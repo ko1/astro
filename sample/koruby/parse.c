@@ -39,6 +39,11 @@ struct frame_context {
     int fwd_rest_slot;
     int fwd_kwh_slot;
     int fwd_blk_slot;
+    /* Anonymous parameter slots (def m(*); m(**); def m(&)) so that
+     * inner calls using bare `*` / `**` / `&` forward them. */
+    int anon_rest_slot;
+    int anon_kwrest_slot;
+    int anon_block_slot;
     struct frame_context *prev;
 };
 
@@ -109,6 +114,9 @@ static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *loca
     f->fwd_rest_slot = -1;
     f->fwd_kwh_slot = -1;
     f->fwd_blk_slot = -1;
+    f->anon_rest_slot = -1;
+    f->anon_kwrest_slot = -1;
+    f->anon_block_slot = -1;
     tc->frame = f;
 }
 
@@ -279,9 +287,20 @@ build_args_array_with_splat(struct transduce_context *tc, pm_node_list_t *args)
     while (i < args->size) {
         if (PM_NODE_TYPE_P(args->nodes[i], PM_SPLAT_NODE)) {
             pm_splat_node_t *sn = (pm_splat_node_t *)args->nodes[i];
-            NODE *splatted = sn->expression
-                ? ALLOC_node_splat_to_ary(T(tc, sn->expression))
-                : ALLOC_node_ary_new(0, 0);
+            NODE *splatted;
+            if (sn->expression) {
+                splatted = ALLOC_node_splat_to_ary(T(tc, sn->expression));
+            } else {
+                /* Anonymous `*` — forward the enclosing method's anon
+                 * rest slot if present; otherwise empty. */
+                int anon = -1;
+                for (struct frame_context *f = tc->frame; f; f = f->prev) {
+                    if (f->anon_rest_slot >= 0) { anon = f->anon_rest_slot; break; }
+                }
+                splatted = (anon >= 0)
+                    ? ALLOC_node_lvar_get((uint32_t)anon)
+                    : ALLOC_node_ary_new(0, 0);
+            }
             result = result ? ALLOC_node_ary_concat(result, splatted) : splatted;
             i++;
         } else {
@@ -1006,7 +1025,20 @@ build_container(struct transduce_context *tc, pm_node_list_t *items, bool is_arr
                             ALLOC_node_seq(kset, ALLOC_node_seq(vset, call)));
                 } else if (PM_NODE_TYPE_P(it, PM_ASSOC_SPLAT_NODE)) {
                     pm_assoc_splat_node_t *sn = (pm_assoc_splat_node_t *)it;
-                    NODE *sval = sn->value ? T(tc, sn->value) : ALLOC_node_hash_new(0, base_slot + 1);
+                    NODE *sval;
+                    if (sn->value) {
+                        sval = T(tc, sn->value);
+                    } else {
+                        /* Anonymous `**` — forward enclosing method's anon
+                         * kwrest slot if present; else empty hash. */
+                        int anon = -1;
+                        for (struct frame_context *f = tc->frame; f; f = f->prev) {
+                            if (f->anon_kwrest_slot >= 0) { anon = f->anon_kwrest_slot; break; }
+                        }
+                        sval = (anon >= 0)
+                            ? ALLOC_node_lvar_get((uint32_t)anon)
+                            : ALLOC_node_hash_new(0, base_slot + 1);
+                    }
                     /* CRuby: **obj calls obj.to_hash first.  We model
                      * via __kwsplat_to_hash(obj) which returns Hash or
                      * raises TypeError.  Method-call kwargs context is
@@ -2569,9 +2601,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       } else {
                           /* Anonymous `*` (no name) — still needs to absorb
                            * extra positional args.  Reserve a hidden slot
-                           * for the gathered Array; nothing will read it
-                           * since there's no lvar to bind. */
+                           * for the gathered Array.  Record it on the frame
+                           * so an inner `f(*)` call can forward. */
                           rest_slot = (int)inc_arg_index(tc);
+                          tc->frame->anon_rest_slot = rest_slot;
                           total_cnt++;
                       }
                   }
@@ -2593,11 +2626,14 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                * slot beyond locals_cnt that holds the hash for extraction. */
               bool has_kwrest = pn->keyword_rest && PM_NODE_TYPE_P(pn->keyword_rest, PM_KEYWORD_REST_PARAMETER_NODE);
               int kwrest_target_slot = -1;
+              bool kwrest_anonymous = false;
               if (has_kwrest) {
                   pm_keyword_rest_parameter_node_t *kr =
                       (pm_keyword_rest_parameter_node_t *)pn->keyword_rest;
                   if (kr->name) {
                       kwrest_target_slot = lvar_slot(tc, kr->name, 0);
+                  } else {
+                      kwrest_anonymous = true;
                   }
               }
               if (fwd_param) {
@@ -2611,6 +2647,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                    * kwargs hash into.  The body prelude only needs to read
                    * from this slot — the prologue handles kwh extraction. */
                   kwh_save_slot = inc_arg_index(tc);
+                  if (kwrest_anonymous) {
+                      /* Anonymous `**` — record kwh_save_slot as the
+                       * forwarding source for inner `f(**)` calls. */
+                      tc->frame->anon_kwrest_slot = (int)kwh_save_slot;
+                  }
                   /* For forwarding, also expose kwh slot to the call site. */
                   if (fwd_param) {
                       tc->frame->fwd_kwh_slot = (int)kwh_save_slot;
@@ -2702,6 +2743,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   if (bp->name) {
                       int slot = lvar_slot(tc, bp->name, 0);
                       if (slot >= 0) block_slot = slot;
+                  } else {
+                      /* Anonymous `&` — reserve a slot so inner `f(&)`
+                       * can forward.  Treat like a named block_slot. */
+                      int slot = (int)inc_arg_index(tc);
+                      block_slot = slot;
+                      tc->frame->anon_block_slot = slot;
                   }
               }
           }
@@ -2967,7 +3014,18 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               NODE *call;
               if (!block_pm && n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_ARGUMENT_NODE)) {
                   pm_block_argument_node_t *ba = (pm_block_argument_node_t *)n->block;
-                  NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
+                  NODE *expr;
+                  if (ba->expression) {
+                      expr = T(tc, ba->expression);
+                  } else {
+                      /* Anonymous `&` — forward enclosing method's anon block. */
+                      int anon = -1;
+                      for (struct frame_context *f = tc->frame; f; f = f->prev) {
+                          if (f->anon_block_slot >= 0) { anon = f->anon_block_slot; break; }
+                      }
+                      expr = (anon >= 0) ? ALLOC_node_lvar_get((uint32_t)anon)
+                                         : ALLOC_node_nil();
+                  }
                   struct method_cache *mc_tp = alloc_method_cache();
                   uint32_t tp_slot = inc_arg_index(tc);
                   inc_arg_index(tc);  /* spare for callee's frame */
@@ -3194,17 +3252,25 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
            * clobber the outer arg into a number. */
           if (!block_pm && n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_ARGUMENT_NODE)) {
               pm_block_argument_node_t *ba = (pm_block_argument_node_t *)n->block;
-              /* `&nil` and `&` (no expr) → pass no block at all, like CRuby. */
-              if (!ba->expression || PM_NODE_TYPE_P(ba->expression, PM_NIL_NODE)) {
+              /* `&nil` → pass no block at all, like CRuby.  `&` (no expr)
+               * forwards the enclosing method's anonymous block parameter
+               * if any. */
+              if (PM_NODE_TYPE_P(ba->expression ? ba->expression : (pm_node_t *)&ba->base, PM_NIL_NODE)) {
                   return build_call_simple(tc, recv, name, args ? &args->arguments : NULL, NULL, recv != NULL);
               }
-              /* Use __to_block_arg helper which converts nil → no block,
-               * else delegates to expr.to_proc.  Reserve tp_slot ABOVE
-               * the call's arg slots: the block expression is evaluated
-               * after the args, so a colliding tp_slot would clobber
-               * the just-staged arg (e.g. `m('a', &lambda)` would put
-               * the lambda into 'a's slot). */
-              NODE *expr = T(tc, ba->expression);
+              NODE *expr;
+              if (ba->expression) {
+                  expr = T(tc, ba->expression);
+              } else {
+                  int anon = -1;
+                  for (struct frame_context *f = tc->frame; f; f = f->prev) {
+                      if (f->anon_block_slot >= 0) { anon = f->anon_block_slot; break; }
+                  }
+                  if (anon < 0) {
+                      return build_call_simple(tc, recv, name, args ? &args->arguments : NULL, NULL, recv != NULL);
+                  }
+                  expr = ALLOC_node_lvar_get((uint32_t)anon);
+              }
               struct method_cache *mc_tp = alloc_method_cache();
               uint32_t tp_slot = inc_arg_index(tc);
               inc_arg_index(tc);  /* spare for callee's frame */
