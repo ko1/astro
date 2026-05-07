@@ -155,7 +155,14 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         bool consume_return = (c->state == KORB_RETURN &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
-        if (c->state == KORB_BREAK || consume_return) {
+        /* break with NULL target: legacy "any method consumes" path
+         * (yield-style break from a cfunc-driven loop, or break that
+         * already escaped its inner while/loop).  break with concrete
+         * target: only the matching frame consumes (set in proc_call
+         * for &block-yield style escapes). */
+        bool consume_break = (c->state == KORB_BREAK &&
+            (c->state_target_frame == NULL || c->state_target_frame == &frame));
+        if (consume_break || consume_return) {
             r = c->state_value;
             c->state = KORB_NORMAL;
             c->state_value = Qnil;
@@ -265,7 +272,14 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         bool consume_return = (c->state == KORB_RETURN &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
-        if (c->state == KORB_BREAK || consume_return) {
+        /* break with NULL target: legacy "any method consumes" path
+         * (yield-style break from a cfunc-driven loop, or break that
+         * already escaped its inner while/loop).  break with concrete
+         * target: only the matching frame consumes (set in proc_call
+         * for &block-yield style escapes). */
+        bool consume_break = (c->state == KORB_BREAK &&
+            (c->state_target_frame == NULL || c->state_target_frame == &frame));
+        if (consume_break || consume_return) {
             r = c->state_value;
             c->state = KORB_NORMAL;
             c->state_value = Qnil;

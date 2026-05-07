@@ -627,26 +627,6 @@ NODE_DEF
 node_break(CTX * restrict c, NODE * restrict n, NODE *value)
 {
     VALUE v = EA(c, value);
-    /* Stale-frame check (same as node_return): a non-lambda block
-     * whose enclosing method has returned can't break to that method
-     * any more — raise LocalJumpError. */
-    extern struct korb_proc *running_block;
-    if (running_block && !running_block->is_lambda &&
-        running_block->return_target_frame) {
-        struct korb_frame *target = (struct korb_frame *)running_block->return_target_frame;
-        bool target_alive = false;
-        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
-            if (f == target) {
-                target_alive = (f->frame_id == running_block->enclosing_frame_id);
-                break;
-            }
-        }
-        if (!target_alive) {
-            VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
-            korb_raise(c, (struct korb_class *)eL, "break from proc-closure");
-            return Qnil;
-        }
-    }
     c->state = KORB_BREAK;
     c->state_value = v;
     return v;

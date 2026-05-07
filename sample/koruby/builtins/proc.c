@@ -328,10 +328,43 @@ redo_proc:
      * lexically-enclosing method, where it'll be consumed at that
      * method's prologue. */
     if (c->state == KORB_BREAK) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-        c->state_target_frame = NULL;
+        if (p->is_lambda && c->state_target_frame == NULL) {
+            /* break inside a lambda's own body (no concrete target) —
+             * consume as the lambda's return value.  When break carries
+             * a concrete target_frame (set by an inner non-lambda proc
+             * that found an &block-owner), let it propagate past us. */
+            r = c->state_value;
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            c->state_target_frame = NULL;
+        } else if (p->is_lambda) {
+            /* lambda but break has a target above us — propagate. */
+            r = c->state_value;
+        } else {
+            /* Non-lambda proc.call: distinguish "yield-style call from
+             * within owning method" from "external .call".  Walk the
+             * live frame chain looking for a method whose &block == p
+             * — if found, this is a yield-style call (mid(&b) doing
+             * b.call) and `break` escapes that method; set target_frame
+             * so its prologue consumes the BREAK.  Otherwise the proc
+             * was .called as a plain Proc with no owning method —
+             * raise LocalJumpError. */
+            struct korb_frame *owner = NULL;
+            for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+                if (f->block == p) { owner = f; break; }
+            }
+            if (owner) {
+                c->state_target_frame = owner;
+                r = c->state_value;
+            } else {
+                VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                c->state_target_frame = NULL;
+                korb_raise(c, (struct korb_class *)eL, "break from proc-closure");
+                r = Qnil;
+            }
+        }
     } else if (c->state == KORB_RETURN && p->is_lambda &&
                c->state_target_frame == NULL) {
         /* Lambda swallows `return` only when the target is unset

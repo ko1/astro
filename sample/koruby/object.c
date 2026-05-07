@@ -3133,7 +3133,9 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         bool consume_return = (c->state == KORB_RETURN &&
             (c->state_target_frame == NULL || c->state_target_frame == &frame));
-        if (c->state == KORB_BREAK || consume_return) {
+        bool consume_break = (c->state == KORB_BREAK &&
+            (c->state_target_frame == NULL || c->state_target_frame == &frame));
+        if (consume_break || consume_return) {
             r = c->state_value;
             c->state = KORB_NORMAL;
             c->state_value = Qnil;
