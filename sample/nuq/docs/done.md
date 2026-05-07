@@ -56,6 +56,16 @@ jq 本体も decnum ビルドでないと通らない領域。
   snapshot ターナリ (`(cnt <= 16) ? small : (VALUE *)nuq_scratch_alloc(...)`)
   全 57 サイトの heap 分岐をここに流す。run 終了で wholesale reset、
   個別 free 不要。valgrind で per-input \"definitely lost\" がゼロ
+- **streaming 入力経路**: stdin の slurp 後 1 値ずつ lazy parse → 即
+  `nuq_run` → arena reset。30 K records JSONL の peak RSS が 832 MB →
+  340 MB に。`-n` モードでも `inputs` builtin が同じ cursor を共有して
+  lazy pull (詳細は [runtime.md §6](./runtime.md))。
+- **GC root pin protocol の確立**: helper が VALUE / VALUE[] を
+  arena allocator 越しに保持する箇所は `NUQ_GC_PIN1` /
+  `NUQ_GC_PIN_ARR` で root 化。binary op (`+/-/*/etc.`)、比較系、
+  `node_pipe` / `node_if` / `node_as[_pattern]` / reduce / foreach /
+  sort_by / group_by / unique / paths walker / json parser まで
+  audit 済み (`linearity.c` 経由の write-back も含む)
 
 ## フィルタ言語
 

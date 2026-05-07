@@ -153,6 +153,36 @@ jaq / gojq に対しても圧倒 — jq / jaq / gojq はいずれも recursive w
 - 100MB: nuq 1.2-2.8× vs jq、scale 秒単位 — **スケールしても比率
   維持** (jq の overhead が線形なので予想通り)
 
+## JSONL/NDJSON bench (実 GitHub Archive データ、~100 MB / 30k events)
+
+`bench/data/jsonl/gharchive.jsonl` は GitHub Archive の 1 時間スライス
+(CC0)、`make bench-data-jsonl` でダウンロード ~120 MB gzipped を
+30 K records (~100 MB text) に truncate。コマンドは `ruby bench/bench.rb
+jsonl` または `make bench-jsonl`。
+
+streaming 系 (per-value 入力) と aggregating 系 (`-n + [inputs]`) を
+混ぜた 9 フィルタ:
+
+| bench | jq | jaq | gojq | **nuq AOT** |
+|---|---:|---:|---:|---:|
+| `identity` (`.`) | 2.45 s | 1.65 s | 1.56 s | **3.6×** |
+| `extract_login` (`select(.type=="PushEvent") \| .actor.login`) | 1.21 s | 1.18 s | 1.21 s | **2.5×** |
+| `commits_message` (`...payload.commits[]?.message`) | 1.11 s | 1.08 s | 1.08 s | **2.2×** |
+| `reshape` (`{user, t, r, ts}` 投影) | 1.16 s | 1.18 s | 1.10 s | **2.5×** |
+| `select_recent_PR` (PullRequestEvent + opened) | 1.13 s | 1.05 s | 1.03 s | **2.3×** |
+| `type_histogram` (`group_by(.type)`) | 1.16 s | 1.05 s | 1.07 s | **1.4×** |
+| `unique_repos` (`unique \| length`) | 1.12 s | 1.05 s | 1.07 s | **1.4×** |
+| `count_pushes` (`[inputs \| select] \| length`) | 1.40 s | 1.20 s | 1.19 s | **0.35×** |
+| `top_users` (`[inputs] \| group_by \| sort_by \| .[0:10]`) | 1.12 s | 1.07 s | 1.08 s | **0.33×** |
+
+streaming 系 5/5 で **2.2-3.6× 速い** (`identity` は純パススルー、
+JSON parser + printer のスループット勝負)。group_by / unique も
+1.4× 維持。
+
+`count_pushes` / `top_users` は `[inputs | ...]` で 30 K の中間値を
+pool に積む構造で、jq の incremental streaming 集計に対し弱い —
+構造的な改善 (B-2 streaming pipe) が必要、todo 行き。
+
 ## メモリ — peak RSS (HWM)
 
 `/usr/bin/time -f '%M'` (Linux maxresident, KB) を `BENCH_MEM=1

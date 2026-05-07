@@ -58,13 +58,19 @@ integrate。
 ### B-2. streaming pipe
 `f | g` は LHS 出力を一度 EMIT pool に集めてから RHS を回す。stack
 discipline で巻き戻しはするが per-stage のスライスは確保される。
-長 stream (`.[]` 経由の large array iteration) で memory 効率が
-落ちる。CPS chain にすれば slice 化を消せる。
+長 stream (`.[]` 経由の large array iteration、`[inputs]` で 30 K 値
+を集約する pattern など) で memory 効率が落ちる。CPS chain にすれば
+slice 化を消せる。
+
+JSONL bench の **`count_pushes` / `top_users` (jq の 0.3×)** がこの
+構造的問題で勝てない代表例 — `[inputs | select(...)]` で 30 K の
+中間値を pool に積むため arena GC が頻発する。これを CPS-chain で
+incremental に処理できれば一気に jq 越えできる。jaq / gojq も同様
+の課題を抱えていて似た性能特性。
 
 **注意**: これは alloc pattern の話で specialization の話ではない。
 pipe は既に SD specializer が両側に入る形になっている。AOT が interp
-を引き離す効果は無い (interp も同じ alloc を使う)。実用 100MB でも
-問題が出ていないので優先度低い。
+を引き離す効果は無い (interp も同じ alloc を使う)。
 
 ### B-3. EMIT pool の sub-call 巻き戻しのコスト
 現在 `c->pool_top = top0` を毎 NODE_DEF 終端で書き戻す。stack discipline
@@ -170,17 +176,16 @@ nuq のフィルタ言語が使える。実装コスト大、恩恵が見えな�
 ### F-1. fuzzing
 クラッシャ潰し。
 
-### F-2. ストリーム入力ベンチ
-今は `n` を stdin で渡すだけ / file を読むだけ。`-R` 1 行ずつ /
-NDJSON / `inputs` ストリームの bench を整備したい。
-
-### F-3. 大規模 NDJSON ベンチ
-`qj` (大規模 NDJSON 寄せの実装) を見つけ次第追加して比較。
-
-### F-4. valgrind を CI に組込み
+### F-2. valgrind を CI に組込み
 `make valgrind` を作って、代表的な workload (real bench の小さい
-サブセット + Q3 reduce + path-walk) を valgrind の memcheck 配下で
-通す。memory access errors / per-input leak が回帰したら検出できる。
+サブセット + Q3 reduce + path-walk + JSONL 集計) を valgrind の
+memcheck 配下で通す。memory access errors / per-input leak が
+回帰したら検出できる。
+
+### F-3. JSONL bench の `qj` 比較
+`qj` (大規模 NDJSON 寄せの実装) が見つかったら `bench/jsonl/` に
+組み込んで比較。streaming 系の jq 互換実装としての立ち位置を
+見たい。
 
 ## 設計方針 (固定)
 
