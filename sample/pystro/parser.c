@@ -4606,21 +4606,43 @@ parse_assignable_target(NODE *rhs)
     if (t->kind != T_NAME) parse_error("invalid assignment target");
     const char *base_name = t->sval;
     tok_pos++;
-    enum trailer_kind { TR_DOT, TR_SUB, TR_SLICE };
+    // TR_CALL stores the resulting call node directly (parse_call_args
+    // builds it on the spot from the partial `cur` we maintain in the
+    // build loop below).  Without this the parser silently dropped
+    // `().*` from `o.m().attr = rhs` and parsed it as `o.m = rhs`.
+    enum trailer_kind { TR_DOT, TR_SUB, TR_SLICE, TR_CALL };
     struct {
         int kind;
         const char *name;                  // TR_DOT
         NODE *idx;                         // TR_SUB
         NODE *sa, *sb, *sc;                // TR_SLICE
+        size_t call_pos;                   // TR_CALL: position of '(' to replay
     } trs[16];
     int ntr = 0;
-    while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+    while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK
+           || peek_tok(0)->kind == T_LPAREN) {
         if (ntr >= 16) parse_error("too many trailers in target");
         if (match_tok(T_DOT)) {
             if (peek_tok(0)->kind != T_NAME) parse_error("expected attr name");
             trs[ntr].kind = TR_DOT;
             trs[ntr].name = peek_tok(0)->sval;
             tok_pos++;
+            ntr++;
+        } else if (peek_tok(0)->kind == T_LPAREN) {
+            // Skip past matching ')' — parse_call_args will replay from
+            // here in the build loop once we know the receiver.
+            trs[ntr].kind = TR_CALL;
+            trs[ntr].call_pos = tok_pos;
+            int depth = 0;
+            while (tok_arr[tok_pos].kind != T_EOF) {
+                int kk = tok_arr[tok_pos].kind;
+                if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+                else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) {
+                    depth--;
+                    if (depth == 0 && kk == T_RPAREN) { tok_pos++; break; }
+                }
+                tok_pos++;
+            }
             ntr++;
         } else {
             expect(T_LBRACK, "'['");
@@ -4682,13 +4704,24 @@ parse_assignable_target(NODE *rhs)
         }
     }
     if (ntr == 0) return make_store(base_name, rhs);
+    // The terminal trailer must be assignable (DOT / SUB / SLICE).  A
+    // trailing `()` makes the LHS a call result, which Python rejects
+    // ("cannot assign to function call").
+    int last = ntr - 1;
+    if (trs[last].kind == TR_CALL) parse_error("cannot assign to function call");
     NODE *cur = make_load(base_name);
     for (int i = 0; i < ntr - 1; i++) {
         if (trs[i].kind == TR_DOT)        cur = ALLOC_node_attr_get(cur, trs[i].name);
         else if (trs[i].kind == TR_SUB)   cur = ALLOC_node_subscript_get(cur, trs[i].idx);
-        else                              cur = ALLOC_node_slice(cur, trs[i].sa, trs[i].sb, trs[i].sc);
+        else if (trs[i].kind == TR_SLICE) cur = ALLOC_node_slice(cur, trs[i].sa, trs[i].sb, trs[i].sc);
+        else {
+            // TR_CALL: replay parse_call_args from the saved '(' position.
+            size_t save = tok_pos;
+            tok_pos = trs[i].call_pos;
+            cur = parse_call_args(cur);
+            tok_pos = save;
+        }
     }
-    int last = ntr - 1;
     if (trs[last].kind == TR_DOT)
         return ALLOC_node_attr_set(cur, trs[last].name, rhs);
     if (trs[last].kind == TR_SUB)
