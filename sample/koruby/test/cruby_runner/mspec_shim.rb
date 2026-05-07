@@ -563,7 +563,10 @@ def suppress_keyword_warning(&blk); blk.call; end
 
 # fixture helper — minimal stub.
 def fixture(file, *args)
-  File.expand_path(args.last.to_s, File.dirname(file).to_s)
+  # mspec convention: fixtures live in a `fixtures/` subdirectory next
+  # to the spec file.  `fixture(__FILE__, "name.rb")` →
+  # "<dirname>/fixtures/name.rb".
+  File.expand_path(File.join("fixtures", *args), File.dirname(file).to_s)
 end
 
 # Misc constants
@@ -644,10 +647,36 @@ end
 # warning behaviour we don't reproduce).
 def complain(_pattern = nil, **_opts); MSpecMatcher.new(:complain); end
 
-# `ruby_exe` — runs ruby code in a subprocess.  Out of scope (no
-# subprocess), so return empty string.
-def ruby_exe(*_); ""; end
-def ruby_cmd(*_); "ruby"; end
+# `ruby_exe` — runs Ruby code in a subprocess.  We spawn the koruby
+# binary on either a fixture file (when `code` is an existing path)
+# or a temp file containing the source.  Stdout is returned; the
+# subprocess exit status updates `$?` so `ruby_exe(code); $?.exitstatus`
+# works.
+KORUBY_BIN = ENV['KORUBY_BIN'] || File.expand_path('../../koruby', __dir__)
+$ms_ruby_exe_seq = 0
+def ruby_exe(code = nil, options: nil, args: nil, escape: nil, env: nil)
+  return "" if code.nil?
+  path = nil
+  written = nil
+  if code.is_a?(String) && File.exist?(code) && (code.end_with?('.rb') || !code.include?("\n"))
+    path = code
+  else
+    $ms_ruby_exe_seq += 1
+    written = "/tmp/koruby-ruby-exe-#{Process.pid rescue 0}-#{$ms_ruby_exe_seq}.rb"
+    File.write(written, code)
+    path = written
+  end
+  envstr = ""
+  if env.is_a?(Hash)
+    envstr = env.map { |k,v| "#{k}=#{v}" }.join(" ") + " "
+  end
+  out = `#{envstr}#{KORUBY_BIN} #{path} 2>/dev/null`
+  File.delete(written) rescue nil if written
+  out
+end
+def ruby_cmd(code = nil, options: nil, args: nil)
+  "#{KORUBY_BIN}#{code ? " -e #{code.inspect}" : ""}"
+end
 
 # `tmp(name)` — return a path under /tmp for spec scratch files.
 # `rm_r(path)` — recursive delete (single file is enough for specs).
