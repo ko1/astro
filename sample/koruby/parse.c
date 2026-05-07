@@ -2528,12 +2528,21 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           return ALLOC_node_nil();
       }
       case PM_POST_EXECUTION_NODE: {
-          /* `END { stmts }` — Ruby runs these at exit (LIFO).  We don't
-           * have an at_exit hook here; treat as no-op (registers but
-           * never fires).  Tests that check `END { ... }` doesn't raise
-           * pass; tests that observe the side effect do not. */
-          (void)node;
-          return ALLOC_node_nil();
+          /* `END { stmts }` — register the body to run at process exit
+           * (LIFO).  Lower to `Kernel#at_exit { ... }`. */
+          pm_post_execution_node_t *pe = (pm_post_execution_node_t *)node;
+          uint32_t saved_ai = inc_arg_index(tc);
+          rewind_arg_index(tc, saved_ai);
+          push_frame(tc, &(pm_constant_id_list_t){0}, true);
+          uint32_t param_base = tc->frame->slot_base;
+          NODE *body = pe->statements ? T(tc, (pm_node_t *)pe->statements) : ALLOC_node_nil();
+          uint32_t env_size = tc->frame->max_cnt;
+          pop_frame(tc);
+          NODE *blk = ALLOC_node_block_literal(body, /*params_cnt*/0, param_base,
+                                               env_size, /*creates_proc*/0);
+          struct method_cache *mc = alloc_method_cache();
+          return ALLOC_node_func_call_block(korb_intern("at_exit"), 0,
+                                            arg_index(tc), blk, mc);
       }
       case PM_RETURN_NODE: {
           pm_return_node_t *n = (pm_return_node_t *)node;

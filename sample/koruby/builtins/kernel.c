@@ -109,10 +109,19 @@ static VALUE kernel_rand(CTX *c, VALUE self, int argc, VALUE *argv) {
  * TypeError on non-conversion.  nil handling is decided by caller. */
 static VALUE kwsplat_convert(CTX *c, VALUE v) {
     if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_HASH) return v;
-    VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                            (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
-    if (c->state != KORB_NORMAL) return Qnil;
-    if (!RTEST(rt)) {
+    /* For BasicObject (no #respond_to?), peek at the method table directly. */
+    bool has_to_hash = false;
+    if (!SPECIAL_CONST_P(v)) {
+        struct korb_class *vk = (struct korb_class *)((struct RBasic *)v)->klass;
+        has_to_hash = vk && korb_class_find_method(vk, korb_intern("to_hash")) != NULL;
+    }
+    VALUE rt = Qfalse;
+    if (!has_to_hash) {
+        rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                          (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
+        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+    }
+    if (!has_to_hash && !RTEST(rt)) {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
         korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into Hash",
