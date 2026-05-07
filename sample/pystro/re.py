@@ -168,7 +168,46 @@ def _match_star(pat, atom_pi, after_quant_pi, s, si, flags, groups, lazy=False):
     return False, -1
 
 
+def _find_top_alt(pat, pi):
+    """Scan for top-level `|` at or after pi.  Returns the index of the
+    first such `|`, or -1 if none.  `[`...`]` and `(`...`)` and escapes
+    are skipped."""
+    depth = 0
+    i = pi
+    while i < len(pat):
+        c = pat[i]
+        if c == "\\" and i + 1 < len(pat):
+            i += 2
+            continue
+        if c == "[":
+            end = pat.find("]", i + 1)
+            i = (end + 1) if end >= 0 else len(pat)
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == "|" and depth == 0:
+            return i
+        i += 1
+    return -1
+
+
 def _match_here(pat, pi, s, si, flags, groups):
+    # Top-level alternation: try left, then right.  Each branch is
+    # `pat[pi:alt]` (left) and `pat[alt+1:]` (right).
+    alt = _find_top_alt(pat, pi)
+    if alt >= 0:
+        saved = list(groups)
+        # Left branch — match left part as a complete sub-pattern.
+        left = pat[pi:alt]
+        ok, ei = _match_here(left, 0, s, si, flags, groups)
+        if ok:
+            return True, ei
+        del groups[:]; groups.extend(saved)
+        # Right branch — recursively (may itself contain another `|`).
+        right_pi = alt + 1
+        return _match_here(pat, right_pi, s, si, flags, groups)
     if pi >= len(pat):
         return True, si
     if pat[pi] == "$" and pi + 1 == len(pat):
