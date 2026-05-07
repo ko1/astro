@@ -42,6 +42,50 @@ integrate。
 ### A-4. `tostream` / `fromstream`
 未実装。streaming JSON I/O を必要とするユースケースで。
 
+## A-OOM. arena 内 dead 累積による peak memory blow-up
+
+per-run arena は run 終了で wholesale reset するが、run 内で生まれた
+dead intermediate を mid-run で回収する仕組みが無い。`map(F) | sort
+| map(G) | ...` のような chain や、特に `reduce range(N) as $x ([]; .
++ [$x])` のような accumulating mutation で **peak memory が dead
+intermediate の総和** になる。
+
+実測 (input 9 byte の `reduce range(50000) as $i ([]; . + [$i]) |
+length`):
+
+| engine | peak RSS | elapsed |
+|---|---:|---:|
+| jq    |    5 MB  | 0.02 s |
+| jaq   |    4 MB  | 0.01 s |
+| gojq  |   47 MB  | 10.4 s |
+| nuq   | 11313 MB | 11.8 s |
+
+(計算結果は全エンジン一致 50000、メモリ使用量だけが破滅)
+
+jq / jaq は refcount ベースの unique-ref 検出で `acc + [x]` を
+**in-place push** に最適化、O(N) で済ます。nuq は arena で全コピー、
+O(N²) アロケが reset まで居残り。
+
+直し方の候補 (実装コスト順):
+
+1. **handle-based VALUE access** + Cheney semispace copying GC: 各
+   `struct nuq_obj *` raw ptr を pin する transient roots stack を
+   導入。precise root tracking で safe な moving GC が実装可能。
+   `nuq_op_add_slow` / `nuq_clone` / その他 helper を全部書き直す
+   必要あり (中規模リファクタ)
+2. **safe-point copying GC**: GC を NODE_DEF entry など raw ptr が
+   無い時点でしか動かさない。helper 中の alloc は `gc_defer++` で
+   GC 抑制。reduce/foreach/map の iter 境界に safe point 挿入
+3. **refcount + COW**: 各 nuq_obj に refcount、`+`/`+=` 等の clone
+   側で refcount=1 を見たら in-place mutation。jq の方式。VALUE
+   assignment 全箇所で inc/dec が必要 (大規模)
+4. **mark-sweep** (non-moving): bump alloc を捨てて size-class
+   freelist + tracing GC。VALUE は不変、root tracking は (1) と同
+   レベル
+
+prototype で (1) は試したが、helper 中の raw ptr が allocator 経由で
+GC を触ると stale になる問題で動作不能。停止解決まで保留。
+
 ## B. パフォーマンス
 
 ### B-1. streaming pipe

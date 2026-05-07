@@ -18,7 +18,16 @@ struct nuq_obj NUQ_NULL_ERR_OBJ  = { .type = NUQ_T_NULL };     /* distinct ptr *
 struct nuq_obj NUQ_TRUE_OBJ  = { .type = NUQ_T_BOOL, .b = true };
 struct nuq_obj NUQ_FALSE_OBJ = { .type = NUQ_T_BOOL, .b = false };
 
-/* ---- per-run arena ---- */
+/* ---- per-run arena ----
+ *
+ * Bump-pointer allocator that resets wholesale at end of each filter
+ * run (`nuq_arena_reset` in nuq_run).  Within a run, dead intermediates
+ * accumulate until the run ends — see todo.md for known patterns
+ * (`reduce ([]; . + [$i])`-style accumulators) where this can blow up
+ * peak memory.  A copying-GC was prototyped but precise root tracking
+ * for raw `struct nuq_obj *` locals in C helpers (`nuq_op_add_slow`
+ * etc.) is non-trivial; deferred until a proper handle-based scheme
+ * is in place. */
 
 bool  nuq_alloc_perm = true;     /* startup: parse / setup is permanent */
 char *nuq_arena_cur  = NULL;
