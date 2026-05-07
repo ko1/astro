@@ -3845,7 +3845,29 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   }
               }
           }
+          /* Destructure prelude for `-> ((a, b))` / `-> ((*a, b))` etc.
+           * Each MULTI_TARGET required param holds a value at param
+           * position i; coerce via to_ary_for_mlhs and bind nested
+           * components recursively. */
+          NODE *l_destructure_pre = NULL;
+          if (pn_l) {
+              for (size_t i = 0; i < pn_l->requireds.size; i++) {
+                  pm_node_t *req = pn_l->requireds.nodes[i];
+                  if (!PM_NODE_TYPE_P(req, PM_MULTI_TARGET_NODE)) continue;
+                  pm_multi_target_node_t *mt = (pm_multi_target_node_t *)req;
+                  uint32_t holder_slot = param_base + (uint32_t)i;
+                  uint32_t arr_slot = inc_arg_index(tc);
+                  NODE *coerce = ALLOC_node_lvar_set(arr_slot,
+                                    ALLOC_node_to_ary_for_mlhs(
+                                        ALLOC_node_lvar_get(holder_slot)));
+                  l_destructure_pre = l_destructure_pre
+                      ? ALLOC_node_seq(l_destructure_pre, coerce) : coerce;
+                  NODE *bound = destructure_into_targets(tc, arr_slot, mt);
+                  if (bound) l_destructure_pre = ALLOC_node_seq(l_destructure_pre, bound);
+              }
+          }
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
+          if (l_destructure_pre) body = ALLOC_node_seq(l_destructure_pre, body);
           if (kw_prologue) body = ALLOC_node_seq(kw_prologue, body);
           /* Resolve `&blk` slot (if any) before pop_frame. */
           int lambda_blk_slot = -1;
