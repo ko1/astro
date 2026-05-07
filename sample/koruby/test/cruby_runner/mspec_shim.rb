@@ -373,10 +373,22 @@ class MSpecExpectation
              msg_ok = if msg.nil? then true
                       elsif msg.is_a?(String)
                         # /a|b/ — proxy regex alternation by checking each
-                        # branch independently.  Good enough for rubyspec's
-                        # pattern strings which don't otherwise use regex
-                        # metacharacters in non-trivial ways.
-                        msg.split('|').any? { |alt| e.message.include?(alt) }
+                        # branch independently.  Strip common regex escape
+                        # sequences (\[ \] \. \( \) \? \+ \* \^ \$ \|) so
+                        # that rubyspec patterns like /\[0, 1\]/ still
+                        # match the error message (which never includes
+                        # literal backslashes).
+                        msg.split('|').any? { |alt|
+                          stripped = alt.dup
+                          %w(\\[ \\] \\. \\( \\) \\? \\+ \\* \\^ \\$ \\| \\\\).each do |esc|
+                            stripped = stripped.gsub(esc, esc[1])
+                          end
+                          # Anchors: drop leading \\A and trailing \\z which
+                          # rubyspec uses for full-string match — we still
+                          # use substring containment as the proxy.
+                          stripped = stripped.sub(/\A\\A/, '').sub(/\\z\z/, '')
+                          e.message.include?(stripped)
+                        }
                       else msg === e.message
                       end
              ok = cls_ok && msg_ok

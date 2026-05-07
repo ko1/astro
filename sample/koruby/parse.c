@@ -3404,14 +3404,22 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           if (cm->else_clause) {
               else_n = T(tc, (pm_node_t *)cm->else_clause);
           } else {
+              /* Message format: subj.inspect — CRuby raises with the
+               * inspected subject as the message (so the user sees what
+               * value didn't match). */
               uint32_t exc_class_slot = inc_arg_index(tc);
               uint32_t msg_slot = inc_arg_index(tc);
               rewind_arg_index(tc, exc_class_slot);
               struct method_cache *mc_raise = alloc_method_cache();
               NODE *cls = ALLOC_node_const_get(korb_intern("NoMatchingPatternError"));
-              NODE *msg = ALLOC_node_str_lit("", 0);
+              uint32_t insp_ai = inc_arg_index(tc);
+              rewind_arg_index(tc, insp_ai);
+              struct method_cache *mc_insp = alloc_method_cache();
+              NODE *insp = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                                   korb_intern("inspect"),
+                                                   0, insp_ai, mc_insp);
               NODE *prep_cls = ALLOC_node_lvar_set(exc_class_slot, cls);
-              NODE *prep_msg = ALLOC_node_lvar_set(msg_slot, msg);
+              NODE *prep_msg = ALLOC_node_lvar_set(msg_slot, insp);
               else_n = ALLOC_node_seq(prep_cls,
                         ALLOC_node_seq(prep_msg,
                           ALLOC_node_func_call(korb_intern("raise"), 2,
