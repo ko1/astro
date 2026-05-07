@@ -2661,6 +2661,11 @@ py_list_get(CTX *c, VALUE seq, VALUE idx)
     if (py_is_class(seq)) {
         VALUE m = py_class_lookup_method(seq, "__class_getitem__");
         if (m != PY_NONE) {
+            // Unwrap @classmethod so the call binds `cls` from the
+            // class on which __class_getitem__ was looked up.
+            if (PY_IS_PTR(m) && PY_PTR(m)->type == PY_T_CLASSMETHOD) {
+                m = PY_PTR(m)->wrap.wrapped;
+            }
             VALUE av[2] = { seq, idx };
             return py_apply(c, m, 2, av);
         }
