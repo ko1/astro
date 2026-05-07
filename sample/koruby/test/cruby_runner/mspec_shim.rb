@@ -463,6 +463,12 @@ class MSpecMock
   def respond_to?(name, _priv = false); @recv.key?(name); end
   def respond_to_missing?(_, _); true; end
   def inspect; "#<mock(#{@name})>"; end
+  # CRuby's RSpec-style mock object overrides built-in methods (to_s,
+  # hash, ==) when stubbed — without these overrides the default
+  # Object impl resolves first and method_missing never fires.
+  def to_s; e = @recv[:to_s]; e ? e.__return_value : super; end
+  def hash; e = @recv[:hash]; e ? e.__return_value : super; end
+  def ==(o); e = @recv[:==]; e ? e.__return_value : super; end
 end
 
 class MSpecMockExpectation
