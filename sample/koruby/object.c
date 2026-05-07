@@ -1976,6 +1976,12 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     }
     /* `&blk` parameter: yield doesn't pass a block, so bind nil. */
     if (blk->block_slot >= 0) fp[blk->block_slot] = Qnil;
+    /* `**kwargs` parameter: yield doesn't pass kwargs (yet — yield with
+     * literal kwargs is not supported here), default to empty Hash so
+     * `**k` lvars see {} instead of leaking nil into user code. */
+    if (blk->kwh_save_slot >= 0) {
+        fp[blk->kwh_save_slot] = korb_hash_new();
+    }
     c->self = blk->self;
     /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
     c->fp = fp;
