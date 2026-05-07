@@ -1100,17 +1100,22 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern void OPTIMIZE_decl(void);
     extern struct Node *OPTIMIZE(struct Node *n);
     OPTIMIZE(ast);
-    /* Recover the caller method's lexical cref.  prologue_ast_simple_inl
-     * skips the `c->cref = mc->def_cref` step when the body is judged
-     * "simple" (no const/cvar/yield/etc), which means inside a simple
-     * method `c->cref` is still the OUTER (top-level) cref.  eval needs
-     * the lexical context of the caller, so pull it from the live
-     * frame's method when present. */
+    /* Recover the lexical cref of the caller's *innermost active scope*.
+     * Order of preference:
+     *   1. If a block is currently running (running_block), use that
+     *      block's captured cref — eval inside `-> { eval "..." }` should
+     *      see the lambda's lexical scope, not the method that .called it.
+     *   2. Otherwise, the calling method's def_cref (works when
+     *      prologue_ast_simple_inl skipped the cref restore step).
+     *   3. Fall back to whatever c->cref currently is.
+     */
     struct korb_cref *prev_cref = c->cref;
-    struct korb_frame *prev_frame_for_eval = c->current_frame;
-    if (prev_frame_for_eval && prev_frame_for_eval->method &&
-        prev_frame_for_eval->method->def_cref) {
-        c->cref = prev_frame_for_eval->method->def_cref;
+    extern struct korb_proc *running_block;
+    if (running_block && running_block->cref) {
+        c->cref = running_block->cref;
+    } else if (c->current_frame && c->current_frame->method &&
+               c->current_frame->method->def_cref) {
+        c->cref = c->current_frame->method->def_cref;
     }
     VALUE r = EVAL(c, ast);
     c->cref = prev_cref;
