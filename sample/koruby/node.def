@@ -2240,8 +2240,11 @@ node_alias_method(CTX * restrict c, NODE * restrict n, NODE *new_name, NODE *old
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
     struct korb_method *m = korb_class_find_method(target, old_id);
     if (!m) {
-        korb_raise(c, NULL, "undefined method '%s' for %s",
-                   korb_id_name(old_id), korb_id_name(target->name));
+        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eN,
+                   "undefined method '%s' for %s",
+                   korb_id_name(old_id),
+                   target->name ? korb_id_name(target->name) : "?");
         return Qnil;
     }
     korb_class_alias_method(target, new_id, m);

@@ -116,7 +116,11 @@ static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     ID old_name = SYMBOL_P(argv[1]) ? korb_sym2id(argv[1]) : korb_intern(korb_str_cstr(argv[1]));
     struct korb_method *m = korb_class_find_method(klass, old_name);
     if (!m) {
-        korb_raise(c, NULL, "undefined method '%s' for %s", korb_id_name(old_name), korb_id_name(klass->name));
+        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eN,
+                   "undefined method '%s' for %s",
+                   korb_id_name(old_name),
+                   klass->name ? korb_id_name(klass->name) : "?");
         return Qnil;
     }
     korb_class_alias_method(klass, new_name, m);
