@@ -78,6 +78,10 @@ void korb_init_builtins(void) {
     DEF(cObj, "class", kernel_class, 0);
     DEF(cObj, "==", kernel_eq, 1);
     DEF(cObj, "!=", kernel_neq, 1);
+    {
+        extern VALUE kernel_not_match(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cObj, "!~", kernel_not_match, 1);
+    }
     DEF(cObj, "!", kernel_not, 0);
     DEF(cObj, "nil?", kernel_nil_p, 0);
     DEF(cObj, "object_id", kernel_object_id, 0);

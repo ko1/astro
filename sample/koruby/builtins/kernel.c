@@ -442,6 +442,14 @@ static VALUE kernel_neq(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(!korb_eq(self, argv[0]));
 }
 
+/* Object#!~: inverted =~.  Default implementation returns !(self =~ arg).
+ * `defined?(x !~ y)` returns "method" because every Object responds to !~. */
+static VALUE kernel_not_match(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE m = korb_funcall(c, self, korb_intern("=~"), 1, argv);
+    if (c->state != KORB_NORMAL) return Qnil;
+    return RTEST(m) ? Qfalse : Qtrue;
+}
+
 static VALUE kernel_not(CTX *c, VALUE self, int argc, VALUE *argv) {
     return RTEST(self) ? Qfalse : Qtrue;
 }
