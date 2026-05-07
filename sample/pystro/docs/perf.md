@@ -52,10 +52,10 @@ operator overload が支配的。
 
 | ベンチ | python3 | pystro interp | pystro AOT | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `richards` (OS sched sim, ~400 行)        | 1.03 s | 4.78 s | **0.47 s** | **0.45× (2.2× FASTER)** |
-| `deltablue` (constraint solver, ~600 行)  | 0.16 s | 1.20 s | **0.61 s** | 3.81× |
-| `raytrace` (簡易 raytracer, ~400 行)      | 0.95 s | 4.05 s | **2.01 s** | 2.12× |
-| `crypto_pyaes` (pure-Py AES-CTR, ~900 行) | 0.55 s | 4.07 s | **1.92 s** | 3.49× |
+| `richards` (OS sched sim, ~400 行)        | 1.03 s | 4.78 s | **0.48 s** | **0.47× (2.2× FASTER)** |
+| `deltablue` (constraint solver, ~600 行)  | 0.16 s | 1.20 s | **0.57 s** | 3.56× |
+| `raytrace` (簡易 raytracer, ~400 行)      | 0.95 s | 4.05 s | **1.27 s** | 1.34× |
+| `crypto_pyaes` (pure-Py AES-CTR, ~900 行) | 0.55 s | 4.07 s | **1.77 s** | 3.22× |
 
 richards は **python3 の 2 倍速い**。 method dispatch overhead を
 完全に潰した結果、 small-class polymorphic な OS scheduler simulation
@@ -111,7 +111,28 @@ dispatch していた → 関数 body は AOT で SD 化されない。
 - `py_iter_next_user` に `no_stack_protector` (alloca が triggers する
   canary check を撤去、 0.40 → 0.34 s)
 
-### Phase 6: bytes/bit ops + algorithmic (今 session 後半)
+### Phase 7: module method IC + attr_set new-instance fast path (今 session)
+
+`docs/why_slow.md` に基づき残った hot path を順に攻めた:
+
+| commit | 改善 | 内容 |
+|---|---|---|
+| `16d05a3` | raytrace -15% | `node_method_*` の fast path に `t == PY_T_MODULE` branch 追加。 `math.sqrt(x)` 等の module method を IC 化。 cache stamp 時に (module_ptr, resolved) を保存、 hot path は self prepend なしで py_apply |
+| `c93297a` | raytrace -28% | attr_set fast path で **新 instance の attrs alloc を inline** 化。 過去に同 (cls, sv) で stamp 済なら descriptor / __setattr__ 確認は不要 → pydict_new + insert を直接実行。 `Vector(x,y,z)` のような __init__ が 1.36M 回の strcmp を撤去 |
+
+`PYSTRO_DBG_SLOW` を一時的に runtime.c に仕込んで slow lookup を class
+名 + method 名で集計したら `Vector.y` / `Vector.z` が各 1.36M 占有。
+attr_get hit 率は 99.5% だったので原因は attr_get ではなく **attr_set
+の py_setattr 内 descriptor 確認** と判明 → 新 instance fast path で
+回避。
+
+ベンチ (best-of-10):
+  raytrace:    2.01 → **1.27 s**  (-37%!、 python3 比 1.34× slow)
+  pyaes:       1.92 → 1.77 s    (-8%)
+  deltablue:   0.61 → 0.57 s    (-7%)
+  richards:    0.47 → 0.48 s    (同)
+
+### Phase 6: bytes/bit ops + algorithmic (前 session)
 
 `docs/why_slow.md` で各 macro bench の CPython 比 slow の原因を計測
 ベースで分析した結果を踏まえ、 上位 ROI 順で着手:
