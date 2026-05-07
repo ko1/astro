@@ -195,7 +195,8 @@ static NODE *destructure_into_targets(struct transduce_context *tc,
     NODE *seq = NULL;
     size_t lefts_n = mt->lefts.size;
     size_t rights_n = mt->rights.size;
-    bool has_rest = mt->rest && PM_NODE_TYPE_P(mt->rest, PM_SPLAT_NODE);
+    bool has_rest = mt->rest && (PM_NODE_TYPE_P(mt->rest, PM_SPLAT_NODE) ||
+                                  PM_NODE_TYPE_P(mt->rest, PM_REST_PARAMETER_NODE));
     /* Helper to bind a single target node from a slot. */
     #define BIND_FROM_VAR(_t, _value_node) do {                               \
         ID _nid = 0; uint32_t _depth = 0;                                     \
@@ -232,11 +233,25 @@ static NODE *destructure_into_targets(struct transduce_context *tc,
     }
     /* *rest = arr[lefts_n..(arr.size - rights_n - 1)] */
     if (has_rest) {
-        pm_splat_node_t *sn = (pm_splat_node_t *)mt->rest;
-        if (sn->expression && PM_NODE_TYPE_P(sn->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
-            pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)sn->expression;
-            int slot = lvar_slot(tc, lt->name, lt->depth);
-            if (slot < 0) slot = lvar_slot_any(tc, lt->name);
+        ID rest_name = 0;
+        uint32_t rest_depth = 0;
+        if (PM_NODE_TYPE_P(mt->rest, PM_SPLAT_NODE)) {
+            pm_splat_node_t *sn = (pm_splat_node_t *)mt->rest;
+            if (sn->expression && PM_NODE_TYPE_P(sn->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)sn->expression;
+                rest_name = lt->name;
+                rest_depth = lt->depth;
+            } else if (sn->expression && PM_NODE_TYPE_P(sn->expression, PM_REQUIRED_PARAMETER_NODE)) {
+                pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)sn->expression;
+                rest_name = rp->name;
+            }
+        } else if (PM_NODE_TYPE_P(mt->rest, PM_REST_PARAMETER_NODE)) {
+            pm_rest_parameter_node_t *rp = (pm_rest_parameter_node_t *)mt->rest;
+            if (rp->name) rest_name = rp->name;
+        }
+        if (rest_name) {
+            int slot = lvar_slot(tc, rest_name, rest_depth);
+            if (slot < 0) slot = lvar_slot_any(tc, rest_name);
             if (slot >= 0) {
                 NODE *value = ALLOC_node_ary_slice_middle(
                                   ALLOC_node_lvar_get(arr_slot),
