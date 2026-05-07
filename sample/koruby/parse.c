@@ -2761,6 +2761,52 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
            * pre-fix behavior); arg layout for the setter is approximate
            * but the assignment expression still evaluates to v. */
           if (n->receiver && ceq(tc, n->name, "[]=") && args_cnt > 2 && !n->block) {
+              bool has_splat = false;
+              for (uint32_t i = 0; i < args_cnt; i++) {
+                  if (PM_NODE_TYPE_P(args->arguments.nodes[i], PM_SPLAT_NODE)) {
+                      has_splat = true; break;
+                  }
+              }
+              if (has_splat) {
+                  /* Splat present (e.g. `obj[a, *x, b] = v`): build the
+                   * args Array at runtime via build_args_array_with_splat,
+                   * save its last element (= v) for the expression's
+                   * result, dispatch []= via node_apply_call.
+                   * IMPORTANT: reserve our 3 fixed slots BEFORE letting
+                   * build_args_array_with_splat consume slots, otherwise
+                   * its temp slots collide with kept/recv/arr. */
+                  uint32_t kept_slot = inc_arg_index(tc);
+                  uint32_t recv_slot = inc_arg_index(tc);
+                  uint32_t arr_slot  = inc_arg_index(tc);
+                  /* Build args first using temps ABOVE the fixed slots. */
+                  NODE *args_arr = build_args_array_with_splat(tc, &args->arguments);
+                  NODE *recv_val_n = T(tc, n->receiver);
+                  /* Reserve apply_idx + spread slots ABOVE all the above. */
+                  uint32_t apply_idx = inc_arg_index(tc);
+                  for (int s = 1; s < 16; s++) inc_arg_index(tc);
+                  rewind_arg_index(tc, kept_slot);
+                  /* Permanently advance for the call layout. */
+                  for (int s = 0; s < 3 + 16; s++) inc_arg_index(tc);
+                  struct method_cache *mc = alloc_method_cache();
+                  NODE *save_recv = ALLOC_node_lvar_set(recv_slot, recv_val_n);
+                  NODE *save_arr  = ALLOC_node_lvar_set(arr_slot, args_arr);
+                  /* kept = arr.last */
+                  uint32_t ai_last = inc_arg_index(tc);
+                  rewind_arg_index(tc, ai_last);
+                  struct method_cache *mc_last = alloc_method_cache();
+                  NODE *last_call = ALLOC_node_method_call(
+                      ALLOC_node_lvar_get(arr_slot), korb_intern("last"),
+                      0, ai_last, mc_last);
+                  NODE *save_kept = ALLOC_node_lvar_set(kept_slot, last_call);
+                  NODE *call = ALLOC_node_apply_call(
+                      ALLOC_node_lvar_get(recv_slot), korb_intern("[]="),
+                      ALLOC_node_lvar_get(arr_slot), apply_idx,
+                      ALLOC_node_nil(), 1, mc);
+                  return ALLOC_node_seq(save_recv,
+                           ALLOC_node_seq(save_arr,
+                             ALLOC_node_seq(save_kept,
+                               ALLOC_node_seq(call, ALLOC_node_lvar_get(kept_slot)))));
+              }
               uint32_t kept_slot = inc_arg_index(tc);
               uint32_t recv_slot = inc_arg_index(tc);
               uint32_t arg_base = arg_index(tc);
