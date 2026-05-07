@@ -183,6 +183,83 @@ static void rewind_arg_index(struct transduce_context *tc, uint32_t to) {
     tc->frame->arg_index = to;
 }
 
+/* Recursive destructure: bind variables from `mt` reading from
+ * fp[arr_slot], assuming arr_slot already holds an Array.  Handles
+ * lefts (positional binds before any *rest), `rest` (a SplatNode
+ * naming the middle), and rights (positional binds after the splat).
+ * For nested PM_MULTI_TARGET_NODE elements, recursively coerces the
+ * sub-array via to_ary_for_mlhs and binds within that. */
+static NODE *destructure_into_targets(struct transduce_context *tc,
+                                      uint32_t arr_slot,
+                                      pm_multi_target_node_t *mt) {
+    NODE *seq = NULL;
+    size_t lefts_n = mt->lefts.size;
+    size_t rights_n = mt->rights.size;
+    bool has_rest = mt->rest && PM_NODE_TYPE_P(mt->rest, PM_SPLAT_NODE);
+    /* Helper to bind a single target node from a slot. */
+    #define BIND_FROM_VAR(_t, _value_node) do {                               \
+        ID _nid = 0; uint32_t _depth = 0;                                     \
+        bool _is_lvar = false;                                                \
+        if (PM_NODE_TYPE_P(_t, PM_LOCAL_VARIABLE_TARGET_NODE)) {              \
+            pm_local_variable_target_node_t *_lt = (pm_local_variable_target_node_t *)_t; \
+            _nid = _lt->name; _depth = _lt->depth; _is_lvar = true;           \
+        } else if (PM_NODE_TYPE_P(_t, PM_REQUIRED_PARAMETER_NODE)) {          \
+            pm_required_parameter_node_t *_rp = (pm_required_parameter_node_t *)_t; \
+            _nid = _rp->name; _is_lvar = true;                                \
+        }                                                                     \
+        if (_is_lvar) {                                                       \
+            int _slot = lvar_slot(tc, _nid, _depth);                          \
+            if (_slot < 0) _slot = lvar_slot_any(tc, _nid);                   \
+            if (_slot >= 0) {                                                 \
+                NODE *_set = ALLOC_node_lvar_set((uint32_t)_slot, (_value_node)); \
+                seq = seq ? ALLOC_node_seq(seq, _set) : _set;                 \
+            }                                                                 \
+        } else if (PM_NODE_TYPE_P(_t, PM_MULTI_TARGET_NODE)) {                \
+            uint32_t _inner_slot = inc_arg_index(tc);                         \
+            NODE *_coerce = ALLOC_node_lvar_set(_inner_slot,                  \
+                                ALLOC_node_to_ary_for_mlhs(_value_node));     \
+            seq = seq ? ALLOC_node_seq(seq, _coerce) : _coerce;               \
+            NODE *_inner = destructure_into_targets(tc, _inner_slot,          \
+                              (pm_multi_target_node_t *)_t);                  \
+            if (_inner) seq = seq ? ALLOC_node_seq(seq, _inner) : _inner;     \
+        }                                                                     \
+    } while (0)
+    /* lefts[i] = arr[i] */
+    for (size_t i = 0; i < lefts_n; i++) {
+        pm_node_t *t = mt->lefts.nodes[i];
+        NODE *value = ALLOC_node_ary_aget(ALLOC_node_lvar_get(arr_slot), (uint32_t)i);
+        BIND_FROM_VAR(t, value);
+    }
+    /* *rest = arr[lefts_n..(arr.size - rights_n - 1)] */
+    if (has_rest) {
+        pm_splat_node_t *sn = (pm_splat_node_t *)mt->rest;
+        if (sn->expression && PM_NODE_TYPE_P(sn->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+            pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)sn->expression;
+            int slot = lvar_slot(tc, lt->name, lt->depth);
+            if (slot < 0) slot = lvar_slot_any(tc, lt->name);
+            if (slot >= 0) {
+                NODE *value = ALLOC_node_ary_slice_middle(
+                                  ALLOC_node_lvar_get(arr_slot),
+                                  (uint32_t)lefts_n, (uint32_t)rights_n);
+                NODE *st = ALLOC_node_lvar_set((uint32_t)slot, value);
+                seq = seq ? ALLOC_node_seq(seq, st) : st;
+            }
+        }
+    }
+    /* rights[k] = arr[max(lefts_n + k, arr.size - rights_n + k)] */
+    for (size_t k = 0; k < rights_n; k++) {
+        pm_node_t *t = mt->rights.nodes[k];
+        NODE *value = ALLOC_node_ary_aget_right(
+                          ALLOC_node_lvar_get(arr_slot),
+                          (uint32_t)lefts_n,
+                          (uint32_t)rights_n,
+                          (uint32_t)k);
+        BIND_FROM_VAR(t, value);
+    }
+    #undef BIND_FROM_VAR
+    return seq;
+}
+
 static bool ceq(struct transduce_context *tc, pm_constant_id_t cid, const char *s) {
     pm_constant_t *c = pm_constant_pool_id_to_constant(&tc->parser->constant_pool, cid);
     size_t len = strlen(s);
@@ -647,30 +724,17 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                         /* The arg may be a non-Array that responds to
                          * to_ary (CRuby destructures via to_ary).  Coerce
                          * tmp_slot through node_to_ary_for_mlhs into a
-                         * fresh slot, then index from the coerced array. */
+                         * fresh slot, then index from the coerced array.
+                         * Use destructure_into_targets so nested
+                         * `((a, b), c)` and `*rest` / `right` parts all
+                         * bind correctly. */
                         uint32_t arr_slot = inc_arg_index(tc);
                         NODE *coerce = ALLOC_node_lvar_set(arr_slot,
                                           ALLOC_node_to_ary_for_mlhs(
                                               ALLOC_node_lvar_get(tmp_slot)));
                         destructure_pre = ALLOC_node_seq(destructure_pre, coerce);
-                        for (size_t j = 0; j < mt->lefts.size; j++) {
-                            pm_node_t *t = mt->lefts.nodes[j];
-                            ID name_id = 0;
-                            uint32_t name_depth = 0;
-                            if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
-                                pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)t;
-                                name_id = lt->name; name_depth = lt->depth;
-                            } else if (PM_NODE_TYPE_P(t, PM_REQUIRED_PARAMETER_NODE)) {
-                                pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)t;
-                                name_id = rp->name;
-                            } else continue;
-                            int slot = lvar_slot(tc, name_id, name_depth);
-                            if (slot < 0) slot = lvar_slot_any(tc, name_id);
-                            if (slot < 0) continue;
-                            NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(arr_slot), (uint32_t)j);
-                            NODE *set = ALLOC_node_lvar_set((uint32_t)slot, get);
-                            destructure_pre = ALLOC_node_seq(destructure_pre, set);
-                        }
+                        NODE *bound = destructure_into_targets(tc, arr_slot, mt);
+                        if (bound) destructure_pre = ALLOC_node_seq(destructure_pre, bound);
                     } else if (PM_NODE_TYPE_P(req, PM_REQUIRED_PARAMETER_NODE)) {
                         pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)req;
                         int slot = lvar_slot_any(tc, rp->name);
