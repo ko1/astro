@@ -511,11 +511,21 @@ void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_
 
 struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
     /* If klass->basic.klass is the shared metaclass, create a per-instance
-     * singleton class so per-class methods can be installed. */
+     * singleton class so per-class methods can be installed.  CRuby
+     * semantics: meta(C).super = meta(C.super), so a method defined on
+     * super's singleton class is visible to C as a class method. */
     struct korb_class *current_meta = (struct korb_class *)klass->basic.klass;
     if (current_meta == korb_vm->class_class || current_meta == korb_vm->module_class) {
-        struct korb_class *meta = korb_class_new(klass->name, current_meta, T_CLASS);
+        struct korb_class *super_meta;
+        if (klass->super) {
+            super_meta = korb_singleton_class_of(klass->super);
+        } else {
+            super_meta = current_meta;
+        }
+        struct korb_class *meta = korb_class_new(klass->name, super_meta, T_CLASS);
         meta->basic.flags = T_CLASS | FL_SINGLETON;
+        /* meta itself's class is the original metaclass (Class). */
+        meta->basic.klass = (VALUE)current_meta;
         klass->basic.klass = (VALUE)meta;
         return meta;
     }
