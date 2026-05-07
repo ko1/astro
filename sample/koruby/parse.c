@@ -1177,21 +1177,27 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
       }
 
       case PM_PINNED_EXPRESSION_NODE: {
+          /* `^(expr) ===> subj` per CRuby — uses === so Regexp/Range pin. */
           pm_pinned_expression_node_t *p = (pm_pinned_expression_node_t *)pat;
           NODE *expr = T(tc, p->expression);
           uint32_t ai = inc_arg_index(tc);
-          inc_arg_index(tc);
-          rewind_arg_index(tc, ai);
-          return ALLOC_node_eq(expr, ALLOC_node_lvar_get(subj_slot), ai);
+          inc_arg_index(tc); rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *arg = ALLOC_node_lvar_set(ai, ALLOC_node_lvar_get(subj_slot));
+          return ALLOC_node_seq(arg,
+              ALLOC_node_method_call(expr, korb_intern("==="), 1, ai, mc));
       }
 
       case PM_PINNED_VARIABLE_NODE: {
+          /* `^var ===> subj` — same === semantics. */
           pm_pinned_variable_node_t *p = (pm_pinned_variable_node_t *)pat;
           NODE *expr = T(tc, (pm_node_t *)p->variable);
           uint32_t ai = inc_arg_index(tc);
-          inc_arg_index(tc);
-          rewind_arg_index(tc, ai);
-          return ALLOC_node_eq(expr, ALLOC_node_lvar_get(subj_slot), ai);
+          inc_arg_index(tc); rewind_arg_index(tc, ai);
+          struct method_cache *mc = alloc_method_cache();
+          NODE *arg = ALLOC_node_lvar_set(ai, ALLOC_node_lvar_get(subj_slot));
+          return ALLOC_node_seq(arg,
+              ALLOC_node_method_call(expr, korb_intern("==="), 1, ai, mc));
       }
 
       case PM_ARRAY_PATTERN_NODE: {
@@ -1244,11 +1250,20 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
               struct method_cache *mc_dc = alloc_method_cache();
               NODE *dc_call = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
                                                       korb_intern("deconstruct"), 0, ai_dc, mc_dc);
+              /* Wrap the deconstruct return through __pattern_decon_check
+               * so non-Array results raise TypeError as CRuby does. */
+              uint32_t ai_chk = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai_chk);
+              struct method_cache *mc_chk = alloc_method_cache();
+              NODE *chk_seq = ALLOC_node_lvar_set(ai_chk, dc_call);
+              NODE *checked_dc = ALLOC_node_seq(chk_seq,
+                  ALLOC_node_func_call(korb_intern("__pattern_decon_check"),
+                                       1, ai_chk, mc_chk));
               /* CRuby calls #deconstruct first if available — even when
                * subj is already an Array (e.g. Array with a singleton
                * deconstruct).  Only fall back to using subj directly
                * when there's no deconstruct method. */
-              NODE *coerced = ALLOC_node_if(rt, dc_call,
+              NODE *coerced = ALLOC_node_if(rt, checked_dc,
                                   ALLOC_node_if(isa1,
                                                 ALLOC_node_lvar_get(subj_slot),
                                                 ALLOC_node_nil()));
@@ -1501,9 +1516,18 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
               NODE *dc_call = ALLOC_node_seq(keys_arg_set,
                   ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
                                           korb_intern("deconstruct_keys"), 1, ai_dc, mc_dc));
+              /* Wrap deconstruct_keys return through __pattern_decon_keys_check
+               * so non-Hash results raise TypeError. */
+              uint32_t ai_chk = inc_arg_index(tc);
+              inc_arg_index(tc); rewind_arg_index(tc, ai_chk);
+              struct method_cache *mc_chk = alloc_method_cache();
+              NODE *chk_set = ALLOC_node_lvar_set(ai_chk, dc_call);
+              NODE *checked_dc = ALLOC_node_seq(chk_set,
+                  ALLOC_node_func_call(korb_intern("__pattern_decon_keys_check"),
+                                       1, ai_chk, mc_chk));
               /* Prefer deconstruct_keys even on Hash (singleton override
                * support — CRuby calls it). */
-              NODE *coerced = ALLOC_node_if(rt, dc_call,
+              NODE *coerced = ALLOC_node_if(rt, checked_dc,
                                   ALLOC_node_if(isa1,
                                                 ALLOC_node_lvar_get(subj_slot),
                                                 ALLOC_node_nil()));
@@ -1777,6 +1801,67 @@ build_find_pattern_with_guard(struct transduce_context *tc,
         ? ALLOC_node_and(window_check, guard_check)
         : window_check;
     NODE *match_action = ALLOC_node_lvar_set((uint32_t)found_slot, ALLOC_node_true());
+    /* Bind pre/post to subj[0, idx] / subj[idx+n, sz-idx-n] when match. */
+    if (fp->left && fp->left->expression
+        && PM_NODE_TYPE_P(fp->left->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+        pm_local_variable_target_node_t *lt =
+            (pm_local_variable_target_node_t *)fp->left->expression;
+        int pre_slot = lvar_slot(tc, lt->name, lt->depth);
+        if (pre_slot < 0) pre_slot = lvar_slot_any(tc, lt->name);
+        if (pre_slot >= 0) {
+            uint32_t ai_pre = inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc);
+            rewind_arg_index(tc, ai_pre);
+            NODE *pre_start = ALLOC_node_lvar_set(ai_pre, ALLOC_node_int_lit(0));
+            NODE *pre_len   = ALLOC_node_lvar_set(ai_pre + 1,
+                                  ALLOC_node_lvar_get((uint32_t)idx_slot));
+            NODE *pre_call = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                  korb_intern("[]"), 2, ai_pre, alloc_method_cache());
+            NODE *pre_seq = ALLOC_node_seq(pre_start,
+                              ALLOC_node_seq(pre_len, pre_call));
+            NODE *pre_assign = ALLOC_node_lvar_set((uint32_t)pre_slot, pre_seq);
+            match_action = ALLOC_node_seq(match_action, pre_assign);
+        }
+    }
+    if (fp->right && PM_NODE_TYPE_P(fp->right, PM_SPLAT_NODE)) {
+        pm_splat_node_t *rsp = (pm_splat_node_t *)fp->right;
+        if (rsp->expression
+            && PM_NODE_TYPE_P(rsp->expression, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+            pm_local_variable_target_node_t *lt =
+                (pm_local_variable_target_node_t *)rsp->expression;
+            int post_slot = lvar_slot(tc, lt->name, lt->depth);
+            if (post_slot < 0) post_slot = lvar_slot_any(tc, lt->name);
+            if (post_slot >= 0) {
+                /* start = idx + n; len = sz - start */
+                uint32_t ai_n   = inc_arg_index(tc);
+                uint32_t ai_two = inc_arg_index(tc); inc_arg_index(tc);
+                rewind_arg_index(tc, ai_n);
+                NODE *n_arg = ALLOC_node_lvar_set(ai_n, ALLOC_node_int_lit((long)n));
+                NODE *start_expr = ALLOC_node_seq(n_arg,
+                    ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)idx_slot),
+                                            korb_intern("+"), 1, ai_n, alloc_method_cache()));
+                uint32_t s_slot = inc_arg_index(tc);
+                rewind_arg_index(tc, s_slot);
+                NODE *save_start = ALLOC_node_lvar_set(s_slot, start_expr);
+                NODE *len_arg = ALLOC_node_lvar_set(ai_two,
+                                    ALLOC_node_lvar_get(s_slot));
+                NODE *len_expr = ALLOC_node_seq(len_arg,
+                    ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)sz_slot),
+                                            korb_intern("-"), 1, ai_two, alloc_method_cache()));
+                uint32_t ai_pp = inc_arg_index(tc); inc_arg_index(tc); inc_arg_index(tc);
+                rewind_arg_index(tc, ai_pp);
+                NODE *pp_start = ALLOC_node_lvar_set(ai_pp,
+                                    ALLOC_node_lvar_get(s_slot));
+                NODE *pp_len   = ALLOC_node_lvar_set(ai_pp + 1, len_expr);
+                NODE *post_call = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
+                                       korb_intern("[]"), 2, ai_pp, alloc_method_cache());
+                NODE *post_seq = ALLOC_node_seq(save_start,
+                                   ALLOC_node_seq(pp_start,
+                                     ALLOC_node_seq(pp_len, post_call)));
+                NODE *post_assign = ALLOC_node_lvar_set((uint32_t)post_slot, post_seq);
+                match_action = ALLOC_node_seq(match_action, post_assign);
+            }
+        }
+    }
     NODE *if_match = ALLOC_node_if(full_check, match_action, ALLOC_node_nil());
     uint32_t ai_inc = inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai_inc);
     NODE *inc_arg_n = ALLOC_node_lvar_set(ai_inc, ALLOC_node_int_lit(1));
@@ -3206,15 +3291,27 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                           pm_constant_target_node_t *ct = (pm_constant_target_node_t *)ref;
                           copy = ALLOC_node_const_set(intern_constant(tc->parser, ct->name), exc_get);
                       } else if (PM_NODE_TYPE_P(ref, PM_CALL_TARGET_NODE)) {
-                          /* obj.attr= : recv.name=(exc) */
+                          /* obj.attr= : recv.name=(exc).  Honor `&.` safe
+                           * navigation: skip the call if recv is nil. */
                           pm_call_target_node_t *ct = (pm_call_target_node_t *)ref;
+                          bool safe_nav = (ct->base.flags &
+                                            PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
+                          uint32_t recv_slot = inc_arg_index(tc);
                           NODE *recv = T(tc, ct->receiver);
+                          NODE *save_recv = ALLOC_node_lvar_set(recv_slot, recv);
                           ID wname = intern_constant(tc->parser, ct->name);
                           uint32_t ai = inc_arg_index(tc); rewind_arg_index(tc, ai);
                           struct method_cache *mc = alloc_method_cache();
                           NODE *st = ALLOC_node_lvar_set(ai, exc_get);
-                          NODE *call = ALLOC_node_method_call(recv, wname, 1, ai, mc);
-                          copy = ALLOC_node_seq(st, call);
+                          NODE *call = ALLOC_node_method_call(
+                              ALLOC_node_lvar_get(recv_slot), wname, 1, ai, mc);
+                          NODE *do_call = ALLOC_node_seq(st, call);
+                          if (safe_nav) {
+                              NODE *not_nil = ALLOC_node_lvar_get(recv_slot);
+                              do_call = ALLOC_node_if(not_nil, do_call,
+                                                      ALLOC_node_nil());
+                          }
+                          copy = ALLOC_node_seq(save_recv, do_call);
                       } else if (PM_NODE_TYPE_P(ref, PM_INDEX_TARGET_NODE)) {
                           pm_index_target_node_t *it = (pm_index_target_node_t *)ref;
                           if (it->arguments && it->arguments->arguments.size == 1) {
@@ -3234,7 +3331,19 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                    * If exceptions list is empty, match anything. */
                   NODE *cond = NULL;
                   if (rc->exceptions.size == 0) {
-                      cond = ALLOC_node_true();
+                      /* Bare `rescue` — CRuby catches StandardError and its
+                       * descendants only.  Other Exception subclasses
+                       * (NoMemoryError, SignalException, SystemExit, ...)
+                       * pass through. */
+                      uint32_t ai_se = inc_arg_index(tc);
+                      rewind_arg_index(tc, ai_se);
+                      struct method_cache *mc_se = alloc_method_cache();
+                      NODE *exc_get_se = ALLOC_node_lvar_get(exc_idx);
+                      NODE *se = ALLOC_node_const_get(korb_intern("StandardError"));
+                      NODE *se_arg = ALLOC_node_lvar_set(ai_se, exc_get_se);
+                      cond = ALLOC_node_seq(se_arg,
+                          ALLOC_node_method_call(se, korb_intern("==="),
+                                                  1, ai_se, mc_se));
                   } else {
                       for (size_t j = 0; j < rc->exceptions.size; j++) {
                           pm_node_t *xn = rc->exceptions.nodes[j];
@@ -3251,7 +3360,18 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                               one = ALLOC_node_seq(s1, ALLOC_node_seq(s2,
                                   ALLOC_node_func_call(korb_intern("__rescue_splat_match"), 2, ai, mc)));
                           } else {
-                              NODE *klass = T(tc, xn);
+                              /* Wrap klass through __rescue_class_check so
+                               * `rescue 42` raises TypeError before ===.
+                               * Allocate ai_chk and ai distinctly — both
+                               * are read by the surrounding method_call so
+                               * they cannot share a slot. */
+                              NODE *klass_raw = T(tc, xn);
+                              uint32_t ai_chk = inc_arg_index(tc);
+                              struct method_cache *mc_chk = alloc_method_cache();
+                              NODE *chk_arg = ALLOC_node_lvar_set(ai_chk, klass_raw);
+                              NODE *klass = ALLOC_node_seq(chk_arg,
+                                  ALLOC_node_func_call(korb_intern("__rescue_class_check"),
+                                                       1, ai_chk, mc_chk));
                               uint32_t ai = inc_arg_index(tc);
                               rewind_arg_index(tc, ai);
                               struct method_cache *mc = alloc_method_cache();
@@ -3490,13 +3610,16 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   } else {
                       NODE *cv = T(tc, cn_pm);
                       if (subject) {
-                          /* cv.===(tmp) — stage tmp at arg slot, then method_call */
+                          /* cv.===(tmp) — stage tmp at arg slot, then
+                           * dispatch via node_case_eqq_call (which uses
+                           * korb_funcall and skips visibility checks so
+                           * `private :===` matchers still work). */
                           uint32_t ai = inc_arg_index(tc);
-                          inc_arg_index(tc); /* extra slot for fallback */
+                          inc_arg_index(tc);
                           rewind_arg_index(tc, ai);
-                          struct method_cache *mc = alloc_method_cache();
                           NODE *seq_arg = ALLOC_node_lvar_set(ai, ALLOC_node_lvar_get(slot));
-                          eqq = ALLOC_node_seq(seq_arg, ALLOC_node_method_call(cv, korb_intern("==="), 1, ai, mc));
+                          eqq = ALLOC_node_seq(seq_arg,
+                              ALLOC_node_case_eqq_call(cv, ai));
                       } else {
                           eqq = cv;
                       }
@@ -3869,9 +3992,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               }
             case PM_SUPER_NODE:
             case PM_FORWARDING_SUPER_NODE:
-              /* "super" — for now always return "super" (proper impl
-               * would walk the class chain to verify a super exists). */
-              return ALLOC_node_frozen_str_lit("super", 5);
+              /* "super" iff a super-method actually exists for the
+               * running method.  node_super_defined_p mirrors super's
+               * own lookup (block-aware) but never raises. */
+              return ALLOC_node_if(ALLOC_node_super_defined_p(),
+                                   ALLOC_node_frozen_str_lit("super", 5),
+                                   ALLOC_node_nil());
             case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_STRING_NODE:
             case PM_SYMBOL_NODE:
               return ALLOC_node_frozen_str_lit("expression", 10);
@@ -4033,21 +4159,17 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                    ALLOC_node_nil());
             }
             case PM_CONSTANT_READ_NODE: {
+              /* `defined?(CONST)` — must mirror lexical const lookup
+               * (cref + super + Object).  Just attempt the actual
+               * const_get and rescue NameError; this guarantees the
+               * same lookup as the bare CONST reference would do. */
               pm_constant_read_node_t *cr = (pm_constant_read_node_t *)expr;
               ID cname = intern_constant(tc->parser, cr->name);
-              /* Check via Object.const_defined?(name) — Module#const_get
-               * raises on missing.  We use the runtime side-effect: try
-               * to look up; rescue nil. */
-              uint32_t ai = inc_arg_index(tc);
-              rewind_arg_index(tc, ai);
-              struct method_cache *mc = alloc_method_cache();
-              NODE *recv = ALLOC_node_const_get(korb_intern("Object"));
-              NODE *seq = ALLOC_node_lvar_set(ai, ALLOC_node_sym_lit(cname));
-              NODE *defined_p = ALLOC_node_seq(seq,
-                  ALLOC_node_method_call(recv, korb_intern("const_defined?"), 1, ai, mc));
-              return ALLOC_node_if(defined_p,
-                                   ALLOC_node_frozen_str_lit("constant", 8),
-                                   ALLOC_node_nil());
+              uint32_t rescue_slot = inc_arg_index(tc);
+              rewind_arg_index(tc, rescue_slot);
+              NODE *body = ALLOC_node_seq(ALLOC_node_const_get(cname),
+                            ALLOC_node_frozen_str_lit("constant", 8));
+              return ALLOC_node_rescue(body, ALLOC_node_nil(), rescue_slot);
             }
             case PM_CALL_NODE: {
               /* Check at runtime via recv.respond_to?(name).  When the
@@ -4131,14 +4253,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       /* Always defined → "method". */
                       return ALLOC_node_frozen_str_lit("method", 6);
                     case PM_CALL_NODE: {
-                        /* defined?(!undefined_method): receiver-less zero-arg
-                         * call to a name that's not a real method on self
-                         * — should return nil.  Use respond_to?(:name, true)
-                         * at runtime. */
                         pm_call_node_t *icn = (pm_call_node_t *)inner;
                         if (!icn->receiver
                             && (!icn->arguments || icn->arguments->arguments.size == 0)
                             && !icn->block) {
+                            /* Receiver-less zero-arg call: respond_to?
+                             * on self. */
                             ID mname = intern_constant(tc->parser, icn->name);
                             uint32_t ai = inc_arg_index(tc);
                             inc_arg_index(tc); rewind_arg_index(tc, ai);
@@ -4341,13 +4461,26 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       }
 
       case PM_RESCUE_MODIFIER_NODE: {
+          /* `expr rescue rescue_expr` — inline rescue catches StandardError
+           * and its descendants only.  Build:
+           *   if StandardError === exc then rescue_expr else raise exc end
+           */
           pm_rescue_modifier_node_t *n = (pm_rescue_modifier_node_t *)node;
-          /* expr rescue rescue_expr */
           uint32_t exc_slot = inc_arg_index(tc);
           NODE *body = T(tc, n->expression);
           NODE *rescue_body = T(tc, n->rescue_expression);
+          uint32_t ai_se = inc_arg_index(tc);
+          rewind_arg_index(tc, ai_se);
+          struct method_cache *mc_se = alloc_method_cache();
+          NODE *exc_get = ALLOC_node_lvar_get(exc_slot);
+          NODE *se = ALLOC_node_const_get(korb_intern("StandardError"));
+          NODE *se_arg = ALLOC_node_lvar_set(ai_se, exc_get);
+          NODE *cond = ALLOC_node_seq(se_arg,
+              ALLOC_node_method_call(se, korb_intern("==="), 1, ai_se, mc_se));
+          NODE *guarded = ALLOC_node_if(cond, rescue_body,
+              ALLOC_node_raise(ALLOC_node_lvar_get(exc_slot)));
           rewind_arg_index(tc, exc_slot);
-          return ALLOC_node_rescue(body, rescue_body, exc_slot);
+          return ALLOC_node_rescue(body, guarded, exc_slot);
       }
 
       case PM_CALL_OPERATOR_WRITE_NODE: {

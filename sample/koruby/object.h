@@ -326,6 +326,7 @@ void korb_const_set(struct korb_class *klass, ID name, VALUE value);
 VALUE korb_const_get(struct korb_class *klass, ID name);
 /* Walks include / super chain (CRuby `Sub::CONST` semantics). */
 VALUE korb_const_get_inherited(struct korb_class *klass, ID name);
+VALUE korb_const_get_inherited_stop_at_object(struct korb_class *klass, ID name);
 bool  korb_const_has_inherited(struct korb_class *klass, ID name);
 bool korb_const_has(struct korb_class *klass, ID name);
 

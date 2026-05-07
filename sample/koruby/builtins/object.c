@@ -218,6 +218,13 @@ VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_raise(c, NULL, "Class#allocate called on non-Class");
         return Qnil;
     }
+    /* Singleton classes can't be instantiated. */
+    if (((struct korb_class *)self)->basic.flags & FL_SINGLETON) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "can't create instance of singleton class");
+        return Qnil;
+    }
     return korb_object_new((struct korb_class *)self);
 }
 

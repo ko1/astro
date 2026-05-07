@@ -130,6 +130,61 @@ node_gvar_defined_p(CTX * restrict c, NODE * restrict n, ID name)
     return KORB_BOOL(korb_gvar_defined(name));
 }
 
+/* defined? for bare CONST — walks lexical scope (cref) and superclass
+ * chain.  Mirrors korb_const_lookup but returns Qfalse instead of
+ * raising NameError on miss.  Respects private_constant: matches what
+ * the actual `CONST` read would resolve.  Inside lexical scope, private
+ * constants are visible to defined?; outside, they're hidden. */
+/* defined?(super) — true iff a super-method exists for the running
+ * method (block-aware: inside a block, target the block's defining
+ * method, mirroring node_super_forward).  Same lookup as super, but
+ * never raises and never invokes. */
+NODE_DEF
+node_super_defined_p(CTX * restrict c, NODE * restrict n)
+{
+    if (!c->current_frame || !c->current_frame->method) return Qfalse;
+    extern struct korb_proc *running_block;
+    struct korb_method *m = (running_block && running_block->defining_method)
+                              ? running_block->defining_method
+                              : c->current_frame->method;
+    if (!m || !m->defining_class) return Qfalse;
+    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    extern struct korb_method *korb_class_find_super_method_n(
+        const struct korb_class *, const struct korb_class *, ID,
+        uint16_t, uint16_t *);
+    uint16_t skip = c->current_frame->method == m ? c->current_frame->super_skip_n : 0;
+    uint16_t out;
+    struct korb_method *sm = korb_class_find_super_method_n(recv_klass,
+        m->defining_class, m->name, skip, &out);
+    return sm ? Qtrue : Qfalse;
+}
+
+NODE_DEF
+node_const_defined_lex(CTX * restrict c, NODE * restrict n, ID name)
+{
+    extern bool korb_const_is_private(const struct korb_class *, ID);
+    for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+        if (korb_const_has(cr->klass, name)) return Qtrue;
+        for (int32_t i = (int32_t)cr->klass->includes_cnt - 1; i >= 0; i--) {
+            if (korb_const_has(cr->klass->includes[i], name)) return Qtrue;
+        }
+    }
+    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    if (k && k->super) {
+        VALUE v = korb_const_get_inherited(k->super, name);
+        if (!UNDEF_P(v)) {
+            if (korb_const_is_private(k->super, name)) return Qfalse;
+            return Qtrue;
+        }
+    }
+    VALUE v = korb_const_get_inherited(korb_vm->object_class, name);
+    if (!UNDEF_P(v)) {
+        if (korb_const_is_private(korb_vm->object_class, name)) return Qfalse;
+        return Qtrue;
+    }
+    return Qfalse;
+}
+
 NODE_DEF
 node_last_line_get(CTX * restrict c, NODE * restrict n)
 {
@@ -219,9 +274,10 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
                 return Qnil;
             }
         }
-        /* Walk super chain AND includes — CRuby's `Sub::CONST` finds
-         * inherited and module-included constants. */
-        VALUE v = korb_const_get_inherited((struct korb_class *)p, name);
+        /* Walk super chain AND includes — but stop short of Object's
+         * own namespace.  CRuby's `Sub::CONST` lookup does NOT find
+         * top-level constants visible only via Object inheritance. */
+        VALUE v = korb_const_get_inherited_stop_at_object((struct korb_class *)p, name);
         if (!UNDEF_P(v)) return v;
         /* const_missing hook: if the class defines a (singleton) method
          * named const_missing, dispatch to it with the missing name as
@@ -605,6 +661,12 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
         mod = (struct korb_class *)existing;
     }
+    else if (!UNDEF_P(existing)) {
+        /* Constant already exists but isn't a Module: TypeError. */
+        korb_raise_type_error(c, "%s is not a module",
+                              korb_id_name(name));
+        return Qnil;
+    }
     else {
         mod = korb_module_new(name);
         korb_const_set(host, name, (VALUE)mod);
@@ -640,6 +702,17 @@ node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint3
 {
     VALUE r = EA(c, recv);
     return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, NULL, mc);
+}
+
+/* Case/when's `===` dispatch: bypass visibility because CRuby calls
+ * the matcher's `===` even when private (the matcher's intent is to
+ * be called by case/when).  Argument is staged at arg_index. */
+NODE_DEF
+node_case_eqq_call(CTX * restrict c, NODE * restrict n, NODE *recv, uint32_t arg_index)
+{
+    VALUE r = EA(c, recv);
+    VALUE arg = c->fp[arg_index];
+    return korb_funcall(c, r, korb_intern("==="), 1, &arg);
 }
 
 NODE_DEF
@@ -1906,7 +1979,10 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, NODE *recv_expr, 
     VALUE recv = EA(c, recv_expr);
     struct korb_class *meta = korb_singleton_class_of_value(recv);
     if (!meta) {
-        korb_raise(c, NULL, "class << invalid receiver");
+        /* Numeric, Symbol etc. — CRuby raises TypeError "no class to make
+         * a singleton class for ..." */
+        korb_raise_type_error(c, "no class to make singleton class for %s",
+                              korb_id_name(korb_class_of_class(recv)->name));
         return Qnil;
     }
     VALUE prev_self = c->self;
@@ -2056,6 +2132,25 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, NODE *parent_expr,
         return Qnil;
     }
     struct korb_class *parent = (struct korb_class *)parent_v;
+    /* private_constant guard: reopening `Outer::Priv` from outside Outer's
+     * lexical scope when Priv is private raises NameError. */
+    {
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private(parent, name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+                if (cr->klass == parent) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           parent->name ? korb_id_name(parent->name) : "?",
+                           korb_id_name(name));
+                return Qnil;
+            }
+        }
+    }
     struct korb_class *super = korb_vm->object_class;
     if (super_expr) {
         VALUE sv = EA(c, super_expr);
@@ -2110,6 +2205,23 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID nam
         return Qnil;
     }
     struct korb_class *parent = (struct korb_class *)parent_v;
+    {
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private(parent, name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+                if (cr->klass == parent) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           parent->name ? korb_id_name(parent->name) : "?",
+                           korb_id_name(name));
+                return Qnil;
+            }
+        }
+    }
     struct korb_class *super = korb_vm->object_class;
     if (super_expr) {
         VALUE sv = EA(c, super_expr);
@@ -2147,10 +2259,31 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID na
         return Qnil;
     }
     struct korb_class *parent = (struct korb_class *)parent_v;
+    {
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private(parent, name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+                if (cr->klass == parent) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           parent->name ? korb_id_name(parent->name) : "?",
+                           korb_id_name(name));
+                return Qnil;
+            }
+        }
+    }
     struct korb_class *mod;
     VALUE existing = korb_const_get(parent, name);
     if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
         mod = (struct korb_class *)existing;
+    } else if (!UNDEF_P(existing)) {
+        korb_raise_type_error(c, "%s is not a module",
+                              korb_id_name(name));
+        return Qnil;
     } else {
         mod = korb_module_new(name);
         korb_const_set(parent, name, (VALUE)mod);

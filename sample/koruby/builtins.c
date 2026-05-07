@@ -65,11 +65,16 @@ void korb_init_builtins(void) {
         VALUE kernel_to_block_arg(CTX *c, VALUE self, int argc, VALUE *argv);
         VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv);
         VALUE kernel_case_splat_match(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE kernel_pattern_decon_check(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE kernel_pattern_decon_keys_check(CTX *c, VALUE self, int argc, VALUE *argv);
         DEF(cObj, "__kwsplat_to_hash", kernel_kwsplat_to_hash, 1);
         DEF(cObj, "__kwsplat_to_hash_lenient", kernel_kwsplat_to_hash_lenient, 1);
         DEF(cObj, "__to_block_arg", kernel_to_block_arg, 1);
         DEF(cObj, "__rescue_splat_match", kernel_rescue_splat_match, 2);
+        DEF(cObj, "__rescue_class_check", kernel_rescue_class_check, 1);
         DEF(cObj, "__case_splat_match", kernel_case_splat_match, 2);
+        DEF(cObj, "__pattern_decon_check", kernel_pattern_decon_check, 1);
+        DEF(cObj, "__pattern_decon_keys_check", kernel_pattern_decon_keys_check, 1);
     }
     DEF(cObj, "print", kernel_print, -1);
     DEF(cObj, "raise", kernel_raise, -1);

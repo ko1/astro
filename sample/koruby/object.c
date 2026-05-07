@@ -537,6 +537,11 @@ struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
  * lazily allocates a fresh class whose super = current class, then
  * rewires basic.klass.  Returns NULL for immediate values. */
 struct korb_class *korb_singleton_class_of_value(VALUE v) {
+    /* true/false/nil all share their respective immutable classes
+     * (CRuby semantics: class << true is the same as TrueClass). */
+    if (v == Qtrue) return korb_vm->true_class;
+    if (v == Qfalse) return korb_vm->false_class;
+    if (v == Qnil) return korb_vm->nil_class;
     if (SPECIAL_CONST_P(v)) return NULL;
     if (BUILTIN_TYPE(v) == T_CLASS || BUILTIN_TYPE(v) == T_MODULE) {
         return korb_singleton_class_of((struct korb_class *)v);
@@ -867,6 +872,31 @@ VALUE korb_const_get_inherited(struct korb_class *klass, ID name) {
         }
         VALUE v = korb_const_get(k, name);
         if (!UNDEF_P(v)) return v;
+        for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
+            VALUE v2 = korb_const_get(k->includes[i], name);
+            if (!UNDEF_P(v2)) return v2;
+        }
+    }
+    return Qundef;
+}
+
+/* Like korb_const_get_inherited but excludes Object's own constants
+ * (Object's top-level constants are not visible via `Klass::CONST`,
+ * but Object's INCLUDES still are — `include M` at top-level adds M
+ * to Object's includes, and `Klass::CONST_FROM_M` resolves through
+ * that path).  Used for explicit `Klass::CONST` scoped lookup. */
+VALUE korb_const_get_inherited_stop_at_object(struct korb_class *klass, ID name) {
+    bool start_is_object = (klass == korb_vm->object_class);
+    for (struct korb_class *k = klass; k; k = k->super) {
+        bool skip_self = (!start_is_object && k == korb_vm->object_class);
+        for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
+            VALUE v = korb_const_get(k->prepends[i], name);
+            if (!UNDEF_P(v)) return v;
+        }
+        if (!skip_self) {
+            VALUE v = korb_const_get(k, name);
+            if (!UNDEF_P(v)) return v;
+        }
         for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
             VALUE v2 = korb_const_get(k->includes[i], name);
             if (!UNDEF_P(v2)) return v2;
@@ -3352,6 +3382,9 @@ void korb_runtime_init(void) {
     korb_const_set(cObject, korb_vm->numeric_class->name, (VALUE)korb_vm->numeric_class);
     korb_const_set(cObject, korb_vm->range_class->name,   (VALUE)korb_vm->range_class);
     korb_const_set(cObject, korb_vm->proc_class->name,    (VALUE)korb_vm->proc_class);
+    korb_const_set(cObject, korb_vm->true_class->name,    (VALUE)korb_vm->true_class);
+    korb_const_set(cObject, korb_vm->false_class->name,   (VALUE)korb_vm->false_class);
+    korb_const_set(cObject, korb_vm->nil_class->name,     (VALUE)korb_vm->nil_class);
 
     /* main object */
     korb_vm->main_obj_class = korb_class_new(korb_intern("Main"), cObject, T_OBJECT);
@@ -3425,6 +3458,26 @@ void korb_runtime_init(void) {
          * by Kernel#exit. */
         k = korb_class_new(korb_intern("SystemExit"), cException, T_OBJECT);
         korb_const_set(cObject, korb_intern("SystemExit"), (VALUE)k);
+        /* Exception subclasses NOT under StandardError — also bypassed
+         * by bare `rescue`.  Stub presence so `rescue NoMemoryError` etc.
+         * doesn't NameError. */
+        k = korb_class_new(korb_intern("NoMemoryError"), cException, T_OBJECT);
+        korb_const_set(cObject, korb_intern("NoMemoryError"), (VALUE)k);
+        k = korb_class_new(korb_intern("SystemStackError"), cException, T_OBJECT);
+        korb_const_set(cObject, korb_intern("SystemStackError"), (VALUE)k);
+        struct korb_class *cSig = korb_class_new(korb_intern("SignalException"),
+                                                  cException, T_OBJECT);
+        korb_const_set(cObject, korb_intern("SignalException"), (VALUE)cSig);
+        k = korb_class_new(korb_intern("Interrupt"), cSig, T_OBJECT);
+        korb_const_set(cObject, korb_intern("Interrupt"), (VALUE)k);
+        k = korb_class_new(korb_intern("SecurityError"), cException, T_OBJECT);
+        korb_const_set(cObject, korb_intern("SecurityError"), (VALUE)k);
+        k = korb_class_new(korb_intern("EncodingError"), cStandardError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("EncodingError"), (VALUE)k);
+        k = korb_class_new(korb_intern("RegexpError"), cStandardError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("RegexpError"), (VALUE)k);
+        k = korb_class_new(korb_intern("FiberError"), cStandardError, T_OBJECT);
+        korb_const_set(cObject, korb_intern("FiberError"), (VALUE)k);
     }
     /* ScriptError children. */
     {

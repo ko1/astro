@@ -85,6 +85,24 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
                      eff_argc, p->params_cnt);
             return Qnil;
         }
+    } else if (p->is_lambda) {
+        /* Lambda with rest: lower bound on required positional args. */
+        int eff_argc = argc;
+        if (p->kwh_save_slot >= 0 && argc > 0 &&
+            !SPECIAL_CONST_P(argv[argc - 1]) &&
+            BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
+            eff_argc = argc - 1;
+        }
+        uint32_t required = (p->params_cnt > p->opt_cnt)
+                             ? p->params_cnt - p->opt_cnt + p->post_cnt
+                             : p->post_cnt;
+        if ((uint32_t)eff_argc < required) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg,
+                     "wrong number of arguments (given %d, expected %u+)",
+                     eff_argc, required);
+            return Qnil;
+        }
     }
     VALUE *prev_fp = c->fp;
     VALUE *prev_sp = c->sp;

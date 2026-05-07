@@ -133,6 +133,28 @@ static VALUE kwsplat_convert(CTX *c, VALUE v) {
     return r;
 }
 
+/* `case x; in [...]` array pattern coerce step: if obj.deconstruct
+ * returns non-Array, raise TypeError ("deconstruct must return Array"). */
+VALUE kernel_pattern_decon_check(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    VALUE v = argv[0];
+    if (NIL_P(v)) return Qnil;  /* propagate (failed-coerce) */
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return v;
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eT, "deconstruct must return Array");
+    return Qnil;
+}
+/* Same shape for deconstruct_keys: must return Hash else TypeError. */
+VALUE kernel_pattern_decon_keys_check(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    VALUE v = argv[0];
+    if (NIL_P(v)) return Qnil;
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_HASH) return v;
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eT, "deconstruct_keys must return Hash");
+    return Qnil;
+}
+
 /* `case x; when *arr` lowering: iterate arr at runtime and return true
  * iff any element ===s x.  Mirrors rescue *list. */
 VALUE kernel_case_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -161,11 +183,35 @@ VALUE kernel_case_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* `rescue *list => e` lowering: list may be Array (or anything with
  * to_a).  Returns true iff any element of the converted list ===s exc.
  * On a non-Array / non-to_a list, raises TypeError to match CRuby. */
+/* Validate that a rescue clause value is a Module/Class — CRuby's
+ * `rescue 42` raises TypeError "class or module required for rescue
+ * clause".  Returns the value unchanged on success. */
+VALUE kernel_rescue_class_check(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    VALUE v = argv[0];
+    if (!SPECIAL_CONST_P(v) &&
+        (BUILTIN_TYPE(v) == T_CLASS || BUILTIN_TYPE(v) == T_MODULE)) {
+        return v;
+    }
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eT,
+               "class or module required for rescue clause");
+    return Qnil;
+}
+
 VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2) return Qfalse;
     VALUE list = argv[0];
     VALUE exc  = argv[1];
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
+        /* `rescue *cls` where cls is a single Class/Module — treat as
+         * one-element list. */
+        if (!SPECIAL_CONST_P(list) &&
+            (BUILTIN_TYPE(list) == T_CLASS || BUILTIN_TYPE(list) == T_MODULE)) {
+            VALUE r = korb_funcall(c, list, korb_intern("==="), 1, &exc);
+            if (c->state != KORB_NORMAL) return Qfalse;
+            return RTEST(r) ? Qtrue : Qfalse;
+        }
         VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
         if (c->state != KORB_NORMAL) return Qfalse;
@@ -181,7 +227,15 @@ VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
-        VALUE r = korb_funcall(c, a->ptr[i], korb_intern("==="), 1, &exc);
+        VALUE el = a->ptr[i];
+        if (SPECIAL_CONST_P(el) ||
+            (BUILTIN_TYPE(el) != T_CLASS && BUILTIN_TYPE(el) != T_MODULE)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "class or module required for rescue clause");
+            return Qfalse;
+        }
+        VALUE r = korb_funcall(c, el, korb_intern("==="), 1, &exc);
         if (c->state != KORB_NORMAL) return Qfalse;
         if (RTEST(r)) return Qtrue;
     }

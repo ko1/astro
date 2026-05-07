@@ -434,10 +434,36 @@ static VALUE module_constants(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
-/* Module#class_eval { ... } — evaluate the block with self = the module. */
+/* Module#class_eval(string) / Module#class_eval { ... } — evaluate
+ * the source string or block with self = the module. */
 static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
     extern struct korb_proc *current_block;
+    /* String-form: eval source in the module's context. */
+    if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) &&
+        BUILTIN_TYPE(argv[0]) == T_STRING) {
+        extern NODE *koruby_parse(const char *src, size_t len, const char *filename);
+        struct korb_string *s = (struct korb_string *)argv[0];
+        struct korb_class *klass = (struct korb_class *)self;
+        NODE *ast = koruby_parse(s->ptr, (size_t)s->len, "(eval)");
+        if (!ast) return Qnil;
+        VALUE *prev_fp = c->fp;
+        VALUE prev_self = c->self;
+        struct korb_class *prev_class = c->current_class;
+        struct korb_cref *prev_cref = c->cref;
+        c->fp = c->sp + 1;
+        c->self = self;
+        c->current_class = klass;
+        struct korb_cref top = { .klass = klass, .prev = NULL };
+        c->cref = &top;
+        OPTIMIZE(ast);
+        VALUE r = EVAL(c, ast);
+        c->fp = prev_fp;
+        c->self = prev_self;
+        c->current_class = prev_class;
+        c->cref = prev_cref;
+        return r;
+    }
     if (!current_block) return self;
     struct korb_proc *blk = current_block;
     /* Symbol-proc / Method-proc shim handling: dispatch as
@@ -596,6 +622,13 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     struct korb_class *klass = (struct korb_class *)self;
+    /* Singleton classes can't be instantiated — CRuby raises TypeError. */
+    if (klass->basic.flags & FL_SINGLETON) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "can't create instance of singleton class");
+        return Qnil;
+    }
     /* Reject .new on an uninitialized class (the result of Class.allocate
      * before its super has been wired up).  Without this, dispatching to
      * .allocate or .initialize on a half-built class crashes deep in
