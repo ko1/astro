@@ -275,11 +275,17 @@ struct korb_method_obj {
  */
 struct korb_binding {
     struct RBasic basic;
-    VALUE *fp;            /* pointer into caller frame's slot area */
-    uint32_t base;        /* offset from fp to slot 0 (block param_base) */
+    VALUE *fp;            /* heap snapshot — primary storage for slot 0..names_cnt-1 */
+    uint32_t base;        /* offset from fp to slot 0 (always 0 with heap snapshot) */
     ID *names;            /* dynamic array; names[i] at fp[base + i] */
     uint32_t names_cnt;
     uint32_t names_capa;
+    /* Live-frame write-through: if the caller's frame is still alive
+     * at the time of get/set, mirror reads/writes there too so the
+     * outer method sees binding-introduced changes (CRuby compat). */
+    VALUE *live_fp;       /* original caller fp at binding-creation time */
+    uint32_t live_base;   /* original base */
+    uint64_t live_frame_id;  /* frame_id of the live frame; 0 if N/A */
     VALUE self;
     struct korb_cref *cref;
     /* Frame ID + method_name for source_location / __method__. */

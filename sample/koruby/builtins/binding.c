@@ -108,19 +108,37 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         names = korb_body_local_names(korb_g_program_body);
         base = 0;
     }
-    b->fp = fp;
-    b->base = base;
     b->cref = c->cref;
     if (c->current_frame && c->current_frame->method) {
         b->method_name = c->current_frame->method->name;
     }
 
-    /* Copy primary names (innermost scope) — preserve slot indexing so
-     * fp[base + i] hits the i-th local. */
+    /* Copy primary names (innermost scope). */
     if (names) {
         for (size_t i = 0; names[i] != 0; i++) {
             binding_append_name(b, names[i]);
         }
+    }
+
+    /* Snapshot the live frame slots into a heap buffer so the binding
+     * survives the caller's frame return.  Also remember the original
+     * fp/base + frame_id so local_variable_set / eval write-through to
+     * the live frame (CRuby's heap-promote semantics, approximated). */
+    b->live_fp = fp;
+    b->live_base = base;
+    b->live_frame_id = (c->current_frame ? c->current_frame->frame_id : 0);
+    if (fp && b->names_cnt > 0) {
+        VALUE *heap = korb_xmalloc(sizeof(VALUE) * (b->names_cnt + 16));
+        for (uint32_t i = 0; i < b->names_cnt; i++) {
+            heap[i] = fp[base + i];
+            if (UNDEF_P(heap[i])) heap[i] = Qnil;
+        }
+        for (uint32_t i = b->names_cnt; i < b->names_cnt + 16; i++) heap[i] = Qnil;
+        b->fp = heap;
+        b->base = 0;
+    } else {
+        b->fp = fp;
+        b->base = base;
     }
 
     /* Lexical inheritance — walk the lexical_parent_block chain.  Each
@@ -281,6 +299,18 @@ static VALUE binding_local_variable_set(CTX *c, VALUE self, int argc, VALUE *arg
     int idx = binding_find_slot(b, name_id);
     if (idx >= 0) {
         if (b->fp) b->fp[b->base + idx] = argv[1];
+        /* Write-through to live frame if it's still on the stack.
+         * Detected via frame_id: walk c->current_frame chain looking
+         * for a matching frame_id; only write if we find it (otherwise
+         * the slot may have been reused for unrelated data). */
+        if (b->live_fp && b->live_frame_id) {
+            for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+                if (f->frame_id == b->live_frame_id) {
+                    b->live_fp[b->live_base + idx] = argv[1];
+                    break;
+                }
+            }
+        }
         /* Mirror to extras when present so subsequent reads remain
          * stable even if caller reuses the underlying slot. */
         if (!NIL_P(b->extra_vars) && BUILTIN_TYPE(b->extra_vars) == T_HASH) {
@@ -385,8 +415,17 @@ static VALUE binding_eval_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     /* Snapshot bind.names_cnt before parse so we know which names
-     * are NEW after merging in the eval body's introduced lvars. */
+     * are NEW after merging in the eval body's introduced lvars.
+     * Also snapshot heap fp values so we can detect which slots the
+     * eval body actually modified — those (and only those) get
+     * write-through to the live caller frame. */
     uint32_t orig_names_cnt = b->names_cnt;
+    VALUE pre_snapshot[orig_names_cnt > 0 ? orig_names_cnt : 1];
+    if (b->fp) {
+        for (uint32_t i = 0; i < orig_names_cnt; i++) {
+            pre_snapshot[i] = b->fp[b->base + i];
+        }
+    }
     char *err_msg = NULL;
     NODE *ast = koruby_parse_with_scope(s->ptr, (size_t)s->len, filename,
                                          scope_locals, scope_locals_n, &err_msg);
@@ -448,6 +487,25 @@ static VALUE binding_eval_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     c->self = prev_self;
     c->fp = prev_fp;
 
+    /* Write-through eval body's slot updates to the live frame, but
+     * only for slots the eval body actually MODIFIED (heap value
+     * differs from the pre-eval snapshot).  Untouched slots stay as
+     * the live frame had them — avoids clobbering the caller's bind
+     * lvar with binding's own snapshot of nil. */
+    if (b->fp && b->live_fp && b->live_frame_id) {
+        bool live = false;
+        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            if (f->frame_id == b->live_frame_id) { live = true; break; }
+        }
+        if (live) {
+            for (uint32_t i = 0; i < orig_names_cnt; i++) {
+                if (b->fp[b->base + i] != pre_snapshot[i]) {
+                    b->live_fp[b->live_base + i] = b->fp[b->base + i];
+                }
+            }
+        }
+    }
+
     /* Sync fp back into extras for binding-introduced names.  Names
      * not in the original caller frame (i.e. introduced by previous
      * local_variable_set / eval) live in extras as the source of
@@ -471,4 +529,39 @@ static VALUE binding_source_location(CTX *c, VALUE self, int argc, VALUE *argv) 
     korb_ary_push(arr, korb_str_new_cstr("(eval)"));
     korb_ary_push(arr, INT2FIX(0));
     return arr;
+}
+
+/* Binding#dup / Binding#clone — deep-copy the names list and extras
+ * Hash so subsequent local_variable_set / eval on the original
+ * doesn't leak into the copy (and vice versa).  fp / self / cref /
+ * method_name are shared (immutable for our purposes). */
+static VALUE binding_dup_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return self;
+    struct korb_binding *src = (struct korb_binding *)self;
+    struct korb_binding *dst = korb_xcalloc(1, sizeof(*dst));
+    dst->basic.flags = T_DATA;
+    dst->basic.klass = src->basic.klass;
+    dst->fp = src->fp;
+    dst->base = src->base;
+    dst->self = src->self;
+    dst->cref = src->cref;
+    dst->method_name = src->method_name;
+    /* Names — deep copy. */
+    if (src->names_cnt > 0) {
+        dst->names = korb_xmalloc(sizeof(ID) * src->names_cnt);
+        memcpy(dst->names, src->names, sizeof(ID) * src->names_cnt);
+        dst->names_cnt = src->names_cnt;
+        dst->names_capa = src->names_cnt;
+    }
+    /* Extras — deep copy each entry. */
+    if (!NIL_P(src->extra_vars) && BUILTIN_TYPE(src->extra_vars) == T_HASH) {
+        dst->extra_vars = korb_hash_new();
+        struct korb_hash *sh = (struct korb_hash *)src->extra_vars;
+        for (struct korb_hash_entry *e = sh->first; e; e = e->next) {
+            korb_hash_aset(dst->extra_vars, e->key, e->value);
+        }
+    } else {
+        dst->extra_vars = Qnil;
+    }
+    return (VALUE)dst;
 }

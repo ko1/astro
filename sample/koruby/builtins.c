@@ -1065,6 +1065,8 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cBinding, korb_intern("receiver"),              binding_receiver,                 0);
         korb_class_add_method_cfunc(cBinding, korb_intern("eval"),                  binding_eval_cfunc,              -1);
         korb_class_add_method_cfunc(cBinding, korb_intern("source_location"),       binding_source_location,          0);
+        korb_class_add_method_cfunc(cBinding, korb_intern("dup"),                   binding_dup_clone,                0);
+        korb_class_add_method_cfunc(cBinding, korb_intern("clone"),                 binding_dup_clone,                0);
         korb_vm->binding_class = cBinding;
     }
     DEF_PRIV(cObj, "binding", kernel_binding_cfunc, 0);
