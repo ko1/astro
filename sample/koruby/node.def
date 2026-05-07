@@ -2083,7 +2083,26 @@ NODE_DEF @noinline
 node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
 {
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    /* CRuby: top-level `def` (the implicit "main" lexical scope) installs
+     * the method as private on Object.  Top-level here means: cref is
+     * just Object (single entry), NOT inside a method body — i.e.,
+     * c->current_frame is NULL.  Inside method bodies CRuby resets to
+     * the class's default_visibility (usually public). */
+    bool top_level = (c->cref && c->cref->klass == korb_vm->object_class &&
+                      c->cref->prev == NULL && target == korb_vm->object_class &&
+                      c->current_frame == NULL);
+    /* Special methods that are private regardless of where defined. */
+    bool always_private =
+        (name == korb_intern("initialize") ||
+         name == korb_intern("initialize_copy") ||
+         name == korb_intern("initialize_dup") ||
+         name == korb_intern("initialize_clone") ||
+         name == korb_intern("respond_to_missing?"));
     korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (top_level || always_private) {
+        struct korb_method *m = korb_class_find_method(target, name);
+        if (m) m->visibility = KORB_VIS_PRIVATE;
+    }
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     /* If parse.c stashed a slot→name table for this body, attach it so
      * Kernel#binding can iterate the live frame to emit lvars. */

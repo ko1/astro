@@ -261,9 +261,9 @@ def have_instance_method(name); MSpecMatcher.new(:have_instance_method, name); e
 def have_private_method(name); MSpecMatcher.new(:have_private_method, name); end
 def have_public_method(name); MSpecMatcher.new(:have_public_method, name); end
 def have_protected_method(name); MSpecMatcher.new(:have_protected_method, name); end
-def have_private_instance_method(name); MSpecMatcher.new(:have_private_instance_method, name); end
-def have_public_instance_method(name); MSpecMatcher.new(:have_public_instance_method, name); end
-def have_protected_instance_method(name); MSpecMatcher.new(:have_protected_instance_method, name); end
+def have_private_instance_method(name, *_); MSpecMatcher.new(:have_private_instance_method, name); end
+def have_public_instance_method(name, *_); MSpecMatcher.new(:have_public_instance_method, name); end
+def have_protected_instance_method(name, *_); MSpecMatcher.new(:have_protected_instance_method, name); end
 def be_ancestor_of(c); MSpecMatcher.new(:be_ancestor_of, c); end
 def be_computed_by(name, *args); MSpecMatcher.new(:be_computed_by, [name, args]); end
 def have_constant(name); MSpecMatcher.new(:have_constant, name); end
