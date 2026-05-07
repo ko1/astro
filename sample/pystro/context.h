@@ -315,9 +315,20 @@ struct gref_cache {
 // argv.  This skips both the bound-method heap allocation and the
 // strcmp scan through the per-type method registry.  Cache miss falls
 // through to `py_getattr` + `py_apply`.
+// `cls_ptr` distinguishes builtin vs user-class entries:
+//   cls_ptr == NULL  → builtin: type_tag is the recv tag, fn is a
+//                       py_builtin_fn called directly with [self, args].
+//   cls_ptr != NULL  → user-class instance method: type_tag is
+//                       PY_T_INSTANCE, cls_ptr is PY_PTR(recv->inst.cls),
+//                       fn holds the resolved method VALUE (PY_T_FUNC
+//                       only — wrapped descriptors fall through to slow
+//                       path).  Fast path skips the MRO walk + strcmp +
+//                       bound-method alloc by calling py_apply directly
+//                       with [self, args] as argv.
 struct method_cache {
     int   type_tag;        // PY_T_xxx; -1 ⇒ uninitialised
-    void *fn;              // py_builtin_fn (or NULL for slow-only)
+    void *fn;              // builtin: py_builtin_fn; user-class: VALUE
+    void *cls_ptr;         // PY_PTR(inst.cls) for user-class; NULL for builtin
 };
 
 // Inline cache for `o.attr` on instances.  Stamped per node_attr_get

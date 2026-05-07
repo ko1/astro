@@ -3822,6 +3822,7 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
                 if (strcmp(tbl[i].name, name) == 0) {
                     cache->type_tag = tag;
                     cache->fn = (void *)tbl[i].fn;
+                    cache->cls_ptr = NULL;       // builtin discriminator
                     // Return a bound builtin for the slow path that
                     // invoked us; subsequent calls hit the inline cache
                     // and skip this entirely.
@@ -3829,10 +3830,48 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
                 }
             }
         }
+        // User-class instance: try to stamp a per-class cache so the
+        // hot path can skip MRO walk + strcmp + bound-method alloc.
+        // Only safe for plain PY_T_FUNC methods — wrapped descriptors
+        // (staticmethod / classmethod / property) need different binding
+        // semantics and stay on the slow path.  Likewise, instance-dict
+        // entries shadow class methods and would invalidate the cache,
+        // so we skip the cache when the same name lives on the instance.
+        if (tag == PY_T_INSTANCE) {
+            struct pyobj *o = PY_PTR(recv);
+            bool shadowed = false;
+            if (o->inst.attrs) {
+                for (size_t i = 0; i < o->inst.attrs->elen; i++) {
+                    VALUE k = o->inst.attrs->entries[i].key;
+                    if (k == 0 || k == DICT_DELETED_KEY) continue;
+                    if (py_is_str(k) && PY_PTR(k)->str.len == strlen(name)
+                        && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
+                        shadowed = true;
+                        break;
+                    }
+                }
+            }
+            if (!shadowed) {
+                VALUE cls = PY_OBJ_VAL(o->inst.cls);
+                VALUE m = py_class_lookup_method(cls, name);
+                if (m != PY_NONE && PY_IS_PTR(m) && PY_PTR(m)->type == PY_T_FUNC) {
+                    cache->type_tag = PY_T_INSTANCE;
+                    cache->fn = (void *)(intptr_t)m;     // store VALUE
+                    cache->cls_ptr = (void *)o->inst.cls;
+                    // Caller expects something callable with self pre-bound
+                    // (slow path passes argv without self).  Use bound for
+                    // this first call; subsequent calls hit the cache fast
+                    // path which prepends self manually and skips the
+                    // bound allocation.
+                    return py_make_bound(recv, m);
+                }
+            }
+        }
     }
     // Instance / class method (no inline-cache-able fast path).
     cache->type_tag = -1;
     cache->fn = NULL;
+    cache->cls_ptr = NULL;
     return py_getattr(c, recv, name);
 }
 

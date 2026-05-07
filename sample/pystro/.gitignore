@@ -18,3 +18,4 @@ code_store/
 cpython/
 @test*
 
+bench/macro/__pycache__/
