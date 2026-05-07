@@ -769,3 +769,44 @@ static VALUE binding_dup_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     return (VALUE)dst;
 }
+
+/* Proc#binding — create a new Binding from the proc's captured env. */
+static VALUE proc_binding_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
+    struct korb_proc *p = (struct korb_proc *)self;
+    struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
+    b->basic.flags = T_DATA;
+    b->basic.klass = korb_vm ? (VALUE)korb_vm->binding_class : 0;
+    b->self = p->self;
+    b->cref = p->cref;
+    b->extra_vars = Qnil;
+    b->outer_vars = Qnil;
+    b->source_file = NULL;
+    b->source_line = 0;
+    /* Names: from the proc's body local_names. */
+    ID *names = p->body ? korb_body_local_names(p->body) : NULL;
+    if (names) {
+        for (size_t i = 0; names[i] != 0; i++) {
+            binding_append_name(b, names[i]);
+        }
+    }
+    /* fp: snapshot the proc's env (already heap-allocated for closures). */
+    if (p->env && b->names_cnt > 0) {
+        VALUE *heap = korb_xmalloc(sizeof(VALUE) * (b->names_cnt + 16));
+        for (uint32_t i = 0; i < b->names_cnt; i++) {
+            heap[i] = p->env[p->param_base + i];
+            if (UNDEF_P(heap[i])) heap[i] = Qnil;
+        }
+        for (uint32_t i = b->names_cnt; i < b->names_cnt + 16; i++) heap[i] = Qnil;
+        b->fp = heap;
+        b->base = 0;
+    } else {
+        b->fp = p->env;
+        b->base = p->param_base;
+    }
+    /* No live frame — proc's env is already heap-promoted. */
+    b->live_fp = NULL;
+    b->live_base = 0;
+    b->live_frame_id = 0;
+    return (VALUE)b;
+}

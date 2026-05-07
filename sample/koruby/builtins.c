@@ -1083,6 +1083,10 @@ void korb_init_builtins(void) {
         korb_vm->binding_class = cBinding;
     }
     DEF_PRIV(cObj, "binding", kernel_binding_cfunc, 0);
+    /* Proc#binding — return a Binding capturing the proc's env / self / cref. */
+    if (korb_vm->proc_class) {
+        DEF(korb_vm->proc_class, "binding", proc_binding_cfunc, 0);
+    }
     /* Kernel#binding is module_function-style: PRIVATE instance method
      * (so user code's bare `binding` works) AND PUBLIC class method
      * (so `Kernel.binding` works).  We register on Kernel.metaclass
