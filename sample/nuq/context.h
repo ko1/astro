@@ -39,6 +39,14 @@ extern void  GC_init(void);
  * across runs (literals, AST kname_value, --argjson values, module
  * data imports). */
 extern bool nuq_alloc_perm;
+/* Increment to suppress GC trigger during multi-step value construction
+ * (e.g. `nuq_make_string` allocating obj + bytes; `nuq_op_add_slow`
+ * allocating new array + copying items).  Decrement when done.  Used
+ * for short helper bodies where pinning every transient with NUQ_GC_PIN
+ * would be more invasive than just postponing GC. */
+extern int nuq_gc_defer;
+#define NUQ_GC_DEFER_BEGIN()  do { nuq_gc_defer++; } while (0)
+#define NUQ_GC_DEFER_END()    do { nuq_gc_defer--; } while (0)
 
 void *nuq_arena_alloc_slow(size_t sz);
 void  nuq_arena_reset(void);
@@ -98,6 +106,65 @@ nuq_value_realloc(void *p, size_t old_sz, size_t new_sz)
  */
 typedef int64_t VALUE;
 
+/* ---- transient GC roots ----
+ *
+ * Helpers in value.c / runtime.c / builtin.c that hold C locals of
+ * type VALUE across allocator calls must pin those locals so the
+ * copying GC can update them when their objs move to to-space.
+ *
+ * Most short helpers can use `NUQ_GC_DEFER_BEGIN/END` instead — that
+ * just suppresses GC across the brief multi-step section.  Pinning
+ * is for cases where GC must remain enabled (e.g. inside long loops
+ * that allocate per iteration). */
+#define NUQ_GC_ROOTS_CAP 65536    /* deep recursive merge can pin ~4 per level */
+extern VALUE *nuq_gc_roots[NUQ_GC_ROOTS_CAP];
+extern size_t nuq_gc_roots_top;
+
+/* Pin an array of VALUEs: GC scans / forwards every entry.  Used by
+ * NODE_DEF helpers that snapshot pool slices into stack/Boehm buffers
+ * — those buffers aren't visible to the copying GC otherwise, so
+ * their VALUE entries would dangle. */
+struct nuq_gc_arr { VALUE *base; size_t cnt; };
+#define NUQ_GC_ARR_CAP 256
+extern struct nuq_gc_arr nuq_gc_arrs[NUQ_GC_ARR_CAP];
+extern size_t nuq_gc_arrs_top;
+
+static inline void
+nuq_gc_push(VALUE *vp)
+{
+    nuq_gc_roots[nuq_gc_roots_top++] = vp;
+}
+
+static inline void
+nuq_gc_pop(size_t n)
+{
+    nuq_gc_roots_top -= n;
+}
+
+static inline void
+nuq_gc_push_arr(VALUE *base, size_t cnt)
+{
+    nuq_gc_arrs[nuq_gc_arrs_top].base = base;
+    nuq_gc_arrs[nuq_gc_arrs_top].cnt  = cnt;
+    nuq_gc_arrs_top++;
+}
+
+static inline void
+nuq_gc_pop_arr(void)
+{
+    nuq_gc_arrs_top--;
+}
+
+#define NUQ_GC_PIN1(a)            \
+    do { nuq_gc_push(&(a)); } while (0)
+#define NUQ_GC_PIN2(a, b)         \
+    do { nuq_gc_push(&(a)); nuq_gc_push(&(b)); } while (0)
+#define NUQ_GC_PIN3(a, b, c)      \
+    do { nuq_gc_push(&(a)); nuq_gc_push(&(b)); nuq_gc_push(&(c)); } while (0)
+#define NUQ_GC_UNPIN(n)           nuq_gc_pop(n)
+#define NUQ_GC_PIN_ARR(b, n)      nuq_gc_push_arr((b), (n))
+#define NUQ_GC_UNPIN_ARR()        nuq_gc_pop_arr()
+
 #define NUQ_FIX_MAX     ((int64_t)((1LL << 62) - 1))
 #define NUQ_FIX_MIN     ((int64_t)(-(1LL << 62)))
 #define NUQ_IS_FIX(v)   ((int64_t)(v) & 1LL)
@@ -114,6 +181,7 @@ enum nuq_type {
     NUQ_T_STRING,
     NUQ_T_ARRAY,
     NUQ_T_OBJECT,
+    NUQ_T_FORWARD,    /* arena copying-GC: header replaced with forwarding ptr */
 };
 
 /*
@@ -152,6 +220,9 @@ struct nuq_obj {
             uint32_t *idx;
             uint32_t  idx_mask;
         } obj;
+        /* Copying-GC: when type == NUQ_T_FORWARD this slot holds the
+         * to-space replacement.  All other union fields are clobbered. */
+        struct nuq_obj *forward;
     };
 };
 

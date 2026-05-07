@@ -294,24 +294,28 @@ node_add(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     size_t top0 = c->pool_top;
     EMIT l = EVAL_ARG(c, lhs);
     if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    /* RHS may grow pool — snapshot l.items pointer. */
+    /* RHS may grow pool — snapshot l.items.  The local buffer is
+     * pinned for GC: it lives outside the EMIT pool so the copying
+     * collector wouldn't otherwise know its VALUEs needed forwarding. */
     uint32_t lc = l.count;
     VALUE local_small[16];
     VALUE *local = (lc <= 16) ? local_small : (VALUE *)GC_malloc(lc * sizeof(VALUE));
     memcpy(local, l.items, lc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(local, lc);
     c->pool_top = top0;
     EMIT rv = EVAL_ARG(c, rhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    /* RHS slice is at pool[top0..top0+rv.count]; we need cartesian
-     * (l × rv), then return slice [top0..pool_top]. */
+    if (UNLIKELY(c->error != NUQ_NULL)) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
     uint32_t rc = rv.count;
     VALUE rsmall[16];
     VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)GC_malloc(rc * sizeof(VALUE));
     memcpy(rlocal, rv.items, rc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(rlocal, rc);
     c->pool_top = top0;
     for (uint32_t j = 0; j < rc; j++)
         for (uint32_t i = 0; i < lc; i++)
             nuq_pool_push(c, nuq_op_add(local[i], rlocal[j]));
+    NUQ_GC_UNPIN_ARR();
+    NUQ_GC_UNPIN_ARR();
     if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
     return nuq_emit_slice(c, top0);
 }
