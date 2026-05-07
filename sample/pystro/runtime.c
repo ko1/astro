@@ -121,7 +121,16 @@ extern const char *PYSTRO_INTERN_init, *PYSTRO_INTERN_new, *PYSTRO_INTERN_eq,
     *PYSTRO_INTERN_index, *PYSTRO_INTERN_invert, *PYSTRO_INTERN_neg,
     *PYSTRO_INTERN_metaclass, *PYSTRO_INTERN_set_name, *PYSTRO_INTERN_iter,
     *PYSTRO_INTERN_next, *PYSTRO_INTERN_call, *PYSTRO_INTERN_get,
-    *PYSTRO_INTERN_repr, *PYSTRO_INTERN_str, *PYSTRO_INTERN_contains;
+    *PYSTRO_INTERN_repr, *PYSTRO_INTERN_str, *PYSTRO_INTERN_contains,
+    // Math/comparison dunders for py_add/py_sub/etc and py_eq/py_cmp.
+    *PYSTRO_INTERN_add, *PYSTRO_INTERN_sub, *PYSTRO_INTERN_mul,
+    *PYSTRO_INTERN_truediv, *PYSTRO_INTERN_floordiv, *PYSTRO_INTERN_mod,
+    *PYSTRO_INTERN_pow, *PYSTRO_INTERN_or, *PYSTRO_INTERN_and,
+    *PYSTRO_INTERN_xor, *PYSTRO_INTERN_lshift, *PYSTRO_INTERN_rshift,
+    *PYSTRO_INTERN_radd, *PYSTRO_INTERN_rsub, *PYSTRO_INTERN_rmul,
+    *PYSTRO_INTERN_iadd, *PYSTRO_INTERN_isub, *PYSTRO_INTERN_imul,
+    *PYSTRO_INTERN_le, *PYSTRO_INTERN_gt, *PYSTRO_INTERN_ge,
+    *PYSTRO_INTERN_ne;
 VALUE
 py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
 {
@@ -1412,11 +1421,11 @@ py_unwrap_primary(VALUE v)
 VALUE
 py_add(CTX *c, VALUE a, VALUE b)
 {
-    VALUE r = py_try_binop_dunder(c, "__add__", a, b);
+    VALUE r = py_try_binop_dunder(c, PYSTRO_INTERN_add, a, b);
     if (r) return r;
-    r = py_try_binop_dunder(c, "__radd__", b, a);
+    r = py_try_binop_dunder(c, PYSTRO_INTERN_radd, b, a);
     if (r) return r;
-    r = py_try_binop_dunder(c, "__iadd__", a, b);
+    r = py_try_binop_dunder(c, PYSTRO_INTERN_iadd, a, b);
     if (r) return r;
     a = py_unwrap_primary(a);
     b = py_unwrap_primary(b);
@@ -1506,11 +1515,11 @@ py_sub(CTX *c, VALUE a, VALUE b)
         }
         return r;
     }
-    VALUE r = py_try_binop_dunder(c, "__sub__", a, b);
+    VALUE r = py_try_binop_dunder(c, PYSTRO_INTERN_sub, a, b);
     if (r) return r;
-    r = py_try_binop_dunder(c, "__rsub__", b, a);
+    r = py_try_binop_dunder(c, PYSTRO_INTERN_rsub, b, a);
     if (r) return r;
-    r = py_try_binop_dunder(c, "__isub__", a, b);
+    r = py_try_binop_dunder(c, PYSTRO_INTERN_isub, a, b);
     if (r) return r;
     a = py_unwrap_primary(a);
     b = py_unwrap_primary(b);
@@ -1534,11 +1543,11 @@ py_sub(CTX *c, VALUE a, VALUE b)
 VALUE
 py_mul(CTX *c, VALUE a, VALUE b)
 {
-    VALUE r = py_try_binop_dunder(c, "__mul__", a, b);
+    VALUE r = py_try_binop_dunder(c, PYSTRO_INTERN_mul, a, b);
     if (r) return r;
-    r = py_try_binop_dunder(c, "__rmul__", b, a);
+    r = py_try_binop_dunder(c, PYSTRO_INTERN_rmul, b, a);
     if (r) return r;
-    r = py_try_binop_dunder(c, "__imul__", a, b);
+    r = py_try_binop_dunder(c, PYSTRO_INTERN_imul, a, b);
     if (r) return r;
     a = py_unwrap_primary(a);
     b = py_unwrap_primary(b);
@@ -1606,7 +1615,7 @@ py_matmul(CTX *c, VALUE a, VALUE b)
 VALUE
 py_truediv(CTX *c, VALUE a, VALUE b)
 {
-    VALUE r = py_try_binop_dunder(c, "__truediv__", a, b);
+    VALUE r = py_try_binop_dunder(c, PYSTRO_INTERN_truediv, a, b);
     if (r) return r;
     if (py_is_complex(a) || py_is_complex(b)) {
         double ra, ia, rb, ib;
@@ -1624,7 +1633,7 @@ py_truediv(CTX *c, VALUE a, VALUE b)
 VALUE
 py_fdiv(CTX *c, VALUE a, VALUE b)
 {
-    VALUE rd = py_try_binop_dunder(c, "__floordiv__", a, b);
+    VALUE rd = py_try_binop_dunder(c, PYSTRO_INTERN_floordiv, a, b);
     if (rd) return rd;
     rd = py_try_binop_dunder(c, "__rfloordiv__", b, a);
     if (rd) return rd;
@@ -1652,7 +1661,7 @@ py_mod(CTX *c, VALUE a, VALUE b)
     // String % formatting: `"fmt" % args`.
     if (py_is_str(a)) return py_str_pct_format(c, a, b);
     {
-        VALUE rd = py_try_binop_dunder(c, "__mod__", a, b);
+        VALUE rd = py_try_binop_dunder(c, PYSTRO_INTERN_mod, a, b);
         if (rd) return rd;
         rd = py_try_binop_dunder(c, "__rmod__", b, a);
         if (rd) return rd;
@@ -1680,7 +1689,7 @@ py_mod(CTX *c, VALUE a, VALUE b)
 VALUE
 py_pow(CTX *c, VALUE a, VALUE b)
 {
-    VALUE r = py_try_binop_dunder(c, "__pow__", a, b);
+    VALUE r = py_try_binop_dunder(c, PYSTRO_INTERN_pow, a, b);
     if (r) return r;
     r = py_try_binop_dunder(c, "__rpow__", b, a);
     if (r) return r;
@@ -1748,7 +1757,7 @@ py_bit_and(CTX *c, VALUE a, VALUE b)
     if (LIKELY(PY_IS_FIXNUM(a) & PY_IS_FIXNUM(b)))
         return PY_FIX(PY_FIXVAL(a) & PY_FIXVAL(b));
     {
-        VALUE rd = py_try_binop_dunder(c, "__and__", a, b);
+        VALUE rd = py_try_binop_dunder(c, PYSTRO_INTERN_and, a, b);
         if (rd) return rd;
         rd = py_try_binop_dunder(c, "__rand__", b, a);
         if (rd) return rd;
@@ -1784,7 +1793,7 @@ py_bit_or(CTX *c, VALUE a, VALUE b)
 {
     if (LIKELY(PY_IS_FIXNUM(a) & PY_IS_FIXNUM(b)))
         return PY_FIX(PY_FIXVAL(a) | PY_FIXVAL(b));
-    VALUE rd = py_try_binop_dunder(c, "__or__", a, b);
+    VALUE rd = py_try_binop_dunder(c, PYSTRO_INTERN_or, a, b);
     if (rd) return rd;
     rd = py_try_binop_dunder(c, "__ror__", b, a);
     if (rd) return rd;
@@ -1878,7 +1887,7 @@ py_bit_xor(CTX *c, VALUE a, VALUE b)
 {
     if (LIKELY(PY_IS_FIXNUM(a) & PY_IS_FIXNUM(b)))
         return PY_FIX(PY_FIXVAL(a) ^ PY_FIXVAL(b));
-    VALUE rd = py_try_binop_dunder(c, "__xor__", a, b);
+    VALUE rd = py_try_binop_dunder(c, PYSTRO_INTERN_xor, a, b);
     if (rd) return rd;
     rd = py_try_binop_dunder(c, "__rxor__", b, a);
     if (rd) return rd;
@@ -1952,7 +1961,7 @@ py_lshift(CTX *c, VALUE a, VALUE b)
         }
     }
     {
-        VALUE rd = py_try_binop_dunder(c, "__lshift__", a, b);
+        VALUE rd = py_try_binop_dunder(c, PYSTRO_INTERN_lshift, a, b);
         if (rd) return rd;
         rd = py_try_binop_dunder(c, "__rlshift__", b, a);
         if (rd) return rd;
@@ -1982,7 +1991,7 @@ py_rshift(CTX *c, VALUE a, VALUE b)
             return PY_FIX(x >> y);
     }
     {
-        VALUE rd = py_try_binop_dunder(c, "__rshift__", a, b);
+        VALUE rd = py_try_binop_dunder(c, PYSTRO_INTERN_rshift, a, b);
         if (rd) return rd;
         rd = py_try_binop_dunder(c, "__rrshift__", b, a);
         if (rd) return rd;
@@ -2111,12 +2120,15 @@ pydict_entry_live(const struct pydict *d, size_t i)
 VALUE
 py_eq(CTX *c, VALUE a, VALUE b)
 {
-    VALUE r = py_try_binop_dunder(c, "__eq__", a, b);
+    // Pass PYSTRO_INTERN_eq (interned) instead of "__eq__" literal so
+    // the lookup hits the dunder slot fast path instead of MRO+strcmp.
+    // deltablue's `==` was 200K+ slow lookups before this fix.
+    VALUE r = py_try_binop_dunder(c, PYSTRO_INTERN_eq, a, b);
     if (r && !(PY_IS_PTR(r) && PY_PTR(r)->type == PY_T_NOTIMPL)) {
         return py_is_truthy(r) ? PY_TRUE : PY_FALSE;
     }
     // a's __eq__ returned NotImplemented (or wasn't defined): try b's.
-    r = py_try_binop_dunder(c, "__eq__", b, a);
+    r = py_try_binop_dunder(c, PYSTRO_INTERN_eq, b, a);
     if (r && !(PY_IS_PTR(r) && PY_PTR(r)->type == PY_T_NOTIMPL)) {
         return py_is_truthy(r) ? PY_TRUE : PY_FALSE;
     }
@@ -13340,6 +13352,14 @@ const char *PYSTRO_INTERN_get;
 const char *PYSTRO_INTERN_repr;
 const char *PYSTRO_INTERN_str;
 const char *PYSTRO_INTERN_contains;
+const char *PYSTRO_INTERN_add, *PYSTRO_INTERN_sub, *PYSTRO_INTERN_mul;
+const char *PYSTRO_INTERN_truediv, *PYSTRO_INTERN_floordiv, *PYSTRO_INTERN_mod;
+const char *PYSTRO_INTERN_pow, *PYSTRO_INTERN_or, *PYSTRO_INTERN_and;
+const char *PYSTRO_INTERN_xor, *PYSTRO_INTERN_lshift, *PYSTRO_INTERN_rshift;
+const char *PYSTRO_INTERN_radd, *PYSTRO_INTERN_rsub, *PYSTRO_INTERN_rmul;
+const char *PYSTRO_INTERN_iadd, *PYSTRO_INTERN_isub, *PYSTRO_INTERN_imul;
+const char *PYSTRO_INTERN_le, *PYSTRO_INTERN_gt, *PYSTRO_INTERN_ge;
+const char *PYSTRO_INTERN_ne;
 
 extern const char *intern_name(const char *s, size_t len);
 
@@ -13370,6 +13390,28 @@ install_interned_names(void)
     PYSTRO_INTERN_repr        = intern_name("__repr__", 8);
     PYSTRO_INTERN_str         = intern_name("__str__", 7);
     PYSTRO_INTERN_contains    = intern_name("__contains__", 12);
+    PYSTRO_INTERN_add         = intern_name("__add__", 7);
+    PYSTRO_INTERN_sub         = intern_name("__sub__", 7);
+    PYSTRO_INTERN_mul         = intern_name("__mul__", 7);
+    PYSTRO_INTERN_truediv     = intern_name("__truediv__", 11);
+    PYSTRO_INTERN_floordiv    = intern_name("__floordiv__", 12);
+    PYSTRO_INTERN_mod         = intern_name("__mod__", 7);
+    PYSTRO_INTERN_pow         = intern_name("__pow__", 7);
+    PYSTRO_INTERN_or          = intern_name("__or__", 6);
+    PYSTRO_INTERN_and         = intern_name("__and__", 7);
+    PYSTRO_INTERN_xor         = intern_name("__xor__", 7);
+    PYSTRO_INTERN_lshift      = intern_name("__lshift__", 10);
+    PYSTRO_INTERN_rshift      = intern_name("__rshift__", 10);
+    PYSTRO_INTERN_radd        = intern_name("__radd__", 8);
+    PYSTRO_INTERN_rsub        = intern_name("__rsub__", 8);
+    PYSTRO_INTERN_rmul        = intern_name("__rmul__", 8);
+    PYSTRO_INTERN_iadd        = intern_name("__iadd__", 8);
+    PYSTRO_INTERN_isub        = intern_name("__isub__", 8);
+    PYSTRO_INTERN_imul        = intern_name("__imul__", 8);
+    PYSTRO_INTERN_le          = intern_name("__le__", 6);
+    PYSTRO_INTERN_gt          = intern_name("__gt__", 6);
+    PYSTRO_INTERN_ge          = intern_name("__ge__", 6);
+    PYSTRO_INTERN_ne          = intern_name("__ne__", 6);
 }
 
 void
