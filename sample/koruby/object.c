@@ -555,15 +555,27 @@ struct korb_class *korb_singleton_class_of_value(VALUE v) {
     if (v == Qnil) return korb_vm->nil_class;
     if (SPECIAL_CONST_P(v)) return NULL;
     if (BUILTIN_TYPE(v) == T_CLASS || BUILTIN_TYPE(v) == T_MODULE) {
-        return korb_singleton_class_of((struct korb_class *)v);
+        struct korb_class *meta = korb_singleton_class_of((struct korb_class *)v);
+        if (meta && korb_obj_frozen_p(v) && !korb_obj_frozen_p((VALUE)meta)) {
+            ((struct RBasic *)meta)->flags |= FL_FROZEN;
+        }
+        return meta;
     }
     /* Generic heap object: rewire klass to a private subclass. */
     struct korb_object *o = (struct korb_object *)v;
     struct korb_class *cur = (struct korb_class *)o->basic.klass;
-    if (cur && cur->name == korb_intern("(singleton)")) return cur;
+    if (cur && cur->name == korb_intern("(singleton)")) {
+        if (korb_obj_frozen_p(v) && !korb_obj_frozen_p((VALUE)cur)) {
+            ((struct RBasic *)cur)->flags |= FL_FROZEN;
+        }
+        return cur;
+    }
     struct korb_class *meta = korb_class_new(korb_intern("(singleton)"),
                                              cur, cur ? cur->instance_type : T_OBJECT);
     meta->basic.flags |= FL_SINGLETON;
+    if (korb_obj_frozen_p(v)) {
+        meta->basic.flags |= FL_FROZEN;
+    }
     o->basic.klass = (VALUE)meta;
     return meta;
 }

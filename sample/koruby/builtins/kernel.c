@@ -517,7 +517,25 @@ static VALUE kernel_object_id(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_freeze(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!SPECIAL_CONST_P(self)) RBASIC(self)->flags |= FL_FROZEN;
+    if (!SPECIAL_CONST_P(self)) {
+        RBASIC(self)->flags |= FL_FROZEN;
+        /* Propagate freeze to the singleton class if one already exists.
+         * (T_OBJECT's basic.klass points to the singleton; lazy creation
+         * for other types doesn't pre-allocate.) */
+        if (BUILTIN_TYPE(self) == T_OBJECT) {
+            struct korb_object *o = (struct korb_object *)self;
+            struct korb_class *meta = (struct korb_class *)o->basic.klass;
+            if (meta && (meta->basic.flags & FL_SINGLETON)) {
+                meta->basic.flags |= FL_FROZEN;
+            }
+        } else if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
+            /* Class / Module: freeze its eigenclass too. */
+            struct korb_class *meta = (struct korb_class *)((struct RBasic *)self)->klass;
+            if (meta && (meta->basic.flags & FL_SINGLETON)) {
+                meta->basic.flags |= FL_FROZEN;
+            }
+        }
+    }
     return self;
 }
 
