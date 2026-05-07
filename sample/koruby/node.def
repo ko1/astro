@@ -1270,10 +1270,11 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_
     /* General case: dispatch user-defined `==`.  For built-in types
      * (T_STRING, T_ARRAY, T_HASH, ...) this finds the methods we
      * registered in builtins.c; for user classes that include
-     * Comparable or override ==, it picks up their definition. */
+     * Comparable or override ==, it picks up their definition.  Pass
+     * the raw return value through — CRuby allows `==` to return
+     * non-boolean (`(obj == x).should == 1`). */
     c->fp[arg_index+1] = r;
-    VALUE ret = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
-    return KORB_BOOL(RTEST(ret));
+    return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
 }
 
 NODE_DEF
