@@ -3359,6 +3359,39 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
     }
 }
 
+// User iterator (kind=5) hot path extracted into its own function so
+// it has a small, dedicated stack frame instead of inheriting
+// py_iter_next's worst-case 440-byte frame for every case.  Called
+// from py_iter_next_inline (node.h) to bypass py_iter_next's switch.
+bool
+py_iter_next_user(CTX *c, struct py_iter *it, VALUE *out)
+{
+    VALUE iter_obj = it->container;
+    VALUE nm = it->next_m;
+    if (UNLIKELY(nm == 0 || nm == PY_NONE)) {
+        if (py_is_instance(iter_obj)) {
+            VALUE cls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
+            nm = py_class_lookup_method(cls, "__next__");
+            if (nm == PY_NONE)
+                py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
+            it->next_m = nm;
+        } else {
+            py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
+        }
+    }
+    VALUE av[1] = { iter_obj };
+    VALUE r = py_apply(c, nm, 1, av);
+    if (UNLIKELY(c->state == PY_STATE_RAISE)) {
+        if (py_exc_matches(c, c->state_value, c->EXC_StopIteration)) {
+            c->state = PY_STATE_NORMAL;
+            c->state_value = PY_NONE;
+        }
+        return false;
+    }
+    *out = r;
+    return true;
+}
+
 bool
 py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
 {
@@ -3420,41 +3453,8 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         }
         return false;
       }
-      case 5: {
-        // User iterator: call __next__; on StopIteration, clear state
-        // and return false.  __next__ is cached at init time (see
-        // py_iter_init's instance branch) so the hot loop just reads
-        // it->next_m.  iter_obj is guaranteed to be an instance at
-        // kind=5 — init only sets kind=5 in that branch.
-        VALUE iter_obj = it->container;
-        VALUE nm = it->next_m;
-        if (UNLIKELY(nm == 0 || nm == PY_NONE)) {
-            // Init didn't resolve __next__ (e.g., __iter__ returned a
-            // non-instance).  Re-resolve or raise.
-            if (py_is_instance(iter_obj)) {
-                VALUE cls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
-                nm = py_class_lookup_method(cls, "__next__");
-                if (nm == PY_NONE)
-                    py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
-                it->next_m = nm;
-            } else {
-                py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
-            }
-        }
-        VALUE av[1] = { iter_obj };
-        VALUE r = py_apply(c, nm, 1, av);
-        if (c->state == PY_STATE_RAISE) {
-            VALUE exc = c->state_value;
-            if (py_exc_matches(c, exc, c->EXC_StopIteration)) {
-                c->state = PY_STATE_NORMAL;
-                c->state_value = PY_NONE;
-                return false;
-            }
-            return false;
-        }
-        *out = r;
-        return true;
-      }
+      case 5:
+        return py_iter_next_user(c, it, out);
       case 4: {
         // iter(callable, sentinel): call container() until result == sentinel.
         VALUE r = py_apply(c, it->container, 0, NULL);
