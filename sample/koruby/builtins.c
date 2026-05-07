@@ -31,6 +31,11 @@
 #include "builtins/proc.c"
 #define DEF(klass, name, fn, argc) \
     korb_class_add_method_cfunc((klass), korb_intern(name), (fn), (argc))
+#define DEF_PRIV(klass, name, fn, argc) do {                              \
+    korb_class_add_method_cfunc((klass), korb_intern(name), (fn), (argc)); \
+    struct korb_method *_m = korb_class_find_method((klass), korb_intern(name)); \
+    if (_m) _m->visibility = KORB_VIS_PRIVATE;                            \
+} while (0)
 
 void korb_init_builtins(void) {
     /* BasicObject methods — must come first since CRuby's BasicObject
@@ -56,8 +61,8 @@ void korb_init_builtins(void) {
     }
     /* Object methods */
     struct korb_class *cObj = korb_vm->object_class;
-    DEF(cObj, "p", kernel_p, -1);
-    DEF(cObj, "puts", kernel_puts, -1);
+    DEF_PRIV(cObj, "p", kernel_p, -1);
+    DEF_PRIV(cObj, "puts", kernel_puts, -1);
     /* internal helpers used by `**obj` hash splat lowering. */
     {
         VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv);
@@ -76,8 +81,8 @@ void korb_init_builtins(void) {
         DEF(cObj, "__pattern_decon_check", kernel_pattern_decon_check, 1);
         DEF(cObj, "__pattern_decon_keys_check", kernel_pattern_decon_keys_check, 1);
     }
-    DEF(cObj, "print", kernel_print, -1);
-    DEF(cObj, "raise", kernel_raise, -1);
+    DEF_PRIV(cObj, "print", kernel_print, -1);
+    DEF_PRIV(cObj, "raise", kernel_raise, -1);
     DEF(cObj, "inspect", kernel_inspect, 0);
     DEF(cObj, "to_s", kernel_to_s, 0);
     DEF(cObj, "class", kernel_class, 0);
@@ -113,14 +118,14 @@ void korb_init_builtins(void) {
     }
     DEF(cObj, "define_singleton_method", obj_define_singleton_method, -1);
     DEF(cObj, "block_given?", kernel_block_given, 0);
-    DEF(cObj, "throw",        kernel_throw,      -1);
-    DEF(cObj, "catch",        kernel_catch,      -1);
-    DEF(cObj, "require_relative", kernel_require_relative, 1);
-    DEF(cObj, "require", kernel_require, 1);
-    DEF(cObj, "__dir__", kernel_dir, 0);
-    DEF(cObj, "load", kernel_load, -1);
-    DEF(cObj, "abort", kernel_abort, -1);
-    DEF(cObj, "exit", kernel_exit, -1);
+    DEF_PRIV(cObj, "throw",        kernel_throw,      -1);
+    DEF_PRIV(cObj, "catch",        kernel_catch,      -1);
+    DEF_PRIV(cObj, "require_relative", kernel_require_relative, 1);
+    DEF_PRIV(cObj, "require", kernel_require, 1);
+    DEF_PRIV(cObj, "__dir__", kernel_dir, 0);
+    DEF_PRIV(cObj, "load", kernel_load, -1);
+    DEF_PRIV(cObj, "abort", kernel_abort, -1);
+    DEF_PRIV(cObj, "exit", kernel_exit, -1);
     {
         VALUE kernel_exit_bang(CTX *c, VALUE self, int argc, VALUE *argv);
         VALUE kernel_abort(CTX *c, VALUE self, int argc, VALUE *argv);
