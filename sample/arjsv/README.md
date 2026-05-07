@@ -19,7 +19,7 @@ email / uri / ipv4 / ipv6 / uuid / json-pointer / etc.) / `const` / `enum`
 / `allOf` / `anyOf` / `oneOf` / `not` / `if`-`then`-`else` / `$ref` to
 `#`, `#/$defs/<name>`, `#/definitions/<name>` with recursive refs).
 
-**JSON Schema Test Suite (draft-07): 1477 / 1584 = 93.24%**.
+**JSON Schema Test Suite (draft-07): 1486 / 1584 = 93.81%**.
 Remaining failures concentrate in optional IDNA / external-`$ref` /
 ECMA-regex tests — see [`docs/done.md`](docs/done.md) for the breakdown.
 

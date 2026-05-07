@@ -19,6 +19,8 @@ module Arjsv
   #   - false     — always-invalid schema
   def self.schema(schema_obj)
     builder = Builder.new
+    builder.top_schema = schema_obj
+    builder.collect_ids(schema_obj)
     builder.reserve_root_slot
     builder.preregister_defs(schema_obj)
     body = builder.lower(schema_obj)
@@ -42,6 +44,7 @@ module Arjsv
   # referenced by index from the relevant NODEs.
   class Builder
     attr_reader :consts, :entries
+    attr_accessor :top_schema
 
     SUPPORTED_KEYWORDS = %w[
       type properties required items additionalItems contains
@@ -62,6 +65,28 @@ module Arjsv
       @entries = []           # secondary AST roots (e.g. $defs targets)
       @defs_idx = {}          # "<name>" => @consts slot holding the target NODE wrapper
       @root_ref_idx = nil     # @consts slot holding the schema's own validate_root
+      @top_schema = nil       # set by Arjsv.schema; needed for general JSON-pointer $refs
+      @path_cache = {}        # "#/path/seg" => @consts slot (dedupes refs to the same target)
+      @id_map = {}            # "<$id>" => sub-schema Hash (collected by collect_ids)
+    end
+
+    # Walk the schema once, building @id_map from any `$id` keyword found.
+    # This lets `$ref: "<$id>"` resolve to a local sub-schema without HTTP.
+    def collect_ids(node)
+      case node
+      when Hash
+        if (id = node['$id']) && id.is_a?(String)
+          # Strip a trailing fragment (treat `<id>#anchor` as just `<id>`
+          # for our purposes — full anchor support would need a separate
+          # name table).
+          @id_map[id] = node unless @id_map.key?(id)
+          stripped = id.split('#').first
+          @id_map[stripped] = node if stripped && !@id_map.key?(stripped)
+        end
+        node.each_value { |v| collect_ids(v) }
+      when Array
+        node.each { |v| collect_ids(v) }
+      end
     end
 
     # Reserve a consts slot for the root schema's own validate_root NODE so
@@ -428,20 +453,91 @@ module Arjsv
       if ref_str == '#' || ref_str == '#/'
         return Arjsv._alloc_ref(ref_str, @root_ref_idx)
       end
-      m = ref_str.match(%r{\A\#/(?:\$defs|definitions)/(.+)\z})
+      # Single-segment $defs / definitions hits the preregistered slot
+      # (forward-ref capable).
+      m = ref_str.match(%r{\A\#/(?:\$defs|definitions)/([^/]+)\z})
       if m
-        # Decode JSON-pointer escapes (RFC 6901: ~1 → /, ~0 → ~) plus
-        # percent-encoding (RFC 3986).
-        name = m[1].gsub('~1', '/').gsub('~0', '~')
-        name = URI::DEFAULT_PARSER.unescape(name)
+        name = json_pointer_unescape(m[1])
         if (idx = @defs_idx[name])
           return Arjsv._alloc_ref(ref_str, idx)
         end
       end
-      # Unsupported $ref forms (external URIs, anchors, URNs, multi-segment
-      # JSON pointers, references to anchors not in $defs):
-      # treat as always-valid.  Real schemas rarely use these without
-      # ahead-of-time bundling; the suite has dedicated tests for them.
+      # General intra-document JSON-pointer ref (`#/path/...`): walk the
+      # original schema following the pointer, lower the pointed-at
+      # sub-schema, and emit a ref to its slot.  Cached by full pointer
+      # string so multiple refs to the same target share one lowering.
+      if ref_str.start_with?('#/')
+        return lower_pointer_ref(ref_str)
+      end
+      # `$id`-based ref: if the ref string matches an `$id` declared
+      # somewhere in the schema, lower that sub-schema.  Covers the
+      # "ref to if/then/else", "Recursive references between schemas",
+      # and "Location-independent identifier" suite cases.
+      if (target = @id_map[ref_str])
+        return lower_id_ref(ref_str, target)
+      end
+      # Anchor `#foo` and id-with-anchor URIs: try lookup as-is.
+      # Already covered by @id_map when stored verbatim above.
+      # Unsupported $ref forms (external URIs we can't resolve, URNs):
+      # treat as always-valid.
+      warn "[arjsv] unsupported $ref: #{ref_str.inspect} — treating as always-valid" if $VERBOSE
+      Arjsv._alloc_pass
+    end
+
+    def lower_id_ref(ref_str, target)
+      key = "$id:#{ref_str}"
+      if (idx = @path_cache[key])
+        return Arjsv._alloc_ref(ref_str, idx)
+      end
+      slot = @consts.length
+      @consts << nil
+      @path_cache[key] = slot
+      body = lower(target)
+      validate_root = Arjsv._alloc_validate_root(body)
+      @consts[slot] = validate_root
+      @entries << validate_root
+      Arjsv._alloc_ref(ref_str, slot)
+    end
+
+    def json_pointer_unescape(seg)
+      URI::DEFAULT_PARSER.unescape(seg.gsub('~1', '/').gsub('~0', '~'))
+    end
+
+    def lower_pointer_ref(ref_str)
+      if (idx = @path_cache[ref_str])
+        return Arjsv._alloc_ref(ref_str, idx)
+      end
+      # Walk #/seg1/seg2/...  Empty trailing slash keeps the trailing
+      # empty segment (e.g. #/definitions/).  Use split with -1 limit to
+      # preserve trailing empty fields.
+      segments = ref_str[2..].split('/', -1).map { |s| json_pointer_unescape(s) }
+      target = @top_schema
+      segments.each do |seg|
+        case target
+        when Hash
+          return unsupported_ref(ref_str) unless target.key?(seg)
+          target = target[seg]
+        when Array
+          i = (Integer(seg) rescue nil)
+          return unsupported_ref(ref_str) if i.nil? || i >= target.length
+          target = target[i]
+        else
+          return unsupported_ref(ref_str)
+        end
+      end
+      # Reserve the slot before recursing into lower(target) so cyclic
+      # refs (target points back at our path) resolve through the slot.
+      slot = @consts.length
+      @consts << nil
+      @path_cache[ref_str] = slot
+      body = lower(target)
+      validate_root = Arjsv._alloc_validate_root(body)
+      @consts[slot] = validate_root
+      @entries << validate_root
+      Arjsv._alloc_ref(ref_str, slot)
+    end
+
+    def unsupported_ref(ref_str)
       warn "[arjsv] unsupported $ref: #{ref_str.inspect} — treating as always-valid" if $VERBOSE
       Arjsv._alloc_pass
     end

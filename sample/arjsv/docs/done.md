@@ -54,7 +54,7 @@ reporting).
 Boolean schemas: `true` (always valid), `false` (always invalid).
 Empty `{}` schema accepted.
 
-## JSON Schema Test Suite (draft-07): **1477 / 1584 pass = 93.24%**
+## JSON Schema Test Suite (draft-07): **1486 / 1584 pass = 93.81%**
 
 Run with `ruby test/run_official_suite.rb` after `tar -xzf` of the suite
 into `/tmp/jsts/...` (or set `SUITE_PATH=`).  Remaining failures
@@ -64,20 +64,19 @@ break down (most are deep edge cases unlikely to bite a real schema):
 |---|---:|---|
 | `optional/format/idn-hostname` | 34 | IDNA-2008 contextual rules; needs libidn / ICU |
 | `optional/format/hostname` | 23 | A-label punycode contextual rules; same |
-| `ref.json` | 21 | external `$ref`, multi-segment JSON pointers, anchor IDs |
+| `ref.json` | 12 | URI base resolution against nested `$id`s |
 | `refRemote.json` | 11 | external `$ref` (HTTP fetching) |
 | `optional/ecmascript-regex` | 8 | Onigmo vs ECMA-262 `\s` class differences |
 | `optional/content` | 4 | `contentEncoding` / `contentMediaType` (rare) |
-| `optional/unknownKeyword` | 2 | `$id` / anchor handling |
+| `optional/unknownKeyword` | 2 | `$id` collected from inside unknown keywords (corner case) |
 | `definitions.json`, `optional/cross-draft.json`, `optional/float-overflow.json` | 1 each | meta-schema `$ref`, future-draft handling, Infinity arithmetic |
 
 ## Out of scope
 
 - `Schema#validate(data)` returning rich error list (currently bool-only)
-- External `$ref` (HTTP fetching), URN base URIs, anchor `$id` resolution
-- Multi-segment JSON-pointer `$ref` (e.g. `#/properties/foo` to lift a
-  sub-schema; current support is `#/$defs/<name>`, `#/definitions/<name>`,
-  and `#` root-ref only)
+- External `$ref` (HTTP fetching), URN base URIs
+- URI base resolution against nested `$id`s (current `$id` lookup matches
+  exact string only; doesn't compose relative-URI inside nested schemas)
 - 2020-12 draft (separate lowering path keyed off `$schema`)
 - IDNA-2008 punycode validation for `format: hostname` / `idn-hostname`
 
@@ -106,7 +105,15 @@ break down (most are deep edge cases unlikely to bite a real schema):
 - `$ref` uses lazy slot indirection: each `$defs` name reserves a `consts`
   slot at preregistration time, then the body lowering writes the
   validate_root wrapper into the slot.  Recursive `$ref`s pick up *the slot*
-  during lowering and read the wrapper from it at runtime.
+  during lowering and read the wrapper from it at runtime.  Three ref
+  resolution paths are supported in order:
+    1. `#`, `#/`              → root validate_root slot
+    2. `#/$defs/<name>` and `#/definitions/<name>` (single segment)
+                             → preregistered slot (forward refs OK)
+    3. General `#/path/seg/...`  → walk the original schema hash, lower
+                                   the pointed-at sub-schema lazily
+    4. `$id`-based ref       → match against an `$id`-map collected by
+                               a one-shot walk before lowering
 - `additionalProperties` / `patternProperties` / `propertyNames` use
   `rb_hash_foreach` with a closure struct carrying the target NODE's
   dispatcher (read at runtime).  Their schema bodies are listed as secondary
