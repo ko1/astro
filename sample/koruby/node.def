@@ -1348,16 +1348,14 @@ NODE_DEF @noinline
 node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, uint32_t exception_lvar_index)
 {
 retry:;
+    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
     VALUE v = EVAL_ARG(c, body);
     if (c->state == KORB_RAISE && rescue_body) {
         VALUE exc = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
         c->fp[exception_lvar_index] = exc;
-        /* $! reflects the current exception throughout the rescue body
-         * (CRuby semantics).  Reset to nil after — bare `raise` already
-         * re-raises via `raise(*nil)` interpreting nil as "use $!". */
-        VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+        /* $! reflects the current exception throughout the rescue body. */
         korb_gvar_set(korb_intern("$!"), exc);
         v = EVAL_ARG(c, rescue_body);
         /* If a NEW exception was raised inside the rescue body, link
@@ -1405,6 +1403,7 @@ node_rescue_else(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_b
 {
 retry_re:;
     bool rescued = false;
+    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
     VALUE v = EVAL_ARG(c, body);
     if (c->state == KORB_RAISE && rescue_body) {
         rescued = true;
@@ -1412,7 +1411,6 @@ retry_re:;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
         c->fp[exception_lvar_index] = exc;
-        VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
         korb_gvar_set(korb_intern("$!"), exc);
         v = EVAL_ARG(c, rescue_body);
         if (c->state == KORB_RAISE && c->state_value &&
