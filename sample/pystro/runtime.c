@@ -43,10 +43,55 @@ py_gc_init(void)
 // Heap allocation helpers.
 // ---------------------------------------------------------------------------
 
+// Per-type allocation size: struct pyobj's union is 312 bytes (PY_T_CLASS
+// dominates due to dunder slots).  For an instance / float / list /
+// dict / etc. we only need ~16-32 bytes.  Per-type sizing saves up to
+// 280 bytes / instance — for raytrace's ~1M Vector allocations that's
+// ~280 MB of avoided GC pressure.
+static inline size_t pyobj_size_for(int type) {
+    #define VARIANT_END(member) (offsetof(struct pyobj, member) + sizeof(((struct pyobj *)0)->member))
+    switch (type) {
+      case PY_T_NONE:
+      case PY_T_BOOL:
+      case PY_T_ELLIPSIS:
+      case PY_T_NOTIMPL:
+        return offsetof(struct pyobj, b) + sizeof(bool);
+      case PY_T_FLOAT:        return VARIANT_END(dbl);
+      case PY_T_BIGNUM:       return VARIANT_END(mpz);
+      case PY_T_COMPLEX:      return VARIANT_END(cpx);
+      case PY_T_STR:
+      case PY_T_BYTES:
+      case PY_T_BYTEARRAY:    return VARIANT_END(str);
+      case PY_T_MODULE:       return VARIANT_END(module);
+      case PY_T_LIST:
+      case PY_T_TUPLE:        return VARIANT_END(list);
+      case PY_T_DICT:
+      case PY_T_SET:
+      case PY_T_FROZENSET:    return VARIANT_END(dict);
+      case PY_T_RANGE:        return VARIANT_END(range);
+      case PY_T_FUNC:         return VARIANT_END(func);
+      case PY_T_BUILTIN:      return VARIANT_END(builtin);
+      case PY_T_BOUND_METHOD: return VARIANT_END(bound);
+      case PY_T_STATICMETHOD:
+      case PY_T_CLASSMETHOD:
+      case PY_T_PROPERTY:     return VARIANT_END(wrap);
+      case PY_T_ITER:         return VARIANT_END(iter_state);
+      case PY_T_GEN:          return VARIANT_END(gen);
+      case PY_T_FILE:         return VARIANT_END(file);
+      case PY_T_SUPER:        return VARIANT_END(super_);
+      case PY_T_SLICE:        return VARIANT_END(slice_);
+      case PY_T_MEMVIEW:      return VARIANT_END(memview);
+      case PY_T_INSTANCE:     return VARIANT_END(inst);
+      case PY_T_CLASS:        return VARIANT_END(cls);
+      default:                return sizeof(struct pyobj);
+    }
+    #undef VARIANT_END
+}
+
 struct pyobj *
 py_alloc(int type)
 {
-    struct pyobj *o = (struct pyobj *)GC_malloc(sizeof(struct pyobj));
+    struct pyobj *o = (struct pyobj *)GC_malloc(pyobj_size_for(type));
     o->type = type;
     return o;
 }
