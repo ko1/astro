@@ -91,9 +91,11 @@ void korb_init_builtins(void) {
     }
     DEF_PRIV(cObj, "print", kernel_print, -1);
     DEF_PRIV(cObj, "raise", kernel_raise, -1);
+    DEF_PRIV(cObj, "fail", kernel_raise, -1);  /* alias */
     if (cKerMeta) {
         DEF(cKerMeta, "print", kernel_print, -1);
         DEF(cKerMeta, "raise", kernel_raise, -1);
+        DEF(cKerMeta, "fail", kernel_raise, -1);
     }
     DEF(cObj, "inspect", kernel_inspect, 0);
     DEF(cObj, "to_s", kernel_to_s, 0);
