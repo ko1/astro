@@ -11803,10 +11803,12 @@ bi_import(CTX *c, int argc, VALUE *argv)
     if (!src) {
         extern const char *PYSTRO_BINDIR;
         if (PYSTRO_BINDIR) {
-            snprintf(path, sizeof(path), "%s/%s", PYSTRO_BINDIR, modpath);
+            // Bundled stdlib stubs live in `<bindir>/stdlib/` (separated
+            // from the binary's directory to keep the project root tidy).
+            snprintf(path, sizeof(path), "%s/stdlib/%s", PYSTRO_BINDIR, modpath);
             src = read_file_into_buf(path);
             if (!src) {
-                snprintf(path, sizeof(path), "%s/%s", PYSTRO_BINDIR, pkgpath);
+                snprintf(path, sizeof(path), "%s/stdlib/%s", PYSTRO_BINDIR, pkgpath);
                 src = read_file_into_buf(path);
             }
         }
