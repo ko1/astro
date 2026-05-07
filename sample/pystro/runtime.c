@@ -741,6 +741,7 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
         if (strcmp(cd->methods[i].name, name) == 0) {
             cd->methods[i].value = fn;
             cd->slots_initialized = false;     // lazy refresh on next lookup
+            // No shape_version bump — replacement doesn't change attr layout.
             return;
         }
     }
@@ -754,6 +755,7 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
     cd->methods[cd->nmethods].value = fn;
     cd->nmethods++;
     cd->slots_initialized = false;       // lazy refresh on next lookup
+    cd->shape_version++;                 // invalidate attr_cache stamps
 }
 
 // Walk the C3-linearised MRO and return the first matching method.

@@ -172,6 +172,11 @@ struct pyclass {
     VALUE slot_index, slot_invert, slot_neg;
     VALUE slot_repr, slot_str, slot_metaclass, slot_set_name;
     bool  slots_initialized;
+
+    // Bumped whenever the class's method table or layout changes.
+    // attr_cache stamps this and trusts the cached eidx as long as it
+    // matches — eliminating per-instance attrs_id checks.
+    uint32_t shape_version;
 };
 
 // CPython-style "compact" dict.  Indices table is open-addressed and
@@ -360,14 +365,19 @@ struct method_cache {
 };
 
 // Inline cache for `o.attr` on instances.  Stamped per node_attr_get
-// site.  Hot path: same class as last time → look at the cached entry
-// index in inst.attrs; if entries[eidx].key matches by pointer, return
-// entries[eidx].value.  Cache miss falls through to py_getattr.
+// site.  Hot path: same class + same shape_version → use cached
+// entry index in *this* instance's attrs.  No per-instance dict
+// identity check — different instances of the same class share the
+// same eidx assuming __init__ added attrs in a consistent order.
+//
+// `attrs_id` was the previous identity field; it caused 90% miss rate
+// on deltablue / 55% on richards because every instance has its own
+// attrs dict (different pointer = miss).  shape_version captures the
+// notion of "class layout unchanged" without per-instance noise.
 struct attr_cache {
-    void *cls_ptr;          // PY_PTR(class) of last seen instance, or NULL
+    void *cls_ptr;          // PY_PTR(class) at stamp time
     int32_t eidx;           // index into inst.attrs->entries[]
-    uint64_t attrs_id;      // identity of the attrs dict (pointer cast to int)
-                             // — invalidated when the class's method table changes
+    uint32_t shape_version; // pyclass.shape_version at stamp time
 };
 
 typedef struct CTX_struct {

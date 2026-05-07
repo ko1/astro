@@ -681,7 +681,7 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
         struct pyobj *o = PY_PTR(ov);
         if (LIKELY(o->inst.attrs && cache->cls_ptr == (void *)o->inst.cls
-                   && cache->attrs_id == (uint64_t)(uintptr_t)o->inst.attrs
+                   && cache->shape_version == o->inst.cls->cls.shape_version
                    && cache->eidx >= 0
                    && (size_t)cache->eidx < o->inst.attrs->elen)) {
             VALUE k = o->inst.attrs->entries[cache->eidx].key;
@@ -705,7 +705,7 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                     && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
                     cache->cls_ptr = (void *)o->inst.cls;
                     cache->eidx = (int32_t)i;
-                    cache->attrs_id = (uint64_t)(uintptr_t)o->inst.attrs;
+                    cache->shape_version = o->inst.cls->cls.shape_version;
                     break;
                 }
             }
@@ -728,7 +728,7 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
         struct pyobj *o = PY_PTR(ov);
         if (LIKELY(o->inst.attrs && cache->cls_ptr == (void *)o->inst.cls
-                   && cache->attrs_id == (uint64_t)(uintptr_t)o->inst.attrs
+                   && cache->shape_version == o->inst.cls->cls.shape_version
                    && cache->eidx >= 0
                    && (size_t)cache->eidx < o->inst.attrs->elen)) {
             VALUE k = o->inst.attrs->entries[cache->eidx].key;
@@ -769,7 +769,7 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                             && py_is_str(k) && PY_PTR(k)->str.len == strlen(name)
                             && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
                             cache->cls_ptr = (void *)o->inst.cls;
-                            cache->attrs_id = (uint64_t)(uintptr_t)o->inst.attrs;
+                            cache->shape_version = o->inst.cls->cls.shape_version;
                             cache->eidx = (int32_t)i;
                             break;
                         }
