@@ -296,6 +296,14 @@ struct korb_frame {
      * current frame came from — without it, `super` lands back on the
      * first occurrence and loops forever. */
     uint16_t super_skip_n;
+    /* Monotonic frame ID — captured on every method-frame push.  Block
+     * literals snapshot this at creation; on break/return they verify
+     * the target frame's current ID matches.  When a method returns,
+     * its stack slot may be reused by a future call — that future
+     * frame gets a new (different) ID, so a stale block sees the
+     * mismatch and we can raise LocalJumpError instead of corrupting
+     * the active method.  Bumped by korb_alloc_frame_id(). */
+    uint64_t frame_id;
 };
 
 /* push/pop frame helpers via macro */

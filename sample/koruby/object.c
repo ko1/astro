@@ -2785,6 +2785,7 @@ bool korb_eq(VALUE a, VALUE b) {
  * bumps the master serial.  Allows the inline cache check in object.h to
  * read this directly without seeing struct korb_vm's full definition. */
 state_serial_t korb_g_method_serial = 0;
+uint64_t korb_g_next_frame_id = 0;
 
 /* Set to true once user code redefines a method on Integer / Float /
  * Array / Hash / String / Symbol — the receiver classes that EVAL_node_*
@@ -3104,6 +3105,8 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.fp = c->fp;
     frame.locals_cnt = mc->locals_cnt;
     frame.super_skip_n = 0;
+    extern uint64_t korb_g_next_frame_id;
+    frame.frame_id = ++korb_g_next_frame_id;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
     extern struct korb_proc *running_block;

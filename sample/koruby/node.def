@@ -582,6 +582,32 @@ NODE_DEF
 node_return(CTX * restrict c, NODE * restrict n, NODE *value)
 {
     VALUE v = EA(c, value);
+    extern struct korb_proc *running_block;
+    /* Stale-frame check: if we're inside a non-lambda block whose
+     * lexically-enclosing method has already returned, raise
+     * LocalJumpError instead of a non-local return.  Two checks are
+     * combined for robustness:
+     *   1. Walk the live frame chain — if the target_frame pointer
+     *      isn't on it, the method has popped already.
+     *   2. Even if a (reused) frame at the same address shows up,
+     *      its frame_id won't match the snapshot taken at block
+     *      creation. */
+    if (running_block && !running_block->is_lambda &&
+        running_block->return_target_frame) {
+        struct korb_frame *target = (struct korb_frame *)running_block->return_target_frame;
+        bool target_alive = false;
+        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            if (f == target) {
+                target_alive = (f->frame_id == running_block->enclosing_frame_id);
+                break;
+            }
+        }
+        if (!target_alive) {
+            VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
+            korb_raise(c, (struct korb_class *)eL, "unexpected return");
+            return Qnil;
+        }
+    }
     c->state = KORB_RETURN;
     c->state_value = v;
     /* If we're running inside a non-lambda block / proc, this is a
@@ -589,7 +615,6 @@ node_return(CTX * restrict c, NODE * restrict n, NODE *value)
      * frame.  `running_block` is set by korb_yield/proc_call.  Plain
      * method body return / lambda body return → state_target_frame
      * stays NULL (consume at any matching boundary). */
-    extern struct korb_proc *running_block;
     c->state_target_frame = NULL;
     if (running_block && !running_block->is_lambda &&
         running_block->return_target_frame) {
@@ -602,6 +627,26 @@ NODE_DEF
 node_break(CTX * restrict c, NODE * restrict n, NODE *value)
 {
     VALUE v = EA(c, value);
+    /* Stale-frame check (same as node_return): a non-lambda block
+     * whose enclosing method has returned can't break to that method
+     * any more — raise LocalJumpError. */
+    extern struct korb_proc *running_block;
+    if (running_block && !running_block->is_lambda &&
+        running_block->return_target_frame) {
+        struct korb_frame *target = (struct korb_frame *)running_block->return_target_frame;
+        bool target_alive = false;
+        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            if (f == target) {
+                target_alive = (f->frame_id == running_block->enclosing_frame_id);
+                break;
+            }
+        }
+        if (!target_alive) {
+            VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
+            korb_raise(c, (struct korb_class *)eL, "break from proc-closure");
+            return Qnil;
+        }
+    }
     c->state = KORB_BREAK;
     c->state_value = v;
     return v;
@@ -905,6 +950,9 @@ node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t par
      * Only when no block is running do we capture the current frame. */
     ((struct korb_proc *)p)->return_target_frame =
         running_block ? running_block->return_target_frame : c->current_frame;
+    ((struct korb_proc *)p)->enclosing_frame_id =
+        running_block ? running_block->enclosing_frame_id
+                      : (c->current_frame ? c->current_frame->frame_id : 0);
     /* Lexical method capture: the method active when this block is
      * created.  super inside the block uses this method's
      * defining_class.  When this block_literal is itself inside another
@@ -925,6 +973,9 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     ((struct korb_proc *)p)->return_target_frame =
         running_block ? running_block->return_target_frame : c->current_frame;
+    ((struct korb_proc *)p)->enclosing_frame_id =
+        running_block ? running_block->enclosing_frame_id
+                      : (c->current_frame ? c->current_frame->frame_id : 0);
     ((struct korb_proc *)p)->defining_method =
         running_block ? running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
@@ -943,6 +994,9 @@ node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t 
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     ((struct korb_proc *)p)->return_target_frame =
         running_block ? running_block->return_target_frame : c->current_frame;
+    ((struct korb_proc *)p)->enclosing_frame_id =
+        running_block ? running_block->enclosing_frame_id
+                      : (c->current_frame ? c->current_frame->frame_id : 0);
     ((struct korb_proc *)p)->defining_method =
         running_block ? running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);

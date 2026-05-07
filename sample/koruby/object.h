@@ -194,6 +194,12 @@ struct korb_class {
 struct korb_proc {
     struct RBasic basic;
     struct Node *body;
+    /* Frame ID of the lexical method where this block was created.
+     * Used by node_break / node_return to detect stale-frame escapes:
+     * when this block's enclosing method has already returned, the
+     * frame_id at its slot won't match this snapshot, and we raise
+     * LocalJumpError. */
+    uint64_t enclosing_frame_id;
     VALUE *env;             /* shared/captured locals */
     uint32_t env_size;      /* slots covered by env (absolute high-water of body) */
     uint32_t params_cnt;    /* total positional params: required + optional */
