@@ -670,8 +670,12 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     // chained `raiser().attr` would silently consult `None.attr`.
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     // Inline cache fast path: same class + same attrs dict identity →
-    // load the cached entry directly.  The first-time miss / class
-    // change / attrs grow falls through to py_getattr.
+    // load the cached entry directly.  attrs_id encodes the backing-
+    // storage identity (realloc bumps it via the new pointer cast), so
+    // a match guarantees `eidx` still indexes the same slot for the
+    // cached name.  Only check the key isn't DELETED; the previous
+    // `is_str + strlen + memcmp` was redundant since the cache was
+    // only stamped after py_getattr resolved the name.
     if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
         struct pyobj *o = PY_PTR(ov);
         if (LIKELY(o->inst.attrs && cache->cls_ptr == (void *)o->inst.cls
@@ -679,12 +683,7 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                    && cache->eidx >= 0
                    && (size_t)cache->eidx < o->inst.attrs->elen)) {
             VALUE k = o->inst.attrs->entries[cache->eidx].key;
-            // Verify the slot still holds the same key (string identity
-            // or pointer-equal — names are interned in the cache).
-            if (LIKELY(k != 0 && k != DICT_DELETED_KEY
-                       && py_is_str(k)
-                       && PY_PTR(k)->str.len == strlen(name)
-                       && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0))
+            if (LIKELY(k != 0 && k != DICT_DELETED_KEY))
                 return o->inst.attrs->entries[cache->eidx].value;
         }
     }
@@ -730,10 +729,7 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                    && cache->eidx >= 0
                    && (size_t)cache->eidx < o->inst.attrs->elen)) {
             VALUE k = o->inst.attrs->entries[cache->eidx].key;
-            if (LIKELY(k != 0 && k != DICT_DELETED_KEY
-                       && py_is_str(k)
-                       && PY_PTR(k)->str.len == strlen(name)
-                       && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0)) {
+            if (LIKELY(k != 0 && k != DICT_DELETED_KEY)) {
                 o->inst.attrs->entries[cache->eidx].value = vv;
                 return PY_NONE;
             }
