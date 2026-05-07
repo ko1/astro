@@ -359,6 +359,27 @@ build_destructure(struct transduce_context *tc,
                 uint32_t _ai = inc_arg_index(tc);                                  \
                 inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, _ai);   \
                 _assign = ALLOC_node_aset(_recv, _idx, _g, _ai);                   \
+            } else if (_it->arguments && _it->arguments->arguments.size > 1) {     \
+                /* Multi-arg index: recv.[]=(idx0, idx1, ..., value).  Use         \
+                 * method_call dispatch.  Receiver/indices not pre-saved           \
+                 * here (the multi-assign presave only handles single-arg). */     \
+                uint32_t _argc = (uint32_t)_it->arguments->arguments.size + 1;     \
+                NODE *_recv = T(tc, _it->receiver);                                \
+                uint32_t _ai = inc_arg_index(tc);                                  \
+                for (uint32_t _k = 1; _k < _argc; _k++) inc_arg_index(tc);         \
+                inc_arg_index(tc);  /* spare for callee */                         \
+                struct method_cache *_mc = alloc_method_cache();                   \
+                NODE *_seq = NULL;                                                 \
+                for (uint32_t _k = 0; _k < _argc - 1; _k++) {                      \
+                    NODE *_st_idx = ALLOC_node_lvar_set(_ai + _k,                  \
+                                        T(tc, _it->arguments->arguments.nodes[_k])); \
+                    _seq = _seq ? ALLOC_node_seq(_seq, _st_idx) : _st_idx;         \
+                }                                                                  \
+                NODE *_st_v = ALLOC_node_lvar_set(_ai + _argc - 1, _g);            \
+                _seq = ALLOC_node_seq(_seq, _st_v);                                \
+                NODE *_call = ALLOC_node_method_call(_recv, korb_intern("[]="),    \
+                                                      _argc, _ai, _mc);            \
+                _assign = ALLOC_node_seq(_seq, _call);                             \
             }                                                                      \
         } else if (PM_NODE_TYPE_P(_t, PM_MULTI_TARGET_NODE)) {                     \
             /* Nested grouped LHS — recurse with _g as the inner RHS. */           \
