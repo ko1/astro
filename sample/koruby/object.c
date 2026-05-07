@@ -3593,6 +3593,24 @@ void korb_runtime_init(void) {
     korb_const_set(cObject, korb_intern("Enumerable"), (VALUE)korb_vm->enumerable_module);
 
     korb_init_builtins();
+    /* $: / $LOAD_PATH: empty Array by default. */
+    {
+        VALUE lp = korb_ary_new();
+        korb_gvar_set(korb_intern("$:"), lp);
+        korb_gvar_set(korb_intern("$LOAD_PATH"), lp);
+        korb_gvar_set(korb_intern("$-I"), lp);
+        korb_gvar_set(korb_intern("$\""), korb_ary_new());
+        korb_gvar_set(korb_intern("$LOADED_FEATURES"), korb_gvar_get(korb_intern("$\"")));
+    }
+    /* Common predefined constants to satisfy code that probes for them. */
+    {
+        korb_const_set(cObject, korb_intern("RUBY_VERSION"),       korb_str_new_cstr("3.4.0"));
+        korb_const_set(cObject, korb_intern("RUBY_RELEASE_DATE"),  korb_str_new_cstr("2024-01-01"));
+        korb_const_set(cObject, korb_intern("RUBY_PLATFORM"),      korb_str_new_cstr("koruby"));
+        korb_const_set(cObject, korb_intern("RUBY_ENGINE"),        korb_str_new_cstr("koruby"));
+        korb_const_set(cObject, korb_intern("RUBY_PATCHLEVEL"),    INT2FIX(0));
+        korb_const_set(cObject, korb_intern("TOPLEVEL_BINDING"),   Qnil);
+    }
 }
 
 /* ---- file load / eval ---- */
