@@ -34,10 +34,16 @@ static VALUE hash_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(korb_hash_size(self));
 }
 static VALUE hash_each(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* CRuby Hash#each yields a single 2-element Array per pair: a
+     * 1-param block sees the [key, value] tuple; a 2-param block
+     * auto-destructures into k, v.  Yielding 2 args directly would
+     * give the 1-param block only the key. */
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE args[2] = { e->key, e->value };
-        korb_yield(c, 2, args);
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, e->key);
+        korb_ary_push(pair, e->value);
+        korb_yield(c, 1, &pair);
         if (c->state != KORB_NORMAL) return Qnil;
     }
     return self;
