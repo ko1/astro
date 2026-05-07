@@ -61,8 +61,16 @@ void korb_init_builtins(void) {
     }
     /* Object methods */
     struct korb_class *cObj = korb_vm->object_class;
+    /* Module functions: private instance method on Object PLUS public
+     * module method on Kernel.metaclass.  Makes Kernel.puts etc work. */
+    struct korb_class *cKerMeta = korb_vm->kernel_module
+        ? korb_singleton_class_of(korb_vm->kernel_module) : NULL;
     DEF_PRIV(cObj, "p", kernel_p, -1);
     DEF_PRIV(cObj, "puts", kernel_puts, -1);
+    if (cKerMeta) {
+        DEF(cKerMeta, "p", kernel_p, -1);
+        DEF(cKerMeta, "puts", kernel_puts, -1);
+    }
     /* internal helpers used by `**obj` hash splat lowering. */
     {
         VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv);
@@ -83,6 +91,10 @@ void korb_init_builtins(void) {
     }
     DEF_PRIV(cObj, "print", kernel_print, -1);
     DEF_PRIV(cObj, "raise", kernel_raise, -1);
+    if (cKerMeta) {
+        DEF(cKerMeta, "print", kernel_print, -1);
+        DEF(cKerMeta, "raise", kernel_raise, -1);
+    }
     DEF(cObj, "inspect", kernel_inspect, 0);
     DEF(cObj, "to_s", kernel_to_s, 0);
     DEF(cObj, "class", kernel_class, 0);
