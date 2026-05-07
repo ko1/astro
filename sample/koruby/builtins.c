@@ -218,9 +218,11 @@ void korb_init_builtins(void) {
     {
         VALUE _str_encoding(CTX *c, VALUE self, int argc, VALUE *argv);
         VALUE _str_force_encoding(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE _str_b(CTX *c, VALUE self, int argc, VALUE *argv);
         DEF(cStr, "encoding",       _str_encoding, 0);
         DEF(cStr, "force_encoding", _str_force_encoding, -1);
         DEF(cStr, "encode",         _str_force_encoding, -1);
+        DEF(cStr, "b",              _str_b, 0);
     }
     /* Encoding#name / #to_s. */
     {

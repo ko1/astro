@@ -1449,6 +1449,13 @@ VALUE _str_encoding(CTX *c, VALUE self, int argc, VALUE *argv) {
 VALUE _str_force_encoding(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
+/* String#b — return a copy of self with ASCII-8BIT encoding.  We don't
+ * track per-string encoding so a dup is enough for behavioral equality. */
+VALUE _str_b(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_STRING) return self;
+    struct korb_string *s = (struct korb_string *)self;
+    return korb_str_new(s->ptr, s->len);
+}
 VALUE _enc_name(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE name = korb_ivar_get(self, korb_intern("@name"));
     if (UNDEF_P(name) || NIL_P(name)) return korb_str_new_cstr("UTF-8");

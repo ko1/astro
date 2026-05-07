@@ -1098,8 +1098,25 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      * eval'd code sees the binding's lvars / self / cref. */
     if (argc < 1) return Qnil;
     if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING) {
-        korb_raise(c, NULL, "eval: argument must be a String");
-        return Qnil;
+        /* CRuby coerces the first arg via #to_str when it isn't already
+         * a String — any object responding to to_str works. */
+        VALUE coerced = Qnil;
+        if (!SPECIAL_CONST_P(argv[0])) {
+            VALUE klass_v = (VALUE)korb_class_of_class(argv[0]);
+            if (klass_v && korb_class_find_method((struct korb_class *)klass_v,
+                                                  korb_intern("to_str"))) {
+                coerced = korb_funcall(c, argv[0], korb_intern("to_str"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            }
+        }
+        if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into String",
+                       korb_id_name(korb_class_of_class(argv[0])->name));
+            return Qnil;
+        }
+        argv[0] = coerced;
     }
     if (argc >= 2 && argv[1] != Qnil) {
         /* Second arg must be a Binding (or nil).  CRuby raises TypeError
