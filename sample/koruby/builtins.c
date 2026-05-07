@@ -219,6 +219,18 @@ void korb_init_builtins(void) {
         DEF(cStr, "force_encoding", _str_force_encoding, -1);
         DEF(cStr, "encode",         _str_force_encoding, -1);
     }
+    /* Encoding#name / #to_s. */
+    {
+        VALUE cEnc_v = korb_const_get(korb_vm->object_class, korb_intern("Encoding"));
+        if (!UNDEF_P(cEnc_v) && !SPECIAL_CONST_P(cEnc_v) &&
+            BUILTIN_TYPE(cEnc_v) == T_CLASS) {
+            struct korb_class *cEnc = (struct korb_class *)cEnc_v;
+            VALUE _enc_name(CTX *c, VALUE self, int argc, VALUE *argv);
+            DEF(cEnc, "name",    _enc_name, 0);
+            DEF(cEnc, "to_s",    _enc_name, 0);
+            DEF(cEnc, "inspect", _enc_name, 0);
+        }
+    }
     DEF(cStr, "+", str_plus, 1);
     DEF(cStr, "<<", str_concat, 1);
     DEF(cStr, "concat", str_concat, 1);

@@ -3598,6 +3598,20 @@ void korb_runtime_init(void) {
     korb_const_set(cObject, korb_intern("Comparable"), (VALUE)korb_vm->comparable_module);
     korb_const_set(cObject, korb_intern("Enumerable"), (VALUE)korb_vm->enumerable_module);
 
+    /* Encoding scaffold MUST be created before korb_init_builtins so the
+     * String#encoding etc. defs in builtins.c find Encoding. */
+    {
+        struct korb_class *cEnc = korb_class_new(korb_intern("Encoding"), cObject, T_OBJECT);
+        korb_const_set(cObject, korb_intern("Encoding"), (VALUE)cEnc);
+        VALUE utf8 = korb_object_new(cEnc);
+        korb_ivar_set(utf8, korb_intern("@name"), korb_str_new_cstr("UTF-8"));
+        korb_const_set(cEnc, korb_intern("UTF_8"),     utf8);
+        korb_const_set(cEnc, korb_intern("ASCII_8BIT"), utf8);
+        korb_const_set(cEnc, korb_intern("BINARY"),    utf8);
+        korb_const_set(cEnc, korb_intern("US_ASCII"),  utf8);
+        korb_const_set(cEnc, korb_intern("EUC_JP"),    utf8);
+        korb_const_set(cEnc, korb_intern("SHIFT_JIS"), utf8);
+    }
     korb_init_builtins();
     /* $: / $LOAD_PATH: empty Array by default. */
     {
@@ -3625,19 +3639,6 @@ void korb_runtime_init(void) {
         korb_const_set(cObject, korb_intern("RUBY_ENGINE"),        korb_str_new_cstr("koruby"));
         korb_const_set(cObject, korb_intern("RUBY_PATCHLEVEL"),    INT2FIX(0));
         korb_const_set(cObject, korb_intern("TOPLEVEL_BINDING"),   Qnil);
-    }
-    /* Minimal Encoding scaffold so `Encoding::UTF_8` etc. exists. */
-    {
-        struct korb_class *cEnc = korb_class_new(korb_intern("Encoding"), cObject, T_OBJECT);
-        korb_const_set(cObject, korb_intern("Encoding"), (VALUE)cEnc);
-        VALUE utf8 = korb_object_new(cEnc);
-        korb_ivar_set(utf8, korb_intern("@name"), korb_str_new_cstr("UTF-8"));
-        korb_const_set(cEnc, korb_intern("UTF_8"),     utf8);
-        korb_const_set(cEnc, korb_intern("ASCII_8BIT"), utf8);
-        korb_const_set(cEnc, korb_intern("BINARY"),    utf8);
-        korb_const_set(cEnc, korb_intern("US_ASCII"),  utf8);
-        korb_const_set(cEnc, korb_intern("EUC_JP"),    utf8);
-        korb_const_set(cEnc, korb_intern("SHIFT_JIS"), utf8);
     }
 }
 
