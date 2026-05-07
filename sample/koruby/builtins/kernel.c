@@ -1173,7 +1173,13 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct Node *korb_g_program_body;
     extern ID *korb_body_local_names(struct Node *body);
     ID *names = NULL;
-    if (running_block && running_block->body) {
+    /* Nested eval: outer eval's body is the innermost scope.  Inner
+     * eval should see lvars introduced by outer eval (test in
+     * `eval('test = 10; eval("test")')`). */
+    if (c->current_eval_program_body) {
+        names = korb_body_local_names(c->current_eval_program_body);
+    }
+    if (!names && running_block && running_block->body) {
         names = korb_body_local_names(running_block->body);
     }
     if (!names && c->current_frame && c->current_frame->method &&
@@ -1237,9 +1243,12 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      * lvars start at fp[param_base], not fp[0] — without this shift,
      * eval body reads the wrong slots when called inside a block whose
      * param_base != 0.  binding_eval_via does the same shift via
-     * b->fp + b->base. */
+     * b->fp + b->base.
+     * Only shift on the OUTER-most eval entry: nested eval inherits
+     * the already-shifted fp, so shifting again would double-skip
+     * past the lvar slots. */
     VALUE *prev_fp = c->fp;
-    if (running_block && running_block->param_base > 0 && c->fp) {
+    if (!prev_eval_body && running_block && running_block->param_base > 0 && c->fp) {
         c->fp = c->fp + running_block->param_base;
     }
     VALUE r = EVAL(c, ast);
