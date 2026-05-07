@@ -741,7 +741,7 @@ py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn)
         if (strcmp(cd->methods[i].name, name) == 0) {
             cd->methods[i].value = fn;
             cd->slots_initialized = false;     // lazy refresh on next lookup
-            // No shape_version bump — replacement doesn't change attr layout.
+            cd->shape_version++;               // invalidate class-attr caches
             return;
         }
     }

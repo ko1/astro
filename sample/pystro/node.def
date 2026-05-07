@@ -727,11 +727,27 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                     return o->inst.attrs->entries[eidx].value;
             }
         }
+    } else if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_CLASS) {
+        // Class data attr (`Strength.WEAKEST`, `Cls.classmethod`).  Cache
+        // the resolved value monomorphically — class shape_version
+        // invalidates on method add.  Saves MRO walk + strcmp in
+        // py_class_lookup_method on every access.
+        if (LIKELY(cache->cls_recv == (void *)PY_PTR(ov)
+                   && cache->class_value
+                   && cache->cls_recv_sv == PY_PTR(ov)->cls.shape_version)) {
+            return (VALUE)(intptr_t)cache->class_value;
+        }
     }
     // Propagate raise from the receiver expression — without this,
     // chained `raiser().attr` would silently consult `None.attr`.
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE r = py_getattr(c, ov, name);
+    // Stamp class-data attr cache.
+    if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_CLASS && r != PY_NONE) {
+        cache->cls_recv = (void *)PY_PTR(ov);
+        cache->class_value = (void *)(intptr_t)r;
+        cache->cls_recv_sv = PY_PTR(ov)->cls.shape_version;
+    }
     // Stamp the cache for next time.  Walk the dict's entries[] to
     // find the index — small overhead, only on miss.
     if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE) {

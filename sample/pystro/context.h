@@ -390,6 +390,15 @@ struct attr_cache {
     void *u_cls [PYSTRO_ATTR_PIC_WAYS];
     int32_t  u_eidx[PYSTRO_ATTR_PIC_WAYS];
     uint32_t u_sv  [PYSTRO_ATTR_PIC_WAYS];
+
+    // Class-data attr cache (monomorphic).  When `recv` itself is a
+    // class object (`Strength.WEAKEST`, `Strength.weakest_of`), there's
+    // no instance dict to index — we want to memoize the resolved value
+    // directly.  cls_recv is PY_PTR(recv) (the class), valid iff
+    // class_value != 0; bumped together with class shape_version.
+    void *cls_recv;
+    void *class_value;       // VALUE cast — the resolved class attr
+    uint32_t cls_recv_sv;    // shape_version snapshot for invalidation
 };
 
 typedef struct CTX_struct {
