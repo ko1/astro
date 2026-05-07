@@ -219,6 +219,8 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
     k->cvars = NULL;
     k->cvar_cnt = 0;
     k->cvar_capa = 0;
+    k->anon_parent = NULL;
+    k->anon_name_in_parent = 0;
     return k;
 }
 
@@ -919,20 +921,51 @@ struct korb_method *korb_class_find_super_method(const struct korb_class *receiv
     return korb_class_find_super_method_n(receiver_klass, defining_class, name, 0, NULL);
 }
 
+/* When an anonymous module/class has been recorded with anon_parent
+ * pointing at an unnamed ancestor, rebuild its full "Parent::Name"
+ * after the parent is finally named.  Recursively descends so chains
+ * like a::B::C::E are all updated. */
+static void korb_propagate_anon_name(struct korb_class *parent) {
+    if (!parent || !parent->name || parent->name == korb_intern("(anon)")) return;
+    for (struct korb_const_entry *e = parent->constants; e; e = e->next) {
+        VALUE v = e->value;
+        if (SPECIAL_CONST_P(v)) continue;
+        if (BUILTIN_TYPE(v) != T_CLASS && BUILTIN_TYPE(v) != T_MODULE) continue;
+        struct korb_class *child = (struct korb_class *)v;
+        if (child->anon_parent != parent) continue;
+        if (child->anon_name_in_parent != e->name) continue;
+        size_t plen = strlen(korb_id_name(parent->name));
+        size_t nlen = strlen(korb_id_name(e->name));
+        char *combined = korb_xmalloc_atomic(plen + 2 + nlen + 1);
+        memcpy(combined, korb_id_name(parent->name), plen);
+        memcpy(combined + plen, "::", 2);
+        memcpy(combined + plen + 2, korb_id_name(e->name), nlen + 1);
+        child->name = korb_intern(combined);
+        child->anon_parent = NULL;
+        child->anon_name_in_parent = 0;
+        /* Recurse: child's own children may have stashed `child` as
+         * their anon_parent. */
+        korb_propagate_anon_name(child);
+    }
+}
+
 /* ---- constants ---- */
 void korb_const_set(struct korb_class *klass, ID name, VALUE value) {
-    /* If the value is a Class/Module that hasn't been "named" yet
-     * (was created anonymously, e.g. `M = Module.new`), give it the
-     * constant's name as its permanent name.  For nested constants
-     * (Outer::Inner), prefix with the parent's name unless the parent
-     * is itself anonymous or is Object. */
     if (!SPECIAL_CONST_P(value) &&
         (BUILTIN_TYPE(value) == T_CLASS || BUILTIN_TYPE(value) == T_MODULE)) {
         struct korb_class *target = (struct korb_class *)value;
-        if (!target->name || target->name == korb_intern("(anon)")) {
-            if (klass != korb_vm->object_class && klass->name &&
-                klass->name != korb_intern("(anon)")) {
-                /* Compose "Parent::Name". */
+        bool target_was_anon = (!target->name || target->name == korb_intern("(anon)"));
+        if (target_was_anon) {
+            /* Determine whether `klass` is "rooted" — has a finalized
+             * name AND is not still pending propagation from an anon
+             * ancestor.  Object is rooted by definition. */
+            bool klass_rooted = (klass == korb_vm->object_class) ||
+                                (klass->name &&
+                                 klass->name != korb_intern("(anon)") &&
+                                 klass->anon_parent == NULL);
+            if (klass_rooted &&
+                klass != korb_vm->object_class) {
+                /* Compose "Parent::Name" — parent is fully named. */
                 size_t plen = strlen(korb_id_name(klass->name));
                 size_t nlen = strlen(korb_id_name(name));
                 char *combined = korb_xmalloc_atomic(plen + 2 + nlen + 1);
@@ -940,20 +973,53 @@ void korb_const_set(struct korb_class *klass, ID name, VALUE value) {
                 memcpy(combined + plen, "::", 2);
                 memcpy(combined + plen + 2, korb_id_name(name), nlen + 1);
                 target->name = korb_intern(combined);
-            } else {
+                target->anon_parent = NULL;
+                target->anon_name_in_parent = 0;
+            } else if (klass_rooted) {
+                /* Object's namespace (top-level): plain name. */
                 target->name = name;
+                target->anon_parent = NULL;
+                target->anon_name_in_parent = 0;
+            } else {
+                /* Parent is still anonymous (or pending propagation).
+                 * Compose a tentative "Parent::Name" using parent's
+                 * current best name, BUT remember the linkage so the
+                 * eventual rename of the parent re-resolves us. */
+                if (klass->name && klass->name != korb_intern("(anon)")) {
+                    size_t plen = strlen(korb_id_name(klass->name));
+                    size_t nlen = strlen(korb_id_name(name));
+                    char *combined = korb_xmalloc_atomic(plen + 2 + nlen + 1);
+                    memcpy(combined, korb_id_name(klass->name), plen);
+                    memcpy(combined + plen, "::", 2);
+                    memcpy(combined + plen + 2, korb_id_name(name), nlen + 1);
+                    target->name = korb_intern(combined);
+                } else {
+                    target->name = name;
+                }
+                target->anon_parent = klass;
+                target->anon_name_in_parent = name;
             }
         }
     }
     for (struct korb_const_entry *e = klass->constants; e; e = e->next) {
-        if (e->name == name) { e->value = value; return; }
+        if (e->name == name) { e->value = value; goto done; }
     }
-    struct korb_const_entry *e = korb_xmalloc(sizeof(*e));
-    e->name = name;
-    e->value = value;
-    e->is_private = false;
-    e->next = klass->constants;
-    klass->constants = e;
+    {
+        struct korb_const_entry *e = korb_xmalloc(sizeof(*e));
+        e->name = name;
+        e->value = value;
+        e->is_private = false;
+        e->next = klass->constants;
+        klass->constants = e;
+    }
+done:
+    /* If `value` itself is a now-named module/class with stashed anon
+     * descendants, propagate the name down. */
+    if (!SPECIAL_CONST_P(value) &&
+        (BUILTIN_TYPE(value) == T_CLASS || BUILTIN_TYPE(value) == T_MODULE)) {
+        korb_propagate_anon_name((struct korb_class *)value);
+    }
+    return;
 }
 
 /* True iff `klass` has a constant named `name` directly (not inherited)

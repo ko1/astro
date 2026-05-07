@@ -182,6 +182,13 @@ struct korb_class {
     } *cvars;
     uint32_t cvar_cnt;
     uint32_t cvar_capa;
+    /* For an anonymous module/class first named via parent::Const = self
+     * BEFORE the parent itself was named, remember that linkage so when
+     * the parent eventually gets a real name we can recompute this
+     * module's name to "Parent::Const".  NULL once the name is finalized
+     * (i.e. once anon_parent itself is no longer anonymous). */
+    struct korb_class *anon_parent;
+    ID anon_name_in_parent;
 };
 
 struct korb_proc {
