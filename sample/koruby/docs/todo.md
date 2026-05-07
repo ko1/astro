@@ -7,8 +7,12 @@
 - koruby 自前 test/ruby/ 全 pass (24 ファイル, 190 件)
 - optcarrot は CRuby と一致 (動作・出力)
 - CRuby `test/ruby/` (in-scope 67 ファイル): **1,108,357 pass / 77.5%**
-- CRuby `spec/ruby/language/` (rubyspec, 65 ファイル): **3,247 pass / 92.1%、
-  34 ファイルが 100%** (eval-with-binding で +99、 yield_spec が perfect から離脱)
+- CRuby `spec/ruby/language/` (rubyspec, 65 ファイル): **3,275 pass / 92.9%、
+  35 ファイルが 100%** (Binding object 完全実装で +28 pass)
+- CRuby `spec/ruby/core/binding/` + `core/kernel/{eval,binding}_spec`:
+  **150 pass** (Binding 100% — local_variable_get/set/defined?/local_variables /
+  receiver / eval / source_location / dup / clone)、 残るのは Refinements
+  (out of scope) と IRB (out of scope)。
 
 ## §0 範囲外 (project policy / user 指定)
 
