@@ -51,22 +51,93 @@ micro で 5-19× 速い同じ実装が、 method dispatch + 多態 class が
 heavy な実アプリでは **逆に 5-14× 遅い**。
 ここがチューニングの伸びしろ。
 
-#### 解釈 — micro と macro でなぜ逆転するか
+#### 計測結果 — どこで時間を食ってるか
 
-- micro はホットループが小さく、 PEP-659 風の inline cache (gref_cache /
-  attr_cache / method_cache) が SD-baked code に完全に inline 展開できる。
-  ループ 1 反復 = 数十命令まで畳まれる。
-- macro は **多数の小メソッド × 多態 dispatch** が支配。 1 method call
-  あたり SD は十分小さいが、 (a) 呼び出し先の class shape が反復ごとに
-  変わるとキャッシュが効かない、 (b) `super().__init__()` 連鎖や
-  classmethod、 MRO walking のオーバーヘッドが残る、 (c) 関数間の
-  dispatcher 経由 indirect call は SD-baked でも PLT 1 hop は払う。
-- CPython 3.12 は specializing interp + adaptive ICs で `LOAD_ATTR` /
-  `CALL` を per-bytecode-inst 特殊化していて、 **この種のワーク
-  ロードは python3 が圧倒的に強い**。 pystro の AST-based SD は逆に
-  monomorphic な hot-loop に強く、 polymorphic dispatch は弱い。
+`perf record -F 4000 ./pystro bench/macro/<name>.py` の上位サンプル
+(2026-05-07、 `code_store/all.so` baked、 best-of-3 run):
 
-具体的な優先項目は本文末「## 大きく負け」項を参照。
+**deltablue** (2.25s, 8.7G samples):
+
+| 関数 | 占有 |
+|---|---:|
+| `__strcmp_avx2` (libc) | **27.2%** |
+| `py_class_lookup_method` | **12.8%** |
+| `py_getattr` | 4.95% |
+| `py_apply_slow` | 4.80% |
+| `strcmp@plt` | 4.69% |
+| `GC_malloc_kind` (Boehm) | 4.39% |
+| 他 (libgc / py_hash / lm_pop など) | 各 1-2% |
+| baked SD (`SD_*`) | **合計 1.4%** |
+
+**richards** (7.34s, 26.8G samples):
+
+| 関数 | 占有 |
+|---|---:|
+| `__strcmp_avx2` | **28.8%** |
+| `py_class_lookup_method` | **15.1%** |
+| `strcmp@plt` | 6.47% |
+| `GC_malloc_kind` | 5.03% |
+| `py_hash` | 4.55% |
+| `py_getattr` | 4.32% |
+
+両方とも **strcmp + py_class_lookup_method** で 40-45% を占める。
+`py_class_lookup_method` (runtime.c:750) は MRO を線形 walk して
+`strcmp(method.name, target_name)` する。 つまり毎 call の method
+解決が strcmp 線形走査。
+
+**根本原因**: pystro の `method_cache` は **builtin type 専用**で、
+user class のインスタンスメソッドには inline cache が無い。
+`py_method_resolve` (runtime.c:3833) のコメントが言ってる:
+
+> // Instance / class method (no inline-cache-able fast path).
+
+つまり `self.recalculate()` のような user-class method 呼び出し
+は SD-baked code でも毎回 `py_getattr` → `py_class_lookup_method`
+→ MRO walk + strcmp に落ちる。
+
+**crypto_pyaes** (2.74s, 10.1G samples) は profile が違う:
+
+| 関数 | 占有 |
+|---|---:|
+| `__strcmp_avx2` | 11.0% |
+| `GC_malloc_kind` | 7.85% |
+| `__memmove_avx_unaligned_erms` | 4.91% |
+| `__memset_avx2_unaligned_erms` | 4.90% |
+| `py_class_lookup_method` | 4.89% |
+| `__gmpz_init_set_si` (GMP) | 2.90% |
+| baked SD | 数% |
+
+bytes 操作 (memmove + memset = 9.8%)、 GC alloc (7.9%)、 GMP の
+fixnum→bignum 変換 (2.9%) など多様な要因。 strcmp は 11% で
+deltablue/richards より少ない (polymorphism 少なく monomorphic
+パターン多)。
+
+#### 帯域 (perf stat / deltablue)
+
+|   | python3 | pystro AOT |
+|---|---:|---:|
+| 経過時間 | 0.18 s | 2.42 s |
+| 命令数 | 2.0 B | **18.6 B (9.3× 多い)** |
+| IPC | 2.95 | 1.92 |
+| LLC miss / refs | n/a | **20.7%** |
+| L1 dcache miss | n/a | 3.38% |
+| branch miss | n/a | 0.36% |
+
+命令数が 9.3× 多いのが最大要因。 IPC 低下 (1.92) と LLC miss 20%
+は副次的だが、 AVX2 strcmp の per-call setup や Boehm GC が小さい
+インスタンスをばら撒くことで cache locality が悪化していると
+考えられる (この帯域分析は推測 — 命令数差だけで時間差の大半を
+説明できる)。
+
+#### これからの優先項目 (上の計測結果に基づく)
+
+1. **user class instance method の inline cache** が最優先。
+   monomorphic でいいので `(cls_ptr, method_value)` を caller-site
+   で stamp し、 `cls_ptr` 一致なら strcmp 経由しない。 これだけで
+   richards / deltablue の 40-45% が消える見込み。
+2. `py_class_lookup_method` 自体の高速化 — name を `intern` 済み
+   ポインタで比較すれば strcmp 不要 (現状文字列値で比較)。
+3. instance allocation pattern の改善 (Boehm 頻度 5-8%)。
 
 ### R10 → R18 の比較
 
@@ -168,34 +239,11 @@ inline flonum 演算ノードと共に SD 化されたため。
   class 呼び出しが少し重くなった。
 
 **大きく負け (4-14×)** — macro (richards / deltablue / raytrace / pyaes)
-- `perf stat ./pystro bench/macro/deltablue.py` vs python3 で:
-
-  |   | python3 | pystro AOT |
-  |---|---:|---:|
-  | 経過時間 | 0.18 s | 2.42 s |
-  | 命令数 | 2.0 B | **18.6 B (9.3× 多い)** |
-  | IPC | 2.95 | **1.92 (1.5× 低い)** |
-  | LLC miss / refs | n/a | **20.7%** |
-
-  内訳:
-  - **命令数 9× 増** が主因。 AST-based dispatcher 経由なので 1 method
-    call = (env 切り替え + frame alloca + dispatch) で 30-50 命令の
-    fixed overhead。 micro はループ本体に inline 展開できるので
-    効くが、 macro は呼び出しが入れ子で展開先が無い。
-  - **IPC 低下** = stalled cycles。 LLC miss 20% で memory bound 気味。
-    GC で object ばら撒くので class instance + dict entry が cache に
-    乗りきらない。 CPython は 2-word PyObject header + 専用 small-obj
-    arena でこの帯域を稼いでる。
-  - polymorphic な call site で attr_cache (monomorphic) が miss して
-    毎回 `py_class_lookup_method` の MRO walk + strcmp に落ちる。
-
-これからの優先項目:
-1. attr_cache の polymorphic 拡張 (現状 monomorphic、 cls_ptr 1 個のみ)
-2. `super().method()` の MRO 解決を per-call site で cache
-3. AST 融合: 同一 receiver の連続 attr_get (`self.x; self.y; self.z`) を
-   1 つの multi-key get にまとめる
-4. instance dict layout を CPython 風 hidden-class に
-5. small-object arena で cache locality 改善
+- 詳細は上の「## 計測結果 — どこで時間を食ってるか」項参照。
+- 一行で言うと: pystro は **user class instance method の inline cache
+  が無い** ので、 `self.foo()` の解決が毎回 `py_class_lookup_method`
+  の MRO+strcmp 線形走査に落ちる。 deltablue / richards でこの経路
+  が 40-45% を占める。
 
 ## 投入した最適化 (時系列)
 
