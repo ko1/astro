@@ -1549,6 +1549,9 @@ node_method_0(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 VALUE av[1] = { o };
                 return py_apply(c, fn, 1, av);
             }
+        } else if (t == PY_T_MODULE) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            if (LIKELY(fn)) return py_apply(c, fn, 0, NULL);
         } else if (cache->fn) {
             VALUE av[1] = { o };
             return ((py_builtin_fn)cache->fn)(c, 1, av);
@@ -1620,6 +1623,16 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
                 return py_apply(c, fn, 3, av);
             }
+        } else if (t == PY_T_MODULE) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            if (LIKELY(fn)) {
+                VALUE av[2];
+                av[0] = EVAL_ARG(c, a0);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                av[1] = EVAL_ARG(c, a1);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                return py_apply(c, fn, 2, av);
+            }
         } else if (cache->fn) {
             VALUE av[3];
             av[0] = o;
@@ -1658,6 +1671,17 @@ node_method_n(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
                 }
                 return py_apply(c, fn, (int)argc + 1, av);
+            }
+        } else if (t == PY_T_MODULE) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            if (LIKELY(fn)) {
+                VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+                for (uint32_t i = 0; i < argc; i++) {
+                    NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                    av[i] = (*arg->head.dispatcher)(c, arg);
+                    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                }
+                return py_apply(c, fn, (int)argc, av);
             }
         } else if (cache->fn) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
