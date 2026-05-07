@@ -7300,7 +7300,7 @@ static struct type_method str_methods[] = {
     { "find",          sm_find,          2, 4 },
     { "replace",       sm_replace,       3, 4 },
     { "count",         sm_count,         2, 4 },
-    { "encode",        sm_encode,        1, 2 },
+    { "encode",        sm_encode,        1, 3 },
     { "format",        sm_format,        1, -1 },
     { "zfill",         sm_zfill,         2, 2 },
     { "center",        sm_center,        2, 3 },
@@ -9084,8 +9084,8 @@ bm_translate(CTX *c, int argc, VALUE *argv)
 }
 
 static struct type_method bytes_methods[] = {
-    { "decode",     bm_decode,     1, 2 },
-    { "encode",     bm_encode,     1, 2 },
+    { "decode",     bm_decode,     1, 3 },
+    { "encode",     bm_encode,     1, 3 },
     { "startswith", bm_startswith, 2, 4 },
     { "split",      bm_split,      1, 3 },
     { "replace",    bm_replace,    3, 3 },
