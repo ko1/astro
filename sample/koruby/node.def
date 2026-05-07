@@ -120,6 +120,70 @@ NODE_DEF
 node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
 {
     VALUE v = EA(c, rhs);
+    /* Validation for special globals. */
+    const char *nm = korb_id_name(name);
+    if (nm && nm[0] == '$' && nm[1]) {
+        bool string_only = false;
+        bool read_only = false;
+        if (!nm[2]) {
+            char c2 = nm[1];
+            if (c2 == '/' || c2 == '\\' || c2 == ',' || c2 == ';') string_only = true;
+            if (c2 == ':' || c2 == '"') read_only = true;
+        } else if (nm[1] == '-' && nm[2] == '0' && !nm[3]) {
+            string_only = true;
+        }
+        if (read_only) {
+            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            korb_raise(c, (struct korb_class *)eN,
+                       "%s is a read-only variable", nm);
+            return Qnil;
+        }
+        if (string_only && !NIL_P(v) &&
+            (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "value of %s must be String", nm);
+            return Qnil;
+        }
+        /* $stdout / $stderr / $stdin must respond to #write (or #read for stdin). */
+        if (strcmp(nm, "$stdout") == 0 || strcmp(nm, "$stderr") == 0) {
+            VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("write")) });
+            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+            if (!RTEST(rt)) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                struct korb_class *klass = korb_class_of_class(v);
+                korb_raise(c, (struct korb_class *)eT,
+                           "%s must have write method, %s given",
+                           nm,
+                           klass && klass->name ? korb_id_name(klass->name) : "?");
+                return Qnil;
+            }
+        }
+        /* $. should call #to_int. */
+        if (strcmp(nm, "$.") == 0) {
+            if (SPECIAL_CONST_P(v) ? !FIXNUM_P(v) : BUILTIN_TYPE(v) != T_BIGNUM) {
+                VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+                if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+                if (RTEST(rt)) {
+                    v = korb_funcall(c, v, korb_intern("to_int"), 0, NULL);
+                    if (c->state != KORB_NORMAL) return Qnil;
+                } else {
+                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    korb_raise(c, (struct korb_class *)eT,
+                               "no implicit conversion to Integer");
+                    return Qnil;
+                }
+            }
+        }
+        /* $/ <-> $-0 sync: assigning to one updates the other. */
+        if (!nm[2] && nm[1] == '/') {
+            korb_gvar_set(korb_intern("$-0"), v);
+        } else if (nm[1] == '-' && nm[2] == '0' && !nm[3]) {
+            korb_gvar_set(korb_intern("$/"), v);
+        }
+    }
     korb_gvar_set(name, v);
     return v;
 }
