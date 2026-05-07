@@ -226,6 +226,18 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
             korb_gvar_set(korb_intern("$-d"),    canon);
             return canon;
         }
+        /* $@ — sets backtrace on the current exception ($!).  Raises
+         * ArgumentError "$! not set" if no exception is in flight. */
+        if (strcmp(nm, "$@") == 0) {
+            VALUE exc = korb_gvar_get(korb_intern("$!"));
+            if (NIL_P(exc) || SPECIAL_CONST_P(exc)) {
+                VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                korb_raise(c, (struct korb_class *)eA, "$! not set");
+                return Qnil;
+            }
+            korb_funcall(c, exc, korb_intern("set_backtrace"), 1, &v);
+            return v;
+        }
         /* $0 / $PROGRAM_NAME aliases — must coerce to String. */
         if (strcmp(nm, "$0") == 0 || strcmp(nm, "$PROGRAM_NAME") == 0) {
             if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) {
