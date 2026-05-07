@@ -53,6 +53,9 @@ struct transduce_context {
     const char *source_file;   /* for NodeHead.source_file */
     bool verbose;
     int last_line;
+    /* Bias added to every reported line number (for `eval(src, file, line)`
+     * where __LINE__ inside src should start at `line`).  0 = no bias. */
+    int line_offset;
 };
 
 static NODE *T(struct transduce_context *tc, pm_node_t *n);
@@ -1299,7 +1302,7 @@ static int line_of_node(struct transduce_context *tc, pm_node_t *node) {
         if (nl->offsets[m] <= off) { best = m; lo = m + 1; }
         else hi = m - 1;
     }
-    return (int)(best + 1);
+    return (int)(best + 1) + tc->line_offset;
 }
 
 static NODE *
@@ -2534,22 +2537,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           return ALLOC_node_seq(seq, ALLOC_node_func_call(korb_intern("Rational"), 2, ai, mc));
       }
       case PM_SOURCE_LINE_NODE: {
-          /* `__LINE__` — line of this token in the source file.
-           * pm_newline_list_line is libprism-internal (not exported),
-           * so do the binary search in-line.  newline_list.offsets
-           * holds source offsets where each line *begins* (after a
-           * preceding '\n'); offsets[0] is 0, offsets[i] = start of
-           * line i+1.  Find the largest i with offsets[i] <= our
-           * cursor offset; the line number is i+1. */
-          const pm_newline_list_t *nl = &tc->parser->newline_list;
-          size_t cursor_off = (size_t)(node->location.start - nl->start);
-          long lo = 0, hi = (long)nl->size - 1, best = 0;
-          while (lo <= hi) {
-              long m = (lo + hi) / 2;
-              if (nl->offsets[m] <= cursor_off) { best = m; lo = m + 1; }
-              else hi = m - 1;
-          }
-          return ALLOC_node_int_lit((intptr_t)(best + 1));
+          /* `__LINE__` — line of this token, biased by tc->line_offset
+           * for `eval(src, file, line)`.  line_of_node already applies
+           * the bias. */
+          int ln = line_of_node(tc, node);
+          return ALLOC_node_int_lit((intptr_t)ln);
       }
       case PM_SOURCE_FILE_NODE: {
           /* `__FILE__` — the script's path. */
@@ -5374,6 +5366,9 @@ NODE *koruby_parse_full(const char *src, size_t len, const char *filename, char 
 NODE *koruby_parse_with_scope(const char *src, size_t len, const char *filename,
                               const char **scope_locals, size_t scope_locals_n,
                               char **err_msg);
+NODE *koruby_parse_with_scope_line(const char *src, size_t len, const char *filename,
+                                   const char **scope_locals, size_t scope_locals_n,
+                                   int line_offset, char **err_msg);
 
 NODE *
 koruby_parse(const char *src, size_t len, const char *filename)
@@ -5391,6 +5386,15 @@ NODE *
 koruby_parse_with_scope(const char *src, size_t len, const char *filename,
                         const char **scope_locals, size_t scope_locals_n,
                         char **err_msg)
+{
+    return koruby_parse_with_scope_line(src, len, filename, scope_locals,
+                                         scope_locals_n, 0, err_msg);
+}
+
+NODE *
+koruby_parse_with_scope_line(const char *src, size_t len, const char *filename,
+                             const char **scope_locals, size_t scope_locals_n,
+                             int line_offset, char **err_msg)
 {
     pm_parser_t parser;
     pm_options_t options = {0};
@@ -5444,6 +5448,11 @@ koruby_parse_with_scope(const char *src, size_t len, const char *filename,
 
     struct transduce_context tc = { 0 };
     tc.parser = &parser;
+    /* line_offset biases all reported line numbers (and __LINE__) so
+     * `eval(src, file, line)` makes line 1 of src appear as `line`.
+     * We subtract 1 because line_of_node already returns 1-based; the
+     * offset adds to that, and we want line 1 → `line` (not line+1). */
+    tc.line_offset = line_offset > 0 ? line_offset - 1 : 0;
     /* Stash a heap-stable copy of filename so NodeHead.source_file
      * stays valid past the parser's lifetime. */
     if (filename) {

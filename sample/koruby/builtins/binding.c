@@ -18,6 +18,9 @@
 extern struct korb_proc *running_block;
 extern struct Node *korb_g_program_body;
 extern ID *korb_body_local_names(struct Node *body);
+extern NODE *koruby_parse_with_scope_line(const char *src, size_t len, const char *filename,
+                                          const char **scope_locals, size_t scope_locals_n,
+                                          int line_offset, char **err_msg);
 extern NODE *koruby_parse_with_scope(const char *src, size_t len, const char *filename,
                                       const char **scope_locals, size_t scope_locals_n,
                                       char **err_msg);
@@ -128,6 +131,18 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     b->cref = c->cref;
     if (c->current_frame && c->current_frame->method) {
         b->method_name = c->current_frame->method->name;
+    }
+    /* Capture source file/line of the `binding` call site.  The cfunc
+     * prologue records the dispatched callsite into c->last_cfunc_callsite
+     * before invoking us, so its node head holds the line we want. */
+    b->source_file = NULL;
+    b->source_line = 0;
+    if (c->last_cfunc_callsite) {
+        b->source_file = c->last_cfunc_callsite->head.source_file;
+        b->source_line = c->last_cfunc_callsite->head.line;
+    }
+    if (!b->source_file && c->current_file) {
+        b->source_file = c->current_file;
     }
 
     /* Copy primary names (innermost scope). */
@@ -421,6 +436,10 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_STRING) {
         filename = ((struct korb_string *)argv[1])->ptr;
     }
+    int line_offset = 0;
+    if (argc >= 3 && FIXNUM_P(argv[2])) {
+        line_offset = (int)FIX2LONG(argv[2]);
+    }
     /* Build scope_locals from binding's names.  Always allocate (even
      * when empty) so koruby_parse_with_scope sees a non-NULL pointer
      * and treats this as eval-with-binding mode (skips node_scope
@@ -468,8 +487,9 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
         }
     }
     char *err_msg = NULL;
-    NODE *ast = koruby_parse_with_scope(s->ptr, (size_t)s->len, filename,
-                                         scope_locals, scope_locals_n, &err_msg);
+    NODE *ast = koruby_parse_with_scope_line(s->ptr, (size_t)s->len, filename,
+                                              scope_locals, scope_locals_n,
+                                              line_offset, &err_msg);
     if (err_msg) {
         VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
         korb_raise(c, (struct korb_class *)eSE, "%s", err_msg);
@@ -564,11 +584,15 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
 }
 
 /* Binding#source_location — [file, line] of where the binding was
- * created.  For now return a stub. */
+ * created. */
 static VALUE binding_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
+    struct korb_binding *b = (struct korb_binding *)self;
     VALUE arr = korb_ary_new();
-    korb_ary_push(arr, korb_str_new_cstr("(eval)"));
-    korb_ary_push(arr, INT2FIX(0));
+    const char *file = b->source_file ? b->source_file : "(eval)";
+    int line = b->source_line ? b->source_line : 0;
+    korb_ary_push(arr, korb_str_new_cstr(file));
+    korb_ary_push(arr, INT2FIX(line));
     return arr;
 }
 

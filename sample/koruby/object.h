@@ -290,6 +290,9 @@ struct korb_binding {
     struct korb_cref *cref;
     /* Frame ID + method_name for source_location / __method__. */
     ID method_name;
+    /* Source file/line of the `binding` call site (for source_location). */
+    const char *source_file;
+    int source_line;
     /* For new-local extension via local_variable_set / eval: when fp
      * may not have free slots, we fall back to this Hash. */
     VALUE extra_vars;
