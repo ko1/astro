@@ -396,7 +396,22 @@ class MSpecExpectation
                           # taken literally — work in chars instead.)
                           stripped = stripped[2..-1] if stripped.start_with?("\\A")
                           stripped = stripped[0..-3] if stripped.end_with?("\\z")
-                          e.message.include?(stripped)
+                          # Wildcard `.*` (matches any chars).  Split
+                          # into segments; each must appear in order.
+                          if stripped.include?('.*')
+                            parts = stripped.split('.*')
+                            pos = 0
+                            parts.all? { |part|
+                              if part.empty? then true
+                              else
+                                idx = e.message.index(part, pos)
+                                if idx then pos = idx + part.length; true
+                                else false; end
+                              end
+                            }
+                          else
+                            e.message.include?(stripped)
+                          end
                         }
                       else msg === e.message
                       end
