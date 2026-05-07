@@ -10412,7 +10412,13 @@ bi_exec(CTX *c, int argc, VALUE *argv)
     struct pydict *snap = NULL;
     if (argc >= 2 && py_is_dict(argv[1])) ns_snapshot(c, &snap);
     EVAL(c, body);
-    if (snap) ns_writeback(c, argv[1], snap);
+    // CPython convention: when both globals and locals are passed,
+    // names defined at the exec'd-code top level land in locals (not
+    // globals).  Without a separate locals dict, fall back to globals.
+    if (snap) {
+        VALUE wb = (argc >= 3 && py_is_dict(argv[2])) ? argv[2] : argv[1];
+        ns_writeback(c, wb, snap);
+    }
     ns_restore(c, &sl);
     ns_restore(c, &sg);
     return PY_NONE;
