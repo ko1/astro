@@ -4572,28 +4572,24 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         return py_apply_kw_func(c, fn, argc, argv, kwc, kwnames, kwvalues);
     }
     if (py_is_builtin(fn)) {
-        if (kwc > 0) {
-            // A few builtins accept specific keyword arguments
-            // (sorted: key, reverse / min/max: key, default / enumerate: start).
-            // The kwargs are forwarded to the builtin via thread-local
-            // pointers; the builtin itself reads them from there.
-            extern int    PYSTRO_BI_KWC;
-            extern const char **PYSTRO_BI_KWNAMES;
-            extern VALUE *PYSTRO_BI_KWVALUES;
-            int saved_kwc = PYSTRO_BI_KWC;
-            const char **saved_kn = PYSTRO_BI_KWNAMES;
-            VALUE *saved_kv = PYSTRO_BI_KWVALUES;
-            PYSTRO_BI_KWC = kwc;
-            PYSTRO_BI_KWNAMES = (const char **)kwnames;
-            PYSTRO_BI_KWVALUES = kwvalues;
-            VALUE r = py_apply_slow(c, fn, argc, argv);
-            PYSTRO_BI_KWC = saved_kwc;
-            PYSTRO_BI_KWNAMES = saved_kn;
-            PYSTRO_BI_KWVALUES = saved_kv;
-            return r;
-        }
-        // delegate via py_apply (slow path is fine)
-        return py_apply_slow(c, fn, argc, argv);
+        // ALWAYS set PYSTRO_BI_KW* — even when kwc==0 — so nested
+        // class/builtin calls inside the builtin don't pick up stale
+        // thread-local kwargs from an outer caller.  Save/restore the
+        // previous values so the outer scope's view is unaffected.
+        extern int    PYSTRO_BI_KWC;
+        extern const char **PYSTRO_BI_KWNAMES;
+        extern VALUE *PYSTRO_BI_KWVALUES;
+        int saved_kwc = PYSTRO_BI_KWC;
+        const char **saved_kn = PYSTRO_BI_KWNAMES;
+        VALUE *saved_kv = PYSTRO_BI_KWVALUES;
+        PYSTRO_BI_KWC = kwc;
+        PYSTRO_BI_KWNAMES = (const char **)kwnames;
+        PYSTRO_BI_KWVALUES = kwvalues;
+        VALUE r = py_apply_slow(c, fn, argc, argv);
+        PYSTRO_BI_KWC = saved_kwc;
+        PYSTRO_BI_KWNAMES = saved_kn;
+        PYSTRO_BI_KWVALUES = saved_kv;
+        return r;
     }
     py_raise_exc(c, c->EXC_TypeError, "object is not callable");
 }
@@ -4626,7 +4622,16 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
                 VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
                 av[0] = fn;
                 for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
-                return py_apply(c, mc, argc + 1, av);
+                // py_apply has no kwargs — explicitly zero PYSTRO_BI_KWC
+                // around the dispatch so the metaclass __call__ (e.g.
+                // bi_type_call) doesn't pick up stale kwargs from an
+                // outer caller's frame.
+                extern int PYSTRO_BI_KWC;
+                int saved_kwc = PYSTRO_BI_KWC;
+                PYSTRO_BI_KWC = 0;
+                VALUE r = py_apply(c, mc, argc + 1, av);
+                PYSTRO_BI_KWC = saved_kwc;
+                return r;
             }
         }
         // __new__ — always defined (object.__new__ is the default).
