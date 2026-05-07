@@ -4083,6 +4083,16 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           if (l_destructure_pre) body = ALLOC_node_seq(l_destructure_pre, body);
           if (kw_prologue) body = ALLOC_node_seq(kw_prologue, body);
+          /* Capture lambda's slot→name table for binding / eval-with-binding
+           * dispatch (same registry the def / block path uses). */
+          if (n->locals.size > 0) {
+              ID *lam_names = korb_xmalloc(sizeof(ID) * (n->locals.size + 1));
+              for (size_t i = 0; i < n->locals.size; i++) {
+                  lam_names[i] = intern_constant(tc->parser, n->locals.ids[i]);
+              }
+              lam_names[n->locals.size] = 0;
+              korb_register_body_local_names(body, lam_names);
+          }
           /* Resolve `&blk` slot (if any) before pop_frame. */
           int lambda_blk_slot = -1;
           if (pn_l && pn_l->block && PM_NODE_TYPE_P((pm_node_t *)pn_l->block, PM_BLOCK_PARAMETER_NODE)) {

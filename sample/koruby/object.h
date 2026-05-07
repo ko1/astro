@@ -247,6 +247,11 @@ struct korb_proc {
      * proc creation time; super inside the block reads this instead
      * of c->current_frame->method. */
     struct korb_method *defining_method;
+    /* The block lexically enclosing this one — i.e. running_block at
+     * the moment this proc was created.  Used by Binding (and any
+     * lvar-walk in the future) to traverse the lexical chain.  NULL
+     * when this block was created outside any block. */
+    struct korb_proc *lexical_parent_block;
 };
 
 /* Method object: a bound (receiver, method) pair, callable via #call/#[] */

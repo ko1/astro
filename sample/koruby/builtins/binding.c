@@ -121,12 +121,62 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         }
     }
 
-    /* Note: we don't merge enclosing-scope names here.  In our
-     * runtime, a block doesn't carry a lexical-parent pointer
-     * (running_block tracks the dynamic invocation, not the lexical
-     * surroundings), so walking c->current_frame would pull in
-     * dynamic callers' locals which aren't lexically visible.
-     * Inherited-scope binding tests stay failing for now. */
+    /* Lexical inheritance — walk the lexical_parent_block chain.  Each
+     * outer block contributes any lvars not already in our table.
+     * Outer-block lvars get snapshot into extras (we don't know which
+     * fp slot still holds them, since the outer block may be on a
+     * different point of the stack).  After walking blocks, also
+     * include defining_method's locals for the same reason. */
+    if (running_block) {
+        if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new();
+        struct korb_proc *parent = running_block->lexical_parent_block;
+        while (parent && parent->body) {
+            ID *parent_names = korb_body_local_names(parent->body);
+            if (parent_names) {
+                /* The currently-running block / lambda's env covers the
+                 * entire closure chain: when a fresh-env-path block was
+                 * called, the heap fp it allocated includes every outer
+                 * slot up through env_size.  Any block created inside
+                 * captures that same fp, so c->fp here holds live
+                 * values for ALL ancestors' locals.  Read from c->fp
+                 * with the parent's param_base offset rather than
+                 * parent->env (which is the snapshot taken at parent's
+                 * creation time and may be stale by now). */
+                VALUE *src_fp = c->fp ? c->fp : parent->env;
+                for (size_t i = 0; parent_names[i] != 0; i++) {
+                    if (binding_find_slot(b, parent_names[i]) >= 0) continue;
+                    binding_append_name(b, parent_names[i]);
+                    VALUE val = src_fp ? src_fp[parent->param_base + i] : Qnil;
+                    if (UNDEF_P(val)) val = Qnil;
+                    korb_hash_aset(b->extra_vars,
+                                   korb_id2sym(parent_names[i]), val);
+                }
+            }
+            parent = parent->lexical_parent_block;
+        }
+        /* defining_method (the lexically-enclosing method) — its
+         * locals should also be visible from inside the block. */
+        if (running_block->defining_method &&
+            running_block->defining_method->type == KORB_METHOD_AST) {
+            struct korb_method *dm = (struct korb_method *)running_block->defining_method;
+            ID *outer_names = dm->u.ast.local_names;
+            if (outer_names) {
+                VALUE *outer_fp = NULL;
+                for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+                    if (f->method == dm) { outer_fp = f->fp; break; }
+                }
+                for (size_t i = 0; outer_names[i] != 0; i++) {
+                    if (binding_find_slot(b, outer_names[i]) >= 0) continue;
+                    binding_append_name(b, outer_names[i]);
+                    if (outer_fp) {
+                        korb_hash_aset(b->extra_vars,
+                                       korb_id2sym(outer_names[i]),
+                                       outer_fp[i]);
+                    }
+                }
+            }
+        }
+    }
     return b;
 }
 
@@ -258,16 +308,44 @@ static VALUE binding_local_variable_defined_p(CTX *c, VALUE self, int argc, VALU
     return KORB_BOOL(binding_find_slot(b, name_id) >= 0);
 }
 
-/* Binding#local_variables — Array of Symbol names. */
+/* Binding#local_variables — Array of Symbol names.  CRuby orders the
+ * list with binding-introduced (extras) names first, then the primary
+ * captured names.  Iterate extras in reverse-insertion order (mirrors
+ * CRuby's stack-of-frames behavior), then primary names in declaration
+ * order. */
 static VALUE binding_local_variables_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE arr = korb_ary_new();
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return arr;
     struct korb_binding *b = (struct korb_binding *)self;
+    /* Build a "is in extras" bitset on the fly. */
+    VALUE extras = b->extra_vars;
+    bool has_extras = (!NIL_P(extras) && BUILTIN_TYPE(extras) == T_HASH);
+    /* Extras first (in insertion order, typical CRuby behavior). */
+    if (has_extras) {
+        struct korb_hash *h = (struct korb_hash *)extras;
+        for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+            if (!SYMBOL_P(e->key)) continue;
+            const char *cname = korb_id_name(korb_sym2id(e->key));
+            if (cname && cname[0] == '_' && cname[1] == 0) continue;
+            if (cname && cname[0] == '_' && cname[1] == '_') continue;
+            korb_ary_push(arr, e->key);
+        }
+    }
+    /* Primary names — skip any already covered by extras. */
     for (uint32_t i = 0; i < b->names_cnt; i++) {
         const char *cname = korb_id_name(b->names[i]);
         if (cname && cname[0] == '_' && cname[1] == 0) continue;
         if (cname && cname[0] == '_' && cname[1] == '_') continue;
-        korb_ary_push(arr, korb_id2sym(b->names[i]));
+        VALUE sym = korb_id2sym(b->names[i]);
+        if (has_extras) {
+            struct korb_hash *h = (struct korb_hash *)extras;
+            bool seen = false;
+            for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+                if (e->key == sym) { seen = true; break; }
+            }
+            if (seen) continue;
+        }
+        korb_ary_push(arr, sym);
     }
     return arr;
 }

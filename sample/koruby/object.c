@@ -1924,6 +1924,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     /* defining_method gets filled in by the proc-literal evaluator
      * (node_proc_set_def_method) once it has the active CTX. */
     p->defining_method = NULL;
+    p->lexical_parent_block = NULL;
     return (VALUE)p;
 }
 
