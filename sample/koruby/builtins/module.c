@@ -169,7 +169,14 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
             struct korb_method *km = korb_class_find_method(
                 (struct korb_class *)m->receiver, m->name);
             if (km) {
-                korb_class_alias_method((struct korb_class *)self, name, km);
+                /* Clone km with defining_class = target so `super` from
+                 * inside the body walks past `self` (the install target)
+                 * rather than past the source module. */
+                struct korb_method *clone = korb_xmalloc(sizeof(*clone));
+                *clone = *km;
+                clone->name = name;
+                clone->defining_class = (struct korb_class *)self;
+                korb_class_alias_method((struct korb_class *)self, name, clone);
                 return korb_id2sym(name);
             }
         }
