@@ -2103,23 +2103,31 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           return ALLOC_node_const_path_get(parent, intern_constant(tc->parser, n->name));
       }
       case PM_CONSTANT_PATH_WRITE_NODE: {
-          /* `Foo::BAR = value` — lower to `Foo.const_set(:BAR, value)`
-           * via a 2-arg method call. */
+          /* `(expr1)::BAR = (expr2)` — lower to `parent.const_set(:BAR, val)`
+           * with Ruby 3.2 left-to-right evaluation: parent expression first,
+           * then value, then call.  Cache parent into a slot up front so
+           * the LHS side effect happens before the RHS. */
           pm_constant_path_write_node_t *n = (pm_constant_path_write_node_t *)node;
           pm_constant_path_node_t *cp = n->target;
           NODE *parent = cp->parent ? T(tc, cp->parent)
                                      : ALLOC_node_const_get(korb_intern("Object"));
           ID name = intern_constant(tc->parser, cp->name);
-          NODE *val = T(tc, n->value);
+          uint32_t parent_slot = inc_arg_index(tc);
           uint32_t a0 = inc_arg_index(tc);
           uint32_t a1 = inc_arg_index(tc);
+          rewind_arg_index(tc, parent_slot);
+          NODE *save_parent = ALLOC_node_lvar_set(parent_slot, parent);
+          NODE *val = T(tc, n->value);
           rewind_arg_index(tc, a0);
           NODE *set_a0 = ALLOC_node_lvar_set(a0, ALLOC_node_sym_lit(name));
           NODE *set_a1 = ALLOC_node_lvar_set(a1, val);
           struct method_cache *mc = alloc_method_cache();
-          NODE *call = ALLOC_node_method_call(parent, korb_intern("const_set"),
+          NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(parent_slot),
+                                              korb_intern("const_set"),
                                               2, a0, mc);
-          return ALLOC_node_seq(set_a0, ALLOC_node_seq(set_a1, call));
+          return ALLOC_node_seq(save_parent,
+                       ALLOC_node_seq(set_a0,
+                              ALLOC_node_seq(set_a1, call)));
       }
       case PM_CONSTANT_PATH_OR_WRITE_NODE: {
           /* Foo::BAR ||= rhs  ⇒  evaluate Foo once, save in slot, then

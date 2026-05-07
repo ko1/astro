@@ -977,8 +977,16 @@ bool korb_const_has(struct korb_class *klass, ID name) {
 
 VALUE korb_const_lookup(CTX *c, ID name) {
     /* Lexical lookup along cref chain (each cref level checks its own
-     * class plus that class's includes — but NOT super). */
+     * class plus that class's includes — but NOT super).  The bottom
+     * implicit `[Object, prev=NULL]` cref entry (created at top-level
+     * before any user `class X` opens) is NOT a real lexical scope —
+     * it's a placeholder so `node_def_full` knows we're at top level.
+     * Skip it for lexical lookup; Object's namespace is reached via
+     * the inheritance walk below.  An EXPLICITLY opened `class Object`
+     * pushes its own cref entry whose prev is non-NULL, so that one
+     * still participates. */
     for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+        if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
         VALUE v = korb_const_get(cr->klass, name);
         if (!UNDEF_P(v)) return v;
         for (int32_t i = (int32_t)cr->klass->includes_cnt - 1; i >= 0; i--) {
