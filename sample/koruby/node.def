@@ -2005,11 +2005,15 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
         }
         if (rs >= 0) {
             VALUE rest = c->fp[rs];
-            if (BUILTIN_TYPE(rest) == T_ARRAY) {
+            if (!SPECIAL_CONST_P(rest) && BUILTIN_TYPE(rest) == T_ARRAY) {
                 struct korb_array *a = (struct korb_array *)rest;
                 for (long i = 0; i < a->len && argc < 64; i++) {
                     forward_buf[argc++] = a->ptr[i];
                 }
+            } else if (!NIL_P(rest)) {
+                /* Reassigned rest with a non-Array scalar — CRuby wraps
+                 * the value into a single-element array for forwarding. */
+                if (argc < 64) forward_buf[argc++] = rest;
             }
         }
         /* Post params live at the very end of the params region. */
