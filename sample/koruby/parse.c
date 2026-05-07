@@ -2951,6 +2951,27 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                           NODE *if_n = ALLOC_node_if(hk, aref, def_val);
                           NODE *set_lv = ALLOC_node_lvar_set((uint32_t)slot, if_n);
                           prologue = prologue ? ALLOC_node_seq(prologue, set_lv) : set_lv;
+                          /* Also stamp the resolved value (default or
+                           * caller-provided) BACK into kwh_save_slot so
+                           * `super` (zsuper) and forwarding both pick up
+                           * defaults applied here.  Skip when **kwrest
+                           * is present (kwrest absorbs the original kwh
+                           * after deletes; defaults are NOT preserved
+                           * there per CRuby). */
+                          if (!has_kwrest) {
+                              uint32_t ai3 = inc_arg_index(tc);
+                              uint32_t ai4 = inc_arg_index(tc);
+                              inc_arg_index(tc);
+                              rewind_arg_index(tc, ai3);
+                              struct method_cache *mc_st = alloc_method_cache();
+                              NODE *kk = ALLOC_node_lvar_set(ai3, ALLOC_node_sym_lit(kid));
+                              NODE *vv = ALLOC_node_lvar_set(ai4, ALLOC_node_lvar_get((uint32_t)slot));
+                              NODE *aset = ALLOC_node_seq(kk,
+                                  ALLOC_node_seq(vv,
+                                      ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
+                                                             korb_intern("[]="), 2, ai3, mc_st)));
+                              prologue = ALLOC_node_seq(prologue, aset);
+                          }
                       }
                   }
                   /* No **kwrest declared: validate that all keys in
