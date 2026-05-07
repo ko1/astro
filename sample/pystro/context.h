@@ -662,7 +662,7 @@ VALUE py_builtin_method(CTX *c, VALUE recv, const char *name);
 // PY_NONE on stop (and sets *done=true), else the next element.
 struct py_iter {
     int kind;               // 0=list/tuple, 1=str, 2=range, 3=dict, 4=callable+sentinel,
-                            // 8=enumerate, 9=zip, 10=map, 11=filter
+                            // 8=enumerate, 9=zip, 10=map, 11=filter, 5=user-iter, 13=__getitem__
     VALUE container;        // callable for kind=4; inner func for kind=10/11
     int64_t i;
     int64_t end;
@@ -671,6 +671,10 @@ struct py_iter {
     // For wrapping iterators (enumerate/zip/map/filter): inner py_iter array.
     struct py_iter *inner;  // NULL for non-wrapping kinds
     int n_inner;            // # of inner iters (zip)
+    // Cache for kind=5 (user iter): __next__ method, resolved once at
+    // init.  Without this every call to py_iter_next does a strcmp
+    // scan through the class methods table.
+    VALUE next_m;
 };
 void py_iter_init(CTX *c, struct py_iter *it, VALUE iterable);
 bool py_iter_next(CTX *c, struct py_iter *it, VALUE *out);

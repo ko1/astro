@@ -711,14 +711,72 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 }
 
 NODE_DEF
-node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, NODE *val)
+node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, NODE *val, struct attr_cache *cache@ref)
 {
     (void)n;
     VALUE ov = EVAL_ARG(c, obj);
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE vv = EVAL_ARG(c, val);
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    // Fast path: same class + same attrs dict + cached entry index +
+    // class has no __setattr__/data-descriptor/__slots__ overrides.
+    // The cache's `eidx` is bit-OR'd with 0x80000000 to encode "no
+    // overrides" so we don't need a separate bit and so cls_ptr alone
+    // can validate the class shape.
+    if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
+        struct pyobj *o = PY_PTR(ov);
+        if (LIKELY(o->inst.attrs && cache->cls_ptr == (void *)o->inst.cls
+                   && cache->attrs_id == (uint64_t)(uintptr_t)o->inst.attrs
+                   && cache->eidx >= 0
+                   && (size_t)cache->eidx < o->inst.attrs->elen)) {
+            VALUE k = o->inst.attrs->entries[cache->eidx].key;
+            if (LIKELY(k != 0 && k != DICT_DELETED_KEY
+                       && py_is_str(k)
+                       && PY_PTR(k)->str.len == strlen(name)
+                       && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0)) {
+                o->inst.attrs->entries[cache->eidx].value = vv;
+                return PY_NONE;
+            }
+        }
+    }
     py_setattr(c, ov, name, vv);
+    // Stamp the cache only if the class has none of the overrides that
+    // the fast path skips (__setattr__, data descriptor for `name`,
+    // __slots__).  Otherwise leave the cache disabled so subsequent
+    // calls keep going through py_setattr.
+    if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE) {
+        struct pyobj *o = PY_PTR(ov);
+        if (o->inst.attrs) {
+            VALUE cls = PY_OBJ_VAL(o->inst.cls);
+            extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
+            extern bool py_class_has_slots_anywhere(VALUE cls);
+            VALUE sm = py_class_lookup_method_pub(cls, "__setattr__");
+            bool has_setattr_override = (sm != PY_NONE
+                && !(PY_IS_PTR(sm) && PY_PTR(sm)->type == PY_T_BUILTIN));
+            if (!has_setattr_override
+                && !py_class_has_slots_anywhere(cls)) {
+                VALUE m = py_class_lookup_method_pub(cls, name);
+                bool has_descriptor = false;
+                if (m != PY_NONE && PY_IS_PTR(m)) {
+                    int t = PY_PTR(m)->type;
+                    has_descriptor = (t == PY_T_PROPERTY || t == PY_T_INSTANCE);
+                }
+                if (!has_descriptor) {
+                    for (size_t i = 0; i < o->inst.attrs->elen; i++) {
+                        VALUE k = o->inst.attrs->entries[i].key;
+                        if (k != 0 && k != DICT_DELETED_KEY
+                            && py_is_str(k) && PY_PTR(k)->str.len == strlen(name)
+                            && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
+                            cache->cls_ptr = (void *)o->inst.cls;
+                            cache->attrs_id = (uint64_t)(uintptr_t)o->inst.attrs;
+                            cache->eidx = (int32_t)i;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
     return PY_NONE;
 }
 

@@ -175,7 +175,7 @@ py_class_extract_slots(CTX *c, VALUE cls)
 
 // True if `cls` (or any ancestor) has __slots__ declared, and `name`
 // isn't in any __slots__ list.  Used by py_setattr to enforce.
-static bool
+bool
 py_class_has_slots_anywhere(VALUE cls)
 {
     if (!py_is_class(cls)) return false;
@@ -3299,6 +3299,11 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
             it->kind = 5;       // user iterator
             it->container = iter_obj;
             it->i = 0; it->end = 0; it->step = 0;
+            // Resolve __next__ once so the hot loop doesn't re-scan.
+            if (py_is_instance(iter_obj)) {
+                VALUE icls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
+                it->next_m = py_class_lookup_method(icls, "__next__");
+            }
             return;
         }
         // Built-in subclass: iterate over primary.
@@ -3417,12 +3422,17 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
       }
       case 5: {
         // User iterator: call __next__; on StopIteration, clear state
-        // and return false.
+        // and return false.  __next__ is cached at init time so the hot
+        // loop doesn't re-scan the class methods table.
         VALUE iter_obj = it->container;
         if (!py_is_instance(iter_obj)) return false;
-        VALUE cls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
-        VALUE nm = py_class_lookup_method(cls, "__next__");
-        if (nm == PY_NONE) py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
+        VALUE nm = it->next_m;
+        if (nm == 0 || nm == PY_NONE) {
+            VALUE cls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
+            nm = py_class_lookup_method(cls, "__next__");
+            if (nm == PY_NONE) py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
+            it->next_m = nm;
+        }
         VALUE av[1] = { iter_obj };
         VALUE r = py_apply(c, nm, 1, av);
         if (c->state == PY_STATE_RAISE) {
