@@ -3514,10 +3514,20 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
         return true;
       }
       case 13: {
-        // __getitem__ sequence protocol.
+        // __getitem__ sequence protocol — catch IndexError /
+        // StopIteration from inside the user-defined __getitem__ via a
+        // local try frame, otherwise the longjmp-based raise
+        // would unwind past us.
         VALUE gm = py_class_lookup_method(PY_OBJ_VAL(PY_PTR(it->container)->inst.cls), "__getitem__");
         VALUE av[2] = { it->container, PY_FIX(it->i) };
-        VALUE r = py_apply(c, gm, 2, av);
+        jmp_buf jb;
+        int saved_top = c->try_top;
+        if (c->try_top < 64) c->try_stack[c->try_top++] = &jb;
+        VALUE r = PY_NONE;
+        if (setjmp(jb) == 0) {
+            r = py_apply(c, gm, 2, av);
+        }
+        c->try_top = saved_top;
         if (c->state == PY_STATE_RAISE) {
             if (py_exc_matches(c, c->state_value, c->EXC_IndexError)
                 || py_exc_matches(c, c->state_value, c->EXC_StopIteration)) {
