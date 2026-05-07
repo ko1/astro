@@ -1373,8 +1373,38 @@ static NODE *build_pattern_check(struct transduce_context *tc, pm_node_t *pat,
               uint32_t ai_dc = inc_arg_index(tc);
               inc_arg_index(tc); rewind_arg_index(tc, ai_dc);
               struct method_cache *mc_dc = alloc_method_cache();
-              NODE *nil_arg = ALLOC_node_lvar_set(ai_dc, ALLOC_node_nil());
-              NODE *dc_call = ALLOC_node_seq(nil_arg,
+              /* Build the keys-list arg.  CRuby passes [:k1, :k2, ...]
+               * for `in {k1:, k2:, ...}` (so deconstruct_keys can return
+               * just those keys), or nil if there's a `**rest` capture
+               * (caller wants all keys). */
+              bool has_kwrest = (h->rest != NULL);
+              NODE *keys_arg;
+              if (has_kwrest || cnt == 0) {
+                  keys_arg = ALLOC_node_nil();
+              } else {
+                  /* Build [k1, k2, ...] as an Array literal. */
+                  uint32_t arr_base = inc_arg_index(tc);
+                  for (uint32_t k = 0; k < cnt; k++) inc_arg_index(tc);
+                  rewind_arg_index(tc, arr_base);
+                  for (uint32_t k = 0; k < cnt; k++) inc_arg_index(tc);
+                  NODE *seq_keys = NULL;
+                  for (uint32_t k = 0; k < cnt; k++) {
+                      pm_node_t *el = h->elements.nodes[k];
+                      if (PM_NODE_TYPE_P(el, PM_ASSOC_NODE)) {
+                          pm_assoc_node_t *as = (pm_assoc_node_t *)el;
+                          NODE *kn = T(tc, as->key);
+                          NODE *st = ALLOC_node_lvar_set(arr_base + k, kn);
+                          seq_keys = seq_keys ? ALLOC_node_seq(seq_keys, st) : st;
+                      } else {
+                          NODE *st = ALLOC_node_lvar_set(arr_base + k, ALLOC_node_nil());
+                          seq_keys = seq_keys ? ALLOC_node_seq(seq_keys, st) : st;
+                      }
+                  }
+                  NODE *arr_new = ALLOC_node_ary_new(cnt, arr_base);
+                  keys_arg = ALLOC_node_seq(seq_keys, arr_new);
+              }
+              NODE *keys_arg_set = ALLOC_node_lvar_set(ai_dc, keys_arg);
+              NODE *dc_call = ALLOC_node_seq(keys_arg_set,
                   ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
                                           korb_intern("deconstruct_keys"), 1, ai_dc, mc_dc));
               /* Prefer deconstruct_keys even on Hash (singleton override
