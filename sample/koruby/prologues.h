@@ -62,6 +62,18 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
                         int PARAMS_KNOWN)
 {
     uint32_t total = (PARAMS_KNOWN >= 0) ? (uint32_t)PARAMS_KNOWN : mc->total_params_cnt;
+    /* Empty `**` kwsplat to a no-kwargs method: silently drop the
+     * empty kwargs hash (CRuby 3.0+).  Detect via FL_KWARGS tag.  Note:
+     * mc->kwh_save_slot < 0 always for "simple" methods, so we only
+     * need to check the trailing-arg flag. */
+    if (UNLIKELY(argc > 0)) {
+        VALUE last = c->fp[arg_index + argc - 1];
+        if (!SPECIAL_CONST_P(last) && BUILTIN_TYPE(last) == T_HASH &&
+            (RBASIC(last)->flags & FL_KWARGS) &&
+            ((struct korb_hash *)last)->size == 0) {
+            argc--;
+        }
+    }
     /* Simple methods have no opt / rest / post / kwargs — argc must
      * exactly match.  Too-few raises ArgumentError just like too-many. */
     if (UNLIKELY(argc != total)) {

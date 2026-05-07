@@ -562,6 +562,14 @@ VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
                      uint32_t argc, uint32_t arg_index,
                      struct korb_proc *block, struct method_cache *mc);
 
+/* FL_KWARGS used by prologue inline functions below — must be visible
+ * before "prologues.h".  Real definition in terms of FL_USER is below;
+ * we forward-define the bit value here. */
+#define FL_USER_SHIFT 12
+#define FL_USER(n)    ((VALUE)1 << (FL_USER_SHIFT + (n)))
+#define FL_SINGLETON FL_USER(0)
+#define FL_KWARGS    FL_USER(1)
+
 /* Inline cache-hit fast path for method dispatch.  On cache hit (LIKELY),
  * directly call mc->prologue — no function call into the slower path.
  * Cache miss falls through to korb_dispatch_call which fills mc and
@@ -762,20 +770,9 @@ char *korb_resolve_relative(const char *current_file, const char *name);
 /* booleans */
 #define KORB_BOOL(b) ((b) ? Qtrue : Qfalse)
 
-/* object FLAGS access */
-#define FL_USER_SHIFT 12
-#define FL_USER(n)    ((VALUE)1 << (FL_USER_SHIFT + (n)))
-
-/* FL_SINGLETON marks a metaclass (singleton class) — set on the lazy
- * child_meta we synthesize in korb_class_new so that `obj.class` can skip
- * past it to report the user-facing class.  CRuby uses FL_SINGLETON for
- * the same purpose. */
-#define FL_SINGLETON FL_USER(0)
-/* FL_KWARGS — set on a Hash that was constructed at a call site as
- * "kwargs" (`m(**h)` or `m(k: v)`).  Dispatch peels trailing Hash only
- * when this flag is set, matching Ruby 3 behavior where `m(plain_hash)`
- * does NOT auto-convert to kwargs. */
-#define FL_KWARGS FL_USER(1)
+/* object FLAGS — definitions hoisted above "prologues.h" include so
+ * the inline prologues can read FL_KWARGS.  See the block before that
+ * include for FL_USER_SHIFT / FL_USER / FL_SINGLETON / FL_KWARGS. */
 
 /* Frozen-object guard.  Inserted at the entry of mutating cfuncs so
  * `frozen_str << "x"` etc. raise FrozenError instead of silently
