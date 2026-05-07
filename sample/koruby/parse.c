@@ -5111,7 +5111,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       /* PM_SOURCE_FILE_NODE / PM_SOURCE_LINE_NODE handled earlier with
        * proper line lookup via prism's newline_list. */
       case PM_SOURCE_ENCODING_NODE: {
-          return ALLOC_node_str_lit("UTF-8", 5);
+          /* `__ENCODING__` — evaluate Encoding::UTF_8 at runtime
+           * (the only encoding we model).  Resolves to the constant
+           * via const_path_get so out-of-scope code paths don't
+           * crash if Encoding isn't yet initialized. */
+          NODE *enc = ALLOC_node_const_get(korb_intern("Encoding"));
+          return ALLOC_node_const_path_get(enc, korb_intern("UTF_8"));
       }
       case PM_INTERPOLATED_REGULAR_EXPRESSION_NODE: {
           /* stub — return string */
