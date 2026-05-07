@@ -128,7 +128,7 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
         if (!nm[2]) {
             char c2 = nm[1];
             if (c2 == '/' || c2 == '\\' || c2 == ',' || c2 == ';') string_only = true;
-            if (c2 == ':' || c2 == '"') read_only = true;
+            if (c2 == ':' || c2 == '"' || c2 == '!') read_only = true;
         } else if (nm[1] == '-' && nm[2] == '0' && !nm[3]) {
             string_only = true;
         }
