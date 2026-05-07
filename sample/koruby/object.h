@@ -735,6 +735,11 @@ char *korb_resolve_relative(const char *current_file, const char *name);
  * past it to report the user-facing class.  CRuby uses FL_SINGLETON for
  * the same purpose. */
 #define FL_SINGLETON FL_USER(0)
+/* FL_KWARGS — set on a Hash that was constructed at a call site as
+ * "kwargs" (`m(**h)` or `m(k: v)`).  Dispatch peels trailing Hash only
+ * when this flag is set, matching Ruby 3 behavior where `m(plain_hash)`
+ * does NOT auto-convert to kwargs. */
+#define FL_KWARGS FL_USER(1)
 
 /* Frozen-object guard.  Inserted at the entry of mutating cfuncs so
  * `frozen_str << "x"` etc. raise FrozenError instead of silently

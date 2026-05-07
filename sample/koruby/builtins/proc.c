@@ -148,17 +148,28 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         c->sp = fresh_env + p->env_size;
         new_fp = fresh_env;
     }
-    /* Kwargs peel: if block declares kwargs and last arg is a Hash,
-     * stash it; otherwise default to {}. */
+    /* Kwargs peel: if block declares kwargs and last arg is a kwargs-
+     * tagged Hash (FL_KWARGS — set by `m(**h)` / `m(k: v)`), stash it.
+     * Plain positional Hash is NOT peeled (Ruby 3 separation). */
     VALUE peeled_kwh = Qundef;
     if (p->kwh_save_slot >= 0) {
         if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
-            BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
+            BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
+            (RBASIC(argv[argc - 1])->flags & FL_KWARGS)) {
             peeled_kwh = argv[argc - 1];
             argc--;
         } else {
             peeled_kwh = korb_hash_new();
         }
+    }
+    /* If last positional is a kwargs-tagged empty Hash and callee has
+     * no **kwargs, drop it. */
+    if (p->kwh_save_slot < 0 && argc > 0 &&
+        !SPECIAL_CONST_P(argv[argc - 1]) &&
+        BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
+        (RBASIC(argv[argc - 1])->flags & FL_KWARGS)) {
+        struct korb_hash *h = (struct korb_hash *)argv[argc - 1];
+        if (h->size == 0) argc--;
     }
     /* Copy params — Ruby block calling convention: when called with a
      * single Array argument and the block declares >1 param, the array

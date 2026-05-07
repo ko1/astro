@@ -988,6 +988,18 @@ node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, NODE *blk_node, uint
     return p;
 }
 
+/* Mark a Hash with FL_KWARGS so dispatch peels it as kwargs at the
+ * call site.  Used by `m(k: v)` / `m(**h)` lowering. */
+NODE_DEF
+node_hash_mark_kwargs(CTX * restrict c, NODE * restrict n, NODE *hash_expr)
+{
+    VALUE h = EVAL_ARG(c, hash_expr);
+    if (!SPECIAL_CONST_P(h) && BUILTIN_TYPE(h) == T_HASH) {
+        ((struct RBasic *)h)->flags |= FL_KWARGS;
+    }
+    return h;
+}
+
 NODE_DEF
 node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {

@@ -1875,6 +1875,22 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
      * args.  When the single arg responds to to_ary, call it; if to_ary
      * returns non-Array, raise TypeError. */
     bool bound_destructure = false;
+    /* Peel kwargs-tagged Hash before destructure / arg processing.  When
+     * yield(**h) carries the tagged hash, callee with **kwargs takes it;
+     * callee without **kwargs drops it if empty (Ruby 3 separation). */
+    VALUE peeled_kwh = Qundef;
+    if (argc > 0 && !SPECIAL_CONST_P(args_buf[argc - 1]) &&
+        BUILTIN_TYPE(args_buf[argc - 1]) == T_HASH &&
+        (RBASIC(args_buf[argc - 1])->flags & FL_KWARGS)) {
+        VALUE last = args_buf[argc - 1];
+        if (blk->kwh_save_slot >= 0) {
+            peeled_kwh = last;
+            argc--;
+        } else {
+            struct korb_hash *h = (struct korb_hash *)last;
+            if (h->size == 0) argc--;
+        }
+    }
     /* CRuby auto-destructures when:
      *   - exactly one arg is yielded
      *   - block has > 1 named param OR has rest with required around it
@@ -1990,11 +2006,9 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     }
     /* `&blk` parameter: yield doesn't pass a block, so bind nil. */
     if (blk->block_slot >= 0) fp[blk->block_slot] = Qnil;
-    /* `**kwargs` parameter: yield doesn't pass kwargs (yet — yield with
-     * literal kwargs is not supported here), default to empty Hash so
-     * `**k` lvars see {} instead of leaking nil into user code. */
+    /* `**kwargs` parameter: use peeled_kwh from above, or default to {}. */
     if (blk->kwh_save_slot >= 0) {
-        fp[blk->kwh_save_slot] = korb_hash_new();
+        fp[blk->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
     }
     c->self = blk->self;
     /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
@@ -2731,18 +2745,32 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (mc->def_cref) c->cref = mc->def_cref;
 
     /* Kwargs hash peel: when the method declares keyword params and the
-     * caller's last positional is a Hash, treat that hash as kwargs.
-     * We stash it into mc->kwh_save_slot (which the body prelude reads)
-     * and decrement argc so the rest of arg processing ignores it.  If
-     * the caller passed no hash, write {} into kwh_save_slot. */
+     * caller's last positional is a kwargs-tagged Hash (FL_KWARGS — set
+     * by `m(**h)` / `m(k: v)`), treat that hash as kwargs.  Plain
+     * positional Hash (`m(h)`) is NOT peeled (Ruby 3 separation). */
     VALUE peeled_kwh = Qundef;
     if (mc->kwh_save_slot >= 0) {
         if (argc > 0 && !SPECIAL_CONST_P(c->fp[argc - 1]) &&
-            BUILTIN_TYPE(c->fp[argc - 1]) == T_HASH) {
+            BUILTIN_TYPE(c->fp[argc - 1]) == T_HASH &&
+            (RBASIC(c->fp[argc - 1])->flags & FL_KWARGS)) {
             peeled_kwh = c->fp[argc - 1];
             argc--;
         } else {
             peeled_kwh = korb_hash_new();
+        }
+    }
+    /* If the last positional is a kwargs-tagged Hash but the callee
+     * doesn't accept **kwargs, drop it silently (CRuby `m(**h)` to a
+     * no-kwargs method is allowed only if h is empty; otherwise ArgError —
+     * we always silently drop here, matching Ruby 2 lenient behavior).
+     * This also handles `m(**empty)` → no positional hash. */
+    if (mc->kwh_save_slot < 0 && argc > 0 &&
+        !SPECIAL_CONST_P(c->fp[argc - 1]) &&
+        BUILTIN_TYPE(c->fp[argc - 1]) == T_HASH &&
+        (RBASIC(c->fp[argc - 1])->flags & FL_KWARGS)) {
+        struct korb_hash *h = (struct korb_hash *)c->fp[argc - 1];
+        if (h->size == 0) {
+            argc--;
         }
     }
 

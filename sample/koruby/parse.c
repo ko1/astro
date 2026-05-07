@@ -4074,7 +4074,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           g_kwsplat_lenient = true;
           NODE *r = build_container(tc, &n->elements, false, true, false);
           g_kwsplat_lenient = prev;
-          return r;
+          /* Tag the resulting Hash with FL_KWARGS so dispatch knows it
+           * came from explicit `**` / `k: v` syntax (Ruby 3 behavior). */
+          return ALLOC_node_hash_mark_kwargs(r);
       }
 
       case PM_DEFINED_NODE: {
