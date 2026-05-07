@@ -420,7 +420,16 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
     m->u.ast.post_params_cnt = 0;
     m->u.ast.kwh_save_slot = -1;
     m->u.ast.local_names = NULL;
+    m->u.ast.param_holder_slots = NULL;
     method_table_set(&klass->methods, name, m);
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+}
+
+/* Attach a param_position → fp slot map to the latest AST method.
+ * Caller owns the array. */
+void korb_class_set_method_param_holder_slots(struct korb_class *klass, ID name, int *slots) {
+    struct korb_method *m = korb_class_find_method(klass, name);
+    if (m && m->type == KORB_METHOD_AST) m->u.ast.param_holder_slots = slots;
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
 
@@ -462,6 +471,31 @@ void korb_register_body_local_names(struct Node *body, ID *names) {
 ID *korb_body_local_names(struct Node *body) {
     for (struct body_to_names_entry *e = g_body_to_names; e; e = e->next) {
         if (e->body == body) return e->names;
+    }
+    return NULL;
+}
+
+/* Side table: body NODE → param_holder_slots[].  Same shape as the
+ * local_names registry — the parse phase records it, the def's
+ * runtime node looks it up and stamps it onto the method record. */
+struct body_to_phs_entry {
+    struct Node *body;
+    int *slots;
+    struct body_to_phs_entry *next;
+};
+static struct body_to_phs_entry *g_body_to_phs = NULL;
+
+void korb_register_body_param_holder_slots(struct Node *body, int *slots) {
+    struct body_to_phs_entry *e = korb_xmalloc(sizeof(*e));
+    e->body = body;
+    e->slots = slots;
+    e->next = g_body_to_phs;
+    g_body_to_phs = e;
+}
+
+int *korb_body_param_holder_slots(struct Node *body) {
+    for (struct body_to_phs_entry *e = g_body_to_phs; e; e = e->next) {
+        if (e->body == body) return e->slots;
     }
     return NULL;
 }
@@ -2958,6 +2992,25 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         if ((int)i == mc->block_slot) continue;
         c->fp[i] = Qnil;
     }
+    /* Param shuffle: when the method's params include a multi_target
+     * (e.g. `def m(a, (b, c), d=1)`), the natural identity mapping
+     * "param position i → fp[i]" collides — fp[1] is both the multi-
+     * target's holder AND b's local slot.  param_holder_slots[] gives
+     * the right destination for each param; copy via snapshot to
+     * avoid clobbering source slots that are also someone's dest. */
+    if (UNLIKELY(mc->param_holder_slots != NULL)) {
+        VALUE snap_buf[64];
+        VALUE *snap = snap_buf;
+        if (mc->total_params_cnt > 64) snap = korb_xmalloc(mc->total_params_cnt * sizeof(VALUE));
+        for (uint32_t i = 0; i < mc->total_params_cnt; i++) snap[i] = c->fp[i];
+        for (uint32_t i = 0; i < mc->total_params_cnt; i++) {
+            int dest = mc->param_holder_slots[i];
+            if (dest >= 0 && (uint32_t)dest != i) {
+                c->fp[dest] = snap[i];
+            }
+        }
+        if (snap != snap_buf) korb_xfree(snap);
+    }
     /* &blk parameter — store the incoming block as a Proc into its
      * slot.  block can be NULL (no block given), in which case the
      * local reads as nil. */
@@ -3041,13 +3094,16 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->type = 0;
         mc->cfunc = NULL;
         mc->def_cref = m->def_cref;
+        mc->param_holder_slots = m->u.ast.param_holder_slots;
         /* &blk reification needs a runtime store, so it goes through the
          * general prologue.  Pick simple vs general based on parameter
          * shape; for the simple case prefer an argc-specialized variant
          * so the C compiler can fold the argc check + unroll the Qnil
-         * fill. */
+         * fill.  Force `general` when param_holder_slots is non-NULL
+         * (multi_target rebinding required, simple path doesn't shuffle). */
         if (mc->rest_slot < 0 && mc->block_slot < 0 && mc->kwh_save_slot < 0 &&
-            mc->total_params_cnt == mc->required_params_cnt) {
+            mc->total_params_cnt == mc->required_params_cnt &&
+            mc->param_holder_slots == NULL) {
             switch (mc->required_params_cnt) {
                 case 0:  mc->prologue = prologue_ast_simple_0; break;
                 case 1:  mc->prologue = prologue_ast_simple_1; break;
@@ -3077,6 +3133,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->type = 2;
         mc->cfunc = NULL;
         mc->def_cref = NULL;
+        mc->param_holder_slots = NULL;
         mc->prologue = prologue_proc_method;
     } else {
         mc->body = NULL;
@@ -3089,6 +3146,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->type = 1;
         mc->cfunc = m->u.cfunc.func;
         mc->def_cref = NULL;
+        mc->param_holder_slots = NULL;
         mc->prologue = prologue_cfunc;
     }
 }

@@ -2138,6 +2138,10 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uin
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     ID *names = korb_body_local_names(body);
     if (names) korb_class_set_method_local_names(target, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
+    }
     return korb_id2sym(name);
 }
 
@@ -2162,6 +2166,10 @@ node_singleton_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body
     if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
     ID *names = korb_body_local_names(body);
     if (names) korb_class_set_method_local_names(target, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
+    }
     return korb_id2sym(name);
 }
 
@@ -2190,6 +2198,10 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID 
     if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
     ID *names = korb_body_local_names(body);
     if (names) korb_class_set_method_local_names(meta, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(meta, name, phs);
+    }
     return korb_id2sym(name);
 }
 
@@ -2217,6 +2229,10 @@ node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, NODE *recv_expr
     if (post_cnt > 0)    korb_class_set_method_post_params_cnt(meta, name, post_cnt);
     ID *names = korb_body_local_names(body);
     if (names) korb_class_set_method_local_names(meta, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(meta, name, phs);
+    }
     return korb_id2sym(name);
 }
 
@@ -2305,6 +2321,10 @@ node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
      * Kernel#binding can iterate the live frame to emit lvars. */
     ID *names = korb_body_local_names(body);
     if (names) korb_class_set_method_local_names(target, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
+    }
     /* If user redefined something on a basic class, EVAL_node_* fast
      * paths must stop short-circuiting through C-side arithmetic. */
     korb_check_basic_op_redef(target, name);
@@ -2331,6 +2351,10 @@ node_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
     if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
     ID *names = korb_body_local_names(body);
     if (names) korb_class_set_method_local_names(target, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
+    }
     korb_check_basic_op_redef(target, name);
     return korb_id2sym(name);
 }

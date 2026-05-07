@@ -195,6 +195,10 @@ struct method_cache {
     bool     is_simple_frame;      /* method body has no yield/super/block_given/_block — slim prologue */
     VALUE (*cfunc)(struct CTX_struct *, VALUE, int, VALUE *);
     struct korb_cref *def_cref;    /* lexical cref captured at def-time */
+    /* param_position → fp slot.  NULL = identity (the common case).
+     * Mirrors korb_method->u.ast.param_holder_slots; cached so the
+     * prologue doesn't dereference mc->method on the hot path. */
+    int     *param_holder_slots;
 };
 
 /* call cache for func calls (similar) */

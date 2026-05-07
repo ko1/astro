@@ -2706,12 +2706,99 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           int block_slot = -1;
           uint32_t kwh_save_slot = (uint32_t)-1;
           push_frame(tc, &n->locals, false);
+          /* param_position → fp slot.  Identity by default; if any
+           * required param is a multi_target whose holder would overlap
+           * the actual param slot of a later named param, we allocate
+           * a synthetic slot past locals for the multi_target so post-/
+           * opt args still land in their lvars.  Length covers ALL param
+           * positions: required + opt + (rest? 1) + post. */
+          int *param_holder_slots = NULL;
+          uint32_t param_total_for_remap = 0;
+          bool any_remap = false;
 
           NODE *prologue = NULL;  /* default-value initialization */
           if (n->parameters) {
               pm_parameters_node_t *pn = (pm_parameters_node_t *)n->parameters;
               required_cnt = (uint32_t)pn->requireds.size;
               total_cnt = required_cnt;
+              /* Compute the tentative param→slot map.  Required params:
+               * named lvars at their natural locals slot, multi_target
+               * gets a synthetic slot past locals.  Opt/post: at their
+               * natural locals slot (looked up via lvar_slot).  If any
+               * mapping differs from identity (= param_position),
+               * remember to emit the runtime shuffle. */
+              uint32_t opt_n = (uint32_t)pn->optionals.size;
+              uint32_t post_n = (uint32_t)pn->posts.size;
+              uint32_t has_rest_pos = (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_REST_PARAMETER_NODE)) ? 1 : 0;
+              param_total_for_remap = required_cnt + opt_n + has_rest_pos + post_n;
+              if (param_total_for_remap > 0) {
+                  param_holder_slots = korb_xmalloc(sizeof(int) * param_total_for_remap);
+                  for (uint32_t i = 0; i < param_total_for_remap; i++) {
+                      param_holder_slots[i] = (int)i;  /* identity default */
+                  }
+                  /* Required: multi_target → synth slot. */
+                  for (size_t i = 0; i < pn->requireds.size; i++) {
+                      pm_node_t *req = pn->requireds.nodes[i];
+                      if (PM_NODE_TYPE_P(req, PM_MULTI_TARGET_NODE)) {
+                          int synth = (int)inc_arg_index(tc);
+                          param_holder_slots[i] = synth;
+                          any_remap = true;
+                      } else if (PM_NODE_TYPE_P(req, PM_REQUIRED_PARAMETER_NODE)) {
+                          pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)req;
+                          /* "_" placeholder names: CRuby allows multiple
+                           * `_` params at distinct slots, even though
+                           * lvar_slot would only return the first.
+                           * Keep identity to avoid collapsing them. */
+                          if (ceq(tc, rp->name, "_")) continue;
+                          int s = lvar_slot(tc, rp->name, 0);
+                          if (s >= 0 && (uint32_t)s != i) {
+                              param_holder_slots[i] = s;
+                              any_remap = true;
+                          }
+                      }
+                  }
+                  /* Optionals: bind to lvar slot. */
+                  for (size_t i = 0; i < pn->optionals.size; i++) {
+                      pm_optional_parameter_node_t *op =
+                          (pm_optional_parameter_node_t *)pn->optionals.nodes[i];
+                      int s = lvar_slot(tc, op->name, 0);
+                      uint32_t pp = required_cnt + (uint32_t)i;
+                      if (s >= 0 && (uint32_t)s != pp) {
+                          param_holder_slots[pp] = s;
+                          any_remap = true;
+                      }
+                  }
+                  /* Rest position: the runtime prologue places the
+                   * gathered Array at fp[rest_slot] directly; the
+                   * shuffle should NOT touch it (no caller arg "lives"
+                   * at the rest position pre-shuffle).  Mark with -1. */
+                  if (has_rest_pos) {
+                      uint32_t pp = required_cnt + opt_n;
+                      param_holder_slots[pp] = -1;
+                  }
+                  /* Post params (after *rest): each post[i] lives at
+                   * locals_cnt - post_n + i in CRuby terms, but here we
+                   * just consult lvar_slot. */
+                  for (size_t i = 0; i < pn->posts.size; i++) {
+                      pm_node_t *p = pn->posts.nodes[i];
+                      ID nm = 0;
+                      if (PM_NODE_TYPE_P(p, PM_REQUIRED_PARAMETER_NODE)) {
+                          nm = ((pm_required_parameter_node_t *)p)->name;
+                      }
+                      if (nm) {
+                          int s = lvar_slot(tc, nm, 0);
+                          uint32_t pp = required_cnt + opt_n + has_rest_pos + (uint32_t)i;
+                          if (s >= 0 && (uint32_t)s != pp) {
+                              param_holder_slots[pp] = s;
+                              any_remap = true;
+                          }
+                      }
+                  }
+                  if (!any_remap) {
+                      korb_xfree(param_holder_slots);
+                      param_holder_slots = NULL;
+                  }
+              }
               /* optionals: build "if Qundef then assign default" chain */
               for (size_t i = 0; i < pn->optionals.size; i++) {
                   pm_optional_parameter_node_t *op = (pm_optional_parameter_node_t *)pn->optionals.nodes[i];
@@ -2969,7 +3056,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   pm_node_t *req = pn->requireds.nodes[i];
                   if (!PM_NODE_TYPE_P(req, PM_MULTI_TARGET_NODE)) continue;
                   pm_multi_target_node_t *mt = (pm_multi_target_node_t *)req;
-                  uint32_t holder_slot = (uint32_t)i;
+                  /* The runtime prologue puts the i-th caller arg into
+                   * fp[param_holder_slots[i]] (synthetic slot past locals
+                   * when multi_target).  Read the array from there. */
+                  uint32_t holder_slot = param_holder_slots
+                      ? (uint32_t)param_holder_slots[i]
+                      : (uint32_t)i;
                   uint32_t arr_slot = inc_arg_index(tc);
                   NODE *coerce = ALLOC_node_lvar_set(arr_slot,
                                     ALLOC_node_to_ary_for_mlhs(
@@ -3023,6 +3115,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           }
           pop_frame(tc);
           if (local_names_arr) korb_register_body_local_names(body, local_names_arr);
+          if (param_holder_slots) korb_register_body_param_holder_slots(body, param_holder_slots);
           code_repo_add(korb_id_name(name), body, false);
           /* posts size — params after *rest, e.g. `def f(a, *r, b, c)`. */
           uint32_t post_cnt = 0;

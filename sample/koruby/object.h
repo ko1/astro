@@ -92,6 +92,14 @@ struct korb_method {
             uint32_t post_params_cnt;      /* params after *rest (def f(a, *r, b)) */
             int kwh_save_slot;             /* slot to stash peeled kwargs hash (-1 if no kwargs) */
             ID *local_names;               /* slot index → name ID; len=locals_cnt; NULL when none */
+            /* param_position → fp slot.  NULL = identity (slot[i]=i),
+             * which is the common case.  Non-NULL is needed when the
+             * params include a multi_target like `def m(a, (b, c), d)`
+             * — (b, c) shares b's slot under the naive identity mapping,
+             * which clobbers d's slot for the 3rd caller arg.  Holds
+             * total_params_cnt entries; default identity for non-shadowed
+             * params.  Synthetic slots are allocated past locals_cnt. */
+            int *param_holder_slots;
         } ast;
         struct {
             VALUE (*func)(CTX *c, VALUE self, int argc, VALUE *argv);
@@ -302,6 +310,7 @@ void korb_class_add_method_ast(struct korb_class *klass, ID name, struct Node *b
 void korb_class_add_method_ast_full(struct korb_class *klass, ID name, struct Node *body,
                                     uint32_t required_params, uint32_t total_params,
                                     int rest_slot, uint32_t locals_cnt);
+void korb_class_set_method_param_holder_slots(struct korb_class *klass, ID name, int *slots);
 void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, struct Node *body,
                                           uint32_t required_params, uint32_t total_params,
                                           int rest_slot, uint32_t locals_cnt,
@@ -312,6 +321,8 @@ void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slo
 void korb_class_set_method_local_names(struct korb_class *klass, ID name, ID *names);
 void korb_register_body_local_names(struct Node *body, ID *names);
 ID *korb_body_local_names(struct Node *body);
+void korb_register_body_param_holder_slots(struct Node *body, int *slots);
+int *korb_body_param_holder_slots(struct Node *body);
 void korb_class_set_method_post_params_cnt(struct korb_class *klass, ID name, uint32_t cnt);
 void korb_class_set_method_kwh_save_slot(struct korb_class *klass, ID name, int slot);
 void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_method *m);
