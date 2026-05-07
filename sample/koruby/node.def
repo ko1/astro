@@ -261,6 +261,26 @@ node_gvar_defined_p(CTX * restrict c, NODE * restrict n, ID name)
     return KORB_BOOL(korb_gvar_defined(name));
 }
 
+/* defined?(A::B) helper — like node_const_path_get but returns Qfalse
+ * instead of dispatching const_missing or raising NameError on miss.
+ * defined? must not invoke const_missing (CRuby semantics). */
+NODE_DEF
+node_const_path_defined(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
+{
+    extern bool korb_const_is_private(const struct korb_class *, ID);
+    VALUE p = EA(c, parent);
+    if (BUILTIN_TYPE(p) != T_CLASS && BUILTIN_TYPE(p) != T_MODULE) return Qfalse;
+    if (korb_const_is_private((struct korb_class *)p, name)) {
+        bool in_scope = false;
+        for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+            if ((VALUE)cr->klass == p) { in_scope = true; break; }
+        }
+        if (!in_scope) return Qfalse;
+    }
+    VALUE v = korb_const_get_inherited_stop_at_object((struct korb_class *)p, name);
+    return UNDEF_P(v) ? Qfalse : Qtrue;
+}
+
 /* defined? for bare CONST — walks lexical scope (cref) and superclass
  * chain.  Mirrors korb_const_lookup but returns Qfalse instead of
  * raising NameError on miss.  Respects private_constant: matches what

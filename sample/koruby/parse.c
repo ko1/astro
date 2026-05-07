@@ -4468,19 +4468,24 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               return ALLOC_node_rescue(body, ALLOC_node_nil(), rescue_slot);
             }
             case PM_CONSTANT_PATH_NODE: {
-              /* `defined?(A::B::C)` — resolve the path step-by-step at
-               * runtime; if any segment is missing, return nil.  We
-               * lower to a call to a helper method that walks the path
-               * and answers "constant" or nil. */
-              NODE *path = T(tc, expr);  /* node_const_path_get; raises on missing */
-              /* Wrap in a rescue so the missing-const raise flips back
-               * to nil; on success the value is replaced with the
-               * "constant" string literal. */
+              /* `defined?(A::B::C)` — resolve via const_path_defined
+               * which returns false on miss without calling
+               * const_missing (CRuby spec).  Resolves the parent path
+               * via the normal const_path_get (which DOES raise on
+               * missing parents, e.g. `Undefined::Object`); rescue
+               * that to convert to nil. */
+              pm_constant_path_node_t *cp = (pm_constant_path_node_t *)expr;
+              ID leaf_name = intern_constant(tc->parser, cp->name);
+              NODE *parent_node = cp->parent
+                  ? T(tc, cp->parent)
+                  : ALLOC_node_const_get(korb_intern("Object"));
               uint32_t ai = inc_arg_index(tc);
               rewind_arg_index(tc, ai);
-              NODE *rescue_body = ALLOC_node_nil();
-              NODE *body = ALLOC_node_seq(path, ALLOC_node_frozen_str_lit("constant", 8));
-              return ALLOC_node_rescue(body, rescue_body, ai);
+              NODE *check = ALLOC_node_const_path_defined(parent_node, leaf_name);
+              NODE *body = ALLOC_node_if(check,
+                  ALLOC_node_frozen_str_lit("constant", 8),
+                  ALLOC_node_nil());
+              return ALLOC_node_rescue(body, ALLOC_node_nil(), ai);
             }
             default:
               return ALLOC_node_frozen_str_lit("expression", 10);
