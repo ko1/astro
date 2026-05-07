@@ -113,6 +113,14 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs, struct iv
 NODE_DEF
 node_gvar_get(CTX * restrict c, NODE * restrict n, ID name)
 {
+    /* $@ — `current exception`.backtrace, or nil if no current exc. */
+    if (name == korb_intern("$@")) {
+        VALUE exc = korb_gvar_get(korb_intern("$!"));
+        if (NIL_P(exc) || SPECIAL_CONST_P(exc)) return Qnil;
+        VALUE bt = korb_funcall(c, exc, korb_intern("backtrace"), 0, NULL);
+        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; bt = Qnil; }
+        return bt;
+    }
     return korb_gvar_get(name);
 }
 

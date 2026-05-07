@@ -3787,6 +3787,7 @@ struct korb_fiber {
     struct korb_cref *resumer_cref;     /* save resumer's lexical const ref */
     struct korb_class *resumer_current_class;
     struct korb_frame *resumer_current_frame;
+    VALUE resumer_bang;                  /* save resumer's $! */
     struct korb_cref *fiber_cref;       /* save fiber's lexical const ref */
     struct korb_class *fiber_current_class;
     struct korb_frame *fiber_current_frame;
@@ -3797,6 +3798,8 @@ struct korb_fiber {
      * resumer's value-stack. */
     VALUE *fiber_fp;
     VALUE *fiber_sp;
+    /* Fiber-local $! value (initially nil). */
+    VALUE fiber_bang;
 
     /* Per-fiber value-stack area: heap-allocated, lives as long as the
      * fiber, used for the block's frame and for any method calls made
@@ -3879,6 +3882,7 @@ VALUE korb_fiber_new(struct korb_proc *block) {
      * env (so method calls inside the block don't overlap its locals). */
     fib->fiber_fp = fib->frame;
     fib->fiber_sp = fib->frame + env_size;
+    fib->fiber_bang = Qnil;
     fib->resumer_fp = NULL;
     fib->resumer_sp = NULL;
     fib->resumer_stack_base = NULL;
@@ -3929,6 +3933,9 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     fib->resumer_cref = c->cref;
     fib->resumer_current_class = c->current_class;
     fib->resumer_current_frame = c->current_frame;
+    /* $! and $@ are fiber-local — stash resumer's, swap in fiber's. */
+    fib->resumer_bang = korb_gvar_get(korb_intern("$!"));
+    korb_gvar_set(korb_intern("$!"), fib->fiber_bang);
     c->fp = fib->fiber_fp;
     c->sp = fib->fiber_sp;
     c->stack_base = fib->frame;
@@ -3966,6 +3973,12 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     c->cref = fib->resumer_cref;
     c->current_class = fib->resumer_current_class;
     c->current_frame = fib->resumer_current_frame;
+    /* Restore resumer's $!: if yield ran, it already did this; if the
+     * fiber finished without yielding (KF_DEAD), we still need to. */
+    if (fib->state == KF_DEAD) {
+        fib->fiber_bang = korb_gvar_get(korb_intern("$!"));
+        korb_gvar_set(korb_intern("$!"), fib->resumer_bang);
+    }
     current_fiber = prev;
     if (fib->state != KF_DEAD) fib->state = KF_SUSPENDED;
     return fib->result;
@@ -3987,6 +4000,8 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     fib->fiber_cref = c->cref;
     fib->fiber_current_class = c->current_class;
     fib->fiber_current_frame = c->current_frame;
+    fib->fiber_bang = korb_gvar_get(korb_intern("$!"));
+    korb_gvar_set(korb_intern("$!"), fib->resumer_bang);
     c->fp = fib->resumer_fp;
     c->sp = fib->resumer_sp;
     c->stack_base = fib->resumer_stack_base;
@@ -4008,6 +4023,8 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     if (fib->fiber_cref) c->cref = fib->fiber_cref;
     if (fib->fiber_current_class) c->current_class = fib->fiber_current_class;
     if (fib->fiber_current_frame) c->current_frame = fib->fiber_current_frame;
+    /* Re-establish fiber's $!: yield saved resumer's, swapped to nil; resume
+     * restored fiber's already.  No-op here. */
     /* Resumed: restore the fiber's fp/sp (resume already did this from
      * its side, but in a chain of resume->yield->resume the inner ctx
      * comes back here and the resumer's wrapper has overwritten c->fp
