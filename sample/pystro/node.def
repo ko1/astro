@@ -1575,6 +1575,17 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
                 return py_apply(c, fn, 2, av);
             }
+        } else if (t == PY_T_MODULE) {
+            // Module method (e.g., `math.sqrt(x)`): no self prepend.
+            // Cache stamps (module_ptr, resolved_method).  raytrace was
+            // doing strcmp through math's globals on every call.
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            if (LIKELY(fn)) {
+                VALUE av[1];
+                av[0] = EVAL_ARG(c, a0);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                return py_apply(c, fn, 1, av);
+            }
         } else if (cache->fn) {
             VALUE av[2];
             av[0] = o;

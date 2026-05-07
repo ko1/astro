@@ -4014,6 +4014,35 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
                 }
             }
         }
+        // Module method (e.g., `math.sqrt(x)`).  No self prepend.
+        // Cache (module_ptr, resolved_method).  raytrace's per-pixel
+        // math.sqrt was doing module-globals strcmp loop per call.
+        if (tag == PY_T_MODULE) {
+            VALUE m = py_getattr(c, recv, name);
+            if (c->state == PY_STATE_NORMAL && m != PY_NONE && PY_IS_PTR(m)) {
+                int mt = PY_PTR(m)->type;
+                if (mt == PY_T_FUNC || mt == PY_T_BUILTIN) {
+                    void *mod_ptr = (void *)PY_PTR(recv);
+                    int found = -1;
+                    for (int i = 0; i < PYSTRO_METHOD_PIC_WAYS; i++) {
+                        if (cache->u_cls[i] == mod_ptr) { found = i; break; }
+                    }
+                    if (found < 0) {
+                        for (int i = PYSTRO_METHOD_PIC_WAYS - 1; i > 0; i--) {
+                            cache->u_cls[i] = cache->u_cls[i - 1];
+                            cache->u_fn [i] = cache->u_fn [i - 1];
+                        }
+                        cache->u_cls[0] = mod_ptr;
+                        cache->u_fn [0] = (void *)(intptr_t)m;
+                    } else {
+                        cache->u_fn[found] = (void *)(intptr_t)m;
+                    }
+                    cache->type_tag = PY_T_MODULE;
+                    return m;       // caller invokes with [args] (no self)
+                }
+            }
+            return m;
+        }
     }
     // Instance / class method (no inline-cache-able fast path).
     cache->type_tag = -1;
