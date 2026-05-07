@@ -1433,7 +1433,7 @@ parse_list_literal(void)
     int n = 0; items[n++] = first;
     while (match_tok(T_COMMA)) {
         if (peek_tok(0)->kind == T_RBRACK) break;
-        if (n >= 256) parse_error("list literal too long");
+        if (n >= 2048) parse_error("list literal too long");
         items[n++] = parse_expr();
     }
     expect(T_RBRACK, "']'");
