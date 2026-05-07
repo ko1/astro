@@ -3,12 +3,12 @@
 [done.md](./done.md) は実装済み。 ここは **未実装 / 不完全 / 既知バグ** の作業
 リスト。
 
-現状 (2026-05-06):
+現状 (2026-05-07):
 - koruby 自前 test/ruby/ 全 pass (24 ファイル, 190 件)
 - optcarrot は CRuby と一致 (動作・出力)
 - CRuby `test/ruby/` (in-scope 67 ファイル): **1,108,357 pass / 77.5%**
-- CRuby `spec/ruby/language/` (rubyspec, 65 ファイル): **2,570 pass / 73.2%、
-  20 ファイルが 100%**
+- CRuby `spec/ruby/language/` (rubyspec, 65 ファイル): **2,984 pass / 90.9%、
+  28 ファイルが 100%**
 
 ## §0 範囲外 (project policy / user 指定)
 
