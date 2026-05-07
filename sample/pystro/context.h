@@ -364,20 +364,22 @@ struct method_cache {
     void *u_fn [PYSTRO_METHOD_PIC_WAYS];   // user-class PIC: method VALUE per slot
 };
 
-// Inline cache for `o.attr` on instances.  Stamped per node_attr_get
-// site.  Hot path: same class + same shape_version → use cached
-// entry index in *this* instance's attrs.  No per-instance dict
-// identity check — different instances of the same class share the
-// same eidx assuming __init__ added attrs in a consistent order.
+// 4-way polymorphic IC for `o.attr` on instances (see PYSTRO_METHOD_PIC_WAYS
+// in struct method_cache for the same pattern).  Per-class entries
+// keyed by `(cls, shape_version)`; the stored eidx is the index in
+// inst.attrs->entries[] for the attribute name this site looks up.
 //
-// `attrs_id` was the previous identity field; it caused 90% miss rate
-// on deltablue / 55% on richards because every instance has its own
-// attrs dict (different pointer = miss).  shape_version captures the
-// notion of "class layout unchanged" without per-instance noise.
+// Why 4-way + shape_version: the previous design used (cls_ptr, attrs_id,
+// eidx) which caused 90% miss on deltablue / 55% on richards because
+// every instance has its own attrs dict.  shape_version captures the
+// "class layout unchanged" notion without per-instance noise.
+// Polymorphic recv (mixed Constraint subclasses, etc.) needed 4-way to
+// avoid thrashing.
+#define PYSTRO_ATTR_PIC_WAYS 4
 struct attr_cache {
-    void *cls_ptr;          // PY_PTR(class) at stamp time
-    int32_t eidx;           // index into inst.attrs->entries[]
-    uint32_t shape_version; // pyclass.shape_version at stamp time
+    void *u_cls [PYSTRO_ATTR_PIC_WAYS];
+    int32_t  u_eidx[PYSTRO_ATTR_PIC_WAYS];
+    uint32_t u_sv  [PYSTRO_ATTR_PIC_WAYS];
 };
 
 typedef struct CTX_struct {
