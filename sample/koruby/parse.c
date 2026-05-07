@@ -2976,45 +2976,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                         ALLOC_node_lvar_get(holder_slot)));
                   destructure_pre = destructure_pre
                       ? ALLOC_node_seq(destructure_pre, coerce) : coerce;
-                  uint32_t lefts_n  = (uint32_t)mt->lefts.size;
-                  uint32_t rights_n = (uint32_t)mt->rights.size;
-                  #define BIND_LVAR(_t, _get) do {                                  \
-                      ID _nid = 0; uint32_t _nd = 0;                                \
-                      if (PM_NODE_TYPE_P(_t, PM_LOCAL_VARIABLE_TARGET_NODE)) {      \
-                          pm_local_variable_target_node_t *_lt = (pm_local_variable_target_node_t *)_t; \
-                          _nid = _lt->name; _nd = _lt->depth;                       \
-                      } else if (PM_NODE_TYPE_P(_t, PM_REQUIRED_PARAMETER_NODE)) {  \
-                          pm_required_parameter_node_t *_rp = (pm_required_parameter_node_t *)_t; \
-                          _nid = _rp->name;                                         \
-                      }                                                              \
-                      if (_nid) {                                                   \
-                          int _s = lvar_slot(tc, _nid, _nd);                        \
-                          if (_s < 0) _s = lvar_slot_any(tc, _nid);                 \
-                          if (_s >= 0) {                                            \
-                              NODE *_st = ALLOC_node_lvar_set((uint32_t)_s, _get);  \
-                              destructure_pre = ALLOC_node_seq(destructure_pre, _st); \
-                          }                                                          \
-                      }                                                              \
-                  } while (0)
-                  for (uint32_t j = 0; j < lefts_n; j++) {
-                      NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(arr_slot), j);
-                      BIND_LVAR(mt->lefts.nodes[j], get);
-                  }
-                  /* `*rest` middle. */
-                  if (mt->rest && PM_NODE_TYPE_P(mt->rest, PM_SPLAT_NODE)) {
-                      pm_splat_node_t *sp = (pm_splat_node_t *)mt->rest;
-                      if (sp->expression) {
-                          NODE *slice = ALLOC_node_ary_slice_middle(
-                              ALLOC_node_lvar_get(arr_slot), lefts_n, rights_n);
-                          BIND_LVAR(sp->expression, slice);
-                      }
-                  }
-                  for (uint32_t j = 0; j < rights_n; j++) {
-                      NODE *get = ALLOC_node_ary_aget_right(
-                          ALLOC_node_lvar_get(arr_slot), lefts_n, rights_n, j);
-                      BIND_LVAR(mt->rights.nodes[j], get);
-                  }
-                  #undef BIND_LVAR
+                  /* Use the recursive destructure helper so nested
+                   * `def m((a, (b, c)))` patterns and rest/right parts
+                   * all bind correctly. */
+                  NODE *bound = destructure_into_targets(tc, arr_slot, mt);
+                  if (bound) destructure_pre = ALLOC_node_seq(destructure_pre, bound);
               }
           }
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
