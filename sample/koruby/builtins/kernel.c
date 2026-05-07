@@ -1100,7 +1100,20 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern void OPTIMIZE_decl(void);
     extern struct Node *OPTIMIZE(struct Node *n);
     OPTIMIZE(ast);
-    VALUE r = c->cref ? EVAL(c, ast) : EVAL(c, ast);
+    /* Recover the caller method's lexical cref.  prologue_ast_simple_inl
+     * skips the `c->cref = mc->def_cref` step when the body is judged
+     * "simple" (no const/cvar/yield/etc), which means inside a simple
+     * method `c->cref` is still the OUTER (top-level) cref.  eval needs
+     * the lexical context of the caller, so pull it from the live
+     * frame's method when present. */
+    struct korb_cref *prev_cref = c->cref;
+    struct korb_frame *prev_frame_for_eval = c->current_frame;
+    if (prev_frame_for_eval && prev_frame_for_eval->method &&
+        prev_frame_for_eval->method->def_cref) {
+        c->cref = prev_frame_for_eval->method->def_cref;
+    }
+    VALUE r = EVAL(c, ast);
+    c->cref = prev_cref;
     c->current_file = prev_file;
     return r;
 }
