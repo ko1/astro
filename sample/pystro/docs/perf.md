@@ -18,15 +18,16 @@
 
 | ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `while_loop` (10M, augassign) | 0.89 s | 0.18 s | **0.05 s** | **0.06× (18× 速い)** |
-| `for_range` (15M sum) | 1.00 s | 0.18 s | **0.12 s** | **0.12× (8× 速い)** |
-| `list_bench` (7M append+sum) | 0.92 s | 0.26 s | **0.22 s** | **0.24× (4× 速い)** |
-| `mandel` (float-heavy) | 0.68 s | 0.70 s | **0.26 s** | **0.38× (2.6× 速い)** |
-| `recursive` (tak(30,20,10)) | 3.82 s | 2.63 s | **1.41 s** | **0.37× (2.7× 速い)** |
-| `fib(35)` (再帰) | 1.23 s | 0.72 s | **0.42 s** | **0.34× (2.9× 速い)** |
-| `nqueens` (recursion + list) | 0.70 s | 0.68 s | **0.44 s** | **0.63× (1.6× 速い)** |
-| `string_bench` (2M split) | 0.57 s | 0.55 s | **0.53 s** | **0.93× (1.07× 速い)** |
-| `dict_bench` (3M put+get) | 0.80 s | 1.08 s | 1.05 s | 1.31× (31% 遅い) |
+| `while_loop` (10M, augassign) | 0.94 s | 0.20 s | **0.06 s** | **0.06× (16× 速い)** |
+| `for_range` (15M sum, C range) | 1.06 s | 0.15 s | **0.08 s** | **0.08× (13× 速い)** |
+| `for_range_pyrange` (Py iter) | 2.24 s | 0.87 s | **0.40 s** | **0.18× (5.6× 速い)** |
+| `list_bench` (7M append+sum) | 0.97 s | 0.23 s | **0.19 s** | **0.20× (5× 速い)** |
+| `mandel` (float-heavy) | 0.69 s | 0.68 s | **0.26 s** | **0.38× (2.7× 速い)** |
+| `recursive` (tak(30,20,10)) | 3.93 s | 2.87 s | **1.42 s** | **0.36× (2.8× 速い)** |
+| `fib(35)` (再帰) | 1.31 s | 0.69 s | **0.44 s** | **0.34× (3.0× 速い)** |
+| `nqueens` (recursion + list) | 0.69 s | 0.65 s | **0.42 s** | **0.61× (1.6× 速い)** |
+| `string_bench` (2M split) | 0.57 s | 0.55 s | **0.55 s** | **0.96× (1.04× 速い)** |
+| `dict_bench` (3M put+get) | 0.81 s | 1.07 s | 0.99 s | 1.22× (22% 遅い) |
 
 best-of-3。**9 ベンチ中 8 で python3 を上回る** (dict_bench は遅い)。
 
@@ -44,7 +45,7 @@ R7〜R10 で取った旧計測 (R10 perf.md) との差分:
 | `string_bench` | 0.50 s | 0.53 s | +6% | str slice の path で state チェック増 |
 | `mandel` | 0.63 s | **0.26 s** | -59% | per-body SD で float fast path が SD 化 |
 | `nqueens` | 0.62 s | **0.44 s** | -29% | 同上 |
-| `dict_bench` | 0.82 s | 1.05 s | +28% | metaclass __call__ の `PYSTRO_BI_KWC` save/restore overhead |
+| `dict_bench` | 0.82 s | 0.99 s | +21% | metaclass __call__ の `PYSTRO_BI_KWC` save/restore overhead |
 
 call-heavy bench は R18 で大幅高速化。 きっかけは **AOT が関数 body
 にも効くようにした fix** (5a2b83b):
@@ -72,20 +73,50 @@ fib / recursive / mandel / nqueens は AOT でも tree-walking interp と
 mandel なら ~3) に。 mandel が 2.6× 速くなったのは関数 body が
 inline flonum 演算ノードと共に SD 化されたため。
 
+#### Python iterator の高速化 (16bf5a3 + a7326de + 43a7e83 + c3d7170)
+
+`class PyRange` のような pure-Python iterator (`__iter__` / `__next__`)
+で AOT が python3 と同等止まりだったのを 4.6× → **5.6× 速い** まで
+持ってきた:
+
+1. **`node_attr_set` に attr_cache を追加**: `self.i = x` の毎反復に
+   `__setattr__` / data descriptor / `__slots__` チェックを strcmp で
+   走査していた (perf で 17% 占有) → fast path で
+   `entries[eidx].value = vv` 直接書込に。 cache stamp 時にだけ
+   semantic 検証 (override 系があれば cache 無効化)。
+2. **attr_get/set fast path から strlen+memcmp 除去**: cache の attrs_id
+   が一致 ⇒ backing storage 同一 ⇒ eidx は同じスロット。 key 名検証
+   は冗長で削れる (DICT_DELETED_KEY だけ確認)。
+3. **`py_iter_next_inline` を node.h に追加**: kind 0/2 (list/tuple/
+   range) は user code を呼ばないので SD-baked for-loop に inline 安全。
+   kind 5 (user iter) は `py_apply` の alloca が tight loop で stack
+   蓄積するので out-of-line のまま。
+4. **struct py_iter に `next_m` キャッシュ**: kind=5 の `__next__`
+   lookup を init で 1 回だけに。
+
+副作用: ASTroGen-generated node_eval.c で `extern VALUE` 宣言なしの
+関数呼出が int 戻り値扱いで高位 32 bit 切り捨てる compiler バグを
+発見、 `py_class_lookup_method_pub` を使うように修正。
+
 ### 解釈
 
-**圧倒的に速い (4×〜18×)** — `while_loop` / `for_range` / `list_bench`
+**圧倒的に速い (5×〜16×)** — `while_loop` / `for_range` / `list_bench`
 - AOT で gref/gset/add/lt が直線的な C 関数呼び出しに畳まれ、 inline
   cache で globals 読み書きが配列 index 1 回。
 - `node_for_global` 内蔵 cache、 `method_cache` で `xs.append(i)` の
   bound-method 確保が消える。
+- `py_iter_next_inline` が list/tuple/range の case を SD に inline。
 
-**よく速い (1.6×〜2.9×)** — `fib` / `recursive` / `mandel` / `nqueens`
+**よく速い (1.6×〜5.6×)** — Python iter / `fib` / `recursive` /
+`mandel` / `nqueens`
 - 関数 body が SD 化された (R18 fix)。 gref_cache + leaf-func alloca、
   `py_apply` inline で PLT hop 排除、 inline flonum で heap-box 消失。
-- mandel は float fast path がループ内で完全 SD 化されるので 2.6×。
+- `for x in PyRange(N)` のような Python iterator が **5.6× 速い**。
+  attr_get / attr_set 両方 inline cache + fast path から strlen+memcmp
+  除去 + `__next__` キャッシュ。
+- mandel は float fast path がループ内で完全 SD 化されるので 2.7×。
 
-**僅差で速い (1.07×)** — `string_bench`
+**僅差で速い (1.04×)** — `string_bench`
 - string slice は buffer 共有。 split/join 等の str op がほぼ memcpy。
 
 **僅差で負け** — `dict_bench`
