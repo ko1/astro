@@ -66,6 +66,18 @@ void  nuq_arena_reset(void);
 extern char *nuq_arena_cur;
 extern char *nuq_arena_end;
 
+/* Scratch allocator — for transient buffers (NODE_DEF snapshot
+ * VALUE[]s, reduce/foreach src_local etc.) that outlive their
+ * pinning but die at end of run.  Bump-pointer like the value arena
+ * but allocations are NOT moved by Cheney GC and the chunk(s) are
+ * not freed mid-run; everything wholesale-resets at run-end.
+ *
+ * Replaces a `(cnt <= 16) ? stack_buf : malloc(...)` pattern that
+ * leaked the heap branch since callers couldn't easily free it
+ * across the many early-return paths.  Now: heap branch goes through
+ * `nuq_scratch_alloc` and is reclaimed at `nuq_arena_reset`. */
+void *nuq_scratch_alloc(size_t sz);
+
 static inline void *
 nuq_arena_alloc(size_t sz)
 {

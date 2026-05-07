@@ -201,6 +201,83 @@ nuq_arena_alloc_slow(size_t sz)
     return p;
 }
 
+/* ---- scratch allocator for transient NODE_DEF snapshot buffers ----
+ *
+ * Same chunk reuse mechanics as the value arena (a free list), but
+ * the chunks are NOT visible to Cheney GC — addresses returned here
+ * are stable for the duration of a run.  Reset wholesale by
+ * `nuq_arena_reset`. */
+static struct nuq_chunk *scratch_first   = NULL;
+static struct nuq_chunk *scratch_current = NULL;
+static char             *scratch_cur     = NULL;
+static char             *scratch_end     = NULL;
+static struct nuq_chunk *scratch_spare   = NULL;
+#define NUQ_SCRATCH_CHUNK   (64u << 10)   /* 64 KB chunks */
+
+void *
+nuq_scratch_alloc(size_t sz)
+{
+    sz = (sz + 7) & ~(size_t)7;
+    if (LIKELY(scratch_cur + sz <= scratch_end)) {
+        char *p = scratch_cur;
+        scratch_cur += sz;
+        return p;
+    }
+    /* Big alloc: dedicated chunk. */
+    size_t need = sz > NUQ_SCRATCH_CHUNK ? sz : NUQ_SCRATCH_CHUNK;
+    /* Reuse from spare. */
+    struct nuq_chunk *c = NULL;
+    struct nuq_chunk **slot = &scratch_spare;
+    while (*slot) {
+        if ((*slot)->capa >= need) {
+            c = *slot;
+            *slot = c->next;
+            c->next = NULL;
+            break;
+        }
+        slot = &(*slot)->next;
+    }
+    if (!c) {
+        c = (struct nuq_chunk *)malloc(sizeof(struct nuq_chunk) + need);
+        if (!c) abort();
+        c->capa = need;
+        c->next = NULL;
+    }
+    if (scratch_current) scratch_current->next = c;
+    else                 scratch_first = c;
+    scratch_current = c;
+    scratch_cur = c->data + sz;
+    scratch_end = c->data + c->capa;
+    return c->data;
+}
+
+static void
+scratch_reset(void)
+{
+    if (scratch_first) {
+        struct nuq_chunk *tail = scratch_first;
+        while (tail->next) tail = tail->next;
+        tail->next = scratch_spare;
+        scratch_spare = scratch_first;
+    }
+    scratch_first = NULL;
+    scratch_current = NULL;
+    scratch_cur = NULL;
+    scratch_end = NULL;
+    /* Trim spare to bounded count, like the value arena. */
+    int kept = 0;
+    struct nuq_chunk *cur = scratch_spare;
+    while (cur && kept < NUQ_SPARE_KEEP) { cur = cur->next; kept++; }
+    while (cur) {
+        struct nuq_chunk *next = cur->next;
+        free(cur);
+        cur = next;
+    }
+    cur = scratch_spare;
+    for (int i = 0; cur && i < NUQ_SPARE_KEEP - 1; i++) cur = cur->next;
+    if (cur) cur->next = NULL;
+}
+
 void
 nuq_arena_reset(void)
 {
@@ -220,6 +297,7 @@ nuq_arena_reset(void)
     nuq_gc_roots_top = 0;
     nuq_gc_arrs_top = 0;
     nuq_gc_defer = 0;
+    scratch_reset();
 }
 
 /* ---- copying GC ---- */

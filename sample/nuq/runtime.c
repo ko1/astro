@@ -80,7 +80,16 @@ nuq_args_intern(struct Node **args, size_t cnt)
     return (uint32_t)args_tab_len++;
 }
 
-struct def_block { size_t cnt; struct nuq_def_entry *items; };
+struct def_block {
+    size_t cnt;
+    struct nuq_def_entry *items;
+    /* Cache of `nuq_func_def`s materialised by `nuq_defs_eval` —
+     * allocated lazily on first use, reused across runs (the def_entry
+     * fields are immutable, scope_top is the same for the same call
+     * site).  Without this we'd leak `cnt` fds per `nuq_run`. */
+    struct nuq_func_def **fds_cache;
+    size_t                fds_cache_scope_top;
+};
 static struct def_block *def_tab = NULL;
 static size_t def_tab_len = 0, def_tab_capa = 0;
 
@@ -94,6 +103,8 @@ nuq_def_block_intern(struct nuq_def_entry *items, size_t cnt)
         def_tab_capa = def_tab_capa ? def_tab_capa * 2 : 16;
         def_tab = (struct def_block *)GC_realloc(def_tab, def_tab_capa * sizeof(*def_tab));
     }
+    /* Zero-init this slot — realloc doesn't zero the extension. */
+    memset(&def_tab[def_tab_len], 0, sizeof(*def_tab));
     def_tab[def_tab_len].cnt = cnt;
     def_tab[def_tab_len].items = items;
     return (uint32_t)def_tab_len++;
@@ -269,7 +280,7 @@ nuq_as_alt_eval(CTX *c, struct Node *lhs, uint32_t alt_id, struct Node *body)
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     uint32_t lc = le.count;
     VALUE small[16];
-    VALUE *lhs_local = (lc <= 16) ? small : (VALUE *)GC_malloc(lc * sizeof(VALUE));
+    VALUE *lhs_local = (lc <= 16) ? small : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE));
     memcpy(lhs_local, le.items, lc * sizeof(VALUE));
     c->pool_top = outer_top;
 
@@ -900,15 +911,35 @@ nuq_defs_eval(CTX *c, uint32_t defs_id, struct Node *body)
 {
     struct def_block *db = &def_tab[defs_id];
     size_t saved = c->func_cnt;
+    /* Materialise / reuse the per-block fd cache.  Without the cache
+     * we'd allocate `db->cnt` fresh nuq_func_defs on every nuq_run,
+     * leaking them per input.  Cache key is the call-site
+     * `c->func_cnt` (sets `scope_top` for the lexical-resolution
+     * cutoff) — when the same defs_id is invoked from the same scope
+     * across runs, fds are reusable verbatim. */
+    if (db->fds_cache == NULL || db->fds_cache_scope_top != saved) {
+        if (db->fds_cache == NULL) {
+            db->fds_cache = (struct nuq_func_def **)
+                            calloc(db->cnt, sizeof(struct nuq_func_def *));
+        }
+        db->fds_cache_scope_top = saved;
+        for (size_t i = 0; i < db->cnt; i++) {
+            struct nuq_func_def *fd = db->fds_cache[i];
+            if (!fd) {
+                fd = (struct nuq_func_def *)calloc(1, sizeof(*fd));
+                db->fds_cache[i] = fd;
+            }
+            struct nuq_def_entry *de = &db->items[i];
+            fd->name_id = de->name_id;
+            fd->arity = de->arity;
+            fd->param_ids = de->param_ids;
+            fd->param_is_value = de->param_is_value;
+            fd->body = de->body;
+            fd->scope_top = 0;     /* nuq_func_define resets this */
+        }
+    }
     for (size_t i = 0; i < db->cnt; i++) {
-        struct nuq_def_entry *de = &db->items[i];
-        struct nuq_func_def *fd = (struct nuq_func_def *)GC_malloc(sizeof(*fd));
-        fd->name_id = de->name_id;
-        fd->arity = de->arity;
-        fd->param_ids = de->param_ids;
-        fd->param_is_value = de->param_is_value;
-        fd->body = de->body;
-        nuq_func_define(c, fd);
+        nuq_func_define(c, db->fds_cache[i]);
     }
     EMIT r = EVAL(c, body);
     c->func_cnt = saved;
@@ -928,7 +959,7 @@ nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, st
     uint32_t ic = init_e.count;
     if (ic == 0) { c->pool_top = t0; return EMIT_EMPTY; }
     VALUE inits_small[16];
-    VALUE *inits = (ic <= 16) ? inits_small : (VALUE *)GC_malloc(ic * sizeof(VALUE));
+    VALUE *inits = (ic <= 16) ? inits_small : (VALUE *)nuq_scratch_alloc(ic * sizeof(VALUE));
     memcpy(inits, init_e.items, ic * sizeof(VALUE));
     c->pool_top = t0;
 
@@ -936,7 +967,7 @@ nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, st
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     uint32_t sc = src_e.count;
     VALUE small[16];
-    VALUE *src_local = (sc <= 16) ? small : (VALUE *)GC_malloc(sc * sizeof(VALUE));
+    VALUE *src_local = (sc <= 16) ? small : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(src_local, src_e.items, sc * sizeof(VALUE));
     c->pool_top = outer_top;
 
@@ -978,7 +1009,7 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
     uint32_t ic = init_e.count;
     if (ic == 0) { c->pool_top = t0; return EMIT_EMPTY; }
     VALUE inits_small[16];
-    VALUE *inits = (ic <= 16) ? inits_small : (VALUE *)GC_malloc(ic * sizeof(VALUE));
+    VALUE *inits = (ic <= 16) ? inits_small : (VALUE *)nuq_scratch_alloc(ic * sizeof(VALUE));
     memcpy(inits, init_e.items, ic * sizeof(VALUE));
     c->pool_top = t0;
 
@@ -986,7 +1017,7 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     uint32_t sc = src_e.count;
     VALUE small[16];
-    VALUE *src_local = (sc <= 16) ? small : (VALUE *)GC_malloc(sc * sizeof(VALUE));
+    VALUE *src_local = (sc <= 16) ? small : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(src_local, src_e.items, sc * sizeof(VALUE));
     c->pool_top = outer_top;
 
@@ -1006,7 +1037,7 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
             }
             uint32_t uc = up.count;
             VALUE usmall[16];
-            VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)GC_malloc(uc * sizeof(VALUE));
+            VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)nuq_scratch_alloc(uc * sizeof(VALUE));
             memcpy(up_local, up.items, uc * sizeof(VALUE));
             c->pool_top = t1;
             for (uint32_t j = 0; j < uc; j++) {
@@ -1043,7 +1074,7 @@ nuq_reduce_pat_eval(CTX *c, struct Node *src, uint32_t pat_id,
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     uint32_t sc = src_e.count;
     VALUE small[16];
-    VALUE *src_local = (sc <= 16) ? small : (VALUE *)GC_malloc(sc * sizeof(VALUE));
+    VALUE *src_local = (sc <= 16) ? small : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(src_local, src_e.items, sc * sizeof(VALUE));
     c->pool_top = outer_top;
 
@@ -1078,7 +1109,7 @@ nuq_foreach_pat_eval(CTX *c, struct Node *src, uint32_t pat_id,
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     uint32_t sc = src_e.count;
     VALUE small[16];
-    VALUE *src_local = (sc <= 16) ? small : (VALUE *)GC_malloc(sc * sizeof(VALUE));
+    VALUE *src_local = (sc <= 16) ? small : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(src_local, src_e.items, sc * sizeof(VALUE));
     c->pool_top = outer_top;
 
@@ -1092,7 +1123,7 @@ nuq_foreach_pat_eval(CTX *c, struct Node *src, uint32_t pat_id,
         if (c->error != NUQ_NULL) { nuq_var_pop(c, v_top); c->input = saved_input; return EMIT_EMPTY; }
         uint32_t uc = up.count;
         VALUE usmall[16];
-        VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)GC_malloc(uc * sizeof(VALUE));
+        VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)nuq_scratch_alloc(uc * sizeof(VALUE));
         memcpy(up_local, up.items, uc * sizeof(VALUE));
         c->pool_top = t1;
         for (uint32_t j = 0; j < uc; j++) {
@@ -1442,7 +1473,7 @@ nuq_format_eval(CTX *c, uint32_t fmt_id, struct Node *body)
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     uint32_t cnt = bo.count;
     VALUE small[16];
-    VALUE *local = (cnt <= 16) ? small : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
+    VALUE *local = (cnt <= 16) ? small : (VALUE *)nuq_scratch_alloc(cnt * sizeof(VALUE));
     memcpy(local, bo.items, cnt * sizeof(VALUE));
     c->pool_top = top0;
     for (uint32_t i = 0; i < cnt; i++) nuq_pool_push(c, fmt_apply(fmt_id, local[i]));
@@ -1629,7 +1660,7 @@ nuq_recurse_dfs(CTX *c, struct Node *body, struct Node *cond, VALUE v)
     uint32_t cnt = bo.count;
     VALUE small[16];
     VALUE *local = (cnt <= 16) ? small
-                               : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
+                               : (VALUE *)nuq_scratch_alloc(cnt * sizeof(VALUE));
     memcpy(local, bo.items, cnt * sizeof(VALUE));
     c->pool_top = t0;
     for (uint32_t i = 0; i < cnt; i++) {
@@ -1796,7 +1827,7 @@ nuq_flatten1_eval(CTX *c, struct Node *depth_expr)
     uint32_t dc = bo.count;
     if (dc == 0) { c->pool_top = outer; return EMIT_EMPTY; }
     int64_t small[16];
-    int64_t *ds = (dc <= 16) ? small : (int64_t *)GC_malloc(dc * sizeof(int64_t));
+    int64_t *ds = (dc <= 16) ? small : (int64_t *)nuq_scratch_alloc(dc * sizeof(int64_t));
     for (uint32_t i = 0; i < dc; i++) {
         VALUE dv = bo.items[i];
         if (!NUQ_IS_FIX(dv)) { c->pool_top = outer; return err_emit(c, "flatten: depth not int"); }
@@ -2069,7 +2100,7 @@ nuq_join_eval(CTX *c, struct Node *sep)
     uint32_t sc = buf.count;
     if (sc == 0) { c->pool_top = outer; return EMIT_EMPTY; }
     VALUE seps[16];
-    VALUE *seps_ptr = (sc <= 16) ? seps : (VALUE *)GC_malloc(sc * sizeof(VALUE));
+    VALUE *seps_ptr = (sc <= 16) ? seps : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(seps_ptr, buf.items, sc * sizeof(VALUE));
     c->pool_top = outer;
     struct nuq_obj *ao = NUQ_PTR(c->input);
@@ -2543,7 +2574,7 @@ nuq_indices_eval(CTX *c, struct Node *pat)
     uint32_t pc = buf.count;
     if (pc == 0) { c->pool_top = outer; return EMIT_EMPTY; }
     VALUE psmall[16];
-    VALUE *ps = (pc <= 16) ? psmall : (VALUE *)GC_malloc(pc * sizeof(VALUE));
+    VALUE *ps = (pc <= 16) ? psmall : (VALUE *)nuq_scratch_alloc(pc * sizeof(VALUE));
     memcpy(ps, buf.items, pc * sizeof(VALUE));
     c->pool_top = outer;
     for (uint32_t k = 0; k < pc; k++) {
@@ -2622,7 +2653,7 @@ nuq_index1_eval(CTX *c, struct Node *pat)
     if (pc == 0) { c->pool_top = outer; return EMIT_EMPTY; }
     /* Snapshot pat values so we can re-evaluate per emit cleanly. */
     VALUE psmall[16];
-    VALUE *ps = (pc <= 16) ? psmall : (VALUE *)GC_malloc(pc * sizeof(VALUE));
+    VALUE *ps = (pc <= 16) ? psmall : (VALUE *)nuq_scratch_alloc(pc * sizeof(VALUE));
     memcpy(ps, buf.items, pc * sizeof(VALUE));
     c->pool_top = outer;
     for (uint32_t k = 0; k < pc; k++) {
@@ -2682,7 +2713,7 @@ nuq_rindex_eval(CTX *c, struct Node *pat)
     uint32_t pc = buf.count;
     if (pc == 0) { c->pool_top = outer; return EMIT_EMPTY; }
     VALUE psmall[16];
-    VALUE *ps = (pc <= 16) ? psmall : (VALUE *)GC_malloc(pc * sizeof(VALUE));
+    VALUE *ps = (pc <= 16) ? psmall : (VALUE *)nuq_scratch_alloc(pc * sizeof(VALUE));
     memcpy(ps, buf.items, pc * sizeof(VALUE));
     c->pool_top = outer;
     for (uint32_t k = 0; k < pc; k++) {
@@ -2810,7 +2841,7 @@ nuq_setpath_eval(CTX *c, struct Node *path, struct Node *value)
         return err_emit(c, "Path too deep");
     }
     VALUE small[16];
-    VALUE *keys = (kcnt <= 16) ? small : (VALUE *)GC_malloc(kcnt * sizeof(VALUE));
+    VALUE *keys = (kcnt <= 16) ? small : (VALUE *)nuq_scratch_alloc(kcnt * sizeof(VALUE));
     memcpy(keys, po->arr.items, kcnt * sizeof(VALUE));
     c->pool_top = t0;
     EMIT ve = EVAL(c, value);
@@ -2931,7 +2962,7 @@ nuq_delpaths_eval(CTX *c, struct Node *paths_expr)
     /* Snapshot since we'll re-use pool. */
     size_t cnt = po->arr.len;
     VALUE small[64];
-    VALUE *paths = (cnt <= 64) ? small : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
+    VALUE *paths = (cnt <= 64) ? small : (VALUE *)nuq_scratch_alloc(cnt * sizeof(VALUE));
     memcpy(paths, po->arr.items, cnt * sizeof(VALUE));
     c->pool_top = t0;
     /* Sort paths descending lex order so deeper / later paths are
@@ -3187,7 +3218,7 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         struct nuq_obj *po = NUQ_PTR(pv);
         size_t klen = po->arr.len;
         VALUE small[16];
-        VALUE *keys = (klen <= 16) ? small : (VALUE *)GC_malloc(klen * sizeof(VALUE));
+        VALUE *keys = (klen <= 16) ? small : (VALUE *)nuq_scratch_alloc(klen * sizeof(VALUE));
         memcpy(keys, po->arr.items, klen * sizeof(VALUE));
         c->pool_top = t0;
         /* Walk down recursively; at the leaf apply fn. */
@@ -3750,7 +3781,7 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
         if (c->error != NUQ_NULL) return;
         uint32_t kc = ie.count;
         VALUE small[16];
-        VALUE *kvs = (kc <= 16) ? small : (VALUE *)GC_malloc(kc * sizeof(VALUE));
+        VALUE *kvs = (kc <= 16) ? small : (VALUE *)nuq_scratch_alloc(kc * sizeof(VALUE));
         memcpy(kvs, ie.items, kc * sizeof(VALUE));
         c->pool_top = t0;
         for (uint32_t i = 0; i < kc; i++) {
@@ -3878,7 +3909,7 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
             struct Node *combined_small[64]; struct Node **combined;
             size_t combined_cnt = step_cnt + inner_cnt - 1;
             combined = (combined_cnt <= 64) ? combined_small
-                                            : (struct Node **)GC_malloc(combined_cnt * sizeof(struct Node *));
+                                            : (struct Node **)nuq_scratch_alloc(combined_cnt * sizeof(struct Node *));
             for (size_t i = 0; i < k; i++) combined[i] = steps[i];
             for (size_t i = 0; i < inner_cnt; i++) combined[k + i] = inner_steps[i];
             for (size_t i = k + 1; i < step_cnt; i++) combined[i + inner_cnt - 1] = steps[i];
@@ -3897,7 +3928,7 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
         struct Node *combined_small[64]; struct Node **combined;
         size_t combined_cnt = step_cnt + inner_cnt - 1;
         combined = (combined_cnt <= 64) ? combined_small
-                                        : (struct Node **)GC_malloc(combined_cnt * sizeof(struct Node *));
+                                        : (struct Node **)nuq_scratch_alloc(combined_cnt * sizeof(struct Node *));
         for (size_t i = 0; i < k; i++) combined[i] = steps[i];
         for (size_t i = 0; i < inner_cnt; i++) combined[k + i] = inner_steps[i];
         for (size_t i = k + 1; i < step_cnt; i++) combined[i + inner_cnt - 1] = steps[i];
@@ -3914,7 +3945,7 @@ path_dfs(CTX *c, struct Node **steps, size_t step_cnt, size_t k,
             /* Splice inner_steps in place of this step. */
             struct Node *combined_small[64]; struct Node **combined;
             size_t combined_cnt = step_cnt + inner_cnt - 1;
-            combined = (combined_cnt <= 64) ? combined_small : (struct Node **)GC_malloc(combined_cnt * sizeof(struct Node *));
+            combined = (combined_cnt <= 64) ? combined_small : (struct Node **)nuq_scratch_alloc(combined_cnt * sizeof(struct Node *));
             for (size_t i = 0; i < k; i++) combined[i] = steps[i];
             for (size_t i = 0; i < inner_cnt; i++) combined[k + i] = inner_steps[i];
             for (size_t i = k + 1; i < step_cnt; i++) combined[i + inner_cnt - 1] = steps[i];
@@ -4136,7 +4167,7 @@ nuq_del_eval(CTX *c, struct Node *path_expr)
         if (c->error != NUQ_NULL) return EMIT_EMPTY;
         uint32_t pcnt = pe.count;
         VALUE small[64];
-        VALUE *paths = (pcnt <= 64) ? small : (VALUE *)GC_malloc(pcnt * sizeof(VALUE));
+        VALUE *paths = (pcnt <= 64) ? small : (VALUE *)nuq_scratch_alloc(pcnt * sizeof(VALUE));
         memcpy(paths, pe.items, pcnt * sizeof(VALUE));
         c->pool_top = outer;
         for (uint32_t i = 1; i < pcnt; i++) {
@@ -4170,7 +4201,7 @@ nuq_del_eval(CTX *c, struct Node *path_expr)
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     uint32_t pcnt = pe.count;
     VALUE small[64];
-    VALUE *paths = (pcnt <= 64) ? small : (VALUE *)GC_malloc(pcnt * sizeof(VALUE));
+    VALUE *paths = (pcnt <= 64) ? small : (VALUE *)nuq_scratch_alloc(pcnt * sizeof(VALUE));
     memcpy(paths, pe.items, pcnt * sizeof(VALUE));
     c->pool_top = outer;
     for (uint32_t i = 1; i < pcnt; i++) {
@@ -4226,7 +4257,7 @@ nuq_assign_eval(CTX *c, struct Node *lhs, struct Node *rhs, uint32_t op_kind)
         uint32_t rc = re.count;
         if (rc == 0) { c->pool_top = outer; return EMIT_EMPTY; }
         VALUE rsmall[16];
-        VALUE *rs = (rc <= 16) ? rsmall : (VALUE *)GC_malloc(rc * sizeof(VALUE));
+        VALUE *rs = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE));
         memcpy(rs, re.items, rc * sizeof(VALUE));
         c->pool_top = outer;
         ud.precomputed_set = true;
@@ -4243,7 +4274,7 @@ nuq_assign_eval(CTX *c, struct Node *lhs, struct Node *rhs, uint32_t op_kind)
                 if (c->error != NUQ_NULL) return EMIT_EMPTY;
                 uint32_t pcnt = pe.count;
                 VALUE psmall[64];
-                VALUE *paths = (pcnt <= 64) ? psmall : (VALUE *)GC_malloc(pcnt * sizeof(VALUE));
+                VALUE *paths = (pcnt <= 64) ? psmall : (VALUE *)nuq_scratch_alloc(pcnt * sizeof(VALUE));
                 memcpy(paths, pe.items, pcnt * sizeof(VALUE));
                 c->pool_top = inner_outer;
                 for (uint32_t a = 1; a < pcnt; a++) {
@@ -4281,7 +4312,7 @@ nuq_assign_eval(CTX *c, struct Node *lhs, struct Node *rhs, uint32_t op_kind)
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
     uint32_t pcnt = pe.count;
     VALUE small[64];
-    VALUE *paths = (pcnt <= 64) ? small : (VALUE *)GC_malloc(pcnt * sizeof(VALUE));
+    VALUE *paths = (pcnt <= 64) ? small : (VALUE *)nuq_scratch_alloc(pcnt * sizeof(VALUE));
     memcpy(paths, pe.items, pcnt * sizeof(VALUE));
     c->pool_top = outer;
     /* Sort descending to keep array indices stable while we update. */
@@ -4396,7 +4427,7 @@ nuq_stream_eval(CTX *c, struct Node *body, nuq_stream_cb cb, void *ud)
     if (c->error != NUQ_NULL) { c->pool_top = t0; return false; }
     uint32_t cnt = e.count;
     VALUE small[16];
-    VALUE *vs = (cnt <= 16) ? small : (VALUE *)GC_malloc(cnt * sizeof(VALUE));
+    VALUE *vs = (cnt <= 16) ? small : (VALUE *)nuq_scratch_alloc(cnt * sizeof(VALUE));
     memcpy(vs, e.items, cnt * sizeof(VALUE));
     c->pool_top = t0;
     for (uint32_t i = 0; i < cnt; i++) {
@@ -4432,7 +4463,7 @@ nuq_limit_eval(CTX *c, struct Node *cnt, struct Node *body)
     uint32_t ccnt = nb.count;
     int64_t small_ns[16];
     int64_t *ns = (ccnt <= 16) ? small_ns
-                               : (int64_t *)GC_malloc(ccnt * sizeof(int64_t));
+                               : (int64_t *)nuq_scratch_alloc(ccnt * sizeof(int64_t));
     for (uint32_t i = 0; i < ccnt; i++) ns[i] = to_int64(nb.items[i]);
     c->pool_top = outer;
 
@@ -4461,7 +4492,7 @@ nuq_skip_eval(CTX *c, struct Node *cnt_n, struct Node *body)
     uint32_t cnt = nb.count;
     int64_t small_ns[16];
     int64_t *ns = (cnt <= 16) ? small_ns
-                              : (int64_t *)GC_malloc(cnt * sizeof(int64_t));
+                              : (int64_t *)nuq_scratch_alloc(cnt * sizeof(int64_t));
     for (uint32_t i = 0; i < cnt; i++) ns[i] = to_int64(nb.items[i]);
     c->pool_top = outer;
 
@@ -4513,7 +4544,7 @@ nuq_nth_eval(CTX *c, struct Node *idx, struct Node *body)
     uint32_t cnt = nb.count;
     int64_t small_ns[16];
     int64_t *ns = (cnt <= 16) ? small_ns
-                              : (int64_t *)GC_malloc(cnt * sizeof(int64_t));
+                              : (int64_t *)nuq_scratch_alloc(cnt * sizeof(int64_t));
     for (uint32_t i = 0; i < cnt; i++) ns[i] = to_int64(nb.items[i]);
     c->pool_top = outer;
 
