@@ -211,6 +211,14 @@ void korb_init_builtins(void) {
 
     /* String */
     struct korb_class *cStr = korb_vm->string_class;
+    /* String#encoding stub — return Encoding::UTF_8.  */
+    {
+        VALUE _str_encoding(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE _str_force_encoding(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cStr, "encoding",       _str_encoding, 0);
+        DEF(cStr, "force_encoding", _str_force_encoding, -1);
+        DEF(cStr, "encode",         _str_force_encoding, -1);
+    }
     DEF(cStr, "+", str_plus, 1);
     DEF(cStr, "<<", str_concat, 1);
     DEF(cStr, "concat", str_concat, 1);

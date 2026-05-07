@@ -1431,3 +1431,30 @@ static VALUE str_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     return has_block ? self : collected;
 }
+
+/* Encoding stubs (we don't track per-string encoding). */
+VALUE _str_encoding(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_class *cEnc = (struct korb_class *)korb_const_get(korb_vm->object_class, korb_intern("Encoding"));
+    if (!cEnc) return Qnil;
+    return korb_const_get(cEnc, korb_intern("UTF_8"));
+}
+VALUE _str_force_encoding(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return self;
+}
+VALUE _enc_name(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE name = korb_ivar_get(self, korb_intern("@name"));
+    if (UNDEF_P(name) || NIL_P(name)) return korb_str_new_cstr("UTF-8");
+    return name;
+}
+VALUE _enc_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return _enc_name(c, self, argc, argv);
+}
+VALUE _enc_default_external(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_const_get((struct korb_class *)self, korb_intern("UTF_8"));
+}
+VALUE _enc_default_internal(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return Qnil;
+}
+VALUE _enc_find(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_const_get((struct korb_class *)self, korb_intern("UTF_8"));
+}
