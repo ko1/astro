@@ -244,14 +244,30 @@ static NODE *alloc_binop(struct transduce_context *tc, pm_constant_id_t name, NO
  * pm_statements_node has 'body' = pm_node_list_t. */
 static NODE *transduce_statements(struct transduce_context *tc, pm_statements_node_t *sn) {
     if (!sn || sn->body.size == 0) return ALLOC_node_nil();
+    /* Hoist BEGIN { ... } blocks to the top: CRuby runs them before any
+     * other top-level code regardless of source order. */
+    NODE *pre = NULL;
     NODE *result = NULL;
     for (size_t i = 0; i < sn->body.size; i++) {
-        NODE *cur = T(tc, sn->body.nodes[i]);
+        pm_node_t *raw = sn->body.nodes[i];
+        if (PM_NODE_TYPE_P(raw, PM_PRE_EXECUTION_NODE)) {
+            pm_pre_execution_node_t *pn = (pm_pre_execution_node_t *)raw;
+            if (pn->statements) {
+                NODE *cur = transduce_statements(tc, pn->statements);
+                if (!cur) cur = ALLOC_node_nil();
+                pre = pre ? ALLOC_node_seq(pre, cur) : cur;
+            }
+            continue;
+        }
+        NODE *cur = T(tc, raw);
         if (!cur) cur = ALLOC_node_nil();
         if (!result) result = cur;
         else result = ALLOC_node_seq(result, cur);
     }
-    return result;
+    if (pre && result) return ALLOC_node_seq(pre, result);
+    if (pre) return pre;
+    if (result) return result;
+    return ALLOC_node_nil();
 }
 
 static NODE *
