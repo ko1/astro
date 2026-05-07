@@ -656,6 +656,7 @@ void korb_init_builtins(void) {
     DEF(cHsh, "delete",     hash_delete,    -1);
     DEF(cHsh, "fetch",      hash_fetch,     -1);
     DEF(cHsh, "__korb_required_kwarg__", hash_required_kwarg, 1);
+    DEF(cHsh, "__korb_kwargs_validate__", hash_kwargs_validate, 1);
     DEF(cHsh, "compare_by_identity",  hash_compare_by_identity, 0);
     DEF(cHsh, "compare_by_identity?", hash_compare_by_identity_p, 0);
     DEF(cHsh, "clear",       hash_clear,        0);

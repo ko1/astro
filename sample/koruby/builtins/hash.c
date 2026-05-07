@@ -186,6 +186,46 @@ static VALUE hash_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+/* Hash#__korb_kwargs_validate__(declared_keys) — internal: raise
+ * ArgumentError("unknown keyword(s): :foo, :bar") if any key in the
+ * receiver isn't in `declared_keys` (an Array of Symbols).  Used by
+ * the def prologue when no **kwrest is declared. */
+static VALUE hash_kwargs_validate(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_ARRAY) return Qnil;
+    const struct korb_hash *h = (const struct korb_hash *)self;
+    const struct korb_array *decl = (const struct korb_array *)argv[0];
+    /* Collect unknowns. */
+    uint32_t cap = 16;
+    uint32_t cnt = 0;
+    VALUE *unknown = korb_xmalloc(cap * sizeof(VALUE));
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        bool found = false;
+        for (size_t j = 0; j < decl->len; j++) {
+            if (korb_eql(e->key, decl->ptr[j])) { found = true; break; }
+        }
+        if (!found) {
+            if (cnt >= cap) {
+                cap *= 2;
+                unknown = korb_xrealloc(unknown, cap * sizeof(VALUE));
+            }
+            unknown[cnt++] = e->key;
+        }
+    }
+    if (cnt == 0) return Qnil;
+    /* Build "unknown keyword: :foo" / "unknown keywords: :foo, :bar" */
+    char buf[1024];
+    int off = snprintf(buf, sizeof(buf), "unknown keyword%s:", cnt == 1 ? "" : "s");
+    for (uint32_t i = 0; i < cnt && off < (int)sizeof(buf) - 4; i++) {
+        VALUE v = korb_inspect(unknown[i]);
+        const char *vs = (BUILTIN_TYPE(v) == T_STRING)
+                           ? ((struct korb_string *)v)->ptr : "?";
+        off += snprintf(buf + off, sizeof(buf) - off, "%s %s", i == 0 ? "" : ",", vs);
+    }
+    VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    korb_raise(c, (struct korb_class *)eArg, "%s", buf);
+    return Qnil;
+}
+
 /* Hash#__korb_required_kwarg__(name) — internal: fetch the key or raise
  * ArgumentError "missing keyword: name".  Used by parse.c when emitting
  * the prologue for `def f(name:)` so the missing-key path produces the

@@ -2762,6 +2762,52 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                           prologue = prologue ? ALLOC_node_seq(prologue, set_lv) : set_lv;
                       }
                   }
+                  /* No **kwrest declared: validate that all keys in
+                   * kwh are accounted for by the declared keywords.
+                   * `__korb_kwargs_validate__(kwh, declared_keys_array)`
+                   * raises ArgumentError("unknown keyword(s)") on miss.
+                   * Skip when kwrest is present (kwrest absorbs anything). */
+                  if (!has_kwrest && pn->keywords.size > 0) {
+                      uint32_t arr_ai = inc_arg_index(tc);
+                      uint32_t call_ai = inc_arg_index(tc);
+                      inc_arg_index(tc);
+                      rewind_arg_index(tc, arr_ai);
+                      uint32_t arr_slot = inc_arg_index(tc);
+                      rewind_arg_index(tc, call_ai);
+                      /* Build [:kw1, :kw2, ...] */
+                      NODE *arr_init = ALLOC_node_lvar_set(arr_slot,
+                                              ALLOC_node_ary_new(0, arr_slot + 1));
+                      prologue = prologue ? ALLOC_node_seq(prologue, arr_init) : arr_init;
+                      for (size_t i = 0; i < pn->keywords.size; i++) {
+                          pm_node_t *kp = pn->keywords.nodes[i];
+                          ID kid = 0;
+                          if (PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) {
+                              kid = intern_constant(tc->parser,
+                                  ((pm_required_keyword_parameter_node_t *)kp)->name);
+                          } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
+                              kid = intern_constant(tc->parser,
+                                  ((pm_optional_keyword_parameter_node_t *)kp)->name);
+                          } else continue;
+                          uint32_t pai = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, pai);
+                          struct method_cache *mc_p = alloc_method_cache();
+                          NODE *karg = ALLOC_node_lvar_set(pai, ALLOC_node_sym_lit(kid));
+                          NODE *push = ALLOC_node_seq(karg,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get(arr_slot),
+                                                     korb_intern("push"), 1, pai, mc_p));
+                          prologue = ALLOC_node_seq(prologue, push);
+                      }
+                      /* Call kwh.__korb_kwargs_validate__(declared) */
+                      uint32_t v_ai = inc_arg_index(tc);
+                      inc_arg_index(tc); rewind_arg_index(tc, v_ai);
+                      struct method_cache *mc_v = alloc_method_cache();
+                      NODE *vset = ALLOC_node_lvar_set(v_ai, ALLOC_node_lvar_get(arr_slot));
+                      NODE *check = ALLOC_node_seq(vset,
+                          ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
+                                                 korb_intern("__korb_kwargs_validate__"),
+                                                 1, v_ai, mc_v));
+                      prologue = ALLOC_node_seq(prologue, check);
+                  }
                   /* **kwrest: copy kwh and delete the named keys.  If no
                    * name was given (anonymous **), skip — nothing to bind. */
                   if (kwrest_target_slot >= 0) {

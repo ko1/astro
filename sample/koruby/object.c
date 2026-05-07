@@ -1011,6 +1011,17 @@ VALUE korb_const_lookup(CTX *c, ID name) {
     /* Object as global namespace (Object's includes too). */
     VALUE v = korb_const_get_inherited(korb_vm->object_class, name);
     if (!UNDEF_P(v)) return v;
+    /* const_missing — dispatch to the lexically innermost real class.
+     * CRuby calls #const_missing on the original class/module scope so
+     * code like `ClassA.constx → CS_CONSTX` can intercept the miss
+     * even when the lookup walks past ClassA. */
+    if (k) {
+        struct korb_class *meta = korb_singleton_class_of(k);
+        if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
+            VALUE sym = korb_id2sym(name);
+            return korb_funcall(c, (VALUE)k, korb_intern("const_missing"), 1, &sym);
+        }
+    }
     {
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
         korb_raise(c, (struct korb_class *)eName,
