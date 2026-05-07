@@ -25,15 +25,15 @@ def describe(name, *opts, &blk)
   # the floor (it_behaves_like is a no-op anyway).
   shared = opts.any? { |o| o.is_a?(Hash) && o[:shared] }
   return if shared
-  prev_describe = $ms_describe
-  prev_be = $ms_before_each
-  prev_ae = $ms_after_each
+  # Push prev state onto a stack instead of using begin/ensure locals:
+  # the latter triggers a koruby bug where `name` / locals become nil
+  # at ensure time when an inner `it`'s rescue body contains a block
+  # literal.  Stack-based save/restore sidesteps the buggy local-slot
+  # path entirely.
+  ($ms_describe_stack ||= []) << [$ms_describe, $ms_before_each, $ms_after_each]
   $ms_describe = name
-  # Each describe gets fresh hook arrays so nested describes don't
-  # share with siblings.  Hooks from the outer scope are still
-  # captured via `prev_be`/`prev_ae` and re-run via the closure below.
-  outer_be = prev_be ? prev_be.dup : []
-  outer_ae = prev_ae ? prev_ae.dup : []
+  outer_be = ($ms_before_each ? $ms_before_each.dup : [])
+  outer_ae = ($ms_after_each ? $ms_after_each.dup : [])
   $ms_before_each = outer_be.dup
   $ms_after_each = outer_ae.dup
   begin
@@ -41,11 +41,11 @@ def describe(name, *opts, &blk)
   rescue => e
     $ms_error += 1
     puts "  ERR #{$ms_describe} (block-level): #{e.class}: #{e.message}"
-  ensure
-    $ms_describe = prev_describe
-    $ms_before_each = prev_be
-    $ms_after_each = prev_ae
   end
+  pd, pbe, pae = $ms_describe_stack.pop
+  $ms_describe = pd
+  $ms_before_each = pbe
+  $ms_after_each = pae
 end
 
 # context is an alias for describe in mspec.  Top-level alias_method
