@@ -1688,6 +1688,30 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uin
     return korb_id2sym(name);
 }
 
+/* `def self.foo(a, *r, b, c)` — like node_singleton_def but additionally
+ * records post_params_cnt so the prologue routes args correctly. */
+NODE_DEF @noinline
+node_singleton_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+{
+    struct korb_class *target;
+    if (BUILTIN_TYPE(c->self) == T_CLASS || BUILTIN_TYPE(c->self) == T_MODULE) {
+        target = korb_singleton_class_of((struct korb_class *)c->self);
+    } else if (!SPECIAL_CONST_P(c->self) && BUILTIN_TYPE(c->self) == T_OBJECT) {
+        extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+        struct korb_class *meta = korb_singleton_class_of_value(c->self);
+        target = meta ? meta : korb_class_of_class(c->self);
+    } else {
+        korb_raise(c, NULL, "def self.* outside of class/module");
+        return Qnil;
+    }
+    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
+    if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
+    ID *names = korb_body_local_names(body);
+    if (names) korb_class_set_method_local_names(target, name, names);
+    return korb_id2sym(name);
+}
+
 NODE_DEF @noinline
 node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
 {
@@ -1703,6 +1727,25 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID 
     }
     korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
+    ID *names = korb_body_local_names(body);
+    if (names) korb_class_set_method_local_names(meta, name, names);
+    return korb_id2sym(name);
+}
+
+/* `def obj.foo(a, *r, b, c)` — variant with post_params_cnt. */
+NODE_DEF @noinline
+node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+{
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    VALUE recv = EA(c, recv_expr);
+    struct korb_class *meta = korb_singleton_class_of_value(recv);
+    if (!meta) {
+        korb_raise(c, NULL, "cannot define singleton method on this value");
+        return Qnil;
+    }
+    korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
+    if (post_cnt > 0)    korb_class_set_method_post_params_cnt(meta, name, post_cnt);
     ID *names = korb_body_local_names(body);
     if (names) korb_class_set_method_local_names(meta, name, names);
     return korb_id2sym(name);

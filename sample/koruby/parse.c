@@ -2524,21 +2524,29 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           pop_frame(tc);
           if (local_names_arr) korb_register_body_local_names(body, local_names_arr);
           code_repo_add(korb_id_name(name), body, false);
-          if (n->receiver) {
-              if (PM_NODE_TYPE_P(n->receiver, PM_SELF_NODE)) {
-                  return ALLOC_node_singleton_def(name, body, required_cnt, total_cnt,
-                                                   (int32_t)rest_slot, (int32_t)block_slot, locals);
-              }
-              /* def obj.foo — install on obj's singleton class. */
-              NODE *recv = T(tc, n->receiver);
-              return ALLOC_node_obj_singleton_def(recv, name, body, required_cnt,
-                                                   total_cnt, (int32_t)rest_slot, (int32_t)block_slot, locals);
-          }
           /* posts size — params after *rest, e.g. `def f(a, *r, b, c)`. */
           uint32_t post_cnt = 0;
           if (n->parameters) {
               pm_parameters_node_t *pn = (pm_parameters_node_t *)n->parameters;
               post_cnt = (uint32_t)pn->posts.size;
+          }
+          if (n->receiver) {
+              if (PM_NODE_TYPE_P(n->receiver, PM_SELF_NODE)) {
+                  if (post_cnt > 0) {
+                      return ALLOC_node_singleton_def_post(name, body, required_cnt, total_cnt,
+                                                           (int32_t)rest_slot, (int32_t)block_slot, locals, post_cnt);
+                  }
+                  return ALLOC_node_singleton_def(name, body, required_cnt, total_cnt,
+                                                   (int32_t)rest_slot, (int32_t)block_slot, locals);
+              }
+              /* def obj.foo — install on obj's singleton class. */
+              NODE *recv = T(tc, n->receiver);
+              if (post_cnt > 0) {
+                  return ALLOC_node_obj_singleton_def_post(recv, name, body, required_cnt,
+                                                           total_cnt, (int32_t)rest_slot, (int32_t)block_slot, locals, post_cnt);
+              }
+              return ALLOC_node_obj_singleton_def(recv, name, body, required_cnt,
+                                                   total_cnt, (int32_t)rest_slot, (int32_t)block_slot, locals);
           }
           NODE *def_node;
           if (post_cnt > 0) {
