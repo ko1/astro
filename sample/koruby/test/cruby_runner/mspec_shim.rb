@@ -357,8 +357,23 @@ class MSpecExpectation
          when :have_protected_instance_method then @actual.protected_method_defined?(m.arg) rescue false
          when :be_ancestor_of then @actual.ancestors.include?(m.arg)
          when :be_computed_by
-           name, args = m.arg
-           @actual.send(name, *args) rescue false
+           # @actual is an Array of [input, *args, expected] tuples.
+           # Each input.send(name, *args) must == expected.
+           name, extra_args = m.arg
+           ok = true
+           @actual.each do |pair|
+             input = pair[0]
+             expected = pair[-1]
+             call_args = extra_args + pair[1...-1]
+             begin
+               actual_val = input.send(name, *call_args)
+             rescue
+               ok = false; break
+             end
+             ok = false unless actual_val == expected
+             break unless ok
+           end
+           ok
          when :have_constant then @actual.const_defined?(m.arg)
          when :have_class_variable then @actual.class_variable_defined?(m.arg) rescue false
          when :have_instance_variable then @actual.instance_variable_defined?(m.arg) rescue false

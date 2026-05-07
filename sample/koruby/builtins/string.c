@@ -1170,7 +1170,27 @@ static VALUE str_ord(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_raise(c, NULL, "empty string");
         return Qnil;
     }
-    return INT2FIX((unsigned char)s->ptr[0]);
+    /* Decode the leading UTF-8 codepoint.  ASCII (0xxxxxxx) returns
+     * the byte directly; multi-byte sequences combine continuation
+     * bytes into the full code-point integer.  Match CRuby's #ord
+     * (which returns the codepoint, not the raw byte). */
+    const unsigned char *p = (const unsigned char *)s->ptr;
+    long len = s->len;
+    unsigned char b0 = p[0];
+    if (b0 < 0x80) return INT2FIX(b0);
+    int seq_len;
+    long cp;
+    if ((b0 & 0xe0) == 0xc0) { seq_len = 2; cp = b0 & 0x1f; }
+    else if ((b0 & 0xf0) == 0xe0) { seq_len = 3; cp = b0 & 0x0f; }
+    else if ((b0 & 0xf8) == 0xf0) { seq_len = 4; cp = b0 & 0x07; }
+    else return INT2FIX(b0);  /* invalid leading byte: fall back */
+    if (len < seq_len) return INT2FIX(b0);
+    for (int i = 1; i < seq_len; i++) {
+        unsigned char bi = p[i];
+        if ((bi & 0xc0) != 0x80) return INT2FIX(b0);
+        cp = (cp << 6) | (bi & 0x3f);
+    }
+    return INT2FIX(cp);
 }
 
 /* String#eql? — content equality; rejects non-strings. */

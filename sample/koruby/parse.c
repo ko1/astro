@@ -4001,6 +4001,19 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           pm_defined_node_t *n = (pm_defined_node_t *)node;
           pm_node_t *expr = n->value;
           if (!expr) return ALLOC_node_nil();
+          /* Unwrap a single Parentheses wrapping a single statement
+           * (`defined?((stmt))`) so the inner kind is what we classify. */
+          while (expr && PM_NODE_TYPE_P(expr, PM_PARENTHESES_NODE)) {
+              pm_parentheses_node_t *pn = (pm_parentheses_node_t *)expr;
+              if (!pn->body) break;
+              if (PM_NODE_TYPE_P(pn->body, PM_STATEMENTS_NODE)) {
+                  pm_statements_node_t *sn = (pm_statements_node_t *)pn->body;
+                  if (sn->body.size != 1) break;
+                  expr = sn->body.nodes[0];
+              } else {
+                  expr = pn->body;
+              }
+          }
           /* Compile-time string for syntactically obvious cases. */
           switch (PM_NODE_TYPE(expr)) {
             case PM_SELF_NODE:
