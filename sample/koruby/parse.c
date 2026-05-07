@@ -2635,8 +2635,19 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       }
       case PM_POST_EXECUTION_NODE: {
           /* `END { stmts }` — register the body to run at process exit
-           * (LIFO).  Lower to `Kernel#at_exit { ... }`. */
+           * (LIFO).  Lower to `Kernel#at_exit { ... }`.
+           *
+           * CRuby semantics: END registers ONCE per syntactic location,
+           * not once per execution.  So `10.times { END { puts :x } }`
+           * only registers a single handler.  We emit a guard global
+           * (`__korb_end_registered_<id>`) and skip registration on
+           * subsequent visits. */
           pm_post_execution_node_t *pe = (pm_post_execution_node_t *)node;
+          static uint32_t end_seq = 0;
+          end_seq++;
+          char gname_buf[64];
+          snprintf(gname_buf, sizeof gname_buf, "$__korb_end_reg_%u", end_seq);
+          ID gid = korb_intern(gname_buf);
           uint32_t saved_ai = inc_arg_index(tc);
           rewind_arg_index(tc, saved_ai);
           push_frame(tc, &(pm_constant_id_list_t){0}, true);
@@ -2647,8 +2658,13 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *blk = ALLOC_node_block_literal(body, /*params_cnt*/0, param_base,
                                                env_size, /*creates_proc*/0);
           struct method_cache *mc = alloc_method_cache();
-          return ALLOC_node_func_call_block(korb_intern("at_exit"), 0,
-                                            arg_index(tc), blk, mc);
+          NODE *register_call = ALLOC_node_func_call_block(korb_intern("at_exit"), 0,
+                                                            arg_index(tc), blk, mc);
+          /* `unless $g; $g = true; at_exit { ... }; end` */
+          NODE *check = ALLOC_node_gvar_get(gid);
+          NODE *set_true = ALLOC_node_gvar_set(gid, ALLOC_node_true());
+          NODE *guarded = ALLOC_node_seq(set_true, register_call);
+          return ALLOC_node_if(check, ALLOC_node_nil(), guarded);
       }
       case PM_RETURN_NODE: {
           pm_return_node_t *n = (pm_return_node_t *)node;
