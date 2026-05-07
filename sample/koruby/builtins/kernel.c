@@ -464,6 +464,8 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* main object: CRuby's main_object inspects/to_s as "main". */
+    if (self == korb_vm->main_obj) return korb_str_new_cstr("main");
     /* Default Kernel#inspect for objects that don't override it.
      * Avoid calling korb_inspect_dispatch here — that would loop
      * straight back to this cfunc.  korb_inspect skips user dispatch. */
@@ -471,6 +473,7 @@ static VALUE kernel_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (self == korb_vm->main_obj) return korb_str_new_cstr("main");
     return korb_to_s(self);
 }
 
