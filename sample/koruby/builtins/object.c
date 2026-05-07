@@ -683,7 +683,25 @@ static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
 }
 static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE arr = korb_ary_new();
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_OBJECT) return arr;
+    if (SPECIAL_CONST_P(self)) return arr;
+    /* Class / Module: their own ivars (e.g. `class C; @x = 1; end` →
+     * C.instance_variables == [:@x]).  Stored on the class itself in
+     * class_ivars[]. */
+    if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
+        struct korb_class *k = (struct korb_class *)self;
+        for (uint32_t i = 0; i < k->class_ivar_cnt; i++) {
+            const char *base = korb_id_name(k->class_ivars[i].name);
+            if (base && base[0] == '@') {
+                korb_ary_push(arr, korb_id2sym(k->class_ivars[i].name));
+            } else {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "@%s", base ? base : "");
+                korb_ary_push(arr, korb_id2sym(korb_intern(buf)));
+            }
+        }
+        return arr;
+    }
+    if (BUILTIN_TYPE(self) != T_OBJECT) return arr;
     struct korb_object *o = (struct korb_object *)self;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     /* Only report ivars that have been set (i.e. slot has a non-Qundef
