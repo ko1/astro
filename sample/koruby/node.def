@@ -990,6 +990,20 @@ node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, NODE *blk_node, uint
     return p;
 }
 
+/* Flip a freshly-created Proc into a lambda.  Used by `-> { ... }` so
+ * the literal becomes a lambda without dispatching Kernel#lambda
+ * (which a class inheriting from BasicObject can't reach). */
+NODE_DEF @noinline
+node_proc_make_lambda(CTX * restrict c, NODE * restrict n, NODE *blk_node)
+{
+    VALUE p = EVAL_ARG(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
+        ((struct korb_proc *)p)->is_lambda = true;
+    }
+    return p;
+}
+
 /* Mark a Hash with FL_KWARGS so dispatch peels it as kwargs at the
  * call site.  Used by `m(k: v)` / `m(**h)` lowering. */
 NODE_DEF

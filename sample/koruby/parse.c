@@ -3788,11 +3788,11 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           if (pn_l && pn_l->posts.size > 0) {
               blk = ALLOC_node_proc_set_post_cnt(blk, (uint32_t)pn_l->posts.size);
           }
-          /* `-> { ... }` and `lambda { ... }` produce a *lambda* — same as
-           * a block literal except is_lambda=true.  Emit a call to the
-           * Kernel#lambda cfunc which flips the flag on the passed block. */
-          struct method_cache *mc = alloc_method_cache();
-          return ALLOC_node_func_call_block(korb_intern("lambda"), 0, arg_index(tc), blk, mc);
+          /* `-> { ... }` produces a *lambda* — same as a block literal
+           * except is_lambda=true.  Flip the flag directly so the literal
+           * works inside classes that inherit from BasicObject (where
+           * Kernel#lambda isn't reachable). */
+          return ALLOC_node_proc_make_lambda(blk);
       }
 
       case PM_CASE_NODE: {
