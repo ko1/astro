@@ -356,6 +356,16 @@ struct gref_cache {
 // each `d.recalculate()` call site.  Monomorphic IC (1 slot) thrashes
 // 100% on richards (measured 4.93M/4.93M).  A 4-way scheme captures
 // virtually all call patterns we observe.
+// Inline cache for binary operators (`a + b`, `a - b`, ...) when LHS
+// is a user-class instance.  Stamped at each node_add / node_sub / etc.
+// site.  Hot path: same class as last time → call the cached `__op__`
+// directly, no MRO walk + strcmp.  raytrace's `Vector + Vector` was
+// the motivating case (strcmp 22% of total runtime → IC reduces).
+struct binop_cache {
+    void *cls_ptr;          // PY_PTR(a->inst.cls), or NULL if uninitialised
+    void *fn;               // resolved __op__ method (PY_T_FUNC VALUE cast)
+};
+
 #define PYSTRO_METHOD_PIC_WAYS 4
 struct method_cache {
     int   type_tag;        // PY_T_xxx; -1 ⇒ uninitialised; PY_T_INSTANCE ⇒ user-class PIC

@@ -287,8 +287,36 @@ node_bit_inv(CTX * restrict c, NODE * restrict n, NODE *a)
 // operands route through the helpers in main.c.
 // ---------------------------------------------------------------------------
 
+// Helper: hot-path IC for instance binops.  When LHS is a user-class
+// instance and the cache is hot for that class, calls the cached
+// __op__ directly — no MRO walk, no strcmp.  Returns 0 on miss /
+// NotImplemented (caller falls through to py_add slow path).
+static inline VALUE
+py_node_binop_ic(CTX *c, struct binop_cache *cache, VALUE av, VALUE bv, const char *name)
+{
+    if (UNLIKELY(!(PY_IS_PTR(av) && PY_PTR(av)->type == PY_T_INSTANCE)))
+        return (VALUE)0;
+    void *cls = (void *)PY_PTR(av)->inst.cls;
+    VALUE m;
+    if (LIKELY(cache->cls_ptr == cls && cache->fn)) {
+        m = (VALUE)(intptr_t)cache->fn;
+    } else {
+        extern VALUE py_class_lookup_method_pub(VALUE cls_v, const char *name);
+        m = py_class_lookup_method_pub(PY_OBJ_VAL(PY_PTR(av)->inst.cls), name);
+        if (m == PY_NONE) return (VALUE)0;
+        if (PY_IS_PTR(m) && PY_PTR(m)->type == PY_T_FUNC) {
+            cache->cls_ptr = cls;
+            cache->fn = (void *)(intptr_t)m;
+        }
+    }
+    VALUE av2[2] = { av, bv };
+    VALUE r = py_apply(c, m, 2, av2);
+    if (PY_IS_PTR(r) && PY_PTR(r)->type == PY_T_NOTIMPL) return (VALUE)0;
+    return r;
+}
+
 NODE_DEF
-node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cache *cache@ref)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
@@ -302,11 +330,12 @@ node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     }
     if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
         return py_make_float(py_flonum_to_double(av) + py_flonum_to_double(bv));
+    { VALUE r = py_node_binop_ic(c, cache, av, bv, "__add__"); if (r) return r; }
     return py_add(c, av, bv);
 }
 
 NODE_DEF
-node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cache *cache@ref)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
@@ -320,11 +349,12 @@ node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     }
     if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
         return py_make_float(py_flonum_to_double(av) - py_flonum_to_double(bv));
+    { VALUE r = py_node_binop_ic(c, cache, av, bv, "__sub__"); if (r) return r; }
     return py_sub(c, av, bv);
 }
 
 NODE_DEF
-node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cache *cache@ref)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
@@ -338,6 +368,7 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     }
     if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
         return py_make_float(py_flonum_to_double(av) * py_flonum_to_double(bv));
+    { VALUE r = py_node_binop_ic(c, cache, av, bv, "__mul__"); if (r) return r; }
     return py_mul(c, av, bv);
 }
 
