@@ -361,11 +361,16 @@ extern int nuq_suppress_error_print;
 extern struct CTX_struct *nuq_active_ctx;
 VALUE nuq_helper_error(const char *fmt, ...);
 
-/* Pending-input queue for jq-compatible `input` / `inputs`.  main.c
- * fills this with all parsed JSON values up front; nuq_input_pull()
- * returns the next one (advancing the cursor).  Both the main loop
- * and the `input` builtin pull from the same cursor. */
-void  nuq_input_queue_set(VALUE *items, size_t cnt);
+/* Streaming input source for jq-compatible `input` / `inputs` and the
+ * default per-value loop.  main.c hands the slurped stdin to
+ * `nuq_input_set_text`; both the main loop and the builtins call
+ * `nuq_input_pull` to lazily parse + consume the next JSON value at
+ * the cursor.  Parsed values land in the per-run arena (callers are
+ * responsible for `nuq_alloc_perm = false` when running inside a
+ * filter; main flips it before each per-value run). */
+void  nuq_input_set_text(const char *src, size_t len);
+void  nuq_input_queue_push(VALUE v);  /* permanent pre-parsed input slot */
+void  nuq_input_reset(void);          /* clear cursor + queue */
 bool  nuq_input_pull(VALUE *out);   /* true if a value was returned */
 
 extern struct nuq_option OPTION;

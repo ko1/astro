@@ -251,10 +251,13 @@ node_pipe(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     EMIT le = EVAL_ARG(c, lhs);
     if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) return EMIT_EMPTY;
     uint32_t cnt = le.count;
-    /* Copy out — alloca for small, GC heap for large. */
+    /* Copy out — alloca for small, scratch arena for large.  RHS may
+     * trigger Cheney GC mid-iteration, which moves arena values; the
+     * snapshot must be PIN_ARR'd so its VALUEs get forwarded. */
     VALUE local_small[16];
     VALUE *local = (cnt <= 16) ? local_small : (VALUE *)nuq_scratch_alloc(cnt * sizeof(VALUE));
     memcpy(local, le.items, cnt * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(local, cnt);
     c->pool_top = top0;
 
     VALUE saved = c->input;
@@ -263,12 +266,14 @@ node_pipe(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
         (void)EVAL_ARG(c, rhs);   /* pushes rhs emits onto pool */
         if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) {
             c->input = saved;
+            NUQ_GC_UNPIN_ARR();
             /* Preserve prior emits so the top-level can print partial
              * output before surfacing the error (jq compat). */
             return nuq_emit_slice(c, top0);
         }
     }
     c->input = saved;
+    NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, top0);
 }
 
@@ -365,104 +370,57 @@ node_add_inplace(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     return nuq_emit_slice(c, top0);
 }
 
+/* Cartesian binary-op body — same shape as node_add but routed through
+ * an arbitrary scalar `OP` (nuq_op_sub etc.).  PIN the snapshots so a
+ * Cheney collection during RHS eval / per-pair op doesn't strand
+ * stale arena pointers. */
+#define BINOP_BODY(OP)                                                    \
+    size_t top0 = c->pool_top;                                            \
+    EMIT l = EVAL_ARG(c, lhs);                                            \
+    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;                \
+    uint32_t lc = l.count;                                                \
+    VALUE local_small[16];                                                \
+    VALUE *local = (lc <= 16) ? local_small : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE)); \
+    memcpy(local, l.items, lc * sizeof(VALUE));                           \
+    NUQ_GC_PIN_ARR(local, lc);                                            \
+    c->pool_top = top0;                                                   \
+    EMIT rv = EVAL_ARG(c, rhs);                                           \
+    if (UNLIKELY(c->error != NUQ_NULL)) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; } \
+    uint32_t rc = rv.count;                                               \
+    VALUE rsmall[16];                                                     \
+    VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE)); \
+    memcpy(rlocal, rv.items, rc * sizeof(VALUE));                         \
+    NUQ_GC_PIN_ARR(rlocal, rc);                                           \
+    c->pool_top = top0;                                                   \
+    for (uint32_t j = 0; j < rc; j++)                                     \
+        for (uint32_t i = 0; i < lc; i++)                                 \
+            nuq_pool_push(c, OP(local[i], rlocal[j]));                    \
+    NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();                               \
+    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; } \
+    return nuq_emit_slice(c, top0)
+
 NODE_DEF
 node_sub(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    size_t top0 = c->pool_top;
-    EMIT l = EVAL_ARG(c, lhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t lc = l.count;
-    VALUE local_small[16];
-    VALUE *local = (lc <= 16) ? local_small : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE));
-    memcpy(local, l.items, lc * sizeof(VALUE));
-    c->pool_top = top0;
-    EMIT rv = EVAL_ARG(c, rhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t rc = rv.count;
-    VALUE rsmall[16];
-    VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE));
-    memcpy(rlocal, rv.items, rc * sizeof(VALUE));
-    c->pool_top = top0;
-    for (uint32_t j = 0; j < rc; j++)
-        for (uint32_t i = 0; i < lc; i++)
-            nuq_pool_push(c, nuq_op_sub(local[i], rlocal[j]));
-    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
-    return nuq_emit_slice(c, top0);
+    BINOP_BODY(nuq_op_sub);
 }
 
 NODE_DEF
 node_mul(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    size_t top0 = c->pool_top;
-    EMIT l = EVAL_ARG(c, lhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t lc = l.count;
-    VALUE local_small[16];
-    VALUE *local = (lc <= 16) ? local_small : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE));
-    memcpy(local, l.items, lc * sizeof(VALUE));
-    c->pool_top = top0;
-    EMIT rv = EVAL_ARG(c, rhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t rc = rv.count;
-    VALUE rsmall[16];
-    VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE));
-    memcpy(rlocal, rv.items, rc * sizeof(VALUE));
-    c->pool_top = top0;
-    for (uint32_t j = 0; j < rc; j++)
-        for (uint32_t i = 0; i < lc; i++)
-            nuq_pool_push(c, nuq_op_mul(local[i], rlocal[j]));
-    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
-    return nuq_emit_slice(c, top0);
+    BINOP_BODY(nuq_op_mul);
 }
 
 NODE_DEF
 node_div(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    size_t top0 = c->pool_top;
-    EMIT l = EVAL_ARG(c, lhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t lc = l.count;
-    VALUE local_small[16];
-    VALUE *local = (lc <= 16) ? local_small : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE));
-    memcpy(local, l.items, lc * sizeof(VALUE));
-    c->pool_top = top0;
-    EMIT rv = EVAL_ARG(c, rhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t rc = rv.count;
-    VALUE rsmall[16];
-    VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE));
-    memcpy(rlocal, rv.items, rc * sizeof(VALUE));
-    c->pool_top = top0;
-    for (uint32_t j = 0; j < rc; j++)
-        for (uint32_t i = 0; i < lc; i++)
-            nuq_pool_push(c, nuq_op_div(local[i], rlocal[j]));
-    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
-    return nuq_emit_slice(c, top0);
+    BINOP_BODY(nuq_op_div);
 }
 
 NODE_DEF
 node_mod(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
 {
-    size_t top0 = c->pool_top;
-    EMIT l = EVAL_ARG(c, lhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t lc = l.count;
-    VALUE local_small[16];
-    VALUE *local = (lc <= 16) ? local_small : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE));
-    memcpy(local, l.items, lc * sizeof(VALUE));
-    c->pool_top = top0;
-    EMIT rv = EVAL_ARG(c, rhs);
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
-    uint32_t rc = rv.count;
-    VALUE rsmall[16];
-    VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE));
-    memcpy(rlocal, rv.items, rc * sizeof(VALUE));
-    c->pool_top = top0;
-    for (uint32_t j = 0; j < rc; j++)
-        for (uint32_t i = 0; i < lc; i++)
-            nuq_pool_push(c, nuq_op_mod(local[i], rlocal[j]));
-    if (UNLIKELY(c->error != NUQ_NULL)) { c->pool_top = top0; return EMIT_EMPTY; }
-    return nuq_emit_slice(c, top0);
+    BINOP_BODY(nuq_op_mod);
 }
 
 NODE_DEF
@@ -491,13 +449,15 @@ node_neg(CTX *c, NODE *n, NODE *expr)
     VALUE lsmall[16];                                                     \
     VALUE *llocal = (lc <= 16) ? lsmall : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE)); \
     memcpy(llocal, l.items, lc * sizeof(VALUE));                          \
+    NUQ_GC_PIN_ARR(llocal, lc);                                           \
     c->pool_top = top0;                                                   \
     EMIT rv = EVAL_ARG(c, rhs);                                           \
-    if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;                \
+    if (UNLIKELY(c->error != NUQ_NULL)) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; } \
     uint32_t rc = rv.count;                                               \
     VALUE rsmall[16];                                                     \
     VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE)); \
     memcpy(rlocal, rv.items, rc * sizeof(VALUE));                         \
+    NUQ_GC_PIN_ARR(rlocal, rc);                                           \
     c->pool_top = top0;                                                   \
     for (uint32_t i = 0; i < lc; i++)                                     \
         for (uint32_t j = 0; j < rc; j++) {                               \
@@ -514,6 +474,7 @@ node_neg(CTX *c, NODE *n, NODE *expr)
             }                                                             \
             nuq_pool_push(c, t ? NUQ_TRUE : NUQ_FALSE);                   \
         }                                                                 \
+    NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();                               \
     return nuq_emit_slice(c, top0)
 
 NODE_DEF
@@ -562,6 +523,7 @@ node_and(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     VALUE lsmall[16];
     VALUE *llocal = (lc <= 16) ? lsmall : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE));
     memcpy(llocal, l.items, lc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(llocal, lc);   /* pin lhs snapshot across rhs eval */
     c->pool_top = top0;
     for (uint32_t i = 0; i < lc; i++) {
         if (!nuq_truthy(llocal[i])) {
@@ -570,15 +532,17 @@ node_and(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
         }
         size_t mid = c->pool_top;
         EMIT rv = EVAL_ARG(c, rhs);
-        if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+        if (UNLIKELY(c->error != NUQ_NULL)) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
         uint32_t rc = rv.count;
         VALUE rsmall[16];
         VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE));
         memcpy(rlocal, rv.items, rc * sizeof(VALUE));
         c->pool_top = mid;
+        /* rlocal not pinned: only used in tight truthy loop, no allocs. */
         for (uint32_t j = 0; j < rc; j++)
             nuq_pool_push(c, nuq_truthy(rlocal[j]) ? NUQ_TRUE : NUQ_FALSE);
     }
+    NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, top0);
 }
 
@@ -592,6 +556,7 @@ node_or(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     VALUE lsmall[16];
     VALUE *llocal = (lc <= 16) ? lsmall : (VALUE *)nuq_scratch_alloc(lc * sizeof(VALUE));
     memcpy(llocal, l.items, lc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(llocal, lc);
     c->pool_top = top0;
     for (uint32_t i = 0; i < lc; i++) {
         if (nuq_truthy(llocal[i])) {
@@ -600,7 +565,7 @@ node_or(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
         }
         size_t mid = c->pool_top;
         EMIT rv = EVAL_ARG(c, rhs);
-        if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+        if (UNLIKELY(c->error != NUQ_NULL)) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
         uint32_t rc = rv.count;
         VALUE rsmall[16];
         VALUE *rlocal = (rc <= 16) ? rsmall : (VALUE *)nuq_scratch_alloc(rc * sizeof(VALUE));
@@ -609,6 +574,7 @@ node_or(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
         for (uint32_t j = 0; j < rc; j++)
             nuq_pool_push(c, nuq_truthy(rlocal[j]) ? NUQ_TRUE : NUQ_FALSE);
     }
+    NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, top0);
 }
 

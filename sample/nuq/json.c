@@ -367,7 +367,16 @@ nuq_json_parse(const char *src, size_t len, const char **endp, char **errmsg)
     json_parse_depth = 0;
     json_parse_src = src;
     json_parse_end = end;
+    /* parse_value walks a recursive descent and stores intermediate
+     * `struct nuq_obj *` pointers across `nuq_object_set` /
+     * `nuq_array_push` calls.  When parsing into the arena (perm=false,
+     * e.g. streaming `inputs` builtin in `-n` mode) those raw pointers
+     * would dangle if a Cheney collection fired mid-parse.  Suppress
+     * collection for the duration of one value — JSON values are
+     * bounded so we don't need to compact mid-parse anyway. */
+    NUQ_GC_DEFER_BEGIN();
     VALUE v = parse_value(&p, end, &err);
+    NUQ_GC_DEFER_END();
     if (errmsg) *errmsg = err;
     if (endp) *endp = p;
     return v;

@@ -41,18 +41,21 @@ slurp_stream(FILE *fp, size_t *len_out)
     return buf;
 }
 
-/* Parse the entire `src` of length `len` into a vector of VALUEs and
- * push it into the global input queue.  Returns 0 on success.  After
- * this the main loop and `input` / `inputs` both pull from the same
- * cursor, matching jq's semantics where mid-filter `input` consumes
- * what would otherwise be the next iteration. */
-static int
-load_input_queue_json(const char *src, size_t len)
+/* Pre-parse all of `src` into permanent (perm = true) VALUEs and push
+ * them into the input queue.  Used by `-n` so `[inputs]`-style
+ * aggregations have a stable VALUE[] snapshot that won't move under
+ * Cheney GC, regardless of how many arena cycles the filter triggers.
+ *
+ * Parses directly here (not via `nuq_input_pull`) — `pull` would re-
+ * read whatever we just pushed back into the queue, producing an
+ * infinite loop. */
+static void
+load_input_queue(const char *src, size_t len)
 {
-    /* Use a growable VALUE array so we can later hand the items[] off
-     * to the runtime. */
-    size_t cap = 16, n = 0;
-    VALUE *items = (VALUE *)GC_malloc(cap * sizeof(VALUE));
+    if (!src || !len) return;
+    extern bool nuq_alloc_perm;
+    bool saved = nuq_alloc_perm;
+    nuq_alloc_perm = true;
     const char *p = src, *end = src + len;
     while (p < end) {
         while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
@@ -62,30 +65,35 @@ load_input_queue_json(const char *src, size_t len)
         VALUE v = nuq_json_parse(p, end - p, &np, &err);
         if (err) {
             fprintf(stderr, "nuq: parse error: %s\n", err);
-            return 1;
+            break;
         }
-        if (n == cap) {
-            cap *= 2;
-            items = (VALUE *)GC_realloc(items, cap * sizeof(VALUE));
-        }
-        items[n++] = v;
+        nuq_input_queue_push(v);
         p = np;
     }
-    nuq_input_queue_set(items, n);
-    return 0;
+    nuq_alloc_perm = saved;
+    /* Drain the cursor so `nuq_input_pull` doesn't re-parse the same
+     * bytes after the queue is exhausted. */
+    nuq_input_set_text(NULL, 0);
 }
 
 static int
 process_input(CTX *c, NODE *filter, const char *src, size_t len)
 {
+    /* Default per-value streaming uses the cursor so each value's
+     * arena allocations get reclaimed by `nuq_arena_reset` after its
+     * filter run (peak RSS tracks the per-value working set, not the
+     * full corpus). */
+    nuq_input_set_text(src, len);
+
     if (OPTION.null_input) {
-        /* `-n` runs the filter once with `.` = null, but `inputs`
-         * inside the filter must still be able to pull stdin values.
-         * Load the queue if there is anything on stdin. */
-        if (src && len) {
-            int rc = load_input_queue_json(src, len);
-            if (rc) return rc;
-        }
+        /* `-n`: filter runs once with `.` = null.  Pre-parse stdin
+         * values into a permanent VALUE[] queue that `inputs` then
+         * walks — `[inputs]`-collecting aggregation queries (group_by,
+         * sort_by, etc.) need their value snapshots to survive arena
+         * GC cycles, and several helpers don't fully pin their
+         * VALUE[] yet (todo.md C-7).  Permanent storage sidesteps
+         * the issue at the cost of higher RSS for now. */
+        load_input_queue(src, len);
         nuq_run(c, filter, NUQ_NULL);
         return 0;
     }
@@ -107,6 +115,11 @@ process_input(CTX *c, NODE *filter, const char *src, size_t len)
         return 0;
     }
     if (OPTION.slurp) {
+        /* Build one big array over all stdin values then run filter
+         * once.  The array is built with `perm = true` — keeps the
+         * input alive for the duration of the run.  TODO: expand the
+         * arena to also handle this without leaving slurp's bytes
+         * permanently allocated. */
         VALUE arr = nuq_make_array(0);
         const char *p = src, *end = src + len;
         while (p < end) {
@@ -124,13 +137,24 @@ process_input(CTX *c, NODE *filter, const char *src, size_t len)
         nuq_run(c, filter, arr);
         return 0;
     }
-    /* default: stream of JSON values, run filter once per value.
-     * The queue is shared with `input` / `inputs` so mid-filter
-     * pulls advance our cursor. */
-    int rc = load_input_queue_json(src, len);
-    if (rc) return rc;
-    VALUE v;
-    while (nuq_input_pull(&v)) nuq_run(c, filter, v);
+    /* Default: stream of JSON values, run filter once per value.  The
+     * cursor is shared with `input` / `inputs` so mid-filter pulls
+     * advance it.  Parse the next value inside the per-run arena
+     * (perm=false) so it gets freed by `nuq_arena_reset` at the end
+     * of `nuq_run`. */
+    extern bool nuq_alloc_perm;
+    while (1) {
+        nuq_alloc_perm = false;
+        VALUE v;
+        bool ok = nuq_input_pull(&v);
+        if (!ok) {
+            nuq_alloc_perm = true;
+            nuq_arena_reset();
+            break;
+        }
+        nuq_run(c, filter, v);
+        /* nuq_run restored perm=true and reset the arena. */
+    }
     return 0;
 }
 

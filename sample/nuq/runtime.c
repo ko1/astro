@@ -459,24 +459,91 @@ nuq_user_args_bind(CTX *c)
     }
 }
 
-/* --- input queue (used by `input` / `inputs` builtins) ------------------- */
+/* --- input source (used by main loop + `input` / `inputs` builtins) ------
+ *
+ * Two modes:
+ *
+ *  - Cursor / lazy parse (default streaming): callers set a raw text
+ *    buffer with `nuq_input_set_text`; each `nuq_input_pull` parses
+ *    the next JSON value at the cursor.  Used by the per-value default
+ *    loop — values land in the per-run arena (caller flips
+ *    `nuq_alloc_perm = false`) and get freed by `nuq_arena_reset`.
+ *
+ *  - Queue / pre-parsed (used for `-n + inputs` aggregation, and any
+ *    other case where a snapshot of every input value must survive
+ *    multiple arena GC cycles): callers populate a permanent VALUE[]
+ *    via `nuq_input_queue_push` and `nuq_input_pull` returns from it.
+ *
+ * Pull prefers the queue if non-empty; otherwise falls back to the
+ * cursor.  Both `input` / `inputs` builtins go through `nuq_input_pull`
+ * regardless, so the choice of source is transparent to the filter. */
+static const char *input_text     = NULL;
+static const char *input_text_end = NULL;
+static const char *input_text_pos = NULL;
 
-static VALUE *input_queue = NULL;
-static size_t input_pos = 0, input_cnt = 0;
+static VALUE *input_queue     = NULL;
+static size_t input_queue_pos = 0;
+static size_t input_queue_len = 0;
+static size_t input_queue_capa = 0;
 
 void
-nuq_input_queue_set(VALUE *items, size_t cnt)
+nuq_input_set_text(const char *src, size_t len)
 {
-    input_queue = items;
-    input_pos = 0;
-    input_cnt = cnt;
+    input_text = input_text_pos = src;
+    input_text_end = src + (src ? len : 0);
+    /* NB: doesn't touch the queue.  The two sources are independent —
+     * pull prefers the queue when non-empty.  Callers wanting a fresh
+     * start should call `nuq_input_reset` instead. */
+}
+
+void
+nuq_input_reset(void)
+{
+    input_text = input_text_pos = input_text_end = NULL;
+    input_queue_pos = 0;
+    input_queue_len = 0;
+}
+
+void
+nuq_input_queue_push(VALUE v)
+{
+    if (input_queue_len == input_queue_capa) {
+        input_queue_capa = input_queue_capa ? input_queue_capa * 2 : 64;
+        input_queue = (VALUE *)realloc(input_queue,
+                                       input_queue_capa * sizeof(VALUE));
+        if (!input_queue) abort();
+    }
+    input_queue[input_queue_len++] = v;
+}
+
+static void
+input_skip_ws(void)
+{
+    while (input_text_pos < input_text_end &&
+           (*input_text_pos == ' '  || *input_text_pos == '\t' ||
+            *input_text_pos == '\n' || *input_text_pos == '\r'))
+        input_text_pos++;
 }
 
 bool
 nuq_input_pull(VALUE *out)
 {
-    if (input_pos >= input_cnt) return false;
-    *out = input_queue[input_pos++];
+    if (input_queue_pos < input_queue_len) {
+        *out = input_queue[input_queue_pos++];
+        return true;
+    }
+    input_skip_ws();
+    if (input_text_pos >= input_text_end) return false;
+    const char *np;
+    char *err = NULL;
+    VALUE v = nuq_json_parse(input_text_pos,
+                             input_text_end - input_text_pos, &np, &err);
+    if (err) {
+        fprintf(stderr, "nuq: parse error: %s\n", err);
+        return false;
+    }
+    input_text_pos = np;
+    *out = v;
     return true;
 }
 
