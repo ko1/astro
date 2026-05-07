@@ -3,6 +3,7 @@ require 'rbconfig'
 require_relative '../arjsv'  # arjsv.so (built by extconf)
 require_relative 'arjsv/version'
 require_relative 'arjsv/format'
+require_relative 'arjsv/content'
 
 module Arjsv
   # cflags passed to the SD compiler — needs Ruby's headers because the SDs
@@ -57,6 +58,7 @@ module Arjsv
       allOf anyOf oneOf not
       if then else
       $ref $schema $id $comment $defs definitions
+      contentEncoding contentMediaType
       title description default examples readOnly writeOnly
     ].freeze
 
@@ -71,21 +73,43 @@ module Arjsv
     end
 
     # Walk the schema once, building @id_map from any `$id` keyword found.
-    # This lets `$ref: "<$id>"` resolve to a local sub-schema without HTTP.
+    # Recurse only into known schema-position keys so a `$id` sitting
+    # inside an `enum` value or an unknown keyword is not honoured (per
+    # the spec's "$id is only an identifier in a schema").
+    KEYS_HASH_OF_SCHEMAS = %w[properties patternProperties $defs definitions].freeze
+    KEYS_SCHEMA_OR_ARRAY = %w[items additionalItems].freeze
+    KEYS_SINGLE_SCHEMA   = %w[additionalProperties propertyNames contains not if then else].freeze
+    KEYS_ARRAY_OF_SCHEMAS = %w[allOf anyOf oneOf].freeze
+
     def collect_ids(node)
-      case node
-      when Hash
-        if (id = node['$id']) && id.is_a?(String)
-          # Strip a trailing fragment (treat `<id>#anchor` as just `<id>`
-          # for our purposes — full anchor support would need a separate
-          # name table).
-          @id_map[id] = node unless @id_map.key?(id)
-          stripped = id.split('#').first
-          @id_map[stripped] = node if stripped && !@id_map.key?(stripped)
+      return unless node.is_a?(Hash)
+      if (id = node['$id']) && id.is_a?(String)
+        @id_map[id] = node unless @id_map.key?(id)
+        stripped = id.split('#').first
+        @id_map[stripped] = node if stripped && !@id_map.key?(stripped)
+      end
+      KEYS_HASH_OF_SCHEMAS.each do |k|
+        v = node[k]
+        v.each_value { |s| collect_ids(s) } if v.is_a?(Hash)
+      end
+      KEYS_SCHEMA_OR_ARRAY.each do |k|
+        v = node[k]
+        if v.is_a?(Hash)
+          collect_ids(v)
+        elsif v.is_a?(Array)
+          v.each { |s| collect_ids(s) }
         end
-        node.each_value { |v| collect_ids(v) }
-      when Array
-        node.each { |v| collect_ids(v) }
+      end
+      KEYS_SINGLE_SCHEMA.each do |k|
+        v = node[k]
+        collect_ids(v) if v.is_a?(Hash)
+      end
+      KEYS_ARRAY_OF_SCHEMAS.each do |k|
+        v = node[k]
+        v.each { |s| collect_ids(s) } if v.is_a?(Array)
+      end
+      if (deps = node['dependencies']).is_a?(Hash)
+        deps.each_value { |v| collect_ids(v) if v.is_a?(Hash) }
       end
     end
 
@@ -174,6 +198,9 @@ module Arjsv
         nodes << lower_not(schema['not'])             if schema.key?('not')
         if schema.key?('if')
           nodes << lower_if_then_else(schema['if'], schema['then'], schema['else'])
+        end
+        if schema.key?('contentEncoding') || schema.key?('contentMediaType')
+          nodes.concat(lower_content(schema))
         end
 
         all_of(nodes.compact)
@@ -303,8 +330,49 @@ module Arjsv
 
     def lower_pattern(pat_str)
       raise ArgumentError, "pattern must be String" unless pat_str.is_a?(String)
-      regex = Regexp.new(pat_str)
+      regex = Regexp.new(ecma_widen_whitespace(pat_str))
       Arjsv._alloc_pattern(pat_str, intern_const(regex))
+    end
+
+    # Patterns are ECMA-262-flavoured per JSON Schema spec.  Onigmo's
+    # `\s` only matches ASCII whitespace, while ECMA-262 includes
+    # Unicode space separators (NBSP, EM SPACE, paragraph separator,
+    # BOM, etc.).  We textually widen `\s` / `\S` outside of char
+    # classes so they cover the ECMA set.
+    ECMA_WS_INNER = '\s\p{Zs}  ﻿'.freeze
+    def ecma_widen_whitespace(pat)
+      out = +''
+      i = 0
+      in_class = false
+      while i < pat.length
+        ch = pat[i]
+        if ch == '\\' && i + 1 < pat.length
+          nxt = pat[i + 1]
+          if !in_class && nxt == 's'
+            out << "[#{ECMA_WS_INNER}]"
+            i += 2
+            next
+          elsif !in_class && nxt == 'S'
+            out << "[^#{ECMA_WS_INNER}]"
+            i += 2
+            next
+          end
+          out << ch << nxt
+          i += 2
+        elsif ch == '['
+          in_class = true
+          out << ch
+          i += 1
+        elsif ch == ']' && in_class
+          in_class = false
+          out << ch
+          i += 1
+        else
+          out << ch
+          i += 1
+        end
+      end
+      out
     end
 
     # Format-name → checker Proc.  The Proc receives the candidate String
@@ -442,6 +510,25 @@ module Arjsv
 
     def lower_contains(sub)
       Arjsv._alloc_contains(lower(sub))
+    end
+
+    # `contentEncoding` (e.g. "base64") and `contentMediaType` (e.g.
+    # "application/json").  draft-07 asserts these; later drafts demote
+    # to annotation.  When both are present and the encoding decodes
+    # cleanly, the decoded bytes are checked against the media type.
+    def lower_content(schema)
+      enc = schema['contentEncoding']
+      media = schema['contentMediaType']
+      result = []
+      if enc
+        proc_e = ContentChecker.encoding(enc)
+        result << Arjsv._alloc_content_check("encoding:#{enc}", intern_const(proc_e)) if proc_e
+      end
+      if media
+        proc_m = ContentChecker.media_type(media, enc)
+        result << Arjsv._alloc_content_check("media:#{media}", intern_const(proc_m)) if proc_m
+      end
+      result
     end
 
     # ---- $ref --------------------------------------------------------

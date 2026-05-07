@@ -367,6 +367,14 @@ rb_alloc_format(VALUE self, VALUE name, VALUE checker_idx)
 }
 
 static VALUE
+rb_alloc_content_check(VALUE self, VALUE tag, VALUE checker_idx)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_content_check(arjsv_dup_key(tag),
+                                                    NUM2UINT(checker_idx)));
+}
+
+static VALUE
 rb_alloc_not(VALUE self, VALUE schema)
 {
     (void)self;
@@ -566,6 +574,7 @@ Init_arjsv(void)
     rb_define_module_function(rb_mArjsv, "_alloc_multiple_of",   rb_alloc_multiple_of,   1);
     rb_define_module_function(rb_mArjsv, "_alloc_pattern",       rb_alloc_pattern,       2);
     rb_define_module_function(rb_mArjsv, "_alloc_format",        rb_alloc_format,        2);
+    rb_define_module_function(rb_mArjsv, "_alloc_content_check", rb_alloc_content_check, 2);
     rb_define_module_function(rb_mArjsv, "_alloc_not",           rb_alloc_not,           1);
     rb_define_module_function(rb_mArjsv, "_alloc_if_then_else",  rb_alloc_if_then_else,  3);
     rb_define_module_function(rb_mArjsv, "_alloc_any_of",        rb_alloc_any_of,        2);

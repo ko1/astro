@@ -264,6 +264,18 @@ node_format(CTX *c, NODE *n, const char *format_name, uint32_t checker_idx)
     return RTEST(r) ? 1 : 0;
 }
 
+// `contentEncoding` / `contentMediaType` (draft-07 assertion mode).  The
+// checker is a Proc receiving the candidate String and returning truthy
+// when valid.  Non-strings pass (per spec — these only constrain strings).
+NODE_DEF
+node_content_check(CTX *c, NODE *n, const char *tag, uint32_t checker_idx)
+{
+    (void)tag;
+    if (!RB_TYPE_P(c->data, T_STRING)) return 1;
+    VALUE r = rb_funcall(c->consts[checker_idx], rb_intern("call"), 1, c->data);
+    return RTEST(r) ? 1 : 0;
+}
+
 // ---- enum / const --------------------------------------------------------
 
 // `const v`.  consts_idx points into the schema's constants array; the

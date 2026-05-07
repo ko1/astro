@@ -54,7 +54,7 @@ reporting).
 Boolean schemas: `true` (always valid), `false` (always invalid).
 Empty `{}` schema accepted.
 
-## JSON Schema Test Suite (draft-07): **1486 / 1584 pass = 93.81%**
+## JSON Schema Test Suite (draft-07): **1501 / 1584 pass = 94.76%**
 
 Run with `ruby test/run_official_suite.rb` after `tar -xzf` of the suite
 into `/tmp/jsts/...` (or set `SUITE_PATH=`).  Remaining failures
@@ -65,11 +65,8 @@ break down (most are deep edge cases unlikely to bite a real schema):
 | `optional/format/idn-hostname` | 34 | IDNA-2008 contextual rules; needs libidn / ICU |
 | `optional/format/hostname` | 23 | A-label punycode contextual rules; same |
 | `ref.json` | 12 | URI base resolution against nested `$id`s |
-| `refRemote.json` | 11 | external `$ref` (HTTP fetching) |
-| `optional/ecmascript-regex` | 8 | Onigmo vs ECMA-262 `\s` class differences |
-| `optional/content` | 4 | `contentEncoding` / `contentMediaType` (rare) |
-| `optional/unknownKeyword` | 2 | `$id` collected from inside unknown keywords (corner case) |
-| `definitions.json`, `optional/cross-draft.json`, `optional/float-overflow.json` | 1 each | meta-schema `$ref`, future-draft handling, Infinity arithmetic |
+| `refRemote.json` | 11 | external `$ref` (HTTP fetching); out of scope here |
+| `definitions.json`, `optional/cross-draft.json`, `optional/float-overflow.json` | 1 each | meta-schema `$ref` (HTTP), future-draft handling, Infinity arithmetic |
 
 ## Out of scope
 
