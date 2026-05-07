@@ -18,51 +18,59 @@
 
 | ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `while_loop` (10M, augassign) | 0.93 s | 0.18 s | 0.05 s | **0.05× (18× 速い)** |
-| `for_range` (15M sum) | 0.96 s | 0.17 s | 0.12 s | **0.12× (8.0× 速い)** |
-| `list_bench` (7M append+sum) | 0.89 s | 0.25 s | 0.21 s | **0.24× (4.2× 速い)** |
-| `fib(35)` (再帰) | 1.17 s | 0.71 s | 0.70 s | **0.60× (1.7× 速い)** |
-| `recursive` (tak(30,20,10)) | 3.78 s | 2.69 s | 2.73 s | **0.72× (1.4× 速い)** |
-| `string_bench` (2M split) | 0.56 s | 0.55 s | 0.54 s | **0.96× (1.04× 速い)** |
-| `mandel` (float-heavy) | 0.66 s | 0.64 s | 0.64 s | **0.97× (1.03× 速い)** |
-| `nqueens` (recursion + list) | 0.67 s | 0.66 s | 0.65 s | **0.97× (1.03× 速い)** |
-| `dict_bench` (3M put+get) | 0.76 s | 1.06 s | 1.07 s | 1.41× (40% 遅い) |
+| `while_loop` (10M, augassign) | 0.89 s | 0.18 s | **0.05 s** | **0.06× (18× 速い)** |
+| `for_range` (15M sum) | 1.00 s | 0.18 s | **0.12 s** | **0.12× (8× 速い)** |
+| `list_bench` (7M append+sum) | 0.92 s | 0.26 s | **0.22 s** | **0.24× (4× 速い)** |
+| `mandel` (float-heavy) | 0.68 s | 0.70 s | **0.26 s** | **0.38× (2.6× 速い)** |
+| `recursive` (tak(30,20,10)) | 3.82 s | 2.63 s | **1.41 s** | **0.37× (2.7× 速い)** |
+| `fib(35)` (再帰) | 1.23 s | 0.72 s | **0.42 s** | **0.34× (2.9× 速い)** |
+| `nqueens` (recursion + list) | 0.70 s | 0.68 s | **0.44 s** | **0.63× (1.6× 速い)** |
+| `string_bench` (2M split) | 0.57 s | 0.55 s | **0.53 s** | **0.93× (1.07× 速い)** |
+| `dict_bench` (3M put+get) | 0.80 s | 1.08 s | 1.05 s | 1.31× (31% 遅い) |
 
 best-of-3。**9 ベンチ中 8 で python3 を上回る** (dict_bench は遅い)。
 
-### R7-R10 → R18 の比較
+### R10 → R18 の比較
 
 R7〜R10 で取った旧計測 (R10 perf.md) との差分:
 
-| ベンチ | R10 AOT | R18 AOT | 差 | 主因 |
+| ベンチ | R10 AOT | R18 AOT (修正後) | 差 | コメント |
 |---|---:|---:|---:|---|
 | `while_loop` | 0.05 s | 0.05 s | 同 | — |
 | `for_range` | 0.09 s | 0.12 s | +33% | iter で IndexError catch する setjmp 追加 |
-| `list_bench` | 0.19 s | 0.21 s | +11% | append の path で state チェック増 |
-| `fib(35)` | 0.62 s | 0.70 s | +13% | call/attr 系の state チェックで分岐増 |
-| `recursive` (tak) | 2.49 s | 2.73 s | +10% | 同上 (再帰で per-call overhead 積み上がり) |
-| `string_bench` | 0.50 s | 0.54 s | +8% | str slice の path で state チェック増 |
-| `mandel` | 0.63 s | 0.64 s | +2% | — |
-| `nqueens` | 0.62 s | 0.65 s | +5% | — |
-| `dict_bench` | 0.82 s | 1.07 s | +30% | metaclass __call__ ディスパッチに `PYSTRO_BI_KWC` save/restore 挿入 |
+| `list_bench` | 0.19 s | 0.22 s | +16% | append の path で state チェック増 |
+| `fib(35)` | 0.62 s | **0.42 s** | -32% | per-body SD (R18 後半 fix) で improved |
+| `recursive` (tak) | 2.49 s | **1.41 s** | -43% | 同上 |
+| `string_bench` | 0.50 s | 0.53 s | +6% | str slice の path で state チェック増 |
+| `mandel` | 0.63 s | **0.26 s** | -59% | per-body SD で float fast path が SD 化 |
+| `nqueens` | 0.62 s | **0.44 s** | -29% | 同上 |
+| `dict_bench` | 0.82 s | 1.05 s | +28% | metaclass __call__ の `PYSTRO_BI_KWC` save/restore overhead |
 
-R11〜R18 で **CPython 互換性向上** (213/213 internal tests + 28/394
-CPython tests fully pass) を入れた代償。 主な overhead 源:
+call-heavy bench は R18 で大幅高速化。 きっかけは **AOT が関数 body
+にも効くようにした fix** (5a2b83b):
 
-1. **chained call/attr/subscript の state propagation**: `raiser().x`
-   が `None.x` ではなく LookupError を伝播する fix で `node_attr_get`
-   等に `if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;`
-   を追加。 codecs.lookup / argparse / configparser に必要。
-2. **`__getitem__` iter の local try frame**: kind=13 で setjmp/longjmp
-   で IndexError を捕える (CPython では C コードで cheap だが pystro
-   は jmp_buf alloc + setjmp が hot path に)。
-3. **`PYSTRO_BI_KWC` save/restore**: nested class call で outer の
-   kwargs が leak しないように metaclass __call__ ディスパッチ前後で
-   thread-local を save/restore。
+#### 関数 body の SD 化 (mandel 2.6×, recursive/fib 2-3×)
 
-これらは互換性のための trade-off。 hot path の追加分岐は基本的に
-UNLIKELY hint で predict できる cold path なので、 absolute overhead
-は数 % 〜 30% 範囲に収まっている。
+R10 〜 R18 前半まで、 `astro_cs_compile(top_body, NULL)` は top-level
+プログラム本体しか SD 化していなかった (`nm code_store/all.so | grep
+-c " T "` が 1 個)。 関数 body は `py_make_func` に渡されるが、
+`py_apply` が `EVAL(c, f->func.body)` を runtime ポインタ経由で
+dispatch するので ASTroGen の specialization が見えない。 結果として
+fib / recursive / mandel / nqueens は AOT でも tree-walking interp と
+同じパスを通っていた。
+
+修正 (R18 後半):
+
+1. `node.c` に `struct code_repo` を追加 (koruby と同パターン)。
+2. `py_make_func` を hook して各 def 時に body を code_repo に登録 +
+   `astro_cs_load(body, NULL)` で dispatcher 即時 swap。
+3. main.c の `-c` flow を「先に interp で 1 回走らせて py_make_func
+   が populate」→「code_repo 全部 + main を astro_cs_compile」→
+   「build / reload / load 各 body」→「exit」 に。
+
+`nm code_store/all.so | grep -c " T "` が 1 → 関数の数 (fib なら 2、
+mandel なら ~3) に。 mandel が 2.6× 速くなったのは関数 body が
+inline flonum 演算ノードと共に SD 化されたため。
 
 ### 解釈
 
@@ -72,17 +80,20 @@ UNLIKELY hint で predict できる cold path なので、 absolute overhead
 - `node_for_global` 内蔵 cache、 `method_cache` で `xs.append(i)` の
   bound-method 確保が消える。
 
-**やや速い (1.4×〜1.7×)** — `fib` / `recursive`
-- gref_cache + leaf-func alloca。 `py_apply` inline で PLT hop も消えた。
+**よく速い (1.6×〜2.9×)** — `fib` / `recursive` / `mandel` / `nqueens`
+- 関数 body が SD 化された (R18 fix)。 gref_cache + leaf-func alloca、
+  `py_apply` inline で PLT hop 排除、 inline flonum で heap-box 消失。
+- mandel は float fast path がループ内で完全 SD 化されるので 2.6×。
 
-**僅差で速い (1.0×〜1.05×)** — `mandel` / `nqueens` / `string_bench`
-- 数値は inline flonum で heap-box 消失。 算術ノードに flonum-flonum
-  fast path。 string slice は buffer 共有。
+**僅差で速い (1.07×)** — `string_bench`
+- string slice は buffer 共有。 split/join 等の str op がほぼ memcpy。
 
 **僅差で負け** — `dict_bench`
 - CPython の dict 実装は数十年磨かれた C コード。 専用 layout、 サイズ別
   hash、 `PyObject_Hash` インライン等。 pystro は open-addressing +
-  線形 hash + identity-eq fast path のみ。
+  線形 hash + identity-eq fast path のみ。 加えて R18 で metaclass
+  __call__ ディスパッチに `PYSTRO_BI_KWC` save/restore を入れたぶん
+  class 呼び出しが少し重くなった。
 
 ## 投入した最適化 (時系列)
 
@@ -193,6 +204,12 @@ pystro はジェネリック open-addressing 1 種のみ。 R18 で
 `PYSTRO_BI_KWC` save/restore を入れたぶん metaclass __call__ ディスパッチ
 が重くなった (これは class 呼び出しが多い test では効く)。
 1× を逆転するなら str-key 専用パスが必要。
+
+### nqueens / mandel の AOT が更に速くできる余地
+
+per-body SD で 2.6× / 1.6× まで来たが、 まだ python3 比 0.38× /
+0.63× で改善余地がある。 inline flonum encoding の判定や `py_apply`
+内のフレーム alloc が hot path に残っている。
 
 ### chained-raise propagation の overhead
 
