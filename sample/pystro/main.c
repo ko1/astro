@@ -237,11 +237,42 @@ main(int argc, char *argv[])
     if (OPTION.dump_ast) { DUMP(stdout, body, false); printf("\n"); free(src); return 0; }
 
     if (OPTION.compile_first || OPTION.aot_only) {
+        // Run the program first in interp mode so py_make_func registers
+        // every function body in code_repo.  Then bake an SD per body
+        // (plus the top-level body) so the next `./pystro <script>`
+        // invocation finds dispatchers for every entry point.  Without
+        // this only the top-level body got a SD; function bodies stayed
+        // in tree-walking interp even with all.so loaded.
+        extern struct {
+            uint32_t size, capa;
+            struct code_entry { const char *name; struct Node *body; } *entries;
+        } code_repo;
+        int jmp_status = setjmp(c->err_jmp);
+        if (jmp_status == 0) {
+            c->err_jmp_active = 1;
+            EVAL(c, body);
+        }
+        c->err_jmp_active = 0;
+        // Reset state so AOT compile doesn't trip on a propagating
+        // raise from the bake-time run.
+        c->state = PY_STATE_NORMAL;
+        c->state_value = PY_NONE;
         astro_cs_compile(body, NULL);
+        for (uint32_t i = 0; i < code_repo.size; i++) {
+            astro_cs_compile(code_repo.entries[i].body, NULL);
+        }
+        // ccache fails inside the sandbox / read-only home dirs; opt out.
+        setenv("CCACHE_DISABLE", "1", 0);
         astro_cs_build(NULL);
         astro_cs_reload();
         astro_cs_load(body, NULL);
-        if (OPTION.aot_only) { free(src); return 0; }
+        for (uint32_t i = 0; i < code_repo.size; i++) {
+            astro_cs_load(code_repo.entries[i].body, NULL);
+        }
+        // Bake-only: don't re-run the program.  The next invocation will
+        // pick up the freshly baked all.so via astro_cs_init.
+        free(src);
+        return 0;
     }
 
     OPTIMIZE(body);

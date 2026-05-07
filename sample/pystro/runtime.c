@@ -480,6 +480,16 @@ py_make_func(struct Node *body, struct pyframe *env,
              bool has_varargs, bool has_kwargs,
              bool is_generator)
 {
+    // Register the body so AOT bake / cs_load can find each function's
+    // entry point.  Without this, only the top-level program body is
+    // a SD entry; function bodies stay in tree-walking interp at run-
+    // time even after `pystro -c` baked all.so.
+    extern void code_repo_add(const char *name, struct Node *body, bool force);
+    extern bool astro_cs_load(struct Node *n, const char *file);
+    if (body) {
+        code_repo_add(name, body, false);
+        astro_cs_load(body, NULL);
+    }
     struct pyobj *o = py_alloc(PY_T_FUNC);
     o->func.body = body;
     o->func.env = env;

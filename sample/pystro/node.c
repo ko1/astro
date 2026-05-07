@@ -30,10 +30,41 @@ OPTIMIZE(NODE *n)
     return n;
 }
 
+// Per-function-body code repo.  py_make_func registers each body so
+// the AOT-compile flow can iterate them and emit per-body SD_<hash>.c.
+// Without this, only the top-level program body is baked, and function
+// bodies (the hot path for fib / recursive / etc.) stay in the
+// tree-walking interpreter.
+struct code_repo {
+    uint32_t size, capa;
+    struct code_entry { const char *name; NODE *body; } *entries;
+};
+struct code_repo code_repo;
+
+NODE *
+code_repo_find(node_hash_t h)
+{
+    if (!h) return NULL;
+    for (uint32_t i = 0; i < code_repo.size; i++) {
+        if (HASH(code_repo.entries[i].body) == h)
+            return code_repo.entries[i].body;
+    }
+    return NULL;
+}
+
 void
 code_repo_add(const char *name, NODE *body, bool force)
 {
-    (void)name; (void)body; (void)force;
+    if (!body) return;
+    if (!force && code_repo_find(HASH(body))) return;
+    if (code_repo.size >= code_repo.capa) {
+        code_repo.capa = code_repo.capa ? code_repo.capa * 2 : 32;
+        code_repo.entries = (struct code_entry *)GC_realloc(
+            code_repo.entries, code_repo.capa * sizeof(*code_repo.entries));
+    }
+    code_repo.entries[code_repo.size].name = name;
+    code_repo.entries[code_repo.size].body = body;
+    code_repo.size++;
 }
 
 #include "node_eval.c"
