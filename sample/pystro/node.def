@@ -602,7 +602,9 @@ node_subscript_get(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *idx)
 {
     (void)n;
     VALUE sv = EVAL_ARG(c, seq);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE iv = EVAL_ARG(c, idx);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     return py_list_get(c, sv, iv);
 }
 
@@ -611,8 +613,11 @@ node_subscript_set(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *idx, NO
 {
     (void)n;
     VALUE sv = EVAL_ARG(c, seq);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE iv = EVAL_ARG(c, idx);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE vv = EVAL_ARG(c, val);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     // Fast path: list[fixnum] = v.
     if (LIKELY(py_is_list(sv) && PY_IS_FIXNUM(iv))) {
         struct pyobj *o = PY_PTR(sv);
@@ -632,9 +637,13 @@ node_slice(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *start, NODE *st
 {
     (void)n;
     VALUE sv = EVAL_ARG(c, seq);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE a  = EVAL_ARG(c, start);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE b  = EVAL_ARG(c, stop);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE s  = EVAL_ARG(c, step);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     return py_list_slice(c, sv, a, b, s);
 }
 
@@ -657,6 +666,9 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE ov = EVAL_ARG(c, obj);
+    // Propagate raise from the receiver expression — without this,
+    // chained `raiser().attr` would silently consult `None.attr`.
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     // Inline cache fast path: same class + same attrs dict identity →
     // load the cached entry directly.  The first-time miss / class
     // change / attrs grow falls through to py_getattr.
@@ -703,7 +715,9 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE ov = EVAL_ARG(c, obj);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE vv = EVAL_ARG(c, val);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     py_setattr(c, ov, name, vv);
     return PY_NONE;
 }
@@ -1184,6 +1198,7 @@ node_call_n(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, ui
 {
     (void)n;
     VALUE f = EVAL_ARG(c, fn);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
         NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
@@ -1297,6 +1312,7 @@ node_method_0(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     if (LIKELY(PY_IS_PTR(o) && PY_PTR(o)->type == cache->type_tag && cache->fn)) {
         VALUE av[1] = { o };
         return ((py_builtin_fn)cache->fn)(c, 1, av);
@@ -1354,6 +1370,7 @@ node_method_n(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
+    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     if (LIKELY(PY_IS_PTR(o) && PY_PTR(o)->type == cache->type_tag && cache->fn)) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
         av[0] = o;
