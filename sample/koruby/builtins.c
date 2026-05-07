@@ -380,6 +380,17 @@ void korb_init_builtins(void) {
     DEF(cObj, "initialize",         kernel_initialize_default, -1);
     DEF_PRIV(cObj, "lambda",        kernel_lambda,             0);
     DEF_PRIV(cObj, "proc",          kernel_proc,               0);
+    /* Mirror to Kernel module so Kernel.private_method_defined? sees them. */
+    if (korb_vm->kernel_module) {
+        struct korb_class *kmod = korb_vm->kernel_module;
+        korb_class_add_method_cfunc(kmod, korb_intern("lambda"), kernel_lambda, 0);
+        korb_class_add_method_cfunc(kmod, korb_intern("proc"),   kernel_proc,   0);
+        korb_class_add_method_cfunc(kmod, korb_intern("eval"),   kernel_eval_stub, -1);
+        struct korb_method *m;
+        if ((m = korb_class_find_method(kmod, korb_intern("lambda")))) m->visibility = KORB_VIS_PRIVATE;
+        if ((m = korb_class_find_method(kmod, korb_intern("proc"))))   m->visibility = KORB_VIS_PRIVATE;
+        if ((m = korb_class_find_method(kmod, korb_intern("eval"))))   m->visibility = KORB_VIS_PRIVATE;
+    }
     /* Range#exclude_end? */
     DEF(cRng, "exclude_end?",       rng_exclude_end_p,         0);
     /* Class ancestors / Module#prepend */
@@ -1070,6 +1081,26 @@ void korb_init_builtins(void) {
         korb_vm->binding_class = cBinding;
     }
     DEF_PRIV(cObj, "binding", kernel_binding_cfunc, 0);
+    /* Kernel#binding is module_function-style: PRIVATE instance method
+     * (so user code's bare `binding` works) AND PUBLIC class method
+     * (so `Kernel.binding` works).  We register on Kernel.metaclass
+     * for the class-method side.  Note: do NOT add a regular instance
+     * method on Kernel itself — our T_MODULE dispatch checks the
+     * module's own method table first, which would find that and
+     * raise "private method" for explicit `Kernel.binding` calls. */
+    if (cKerMeta) {
+        DEF(cKerMeta, "binding", kernel_binding_cfunc, 0);
+    }
+    /* Mirror the visibility info on Kernel itself for
+     * Kernel.private_method_defined?(:binding) — the lookup needs
+     * the method present on Kernel.  Add but mark private so the
+     * T_MODULE dispatch above falls through. */
+    if (korb_vm->kernel_module) {
+        korb_class_add_method_cfunc(korb_vm->kernel_module, korb_intern("binding"),
+                                     kernel_binding_cfunc, 0);
+        struct korb_method *km = korb_class_find_method(korb_vm->kernel_module, korb_intern("binding"));
+        if (km) km->visibility = KORB_VIS_PRIVATE;
+    }
 
     /* Method class — instances are returned by Object#method */
     {

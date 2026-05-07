@@ -3350,7 +3350,15 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
     if (UNLIKELY(!mc || mc->serial != korb_vm->method_serial || mc->klass != klass)) {
         struct korb_method *m = NULL;
         if (BUILTIN_TYPE(recv) == T_MODULE) {
+            /* Module function lookup: when recv is the module itself,
+             * its instance methods are accessible as class methods —
+             * but only the PUBLIC ones.  Private instance methods
+             * stay private (CRuby's module_function convention).
+             * If we'd find a private one, fall through to klass
+             * (recv's metaclass) so a public class-method version
+             * (added via DEF on cKerMeta etc.) wins. */
             m = korb_class_find_method((struct korb_class *)recv, name);
+            if (m && m->visibility == KORB_VIS_PRIVATE) m = NULL;
         }
         if (!m) m = korb_class_find_method(klass, name);
         if (UNLIKELY(!m)) {
