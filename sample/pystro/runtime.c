@@ -3339,7 +3339,13 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
             }
         }
     }
-    py_raise_exc(c, c->EXC_TypeError, "object is not iterable");
+    {
+        extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+        VALUE av_t[1] = { iterable };
+        VALUE tt = bi_type(c, 1, av_t);
+        const char *tn = (py_is_class(tt)) ? PY_PTR(tt)->cls.name : "?";
+        py_raise_exc(c, c->EXC_TypeError, "'%s' object is not iterable", tn);
+    }
 }
 
 bool
