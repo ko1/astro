@@ -516,6 +516,15 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                     uint32_t tmp_slot = saved_tmp[i];
                     if (PM_NODE_TYPE_P(req, PM_MULTI_TARGET_NODE)) {
                         pm_multi_target_node_t *mt = (pm_multi_target_node_t *)req;
+                        /* The arg may be a non-Array that responds to
+                         * to_ary (CRuby destructures via to_ary).  Coerce
+                         * tmp_slot through node_to_ary_for_mlhs into a
+                         * fresh slot, then index from the coerced array. */
+                        uint32_t arr_slot = inc_arg_index(tc);
+                        NODE *coerce = ALLOC_node_lvar_set(arr_slot,
+                                          ALLOC_node_to_ary_for_mlhs(
+                                              ALLOC_node_lvar_get(tmp_slot)));
+                        destructure_pre = ALLOC_node_seq(destructure_pre, coerce);
                         for (size_t j = 0; j < mt->lefts.size; j++) {
                             pm_node_t *t = mt->lefts.nodes[j];
                             ID name_id = 0;
@@ -530,7 +539,7 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                             int slot = lvar_slot(tc, name_id, name_depth);
                             if (slot < 0) slot = lvar_slot_any(tc, name_id);
                             if (slot < 0) continue;
-                            NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(tmp_slot), (uint32_t)j);
+                            NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(arr_slot), (uint32_t)j);
                             NODE *set = ALLOC_node_lvar_set((uint32_t)slot, get);
                             destructure_pre = ALLOC_node_seq(destructure_pre, set);
                         }
