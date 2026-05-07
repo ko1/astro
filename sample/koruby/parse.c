@@ -4033,6 +4033,29 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   seq = seq ? ALLOC_node_seq(seq, st) : st;
               }
           }
+          /* Explicit `&block`: lower to node_super_block which sets
+           * frame.block / current_block to the evaluated proc. */
+          if (n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_ARGUMENT_NODE)) {
+              pm_block_argument_node_t *ba = (pm_block_argument_node_t *)n->block;
+              NODE *blk_expr;
+              if (!ba->expression || PM_NODE_TYPE_P(ba->expression, PM_NIL_NODE)) {
+                  blk_expr = ALLOC_node_nil();
+              } else {
+                  /* __to_block_arg coerces non-Proc to_proc and
+                   * forwards Proc through.  Reserved a fresh slot
+                   * above the args so it doesn't clobber. */
+                  uint32_t tp_slot = inc_arg_index(tc);
+                  inc_arg_index(tc); rewind_arg_index(tc, tp_slot);
+                  struct method_cache *mc_tp = alloc_method_cache();
+                  NODE *expr = T(tc, ba->expression);
+                  NODE *prep_blk = ALLOC_node_lvar_set(tp_slot, expr);
+                  blk_expr = ALLOC_node_seq(prep_blk,
+                      ALLOC_node_func_call(korb_intern("__to_block_arg"), 1, tp_slot, mc_tp));
+              }
+              NODE *sup = ALLOC_node_super_block(cnt, arg_idx, blk_expr);
+              rewind_arg_index(tc, arg_idx);
+              return seq ? ALLOC_node_seq(seq, sup) : sup;
+          }
           NODE *sup = ALLOC_node_super(cnt, arg_idx);
           rewind_arg_index(tc, arg_idx);
           return seq ? ALLOC_node_seq(seq, sup) : sup;

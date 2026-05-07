@@ -1460,6 +1460,85 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     return r;
 }
 
+/* Variant of node_super that accepts an explicit block expression
+ * (`super(args, &blk)`).  blk_expr evaluates to a Proc (or nil meaning
+ * no block); the chosen block is what the super method's `yield` /
+ * `block_given?` sees.  The runtime semantics otherwise match
+ * node_super. */
+NODE_DEF @noinline
+node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index, NODE *blk_expr)
+{
+    if (!c->current_frame || !c->current_frame->method) {
+        korb_raise(c, NULL, "super called outside of method");
+        return Qnil;
+    }
+    struct korb_method *m = c->current_frame->method;
+    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    extern struct korb_method *korb_class_find_super_method_n(
+        const struct korb_class *, const struct korb_class *, ID,
+        uint16_t, uint16_t *);
+    uint16_t new_skip_n = 0;
+    struct korb_method *sm = m->defining_class
+        ? korb_class_find_super_method_n(recv_klass, m->defining_class, m->name,
+                                          c->current_frame->super_skip_n, &new_skip_n)
+        : NULL;
+    if (!sm) {
+        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", korb_id_name(m->name));
+        return Qnil;
+    }
+    /* Evaluate the explicit block.  nil → no block. */
+    VALUE blk_v = blk_expr ? EA(c, blk_expr) : Qnil;
+    struct korb_proc *blk_proc = (!NIL_P(blk_v) && !SPECIAL_CONST_P(blk_v) &&
+                                   BUILTIN_TYPE(blk_v) == T_PROC)
+                                  ? (struct korb_proc *)blk_v : NULL;
+    if (sm->type == KORB_METHOD_CFUNC) {
+        struct korb_proc *prev_block = current_block;
+        current_block = blk_proc;
+        VALUE r = sm->u.cfunc.func(c, c->self, argc, &c->fp[arg_index]);
+        current_block = prev_block;
+        return r;
+    }
+    VALUE *prev_fp = c->fp;
+    VALUE *new_fp = prev_fp + arg_index;
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt > c->sp) c->sp = new_fp + sm->u.ast.locals_cnt;
+    for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
+    c->fp = new_fp;
+    struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = sm;
+    frame.self = c->self;
+    frame.block = blk_proc;  /* explicit block overrides caller's */
+    frame.caller_node = n;
+    frame.fp = new_fp;
+    frame.locals_cnt = sm->u.ast.locals_cnt;
+    frame.super_skip_n = new_skip_n;
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
+    extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
+    c->current_frame = &frame;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
+    struct korb_proc *prev_current_block = current_block;
+    current_block = blk_proc;
+    VALUE r = EVAL(c, sm->u.ast.body);
+    current_block = prev_current_block;
+    c->current_frame = frame.prev;
+    running_block = prev_running;
+    c->fp = prev_fp;
+    if (c->state == KORB_RETURN &&
+        (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->state_target_frame = NULL;
+    }
+    return r;
+}
+
 NODE_DEF
 node_super_forward(CTX * restrict c, NODE * restrict n)
 {
