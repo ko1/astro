@@ -2954,11 +2954,8 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                           /* Also stamp the resolved value (default or
                            * caller-provided) BACK into kwh_save_slot so
                            * `super` (zsuper) and forwarding both pick up
-                           * defaults applied here.  Skip when **kwrest
-                           * is present (kwrest absorbs the original kwh
-                           * after deletes; defaults are NOT preserved
-                           * there per CRuby). */
-                          if (!has_kwrest) {
+                           * defaults applied here. */
+                          {
                               uint32_t ai3 = inc_arg_index(tc);
                               uint32_t ai4 = inc_arg_index(tc);
                               inc_arg_index(tc);
