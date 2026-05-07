@@ -3543,10 +3543,28 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       }
 
       case PM_CONSTANT_OR_WRITE_NODE: {
+          /* `FOO ||= rhs` — undefined FOO must NOT raise; treat as nil
+           * so the right side runs and sets FOO. */
           pm_constant_or_write_node_t *n = (pm_constant_or_write_node_t *)node;
           ID name = intern_constant(tc->parser, n->name);
-          return ALLOC_node_or(ALLOC_node_const_get(name),
+          uint32_t rescue_slot = inc_arg_index(tc);
+          rewind_arg_index(tc, rescue_slot);
+          NODE *cur = ALLOC_node_rescue(ALLOC_node_const_get(name),
+                                         ALLOC_node_nil(), rescue_slot);
+          return ALLOC_node_or(cur,
                                ALLOC_node_const_set(name, T(tc, n->value)));
+      }
+      case PM_CONSTANT_AND_WRITE_NODE: {
+          /* `FOO &&= rhs` — undefined FOO behaves as nil (false branch),
+           * so we just skip the assignment; otherwise FOO = rhs. */
+          pm_constant_and_write_node_t *n = (pm_constant_and_write_node_t *)node;
+          ID name = intern_constant(tc->parser, n->name);
+          uint32_t rescue_slot = inc_arg_index(tc);
+          rewind_arg_index(tc, rescue_slot);
+          NODE *cur = ALLOC_node_rescue(ALLOC_node_const_get(name),
+                                         ALLOC_node_nil(), rescue_slot);
+          return ALLOC_node_and(cur,
+                                ALLOC_node_const_set(name, T(tc, n->value)));
       }
 
       case PM_KEYWORD_HASH_NODE: {
