@@ -1072,7 +1072,13 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     struct korb_string *s = (struct korb_string *)argv[0];
-    return korb_eval_string(c, s->ptr, (size_t)s->len, "(eval)");
+    /* Build "(eval at <caller_file>:<line>)" — CRuby's __FILE__ format
+     * inside eval'd code.  Use last_cfunc_callsite line if available. */
+    char filename[1024];
+    int line = (c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0);
+    snprintf(filename, sizeof(filename), "(eval at %s:%d)",
+             c->current_file ? c->current_file : "(unknown)", line);
+    return korb_eval_string(c, s->ptr, (size_t)s->len, filename);
 }
 /* Default Object#initialize — accepts any args and returns self.
  * Lets `super` from an overridden initialize at the top of the chain
