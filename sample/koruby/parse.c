@@ -3218,18 +3218,34 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               NODE *body = wn->statements ? transduce_statements(tc, wn->statements) : ALLOC_node_nil();
               NODE *cond_chain = NULL;
               for (size_t j = 0; j < wn->conditions.size; j++) {
-                  NODE *cv = T(tc, wn->conditions.nodes[j]);
+                  pm_node_t *cn_pm = wn->conditions.nodes[j];
                   NODE *eqq;
-                  if (subject) {
-                      /* cv.===(tmp) — stage tmp at arg slot, then method_call */
+                  if (subject && PM_NODE_TYPE_P(cn_pm, PM_SPLAT_NODE)) {
+                      /* `when *arr` — iterate arr at runtime; match if any
+                       * element ===s subject.  Use __case_splat_match
+                       * helper. */
+                      pm_splat_node_t *sp = (pm_splat_node_t *)cn_pm;
+                      NODE *list = sp->expression ? T(tc, sp->expression) : ALLOC_node_nil();
                       uint32_t ai = inc_arg_index(tc);
-                      inc_arg_index(tc); /* extra slot for fallback */
-                      rewind_arg_index(tc, ai);
+                      inc_arg_index(tc); rewind_arg_index(tc, ai);
                       struct method_cache *mc = alloc_method_cache();
-                      NODE *seq_arg = ALLOC_node_lvar_set(ai, ALLOC_node_lvar_get(slot));
-                      eqq = ALLOC_node_seq(seq_arg, ALLOC_node_method_call(cv, korb_intern("==="), 1, ai, mc));
+                      NODE *s1 = ALLOC_node_lvar_set(ai, list);
+                      NODE *s2 = ALLOC_node_lvar_set(ai + 1, ALLOC_node_lvar_get(slot));
+                      eqq = ALLOC_node_seq(s1, ALLOC_node_seq(s2,
+                          ALLOC_node_func_call(korb_intern("__case_splat_match"), 2, ai, mc)));
                   } else {
-                      eqq = cv;
+                      NODE *cv = T(tc, cn_pm);
+                      if (subject) {
+                          /* cv.===(tmp) — stage tmp at arg slot, then method_call */
+                          uint32_t ai = inc_arg_index(tc);
+                          inc_arg_index(tc); /* extra slot for fallback */
+                          rewind_arg_index(tc, ai);
+                          struct method_cache *mc = alloc_method_cache();
+                          NODE *seq_arg = ALLOC_node_lvar_set(ai, ALLOC_node_lvar_get(slot));
+                          eqq = ALLOC_node_seq(seq_arg, ALLOC_node_method_call(cv, korb_intern("==="), 1, ai, mc));
+                      } else {
+                          eqq = cv;
+                      }
                   }
                   cond_chain = cond_chain ? ALLOC_node_or(cond_chain, eqq) : eqq;
               }
