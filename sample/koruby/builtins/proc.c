@@ -142,7 +142,14 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     bool env_outside_stack = (new_fp < c->stack_base || new_fp >= c->stack_end);
     bool method_overlaps_env = (prev_fp && prev_fp != new_fp &&
                                 prev_fp >= new_fp && prev_fp <= new_fp + p->env_size);
-    if (method_overlaps_env || env_outside_stack) {
+    /* Self-recursion: a proc/lambda is being called from inside its own
+     * body (or a callee that hasn't returned yet).  prev_fp == new_fp
+     * means the same env slots are about to be overwritten — including
+     * the body's own locals, which must be per-call.  Clone so each
+     * invocation gets a fresh local-vars region; closure-captured outer
+     * vars still propagate via the writeback step below. */
+    bool self_recursion = (prev_fp == new_fp && new_fp != NULL);
+    if (method_overlaps_env || env_outside_stack || self_recursion) {
         fresh_env = c->sp;
         for (uint32_t i = 0; i < p->env_size; i++) fresh_env[i] = new_fp[i];
         c->sp = fresh_env + p->env_size;
