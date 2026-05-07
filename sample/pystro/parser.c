@@ -3114,9 +3114,13 @@ parse_class(void)
                         nkw++;
                     }
                 } else if (first) {
+                    // PEP 646 unpacked base: `class C(*Ts): pass`.
+                    // Pystro has no TypeVarTuple semantics; ignore `*`.
+                    if (peek_tok(0)->kind == T_STAR) tok_pos++;
                     base = parse_expr();
                 } else {
                     if (nextra >= 8) parse_error("too many base classes");
+                    if (peek_tok(0)->kind == T_STAR) tok_pos++;
                     extra_bases[nextra++] = parse_expr();
                 }
                 first = false;
