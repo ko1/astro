@@ -177,7 +177,8 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
                 return Qnil;
             }
         }
-        /* $. should call #to_int. */
+        /* $. should call #to_int.  Returned value must be Integer; if
+         * #to_int gives non-Integer, raise TypeError. */
         if (strcmp(nm, "$.") == 0) {
             if (SPECIAL_CONST_P(v) ? !FIXNUM_P(v) : BUILTIN_TYPE(v) != T_BIGNUM) {
                 VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
@@ -186,6 +187,14 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
                 if (RTEST(rt)) {
                     v = korb_funcall(c, v, korb_intern("to_int"), 0, NULL);
                     if (c->state != KORB_NORMAL) return Qnil;
+                    bool is_int = SPECIAL_CONST_P(v) ? FIXNUM_P(v)
+                                                     : BUILTIN_TYPE(v) == T_BIGNUM;
+                    if (!is_int) {
+                        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                        korb_raise(c, (struct korb_class *)eT,
+                                   "can't convert to Integer (#to_int returned non-Integer)");
+                        return Qnil;
+                    }
                 } else {
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
                     korb_raise(c, (struct korb_class *)eT,

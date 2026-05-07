@@ -181,6 +181,9 @@ void korb_init_builtins(void) {
     DEF(cFlt, "*", flt_mul, 1);
     DEF(cFlt, "/", flt_div, 1);
     DEF(cFlt, "to_s", flt_to_s, 0);
+    extern VALUE flt_to_i(CTX *c, VALUE self, int argc, VALUE *argv);
+    DEF(cFlt, "to_i",   flt_to_i, 0);
+    DEF(cFlt, "to_int", flt_to_i, 0);
     DEF(cFlt, "step", flt_step, -1);
     DEF(cFlt, "nan?",      flt_nan_p,      0);
     DEF(cFlt, "infinite?", flt_infinite_p, 0);

@@ -263,7 +263,7 @@ static VALUE flt_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (isnan(a) || isnan(b)) return Qnil;
     return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
 }
-static VALUE flt_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
+VALUE flt_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX((long)korb_num2dbl(self));
 }
 static VALUE flt_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
