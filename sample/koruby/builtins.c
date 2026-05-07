@@ -63,9 +63,11 @@ void korb_init_builtins(void) {
         VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv);
         VALUE kernel_kwsplat_to_hash_lenient(CTX *c, VALUE self, int argc, VALUE *argv);
         VALUE kernel_to_block_arg(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv);
         DEF(cObj, "__kwsplat_to_hash", kernel_kwsplat_to_hash, 1);
         DEF(cObj, "__kwsplat_to_hash_lenient", kernel_kwsplat_to_hash_lenient, 1);
         DEF(cObj, "__to_block_arg", kernel_to_block_arg, 1);
+        DEF(cObj, "__rescue_splat_match", kernel_rescue_splat_match, 2);
     }
     DEF(cObj, "print", kernel_print, -1);
     DEF(cObj, "raise", kernel_raise, -1);

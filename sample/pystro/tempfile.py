@@ -74,6 +74,13 @@ class SpooledTemporaryFile(NamedTemporaryFile):
         super().__init__(mode=mode, **kw)
 
 
+def mktemp(suffix="", prefix="tmp", dir=None):
+    """Deprecated; pystro stub returns a unique-ish name without
+    creating the file."""
+    if dir is None: dir = gettempdir()
+    return os.path.join(dir, _make_name(prefix, suffix))
+
+
 class TemporaryDirectory:
     def __init__(self, suffix="", prefix="tmp", dir=None):
         self.name = mkdtemp(suffix, prefix, dir)

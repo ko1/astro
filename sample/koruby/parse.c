@@ -2005,13 +2005,18 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           return ALLOC_node_redo();
       }
       case PM_SINGLETON_CLASS_NODE: {
-          /* class << obj; body; end */
+          /* class << obj; body; end — opens a fresh lexical/local scope.
+           * Wrap the body in node_scope so the body's locals (e.g. a
+           * `rescue => e`'s `e`) get their own fp window instead of
+           * clobbering the parent's slots. */
           pm_singleton_class_node_t *n = (pm_singleton_class_node_t *)node;
           NODE *recv = T(tc, n->expression);
           push_frame(tc, &n->locals, false);
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
+          uint32_t mx = tc->frame->max_cnt;
           pop_frame(tc);
-          return ALLOC_node_singleton_class_body(recv, body);
+          NODE *body_scope = ALLOC_node_scope(mx, body);
+          return ALLOC_node_singleton_class_body(recv, body_scope);
       }
       case PM_IMAGINARY_NODE: {
           /* `5i` → `Complex(0, 5)`. */
@@ -2972,20 +2977,37 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       if (copy) body_for_clause = ALLOC_node_seq(copy, body_for_clause);
                   }
                   /* Build cond: K1 === exc || K2 === exc || ...
+                   * Splat exceptions (`rescue *list => e`) lower to
+                   * `__rescue_splat_match?(list, exc)` which iterates
+                   * the array at runtime.
                    * If exceptions list is empty, match anything. */
                   NODE *cond = NULL;
                   if (rc->exceptions.size == 0) {
                       cond = ALLOC_node_true();
                   } else {
                       for (size_t j = 0; j < rc->exceptions.size; j++) {
-                          NODE *klass = T(tc, rc->exceptions.nodes[j]);
-                          uint32_t ai = inc_arg_index(tc);
-                          rewind_arg_index(tc, ai);
-                          struct method_cache *mc = alloc_method_cache();
+                          pm_node_t *xn = rc->exceptions.nodes[j];
+                          NODE *one;
                           NODE *exc_get = ALLOC_node_lvar_get(exc_idx);
-                          NODE *seq = ALLOC_node_lvar_set(ai, exc_get);
-                          NODE *one = ALLOC_node_seq(seq,
-                              ALLOC_node_method_call(klass, korb_intern("==="), 1, ai, mc));
+                          if (PM_NODE_TYPE_P(xn, PM_SPLAT_NODE)) {
+                              pm_splat_node_t *sp = (pm_splat_node_t *)xn;
+                              NODE *list = sp->expression ? T(tc, sp->expression) : ALLOC_node_nil();
+                              uint32_t ai = inc_arg_index(tc);
+                              inc_arg_index(tc); rewind_arg_index(tc, ai);
+                              struct method_cache *mc = alloc_method_cache();
+                              NODE *s1 = ALLOC_node_lvar_set(ai, list);
+                              NODE *s2 = ALLOC_node_lvar_set(ai + 1, exc_get);
+                              one = ALLOC_node_seq(s1, ALLOC_node_seq(s2,
+                                  ALLOC_node_func_call(korb_intern("__rescue_splat_match"), 2, ai, mc)));
+                          } else {
+                              NODE *klass = T(tc, xn);
+                              uint32_t ai = inc_arg_index(tc);
+                              rewind_arg_index(tc, ai);
+                              struct method_cache *mc = alloc_method_cache();
+                              NODE *seq = ALLOC_node_lvar_set(ai, exc_get);
+                              one = ALLOC_node_seq(seq,
+                                  ALLOC_node_method_call(klass, korb_intern("==="), 1, ai, mc));
+                          }
                           cond = cond ? ALLOC_node_or(cond, one) : one;
                       }
                   }

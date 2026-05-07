@@ -133,6 +133,36 @@ static VALUE kwsplat_convert(CTX *c, VALUE v) {
     return r;
 }
 
+/* `rescue *list => e` lowering: list may be Array (or anything with
+ * to_a).  Returns true iff any element of the converted list ===s exc.
+ * On a non-Array / non-to_a list, raises TypeError to match CRuby. */
+VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 2) return Qfalse;
+    VALUE list = argv[0];
+    VALUE exc  = argv[1];
+    if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
+        VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+        if (c->state != KORB_NORMAL) return Qfalse;
+        if (RTEST(rt)) {
+            list = korb_funcall(c, list, korb_intern("to_a"), 0, NULL);
+            if (c->state != KORB_NORMAL) return Qfalse;
+        }
+        if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT, "can't convert to Array (returned non-Array)");
+            return Qfalse;
+        }
+    }
+    struct korb_array *a = (struct korb_array *)list;
+    for (long i = 0; i < a->len; i++) {
+        VALUE r = korb_funcall(c, a->ptr[i], korb_intern("==="), 1, &exc);
+        if (c->state != KORB_NORMAL) return Qfalse;
+        if (RTEST(r)) return Qtrue;
+    }
+    return Qfalse;
+}
+
 /* `&expr` block-pass: nil → no block (Qnil); else expr.to_proc.
  * CRuby allows `m(&nil)` to mean "no block". */
 VALUE kernel_to_block_arg(CTX *c, VALUE self, int argc, VALUE *argv) {

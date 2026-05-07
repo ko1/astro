@@ -134,6 +134,24 @@ abs = abs_
 not_op = not_
 sub = sub  # idempotent
 
+def concat(a, b): return a + b
+def iconcat(a, b): a += b; return a
+
+
+def call(obj, /, *args, **kwargs):
+    return obj(*args, **kwargs)
+
+
+def indexOf(a, b):
+    for i, v in enumerate(a):
+        if v == b: return i
+    raise ValueError("not found")
+
+
+def countOf(a, b):
+    return sum(1 for v in a if v == b)
+
+
 __all__ = [
     "add", "sub", "mul", "truediv", "floordiv", "mod", "pow_", "pow",
     "neg", "pos", "abs_", "abs",
@@ -144,5 +162,6 @@ __all__ = [
     "itemgetter", "attrgetter", "methodcaller",
     "iadd", "isub", "imul", "itruediv", "ifloordiv", "imod", "ipow",
     "iand", "ior", "ixor", "ilshift", "irshift",
-    "index", "length_hint",
+    "index", "length_hint", "matmul", "imatmul",
+    "concat", "iconcat", "call", "indexOf", "countOf",
 ]

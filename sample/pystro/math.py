@@ -173,6 +173,41 @@ def perm(n, k=None):
         r *= (n - i)
     return r
 
+def fmax(a, b):
+    """math.fmax — like max() but ignores NaN."""
+    if isnan(a): return b
+    if isnan(b): return a
+    return a if a >= b else b
+
+
+def fmin(a, b):
+    if isnan(a): return b
+    if isnan(b): return a
+    return a if a <= b else b
+
+
+def isqrt(n):
+    if n < 0:
+        raise ValueError("isqrt: negative")
+    if n == 0: return 0
+    x = n
+    y = (x + 1) // 2
+    while y < x:
+        x = y
+        y = (x + n // x) // 2
+    return x
+
+
+def prod(iterable, *, start=1):
+    r = start
+    for x in iterable: r = r * x
+    return r
+
+
+def floor_div(a, b):  # legacy alias
+    return a // b
+
+
 def isclose(a, b, rel_tol=1e-9, abs_tol=0.0):
     diff = a - b
     if diff < 0: diff = -diff
