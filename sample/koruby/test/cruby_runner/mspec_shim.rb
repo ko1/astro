@@ -539,6 +539,12 @@ SPEC_TEMP_DIR = "/tmp/spec_temp" rescue nil
 # Suppress warning helper used in some specs.
 def suppress_warning; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end
 
+# mspec / TestUnit helper used by some specs to fail unconditionally.
+def flunk(msg = nil); raise MSpecError, msg || "flunked"; end
+# Return the value of $! at the calling point — some specs probe it via
+# this helper rather than referring to $! directly.
+def suppress_keyword_warning(&blk); blk.call; end
+
 # fixture helper — minimal stub.
 def fixture(file, *args)
   File.expand_path(args.last.to_s, File.dirname(file).to_s)
