@@ -133,6 +133,17 @@ static VALUE kwsplat_convert(CTX *c, VALUE v) {
     return r;
 }
 
+/* `&expr` block-pass: nil → no block (Qnil); else expr.to_proc.
+ * CRuby allows `m(&nil)` to mean "no block". */
+VALUE kernel_to_block_arg(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || NIL_P(argv[0])) return Qnil;
+    VALUE v = argv[0];
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_PROC) return v;
+    VALUE r = korb_funcall(c, v, korb_intern("to_proc"), 0, NULL);
+    if (c->state != KORB_NORMAL) return Qnil;
+    return r;
+}
+
 /* Lenient: `m(**nil)` is allowed and treated as no kwargs. */
 VALUE kernel_kwsplat_to_hash_lenient(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || NIL_P(argv[0])) return korb_hash_new();

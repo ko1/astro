@@ -398,13 +398,16 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                 }
                 real_args.size = bn;
                 real_args.nodes = buf;
-                /* Build `expr.to_proc` node manually.  Reserve a fresh
-                 * slot for its dispatch so we don't alias an outer
-                 * call's staging area. */
+                /* Convert `&expr` to a block via __to_block_arg helper:
+                 * nil → no block (Qnil); else expr.to_proc.  Reserve a
+                 * fresh slot for the helper's argv. */
                 NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
                 struct method_cache *mc = alloc_method_cache();
                 uint32_t tp_slot = inc_arg_index(tc);
-                NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, tp_slot, mc);
+                inc_arg_index(tc); rewind_arg_index(tc, tp_slot);
+                NODE *prep = ALLOC_node_lvar_set(tp_slot, expr);
+                NODE *to_proc = ALLOC_node_seq(prep,
+                    ALLOC_node_func_call(korb_intern("__to_block_arg"), 1, tp_slot, mc));
                 NODE *r = build_call_simple(tc, recv, name, &real_args, to_proc, is_method);
                 rewind_arg_index(tc, tp_slot);
                 return r;
@@ -2673,7 +2676,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   NODE *expr = ba->expression ? T(tc, ba->expression) : ALLOC_node_nil();
                   struct method_cache *mc_tp = alloc_method_cache();
                   uint32_t tp_slot = inc_arg_index(tc);
-                  NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, tp_slot, mc_tp);
+                  inc_arg_index(tc); rewind_arg_index(tc, tp_slot);
+                  NODE *prep = ALLOC_node_lvar_set(tp_slot, expr);
+                  NODE *to_proc = ALLOC_node_seq(prep,
+                      ALLOC_node_func_call(korb_intern("__to_block_arg"), 1, tp_slot, mc_tp));
                   call = build_call_simple(tc, recv_get, name, args ? &args->arguments : NULL, to_proc, true);
                   rewind_arg_index(tc, tp_slot);
               } else {
@@ -2853,10 +2859,16 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               if (!ba->expression || PM_NODE_TYPE_P(ba->expression, PM_NIL_NODE)) {
                   return build_call_simple(tc, recv, name, args ? &args->arguments : NULL, NULL, recv != NULL);
               }
+              /* Use __to_block_arg helper which converts nil → no block,
+               * else delegates to expr.to_proc.  This makes runtime-nil
+               * `&b` (with b == nil) match CRuby's "no block" behavior. */
               NODE *expr = T(tc, ba->expression);
               struct method_cache *mc_tp = alloc_method_cache();
               uint32_t tp_slot = inc_arg_index(tc);
-              NODE *to_proc = ALLOC_node_method_call(expr, korb_intern("to_proc"), 0, tp_slot, mc_tp);
+              inc_arg_index(tc); rewind_arg_index(tc, tp_slot);
+              NODE *prep = ALLOC_node_lvar_set(tp_slot, expr);
+              NODE *to_proc = ALLOC_node_seq(prep,
+                  ALLOC_node_func_call(korb_intern("__to_block_arg"), 1, tp_slot, mc_tp));
               NODE *r = build_call_simple(tc, recv, name, args ? &args->arguments : NULL, to_proc, recv != NULL);
               rewind_arg_index(tc, tp_slot);
               return r;
