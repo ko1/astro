@@ -93,7 +93,51 @@ LambdaType = FunctionType
 GeneratorType = type(_dummy_gen())
 BuiltinFunctionType = type(print)
 BuiltinMethodType = BuiltinFunctionType
-MethodType = type([].append)   # bound method on list
+
+
+# `MethodType(func, instance)` — bind func as a method of instance.
+# Pystro's intrinsic bound-method type isn't constructible, so emulate
+# it with a small callable class that holds (__func__, __self__).
+# A custom metaclass with __instancecheck__ makes isinstance() also
+# recognise pystro's intrinsic bound-method type (`type([].append)`),
+# so existing code that does `isinstance(C().m, types.MethodType)`
+# still works.
+_BoundMethodType = type([].append)
+
+
+class _MethodTypeMeta(type):
+    def __instancecheck__(cls, instance):
+        # First: pystro's intrinsic bound-method type (e.g. `[].append`,
+        # or any `inst.method` of a user class).
+        if type(instance) is _BoundMethodType:
+            return True
+        # Second: a real instance of MethodType (constructed via
+        # `types.MethodType(func, inst)`).
+        try:
+            for base in type(instance).__mro__:
+                if base is cls:
+                    return True
+        except Exception:
+            pass
+        return False
+
+
+class MethodType(metaclass=_MethodTypeMeta):
+    def __init__(self, func, instance):
+        self.__func__ = func
+        self.__self__ = instance
+    def __call__(self, *args, **kwargs):
+        return self.__func__(self.__self__, *args, **kwargs)
+    def __repr__(self):
+        return f"<bound method of {self.__self__!r}>"
+    def __getattr__(self, name):
+        return getattr(self.__func__, name)
+    def __eq__(self, o):
+        return (isinstance(o, MethodType)
+                and self.__func__ is o.__func__
+                and self.__self__ is o.__self__)
+    def __hash__(self):
+        return hash((id(self.__func__), id(self.__self__)))
 # MappingProxyType — read-only view of a dict.  Pystro implements as a
 # wrapper class that delegates lookups to an underlying dict and rejects
 # mutations.
