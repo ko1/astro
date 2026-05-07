@@ -37,21 +37,24 @@ best-of-3。**10 micro 中 9 で python3 を上回る** (dict_bench のみ遅い
 
 | ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `richards` (OS sched sim, ~400 行) | 1.09 s | 4.78 s | **2.31 s** | 2.12× (2.1× 遅い) |
-| `deltablue` (constraint solver, ~600 行) | 0.16 s | 1.20 s | **0.74 s** | 4.63× (4.6× 遅い) |
-| `raytrace` (簡易 raytracer, ~400 行) | 0.88 s | 4.05 s | **2.70 s** | 3.07× (3.1× 遅い) |
-| `crypto_pyaes` (pure-Py AES-CTR) | 0.53 s | 4.07 s | 3.02 s | 5.7× (5.7× 遅い) |
+| `richards` (OS sched sim, ~400 行) | 1.00 s | 4.78 s | **0.48 s** | **0.48× (2.1× FASTER)** |
+| `deltablue` (constraint solver, ~600 行) | 0.16 s | 1.20 s | **0.69 s** | 4.31× (4.3× 遅い) |
+| `raytrace` (簡易 raytracer, ~400 行) | 0.86 s | 4.05 s | **2.48 s** | 2.88× (2.9× 遅い) |
+| `crypto_pyaes` (pure-Py AES-CTR) | 0.54 s | 4.07 s | 2.73 s | 5.07× (5.1× 遅い) |
 
-`ae87e35` 〜 `ba3897e` で 4 段階の最適化を投入:
+`ae87e35` 〜 `3e90b55` で 5 段階の最適化を投入:
 - user-class method の monomorphic IC (`ae87e35`) → richards -29%
-- 4-way polymorphic IC (`2eadb18`) → richards -10% (polymorphic 解消)
-- pre-resolved dunder slot + intern (`bf286e0`) → richards -10%, raytrace -10%
+- 4-way polymorphic IC (method) (`2eadb18`) → richards 100% IC thrash 解消
+- pre-resolved dunder slot + intern (`bf286e0`) → strcmp 大幅減
 - attr_cache を attrs_id → class shape_version (`ba3897e`) → 大改善
+- attr_cache 4-way polymorphic (`3e90b55`) → richards さらに -78%
 
-最初の baseline (6.83 / 2.27 / 6.19 / 2.58) → 現在 (2.31 / 0.74 / 2.70 / 3.02):
-**richards 3.0× / deltablue 3.1× / raytrace 2.3× faster** (best-of-3)。
-crypto_pyaes は 17% 遅い (operator dunder `__add__/__or__/__xor__` が
-slot 未対応で 24-way scan 全 miss → slow path に落ちる; 後述)。
+最初の baseline (6.83 / 2.27 / 6.19 / 2.58) → 現在 (0.48 / 0.69 / 2.48 / 2.73):
+**richards 14.2× / deltablue 3.3× / raytrace 2.5× faster** (best-of-5)。
+**richards は python3 を 2.1× 上回る** (0.48s vs 1.00s)。
+
+crypto_pyaes はやや 遅い: bytes/bytearray 操作が memcpy/memset 主体
+で SD 層からは触れにくい。
 
 #### 計測結果 — どこで時間を食ってるか
 
