@@ -2086,6 +2086,22 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
            * IS the caller's lvar slot 0.  Return body unwrapped — runs
            * in caller's frame directly. */
           if (g_skip_program_scope) return body;
+          /* Top-level program: capture local names so a top-level
+           * `eval('lvar')` (no enclosing method / block) can resolve
+           * the lvar via the same side-table mechanism block / def use.
+           * The body NODE is what node_scope wraps; the ID list is
+           * looked up by kernel_eval against `body` (which it can
+           * obtain through a global program-body pointer, set below). */
+          if (n->locals.size > 0) {
+              ID *prog_names = korb_xmalloc(sizeof(ID) * (n->locals.size + 1));
+              for (size_t i = 0; i < n->locals.size; i++) {
+                  prog_names[i] = intern_constant(tc->parser, n->locals.ids[i]);
+              }
+              prog_names[n->locals.size] = 0;
+              korb_register_body_local_names(body, prog_names);
+              extern struct Node *korb_g_program_body;
+              korb_g_program_body = body;
+          }
           return ALLOC_node_scope(mx, body);
       }
       case PM_STATEMENTS_NODE:

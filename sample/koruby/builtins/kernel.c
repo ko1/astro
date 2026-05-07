@@ -1113,6 +1113,7 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      *      is the caller's AST method).
      */
     extern struct korb_proc *running_block;
+    extern struct Node *korb_g_program_body;
     extern ID *korb_body_local_names(struct Node *body);
     ID *names = NULL;
     if (running_block && running_block->body) {
@@ -1121,6 +1122,11 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!names && c->current_frame && c->current_frame->method &&
         c->current_frame->method->type == KORB_METHOD_AST) {
         names = c->current_frame->method->u.ast.local_names;
+    }
+    /* Top-level: no method or block frame.  Use program body's lvar
+     * names (registered by parse.c when the script was loaded). */
+    if (!names && !c->current_frame && korb_g_program_body) {
+        names = korb_body_local_names(korb_g_program_body);
     }
     if (names) {
         size_t n = 0;

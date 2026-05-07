@@ -1941,6 +1941,11 @@ struct korb_proc *current_block = NULL;
 /* Block / proc / lambda currently executing — distinct from current_block
  * (which is the block PASSED to the current method).  See object.h. */
 struct korb_proc *running_block = NULL;
+/* Top-level program body — set by parse.c when transducing the
+ * outermost PM_PROGRAM_NODE.  Used by kernel_eval to find the script's
+ * own lvar names when eval is called with no enclosing method / block
+ * frame. */
+struct Node *korb_g_program_body = NULL;
 
 bool korb_block_given(void) { return current_block != NULL; }
 
