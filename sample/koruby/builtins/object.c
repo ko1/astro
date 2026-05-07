@@ -187,6 +187,20 @@ VALUE mod_class_variable_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
  * creating one if needed.  All subsequent define_method on it adds
  * a method visible only to this object. */
 VALUE obj_singleton_class(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* CRuby: true / false / nil have no real singleton class; the
+     * .singleton_class method returns the regular class (TrueClass /
+     * FalseClass / NilClass).  Symbols and Integers raise TypeError
+     * (immutable identity is shared across all instances). */
+    if (NIL_P(self) || self == Qtrue || self == Qfalse) {
+        return (VALUE)korb_class_of_class(self);
+    }
+    if (SPECIAL_CONST_P(self) && (FIXNUM_P(self) || SYMBOL_P(self) || KORB_IS_FLOAT(self))) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "can't define singleton on %s",
+                   korb_id_name(korb_class_of_class(self)->name));
+        return Qnil;
+    }
     extern struct korb_class *korb_singleton_class_of_value(VALUE v);
     struct korb_class *meta = korb_singleton_class_of_value(self);
     if (!meta) {
