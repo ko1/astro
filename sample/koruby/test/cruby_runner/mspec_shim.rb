@@ -408,9 +408,55 @@ class MSpecNegatedExpectation < MSpecExpectation
   # ... incomplete; fall back to the matcher's negation
 end
 
-# ruby_version_is "3.0" do ... end — we always run the body (latest ruby).
-def ruby_version_is(_v, &blk); blk.call if blk; end
-def ruby_version_is_not(_v, &blk); end  # skip lower-version-only branches
+# ruby_version_is supports a String "3.0" (>=) or a Range "..."3.4"
+# (only versions before 3.4).  We pretend to be Ruby 3.4 (master).
+KORB_RUBY_VERSION = "3.4.0"
+
+def __version_cmp(a, b)
+  pa = a.split('.').map(&:to_i)
+  pb = b.split('.').map(&:to_i)
+  n = pa.size > pb.size ? pa.size : pb.size
+  n.times do |i|
+    pi = pa[i] || 0
+    qi = pb[i] || 0
+    return -1 if pi < qi
+    return 1  if pi > qi
+  end
+  0
+end
+
+def __version_le(a, b); __version_cmp(a, b) <= 0; end
+def __version_lt(a, b); __version_cmp(a, b) <  0; end
+def __version_ge(a, b); __version_cmp(a, b) >= 0; end
+
+def __ruby_version_in_range?(v)
+  if v.is_a?(Range)
+    lo = v.begin.to_s.empty? ? "0" : v.begin
+    hi = v.end
+    cur = KORB_RUBY_VERSION
+    lo_ok = __version_ge(cur, lo)
+    if hi.nil?
+      hi_ok = true
+    elsif v.exclude_end?
+      hi_ok = __version_lt(cur, hi)
+    else
+      hi_ok = __version_le(cur, hi)
+    end
+    lo_ok && hi_ok
+  else
+    __version_ge(KORB_RUBY_VERSION, v)
+  end
+end
+
+def ruby_version_is(v, &blk)
+  return unless blk
+  blk.call if __ruby_version_in_range?(v)
+end
+
+def ruby_version_is_not(v, &blk)
+  return unless blk
+  blk.call unless __ruby_version_in_range?(v)
+end
 def ruby_bug(_id, _v); yield if block_given?; end
 def platform_is(*_opts, &blk); end
 def platform_is_not(*_opts, &blk); blk.call if blk; end
