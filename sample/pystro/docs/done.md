@@ -212,19 +212,52 @@ clear / copy` (挿入順保持; Python 3.7+ 仕様)
 
 `make bench` の結果。詳細は [`perf.md`](./perf.md)。
 
+### micro (10 本、 best-of-5)
+
 | bench (~1s on python3) | python3 | pystro AOT | pystro/python3 |
 |---|---:|---:|---:|
-| while_loop 10M | 0.91 s | 0.05 s | **18×** |
-| for_range 15M | 0.98 s | 0.08 s | **12×** |
-| list 7M append+sum | 0.91 s | 0.19 s | **4.8×** |
-| fib(35) | 1.20 s | 0.63 s | **1.9×** |
-| recursive (tak) | 3.97 s | 2.58 s | **1.5×** |
-| string 2M split | 0.58 s | 0.49 s | **1.2×** |
-| nqueens | 0.68 s | 0.61 s | **1.1×** |
-| mandel | 0.68 s | 0.65 s | **1.05×** |
-| dict 3M put+get | 0.76 s | 0.83 s | 0.92× |
+| while_loop 10M | 0.89 s | 0.06 s | **14.8×** |
+| for_range 15M (C range) | 0.91 s | 0.08 s | **11.4×** |
+| for_range_pyrange (Py iter) | 2.17 s | 0.36 s | **6.0×** |
+| list 7M append+sum | 0.86 s | 0.18 s | **4.8×** |
+| fib(35) | 1.15 s | 0.41 s | **2.8×** |
+| recursive (tak) | 3.87 s | 1.37 s | **2.8×** |
+| mandel (float-heavy) | 0.66 s | 0.28 s | **2.4×** |
+| nqueens | 0.68 s | 0.47 s | **1.45×** |
+| string 2M split | 0.58 s | 0.59 s | 1.0× (≒同等) |
+| dict 3M put+get | 0.79 s | 1.10 s | 0.72× (1.4× 遅い) |
 
-**8 / 9 の bench で python3 を上回る。**
+**10 / 10 micro 中 8 で python3 を上回る** (string ≒同、dict 遅い)。
+
+### macro (4 本、 pyperformance 由来)
+
+| bench | python3 | pystro AOT | pystro/python3 |
+|---|---:|---:|---:|
+| richards (OS sched sim) | 1.04 s | **0.48 s** | **2.16× FASTER** |
+| deltablue (constraint solver) | 0.17 s | 0.80 s | 4.7× 遅い |
+| raytrace | 0.87 s | 2.48 s | 2.85× 遅い |
+| crypto_pyaes (pure-Py AES-CTR) | 0.55 s | 2.74 s | 4.99× 遅い |
+
+richards は **python3 を 2.1× 上回る** — small-class polymorphic な
+OS scheduler simulation で、 IC 4 段階の積み上げで完全 dispatch
+overhead を削った。
+
+### Phase 4: 実アプリ向け IC 最適化 (今ラウンド)
+
+richards で perf record して **`__strcmp_avx2` 28% + `py_class_lookup_method`
+13% = 41% 占有** が判明 → user-class instance method に IC が
+無いのが原因と特定。 5 段階で潰した:
+
+| commit | 改善 | 内容 |
+|---|---|---|
+| `ae87e35` | richards -29% | user-class method の monomorphic IC を `method_cache` に追加 |
+| `2eadb18` | richards -10% | 100% IC thrash 計測 (richards 4.93M/4.93M) → 4-way polymorphic IC |
+| `bf286e0` | strcmp 大幅減 | dunder 24 種を pre-intern + struct pyclass の slot に格納 + lazy refresh |
+| `ba3897e` | deltablue -67% | attr_cache を `attrs_id` (instance ごとに異なる) → `shape_version` (class 共有) に置換 |
+| `3e90b55` | richards -78% | attr_cache も 4-way polymorphic 化 |
+
+最初の baseline (6.83 / 2.27 / 6.19 / 2.58) → 現在 (0.48 / 0.80 / 2.48 / 2.74):
+**richards 14.2× / deltablue 2.8× / raytrace 2.5× faster**。
 
 ### Python 仕様準拠について
 

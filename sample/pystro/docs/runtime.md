@@ -226,11 +226,27 @@ nested class call の outer kwargs leak は R18 で metaclass __call__
 `@ref` で末尾に cache 構造体ポインタを埋め込み、 ASTroGen が hash 計算
 スキップ + dump スキップ + specialize 時に `&n->u.<kind>.<field>` を emit。
 
-| キャッシュ | フィールド | 効果 |
+| キャッシュ | 形 | 効果 |
 |---|---|---|
 | `gref_cache` | `{serial, idx}` | global lookup の strcmp 排除 |
-| `attr_cache` | `{cls_ptr, attrs_id, eidx}` | instance attr の dict lookup 排除 |
-| `method_cache` | `{type_tag, fn}` | bound-method 確保排除 (xs.append(i) 等) |
+| `attr_cache` | 4-way (cls, shape_version, eidx) | instance attr の dict lookup を class 共有の shape_version で 1 命令検証 |
+| `method_cache` | builtin path: `{type_tag, fn}` / user-class path: 4-way (cls, fn) | bound-method 確保 + MRO walk + strcmp 排除 |
+
+**`attr_cache` の shape_version**: instance ごとの `attrs_id` ではなく
+class が持つ shape_version を比較する設計 (commit `ba3897e`)。 同じ class
+の複数 instance 間で eidx を共有でき、 deltablue で hit 率 11% → 71% に。
+shape_version は `py_class_add_method` で bump される (構造変化のみ)。
+
+**4-way polymorphic IC**: `Constraint` subclass の混合 iteration のような
+polymorphic call site で monomorphic IC は thrash する (richards で
+4.93M/4.93M = 100% miss を計測)。 4 entry 配列で linear scan + LRU 挿入
+することで thrash 解消 (commit `2eadb18` / `3e90b55`)。
+
+**dunder slot pre-resolution**: 24 種の特殊メソッド名 (`__init__`、
+`__eq__` など) を struct pyclass の専用フィールドに pre-resolve。
+`py_class_lookup_method` の hot path は `name == PYSTRO_INTERN_eq` の
+ようなポインタ一発比較 + フィールド load で済み、 MRO walk + strcmp は
+slow path のみ (commit `bf286e0`)。 詳細は [perf.md](./perf.md) Phase 4。
 
 ## 6. parser
 

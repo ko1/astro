@@ -24,7 +24,23 @@ total=394  pass=28  mixed=322  crash/timeout=18  parse_err=22  import_err=4
 
 ### ベンチ ([perf.md](./perf.md) より)
 
-9 ベンチ中 8 で python3 を上回る。 dict_bench のみ 1.41× 遅い。
+micro 10 中 8 で python3 を上回る (`while_loop` 14.8× / `for_range`
+11.4× / `pyrange` 6× / `list_bench` 4.8× / `fib35` 2.8× / `recursive` 2.8×
+/ `mandel` 2.4× / `nqueens` 1.45×)。 `string_bench` 同等、 `dict_bench`
+1.4× 遅い。
+
+macro (pyperformance 由来) 4 本中 1 で python3 を上回る:
+
+| ベンチ | python3 | pystro AOT | 比 |
+|---|---:|---:|---:|
+| richards | 1.04 s | **0.48 s** | **2.1× FASTER** |
+| deltablue | 0.17 s | 0.80 s | 4.7× |
+| raytrace | 0.87 s | 2.48 s | 2.85× |
+| crypto_pyaes | 0.55 s | 2.74 s | 4.99× |
+
+method_cache / attr_cache の 4-way polymorphic IC + dunder slot で
+Phase 4 は完了。 残るのは operator dunder の slot 化 (raytrace 用)、
+bytes 操作の専用化 (pyaes 用)、 そして dict_bench の str-key 専用パス。
 
 ---
 
@@ -89,19 +105,36 @@ parse 時の検証強化は段階的に。
   group `(...)`、 lazy `*?+??`、 IGNORECASE は対応。
   `{n,m}` brace quantifier、 lookaround、 後方参照、 Unicode property は未対応。
 
+#### operator dunder の slot 化 (raytrace 用)
+
+raytrace は Vector の `__add__/__sub__/__mul__/__neg__` が **slot
+未対応** で MRO walk + strcmp に落ち、 `__strcmp_avx2` が 23% 占有。
+struct pyclass を直接拡大するアプローチは struct 全体が膨れて
+attr_cache hot path のキャッシュ効率を下げて net 不利になった
+(試した範囲、 commit せず revert)。
+
+別アプローチ案:
+- slot を別 struct に切り出して pyclass→slot table へポインタ 1 個
+  だけ持たせる (struct pyclass 自体は膨らまない)
+- perfect hash dispatch — `PYSTRO_INTERN_*` の固定アドレスを bucket
+  化して 1〜2 compare で slot 解決
+- 直接 py_add/py_sub などから offsetof で slot field 読む (struct
+  拡大の副作用を kill しないと win しない)
+
+#### bytes 操作の専用化 (pyaes 用)
+
+`__memmove_avx_unaligned_erms` 4.9% + `__memset_avx2_unaligned_erms`
+4.9% + `GC_malloc_kind` 7.9% で SD 層から触れにくい層が hot。
+XOR / slice / concat に inline path を入れる方向。
+
 #### dict_bench で python3 を抜く
 
-現状 1.41× 遅い ([perf.md](./perf.md))。 残ボトルネック:
-
-- `py_dict_set` / `py_hash` の関数呼び出しコスト
-- AST dispatcher 自体のオーバーヘッド
-- R18 で `PYSTRO_BI_KWC` save/restore を入れた分の overhead
-
-改善案:
+現状 1.4× 遅い ([perf.md](./perf.md))。 CPython は str-key 専用
+layout など細かい最適化を持っていて、 generic open-addressing 1 種の
+pystro では届かない。 改善案:
 - `py_dict_set` / `pydict_find` を `static inline` 化
-- CPython 風 string-only dict layout 追加
-- AST direct dispatch 設計の限界に近いので、 これ以上は specialized
-  path 増やす方向。
+- str-key 専用 dict layout 追加 (CPython 風)
+- `PYSTRO_BI_KWC` save/restore (metaclass __call__) の overhead 削減
 
 #### chained-raise propagation の overhead 削減
 

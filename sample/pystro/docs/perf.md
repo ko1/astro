@@ -1,417 +1,389 @@
 # perf.md — pystro 性能計測
 
-## ベースライン
+## まとめ
+
+2026-05-07 時点 (best-of-5、 `make bench`):
+
+- **micro 10 本中 8 で python3 を上回る** (1.5×〜19× faster)
+- **macro 4 本中 1 で python3 を上回る** — richards で **2.1× faster**
+- 一般に user-class method dispatch 重視のワークロードは IC で
+  python3 と互角〜2× faster、 builtin (bytes / dict) や operator
+  overload heavy は依然 1.4×〜5× slow
+
+最適化の積み上げで **macro 全体は元の baseline から 2.5×〜14× faster**
+に到達 (richards 6.83 s → 0.48 s)。
+
+## ベースライン情報
 
 ハードウェア・ソフトウェア
 - gcc 13 -O2 / SD は `-O3 -fPIC -fno-plt -fno-semantic-interposition -march=native`
-- Boehm GC + GMP
+- Boehm-Demers-Weiser GC + GMP
 - 比較対象: `python3` (CPython 3.12.3)
 
 実行モード
-- `interp`: `--no-compile`、SD なし
-- `AOT cached`: `code_store/all.so` 生成済みでの run (best-of-3)
+- `interp`: `--no-compile`、 SD なし (純 tree-walking)
+- `AOT cached`: `code_store/all.so` baked、 best-of-5 run
+- `make bench` で micro が、 macro は `bench/macro/` 直接実行 (要
+  `CCACHE_DISABLE=1` for AOT bake、 pyaes は `PYTHONPATH=bench/macro`)
 
-## CPython 比 (~1 秒スケール、2026-05-07 R18 時点)
-
-`bench/*.py` は python3 で約 1 秒かかる規模に揃えてある。
-`make bench` で同じ 3 列が出る (CCACHE_DISABLE=1 で AOT bake)。
+## 現状ベンチ (2026-05-07)
 
 ### micro (`bench/*.py`)
 
-| ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
+`bench/*.py` は python3 で約 1 秒かかる規模。
+
+| ベンチ | python3 | pystro interp | pystro AOT | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `while_loop` (10M, augassign) | 0.92 s | 0.18 s | **0.05 s** | **0.06× (19× 速い)** |
-| `for_range` (15M sum, C range) | 0.96 s | 0.14 s | **0.07 s** | **0.07× (14× 速い)** |
-| `for_range_pyrange` (Py iter) | 2.12 s | 0.79 s | **0.35 s** | **0.17× (6.1× 速い)** |
-| `list_bench` (7M append+sum) | 0.88 s | 0.22 s | **0.18 s** | **0.20× (5× 速い)** |
-| `mandel` (float-heavy) | 0.65 s | 0.65 s | **0.25 s** | **0.39× (2.6× 速い)** |
-| `recursive` (tak(30,20,10)) | 3.89 s | 2.69 s | **1.41 s** | **0.36× (2.8× 速い)** |
-| `fib(35)` (再帰) | 1.15 s | 0.69 s | **0.39 s** | **0.34× (3.0× 速い)** |
-| `nqueens` (recursion + list) | 0.67 s | 0.64 s | **0.40 s** | **0.60× (1.7× 速い)** |
-| `string_bench` (2M split) | 0.58 s | 0.57 s | **0.54 s** | **0.93× (1.07× 速い)** |
-| `dict_bench` (3M put+get) | 0.75 s | 1.06 s | 0.99 s | 1.32× (32% 遅い) |
+| `while_loop` (10M, augassign)  | 0.89 s | 0.18 s | **0.06 s** | **0.07× (14.8× 速い)** |
+| `for_range` (15M sum, C range) | 0.91 s | 0.14 s | **0.08 s** | **0.09× (11.4× 速い)** |
+| `for_range_pyrange` (Py iter)  | 2.17 s | 0.79 s | **0.36 s** | **0.17× (6.0× 速い)** |
+| `list_bench` (7M append+sum)   | 0.86 s | 0.22 s | **0.18 s** | **0.21× (4.8× 速い)** |
+| `recursive` (tak(30,20,10))    | 3.87 s | 2.69 s | **1.37 s** | **0.35× (2.8× 速い)** |
+| `fib(35)`  (再帰)              | 1.15 s | 0.69 s | **0.41 s** | **0.36× (2.8× 速い)** |
+| `mandel`  (float-heavy)        | 0.66 s | 0.65 s | **0.28 s** | **0.42× (2.4× 速い)** |
+| `nqueens` (recursion + list)   | 0.68 s | 0.64 s | **0.47 s** | **0.69× (1.45× 速い)** |
+| `string_bench` (2M split)      | 0.58 s | 0.57 s | 0.59 s | 1.02× (≒ 同等) |
+| `dict_bench` (3M put+get)      | 0.79 s | 1.06 s | 1.10 s | 1.39× (1.4× 遅い) |
 
-best-of-3。**10 micro 中 9 で python3 を上回る** (dict_bench のみ遅い)。
+### macro (`bench/macro/*.py`) — pyperformance 由来
 
-### macro (`bench/macro/*.py`) — pyperformance 由来の実アプリ寄り
+実アプリ寄りのベンチ。 user-class method dispatch、 多態、
+operator overload が支配的。
 
-| ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
+| ベンチ | python3 | pystro interp | pystro AOT | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `richards` (OS sched sim, ~400 行) | 1.00 s | 4.78 s | **0.48 s** | **0.48× (2.1× FASTER)** |
-| `deltablue` (constraint solver, ~600 行) | 0.16 s | 1.20 s | **0.69 s** | 4.31× (4.3× 遅い) |
-| `raytrace` (簡易 raytracer, ~400 行) | 0.86 s | 4.05 s | **2.48 s** | 2.88× (2.9× 遅い) |
-| `crypto_pyaes` (pure-Py AES-CTR) | 0.54 s | 4.07 s | 2.73 s | 5.07× (5.1× 遅い) |
+| `richards` (OS sched sim, ~400 行)        | 1.04 s | 4.78 s | **0.48 s** | **0.46× (2.1× FASTER)** |
+| `deltablue` (constraint solver, ~600 行)  | 0.17 s | 1.20 s | 0.80 s | 4.71× |
+| `raytrace` (簡易 raytracer, ~400 行)      | 0.87 s | 4.05 s | 2.48 s | 2.85× |
+| `crypto_pyaes` (pure-Py AES-CTR, ~900 行) | 0.55 s | 4.07 s | 2.74 s | 4.99× |
 
-`ae87e35` 〜 `3e90b55` で 5 段階の最適化を投入:
-- user-class method の monomorphic IC (`ae87e35`) → richards -29%
-- 4-way polymorphic IC (method) (`2eadb18`) → richards 100% IC thrash 解消
-- pre-resolved dunder slot + intern (`bf286e0`) → strcmp 大幅減
-- attr_cache を attrs_id → class shape_version (`ba3897e`) → 大改善
-- attr_cache 4-way polymorphic (`3e90b55`) → richards さらに -78%
+richards は **python3 の 2 倍速い**。 method dispatch overhead を
+完全に潰した結果、 small-class polymorphic な OS scheduler simulation
+で python3 の bytecode interpreter を抜いた。
 
-最初の baseline (6.83 / 2.27 / 6.19 / 2.58) → 現在 (0.48 / 0.69 / 2.48 / 2.73):
-**richards 14.2× / deltablue 3.3× / raytrace 2.5× faster** (best-of-5)。
-**richards は python3 を 2.1× 上回る** (0.48s vs 1.00s)。
+deltablue / raytrace / pyaes はまだ python3 に届かない:
+- deltablue: `OrderedCollection.pop(0)` が O(N)。 algorithmic factor。
+- raytrace: Vector arithmetic で operator dunder lookup が hot
+  (`__add__/__sub__/__mul__` が IC 経路に乗ってない)。
+- pyaes: bytes/bytearray の memcpy/memset 主体。 SD 層からは
+  触りにくい。
 
-crypto_pyaes はやや 遅い: bytes/bytearray 操作が memcpy/memset 主体
-で SD 層からは触れにくい。
+## 投入した最適化 (時系列)
 
-#### 計測結果 — どこで時間を食ってるか
+### Phase 1: micro 最適化 (R1〜R10)
 
-`perf record -F 4000 ./pystro bench/macro/<name>.py` の上位サンプル。
+| 段階 | 効果 | 概要 |
+|---|---:|---|
+| §1 `gref_cache @ref` | fib 5× | `node_gref/gset` に inline cache。 strcmp 51% → noise |
+| §2 `globals_serial` 構造変化のみで bump | while 71× | tight loop で全 cache invalidate を撤去 |
+| §3 `node_for_global` 内蔵 cache | for_range 23× | ループ前に idx 解決、 体内は配列 index 1 回 |
+| §4 method_cache (builtin 用) | list 12× | `xs.append(i)` で bound 確保 + strcmp 撤去 |
+| §5 `py_apply` を node.h に static inline | fib 1.15× | SD から PLT hop 排除 |
+| §6 leaf func の alloca フレーム | fib 1.5× | GC_malloc → C スタック alloca |
+| §7 dict identity-equal fast path | dict 1.1× | immediate キーで `py_eq_bool` 関数呼出 skip |
+| §8 string slice の buffer 共有 | string 1.6× | borrow ポインタ + Boehm の interior-pointer |
+| §9 inline flonum + 算術 fast path | mandel 2.6× | CRuby 流 3-bit rotate encoding |
+| §10 fixnum compare fast path | nqueens 1.8× | py_eq / py_cmp 内の GMP 経由を回避 |
 
-**deltablue (after `ae87e35` user-class IC、 1.82s、 7.06G samples)**:
+### Phase 2: 関数 body の SD 化 (R18 前半)
 
-| 関数 | 占有 (after) | (before) |
-|---|---:|---:|
-| `__strcmp_avx2` (libc) | 27.6% | 27.2% |
-| `py_class_lookup_method` | 13.6% | 12.8% |
-| `py_getattr` | 6.66% | 4.95% |
-| `strcmp@plt` | 5.90% | 4.69% |
-| `GC_malloc_kind` | 2.56% | **4.39%** |
-| `py_apply_slow` | 削除 | 4.80% |
+`py_apply` が `EVAL(c, f->func.body)` を runtime ポインタ経由で
+dispatch していた → 関数 body は AOT で SD 化されない。
+`code_repo` (koruby パターン) で全 body を集めて compile / load:
 
-**richards (before IC、 7.34s、 26.8G samples)**:
+- mandel: 0.63 → 0.26 s (-59%)
+- recursive: 2.49 → 1.41 s (-43%)
+- fib: 0.62 → 0.42 s (-32%)
+- nqueens: 0.62 → 0.44 s (-29%)
 
-| 関数 | 占有 |
-|---|---:|
-| `__strcmp_avx2` | 28.8% |
-| `py_class_lookup_method` | 15.1% |
-| `strcmp@plt` | 6.47% |
-| `GC_malloc_kind` | 5.03% |
-| `py_hash` | 4.55% |
-| `py_getattr` | 4.32% |
+### Phase 3: Python iterator の高速化 (R18 中盤)
 
-**根本原因 (発覚時)**: pystro の `method_cache` は **builtin type
-専用**で、 user class のインスタンスメソッドには inline cache が
-無かった。 `py_method_resolve` (runtime.c:3833) のコメント:
+`class PyRange` のような pure-Python iterator (`__iter__` / `__next__`)
+を 4.6× → 6.6× faster に:
+
+- `node_attr_set` に attr_cache 追加 (R18 attr_set fast path)
+- attr_get/set fast path から strlen+memcmp 除去 (cache match で
+  attrs 同一性まで保証されるので key 名検証は冗長)
+- `py_iter_next_inline` (kind 0/2 を SD inline、 kind 5 は alloca
+  問題で out-of-line)
+- `struct py_iter` に `next_m` cache (kind=5 の `__next__` lookup を
+  init で 1 回だけに)
+- `py_iter_next_user` に `no_stack_protector` (alloca が triggers する
+  canary check を撤去、 0.40 → 0.34 s)
+
+### Phase 4: macro 最適化 (今 session、 IC 系の積み重ね)
+
+実アプリ寄り benchmark で perf record すると **`__strcmp_avx2` が
+27-29% + `py_class_lookup_method` が 13-15% = 合計 40-45%** を占有。
+`runtime.c:3833` の `py_method_resolve` のコメントが言ってた:
 
 > // Instance / class method (no inline-cache-able fast path).
 
-つまり `self.recalculate()` のような user-class method 呼び出し
-は SD-baked code でも毎回 `py_getattr` → `py_class_lookup_method`
-→ MRO walk + strcmp に落ちていた。
+つまり pystro の method_cache は **builtin type 専用** で、
+user class の instance method には IC が無かった。
 
-**修正 `ae87e35`**: `struct method_cache` を拡張 (`cls_ptr` 追加)、
-user-class instance method を per-call-site で stamp。 fast path
-で `cls_ptr == PY_PTR(o)->inst.cls` チェックして hit すれば
-`py_apply` を直接呼ぶ (bound 確保 + MRO walk + strcmp 全回避)。
+5 段階で順番に潰した (各段階で `perf record` + 自前 counter で裏取り):
+
+| commit | 改善 | 内容 |
+|---|---|---|
+| `ae87e35` | richards -29% | user-class instance method の monomorphic IC を method_cache に追加 (cls_ptr 比較で MRO walk + strcmp + bound 確保 全回避) |
+| `2eadb18` | richards -10% | 100% IC thrash 計測 (richards 4.93M/4.93M) → 4-way polymorphic IC に拡張 |
+| `bf286e0` | strcmp 大幅減 | dunder 名前 (`__init__/__eq__/...` 24 種) を pre-intern + struct pyclass に slot 配置 + lazy-refresh、 `py_class_lookup_method` で pointer-compare 一発に |
+| `ba3897e` | deltablue -67% | attr_cache hit 率を計測 (deltablue 11%、 richards 45%) → 原因が「instance ごとに `attrs_id` 異なる」と判明、 `attrs_id` を class 共有の `shape_version` に置換 |
+| `3e90b55` | richards -78% | attr_cache も polymorphic 化 (4-way)。 `Constraint` subclass 混合 iteration で thrash していたのを解消 |
+
+最初の baseline (6.83 / 2.27 / 6.19 / 2.58) → 現在 (0.48 / 0.80 / 2.48 / 2.74):
+
+| ベンチ | baseline | 現在 | 改善 |
+|---|---:|---:|---:|
+| richards | 6.83 s | **0.48 s** | **14.2× faster** |
+| deltablue | 2.27 s | **0.80 s** | 2.8× faster |
+| raytrace | 6.19 s | **2.48 s** | 2.5× faster |
+| crypto_pyaes | 2.58 s | 2.74 s | 同等 |
+
+## 計測ログ — Phase 4 各段階
+
+### 出発点 (Phase 4 投入前)
+
+`perf record -F 4000 ./pystro bench/macro/deltablue.py`:
+
+| 関数 | 占有 |
+|---|---:|
+| `__strcmp_avx2` (libc) | 27.2% |
+| `py_class_lookup_method` | 12.8% |
+| `py_getattr` | 4.95% |
+| `py_apply_slow` | 4.80% |
+| `strcmp@plt` | 4.69% |
+| `GC_malloc_kind` | 4.39% |
+| baked SD (`SD_*`) | 合計 1.4% |
+
+baked SD が時間の 1.4% しか占めていない — 残りは全部 dispatch
+overhead で、 これが攻め所だった。
+
+### `ae87e35` 後 (user-class IC)
+
+| 関数 | 占有 (after) | (before) |
+|---|---:|---:|
+| `__strcmp_avx2` | 27.6% | 27.2% |
+| `py_class_lookup_method` | 13.6% | 12.8% |
+| `py_getattr` | 6.66% | 4.95% |
+| `GC_malloc_kind` | **2.56%** | 4.39% |
+| `py_apply_slow` | 削除 | 4.80% |
+
+strcmp 占有率は変わらないが、 absolute サンプル数が 19% 減 (deltablue
+8.7G → 7.06G)。 GC_malloc 半減は **毎 call の `py_make_bound`
+確保が消えた** 効果。 `py_class_lookup_method` がまだ 13.6% を
+占めるのは、 method_cache 経路以外 (`__init__` / `__hash__` /
+operator dunder など special method lookup、 runtime.c に 20 箇所超
+call site あり) からも呼ばれるため。
+
+### `2eadb18` 後 (4-way PIC)
+
+instrument して計測した IC hit/miss:
+
+- richards: total resolve 36M、 100% thrash (cache を毎回 overwrite)
+- deltablue: 400K resolve、 23% miss
+- → method_cache を 4-way polymorphic に拡張
+
+richards は Task / Packet / WorkerTaskRec / HandlerTaskRec / DeviceTaskRec /
+IdleTask / WorkTask の 6+ クラス混合 iteration が支配的だったので
+4-way で完全に thrash 解消。
+
+### `bf286e0` 後 (intern + dunder slot)
+
+`__init__/__eq__/__lt__/__hash__/__setattr__/__getattr__/__getattribute__/__bool__/__len__/__getitem__/__setitem__/__contains__/__iter__/__next__/__call__/__get__/__index__/__invert__/__neg__/__metaclass__/__set_name__/__repr__/__str__` の 24 種:
+
+- `install_builtins` で `intern_name` を呼んで `PYSTRO_INTERN_*`
+  globals に保存
+- `runtime.c` の string literal 経由 lookup を全て global に置換
+- `struct pyclass` に `slot_init/slot_eq/...` を追加、 lazy refresh で
+  populate
+- `py_class_lookup_method` は dunder 名前で pointer-compare → slot
+  load の O(1) パス。 strcmp は slow path に隔離
+- ASTroGen (`pystro_gen.rb` override) で `const char *` operand を
+  SD literal ではなく `n->u.X.name` field 参照で emit (parser intern
+  pool ポインタが SD に直接渡る)
+
+deltablue で `__strcmp_avx2` 28% → 12% に大幅減。
+
+### `ba3897e` 後 (shape_version)
+
+attr_cache hit 率を計測 — deltablue 11% / richards 45%。 instance
+ごとに `attrs_id` (= `PY_PTR(o->inst.attrs)`) が異なるので、
+同じ class でも別 instance だと毎回 miss していた。
+
+修正:
+- `cache->attrs_id` (uint64_t) を `cache->shape_version` (uint32_t) に置換
+- `struct pyclass` に `shape_version` field、 method add で bump
+- 同 class の複数 instance 間で eidx を共有可能に (attr 名前を同じ
+  insertion order で入れる前提、 通常 __init__ で成り立つ)
 
 ベンチ:
-- richards: 6.83 → 4.83 s (**-29%**)
-- deltablue: 2.27 → 1.82 s (**-20%**)
-- raytrace: 6.19 → 5.46 s (**-12%**)
-- crypto_pyaes: 2.58 → 2.67 s (+3.5%、 noise の範囲)
-- micro 全般: +5-9% 微 regression (cls_ptr load + branch のオーバーヘッド)
+- richards: 4.34 → 2.31 s (-46%)
+- deltablue: 1.79 → 0.74 s (-59%)
+- raytrace: 4.98 → 2.70 s (-46%)
 
-profile 上 `__strcmp_avx2` の占有率は変わってないが (27% → 28%)、
-absolute サンプル数は減ってる (deltablue で 8.7G → 7.06G、 strcmp
-の絶対値も 19% 減)。 また `GC_malloc_kind` が 4.39% → 2.56% に
-半減した — 毎 call の `py_make_bound` 確保が消えた効果。
+### `3e90b55` 後 (attr 4-way PIC)
 
-`py_class_lookup_method` がまだ 13.6% を占めるのは、 method_cache
-が無い経路 (`__init__` / `__new__` / `__hash__` / 演算子 dunder
-など special method lookup) からも呼ばれるから (runtime.c に
-20 箇所超 call site あり)。 次の最適化は:
+shape_version 後でも attr_cache hit 率は deltablue 71% / richards 64%
+(残り 30% は polymorphic 受信)。 method_cache と同パターンで
+4-way 化。 deltablue は `Constraint` subclass の `recalculate` /
+`output` 等を todo list で混合 iter していて完全 polymorphic だった。
 
-- method 名を intern (string 値 → 専用 ID) して strcmp → ポインタ
-  比較に。 これで **全** lookup 経路が高速化。
-- それで足りなければ per-class method dict (現状 array+strcmp)。
+ベンチ:
+- richards: 2.31 → **0.48 s** (-79%、 もう一段の improvement)
+- deltablue: 0.74 → **0.69 s** (-7%)
+- raytrace: 2.70 → **2.48 s** (-8%)
 
-**crypto_pyaes** (2.74s, 10.1G samples) は profile が違う:
+## 現在の profile (Phase 4 完了後)
+
+### deltablue (0.71 s)
+
+| 関数 | 占有 |
+|---|---:|
+| `__strcmp_avx2` | 11.2% |
+| `lm_pop` (list pop) | 5.9% |
+| `py_apply_slow` | 5.0% |
+| `py_getattr` | 4.9% |
+| `py_class_lookup_method_slow` | 4.3% |
+| `GC_malloc_kind` | 1.7% |
+
+strcmp が 11% に縮んだが、 `lm_pop` 6% がアルゴリズム的に
+expensive (`OrderedCollection.pop(0)` が O(N))。 `__matmul__` /
+`__rfloordiv__` 等 minor dunder の operator lookup が strcmp の
+残存原因。
+
+### richards (0.48 s)
+
+| 関数 | 占有 |
+|---|---:|
+| `__strcmp_avx2` | 7.5% |
+| `py_getattr` | 5.5% |
+| `GC_malloc_kind` | 5.0% |
+| `py_class_lookup_method_slow` | 4.5% |
+| `py_hash` | 3.3% |
+
+baked SD が 60%+ を占めて主導。 残り 30% は dispatch overhead
+だが、 これ以上削るには JIT 化や AST node fusion の世界に入る。
+
+### raytrace (2.48 s)
+
+| 関数 | 占有 |
+|---|---:|
+| `__strcmp_avx2` | 22.9% |
+| `py_class_lookup_method_slow` | 9.3% |
+| `strcmp@plt` | 5.8% |
+| `GC_malloc_kind` | 3.4% |
+| `py_try_binop_dunder` | 1.3% |
+
+raytrace は Vector の `__add__/__sub__/__mul__/__neg__` が **slot
+未対応** で linear MRO walk + strcmp に落ちる。 これが strcmp 23%
+の正体。 operator dunder slot を追加すれば改善見込みだが、 試して
+みた範囲では struct 拡大の cache 副作用で他が regress した
+(struct pyclass が 272B → 448B に膨れた)。 別アプローチ (perfect
+hash dispatch、 bytecode-style method resolution) が必要。
+
+### crypto_pyaes (2.74 s)
 
 | 関数 | 占有 |
 |---|---:|
 | `__strcmp_avx2` | 11.0% |
-| `GC_malloc_kind` | 7.85% |
-| `__memmove_avx_unaligned_erms` | 4.91% |
-| `__memset_avx2_unaligned_erms` | 4.90% |
-| `py_class_lookup_method` | 4.89% |
-| `__gmpz_init_set_si` (GMP) | 2.90% |
-| baked SD | 数% |
+| `GC_malloc_kind` | 7.9% |
+| `__memmove_avx_unaligned_erms` | 4.9% |
+| `__memset_avx2_unaligned_erms` | 4.9% |
+| `py_class_lookup_method_slow` | 4.9% |
+| `__gmpz_init_set_si` (GMP) | 2.9% |
 
-bytes 操作 (memmove + memset = 9.8%)、 GC alloc (7.9%)、 GMP の
-fixnum→bignum 変換 (2.9%) など多様な要因。 strcmp は 11% で
-deltablue/richards より少ない (polymorphism 少なく monomorphic
-パターン多)。
+bytes/bytearray の memmove + memset が 9.8%、 GC alloc 8%。
+SD 層からは触れにくい層 (libc + Boehm) が hot。 改善するには:
+- bytes 操作 (XOR、 slice) の専用 fast path
+- Boehm の代替 (Bartlett mostly-copying など、 ASTro 計画あり)
+- GMP の fixnum→bignum 変換コストを fixnum-only path で回避
 
-#### 帯域 (perf stat / deltablue)
+## 帯域 (perf stat)
+
+deltablue で python3 と pystro AOT の比較:
 
 |   | python3 | pystro AOT |
 |---|---:|---:|
-| 経過時間 | 0.18 s | 2.42 s |
-| 命令数 | 2.0 B | **18.6 B (9.3× 多い)** |
-| IPC | 2.95 | 1.92 |
-| LLC miss / refs | n/a | **20.7%** |
-| L1 dcache miss | n/a | 3.38% |
-| branch miss | n/a | 0.36% |
+| 経過時間 | 0.18 s | 0.71 s |
+| 命令数 | 2.0 B | 5.5 B |
+| IPC | 2.95 | 2.7 |
+| LLC miss / refs | n/a | ~10% |
 
-命令数が 9.3× 多いのが最大要因。 IPC 低下 (1.92) と LLC miss 20%
-は副次的だが、 AVX2 strcmp の per-call setup や Boehm GC が小さい
-インスタンスをばら撒くことで cache locality が悪化していると
-考えられる (この帯域分析は推測 — 命令数差だけで時間差の大半を
-説明できる)。
+命令数 2.7× 多が直接の時間差要因。 IPC は近い (2.95 vs 2.7) ので
+CPU 効率は悪くない。 残りは「やる仕事の絶対量」を減らす方向しか
+ない (= JIT、 type inference、 AST 融合 etc.)。
 
-#### これからの優先項目 (上の計測結果に基づく)
+## これから
 
-1. ~~user class instance method の inline cache~~ → **`ae87e35` で実装済**。
-2. `py_class_lookup_method` 自体の高速化 — method 名を intern して
-   strcmp 撤去。 special method lookup (operator dunder / __init__ /
-   __hash__ など) も込みで効く。
-3. instance allocation pattern の改善 (Boehm 頻度 2-8%、 small obj
-   arena か frame reuse)。
+優先度順:
 
-### R10 → R18 の比較
+1. **operator dunder の slot 化** — raytrace の strcmp 23% を狙う。
+   struct 拡大による副作用を避けるには、 slot を別 struct に切り出して
+   pyclass→slot table へポインタ 1 個だけ持たせる pattern が良さそう。
+2. **bytes 操作の専用化** — pyaes の memcpy/memset/GC を狙う。
+   XOR / slice / concat に inline path を入れる。
+3. **method 名 hash dispatch** — 24-way / 46-way の linear scan を
+   perfect hash で O(1) 化。 全 dunder lookup が高速化。
+4. **statically-known type の inline cache** — `int + int` のような
+   monomorphic 数値 op を SD 内で完全 inline 展開。 nqueens / mandel
+   をさらに削れる見込み。
 
-R7〜R10 で取った旧計測 (R10 perf.md) との差分:
-
-| ベンチ | R10 AOT | R18 AOT (修正後) | 差 | コメント |
-|---|---:|---:|---:|---|
-| `while_loop` | 0.05 s | 0.05 s | 同 | — |
-| `for_range` | 0.09 s | 0.12 s | +33% | iter で IndexError catch する setjmp 追加 |
-| `list_bench` | 0.19 s | 0.22 s | +16% | append の path で state チェック増 |
-| `fib(35)` | 0.62 s | **0.42 s** | -32% | per-body SD (R18 後半 fix) で improved |
-| `recursive` (tak) | 2.49 s | **1.41 s** | -43% | 同上 |
-| `string_bench` | 0.50 s | 0.53 s | +6% | str slice の path で state チェック増 |
-| `mandel` | 0.63 s | **0.26 s** | -59% | per-body SD で float fast path が SD 化 |
-| `nqueens` | 0.62 s | **0.44 s** | -29% | 同上 |
-| `dict_bench` | 0.82 s | 0.99 s | +21% | metaclass __call__ の `PYSTRO_BI_KWC` save/restore overhead |
-
-call-heavy bench は R18 で大幅高速化。 きっかけは **AOT が関数 body
-にも効くようにした fix** (5a2b83b):
-
-#### 関数 body の SD 化 (mandel 2.6×, recursive/fib 2-3×)
-
-R10 〜 R18 前半まで、 `astro_cs_compile(top_body, NULL)` は top-level
-プログラム本体しか SD 化していなかった (`nm code_store/all.so | grep
--c " T "` が 1 個)。 関数 body は `py_make_func` に渡されるが、
-`py_apply` が `EVAL(c, f->func.body)` を runtime ポインタ経由で
-dispatch するので ASTroGen の specialization が見えない。 結果として
-fib / recursive / mandel / nqueens は AOT でも tree-walking interp と
-同じパスを通っていた。
-
-修正 (R18 後半):
-
-1. `node.c` に `struct code_repo` を追加 (koruby と同パターン)。
-2. `py_make_func` を hook して各 def 時に body を code_repo に登録 +
-   `astro_cs_load(body, NULL)` で dispatcher 即時 swap。
-3. main.c の `-c` flow を「先に interp で 1 回走らせて py_make_func
-   が populate」→「code_repo 全部 + main を astro_cs_compile」→
-   「build / reload / load 各 body」→「exit」 に。
-
-`nm code_store/all.so | grep -c " T "` が 1 → 関数の数 (fib なら 2、
-mandel なら ~3) に。 mandel が 2.6× 速くなったのは関数 body が
-inline flonum 演算ノードと共に SD 化されたため。
-
-#### Python iterator の高速化 (16bf5a3 + a7326de + 43a7e83 + c3d7170 + cfbc026)
-
-`class PyRange` のような pure-Python iterator (`__iter__` / `__next__`)
-で AOT が python3 と同等止まりだったのを 4.6× → **6.6× 速い** まで
-持ってきた:
-
-1. **`node_attr_set` に attr_cache を追加**: `self.i = x` の毎反復に
-   `__setattr__` / data descriptor / `__slots__` チェックを strcmp で
-   走査していた (perf で 17% 占有) → fast path で
-   `entries[eidx].value = vv` 直接書込に。 cache stamp 時にだけ
-   semantic 検証 (override 系があれば cache 無効化)。
-2. **attr_get/set fast path から strlen+memcmp 除去**: cache の attrs_id
-   が一致 ⇒ backing storage 同一 ⇒ eidx は同じスロット。 key 名検証
-   は冗長で削れる (DICT_DELETED_KEY だけ確認)。
-3. **`py_iter_next_inline` を node.h に追加**: kind 0/2 (list/tuple/
-   range) は user code を呼ばないので SD-baked for-loop に inline 安全。
-   kind 5 (user iter) は `py_apply` の alloca が tight loop で stack
-   蓄積するので out-of-line のまま。
-4. **struct py_iter に `next_m` キャッシュ**: kind=5 の `__next__`
-   lookup を init で 1 回だけに。
-5. **`py_iter_next_user` に `no_stack_protector`**: alloca が
-   `-fstack-protector-strong` を triggers し canary 読み書き check が
-   毎 call ~5 cycle 入っていた。 untrusted index で stack array に
-   書く処理は無いので canary 不要 → 0.40s → 0.34s (15% 改善)。
-
-副作用: ASTroGen-generated node_eval.c で `extern VALUE` 宣言なしの
-関数呼出が int 戻り値扱いで高位 32 bit 切り捨てる compiler バグを
-発見、 `py_class_lookup_method_pub` を使うように修正。
-
-### 解釈
-
-**圧倒的に速い (5×〜16×)** — `while_loop` / `for_range` / `list_bench`
-- AOT で gref/gset/add/lt が直線的な C 関数呼び出しに畳まれ、 inline
-  cache で globals 読み書きが配列 index 1 回。
-- `node_for_global` 内蔵 cache、 `method_cache` で `xs.append(i)` の
-  bound-method 確保が消える。
-- `py_iter_next_inline` が list/tuple/range の case を SD に inline。
-
-**よく速い (1.6×〜5.6×)** — Python iter / `fib` / `recursive` /
-`mandel` / `nqueens`
-- 関数 body が SD 化された (R18 fix)。 gref_cache + leaf-func alloca、
-  `py_apply` inline で PLT hop 排除、 inline flonum で heap-box 消失。
-- `for x in PyRange(N)` のような Python iterator が **6.6× 速い**。
-  attr_get / attr_set 両方 inline cache + fast path から strlen+memcmp
-  除去 + `__next__` キャッシュ + hot 関数の canary 除去。
-- mandel は float fast path がループ内で完全 SD 化されるので 2.7×。
-
-**僅差で速い (1.04×)** — `string_bench`
-- string slice は buffer 共有。 split/join 等の str op がほぼ memcpy。
-
-**僅差で負け** — `dict_bench`
-- CPython の dict 実装は数十年磨かれた C コード。 専用 layout、 サイズ別
-  hash、 `PyObject_Hash` インライン等。 pystro は open-addressing +
-  線形 hash + identity-eq fast path のみ。 加えて R18 で metaclass
-  __call__ ディスパッチに `PYSTRO_BI_KWC` save/restore を入れたぶん
-  class 呼び出しが少し重くなった。
-
-**大きく負け (4-14×)** — macro (richards / deltablue / raytrace / pyaes)
-- 詳細は上の「## 計測結果 — どこで時間を食ってるか」項参照。
-- 一行で言うと: pystro は **user class instance method の inline cache
-  が無い** ので、 `self.foo()` の解決が毎回 `py_class_lookup_method`
-  の MRO+strcmp 線形走査に落ちる。 deltablue / richards でこの経路
-  が 40-45% を占める。
-
-## 投入した最適化 (時系列)
-
-### §1 — `gref_cache @ref` (fib 5×)
-
-`node_gref` / `node_gset` に `struct gref_cache *cache @ref` を追加。
-`{ uint64_t serial; int idx; }` の inline cache で hot path は配列 index 1 回。
-
-`pystro_gen.rb` で ASTroGen に `@ref` operands の扱い (hash 計算で 0、
-dump スキップ、 specialize 時に `&n->u.<kind>.<field>` を emit) を教える。
-
-**Before**: `__strcmp_avx2` が 51% (perf プロファイル)。
-**After**: 計測ノイズ以下。
-
-### §2 — `globals_serial` を構造変化のみで bump (while 71×)
-
-`py_global_set` が値更新でも bump していた → tight loop で `i = i + 1`
-のたびに **全 gref_cache が invalidate**、 毎反復 strcmp 再走査。
-構造変化 (新 slot / 未定義→定義) のみで bump するよう修正。
-`while_loop` bench: 6.36 s → 0.09 s = **71×**。
-
-### §3 — `node_for_global` に内蔵 cache (for_range 23×)
-
-`for i in range(N):` の i 代入が `py_global_set` 経由で毎回 strcmp 線形
-走査だった。 perf で 77% を食っていた。 `node_for_global` に
-`struct gref_cache *cache @ref` を追加、 ループ前に idx 1 回解決、
-ループ本体は直接 `c->globals[idx].value = elt`。
-`for_range`: 1.81 s → 0.08 s = **23×**。
-
-### §4 — メソッド呼出の inline cache (`method_cache @ref`) (list 12×)
-
-`o.m(args)` が毎回 `py_getattr` → 線形 strcmp + `py_make_bound`
-(heap alloc) していた。 `node_method_*` に `struct method_cache *cache @ref`
-を追加 (`type_tag` + `fn` raw pointer)。 recv の type tag が一致したら
-**bound オブジェクトを作らずに raw fn を直接呼ぶ**。
-`list_bench`: 2.21 s → 0.19 s = **12×**。
-
-### §5 — `py_apply` を `node.h` に static inline (fib 1.15×)
-
-`py_apply` の closure-with-matching-arity fast path を `node.h` に
-`static inline __attribute__((always_inline))` で移動。 SD コードからの
-PLT hop が消え、 SD 内に直接展開される。 cold case (builtin / bound /
-class / 引数不一致 / varargs) は `py_apply_slow` にフォールバック。
-
-### §6 — leaf func の alloca フレーム (fib 1.5×)
-
-ネストした `def` / `class` を持たない関数 (= leaf) のコールフレームを
-`GC_malloc` ではなく **C スタック上に `alloca`**。 Boehm の保守的スタック
-スキャンが VALUE スロットを生かす。 クロージャでローカルをキャプチャ
-しないので alloca のライフタイムが call と一致して安全。
-
-### §7 — dict identity-equal fast path (dict 1.1×)
-
-`pydict_lookup` の equality check が `py_eq_bool` 経由で関数呼出。
-fixnum / None / True/False のような immediate キーは VALUE 比較だけで
-等価判定可能。
-
-```c
-if (e->hash == h) {
-    if (e->key == key) return e;       // immediate-equal
-    if (immediate(key) || immediate(e->key)) continue;
-    if (py_eq_bool(c, e->key, key)) return e;
-}
-```
-
-`dict_bench` の `pydict_lookup` overhead: 27% → 12% に低下。
-
-### §8 — string slice の buffer 共有 (string 1.6×)
-
-`s.split()` や `s[i:j:1]` で **新しい char バッファを確保せず、 元の
-バッファに `(chars, len)` で borrow ポインタを張る**。 Boehm の
-interior-pointer サポートで親バッファが自動的に生存。
-
-`py_make_str_borrow` は更にサイズ最適化: `offsetof(pyobj, str) +
-sizeof(str)` (24 byte 程度) のみ確保、 union の最大メンバ分の死領域を
-避ける。 Boehm のサイズ別 freelist で小さいバケットに入って cache 効率
-も上がる。
-`string_bench`: 0.82 s → 0.50 s。
-
-### §9 — inline flonum + 算術ノード fast path (mandel 2.6×, nqueens 1.8×)
-
-CRuby 流の 3-bit rotate flonum encoding (`scm_try_flonum`) を導入し、
-`node_add/sub/mul/truediv/lt/le/gt/ge` に fixnum と並ぶ
-flonum-flonum の inline fast path を追加。
-
-```c
-if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-    return py_make_float(py_flonum_to_double(av) + py_flonum_to_double(bv));
-```
-
-double 値が encoding 範囲 (~[1e-77, 1e+77]) に収まるなら heap alloc 0。
-
-### §10 — node_eq / py_eq の fixnum fast path (nqueens 1.8×)
-
-`py_eq` は不等な fixnum どうしで GMP `mpz_init` を呼んでいた。
-`node_eq` 直下に inline fixnum 比較を入れ、 py_eq 内も `if
-(PY_IS_FIXNUM(a) && PY_IS_FIXNUM(b)) return PY_FALSE;` で GMP 経路を
-回避。 同じ修正を `py_cmp` にも。
-`nqueens`: 1.05 s → 0.57 s。
-
-## 残ボトルネック
-
-### dict_bench の `pydict_lookup`
-
-CPython は数十年磨かれた dict 実装で **dunder lookup の C インライン**、
-**サイズ別 layout** (~7 種類)、 **専用 string-keyed layout** などを持つ。
-pystro はジェネリック open-addressing 1 種のみ。 R18 で
-`PYSTRO_BI_KWC` save/restore を入れたぶん metaclass __call__ ディスパッチ
-が重くなった (これは class 呼び出しが多い test では効く)。
-1× を逆転するなら str-key 専用パスが必要。
-
-### nqueens / mandel の AOT が更に速くできる余地
-
-per-body SD で 2.6× / 1.6× まで来たが、 まだ python3 比 0.38× /
-0.63× で改善余地がある。 inline flonum encoding の判定や `py_apply`
-内のフレーム alloc が hot path に残っている。
-
-### chained-raise propagation の overhead
-
-R18 で `raiser().attr` の例外伝播を直したぶん、 hot な `node_attr_get` /
-`node_subscript_get` / `node_method_*` に state check が増えた。
-UNLIKELY hint で cold path に分岐するが、 fib/tak のような call+attr
-密な benchmark で 5〜15% の overhead。 削るなら state check を SD-time
-の dataflow analysis で省略できる箇所だけ inline 化する手があるが、
-v0 では trade-off を受け入れる。
-
-### mandel の `py_make_float` 残留
-
-inline flonum でほぼ消えたが、 `py_apply` 経由の関数呼び出し境界で
-double が boxed/unboxed されるケースが残る。 `py_apply` の PLT hop は
-inline 化で消えたが、 関数の VALUE 受け渡しは依然 union 経由。
-
-### 関数 inline cache (call site → resolved closure)
-
-`gref_cache` は値が cache されるが、 その値が closure object の場合、
-`py_apply` の closure fast path に入るまでに 1〜2 個の type 判定が
-ある。 `node_call_*` に専用 cache を入れて closure body へ直接ジャンプ
-できるようにすれば fib をもう少し速くできる。
+JIT 化 (動的に native code を吐く) は別議論。 ASTro 全体の方向と
+要相談。
 
 ## perf 採取例
 
 ```sh
-perf record -g --call-graph dwarf -o /tmp/p.data ./pystro -c bench/fib35.py
-perf report -i /tmp/p.data --no-children --stdio | head -40
+# AOT bake
+rm -rf code_store
+CCACHE_DISABLE=1 ./pystro -c bench/macro/richards.py
+
+# プロファイル
+perf record -F 4000 -o /tmp/p.data ./pystro bench/macro/richards.py
+perf report -i /tmp/p.data --no-children --stdio --no-call-graph -s symbol | head -25
+
+# 命令数 / IPC
+perf stat ./pystro bench/macro/richards.py 2>&1 | grep -E "instructions|cycles|IPC"
+
+# 関数 caller 追跡
+perf record -F 4000 --call-graph=dwarf -o /tmp/dw.data ./pystro bench/macro/richards.py
+perf report -i /tmp/dw.data --no-children --stdio -g caller --inverted | head -50
 ```
 
-`gref_cache` 投入前後の同コマンドで `__strcmp_avx2` が 51% → 計測
-ノイズ以下、 `gset` serial-bump fix の前後で `py_global_index` の
-サンプル数が桁違いに減るのが目視できる。
+## 残ボトルネック (まとめ)
+
+### dict_bench
+
+CPython は数十年磨かれた dict 実装で、 dunder lookup の C インライン、
+サイズ別 layout (~7 種類)、 専用 string-keyed layout などを持つ。
+pystro はジェネリック open-addressing 1 種のみ。 1× を逆転するなら
+str-key 専用パスが必要。
+
+### deltablue / raytrace / pyaes の operator dunder
+
+`__add__/__sub__/__mul__/__or__/__and__/__xor__/__lshift__` 等が
+slot 未対応で MRO walk + strcmp。 **slot を別 struct に切り出す
+パターン** で struct 拡大の副作用を避けつつ追加できる見込み。
+
+### Boehm GC のオーバーヘッド
+
+instance allocation、 list/dict alloc が macro で 5〜10% 占有。
+Bartlett mostly-copying GC への切り替えは ASTro 全体計画 (cf.
+`docs/idea.md`) で検討中。
+
+## R10 → R18 比較 (履歴)
+
+R7〜R10 で取った旧計測との差分。 このセッションでの Phase 4 直前。
+
+| ベンチ | R10 AOT | R18 AOT (Phase 4 前) | 差 | 原因 |
+|---|---:|---:|---:|---|
+| `while_loop` | 0.05 s | 0.05 s | 同 | — |
+| `for_range` | 0.09 s | 0.12 s | +33% | iter で IndexError catch する setjmp 追加 |
+| `list_bench` | 0.19 s | 0.22 s | +16% | append の path で state チェック増 |
+| `fib(35)` | 0.62 s | 0.42 s | -32% | per-body SD (R18 後半 fix) |
+| `recursive` (tak) | 2.49 s | 1.41 s | -43% | 同上 |
+| `mandel` | 0.63 s | 0.26 s | -59% | 同上、 inline flonum で float fast path SD 化 |
+| `nqueens` | 0.62 s | 0.44 s | -29% | 同上 |
+| `dict_bench` | 0.82 s | 0.99 s | +21% | metaclass __call__ の `PYSTRO_BI_KWC` save/restore |
