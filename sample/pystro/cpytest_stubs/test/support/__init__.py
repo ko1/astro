@@ -338,6 +338,30 @@ def reap_threads(fn):
     return fn
 
 
+def reset_code(fn):
+    return fn
+
+
+def make_legacy_pyc(source):
+    return source + "c"
+
+
+class _stop_after_first(object):
+    pass
+
+
+def detect_api_mismatch(*args, **kwargs):
+    return set()
+
+
+def check__all__(*args, **kwargs):
+    pass
+
+
+def is_resource_enabled(name):
+    return False
+
+
 def requires_debug_ranges():
     def deco(fn):
         return _unittest.skip("requires debug ranges")(fn)
