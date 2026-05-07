@@ -309,6 +309,12 @@ struct korb_frame {
      * mismatch and we can raise LocalJumpError instead of corrupting
      * the active method.  Bumped by korb_alloc_frame_id(). */
     uint64_t frame_id;
+    /* Singly-linked list of bindings created INSIDE this frame's
+     * lifetime.  At frame epilogue we walk the chain and copy the
+     * current fp slots into each binding's heap snapshot — so
+     * `bind = binding; ...; b = 1; @ret = bind` returns a binding
+     * that sees b's final value (CRuby heap-promote semantics). */
+    void *bindings_head;
 };
 
 /* push/pop frame helpers via macro */

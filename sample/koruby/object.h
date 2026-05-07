@@ -293,7 +293,17 @@ struct korb_binding {
     /* For new-local extension via local_variable_set / eval: when fp
      * may not have free slots, we fall back to this Hash. */
     VALUE extra_vars;
+    /* Linkage for the per-frame "bindings created here" list.  At
+     * frame epilogue we walk this list and snapshot the live fp into
+     * each binding's heap so the binding survives the frame return. */
+    struct korb_binding *next_in_frame;
 };
+
+/* Run at method epilogue: snapshot fp slots into each registered
+ * binding so they hold final values rather than the moment-of-take
+ * snapshot.  Called from prologue_ast_*_inl just before c->fp is
+ * restored to the previous frame. */
+void korb_binding_snapshot_frame(struct korb_frame *f);
 
 /* global VM */
 struct korb_vm {

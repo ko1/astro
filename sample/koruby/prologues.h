@@ -112,6 +112,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.super_skip_n = 0;
     extern uint64_t korb_g_next_frame_id;
     frame.frame_id = ++korb_g_next_frame_id;
+    frame.bindings_head = NULL;
     /* $_ / $~ are method-scoped — fresh slot per call.  We always init
      * because callees (e.g. kernel_print without args, or any method
      * that gets / =~ s its way into $_) reach for the current frame's
@@ -156,6 +157,12 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + mc->locals_cnt);
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + mc->locals_cnt);
+    }
+    /* Bindings created in this frame's lifetime: copy fp slots into
+     * their heap snapshots so they hold final values after the frame
+     * pops (CRuby heap-promote approximation). */
+    if (UNLIKELY(frame.bindings_head != NULL)) {
+        korb_binding_snapshot_frame(&frame);
     }
     c->fp = prev_fp;
     /* Always restore sp.  Without this, every method call leaves sp
@@ -232,6 +239,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.super_skip_n = 0;
     extern uint64_t korb_g_next_frame_id;
     frame.frame_id = ++korb_g_next_frame_id;
+    frame.bindings_head = NULL;
     /* $_ / $~ are method-scoped — fresh slot per call.  We always init
      * because callees (e.g. kernel_print without args, or any method
      * that gets / =~ s its way into $_) reach for the current frame's
@@ -276,6 +284,9 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + mc->locals_cnt);
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + mc->locals_cnt);
+    }
+    if (UNLIKELY(frame.bindings_head != NULL)) {
+        korb_binding_snapshot_frame(&frame);
     }
     c->fp = prev_fp;
     c->sp = prev_sp;

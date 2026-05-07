@@ -141,6 +141,15 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     b->live_fp = fp;
     b->live_base = base;
     b->live_frame_id = (c->current_frame ? c->current_frame->frame_id : 0);
+    /* Register on the live frame so we get a final-state snapshot
+     * when the frame epilogue runs.  Without this, `bind = binding;
+     * b = 1; @x = bind` produces a binding where bind.eval('b')
+     * sees the moment-of-take value (nil) rather than the final
+     * value (1) — losing one of CRuby's heap-promote properties. */
+    if (c->current_frame) {
+        b->next_in_frame = (struct korb_binding *)c->current_frame->bindings_head;
+        c->current_frame->bindings_head = b;
+    }
     if (fp && b->names_cnt > 0) {
         VALUE *heap = korb_xmalloc(sizeof(VALUE) * (b->names_cnt + 16));
         for (uint32_t i = 0; i < b->names_cnt; i++) {
@@ -422,6 +431,27 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
             scope_locals[i] = korb_id_name(b->names[i]);
         }
     }
+    /* If the live caller frame is still on the stack, refresh our
+     * heap snapshot from it so the eval body sees the latest values
+     * the method has written.  Mirrors CRuby's heap-promoted env. */
+    if (b->live_fp && b->live_frame_id) {
+        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            if (f->frame_id == b->live_frame_id) {
+                /* Refresh primary names only; binding-introduced names
+                 * live in our heap snapshot. */
+                /* names_cnt may include both primary and added.  The
+                 * primary count = whatever was in fp at create time,
+                 * but we don't track it separately.  Refresh all
+                 * slots — values for added names from live_fp are
+                 * meaningless but harmless (extras Hash overrides
+                 * anyway). */
+                for (uint32_t i = 0; i < b->names_cnt; i++) {
+                    b->fp[b->base + i] = f->fp[b->live_base + i];
+                }
+                break;
+            }
+        }
+    }
     /* Snapshot bind.names_cnt before parse so we know which names
      * are NEW after merging in the eval body's introduced lvars.
      * Also snapshot heap fp values so we can detect which slots the
@@ -537,6 +567,30 @@ static VALUE binding_source_location(CTX *c, VALUE self, int argc, VALUE *argv) 
     korb_ary_push(arr, korb_str_new_cstr("(eval)"));
     korb_ary_push(arr, INT2FIX(0));
     return arr;
+}
+
+/* Snapshot the frame's locals into each registered binding's heap.
+ * Called from prologue_ast_*_inl just before c->fp is restored. */
+void korb_binding_snapshot_frame(struct korb_frame *f) {
+    struct korb_binding *b = (struct korb_binding *)f->bindings_head;
+    while (b) {
+        struct korb_binding *next = b->next_in_frame;
+        if (b->fp && b->live_fp == f->fp) {
+            uint32_t n = b->names_cnt;
+            uint32_t copy_n = (n > f->locals_cnt) ? f->locals_cnt : n;
+            for (uint32_t i = 0; i < copy_n; i++) {
+                b->fp[b->base + i] = f->fp[b->live_base + i];
+            }
+            /* Frame is about to be popped — invalidate live_fp /
+             * live_frame_id so subsequent get/set don't try to read
+             * stale stack memory. */
+            b->live_fp = NULL;
+            b->live_frame_id = 0;
+        }
+        b->next_in_frame = NULL;
+        b = next;
+    }
+    f->bindings_head = NULL;
 }
 
 /* Method dispatch for Binding#eval — receiver-bound wrapper. */

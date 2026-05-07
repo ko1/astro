@@ -3146,6 +3146,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.super_skip_n = 0;
     extern uint64_t korb_g_next_frame_id;
     frame.frame_id = ++korb_g_next_frame_id;
+    frame.bindings_head = NULL;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
     extern struct korb_proc *running_block;
