@@ -159,6 +159,11 @@ static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *
         }
     }
 }
+/* Top-level default visibility — initially PRIVATE (CRuby behavior:
+ * top-level defs are private on Object).  Toggled by public/private
+ * called at top-level. */
+bool g_top_level_default_private = true;
+
 static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
                                    enum korb_visibility v)
 {
@@ -168,6 +173,11 @@ static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
          * `public` toggle. */
         if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
             ((struct korb_class *)self)->default_visibility = v;
+        }
+        /* Also track top-level private/public state for `def` at the
+         * implicit main-object scope.  self is the main object here. */
+        if (self == korb_vm->main_obj) {
+            g_top_level_default_private = (v == KORB_VIS_PRIVATE);
         }
         return self;
     }

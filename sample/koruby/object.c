@@ -3663,11 +3663,14 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     struct korb_class *prev_class = c->current_class;
     struct korb_cref *prev_cref = c->cref;
     const char *prev_file = c->current_file;
+    struct korb_frame *prev_frame = c->current_frame;
 
     /* Top-level frame for the new file: stack just past current sp */
     c->fp = c->sp + 1;
     c->self = korb_vm->main_obj;
     c->current_class = korb_vm->object_class;
+    /* Loaded file's top-level def's are not inside a method body. */
+    c->current_frame = NULL;
 
     /* Reset cref to [Object] for top-level execution */
     struct korb_cref top_cref = { .klass = korb_vm->object_class, .prev = NULL };
@@ -3682,6 +3685,7 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     c->current_class = prev_class;
     c->cref = prev_cref;
     c->current_file = prev_file;
+    c->current_frame = prev_frame;
     return r;
 }
 

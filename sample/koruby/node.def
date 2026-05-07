@@ -2093,13 +2093,18 @@ node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
 {
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
     /* CRuby: top-level `def` (the implicit "main" lexical scope) installs
-     * the method as private on Object.  Top-level here means: cref is
-     * just Object (single entry), NOT inside a method body — i.e.,
-     * c->current_frame is NULL.  Inside method bodies CRuby resets to
-     * the class's default_visibility (usually public). */
-    bool top_level = (c->cref && c->cref->klass == korb_vm->object_class &&
-                      c->cref->prev == NULL && target == korb_vm->object_class &&
-                      c->current_frame == NULL);
+     * the method as private on Object by default.  Top-level here means:
+     * cref is just [Object] AND NOT inside a method body.  But the user
+     * may have called `public` / `private` / `module_function` to change
+     * the local visibility — those modify Object's default_visibility,
+     * so we honor that: only force private when default_visibility is
+     * still the initial PUBLIC and we're top-level.
+     *
+     * This relies on a distinction we don't currently track between
+     * "PUBLIC by default" and "PUBLIC because user said public".  As a
+     * compromise, we use a per-frame "top_level_explicit_public" flag
+     * threaded via Object's default_visibility being set ABOVE PUBLIC
+     * (we encode "explicit PUBLIC at top-level" by toggling). */
     /* Special methods that are private regardless of where defined. */
     bool always_private =
         (name == korb_intern("initialize") ||
@@ -2107,8 +2112,14 @@ node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t
          name == korb_intern("initialize_dup") ||
          name == korb_intern("initialize_clone") ||
          name == korb_intern("respond_to_missing?"));
+    bool top_level = (c->cref && c->cref->klass == korb_vm->object_class &&
+                      c->cref->prev == NULL && target == korb_vm->object_class &&
+                      c->current_frame == NULL);
+    /* g_top_level_default_private toggles when `private`/`public` is
+     * called at top-level.  Initial state: true (private by default). */
+    extern bool g_top_level_default_private;
     korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
-    if (top_level || always_private) {
+    if (always_private || (top_level && g_top_level_default_private)) {
         struct korb_method *m = korb_class_find_method(target, name);
         if (m) m->visibility = KORB_VIS_PRIVATE;
     }
