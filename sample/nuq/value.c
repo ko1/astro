@@ -1299,6 +1299,47 @@ to_double_v(VALUE v)
     return NUQ_PTR(v)->dbl;
 }
 
+/* Linearity-analysis-marked variant of `+` for arrays.
+ *
+ * The static linearity pass (linearity.c) marks a `node_add` as
+ * `node_add_inplace` when it can prove the LHS at this site is
+ * unique — i.e. no other live reference to it exists.  Under that
+ * guarantee, mutating LHS by appending RHS items is observationally
+ * equivalent to allocating a fresh `lhs+rhs` array but avoids the
+ * O(|lhs|) copy.  The canonical win is `reduce SRC as $x ([]; . +
+ * [$x])` where naive copy is O(N²) and in-place is O(N).
+ *
+ * Non-array combinations (string+string, object+object, numeric, null
+ * absorption) don't have a useful in-place form here — strings need a
+ * fresh sized buffer, objects need merge semantics — so we delegate
+ * to the regular slow path. */
+VALUE
+nuq_op_add_inplace(VALUE a, VALUE b)
+{
+    if (LIKELY(NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_ARRAY &&
+               NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_ARRAY)) {
+        /* Runtime safety net: only mutate if `a`'s allocation lives
+         * in the current per-run arena.  Boehm-managed values (e.g.
+         * the input JSON tree) must not be mutated — Boehm doesn't
+         * track our arena, so growing the array buffer would silently
+         * become unreachable for Boehm and invalid after Cheney GC.
+         * The static linearity analysis can't always tell the
+         * difference (top-level `. + [x]` has dot_uses=1 in scope but
+         * `.` is the Boehm input), so we double-check here. */
+        if (LIKELY(in_arena(NUQ_PTR(a)))) {
+            NUQ_GC_PIN2(a, b);
+            size_t lb = NUQ_PTR(b)->arr.len;
+            for (size_t i = 0; i < lb; i++) {
+                VALUE item = NUQ_PTR(b)->arr.items[i]; /* refetch */
+                nuq_array_push(a, item);
+            }
+            NUQ_GC_UNPIN(2);
+            return a;
+        }
+    }
+    return nuq_op_add_slow(a, b);
+}
+
 VALUE
 nuq_op_add_slow(VALUE a, VALUE b)
 {
@@ -1316,14 +1357,23 @@ nuq_op_add_slow(VALUE a, VALUE b)
         size_t la = NUQ_PTR(a)->str.len;
         size_t lb = NUQ_PTR(b)->str.len;
         size_t ln = la + lb;
-        char *buf = (char *)nuq_value_alloc_atomic(ln + 1);
-        /* Re-fetch after alloc — a/b may have moved. */
-        memcpy(buf, NUQ_PTR(a)->str.bytes, la);
-        memcpy(buf + la, NUQ_PTR(b)->str.bytes, lb);
-        buf[ln] = '\0';
-        VALUE r = nuq_make_string_take(buf, ln);
+        /* Combined alloc — obj header + bytes in one block.  Allocating
+         * a separate `buf` first and then make_string_take'ing it would
+         * race with GC: a GC fired by the second alloc would free the
+         * from-space chunk holding buf and our memcpy would read stale
+         * memory. */
+        size_t buf_sz = (ln + 1 + 7) & ~(size_t)7;
+        char *block = (char *)nuq_value_alloc(NUQ_HDR_SZ + buf_sz);
+        struct nuq_obj *o = (struct nuq_obj *)block;
+        o->type = NUQ_T_STRING;
+        o->str.bytes = block + NUQ_HDR_SZ;
+        o->str.len = ln;
+        /* a/b were pinned — refetch after alloc. */
+        memcpy(o->str.bytes,      NUQ_PTR(a)->str.bytes, la);
+        memcpy(o->str.bytes + la, NUQ_PTR(b)->str.bytes, lb);
+        o->str.bytes[ln] = '\0';
         NUQ_GC_UNPIN(2);
-        return r;
+        return NUQ_OBJ_VAL(o);
     }
     if (NUQ_IS_PTR(a) && NUQ_PTR(a)->type == NUQ_T_ARRAY &&
         NUQ_IS_PTR(b) && NUQ_PTR(b)->type == NUQ_T_ARRAY) {

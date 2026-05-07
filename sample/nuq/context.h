@@ -401,6 +401,7 @@ VALUE nuq_clone(VALUE v);
 bool  nuq_contains      (VALUE a, VALUE b);
 
 VALUE nuq_op_add_slow(VALUE a, VALUE b);
+VALUE nuq_op_add_inplace(VALUE a, VALUE b);
 VALUE nuq_op_sub_slow(VALUE a, VALUE b);
 VALUE nuq_op_mul_slow(VALUE a, VALUE b);
 VALUE nuq_op_div_slow(VALUE a, VALUE b);

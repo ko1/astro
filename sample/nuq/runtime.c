@@ -113,6 +113,20 @@ nuq_compile_all_def_bodies(void)
     }
 }
 
+/* Run linearity analysis on every interned user-def body.  Called
+ * after parse so the rewrite is visible to AOT compile / dump. */
+void
+nuq_linearity_analyze_all_defs(void)
+{
+    extern void nuq_linearity_analyze_def_body(struct Node *body);
+    for (size_t i = 0; i < def_tab_len; i++) {
+        const struct def_block *const db = &def_tab[i];
+        for (size_t j = 0; j < db->cnt; j++) {
+            nuq_linearity_analyze_def_body(db->items[j].body);
+        }
+    }
+}
+
 void
 nuq_load_all_def_bodies(void)
 {

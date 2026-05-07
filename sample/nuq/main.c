@@ -243,6 +243,15 @@ main(int argc, char **argv)
 
     NODE *filter = nuq_parse_filter(filter_src);
 
+    /* Static linearity analysis: rewrite `node_add(., _)` to
+     * `node_add_inplace` at sites where the LHS dot is provably
+     * unique (no other live aliases in scope).  Saves the canonical
+     * O(N²) `acc + [x]` pattern from copying. */
+    extern void nuq_linearity_analyze(struct Node *);
+    extern void nuq_linearity_analyze_all_defs(void);
+    nuq_linearity_analyze(filter);
+    nuq_linearity_analyze_all_defs();
+
     if (OPTION.dump_ast) {
         DUMP(stderr, filter, false);
         fputc('\n', stderr);

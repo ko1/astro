@@ -208,48 +208,71 @@ best-of-3 で取るのと違って、メモリは high-water mark を見るた�
   Goランタイムが path 配列を全部保持する gojq 実装の特性。nuq は
   847 MB で gojq に対 0.78×、jq の 1.09× で済む。
 
-### GC のおかげ — `acc + [$i]` 系クエリの実測
+### Cheney GC + 線形性解析 — `acc + [$i]` 系クエリの実測
 
 `reduce range(N) as $i ([]; . + [$i]) | length` を `/usr/bin/time -f
 '%e %M'` で計測 (時間 = wall-clock 秒, メモリ = peak RSS):
 
-| N | jq | gojq | **nuq** |
-|---:|---:|---:|---:|
-| 3 e4 | 0.01 s / 4.3 MB | 2.90 s / 11.7 MB | 0.48 s / **22 MB** |
-| 5 e4 | 0.02 s / 4.7 MB | 10.06 s / 40.7 MB | 1.33 s / **22 MB** |
-| 1 e5 | 0.04 s / 6.4 MB | 39.67 s / 67.5 MB | 5.72 s / **24 MB** |
-| 2 e5 | 0.08 s / 7.6 MB | (>120 s) | 29.49 s / **37 MB** |
-| 1 e6 | 0.34 s / 24.5 MB | (>30 min 見込み・実測未取) | 1621 s / **110 MB** |
+| N | jq | gojq | nuq (Cheney 単独) | **nuq (＋線形性 ★)** |
+|---:|---:|---:|---:|---:|
+| 1 e5 | 0.04 s / 6.4 MB | 39.7 s / 67.5 MB | 5.72 s / 24 MB | **0.01 s** / 13 MB |
+| 1 e6 | 0.34 s / 24.5 MB | (>30 min 見込み) | 1621 s / 110 MB | **0.09 s** / 65 MB |
+| 1 e7 | 3.55 s / 252 MB | — | — (時間切れ) | **0.99 s** / 688 MB |
 
-N=1e6 でも nuq は 110 MB に
-頭打ち — `acc.len` ≈ 8 MB の live-set が dominant、Cheney 1 回ごと
-to-space に 8 MB だけ転送、from-space (使い終わった garbage) は
-recycle されるため。GC 採用前 (in-house 計測) は同じ N で 11 GB
-を喰い切って OOM していた。
+★ 線形性解析を入れると **jq の 3-4× 速い** スケールに乗る。N=1e6 で
+0.09 s vs jq 0.34 s。
 
-#### メモリ視点
+#### 段階別の効果
 
-`acc + [$i]` は意味論上は毎反復 `acc` を全コピー → 単純実装の総
-alloc 量は `Σ (i+1) × 8 byte ≈ N²/2 × 8` (N=1e5 で 40 GB、N=1e6 で
-4 TB)。GC 無しだと N=1e5 程度でも arena が GB スケールに膨らんで
-OOM。Cheney GC 採用後は 1 GC ごとに live-set だけ to-space に転送、
-garbage は recycle されるため **peak RSS は N に対しほぼ一定** (24-37
-MB レンジ)。同じ "毎回コピー" 路線の **gojq よりも省メモリ** (gojq は
-N=1e5 で 67 MB、N=2e5 で更に増)。
+1. **何もしない (immutable copy)**: `acc + [$i]` は毎反復で `acc` を
+   全コピー → 総 alloc 量は `Σ (i+1) × 8 byte ≈ N²/2 × 8` (N=1e6 で
+   4 TB)。N=1e5 程度でも arena が GB スケールに膨らんで OOM。
 
-#### 速度視点
+2. **Cheney GC (本コミット直前まで)**: 1 GC ごとに live-set だけ
+   to-space に転送、garbage は recycle。**peak RSS は N に対し
+   ほぼ一定** (24-110 MB)。同じ "毎回コピー" 路線の gojq より省メモリ
+   (N=1e5 で gojq 67 MB → nuq 24 MB)。
+   速度は依然として O(N²)。N=1e5 で 5.72 s (jq の 140× 遅) — alloc は
+   速くなったが「コピー量」が変わってないので。
 
-jq だけが圧倒的に速い (1e5 で 0.04 s, nuq の 140×) のは jq が
-**refcount=1 の `acc` を `acc.push($i)` に降格** しているため
-(in-place mutation)。nuq・gojq は immutable copy → O(N²) で同じ
-quadratic curve。**nuq は gojq に対して 6-7× 速い** (1e5 で 5.7 s vs
-39.7 s) — bump-allocation + Cheney の高速 alloc / コピーが効いている。
+3. **Cheney GC + 線形性解析 (本コミット)**: AST 解析で `acc + [$i]`
+   の LHS が "linear" (他から参照されない) と判定できれば
+   `node_add` を `node_add_inplace` に書き換え、runtime で
+   `nuq_array_push` で in-place 拡張する。**O(N²) → O(N)**。
+   N=1e6 で **jq より速い** 0.09 s vs 0.34 s。jq の同じ最適化は
+   refcount=1 の動的検出だが、nuq は parse-time に static に
+   決定するので runtime の per-op overhead 0。
 
-jq の最適化を nuq でも実装するには `acc + [$i]` の `acc` 側が
-**linear** (1 回しか参照されない) と分かる必要がある。構文が単純な
-jq subset なので AST 解析で判定可能 — TODO は
-[todo.md](todo.md) 参照。詳細な GC 実装は
-[runtime.md §5](runtime.md#5-メモリ管理--per-run-arena--cheney-copying-gc)。
+#### 線形性解析の仕組み (linearity.c)
+
+AST を walk して各 *dot-scope* (pipe RHS / reduce update / foreach
+update,extract / 関数 body が境界) について `.` の syntactic read 数
+を数える。`reduce range(N) as $i ([]; UPDATE)` の UPDATE が:
+
+- 直接 `node_add(node_identity, RHS)` 形で書かれている
+- UPDATE scope 内で他に `.` を読んでいない (RHS、`$x = .` 形の as
+  のあとの $x 参照、`.x` フィールドアクセスなど **すべて 0**)
+
+を満たすと、その `node_add` のカインドを `node_add_inplace` に
+書き換える。後段の dispatch / AOT は新しいカインドを通常通り
+扱う (専用 NODE_DEF が `node.def` にある)。
+
+Runtime の `nuq_op_add_inplace` は `in_arena(LHS)` で安全性を再確認
+する: LHS が arena 上の "走行中" 値なら mutate、Boehm 上の永続値
+(典型は入力 JSON、リテラル) なら copy にフォールバック。これで:
+
+- top-level `. + [99]` (` = 入力 JSON、Boehm) → static 解析は mark
+  するが runtime ガードで copy にする (jq 的なセマンティクスを保つ)
+- nested の `reduce ... (.; . + [...])` でも、初回 iter は input が
+  Boehm のためコピー、2 回目以降は acc が arena に乗っているので
+  in-place — 結果として実用的には N-1 回が in-place
+
+`as` で `.` を別名に縛ると ($a = .) その alias 参照も dot 参照と
+してカウントするので、aliased dot を変更する不正は静的にブロック
+される (一致しないと mark が外れて copy 経路に落ちる)。
+
+詳細な GC 実装は [runtime.md §5](runtime.md#5-メモリ管理--per-run-arena--cheney-copying-gc)、
+線形性解析の実装は `linearity.c` のヘッダコメント参照。
 
 ### 計測コマンド
 
