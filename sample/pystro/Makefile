@@ -73,7 +73,7 @@ bench: pystro
 	  rm -rf code_store; \
 	  in=$$(for i in 1 2 3; do /usr/bin/time -f "%e" ./pystro --no-compile "$$b" 2>&1 1>/dev/null | tail -1; done | sort -n | head -1); \
 	  rm -rf code_store; \
-	  ./pystro -c "$$b" >/dev/null 2>&1; \
+	  CCACHE_DISABLE=1 ./pystro -c "$$b" >/dev/null 2>&1; \
 	  ac=$$(for i in 1 2 3; do /usr/bin/time -f "%e" ./pystro "$$b" 2>&1 1>/dev/null | tail -1; done | sort -n | head -1); \
 	  printf "%-26s %10s %10s %10s\n" "$$(basename $$b)" "$${py}s" "$${in}s" "$${ac}s"; \
 	done
