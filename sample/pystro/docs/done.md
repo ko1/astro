@@ -8,13 +8,51 @@ ASTro 上の Python サブセット。本書は **動く言語機能** を一覧
 
 ```
 $ make test
-... 56 tests OK ...
-passed=56  failed=0  total=56
+... 213 tests OK ...
+passed=213  failed=0  total=213
 ```
 
-interpreter / AOT cached の両方で 56/56 pass。
-うち test 45〜55 は CPython の `Lib/test/test_*.py` を pystro 用に adapt した
+interpreter / AOT cached の両方で **213/213 pass**。
+test 45〜213 は CPython の `Lib/test/test_*.py` を pystro 用に adapt した
 unittest 形式 (TestCase / assertEqual / assertRaises / main(globals()))。
+
+### CPython 公式テストの直接実行 (R18)
+
+`cpython/` を clone して `PYTHONPATH=cpytest_stubs:cpython/Lib` で
+`Lib/test/test_*.py` を pystro で実行している。 現状 (2026-05-07):
+
+| 区分 | 数 |
+|---|---|
+| total | 394 |
+| **fully pass** (`failed=0`) | **28** |
+| mixed (test logic ran, ≥1 fail) | 322 |
+| crash / timeout | 18 |
+| parse error | 22 |
+| import error | 4 |
+
+詳細は [todo.md](./todo.md) の R18 節を参照。 CPython 互換性のために
+入れた shim 群:
+- stdlib stubs: `_socket`, `_operator`, `_io`, `_imp`, `_locale`,
+  `_thread`, `_weakref`, `_contextvars`, `_tracemalloc`, `_symtable`,
+  `_lsprof`, `_multibytecodec`, `_opcode`, `atexit`, `pyexpat`,
+  `faulthandler`, `email/{header,message,utils,charset}`, `argparse`
+  (formatter/Action), `numbers`。
+- test.support shim package (cpytest_stubs/test/support/) — skip
+  decorator + helper 群を no-op で。
+- runtime: `bi_import` cached re-attach, module の `__file__` /
+  `__dict__`, `exec(bytes)` 受理, `in` の iter protocol fallback,
+  単項 `+` で non-numeric は TypeError, exec/eval/compile が
+  parse 失敗時 SyntaxError, ABCMeta `_abc_registry` 経由 virtual
+  subclass, **chained call/attr/subscript で raise 伝播**,
+  **PYSTRO_BI_KWC leak 修正** (configparser 用)。
+- parser: `del(target)` paren / `del d[1, 2]`, `super(C)` 1-arg,
+  `with cm as (a.x, a.y):`, multi-element subscript with slice,
+  `tuple[*Ts]`, top-level `*a, *b`, nested `[*rest]`, `@=` matmul,
+  `class C(*Ts):`, `for st.lineno, line in ...`, chain assign / unpack
+  group buffer 256。
+
+これにより `213 internal + 28 CPython official` = 多数のテストが
+pass。
 
 ## 言語機能
 
@@ -580,3 +618,79 @@ bytecode loop、Boehm GC vs CPython の refcount + cycle collector)。
 - json.dumps decodes UTF-8 → codepoints, escapes \\uXXXX (with
   surrogate pairs for U+10000+); ensure_ascii=False emits raw UTF-8
 - complex(str) parses 1+2j / -j / pure / paren forms
+
+### R17〜R18 (CPython テスト互換性向上)
+
+R17 で UTF-8 codepoint str / `@` matmul / async sync / eval-exec ns
+dict / PEP 604 union / collections.abc + typing.Generic / etc を入れ
+**213 internal tests passing**。 R18 では CPython の `Lib/test/test_*.py`
+を直接動かす方向で:
+
+#### parser
+- `del(target)` paren / `del d[1, 2]` tuple-key subscript
+- `super(C)` 1-arg form (パースのみ; `super()` と等価扱い)
+- `with cm as (a.x, a.y):` 任意 trailer 付き unpack target
+- multi-element subscript with slice (`obj[:42, ..., :24:, 24, 100]`)
+  read / write / del
+- `tuple[*Ts]` PEP 646 starred subscript element
+- top-level `*a, *b` starred tuple (paren なし)
+- nested unpack with `[*rest]`、 post-star は negative index
+- `@=` matmul augassign
+- `class C(*Ts):` PEP 646 starred class base
+- `for st.lineno, line in ...` (for-target に attr/subscript)
+- chain assign / unpack group buffer 8 → 256
+- list literal cap 256 → 2048
+- exec/eval/compile parse 失敗が SyntaxError を raise (longjmp 経由)
+
+#### runtime
+- chained call/attr/subscript で raise が伝播
+  (`raiser().attr` が AttributeError ではなく元の例外を投げる)
+- `__getitem__` iter protocol が IndexError を local try frame で catch
+- `in` 演算子の generic iter protocol fallback
+- 単項 `+` で non-numeric は TypeError
+- exec(g, l) が新名を locals 側に書き戻し (timeit 用)
+- `__class_getitem__` の @classmethod を unwrap
+- iter / `<` の TypeError 表記が CPython 互換
+  (`'X' object is not iterable`,
+   `'<' not supported between instances of 'X' and 'Y'`)
+- ABCMeta `_abc_registry` 経由 virtual subclass
+  (`isinstance(5, numbers.Integral)` が動く)
+- bi_import cached re-attach (dotted module の parent 属性貼り直し)
+- module の `__file__` / `__dict__` 公開
+- exec(bytes) / eval(bytes) / compile(bytes) 受理
+- nested class call の PYSTRO_BI_KWC leak fix
+  (`RawConfigParser(defaults={})` が動く)
+
+#### 標準ライブラリ shim
+- stdlib stubs: `_socket`, `_operator`, `_io`, `_imp`, `_locale`,
+  `_thread`, `_weakref`, `_contextvars`, `_tracemalloc`, `_symtable`,
+  `_lsprof`, `_multibytecodec`, `_opcode`, `atexit`, `pyexpat`,
+  `faulthandler`, `email/{header,message,utils,charset}`, `argparse`
+  拡張 (formatter / Action / Namespace / FileType etc.), `numbers`
+- `cpytest_stubs/test/support/` shim package (skip decorator + helper
+  群 を no-op)
+- `types.MethodType(fn, inst)` constructible (metaclass で内蔵
+  bound-method type も認識)
+- `unittest.mock` subnamespace (Mock / patch / sentinel / mock_open)
+- `collections.namedtuple` field を non-data descriptor 化
+  (`Cls.field.__doc__ = ...` を許す)
+- `dict.fromkeys` instance method 経由でも呼べる
+- `bytes.decode` / `str.encode` が errors 引数受理
+- `math.fmax / fmin / isqrt / prod`, `math.isclose` に self leak
+  workaround
+- `operator.{concat, iconcat, call, indexOf, countOf}`
+- `tempfile.mktemp`, `NamedTemporaryFile` に __iter__ / tell / flush
+- `os.stat_result` / `times_result` skeleton
+- `csv.{register,unregister,get,list}_dialect`,
+  `QUOTE_{MINIMAL,ALL,NONNUMERIC,NONE}`
+- `re` top-level alternation `|` (paren 内も group 内も)
+
+CPython 公式テストの sweep 結果:
+
+```
+total=394 pass=28 mixed=322 crash/timeout=18 parse_err=22 import_err=4
+```
+
+`pass=28` は本物のアサーションを含むテストが全部通っているもの (空の
+スケルトンも数件含む)。 `mixed=322` は test logic が走って一部失敗、
+`pass=N failed=M` を出している。 残課題は [todo.md](./todo.md) 参照。

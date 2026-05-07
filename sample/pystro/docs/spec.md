@@ -1,7 +1,10 @@
 # pystro 言語仕様
 
 `pystro` は **Python 3 のサブセット**インタプリタ。CPython 3.12 と同じ
-意味論を目指し、9 ベンチ中 8 ベンチで CPython を上回る範囲をカバーする。
+意味論を目指し、9 ベンチ中 8 ベンチで CPython を上回る範囲をカバーする
+([perf.md](perf.md) 参照)。 R18 時点で **213/213 internal tests** + 28
+が CPython の `Lib/test/test_*.py` を完全 pass、 322 が test logic を実行
+([done.md](done.md) 参照)。
 完全な Python 仕様は [Python Language Reference](https://docs.python.org/3/reference/)
 を参照。本書は pystro で動く範囲を端的に示す。
 
@@ -409,12 +412,16 @@ slow()
 
 ## 持たない / 制限
 
-- `async` / `await` の真の非同期セマンティクス (実装あれば限定的)
-- `metaclass` の本格利用 (シンプルなものは可)
-- 型アノテーションの実行時利用 (`__annotations__`)
-- `__slots__` による属性制限
+- `async` / `await` の真の非同期セマンティクス
+  (sync として通すフォールバックはあり)
+- 完全な `re` モジュール (alternation `|` + 基本 quantifier `* + ?`、
+  brace `{n,m}` 一部、 char class、 group は対応; lookaround / 後方参照 /
+  Unicode property は astrorge integration 待ち)
 - C extensions / `ctypes`
-- スレッド / `multiprocessing`
-- 完全な `re` モジュール (簡易のみ)
+- スレッド / `multiprocessing` (single thread モデル、
+  `_thread` は no-op stub)
+- `__slots__` による属性制限 (declared だが ignore)
+- 型アノテーションの実行時利用 (`__annotations__`) は限定的に対応 — class
+  body の `name: T` は `__annotations__` dict に登録する
 
 詳細: [`done.md`](done.md) / [`todo.md`](todo.md)。
