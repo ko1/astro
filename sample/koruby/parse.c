@@ -310,18 +310,20 @@ static NODE *alloc_binop(struct transduce_context *tc, pm_constant_id_t name, NO
     if (ceq(tc, name, "|"))  return ALLOC_node_bit_or(l, r, ai);
     if (ceq(tc, name, "^"))  return ALLOC_node_bit_xor(l, r, ai);
     if (ceq(tc, name, "**")) {
-        /* No specialized node for ** — call as a method on l.  Both l
-         * and r may stage temporaries in slot ai during their own
-         * evaluation, so spill the *receiver* into a fresh slot first,
-         * evaluate r into its own slot afterwards, then call.  Without
-         * this two-slot dance, `f(a,b) ** N` ends up with the prior
-         * call's first arg leaking through into N's slot. */
+        /* No specialized node for ** — call as a method on l.  We
+         * materialize l into recv_slot and r into arg_slot at runtime
+         * before calling.  These slots are used PERSISTENTLY during
+         * the call (set_recv writes recv_slot, then set_arg evaluates
+         * r — which may itself contain nested `**` that would clobber
+         * recv_slot if it reused the same slot indices).  Allocate
+         * dedicated slots that DON'T get rewound, so a nested binop
+         * inside r gets fresh slots beyond ours.
+         *
+         * Without this, `a **= b **= 2` evaluates 3 ** 9 instead of
+         * 2 ** 9 because the inner ** overwrites the outer's recv. */
         struct method_cache *mc = alloc_method_cache();
-        uint32_t recv_slot = ai;
-        uint32_t arg_slot  = ai + 1;
-        /* Order matters: evaluate l (might stage at ai), then save
-         * its result into recv_slot; then evaluate r (whose eval
-         * stages at the freed slots) and write to arg_slot. */
+        uint32_t recv_slot = inc_arg_index(tc);
+        uint32_t arg_slot  = inc_arg_index(tc);
         NODE *set_recv = ALLOC_node_lvar_set(recv_slot, l);
         NODE *set_arg  = ALLOC_node_lvar_set(arg_slot,  r);
         NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot),

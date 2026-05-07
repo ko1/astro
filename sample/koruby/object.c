@@ -3432,10 +3432,15 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
 
 __attribute__((noinline,cold)) VALUE
 korb_node_plus_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
-    if (BUILTIN_TYPE(l) == T_STRING && BUILTIN_TYPE(r) == T_STRING) {
+    /* Fast paths only when both operands are EXACTLY String / Array
+     * (not subclasses).  A subclass may have redefined `+`, in which
+     * case we must dispatch to find the override. */
+    if (BUILTIN_TYPE(l) == T_STRING && BUILTIN_TYPE(r) == T_STRING &&
+        ((struct RBasic *)l)->klass == (VALUE)korb_vm->string_class) {
         return korb_str_concat(l, r);
     }
-    if (BUILTIN_TYPE(l) == T_ARRAY && BUILTIN_TYPE(r) == T_ARRAY) {
+    if (BUILTIN_TYPE(l) == T_ARRAY && BUILTIN_TYPE(r) == T_ARRAY &&
+        ((struct RBasic *)l)->klass == (VALUE)korb_vm->array_class) {
         VALUE a = korb_ary_new_capa(korb_ary_len(l) + korb_ary_len(r));
         for (long i = 0, n2 = korb_ary_len(l); i < n2; i++) korb_ary_push(a, korb_ary_aref(l, i));
         for (long i = 0, n2 = korb_ary_len(r); i < n2; i++) korb_ary_push(a, korb_ary_aref(r, i));

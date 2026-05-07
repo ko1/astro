@@ -4,12 +4,20 @@
  * value.  Class#new's generic path goes through korb_object_new which
  * doesn't allocate the String storage; we need a real heap String. */
 VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc == 0) return korb_str_new("", 0);
+    VALUE r;
     if (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_STRING) {
         struct korb_string *s = (struct korb_string *)argv[0];
-        return korb_str_new(s->ptr, s->len);
+        r = korb_str_new(s->ptr, s->len);
+    } else {
+        r = korb_str_new("", 0);
     }
-    return korb_str_new("", 0);
+    /* For String subclasses, retag the result with the subclass so
+     * `class BP < String; end; BP.new("a").class == BP`.  Top-level
+     * `String.new` keeps the default String klass. */
+    if (BUILTIN_TYPE(self) == T_CLASS && (struct korb_class *)self != korb_vm->string_class) {
+        ((struct RBasic *)r)->klass = self;
+    }
+    return r;
 }
 
 /* ---------- String ---------- */
