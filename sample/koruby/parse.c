@@ -4539,9 +4539,16 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                     default: break;
                   }
               }
-              NODE *recv_node = cn->receiver ? T(tc, cn->receiver) : ALLOC_node_self();
+              /* Reserve arg slots BEFORE translating the receiver so the
+               * receiver call's own slot allocations sit ABOVE ours.
+               * Without this, the receiver-side method_call writes into
+               * fp[ai] during its arg staging and clobbers the prepared
+               * `:method_name` symbol before respond_to? reads it. */
               uint32_t ai = inc_arg_index(tc);
-              inc_arg_index(tc); rewind_arg_index(tc, ai);
+              inc_arg_index(tc);
+              /* Don't rewind — keep ai+1 reserved across the receiver build. */
+              NODE *recv_node = cn->receiver ? T(tc, cn->receiver) : ALLOC_node_self();
+              rewind_arg_index(tc, ai);
               struct method_cache *mc = alloc_method_cache();
               /* For receiver-less calls, defined?(name) sees private and
                * protected methods on self; pass true as the second arg.
