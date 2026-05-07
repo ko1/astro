@@ -853,7 +853,7 @@ node_for_local(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *iter, N
     py_iter_init(c, &st, it);
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE elt;
-    while (py_iter_next(c, &st, &elt)) {
+    while (py_iter_next_inline(c, &st, &elt)) {
         if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
         c->env->slots[slot] = elt;
         EVAL_ARG(c, body);
@@ -883,7 +883,7 @@ node_for_global(CTX * restrict c, NODE * restrict n, const char *name, NODE *ite
     }
     int idx = cache->idx;
     VALUE elt;
-    while (py_iter_next(c, &st, &elt)) {
+    while (py_iter_next_inline(c, &st, &elt)) {
         if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
         c->globals->entries[idx].value = elt;
         c->globals->entries[idx].defined = true;

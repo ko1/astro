@@ -137,4 +137,29 @@ extern size_t PYSTRO_CALL_ARGS_LEN;
 extern size_t PYSTRO_CALL_ARGS_CAP;
 size_t pystro_call_args_reserve(NODE **args, size_t n);
 
+// Inline fast paths for the iter protocol.  Only kinds 0/2 (list /
+// tuple / range — no user code, no alloca'd frames) are safe to inline
+// at SD-baked call sites; case 5 (user iterator) calls py_apply which
+// uses alloca — inlining that into a tight loop accumulates stack
+// frames until the enclosing SD returns, which blows the stack on
+// any large iteration.
+extern bool py_iter_next(CTX *c, struct py_iter *it, VALUE *out);
+
+static inline __attribute__((always_inline)) bool
+py_iter_next_inline(CTX *c, struct py_iter *it, VALUE *out)
+{
+    switch (it->kind) {
+      case 0:   // list / tuple
+        if (it->i >= it->end) return false;
+        *out = PY_PTR(it->container)->list.items[it->i++];
+        return true;
+      case 2:   // range
+        if (it->step > 0 ? it->i >= it->end : it->i <= it->end) return false;
+        *out = py_make_int(it->i);
+        it->i += it->step;
+        return true;
+    }
+    return py_iter_next(c, it, out);
+}
+
 #endif // PYSTRO_NODE_H
