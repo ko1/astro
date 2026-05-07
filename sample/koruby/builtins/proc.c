@@ -333,12 +333,13 @@ redo_proc:
         c->state_value = Qnil;
         c->state_target_frame = NULL;
     } else if (c->state == KORB_RETURN && p->is_lambda &&
-               (c->state_target_frame == NULL ||
-                c->state_target_frame == c->current_frame)) {
-        /* Lambda swallows `return` only when the target is the lambda
-         * itself (or NULL = no specific target).  A non-local return
-         * triggered by a block whose lexical enclosing method is OUTSIDE
-         * this lambda must propagate past it (jruby/jruby#3143). */
+               c->state_target_frame == NULL) {
+        /* Lambda swallows `return` only when the target is unset
+         * (= the return originated from inside the lambda's own body).
+         * A non-local return triggered by an inner non-lambda proc
+         * whose enclosing method sits OUTSIDE this lambda has a
+         * concrete target_frame and must propagate past us
+         * (jruby/jruby#3143; ThroughDefineMethod return spec). */
         r = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;

@@ -3182,11 +3182,19 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     /* Temporarily rebind the proc's `self` to the dispatch receiver:
      * define_method'd procs run with self = the call receiver, not the
      * class body's self captured at proc creation.  We restore after
-     * so a later call (or other dispatch site) sees the original. */
+     * so a later call (or other dispatch site) sees the original.
+     *
+     * Also flip is_lambda for the duration of the call so `return`
+     * inside the proc body acts as a method-local return (CRuby's
+     * define_method-via-proc semantics: the proc behaves like a
+     * lambda for return / break purposes). */
     VALUE prev_p_self = p->self;
+    bool prev_is_lambda = p->is_lambda;
     p->self = recv;
+    p->is_lambda = true;
     VALUE r = proc_call(c, (VALUE)p, (int)argc, argv);
     p->self = prev_p_self;
+    p->is_lambda = prev_is_lambda;
     c->self = prev_self;
     return r;
 }
