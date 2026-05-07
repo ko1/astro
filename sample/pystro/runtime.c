@@ -3363,6 +3363,14 @@ py_iter_init(CTX *c, struct py_iter *it, VALUE iterable)
 // it has a small, dedicated stack frame instead of inheriting
 // py_iter_next's worst-case 440-byte frame for every case.  Called
 // from py_iter_next_inline (node.h) to bypass py_iter_next's switch.
+//
+// no_stack_protector: -fstack-protector-strong triggers on any function
+// that uses alloca (py_apply inlines into us and alloca's the callee
+// frame).  The canary read/write/check costs ~5 cycles per call which,
+// at 15M iterations on for_range_pyrange, adds 7-8% to runtime.  This
+// function never writes a stack array via untrusted indices, so the
+// canary is defending against threats we don't have.
+__attribute__((no_stack_protector))
 bool
 py_iter_next_user(CTX *c, struct py_iter *it, VALUE *out)
 {
