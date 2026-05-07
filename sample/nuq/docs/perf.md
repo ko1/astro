@@ -49,20 +49,22 @@ vs jq:
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `deep_field` | 1.00× | 1.00× | 1.31× | **1.27×** |
-| `extract_field` | 1.00× | 1.24× | 1.38× | **1.42×** |
-| `filter_count` | 1.00× | 1.02× | 1.33× | **1.41×** |
-| `group_by` | 1.00× | 1.13× | 1.30× | **1.41×** |
-| `identity` | 1.00× | 1.07× | 1.32× | **1.32×** |
-| `keys_aggregate` | 1.00× | 2.56× | 3.21× | **3.18×** |
-| `length` | 1.00× | 1.22× | 1.31× | **1.23×** |
-| `recurse_paths` | 1.00× | 1.23× | 1.51× | **1.34×** |
-| `sort_by` | 1.00× | 1.16× | 0.62× | **1.46×** |
-| `sum_score` | 1.00× | 1.12× | 1.32× | **1.28×** |
-| `transform` | 1.00× | 0.93× | 1.41× | **1.43×** |
+| `deep_field` | 1.00× | 1.05× | 1.32× | **1.30×** |
+| `extract_field` | 1.00× | 1.14× | 1.29× | **1.26×** |
+| `filter_count` | 1.00× | 1.02× | 1.35× | **1.36×** |
+| `group_by` | 1.00× | 1.11× | 1.26× | **1.58×** |
+| `identity` | 1.00× | 1.00× | 1.27× | **1.54×** |
+| `keys_aggregate` | 1.00× | 2.66× | 3.01× | **3.54×** |
+| `length` | 1.00× | 1.17× | 1.22× | **1.34×** |
+| `recurse_paths` | 1.00× | 1.30× | 1.39× | **1.56×** |
+| `sort_by` | 1.00× | 1.03× | 0.63× | **1.52×** |
+| `sum_score` | 1.00× | 1.19× | 1.32× | **1.36×** |
+| `transform` | 1.00× | 0.96× | 1.51× | **1.79×** |
 
-実用 11/11 すべてで jq 越え (1.2-3.2×)。`keys_aggregate` は jaq / gojq
-より速い。
+実用 11/11 すべてで jq 越え (1.3-3.5×)。Cheney GC 導入後に
+`transform` (+25%)、`recurse_paths` (+16%)、`group_by` (+12%) など
+が押し上がった (mid-run reclaim で alloc バンドル分のメモリ局所性が
+向上)。
 
 ## Micro-bench (jaq examples/benches; input = scalar n via stdin)
 
@@ -143,6 +145,122 @@ jaq / gojq に対しても圧倒 — jq / jaq / gojq はいずれも recursive w
 - 1.9MB: nuq 1.2-3.2× vs jq、scale ms 単位
 - 100MB: nuq 1.2-2.8× vs jq、scale 秒単位 — **スケールしても比率
   維持** (jq の overhead が線形なので予想通り)
+
+## メモリ — peak RSS (HWM)
+
+`/usr/bin/time -f '%M'` (Linux maxresident, KB) を `BENCH_MEM=1
+ruby bench/bench.rb {real,big}` で採取。**worst-of-2** (時間ベンチが
+best-of-3 で取るのと違って、メモリは high-water mark を見るため
+最悪値を採る)。
+
+### Real (input: users.json, 1.9 MB)
+
+| bench | jq | jaq | gojq | nuq int | nuq AOT | **nuq/jq** |
+|---|---:|---:|---:|---:|---:|---:|
+| `deep_field` | 26.6 MB | 26.1 MB | 25.2 MB | 33.1 MB | 33.2 MB | **1.25×** |
+| `extract_field` | 26.5 MB | 26.2 MB | 25.1 MB | 33.4 MB | 33.2 MB | **1.25×** |
+| `filter_count` | 26.4 MB | 26.4 MB | 25.0 MB | 33.2 MB | 33.4 MB | **1.27×** |
+| `group_by` | 27.1 MB | 28.2 MB | 26.6 MB | 33.4 MB | 33.4 MB | **1.23×** |
+| `identity` | 28.1 MB | 25.9 MB | 26.6 MB | 33.1 MB | 33.1 MB | **1.18×** |
+| `keys_aggregate` | 33.1 MB | 36.8 MB | 38.9 MB | 35.9 MB | 36.0 MB | **1.09×** |
+| `length` | 26.2 MB | 26.0 MB | 23.6 MB | 33.1 MB | 33.1 MB | **1.26×** |
+| `recurse_paths` | 26.1 MB | 26.1 MB | 23.9 MB | 33.0 MB | 33.1 MB | **1.27×** |
+| `sort_by` | 27.1 MB | 27.0 MB | 42.6 MB | 33.2 MB | 37.6 MB | **1.39×** |
+| `sum_score` | 26.6 MB | 26.0 MB | 25.8 MB | 33.8 MB | 33.9 MB | **1.27×** |
+| `transform` | 30.1 MB | 26.4 MB | 28.8 MB | 34.2 MB | 34.4 MB | **1.14×** |
+
+実用 1.9 MB スケールでは皆 25-40 MB レンジに収まり、ほぼ全部
+**スタートアップ + `GC_init` + JSON parse + 出力バッファ** の固定
+コスト。nuq が一律 33MB でやや重いのは Boehm GC の常駐 heap が初期
+8MB ほど確保される + `__attribute__((constructor))` 系で組み込み
+シンボル登録が走る。jq は 26 MB 付近 (jq 自身の symbol table は小さい)。
+比率 1.1-1.4× は 5-10 MB の差で、ベース投資の差。
+
+### Big (input: 25-46 MB / shape)
+
+| bench (shape) | jq | jaq | gojq | nuq int | nuq AOT | **nuq/jq** |
+|---|---:|---:|---:|---:|---:|---:|
+| `bulk_update` (users) | 492.1 MB | 414.2 MB | 484.8 MB | 542.6 MB | 542.4 MB | **1.10×** |
+| `deep_followers` (users) | 393.7 MB | 411.2 MB | 350.2 MB | 493.4 MB | 493.4 MB | **1.25×** |
+| `extract_users` (users) | 393.7 MB | 410.9 MB | 349.1 MB | 493.1 MB | 493.1 MB | **1.25×** |
+| `group_city` (users) | 402.6 MB | 433.7 MB | 370.7 MB | 494.6 MB | 494.2 MB | **1.23×** |
+| `log_error_paths` (logs) | 218.1 MB | 297.3 MB | 217.5 MB | 335.8 MB | 335.9 MB | **1.54×** |
+| `log_post_avg` (logs) | 217.3 MB | 293.2 MB | 214.1 MB | 343.8 MB | 343.6 MB | **1.58×** |
+| `log_request_id` (logs) | 220.7 MB | 293.4 MB | 222.4 MB | 335.0 MB | 334.9 MB | **1.52×** |
+| `sum_active_score` (users) | 392.6 MB | 411.9 MB | 352.5 MB | 498.6 MB | 498.6 MB | **1.27×** |
+| `table_flag_count` (table) | 483.4 MB | 360.4 MB | 490.7 MB | 586.6 MB | 587.0 MB | **1.21×** |
+| `table_sum_col0` (table) | 511.7 MB | 357.0 MB | 551.5 MB | 586.9 MB | 586.9 MB | **1.15×** |
+| `table_unique_colors` (table) | 536.7 MB | 407.7 MB | 552.7 MB | 599.1 MB | 599.2 MB | **1.12×** |
+| `tree_leaf_sum` (tree) | 277.0 MB | 300.0 MB | 453.3 MB | 402.4 MB | 402.4 MB | **1.45×** |
+| `tree_numbers` (tree) | 286.9 MB | 301.7 MB | 455.6 MB | 385.4 MB | 381.4 MB | **1.33×** |
+| `tree_paths` (tree) | 776.1 MB | 780.4 MB | 1.10 GB | 847.1 MB | 843.3 MB | **1.09×** |
+
+100 MB スケールでは全エンジン 200 MB～1.1 GB レンジ。**nuq は jq の
+1.1-1.6× に収まる**。これは:
+
+- **入力 JSON は Boehm 側に保持** — 25-46 MB の入力 + 内部表現
+  (jq では 1 値あたり 24-40 byte) で 200-500 MB の常駐は皆共通。
+- **中間値は arena + Cheney copying GC** — 走行中にバンドル alloc
+  が積もったら threshold で minor 回収して live-set ~2× に圧縮。
+  GC 採用前は `[paths]` 系で 11 GB / `reduce ([]; . + [$i])` 系で
+  1.4 GB 出ていた所が、jq と同等オーダーに落ちた。
+- **gojq の `tree_paths` だけ 1.10 GB に膨らんでいる** のは
+  Goランタイムが path 配列を全部保持する gojq 実装の特性。nuq は
+  847 MB で gojq に対 0.78×、jq の 1.09× で済む。
+
+### GC のおかげ — `acc + [$i]` 系クエリの実測
+
+`reduce range(N) as $i ([]; . + [$i]) | length` を `/usr/bin/time -f
+'%e %M'` で計測 (時間 = wall-clock 秒, メモリ = peak RSS):
+
+| N | jq | gojq | **nuq** |
+|---:|---:|---:|---:|
+| 3 e4 | 0.01 s / 4.3 MB | 2.90 s / 11.7 MB | 0.48 s / **22 MB** |
+| 5 e4 | 0.02 s / 4.7 MB | 10.06 s / 40.7 MB | 1.33 s / **22 MB** |
+| 1 e5 | 0.04 s / 6.4 MB | 39.67 s / 67.5 MB | 5.72 s / **24 MB** |
+| 2 e5 | 0.08 s / 7.6 MB | (>120 s) | 29.49 s / **37 MB** |
+| 1 e6 | 0.34 s / 24.5 MB | (>30 min 見込み・実測未取) | 1621 s / **110 MB** |
+
+N=1e6 でも nuq は 110 MB に
+頭打ち — `acc.len` ≈ 8 MB の live-set が dominant、Cheney 1 回ごと
+to-space に 8 MB だけ転送、from-space (使い終わった garbage) は
+recycle されるため。GC 採用前 (in-house 計測) は同じ N で 11 GB
+を喰い切って OOM していた。
+
+#### メモリ視点
+
+`acc + [$i]` は意味論上は毎反復 `acc` を全コピー → 単純実装の総
+alloc 量は `Σ (i+1) × 8 byte ≈ N²/2 × 8` (N=1e5 で 40 GB、N=1e6 で
+4 TB)。GC 無しだと N=1e5 程度でも arena が GB スケールに膨らんで
+OOM。Cheney GC 採用後は 1 GC ごとに live-set だけ to-space に転送、
+garbage は recycle されるため **peak RSS は N に対しほぼ一定** (24-37
+MB レンジ)。同じ "毎回コピー" 路線の **gojq よりも省メモリ** (gojq は
+N=1e5 で 67 MB、N=2e5 で更に増)。
+
+#### 速度視点
+
+jq だけが圧倒的に速い (1e5 で 0.04 s, nuq の 140×) のは jq が
+**refcount=1 の `acc` を `acc.push($i)` に降格** しているため
+(in-place mutation)。nuq・gojq は immutable copy → O(N²) で同じ
+quadratic curve。**nuq は gojq に対して 6-7× 速い** (1e5 で 5.7 s vs
+39.7 s) — bump-allocation + Cheney の高速 alloc / コピーが効いている。
+
+jq の最適化を nuq でも実装するには `acc + [$i]` の `acc` 側が
+**linear** (1 回しか参照されない) と分かる必要がある。構文が単純な
+jq subset なので AST 解析で判定可能 — TODO は
+[todo.md](todo.md) 参照。詳細な GC 実装は
+[runtime.md §5](runtime.md#5-メモリ管理--per-run-arena--cheney-copying-gc)。
+
+### 計測コマンド
+
+```bash
+make
+BENCH_MEM=1 ruby bench/bench.rb real    # 実用ベンチ
+BENCH_MEM=1 ruby bench/bench.rb big     # big-data ベンチ
+```
+
+`/usr/bin/time -f '%M'` を内部で wrap、`BENCH_ATTEMPTS` (default 3)
+回中 max を採る (worst-of-N)。
 
 ## 解釈
 

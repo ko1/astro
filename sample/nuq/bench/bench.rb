@@ -30,6 +30,7 @@
 #   BENCH_DEBUG=1 ruby bench/bench.rb # show cmd lines
 #   BENCH_TIMEOUT=120 ruby bench/bench.rb big   # extend timeout
 #   BENCH_ATTEMPTS=1 ruby bench/bench.rb big    # single shot per cell
+#   BENCH_MEM=1 ruby bench/bench.rb   # report peak RSS instead of time
 #
 # Env:
 #   JQ=path/to/jq      override jq binary
@@ -56,6 +57,9 @@ ENGINES << ['nuq AOT', [NUQ, '-c'], { aot: true }]
 
 PER_CELL_TIMEOUT = (ENV['BENCH_TIMEOUT'] || '60').to_i
 ATTEMPTS = (ENV['BENCH_ATTEMPTS'] || '3').to_i
+MEM_MODE = ENV['BENCH_MEM'] == '1'
+TIME_BIN = '/usr/bin/time'
+abort "BENCH_MEM=1 needs #{TIME_BIN}" if MEM_MODE && !File.executable?(TIME_BIN)
 
 # n values for micro benches (stdin scalar)
 MICRO_N = {
@@ -127,6 +131,9 @@ def run_with_timeout(cmd, env, stdin_data: nil, stdin_file: nil, timeout: PER_CE
 end
 
 def measure(cmd, env, stdin_data: nil, stdin_file: nil, attempts: ATTEMPTS)
+  if MEM_MODE
+    return measure_mem(cmd, env, stdin_data: stdin_data, stdin_file: stdin_file, attempts: attempts)
+  end
   best = nil
   attempts.times do
     t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -142,6 +149,27 @@ def measure(cmd, env, stdin_data: nil, stdin_file: nil, attempts: ATTEMPTS)
   [best, nil, true]
 end
 
+# Measure peak RSS (KB) via `/usr/bin/time -f %M`. Returns the WORST
+# (max) over the attempts, which is the more meaningful number for
+# memory: best-of-N would hide the high-water mark.
+def measure_mem(cmd, env, stdin_data: nil, stdin_file: nil, attempts: ATTEMPTS)
+  worst = nil
+  attempts.times do
+    tmp = "#{ENV['TMPDIR'] || '/tmp'}/nuq_bench_mem.#{Process.pid}.#{rand(1<<32)}.txt"
+    wrapped = [TIME_BIN, '-f', '%M', '-o', tmp] + cmd
+    out, err, st, killed = run_with_timeout(wrapped, env, stdin_data: stdin_data, stdin_file: stdin_file)
+    mem_kb = (File.exist?(tmp) ? File.read(tmp).strip.to_i : nil)
+    File.unlink(tmp) rescue nil
+    if killed
+      return [nil, "timeout (#{PER_CELL_TIMEOUT}s)", false]
+    end
+    return [nil, err.lines.first&.chomp, false] unless st && st.success?
+    next if mem_kb.nil? || mem_kb <= 0
+    worst = mem_kb if worst.nil? || mem_kb > worst
+  end
+  [worst, nil, !worst.nil?]
+end
+
 def fmt_time(t)
   return '—' if t.nil?
   if t < 0.01
@@ -153,9 +181,26 @@ def fmt_time(t)
   end
 end
 
+def fmt_mem(kb)
+  return '—' if kb.nil?
+  if kb < 1024
+    sprintf('%d KB', kb)
+  elsif kb < 1024 * 1024
+    sprintf('%.1f MB', kb / 1024.0)
+  else
+    sprintf('%.2f GB', kb / 1024.0 / 1024.0)
+  end
+end
+
+def fmt_value(v)
+  MEM_MODE ? fmt_mem(v) : fmt_time(v)
+end
+
 def fmt_speedup(jq_t, t)
   return '—' if jq_t.nil? || t.nil? || t == 0
-  r = jq_t / t   # > 1 means t is faster than jq
+  # MEM mode: ratio is t/jq (lower = less memory than jq)
+  # Time mode: ratio is jq/t (higher = faster than jq)
+  r = MEM_MODE ? (t.to_f / jq_t) : (jq_t.to_f / t)
   sprintf('%.2fx', r)
 end
 
@@ -262,7 +307,7 @@ def print_md_table(title, results, n_provider)
     cells = [name]
     cells << n_provider.call(name).to_s if n_provider
     row.each do |t, _, ok|
-      cells << (ok ? fmt_time(t) : (t.nil? ? '—' : "**err**"))
+      cells << (ok ? fmt_value(t) : (t.nil? ? '—' : "**err**"))
     end
     puts '| ' + cells.join(' | ') + ' |'
   end
@@ -270,9 +315,10 @@ def print_md_table(title, results, n_provider)
   jq_idx = ENGINES.index { |label, _| label == 'jq' }
   return unless jq_idx
 
-  # Speedup table relative to jq
+  # Ratio table relative to jq
   puts ''
-  puts "### Speedup vs jq (higher = faster than jq)"
+  puts(MEM_MODE ? "### Ratio vs jq (lower = less memory)" :
+                  "### Speedup vs jq (higher = faster than jq)")
   puts ''
   header = ['bench']
   header << 'n' if n_provider
@@ -290,7 +336,8 @@ def print_md_table(title, results, n_provider)
   end
 end
 
-puts "# nuq benchmark results"
+puts(MEM_MODE ? "# nuq benchmark results — peak RSS (max RSS via /usr/bin/time -f %M)" :
+                "# nuq benchmark results")
 print_md_table("Real-world (input: bench/data/users.json, ~1.9 MB / 10k users)",
                real_results, nil)
 print_md_table("Micro-benchmarks (jaq examples/benches; input = scalar n via stdin)",
@@ -306,5 +353,10 @@ ENGINES.each do |label, cmd, _|
   v = `#{cmd[0]} --version 2>/dev/null`.lines.first&.chomp || '?'
   puts "- **#{label}**: `#{cmd[0]}` (#{v})"
 end
-puts "- per-cell timeout: #{PER_CELL_TIMEOUT}s, best-of-#{ATTEMPTS}, CCACHE_DISABLE=1 for AOT cells"
-puts "- whole-process wall time (includes startup, filter parse, JSON parse, eval, output)"
+if MEM_MODE
+  puts "- per-cell timeout: #{PER_CELL_TIMEOUT}s, **worst-of-#{ATTEMPTS}** RSS, CCACHE_DISABLE=1 for AOT cells"
+  puts "- peak RSS via `/usr/bin/time -f %M` (Linux maxresident, KB)"
+else
+  puts "- per-cell timeout: #{PER_CELL_TIMEOUT}s, best-of-#{ATTEMPTS}, CCACHE_DISABLE=1 for AOT cells"
+  puts "- whole-process wall time (includes startup, filter parse, JSON parse, eval, output)"
+end

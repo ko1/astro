@@ -129,9 +129,12 @@ struct nuq_gc_arr { VALUE *base; size_t cnt; };
 extern struct nuq_gc_arr nuq_gc_arrs[NUQ_GC_ARR_CAP];
 extern size_t nuq_gc_arrs_top;
 
+__attribute__((noreturn,cold)) void nuq_gc_push_overflow(void);
+
 static inline void
 nuq_gc_push(VALUE *vp)
 {
+    if (UNLIKELY(nuq_gc_roots_top >= NUQ_GC_ROOTS_CAP)) nuq_gc_push_overflow();
     nuq_gc_roots[nuq_gc_roots_top++] = vp;
 }
 

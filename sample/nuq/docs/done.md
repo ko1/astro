@@ -32,12 +32,16 @@ jq 本体も decnum ビルドでないと通らない領域。
 
 - 整数: 62-bit fixnum (1-bit タグ)
 - 浮動小数: ヒープ box (`struct nuq_obj` の `dbl`)
-- 文字列 / 配列 / オブジェクト: ヒープ box、Boehm GC
+- 文字列 / 配列 / オブジェクト: per-run arena bump alloc (eval 中) +
+  Boehm GC (parser / リテラル / `--arg*` / module data 等の永続物)
 - `null` / `true` / `false`: 静的 singleton
 - オブジェクトは **挿入順を保持** (parallel `keys[]` / `vals[]`)
 - 16 keys 超で **lazy hash idx** を build (open-addressing FNV-1a、
-  load factor ≤ 0.5)。lookup は実質 O(1)、挿入順イテレーションは
-  parallel array 側でそのまま
+  load factor ≤ 0.5)
+- arena は **Cheney 式 stop-the-world copying GC** で mid-run 回収:
+  16 MB しきい値で trigger、live 値だけ to-space にコピーして
+  from-space を解放。`reduce ([]; . + [$i])` 系の累積 mutation で
+  O(N²) → O(N) memory に。詳細は [`runtime.md`](./runtime.md) §5
 
 ## フィルタ言語
 

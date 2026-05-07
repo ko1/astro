@@ -41,13 +41,28 @@ char *nuq_arena_cur  = NULL;
 char *nuq_arena_end  = NULL;
 
 VALUE *nuq_gc_roots[NUQ_GC_ROOTS_CAP];
+
+void
+nuq_gc_push_overflow(void)
+{
+    fprintf(stderr,
+            "nuq: GC root pin stack overflow (>%u). "
+            "This is a bug — a helper is pinning without unpinning.\n",
+            (unsigned)NUQ_GC_ROOTS_CAP);
+    abort();
+}
 size_t nuq_gc_roots_top = 0;
 struct nuq_gc_arr nuq_gc_arrs[NUQ_GC_ARR_CAP];
 size_t nuq_gc_arrs_top = 0;
 int    nuq_gc_defer = 0;
 
 #define NUQ_ARENA_CHUNK   (1u << 20)   /* 1 MiB chunks */
-#define NUQ_GC_THRESHOLD  (16u << 20)  /* trigger minor GC at 16 MB */
+#define NUQ_GC_THRESHOLD  (16u << 20)  /* initial GC trigger at 16 MB */
+/* Next-trigger threshold; bumped after each GC to ~2x the surviving
+ * live set so workloads with large persistent state (e.g. `[paths]`
+ * collecting 1M paths) don't enter a quadratic copy cycle where every
+ * alloc-bump immediately re-fires GC. */
+static size_t arena_gc_threshold = NUQ_GC_THRESHOLD;
 
 struct nuq_chunk {
     struct nuq_chunk *next;
@@ -148,7 +163,7 @@ nuq_arena_alloc_slow(size_t sz)
      * big-alloc branch so deeply-recursive `acc + [$i]` style code
      * with growing arrays doesn't bypass the GC trigger by always
      * taking the dedicated-chunk path. */
-    if (!gc_in_progress && nuq_gc_defer == 0 && nuq_active_ctx && arena_total > NUQ_GC_THRESHOLD) {
+    if (!gc_in_progress && nuq_gc_defer == 0 && nuq_active_ctx && arena_total > arena_gc_threshold) {
         nuq_arena_collect();
         char *p = nuq_arena_cur;
         char *next = p + sz;
@@ -201,6 +216,7 @@ nuq_arena_reset(void)
     nuq_arena_cur = NULL;
     nuq_arena_end = NULL;
     arena_total = 0;
+    arena_gc_threshold = NUQ_GC_THRESHOLD;
     nuq_gc_roots_top = 0;
     nuq_gc_arrs_top = 0;
     nuq_gc_defer = 0;
@@ -367,6 +383,10 @@ nuq_arena_collect(void)
 {
     if (gc_in_progress || !nuq_active_ctx) return;
     gc_in_progress = true;
+    if (getenv("NUQ_GC_TRACE")) {
+        static int cnt = 0;
+        fprintf(stderr, "[gc#%d] from=%zu MB\n", ++cnt, arena_total >> 20);
+    }
 
     /* Stash the from-space, set up empty to-space. */
     struct nuq_chunk *from_first = arena_first;
@@ -445,6 +465,12 @@ nuq_arena_collect(void)
     nuq_arena_cur = gc_to_cur;
     nuq_arena_end = gc_to_end;
     arena_total = gc_to_total;
+
+    /* Adaptive threshold: aim for ~2x live so steady-state alloc rate
+     * gives one GC per doubling of arena, not per fixed 16 MB. */
+    size_t want = gc_to_total * 2;
+    if (want < NUQ_GC_THRESHOLD) want = NUQ_GC_THRESHOLD;
+    arena_gc_threshold = want;
 
     gc_to_first = NULL;
     gc_to_current = NULL;
@@ -879,6 +905,7 @@ nuq_eq_slow(VALUE a, VALUE b)
             if (!nuq_eq(oa->obj.vals[i], nuq_object_get(b, k))) return false;
         }
         return true;
+      case NUQ_T_FORWARD: abort(); /* live values can't be forwarding ptrs */
     }
     return false;
 }
@@ -896,6 +923,7 @@ nuq_type_rank(VALUE v)
       case NUQ_T_STRING: return 4;
       case NUQ_T_ARRAY:  return 5;
       case NUQ_T_OBJECT: return 6;
+      case NUQ_T_FORWARD: abort();
     }
     return 7;
 }
@@ -982,6 +1010,7 @@ nuq_type_name(VALUE v)
       case NUQ_T_STRING: return "string";
       case NUQ_T_ARRAY:  return "array";
       case NUQ_T_OBJECT: return "object";
+      case NUQ_T_FORWARD: abort();
     }
     return "unknown";
 }
@@ -1063,6 +1092,7 @@ nuq_length(VALUE v)
       }
       case NUQ_T_ARRAY:  return nuq_make_int((int64_t)o->arr.len);
       case NUQ_T_OBJECT: return nuq_make_int((int64_t)o->obj.len);
+      case NUQ_T_FORWARD: abort();
     }
     return NUQ_FIX(0);
 }
@@ -1229,6 +1259,7 @@ nuq_contains_core(VALUE a, VALUE b)
         }
         return true;
       }
+      case NUQ_T_FORWARD: abort();
     }
     return false;
 }

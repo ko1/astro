@@ -514,6 +514,8 @@ print_value(FILE *fp, VALUE v, int indent, int depth)
       case NUQ_T_BOOL:   puts_u(o->b ? "true" : "false", fp); return;
       case NUQ_T_DOUBLE: print_number(fp, v); return;
       case NUQ_T_STRING: print_string(fp, o); return;
+      case NUQ_T_FORWARD: /* live values can't be forwarding ptrs */
+        abort();
       case NUQ_T_ARRAY: {
         if (depth > NUQ_JSON_PRINT_MAX_DEPTH) {
             puts_u("\"<skipped: too deep>\"", fp);

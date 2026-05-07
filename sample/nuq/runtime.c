@@ -2993,10 +2993,12 @@ typedef VALUE (*nuq_leaf_fn)(VALUE v, void *ud, bool *dropped);
 
 static VALUE walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud);
 
-/* Helper: clone object and set/delete one key. */
+/* Helper: clone object and set/delete one key.  nuq_clone may GC, so
+ * `k` and `new_v` need pinning across it. */
 static VALUE
 obj_with_key(VALUE obj, VALUE k, VALUE new_v, bool drop)
 {
+    NUQ_GC_PIN3(obj, k, new_v);
     VALUE clone = nuq_clone(obj);
     if (drop) {
         struct nuq_obj *co = NUQ_PTR(clone);
@@ -3015,6 +3017,7 @@ obj_with_key(VALUE obj, VALUE k, VALUE new_v, bool drop)
     } else {
         nuq_object_set(clone, k, new_v);
     }
+    NUQ_GC_UNPIN(3);
     return clone;
 }
 
@@ -3340,23 +3343,33 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         const char *name = (n->head.kind == &kind_node_field)
             ? n->u.node_field.name : n->u.node_field_opt.name;
         VALUE k = nuq_make_string(name, strlen(name));
+        /* fn() invokes user filter — many allocs, GC may fire. v and k
+         * live across the call; pin them. */
+        NUQ_GC_PIN2(v, k);
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
             VALUE child = nuq_object_get(v, k);
             bool dropped = false;
             VALUE new_child = fn(child, ud, &dropped);
-            if (c->error != NUQ_NULL) return v;
-            return obj_with_key(v, k, new_child, dropped);
+            if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(2); return v; }
+            NUQ_GC_PIN1(new_child);
+            VALUE r = obj_with_key(v, k, new_child, dropped);
+            NUQ_GC_UNPIN(3);
+            return r;
         }
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_NULL) {
             /* auto-vivify: treat null as empty object */
             VALUE empty_obj = nuq_make_object(4);
+            NUQ_GC_PIN1(empty_obj);
             bool dropped = false;
             VALUE new_child = fn(NUQ_NULL, ud, &dropped);
-            if (c->error != NUQ_NULL) return v;
-            if (dropped) return v;     /* nothing to delete */
+            if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(3); return v; }
+            if (dropped) { NUQ_GC_UNPIN(3); return v; }
+            NUQ_GC_PIN1(new_child);
             nuq_object_set(empty_obj, k, new_child);
+            NUQ_GC_UNPIN(4);
             return empty_obj;
         }
+        NUQ_GC_UNPIN(2);
         if (optional) return v;
         c->error = nuq_make_string("path expression: not object", 27);
         return v;
@@ -3441,30 +3454,43 @@ walk_path(CTX *c, struct Node *n, VALUE v, nuq_leaf_fn fn, void *ud)
         return v;
     }
 
-    /* iter (`.[]`) — for each element, apply fn; rebuild container */
+    /* iter (`.[]`) — for each element, apply fn; rebuild container.
+     * fn() runs arbitrary user filter and may GC.  Pin v and result
+     * across the loop; refetch element pointers from v each iter. */
     if (n->head.kind == &kind_node_iter || n->head.kind == &kind_node_iter_opt) {
         bool optional = (n->head.kind == &kind_node_iter_opt);
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
-            struct nuq_obj *o = NUQ_PTR(v);
-            VALUE result = nuq_make_array(o->arr.len);
-            for (size_t i = 0; i < o->arr.len; i++) {
+            size_t len = NUQ_PTR(v)->arr.len;
+            VALUE result = nuq_make_array(len);
+            NUQ_GC_PIN2(v, result);
+            for (size_t i = 0; i < len; i++) {
                 bool dropped = false;
-                VALUE new_v = fn(o->arr.items[i], ud, &dropped);
-                if (c->error != NUQ_NULL) return v;
+                VALUE item = NUQ_PTR(v)->arr.items[i];   /* refetch */
+                VALUE new_v = fn(item, ud, &dropped);
+                if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(2); return v; }
                 if (!dropped) nuq_array_push(result, new_v);
                 /* dropped → just skip pushing, effectively removing */
             }
+            NUQ_GC_UNPIN(2);
             return result;
         }
         if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
-            struct nuq_obj *o = NUQ_PTR(v);
-            VALUE result = nuq_make_object(o->obj.len);
-            for (size_t i = 0; i < o->obj.len; i++) {
+            size_t len = NUQ_PTR(v)->obj.len;
+            VALUE result = nuq_make_object(len);
+            NUQ_GC_PIN2(v, result);
+            for (size_t i = 0; i < len; i++) {
                 bool dropped = false;
-                VALUE new_v = fn(o->obj.vals[i], ud, &dropped);
-                if (c->error != NUQ_NULL) return v;
-                if (!dropped) nuq_object_set(result, o->obj.keys[i], new_v);
+                VALUE val = NUQ_PTR(v)->obj.vals[i];     /* refetch */
+                VALUE key = NUQ_PTR(v)->obj.keys[i];     /* refetch */
+                VALUE new_v = fn(val, ud, &dropped);
+                if (c->error != NUQ_NULL) { NUQ_GC_UNPIN(2); return v; }
+                /* GC inside fn may have moved key — refetch from v. */
+                if (!dropped) {
+                    key = NUQ_PTR(v)->obj.keys[i];
+                    nuq_object_set(result, key, new_v);
+                }
             }
+            NUQ_GC_UNPIN(2);
             return result;
         }
         if (optional) return v;
@@ -4689,23 +4715,37 @@ nuq_recurse_collect_pool(CTX *c, VALUE v)
 static void
 paths_walk_pool(CTX *c, VALUE v, VALUE path)
 {
-    if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
-        struct nuq_obj *o = NUQ_PTR(v);
-        for (size_t i = 0; i < o->arr.len; i++) {
+    if (!NUQ_IS_PTR(v)) return;
+    int t = NUQ_PTR(v)->type;
+    if (t != NUQ_T_ARRAY && t != NUQ_T_OBJECT) return;
+    /* PIN v and path: nuq_clone / nuq_array_push / nuq_pool_push and
+     * the recursive call may allocate and trigger GC, which would
+     * invalidate any raw `struct nuq_obj *` cached from NUQ_PTR(v). */
+    NUQ_GC_PIN2(v, path);
+    if (t == NUQ_T_ARRAY) {
+        size_t len = NUQ_PTR(v)->arr.len;
+        for (size_t i = 0; i < len; i++) {
             VALUE p = nuq_clone(path);
-            nuq_array_push(p, nuq_make_int(i));
+            NUQ_GC_PIN1(p); /* nuq_array_push may grow → GC */
+            nuq_array_push(p, nuq_make_int((int64_t)i));
             nuq_pool_push(c, p);
-            paths_walk_pool(c, o->arr.items[i], p);
+            VALUE child = NUQ_PTR(v)->arr.items[i]; /* refetch after allocs */
+            paths_walk_pool(c, child, p);
+            NUQ_GC_UNPIN(1);
         }
-    } else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
-        struct nuq_obj *o = NUQ_PTR(v);
-        for (size_t i = 0; i < o->obj.len; i++) {
+    } else {
+        size_t len = NUQ_PTR(v)->obj.len;
+        for (size_t i = 0; i < len; i++) {
             VALUE p = nuq_clone(path);
-            nuq_array_push(p, o->obj.keys[i]);
+            NUQ_GC_PIN1(p);
+            nuq_array_push(p, NUQ_PTR(v)->obj.keys[i]); /* refetch */
             nuq_pool_push(c, p);
-            paths_walk_pool(c, o->obj.vals[i], p);
+            VALUE child = NUQ_PTR(v)->obj.vals[i]; /* refetch */
+            paths_walk_pool(c, child, p);
+            NUQ_GC_UNPIN(1);
         }
     }
+    NUQ_GC_UNPIN(2);
 }
 
 void
@@ -4719,23 +4759,38 @@ nuq_paths_collect_pool(CTX *c, VALUE v)
 static void
 leaf_paths_walk(CTX *c, VALUE v, VALUE path)
 {
-    if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_ARRAY) {
-        struct nuq_obj *o = NUQ_PTR(v);
-        for (size_t i = 0; i < o->arr.len; i++) {
+    if (!NUQ_IS_PTR(v)) {
+        nuq_pool_push(c, path);
+        return;
+    }
+    int t = NUQ_PTR(v)->type;
+    if (t != NUQ_T_ARRAY && t != NUQ_T_OBJECT) {
+        nuq_pool_push(c, path);
+        return;
+    }
+    NUQ_GC_PIN2(v, path);
+    if (t == NUQ_T_ARRAY) {
+        size_t len = NUQ_PTR(v)->arr.len;
+        for (size_t i = 0; i < len; i++) {
             VALUE p = nuq_clone(path);
+            NUQ_GC_PIN1(p);
             nuq_array_push(p, nuq_make_int((int64_t)i));
-            leaf_paths_walk(c, o->arr.items[i], p);
-        }
-    } else if (NUQ_IS_PTR(v) && NUQ_PTR(v)->type == NUQ_T_OBJECT) {
-        struct nuq_obj *o = NUQ_PTR(v);
-        for (size_t i = 0; i < o->obj.len; i++) {
-            VALUE p = nuq_clone(path);
-            nuq_array_push(p, o->obj.keys[i]);
-            leaf_paths_walk(c, o->obj.vals[i], p);
+            VALUE child = NUQ_PTR(v)->arr.items[i];
+            leaf_paths_walk(c, child, p);
+            NUQ_GC_UNPIN(1);
         }
     } else {
-        nuq_pool_push(c, path);
+        size_t len = NUQ_PTR(v)->obj.len;
+        for (size_t i = 0; i < len; i++) {
+            VALUE p = nuq_clone(path);
+            NUQ_GC_PIN1(p);
+            nuq_array_push(p, NUQ_PTR(v)->obj.keys[i]);
+            VALUE child = NUQ_PTR(v)->obj.vals[i];
+            leaf_paths_walk(c, child, p);
+            NUQ_GC_UNPIN(1);
+        }
     }
+    NUQ_GC_UNPIN(2);
 }
 
 void
