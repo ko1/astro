@@ -22,6 +22,7 @@
 #include "node.h"
 #include "astro_code_store.h"
 #include <errno.h>
+#include <unistd.h>
 
 struct nuq_option OPTION = { .indent = 2 };
 
@@ -78,6 +79,13 @@ static int
 process_input(CTX *c, NODE *filter, const char *src, size_t len)
 {
     if (OPTION.null_input) {
+        /* `-n` runs the filter once with `.` = null, but `inputs`
+         * inside the filter must still be able to pull stdin values.
+         * Load the queue if there is anything on stdin. */
+        if (src && len) {
+            int rc = load_input_queue_json(src, len);
+            if (rc) return rc;
+        }
         nuq_run(c, filter, NUQ_NULL);
         return 0;
     }
@@ -283,8 +291,13 @@ main(int argc, char **argv)
 
     int rc = 0;
     if (input_file_cnt == 0) {
-        size_t L; char *buf = OPTION.null_input ? NULL : slurp_stream(stdin, &L);
-        rc = process_input(c, filter, buf, OPTION.null_input ? 0 : L);
+        /* Slurp stdin even with `-n` — the filter may use `inputs`
+         * to pull from it.  `process_input` decides whether to run
+         * the filter per stdin value (default) or once with NUQ_NULL
+         * (`-n`). */
+        size_t L; char *buf = isatty(STDIN_FILENO) && OPTION.null_input
+                              ? NULL : slurp_stream(stdin, &L);
+        rc = process_input(c, filter, buf, buf ? L : 0);
         free(buf);
     } else {
         for (int i = 0; i < input_file_cnt; i++) {

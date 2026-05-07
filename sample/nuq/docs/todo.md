@@ -182,7 +182,10 @@ NDJSON / `inputs` ストリームの bench を整備したい。
 サブセット + Q3 reduce + path-walk) を valgrind の memcheck 配下で
 通す。memory access errors / per-input leak が回帰したら検出できる。
 
-## 設計上の妥協 (変えない)
+## 設計方針 (固定)
+
+積極的に選んだ設計上の選択 — 性能・互換・実装複雑度のバランスを
+取った結果で、変える予定のない不変式 ("妥協" ではない)。
 
 - **メモリ管理は per-run arena + Cheney copying GC + scratch arena**:
   - 永続領域 (AST / リテラル / `--arg*` / module data / CTX / intern):

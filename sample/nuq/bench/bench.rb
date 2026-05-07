@@ -82,6 +82,19 @@ MICRO_N = {
 # real benches: all use bench/data/users.json by default
 REAL_INPUT = File.join(__dir__, 'data', 'users.json')
 
+# jsonl benches: real-world NDJSON, GitHub Archive 1-hour slice
+# (~100 MB / 30 K events).  Generated on demand by gen_jsonl.rb.
+JSONL_DATA_DIR = File.join(__dir__, 'data', 'jsonl')
+JSONL_DATA_FILE = File.join(JSONL_DATA_DIR, 'gharchive.jsonl')
+# Filters that aggregate the whole stream need `-n`; the rest are
+# per-record streaming.
+JSONL_FLAGS = {
+  'count_pushes'   => ['-n'],
+  'top_users'      => ['-n'],
+  'type_histogram' => ['-n'],
+  'unique_repos'   => ['-n'],
+}
+
 # big benches: ~25 MB-each diverse-shape JSON files in bench/data/big/.
 # Each filter targets ONE file based on its prefix.
 BIG_DATA_DIR = File.join(__dir__, 'data', 'big')
@@ -107,25 +120,32 @@ def run_with_timeout(cmd, env, stdin_data: nil, stdin_file: nil, timeout: PER_CE
   killed = false
   Open3.popen3(env, *cmd) do |stdin, stdout, stderr, wait_thr|
     pid = wait_thr.pid
-    begin
-      if stdin_file
-        File.open(stdin_file, 'rb') { |f| IO.copy_stream(f, stdin) }
-      elsif stdin_data
-        stdin.write(stdin_data)
-      end
-    rescue Errno::EPIPE
-      # child closed stdin before reading all of it (e.g. `.` only
-      # parses one value, then exits) — that's fine.
-    end
-    stdin.close rescue nil
+    # Drain stdout/stderr concurrently with the stdin write — large
+    # inputs (e.g. 100 MB JSONL with `identity` echoing it back) deadlock
+    # otherwise: child fills its 64 KB stdout pipe buffer waiting for
+    # us, parent fills its 64 KB stdin pipe buffer waiting for child.
     out_io = Thread.new { stdout.read }
     err_io = Thread.new { stderr.read }
+    in_io = Thread.new do
+      begin
+        if stdin_file
+          File.open(stdin_file, 'rb') { |f| IO.copy_stream(f, stdin) }
+        elsif stdin_data
+          stdin.write(stdin_data)
+        end
+      rescue Errno::EPIPE
+        # child closed stdin early (e.g. `.` only parses one value,
+        # then exits) — fine.
+      ensure
+        stdin.close rescue nil
+      end
+    end
     if wait_thr.join(timeout).nil?
       Process.kill('KILL', pid) rescue nil
       wait_thr.value rescue nil
       killed = true
     end
-    out_io.join; err_io.join
+    in_io.join; out_io.join; err_io.join
     return [out_io.value, err_io.value, wait_thr.value, killed]
   end
 end
@@ -209,7 +229,7 @@ end
 selected = []
 suites = []
 ARGV.each do |a|
-  if %w[real micro big].include?(a)
+  if %w[real micro big jsonl].include?(a)
     suites << a
   else
     selected << a
@@ -222,26 +242,30 @@ suites = %w[real micro] if suites.empty?
 env_aot     = { 'CCACHE_DISABLE' => '1' }
 env_neutral = {}
 
-def run_suite(suite, names, default_n, stdin_provider, env_aot, env_neutral)
+def run_suite(suite, names, default_n, stdin_provider, env_aot, env_neutral, extra_flags: nil)
   results = []
   names.each do |name|
     filter_path = File.join(__dir__, suite, "#{name}.jq")
     next unless File.exist?(filter_path)
     filter = File.read(filter_path).strip
     stdin_data, stdin_file = stdin_provider.call(name)
+    flags = extra_flags ? (extra_flags[name] || []) : []
+    $stderr.puts "  [bench] #{suite}/#{name}" if ENV['BENCH_VERBOSE']
 
     row = [name]
     row_data = []
     ENGINES.each do |label, cmd, opts|
       opts ||= {}
+      argv = cmd + flags + [filter]
+      $stderr.puts "    [#{label}] #{argv.inspect[0,120]}" if ENV['BENCH_VERBOSE']
       if opts[:aot]
         FileUtils.rm_rf(File.join(ROOT, 'code_store'))
         # bake (1 attempt, throw-away timing)
-        measure(cmd + [filter], env_aot, stdin_data: stdin_data, stdin_file: stdin_file, attempts: 1)
+        measure(argv, env_aot, stdin_data: stdin_data, stdin_file: stdin_file, attempts: 1)
         # measure (best of 3 cached runs)
-        t, err, ok = measure(cmd + [filter], env_aot, stdin_data: stdin_data, stdin_file: stdin_file)
+        t, err, ok = measure(argv, env_aot, stdin_data: stdin_data, stdin_file: stdin_file)
       else
-        t, err, ok = measure(cmd + [filter], env_neutral, stdin_data: stdin_data, stdin_file: stdin_file)
+        t, err, ok = measure(argv, env_neutral, stdin_data: stdin_data, stdin_file: stdin_file)
       end
       row_data << [t, err, ok]
     end
@@ -289,6 +313,23 @@ if suites.include?('big')
                           nil,
                           ->(name) { [nil, File.join(BIG_DATA_DIR, BIG_INPUTS[name])] },
                           env_aot, env_neutral)
+end
+
+# JSONL suite: real GitHub Archive 1-hour NDJSON (~100 MB / 30 K events).
+jsonl_names = Dir["#{__dir__}/jsonl/*.jq"].map { |p| File.basename(p, '.jq') }.sort
+jsonl_names.select! { |n| selected.any? { |s| n.include?(s) } } unless selected.empty?
+jsonl_results = []
+if suites.include?('jsonl')
+  unless File.exist?(JSONL_DATA_FILE) && File.size(JSONL_DATA_FILE) > 50_000_000
+    warn "jsonl data missing — running gen_jsonl.rb (downloads ~120 MB GH Archive)…"
+    system('ruby', File.join(__dir__, 'data', 'gen_jsonl.rb')) or
+      abort 'gen_jsonl.rb failed'
+  end
+  jsonl_results = run_suite('jsonl', jsonl_names,
+                            nil,
+                            ->(_name) { [nil, JSONL_DATA_FILE] },
+                            env_aot, env_neutral,
+                            extra_flags: JSONL_FLAGS)
 end
 
 # ---- MD table output --------------------------------------------------
@@ -345,6 +386,8 @@ print_md_table("Micro-benchmarks (jaq examples/benches; input = scalar n via std
 print_md_table("Big-data (4 shapes × ~25 MB; total ~100 MB — see bench/data/big/)",
                big_results,
                ->(name) { BIG_INPUTS[name].sub('_big.json', '') })
+print_md_table("JSONL (real GitHub Archive 1-hour, ~100 MB / 30k events)",
+               jsonl_results, nil)
 
 puts ''
 puts "## Versions"

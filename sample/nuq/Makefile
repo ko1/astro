@@ -35,11 +35,26 @@ jqtest: nuq
 bench: nuq
 	ruby bench/bench.rb
 
+# Real-world NDJSON dataset for the `jsonl` bench suite.  Downloads
+# a 1-hour GitHub Archive slice (~120 MB compressed), decompresses
+# and truncates to 30K events (~100 MB).  Skipped if file is already
+# present.  Network access required on first run only.
+bench-data-jsonl:
+	ruby bench/data/gen_jsonl.rb
+
+bench-jsonl: nuq bench-data-jsonl
+	ruby bench/bench.rb jsonl
+
 clean:
 	rm -f nuq $(NODE_GENFILES)
 	rm -rf code_store
 
-distclean: clean
+# Wipe generated bench data (forces re-download / re-generation on
+# next run).  Not part of `clean` since download is slow.
+clean-bench-data:
+	rm -rf bench/data/big bench/data/jsonl/*.jsonl bench/data/jsonl/*.json bench/data/jsonl/*.json.gz
+
+distclean: clean clean-bench-data
 	rm -rf code_store
 
-.PHONY: all test jqtest bench clean distclean
+.PHONY: all test jqtest bench bench-data-jsonl bench-jsonl clean clean-bench-data distclean
