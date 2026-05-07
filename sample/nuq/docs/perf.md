@@ -22,7 +22,9 @@
 ## 環境
 
 - gcc 13 -O2、SD は `-O3 -fPIC -fno-plt -march=native`
-- Boehm GC (libgc)
+- メモリ管理: per-run arena + Cheney copying GC (詳細は
+  [runtime.md §5](runtime.md#5-メモリ管理--per-run-arena--cheney-copying-gc))。
+  外部 GC ライブラリ依存なし — `libm` + `libc` のみで動く
 - 比較対象: `jq-1.7`、`jaq 3.0.0`、`gojq 0.12.19`
 - best-of-3、各セル timeout 30s (big は 120s)、CPU 固定なし
 - `CCACHE_DISABLE=1` (AOT セルのみ) — sandbox + ccache の干渉対策
@@ -33,38 +35,43 @@
 
 | bench | jq | jaq | gojq | nuq int | nuq AOT |
 |---|---:|---:|---:|---:|---:|
-| `deep_field` (`[.[] \| .stats.followers] \| add`) | 63 ms | 63 ms | 48 ms | 47 ms | 50 ms |
-| `extract_field` (`[.[] \| .name] \| length`) | 63 ms | 51 ms | 46 ms | 46 ms | 45 ms |
-| `filter_count` (`[.[] \| select(.active and .age > 30)] \| length`) | 66 ms | 65 ms | 50 ms | 49 ms | 47 ms |
-| `group_by` (`group_by(.city) \| map(...)`) | 73 ms | 65 ms | 56 ms | 54 ms | 52 ms |
-| `identity` (`.`) | 86 ms | 80 ms | 66 ms | 62 ms | 65 ms |
-| `keys_aggregate` (`[.[] \| keys] \| add \| unique \| length`) | 278 ms | 109 ms | 87 ms | 82 ms | 87 ms |
-| `length` (`length`) | 57 ms | 46 ms | 43 ms | 46 ms | 46 ms |
-| `recurse_paths` (`.[0] \| [paths] \| length`) | 61 ms | 50 ms | 41 ms | 44 ms | 46 ms |
-| `sort_by` (`sort_by(.score) \| .[-10:] \| map(.name)`) | 78 ms | 67 ms | 126 ms | 49 ms | 53 ms |
-| `sum_score` (`[.[] \| .score] \| add`) | 60 ms | 54 ms | 46 ms | 46 ms | 47 ms |
-| `transform` (`map({name, email, top_tag: .tags[0]})`) | 80 ms | 85 ms | 56 ms | 54 ms | 56 ms |
+| `deep_field` (`[.[] \| .stats.followers] \| add`) | 60 ms | 54 ms | 46 ms | 35 ms | 35 ms |
+| `extract_field` (`[.[] \| .name] \| length`) | 55 ms | 52 ms | 44 ms | 33 ms | 32 ms |
+| `filter_count` (`[.[] \| select(.active and .age > 30)] \| length`) | 59 ms | 59 ms | 47 ms | 34 ms | 34 ms |
+| `group_by` (`group_by(.city) \| map(...)`) | 68 ms | 60 ms | 50 ms | 35 ms | 35 ms |
+| `identity` (`.`) | 79 ms | 76 ms | 59 ms | 43 ms | 42 ms |
+| `keys_aggregate` (`[.[] \| keys] \| add \| unique \| length`) | 252 ms | 91 ms | 83 ms | 63 ms | 64 ms |
+| `length` (`length`) | 52 ms | 46 ms | 40 ms | 31 ms | 31 ms |
+| `recurse_paths` (`.[0] \| [paths] \| length`) | 55 ms | 45 ms | 39 ms | 32 ms | 30 ms |
+| `sort_by` (`sort_by(.score) \| .[-10:] \| map(.name)`) | 70 ms | 63 ms | 109 ms | 35 ms | 37 ms |
+| `sum_score` (`[.[] \| .score] \| add`) | 61 ms | 54 ms | 44 ms | 32 ms | 33 ms |
+| `transform` (`map({name, email, top_tag: .tags[0]})`) | 75 ms | 83 ms | 55 ms | 40 ms | 41 ms |
 
 vs jq:
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `deep_field` | 1.00× | 1.05× | 1.32× | **1.30×** |
-| `extract_field` | 1.00× | 1.14× | 1.29× | **1.26×** |
-| `filter_count` | 1.00× | 1.02× | 1.35× | **1.36×** |
-| `group_by` | 1.00× | 1.11× | 1.26× | **1.58×** |
-| `identity` | 1.00× | 1.00× | 1.27× | **1.54×** |
-| `keys_aggregate` | 1.00× | 2.66× | 3.01× | **3.54×** |
-| `length` | 1.00× | 1.17× | 1.22× | **1.34×** |
-| `recurse_paths` | 1.00× | 1.30× | 1.39× | **1.56×** |
-| `sort_by` | 1.00× | 1.03× | 0.63× | **1.52×** |
-| `sum_score` | 1.00× | 1.19× | 1.32× | **1.36×** |
-| `transform` | 1.00× | 0.96× | 1.51× | **1.79×** |
+| `deep_field` | 1.00× | 1.06× | 1.32× | **1.70×** |
+| `extract_field` | 1.00× | 1.09× | 1.27× | **1.72×** |
+| `filter_count` | 1.00× | 1.01× | 1.32× | **1.79×** |
+| `group_by` | 1.00× | 1.11× | 1.30× | **1.83×** |
+| `identity` | 1.00× | 1.06× | 1.39× | **1.91×** |
+| `keys_aggregate` | 1.00× | 2.52× | 2.81× | **3.57×** |
+| `length` | 1.00× | 1.10× | 1.27× | **1.66×** |
+| `recurse_paths` | 1.00× | 1.13× | 1.35× | **1.78×** |
+| `sort_by` | 1.00× | 1.10× | 0.69× | **1.78×** |
+| `sum_score` | 1.00× | 1.00× | 1.20× | **1.59×** |
+| `transform` | 1.00× | 0.91× | 1.42× | **1.85×** |
 
-実用 11/11 すべてで jq 越え (1.3-3.5×)。Cheney GC 導入後に
-`transform` (+25%)、`recurse_paths` (+16%)、`group_by` (+12%) など
-が押し上がった (mid-run reclaim で alloc バンドル分のメモリ局所性が
-向上)。
+実用 11/11 すべてで jq 越え (**1.6-3.6×**)。最近の進捗:
+- **Cheney copying GC** 導入で mid-run reclaim、alloc バンドル分の
+  メモリ局所性が向上 (`transform` +25%、`group_by` +12% など)。
+- **線形性解析** (`linearity.c`) で `acc + [$i]` 系を in-place mutation に
+  降格 — 実用ベンチには直接該当 pattern が少ないが Q3 系が桁違いに
+  改善 ([§GC + 線形性解析](#cheney-gc--線形性解析--acc---i-系クエリの実測))。
+- **libgc 依存除去** (このコミット) で 8 MB 常駐 heap + per-alloc の
+  lookup/sweep コストが消えて、実用ベンチが一律 +20-40% 速くなった
+  (`identity` +25%、`length` +24%、`sort_by` AOT は安定)。
 
 ## Micro-bench (jaq examples/benches; input = scalar n via stdin)
 
@@ -170,11 +177,10 @@ best-of-3 で取るのと違って、メモリは high-water mark を見るた�
 | `transform` | 30.1 MB | 26.4 MB | 28.8 MB | 34.2 MB | 34.4 MB | **1.14×** |
 
 実用 1.9 MB スケールでは皆 25-40 MB レンジに収まり、ほぼ全部
-**スタートアップ + `GC_init` + JSON parse + 出力バッファ** の固定
-コスト。nuq が一律 33MB でやや重いのは Boehm GC の常駐 heap が初期
-8MB ほど確保される + `__attribute__((constructor))` 系で組み込み
-シンボル登録が走る。jq は 26 MB 付近 (jq 自身の symbol table は小さい)。
-比率 1.1-1.4× は 5-10 MB の差で、ベース投資の差。
+**スタートアップ + JSON parse + 出力バッファ** の固定コスト。nuq が
+一律 ~34MB でやや重いのは AST + 組み込み def 群の永続常駐 (parse-time
+の `--no-compile` 状態でも prelude を全部 AST 化する)。jq は 26 MB
+付近。比率 1.1-1.3× は 5-10 MB の差で、永続データのレイアウト差。
 
 ### Big (input: 25-46 MB / shape)
 
@@ -198,7 +204,7 @@ best-of-3 で取るのと違って、メモリは high-water mark を見るた�
 100 MB スケールでは全エンジン 200 MB～1.1 GB レンジ。**nuq は jq の
 1.1-1.6× に収まる**。これは:
 
-- **入力 JSON は Boehm 側に保持** — 25-46 MB の入力 + 内部表現
+- **入力 JSON は永続領域に保持** — 25-46 MB の入力 + 内部表現
   (jq では 1 値あたり 24-40 byte) で 200-500 MB の常駐は皆共通。
 - **中間値は arena + Cheney copying GC** — 走行中にバンドル alloc
   が積もったら threshold で minor 回収して live-set ~2× に圧縮。
@@ -258,13 +264,13 @@ update,extract / 関数 body が境界) について `.` の syntactic read 数
 扱う (専用 NODE_DEF が `node.def` にある)。
 
 Runtime の `nuq_op_add_inplace` は `in_arena(LHS)` で安全性を再確認
-する: LHS が arena 上の "走行中" 値なら mutate、Boehm 上の永続値
+する: LHS が arena 上の "走行中" 値なら mutate、永続領域の値
 (典型は入力 JSON、リテラル) なら copy にフォールバック。これで:
 
-- top-level `. + [99]` (` = 入力 JSON、Boehm) → static 解析は mark
+- top-level `. + [99]` (`.` = 入力 JSON、永続) → static 解析は mark
   するが runtime ガードで copy にする (jq 的なセマンティクスを保つ)
 - nested の `reduce ... (.; . + [...])` でも、初回 iter は input が
-  Boehm のためコピー、2 回目以降は acc が arena に乗っているので
+  永続のためコピー、2 回目以降は acc が arena に乗っているので
   in-place — 結果として実用的には N-1 回が in-place
 
 `as` で `.` を別名に縛ると ($a = .) その alias 参照も dot 参照と
@@ -401,7 +407,7 @@ hot loop が薄いので、PGO よりも AST fusion の方が相性がいい。
 ### Object literal の direct-build fast path
 
 全エントリ count==1 の典型ケースで cartesian iteration を skip、
-pool 直書きで GC_malloc をエントリごとに節約。static key は parser で
+pool 直書きで per-entry alloc を節約。static key は parser で
 `nuq_make_string` を 1 度だけ実行 → entry に VALUE で保存。
 `transform` 1.31× → 1.43×。
 

@@ -33,7 +33,8 @@ jq 本体も decnum ビルドでないと通らない領域。
 - 整数: 62-bit fixnum (1-bit タグ)
 - 浮動小数: ヒープ box (`struct nuq_obj` の `dbl`)
 - 文字列 / 配列 / オブジェクト: per-run arena bump alloc (eval 中) +
-  Boehm GC (parser / リテラル / `--arg*` / module data 等の永続物)
+  plain `malloc` 永続領域 (parser / リテラル / `--arg*` / module data
+  等)。**libgc 依存なし** — `libm` + `libc` のみで動く
 - `null` / `true` / `false`: 静的 singleton
 - オブジェクトは **挿入順を保持** (parallel `keys[]` / `vals[]`)
 - 16 keys 超で **lazy hash idx** を build (open-addressing FNV-1a、

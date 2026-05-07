@@ -7,11 +7,13 @@
  */
 #include "node.h"
 
-/* --- allocation: use libgc so we don't have to worry about lifetimes ---- */
+/* --- AST node allocation: plain malloc; AST is permanent for the
+ * lifetime of the process.  Each filter parse leaks its tree at exit;
+ * that's fine for a CLI tool with bounded permanent state. ---- */
 static __attribute__((noinline)) NODE *
 node_allocate(size_t size)
 {
-    NODE *n = (NODE *)GC_malloc(size);
+    NODE *n = (NODE *)calloc(1, size);
     if (n == NULL) {
         fprintf(stderr, "out of memory\n");
         abort();
@@ -59,6 +61,5 @@ code_repo_add(const char *name, NODE *body, bool force)
 void
 INIT(void)
 {
-    GC_init();
     astro_cs_init("code_store", ".", 0);
 }

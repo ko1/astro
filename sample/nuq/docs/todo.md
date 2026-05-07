@@ -193,8 +193,11 @@ NDJSON / `inputs` ストリームの bench を整備したい。
 
 ## 設計上の妥協 (変えない)
 
-- **GC は Boehm-Demers-Weiser**。VALUE が 8-byte aligned ポインタ +
-  1-bit fixnum タグで conservative GC で安全
+- **メモリ管理は per-run arena + Cheney copying GC**。永続領域 (AST
+  / リテラル / `--arg*` / module data / CTX) は plain `malloc` で
+  プロセス終了まで保持、中間値は arena に bump alloc → 16 MB しきい値
+  で minor GC、run 終了で wholesale reset。外部 GC ライブラリ (libgc
+  等) 依存なし
 - **オブジェクトは順序保持** (parallel array で挿入順、+ lazy hash
   idx で lookup O(1))
 - **string slice はコピー** (jq に揃える、buffer 共有はしない)

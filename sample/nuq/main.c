@@ -268,19 +268,17 @@ main(int argc, char **argv)
         }
     }
 
-    /* CTX *must* be GC-allocated: it holds pointers (var_stack,
-     * funcs, emit_buf) into GC-managed memory.  A malloc'd CTX is
-     * invisible to Boehm's scanner, which can then collect those
-     * blocks while CTX still references them — manifests as a
-     * corrupt-`$x` lookup once the foreach loop's emit_buf grows
-     * enough to trigger GC. */
-    CTX *c = (CTX *)GC_malloc(sizeof(*c));
-    memset(c, 0, sizeof(*c));
+    /* CTX is allocated once per process and held until exit.  No
+     * tracing GC scans it — none is needed: arena values inside the
+     * pool / var_stack are kept reachable via the manual root-pin
+     * protocol (NUQ_GC_PIN / PIN_ARR) and the explicit `gc_forward_value`
+     * walk over CTX in nuq_arena_collect. */
+    CTX *c = (CTX *)calloc(1, sizeof(*c));
     c->error = NUQ_NULL;
     /* Pre-grow the EMIT pool so the UNLIKELY realloc branch in
      * nuq_pool_push stays cold for typical bench sizes. */
     c->pool_capa = 4096;
-    c->pool = (VALUE *)GC_malloc(c->pool_capa * sizeof(VALUE));
+    c->pool = (VALUE *)calloc(c->pool_capa, sizeof(VALUE));
     nuq_user_args_bind(c);
 
     int rc = 0;

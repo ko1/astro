@@ -14,9 +14,9 @@ typedef struct Node NODE;
  *   - items: pointer into c->pool[]
  *   - count: number of emitted values
  *
- * This avoids `GC_malloc` per emit-array (~64 bytes for the nuq_obj
- * header) — for emit-heavy workloads (pyramid, try-catch, fan-out)
- * this is the dominant cost.  The pool itself grows monotonically;
+ * This avoids one fresh allocation per emit-array (~64 bytes for the
+ * nuq_obj header + items buffer) — for emit-heavy workloads (pyramid,
+ * try-catch, fan-out) this is the dominant cost.  The pool itself grows monotonically;
  * callers release slots by writing back `c->pool_top = saved_top`
  * after consuming the child's EMIT.
  */

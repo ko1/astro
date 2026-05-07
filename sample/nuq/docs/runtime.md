@@ -146,42 +146,42 @@ typedef struct CTX_struct {
 } CTX;
 ```
 
-CTX は **`GC_malloc` で確保** する。`pool` / `var_stack` / `funcs` 等の
-内部ポインタが GC ルートとして見える必要がある — `calloc` だと Boehm
-の保守的 scanner から live と認識されず、内側ブロックが回収されて
-`$x undefined` などの謎挙動を起こす。
+CTX は **`calloc` で確保** する。`pool` / `var_stack` / `funcs` 等の
+内部ポインタは初期 NULL で、後から `realloc` で伸ばす。プロセス終了
+まで保持される (CLI ツールなので明示 free はしない)。
 
 ## 5. メモリ管理 — Per-run arena + Cheney copying GC
 
 ### 5.1 動機
 
-ASTro samples の従来パターンは **Boehm GC 一本**:
+ASTro samples の従来パターン (旧 nuq も) は **Boehm GC 一本**:
 - 値ごとに `GC_malloc(sizeof(nuq_obj))`
 - per-alloc に lookup / sweep / mark のコスト
 - 100MB JSON 処理で 10-15% が libgc 内に消える
+- `libgc.so` 依存
 
 per-run arena で改善できる点:
 - bump-pointer alloc は 2 命令 (cmp + add)
 - run 終了で wholesale reset (GC sweep 不要)
 - per-emit alloc が事実上ゼロコストに
+- libgc 依存を剥がせる (libm + libc のみで動く)
 
 ただし **run 内で死んだ中間値を回収する仕組み**がないと、
 `reduce range(N) as $i ([]; . + [$i])` のような accumulating
 mutation で **memory が O(N²) に膨れる** (各反復が新配列を作って
-旧配列を捨てるが、arena は run 終わりまで free しない)。
-
-実測で N=50000 のとき nuq は **11.3 GB / 13 s**、jq は 4 MB / 0.01 s。
-500× 以上のメモリ差。
+旧配列を捨てるが、arena は run 終わりまで free しない) — これに
+対しては Cheney 式 copying GC + 線形性解析 (`linearity.c`) で対処
+する (§5.3 / [perf.md](perf.md))。
 
 ### 5.2 二層構造
 
 | 領域 | アロケータ | 寿命 | 用途 |
 |---|---|---|---|
-| **Boehm GC heap** | `GC_malloc` | 永続 (process lifetime) | AST / 字句リテラル / `--argjson` / `--slurpfile` / module data / intern table / def_table / CTX 自身 / pool バッファ / var_stack / funcs[] |
+| **永続領域 (perm)** | `malloc` / `calloc` / `realloc` | プロセス終了まで | AST / 字句リテラル / `--argjson` / `--slurpfile` / module data / intern table / def_table / CTX 自身 / pool バッファ / var_stack / funcs[] |
 | **per-run arena** | `nuq_value_alloc` (bump) | run 1 回 + mid-run minor GC | filter eval が作る中間 VALUE (array / object / string / heap-double / 各 buffer) |
 
 `nuq_alloc_perm` フラグで切替: 起動時 (parser / module load /
-`--argjson` parse / data import) は perm = true で Boehm 行き、
+`--argjson` parse / data import) は perm = true で plain malloc 行き、
 `nuq_run` 突入時に false へ。run 終了で `nuq_arena_reset()` +
 perm = true。
 
@@ -189,16 +189,19 @@ perm = true。
 static inline void *
 nuq_value_alloc(size_t sz)
 {
-    if (UNLIKELY(nuq_alloc_perm)) return GC_malloc(sz);
+    if (UNLIKELY(nuq_alloc_perm)) return malloc(sz);
     return nuq_arena_alloc(sz);
 }
 ```
 
-arena chunk は **plain malloc/free** (Boehm 経由ではない)。
-Boehm-allocated な値 (literal や module data) は別の global table
-からも reachable なので、arena が tracking しなくても解放されない。
-逆に Boehm の保守的 scan は arena には立ち入らない (chunk が
-Boehm の管理外なので)。
+(実装上は `GC_malloc` という名前のマクロが残っているが、これは
+`calloc(1, sz)` への単なるリダイレクト — 旧 Boehm の zero-init 契約
+を保つため。コードを段階的に書き換える際の互換シム。)
+
+arena chunk も plain `malloc/free`。永続領域の値 (literal や
+module data) は別の global table からも reachable で、明示 free しない
+限り解放されない。permanent allocations は process exit でまとめて
+OS が回収する (CLI なので問題なし)。
 
 ### 5.3 Cheney 式 copying GC
 
@@ -331,7 +334,7 @@ case NUQ_T_OBJECT: {
 EMIT l = EVAL_ARG(c, lhs);
 uint32_t lc = l.count;
 VALUE local_small[16];
-VALUE *local = (lc <= 16) ? local_small : (VALUE *)GC_malloc(lc * sizeof(VALUE));
+VALUE *local = (lc <= 16) ? local_small : (VALUE *)malloc(lc * sizeof(VALUE));
 memcpy(local, l.items, lc * sizeof(VALUE));
 NUQ_GC_PIN_ARR(local, lc);
 c->pool_top = top0;
@@ -340,7 +343,7 @@ EMIT rv = EVAL_ARG(c, rhs);     /* ここで GC が走り得る */
 NUQ_GC_UNPIN_ARR();
 ```
 
-local は stack か Boehm の独立バッファで、Cheney scan は触れない。
+local は stack か `malloc` の独立バッファで、Cheney scan は触れない。
 PIN_ARR で配列単位の root を登録し、GC walk が中身の VALUE を
 forward する。
 

@@ -8,11 +8,12 @@ ASTro 上に乗せた **jq インタプリタ**。JSON を入力にとって [jq
   closure / `..|=F` 形のパス更新 / depth 制限 / lazy `limit` / `first` /
   ... まで含めた jq 1.7 ほぼ全機能。残る 2 件は decnum (任意精度 10 進数)
   専用テスト。
-- 速度: `min-max 1M` 9.0×、`reverse 1M` 16×、`upto 8k` 51× vs jq。
-  実用 100MB JSON でも tree walk で 2.8× 速。
+- 速度: `min-max 1M` 16×、`reverse 1M` 28×、`upto 8k` 57×、
+  `group-by 100k` 21× vs jq。実用 100MB JSON でも tree walk で 3.9× 速。
 - 実装: AST 木ウォーカー + ASTro の SD specializer + parse-time AST
-  fusion。値は 1-bit fixnum タグ + `struct nuq_obj` の判別共用体、
-  Boehm GC。
+  fusion + 線形性解析 (`acc + [$i]` を in-place mutation に降格)。
+  値は 1-bit fixnum タグ + `struct nuq_obj` の判別共用体。**外部 GC
+  ライブラリ依存なし** — per-run arena + Cheney copying GC を自前実装。
 
 詳細: [`docs/spec.md`](./docs/spec.md) (言語仕様),
 [`docs/done.md`](./docs/done.md) (実装範囲),
@@ -227,6 +228,7 @@ sample/nuq/
 - インタプリタ専用に絞るなら `--no-compile`。
 - ccache + sandbox の問題が出る環境では `CCACHE_DISABLE=1`。
 
-GC は Boehm-Demers-Weiser、`VALUE` は 1-bit fixnum タグの 64-bit。
-`struct nuq_obj` の判別共用体で null / bool / double / 文字列 / 配列 /
-オブジェクトを表現。
+メモリ管理は **per-run arena + Cheney copying GC** を自前実装、外部 GC
+ライブラリ依存なし (`libm` + `libc` のみで動く)。`VALUE` は 1-bit
+fixnum タグの 64-bit、`struct nuq_obj` の判別共用体で
+null / bool / double / 文字列 / 配列 / オブジェクトを表現。

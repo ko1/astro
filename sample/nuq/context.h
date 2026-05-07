@@ -13,10 +13,21 @@
 #include <inttypes.h>
 #include <time.h>
 
-extern void *GC_malloc(size_t);
-extern void *GC_malloc_atomic(size_t);
-extern void *GC_realloc(void *, size_t);
-extern void  GC_init(void);
+/* GC_* shims — no longer linked against libgc.  We keep the names so
+ * call sites still compile, but route through the C runtime allocator.
+ *
+ * `GC_malloc` returns ZERO-INITIALIZED memory (libgc's contract); a
+ * lot of call sites rely on this for fields they don't explicitly set
+ * (e.g. `nuq_func_def::var_snap` defaults to NULL).  Map it to
+ * `calloc` rather than `malloc`.
+ *
+ * `GC_malloc_atomic` is identical here: we never had useful
+ * conservative-pointer semantics from libgc anyway (the per-run arena
+ * and the manual root-pin protocol cover liveness). */
+#include <stdlib.h>
+#define GC_malloc(sz)         calloc(1, (sz))
+#define GC_malloc_atomic(sz)  calloc(1, (sz))
+#define GC_realloc(p, sz)     realloc((p), (sz))
 
 #define LIKELY(expr)   __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
@@ -28,16 +39,17 @@ extern void  GC_init(void);
  * `nuq_clone`, plus container growth) live for one filter
  * invocation: the intermediate values are printed at end of run and
  * then dropped.  Routing them through a bump-pointer arena that's
- * reset after every run drops most GC_malloc / free / sweep traffic.
+ * reset after every run drops most malloc / free / sweep traffic.
  *
- * The arena chunks themselves are GC_malloc'd so Boehm scans them
- * conservatively — VALUEs in arena that point into Boehm-managed
- * objects (e.g. input JSON, interned literals) stay alive.
+ * The arena chunks themselves are plain `malloc`d and recycled by the
+ * arena allocator across runs.  A copying GC (Cheney) compacts live
+ * objects within the arena when it crosses a threshold.
  *
  * Parse-time / module-load / startup paths flip `nuq_alloc_perm` to
- * route through Boehm-managed memory so the resulting values survive
- * across runs (literals, AST kname_value, --argjson values, module
- * data imports). */
+ * route through plain `malloc` so the resulting values survive across
+ * runs (literals, AST kname_value, --argjson values, module data
+ * imports).  These permanent allocations are leaked at process exit
+ * — that's fine for a CLI tool with bounded permanent state. */
 extern bool nuq_alloc_perm;
 /* Increment to suppress GC trigger during multi-step value construction
  * (e.g. `nuq_make_string` allocating obj + bytes; `nuq_op_add_slow`
