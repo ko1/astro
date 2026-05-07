@@ -2526,6 +2526,44 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   }
               }
           }
+          /* Method-level destructure of `def m((a, b))` style required
+           * params: the slot at param position N holds the value passed
+           * by the caller; we coerce it via to_ary and bind a, b from
+           * that array.  Mirrors block-param destructure. */
+          NODE *destructure_pre = NULL;
+          if (n->parameters) {
+              pm_parameters_node_t *pn = (pm_parameters_node_t *)n->parameters;
+              for (size_t i = 0; i < pn->requireds.size; i++) {
+                  pm_node_t *req = pn->requireds.nodes[i];
+                  if (!PM_NODE_TYPE_P(req, PM_MULTI_TARGET_NODE)) continue;
+                  pm_multi_target_node_t *mt = (pm_multi_target_node_t *)req;
+                  uint32_t holder_slot = (uint32_t)i;  /* required params occupy slots 0..req-1 */
+                  uint32_t arr_slot = inc_arg_index(tc);
+                  NODE *coerce = ALLOC_node_lvar_set(arr_slot,
+                                    ALLOC_node_to_ary_for_mlhs(
+                                        ALLOC_node_lvar_get(holder_slot)));
+                  destructure_pre = destructure_pre
+                      ? ALLOC_node_seq(destructure_pre, coerce) : coerce;
+                  for (size_t j = 0; j < mt->lefts.size; j++) {
+                      pm_node_t *t = mt->lefts.nodes[j];
+                      ID name_id = 0;
+                      uint32_t name_depth = 0;
+                      if (PM_NODE_TYPE_P(t, PM_LOCAL_VARIABLE_TARGET_NODE)) {
+                          pm_local_variable_target_node_t *lt = (pm_local_variable_target_node_t *)t;
+                          name_id = lt->name; name_depth = lt->depth;
+                      } else if (PM_NODE_TYPE_P(t, PM_REQUIRED_PARAMETER_NODE)) {
+                          pm_required_parameter_node_t *rp = (pm_required_parameter_node_t *)t;
+                          name_id = rp->name;
+                      } else continue;
+                      int slot = lvar_slot(tc, name_id, name_depth);
+                      if (slot < 0) slot = lvar_slot_any(tc, name_id);
+                      if (slot < 0) continue;
+                      NODE *get = ALLOC_node_ary_aget(ALLOC_node_lvar_get(arr_slot), (uint32_t)j);
+                      NODE *set = ALLOC_node_lvar_set((uint32_t)slot, get);
+                      destructure_pre = ALLOC_node_seq(destructure_pre, set);
+                  }
+              }
+          }
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           /* Wrap body so the def_line metadata sits on an outer node and
            * doesn't clobber the actual first-statement line — backtrace
@@ -2533,6 +2571,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
            * c->last_cfunc_callsite.  The wrapper is a no-op when there's
            * no prologue (a nil-seq); when there's a prologue, it already
            * is a seq. */
+          if (destructure_pre) {
+              prologue = prologue ? ALLOC_node_seq(prologue, destructure_pre)
+                                  : destructure_pre;
+          }
           if (prologue) body = ALLOC_node_seq(prologue, body);
           else          body = ALLOC_node_seq(ALLOC_node_nil(), body);
           /* For Method#source_location: prefer the def's own line over
