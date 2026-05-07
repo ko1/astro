@@ -995,6 +995,13 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
     return out;
 }
 static VALUE kernel_method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Inside Binding#eval body — return the method name captured at
+     * binding-creation time, so `bind.eval('__method__')` reports the
+     * method where binding was taken (CRuby semantics). */
+    if (c->current_eval_binding) {
+        struct korb_binding *b = (struct korb_binding *)c->current_eval_binding;
+        if (b->method_name) return korb_id2sym(b->method_name);
+    }
     /* cfunc prologue (prologue_cfunc_inl) doesn't push a frame, so
      * c->current_frame is the *enclosing* AST method's frame — exactly
      * what __method__ should report. */

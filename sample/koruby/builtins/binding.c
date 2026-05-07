@@ -96,13 +96,15 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         names = korb_body_local_names(running_block->body);
         base = running_block->param_base;
     }
+    bool inside_method = false;
     if (!names && c->current_frame && c->current_frame->method &&
         c->current_frame->method->type == KORB_METHOD_AST) {
         names = c->current_frame->method->u.ast.local_names;
         if (c->current_frame->fp) fp = c->current_frame->fp;
         base = 0;
+        inside_method = true;  /* even if names == NULL — empty-locals method */
     }
-    if (!names && korb_g_program_body) {
+    if (!names && !inside_method && korb_g_program_body) {
         names = korb_body_local_names(korb_g_program_body);
         base = 0;
     }
@@ -369,11 +371,15 @@ static VALUE binding_eval_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_STRING) {
         filename = ((struct korb_string *)argv[1])->ptr;
     }
-    /* Build scope_locals from binding's names. */
+    /* Build scope_locals from binding's names.  Always allocate (even
+     * when empty) so koruby_parse_with_scope sees a non-NULL pointer
+     * and treats this as eval-with-binding mode (skips node_scope
+     * fp-shift). */
     const char **scope_locals = NULL;
     size_t scope_locals_n = b->names_cnt;
-    if (scope_locals_n > 0) {
-        scope_locals = korb_xmalloc(sizeof(char *) * scope_locals_n);
+    {
+        size_t alloc_n = scope_locals_n ? scope_locals_n : 1;
+        scope_locals = korb_xmalloc(sizeof(char *) * alloc_n);
         for (uint32_t i = 0; i < b->names_cnt; i++) {
             scope_locals[i] = korb_id_name(b->names[i]);
         }

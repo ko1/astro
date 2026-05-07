@@ -5402,7 +5402,13 @@ koruby_parse_with_scope(const char *src, size_t len, const char *filename,
      * scope, so the resulting ProgramNode.locals contains both
      * caller's lvars (at their original indices) and any new locals
      * introduced inside the eval body. */
-    bool eval_mode = (scope_locals != NULL && scope_locals_n > 0);
+    /* eval_mode is enabled whenever the caller passes the scope_locals
+     * pointer at all — even if the array is empty (CLEAN binding from
+     * a method with no lvars).  That tells PM_PROGRAM_NODE to skip the
+     * fp-shifting node_scope wrapper so eval body shares caller's
+     * frame.  Empty scope still triggers prism's "scope present" mode
+     * (locals get tagged at depth 0). */
+    bool eval_mode = (scope_locals != NULL);
     if (eval_mode) {
         pm_options_scopes_init(&options, 1);
         pm_options_scope_t *scope = (pm_options_scope_t *)pm_options_scope_get(&options, 0);
