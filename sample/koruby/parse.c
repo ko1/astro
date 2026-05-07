@@ -254,6 +254,21 @@ build_container(struct transduce_context *tc, pm_node_list_t *items, bool is_arr
  * around PM_KEYWORD_HASH_NODE handling for method-call kwargs. */
 bool g_kwsplat_lenient = false;
 
+/* Multi-assign presave context: filled by PM_MULTI_WRITE_NODE handler
+ * before evaluating RHS, consumed by ASSIGN_TARGET when an LHS target
+ * is a CALL_TARGET / INDEX_TARGET (use the saved recv/idx slots
+ * instead of re-translating the receiver). */
+struct mlhs_presave { int recv_slot; int idx_slot; pm_node_t *target; };
+int g_mlhs_presave_cnt = 0;
+struct mlhs_presave g_mlhs_presave[32];
+
+static int mlhs_presave_lookup(pm_node_t *t) {
+    for (int i = 0; i < g_mlhs_presave_cnt; i++) {
+        if (g_mlhs_presave[i].target == t) return i;
+    }
+    return -1;
+}
+
 /* Build a single Array NODE that flattens splatted args at runtime.
  * For `[a, *b, c]` form: build [a] + b.to_a + [c]. */
 static NODE *
@@ -321,7 +336,10 @@ build_destructure(struct transduce_context *tc,
             _assign = ALLOC_node_gvar_set(intern_constant(tc->parser, _gt->name), _g); \
         } else if (PM_NODE_TYPE_P(_t, PM_CALL_TARGET_NODE)) {                      \
             pm_call_target_node_t *_ct = (pm_call_target_node_t *)_t;              \
-            NODE *_recv = T(tc, _ct->receiver);                                    \
+            int _pi = mlhs_presave_lookup(_t);                                     \
+            NODE *_recv = (_pi >= 0)                                               \
+                ? ALLOC_node_lvar_get((uint32_t)g_mlhs_presave[_pi].recv_slot)     \
+                : T(tc, _ct->receiver);                                            \
             ID _wname = intern_constant(tc->parser, _ct->name);                    \
             uint32_t _ai = inc_arg_index(tc); rewind_arg_index(tc, _ai);           \
             struct method_cache *_mc = alloc_method_cache();                       \
@@ -331,8 +349,13 @@ build_destructure(struct transduce_context *tc,
         } else if (PM_NODE_TYPE_P(_t, PM_INDEX_TARGET_NODE)) {                     \
             pm_index_target_node_t *_it = (pm_index_target_node_t *)_t;            \
             if (_it->arguments && _it->arguments->arguments.size == 1) {           \
-                NODE *_recv = T(tc, _it->receiver);                                \
-                NODE *_idx = T(tc, _it->arguments->arguments.nodes[0]);            \
+                int _pi = mlhs_presave_lookup(_t);                                 \
+                NODE *_recv = (_pi >= 0)                                           \
+                    ? ALLOC_node_lvar_get((uint32_t)g_mlhs_presave[_pi].recv_slot) \
+                    : T(tc, _it->receiver);                                        \
+                NODE *_idx = (_pi >= 0)                                            \
+                    ? ALLOC_node_lvar_get((uint32_t)g_mlhs_presave[_pi].idx_slot)  \
+                    : T(tc, _it->arguments->arguments.nodes[0]);                   \
                 uint32_t _ai = inc_arg_index(tc);                                  \
                 inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, _ai);   \
                 _assign = ALLOC_node_aset(_recv, _idx, _g, _ai);                   \
@@ -3496,19 +3519,81 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       }
 
       case PM_MULTI_WRITE_NODE: {
+          /* CRuby evaluation order for `lhs1, lhs2, ... = rhs1, rhs2, ...`:
+           *   1. Evaluate every LHS receiver / index, left to right.
+           *   2. Evaluate the RHS.
+           *   3. Distribute RHS values into the saved-receiver/index slots.
+           * We pre-walk the LHS list, save receivers/indices to fresh
+           * slots, then build the destructure chain using those saved
+           * slots so the actual eval order matches CRuby. */
           pm_multi_write_node_t *n = (pm_multi_write_node_t *)node;
+          /* Pre-pass: for each PM_CALL_TARGET_NODE / PM_INDEX_TARGET_NODE
+           * in lefts/rest/rights, allocate slots and emit save expressions. */
+          NODE *lhs_pre = NULL;
+          uint32_t lefts_n = (uint32_t)n->lefts.size;
+          uint32_t rights_n = (uint32_t)n->rights.size;
+          /* Up to 32 targets total — generous for typical multi-assign. */
+          struct mlhs_presave presave[32];
+          int psv_cnt = 0;
+          #define PRESAVE_TARGET(_t) do {                                                  \
+              if (psv_cnt >= 32) break;                                                    \
+              if (PM_NODE_TYPE_P(_t, PM_CALL_TARGET_NODE)) {                               \
+                  pm_call_target_node_t *_ct = (pm_call_target_node_t *)_t;                \
+                  uint32_t _rs = inc_arg_index(tc);                                        \
+                  NODE *_save = ALLOC_node_lvar_set(_rs, T(tc, _ct->receiver));            \
+                  lhs_pre = lhs_pre ? ALLOC_node_seq(lhs_pre, _save) : _save;              \
+                  presave[psv_cnt].recv_slot = (int)_rs;                                   \
+                  presave[psv_cnt].idx_slot = -1;                                          \
+                  presave[psv_cnt].target = _t;                                            \
+                  psv_cnt++;                                                               \
+              } else if (PM_NODE_TYPE_P(_t, PM_INDEX_TARGET_NODE)) {                       \
+                  pm_index_target_node_t *_it = (pm_index_target_node_t *)_t;              \
+                  if (_it->arguments && _it->arguments->arguments.size == 1) {             \
+                      uint32_t _rs = inc_arg_index(tc);                                    \
+                      uint32_t _is = inc_arg_index(tc);                                    \
+                      NODE *_sr = ALLOC_node_lvar_set(_rs, T(tc, _it->receiver));          \
+                      NODE *_si = ALLOC_node_lvar_set(_is,                                 \
+                                      T(tc, _it->arguments->arguments.nodes[0]));          \
+                      lhs_pre = lhs_pre ? ALLOC_node_seq(lhs_pre, _sr) : _sr;              \
+                      lhs_pre = ALLOC_node_seq(lhs_pre, _si);                              \
+                      presave[psv_cnt].recv_slot = (int)_rs;                               \
+                      presave[psv_cnt].idx_slot = (int)_is;                                \
+                      presave[psv_cnt].target = _t;                                        \
+                      psv_cnt++;                                                           \
+                  }                                                                        \
+              }                                                                            \
+          } while (0)
+          for (uint32_t i = 0; i < lefts_n; i++) PRESAVE_TARGET(n->lefts.nodes[i]);
+          if (n->rest && PM_NODE_TYPE_P(n->rest, PM_SPLAT_NODE)) {
+              pm_splat_node_t *splat = (pm_splat_node_t *)n->rest;
+              if (splat->expression) PRESAVE_TARGET(splat->expression);
+          }
+          for (uint32_t i = 0; i < rights_n; i++) PRESAVE_TARGET(n->rights.nodes[i]);
+          #undef PRESAVE_TARGET
+
           NODE *rhs = T(tc, n->value);
-          /* Save original RHS to a slot — multi-assign returns the
-           * untransformed RHS regardless of how it gets distributed. */
           uint32_t orig_slot = inc_arg_index(tc);
           NODE *save_orig = ALLOC_node_lvar_set(orig_slot, rhs);
+          /* Stash presave info for build_destructure / ASSIGN_TARGET to
+           * consume.  Use a thread-local-ish global; simpler than
+           * threading through every recursive call.  Multi-assign isn't
+           * concurrent so this is fine. */
+          extern int g_mlhs_presave_cnt;
+          extern struct mlhs_presave g_mlhs_presave[32];
+          int saved_psv = g_mlhs_presave_cnt;
+          struct mlhs_presave saved_arr[32];
+          for (int i = 0; i < g_mlhs_presave_cnt && i < 32; i++) saved_arr[i] = g_mlhs_presave[i];
+          for (int i = 0; i < psv_cnt; i++) g_mlhs_presave[i] = presave[i];
+          g_mlhs_presave_cnt = psv_cnt;
           NODE *destruct = build_destructure(tc, &n->lefts, n->rest, &n->rights,
                                               ALLOC_node_lvar_get(orig_slot));
-          NODE *chain = ALLOC_node_seq(save_orig, destruct);
-          /* Append the orig_slot read so the whole multi-assign expr
-           * evaluates to the original RHS (CRuby semantics). */
+          /* Restore previous presave context (handles nested multi-assign). */
+          g_mlhs_presave_cnt = saved_psv;
+          for (int i = 0; i < saved_psv && i < 32; i++) g_mlhs_presave[i] = saved_arr[i];
+
+          NODE *chain = lhs_pre ? ALLOC_node_seq(lhs_pre, save_orig) : save_orig;
+          chain = ALLOC_node_seq(chain, destruct);
           chain = ALLOC_node_seq(chain, ALLOC_node_lvar_get(orig_slot));
-          rewind_arg_index(tc, orig_slot);
           return chain;
       }
 
