@@ -3203,8 +3203,14 @@ py_contains(CTX *c, VALUE container, VALUE v)
     struct py_iter it;
     py_iter_init(c, &it, container);
     if (c->state != PY_STATE_NORMAL) {
+        extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+        VALUE av_t[1] = { container };
+        VALUE tt = bi_type(c, 1, av_t);
+        const char *tn = (py_is_class(tt)) ? PY_PTR(tt)->cls.name : "?";
         c->state = PY_STATE_NORMAL;
-        py_raise_exc(c, c->EXC_TypeError, "argument is not iterable for `in`");
+        py_raise_exc(c, c->EXC_TypeError,
+                     "argument of type '%s' is not a container or iterable",
+                     tn);
     }
     VALUE x;
     while (py_iter_next(c, &it, &x)) {
