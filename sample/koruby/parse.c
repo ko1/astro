@@ -4041,6 +4041,29 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                              ALLOC_node_frozen_str_lit("method", 6),
                                              ALLOC_node_nil());
                     }
+                    case PM_CLASS_VARIABLE_READ_NODE: {
+                        /* `defined?(!@@x)` — "method" iff @@x is set, else nil. */
+                        pm_class_variable_read_node_t *cv = (pm_class_variable_read_node_t *)inner;
+                        ID name = intern_constant(tc->parser, cv->name);
+                        uint32_t ai = inc_arg_index(tc);
+                        inc_arg_index(tc); rewind_arg_index(tc, ai);
+                        struct method_cache *mc = alloc_method_cache();
+                        NODE *cls_node = ALLOC_node_method_call(ALLOC_node_self(),
+                                                                 korb_intern("class"), 0, ai, mc);
+                        uint32_t ai2 = inc_arg_index(tc);
+                        inc_arg_index(tc); rewind_arg_index(tc, ai2);
+                        struct method_cache *mc2 = alloc_method_cache();
+                        NODE *defined_p = ALLOC_node_seq(
+                            ALLOC_node_lvar_set(ai2, ALLOC_node_sym_lit(name)),
+                            ALLOC_node_method_call(cls_node, korb_intern("class_variable_defined?"),
+                                                   1, ai2, mc2));
+                        uint32_t rescue_slot = inc_arg_index(tc);
+                        rewind_arg_index(tc, rescue_slot);
+                        NODE *body = ALLOC_node_if(defined_p,
+                                             ALLOC_node_frozen_str_lit("method", 6),
+                                             ALLOC_node_nil());
+                        return ALLOC_node_rescue(body, ALLOC_node_nil(), rescue_slot);
+                    }
                     case PM_NIL_NODE: case PM_TRUE_NODE: case PM_FALSE_NODE:
                     case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_STRING_NODE:
                     case PM_SYMBOL_NODE: case PM_ARRAY_NODE: case PM_HASH_NODE:
