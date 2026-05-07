@@ -2710,9 +2710,22 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         uint32_t min_argc = mc->required_params_cnt + mc->post_params_cnt;
         if (UNLIKELY(argc < min_argc)) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            korb_raise(c, (struct korb_class *)eArg,
-                       "wrong number of arguments (given %u, expected %u)",
-                       argc, min_argc);
+            bool variadic = (mc->rest_slot >= 0) || (mc->total_params_cnt > min_argc);
+            uint32_t opt_total = mc->total_params_cnt - mc->required_params_cnt - mc->post_params_cnt;
+            if (mc->rest_slot >= 0) {
+                korb_raise(c, (struct korb_class *)eArg,
+                           "wrong number of arguments (given %u, expected %u+)",
+                           argc, min_argc);
+            } else if (opt_total > 0) {
+                korb_raise(c, (struct korb_class *)eArg,
+                           "wrong number of arguments (given %u, expected %u..%u)",
+                           argc, min_argc, mc->total_params_cnt);
+            } else {
+                korb_raise(c, (struct korb_class *)eArg,
+                           "wrong number of arguments (given %u, expected %u)",
+                           argc, min_argc);
+            }
+            (void)variadic;
             c->fp = prev_fp;
             c->cref = prev_cref;
             current_block = prev_block;
