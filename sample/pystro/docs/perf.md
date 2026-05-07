@@ -37,16 +37,21 @@ best-of-3。**10 micro 中 9 で python3 を上回る** (dict_bench のみ遅い
 
 | ベンチ | python3 | pystro interp | pystro AOT cached | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `richards` (OS sched sim, ~400 行) | 1.09 s | 7.45 s | 4.83 s | 4.43× (4.4× 遅い) |
-| `deltablue` (constraint solver, ~600 行) | 0.16 s | 2.55 s | 1.82 s | 11.4× (11× 遅い) |
-| `raytrace` (簡易 raytracer, ~400 行) | 0.88 s | 6.35 s | 5.46 s | 6.20× (6.2× 遅い) |
-| `crypto_pyaes` (pure-Py AES-CTR) | 0.53 s | 2.76 s | 2.67 s | 5.04× (5× 遅い) |
+| `richards` (OS sched sim, ~400 行) | 1.09 s | 4.78 s | **2.31 s** | 2.12× (2.1× 遅い) |
+| `deltablue` (constraint solver, ~600 行) | 0.16 s | 1.20 s | **0.74 s** | 4.63× (4.6× 遅い) |
+| `raytrace` (簡易 raytracer, ~400 行) | 0.88 s | 4.05 s | **2.70 s** | 3.07× (3.1× 遅い) |
+| `crypto_pyaes` (pure-Py AES-CTR) | 0.53 s | 4.07 s | 3.02 s | 5.7× (5.7× 遅い) |
 
-micro で 5-19× 速い同じ実装が、 method dispatch + 多態 class が
-heavy な実アプリでは **逆に 4-11× 遅い**。
+`ae87e35` 〜 `ba3897e` で 4 段階の最適化を投入:
+- user-class method の monomorphic IC (`ae87e35`) → richards -29%
+- 4-way polymorphic IC (`2eadb18`) → richards -10% (polymorphic 解消)
+- pre-resolved dunder slot + intern (`bf286e0`) → richards -10%, raytrace -10%
+- attr_cache を attrs_id → class shape_version (`ba3897e`) → 大改善
 
-`ae87e35` で user class instance method の inline cache を入れて
-richards -29% / deltablue -20% / raytrace -12% 改善。 詳細は下記。
+最初の baseline (6.83 / 2.27 / 6.19 / 2.58) → 現在 (2.31 / 0.74 / 2.70 / 3.02):
+**richards 3.0× / deltablue 3.1× / raytrace 2.3× faster** (best-of-3)。
+crypto_pyaes は 17% 遅い (operator dunder `__add__/__or__/__xor__` が
+slot 未対応で 24-way scan 全 miss → slow path に落ちる; 後述)。
 
 #### 計測結果 — どこで時間を食ってるか
 
