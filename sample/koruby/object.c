@@ -3828,13 +3828,20 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     struct korb_cref *prev_cref = c->cref;
     const char *prev_file = c->current_file;
     struct korb_frame *prev_frame = c->current_frame;
+    extern struct korb_proc *running_block;
+    struct korb_proc *prev_running_block = running_block;
 
     /* Top-level frame for the new file: stack just past current sp */
     c->fp = c->sp + 1;
     c->self = korb_vm->main_obj;
     c->current_class = korb_vm->object_class;
-    /* Loaded file's top-level def's are not inside a method body. */
+    /* Loaded file's top-level def's are not inside a method body — and
+     * not inside a block of the calling context either, so a stray
+     * `return` from within a block in the loaded file raises
+     * LocalJumpError instead of accidentally targeting the caller's
+     * block frame. */
     c->current_frame = NULL;
+    running_block = NULL;
 
     /* Reset cref to [Object] for top-level execution */
     struct korb_cref top_cref = { .klass = korb_vm->object_class, .prev = NULL };
@@ -3860,6 +3867,7 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     c->cref = prev_cref;
     c->current_file = prev_file;
     c->current_frame = prev_frame;
+    running_block = prev_running_block;
     return r;
 }
 
