@@ -3025,8 +3025,28 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
            * call that uses a lvar_get-of-temp as the receiver, then
            * wrap the result with the nil-check. */
           if (n->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) {
+              /* Detect setter for the safe-nav assignment-value semantics. */
+              pm_constant_t *snc = pm_constant_pool_id_to_constant(
+                  &tc->parser->constant_pool, n->name);
+              const char *snm = (const char *)snc->start;
+              size_t snmlen = snc->length;
+              bool is_setter = snmlen >= 1 && snm[snmlen - 1] == '=' &&
+                  !(snmlen >= 2 && (snm[snmlen - 2] == '!' ||
+                                     snm[snmlen - 2] == '=' ||
+                                     snm[snmlen - 2] == '<' ||
+                                     snm[snmlen - 2] == '>')) &&
+                  args && args->arguments.size == 1 && !n->block;
+              /* Reserve setter_kept FIRST (lowest slot) so it isn't
+               * overwritten by call_arg slots that may rewind below. */
+              uint32_t setter_kept = (uint32_t)-1;
+              if (is_setter) setter_kept = inc_arg_index(tc);
               uint32_t tmp = inc_arg_index(tc);
               NODE *save = ALLOC_node_lvar_set(tmp, T(tc, n->receiver));
+              NODE *setter_kept_save = NULL;
+              if (is_setter) {
+                  NODE *rhs_val = T(tc, args->arguments.nodes[0]);
+                  setter_kept_save = ALLOC_node_lvar_set(setter_kept, rhs_val);
+              }
               /* Re-translate the call but with the receiver replaced
                * by an lvar_get of `tmp` — so we don't evaluate the
                * recv expression twice (and so its temps don't collide
@@ -3067,7 +3087,20 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                * need to evaluate save FIRST regardless of the test, so
                * the seq is: save; (lvar(tmp).nil? ? nil : call). */
               NODE *check = ALLOC_node_eq(ALLOC_node_lvar_get(tmp), ALLOC_node_nil(), tmp);
-              NODE *guarded = ALLOC_node_if(check, ALLOC_node_nil(), call);
+              NODE *call_for_branch = call;
+              if (is_setter && setter_kept != (uint32_t)-1) {
+                  /* Setter assignment value is the rhs (kept_slot), not
+                   * the call's return.  Sequence: call; lvar(kept). */
+                  call_for_branch = ALLOC_node_seq(call, ALLOC_node_lvar_get(setter_kept));
+              }
+              NODE *guarded = ALLOC_node_if(check, ALLOC_node_nil(), call_for_branch);
+              if (setter_kept_save) {
+                  /* Pre-save rhs before the recv-nil check.  Order: save_recv;
+                   * save_rhs; if recv.nil? then nil else (call; lvar(kept)). */
+                  rewind_arg_index(tc, tmp);
+                  return ALLOC_node_seq(save,
+                      ALLOC_node_seq(setter_kept_save, guarded));
+              }
               rewind_arg_index(tc, tmp);
               return ALLOC_node_seq(save, guarded);
           }
