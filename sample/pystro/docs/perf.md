@@ -52,10 +52,10 @@ operator overload が支配的。
 
 | ベンチ | python3 | pystro interp | pystro AOT | **AOT/python3** |
 |---|---:|---:|---:|---:|
-| `richards` (OS sched sim, ~400 行)        | 1.05 s | 4.78 s | **0.51 s** | **0.48× (2.1× FASTER)** |
-| `deltablue` (constraint solver, ~600 行)  | 0.18 s | 1.20 s | **0.65 s** | 3.61× |
-| `raytrace` (簡易 raytracer, ~400 行)      | 0.88 s | 4.05 s | **2.06 s** | 2.34× |
-| `crypto_pyaes` (pure-Py AES-CTR, ~900 行) | 0.60 s | 4.07 s | 2.80 s | 4.67× |
+| `richards` (OS sched sim, ~400 行)        | 1.03 s | 4.78 s | **0.47 s** | **0.45× (2.2× FASTER)** |
+| `deltablue` (constraint solver, ~600 行)  | 0.16 s | 1.20 s | **0.61 s** | 3.81× |
+| `raytrace` (簡易 raytracer, ~400 行)      | 0.95 s | 4.05 s | **2.01 s** | 2.12× |
+| `crypto_pyaes` (pure-Py AES-CTR, ~900 行) | 0.55 s | 4.07 s | **1.92 s** | 3.49× |
 
 richards は **python3 の 2 倍速い**。 method dispatch overhead を
 完全に潰した結果、 small-class polymorphic な OS scheduler simulation
@@ -111,7 +111,21 @@ dispatch していた → 関数 body は AOT で SD 化されない。
 - `py_iter_next_user` に `no_stack_protector` (alloca が triggers する
   canary check を撤去、 0.40 → 0.34 s)
 
-### Phase 5: 計測ベース細粒度 IC (続き、 今 session)
+### Phase 6: bytes/bit ops + algorithmic (今 session 後半)
+
+`docs/why_slow.md` で各 macro bench の CPython 比 slow の原因を計測
+ベースで分析した結果を踏まえ、 上位 ROI 順で着手:
+
+| commit | 改善 | 内容 |
+|---|---|---|
+| `5cc5ebd` | deltablue -7.7% | `lm_pop` を memmove 化。 element-by-element shift loop だったものを bulk copy に |
+| `5e8cc1b` | pyaes -35% | bit op (`& \| ^ << >>`) に fixnum fast path。 AES の 8-bit 値 XOR/AND が毎回 mpz_t 経由していたのを撤去 |
+
+**pyaes 大改善**: 2.74 → **1.92 s** (-30%)。 python3 比 4.7× → **3.5×
+slow** に縮まった。 GMP の `__gmpz_init_set_si` (perf 上 3%) を
+fixnum 経路でほぼ撤去できたのが効いた。
+
+### Phase 5: 計測ベース細粒度 IC (前 session 後半)
 
 `PYSTRO_DBG_NAMES` を一時的に runtime.c に仕込んで、 slow lookup
 される名前を頻度順で集計したら以下の発見:
