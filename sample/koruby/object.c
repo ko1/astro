@@ -3068,15 +3068,39 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(mc->param_holder_slots != NULL)) {
         VALUE snap_buf[64];
         VALUE *snap = snap_buf;
-        if (mc->total_params_cnt > 64) snap = korb_xmalloc(mc->total_params_cnt * sizeof(VALUE));
+        bool dest_used_buf[64] = {0};
+        bool *dest_used = dest_used_buf;
+        if (mc->total_params_cnt > 64) {
+            snap = korb_xmalloc(mc->total_params_cnt * sizeof(VALUE));
+            dest_used = korb_xmalloc(mc->total_params_cnt * sizeof(bool));
+            for (uint32_t i = 0; i < mc->total_params_cnt; i++) dest_used[i] = false;
+        }
         for (uint32_t i = 0; i < mc->total_params_cnt; i++) snap[i] = c->fp[i];
+        /* First pass: write each param's value to its dest slot. */
         for (uint32_t i = 0; i < mc->total_params_cnt; i++) {
             int dest = mc->param_holder_slots[i];
             if (dest >= 0 && (uint32_t)dest != i) {
                 c->fp[dest] = snap[i];
             }
+            /* Mark which slots in [0..total) are still actually used as
+             * a param holder (= destination for some position). */
+            if (dest >= 0 && (uint32_t)dest < mc->total_params_cnt) {
+                dest_used[dest] = true;
+            } else if (dest < 0 && i < mc->total_params_cnt) {
+                /* Skipped param (e.g. rest_slot's dummy); leave its
+                 * slot as-is. */
+                dest_used[i] = true;
+            }
+        }
+        /* Second pass: any slot in [0..total) that's NOT a destination
+         * is shadowing a real lvar (whose lvar_slot < total but isn't
+         * one of the param positions).  Reset those to Qnil so the
+         * lvar reads nil instead of the leftover caller arg. */
+        for (uint32_t i = 0; i < mc->total_params_cnt; i++) {
+            if (!dest_used[i]) c->fp[i] = Qnil;
         }
         if (snap != snap_buf) korb_xfree(snap);
+        if (dest_used != dest_used_buf) korb_xfree(dest_used);
     }
     /* &blk parameter — store the incoming block as a Proc into its
      * slot.  block can be NULL (no block given), in which case the
