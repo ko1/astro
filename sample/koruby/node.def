@@ -1994,17 +1994,27 @@ node_ensure(CTX * restrict c, NODE * restrict n, NODE *body, NODE *ensure_body)
 {
     int saved_state = KORB_NORMAL;
     VALUE saved_value = Qnil;
+    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
     VALUE r = EVAL_ARG(c, body);
     if (c->state != KORB_NORMAL) {
         saved_state = c->state;
         saved_value = c->state_value;
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
+        /* $! reflects in-flight exception during ensure body. */
+        if (saved_state == KORB_RAISE) {
+            korb_gvar_set(korb_intern("$!"), saved_value);
+        }
     }
     EVAL_ARG(c, ensure_body);
     if (c->state == KORB_NORMAL && saved_state != KORB_NORMAL) {
         c->state = saved_state;
         c->state_value = saved_value;
+    }
+    /* Restore $! after ensure body if the body completed (didn't replace
+     * the in-flight exception with a new one). */
+    if (c->state != KORB_RAISE) {
+        korb_gvar_set(korb_intern("$!"), prev_bang);
     }
     return r;
 }
