@@ -1232,7 +1232,18 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
                c->current_frame->method->def_cref) {
         c->cref = c->current_frame->method->def_cref;
     }
+    /* Adjust c->fp so eval body's slot 0 corresponds to scope_locals[0]
+     * (caller's first lvar).  For a block context, the block's actual
+     * lvars start at fp[param_base], not fp[0] — without this shift,
+     * eval body reads the wrong slots when called inside a block whose
+     * param_base != 0.  binding_eval_via does the same shift via
+     * b->fp + b->base. */
+    VALUE *prev_fp = c->fp;
+    if (running_block && running_block->param_base > 0 && c->fp) {
+        c->fp = c->fp + running_block->param_base;
+    }
     VALUE r = EVAL(c, ast);
+    c->fp = prev_fp;
     c->cref = prev_cref;
     c->current_eval_program_body = prev_eval_body;
     c->current_file = prev_file;
