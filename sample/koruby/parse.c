@@ -4523,8 +4523,17 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                     }
                     default: break;
                   }
-                  /* Generic: just return "method" (assume defined). */
-                  return ALLOC_node_frozen_str_lit("method", 6);
+                  /* Generic: defined?(!recv) — evaluate the receiver
+                   * (so its side effects fire), swallow any exception
+                   * via rescue, and return "method".  Matches the
+                   * "calls a method in a 'not' expression and returns
+                   * 'method'" spec without leaking exceptions. */
+                  uint32_t rs = inc_arg_index(tc);
+                  rewind_arg_index(tc, rs);
+                  NODE *recv_eval = T(tc, inner);
+                  NODE *body = ALLOC_node_seq(recv_eval,
+                      ALLOC_node_frozen_str_lit("method", 6));
+                  return ALLOC_node_rescue(body, ALLOC_node_nil(), rs);
               }
               /* If the call has a receiver that is itself a literal,
                * defined? returns "expression". */
