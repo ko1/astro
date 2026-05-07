@@ -151,8 +151,11 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
         }
         if (read_only) {
             VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            /* CRuby uses canonical names ($-I for $:) in the error message. */
+            const char *display = nm;
+            if (strcmp(nm, "$:") == 0) display = "$-I";
             korb_raise(c, (struct korb_class *)eN,
-                       "%s is a read-only variable", nm);
+                       "%s is a read-only variable", display);
             return Qnil;
         }
         if (string_only && !NIL_P(v) &&
