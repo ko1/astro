@@ -1870,6 +1870,12 @@ redo_block:
         c->state = KORB_NORMAL; c->state_value = Qnil;
         return nv;
     }
+    /* `break` from inside the block: target the yielding method's frame
+     * so loops within that method's body don't consume the break (e.g.
+     * `def m; while x; yield; end; <stmt>; end` should skip <stmt>). */
+    if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
+        c->state_target_frame = c->current_frame;
+    }
     return r;
 }
 

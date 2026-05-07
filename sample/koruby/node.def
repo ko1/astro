@@ -269,7 +269,8 @@ node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
     redo_while:
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
-            if (c->state == KORB_BREAK) {
+            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
+                /* break with no target frame is a local while-break. */
                 VALUE bv = c->state_value;
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
@@ -302,7 +303,7 @@ node_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
     redo_until:
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
-            if (c->state == KORB_BREAK) {
+            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
                 VALUE bv = c->state_value;
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
@@ -1933,7 +1934,7 @@ node_do_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
     redo_do_while:
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
-            if (c->state == KORB_BREAK) {
+            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
                 VALUE bv = c->state_value;
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
@@ -1965,7 +1966,7 @@ node_do_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
     redo_do_until:
         EVAL_ARG(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
-            if (c->state == KORB_BREAK) {
+            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
                 VALUE bv = c->state_value;
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
