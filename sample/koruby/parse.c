@@ -348,7 +348,46 @@ build_destructure(struct transduce_context *tc,
             _assign = ALLOC_node_seq(_st, _call);                                  \
         } else if (PM_NODE_TYPE_P(_t, PM_INDEX_TARGET_NODE)) {                     \
             pm_index_target_node_t *_it = (pm_index_target_node_t *)_t;            \
-            if (_it->arguments && _it->arguments->arguments.size == 1) {           \
+            bool _has_splat = false;                                               \
+            if (_it->arguments) {                                                  \
+                for (size_t _ii = 0; _ii < _it->arguments->arguments.size; _ii++) {\
+                    if (PM_NODE_TYPE_P(_it->arguments->arguments.nodes[_ii],       \
+                                        PM_SPLAT_NODE)) { _has_splat = true; break; } \
+                }                                                                  \
+            }                                                                      \
+            if (_has_splat) {                                                      \
+                /* Splat in index — build args Array at runtime, dispatch         \
+                 * []= via apply_call.  Reserve our slots BEFORE the              \
+                 * build_args call so its internal staging doesn't collide        \
+                 * (build_container rewinds at the end, freeing its temps for     \
+                 * later allocations). */                                          \
+                uint32_t _rs = inc_arg_index(tc);                                  \
+                uint32_t _as = inc_arg_index(tc);                                  \
+                uint32_t _vs = inc_arg_index(tc);                                  \
+                uint32_t _xs = inc_arg_index(tc);                                  \
+                uint32_t _appi = inc_arg_index(tc);                                \
+                for (int _ss = 1; _ss < 16; _ss++) inc_arg_index(tc);              \
+                NODE *_recv = T(tc, _it->receiver);                                \
+                NODE *_arr = build_args_array_with_splat(tc, &_it->arguments->arguments); \
+                uint32_t _final_arr = inc_arg_index(tc);                           \
+                NODE *_save_r = ALLOC_node_lvar_set(_rs, _recv);                   \
+                NODE *_save_a = ALLOC_node_lvar_set(_as, _arr);                    \
+                NODE *_save_v = ALLOC_node_lvar_set(_vs, _g);                      \
+                NODE *_one = ALLOC_node_seq(                                       \
+                                ALLOC_node_lvar_set(_xs, ALLOC_node_lvar_get(_vs)),\
+                                ALLOC_node_ary_new(1, _xs));                       \
+                NODE *_combined = ALLOC_node_ary_concat(ALLOC_node_lvar_get(_as), _one); \
+                NODE *_save_final = ALLOC_node_lvar_set(_final_arr, _combined);    \
+                struct method_cache *_mc = alloc_method_cache();                   \
+                NODE *_call = ALLOC_node_apply_call(ALLOC_node_lvar_get(_rs),      \
+                                                     korb_intern("[]="),           \
+                                                     ALLOC_node_lvar_get(_final_arr), \
+                                                     _appi, ALLOC_node_nil(), 1, _mc); \
+                _assign = ALLOC_node_seq(_save_r,                                  \
+                            ALLOC_node_seq(_save_a,                                \
+                                ALLOC_node_seq(_save_v,                            \
+                                    ALLOC_node_seq(_save_final, _call))));         \
+            } else if (_it->arguments && _it->arguments->arguments.size == 1) {   \
                 int _pi = mlhs_presave_lookup(_t);                                 \
                 NODE *_recv = (_pi >= 0)                                           \
                     ? ALLOC_node_lvar_get((uint32_t)g_mlhs_presave[_pi].recv_slot) \
