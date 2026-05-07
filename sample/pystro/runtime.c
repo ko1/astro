@@ -2322,7 +2322,7 @@ py_hash(CTX *c, VALUE v)
 #define DICT_LOAD_NUM  2
 #define DICT_LOAD_DEN  3
 
-static struct pydict *
+struct pydict *
 pydict_new(void)
 {
     struct pydict *d = (struct pydict *)GC_malloc(sizeof(struct pydict));
@@ -2509,7 +2509,7 @@ pydict_grow_entries(struct pydict *d)
 // Lower-level set: takes a struct pydict* and a precomputed hash.
 // Used both by py_dict_set and by callers (instance attrs) that hold
 // a struct pydict* directly.
-static void
+void
 pydict_set_h(CTX *c, struct pydict *d, VALUE key, uint64_t h, VALUE val)
 {
     size_t bucket;

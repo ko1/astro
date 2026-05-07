@@ -62,6 +62,7 @@ usage(void)
 // Captured argv so that `sys.argv` (via __pystro_argv__) can return it.
 int    PYSTRO_ARGC = 0;
 char **PYSTRO_ARGV = NULL;
+
 // Directory of the pystro binary itself; used as a sys.path-like fallback
 // so built-in stdlib modules (math.py / sys.py / json.py / etc.) are
 // importable regardless of cwd.
