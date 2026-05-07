@@ -261,6 +261,11 @@ def have_instance_method(name); MSpecMatcher.new(:have_instance_method, name); e
 def have_private_method(name); MSpecMatcher.new(:have_private_method, name); end
 def have_public_method(name); MSpecMatcher.new(:have_public_method, name); end
 def have_protected_method(name); MSpecMatcher.new(:have_protected_method, name); end
+def have_private_instance_method(name); MSpecMatcher.new(:have_private_instance_method, name); end
+def have_public_instance_method(name); MSpecMatcher.new(:have_public_instance_method, name); end
+def have_protected_instance_method(name); MSpecMatcher.new(:have_protected_instance_method, name); end
+def be_ancestor_of(c); MSpecMatcher.new(:be_ancestor_of, c); end
+def be_computed_by(name, *args); MSpecMatcher.new(:be_computed_by, [name, args]); end
 def have_constant(name); MSpecMatcher.new(:have_constant, name); end
 def have_class_variable(name); MSpecMatcher.new(:have_class_variable, name); end
 def have_instance_variable(name); MSpecMatcher.new(:have_instance_variable, name); end
@@ -347,6 +352,13 @@ class MSpecExpectation
          when :have_private_method then @actual.private_method_defined?(m.arg)
          when :have_public_method then @actual.public_method_defined?(m.arg)
          when :have_protected_method then @actual.protected_method_defined?(m.arg) rescue false
+         when :have_private_instance_method then @actual.private_method_defined?(m.arg)
+         when :have_public_instance_method then @actual.public_method_defined?(m.arg)
+         when :have_protected_instance_method then @actual.protected_method_defined?(m.arg) rescue false
+         when :be_ancestor_of then @actual.ancestors.include?(m.arg)
+         when :be_computed_by
+           name, args = m.arg
+           @actual.send(name, *args) rescue false
          when :have_constant then @actual.const_defined?(m.arg)
          when :have_class_variable then @actual.class_variable_defined?(m.arg) rescue false
          when :have_instance_variable then @actual.instance_variable_defined?(m.arg) rescue false
