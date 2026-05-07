@@ -17,8 +17,8 @@ R11–R17 で深掘り (test 78–212 追加, **213 unit tests passing**)。 [do
 |---|---|
 | total | 394 |
 | **fully pass** (`failed=0`) | **28** |
-| mixed (test logic ran, ≥1 fail) | 322 |
-| crash / timeout | 18 |
+| mixed (test logic ran, ≥1 fail) | 321 |
+| crash / timeout | 19 |
 | parse error | 22 |
 | import error | 4 |
 
@@ -85,6 +85,10 @@ CPython compat の作業として追加した薄い shim 群:
 - **PEP 646 `class C(*Ts):` starred class base**.
 - **math.fmax / fmin / isqrt / prod**, **operator.{concat, iconcat,
   call, indexOf, countOf}**, **tempfile.mktemp**.
+- **re top-level alternation `|`**: 既存 re.py は `|` をリテラル
+  扱いだった。 `_find_top_alt` で top-level の `|` を探して左→右の
+  順で alternative を試す。 `(cat|dog|fish)` や html.unescape の
+  `&(#[0-9]+;?|...)` パターンが動作。
 
 **まだ blocking している parse error 28 種** (1 ファイルずつ別案件):
 
