@@ -3422,16 +3422,24 @@ py_iter_next(CTX *c, struct py_iter *it, VALUE *out)
       }
       case 5: {
         // User iterator: call __next__; on StopIteration, clear state
-        // and return false.  __next__ is cached at init time so the hot
-        // loop doesn't re-scan the class methods table.
+        // and return false.  __next__ is cached at init time (see
+        // py_iter_init's instance branch) so the hot loop just reads
+        // it->next_m.  iter_obj is guaranteed to be an instance at
+        // kind=5 — init only sets kind=5 in that branch.
         VALUE iter_obj = it->container;
-        if (!py_is_instance(iter_obj)) return false;
         VALUE nm = it->next_m;
-        if (nm == 0 || nm == PY_NONE) {
-            VALUE cls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
-            nm = py_class_lookup_method(cls, "__next__");
-            if (nm == PY_NONE) py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
-            it->next_m = nm;
+        if (UNLIKELY(nm == 0 || nm == PY_NONE)) {
+            // Init didn't resolve __next__ (e.g., __iter__ returned a
+            // non-instance).  Re-resolve or raise.
+            if (py_is_instance(iter_obj)) {
+                VALUE cls = PY_OBJ_VAL(PY_PTR(iter_obj)->inst.cls);
+                nm = py_class_lookup_method(cls, "__next__");
+                if (nm == PY_NONE)
+                    py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
+                it->next_m = nm;
+            } else {
+                py_raise_exc(c, c->EXC_TypeError, "iter object has no __next__");
+            }
         }
         VALUE av[1] = { iter_obj };
         VALUE r = py_apply(c, nm, 1, av);
