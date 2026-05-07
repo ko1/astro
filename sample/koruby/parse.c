@@ -249,6 +249,11 @@ static NODE *transduce_statements(struct transduce_context *tc, pm_statements_no
 static NODE *
 build_container(struct transduce_context *tc, pm_node_list_t *items, bool is_array, bool is_hash, bool is_str_concat);
 
+/* When true, **obj kwsplat lowering uses __kwsplat_to_hash_lenient
+ * (nil → {}) instead of __kwsplat_to_hash (nil → TypeError).  Set just
+ * around PM_KEYWORD_HASH_NODE handling for method-call kwargs. */
+bool g_kwsplat_lenient = false;
+
 /* Build a single Array NODE that flattens splatted args at runtime.
  * For `[a, *b, c]` form: build [a] + b.to_a + [c]. */
 static NODE *
@@ -902,10 +907,23 @@ build_container(struct transduce_context *tc, pm_node_list_t *items, bool is_arr
                 } else if (PM_NODE_TYPE_P(it, PM_ASSOC_SPLAT_NODE)) {
                     pm_assoc_splat_node_t *sn = (pm_assoc_splat_node_t *)it;
                     NODE *sval = sn->value ? T(tc, sn->value) : ALLOC_node_hash_new(0, base_slot + 1);
+                    /* CRuby: **obj calls obj.to_hash first.  We model
+                     * via __kwsplat_to_hash(obj) which returns Hash or
+                     * raises TypeError.  Method-call kwargs context is
+                     * lenient: nil → {} instead of raising. */
+                    extern bool g_kwsplat_lenient;
+                    ID conv_id = g_kwsplat_lenient ? korb_intern("__kwsplat_to_hash_lenient")
+                                                    : korb_intern("__kwsplat_to_hash");
+                    uint32_t conv_ai = inc_arg_index(tc);
+                    inc_arg_index(tc); rewind_arg_index(tc, conv_ai);
+                    struct method_cache *mc_conv = alloc_method_cache();
+                    NODE *conv_set = ALLOC_node_lvar_set(conv_ai, sval);
+                    NODE *converted = ALLOC_node_func_call(conv_id, 1, conv_ai, mc_conv);
+                    NODE *conv_seq = ALLOC_node_seq(conv_set, converted);
                     uint32_t ai = inc_arg_index(tc);
                     inc_arg_index(tc); rewind_arg_index(tc, ai);
                     struct method_cache *mc = alloc_method_cache();
-                    NODE *aset = ALLOC_node_lvar_set(ai, sval);
+                    NODE *aset = ALLOC_node_lvar_set(ai, conv_seq);
                     /* hash_merge returns a new hash — re-assign base. */
                     NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(base_slot),
                                                         korb_intern("merge"), 1, ai, mc);
@@ -3387,8 +3405,15 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
 
       case PM_KEYWORD_HASH_NODE: {
           pm_keyword_hash_node_t *n = (pm_keyword_hash_node_t *)node;
-          /* treat as a regular hash */
-          return build_container(tc, &n->elements, false, true, false);
+          /* keyword-args hash at a method call site.  CRuby tolerates
+           * `m(**nil)` as no kwargs, while `{**nil}` raises.  Set the
+           * lenient flag so `**` lowering uses `__kwsplat_to_hash_lenient`. */
+          extern bool g_kwsplat_lenient;
+          bool prev = g_kwsplat_lenient;
+          g_kwsplat_lenient = true;
+          NODE *r = build_container(tc, &n->elements, false, true, false);
+          g_kwsplat_lenient = prev;
+          return r;
       }
 
       case PM_DEFINED_NODE: {

@@ -58,6 +58,13 @@ void korb_init_builtins(void) {
     struct korb_class *cObj = korb_vm->object_class;
     DEF(cObj, "p", kernel_p, -1);
     DEF(cObj, "puts", kernel_puts, -1);
+    /* internal helpers used by `**obj` hash splat lowering. */
+    {
+        VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv);
+        VALUE kernel_kwsplat_to_hash_lenient(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cObj, "__kwsplat_to_hash", kernel_kwsplat_to_hash, 1);
+        DEF(cObj, "__kwsplat_to_hash_lenient", kernel_kwsplat_to_hash_lenient, 1);
+    }
     DEF(cObj, "print", kernel_print, -1);
     DEF(cObj, "raise", kernel_raise, -1);
     DEF(cObj, "inspect", kernel_inspect, 0);

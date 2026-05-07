@@ -100,6 +100,56 @@ static VALUE kernel_rand(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 /* ---------- Kernel ---------- */
+/* `**obj` in a hash literal: convert obj to Hash via to_hash.  CRuby
+ * raises TypeError if obj doesn't respond to to_hash or if to_hash
+ * returns a non-Hash (with the message "no implicit conversion of X
+ * into Hash").  nil is rejected (CRuby semantics changed in 2.7+;
+ * empty-hash splat is `**{}`). */
+/* Common path: convert v to Hash via to_hash.  Returns Hash or raises
+ * TypeError on non-conversion.  nil handling is decided by caller. */
+static VALUE kwsplat_convert(CTX *c, VALUE v) {
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_HASH) return v;
+    VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
+    if (c->state != KORB_NORMAL) return Qnil;
+    if (!RTEST(rt)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion of %s into Hash",
+                   korb_id_name(korb_class_of_class(v)->name));
+        return Qnil;
+    }
+    VALUE r = korb_funcall(c, v, korb_intern("to_hash"), 0, NULL);
+    if (c->state != KORB_NORMAL) return Qnil;
+    if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_HASH) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "can't convert %s to Hash (%s#to_hash gives %s)",
+                   korb_id_name(korb_class_of_class(v)->name),
+                   korb_id_name(korb_class_of_class(v)->name),
+                   korb_id_name(korb_class_of_class(r)->name));
+        return Qnil;
+    }
+    return r;
+}
+
+/* Lenient: `m(**nil)` is allowed and treated as no kwargs. */
+VALUE kernel_kwsplat_to_hash_lenient(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || NIL_P(argv[0])) return korb_hash_new();
+    return kwsplat_convert(c, argv[0]);
+}
+
+VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return korb_hash_new();
+    VALUE v = argv[0];
+    if (NIL_P(v)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT, "no implicit conversion of nil into Hash");
+        return Qnil;
+    }
+    return kwsplat_convert(c, v);
+}
+
 static VALUE kernel_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (int i = 0; i < argc; i++) {
         VALUE s = korb_inspect_dispatch(c, argv[i]);
