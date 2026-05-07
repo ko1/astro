@@ -1373,18 +1373,37 @@ extern VALUE py_method_resolve(CTX *c, VALUE recv, const char *name, struct meth
 //     cache->fn and we call py_apply on it with [self, args] — bypasses
 //     bound-method allocation and the MRO walk + strcmp.
 
+// Polymorphic IC scan helper.  Returns method VALUE on hit, 0 on miss.
+// Inlined into each node_method_* fast path; compiler unrolls the
+// 4-iter loop and folds the hits.
+static inline VALUE
+pystro_pic_lookup(struct method_cache *cache, void *cls)
+{
+    if (cache->u_cls[0] == cls) return (VALUE)(intptr_t)cache->u_fn[0];
+    if (cache->u_cls[1] == cls) return (VALUE)(intptr_t)cache->u_fn[1];
+    if (cache->u_cls[2] == cls) return (VALUE)(intptr_t)cache->u_fn[2];
+    if (cache->u_cls[3] == cls) return (VALUE)(intptr_t)cache->u_fn[3];
+    return 0;
+}
+
 NODE_DEF
 node_method_0(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, struct method_cache *cache@ref)
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    if (LIKELY(PY_IS_PTR(o) && PY_PTR(o)->type == cache->type_tag && cache->fn)) {
-        VALUE av[1] = { o };
-        if (LIKELY(!cache->cls_ptr))
+    if (LIKELY(PY_IS_PTR(o)) && PY_PTR(o)->type == cache->type_tag) {
+        int t = PY_PTR(o)->type;
+        if (t == PY_T_INSTANCE) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o)->inst.cls);
+            if (LIKELY(fn)) {
+                VALUE av[1] = { o };
+                return py_apply(c, fn, 1, av);
+            }
+        } else if (cache->fn) {
+            VALUE av[1] = { o };
             return ((py_builtin_fn)cache->fn)(c, 1, av);
-        if (LIKELY(cache->cls_ptr == (void *)PY_PTR(o)->inst.cls))
-            return py_apply(c, (VALUE)(intptr_t)cache->fn, 1, av);
+        }
     }
     VALUE m = py_method_resolve(c, o, name, cache);
     return py_apply(c, m, 0, NULL);
@@ -1396,15 +1415,24 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
     if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-    if (LIKELY(PY_IS_PTR(o) && PY_PTR(o)->type == cache->type_tag && cache->fn)) {
-        VALUE av[2];
-        av[0] = o;
-        av[1] = EVAL_ARG(c, a0);
-        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-        if (LIKELY(!cache->cls_ptr))
+    if (LIKELY(PY_IS_PTR(o)) && PY_PTR(o)->type == cache->type_tag) {
+        int t = PY_PTR(o)->type;
+        if (t == PY_T_INSTANCE) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o)->inst.cls);
+            if (LIKELY(fn)) {
+                VALUE av[2];
+                av[0] = o;
+                av[1] = EVAL_ARG(c, a0);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                return py_apply(c, fn, 2, av);
+            }
+        } else if (cache->fn) {
+            VALUE av[2];
+            av[0] = o;
+            av[1] = EVAL_ARG(c, a0);
+            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
             return ((py_builtin_fn)cache->fn)(c, 2, av);
-        if (LIKELY(cache->cls_ptr == (void *)PY_PTR(o)->inst.cls))
-            return py_apply(c, (VALUE)(intptr_t)cache->fn, 2, av);
+        }
     }
     VALUE m = py_method_resolve(c, o, name, cache);
     VALUE av[1];
@@ -1419,17 +1447,28 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
     if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-    if (LIKELY(PY_IS_PTR(o) && PY_PTR(o)->type == cache->type_tag && cache->fn)) {
-        VALUE av[3];
-        av[0] = o;
-        av[1] = EVAL_ARG(c, a0);
-        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-        av[2] = EVAL_ARG(c, a1);
-        if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-        if (LIKELY(!cache->cls_ptr))
+    if (LIKELY(PY_IS_PTR(o)) && PY_PTR(o)->type == cache->type_tag) {
+        int t = PY_PTR(o)->type;
+        if (t == PY_T_INSTANCE) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o)->inst.cls);
+            if (LIKELY(fn)) {
+                VALUE av[3];
+                av[0] = o;
+                av[1] = EVAL_ARG(c, a0);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                av[2] = EVAL_ARG(c, a1);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                return py_apply(c, fn, 3, av);
+            }
+        } else if (cache->fn) {
+            VALUE av[3];
+            av[0] = o;
+            av[1] = EVAL_ARG(c, a0);
+            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+            av[2] = EVAL_ARG(c, a1);
+            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
             return ((py_builtin_fn)cache->fn)(c, 3, av);
-        if (LIKELY(cache->cls_ptr == (void *)PY_PTR(o)->inst.cls))
-            return py_apply(c, (VALUE)(intptr_t)cache->fn, 3, av);
+        }
     }
     VALUE m = py_method_resolve(c, o, name, cache);
     VALUE av[2];
@@ -1446,18 +1485,30 @@ node_method_n(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    if (LIKELY(PY_IS_PTR(o) && PY_PTR(o)->type == cache->type_tag && cache->fn)) {
-        VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
-        av[0] = o;
-        for (uint32_t i = 0; i < argc; i++) {
-            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
-            av[i + 1] = (*arg->head.dispatcher)(c, arg);
-            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-        }
-        if (LIKELY(!cache->cls_ptr))
+    if (LIKELY(PY_IS_PTR(o)) && PY_PTR(o)->type == cache->type_tag) {
+        int t = PY_PTR(o)->type;
+        if (t == PY_T_INSTANCE) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o)->inst.cls);
+            if (LIKELY(fn)) {
+                VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+                av[0] = o;
+                for (uint32_t i = 0; i < argc; i++) {
+                    NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                    av[i + 1] = (*arg->head.dispatcher)(c, arg);
+                    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                }
+                return py_apply(c, fn, (int)argc + 1, av);
+            }
+        } else if (cache->fn) {
+            VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+            av[0] = o;
+            for (uint32_t i = 0; i < argc; i++) {
+                NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                av[i + 1] = (*arg->head.dispatcher)(c, arg);
+                if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+            }
             return ((py_builtin_fn)cache->fn)(c, (int)argc + 1, av);
-        if (LIKELY(cache->cls_ptr == (void *)PY_PTR(o)->inst.cls))
-            return py_apply(c, (VALUE)(intptr_t)cache->fn, (int)argc + 1, av);
+        }
     }
     VALUE m = py_method_resolve(c, o, name, cache);
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));

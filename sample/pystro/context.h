@@ -315,20 +315,30 @@ struct gref_cache {
 // argv.  This skips both the bound-method heap allocation and the
 // strcmp scan through the per-type method registry.  Cache miss falls
 // through to `py_getattr` + `py_apply`.
-// `cls_ptr` distinguishes builtin vs user-class entries:
-//   cls_ptr == NULL  → builtin: type_tag is the recv tag, fn is a
-//                       py_builtin_fn called directly with [self, args].
-//   cls_ptr != NULL  → user-class instance method: type_tag is
-//                       PY_T_INSTANCE, cls_ptr is PY_PTR(recv->inst.cls),
-//                       fn holds the resolved method VALUE (PY_T_FUNC
-//                       only — wrapped descriptors fall through to slow
-//                       path).  Fast path skips the MRO walk + strcmp +
-//                       bound-method alloc by calling py_apply directly
-//                       with [self, args] as argv.
+// Two layouts coexist (builtin vs polymorphic user-class instance):
+//
+//   type_tag != PY_T_INSTANCE → builtin entry:
+//       fn  = py_builtin_fn called directly with [self, args]
+//       u_cls[*] / u_fn[*] unused
+//
+//   type_tag == PY_T_INSTANCE → polymorphic user-class entry:
+//       fn  = unused (kept for backwards layout compatibility)
+//       u_cls[i] = PY_PTR(inst.cls), u_fn[i] = method VALUE for each
+//       cached class.  4 entries with linear scan.  When all slots are
+//       full and a new class arrives the oldest (slot 0) is evicted and
+//       the rest shift down.
+//
+// Why 4 entries: deltablue/richards style polymorphism has 2-4 sibling
+// subclasses (StayConstraint/EditConstraint/EqualityConstraint/...) at
+// each `d.recalculate()` call site.  Monomorphic IC (1 slot) thrashes
+// 100% on richards (measured 4.93M/4.93M).  A 4-way scheme captures
+// virtually all call patterns we observe.
+#define PYSTRO_METHOD_PIC_WAYS 4
 struct method_cache {
-    int   type_tag;        // PY_T_xxx; -1 ⇒ uninitialised
-    void *fn;              // builtin: py_builtin_fn; user-class: VALUE
-    void *cls_ptr;         // PY_PTR(inst.cls) for user-class; NULL for builtin
+    int   type_tag;        // PY_T_xxx; -1 ⇒ uninitialised; PY_T_INSTANCE ⇒ user-class PIC
+    void *fn;              // builtin path only
+    void *u_cls[PYSTRO_METHOD_PIC_WAYS];   // user-class PIC: PY_PTR(inst.cls) per slot
+    void *u_fn [PYSTRO_METHOD_PIC_WAYS];   // user-class PIC: method VALUE per slot
 };
 
 // Inline cache for `o.attr` on instances.  Stamped per node_attr_get
