@@ -2080,18 +2080,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *body = transduce_statements(tc, n->statements);
           uint32_t mx = tc->frame->max_cnt;
           pop_frame(tc);
-          /* eval-with-binding mode: caller passed scope_locals that got
-           * merged into n->locals.  We must NOT shift fp (node_scope
-           * does fp += envsize + zeros), because eval body's slot 0
-           * IS the caller's lvar slot 0.  Return body unwrapped — runs
-           * in caller's frame directly. */
-          if (g_skip_program_scope) return body;
-          /* Top-level program: capture local names so a top-level
-           * `eval('lvar')` (no enclosing method / block) can resolve
-           * the lvar via the same side-table mechanism block / def use.
-           * The body NODE is what node_scope wraps; the ID list is
-           * looked up by kernel_eval against `body` (which it can
-           * obtain through a global program-body pointer, set below). */
+          /* Always register the program's local names against the body
+           * NODE.  Used by Binding#eval to detect new lvars introduced
+           * inside the eval body, and by top-level eval-with-binding to
+           * find caller's locals when no method frame is on the chain. */
           if (n->locals.size > 0) {
               ID *prog_names = korb_xmalloc(sizeof(ID) * (n->locals.size + 1));
               for (size_t i = 0; i < n->locals.size; i++) {
@@ -2099,6 +2091,17 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               }
               prog_names[n->locals.size] = 0;
               korb_register_body_local_names(body, prog_names);
+          }
+          /* eval-with-binding mode: caller passed scope_locals that got
+           * merged into n->locals.  We must NOT shift fp (node_scope
+           * does fp += envsize + zeros), because eval body's slot 0
+           * IS the caller's lvar slot 0.  Return body unwrapped — runs
+           * in caller's frame directly. */
+          if (g_skip_program_scope) return body;
+          /* Top-level program: stash a global pointer so kernel_eval
+           * can find caller's locals when there's no enclosing method
+           * / block frame. */
+          if (n->locals.size > 0) {
               extern struct Node *korb_g_program_body;
               korb_g_program_body = body;
           }

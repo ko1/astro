@@ -29,6 +29,7 @@
 #include "builtins/file.c"
 #include "builtins/boolean.c"
 #include "builtins/proc.c"
+#include "builtins/binding.c"
 #define DEF(klass, name, fn, argc) \
     korb_class_add_method_cfunc((klass), korb_intern(name), (fn), (argc))
 #define DEF_PRIV(klass, name, fn, argc) do {                              \
@@ -1050,6 +1051,23 @@ void korb_init_builtins(void) {
         extern VALUE korb_fiber_resume_cfunc(CTX *c, VALUE self, int argc, VALUE *argv);
         korb_class_add_method_cfunc(cFiber, korb_intern("resume"), korb_fiber_resume_cfunc, -1);
     }
+
+    /* Binding class — instances are returned by Kernel#binding.  T_DATA
+     * because korb_binding has its own storage layout (fp pointer +
+     * names + cref) that doesn't fit T_OBJECT's ivar table. */
+    {
+        struct korb_class *cBinding = korb_class_new(korb_intern("Binding"), korb_vm->object_class, T_DATA);
+        korb_const_set(korb_vm->object_class, korb_intern("Binding"), (VALUE)cBinding);
+        korb_class_add_method_cfunc(cBinding, korb_intern("local_variable_get"),    binding_local_variable_get,       1);
+        korb_class_add_method_cfunc(cBinding, korb_intern("local_variable_set"),    binding_local_variable_set,       2);
+        korb_class_add_method_cfunc(cBinding, korb_intern("local_variable_defined?"), binding_local_variable_defined_p, 1);
+        korb_class_add_method_cfunc(cBinding, korb_intern("local_variables"),       binding_local_variables_cfunc,    0);
+        korb_class_add_method_cfunc(cBinding, korb_intern("receiver"),              binding_receiver,                 0);
+        korb_class_add_method_cfunc(cBinding, korb_intern("eval"),                  binding_eval_cfunc,              -1);
+        korb_class_add_method_cfunc(cBinding, korb_intern("source_location"),       binding_source_location,          0);
+        korb_vm->binding_class = cBinding;
+    }
+    DEF_PRIV(cObj, "binding", kernel_binding_cfunc, 0);
 
     /* Method class — instances are returned by Object#method */
     {

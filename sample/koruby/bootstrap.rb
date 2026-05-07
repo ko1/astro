@@ -3314,78 +3314,10 @@ def BigDecimal(value, digits = nil)
   BigDecimal.new(value, digits)
 end
 
-# Binding — shallow approximation of CRuby's Binding.  The runtime
-# doesn't preserve local-variable names through method bodies, so we
-# can't auto-capture every lvar at `binding` time.  Instead, this
-# provides an explicit dictionary backed by `local_variable_set` /
-# `local_variable_get` plus `binding.eval(src)` that prefixes the
-# stored bindings as assignments before evaluating the source.
-#
-# That covers the common test-scope uses (poking values into eval'd
-# code) while keeping the implementation scope minimal — enough to
-# unblock tests that assume `binding` exists.
-class Binding
-  attr_reader :receiver
-
-  def initialize(self_obj)
-    @receiver = self_obj
-    @vars = {}
-  end
-
-  def local_variable_set(name, val)
-    @vars[name.to_sym] = val
-    val
-  end
-
-  def local_variable_get(name)
-    sym = name.to_sym
-    raise NameError, "local variable `#{name}' not defined" unless @vars.key?(sym)
-    @vars[sym]
-  end
-
-  def local_variable_defined?(name)
-    @vars.key?(name.to_sym)
-  end
-
-  def local_variables
-    @vars.keys
-  end
-
-  def eval(src, file = "(eval)", line = 1)
-    prefix = String.new
-    @vars.each do |k, v|
-      # Materialize each binding-stored value via Marshal so arbitrary
-      # objects round-trip into the eval'd source.  For the very common
-      # primitives this works (Marshal handles them); for other types
-      # we fall back to inspect, which round-trips literal-y values.
-      begin
-        bytes = Marshal.dump(v)
-        prefix << "#{k} = ::Marshal.load(#{bytes.inspect}); "
-      rescue
-        prefix << "#{k} = #{v.inspect}; "
-      end
-    end
-    BINDING_EVAL_HOST.do_eval(prefix + src.to_s)
-  end
-end
-
-# Top-level helper that invokes Kernel#eval — Binding#eval defers to
-# this so we don't recurse on the method named `eval`.  Run inside a
-# fresh receiver so dispatch can't loop back through Binding#eval.
-BINDING_EVAL_HOST = Object.new
-def BINDING_EVAL_HOST.do_eval(src)
-  eval(src)
-end
-
-# Kernel#binding — Binding bound to the caller's `self`, pre-populated
-# with the caller's named lvars (snapshot at the moment binding is
-# called).  Subsequent `b.eval(src)` sees those names; updates inside
-# the eval are not propagated back (it runs at top-level scope).
-def binding
-  b = Binding.new(self)
-  __capture_lvars__.each { |k, v| b.local_variable_set(k, v) }
-  b
-end
+# Binding — implemented in C (builtins/binding.c).  The C-side struct
+# captures fp + names + cref at `Kernel#binding` time so reads and
+# writes go directly through the live caller frame.  bootstrap.rb
+# just re-exposes the class so user code can refer to ::Binding.
 
 # Marshal — CRuby-compatible binary serialization for the common types.
 # Format follows MRI's Marshal version 4.8 wire spec, restricted to:

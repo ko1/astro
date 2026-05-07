@@ -250,6 +250,11 @@ typedef struct CTX_struct {
     /* for call site & frame info */
     struct korb_frame *current_frame;
 
+    /* When non-NULL, the currently-executing code is a Binding#eval body
+     * — Kernel#local_variables / __method__ / etc. consult this to
+     * report the binding's view rather than the caller frame's. */
+    void *current_eval_binding;
+
     /* Most-recent callsite of a cfunc dispatch — set by prologue_cfunc_inl
      * before calling the cfunc, so cfunc bodies (e.g. kernel_raise) can
      * record the line of the call into a backtrace. */

@@ -1021,6 +1021,19 @@ static VALUE kernel_method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
  * return [] to avoid leaking mspec_shim internals. */
 static VALUE kernel_local_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE arr = korb_ary_new();
+    /* Inside Binding#eval body — report the binding's view, not the
+     * caller frame's. */
+    if (c->current_eval_binding) {
+        struct korb_binding *b = (struct korb_binding *)c->current_eval_binding;
+        for (uint32_t i = 0; i < b->names_cnt; i++) {
+            const char *cname = korb_id_name(b->names[i]);
+            if (!cname) continue;
+            if (cname[0] == '_' && cname[1] == 0) continue;
+            if (cname[0] == '_' && cname[1] == '_') continue;
+            korb_ary_push(arr, korb_id2sym(b->names[i]));
+        }
+        return arr;
+    }
     struct korb_frame *f = c->current_frame;
     if (!f || !f->method || f->method->type != KORB_METHOD_AST) return arr;
     /* Filter out the test harness frames so user-level local_variables

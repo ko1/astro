@@ -256,6 +256,34 @@ struct korb_method_obj {
     ID name;
 };
 
+/* Binding — captures a frame's lexical state at the point `binding` is
+ * called.  fp points into the live caller frame's slot area; while the
+ * caller is alive, gets/sets read & write the frame directly so changes
+ * are bidirectional (CRuby's heap-promoted env semantics).  Once the
+ * caller returns, fp becomes stale — we don't track that, but typical
+ * use is bind-then-eval-then-discard.
+ *
+ * names[i] is the lvar name at fp[base + i].  Initially populated from
+ * the caller's local_names; binding.local_variable_set or eval can
+ * append new names (their slots land in the temp area past caller's
+ * locals_cnt — best-effort, may collide with caller's transient temps).
+ */
+struct korb_binding {
+    struct RBasic basic;
+    VALUE *fp;            /* pointer into caller frame's slot area */
+    uint32_t base;        /* offset from fp to slot 0 (block param_base) */
+    ID *names;            /* dynamic array; names[i] at fp[base + i] */
+    uint32_t names_cnt;
+    uint32_t names_capa;
+    VALUE self;
+    struct korb_cref *cref;
+    /* Frame ID + method_name for source_location / __method__. */
+    ID method_name;
+    /* For new-local extension via local_variable_set / eval: when fp
+     * may not have free slots, we fall back to this Hash. */
+    VALUE extra_vars;
+};
+
 /* global VM */
 struct korb_vm {
     state_serial_t method_serial;
@@ -281,6 +309,7 @@ struct korb_vm {
     struct korb_class *numeric_class;
     struct korb_class *fiber_class;
     struct korb_class *method_class;
+    struct korb_class *binding_class;
 
     /* globals */
     struct korb_method_table globals;
