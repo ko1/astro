@@ -455,6 +455,22 @@ class MSpecExpectation
     end
     self
   end
+  # Fallback proxy: `obj.should.foo?` / `obj.should.bar` delegates to
+  # @actual.foo? / @actual.bar and asserts truthy.
+  def method_missing(name, *args, &blk)
+    if @actual.respond_to?(name)
+      result = @actual.send(name, *args, &blk)
+      if result then $ms_pass += 1
+      else raise MSpecError, "expected #{@actual.inspect}.#{name}(#{args.inspect}) to be truthy, got #{result.inspect}"
+      end
+      result
+    else
+      super
+    end
+  end
+  def respond_to_missing?(name, priv = false)
+    @actual.respond_to?(name, priv)
+  end
 end
 
 class MSpecNegatedExpectation < MSpecExpectation
