@@ -565,6 +565,11 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                      * slot inside the block frame's locals. */
                     block_has_anon_rest = true;
                 }
+            } else if (pn->rest && PM_NODE_TYPE_P(pn->rest, PM_IMPLICIT_REST_NODE)) {
+                /* Trailing comma `|a,|` — implicit (unnamed) rest.
+                 * Same effect as anonymous `|a, *|`: triggers autosplat
+                 * of a single Array yield arg and absorbs extras. */
+                block_has_anon_rest = true;
             }
         }
     } else if (bn->parameters && PM_NODE_TYPE_P(bn->parameters, PM_NUMBERED_PARAMETERS_NODE)) {

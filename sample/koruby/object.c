@@ -368,6 +368,14 @@ static bool korb_method_body_is_simple_frame(struct Node *body) {
         strstr(buf, "(node_cvar_set ")          == NULL &&
         strstr(buf, "(node_raise ")             == NULL &&
         strstr(buf, "block_given?")             == NULL &&
+        /* `def`/`undef`/`alias`/`class`/`module` reach for `c->cref` to
+         * pick the target class, so they need the cref restore step. */
+        strstr(buf, "(node_def_full ")          == NULL &&
+        strstr(buf, "(node_def_self ")          == NULL &&
+        strstr(buf, "(node_undef ")             == NULL &&
+        strstr(buf, "(node_alias ")             == NULL &&
+        strstr(buf, "(node_class_def")          == NULL &&
+        strstr(buf, "(node_module_def")         == NULL &&
         /* __method__ / __callee__ / caller need a real frame so they
          * can find the enclosing method; skip the slim path. */
         strstr(buf, "__method__")               == NULL &&
@@ -1922,13 +1930,18 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
             if (RTEST(rt)) {
                 VALUE coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
                 if (c->state != KORB_NORMAL) return Qnil;
-                if (BUILTIN_TYPE(coerced) != T_ARRAY) {
+                if (NIL_P(coerced)) {
+                    /* to_ary explicitly returned nil — treat the same
+                     * as not responding to to_ary: pass the original
+                     * object through without destructuring. */
+                } else if (BUILTIN_TYPE(coerced) != T_ARRAY) {
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
                     korb_raise(c, (struct korb_class *)eT,
                                "can't convert to Array (#to_ary gave non-Array)");
                     return Qnil;
+                } else {
+                    arr = coerced;
                 }
-                arr = coerced;
             }
         }
         if (!NIL_P(arr) && BUILTIN_TYPE(arr) == T_ARRAY) {
