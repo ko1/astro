@@ -41,41 +41,6 @@ slurp_stream(FILE *fp, size_t *len_out)
     return buf;
 }
 
-/* Pre-parse all of `src` into permanent (perm = true) VALUEs and push
- * them into the input queue.  Used by `-n` so `[inputs]`-style
- * aggregations have a stable VALUE[] snapshot that won't move under
- * Cheney GC, regardless of how many arena cycles the filter triggers.
- *
- * Parses directly here (not via `nuq_input_pull`) — `pull` would re-
- * read whatever we just pushed back into the queue, producing an
- * infinite loop. */
-static void
-load_input_queue(const char *src, size_t len)
-{
-    if (!src || !len) return;
-    extern bool nuq_alloc_perm;
-    bool saved = nuq_alloc_perm;
-    nuq_alloc_perm = true;
-    const char *p = src, *end = src + len;
-    while (p < end) {
-        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
-        if (p >= end) break;
-        const char *np;
-        char *err = NULL;
-        VALUE v = nuq_json_parse(p, end - p, &np, &err);
-        if (err) {
-            fprintf(stderr, "nuq: parse error: %s\n", err);
-            break;
-        }
-        nuq_input_queue_push(v);
-        p = np;
-    }
-    nuq_alloc_perm = saved;
-    /* Drain the cursor so `nuq_input_pull` doesn't re-parse the same
-     * bytes after the queue is exhausted. */
-    nuq_input_set_text(NULL, 0);
-}
-
 static int
 process_input(CTX *c, NODE *filter, const char *src, size_t len)
 {
@@ -86,14 +51,9 @@ process_input(CTX *c, NODE *filter, const char *src, size_t len)
     nuq_input_set_text(src, len);
 
     if (OPTION.null_input) {
-        /* `-n`: filter runs once with `.` = null.  Pre-parse stdin
-         * values into a permanent VALUE[] queue that `inputs` then
-         * walks — `[inputs]`-collecting aggregation queries (group_by,
-         * sort_by, etc.) need their value snapshots to survive arena
-         * GC cycles, and several helpers don't fully pin their
-         * VALUE[] yet (todo.md C-7).  Permanent storage sidesteps
-         * the issue at the cost of higher RSS for now. */
-        load_input_queue(src, len);
+        /* `-n`: filter runs once with `.` = null.  `inputs` inside
+         * the filter pulls stdin values lazily through the cursor
+         * (per-value parse → arena → freed at end of run). */
         nuq_run(c, filter, NUQ_NULL);
         return 0;
     }

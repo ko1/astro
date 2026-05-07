@@ -696,6 +696,7 @@ node_if(CTX *c, NODE *n, NODE *cond, NODE *thn, NODE *els)
     VALUE csmall[16];
     VALUE *clocal = (cc <= 16) ? csmall : (VALUE *)nuq_scratch_alloc(cc * sizeof(VALUE));
     memcpy(clocal, cs.items, cc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(clocal, cc);   /* thn/els eval can move arena values */
     c->pool_top = top0;
     for (uint32_t i = 0; i < cc; i++) {
         if (nuq_truthy(clocal[i])) {
@@ -703,8 +704,9 @@ node_if(CTX *c, NODE *n, NODE *cond, NODE *thn, NODE *els)
         } else {
             (void)EVAL_ARG(c, els);
         }
-        if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+        if (UNLIKELY(c->error != NUQ_NULL)) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
     }
+    NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, top0);
 }
 
@@ -737,14 +739,16 @@ node_as(CTX *c, NODE *n, NODE *src, uint32_t var_id, NODE *body)
     VALUE ssmall[16];
     VALUE *slocal = (sc <= 16) ? ssmall : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(slocal, bs.items, sc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(slocal, sc);   /* body eval may move arena values */
     c->pool_top = top0;
     for (uint32_t i = 0; i < sc; i++) {
         size_t var_top = c->var_top;
         nuq_var_push(c, var_id, slocal[i]);
         (void)EVAL_ARG(c, body);
         nuq_var_pop(c, var_top);
-        if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+        if (UNLIKELY(c->error != NUQ_NULL)) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
     }
+    NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, top0);
 }
 
@@ -765,14 +769,16 @@ node_as_pattern(CTX *c, NODE *n, NODE *src, uint32_t pat_id, NODE *body)
     VALUE ssmall[16];
     VALUE *slocal = (sc <= 16) ? ssmall : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(slocal, bs.items, sc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(slocal, sc);
     c->pool_top = top0;
     struct nuq_pat *pat = nuq_pat_get(pat_id);
     for (uint32_t i = 0; i < sc; i++) {
         size_t var_top = nuq_pat_bind(c, pat, slocal[i]);
         (void)EVAL_ARG(c, body);
         nuq_var_pop(c, var_top);
-        if (UNLIKELY(c->error != NUQ_NULL)) return EMIT_EMPTY;
+        if (UNLIKELY(c->error != NUQ_NULL)) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
     }
+    NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, top0);
 }
 
@@ -1994,12 +2000,14 @@ node_b_strflocaltime(CTX *c, NODE *n, NODE *fmt_n)
     VALUE fsmall[16];
     VALUE *fmts = (fc <= 16) ? fsmall : (VALUE *)nuq_scratch_alloc(fc * sizeof(VALUE));
     memcpy(fmts, fb.items, fc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(fmts, fc);   /* nuq_make_string in the loop can GC */
     c->pool_top = outer;
     for (uint32_t k = 0; k < fc; k++) {
         VALUE fv = fmts[k];
         if (!(NUQ_IS_PTR(fv) && NUQ_PTR(fv)->type == NUQ_T_STRING)) {
             c->pool_top = outer;
             c->error = nuq_make_string("strflocaltime/1 requires a string format", 40);
+            NUQ_GC_UNPIN_ARR();
             return EMIT_EMPTY;
         }
         struct nuq_obj *fo = NUQ_PTR(fv);
@@ -2011,6 +2019,7 @@ node_b_strflocaltime(CTX *c, NODE *n, NODE *fmt_n)
         size_t n_out = strftime(out, sizeof(out), fmt_buf, &tm);
         nuq_pool_push(c, nuq_make_string(out, n_out));
     }
+    NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, outer);
 }
 

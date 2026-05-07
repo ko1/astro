@@ -161,17 +161,27 @@ nuq_builtin_unique(VALUE input)
         nuq_helper_error("");
         return NUQ_NULL;
     }
-    struct nuq_obj *o = NUQ_PTR(input);
-    VALUE sorted = nuq_make_array(o->arr.len);
-    struct nuq_obj *so = NUQ_PTR(sorted);
-    if (o->arr.len > 0) memcpy(so->arr.items, o->arr.items, o->arr.len * sizeof(VALUE));
-    so->arr.len = o->arr.len;
-    nuq_value_sort(so->arr.items, so->arr.len);
-    VALUE r = nuq_make_array(so->arr.len);
-    for (size_t i = 0; i < so->arr.len; i++) {
-        if (i == 0 || nuq_cmp(so->arr.items[i], so->arr.items[i-1]) != 0)
-            nuq_array_push(r, so->arr.items[i]);
+    NUQ_GC_PIN1(input);
+    size_t N = NUQ_PTR(input)->arr.len;
+    VALUE sorted = nuq_make_array(N);
+    NUQ_GC_PIN1(sorted);
+    /* Re-fetch input/sorted after the make_array (may have GC'd). */
+    if (N > 0) {
+        memcpy(NUQ_PTR(sorted)->arr.items,
+               NUQ_PTR(input)->arr.items, N * sizeof(VALUE));
+        NUQ_PTR(sorted)->arr.len = N;
     }
+    nuq_value_sort(NUQ_PTR(sorted)->arr.items, N);
+    VALUE r = nuq_make_array(N);
+    NUQ_GC_PIN1(r);
+    for (size_t i = 0; i < N; i++) {
+        struct nuq_obj *so = NUQ_PTR(sorted);   /* refetch */
+        VALUE cur = so->arr.items[i];
+        VALUE prev = i > 0 ? so->arr.items[i-1] : NUQ_NULL;
+        if (i == 0 || nuq_cmp(cur, prev) != 0)
+            nuq_array_push(r, cur);
+    }
+    NUQ_GC_UNPIN(3);
     return r;
 }
 

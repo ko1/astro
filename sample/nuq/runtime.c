@@ -1028,19 +1028,22 @@ nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, st
     VALUE inits_small[16];
     VALUE *inits = (ic <= 16) ? inits_small : (VALUE *)nuq_scratch_alloc(ic * sizeof(VALUE));
     memcpy(inits, init_e.items, ic * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(inits, ic);
     c->pool_top = t0;
 
     EMIT src_e = EVAL(c, src);
-    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (c->error != NUQ_NULL) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
     uint32_t sc = src_e.count;
     VALUE small[16];
     VALUE *src_local = (sc <= 16) ? small : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(src_local, src_e.items, sc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(src_local, sc);
     c->pool_top = outer_top;
 
     VALUE saved_input = c->input;
     for (uint32_t k = 0; k < ic; k++) {
         VALUE acc = inits[k];
+        NUQ_GC_PIN1(acc);          /* survives across many update evals */
         for (uint32_t i = 0; i < sc; i++) {
             size_t t1 = c->pool_top;
             size_t v_top = c->var_top;
@@ -1051,14 +1054,18 @@ nuq_reduce_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, st
             if (c->error != NUQ_NULL) {
                 c->input = saved_input;
                 c->pool_top = outer_top;
+                NUQ_GC_UNPIN(1);
+                NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
                 return EMIT_EMPTY;
             }
             if (up.count > 0) acc = up.items[up.count - 1];
             c->pool_top = t1;
         }
         nuq_pool_push(c, acc);
+        NUQ_GC_UNPIN(1);
     }
     c->input = saved_input;
+    NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, outer_top);
 }
 
@@ -1069,7 +1076,9 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
 
     /* `init` may emit multiple values (jq runs the foreach once per
      * init).  Snapshot the inits and the source array up front so the
-     * pool is free for body evaluation. */
+     * pool is free for body evaluation.  All three buffers (inits,
+     * src_local, up_local) plus the live `acc` outlive multiple
+     * arena allocator calls (update / extract eval) — pin everything. */
     size_t t0 = c->pool_top;
     EMIT init_e = EVAL(c, init);
     if (c->error != NUQ_NULL) return EMIT_EMPTY;
@@ -1078,51 +1087,68 @@ nuq_foreach_eval(CTX *c, struct Node *src, uint32_t var_id, struct Node *init, s
     VALUE inits_small[16];
     VALUE *inits = (ic <= 16) ? inits_small : (VALUE *)nuq_scratch_alloc(ic * sizeof(VALUE));
     memcpy(inits, init_e.items, ic * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(inits, ic);
     c->pool_top = t0;
 
     EMIT src_e = EVAL(c, src);
-    if (c->error != NUQ_NULL) return EMIT_EMPTY;
+    if (c->error != NUQ_NULL) { NUQ_GC_UNPIN_ARR(); return EMIT_EMPTY; }
     uint32_t sc = src_e.count;
     VALUE small[16];
     VALUE *src_local = (sc <= 16) ? small : (VALUE *)nuq_scratch_alloc(sc * sizeof(VALUE));
     memcpy(src_local, src_e.items, sc * sizeof(VALUE));
+    NUQ_GC_PIN_ARR(src_local, sc);
     c->pool_top = outer_top;
 
     VALUE saved_input = c->input;
     for (uint32_t k = 0; k < ic; k++) {
         VALUE acc = inits[k];
+        NUQ_GC_PIN1(acc);
         for (uint32_t i = 0; i < sc; i++) {
             size_t v_top = c->var_top;
             nuq_var_push(c, var_id, src_local[i]);
             c->input = acc;
             size_t t1 = c->pool_top;
             EMIT up = EVAL(c, update);
-            if (c->error != NUQ_NULL) { nuq_var_pop(c, v_top); c->input = saved_input; c->pool_top = outer_top; return EMIT_EMPTY; }
+            if (c->error != NUQ_NULL) {
+                nuq_var_pop(c, v_top); c->input = saved_input; c->pool_top = outer_top;
+                NUQ_GC_UNPIN(1); NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
+                return EMIT_EMPTY;
+            }
             if (c->break_label != 0) {
                 nuq_var_pop(c, v_top); c->input = saved_input;
+                NUQ_GC_UNPIN(1); NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
                 return nuq_emit_slice(c, outer_top);
             }
             uint32_t uc = up.count;
             VALUE usmall[16];
             VALUE *up_local = (uc <= 16) ? usmall : (VALUE *)nuq_scratch_alloc(uc * sizeof(VALUE));
             memcpy(up_local, up.items, uc * sizeof(VALUE));
+            NUQ_GC_PIN_ARR(up_local, uc);
             c->pool_top = t1;
             for (uint32_t j = 0; j < uc; j++) {
                 acc = up_local[j];
                 c->input = acc;
                 (void)EVAL(c, extract);
                 if (c->error != NUQ_NULL) {
-                    nuq_var_pop(c, v_top); c->input = saved_input; c->pool_top = outer_top; return EMIT_EMPTY;
+                    nuq_var_pop(c, v_top); c->input = saved_input; c->pool_top = outer_top;
+                    NUQ_GC_UNPIN_ARR();   /* up_local */
+                    NUQ_GC_UNPIN(1); NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
+                    return EMIT_EMPTY;
                 }
                 if (c->break_label != 0) {
                     nuq_var_pop(c, v_top); c->input = saved_input;
+                    NUQ_GC_UNPIN_ARR();
+                    NUQ_GC_UNPIN(1); NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
                     return nuq_emit_slice(c, outer_top);
                 }
             }
+            NUQ_GC_UNPIN_ARR();   /* up_local */
             nuq_var_pop(c, v_top);
         }
+        NUQ_GC_UNPIN(1);   /* acc */
     }
     c->input = saved_input;
+    NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, outer_top);
 }
 
@@ -2468,15 +2494,25 @@ nuq_sort_by_eval(CTX *c, struct Node *body)
 {
     if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))
         return err_emit(c, "sort_by: not array");
-    struct nuq_obj *o = NUQ_PTR(c->input);
-    size_t N = o->arr.len;
-    struct nuq_kv *kvs = (struct nuq_kv *)nuq_value_alloc(N * sizeof(struct nuq_kv));
+    /* Hold the input array via a local pinned slot — c->input gets
+     * mutated mid-loop to feed each element to the body, so we can't
+     * just pin &c->input.  `kvs` lives in scratch (non-Cheney) and
+     * the keys go into a parallel pinned VALUE[] so a body-eval GC
+     * can forward them.  `kvs[i].key` is reread from the pinned
+     * array after the loop. */
+    VALUE input_arr = c->input;
+    NUQ_GC_PIN1(input_arr);
+    size_t N = NUQ_PTR(input_arr)->arr.len;
+    struct nuq_kv *kvs = (struct nuq_kv *)nuq_scratch_alloc(N * sizeof(struct nuq_kv));
+    VALUE *keys_pin = (VALUE *)nuq_scratch_alloc(N * sizeof(VALUE));
+    for (size_t i = 0; i < N; i++) keys_pin[i] = NUQ_NULL;
+    NUQ_GC_PIN_ARR(keys_pin, N);
     VALUE saved = c->input;
     for (size_t i = 0; i < N; i++) {
-        c->input = o->arr.items[i];
+        c->input = NUQ_PTR(input_arr)->arr.items[i];
         size_t t0 = c->pool_top;
         EMIT bo = EVAL(c, body);
-        if (c->error != NUQ_NULL) { c->input = saved; return EMIT_EMPTY; }
+        if (c->error != NUQ_NULL) { c->input = saved; NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN(1); return EMIT_EMPTY; }
         VALUE k;
         if (bo.count == 0) k = NUQ_NULL;
         else if (bo.count == 1) k = bo.items[0];
@@ -2486,15 +2522,20 @@ nuq_sort_by_eval(CTX *c, struct Node *body)
             for (uint32_t j = 0; j < bo.count; j++) nuq_array_push(k, bo.items[j]);
         }
         c->pool_top = t0;
-        kvs[i].key = k;
+        keys_pin[i] = k;
         kvs[i].idx = (uint32_t)i;
     }
     c->input = saved;
+    /* Build kvs[].key from the (post-GC-forwarded) pinned keys. */
+    for (size_t i = 0; i < N; i++) kvs[i].key = keys_pin[i];
     kv_quicksort(kvs, N);
     VALUE result = nuq_make_array(N);
     struct nuq_obj *r = NUQ_PTR(result);
-    for (size_t i = 0; i < N; i++) r->arr.items[i] = o->arr.items[kvs[i].idx];
+    struct nuq_obj *src = NUQ_PTR(input_arr);
+    for (size_t i = 0; i < N; i++) r->arr.items[i] = src->arr.items[kvs[i].idx];
     r->arr.len = N;
+    NUQ_GC_UNPIN_ARR();
+    NUQ_GC_UNPIN(1);
     return nuq_emit_one(c, result);
 }
 
@@ -2503,29 +2544,39 @@ nuq_group_by_eval(CTX *c, struct Node *body)
 {
     if (!(NUQ_IS_PTR(c->input) && NUQ_PTR(c->input)->type == NUQ_T_ARRAY))
         return err_emit(c, "group_by: not array");
-    struct nuq_obj *o = NUQ_PTR(c->input);
-    size_t N = o->arr.len;
-    struct nuq_kv *kvs = (struct nuq_kv *)nuq_value_alloc(N * sizeof(struct nuq_kv));
+    VALUE input_arr = c->input;
+    NUQ_GC_PIN1(input_arr);
+    size_t N = NUQ_PTR(input_arr)->arr.len;
+    struct nuq_kv *kvs = (struct nuq_kv *)nuq_scratch_alloc(N * sizeof(struct nuq_kv));
+    VALUE *keys_pin = (VALUE *)nuq_scratch_alloc(N * sizeof(VALUE));
+    for (size_t i = 0; i < N; i++) keys_pin[i] = NUQ_NULL;
+    NUQ_GC_PIN_ARR(keys_pin, N);
     VALUE saved = c->input;
     for (size_t i = 0; i < N; i++) {
-        c->input = o->arr.items[i];
+        c->input = NUQ_PTR(input_arr)->arr.items[i];
         size_t t0 = c->pool_top;
         EMIT bo = EVAL(c, body);
-        if (c->error != NUQ_NULL) { c->input = saved; return EMIT_EMPTY; }
-        kvs[i].key = bo.count > 0 ? bo.items[0] : NUQ_NULL;
+        if (c->error != NUQ_NULL) { c->input = saved; NUQ_GC_UNPIN_ARR(); NUQ_GC_UNPIN(1); return EMIT_EMPTY; }
+        keys_pin[i] = bo.count > 0 ? bo.items[0] : NUQ_NULL;
         kvs[i].idx = (uint32_t)i;
         c->pool_top = t0;
     }
     c->input = saved;
-    kv_quicksort(kvs, N);
+    for (size_t i = 0; i < N; i++) kvs[i].key = keys_pin[i];
+    kv_quicksort(kvs, N);   /* sort doesn't allocate, no GC */
 
+    /* Result-building loop allocates per group → may GC.  We can't
+     * use kvs[i].key directly across allocs because kvs is in scratch
+     * (not scanned).  Walk via keys_pin (still pinned + forwarded). */
     VALUE result = nuq_make_array(0);
+    NUQ_GC_PIN1(result);
     VALUE cur_group = NUQ_NULL;
     VALUE cur_key = NUQ_NULL;
+    NUQ_GC_PIN2(cur_group, cur_key);
     bool has = false;
     for (size_t i = 0; i < N; i++) {
-        VALUE k = kvs[i].key;
-        VALUE v = o->arr.items[kvs[i].idx];
+        VALUE k = keys_pin[kvs[i].idx];
+        VALUE v = NUQ_PTR(input_arr)->arr.items[kvs[i].idx]; /* refetch */
         if (!has || nuq_cmp(k, cur_key) != 0) {
             cur_group = nuq_make_array(0);
             cur_key = k;
@@ -2536,6 +2587,9 @@ nuq_group_by_eval(CTX *c, struct Node *body)
             nuq_array_push(cur_group, v);
         }
     }
+    NUQ_GC_UNPIN(3);   /* cur_group, cur_key, result */
+    NUQ_GC_UNPIN_ARR();
+    NUQ_GC_UNPIN(1);   /* input_arr */
     return nuq_emit_one(c, result);
 }
 
