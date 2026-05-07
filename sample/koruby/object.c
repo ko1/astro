@@ -983,19 +983,27 @@ void korb_const_set(struct korb_class *klass, ID name, VALUE value) {
             } else {
                 /* Parent is still anonymous (or pending propagation).
                  * Compose a tentative "Parent::Name" using parent's
-                 * current best name, BUT remember the linkage so the
-                 * eventual rename of the parent re-resolves us. */
+                 * current best name (or a `#<Module:0x...>` placeholder
+                 * when parent has no name yet).  Remember the linkage so
+                 * the eventual rename of the parent re-resolves us. */
+                const char *parent_str;
+                char placeholder[64];
                 if (klass->name && klass->name != korb_intern("(anon)")) {
-                    size_t plen = strlen(korb_id_name(klass->name));
-                    size_t nlen = strlen(korb_id_name(name));
-                    char *combined = korb_xmalloc_atomic(plen + 2 + nlen + 1);
-                    memcpy(combined, korb_id_name(klass->name), plen);
-                    memcpy(combined + plen, "::", 2);
-                    memcpy(combined + plen + 2, korb_id_name(name), nlen + 1);
-                    target->name = korb_intern(combined);
+                    parent_str = korb_id_name(klass->name);
                 } else {
-                    target->name = name;
+                    snprintf(placeholder, sizeof(placeholder),
+                             "#<%s:%p>",
+                             BUILTIN_TYPE(klass) == T_MODULE ? "Module" : "Class",
+                             (void *)klass);
+                    parent_str = placeholder;
                 }
+                size_t plen = strlen(parent_str);
+                size_t nlen = strlen(korb_id_name(name));
+                char *combined = korb_xmalloc_atomic(plen + 2 + nlen + 1);
+                memcpy(combined, parent_str, plen);
+                memcpy(combined + plen, "::", 2);
+                memcpy(combined + plen + 2, korb_id_name(name), nlen + 1);
+                target->name = korb_intern(combined);
                 target->anon_parent = klass;
                 target->anon_name_in_parent = name;
             }
