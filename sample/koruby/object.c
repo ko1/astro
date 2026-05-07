@@ -2579,6 +2579,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         }
     }
 
+    long opt_filled = 0;
     if (mc->rest_slot >= 0) {
         long fixed_pre  = (long)mc->required_params_cnt;
         long fixed_post = (long)mc->post_params_cnt;
@@ -2588,7 +2589,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         if (optional_cnt < 0) optional_cnt = 0;
         long after_required = (long)argc - fixed_pre - fixed_post;
         if (after_required < 0) after_required = 0;
-        long opt_filled = after_required < optional_cnt ? after_required : optional_cnt;
+        opt_filled = after_required < optional_cnt ? after_required : optional_cnt;
         long extra = after_required - opt_filled;  /* leftover for rest */
         /* Snapshot post args before overwriting fp[rest_slot]. */
         VALUE post_save[16];
@@ -2605,14 +2606,53 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         for (long i = 0; i < fixed_post; i++) {
             c->fp[mc->rest_slot + 1 + i] = post_buf[i];
         }
+    } else if (mc->post_params_cnt > 0) {
+        /* No rest, but post params present.  argv layout in caller:
+         * [pre, opts_filled, post].  We need to move the post args to
+         * the post slots and put Qundef in the unfilled opt slots. */
+        long fixed_pre  = (long)mc->required_params_cnt;
+        long fixed_post = (long)mc->post_params_cnt;
+        long optional_cnt = (long)mc->total_params_cnt - fixed_pre - fixed_post;
+        if (optional_cnt < 0) optional_cnt = 0;
+        long after_required = (long)argc - fixed_pre - fixed_post;
+        if (after_required < 0) after_required = 0;
+        opt_filled = after_required < optional_cnt ? after_required : optional_cnt;
+        VALUE post_save[16];
+        VALUE *post_buf = post_save;
+        if (fixed_post > 16) post_buf = korb_xmalloc(sizeof(VALUE) * fixed_post);
+        for (long i = 0; i < fixed_post; i++) {
+            post_buf[i] = c->fp[fixed_pre + opt_filled + i];
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            c->fp[fixed_pre + optional_cnt + i] = post_buf[i];
+        }
     }
 
-    uint32_t opt_start = argc;
-    if (opt_start < mc->required_params_cnt) opt_start = mc->required_params_cnt;
+    /* Optional-slot start: after required + opt_filled.  Slots
+     * required..required+opt_filled-1 hold caller-provided opt values;
+     * everything from required+opt_filled onward (excluding rest/post)
+     * gets Qundef so the body's default_init prologue substitutes the
+     * user-supplied default. */
+    uint32_t opt_start;
+    if (mc->rest_slot >= 0 || mc->post_params_cnt > 0) {
+        opt_start = mc->required_params_cnt + (uint32_t)opt_filled;
+    } else {
+        opt_start = argc;
+        if (opt_start < mc->required_params_cnt) opt_start = mc->required_params_cnt;
+    }
+    /* When there are post params and no rest, post slots live at the
+     * end of total_params_cnt — set their range so the clear loop skips
+     * them. */
+    uint32_t post_lo_no_rest = 0, post_hi_no_rest = 0;
+    if (mc->rest_slot < 0 && mc->post_params_cnt > 0) {
+        post_lo_no_rest = mc->total_params_cnt - mc->post_params_cnt;
+        post_hi_no_rest = mc->total_params_cnt;
+    }
     /* Don't clobber post-rest slots (just populated above). */
     uint32_t post_lo = (mc->rest_slot >= 0 && mc->post_params_cnt)
-                         ? (uint32_t)(mc->rest_slot + 1) : 0;
-    uint32_t post_hi = post_lo + mc->post_params_cnt;
+                         ? (uint32_t)(mc->rest_slot + 1) : post_lo_no_rest;
+    uint32_t post_hi = (mc->rest_slot >= 0 && mc->post_params_cnt)
+                         ? post_lo + mc->post_params_cnt : post_hi_no_rest;
     for (uint32_t i = opt_start; i < mc->total_params_cnt; i++) {
         if ((int)i == mc->rest_slot) continue;
         if (mc->post_params_cnt && i >= post_lo && i < post_hi) continue;

@@ -2700,6 +2700,38 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                      T(tc, args->arguments.nodes[1]),
                                      ai);
           }
+          /* `obj[k1, k2, ..., kN] = v` — N>2 keys.  []= takes N+1 args
+           * (keys + value).  CRuby's assignment expression evaluates to
+           * the assigned value (last arg), not the writer's return.
+           * Save the last arg to a kept slot and read after the call. */
+          if (n->receiver && ceq(tc, n->name, "[]=") && args_cnt > 2 && !n->block) {
+              uint32_t kept_slot = inc_arg_index(tc);
+              uint32_t recv_slot = inc_arg_index(tc);
+              uint32_t arg_base = arg_index(tc);
+              for (uint32_t i = 0; i < args_cnt; i++) inc_arg_index(tc);
+              inc_arg_index(tc);  /* spare for callee's frame */
+              rewind_arg_index(tc, kept_slot);
+              for (uint32_t i = 0; i < args_cnt + 2; i++) inc_arg_index(tc);
+              struct method_cache *mc = alloc_method_cache();
+              NODE *recv = T(tc, n->receiver);
+              NODE *save_recv = ALLOC_node_lvar_set(recv_slot, recv);
+              /* Evaluate args in source order, save value (last arg) to
+               * kept_slot too. */
+              NODE *seq = save_recv;
+              for (uint32_t i = 0; i < args_cnt; i++) {
+                  NODE *a = T(tc, args->arguments.nodes[i]);
+                  seq = ALLOC_node_seq(seq, ALLOC_node_lvar_set(arg_base + i, a));
+              }
+              /* Mirror the LAST arg into kept_slot for the result. */
+              NODE *save_kept = ALLOC_node_lvar_set(kept_slot,
+                                  ALLOC_node_lvar_get(arg_base + args_cnt - 1));
+              NODE *call = ALLOC_node_method_call(
+                  ALLOC_node_lvar_get(recv_slot), korb_intern("[]="),
+                  args_cnt, arg_base, mc);
+              return ALLOC_node_seq(seq,
+                       ALLOC_node_seq(save_kept,
+                         ALLOC_node_seq(call, ALLOC_node_lvar_get(kept_slot))));
+          }
 
           /* unary minus rewrite: foo.-@ */
           if (n->receiver && ceq(tc, n->name, "-@") && args_cnt == 0 && !n->block) {
