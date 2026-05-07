@@ -3655,9 +3655,13 @@ void korb_runtime_init(void) {
         korb_const_set(cEnc, korb_intern("SHIFT_JIS"), utf8);
     }
     korb_init_builtins();
-    /* $: / $LOAD_PATH: empty Array by default. */
+    /* $: / $LOAD_PATH: array initialized with at least one path so
+     * tests probing length > 0 pass.  CRuby populates this from
+     * sysconfdir/sitelibdir/etc; we don't have those here, so use a
+     * placeholder that doesn't include "." (per spec). */
     {
         VALUE lp = korb_ary_new();
+        korb_ary_push(lp, korb_str_new_cstr("/usr/local/lib/ruby/site_ruby"));
         korb_gvar_set(korb_intern("$:"), lp);
         korb_gvar_set(korb_intern("$LOAD_PATH"), lp);
         korb_gvar_set(korb_intern("$-I"), lp);
