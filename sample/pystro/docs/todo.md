@@ -17,8 +17,8 @@ R11–R17 で深掘り (test 78–212 追加, **213 unit tests passing**)。 [do
 |---|---|
 | total | 394 |
 | **fully pass** (`failed=0`) | **28** |
-| mixed (test logic ran, ≥1 fail) | 321 |
-| crash / timeout | 19 |
+| mixed (test logic ran, ≥1 fail) | 322 |
+| crash / timeout | 18 |
 | parse error | 22 |
 | import error | 4 |
 
@@ -89,6 +89,50 @@ CPython compat の作業として追加した薄い shim 群:
   扱いだった。 `_find_top_alt` で top-level の `|` を探して左→右の
   順で alternative を試す。 `(cat|dog|fish)` や html.unescape の
   `&(#[0-9]+;?|...)` パターンが動作。
+- **chained call/attr/subscript で raise が伝播**: pystro は
+  raise/return を CTX state field で伝播するが node_attr_get /
+  node_subscript_get / node_call_n / node_method_0 / node_method_n /
+  node_attr_set / node_subscript_set / node_slice / node_method_1
+  などが receiver eval 後の state チェックを忘れていて、 raiser から
+  返ってきた `None` に対して `.attr` / `[...]` が走り、 元の
+  exception が AttributeError 等で覆われていた。 各箇所で
+  `c->state != PY_STATE_NORMAL` を即時 return。 codecs の
+  `lookup(encoding).incrementalencoder` がこれで動く。
+- **__class_getitem__ が @classmethod を unwrap**: `Cls[item]` で
+  classmethod-wrapped __class_getitem__ をそのまま py_apply すると
+  `object is not callable` だった。 PY_T_CLASSMETHOD を unwrap して
+  bind 不要 (cls は seq 自身) で呼ぶ。
+- **iter / `<` TypeError 表記が CPython 互換**:
+  `'X' object is not iterable` / `'<' not supported between
+  instances of 'X' and 'Y'`。
+- **__getitem__ iter protocol が IndexError を catch**: kind 13 で
+  local jmp_buf を立てて user の __getitem__ から raise された
+  IndexError / StopIteration を try frame で捕まえ iteration 終了。
+- **exec(g, l) は新名を locals dict 側に書き戻す**: timeit が
+  `local_ns["inner"]` で読むのを許容。
+- **PYSTRO_BI_KWC leak 修正**: py_apply_slow の class branch が
+  metaclass __call__ (bi_type_call 等) を呼ぶときに stale な
+  outer の kwargs (PYSTRO_BI_KWC) を引き継いでいた。 inner class
+  call の中で nested instantiation したとき、 outer の kwargs が
+  inner の __init__ に流れて TypeError。 metaclass __call__ ディスパッチ
+  前後で PYSTRO_BI_KWC を save/restore。 `RawConfigParser(defaults={})`
+  が動く。
+- **types.MethodType** を constructible callable wrapper に。 metaclass
+  __instancecheck__ で pystro 内蔵 bound-method type も認識。
+- **for target に attr/subscript** (`for st.lineno, line in ...`).
+- **del multi-element subscript with slice**.
+- **PEP 646 `class C(*Ts):`** starred class base.
+- **chain assign / unpack group buffer 8 → 256**.
+- **dict.fromkeys instance call**, **bytes.decode 3 args**.
+- **list literal cap 256→2048**.
+- **NamedTemporaryFile** に __iter__ / tell / flush / truncate / fileno
+  を追加 (csv.reader が iter する pattern 用)。
+- **math.fmax / fmin / isqrt / prod**, **operator.{concat, iconcat,
+  call, indexOf, countOf}**, **tempfile.mktemp**.
+- **math.isclose** が `class C: isclose = math.isclose` パターンで
+  self leak した場合に non-numeric leading arg を捨てる (CPython の
+  C builtin は descriptor じゃないので bind されない、 という
+  挙動を Python 関数で偽装)。
 
 **まだ blocking している parse error 28 種** (1 ファイルずつ別案件):
 
