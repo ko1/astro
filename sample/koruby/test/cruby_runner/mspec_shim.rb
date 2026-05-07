@@ -283,17 +283,17 @@ def __mspec_include_matcher(*items); MSpecMatcher.new(:include, items); end
 # the matcher form.  Modules and Classes can't be values one wants to
 # match in `include`, so this never actually shadows.
 def include(*items)
-  if items.size >= 1 && items.all? { |i|
-    !i.nil? && (i.class == Module || i.class == Class || (i.is_a?(Class) && (i == Module || i.ancestors.include?(Module))))
+  # Real Module#include: every arg must be a Module (not a Class —
+  # `include Foo` for a Class would raise TypeError in CRuby anyway).
+  # `arr.should include(SomeError)` passes a Class as a value to test —
+  # we route that to the matcher form.
+  all_modules = items.size >= 1 && items.all? { |i|
+    !i.nil? && i.class == Module
   }
-    # forward to Module#include via the receiver's include
-    if self.is_a?(Module)
-      items.each { |m| self.send(:include, m) }
-      return self
-    else
-      Object.send(:include, *items)
-      return self
-    end
+  if all_modules
+    target = self.is_a?(Module) ? self : Object
+    items.each { |m| target.send(:include, m) }
+    return self
   end
   MSpecMatcher.new(:include, items)
 end
