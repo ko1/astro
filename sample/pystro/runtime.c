@@ -3544,6 +3544,12 @@ struct type_method {
 static struct type_method str_methods[];
 static struct type_method list_methods[];
 static struct type_method dict_methods[];
+static VALUE bi_dict_fromkeys(CTX *c, int argc, VALUE *argv);
+static VALUE
+dm_fromkeys_bridge(CTX *c, int argc, VALUE *argv)
+{
+    return bi_dict_fromkeys(c, argc - 1, argv + 1);
+}
 static struct type_method set_methods[];
 static struct type_method frozenset_methods[];
 static struct type_method gen_methods[];
@@ -7692,6 +7698,7 @@ static struct type_method dict_methods[] = {
     { "__delitem__", dm_delitem,   2, 2 },
     { "__contains__", dm_contains, 2, 2 },
     { "__len__",     dm_len,       1, 1 },
+    { "fromkeys",    dm_fromkeys_bridge,  2, 3 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -8628,6 +8635,8 @@ bi_dict_fromkeys(CTX *c, int argc, VALUE *argv)
     }
     return r;
 }
+
+
 
 // bytes.join(iter) — concatenate bytes-like with self as separator.
 static VALUE
