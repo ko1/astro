@@ -383,10 +383,15 @@ class MSpecExpectation
                           %w(\\[ \\] \\. \\( \\) \\? \\+ \\* \\^ \\$ \\| \\\\).each do |esc|
                             stripped = stripped.gsub(esc, esc[1])
                           end
-                          # Anchors: drop leading \\A and trailing \\z which
-                          # rubyspec uses for full-string match — we still
-                          # use substring containment as the proxy.
-                          stripped = stripped.sub(/\A\\A/, '').sub(/\\z\z/, '')
+                          # Anchors: drop a leading "\\A" and a trailing
+                          # "\\z" — rubyspec uses these for full-string
+                          # match; we use substring containment as the
+                          # proxy, so just drop the anchors.  (Plain
+                          # string literals: koruby's /regex/ is itself
+                          # a String, so the matcher's pattern would be
+                          # taken literally — work in chars instead.)
+                          stripped = stripped[2..-1] if stripped.start_with?("\\A")
+                          stripped = stripped[0..-3] if stripped.end_with?("\\z")
                           e.message.include?(stripped)
                         }
                       else msg === e.message
