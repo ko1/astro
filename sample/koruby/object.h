@@ -647,11 +647,13 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         VALUE arg = argv[0];  /* snapshot before fp swap */
         VALUE *prev_fp = c->fp;
         VALUE prev_self = c->self;
+        struct korb_cref *prev_cref = c->cref;
         struct korb_proc *prev_block = current_block;
         VALUE *bfp = blk->env;
         bfp[blk->param_base] = arg;
         c->self = blk->self;
         c->fp = bfp;
+        if (blk->cref) c->cref = blk->cref;
         /* Lexical block target: yield inside this block goes to the
          * enclosing method's block, not back to this block itself. */
         current_block = blk->enclosing_block;
@@ -666,6 +668,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         }
         c->fp = prev_fp;
         c->self = prev_self;
+        c->cref = prev_cref;
         current_block = prev_block;
         running_block = prev_running;
         if (UNLIKELY(c->state == KORB_NEXT)) {

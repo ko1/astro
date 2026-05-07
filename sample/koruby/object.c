@@ -2011,6 +2011,11 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         fp[blk->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
     }
     c->self = blk->self;
+    /* Install the block's lexical cref so const lookup inside the block
+     * uses the lexical scope at block-creation time, not the dynamic
+     * caller's. */
+    struct korb_cref *prev_cref = c->cref;
+    if (blk->cref) c->cref = blk->cref;
     /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
     c->fp = fp;
     /* Lexical block target: yield inside block body refers to the
@@ -2037,6 +2042,7 @@ redo_block:
     }
     c->fp = prev_fp;
     c->self = prev_self;
+    c->cref = prev_cref;
     current_block = prev_block;
     running_block = prev_running;
     /* `next` inside a block: yield returns the next value, state cleared.
