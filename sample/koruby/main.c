@@ -149,6 +149,12 @@ int main(int argc, char *argv[])
         korb_ary_push(argv_array, korb_str_new_cstr(argv[i]));
     }
     korb_const_set(korb_vm->object_class, korb_intern("ARGV"), argv_array);
+    /* $0 / $PROGRAM_NAME — the script path. */
+    {
+        VALUE pn = korb_str_new_cstr(file ? file : (e_code ? "-e" : argv[0]));
+        korb_gvar_set(korb_intern("$0"), pn);
+        korb_gvar_set(korb_intern("$PROGRAM_NAME"), pn);
+    }
 
     char *src = NULL;
     size_t len = 0;

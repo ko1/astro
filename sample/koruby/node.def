@@ -226,6 +226,18 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
             korb_gvar_set(korb_intern("$-d"),    canon);
             return canon;
         }
+        /* $0 / $PROGRAM_NAME aliases — must coerce to String. */
+        if (strcmp(nm, "$0") == 0 || strcmp(nm, "$PROGRAM_NAME") == 0) {
+            if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "$0 must be a String");
+                return Qnil;
+            }
+            korb_gvar_set(korb_intern("$0"), v);
+            korb_gvar_set(korb_intern("$PROGRAM_NAME"), v);
+            return v;
+        }
     }
     korb_gvar_set(name, v);
     return v;
