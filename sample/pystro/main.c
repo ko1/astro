@@ -209,17 +209,13 @@ main(int argc, char *argv[])
             }
             tokenize(prog, "<repl>");
             NODE *body = parse_program();
-            if (setjmp(c->err_jmp) == 0) {
-                c->err_jmp_active = 1;
-                EVAL(c, body);
-                if (c->state == PYS_STATE_RAISE) {
-                    VALUE exc = c->state_value;
-                    const char *cls_name = pys_is_instance(exc) ? PYS_PTR(exc)->inst.cls->cls.name : "Exception";
-                    fprintf(stderr, "%s\n", cls_name);
-                    c->state = PYS_STATE_NORMAL; c->state_value = PYS_NONE;
-                }
+            EVAL(c, body);
+            if (c->state == PYS_STATE_RAISE) {
+                VALUE exc = c->state_value;
+                const char *cls_name = pys_is_instance(exc) ? PYS_PTR(exc)->inst.cls->cls.name : "Exception";
+                fprintf(stderr, "%s\n", cls_name);
+                c->state = PYS_STATE_NORMAL; c->state_value = PYS_NONE;
             }
-            c->err_jmp_active = 0;
             free(prog);
         }
         return 0;
@@ -248,12 +244,7 @@ main(int argc, char *argv[])
             uint32_t size, capa;
             struct code_entry { const char *name; struct Node *body; } *entries;
         } code_repo;
-        int jmp_status = setjmp(c->err_jmp);
-        if (jmp_status == 0) {
-            c->err_jmp_active = 1;
-            EVAL(c, body);
-        }
-        c->err_jmp_active = 0;
+        EVAL(c, body);
         // Reset state so AOT compile doesn't trip on a propagating
         // raise from the bake-time run.
         c->state = PYS_STATE_NORMAL;
@@ -278,12 +269,7 @@ main(int argc, char *argv[])
 
     OPTIMIZE(body);
 
-    int jmp_status = setjmp(c->err_jmp);
-    if (jmp_status == 0) {
-        c->err_jmp_active = 1;
-        EVAL(c, body);
-    }
-    c->err_jmp_active = 0;
+    EVAL(c, body);
     if (c->state == PYS_STATE_RAISE) {
         VALUE exc = c->state_value;
         const char *cls_name = "Exception";

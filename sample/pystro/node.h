@@ -76,7 +76,7 @@ pys_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
 {
     // If an argument expression raised, don't invoke the callee with
     // a half-built argv — propagate the raise immediately.
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (LIKELY(PYS_IS_PTR(fn) && PYS_PTR(fn)->type == PYS_T_FUNC)) {
         struct pysobj *f = PYS_PTR(fn);
         // Fast path only handles plain "exact arity, no varargs/kwargs,
@@ -121,7 +121,7 @@ pys_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
                 c->state_value = PYS_NONE;
                 return r;
             }
-            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
             return PYS_NONE;
         }
     }

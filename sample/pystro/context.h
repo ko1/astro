@@ -335,10 +335,17 @@ enum pys_state {
     _pys_prop_r;                                                \
 })
 
-// 例外送出。 try frame があれば node_try が捕捉、 なければ top に伝播。
+// 例外送出 (既に build 済み exception instance を投げる)。
 #define PYS_RAISE(c, exc) do {                                  \
     (c)->state = PYS_STATE_RAISE;                               \
     (c)->state_value = (exc);                                   \
+    return 0;                                                   \
+} while (0)
+
+// 例外送出 (class + format で build しつつ投げる)。 pys_raise_exc を
+// statement-position で呼ぶ箇所を全部こちらに。 longjmp 経路なし。
+#define PYS_RAISE_EXC(c, cls, ...) do {                         \
+    pys_raise_exc((c), (cls), __VA_ARGS__);                     \
     return 0;                                                   \
 } while (0)
 
@@ -487,15 +494,6 @@ typedef struct CTX_struct {
     // for cooperative MRO walking.  Saved/restored across nested
     // method calls.
     VALUE  method_class;
-
-    jmp_buf err_jmp;
-    int     err_jmp_active;
-
-    // Stack of jmp_buf set up by `node_try`.  `pys_raise_exc` longjmps
-    // to the innermost frame so dispatch unwinds without every node on
-    // the path checking `c->state`.  Empty stack ⇒ longjmp to err_jmp.
-    jmp_buf *try_stack[64];
-    int      try_top;
 
     // Currently-executing generator (NULL if not inside one).  yield
     // expressions read this to know which gen to swap back to.
@@ -745,7 +743,9 @@ VALUE pys_to_repr(CTX *c, VALUE v);
 // Error / raise.
 __attribute__((noreturn,format(printf,2,3)))
 void pys_error(CTX *c, const char *fmt, ...);
-__attribute__((noreturn,format(printf,3,4)))
+// pys_raise_exc — set state=RAISE, state_value=new exception, no longjmp.
+// Caller (or PYS_RAISE_EXC macro) is responsible for early return.
+__attribute__((format(printf,3,4)))
 void pys_raise_exc(CTX *c, VALUE cls, const char *fmt, ...);
 
 // Numeric tower.
