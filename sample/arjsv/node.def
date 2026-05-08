@@ -253,6 +253,17 @@ node_pattern(CTX *c, NODE *n, const char *pattern, uint32_t consts_idx)
     return rb_reg_match(c->consts[consts_idx], c->data) != Qnil;
 }
 
+// `format` (assertion mode).  The checker is a Ruby Proc stored in consts;
+// it returns true / false (or anything truthy / falsy).  Non-strings pass.
+NODE_DEF
+node_format(CTX *c, NODE *n, const char *format_name, uint32_t checker_idx)
+{
+    (void)format_name;
+    if (!RB_TYPE_P(c->data, T_STRING)) return 1;
+    VALUE r = rb_funcall(c->consts[checker_idx], rb_intern("call"), 1, c->data);
+    return RTEST(r) ? 1 : 0;
+}
+
 // ---- enum / const --------------------------------------------------------
 
 // `const v`.  consts_idx points into the schema's constants array; the
@@ -519,6 +530,42 @@ node_property_names(CTX *c, NODE *n, NODE *schema)
 }
 
 // ---- $ref --------------------------------------------------------------
+
+// `dependencies` (draft-07): if `key` is present in the data hash, the
+// data must validate against `dep_schema`.  `dep_schema` is either a
+// required-list (chain of node_required) or a regular sub-schema, both
+// lowered to NODE on the Ruby side.
+NODE_DEF
+node_dependency(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *dep_schema, NODE *next)
+{
+    (void)key;
+    if (RB_TYPE_P(c->data, T_HASH)) {
+        if (rb_hash_lookup2(c->data, c->consts[key_idx], Qundef) != Qundef) {
+            if (!EVAL_ARG(c, dep_schema)) return 0;
+        }
+    }
+    return EVAL_ARG(c, next);
+}
+
+// `contains: <schema>` — array must have ≥1 element validating against schema.
+// On a non-array, this keyword has no effect (pass).  Empty arrays fail
+// (no matching item exists).
+NODE_DEF
+node_contains(CTX *c, NODE *n, NODE *schema)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    long len = RARRAY_LEN(c->data);
+    VALUE saved = c->data;
+    for (long i = 0; i < len; i++) {
+        c->data = RARRAY_AREF(saved, i);
+        if (EVAL_ARG(c, schema)) {
+            c->data = saved;
+            return 1;
+        }
+    }
+    c->data = saved;
+    return 0;
+}
 
 // `$ref: "#/$defs/<name>"`.  The target is an independently-compiled entry
 // node; its wrapper VALUE lives in consts so the Schema's GC mark keeps it

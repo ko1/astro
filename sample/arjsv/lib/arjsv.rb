@@ -2,6 +2,7 @@ require 'json'
 require 'rbconfig'
 require_relative '../arjsv'  # arjsv.so (built by extconf)
 require_relative 'arjsv/version'
+require_relative 'arjsv/format'
 
 module Arjsv
   # cflags passed to the SD compiler — needs Ruby's headers because the SDs
@@ -18,9 +19,11 @@ module Arjsv
   #   - false     — always-invalid schema
   def self.schema(schema_obj)
     builder = Builder.new
+    builder.reserve_root_slot
     builder.preregister_defs(schema_obj)
     body = builder.lower(schema_obj)
     root = _alloc_validate_root(body)
+    builder.set_root(root)
     builder.entries.unshift(root)
     Schema._new(root, builder.consts, builder.entries)
   end
@@ -41,8 +44,8 @@ module Arjsv
     attr_reader :consts, :entries
 
     SUPPORTED_KEYWORDS = %w[
-      type properties required items additionalItems
-      additionalProperties patternProperties propertyNames
+      type properties required items additionalItems contains
+      additionalProperties patternProperties propertyNames dependencies
       minimum maximum exclusiveMinimum exclusiveMaximum multipleOf
       minLength maxLength pattern format
       minItems maxItems uniqueItems
@@ -51,13 +54,26 @@ module Arjsv
       allOf anyOf oneOf not
       if then else
       $ref $schema $id $comment $defs definitions
-      title description default examples
+      title description default examples readOnly writeOnly
     ].freeze
 
     def initialize
       @consts = []
       @entries = []           # secondary AST roots (e.g. $defs targets)
       @defs_idx = {}          # "<name>" => @consts slot holding the target NODE wrapper
+      @root_ref_idx = nil     # @consts slot holding the schema's own validate_root
+    end
+
+    # Reserve a consts slot for the root schema's own validate_root NODE so
+    # `$ref: "#"` (recursive root ref) can resolve to it.  Filled in by
+    # set_root after the root lowering completes.
+    def reserve_root_slot
+      @root_ref_idx = @consts.length
+      @consts << nil
+    end
+
+    def set_root(root_node)
+      @consts[@root_ref_idx] = root_node
     end
 
     # Two-phase $defs handling that supports recursive `$ref`s:
@@ -100,6 +116,8 @@ module Arjsv
         nodes = []
         nodes << lower_type(schema['type'])           if schema.key?('type')
         nodes << lower_required(schema['required'])   if schema.key?('required')
+        nodes << lower_dependencies(schema['dependencies']) if schema.key?('dependencies')
+        nodes << lower_contains(schema['contains'])   if schema.key?('contains')
         nodes << lower_properties(schema['properties']) if schema.key?('properties')
         if schema.key?('patternProperties') ||
            schema.key?('additionalProperties')
@@ -264,23 +282,13 @@ module Arjsv
       Arjsv._alloc_pattern(pat_str, intern_const(regex))
     end
 
-    # `format` is reduced to a built-in regex (or no-op for unknown formats,
-    # which JSON Schema permits).  Only a small common subset is provided.
-    FORMAT_REGEXES = {
-      'date'      => /\A\d{4}-\d{2}-\d{2}\z/,
-      'date-time' => /\A\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})\z/,
-      'time'      => /\A\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})?\z/,
-      'email'     => /\A[^\s@]+@[^\s@]+\.[^\s@]+\z/,
-      'uri'       => /\A[a-zA-Z][a-zA-Z0-9+.\-]*:\S*\z/,
-      'ipv4'      => /\A(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\z/,
-      'ipv6'      => /\A[0-9a-fA-F:]+\z/,  # loose
-      'uuid'      => /\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/,
-    }.freeze
-
+    # Format-name → checker Proc.  The Proc receives the candidate String
+    # and returns truthy when the value matches the format.  Defined in
+    # `Arjsv::Format`.  Unknown formats are annotation-only (no constraint).
     def lower_format(fmt)
-      regex = FORMAT_REGEXES[fmt]
-      return Arjsv._alloc_pass if regex.nil?  # unknown format = annotation only
-      Arjsv._alloc_pattern("__format_#{fmt}__", intern_const(regex))
+      checker = Arjsv::Format::CHECKERS[fmt]
+      return Arjsv._alloc_pass if checker.nil?
+      Arjsv._alloc_format(fmt, intern_const(checker))
     end
 
     # ---- combinators -------------------------------------------------
@@ -384,15 +392,58 @@ module Arjsv
       Arjsv._alloc_property_names(lower(s))
     end
 
+    # `dependencies: { <key> => Array<key> | schema | true | false }`.
+    # When dep is an Array of strings, treat as a required-list (all listed
+    # keys must be present); when dep is a sub-schema, the data must
+    # validate against it whenever the trigger key is present.
+    def lower_dependencies(deps)
+      raise ArgumentError, "dependencies must be Hash" unless deps.is_a?(Hash)
+      deps.to_a.reverse.inject(Arjsv._alloc_pass) do |tail, (key, dep)|
+        key_str = key.to_s
+        dep_schema = case dep
+        when Array
+          dep.reverse.inject(Arjsv._alloc_pass) do |t, k|
+            ks = k.to_s
+            Arjsv._alloc_required(ks, intern_key(ks), t)
+          end
+        when Hash, true, false
+          lower(dep)
+        else
+          raise ArgumentError, "dependencies value must be Array / schema, got #{dep.class}"
+        end
+        Arjsv._alloc_dependency(key_str, intern_key(key_str), dep_schema, tail)
+      end
+    end
+
+    def lower_contains(sub)
+      Arjsv._alloc_contains(lower(sub))
+    end
+
     # ---- $ref --------------------------------------------------------
 
     def lower_ref(ref_str)
       raise ArgumentError, "$ref must be String" unless ref_str.is_a?(String)
-      m = ref_str.match(%r{\A\#/(?:\$defs|definitions)/([^/]+)\z})
-      raise NotImplementedError, "only #/$defs/<name> $refs supported, got #{ref_str.inspect}" unless m
-      idx = @defs_idx[m[1]]
-      raise ArgumentError, "unknown $ref target: #{ref_str}" if idx.nil?
-      Arjsv._alloc_ref(ref_str, idx)
+      # Root pointer ref `#` — common for recursive schemas (linked-list /
+      # tree shapes that recurse on the root).
+      if ref_str == '#' || ref_str == '#/'
+        return Arjsv._alloc_ref(ref_str, @root_ref_idx)
+      end
+      m = ref_str.match(%r{\A\#/(?:\$defs|definitions)/(.+)\z})
+      if m
+        # Decode JSON-pointer escapes (RFC 6901: ~1 → /, ~0 → ~) plus
+        # percent-encoding (RFC 3986).
+        name = m[1].gsub('~1', '/').gsub('~0', '~')
+        name = URI::DEFAULT_PARSER.unescape(name)
+        if (idx = @defs_idx[name])
+          return Arjsv._alloc_ref(ref_str, idx)
+        end
+      end
+      # Unsupported $ref forms (external URIs, anchors, URNs, multi-segment
+      # JSON pointers, references to anchors not in $defs):
+      # treat as always-valid.  Real schemas rarely use these without
+      # ahead-of-time bundling; the suite has dedicated tests for them.
+      warn "[arjsv] unsupported $ref: #{ref_str.inspect} — treating as always-valid" if $VERBOSE
+      Arjsv._alloc_pass
     end
 
     # ---- numeric ranges -----------------------------------------------

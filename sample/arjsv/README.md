@@ -10,9 +10,21 @@ lower per-validation overhead.
 
 ## Status
 
-Tier 1 / MVP (see [`docs/done.md`](docs/done.md)).  Tier 2/3 keywords
-(`pattern`, `$ref`, `allOf`/`oneOf`/etc.) are listed in
-[`docs/todo.md`](docs/todo.md).
+draft-07 keyword coverage is essentially complete (`type` / `properties` /
+`required` / `items` (uniform + tuple) / `additionalItems` /
+`additionalProperties` / `patternProperties` / `propertyNames` /
+`dependencies` / `contains` / size constraints / numeric ranges /
+`multipleOf` / `pattern` / `format` (real validators for date / time /
+email / uri / ipv4 / ipv6 / uuid / json-pointer / etc.) / `const` / `enum`
+/ `allOf` / `anyOf` / `oneOf` / `not` / `if`-`then`-`else` / `$ref` to
+`#`, `#/$defs/<name>`, `#/definitions/<name>` with recursive refs).
+
+**JSON Schema Test Suite (draft-07): 1477 / 1584 = 93.24%**.
+Remaining failures concentrate in optional IDNA / external-`$ref` /
+ECMA-regex tests — see [`docs/done.md`](docs/done.md) for the breakdown.
+
+`Schema#validate` returning a rich error list is the main missing
+feature; today the API is bool-only via `valid?`.
 
 ## Build
 

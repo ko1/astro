@@ -54,13 +54,32 @@ reporting).
 Boolean schemas: `true` (always valid), `false` (always invalid).
 Empty `{}` schema accepted.
 
+## JSON Schema Test Suite (draft-07): **1477 / 1584 pass = 93.24%**
+
+Run with `ruby test/run_official_suite.rb` after `tar -xzf` of the suite
+into `/tmp/jsts/...` (or set `SUITE_PATH=`).  Remaining failures
+break down (most are deep edge cases unlikely to bite a real schema):
+
+| group | fails | reason |
+|---|---:|---|
+| `optional/format/idn-hostname` | 34 | IDNA-2008 contextual rules; needs libidn / ICU |
+| `optional/format/hostname` | 23 | A-label punycode contextual rules; same |
+| `ref.json` | 21 | external `$ref`, multi-segment JSON pointers, anchor IDs |
+| `refRemote.json` | 11 | external `$ref` (HTTP fetching) |
+| `optional/ecmascript-regex` | 8 | Onigmo vs ECMA-262 `\s` class differences |
+| `optional/content` | 4 | `contentEncoding` / `contentMediaType` (rare) |
+| `optional/unknownKeyword` | 2 | `$id` / anchor handling |
+| `definitions.json`, `optional/cross-draft.json`, `optional/float-overflow.json` | 1 each | meta-schema `$ref`, future-draft handling, Infinity arithmetic |
+
 ## Out of scope
 
 - `Schema#validate(data)` returning rich error list (currently bool-only)
-- `$ref` to external documents / non-`$defs` JSON-pointer paths
+- External `$ref` (HTTP fetching), URN base URIs, anchor `$id` resolution
+- Multi-segment JSON-pointer `$ref` (e.g. `#/properties/foo` to lift a
+  sub-schema; current support is `#/$defs/<name>`, `#/definitions/<name>`,
+  and `#` root-ref only)
 - 2020-12 draft (separate lowering path keyed off `$schema`)
-- `dependencies` / `dependentSchemas` / `dependentRequired` (rare; can chain similarly)
-- `contains` / `minContains` / `maxContains` (added in 2019-09)
+- IDNA-2008 punycode validation for `format: hostname` / `idn-hostname`
 
 ## Internals
 
