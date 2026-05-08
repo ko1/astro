@@ -11,6 +11,13 @@ static VALUE ary_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+/* Array#to_ary / Array#deconstruct — return self.  to_ary is the
+ * canonical "I behave as an array" hook used in argument splatting and
+ * pattern matching; deconstruct is the analogous pattern-match hook. */
+static VALUE ary_self(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return self;
+}
+
 /* Coerce v to an Integer via #to_int (CRuby protocol).  Returns the
  * Fixnum/Bignum on success.  On failure raises TypeError and returns
  * Qundef.  Already-Integer values pass through. */

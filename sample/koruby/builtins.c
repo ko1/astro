@@ -762,6 +762,8 @@ void korb_init_builtins(void) {
     DEF(cAry, "rassoc",      ary_rassoc,      1);
     DEF(cAry, "at",          ary_at,          1);
     DEF(cAry, "to_a",        ary_to_a,        0);
+    DEF(cAry, "to_ary",      ary_self,        0);
+    DEF(cAry, "deconstruct", ary_self,        0);
     DEF(cAry, "fetch",       ary_fetch,       -1);
     DEF(cAry, "fetch_values", ary_fetch_values, -1);
     DEF(cAry, "delete",      ary_delete,      1);
