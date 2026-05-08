@@ -1220,6 +1220,18 @@ void korb_init_builtins(void) {
         struct korb_class *cProcMeta = korb_class_new(korb_intern("ProcMeta"),
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cProcMeta, korb_intern("new"), proc_class_new, -1);
+        /* Proc.allocate raises TypeError (CRuby) — no proc allocation
+         * without a block. */
+        {
+            VALUE _proc_alloc_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "allocator undefined for Proc");
+                return Qnil;
+            }
+            korb_class_add_method_cfunc(cProcMeta, korb_intern("allocate"),
+                                        _proc_alloc_raise, 0);
+        }
         cPrc->basic.klass = (VALUE)cProcMeta;
     }
     {

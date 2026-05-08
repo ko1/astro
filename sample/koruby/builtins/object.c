@@ -899,6 +899,13 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
             korb_module_include(nk, src->includes[i]);
         }
         r = (VALUE)nk;
+    } else if (t == T_PROC) {
+        /* Shallow copy: alloc a fresh struct, copy fields. */
+        struct korb_proc *src = (struct korb_proc *)self;
+        struct korb_proc *np = korb_xmalloc(sizeof(*np));
+        *np = *src;
+        np->basic.flags &= ~FL_FROZEN;  /* dup drops freeze; clone restores below */
+        r = (VALUE)np;
     }
     /* freeze_arg: -1 = default (preserve from source), 0 = force unfrozen,
      * 1 = force frozen.  preserve_frozen is the dup-vs-clone selector. */
