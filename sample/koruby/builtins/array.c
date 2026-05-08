@@ -1674,9 +1674,36 @@ static VALUE ary_dig(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments to dig (0 for 1+)");
         return Qnil;
     }
+    /* Index must be Integer (or convertible via #to_int) — non-numeric
+     * raises TypeError (CRuby semantics). */
+    if (!FIXNUM_P(argv[0]) && (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_BIGNUM)) {
+        VALUE klass_v = (VALUE)korb_class_of_class(argv[0]);
+        if (klass_v && korb_class_find_method((struct korb_class *)klass_v,
+                                                korb_intern("to_int"))) {
+            VALUE coerced = korb_funcall(c, argv[0], korb_intern("to_int"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            argv[0] = coerced;
+        } else {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into Integer",
+                       korb_id_name(korb_class_of_class(argv[0])->name));
+            return Qnil;
+        }
+    }
     VALUE first = korb_ary_aref(self, FIXNUM_P(argv[0]) ? FIX2LONG(argv[0]) : 0);
     if (argc == 1) return first;
     if (NIL_P(first)) return Qnil;
+    /* Intermediate must respond to #dig — else TypeError. */
+    VALUE next_klass = (VALUE)korb_class_of_class(first);
+    if (!next_klass || !korb_class_find_method((struct korb_class *)next_klass,
+                                                 korb_intern("dig"))) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "%s does not have #dig method",
+                   korb_id_name(korb_class_of_class(first)->name));
+        return Qnil;
+    }
     return korb_funcall(c, first, korb_intern("dig"), argc - 1, argv + 1);
 }
 

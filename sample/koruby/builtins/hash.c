@@ -288,7 +288,15 @@ static VALUE hash_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         slot = &(*slot)->bucket_next;
     }
-    if (!target) return Qnil;
+    if (!target) {
+        /* Not found: if a block was given, yield key and return its result. */
+        if (korb_block_given()) {
+            VALUE r = korb_yield(c, 1, &key);
+            if (c->state != KORB_NORMAL) return Qnil;
+            return r;
+        }
+        return Qnil;
+    }
     /* Unlink from insertion-order chain */
     struct korb_hash_entry *prev = NULL;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
@@ -735,6 +743,16 @@ static VALUE hash_dig(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (UNDEF_P(first)) first = Qnil;
     if (argc == 1) return first;
     if (NIL_P(first)) return Qnil;
+    /* Intermediate must respond to #dig — else TypeError. */
+    VALUE next_klass = (VALUE)korb_class_of_class(first);
+    if (!next_klass || !korb_class_find_method((struct korb_class *)next_klass,
+                                                 korb_intern("dig"))) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "%s does not have #dig method",
+                   korb_id_name(korb_class_of_class(first)->name));
+        return Qnil;
+    }
     return korb_funcall(c, first, korb_intern("dig"), argc - 1, argv + 1);
 }
 
