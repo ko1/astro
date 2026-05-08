@@ -3,15 +3,25 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-08, eighth pass)
+## 現状 (2026-05-08, ninth pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
-- **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,745 pass / 190 fail / 51 err / 35 perfect**
-  (累計 +341 pass)。
+- **CRuby `spec/ruby/language/`**: **3,745 pass / 190 fail / 51 err** (前回比同値)。
 - **optcarrot**: 30 frames で **67 fps**。
-- **CRuby `spec/ruby/core/` 14 主要 cat**: **13,320+ pass、 216+ ファイル perfect**
-  (累計 +913+ pass、 +83+ perfect)。 本セッションで perfect 化したもの一覧
-  (代表):
+- **CRuby `spec/ruby/core/` 14 主要 cat**: ninth pass で perfect 化:
+  - `core/numeric/{ceil,floor,round,truncate,fdiv,dup,clone}` (7)
+  - `core/integer/{allbits,anybits,nobits,sqrt,try_convert,to_r,rationalize}` (7)
+  - `core/string/{lstrip,rstrip,strip,chomp,sum,getbyte,append,to_f}` (8)
+  - `core/hash/{flatten,deconstruct_keys,replace,sort,to_h}` (5)
+  - `core/array/{fetch,fetch_values,deconstruct,to_ary}` (4)
+  - `core/exception/{message,inspect,name}` (3)
+  - `core/symbol/{symbol,float,inspect}` (3)
+  - `core/range/inspect` (1)
+  - `core/comparable/equal_value` (mostly)
+  - `core/module/{const_get,extended,included,prepended}` (4)
+  - `core/kernel/{Array,Float,Hash,Integer,String}` (5 — private 化)
+- **CRuby `spec/ruby/core/` 14 主要 cat (eighth pass)**: **13,320+ pass、 216+ ファイル perfect**
+  本セッションで perfect 化したもの一覧 (代表):
   - `core/array/{any,clear,assoc,plus,try_convert,compact,rassoc,at,insert,
     pop,shift,drop,delete,rotate}` (14)
   - `core/hash/{new,try_convert,to_proc,default_proc}` (4)
