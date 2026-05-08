@@ -3,26 +3,34 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-08, fifth pass)
+## 現状 (2026-05-08, sixth pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
-- **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,726 pass / 208 fail / 55 err / 35 perfect**
-  (前 round 比 +322 pass)。 主な修正:
-  - mock shim の slot bug を proc.c の env-clone 条件拡大で解消 (+301 pass)。
-  - lambda の opt 引数を実装、 anon-rest+post の slot mismatch を修正。
-  - hash literal の string-key 自動 freeze (perfect 化)。
-  - missing keyword エラーで全キー列挙 (`missing keywords: :a, :b, :c`)。
-  - Proc#parameters の slot indexing と anon `*` / `**` / `&` names。
-  - eval `__FILE__` を `(eval at <caller>:<line>)` 形式に (file_spec perfect)。
-  - `clone(freeze:)` の処理 (Object#clone と Binding#clone それぞれで)。
-  - proc post-rest の extra-arg を末尾から落とす。
-  - `case x; in pat; end` 末尾 raise の slot 衝突を修正
-    (msg→cls 順に prep して inspect callee の上書きを回避)。
+- **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,745 pass / 190 fail / 51 err / 35 perfect**
+  (前 round 比 +19 pass; 累計 +341 pass)。
 - **optcarrot**: 30 frames で 85 fps、 動作・出力一致。
-- **CRuby `spec/ruby/core/`** (13 主要 cat): **12,407+ pass、 133 ファイル perfect**。
-  本 round で `core/proc/parameters_spec` 26/26 → 42/18、
-  `core/binding/clone_spec` perfect 化。
+- **CRuby `spec/ruby/core/` 14 主要 cat**: **13,186+ pass、 192 ファイル perfect**
+  (前 round 比 +47 perfect、 +780 pass)。 本 round で perfect 化した spec:
+  - `core/array/{any,clear,assoc,plus,try_convert}`
+  - `core/hash/{new,try_convert,to_proc}`
+  - `core/string/{hex,oct,try_convert,plus,include,prepend}`
+  - `core/integer/{multiply,plus,uminus,divide,digits}`
+  - `core/proc/lambda`
+  - `core/comparable/{lt,gt,gte,lte,clamp}` (5)
+  - `core/kernel/{class,raise,instance_of,instance_variable_defined,dup,
+    case_compare,throw,respond_to,respond_to_missing}` (9)
+  - `core/binding/clone`
+  - `core/module/{const_set,class_variable_set,deprecate_constant,lt,lte,gt,gte,
+    comparison,private_class_method,public_class_method,attr_reader(部分)}` (10)
 - **Binding**: **150 pass** (完全互換)。
+
+## 旧現状 (2026-05-08, fifth pass)
+
+- **CRuby `spec/ruby/language/`**: 3,726 pass / 35 perfect (mock-shim slot fix +301)。
+- mock-shim slot bug 解消、 lambda opt args、 anon-rest+post 修正、
+  hash literal string-key freeze、 missing keyword 全キー列挙、
+  Proc#parameters slot indexing、 eval `__FILE__`、 clone(freeze:)、
+  proc post-rest extra-drop、 case/in slot 衝突。
 
 ## 旧現状 (2026-05-08, fourth pass)
 
