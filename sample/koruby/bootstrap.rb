@@ -632,16 +632,6 @@ class String
     r = delete(*a)
     r == self ? nil : (replace(r); self)
   end
-  def delete_prefix!(prefix)
-    return nil unless start_with?(prefix)
-    replace(self[prefix.size..-1] || "")
-    self
-  end
-  def delete_suffix!(suffix)
-    return nil unless end_with?(suffix)
-    replace(self[0...(size - suffix.size)] || "")
-    self
-  end
 
   def chr; empty? ? "" : self[0]; end
 

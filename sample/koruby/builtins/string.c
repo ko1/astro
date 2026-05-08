@@ -179,10 +179,45 @@ static VALUE str_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_STRING && korb_eql(self, argv[0]));
 }
 
+/* Reentrancy guard for the inverted-<=> path: if other.<=>(self) re-enters
+ * String#<=> with the same pair, return nil rather than recursing. */
+static int str_cmp_inverse_depth = 0;
 static VALUE str_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
+    if (argc < 1) return Qnil;
+    VALUE other = argv[0];
+    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
+        if (!SPECIAL_CONST_P(other)) {
+            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                VALUE r = korb_funcall(c, other, korb_intern("to_str"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+                if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
+                    other = r;
+                    goto compare_strings;
+                }
+            }
+            if (str_cmp_inverse_depth > 0) return Qnil;
+            rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                              (VALUE[]){ korb_id2sym(korb_intern("<=>")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                str_cmp_inverse_depth++;
+                VALUE r = korb_funcall(c, other, korb_intern("<=>"), 1, &self);
+                str_cmp_inverse_depth--;
+                if (c->state == KORB_RAISE) return Qnil;
+                if (FIXNUM_P(r)) {
+                    long v = FIX2LONG(r);
+                    return INT2FIX(v < 0 ? 1 : v > 0 ? -1 : 0);
+                }
+            }
+        }
+        return Qnil;
+    }
+compare_strings:;
     struct korb_string *a = (struct korb_string *)self;
-    struct korb_string *b = (struct korb_string *)argv[0];
+    struct korb_string *b = (struct korb_string *)other;
     long n = a->len < b->len ? a->len : b->len;
     int r = memcmp(a->ptr, b->ptr, n);
     if (r != 0) return INT2FIX(r < 0 ? -1 : 1);
@@ -1528,22 +1563,84 @@ static VALUE str_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* ---------- String#delete_prefix / delete_suffix ----------
  * Non-mutating; returns the string without the prefix/suffix or a copy
  * of self if the prefix/suffix doesn't match. */
+
+/* Coerce arg to a String via #to_str; on failure raises TypeError. */
+static VALUE str_coerce_arg(CTX *c, VALUE arg) {
+    if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) return arg;
+    if (!SPECIAL_CONST_P(arg)) {
+        VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (c->state == KORB_RAISE) return Qundef;
+        if (RTEST(rt)) {
+            VALUE r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qundef;
+            if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) return r;
+        }
+    }
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eT,
+               "no implicit conversion of %s into String",
+               SPECIAL_CONST_P(arg) ? "(special)"
+                   : korb_id_name(korb_class_of_class(arg)->name));
+    return Qundef;
+}
+
 static VALUE str_delete_prefix(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
+    if (argc < 1) return korb_str_new(((struct korb_string *)self)->ptr,
+                                       ((struct korb_string *)self)->len);
+    VALUE arg = str_coerce_arg(c, argv[0]);
+    if (UNDEF_P(arg)) return Qnil;
     struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *p = (struct korb_string *)argv[0];
+    struct korb_string *p = (struct korb_string *)arg;
     if (p->len <= s->len && memcmp(s->ptr, p->ptr, p->len) == 0)
         return korb_str_new(s->ptr + p->len, s->len - p->len);
     return korb_str_new(s->ptr, s->len);
 }
 
 static VALUE str_delete_suffix(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
+    if (argc < 1) return korb_str_new(((struct korb_string *)self)->ptr,
+                                       ((struct korb_string *)self)->len);
+    VALUE arg = str_coerce_arg(c, argv[0]);
+    if (UNDEF_P(arg)) return Qnil;
     struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *p = (struct korb_string *)argv[0];
+    struct korb_string *p = (struct korb_string *)arg;
     if (p->len <= s->len && memcmp(s->ptr + s->len - p->len, p->ptr, p->len) == 0)
         return korb_str_new(s->ptr, s->len - p->len);
     return korb_str_new(s->ptr, s->len);
+}
+
+/* In-place variants: mutate self; return self on change, nil on no-op. */
+static VALUE str_delete_prefix_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
+    if (argc < 1) return Qnil;
+    VALUE arg = str_coerce_arg(c, argv[0]);
+    if (UNDEF_P(arg)) return Qnil;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *p = (struct korb_string *)arg;
+    if (p->len == 0 || p->len > s->len ||
+        memcmp(s->ptr, p->ptr, p->len) != 0) return Qnil;
+    long new_len = s->len - p->len;
+    char *np = korb_xmalloc_atomic(new_len + 1);
+    memcpy(np, s->ptr + p->len, new_len);
+    np[new_len] = 0;
+    s->ptr = np;
+    s->len = new_len;
+    s->capa = new_len;
+    return self;
+}
+
+static VALUE str_delete_suffix_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
+    if (argc < 1) return Qnil;
+    VALUE arg = str_coerce_arg(c, argv[0]);
+    if (UNDEF_P(arg)) return Qnil;
+    struct korb_string *s = (struct korb_string *)self;
+    struct korb_string *p = (struct korb_string *)arg;
+    if (p->len == 0 || p->len > s->len ||
+        memcmp(s->ptr + s->len - p->len, p->ptr, p->len) != 0) return Qnil;
+    s->len -= p->len;
+    if (s->capa > s->len) s->ptr[s->len] = 0;
+    return self;
 }
 
 /* ---------- String#each_line (real impl) ----------

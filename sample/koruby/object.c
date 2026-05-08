@@ -2653,12 +2653,19 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
                 case '\n': esc = "\\n";  break;
                 case '\t': esc = "\\t";  break;
                 case '\r': esc = "\\r";  break;
-                case '\0': esc = "\\0";  break;
                 case '\a': esc = "\\a";  break;
                 case '\b': esc = "\\b";  break;
                 case '\f': esc = "\\f";  break;
                 case '\v': esc = "\\v";  break;
                 case '\x1b': esc = "\\e"; break;
+                case '#':
+                    /* CRuby escapes `#` only when followed by an
+                     * interpolation-trigger character: `{`, `$`, `@`. */
+                    if (i + 1 < s->len) {
+                        unsigned char nx = (unsigned char)s->ptr[i + 1];
+                        if (nx == '{' || nx == '$' || nx == '@') esc = "\\#";
+                    }
+                    break;
                 default:
                     if (ch < 0x20 || ch == 0x7f) {
                         snprintf(buf, sizeof(buf), "\\x%02X", ch);

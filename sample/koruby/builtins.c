@@ -703,8 +703,10 @@ void korb_init_builtins(void) {
     DEF(cStr, "oct",           str_oct,           0);
     DEF(cStr, "prepend",       str_prepend,      -1);
     DEF(cStr, "insert",        str_insert,        2);
-    DEF(cStr, "delete_prefix", str_delete_prefix, 1);
-    DEF(cStr, "delete_suffix", str_delete_suffix, 1);
+    DEF(cStr, "delete_prefix",  str_delete_prefix,  1);
+    DEF(cStr, "delete_prefix!", str_delete_prefix_bang, 1);
+    DEF(cStr, "delete_suffix",  str_delete_suffix,  1);
+    DEF(cStr, "delete_suffix!", str_delete_suffix_bang, 1);
     DEF(cStr, "byteslice",     str_byteslice,    -1);
     DEF(cStr, "append_as_bytes", str_append_as_bytes, -1);
     DEF(cStr, "setbyte",       str_setbyte,       2);
