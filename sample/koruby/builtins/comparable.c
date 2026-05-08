@@ -232,7 +232,14 @@ static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *
                 cp->visibility = v;
                 korb_class_alias_method(k, name, cp);
             } else {
-                /* Method doesn't exist anywhere — CRuby raises NameError. */
+                /* Method doesn't exist anywhere.  CRuby raises NameError
+                 * for regular Modules / Classes, but is lenient for
+                 * singleton classes (where mock objects route undefined
+                 * methods through method_missing — `class << x; private
+                 * :to_ary; end` shouldn't blow up just because to_ary
+                 * isn't a real method). */
+                bool is_singleton = (((struct RBasic *)k)->flags & FL_SINGLETON);
+                if (is_singleton) continue;
                 VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
                 const char *cn = (k->name != 0) ? korb_id_name(k->name) : "(anon)";
                 korb_raise(c, (struct korb_class *)eN,
