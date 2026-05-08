@@ -157,7 +157,11 @@ static VALUE int_xor(CTX *c, VALUE self, int argc, VALUE *argv) {
         (SPECIAL_CONST_P(rhs) || (BUILTIN_TYPE(rhs) != T_BIGNUM && BUILTIN_TYPE(rhs) != T_FLOAT))) { \
         VALUE _coerced = int_coerce_dispatch((c), self, (rhs), korb_intern((op_name))); \
         if (!UNDEF_P(_coerced)) return _coerced; \
-        korb_raise((c), NULL, "comparison of Integer with non-numeric failed"); \
+        VALUE _eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError")); \
+        korb_raise((c), (struct korb_class *)_eA, \
+                   "comparison of Integer with %s failed", \
+                   SPECIAL_CONST_P(rhs) ? "non-Numeric" : \
+                       korb_id_name(korb_class_of_class(rhs)->name)); \
         return Qnil; \
     } \
 } while (0)
