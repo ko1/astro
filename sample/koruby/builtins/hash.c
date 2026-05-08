@@ -516,13 +516,35 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct korb_proc *current_block;
-    if (argc > 1) {
+    /* Ruby 3.2+: Hash.new accepts a `capacity:` keyword (and rejects
+     * unknown keywords).  Peel off a trailing FL_KWARGS hash before the
+     * arity check so `Hash.new(capacity: 100)` doesn't look like a
+     * positional default. */
+    int eff_argc = argc;
+    if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
+        BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
+        (RBASIC(argv[argc - 1])->flags & FL_KWARGS)) {
+        struct korb_hash *kw = (struct korb_hash *)argv[argc - 1];
+        VALUE cap_key = korb_id2sym(korb_intern("capacity"));
+        for (struct korb_hash_entry *e = kw->first; e; e = e->next) {
+            if (!korb_eql(e->key, cap_key)) {
+                VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                const char *kn = SYMBOL_P(e->key) ? korb_id_name(korb_sym2id(e->key)) : "?";
+                korb_raise(c, (struct korb_class *)eA,
+                           "unknown keyword: :%s", kn);
+                return Qnil;
+            }
+        }
+        /* capacity is informational only — we don't pre-grow buckets. */
+        eff_argc = argc - 1;
+    }
+    if (eff_argc > 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eA,
-                   "wrong number of arguments (given %d, expected 0..1)", argc);
+                   "wrong number of arguments (given %d, expected 0..1)", eff_argc);
         return Qnil;
     }
-    if (current_block && argc >= 1) {
+    if (current_block && eff_argc >= 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given 1, expected 0)");
@@ -532,7 +554,7 @@ static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *hh = (struct korb_hash *)h;
     if (current_block) {
         hh->default_proc = (VALUE)current_block;
-    } else if (argc >= 1) {
+    } else if (eff_argc >= 1) {
         hh->default_value = argv[0];
     }
     return h;
