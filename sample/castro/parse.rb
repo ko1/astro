@@ -70,10 +70,25 @@ class CType
     'i'
   end
 
-  # Width (= sizeof) of a single primitive / pointer.  Aggregates
-  # (array, struct) compute layout-aware sizes.  All numbers in BYTES
-  # — castro's storage is byte-precise (since the slot→byte refactor),
-  # so this is the on-disk / in-memory layout, not just sizeof().
+  # Slots occupied by a value of this type (1 for prim/ptr; product for
+  # arrays; sum-of-fields for structs).  For struct lookups we consult
+  # the global STRUCTS table — since `struct point` typed at declaration
+  # time may carry no `fields` of its own (the body lives in the named
+  # entry of STRUCTS).
+  def slot_count
+    case @kind
+    when :prim, :ptr then 1
+    when :array      then (@size || 1) * @inner.slot_count
+    when :struct
+      info = STRUCTS[@name]
+      return info[:size_slots] if info
+      @fields ? @fields.sum { |_, t| t.slot_count } : 1
+    end
+  end
+
+  # Byte size as C reports it via sizeof().  Castro internally uses
+  # 8-byte slots for everything, but this matches the host ABI so
+  # programs that compute `sizeof(x)` see expected values.
   def byte_size
     case @kind
     when :prim
@@ -93,47 +108,8 @@ class CType
     when :ptr then 8
     when :array then (@size || 0) * @inner.byte_size
     when :struct
-      info = STRUCTS[@name]
-      return info[:size_bytes] if info
-      # No body recorded yet — assume fields are slot-equivalents.
-      # Real layout is filled in once parse_struct_body runs.
-      8
+      @fields ? @fields.sum { |_, t| t.byte_size } : 8
     end
-  end
-
-  # Required alignment in bytes (max alignment of any constituent for
-  # aggregates).  Used by alloc_global / Func.add_local / struct field
-  # layout to align each item per the host C ABI.
-  def byte_align
-    case @kind
-    when :prim
-      case @name
-      when 'char', 'signed_char', 'unsigned_char', '_Bool', 'bool', 'void' then 1
-      when 'short', 'unsigned_short' then 2
-      when 'int', 'unsigned', 'unsigned_int', 'float' then 4
-      when 'long', 'unsigned_long', 'long_long', 'unsigned_long_long',
-           'double', 'size_t', 'ssize_t', 'ptrdiff_t', 'intptr_t', 'uintptr_t' then 8
-      when 'long_double' then 16
-      else 4
-      end
-    when :ptr then 8
-    when :array then @inner.byte_align
-    when :struct
-      info = STRUCTS[@name]
-      return info[:align] if info
-      8
-    end
-  end
-
-  # Round `off` up to a multiple of `align`.
-  def self.align_up(off, align)
-    (off + align - 1) & ~(align - 1)
-  end
-
-  # Legacy slot_count (= byte_size / 8 rounded up) — still referenced
-  # by a few callers in transition; new code should use `byte_size`.
-  def slot_count
-    (byte_size + 7) / 8
   end
 
   # Used when the type appears in a value context: arrays decay to
@@ -157,20 +133,22 @@ class CType
 end
 
 # =====================================================================
-# Globals: a table of symbol → [byte offset, CType] kept across the
-# whole compilation unit.  Storage is byte-precise (= matches host C
-# ABI), so each global is placed at an offset that satisfies its
-# natural alignment.
+# Globals: a table of symbol → [slot index, type, init AST] kept across
+# the whole compilation unit.
 # =====================================================================
-GLOBALS = {}        # name -> [byte_offset, CType]
+GLOBALS = {}        # name -> [slot_idx, CType]
 GLOBAL_INITS = []   # array of init AST forms (executed in order)
-GLOBAL_NEXT = 0     # next free byte offset in c->globals
+GLOBAL_NEXT = 0     # next free slot in c->globals
 
 def alloc_global(name, ty)
-  off = CType.align_up(GLOBAL_NEXT, ty.byte_align)
-  GLOBALS[name] = [off, ty]
-  set_global_next(off + ty.byte_size)
-  off
+  idx = GLOBAL_NEXT
+  GLOBALS[name] = [idx, ty]
+  add_globals = ty.slot_count
+  $G_next_after = idx + add_globals
+  define_singleton_method(:_noop) { } if false # keep editor happy
+  idx_after = idx + add_globals
+  set_global_next(idx_after)
+  idx
 end
 
 def set_global_next(n) ; Object.send(:remove_const, :GLOBAL_NEXT); Object.const_set(:GLOBAL_NEXT, n); end
@@ -228,18 +206,12 @@ def parse_type_spec(node, src)
     if body
       fields = parse_struct_body(body, src)
       offsets = {}
-      off = 0
-      max_align = 1
+      slot = 0
       fields.each do |fname, fty|
-        a = fty.byte_align
-        max_align = a if a > max_align
-        off = CType.align_up(off, a)
-        offsets[fname] = off
-        off += fty.byte_size
+        offsets[fname] = slot
+        slot += fty.slot_count
       end
-      total = CType.align_up(off, max_align)
-      STRUCTS[tag] = { fields: fields, offsets: offsets,
-                       size_bytes: total, align: max_align }
+      STRUCTS[tag] = { fields: fields, offsets: offsets, size_slots: slot }
     end
     CType.struct(tag)
   when 'type_identifier'
@@ -485,38 +457,38 @@ class Func
     @ret_ty = ret_ty
     @params = []
     @locals_map = {}
-    @next_local = 0     # cursor in BYTES into the frame
-    @max_local = 0      # high-water mark in BYTES
+    @next_local = 0
+    @max_local = 0   # high-water mark — used as the callee's stack
+                     # VLA size, must include temporary arg-staging slots
     @uses_goto = false
-    @label_map = {}     # label name -> integer index
+    @label_map = {}        # label name -> integer index
   end
 
-  def next_local; @next_local; end
+  # next_local is the live cursor — bumped/restored around argument
+  # staging.  Writes go through this setter so we can track the
+  # high-water mark independently.
+  def next_local
+    @next_local
+  end
 
   def next_local=(v)
     @next_local = v
     @max_local = v if v > @max_local
   end
 
-  # Args sit at fixed 8-byte slot offsets at the start of the frame.
-  # This keeps the runtime arg-passing convention (caller stages args
-  # at consecutive 8-byte slots in its scratch area; node_callN copies
-  # them as 8-byte VALUE units to F[0..arg_count*8-1]).  Each param's
-  # natural type lives in the lower bytes of its slot.
   def add_param(name, ty)
-    off = CType.align_up(@next_local, 8)
-    @locals_map[name] = [off, ty]
+    idx = @next_local
+    @locals_map[name] = [idx, ty]
     @params << [name, ty]
-    self.next_local = off + 8
-    off
+    self.next_local = @next_local + ty.slot_count
+    idx
   end
 
-  # Non-arg locals are byte-precise: each at its own alignment, packed.
   def add_local(name, ty)
-    off = CType.align_up(@next_local, ty.byte_align)
-    @locals_map[name] = [off, ty]
-    self.next_local = off + ty.byte_size
-    off
+    idx = @next_local
+    @locals_map[name] = [idx, ty]
+    self.next_local = @next_local + ty.slot_count
+    idx
   end
 
   def label_index(name)
@@ -530,11 +502,14 @@ end
 # Type-aware helpers
 # =====================================================================
 
-# Scale an array/pointer index by the element's byte_size so the
-# runtime ptr_add (byte stride) lands on the right element.  Char
-# arrays / char-pointer arithmetic skip the multiplication (stride 1).
+# Scale an array/pointer index by the element's slot_count so the
+# runtime ptr_add (which advances in slots, not bytes) lands on the
+# right slot.  Plain ints, pointers, char etc. all have slot_count == 1
+# so the multiplication folds away; structs and nested arrays need it.
+# Returns the original expr when the multiplier is 1 to keep the SX
+# tree small.
 def scale_index(idx_sx, elem_ty)
-  s = elem_ty.byte_size
+  s = elem_ty.slot_count
   return idx_sx if s == 1
   [:mul_i, idx_sx, [:lit_i, s]]
 end
@@ -550,13 +525,16 @@ end
 # Triggered for sieve's `for (i = 0; i < n; i++) prime[i] = 1;`
 # initialization.  Returns the rewritten SX or nil.
 def array_fill_for(init_sx, cond_sx, upd_sx, body_sx)
-  # Disabled in the byte-precise refactor — the slot-based pattern
-  # matchers below don't fire for the new typed lset_i32 / load_i32
-  # AST shape, and re-implementing the peephole on byte offsets isn't
-  # done yet.  The full byte-precise SD chain still vectorises sieve's
-  # init via gcc's -O3 auto-vectoriser when the chain is `static
-  # always_inline`, so the perf cost is manageable.
-  nil
+  iv = match_for_init(init_sx)
+  return nil if iv.nil?
+  return nil unless match_for_cond(cond_sx, iv)
+  return nil unless match_for_step(upd_sx, iv)
+  base_value = match_for_body(body_sx, iv)
+  return nil if base_value.nil?
+  base, value = base_value
+  start = init_sx[1][2]
+  end_v = cond_sx[2]
+  [:seq, [:array_fill_i, base, start, end_v, value], [:nop]]
 end
 
 # Match `init = (drop (lset IV (...)))` and return IV.
@@ -606,11 +584,17 @@ end
 # Returns IDX, else nil.  Used by the if_statement peephole to fuse
 # `if (cond) lvar++;` into a single branchless `inc_local_if` op.
 def match_inc_local_post(stmt_sx)
-  # Disabled in the byte-precise refactor — int locals now compile to
-  # `[:lset_i32, [:addr_local, off], rhs]` rather than `[:lset, idx, rhs]`,
-  # so the slot-shaped pattern below would never fire.  Re-implementing
-  # it on the typed shape is straightforward but isn't done yet.
-  nil
+  return nil unless stmt_sx.is_a?(Array) && stmt_sx[0] == :drop
+  inner = stmt_sx[1]
+  return nil unless inner.is_a?(Array) && inner[0] == :seq
+  lset = inner[1]
+  return nil unless lset.is_a?(Array) && lset[0] == :lset
+  idx = lset[1]
+  rhs = lset[2]
+  return nil unless rhs.is_a?(Array) && rhs[0] == :add_i
+  return nil unless rhs[1].is_a?(Array) && rhs[1][0] == :lget && rhs[1][1] == idx
+  return nil unless rhs[2] == [:lit_i, 1]
+  idx
 end
 
 def cast(expr, frm, to)
@@ -730,62 +714,23 @@ end
 # expression compiler — returns [sx_form, CType]
 # =====================================================================
 
-# Type → unsigned-flag detection for sub-word loads.  C's signed types
-# sign-extend; unsigned zero-extend.  We only really care for byte/short
-# (their bit pattern in the int64 lane differs by extension); int/long/
-# pointer have a single canonical width and we use the standard load_T.
-def unsigned_int?(ty)
-  ty.int? && ty.name.to_s.start_with?('unsigned')
+# Shared helper: produce a load expression for a variable slot of type ty.
+def lvar_load(idx, ty, scope)
+  # `scope` is :local or :global.  Arrays decay to "address-of" — the
+  # value of `a` is `&a[0]` (a slot pointer).
+  if ty.array?
+    return [scope == :global ? :addr_global : :addr_local, idx]
+  end
+  case ty.slot_kind
+  when 'i' then [scope == :global ? :gget : :lget, idx]
+  when 'd' then [scope == :global ? :gget : :lget, idx]
+  when 'p' then [scope == :global ? :gget : :lget, idx]
+  end
 end
 
-# Variable read at byte offset `off` of type `ty` in `scope` (:local or
-# :global).  Arrays decay to a byte-address (= addr_local/global).  For
-# scalar types we pick the typed load matching the storage width:
-# 8-byte → lget/gget (single-instruction VALUE-sized load); sub-word →
-# addr_T + load_T<width>.
-def lvar_load(off, ty, scope)
-  addr_op = scope == :global ? :addr_global : :addr_local
-  if ty.array? || ty.struct?
-    return [addr_op, off]
-  end
-  if ty.byte_size == 8
-    return [scope == :global ? :gget : :lget, off]
-  end
-  # sub-word: addr_local + typed load
-  load_op =
-    if ty.float?
-      :load_f32          # only float (4) is sub-word; double = 8
-    elsif ty.byte_size == 4
-      unsigned_int?(ty) ? :load_u32 : :load_i32
-    elsif ty.byte_size == 2
-      unsigned_int?(ty) ? :load_u16 : :load_i16
-    elsif ty.byte_size == 1
-      unsigned_int?(ty) ? :load_u8  : :load_i8
-    else
-      raise CompileError, "unsupported lvar load width #{ty.byte_size} for #{ty}"
-    end
-  [load_op, [addr_op, off]]
-end
-
-# Variable write at byte offset `off`.  Same width-based dispatch as
-# lvar_load; 8-byte stores use lset/gset directly.  Struct stores (rare:
-# only on the LHS of `s = otherstruct;`) fall through to the legacy
-# 8-byte slot store — the rhs is expected to already be a VALUE-shaped
-# value the runtime can deposit at offset.
-def lvar_store(off, ty, rhs, scope)
+def lvar_store(idx, ty, rhs, scope)
   raise CompileError, "can't assign to array variable" if ty.array?
-  if ty.byte_size == 8 || ty.struct?
-    return [scope == :global ? :gset : :lset, off, rhs]
-  end
-  addr_op = scope == :global ? :addr_global : :addr_local
-  store_op =
-    if ty.float? then :store_f32
-    elsif ty.byte_size == 4 then :store_i32
-    elsif ty.byte_size == 2 then :store_i16
-    elsif ty.byte_size == 1 then :store_i8
-    else raise CompileError, "unsupported lvar store width #{ty.byte_size} for #{ty}"
-    end
-  [store_op, [addr_op, off], rhs]
+  [scope == :global ? :gset : :lset, idx, rhs]
 end
 
 def builtin_call(fname, args_compiled, fn)
@@ -1059,13 +1004,7 @@ def compile_binary(node, fn, src)
     return [[:ptr_sub_i, ls, scale_index(cast(rs, rt, CType::LONG), lt.inner)], lt]
   end
   if op == '-' && lt.ptr_like? && rt.ptr_like?
-    # ptr_diff returns the byte difference; C semantics expect element
-    # count, so divide by sizeof(*p) at the use site.  For byte-pointer
-    # diff (sizeof=1) the divide folds away.
-    diff = [:ptr_diff, ls, rs]
-    s = lt.inner.byte_size
-    diff = [:div_i, diff, [:lit_i, s]] unless s == 1
-    return [diff, CType.prim('ptrdiff_t')]
+    return [[:ptr_diff, ls, rs], CType.prim('ptrdiff_t')]
   end
   if %w[+ - * /].include?(op)
     promoted = (lt.float? || rt.float?) ? CType::DBL : CType::INT
@@ -1108,24 +1047,14 @@ end
 def load_through(addr_sx, elem_ty)
   case elem_ty.kind
   when :prim
-    if elem_ty.float?
-      elem_ty.byte_size == 4 ? [:load_f32, addr_sx] : [:load_d, addr_sx]
-    else
-      case elem_ty.byte_size
-      when 8 then [:load_i, addr_sx]
-      when 4 then unsigned_int?(elem_ty) ? [:load_u32, addr_sx] : [:load_i32, addr_sx]
-      when 2 then unsigned_int?(elem_ty) ? [:load_u16, addr_sx] : [:load_i16, addr_sx]
-      when 1 then unsigned_int?(elem_ty) ? [:load_u8,  addr_sx] : [:load_i8,  addr_sx]
-      else        [:load_i, addr_sx]
-      end
-    end
+    elem_ty.float? ? [:load_d, addr_sx] : [:load_i, addr_sx]
   when :ptr
     [:load_p, addr_sx]
   when :array
     # array doesn't load — it decays to the address itself
     addr_sx
   when :struct
-    # opaque value (struct used in non-load context); placeholder.
+    # opaque value; load slot 0 (placeholder)
     [:load_i, addr_sx]
   end
 end
@@ -1133,17 +1062,7 @@ end
 def store_through(addr_sx, val_sx, ty)
   case ty.kind
   when :prim
-    if ty.float?
-      ty.byte_size == 4 ? [:store_f32, addr_sx, val_sx] : [:store_d, addr_sx, val_sx]
-    else
-      case ty.byte_size
-      when 8 then [:store_i, addr_sx, val_sx]
-      when 4 then [:store_i32, addr_sx, val_sx]
-      when 2 then [:store_i16, addr_sx, val_sx]
-      when 1 then [:store_i8,  addr_sx, val_sx]
-      else        [:store_i,   addr_sx, val_sx]
-      end
-    end
+    ty.float? ? [:store_d, addr_sx, val_sx] : [:store_i, addr_sx, val_sx]
   when :ptr
     [:store_p, addr_sx, val_sx]
   else
@@ -1397,9 +1316,8 @@ def update_op(cur, ty, delta)
   if ty.float?
     [:add_d, cur, [:lit_d, delta.to_f]]
   elsif ty.ptr_like?
-    stride = ty.inner.byte_size
-    delta > 0 ? [:ptr_add, cur, [:lit_i, delta * stride]]
-              : [:ptr_sub_i, cur, [:lit_i, -delta * stride]]
+    delta > 0 ? [:ptr_add, cur, [:lit_i, delta]]
+              : [:ptr_sub_i, cur, [:lit_i, -delta]]
   else
     [:add_i, cur, [:lit_i, delta]]
   end
@@ -1409,9 +1327,8 @@ def update_op_inverse(cur, ty, delta)
   if ty.float?
     [:sub_d, cur, [:lit_d, delta.to_f]]
   elsif ty.ptr_like?
-    stride = ty.inner.byte_size
-    delta > 0 ? [:ptr_sub_i, cur, [:lit_i, delta * stride]]
-              : [:ptr_add, cur, [:lit_i, -delta * stride]]
+    delta > 0 ? [:ptr_sub_i, cur, [:lit_i, delta]]
+              : [:ptr_add, cur, [:lit_i, -delta]]
   else
     [:sub_i, cur, [:lit_i, delta]]
   end
@@ -1450,9 +1367,9 @@ def field_address(node, fn, src)
   info = STRUCTS[struct_ty.name]
   raise CompileError, "unknown struct #{struct_ty.name}" if info.nil?
   raise CompileError, "no field #{fname} in struct #{struct_ty.name}" unless info[:offsets].key?(fname)
-  off_bytes = info[:offsets][fname]
+  off_slots = info[:offsets][fname]
   ftype = info[:fields].find { |n, _| n == fname }[1]
-  addr = off_bytes == 0 ? base_addr : [:ptr_add, base_addr, [:lit_i, off_bytes]]
+  addr = off_slots == 0 ? base_addr : [:ptr_add, base_addr, [:lit_i, off_slots]]
   [addr, ftype]
 end
 
@@ -1511,15 +1428,15 @@ def compile_call(node, fn, src)
       idx, ty = (fn.locals_map[fname] || GLOBALS[fname])
       scope = fn.locals_map.key?(fname) ? :local : :global
       fn_value = lvar_load(idx, ty, scope)
-      arg_off = CType.align_up(fn.next_local, 8)
-      fn.next_local = arg_off + args.length * 8
+      arg_index = fn.next_local
+      fn.next_local += args.length
       seq_ops = []
       args.each_with_index do |a, i|
         asx, _ = compile_expr(a, fn, src)
-        seq_ops << [:lset, arg_off + i * 8, asx]
+        seq_ops << [:lset, arg_index + i, asx]
       end
-      fn.next_local = arg_off
-      chain = [:call_indirect, fn_value, args.length, arg_off]
+      fn.next_local -= args.length
+      chain = [:call_indirect, fn_value, args.length, arg_index]
       seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
       return [chain, CType::INT]
     end
@@ -1527,15 +1444,15 @@ def compile_call(node, fn, src)
     # printf is variadic; runtime walks the format spec.
     if fname == 'printf'
       raise CompileError, 'printf needs a format' if args.empty?
-      arg_off = CType.align_up(fn.next_local, 8)
-      fn.next_local = arg_off + args.length * 8
+      arg_index = fn.next_local
+      fn.next_local += args.length
       seq_ops = []
       args.each_with_index do |a, i|
         asx, _ = compile_expr(a, fn, src)
-        seq_ops << [:lset, arg_off + i * 8, asx]
+        seq_ops << [:lset, arg_index + i, asx]
       end
-      fn.next_local = arg_off
-      chain = [:call_printf, args.length, arg_off]
+      fn.next_local -= args.length
+      chain = [:call_printf, args.length, arg_index]
       seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
       return [chain, CType::INT]
     end
@@ -1584,14 +1501,14 @@ def compile_call(node, fn, src)
         return [chain, ret_ty]
       end
 
-      arg_off = CType.align_up(fn.next_local, 8)
-      fn.next_local = arg_off + args.length * 8
+      arg_index = fn.next_local
+      fn.next_local += args.length
       seq_ops = []
       args.each_with_index do |a, i|
         asx, ats = compile_expr(a, fn, src)
-        seq_ops << [:lset, arg_off + i * 8, cast(asx, ats, param_tys[i])]
+        seq_ops << [:lset, arg_index + i, cast(asx, ats, param_tys[i])]
       end
-      fn.next_local = arg_off
+      fn.next_local -= args.length
       # Direct self-recursion uses the OLD `:call` IR (idx → runtime
       # `c->func_bodies[idx]` lookup, paired with castro_gen.rb's
       # SPECIALIZE_node_call override that emits an extern direct
@@ -1616,7 +1533,7 @@ def compile_call(node, fn, src)
       # current function's local count isn't final yet.  The post-pass
       # walks the AST after every function has been compiled and
       # patches each call site with the resolved local_cnt.
-      chain = [:call_static, func_idx, args.length, arg_off, nil]
+      chain = [:call_static, func_idx, args.length, arg_index, nil]
       seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
       return [chain, ret_ty]
     end
@@ -1626,15 +1543,15 @@ def compile_call(node, fn, src)
 
   # Indirect call: callee is some pointer-valued expression
   fnsx, fnty = compile_expr(callee, fn, src)
-  arg_off = CType.align_up(fn.next_local, 8)
-  fn.next_local = arg_off + args.length * 8
+  arg_index = fn.next_local
+  fn.next_local += args.length
   seq_ops = []
   args.each_with_index do |a, i|
     asx, _ = compile_expr(a, fn, src)
-    seq_ops << [:lset, arg_off + i * 8, asx]
+    seq_ops << [:lset, arg_index + i, asx]
   end
-  fn.next_local = arg_off
-  chain = [:call_indirect, fnsx, args.length, arg_off]
+  fn.next_local -= args.length
+  chain = [:call_indirect, fnsx, args.length, arg_index]
   seq_ops.reverse_each { |s| chain = [:seq, s, chain] }
   [chain, CType::INT]
 end
@@ -1794,28 +1711,26 @@ def emit_local_init(idx, ty, v_node, fn, src)
       elems = []
       v_node.each_named { |c| elems << c }
       out = []
-      elem_size = ty.inner.byte_size
       elems.each_with_index do |e, i|
         next if i >= ty.size
         es, et = compile_expr(e, fn, src)
-        out << lvar_store(idx + i * elem_size, ty.inner,
-                          cast(es, et, ty.inner), :local)
+        out << [:lset, idx + i, cast(es, et, ty.inner)]
       end
       return out
     end
     if v_node && v_node.type.to_s == 'string_literal'
-      # char buf[N] = "hello"; — copy each byte to bytes[idx..idx+n-1].
+      # char buf[N] = "hello"; — copy each byte into successive slots.
       s = parse_string_literal(v_node, src)
       out = []
       n = ty.size || (s.length + 1)
       (0...n).each do |i|
         b = i < s.length ? s.bytes[i] : 0
-        out << lvar_store(idx + i, CType::CHAR, [:lit_i, b], :local)
+        out << [:lset, idx + i, [:lit_i, b]]
       end
       return out
     end
     # uninitialised — leave as zero (calloc'd / lset 0)
-    return [lvar_store(idx, ty.inner, [:lit_i, 0], :local)]
+    return [[:lset, idx, [:lit_i, 0]]]
   end
 
   if v_node && v_node.type.to_s == 'initializer_list' && ty.struct?
@@ -1838,17 +1753,17 @@ def emit_local_init(idx, ty, v_node, fn, src)
           fname_node = nil
           designator.each_named { |c| fname_node = c; break }
           fname = text(fname_node, src)
-          off = idx + info[:offsets][fname]
+          slot = idx + info[:offsets][fname]
           ftype = info[:fields].find { |n, _| n == fname }[1]
           es, et = compile_expr(val_node, fn, src)
-          out << lvar_store(off, ftype, cast(es, et, ftype), :local)
+          out << [:lset, slot, cast(es, et, ftype)]
         end
       else
         fname, fty = info[:fields][pos]
         next if fname.nil?
-        off = idx + info[:offsets][fname]
+        slot = idx + info[:offsets][fname]
         es, et = compile_expr(e, fn, src)
-        out << lvar_store(off, fty, cast(es, et, fty), :local)
+        out << [:lset, slot, cast(es, et, fty)]
         pos += 1
       end
     end
@@ -1857,13 +1772,13 @@ def emit_local_init(idx, ty, v_node, fn, src)
 
   if v_node
     es, et = compile_expr(v_node, fn, src)
-    return [lvar_store(idx, ty, cast(es, et, ty), :local)]
+    return [[:lset, idx, cast(es, et, ty)]]
   end
 
   if ty.float?
-    [lvar_store(idx, ty, [:lit_d, 0.0], :local)]
+    [[:lset, idx, [:lit_d, 0.0]]]
   else
-    [lvar_store(idx, ty, [:lit_i, 0], :local)]
+    [[:lset, idx, [:lit_i, 0]]]
   end
 end
 
@@ -1908,35 +1823,30 @@ def compile_switch(node, fn, src)
   has_default = cases.any? { |v, _| v.nil? }
   default_idx = has_default ? fn.add_local("__default_#{node.start_byte}", CType::INT) : nil
 
-  load_sw = lvar_load(sw_idx, CType::INT, :local)
-  load_matched = lvar_load(matched_idx, CType::INT, :local)
-  load_default = has_default ? lvar_load(default_idx, CType::INT, :local) : nil
-  set_matched = ->(v) { lvar_store(matched_idx, CType::INT, [:lit_i, v], :local) }
-
   case_values = cases.map { |v, _| v }.compact
   default_check = case_values.inject([:lit_i, 1]) do |acc, v|
-    [:land, acc, [:neq_i, load_sw, v]]
+    [:land, acc, [:neq_i, [:lget, sw_idx], v]]
   end
 
   body_stmts = []
-  body_stmts << lvar_store(sw_idx, CType::INT, cs, :local)
-  body_stmts << set_matched.call(0)
-  body_stmts << lvar_store(default_idx, CType::INT, default_check, :local) if has_default
+  body_stmts << [:lset, sw_idx, cs]
+  body_stmts << [:lset, matched_idx, [:lit_i, 0]]
+  body_stmts << [:lset, default_idx, default_check] if has_default
 
   cases.each do |val, stmts|
     cond =
       if val.nil?
-        [:lor, load_matched, load_default]
+        [:lor, [:lget, matched_idx], [:lget, default_idx]]
       else
-        [:lor, load_matched, [:eq_i, load_sw, val]]
+        [:lor, [:lget, matched_idx], [:eq_i, [:lget, sw_idx], val]]
       end
     case_body =
       if stmts.empty?
-        set_matched.call(1)
+        [:lset, matched_idx, [:lit_i, 1]]
       else
         rest = stmts.last
         stmts[0...-1].reverse_each { |s| rest = [:seq, s, rest] }
-        [:seq, set_matched.call(1), rest]
+        [:seq, [:lset, matched_idx, [:lit_i, 1]], rest]
       end
     body_stmts << [:if, cond, case_body, [:nop]]
   end
@@ -2249,10 +2159,10 @@ end
 
 def alloc_global_slot(name, ty)
   return GLOBALS[name][0] if GLOBALS.key?(name)
-  off = CType.align_up(GLOBAL_NEXT, ty.byte_align)
-  GLOBALS[name] = [off, ty]
-  set_global_next(off + ty.byte_size)
-  off
+  idx = GLOBAL_NEXT
+  GLOBALS[name] = [idx, ty]
+  set_global_next(idx + ty.slot_count)
+  idx
 end
 
 def add_global_init(idx, ty, v_node, src)
@@ -2283,12 +2193,12 @@ def init_aggregate_at(base_idx, ty, v_node, src)
       n = ty.size || (s.length + 1)
       (0...n).each do |i|
         b = i < s.length ? s.bytes[i] : 0
-        GLOBAL_INITS << lvar_store(base_idx + i, CType::CHAR, [:lit_i, b], :global)
+        GLOBAL_INITS << [:gset, base_idx + i, [:lit_i, b]]
       end
       return
     end
     if v_node.type.to_s == 'initializer_list'
-      stride = ty.inner.byte_size
+      stride = ty.inner.slot_count
       pos = 0
       elems = []; v_node.each_named { |c| elems << c }
       elems.each do |e|
@@ -2360,7 +2270,7 @@ def init_aggregate_at(base_idx, ty, v_node, src)
 
   # Scalar fall-through.
   es, et = compile_expr(v_node, init_fn, src)
-  GLOBAL_INITS << lvar_store(base_idx, ty, cast(es, et, ty), :global)
+  GLOBAL_INITS << [:gset, base_idx, cast(es, et, ty)]
 end
 
 # Walk all enumerator constants up-front so they're visible everywhere.

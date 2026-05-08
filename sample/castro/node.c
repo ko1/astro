@@ -40,15 +40,5 @@ OPTIMIZE(NODE *n)
 void
 INIT(void)
 {
-    // The SD chain inlines many expressions into one giant tree.  At
-    // -O3 gcc defaults to `-ffp-contract=fast` (FMA fuses across
-    // statements), which yields different rounding than the original
-    // C statements would have produced.  Force `-ffp-contract=on` so
-    // FMA only fires within a single C expression (= the standard C99
-    // behaviour) and our AOT result matches interp / gcc -O3 of the
-    // original source.  Mandelbrot diverges by ~2 iters out of 30k
-    // without this — visible as "expected 174, got 114" on the
-    // long-bench when the count is XOR-folded.
-    setenv("ASTRO_EXTRA_CFLAGS", "-ffp-contract=on", 0);
     astro_cs_init("code_store", ".", 0);
 }
