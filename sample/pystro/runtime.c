@@ -414,10 +414,11 @@ pys_normalise_int(mpz_srcptr z)
     return pys_make_bignum(z);
 }
 
+// Out-of-line bignum boxing.  Caller has already verified v is outside
+// fixnum range; we just construct the heap mpz.
 VALUE
-pys_make_int(int64_t v)
+pys_make_int_bignum(int64_t v)
 {
-    if (v >= PYS_FIXNUM_MIN && v <= PYS_FIXNUM_MAX) return PYS_FIX(v);
     mpz_t z; mpz_init(z);
     mpz_set_si(z, (long)v);     // covers up to long range
     if ((int64_t)(long)v != v) {

@@ -699,8 +699,18 @@ pys_is_truthy(VALUE v)
 // Allocators / builders.
 struct pysobj *pys_alloc(int type);
 VALUE pys_make_float (double d);
-VALUE pys_make_int   (int64_t v);                  // fixnum if fits, else bignum
+VALUE pys_make_int_bignum(int64_t v);              // out-of-line bignum slow path
 VALUE pys_make_bignum(mpz_srcptr z);
+
+// Inlinable int boxing.  Almost all `pys_make_int` calls produce
+// fixnums; the bignum path only runs on actual overflow.  Keeps
+// SD-baked range / counter loops off a PLT call into runtime.c.
+static inline VALUE
+pys_make_int(int64_t v)
+{
+    if (LIKELY(v >= PYS_FIXNUM_MIN && v <= PYS_FIXNUM_MAX)) return PYS_FIX(v);
+    return pys_make_int_bignum(v);
+}
 VALUE pys_make_str   (const char *s, size_t len);
 VALUE pys_make_str_take(char *s, size_t len);      // takes ownership
 VALUE pys_make_bytes (const char *s, size_t len);
