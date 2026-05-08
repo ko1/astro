@@ -40,5 +40,15 @@ OPTIMIZE(NODE *n)
 void
 INIT(void)
 {
+    // The SD chain inlines many distinct C statements into one giant
+    // expression tree.  At -O3, gcc defaults to `-ffp-contract=fast`
+    // (fuse multiply-add across statement boundaries), which yields
+    // different rounding than the original C statements would produce.
+    // Without this override, mandelbrot's AOT result drifts from gcc's
+    // -O3 (and from castro's own interpreter): the long-bench
+    // 30-iter sum returns 114 instead of 174.  Forcing
+    // `-ffp-contract=on` (= C99 within-expression FMA only) makes the
+    // AOT output match every other tier.
+    setenv("ASTRO_EXTRA_CFLAGS", "-ffp-contract=on", 0);
     astro_cs_init("code_store", ".", 0);
 }
