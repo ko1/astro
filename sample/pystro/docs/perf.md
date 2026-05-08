@@ -6,9 +6,9 @@
 best-of-5〜10。 詳細表は [現状ベンチ](#現状ベンチ-2026-05-08) を参照。
 
 - **vs CPython 3.12.3** (Ubuntu 24.04 stock): macro 4/4 + micro 9/10 で勝ち
-- **vs CPython 3.14.4 (no-JIT)**: macro 3/4 + micro 9/10 で勝ち
-  (`raytrace` が 3.14 の 25% speedup で逆転される)
-- **vs CPython 3.14.4 +JIT**: macro 3/4 + micro 9/10 で勝ち
+- **vs CPython 3.14.4 (no-JIT)**: macro **4/4** + micro 9/10 で勝ち
+  (raytrace 逆転を attr_cache の key+hash 化で奪還、 0.68 vs 0.65)
+- **vs CPython 3.14.4 +JIT**: macro 4/4 + micro 9/10 で勝ち
   (JIT は本ベンチ規模 ~1s では大半が中立 or 微悪化、
   richards のみで JIT が +7%)
 
@@ -27,6 +27,13 @@ best-of-5〜10。 詳細表は [現状ベンチ](#現状ベンチ-2026-05-08) �
   counter loops で PLT call を回避
 - `pys_apply_slow` の class-init dispatch を `cd->slot_init` 直接読みに
   (`pys_class_lookup_method` 経由から external call を 1 段除去)
+- `pys_apply` 末尾の RETURN/RAISE state 読みを 1 回に集約:
+  fib35 0.49 → 0.41 (~16%)、 richards 0.52 → 0.48 (~8%)
+- `attr_cache` に per-callsite の `key_val` + `key_hash` を追加 (16 B 増):
+  fresh-instance attr_set で `pys_make_str` + `pys_hash` を回避、
+  raytrace 0.79 → 0.69 (~13%)、 **3.14 を逆転**
+- `node_method_{1,2,n}` の冗長な c->state 読みを除去 / `!av[i]`
+  チェックに変換 (12 箇所)
 
 ### 試して撤回した変更 (記録のみ)
 
@@ -69,8 +76,8 @@ overload、 bignum、 bytes 操作が支配的。
 | ベンチ | py3.12 | py3.14 | py3.14+JIT | pystro-i | pystro-AOT | best |
 |---|---:|---:|---:|---:|---:|---|
 | `richards`     | 1.07 s | 0.87 s | 0.83 s | 0.95 s | **0.48 s** | pystro |
-| `deltablue`    | 0.17 s | 0.14 s | 0.17 s | 0.20 s | **0.13 s** | pystro |
-| `raytrace`     | 0.88 s | **0.68 s** | 0.71 s | 1.07 s | 0.81 s | py3.14 |
+| `deltablue`    | 0.17 s | 0.14 s | 0.17 s | 0.20 s | **0.12 s** | pystro |
+| `raytrace`     | 0.88 s | 0.68 s | 0.71 s | 1.07 s | **0.65 s** | pystro |
 | `crypto_pyaes` | 0.56 s | 0.48 s | 0.53 s | 0.53 s | **0.34 s** | pystro |
 
 pystro AOT を CPython 各バージョンと比較した時の比 (1× 未満が pystro 勝):
@@ -78,14 +85,15 @@ pystro AOT を CPython 各バージョンと比較した時の比 (1× 未満が
 | ベンチ | vs py3.12 | vs py3.14 | vs py3.14+JIT |
 |---|---:|---:|---:|
 | `richards`     | **0.45× (2.23× faster)** | **0.55× (1.81× faster)** | **0.58× (1.73× faster)** |
-| `deltablue`    | **0.76× (1.31× faster)** | **0.93× (1.08× faster)** | **0.76× (1.31× faster)** |
-| `raytrace`     | **0.92× (1.09× faster)** | 1.19× SLOWER | 1.14× SLOWER |
+| `deltablue`    | **0.71× (1.42× faster)** | **0.86× (1.17× faster)** | **0.71× (1.42× faster)** |
+| `raytrace`     | **0.74× (1.35× faster)** | **0.96× (1.05× faster)** | **0.92× (1.09× faster)** |
 | `crypto_pyaes` | **0.61× (1.65× faster)** | **0.71× (1.41× faster)** | **0.64× (1.56× faster)** |
 
 **3.14 の素の改善が大きい**。 JIT 無しでも 3.12 → 3.14 で
 richards 16% / raytrace 25% / pyaes 13% 速くなっている (Tier 2 uops
-interpreter + 諸最適化)。 raytrace では 3.14 が pystro AOT を
-逆転した。
+interpreter + 諸最適化)。 raytrace は 2026-05-08 まで 3.14 に
+逆転されていたが、 attr_cache key+hash 化と pys_apply state 集約で
+奪還 (0.81 → 0.65 = 20% 短縮、 vs 3.14 0.68 で逆に勝ち)。
 
 **JIT は本規模では win とは限らない**。 macro 4 本中 JIT が改善した
 のは richards のみ (0.90 → 0.84、 +7%)。 deltablue / raytrace / pyaes
