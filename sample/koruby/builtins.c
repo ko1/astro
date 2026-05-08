@@ -126,6 +126,18 @@ void korb_init_builtins(void) {
     DEF(cObj, "respond_to?", kernel_respond_to_p, 1);
     DEF(cObj, "is_a?", kernel_is_a_p, 1);
     DEF(cObj, "kind_of?", kernel_is_a_p, 1);
+    /* Default Object#respond_to_missing? — always returns false.  CRuby
+     * has this as a private instance method on Kernel; user classes
+     * override it to participate in respond_to? lookup. */
+    {
+        VALUE _rtm_default(CTX *c, VALUE self, int argc, VALUE *argv) {
+            return Qfalse;
+        }
+        DEF_PRIV(cObj, "respond_to_missing?", _rtm_default, 2);
+        if (korb_vm->kernel_module) {
+            DEF_PRIV(korb_vm->kernel_module, "respond_to_missing?", _rtm_default, 2);
+        }
+    }
     /* Kernel module copies for `Kernel.{public,private}_instance_methods`
      * introspection. */
     if (korb_vm->kernel_module) {
@@ -790,6 +802,7 @@ void korb_init_builtins(void) {
     DEF(cHsh, "default",      hash_default_get,      0);
     DEF(cHsh, "default=",     hash_default_set,      1);
     DEF(cHsh, "default_proc", hash_default_proc_get, 0);
+    DEF(cHsh, "default_proc=", hash_default_proc_set, 1);
     {
         /* Override Class.new on Hash's metaclass so Hash.new(default) and
          * Hash.new { ... } actually create a real hash with the default. */

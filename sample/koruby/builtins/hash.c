@@ -573,7 +573,29 @@ static VALUE hash_default_set(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#default_proc — the default_proc or nil. */
 static VALUE hash_default_proc_get(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return ((struct korb_hash *)self)->default_proc;
+    VALUE v = ((struct korb_hash *)self)->default_proc;
+    return NIL_P(v) ? Qnil : v;
+}
+
+/* Hash#default_proc= — store a Proc as the miss-path resolver. */
+static VALUE hash_default_proc_set(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qnil;
+    CHECK_FROZEN_RET(c, self, Qnil);
+    VALUE blk = argv[0];
+    struct korb_hash *h = (struct korb_hash *)self;
+    if (NIL_P(blk)) {
+        h->default_proc = Qnil;
+    } else {
+        if (SPECIAL_CONST_P(blk) || BUILTIN_TYPE(blk) != T_PROC) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "wrong default_proc type %s (expected Proc)",
+                       korb_id_name(korb_class_of_class(blk)->name));
+            return Qnil;
+        }
+        h->default_proc = blk;
+    }
+    return blk;
 }
 
 /* Hash#clear — empty the hash. */

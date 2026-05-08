@@ -372,15 +372,9 @@ class Hash
     end
   end
 
-  # Hash#default_proc= — store the proc in @default_proc; #default_proc
-  # already reads it (registered C-side via instance_variable_get under
-  # the cover; we just expose the writer).  Setter is a no-op when the
-  # underlying default-resolution path doesn't consult @default_proc,
-  # but providing the API is what tests need.
-  def default_proc=(blk)
-    instance_variable_set(:@default_proc, blk)
-    blk
-  end unless method_defined?(:default_proc=)
+  # default_proc= is now provided by the C builtin which stores into
+  # the hash struct's `default_proc` field directly so Hash#[] miss
+  # path can dispatch the proc.
 
   # Hash#rehash — re-build the bucket index from current keys.  Our
   # implementation re-hashes lazily on every lookup, so this is a no-op.
@@ -3646,7 +3640,15 @@ class Module
   # deprecate_constant — registers the constant as deprecated.  Just
   # accepts the names and does nothing (no-op); subsequent uses still
   # resolve.  CRuby would emit a warning at access time.
-  def deprecate_constant(*_names); self; end unless method_defined?(:deprecate_constant)
+  def deprecate_constant(*names)
+    names.each do |n|
+      sym = n.is_a?(Symbol) ? n : (n.respond_to?(:to_str) ? n.to_str.to_sym : n)
+      unless const_defined?(sym, false)
+        raise NameError, "constant #{self}::#{sym} not defined"
+      end
+    end
+    self
+  end unless method_defined?(:deprecate_constant)
 
   def autoload(_name, _path); nil; end unless method_defined?(:autoload)
   def autoload?(_name, _inherit = true); nil; end unless method_defined?(:autoload?)
