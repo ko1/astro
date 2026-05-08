@@ -538,8 +538,18 @@ void korb_init_builtins(void) {
         DEF(cObj, "yield_self", obj_then,   0);
         DEF(cObj, "itself",     obj_itself, 0);
     }
-    DEF(cObj, "format",                kernel_format,            -1);
-    DEF(cObj, "sprintf",               kernel_format,            -1);
+    DEF_PRIV(cObj, "format",            kernel_format,            -1);
+    DEF_PRIV(cObj, "sprintf",           kernel_format,            -1);
+    if (korb_vm->kernel_module) {
+        DEF_PRIV(korb_vm->kernel_module, "format",  kernel_format, -1);
+        DEF_PRIV(korb_vm->kernel_module, "sprintf", kernel_format, -1);
+    }
+    /* Also expose as public methods on Kernel.singleton_class so the
+     * `Kernel.format(...)` form works. */
+    if (cKerMeta) {
+        DEF(cKerMeta, "format",  kernel_format, -1);
+        DEF(cKerMeta, "sprintf", kernel_format, -1);
+    }
     DEF(cObj, "printf",                kernel_printf,            -1);
 
     /* extra Integer */
