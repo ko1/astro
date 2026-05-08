@@ -1670,6 +1670,13 @@ static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Array[] — class method, equivalent to an array literal of the args. */
 VALUE ary_class_brackets(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_ary_new_capa((long)argc);
+    /* Honor the receiver class — `MySubclass[1,2,3]` returns a
+     * MySubclass instance (CRuby Array.[] semantics).  Default cases
+     * (Array.[]) keep Array as the basic.klass. */
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS &&
+        self != (VALUE)korb_vm->array_class) {
+        ((struct RBasic *)r)->klass = self;
+    }
     for (int i = 0; i < argc; i++) korb_ary_push(r, argv[i]);
     return r;
 }
