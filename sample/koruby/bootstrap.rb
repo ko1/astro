@@ -1449,6 +1449,23 @@ class Hash
     h
   end
 
+  # Hash#flatten — flatten one level by default: [k1, v1, k2, v2, ...].
+  # When passed depth, also flattens Array values up to depth.
+  # CRuby coerces depth via #to_int and raises TypeError on failure.
+  def flatten(depth = 1)
+    unless depth.is_a?(Integer)
+      raise TypeError, "no implicit conversion of #{depth.class} into Integer" \
+        unless depth.respond_to?(:to_int)
+      depth = depth.to_int
+      raise TypeError, "can't convert #{depth.class} to Integer" \
+        unless depth.is_a?(Integer)
+    end
+    result = []
+    each_pair { |k, v| result << k; result << v }
+    return result if depth <= 1
+    result.flatten(depth - 1)
+  end unless method_defined?(:flatten)
+
   def transform_keys(&blk)
     return enum_for(:transform_keys) unless blk
     h = {}
