@@ -268,6 +268,15 @@ rb_alloc_required(VALUE self, VALUE key, VALUE key_idx, VALUE next)
 }
 
 static VALUE
+rb_alloc_required_unsafe(VALUE self, VALUE key, VALUE key_idx, VALUE next)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_required_unsafe(arjsv_dup_key(key),
+                                                      NUM2UINT(key_idx),
+                                                      arjsv_unwrap_node(next)));
+}
+
+static VALUE
 rb_alloc_property(VALUE self, VALUE key, VALUE key_idx, VALUE schema, VALUE next)
 {
     (void)self;
@@ -278,10 +287,27 @@ rb_alloc_property(VALUE self, VALUE key, VALUE key_idx, VALUE schema, VALUE next
 }
 
 static VALUE
+rb_alloc_property_unsafe(VALUE self, VALUE key, VALUE key_idx, VALUE schema, VALUE next)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_property_unsafe(arjsv_dup_key(key),
+                                                      NUM2UINT(key_idx),
+                                                      arjsv_unwrap_node(schema),
+                                                      arjsv_unwrap_node(next)));
+}
+
+static VALUE
 rb_alloc_items_uniform(VALUE self, VALUE schema)
 {
     (void)self;
     return arjsv_wrap_node(ALLOC_node_items_uniform(arjsv_unwrap_node(schema)));
+}
+
+static VALUE
+rb_alloc_items_uniform_unsafe(VALUE self, VALUE schema)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_items_uniform_unsafe(arjsv_unwrap_node(schema)));
 }
 
 static VALUE
@@ -469,10 +495,11 @@ rb_alloc_dependency(VALUE self, VALUE key, VALUE key_idx, VALUE dep_schema, VALU
 }
 
 static VALUE
-rb_alloc_contains(VALUE self, VALUE schema)
+rb_alloc_contains(VALUE self, VALUE min, VALUE max, VALUE schema)
 {
     (void)self;
-    return arjsv_wrap_node(ALLOC_node_contains(arjsv_unwrap_node(schema)));
+    return arjsv_wrap_node(ALLOC_node_contains(NUM2INT(min), NUM2INT(max),
+                                               arjsv_unwrap_node(schema)));
 }
 
 static VALUE
@@ -561,8 +588,11 @@ Init_arjsv(void)
     rb_define_module_function(rb_mArjsv, "_alloc_seq",           rb_alloc_seq,           2);
     rb_define_module_function(rb_mArjsv, "_alloc_type_check",    rb_alloc_type_check,    1);
     rb_define_module_function(rb_mArjsv, "_alloc_required",      rb_alloc_required,      3);
+    rb_define_module_function(rb_mArjsv, "_alloc_required_unsafe", rb_alloc_required_unsafe, 3);
     rb_define_module_function(rb_mArjsv, "_alloc_property",      rb_alloc_property,      4);
+    rb_define_module_function(rb_mArjsv, "_alloc_property_unsafe", rb_alloc_property_unsafe, 4);
     rb_define_module_function(rb_mArjsv, "_alloc_items_uniform", rb_alloc_items_uniform, 1);
+    rb_define_module_function(rb_mArjsv, "_alloc_items_uniform_unsafe", rb_alloc_items_uniform_unsafe, 1);
     rb_define_module_function(rb_mArjsv, "_alloc_items_tuple",   rb_alloc_items_tuple,   3);
     rb_define_module_function(rb_mArjsv, "_alloc_additional_items", rb_alloc_additional_items, 2);
     rb_define_module_function(rb_mArjsv, "_alloc_no_additional_items", rb_alloc_no_additional_items, 1);
@@ -588,7 +618,7 @@ Init_arjsv(void)
     rb_define_module_function(rb_mArjsv, "_alloc_property_names", rb_alloc_property_names, 1);
     rb_define_module_function(rb_mArjsv, "_alloc_ref",           rb_alloc_ref,           2);
     rb_define_module_function(rb_mArjsv, "_alloc_dependency",    rb_alloc_dependency,    4);
-    rb_define_module_function(rb_mArjsv, "_alloc_contains",      rb_alloc_contains,      1);
+    rb_define_module_function(rb_mArjsv, "_alloc_contains",      rb_alloc_contains,      3);
     rb_define_module_function(rb_mArjsv, "_alloc_minimum",       rb_alloc_minimum,       2);
     rb_define_module_function(rb_mArjsv, "_alloc_maximum",       rb_alloc_maximum,       2);
     rb_define_module_function(rb_mArjsv, "_alloc_min_length",    rb_alloc_min_length,    1);

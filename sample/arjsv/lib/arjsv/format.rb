@@ -155,6 +155,33 @@ module Arjsv
       !!(s =~ /\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/)
     }
 
+    # ISO 8601 / RFC 3339 ABNF duration.  The grammar is *strictly
+    # ordered*: Y M D in the date part, H M S in the time part, with
+    # only the documented "skip-tail" omissions.  Examples:
+    #     valid:    P1Y2M3DT4H5M6S, P1D, PT1H, P0D, P10W
+    #     invalid:  P1Y2D (Y skipping straight to D), PT0.5S (fractional),
+    #               P1Y2W (week mixed with date components),
+    #               P2D1Y (out of order), PT1D (date in time slot)
+    DUR_DATE_RE  = /\A(?:\d+Y(?:\d+M(?:\d+D)?)?|\d+M(?:\d+D)?|\d+D)\z/
+    DUR_TIME_RE  = /\A(?:\d+H(?:\d+M(?:\d+S)?)?|\d+M(?:\d+S)?|\d+S)\z/
+    DUR_WEEK_RE  = /\A\d+W\z/
+    DURATION = ->(s) {
+      return false unless s.is_a?(String) && s.start_with?('P')
+      body = s[1..]
+      return false if body.empty?
+      return true if body =~ DUR_WEEK_RE
+      date_part, sep, time_part = body.partition('T')
+      has_t = !sep.empty?
+      date_ok = date_part.empty? || date_part =~ DUR_DATE_RE
+      return false unless date_ok
+      if has_t
+        return false if time_part.empty?
+        return false unless time_part =~ DUR_TIME_RE
+      end
+      return false if date_part.empty? && !has_t
+      true
+    }
+
     URI_RE = ->(s) {
       return false if s.empty?
       begin
@@ -228,6 +255,22 @@ module Arjsv
       end
     }
 
+    # Pre-compiled Regexp shortcuts for formats that are pure regex.
+    # When the runtime sees one of these, it dispatches via `node_pattern`
+    # (single `rb_reg_match` call) instead of `node_format` (rb_funcall →
+    # Ruby Proc → Ruby code), saving ~700ns per check.  Formats whose
+    # validation needs stdlib parsing (date / uri / ipv6 etc.) stay as
+    # Procs in CHECKERS below.
+    EMAIL_RE = /\A(?!\.)(?!.*\.\.)[^\s@]+(?<!\.)@[^\s@]+\.[^\s@]+\z/
+    UUID_RE = /\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/
+    IPV4_RE = /\A(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\z/
+    REGEX_SHORTCUTS = {
+      'email'     => EMAIL_RE,
+      'idn-email' => EMAIL_RE,
+      'uuid'      => UUID_RE,
+      'ipv4'      => IPV4_RE,
+    }.freeze
+
     CHECKERS = {
       'date'                   => DATE,
       'date-time'              => DATE_TIME,
@@ -239,6 +282,7 @@ module Arjsv
       'ipv4'                   => IPV4,
       'ipv6'                   => IPV6,
       'uuid'                   => UUID,
+      'duration'               => DURATION,
       'uri'                    => URI_RE,
       'uri-reference'          => URI_REFERENCE,
       'iri'                    => IRI,

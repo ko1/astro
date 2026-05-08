@@ -9,11 +9,13 @@ $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
 require 'arjsv'
 
 suite_path = ENV['SUITE_PATH']
+draft = ENV['DRAFT'] || 'draft7'
 if suite_path.nil? || !File.directory?(suite_path)
-  cands = Dir.glob('/tmp/jsts/json-schema-org-*/tests/draft7')
+  cands = Dir.glob("/tmp/jsts/json-schema-org-*/tests/#{draft}")
   suite_path = cands.first
 end
-abort "no suite path; set SUITE_PATH=" unless suite_path && File.directory?(suite_path)
+abort "no suite path; set SUITE_PATH= or DRAFT=" unless suite_path && File.directory?(suite_path)
+puts "Suite: #{suite_path}"
 
 filter_files = ARGV.empty? ? nil : ARGV
 total = pass = fail_count = err = skipped = 0

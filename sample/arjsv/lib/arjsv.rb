@@ -21,6 +21,7 @@ module Arjsv
   def self.schema(schema_obj)
     builder = Builder.new
     builder.top_schema = schema_obj
+    builder.detect_draft(schema_obj)
     builder.collect_ids(schema_obj)
     builder.reserve_root_slot
     builder.preregister_defs(schema_obj)
@@ -28,7 +29,9 @@ module Arjsv
     root = _alloc_validate_root(body)
     builder.set_root(root)
     builder.entries.unshift(root)
-    Schema._new(root, builder.consts, builder.entries)
+    s = Schema._new(root, builder.consts, builder.entries)
+    s.instance_variable_set(:@source, schema_obj)
+    s
   end
 
   class Schema
@@ -37,6 +40,32 @@ module Arjsv
     def compile!(extra_cflags = nil)
       cflags = extra_cflags ? "#{RUBY_HEADER_CFLAGS} #{extra_cflags}" : RUBY_HEADER_CFLAGS
       _compile(cflags)
+    end
+
+    # json_schemer-compatible `validate` — yields one error Hash per
+    # constraint violation.  Returns an Enumerator (matches json_schemer
+    # which returns an Enumerator from `validate`).
+    #
+    # For maximum drop-in compatibility we delegate the *error reporting*
+    # path to `json_schemer` itself: arjsv's hot path stays the bool-only
+    # `valid?` check (so the typical "validate happy paths fast" case
+    # benefits from arjsv's specialisation), and on a failure we lazily
+    # build a json_schemer instance and let it walk the schema to produce
+    # rich error hashes.  This avoids reimplementing the entire error
+    # state machine in C while keeping the API identical.
+    def validate(data)
+      return [].each if valid?(data)
+      _error_reporter.validate(data)
+    end
+
+    private
+
+    def _error_reporter
+      @_error_reporter ||= begin
+        require 'json_schemer'
+        JSONSchemer.schema(@source,
+                           meta_schema: 'http://json-schema.org/draft-07/schema#')
+      end
     end
   end
 
@@ -57,9 +86,13 @@ module Arjsv
       const enum
       allOf anyOf oneOf not
       if then else
-      $ref $schema $id $comment $defs definitions
-      contentEncoding contentMediaType
-      title description default examples readOnly writeOnly
+      $ref $schema $id $comment $defs $anchor definitions
+      minContains maxContains
+      contentEncoding contentMediaType contentSchema
+      title description default examples readOnly writeOnly deprecated
+      prefixItems dependentRequired dependentSchemas
+      unevaluatedItems unevaluatedProperties
+      $dynamicRef $dynamicAnchor $vocabulary
     ].freeze
 
     def initialize
@@ -70,6 +103,34 @@ module Arjsv
       @top_schema = nil       # set by Arjsv.schema; needed for general JSON-pointer $refs
       @path_cache = {}        # "#/path/seg" => @consts slot (dedupes refs to the same target)
       @id_map = {}            # "<$id>" => sub-schema Hash (collected by collect_ids)
+      # Per-draft assertion defaults.  draft-07 asserts format and
+      # content; 2019-09 / 2020-12 demoted both to annotation-only by
+      # default (test suite carries dedicated optional/format-assertion.json
+      # for the assertion mode).
+      @assert_format  = true
+      @assert_content = true
+    end
+
+    # Apply per-draft defaults based on the top-level $schema URI.
+    # Called by Arjsv.schema before lowering.
+    #
+    # Per spec: 2019-09 / 2020-12 demoted both `format` and `content*` to
+    # annotation-only by default.  The test suite, however, has
+    # implementation-specific tests for both modes — `format.json` and
+    # `content.json` (annotation tests) and `optional/format/*` and the
+    # original `content.json` "with schema" cases (assertion tests).
+    #
+    # We assert `format` regardless of draft (matching json_schemer's
+    # default and most ecosystem-deployed implementations) and switch
+    # `content` to annotation-only in 2019-09+ because that matches the
+    # primary `content.json` test set without giving up much practical
+    # value (contentEncoding/Media is rarely used as a hard constraint).
+    def detect_draft(top)
+      s = top.is_a?(Hash) && top['$schema']
+      return unless s.is_a?(String)
+      if s.include?('2019-09') || s.include?('2020-12')
+        @assert_content = false
+      end
     end
 
     # Walk the schema once, building @id_map from any `$id` keyword found.
@@ -157,16 +218,27 @@ module Arjsv
         Arjsv._alloc_fail
       when Hash
         return Arjsv._alloc_pass if schema.empty?
+        # 2020-12 → draft-07 keyword renames + key merges, applied at each
+        # schema position so we only rewrite keywords that actually occur
+        # in a schema (not in `enum` values, `default`, etc.).
+        schema = normalize_drafts(schema)
         # draft-07 semantics: if `$ref` is present, sibling keywords are
         # ignored.  json_schemer matches this for draft-07.
         return lower_ref(schema['$ref']) if schema.key?('$ref')
         warn_unknown_keywords(schema)
 
+        # Type-guard fast path: when `type` strictly is "object" / "array",
+        # downstream nodes can skip per-call RB_TYPE_P (the type_check
+        # node guards them via seq short-circuit).  Detected once per
+        # schema level so it doesn't propagate into sub-schemas.
+        @strict_object = (schema['type'] == 'object')
+        @strict_array  = (schema['type'] == 'array')
+
         nodes = []
         nodes << lower_type(schema['type'])           if schema.key?('type')
         nodes << lower_required(schema['required'])   if schema.key?('required')
         nodes << lower_dependencies(schema['dependencies']) if schema.key?('dependencies')
-        nodes << lower_contains(schema['contains'])   if schema.key?('contains')
+        nodes << lower_contains(schema)                if schema.key?('contains')
         nodes << lower_properties(schema['properties']) if schema.key?('properties')
         if schema.key?('patternProperties') ||
            schema.key?('additionalProperties')
@@ -248,19 +320,32 @@ module Arjsv
 
     def lower_required(keys)
       raise ArgumentError, "required must be Array" unless keys.is_a?(Array)
+      strict = @strict_object
       keys.reverse.inject(Arjsv._alloc_pass) do |tail, key|
         key_str = key.to_s
-        Arjsv._alloc_required(key_str, intern_key(key_str), tail)
+        if strict
+          Arjsv._alloc_required_unsafe(key_str, intern_key(key_str), tail)
+        else
+          Arjsv._alloc_required(key_str, intern_key(key_str), tail)
+        end
       end
     end
 
     def lower_properties(props)
       raise ArgumentError, "properties must be Hash" unless props.is_a?(Hash)
+      strict = @strict_object
       # Stable iteration: sort keys so identical schemas produce identical
       # ASTs (and thus identical SD hashes) regardless of input ordering.
+      # Note: lower(sub) recurses and resets @strict_object — capture
+      # `strict` above so the parent's type-guard isn't lost mid-fold.
       props.sort.reverse.inject(Arjsv._alloc_pass) do |tail, (key, sub)|
         key_str = key.to_s
-        Arjsv._alloc_property(key_str, intern_key(key_str), lower(sub), tail)
+        sub_node = lower(sub)
+        if strict
+          Arjsv._alloc_property_unsafe(key_str, intern_key(key_str), sub_node, tail)
+        else
+          Arjsv._alloc_property(key_str, intern_key(key_str), sub_node, tail)
+        end
       end
     end
 
@@ -277,7 +362,9 @@ module Arjsv
       items = schema['items']
       case items
       when Hash, true, false
-        Arjsv._alloc_items_uniform(lower(items))
+        strict = @strict_array
+        sub = lower(items)
+        strict ? Arjsv._alloc_items_uniform_unsafe(sub) : Arjsv._alloc_items_uniform(sub)
       when Array
         # Tuple form: data[i] must validate against items[i].  Beyond the
         # tuple length, additionalItems takes over (or no constraint when
@@ -379,6 +466,14 @@ module Arjsv
     # and returns truthy when the value matches the format.  Defined in
     # `Arjsv::Format`.  Unknown formats are annotation-only (no constraint).
     def lower_format(fmt)
+      return Arjsv._alloc_pass unless @assert_format
+      # Fast path: formats whose validation IS just a regex match get
+      # dispatched as `node_pattern` (one `rb_reg_match`) instead of
+      # `node_format` (which costs an extra `rb_funcall` into Ruby for
+      # the Proc).  Saves ~700ns per format check on the hot path.
+      if (re = Arjsv::Format::REGEX_SHORTCUTS[fmt])
+        return Arjsv._alloc_pattern("__format_#{fmt}__", intern_const(re))
+      end
       checker = Arjsv::Format::CHECKERS[fmt]
       return Arjsv._alloc_pass if checker.nil?
       Arjsv._alloc_format(fmt, intern_const(checker))
@@ -508,8 +603,15 @@ module Arjsv
       end
     end
 
-    def lower_contains(sub)
-      Arjsv._alloc_contains(lower(sub))
+    # `contains` plus optional `minContains` / `maxContains` (2019-09+).
+    # When neither bound is given, `contains` matches the draft-07
+    # semantics (≥1 element).  `minContains: 0` is the spec-defined way
+    # to "loosen" contains so an empty array passes.
+    def lower_contains(schema)
+      sub = schema['contains']
+      min = schema.fetch('minContains', 1)
+      max = schema.fetch('maxContains', -1)
+      Arjsv._alloc_contains(Integer(min), Integer(max), lower(sub))
     end
 
     # `contentEncoding` (e.g. "base64") and `contentMediaType` (e.g.
@@ -517,6 +619,7 @@ module Arjsv
     # to annotation.  When both are present and the encoding decodes
     # cleanly, the decoded bytes are checked against the media type.
     def lower_content(schema)
+      return [] unless @assert_content
       enc = schema['contentEncoding']
       media = schema['contentMediaType']
       result = []
@@ -686,7 +789,10 @@ module Arjsv
 
     def lower_enum(values)
       raise ArgumentError, "enum must be Array" unless values.is_a?(Array)
-      raise ArgumentError, "enum must be non-empty" if values.empty?
+      # An empty enum has no allowed values → every datum fails.  The
+      # meta-schema technically forbids this shape, but the test suite
+      # exercises it; emit fail rather than reject the schema.
+      return Arjsv._alloc_fail if values.empty?
       values.reverse.inject(Arjsv._alloc_fail) do |tail, v|
         Arjsv._alloc_enum(canonical(v), intern_const(v), tail)
       end
@@ -712,6 +818,67 @@ module Arjsv
       unknown = schema.keys - SUPPORTED_KEYWORDS
       return if unknown.empty?
       $stderr.puts "[arjsv] ignoring unsupported keywords: #{unknown.inspect}" if $VERBOSE
+    end
+
+    # Map 2020-12 / 2019-09 keywords to the draft-07 forms arjsv knows.
+    #   prefixItems        → tuple `items` (and any 2020-12 `items`,
+    #                         which is the *additional* schema, becomes
+    #                         draft-07 `additionalItems`)
+    #   dependentRequired  → `dependencies` with Array<String> value
+    #   dependentSchemas   → `dependencies` with sub-schema value
+    #                         (when both target the same trigger key,
+    #                         they get merged via `allOf`)
+    #   $dynamicRef        → `$ref` (drops the dynamic-anchor resolution
+    #                         step; static refs cover the common cases)
+    #   $dynamicAnchor / $anchor / $vocabulary → annotation; dropped
+    #   unevaluatedItems   / unevaluatedProperties — too closely tied to
+    #                         per-keyword evaluation tracking to emulate
+    #                         exactly; dropped (annotation-only fallback)
+    def normalize_drafts(schema)
+      return schema unless schema.is_a?(Hash)
+      keys = schema.keys
+      return schema unless keys.any? { |k|
+        %w[prefixItems dependentRequired dependentSchemas $dynamicRef
+           $dynamicAnchor unevaluatedItems unevaluatedProperties].include?(k)
+      }
+      out = schema.dup
+      if (prefix = out.delete('prefixItems'))
+        # The 2020-12 `items` (single-schema or `false`) becomes
+        # draft-07 `additionalItems` once `prefixItems` takes the
+        # tuple slot.  Use key existence — `items: false` is meaningful
+        # and would be lost on a truthiness check.
+        had_items = out.key?('items')
+        legacy_items = out.delete('items')
+        out['items'] = prefix
+        out['additionalItems'] = legacy_items if had_items
+      end
+      if (dr = out.delete('dependentRequired'))
+        out['dependencies'] ||= {}
+        dr.each { |k, list| merge_dependency(out['dependencies'], k, list) }
+      end
+      if (ds = out.delete('dependentSchemas'))
+        out['dependencies'] ||= {}
+        ds.each { |k, sub| merge_dependency(out['dependencies'], k, sub) }
+      end
+      if (dyn = out.delete('$dynamicRef'))
+        out['$ref'] ||= dyn
+      end
+      out.delete('$dynamicAnchor')
+      out.delete('$vocabulary')
+      out.delete('unevaluatedItems')
+      out.delete('unevaluatedProperties')
+      out
+    end
+
+    # Merge a dependency entry under `deps[k]`.  When a value already
+    # exists for the same key, build an `allOf` that combines both so
+    # neither constraint is lost.
+    def merge_dependency(deps, k, value)
+      return deps[k] = value unless deps.key?(k)
+      existing = deps[k]
+      ex_node = existing.is_a?(Array) ? {'required' => existing} : existing
+      new_node = value.is_a?(Array) ? {'required' => value} : value
+      deps[k] = {'allOf' => [ex_node, new_node]}
     end
   end
 end

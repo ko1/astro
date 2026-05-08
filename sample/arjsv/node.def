@@ -79,6 +79,16 @@ node_required(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *next)
     return EVAL_ARG(c, next);
 }
 
+// Unsafe (type-guarded) variant — caller has asserted via `type:"object"`
+// that c->data is a Hash, so skip the per-call RB_TYPE_P guard.
+NODE_DEF
+node_required_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *next)
+{
+    (void)key;
+    if (rb_hash_lookup2(c->data, c->consts[key_idx], Qundef) == Qundef) return 0;
+    return EVAL_ARG(c, next);
+}
+
 // One property's sub-schema check; recurses into `next`.  If the key is
 // absent, skip (per JSON Schema: properties only constrain present keys).
 // See node_required for the (key, key_idx) split rationale.
@@ -99,6 +109,22 @@ node_property(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *schema, 
     return EVAL_ARG(c, next);
 }
 
+// Unsafe (type-guarded) variant of node_property.
+NODE_DEF
+node_property_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *schema, NODE *next)
+{
+    (void)key;
+    VALUE prop = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
+    if (prop != Qundef) {
+        VALUE saved = c->data;
+        c->data = prop;
+        int ok = EVAL_ARG(c, schema);
+        c->data = saved;
+        if (!ok) return 0;
+    }
+    return EVAL_ARG(c, next);
+}
+
 // ---- Array keywords ------------------------------------------------------
 
 // Single sub-schema applied to every array element.  No-op for non-arrays.
@@ -106,6 +132,25 @@ NODE_DEF
 node_items_uniform(CTX *c, NODE *n, NODE *schema)
 {
     if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    long len = RARRAY_LEN(c->data);
+    VALUE saved = c->data;
+    for (long i = 0; i < len; i++) {
+        c->data = RARRAY_AREF(saved, i);
+        if (!EVAL_ARG(c, schema)) {
+            c->data = saved;
+            return 0;
+        }
+    }
+    c->data = saved;
+    return 1;
+}
+
+// Unsafe (type-guarded) variant — emitted when the schema's `type` is
+// the single string "array" so the per-call RB_TYPE_P guard can be
+// skipped.  See node_property_unsafe for the pattern.
+NODE_DEF
+node_items_uniform_unsafe(CTX *c, NODE *n, NODE *schema)
+{
     long len = RARRAY_LEN(c->data);
     VALUE saved = c->data;
     for (long i = 0; i < len; i++) {
@@ -559,24 +604,31 @@ node_dependency(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *dep_sc
     return EVAL_ARG(c, next);
 }
 
-// `contains: <schema>` — array must have ≥1 element validating against schema.
-// On a non-array, this keyword has no effect (pass).  Empty arrays fail
-// (no matching item exists).
+// `contains: <schema>` (+ optional minContains / maxContains).  Array must
+// have a count of matching elements within [min, max].  On a non-array,
+// the keyword is a no-op (pass).
+//
+// `min` defaults to 1 when only `contains` is given.  `min == 0` means
+// even an empty array passes.  `max == -1` means unbounded.
 NODE_DEF
-node_contains(CTX *c, NODE *n, NODE *schema)
+node_contains(CTX *c, NODE *n, int32_t min, int32_t max, NODE *schema)
 {
     if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
     long len = RARRAY_LEN(c->data);
+    int32_t count = 0;
     VALUE saved = c->data;
     for (long i = 0; i < len; i++) {
         c->data = RARRAY_AREF(saved, i);
-        if (EVAL_ARG(c, schema)) {
+        if (EVAL_ARG(c, schema)) count++;
+        // Early exit when max-bounded and exceeded.
+        if (max >= 0 && count > max) {
             c->data = saved;
-            return 1;
+            return 0;
         }
     }
     c->data = saved;
-    return 0;
+    if (count < min) return 0;
+    return 1;
 }
 
 // `$ref: "#/$defs/<name>"`.  The target is an independently-compiled entry

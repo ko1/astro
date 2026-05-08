@@ -1,12 +1,11 @@
 # arjsv performance notes
 
-draft-07 keywords (full Tier 1 + Tier 2 + Tier 3 set: type / properties /
-required / items uniform-and-tuple / additionalItems / additionalProperties
-/ patternProperties / propertyNames / minimum / maximum / exclusive forms /
-multipleOf / minLength / maxLength / pattern / format / minItems / maxItems
-/ uniqueItems / minProperties / maxProperties / const / enum / allOf / anyOf
-/ oneOf / not / if-then-else / `$ref` to `#/$defs/` and `#/definitions/` /
-recursive `$ref`).
+draft-07 + draft 2020-12 (auto-detected via `$schema`).  Full keyword
+matrix in `docs/done.md`.  Note: since the bench schemas now include
+`format: email` and `additionalProperties: false`, the absolute numbers
+sit lower than the original Tier 1 numbers — but vs json_schemer /
+rj_schema the multipliers are comparable, and the schemas are more
+representative of real OpenAPI workloads.
 
 ## 3-way benchmark (ruby 4.0.2 / x86_64 / `benchmark/run.rb`)
 
@@ -27,25 +26,21 @@ Two scenarios per schema:
 
 | schema | json_schemer | arjsv interp | arjsv AOT | rj_schema (Hash→JSON) | arjsv vs rj_schema |
 |---|---:|---:|---:|---:|---:|
-| simple int (valid)        |   176k |  13.78M |  14.00M |  274k | **51×** |
-| user object (valid)       |  10.8k |   1.28M |   1.30M |  125k | **10×** |
-| user object (invalid)     |  62.7k |  10.93M |  10.65M |  130k | **84×** |
-| api response x5  (valid)  |  1.23k |  127k¹  |  55.6k¹ | 16.5k | **3.4×** |
-| api response x50 (valid)  |    180 |   16.0k |   16.1k |  2.12k | **7.6×** |
-
-ips (i/s).  ¹ `api response x5` interp came in with 28% variance; AOT was
-stable at 2.6%; treat the interp number as an upper bound from a lucky
-warmup.
+| simple int (valid)        |   78k |   7.41M |   7.45M |  259k | **29×** |
+| user object (valid)       | 4.90k |    460k |    449k |  112k | **4.0×** |
+| user object (invalid)     |  73k  |  11.76M |  11.98M |  148k | **81×** |
+| api response x5  (valid)  | 1.71k |    143k |    143k |  19.3k | **7.4×** |
+| api response x50 (valid)  |   208 |   17.7k |   18.0k |  2.48k | **7.3×** |
 
 ### (B) JSON string in
 
 | schema | json_schemer (parse+v) | arjsv interp (parse+v) | arjsv AOT (parse+v) | rj_schema (preloaded) | arjsv vs rj_schema |
 |---|---:|---:|---:|---:|---:|
-| simple int (valid)        |  133k |   2.65M | 5.05M  |  692k | **7.3×** |
-| user object (valid)       | 7.66k |    614k |  616k  |  137k | **4.5×** |
-| user object (invalid)     | 53.2k |   1.50M | 1.59M  |  148k | **10.7×** |
-| api response x5  (valid)  | 1.70k |  89.6k  | 90.6k  | 20.3k | **4.5×** |
-| api response x50 (valid)  |    174 |  10.3k | 10.5k  | 2.27k | **4.6×** |
+| simple int (valid)        |  204k |   6.50M | 6.08M  |  316k | **19×** |
+| user object (valid)       | 12.3k |    630k |  641k  |  153k | **4.2×** |
+| user object (invalid)     |  67k  |   1.78M | 1.76M  |  157k | **11×** |
+| api response x5  (valid)  | 1.70k |   86.3k | 87.0k  | 20.1k | **4.3×** |
+| api response x50 (valid)  |   223 |   11.0k | 11.0k  |  2.55k | **4.3×** |
 
 `api response x5` and `x50` exercise `$ref` (recursive User+Address),
 `additionalProperties:false`, `pattern`, `format`, `enum`, `uniqueItems`,

@@ -10,21 +10,30 @@ lower per-validation overhead.
 
 ## Status
 
-draft-07 keyword coverage is essentially complete (`type` / `properties` /
-`required` / `items` (uniform + tuple) / `additionalItems` /
-`additionalProperties` / `patternProperties` / `propertyNames` /
-`dependencies` / `contains` / size constraints / numeric ranges /
-`multipleOf` / `pattern` / `format` (real validators for date / time /
-email / uri / ipv4 / ipv6 / uuid / json-pointer / etc.) / `const` / `enum`
-/ `allOf` / `anyOf` / `oneOf` / `not` / `if`-`then`-`else` / `$ref` to
-`#`, `#/$defs/<name>`, `#/definitions/<name>` with recursive refs).
+draft-07 + draft 2020-12 (auto-detected from `$schema`).  Keyword
+coverage is essentially complete: type / properties / required / items
+(uniform + tuple) / additionalItems / additionalProperties /
+patternProperties / propertyNames / dependencies (+ 2020-12
+`dependentRequired` / `dependentSchemas`) / contains (+ minContains /
+maxContains) / size constraints / numeric ranges / multipleOf /
+pattern / format (Ruby-stdlib validators for date / time / duration /
+email / uri / ipv4 / ipv6 / uuid / json-pointer / etc.) / const / enum /
+allOf / anyOf / oneOf / not / if-then-else / contentEncoding /
+contentMediaType / `$ref` (root, `#/$defs/<name>`, full JSON pointer,
+`$id` lookup; recursive refs supported).
 
-**JSON Schema Test Suite (draft-07): 1501 / 1584 = 94.76%**.
-Remaining failures concentrate in optional IDNA / external-`$ref` /
-ECMA-regex tests — see [`docs/done.md`](docs/done.md) for the breakdown.
+**JSON Schema Test Suite**:
+- draft-07: 1501 / 1584 = **94.76%**
+- 2020-12:  1854 / 2069 = **89.61%**
 
-`Schema#validate` returning a rich error list is the main missing
-feature; today the API is bool-only via `valid?`.
+Remaining failures concentrate in IDNA hostname (no libidn), external
+HTTP `$ref`, and `unevaluatedProperties` / `unevaluatedItems` — see
+[`docs/done.md`](docs/done.md) for the breakdown.
+
+Both `valid?` and `validate` (json_schemer-compatible error array) are
+implemented.  `valid?` runs entirely on arjsv's specialised dispatcher;
+`validate` returns rich errors by delegating reporting to `json_schemer`
+*only when validation fails* — happy path stays at arjsv's speed.
 
 ## Build
 
