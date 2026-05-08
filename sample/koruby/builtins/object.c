@@ -710,6 +710,55 @@ static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
         for (struct korb_hash_entry *e = h->first; e; e = e->next) {
             korb_hash_aset(r, e->key, e->value);
         }
+    } else if (t == T_CLASS || t == T_MODULE) {
+        /* Module/Class#dup: shallow copy into a new anonymous
+         * module/class.  Methods, constants, class_ivars, and class
+         * variables are independent from the source after dup. */
+        struct korb_class *src = (struct korb_class *)self;
+        struct korb_class *nk;
+        if (t == T_CLASS) {
+            nk = korb_class_new(0, src->super, src->instance_type);
+        } else {
+            nk = korb_module_new(0);
+        }
+        /* Copy methods (shallow — share method body / ast nodes). */
+        for (uint32_t b = 0; b < src->methods.bucket_cnt; b++) {
+            for (struct korb_method_table_entry *e = src->methods.buckets[b]; e; e = e->next) {
+                if (e->method) korb_class_alias_method(nk, e->name, e->method);
+            }
+        }
+        /* Copy class variables. */
+        for (uint32_t i = 0; i < src->cvar_cnt; i++) {
+            if (nk->cvar_cnt >= nk->cvar_capa) {
+                uint32_t nc = nk->cvar_capa ? nk->cvar_capa * 2 : 4;
+                nk->cvars = korb_xrealloc(nk->cvars, nc * sizeof(*nk->cvars));
+                nk->cvar_capa = nc;
+            }
+            nk->cvars[nk->cvar_cnt].name = src->cvars[i].name;
+            nk->cvars[nk->cvar_cnt].value = src->cvars[i].value;
+            nk->cvar_cnt++;
+        }
+        /* Copy class_ivars (e.g. `class C; @x = 1; end`). */
+        for (uint32_t i = 0; i < src->class_ivar_cnt; i++) {
+            if (nk->class_ivar_cnt >= nk->class_ivar_capa) {
+                uint32_t nc = nk->class_ivar_capa ? nk->class_ivar_capa * 2 : 4;
+                nk->class_ivars = korb_xrealloc(nk->class_ivars,
+                                                 nc * sizeof(*nk->class_ivars));
+                nk->class_ivar_capa = nc;
+            }
+            nk->class_ivars[nk->class_ivar_cnt].name = src->class_ivars[i].name;
+            nk->class_ivars[nk->class_ivar_cnt].value = src->class_ivars[i].value;
+            nk->class_ivar_cnt++;
+        }
+        /* Copy constants. */
+        for (struct korb_const_entry *e = src->constants; e; e = e->next) {
+            korb_const_set(nk, e->name, e->value);
+        }
+        /* Copy includes (shallow — share Module instances). */
+        for (uint32_t i = 0; i < src->includes_cnt; i++) {
+            korb_module_include(nk, src->includes[i]);
+        }
+        r = (VALUE)nk;
     }
     if (preserve_frozen && r != self && !SPECIAL_CONST_P(r) && korb_obj_frozen_p(self)) {
         ((struct RBasic *)r)->flags |= FL_FROZEN;
