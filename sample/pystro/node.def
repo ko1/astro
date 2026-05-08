@@ -1048,8 +1048,22 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // generic dict setter and update the cache slot.  No
             // descriptor check needed — same (cls, sv) means same
             // semantics as a previous successful stamp.
-            VALUE key = pys_make_str(name, strlen(name));
-            uint64_t h = pys_hash(c, key);
+            //
+            // Reuse the per-call-site cached (key, hash) when present —
+            // raytrace's Vector __init__ creates fresh attrs dicts for
+            // every instance, so the 2nd + 3rd attr_set went through
+            // pys_make_str + pys_hash repeatedly even though the name
+            // is identical to last call at this source line.
+            VALUE key = (VALUE)(intptr_t)cache->key_val;
+            uint64_t h;
+            if (UNLIKELY(!key)) {
+                key = pys_make_str(name, strlen(name));
+                h = pys_hash(c, key);
+                cache->key_val  = (void *)(intptr_t)key;
+                cache->key_hash = h;
+            } else {
+                h = cache->key_hash;
+            }
             int32_t new_eidx = pydict_set_h(c, o->inst.attrs, key, h, vv);
             if (LIKELY(new_eidx >= 0)) cache->u_eidx[matched_slot] = new_eidx;
             return PYS_NONE;

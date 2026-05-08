@@ -470,6 +470,15 @@ struct attr_cache {
     void *inst_ca_cls;
     void *inst_ca_val;
     uint32_t inst_ca_sv;
+
+    // Per-call-site cached (key VALUE, hash) for the source-position's
+    // attribute name.  pystro previously called `pys_make_str(name, ...)`
+    // + `pys_hash(...)` on every fresh-instance attr_set, even though the
+    // name is fixed at that source line.  Lazily filled on first slow
+    // path (key_val == 0).  Invalidated never — name strings are immutable
+    // for the life of the AST.
+    void    *key_val;
+    uint64_t key_hash;
 };
 
 typedef struct CTX_struct {
