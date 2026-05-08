@@ -43,6 +43,16 @@
 - [x] Boolean `exclusiveMinimum` / `exclusiveMaximum` (draft-04 form)
 - [x] `$schema`-driven assert/annotation defaults (`format`, `content*`)
 - [x] `$ref` siblings ignored in draft-07 / honoured in 2019-09+
+- [x] RFC 3986 URI base resolution for `$id` / `$ref` (relative refs,
+      anchored refs, nested `$id` base changes)
+- [x] Quoted-string / domain-literal email format (RFC 5322 / 5321)
+- [x] Unicode-aware `idn-email` local-part / domain charset
+- [x] `multipleOf` overflow → fall back to Ruby `Rational` for
+      precise integer-multiple check (replaces `isfinite` short-circuit)
+- [x] `unevaluatedProperties: true` / `unevaluatedItems: true` track
+      all keys / items as evaluated (per spec annotation rule)
+- [x] `eval_scope` propagates inner annotations to outer scope on
+      success (in-place applicator aggregation)
 
 ### Performance
 - [x] Per-`node_property` / `node_required` fstring cache (eliminate
@@ -55,13 +65,19 @@
 ## Open
 
 ### spec compatibility (deep edges)
-- [ ] External `$ref` (HTTP fetching), URN base URIs
-- [ ] URI base resolution against nested `$id`s (current `$id` lookup
-      matches exact string only)
-- [ ] `$dynamicRef` / `$dynamicAnchor` full scoping (treated like
-      `$ref` / `$anchor`; covers most static cases)
+- [ ] External `$ref` (HTTP fetching), URN base URIs — out of "no
+      external dependency" scope; required to fetch the spec
+      meta-schema from `http://json-schema.org/...`
+- [ ] `$dynamicRef` / `$dynamicAnchor` full dynamic-scope resolution
+      (treated like `$ref` / `$anchor`; static cases work, the cases
+      where dynamic scope determines the target do not — 16 fails
+      in 2020-12 `dynamicRef.json`)
 - [ ] IDNA-2008 punycode validation for `format: hostname` /
-      `idn-hostname` (would need libidn)
+      `idn-hostname` (would need libidn / ICU tables)
+- [ ] `unevaluatedItems` with `contains`-tracked sparse indices —
+      requires switching `c->eval_items` from prefix-count int to a
+      sparse-set representation (2 fails in 2020-12)
+- [ ] Strict ECMA-262 `pattern` validation (reject `\a` etc.)
 
 ### performance follow-ups
 - [ ] Conditionalise the `eval_keys` / `eval_items` save/restore in

@@ -1,5 +1,6 @@
 require 'json'
 require 'rbconfig'
+require 'uri'
 require_relative '../arjsv'  # arjsv.so (built by extconf)
 require_relative 'arjsv/version'
 require_relative 'arjsv/format'
@@ -152,6 +153,9 @@ module Arjsv
       @top_schema = nil       # set by Arjsv.schema; needed for general JSON-pointer $refs
       @path_cache = {}        # "#/path/seg" => @consts slot (dedupes refs to the same target)
       @id_map = {}            # "<$id>" => sub-schema Hash (collected by collect_ids)
+      @base_uri = nil         # current base URI; pushed/popped by lower() on $id
+      @base_uri_stack = []
+      @top_base = nil         # top-level $id (if any), used by collect_ids root
       # Per-draft assertion defaults.  draft-07 asserts format and
       # content; 2019-09 / 2020-12 demoted both to annotation-only by
       # default (test suite carries dedicated optional/format-assertion.json
@@ -223,46 +227,83 @@ module Arjsv
     KEYS_SINGLE_SCHEMA   = %w[additionalProperties propertyNames contains not if then else].freeze
     KEYS_ARRAY_OF_SCHEMAS = %w[allOf anyOf oneOf].freeze
 
-    def collect_ids(node)
+    def collect_ids(node, base = nil)
       return unless node.is_a?(Hash)
       # `$id` (draft-06+) and bare `id` (draft-04) both register the
-      # subschema as a target.
+      # subschema as a target.  RFC 3986: a relative `$id` is resolved
+      # against the surrounding base URI; a plain fragment `#name`
+      # introduces an anchor on the parent base rather than changing it.
+      current_base = base
       %w[$id id].each do |k|
         v = node[k]
         next unless v.is_a?(String)
+        # Pure fragment (`#foo`) is registered as an anchor on the
+        # current base AND in the legacy `#foo`-only form.
+        if v.start_with?('#')
+          @id_map[v] = node unless @id_map.key?(v)
+          if current_base
+            base_no_frag = current_base.split('#').first
+            qual = "#{base_no_frag}#{v}"
+            @id_map[qual] = node unless @id_map.key?(qual)
+          end
+          next
+        end
+        # Resolve against current base when relative.
+        resolved = uri_resolve(current_base, v)
         @id_map[v] = node unless @id_map.key?(v)
-        stripped = v.split('#').first
+        @id_map[resolved] = node unless @id_map.key?(resolved)
+        stripped = resolved.split('#').first
         @id_map[stripped] = node if stripped && !@id_map.key?(stripped)
+        current_base = stripped || resolved
       end
       # 2020-12 `$anchor` and 2019-09 `$dynamicAnchor` register local
-      # fragment IDs.
+      # fragment IDs.  Stored as bare `#name` (legacy lookup) AND as
+      # `<base>#name` for absolute-URI refs.
       %w[$anchor $dynamicAnchor].each do |k|
         a = node[k]
-        @id_map["##{a}"] = node if a.is_a?(String) && !@id_map.key?("##{a}")
+        next unless a.is_a?(String)
+        @id_map["##{a}"] = node unless @id_map.key?("##{a}")
+        if current_base
+          base_no_frag = current_base.split('#').first
+          qual = "#{base_no_frag}##{a}"
+          @id_map[qual] = node unless @id_map.key?(qual)
+        end
       end
       KEYS_HASH_OF_SCHEMAS.each do |k|
         v = node[k]
-        v.each_value { |s| collect_ids(s) } if v.is_a?(Hash)
+        v.each_value { |s| collect_ids(s, current_base) } if v.is_a?(Hash)
       end
       KEYS_SCHEMA_OR_ARRAY.each do |k|
         v = node[k]
         if v.is_a?(Hash)
-          collect_ids(v)
+          collect_ids(v, current_base)
         elsif v.is_a?(Array)
-          v.each { |s| collect_ids(s) }
+          v.each { |s| collect_ids(s, current_base) }
         end
       end
       KEYS_SINGLE_SCHEMA.each do |k|
         v = node[k]
-        collect_ids(v) if v.is_a?(Hash)
+        collect_ids(v, current_base) if v.is_a?(Hash)
       end
       KEYS_ARRAY_OF_SCHEMAS.each do |k|
         v = node[k]
-        v.each { |s| collect_ids(s) } if v.is_a?(Array)
+        v.each { |s| collect_ids(s, current_base) } if v.is_a?(Array)
       end
       if (deps = node['dependencies']).is_a?(Hash)
-        deps.each_value { |v| collect_ids(v) if v.is_a?(Hash) }
+        deps.each_value { |v| collect_ids(v, current_base) if v.is_a?(Hash) }
       end
+      # Track the top-level base so lower() / preregister_defs can start
+      # with the right base URI.  Only set on the very first call (root).
+      @top_base ||= current_base if base.nil?
+    end
+
+    # RFC 3986 reference resolution.  Falls back to `ref` itself on parse
+    # error so we never raise from schema build (json_schemer's behaviour).
+    def uri_resolve(base, ref)
+      return ref if base.nil? || base.empty?
+      URI.join(base, ref).to_s
+    rescue URI::Error
+      ref
     end
 
     # Reserve a consts slot for the root schema's own validate_root NODE so
@@ -292,12 +333,18 @@ module Arjsv
         @consts << nil
         @defs_idx[name.to_s] = idx
       end
+      # Set up the root base URI so $id-resolution inside def bodies
+      # uses the top-level $id as the parent base.  Pushes once; the
+      # matching pop is at end of method.
+      saved_base = @base_uri
+      @base_uri = @top_base if @top_base
       defs.each do |name, sub|
         body = lower(sub)
         root = Arjsv._alloc_validate_root(body)
         @consts[@defs_idx[name.to_s]] = root
         @entries << root
       end
+      @base_uri = saved_base
     end
 
     # schema → NODE
@@ -313,6 +360,27 @@ module Arjsv
         # schema position so we only rewrite keywords that actually occur
         # in a schema (not in `enum` values, `default`, etc.).
         schema = normalize_drafts(schema)
+        # Push base URI when entering a sub-schema with $id (RFC 3986
+        # base resolution; pure-fragment $id is an anchor only and does
+        # NOT change base).
+        pushed_base = false
+        id_v = schema['$id'] || schema['id']
+        if id_v.is_a?(String) && !id_v.start_with?('#')
+          @base_uri_stack.push(@base_uri)
+          @base_uri = uri_resolve(@base_uri, id_v).split('#').first
+          pushed_base = true
+        end
+        result = lower_inner(schema)
+        @base_uri = @base_uri_stack.pop if pushed_base
+        return result
+      else
+        raise ArgumentError, "Schema must be Hash / true / false, got #{schema.class}"
+      end
+    end
+
+    # Body of lower() for Hash schemas; split out so the base-URI
+    # push/pop wrapper above can be a thin shell.  Returns a NODE.
+    def lower_inner(schema)
         # draft-07 semantics: if `$ref` is present, sibling keywords are
         # ignored.  2019-09+ allows siblings to apply alongside $ref.
         if schema.key?('$ref')
@@ -389,9 +457,6 @@ module Arjsv
           body = Arjsv._alloc_eval_scope(body)
         end
         body
-      else
-        raise ArgumentError, "Schema must be Hash / true / false, got #{schema.class}"
-      end
     end
 
     # AND-combine nodes into a right-recursive seq chain terminated by pass.
@@ -502,8 +567,16 @@ module Arjsv
         end
         ai = schema['additionalItems']
         case ai
-        when nil, true
+        when nil
           chain
+        when true
+          # `items: true` in 2020-12 (which we mapped to `additionalItems: true`
+          # alongside the prefixItems→items rewrite) and a draft-07 schema
+          # that says `additionalItems: true` both mean "no constraint, but
+          # the items count as evaluated for the surrounding
+          # unevaluatedItems".  Emit an additional_items with pass body so
+          # the runtime tracks `eval_items = len`.
+          all_of([chain, Arjsv._alloc_additional_items(prefix_len, Arjsv._alloc_pass)])
         when false
           all_of([chain, Arjsv._alloc_no_additional_items(prefix_len)])
         when Hash
@@ -729,7 +802,11 @@ module Arjsv
     def lower_unevaluated_properties(v)
       case v
       when true
-        Arjsv._alloc_pass            # everything passes
+        # Emit the schema-form with a `pass` body so the runtime walks
+        # every still-unevaluated key, validates trivially, and marks
+        # them as evaluated — matching the spec's "this keyword
+        # contributes an annotation that all keys are evaluated".
+        Arjsv._alloc_unevaluated_properties_schema(Arjsv._alloc_pass)
       when false
         Arjsv._alloc_no_unevaluated_properties
       when Hash
@@ -742,7 +819,7 @@ module Arjsv
     def lower_unevaluated_items(v)
       case v
       when true
-        Arjsv._alloc_pass
+        Arjsv._alloc_unevaluated_items_schema(Arjsv._alloc_pass)
       when false
         Arjsv._alloc_no_unevaluated_items
       when Hash
@@ -813,37 +890,48 @@ module Arjsv
     def lower_ref(ref_str)
       raise ArgumentError, "$ref must be String" unless ref_str.is_a?(String)
       # Root pointer ref `#` — common for recursive schemas (linked-list /
-      # tree shapes that recurse on the root).
-      if ref_str == '#' || ref_str == '#/'
+      # tree shapes that recurse on the root).  Only treat as the lex
+      # root when there's no enclosing $id base; otherwise resolve below.
+      if (ref_str == '#' || ref_str == '#/') && @base_uri.nil?
         return Arjsv._alloc_ref(ref_str, @root_ref_idx)
       end
       # Single-segment $defs / definitions hits the preregistered slot
-      # (forward-ref capable).
-      m = ref_str.match(%r{\A\#/(?:\$defs|definitions)/([^/]+)\z})
-      if m
-        name = json_pointer_unescape(m[1])
-        if (idx = @defs_idx[name])
-          return Arjsv._alloc_ref(ref_str, idx)
+      # (forward-ref capable; only when not under a sub-$id, since under
+      # a sub-$id the JSON pointer is rooted at the sub-schema).
+      if @base_uri.nil? || @base_uri == @top_base
+        m = ref_str.match(%r{\A\#/(?:\$defs|definitions)/([^/]+)\z})
+        if m
+          name = json_pointer_unescape(m[1])
+          if (idx = @defs_idx[name])
+            return Arjsv._alloc_ref(ref_str, idx)
+          end
         end
       end
-      # General intra-document JSON-pointer ref (`#/path/...`): walk the
-      # original schema following the pointer, lower the pointed-at
-      # sub-schema, and emit a ref to its slot.  Cached by full pointer
-      # string so multiple refs to the same target share one lowering.
+      # Resolve relative to current base URI (RFC 3986).
+      resolved = uri_resolve(@base_uri, ref_str)
+      # Try @id_map with both the raw and the resolved URI.
+      if (target = @id_map[ref_str] || @id_map[resolved])
+        return lower_id_ref(resolved, target)
+      end
+      # Pure intra-document JSON pointer (`#/...`): no scheme, just a
+      # pointer relative to the *current resource*.  When @base_uri is
+      # set, the resource is whatever schema declared that $id; locate
+      # it via @id_map.  When unset, walk @top_schema.
       if ref_str.start_with?('#/')
-        return lower_pointer_ref(ref_str)
+        if @base_uri.nil?
+          return lower_pointer_ref(ref_str, @top_schema, ref_str)
+        elsif (root = @id_map[@base_uri])
+          return lower_pointer_ref(resolved, root, ref_str)
+        end
       end
-      # `$id`-based ref: if the ref string matches an `$id` declared
-      # somewhere in the schema, lower that sub-schema.  Covers the
-      # "ref to if/then/else", "Recursive references between schemas",
-      # and "Location-independent identifier" suite cases.
-      if (target = @id_map[ref_str])
-        return lower_id_ref(ref_str, target)
+      # The resolved URI may be `<base-with-fragment>` like
+      # `http://x/y.json#/$defs/foo`.  Split and walk.
+      if resolved.include?('#/')
+        base_part, frag = resolved.split('#', 2)
+        root = @id_map[base_part] || (base_part == @top_base ? @top_schema : nil)
+        return lower_pointer_ref(resolved, root, '#' + frag) if root
       end
-      # Anchor `#foo` and id-with-anchor URIs: try lookup as-is.
-      # Already covered by @id_map when stored verbatim above.
-      # Unsupported $ref forms (external URIs we can't resolve, URNs):
-      # treat as always-valid.
+      # Unsupported $ref (external URI, etc.): treat as always-valid.
       warn "[arjsv] unsupported $ref: #{ref_str.inspect} — treating as always-valid" if $VERBOSE
       Arjsv._alloc_pass
     end
@@ -867,33 +955,39 @@ module Arjsv
       URI::DEFAULT_PARSER.unescape(seg.gsub('~1', '/').gsub('~0', '~'))
     end
 
-    def lower_pointer_ref(ref_str)
-      if (idx = @path_cache[ref_str])
+    def lower_pointer_ref(ref_str, root = @top_schema, pointer = nil)
+      cache_key = ref_str
+      if (idx = @path_cache[cache_key])
         return Arjsv._alloc_ref(ref_str, idx)
       end
-      # Walk #/seg1/seg2/...  Empty trailing slash keeps the trailing
-      # empty segment (e.g. #/definitions/).  Use split with -1 limit to
-      # preserve trailing empty fields.
-      segments = ref_str[2..].split('/', -1).map { |s| json_pointer_unescape(s) }
-      target = @top_schema
-      segments.each do |seg|
-        case target
-        when Hash
-          return unsupported_ref(ref_str) unless target.key?(seg)
-          target = target[seg]
-        when Array
-          i = (Integer(seg) rescue nil)
-          return unsupported_ref(ref_str) if i.nil? || i >= target.length
-          target = target[i]
-        else
-          return unsupported_ref(ref_str)
+      # `pointer` allows a caller-provided fragment when ref_str carries
+      # an absolute URI prefix (e.g. resolved `http://x/y.json#/$defs/foo`).
+      ptr = pointer || ref_str
+      # `#`/`#/` returns the root.
+      if ptr == '#' || ptr == '#/'
+        target = root
+      else
+        # Walk #/seg1/seg2/...  Use split with -1 limit to preserve
+        # trailing empty fields.
+        segments = ptr[2..].split('/', -1).map { |s| json_pointer_unescape(s) }
+        target = root
+        segments.each do |seg|
+          case target
+          when Hash
+            return unsupported_ref(ref_str) unless target.key?(seg)
+            target = target[seg]
+          when Array
+            i = (Integer(seg) rescue nil)
+            return unsupported_ref(ref_str) if i.nil? || i >= target.length
+            target = target[i]
+          else
+            return unsupported_ref(ref_str)
+          end
         end
       end
-      # Reserve the slot before recursing into lower(target) so cyclic
-      # refs (target points back at our path) resolve through the slot.
       slot = @consts.length
       @consts << nil
-      @path_cache[ref_str] = slot
+      @path_cache[cache_key] = slot
       body = lower(target)
       validate_root = Arjsv._alloc_validate_root(body)
       @consts[slot] = validate_root

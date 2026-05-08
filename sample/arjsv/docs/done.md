@@ -39,9 +39,11 @@ s.valid?({'name' => 'Alice'})        # ← String key も OK
 2020-12 keywords are normalised to draft-07 forms during lowering —
 `prefixItems` → tuple `items`, `dependentRequired`/`dependentSchemas` →
 `dependencies`, `$dynamicRef` → `$ref`, `$dynamicAnchor`/`$anchor` →
-local id-map.  `unevaluatedItems` / `unevaluatedProperties` are dropped
-(annotation-only fallback) because they require keyword-evaluation
-tracking that arjsv's specialiser doesn't build today.
+local id-map.  `unevaluatedItems` / `unevaluatedProperties` are
+implemented via a runtime `eval_keys` Hash + `eval_items` count, with
+`eval_scope` propagating annotations up from in-place applicators
+(allOf members, $ref bodies) on success.  `$id` / `$ref` resolution
+follows RFC 3986 base-URI rules.
 
 | Group  | Keyword              | Notes |
 |--------|----------------------|-------|
@@ -88,46 +90,54 @@ Empty `{}` schema accepted.
 
 | draft     | pass | total | % |
 |-----------|---:|---:|---:|
-| draft-04  |  902 |  917 | **98.36%** |
-| draft-06  | 1185 | 1209 | **98.01%** |
-| draft-07  | 1501 | 1584 | **94.76%** |
-| 2020-12   | 1924 | 2069 | **92.99%** |
+| draft-04  |  906 |  917 | **98.80%** |
+| draft-06  | 1196 | 1209 | **98.92%** |
+| draft-07  | 1513 | 1584 | **95.52%** |
+| 2020-12   | 1957 | 2069 | **94.59%** |
 
 Run with `ruby test/run_official_suite.rb` (default = draft-07);
 `DRAFT=draft4|draft6|draft2020-12 …` switches dataset.
 
-### draft-07 failure breakdown
+### draft-07 failure breakdown (71 fails)
 
 | group | fails | reason |
 |---|---:|---|
 | `optional/format/idn-hostname` | 34 | IDNA-2008 contextual rules; needs libidn / ICU |
 | `optional/format/hostname` | 23 | A-label punycode contextual rules; same |
-| `ref.json` | 12 | URI base resolution against nested `$id`s |
-| `refRemote.json` | 11 | external `$ref` (HTTP fetching); out of scope here |
-| `definitions.json`, `optional/cross-draft.json`, `optional/float-overflow.json` | 1 each | meta-schema `$ref` (HTTP), future-draft handling, Infinity arithmetic |
+| `refRemote.json` | 11 | external `$ref` (HTTP fetching); out of scope |
+| `ref.json` | 1 | meta-schema HTTP fetch |
+| `definitions.json` / `optional/cross-draft.json` | 1 each | external HTTP $ref |
 
-### 2020-12 failure breakdown
+### 2020-12 failure breakdown (112 fails)
 
 | group | fails | reason |
 |---|---:|---|
-| `unevaluatedProperties` | 44 | requires per-keyword evaluation tracking |
-| `optional/format/idn-hostname` | 34 | as above |
-| `unevaluatedItems`        | 27 | as above |
-| `optional/format/hostname` | 23 | as above |
-| `dynamicRef`              | 21 | full dynamic-anchor scoping not implemented |
-| `format.json`             | 18 | tradeoff: assert format (loses these annotation tests but keeps 100+ optional/format ones) |
-| `refRemote` / `ref`       | 30 | external HTTP / nested URI base resolution |
-| `optional/format/email`   |  6 | quoted-string local parts |
-| misc                      | 12 | small edge cases |
+| `optional/format/idn-hostname` | 34 | IDNA / Unicode tables |
+| `optional/format/hostname` | 23 | A-label punycode |
+| `format.json`             | 18 | tradeoff: arjsv asserts format unconditionally; the 18 `valid` cases here include strings like `127.0.0.1.0` for `format: ipv4` that real validators rightly reject |
+| `dynamicRef.json`         | 16 | full dynamic-anchor scope resolution not implemented |
+| `refRemote.json`          | 15 | external HTTP fetch |
+| `unevaluatedItems.json`   | 2 | `contains`-tracked sparse indices (current `eval_items` is prefix-count) |
+| `vocabulary.json` / `defs.json` / `ref.json` / `ecmascript-regex` | 1 each | meta-schema HTTP, custom vocab, etc. |
 
-## Out of scope
+## Out of scope (by design)
 
-- External `$ref` (HTTP fetching), URN base URIs
-- URI base resolution against nested `$id`s
-- `$dynamicRef` / `$dynamicAnchor` full scoping (treated like `$ref` /
-  `$anchor`; covers most static cases)
-- IDNA-2008 punycode validation for `format: hostname` / `idn-hostname`
-  (would need libidn / ICU)
+- External `$ref` (HTTP fetching) — `refRemote.json`, plus the
+  meta-schema cases in `definitions.json` / `cross-draft.json` /
+  `vocabulary.json` that fetch the spec metaschema URL.
+- IDNA-2008 / punycode validation for `format: hostname` / `idn-hostname`
+  / `idn-email` Unicode-form validation — needs libidn or ICU tables.
+- `$dynamicRef` full dynamic-scope resolution — implemented as a static
+  `$ref` to the matching `$dynamicAnchor`.  Static cases work; the cases
+  that distinguish dynamic-vs-static scope do not.
+
+## Known small gaps
+
+- `unevaluatedItems` with `contains` (2 tests in 2020-12): the current
+  `c->eval_items` is a prefix-length integer.  Fixing requires switching
+  to a sparse-set representation; deferred.
+- Strict ECMA-262 control-escape rejection in `pattern` (1 test): we
+  accept `\a` because Onigmo does; ECMA forbids it.
 
 ## Internals
 

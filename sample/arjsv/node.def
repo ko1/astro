@@ -367,7 +367,14 @@ node_multiple_of(CTX *c, NODE *n, double divisor)
     if (divisor == 0.0) return 0;
     double v = arjsv_value_to_double(c->data);
     double q = v / divisor;
-    return q == floor(q) && isfinite(q);
+    // Overflow path: v/divisor doesn't fit in a double.  Defer to the
+    // Ruby-side rational check (`Rational(v) % Rational(d) == 0`) which
+    // gets the precise answer.  Slow, but only triggered on extreme
+    // values like 1e308.
+    if (!isfinite(q)) {
+        return arjsv_rational_multiple_of(c->data, divisor);
+    }
+    return q == floor(q);
 }
 
 // ---- String keywords -----------------------------------------------------
@@ -768,6 +775,15 @@ node_property_names(CTX *c, NODE *n, NODE *schema)
 // the regular keyword sequence including the unevaluated_* node at the
 // end.  Outer eval state is saved on entry and restored on exit so
 // inner contributions don't leak to enclosing scopes.
+// Helper: copy every key from src hash into dst hash (used by eval_scope
+// to propagate inner-scope annotations to the outer scope on success).
+static int
+arjsv_merge_keys_iter(VALUE key, VALUE val, VALUE dst)
+{
+    rb_hash_aset(dst, key, val);
+    return ST_CONTINUE;
+}
+
 NODE_DEF
 node_eval_scope(CTX *c, NODE *n, NODE *body)
 {
@@ -776,6 +792,19 @@ node_eval_scope(CTX *c, NODE *n, NODE *body)
     c->eval_keys = rb_hash_new();
     c->eval_items = 0;
     int ok = EVAL_ARG(c, body);
+    if (ok) {
+        // Aggregate inner scope's annotations into the outer scope so
+        // an enclosing unevaluatedProperties / unevaluatedItems can see
+        // contributions from this in-place applicator (allOf member,
+        // $ref body, etc.).  On failure the inner annotations are
+        // discarded — the failing sub-schema didn't evaluate cleanly.
+        if (saved_keys != Qnil) {
+            rb_hash_foreach(c->eval_keys, arjsv_merge_keys_iter, saved_keys);
+        }
+        if (saved_items != -1 && c->eval_items > saved_items) {
+            saved_items = c->eval_items;
+        }
+    }
     c->eval_keys = saved_keys;
     c->eval_items = saved_items;
     return ok;

@@ -23,13 +23,17 @@ contentMediaType / `$ref` (root, `#/$defs/<name>`, full JSON pointer,
 `$id` lookup; recursive refs supported).
 
 **JSON Schema Test Suite**:
-- draft-04:  902 / 917 = **98.36%**
-- draft-06: 1185 / 1209 = **98.01%**
-- draft-07: 1501 / 1584 = **94.76%**
-- 2020-12:  1924 / 2069 = **92.99%**
+- draft-04:  906 / 917 = **98.80%**
+- draft-06: 1196 / 1209 = **98.92%**
+- draft-07: 1513 / 1584 = **95.52%**
+- 2020-12:  1957 / 2069 = **94.59%**
 
-Remaining failures concentrate in IDNA hostname (no libidn), external
-HTTP `$ref`, and a few deep `$dynamicRef` / nested-`$id` cases — see
+Remaining failures concentrate in IDNA hostname / punycode A-label
+(needs Unicode IDNA tables), external HTTP `$ref` (no fetcher),
+`$dynamicRef` dynamic scope resolution, and the optional ECMA-262
+regex assertion strictness — i.e. things that need an external
+dependency or substantial extra code.  Within the "no external
+dependency" scope, arjsv is essentially feature-complete; see
 [`docs/done.md`](docs/done.md) for the breakdown.
 
 json_schemer drop-in API: `valid?`, `validate` (Enumerator of error

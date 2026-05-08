@@ -68,6 +68,19 @@ arjsv_value_to_double(VALUE v)
     return NUM2DBL(v);
 }
 
+// Slow-path multipleOf check when float division overflows.  Uses Ruby's
+// Rational so values like 1e308 / 0.123456789 are computed exactly.
+// Returns 1 (valid) iff `v` is an integer multiple of `divisor`.
+static inline int
+arjsv_rational_multiple_of(VALUE v, double divisor)
+{
+    VALUE rv = rb_funcall(v, rb_intern("to_r"), 0);
+    VALUE rd = rb_funcall(DBL2NUM(divisor), rb_intern("to_r"), 0);
+    VALUE q = rb_funcall(rv, '/', 1, rd);
+    VALUE denom = rb_funcall(q, rb_intern("denominator"), 0);
+    return RTEST(rb_funcall(denom, rb_intern("=="), 1, INT2FIX(1)));
+}
+
 // Compute the type bitmask for a Ruby VALUE.  Returns 0 if v is none of the
 // JSON-recognised types (e.g. a Ruby Symbol — JSON has no symbols).
 static inline uint32_t

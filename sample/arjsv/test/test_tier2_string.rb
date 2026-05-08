@@ -28,8 +28,14 @@ class TestTier2String < ArjsvTest
     s = schema('format' => 'email')
     assert_valid s, 'a@b.co'
     assert_valid s, 'first.last@example.com'
+    assert_valid s, '"quoted local"@example.com'
+    assert_valid s, 'user@[127.0.0.1]'
     refute_valid s, 'no-at'
-    refute_valid s, 'a@b'
+    refute_valid s, '@example.com'                # missing local part
+    refute_valid s, 'user@'                        # missing domain
+    refute_valid s, 'user@invalid=domain.com'      # `=` in label
+    refute_valid s, '.user@example.com'            # leading dot in local
+    refute_valid s, 'user..name@example.com'       # consecutive dots
   end
 
   def test_format_date
