@@ -389,6 +389,28 @@ class Hash
   # Note: Hash#to_h is defined later (line ~1500) — leave it there so a
   # single canonical implementation exists.
 
+  # Hash#hash — content-based hash that's order-independent.  Each
+  # entry contributes (k.hash * 17 ^ v.hash) into a XOR accumulator,
+  # and the size is mixed in.  Recursion guard via class-level Hash.
+  @@__hash_seen = {}
+  def hash
+    if @@__hash_seen[self.object_id]
+      return self.class.hash
+    end
+    @@__hash_seen[self.object_id] = true
+    begin
+      h = size * 7
+      each_pair { |k, v|
+        # Use a multiplicative mix that doesn't cancel under XOR even
+        # when many entries share equal values.
+        h ^= ((k.hash * 17 + 13) * (v.hash * 23 + 11)) & 0xffffffffffffffff
+      }
+      h
+    ensure
+      @@__hash_seen.delete(self.object_id)
+    end
+  end
+
   def transform_keys!(*args, &blk)
     if args.size == 0 && !blk
       return enum_for(:transform_keys!)
