@@ -707,6 +707,14 @@ static VALUE method_owner(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE obj_instance_of_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
+    /* CRuby: argument must be a Class or Module; otherwise TypeError. */
+    if (SPECIAL_CONST_P(argv[0]) ||
+        (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "class or module required");
+        return Qnil;
+    }
     return KORB_BOOL((VALUE)korb_class_of_class(self) == argv[0]);
 }
 
@@ -858,6 +866,21 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
             ((struct RBasic *)r)->flags |= FL_FROZEN;
         }
     }
+    /* CRuby protocol: after the shallow copy, dispatch initialize_copy
+     * (or initialize_clone for clone) on the new instance with the
+     * original as the argument so user code can deep-copy / install
+     * extra state.  Only fire when the user actually defined the hook
+     * (the default Object#initialize_copy is a no-op). */
+    if (r != self && !SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_OBJECT) {
+        struct korb_class *k = korb_class_of_class(r);
+        ID hook = preserve_frozen ? korb_intern("initialize_clone")
+                                   : korb_intern("initialize_copy");
+        if (k && korb_class_find_method(k, hook)) {
+            VALUE args[1] = { self };
+            korb_funcall(c, r, hook, 1, args);
+            if (c->state == KORB_RAISE) return Qnil;
+        }
+    }
     return r;
 }
 static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -902,13 +925,22 @@ static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE obj_ivar_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_OBJECT) return Qfalse;
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
-    else if (BUILTIN_TYPE(argv[0]) == T_STRING)
+    else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
         name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
                              ((struct korb_string *)argv[0])->len);
-    else return Qfalse;
+    } else {
+        /* CRuby: arg must be Symbol/String or respond to #to_str.
+         * Otherwise TypeError. */
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        const char *cn = SPECIAL_CONST_P(argv[0]) ? "(special)"
+                              : korb_id_name(korb_class_of_class(argv[0])->name);
+        korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string", cn);
+        return Qnil;
+    }
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_OBJECT) return Qfalse;
     /* CRuby: ivar is "defined" once it has been set, even to nil.
      * korb_ivar_get returns Qnil for both unset and set-to-nil — use
      * korb_ivar_defined directly so we don't lose that distinction. */
