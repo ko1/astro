@@ -1144,10 +1144,17 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
         return binding_eval_via(c, b, forward, 3);
     }
     struct korb_string *s = (struct korb_string *)argv[0];
-    /* CRuby's __FILE__ inside `eval(str)` is just "(eval)" (until
-     * Ruby 3.3+ changed it to "(eval at ...)").  Stick with the
-     * 3.2-compatible value here. */
-    const char *filename = "(eval)";
+    /* CRuby 3.4+: __FILE__ inside `eval(str)` is "(eval at <caller>:<line>)".
+     * Build the canonical form using the caller's file/line (recorded at
+     * cfunc dispatch via last_cfunc_callsite). */
+    char eval_filename_buf[1024];
+    {
+        const char *cf = c->current_file ? c->current_file : "(unknown)";
+        int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
+        snprintf(eval_filename_buf, sizeof(eval_filename_buf),
+                 "(eval at %s:%d)", cf, line);
+    }
+    const char *filename = eval_filename_buf;
     /* `eval(str)` (without explicit binding) runs in the caller's
      * lexical context: cref / current_frame stay; def lands on the
      * caller's class.  korb_eval_string normally resets these to
