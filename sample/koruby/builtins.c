@@ -677,7 +677,7 @@ void korb_init_builtins(void) {
     DEF(cAry, "*",         ary_mul, 1);
     DEF(cAry, "uniq!",     ary_uniq, -1);
     DEF(cAry, "sort!",     ary_sort_bang, -1);
-    DEF(cAry, "compact!",  ary_compact, 0);
+    DEF(cAry, "compact!",  ary_compact_bang, 0);
     DEF(cAry, "reverse!",  ary_reverse_bang, 0);
     DEF(cAry, "rotate!",   ary_rotate_bang, -1);
     DEF(cAry, "rotate",    ary_rotate, -1);

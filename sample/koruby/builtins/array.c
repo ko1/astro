@@ -1,6 +1,52 @@
 /* Array — moved from builtins.c.  Included from builtins.c so we
  * inherit its includes/macros (KORB_BOOL, korb_intern, etc.). */
 
+/* Coerce v to an Integer via #to_int (CRuby protocol).  Returns the
+ * Fixnum/Bignum on success.  On failure raises TypeError and returns
+ * Qundef.  Already-Integer values pass through. */
+static VALUE korb_to_int_or_raise(CTX *c, VALUE v) {
+    if (FIXNUM_P(v)) return v;
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_BIGNUM) return v;
+    /* Float / mock / user object — try #to_int.  Float defines to_int
+     * (truncates), heap objects can override.  Special-const values
+     * other than Float (true/false/nil/Symbol) reject below. */
+    bool is_real = !SPECIAL_CONST_P(v);
+    bool is_float = FLONUM_P(v) || (is_real && BUILTIN_TYPE(v) == T_FLOAT);
+    if (is_real || is_float) {
+        VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+        if (c->state == KORB_RAISE) return Qundef;
+        if (RTEST(rt)) {
+            VALUE r = korb_funcall(c, v, korb_intern("to_int"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qundef;
+            if (FIXNUM_P(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_BIGNUM)) {
+                return r;
+            }
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            const char *src_n = is_float ? "Float"
+                                : korb_id_name(korb_class_of_class(v)->name);
+            korb_raise(c, (struct korb_class *)eT,
+                       "can't convert %s to Integer (%s#to_int gives %s)",
+                       src_n, src_n,
+                       SPECIAL_CONST_P(r) ? "(special)"
+                           : korb_id_name(korb_class_of_class(r)->name));
+            return Qundef;
+        }
+    }
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    const char *cn;
+    if (v == Qtrue) cn = "true";
+    else if (v == Qfalse) cn = "false";
+    else if (v == Qnil) cn = "nil";
+    else if (FLONUM_P(v)) cn = "Float";
+    else if (SYMBOL_P(v)) cn = "Symbol";
+    else if (SPECIAL_CONST_P(v)) cn = "(special)";
+    else cn = korb_id_name(korb_class_of_class(v)->name);
+    korb_raise(c, (struct korb_class *)eT,
+               "no implicit conversion of %s into Integer", cn);
+    return Qundef;
+}
+
 /* ---------- Array ---------- */
 static VALUE ary_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(korb_ary_len(self));
@@ -114,8 +160,17 @@ static VALUE ary_push(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE ary_pop(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
-    if (argc >= 1 && FIXNUM_P(argv[0])) {
-        long n = FIX2LONG(argv[0]);
+    if (argc > 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 0..1)", argc);
+        return Qnil;
+    }
+    if (argc >= 1) {
+        VALUE iv = korb_to_int_or_raise(c, argv[0]);
+        if (UNDEF_P(iv)) return Qnil;
+        if (!FIXNUM_P(iv)) return Qnil;  /* Bignum n: way bigger than array */
+        long n = FIX2LONG(iv);
         if (n < 0) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
             korb_raise(c, (struct korb_class *)eArg, "negative array size");
@@ -460,6 +515,23 @@ static VALUE ary_compact(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_ary_new();
     for (long i = 0; i < a->len; i++) if (!NIL_P(a->ptr[i])) korb_ary_push(r, a->ptr[i]);
     return r;
+}
+
+/* Array#compact! — destructive: remove nil in place; return self if any
+ * change, nil if no nil was removed (CRuby semantic for the bang). */
+static VALUE ary_compact_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_array *a = (struct korb_array *)self;
+    long w = 0;
+    bool any = false;
+    for (long r = 0; r < a->len; r++) {
+        if (NIL_P(a->ptr[r])) { any = true; continue; }
+        if (w != r) a->ptr[w] = a->ptr[r];
+        w++;
+    }
+    if (!any) return Qnil;
+    a->len = w;
+    return self;
 }
 
 static VALUE ary_uniq(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1083,9 +1155,18 @@ static VALUE ary_unshift(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_shift(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
+    if (argc > 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 0..1)", argc);
+        return Qnil;
+    }
     struct korb_array *a = (struct korb_array *)self;
-    if (argc >= 1 && FIXNUM_P(argv[0])) {
-        long n = FIX2LONG(argv[0]);
+    if (argc >= 1) {
+        VALUE iv = korb_to_int_or_raise(c, argv[0]);
+        if (UNDEF_P(iv)) return Qnil;
+        if (!FIXNUM_P(iv)) return Qnil;
+        long n = FIX2LONG(iv);
         if (n < 0) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
             korb_raise(c, (struct korb_class *)eArg, "negative array size");
@@ -1373,18 +1454,39 @@ static VALUE ary_rassoc(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
         VALUE e = a->ptr[i];
-        if (BUILTIN_TYPE(e) == T_ARRAY && ((struct korb_array *)e)->len > 1 &&
-            korb_eq(((struct korb_array *)e)->ptr[1], argv[0])) {
-            return e;
+        VALUE entry;
+        if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_ARRAY) {
+            entry = e;
+        } else if (!SPECIAL_CONST_P(e)) {
+            struct korb_class *k = korb_class_of_class(e);
+            if (!k || !korb_class_find_method(k, korb_intern("to_ary"))) continue;
+            entry = korb_funcall(c, e, korb_intern("to_ary"), 0, NULL);
+            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; continue; }
+            if (SPECIAL_CONST_P(entry) || BUILTIN_TYPE(entry) != T_ARRAY) continue;
+        } else {
+            continue;
         }
+        struct korb_array *ea = (struct korb_array *)entry;
+        if (ea->len < 2) continue;
+        VALUE eq_args[1] = { argv[0] };
+        VALUE r = korb_funcall(c, ea->ptr[1], korb_intern("=="), 1, eq_args);
+        if (RTEST(r)) return entry;
     }
     return Qnil;
 }
 
 /* Array#at(i) — like a[i] for a single integer index. */
 static VALUE ary_at(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!FIXNUM_P(argv[0])) return Qnil;
-    return korb_ary_aref(self, FIX2LONG(argv[0]));
+    if (argc != 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1)", argc);
+        return Qnil;
+    }
+    VALUE iv = korb_to_int_or_raise(c, argv[0]);
+    if (UNDEF_P(iv)) return Qnil;
+    if (!FIXNUM_P(iv)) return Qnil;
+    return korb_ary_aref(self, FIX2LONG(iv));
 }
 
 /* Array#delete(obj) — remove all == matches; return obj if found else nil. */
@@ -1495,11 +1597,28 @@ static VALUE ary_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Array#insert(i, *elts) — splice elts into self starting at i. */
 static VALUE ary_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
-    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    if (argc < 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given 0, expected 1+)");
+        return Qnil;
+    }
+    if (argc == 1) return self;  /* `arr.insert(i)` with no values is no-op */
+    VALUE iv = korb_to_int_or_raise(c, argv[0]);
+    if (UNDEF_P(iv)) return Qnil;
+    if (!FIXNUM_P(iv)) return self;
     struct korb_array *a = (struct korb_array *)self;
-    long i = FIX2LONG(argv[0]);
-    if (i < 0) i += a->len + 1;
-    if (i < 0) i = 0;
+    long i = FIX2LONG(iv);
+    if (i < 0) {
+        long real = i + a->len + 1;
+        if (real < 0) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE,
+                       "index %ld too small for array; minimum: -%ld", i, a->len + 1);
+            return Qnil;
+        }
+        i = real;
+    }
     long ins = argc - 1;
     if (ins == 0) return self;
     while (a->len < i) korb_ary_push(self, Qnil);
