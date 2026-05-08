@@ -989,36 +989,63 @@ static VALUE module_remove_class_variable(CTX *c, VALUE self, int argc, VALUE *a
 /* Module#private_class_method(:foo, ...) — mark singleton method as
  * private.  Stub-level: just set visibility flag.  We keep things
  * simple — return self regardless. */
-static VALUE module_private_class_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
+                                  enum korb_visibility v) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
     extern struct korb_class *korb_singleton_class_of(struct korb_class *);
     struct korb_class *meta = korb_singleton_class_of((struct korb_class *)self);
+    /* Single-Array form: `private_class_method([:foo, :bar])` (Ruby 3.x). */
+    if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
+        struct korb_array *a = (struct korb_array *)argv[0];
+        argv = a->ptr;
+        argc = (int)a->len;
+    }
     for (int i = 0; i < argc; i++) {
-        ID name = SYMBOL_P(argv[i]) ? korb_sym2id(argv[i]) :
-                  (BUILTIN_TYPE(argv[i]) == T_STRING ?
-                   korb_intern_n(((struct korb_string *)argv[i])->ptr,
-                                 ((struct korb_string *)argv[i])->len) : 0);
-        if (!name || !meta) continue;
-        struct korb_method *m = korb_class_find_method(meta, name);
-        if (m) m->visibility = KORB_VIS_PRIVATE;
+        VALUE arg = argv[i];
+        if (!SYMBOL_P(arg) &&
+            (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) &&
+            !SPECIAL_CONST_P(arg)) {
+            VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                arg = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            }
+        }
+        ID name = 0;
+        if (SYMBOL_P(arg)) name = korb_sym2id(arg);
+        else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING)
+            name = korb_intern_n(((struct korb_string *)arg)->ptr,
+                                 ((struct korb_string *)arg)->len);
+        if (!name) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "%s is not a symbol nor a string",
+                       SPECIAL_CONST_P(argv[i]) ? "(special)"
+                           : korb_id_name(korb_class_of_class(argv[i])->name));
+            return Qnil;
+        }
+        struct korb_method *m = meta ? korb_class_find_method(meta, name) : NULL;
+        if (!m) {
+            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            const char *cn = (((struct korb_class *)self)->name)
+                              ? korb_id_name(((struct korb_class *)self)->name) : "(anon)";
+            korb_raise(c, (struct korb_class *)eN,
+                       "undefined method '%s' for class '%s'",
+                       korb_id_name(name), cn);
+            return Qnil;
+        }
+        m->visibility = v;
     }
     return self;
 }
+static VALUE module_private_class_method(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return class_visibility_set(c, self, argc, argv, KORB_VIS_PRIVATE);
+}
 
 static VALUE module_public_class_method(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
-    extern struct korb_class *korb_singleton_class_of(struct korb_class *);
-    struct korb_class *meta = korb_singleton_class_of((struct korb_class *)self);
-    for (int i = 0; i < argc; i++) {
-        ID name = SYMBOL_P(argv[i]) ? korb_sym2id(argv[i]) :
-                  (BUILTIN_TYPE(argv[i]) == T_STRING ?
-                   korb_intern_n(((struct korb_string *)argv[i])->ptr,
-                                 ((struct korb_string *)argv[i])->len) : 0);
-        if (!name || !meta) continue;
-        struct korb_method *m = korb_class_find_method(meta, name);
-        if (m) m->visibility = KORB_VIS_PUBLIC;
-    }
-    return self;
+    return class_visibility_set(c, self, argc, argv, KORB_VIS_PUBLIC);
 }
 
 /* Module#private_constant / public_constant — visibility on constants. */
