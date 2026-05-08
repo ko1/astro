@@ -2946,16 +2946,22 @@ void korb_check_basic_op_redef(struct korb_class *target, ID name) {
         korb_g_array_op_redefined = true;
         return;
     }
-    /* Integer/Float/Numeric redef trips the global FIXNUM/FLONUM
-     * fast-path off — those are the basic ops the inline fast paths in
-     * node_plus/minus/mul/div etc. care about.  Hash/String/Symbol
-     * redefining their own `<` or `[]` doesn't affect Integer arithmetic
-     * dispatch, so don't set the flag for them (otherwise adding any
-     * helper to bootstrap.rb on those classes would kill the fast path
-     * across the whole VM — fib(36) regressed ~5× from this). */
+    /* Integer/Float redef trips the global FIXNUM/FLONUM fast-path off —
+     * those are the basic ops the inline fast paths in node_plus/minus/
+     * mul/div etc. care about.  Hash/String/Symbol redefining their own
+     * `<` or `[]` doesn't affect Integer arithmetic dispatch, so don't
+     * set the flag for them (otherwise adding any helper to bootstrap.rb
+     * on those classes would kill the fast path across the whole VM —
+     * fib(36) regressed ~5× from this).
+     *
+     * Numeric adds are SKIPPED here too: a default `Numeric#<=>` (or
+     * other op) added in bootstrap.rb still has Integer/Float's own
+     * cfunc winning at lookup time, so the inline fast paths remain
+     * valid.  Without this skip, just defining `Numeric#<=>` once at
+     * startup would permanently slow every fixnum compare ~10× even
+     * though Integer's <=> is still in effect (optcarrot 70 → 7 fps). */
     if (target != korb_vm->integer_class &&
-        target != korb_vm->float_class   &&
-        target != korb_vm->numeric_class) return;
+        target != korb_vm->float_class) return;
     korb_g_basic_op_redefined = true;
 }
 

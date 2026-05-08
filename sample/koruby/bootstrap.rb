@@ -478,7 +478,10 @@ class Numeric
 
   # Numeric#<=> — default falls back to identity (CRuby returns 0 when
   # self.equal?(other), nil otherwise).  Subclasses (Integer/Float)
-  # override; this is the shared root.
+  # override; this is the shared root.  Adding this to Numeric used to
+  # trip the global basic-op redef flag and ~10× regress optcarrot,
+  # but korb_check_basic_op_redef now skips Numeric (Integer/Float
+  # cfuncs still win at lookup).
   def <=>(other)
     self.equal?(other) ? 0 : nil
   end unless method_defined?(:<=>)
