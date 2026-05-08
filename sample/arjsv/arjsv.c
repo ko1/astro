@@ -153,6 +153,10 @@ rb_arjsv_schema_valid_p(VALUE self, VALUE data)
     ctx.consts = RARRAY_LEN(s->consts) > 0 ? RARRAY_CONST_PTR(s->consts) : NULL;
     ctx.one_of_count = 0;
     ctx.one_of_active = 0;
+    ctx.one_of_match_keys = Qundef;
+    ctx.one_of_match_items = -1;
+    ctx.eval_keys = Qnil;
+    ctx.eval_items = -1;
     int ok = EVAL(&ctx, s->root);
     return ok ? Qtrue : Qfalse;
 }
@@ -501,6 +505,41 @@ rb_alloc_ref(VALUE self, VALUE defs_name, VALUE consts_idx)
 }
 
 static VALUE
+rb_alloc_eval_scope(VALUE self, VALUE body)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_eval_scope(arjsv_unwrap_node(body)));
+}
+
+static VALUE
+rb_alloc_unevaluated_properties_schema(VALUE self, VALUE schema)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_unevaluated_properties_schema(arjsv_unwrap_node(schema)));
+}
+
+static VALUE
+rb_alloc_no_unevaluated_properties(VALUE self)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_no_unevaluated_properties());
+}
+
+static VALUE
+rb_alloc_unevaluated_items_schema(VALUE self, VALUE schema)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_unevaluated_items_schema(arjsv_unwrap_node(schema)));
+}
+
+static VALUE
+rb_alloc_no_unevaluated_items(VALUE self)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_no_unevaluated_items());
+}
+
+static VALUE
 rb_alloc_dependency(VALUE self, VALUE key, VALUE key_idx, VALUE sym_idx, VALUE dep_schema, VALUE next)
 {
     (void)self;
@@ -636,6 +675,11 @@ Init_arjsv(void)
     rb_define_module_function(rb_mArjsv, "_alloc_property_names", rb_alloc_property_names, 1);
     rb_define_module_function(rb_mArjsv, "_alloc_ref",           rb_alloc_ref,           2);
     rb_define_module_function(rb_mArjsv, "_alloc_dependency",    rb_alloc_dependency,    5);
+    rb_define_module_function(rb_mArjsv, "_alloc_eval_scope",    rb_alloc_eval_scope,    1);
+    rb_define_module_function(rb_mArjsv, "_alloc_unevaluated_properties_schema", rb_alloc_unevaluated_properties_schema, 1);
+    rb_define_module_function(rb_mArjsv, "_alloc_no_unevaluated_properties",     rb_alloc_no_unevaluated_properties,     0);
+    rb_define_module_function(rb_mArjsv, "_alloc_unevaluated_items_schema",      rb_alloc_unevaluated_items_schema,      1);
+    rb_define_module_function(rb_mArjsv, "_alloc_no_unevaluated_items",          rb_alloc_no_unevaluated_items,          0);
     rb_define_module_function(rb_mArjsv, "_alloc_contains",      rb_alloc_contains,      3);
     rb_define_module_function(rb_mArjsv, "_alloc_minimum",       rb_alloc_minimum,       2);
     rb_define_module_function(rb_mArjsv, "_alloc_maximum",       rb_alloc_maximum,       2);

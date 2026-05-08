@@ -158,6 +158,7 @@ module Arjsv
       # for the assertion mode).
       @assert_format  = true
       @assert_content = true
+      @ref_keeps_siblings = false   # draft-07 default: $ref ignores siblings
       # User-supplied format checkers (json_schemer-compatible).
       # Symbol keys are normalised to Strings; `false` / `nil` values
       # disable a built-in format.
@@ -175,22 +176,16 @@ module Arjsv
     # Apply per-draft defaults based on the top-level $schema URI.
     # Called by Arjsv.schema before lowering.
     #
-    # Per spec: 2019-09 / 2020-12 demoted both `format` and `content*` to
-    # annotation-only by default.  The test suite, however, has
-    # implementation-specific tests for both modes — `format.json` and
-    # `content.json` (annotation tests) and `optional/format/*` and the
-    # original `content.json` "with schema" cases (assertion tests).
-    #
-    # We assert `format` regardless of draft (matching json_schemer's
-    # default and most ecosystem-deployed implementations) and switch
-    # `content` to annotation-only in 2019-09+ because that matches the
-    # primary `content.json` test set without giving up much practical
-    # value (contentEncoding/Media is rarely used as a hard constraint).
+    # Defaults that change with draft:
+    # - `format` assertion: arjsv asserts in all drafts (match json_schemer).
+    # - `content*` assertion: 2019-09+ → annotation-only.
+    # - `$ref` siblings: draft-07 ignores them; 2019-09+ applies them.
     def detect_draft(top)
       s = top.is_a?(Hash) && top['$schema']
       return unless s.is_a?(String)
       if s.include?('2019-09') || s.include?('2020-12')
         @assert_content = false
+        @ref_keeps_siblings = true
       end
     end
 
@@ -319,8 +314,19 @@ module Arjsv
         # in a schema (not in `enum` values, `default`, etc.).
         schema = normalize_drafts(schema)
         # draft-07 semantics: if `$ref` is present, sibling keywords are
-        # ignored.  json_schemer matches this for draft-07.
-        return lower_ref(schema['$ref']) if schema.key?('$ref')
+        # ignored.  2019-09+ allows siblings to apply alongside $ref.
+        if schema.key?('$ref')
+          ref_node = lower_ref(schema['$ref'])
+          return ref_node unless @ref_keeps_siblings
+          # Continue: $ref is one of the keywords; emit it first and let
+          # the rest of the keyword sequence run normally.  Strip from
+          # schema so we don't recurse via the early-return.
+          schema = schema.reject { |k, _| k == '$ref' }
+          # Inject the ref node at the head of `nodes` accumulator.
+          # We'll handle it via a small trick: stash in a local and
+          # prepend after collecting siblings.
+          extra_ref_node = ref_node
+        end
         warn_unknown_keywords(schema)
 
         # Type-guard fast path: when `type` strictly is "object" / "array",
@@ -370,8 +376,19 @@ module Arjsv
         if schema.key?('contentEncoding') || schema.key?('contentMediaType')
           nodes.concat(lower_content(schema))
         end
+        # `unevaluatedProperties` / `unevaluatedItems` (2019-09+).  Must run
+        # AFTER the other keywords so the eval_keys / eval_items state is
+        # fully populated.  The wrapping eval_scope (added below) is what
+        # makes those tracked variables non-nil for this level.
+        nodes << lower_unevaluated_properties(schema['unevaluatedProperties']) if schema.key?('unevaluatedProperties')
+        nodes << lower_unevaluated_items(schema['unevaluatedItems'])           if schema.key?('unevaluatedItems')
 
-        all_of(nodes.compact)
+        nodes.unshift(extra_ref_node) if defined?(extra_ref_node) && extra_ref_node
+        body = all_of(nodes.compact)
+        if schema.key?('unevaluatedProperties') || schema.key?('unevaluatedItems')
+          body = Arjsv._alloc_eval_scope(body)
+        end
+        body
       else
         raise ArgumentError, "Schema must be Hash / true / false, got #{schema.class}"
       end
@@ -659,10 +676,13 @@ module Arjsv
       end
       result << pp_chain_tail unless pattern_props.empty?
 
-      # additionalProperties node.  Skip if the keyword is absent or `true`
-      # (= no constraint).
+      # additionalProperties.  Absent ⇒ no node, no annotation tracking.
+      # Explicit `true` (or any non-Hash truthy value) ⇒ emit the
+      # schema-form node with `pass` body so the C-side iteration tracks
+      # every unknown key as evaluated (needed for adjacent
+      # unevaluatedProperties to see them).
       ap = schema['additionalProperties']
-      return result if ap.nil? || ap == true
+      return result if ap.nil?
 
       # Collect known property-name fstrings and their consts indices
       # (contiguous range required for the C-side iteration).
@@ -673,6 +693,9 @@ module Arjsv
       result << if ap == false
         Arjsv._alloc_no_additional_properties(keys_start, keys_count, pats_start, pats_count)
       else
+        # `ap` is true / Hash / { ... }; lower(true) returns pass and
+        # lower(hash) returns the sub-schema node.  Either way unknown
+        # keys are validated and (on success) recorded in eval_keys.
         Arjsv._alloc_additional_properties_schema(keys_start, keys_count,
                                                   pats_start, pats_count,
                                                   lower(ap))
@@ -697,6 +720,36 @@ module Arjsv
 
     def lower_property_names(s)
       Arjsv._alloc_property_names(lower(s))
+    end
+
+    # `unevaluatedProperties` (2019-09+) — controls keys not "evaluated"
+    # by adjacent properties / patternProperties / additionalProperties /
+    # in-place applicators.  Implementation reads the eval_keys set
+    # populated by those keywords during this level's evaluation.
+    def lower_unevaluated_properties(v)
+      case v
+      when true
+        Arjsv._alloc_pass            # everything passes
+      when false
+        Arjsv._alloc_no_unevaluated_properties
+      when Hash
+        Arjsv._alloc_unevaluated_properties_schema(lower(v))
+      else
+        raise ArgumentError, "unevaluatedProperties must be bool / schema, got #{v.class}"
+      end
+    end
+
+    def lower_unevaluated_items(v)
+      case v
+      when true
+        Arjsv._alloc_pass
+      when false
+        Arjsv._alloc_no_unevaluated_items
+      when Hash
+        Arjsv._alloc_unevaluated_items_schema(lower(v))
+      else
+        raise ArgumentError, "unevaluatedItems must be bool / schema, got #{v.class}"
+      end
     end
 
     # `dependencies: { <key> => Array<key> | schema | true | false }`.
@@ -986,8 +1039,8 @@ module Arjsv
       end
       out.delete('$dynamicAnchor')
       out.delete('$vocabulary')
-      out.delete('unevaluatedItems')
-      out.delete('unevaluatedProperties')
+      # `unevaluatedItems` / `unevaluatedProperties` are now implemented;
+      # let them flow through to lower() instead of dropping.
       out
     end
 

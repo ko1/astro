@@ -28,6 +28,32 @@ NODE *arjsv_unwrap_node(VALUE v);
 void arjsv_node_mark(void *ptr);
 extern const rb_data_type_t arjsv_node_type;
 
+// Annotation-tracking helpers for `unevaluatedProperties` /
+// `unevaluatedItems`.  Off when c->eval_keys is Qnil / c->eval_items is
+// -1 — that's the common case (no unevaluated_* in the schema), so the
+// branch is well-predicted.
+static inline void
+arjsv_track_key(CTX *c, VALUE key)
+{
+    if (c->eval_keys != Qnil) rb_hash_aset(c->eval_keys, key, Qtrue);
+}
+
+static inline void
+arjsv_track_item(CTX *c, long idx)
+{
+    if (c->eval_items != -1 && (int)(idx + 1) > c->eval_items) {
+        c->eval_items = (int)(idx + 1);
+    }
+}
+
+static inline void
+arjsv_track_items_count(CTX *c, long count)
+{
+    if (c->eval_items != -1 && (int)count > c->eval_items) {
+        c->eval_items = (int)count;
+    }
+}
+
 // Numeric helpers shared between node.def and arjsv.c.
 static inline bool
 arjsv_value_is_number(VALUE v)

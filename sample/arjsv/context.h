@@ -24,6 +24,18 @@ typedef struct CTX_struct {
     const VALUE *consts;
     int one_of_count;       // matches counter for `oneOf` walk
     int one_of_active;      // > 0 inside a `oneOf` evaluation
+    // Snapshot of evaluation state at the moment of a `oneOf` match.
+    // Captured so that, when oneOf finds *exactly* one matching branch,
+    // we can restore that branch's contributions (and discard those of
+    // any other branches that we tried in between).
+    VALUE one_of_match_keys;
+    int one_of_match_items;
+    // Annotation tracking for `unevaluatedProperties` / `unevaluatedItems`.
+    // Off (Qnil / -1) outside an `eval_scope`.  Inside a scope, every
+    // node that "evaluates" a key / index records it here.  The
+    // unevaluated_* check at the end reads this set.
+    VALUE eval_keys;        // Qnil (off) or Hash<key_VALUE, true>
+    int eval_items;         // -1 (off) or count of array prefix evaluated
 } CTX;
 
 struct arjsv_option {

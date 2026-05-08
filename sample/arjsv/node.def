@@ -101,6 +101,10 @@ node_required_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_
 // absent, skip (per JSON Schema: properties only constrain present keys).
 // See node_required for the (key, key_idx) split rationale.
 // See node_required for the String-then-Symbol fallback rationale.
+// On a successful match, also records the key in c->eval_keys (for
+// the surrounding `unevaluatedProperties` check, when one is in scope).
+// Saves and resets c->eval_keys / eval_items around the sub-schema
+// recursion so the inner schema starts with a fresh tracking context.
 NODE_DEF
 node_property(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym_idx, NODE *schema, NODE *next)
 {
@@ -109,11 +113,18 @@ node_property(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym_i
         VALUE prop = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
         if (prop == Qundef) prop = rb_hash_lookup2(c->data, c->consts[sym_idx], Qundef);
         if (prop != Qundef) {
-            VALUE saved = c->data;
+            VALUE saved_data = c->data;
+            VALUE saved_keys = c->eval_keys;
+            int saved_items = c->eval_items;
             c->data = prop;
+            c->eval_keys = Qnil;
+            c->eval_items = -1;
             int ok = EVAL_ARG(c, schema);
-            c->data = saved;
+            c->data = saved_data;
+            c->eval_keys = saved_keys;
+            c->eval_items = saved_items;
             if (!ok) return 0;
+            arjsv_track_key(c, c->consts[key_idx]);
         }
     }
     return EVAL_ARG(c, next);
@@ -127,11 +138,18 @@ node_property_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_
     VALUE prop = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
     if (prop == Qundef) prop = rb_hash_lookup2(c->data, c->consts[sym_idx], Qundef);
     if (prop != Qundef) {
-        VALUE saved = c->data;
+        VALUE saved_data = c->data;
+        VALUE saved_keys = c->eval_keys;
+        int saved_items = c->eval_items;
         c->data = prop;
+        c->eval_keys = Qnil;
+        c->eval_items = -1;
         int ok = EVAL_ARG(c, schema);
-        c->data = saved;
+        c->data = saved_data;
+        c->eval_keys = saved_keys;
+        c->eval_items = saved_items;
         if (!ok) return 0;
+        arjsv_track_key(c, c->consts[key_idx]);
     }
     return EVAL_ARG(c, next);
 }
@@ -151,11 +169,18 @@ node_property_with_default(CTX *c, NODE *n, const char *key, uint32_t key_idx, u
             prop = c->consts[default_idx];
             rb_hash_aset(c->data, c->consts[key_idx], prop);
         }
-        VALUE saved = c->data;
+        VALUE saved_data = c->data;
+        VALUE saved_keys = c->eval_keys;
+        int saved_items = c->eval_items;
         c->data = prop;
+        c->eval_keys = Qnil;
+        c->eval_items = -1;
         int ok = EVAL_ARG(c, schema);
-        c->data = saved;
+        c->data = saved_data;
+        c->eval_keys = saved_keys;
+        c->eval_items = saved_items;
         if (!ok) return 0;
+        arjsv_track_key(c, c->consts[key_idx]);
     }
     return EVAL_ARG(c, next);
 }
@@ -163,20 +188,31 @@ node_property_with_default(CTX *c, NODE *n, const char *key, uint32_t key_idx, u
 // ---- Array keywords ------------------------------------------------------
 
 // Single sub-schema applied to every array element.  No-op for non-arrays.
+// On success, marks ALL elements as evaluated (eval_items = len).
 NODE_DEF
 node_items_uniform(CTX *c, NODE *n, NODE *schema)
 {
     if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
     long len = RARRAY_LEN(c->data);
-    VALUE saved = c->data;
+    VALUE saved_data = c->data;
+    VALUE saved_keys = c->eval_keys;
+    int saved_items = c->eval_items;
     for (long i = 0; i < len; i++) {
-        c->data = RARRAY_AREF(saved, i);
-        if (!EVAL_ARG(c, schema)) {
-            c->data = saved;
+        c->data = RARRAY_AREF(saved_data, i);
+        c->eval_keys = Qnil;
+        c->eval_items = -1;
+        int ok = EVAL_ARG(c, schema);
+        if (!ok) {
+            c->data = saved_data;
+            c->eval_keys = saved_keys;
+            c->eval_items = saved_items;
             return 0;
         }
     }
-    c->data = saved;
+    c->data = saved_data;
+    c->eval_keys = saved_keys;
+    c->eval_items = saved_items;
+    arjsv_track_items_count(c, len);
     return 1;
 }
 
@@ -187,15 +223,25 @@ NODE_DEF
 node_items_uniform_unsafe(CTX *c, NODE *n, NODE *schema)
 {
     long len = RARRAY_LEN(c->data);
-    VALUE saved = c->data;
+    VALUE saved_data = c->data;
+    VALUE saved_keys = c->eval_keys;
+    int saved_items = c->eval_items;
     for (long i = 0; i < len; i++) {
-        c->data = RARRAY_AREF(saved, i);
-        if (!EVAL_ARG(c, schema)) {
-            c->data = saved;
+        c->data = RARRAY_AREF(saved_data, i);
+        c->eval_keys = Qnil;
+        c->eval_items = -1;
+        int ok = EVAL_ARG(c, schema);
+        if (!ok) {
+            c->data = saved_data;
+            c->eval_keys = saved_keys;
+            c->eval_items = saved_items;
             return 0;
         }
     }
-    c->data = saved;
+    c->data = saved_data;
+    c->eval_keys = saved_keys;
+    c->eval_items = saved_items;
+    arjsv_track_items_count(c, len);
     return 1;
 }
 
@@ -207,11 +253,18 @@ node_items_tuple(CTX *c, NODE *n, uint32_t index, NODE *schema, NODE *next)
     if (RB_TYPE_P(c->data, T_ARRAY)) {
         long len = RARRAY_LEN(c->data);
         if ((long)index < len) {
-            VALUE saved = c->data;
-            c->data = RARRAY_AREF(saved, index);
+            VALUE saved_data = c->data;
+            VALUE saved_keys = c->eval_keys;
+            int saved_items = c->eval_items;
+            c->data = RARRAY_AREF(saved_data, index);
+            c->eval_keys = Qnil;
+            c->eval_items = -1;
             int ok = EVAL_ARG(c, schema);
-            c->data = saved;
+            c->data = saved_data;
+            c->eval_keys = saved_keys;
+            c->eval_items = saved_items;
             if (!ok) return 0;
+            arjsv_track_item(c, index);
         }
     }
     return EVAL_ARG(c, next);
@@ -223,15 +276,25 @@ node_additional_items(CTX *c, NODE *n, uint32_t start, NODE *schema)
 {
     if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
     long len = RARRAY_LEN(c->data);
-    VALUE saved = c->data;
+    VALUE saved_data = c->data;
+    VALUE saved_keys = c->eval_keys;
+    int saved_items = c->eval_items;
     for (long i = start; i < len; i++) {
-        c->data = RARRAY_AREF(saved, i);
-        if (!EVAL_ARG(c, schema)) {
-            c->data = saved;
+        c->data = RARRAY_AREF(saved_data, i);
+        c->eval_keys = Qnil;
+        c->eval_items = -1;
+        int ok = EVAL_ARG(c, schema);
+        if (!ok) {
+            c->data = saved_data;
+            c->eval_keys = saved_keys;
+            c->eval_items = saved_items;
             return 0;
         }
     }
-    c->data = saved;
+    c->data = saved_data;
+    c->eval_keys = saved_keys;
+    c->eval_items = saved_items;
+    arjsv_track_items_count(c, len);
     return 1;
 }
 
@@ -397,32 +460,55 @@ node_max_properties(CTX *c, NODE *n, int32_t max)
 
 // ---- Combinators --------------------------------------------------------
 
-// `not`.
+// `not`.  Per spec, `not` does NOT propagate evaluation annotations to
+// the surrounding `unevaluated_*` check — suppress tracking inside.
 NODE_DEF
 node_not(CTX *c, NODE *n, NODE *schema)
 {
-    return !EVAL_ARG(c, schema);
+    VALUE saved_keys = c->eval_keys;
+    int saved_items = c->eval_items;
+    c->eval_keys = Qnil;
+    c->eval_items = -1;
+    int ok = !EVAL_ARG(c, schema);
+    c->eval_keys = saved_keys;
+    c->eval_items = saved_items;
+    return ok;
 }
 
 // `if/then/else`.  if-fail does not propagate as failure; the else branch
-// (or pass when else is absent) takes over.
+// (or pass when else is absent) takes over.  Per spec, when `if` fails,
+// its evaluation contributions are rolled back before running `else`.
 NODE_DEF
 node_if_then_else(CTX *c, NODE *n, NODE *if_schema, NODE *then_schema, NODE *else_schema)
 {
+    VALUE saved_keys = (c->eval_keys != Qnil) ? rb_hash_dup(c->eval_keys) : Qnil;
+    int saved_items = c->eval_items;
     if (EVAL_ARG(c, if_schema)) {
         return EVAL_ARG(c, then_schema);
     } else {
+        c->eval_keys = saved_keys;
+        c->eval_items = saved_items;
         return EVAL_ARG(c, else_schema);
     }
 }
 
-// `anyOf` chain step — short-circuit success.  Chain terminates with
-// `node_fail` (no branch matched).
+// `anyOf` chain step — runs the branch, then `next`, returning success
+// if either matches.  We do NOT short-circuit on first match because
+// per spec the matched branches' evaluation annotations all apply
+// (matters for `unevaluated_*`).  When the branch fails, its
+// contributions are rolled back so only matched branches contribute.
 NODE_DEF
 node_any_of(CTX *c, NODE *n, NODE *branch, NODE *next)
 {
-    if (EVAL_ARG(c, branch)) return 1;
-    return EVAL_ARG(c, next);
+    VALUE saved_keys = (c->eval_keys != Qnil) ? rb_hash_dup(c->eval_keys) : Qnil;
+    int saved_items = c->eval_items;
+    int matched = EVAL_ARG(c, branch);
+    if (!matched) {
+        c->eval_keys = saved_keys;
+        c->eval_items = saved_items;
+    }
+    int next_matched = EVAL_ARG(c, next);
+    return matched || next_matched;
 }
 
 // `oneOf` is implemented as a counter walk.  `node_one_of` is the root
@@ -432,25 +518,54 @@ node_any_of(CTX *c, NODE *n, NODE *branch, NODE *next)
 NODE_DEF
 node_one_of(CTX *c, NODE *n, NODE *chain)
 {
-    int saved = c->one_of_count;
+    VALUE saved_keys = (c->eval_keys != Qnil) ? rb_hash_dup(c->eval_keys) : Qnil;
+    int saved_items = c->eval_items;
+    int saved_count = c->one_of_count;
     int saved_active = c->one_of_active;
+    VALUE saved_match_keys = c->one_of_match_keys;
+    int saved_match_items = c->one_of_match_items;
     c->one_of_count = 0;
     c->one_of_active = 1;
+    c->one_of_match_keys = Qundef;          // "no match yet"
+    c->one_of_match_items = -1;
     EVAL_ARG(c, chain);
     int ok = (c->one_of_count == 1);
-    c->one_of_count = saved;
+    if (ok && c->one_of_match_keys != Qundef) {
+        // Restore the single match's contributions.
+        c->eval_keys = c->one_of_match_keys;
+        c->eval_items = c->one_of_match_items;
+    } else {
+        // 0 matches or 2+ matches → restore initial state.
+        c->eval_keys = saved_keys;
+        c->eval_items = saved_items;
+    }
+    c->one_of_count = saved_count;
     c->one_of_active = saved_active;
+    c->one_of_match_keys = saved_match_keys;
+    c->one_of_match_items = saved_match_items;
     return ok;
 }
 
 NODE_DEF
 node_one_of_step(CTX *c, NODE *n, NODE *branch, NODE *next)
 {
+    VALUE pre_keys = (c->eval_keys != Qnil) ? rb_hash_dup(c->eval_keys) : Qnil;
+    int pre_items = c->eval_items;
     if (EVAL_ARG(c, branch)) {
+        if (c->one_of_count == 0) {
+            // First match — snapshot the contributions for later
+            // restoration if no further branches match.
+            c->one_of_match_keys = (c->eval_keys != Qnil) ? rb_hash_dup(c->eval_keys) : Qnil;
+            c->one_of_match_items = c->eval_items;
+        } else {
+            // Second+ match — invalidate the captured state.
+            c->one_of_match_keys = Qundef;
+        }
         c->one_of_count++;
-        // Two matches already → can early-exit (chain still walked but no
-        // more increments matter; keeping it simple — full walk).
     }
+    // Roll back so the next branch sees the pre-step state.
+    c->eval_keys = pre_keys;
+    c->eval_items = pre_items;
     return EVAL_ARG(c, next);
 }
 
@@ -472,16 +587,24 @@ static int
 arjsv_pp_iter(VALUE key, VALUE val, VALUE arg)
 {
     struct arjsv_pp_iter_ctx *pc = (struct arjsv_pp_iter_ctx *)arg;
-    if (!RB_TYPE_P(key, T_STRING)) return ST_CONTINUE;
-    if (rb_reg_match(pc->regex, key) == Qnil) return ST_CONTINUE;
-    VALUE saved = pc->c->data;
+    if (!RB_TYPE_P(key, T_STRING) && !RB_TYPE_P(key, T_SYMBOL)) return ST_CONTINUE;
+    VALUE key_str = RB_TYPE_P(key, T_SYMBOL) ? rb_sym2str(key) : key;
+    if (rb_reg_match(pc->regex, key_str) == Qnil) return ST_CONTINUE;
+    VALUE saved_data = pc->c->data;
+    VALUE saved_keys = pc->c->eval_keys;
+    int saved_items = pc->c->eval_items;
     pc->c->data = val;
+    pc->c->eval_keys = Qnil;
+    pc->c->eval_items = -1;
     int ok = (*pc->schema_dispatcher)(pc->c, pc->schema);
-    pc->c->data = saved;
+    pc->c->data = saved_data;
+    pc->c->eval_keys = saved_keys;
+    pc->c->eval_items = saved_items;
     if (!ok) {
         pc->valid = 0;
         return ST_STOP;
     }
+    arjsv_track_key(pc->c, key);
     return ST_CONTINUE;
 }
 
@@ -521,24 +644,32 @@ arjsv_ap_iter(VALUE key, VALUE val, VALUE arg)
     for (uint32_t i = 0; i < ap->known_keys_count; i++) {
         if (rb_equal(key, ap->known_keys[i]) == Qtrue) return ST_CONTINUE;
     }
-    if (RB_TYPE_P(key, T_STRING)) {
+    if (RB_TYPE_P(key, T_STRING) || RB_TYPE_P(key, T_SYMBOL)) {
+        VALUE key_str = RB_TYPE_P(key, T_SYMBOL) ? rb_sym2str(key) : key;
         for (uint32_t i = 0; i < ap->known_patterns_count; i++) {
-            if (rb_reg_match(ap->known_patterns[i], key) != Qnil) return ST_CONTINUE;
+            if (rb_reg_match(ap->known_patterns[i], key_str) != Qnil) return ST_CONTINUE;
         }
     }
-    // Unknown key.
+    // Unknown key — additionalProperties decides.
     if (ap->additional_schema == NULL) {
         ap->valid = 0;
         return ST_STOP;
     }
-    VALUE saved = ap->c->data;
+    VALUE saved_data = ap->c->data;
+    VALUE saved_keys = ap->c->eval_keys;
+    int saved_items = ap->c->eval_items;
     ap->c->data = val;
+    ap->c->eval_keys = Qnil;
+    ap->c->eval_items = -1;
     int ok = (*ap->additional_dispatcher)(ap->c, ap->additional_schema);
-    ap->c->data = saved;
+    ap->c->data = saved_data;
+    ap->c->eval_keys = saved_keys;
+    ap->c->eval_items = saved_items;
     if (!ok) {
         ap->valid = 0;
         return ST_STOP;
     }
+    arjsv_track_key(ap->c, key);
     return ST_CONTINUE;
 }
 
@@ -596,10 +727,16 @@ arjsv_pn_iter(VALUE key, VALUE val, VALUE arg)
 {
     (void)val;
     struct arjsv_pn_iter_ctx *pc = (struct arjsv_pn_iter_ctx *)arg;
-    VALUE saved = pc->c->data;
-    pc->c->data = key;
+    VALUE saved_data = pc->c->data;
+    VALUE saved_keys = pc->c->eval_keys;
+    int saved_items = pc->c->eval_items;
+    pc->c->data = RB_TYPE_P(key, T_SYMBOL) ? rb_sym2str(key) : key;
+    pc->c->eval_keys = Qnil;
+    pc->c->eval_items = -1;
     int ok = (*pc->schema_dispatcher)(pc->c, pc->schema);
-    pc->c->data = saved;
+    pc->c->data = saved_data;
+    pc->c->eval_keys = saved_keys;
+    pc->c->eval_items = saved_items;
     if (!ok) {
         pc->valid = 0;
         return ST_STOP;
@@ -623,6 +760,139 @@ node_property_names(CTX *c, NODE *n, NODE *schema)
 
 // ---- $ref --------------------------------------------------------------
 
+// ---- unevaluatedProperties / unevaluatedItems --------------------------
+
+// `eval_scope` — establishes a fresh annotation-tracking context for
+// the body it wraps.  Builder emits this at every schema position that
+// declares `unevaluatedProperties` / `unevaluatedItems`.  The body is
+// the regular keyword sequence including the unevaluated_* node at the
+// end.  Outer eval state is saved on entry and restored on exit so
+// inner contributions don't leak to enclosing scopes.
+NODE_DEF
+node_eval_scope(CTX *c, NODE *n, NODE *body)
+{
+    VALUE saved_keys = c->eval_keys;
+    int saved_items = c->eval_items;
+    c->eval_keys = rb_hash_new();
+    c->eval_items = 0;
+    int ok = EVAL_ARG(c, body);
+    c->eval_keys = saved_keys;
+    c->eval_items = saved_items;
+    return ok;
+}
+
+// `unevaluatedProperties: false` — fail if any data key is not in
+// c->eval_keys (= wasn't evaluated by adjacent properties /
+// patternProperties / additionalProperties / in-place applicators).
+struct arjsv_unp_iter_ctx {
+    CTX *c;
+    NODE *schema;
+    node_dispatcher_func_t schema_dispatcher;  // NULL for the false form
+    int valid;
+};
+
+static int
+arjsv_unp_iter(VALUE key, VALUE val, VALUE arg)
+{
+    struct arjsv_unp_iter_ctx *up = (struct arjsv_unp_iter_ctx *)arg;
+    if (up->c->eval_keys != Qnil &&
+        rb_hash_lookup2(up->c->eval_keys, key, Qundef) != Qundef) {
+        return ST_CONTINUE;
+    }
+    if (up->schema == NULL) {
+        // false form — any unevaluated key is a fail.
+        up->valid = 0;
+        return ST_STOP;
+    }
+    VALUE saved_data = up->c->data;
+    VALUE saved_keys = up->c->eval_keys;
+    int saved_items = up->c->eval_items;
+    up->c->data = val;
+    up->c->eval_keys = Qnil;
+    up->c->eval_items = -1;
+    int ok = (*up->schema_dispatcher)(up->c, up->schema);
+    up->c->data = saved_data;
+    up->c->eval_keys = saved_keys;
+    up->c->eval_items = saved_items;
+    if (!ok) {
+        up->valid = 0;
+        return ST_STOP;
+    }
+    arjsv_track_key(up->c, key);
+    return ST_CONTINUE;
+}
+
+NODE_DEF
+node_unevaluated_properties_schema(CTX *c, NODE *n, NODE *schema)
+{
+    if (!RB_TYPE_P(c->data, T_HASH)) return 1;
+    struct arjsv_unp_iter_ctx up = {
+        .c = c,
+        .schema = schema,
+        .schema_dispatcher = schema_dispatcher,
+        .valid = 1,
+    };
+    rb_hash_foreach(c->data, arjsv_unp_iter, (VALUE)&up);
+    return up.valid;
+}
+
+NODE_DEF
+node_no_unevaluated_properties(CTX *c, NODE *n)
+{
+    if (!RB_TYPE_P(c->data, T_HASH)) return 1;
+    struct arjsv_unp_iter_ctx up = {
+        .c = c,
+        .schema = NULL,
+        .schema_dispatcher = NULL,
+        .valid = 1,
+    };
+    rb_hash_foreach(c->data, arjsv_unp_iter, (VALUE)&up);
+    return up.valid;
+}
+
+// `unevaluatedItems: <schema>` — validate items at indices >= eval_items
+// against the schema.  On success, marks them all as evaluated so any
+// outer scope's check sees the full prefix.
+NODE_DEF
+node_unevaluated_items_schema(CTX *c, NODE *n, NODE *schema)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    long len = RARRAY_LEN(c->data);
+    long start = (c->eval_items >= 0) ? c->eval_items : 0;
+    if (start >= len) return 1;
+    VALUE saved_data = c->data;
+    VALUE saved_keys = c->eval_keys;
+    int saved_items = c->eval_items;
+    for (long i = start; i < len; i++) {
+        c->data = RARRAY_AREF(saved_data, i);
+        c->eval_keys = Qnil;
+        c->eval_items = -1;
+        int ok = EVAL_ARG(c, schema);
+        if (!ok) {
+            c->data = saved_data;
+            c->eval_keys = saved_keys;
+            c->eval_items = saved_items;
+            return 0;
+        }
+    }
+    c->data = saved_data;
+    c->eval_keys = saved_keys;
+    c->eval_items = saved_items;
+    arjsv_track_items_count(c, len);
+    return 1;
+}
+
+// `unevaluatedItems: false` — fail if any items at indices >= eval_items
+// remain.
+NODE_DEF
+node_no_unevaluated_items(CTX *c, NODE *n)
+{
+    if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
+    long len = RARRAY_LEN(c->data);
+    long start = (c->eval_items >= 0) ? c->eval_items : 0;
+    return len <= start;
+}
+
 // `dependencies` (draft-07): if `key` is present in the data hash, the
 // data must validate against `dep_schema`.  `dep_schema` is either a
 // required-list (chain of node_required) or a regular sub-schema, both
@@ -644,7 +914,8 @@ node_dependency(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym
 
 // `contains: <schema>` (+ optional minContains / maxContains).  Array must
 // have a count of matching elements within [min, max].  On a non-array,
-// the keyword is a no-op (pass).
+// the keyword is a no-op (pass).  Each MATCHING element is recorded as
+// "evaluated" for the surrounding `unevaluatedItems` check (per spec).
 //
 // `min` defaults to 1 when only `contains` is given.  `min == 0` means
 // even an empty array passes.  `max == -1` means unbounded.
@@ -654,18 +925,35 @@ node_contains(CTX *c, NODE *n, int32_t min, int32_t max, NODE *schema)
     if (!RB_TYPE_P(c->data, T_ARRAY)) return 1;
     long len = RARRAY_LEN(c->data);
     int32_t count = 0;
-    VALUE saved = c->data;
+    VALUE saved_data = c->data;
+    VALUE saved_keys = c->eval_keys;
+    int saved_items = c->eval_items;
+    long max_matched_idx = -1;
     for (long i = 0; i < len; i++) {
-        c->data = RARRAY_AREF(saved, i);
-        if (EVAL_ARG(c, schema)) count++;
+        c->data = RARRAY_AREF(saved_data, i);
+        c->eval_keys = Qnil;
+        c->eval_items = -1;
+        if (EVAL_ARG(c, schema)) {
+            count++;
+            max_matched_idx = i;
+        }
         // Early exit when max-bounded and exceeded.
         if (max >= 0 && count > max) {
-            c->data = saved;
+            c->data = saved_data;
+            c->eval_keys = saved_keys;
+            c->eval_items = saved_items;
             return 0;
         }
     }
-    c->data = saved;
+    c->data = saved_data;
+    c->eval_keys = saved_keys;
+    c->eval_items = saved_items;
     if (count < min) return 0;
+    // Track items up to the last match (matched indices contribute to
+    // evaluation; non-matching indices in between are also already
+    // covered by the array prefix because contains-evaluation is "array
+    // up to last match").
+    if (max_matched_idx >= 0) arjsv_track_item(c, max_matched_idx);
     return 1;
 }
 
