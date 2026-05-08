@@ -372,6 +372,13 @@ static VALUE rng_any_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE rng_count(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
+    /* Beginless or endless ranges have infinite element count when no
+     * argument or block is given to filter (CRuby semantics).  Float
+     * infinity is the conventional carrier for "infinite". */
+    if (argc == 0 && !korb_block_given() &&
+        (NIL_P(r->begin) || NIL_P(r->end))) {
+        return korb_float_new(1.0/0.0);
+    }
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return INT2FIX(0);
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     long n = e - b + 1;
