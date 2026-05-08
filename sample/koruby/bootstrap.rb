@@ -3906,6 +3906,34 @@ class Proc
   end unless method_defined?(:<<)
 end
 
+class NameError
+  # NameError#receiver — return the recorded receiver, or raise
+  # ArgumentError if none was captured.  We don't track the receiver
+  # at NameError instantiation (that would need :receiver kwarg
+  # support in Class#new), so this is the conservative default.
+  def receiver
+    if defined?(@receiver) && @receiver
+      @receiver
+    else
+      raise ArgumentError, "no receiver is available"
+    end
+  end unless method_defined?(:receiver)
+  # NameError#name — return @name if recorded.
+  def name
+    @name if defined?(@name)
+  end unless method_defined?(:name)
+end
+
+class FrozenError
+  def receiver
+    if defined?(@receiver) && @receiver
+      @receiver
+    else
+      raise ArgumentError, "no receiver is available"
+    end
+  end unless method_defined?(:receiver)
+end
+
 class BasicObject
   # Default no-op private hooks expected by CRuby specs.  We define
   # them on BasicObject so they are inherited by every other class.

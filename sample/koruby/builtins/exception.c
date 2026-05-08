@@ -105,14 +105,40 @@ static VALUE exc_backtrace_locations(CTX *c, VALUE self, int argc, VALUE *argv) 
     return bt;
 }
 static VALUE exc_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc >= 1) {
+    /* Drop trailing FL_KWARGS hash and look for `:receiver` (NameError
+     * / FrozenError accept it as a keyword). */
+    int eff_argc = argc;
+    VALUE recv_kw = Qundef;
+    if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
+        BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
+        (RBASIC(argv[argc - 1])->flags & FL_KWARGS)) {
+        struct korb_hash *kh = (struct korb_hash *)argv[argc - 1];
+        for (struct korb_hash_entry *e = kh->first; e; e = e->next) {
+            if (SYMBOL_P(e->key) && korb_sym2id(e->key) == korb_intern("receiver")) {
+                recv_kw = e->value;
+            }
+        }
+        eff_argc = argc - 1;
+    }
+    if (eff_argc >= 1) {
         VALUE msg = argv[0];
-        if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING) {
-            /* coerce via to_s */
+        if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING && !NIL_P(msg)) {
             VALUE s = korb_funcall(c, msg, korb_intern("to_s"), 0, NULL);
             if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
         }
-        korb_ivar_set(self, korb_intern("@message"), msg);
+        if (!NIL_P(msg) || eff_argc >= 1) {
+            korb_ivar_set(self, korb_intern("@message"), msg);
+        }
+    }
+    /* NameError / NoMethodError accept a second positional arg as the
+     * `name` (the missing identifier).  We unconditionally store argv[1]
+     * into @name when present — Exception subclasses that don't expose
+     * a `name` reader simply ignore it. */
+    if (eff_argc >= 2) {
+        korb_ivar_set(self, korb_intern("@name"), argv[1]);
+    }
+    if (!UNDEF_P(recv_kw)) {
+        korb_ivar_set(self, korb_intern("@receiver"), recv_kw);
     }
     return self;
 }
