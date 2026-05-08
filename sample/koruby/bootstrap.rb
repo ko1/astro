@@ -386,15 +386,8 @@ class Hash
   end unless method_defined?(:to_proc)
 
   def to_hash; self; end unless method_defined?(:to_hash)
-  def to_h(&blk)
-    if blk
-      h = {}
-      each_pair { |k, v| pair = blk.call(k, v); h[pair[0]] = pair[1] }
-      h
-    else
-      self
-    end
-  end unless method_defined?(:to_h)
+  # Note: Hash#to_h is defined later (line ~1500) — leave it there so a
+  # single canonical implementation exists.
 
   def transform_keys!(&blk)
     new_h = {}
@@ -1473,8 +1466,27 @@ class Hash
     h
   end
 
-  def to_h
-    self
+  def to_h(&blk)
+    if blk
+      h = {}
+      each_pair { |k, v|
+        pair = blk.call(k, v)
+        if !pair.is_a?(Array) && pair.respond_to?(:to_ary)
+          pair = pair.to_ary
+        end
+        unless pair.is_a?(Array) && pair.size == 2
+          if pair.is_a?(Array)
+            raise ArgumentError, "element has wrong array length (expected 2, was #{pair.size})"
+          else
+            raise TypeError, "wrong element type #{pair.class} (expected array)"
+          end
+        end
+        h[pair[0]] = pair[1]
+      }
+      h
+    else
+      self
+    end
   end
 
   def to_s
