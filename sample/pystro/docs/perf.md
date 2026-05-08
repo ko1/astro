@@ -23,6 +23,19 @@ best-of-5〜10。 詳細表は [現状ベンチ](#現状ベンチ-2026-05-08) �
   setjmp/longjmp 撤去で食った 3-10% を取り戻し
 - fixnum tagged-arithmetic (`a-1+b` パターン): codegen 縮小、
   richards で marginal 改善、 他は中立
+- `pys_make_int` fixnum fast path を static inline 化: SD-baked range /
+  counter loops で PLT call を回避
+- `pys_apply_slow` の class-init dispatch を `cd->slot_init` 直接読みに
+  (`pys_class_lookup_method` 経由から external call を 1 段除去)
+
+### 試して撤回した変更 (記録のみ)
+
+- `str.hash` lazy cache (struct pysobj 拡張): 短い attr 名 (`x`, `y`, `z`)
+  が hot で FNV ループはそもそも 1-3 iter、 cache check のオーバヘッド
+  が逆に勝って ~5% regression。
+- `pys_apply` への class fast_new instantiation インライン: ホットな
+  pys_apply の icache 圧迫で全 macro が遅くなる (raytrace 0.81 → 0.91)。
+- `pys_make_float` の inline 化: SD body の bloat で raytrace 微悪化。
 
 JIT との比較は [vs_cpython.md](./vs_cpython.md) で詳しく分析。
 
