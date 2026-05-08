@@ -360,6 +360,15 @@ static VALUE str_chars(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE str_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
+    /* Block form: yield each byte to the block, return self. */
+    if (korb_block_given()) {
+        for (long i = 0; i < s->len; i++) {
+            VALUE b = INT2FIX((unsigned char)s->ptr[i]);
+            korb_yield(c, 1, &b);
+            if (c->state == KORB_RAISE) return Qnil;
+        }
+        return self;
+    }
     VALUE r = korb_ary_new_capa(s->len);
     for (long i = 0; i < s->len; i++) korb_ary_push(r, INT2FIX((unsigned char)s->ptr[i]));
     return r;
