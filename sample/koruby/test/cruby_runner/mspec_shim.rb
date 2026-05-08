@@ -644,6 +644,13 @@ def fixture(file, *args)
   File.expand_path(File.join("fixtures", *args), File.dirname(file).to_s)
 end
 
+# mock_to_path — returns a mock object whose #to_path returns `path`.
+def mock_to_path(path)
+  m = mock("path")
+  m.should_receive(:to_path).and_return(path)
+  m
+end
+
 # Misc constants
 NATFIXNUM_MIN = -(2**62) rescue 0
 NATFIXNUM_MAX = (2**62) - 1 rescue 0
