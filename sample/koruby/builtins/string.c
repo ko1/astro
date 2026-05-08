@@ -143,20 +143,35 @@ static VALUE str_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(0);
 }
 
+/* Raise CRuby's "comparison of String with X failed" ArgumentError when
+ * <=> couldn't reach a result. */
+static void str_cmp_raise(CTX *c, VALUE other) {
+    VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    VALUE oi = korb_inspect(other);
+    const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
+                            ? korb_str_cstr(oi)
+                            : korb_id_name(korb_class_of_class(other)->name);
+    korb_raise(c, (struct korb_class *)eArg,
+               "comparison of String with %s failed", o_str);
+}
 static VALUE str_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = str_cmp(c, self, argc, argv);
+    if (NIL_P(r)) { str_cmp_raise(c, argv[0]); return Qnil; }
     return KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) < 0);
 }
 static VALUE str_le(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = str_cmp(c, self, argc, argv);
+    if (NIL_P(r)) { str_cmp_raise(c, argv[0]); return Qnil; }
     return KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) <= 0);
 }
 static VALUE str_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = str_cmp(c, self, argc, argv);
+    if (NIL_P(r)) { str_cmp_raise(c, argv[0]); return Qnil; }
     return KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) > 0);
 }
 static VALUE str_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = str_cmp(c, self, argc, argv);
+    if (NIL_P(r)) { str_cmp_raise(c, argv[0]); return Qnil; }
     return KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) >= 0);
 }
 static VALUE str_to_s(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }

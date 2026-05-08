@@ -5,16 +5,39 @@
  * All cfuncs invoke `self.<=>(other)` and interpret the result.  If
  * <=> returns nil (incomparable), comparison ops raise ArgumentError. */
 
+/* Returns the sign of `self <=> other`: -1, 0, or 1.  Fixnum is direct;
+ * Float / Bignum / any other Numeric is reduced to its sign so that
+ * comparators like Comparable#> work for non-canonical <=> returns
+ * (e.g. user code that returns 0.1 to mean "greater"). */
 static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
     VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, &other);
     if (NIL_P(r)) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        /* CRuby's "comparison of X with Y failed" uses the class name on
+         * the LHS but inspect-style for non-builtin RHS values
+         * (`"comparison of String with 7 failed"`). */
+        VALUE oi = korb_inspect(other);
+        const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
+                                ? korb_str_cstr(oi)
+                                : korb_id_name(korb_class_of_class(other)->name);
         korb_raise(c, (struct korb_class *)eArg, "comparison of %s with %s failed",
-                   korb_id_name(korb_class_of_class(self)->name),
-                   korb_id_name(korb_class_of_class(other)->name));
+                   korb_id_name(korb_class_of_class(self)->name), o_str);
         return 0;
     }
-    if (FIXNUM_P(r)) return FIX2LONG(r);
+    if (FIXNUM_P(r)) {
+        long v = FIX2LONG(r);
+        return v < 0 ? -1 : (v > 0 ? 1 : 0);
+    }
+    if (FLONUM_P(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT)) {
+        double d = korb_num2dbl(r);
+        if (d < 0.0) return -1;
+        if (d > 0.0) return 1;
+        return 0;
+    }
+    if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_BIGNUM) {
+        int s = mpz_sgn((mpz_ptr)((struct korb_bignum *)r)->mpz);
+        return s < 0 ? -1 : (s > 0 ? 1 : 0);
+    }
     return 0;
 }
 
