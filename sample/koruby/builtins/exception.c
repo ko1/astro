@@ -3,19 +3,37 @@
 /* ---------- Exception ----------
  * Exception is a T_OBJECT now; message lives in @message and backtrace
  * lives in @__backtrace__ (set during raise — currently empty). */
+/* Exception#message — calls #to_s and returns the resulting string.
+ * Subclasses that override #to_s see their override applied here.  When
+ * to_s isn't otherwise overridden it falls back to @message via
+ * exc_to_s.  This is the CRuby-2.7+ behavior (`message` was equivalent
+ * to `to_s`). */
+static VALUE exc_to_s_internal(CTX *c, VALUE self);
 static VALUE exc_message(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
+}
+static VALUE exc_to_s_internal(CTX *c, VALUE self) {
     VALUE msg = korb_ivar_get(self, korb_intern("@message"));
     if (UNDEF_P(msg) || NIL_P(msg)) {
         if (!SPECIAL_CONST_P(self)) {
             struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
-            return korb_str_new_cstr(k && k->name ? korb_id_name(k->name) : "Exception");
+            /* Walk past singleton metaclasses — exc.class on a frozen
+             * exception with a redefined method returns the user class
+             * name, not "(singleton)". */
+            while (k && (k->basic.flags & FL_SINGLETON)) k = k->super;
+            const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
+            return korb_str_new_cstr(kn);
         }
         return korb_str_new_cstr("");
+    }
+    /* CRuby calls #to_s on @message if it isn't a String. */
+    if (SPECIAL_CONST_P(msg) || BUILTIN_TYPE(msg) != T_STRING) {
+        return korb_funcall(c, msg, korb_intern("to_s"), 0, NULL);
     }
     return msg;
 }
 static VALUE exc_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return exc_message(c, self, argc, argv);
+    return exc_to_s_internal(c, self);
 }
 static VALUE exc_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self)) return korb_str_new_cstr("#<Exception>");
