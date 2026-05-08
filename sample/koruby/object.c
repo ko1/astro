@@ -2709,9 +2709,13 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
     }
     if (t == T_RANGE) {
         struct korb_range *r = (struct korb_range *)v;
-        VALUE s = korb_inspect_inner(r->begin, depth+1);
+        bool both_nil = NIL_P(r->begin) && NIL_P(r->end);
+        VALUE s = (NIL_P(r->begin) && !both_nil)
+                      ? korb_str_new_cstr("")
+                      : korb_inspect_inner(r->begin, depth+1);
         korb_str_concat(s, korb_str_new_cstr(r->exclude_end ? "..." : ".."));
-        korb_str_concat(s, korb_inspect_inner(r->end, depth+1));
+        if (!NIL_P(r->end) || both_nil)
+            korb_str_concat(s, korb_inspect_inner(r->end, depth+1));
         return s;
     }
     if (t == T_FLOAT) {
