@@ -1096,8 +1096,12 @@ static VALUE ary_count(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_drop(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(argv[0])) return self;
     long n = FIX2LONG(argv[0]);
+    if (n < 0) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "attempt to drop negative size");
+        return Qnil;
+    }
     struct korb_array *a = (struct korb_array *)self;
-    if (n < 0) n = 0;
     if (n > a->len) n = a->len;
     VALUE r = korb_ary_new_capa(a->len - n);
     for (long i = n; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
@@ -1107,8 +1111,12 @@ static VALUE ary_drop(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_take(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(argv[0])) return self;
     long n = FIX2LONG(argv[0]);
+    if (n < 0) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "attempt to take negative size");
+        return Qnil;
+    }
     struct korb_array *a = (struct korb_array *)self;
-    if (n < 0) n = 0;
     if (n > a->len) n = a->len;
     VALUE r = korb_ary_new_capa(n);
     for (long i = 0; i < n; i++) korb_ary_push(r, a->ptr[i]);
@@ -1282,13 +1290,19 @@ static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
  * enough for `[1,2].hash == [1,2].hash` to hold). */
 /* Array#assoc — find a sub-array whose first element == arg. */
 static VALUE ary_assoc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Call == on the entry's first element (so user-defined == can
+     * decide).  korb_eq does identity-first then dispatches to ==,
+     * which routes to the FIRST receiver's == — that's the entry's
+     * first element here. */
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
         VALUE e = a->ptr[i];
-        if (BUILTIN_TYPE(e) == T_ARRAY && ((struct korb_array *)e)->len > 0 &&
-            korb_eq(((struct korb_array *)e)->ptr[0], argv[0])) {
-            return e;
-        }
+        if (SPECIAL_CONST_P(e) || BUILTIN_TYPE(e) != T_ARRAY) continue;
+        struct korb_array *ea = (struct korb_array *)e;
+        if (ea->len == 0) continue;
+        VALUE eq_args[1] = { argv[0] };
+        VALUE r = korb_funcall(c, ea->ptr[0], korb_intern("=="), 1, eq_args);
+        if (RTEST(r)) return e;
     }
     return Qnil;
 }

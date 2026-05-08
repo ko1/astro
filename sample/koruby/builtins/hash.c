@@ -244,7 +244,12 @@ static VALUE hash_required_kwarg(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+    if (argc < 1 || argc > 2) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1..2)", argc);
+        return Qnil;
+    }
     const struct korb_hash *h = (const struct korb_hash *)self;
     uint64_t hh = korb_hash_value(argv[0]);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
@@ -513,7 +518,9 @@ static VALUE hash_compact(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
-/* Hash#compact! — destructive compact. */
+/* Hash#compact! — destructive compact.  Returns nil if no nil values
+ * were removed (CRuby semantics: bang methods that didn't change the
+ * receiver return nil). */
 static VALUE hash_compact_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
@@ -522,6 +529,7 @@ static VALUE hash_compact_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (NIL_P(e->value)) korb_ary_push(keys, e->key);
     }
     struct korb_array *ka = (struct korb_array *)keys;
+    if (ka->len == 0) return Qnil;
     for (long i = 0; i < ka->len; i++) {
         VALUE ad[1] = {ka->ptr[i]};
         hash_delete(c, self, 1, ad);
