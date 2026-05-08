@@ -1032,7 +1032,7 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // Allocate attrs lazily here if NULL — saves a slow-path round
             // trip through pys_setattr for every fresh instance attribute.
             extern struct pysdict *pydict_new(void);
-            extern void pydict_set_h(CTX *c, struct pysdict *d, VALUE key, uint64_t h, VALUE val);
+            extern int32_t pydict_set_h(CTX *c, struct pysdict *d, VALUE key, uint64_t h, VALUE val);
             if (UNLIKELY(!o->inst.attrs)) o->inst.attrs = pydict_new();
             int eidx = cache->u_eidx[matched_slot];
             if (LIKELY(eidx >= 0 && (size_t)eidx < o->inst.attrs->elen)) {
@@ -1047,21 +1047,10 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // generic dict setter and update the cache slot.  No
             // descriptor check needed — same (cls, sv) means same
             // semantics as a previous successful stamp.
-            extern VALUE pys_make_str_intern(const char *, size_t);
-            (void)pys_make_str_intern;
             VALUE key = pys_make_str(name, strlen(name));
             uint64_t h = pys_hash(c, key);
-            pydict_set_h(c, o->inst.attrs, key, h, vv);
-            // Find the entry just inserted to update eidx.
-            for (size_t i = 0; i < o->inst.attrs->elen; i++) {
-                VALUE k2 = o->inst.attrs->entries[i].key;
-                if (k2 != 0 && k2 != DICT_DELETED_KEY
-                    && pys_is_str(k2) && PYS_PTR(k2)->str.len == strlen(name)
-                    && memcmp(PYS_PTR(k2)->str.chars, name, PYS_PTR(k2)->str.len) == 0) {
-                    cache->u_eidx[matched_slot] = (int32_t)i;
-                    break;
-                }
-            }
+            int32_t new_eidx = pydict_set_h(c, o->inst.attrs, key, h, vv);
+            if (LIKELY(new_eidx >= 0)) cache->u_eidx[matched_slot] = new_eidx;
             return PYS_NONE;
         }
     }

@@ -2619,8 +2619,11 @@ pydict_grow_entries(struct pysdict *d)
 
 // Lower-level set: takes a struct pysdict* and a precomputed hash.
 // Used both by pys_dict_set and by callers (instance attrs) that hold
-// a struct pysdict* directly.
-void
+// a struct pysdict* directly.  Returns the entries[] index where the
+// (possibly new) value lives — saves callers the linear scan they used
+// to do to refresh their attr_cache after a fresh insert.  Pre-resize:
+// the index is stable; post-resize (rare) the caller refetches.
+int32_t
 pydict_set_h(CTX *c, struct pysdict *d, VALUE key, uint64_t h, VALUE val)
 {
     size_t bucket;
@@ -2629,7 +2632,7 @@ pydict_set_h(CTX *c, struct pysdict *d, VALUE key, uint64_t h, VALUE val)
     pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &first_tomb);
     if (eidx >= 0) {
         d->entries[eidx].value = val;
-        return;
+        return eidx;
     }
     if (d->elen == d->ecapa) pydict_grow_entries(d);
     int32_t new_idx = (int32_t)d->elen;
@@ -2644,10 +2647,14 @@ pydict_set_h(CTX *c, struct pysdict *d, VALUE key, uint64_t h, VALUE val)
         d->indices[bucket] = new_idx;
         d->fill++;
     }
-    if (d->fill * DICT_LOAD_DEN >= d->icapa * DICT_LOAD_NUM) {
+    if (UNLIKELY(d->fill * DICT_LOAD_DEN >= d->icapa * DICT_LOAD_NUM)) {
         bool compact = (d->elen - d->used) * 2 >= d->elen;
         pydict_resize(d, d->icapa * 2, compact);
+        // entries[] is rebuilt by resize when compacting; index becomes
+        // unreliable.  Return -1 so callers know to refresh externally.
+        if (compact) return -1;
     }
+    return new_idx;
 }
 
 void
