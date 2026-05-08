@@ -3,7 +3,38 @@
 本書は **すでに動く** 言語機能と、**取り入れた性能改善** を一覧する。
 未実装は [todo.md](./todo.md) に分離してある。
 
-## テストスイートの現状 (2026-05-08)
+## テストスイートの現状 (2026-05-08, fifth pass)
+
+### 直近改善 (rubyspec language sweep)
+
+mock-shim の slot 衝突を解消したことで隠れていた fail が一気に表面化、 net で
++311 pass。 主な fix:
+
+- **proc.c の env-clone 条件拡大**: `prev_fp > new_fp` で常に clone するように
+  し、 lambda/proc 経由の closure body から呼ばれる method frame が caller の
+  active frame の slot を上書きする問題を解消。 mock-shim の `__apply_matcher`
+  で `m.kind` / `m.arg` が `Module` / `String` に化けるバグが消えた (共通の
+  「`'kind' for X` 系」エラー)。 これだけで rubyspec の language で +301 pass。
+- **lambda の opt 引数**: `parse.c` の `PM_LAMBDA_NODE` パスが optional の数を
+  params_cnt に含めず、 default-init prologue も生成していなかった。 block
+  パスと同じ処理を追加。 `proc.c` の strict-arity check も `[required, total]`
+  範囲チェックに修正。 `language/lambda_spec` で +7 pass。
+- **anon-rest + post の slot mismatch**: `def m(*, a)` で post 値が
+  `fp[anon_rest_slot+1]` ではなく `fp[total_params_cnt - post_cnt + i]`
+  に書かれるよう修正 (param-position layout に揃える)。 `language/method_spec`
+  と core 全般で複数 pass 増。
+- **proc の post-rest extra drop**: `proc {|a, b=, c=, d, e|}.call(1..6)` で
+  6 個目を末尾から落とすよう修正。 従来は中間から落としていたため
+  `[1,2,3,5,6]` が返っていた。 CRuby は `[1,2,3,4,5]`。
+- **hash literal の string-key 自動 freeze**: `{key => v}` で mutable な key を
+  使うと CRuby は frozen copy で dedup する。 `node_hash_new` で対応。
+  `language/hash_spec` が perfect 化。
+- **missing keyword の全キー列挙**: 従来は最初の missing で raise していたが、
+  CRuby と同じ `"missing keywords: :a, :b, :c"` 形式で全部列挙するよう修正。
+  `Hash#__korb_required_kwargs_check__` を追加し、 method def の prologue で
+  up-front チェック。
+
+### 自前 test/ruby/
 
 ### 自前 test/ruby/
 
@@ -28,7 +59,7 @@ $ ./koruby test/cruby_runner/run_rubyspec.rb \
 and_spec.rb: pass=26 fail=0 err=0 skip=0
 ```
 
-language/* (65 ファイル走破): **pass=3,275 / 3,507 (93.4%)、 35 ファイルが
+language/* (65 ファイル走破): **pass=3,715 / 4,009 (92.7%)、 34 ファイルが
 100% perfect、 23 件 SKIP**。
 
 100% perfect (35 spec):

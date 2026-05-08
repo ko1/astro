@@ -3006,6 +3006,50 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   if (fwd_param) {
                       tc->frame->fwd_kwh_slot = (int)kwh_save_slot;
                   }
+                  /* Up-front check: build array of all required-keyword
+                   * names and call __korb_required_kwargs_check__ which
+                   * raises with EVERY missing key listed in one error
+                   * (CRuby 'missing keywords: :a, :b' format). */
+                  {
+                      size_t req_kw_n = 0;
+                      for (size_t i = 0; i < pn->keywords.size; i++) {
+                          if (PM_NODE_TYPE_P(pn->keywords.nodes[i], PM_REQUIRED_KEYWORD_PARAMETER_NODE)) req_kw_n++;
+                      }
+                      if (req_kw_n > 0) {
+                          uint32_t r_arr_ai = inc_arg_index(tc);
+                          uint32_t r_call_ai = inc_arg_index(tc);
+                          inc_arg_index(tc);
+                          rewind_arg_index(tc, r_arr_ai);
+                          uint32_t r_arr_slot = inc_arg_index(tc);
+                          rewind_arg_index(tc, r_call_ai);
+                          NODE *arr_init = ALLOC_node_lvar_set(r_arr_slot,
+                                                  ALLOC_node_ary_new(0, r_arr_slot + 1));
+                          prologue = prologue ? ALLOC_node_seq(prologue, arr_init) : arr_init;
+                          for (size_t i = 0; i < pn->keywords.size; i++) {
+                              pm_node_t *kp = pn->keywords.nodes[i];
+                              if (!PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) continue;
+                              ID kid = intern_constant(tc->parser,
+                                  ((pm_required_keyword_parameter_node_t *)kp)->name);
+                              uint32_t pai = inc_arg_index(tc);
+                              inc_arg_index(tc); rewind_arg_index(tc, pai);
+                              struct method_cache *mc_p = alloc_method_cache();
+                              NODE *karg = ALLOC_node_lvar_set(pai, ALLOC_node_sym_lit(kid));
+                              NODE *push = ALLOC_node_seq(karg,
+                                  ALLOC_node_method_call(ALLOC_node_lvar_get(r_arr_slot),
+                                                         korb_intern("push"), 1, pai, mc_p));
+                              prologue = ALLOC_node_seq(prologue, push);
+                          }
+                          uint32_t v_ai = inc_arg_index(tc);
+                          inc_arg_index(tc); rewind_arg_index(tc, v_ai);
+                          struct method_cache *mc_v = alloc_method_cache();
+                          NODE *vset = ALLOC_node_lvar_set(v_ai, ALLOC_node_lvar_get(r_arr_slot));
+                          NODE *check = ALLOC_node_seq(vset,
+                              ALLOC_node_method_call(ALLOC_node_lvar_get(kwh_save_slot),
+                                                     korb_intern("__korb_required_kwargs_check__"),
+                                                     1, v_ai, mc_v));
+                          prologue = ALLOC_node_seq(prologue, check);
+                      }
+                  }
                   /* For each keyword: extract from kwh_save_slot into the
                    * named local's slot. */
                   for (size_t i = 0; i < pn->keywords.size; i++) {
@@ -3015,9 +3059,10 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                               (pm_required_keyword_parameter_node_t *)kp;
                           int slot = lvar_slot(tc, rk->name, 0);
                           if (slot < 0) continue;
-                          /* slot = kwh_save.__korb_required_kwarg__(:name) —
-                           * raises ArgumentError "missing keyword" on miss
-                           * (instead of KeyError from plain fetch). */
+                          /* Required keyword.  __korb_required_kwargs_check__
+                           * already verified presence (raised if missing) so
+                           * here we can safely fetch.  Use the same RAISE
+                           * helper as a defensive backstop. */
                           uint32_t ai = inc_arg_index(tc);
                           inc_arg_index(tc); rewind_arg_index(tc, ai);
                           struct method_cache *mc = alloc_method_cache();
@@ -3953,6 +3998,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       case PM_LAMBDA_NODE: {
           pm_lambda_node_t *n = (pm_lambda_node_t *)node;
           uint32_t params_cnt = 0;
+          uint32_t lambda_opt_cnt = 0;
           pm_constant_id_t lambda_rest_name = 0;
           pm_parameters_node_t *pn_l = NULL;
           bool lambda_has_anon_rest = false;
@@ -3961,7 +4007,8 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)n->parameters;
               if (bp->parameters) {
                   pn_l = (pm_parameters_node_t *)bp->parameters;
-                  params_cnt = (uint32_t)pn_l->requireds.size;
+                  params_cnt = (uint32_t)pn_l->requireds.size + (uint32_t)pn_l->optionals.size;
+                  lambda_opt_cnt = (uint32_t)pn_l->optionals.size;
                   if (pn_l->rest && PM_NODE_TYPE_P(pn_l->rest, PM_REST_PARAMETER_NODE)) {
                       pm_rest_parameter_node_t *rp = (pm_rest_parameter_node_t *)pn_l->rest;
                       if (rp->name) lambda_rest_name = rp->name;
@@ -4095,8 +4142,22 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   if (bound) l_destructure_pre = ALLOC_node_seq(l_destructure_pre, bound);
               }
           }
+          NODE *l_opt_prologue = NULL;
+          if (pn_l) {
+              for (size_t i = 0; i < pn_l->optionals.size; i++) {
+                  if (!PM_NODE_TYPE_P(pn_l->optionals.nodes[i], PM_OPTIONAL_PARAMETER_NODE)) continue;
+                  pm_optional_parameter_node_t *op =
+                      (pm_optional_parameter_node_t *)pn_l->optionals.nodes[i];
+                  int slot = lvar_slot(tc, op->name, 0);
+                  if (slot < 0) continue;
+                  NODE *def_val = T(tc, op->value);
+                  NODE *init = ALLOC_node_default_init((uint32_t)slot, def_val);
+                  l_opt_prologue = l_opt_prologue ? ALLOC_node_seq(l_opt_prologue, init) : init;
+              }
+          }
           NODE *body = n->body ? T(tc, n->body) : ALLOC_node_nil();
           if (l_destructure_pre) body = ALLOC_node_seq(l_destructure_pre, body);
+          if (l_opt_prologue) body = ALLOC_node_seq(l_opt_prologue, body);
           if (kw_prologue) body = ALLOC_node_seq(kw_prologue, body);
           /* Capture lambda's slot→name table for binding / eval-with-binding
            * dispatch (same registry the def / block path uses). */
@@ -4130,6 +4191,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                                                    env_size, (int32_t)lambda_rest_slot, l_creates_proc);
           } else {
               blk = ALLOC_node_block_literal(body, params_cnt, param_base, env_size, l_creates_proc);
+          }
+          if (lambda_opt_cnt > 0) {
+              blk = ALLOC_node_proc_set_opt_cnt(blk, lambda_opt_cnt);
           }
           if (lambda_blk_slot >= 0) {
               blk = ALLOC_node_proc_set_block_slot(blk, (int32_t)lambda_blk_slot);

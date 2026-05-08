@@ -275,6 +275,43 @@ static VALUE hash_required_kwarg(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qnil;
 }
 
+/* Hash#__korb_required_kwargs_check__(keys) — internal: verify all keys
+ * present in self; if any are missing, raise ArgumentError listing them
+ * all (CRuby's "missing keywords: :a, :b" format).  Called once at the
+ * top of the kwargs prologue so the error mentions every missing key
+ * instead of just the first encountered. */
+static VALUE hash_required_kwargs_check(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_ARRAY) return Qnil;
+    const struct korb_hash *h = (const struct korb_hash *)self;
+    const struct korb_array *keys = (const struct korb_array *)argv[0];
+    /* Collect missing keys preserving declared order. */
+    VALUE missing = korb_ary_new();
+    for (long i = 0; i < (long)keys->len; i++) {
+        VALUE key = keys->ptr[i];
+        uint64_t hh = korb_hash_value(key);
+        bool found = false;
+        for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+            if (e->hash == hh && korb_eql(e->key, key)) { found = true; break; }
+        }
+        if (!found) korb_ary_push(missing, key);
+    }
+    struct korb_array *miss_a = (struct korb_array *)missing;
+    if (miss_a->len == 0) return Qnil;
+    /* Build "missing keyword(s): :a, :b" message. */
+    char buf[1024];
+    int off = 0;
+    const char *plural = miss_a->len > 1 ? "keywords" : "keyword";
+    off += snprintf(buf + off, sizeof(buf) - off, "missing %s: ", plural);
+    for (long i = 0; i < (long)miss_a->len && off < (int)sizeof(buf) - 16; i++) {
+        const char *kn = SYMBOL_P(miss_a->ptr[i]) ? korb_id_name(korb_sym2id(miss_a->ptr[i])) : "?";
+        off += snprintf(buf + off, sizeof(buf) - off, "%s:%s",
+                        i == 0 ? "" : ", ", kn);
+    }
+    VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    korb_raise(c, (struct korb_class *)eArg, "%s", buf);
+    return Qnil;
+}
+
 static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || argc > 2) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));

@@ -78,11 +78,15 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
             BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
             eff_argc = argc - 1;
         }
-        if ((uint32_t)eff_argc != p->params_cnt) {
+        uint32_t total_pos = p->params_cnt + p->post_cnt;
+        uint32_t required = (p->params_cnt > p->opt_cnt)
+                             ? p->params_cnt - p->opt_cnt + p->post_cnt
+                             : p->post_cnt;
+        if ((uint32_t)eff_argc < required || (uint32_t)eff_argc > total_pos) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
             korb_raise(c, (struct korb_class *)eArg,
                      "wrong number of arguments (given %d, expected %u)",
-                     eff_argc, p->params_cnt);
+                     eff_argc, total_pos);
             return Qnil;
         }
     } else if (p->is_lambda) {
@@ -140,8 +144,13 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
      * called from inside it: fp would jump out of the fiber's stack
      * and stack_end checks would misfire (false stack-overflow). */
     bool env_outside_stack = (new_fp < c->stack_base || new_fp >= c->stack_end);
-    bool method_overlaps_env = (prev_fp && prev_fp != new_fp &&
-                                prev_fp >= new_fp && prev_fp <= new_fp + p->env_size);
+    /* Method-overlap: any active method frame is currently positioned
+     * above env (prev_fp > new_fp).  Without cloning, callees inside
+     * the body that allocate frames at new_fp + N can extend past
+     * env_size and overwrite the active method's locals.  Clone the
+     * env to fresh space at c->sp so callees write into virgin memory
+     * (and outer-scope writes propagate via the writeback step below). */
+    bool method_overlaps_env = (prev_fp && prev_fp != new_fp && prev_fp > new_fp);
     /* Self-recursion: a proc/lambda is being called from inside its own
      * body (or a callee that hasn't returned yet).  prev_fp == new_fp
      * means the same env slots are about to be overwritten — including
@@ -221,6 +230,14 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         uint32_t post_cnt = p->post_cnt;
         uint32_t arg_cur = 0;  /* pointer into argv */
         uint32_t total_argc = (uint32_t)argc;
+        /* If no *rest, cap effective argc at total positional capacity:
+         * extra args are dropped from the END (after posts).  So
+         * `proc {|a, b=, c=, d, e|}.call(1..6)` binds a=1, b=2, c=3,
+         * d=4, e=5 (drop 6 from end). */
+        if (p->rest_slot < 0) {
+            uint32_t total_pos = req_cnt + p->opt_cnt + post_cnt;
+            if (total_argc > total_pos) total_argc = total_pos;
+        }
         /* 1) Fill required from front. */
         uint32_t req_fill = (total_argc < req_cnt) ? total_argc : req_cnt;
         for (uint32_t i = 0; i < req_fill; i++) {
@@ -229,7 +246,13 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         for (uint32_t i = req_fill; i < req_cnt; i++) {
             new_fp[p->param_base + i] = Qnil;
         }
-        /* 2) Reserve post slots — pulled later from argv tail. */
+        /* 2) Reserve post slots — pulled later from argv tail.  When
+         * there's no *rest, extra args (beyond what req+opt+post can
+         * absorb) are dropped from the END (after posts), not from the
+         * middle: caller's last `extra` args are skipped, so the post
+         * slots take the FIRST post_cnt args from the end of the
+         * effective tail.  CRuby semantics: `proc {|a,b=,c=,d,e|}` with
+         * 6 args binds a=1, b=2, c=3, d=4, e=5 (6 dropped from end). */
         uint32_t remaining = total_argc - arg_cur;  /* args left after req */
         uint32_t post_take = (remaining < post_cnt) ? remaining : post_cnt;
         uint32_t middle = remaining - post_take;    /* available to opt + *rest */
@@ -248,15 +271,14 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
             VALUE rest = korb_ary_new();
             for (uint32_t i = 0; i < middle; i++) korb_ary_push(rest, argv[arg_cur++]);
             new_fp[p->rest_slot] = rest;
-        } else {
-            /* No rest — just skip the leftover middle args (they're dropped). */
-            arg_cur += middle;
         }
         /* 5) Posts: absolute slots = param_base + params_cnt + (rest?1:0). */
         if (post_cnt > 0) {
             uint32_t post_base = p->param_base + p->params_cnt + (p->rest_slot >= 0 ? 1 : 0);
+            /* Posts pull from the tail of argv: argv[total_argc - post_take ..]. */
+            uint32_t post_src = total_argc - post_take;
             for (uint32_t i = 0; i < post_take; i++) {
-                new_fp[post_base + i] = argv[arg_cur++];
+                new_fp[post_base + i] = argv[post_src + i];
             }
             for (uint32_t i = post_take; i < post_cnt; i++) {
                 new_fp[post_base + i] = Qnil;

@@ -3,7 +3,19 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-08, fourth pass)
+## 現状 (2026-05-08, fifth pass)
+
+- **自前 test/ruby/**: **24/24 全 OK** (737 件)。
+- **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,715 pass / 217 fail / 54 err / 34 perfect**
+  (前 round 比 +311 pass)。 mock shim の slot bug を proc.c の env-clone 条件
+  拡大で解消、 lambda の opt 引数を実装、 anon-rest+post の slot mismatch を
+  修正、 hash literal の string-key 自動 freeze、 missing keyword エラーで
+  全キー列挙を実装。
+- **optcarrot**: 30 frames で 85 fps、 動作・出力一致。
+- **CRuby `spec/ruby/core/`** (13 主要 cat): **12,407+ pass、 133 ファイル perfect**。
+- **Binding**: **150 pass** (完全互換)。
+
+## 旧現状 (2026-05-08, fourth pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
 - **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,404 pass / 40 perfect**。

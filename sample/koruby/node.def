@@ -683,7 +683,18 @@ node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_i
     /* argc is # of pairs * 2; flat key,value,key,value,... */
     VALUE h = korb_hash_new();
     for (uint32_t i = 0; i + 1 < argc; i += 2) {
-        korb_hash_aset(h, c->fp[arg_index + i], c->fp[arg_index + i + 1]);
+        VALUE k = c->fp[arg_index + i];
+        /* CRuby: hash-literal mutable String keys are deduplicated
+         * (frozen copy in the hash, original mutable string left
+         * alone). */
+        if (!SPECIAL_CONST_P(k) && BUILTIN_TYPE(k) == T_STRING &&
+            !(RBASIC(k)->flags & FL_FROZEN)) {
+            VALUE k2 = korb_str_new(((struct korb_string *)k)->ptr,
+                                    ((struct korb_string *)k)->len);
+            RBASIC(k2)->flags |= FL_FROZEN;
+            k = k2;
+        }
+        korb_hash_aset(h, k, c->fp[arg_index + i + 1]);
     }
     return h;
 }

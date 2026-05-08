@@ -3054,8 +3054,15 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
             korb_ary_push(rest, c->fp[fixed_pre + opt_filled + i]);
         }
         c->fp[mc->rest_slot] = rest;
+        /* Posts land at fp[total - post_cnt + i] in the param-position
+         * layout — this is fp[rest_slot+1+i] iff rest_slot is at
+         * required+opt position (named rest), but for *anonymous* rest
+         * the rest_slot is allocated past locals, so the two indices
+         * diverge.  Write to the param-position layout so the shuffle
+         * (which reads fp[i] for each position i) sees the right values. */
+        long post_base = (long)mc->total_params_cnt - fixed_post;
         for (long i = 0; i < fixed_post; i++) {
-            c->fp[mc->rest_slot + 1 + i] = post_buf[i];
+            c->fp[post_base + i] = post_buf[i];
         }
     } else if (mc->post_params_cnt > 0) {
         /* No rest, but post params present.  argv layout in caller:
