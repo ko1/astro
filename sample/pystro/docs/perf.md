@@ -34,6 +34,9 @@ best-of-5〜10。 詳細表は [現状ベンチ](#現状ベンチ-2026-05-08) �
   raytrace 0.79 → 0.69 (~13%)、 **3.14 を逆転**
 - `node_method_{1,2,n}` の冗長な c->state 読みを除去 / `!av[i]`
   チェックに変換 (12 箇所)
+- `pys_try_binop_dunder` を `__attribute__((always_inline))` で
+  pys_add/sub/mul に強制 inline (gcc -O2 が out-of-line してた):
+  raytrace さらに ~3% 短縮
 
 ### 試して撤回した変更 (記録のみ)
 
