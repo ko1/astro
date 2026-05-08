@@ -739,13 +739,33 @@ VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
 /* ---------- Object#dup / clone / instance_variables ---------- */
 static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen);
 
+static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg);
 static VALUE obj_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return obj_dup_impl(c, self, true);
+    /* clone(freeze: nil/true/false) — `freeze: true` (default) preserves
+     * the source's frozen-ness; `false` produces an unfrozen copy even if
+     * the source was frozen; `nil` (only Ruby 3.0+) is the same as default
+     * for koruby's purposes. */
+    int freeze_arg = -1; /* -1 = default (preserve) */
+    if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_HASH) {
+        VALUE fk = korb_id2sym(korb_intern("freeze"));
+        struct korb_hash *h = (struct korb_hash *)argv[0];
+        for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+            if (korb_eql(e->key, fk)) {
+                if (e->value == Qfalse) freeze_arg = 0;
+                else if (e->value == Qtrue) freeze_arg = 1;
+                break;
+            }
+        }
+    }
+    return obj_dup_impl_freeze(c, self, true, freeze_arg);
 }
 static VALUE obj_dup(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return obj_dup_impl(c, self, false);
+    return obj_dup_impl_freeze(c, self, false, -1);
 }
 static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
+    return obj_dup_impl_freeze(c, self, preserve_frozen, -1);
+}
+static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg) {
     if (SPECIAL_CONST_P(self)) return self;
     enum korb_type t = BUILTIN_TYPE(self);
     VALUE r = self;
@@ -827,8 +847,16 @@ static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
         }
         r = (VALUE)nk;
     }
-    if (preserve_frozen && r != self && !SPECIAL_CONST_P(r) && korb_obj_frozen_p(self)) {
-        ((struct RBasic *)r)->flags |= FL_FROZEN;
+    /* freeze_arg: -1 = default (preserve from source), 0 = force unfrozen,
+     * 1 = force frozen.  preserve_frozen is the dup-vs-clone selector. */
+    if (r != self && !SPECIAL_CONST_P(r)) {
+        if (freeze_arg == 1) {
+            ((struct RBasic *)r)->flags |= FL_FROZEN;
+        } else if (freeze_arg == 0) {
+            ((struct RBasic *)r)->flags &= ~FL_FROZEN;
+        } else if (preserve_frozen && korb_obj_frozen_p(self)) {
+            ((struct RBasic *)r)->flags |= FL_FROZEN;
+        }
     }
     return r;
 }

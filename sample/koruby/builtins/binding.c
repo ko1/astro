@@ -739,12 +739,34 @@ static VALUE binding_eval_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Hash so subsequent local_variable_set / eval on the original
  * doesn't leak into the copy (and vice versa).  fp / self / cref /
  * method_name are shared (immutable for our purposes). */
-static VALUE binding_dup_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
+static VALUE binding_dup_clone_impl(CTX *c, VALUE self, bool preserve_frozen, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return self;
     struct korb_binding *src = (struct korb_binding *)self;
     struct korb_binding *dst = korb_xcalloc(1, sizeof(*dst));
     dst->basic.flags = T_DATA;
     dst->basic.klass = src->basic.klass;
+    /* Frozen handling: clone preserves source's frozen flag (with optional
+     * `freeze: true/false` kwarg override); dup always produces unfrozen. */
+    int freeze_arg = -1;
+    if (preserve_frozen && argc >= 1 &&
+        !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_HASH) {
+        VALUE fk = korb_id2sym(korb_intern("freeze"));
+        struct korb_hash *h = (struct korb_hash *)argv[0];
+        for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+            if (korb_eql(e->key, fk)) {
+                if (e->value == Qfalse) freeze_arg = 0;
+                else if (e->value == Qtrue) freeze_arg = 1;
+                break;
+            }
+        }
+    }
+    if (freeze_arg == 1) {
+        dst->basic.flags |= FL_FROZEN;
+    } else if (freeze_arg == 0) {
+        /* explicit unfreeze */
+    } else if (preserve_frozen && (src->basic.flags & FL_FROZEN)) {
+        dst->basic.flags |= FL_FROZEN;
+    }
     dst->fp = src->fp;
     dst->base = src->base;
     dst->self = src->self;
@@ -768,6 +790,13 @@ static VALUE binding_dup_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
         dst->extra_vars = Qnil;
     }
     return (VALUE)dst;
+}
+
+static VALUE binding_clone_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return binding_dup_clone_impl(c, self, true, argc, argv);
+}
+static VALUE binding_dup_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+    return binding_dup_clone_impl(c, self, false, argc, argv);
 }
 
 /* Proc#binding — create a new Binding from the proc's captured env. */
