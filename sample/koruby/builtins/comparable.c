@@ -495,6 +495,13 @@ static VALUE module_const_get(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
     if (argc < 2) return Qnil;
+    /* Frozen check before any side effects (CRuby semantics). */
+    if (korb_obj_frozen_p(self)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
+                   korb_id_name(korb_class_of_class(self)->name));
+        return Qnil;
+    }
     const char *namep = NULL;
     int namelen = 0;
     if (SYMBOL_P(argv[0])) {
