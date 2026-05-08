@@ -488,10 +488,39 @@ class Numeric
     self.equal?(other) ? 0 : nil
   end unless method_defined?(:<=>)
 
+  # Numeric#dup / #clone — return self.  Numeric instances are
+  # immutable in CRuby, and dup/clone are no-ops; copy-on-write style
+  # subclasses also expect identity.  clone(freeze:) honors the keyword.
+  def dup
+    self
+  end
+  def clone(freeze: true)
+    if freeze == false
+      raise ArgumentError, "can't unfreeze #{self.class}"
+    end
+    self
+  end
+
   # Numeric#fdiv — Float division.  All numeric kinds get this.
   def fdiv(other)
     self.to_f / other.to_f
   end unless method_defined?(:fdiv)
+
+  # Numeric#ceil / #floor / #round / #truncate — default impls go via
+  # #to_f and let Float handle the rounding.  Subclasses (Integer / Float)
+  # override.  These satisfy `Class.new(Numeric)` instances.
+  def ceil(*args)
+    to_f.ceil(*args)
+  end unless method_defined?(:ceil)
+  def floor(*args)
+    to_f.floor(*args)
+  end unless method_defined?(:floor)
+  def round(*args)
+    to_f.round(*args)
+  end unless method_defined?(:round)
+  def truncate(*args)
+    to_f.truncate(*args)
+  end unless method_defined?(:truncate)
 
   def finite?
     if respond_to?(:nan?) && nan?

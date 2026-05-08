@@ -719,8 +719,19 @@ class MSpecMock
 end
 
 class MSpecMockExpectation
-  def initialize(mock, name); @mock = mock; @name = name; @ret = nil; @raise = nil; end
-  def and_return(v); @ret = v; self; end
+  def initialize(mock, name); @mock = mock; @name = name; @ret = nil; @ret_seq = nil; @ret_idx = 0; @raise = nil; end
+  # and_return(v) — fix the return value.
+  # and_return(v1, v2, ...) — return v1 on the first call, v2 on the
+  #   second, etc.; final value sticks for any subsequent call.
+  def and_return(*vs)
+    if vs.size <= 1
+      @ret = vs[0]
+    else
+      @ret_seq = vs
+      @ret_idx = 0
+    end
+    self
+  end
   # `and_raise(exc_class)` / `and_raise(exc_instance)`: when the mocked
   # method is called, raise instead of returning @ret.
   def and_raise(exc); @raise = exc; self; end
@@ -744,7 +755,13 @@ class MSpecMockExpectation
     if @raise
       raise (@raise.is_a?(Class) ? @raise.new : @raise)
     end
-    @ret
+    if @ret_seq
+      v = @ret_seq[@ret_idx] || @ret_seq.last
+      @ret_idx += 1
+      v
+    else
+      @ret
+    end
   end
 end
 

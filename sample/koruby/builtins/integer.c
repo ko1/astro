@@ -427,9 +427,28 @@ static VALUE int_fdiv(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     double a = (double)(FIXNUM_P(self) ? FIX2LONG(self) : 0);
     double b;
-    if      (FIXNUM_P(argv[0]))                                            b = (double)FIX2LONG(argv[0]);
-    else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_FLOAT) b = korb_num2dbl(argv[0]);
-    else return Qnil;
+    VALUE other = argv[0];
+    if      (FIXNUM_P(other))                                            b = (double)FIX2LONG(other);
+    else if (FLONUM_P(other))                                            b = korb_flonum_to_double(other);
+    else if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_FLOAT)  b = korb_num2dbl(other);
+    else if (!SPECIAL_CONST_P(other)) {
+        /* Coerce via #to_f (CRuby semantics for Numeric#fdiv with mocks
+         * and other to_f-respondable objects). */
+        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_f")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt)) {
+            VALUE r = korb_funcall(c, other, korb_intern("to_f"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (FLONUM_P(r)) b = korb_flonum_to_double(r);
+            else if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT) b = korb_num2dbl(r);
+            else return Qnil;
+        } else {
+            return Qnil;
+        }
+    } else {
+        return Qnil;
+    }
     return korb_float_new(a / b);
 }
 
