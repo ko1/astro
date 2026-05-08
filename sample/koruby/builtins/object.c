@@ -678,6 +678,13 @@ static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
     if (t == T_OBJECT) {
         struct korb_object *o = (struct korb_object *)self;
         struct korb_class *k = (struct korb_class *)o->basic.klass;
+        /* dup (preserve_frozen=false) drops the singleton class — CRuby
+         * dup creates a new object with the "real" class, ignoring any
+         * methods/constants added on the original's singleton class.
+         * clone (preserve_frozen=true) keeps the singleton class. */
+        if (!preserve_frozen && k && k->name == korb_intern("(singleton)")) {
+            while (k && k->name == korb_intern("(singleton)")) k = k->super;
+        }
         r = korb_object_new(k);
         struct korb_object *no = (struct korb_object *)r;
         for (uint32_t i = 0; i < o->ivar_cnt && i < no->ivar_capa; i++) {
