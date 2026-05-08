@@ -614,6 +614,10 @@ end
 def ruby_bug(_id, _v); yield if block_given?; end
 def platform_is(*_opts, &blk); end
 def platform_is_not(*_opts, &blk); blk.call if blk; end
+# `not_supported_on(:ruby)` skips on ruby; skip everywhere else.  Treat
+# as "always run" since koruby isn't ruby — be slightly permissive.
+def not_supported_on(*_args, &blk); blk.call if blk; end
+def conflicts_with(*_args, &blk); blk.call if blk; end
 def quarantine!(*_opts); yield if block_given?; end
 def guard(*_opts, &blk); blk.call if blk; end
 def guard_not(*_opts, &blk); blk.call if blk; end
