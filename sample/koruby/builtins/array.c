@@ -646,14 +646,22 @@ static VALUE ary_max(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     VALUE acc = argc > 0 ? argv[0] : INT2FIX(0);
+    bool has_block = korb_block_given();
     for (long i = 0; i < a->len; i++) {
-        if (FIXNUM_P(acc) && FIXNUM_P(a->ptr[i])) {
+        VALUE elt = a->ptr[i];
+        /* Block form: yield each element through the block and use the
+         * result.  Init value is NOT block-mapped. */
+        if (has_block) {
+            elt = korb_yield(c, 1, &elt);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
+        if (FIXNUM_P(acc) && FIXNUM_P(elt)) {
             long s;
-            if (!__builtin_add_overflow(FIX2LONG(acc), FIX2LONG(a->ptr[i]), &s) && FIXABLE(s))
+            if (!__builtin_add_overflow(FIX2LONG(acc), FIX2LONG(elt), &s) && FIXABLE(s))
                 acc = INT2FIX(s);
-            else acc = korb_int_plus(acc, a->ptr[i]);
+            else acc = korb_int_plus(acc, elt);
         } else {
-            acc = korb_funcall(c, acc, korb_intern("+"), 1, &a->ptr[i]);
+            acc = korb_funcall(c, acc, korb_intern("+"), 1, &elt);
         }
     }
     return acc;
@@ -1083,7 +1091,15 @@ static VALUE ary_rotate_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     if (a->len <= 1) return self;
-    long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 1;
+    long n;
+    if (argc >= 1) {
+        VALUE iv = korb_to_int_or_raise(c, argv[0]);
+        if (UNDEF_P(iv)) return Qnil;
+        if (!FIXNUM_P(iv)) return self;
+        n = FIX2LONG(iv);
+    } else {
+        n = 1;
+    }
     long len = a->len;
     n = n % len;
     if (n < 0) n += len;
@@ -1112,7 +1128,15 @@ static VALUE ary_rotate_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_rotate(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
-    long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 1;
+    long n;
+    if (argc >= 1) {
+        VALUE iv = korb_to_int_or_raise(c, argv[0]);
+        if (UNDEF_P(iv)) return Qnil;
+        if (!FIXNUM_P(iv)) return korb_ary_new();
+        n = FIX2LONG(iv);
+    } else {
+        n = 1;
+    }
     if (a->len == 0) return korb_ary_new();
     n = n % a->len;
     if (n < 0) n += a->len;
