@@ -592,6 +592,19 @@ class Integer
     x
   end unless respond_to?(:sqrt)
 
+  # Integer#to_r — produce a Rational with self/1.
+  def to_r
+    Rational(self, 1)
+  end unless method_defined?(:to_r)
+
+  # Integer#rationalize — same as to_r; the optional precision arg is
+  # ignored (CRuby returns the integer-equivalent rational regardless).
+  def rationalize(*a)
+    raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" \
+      if a.size > 1
+    Rational(self, 1)
+  end unless method_defined?(:rationalize)
+
   # Integer.try_convert(obj) — coerce via #to_int; return nil on
   # non-integer-convertible objects, raise TypeError if to_int returns
   # a non-Integer.
