@@ -817,6 +817,9 @@ static VALUE hash_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#replace(other) — destructive replace. */
 static VALUE hash_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Frozen check fires unconditionally — even if argv would have led
+     * to a no-op, CRuby still raises FrozenError on a frozen receiver. */
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (argc < 1) return self;
     if (self == argv[0]) return self;
     /* Coerce non-Hash via #to_hash. */
@@ -954,7 +957,8 @@ static VALUE hash_max_by(CTX *c, VALUE self, int argc, VALUE *argv) {
     return hash_min_or_max_by(c, self, argc, argv, 1);
 }
 
-/* Hash#sort — array of [k, v] sorted by [k, v] <=>. */
+/* Hash#sort — array of [k, v] sorted by [k, v] <=>. With a block,
+ * forwards the block to Array#sort so the user comparator participates. */
 static VALUE hash_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_ary_new();
@@ -964,8 +968,24 @@ static VALUE hash_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_ary_push(pair, e->value);
         korb_ary_push(r, pair);
     }
-    /* Sort by [k, v] <=> */
+    if (korb_block_given()) {
+        return korb_funcall_with_block(c, r, korb_intern("sort"), 0, NULL,
+                                        (VALUE)current_block);
+    }
     return korb_funcall(c, r, korb_intern("sort"), 0, NULL);
+}
+
+/* Hash#deconstruct_keys — pattern-match support hook.  Spec: takes one
+ * argument (an Array of keys, or nil to mean "all keys"); returns self.
+ * koruby ignores the keys arg and just returns self.  Validates argc. */
+static VALUE hash_deconstruct_keys(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc != 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1)", argc);
+        return Qnil;
+    }
+    return self;
 }
 
 static VALUE hash_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {

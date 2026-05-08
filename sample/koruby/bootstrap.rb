@@ -404,6 +404,8 @@ class Hash
     self
   end unless method_defined?(:transform_keys!)
   def transform_values!(&blk)
+    return enum_for(:transform_values!) unless blk
+    raise FrozenError, "can't modify frozen Hash: #{inspect}" if frozen?
     each_pair { |k, v| self[k] = blk.call(v) }
     self
   end unless method_defined?(:transform_values!)
@@ -1294,12 +1296,14 @@ class Hash
   end unless method_defined?(:>=)
 
   def transform_values(&blk)
+    return enum_for(:transform_values) unless blk
     h = {}
     each_pair { |k, v| h[k] = blk.call(v) }
     h
   end
 
   def transform_keys(&blk)
+    return enum_for(:transform_keys) unless blk
     h = {}
     each_pair { |k, v| h[blk.call(k)] = v }
     h
@@ -1386,8 +1390,8 @@ class Hash
     keys.map { |k| self[k] }
   end
 
-  def sort
-    to_a.sort
+  def sort(&blk)
+    blk ? to_a.sort(&blk) : to_a.sort
   end
 end
 

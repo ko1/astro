@@ -725,6 +725,8 @@ void korb_init_builtins(void) {
     DEF(cAry, "assoc",       ary_assoc,       1);
     DEF(cAry, "rassoc",      ary_rassoc,      1);
     DEF(cAry, "at",          ary_at,          1);
+    DEF(cAry, "fetch",       ary_fetch,       -1);
+    DEF(cAry, "fetch_values", ary_fetch_values, -1);
     DEF(cAry, "delete",      ary_delete,      1);
     DEF(cAry, "delete_at",   ary_delete_at,   1);
     DEF(cAry, "delete_if",   ary_delete_if,   0);
@@ -826,6 +828,7 @@ void korb_init_builtins(void) {
     DEF(cHsh, "min_by",      hash_min_by,       0);
     DEF(cHsh, "max_by",      hash_max_by,       0);
     DEF(cHsh, "sort",        hash_sort,         0);
+    DEF(cHsh, "deconstruct_keys", hash_deconstruct_keys, 1);
     DEF(cHsh, "dig",              hash_dig,              -1);
     DEF(cHsh, "has_value?",       hash_has_value_p,       1);
     DEF(cHsh, "value?",           hash_has_value_p,       1);

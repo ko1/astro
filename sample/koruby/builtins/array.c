@@ -1552,6 +1552,67 @@ static VALUE ary_at(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_ary_aref(self, FIX2LONG(iv));
 }
 
+/* Array#fetch(idx[, default]) {block}
+ *  * idx is coerced via #to_int.
+ *  * If idx is in range, returns the element.
+ *  * Otherwise: yields idx to a block (if given) and returns its value;
+ *    else returns the explicit default arg (if given);
+ *    else raises IndexError. */
+static VALUE ary_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || argc > 2) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1..2)", argc);
+        return Qnil;
+    }
+    VALUE iv = korb_to_int_or_raise(c, argv[0]);
+    if (c->state == KORB_RAISE || !FIXNUM_P(iv)) return Qnil;
+    long i = FIX2LONG(iv);
+    struct korb_array *a = (struct korb_array *)self;
+    long norm = i < 0 ? i + a->len : i;
+    if (norm >= 0 && norm < a->len) return a->ptr[norm];
+    if (korb_block_given()) {
+        VALUE arg[1] = { argv[0] };
+        return korb_yield(c, 1, arg);
+    }
+    if (argc == 2) return argv[1];
+    VALUE eI = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+    korb_raise(c, (struct korb_class *)eI,
+               "index %ld outside of array bounds: %ld...%ld",
+               i, -a->len, a->len);
+    return Qnil;
+}
+
+/* Array#fetch_values(*indexes) {block} — like fetch but for many indexes
+ * at once.  Returns an array.  Without a block, raises IndexError on the
+ * first missing index. */
+static VALUE ary_fetch_values(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE r = korb_ary_new();
+    bool block_p = korb_block_given();
+    struct korb_array *a = (struct korb_array *)self;
+    for (int k = 0; k < argc; k++) {
+        VALUE iv = korb_to_int_or_raise(c, argv[k]);
+        if (c->state == KORB_RAISE || !FIXNUM_P(iv)) return Qnil;
+        long i = FIX2LONG(iv);
+        long norm = i < 0 ? i + a->len : i;
+        if (norm >= 0 && norm < a->len) {
+            korb_ary_push(r, a->ptr[norm]);
+        } else if (block_p) {
+            VALUE arg[1] = { argv[k] };
+            VALUE yv = korb_yield(c, 1, arg);
+            if (c->state == KORB_RAISE) return Qnil;
+            korb_ary_push(r, yv);
+        } else {
+            VALUE eI = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eI,
+                       "index %ld outside of array bounds: %ld...%ld",
+                       i, -a->len, a->len);
+            return Qnil;
+        }
+    }
+    return r;
+}
+
 /* Array#delete(obj) — remove all == matches; return obj if found else nil. */
 static VALUE ary_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
