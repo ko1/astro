@@ -803,6 +803,9 @@ def max_long;        2 ** 63 - 1; end
 def min_long;       -(2 ** 63); end
 def fixnum_max;      (2**62) - 1; end
 def fixnum_min;     -(2**62); end
+# Common spec constants
+TOLERANCE      = 0.00003 unless Object.const_defined?(:TOLERANCE)
+TIME_TOLERANCE = 20.0    unless Object.const_defined?(:TIME_TOLERANCE)
 
 def tmp(name = "_spec_tmp")
   "/tmp/koruby-spec-#{Process.pid rescue 0}-#{name}"
