@@ -6,8 +6,8 @@
 ## 現状 (2026-05-08, fifth pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
-- **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,725 pass / 209 fail / 55 err / 35 perfect**
-  (前 round 比 +321 pass)。 主な修正:
+- **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,726 pass / 208 fail / 55 err / 35 perfect**
+  (前 round 比 +322 pass)。 主な修正:
   - mock shim の slot bug を proc.c の env-clone 条件拡大で解消 (+301 pass)。
   - lambda の opt 引数を実装、 anon-rest+post の slot mismatch を修正。
   - hash literal の string-key 自動 freeze (perfect 化)。
@@ -16,6 +16,8 @@
   - eval `__FILE__` を `(eval at <caller>:<line>)` 形式に (file_spec perfect)。
   - `clone(freeze:)` の処理 (Object#clone と Binding#clone それぞれで)。
   - proc post-rest の extra-arg を末尾から落とす。
+  - `case x; in pat; end` 末尾 raise の slot 衝突を修正
+    (msg→cls 順に prep して inspect callee の上書きを回避)。
 - **optcarrot**: 30 frames で 85 fps、 動作・出力一致。
 - **CRuby `spec/ruby/core/`** (13 主要 cat): **12,407+ pass、 133 ファイル perfect**。
   本 round で `core/proc/parameters_spec` 26/26 → 42/18、
