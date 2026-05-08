@@ -5,8 +5,36 @@
  * doesn't allocate the String storage; we need a real heap String. */
 VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r;
-    if (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_STRING) {
-        struct korb_string *s = (struct korb_string *)argv[0];
+    /* Drop trailing FL_KWARGS hash (encoding: / capacity: kwargs are
+     * accepted but treated as informational). */
+    int eff_argc = argc;
+    if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
+        BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
+        (RBASIC(argv[argc - 1])->flags & FL_KWARGS)) {
+        eff_argc = argc - 1;
+    }
+    if (eff_argc >= 1) {
+        VALUE init = argv[0];
+        if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
+            if (!SPECIAL_CONST_P(init)) {
+                VALUE rt = korb_funcall(c, init, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+                if (c->state == KORB_RAISE) return Qnil;
+                if (RTEST(rt)) {
+                    init = korb_funcall(c, init, korb_intern("to_str"), 0, NULL);
+                    if (c->state == KORB_RAISE) return Qnil;
+                }
+            }
+            if (SPECIAL_CONST_P(init) || BUILTIN_TYPE(init) != T_STRING) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion of %s into String",
+                           SPECIAL_CONST_P(argv[0]) ? "(special)"
+                               : korb_id_name(korb_class_of_class(argv[0])->name));
+                return Qnil;
+            }
+        }
+        struct korb_string *s = (struct korb_string *)init;
         r = korb_str_new(s->ptr, s->len);
     } else {
         r = korb_str_new("", 0);
@@ -22,9 +50,29 @@ VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- String ---------- */
 static VALUE str_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
+    VALUE other = argv[0];
+    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
+        /* Try to_str — TypeError if the object doesn't convert. */
+        if (!SPECIAL_CONST_P(other)) {
+            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                other = korb_funcall(c, other, korb_intern("to_str"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            }
+        }
+        if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into String",
+                       SPECIAL_CONST_P(argv[0]) ? "(special)"
+                           : korb_id_name(korb_class_of_class(argv[0])->name));
+            return Qnil;
+        }
+    }
     VALUE r = korb_str_dup(self);
-    return korb_str_concat(r, argv[0]);
+    return korb_str_concat(r, other);
 }
 /* Append a single arg to self.  Returns Qfalse on raise (caller stops). */
 static bool str_concat_one(CTX *c, VALUE self, VALUE arg);
@@ -427,9 +475,29 @@ static VALUE str_end_with(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE str_include(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qfalse;
+    if (argc < 1) return Qfalse;
+    VALUE other = argv[0];
+    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
+        if (!SPECIAL_CONST_P(other)) {
+            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (c->state == KORB_RAISE) return Qfalse;
+            if (RTEST(rt)) {
+                other = korb_funcall(c, other, korb_intern("to_str"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qfalse;
+            }
+        }
+        if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into String",
+                       SPECIAL_CONST_P(argv[0]) ? "(special)"
+                           : korb_id_name(korb_class_of_class(argv[0])->name));
+            return Qfalse;
+        }
+    }
     struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *p = (struct korb_string *)argv[0];
+    struct korb_string *p = (struct korb_string *)other;
     if (p->len == 0) return Qtrue;
     for (long i = 0; i + p->len <= s->len; i++) {
         if (memcmp(s->ptr + i, p->ptr, p->len) == 0) return Qtrue;
@@ -1385,10 +1453,37 @@ static VALUE str_oct(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_prepend(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_string *s = (struct korb_string *)self;
+    /* Coerce each arg via #to_str if not String; raise TypeError on
+     * failure (CRuby semantics). */
+    VALUE local[8];
+    VALUE *args = (argc <= 8) ? local : (VALUE *)korb_xmalloc(sizeof(VALUE) * argc);
+    for (int i = 0; i < argc; i++) {
+        VALUE a = argv[i];
+        if (SPECIAL_CONST_P(a) || BUILTIN_TYPE(a) != T_STRING) {
+            if (!SPECIAL_CONST_P(a)) {
+                VALUE rt = korb_funcall(c, a, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+                if (c->state == KORB_RAISE) return Qnil;
+                if (RTEST(rt)) {
+                    a = korb_funcall(c, a, korb_intern("to_str"), 0, NULL);
+                    if (c->state == KORB_RAISE) return Qnil;
+                }
+            }
+            if (SPECIAL_CONST_P(a) || BUILTIN_TYPE(a) != T_STRING) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion of %s into String",
+                           SPECIAL_CONST_P(argv[i]) ? "(special)"
+                               : korb_id_name(korb_class_of_class(argv[i])->name));
+                return Qnil;
+            }
+        }
+        args[i] = a;
+    }
+    argv = args;
     /* Concatenate args into a single buffer first to keep the math simple. */
     long extra = 0;
     for (int i = 0; i < argc; i++) {
-        if (BUILTIN_TYPE(argv[i]) != T_STRING) return self;
         extra += ((struct korb_string *)argv[i])->len;
     }
     long total = extra + s->len;
