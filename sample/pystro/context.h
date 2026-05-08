@@ -777,7 +777,26 @@ VALUE pys_dict_get   (CTX *c, VALUE d, VALUE key);
 void  pys_dict_set   (CTX *c, VALUE d, VALUE key, VALUE val);
 bool  pys_dict_has   (CTX *c, VALUE d, VALUE key);
 bool  pys_dict_remove(CTX *c, VALUE d, VALUE key);
-uint64_t pys_hash    (CTX *c, VALUE v);
+uint64_t pys_hash_slow(CTX *c, VALUE v);
+
+// Inlinable fast-path hash.  Fixnum / flonum (the dominant int/float
+// keys in dict_bench / general numeric maps) hash without a function
+// call — saves the call+ret + register spills around the hot dict
+// indices_lookup loop.  All other tags fall through to the out-of-line
+// slow path which handles strings, bytes, tuples, frozenset, bound
+// methods, etc.  Whole-int floats (1.0) get the same hash as PYS_FIX(1)
+// in pys_hash_slow; we replicate that normalization here so dicts
+// keyed by mixed int/float still match.
+static inline uint64_t
+pys_hash(CTX *c, VALUE v)
+{
+    if (PYS_IS_FIXNUM(v)) {
+        uint64_t k = (uint64_t)PYS_FIXVAL(v);
+        k *= 0x9E3779B97F4A7C15ULL;
+        return k ^ (k >> 32);
+    }
+    return pys_hash_slow(c, v);
+}
 
 // Membership: `x in y`.
 bool pys_contains(CTX *c, VALUE container, VALUE v);

@@ -2292,10 +2292,17 @@ pys_eq_bool(CTX *c, VALUE a, VALUE b)
 // Hash.
 // ---------------------------------------------------------------------------
 
+// Out-of-line hash for non-fixnum values.  Fixnum is handled by the
+// inline pys_hash in context.h to keep the dict-bench hot path off the
+// PLT.  Recursive calls back into pys_hash() from this body re-enter
+// the inline (and may recurse here for nested non-fixnum components).
 uint64_t
-pys_hash(CTX *c, VALUE v)
+pys_hash_slow(CTX *c, VALUE v)
 {
     if (PYS_IS_FIXNUM(v)) {
+        // Defensive: callers should have taken the inline fast path,
+        // but generic dispatch sites (recursive list/tuple hashes) may
+        // land here with fixnums.
         uint64_t k = (uint64_t)PYS_FIXVAL(v);
         k *= 0x9E3779B97F4A7C15ULL;
         return k ^ (k >> 32);
