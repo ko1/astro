@@ -1416,7 +1416,7 @@ pys_neg(CTX *c, VALUE a)
 // We mirror that: any user instance with a defined dunder takes priority.
 // Returns 0 if the dunder isn't defined OR if it returned NotImplemented
 // (so the caller can fall through to reflected ops or built-in paths).
-static inline VALUE
+static inline __attribute__((always_inline)) VALUE
 pys_try_binop_dunder(CTX *c, const char *name, VALUE a, VALUE b)
 {
     // Only user-defined classes can have a dunder we don't already
