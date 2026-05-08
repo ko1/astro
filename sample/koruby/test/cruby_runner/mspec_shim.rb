@@ -665,7 +665,14 @@ end
 # call returns an Object that responds to `should_receive(name)` and
 # subsequent `.and_return(...)`.  Calling the method on the mock returns
 # the configured value (or nil).  Doesn't enforce call counts.
+# CRuby's mspec exposes the mock object's class as `MockObject` so error
+# messages from c-side type checks (e.g. "can't convert MockObject to
+# Array") match what specs assert.  Define it as an alias and override
+# Mock#class to return it.
+class MockObject; end unless defined?(MockObject)
+
 class MSpecMock
+  def class; MockObject; end
   def initialize(name); @name = name; @recv = {}; end
   def should_receive(method, *_); @recv[method] = MSpecMockExpectation.new(self, method); @recv[method]; end
   def stub(*); MSpecMockExpectation.new(self, :stub); end

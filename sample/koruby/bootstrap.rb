@@ -344,8 +344,15 @@ class Array
   class << self
     def try_convert(o)
       return o if o.is_a?(Array)
-      o.respond_to?(:to_ary) ? o.to_ary : nil
-    end unless respond_to?(:try_convert)
+      return nil unless o.respond_to?(:to_ary)
+      r = o.to_ary
+      return nil if r.nil?
+      unless r.is_a?(Array)
+        raise TypeError,
+              "can't convert #{o.class} to Array (#{o.class}#to_ary gives #{r.class})"
+      end
+      r
+    end
   end
 end
 
@@ -354,8 +361,15 @@ class Hash
   class << self
     def try_convert(o)
       return o if o.is_a?(Hash)
-      o.respond_to?(:to_hash) ? o.to_hash : nil
-    end unless respond_to?(:try_convert)
+      return nil unless o.respond_to?(:to_hash)
+      r = o.to_hash
+      return nil if r.nil?
+      unless r.is_a?(Hash)
+        raise TypeError,
+              "can't convert #{o.class} to Hash (#{o.class}#to_hash gives #{r.class})"
+      end
+      r
+    end
   end
 
   # Hash#default_proc= — store the proc in @default_proc; #default_proc
@@ -737,8 +751,15 @@ class String
   class << self
     def try_convert(s)
       return s if s.is_a?(String)
-      s.respond_to?(:to_str) ? s.to_str : nil
-    end unless respond_to?(:try_convert)
+      return nil unless s.respond_to?(:to_str)
+      r = s.to_str
+      return nil if r.nil?
+      unless r.is_a?(String)
+        raise TypeError,
+              "can't convert #{s.class} to String (#{s.class}#to_str gives #{r.class})"
+      end
+      r
+    end
   end
 
   def upto(to, exclusive = false, &blk)
@@ -3574,17 +3595,31 @@ class Proc
     n = arity || self.arity
     n = -n if n < 0
     me = self
+    is_lam = me.lambda?
     accum = nil
-    accum = ->(collected) {
-      ->(*more) {
-        all = collected + more
-        if all.size >= n
-          me.call(*all)
-        else
-          accum.call(all)
-        end
+    if is_lam
+      accum = ->(collected) {
+        lambda { |*more|
+          all = collected + more
+          if all.size >= n
+            me.call(*all)
+          else
+            accum.call(all)
+          end
+        }
       }
-    }
+    else
+      accum = ->(collected) {
+        Proc.new { |*more|
+          all = collected + more
+          if all.size >= n
+            me.call(*all)
+          else
+            accum.call(all)
+          end
+        }
+      }
+    end
     accum.call([])
   end
 

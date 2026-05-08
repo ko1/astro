@@ -699,11 +699,12 @@ void korb_init_builtins(void) {
                     if (NIL_P(r)) return Qnil;
                     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_ARRAY) {
                         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                        const char *src_n = korb_id_name(korb_class_of_class(o)->name);
+                        const char *got_n = SPECIAL_CONST_P(r) ? "(special)"
+                                                                : korb_id_name(korb_class_of_class(r)->name);
                         korb_raise(c, (struct korb_class *)eT,
                                    "can't convert %s to Array (%s#to_ary gives %s)",
-                                   korb_id_name(korb_class_of_class(o)->name),
-                                   korb_id_name(korb_class_of_class(o)->name),
-                                   korb_id_name(korb_class_of_class(r)->name));
+                                   src_n, src_n, got_n);
                         return Qnil;
                     }
                     return r;

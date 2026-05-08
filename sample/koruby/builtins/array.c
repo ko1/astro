@@ -1346,18 +1346,29 @@ static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Array#assoc — find a sub-array whose first element == arg. */
 static VALUE ary_assoc(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Call == on the entry's first element (so user-defined == can
-     * decide).  korb_eq does identity-first then dispatches to ==,
-     * which routes to the FIRST receiver's == — that's the entry's
-     * first element here. */
+     * decide).  Non-array entries get implicit to_ary coercion (CRuby:
+     * "calls to_ary on non-array elements"). */
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
         VALUE e = a->ptr[i];
-        if (SPECIAL_CONST_P(e) || BUILTIN_TYPE(e) != T_ARRAY) continue;
-        struct korb_array *ea = (struct korb_array *)e;
+        VALUE entry;
+        if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_ARRAY) {
+            entry = e;
+        } else if (!SPECIAL_CONST_P(e)) {
+            /* Try to_ary; if it doesn't respond / raises, skip. */
+            struct korb_class *k = korb_class_of_class(e);
+            if (!k || !korb_class_find_method(k, korb_intern("to_ary"))) continue;
+            entry = korb_funcall(c, e, korb_intern("to_ary"), 0, NULL);
+            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; continue; }
+            if (SPECIAL_CONST_P(entry) || BUILTIN_TYPE(entry) != T_ARRAY) continue;
+        } else {
+            continue;
+        }
+        struct korb_array *ea = (struct korb_array *)entry;
         if (ea->len == 0) continue;
         VALUE eq_args[1] = { argv[0] };
         VALUE r = korb_funcall(c, ea->ptr[0], korb_intern("=="), 1, eq_args);
-        if (RTEST(r)) return e;
+        if (RTEST(r)) return entry;
     }
     return Qnil;
 }
