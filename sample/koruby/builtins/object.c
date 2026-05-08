@@ -192,11 +192,23 @@ VALUE mod_class_variable_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
     ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
     if (!name) return Qfalse;
-    /* Walk the receiver's chain directly. */
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return Qfalse;
-    for (struct korb_class *cur = (struct korb_class *)self; cur; cur = cur->super) {
+    /* Walk super chain + transitive includes (CRuby semantics). */
+    struct korb_class *root = (struct korb_class *)self;
+    /* Open-coded recursive walk: use a small stack to avoid infinite
+     * recursion on cyclic includes (defensive). */
+    struct korb_class *stack[64];
+    int top = 0;
+    stack[top++] = root;
+    while (top > 0) {
+        struct korb_class *cur = stack[--top];
+        if (!cur) continue;
         for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
             if (cur->cvars[i].name == name) return Qtrue;
+        }
+        if (cur->super && top < 63) stack[top++] = cur->super;
+        for (uint32_t i = 0; i < cur->includes_cnt && top < 63; i++) {
+            stack[top++] = cur->includes[i];
         }
     }
     return Qfalse;

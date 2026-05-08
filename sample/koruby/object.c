@@ -226,10 +226,22 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
 
 /* Class variables: walk the cref's class up the super chain to find
  * @@name; return Qundef when not present.  Used by node_cvar_get. */
+static struct korb_class *cvar_owner_walk_(struct korb_class *k, ID name);
 static struct korb_class *cvar_owner_(struct korb_class *k, ID name) {
+    return cvar_owner_walk_(k, name);
+}
+/* Walk super chain + transitive includes for a cvar.  Includes can also
+ * declare class variables (`module M; @@x = 1; end`) which are visible
+ * via the including class (CRuby semantics). */
+static struct korb_class *cvar_owner_walk_(struct korb_class *k, ID name) {
+    if (!k) return NULL;
     for (struct korb_class *cur = k; cur; cur = cur->super) {
         for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
             if (cur->cvars[i].name == name) return cur;
+        }
+        for (uint32_t i = 0; i < cur->includes_cnt; i++) {
+            struct korb_class *o = cvar_owner_walk_(cur->includes[i], name);
+            if (o) return o;
         }
     }
     return NULL;
