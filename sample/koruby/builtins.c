@@ -564,7 +564,10 @@ void korb_init_builtins(void) {
     DEF(cAry, "pack",       ary_pack,       -1);
     DEF(cAry, "concat",     ary_concat,     -1);
     DEF(cAry, "-",          ary_minus,       1);
-    DEF(cAry, "+",          ary_concat,     -1);
+    {
+        VALUE ary_plus(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cAry, "+",          ary_plus,        1);
+    }
     DEF(cAry, "index",      ary_index,      -1);
     DEF(cAry, "find_index", ary_index,      -1);
     DEF(cAry, "reverse",      ary_reverse,      0);

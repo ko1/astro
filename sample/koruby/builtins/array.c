@@ -927,6 +927,47 @@ static VALUE ary_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 
+/* Array#+ — non-destructive concat (CRuby semantics).  Coerces the
+ * argument via #to_ary if not already an Array. */
+VALUE ary_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return self;
+    VALUE other = argv[0];
+    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_ARRAY) {
+        if (!SPECIAL_CONST_P(other)) {
+            VALUE klass_v = (VALUE)korb_class_of_class(other);
+            if (klass_v && korb_class_find_method((struct korb_class *)klass_v,
+                                                    korb_intern("to_ary"))) {
+                other = korb_funcall(c, other, korb_intern("to_ary"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            } else {
+                /* Try method_missing path (mock objects). */
+                other = korb_funcall(c, other, korb_intern("to_ary"), 0, NULL);
+                if (c->state == KORB_RAISE) {
+                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    c->state = KORB_NORMAL; c->state_value = Qnil;
+                    korb_raise(c, (struct korb_class *)eT,
+                               "no implicit conversion of %s into Array",
+                               korb_id_name(korb_class_of_class(argv[0])->name));
+                    return Qnil;
+                }
+            }
+        }
+        if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_ARRAY) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into Array",
+                       korb_id_name(korb_class_of_class(argv[0])->name));
+            return Qnil;
+        }
+    }
+    struct korb_array *l = (struct korb_array *)self;
+    struct korb_array *r = (struct korb_array *)other;
+    VALUE result = korb_ary_new_capa(l->len + r->len);
+    for (long i = 0; i < l->len; i++) korb_ary_push(result, l->ptr[i]);
+    for (long i = 0; i < r->len; i++) korb_ary_push(result, r->ptr[i]);
+    return result;
+}
+
 static VALUE ary_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_ARRAY) return korb_ary_new();
     struct korb_array *a = (struct korb_array *)self;
