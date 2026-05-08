@@ -15,7 +15,7 @@ NODE_DEF
 node_const_int(CTX * restrict c, NODE * restrict n, int32_t v)
 {
     (void)c; (void)n;
-    return PY_FIX(v);
+    return PYS_FIX(v);
 }
 
 NODE_DEF
@@ -35,7 +35,7 @@ node_const_bignum(CTX * restrict c, NODE * restrict n, const char *s)
     (void)n;
     mpz_t z;
     mpz_init_set_str(z, s, 10);
-    VALUE v = py_make_bignum(z);
+    VALUE v = pys_make_bignum(z);
     mpz_clear(z);
     return v;
 }
@@ -45,7 +45,7 @@ node_const_float(CTX * restrict c, NODE * restrict n, uint64_t bits)
 {
     (void)n;
     union { uint64_t u; double d; } pun = { .u = bits };
-    return py_make_float(pun.d);
+    return pys_make_float(pun.d);
 }
 
 NODE_DEF
@@ -53,46 +53,46 @@ node_const_imag(CTX * restrict c, NODE * restrict n, uint64_t bits)
 {
     (void)c; (void)n;
     union { uint64_t u; double d; } pun = { .u = bits };
-    extern VALUE py_make_complex(double re, double im);
-    return py_make_complex(0.0, pun.d);
+    extern VALUE pys_make_complex(double re, double im);
+    return pys_make_complex(0.0, pun.d);
 }
 
 NODE_DEF
 node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
 {
     (void)n;
-    return py_make_str(s, strlen(s));
+    return pys_make_str(s, strlen(s));
 }
 
 NODE_DEF
 node_const_bytes(CTX * restrict c, NODE * restrict n, const char *s, uint32_t len)
 {
     (void)c; (void)n;
-    return py_make_bytes(s, (size_t)len);
+    return pys_make_bytes(s, (size_t)len);
 }
 
 NODE_DEF
 node_const_none(CTX * restrict c, NODE * restrict n)
 {
     (void)c; (void)n;
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 NODE_DEF
 node_const_true(CTX * restrict c, NODE * restrict n)
 {
     (void)c; (void)n;
-    return PY_TRUE;
+    return PYS_TRUE;
 }
 
 NODE_DEF
 node_const_false(CTX * restrict c, NODE * restrict n)
 {
     (void)c; (void)n;
-    return PY_FALSE;
+    return PYS_FALSE;
 }
 
-// List / tuple / dict literals — items live in the global PYSTRO_NODE_TABLE
+// List / tuple / dict literals — items live in the global PYS_NODE_TABLE
 // side array (the parser packs them in left-to-right at parse time).
 NODE_DEF @noinline
 node_make_list(CTX * restrict c, NODE * restrict n, uint32_t items_idx, uint32_t nitems)
@@ -100,11 +100,11 @@ node_make_list(CTX * restrict c, NODE * restrict n, uint32_t items_idx, uint32_t
     (void)n;
 VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (nitems ? nitems : 1));
     for (uint32_t i = 0; i < nitems; i++) {
-        NODE *e = PYSTRO_NODE_TABLE[items_idx + i];
+        NODE *e = PYS_NODE_TABLE[items_idx + i];
         items[i] = (*e->head.dispatcher)(c, e);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
-    return py_make_list(items, nitems);
+    return pys_make_list(items, nitems);
 }
 
 NODE_DEF @noinline
@@ -113,23 +113,23 @@ node_make_tuple(CTX * restrict c, NODE * restrict n, uint32_t items_idx, uint32_
     (void)n;
 VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (nitems ? nitems : 1));
     for (uint32_t i = 0; i < nitems; i++) {
-        NODE *e = PYSTRO_NODE_TABLE[items_idx + i];
+        NODE *e = PYS_NODE_TABLE[items_idx + i];
         items[i] = (*e->head.dispatcher)(c, e);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
-    return py_make_tuple(items, nitems);
+    return pys_make_tuple(items, nitems);
 }
 
 NODE_DEF @noinline
 node_make_set(CTX * restrict c, NODE * restrict n, uint32_t items_idx, uint32_t nitems)
 {
     (void)n;
-    VALUE s = py_make_set();
+    VALUE s = pys_make_set();
     for (uint32_t i = 0; i < nitems; i++) {
-        NODE *e = PYSTRO_NODE_TABLE[items_idx + i];
+        NODE *e = PYS_NODE_TABLE[items_idx + i];
         VALUE v = (*e->head.dispatcher)(c, e);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-        py_dict_set(c, s, v, PY_NONE);
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+        pys_dict_set(c, s, v, PYS_NONE);
     }
     return s;
 }
@@ -139,15 +139,15 @@ NODE_DEF @noinline
 node_make_dict(CTX * restrict c, NODE * restrict n, uint32_t pairs_idx, uint32_t npairs)
 {
     (void)n;
-VALUE d = py_make_dict();
+VALUE d = pys_make_dict();
     for (uint32_t i = 0; i < npairs; i++) {
-        NODE *kn = PYSTRO_NODE_TABLE[pairs_idx + 2*i];
-        NODE *vn = PYSTRO_NODE_TABLE[pairs_idx + 2*i + 1];
+        NODE *kn = PYS_NODE_TABLE[pairs_idx + 2*i];
+        NODE *vn = PYS_NODE_TABLE[pairs_idx + 2*i + 1];
         VALUE k = (*kn->head.dispatcher)(c, kn);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         VALUE v = (*vn->head.dispatcher)(c, vn);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-        py_dict_set(c, d, k, v);
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+        pys_dict_set(c, d, k, v);
     }
     return d;
 }
@@ -166,7 +166,7 @@ node_lref(CTX * restrict c, NODE * restrict n, uint32_t idx)
     // UnboundLocalError after del).  Real values can never be 0
     // (fixnums set bit 0; pointers are non-NULL).
     if (UNLIKELY(v == 0))
-        py_raise_exc(c, c->EXC_NameError, "local variable referenced after del");
+        pys_raise_exc(c, c->EXC_NameError, "local variable referenced after del");
     return v;
 }
 
@@ -176,7 +176,7 @@ node_lunbind(CTX * restrict c, NODE * restrict n, uint32_t idx)
 {
     (void)n;
     c->env->slots[idx] = (VALUE)0;
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 NODE_DEF
@@ -184,9 +184,9 @@ node_lset(CTX * restrict c, NODE * restrict n, uint32_t idx, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     c->env->slots[idx] = v;
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 // Closure-captured local reference: walk `depth` parent links to reach
@@ -197,7 +197,7 @@ NODE_DEF
 node_lref_up(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
 {
     (void)n;
-    struct pyframe *e = c->env;
+    struct pysframe *e = c->env;
     for (uint32_t i = 0; i < depth; i++) e = e->parent;
     return e->slots[idx];
 }
@@ -207,11 +207,11 @@ node_lset_up(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, 
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    struct pyframe *e = c->env;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    struct pysframe *e = c->env;
     for (uint32_t i = 0; i < depth; i++) e = e->parent;
     e->slots[idx] = v;
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 NODE_DEF
@@ -221,8 +221,8 @@ node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cac
     // Fast path: cache valid → direct array index.
     if (LIKELY(cache->serial == c->globals->serial))
         return c->globals->entries[cache->idx].value;
-    extern int py_global_resolve(CTX *c, const char *name);
-    int idx = py_global_resolve(c, name);
+    extern int pys_global_resolve(CTX *c, const char *name);
+    int idx = pys_global_resolve(c, name);
     cache->serial = c->globals->serial;
     cache->idx = idx;
     return c->globals->entries[idx].value;
@@ -233,19 +233,19 @@ node_gset(CTX * restrict c, NODE * restrict n, const char *name, NODE *val, stru
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     // Cache holds (serial, idx).  Hot path: cache valid → direct write,
     // no serial bump (the bump only fires on structural change inside
-    // py_global_define when a new slot is allocated).
+    // pys_global_define when a new slot is allocated).
     if (LIKELY(cache->serial == c->globals->serial)) {
         c->globals->entries[cache->idx].value = v;
-        return PY_NONE;
+        return PYS_NONE;
     }
-    py_global_define(c, name, v);
-    extern int py_global_resolve(CTX *c, const char *name);
-    cache->idx = py_global_resolve(c, name);
+    pys_global_define(c, name, v);
+    extern int pys_global_resolve(CTX *c, const char *name);
+    cache->idx = pys_global_resolve(c, name);
     cache->serial = c->globals->serial;
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,13 +257,13 @@ node_neg(CTX * restrict c, NODE * restrict n, NODE *a)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    if (LIKELY(PY_IS_FIXNUM(av))) {
+    if (LIKELY(PYS_IS_FIXNUM(av))) {
         int64_t r;
-        if (LIKELY(!__builtin_sub_overflow((int64_t)0, (int64_t)PY_FIXVAL(av), &r) &&
-                   r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
-            return PY_FIX(r);
+        if (LIKELY(!__builtin_sub_overflow((int64_t)0, (int64_t)PYS_FIXVAL(av), &r) &&
+                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
+            return PYS_FIX(r);
     }
-    return py_neg(c, av);
+    return pys_neg(c, av);
 }
 
 NODE_DEF
@@ -271,7 +271,7 @@ node_not(CTX * restrict c, NODE * restrict n, NODE *a)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    return py_is_truthy(av) ? PY_FALSE : PY_TRUE;
+    return pys_is_truthy(av) ? PYS_FALSE : PYS_TRUE;
 }
 
 NODE_DEF
@@ -279,7 +279,7 @@ node_bit_inv(CTX * restrict c, NODE * restrict n, NODE *a)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    return py_bit_inv(c, av);
+    return pys_bit_inv(c, av);
 }
 
 // ---------------------------------------------------------------------------
@@ -290,38 +290,38 @@ node_bit_inv(CTX * restrict c, NODE * restrict n, NODE *a)
 // Helper: hot-path IC for instance binops.  When LHS is a user-class
 // instance and the cache is hot for that class, calls the cached
 // __op__ directly — no MRO walk, no strcmp.  Returns 0 on miss /
-// NotImplemented (caller falls through to py_add slow path).
+// NotImplemented (caller falls through to pys_add slow path).
 //
 // On cache miss the lookup uses an interned name (intern_name once
-// per literal) so py_class_lookup_method_pub can pointer-compare
+// per literal) so pys_class_lookup_method_pub can pointer-compare
 // against the class's stored method names instead of strcmp.
 static inline VALUE
-py_node_binop_ic(CTX *c, struct binop_cache *cache, VALUE av, VALUE bv, const char *name_lit, const char **interned_slot)
+pys_node_binop_ic(CTX *c, struct binop_cache *cache, VALUE av, VALUE bv, const char *name_lit, const char **interned_slot)
 {
-    if (UNLIKELY(!(PY_IS_PTR(av) && PY_PTR(av)->type == PY_T_INSTANCE)))
+    if (UNLIKELY(!(PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE)))
         return (VALUE)0;
-    void *cls = (void *)PY_PTR(av)->inst.cls;
+    void *cls = (void *)PYS_PTR(av)->inst.cls;
     VALUE m;
     if (LIKELY(cache->cls_ptr == cls && cache->fn)) {
         m = (VALUE)(intptr_t)cache->fn;
     } else {
-        extern VALUE py_class_lookup_method_pub(VALUE cls_v, const char *name);
+        extern VALUE pys_class_lookup_method_pub(VALUE cls_v, const char *name);
         extern const char *intern_name(const char *s, size_t len);
         if (UNLIKELY(!*interned_slot))
             *interned_slot = intern_name(name_lit, strlen(name_lit));
-        m = py_class_lookup_method_pub(PY_OBJ_VAL(PY_PTR(av)->inst.cls), *interned_slot);
-        if (m == PY_NONE) return (VALUE)0;
-        if (PY_IS_PTR(m) && PY_PTR(m)->type == PY_T_FUNC) {
+        m = pys_class_lookup_method_pub(PYS_OBJ_VAL(PYS_PTR(av)->inst.cls), *interned_slot);
+        if (m == PYS_NONE) return (VALUE)0;
+        if (PYS_IS_PTR(m) && PYS_PTR(m)->type == PYS_T_FUNC) {
             cache->cls_ptr = cls;
             cache->fn = (void *)(intptr_t)m;
         }
     }
     VALUE av2[2] = { av, bv };
-    VALUE r = py_apply(c, m, 2, av2);
-    if (PY_IS_PTR(r) && PY_PTR(r)->type == PY_T_NOTIMPL) return (VALUE)0;
+    VALUE r = pys_apply(c, m, 2, av2);
+    if (PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL) return (VALUE)0;
     return r;
 }
-static const char *PY_BINOP_INTERNED_add, *PY_BINOP_INTERNED_sub, *PY_BINOP_INTERNED_mul;
+static const char *PYS_BINOP_INTERNED_add, *PYS_BINOP_INTERNED_sub, *PYS_BINOP_INTERNED_mul;
 
 NODE_DEF
 node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cache *cache@ref)
@@ -329,17 +329,17 @@ node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cac
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
         int64_t r;
-        if (LIKELY(!__builtin_add_overflow((int64_t)PY_FIXVAL(av),
-                                           (int64_t)PY_FIXVAL(bv), &r) &&
-                   r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
-            return PY_FIX(r);
+        if (LIKELY(!__builtin_add_overflow((int64_t)PYS_FIXVAL(av),
+                                           (int64_t)PYS_FIXVAL(bv), &r) &&
+                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
+            return PYS_FIX(r);
     }
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-        return py_make_float(py_flonum_to_double(av) + py_flonum_to_double(bv));
-    { VALUE r = py_node_binop_ic(c, cache, av, bv, "__add__", &PY_BINOP_INTERNED_add); if (r) return r; }
-    return py_add(c, av, bv);
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
+        return pys_make_float(pys_flonum_to_double(av) + pys_flonum_to_double(bv));
+    { VALUE r = pys_node_binop_ic(c, cache, av, bv, "__add__", &PYS_BINOP_INTERNED_add); if (r) return r; }
+    return pys_add(c, av, bv);
 }
 
 // Python `+=` on list mutates in place (CPython's `__iadd__`).  pystro
@@ -354,19 +354,19 @@ node_iadd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_ca
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
         int64_t r;
-        if (LIKELY(!__builtin_add_overflow((int64_t)PY_FIXVAL(av),
-                                           (int64_t)PY_FIXVAL(bv), &r) &&
-                   r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
-            return PY_FIX(r);
+        if (LIKELY(!__builtin_add_overflow((int64_t)PYS_FIXVAL(av),
+                                           (int64_t)PYS_FIXVAL(bv), &r) &&
+                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
+            return PYS_FIX(r);
     }
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-        return py_make_float(py_flonum_to_double(av) + py_flonum_to_double(bv));
-    if (LIKELY(PY_IS_PTR(av) && PY_PTR(av)->type == PY_T_LIST)) {
-        struct pyobj *la = PY_PTR(av);
-        if (PY_IS_PTR(bv) && (PY_PTR(bv)->type == PY_T_LIST || PY_PTR(bv)->type == PY_T_TUPLE)) {
-            struct pyobj *lb = PY_PTR(bv);
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
+        return pys_make_float(pys_flonum_to_double(av) + pys_flonum_to_double(bv));
+    if (LIKELY(PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_LIST)) {
+        struct pysobj *la = PYS_PTR(av);
+        if (PYS_IS_PTR(bv) && (PYS_PTR(bv)->type == PYS_T_LIST || PYS_PTR(bv)->type == PYS_T_TUPLE)) {
+            struct pysobj *lb = PYS_PTR(bv);
             size_t add = lb->list.len;
             size_t need = la->list.len + add;
             if (need > la->list.capa) {
@@ -387,8 +387,8 @@ node_iadd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_ca
             return av;
         }
     }
-    { VALUE r = py_node_binop_ic(c, cache, av, bv, "__add__", &PY_BINOP_INTERNED_add); if (r) return r; }
-    return py_add(c, av, bv);
+    { VALUE r = pys_node_binop_ic(c, cache, av, bv, "__add__", &PYS_BINOP_INTERNED_add); if (r) return r; }
+    return pys_add(c, av, bv);
 }
 
 NODE_DEF
@@ -397,17 +397,17 @@ node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cac
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
         int64_t r;
-        if (LIKELY(!__builtin_sub_overflow((int64_t)PY_FIXVAL(av),
-                                           (int64_t)PY_FIXVAL(bv), &r) &&
-                   r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
-            return PY_FIX(r);
+        if (LIKELY(!__builtin_sub_overflow((int64_t)PYS_FIXVAL(av),
+                                           (int64_t)PYS_FIXVAL(bv), &r) &&
+                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
+            return PYS_FIX(r);
     }
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-        return py_make_float(py_flonum_to_double(av) - py_flonum_to_double(bv));
-    { VALUE r = py_node_binop_ic(c, cache, av, bv, "__sub__", &PY_BINOP_INTERNED_sub); if (r) return r; }
-    return py_sub(c, av, bv);
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
+        return pys_make_float(pys_flonum_to_double(av) - pys_flonum_to_double(bv));
+    { VALUE r = pys_node_binop_ic(c, cache, av, bv, "__sub__", &PYS_BINOP_INTERNED_sub); if (r) return r; }
+    return pys_sub(c, av, bv);
 }
 
 NODE_DEF
@@ -416,27 +416,27 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cac
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
         int64_t r;
-        if (LIKELY(!__builtin_mul_overflow((int64_t)PY_FIXVAL(av),
-                                           (int64_t)PY_FIXVAL(bv), &r) &&
-                   r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
-            return PY_FIX(r);
+        if (LIKELY(!__builtin_mul_overflow((int64_t)PYS_FIXVAL(av),
+                                           (int64_t)PYS_FIXVAL(bv), &r) &&
+                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
+            return PYS_FIX(r);
     }
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-        return py_make_float(py_flonum_to_double(av) * py_flonum_to_double(bv));
-    { VALUE r = py_node_binop_ic(c, cache, av, bv, "__mul__", &PY_BINOP_INTERNED_mul); if (r) return r; }
-    return py_mul(c, av, bv);
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
+        return pys_make_float(pys_flonum_to_double(av) * pys_flonum_to_double(bv));
+    { VALUE r = pys_node_binop_ic(c, cache, av, bv, "__mul__", &PYS_BINOP_INTERNED_mul); if (r) return r; }
+    return pys_mul(c, av, bv);
 }
 
 NODE_DEF
 node_matmul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
-    extern VALUE py_matmul(CTX *c, VALUE a, VALUE b);
+    extern VALUE pys_matmul(CTX *c, VALUE a, VALUE b);
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return py_matmul(c, av, bv);
+    return pys_matmul(c, av, bv);
 }
 
 NODE_DEF
@@ -445,12 +445,12 @@ node_truediv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv))) {
-        double d = py_flonum_to_double(bv);
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv))) {
+        double d = pys_flonum_to_double(bv);
         if (LIKELY(d != 0.0))
-            return py_make_float(py_flonum_to_double(av) / d);
+            return pys_make_float(pys_flonum_to_double(av) / d);
     }
-    return py_truediv(c, av, bv);
+    return pys_truediv(c, av, bv);
 }
 
 NODE_DEF
@@ -461,17 +461,17 @@ node_floordiv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     VALUE bv = EVAL_ARG(c, b);
     // Fixnum // fixnum: Python floor division (rounds toward -inf).  GMP
     // path was 1.6% on pyaes for `i // 4` / `i // 16` shape ops; inline.
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
-        int64_t bi = PY_FIXVAL(bv);
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
+        int64_t bi = PYS_FIXVAL(bv);
         if (LIKELY(bi != 0)) {
-            int64_t ai = PY_FIXVAL(av);
+            int64_t ai = PYS_FIXVAL(av);
             int64_t q = ai / bi;
             int64_t r = ai - q * bi;
             if ((r != 0) && ((r < 0) != (bi < 0))) q -= 1;
-            return PY_FIX(q);
+            return PYS_FIX(q);
         }
     }
-    return py_fdiv(c, av, bv);
+    return pys_fdiv(c, av, bv);
 }
 
 NODE_DEF
@@ -482,16 +482,16 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     VALUE bv = EVAL_ARG(c, b);
     // Fixnum % fixnum: Python mod has same sign as divisor.  pyaes uses
     // `i % 4` heavily in AES round transforms; was 1.7% via GMP.
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
-        int64_t bi = PY_FIXVAL(bv);
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
+        int64_t bi = PYS_FIXVAL(bv);
         if (LIKELY(bi != 0)) {
-            int64_t ai = PY_FIXVAL(av);
+            int64_t ai = PYS_FIXVAL(av);
             int64_t r = ai % bi;
             if ((r != 0) && ((r < 0) != (bi < 0))) r += bi;
-            return PY_FIX(r);
+            return PYS_FIX(r);
         }
     }
-    return py_mod(c, av, bv);
+    return pys_mod(c, av, bv);
 }
 
 NODE_DEF
@@ -500,14 +500,14 @@ node_pow(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return py_pow(c, av, bv);
+    return pys_pow(c, av, bv);
 }
 
 // Fixnum fast paths for bit ops.  Without these, every `a & b` /
-// `a ^ b` etc. went through py_bit_xor → py_to_mpz → mpz_xor →
-// py_normalise_int even when both sides fit in a single fixnum.
-// pyaes (AES bytes XOR / AND on 8-bit values) had `py_bit_xor` 1.5%
-// + `py_bit_and` 1.4% + GMP `__gmpz_init_set_si` 3% in the profile.
+// `a ^ b` etc. went through pys_bit_xor → pys_to_mpz → mpz_xor →
+// pys_normalise_int even when both sides fit in a single fixnum.
+// pyaes (AES bytes XOR / AND on 8-bit values) had `pys_bit_xor` 1.5%
+// + `pys_bit_and` 1.4% + GMP `__gmpz_init_set_si` 3% in the profile.
 // fixnum path: inline single instruction, GMP path 撤去。
 
 NODE_DEF
@@ -516,9 +516,9 @@ node_bit_and(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return PY_FIX(PY_FIXVAL(av) & PY_FIXVAL(bv));
-    return py_bit_and(c, av, bv);
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return PYS_FIX(PYS_FIXVAL(av) & PYS_FIXVAL(bv));
+    return pys_bit_and(c, av, bv);
 }
 
 NODE_DEF
@@ -527,9 +527,9 @@ node_bit_or(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return PY_FIX(PY_FIXVAL(av) | PY_FIXVAL(bv));
-    return py_bit_or(c, av, bv);
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return PYS_FIX(PYS_FIXVAL(av) | PYS_FIXVAL(bv));
+    return pys_bit_or(c, av, bv);
 }
 
 NODE_DEF
@@ -538,9 +538,9 @@ node_bit_xor(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return PY_FIX(PY_FIXVAL(av) ^ PY_FIXVAL(bv));
-    return py_bit_xor(c, av, bv);
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return PYS_FIX(PYS_FIXVAL(av) ^ PYS_FIXVAL(bv));
+    return pys_bit_xor(c, av, bv);
 }
 
 NODE_DEF
@@ -549,19 +549,19 @@ node_lshift(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
-        int64_t x = PY_FIXVAL(av);
-        int64_t y = PY_FIXVAL(bv);
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
+        int64_t x = PYS_FIXVAL(av);
+        int64_t y = PYS_FIXVAL(bv);
         // `<< 0..62` での fixnum 内 overflow をチェック (符号付き 63 bit)
         if (LIKELY(y >= 0 && y < 62)) {
             int64_t r = x << y;
             // overflow detect: ((x << y) >> y) == x で確認
             if (LIKELY((r >> y) == x &&
-                       r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
-                return PY_FIX(r);
+                       r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
+                return PYS_FIX(r);
         }
     }
-    return py_lshift(c, av, bv);
+    return pys_lshift(c, av, bv);
 }
 
 NODE_DEF
@@ -570,13 +570,13 @@ node_rshift(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
-        int64_t x = PY_FIXVAL(av);
-        int64_t y = PY_FIXVAL(bv);
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
+        int64_t x = PYS_FIXVAL(av);
+        int64_t y = PYS_FIXVAL(bv);
         if (LIKELY(y >= 0 && y < 63))
-            return PY_FIX(x >> y);
+            return PYS_FIX(x >> y);
     }
-    return py_rshift(c, av, bv);
+    return pys_rshift(c, av, bv);
 }
 
 // ---------------------------------------------------------------------------
@@ -589,16 +589,16 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return ((int64_t)PY_FIXVAL(av) < (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-        return py_flonum_to_double(av) < py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
-    if (py_is_any_set(av) && py_is_any_set(bv)) {
-        extern int py_set_cmp_partial(CTX *c, VALUE a, VALUE b);
-        int r = py_set_cmp_partial(c, av, bv);
-        return r == -1 ? PY_TRUE : PY_FALSE;
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return ((int64_t)PYS_FIXVAL(av) < (int64_t)PYS_FIXVAL(bv)) ? PYS_TRUE : PYS_FALSE;
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
+        return pys_flonum_to_double(av) < pys_flonum_to_double(bv) ? PYS_TRUE : PYS_FALSE;
+    if (pys_is_any_set(av) && pys_is_any_set(bv)) {
+        extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+        int r = pys_set_cmp_partial(c, av, bv);
+        return r == -1 ? PYS_TRUE : PYS_FALSE;
     }
-    return py_cmp(c, av, bv) < 0 ? PY_TRUE : PY_FALSE;
+    return pys_cmp(c, av, bv) < 0 ? PYS_TRUE : PYS_FALSE;
 }
 
 NODE_DEF
@@ -607,16 +607,16 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return ((int64_t)PY_FIXVAL(av) <= (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-        return py_flonum_to_double(av) <= py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
-    if (py_is_any_set(av) && py_is_any_set(bv)) {
-        extern int py_set_cmp_partial(CTX *c, VALUE a, VALUE b);
-        int r = py_set_cmp_partial(c, av, bv);
-        return (r == -1 || r == 0) ? PY_TRUE : PY_FALSE;
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return ((int64_t)PYS_FIXVAL(av) <= (int64_t)PYS_FIXVAL(bv)) ? PYS_TRUE : PYS_FALSE;
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
+        return pys_flonum_to_double(av) <= pys_flonum_to_double(bv) ? PYS_TRUE : PYS_FALSE;
+    if (pys_is_any_set(av) && pys_is_any_set(bv)) {
+        extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+        int r = pys_set_cmp_partial(c, av, bv);
+        return (r == -1 || r == 0) ? PYS_TRUE : PYS_FALSE;
     }
-    return py_cmp(c, av, bv) <= 0 ? PY_TRUE : PY_FALSE;
+    return pys_cmp(c, av, bv) <= 0 ? PYS_TRUE : PYS_FALSE;
 }
 
 NODE_DEF
@@ -625,16 +625,16 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return ((int64_t)PY_FIXVAL(av) > (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-        return py_flonum_to_double(av) > py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
-    if (py_is_any_set(av) && py_is_any_set(bv)) {
-        extern int py_set_cmp_partial(CTX *c, VALUE a, VALUE b);
-        int r = py_set_cmp_partial(c, av, bv);
-        return r == 1 ? PY_TRUE : PY_FALSE;
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return ((int64_t)PYS_FIXVAL(av) > (int64_t)PYS_FIXVAL(bv)) ? PYS_TRUE : PYS_FALSE;
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
+        return pys_flonum_to_double(av) > pys_flonum_to_double(bv) ? PYS_TRUE : PYS_FALSE;
+    if (pys_is_any_set(av) && pys_is_any_set(bv)) {
+        extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+        int r = pys_set_cmp_partial(c, av, bv);
+        return r == 1 ? PYS_TRUE : PYS_FALSE;
     }
-    return py_cmp(c, av, bv) > 0 ? PY_TRUE : PY_FALSE;
+    return pys_cmp(c, av, bv) > 0 ? PYS_TRUE : PYS_FALSE;
 }
 
 NODE_DEF
@@ -643,16 +643,16 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return ((int64_t)PY_FIXVAL(av) >= (int64_t)PY_FIXVAL(bv)) ? PY_TRUE : PY_FALSE;
-    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
-        return py_flonum_to_double(av) >= py_flonum_to_double(bv) ? PY_TRUE : PY_FALSE;
-    if (py_is_any_set(av) && py_is_any_set(bv)) {
-        extern int py_set_cmp_partial(CTX *c, VALUE a, VALUE b);
-        int r = py_set_cmp_partial(c, av, bv);
-        return (r == 1 || r == 0) ? PY_TRUE : PY_FALSE;
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return ((int64_t)PYS_FIXVAL(av) >= (int64_t)PYS_FIXVAL(bv)) ? PYS_TRUE : PYS_FALSE;
+    if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
+        return pys_flonum_to_double(av) >= pys_flonum_to_double(bv) ? PYS_TRUE : PYS_FALSE;
+    if (pys_is_any_set(av) && pys_is_any_set(bv)) {
+        extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+        int r = pys_set_cmp_partial(c, av, bv);
+        return (r == 1 || r == 0) ? PYS_TRUE : PYS_FALSE;
     }
-    return py_cmp(c, av, bv) >= 0 ? PY_TRUE : PY_FALSE;
+    return pys_cmp(c, av, bv) >= 0 ? PYS_TRUE : PYS_FALSE;
 }
 
 NODE_DEF
@@ -661,9 +661,9 @@ node_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return av == bv ? PY_TRUE : PY_FALSE;
-    return py_eq(c, av, bv);
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return av == bv ? PYS_TRUE : PYS_FALSE;
+    return pys_eq(c, av, bv);
 }
 
 NODE_DEF
@@ -672,9 +672,9 @@ node_ne(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv)))
-        return av != bv ? PY_TRUE : PY_FALSE;
-    return py_eq(c, av, bv) == PY_TRUE ? PY_FALSE : PY_TRUE;
+    if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv)))
+        return av != bv ? PYS_TRUE : PYS_FALSE;
+    return pys_eq(c, av, bv) == PYS_TRUE ? PYS_FALSE : PYS_TRUE;
 }
 
 NODE_DEF
@@ -683,7 +683,7 @@ node_is(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)c; (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return av == bv ? PY_TRUE : PY_FALSE;
+    return av == bv ? PYS_TRUE : PYS_FALSE;
 }
 
 NODE_DEF
@@ -692,7 +692,7 @@ node_is_not(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)c; (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return av != bv ? PY_TRUE : PY_FALSE;
+    return av != bv ? PYS_TRUE : PYS_FALSE;
 }
 
 NODE_DEF
@@ -701,7 +701,7 @@ node_in(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return py_contains(c, bv, av) ? PY_TRUE : PY_FALSE;
+    return pys_contains(c, bv, av) ? PYS_TRUE : PYS_FALSE;
 }
 
 NODE_DEF
@@ -710,7 +710,7 @@ node_not_in(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return py_contains(c, bv, av) ? PY_FALSE : PY_TRUE;
+    return pys_contains(c, bv, av) ? PYS_FALSE : PYS_TRUE;
 }
 
 // ---------------------------------------------------------------------------
@@ -722,7 +722,7 @@ node_and(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    if (!py_is_truthy(av)) return av;
+    if (!pys_is_truthy(av)) return av;
     return EVAL_ARG(c, b);
 }
 
@@ -731,7 +731,7 @@ node_or(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
-    if (py_is_truthy(av)) return av;
+    if (pys_is_truthy(av)) return av;
     return EVAL_ARG(c, b);
 }
 
@@ -744,28 +744,28 @@ node_subscript_get(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *idx)
 {
     (void)n;
     VALUE sv = EVAL_ARG(c, seq);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE iv = EVAL_ARG(c, idx);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     // Fixnum index on list/tuple/bytes/bytearray fast path.  pyaes
     // does heavy bytes-arr[i] indexing for AES round transforms;
-    // py_list_get's full dispatch was ~3% of total runtime.
-    if (LIKELY(PY_IS_FIXNUM(iv) && PY_IS_PTR(sv))) {
-        int t = PY_PTR(sv)->type;
-        int64_t i = PY_FIXVAL(iv);
-        if (t == PY_T_LIST || t == PY_T_TUPLE) {
-            struct pyobj *o = PY_PTR(sv);
+    // pys_list_get's full dispatch was ~3% of total runtime.
+    if (LIKELY(PYS_IS_FIXNUM(iv) && PYS_IS_PTR(sv))) {
+        int t = PYS_PTR(sv)->type;
+        int64_t i = PYS_FIXVAL(iv);
+        if (t == PYS_T_LIST || t == PYS_T_TUPLE) {
+            struct pysobj *o = PYS_PTR(sv);
             if (UNLIKELY(i < 0)) i += (int64_t)o->list.len;
             if (LIKELY((uint64_t)i < (uint64_t)o->list.len))
                 return o->list.items[i];
-        } else if (t == PY_T_BYTES || t == PY_T_BYTEARRAY) {
-            struct pyobj *o = PY_PTR(sv);
+        } else if (t == PYS_T_BYTES || t == PYS_T_BYTEARRAY) {
+            struct pysobj *o = PYS_PTR(sv);
             if (UNLIKELY(i < 0)) i += (int64_t)o->str.len;
             if (LIKELY((uint64_t)i < (uint64_t)o->str.len))
-                return PY_FIX((unsigned char)o->str.chars[i]);
+                return PYS_FIX((unsigned char)o->str.chars[i]);
         }
     }
-    return py_list_get(c, sv, iv);
+    return pys_list_get(c, sv, iv);
 }
 
 NODE_DEF
@@ -773,23 +773,23 @@ node_subscript_set(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *idx, NO
 {
     (void)n;
     VALUE sv = EVAL_ARG(c, seq);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE iv = EVAL_ARG(c, idx);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE vv = EVAL_ARG(c, val);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     // Fast path: list[fixnum] = v.
-    if (LIKELY(py_is_list(sv) && PY_IS_FIXNUM(iv))) {
-        struct pyobj *o = PY_PTR(sv);
-        int64_t i = PY_FIXVAL(iv);
+    if (LIKELY(pys_is_list(sv) && PYS_IS_FIXNUM(iv))) {
+        struct pysobj *o = PYS_PTR(sv);
+        int64_t i = PYS_FIXVAL(iv);
         if (i < 0) i += (int64_t)o->list.len;
         if (LIKELY(i >= 0 && i < (int64_t)o->list.len)) {
             o->list.items[i] = vv;
-            return PY_NONE;
+            return PYS_NONE;
         }
     }
-    py_list_set(c, sv, iv, vv);
-    return PY_NONE;
+    pys_list_set(c, sv, iv, vv);
+    return PYS_NONE;
 }
 
 NODE_DEF
@@ -797,28 +797,28 @@ node_slice(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *start, NODE *st
 {
     (void)n;
     VALUE sv = EVAL_ARG(c, seq);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE a  = EVAL_ARG(c, start);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE b  = EVAL_ARG(c, stop);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE s  = EVAL_ARG(c, step);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    return py_list_slice(c, sv, a, b, s);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    return pys_list_slice(c, sv, a, b, s);
 }
 
 NODE_DEF
 node_slice_set(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *start, NODE *stop, NODE *step, NODE *val)
 {
     (void)n;
-    extern void py_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE val);
+    extern void pys_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE val);
     VALUE sv = EVAL_ARG(c, seq);
     VALUE a  = EVAL_ARG(c, start);
     VALUE b  = EVAL_ARG(c, stop);
     VALUE s  = EVAL_ARG(c, step);
     VALUE vv = EVAL_ARG(c, val);
-    py_list_slice_set(c, sv, a, b, s, vv);
-    return PY_NONE;
+    pys_list_slice_set(c, sv, a, b, s, vv);
+    return PYS_NONE;
 }
 
 NODE_DEF
@@ -832,14 +832,14 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     // a match guarantees `eidx` still indexes the same slot for the
     // cached name.  Only check the key isn't DELETED; the previous
     // `is_str + strlen + memcmp` was redundant since the cache was
-    // only stamped after py_getattr resolved the name.
+    // only stamped after pys_getattr resolved the name.
     //
     // Note: the cache match itself proves obj evaluated cleanly — a
-    // raised call would have left ov == PY_NONE which can never match
+    // raised call would have left ov == PYS_NONE which can never match
     // a class-matching cls_ptr.  So the state check is only needed on
     // cache miss (slow path).
-    if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
-        struct pyobj *o = PY_PTR(ov);
+    if (LIKELY(PYS_IS_PTR(ov) && PYS_PTR(ov)->type == PYS_T_INSTANCE)) {
+        struct pysobj *o = PYS_PTR(ov);
         if (LIKELY(o->inst.attrs)) {
             void *cls = (void *)o->inst.cls;
             uint32_t sv = o->inst.cls->cls.shape_version;
@@ -866,37 +866,37 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             && cache->inst_ca_sv == o->inst.cls->cls.shape_version) {
             return (VALUE)(intptr_t)cache->inst_ca_val;
         }
-    } else if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_CLASS) {
+    } else if (PYS_IS_PTR(ov) && PYS_PTR(ov)->type == PYS_T_CLASS) {
         // Class data attr (`Strength.WEAKEST`, `Cls.classmethod`).  Cache
         // the resolved value monomorphically — class shape_version
         // invalidates on method add.  Saves MRO walk + strcmp in
-        // py_class_lookup_method on every access.
-        if (LIKELY(cache->cls_recv == (void *)PY_PTR(ov)
+        // pys_class_lookup_method on every access.
+        if (LIKELY(cache->cls_recv == (void *)PYS_PTR(ov)
                    && cache->class_value
-                   && cache->cls_recv_sv == PY_PTR(ov)->cls.shape_version)) {
+                   && cache->cls_recv_sv == PYS_PTR(ov)->cls.shape_version)) {
             return (VALUE)(intptr_t)cache->class_value;
         }
     }
     // Propagate raise from the receiver expression — without this,
     // chained `raiser().attr` would silently consult `None.attr`.
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    VALUE r = py_getattr(c, ov, name);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    VALUE r = pys_getattr(c, ov, name);
     // Stamp class-data attr cache.
-    if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_CLASS && r != PY_NONE) {
-        cache->cls_recv = (void *)PY_PTR(ov);
+    if (PYS_IS_PTR(ov) && PYS_PTR(ov)->type == PYS_T_CLASS && r != PYS_NONE) {
+        cache->cls_recv = (void *)PYS_PTR(ov);
         cache->class_value = (void *)(intptr_t)r;
-        cache->cls_recv_sv = PY_PTR(ov)->cls.shape_version;
+        cache->cls_recv_sv = PYS_PTR(ov)->cls.shape_version;
     }
     // Stamp the cache for next time.
-    if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE && r != PY_NONE) {
-        struct pyobj *o = PY_PTR(ov);
+    if (PYS_IS_PTR(ov) && PYS_PTR(ov)->type == PYS_T_INSTANCE && r != PYS_NONE) {
+        struct pysobj *o = PYS_PTR(ov);
         int32_t found_eidx = -1;
         if (o->inst.attrs) {
             for (size_t i = 0; i < o->inst.attrs->elen; i++) {
                 VALUE k = o->inst.attrs->entries[i].key;
                 if (k != 0 && k != DICT_DELETED_KEY
-                    && py_is_str(k) && PY_PTR(k)->str.len == strlen(name)
-                    && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
+                    && pys_is_str(k) && PYS_PTR(k)->str.len == strlen(name)
+                    && memcmp(PYS_PTR(k)->str.chars, name, PYS_PTR(k)->str.len) == 0) {
                     found_eidx = (int32_t)i;
                     break;
                 }
@@ -908,10 +908,10 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // Find an existing slot for this cls; on miss, shift
             // entries down (LRU eviction of slot 3) and insert at 0.
             int found = -1;
-            for (int s = 0; s < PYSTRO_ATTR_PIC_WAYS; s++)
+            for (int s = 0; s < PYS_ATTR_PIC_WAYS; s++)
                 if (cache->u_cls[s] == cls) { found = s; break; }
             if (found < 0) {
-                for (int s = PYSTRO_ATTR_PIC_WAYS - 1; s > 0; s--) {
+                for (int s = PYS_ATTR_PIC_WAYS - 1; s > 0; s--) {
                     cache->u_cls [s] = cache->u_cls [s - 1];
                     cache->u_eidx[s] = cache->u_eidx[s - 1];
                     cache->u_sv  [s] = cache->u_sv  [s - 1];
@@ -926,13 +926,13 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // is stable data (not a bound method, descriptor, or
             // property — those depend on receiver / re-evaluate).
             bool stamp = false;
-            if (PY_IS_PTR(r)) {
-                int t = PY_PTR(r)->type;
-                if (t == PY_T_LIST || t == PY_T_TUPLE || t == PY_T_DICT
-                    || t == PY_T_STR || t == PY_T_BYTES || t == PY_T_BYTEARRAY
-                    || t == PY_T_SET || t == PY_T_FROZENSET
-                    || t == PY_T_BIGNUM || t == PY_T_RANGE
-                    || t == PY_T_CLASS)
+            if (PYS_IS_PTR(r)) {
+                int t = PYS_PTR(r)->type;
+                if (t == PYS_T_LIST || t == PYS_T_TUPLE || t == PYS_T_DICT
+                    || t == PYS_T_STR || t == PYS_T_BYTES || t == PYS_T_BYTEARRAY
+                    || t == PYS_T_SET || t == PYS_T_FROZENSET
+                    || t == PYS_T_BIGNUM || t == PYS_T_RANGE
+                    || t == PYS_T_CLASS)
                     stamp = true;
             } else {
                 stamp = true;   // immediate fixnum / flonum / None / bool
@@ -956,10 +956,10 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     // Fast path: same class + same attrs dict + cached entry index +
     // class has no __setattr__/data-descriptor/__slots__ overrides.
     // The cache match proves both ov and vv evaluated cleanly — a
-    // raise would have left them as PY_NONE which can't match.  So
+    // raise would have left them as PYS_NONE which can't match.  So
     // state check is deferred to slow path.
-    if (LIKELY(PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE)) {
-        struct pyobj *o = PY_PTR(ov);
+    if (LIKELY(PYS_IS_PTR(ov) && PYS_PTR(ov)->type == PYS_T_INSTANCE)) {
+        struct pysobj *o = PYS_PTR(ov);
         void *cls = (void *)o->inst.cls;
         uint32_t sv = o->inst.cls->cls.shape_version;
         // Find matching slot — class + shape_version must agree.
@@ -972,16 +972,16 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // Already verified: no __setattr__ / data-descriptor / __slots__
             // overrides for this (cls, sv) pair (those bump shape_version).
             // Allocate attrs lazily here if NULL — saves a slow-path round
-            // trip through py_setattr for every fresh instance attribute.
-            extern struct pydict *pydict_new(void);
-            extern void pydict_set_h(CTX *c, struct pydict *d, VALUE key, uint64_t h, VALUE val);
+            // trip through pys_setattr for every fresh instance attribute.
+            extern struct pysdict *pydict_new(void);
+            extern void pydict_set_h(CTX *c, struct pysdict *d, VALUE key, uint64_t h, VALUE val);
             if (UNLIKELY(!o->inst.attrs)) o->inst.attrs = pydict_new();
             int eidx = cache->u_eidx[matched_slot];
             if (LIKELY(eidx >= 0 && (size_t)eidx < o->inst.attrs->elen)) {
                 VALUE k = o->inst.attrs->entries[eidx].key;
                 if (LIKELY(k != 0 && k != DICT_DELETED_KEY)) {
                     o->inst.attrs->entries[eidx].value = vv;
-                    return PY_NONE;
+                    return PYS_NONE;
                 }
             }
             // Attrs exists but the entry isn't there yet (fresh
@@ -989,43 +989,43 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // generic dict setter and update the cache slot.  No
             // descriptor check needed — same (cls, sv) means same
             // semantics as a previous successful stamp.
-            extern VALUE py_make_str_intern(const char *, size_t);
-            (void)py_make_str_intern;
-            VALUE key = py_make_str(name, strlen(name));
-            uint64_t h = py_hash(c, key);
+            extern VALUE pys_make_str_intern(const char *, size_t);
+            (void)pys_make_str_intern;
+            VALUE key = pys_make_str(name, strlen(name));
+            uint64_t h = pys_hash(c, key);
             pydict_set_h(c, o->inst.attrs, key, h, vv);
             // Find the entry just inserted to update eidx.
             for (size_t i = 0; i < o->inst.attrs->elen; i++) {
                 VALUE k2 = o->inst.attrs->entries[i].key;
                 if (k2 != 0 && k2 != DICT_DELETED_KEY
-                    && py_is_str(k2) && PY_PTR(k2)->str.len == strlen(name)
-                    && memcmp(PY_PTR(k2)->str.chars, name, PY_PTR(k2)->str.len) == 0) {
+                    && pys_is_str(k2) && PYS_PTR(k2)->str.len == strlen(name)
+                    && memcmp(PYS_PTR(k2)->str.chars, name, PYS_PTR(k2)->str.len) == 0) {
                     cache->u_eidx[matched_slot] = (int32_t)i;
                     break;
                 }
             }
-            return PY_NONE;
+            return PYS_NONE;
         }
     }
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    py_setattr(c, ov, name, vv);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    pys_setattr(c, ov, name, vv);
     // Stamp the cache only if the class has none of the overrides that
     // the fast path skips (__setattr__, data descriptor for `name`,
     // __slots__).  Otherwise leave the cache disabled so subsequent
-    // calls keep going through py_setattr.
-    if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE) {
-        struct pyobj *o = PY_PTR(ov);
+    // calls keep going through pys_setattr.
+    if (PYS_IS_PTR(ov) && PYS_PTR(ov)->type == PYS_T_INSTANCE) {
+        struct pysobj *o = PYS_PTR(ov);
         if (o->inst.attrs) {
             void *cls_p = (void *)o->inst.cls;
             uint32_t sv = o->inst.cls->cls.shape_version;
             // Idempotent stamp: if any slot already has (cls_p, sv), the
             // descriptor / __setattr__ checks were done previously — just
             // refresh eidx (which can change as attrs grows).  This
-            // eliminates a 2.75M-call py_class_lookup_method_pub
+            // eliminates a 2.75M-call pys_class_lookup_method_pub
             // hot path on raytrace where new Vector instances each
             // re-stamp 3 times in __init__.
             int existing_slot = -1;
-            for (int s = 0; s < PYSTRO_ATTR_PIC_WAYS; s++) {
+            for (int s = 0; s < PYS_ATTR_PIC_WAYS; s++) {
                 if (cache->u_cls[s] == cls_p && cache->u_sv[s] == sv) {
                     existing_slot = s;
                     break;
@@ -1036,42 +1036,42 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 for (size_t i = 0; i < o->inst.attrs->elen; i++) {
                     VALUE k = o->inst.attrs->entries[i].key;
                     if (k != 0 && k != DICT_DELETED_KEY
-                        && py_is_str(k) && PY_PTR(k)->str.len == strlen(name)
-                        && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
+                        && pys_is_str(k) && PYS_PTR(k)->str.len == strlen(name)
+                        && memcmp(PYS_PTR(k)->str.chars, name, PYS_PTR(k)->str.len) == 0) {
                         cache->u_eidx[existing_slot] = (int32_t)i;
                         break;
                     }
                 }
-                return PY_NONE;
+                return PYS_NONE;
             }
-            VALUE cls = PY_OBJ_VAL(o->inst.cls);
-            extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
-            extern bool py_class_has_slots_anywhere(VALUE cls);
-            extern const char *PYSTRO_INTERN_setattr;
-            VALUE sm = py_class_lookup_method_pub(cls, PYSTRO_INTERN_setattr);
-            bool has_setattr_override = (sm != PY_NONE
-                && !(PY_IS_PTR(sm) && PY_PTR(sm)->type == PY_T_BUILTIN));
+            VALUE cls = PYS_OBJ_VAL(o->inst.cls);
+            extern VALUE pys_class_lookup_method_pub(VALUE cls, const char *name);
+            extern bool pys_class_has_slots_anywhere(VALUE cls);
+            extern const char *PYS_INTERN_setattr;
+            VALUE sm = pys_class_lookup_method_pub(cls, PYS_INTERN_setattr);
+            bool has_setattr_override = (sm != PYS_NONE
+                && !(PYS_IS_PTR(sm) && PYS_PTR(sm)->type == PYS_T_BUILTIN));
             if (!has_setattr_override
-                && !py_class_has_slots_anywhere(cls)) {
-                VALUE m = py_class_lookup_method_pub(cls, name);
+                && !pys_class_has_slots_anywhere(cls)) {
+                VALUE m = pys_class_lookup_method_pub(cls, name);
                 bool has_descriptor = false;
-                if (m != PY_NONE && PY_IS_PTR(m)) {
-                    int t = PY_PTR(m)->type;
-                    has_descriptor = (t == PY_T_PROPERTY || t == PY_T_INSTANCE);
+                if (m != PYS_NONE && PYS_IS_PTR(m)) {
+                    int t = PYS_PTR(m)->type;
+                    has_descriptor = (t == PYS_T_PROPERTY || t == PYS_T_INSTANCE);
                 }
                 if (!has_descriptor) {
                     for (size_t i = 0; i < o->inst.attrs->elen; i++) {
                         VALUE k = o->inst.attrs->entries[i].key;
                         if (k != 0 && k != DICT_DELETED_KEY
-                            && py_is_str(k) && PY_PTR(k)->str.len == strlen(name)
-                            && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
+                            && pys_is_str(k) && PYS_PTR(k)->str.len == strlen(name)
+                            && memcmp(PYS_PTR(k)->str.chars, name, PYS_PTR(k)->str.len) == 0) {
                             void *cls_p = (void *)o->inst.cls;
                             uint32_t sv = o->inst.cls->cls.shape_version;
                             int found = -1;
-                            for (int s = 0; s < PYSTRO_ATTR_PIC_WAYS; s++)
+                            for (int s = 0; s < PYS_ATTR_PIC_WAYS; s++)
                                 if (cache->u_cls[s] == cls_p) { found = s; break; }
                             if (found < 0) {
-                                for (int s = PYSTRO_ATTR_PIC_WAYS - 1; s > 0; s--) {
+                                for (int s = PYS_ATTR_PIC_WAYS - 1; s > 0; s--) {
                                     cache->u_cls [s] = cache->u_cls [s - 1];
                                     cache->u_eidx[s] = cache->u_eidx[s - 1];
                                     cache->u_sv  [s] = cache->u_sv  [s - 1];
@@ -1088,7 +1088,7 @@ node_attr_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             }
         }
     }
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,7 +1100,7 @@ node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
 {
     (void)n;
     VALUE cv = EVAL_ARG(c, cond);
-    if (py_is_truthy(cv)) return EVAL_ARG(c, thn);
+    if (pys_is_truthy(cv)) return EVAL_ARG(c, thn);
     return EVAL_ARG(c, els);
 }
 
@@ -1109,7 +1109,7 @@ node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
 {
     (void)n;
     EVAL_ARG(c, first);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     return EVAL_ARG(c, rest);
 }
 
@@ -1117,7 +1117,7 @@ NODE_DEF
 node_nop(CTX * restrict c, NODE * restrict n)
 {
     (void)c; (void)n;
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 NODE_DEF
@@ -1126,16 +1126,16 @@ node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body, NODE *el
     (void)n;
     for (;;) {
         VALUE cv = EVAL_ARG(c, cond);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-        if (!py_is_truthy(cv)) {
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+        if (!pys_is_truthy(cv)) {
             EVAL_ARG(c, else_body);
-            return PY_NONE;
+            return PYS_NONE;
         }
         EVAL_ARG(c, body);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) {
-            if (c->state == PY_STATE_BREAK)    { c->state = PY_STATE_NORMAL; return PY_NONE; }
-            if (c->state == PY_STATE_CONTINUE) { c->state = PY_STATE_NORMAL; continue; }
-            return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) {
+            if (c->state == PYS_STATE_BREAK)    { c->state = PYS_STATE_NORMAL; return PYS_NONE; }
+            if (c->state == PYS_STATE_CONTINUE) { c->state = PYS_STATE_NORMAL; continue; }
+            return PYS_NONE;
         }
     }
 }
@@ -1144,16 +1144,16 @@ NODE_DEF
 node_break(CTX * restrict c, NODE * restrict n)
 {
     (void)n;
-    c->state = PY_STATE_BREAK;
-    return PY_NONE;
+    c->state = PYS_STATE_BREAK;
+    return PYS_NONE;
 }
 
 NODE_DEF
 node_continue(CTX * restrict c, NODE * restrict n)
 {
     (void)n;
-    c->state = PY_STATE_CONTINUE;
-    return PY_NONE;
+    c->state = PYS_STATE_CONTINUE;
+    return PYS_NONE;
 }
 
 // `for x in iter: body else: else_body` over local target.  The
@@ -1163,23 +1163,23 @@ node_for_local(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *iter, N
 {
     (void)n;
     VALUE it = EVAL_ARG(c, iter);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    struct py_iter st;
-    py_iter_init(c, &st, it);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    struct pys_iter st;
+    pys_iter_init(c, &st, it);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE elt;
-    while (py_iter_next_inline(c, &st, &elt)) {
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    while (pys_iter_next_inline(c, &st, &elt)) {
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         c->env->slots[slot] = elt;
         EVAL_ARG(c, body);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) {
-            if (c->state == PY_STATE_BREAK)    { c->state = PY_STATE_NORMAL; return PY_NONE; }
-            if (c->state == PY_STATE_CONTINUE) { c->state = PY_STATE_NORMAL; continue; }
-            return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) {
+            if (c->state == PYS_STATE_BREAK)    { c->state = PYS_STATE_NORMAL; return PYS_NONE; }
+            if (c->state == PYS_STATE_CONTINUE) { c->state = PYS_STATE_NORMAL; continue; }
+            return PYS_NONE;
         }
     }
     EVAL_ARG(c, else_body);
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 NODE_DEF
@@ -1187,30 +1187,30 @@ node_for_global(CTX * restrict c, NODE * restrict n, const char *name, NODE *ite
 {
     (void)n;
     VALUE it = EVAL_ARG(c, iter);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    struct py_iter st;
-    py_iter_init(c, &st, it);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    struct pys_iter st;
+    pys_iter_init(c, &st, it);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     if (cache->serial != c->globals->serial) {
-        extern int py_global_resolve_or_alloc(CTX *c, const char *name);
-        cache->idx = py_global_resolve_or_alloc(c, name);
+        extern int pys_global_resolve_or_alloc(CTX *c, const char *name);
+        cache->idx = pys_global_resolve_or_alloc(c, name);
         cache->serial = c->globals->serial;
     }
     int idx = cache->idx;
     VALUE elt;
-    while (py_iter_next_inline(c, &st, &elt)) {
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    while (pys_iter_next_inline(c, &st, &elt)) {
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         c->globals->entries[idx].value = elt;
         c->globals->entries[idx].defined = true;
         EVAL_ARG(c, body);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) {
-            if (c->state == PY_STATE_BREAK)    { c->state = PY_STATE_NORMAL; return PY_NONE; }
-            if (c->state == PY_STATE_CONTINUE) { c->state = PY_STATE_NORMAL; continue; }
-            return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) {
+            if (c->state == PYS_STATE_BREAK)    { c->state = PYS_STATE_NORMAL; return PYS_NONE; }
+            if (c->state == PYS_STATE_CONTINUE) { c->state = PYS_STATE_NORMAL; continue; }
+            return PYS_NONE;
         }
     }
     EVAL_ARG(c, else_body);
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 NODE_DEF
@@ -1218,8 +1218,8 @@ node_return(CTX * restrict c, NODE * restrict n, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    if (c->state == PY_STATE_NORMAL) {
-        c->state = PY_STATE_RETURN;
+    if (c->state == PYS_STATE_NORMAL) {
+        c->state = PYS_STATE_RETURN;
         c->state_value = v;
     }
     return v;
@@ -1232,68 +1232,68 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc)
     VALUE v = EVAL_ARG(c, exc);
     // Allow `raise SomeClass` (auto-instantiate with no args) or a
     // ready-made instance.
-    if (py_is_class(v)) {
-        v = py_apply(c, v, 0, NULL);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL && c->state != PY_STATE_RAISE)) return PY_NONE;
-    } else if (!py_is_instance(v) || !PY_PTR(v)->inst.cls
-               || !PY_PTR(v)->inst.cls->cls.is_exception) {
-        py_raise_exc(c, c->EXC_TypeError,
+    if (pys_is_class(v)) {
+        v = pys_apply(c, v, 0, NULL);
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL && c->state != PYS_STATE_RAISE)) return PYS_NONE;
+    } else if (!pys_is_instance(v) || !PYS_PTR(v)->inst.cls
+               || !PYS_PTR(v)->inst.cls->cls.is_exception) {
+        pys_raise_exc(c, c->EXC_TypeError,
                      "exceptions must derive from BaseException");
-        return PY_NONE;
+        return PYS_NONE;
     }
     // Stash a traceback snapshot on the raised instance, if not set yet.
-    if (py_is_instance(v) && c->call_top > 0) {
-        VALUE existing = py_getattr_optional(c, v, "__traceback__");
-        if (!existing || existing == PY_NONE) {
-            c->state = PY_STATE_NORMAL;
+    if (pys_is_instance(v) && c->call_top > 0) {
+        VALUE existing = pys_getattr_optional(c, v, "__traceback__");
+        if (!existing || existing == PYS_NONE) {
+            c->state = PYS_STATE_NORMAL;
             VALUE *frames = (VALUE *)alloca(sizeof(VALUE) * c->call_top);
             for (int i = 0; i < c->call_top; i++) {
                 const char *fn = c->call_stack[i] ? c->call_stack[i] : "<anon>";
-                frames[i] = py_make_str(fn, strlen(fn));
+                frames[i] = pys_make_str(fn, strlen(fn));
             }
-            py_setattr(c, v, "__traceback__", py_make_list(frames, c->call_top));
+            pys_setattr(c, v, "__traceback__", pys_make_list(frames, c->call_top));
         }
     }
     // Implicit __context__: when raising inside an except handler, the
     // currently-handled exception becomes the new exception's context
     // — unless the user already explicitly set __cause__ via 'raise X
     // from Y' (in which case __suppress_context__ is True).
-    if (py_is_instance(v) && c->current_handling_exc
-        && c->current_handling_exc != PY_NONE && c->current_handling_exc != v) {
-        VALUE existing = py_getattr_optional(c, v, "__context__");
-        if (!existing || existing == PY_NONE) {
-            c->state = PY_STATE_NORMAL;
-            py_setattr(c, v, "__context__", c->current_handling_exc);
+    if (pys_is_instance(v) && c->current_handling_exc
+        && c->current_handling_exc != PYS_NONE && c->current_handling_exc != v) {
+        VALUE existing = pys_getattr_optional(c, v, "__context__");
+        if (!existing || existing == PYS_NONE) {
+            c->state = PYS_STATE_NORMAL;
+            pys_setattr(c, v, "__context__", c->current_handling_exc);
         }
     }
-    c->state = PY_STATE_RAISE;
+    c->state = PYS_STATE_RAISE;
     c->state_value = v;
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 NODE_DEF
 node_raise_bare(CTX * restrict c, NODE * restrict n)
 {
     (void)n;
-    if (c->state_value == 0 || c->state_value == PY_NONE) {
-        py_raise_exc(c, c->EXC_RuntimeError, "No active exception to re-raise");
+    if (c->state_value == 0 || c->state_value == PYS_NONE) {
+        pys_raise_exc(c, c->EXC_RuntimeError, "No active exception to re-raise");
     }
-    c->state = PY_STATE_RAISE;
-    return PY_NONE;
+    c->state = PYS_STATE_RAISE;
+    return PYS_NONE;
 }
 
 // `yield expr` — stash the value on c->current_gen and swap back to
 // the caller of next() / iter().  The body resumes here when next()
-// is called again.  Returns the value passed to .send() (or PY_NONE
+// is called again.  Returns the value passed to .send() (or PYS_NONE
 // if next()).
 NODE_DEF @noinline
 node_yield(CTX * restrict c, NODE * restrict n, NODE *val)
 {
     (void)n;
-    extern VALUE py_gen_yield(CTX *c, VALUE v);
+    extern VALUE pys_gen_yield(CTX *c, VALUE v);
     VALUE v = EVAL_ARG(c, val);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    return py_gen_yield(c, v);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    return pys_gen_yield(c, v);
 }
 
 // try / except / else / finally.  Defers to a host function whose
@@ -1303,9 +1303,9 @@ NODE_DEF @noinline
 node_try(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *else_body, NODE *finally_body)
 {
     (void)n;
-    extern void py_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *else_body, NODE *finally_body);
-    py_run_try(c, body, handlers_idx, nhandlers, else_body, finally_body);
-    return PY_NONE;
+    extern void pys_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *else_body, NODE *finally_body);
+    pys_run_try(c, body, handlers_idx, nhandlers, else_body, finally_body);
+    return PYS_NONE;
 }
 
 // `with` runner — evaluates `cm_expr` to get the (already-entered) CM,
@@ -1317,15 +1317,15 @@ node_with(CTX * restrict c, NODE * restrict n, NODE *cm_expr, NODE *body, uint32
 {
     (void)n; (void)as_slot; (void)has_as;
     VALUE cm = EVAL_ARG(c, cm_expr);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    extern void py_run_with(CTX *c, VALUE cm, NODE *body);
-    py_run_with(c, cm, body);
-    return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    extern void pys_run_with(CTX *c, VALUE cm, NODE *body);
+    pys_run_with(c, cm, body);
+    return PYS_NONE;
 }
 
 // `def` allocates a closure object and stores it as a global by name
 // (or as a method on c->current_class while a class body is running).
-// Default values come from PYSTRO_NODE_TABLE[defaults_idx..idx+ndefaults].
+// Default values come from PYS_NODE_TABLE[defaults_idx..idx+ndefaults].
 // Build the function value.  Adds the func to `c->current_class` as a
 // side effect if a class body is being evaluated; the caller (parser)
 // stores the returned value via make_store for top-level / nested-def
@@ -1342,33 +1342,33 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
         dv = (VALUE *)alloca(sizeof(VALUE) * nparams);
         for (uint32_t i = 0; i < nparams; i++) dv[i] = (VALUE)0;
         for (uint32_t i = 0; i < ndefaults; i++) {
-            struct pydefault *d = &PYSTRO_DEFAULTS[defaults_idx + i];
+            struct pysdefault *d = &PYS_DEFAULTS[defaults_idx + i];
             dv[d->slot] = (*d->expr->head.dispatcher)(c, d->expr);
-            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+            if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         }
     }
-    const char **pn = nparams > 0 ? &PYSTRO_NAME_TABLE[names_idx] : NULL;
+    const char **pn = nparams > 0 ? &PYS_NAME_TABLE[names_idx] : NULL;
     bool has_va = (flags & 1) != 0;
     bool has_kw = (flags & 2) != 0;
     int n_pos_only = (int)((flags >> 8) & 0xFF);
-    VALUE fn = py_make_func(body, c->env, name, (int)nparams, (int)n_pos_named,
+    VALUE fn = pys_make_func(body, c->env, name, (int)nparams, (int)n_pos_named,
                             (int)nlocals, dv, leaf != 0, pn, has_va, has_kw,
                             is_gen != 0);
-    PY_PTR(fn)->func.n_pos_only = n_pos_only;
+    PYS_PTR(fn)->func.n_pos_only = n_pos_only;
     // Docstring: if body's leftmost-spine leaf is a const_str, stash
     // it as `__doc__` on the func.
     {
         extern const struct NodeKind kind_node_seq;
         extern const struct NodeKind kind_node_const_str;
-        extern void py_func_set_doc(CTX *c, VALUE fn, const char *s);
+        extern void pys_func_set_doc(CTX *c, VALUE fn, const char *s);
         NODE *first = body;
         while (first && first->head.kind == &kind_node_seq)
             first = first->u.node_seq.first;
         if (first && first->head.kind == &kind_node_const_str)
-            py_func_set_doc(c, fn, first->u.node_const_str.s);
+            pys_func_set_doc(c, fn, first->u.node_const_str.s);
     }
-    if (c->current_class != PY_NONE)
-        py_class_add_method(c, c->current_class, name, fn);
+    if (c->current_class != PYS_NONE)
+        pys_class_add_method(c, c->current_class, name, fn);
     return fn;
 }
 
@@ -1383,22 +1383,22 @@ NODE_DEF
 node_class_method_get(CTX * restrict c, NODE * restrict n, const char *name)
 {
     (void)n;
-    if (c->current_class == PY_NONE)
-        py_raise_exc(c, c->EXC_RuntimeError, "method get outside class body");
-    extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
-    return py_class_lookup_method_pub(c->current_class, name);
+    if (c->current_class == PYS_NONE)
+        pys_raise_exc(c, c->EXC_RuntimeError, "method get outside class body");
+    extern VALUE pys_class_lookup_method_pub(VALUE cls, const char *name);
+    return pys_class_lookup_method_pub(c->current_class, name);
 }
 
 NODE_DEF
 node_class_method_set(CTX * restrict c, NODE * restrict n, const char *name, NODE *val)
 {
     (void)n;
-    if (c->current_class == PY_NONE)
-        py_raise_exc(c, c->EXC_RuntimeError, "method set outside class body");
+    if (c->current_class == PYS_NONE)
+        pys_raise_exc(c, c->EXC_RuntimeError, "method set outside class body");
     VALUE v = EVAL_ARG(c, val);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    py_class_add_method(c, c->current_class, name, v);
-    return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    pys_class_add_method(c, c->current_class, name, v);
+    return PYS_NONE;
 }
 
 // Class-body name load: look up `name` first in the enclosing class
@@ -1408,13 +1408,13 @@ NODE_DEF
 node_class_body_load(CTX * restrict c, NODE * restrict n, const char *name)
 {
     (void)n;
-    if (c->current_class != PY_NONE) {
-        extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
-        VALUE v = py_class_lookup_method_pub(c->current_class, name);
-        if (v != PY_NONE) return v;
+    if (c->current_class != PYS_NONE) {
+        extern VALUE pys_class_lookup_method_pub(VALUE cls, const char *name);
+        VALUE v = pys_class_lookup_method_pub(c->current_class, name);
+        if (v != PYS_NONE) return v;
     }
-    extern int py_global_resolve(CTX *c, const char *name);
-    int idx = py_global_resolve(c, name);
+    extern int pys_global_resolve(CTX *c, const char *name);
+    int idx = pys_global_resolve(c, name);
     return c->globals->entries[idx].value;
 }
 
@@ -1425,41 +1425,41 @@ NODE_DEF @noinline
 node_class_with_meta(CTX * restrict c, NODE * restrict n, NODE *cls_node, NODE *meta_node, const char *cname)
 {
     (void)n;
-    extern VALUE py_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name);
+    extern VALUE pys_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name);
     VALUE cls  = EVAL_ARG(c, cls_node);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE meta = EVAL_ARG(c, meta_node);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    return py_class_meta_apply(c, cls, meta, cname);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    return pys_class_meta_apply(c, cls, meta, cname);
 }
 
-// Multi-base form: bases live in PYSTRO_NODE_TABLE[bases_idx..nbases].
+// Multi-base form: bases live in PYS_NODE_TABLE[bases_idx..nbases].
 // Otherwise same shape as node_class.
 NODE_DEF @noinline
 node_class_multi(CTX * restrict c, NODE * restrict n, const char *name, uint32_t bases_idx, uint32_t nbases, NODE *body)
 {
     (void)n;
-    extern void py_class_set_bases(VALUE cls, VALUE *bases, int n);
+    extern void pys_class_set_bases(VALUE cls, VALUE *bases, int n);
     VALUE *bvs = (VALUE *)alloca(sizeof(VALUE) * (nbases ? nbases : 1));
     for (uint32_t i = 0; i < nbases; i++) {
-        NODE *bn = PYSTRO_NODE_TABLE[bases_idx + i];
+        NODE *bn = PYS_NODE_TABLE[bases_idx + i];
         bvs[i] = (*bn->head.dispatcher)(c, bn);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
-    VALUE cls = py_make_class(name, nbases ? bvs[0] : PY_NONE, false);
-    py_class_set_bases(cls, bvs, (int)nbases);
+    VALUE cls = pys_make_class(name, nbases ? bvs[0] : PYS_NONE, false);
+    pys_class_set_bases(cls, bvs, (int)nbases);
     VALUE saved = c->current_class;
     c->current_class = cls;
     EVAL_ARG(c, body);
     c->current_class = saved;
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    extern void py_class_extract_slots(CTX *c, VALUE cls);
-    py_class_extract_slots(c, cls);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    extern void pys_class_extract_slots(CTX *c, VALUE cls);
+    pys_class_extract_slots(c, cls);
     // Inherited metaclass: if any base has a `__metaclass__` attribute
     // (set by an explicit metaclass=M on the base or its ancestors),
     // apply it now.
-    extern VALUE py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name);
-    return py_class_inherit_metaclass(c, cls, bvs, (int)nbases, name);
+    extern VALUE pys_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name);
+    return pys_class_inherit_metaclass(c, cls, bvs, (int)nbases, name);
 }
 
 // Build the class object: evaluate base, allocate the class, evaluate
@@ -1471,19 +1471,19 @@ node_class(CTX * restrict c, NODE * restrict n, const char *name, NODE *base, NO
 {
     (void)n;
     VALUE base_v = EVAL_ARG(c, base);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    bool is_exc = (base_v != PY_NONE) && py_is_class(base_v) && PY_PTR(base_v)->cls.is_exception;
-    VALUE cls = py_make_class(name, base_v, is_exc);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    bool is_exc = (base_v != PYS_NONE) && pys_is_class(base_v) && PYS_PTR(base_v)->cls.is_exception;
+    VALUE cls = pys_make_class(name, base_v, is_exc);
     VALUE saved = c->current_class;
     c->current_class = cls;
     EVAL_ARG(c, body);
     c->current_class = saved;
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    extern void py_class_extract_slots(CTX *c, VALUE cls);
-    py_class_extract_slots(c, cls);
-    extern VALUE py_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    extern void pys_class_extract_slots(CTX *c, VALUE cls);
+    pys_class_extract_slots(c, cls);
+    extern VALUE pys_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name);
     VALUE bases1[1] = { base_v };
-    return py_class_inherit_metaclass(c, cls, bases1, base_v != PY_NONE ? 1 : 0, name);
+    return pys_class_inherit_metaclass(c, cls, bases1, base_v != PYS_NONE ? 1 : 0, name);
 }
 
 NODE_DEF @noinline
@@ -1495,12 +1495,12 @@ node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nloc
         dv = (VALUE *)alloca(sizeof(VALUE) * nparams);
         for (uint32_t i = 0; i < nparams; i++) dv[i] = (VALUE)0;
         for (uint32_t i = 0; i < ndefaults; i++) {
-            struct pydefault *d = &PYSTRO_DEFAULTS[defaults_idx + i];
+            struct pysdefault *d = &PYS_DEFAULTS[defaults_idx + i];
             dv[d->slot] = (*d->expr->head.dispatcher)(c, d->expr);
-            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+            if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         }
     }
-    const char **pn = nparams > 0 ? &PYSTRO_NAME_TABLE[names_idx] : NULL;
+    const char **pn = nparams > 0 ? &PYS_NAME_TABLE[names_idx] : NULL;
     bool leaf_b = (leaf & 1) != 0;
     bool is_gen = (leaf & 2) != 0;
     bool has_va = (leaf & 4) != 0;
@@ -1513,7 +1513,7 @@ node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nloc
         n_pos_named = (int)nparams;
     }
     const char *fname = is_gen ? "<genexpr>" : "<lambda>";
-    return py_make_func(body, c->env, fname, (int)nparams, n_pos_named,
+    return pys_make_func(body, c->env, fname, (int)nparams, n_pos_named,
                         (int)nlocals, dv, leaf_b, pn, has_va, has_kw, is_gen);
 }
 
@@ -1526,7 +1526,7 @@ node_call_0(CTX * restrict c, NODE * restrict n, NODE *fn)
 {
     (void)n;
     VALUE f = EVAL_ARG(c, fn);
-    return py_apply(c, f, 0, NULL);
+    return pys_apply(c, f, 0, NULL);
 }
 
 NODE_DEF
@@ -1536,7 +1536,7 @@ node_call_1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
     VALUE f = EVAL_ARG(c, fn);
     VALUE av[1];
     av[0] = EVAL_ARG(c, a0);
-    return py_apply(c, f, 1, av);
+    return pys_apply(c, f, 1, av);
 }
 
 NODE_DEF
@@ -1547,7 +1547,7 @@ node_call_2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
     VALUE av[2];
     av[0] = EVAL_ARG(c, a0);
     av[1] = EVAL_ARG(c, a1);
-    return py_apply(c, f, 2, av);
+    return pys_apply(c, f, 2, av);
 }
 
 NODE_DEF
@@ -1559,7 +1559,7 @@ node_call_3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, N
     av[0] = EVAL_ARG(c, a0);
     av[1] = EVAL_ARG(c, a1);
     av[2] = EVAL_ARG(c, a2);
-    return py_apply(c, f, 3, av);
+    return pys_apply(c, f, 3, av);
 }
 
 NODE_DEF @noinline
@@ -1567,23 +1567,23 @@ node_call_n(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, ui
 {
     (void)n;
     VALUE f = EVAL_ARG(c, fn);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
-        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+        NODE *arg = PYS_NODE_TABLE[args_idx + i];
         av[i] = (*arg->head.dispatcher)(c, arg);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
-    return py_apply(c, f, (int)argc, av);
+    return pys_apply(c, f, (int)argc, av);
 }
 
-// Call with `*list` / `**dict` expansion.  Walks PYSTRO_SPREADS,
+// Call with `*list` / `**dict` expansion.  Walks PYS_SPREADS,
 // expanding spread entries into the positional / keyword arg lists.
 NODE_DEF @noinline
 node_call_spread(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t spreads_idx, uint32_t nspreads)
 {
     (void)n;
-    extern VALUE py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwnames, VALUE *kwvalues);
+    extern VALUE pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwnames, VALUE *kwvalues);
     VALUE f = EVAL_ARG(c, fn);
     // First pass: count.
     size_t cap_pos = 4, cap_kw = 4;
@@ -1593,18 +1593,18 @@ node_call_spread(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t spreads
     VALUE       *kv = (VALUE *)GC_malloc(sizeof(VALUE) * cap_kw);
     int kwc = 0;
     for (uint32_t i = 0; i < nspreads; i++) {
-        struct pyspread_arg *sa = &PYSTRO_SPREADS[spreads_idx + i];
+        struct pyspread_arg *sa = &PYS_SPREADS[spreads_idx + i];
         VALUE v = (*sa->node->head.dispatcher)(c, sa->node);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         if (sa->kind == 0) {
             if (argc == (int)cap_pos) { cap_pos *= 2; av = (VALUE *)GC_realloc(av, sizeof(VALUE) * cap_pos); }
             av[argc++] = v;
         } else if (sa->kind == 1) {
             // *iterable
-            struct py_iter it; py_iter_init(c, &it, v);
-            if (c->state != PY_STATE_NORMAL) return PY_NONE;
+            struct pys_iter it; pys_iter_init(c, &it, v);
+            if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
             VALUE x;
-            while (py_iter_next(c, &it, &x)) {
+            while (pys_iter_next(c, &it, &x)) {
                 if (argc == (int)cap_pos) { cap_pos *= 2; av = (VALUE *)GC_realloc(av, sizeof(VALUE) * cap_pos); }
                 av[argc++] = x;
             }
@@ -1619,76 +1619,76 @@ node_call_spread(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t spreads
             kwc++;
         } else if (sa->kind == 3) {
             // **dict
-            if (!py_is_dict(v)) py_raise_exc(c, c->EXC_TypeError, "argument after ** must be a dict");
-            struct pydict *d = PY_PTR(v)->dict;
+            if (!pys_is_dict(v)) pys_raise_exc(c, c->EXC_TypeError, "argument after ** must be a dict");
+            struct pysdict *d = PYS_PTR(v)->dict;
             for (size_t j = 0; j < d->elen; j++) {
                 VALUE _k_chk = d->entries[j].key;
                 if (_k_chk != 0 && _k_chk != DICT_DELETED_KEY) {
-                    if (!py_is_str(d->entries[j].key))
-                        py_raise_exc(c, c->EXC_TypeError, "** keys must be strings");
+                    if (!pys_is_str(d->entries[j].key))
+                        pys_raise_exc(c, c->EXC_TypeError, "** keys must be strings");
                     if (kwc == (int)cap_kw) {
                         cap_kw *= 2;
                         kn = (const char **)GC_realloc(kn, sizeof(char *) * cap_kw);
                         kv = (VALUE *)GC_realloc(kv, sizeof(VALUE) * cap_kw);
                     }
-                    kn[kwc] = PY_PTR(d->entries[j].key)->str.chars;
+                    kn[kwc] = PYS_PTR(d->entries[j].key)->str.chars;
                     kv[kwc] = d->entries[j].value;
                     kwc++;
                 }
             }
         }
     }
-    return py_apply_kw(c, f, argc, av, kwc, kn, kv);
+    return pys_apply_kw(c, f, argc, av, kwc, kn, kv);
 }
 
 // Call with keyword arguments (and possibly positional too).
-// Positional from PYSTRO_NODE_TABLE[args_idx..argc], kwargs from
-// PYSTRO_KWARGS[kwargs_idx..kwc].  No `*list` / `**dict` expansion at
+// Positional from PYS_NODE_TABLE[args_idx..argc], kwargs from
+// PYS_KWARGS[kwargs_idx..kwc].  No `*list` / `**dict` expansion at
 // the call site for v0.
 NODE_DEF @noinline
 node_call_kw(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc, uint32_t kwargs_idx, uint32_t kwc)
 {
     (void)n;
-    extern VALUE py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwnames, VALUE *kwvalues);
+    extern VALUE pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwnames, VALUE *kwvalues);
     VALUE f = EVAL_ARG(c, fn);
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
-        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+        NODE *arg = PYS_NODE_TABLE[args_idx + i];
         av[i] = (*arg->head.dispatcher)(c, arg);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
     const char **kwn = (const char **)alloca(sizeof(char *) * (kwc ? kwc : 1));
     VALUE       *kwv = (VALUE *)alloca(sizeof(VALUE) * (kwc ? kwc : 1));
     for (uint32_t i = 0; i < kwc; i++) {
-        kwn[i] = PYSTRO_KWARGS[kwargs_idx + i].name;
-        NODE *vn = PYSTRO_KWARGS[kwargs_idx + i].value;
+        kwn[i] = PYS_KWARGS[kwargs_idx + i].name;
+        NODE *vn = PYS_KWARGS[kwargs_idx + i].value;
         kwv[i] = (*vn->head.dispatcher)(c, vn);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
-    return py_apply_kw(c, f, (int)argc, av, (int)kwc, kwn, kwv);
+    return pys_apply_kw(c, f, (int)argc, av, (int)kwc, kwn, kwv);
 }
 
 // Method call: `o.m(args)`.  Inline-cached: when `recv`'s type-tag
 // matches `cache->type_tag` we call the cached raw builtin fn with
 // `recv` prepended to argv — no bound-method heap allocation, no
 // strcmp scan through the per-type method registry.  Cache miss (new
-// type, instance method, etc.) falls through to py_method_resolve +
-// py_apply, which also re-stamps the cache for the hot tag.
-extern VALUE py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cache);
+// type, instance method, etc.) falls through to pys_method_resolve +
+// pys_apply, which also re-stamps the cache for the hot tag.
+extern VALUE pys_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cache);
 
 // Two cache-fast-path layouts coexist (discriminated by cache->cls_ptr):
 //   builtin (cls_ptr == NULL): cache->type_tag is the recv type, cache->fn
-//     is a `py_builtin_fn` invoked directly on [self, args].
+//     is a `pys_builtin_fn` invoked directly on [self, args].
 //   user-class instance (cls_ptr != NULL): cache->cls_ptr is
-//     PY_PTR(recv->inst.cls).  Cache stores the resolved method VALUE in
-//     cache->fn and we call py_apply on it with [self, args] — bypasses
+//     PYS_PTR(recv->inst.cls).  Cache stores the resolved method VALUE in
+//     cache->fn and we call pys_apply on it with [self, args] — bypasses
 //     bound-method allocation and the MRO walk + strcmp.
 
 // Polymorphic IC scan helper.  Returns method VALUE on hit, 0 on miss.
 // Inlined into each node_method_* fast path; compiler unrolls the
 // 4-iter loop and folds the hits.
 static inline VALUE
-pystro_pic_lookup(struct method_cache *cache, void *cls)
+pys_pic_lookup(struct method_cache *cache, void *cls)
 {
     if (cache->u_cls[0] == cls) return (VALUE)(intptr_t)cache->u_fn[0];
     if (cache->u_cls[1] == cls) return (VALUE)(intptr_t)cache->u_fn[1];
@@ -1702,42 +1702,42 @@ node_method_0(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    if (LIKELY(PY_IS_PTR(o)) && PY_PTR(o)->type == cache->type_tag) {
-        int t = PY_PTR(o)->type;
-        if (t == PY_T_INSTANCE) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o)->inst.cls);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    if (LIKELY(PYS_IS_PTR(o)) && PYS_PTR(o)->type == cache->type_tag) {
+        int t = PYS_PTR(o)->type;
+        if (t == PYS_T_INSTANCE) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o)->inst.cls);
             if (LIKELY(fn)) {
                 VALUE av[1] = { o };
-                return py_apply(c, fn, 1, av);
+                return pys_apply(c, fn, 1, av);
             }
             // Primary-builtin case (e.g. OrderedCollection.append):
             // checked after user-class PIC so common path stays cheap.
-            if (cache->fn && cache->u_cls[0] == (void *)PY_PTR(o)->inst.cls) {
-                VALUE primary = PY_PTR(o)->inst.primary;
+            if (cache->fn && cache->u_cls[0] == (void *)PYS_PTR(o)->inst.cls) {
+                VALUE primary = PYS_PTR(o)->inst.primary;
                 if (LIKELY(primary)) {
                     VALUE av[1] = { primary };
-                    return ((py_builtin_fn)cache->fn)(c, 1, av);
+                    return ((pys_builtin_fn)cache->fn)(c, 1, av);
                 }
             }
-        } else if (t == PY_T_MODULE) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
-            if (LIKELY(fn)) return py_apply(c, fn, 0, NULL);
-        } else if (t == PY_T_CLASS) {
+        } else if (t == PYS_T_MODULE) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o));
+            if (LIKELY(fn)) return pys_apply(c, fn, 0, NULL);
+        } else if (t == PYS_T_CLASS) {
             // `Cls.classmethod()` — IC stamps the wrapped function and
             // we synthesise the cls-as-first-arg call directly.
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o));
             if (LIKELY(fn)) {
                 VALUE av[1] = { o };
-                return py_apply(c, fn, 1, av);
+                return pys_apply(c, fn, 1, av);
             }
         } else if (cache->fn) {
             VALUE av[1] = { o };
-            return ((py_builtin_fn)cache->fn)(c, 1, av);
+            return ((pys_builtin_fn)cache->fn)(c, 1, av);
         }
     }
-    VALUE m = py_method_resolve(c, o, name, cache);
-    return py_apply(c, m, 0, NULL);
+    VALUE m = pys_method_resolve(c, o, name, cache);
+    return pys_apply(c, m, 0, NULL);
 }
 
 NODE_DEF
@@ -1745,61 +1745,61 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
-    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-    if (LIKELY(PY_IS_PTR(o)) && PY_PTR(o)->type == cache->type_tag) {
-        int t = PY_PTR(o)->type;
-        if (t == PY_T_INSTANCE) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o)->inst.cls);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+    if (LIKELY(PYS_IS_PTR(o)) && PYS_PTR(o)->type == cache->type_tag) {
+        int t = PYS_PTR(o)->type;
+        if (t == PYS_T_INSTANCE) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o)->inst.cls);
             if (LIKELY(fn)) {
                 VALUE av[2];
                 av[0] = o;
                 av[1] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                return py_apply(c, fn, 2, av);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                return pys_apply(c, fn, 2, av);
             }
-            if (cache->fn && cache->u_cls[0] == (void *)PY_PTR(o)->inst.cls) {
-                VALUE primary = PY_PTR(o)->inst.primary;
+            if (cache->fn && cache->u_cls[0] == (void *)PYS_PTR(o)->inst.cls) {
+                VALUE primary = PYS_PTR(o)->inst.primary;
                 if (LIKELY(primary)) {
                     VALUE av[2];
                     av[0] = primary;
                     av[1] = EVAL_ARG(c, a0);
-                    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                    return ((py_builtin_fn)cache->fn)(c, 2, av);
+                    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                    return ((pys_builtin_fn)cache->fn)(c, 2, av);
                 }
             }
-        } else if (t == PY_T_MODULE) {
+        } else if (t == PYS_T_MODULE) {
             // Module method (e.g., `math.sqrt(x)`): no self prepend.
             // Cache stamps (module_ptr, resolved_method).  raytrace was
             // doing strcmp through math's globals on every call.
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o));
             if (LIKELY(fn)) {
                 VALUE av[1];
                 av[0] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                return py_apply(c, fn, 1, av);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                return pys_apply(c, fn, 1, av);
             }
-        } else if (t == PY_T_CLASS) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+        } else if (t == PYS_T_CLASS) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o));
             if (LIKELY(fn)) {
                 VALUE av[2];
                 av[0] = o;
                 av[1] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                return py_apply(c, fn, 2, av);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                return pys_apply(c, fn, 2, av);
             }
         } else if (cache->fn) {
             VALUE av[2];
             av[0] = o;
             av[1] = EVAL_ARG(c, a0);
-            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-            return ((py_builtin_fn)cache->fn)(c, 2, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+            return ((pys_builtin_fn)cache->fn)(c, 2, av);
         }
     }
-    VALUE m = py_method_resolve(c, o, name, cache);
+    VALUE m = pys_method_resolve(c, o, name, cache);
     VALUE av[1];
     av[0] = EVAL_ARG(c, a0);
-    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-    return py_apply(c, m, 1, av);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+    return pys_apply(c, m, 1, av);
 }
 
 NODE_DEF
@@ -1807,70 +1807,70 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
-    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-    if (LIKELY(PY_IS_PTR(o)) && PY_PTR(o)->type == cache->type_tag) {
-        int t = PY_PTR(o)->type;
-        if (t == PY_T_INSTANCE) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o)->inst.cls);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+    if (LIKELY(PYS_IS_PTR(o)) && PYS_PTR(o)->type == cache->type_tag) {
+        int t = PYS_PTR(o)->type;
+        if (t == PYS_T_INSTANCE) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o)->inst.cls);
             if (LIKELY(fn)) {
                 VALUE av[3];
                 av[0] = o;
                 av[1] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
                 av[2] = EVAL_ARG(c, a1);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                return py_apply(c, fn, 3, av);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                return pys_apply(c, fn, 3, av);
             }
-            if (cache->fn && cache->u_cls[0] == (void *)PY_PTR(o)->inst.cls) {
-                VALUE primary = PY_PTR(o)->inst.primary;
+            if (cache->fn && cache->u_cls[0] == (void *)PYS_PTR(o)->inst.cls) {
+                VALUE primary = PYS_PTR(o)->inst.primary;
                 if (LIKELY(primary)) {
                     VALUE av[3];
                     av[0] = primary;
                     av[1] = EVAL_ARG(c, a0);
-                    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
                     av[2] = EVAL_ARG(c, a1);
-                    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                    return ((py_builtin_fn)cache->fn)(c, 3, av);
+                    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                    return ((pys_builtin_fn)cache->fn)(c, 3, av);
                 }
             }
-        } else if (t == PY_T_MODULE) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+        } else if (t == PYS_T_MODULE) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o));
             if (LIKELY(fn)) {
                 VALUE av[2];
                 av[0] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
                 av[1] = EVAL_ARG(c, a1);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                return py_apply(c, fn, 2, av);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                return pys_apply(c, fn, 2, av);
             }
-        } else if (t == PY_T_CLASS) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+        } else if (t == PYS_T_CLASS) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o));
             if (LIKELY(fn)) {
                 VALUE av[3];
                 av[0] = o;
                 av[1] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
                 av[2] = EVAL_ARG(c, a1);
-                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                return py_apply(c, fn, 3, av);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                return pys_apply(c, fn, 3, av);
             }
         } else if (cache->fn) {
             VALUE av[3];
             av[0] = o;
             av[1] = EVAL_ARG(c, a0);
-            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
             av[2] = EVAL_ARG(c, a1);
-            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-            return ((py_builtin_fn)cache->fn)(c, 3, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+            return ((pys_builtin_fn)cache->fn)(c, 3, av);
         }
     }
-    VALUE m = py_method_resolve(c, o, name, cache);
+    VALUE m = pys_method_resolve(c, o, name, cache);
     VALUE av[2];
     av[0] = EVAL_ARG(c, a0);
-    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
     av[1] = EVAL_ARG(c, a1);
-    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-    return py_apply(c, m, 2, av);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+    return pys_apply(c, m, 2, av);
 }
 
 NODE_DEF @noinline
@@ -1878,76 +1878,76 @@ node_method_n(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
 {
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    if (LIKELY(PY_IS_PTR(o)) && PY_PTR(o)->type == cache->type_tag) {
-        int t = PY_PTR(o)->type;
-        if (t == PY_T_INSTANCE) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o)->inst.cls);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    if (LIKELY(PYS_IS_PTR(o)) && PYS_PTR(o)->type == cache->type_tag) {
+        int t = PYS_PTR(o)->type;
+        if (t == PYS_T_INSTANCE) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o)->inst.cls);
             if (LIKELY(fn)) {
                 VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
                 av[0] = o;
                 for (uint32_t i = 0; i < argc; i++) {
-                    NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                    NODE *arg = PYS_NODE_TABLE[args_idx + i];
                     av[i + 1] = (*arg->head.dispatcher)(c, arg);
-                    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
                 }
-                return py_apply(c, fn, (int)argc + 1, av);
+                return pys_apply(c, fn, (int)argc + 1, av);
             }
-            if (cache->fn && cache->u_cls[0] == (void *)PY_PTR(o)->inst.cls) {
-                VALUE primary = PY_PTR(o)->inst.primary;
+            if (cache->fn && cache->u_cls[0] == (void *)PYS_PTR(o)->inst.cls) {
+                VALUE primary = PYS_PTR(o)->inst.primary;
                 if (LIKELY(primary)) {
                     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
                     av[0] = primary;
                     for (uint32_t i = 0; i < argc; i++) {
-                        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                        NODE *arg = PYS_NODE_TABLE[args_idx + i];
                         av[i + 1] = (*arg->head.dispatcher)(c, arg);
-                        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
                     }
-                    return ((py_builtin_fn)cache->fn)(c, (int)argc + 1, av);
+                    return ((pys_builtin_fn)cache->fn)(c, (int)argc + 1, av);
                 }
             }
-        } else if (t == PY_T_MODULE) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+        } else if (t == PYS_T_MODULE) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o));
             if (LIKELY(fn)) {
                 VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
                 for (uint32_t i = 0; i < argc; i++) {
-                    NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                    NODE *arg = PYS_NODE_TABLE[args_idx + i];
                     av[i] = (*arg->head.dispatcher)(c, arg);
-                    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
                 }
-                return py_apply(c, fn, (int)argc, av);
+                return pys_apply(c, fn, (int)argc, av);
             }
-        } else if (t == PY_T_CLASS) {
-            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+        } else if (t == PYS_T_CLASS) {
+            VALUE fn = pys_pic_lookup(cache, (void *)PYS_PTR(o));
             if (LIKELY(fn)) {
                 VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
                 av[0] = o;
                 for (uint32_t i = 0; i < argc; i++) {
-                    NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                    NODE *arg = PYS_NODE_TABLE[args_idx + i];
                     av[i + 1] = (*arg->head.dispatcher)(c, arg);
-                    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
                 }
-                return py_apply(c, fn, (int)argc + 1, av);
+                return pys_apply(c, fn, (int)argc + 1, av);
             }
         } else if (cache->fn) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = o;
             for (uint32_t i = 0; i < argc; i++) {
-                NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                NODE *arg = PYS_NODE_TABLE[args_idx + i];
                 av[i + 1] = (*arg->head.dispatcher)(c, arg);
-                if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
             }
-            return ((py_builtin_fn)cache->fn)(c, (int)argc + 1, av);
+            return ((pys_builtin_fn)cache->fn)(c, (int)argc + 1, av);
         }
     }
-    VALUE m = py_method_resolve(c, o, name, cache);
+    VALUE m = pys_method_resolve(c, o, name, cache);
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
     for (uint32_t i = 0; i < argc; i++) {
-        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+        NODE *arg = PYS_NODE_TABLE[args_idx + i];
         av[i] = (*arg->head.dispatcher)(c, arg);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
-    return py_apply(c, m, (int)argc, av);
+    return pys_apply(c, m, (int)argc, av);
 }
 
 // `super(C, self).method(args)` — explicit form.  Walks self.__class__'s
@@ -1956,56 +1956,56 @@ NODE_DEF @noinline
 node_super_method_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, NODE *self_expr, const char *method_name, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
-    extern VALUE py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name);
+    extern VALUE pys_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name);
     VALUE cls = EVAL_ARG(c, cls_expr);
     VALUE self = EVAL_ARG(c, self_expr);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    if (!py_is_class(cls))     py_raise_exc(c, c->EXC_TypeError, "super(): first arg must be class");
-    if (!py_is_instance(self)) py_raise_exc(c, c->EXC_TypeError, "super(): second arg must be instance");
-    VALUE m = py_super_lookup(c, self, cls, method_name);
-    if (m == PY_NONE) py_raise_exc(c, c->EXC_AttributeError,
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    if (!pys_is_class(cls))     pys_raise_exc(c, c->EXC_TypeError, "super(): first arg must be class");
+    if (!pys_is_instance(self)) pys_raise_exc(c, c->EXC_TypeError, "super(): second arg must be instance");
+    VALUE m = pys_super_lookup(c, self, cls, method_name);
+    if (m == PYS_NONE) pys_raise_exc(c, c->EXC_AttributeError,
                                    "'super' object has no attribute '%s'", method_name);
     // Unwrap @classmethod / @staticmethod descriptors found via the MRO walk.
     bool was_classmethod = false;
     bool was_staticmethod = false;
-    if (PY_IS_PTR(m)) {
-        if (PY_PTR(m)->type == PY_T_CLASSMETHOD) {
-            m = PY_PTR(m)->wrap.wrapped; was_classmethod = true;
-        } else if (PY_PTR(m)->type == PY_T_STATICMETHOD) {
-            m = PY_PTR(m)->wrap.wrapped; was_staticmethod = true;
+    if (PYS_IS_PTR(m)) {
+        if (PYS_PTR(m)->type == PYS_T_CLASSMETHOD) {
+            m = PYS_PTR(m)->wrap.wrapped; was_classmethod = true;
+        } else if (PYS_PTR(m)->type == PYS_T_STATICMETHOD) {
+            m = PYS_PTR(m)->wrap.wrapped; was_staticmethod = true;
         }
     }
-    extern bool py_is_bound_builtin(VALUE v);
+    extern bool pys_is_bound_builtin(VALUE v);
     // __new__ is implicitly static; staticmethod also has no implicit self.
     bool skip_self_super = (strcmp(method_name, "__new__") == 0) || was_staticmethod;
     if (was_classmethod) {
         // First arg is the class — derive from self.
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
-        av[0] = py_is_class(self) ? self : PY_OBJ_VAL(PY_PTR(self)->inst.cls);
+        av[0] = pys_is_class(self) ? self : PYS_OBJ_VAL(PYS_PTR(self)->inst.cls);
         for (uint32_t i = 0; i < argc; i++) {
-            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+            NODE *arg = PYS_NODE_TABLE[args_idx + i];
             av[i + 1] = (*arg->head.dispatcher)(c, arg);
-            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+            if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         }
-        return py_apply(c, m, (int)argc + 1, av);
+        return pys_apply(c, m, (int)argc + 1, av);
     }
-    if (py_is_bound_builtin(m) || skip_self_super) {
+    if (pys_is_bound_builtin(m) || skip_self_super) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
         for (uint32_t i = 0; i < argc; i++) {
-            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+            NODE *arg = PYS_NODE_TABLE[args_idx + i];
             av[i] = (*arg->head.dispatcher)(c, arg);
-            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+            if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         }
-        return py_apply(c, m, (int)argc, av);
+        return pys_apply(c, m, (int)argc, av);
     }
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
     av[0] = self;
     for (uint32_t i = 0; i < argc; i++) {
-        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+        NODE *arg = PYS_NODE_TABLE[args_idx + i];
         av[i + 1] = (*arg->head.dispatcher)(c, arg);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
-    return py_apply(c, m, (int)argc + 1, av);
+    return pys_apply(c, m, (int)argc + 1, av);
 }
 
 // `super().method(args)` — cooperative MRO walk.  Walks the actual
@@ -2016,12 +2016,12 @@ NODE_DEF @noinline
 node_super_obj(CTX * restrict c, NODE * restrict n)
 {
     (void)n;
-    extern VALUE py_make_super(VALUE start_cls, VALUE self);
+    extern VALUE pys_make_super(VALUE start_cls, VALUE self);
     if (!c->env || c->env->nslots < 1)
-        py_raise_exc(c, c->EXC_RuntimeError, "super() outside of method");
+        pys_raise_exc(c, c->EXC_RuntimeError, "super() outside of method");
     VALUE self = c->env->slots[0];
     VALUE start = c->method_class;
-    return py_make_super(start, self);
+    return pys_make_super(start, self);
 }
 
 // `super(C, self)` explicit form returning a proxy.
@@ -2029,137 +2029,137 @@ NODE_DEF @noinline
 node_super_obj_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, NODE *self_expr)
 {
     (void)n;
-    extern VALUE py_make_super(VALUE start_cls, VALUE self);
+    extern VALUE pys_make_super(VALUE start_cls, VALUE self);
     VALUE cls = EVAL_ARG(c, cls_expr);
     VALUE self = EVAL_ARG(c, self_expr);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    return py_make_super(cls, self);
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    return pys_make_super(cls, self);
 }
 
 // instance's class MRO starting just after the lexical defining class
-// (read from c->method_class set by py_apply when entering a method).
+// (read from c->method_class set by pys_apply when entering a method).
 // Falls back to `base_v` only if method_class is not set (e.g. when
 // called outside a method).
 NODE_DEF @noinline
 node_super_method(CTX * restrict c, NODE * restrict n, NODE *base, const char *method_name, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
-    extern VALUE py_class_lookup_method_pub(VALUE cls, const char *name);
-    extern VALUE py_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name);
+    extern VALUE pys_class_lookup_method_pub(VALUE cls, const char *name);
+    extern VALUE pys_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name);
     if (!c->env || c->env->nslots < 1)
-        py_raise_exc(c, c->EXC_RuntimeError, "super() outside of method");
+        pys_raise_exc(c, c->EXC_RuntimeError, "super() outside of method");
     VALUE self = c->env->slots[0];
     VALUE start = c->method_class;
-    VALUE m = PY_NONE;
-    if (start != PY_NONE && py_is_instance(self)) {
-        m = py_super_lookup(c, self, start, method_name);
-    } else if (start != PY_NONE && py_is_class(self)) {
+    VALUE m = PYS_NONE;
+    if (start != PYS_NONE && pys_is_instance(self)) {
+        m = pys_super_lookup(c, self, start, method_name);
+    } else if (start != PYS_NONE && pys_is_class(self)) {
         // self is a class (e.g. __new__ / classmethod): walk past start
         // in self's own MRO and look for the method.
-        struct pyclass *cd = &PY_PTR(self)->cls;
+        struct pysclass *cd = &PYS_PTR(self)->cls;
         int i = 0;
         while (i < cd->nmro && cd->mro[i] != start) i++;
         for (int j = i + 1; j < cd->nmro; j++) {
-            struct pyclass *kd = &PY_PTR(cd->mro[j])->cls;
+            struct pysclass *kd = &PYS_PTR(cd->mro[j])->cls;
             for (int k = 0; k < kd->nmethods; k++) {
                 if (strcmp(kd->methods[k].name, method_name) == 0) {
                     m = kd->methods[k].value; break;
                 }
             }
-            if (m != PY_NONE) break;
+            if (m != PYS_NONE) break;
         }
     }
-    if (m == PY_NONE) {
+    if (m == PYS_NONE) {
         // Fallback: use the parser-captured base.
         VALUE base_v = EVAL_ARG(c, base);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-        if (!py_is_class(base_v)) py_raise_exc(c, c->EXC_TypeError, "super(): base is not a class");
-        m = py_class_lookup_method_pub(base_v, method_name);
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+        if (!pys_is_class(base_v)) pys_raise_exc(c, c->EXC_TypeError, "super(): base is not a class");
+        m = pys_class_lookup_method_pub(base_v, method_name);
     }
-    if (m == PY_NONE) py_raise_exc(c, c->EXC_AttributeError,
+    if (m == PYS_NONE) pys_raise_exc(c, c->EXC_AttributeError,
                                    "'super' object has no attribute '%s'", method_name);
     // Unwrap @classmethod / @staticmethod descriptors found via the MRO walk.
     bool was_classmethod = false;
     bool was_staticmethod = false;
-    if (PY_IS_PTR(m)) {
-        if (PY_PTR(m)->type == PY_T_CLASSMETHOD) {
-            m = PY_PTR(m)->wrap.wrapped; was_classmethod = true;
-        } else if (PY_PTR(m)->type == PY_T_STATICMETHOD) {
-            m = PY_PTR(m)->wrap.wrapped; was_staticmethod = true;
+    if (PYS_IS_PTR(m)) {
+        if (PYS_PTR(m)->type == PYS_T_CLASSMETHOD) {
+            m = PYS_PTR(m)->wrap.wrapped; was_classmethod = true;
+        } else if (PYS_PTR(m)->type == PYS_T_STATICMETHOD) {
+            m = PYS_PTR(m)->wrap.wrapped; was_staticmethod = true;
         }
     }
-    extern bool py_is_bound_builtin(VALUE v);
+    extern bool pys_is_bound_builtin(VALUE v);
     // __new__ is implicitly static; staticmethod also has no implicit self.
     bool skip_self_super = (strcmp(method_name, "__new__") == 0) || was_staticmethod;
     if (was_classmethod) {
         // First arg is the class — derive from self.
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
-        av[0] = py_is_class(self) ? self : PY_OBJ_VAL(PY_PTR(self)->inst.cls);
+        av[0] = pys_is_class(self) ? self : PYS_OBJ_VAL(PYS_PTR(self)->inst.cls);
         for (uint32_t i = 0; i < argc; i++) {
-            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+            NODE *arg = PYS_NODE_TABLE[args_idx + i];
             av[i + 1] = (*arg->head.dispatcher)(c, arg);
-            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+            if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         }
-        return py_apply(c, m, (int)argc + 1, av);
+        return pys_apply(c, m, (int)argc + 1, av);
     }
-    if (py_is_bound_builtin(m) || skip_self_super) {
+    if (pys_is_bound_builtin(m) || skip_self_super) {
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
         for (uint32_t i = 0; i < argc; i++) {
-            NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+            NODE *arg = PYS_NODE_TABLE[args_idx + i];
             av[i] = (*arg->head.dispatcher)(c, arg);
-            if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+            if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         }
-        return py_apply(c, m, (int)argc, av);
+        return pys_apply(c, m, (int)argc, av);
     }
     VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
     av[0] = self;
     for (uint32_t i = 0; i < argc; i++) {
-        NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+        NODE *arg = PYS_NODE_TABLE[args_idx + i];
         av[i + 1] = (*arg->head.dispatcher)(c, arg);
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     }
-    return py_apply(c, m, (int)argc + 1, av);
+    return pys_apply(c, m, (int)argc + 1, av);
 }
 
 // `match SUBJECT: case PAT (if GUARD): BODY ...`
 //
-// PYSTRO_CASES[cases_idx..idx+ncases] are the cases; each case carries
+// PYS_CASES[cases_idx..idx+ncases] are the cases; each case carries
 // a root pattern index + optional guard + body.  The pattern tree is
-// in PYSTRO_PATTERNS.  Pattern matching may bind names — those are
+// in PYS_PATTERNS.  Pattern matching may bind names — those are
 // always evaluated as `make_store` operations during the walk.
 NODE_DEF @noinline
 node_match(CTX * restrict c, NODE * restrict n, NODE *subject, uint32_t cases_idx, uint32_t ncases)
 {
     (void)n;
-    extern bool py_pat_match(CTX *c, int pat_idx, VALUE v);
+    extern bool pys_pat_match(CTX *c, int pat_idx, VALUE v);
     VALUE sv = EVAL_ARG(c, subject);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
     for (uint32_t i = 0; i < ncases; i++) {
-        struct pycase *cs = &PYSTRO_CASES[cases_idx + i];
-        if (!py_pat_match(c, cs->pat_idx, sv)) continue;
-        if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+        struct pyscase *cs = &PYS_CASES[cases_idx + i];
+        if (!pys_pat_match(c, cs->pat_idx, sv)) continue;
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
         if (cs->guard) {
             VALUE g = EVAL(c, cs->guard);
-            if (c->state != PY_STATE_NORMAL) return PY_NONE;
-            if (!py_is_truthy(g)) continue;
+            if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
+            if (!pys_is_truthy(g)) continue;
         }
         EVAL(c, cs->body);
-        return PY_NONE;
+        return PYS_NONE;
     }
-    return PY_NONE;
+    return PYS_NONE;
 }
 
 // Tuple/list unpacking assignment: `a, b, c = expr`.  The targets live
-// in PYSTRO_UNPACK_TARGETS[targets_idx..idx+ntargets]; each target
+// in PYS_UNPACK_TARGETS[targets_idx..idx+ntargets]; each target
 // records (is_local, slot|name).
 NODE_DEF @noinline
 node_unpack_assign(CTX * restrict c, NODE * restrict n, uint32_t targets_idx, uint32_t ntargets, NODE *rhs)
 {
     (void)n;
-    extern struct pyunpack_target *PYSTRO_UNPACK_TARGETS;
-    extern void py_unpack_assign(CTX *c, struct pyunpack_target *t, uint32_t n, VALUE rhs);
+    extern struct pyunpack_target *PYS_UNPACK_TARGETS;
+    extern void pys_unpack_assign(CTX *c, struct pyunpack_target *t, uint32_t n, VALUE rhs);
     VALUE r = EVAL_ARG(c, rhs);
-    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
-    py_unpack_assign(c, &PYSTRO_UNPACK_TARGETS[targets_idx], ntargets, r);
-    return PY_NONE;
+    if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return PYS_NONE;
+    pys_unpack_assign(c, &PYS_UNPACK_TARGETS[targets_idx], ntargets, r);
+    return PYS_NONE;
 }

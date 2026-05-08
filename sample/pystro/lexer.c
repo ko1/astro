@@ -542,7 +542,7 @@ read_number(void)
     else if (base == 16) ll = strtoll(clean + 2, &end, 16);
     else if (base == 2)  ll = strtoll(clean + 2, &end, 2);
     else                 ll = strtoll(clean + 2, &end, 8);
-    if (errno == ERANGE || ll > PY_FIXNUM_MAX || ll < PY_FIXNUM_MIN) {
+    if (errno == ERANGE || ll > PYS_FIXNUM_MAX || ll < PYS_FIXNUM_MIN) {
         // Need bignum literal.  Stash decimal text on `sval` and set overflow flag.
         char *dec = clean;
         if (base != 10) {

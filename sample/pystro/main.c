@@ -16,7 +16,7 @@
 #include <readline/history.h>
 #endif
 
-struct pystro_option OPTION;
+struct pys_option OPTION;
 
 #include "runtime.c"
 #include "lexer.c"
@@ -60,18 +60,18 @@ usage(void)
 }
 
 // Captured argv so that `sys.argv` (via __pystro_argv__) can return it.
-int    PYSTRO_ARGC = 0;
-char **PYSTRO_ARGV = NULL;
+int    PYS_ARGC = 0;
+char **PYS_ARGV = NULL;
 
 // Directory of the pystro binary itself; used as a sys.path-like fallback
 // so built-in stdlib modules (math.py / sys.py / json.py / etc.) are
 // importable regardless of cwd.
-const char *PYSTRO_BINDIR = NULL;
+const char *PYS_BINDIR = NULL;
 
 int
 main(int argc, char *argv[])
 {
-    py_gc_init();
+    pys_gc_init();
     // Resolve pystro's own directory once so we can use it as a
     // stdlib search path.
     {
@@ -84,7 +84,7 @@ main(int argc, char *argv[])
                 *slash = '\0';
                 char *dup = (char *)malloc(strlen(buf) + 1);
                 strcpy(dup, buf);
-                PYSTRO_BINDIR = dup;
+                PYS_BINDIR = dup;
             }
         }
     }
@@ -119,11 +119,11 @@ main(int argc, char *argv[])
     }
     // Record argv from the script-name onwards for sys.argv parity.
     if (file) {
-        PYSTRO_ARGC = argc - (ai - 1);
-        PYSTRO_ARGV = &argv[ai - 1];
+        PYS_ARGC = argc - (ai - 1);
+        PYS_ARGV = &argv[ai - 1];
     } else {
-        PYSTRO_ARGC = argc - ai + 1;
-        PYSTRO_ARGV = &argv[ai - 1];
+        PYS_ARGC = argc - ai + 1;
+        PYS_ARGV = &argv[ai - 1];
     }
 
     INIT();
@@ -132,27 +132,27 @@ main(int argc, char *argv[])
     // env, EXC_*, state_value, ...) — otherwise those reachable-only-
     // through-CTX heap allocations get reclaimed mid-run.
     CTX *c = (CTX *)GC_malloc(sizeof(CTX));
-    extern struct pyglobals *py_globals_new(void);
-    c->globals = py_globals_new();
-    c->state = PY_STATE_NORMAL;
-    c->current_class = PY_NONE;
-    c->method_class = PY_NONE;
+    extern struct pysglobals *pys_globals_new(void);
+    c->globals = pys_globals_new();
+    c->state = PYS_STATE_NORMAL;
+    c->current_class = PYS_NONE;
+    c->method_class = PYS_NONE;
     c->recursion_limit = 1000;
-    extern CTX *py_current_ctx;
-    py_current_ctx = c;
+    extern CTX *pys_current_ctx;
+    pys_current_ctx = c;
     install_builtins(c);
     // Register the running script's globals as `sys.modules["__main__"]`
     // (CPython's convention).  Lets unittest.main() and similar
     // introspect the entry-point module by name.
     {
         extern VALUE modules_dict(CTX *c);
-        struct pyobj *mo = (struct pyobj *)GC_malloc(
-            offsetof(struct pyobj, module) + sizeof(((struct pyobj *)0)->module));
-        mo->type = PY_T_MODULE;
+        struct pysobj *mo = (struct pysobj *)GC_malloc(
+            offsetof(struct pysobj, module) + sizeof(((struct pysobj *)0)->module));
+        mo->type = PYS_T_MODULE;
         mo->module.name = "__main__";
         mo->module.globals = c->globals;
-        VALUE mod = PY_OBJ_VAL(mo);
-        py_dict_set(c, modules_dict(c), py_make_str("__main__", 8), mod);
+        VALUE mod = PYS_OBJ_VAL(mo);
+        pys_dict_set(c, modules_dict(c), pys_make_str("__main__", 8), mod);
     }
 
     if (repl_mode) {
@@ -212,11 +212,11 @@ main(int argc, char *argv[])
             if (setjmp(c->err_jmp) == 0) {
                 c->err_jmp_active = 1;
                 EVAL(c, body);
-                if (c->state == PY_STATE_RAISE) {
+                if (c->state == PYS_STATE_RAISE) {
                     VALUE exc = c->state_value;
-                    const char *cls_name = py_is_instance(exc) ? PY_PTR(exc)->inst.cls->cls.name : "Exception";
+                    const char *cls_name = pys_is_instance(exc) ? PYS_PTR(exc)->inst.cls->cls.name : "Exception";
                     fprintf(stderr, "%s\n", cls_name);
-                    c->state = PY_STATE_NORMAL; c->state_value = PY_NONE;
+                    c->state = PYS_STATE_NORMAL; c->state_value = PYS_NONE;
                 }
             }
             c->err_jmp_active = 0;
@@ -230,7 +230,7 @@ main(int argc, char *argv[])
     else          { src = read_file(file);  src_name = file; }
 
     // Bind __file__ to the running script path (CPython convention).
-    py_global_set(c, "__file__", py_make_str(src_name, strlen(src_name)));
+    pys_global_set(c, "__file__", pys_make_str(src_name, strlen(src_name)));
 
     tokenize(src, src_name);
     NODE *body = parse_program();
@@ -238,7 +238,7 @@ main(int argc, char *argv[])
     if (OPTION.dump_ast) { DUMP(stdout, body, false); printf("\n"); free(src); return 0; }
 
     if (OPTION.compile_first || OPTION.aot_only) {
-        // Run the program first in interp mode so py_make_func registers
+        // Run the program first in interp mode so pys_make_func registers
         // every function body in code_repo.  Then bake an SD per body
         // (plus the top-level body) so the next `./pystro <script>`
         // invocation finds dispatchers for every entry point.  Without
@@ -256,8 +256,8 @@ main(int argc, char *argv[])
         c->err_jmp_active = 0;
         // Reset state so AOT compile doesn't trip on a propagating
         // raise from the bake-time run.
-        c->state = PY_STATE_NORMAL;
-        c->state_value = PY_NONE;
+        c->state = PYS_STATE_NORMAL;
+        c->state_value = PYS_NONE;
         astro_cs_compile(body, NULL);
         for (uint32_t i = 0; i < code_repo.size; i++) {
             astro_cs_compile(code_repo.entries[i].body, NULL);
@@ -284,32 +284,32 @@ main(int argc, char *argv[])
         EVAL(c, body);
     }
     c->err_jmp_active = 0;
-    if (c->state == PY_STATE_RAISE) {
+    if (c->state == PYS_STATE_RAISE) {
         VALUE exc = c->state_value;
         const char *cls_name = "Exception";
-        if (py_is_instance(exc)) cls_name = PY_PTR(exc)->inst.cls->cls.name;
+        if (pys_is_instance(exc)) cls_name = PYS_PTR(exc)->inst.cls->cls.name;
         fprintf(stderr, "Traceback (most recent call last):\n");
-        if (py_is_instance(exc)) {
-            VALUE tb = py_getattr_optional(c, exc, "__traceback__");
-            if (tb && py_is_list(tb)) {
-                size_t n = PY_PTR(tb)->list.len;
+        if (pys_is_instance(exc)) {
+            VALUE tb = pys_getattr_optional(c, exc, "__traceback__");
+            if (tb && pys_is_list(tb)) {
+                size_t n = PYS_PTR(tb)->list.len;
                 for (size_t i = 0; i < n; i++) {
-                    VALUE fn = PY_PTR(tb)->list.items[i];
-                    if (py_is_str(fn))
+                    VALUE fn = PYS_PTR(tb)->list.items[i];
+                    if (pys_is_str(fn))
                         fprintf(stderr, "  in %.*s\n",
-                                (int)PY_PTR(fn)->str.len, PY_PTR(fn)->str.chars);
+                                (int)PYS_PTR(fn)->str.len, PYS_PTR(fn)->str.chars);
                 }
             }
         }
         fprintf(stderr, "%s: ", cls_name);
-        if (py_is_instance(exc) && PY_PTR(exc)->inst.attrs) {
-            VALUE k = py_make_str("message", 7);
-            struct pydict *d = PY_PTR(exc)->inst.attrs;
-            uint64_t h = py_hash(c, k);
+        if (pys_is_instance(exc) && PYS_PTR(exc)->inst.attrs) {
+            VALUE k = pys_make_str("message", 7);
+            struct pysdict *d = PYS_PTR(exc)->inst.attrs;
+            uint64_t h = pys_hash(c, k);
             int32_t eidx = pydict_find(c, d, k, h);
-            if (eidx >= 0 && py_is_str(d->entries[eidx].value))
-                fwrite(PY_PTR(d->entries[eidx].value)->str.chars, 1,
-                       PY_PTR(d->entries[eidx].value)->str.len, stderr);
+            if (eidx >= 0 && pys_is_str(d->entries[eidx].value))
+                fwrite(PYS_PTR(d->entries[eidx].value)->str.chars, 1,
+                       PYS_PTR(d->entries[eidx].value)->str.len, stderr);
         }
         fputc('\n', stderr);
         free(src);

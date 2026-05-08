@@ -6,160 +6,160 @@
 
 // Side-tables for ASTroGen-opaque NODE* references (call args, list /
 // tuple / dict literal items, function defaults).
-NODE   **PYSTRO_NODE_TABLE = NULL;
-size_t   PYSTRO_NODE_TABLE_LEN = 0;
-size_t   PYSTRO_NODE_TABLE_CAPA = 0;
+NODE   **PYS_NODE_TABLE = NULL;
+size_t   PYS_NODE_TABLE_LEN = 0;
+size_t   PYS_NODE_TABLE_CAPA = 0;
 
 // Bag of param-name lists indexed by node_def's `names_idx`.
-const char **PYSTRO_NAME_TABLE = NULL;
-static size_t pystro_name_len, pystro_name_capa;
+const char **PYS_NAME_TABLE = NULL;
+static size_t pys_name_len, pys_name_capa;
 static size_t name_table_reserve(const char **names, size_t n)
 {
-    if (pystro_name_len + n > pystro_name_capa) {
-        size_t cap = pystro_name_capa ? pystro_name_capa * 2 : 32;
-        while (cap < pystro_name_len + n) cap *= 2;
-        PYSTRO_NAME_TABLE = (const char **)GC_realloc(PYSTRO_NAME_TABLE, cap * sizeof(char *));
-        pystro_name_capa = cap;
+    if (pys_name_len + n > pys_name_capa) {
+        size_t cap = pys_name_capa ? pys_name_capa * 2 : 32;
+        while (cap < pys_name_len + n) cap *= 2;
+        PYS_NAME_TABLE = (const char **)GC_realloc(PYS_NAME_TABLE, cap * sizeof(char *));
+        pys_name_capa = cap;
     }
-    size_t base = pystro_name_len;
-    for (size_t i = 0; i < n; i++) PYSTRO_NAME_TABLE[base + i] = names[i];
-    pystro_name_len += n;
+    size_t base = pys_name_len;
+    for (size_t i = 0; i < n; i++) PYS_NAME_TABLE[base + i] = names[i];
+    pys_name_len += n;
     return base;
 }
 
 // Bag of (name, NODE *) kwargs indexed by node_call_kw's `kwargs_idx`.
-struct pykwarg *PYSTRO_KWARGS = NULL;
-static size_t pystro_kwargs_len, pystro_kwargs_capa;
-static size_t kwargs_reserve(struct pykwarg *src, size_t n)
+struct pyskwarg *PYS_KWARGS = NULL;
+static size_t pys_kwargs_len, pys_kwargs_capa;
+static size_t kwargs_reserve(struct pyskwarg *src, size_t n)
 {
-    if (pystro_kwargs_len + n > pystro_kwargs_capa) {
-        size_t cap = pystro_kwargs_capa ? pystro_kwargs_capa * 2 : 16;
-        while (cap < pystro_kwargs_len + n) cap *= 2;
-        PYSTRO_KWARGS = (struct pykwarg *)GC_realloc(PYSTRO_KWARGS, cap * sizeof(struct pykwarg));
-        pystro_kwargs_capa = cap;
+    if (pys_kwargs_len + n > pys_kwargs_capa) {
+        size_t cap = pys_kwargs_capa ? pys_kwargs_capa * 2 : 16;
+        while (cap < pys_kwargs_len + n) cap *= 2;
+        PYS_KWARGS = (struct pyskwarg *)GC_realloc(PYS_KWARGS, cap * sizeof(struct pyskwarg));
+        pys_kwargs_capa = cap;
     }
-    size_t base = pystro_kwargs_len;
-    for (size_t i = 0; i < n; i++) PYSTRO_KWARGS[base + i] = src[i];
-    pystro_kwargs_len += n;
+    size_t base = pys_kwargs_len;
+    for (size_t i = 0; i < n; i++) PYS_KWARGS[base + i] = src[i];
+    pys_kwargs_len += n;
     return base;
 }
 
 // Spread args at call site (positional / kwarg + their `*expr` / `**expr`).
-struct pyspread_arg *PYSTRO_SPREADS = NULL;
-static size_t pystro_spreads_len, pystro_spreads_capa;
+struct pyspread_arg *PYS_SPREADS = NULL;
+static size_t pys_spreads_len, pys_spreads_capa;
 static size_t spreads_reserve(struct pyspread_arg *src, size_t n)
 {
-    if (pystro_spreads_len + n > pystro_spreads_capa) {
-        size_t cap = pystro_spreads_capa ? pystro_spreads_capa * 2 : 16;
-        while (cap < pystro_spreads_len + n) cap *= 2;
-        PYSTRO_SPREADS = (struct pyspread_arg *)GC_realloc(PYSTRO_SPREADS, cap * sizeof(struct pyspread_arg));
-        pystro_spreads_capa = cap;
+    if (pys_spreads_len + n > pys_spreads_capa) {
+        size_t cap = pys_spreads_capa ? pys_spreads_capa * 2 : 16;
+        while (cap < pys_spreads_len + n) cap *= 2;
+        PYS_SPREADS = (struct pyspread_arg *)GC_realloc(PYS_SPREADS, cap * sizeof(struct pyspread_arg));
+        pys_spreads_capa = cap;
     }
-    size_t base = pystro_spreads_len;
-    for (size_t i = 0; i < n; i++) PYSTRO_SPREADS[base + i] = src[i];
-    pystro_spreads_len += n;
+    size_t base = pys_spreads_len;
+    for (size_t i = 0; i < n; i++) PYS_SPREADS[base + i] = src[i];
+    pys_spreads_len += n;
     return base;
 }
 
-struct pypat  *PYSTRO_PATTERNS = NULL;
-static size_t pystro_patterns_len, pystro_patterns_capa;
-static int pat_alloc(struct pypat p)
+struct pyspat  *PYS_PATTERNS = NULL;
+static size_t pys_patterns_len, pys_patterns_capa;
+static int pat_alloc(struct pyspat p)
 {
-    if (pystro_patterns_len == pystro_patterns_capa) {
-        size_t cap = pystro_patterns_capa ? pystro_patterns_capa * 2 : 16;
-        PYSTRO_PATTERNS = (struct pypat *)GC_realloc(PYSTRO_PATTERNS, cap * sizeof(struct pypat));
-        pystro_patterns_capa = cap;
+    if (pys_patterns_len == pys_patterns_capa) {
+        size_t cap = pys_patterns_capa ? pys_patterns_capa * 2 : 16;
+        PYS_PATTERNS = (struct pyspat *)GC_realloc(PYS_PATTERNS, cap * sizeof(struct pyspat));
+        pys_patterns_capa = cap;
     }
-    int idx = (int)pystro_patterns_len++;
-    PYSTRO_PATTERNS[idx] = p;
+    int idx = (int)pys_patterns_len++;
+    PYS_PATTERNS[idx] = p;
     return idx;
 }
 
-struct pycase *PYSTRO_CASES = NULL;
-static size_t pystro_cases_len, pystro_cases_capa;
-static size_t cases_reserve(struct pycase *src, size_t n)
+struct pyscase *PYS_CASES = NULL;
+static size_t pys_cases_len, pys_cases_capa;
+static size_t cases_reserve(struct pyscase *src, size_t n)
 {
-    if (pystro_cases_len + n > pystro_cases_capa) {
-        size_t cap = pystro_cases_capa ? pystro_cases_capa * 2 : 8;
-        while (cap < pystro_cases_len + n) cap *= 2;
-        PYSTRO_CASES = (struct pycase *)GC_realloc(PYSTRO_CASES, cap * sizeof(struct pycase));
-        pystro_cases_capa = cap;
+    if (pys_cases_len + n > pys_cases_capa) {
+        size_t cap = pys_cases_capa ? pys_cases_capa * 2 : 8;
+        while (cap < pys_cases_len + n) cap *= 2;
+        PYS_CASES = (struct pyscase *)GC_realloc(PYS_CASES, cap * sizeof(struct pyscase));
+        pys_cases_capa = cap;
     }
-    size_t base = pystro_cases_len;
-    for (size_t i = 0; i < n; i++) PYSTRO_CASES[base + i] = src[i];
-    pystro_cases_len += n;
+    size_t base = pys_cases_len;
+    for (size_t i = 0; i < n; i++) PYS_CASES[base + i] = src[i];
+    pys_cases_len += n;
     return base;
 }
 
 // Bag of (slot, NODE *) defaults for node_def / node_lambda.
-struct pydefault *PYSTRO_DEFAULTS = NULL;
-static size_t pystro_defaults_len, pystro_defaults_capa;
-static size_t defaults_reserve(struct pydefault *src, size_t n)
+struct pysdefault *PYS_DEFAULTS = NULL;
+static size_t pys_defaults_len, pys_defaults_capa;
+static size_t defaults_reserve(struct pysdefault *src, size_t n)
 {
-    if (pystro_defaults_len + n > pystro_defaults_capa) {
-        size_t cap = pystro_defaults_capa ? pystro_defaults_capa * 2 : 8;
-        while (cap < pystro_defaults_len + n) cap *= 2;
-        PYSTRO_DEFAULTS = (struct pydefault *)GC_realloc(PYSTRO_DEFAULTS, cap * sizeof(struct pydefault));
-        pystro_defaults_capa = cap;
+    if (pys_defaults_len + n > pys_defaults_capa) {
+        size_t cap = pys_defaults_capa ? pys_defaults_capa * 2 : 8;
+        while (cap < pys_defaults_len + n) cap *= 2;
+        PYS_DEFAULTS = (struct pysdefault *)GC_realloc(PYS_DEFAULTS, cap * sizeof(struct pysdefault));
+        pys_defaults_capa = cap;
     }
-    size_t base = pystro_defaults_len;
-    for (size_t i = 0; i < n; i++) PYSTRO_DEFAULTS[base + i] = src[i];
-    pystro_defaults_len += n;
+    size_t base = pys_defaults_len;
+    for (size_t i = 0; i < n; i++) PYS_DEFAULTS[base + i] = src[i];
+    pys_defaults_len += n;
     return base;
 }
 
 static size_t
 node_table_reserve(NODE **items, size_t n)
 {
-    if (PYSTRO_NODE_TABLE_LEN + n > PYSTRO_NODE_TABLE_CAPA) {
-        size_t cap = PYSTRO_NODE_TABLE_CAPA ? PYSTRO_NODE_TABLE_CAPA * 2 : 64;
-        while (cap < PYSTRO_NODE_TABLE_LEN + n) cap *= 2;
-        PYSTRO_NODE_TABLE = (NODE **)GC_realloc(PYSTRO_NODE_TABLE, cap * sizeof(NODE *));
-        PYSTRO_NODE_TABLE_CAPA = cap;
+    if (PYS_NODE_TABLE_LEN + n > PYS_NODE_TABLE_CAPA) {
+        size_t cap = PYS_NODE_TABLE_CAPA ? PYS_NODE_TABLE_CAPA * 2 : 64;
+        while (cap < PYS_NODE_TABLE_LEN + n) cap *= 2;
+        PYS_NODE_TABLE = (NODE **)GC_realloc(PYS_NODE_TABLE, cap * sizeof(NODE *));
+        PYS_NODE_TABLE_CAPA = cap;
     }
-    size_t base = PYSTRO_NODE_TABLE_LEN;
-    for (size_t i = 0; i < n; i++) PYSTRO_NODE_TABLE[base + i] = items[i];
-    PYSTRO_NODE_TABLE_LEN += n;
+    size_t base = PYS_NODE_TABLE_LEN;
+    for (size_t i = 0; i < n; i++) PYS_NODE_TABLE[base + i] = items[i];
+    PYS_NODE_TABLE_LEN += n;
     return base;
 }
 
-// Try-handler array (struct pyhandler in context.h).
-struct pyhandler *PYSTRO_HANDLERS = NULL;
-static size_t pystro_handlers_len, pystro_handlers_capa;
+// Try-handler array (struct pyshandler in context.h).
+struct pyshandler *PYS_HANDLERS = NULL;
+static size_t pys_handlers_len, pys_handlers_capa;
 
 static size_t
-handlers_reserve(struct pyhandler *src, size_t n)
+handlers_reserve(struct pyshandler *src, size_t n)
 {
-    if (pystro_handlers_len + n > pystro_handlers_capa) {
-        size_t cap = pystro_handlers_capa ? pystro_handlers_capa * 2 : 8;
-        while (cap < pystro_handlers_len + n) cap *= 2;
-        PYSTRO_HANDLERS = (struct pyhandler *)GC_realloc(
-            PYSTRO_HANDLERS, cap * sizeof(struct pyhandler));
-        pystro_handlers_capa = cap;
+    if (pys_handlers_len + n > pys_handlers_capa) {
+        size_t cap = pys_handlers_capa ? pys_handlers_capa * 2 : 8;
+        while (cap < pys_handlers_len + n) cap *= 2;
+        PYS_HANDLERS = (struct pyshandler *)GC_realloc(
+            PYS_HANDLERS, cap * sizeof(struct pyshandler));
+        pys_handlers_capa = cap;
     }
-    size_t base = pystro_handlers_len;
-    for (size_t i = 0; i < n; i++) PYSTRO_HANDLERS[base + i] = src[i];
-    pystro_handlers_len += n;
+    size_t base = pys_handlers_len;
+    for (size_t i = 0; i < n; i++) PYS_HANDLERS[base + i] = src[i];
+    pys_handlers_len += n;
     return base;
 }
 
 // Unpack-target array (struct pyunpack_target in context.h).
-struct pyunpack_target *PYSTRO_UNPACK_TARGETS = NULL;
-static size_t pystro_unpack_len, pystro_unpack_capa;
+struct pyunpack_target *PYS_UNPACK_TARGETS = NULL;
+static size_t pys_unpack_len, pys_unpack_capa;
 
 static size_t
 unpack_reserve(struct pyunpack_target *src, size_t n)
 {
-    if (pystro_unpack_len + n > pystro_unpack_capa) {
-        size_t cap = pystro_unpack_capa ? pystro_unpack_capa * 2 : 8;
-        while (cap < pystro_unpack_len + n) cap *= 2;
-        PYSTRO_UNPACK_TARGETS = (struct pyunpack_target *)GC_realloc(
-            PYSTRO_UNPACK_TARGETS, cap * sizeof(struct pyunpack_target));
-        pystro_unpack_capa = cap;
+    if (pys_unpack_len + n > pys_unpack_capa) {
+        size_t cap = pys_unpack_capa ? pys_unpack_capa * 2 : 8;
+        while (cap < pys_unpack_len + n) cap *= 2;
+        PYS_UNPACK_TARGETS = (struct pyunpack_target *)GC_realloc(
+            PYS_UNPACK_TARGETS, cap * sizeof(struct pyunpack_target));
+        pys_unpack_capa = cap;
     }
-    size_t base = pystro_unpack_len;
-    for (size_t i = 0; i < n; i++) PYSTRO_UNPACK_TARGETS[base + i] = src[i];
-    pystro_unpack_len += n;
+    size_t base = pys_unpack_len;
+    for (size_t i = 0; i < n; i++) PYS_UNPACK_TARGETS[base + i] = src[i];
+    pys_unpack_len += n;
     return base;
 }
 
@@ -203,7 +203,7 @@ parse_error(const char *fmt, ...)
     va_list ap; va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
-    if (getenv("PYSTRO_DEBUG_PARSE")) {
+    if (getenv("PYS_DEBUG_PARSE")) {
         fprintf(stderr, " [tok_pos=%zu", tok_pos);
         for (int i = -3; i <= 3; i++) {
             int p = (int)tok_pos + i;
@@ -1591,7 +1591,7 @@ parse_lambda(void)
     sc.parent = cur_scope;
 
     int nparams = 0;
-    struct pydefault defs[16];
+    struct pysdefault defs[16];
     int ndefaults = 0;
     bool seen_default = false;
     const char *names[16];
@@ -1719,7 +1719,7 @@ parse_atom(void)
         if (t->ival_overflow) return ALLOC_node_const_bignum(t->sval);
         if (t->ival >= INT32_MIN && t->ival <= INT32_MAX)
             return ALLOC_node_const_int((int32_t)t->ival);
-        return ALLOC_node_const_int64(PY_FIX(t->ival));
+        return ALLOC_node_const_int64(PYS_FIX(t->ival));
       }
       case T_FLOAT: {
         tok_pos++;
@@ -1843,7 +1843,7 @@ parse_call_args(NODE *fn)
     expect(T_LPAREN, "'('");
     NODE *args[64];
     int argc = 0;
-    struct pykwarg kws[256];
+    struct pyskwarg kws[256];
     int kwc = 0;
     struct pyspread_arg spreads[256];
     int nspreads = 0;
@@ -2434,7 +2434,7 @@ parse_walrus(void)
 {
     // `yield` / `yield expr` as an expression — most common in
     // `x = yield ...`.  parse_yield returns a node whose runtime value
-    // is the .send() argument (PY_NONE for plain next()).
+    // is the .send() argument (PYS_NONE for plain next()).
     if (peek_tok(0)->kind == T_YIELD) return parse_yield();
     if (peek_tok(0)->kind == T_NAME && peek_tok(1)->kind == T_WALRUS) {
         const char *nm = peek_tok(0)->sval;
@@ -2813,9 +2813,9 @@ for_after_target: ;
 // Returns slot counts + table indices via out-params.
 //   nparams         total slots
 //   n_pos_named     # of pos-or-keyword params (before *args)
-//   ndefaults       # of (slot, expr) entries pushed to PYSTRO_DEFAULTS
-//   didx            base in PYSTRO_DEFAULTS
-//   nidx            base in PYSTRO_NAME_TABLE
+//   ndefaults       # of (slot, expr) entries pushed to PYS_DEFAULTS
+//   didx            base in PYS_DEFAULTS
+//   nidx            base in PYS_NAME_TABLE
 // Parse-time scratch buffer for parameter annotations.  parse_params
 // fills these arrays so the caller (parse_def / parse_lambda) can
 // attach them to the function via `f.__annotations__ = {...}` after
@@ -2837,7 +2837,7 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
     bool saw_star = false;
     bool saw_slash = false;
     bool has_va = false, has_kw = false;
-    struct pydefault defs[32];
+    struct pysdefault defs[32];
     int ndefaults = 0;
     bool seen_default_in_pos = false;
     const char *names[32];
@@ -3206,7 +3206,7 @@ static int
 parse_pattern_atom(void)
 {
     int k = peek_tok(0)->kind;
-    struct pypat p = {0};
+    struct pyspat p = {0};
     if (k == T_INT || k == T_FLOAT || k == T_IMAG || k == T_STR
             || k == T_NONE || k == T_TRUE || k == T_FALSE) {
         p.kind = PYPAT_LITERAL;
@@ -3275,9 +3275,9 @@ parse_pattern_atom(void)
                 if (peek_tok(0)->kind == T_RPAREN) break;
             }
             expect(T_RPAREN, "')'");
-            int base = (int)pystro_patterns_len;
+            int base = (int)pys_patterns_len;
             for (int i = 0; i < nargs; i++) {
-                struct pypat copy = PYSTRO_PATTERNS[child_pats[i]];
+                struct pyspat copy = PYS_PATTERNS[child_pats[i]];
                 pat_alloc(copy);
             }
             p.kind = PYPAT_CLASS_ARGS;
@@ -3322,7 +3322,7 @@ parse_pattern_atom(void)
             // *NAME inside seq pattern — capture rest.
             if (peek_tok(0)->kind == T_STAR) {
                 tok_pos++;
-                struct pypat sp = {0};
+                struct pyspat sp = {0};
                 sp.kind = PYPAT_STAR;
                 if (peek_tok(0)->kind == T_NAME && strcmp(peek_tok(0)->sval, "_") != 0) {
                     sp.name = peek_tok(0)->sval;
@@ -3343,7 +3343,7 @@ parse_pattern_atom(void)
                 if (nc >= 64) parse_error("seq pattern too long");
                 if (peek_tok(0)->kind == T_STAR) {
                     tok_pos++;
-                    struct pypat sp = {0};
+                    struct pyspat sp = {0};
                     sp.kind = PYPAT_STAR;
                     if (peek_tok(0)->kind == T_NAME && strcmp(peek_tok(0)->sval, "_") != 0) {
                         sp.name = peek_tok(0)->sval;
@@ -3363,9 +3363,9 @@ parse_pattern_atom(void)
         }
         if (close == T_RBRACK) expect(T_RBRACK, "']'");
         else                   expect(T_RPAREN, "')'");
-        int base = (int)pystro_patterns_len;
+        int base = (int)pys_patterns_len;
         for (int i = 0; i < nc; i++) {
-            struct pypat copy = PYSTRO_PATTERNS[children[i]];
+            struct pyspat copy = PYS_PATTERNS[children[i]];
             pat_alloc(copy);
         }
         p.kind = PYPAT_SEQUENCE;
@@ -3393,9 +3393,9 @@ parse_pattern_atom(void)
             }
         }
         expect(T_RBRACE, "'}'");
-        int base = (int)pystro_patterns_len;
+        int base = (int)pys_patterns_len;
         for (int i = 0; i < nc; i++) {
-            struct pypat copy = PYSTRO_PATTERNS[child_pats[i]];
+            struct pyspat copy = PYS_PATTERNS[child_pats[i]];
             pat_alloc(copy);
         }
         p.kind = PYPAT_MAPPING;
@@ -3426,12 +3426,12 @@ parse_pattern_or(void)
             if (n >= 16) parse_error("too many | alternatives");
             alts[n++] = parse_pattern_atom();
         }
-        int base = (int)pystro_patterns_len;
+        int base = (int)pys_patterns_len;
         for (int i = 0; i < n; i++) {
-            struct pypat copy = PYSTRO_PATTERNS[alts[i]];
+            struct pyspat copy = PYS_PATTERNS[alts[i]];
             pat_alloc(copy);
         }
-        struct pypat p = {0};
+        struct pyspat p = {0};
         p.kind = PYPAT_OR;
         p.first_child = base;
         p.nchildren = n;
@@ -3447,10 +3447,10 @@ parse_pattern_or(void)
         if (cur_scope && !scope_is_global_decl(cur_scope, bind_name) &&
             !scope_is_nonlocal_decl(cur_scope, bind_name))
             slot = scope_add_local(cur_scope, bind_name);
-        int base = (int)pystro_patterns_len;
-        struct pypat copy = PYSTRO_PATTERNS[result];
+        int base = (int)pys_patterns_len;
+        struct pyspat copy = PYS_PATTERNS[result];
         pat_alloc(copy);
-        struct pypat p = {0};
+        struct pyspat p = {0};
         p.kind = PYPAT_AS;
         p.first_child = base;
         p.nchildren = 1;
@@ -3473,7 +3473,7 @@ parse_match(void)
     expect(T_COLON, "':'");
     expect(T_NEWLINE, "newline");
     expect(T_INDENT, "indent");
-    struct pycase cases[64];
+    struct pyscase cases[64];
     int nc = 0;
     while (peek_tok(0)->kind == T_NAME &&
            peek_tok(0)->sval == intern_name("case", 4)) {
@@ -3609,11 +3609,11 @@ parse_try(void)
     expect(T_TRY, "'try'");
     NODE *body = parse_suite();
 
-    struct pyhandler hs[16];
+    struct pyshandler hs[16];
     int nh = 0;
     while (peek_tok(0)->kind == T_EXCEPT) {
         tok_pos++;
-        struct pyhandler h = {0};
+        struct pyshandler h = {0};
         // PEP 654: `except*` — exception group split-and-handle.
         if (match_tok(T_STAR)) {
             h.is_star = true;
@@ -3681,7 +3681,7 @@ parse_assert(void)
 
 // `del` — supports `del NAME`, `del obj.attr`, `del a[i]`.  For
 // `del NAME` we emit a builtin call that unbinds the global / writes
-// PY_NONE to the local (Python truly unbinds; pystro's local frame
+// PYS_NONE to the local (Python truly unbinds; pystro's local frame
 // has no per-slot validity bit so the local case is approximate but
 // commonly safe).
 static NODE *parse_del_one(void);
@@ -4195,7 +4195,7 @@ parse_simple_stmt(void)
             NODE *fallback = ALLOC_node_subscript_set(
                 ALLOC_node_class_method_get(intern_name("__annotations__", 15)),
                 fallback_key, ALLOC_node_const_str(nm));
-            struct pyhandler hs[1] = {0};
+            struct pyshandler hs[1] = {0};
             // Catch tuple of common issues.
             NODE *exc_tuple_items[3] = {
                 ALLOC_node_gref(intern_name("NameError", 9)),
@@ -4715,7 +4715,7 @@ parse_assignable_target(NODE *rhs)
             // Fuse `obj.name(args)` into a method call when the next
             // trailer is TR_CALL — otherwise the LHS path emits
             // call_0(attr_get(...)) which loses the method PIC and
-            // forces every call through py_apply_slow's bound-method
+            // forces every call through pys_apply_slow's bound-method
             // dispatch.  deltablue's `self.output().value = ...` was
             // hitting this every constraint propagation step.
             if (i + 1 < ntr - 1 && trs[i + 1].kind == TR_CALL) {

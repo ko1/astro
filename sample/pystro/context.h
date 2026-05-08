@@ -1,5 +1,5 @@
-#ifndef PYSTRO_CONTEXT_H
-#define PYSTRO_CONTEXT_H 1
+#ifndef PYS_CONTEXT_H
+#define PYS_CONTEXT_H 1
 
 #include <stdint.h>
 #include <stddef.h>
@@ -28,125 +28,125 @@ extern void  GC_set_free_space_divisor(unsigned);
 // VALUE encoding (CRuby / ascheme / luastro family):
 //   xxxx_xxx1 → fixnum (signed 63-bit, shift-left + OR 1)
 //   xxxx_xx10 → flonum (IEEE-754 double encoded inline; 3-bit rotate)
-//   xxxx_x000 → ptr to `struct pyobj` (8-byte aligned)
+//   xxxx_x000 → ptr to `struct pysobj` (8-byte aligned)
 //
 // Flonum encoding: doubles whose IEEE-754 exponent top-3-bits ∈ {0b011,
 // 0b100} (magnitudes ~[1e-77, 1e+77]) round-trip through a left-rotate-
 // by-3 + bit-1 tag.  Everything else (0.0, denormals, NaN/inf, very
-// large/small) falls back to the heap PY_T_FLOAT path.  This eliminates
+// large/small) falls back to the heap PYS_T_FLOAT path.  This eliminates
 // per-arithmetic-op heap allocation for the typical numeric workload.
 //
-// True / False / None are static singleton pyobj's; their addresses are
-// the literal VALUE constants PY_TRUE / PY_FALSE / PY_NONE.
+// True / False / None are static singleton pysobj's; their addresses are
+// the literal VALUE constants PYS_TRUE / PYS_FALSE / PYS_NONE.
 typedef int64_t VALUE;
 
-#define PY_FIXNUM_MAX  ((int64_t)((1LL << 62) - 1))
-#define PY_FIXNUM_MIN  ((int64_t)(-(1LL << 62)))
-#define PY_IS_FIXNUM(v) ((int64_t)(v) & 1LL)
-#define PY_FIX(n)       (((VALUE)(int64_t)(n) << 1) | 1LL)
-#define PY_FIXVAL(v)    ((int64_t)(v) >> 1)
+#define PYS_FIXNUM_MAX  ((int64_t)((1LL << 62) - 1))
+#define PYS_FIXNUM_MIN  ((int64_t)(-(1LL << 62)))
+#define PYS_IS_FIXNUM(v) ((int64_t)(v) & 1LL)
+#define PYS_FIX(n)       (((VALUE)(int64_t)(n) << 1) | 1LL)
+#define PYS_FIXVAL(v)    ((int64_t)(v) >> 1)
 
-#define PY_FLONUM_MASK   3LL
-#define PY_FLONUM_TAG    2LL
-#define PY_IS_FLONUM(v)  (((int64_t)(v) & PY_FLONUM_MASK) == PY_FLONUM_TAG)
+#define PYS_FLONUM_MASK   3LL
+#define PYS_FLONUM_TAG    2LL
+#define PYS_IS_FLONUM(v)  (((int64_t)(v) & PYS_FLONUM_MASK) == PYS_FLONUM_TAG)
 
-#define PY_IS_PTR(v)    (((int64_t)(v) & PY_FLONUM_MASK) == 0)
-#define PY_PTR(v)       ((struct pyobj *)(uintptr_t)(v))
-#define PY_OBJ_VAL(p)   ((VALUE)(uintptr_t)(p))
+#define PYS_IS_PTR(v)    (((int64_t)(v) & PYS_FLONUM_MASK) == 0)
+#define PYS_PTR(v)       ((struct pysobj *)(uintptr_t)(v))
+#define PYS_OBJ_VAL(p)   ((VALUE)(uintptr_t)(p))
 
-static inline uint64_t py_rotl64(uint64_t x, int n) { return (x << n) | (x >> (64 - n)); }
-static inline uint64_t py_rotr64(uint64_t x, int n) { return (x >> n) | (x << (64 - n)); }
+static inline uint64_t pys_rotl64(uint64_t x, int n) { return (x << n) | (x >> (64 - n)); }
+static inline uint64_t pys_rotr64(uint64_t x, int n) { return (x >> n) | (x << (64 - n)); }
 
 // Try to inline-encode `d`.  Returns 0 if `d` falls outside the encodable
 // range (caller must heap-box).
 static inline VALUE
-py_try_flonum(double d)
+pys_try_flonum(double d)
 {
     union { double d; uint64_t u; } pun;
     pun.d = d;
     int bits = (int)((pun.u >> 60) & 0x7);
     if (__builtin_expect(d == 0.0 || (bits != 3 && bits != 4), 0)) return 0;
-    return (VALUE)((py_rotl64(pun.u, 3) & ~(uint64_t)1) | PY_FLONUM_TAG);
+    return (VALUE)((pys_rotl64(pun.u, 3) & ~(uint64_t)1) | PYS_FLONUM_TAG);
 }
 
 static inline double
-py_flonum_to_double(VALUE v)
+pys_flonum_to_double(VALUE v)
 {
     union { double d; uint64_t u; } pun;
     uint64_t b63 = ((uint64_t)v >> 63) & 1;
-    pun.u = py_rotr64((2 - b63) | ((uint64_t)v & ~(uint64_t)3), 3);
+    pun.u = pys_rotr64((2 - b63) | ((uint64_t)v & ~(uint64_t)3), 3);
     return pun.d;
 }
 
 enum pyobj_type {
-    PY_T_NONE = 0,
-    PY_T_BOOL,
-    PY_T_FLOAT,
-    PY_T_BIGNUM,            // GMP mpz
-    PY_T_COMPLEX,           // complex (real + imag double pair)
-    PY_T_STR,
-    PY_T_BYTES,             // immutable byte sequence (b"...")
-    PY_T_BYTEARRAY,         // mutable byte sequence
-    PY_T_MODULE,            // imported module (has own globals)
+    PYS_T_NONE = 0,
+    PYS_T_BOOL,
+    PYS_T_FLOAT,
+    PYS_T_BIGNUM,            // GMP mpz
+    PYS_T_COMPLEX,           // complex (real + imag double pair)
+    PYS_T_STR,
+    PYS_T_BYTES,             // immutable byte sequence (b"...")
+    PYS_T_BYTEARRAY,         // mutable byte sequence
+    PYS_T_MODULE,            // imported module (has own globals)
 
-    PY_T_LIST,
-    PY_T_TUPLE,
-    PY_T_DICT,
-    PY_T_SET,
-    PY_T_FROZENSET,         // immutable + hashable variant of SET
-    PY_T_RANGE,
-    PY_T_FUNC,
-    PY_T_BUILTIN,
-    PY_T_BOUND_METHOD,
-    PY_T_CLASS,
-    PY_T_INSTANCE,
-    PY_T_STATICMETHOD,    // wraps a func; bypasses self binding
-    PY_T_CLASSMETHOD,     // wraps a func; binds the class instead of self
-    PY_T_PROPERTY,        // wraps a getter func; called on attribute read
-    PY_T_ITER,            // built-in iterator wrapper around a struct py_iter
-    PY_T_GEN,             // generator (ucontext-backed lazy yield)
-    PY_T_FILE,            // text/binary file object (FILE* under the hood)
-    PY_T_SUPER,           // bound super proxy: (start_class, self)
-    PY_T_SLICE,           // slice(start, stop, step)
-    PY_T_ELLIPSIS,        // ...
-    PY_T_NOTIMPL,         // NotImplemented sentinel
-    PY_T_MEMVIEW,         // memoryview wrapping a bytes/bytearray
+    PYS_T_LIST,
+    PYS_T_TUPLE,
+    PYS_T_DICT,
+    PYS_T_SET,
+    PYS_T_FROZENSET,         // immutable + hashable variant of SET
+    PYS_T_RANGE,
+    PYS_T_FUNC,
+    PYS_T_BUILTIN,
+    PYS_T_BOUND_METHOD,
+    PYS_T_CLASS,
+    PYS_T_INSTANCE,
+    PYS_T_STATICMETHOD,    // wraps a func; bypasses self binding
+    PYS_T_CLASSMETHOD,     // wraps a func; binds the class instead of self
+    PYS_T_PROPERTY,        // wraps a getter func; called on attribute read
+    PYS_T_ITER,            // built-in iterator wrapper around a struct pys_iter
+    PYS_T_GEN,             // generator (ucontext-backed lazy yield)
+    PYS_T_FILE,            // text/binary file object (FILE* under the hood)
+    PYS_T_SUPER,           // bound super proxy: (start_class, self)
+    PYS_T_SLICE,           // slice(start, stop, step)
+    PYS_T_ELLIPSIS,        // ...
+    PYS_T_NOTIMPL,         // NotImplemented sentinel
+    PYS_T_MEMVIEW,         // memoryview wrapping a bytes/bytearray
 };
 
-struct pyobj;
-struct pyframe;
-struct pyclass;
-struct pydict;
-struct pygen;
+struct pysobj;
+struct pysframe;
+struct pysclass;
+struct pysdict;
+struct pysgen;
 struct CTX_struct;
 struct Node;
 
-typedef VALUE (*py_builtin_fn)(struct CTX_struct *c, int argc, VALUE *argv);
+typedef VALUE (*pys_builtin_fn)(struct CTX_struct *c, int argc, VALUE *argv);
 
 // Class definition: name + method table + base class.  Methods are
 // stored as a small array of (name, value) — fine until classes start
 // having dozens of methods, at which point upgrading to a hash table
 // is straightforward.  `is_exception` distinguishes user/builtin
 // exception classes for `except` matching.
-struct pyclass_method {
+struct pysclass_method {
     const char *name;
     VALUE       value;
 };
-struct pyclass {
+struct pysclass {
     const char *name;
-    struct pyclass_method *methods;
+    struct pysclass_method *methods;
     int  nmethods, methods_capa;
     bool is_exception;
-    VALUE base;             // first base, or PY_NONE — kept for super()
+    VALUE base;             // first base, or PYS_NONE — kept for super()
     VALUE *bases;           // direct bases (length nbases)
     int   nbases;
     VALUE *mro;             // C3-linearised MRO including self at [0]
     int   nmro;
     // For built-in type classes (int / str / list / ...), `builtin_ctor`
-    // is the C constructor function that py_apply calls when this class
+    // is the C constructor function that pys_apply calls when this class
     // is invoked.  NULL for user classes (which use __init__).
-    py_builtin_fn builtin_ctor;
-    // The PY_T_* tag of values produced by this class.  -1 for user classes.
+    pys_builtin_fn builtin_ctor;
+    // The PYS_T_* tag of values produced by this class.  -1 for user classes.
     int builtin_tag;
     // __slots__ declared on the class (NULL = no slots; set means an
     // attempt to set a non-listed attr raises AttributeError).  Walks
@@ -156,9 +156,9 @@ struct pyclass {
     int          nslots;
 
     // Pre-resolved common dunder slots — populated by `pyclass_refresh_slots`
-    // at class-creation time and after every `py_class_add_method`.  The
+    // at class-creation time and after every `pys_class_add_method`.  The
     // value is the result of an MRO walk for the corresponding name, or
-    // PY_NONE if no class along the MRO defines it.  Replaces the per-call
+    // PYS_NONE if no class along the MRO defines it.  Replaces the per-call
     // strcmp-through-MRO scan with one pointer compare + one load.
     //
     // Subclass invalidation: a method add on a base class doesn't auto-
@@ -172,12 +172,12 @@ struct pyclass {
     VALUE slot_index, slot_invert, slot_neg;
     VALUE slot_repr, slot_str, slot_metaclass, slot_set_name;
     bool  slots_initialized;
-    // True iff py_apply on this class can skip the __new__ MRO walk
+    // True iff pys_apply on this class can skip the __new__ MRO walk
     // and dispatch — slot_new is `bi_object_new` (the default
     // object.__new__), the class is not an exception, has no metaclass,
     // and has no built-in base needing primary-value setup.  Computed
     // from slot_new + flags in pyclass_refresh_slots.  When true,
-    // instantiation is a single py_make_instance + slot_init dispatch.
+    // instantiation is a single pys_make_instance + slot_init dispatch.
     bool  fast_new;
 
     // Bumped whenever the class's method table or layout changes.
@@ -194,17 +194,17 @@ struct pyclass {
 //   entries[0..elen)   : (key, value, hash) — dense, append-only on new keys.
 //                        On delete we mark indices[bucket]=DICT_TOMB and zero out
 //                        entries[i].hash → 0 with DICT_DELETED_KEY sentinel as key.
-struct pydict_entry {
+struct pysdict_entry {
     VALUE     key;          // 0 or DICT_DELETED_KEY = deleted slot
     VALUE     value;
     uint64_t  hash;
 };
 #define DICT_EMPTY_IDX  ((int32_t)-1)
 #define DICT_TOMB_IDX   ((int32_t)-2)
-#define DICT_DELETED_KEY ((VALUE)0xDEADBEEF1)   // never produced by py_make_*
-struct pydict {
+#define DICT_DELETED_KEY ((VALUE)0xDEADBEEF1)   // never produced by pys_make_*
+struct pysdict {
     int32_t  *indices;      // open-addressed bucket → entries index
-    struct pydict_entry *entries;
+    struct pysdict_entry *entries;
     size_t   icapa;         // power of 2; #buckets in indices[]
     size_t   elen;          // # of slots in entries[] (incl. deleted)
     size_t   ecapa;
@@ -212,7 +212,7 @@ struct pydict {
     size_t   fill;          // indices[] used (= used + tombstones)
 };
 
-struct pyobj {
+struct pysobj {
     int type;
     union {
         bool b;
@@ -220,11 +220,11 @@ struct pyobj {
         mpz_t mpz;
         struct { char *chars; size_t len; } str;
         struct { VALUE *items; size_t len; size_t capa; } list;        // also tuple
-        struct pydict *dict;
+        struct pysdict *dict;
         struct { int64_t start, stop, step; } range;
         struct {
             struct Node *body;
-            struct pyframe *env;
+            struct pysframe *env;
             const char *name;
             int nparams;            // total slots: pos-or-kw + *args + kwonly + **kw
             int n_pos_named;        // # of pos-or-kw params (before any *args)
@@ -236,20 +236,20 @@ struct pyobj {
             bool has_varargs;       // a `*args` slot is present
             bool has_kwargs;        // a `**kwargs` slot is present
             bool is_generator;      // body contains `yield` — call returns
-                                    // a PY_T_GEN, body runs lazily
+                                    // a PYS_T_GEN, body runs lazily
             VALUE defining_class;   // class this method was defined on
-                                    // (PY_NONE for non-method funcs) —
+                                    // (PYS_NONE for non-method funcs) —
                                     // used for cooperative super()
-            struct pyglobals *fglobals;  // captured globals at def time
-            struct pydict *attrs;   // user-set attributes (`f.x = 5`); lazy
+            struct pysglobals *fglobals;  // captured globals at def time
+            struct pysdict *attrs;   // user-set attributes (`f.x = 5`); lazy
         } func;
-        // PY_T_MODULE: name + its globals.
+        // PYS_T_MODULE: name + its globals.
         struct {
             const char *name;
-            struct pyglobals *globals;
+            struct pysglobals *globals;
         } module;
         struct {
-            py_builtin_fn fn;
+            pys_builtin_fn fn;
             const char *name;
             int min_argc, max_argc;
         } builtin;
@@ -258,32 +258,32 @@ struct pyobj {
             VALUE func;             // a func or builtin
         } bound;
         // staticmethod / classmethod / property wrap a single func.
-        // For PY_T_PROPERTY: `wrapped` is the getter; `setter` is the optional setter.
+        // For PYS_T_PROPERTY: `wrapped` is the getter; `setter` is the optional setter.
         struct { VALUE wrapped; VALUE setter; VALUE deleter; } wrap;
-        // PY_T_ITER: holds a `struct py_iter` for stateful iteration.
-        struct py_iter *iter_state;
-        // PY_T_GEN: lazy generator (ucontext + body func + saved state).
-        struct pygen *gen;
-        // PY_T_FILE: a libc FILE* wrapper.
+        // PYS_T_ITER: holds a `struct pys_iter` for stateful iteration.
+        struct pys_iter *iter_state;
+        // PYS_T_GEN: lazy generator (ucontext + body func + saved state).
+        struct pysgen *gen;
+        // PYS_T_FILE: a libc FILE* wrapper.
         struct {
             void *fp;          // FILE *
             char *path;        // duplicated for repr/__name
             bool  binary;
             bool  closed;
         } file;
-        // PY_T_COMPLEX: real + imag pair (CPython same).
+        // PYS_T_COMPLEX: real + imag pair (CPython same).
         struct { double re; double im; } cpx;
-        // PY_T_SUPER: bound super proxy.  start_cls = the class to walk
+        // PYS_T_SUPER: bound super proxy.  start_cls = the class to walk
         // FROM (exclusive); self = the bound instance.
         struct { VALUE start_cls; VALUE self; } super_;
-        // PY_T_SLICE: slice(start, stop, step).  Each VALUE may be PY_NONE.
+        // PYS_T_SLICE: slice(start, stop, step).  Each VALUE may be PYS_NONE.
         struct { VALUE start; VALUE stop; VALUE step; } slice_;
-        // PY_T_MEMVIEW: borrowed view over bytes/bytearray.
+        // PYS_T_MEMVIEW: borrowed view over bytes/bytearray.
         struct { VALUE source; size_t off; size_t len; } memview;
-        struct pyclass cls;
+        struct pysclass cls;
         struct {
-            struct pyobj *cls;
-            struct pydict *attrs;
+            struct pysobj *cls;
+            struct pysdict *attrs;
             // For instances of a class that subclasses a built-in type
             // (e.g. `class M(list)`), `primary` holds the underlying
             // built-in value (list/dict/str/etc.).  Method dispatch on
@@ -293,21 +293,67 @@ struct pyobj {
     };
 };
 
-struct pyframe {
-    struct pyframe *parent;
+struct pysframe {
+    struct pysframe *parent;
     int nslots;
     VALUE slots[];
 };
 
-enum py_state {
-    PY_STATE_NORMAL = 0,
-    PY_STATE_RETURN,
-    PY_STATE_RAISE,
-    PY_STATE_BREAK,
-    PY_STATE_CONTINUE,
+enum pys_state {
+    PYS_STATE_NORMAL = 0,
+    PYS_STATE_RETURN,
+    PYS_STATE_RAISE,
+    PYS_STATE_BREAK,
+    PYS_STATE_CONTINUE,
 };
 
-struct pystro_option {
+// ---------------------------------------------------------------------------
+// 制御フロー伝播の規約 (state-based、 setjmp/longjmp 不使用):
+//
+//   EVAL_node_* / pys_apply / 各 helper の戻り値:
+//     != 0  → 正常値 (Python value: PYS_NONE/TRUE/FALSE/fixnum/flonum/ptr)
+//     == 0  → 異常終了。 c->state を見て何が起きたかを判断:
+//               PYS_STATE_RAISE     → 例外伝播中、 c->state_value に exc
+//               PYS_STATE_RETURN    → return 中、    c->state_value に値
+//               PYS_STATE_BREAK     → break 中
+//               PYS_STATE_CONTINUE  → continue 中
+//
+// VALUE 0 は pystro の encoding 上どの型にも使われていない (fixnum は
+// PYS_FIX(0) = 1、 flonum は encoded 0、 ヒープポインタは NULL = 0 を
+// 使わない、 PYS_NONE/TRUE/FALSE は静的 singleton ポインタ) ので、
+// 安全に "abnormal" sentinel として使える。
+//
+// hot path のチェックは `if (UNLIKELY(!r)) return 0;` の register-only
+// 1 命令 (test rax, rax; je) で済み、 c->state の memory load を
+// avoid できる。 c->state は 0 が伝播してきた点でだけ参照する。
+// ---------------------------------------------------------------------------
+
+// 0 を伝播 (任意 expression に使える)。 gcc statement expression を使用。
+#define PYS_PROP(expr) ({                                       \
+    VALUE _pys_prop_r = (expr);                                 \
+    if (UNLIKELY(!_pys_prop_r)) return 0;                       \
+    _pys_prop_r;                                                \
+})
+
+// 例外送出。 try frame があれば node_try が捕捉、 なければ top に伝播。
+#define PYS_RAISE(c, exc) do {                                  \
+    (c)->state = PYS_STATE_RAISE;                               \
+    (c)->state_value = (exc);                                   \
+    return 0;                                                   \
+} while (0)
+
+// return value 設定。 pys_apply 出口で state == RETURN を見て unwrap。
+#define PYS_RETURN(c, val) do {                                 \
+    (c)->state = PYS_STATE_RETURN;                              \
+    (c)->state_value = (val);                                   \
+    return 0;                                                   \
+} while (0)
+
+// break / continue (loop body 内のみ valid)
+#define PYS_BREAK(c)    do { (c)->state = PYS_STATE_BREAK;    return 0; } while (0)
+#define PYS_CONTINUE(c) do { (c)->state = PYS_STATE_CONTINUE; return 0; } while (0)
+
+struct pys_option {
     bool quiet;
     bool dump_ast;
     bool no_compiled_code;
@@ -315,7 +361,7 @@ struct pystro_option {
     bool aot_only;
     bool record_all;
 };
-extern struct pystro_option OPTION;
+extern struct pys_option OPTION;
 
 struct gentry {
     const char *name;
@@ -324,9 +370,9 @@ struct gentry {
 };
 
 // Globals namespace (module-level).  Each module has its own
-// `pyglobals`; functions capture a pointer to the one in scope at
+// `pysglobals`; functions capture a pointer to the one in scope at
 // def-time, so cross-module calls see the right names.
-struct pyglobals {
+struct pysglobals {
     struct gentry *entries;
     size_t size, capa;
     uint64_t serial;
@@ -334,7 +380,7 @@ struct pyglobals {
 
 // Inline cache stamped at every node_gref / node_gset call site.  The
 // cache holds (serial, value): hot path is two 8-byte loads + a compare.
-// Mutated by `py_global_set` / `py_global_define` via globals_serial bump.
+// Mutated by `pys_global_set` / `pys_global_define` via globals_serial bump.
 struct gref_cache {
     uint64_t serial;
     int      idx;          // index into c->globals (-1 if not yet resolved)
@@ -344,16 +390,16 @@ struct gref_cache {
 // type-tag as `type_tag`, call `fn` directly with `recv` prepended to
 // argv.  This skips both the bound-method heap allocation and the
 // strcmp scan through the per-type method registry.  Cache miss falls
-// through to `py_getattr` + `py_apply`.
+// through to `pys_getattr` + `pys_apply`.
 // Two layouts coexist (builtin vs polymorphic user-class instance):
 //
-//   type_tag != PY_T_INSTANCE → builtin entry:
-//       fn  = py_builtin_fn called directly with [self, args]
+//   type_tag != PYS_T_INSTANCE → builtin entry:
+//       fn  = pys_builtin_fn called directly with [self, args]
 //       u_cls[*] / u_fn[*] unused
 //
-//   type_tag == PY_T_INSTANCE → polymorphic user-class entry:
+//   type_tag == PYS_T_INSTANCE → polymorphic user-class entry:
 //       fn  = unused (kept for backwards layout compatibility)
-//       u_cls[i] = PY_PTR(inst.cls), u_fn[i] = method VALUE for each
+//       u_cls[i] = PYS_PTR(inst.cls), u_fn[i] = method VALUE for each
 //       cached class.  4 entries with linear scan.  When all slots are
 //       full and a new class arrives the oldest (slot 0) is evicted and
 //       the rest shift down.
@@ -369,19 +415,19 @@ struct gref_cache {
 // directly, no MRO walk + strcmp.  raytrace's `Vector + Vector` was
 // the motivating case (strcmp 22% of total runtime → IC reduces).
 struct binop_cache {
-    void *cls_ptr;          // PY_PTR(a->inst.cls), or NULL if uninitialised
-    void *fn;               // resolved __op__ method (PY_T_FUNC VALUE cast)
+    void *cls_ptr;          // PYS_PTR(a->inst.cls), or NULL if uninitialised
+    void *fn;               // resolved __op__ method (PYS_T_FUNC VALUE cast)
 };
 
-#define PYSTRO_METHOD_PIC_WAYS 4
+#define PYS_METHOD_PIC_WAYS 4
 struct method_cache {
-    int   type_tag;        // PY_T_xxx; -1 ⇒ uninitialised; PY_T_INSTANCE ⇒ user-class PIC
+    int   type_tag;        // PYS_T_xxx; -1 ⇒ uninitialised; PYS_T_INSTANCE ⇒ user-class PIC
     void *fn;              // builtin path only
-    void *u_cls[PYSTRO_METHOD_PIC_WAYS];   // user-class PIC: PY_PTR(inst.cls) per slot
-    void *u_fn [PYSTRO_METHOD_PIC_WAYS];   // user-class PIC: method VALUE per slot
+    void *u_cls[PYS_METHOD_PIC_WAYS];   // user-class PIC: PYS_PTR(inst.cls) per slot
+    void *u_fn [PYS_METHOD_PIC_WAYS];   // user-class PIC: method VALUE per slot
 };
 
-// 4-way polymorphic IC for `o.attr` on instances (see PYSTRO_METHOD_PIC_WAYS
+// 4-way polymorphic IC for `o.attr` on instances (see PYS_METHOD_PIC_WAYS
 // in struct method_cache for the same pattern).  Per-class entries
 // keyed by `(cls, shape_version)`; the stored eidx is the index in
 // inst.attrs->entries[] for the attribute name this site looks up.
@@ -392,39 +438,39 @@ struct method_cache {
 // "class layout unchanged" notion without per-instance noise.
 // Polymorphic recv (mixed Constraint subclasses, etc.) needed 4-way to
 // avoid thrashing.
-#define PYSTRO_ATTR_PIC_WAYS 4
+#define PYS_ATTR_PIC_WAYS 4
 struct attr_cache {
-    void *u_cls [PYSTRO_ATTR_PIC_WAYS];
-    int32_t  u_eidx[PYSTRO_ATTR_PIC_WAYS];
-    uint32_t u_sv  [PYSTRO_ATTR_PIC_WAYS];
+    void *u_cls [PYS_ATTR_PIC_WAYS];
+    int32_t  u_eidx[PYS_ATTR_PIC_WAYS];
+    uint32_t u_sv  [PYS_ATTR_PIC_WAYS];
 
     // Class-data attr cache (monomorphic).  When `recv` itself is a
     // class object (`Strength.WEAKEST`, `Strength.weakest_of`), there's
     // no instance dict to index — we want to memoize the resolved value
-    // directly.  cls_recv is PY_PTR(recv) (the class), valid iff
+    // directly.  cls_recv is PYS_PTR(recv) (the class), valid iff
     // class_value != 0; bumped together with class shape_version.
     void *cls_recv;
     void *class_value;       // VALUE cast — the resolved class attr
     uint32_t cls_recv_sv;    // shape_version snapshot for invalidation
 
     // Instance-receiver, class-data attr cache (monomorphic).  When
-    // `aes.T1` looks up a class-level table on an instance, py_getattr
+    // `aes.T1` looks up a class-level table on an instance, pys_getattr
     // walks the MRO every time.  inst_ca_cls is the recv's class
     // pointer; inst_ca_val holds the cached lookup result (a stable
     // class data attr — list / dict / int etc., never a bound method
     // or property).  Bumped on class shape_version change.  Was 9% of
-    // pyaes runtime in py_class_lookup_method_slow.
+    // pyaes runtime in pys_class_lookup_method_slow.
     void *inst_ca_cls;
     void *inst_ca_val;
     uint32_t inst_ca_sv;
 };
 
 typedef struct CTX_struct {
-    struct pyframe *env;
+    struct pysframe *env;
 
     // Currently-active globals (= the running module's namespace).
     // Switched on cross-module function call.
-    struct pyglobals *globals;
+    struct pysglobals *globals;
 
     int    state;
     VALUE  state_value;             // return value / raised exception
@@ -433,7 +479,7 @@ typedef struct CTX_struct {
 
     // While executing a `class C:` body, `current_class` holds the
     // class object so nested `def` ALLOC nodes register methods there
-    // instead of globals.  PY_NONE outside class-body scope.
+    // instead of globals.  PYS_NONE outside class-body scope.
     VALUE  current_class;
 
     // While executing a method body, `method_class` is the class on
@@ -445,7 +491,7 @@ typedef struct CTX_struct {
     jmp_buf err_jmp;
     int     err_jmp_active;
 
-    // Stack of jmp_buf set up by `node_try`.  `py_raise_exc` longjmps
+    // Stack of jmp_buf set up by `node_try`.  `pys_raise_exc` longjmps
     // to the innermost frame so dispatch unwinds without every node on
     // the path checking `c->state`.  Empty stack ⇒ longjmp to err_jmp.
     jmp_buf *try_stack[64];
@@ -453,10 +499,10 @@ typedef struct CTX_struct {
 
     // Currently-executing generator (NULL if not inside one).  yield
     // expressions read this to know which gen to swap back to.
-    struct pygen *current_gen;
+    struct pysgen *current_gen;
 
     // Built-in exception classes (constructed once at install_builtins).
-    // PYSTRO_EXC_LIST(X) below enumerates every EXC_* field — useful for
+    // PYS_EXC_LIST(X) below enumerates every EXC_* field — useful for
     // save/restore across module imports (so caught exceptions match
     // by identity).
     VALUE EXC_Exception;
@@ -521,7 +567,7 @@ typedef struct CTX_struct {
     VALUE EXC_BytesWarning;
     VALUE EXC_ResourceWarning;
 
-#define PYSTRO_EXC_LIST(X) \
+#define PYS_EXC_LIST(X) \
     X(BaseException) X(Exception) X(SystemExit) X(KeyboardInterrupt) \
     X(GeneratorExit) X(StopIteration) X(StopAsyncIteration) \
     X(ArithmeticError) X(OverflowError) X(ZeroDivisionError) \
@@ -577,7 +623,7 @@ typedef struct CTX_struct {
     VALUE TYPE_frozenset;
     VALUE TYPE_range;
 
-    // Mini call-stack for traceback on uncaught exception.  py_apply
+    // Mini call-stack for traceback on uncaught exception.  pys_apply
     // pushes the function name on entry and pops on exit.  Capped to
     // 1024 frames; deeper recursion just truncates.
     const char *call_stack[1024];
@@ -585,170 +631,170 @@ typedef struct CTX_struct {
     int         recursion_limit;       // raises RecursionError when exceeded
 } CTX;
 
-extern struct pyobj PY_NONE_OBJ, PY_TRUE_OBJ, PY_FALSE_OBJ;
-#define PY_NONE  PY_OBJ_VAL(&PY_NONE_OBJ)
-#define PY_TRUE  PY_OBJ_VAL(&PY_TRUE_OBJ)
-#define PY_FALSE PY_OBJ_VAL(&PY_FALSE_OBJ)
+extern struct pysobj PYS_NONE_OBJ, PYS_TRUE_OBJ, PYS_FALSE_OBJ;
+#define PYS_NONE  PYS_OBJ_VAL(&PYS_NONE_OBJ)
+#define PYS_TRUE  PYS_OBJ_VAL(&PYS_TRUE_OBJ)
+#define PYS_FALSE PYS_OBJ_VAL(&PYS_FALSE_OBJ)
 
 // Type predicates.
-static inline bool py_is_none(VALUE v)    { return v == PY_NONE; }
-static inline bool py_is_bool(VALUE v)    { return v == PY_TRUE || v == PY_FALSE; }
-static inline bool py_is_fix(VALUE v)     { return PY_IS_FIXNUM(v); }
-static inline bool py_is_heap_float(VALUE v) { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FLOAT; }
-static inline bool py_is_float(VALUE v)   { return PY_IS_FLONUM(v) || py_is_heap_float(v); }
-static inline bool py_is_bignum(VALUE v)  { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BIGNUM; }
-static inline bool py_is_int(VALUE v)     { return py_is_fix(v) || py_is_bignum(v); }
-static inline bool py_is_str(VALUE v)     { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_STR; }
-static inline bool py_is_bytes(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BYTES; }
-static inline bool py_is_bytearray(VALUE v){ return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BYTEARRAY; }
-static inline bool py_is_byteseq(VALUE v) { return py_is_bytes(v) || py_is_bytearray(v); }
-static inline bool py_is_module(VALUE v)  { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_MODULE; }
-static inline bool py_is_list(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_LIST; }
-static inline bool py_is_tuple(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_TUPLE; }
-static inline bool py_is_dict(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_DICT; }
-static inline bool py_is_set(VALUE v)     { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_SET; }
-static inline bool py_is_frozenset(VALUE v){ return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FROZENSET; }
-static inline bool py_is_any_set(VALUE v) { return py_is_set(v) || py_is_frozenset(v); }
-static inline bool py_is_range(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_RANGE; }
-static inline bool py_is_file(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FILE; }
-static inline bool py_is_complex(VALUE v) { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_COMPLEX; }
-static inline bool py_is_super(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_SUPER; }
-static inline bool py_is_func(VALUE v)    { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_FUNC; }
-static inline bool py_is_builtin(VALUE v) { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BUILTIN; }
-static inline bool py_is_bound(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_BOUND_METHOD; }
-static inline bool py_is_class(VALUE v)   { return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_CLASS; }
-static inline bool py_is_instance(VALUE v){ return PY_IS_PTR(v) && PY_PTR(v)->type == PY_T_INSTANCE; }
-static inline bool py_is_callable(VALUE v) {
-    return py_is_func(v) || py_is_builtin(v) || py_is_bound(v) || py_is_class(v);
+static inline bool pys_is_none(VALUE v)    { return v == PYS_NONE; }
+static inline bool pys_is_bool(VALUE v)    { return v == PYS_TRUE || v == PYS_FALSE; }
+static inline bool pys_is_fix(VALUE v)     { return PYS_IS_FIXNUM(v); }
+static inline bool pys_is_heap_float(VALUE v) { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_FLOAT; }
+static inline bool pys_is_float(VALUE v)   { return PYS_IS_FLONUM(v) || pys_is_heap_float(v); }
+static inline bool pys_is_bignum(VALUE v)  { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_BIGNUM; }
+static inline bool pys_is_int(VALUE v)     { return pys_is_fix(v) || pys_is_bignum(v); }
+static inline bool pys_is_str(VALUE v)     { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_STR; }
+static inline bool pys_is_bytes(VALUE v)   { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_BYTES; }
+static inline bool pys_is_bytearray(VALUE v){ return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_BYTEARRAY; }
+static inline bool pys_is_byteseq(VALUE v) { return pys_is_bytes(v) || pys_is_bytearray(v); }
+static inline bool pys_is_module(VALUE v)  { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_MODULE; }
+static inline bool pys_is_list(VALUE v)    { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_LIST; }
+static inline bool pys_is_tuple(VALUE v)   { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_TUPLE; }
+static inline bool pys_is_dict(VALUE v)    { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_DICT; }
+static inline bool pys_is_set(VALUE v)     { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_SET; }
+static inline bool pys_is_frozenset(VALUE v){ return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_FROZENSET; }
+static inline bool pys_is_any_set(VALUE v) { return pys_is_set(v) || pys_is_frozenset(v); }
+static inline bool pys_is_range(VALUE v)   { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_RANGE; }
+static inline bool pys_is_file(VALUE v)    { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_FILE; }
+static inline bool pys_is_complex(VALUE v) { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_COMPLEX; }
+static inline bool pys_is_super(VALUE v)   { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_SUPER; }
+static inline bool pys_is_func(VALUE v)    { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_FUNC; }
+static inline bool pys_is_builtin(VALUE v) { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_BUILTIN; }
+static inline bool pys_is_bound(VALUE v)   { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_BOUND_METHOD; }
+static inline bool pys_is_class(VALUE v)   { return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_CLASS; }
+static inline bool pys_is_instance(VALUE v){ return PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_INSTANCE; }
+static inline bool pys_is_callable(VALUE v) {
+    return pys_is_func(v) || pys_is_builtin(v) || pys_is_bound(v) || pys_is_class(v);
 }
 
 // Python truthiness.
-extern bool py_is_truthy_instance(VALUE v);     // dispatches __bool__/__len__
+extern bool pys_is_truthy_instance(VALUE v);     // dispatches __bool__/__len__
 static inline bool
-py_is_truthy(VALUE v)
+pys_is_truthy(VALUE v)
 {
-    if (v == PY_NONE || v == PY_FALSE) return false;
-    if (PY_IS_FIXNUM(v)) return PY_FIXVAL(v) != 0;
-    if (PY_IS_FLONUM(v)) return py_flonum_to_double(v) != 0.0;
-    struct pyobj *o = PY_PTR(v);
+    if (v == PYS_NONE || v == PYS_FALSE) return false;
+    if (PYS_IS_FIXNUM(v)) return PYS_FIXVAL(v) != 0;
+    if (PYS_IS_FLONUM(v)) return pys_flonum_to_double(v) != 0.0;
+    struct pysobj *o = PYS_PTR(v);
     switch (o->type) {
-      case PY_T_FLOAT:  return o->dbl != 0.0;
-      case PY_T_BIGNUM: return mpz_sgn(o->mpz) != 0;
-      case PY_T_COMPLEX: return o->cpx.re != 0.0 || o->cpx.im != 0.0;
-      case PY_T_STR:    return o->str.len != 0;
-      case PY_T_BYTES:
-      case PY_T_BYTEARRAY: return o->str.len != 0;
-      case PY_T_LIST:
-      case PY_T_TUPLE:  return o->list.len != 0;
-      case PY_T_DICT:   return o->dict->used != 0;
-      case PY_T_SET:
-      case PY_T_FROZENSET: return o->dict->used != 0;
-      case PY_T_RANGE: {
+      case PYS_T_FLOAT:  return o->dbl != 0.0;
+      case PYS_T_BIGNUM: return mpz_sgn(o->mpz) != 0;
+      case PYS_T_COMPLEX: return o->cpx.re != 0.0 || o->cpx.im != 0.0;
+      case PYS_T_STR:    return o->str.len != 0;
+      case PYS_T_BYTES:
+      case PYS_T_BYTEARRAY: return o->str.len != 0;
+      case PYS_T_LIST:
+      case PYS_T_TUPLE:  return o->list.len != 0;
+      case PYS_T_DICT:   return o->dict->used != 0;
+      case PYS_T_SET:
+      case PYS_T_FROZENSET: return o->dict->used != 0;
+      case PYS_T_RANGE: {
           if (o->range.step > 0) return o->range.start < o->range.stop;
           return o->range.start > o->range.stop;
       }
-      case PY_T_INSTANCE: return py_is_truthy_instance(v);
+      case PYS_T_INSTANCE: return pys_is_truthy_instance(v);
       default:          return true;
     }
 }
 
 // Allocators / builders.
-struct pyobj *py_alloc(int type);
-VALUE py_make_float (double d);
-VALUE py_make_int   (int64_t v);                  // fixnum if fits, else bignum
-VALUE py_make_bignum(mpz_srcptr z);
-VALUE py_make_str   (const char *s, size_t len);
-VALUE py_make_str_take(char *s, size_t len);      // takes ownership
-VALUE py_make_bytes (const char *s, size_t len);
-VALUE py_make_bytearray(const char *s, size_t len);
-VALUE py_make_list  (VALUE *items, size_t n);     // copies items; capa=max(n,4)
-VALUE py_make_tuple (VALUE *items, size_t n);
-VALUE py_make_dict  (void);
-VALUE py_make_set   (void);
-VALUE py_make_frozenset(void);
-VALUE py_make_range (int64_t start, int64_t stop, int64_t step);
-VALUE py_make_func  (struct Node *body, struct pyframe *env,
+struct pysobj *pys_alloc(int type);
+VALUE pys_make_float (double d);
+VALUE pys_make_int   (int64_t v);                  // fixnum if fits, else bignum
+VALUE pys_make_bignum(mpz_srcptr z);
+VALUE pys_make_str   (const char *s, size_t len);
+VALUE pys_make_str_take(char *s, size_t len);      // takes ownership
+VALUE pys_make_bytes (const char *s, size_t len);
+VALUE pys_make_bytearray(const char *s, size_t len);
+VALUE pys_make_list  (VALUE *items, size_t n);     // copies items; capa=max(n,4)
+VALUE pys_make_tuple (VALUE *items, size_t n);
+VALUE pys_make_dict  (void);
+VALUE pys_make_set   (void);
+VALUE pys_make_frozenset(void);
+VALUE pys_make_range (int64_t start, int64_t stop, int64_t step);
+VALUE pys_make_func  (struct Node *body, struct pysframe *env,
                      const char *name, int nparams, int n_pos_named,
                      int nlocals, VALUE *defaults_per_slot, bool leaf,
                      const char **param_names,
                      bool has_varargs, bool has_kwargs,
                      bool is_generator);
-VALUE py_make_builtin(const char *name, py_builtin_fn fn, int min_argc, int max_argc);
-VALUE py_make_bound (VALUE self, VALUE func);
-VALUE py_make_class (const char *name, VALUE base, bool is_exception);
-VALUE py_make_instance(VALUE cls);
+VALUE pys_make_builtin(const char *name, pys_builtin_fn fn, int min_argc, int max_argc);
+VALUE pys_make_bound (VALUE self, VALUE func);
+VALUE pys_make_class (const char *name, VALUE base, bool is_exception);
+VALUE pys_make_instance(VALUE cls);
 
 // Frame.
-struct pyframe *py_new_frame(struct pyframe *parent, int nslots);
+struct pysframe *pys_new_frame(struct pysframe *parent, int nslots);
 
 // Globals.
-void  py_global_define(CTX *c, const char *name, VALUE v);
-VALUE py_global_ref   (CTX *c, const char *name);
-void  py_global_set   (CTX *c, const char *name, VALUE v);
-bool  py_global_has   (CTX *c, const char *name);
+void  pys_global_define(CTX *c, const char *name, VALUE v);
+VALUE pys_global_ref   (CTX *c, const char *name);
+void  pys_global_set   (CTX *c, const char *name, VALUE v);
+bool  pys_global_has   (CTX *c, const char *name);
 
 // Apply.  The fast path (closure with matching arity) is `static inline`
 // in node.h; everything else routes here.
-VALUE py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv);
+VALUE pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv);
 
 // Display + repr.
-void  py_display(FILE *fp, VALUE v, bool repr);
-VALUE py_to_str(CTX *c, VALUE v);
-VALUE py_to_repr(CTX *c, VALUE v);
+void  pys_display(FILE *fp, VALUE v, bool repr);
+VALUE pys_to_str(CTX *c, VALUE v);
+VALUE pys_to_repr(CTX *c, VALUE v);
 
 // Error / raise.
 __attribute__((noreturn,format(printf,2,3)))
-void py_error(CTX *c, const char *fmt, ...);
+void pys_error(CTX *c, const char *fmt, ...);
 __attribute__((noreturn,format(printf,3,4)))
-void py_raise_exc(CTX *c, VALUE cls, const char *fmt, ...);
+void pys_raise_exc(CTX *c, VALUE cls, const char *fmt, ...);
 
 // Numeric tower.
-VALUE py_add (CTX *c, VALUE a, VALUE b);
-VALUE py_sub (CTX *c, VALUE a, VALUE b);
-VALUE py_mul (CTX *c, VALUE a, VALUE b);
-VALUE py_truediv(CTX *c, VALUE a, VALUE b);
-VALUE py_fdiv(CTX *c, VALUE a, VALUE b);
-VALUE py_mod (CTX *c, VALUE a, VALUE b);
-VALUE py_pow (CTX *c, VALUE a, VALUE b);
-VALUE py_neg (CTX *c, VALUE a);
-VALUE py_bit_and(CTX *c, VALUE a, VALUE b);
-VALUE py_bit_or (CTX *c, VALUE a, VALUE b);
-VALUE py_bit_xor(CTX *c, VALUE a, VALUE b);
-VALUE py_bit_inv(CTX *c, VALUE a);
-VALUE py_lshift (CTX *c, VALUE a, VALUE b);
-VALUE py_rshift (CTX *c, VALUE a, VALUE b);
-int   py_cmp (CTX *c, VALUE a, VALUE b);
-VALUE py_eq  (CTX *c, VALUE a, VALUE b);
-bool  py_eq_bool(CTX *c, VALUE a, VALUE b);
+VALUE pys_add (CTX *c, VALUE a, VALUE b);
+VALUE pys_sub (CTX *c, VALUE a, VALUE b);
+VALUE pys_mul (CTX *c, VALUE a, VALUE b);
+VALUE pys_truediv(CTX *c, VALUE a, VALUE b);
+VALUE pys_fdiv(CTX *c, VALUE a, VALUE b);
+VALUE pys_mod (CTX *c, VALUE a, VALUE b);
+VALUE pys_pow (CTX *c, VALUE a, VALUE b);
+VALUE pys_neg (CTX *c, VALUE a);
+VALUE pys_bit_and(CTX *c, VALUE a, VALUE b);
+VALUE pys_bit_or (CTX *c, VALUE a, VALUE b);
+VALUE pys_bit_xor(CTX *c, VALUE a, VALUE b);
+VALUE pys_bit_inv(CTX *c, VALUE a);
+VALUE pys_lshift (CTX *c, VALUE a, VALUE b);
+VALUE pys_rshift (CTX *c, VALUE a, VALUE b);
+int   pys_cmp (CTX *c, VALUE a, VALUE b);
+VALUE pys_eq  (CTX *c, VALUE a, VALUE b);
+bool  pys_eq_bool(CTX *c, VALUE a, VALUE b);
 
 // Containers.
-VALUE py_list_get   (CTX *c, VALUE list, VALUE idx);    // also tuple/str
-VALUE py_list_set   (CTX *c, VALUE list, VALUE idx, VALUE val);
-VALUE py_list_slice (CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step);
-void  py_list_append(CTX *c, VALUE list, VALUE v);
-size_t py_seq_len   (CTX *c, VALUE v);
-VALUE py_dict_get   (CTX *c, VALUE d, VALUE key);
-void  py_dict_set   (CTX *c, VALUE d, VALUE key, VALUE val);
-bool  py_dict_has   (CTX *c, VALUE d, VALUE key);
-bool  py_dict_remove(CTX *c, VALUE d, VALUE key);
-uint64_t py_hash    (CTX *c, VALUE v);
+VALUE pys_list_get   (CTX *c, VALUE list, VALUE idx);    // also tuple/str
+VALUE pys_list_set   (CTX *c, VALUE list, VALUE idx, VALUE val);
+VALUE pys_list_slice (CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step);
+void  pys_list_append(CTX *c, VALUE list, VALUE v);
+size_t pys_seq_len   (CTX *c, VALUE v);
+VALUE pys_dict_get   (CTX *c, VALUE d, VALUE key);
+void  pys_dict_set   (CTX *c, VALUE d, VALUE key, VALUE val);
+bool  pys_dict_has   (CTX *c, VALUE d, VALUE key);
+bool  pys_dict_remove(CTX *c, VALUE d, VALUE key);
+uint64_t pys_hash    (CTX *c, VALUE v);
 
 // Membership: `x in y`.
-bool py_contains(CTX *c, VALUE container, VALUE v);
+bool pys_contains(CTX *c, VALUE container, VALUE v);
 
 // Attribute access.
-VALUE py_getattr(CTX *c, VALUE v, const char *name);
-VALUE py_getattr_optional(CTX *c, VALUE v, const char *name);
-void  py_setattr(CTX *c, VALUE v, const char *name, VALUE val);
+VALUE pys_getattr(CTX *c, VALUE v, const char *name);
+VALUE pys_getattr_optional(CTX *c, VALUE v, const char *name);
+void  pys_setattr(CTX *c, VALUE v, const char *name, VALUE val);
 
 // Method-call support: `o.m(...)` resolves to a callable; for instance
 // methods we wrap as bound; for built-in type methods (str.split, ...)
 // we look up via an opaque per-type table.
-VALUE py_builtin_method(CTX *c, VALUE recv, const char *name);
+VALUE pys_builtin_method(CTX *c, VALUE recv, const char *name);
 
-// Iteration: returns an opaque iterator handle; `py_iter_next` returns
-// PY_NONE on stop (and sets *done=true), else the next element.
-struct py_iter {
+// Iteration: returns an opaque iterator handle; `pys_iter_next` returns
+// PYS_NONE on stop (and sets *done=true), else the next element.
+struct pys_iter {
     int kind;               // 0=list/tuple, 1=str, 2=range, 3=dict, 4=callable+sentinel,
                             // 8=enumerate, 9=zip, 10=map, 11=filter, 5=user-iter, 13=__getitem__
     VALUE container;        // callable for kind=4; inner func for kind=10/11
@@ -756,21 +802,21 @@ struct py_iter {
     int64_t end;
     int64_t step;
     VALUE sentinel;         // kind=4 only
-    // For wrapping iterators (enumerate/zip/map/filter): inner py_iter array.
-    struct py_iter *inner;  // NULL for non-wrapping kinds
+    // For wrapping iterators (enumerate/zip/map/filter): inner pys_iter array.
+    struct pys_iter *inner;  // NULL for non-wrapping kinds
     int n_inner;            // # of inner iters (zip)
     // Cache for kind=5 (user iter): __next__ method, resolved once at
-    // init.  Without this every call to py_iter_next does a strcmp
+    // init.  Without this every call to pys_iter_next does a strcmp
     // scan through the class methods table.
     VALUE next_m;
 };
-void py_iter_init(CTX *c, struct py_iter *it, VALUE iterable);
-bool py_iter_next(CTX *c, struct py_iter *it, VALUE *out);
+void pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable);
+bool pys_iter_next(CTX *c, struct pys_iter *it, VALUE *out);
 
 // Try-handler descriptor.  The parser packs an array of these into the
-// global PYSTRO_HANDLERS table; node_try walks `nhandlers` of them
+// global PYS_HANDLERS table; node_try walks `nhandlers` of them
 // starting at `handlers_idx`.
-struct pyhandler {
+struct pyshandler {
     struct Node *exc_class;     // NULL ⇒ bare except (catch all)
     struct Node *body;
     const char  *name;          // NULL ⇒ no `as name`
@@ -787,24 +833,24 @@ struct pyunpack_target {
     const char *global_name;
 };
 
-bool py_exc_matches(CTX *c, VALUE exc, VALUE cls);
-void py_unpack_assign(CTX *c, struct pyunpack_target *t, uint32_t n, VALUE rhs);
-void py_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn);
+bool pys_exc_matches(CTX *c, VALUE exc, VALUE cls);
+void pys_unpack_assign(CTX *c, struct pyunpack_target *t, uint32_t n, VALUE rhs);
+void pys_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn);
 
 // Side tables populated by the parser, consumed by node_eval.c.
 struct Node;
-extern struct Node            **PYSTRO_NODE_TABLE;
-extern struct pyhandler        *PYSTRO_HANDLERS;
-extern struct pyunpack_target  *PYSTRO_UNPACK_TARGETS;
-extern const char             **PYSTRO_NAME_TABLE;     // bag of param name lists for node_def
+extern struct Node            **PYS_NODE_TABLE;
+extern struct pyshandler        *PYS_HANDLERS;
+extern struct pyunpack_target  *PYS_UNPACK_TARGETS;
+extern const char             **PYS_NAME_TABLE;     // bag of param name lists for node_def
 
 // One kwarg entry: a name and the AST node producing the value.  Both
 // node_call_kw and the `**dict` expansion path share the type.
-struct pykwarg {
+struct pyskwarg {
     const char *name;
     struct Node *value;
 };
-extern struct pykwarg          *PYSTRO_KWARGS;
+extern struct pyskwarg          *PYS_KWARGS;
 
 // Call-site argument with spread support.  kind:
 //   0 = positional (single value)
@@ -816,19 +862,19 @@ struct pyspread_arg {
     const char  *name;
     struct Node *node;
 };
-extern struct pyspread_arg     *PYSTRO_SPREADS;
+extern struct pyspread_arg     *PYS_SPREADS;
 
 // One default-arg entry: a slot index in the param list plus the AST
 // node producing the default value.  Used by node_def / node_lambda.
-struct pydefault {
+struct pysdefault {
     int          slot;
     struct Node *expr;
 };
-extern struct pydefault        *PYSTRO_DEFAULTS;
+extern struct pysdefault        *PYS_DEFAULTS;
 
 // match / case patterns.  The parser packs a tree of patterns into
-// PYSTRO_PATTERNS and gives node_match a starting index per case.
-enum py_pat_kind {
+// PYS_PATTERNS and gives node_match a starting index per case.
+enum pys_pat_kind {
     PYPAT_LITERAL = 0,    // pre-evaluated literal value
     PYPAT_CAPTURE,        // name binding (any value matches)
     PYPAT_WILDCARD,       // `_`
@@ -841,23 +887,23 @@ enum py_pat_kind {
     PYPAT_STAR,           // *NAME inside a sequence — captures the rest
     PYPAT_AS,             // pat as NAME — bind NAME if pat matches
 };
-struct pypat {
+struct pyspat {
     int kind;
     struct Node *literal;       // PYPAT_LITERAL / PYPAT_VALUE / PYPAT_CLASS / PYPAT_CLASS_ARGS
     int slot;                   // PYPAT_CAPTURE: local slot, -1 if global
     const char *name;           // PYPAT_CAPTURE: global name (when slot=-1)
-    int first_child;            // OR / SEQUENCE / CLASS_ARGS / MAPPING: index into PYSTRO_PATTERNS
+    int first_child;            // OR / SEQUENCE / CLASS_ARGS / MAPPING: index into PYS_PATTERNS
     int nchildren;
     struct Node **keys;         // PYPAT_MAPPING: key NODE *exprs, length nchildren
     const char **attrs;         // PYPAT_CLASS_ARGS: attr name per child
 };
-extern struct pypat *PYSTRO_PATTERNS;
+extern struct pyspat *PYS_PATTERNS;
 
-struct pycase {
-    int          pat_idx;       // root pattern in PYSTRO_PATTERNS
+struct pyscase {
+    int          pat_idx;       // root pattern in PYS_PATTERNS
     struct Node *guard;         // optional `if guard` (NULL = none)
     struct Node *body;
 };
-extern struct pycase *PYSTRO_CASES;
+extern struct pyscase *PYS_CASES;
 
-#endif // PYSTRO_CONTEXT_H
+#endif // PYS_CONTEXT_H

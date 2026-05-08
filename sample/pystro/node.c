@@ -30,7 +30,7 @@ OPTIMIZE(NODE *n)
     return n;
 }
 
-// Per-function-body code repo.  py_make_func registers each body so
+// Per-function-body code repo.  pys_make_func registers each body so
 // the AOT-compile flow can iterate them and emit per-body SD_<hash>.c.
 // Without this, only the top-level program body is baked, and function
 // bodies (the hot path for fib / recursive / etc.) stay in the
@@ -77,24 +77,24 @@ code_repo_add(const char *name, NODE *body, bool force)
 
 // Variadic-call arg table, populated by the parser.  Keeping it in a
 // flat array (rather than per-call malloced lists) lets node_call_n
-// fold an `args_idx` literal into a direct PYSTRO_CALL_ARGS[base + i]
+// fold an `args_idx` literal into a direct PYS_CALL_ARGS[base + i]
 // load in the SD function.
-NODE **PYSTRO_CALL_ARGS = NULL;
-size_t PYSTRO_CALL_ARGS_LEN = 0;
-size_t PYSTRO_CALL_ARGS_CAP = 0;
+NODE **PYS_CALL_ARGS = NULL;
+size_t PYS_CALL_ARGS_LEN = 0;
+size_t PYS_CALL_ARGS_CAP = 0;
 
 size_t
-pystro_call_args_reserve(NODE **args, size_t n)
+pys_call_args_reserve(NODE **args, size_t n)
 {
-    if (PYSTRO_CALL_ARGS_LEN + n > PYSTRO_CALL_ARGS_CAP) {
-        size_t cap = PYSTRO_CALL_ARGS_CAP ? PYSTRO_CALL_ARGS_CAP * 2 : 64;
-        while (cap < PYSTRO_CALL_ARGS_LEN + n) cap *= 2;
-        PYSTRO_CALL_ARGS = (NODE **)GC_realloc(PYSTRO_CALL_ARGS, cap * sizeof(NODE *));
-        PYSTRO_CALL_ARGS_CAP = cap;
+    if (PYS_CALL_ARGS_LEN + n > PYS_CALL_ARGS_CAP) {
+        size_t cap = PYS_CALL_ARGS_CAP ? PYS_CALL_ARGS_CAP * 2 : 64;
+        while (cap < PYS_CALL_ARGS_LEN + n) cap *= 2;
+        PYS_CALL_ARGS = (NODE **)GC_realloc(PYS_CALL_ARGS, cap * sizeof(NODE *));
+        PYS_CALL_ARGS_CAP = cap;
     }
-    size_t base = PYSTRO_CALL_ARGS_LEN;
-    for (size_t i = 0; i < n; i++) PYSTRO_CALL_ARGS[base + i] = args[i];
-    PYSTRO_CALL_ARGS_LEN += n;
+    size_t base = PYS_CALL_ARGS_LEN;
+    for (size_t i = 0; i < n; i++) PYS_CALL_ARGS[base + i] = args[i];
+    PYS_CALL_ARGS_LEN += n;
     return base;
 }
 
