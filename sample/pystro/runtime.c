@@ -1449,7 +1449,6 @@ pys_add(CTX *c, VALUE a, VALUE b)
     VALUE r = pys_try_binop_dunder(c, PYS_INTERN_add, a, b);
     if (r) return r;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     r = pys_try_binop_dunder(c, PYS_INTERN_radd, b, a);
     if (r) return r;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -1547,7 +1546,6 @@ pys_sub(CTX *c, VALUE a, VALUE b)
     VALUE r = pys_try_binop_dunder(c, PYS_INTERN_sub, a, b);
     if (r) return r;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     r = pys_try_binop_dunder(c, PYS_INTERN_rsub, b, a);
     if (r) return r;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -1578,7 +1576,6 @@ pys_mul(CTX *c, VALUE a, VALUE b)
 {
     VALUE r = pys_try_binop_dunder(c, PYS_INTERN_mul, a, b);
     if (r) return r;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     r = pys_try_binop_dunder(c, PYS_INTERN_rmul, b, a);
     if (r) return r;
@@ -1643,7 +1640,6 @@ pys_matmul(CTX *c, VALUE a, VALUE b)
     VALUE r = pys_try_binop_dunder(c, "__matmul__", a, b);
     if (r) return r;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     r = pys_try_binop_dunder(c, "__rmatmul__", b, a);
     if (r) return r;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -1658,7 +1654,6 @@ pys_truediv(CTX *c, VALUE a, VALUE b)
 {
     VALUE r = pys_try_binop_dunder(c, PYS_INTERN_truediv, a, b);
     if (r) return r;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (pys_is_complex(a) || pys_is_complex(b)) {
         double ra, ia, rb, ib;
@@ -1678,7 +1673,6 @@ pys_fdiv(CTX *c, VALUE a, VALUE b)
 {
     VALUE rd = pys_try_binop_dunder(c, PYS_INTERN_floordiv, a, b);
     if (rd) return rd;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     rd = pys_try_binop_dunder(c, "__rfloordiv__", b, a);
     if (rd) return rd;
@@ -1710,7 +1704,6 @@ pys_mod(CTX *c, VALUE a, VALUE b)
         VALUE rd = pys_try_binop_dunder(c, PYS_INTERN_mod, a, b);
         if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         rd = pys_try_binop_dunder(c, "__rmod__", b, a);
         if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -1740,7 +1733,6 @@ pys_pow(CTX *c, VALUE a, VALUE b)
 {
     VALUE r = pys_try_binop_dunder(c, PYS_INTERN_pow, a, b);
     if (r) return r;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     r = pys_try_binop_dunder(c, "__rpow__", b, a);
     if (r) return r;
@@ -1812,7 +1804,6 @@ pys_bit_and(CTX *c, VALUE a, VALUE b)
         VALUE rd = pys_try_binop_dunder(c, PYS_INTERN_and, a, b);
         if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         rd = pys_try_binop_dunder(c, "__rand__", b, a);
         if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -1850,7 +1841,6 @@ pys_bit_or(CTX *c, VALUE a, VALUE b)
         return PYS_FIX(PYS_FIXVAL(a) | PYS_FIXVAL(b));
     VALUE rd = pys_try_binop_dunder(c, PYS_INTERN_or, a, b);
     if (rd) return rd;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     rd = pys_try_binop_dunder(c, "__ror__", b, a);
     if (rd) return rd;
@@ -1948,7 +1938,6 @@ pys_bit_xor(CTX *c, VALUE a, VALUE b)
     VALUE rd = pys_try_binop_dunder(c, PYS_INTERN_xor, a, b);
     if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     rd = pys_try_binop_dunder(c, "__rxor__", b, a);
     if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -2025,7 +2014,6 @@ pys_lshift(CTX *c, VALUE a, VALUE b)
         VALUE rd = pys_try_binop_dunder(c, PYS_INTERN_lshift, a, b);
         if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         rd = pys_try_binop_dunder(c, "__rlshift__", b, a);
         if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -2057,7 +2045,6 @@ pys_rshift(CTX *c, VALUE a, VALUE b)
     {
         VALUE rd = pys_try_binop_dunder(c, PYS_INTERN_rshift, a, b);
         if (rd) return rd;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         rd = pys_try_binop_dunder(c, "__rrshift__", b, a);
         if (rd) return rd;
@@ -2397,7 +2384,7 @@ pys_hash(CTX *c, VALUE v)
         if (hm != PYS_NONE) {
             VALUE av[1] = { v };
             VALUE r = pys_apply(c, hm, 1, av);
-            if (c->state != PYS_STATE_NORMAL) return 0;
+            if (UNLIKELY(!r)) return 0;
             // Coerce result to a 64-bit hash (signed-truncated, like CPython's PyObject_Hash).
             if (PYS_IS_FIXNUM(r)) {
                 int64_t hv = PYS_FIXVAL(r);
@@ -5946,7 +5933,7 @@ pys_gen_throw(CTX *c, VALUE gen_v, VALUE exc)
     // constructor so .args/.message etc. get properly initialised.
     if (pys_is_class(exc)) {
         VALUE inst = pys_apply(c, exc, 0, NULL);
-        if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
+        if (UNLIKELY(!inst)) return PYS_NONE;
         exc = inst;
     }
     struct pysgen *g = PYS_PTR(gen_v)->gen;
@@ -6021,12 +6008,12 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
         return true;
       case PYPAT_LITERAL: {
         VALUE lit = EVAL(c, p->literal);
-        if (c->state != PYS_STATE_NORMAL) return false;
+        if (UNLIKELY(!lit)) return false;
         return pys_eq(c, v, lit) == PYS_TRUE;
       }
       case PYPAT_VALUE: {
         VALUE val = EVAL(c, p->literal);
-        if (c->state != PYS_STATE_NORMAL) return false;
+        if (UNLIKELY(!val)) return false;
         return v == val;     // identity (Python uses == here, close enough)
       }
       case PYPAT_CAPTURE:
@@ -6095,13 +6082,13 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
         return true;
       case PYPAT_CLASS: {
         VALUE cls = EVAL(c, p->literal);
-        if (c->state != PYS_STATE_NORMAL) return false;
+        if (UNLIKELY(!cls)) return false;
         if (!pys_is_class(cls)) return false;
         // Built-in type pattern (int, str, float, list, ...): match by type tag.
         extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
         VALUE av[1] = { v };
         VALUE actual_cls = bi_type(c, 1, av);
-        if (c->state != PYS_STATE_NORMAL) return false;
+        if (UNLIKELY(!actual_cls)) return false;
         if (actual_cls == cls) return true;
         if (pys_is_class(actual_cls))
             return class_is_ancestor(actual_cls, cls);
@@ -6109,7 +6096,7 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
       }
       case PYPAT_CLASS_ARGS: {
         VALUE cls = EVAL(c, p->literal);
-        if (c->state != PYS_STATE_NORMAL) return false;
+        if (UNLIKELY(!cls)) return false;
         if (!pys_is_class(cls)) return false;
         if (!pys_is_instance(v)) return false;
         if (!class_is_ancestor(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), cls)) return false;
@@ -6146,10 +6133,10 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
         if (!pys_is_dict(v)) return false;
         for (int i = 0; i < p->nchildren; i++) {
             VALUE key = EVAL(c, p->keys[i]);
-            if (c->state != PYS_STATE_NORMAL) return false;
+            if (UNLIKELY(!key)) return false;
             if (!pys_dict_has(c, v, key)) return false;
             VALUE val = pys_dict_get(c, v, key);
-            if (c->state != PYS_STATE_NORMAL) return false;
+            if (UNLIKELY(!val)) return false;
             if (!pys_pat_match(c, p->first_child + i, val)) return false;
         }
         return true;
@@ -6232,7 +6219,7 @@ pys_eg_split(CTX *c, VALUE eg, VALUE type, VALUE *matched_out, VALUE *unmatched_
 // generated with always_inline by ASTroGen).
 // ---------------------------------------------------------------------------
 
-void
+VALUE
 pys_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE *else_body, NODE *finally_body)
 {
     // State-based: pys_apply/etc. restore env on return, so no manual
@@ -6351,6 +6338,7 @@ pys_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE 
         EVAL(c, finally_body);
         if (c->state == PYS_STATE_NORMAL) { c->state = sst; c->state_value = sval; }
     }
+    return c->state == PYS_STATE_NORMAL ? PYS_NONE : 0;
 }
 
 // `with EXPR as NAME: body` runner.  `cm` is the already-evaluated
@@ -6358,7 +6346,7 @@ pys_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE 
 // Runs `body` with proper exception protocol: on raise, calls
 // `cm.__exit__(type, value, None)`; if it returns truthy the exception
 // is suppressed.  On normal exit, calls `cm.__exit__(None, None, None)`.
-void
+VALUE
 pys_run_with(CTX *c, VALUE cm, NODE *body)
 {
     EVAL(c, body);
@@ -6371,7 +6359,7 @@ pys_run_with(CTX *c, VALUE cm, NODE *body)
         c->state = PYS_STATE_NORMAL;
         c->state_value = PYS_NONE;
         VALUE exit_m = pys_getattr(c, cm, "__exit__");
-        if (c->state != PYS_STATE_NORMAL) return;
+        if (UNLIKELY(!exit_m)) return 0;
         VALUE r = pys_apply(c, exit_m, 3, av);
         if (c->state == PYS_STATE_RAISE) {
             // __exit__ raised — set the new exc's __context__ to the
@@ -6380,20 +6368,23 @@ pys_run_with(CTX *c, VALUE cm, NODE *body)
             if (pys_is_instance(new_exc) && new_exc != exc) {
                 pys_setattr(c, new_exc, "__context__", exc);
             }
-            return;
+            return 0;
         }
-        if (c->state != PYS_STATE_NORMAL) return;
+        if (c->state != PYS_STATE_NORMAL) return 0;
         if (!pys_is_truthy(r)) {
             // Re-raise the original exception.
             c->state = PYS_STATE_RAISE;
             c->state_value = exc;
+            return 0;
         }
     } else {
         VALUE av[3] = { PYS_NONE, PYS_NONE, PYS_NONE };
         VALUE exit_m = pys_getattr(c, cm, "__exit__");
-        if (c->state != PYS_STATE_NORMAL) return;
+        if (UNLIKELY(!exit_m)) return 0;
         pys_apply(c, exit_m, 3, av);
+        if (c->state != PYS_STATE_NORMAL) return 0;
     }
+    return PYS_NONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -9905,13 +9896,13 @@ bi_dict(CTX *c, int argc, VALUE *argv)
         if (keys_m != PYS_NONE) {
             VALUE av0[1] = { argv[0] };
             VALUE keys = pys_apply(c, keys_m, 1, av0);
-            if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
+            if (UNLIKELY(!keys)) return PYS_NONE;
             struct pys_iter it; pys_iter_init(c, &it, keys);
             if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
             VALUE k;
             while (pys_iter_next(c, &it, &k)) {
                 VALUE v = pys_list_get(c, argv[0], k);
-                if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
+                if (UNLIKELY(!v)) return PYS_NONE;
                 pys_dict_set(c, r, k, v);
             }
         } else {
@@ -10875,7 +10866,7 @@ pys_isinstance_check(CTX *c, VALUE v, VALUE cls)
                 if (m != PYS_NONE) {
                     VALUE av[2] = { cls, v };
                     VALUE r = pys_apply(c, m, 2, av);
-                    if (c->state != PYS_STATE_NORMAL) return false;
+                    if (UNLIKELY(!r)) return false;
                     return pys_is_truthy(r);
                 }
             }
