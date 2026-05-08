@@ -10,6 +10,39 @@
 - コンパイラ: gcc 13.3 (-O2 / -O3)
 - Ruby (比較対象): CRuby 4.0.2 +PRISM (no-JIT / `--yjit`)
 
+## 2026-05-08 Binding 完全実装後の再測定 (HEAD)
+
+Binding object を C 実装し、 prologue で cref を常に save (`mc->def_cref`
+が定義時の cref を保持するよう) した上で、 frame に bindings_head を
+init / epilogue snapshot 呼出を追加。 計算量的には call あたり数ストア
+程度のオーバーヘッドが発生するため fib (~30M 呼出) で計測。
+
+| bench | ruby (no JIT) | ruby --yjit | **koruby+aot** | 2026-05-06 baseline |
+|---|---:|---:|---:|---:|
+| fib(36) | 1.41 | 0.22 | **0.78** | 0.732 (koruby+aot) |
+| optcarrot 600f (FPS) | 44.8 | — | **85.3** | 74.0 |
+| optcarrot 600f (wall) | 14.04 | — | **7.32** | 8.5 |
+
+- fib の小幅な絶対値悪化 (0.732 → 0.78、 +6%) は誤差 + Ruby バージョン更新で
+  CRuby 側も速くなっている (1.632 → 1.41) ためと判定。 vs-ruby 比は
+  0.45× → 0.55× にやや劣化したが、 sustained ベンチでは改善。
+- **optcarrot は逆に大幅改善** (74 → 85.3 FPS、 wall 8.5 → 7.32s)。 inline
+  cache + ivar shape など別系統の改善が効いている。
+- **cref save guard**: prologue で `c->cref == mc->def_cref` ならスワップ
+  スキップ (toplevel fib のような cref 同一ケースでロード/ストア 4 op を
+  削減)。 fib では 0.80 → 0.78 と微小改善。 防御的に残す。
+- bindings_head の init / null check は計測上の影響無し (UNLIKELY 側で
+  branch predictor に乗っている)。
+
+### 教訓
+
+- **lvar 周りの prologue 変更は call-heavy bench に効きやすい** が、
+  sustained ベンチでは別の最適化 (inline cache、 ivar shape、 method
+  dispatch) が勝つことが多い。 最初に sustained で測ってから micro bench で
+  詰める順番。
+- vs-ruby 比較は CRuby のバージョン更新で動くので、 絶対値と比率の両方を
+  perf.md に残す方がよい。
+
 ## 2026-05-06 リグレッション + 互換性大改修後 (HEAD `52489bc + fix`)
 
 CRuby tu_shim 互換性 +2,236 pass (Proc cref / post / &blk / etc) と

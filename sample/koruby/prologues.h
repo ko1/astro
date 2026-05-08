@@ -131,14 +131,16 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * enclosing). */
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
-    /* cref must always reflect the method's definition site so cref-
-     * dependent operations (Kernel#binding, class-variable access,
-     * `class C` keyword in nested blocks) see the lexical class
-     * rather than the dynamic caller's.  Save+restore unconditionally;
-     * the simple-frame flag now only avoids the block / current_block
-     * stash, which is genuinely cheap to skip. */
-    prev_cref = c->cref;
-    if (mc->def_cref) c->cref = mc->def_cref;
+    /* cref must reflect the method's definition site so cref-dependent
+     * operations (Kernel#binding, class-variable access, `class C`
+     * keyword) see the lexical class.  Most calls have c->cref ==
+     * mc->def_cref already (top-level fib, ack, etc.) so guard the
+     * swap to skip 4 memory ops per call on the hot path. */
+    bool cref_swapped = (mc->def_cref != NULL && c->cref != mc->def_cref);
+    if (UNLIKELY(cref_swapped)) {
+        prev_cref = c->cref;
+        c->cref = mc->def_cref;
+    }
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
         current_block = block;
@@ -153,7 +155,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     c->current_frame = frame.prev;
     running_block = prev_running;
-    c->cref = prev_cref;
+    if (UNLIKELY(cref_swapped)) c->cref = prev_cref;
     if (UNLIKELY(!simple)) {
         current_block = prev_block;
     }
@@ -264,14 +266,16 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * enclosing). */
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
-    /* cref must always reflect the method's definition site so cref-
-     * dependent operations (Kernel#binding, class-variable access,
-     * `class C` keyword in nested blocks) see the lexical class
-     * rather than the dynamic caller's.  Save+restore unconditionally;
-     * the simple-frame flag now only avoids the block / current_block
-     * stash, which is genuinely cheap to skip. */
-    prev_cref = c->cref;
-    if (mc->def_cref) c->cref = mc->def_cref;
+    /* cref must reflect the method's definition site so cref-dependent
+     * operations (Kernel#binding, class-variable access, `class C`
+     * keyword) see the lexical class.  Most calls have c->cref ==
+     * mc->def_cref already (top-level fib, ack, etc.) so guard the
+     * swap to skip 4 memory ops per call on the hot path. */
+    bool cref_swapped = (mc->def_cref != NULL && c->cref != mc->def_cref);
+    if (UNLIKELY(cref_swapped)) {
+        prev_cref = c->cref;
+        c->cref = mc->def_cref;
+    }
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
         current_block = block;
@@ -289,7 +293,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     c->current_frame = frame.prev;
     running_block = prev_running;
-    c->cref = prev_cref;
+    if (UNLIKELY(cref_swapped)) c->cref = prev_cref;
     if (UNLIKELY(!simple)) {
         current_block = prev_block;
     }
