@@ -389,9 +389,26 @@ class Hash
   # Note: Hash#to_h is defined later (line ~1500) — leave it there so a
   # single canonical implementation exists.
 
-  def transform_keys!(&blk)
+  def transform_keys!(*args, &blk)
+    if args.size == 0 && !blk
+      return enum_for(:transform_keys!)
+    end
+    if args.size > 1
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)"
+    end
+    raise FrozenError, "can't modify frozen Hash: #{inspect}" if frozen?
+    repl = args[0]
     new_h = {}
-    each_pair { |k, v| new_h[blk.call(k)] = v }
+    each_pair { |k, v|
+      nk = if repl && repl.key?(k)
+             repl[k]
+           elsif blk
+             blk.call(k)
+           else
+             k
+           end
+      new_h[nk] = v
+    }
     clear
     new_h.each_pair { |k, v| self[k] = v }
     self
@@ -1459,10 +1476,28 @@ class Hash
     result.flatten(depth - 1)
   end unless method_defined?(:flatten)
 
-  def transform_keys(&blk)
-    return enum_for(:transform_keys) unless blk
+  # Hash#transform_keys(hash = nil, &blk) — optional hash argument
+  # specifies explicit key replacements; the block (if given) handles
+  # any keys not present in hash.
+  def transform_keys(*args, &blk)
+    if args.size == 0 && !blk
+      return enum_for(:transform_keys)
+    end
+    if args.size > 1
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)"
+    end
+    repl = args[0]
     h = {}
-    each_pair { |k, v| h[blk.call(k)] = v }
+    each_pair { |k, v|
+      nk = if repl && repl.key?(k)
+             repl[k]
+           elsif blk
+             blk.call(k)
+           else
+             k
+           end
+      h[nk] = v
+    }
     h
   end
 
