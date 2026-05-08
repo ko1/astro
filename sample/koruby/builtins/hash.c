@@ -562,12 +562,22 @@ static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#default — the default_value or nil. */
 static VALUE hash_default_get(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return ((struct korb_hash *)self)->default_value;
+    struct korb_hash *h = (struct korb_hash *)self;
+    /* Hash#default(key) — when default_proc is set and a key is given,
+     * call the proc with (self, key); otherwise return default_value. */
+    if (!NIL_P(h->default_proc) && argc >= 1) {
+        VALUE args[2] = { self, argv[0] };
+        return korb_funcall(c, h->default_proc, korb_intern("call"), 2, args);
+    }
+    return h->default_value;
 }
 
-/* Hash#default= — set the default_value. */
+/* Hash#default= — set the default_value, clear default_proc. */
 static VALUE hash_default_set(CTX *c, VALUE self, int argc, VALUE *argv) {
-    ((struct korb_hash *)self)->default_value = argv[0];
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_hash *h = (struct korb_hash *)self;
+    h->default_value = argv[0];
+    h->default_proc = Qnil;  /* setting default value clears default_proc */
     return argv[0];
 }
 
@@ -712,6 +722,12 @@ static VALUE hash_keep_if(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE hash_compact(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_hash_new();
+    struct korb_hash *rh = (struct korb_hash *)r;
+    /* Preserve default value/proc and compare_by_identity (CRuby
+     * semantics: compact returns a new Hash with same settings). */
+    rh->default_value = h->default_value;
+    rh->default_proc = h->default_proc;
+    rh->compare_by_identity = h->compare_by_identity;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         if (!NIL_P(e->value)) korb_hash_aset(r, e->key, e->value);
     }
@@ -794,10 +810,37 @@ static VALUE hash_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#replace(other) — destructive replace. */
 static VALUE hash_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return self;
+    if (self == argv[0]) return self;
+    /* Coerce non-Hash via #to_hash. */
+    VALUE other = argv[0];
+    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_HASH) {
+        if (!SPECIAL_CONST_P(other)) {
+            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                other = korb_funcall(c, other, korb_intern("to_hash"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            }
+        }
+        if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_HASH) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into Hash",
+                       SPECIAL_CONST_P(argv[0]) ? "(special)"
+                           : korb_id_name(korb_class_of_class(argv[0])->name));
+            return Qnil;
+        }
+    }
     CHECK_FROZEN_RET(c, self, Qnil);
-    if (BUILTIN_TYPE(argv[0]) != T_HASH) return self;
     hash_clear(c, self, 0, NULL);
-    struct korb_hash *src = (struct korb_hash *)argv[0];
+    struct korb_hash *src = (struct korb_hash *)other;
+    struct korb_hash *dst = (struct korb_hash *)self;
+    /* Transfer compare_by_identity, default_value, default_proc. */
+    dst->compare_by_identity = src->compare_by_identity;
+    dst->default_value = src->default_value;
+    dst->default_proc = src->default_proc;
     for (struct korb_hash_entry *e = src->first; e; e = e->next) {
         korb_hash_aset(self, e->key, e->value);
     }

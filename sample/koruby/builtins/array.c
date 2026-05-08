@@ -1213,17 +1213,53 @@ static VALUE ary_shift(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_transpose(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return korb_ary_new();
-    /* All inner arrays must be same length */
+    /* Normalize each inner element via to_ary if it isn't already an
+     * Array — CRuby semantics. */
     long n_outer = a->len;
-    long n_inner = (BUILTIN_TYPE(a->ptr[0]) == T_ARRAY) ? ((struct korb_array *)a->ptr[0])->len : 0;
+    VALUE *coerced = korb_xmalloc(n_outer * sizeof(VALUE));
+    for (long j = 0; j < n_outer; j++) {
+        VALUE inner = a->ptr[j];
+        if (!SPECIAL_CONST_P(inner) && BUILTIN_TYPE(inner) == T_ARRAY) {
+            coerced[j] = inner;
+            continue;
+        }
+        if (!SPECIAL_CONST_P(inner)) {
+            VALUE rt = korb_funcall(c, inner, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                VALUE r = korb_funcall(c, inner, korb_intern("to_ary"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+                if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_ARRAY) {
+                    coerced[j] = r;
+                    continue;
+                }
+            }
+        }
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion of %s into Array",
+                   SPECIAL_CONST_P(inner) ? "(special)"
+                       : korb_id_name(korb_class_of_class(inner)->name));
+        return Qnil;
+    }
+    long n_inner = ((struct korb_array *)coerced[0])->len;
+    /* Verify all rows have the same length. */
+    for (long j = 1; j < n_outer; j++) {
+        if (((struct korb_array *)coerced[j])->len != n_inner) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE,
+                       "element size differs (%ld should be %ld)",
+                       ((struct korb_array *)coerced[j])->len, n_inner);
+            return Qnil;
+        }
+    }
     VALUE r = korb_ary_new_capa(n_inner);
     for (long i = 0; i < n_inner; i++) {
         VALUE row = korb_ary_new_capa(n_outer);
         for (long j = 0; j < n_outer; j++) {
-            VALUE inner = a->ptr[j];
-            if (BUILTIN_TYPE(inner) == T_ARRAY && i < ((struct korb_array *)inner)->len) {
-                korb_ary_push(row, ((struct korb_array *)inner)->ptr[i]);
-            } else korb_ary_push(row, Qnil);
+            VALUE inner = coerced[j];
+            korb_ary_push(row, ((struct korb_array *)inner)->ptr[i]);
         }
         korb_ary_push(r, row);
     }
