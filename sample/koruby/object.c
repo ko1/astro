@@ -1736,6 +1736,25 @@ double korb_num2dbl_slow(VALUE v) {
 }
 
 /* ---- bignum (GMP) ---- */
+
+/* libgc finalizer for korb_bignum: GMP allocates the mpz_t's limbs via
+ * its own allocator (NOT libgc), so when libgc reclaims the wrapping
+ * korb_bignum / mpz_t structs, the limbs leak — silently growing
+ * resident memory until OOM.  Register a finalizer that calls mpz_clear
+ * on collection so GMP releases the limb buffer. */
+static void korb_bignum_finalizer(void *obj, void *cd) {
+    struct korb_bignum *b = (struct korb_bignum *)obj;
+    if (b && b->mpz) {
+        mpz_clear((mpz_ptr)b->mpz);
+        b->mpz = NULL;
+    }
+    (void)cd;
+}
+
+static void korb_bignum_register_finalizer(struct korb_bignum *b) {
+    GC_register_finalizer(b, korb_bignum_finalizer, NULL, NULL, NULL);
+}
+
 VALUE korb_bignum_new_str(const char *str, int base) {
     struct korb_bignum *b = korb_xmalloc(sizeof(*b));
     b->basic.flags = T_BIGNUM;
@@ -1746,8 +1765,12 @@ VALUE korb_bignum_new_str(const char *str, int base) {
     /* if it fits in fixnum, return fixnum */
     if (mpz_fits_slong_p(*z)) {
         long v = mpz_get_si(*z);
-        if (FIXABLE(v)) return INT2FIX(v);
+        if (FIXABLE(v)) {
+            mpz_clear(*z);
+            return INT2FIX(v);
+        }
     }
+    korb_bignum_register_finalizer(b);
     return (VALUE)b;
 }
 
@@ -1759,6 +1782,7 @@ VALUE korb_bignum_new_long(long v) {
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
     mpz_init_set_si(*z, v);
     b->mpz = z;
+    korb_bignum_register_finalizer(b);
     return (VALUE)b;
 }
 
@@ -1779,6 +1803,7 @@ static VALUE from_mpz(mpz_t z) {
     mpz_init_set(*bz, z);
     mpz_clear(z);
     b->mpz = bz;
+    korb_bignum_register_finalizer(b);
     return (VALUE)b;
 }
 
