@@ -30,6 +30,25 @@
 #include "builtins/boolean.c"
 #include "builtins/proc.c"
 #include "builtins/binding.c"
+VALUE _allocator_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    const char *cn = (!SPECIAL_CONST_P(self) &&
+                      (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE))
+        ? korb_id_name(((struct korb_class *)self)->name) : "?";
+    korb_raise(c, (struct korb_class *)eT,
+               "allocator undefined for %s", cn);
+    return Qnil;
+}
+VALUE _new_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
+    VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+    const char *cn = (!SPECIAL_CONST_P(self) &&
+                      (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE))
+        ? korb_id_name(((struct korb_class *)self)->name) : "?";
+    korb_raise(c, (struct korb_class *)eN,
+               "undefined method 'new' for %s", cn);
+    return Qnil;
+}
+
 #define DEF(klass, name, fn, argc) \
     korb_class_add_method_cfunc((klass), korb_intern(name), (fn), (argc))
 #define DEF_PRIV(klass, name, fn, argc) do {                              \
@@ -228,8 +247,18 @@ void korb_init_builtins(void) {
     DEF(cInt, "next", int_succ, 0);
     DEF(cInt, "pred", int_pred, 0);
 
+    /* Helpers used to forbid `.allocate` / `.new` on classes whose
+     * instances are immediates (Float, Symbol, NilClass, TrueClass,
+     * FalseClass).  CRuby raises TypeError from .allocate and
+     * NoMethodError from .new.  `_allocator_disallowed` and
+     * `_new_disallowed` are defined above. */
     /* Float */
     struct korb_class *cFlt = korb_vm->float_class;
+    {
+        struct korb_class *cFltMeta = korb_singleton_class_of(cFlt);
+        DEF(cFltMeta, "allocate", _allocator_disallowed, -1);
+        DEF(cFltMeta, "new",      _new_disallowed,       -1);
+    }
     korb_const_set(cFlt, korb_intern("INFINITY"), korb_float_new(1.0/0.0));
     korb_const_set(cFlt, korb_intern("NAN"),      korb_float_new(0.0/0.0));
     korb_const_set(cFlt, korb_intern("MAX"),      korb_float_new(1.7976931348623157e+308));
@@ -1182,6 +1211,11 @@ void korb_init_builtins(void) {
 
     /* Symbol */
     struct korb_class *cSym = korb_vm->symbol_class;
+    {
+        struct korb_class *cSymMeta = korb_singleton_class_of(cSym);
+        DEF(cSymMeta, "allocate", _allocator_disallowed, -1);
+        DEF(cSymMeta, "new",      _new_disallowed,       -1);
+    }
     {
         VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv);
         DEF(cSym, "to_sym",  obj_itself, 0);
