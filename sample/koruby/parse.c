@@ -4079,9 +4079,13 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                           struct method_cache *mc = alloc_method_cache();
                           NODE *karg = ALLOC_node_lvar_set(ai,
                               ALLOC_node_sym_lit(intern_constant(tc->parser, rk->name)));
+                          /* Use the canonical required-kwarg helper which
+                           * raises ArgumentError "missing keyword: :name"
+                           * (CRuby semantics) instead of KeyError. */
                           NODE *fetch = ALLOC_node_seq(karg,
                               ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)lambda_kwh_slot),
-                                                     korb_intern("fetch"), 1, ai, mc));
+                                                     korb_intern("__korb_required_kwarg__"),
+                                                     1, ai, mc));
                           NODE *ext = ALLOC_node_lvar_set((uint32_t)slot, fetch);
                           kw_prologue = kw_prologue ? ALLOC_node_seq(kw_prologue, ext) : ext;
                       } else if (PM_NODE_TYPE_P(kp, PM_OPTIONAL_KEYWORD_PARAMETER_NODE)) {
