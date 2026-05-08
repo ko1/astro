@@ -125,6 +125,13 @@ void korb_init_builtins(void) {
     DEF(cObj, "respond_to?", kernel_respond_to_p, 1);
     DEF(cObj, "is_a?", kernel_is_a_p, 1);
     DEF(cObj, "kind_of?", kernel_is_a_p, 1);
+    /* Kernel module copies for `Kernel.{public,private}_instance_methods`
+     * introspection. */
+    if (korb_vm->kernel_module) {
+        DEF(korb_vm->kernel_module, "respond_to?", kernel_respond_to_p, 1);
+        DEF(korb_vm->kernel_module, "is_a?", kernel_is_a_p, 1);
+        DEF(korb_vm->kernel_module, "kind_of?", kernel_is_a_p, 1);
+    }
     DEF(cObj, "methods", obj_methods, -1);
     {
         VALUE obj_public_methods(CTX *c, VALUE self, int argc, VALUE *argv);
@@ -143,6 +150,10 @@ void korb_init_builtins(void) {
     DEF(cObj, "block_given?", kernel_block_given, 0);
     DEF_PRIV(cObj, "throw",        kernel_throw,      -1);
     DEF_PRIV(cObj, "catch",        kernel_catch,      -1);
+    if (korb_vm->kernel_module) {
+        DEF_PRIV(korb_vm->kernel_module, "throw", kernel_throw, -1);
+        DEF_PRIV(korb_vm->kernel_module, "catch", kernel_catch, -1);
+    }
     DEF_PRIV(cObj, "require_relative", kernel_require_relative, 1);
     DEF_PRIV(cObj, "require", kernel_require, 1);
     DEF_PRIV(cObj, "__dir__", kernel_dir, 0);

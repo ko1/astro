@@ -576,15 +576,33 @@ static VALUE kernel_frozen_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
+    /* Coerce non-Symbol/String name via #to_str (CRuby semantics).
+     * Failure or unsuitable type → TypeError. */
+    VALUE name_arg = argv[0];
+    if (!SYMBOL_P(name_arg) &&
+        (SPECIAL_CONST_P(name_arg) || BUILTIN_TYPE(name_arg) != T_STRING)) {
+        if (!SPECIAL_CONST_P(name_arg)) {
+            VALUE rt = korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (c->state == KORB_RAISE) return Qfalse;
+            if (RTEST(rt)) {
+                name_arg = korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qfalse;
+            }
+        }
+    }
     ID name;
-    if (SYMBOL_P(argv[0])) {
-        name = korb_sym2id(argv[0]);
-    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
-        struct korb_string *s = (struct korb_string *)argv[0];
+    if (SYMBOL_P(name_arg)) {
+        name = korb_sym2id(name_arg);
+    } else if (!SPECIAL_CONST_P(name_arg) && BUILTIN_TYPE(name_arg) == T_STRING) {
+        struct korb_string *s = (struct korb_string *)name_arg;
         name = korb_intern_n(s->ptr, s->len);
     } else {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        korb_raise(c, (struct korb_class *)eT, "expected Symbol or String");
+        korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string",
+                   SPECIAL_CONST_P(argv[0]) ? "(special)"
+                       : korb_id_name(korb_class_of_class(argv[0])->name));
         return Qfalse;
     }
     struct korb_class *klass = korb_class_of_class(self);
@@ -642,8 +660,10 @@ static VALUE kernel_block_given(CTX *c, VALUE self, int argc, VALUE *argv) {
  * val; otherwise re-propagates.  No setjmp/longjmp — the existing
  * EVAL_ARG / korb_yield bail-on-non-NORMAL machinery does the work. */
 static VALUE kernel_throw(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) {
-        korb_raise(c, NULL, "throw: tag required");
+    if (argc < 1 || argc > 2) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1..2)", argc);
         return Qnil;
     }
     VALUE tag = argv[0];
