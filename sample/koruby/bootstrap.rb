@@ -476,6 +476,13 @@ end
 class Numeric
   include Comparable
 
+  # Numeric#<=> — default falls back to identity (CRuby returns 0 when
+  # self.equal?(other), nil otherwise).  Subclasses (Integer/Float)
+  # override; this is the shared root.
+  def <=>(other)
+    self.equal?(other) ? 0 : nil
+  end unless method_defined?(:<=>)
+
   # Numeric#fdiv — Float division.  All numeric kinds get this.
   def fdiv(other)
     self.to_f / other.to_f
