@@ -93,6 +93,14 @@ void korb_init_builtins(void) {
     DEF_PRIV(cObj, "print", kernel_print, -1);
     DEF_PRIV(cObj, "raise", kernel_raise, -1);
     DEF_PRIV(cObj, "fail", kernel_raise, -1);  /* alias */
+    /* Also register on Kernel module so `Kernel.private_instance_methods`
+     * reports them (CRuby convention).  Module include propagates to
+     * Object instances. */
+    if (korb_vm->kernel_module) {
+        DEF_PRIV(korb_vm->kernel_module, "print", kernel_print, -1);
+        DEF_PRIV(korb_vm->kernel_module, "raise", kernel_raise, -1);
+        DEF_PRIV(korb_vm->kernel_module, "fail", kernel_raise, -1);
+    }
     if (cKerMeta) {
         DEF(cKerMeta, "print", kernel_print, -1);
         DEF(cKerMeta, "raise", kernel_raise, -1);

@@ -494,12 +494,24 @@ static VALUE kernel_class(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Skip past any FL_SINGLETON metaclasses up the chain — `obj.class`
      * reports the user-facing class (Class for any class object, the
      * ordinary instance class for ordinary objects), not the lazy
-     * metaclass we synthesize for singleton-method propagation. */
+     * metaclass we synthesize for singleton-method propagation.  For
+     * Class instances themselves (String.class, etc.), our metaclasses
+     * may not always have FL_SINGLETON set — also check for the
+     * pseudo-class names that end with "Meta" or are unnamed (anon)
+     * metaclasses, and walk to the standard `Class` constant. */
     VALUE k = korb_class_of(self);
-    while (!SPECIAL_CONST_P(k) && (((struct RBasic *)k)->flags & FL_SINGLETON)) {
+    while (!SPECIAL_CONST_P(k)) {
         struct korb_class *kk = (struct korb_class *)k;
-        if (!kk->super) break;
-        k = (VALUE)kk->super;
+        bool is_singleton = (((struct RBasic *)k)->flags & FL_SINGLETON);
+        /* Self is itself a class/module: its korb_class_of is the
+         * metaclass; collapse all metaclass entries to plain `Class`. */
+        bool self_is_class = !SPECIAL_CONST_P(self) &&
+                             (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE);
+        if (self_is_class && kk != korb_vm->class_class && kk != korb_vm->module_class) {
+            if (kk->super) { k = (VALUE)kk->super; continue; }
+        }
+        if (is_singleton && kk->super) { k = (VALUE)kk->super; continue; }
+        break;
     }
     return k;
 }
