@@ -585,17 +585,43 @@ static VALUE hash_default_proc_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
     if (NIL_P(blk)) {
         h->default_proc = Qnil;
-    } else {
+        return Qnil;
+    }
+    /* Coerce non-Proc via #to_proc (mock objects, etc.). */
+    if (SPECIAL_CONST_P(blk) || BUILTIN_TYPE(blk) != T_PROC) {
+        if (!SPECIAL_CONST_P(blk)) {
+            VALUE rt = korb_funcall(c, blk, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_proc")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                blk = korb_funcall(c, blk, korb_intern("to_proc"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            }
+        }
         if (SPECIAL_CONST_P(blk) || BUILTIN_TYPE(blk) != T_PROC) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
             korb_raise(c, (struct korb_class *)eT,
                        "wrong default_proc type %s (expected Proc)",
-                       korb_id_name(korb_class_of_class(blk)->name));
+                       korb_id_name(korb_class_of_class(argv[0])->name));
             return Qnil;
         }
-        h->default_proc = blk;
     }
-    return blk;
+    /* Lambda with wrong arity → TypeError ("default_proc takes two
+     * arguments (2 for arity)"). */
+    struct korb_proc *p = (struct korb_proc *)blk;
+    if (p->is_lambda) {
+        long ar = (long)p->params_cnt - (long)p->opt_cnt + (long)p->post_cnt;
+        if (ar != 2) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "default_proc takes two arguments (2 for %ld)", ar);
+            return Qnil;
+        }
+    }
+    h->default_proc = blk;
+    /* CRuby: setting default_proc clears default_value. */
+    h->default_value = Qnil;
+    return argv[0];
 }
 
 /* Hash#clear — empty the hash. */
