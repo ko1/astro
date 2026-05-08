@@ -29,6 +29,8 @@ struct frame_context {
      * yield would clobber whatever the sibling wrote. */
     uint32_t block_floor;
     bool is_block;        /* true for block frames (share parent fp) */
+    bool is_def;          /* true for method-def frames (yield valid here
+                           * and in any block lexically nested in this) */
     /* Set to true when a child block / lambda is encountered inside
      * this frame's body.  Propagated to the proc at korb_proc_new
      * time as `creates_proc`, so korb_yield can pick a fresh-env
@@ -56,6 +58,10 @@ struct transduce_context {
     /* Bias added to every reported line number (for `eval(src, file, line)`
      * where __LINE__ inside src should start at `line`).  0 = no bias. */
     int line_offset;
+    /* Set by transduction when we detect a static error (e.g. `yield`
+     * outside a method).  Bubbles up to koruby_parse_with_scope so eval
+     * can raise SyntaxError. */
+    char *transduce_err;
 };
 
 static NODE *T(struct transduce_context *tc, pm_node_t *n);
@@ -96,6 +102,7 @@ static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *loca
     f->prev = tc->frame;
     f->locals = locals;
     f->is_block = is_block;
+    f->is_def = false;  /* PM_DEF_NODE flips this on after push_frame */
     /* For block frames, slot_base is parent's current arg_index — i.e. just
      * above any previously-staged value.  This sits the block's locals on
      * top of any temporaries the parent had reserved, which is correct for
@@ -2793,6 +2800,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           int block_slot = -1;
           uint32_t kwh_save_slot = (uint32_t)-1;
           push_frame(tc, &n->locals, false);
+          tc->frame->is_def = true;  /* enables `yield` inside body / nested blocks */
           /* param_position → fp slot.  Identity by default; if any
            * required param is a multi_target whose holder would overlap
            * the actual param slot of a later named param, we allocate
@@ -3346,6 +3354,21 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
 
       case PM_YIELD_NODE: {
           pm_yield_node_t *n = (pm_yield_node_t *)node;
+          /* yield is only valid inside a method body (def) or a block
+           * lexically nested in one.  If we walk frames upward and hit
+           * a class/module/singleton/program before a method def, the
+           * yield is invalid — CRuby raises SyntaxError "Invalid yield". */
+          {
+              bool yield_ok = false;
+              for (struct frame_context *f = tc->frame; f; f = f->prev) {
+                  if (f->is_def) { yield_ok = true; break; }
+                  if (!f->is_block) break;  /* class/module/program barrier */
+              }
+              if (!yield_ok && !tc->transduce_err) {
+                  tc->transduce_err = korb_xmalloc_atomic(64);
+                  memcpy(tc->transduce_err, "Invalid yield", 14);
+              }
+          }
           uint32_t arg_idx = arg_index(tc);
           /* Detect splat in args.  If any arg is `*arr`, lower to a
            * variadic yield via an array (`korb_yield(c, ary.length, ary)`)
@@ -5465,6 +5488,13 @@ koruby_parse_with_scope_line(const char *src, size_t len, const char *filename,
     g_skip_program_scope = eval_mode;
     NODE *r = T(&tc, root);
     g_skip_program_scope = prev_skip_scope;
+
+    /* Static error caught during transduction (e.g. yield outside method).
+     * Surface as if it were a parse-time SyntaxError. */
+    if (tc.transduce_err && err_msg && !*err_msg) {
+        *err_msg = tc.transduce_err;
+        r = NULL;
+    }
 
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
