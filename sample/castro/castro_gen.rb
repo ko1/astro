@@ -70,8 +70,8 @@ class CastroNodeDef < ASTroGen::NodeDef
       {
           uint32_t func_idx = n->u.#{@name}.func_idx;
           uint32_t arg_count = n->u.#{@name}.arg_count;
-          uint32_t arg_index = n->u.#{@name}.arg_index;
-          uint32_t local_cnt = n->u.#{@name}.local_cnt;
+          uint32_t arg_off = n->u.#{@name}.arg_off;
+          uint32_t frame_bytes = n->u.#{@name}.frame_bytes;
           extern NODE **castro_specialize_func_bodies;
           if (!castro_specialize_func_bodies) {
               fprintf(stderr, "SPECIALIZE_#{@name}: func_bodies snapshot not initialised\\n");
@@ -84,7 +84,7 @@ class CastroNodeDef < ASTroGen::NodeDef
           n->head.dispatcher_name = dispatcher_name;
 
           fprintf(fp, "// (#{@name} idx=%u arg=%u local=%u) -> SD_%lx\\n",
-                  func_idx, arg_index, local_cnt, (unsigned long)callee_hash);
+                  func_idx, arg_off, frame_bytes, (unsigned long)callee_hash);
           fprintf(fp, "extern RESULT SD_%lx(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                   (unsigned long)callee_hash);
 
@@ -98,7 +98,7 @@ class CastroNodeDef < ASTroGen::NodeDef
           // when the inlined call chain doesn't escape `&F`, which is
           // the whole point of this transform (see node.def
           // node_call's commentary).
-          fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+          fprintf(fp, "    _Alignas(8) char F[%u];\\n", frame_bytes);
           // Argument copy uses scalar `.i` field assignment rather
           // than aggregate `F[i] = fp[j]`.  Both move the same 8
           // bytes (VALUE is a union of identically-sized members
@@ -123,8 +123,14 @@ class CastroNodeDef < ASTroGen::NodeDef
           // call site (ackermann SD: 508 -> 318 bytes text, no AVX
           // setup per call).  Sole risk is non-conforming source
           // that reads an uninit local — that's already UB upstream.
+          // Args are at byte offset `arg_off` in caller's fp, each in
+          // an 8-byte slot; in F they sit at byte offsets 0, 8, 16, ...
+          // Use memcpy to avoid strict-aliasing pessimisation between the
+          // VALUE-typed write and the typed (int32 etc.) read inside the
+          // callee body.  gcc lowers an 8-byte memcpy to a single mov.
           for (uint32_t i = 0; i < arg_count; i++) {
-              fprintf(fp, "    F[%u].i = fp[%u].i;\\n", i, arg_index + i);
+              fprintf(fp, "    __builtin_memcpy(F + %u, (char *)fp + %u, 8);\\n",
+                      i * 8, arg_off + i * 8);
           }
           // In valid C, BREAK / CONTINUE / GOTO are caught inside the
           // callee, RETURN is its normal exit — discard the callee's
@@ -134,7 +140,7 @@ class CastroNodeDef < ASTroGen::NodeDef
           // avoid a named `RESULT v` temp, which leaves CLOBBER(eol)
           // markers in the surrounding loop body and blocks gcc's
           // tree-ssa loop deletion (see astrogen.rb's same fix).
-          fprintf(fp, "    return RESULT_OK(SD_%lx(c, body, F).value);\\n",
+          fprintf(fp, "    return RESULT_OK(SD_%lx(c, body, (VALUE *)F).value);\\n",
                   (unsigned long)callee_hash);
           fprintf(fp, "}\\n\\n");
       }
@@ -156,8 +162,8 @@ class CastroNodeDef < ASTroGen::NodeDef
       SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
       {
           uint32_t arg_count = n->u.#{@name}.arg_count;
-          uint32_t arg_index = n->u.#{@name}.arg_index;
-          uint32_t local_cnt = n->u.#{@name}.local_cnt;
+          uint32_t arg_off = n->u.#{@name}.arg_off;
+          uint32_t frame_bytes = n->u.#{@name}.frame_bytes;
           NODE *callee = n->u.#{@name}.callee;
           if (!callee) {
               fprintf(stderr, "SPECIALIZE_#{@name}: callee not patched\\n");
@@ -173,7 +179,7 @@ class CastroNodeDef < ASTroGen::NodeDef
           const char *callee_disp = DISPATCHER_NAME(callee);
 
           fprintf(fp, "// (#{@name} arg=%u local=%u)\\n",
-                  arg_index, local_cnt);
+                  arg_off, frame_bytes);
           if (callee->head.flags.no_inline) {
               fprintf(fp, "extern RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                       callee_disp);
@@ -186,14 +192,20 @@ class CastroNodeDef < ASTroGen::NodeDef
           fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
           fprintf(fp, "%s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp)\\n{\\n",
                   dispatcher_name);
-          fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+          fprintf(fp, "    _Alignas(8) char F[%u];\\n", frame_bytes);
           // Scalar `.i` arg copy + skipped zero-init for trailing
           // slots, both for the same reasons as in
           // castro_build_call_specializer above.
+          // Args are at byte offset `arg_off` in caller's fp, each in
+          // an 8-byte slot; in F they sit at byte offsets 0, 8, 16, ...
+          // Use memcpy to avoid strict-aliasing pessimisation between the
+          // VALUE-typed write and the typed (int32 etc.) read inside the
+          // callee body.  gcc lowers an 8-byte memcpy to a single mov.
           for (uint32_t i = 0; i < arg_count; i++) {
-              fprintf(fp, "    F[%u].i = fp[%u].i;\\n", i, arg_index + i);
+              fprintf(fp, "    __builtin_memcpy(F + %u, (char *)fp + %u, 8);\\n",
+                      i * 8, arg_off + i * 8);
           }
-          fprintf(fp, "    return RESULT_OK(%s(c, n->u.#{@name}.callee, F).value);\\n",
+          fprintf(fp, "    return RESULT_OK(%s(c, n->u.#{@name}.callee, (VALUE *)F).value);\\n",
                   callee_disp);
           fprintf(fp, "}\\n\\n");
       }
@@ -208,8 +220,11 @@ class CastroNodeDef < ASTroGen::NodeDef
     def castro_build_callN_recursive_specializer(narg)
       arg_dispatch = (0...narg).map { |i|
         <<~ARG.chomp
-              fprintf(fp, "    F[#{i}] = ");
+              fprintf(fp, "    {\\n");
+              fprintf(fp, "        VALUE __arg_#{i} = ");
               fprintf(fp, "%s(c, n->u.#{@name}.a#{i}, fp).value;\\n", DISPATCHER_NAME(n->u.#{@name}.a#{i}));
+              fprintf(fp, "        __builtin_memcpy(F + #{i*8}, &__arg_#{i}, 8);\\n");
+              fprintf(fp, "    }\\n");
         ARG
       }.join("\n")
 
@@ -226,7 +241,7 @@ class CastroNodeDef < ASTroGen::NodeDef
       SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
       {
           uint32_t func_idx = n->u.#{@name}.func_idx;
-          uint32_t local_cnt = n->u.#{@name}.local_cnt;
+          uint32_t frame_bytes = n->u.#{@name}.frame_bytes;
           extern NODE **castro_specialize_func_bodies;
           if (!castro_specialize_func_bodies) {
               fprintf(stderr, "SPECIALIZE_#{@name}: func_bodies snapshot not initialised\\n");
@@ -241,7 +256,7 @@ class CastroNodeDef < ASTroGen::NodeDef
           n->head.dispatcher_name = dispatcher_name;
 
           fprintf(fp, "// (#{@name} idx=%u local=%u) -> SD_%lx\\n",
-                  func_idx, local_cnt, (unsigned long)callee_hash);
+                  func_idx, frame_bytes, (unsigned long)callee_hash);
           fprintf(fp, "extern RESULT SD_%lx(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                   (unsigned long)callee_hash);
 
@@ -252,9 +267,9 @@ class CastroNodeDef < ASTroGen::NodeDef
           fprintf(fp, "%s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp)\\n{\\n",
                   dispatcher_name);
           fprintf(fp, "    NODE *body = c->func_bodies[%u];\\n", func_idx);
-          fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+          fprintf(fp, "    _Alignas(8) char F[%u];\\n", frame_bytes);
       #{arg_dispatch}
-          fprintf(fp, "    return RESULT_OK(SD_%lx(c, body, F).value);\\n",
+          fprintf(fp, "    return RESULT_OK(SD_%lx(c, body, (VALUE *)F).value);\\n",
                   (unsigned long)callee_hash);
           fprintf(fp, "}\\n\\n");
       }
@@ -268,8 +283,11 @@ class CastroNodeDef < ASTroGen::NodeDef
     def castro_build_callN_static_specializer(narg)
       arg_dispatch = (0...narg).map { |i|
         <<~ARG.chomp
-              fprintf(fp, "    F[#{i}] = ");
+              fprintf(fp, "    {\\n");
+              fprintf(fp, "        VALUE __arg_#{i} = ");
               fprintf(fp, "%s(c, n->u.#{@name}.a#{i}, fp).value;\\n", DISPATCHER_NAME(n->u.#{@name}.a#{i}));
+              fprintf(fp, "        __builtin_memcpy(F + #{i*8}, &__arg_#{i}, 8);\\n");
+              fprintf(fp, "    }\\n");
         ARG
       }.join("\n")
 
@@ -285,7 +303,7 @@ class CastroNodeDef < ASTroGen::NodeDef
       static void
       SPECIALIZE_#{@name}(FILE *fp, NODE *n, bool is_public)
       {
-          uint32_t local_cnt = n->u.#{@name}.local_cnt;
+          uint32_t frame_bytes = n->u.#{@name}.frame_bytes;
           NODE *callee = n->u.#{@name}.callee;
           if (!callee) {
               fprintf(stderr, "SPECIALIZE_#{@name}: callee not patched\\n");
@@ -298,7 +316,7 @@ class CastroNodeDef < ASTroGen::NodeDef
           n->head.dispatcher_name = dispatcher_name;
           const char *callee_disp = DISPATCHER_NAME(callee);
 
-          fprintf(fp, "// (#{@name} local=%u)\\n", local_cnt);
+          fprintf(fp, "// (#{@name} local=%u)\\n", frame_bytes);
           if (callee->head.flags.no_inline) {
               fprintf(fp, "extern RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                       callee_disp);
@@ -312,9 +330,9 @@ class CastroNodeDef < ASTroGen::NodeDef
           fprintf(fp, "__attribute__((no_stack_protector)) RESULT\\n");
           fprintf(fp, "%s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp)\\n{\\n",
                   dispatcher_name);
-          fprintf(fp, "    VALUE F[%u];\\n", local_cnt);
+          fprintf(fp, "    _Alignas(8) char F[%u];\\n", frame_bytes);
       #{arg_dispatch}
-          fprintf(fp, "    return RESULT_OK(%s(c, n->u.#{@name}.callee, F).value);\\n",
+          fprintf(fp, "    return RESULT_OK(%s(c, n->u.#{@name}.callee, (VALUE *)F).value);\\n",
                   callee_disp);
           fprintf(fp, "}\\n\\n");
       }

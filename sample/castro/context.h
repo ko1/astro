@@ -74,20 +74,17 @@ typedef struct CTX_struct {
     VALUE *fp;
     VALUE *env_end;
 
-    // Globals: a flat VALUE region indexed by slot.  parse.rb
-    // determines a slot index for each declared global; the runtime
-    // allocates `globals_size` slots up-front, fills them with the
-    // declared initializers, then leaves them in place for the rest of
-    // the program.  Arrays / structs occupy multiple consecutive slots.
+    // Globals: a packed byte region indexed by byte offset.  parse.rb
+    // assigns each global a byte offset honoring its alignment (e.g.
+    // 4-byte ints get 4-byte aligned slots).  The runtime allocates
+    // `globals_size` bytes upfront, runs the initializers, and leaves
+    // the buffer in place for the rest of the program.
     //
     // `restrict` lets gcc prove that pointers derived from `globals`
     // (= every `node_addr_global` pointer that flows into a load/store)
-    // don't alias the caller-allocated frame `VALUE * restrict fp` that
-    // every SD takes as its third parameter.  Without this, gcc has to
-    // reload `fp[i]` after every store-through-globals (e.g. `data[j] = t`
-    // in quicksort's partition loop) because both pointers ultimately
-    // type-pun int64_t through their respective unions.
-    VALUE * restrict globals;
+    // don't alias the caller-allocated frame `fp` that every SD takes
+    // as its third parameter.
+    void * restrict globals;
     size_t globals_size;
 
     unsigned int func_count;

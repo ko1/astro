@@ -4,47 +4,36 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
 struct castro_option OPTION;
 
 // =====================================================================
-// VALUE-slot string handling
+// String literal interning (byte-precise)
 // =====================================================================
 //
-// Castro stores 1 byte-of-source per VALUE slot — `"hello"` becomes
-// 6 slots {.i = 'h'}, ..., {.i = '\0'}.  This makes `s[i]` fall out of
-// the same slot-indexed pointer arithmetic the rest of the language
-// uses, at the cost of a 8x space hit and the printf("%s") shim below
-// that materialises a contiguous char buffer for the host libc call.
-//
-// Literals are interned in a small hash table so identical strings
-// share storage and can be cheaply compared by address.
+// Strings in castro are real C `char[]` byte arrays.  Literals are
+// interned in a small dedup table so identical literals share storage
+// (cheap pointer-equality compare) and so we don't leak duplicates on
+// every parse_literal call.
 
-struct intern_entry { char *key; size_t klen; VALUE *val; };
+struct intern_entry { char *key; size_t klen; };
 static struct {
     struct intern_entry *items;
     size_t cnt, capa;
 } intern_pool;
 
-static VALUE *
-castro_alloc_slot_string(const char *s, size_t len)
-{
-    VALUE *buf = (VALUE *)calloc(len + 1, sizeof(VALUE));
-    for (size_t i = 0; i < len; i++) buf[i].i = (unsigned char)s[i];
-    buf[len].i = 0;
-    return buf;
-}
-
-VALUE *
+void *
 castro_intern_string(const char *s)
 {
     size_t len = strlen(s);
     for (size_t i = 0; i < intern_pool.cnt; i++) {
         if (intern_pool.items[i].klen == len &&
             memcmp(intern_pool.items[i].key, s, len) == 0) {
-            return intern_pool.items[i].val;
+            return intern_pool.items[i].key;
         }
     }
     if (intern_pool.cnt == intern_pool.capa) {
@@ -57,121 +46,21 @@ castro_intern_string(const char *s)
     memcpy(e->key, s, len);
     e->key[len] = '\0';
     e->klen = len;
-    e->val = castro_alloc_slot_string(s, len);
-    return e->val;
+    return e->key;
 }
 
-// Materialise a VALUE-slot string into a contiguous char buffer for
-// passing to host libc (printf %s, etc.).  Caller frees.
-static char *
-castro_slot_to_cstring(const VALUE *s)
-{
-    if (s == NULL) return NULL;
-    size_t len = 0;
-    while (s[len].i != 0) len++;
-    char *buf = malloc(len + 1);
-    for (size_t i = 0; i < len; i++) buf[i] = (char)s[i].i;
-    buf[len] = '\0';
-    return buf;
-}
-
-int64_t castro_strlen(const VALUE *s) {
-    int64_t l = 0;
-    if (!s) return 0;
-    while (s[l].i != 0) l++;
-    return l;
-}
-
-int64_t castro_strcmp(const VALUE *a, const VALUE *b) {
-    while (a->i && a->i == b->i) { a++; b++; }
-    return (int64_t)((unsigned char)a->i) - (int64_t)((unsigned char)b->i);
-}
-
-int64_t castro_strncmp(const VALUE *a, const VALUE *b, int64_t n) {
-    while (n > 0 && a->i && a->i == b->i) { a++; b++; n--; }
-    if (n == 0) return 0;
-    return (int64_t)((unsigned char)a->i) - (int64_t)((unsigned char)b->i);
-}
-
-int64_t castro_memcmp(const VALUE *a, const VALUE *b, int64_t n) {
-    // memcmp distinguishes {0,0,...} from a shorter buffer; unlike
-    // strncmp it doesn't stop at NUL.  Compare exactly `n` slots.
-    for (int64_t i = 0; i < n; i++) {
-        unsigned char av = (unsigned char)a[i].i;
-        unsigned char bv = (unsigned char)b[i].i;
-        if (av != bv) return (int64_t)av - (int64_t)bv;
-    }
-    return 0;
-}
-
-VALUE *castro_strcpy(VALUE *dst, const VALUE *src) {
-    VALUE *d = dst;
-    while ((d->i = src->i) != 0) { d++; src++; }
-    return dst;
-}
-
-VALUE *castro_strncpy(VALUE *dst, const VALUE *src, int64_t n) {
-    VALUE *d = dst;
-    while (n > 0 && src->i) { d->i = src->i; d++; src++; n--; }
-    while (n > 0) { d->i = 0; d++; n--; }
-    return dst;
-}
-
-VALUE *castro_strcat(VALUE *dst, const VALUE *src) {
-    VALUE *d = dst;
-    while (d->i) d++;
-    while ((d->i = src->i) != 0) { d++; src++; }
-    return dst;
-}
-
-void *castro_memset(VALUE *dst, int64_t v, int64_t n) {
-    for (int64_t i = 0; i < n; i++) dst[i].i = (unsigned char)v;
-    return dst;
-}
-
-// Typed slot fill: fills `count` consecutive int slots starting at `base`
-// with `value`.  parse.rb emits a call to this for the
-// `for (i=s; i<e; i++) array[i] = const_int` idiom, which is sieve's
-// `prime[i] = 1` initialization.  As a standalone function compiled
-// with -O3, gcc readily vectorizes this with AVX-256 (4 int64 stores
-// per iteration) — much faster than the per-element scalar store an
-// inlined SD chain emits.
+// Typed int32 fill helper: fills `count` consecutive int32 elements
+// starting at `base` with `value`.  parse.rb emits a call to this for
+// the `for (i=s; i<e; i++) array[i] = const_int` idiom (e.g. sieve's
+// `prime[i] = 1` init).  Compiled standalone with -O3, gcc readily
+// AVX-vectorises it (8 int32 stores per iteration on AVX2).
 __attribute__((noinline))
-void castro_fill_i(int64_t * __restrict__ base, int64_t value, int64_t count)
+void castro_fill_i32(int32_t * __restrict__ base, int32_t value, int64_t count)
 {
     for (int64_t i = 0; i < count; i++) base[i] = value;
 }
 
-void *castro_memcpy(VALUE *dst, const VALUE *src, int64_t n) {
-    for (int64_t i = 0; i < n; i++) dst[i] = src[i];
-    return dst;
-}
-
-int64_t castro_atoi(const VALUE *s) {
-    if (!s) return 0;
-    while (s->i == ' ' || s->i == '\t') s++;
-    int sign = 1;
-    if (s->i == '-') { sign = -1; s++; }
-    else if (s->i == '+') s++;
-    int64_t v = 0;
-    while (s->i >= '0' && s->i <= '9') { v = v * 10 + (s->i - '0'); s++; }
-    return sign * v;
-}
-
 void castro_exit(int code) { exit(code); }
-
-int castro_puts(const VALUE *slot_str)
-{
-    if (!slot_str) return EOF;
-    int total = 0;
-    while (slot_str->i != 0) {
-        putchar((int)slot_str->i);
-        slot_str++;
-        total++;
-    }
-    putchar('\n');
-    return total + 1;
-}
 
 // =====================================================================
 // printf-family runtime
@@ -184,13 +73,13 @@ int castro_puts(const VALUE *slot_str)
 // preserved so width-correct integer formatting still works.
 
 int
-castro_run_printf(const char *fmt_in, VALUE *args, uint32_t arg_count)
+castro_run_printf(const char *fmt, VALUE *args, uint32_t arg_count)
 {
-    // The format string in castro is itself a VALUE-slot array (one
-    // byte per slot in .i), so first lower it to a contiguous C string
-    // we can walk char by char.
-    char *fmt_buf = castro_slot_to_cstring((const VALUE *)fmt_in);
-    const char *fmt = fmt_buf ? fmt_buf : "";
+    // Byte-precise: `fmt` is a real C string (`char *`).  Args remain
+    // 8-byte VALUE slots (the printf calling convention preserves
+    // slot-per-arg even after the byte-precise frame transition; each
+    // slot's lower bytes hold the typed value).
+    if (!fmt) fmt = "";
     int total = 0;
     uint32_t arg_idx = 0;
     while (*fmt) {
@@ -209,9 +98,7 @@ castro_run_printf(const char *fmt_in, VALUE *args, uint32_t arg_count)
         char buf[64];
         char *bp = buf;
         *bp++ = '%';
-        // flags
         while (*p && strchr("-+ #0'", *p)) *bp++ = *p++;
-        // width (digits or *)
         if (*p == '*') {
             if (arg_idx >= arg_count) goto verbatim;
             int w = (int)args[arg_idx++].i;
@@ -220,7 +107,6 @@ castro_run_printf(const char *fmt_in, VALUE *args, uint32_t arg_count)
         } else {
             while (*p >= '0' && *p <= '9') *bp++ = *p++;
         }
-        // precision
         if (*p == '.') {
             *bp++ = *p++;
             if (*p == '*') {
@@ -232,7 +118,6 @@ castro_run_printf(const char *fmt_in, VALUE *args, uint32_t arg_count)
                 while (*p >= '0' && *p <= '9') *bp++ = *p++;
             }
         }
-        // length modifier
         const char *lstart = p;
         while (*p && strchr("hljztL", *p)) p++;
         size_t llen = p - lstart;
@@ -268,14 +153,9 @@ castro_run_printf(const char *fmt_in, VALUE *args, uint32_t arg_count)
           case 'c':
             n = printf(buf, (int)v.i);
             break;
-          case 's': {
-            // VALUE-slot strings need to be lowered into contiguous char
-            // bytes for host printf to read them as a C string.
-            char *cs = v.p ? castro_slot_to_cstring((const VALUE *)v.p) : NULL;
-            n = printf(buf, cs ? cs : "(null)");
-            free(cs);
+          case 's':
+            n = printf(buf, v.p ? (const char *)v.p : "(null)");
             break;
-          }
           case 'p':
             n = printf(buf, v.p);
             break;
@@ -290,7 +170,6 @@ verbatim:
         if (n > 0) total += n;
         fmt = p + 1;
     }
-    free(fmt_buf);
     return total;
 }
 
@@ -683,7 +562,14 @@ build_op(sx_lexer *l, tok_t op)
         {"cast_id",     ALLOC_node_cast_id},
         {"cast_di",     ALLOC_node_cast_di},
         {"load_i",      ALLOC_node_load_i},
+        {"load_i32",    ALLOC_node_load_i32},
+        {"load_u32",    ALLOC_node_load_u32},
+        {"load_i16",    ALLOC_node_load_i16},
+        {"load_u16",    ALLOC_node_load_u16},
+        {"load_i8",     ALLOC_node_load_i8},
+        {"load_u8",     ALLOC_node_load_u8},
         {"load_d",      ALLOC_node_load_d},
+        {"load_f32",    ALLOC_node_load_f32},
         {"load_p",      ALLOC_node_load_p},
         {"call_putchar",ALLOC_node_putchar},
         {"call_puts",   ALLOC_node_puts},
@@ -737,7 +623,11 @@ build_op(sx_lexer *l, tok_t op)
         {"do_while",        ALLOC_node_do_while},
         {"while",           ALLOC_node_while},
         {"store_i",         ALLOC_node_store_i},
+        {"store_i32",       ALLOC_node_store_i32},
+        {"store_i16",       ALLOC_node_store_i16},
+        {"store_i8",        ALLOC_node_store_i8},
         {"store_d",         ALLOC_node_store_d},
+        {"store_f32",       ALLOC_node_store_f32},
         {"store_p",         ALLOC_node_store_p},
         {"ptr_add",         ALLOC_node_ptr_add},
         {"ptr_sub_i",       ALLOC_node_ptr_sub_i},
@@ -952,7 +842,10 @@ load_program(CTX *c, sx_lexer *l)
     int64_t globals_size = read_int(l);
     int64_t nfuncs = read_int(l);
     if (globals_size > 0) {
-        c->globals = calloc((size_t)globals_size, sizeof(VALUE));
+        // `globals_size` from the SX header is in BYTES (parse.rb's
+        // byte-precise layout).  calloc zero-fills, matching C's
+        // implicit zero-init for static-storage globals.
+        c->globals = calloc((size_t)globals_size, 1);
         c->globals_size = (size_t)globals_size;
     }
     c->func_count = (unsigned)nfuncs;

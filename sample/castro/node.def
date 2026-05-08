@@ -46,73 +46,154 @@ node_lit_str(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const cha
 }
 
 // --- locals ---------------------------------------------------------
+//
+// Frame is `_Alignas(8) char F[bytes]` (allocated by the call_static
+// specializer); parse.rb assigns each local a byte offset honoring its
+// alignment.  `lget` / `lset` here read/write 8 bytes — they're emitted
+// only for 8-byte-wide locals (long, double, pointer).  Sub-word
+// (int / short / char / float) goes through `addr_local(off)` + a
+// typed `load_T` / `store_T`.
 
 NODE_DEF
-node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx)
+node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off)
 {
-    return RESULT_OK(fp[idx]);
+    return RESULT_OK(*(VALUE *)((char *)fp + off));
 }
 
 NODE_DEF
-node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx, NODE *rhs)
+node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off, NODE *rhs)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, rhs));
-    fp[idx] = v;
+    *(VALUE *)((char *)fp + off) = v;
     return RESULT_OK(v);
+}
+
+// 4-byte int slot fast-path (parse.rb emits this for `int` locals).
+NODE_DEF
+node_lget_i32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off)
+{
+    int32_t * restrict ip = (int32_t *)((char *)fp + off);
+    return RESULT_OK((VALUE){.i = (int64_t)*ip});
+}
+
+NODE_DEF
+node_lset_i32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off, NODE *rhs)
+{
+    int64_t v = UNWRAP(EVAL_ARG(c, rhs)).i;
+    int32_t * restrict ip = (int32_t *)((char *)fp + off);
+    *ip = (int32_t)v;
+    return RESULT_OK((VALUE){.i = (int64_t)(int32_t)v});
 }
 
 // --- globals --------------------------------------------------------
 //
-// Globals live in c->globals (a flat VALUE region).  parse.rb assigns
-// each global a slot index; arrays and structs span multiple consecutive
-// slots starting at their head index.
+// `c->globals` is a packed byte buffer sized at load_program.  parse.rb
+// assigns each global a byte offset (with type alignment / padding).
+// `gget` / `gset` are the 8-byte fast path; sub-word goes via
+// `addr_global` + typed load/store.
 
 NODE_DEF
-node_gget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx)
+node_gget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off)
 {
-    return RESULT_OK(c->globals[idx]);
+    return RESULT_OK(*(VALUE *)((char *)c->globals + off));
 }
 
 NODE_DEF
-node_gset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx, NODE *rhs)
+node_gset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off, NODE *rhs)
 {
     VALUE v = UNWRAP(EVAL_ARG(c, rhs));
-    c->globals[idx] = v;
+    *(VALUE *)((char *)c->globals + off) = v;
     return RESULT_OK(v);
+}
+
+NODE_DEF
+node_gget_i32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off)
+{
+    int32_t * restrict ip = (int32_t *)((char *)c->globals + off);
+    return RESULT_OK((VALUE){.i = (int64_t)*ip});
+}
+
+NODE_DEF
+node_gset_i32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off, NODE *rhs)
+{
+    int64_t v = UNWRAP(EVAL_ARG(c, rhs)).i;
+    int32_t * restrict ip = (int32_t *)((char *)c->globals + off);
+    *ip = (int32_t)v;
+    return RESULT_OK((VALUE){.i = (int64_t)(int32_t)v});
 }
 
 // --- address-of -----------------------------------------------------
 
 NODE_DEF
-node_addr_local(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx)
+node_addr_local(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off)
 {
-    return RESULT_OK((VALUE){.p = &fp[idx]});
+    return RESULT_OK((VALUE){.p = (char *)fp + off});
 }
 
 NODE_DEF
-node_addr_global(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx)
+node_addr_global(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off)
 {
-    return RESULT_OK((VALUE){.p = &c->globals[idx]});
+    return RESULT_OK((VALUE){.p = (char *)c->globals + off});
 }
 
 // --- pointer load / store -------------------------------------------
 //
-// All castro data lives in 8-byte VALUE slots; pointer arithmetic is
-// done in slot units (see node_ptr_add).  The load_x / store_x family
-// reads or writes the corresponding union slot through the pointer.
-// parse.rb picks the variant matching the pointer's pointee type.
+// Byte-precise: parse.rb picks the variant matching the pointee type.
+// Sub-word loads sign- or zero-extend into VALUE.i; sub-word stores
+// truncate from VALUE.i (or VALUE.d for float).
 
-// Loads/stores go through typed `int64_t *` / `double *` rather than
-// through the `VALUE` union so gcc's TBAA can prove they don't alias
-// `VALUE *fp`.  Without this gcc treats every store_i as potentially
-// aliasing the frame and reloads loop locals (i, j, n) from `fp[]`
-// every iteration of e.g. sieve's mark loop.
-
+// 8-byte int (long, long long, size_t, …)
 NODE_DEF
 node_load_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
     int64_t * restrict ip = (int64_t *)UNWRAP(EVAL_ARG(c, p)).p;
     return RESULT_OK((VALUE){.i = *ip});
+}
+
+// 4-byte int (sign-extended)
+NODE_DEF
+node_load_i32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
+{
+    int32_t * restrict ip = (int32_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.i = (int64_t)*ip});
+}
+
+// 4-byte unsigned int (zero-extended)
+NODE_DEF
+node_load_u32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
+{
+    uint32_t * restrict ip = (uint32_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.i = (int64_t)(uint64_t)*ip});
+}
+
+// 2-byte signed (sign-extended)
+NODE_DEF
+node_load_i16(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
+{
+    int16_t * restrict ip = (int16_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.i = (int64_t)*ip});
+}
+
+NODE_DEF
+node_load_u16(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
+{
+    uint16_t * restrict ip = (uint16_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.i = (int64_t)(uint64_t)*ip});
+}
+
+// 1-byte signed
+NODE_DEF
+node_load_i8(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
+{
+    int8_t * restrict ip = (int8_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.i = (int64_t)*ip});
+}
+
+NODE_DEF
+node_load_u8(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
+{
+    uint8_t * restrict ip = (uint8_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.i = (int64_t)(uint64_t)*ip});
 }
 
 NODE_DEF
@@ -122,22 +203,20 @@ node_load_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
     return RESULT_OK((VALUE){.d = *dp});
 }
 
+// 4-byte float, promoted to double in VALUE.d
+NODE_DEF
+node_load_f32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
+{
+    float * restrict fpv = (float *)UNWRAP(EVAL_ARG(c, p)).p;
+    return RESULT_OK((VALUE){.d = (double)*fpv});
+}
+
 NODE_DEF
 node_load_p(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p)
 {
     void ** restrict pp = (void **)UNWRAP(EVAL_ARG(c, p)).p;
     return RESULT_OK((VALUE){.p = *pp});
 }
-
-// `int64_t * restrict ip` on the load/store helpers tells gcc that the
-// pointer used to reach `c->globals[i]` (or any other addressable storage
-// reached through `node_addr_global` / `node_ptr_add`) does not alias the
-// caller-allocated frame `fp[]` for the surrounding loop iteration.
-// Without this hint, after a `*ip = v` store in qs's partition body
-// gcc reloads `fp[i]` (= i, j, hi, pivot) because it can't prove the
-// stored-through pointer doesn't reach into `fp[]`.  With both fp and
-// the typed pointer marked restrict, the inner loop drops 2-3 reloads
-// per iter (qs ~14% on long-bench).
 
 NODE_DEF
 node_store_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
@@ -146,6 +225,33 @@ node_store_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, 
     int64_t vv = UNWRAP(EVAL_ARG(c, v)).i;
     *ip = vv;
     return RESULT_OK((VALUE){.i = vv});
+}
+
+NODE_DEF
+node_store_i32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
+{
+    int32_t * restrict ip = (int32_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    int64_t vv = UNWRAP(EVAL_ARG(c, v)).i;
+    *ip = (int32_t)vv;
+    return RESULT_OK((VALUE){.i = (int64_t)(int32_t)vv});
+}
+
+NODE_DEF
+node_store_i16(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
+{
+    int16_t * restrict ip = (int16_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    int64_t vv = UNWRAP(EVAL_ARG(c, v)).i;
+    *ip = (int16_t)vv;
+    return RESULT_OK((VALUE){.i = (int64_t)(int16_t)vv});
+}
+
+NODE_DEF
+node_store_i8(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
+{
+    int8_t * restrict ip = (int8_t *)UNWRAP(EVAL_ARG(c, p)).p;
+    int64_t vv = UNWRAP(EVAL_ARG(c, v)).i;
+    *ip = (int8_t)vv;
+    return RESULT_OK((VALUE){.i = (int64_t)(int8_t)vv});
 }
 
 NODE_DEF
@@ -158,20 +264,33 @@ node_store_d(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, 
 }
 
 NODE_DEF
+node_store_f32(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
+{
+    float * restrict fpv = (float *)UNWRAP(EVAL_ARG(c, p)).p;
+    double vv = UNWRAP(EVAL_ARG(c, v)).d;
+    *fpv = (float)vv;
+    return RESULT_OK((VALUE){.d = (double)(float)vv});
+}
+
+NODE_DEF
 node_store_p(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *v)
 {
     void *pv = UNWRAP(EVAL_ARG(c, p)).p;
     void *vv = UNWRAP(EVAL_ARG(c, v)).p;
-    ((VALUE *)pv)->p = vv;
+    *(void **)pv = vv;
     return RESULT_OK((VALUE){.p = vv});
 }
 
-// p + i  /  p - i  /  p1 - p2 — all in slot units (see header note).
+// p + n / p - n / p1 - p2 — byte stride.  parse.rb pre-multiplies any
+// element index by `sizeof(*p)` before handing it here, so the runtime
+// is just a plain `(char *)p + off_bytes`.  Same for diff (returns the
+// byte difference; parse.rb divides by sizeof(*p) at the use site to
+// yield the C-level "element count").
 
 NODE_DEF
 node_ptr_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *off)
 {
-    VALUE *pv = (VALUE *)UNWRAP(EVAL_ARG(c, p)).p;
+    char *pv = (char *)UNWRAP(EVAL_ARG(c, p)).p;
     int64_t o = UNWRAP(EVAL_ARG(c, off)).i;
     return RESULT_OK((VALUE){.p = pv + o});
 }
@@ -179,7 +298,7 @@ node_ptr_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, 
 NODE_DEF
 node_ptr_sub_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p, NODE *off)
 {
-    VALUE *pv = (VALUE *)UNWRAP(EVAL_ARG(c, p)).p;
+    char *pv = (char *)UNWRAP(EVAL_ARG(c, p)).p;
     int64_t o = UNWRAP(EVAL_ARG(c, off)).i;
     return RESULT_OK((VALUE){.p = pv - o});
 }
@@ -187,8 +306,8 @@ node_ptr_sub_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p
 NODE_DEF
 node_ptr_diff(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
 {
-    VALUE *av = (VALUE *)UNWRAP(EVAL_ARG(c, a)).p;
-    VALUE *bv = (VALUE *)UNWRAP(EVAL_ARG(c, b)).p;
+    char *av = (char *)UNWRAP(EVAL_ARG(c, a)).p;
+    char *bv = (char *)UNWRAP(EVAL_ARG(c, b)).p;
     return RESULT_OK((VALUE){.i = av - bv});
 }
 
@@ -248,73 +367,70 @@ node_call_free(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *p
 
 extern int64_t castro_strlen(const VALUE *s);
 extern int64_t castro_strcmp(const VALUE *a, const VALUE *b);
-extern int64_t castro_strncmp(const VALUE *a, const VALUE *b, int64_t n);
-extern VALUE *castro_strcpy(VALUE *dst, const VALUE *src);
-extern VALUE *castro_strncpy(VALUE *dst, const VALUE *src, int64_t n);
-extern VALUE *castro_strcat(VALUE *dst, const VALUE *src);
-extern void *castro_memset(VALUE *dst, int64_t v, int64_t n);
-extern void *castro_memcpy(VALUE *dst, const VALUE *src, int64_t n);
-extern int64_t castro_memcmp(const VALUE *a, const VALUE *b, int64_t n);
-extern void castro_fill_i(int64_t *base, int64_t value, int64_t count);
-extern int64_t castro_atoi(const VALUE *s);
+// Byte-precise: strings are real C `char[]` byte buffers, so the host
+// libc routines work directly without any per-slot conversion.
+#include <string.h>
+#include <stdlib.h>
+extern void castro_fill_i32(int32_t *base, int32_t value, int64_t count);
 extern void castro_exit(int code);
 
 NODE_DEF
 node_call_strlen(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s)
 {
-    return RESULT_OK((VALUE){.i = castro_strlen((const VALUE *)UNWRAP(EVAL_ARG(c, s)).p)});
+    return RESULT_OK((VALUE){.i = (int64_t)strlen((const char *)UNWRAP(EVAL_ARG(c, s)).p)});
 }
 
 NODE_DEF
 node_call_strcmp(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
 {
-    return RESULT_OK((VALUE){.i = castro_strcmp((const VALUE *)UNWRAP(EVAL_ARG(c, a)).p,
-                                       (const VALUE *)UNWRAP(EVAL_ARG(c, b)).p)});
+    return RESULT_OK((VALUE){.i = strcmp((const char *)UNWRAP(EVAL_ARG(c, a)).p,
+                                          (const char *)UNWRAP(EVAL_ARG(c, b)).p)});
 }
 
 NODE_DEF
 node_call_strncmp(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b, NODE *k)
 {
-    return RESULT_OK((VALUE){.i = castro_strncmp((const VALUE *)UNWRAP(EVAL_ARG(c, a)).p,
-                                        (const VALUE *)UNWRAP(EVAL_ARG(c, b)).p,
-                                        UNWRAP(EVAL_ARG(c, k)).i)});
+    return RESULT_OK((VALUE){.i = strncmp((const char *)UNWRAP(EVAL_ARG(c, a)).p,
+                                          (const char *)UNWRAP(EVAL_ARG(c, b)).p,
+                                          (size_t)UNWRAP(EVAL_ARG(c, k)).i)});
 }
 
 NODE_DEF
 node_call_strcpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *src)
 {
-    return RESULT_OK((VALUE){.p = castro_strcpy((VALUE *)UNWRAP(EVAL_ARG(c, dst)).p,
-                                       (const VALUE *)UNWRAP(EVAL_ARG(c, src)).p)});
+    return RESULT_OK((VALUE){.p = strcpy((char *)UNWRAP(EVAL_ARG(c, dst)).p,
+                                          (const char *)UNWRAP(EVAL_ARG(c, src)).p)});
 }
 
 NODE_DEF
 node_call_strncpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *src, NODE *k)
 {
-    return RESULT_OK((VALUE){.p = castro_strncpy((VALUE *)UNWRAP(EVAL_ARG(c, dst)).p,
-                                        (const VALUE *)UNWRAP(EVAL_ARG(c, src)).p,
-                                        UNWRAP(EVAL_ARG(c, k)).i)});
+    return RESULT_OK((VALUE){.p = strncpy((char *)UNWRAP(EVAL_ARG(c, dst)).p,
+                                           (const char *)UNWRAP(EVAL_ARG(c, src)).p,
+                                           (size_t)UNWRAP(EVAL_ARG(c, k)).i)});
 }
 
 NODE_DEF
 node_call_strcat(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *src)
 {
-    return RESULT_OK((VALUE){.p = castro_strcat((VALUE *)UNWRAP(EVAL_ARG(c, dst)).p,
-                                       (const VALUE *)UNWRAP(EVAL_ARG(c, src)).p)});
+    return RESULT_OK((VALUE){.p = strcat((char *)UNWRAP(EVAL_ARG(c, dst)).p,
+                                          (const char *)UNWRAP(EVAL_ARG(c, src)).p)});
 }
 
 NODE_DEF
 node_call_memset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *v, NODE *k)
 {
-    return RESULT_OK((VALUE){.p = castro_memset((VALUE *)UNWRAP(EVAL_ARG(c, dst)).p,
-                                       UNWRAP(EVAL_ARG(c, v)).i, UNWRAP(EVAL_ARG(c, k)).i)});
+    return RESULT_OK((VALUE){.p = memset((char *)UNWRAP(EVAL_ARG(c, dst)).p,
+                                          (int)UNWRAP(EVAL_ARG(c, v)).i,
+                                          (size_t)UNWRAP(EVAL_ARG(c, k)).i)});
 }
 
 NODE_DEF
 node_call_memcpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dst, NODE *src, NODE *k)
 {
-    return RESULT_OK((VALUE){.p = castro_memcpy((VALUE *)UNWRAP(EVAL_ARG(c, dst)).p,
-                                       (const VALUE *)UNWRAP(EVAL_ARG(c, src)).p,
-                                       UNWRAP(EVAL_ARG(c, k)).i)});
+    return RESULT_OK((VALUE){.p = memcpy((char *)UNWRAP(EVAL_ARG(c, dst)).p,
+                                          (const char *)UNWRAP(EVAL_ARG(c, src)).p,
+                                          (size_t)UNWRAP(EVAL_ARG(c, k)).i)});
 }
 
 // Specialized array-fill emitted by parse.rb's pattern detector for
@@ -332,41 +448,51 @@ node_call_memcpy(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
 // EVAL helper itself: gcc lowers `cv != 0 ? 1 : 0` to `setne`, and
 // the surrounding loop becomes a straight 5-instruction count loop
 // without the prime/composite branch.
+// `if (cond) lvar++` for an int local at byte `off`.  parse.rb only
+// emits this for int (4-byte) locals — for long / size_t we'd need a
+// separate i64 variant.
 NODE_DEF
-node_inc_local_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t idx, NODE *cond)
+node_inc_local_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t off, NODE *cond)
 {
     int64_t cv = UNWRAP(EVAL_ARG(c, cond)).i;
-    int64_t inc = (cv != 0);
-    fp[idx].i += inc;
-    return RESULT_OK((VALUE){.i = fp[idx].i});
+    int32_t inc = (int32_t)(cv != 0);
+    int32_t * restrict p = (int32_t *)((char *)fp + off);
+    *p += inc;
+    return RESULT_OK((VALUE){.i = (int64_t)*p});
 }
 
-// pointer to int).  Calls the noinline `castro_fill_i` helper so gcc
-// can vectorize it with AVX-256 (4 int64 stores per iteration), which
-// the inlined per-element SD chain doesn't trigger.
+// `for (i = S; i < E; i++) array[i] = K` peephole.  Byte-precise:
+// parse.rb passes `start` and `end` already scaled by sizeof(int) = 4
+// (= byte offsets into `base`), so the runtime handler walks
+// `(int32_t *)(base + start)` directly.  `value` is the int literal K
+// in the .i lane — narrowed to int32 here.
 NODE_DEF
 node_array_fill_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *base, NODE *start, NODE *end, NODE *value)
 {
-    int64_t *p = (int64_t *)UNWRAP(EVAL_ARG(c, base)).p;
+    char *bp = (char *)UNWRAP(EVAL_ARG(c, base)).p;
     int64_t s = UNWRAP(EVAL_ARG(c, start)).i;
     int64_t e = UNWRAP(EVAL_ARG(c, end)).i;
-    int64_t v = UNWRAP(EVAL_ARG(c, value)).i;
-    if (e > s) castro_fill_i(p + s, v, e - s);
+    int32_t v = (int32_t)UNWRAP(EVAL_ARG(c, value)).i;
+    if (e > s) {
+        int32_t *p = (int32_t *)(bp + s);
+        int64_t count = (e - s) / 4;  // start/end are byte offsets, ints are 4 bytes
+        castro_fill_i32(p, v, count);
+    }
     return RESULT_OK_I(0);
 }
 
 NODE_DEF
 node_call_memcmp(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b, NODE *k)
 {
-    return RESULT_OK((VALUE){.i = castro_memcmp((const VALUE *)UNWRAP(EVAL_ARG(c, a)).p,
-                                        (const VALUE *)UNWRAP(EVAL_ARG(c, b)).p,
-                                        UNWRAP(EVAL_ARG(c, k)).i)});
+    return RESULT_OK((VALUE){.i = memcmp((const char *)UNWRAP(EVAL_ARG(c, a)).p,
+                                          (const char *)UNWRAP(EVAL_ARG(c, b)).p,
+                                          (size_t)UNWRAP(EVAL_ARG(c, k)).i)});
 }
 
 NODE_DEF
 node_call_atoi(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s)
 {
-    return RESULT_OK((VALUE){.i = castro_atoi((const VALUE *)UNWRAP(EVAL_ARG(c, s)).p)});
+    return RESULT_OK((VALUE){.i = (int64_t)atoi((const char *)UNWRAP(EVAL_ARG(c, s)).p)});
 }
 
 NODE_DEF @noinline
@@ -770,57 +896,47 @@ node_cast_di(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 // which is a register parameter.  Determinism across runs also
 // favours an integer index over a heap pointer.)
 
-// Caller-allocates the callee's frame as a stack VLA `F[local_cnt]`
-// (wastro's pattern, node.def:1672 over there).  When the parent SD
-// chain is fully `static inline always_inline`, `&F` never escapes —
-// gcc's SROA recognises the array as a set of independent scalars and
-// register-promotes each slot.  Loop variables that previously lived
-// in `fp[i]` (heap memory) become real registers, and the inner
-// store-loop in sieve / quicksort / matmul stops reloading invariant
-// loop bounds every iteration.
+// Caller-allocates the callee's frame as `_Alignas(8) char F[frame_bytes]`
+// — byte-precise layout: args start at byte 0 (each padded to 8 so the
+// generic slot copy works regardless of the arg's natural size), locals
+// follow at their byte-aligned offsets.  parse.rb computes
+// `frame_bytes` from the callee's signature + declared locals.
 //
-// `local_cnt` is the callee's full local count (params + declared
-// locals), baked at SPECIALIZE time as a uint32_t immediate so the
-// VLA size is a compile-time constant in the inlined body — needed
-// for SROA to fire.
+// `arg_count` is in 8-byte slot units (= the number of args; each lives
+// in an 8-byte slot in the caller's staging area and the callee's F[0..]
+// region).  `arg_off` is the byte offset of that staging area inside
+// the caller's frame.
+//
+// When the parent SD chain is fully `static inline always_inline`,
+// `&F` never escapes and gcc's SROA register-promotes each scalar
+// inside F just as it did with the old `VALUE F[local_cnt]` model.
 
 NODE_DEF
-node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t arg_count, uint32_t arg_index, uint32_t local_cnt)
+node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t arg_count, uint32_t arg_off, uint32_t frame_bytes)
 {
     NODE *body = c->func_bodies[func_idx];
-    VALUE F[local_cnt];
-    for (uint32_t i = 0; i < arg_count; i++) F[i] = fp[arg_index + i];
-    for (uint32_t i = arg_count; i < local_cnt; i++) F[i].i = 0;
-    RESULT r = (*body->head.dispatcher)(c, body, F);
-    // In valid C, BREAK/CONTINUE/GOTO are caught inside the callee
-    // before reaching this point, and RETURN is the callee's normal
-    // exit — discard the state entirely so the surrounding SD's
-    // EVAL_ARG/UNWRAP sees a compile-time-constant NORMAL and DCEs the
-    // state-propagation branch.
+    _Alignas(8) char F[frame_bytes];
+    // Args at byte 0..arg_count*8-1 of F.  Source is caller's fp at
+    // byte offset `arg_off`.  memcpy avoids the strict-aliasing
+    // pessimisation between a VALUE-typed write here and the typed
+    // (int32_t / etc.) read at the callee's load site.
+    if (arg_count) __builtin_memcpy(F, (char *)fp + arg_off, arg_count * 8);
+    if (frame_bytes > arg_count * 8) {
+        __builtin_memset(F + arg_count * 8, 0, frame_bytes - arg_count * 8);
+    }
+    RESULT r = (*body->head.dispatcher)(c, body, (VALUE *)F);
     return RESULT_OK(r.value);
 }
 
-// Non-recursive call.  Carries the callee body NODE* as a child
-// operand, populated by load_program's 3rd pass (callee starts NULL
-// during phase 2 since the body might not be built yet).  The
-// framework's natural SPECIALIZE walks into the callee subtree and
-// emits its SD chain as `static inline` in the caller's TU — gcc -O3
-// then inlines through.
-
 NODE_DEF
-node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t arg_count, uint32_t arg_index, uint32_t local_cnt)
+node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t arg_count, uint32_t arg_off, uint32_t frame_bytes)
 {
-    VALUE F[local_cnt];
-    for (uint32_t i = 0; i < arg_count; i++) F[i] = fp[arg_index + i];
-    for (uint32_t i = arg_count; i < local_cnt; i++) F[i].i = 0;
-    // Shadow `fp` so EVAL_ARG dispatches the callee at the new frame
-    // (the framework's macro expands `EVAL_ARG(c, callee)` to
-    // `(*callee_dispatcher)(c, callee, fp)`, picking up the local
-    // `fp` we've overwritten).  Going through EVAL_ARG instead of an
-    // explicit dispatcher call is what lets the parent specializer
-    // pass the baked `SD_<callee_hash>` symbol as the dispatcher arg
-    // — making the call direct and inline-able.
-    fp = F;
+    _Alignas(8) char F[frame_bytes];
+    if (arg_count) __builtin_memcpy(F, (char *)fp + arg_off, arg_count * 8);
+    if (frame_bytes > arg_count * 8) {
+        __builtin_memset(F + arg_count * 8, 0, frame_bytes - arg_count * 8);
+    }
+    fp = (VALUE *)F;
     RESULT r = EVAL_ARG(c, callee);
     return RESULT_OK(r.value);
 }
@@ -847,85 +963,101 @@ node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
 // node_call_static; works only for non-recursive callees).
 
 NODE_DEF
-node_call0_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t local_cnt)
+node_call0_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t frame_bytes)
 {
     NODE *body = c->func_bodies[func_idx];
-    VALUE F[local_cnt];
-    RESULT r = (*body->head.dispatcher)(c, body, F);
+    _Alignas(8) char F[frame_bytes];
+    RESULT r = (*body->head.dispatcher)(c, body, (VALUE *)F);
+    return RESULT_OK(r.value);
+}
+
+// callN_recursive / _static: each arg evaluated directly into F[i] as
+// an 8-byte VALUE (lower bytes hold the actual typed value).  Same
+// "args at slot offsets, locals byte-precise" layout as `node_call`.
+
+NODE_DEF
+node_call1_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t frame_bytes, NODE *a0)
+{
+    NODE *body = c->func_bodies[func_idx];
+    _Alignas(8) char F[frame_bytes];
+    VALUE __a0 = UNWRAP(EVAL_ARG(c, a0));
+    __builtin_memcpy(F + 0, &__a0, 8);
+    RESULT r = (*body->head.dispatcher)(c, body, (VALUE *)F);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call1_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t local_cnt, NODE *a0)
+node_call2_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t frame_bytes, NODE *a0, NODE *a1)
 {
     NODE *body = c->func_bodies[func_idx];
-    VALUE F[local_cnt];
-    F[0] = UNWRAP(EVAL_ARG(c, a0));
-    RESULT r = (*body->head.dispatcher)(c, body, F);
+    _Alignas(8) char F[frame_bytes];
+    VALUE __a0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE __a1 = UNWRAP(EVAL_ARG(c, a1));
+    __builtin_memcpy(F + 0, &__a0, 8);
+    __builtin_memcpy(F + 8, &__a1, 8);
+    RESULT r = (*body->head.dispatcher)(c, body, (VALUE *)F);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call2_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t local_cnt, NODE *a0, NODE *a1)
+node_call3_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t frame_bytes, NODE *a0, NODE *a1, NODE *a2)
 {
     NODE *body = c->func_bodies[func_idx];
-    VALUE F[local_cnt];
-    F[0] = UNWRAP(EVAL_ARG(c, a0));
-    F[1] = UNWRAP(EVAL_ARG(c, a1));
-    RESULT r = (*body->head.dispatcher)(c, body, F);
+    _Alignas(8) char F[frame_bytes];
+    VALUE __a0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE __a1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE __a2 = UNWRAP(EVAL_ARG(c, a2));
+    __builtin_memcpy(F + 0,  &__a0, 8);
+    __builtin_memcpy(F + 8,  &__a1, 8);
+    __builtin_memcpy(F + 16, &__a2, 8);
+    RESULT r = (*body->head.dispatcher)(c, body, (VALUE *)F);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call3_recursive(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t func_idx, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2)
+node_call0_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t frame_bytes)
 {
-    NODE *body = c->func_bodies[func_idx];
-    VALUE F[local_cnt];
-    F[0] = UNWRAP(EVAL_ARG(c, a0));
-    F[1] = UNWRAP(EVAL_ARG(c, a1));
-    F[2] = UNWRAP(EVAL_ARG(c, a2));
-    RESULT r = (*body->head.dispatcher)(c, body, F);
-    return RESULT_OK(r.value);
-}
-
-NODE_DEF
-node_call0_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t local_cnt)
-{
-    VALUE F[local_cnt];
-    fp = F;
+    _Alignas(8) char F[frame_bytes];
+    fp = (VALUE *)F;
     RESULT r = EVAL_ARG(c, callee);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call1_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t local_cnt, NODE *a0)
+node_call1_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t frame_bytes, NODE *a0)
 {
-    VALUE F[local_cnt];
-    F[0] = UNWRAP(EVAL_ARG(c, a0));
-    fp = F;
+    _Alignas(8) char F[frame_bytes];
+    VALUE __a0 = UNWRAP(EVAL_ARG(c, a0));
+    __builtin_memcpy(F + 0, &__a0, 8);
+    fp = (VALUE *)F;
     RESULT r = EVAL_ARG(c, callee);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call2_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t local_cnt, NODE *a0, NODE *a1)
+node_call2_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t frame_bytes, NODE *a0, NODE *a1)
 {
-    VALUE F[local_cnt];
-    F[0] = UNWRAP(EVAL_ARG(c, a0));
-    F[1] = UNWRAP(EVAL_ARG(c, a1));
-    fp = F;
+    _Alignas(8) char F[frame_bytes];
+    VALUE __a0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE __a1 = UNWRAP(EVAL_ARG(c, a1));
+    __builtin_memcpy(F + 0, &__a0, 8);
+    __builtin_memcpy(F + 8, &__a1, 8);
+    fp = (VALUE *)F;
     RESULT r = EVAL_ARG(c, callee);
     return RESULT_OK(r.value);
 }
 
 NODE_DEF
-node_call3_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t local_cnt, NODE *a0, NODE *a1, NODE *a2)
+node_call3_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *callee, uint32_t frame_bytes, NODE *a0, NODE *a1, NODE *a2)
 {
-    VALUE F[local_cnt];
-    F[0] = UNWRAP(EVAL_ARG(c, a0));
-    F[1] = UNWRAP(EVAL_ARG(c, a1));
-    F[2] = UNWRAP(EVAL_ARG(c, a2));
-    fp = F;
+    _Alignas(8) char F[frame_bytes];
+    VALUE __a0 = UNWRAP(EVAL_ARG(c, a0));
+    VALUE __a1 = UNWRAP(EVAL_ARG(c, a1));
+    VALUE __a2 = UNWRAP(EVAL_ARG(c, a2));
+    __builtin_memcpy(F + 0,  &__a0, 8);
+    __builtin_memcpy(F + 8,  &__a1, 8);
+    __builtin_memcpy(F + 16, &__a2, 8);
+    fp = (VALUE *)F;
     RESULT r = EVAL_ARG(c, callee);
     return RESULT_OK(r.value);
 }
@@ -940,10 +1072,13 @@ node_call3_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE
 extern int castro_run_printf(const char *fmt, VALUE *args, uint32_t arg_count);
 
 NODE_DEF @noinline
-node_printf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arg_count, uint32_t arg_index)
+node_printf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arg_count, uint32_t arg_off)
 {
-    const char *fmt = (const char *)fp[arg_index].p;
-    int r = castro_run_printf(fmt, &fp[arg_index + 1], arg_count - 1);
+    // Args are staged in caller's frame at byte offset `arg_off`,
+    // each occupying an 8-byte slot.  arg 0 is the format string ptr.
+    VALUE *args = (VALUE *)((char *)fp + arg_off);
+    const char *fmt = (const char *)args[0].p;
+    int r = castro_run_printf(fmt, &args[1], arg_count - 1);
     return RESULT_OK((VALUE){.i = r});
 }
 
@@ -954,12 +1089,10 @@ node_putchar(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
     return RESULT_OK((VALUE){.i = putchar(ch)});
 }
 
-extern int castro_puts(const VALUE *slot_str);
-
 NODE_DEF
 node_puts(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e)
 {
-    return RESULT_OK((VALUE){.i = castro_puts((const VALUE *)UNWRAP(EVAL_ARG(c, e)).p)});
+    return RESULT_OK((VALUE){.i = puts((const char *)UNWRAP(EVAL_ARG(c, e)).p)});
 }
 
 // --- function pointer ----------------------------------------------
@@ -976,7 +1109,7 @@ node_func_addr(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
 }
 
 NODE_DEF
-node_call_indirect(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fn_expr, uint32_t arg_count, uint32_t arg_index)
+node_call_indirect(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fn_expr, uint32_t arg_count, uint32_t arg_off)
 {
     NODE *body = (NODE *)UNWRAP(EVAL_ARG(c, fn_expr)).p;
     (void)arg_count;
@@ -984,7 +1117,10 @@ node_call_indirect(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NOD
         fprintf(stderr, "castro: NULL function pointer\n");
         exit(1);
     }
-    RESULT r = (*body->head.dispatcher)(c, body, fp + arg_index);
+    // arg staging area starts at byte `arg_off` in caller's frame —
+    // pass it directly as the callee's fp (= same byte offsets as
+    // the callee's args region).
+    RESULT r = (*body->head.dispatcher)(c, body, (VALUE *)((char *)fp + arg_off));
     return RESULT_OK(r.value);
 }
 
