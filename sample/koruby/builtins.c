@@ -364,8 +364,16 @@ void korb_init_builtins(void) {
                 if (c->state == KORB_RAISE) return Qnil;
                 if (writable) {
                     VALUE w = module_attr_writer(c, self, 1, argv);
-                    (void)w;
                     if (c->state == KORB_RAISE) return Qnil;
+                    /* CRuby returns [reader_sym, writer_sym] in this form. */
+                    VALUE arr = korb_ary_new_capa(2);
+                    if (BUILTIN_TYPE(r) == T_ARRAY && ((struct korb_array *)r)->len > 0) {
+                        korb_ary_push(arr, ((struct korb_array *)r)->ptr[0]);
+                    }
+                    if (BUILTIN_TYPE(w) == T_ARRAY && ((struct korb_array *)w)->len > 0) {
+                        korb_ary_push(arr, ((struct korb_array *)w)->ptr[0]);
+                    }
+                    return arr;
                 }
                 return r;
             }
