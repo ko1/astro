@@ -814,34 +814,34 @@ static VALUE class_name(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* (Array#hash folded into builtins/array.c) */
 
 /* ---------- Class#ancestors / Module#prepend ---------- */
+
+/* Append `m` and its transitive included modules to `arr`, dedup'd. */
+static void ancestors_push_module(VALUE arr, struct korb_class *m) {
+    if (!m) return;
+    struct korb_array *a = (struct korb_array *)arr;
+    for (long j = 0; j < a->len; j++) {
+        if (a->ptr[j] == (VALUE)m) return;
+    }
+    korb_ary_push(arr, (VALUE)m);
+    /* Recurse into m's own includes (latest-include first to match
+     * CRuby's "module that is included later sits earlier in
+     * ancestors"). */
+    for (int32_t i = (int32_t)m->includes_cnt - 1; i >= 0; i--) {
+        ancestors_push_module(arr, m->includes[i]);
+    }
+}
+
 static VALUE class_ancestors(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE arr = korb_ary_new();
     if (SPECIAL_CONST_P(self)) return arr;
     struct korb_class *k = (struct korb_class *)self;
-    /* Dedupe: an included module that also appears further up the
-     * super chain (because the super class includes it too) should
-     * only appear at its first/most-specific position. */
     while (k) {
         for (int32_t i = (int32_t)k->prepends_cnt - 1; i >= 0; i--) {
-            VALUE v = (VALUE)k->prepends[i];
-            bool dup = false;
-            for (long j = 0; j < ((struct korb_array *)arr)->len; j++) {
-                if (((struct korb_array *)arr)->ptr[j] == v) { dup = true; break; }
-            }
-            if (!dup) korb_ary_push(arr, v);
+            ancestors_push_module(arr, k->prepends[i]);
         }
-        bool dup_self = false;
-        for (long j = 0; j < ((struct korb_array *)arr)->len; j++) {
-            if (((struct korb_array *)arr)->ptr[j] == (VALUE)k) { dup_self = true; break; }
-        }
-        if (!dup_self) korb_ary_push(arr, (VALUE)k);
+        ancestors_push_module(arr, k);
         for (int32_t i = (int32_t)k->includes_cnt - 1; i >= 0; i--) {
-            VALUE v = (VALUE)k->includes[i];
-            bool dup = false;
-            for (long j = 0; j < ((struct korb_array *)arr)->len; j++) {
-                if (((struct korb_array *)arr)->ptr[j] == v) { dup = true; break; }
-            }
-            if (!dup) korb_ary_push(arr, v);
+            ancestors_push_module(arr, k->includes[i]);
         }
         k = k->super;
     }

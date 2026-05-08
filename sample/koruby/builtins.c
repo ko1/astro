@@ -350,7 +350,29 @@ void korb_init_builtins(void) {
     struct korb_class *cMod = korb_vm->module_class;
     DEF(cMod, "name", class_name, 0);
     DEF(cMod, "attr_reader",   module_attr_reader,   -1);
-    DEF(cMod, "attr",          module_attr_reader,   -1);   /* single-arg form */
+    /* Module#attr — historical:
+     *   attr :foo            → reader only
+     *   attr :foo, true      → reader + writer (deprecated form)
+     *   attr :foo, :bar, ... → readers for each (when args are all symbols) */
+    {
+        VALUE _module_attr(CTX *c, VALUE self, int argc, VALUE *argv) {
+            VALUE module_attr_reader(CTX *, VALUE, int, VALUE *);
+            VALUE module_attr_writer(CTX *, VALUE, int, VALUE *);
+            if (argc == 2 && (argv[1] == Qtrue || argv[1] == Qfalse)) {
+                bool writable = (argv[1] == Qtrue);
+                VALUE r = module_attr_reader(c, self, 1, argv);
+                if (c->state == KORB_RAISE) return Qnil;
+                if (writable) {
+                    VALUE w = module_attr_writer(c, self, 1, argv);
+                    (void)w;
+                    if (c->state == KORB_RAISE) return Qnil;
+                }
+                return r;
+            }
+            return module_attr_reader(c, self, argc, argv);
+        }
+        DEF(cMod, "attr", _module_attr, -1);
+    }
     DEF(cMod, "attr_writer",   module_attr_writer,   -1);
     DEF(cMod, "attr_accessor", module_attr_accessor, -1);
     DEF(cMod, "include",       module_include,       -1);
