@@ -115,14 +115,20 @@ pys_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             c->globals = saved_g;
             c->call_top = saved_call_top;
 
-            if (c->state == PYS_STATE_RETURN) {
+            // Combine the RETURN / RAISE check into one state load —
+            // gcc otherwise reloads c->state across the comparison.
+            // PYS_STATE_NORMAL is the common case (function fell off the
+            // end implicitly returning None); RETURN is also common.
+            // RAISE is the cold path.
+            int st = c->state;
+            if (LIKELY(st == PYS_STATE_NORMAL)) return PYS_NONE;
+            if (st == PYS_STATE_RETURN) {
                 VALUE r = c->state_value;
                 c->state = PYS_STATE_NORMAL;
                 c->state_value = PYS_NONE;
                 return r;
             }
-            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-            return PYS_NONE;
+            return 0;       // PYS_STATE_RAISE
         }
     }
     return pys_apply_slow(c, fn, argc, argv);
