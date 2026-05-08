@@ -127,8 +127,36 @@ static VALUE hash_merge(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_hash_aset(r, e->key, e->value);
     }
     for (int i = 0; i < argc; i++) {
-        if (BUILTIN_TYPE(argv[i]) != T_HASH) continue;
-        struct korb_hash *o = (struct korb_hash *)argv[i];
+        VALUE arg = argv[i];
+        if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_HASH) {
+            /* Coerce via #to_hash — CRuby semantics.  Try the call
+             * unconditionally (covers method_missing-based mocks); only
+             * skip if it raises NoMethodError. */
+            if (!SPECIAL_CONST_P(arg)) {
+                arg = korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL);
+                if (c->state == KORB_RAISE) {
+                    /* swallow NoMethodError; propagate other errors */
+                    VALUE bang = c->state_value;
+                    VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+                    if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
+                        BUILTIN_TYPE(eNo) == T_CLASS) {
+                        struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
+                        bool is_nm = false;
+                        for (struct korb_class *kk = bk; kk; kk = kk->super) {
+                            if (kk == (struct korb_class *)eNo) { is_nm = true; break; }
+                        }
+                        if (is_nm) {
+                            c->state = KORB_NORMAL;
+                            c->state_value = Qnil;
+                            continue;
+                        }
+                    }
+                    return Qnil;
+                }
+            }
+            if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_HASH) continue;
+        }
+        struct korb_hash *o = (struct korb_hash *)arg;
         for (struct korb_hash_entry *e = o->first; e; e = e->next) {
             /* Detect "key already present in r" via the entry list, not
              * korb_hash_aref's value (which returns the default value on
@@ -431,9 +459,21 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
+    extern struct korb_proc *current_block;
+    if (argc > 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 0..1)", argc);
+        return Qnil;
+    }
+    if (current_block && argc >= 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given 1, expected 0)");
+        return Qnil;
+    }
     VALUE h = korb_hash_new();
     struct korb_hash *hh = (struct korb_hash *)h;
-    extern struct korb_proc *current_block;
     if (current_block) {
         hh->default_proc = (VALUE)current_block;
     } else if (argc >= 1) {
@@ -491,6 +531,32 @@ static VALUE hash_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     return self;
+}
+
+/* Hash#reject! — like delete_if but returns nil if no entries were
+ * removed (CRuby bang semantics). */
+static VALUE hash_reject_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_hash *h = (struct korb_hash *)self;
+    VALUE keys = korb_ary_new();
+    for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+        korb_ary_push(keys, e->key);
+    }
+    struct korb_array *ka = (struct korb_array *)keys;
+    bool any_deleted = false;
+    for (long i = 0; i < ka->len; i++) {
+        VALUE k = ka->ptr[i];
+        VALUE v = korb_hash_aref(self, k);
+        VALUE args[2] = {k, v};
+        VALUE drop = korb_yield(c, 2, args);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(drop)) {
+            VALUE ad[1] = {k};
+            hash_delete(c, self, 1, ad);
+            any_deleted = true;
+        }
+    }
+    return any_deleted ? self : Qnil;
 }
 
 /* Hash#keep_if { |k, v| ... } — opposite of delete_if. */

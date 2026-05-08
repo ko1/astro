@@ -713,7 +713,10 @@ void korb_init_builtins(void) {
     DEF(cHsh, "fetch_values",hash_fetch_values,-1);
     DEF(cHsh, "member?",     hash_key_p,        1);
     DEF(cHsh, "reject",      hash_reject,       0);
-    DEF(cHsh, "reject!",     hash_delete_if,    0);
+    {
+        VALUE hash_reject_bang(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cHsh, "reject!",     hash_reject_bang,  0);
+    }
     DEF(cHsh, "replace",     hash_replace,      1);
     DEF(cHsh, "shift",       hash_shift,        0);
     DEF(cHsh, "store",       hash_aset,         2);
