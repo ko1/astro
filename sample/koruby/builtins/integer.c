@@ -236,18 +236,34 @@ static VALUE int_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_even_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) return KORB_BOOL((FIX2LONG(self) & 1) == 0);
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        mpz_ptr z = (mpz_ptr)((struct korb_bignum *)self)->mpz;
+        return KORB_BOOL(mpz_even_p(z));
+    }
     return Qfalse;
 }
 static VALUE int_odd_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) return KORB_BOOL((FIX2LONG(self) & 1) == 1);
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        mpz_ptr z = (mpz_ptr)((struct korb_bignum *)self)->mpz;
+        return KORB_BOOL(mpz_odd_p(z));
+    }
     return Qfalse;
 }
 static VALUE int_positive_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) return KORB_BOOL(FIX2LONG(self) > 0);
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        mpz_ptr z = (mpz_ptr)((struct korb_bignum *)self)->mpz;
+        return KORB_BOOL(mpz_sgn(z) > 0);
+    }
     return Qfalse;
 }
 static VALUE int_negative_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) return KORB_BOOL(FIX2LONG(self) < 0);
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        mpz_ptr z = (mpz_ptr)((struct korb_bignum *)self)->mpz;
+        return KORB_BOOL(mpz_sgn(z) < 0);
+    }
     return Qfalse;
 }
 
