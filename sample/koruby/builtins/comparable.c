@@ -183,6 +183,12 @@ static VALUE module_alias_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     ID new_name = SYMBOL_P(argv[0]) ? korb_sym2id(argv[0]) : korb_intern(korb_str_cstr(argv[0]));
     ID old_name = SYMBOL_P(argv[1]) ? korb_sym2id(argv[1]) : korb_intern(korb_str_cstr(argv[1]));
     struct korb_method *m = korb_class_find_method(klass, old_name);
+    /* Module receiver: also check Object since included methods are
+     * accessible via lookup on Module bodies
+     * (e.g. `module Kernel; alias_method :a, :method_on_object; end`). */
+    if (!m && BUILTIN_TYPE(self) == T_MODULE && korb_vm->object_class) {
+        m = korb_class_find_method(korb_vm->object_class, old_name);
+    }
     if (!m) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
         korb_raise(c, (struct korb_class *)eN,
