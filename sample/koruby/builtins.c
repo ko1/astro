@@ -654,6 +654,35 @@ void korb_init_builtins(void) {
         VALUE ary_class_brackets(CTX *c, VALUE self, int argc, VALUE *argv);
         korb_class_add_method_cfunc(cAryMeta, korb_intern("[]"), ary_class_brackets, -1);
         cAry->basic.klass = (VALUE)cAryMeta;
+        /* Array.try_convert(obj) — obj.to_ary if obj responds and returns
+         * Array, else nil.  Raises TypeError if #to_ary returns non-Array. */
+        korb_class_add_method_cfunc(cAryMeta, korb_intern("try_convert"),
+            ({
+                VALUE _try(CTX *c, VALUE self, int argc, VALUE *argv) {
+                    if (argc < 1) return Qnil;
+                    VALUE o = argv[0];
+                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_ARRAY) return o;
+                    VALUE klass_v = (VALUE)korb_class_of_class(o);
+                    if (!klass_v || !korb_class_find_method((struct korb_class *)klass_v,
+                                                             korb_intern("to_ary"))) {
+                        return Qnil;
+                    }
+                    VALUE r = korb_funcall(c, o, korb_intern("to_ary"), 0, NULL);
+                    if (c->state == KORB_RAISE) return Qnil;
+                    if (NIL_P(r)) return Qnil;
+                    if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_ARRAY) {
+                        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                        korb_raise(c, (struct korb_class *)eT,
+                                   "can't convert %s to Array (%s#to_ary gives %s)",
+                                   korb_id_name(korb_class_of_class(o)->name),
+                                   korb_id_name(korb_class_of_class(o)->name),
+                                   korb_id_name(korb_class_of_class(r)->name));
+                        return Qnil;
+                    }
+                    return r;
+                }
+                _try;
+            }), -1);
     }
 
     /* extra Hash */

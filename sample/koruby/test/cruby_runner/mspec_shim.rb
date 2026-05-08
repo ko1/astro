@@ -678,15 +678,30 @@ class MSpecMock
 end
 
 class MSpecMockExpectation
-  def initialize(mock, name); @mock = mock; @name = name; @ret = nil; end
+  def initialize(mock, name); @mock = mock; @name = name; @ret = nil; @raise = nil; end
   def and_return(v); @ret = v; self; end
+  # `and_raise(exc_class)` / `and_raise(exc_instance)`: when the mocked
+  # method is called, raise instead of returning @ret.
+  def and_raise(exc); @raise = exc; self; end
   def and_yield(*); self; end
   def with(*); self; end
   def once; self; end
   def twice; self; end
   def at_least(*); self; end
   def at_most(*); self; end
-  def __return_value; @ret; end
+  # Some specs chain matcher-style helpers off the expectation; we
+  # accept and ignore them (real semantics aren't asserted).
+  def kind(*); self; end
+  def kind_of(*); self; end
+  def respond_to_missing?(name, include_private = false)
+    super
+  end
+  def __return_value
+    if @raise
+      raise (@raise.is_a?(Class) ? @raise.new : @raise)
+    end
+    @ret
+  end
 end
 
 def mock(name = ""); MSpecMock.new(name); end
