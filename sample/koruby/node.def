@@ -1180,7 +1180,12 @@ node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
-        if (UNLIKELY(b == 0)) { c->last_cfunc_callsite = n; korb_raise(c, NULL, "divided by 0"); return Qnil; }
+        if (UNLIKELY(b == 0)) {
+            c->last_cfunc_callsite = n;
+            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            return Qnil;
+        }
         long q = a / b;
         if ((a % b) != 0 && ((a ^ b) < 0)) q--;
         if (FIXABLE(q)) return INT2FIX(q);
@@ -1200,7 +1205,12 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg
     VALUE r = EA(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
-        if (UNLIKELY(b == 0)) { c->last_cfunc_callsite = n; korb_raise(c, NULL, "divided by 0"); return Qnil; }
+        if (UNLIKELY(b == 0)) {
+            c->last_cfunc_callsite = n;
+            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            return Qnil;
+        }
         long m = a % b;
         if (m != 0 && ((a ^ b) < 0)) m += b;
         return INT2FIX(m);
