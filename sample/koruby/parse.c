@@ -4307,6 +4307,18 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                       NODE *s2 = ALLOC_node_lvar_set(ai + 1, ALLOC_node_lvar_get(slot));
                       eqq = ALLOC_node_seq(s1, ALLOC_node_seq(s2,
                           ALLOC_node_func_call(korb_intern("__case_splat_match"), 2, ai, mc)));
+                  } else if (!subject && PM_NODE_TYPE_P(cn_pm, PM_SPLAT_NODE)) {
+                      /* `case; when *arr; ... end` (no target) — splat
+                       * expands to `when arr[0], arr[1], ...`.  At
+                       * runtime: any element of arr is truthy → match. */
+                      pm_splat_node_t *sp = (pm_splat_node_t *)cn_pm;
+                      NODE *list = sp->expression ? T(tc, sp->expression) : ALLOC_node_nil();
+                      uint32_t ai = inc_arg_index(tc);
+                      inc_arg_index(tc); rewind_arg_index(tc, ai);
+                      struct method_cache *mc = alloc_method_cache();
+                      NODE *s1 = ALLOC_node_lvar_set(ai, list);
+                      eqq = ALLOC_node_seq(s1,
+                          ALLOC_node_func_call(korb_intern("__case_splat_any"), 1, ai, mc));
                   } else {
                       NODE *cv = T(tc, cn_pm);
                       if (subject) {

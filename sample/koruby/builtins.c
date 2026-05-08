@@ -87,6 +87,7 @@ void korb_init_builtins(void) {
         DEF(cObj, "__rescue_splat_match", kernel_rescue_splat_match, 2);
         DEF(cObj, "__rescue_class_check", kernel_rescue_class_check, 1);
         DEF(cObj, "__case_splat_match", kernel_case_splat_match, 2);
+        DEF(cObj, "__case_splat_any",   kernel_case_splat_any,   1);
         DEF(cObj, "__pattern_decon_check", kernel_pattern_decon_check, 1);
         DEF(cObj, "__pattern_decon_keys_check", kernel_pattern_decon_keys_check, 1);
     }

@@ -189,6 +189,28 @@ VALUE kernel_case_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qfalse;
 }
 
+/* `case; when *arr; ... end` (no target) — return true iff any element
+ * of arr is truthy (`when *[false, true]` → true). */
+VALUE kernel_case_splat_any(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1) return Qfalse;
+    VALUE list = argv[0];
+    if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
+        VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+        if (c->state != KORB_NORMAL) return Qfalse;
+        if (RTEST(rt)) {
+            list = korb_funcall(c, list, korb_intern("to_a"), 0, NULL);
+            if (c->state != KORB_NORMAL) return Qfalse;
+        }
+        if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return Qfalse;
+    }
+    struct korb_array *a = (struct korb_array *)list;
+    for (long i = 0; i < a->len; i++) {
+        if (RTEST(a->ptr[i])) return Qtrue;
+    }
+    return Qfalse;
+}
+
 /* `rescue *list => e` lowering: list may be Array (or anything with
  * to_a).  Returns true iff any element of the converted list ===s exc.
  * On a non-Array / non-to_a list, raises TypeError to match CRuby. */
