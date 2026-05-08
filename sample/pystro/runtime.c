@@ -5107,7 +5107,10 @@ pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
                 pys_setattr(c, inst, "exceptions", argv[1]);
             }
         }
-        VALUE init = pys_class_lookup_method(fn, PYS_INTERN_init);
+        // Use the pre-resolved slot directly — `pys_class_lookup_method`
+        // would do the same load + branch but as an external call.  cd is
+        // already in scope from above (slots_initialized was checked).
+        VALUE init = cd_apply->slot_init;
         if (init != PYS_NONE) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = inst;
