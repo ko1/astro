@@ -3837,6 +3837,22 @@ class Proc
   end unless method_defined?(:<<)
 end
 
+class BasicObject
+  # Default no-op private hooks expected by CRuby specs.  We define
+  # them on BasicObject so they are inherited by every other class.
+  private
+  def singleton_method_added(_); end
+  def singleton_method_removed(_); end
+  def singleton_method_undefined(_); end
+  # Default initialize: BasicObject's initialize takes no args.
+  def initialize
+  end unless method_defined?(:initialize)
+  # Default method_missing: raise NoMethodError on the missing name.
+  def method_missing(name, *args)
+    ::Kernel.raise(::NoMethodError, "undefined method '#{name}' for #{self.inspect}")
+  end unless private_method_defined?(:method_missing) || method_defined?(:method_missing)
+end
+
 class Module
   # const_source_location — file/line where the constant was defined.
   # We don't track this; return nil so callers fall back to "unknown".
