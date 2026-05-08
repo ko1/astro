@@ -479,7 +479,15 @@ static VALUE ary_uniq(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_include(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
     struct korb_array *a = (struct korb_array *)self;
-    for (long i = 0; i < a->len; i++) if (korb_eq(a->ptr[i], argv[0])) return Qtrue;
+    /* CRuby calls element == obj (left-to-right), letting user-defined
+     * == on elements decide.  korb_eq does identity-shortcut + dispatches
+     * to ==, but we want to dispatch on the ELEMENT's == (not obj's). */
+    for (long i = 0; i < a->len; i++) {
+        if (a->ptr[i] == argv[0]) return Qtrue;  /* identity fast path */
+        VALUE r = korb_funcall(c, a->ptr[i], korb_intern("=="), 1, &argv[0]);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(r)) return Qtrue;
+    }
     return Qfalse;
 }
 

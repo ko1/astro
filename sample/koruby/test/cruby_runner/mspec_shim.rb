@@ -709,6 +709,9 @@ class MSpecMockExpectation
   def twice; self; end
   def at_least(*); self; end
   def at_most(*); self; end
+  def any_number_of_times(*); self; end
+  def exactly(*); self; end
+  def never; self; end
   # Some specs chain matcher-style helpers off the expectation; we
   # accept and ignore them (real semantics aren't asserted).
   def kind(*); self; end
