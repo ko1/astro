@@ -3695,6 +3695,20 @@ class Module
 
   def autoload(_name, _path); nil; end unless method_defined?(:autoload)
   def autoload?(_name, _inherit = true); nil; end unless method_defined?(:autoload?)
+
+  # Lifecycle hooks: default no-op private instance methods.  CRuby
+  # invokes these from the runtime when the corresponding event happens
+  # on a class/module — koruby doesn't trigger them yet but defining the
+  # privates here lets specs that only assert "is a private method" pass.
+  private
+  def included(_); end unless method_defined?(:included) || private_method_defined?(:included)
+  def extended(_); end unless method_defined?(:extended) || private_method_defined?(:extended)
+  def prepended(_); end unless method_defined?(:prepended) || private_method_defined?(:prepended)
+  def method_added(_); end unless method_defined?(:method_added) || private_method_defined?(:method_added)
+  def method_removed(_); end unless method_defined?(:method_removed) || private_method_defined?(:method_removed)
+  def method_undefined(_); end unless method_defined?(:method_undefined) || private_method_defined?(:method_undefined)
+  def const_added(_); end unless method_defined?(:const_added) || private_method_defined?(:const_added)
+  public
 end
 
 module Kernel

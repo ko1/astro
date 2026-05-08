@@ -552,9 +552,38 @@ static VALUE module_const_get(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qnil;
     if (argc < 1) return Qnil;
     ID name;
-    if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
-    else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    else return Qnil;
+    VALUE arg = argv[0];
+    if (SYMBOL_P(arg)) name = korb_sym2id(arg);
+    else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) {
+        name = korb_intern_n(((struct korb_string *)arg)->ptr,
+                             ((struct korb_string *)arg)->len);
+    } else if (!SPECIAL_CONST_P(arg)) {
+        /* Coerce via #to_str (CRuby semantics: const_get accepts a
+         * String-convertible name). */
+        VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt)) {
+            VALUE r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
+                name = korb_intern_n(((struct korb_string *)r)->ptr,
+                                     ((struct korb_string *)r)->len);
+                goto have_name;
+            }
+        }
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion of %s into String",
+                   korb_id_name(korb_class_of_class(arg)->name));
+        return Qnil;
+    } else {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion of (special) into String");
+        return Qnil;
+    }
+have_name:;
     bool inherit = true;
     if (argc >= 2) inherit = RTEST(argv[1]);
     extern VALUE korb_const_get_inherited(struct korb_class *klass, ID name);
