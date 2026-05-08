@@ -363,6 +363,37 @@ c->cref = new_cref.prev;
 
 スタック上に確保 → 終了時に自動破棄。
 
+### 6.1 Binding と heap-promote
+
+`binding` を取った瞬間に、 caller frame の lvar スロットを heap snapshot へ
+コピー。 同時に `live_fp` / `live_frame_id` を覚えておき、 frame がまだ
+生きている間は read/write を live_fp 側にも write-through する。 frame
+epilogue で `c->bindings_head` を辿って snapshot を確定し、 live_fp は無効化。
+
+```c
+struct korb_binding {
+    struct RBasic basic;
+    VALUE *fp;            /* heap snapshot — primary 保管庫 */
+    ID *names;            /* 表示順: [extras...,] primary, outer */
+    uint32_t names_cnt, outer_names_cnt;
+    VALUE *live_fp;       /* 元の caller fp; 生きてる間だけ valid */
+    uint64_t live_frame_id;
+    VALUE self, extra_vars, outer_vars;
+    struct korb_cref *cref;
+    const char *source_file; int source_line;
+};
+```
+
+`Binding#eval(src [, file [, line]])` は `koruby_parse_with_scope_line` で
+prism に scope_locals を渡し、 eval body 内の bare-name を local resolve
+させる。 eval が新規 lvar を introduce すると binding に取り込み (extras
+hash) + live frame に write-through。 nested eval / block-context eval も
+含めて caller の slot を正しく辿るよう、 `c->fp` を `param_base` 分シフト
+する。
+
+`Proc#binding` は proc 捕捉済み env から Binding を組む — env は既に
+heap-allocated (closure 化済) なので live tracking は不要。
+
 ## 7. インスタンス変数 (shape ベース)
 
 CRuby の object_shapes に倣った **クラス単位の slot 配列**:

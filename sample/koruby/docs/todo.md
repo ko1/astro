@@ -1,18 +1,29 @@
 # todo.md — koruby Ruby 互換性ギャップ
 
-[done.md](./done.md) は実装済み。 ここは **未実装 / 不完全 / 既知バグ** の作業
-リスト。
+[done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
+既知バグ** の作業リスト。
 
-現状 (2026-05-07):
-- koruby 自前 test/ruby/ 全 pass (24 ファイル, 190 件)
-- optcarrot は CRuby と一致 (動作・出力)
-- CRuby `test/ruby/` (in-scope 67 ファイル): **1,108,357 pass / 77.5%**
-- CRuby `spec/ruby/language/` (rubyspec, 65 ファイル): **3,275 pass / 92.9%、
-  35 ファイルが 100%** (Binding object 完全実装で +28 pass)
-- CRuby `spec/ruby/core/binding/` + `core/kernel/{eval,binding}_spec`:
-  **150 pass** (Binding 100% — local_variable_get/set/defined?/local_variables /
-  receiver / eval / source_location / dup / clone)、 残るのは Refinements
-  (out of scope) と IRB (out of scope)。
+## 現状 (2026-05-08)
+
+- **自前 test/ruby/**: 24 ファイル中 **23 OK / 1 FAIL** (`ArrayLshiftRedef`
+  のみ既知 regression)。 23 OK の合計 733 件 全 pass。
+- **optcarrot**: CRuby と動作・出力一致。
+- **CRuby `test/ruby/` (in-scope 67 ファイル)**: 1,108,357 pass / 77.5%。
+- **CRuby `spec/ruby/language/` (rubyspec, 65 ファイル)**:
+  **3,275 pass / 3,507 (93.4%)、 35 ファイルが 100% perfect**。
+- **CRuby `spec/ruby/core/binding/` + `core/kernel/{eval,binding}_spec`**:
+  **150 pass** (Binding 自体は 100%、 残るのは Refinements / IRB の out-of-scope のみ)。
+- **CRuby `spec/ruby/core/` 主要カテゴリ**:
+  - `kernel`: 6,489 pass / 293 fail / 145 err
+  - `string`: 1,800 pass / 1,127 fail / 206 err
+  - `array`: 1,171 pass / 436 fail / 67 err
+  - `integer`: 869 pass / 172 fail / 183 err
+  - `hash`: 400 pass / 97 fail / 33 err
+  - `proc`: 195 pass / 60 fail / 25 err
+  - `float`: 120 pass / 35 fail / 74 err
+  - `symbol`: 117 pass / 69 fail / 31 err
+  - `range`: 98 pass / 79 fail / 11 err
+  - `binding`: 58 pass / 0 fail / 2 err (irb_spec の IO.popen など out-of-scope のみ)
 
 ## §0 範囲外 (project policy / user 指定)
 
@@ -33,61 +44,54 @@
 | ruby2_keywords | 互換性 marker、 範囲外 |
 | DidYouMean (NoMethodError 提案) | 別途 |
 | Random reproducibility (`srand` で seed 一致) | 範囲外 |
+| Process / spawn / fork / `ruby_exe` 子プロセス起動 | 範囲外 (子プロセスを介する spec は skip / 0 pass で許容) |
+| IRB (`Binding#irb`) | 対話的 IRB は対象外 |
 
 mspec_shim はこの一覧の constant を未定義時に skip 扱いにする。
 
-## §A rubyspec 由来の高インパクト項目
+## §A 完全 perfect 候補 (残 fail/err が 1〜4 件)
 
-rubyspec sweep の伸びしろ。 §A1〜B8 は前 todo 版から大半を実装済み (本セッ
-ション)。 残るのは下記。
+「あと数件で 100% pass」 になる language spec。 直近の作業優先度高め。
 
-### A7. block in index assignment (`assignments_spec` 数件)
-
-`obj[*args, &blk] = v` を prism は SyntaxError にしているが、 spec は
-`-> { eval ... }.should raise_error(SyntaxError, /pattern/)` で「 pattern が
-合うか」を見る。 SyntaxError は出るがメッセージが CRuby と違うため fail。
-mspec_shim 側の substring matcher で吸収済みのケースもあるが、 トリッキーな
-SyntaxError 群は個別調整が必要。
-
-### A9. lexical scope const lookup (constants_spec ~10 fail)
-
-`fixtures/constants.rb` 経由のテストで、 多階層 include / 動的 const 追加 /
-"Object 名前空間 vs 明示再オープン" の細かな差で残 fail。 大半は cref 連鎖
-の捕捉が parse 時の class/module nesting に追従していないことに起因。
-
-### A10. ensure block の backtrace 整形
-
-`ensure_spec` の "does not introduce extra backtrace entries" ↔ block frame の
-名前 ('block in <main>' vs 'it')。 backtrace builder が block 実行を独立
-frame として表示しないのが原因。 cosmetic 1 件。
+| spec | pass / fail / err | 原因の見当 |
+|---|---|---|
+| `line_spec` | 2 / 0 / 0 | 既に perfect |
+| `class_variable_spec` | 20 / 1 / 0 | "overtaken by" RuntimeError 警告 (Verbose mode の動作) |
+| `variables_spec` | 168 / 2 / 0 | local-variable shadowing の `-W` warn 出力 |
+| `rescue_spec` | 87 / 1 / 0 | backtrace 中の `'block in <enclosing>'` ラベル化 (§B1) |
+| `yield_spec` | 40 / 2 / 0 | 「prism は受け付けるが CRuby は SyntaxError」 系 (yield in singleton class literal) |
+| `method_spec` | 228 / 1 / 1 | block-level method param 取得の 1 件 + 1 err |
+| `class_spec` | 66 / 2 / 2 | Class.new block 内の `class X` の lexical scope (§B3) |
+| `super_spec` | 117 / 1 / 2 | BasicObject 経由 super, 可視性変更後 super, define_method 経由の RuntimeError |
+| `block_spec` | 180 / 2 / 2 | block の SyntaxError 系 (循環引数参照) と to_proc 周り |
+| `keyword_arguments_spec` | 45 / 8 / 3 | `**hash` empty 扱い (§B2) |
 
 ## §B 中インパクト項目
 
-### B2. `at_exit` / END (`END_spec` 23 fail = 0%)
+### B1. block frame の backtrace ラベル
 
-`at_exit { ... }` ハンドラの登録 + main 終了時の LIFO 実行は実装済みだが、
-`END_spec` は `ruby_exe` で子プロセスを起動して標準出力を比較する形なので
-B6 (Process / spawn) との合わせ技が必要。 mspec_shim の `ruby_exe` を実装
-すれば一気に通る見込み。
+CRuby は block 内 raise の backtrace を `:in 'block in foo'` (or `:in 'block in <main>'`) と表示する。 koruby は呼び出し元の AST node line を貼るだけで block を独立 frame として表示しない。 `rescue_spec` / `ensure_spec` の "deepest rescue block" 系と、 backtrace API ベースの spec が複数 fail。 backtrace builder で running_block の生成位置を frame として挟む必要あり。
 
-### B3. Hash literal `**hash` の empty 扱い
+### B2. 空 kwargs hash の自動消失
 
-`m({}, **{})` で空 kwargs hash が positional に流れる。 CRuby は 3.x で
-empty kwargs hash を消す。 `keyword_arguments_spec` で十数件 fail。 
-call site の args 構築を kwargs と positional に明示分離する必要あり。
+`m({}, **{})` で空 kwargs hash が positional に流れる現象。 CRuby 3.x は empty kwargs hash を call-site で消去する。 `keyword_arguments_spec` で十数件 fail。 call site の args 構築を kwargs と positional に明示分離する必要あり。
+
+### B3. Class.new block 内の `class X` lexical scope
+
+`Class.new do; class X; end; end` で、 X は block 作成時の lexical scope (= 外側) に作られる。 koruby は `current_block->cref` を nk に push するため X が anon class 配下に入る。 builtins/module.c の `class_new` の cref 操作を見直し。
 
 ### B4. SyntaxError message 一致
 
-`-> { eval "1 rescue RuntimeError 2" }.should raise_error(SyntaxError)` 等で
-我々 (prism) のメッセージと CRuby の差で fail するケース。 mspec_shim 側
-の substring matcher で半数は救えているが、 「prism は受け付けるが CRuby
-は SyntaxError」 のケースは個別対応必要。
+`-> { eval "..." }.should raise_error(SyntaxError, /pattern/)` で prism と CRuby のエラーメッセージが違うため fail。 mspec_shim 側の substring matcher で半数は救えているが、 「prism は受け付けるが CRuby は SyntaxError」 のケース (例: yield in singleton class) は個別対応必要。
+
+### B5. eval body から外側 block の lvar 更新
+
+`eval("a = 2")` を block 内から呼ぶと、 eval body は新規 lvar `a` を作るだけで block の `a` を更新しない。 prism の depth 1+ scope への書き戻しを実装する必要あり。 `kernel/eval_spec` の "updates a local in a scope above a surrounding block scope" など。
 
 ## §C 残小バグ
 
-- [x] ~~**Boehm GC 再帰クラッシュ** in test_exception~~
-- [x] ~~**block param `*x` splat が Fiber 越しに値消失**~~
-- [ ] **Float#floor(n) の Float 精度** — Float 表現の本質 (291.4.floor(2) は 291.39 になる)。
+- [ ] **ArrayLshiftRedef** (`test/test_basic_op_redef.rb`) — Array#<< の redef guard が発火しない (4/4 fail)
+- [ ] **Float#floor(n) の Float 精度** — Float 表現の本質 (291.4.floor(2) は 291.39 になる)
 - [ ] **proc/lambda の post-rest の parameter 名** が `[:req]` のまま
 - [ ] **m17n strings**: encoding を真面目に処理してないので multi-byte 周りで slot wrap や split で誤動作
 - [ ] **`def f(&nil)` / `def f(**nil)`** (Ruby 3.4) — PM_MISSING_NODE で吸収済みだが parameters に反映されない
@@ -108,24 +112,29 @@ call site の args 構築を kwargs と positional に明示分離する必要�
 - [ ] `Complex` / `Rational`: `coerce` 経由の polar canonicalization、 NaN/Infinity の to_s 表記、 expt special angles
 - [ ] `StringIO` クラス自体 (test の依存により $_ 系 spec が skip 多い)
 
-## §F 完全 pass を狙えそうな spec
+## §F core spec の伸びしろ
 
-100% に近い + 残ファイルが小さい spec 群:
+`spec/ruby/core/` で **現状 60% 未満かつ実装可能** なクラス。 実装済み
+基盤 (Binding / eval / proc / hash) を生かせば数百件単位で増える。
 
-| spec | 残 fail | コスト感 | 備考 |
-|---|---:|---|---|
-| `line_spec` | 1 | 中 | `__LINE__` in loaded file の細部 |
-| `class_variable_spec` | 1 | 中 | overtaken ancestor の RuntimeError 警告 |
-| `symbol_spec` | 2 | 中 | null char in symbol name parser |
-| `ensure_spec` | 2 | 高 | backtrace 中の `'block'` ラベル (§A10) |
-| `precedence_spec` | 4 | 中 | 大半は `~/regex/` 系 (regex 統合待ち) |
-| `array_spec` | 4 | 高 | BasicObject 経由 splat、 `arr[*splat] = []` |
-| `proc_spec` | 6 | 中 | proc/block 引数 destructure の `(a, b)` パターン |
+| カテゴリ | pass | fail | err | 備考 |
+|---|---:|---:|---:|---|
+| `string` | 1800 | 1127 | 206 | encoding 系除外でもまだ伸びしろ大 |
+| `array` | 1171 | 436 | 67 | BasicObject splat、 reject_bang の余地 |
+| `integer` | 869 | 172 | 183 | Float 精度系 + bignum 細部 |
+| `range` | 98 | 79 | 11 | endless range step / first(n) の細部 |
+| `symbol` | 117 | 69 | 31 | inspect / to_proc / encoding 関連の細部 |
+| `proc` | 195 | 60 | 25 | curry / parameters / arity の細部 |
+| `float` | 120 | 35 | 74 | Float 表現本質、 step / divmod 精度 |
+| `hash` | 400 | 97 | 33 | merge with block / compare_by_identity |
 
-## §G 過去セッション履歴 (アーカイブ)
+## §G 過去セッション履歴
 
-実装済み変更の履歴は本書 §G 以降と git log を参照。 手を動かす前にここを
-ざっと見て、 既に試した方針を再走しないこと。
+実装済み変更の履歴は git log を参照。 手を動かす前に直近 30 commits 程度を
+ざっと眺めて既に試した方針を再走しないこと。 直近の大改修:
 
-(以前の §G セッション内容は git log で参照可能 — todo.md を肥大化させない
-ためここでは省略。)
+- 2026-05-07: Binding 完全実装 (binding TOTAL 110 → 150)
+- 2026-05-07: Kernel#eval coerce + String#b + block fp shift + nested eval
+- 2026-05-06: eval-with-binding (caller の lvars 参照、+99 pass)
+- 2026-05-05: mock support (should_receive)、 LocalJumpError 検出
+- 2026-05-04: describe→context→describe のローカル破壊修正

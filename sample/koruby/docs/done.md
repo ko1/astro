@@ -3,12 +3,13 @@
 本書は **すでに動く** 言語機能と、**取り入れた性能改善** を一覧する。
 未実装は [todo.md](./todo.md) に分離してある。
 
-## テストスイートの現状 (2026-05-06)
+## テストスイートの現状 (2026-05-08)
 
 ### 自前 test/ruby/
 
 `test/ruby/<category>/test_*.rb` に koruby 固有テストを配置。
-**24 ファイル, 190 件全 pass**。
+**24 ファイル中 23 OK / 1 FAIL** (`ArrayLshiftRedef` のみ既知 regression、
+[todo.md §C](./todo.md))。 23 OK の合計 733 件 全 pass。
 
 ### CRuby test/ruby/ (互換性 sanity)
 
@@ -27,10 +28,38 @@ $ ./koruby test/cruby_runner/run_rubyspec.rb \
 and_spec.rb: pass=26 fail=0 err=0 skip=0
 ```
 
-language/* (65 ファイル走破): **pass=2,570 / 3,511 (73.2%)、20 ファイルが 100% pass、29 件 SKIP**。
-- 100% pass: `and` / `comment` / `ensure` / `line` / `loop` / `next` / `not` / `or` / `order` / `private` / `range` / `redo` / `retry` / `safe` / `throw` (1 skip) / `undef` / `unless` / `until` / `while`
-- 95%+: `class_variable` (95.2%), `precedence` (93.1%), `symbol` (93.9%), `variables` (93.4%), `yield` (95.6%)
-- 90%+: `array` (91.7%), `throw`
+language/* (65 ファイル走破): **pass=3,275 / 3,507 (93.4%)、 35 ファイルが
+100% perfect、 23 件 SKIP**。
+
+100% perfect (35 spec):
+`and` / `array` / `BEGIN` / `END` / `comment` / `delegation` / `encoding` /
+`ensure` / `execution` / `file` / `heredoc` / `line` / `loop` /
+`magic_comment` / `module` / `next` / `not` / `numbered_parameters` /
+`numbers` / `optional_assignments` / `or` / `order` / `precedence` /
+`private` / `proc` / `range` / `redo` / `retry` / `safe` / `send` /
+`throw` / `undef` / `unless` / `until` / `while`。
+
+近接 (残 fail+err ≤ 4): `class_variable` (1) / `variables` (2) / `rescue` (1) /
+`yield` (2) / `method` (2) / `class` (4) / `super` (3) / `block` (4)。
+詳しくは [todo.md §A](./todo.md)。
+
+### CRuby spec/ruby/core/ (代表カテゴリ)
+
+| カテゴリ | pass | fail | err | 備考 |
+|---|---:|---:|---:|---|
+| `kernel` | 6,489 | 293 | 145 | `String#b` + `to_str` coerce 後に大幅改善 |
+| `string` | 1,800 | 1,127 | 206 | encoding 系除外でも残る |
+| `array` | 1,171 | 436 | 67 | |
+| `integer` | 869 | 172 | 183 | Float 精度系 / bignum |
+| `hash` | 400 | 97 | 33 | |
+| `proc` | 195 | 60 | 25 | |
+| `float` | 120 | 35 | 74 | |
+| `symbol` | 117 | 69 | 31 | |
+| `range` | 98 | 79 | 11 | |
+| `binding` | 58 | 0 | 2 | err は IRB / Refinements (out-of-scope) のみ |
+
+**Binding 関連スイート (`core/binding/*` + `core/kernel/{eval,binding}_spec`)
+合計: 150 pass**。 Binding 自体は完全互換 (詳細は §Binding 節)。
 
 shim が cover している matchers / helpers:
 - `should == / != / equal / eql / be_nil / be_true / be_false / be_truthy / be_falsy`

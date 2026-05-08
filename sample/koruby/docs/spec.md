@@ -26,6 +26,9 @@ CRuby と同等の意味論を狙うが、未実装機能 (Regexp / Fiber / Thre
 | `Class` / `Module` | `class Foo; end` | 第一級 |
 | `Struct` | `Struct.new(:a, :b)` | |
 | `Exception` | `RuntimeError.new("oops")` | |
+| `Binding` | `binding` | フレームの lvar / self / cref を捕捉 |
+| `Method` / `UnboundMethod` | `obj.method(:foo)` | bind / unbind / curry |
+| `Fiber` | `Fiber.new { ... }` | resume / yield / transfer |
 
 **真偽判定**: `false` と `nil` だけが偽。`0` も `""` も `[]` も真 (Ruby 標準)。
 
@@ -292,7 +295,28 @@ require require_relative load
 raise rescue
 sleep srand rand
 abort exit
-caller __method__`
+caller __method__
+binding eval (with optional Binding arg)
+lambda proc block_given? loop catch throw
+Integer Float String Array Hash`
+
+### Binding
+
+```ruby
+def m
+  a = 1
+  b = binding
+  b.local_variable_set(:c, 99)
+  b.local_variables   # => [:c, :a, :b]   (set-introduced first)
+  b.eval("a + c")     # => 100
+  b.source_location   # => [<file>, <line>]
+end
+```
+
+`local_variable_get` / `local_variable_set` / `local_variable_defined?` /
+`local_variables` / `receiver` / `eval(src [, file [, line]])` /
+`source_location` / `dup` / `clone` をサポート。
+`Proc#binding` も実装済み (proc 捕捉 env から Binding 構築)。
 
 ### Class / Module
 
@@ -346,11 +370,12 @@ p Point.new(1, 2) + Point.new(10, 20)
 ## 持たない / 制限
 
 - **真の Regexp** — Regexp リテラルは文字列スタブとして扱い、`=~` / `match` / `scan` は no-op (将来的に sample/astrogre と統合予定)
-- 受け側の splat / kwargs / ブロック引数の網羅 (`(*args)` は限定的、`(**opts)` `(&blk)` は未対応)
-- ブロックでの destructure (`each { |k, v| ... }` で 2 要素配列分解)
-- 真の `Comparable` / `Enumerable` mixin (現在は flatten copy)
-- `Object#method` / `Method` / `UnboundMethod` クラス
-- `Fiber` / `Thread`
-- 完全な IO / Encoding / Float の特殊値 (Infinity / NaN) 細部
+- **Encoding-aware String** — byte sequence のみ。`String#encoding` `force_encoding` `b` は stub、 multi-byte succ や m17n 系は未対応
+- **Thread / Mutex / Queue** — single-threaded 前提
+- **Refinements** (`refine` / `using`)
+- **Ractor**
+- **TracePoint / RubyVM**
+- **Process / spawn / fork** — `ruby_exe` 子プロセス起動を必要とする spec は skip
+- 完全な IO / Float の特殊値 (Infinity / NaN) 細部
 
 詳細: [`done.md`](done.md) / [`todo.md`](todo.md) / [`runtime.md`](runtime.md)。
