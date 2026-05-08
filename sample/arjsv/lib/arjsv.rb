@@ -67,7 +67,22 @@ module Arjsv
     s
   end
 
+  # json_schemer-compatible — validates that `schema_obj` is a
+  # well-formed JSON Schema by checking it against the appropriate
+  # meta-schema.  Delegates to json_schemer because reimplementing the
+  # meta-schema check is significant work and meta-schema validation is
+  # a rare, schema-build-time operation (no perf concern).
+  def self.valid_schema?(schema_obj)
+    require 'json_schemer'
+    JSONSchemer.valid_schema?(schema_obj)
+  end
+
   class Schema
+    # Instance form: validates the schema this Schema was built from.
+    def valid_schema?
+      Arjsv.valid_schema?(@source)
+    end
+
     # Public wrapper around the C-level _compile that supplies the right
     # Ruby header cflags by default.
     def compile!(extra_cflags = nil)
