@@ -661,7 +661,10 @@ class String
   # via undump gives the original bytes.
   def dump
     out = "\""
-    bytes.each do |b|
+    bs = bytes
+    i = 0
+    while i < bs.size
+      b = bs[i]
       case b
       when 0x09 then out << "\\t"
       when 0x0a then out << "\\n"
@@ -673,10 +676,18 @@ class String
       when 0x1b then out << "\\e"
       when 0x22 then out << "\\\""
       when 0x5c then out << "\\\\"
+      when 0x23 # `#` — only escape when followed by interpolation triggers.
+        nx = bs[i + 1]
+        if nx == 0x7B || nx == 0x24 || nx == 0x40 # `{`, `$`, `@`
+          out << "\\#"
+        else
+          out << "#"
+        end
       when 0x20..0x7e then out << b.chr
       else
         out << ("\\x%02X" % b)
       end
+      i += 1
     end
     out << "\""
   end unless method_defined?(:dump)
@@ -1609,6 +1620,62 @@ class String
       self[a]
     else
       self[a, b]
+    end
+  end
+
+  # String#slice! — take a slice and remove it in place.  Returns the
+  # extracted substring, or nil when no slice was extracted.  Raises
+  # FrozenError on a frozen receiver before any other check.
+  def slice!(a, b = nil)
+    raise FrozenError, "can't modify frozen String: #{inspect}" if frozen?
+    # Coerce Integer-shaped args via #to_int (CRuby calls to_int even
+    # for the (idx, len) and (idx) forms).
+    if !a.is_a?(Integer) && !a.is_a?(Range) && !a.is_a?(String) &&
+       !a.is_a?(Regexp) && a.respond_to?(:to_int)
+      a = a.to_int
+    end
+    if !b.nil? && !b.is_a?(Integer) && b.respond_to?(:to_int)
+      b = b.to_int
+    end
+    if b.nil?
+      r = self[a]
+      return nil if r.nil?
+      if a.is_a?(Integer)
+        n = self.size
+        idx = a < 0 ? a + n : a
+        return nil if idx < 0 || idx >= n
+        replace(self[0, idx] + self[idx + 1, n - idx - 1])
+      elsif a.is_a?(Range)
+        first = a.first
+        last  = a.last
+        excl  = a.exclude_end?
+        n = self.size
+        i = first.is_a?(Integer) ? (first < 0 ? first + n : first) : 0
+        j = last.is_a?(Integer)  ? (last  < 0 ? last  + n : last)  : (n - 1)
+        i = 0 if i < 0
+        j = excl ? j - 1 : j
+        if i > j || i >= n
+          return r
+        end
+        j = n - 1 if j >= n
+        replace(self[0, i] + self[j + 1, n - j - 1])
+      elsif a.is_a?(String)
+        idx = self.index(a)
+        return nil if idx.nil?
+        replace(self[0, idx] + self[idx + a.size, self.size - idx - a.size])
+      end
+      r
+    else
+      return nil if b < 0
+      r = self[a, b]
+      return nil if r.nil?
+      n = self.size
+      idx = a < 0 ? a + n : a
+      idx = 0 if idx < 0
+      len = b
+      len = n - idx if idx + len > n
+      replace(self[0, idx] + self[idx + len, n - idx - len])
+      r
     end
   end
 

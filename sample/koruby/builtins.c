@@ -270,7 +270,7 @@ void korb_init_builtins(void) {
         }
     }
     DEF(cStr, "+", str_plus, 1);
-    DEF(cStr, "<<", str_concat, 1);
+    DEF(cStr, "<<", str_lshift, -1);
     DEF(cStr, "concat", str_concat, 1);
     DEF(cStr, "size", str_size, 0);
     DEF(cStr, "length", str_size, 0);

@@ -82,6 +82,20 @@ static VALUE str_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 /* Append a single arg to self.  Returns Qfalse on raise (caller stops). */
 static bool str_concat_one(CTX *c, VALUE self, VALUE arg);
+/* String#<< — accepts exactly one argument (CRuby semantics).  Variadic
+ * version is `concat`. */
+static bool str_concat_one(CTX *c, VALUE self, VALUE arg);
+static VALUE str_lshift(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
+    if (argc != 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1)", argc);
+        return Qnil;
+    }
+    if (!str_concat_one(c, self, argv[0])) return Qnil;
+    return self;
+}
 static VALUE str_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     /* String#concat accepts variadic args, appending each in order.
@@ -478,8 +492,67 @@ static VALUE str_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(v);
 }
 
+/* CRuby's String#to_f parses a leading numeric literal with the same
+ * lexical structure as a Ruby float literal:
+ *   * optional ASCII whitespace
+ *   * optional sign
+ *   * digits with optional underscores between consecutive digits
+ *   * optional fractional part (`.<digits>` with the same underscore rule)
+ *   * optional exponent (`e[<sign>]<digits>`)
+ *   * stops at the first non-matching byte; remaining input is ignored.
+ * Hex/oct prefixes are NOT recognized. "Infinity" / "NaN" return 0.0. */
 static VALUE str_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_float_new(strtod(((struct korb_string *)self)->ptr, NULL));
+    const struct korb_string *s = (const struct korb_string *)self;
+    const char *p = s->ptr, *e = s->ptr + s->len;
+    /* Skip leading ASCII whitespace. */
+    while (p < e && (*p == ' ' || *p == '\t' || *p == '\n' ||
+                     *p == '\v' || *p == '\f' || *p == '\r')) p++;
+    /* Build a sanitized copy: copy bytes that match Ruby's float-literal
+     * grammar, dropping underscores between digits. */
+    char buf[64];
+    long blen = 0;
+    if (p < e && (*p == '+' || *p == '-')) { buf[blen++] = *p++; }
+    bool saw_digit = false;
+    /* Integer part. */
+    while (p < e && *p >= '0' && *p <= '9') {
+        if (blen + 1 < (long)sizeof(buf)) buf[blen++] = *p;
+        saw_digit = true;
+        p++;
+        if (p < e && *p == '_' && p + 1 < e && p[1] >= '0' && p[1] <= '9') p++;
+    }
+    /* Fractional part. */
+    if (p < e && *p == '.' && p + 1 < e && p[1] >= '0' && p[1] <= '9') {
+        if (blen + 1 < (long)sizeof(buf)) buf[blen++] = *p;
+        p++;
+        while (p < e && *p >= '0' && *p <= '9') {
+            if (blen + 1 < (long)sizeof(buf)) buf[blen++] = *p;
+            saw_digit = true;
+            p++;
+            if (p < e && *p == '_' && p + 1 < e && p[1] >= '0' && p[1] <= '9') p++;
+        }
+    }
+    /* Exponent. */
+    if (saw_digit && p < e && (*p == 'e' || *p == 'E')) {
+        long save_blen = blen;
+        const char *save_p = p;
+        if (blen + 1 < (long)sizeof(buf)) buf[blen++] = *p;
+        p++;
+        if (p < e && (*p == '+' || *p == '-')) {
+            if (blen + 1 < (long)sizeof(buf)) buf[blen++] = *p;
+            p++;
+        }
+        bool exp_digit = false;
+        while (p < e && *p >= '0' && *p <= '9') {
+            if (blen + 1 < (long)sizeof(buf)) buf[blen++] = *p;
+            exp_digit = true;
+            p++;
+            if (p < e && *p == '_' && p + 1 < e && p[1] >= '0' && p[1] <= '9') p++;
+        }
+        if (!exp_digit) { blen = save_blen; p = save_p; }
+    }
+    if (!saw_digit) return korb_float_new(0.0);
+    buf[blen] = '\0';
+    return korb_float_new(strtod(buf, NULL));
 }
 
 /* String#byteslice — byte-indexed slice.  koruby is byte-only so this
