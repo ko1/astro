@@ -3,7 +3,21 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-08, second pass)
+## 現状 (2026-05-08, fourth pass)
+
+- **自前 test/ruby/**: **24/24 全 OK** (737 件)。
+- **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,404 pass / 40 perfect**。
+- **CRuby `spec/ruby/core/`** (13 主要 cat): **12,407 pass、 133 ファイル perfect**。
+  本ラウンドで perfect 化: array (assoc/clear/dig/include/plus/take),
+  hash (compact/delete/dig/empty/any/fetch/fetch_values/new/reject),
+  module (case_compare/protected_instance_methods/public_instance_methods),
+  class (new), range (new/hash), float (lt/le/gt/ge/uminus),
+  integer (bit_length), string (bytes)。
+- **Binding**: **150 pass** (完全互換)。
+
+---
+
+## 旧現状 (2026-05-08, second pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (ArrayLshiftRedef 解決)。 合計 737 件 全 pass。
 - **optcarrot**: CRuby と動作・出力一致。
