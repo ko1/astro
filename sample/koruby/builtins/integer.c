@@ -29,8 +29,11 @@ static VALUE int_to_rational_obj(CTX *c, VALUE self) {
  * Returns Qundef when the RHS doesn't respond to :coerce so the
  * caller can fall through to TypeError. */
 static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
-    struct korb_class *ok = korb_class_of_class(other);
-    if (!korb_class_find_method(ok, korb_intern("coerce"))) return Qundef;
+    /* Use respond_to? so mock objects (method_missing) are also seen. */
+    VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+    if (c->state == KORB_RAISE) return Qnil;
+    if (!RTEST(rt)) return Qundef;
     VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
     if (c->state != KORB_NORMAL) return Qnil;
     if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return Qundef;
@@ -130,6 +133,14 @@ static VALUE int_rshift(CTX *c, VALUE self, int argc, VALUE *argv) {
 #define INT_BITOP_GUARD(c, rhs, op_name) do { \
     if (!FIXNUM_P(rhs) && \
         (SPECIAL_CONST_P(rhs) || BUILTIN_TYPE(rhs) != T_BIGNUM)) { \
+        /* Float never bit-ops with Integer — CRuby raises TypeError
+         * directly without going through the coerce protocol. */ \
+        if (FLONUM_P(rhs) || (!SPECIAL_CONST_P(rhs) && BUILTIN_TYPE(rhs) == T_FLOAT)) { \
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError")); \
+            korb_raise((c), (struct korb_class *)eT, \
+                       "no implicit conversion of Float into Integer"); \
+            return Qnil; \
+        } \
         VALUE _coerced = int_coerce_dispatch((c), self, (rhs), korb_intern((op_name))); \
         if (!UNDEF_P(_coerced)) return _coerced; \
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError")); \
