@@ -20,6 +20,12 @@ module Arjsv
   #   - false     — always-invalid schema
   def self.schema(schema_obj)
     builder = Builder.new
+    # Convert Symbol keys at schema positions to Strings (one-shot,
+    # schema-build time; runtime hot path stays untouched).  `enum` /
+    # `const` / `default` / `examples` *values* are left as-is — those
+    # are JSON data shapes the user matches against their own data and
+    # have to follow the user's String-vs-Symbol convention.
+    schema_obj = builder.normalize_schema_keys(schema_obj)
     builder.top_schema = schema_obj
     builder.detect_draft(schema_obj)
     builder.collect_ids(schema_obj)
@@ -130,6 +136,31 @@ module Arjsv
       return unless s.is_a?(String)
       if s.include?('2019-09') || s.include?('2020-12')
         @assert_content = false
+      end
+    end
+
+    # Schema-position keys whose VALUE is JSON data, not a sub-schema —
+    # we don't recurse into these during key normalisation, so that
+    # `enum: [{a: 1}]` keeps its Symbol key intact (the user's data
+    # convention is what matters for matching, not arjsv's).
+    SCHEMA_VALUE_KEYS = %w[enum const default examples].freeze
+
+    # Convert Symbol keys at schema positions to Strings.  Walked once at
+    # `Arjsv.schema` entry; runtime hot path is unaffected.  Mirrors
+    # json_schemer's `deep_stringify_keys`, but skips data-value keywords
+    # (`enum` / `const` / `default` / `examples`) so users' data shapes
+    # aren't rewritten under their feet.
+    def normalize_schema_keys(node)
+      case node
+      when Hash
+        node.each_with_object({}) do |(k, v), out|
+          ks = k.is_a?(Symbol) ? k.to_s : k
+          out[ks] = SCHEMA_VALUE_KEYS.include?(ks) ? v : normalize_schema_keys(v)
+        end
+      when Array
+        node.map { |v| normalize_schema_keys(v) }
+      else
+        node
       end
     end
 

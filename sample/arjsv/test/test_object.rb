@@ -34,6 +34,37 @@ class TestObject < ArjsvTest
     refute_valid s, {name: 'X', age: 'thirty'}
   end
 
+  # Schemas can themselves use Symbol keys.  Schema-build-time normalises
+  # Symbol keys at schema positions to Strings (one-shot); enum / const
+  # values keep their original key convention so user-side data matching
+  # works as intended.
+  def test_symbol_keyed_schema
+    s = schema(
+      type: 'object',
+      required: ['name'],
+      properties: {
+        'name' => {type: 'string', minLength: 1},
+      },
+    )
+    assert_valid s, {'name' => 'X'}
+    refute_valid s, {'name' => ''}                # minLength fails
+    refute_valid s, {}                            # required fails
+  end
+
+  def test_symbol_keyed_schema_with_symbol_data
+    # Both schema and data Symbol-keyed — the common Rails / Sinatra flow.
+    s = schema(
+      type: 'object',
+      required: ['age'],
+      properties: {
+        'age' => {type: 'integer', minimum: 0},
+      },
+    )
+    assert_valid s, {age: 18}
+    refute_valid s, {age: -1}
+    refute_valid s, {}
+  end
+
   def test_required_on_non_object_skipped
     # `required` only triggers when value is an object — for non-objects the
     # type check (a sibling) is what fails.  required alone passes them.
