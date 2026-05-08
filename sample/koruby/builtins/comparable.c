@@ -525,13 +525,27 @@ static VALUE module_const_set(CTX *c, VALUE self, int argc, VALUE *argv) {
                    korb_id_name(korb_class_of_class(self)->name));
         return Qnil;
     }
+    /* Coerce non-Symbol/String name via #to_str (CRuby semantics). */
+    VALUE name_arg = argv[0];
+    if (!SYMBOL_P(name_arg) &&
+        (SPECIAL_CONST_P(name_arg) || BUILTIN_TYPE(name_arg) != T_STRING)) {
+        if (!SPECIAL_CONST_P(name_arg)) {
+            VALUE rt = korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                name_arg = korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            }
+        }
+    }
     const char *namep = NULL;
     int namelen = 0;
-    if (SYMBOL_P(argv[0])) {
-        const char *s = korb_id_name(korb_sym2id(argv[0]));
+    if (SYMBOL_P(name_arg)) {
+        const char *s = korb_id_name(korb_sym2id(name_arg));
         namep = s; namelen = (int)strlen(s);
-    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
-        struct korb_string *str = (struct korb_string *)argv[0];
+    } else if (!SPECIAL_CONST_P(name_arg) && BUILTIN_TYPE(name_arg) == T_STRING) {
+        struct korb_string *str = (struct korb_string *)name_arg;
         namep = str->ptr; namelen = str->len;
     } else {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));

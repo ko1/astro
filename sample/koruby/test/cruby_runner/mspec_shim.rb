@@ -736,6 +736,32 @@ end
 
 def mock(name = ""); MSpecMock.new(name); end
 def mock_int(value); value; end
+# Lightweight NumericMockObject stand-in.  Real mspec subclasses Numeric;
+# we pretend by including Comparable and forwarding == / <=> through the
+# stored name when used as a sentinel.
+class NumericMockObject < Numeric
+  attr_reader :name
+  def initialize(name, options = {})
+    @name = name
+    @null = options[:null_object]
+    @recv = {}
+  end
+  def should_receive(method, *_)
+    @recv[method] = MSpecMockExpectation.new(self, method)
+    @recv[method]
+  end
+  def stub(*); MSpecMockExpectation.new(self, :stub); end
+  def method_missing(sym, *args, &block)
+    if (e = @recv[sym]) then e.__return_value
+    elsif @null then self
+    else nil
+    end
+  end
+  def respond_to?(name, _priv = false)
+    @recv.key?(name) || super
+  end
+end
+def mock_numeric(name, options = {}); NumericMockObject.new(name, options); end
 def stub!(name = ""); MSpecMock.new(name); end
 
 # ScratchPad — mspec helper that records values across an example's

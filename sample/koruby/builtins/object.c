@@ -105,6 +105,18 @@ static ID korb_name_to_id_(VALUE v) {
  * least one identifier character.  Returns the ID on success, or
  * raises NameError / TypeError and returns 0. */
 static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
+    /* Coerce non-Symbol/String name via #to_str (CRuby semantics). */
+    if (!SYMBOL_P(v) &&
+        (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) &&
+        !SPECIAL_CONST_P(v)) {
+        VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (c->state == KORB_RAISE) return 0;
+        if (RTEST(rt)) {
+            v = korb_funcall(c, v, korb_intern("to_str"), 0, NULL);
+            if (c->state == KORB_RAISE) return 0;
+        }
+    }
     const char *p; long n;
     if (SYMBOL_P(v)) {
         p = korb_id_name(korb_sym2id(v));
