@@ -76,18 +76,40 @@ static VALUE cmp_clamp(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE lo, hi;
     if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)argv[0];
+        if (r->exclude_end) {
+            /* `clamp(a...b)` is rejected (no clean cap on b's value). */
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg,
+                       "cannot clamp with an exclusive range");
+            return Qnil;
+        }
         lo = r->begin;
         hi = r->end;
-        /* Exclusive-end Integer ranges: drop the upper bound by 1 so
-         * `0.clamp(1...5)` behaves like `0.clamp(1, 4)`. */
-        if (r->exclude_end && !NIL_P(hi) && FIXNUM_P(hi))
-            hi = INT2FIX(FIX2LONG(hi) - 1);
     } else if (argc == 2) {
         lo = argv[0];
         hi = argv[1];
     } else {
         korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 1..2)", argc);
         return Qnil;
+    }
+    /* If both bounds are non-nil, verify lo <= hi.  Use the bounds'
+     * own <=> (CRuby uses min.<=>(max)) so user-defined comparison
+     * decides; nil result OR positive sign → ArgumentError. */
+    if (!NIL_P(lo) && !NIL_P(hi)) {
+        VALUE r = korb_funcall(c, lo, korb_intern("<=>"), 1, &hi);
+        if (c->state == KORB_RAISE) return Qnil;
+        bool bad;
+        if (NIL_P(r)) bad = true;
+        else if (FIXNUM_P(r)) bad = FIX2LONG(r) > 0;
+        else if (FLONUM_P(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT))
+            bad = korb_num2dbl(r) > 0;
+        else bad = false;
+        if (bad) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg,
+                       "min argument must be smaller than max argument");
+            return Qnil;
+        }
     }
     if (!NIL_P(lo) && korb_cmp_call(c, self, lo) < 0) return lo;
     if (!NIL_P(hi) && korb_cmp_call(c, self, hi) > 0) return hi;
