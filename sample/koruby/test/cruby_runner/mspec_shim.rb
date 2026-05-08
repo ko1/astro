@@ -546,7 +546,20 @@ class MSpecNegatedExpectation < MSpecExpectation
     else raise MSpecError, "expected non-nil"
     end
   end
-  # ... incomplete; fall back to the matcher's negation
+  # Fallback predicate proxy: `obj.should_not.empty?` invokes
+  # `obj.empty?` and asserts FALSY (the parent class asserts truthy
+  # — which is wrong for the negated form).
+  def method_missing(name, *args, &blk)
+    if @actual.respond_to?(name)
+      result = @actual.send(name, *args, &blk)
+      if !result then $ms_pass += 1
+      else raise MSpecError, "expected !#{@actual.inspect}.#{name}(#{args.inspect}), got #{result.inspect}"
+      end
+      result
+    else
+      super
+    end
+  end
 end
 
 # ruby_version_is supports a String "3.0" (>=) or a Range "..."3.4"
