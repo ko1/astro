@@ -18,8 +18,35 @@ module Arjsv
   #   - Hash      — a regular schema object
   #   - true / {} — always-valid schema
   #   - false     — always-invalid schema
-  def self.schema(schema_obj)
-    builder = Builder.new
+  # Build a Schema from a parsed JSON-Schema hash.
+  #
+  # Options:
+  #   formats:  Hash<String, #call> of user-defined format checkers.
+  #             Each value is called as `proc.call(string_value)` and
+  #             must return truthy to mean "valid".  Merges with arjsv's
+  #             built-in formats (user-supplied takes precedence; setting
+  #             to `nil` or `false` disables a built-in format).
+  # Use *args + **opts to accept either calling convention:
+  #   Arjsv.schema({type: 'x'})                 # explicit braces
+  #   Arjsv.schema('type' => 'x')               # implicit hash (Ruby 4
+  #                                              packs this into **opts)
+  #   Arjsv.schema(schema_hash, formats: { … }) # explicit options
+  # arjsv-specific options (`formats:` for now) are pulled out first; if no
+  # positional arg remains, the residue is the schema.
+  ARJSV_OPTIONS = %i[formats].freeze
+  def self.schema(*args, **opts)
+    own_opts = opts.slice(*ARJSV_OPTIONS)
+    schema_kwargs = opts.except(*ARJSV_OPTIONS)
+    case args.length
+    when 1
+      schema_obj = args[0]
+      raise ArgumentError, "unexpected schema kwargs: #{schema_kwargs.keys}" unless schema_kwargs.empty?
+    when 0
+      schema_obj = schema_kwargs
+    else
+      raise ArgumentError, "Arjsv.schema accepts at most 1 positional argument"
+    end
+    builder = Builder.new(formats: own_opts[:formats])
     # Convert Symbol keys at schema positions to Strings (one-shot,
     # schema-build time; runtime hot path stays untouched).  `enum` /
     # `const` / `default` / `examples` *values* are left as-is — those
@@ -101,7 +128,7 @@ module Arjsv
       $dynamicRef $dynamicAnchor $vocabulary
     ].freeze
 
-    def initialize
+    def initialize(formats: nil)
       @consts = []
       @entries = []           # secondary AST roots (e.g. $defs targets)
       @defs_idx = {}          # "<name>" => @consts slot holding the target NODE wrapper
@@ -115,6 +142,12 @@ module Arjsv
       # for the assertion mode).
       @assert_format  = true
       @assert_content = true
+      # User-supplied format checkers (json_schemer-compatible).
+      # Symbol keys are normalised to Strings; `false` / `nil` values
+      # disable a built-in format.
+      @user_formats = (formats || {}).each_with_object({}) do |(k, v), h|
+        h[k.to_s] = v
+      end
     end
 
     # Apply per-draft defaults based on the top-level $schema URI.
@@ -502,6 +535,15 @@ module Arjsv
     # `Arjsv::Format`.  Unknown formats are annotation-only (no constraint).
     def lower_format(fmt)
       return Arjsv._alloc_pass unless @assert_format
+      # User-supplied formats take precedence (json_schemer-compatible).
+      # `false` / `nil` mapping disables the format (= annotation only).
+      if @user_formats.key?(fmt)
+        v = @user_formats[fmt]
+        return Arjsv._alloc_pass if v.nil? || v == false
+        # User Proc: dispatch via node_format (no regex fast path —
+        # the user's checker may have arbitrary semantics).
+        return Arjsv._alloc_format(fmt, intern_const(v))
+      end
       # Fast path: formats whose validation IS just a regex match get
       # dispatched as `node_pattern` (one `rb_reg_match`) instead of
       # `node_format` (which costs an extra `rb_funcall` into Ruby for
