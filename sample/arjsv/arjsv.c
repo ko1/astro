@@ -301,6 +301,18 @@ rb_alloc_property_unsafe(VALUE self, VALUE key, VALUE key_idx, VALUE sym_idx, VA
 }
 
 static VALUE
+rb_alloc_property_with_default(VALUE self, VALUE key, VALUE key_idx, VALUE sym_idx, VALUE default_idx, VALUE schema, VALUE next)
+{
+    (void)self;
+    return arjsv_wrap_node(ALLOC_node_property_with_default(arjsv_dup_key(key),
+                                                            NUM2UINT(key_idx),
+                                                            NUM2UINT(sym_idx),
+                                                            NUM2UINT(default_idx),
+                                                            arjsv_unwrap_node(schema),
+                                                            arjsv_unwrap_node(next)));
+}
+
+static VALUE
 rb_alloc_items_uniform(VALUE self, VALUE schema)
 {
     (void)self;
@@ -596,6 +608,7 @@ Init_arjsv(void)
     rb_define_module_function(rb_mArjsv, "_alloc_required_unsafe", rb_alloc_required_unsafe, 4);
     rb_define_module_function(rb_mArjsv, "_alloc_property",      rb_alloc_property,      5);
     rb_define_module_function(rb_mArjsv, "_alloc_property_unsafe", rb_alloc_property_unsafe, 5);
+    rb_define_module_function(rb_mArjsv, "_alloc_property_with_default", rb_alloc_property_with_default, 6);
     rb_define_module_function(rb_mArjsv, "_alloc_items_uniform", rb_alloc_items_uniform, 1);
     rb_define_module_function(rb_mArjsv, "_alloc_items_uniform_unsafe", rb_alloc_items_uniform_unsafe, 1);
     rb_define_module_function(rb_mArjsv, "_alloc_items_tuple",   rb_alloc_items_tuple,   3);

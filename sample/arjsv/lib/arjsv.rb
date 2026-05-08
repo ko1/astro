@@ -33,7 +33,7 @@ module Arjsv
   #   Arjsv.schema(schema_hash, formats: { … }) # explicit options
   # arjsv-specific options (`formats:` for now) are pulled out first; if no
   # positional arg remains, the residue is the schema.
-  ARJSV_OPTIONS = %i[formats].freeze
+  ARJSV_OPTIONS = %i[formats insert_property_defaults].freeze
   def self.schema(*args, **opts)
     own_opts = opts.slice(*ARJSV_OPTIONS)
     schema_kwargs = opts.except(*ARJSV_OPTIONS)
@@ -46,7 +46,8 @@ module Arjsv
     else
       raise ArgumentError, "Arjsv.schema accepts at most 1 positional argument"
     end
-    builder = Builder.new(formats: own_opts[:formats])
+    builder = Builder.new(formats: own_opts[:formats],
+                          insert_defaults: own_opts[:insert_property_defaults])
     # Convert Symbol keys at schema positions to Strings (one-shot,
     # schema-build time; runtime hot path stays untouched).  `enum` /
     # `const` / `default` / `examples` *values* are left as-is — those
@@ -143,7 +144,7 @@ module Arjsv
       $dynamicRef $dynamicAnchor $vocabulary
     ].freeze
 
-    def initialize(formats: nil)
+    def initialize(formats: nil, insert_defaults: false)
       @consts = []
       @entries = []           # secondary AST roots (e.g. $defs targets)
       @defs_idx = {}          # "<name>" => @consts slot holding the target NODE wrapper
@@ -163,6 +164,12 @@ module Arjsv
       @user_formats = (formats || {}).each_with_object({}) do |(k, v), h|
         h[k.to_s] = v
       end
+      # `insert_property_defaults` (json_schemer-compatible): when set,
+      # property nodes whose sub-schema declares `default` will MUTATE
+      # the data Hash and insert the default value when the key is
+      # absent.  Off by default (validators with side effects are
+      # surprising; opt in explicitly).
+      @insert_defaults = !!insert_defaults
     end
 
     # Apply per-draft defaults based on the top-level $schema URI.
@@ -424,6 +431,7 @@ module Arjsv
     def lower_properties(props)
       raise ArgumentError, "properties must be Hash" unless props.is_a?(Hash)
       strict = @strict_object
+      insert_defaults = @insert_defaults
       # Stable iteration: sort keys so identical schemas produce identical
       # ASTs (and thus identical SD hashes) regardless of input ordering.
       # Note: lower(sub) recurses and resets @strict_object — capture
@@ -432,6 +440,15 @@ module Arjsv
         key_str = key.to_s
         str_idx, sym_idx = intern_key_pair(key_str)
         sub_node = lower(sub)
+        # If `insert_property_defaults` is on AND this sub-schema has a
+        # `default`, we route through the with-default node which mutates
+        # the data hash on absent.  Independent of `strict` guard — the
+        # default-insertion node embeds its own RB_TYPE_P (mutation needs
+        # the safety check anyway).
+        if insert_defaults && sub.is_a?(Hash) && sub.key?('default')
+          default_idx = intern_const(sub['default'])
+          next Arjsv._alloc_property_with_default(key_str, str_idx, sym_idx, default_idx, sub_node, tail)
+        end
         if strict
           Arjsv._alloc_property_unsafe(key_str, str_idx, sym_idx, sub_node, tail)
         else

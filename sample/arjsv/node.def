@@ -136,6 +136,30 @@ node_property_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_
     return EVAL_ARG(c, next);
 }
 
+// `insert_defaults` variant — when the property is absent, mutates
+// c->data to insert the schema's `default` value (consts[default_idx])
+// using the String key form, then validates the (now-present) value.
+// Matches json_schemer's `insert_property_defaults: true` behaviour.
+NODE_DEF
+node_property_with_default(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym_idx, uint32_t default_idx, NODE *schema, NODE *next)
+{
+    (void)key;
+    if (RB_TYPE_P(c->data, T_HASH)) {
+        VALUE prop = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
+        if (prop == Qundef) prop = rb_hash_lookup2(c->data, c->consts[sym_idx], Qundef);
+        if (prop == Qundef) {
+            prop = c->consts[default_idx];
+            rb_hash_aset(c->data, c->consts[key_idx], prop);
+        }
+        VALUE saved = c->data;
+        c->data = prop;
+        int ok = EVAL_ARG(c, schema);
+        c->data = saved;
+        if (!ok) return 0;
+    }
+    return EVAL_ARG(c, next);
+}
+
 // ---- Array keywords ------------------------------------------------------
 
 // Single sub-schema applied to every array element.  No-op for non-arrays.
