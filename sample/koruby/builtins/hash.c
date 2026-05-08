@@ -123,6 +123,10 @@ static VALUE hash_merge(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *src = (struct korb_hash *)self;
     bool has_block = korb_block_given();
     VALUE r = korb_hash_new();
+    /* Honor subclass: result has self's class (CRuby semantics). */
+    if (((struct RBasic *)self)->klass != (VALUE)korb_vm->hash_class) {
+        ((struct RBasic *)r)->klass = ((struct RBasic *)self)->klass;
+    }
     for (struct korb_hash_entry *e = src->first; e; e = e->next) {
         korb_hash_aset(r, e->key, e->value);
     }
@@ -424,12 +428,25 @@ static VALUE hash_tally(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash.new(default = nil) / Hash.new { |h, k| ... }. */
 /* Hash[pairs] / Hash[k1,v1,k2,v2,...] / Hash[other_hash] — convert to Hash. */
+/* Apply receiver-class to a freshly-created hash.  When self is a
+ * Hash subclass, the result should be an instance of that subclass. */
+static inline void hash_apply_self_class(VALUE r, VALUE self) {
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS &&
+        self != (VALUE)korb_vm->hash_class) {
+        ((struct RBasic *)r)->klass = self;
+    }
+}
 static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc == 0) return korb_hash_new();
+    if (argc == 0) {
+        VALUE r = korb_hash_new();
+        hash_apply_self_class(r, self);
+        return r;
+    }
     if (argc == 1) {
         VALUE arg = argv[0];
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_HASH) {
             VALUE r = korb_hash_new();
+            hash_apply_self_class(r, self);
             struct korb_hash *src = (struct korb_hash *)arg;
             for (struct korb_hash_entry *e = src->first; e; e = e->next) {
                 korb_hash_aset(r, e->key, e->value);
@@ -439,6 +456,7 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
             /* Hash[ [[k,v], [k,v]] ] form. */
             VALUE r = korb_hash_new();
+            hash_apply_self_class(r, self);
             struct korb_array *a = (struct korb_array *)arg;
             for (long i = 0; i < a->len; i++) {
                 VALUE pair = a->ptr[i];
@@ -452,6 +470,7 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     /* Hash[k,v,k,v,...] flat form. */
     VALUE r = korb_hash_new();
+    hash_apply_self_class(r, self);
     for (int i = 0; i + 1 < argc; i += 2) {
         korb_hash_aset(r, argv[i], argv[i+1]);
     }

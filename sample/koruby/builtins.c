@@ -222,6 +222,7 @@ void korb_init_builtins(void) {
         DEF(cStr, "encoding",       _str_encoding, 0);
         DEF(cStr, "force_encoding", _str_force_encoding, -1);
         DEF(cStr, "encode",         _str_force_encoding, -1);
+        DEF(cStr, "encode!",        _str_force_encoding, -1);
         DEF(cStr, "b",              _str_b, 0);
     }
     /* Encoding#name / #to_s. */
