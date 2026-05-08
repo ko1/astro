@@ -155,6 +155,13 @@ VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
 VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return Qnil;
     if (argc < 2) return Qnil;
+    /* Frozen check before any side effects (CRuby semantics). */
+    if (korb_obj_frozen_p(self)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
+                   korb_id_name(korb_class_of_class(self)->name));
+        return Qnil;
+    }
     ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
     if (!name) return Qnil;
     extern void korb_cvar_set(CTX *c, ID name, VALUE val);
