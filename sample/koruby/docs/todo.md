@@ -3,28 +3,28 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-08, seventh pass)
+## 現状 (2026-05-08, eighth pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
 - **CRuby `spec/ruby/language/` (rubyspec, 65)**: **3,745 pass / 190 fail / 51 err / 35 perfect**
   (累計 +341 pass)。
-- **optcarrot**: 30 frames で **68 fps** — `Numeric#<=>` 追加が
-  `korb_g_basic_op_redefined` を立てて 10× regress していたのを修正
-  (Numeric を `korb_check_basic_op_redef` から除外)。
-- **CRuby `spec/ruby/core/` 14 主要 cat**: **13,260+ pass、 200+ ファイル perfect**
-  (累計 +850+ pass、 +60+ perfect)。 本セッションで perfect 化:
-  - `core/array/{any,clear,assoc,plus,try_convert}`
-  - `core/hash/{new,try_convert,to_proc,default_proc}`
-  - `core/string/{hex,oct,try_convert,plus,include,prepend}`
-  - `core/integer/{multiply,plus,uminus,divide,digits,bit_and,bit_or,bit_xor}`
-  - `core/proc/{lambda,allocate}`
-  - `core/comparable/{lt,gt,gte,lte,clamp}`
+- **optcarrot**: 30 frames で **67 fps**。
+- **CRuby `spec/ruby/core/` 14 主要 cat**: **13,320+ pass、 216+ ファイル perfect**
+  (累計 +913+ pass、 +83+ perfect)。 本セッションで perfect 化したもの一覧
+  (代表):
+  - `core/array/{any,clear,assoc,plus,try_convert,compact,rassoc,at,insert,
+    pop,shift,drop,delete,rotate}` (14)
+  - `core/hash/{new,try_convert,to_proc,default_proc}` (4)
+  - `core/string/{hex,oct,try_convert,plus,include,prepend}` (6)
+  - `core/integer/{multiply,plus,uminus,divide,digits,bit_and,bit_or,bit_xor}` (8)
+  - `core/proc/{lambda,allocate}` (2)
+  - `core/comparable/{lt,gt,gte,lte,clamp}` (5)
   - `core/kernel/{class,raise,instance_of,instance_variable_defined,dup,
-    case_compare,throw,respond_to,respond_to_missing}`
+    case_compare,throw,respond_to,respond_to_missing}` (9)
   - `core/binding/clone`
   - `core/module/{const_set,class_variable_set,deprecate_constant,lt,lte,gt,gte,
     comparison,private_class_method,public_class_method,attr_reader,
-    attr_writer,attr_accessor}`
+    attr_writer,attr_accessor,attr,private,protected}` (16)
   - `core/numeric/comparison`
   - `core/float/divide`
 - **Binding**: **150 pass** (完全互換)。
