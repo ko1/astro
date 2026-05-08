@@ -4336,10 +4336,14 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               NODE *insp = ALLOC_node_method_call(ALLOC_node_lvar_get(subj_slot),
                                                    korb_intern("inspect"),
                                                    0, insp_ai, mc_insp);
-              NODE *prep_cls = ALLOC_node_lvar_set(exc_class_slot, cls);
+              /* Assign msg first (its inspect call may clobber slots in
+               * [exc_class_slot..]); then write class on top.  Without this
+               * order the inspect callee's own locals overwrite fp[N] and
+               * raise sees garbage in argv[0]. */
               NODE *prep_msg = ALLOC_node_lvar_set(msg_slot, insp);
-              else_n = ALLOC_node_seq(prep_cls,
-                        ALLOC_node_seq(prep_msg,
+              NODE *prep_cls = ALLOC_node_lvar_set(exc_class_slot, cls);
+              else_n = ALLOC_node_seq(prep_msg,
+                        ALLOC_node_seq(prep_cls,
                           ALLOC_node_func_call(korb_intern("raise"), 2,
                                                exc_class_slot, mc_raise)));
           }

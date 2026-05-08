@@ -449,7 +449,7 @@ class MSpecExpectation
                         # literal backslashes).
                         msg.split('|').any? { |alt|
                           stripped = alt.dup
-                          %w(\\[ \\] \\. \\( \\) \\? \\+ \\* \\^ \\$ \\| \\\\).each do |esc|
+                          %w(\\[ \\] \\{ \\} \\. \\( \\) \\? \\+ \\* \\^ \\$ \\| \\\\).each do |esc|
                             stripped = stripped.gsub(esc, esc[1])
                           end
                           # Anchors: drop a leading "\\A" and a trailing
