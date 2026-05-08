@@ -166,17 +166,17 @@ streaming 系 (per-value 入力) と aggregating 系 (`-n + [inputs]`) を
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `identity` (`.`) | 1.00× | 1.47× | 1.42× | **6.10×** |
-| `extract_login` (`select(.type=="PushEvent") \| .actor.login`) | 1.00× | 1.06× | 1.00× | **2.45×** |
-| `commits_message` (`...payload.commits[]?.message`) | 1.00× | 1.00× | 0.91× | **4.23×** |
-| `reshape` (`{user, t, r, ts}` 投影) | 1.00× | 1.01× | 1.06× | **5.15×** |
-| `select_recent_PR` (PullRequestEvent + opened) | 1.00× | 1.07× | 1.05× | **4.82×** |
-| `type_histogram` (`group_by(.type)`) | 1.00× | 1.10× | 1.03× | **2.37×** |
-| `unique_repos` (`unique \| length`) | 1.00× | 1.10× | 1.04× | **2.38×** |
-| `count_pushes` (`[inputs \| select] \| length`) | 1.00× | 1.15× | 1.15× | **2.57×** |
-| `top_users` (`[inputs] \| group_by \| sort_by \| .[0:10]`) | 1.00× | 1.08× | 1.03× | **2.38×** |
+| `identity` (`.`) | 1.00× | 1.47× | 1.42× | **6.50×** |
+| `extract_login` (`select(.type=="PushEvent") \| .actor.login`) | 1.00× | 1.06× | 1.00× | **5.41×** |
+| `commits_message` (`...payload.commits[]?.message`) | 1.00× | 1.00× | 0.91× | **5.50×** |
+| `reshape` (`{user, t, r, ts}` 投影) | 1.00× | 1.01× | 1.06× | **5.38×** |
+| `select_recent_PR` (PullRequestEvent + opened) | 1.00× | 1.07× | 1.05× | **5.84×** |
+| `type_histogram` (`group_by(.type)`) | 1.00× | 1.10× | 1.03× | **2.57×** |
+| `unique_repos` (`unique \| length`) | 1.00× | 1.10× | 1.04× | **2.67×** |
+| `count_pushes` (`[inputs \| select] \| length`) | 1.00× | 1.15× | 1.15× | **2.91×** |
+| `top_users` (`[inputs] \| group_by \| sort_by \| .[0:10]`) | 1.00× | 1.08× | 1.03× | **2.52×** |
 
-JSONL **9/9 で 2.4-6.1× vs jq**。前世代までは:
+JSONL **9/9 で 2.5-6.5× vs jq**。前世代までは:
 - streaming 5/5 で 2.2-3.6× (parse+print スループット)
 - group_by / unique 1.4× 維持
 - **`count_pushes` / `top_users` だけ 0.33-0.35×** (jq の incremental
@@ -185,14 +185,19 @@ JSONL **9/9 で 2.4-6.1× vs jq**。前世代までは:
 最後の 2 件が逆転したのは下記 2 つの最適化がそれぞれ効いた結果:
 
 - **SIMD string scanner** で `parse_string_raw` / `print_string` の
-  inner byte-loop を SSE2 16-byte stride に。`identity` (parse +
-  print のスループット勝負) が 3.6× → 6.1×。
+  inner byte-loop を SSE2/AVX2 stride に (起動時 CPU dispatch)。
+  `identity` (parse + print のスループット勝負) が 3.6× → 6.5×。
 - **`inputs | F` の streaming-pipe fusion**: `pipe(inputs, F)` →
   `node_b_inputs_pipe(F)`、`[inputs | F] | length` →
   `node_b_count_inputs(F)`、`pipe(inputs_pipe(F), G)` →
   `inputs_pipe(F | G)` (chain absorption)。30 K records を pool に
-  同時保持しないので、`count_pushes` が 0.35× → 2.57× に逆転。
-  `top_users` も SIMD と GC threshold 緩和の合算で 0.33× → 2.38×。
+  同時保持しないので、`count_pushes` が 0.35× → 2.91× に逆転。
+  `top_users` も SIMD と GC threshold 緩和の合算で 0.33× → 2.52×。
+- **JSON parser の object 構築**: `nuq_object_set` (per-call dedup
+  scan + PIN3) → `nuq_object_append` (pure append、profile 上 top
+  hot spot から 3.8% → 0%)。`extract_login` 2.5× → 5.4× /
+  `select_recent_PR` 4.8× → 5.8× / `commits_message` 4.2× → 5.5×
+  と、object-heavy な投影系が一段ジャンプ。
 
 ## メモリ — peak RSS (HWM)
 
@@ -349,9 +354,10 @@ micro 系の桁違いの勝ち:
 
 JSONL 系の構造的勝ち:
 
-- **`identity` (純 parse + print) 6.1×**: SIMD string scanner が
-  effective。jq の per-byte scanner との差。
-- **`count_pushes` 2.6× / `top_users` 2.4×**: 元々 0.3× で大敗
+- **`identity` (純 parse + print) 6.5×**: SIMD string scanner
+  (SSE2 + AVX2 dispatch) と parser の object_append fast path
+  が effective。jq の per-byte scanner との差。
+- **`count_pushes` 2.9× / `top_users` 2.5×**: 元々 0.3× で大敗
   していた構造的問題を `inputs | F` streaming-pipe fusion で逆転。
 
 実用 (real) bench の field 抽出系 (deep_field / extract_field /
