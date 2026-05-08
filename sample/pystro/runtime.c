@@ -872,6 +872,30 @@ pyclass_refresh_slots(VALUE cls)
     cd->slot_str           = py_class_lookup_method_slow(cls, PYSTRO_INTERN_str);
     cd->slot_metaclass     = py_class_lookup_method_slow(cls, PYSTRO_INTERN_metaclass);
     cd->slot_set_name      = py_class_lookup_method_slow(cls, PYSTRO_INTERN_set_name);
+    // Compute fast_new: true iff slot_new resolves to the built-in
+    // object.__new__ AND the class neither needs exception setup nor
+    // has a built-in base (so bi_object_new's primary-value branch is
+    // a no-op anyway).  Not gated on metaclass — caller still does
+    // the metaclass __call__ check before consulting fast_new.
+    {
+        extern VALUE bi_object_new(CTX *c, int argc, VALUE *argv);
+        bool ok = !cd->is_exception
+                  && cd->slot_new != PY_NONE
+                  && PY_IS_PTR(cd->slot_new)
+                  && PY_PTR(cd->slot_new)->type == PY_T_BUILTIN
+                  && PY_PTR(cd->slot_new)->builtin.fn == bi_object_new;
+        if (ok) {
+            // Walk MRO for any class with a builtin_ctor (besides self if
+            // it's already a builtin — but builtin types aren't routed
+            // here in the fast path).
+            for (int i = 0; i < cd->nmro; i++) {
+                if (py_is_class(cd->mro[i]) && PY_PTR(cd->mro[i])->cls.builtin_ctor) {
+                    ok = false; break;
+                }
+            }
+        }
+        cd->fast_new = ok;
+    }
     cd->slots_initialized  = true;
 }
 
@@ -4100,6 +4124,41 @@ py_method_resolve(CTX *c, VALUE recv, const char *name, struct method_cache *cac
                 }
             }
         }
+        // Class method on the class itself (`Cls.cm(...)`): for
+        // @classmethod-decorated methods, cache the wrapped function so
+        // node_method_N's fast path can dispatch with cls prepended,
+        // skipping py_class_lookup_method + bound-method alloc on every
+        // call.  deltablue's `Strength.weakest_of` / `cls.weaker` chain
+        // hammered py_getattr → py_class_lookup_method otherwise.
+        if (tag == PY_T_CLASS) {
+            VALUE m = py_class_lookup_method(recv, name);
+            if (m != PY_NONE && PY_IS_PTR(m) && PY_PTR(m)->type == PY_T_CLASSMETHOD) {
+                VALUE wrapped = PY_PTR(m)->wrap.wrapped;
+                if (PY_IS_PTR(wrapped) && PY_PTR(wrapped)->type == PY_T_FUNC) {
+                    void *cls_ptr = (void *)PY_PTR(recv);
+                    int found = -1;
+                    for (int i = 0; i < PYSTRO_METHOD_PIC_WAYS; i++) {
+                        if (cache->u_cls[i] == cls_ptr) { found = i; break; }
+                    }
+                    if (found < 0) {
+                        for (int i = PYSTRO_METHOD_PIC_WAYS - 1; i > 0; i--) {
+                            cache->u_cls[i] = cache->u_cls[i - 1];
+                            cache->u_fn [i] = cache->u_fn [i - 1];
+                        }
+                        cache->u_cls[0] = cls_ptr;
+                        cache->u_fn [0] = (void *)(intptr_t)wrapped;
+                    } else {
+                        cache->u_fn[found] = (void *)(intptr_t)wrapped;
+                    }
+                    cache->type_tag = PY_T_CLASS;
+                    cache->fn = NULL;
+                    // Slow path's own caller (py_apply_slow with the
+                    // bound method) handles this call's dispatch; the
+                    // hot path picks up the IC from next call.
+                    return py_make_bound(recv, wrapped);
+                }
+            }
+        }
         // Module method (e.g., `math.sqrt(x)`).  No self prepend.
         // Cache (module_ptr, resolved_method).  raytrace's per-pixel
         // math.sqrt was doing module-globals strcmp loop per call.
@@ -4872,21 +4931,29 @@ py_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         // pattern, immutable types, etc.).  Return value of __new__ becomes
         // the instance; if it's an instance of cls, __init__ runs on it.
         VALUE inst;
-        VALUE new_m = py_class_lookup_method(fn, PYSTRO_INTERN_new);
-        if (new_m != PY_NONE) {
-            VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
-            av[0] = fn;
-            for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
-            inst = py_apply_kw(c, new_m, argc + 1, av, kwc, kwnames, kwvalues);
-            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-        } else {
+        struct pyclass *cd = &PY_PTR(fn)->cls;
+        if (UNLIKELY(!cd->slots_initialized)) pyclass_refresh_slots(fn);
+        if (LIKELY(cd->fast_new)) {
+            // Skip __new__ dispatch for the common "user class with default
+            // object.__new__" — instantiation collapses to alloc + __init__.
             inst = py_make_instance(fn);
+        } else {
+            VALUE new_m = cd->slot_new;
+            if (new_m != PY_NONE) {
+                VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+                av[0] = fn;
+                for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+                inst = py_apply_kw(c, new_m, argc + 1, av, kwc, kwnames, kwvalues);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+            } else {
+                inst = py_make_instance(fn);
+            }
+            if (cd->is_exception) {
+                py_setattr(c, inst, "args", py_make_tuple(argv, argc));
+                if (argc >= 1 && py_is_str(argv[0])) py_setattr(c, inst, "message", argv[0]);
+            }
         }
-        if (PY_PTR(fn)->cls.is_exception) {
-            py_setattr(c, inst, "args", py_make_tuple(argv, argc));
-            if (argc >= 1 && py_is_str(argv[0])) py_setattr(c, inst, "message", argv[0]);
-        }
-        VALUE init = py_class_lookup_method(fn, PYSTRO_INTERN_init);
+        VALUE init = cd->slot_init;
         if (init != PY_NONE) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = inst;
@@ -4970,20 +5037,26 @@ py_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         // It returns the new instance and handles built-in subclass
         // primary value setup.
         VALUE inst;
-        VALUE new_m = py_class_lookup_method(fn, PYSTRO_INTERN_new);
-        if (new_m != PY_NONE) {
-            VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
-            av[0] = fn;
-            for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
-            inst = py_apply(c, new_m, argc + 1, av);
-            if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-        } else {
+        struct pyclass *cd_apply = &PY_PTR(fn)->cls;
+        if (UNLIKELY(!cd_apply->slots_initialized)) pyclass_refresh_slots(fn);
+        if (LIKELY(cd_apply->fast_new)) {
             inst = py_make_instance(fn);
-            VALUE bin_base = py_class_find_builtin_base(fn);
-            if (bin_base != PY_NONE) {
-                VALUE primary = PY_PTR(bin_base)->cls.builtin_ctor(c, argc, argv);
+        } else {
+            VALUE new_m = cd_apply->slot_new;
+            if (new_m != PY_NONE) {
+                VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+                av[0] = fn;
+                for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
+                inst = py_apply(c, new_m, argc + 1, av);
                 if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
-                PY_PTR(inst)->inst.primary = primary;
+            } else {
+                inst = py_make_instance(fn);
+                VALUE bin_base = py_class_find_builtin_base(fn);
+                if (bin_base != PY_NONE) {
+                    VALUE primary = PY_PTR(bin_base)->cls.builtin_ctor(c, argc, argv);
+                    if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                    PY_PTR(inst)->inst.primary = primary;
+                }
             }
         }
         if (PY_PTR(fn)->cls.is_exception) {

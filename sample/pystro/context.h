@@ -172,6 +172,13 @@ struct pyclass {
     VALUE slot_index, slot_invert, slot_neg;
     VALUE slot_repr, slot_str, slot_metaclass, slot_set_name;
     bool  slots_initialized;
+    // True iff py_apply on this class can skip the __new__ MRO walk
+    // and dispatch — slot_new is `bi_object_new` (the default
+    // object.__new__), the class is not an exception, has no metaclass,
+    // and has no built-in base needing primary-value setup.  Computed
+    // from slot_new + flags in pyclass_refresh_slots.  When true,
+    // instantiation is a single py_make_instance + slot_init dispatch.
+    bool  fast_new;
 
     // Bumped whenever the class's method table or layout changes.
     // attr_cache stamps this and trusts the cached eidx as long as it
@@ -399,6 +406,17 @@ struct attr_cache {
     void *cls_recv;
     void *class_value;       // VALUE cast — the resolved class attr
     uint32_t cls_recv_sv;    // shape_version snapshot for invalidation
+
+    // Instance-receiver, class-data attr cache (monomorphic).  When
+    // `aes.T1` looks up a class-level table on an instance, py_getattr
+    // walks the MRO every time.  inst_ca_cls is the recv's class
+    // pointer; inst_ca_val holds the cached lookup result (a stable
+    // class data attr — list / dict / int etc., never a bound method
+    // or property).  Bumped on class shape_version change.  Was 9% of
+    // pyaes runtime in py_class_lookup_method_slow.
+    void *inst_ca_cls;
+    void *inst_ca_val;
+    uint32_t inst_ca_sv;
 };
 
 typedef struct CTX_struct {

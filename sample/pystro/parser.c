@@ -3927,7 +3927,7 @@ static NODE *
 augop_apply(int kind, NODE *lhs, NODE *rhs)
 {
     switch (kind) {
-      case T_PLUS_EQ:        return ALLOC_node_add(lhs, rhs);
+      case T_PLUS_EQ:        return ALLOC_node_iadd(lhs, rhs);
       case T_MINUS_EQ:       return ALLOC_node_sub(lhs, rhs);
       case T_STAR_EQ:        return ALLOC_node_mul(lhs, rhs);
       case T_SLASH_EQ:       return ALLOC_node_truediv(lhs, rhs);
@@ -4711,7 +4711,44 @@ parse_assignable_target(NODE *rhs)
     if (trs[last].kind == TR_CALL) parse_error("cannot assign to function call");
     NODE *cur = make_load(base_name);
     for (int i = 0; i < ntr - 1; i++) {
-        if (trs[i].kind == TR_DOT)        cur = ALLOC_node_attr_get(cur, trs[i].name);
+        if (trs[i].kind == TR_DOT) {
+            // Fuse `obj.name(args)` into a method call when the next
+            // trailer is TR_CALL — otherwise the LHS path emits
+            // call_0(attr_get(...)) which loses the method PIC and
+            // forces every call through py_apply_slow's bound-method
+            // dispatch.  deltablue's `self.output().value = ...` was
+            // hitting this every constraint propagation step.
+            if (i + 1 < ntr - 1 && trs[i + 1].kind == TR_CALL) {
+                size_t save = tok_pos;
+                tok_pos = trs[i + 1].call_pos;
+                tok_pos++;       // consume '('
+                NODE *args[64];
+                int argc = 0;
+                if (peek_tok(0)->kind != T_RPAREN) {
+                    for (;;) {
+                        if (argc >= 64) parse_error("too many args");
+                        args[argc++] = parse_expr();
+                        if (!match_tok(T_COMMA)) break;
+                        if (peek_tok(0)->kind == T_RPAREN) break;
+                    }
+                }
+                expect(T_RPAREN, "')'");
+                tok_pos = save;
+                switch (argc) {
+                  case 0: cur = ALLOC_node_method_0(cur, trs[i].name); break;
+                  case 1: cur = ALLOC_node_method_1(cur, trs[i].name, args[0]); break;
+                  case 2: cur = ALLOC_node_method_2(cur, trs[i].name, args[0], args[1]); break;
+                  default: {
+                    size_t base = node_table_reserve(args, argc);
+                    cur = ALLOC_node_method_n(cur, trs[i].name, (uint32_t)base, (uint32_t)argc);
+                    break;
+                  }
+                }
+                i++;     // skip the TR_CALL we just consumed
+            } else {
+                cur = ALLOC_node_attr_get(cur, trs[i].name);
+            }
+        }
         else if (trs[i].kind == TR_SUB)   cur = ALLOC_node_subscript_get(cur, trs[i].idx);
         else if (trs[i].kind == TR_SLICE) cur = ALLOC_node_slice(cur, trs[i].sa, trs[i].sb, trs[i].sc);
         else {

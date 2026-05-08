@@ -342,6 +342,55 @@ node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cac
     return py_add(c, av, bv);
 }
 
+// Python `+=` on list mutates in place (CPython's `__iadd__`).  pystro
+// previously desugared `a += b` to `a = a + b`, which allocated a fresh
+// list every iteration — pyaes's `_remaining_counter += [...]` driver
+// loop was thus O(N²) and dominated memmove (12% of total).  This node
+// preserves the parser's `lset(name, iadd(lref(name), rhs))` shape but
+// does in-place extend when both sides are list, falling back to add().
+NODE_DEF
+node_iadd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cache *cache@ref)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+        int64_t r;
+        if (LIKELY(!__builtin_add_overflow((int64_t)PY_FIXVAL(av),
+                                           (int64_t)PY_FIXVAL(bv), &r) &&
+                   r >= PY_FIXNUM_MIN && r <= PY_FIXNUM_MAX))
+            return PY_FIX(r);
+    }
+    if (LIKELY(PY_IS_FLONUM(av) & PY_IS_FLONUM(bv)))
+        return py_make_float(py_flonum_to_double(av) + py_flonum_to_double(bv));
+    if (LIKELY(PY_IS_PTR(av) && PY_PTR(av)->type == PY_T_LIST)) {
+        struct pyobj *la = PY_PTR(av);
+        if (PY_IS_PTR(bv) && (PY_PTR(bv)->type == PY_T_LIST || PY_PTR(bv)->type == PY_T_TUPLE)) {
+            struct pyobj *lb = PY_PTR(bv);
+            size_t add = lb->list.len;
+            size_t need = la->list.len + add;
+            if (need > la->list.capa) {
+                size_t cap = la->list.capa ? la->list.capa : 4;
+                while (cap < need) cap *= 2;
+                VALUE *items = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
+                if (la->list.len) memcpy(items, la->list.items, sizeof(VALUE) * la->list.len);
+                la->list.items = items;
+                la->list.capa = cap;
+            }
+            // memcpy is safe even when av == bv (self-extend) only if
+            // capa already covered len*2 — we just realloc'd, so source
+            // pointer is the (possibly old) la->list.items.  When av ==
+            // bv, lb == la and we read from the freshly allocated items
+            // (which were just memcpy'd).  Read after the realloc.
+            memcpy(la->list.items + la->list.len, lb->list.items, sizeof(VALUE) * add);
+            la->list.len += add;
+            return av;
+        }
+    }
+    { VALUE r = py_node_binop_ic(c, cache, av, bv, "__add__", &PY_BINOP_INTERNED_add); if (r) return r; }
+    return py_add(c, av, bv);
+}
+
 NODE_DEF
 node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cache *cache@ref)
 {
@@ -410,6 +459,18 @@ node_floordiv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    // Fixnum // fixnum: Python floor division (rounds toward -inf).  GMP
+    // path was 1.6% on pyaes for `i // 4` / `i // 16` shape ops; inline.
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+        int64_t bi = PY_FIXVAL(bv);
+        if (LIKELY(bi != 0)) {
+            int64_t ai = PY_FIXVAL(av);
+            int64_t q = ai / bi;
+            int64_t r = ai - q * bi;
+            if ((r != 0) && ((r < 0) != (bi < 0))) q -= 1;
+            return PY_FIX(q);
+        }
+    }
     return py_fdiv(c, av, bv);
 }
 
@@ -419,6 +480,17 @@ node_mod(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
+    // Fixnum % fixnum: Python mod has same sign as divisor.  pyaes uses
+    // `i % 4` heavily in AES round transforms; was 1.7% via GMP.
+    if (LIKELY(PY_IS_FIXNUM(av) & PY_IS_FIXNUM(bv))) {
+        int64_t bi = PY_FIXVAL(bv);
+        if (LIKELY(bi != 0)) {
+            int64_t ai = PY_FIXVAL(av);
+            int64_t r = ai % bi;
+            if ((r != 0) && ((r < 0) != (bi < 0))) r += bi;
+            return PY_FIX(r);
+        }
+    }
     return py_mod(c, av, bv);
 }
 
@@ -675,6 +747,24 @@ node_subscript_get(CTX * restrict c, NODE * restrict n, NODE *seq, NODE *idx)
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
     VALUE iv = EVAL_ARG(c, idx);
     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+    // Fixnum index on list/tuple/bytes/bytearray fast path.  pyaes
+    // does heavy bytes-arr[i] indexing for AES round transforms;
+    // py_list_get's full dispatch was ~3% of total runtime.
+    if (LIKELY(PY_IS_FIXNUM(iv) && PY_IS_PTR(sv))) {
+        int t = PY_PTR(sv)->type;
+        int64_t i = PY_FIXVAL(iv);
+        if (t == PY_T_LIST || t == PY_T_TUPLE) {
+            struct pyobj *o = PY_PTR(sv);
+            if (UNLIKELY(i < 0)) i += (int64_t)o->list.len;
+            if (LIKELY((uint64_t)i < (uint64_t)o->list.len))
+                return o->list.items[i];
+        } else if (t == PY_T_BYTES || t == PY_T_BYTEARRAY) {
+            struct pyobj *o = PY_PTR(sv);
+            if (UNLIKELY(i < 0)) i += (int64_t)o->str.len;
+            if (LIKELY((uint64_t)i < (uint64_t)o->str.len))
+                return PY_FIX((unsigned char)o->str.chars[i]);
+        }
+    }
     return py_list_get(c, sv, iv);
 }
 
@@ -766,6 +856,16 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                     return o->inst.attrs->entries[eidx].value;
             }
         }
+        // Instance-receiver class-attr fast path (`aes.T1`, `self.S` ..):
+        // attribute lives on the class, not the instance dict.  When the
+        // class is unchanged since stamping, the cached value is still
+        // current.  Monomorphic single slot (the hot pyaes / raytrace
+        // sites are call-site monomorphic).
+        if (cache->inst_ca_cls == (void *)o->inst.cls
+            && cache->inst_ca_val
+            && cache->inst_ca_sv == o->inst.cls->cls.shape_version) {
+            return (VALUE)(intptr_t)cache->inst_ca_val;
+        }
     } else if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_CLASS) {
         // Class data attr (`Strength.WEAKEST`, `Cls.classmethod`).  Cache
         // the resolved value monomorphically — class shape_version
@@ -787,36 +887,60 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
         cache->class_value = (void *)(intptr_t)r;
         cache->cls_recv_sv = PY_PTR(ov)->cls.shape_version;
     }
-    // Stamp the cache for next time.  Walk the dict's entries[] to
-    // find the index — small overhead, only on miss.
-    if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE) {
+    // Stamp the cache for next time.
+    if (PY_IS_PTR(ov) && PY_PTR(ov)->type == PY_T_INSTANCE && r != PY_NONE) {
         struct pyobj *o = PY_PTR(ov);
+        int32_t found_eidx = -1;
         if (o->inst.attrs) {
             for (size_t i = 0; i < o->inst.attrs->elen; i++) {
                 VALUE k = o->inst.attrs->entries[i].key;
                 if (k != 0 && k != DICT_DELETED_KEY
                     && py_is_str(k) && PY_PTR(k)->str.len == strlen(name)
                     && memcmp(PY_PTR(k)->str.chars, name, PY_PTR(k)->str.len) == 0) {
-                    void *cls = (void *)o->inst.cls;
-                    uint32_t sv = o->inst.cls->cls.shape_version;
-                    // Find an existing slot for this cls; on miss, shift
-                    // entries down (LRU eviction of slot 3) and insert at 0.
-                    int found = -1;
-                    for (int s = 0; s < PYSTRO_ATTR_PIC_WAYS; s++)
-                        if (cache->u_cls[s] == cls) { found = s; break; }
-                    if (found < 0) {
-                        for (int s = PYSTRO_ATTR_PIC_WAYS - 1; s > 0; s--) {
-                            cache->u_cls [s] = cache->u_cls [s - 1];
-                            cache->u_eidx[s] = cache->u_eidx[s - 1];
-                            cache->u_sv  [s] = cache->u_sv  [s - 1];
-                        }
-                        cache->u_cls [0] = cls;
-                    }
-                    int slot = (found >= 0) ? found : 0;
-                    cache->u_eidx[slot] = (int32_t)i;
-                    cache->u_sv  [slot] = sv;
+                    found_eidx = (int32_t)i;
                     break;
                 }
+            }
+        }
+        if (found_eidx >= 0) {
+            void *cls = (void *)o->inst.cls;
+            uint32_t sv = o->inst.cls->cls.shape_version;
+            // Find an existing slot for this cls; on miss, shift
+            // entries down (LRU eviction of slot 3) and insert at 0.
+            int found = -1;
+            for (int s = 0; s < PYSTRO_ATTR_PIC_WAYS; s++)
+                if (cache->u_cls[s] == cls) { found = s; break; }
+            if (found < 0) {
+                for (int s = PYSTRO_ATTR_PIC_WAYS - 1; s > 0; s--) {
+                    cache->u_cls [s] = cache->u_cls [s - 1];
+                    cache->u_eidx[s] = cache->u_eidx[s - 1];
+                    cache->u_sv  [s] = cache->u_sv  [s - 1];
+                }
+                cache->u_cls[0] = cls;
+            }
+            int slot = (found >= 0) ? found : 0;
+            cache->u_eidx[slot] = found_eidx;
+            cache->u_sv  [slot] = sv;
+        } else {
+            // Instance-receiver class-attr stamp: only when the value
+            // is stable data (not a bound method, descriptor, or
+            // property — those depend on receiver / re-evaluate).
+            bool stamp = false;
+            if (PY_IS_PTR(r)) {
+                int t = PY_PTR(r)->type;
+                if (t == PY_T_LIST || t == PY_T_TUPLE || t == PY_T_DICT
+                    || t == PY_T_STR || t == PY_T_BYTES || t == PY_T_BYTEARRAY
+                    || t == PY_T_SET || t == PY_T_FROZENSET
+                    || t == PY_T_BIGNUM || t == PY_T_RANGE
+                    || t == PY_T_CLASS)
+                    stamp = true;
+            } else {
+                stamp = true;   // immediate fixnum / flonum / None / bool
+            }
+            if (stamp) {
+                cache->inst_ca_cls = (void *)o->inst.cls;
+                cache->inst_ca_val = (void *)(intptr_t)r;
+                cache->inst_ca_sv  = o->inst.cls->cls.shape_version;
             }
         }
     }
@@ -1599,6 +1723,14 @@ node_method_0(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
         } else if (t == PY_T_MODULE) {
             VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
             if (LIKELY(fn)) return py_apply(c, fn, 0, NULL);
+        } else if (t == PY_T_CLASS) {
+            // `Cls.classmethod()` — IC stamps the wrapped function and
+            // we synthesise the cls-as-first-arg call directly.
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            if (LIKELY(fn)) {
+                VALUE av[1] = { o };
+                return py_apply(c, fn, 1, av);
+            }
         } else if (cache->fn) {
             VALUE av[1] = { o };
             return ((py_builtin_fn)cache->fn)(c, 1, av);
@@ -1645,6 +1777,15 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 av[0] = EVAL_ARG(c, a0);
                 if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
                 return py_apply(c, fn, 1, av);
+            }
+        } else if (t == PY_T_CLASS) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            if (LIKELY(fn)) {
+                VALUE av[2];
+                av[0] = o;
+                av[1] = EVAL_ARG(c, a0);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                return py_apply(c, fn, 2, av);
             }
         } else if (cache->fn) {
             VALUE av[2];
@@ -1701,6 +1842,17 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 av[1] = EVAL_ARG(c, a1);
                 if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
                 return py_apply(c, fn, 2, av);
+            }
+        } else if (t == PY_T_CLASS) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            if (LIKELY(fn)) {
+                VALUE av[3];
+                av[0] = o;
+                av[1] = EVAL_ARG(c, a0);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                av[2] = EVAL_ARG(c, a1);
+                if (UNLIKELY(c->state == PY_STATE_RAISE)) return PY_NONE;
+                return py_apply(c, fn, 3, av);
             }
         } else if (cache->fn) {
             VALUE av[3];
@@ -1764,6 +1916,18 @@ node_method_n(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                     if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
                 }
                 return py_apply(c, fn, (int)argc, av);
+            }
+        } else if (t == PY_T_CLASS) {
+            VALUE fn = pystro_pic_lookup(cache, (void *)PY_PTR(o));
+            if (LIKELY(fn)) {
+                VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
+                av[0] = o;
+                for (uint32_t i = 0; i < argc; i++) {
+                    NODE *arg = PYSTRO_NODE_TABLE[args_idx + i];
+                    av[i + 1] = (*arg->head.dispatcher)(c, arg);
+                    if (UNLIKELY(c->state != PY_STATE_NORMAL)) return PY_NONE;
+                }
+                return py_apply(c, fn, (int)argc + 1, av);
             }
         } else if (cache->fn) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
