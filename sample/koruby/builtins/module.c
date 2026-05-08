@@ -655,9 +655,24 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Class.new(superclass = Object) — create an anonymous subclass. */
     if (klass == korb_vm->class_class) {
         struct korb_class *super = korb_vm->object_class;
-        if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) &&
-            BUILTIN_TYPE(argv[0]) == T_CLASS) {
+        if (argc >= 1) {
+            /* Reject non-Class superclass with TypeError. */
+            if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_CLASS) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "superclass must be an instance of Class (given an instance of %s)",
+                           korb_id_name(korb_class_of_class(argv[0])->name));
+                return Qnil;
+            }
             super = (struct korb_class *)argv[0];
+            /* Reject metaclass (FL_SINGLETON) — CRuby raises TypeError
+             * "can't make subclass of singleton class". */
+            if (super->basic.flags & FL_SINGLETON) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "can't make subclass of singleton class");
+                return Qnil;
+            }
             /* Reject an uninitialized superclass — same TypeError as
              * `klass.new` on it.  Uninitialized classes have no super
              * field set up yet, so subclassing them would inherit a
