@@ -583,26 +583,63 @@ VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE r = korb_ary_new();
     ID *names = p->body ? korb_body_local_names(p->body) : NULL;
-    const char *kind = p->is_lambda ? "req" : "opt";
+    /* names[] is indexed from prism's locals.ids[] (lvar 0 = first local).
+     * Proc params live at fp[param_base + i] = fp[slot_base + i]; the name
+     * for param i is names[i] (locals[0] is the first lvar in the proc's
+     * own frame).  For rest/kwrest/blk slots the registered slot is
+     * absolute (fp index), so we recover the locals index by subtracting
+     * param_base. */
+    uint32_t req_cnt = (p->params_cnt > p->opt_cnt) ? p->params_cnt - p->opt_cnt : 0;
     for (uint32_t i = 0; i < p->params_cnt; i++) {
         VALUE pair = korb_ary_new_capa(2);
+        const char *kind;
+        if (i < req_cnt) {
+            kind = p->is_lambda ? "req" : "opt";
+        } else {
+            kind = "opt";
+        }
         korb_ary_push(pair, korb_id2sym(korb_intern(kind)));
-        long slot = (long)p->param_base + (long)i;
-        if (names && slot >= 0) {
-            const char *n = korb_id_name(names[slot]);
-            if (n && n[0] != 0 && !(n[0] == '_' && n[1] == 0)) {
-                korb_ary_push(pair, korb_id2sym(names[slot]));
+        if (names) {
+            ID nm = names[i];
+            const char *n = nm ? korb_id_name(nm) : "";
+            if (n && n[0] != 0) {
+                korb_ary_push(pair, korb_id2sym(nm));
             }
         }
         korb_ary_push(r, pair);
     }
-    if (p->rest_slot >= 0) {
+    if (p->rest_slot >= 0 && !p->implicit_rest) {
         VALUE pair = korb_ary_new_capa(2);
         korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
+        bool added_name = false;
         if (names) {
-            const char *n = korb_id_name(names[p->rest_slot]);
-            if (n && n[0] != 0 && !(n[0] == '_' && n[1] == 0)) {
-                korb_ary_push(pair, korb_id2sym(names[p->rest_slot]));
+            long li = (long)p->rest_slot - (long)p->param_base;
+            if (li >= 0) {
+                ID nm = names[li];
+                const char *n = nm ? korb_id_name(nm) : "";
+                if (n && n[0] != 0) {
+                    korb_ary_push(pair, korb_id2sym(nm));
+                    added_name = true;
+                }
+            }
+        }
+        /* Anonymous splat `*` — CRuby returns the literal name `:*`. */
+        if (!added_name) {
+            korb_ary_push(pair, korb_id2sym(korb_intern("*")));
+        }
+        korb_ary_push(r, pair);
+    }
+    /* Post params (after rest). */
+    for (uint32_t i = 0; i < p->post_cnt; i++) {
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, korb_id2sym(korb_intern("req")));
+        long abs = (long)p->param_base + (long)p->params_cnt + (p->rest_slot >= 0 ? 1 : 0) + (long)i;
+        long li = abs - (long)p->param_base;
+        if (names && li >= 0) {
+            ID nm = names[li];
+            const char *n = nm ? korb_id_name(nm) : "";
+            if (n && n[0] != 0) {
+                korb_ary_push(pair, korb_id2sym(nm));
             }
         }
         korb_ary_push(r, pair);
@@ -610,11 +647,41 @@ VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (p->kwh_save_slot >= 0) {
         VALUE pair = korb_ary_new_capa(2);
         korb_ary_push(pair, korb_id2sym(korb_intern("keyrest")));
+        bool added_name = false;
         if (names) {
-            const char *n = korb_id_name(names[p->kwh_save_slot]);
-            if (n && n[0] != 0 && !(n[0] == '_' && n[1] == 0)) {
-                korb_ary_push(pair, korb_id2sym(names[p->kwh_save_slot]));
+            long li = (long)p->kwh_save_slot - (long)p->param_base;
+            if (li >= 0) {
+                ID nm = names[li];
+                const char *n = nm ? korb_id_name(nm) : "";
+                if (n && n[0] != 0) {
+                    korb_ary_push(pair, korb_id2sym(nm));
+                    added_name = true;
+                }
             }
+        }
+        if (!added_name) {
+            korb_ary_push(pair, korb_id2sym(korb_intern("**")));
+        }
+        korb_ary_push(r, pair);
+    }
+    /* Block parameter `&blk`: param appears at the end of the list. */
+    if (p->block_slot >= 0) {
+        VALUE pair = korb_ary_new_capa(2);
+        korb_ary_push(pair, korb_id2sym(korb_intern("block")));
+        bool added_name = false;
+        if (names) {
+            long li = (long)p->block_slot - (long)p->param_base;
+            if (li >= 0) {
+                ID nm = names[li];
+                const char *n = nm ? korb_id_name(nm) : "";
+                if (n && n[0] != 0) {
+                    korb_ary_push(pair, korb_id2sym(nm));
+                    added_name = true;
+                }
+            }
+        }
+        if (!added_name) {
+            korb_ary_push(pair, korb_id2sym(korb_intern("&")));
         }
         korb_ary_push(r, pair);
     }
