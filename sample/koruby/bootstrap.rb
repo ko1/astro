@@ -603,21 +603,10 @@ class String
   # Cheap Ruby-side bang variants.  Each one calls the non-bang version
   # and replaces the receiver's bytes via String#replace if it differs;
   # returns nil when no change happened (CRuby semantics).
-  def chomp!(*a)
-    r = chomp(*a)
-    r == self ? nil : (replace(r); self)
-  end
   def chop!
+    raise FrozenError, "can't modify frozen String: #{inspect}" if frozen?
     return nil if empty?
     r = chop
-    r == self ? nil : (replace(r); self)
-  end
-  def lstrip!
-    r = lstrip
-    r == self ? nil : (replace(r); self)
-  end
-  def rstrip!
-    r = rstrip
     r == self ? nil : (replace(r); self)
   end
   def strip!
@@ -1583,23 +1572,6 @@ class String
 
   def intern
     to_sym
-  end
-
-  def lstrip
-    s = self.dup
-    s.sub(/\A\s+/, "")
-    while s.size > 0 && (s[0] == " " || s[0] == "\t" || s[0] == "\n" || s[0] == "\r")
-      s = s[1..-1]
-    end
-    s
-  end
-
-  def rstrip
-    s = self.dup
-    while s.size > 0 && (s[-1] == " " || s[-1] == "\t" || s[-1] == "\n" || s[-1] == "\r")
-      s = s[0..-2]
-    end
-    s
   end
 
   def ljust(n, pad = " ")

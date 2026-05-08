@@ -564,7 +564,13 @@ void korb_init_builtins(void) {
     /* extra String */
     DEF(cStr, "split",       str_split,       -1);
     DEF(cStr, "chomp",       str_chomp,       -1);
+    DEF(cStr, "chomp!",      str_chomp_bang,  -1);
     DEF(cStr, "strip",       str_strip,        0);
+    DEF(cStr, "strip!",      str_strip_bang,   0);
+    DEF(cStr, "lstrip",      str_lstrip,       0);
+    DEF(cStr, "lstrip!",     str_lstrip_bang,  0);
+    DEF(cStr, "rstrip",      str_rstrip,       0);
+    DEF(cStr, "rstrip!",     str_rstrip_bang,  0);
     DEF(cStr, "to_i",        str_to_i,        -1);
     DEF(cStr, "to_f",        str_to_f,         0);
     DEF(cStr, "[]",          str_aref,        -1);
