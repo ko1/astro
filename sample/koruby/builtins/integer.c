@@ -60,7 +60,7 @@ static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
 
 static VALUE int_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new((double)FIX2LONG(self) + korb_num2dbl(argv[0]));
+        return korb_float_new(korb_num2dbl(self) + korb_num2dbl(argv[0]));
     }
     if (int_op_other_kind(argv[0])) {
         /* + is commutative — delegate to Rational#+/Complex#+. */
@@ -71,7 +71,7 @@ static VALUE int_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new((double)FIX2LONG(self) - korb_num2dbl(argv[0]));
+        return korb_float_new(korb_num2dbl(self) - korb_num2dbl(argv[0]));
     }
     if (int_op_other_kind(argv[0])) {
         VALUE r = int_to_rational_obj(c, self);
@@ -82,7 +82,11 @@ static VALUE int_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new((double)FIX2LONG(self) * korb_num2dbl(argv[0]));
+        /* self may be Fixnum (immediate) or Bignum (heap).  Use
+         * korb_num2dbl which handles both via the slow path.  Without
+         * this Bignum * Float would interpret the heap pointer as a
+         * Fixnum and return garbage. */
+        return korb_float_new(korb_num2dbl(self) * korb_num2dbl(argv[0]));
     }
     if (int_op_other_kind(argv[0])) {
         return korb_funcall(c, argv[0], korb_intern("*"), 1, &self);
@@ -92,7 +96,7 @@ static VALUE int_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new((double)FIX2LONG(self) / korb_num2dbl(argv[0]));
+        return korb_float_new(korb_num2dbl(self) / korb_num2dbl(argv[0]));
     }
     if (int_op_other_kind(argv[0])) {
         VALUE r = int_to_rational_obj(c, self);
@@ -168,30 +172,30 @@ static VALUE int_xor(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
     INT_CMP_GUARD(c, argv[0], "<");
     if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
-        return KORB_BOOL((double)FIX2LONG(self) < korb_num2dbl(argv[0]));
+        return KORB_BOOL(korb_num2dbl(self) < korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_cmp(self, argv[0]) < 0);
 }
 static VALUE int_le(CTX *c, VALUE self, int argc, VALUE *argv) {
     INT_CMP_GUARD(c, argv[0], "<=");
     if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
-        return KORB_BOOL((double)FIX2LONG(self) <= korb_num2dbl(argv[0]));
+        return KORB_BOOL(korb_num2dbl(self) <= korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_cmp(self, argv[0]) <= 0);
 }
 static VALUE int_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
     INT_CMP_GUARD(c, argv[0], ">");
     if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
-        return KORB_BOOL((double)FIX2LONG(self) > korb_num2dbl(argv[0]));
+        return KORB_BOOL(korb_num2dbl(self) > korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_cmp(self, argv[0]) > 0);
 }
 static VALUE int_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
     INT_CMP_GUARD(c, argv[0], ">=");
     if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
-        return KORB_BOOL((double)FIX2LONG(self) >= korb_num2dbl(argv[0]));
+        return KORB_BOOL(korb_num2dbl(self) >= korb_num2dbl(argv[0]));
     return KORB_BOOL(korb_int_cmp(self, argv[0]) >= 0);
 }
 static VALUE int_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0]))
-        return KORB_BOOL((double)FIX2LONG(self) == korb_num2dbl(argv[0]));
+        return KORB_BOOL(korb_num2dbl(self) == korb_num2dbl(argv[0]));
     /* Only Integer/Bignum can be == an Integer; everything else is false.
      * Without this guard, `0 == nil` segfaults inside to_mpz (which casts
      * the second operand to a Bignum pointer). */
@@ -210,7 +214,7 @@ static VALUE int_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
         return INT2FIX(korb_int_cmp(self, argv[0]));
     }
     if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0])) {
-        double a = (double)FIX2LONG(self);
+        double a = korb_num2dbl(self);
         double b = korb_num2dbl(argv[0]);
         return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
     }
@@ -228,7 +232,7 @@ static VALUE int_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_to_i(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
 static VALUE int_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (FIXNUM_P(self)) return korb_float_new((double)FIX2LONG(self));
+    if (FIXNUM_P(self)) return korb_float_new(korb_num2dbl(self));
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
         return korb_float_new(mpz_get_d((mpz_ptr)((struct korb_bignum *)self)->mpz));
     }
@@ -458,7 +462,7 @@ static VALUE int_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (KORB_IS_FLOAT(other)) {
         korb_ary_push(pair, other);
-        korb_ary_push(pair, korb_float_new((double)FIX2LONG(self)));
+        korb_ary_push(pair, korb_float_new(korb_num2dbl(self)));
         return pair;
     }
     VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
@@ -636,7 +640,7 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Float exponent: promote to Float arithmetic.  `2 ** 0.5` should
      * be 1.414, not 2 — CRuby returns a Float. */
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new(pow((double)FIX2LONG(self), korb_num2dbl(argv[0])));
+        return korb_float_new(pow(korb_num2dbl(self), korb_num2dbl(argv[0])));
     }
     if (!FIXNUM_P(argv[0])) return self;
     long base = FIX2LONG(self), exp = FIX2LONG(argv[0]);
