@@ -38,12 +38,20 @@ static VALUE exc_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE exc_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self)) return korb_str_new_cstr("#<Exception>");
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
+    while (k && (k->basic.flags & FL_SINGLETON)) k = k->super;
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
-    char buf[256];
-    VALUE msg = korb_ivar_get(self, korb_intern("@message"));
-    const char *ms = (msg && !SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) == T_STRING)
-                       ? korb_str_cstr(msg) : "";
-    snprintf(buf, sizeof(buf), "#<%s: %s>", kn, ms);
+    /* Drive the inspect output from #to_s so subclasses that override
+     * to_s see their value used.  Three cases:
+     *   to_s == ""           → just the class name  (no #<...:>)
+     *   to_s == class name    → "#<Class: Class>"   (CRuby keeps it)
+     *   to_s == anything else → "#<Class: <to_s>>" */
+    VALUE s = korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
+    if (c->state == KORB_RAISE) return Qnil;
+    const char *ms = (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING)
+                       ? korb_str_cstr(s) : "";
+    if (ms[0] == '\0') return korb_str_new_cstr(kn);
+    char *buf = korb_xmalloc_atomic(strlen(kn) + strlen(ms) + 8);
+    sprintf(buf, "#<%s: %s>", kn, ms);
     return korb_str_new_cstr(buf);
 }
 static VALUE exc_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
