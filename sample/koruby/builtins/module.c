@@ -602,16 +602,29 @@ static VALUE module_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
     return module_gt(c, self, argc, argv);
 }
 
+/* Walk a module's transitive includes (and super chain).  Returns true
+ * if `target` is in the module's ancestry. */
+static bool korb_module_has_ancestor(struct korb_class *m, struct korb_class *target) {
+    if (!m) return false;
+    for (struct korb_class *k = m; k; k = k->super) {
+        if (k == target) return true;
+        for (uint32_t i = 0; i < k->includes_cnt; i++) {
+            if (korb_module_has_ancestor(k->includes[i], target)) return true;
+        }
+    }
+    return false;
+}
+
 /* ---------- Class === (for case/when class match) ---------- */
 static VALUE class_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Class === obj  ⇔ obj.is_a?(self) */
+    /* Class === obj  ⇔ obj.is_a?(self).  Walks super chain + transitive
+     * includes (Module includes Module).  `M === obj.extend(M)` and
+     * `Basic === Child.new` (Child includes Super, Super includes Basic)
+     * both return true. */
     if (argc < 1) return Qfalse;
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qfalse;
     struct korb_class *target = (struct korb_class *)self;
-    for (struct korb_class *k = korb_class_of_class(argv[0]); k; k = k->super) {
-        if (k == target) return Qtrue;
-    }
-    return Qfalse;
+    return KORB_BOOL(korb_module_has_ancestor(korb_class_of_class(argv[0]), target));
 }
 
 
