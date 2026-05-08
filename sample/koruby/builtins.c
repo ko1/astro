@@ -756,6 +756,45 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cHshMeta, korb_intern("new"), hash_class_new, -1);
         korb_class_add_method_cfunc(cHshMeta, korb_intern("[]"),  hash_class_aref, -1);
         cHsh->basic.klass = (VALUE)cHshMeta;
+        /* Hash.try_convert(obj) — obj.to_hash if responding and returns
+         * Hash, else nil.  Raises TypeError if #to_hash returns non-Hash. */
+        korb_class_add_method_cfunc(cHshMeta, korb_intern("try_convert"),
+            ({
+                VALUE _try(CTX *c, VALUE self, int argc, VALUE *argv) {
+                    if (argc < 1) return Qnil;
+                    VALUE o = argv[0];
+                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_HASH) return o;
+                    if (SPECIAL_CONST_P(o)) return Qnil;
+                    VALUE r = korb_funcall(c, o, korb_intern("to_hash"), 0, NULL);
+                    if (c->state == KORB_RAISE) {
+                        VALUE bang = c->state_value;
+                        VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+                        if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
+                            BUILTIN_TYPE(eNo) == T_CLASS) {
+                            struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
+                            for (struct korb_class *kk = bk; kk; kk = kk->super) {
+                                if (kk == (struct korb_class *)eNo) {
+                                    c->state = KORB_NORMAL; c->state_value = Qnil;
+                                    return Qnil;
+                                }
+                            }
+                        }
+                        return Qnil;
+                    }
+                    if (NIL_P(r)) return Qnil;
+                    if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_HASH) {
+                        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                        korb_raise(c, (struct korb_class *)eT,
+                                   "can't convert %s to Hash (%s#to_hash gives %s)",
+                                   korb_id_name(korb_class_of_class(o)->name),
+                                   korb_id_name(korb_class_of_class(o)->name),
+                                   korb_id_name(korb_class_of_class(r)->name));
+                        return Qnil;
+                    }
+                    return r;
+                }
+                _try;
+            }), -1);
     }
     /* String.new(s = "") — initialize from optional string. */
     {
@@ -764,6 +803,45 @@ void korb_init_builtins(void) {
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cStrMeta, korb_intern("new"), str_class_new, -1);
         cStr->basic.klass = (VALUE)cStrMeta;
+        /* String.try_convert(obj) — obj.to_str if responding and returns
+         * String, else nil.  Raises TypeError if #to_str returns non-String. */
+        korb_class_add_method_cfunc(cStrMeta, korb_intern("try_convert"),
+            ({
+                VALUE _try(CTX *c, VALUE self, int argc, VALUE *argv) {
+                    if (argc < 1) return Qnil;
+                    VALUE o = argv[0];
+                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_STRING) return o;
+                    if (SPECIAL_CONST_P(o)) return Qnil;
+                    VALUE r = korb_funcall(c, o, korb_intern("to_str"), 0, NULL);
+                    if (c->state == KORB_RAISE) {
+                        VALUE bang = c->state_value;
+                        VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+                        if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
+                            BUILTIN_TYPE(eNo) == T_CLASS) {
+                            struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
+                            for (struct korb_class *kk = bk; kk; kk = kk->super) {
+                                if (kk == (struct korb_class *)eNo) {
+                                    c->state = KORB_NORMAL; c->state_value = Qnil;
+                                    return Qnil;
+                                }
+                            }
+                        }
+                        return Qnil;
+                    }
+                    if (NIL_P(r)) return Qnil;
+                    if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_STRING) {
+                        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                        korb_raise(c, (struct korb_class *)eT,
+                                   "can't convert %s to String (%s#to_str gives %s)",
+                                   korb_id_name(korb_class_of_class(o)->name),
+                                   korb_id_name(korb_class_of_class(o)->name),
+                                   korb_id_name(korb_class_of_class(r)->name));
+                        return Qnil;
+                    }
+                    return r;
+                }
+                _try;
+            }), -1);
     }
     DEF(cHsh, "===",        hash_eqq,        1);
     DEF(cHsh, "dup",        hash_dup,        0);
