@@ -1395,9 +1395,35 @@ static VALUE ary_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Array#delete_at(i) — remove element at i, return removed or nil. */
 static VALUE ary_delete_at(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
-    if (!FIXNUM_P(argv[0])) return Qnil;
+    /* Coerce non-Integer index via #to_int (CRuby semantics).  Try
+     * unconditionally so method_missing-based mocks also coerce. */
+    VALUE idx = argv[0];
+    if (!FIXNUM_P(idx) && (SPECIAL_CONST_P(idx) || BUILTIN_TYPE(idx) != T_BIGNUM)) {
+        if (!SPECIAL_CONST_P(idx)) {
+            VALUE coerced = korb_funcall(c, idx, korb_intern("to_int"), 0, NULL);
+            if (c->state == KORB_RAISE) {
+                /* swallow NoMethodError so the original index sticks. */
+                VALUE bang = c->state_value;
+                VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+                if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
+                    BUILTIN_TYPE(eNo) == T_CLASS) {
+                    struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
+                    bool is_nm = false;
+                    for (struct korb_class *kk = bk; kk; kk = kk->super) {
+                        if (kk == (struct korb_class *)eNo) { is_nm = true; break; }
+                    }
+                    if (is_nm) { c->state = KORB_NORMAL; c->state_value = Qnil; }
+                    else return Qnil;
+                } else return Qnil;
+            } else if (FIXNUM_P(coerced)) {
+                idx = coerced;
+            }
+        }
+        if (!FIXNUM_P(idx)) return Qnil;
+    }
+    if (!FIXNUM_P(idx)) return Qnil;
     struct korb_array *a = (struct korb_array *)self;
-    long i = FIX2LONG(argv[0]);
+    long i = FIX2LONG(idx);
     if (i < 0) i += a->len;
     if (i < 0 || i >= a->len) return Qnil;
     VALUE r = a->ptr[i];
