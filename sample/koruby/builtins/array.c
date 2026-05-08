@@ -1843,11 +1843,36 @@ static VALUE ary_first_n(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Integer / Bignum: convert to long; out-of-long-range Bignum
      * counts as a too-big size (CRuby raises RangeError there). */
     long n;
-    if (FIXNUM_P(argv[0])) {
-        n = FIX2LONG(argv[0]);
-    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
-        /* Treat as too large — return all elements. */
-        n = a->len;
+    VALUE arg = argv[0];
+    if (!FIXNUM_P(arg) && (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_BIGNUM)) {
+        if (!SPECIAL_CONST_P(arg)) {
+            VALUE coerced = korb_funcall(c, arg, korb_intern("to_int"), 0, NULL);
+            if (c->state == KORB_RAISE) {
+                /* swallow NoMethodError, propagate other errors. */
+                VALUE bang = c->state_value;
+                VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+                if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
+                    BUILTIN_TYPE(eNo) == T_CLASS) {
+                    struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
+                    bool is_nm = false;
+                    for (struct korb_class *kk = bk; kk; kk = kk->super) {
+                        if (kk == (struct korb_class *)eNo) { is_nm = true; break; }
+                    }
+                    if (is_nm) { c->state = KORB_NORMAL; c->state_value = Qnil; }
+                    else return Qnil;
+                } else return Qnil;
+            } else {
+                arg = coerced;
+            }
+        }
+    }
+    if (FIXNUM_P(arg)) {
+        n = FIX2LONG(arg);
+    } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_BIGNUM) {
+        /* CRuby raises RangeError "bignum too big to convert into long". */
+        VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+        korb_raise(c, (struct korb_class *)eR, "bignum too big to convert into 'long'");
+        return Qnil;
     } else {
         korb_raise_type_error(c, "no implicit conversion from %s into Integer",
                               korb_id_name(korb_class_of_class(argv[0])->name));
@@ -1871,10 +1896,34 @@ static VALUE ary_last_n(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (argc < 1) return a->len == 0 ? Qnil : a->ptr[a->len - 1];
     long n;
-    if (FIXNUM_P(argv[0])) {
-        n = FIX2LONG(argv[0]);
-    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
-        n = a->len;
+    VALUE arg = argv[0];
+    if (!FIXNUM_P(arg) && (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_BIGNUM)) {
+        if (!SPECIAL_CONST_P(arg)) {
+            VALUE coerced = korb_funcall(c, arg, korb_intern("to_int"), 0, NULL);
+            if (c->state == KORB_RAISE) {
+                VALUE bang = c->state_value;
+                VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+                if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
+                    BUILTIN_TYPE(eNo) == T_CLASS) {
+                    struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
+                    bool is_nm = false;
+                    for (struct korb_class *kk = bk; kk; kk = kk->super) {
+                        if (kk == (struct korb_class *)eNo) { is_nm = true; break; }
+                    }
+                    if (is_nm) { c->state = KORB_NORMAL; c->state_value = Qnil; }
+                    else return Qnil;
+                } else return Qnil;
+            } else {
+                arg = coerced;
+            }
+        }
+    }
+    if (FIXNUM_P(arg)) {
+        n = FIX2LONG(arg);
+    } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_BIGNUM) {
+        VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+        korb_raise(c, (struct korb_class *)eR, "bignum too big to convert into 'long'");
+        return Qnil;
     } else {
         korb_raise_type_error(c, "no implicit conversion from %s into Integer",
                               korb_id_name(korb_class_of_class(argv[0])->name));
