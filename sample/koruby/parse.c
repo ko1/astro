@@ -491,6 +491,23 @@ build_destructure(struct transduce_context *tc,
             NODE *_st = ALLOC_node_lvar_set(_ai, _g);                              \
             NODE *_call = ALLOC_node_method_call(_recv, _wname, 1, _ai, _mc);      \
             _assign = ALLOC_node_seq(_st, _call);                                  \
+        } else if (PM_NODE_TYPE_P(_t, PM_CONSTANT_PATH_TARGET_NODE)) {              \
+            pm_constant_path_target_node_t *_pt = (pm_constant_path_target_node_t *)_t; \
+            int _pi = mlhs_presave_lookup(_t);                                     \
+            NODE *_parent = (_pi >= 0)                                             \
+                ? ALLOC_node_lvar_get((uint32_t)g_mlhs_presave[_pi].recv_slot)     \
+                : (_pt->parent ? T(tc, _pt->parent)                                \
+                                : ALLOC_node_const_get(korb_intern("Object")));    \
+            ID _cname = intern_constant(tc->parser, _pt->name);                    \
+            uint32_t _ai = inc_arg_index(tc);                                      \
+            uint32_t _ai2 = inc_arg_index(tc);                                     \
+            rewind_arg_index(tc, _ai);                                             \
+            struct method_cache *_mc = alloc_method_cache();                       \
+            NODE *_st_name = ALLOC_node_lvar_set(_ai, ALLOC_node_sym_lit(_cname)); \
+            NODE *_st_val = ALLOC_node_lvar_set(_ai2, _g);                         \
+            NODE *_call = ALLOC_node_method_call(_parent, korb_intern("const_set"),\
+                                                  2, _ai, _mc);                    \
+            _assign = ALLOC_node_seq(_st_name, ALLOC_node_seq(_st_val, _call));    \
         } else if (PM_NODE_TYPE_P(_t, PM_INDEX_TARGET_NODE)) {                     \
             pm_index_target_node_t *_it = (pm_index_target_node_t *)_t;            \
             bool _has_splat = false;                                               \
@@ -4386,12 +4403,28 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           /* Up to 32 targets total — generous for typical multi-assign. */
           struct mlhs_presave presave[32];
           int psv_cnt = 0;
-          #define PRESAVE_TARGET(_t) do {                                                  \
+          /* Recursive: for nested `((a.x, b), c) = ...` we must presave
+           * a.x's receiver before RHS, even though the top-level left is
+           * a MULTI_TARGET (not a CALL/INDEX target itself).  Walk through
+           * any MULTI_TARGET children to collect all CALL/INDEX targets
+           * left-to-right. */
+          #define PRESAVE_TARGET_OBJ(_t) do {                                              \
               if (psv_cnt >= 32) break;                                                    \
               if (PM_NODE_TYPE_P(_t, PM_CALL_TARGET_NODE)) {                               \
                   pm_call_target_node_t *_ct = (pm_call_target_node_t *)_t;                \
                   uint32_t _rs = inc_arg_index(tc);                                        \
                   NODE *_save = ALLOC_node_lvar_set(_rs, T(tc, _ct->receiver));            \
+                  lhs_pre = lhs_pre ? ALLOC_node_seq(lhs_pre, _save) : _save;              \
+                  presave[psv_cnt].recv_slot = (int)_rs;                                   \
+                  presave[psv_cnt].idx_slot = -1;                                          \
+                  presave[psv_cnt].target = _t;                                            \
+                  psv_cnt++;                                                               \
+              } else if (PM_NODE_TYPE_P(_t, PM_CONSTANT_PATH_TARGET_NODE)) {                \
+                  pm_constant_path_target_node_t *_pt = (pm_constant_path_target_node_t *)_t; \
+                  uint32_t _rs = inc_arg_index(tc);                                        \
+                  NODE *_parent_n = _pt->parent ? T(tc, _pt->parent)                       \
+                                                 : ALLOC_node_const_get(korb_intern("Object")); \
+                  NODE *_save = ALLOC_node_lvar_set(_rs, _parent_n);                       \
                   lhs_pre = lhs_pre ? ALLOC_node_seq(lhs_pre, _save) : _save;              \
                   presave[psv_cnt].recv_slot = (int)_rs;                                   \
                   presave[psv_cnt].idx_slot = -1;                                          \
@@ -4414,13 +4447,61 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
                   }                                                                        \
               }                                                                            \
           } while (0)
-          for (uint32_t i = 0; i < lefts_n; i++) PRESAVE_TARGET(n->lefts.nodes[i]);
+          /* Stack-based walker for nested MULTI_TARGET — emit
+           * PRESAVE_TARGET_OBJ in left-to-right order across all nesting
+           * levels.  (No nested functions in C.) */
+          pm_node_t *walk_stack[64];
+          int walk_top = 0;
+          /* Push targets in reverse so we pop in left-to-right order. */
+          #define WALK_PUSH_LIST(_lst) do {                                                \
+              for (size_t _i = (_lst); _i > 0 && walk_top < 64; _i--) {                    \
+                  walk_stack[walk_top++] = NULL; /* placeholder, fixed below */            \
+              }                                                                            \
+          } while (0)
+          /* Build the initial list: lefts (left to right) + rest? + rights (left to right).
+           * Push reversed onto the stack. */
+          struct { pm_node_t *t; } *order = NULL; (void)order;
+          /* Simpler: gather into a local array first, then pop. */
+          pm_node_t *order_arr[256];
+          int order_n = 0;
+          for (uint32_t i = 0; i < lefts_n && order_n < 256; i++) order_arr[order_n++] = n->lefts.nodes[i];
           if (n->rest && PM_NODE_TYPE_P(n->rest, PM_SPLAT_NODE)) {
               pm_splat_node_t *splat = (pm_splat_node_t *)n->rest;
-              if (splat->expression) PRESAVE_TARGET(splat->expression);
+              if (splat->expression && order_n < 256) order_arr[order_n++] = splat->expression;
           }
-          for (uint32_t i = 0; i < rights_n; i++) PRESAVE_TARGET(n->rights.nodes[i]);
-          #undef PRESAVE_TARGET
+          for (uint32_t i = 0; i < rights_n && order_n < 256; i++) order_arr[order_n++] = n->rights.nodes[i];
+          /* Walk: for each top-level entry, recursively expand MULTI_TARGET
+           * by inserting its children in order before continuing. */
+          for (int oi = 0; oi < order_n; oi++) {
+              pm_node_t *t = order_arr[oi];
+              if (PM_NODE_TYPE_P(t, PM_MULTI_TARGET_NODE)) {
+                  /* Splice children at oi+1 by shifting tail right. */
+                  pm_multi_target_node_t *mt = (pm_multi_target_node_t *)t;
+                  pm_node_t *children[64];
+                  int cn = 0;
+                  for (size_t k = 0; k < mt->lefts.size && cn < 64; k++) children[cn++] = mt->lefts.nodes[k];
+                  if (mt->rest && PM_NODE_TYPE_P(mt->rest, PM_SPLAT_NODE)) {
+                      pm_splat_node_t *sp = (pm_splat_node_t *)mt->rest;
+                      if (sp->expression && cn < 64) children[cn++] = sp->expression;
+                  }
+                  for (size_t k = 0; k < mt->rights.size && cn < 64; k++) children[cn++] = mt->rights.nodes[k];
+                  /* Replace order_arr[oi] with children[0..cn). */
+                  if (order_n - 1 + cn > 256) cn = 256 - (order_n - 1);
+                  /* Shift tail. */
+                  int tail = order_n - oi - 1;
+                  if (tail > 0) {
+                      memmove(&order_arr[oi + cn], &order_arr[oi + 1], tail * sizeof(pm_node_t *));
+                  }
+                  for (int k = 0; k < cn; k++) order_arr[oi + k] = children[k];
+                  order_n = order_n - 1 + cn;
+                  oi--;  /* re-process this index (now first child) */
+              } else {
+                  PRESAVE_TARGET_OBJ(t);
+              }
+          }
+          (void)walk_stack; (void)walk_top;
+          #undef WALK_PUSH_LIST
+          #undef PRESAVE_TARGET_OBJ
 
           NODE *rhs = T(tc, n->value);
           uint32_t orig_slot = inc_arg_index(tc);
