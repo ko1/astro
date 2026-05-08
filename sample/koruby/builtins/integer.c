@@ -614,9 +614,54 @@ static VALUE int_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 
+/* Helper: coerce stop endpoint for upto/downto.  Returns the long value
+ * with floor (upto) or ceil (downto) for Float; raises ArgumentError
+ * for non-numeric.  Returns LONG_MIN/LONG_MAX as sentinel for
+ * over/underflow / infinity. */
+static long int_upto_downto_stop(CTX *c, VALUE arg, bool is_upto, bool *abort) {
+    *abort = false;
+    if (FIXNUM_P(arg)) return FIX2LONG(arg);
+    if (FLONUM_P(arg) || (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_FLOAT)) {
+        double d = korb_num2dbl(arg);
+        if (d != d) {  /* NaN */
+            *abort = true;
+            return 0;
+        }
+        long s;
+        if (is_upto) {
+            s = (long)d;
+            if (d < (double)s) s--;  /* floor */
+        } else {
+            s = (long)d;
+            if (d > (double)s) s++;  /* ceil */
+        }
+        return s;
+    }
+    if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_BIGNUM) {
+        /* Bignum stop: empty iteration (start can't reach Bignum). */
+        *abort = true;
+        return 0;
+    }
+    VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    korb_raise(c, (struct korb_class *)eA,
+               "comparison of Integer with %s failed",
+               SPECIAL_CONST_P(arg) ? "(special)"
+                   : korb_id_name(korb_class_of_class(arg)->name));
+    *abort = true;
+    return 0;
+}
+
 static VALUE int_upto(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!FIXNUM_P(self) || argc < 1 || !FIXNUM_P(argv[0])) return self;
-    long start = FIX2LONG(self), stop = FIX2LONG(argv[0]);
+    if (!FIXNUM_P(self) || argc < 1) return self;
+    bool abort = false;
+    long stop = int_upto_downto_stop(c, argv[0], true, &abort);
+    if (abort && c->state == KORB_RAISE) return Qnil;
+    long start = FIX2LONG(self);
+    if (abort) {
+        /* Bignum/NaN stop — empty loop. */
+        if (!korb_block_given()) return korb_ary_new();
+        return self;
+    }
     if (!korb_block_given()) {
         VALUE a = korb_ary_new();
         for (long i = start; i <= stop; i++) korb_ary_push(a, INT2FIX(i));
@@ -631,8 +676,15 @@ static VALUE int_upto(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE int_downto(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!FIXNUM_P(self) || argc < 1 || !FIXNUM_P(argv[0])) return self;
-    long start = FIX2LONG(self), stop = FIX2LONG(argv[0]);
+    if (!FIXNUM_P(self) || argc < 1) return self;
+    bool abort = false;
+    long stop = int_upto_downto_stop(c, argv[0], false, &abort);
+    if (abort && c->state == KORB_RAISE) return Qnil;
+    long start = FIX2LONG(self);
+    if (abort) {
+        if (!korb_block_given()) return korb_ary_new();
+        return self;
+    }
     if (!korb_block_given()) {
         VALUE a = korb_ary_new();
         for (long i = start; i >= stop; i--) korb_ary_push(a, INT2FIX(i));
