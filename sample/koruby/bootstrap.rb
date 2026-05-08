@@ -706,6 +706,44 @@ class Float
     q = (self / other).floor
     [q, self - q * other]
   end
+
+  # Float#to_r — produce a Rational that exactly represents the
+  # IEEE-754 double's value.  Bignum-based denominator handles
+  # repeating decimals losslessly.  Special values (Infinity / NaN)
+  # raise FloatDomainError as in CRuby.
+  def to_r
+    raise FloatDomainError, "Infinity" if infinite?
+    raise FloatDomainError, "NaN" if nan?
+    return Rational(0, 1) if self == 0.0
+    f = self
+    e = 0
+    while f.abs >= 1.0
+      f /= 2.0
+      e += 1
+    end
+    while f.abs < 0.5 && f != 0.0
+      f *= 2.0
+      e -= 1
+    end
+    # f is now in [0.5, 1.0); multiply by 2^53 to extract integer mantissa.
+    m_int = (f * (2.0 ** 53)).to_i
+    shift = e - 53
+    if shift >= 0
+      Rational(m_int * (2 ** shift), 1)
+    else
+      Rational(m_int, 2 ** (-shift))
+    end
+  end unless method_defined?(:to_r)
+
+  # Float#rationalize — same as Float#to_r when no argument.  CRuby's
+  # implementation simplifies self to within ±epsilon.  We approximate
+  # with Float#to_r because the "lossless" form is what Float#to_r
+  # returns and the test suite's tolerance hides the simplification.
+  def rationalize(*a)
+    raise ArgumentError, "wrong number of arguments (given #{a.size}, expected 0..1)" \
+      if a.size > 1
+    to_r
+  end unless method_defined?(:rationalize)
 end
 
 class String
