@@ -788,6 +788,15 @@ end
 
 # `tmp(name)` — return a path under /tmp for spec scratch files.
 # `rm_r(path)` — recursive delete (single file is enough for specs).
+# mspec/helpers/numeric.rb — boundary helpers used by Integer / Float specs.
+def nan_value;       0.0 / 0.0; end
+def infinity_value;  1.0 / 0.0; end
+def bignum_value(plus = 0); (2**64) + plus; end
+def max_long;        2 ** 63 - 1; end
+def min_long;       -(2 ** 63); end
+def fixnum_max;      (2**62) - 1; end
+def fixnum_min;     -(2**62); end
+
 def tmp(name = "_spec_tmp")
   "/tmp/koruby-spec-#{Process.pid rescue 0}-#{name}"
 end
