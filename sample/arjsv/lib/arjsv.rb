@@ -119,7 +119,7 @@ module Arjsv
       const enum
       allOf anyOf oneOf not
       if then else
-      $ref $schema $id $comment $defs $anchor definitions
+      $ref $schema $id id $comment $defs $anchor definitions
       minContains maxContains
       contentEncoding contentMediaType contentSchema
       title description default examples readOnly writeOnly deprecated
@@ -208,10 +208,20 @@ module Arjsv
 
     def collect_ids(node)
       return unless node.is_a?(Hash)
-      if (id = node['$id']) && id.is_a?(String)
-        @id_map[id] = node unless @id_map.key?(id)
-        stripped = id.split('#').first
+      # `$id` (draft-06+) and bare `id` (draft-04) both register the
+      # subschema as a target.
+      %w[$id id].each do |k|
+        v = node[k]
+        next unless v.is_a?(String)
+        @id_map[v] = node unless @id_map.key?(v)
+        stripped = v.split('#').first
         @id_map[stripped] = node if stripped && !@id_map.key?(stripped)
+      end
+      # 2020-12 `$anchor` and 2019-09 `$dynamicAnchor` register local
+      # fragment IDs.
+      %w[$anchor $dynamicAnchor].each do |k|
+        a = node[k]
+        @id_map["##{a}"] = node if a.is_a?(String) && !@id_map.key?("##{a}")
       end
       KEYS_HASH_OF_SCHEMAS.each do |k|
         v = node[k]
