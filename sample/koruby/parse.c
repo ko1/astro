@@ -5127,10 +5127,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
       case PM_CALL_OPERATOR_WRITE_NODE: {
           /* a.b op= v  ⇒  recv = a; recv.b=(recv.b op v).  recv is
            * evaluated once.  Result is the assigned value (the combined
-           * RHS), not the writer's return value. */
+           * RHS), not the writer's return value.  Safe-nav `a&.b op= v`
+           * short-circuits to nil when recv is nil. */
           pm_call_operator_write_node_t *n = (pm_call_operator_write_node_t *)node;
           ID rname = intern_constant(tc->parser, n->read_name);
           ID wname = intern_constant(tc->parser, n->write_name);
+          bool safe_nav = (n->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
           uint32_t recv_slot = inc_arg_index(tc);
           uint32_t ai = inc_arg_index(tc);
           inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
@@ -5142,15 +5144,19 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *st = ALLOC_node_lvar_set(ai, combined);
           struct method_cache *mc2 = alloc_method_cache();
           NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), wname, 1, ai, mc2);
-          NODE *result = ALLOC_node_seq(save,
-                          ALLOC_node_seq(st,
-                            ALLOC_node_seq(call, ALLOC_node_lvar_get(ai))));
-          return result;
+          NODE *body = ALLOC_node_seq(st,
+                          ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
+          if (safe_nav) {
+              body = ALLOC_node_if(ALLOC_node_lvar_get(recv_slot),
+                                    body, ALLOC_node_nil());
+          }
+          return ALLOC_node_seq(save, body);
       }
       case PM_CALL_OR_WRITE_NODE: {
           pm_call_or_write_node_t *n = (pm_call_or_write_node_t *)node;
           ID rname = intern_constant(tc->parser, n->read_name);
           ID wname = intern_constant(tc->parser, n->write_name);
+          bool safe_nav = (n->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
           uint32_t recv_slot = inc_arg_index(tc);
           uint32_t ai = inc_arg_index(tc);
           inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
@@ -5163,12 +5169,18 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), wname, 1, ai, mc2);
           NODE *assign_branch = ALLOC_node_seq(st,
                                   ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
-          return ALLOC_node_seq(save, ALLOC_node_or(cur, assign_branch));
+          NODE *body = ALLOC_node_or(cur, assign_branch);
+          if (safe_nav) {
+              body = ALLOC_node_if(ALLOC_node_lvar_get(recv_slot),
+                                    body, ALLOC_node_nil());
+          }
+          return ALLOC_node_seq(save, body);
       }
       case PM_CALL_AND_WRITE_NODE: {
           pm_call_and_write_node_t *n = (pm_call_and_write_node_t *)node;
           ID rname = intern_constant(tc->parser, n->read_name);
           ID wname = intern_constant(tc->parser, n->write_name);
+          bool safe_nav = (n->base.flags & PM_CALL_NODE_FLAGS_SAFE_NAVIGATION) != 0;
           uint32_t recv_slot = inc_arg_index(tc);
           uint32_t ai = inc_arg_index(tc);
           inc_arg_index(tc); rewind_arg_index(tc, recv_slot);
@@ -5181,7 +5193,12 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           NODE *call = ALLOC_node_method_call(ALLOC_node_lvar_get(recv_slot), wname, 1, ai, mc2);
           NODE *assign_branch = ALLOC_node_seq(st,
                                   ALLOC_node_seq(call, ALLOC_node_lvar_get(ai)));
-          return ALLOC_node_seq(save, ALLOC_node_and(cur, assign_branch));
+          NODE *body = ALLOC_node_and(cur, assign_branch);
+          if (safe_nav) {
+              body = ALLOC_node_if(ALLOC_node_lvar_get(recv_slot),
+                                    body, ALLOC_node_nil());
+          }
+          return ALLOC_node_seq(save, body);
       }
       case PM_INDEX_OR_WRITE_NODE:
       case PM_INDEX_AND_WRITE_NODE: {
