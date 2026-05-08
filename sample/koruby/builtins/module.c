@@ -610,7 +610,7 @@ static VALUE module_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Walk a module's transitive includes (and super chain).  Returns true
  * if `target` is in the module's ancestry. */
-static bool korb_module_has_ancestor(struct korb_class *m, struct korb_class *target) {
+bool korb_module_has_ancestor(struct korb_class *m, struct korb_class *target) {
     if (!m) return false;
     for (struct korb_class *k = m; k; k = k->super) {
         if (k == target) return true;

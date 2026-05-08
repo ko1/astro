@@ -402,6 +402,25 @@ void korb_init_builtins(void) {
     /* Class ancestors / Module#prepend */
     DEF(cMod, "ancestors",          class_ancestors,           0);
     DEF(cMod, "prepend",            module_prepend,           -1);
+    {
+        VALUE module_include_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+            if (argc < 1) return Qfalse;
+            if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qfalse;
+            if (SPECIAL_CONST_P(argv[0]) ||
+                (BUILTIN_TYPE(argv[0]) != T_MODULE && BUILTIN_TYPE(argv[0]) != T_CLASS)) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "wrong argument type %s (expected Module)",
+                           SPECIAL_CONST_P(argv[0]) ? "?" :
+                               korb_id_name(korb_class_of_class(argv[0])->name));
+                return Qnil;
+            }
+            extern bool korb_module_has_ancestor(struct korb_class *, struct korb_class *);
+            return KORB_BOOL(korb_module_has_ancestor((struct korb_class *)self,
+                                                      (struct korb_class *)argv[0]));
+        }
+        DEF(cMod, "include?",       module_include_p,         1);
+    }
     DEF(cObj, "extend",             obj_extend,               -1);
     DEF(cObj, "send",                  obj_send,                 -1);
     DEF(cObj, "__send__",              obj_send,                 -1);
