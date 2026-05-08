@@ -1912,6 +1912,21 @@ void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
                 korb_snapshot_one_proc_((struct korb_proc *)iv, fp_lo, fp_hi);
             }
         }
+        return;
+    }
+    /* Class / Module body: lambdas captured into a constant
+     * (`READER = -> { m }` pattern in a class body) keep their env on
+     * the class body's fp.  When the body returns, those slots are
+     * reused by subsequent method calls.  Snapshot any T_PROC constant
+     * whose env still points into the dying frame. */
+    if (t == T_CLASS || t == T_MODULE) {
+        struct korb_class *k = (struct korb_class *)v;
+        for (struct korb_const_entry *e = k->constants; e; e = e->next) {
+            if (SPECIAL_CONST_P(e->value)) continue;
+            if (BUILTIN_TYPE(e->value) == T_PROC) {
+                korb_snapshot_one_proc_((struct korb_proc *)e->value, fp_lo, fp_hi);
+            }
+        }
     }
 }
 

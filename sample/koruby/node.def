@@ -788,10 +788,16 @@ node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, N
     c->current_class = klass;
     c->self = (VALUE)klass;
     c->cref = &new_cref;
+    VALUE *fp_lo = c->fp;
+    VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
     c->self = prev_self;
     c->cref = prev_cref;
+    /* Snapshot any Proc constant captured into the class body whose env
+     * still points into the dying class-body fp range.  Required for
+     * `class C; m = :x; READER = -> { m }; end` patterns. */
+    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     return r;
 }
 
@@ -834,10 +840,12 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     c->current_class = klass;
     c->self = (VALUE)klass;
     c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
     c->self = prev_self;
     c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     return r;
 }
 
@@ -868,10 +876,12 @@ node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
     c->current_class = mod;
     c->self = (VALUE)mod;
     c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
     c->self = prev_self;
     c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)mod, fp_lo, fp_hi + 1024);
     return r;
 }
 
@@ -2601,10 +2611,12 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, NODE *parent_expr,
     c->current_class = klass;
     c->self = (VALUE)klass;
     c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
     c->self = prev_self;
     c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     return r;
 }
 
@@ -2660,10 +2672,12 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID nam
     c->current_class = klass;
     c->self = (VALUE)klass;
     c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
     c->self = prev_self;
     c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     return r;
 }
 
@@ -2715,10 +2729,12 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID na
     c->current_class = mod;
     c->self = (VALUE)mod;
     c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
     c->self = prev_self;
     c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)mod, fp_lo, fp_hi + 1024);
     return r;
 }
 
