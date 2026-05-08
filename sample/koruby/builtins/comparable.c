@@ -218,15 +218,29 @@ static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *
             m_local->visibility = v;
         } else {
             struct korb_method *m_inherited = korb_class_find_method(k, name);
+            /* When the receiver is a Module (not Class), CRuby also
+             * searches Object's methods (since Object is everything's
+             * common ancestor and Module.new bodies can refer to Object
+             * methods).  Fall back to Object so `private :Object_method`
+             * on `Module.new` works. */
+            if (!m_inherited && BUILTIN_TYPE(self) == T_MODULE && korb_vm->object_class) {
+                m_inherited = korb_class_find_method(korb_vm->object_class, name);
+            }
             if (m_inherited) {
-                /* Allocate a fresh korb_method copy so mutating
-                 * visibility doesn't affect the inherited entry on the
-                 * parent class.  korb_class_alias_method shares the
-                 * pointer, so we install our own copy. */
                 struct korb_method *cp = korb_xmalloc(sizeof(*cp));
                 *cp = *m_inherited;
                 cp->visibility = v;
                 korb_class_alias_method(k, name, cp);
+            } else {
+                /* Method doesn't exist anywhere — CRuby raises NameError. */
+                VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                const char *cn = (k->name != 0) ? korb_id_name(k->name) : "(anon)";
+                korb_raise(c, (struct korb_class *)eN,
+                           "undefined method '%s' for %s '%s'",
+                           korb_id_name(name),
+                           BUILTIN_TYPE(self) == T_MODULE ? "module" : "class",
+                           cn);
+                return;
             }
         }
     }
@@ -242,7 +256,7 @@ static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
     if (argc == 0) {
         /* No-arg form: change the default visibility for subsequent
          * `def`s in this class body.  `protected` / `private` /
-         * `public` toggle. */
+         * `public` toggle.  Returns nil per CRuby. */
         if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
             ((struct korb_class *)self)->default_visibility = v;
         }
@@ -251,9 +265,17 @@ static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
         if (self == korb_vm->main_obj) {
             g_top_level_default_private = (v == KORB_VIS_PRIVATE);
         }
-        return self;
+        return Qnil;
+    }
+    /* Single Array form: `private([:foo, :bar])` (Ruby 3.x). */
+    if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
+        struct korb_array *a = (struct korb_array *)argv[0];
+        module_set_visibility_for_args(c, self, (int)a->len, a->ptr, v);
+        if (c->state == KORB_RAISE) return Qnil;
+        return argv[0];
     }
     module_set_visibility_for_args(c, self, argc, argv, v);
+    if (c->state == KORB_RAISE) return Qnil;
     /* Ruby 3.0+: public/private/protected with args returns the symbol
      * (single arg) or array of symbols (multiple args).  String args
      * are converted to symbols for the return value. */
