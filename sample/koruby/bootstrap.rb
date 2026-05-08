@@ -3871,14 +3871,17 @@ class Object
     v
   end unless method_defined?(:remove_instance_variable)
 
+end
+
+module Kernel
   # Kernel#Hash(arg) — convert arg to Hash via to_hash, or {} for nil.
   def Hash(arg)
     return {} if arg.nil? || arg == []
     return arg if arg.is_a?(Hash)
     return arg.to_hash if arg.respond_to?(:to_hash)
     raise TypeError, "can't convert #{arg.class} into Hash"
-  end unless method_defined?(:Hash)
-
+  end unless private_method_defined?(:Hash)
+  private :Hash
 end
 
 # ---------- Set (minimal Hash-backed) ----------

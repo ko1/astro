@@ -183,10 +183,17 @@ void korb_init_builtins(void) {
     DEF(cObj, "at_exit", kernel_at_exit, 0);
     DEF(cObj, "rand",    kernel_rand,   -1);
     DEF(cObj, "srand",   kernel_srand,  -1);
-    DEF(cObj, "Integer", kernel_integer, -1);
-    DEF(cObj, "Float", kernel_float, 1);
-    DEF(cObj, "String", kernel_string, 1);
-    DEF(cObj, "Array", kernel_array, 1);
+    DEF_PRIV(cObj, "Integer", kernel_integer, -1);
+    DEF_PRIV(cObj, "Float",   kernel_float,    1);
+    DEF_PRIV(cObj, "String",  kernel_string,   1);
+    DEF_PRIV(cObj, "Array",   kernel_array,    1);
+    /* Spec checks Kernel.private_instance_methods — also register there. */
+    if (korb_vm->kernel_module) {
+        DEF_PRIV(korb_vm->kernel_module, "Integer", kernel_integer, -1);
+        DEF_PRIV(korb_vm->kernel_module, "Float",   kernel_float,    1);
+        DEF_PRIV(korb_vm->kernel_module, "String",  kernel_string,   1);
+        DEF_PRIV(korb_vm->kernel_module, "Array",   kernel_array,    1);
+    }
 
     /* Integer */
     struct korb_class *cInt = korb_vm->integer_class;

@@ -54,10 +54,27 @@ static VALUE cmp_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(korb_cmp_call(c, self, argv[0]) >= 0);
 }
 static VALUE cmp_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Comparable#== uses <=> too — returns true iff <=> returns 0. */
+    /* CRuby fast path: identical objects compare equal without
+     * invoking #<=>.  Avoids infinite recursion when #<=> calls super
+     * and the only resolved super is BasicObject (no <=>). */
+    if (argc >= 1 && self == argv[0]) return Qtrue;
+    /* Comparable#== uses <=> too — returns true iff <=> returns 0
+     * (or 0.0 / equivalent zero numeric).  An undefined <=> bubbles up
+     * as NoMethodError and we swallow it to return false (CRuby
+     * compatible). */
     VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, argv);
+    if (c->state == KORB_RAISE) {
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        return Qfalse;
+    }
     if (NIL_P(r)) return Qfalse;
-    return KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) == 0);
+    if (FIXNUM_P(r)) return KORB_BOOL(FIX2LONG(r) == 0);
+    if (FLONUM_P(r)) return KORB_BOOL(korb_flonum_to_double(r) == 0.0);
+    if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT) {
+        return KORB_BOOL(((struct korb_float *)r)->value == 0.0);
+    }
+    return Qfalse;
 }
 static VALUE cmp_between(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 2) {
