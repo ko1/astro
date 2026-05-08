@@ -295,6 +295,11 @@ def be_false; MSpecMatcher.new(:be_false); end
 def be_truthy; MSpecMatcher.new(:be_truthy); end
 def be_falsy; MSpecMatcher.new(:be_falsy); end
 def be_close(target, tol); MSpecMatcher.new(:be_close, [target, tol]); end
+def be_nan; MSpecMatcher.new(:be_nan); end
+def be_positive_infinity; MSpecMatcher.new(:be_positive_infinity); end
+def be_negative_infinity; MSpecMatcher.new(:be_negative_infinity); end
+def be_positive_zero; MSpecMatcher.new(:be_positive_zero); end
+def be_negative_zero; MSpecMatcher.new(:be_negative_zero); end
 def be_an_instance_of(k); MSpecMatcher.new(:be_an_instance_of, k); end
 def be_kind_of(k); MSpecMatcher.new(:be_kind_of, k); end
 def be_a(k); be_kind_of(k); end
@@ -421,6 +426,11 @@ class MSpecExpectation
          when :be_truthy then !!@actual
          when :be_falsy then !@actual
          when :be_close then (@actual - m.arg[0]).abs <= m.arg[1]
+         when :be_nan then @actual.is_a?(Float) && @actual.nan?
+         when :be_positive_infinity then @actual.is_a?(Float) && @actual.infinite? == 1
+         when :be_negative_infinity then @actual.is_a?(Float) && @actual.infinite? == -1
+         when :be_positive_zero then @actual == 0 && (1.0 / @actual rescue 0) > 0
+         when :be_negative_zero then @actual == 0 && (1.0 / @actual rescue 0) < 0
          when :be_an_instance_of then @actual.class == m.arg
          when :be_kind_of then @actual.kind_of?(m.arg)
          when :equal then @actual.equal?(m.arg)
