@@ -323,10 +323,11 @@ module Arjsv
       strict = @strict_object
       keys.reverse.inject(Arjsv._alloc_pass) do |tail, key|
         key_str = key.to_s
+        str_idx, sym_idx = intern_key_pair(key_str)
         if strict
-          Arjsv._alloc_required_unsafe(key_str, intern_key(key_str), tail)
+          Arjsv._alloc_required_unsafe(key_str, str_idx, sym_idx, tail)
         else
-          Arjsv._alloc_required(key_str, intern_key(key_str), tail)
+          Arjsv._alloc_required(key_str, str_idx, sym_idx, tail)
         end
       end
     end
@@ -340,22 +341,25 @@ module Arjsv
       # `strict` above so the parent's type-guard isn't lost mid-fold.
       props.sort.reverse.inject(Arjsv._alloc_pass) do |tail, (key, sub)|
         key_str = key.to_s
+        str_idx, sym_idx = intern_key_pair(key_str)
         sub_node = lower(sub)
         if strict
-          Arjsv._alloc_property_unsafe(key_str, intern_key(key_str), sub_node, tail)
+          Arjsv._alloc_property_unsafe(key_str, str_idx, sym_idx, sub_node, tail)
         else
-          Arjsv._alloc_property(key_str, intern_key(key_str), sub_node, tail)
+          Arjsv._alloc_property(key_str, str_idx, sym_idx, sub_node, tail)
         end
       end
     end
 
-    # Park a property-name as a deduplicated frozen String in @consts so the
-    # runtime can do `rb_hash_lookup2(c->data, c->consts[idx])` without
-    # allocating a fresh String per validation.  `-key_str` (= dedup_to_fstring)
+    # Park a property name as BOTH a deduplicated frozen String and a
+    # Symbol in @consts.  Runtime tries the String version first (matches
+    # the JSON-spec / `JSON.parse` form, free hit on string-key data), and
+    # falls back to the Symbol version on miss so Hashes with Symbol keys
+    # (Rails / `symbolize_names: true`) still validate correctly.  `-str`
     # gives an interned, frozen, hash-cached String — Ruby's standard
     # idiom for hash-key reuse.
-    def intern_key(key_str)
-      intern_const(-key_str)
+    def intern_key_pair(key_str)
+      [intern_const(-key_str), intern_const(key_str.to_sym)]
     end
 
     def lower_items(schema)
@@ -592,14 +596,16 @@ module Arjsv
         when Array
           dep.reverse.inject(Arjsv._alloc_pass) do |t, k|
             ks = k.to_s
-            Arjsv._alloc_required(ks, intern_key(ks), t)
+            ks_str_idx, ks_sym_idx = intern_key_pair(ks)
+            Arjsv._alloc_required(ks, ks_str_idx, ks_sym_idx, t)
           end
         when Hash, true, false
           lower(dep)
         else
           raise ArgumentError, "dependencies value must be Array / schema, got #{dep.class}"
         end
-        Arjsv._alloc_dependency(key_str, intern_key(key_str), dep_schema, tail)
+        str_idx, sym_idx = intern_key_pair(key_str)
+        Arjsv._alloc_dependency(key_str, str_idx, sym_idx, dep_schema, tail)
       end
     end
 

@@ -10,6 +10,30 @@ class TestObject < ArjsvTest
     refute_valid s, {}
   end
 
+  # Symbol-key data (e.g. JSON.parse(symbolize_names: true), Rails params)
+  # validates the same as String-key data.  String-key is the spec form and
+  # the runtime fast path; Symbol-key falls back to a second hash lookup
+  # only when the String lookup misses.
+  def test_required_with_symbol_keys
+    s = schema('type' => 'object', 'required' => ['name', 'age'])
+    assert_valid s, {name: 'A', age: 1}
+    refute_valid s, {name: 'A'}
+    refute_valid s, {}
+  end
+
+  def test_properties_with_symbol_keys
+    s = schema(
+      'type' => 'object',
+      'properties' => {
+        'name' => {'type' => 'string'},
+        'age'  => {'type' => 'integer'},
+      }
+    )
+    assert_valid s, {name: 'X', age: 30}
+    refute_valid s, {name: 1}
+    refute_valid s, {name: 'X', age: 'thirty'}
+  end
+
   def test_required_on_non_object_skipped
     # `required` only triggers when value is an object — for non-objects the
     # type check (a sibling) is what fails.  required alone passes them.

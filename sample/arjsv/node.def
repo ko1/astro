@@ -69,12 +69,18 @@ node_type_check(CTX *c, NODE *n, uint32_t mask)
 // nodes with different keys produce distinct SDs.  The runtime lookup uses
 // `c->consts[key_idx]` — a frozen Ruby string interned at schema-build time
 // — so no `rb_str_new_cstr` allocation per call.
+// String key first (the JSON Schema spec form, also `JSON.parse` default).
+// Fall back to the Symbol version (consts[sym_idx]) only when the String
+// lookup misses, so Hashes with String keys pay zero overhead and Hashes
+// with Symbol keys (Rails-style) still validate correctly.
 NODE_DEF
-node_required(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *next)
+node_required(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym_idx, NODE *next)
 {
     (void)key;
     if (RB_TYPE_P(c->data, T_HASH)) {
-        if (rb_hash_lookup2(c->data, c->consts[key_idx], Qundef) == Qundef) return 0;
+        VALUE v = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
+        if (v == Qundef) v = rb_hash_lookup2(c->data, c->consts[sym_idx], Qundef);
+        if (v == Qundef) return 0;
     }
     return EVAL_ARG(c, next);
 }
@@ -82,22 +88,26 @@ node_required(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *next)
 // Unsafe (type-guarded) variant — caller has asserted via `type:"object"`
 // that c->data is a Hash, so skip the per-call RB_TYPE_P guard.
 NODE_DEF
-node_required_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *next)
+node_required_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym_idx, NODE *next)
 {
     (void)key;
-    if (rb_hash_lookup2(c->data, c->consts[key_idx], Qundef) == Qundef) return 0;
+    VALUE v = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
+    if (v == Qundef) v = rb_hash_lookup2(c->data, c->consts[sym_idx], Qundef);
+    if (v == Qundef) return 0;
     return EVAL_ARG(c, next);
 }
 
 // One property's sub-schema check; recurses into `next`.  If the key is
 // absent, skip (per JSON Schema: properties only constrain present keys).
 // See node_required for the (key, key_idx) split rationale.
+// See node_required for the String-then-Symbol fallback rationale.
 NODE_DEF
-node_property(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *schema, NODE *next)
+node_property(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym_idx, NODE *schema, NODE *next)
 {
     (void)key;
     if (RB_TYPE_P(c->data, T_HASH)) {
         VALUE prop = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
+        if (prop == Qundef) prop = rb_hash_lookup2(c->data, c->consts[sym_idx], Qundef);
         if (prop != Qundef) {
             VALUE saved = c->data;
             c->data = prop;
@@ -111,10 +121,11 @@ node_property(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *schema, 
 
 // Unsafe (type-guarded) variant of node_property.
 NODE_DEF
-node_property_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *schema, NODE *next)
+node_property_unsafe(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym_idx, NODE *schema, NODE *next)
 {
     (void)key;
     VALUE prop = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
+    if (prop == Qundef) prop = rb_hash_lookup2(c->data, c->consts[sym_idx], Qundef);
     if (prop != Qundef) {
         VALUE saved = c->data;
         c->data = prop;
@@ -591,13 +602,16 @@ node_property_names(CTX *c, NODE *n, NODE *schema)
 // `dependencies` (draft-07): if `key` is present in the data hash, the
 // data must validate against `dep_schema`.  `dep_schema` is either a
 // required-list (chain of node_required) or a regular sub-schema, both
-// lowered to NODE on the Ruby side.
+// lowered to NODE on the Ruby side.  See node_required for the
+// String-then-Symbol fallback rationale.
 NODE_DEF
-node_dependency(CTX *c, NODE *n, const char *key, uint32_t key_idx, NODE *dep_schema, NODE *next)
+node_dependency(CTX *c, NODE *n, const char *key, uint32_t key_idx, uint32_t sym_idx, NODE *dep_schema, NODE *next)
 {
     (void)key;
     if (RB_TYPE_P(c->data, T_HASH)) {
-        if (rb_hash_lookup2(c->data, c->consts[key_idx], Qundef) != Qundef) {
+        VALUE v = rb_hash_lookup2(c->data, c->consts[key_idx], Qundef);
+        if (v == Qundef) v = rb_hash_lookup2(c->data, c->consts[sym_idx], Qundef);
+        if (v != Qundef) {
             if (!EVAL_ARG(c, dep_schema)) return 0;
         }
     }
