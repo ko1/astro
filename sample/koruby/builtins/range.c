@@ -27,6 +27,17 @@ static VALUE rng_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_range_new(argv[0], argv[1], excl);
 }
 
+/* Range#hash — same begin / end / exclude_end? must hash equal. */
+static VALUE rng_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_range *r = (struct korb_range *)self;
+    VALUE bh = korb_funcall(c, r->begin, korb_intern("hash"), 0, NULL);
+    VALUE eh = korb_funcall(c, r->end,   korb_intern("hash"), 0, NULL);
+    long bn = FIXNUM_P(bh) ? FIX2LONG(bh) : 0;
+    long en = FIXNUM_P(eh) ? FIX2LONG(eh) : 0;
+    long h = bn ^ (en * 0x9E3779B97F4A7C15L) ^ (r->exclude_end ? 0x5A : 0);
+    return INT2FIX(h);
+}
+
 static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* No block → return Array stand-in (Enumerator placeholder).  An
      * Array is "Enumerable enough" for the common chains like

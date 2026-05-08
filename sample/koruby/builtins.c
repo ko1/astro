@@ -299,6 +299,10 @@ void korb_init_builtins(void) {
     DEF(cRng, "end",   rng_last,  -1);
     DEF(cRng, "max",   rng_last,  -1);
     DEF(cRng, "to_a", rng_to_a, 0);
+    {
+        VALUE rng_hash(CTX *c, VALUE self, int argc, VALUE *argv);
+        DEF(cRng, "hash", rng_hash, 0);
+    }
 
     /* Class */
     struct korb_class *cCls = korb_vm->class_class;
