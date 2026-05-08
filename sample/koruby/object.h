@@ -455,7 +455,12 @@ korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
 extern void korb_raise_frozen_modification(VALUE obj);
 static inline __attribute__((always_inline)) void
 korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
-    if (UNLIKELY(SPECIAL_CONST_P(obj))) return;
+    if (UNLIKELY(SPECIAL_CONST_P(obj))) {
+        /* true / false / nil / Integer / Float / Symbol can't have
+         * ivars — CRuby raises FrozenError on attempts. */
+        korb_raise_frozen_modification(obj);
+        return;
+    }
     if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) {
         korb_ivar_set_ic_slow(obj, name, val, cache);
         return;

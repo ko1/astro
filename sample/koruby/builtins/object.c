@@ -87,6 +87,22 @@ static VALUE obj_instance_variable_set(CTX *c, VALUE self, int argc, VALUE *argv
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
     else return Qnil;
+    /* Immediate values (true/false/nil/Integer/Symbol/Float) can't have
+     * ivars; CRuby raises FrozenError ("can't modify frozen X").  Match
+     * that semantic via a RuntimeError-class FrozenError. */
+    if (SPECIAL_CONST_P(self) || FIXNUM_P(self) || FLONUM_P(self) || SYMBOL_P(self)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        const char *cn = "(special)";
+        if (self == Qtrue) cn = "true";
+        else if (self == Qfalse) cn = "false";
+        else if (self == Qnil) cn = "nil";
+        else if (FIXNUM_P(self)) cn = "Integer";
+        else if (FLONUM_P(self)) cn = "Float";
+        else if (SYMBOL_P(self)) cn = "Symbol";
+        korb_raise(c, (struct korb_class *)eF,
+                   "can't modify frozen %s", cn);
+        return Qnil;
+    }
     korb_ivar_set(self, name, argv[1]);
     return argv[1];
 }

@@ -2463,7 +2463,13 @@ void korb_raise_frozen_modification(VALUE obj) {
     if (!c) return;
     VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
     const char *cn = "Object";
-    if (!SPECIAL_CONST_P(obj)) {
+    if (obj == Qtrue) cn = "TrueClass";
+    else if (obj == Qfalse) cn = "FalseClass";
+    else if (obj == Qnil) cn = "NilClass";
+    else if (FIXNUM_P(obj)) cn = "Integer";
+    else if (FLONUM_P(obj)) cn = "Float";
+    else if (SYMBOL_P(obj)) cn = "Symbol";
+    else if (!SPECIAL_CONST_P(obj)) {
         struct korb_class *k = korb_class_of_class(obj);
         if (k && k->name) cn = korb_id_name(k->name);
     }
