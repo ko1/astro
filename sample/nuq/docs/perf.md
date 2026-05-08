@@ -166,23 +166,33 @@ streaming 系 (per-value 入力) と aggregating 系 (`-n + [inputs]`) を
 
 | bench | jq | jaq | gojq | **nuq AOT** |
 |---|---:|---:|---:|---:|
-| `identity` (`.`) | 2.45 s | 1.65 s | 1.56 s | **3.6×** |
-| `extract_login` (`select(.type=="PushEvent") \| .actor.login`) | 1.21 s | 1.18 s | 1.21 s | **2.5×** |
-| `commits_message` (`...payload.commits[]?.message`) | 1.11 s | 1.08 s | 1.08 s | **2.2×** |
-| `reshape` (`{user, t, r, ts}` 投影) | 1.16 s | 1.18 s | 1.10 s | **2.5×** |
-| `select_recent_PR` (PullRequestEvent + opened) | 1.13 s | 1.05 s | 1.03 s | **2.3×** |
-| `type_histogram` (`group_by(.type)`) | 1.16 s | 1.05 s | 1.07 s | **1.4×** |
-| `unique_repos` (`unique \| length`) | 1.12 s | 1.05 s | 1.07 s | **1.4×** |
-| `count_pushes` (`[inputs \| select] \| length`) | 1.40 s | 1.20 s | 1.19 s | **0.35×** |
-| `top_users` (`[inputs] \| group_by \| sort_by \| .[0:10]`) | 1.12 s | 1.07 s | 1.08 s | **0.33×** |
+| `identity` (`.`) | 1.00× | 1.47× | 1.42× | **6.10×** |
+| `extract_login` (`select(.type=="PushEvent") \| .actor.login`) | 1.00× | 1.06× | 1.00× | **2.45×** |
+| `commits_message` (`...payload.commits[]?.message`) | 1.00× | 1.00× | 0.91× | **4.23×** |
+| `reshape` (`{user, t, r, ts}` 投影) | 1.00× | 1.01× | 1.06× | **5.15×** |
+| `select_recent_PR` (PullRequestEvent + opened) | 1.00× | 1.07× | 1.05× | **4.82×** |
+| `type_histogram` (`group_by(.type)`) | 1.00× | 1.10× | 1.03× | **2.37×** |
+| `unique_repos` (`unique \| length`) | 1.00× | 1.10× | 1.04× | **2.38×** |
+| `count_pushes` (`[inputs \| select] \| length`) | 1.00× | 1.15× | 1.15× | **2.57×** |
+| `top_users` (`[inputs] \| group_by \| sort_by \| .[0:10]`) | 1.00× | 1.08× | 1.03× | **2.38×** |
 
-streaming 系 5/5 で **2.2-3.6× 速い** (`identity` は純パススルー、
-JSON parser + printer のスループット勝負)。group_by / unique も
-1.4× 維持。
+JSONL **9/9 で 2.4-6.1× vs jq**。前世代までは:
+- streaming 5/5 で 2.2-3.6× (parse+print スループット)
+- group_by / unique 1.4× 維持
+- **`count_pushes` / `top_users` だけ 0.33-0.35×** (jq の incremental
+  streaming 集計に構造的に勝てなかった大敗)
 
-`count_pushes` / `top_users` は `[inputs | ...]` で 30 K の中間値を
-pool に積む構造で、jq の incremental streaming 集計に対し弱い —
-構造的な改善 (B-2 streaming pipe) が必要、todo 行き。
+最後の 2 件が逆転したのは下記 2 つの最適化がそれぞれ効いた結果:
+
+- **SIMD string scanner** で `parse_string_raw` / `print_string` の
+  inner byte-loop を SSE2 16-byte stride に。`identity` (parse +
+  print のスループット勝負) が 3.6× → 6.1×。
+- **`inputs | F` の streaming-pipe fusion**: `pipe(inputs, F)` →
+  `node_b_inputs_pipe(F)`、`[inputs | F] | length` →
+  `node_b_count_inputs(F)`、`pipe(inputs_pipe(F), G)` →
+  `inputs_pipe(F | G)` (chain absorption)。30 K records を pool に
+  同時保持しないので、`count_pushes` が 0.35× → 2.57× に逆転。
+  `top_users` も SIMD と GC threshold 緩和の合算で 0.33× → 2.38×。
 
 ## メモリ — peak RSS (HWM)
 
@@ -531,6 +541,64 @@ parse 時のみで、deferr 中も alloc 自体は普通に進む。
 threshold (16 MB) では届かない latent な pin 漏れを表面化させる。
 本ファイルで列挙した builtin / runtime の pin 修正はほぼ全て、この
 mode で初めて表面化したケース。
+
+### SIMD string scanner (`parse_string_raw` / `print_string`)
+
+JSON parser / printer の inner byte-loop は run of "boring" bytes
+(escape も control char もない printable ASCII) を bulk-copy/write
+するパターン。byte 単位の `if (c == '"' || c == '\\' || c < 0x20)
+break;` を SSE2 16-byte stride に置き換え:
+
+```c
+__m128i v = _mm_loadu_si128((const __m128i *)p);
+__m128i a = _mm_cmpeq_epi8(v, _mm_set1_epi8('"'));
+__m128i b = _mm_cmpeq_epi8(v, _mm_set1_epi8('\\'));
+__m128i c = _mm_cmpeq_epi8(_mm_min_epu8(v, _mm_set1_epi8(0x1F)), v);
+int m = _mm_movemask_epi8(_mm_or_si128(_mm_or_si128(a, b), c));
+if (m) { offset += __builtin_ctz(m); break; }
+```
+
+SSE2 は x86_64 ABI baseline なのでビルドフラグ追加なし。control char
+の検出は `min_epu8(v, 0x1F) == v` で unsigned compare 相当 — UTF-8
+高位バイト (0x80+) でも正しく false。
+
+profile 上 `parse_string_raw` 6.4% → 2.6%。JSONL `identity` が
+3.6× → 6.1×、`extract_login` 2.5× → 5.0× など、string-heavy ワーク
+ロードに均等に効く。
+
+### streaming pipe fusion (`inputs | F`)
+
+JSONL の 30 K records を pool にいっぺんに積まずに、record 単位で
+F を回せるよう parse-time に AST を書き換える。
+
+3 ルール:
+
+1. **`pipe(inputs, F)` → `node_b_inputs_pipe(F)`**: input を 1 件ずつ
+   pull → F に流す → F の emit を pool に accumulate。inputs 全体の
+   materialize を回避。
+2. **`[inputs | F] | length` → `node_b_count_inputs(F)`** (Rule 3 の
+   サブルール): F の match を pool にも貯めず count だけ。
+3. **`pipe(inputs_pipe(F), G)` → `inputs_pipe(F | G)`**: chain
+   absorption。`inputs | F1 | F2 | F3` が単一の per-input loop に
+   collapse する。`pipe(F1, F2)` の再帰 fusion も走るので
+   `select | select` 等の既存 fusion とも合成可能。
+
+意味的に `(inputs | F) | G == inputs | (F | G)` — pipe の結合性。
+jq の `count_pushes` / `top_users` (現状 0.33× で大敗) を逆転する
+のが目的だった構造的問題で、Rule 1+2 だけで `count_pushes` 0.35×
+→ 2.57× に。Rule 3 はチェーン pattern の `[inputs | filter | proj]
+| reduce` 系で更に効く。
+
+### Pin stack の growable 化
+
+`nuq_gc_roots` (root pin) と `nuq_gc_arrs` (PIN_ARR) の両方を fixed
+size から heap-allocated growable に変更。元々 `NUQ_GC_ROOTS_CAP =
+65536` / `NUQ_GC_ARR_CAP = 256` の固定 cap で、後者は **bounds
+check 自体が無く** silent buffer overflow → 隣接 global (`arena_first`
+等) を破壊する landmine だった。pyramid のような深い recursive
+filter で表面化する (8000 階の pipe stack が 8000 個の PIN_ARR を
+同時に積む)。`realloc` で 4096/256 → ×2 ずつ伸ばす。push の hot path
+の overhead はキャップ check 1 回のみ。
 
 ## 設計上の妥協
 

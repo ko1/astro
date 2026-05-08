@@ -59,19 +59,33 @@ bool  nuq_alloc_perm = true;     /* startup: parse / setup is permanent */
 char *nuq_arena_cur  = NULL;
 char *nuq_arena_end  = NULL;
 
-VALUE *nuq_gc_roots[NUQ_GC_ROOTS_CAP];
+/* Pin stack — heap-allocated growable buffer.  Initial cap matches
+ * the old fixed size; doubles on overflow. */
+VALUE **nuq_gc_roots = NULL;
+size_t nuq_gc_roots_top = 0;
+size_t nuq_gc_roots_capa = 0;
 
 void
-nuq_gc_push_overflow(void)
+nuq_gc_push_grow(void)
 {
-    fprintf(stderr,
-            "nuq: GC root pin stack overflow (>%u). "
-            "This is a bug — a helper is pinning without unpinning.\n",
-            (unsigned)NUQ_GC_ROOTS_CAP);
-    abort();
+    size_t nc = nuq_gc_roots_capa ? nuq_gc_roots_capa * 2 : 4096;
+    nuq_gc_roots = (VALUE **)realloc(nuq_gc_roots, nc * sizeof(VALUE *));
+    if (!nuq_gc_roots) abort();
+    nuq_gc_roots_capa = nc;
 }
-size_t nuq_gc_roots_top = 0;
-struct nuq_gc_arr nuq_gc_arrs[NUQ_GC_ARR_CAP];
+
+/* Pin-array stack — same growable semantics as nuq_gc_roots. */
+struct nuq_gc_arr *nuq_gc_arrs = NULL;
+size_t nuq_gc_arrs_capa = 0;
+
+void
+nuq_gc_arrs_grow(void)
+{
+    size_t nc = nuq_gc_arrs_capa ? nuq_gc_arrs_capa * 2 : 256;
+    nuq_gc_arrs = (struct nuq_gc_arr *)realloc(nuq_gc_arrs, nc * sizeof(*nuq_gc_arrs));
+    if (!nuq_gc_arrs) abort();
+    nuq_gc_arrs_capa = nc;
+}
 size_t nuq_gc_arrs_top = 0;
 int    nuq_gc_defer = 0;
 

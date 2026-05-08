@@ -78,6 +78,23 @@ jq 本体も decnum ビルドでないと通らない領域。
   通常 build と stress build の両方で `make test` 370/370 PASS を
   維持。pin 抜けが新たに混入したらこの mode で即座に局所化できる。
   実装詳細は [runtime.md §5.5](./runtime.md#55-debug-build-stale-pointer-を即-segfault-にする)。
+- **JSON parser / printer の SIMD scanner**: `parse_string_raw` /
+  `print_string` の inner byte-loop (`'"' | '\\' | < 0x20` を探す) を
+  SSE2 16-byte stride に。JSONL `identity` (パススルー) が 3.6× →
+  6.1×、real bench も string-heavy なものは +5-15%。
+- **streaming pipe fusion**: `inputs | F` を `node_b_inputs_pipe(F)`
+  に rewrite して record 単位で stream。`[inputs | F] | length` は
+  `node_b_count_inputs(F)` まで畳む (pool accumulation も無し)。
+  chain absorption rule で `inputs | F1 | F2 | ...` も単一 per-input
+  loop に collapse。JSONL `count_pushes` 0.35× → 2.57×、
+  `top_users` 0.33× → 2.38× — 構造的に jq に勝てなかった大敗 2 件
+  が逆転。
+- **Pin stack heap-growable**: `nuq_gc_roots` / `nuq_gc_arrs` を
+  fixed size (65536 / 256) から `realloc` ベースの growable に。
+  特に後者は bounds check すら無く、深い recursive filter (pyramid
+  8000) で隣接 global (`arena_first` 等) を silent overflow で
+  破壊する landmine だった。push hot-path の追加 overhead は cap
+  check 1 回のみ。
 
 ## フィルタ言語
 

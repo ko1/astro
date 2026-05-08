@@ -55,22 +55,20 @@ integrate。
   を伝播すれば `def push($i): . + [$i]; reduce ... as $i ([]; push($i))`
   のような書き方も最適化可能
 
-### B-2. streaming pipe
-`f | g` は LHS 出力を一度 EMIT pool に集めてから RHS を回す。stack
-discipline で巻き戻しはするが per-stage のスライスは確保される。
-長 stream (`.[]` 経由の large array iteration、`[inputs]` で 30 K 値
-を集約する pattern など) で memory 効率が落ちる。CPS chain にすれば
-slice 化を消せる。
+### B-2. streaming pipe (`inputs | F` だけは解決済み)
 
-JSONL bench の **`count_pushes` / `top_users` (jq の 0.3×)** がこの
-構造的問題で勝てない代表例 — `[inputs | select(...)]` で 30 K の
-中間値を pool に積むため arena GC が頻発する。これを CPS-chain で
-incremental に処理できれば一気に jq 越えできる。jaq / gojq も同様
-の課題を抱えていて似た性能特性。
+`inputs | F` パターンは parse-time fusion で解決
+([done.md](./done.md) 参照)。`[inputs | F] | length` も
+`node_b_count_inputs(F)` まで畳まれ、chain absorption で
+`inputs | F1 | F2 | ...` も単一 per-input loop に collapse する。
+JSONL bench の `count_pushes` / `top_users` が 0.3× → 2.4-2.6× に
+逆転。
 
-**注意**: これは alloc pattern の話で specialization の話ではない。
-pipe は既に SD specializer が両側に入る形になっている。AOT が interp
-を引き離す効果は無い (interp も同じ alloc を使う)。
+残り: `inputs` 以外の unbounded stream 源 (理論上は `range(N)`
+高 N、`recurse(...)`) は依然 EMIT pool に集める。実用 jq filter で
+これらが unbounded で使われることは稀なので優先度低。汎用
+streaming pipe (CPS chain) が必要になるのはこの先より複雑な
+ストリーミングを扱うとき。
 
 ### B-3. EMIT pool の sub-call 巻き戻しのコスト
 現在 `c->pool_top = top0` を毎 NODE_DEF 終端で書き戻す。stack discipline

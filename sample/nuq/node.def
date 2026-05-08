@@ -258,35 +258,30 @@ node_pipe(CTX *c, NODE *n, NODE *lhs, NODE *rhs)
     EMIT le = EVAL_ARG(c, lhs);
     if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) return EMIT_EMPTY;
     uint32_t cnt = le.count;
-    /* Copy out — alloca for small, scratch arena for large.  RHS may
-     * trigger Cheney GC mid-iteration, which moves arena values; the
-     * snapshot must be PIN_ARR'd so its VALUEs get forwarded. */
-    VALUE local_small[16];
-    VALUE *local = (cnt <= 16) ? local_small : (VALUE *)nuq_scratch_alloc(cnt * sizeof(VALUE));
+    /* Copy out lhs emits + caller's c->input (one extra slot at index
+     * `cnt` for `saved`).  RHS may fire GC and move arena values; the
+     * snapshot is PIN_ARR'd so all entries (incl. saved) get
+     * forwarded.  Using one PIN_ARR for both avoids per-frame growth
+     * of the gc-roots stack on deep recursive filters (pyramid 8000
+     * had 8000 nested pipe frames). */
+    VALUE local_small[17];   /* +1 for saved */
+    VALUE *local = (cnt < 16) ? local_small
+                              : (VALUE *)nuq_scratch_alloc((cnt + 1) * sizeof(VALUE));
     memcpy(local, le.items, cnt * sizeof(VALUE));
-    NUQ_GC_PIN_ARR(local, cnt);
+    local[cnt] = c->input;   /* saved */
+    NUQ_GC_PIN_ARR(local, cnt + 1);
     c->pool_top = top0;
 
-    /* `saved` holds the outer c->input; rhs eval can fire GC and move
-     * arena objects, so pin it.  Without the pin, the final
-     * `c->input = saved` reverts to a stale (forwarded) pointer and
-     * the parent frame deref-segfaults. */
-    VALUE saved = c->input;
-    NUQ_GC_PIN1(saved);
     for (uint32_t i = 0; i < cnt; i++) {
         c->input = local[i];
         (void)EVAL_ARG(c, rhs);   /* pushes rhs emits onto pool */
         if (UNLIKELY(c->error != NUQ_NULL || c->break_label != 0)) {
-            c->input = saved;
-            NUQ_GC_UNPIN(1);
+            c->input = local[cnt];
             NUQ_GC_UNPIN_ARR();
-            /* Preserve prior emits so the top-level can print partial
-             * output before surfacing the error (jq compat). */
             return nuq_emit_slice(c, top0);
         }
     }
-    c->input = saved;
-    NUQ_GC_UNPIN(1);
+    c->input = local[cnt];
     NUQ_GC_UNPIN_ARR();
     return nuq_emit_slice(c, top0);
 }

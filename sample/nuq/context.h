@@ -153,25 +153,34 @@ typedef int64_t VALUE;
  * just suppresses GC across the brief multi-step section.  Pinning
  * is for cases where GC must remain enabled (e.g. inside long loops
  * that allocate per iteration). */
-#define NUQ_GC_ROOTS_CAP 65536    /* deep recursive merge can pin ~4 per level */
-extern VALUE *nuq_gc_roots[NUQ_GC_ROOTS_CAP];
+/* Pin stack — grows on overflow.  Fixed-size was 65536, but deep
+ * recursive filters (pyramid 8k, 200+ levels of pipe) push that many
+ * `saved = c->input` pins simultaneously.  Grow doubling so worst-case
+ * is amortized O(1) per push. */
+extern VALUE **nuq_gc_roots;
 extern size_t nuq_gc_roots_top;
+extern size_t nuq_gc_roots_capa;
 
 /* Pin an array of VALUEs: GC scans / forwards every entry.  Used by
  * NODE_DEF helpers that snapshot pool slices into stack/Boehm buffers
  * — those buffers aren't visible to the copying GC otherwise, so
  * their VALUE entries would dangle. */
 struct nuq_gc_arr { VALUE *base; size_t cnt; };
-#define NUQ_GC_ARR_CAP 256
-extern struct nuq_gc_arr nuq_gc_arrs[NUQ_GC_ARR_CAP];
+/* Pin-array stack — heap-allocated growable.  Like the root pin
+ * stack, deep recursion (pyramid 8k) can push thousands of pin-arr
+ * entries simultaneously, far exceeding any fixed cap.  Without a
+ * bounds check the old fixed-256 array silently smashed adjacent
+ * globals (arena_first ended up overwritten with a stack address). */
+extern struct nuq_gc_arr *nuq_gc_arrs;
 extern size_t nuq_gc_arrs_top;
+extern size_t nuq_gc_arrs_capa;
 
-__attribute__((noreturn,cold)) void nuq_gc_push_overflow(void);
+__attribute__((cold)) void nuq_gc_push_grow(void);
 
 static inline void
 nuq_gc_push(VALUE *vp)
 {
-    if (UNLIKELY(nuq_gc_roots_top >= NUQ_GC_ROOTS_CAP)) nuq_gc_push_overflow();
+    if (UNLIKELY(nuq_gc_roots_top >= nuq_gc_roots_capa)) nuq_gc_push_grow();
     nuq_gc_roots[nuq_gc_roots_top++] = vp;
 }
 
@@ -181,9 +190,11 @@ nuq_gc_pop(size_t n)
     nuq_gc_roots_top -= n;
 }
 
+__attribute__((cold)) void nuq_gc_arrs_grow(void);
 static inline void
 nuq_gc_push_arr(VALUE *base, size_t cnt)
 {
+    if (UNLIKELY(nuq_gc_arrs_top >= nuq_gc_arrs_capa)) nuq_gc_arrs_grow();
     nuq_gc_arrs[nuq_gc_arrs_top].base = base;
     nuq_gc_arrs[nuq_gc_arrs_top].cnt  = cnt;
     nuq_gc_arrs_top++;
