@@ -541,6 +541,73 @@ class Numeric
 end
 
 class Integer
+  # Bit-set predicates: x.allbits?(mask) ⇔ (x & mask) == mask;
+  # x.anybits?(mask) ⇔ (x & mask) != 0; x.nobits? ⇔ (x & mask) == 0.
+  # The mask is coerced via #to_int (CRuby semantics).
+  def allbits?(mask)
+    mask = __coerce_bit_mask(mask)
+    (self & mask) == mask
+  end unless method_defined?(:allbits?)
+  def anybits?(mask)
+    mask = __coerce_bit_mask(mask)
+    (self & mask) != 0
+  end unless method_defined?(:anybits?)
+  def nobits?(mask)
+    mask = __coerce_bit_mask(mask)
+    (self & mask) == 0
+  end unless method_defined?(:nobits?)
+  private
+  def __coerce_bit_mask(mask)
+    return mask if mask.is_a?(Integer)
+    raise TypeError, "no implicit conversion of #{mask.class} into Integer" \
+      unless mask.respond_to?(:to_int)
+    r = mask.to_int
+    raise TypeError,
+          "can't convert #{mask.class} to Integer (#{mask.class}#to_int gives #{r.class})" \
+      unless r.is_a?(Integer)
+    r
+  end
+  public
+
+  # Integer.sqrt — integer square root.  Raises Math::DomainError on
+  # negative input.  Coerces non-Integer via #to_int.
+  def self.sqrt(n)
+    unless n.is_a?(Integer)
+      raise TypeError, "no implicit conversion of #{n.class} into Integer" \
+        unless n.respond_to?(:to_int)
+      n = n.to_int
+      raise TypeError,
+            "can't convert #{n.class} to Integer (#{n.class}#to_int gives #{n.class})" \
+        unless n.is_a?(Integer)
+    end
+    raise Math::DomainError, "Numerical argument is out of domain - 'isqrt'" if n < 0
+    return 0 if n == 0
+    # Newton's method on Integer.
+    x = n
+    y = (x + 1) / 2
+    while y < x
+      x = y
+      y = (x + n / x) / 2
+    end
+    x
+  end unless respond_to?(:sqrt)
+
+  # Integer.try_convert(obj) — coerce via #to_int; return nil on
+  # non-integer-convertible objects, raise TypeError if to_int returns
+  # a non-Integer.
+  def self.try_convert(obj)
+    return obj if obj.is_a?(Integer)
+    return nil unless obj.respond_to?(:to_int)
+    r = obj.to_int
+    return nil if r.nil?
+    raise TypeError,
+          "can't convert #{obj.class} to Integer (#{obj.class}#to_int gives #{r.class})" \
+      unless r.is_a?(Integer)
+    r
+  end unless respond_to?(:try_convert)
+end
+
+class Integer
   include Comparable
 
   def gcd(other)
