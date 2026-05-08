@@ -333,12 +333,14 @@ node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cac
     if (UNLIKELY(!av)) return 0;
     VALUE bv = EVAL_ARG(c, b);
     if (UNLIKELY(!bv)) return 0;
+    // Tagged-fixnum addition: (a-1) + b = (a'<<1) + (b'<<1|1) = (a'+b')<<1|1.
+    // Skips the SAR + SAR + SHL + OR untag/retag sequence.  __builtin_add_overflow
+    // on the tagged values catches int64 overflow, which equals fixnum range
+    // overflow exactly because tagged-MAX = 2^63-1 / tagged-MIN = -2^63+1.
     if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
         int64_t r;
-        if (LIKELY(!__builtin_add_overflow((int64_t)PYS_FIXVAL(av),
-                                           (int64_t)PYS_FIXVAL(bv), &r) &&
-                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
-            return PYS_FIX(r);
+        if (LIKELY(!__builtin_add_overflow((int64_t)av - 1, (int64_t)bv, &r)))
+            return (VALUE)r;
     }
     if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
         return pys_make_float(pys_flonum_to_double(av) + pys_flonum_to_double(bv));
@@ -362,10 +364,8 @@ node_iadd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_ca
     if (UNLIKELY(!bv)) return 0;
     if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
         int64_t r;
-        if (LIKELY(!__builtin_add_overflow((int64_t)PYS_FIXVAL(av),
-                                           (int64_t)PYS_FIXVAL(bv), &r) &&
-                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
-            return PYS_FIX(r);
+        if (LIKELY(!__builtin_add_overflow((int64_t)av - 1, (int64_t)bv, &r)))
+            return (VALUE)r;
     }
     if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
         return pys_make_float(pys_flonum_to_double(av) + pys_flonum_to_double(bv));
@@ -405,12 +405,11 @@ node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cac
     if (UNLIKELY(!av)) return 0;
     VALUE bv = EVAL_ARG(c, b);
     if (UNLIKELY(!bv)) return 0;
+    // Tagged-fixnum subtraction: a - (b-1) = (a'<<1|1) - (b'<<1) = (a'-b')<<1|1.
     if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
         int64_t r;
-        if (LIKELY(!__builtin_sub_overflow((int64_t)PYS_FIXVAL(av),
-                                           (int64_t)PYS_FIXVAL(bv), &r) &&
-                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
-            return PYS_FIX(r);
+        if (LIKELY(!__builtin_sub_overflow((int64_t)av, (int64_t)bv - 1, &r)))
+            return (VALUE)r;
     }
     if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
         return pys_make_float(pys_flonum_to_double(av) - pys_flonum_to_double(bv));
@@ -426,12 +425,14 @@ node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cac
     if (UNLIKELY(!av)) return 0;
     VALUE bv = EVAL_ARG(c, b);
     if (UNLIKELY(!bv)) return 0;
+    // Tagged-fixnum multiplication: (a>>1) * (b-1) = a' * (b'<<1) = (a'*b')<<1.
+    // OR 1 sets the tag.  The shift on `av` is one SAR instead of two (we
+    // skip the second untag).  Overflow analysis: if a' * 2*b' overflows
+    // int64, fixnum range is exceeded; otherwise the |1 tag preserves it.
     if (LIKELY(PYS_IS_FIXNUM(av) & PYS_IS_FIXNUM(bv))) {
         int64_t r;
-        if (LIKELY(!__builtin_mul_overflow((int64_t)PYS_FIXVAL(av),
-                                           (int64_t)PYS_FIXVAL(bv), &r) &&
-                   r >= PYS_FIXNUM_MIN && r <= PYS_FIXNUM_MAX))
-            return PYS_FIX(r);
+        if (LIKELY(!__builtin_mul_overflow((int64_t)av >> 1, (int64_t)bv - 1, &r)))
+            return (VALUE)(r | 1);
     }
     if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
         return pys_make_float(pys_flonum_to_double(av) * pys_flonum_to_double(bv));
