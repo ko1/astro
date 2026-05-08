@@ -11,6 +11,19 @@ static VALUE rng_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     bool excl = (argc >= 3) && RTEST(argv[2]);
+    /* Validate that begin <=> end is comparable.  If both are non-nil
+     * and #<=> returns nil, raise ArgumentError.  #<=> raising
+     * propagates (CRuby semantics). */
+    if (!NIL_P(argv[0]) && !NIL_P(argv[1])) {
+        VALUE arg2[1] = { argv[1] };
+        VALUE cmp = korb_funcall(c, argv[0], korb_intern("<=>"), 1, arg2);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (NIL_P(cmp)) {
+            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eArg, "bad value for range");
+            return Qnil;
+        }
+    }
     return korb_range_new(argv[0], argv[1], excl);
 }
 
