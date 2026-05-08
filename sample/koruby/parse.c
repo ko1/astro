@@ -1291,9 +1291,19 @@ build_container(struct transduce_context *tc, pm_node_list_t *items, bool is_arr
 
 static int integer_value_int32(pm_integer_t *integer, intptr_t *out) {
     if (integer->length == 0) {
-        intptr_t v = (intptr_t)integer->value;
-        if (integer->negative) v = -v;
-        *out = v;
+        /* `value` is the unsigned magnitude (uint64_t).  A signed intptr_t
+         * can only hold up to PTRDIFF_MAX (positive) or |PTRDIFF_MAX|+1
+         * (negative).  Reject anything beyond and let the bignum path
+         * handle it.  This catches the 2**64 boundary where value=0 due
+         * to overflow on platforms where pm uses uint64_t. */
+        uint64_t mag = (uint64_t)integer->value;
+        if (integer->negative) {
+            if (mag > (uint64_t)INTPTR_MAX + 1ULL) return 0;
+            *out = -(intptr_t)mag;
+        } else {
+            if (mag > (uint64_t)INTPTR_MAX) return 0;
+            *out = (intptr_t)mag;
+        }
         return 1;
     }
     /* large integer: need bignum */
@@ -2160,13 +2170,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           if (integer_value_int32(&n->value, &v) && FIXABLE(v)) {
               return ALLOC_node_int_lit(v);
           }
+          /* integer_to_string already prepends '-' for negative integers
+           * (pm_integer_string emits the sign), so don't add another. */
           char *s = integer_to_string(&n->value);
-          if (n->value.negative) {
-              /* integer_to_string already includes sign? Actually pm_integer_string uses absolute val + negative flag */
-              char *t = korb_xmalloc_atomic(strlen(s) + 2);
-              t[0] = '-'; strcpy(t+1, s);
-              s = t;
-          }
           return ALLOC_node_bignum_lit(s);
       }
       case PM_FLOAT_NODE: {
@@ -2526,13 +2532,9 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               if (n->numerator.negative) v = -v;
               num_node = ALLOC_node_int_lit(v);
           } else {
+              /* integer_to_string already prepends '-' for negative;
+               * don't double-prepend. */
               char *s = integer_to_string(&n->numerator);
-              if (n->numerator.negative) {
-                  size_t len = strlen(s);
-                  char *t = korb_xmalloc_atomic(len + 2);
-                  t[0] = '-'; memcpy(t + 1, s, len + 1);
-                  s = t;
-              }
               num_node = ALLOC_node_bignum_lit(s);
           }
           /* denominator. */
@@ -2543,12 +2545,6 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               den_node = ALLOC_node_int_lit(d);
           } else {
               char *s = integer_to_string(&n->denominator);
-              if (n->denominator.negative) {
-                  size_t len = strlen(s);
-                  char *t = korb_xmalloc_atomic(len + 2);
-                  t[0] = '-'; memcpy(t + 1, s, len + 1);
-                  s = t;
-              }
               den_node = ALLOC_node_bignum_lit(s);
           }
           uint32_t ai = arg_index(tc);

@@ -1064,6 +1064,12 @@ static VALUE ary_reverse_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_clear(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc != 0) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 0)", argc);
+        return Qnil;
+    }
     CHECK_FROZEN_RET(c, self, Qnil);
     ((struct korb_array *)self)->len = 0;
     return self;
