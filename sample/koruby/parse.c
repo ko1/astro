@@ -851,6 +851,49 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
         }
         if (has_kw) {
             block_kwh_slot = (int)inc_arg_index(tc);
+            /* Up-front check: list every missing required keyword in one
+             * ArgumentError ("missing keywords: :a, :b") — same shape as
+             * the method-def path. */
+            size_t b_req_kw_n = 0;
+            for (size_t i = 0; i < block_pn->keywords.size; i++) {
+                if (PM_NODE_TYPE_P(block_pn->keywords.nodes[i],
+                                   PM_REQUIRED_KEYWORD_PARAMETER_NODE)) b_req_kw_n++;
+            }
+            if (b_req_kw_n > 0) {
+                uint32_t r_arr_ai = inc_arg_index(tc);
+                uint32_t r_call_ai = inc_arg_index(tc);
+                inc_arg_index(tc);
+                rewind_arg_index(tc, r_arr_ai);
+                uint32_t r_arr_slot = inc_arg_index(tc);
+                rewind_arg_index(tc, r_call_ai);
+                NODE *arr_init = ALLOC_node_lvar_set(r_arr_slot,
+                                        ALLOC_node_ary_new(0, r_arr_slot + 1));
+                block_kw_prologue = block_kw_prologue
+                    ? ALLOC_node_seq(block_kw_prologue, arr_init) : arr_init;
+                for (size_t i = 0; i < block_pn->keywords.size; i++) {
+                    pm_node_t *kp = block_pn->keywords.nodes[i];
+                    if (!PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) continue;
+                    ID kid = intern_constant(tc->parser,
+                        ((pm_required_keyword_parameter_node_t *)kp)->name);
+                    uint32_t pai = inc_arg_index(tc);
+                    inc_arg_index(tc); rewind_arg_index(tc, pai);
+                    struct method_cache *mc_p = alloc_method_cache();
+                    NODE *karg = ALLOC_node_lvar_set(pai, ALLOC_node_sym_lit(kid));
+                    NODE *push = ALLOC_node_seq(karg,
+                        ALLOC_node_method_call(ALLOC_node_lvar_get(r_arr_slot),
+                                               korb_intern("push"), 1, pai, mc_p));
+                    block_kw_prologue = ALLOC_node_seq(block_kw_prologue, push);
+                }
+                uint32_t v_ai = inc_arg_index(tc);
+                inc_arg_index(tc); rewind_arg_index(tc, v_ai);
+                struct method_cache *mc_v = alloc_method_cache();
+                NODE *vset = ALLOC_node_lvar_set(v_ai, ALLOC_node_lvar_get(r_arr_slot));
+                NODE *check = ALLOC_node_seq(vset,
+                    ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)block_kwh_slot),
+                                           korb_intern("__korb_required_kwargs_check__"),
+                                           1, v_ai, mc_v));
+                block_kw_prologue = ALLOC_node_seq(block_kw_prologue, check);
+            }
             for (size_t i = 0; i < block_pn->keywords.size; i++) {
                 pm_node_t *kp = block_pn->keywords.nodes[i];
                 if (PM_NODE_TYPE_P(kp, PM_REQUIRED_KEYWORD_PARAMETER_NODE)) {
@@ -866,7 +909,10 @@ build_call_with_block(struct transduce_context *tc, NODE *recv, ID name,
                     /* Use the same `__korb_required_kwarg__` helper as
                      * method-side prologue so missing required kwargs
                      * produce ArgumentError("missing keyword: :name")
-                     * instead of KeyError. */
+                     * instead of KeyError.  (The up-front
+                     * __korb_required_kwargs_check__ above already
+                     * raised for missing keys; this is a defensive
+                     * backstop.) */
                     NODE *fetch = ALLOC_node_seq(karg,
                         ALLOC_node_method_call(ALLOC_node_lvar_get((uint32_t)block_kwh_slot),
                                                korb_intern("__korb_required_kwarg__"), 1, ai, mc));
