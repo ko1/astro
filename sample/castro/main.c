@@ -968,12 +968,24 @@ load_program(CTX *c, sx_lexer *l)
     G_INIT_EXPR = build_expr(l);
     G_INIT_EXPR = OPTIMIZE(G_INIT_EXPR);
 
-    // Phase 1: names.  These come right after INIT_EXPR.
+    // Phase 1: names + per-function flags.  Format:
+    //     (sig NAME [no_inline])
+    // The optional `no_inline` token is set by parse.rb when the body
+    // is bigger than the inline threshold; we cache it here and apply
+    // to the body NODE in phase 2 once the body is built.
+    bool *func_no_inline = nfuncs > 0 ? calloc((size_t)nfuncs, sizeof(bool)) : NULL;
     for (int64_t i = 0; i < nfuncs; i++) {
         sx_expect(l, TK_LPAREN);
         if (!sx_ident_eq(&l->cur, "sig")) sx_err(l, "expected `sig`");
         sx_next(l);
         c->func_names[i] = read_string_or_ident(l);
+        // Optional flag tokens after the name.
+        while (l->cur.kind == TK_IDENT) {
+            if (sx_ident_eq(&l->cur, "no_inline")) {
+                func_no_inline[i] = true;
+            }
+            sx_next(l);
+        }
         sx_expect(l, TK_RPAREN);
     }
 
@@ -982,7 +994,11 @@ load_program(CTX *c, sx_lexer *l)
         NODE *body = build_expr(l);
         body = OPTIMIZE(body);
         c->func_bodies[i] = body;
+        if (func_no_inline && func_no_inline[i]) {
+            body->head.flags.no_inline = 1;
+        }
     }
+    free(func_no_inline);
 
     // Phase 3: patch every `node_call_static` allocated in phase 2 so
     // its `callee` operand points at the resolved body NODE.  After

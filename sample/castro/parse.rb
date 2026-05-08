@@ -2531,8 +2531,21 @@ def main
   end
   emit_sx(init_expr, out)
   out << "\n"
-  funcs.each do |name, _fn, _body_sx, _ret_ty|
-    out << "  (sig #{name})\n"
+  # Per-function flag emission.  When the body's node count exceeds
+  # `castro_no_inline_threshold`, we tag the function `no_inline` so
+  # callers' SPECIALIZE override (castro_gen.rb) emits `extern SD_<hash>`
+  # instead of recursively inlining the whole subtree.  Avoids
+  # N×M source blowup when the same big helper is called from many
+  # callers.  Threshold env-overridable for benchmarking.
+  no_inline_threshold = (ENV['CASTRO_NO_INLINE_THRESHOLD'] || 500).to_i
+  count_nodes_in = lambda do |sx|
+    next 1 unless sx.is_a?(Array)
+    1 + sx[1..-1].sum { |x| count_nodes_in.call(x) }
+  end
+  funcs.each do |name, _fn, body_sx, _ret_ty|
+    nc = count_nodes_in.call(body_sx)
+    flags = nc > no_inline_threshold ? ' no_inline' : ''
+    out << "  (sig #{name}#{flags})\n"
   end
   funcs.each do |_name, _fn, body_sx, _ret_ty|
     out << "  "

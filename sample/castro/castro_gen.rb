@@ -163,22 +163,39 @@ class CastroNodeDef < ASTroGen::NodeDef
               fprintf(stderr, "SPECIALIZE_#{@name}: callee not patched\\n");
               exit(1);
           }
-          // Specialize the callee body before naming this SD's
-          // dispatcher — that way the recursive walk has a chance to
-          // emit the callee's chain as static-inline siblings, and
-          // we can refer to its root SD by name.
-          SPECIALIZE(fp, callee);
+          // For small callees: specialize the body into THIS TU as
+          // static inline so caller can inline through (= leaf inline,
+          // SROA-friendly).  For big callees marked `no_inline`: skip
+          // the recursive SPECIALIZE — the callee's own TU is the
+          // single source of truth, this TU just `extern`s the symbol.
+          // Saves the N×M source bloat when many callers share a big
+          // helper.  Threshold tuned by parse.rb's
+          // CASTRO_NO_INLINE_THRESHOLD.
+          //
+          // Note we bypass DISPATCHER_NAME for the no_inline branch:
+          // the framework default treats no_inline as "use the runtime
+          // function pointer `callee->head.dispatcher`", but we want a
+          // direct extern call to `SD_<callee_hash>` instead.  Get the
+          // hashed name explicitly via alloc_dispatcher_name(callee).
+          bool callee_inline = !callee->head.flags.no_inline;
+          if (callee_inline) {
+              SPECIALIZE(fp, callee);
+          } else if (!callee->head.dispatcher_name) {
+              callee->head.dispatcher_name = alloc_dispatcher_name(callee);
+          }
           const char *dispatcher_name = alloc_dispatcher_name(n);
           n->head.dispatcher_name = dispatcher_name;
-          const char *callee_disp = DISPATCHER_NAME(callee);
+          const char *callee_disp = callee_inline
+              ? DISPATCHER_NAME(callee)
+              : callee->head.dispatcher_name;
 
-          fprintf(fp, "// (#{@name} arg=%u local=%u)\\n",
-                  arg_index, local_cnt);
-          if (callee->head.flags.no_inline) {
-              fprintf(fp, "extern RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+          fprintf(fp, "// (#{@name} arg=%u local=%u %s)\\n",
+                  arg_index, local_cnt, callee_inline ? "inline" : "extern");
+          if (callee_inline) {
+              fprintf(fp, "static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                       callee_disp);
           } else {
-              fprintf(fp, "static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+              fprintf(fp, "extern RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                       callee_disp);
           }
 
@@ -291,19 +308,29 @@ class CastroNodeDef < ASTroGen::NodeDef
               fprintf(stderr, "SPECIALIZE_#{@name}: callee not patched\\n");
               exit(1);
           }
-          SPECIALIZE(fp, callee);
+          // Same inline-vs-extern split as call_static above (see
+          // castro_build_call_static_specializer).
+          bool callee_inline = !callee->head.flags.no_inline;
+          if (callee_inline) {
+              SPECIALIZE(fp, callee);
+          } else if (!callee->head.dispatcher_name) {
+              callee->head.dispatcher_name = alloc_dispatcher_name(callee);
+          }
       #{arg_specialize}
 
           const char *dispatcher_name = alloc_dispatcher_name(n);
           n->head.dispatcher_name = dispatcher_name;
-          const char *callee_disp = DISPATCHER_NAME(callee);
+          const char *callee_disp = callee_inline
+              ? DISPATCHER_NAME(callee)
+              : callee->head.dispatcher_name;
 
-          fprintf(fp, "// (#{@name} local=%u)\\n", local_cnt);
-          if (callee->head.flags.no_inline) {
-              fprintf(fp, "extern RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+          fprintf(fp, "// (#{@name} local=%u %s)\\n", local_cnt,
+                  callee_inline ? "inline" : "extern");
+          if (callee_inline) {
+              fprintf(fp, "static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                       callee_disp);
           } else {
-              fprintf(fp, "static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
+              fprintf(fp, "extern RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                       callee_disp);
           }
       #{decls}
