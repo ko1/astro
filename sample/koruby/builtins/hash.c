@@ -635,7 +635,17 @@ static VALUE hash_fetch_values(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
         if (!found) {
-            korb_raise(c, NULL, "key not found");
+            /* Block fallback: yield key for the missing entry, push the
+             * block's result.  Otherwise raise KeyError. */
+            if (korb_block_given()) {
+                VALUE blk_r = korb_yield(c, 1, &k);
+                if (c->state == KORB_RAISE) return Qnil;
+                korb_ary_push(r, blk_r);
+                continue;
+            }
+            VALUE eK = korb_const_get(korb_vm->object_class, korb_intern("KeyError"));
+            korb_raise(c, eK ? (struct korb_class *)eK : NULL,
+                       "key not found");
             return Qnil;
         }
         korb_ary_push(r, v);
