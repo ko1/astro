@@ -1793,7 +1793,6 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
     if (UNLIKELY(!o)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (LIKELY(PYS_IS_PTR(o)) && PYS_PTR(o)->type == cache->type_tag) {
         int t = PYS_PTR(o)->type;
         if (t == PYS_T_INSTANCE) {
@@ -1802,7 +1801,6 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 VALUE av[2];
                 av[0] = o;
                 av[1] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 return pys_apply(c, fn, 2, av);
             }
             if (cache->fn && cache->u_cls[0] == (void *)PYS_PTR(o)->inst.cls) {
@@ -1811,7 +1809,7 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                     VALUE av[2];
                     av[0] = primary;
                     av[1] = EVAL_ARG(c, a0);
-                    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+                    if (UNLIKELY(!av[1])) return 0;
                     return ((pys_builtin_fn)cache->fn)(c, 2, av);
                 }
             }
@@ -1823,7 +1821,6 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             if (LIKELY(fn)) {
                 VALUE av[1];
                 av[0] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 return pys_apply(c, fn, 1, av);
             }
         } else if (t == PYS_T_CLASS) {
@@ -1832,21 +1829,19 @@ node_method_1(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 VALUE av[2];
                 av[0] = o;
                 av[1] = EVAL_ARG(c, a0);
-                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 return pys_apply(c, fn, 2, av);
             }
         } else if (cache->fn) {
             VALUE av[2];
             av[0] = o;
             av[1] = EVAL_ARG(c, a0);
-            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (UNLIKELY(!av[1])) return 0;
             return ((pys_builtin_fn)cache->fn)(c, 2, av);
         }
     }
     VALUE m = pys_method_resolve(c, o, name, cache);
     VALUE av[1];
     av[0] = EVAL_ARG(c, a0);
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     return pys_apply(c, m, 1, av);
 }
 
@@ -1856,7 +1851,6 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     (void)n;
     VALUE o = EVAL_ARG(c, obj);
     if (UNLIKELY(!o)) return 0;
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (LIKELY(PYS_IS_PTR(o)) && PYS_PTR(o)->type == cache->type_tag) {
         int t = PYS_PTR(o)->type;
         if (t == PYS_T_INSTANCE) {
@@ -1867,7 +1861,6 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 av[1] = EVAL_ARG(c, a0);
                 if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 av[2] = EVAL_ARG(c, a1);
-                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 return pys_apply(c, fn, 3, av);
             }
             if (cache->fn && cache->u_cls[0] == (void *)PYS_PTR(o)->inst.cls) {
@@ -1878,7 +1871,7 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                     av[1] = EVAL_ARG(c, a0);
                     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                     av[2] = EVAL_ARG(c, a1);
-                    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+                    if (UNLIKELY(!av[2])) return 0;
                     return ((pys_builtin_fn)cache->fn)(c, 3, av);
                 }
             }
@@ -1889,7 +1882,6 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 av[0] = EVAL_ARG(c, a0);
                 if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 av[1] = EVAL_ARG(c, a1);
-                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 return pys_apply(c, fn, 2, av);
             }
         } else if (t == PYS_T_CLASS) {
@@ -1900,7 +1892,6 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
                 av[1] = EVAL_ARG(c, a0);
                 if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 av[2] = EVAL_ARG(c, a1);
-                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 return pys_apply(c, fn, 3, av);
             }
         } else if (cache->fn) {
@@ -1909,7 +1900,7 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             av[1] = EVAL_ARG(c, a0);
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
             av[2] = EVAL_ARG(c, a1);
-            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (UNLIKELY(!av[2])) return 0;
             return ((pys_builtin_fn)cache->fn)(c, 3, av);
         }
     }
@@ -1918,7 +1909,6 @@ node_method_2(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
     av[0] = EVAL_ARG(c, a0);
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     av[1] = EVAL_ARG(c, a1);
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     return pys_apply(c, m, 2, av);
 }
 
