@@ -1,6 +1,16 @@
 /* Array — moved from builtins.c.  Included from builtins.c so we
  * inherit its includes/macros (KORB_BOOL, korb_intern, etc.). */
 
+/* Array#to_a — for a plain Array, returns self.  For subclasses,
+ * returns a fresh Array with the same contents (CRuby semantics). */
+static VALUE ary_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (korb_class_of_class(self) == korb_vm->array_class) return self;
+    struct korb_array *a = (struct korb_array *)self;
+    VALUE r = korb_ary_new_capa(a->len);
+    for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
+    return r;
+}
+
 /* Coerce v to an Integer via #to_int (CRuby protocol).  Returns the
  * Fixnum/Bignum on success.  On failure raises TypeError and returns
  * Qundef.  Already-Integer values pass through. */
