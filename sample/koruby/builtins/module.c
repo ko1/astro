@@ -16,31 +16,79 @@ static VALUE ivar_getter_dispatch(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* attr_reader / attr_writer / attr_accessor implementation:
  * We install AST methods whose body is node_ivar_get / node_ivar_set.
  */
+
+/* Resolve an attr_*'s name argument: accept Symbol/String, fall back
+ * to #to_str.  Returns 0 (and raises) on TypeError / invalid name.
+ * Sets *out_id on success. */
+static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
+    VALUE v = arg;
+    if (!SYMBOL_P(v) && (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
+        if (!SPECIAL_CONST_P(v)) {
+            VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+            if (c->state == KORB_RAISE) return false;
+            if (RTEST(rt)) {
+                v = korb_funcall(c, v, korb_intern("to_str"), 0, NULL);
+                if (c->state == KORB_RAISE) return false;
+            }
+        }
+    }
+    ID name;
+    if (SYMBOL_P(v)) name = korb_sym2id(v);
+    else if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_STRING) {
+        name = korb_intern_n(((struct korb_string *)v)->ptr,
+                             ((struct korb_string *)v)->len);
+    } else {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "%s is not a symbol nor a string",
+                   SPECIAL_CONST_P(arg) ? "(special)"
+                       : korb_id_name(korb_class_of_class(arg)->name));
+        return false;
+    }
+    const char *base = korb_id_name(name);
+    if (!base || (!((base[0] >= 'a' && base[0] <= 'z') ||
+                    (base[0] >= 'A' && base[0] <= 'Z') || base[0] == '_'))) {
+        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eN,
+                   "invalid attribute name '%s'", base ? base : "");
+        return false;
+    }
+    *out_id = name;
+    (void)meth;
+    return true;
+}
+
+/* Frozen check: receiver class/module must not be frozen.  Returns
+ * false (and raises FrozenError) on failure. */
+static bool attr_check_frozen(CTX *c, VALUE self) {
+    if (korb_obj_frozen_p(self)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        struct korb_class *k = (struct korb_class *)self;
+        const char *cn = (k->name != 0) ? korb_id_name(k->name) : "(anon)";
+        korb_raise(c, (struct korb_class *)eF,
+                   "can't modify frozen %s: %s",
+                   BUILTIN_TYPE(self) == T_MODULE ? "Module" : "Class", cn);
+        return false;
+    }
+    return true;
+}
 static VALUE module_attr_reader(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
         korb_raise(c, NULL, "attr_reader: not on a class/module");
         return Qnil;
     }
+    if (!attr_check_frozen(c, self)) return Qnil;
     struct korb_class *klass = (struct korb_class *)self;
     VALUE result = korb_ary_new();
     for (int i = 0; i < argc; i++) {
         ID name;
-        if (SYMBOL_P(argv[i])) name = korb_sym2id(argv[i]);
-        else if (BUILTIN_TYPE(argv[i]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[i])->ptr, ((struct korb_string *)argv[i])->len);
-        else continue;
-        /* Reject names starting with non-identifier chars — CRuby raises NameError. */
+        if (!attr_resolve_name(c, argv[i], &name, "attr_reader")) return Qnil;
         const char *base = korb_id_name(name);
-        if (!base || (!((base[0] >= 'a' && base[0] <= 'z') || (base[0] >= 'A' && base[0] <= 'Z') || base[0] == '_'))) {
-            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-            korb_raise(c, (struct korb_class *)eN, "invalid attribute name '%s'", base ? base : "");
-            return Qnil;
-        }
-        /* @name */
         long bl = strlen(base);
         char *iv = korb_xmalloc_atomic(bl + 2);
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
         ID iv_id = korb_intern(iv);
-        /* body: node_ivar_get(iv_id) */
         NODE *body = ALLOC_node_ivar_get(iv_id);
         korb_class_add_method_ast(klass, name, body, 0, 0);
         korb_ary_push(result, korb_id2sym(name));
@@ -53,29 +101,20 @@ static VALUE module_attr_writer(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_raise(c, NULL, "attr_writer: not on a class/module");
         return Qnil;
     }
+    if (!attr_check_frozen(c, self)) return Qnil;
     struct korb_class *klass = (struct korb_class *)self;
     VALUE result = korb_ary_new();
     for (int i = 0; i < argc; i++) {
         ID name;
-        if (SYMBOL_P(argv[i])) name = korb_sym2id(argv[i]);
-        else if (BUILTIN_TYPE(argv[i]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[i])->ptr, ((struct korb_string *)argv[i])->len);
-        else continue;
+        if (!attr_resolve_name(c, argv[i], &name, "attr_writer")) return Qnil;
         const char *base = korb_id_name(name);
-        if (!base || (!((base[0] >= 'a' && base[0] <= 'z') || (base[0] >= 'A' && base[0] <= 'Z') || base[0] == '_'))) {
-            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-            korb_raise(c, (struct korb_class *)eN, "invalid attribute name '%s'", base ? base : "");
-            return Qnil;
-        }
         long bl = strlen(base);
-        /* setter name: name=  */
         char *sn = korb_xmalloc_atomic(bl + 2);
         memcpy(sn, base, bl); sn[bl] = '='; sn[bl + 1] = 0;
         ID setter_id = korb_intern(sn);
-        /* @name */
         char *iv = korb_xmalloc_atomic(bl + 2);
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
         ID iv_id = korb_intern(iv);
-        /* body: node_ivar_set(iv_id, node_lvar_get(0)) */
         NODE *body = ALLOC_node_ivar_set(iv_id, ALLOC_node_lvar_get(0));
         korb_class_add_method_ast(klass, setter_id, body, 1, 1);
         korb_ary_push(result, korb_id2sym(setter_id));
