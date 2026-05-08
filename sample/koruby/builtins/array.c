@@ -1225,8 +1225,11 @@ static VALUE ary_count(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_drop(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
-    long n = FIX2LONG(argv[0]);
+    if (argc < 1) return self;
+    VALUE iv = korb_to_int_or_raise(c, argv[0]);
+    if (UNDEF_P(iv)) return Qnil;
+    if (!FIXNUM_P(iv)) return self;
+    long n = FIX2LONG(iv);
     if (n < 0) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eA, "attempt to drop negative size");
@@ -1491,19 +1494,40 @@ static VALUE ary_at(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#delete(obj) — remove all == matches; return obj if found else nil. */
 static VALUE ary_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
-    CHECK_FROZEN_RET(c, self, Qnil);
+    if (argc < 1) return Qnil;
+    /* Frozen check is conditional: CRuby only raises FrozenError when a
+     * modification would actually happen.  Scan first; raise if we'd
+     * remove anything. */
     struct korb_array *a = (struct korb_array *)self;
-    long w = 0;
-    bool found = false;
+    /* First pass: count matches (use full == dispatch so user override
+     * participates).  Don't mutate yet. */
+    long matches = 0;
     for (long r = 0; r < a->len; r++) {
-        if (korb_eq(a->ptr[r], argv[0])) {
-            found = true;
-        } else {
-            a->ptr[w++] = a->ptr[r];
+        VALUE eq_args[1] = { argv[0] };
+        VALUE r_eq = korb_funcall(c, a->ptr[r], korb_intern("=="), 1, eq_args);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(r_eq)) matches++;
+    }
+    if (matches == 0) {
+        /* No modification — block fallback (CRuby returns block's value
+         * if a block is given, else nil).  Don't raise FrozenError. */
+        if (korb_block_given()) {
+            VALUE blk_args[1] = { argv[0] };
+            return korb_yield(c, 1, blk_args);
         }
+        return Qnil;
+    }
+    /* Will modify — now enforce frozen check. */
+    CHECK_FROZEN_RET(c, self, Qnil);
+    long w = 0;
+    for (long r = 0; r < a->len; r++) {
+        VALUE eq_args[1] = { argv[0] };
+        VALUE r_eq = korb_funcall(c, a->ptr[r], korb_intern("=="), 1, eq_args);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (!RTEST(r_eq)) a->ptr[w++] = a->ptr[r];
     }
     a->len = w;
-    return found ? argv[0] : Qnil;
+    return argv[0];
 }
 
 /* Array#delete_at(i) — remove element at i, return removed or nil. */
