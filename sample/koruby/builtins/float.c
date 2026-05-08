@@ -243,16 +243,37 @@ static VALUE flt_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_float_new(pow(a, b));
 }
 
+/* Reject non-Numeric arg with ArgumentError (CRuby semantics). */
+static bool flt_check_numeric(CTX *c, VALUE other) {
+    if (FIXNUM_P(other) || KORB_IS_FLOAT(other)) return true;
+    if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM) return true;
+    if (!SPECIAL_CONST_P(other)) {
+        struct korb_class *k = korb_class_of_class(other);
+        for (; k; k = k->super) {
+            if (k == korb_vm->numeric_class) return true;
+        }
+    }
+    VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    korb_raise(c, (struct korb_class *)eA,
+               "comparison of Float with %s failed",
+               SPECIAL_CONST_P(other) ? "non-Numeric" :
+                   korb_id_name(korb_class_of_class(other)->name));
+    return false;
+}
 static VALUE flt_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!flt_check_numeric(c, argv[0])) return Qnil;
     return KORB_BOOL(korb_num2dbl(self) < korb_num2dbl(argv[0]));
 }
 static VALUE flt_le(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!flt_check_numeric(c, argv[0])) return Qnil;
     return KORB_BOOL(korb_num2dbl(self) <= korb_num2dbl(argv[0]));
 }
 static VALUE flt_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!flt_check_numeric(c, argv[0])) return Qnil;
     return KORB_BOOL(korb_num2dbl(self) > korb_num2dbl(argv[0]));
 }
 static VALUE flt_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!flt_check_numeric(c, argv[0])) return Qnil;
     return KORB_BOOL(korb_num2dbl(self) >= korb_num2dbl(argv[0]));
 }
 static VALUE flt_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
