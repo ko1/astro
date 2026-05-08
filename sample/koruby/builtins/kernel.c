@@ -403,6 +403,8 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
                        "exception class/object expected");
             return Qnil;
         }
+        int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
+        korb_exc_set_backtrace(c, argv[0], line);
         c->state = KORB_RAISE;
         c->state_value = argv[0];
     } else if (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_CLASS) {
@@ -412,6 +414,8 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
             msg = korb_str_cstr(argv[1]);
         }
         VALUE e = korb_exc_new((struct korb_class *)argv[0], msg);
+        int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
+        korb_exc_set_backtrace(c, e, line);
         VALUE cur = korb_gvar_get(korb_intern("$!"));
         if (!NIL_P(cur) && cur != e &&
             !SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {

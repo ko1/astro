@@ -226,7 +226,17 @@ class MSpecExpectation
   end
   def include(*items)
     items.each do |it|
-      unless @actual.include?(it)
+      ok = @actual.include?(it)
+      # Backtrace quote-style equivalence: spec text often uses
+      # `:in \`name'` (Ruby 3.2 backtick form), but modern Ruby (3.4+)
+      # produces `:in 'name'` (single-quote form).  Treat them as
+      # equivalent so existing specs pass against the new format.
+      if !ok && @actual.is_a?(String) && it.is_a?(String) &&
+         it.include?(":in `")
+        alt = it.gsub(":in `", ":in '")
+        ok = @actual.include?(alt)
+      end
+      unless ok
         raise MSpecError, "expected to include #{it.inspect}, got #{@actual.inspect}"
       end
     end
@@ -480,7 +490,19 @@ class MSpecExpectation
              ok = cls_ok && msg_ok
            end
            ok
-         when :include then m.arg.all? { |x| @actual.include?(x) }
+         when :include then m.arg.all? { |x|
+                                ok2 = @actual.include?(x)
+                                # Backtrace quote-style: spec text uses
+                                # `:in \`name'` (Ruby 3.2 backtick form),
+                                # modern Ruby produces `:in 'name'`.
+                                # Treat as equivalent.
+                                if !ok2 && @actual.is_a?(String) &&
+                                   x.is_a?(String) && x.include?(":in `")
+                                  alt = x.gsub(":in `", ":in '")
+                                  ok2 = @actual.include?(alt)
+                                end
+                                ok2
+                              }
          else raise MSpecError, "unknown matcher #{m.kind}"
          end
     pass = negate ? !ok : ok
