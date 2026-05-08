@@ -53,6 +53,7 @@ static VALUE hash_each(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* ---------- Hash methods (extended) ---------- */
 
 static VALUE hash_compare_by_identity(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
     if (h->compare_by_identity) return self;
     h->compare_by_identity = true;
@@ -123,6 +124,12 @@ static VALUE hash_merge(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *src = (struct korb_hash *)self;
     bool has_block = korb_block_given();
     VALUE r = korb_hash_new();
+    struct korb_hash *rh = (struct korb_hash *)r;
+    /* Preserve compare_by_identity / default_value / default_proc
+     * across dup/merge (CRuby semantics). */
+    rh->compare_by_identity = src->compare_by_identity;
+    rh->default_value = src->default_value;
+    rh->default_proc = src->default_proc;
     /* Honor subclass: result has self's class (CRuby semantics). */
     if (((struct RBasic *)self)->klass != (VALUE)korb_vm->hash_class) {
         ((struct RBasic *)r)->klass = ((struct RBasic *)self)->klass;

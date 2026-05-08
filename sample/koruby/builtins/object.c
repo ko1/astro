@@ -847,6 +847,12 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
     } else if (t == T_HASH) {
         r = korb_hash_new();
         struct korb_hash *h = (struct korb_hash *)self;
+        struct korb_hash *rh = (struct korb_hash *)r;
+        /* Preserve compare_by_identity / default_value / default_proc
+         * across dup/clone (CRuby semantics). */
+        rh->compare_by_identity = h->compare_by_identity;
+        rh->default_value = h->default_value;
+        rh->default_proc = h->default_proc;
         for (struct korb_hash_entry *e = h->first; e; e = e->next) {
             korb_hash_aset(r, e->key, e->value);
         }
