@@ -544,7 +544,7 @@ class Integer
   end unless method_defined?(:ceildiv)
 
   def digits(base = 10)
-    raise ArgumentError, "negative number" if self < 0
+    raise Math::DomainError, "out of domain" if self < 0
     raise ArgumentError, "negative radix" if base.is_a?(Integer) && base < 0
     raise ArgumentError, "invalid radix #{base}" if base.is_a?(Integer) && base < 2
     return [0] if self == 0

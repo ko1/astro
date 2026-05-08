@@ -1310,6 +1310,13 @@ void korb_init_builtins(void) {
     {
         struct korb_class *cMath = korb_module_new(korb_intern("Math"));
         korb_const_set(korb_vm->object_class, korb_intern("Math"), (VALUE)cMath);
+        /* Math::DomainError < StandardError — raised by Math.sqrt(-1) etc. */
+        VALUE eStd = korb_const_get(korb_vm->object_class, korb_intern("StandardError"));
+        struct korb_class *cMathDomainError = korb_class_new(korb_intern("DomainError"),
+            (eStd && !SPECIAL_CONST_P(eStd) && BUILTIN_TYPE(eStd) == T_CLASS)
+                ? (struct korb_class *)eStd : NULL,
+            T_OBJECT);
+        korb_const_set(cMath, korb_intern("DomainError"), (VALUE)cMathDomainError);
         struct korb_class *cMathMeta = korb_class_new(korb_intern("MathMeta"),
                                                       korb_vm->module_class, T_MODULE);
         korb_const_set(cMath, korb_intern("PI"), korb_float_new(3.141592653589793));
