@@ -5,10 +5,12 @@ ASTro でホスト言語を高速化する際にレイヤ横断で再利用で�
 どのサンプル言語で観測したかを明示している。
 
 各言語サンプルの詳細は個別の `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-にある。`perf.md` を持つサンプルは現在 14 種
-(`abruby` / `aforth` / `ascheme` / `asom` / `astocaml` / `astrogre` /
-`castro` / `jstro` / `koruby` / `naruby` / `nuq` / `pascalast` / `pystro` /
-`wastro`)。本ドキュメントから `castro perf.md §N` のように引用する。
+にある。`perf.md` を持つサンプルは現在 15 種
+(`abruby` / `aforth` / `arjsv` / `ascheme` / `asom` / `astocaml` /
+`astrogre` / `castro` / `jstro` / `koruby` / `naruby` / `nuq` /
+`pascalast` / `pystro` / `wastro`)。`astr` / `calc` / `luastro` は
+本書執筆時点で `perf.md` 未整備 (luastro は `runtime.md` に断片あり)。
+本ドキュメントから `castro perf.md §N` のように引用する。
 
 本ドキュメントは **「どのレイヤで何を回せば効くか」** の地図として読むことを
 想定している。
@@ -852,6 +854,101 @@ abruby の経験が示す **embedded interpreter モデル特有の教訓**:
    **PGO 駆動の type-speculating SD**（§4.7）でホスト境界の cfunc 呼び
    自体を inline するか。後者は全サンプル横断の最大未踏領域なので、
    abruby 単独で解ける問題ではない。
+
+---
+
+## 13. arjsv チャレンジ記（言語事例研究）
+
+JSON Schema バリデータ `arjsv` を **CRuby C 拡張ライブラリ** として乗
+せた、4 つ目のポジション。詳細は `sample/arjsv/docs/perf.md`。
+
+3 サンプルの位置づけ:
+
+- ascheme（§10）: parser + node.def で 2-7×（純動的）
+- wastro（§11）: framework 標準特化だけで native 3×（純静的）
+- abruby（§12）: 両方使うが libruby 30% で頭打ち（embedded interpreter）
+- **arjsv**: per-call が **`O(数十 ns)` の CRuby C API 呼び出しに支配されて
+  いる DSL**。AOT vs interp が **tied** という境界値で、
+  「dispatch コストが最初から低い問題」では ASTro の特化レバーが効かない
+  という反例事例
+
+### 13.1 効いた打ち手（インパクト順）
+
+| 打ち手 | 効果 | 一般性 |
+|---|---|---|
+| Schema 側 `consts[]` 配列に property 名 / regex / `$defs` ターゲットを集約。ノードは `uint32_t key_idx` だけ持つ | per-call alloc 0、user-object 640ns→139ns | スキーマ駆動 DSL 全般。**「per-call で見えるのは index だけ、value は schema 側」** という分離 |
+| frozen Ruby String を `c->consts[idx]` で `rb_hash_lookup2` に直接渡す | `rb_str_new_cstr` per-call が消える、`String#hash` のキャッシュが効く | CRuby 拡張全般 |
+| ASTroGen 標準の `static inline` 連鎖 + `-rdynamic` だけで 17 ノードのスキーマが 1 つの SD に畳める | `objdump` で `call SD_*` / `call DISPATCH_*` ゼロ確認 | フレームワーク標準 |
+
+### 13.2 「AOT vs interp が tied」 という結果の読み方
+
+| schema (parsed Ruby in) | interp | AOT | gap |
+|---|---:|---:|---:|
+| simple int (valid)    | 13.78M | 14.00M | tied |
+| user object (valid)   |  1.28M |  1.30M | tied |
+| user object (invalid) | 10.93M | 10.65M | tied |
+| api response x50      |  16.0k |  16.1k | tied |
+
+`objdump` で AOT は完全に inline している（`call DISPATCH_*` ゼロ）にも
+かかわらず、interp と差がつかない。
+
+理由:
+
+1. **dispatch が既に well-predicted**。同じ N ノードを毎回同じ順で訪問
+   するので、`(*head.dispatcher)(c, n)` の indirect call が分岐予測で
+   ~2 ns に収まる。
+2. **per-node の仕事が CRuby C API（`rb_hash_lookup2` / `rb_str_hash` /
+   `rb_str_comparable`）で 25% 占有**。AOT の特化はここに届かない。
+3. **Ruby 側 `valid?` メソッドディスパッチが 28% 占有**：
+   `vm_exec_core` / `vm_invoke_iseq_block` / `rb_arjsv_schema_valid_p`。
+   両モード共通の固定コスト。
+4. 絶対床: `FakeSchema#valid?`（`def valid?(x); true; end`）が 45 ns/op。
+   arjsv interp の `type:integer` は 50 ns＝floor 45 ns + validator 5 ns。
+   **AOT は floor を破れない**。
+
+これは naruby / calc とは **逆の不等式**:
+
+- naruby / calc: per-node 仕事 ~1 ns（算術）、dispatch が支配的 → AOT が大勝
+- arjsv: per-node 仕事 10–80 ns（CRuby C API）、dispatch は割合上小さい
+  → AOT は **無効ではない**が **目立たない**
+
+### 13.3 教訓（言語非依存）
+
+1. **「AOT vs interp で差が出ない」結果が出たら、まず profile を見る**。
+   `perf record` で per-node 仕事の絶対時間を測り、ASTro が触れる領域
+   （dispatch / arg 取り出し / SROA 余地）が % 占有でどれくらいかを
+   出すのが先。dispatch が 5% しかないなら AOT は最大 5% しか勝てない。
+2. **「dispatch が支配的でない問題」は ASTro の射程外** ではないが
+   レバーが小さい。それでも ASTro を選ぶ価値は **「ライブラリ実装コストの
+   軽さ」と「ホスト VALUE 共有によるゼロアロケーション API」**にある
+   （arjsv の rj_schema 比 86× の勝因はそこ）。
+3. **per-call の per-property `rb_str_new_cstr` のような「framework が
+   助けない hot allocation」は schema/parser 側に push する**。`consts[]`
+   集約は ASTro framework の機能ではないが、AST DSL 全般に適用可能な
+   パターン。
+4. **stable ID（`uint32_t key_idx`）と value（`Ruby VALUE`）を分離する** と
+   構造ハッシュは安定（key_idx 不変）、value は process ごとに作り直し、
+   という分離が成立する。これは memory `project_astro_value_consts_gap.md`
+   が指す「reload-time fixup の framework gap」とちょうど対応する。
+   現状 framework に reload-time fixup が無いので arjsv は `c->consts[]`
+   の indirection を 1 段払っている。
+
+### 13.4 ASTro user 視点の総括（arjsv 編）
+
+四極事例まとめ:
+
+| sample | 立ち位置 | AOT のレバー | 主な制約 |
+|---|---|---|---|
+| ascheme | 純動的 | parser + node.def 2-7× | tail-call ELIM 等の言語固有書換が要 |
+| wastro | 純静的 | framework 標準特化 3× | 再帰境界・統一シグネチャに framework 改修要 |
+| abruby | embedded host | parser + PGO で 4× | libruby 30% に頭打ち |
+| **arjsv** | **embedded host DSL** | **AOT=interp tied** | per-node 仕事が host API で AOT 無効化 |
+
+「AOT で何倍でも勝つ」という単純な物語ではなく、**問題の per-node 仕事
+コストが ASTro の効くゾーンに入っているか**で射程が決まることが、
+arjsv の境界値事例で明確になった。一方 arjsv の `consts[]` パターンと
+「ホスト VALUE 共有によるゼロアロケーション API」は **DSL on CRuby 拡張**
+の典型形として再利用価値が高い。
 
 ---
 

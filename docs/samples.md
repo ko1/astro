@@ -3,8 +3,8 @@
 ASTro リポジトリ配下の `sample/*` を **言語特性** と **そこから導かれる
 node.def 構成** を中心に横断分析した文書。各サンプル個別の詳細は
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-を参照。本書は「17 サンプル並べて何が分かるか」を整理する
-(汎用言語 16 + JSON フィルタ DSL の `nuq`)。
+を参照。本書は「18 サンプル並べて何が分かるか」を整理する
+(汎用言語 16 + DSL 2 種: JSON フィルタの `nuq`、JSON Schema の `arjsv`)。
 
 §6 でサンプルバイナリの **コマンドラインオプション** を横断比較、
 §7 で各サンプルの `docs/perf.md` から **定量的な性能まとめ** を出し、
@@ -35,7 +35,8 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 | `castro` | C サブセット | 命令型, 静的 | 静 | int64 / double / pointer | tree-sitter-c で型解決 → 1 slot=8byte レイアウト |
 | `wastro` | WebAssembly 1.0+ | スタックマシン, 静的 | 静 | i32/i64/f32/f64 | WAT/WASM 両対応 / spec-test ハーネス |
 | `astrogre` | (Onigmo 互換 regex) | DSL — 正規表現 | — | — | **マッチエンジン自体が AST**、`are` grep CLI 付属 |
-| `nuq` | (jq 互換) | DSL — JSON フィルタ | — | tagged fixnum + `nuq_obj` | pipe / comma fan-out / `try-catch` / `reduce` / `foreach` / 70+ builtin |
+| `nuq` | (jq 1.7 互換) | DSL — JSON フィルタ | — | tagged fixnum + `nuq_obj` | pipe / comma fan-out / `try-catch` / `reduce` / `foreach` / module / call-by-name / 70+ builtin、jq 1.7 公式 524/526 |
+| `arjsv` | (JSON Schema draft-07 / 2020-12) | DSL — 検証器 | — | CRuby `VALUE` | **CRuby C 拡張**、スキーマ → AST → SD で per-validation がアロケーションフリー |
 
 パラダイム軸での広がり:
 - **教育用最小**: `calc`
@@ -45,12 +46,12 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 - **OO 純化**: `asom`
 - **データ解析系**: `astr`
 - **スタックマシン**: `aforth` / `wastro`
-- **DSL / エンジン応用**: `astrogre` / `nuq`
+- **DSL / エンジン応用**: `astrogre` / `nuq` / `arjsv`
 
 直交する軸として **型システム** で切ると:
 - **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `wastro`
 - **動的型**: 動的言語勢 6 つ + Scheme + Smalltalk + R + Forth (cell 単位 untyped)
-- **型なし / DSL**: `calc` / `astrogre` / `nuq`
+- **型なし / DSL**: `calc` / `astrogre` / `nuq` / `arjsv`
 
 静的型 4 つはそれぞれ違う方向 — Pascal (古典手続き型 + variant record),
 C (低レベル ABI + ポインタ), OCaml (Hindley-Milner + variant + class),
@@ -67,28 +68,30 @@ ASTro が想定外でも嵌まる例になっている。
 
 ## 2. node.def 規模 と コードボリューム
 
-| sample | NODE_DEF 数 | node.def 行数 | C コード行数 (生成除く) | テスト | ベンチ |
-|---|---:|---:|---:|---:|---:|
-| `calc`      |   6 |    36 |    227 |   - |   - |
-| `naruby`    |  36 |   571 |  3,175 |   - |  37 |
-| `astr`      |  46 |   578 |  2,028 |  18 |   4 |
-| `astrogre`  |  53 | 1,612 |  3,678 |   - |  11 |
-| `ascheme`   |  54 |   778 |  4,341 |  34 |  19 |
-| `nuq`       |  57 |   407 |    -   | 338 |   - |
-| `aforth`    |  68 |   639 |    851 |   7 |  10 |
-| `luastro`   |  74 | 1,448 |  5,086 |   9 |  24 |
-| `asom`      |  80 | 1,262 |  5,327 |  29 |   - |
-| `koruby`    |  90 | 1,402 |  8,603 | 175 |  27 |
-| `pystro`    |  91 | 1,390 |  4,737 |  55 |   6 |
-| `astocaml`  |  91 | 1,196 |  6,540 |  70 |  26 |
-| `castro`    | 101 | 1,019 |  1,245 |   - |   - |
-| `jstro`     | 101 | 1,991 |  9,680 |   5 |  14 |
-| `abruby`    | 107 | 3,910 |  2,888 |  43 | 193 |
-| `pascalast` | 159 | 1,968 |  5,290 |  99 |  17 |
-| `wastro`    | 212 | 2,032 |  5,861 |   - |   - |
+| sample | NODE_DEF 数 | node.def 行数 |
+|---|---:|---:|
+| `calc`      |   6 |    36 |
+| `naruby`    |  32 |   479 |
+| `astr`      |  46 |   578 |
+| `arjsv`     |  47 |   971 |
+| `astrogre`  |  53 | 1,612 |
+| `ascheme`   |  54 |   778 |
+| `aforth`    |  68 |   639 |
+| `luastro`   |  74 | 1,448 |
+| `asom`      |  80 | 1,262 |
+| `astocaml`  |  91 | 1,196 |
+| `pystro`    |  95 | 2,165 |
+| `castro`    | 101 | 1,019 |
+| `jstro`     | 101 | 1,991 |
+| `abruby`    | 107 | 3,910 |
+| `koruby`    | 119 | 2,803 |
+| `pascalast` | 159 | 1,968 |
+| `nuq`       | 209 | 2,763 |
+| `wastro`    | 212 | 2,032 |
 
-(C コード行数列とテスト/ベンチ列は表作成時のスナップショットで、最新値とずれている
-ことがある — node.def の数値だけ保守。)
+(C コード行数とテスト/ベンチ件数はサンプルごとに発展しているので
+ここでは追わない — `sample/<lang>/docs/` を見るのが正確。
+node.def 数値だけ保守する。)
 
 観察:
 - **「ノード数 ≒ 言語の表現力」ではない**。動的言語は call/算術を 1 つに
@@ -104,6 +107,11 @@ ASTro が想定外でも嵌まる例になっている。
 - `aforth` 68 ノードで C 851 行、`castro` 101 ノードで C 1,245 行と
   **実装サイズが小さい言語** が成立しているのは、ASTro が EVAL ロジック
   以外を全部生成側に持っていく結果。
+- 一方 `nuq` 209 ノードのうち **149 個が `node_b_<builtin>`** という
+  per-builtin ノード (jq 1.7 の `length` / `keys` / `map` / `bsearch` ...
+  を個別ノード化)、残り 60 が言語構造ノード。`asom` の `send_<receiver>`
+  特化や、Forth で「全 word が NODE」とした `aforth` (§3 後半) と同系統
+  — DSL/builtin の数だけノードが生える。
 
 ---
 
@@ -399,6 +407,8 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 | `pascalast` | `int64_t` | libgc | 自前 lexer + parser | display 配列 (nested proc), variant record |
 | `wastro` | `uint64_t` (raw bits) | leak | WAT tokenizer + 2 系統 (S 式 / stack-style) + .wasm decoder | typed slot union frame, spec-test runner |
 | `astrogre` | `int64_t` (内部表現) | leak | 自前 regex parser | Aho-Corasick prefilter, Boyer-Moore-like memmem, scanner ノード |
+| `nuq` | tagged fixnum + `nuq_obj` | 自前 Cheney コピーGC + per-run arena | 自前 jq lexer + parser + module 解決 | path 更新 (`..\|=F`)、線形性解析で `+= [$i]` を mutation 化、70+ builtin |
+| `arjsv` | CRuby `VALUE` | CRuby GC (Ruby 拡張) | JSON Schema → AST lower (Ruby 側) | per-schema SD bake、Schema 側 consts 配列で per-call alloc 0、`json_schemer` 互換 API |
 
 注目点:
 - **値表現は 4 系統**: 純 `int64`, low-bit fixnum tagged, CRuby 互換 (3-bit tag),
@@ -406,6 +416,9 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 - **GC は libgc が主流** (5 サンプル)。**自前 mark-sweep** は luastro と jstro
   だけ — どちらも weak table / shape table のような "GC が見るべきだが
   conservative scan を逃したい" 構造を持つ言語で、自前にする動機が立つ。
+  **自前 Cheney コピー** は nuq のみ (per-run arena で短命オブジェクトを
+  まとめてリセット)。**ホスト GC を借りる** のは abruby / arjsv の CRuby
+  C 拡張勢。
 - **パーサ**: Prism (`naruby`, `abruby`, `koruby`) を使うのは Ruby 系
   3 つだけ。残り全部は **手書き再帰下降** か (`castro` だけ)
   **tree-sitter-c**。ASTro 自体はパーサに何の制約も置かない。
@@ -444,6 +457,8 @@ ASTro は plain interpreter / AOT / Profile-Guided / JIT の 4 モードを
 | `pascalast` | ✓ | ✓ |   |   |
 | `wastro`    | ✓ | ✓ |   |   |
 | `astrogre`  | ✓ | ✓ |   |   |
+| `nuq`       | ✓ | ✓ |   |   |
+| `arjsv`     | ✓ | ✓ |   |   |
 
 PG をやっているのは `abruby` / `ascheme` / `asom` / `luastro` / `jstro` / `naruby`。
 JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
@@ -480,13 +495,17 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 | `pascalast` | `--no-compile` | (`-c` のみで bake、走らせない) | `-c` | — | — | `--dump-ast` | `-q` |
 | `wastro`    | `--no-compile` | `-c` (compile→run) | `--aot` / `--aot-compile` | — | `--clear-cs` / `--ccs` | — | `-q` |
 | `astrogre/are` | (default; opt-in `--aot`) | `--aot` | — | — | — | `--dump PATTERN` | `-q` (grep `-q`) |
+| `nuq`       | `--no-compile` | (default; `code_store/all.so` を使う) | — | — | — | `--dump-ast` | `--quiet` |
+
+`arjsv` は CLI を持たない CRuby C 拡張。`Arjsv.schema(...).valid?(value)` の
+ライブラリ呼びで使い、`code_store/all.so` の有無で interp / AOT が自動切替。
 
 ### 6.2 命名の不統一が見える
 
 同じ意味のフラグがサンプルごとに名前違い:
 
 - **「code store を引かない」**:
-  - `--no-compile` 系: `aforth` / `astocaml` / `castro` / `jstro` / `luastro` / `pascalast` / `pystro` / `wastro` / `calc`
+  - `--no-compile` 系: `aforth` / `astocaml` / `castro` / `jstro` / `luastro` / `nuq` / `pascalast` / `pystro` / `wastro` / `calc`
   - `--plain` 系: `abruby` / `asom`
   - `-i` / `--plain` 系: `naruby` / `astr`
   - default off: `ascheme` / `astrogre/are` (opt-in が `--aot`)
@@ -528,6 +547,8 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 | `astrogre/are` | `--engine=astrogre|onigmo` | バックエンド差し替え (head-to-head 比較用) |
 | `astrogre/are` | `--encoding=utf-8|ascii` | regex エンコーディング |
 | `astrogre/are` | grep フラグ群 (`-i -n -c -v -w -F -l -L -H -h -o -A -B -C -m -e -f -t -T --include --exclude --hidden --no-ignore -a --no-recursive -j N --color`) | grep 互換 |
+| `nuq` | `--tab` / `--indent N` / `--seq` / `--exit-status` / `--arg K V` / `--argjson K V` / `--slurpfile K F` / `--rawfile K F` / `-L PATH` | jq 互換 |
+| `nuq` | `--no-specialize` | SD 生成を抑止 (interp + cs load のみ) |
 
 ### 6.4 入力経路のバリエーション
 
@@ -577,12 +598,12 @@ CLI に出ないが環境変数で挙動を変えるもの:
 
 | sample | リファレンス | bench 数 | AOT vs リファレンス |
 |---|---|---:|---|
-| `aforth` | gforth (成熟した direct-threaded Forth) | 9 | **9/9 勝**、最大 15× (gcd) / 8× (factorial) / 7× (collatz) |
+| `aforth` | gforth (成熟した direct-threaded Forth) | 9 | **8/9 勝** (ack のみ 0.95× で薄敗)、最大 13.9× (gcd) / 8.1× (factorial) / 7.2× (collatz) |
 | `ascheme` | chibi-scheme 0.12 / guile 3.0 (JIT) | 7 + 11 | **vs chibi 18/18 勝** (1.5–7.5×)、**vs guile 17/18 勝** (matmul のみ 1.2× 負け、最大 27×) |
-| `pystro` | CPython 3.12 | 6 | **6/6 勝**、1.13× (dict) — 19× (while loop) |
+| `pystro` | CPython 3.12 / 3.14 (no-JIT) / 3.14+JIT | 4 macro + 10 micro | **vs 3.12 13/14 勝**、**vs 3.14+JIT 12/14 勝**。`while_loop` 17×、`for_range` ~10× |
 | `asom` | SOM++ (g++ -O3 bytecode VM) / TruffleSOM (Graal JIT) | 12 | **vs SOM++ 11/12 勝**、PG なら **12/12 勝**、最大 10× (Sieve)。Truffle warm peak には 4–28× 負け |
 | `abruby` | CRuby 4.0.2 / YJIT | 15 + optcarrot | **vs CRuby 整数ループ系 4–8×**、optcarrot で +90% (PGC で 86.5 fps vs CRuby 45.6 fps)。YJIT は recursive で 1.5–2× 先 |
-| `koruby` | CRuby 4.0 / YJIT | optcarrot | AOT-PGO で **112 fps** (CRuby 42 fps の 2.65×、YJIT 178 fps の 0.63×) |
+| `koruby` | CRuby 4.0 / YJIT | optcarrot | AOT で **~100 fps** (gcc-15 -O3、CRuby ~42 fps の **2.4×**、YJIT 175 fps の 0.57×)。PGO 効果は +1 fps |
 | `naruby` | gcc -O0..-O3 (同等 C) + CRuby/YJIT | 15 | **gcc -O3 と ≤1.1× が 5/15** (gcd, compose, collatz, early_return, prime_count)。fib/ackermann/tak のみ 4–13× 差 |
 | `astocaml` | OCaml 4.14 (toplevel/bytecode/native) | 5 | **toplevel 5/5 勝**、**bytecode 3/5 勝**、native (ocamlopt) は 3.5–20× 先 |
 | `castro` | gcc -O0/-O1/-O3 (同 source) | 11 | **-O0 を 3 本上回り**、crc32 で **-O1 と 1.11× タイ**。-O3 への残ギャップ 3–5× |
@@ -590,6 +611,8 @@ CLI に出ないが環境変数で挙動を変えるもの:
 | `jstro` | node v18 (V8 TurboFan) | 13 | **try/catch 45×、cold-start 53×、Redux 系 2.25×、large sieve 2.45×** で勝ち。fib/mandel/nbody は 3–14× 負け |
 | `astrogre` | ripgrep / GNU grep / Onigmo | 17 | **vs Onigmo 8/8 勝** (3–15×)、**vs grep 6/8 勝** (最大 10×)、ripgrep には 3/8 + 1 タイ (識別子系で 10× 負け) |
 | `pascalast` | (外部 Pascal なし、自 interp との比較のみ) | 4 | interp → AOT で 2× (recursive) 〜 25× (tight loop) |
+| `nuq` | jq 1.7 / jaq 3.0 / gojq | 11 real + 14 micro + 4 big | **real 11/11 vs jq 2.6–5.0×**、micro 13/14 (`min-max 1M` 9×, `reverse 1M` 16×, `upto 8k` 51×)。jq 1.7 公式 524/526 |
+| `arjsv` | json_schemer 2.5 / rj_schema 1.0 (Rust+RapidJSON FFI) | 5 schemas × 2 scenarios | **vs `rj_schema` (parsed-Hash) 7.5–86×**、**vs `json_schemer` 90–280×**。gateway-flow (JSON文字列入力) は rj_schema 比 4–11× |
 | `aforth` ~ `wastro` の interp 列は省略。各 perf.md の表参照。 |
 
 ### 7.2 速度をどこで稼げているか (パターン別)
@@ -599,7 +622,7 @@ CLI に出ないが環境変数で挙動を変えるもの:
 
 #### (a) 大勝するパターン
 
-- **tight inner loop で型が parser-time に確定**: aforth (gcd 15×),
+- **tight inner loop で型が parser-time に確定**: aforth (gcd 13.9×),
   pystro (while_loop 19×), ascheme (sumloop 20× vs guile),
   asom (Sieve 10×), naruby (loop で C コンパイラがループ自体を消す)
 - **インタプリタ起動が遅い処理系との比較**: jstro vs node は
@@ -746,6 +769,8 @@ CLI に出ないが環境変数で挙動を変えるもの:
 | 純動的 (Scheme) | **○** | ascheme が chibi/guile に並ぶ AOT 性能 |
 | スタック VM (Forth/Wasm) | **○** | aforth が gforth を 8/9 で上回る |
 | DSL (regex) | **○** | astrogre が onigmo の隣に並ぶマッチ性能 |
+| DSL (JSON フィルタ / Schema) | **◎** | nuq が jq を全域 2.6–5.0×、arjsv は Rust+RapidJSON FFI を 4–86×。スキーマ / フィルタ式が SD 1 個に焼き切れる類は ASTro と相性が良い |
+| ホスト言語の C 拡張 | **○** | abruby / arjsv が CRuby ext として成立。ホスト VALUE / GC / Parser を借りて初期実装コストを大幅短縮 (代償は §8.2: hot path に host cfunc が残ること) |
 | イベント駆動 / async | **未検証** | サンプル無し |
 | GC の精度が要る (precise GC) | **△** | jstro/luastro が自前 mark-sweep を書いており、フレームワークは助けない |
 | 短命スクリプト (CLI ツール) | **△** | bake コストと dlopen キャッシュの初期化が見える。プレ bake 推奨 |
@@ -763,7 +788,8 @@ ASTro は **「AST 解釈で書きやすい × 部分評価 + C コンパイラ�
 - 静的型・スタック VM → AOT で gcc -O1 級 (castro/aforth/wastro)
 - 動的言語 → 既存処理系 (CRuby, lua5.4, node v18) と同水準〜部分的勝利
 - 関数型 → 既存トリ系処理系 (chibi/guile) と並ぶ
-- DSL → 専用エンジン (onigmo) と肉薄
+- DSL → 専用エンジン (onigmo) と肉薄、jq / JSON Schema 系では既存実装を
+  抜く (nuq vs jq 2.6–5.0×、arjsv vs Rust+RapidJSON FFI 4–86×)
 
 ** AOT に頼った "tree-walking interpreter の限界突破" としては成功**
 していると言える。一方で **JIT の枠組みは試作段階** (naruby のみ) で、

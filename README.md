@@ -49,52 +49,49 @@ ASTro samples span a wide range of language families to exercise the framework a
 - [`calc`](./sample/calc/) — **toy 6-node calculator REPL** (`num` + `+`/`-`/`*`/`/`/`%`), the smallest end-to-end ASTroGen example.
 
 **Ruby family.**
-- [`naruby`](./sample/naruby/) — ***not a Ruby***: integer-only 21-node Ruby subset.
-  The original ASTro paper's vehicle for evaluating all four execution modes, JIT included.
-- [`abruby`](./sample/abruby/) — ***a bit Ruby***: larger Ruby subset as a CRuby C extension.
-  Reuses CRuby's `VALUE`, Prism parser, and the full Bignum / Float / Rational / Complex numeric stack.
-- [`koruby`](./sample/koruby/) — ***kind of Ruby***: standalone (non-CRuby) Ruby with Boehm GC + GMP + Prism + ucontext `Fiber`.
-  **Runs optcarrot end-to-end**; AOT beats CRuby (no JIT) on `fib` by ~3.6×.
+- [`naruby`](./sample/naruby/) — ***not a Ruby***: tiny integer-only Ruby subset (32 nodes).
+  The original ASTro paper's vehicle and **the only sample exercising all four execution modes** (plain / AOT / PG / JIT) from a single binary.
+- [`abruby`](./sample/abruby/) — ***a bit Ruby***: larger Ruby subset as a CRuby C extension (107 nodes), reusing CRuby's `VALUE` / Prism / GC.
+  PGC-baked optcarrot **86.5 fps** vs CRuby (no-JIT) 45.6 fps; integer-loop microbenches 4–8×.
+- [`koruby`](./sample/koruby/) — ***kind of Ruby***: standalone (non-CRuby) Ruby with Boehm GC + GMP + Prism (119 nodes).
+  **Runs optcarrot end-to-end at ~100 fps** (gcc-15 -O3, vs CRuby 42 fps ≈ 2.4×; YJIT 175 fps).
 
 **Other dynamic scripting.**
-- [`luastro`](./sample/luastro/) — **Lua 5.4** with tagged 8-byte `LuaValue`.
-  Full pattern matcher, weak tables, `__gc` finalizers, ucontext coroutines, mark-sweep GC.
-- [`jstro`](./sample/jstro/) — **JavaScript** (broad ES2023 subset) with V8-style hidden-class objects + shape-transition ICs.
-  Profile-driven kind swap, longjmp `throw`, mark-sweep GC; beats node v18 by 2-50× on several benches.
-- [`pystro`](./sample/pystro/) — **Python 3** subset (~80 nodes): GMP bignum + classes + dunder + `try`/`except` + generators + comprehensions + f-strings + ~37 builtins.
-  **Beats CPython 3.12 on 8 / 9 benches** at ~1 s scale (`while_loop` 18×, `for_range` 11×).
+- [`luastro`](./sample/luastro/) — **Lua 5.4** (74 nodes) with tagged 8-byte `LuaValue`.
+  Full pattern matcher, weak tables, `__gc` finalizers, ucontext coroutines, self-written mark-sweep GC.
+- [`jstro`](./sample/jstro/) — **JavaScript** (broad ES2023 subset, 101 nodes) with V8-style hidden-class objects + shape-transition ICs.
+  Profile-driven kind swap, longjmp `throw`, mark-sweep GC; beats node v18 by 2–50× on several benches.
+- [`pystro`](./sample/pystro/) — **Python 3** subset (95 nodes): GMP bignum + classes + dunder + `try`/`except` + generators + comprehensions + f-strings + ~37 builtins.
+  **Beats CPython 3.12 on 13 / 14 benches** (4 macro + 9/10 micro) at ~1 s scale (`while_loop` 17×); also beats CPython 3.14+JIT on 12/14.
 
 **Functional / academic.**
-- [`ascheme`](./sample/ascheme/) — **R5RS Scheme** with the full numeric tower (fixnum / bignum / rational / flonum / complex via GMP), `call/cc`, multiple values, ports.
-  Passes 179/179 of chibi's `r5rs-tests.scm`.
-- [`astocaml`](./sample/astocaml/) — **OCaml** subset (~80 nodes) with HM-lite type inference, ADTs, exceptions, single-inheritance classes, real functor instantiation, TCO.
+- [`ascheme`](./sample/ascheme/) — **R5RS Scheme** (54 nodes) with the full numeric tower (fixnum / bignum / rational / flonum / complex via GMP), `call/cc`, multiple values, ports.
+  Passes 179/179 of chibi's `r5rs-tests.scm`; vs chibi 18/18 wins, vs guile 17/18 (up to 27×).
+- [`astocaml`](./sample/astocaml/) — **OCaml** subset (91 nodes) with HM-lite type inference, ADTs, exceptions, single-inheritance classes, real functor instantiation, TCO.
   35/35 tests; with `-c`, fib / ack / tak beat `ocamlc` bytecode and `ocaml` toplevel.
-- [`asom`](./sample/asom/) — **[SOM](https://som-st.github.io/)** Smalltalk dialect with type-specialized sends, control-flow inlining, Boehm GC + GMP.
-  Passes the full SOM TestSuite (221/221).
+- [`asom`](./sample/asom/) — **[SOM](https://som-st.github.io/)** Smalltalk dialect (80 nodes) with type-specialized sends, control-flow inlining, Boehm GC + GMP.
+  Passes the full SOM TestSuite (221/221); PG mode beats SOM++ on all 12 AreWeFastYet benches.
 
 **Statically-typed imperative.**
-- [`pascalast`](./sample/pascalast/) — **Pascal** subset (~190 nodes), ISO 7185 + Free Pascal–style OO: variant records, sets, `with`, `array of T`, `virtual` / `override`, `try/except`, properties.
+- [`pascalast`](./sample/pascalast/) — **Pascal** subset (159 nodes), ISO 7185 + Free Pascal–style OO: variant records, sets, `with`, `array of T`, `virtual` / `override`, `try/except`, properties.
   **Wins outright on tight constant-folding loops vs `fpc -O3`** (collatz 0.4× / leibniz 0.6× / mandelbrot 0.8×).
-- [`castro`](./sample/castro/) — **C** subset with tree-sitter-c front-end, 8-byte slot VALUE, structs / function pointers / `printf`, `gcc -E` preprocessing.
-  AOT beats `gcc -O0` on tight loops.
+- [`castro`](./sample/castro/) — **C** subset (101 nodes) with tree-sitter-c front-end, 8-byte slot VALUE, structs / function pointers / `printf`, `gcc -E` preprocessing.
+  AOT beats `gcc -O0` on tight loops; `crc32` ties `gcc -O1`.
 
 **Stack-based.**
-- [`aforth`](./sample/aforth/) — **Forth** subset where every word is an AST NODE (no traditional threaded code); calls indirect through a `word_id` → `NODE *` table.
-  Wins 8/9 against gforth 0.7.3 (gcd 13.9×, factorial 8.1×, collatz 7.2×).
+- [`aforth`](./sample/aforth/) — **Forth** subset (68 nodes) where every word is an AST NODE (no traditional threaded code); calls indirect through a `word_id` → `NODE *` table.
+  Wins 8/9 against gforth 0.7.3 (gcd 13.9×, factorial 8.1×, collatz 7.2×; ack 0.95× the only loss).
 
 **Data / vector.**
-- [`astr`](./sample/astr/) — **R** subset (~30 nodes) with tagged 64-bit `VALUE`, libgc, vector/scalar broadcast, `c()` / `paste` / `substr` / `1:n` ranges.
+- [`astr`](./sample/astr/) — **R** subset (46 nodes) with tagged 64-bit `VALUE`, libgc, vector/scalar broadcast, `c()` / `paste` / `substr` / `1:n` ranges.
   AOT 4.1× on fib(36), 3.8× on ack(3,9).
 
 **Non-source / DSL.**
-- [`wastro`](./sample/wastro/) — **WebAssembly 1.0** (MVP) interpreter (~210 nodes).
-  Reads both `.wat` and `.wasm`, runs the wasm spec-test `.wast` harness.
-- [`astrogre`](./sample/astrogre/) — **Ruby-style regex engine** (~22 match nodes — the matcher itself is an AST) with a `grep`-style CLI; switchable between the astrogre backend and Onigmo.
-  AOT fuses the for-each-start-position search loop and the regex chain into one SD function (7.2× over interp on long-buffer literal search).
-- [`nuq`](./sample/nuq/) — **`jq` clone** (~50 nodes), full jq filter language modulo regex / assignment-style operators: pipe / comma, `if-elif-else`, `try-catch`, `reduce` / `foreach`, `label` / `break`, user `def`s, `@uri` / `@base64` / etc., 70+ builtins.
-  338 / 338 tests pass; about half are differential against system `jq`.
-- [`arjsv`](./sample/arjsv/) — **JSON Schema validator** (drafts 04 / 06 / 07 / 2020-12, 47 nodes), CRuby C extension with a `json_schemer`-compatible API.
-  Each schema lowers to its own SD; property names, regexes, and `$defs` targets live in a Schema-side `consts` array so per-call validation does no allocation.  JSON Schema Test Suite: draft-04 98.8%, draft-06 98.9%, draft-07 95.5%, 2020-12 94.6% (within "no external dependency" scope — IDNA / HTTP `$ref` / dynamic-scope `$dynamicRef` excluded).  Drop-in for `json_schemer` (`valid?` / `validate` / `valid_schema?` / `formats:` / `insert_property_defaults:` 互換).  4–11× faster than `rj_schema` (Rust + RapidJSON via FFI) on the gateway-flow benchmark; 25–180× faster than `json_schemer` (pure Ruby).
+- [`wastro`](./sample/wastro/) — **WebAssembly 1.0+ (MVP)** interpreter (212 nodes).  Reads both `.wat` and `.wasm`, runs the wasm spec-test `.wast` harness; AOT-cached within **3–6× of `gcc -O2`** on tight loops.
+- [`astrogre`](./sample/astrogre/) — **Ruby/Onigmo-compatible regex engine** (53 nodes — the matcher itself is an AST) with a `grep`-style CLI (`are`); switchable backend (astrogre / Onigmo).  AOT fuses the start-position scan loop and the regex chain into one SD (8/8 wins vs Onigmo, 3–15×).
+- [`nuq`](./sample/nuq/) — **`jq` 1.7-compatible clone** (209 nodes) with full pipeline / `try-catch` / `reduce` / `foreach` / module / call-by-name / 70+ builtins.  Passes **524/526** of jq 1.7's official test suite; real-world 11/11 wins **2.6–5.0× vs jq** (micro `upto` 50×, `reverse` 16×).
+- [`arjsv`](./sample/arjsv/) — **JSON Schema validator** (drafts 04 / 06 / 07 / 2020-12, 47 nodes), CRuby C extension, `json_schemer`-compatible API, per-schema SD with alloc-free `valid?`.
+  Test Suite (excl. IDNA / HTTP `$ref` / dynamic `$dynamicRef`): 04 98.8% / 06 98.9% / 07 95.5% / 2020-12 94.6%.  **4–11× vs `rj_schema`** (Rust+RapidJSON FFI), **25–180× vs `json_schemer`** (pure Ruby).
 
 ## References
 
