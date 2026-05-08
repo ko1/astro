@@ -23,17 +23,21 @@ contentMediaType / `$ref` (root, `#/$defs/<name>`, full JSON pointer,
 `$id` lookup; recursive refs supported).
 
 **JSON Schema Test Suite**:
+- draft-04:  902 / 917 = **98.36%**
+- draft-06: 1185 / 1209 = **98.01%**
 - draft-07: 1501 / 1584 = **94.76%**
-- 2020-12:  1854 / 2069 = **89.61%**
+- 2020-12:  1924 / 2069 = **92.99%**
 
 Remaining failures concentrate in IDNA hostname (no libidn), external
-HTTP `$ref`, and `unevaluatedProperties` / `unevaluatedItems` — see
+HTTP `$ref`, and a few deep `$dynamicRef` / nested-`$id` cases — see
 [`docs/done.md`](docs/done.md) for the breakdown.
 
-Both `valid?` and `validate` (json_schemer-compatible error array) are
-implemented.  `valid?` runs entirely on arjsv's specialised dispatcher;
-`validate` returns rich errors by delegating reporting to `json_schemer`
-*only when validation fails* — happy path stays at arjsv's speed.
+json_schemer drop-in API: `valid?`, `validate` (Enumerator of error
+hashes), `valid_schema?`, `formats:` 独自 format 拡張、
+`insert_property_defaults:` の data mutation も対応。  Symbol-key データ /
+Symbol-key スキーマも透過に動く。  詳細は [`docs/spec.md`](docs/spec.md)、
+内部設計は [`docs/runtime.md`](docs/runtime.md)、
+ベンチは [`docs/perf.md`](docs/perf.md)。
 
 ## Build
 

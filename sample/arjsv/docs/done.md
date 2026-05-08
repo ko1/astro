@@ -1,25 +1,38 @@
 # arjsv: implemented features
 
-draft-07 + draft 2020-12 (auto-detected via `$schema`),
-json_schemer-compatible API for both `valid?` and `validate`.
+draft-04 / draft-06 / draft-07 / 2019-09 / 2020-12 を `$schema` で
+auto-detect。 json_schemer-compatible API。
+
+詳細仕様は [`spec.md`](./spec.md)、 内部実装は [`runtime.md`](./runtime.md)、
+ベンチは [`perf.md`](./perf.md)、 残作業は [`todo.md`](./todo.md)。
 
 ## Public API
 
 ```ruby
 require 'arjsv'
 
+# 基本
 s = Arjsv.schema({'type' => 'integer', 'minimum' => 0})
-s.valid?(42)         # => true / false (fast path, all in arjsv)
-s.validate(42).to_a  # => []
-s.validate(-1).to_a  # => [{ ... json_schemer-compatible error hash ... }]
-s.compile!           # AOT-specialise (otherwise pure interpreter)
+s.valid?(42)         # => true (fast path, arjsv の specialised dispatcher)
+s.validate(42).to_a  # => [] (fast path)
+s.validate(-1).to_a  # => [{ ... json_schemer 互換 error hash ... }]
+s.compile!           # AOT-specialise (default は interp、 hot loop で呼ぶなら推奨)
+
+# json_schemer-compatible options
+Arjsv.schema(schema, formats: { 'phone' => ->(s) { ... } })
+Arjsv.schema(schema, insert_property_defaults: true)
+
+# meta-schema 検証
+Arjsv.valid_schema?(schema_obj)
+s.valid_schema?
+
+# Symbol key data も透過に動く
+s.valid?({name: 'Alice'})            # ← Symbol key OK
+s.valid?({'name' => 'Alice'})        # ← String key も OK
 ```
 
-`valid?` runs entirely on the arjsv specialised dispatcher.
-`validate` falls back to `json_schemer` *only when validation fails* to
-produce rich, json_schemer-compatible error hashes — the happy path
-keeps arjsv's speed and the error-reporting path matches json_schemer
-output verbatim.
+`valid?` は arjsv 内で完結。 `validate` は失敗時のみ json_schemer に
+委譲して rich error 配列を返す (happy path は arjsv 速度を維持)。
 
 ## Supported keywords (draft-07 + 2020-12)
 
@@ -75,11 +88,13 @@ Empty `{}` schema accepted.
 
 | draft     | pass | total | % |
 |-----------|---:|---:|---:|
+| draft-04  |  902 |  917 | **98.36%** |
+| draft-06  | 1185 | 1209 | **98.01%** |
 | draft-07  | 1501 | 1584 | **94.76%** |
-| 2020-12   | 1854 | 2069 | **89.61%** |
+| 2020-12   | 1924 | 2069 | **92.99%** |
 
 Run with `ruby test/run_official_suite.rb` (default = draft-07);
-`DRAFT=draft2020-12 …` switches dataset.
+`DRAFT=draft4|draft6|draft2020-12 …` switches dataset.
 
 ### draft-07 failure breakdown
 
@@ -109,11 +124,10 @@ Run with `ruby test/run_official_suite.rb` (default = draft-07);
 
 - External `$ref` (HTTP fetching), URN base URIs
 - URI base resolution against nested `$id`s
-- `unevaluatedItems` / `unevaluatedProperties` — needs cross-keyword
-  evaluation tracking arjsv doesn't build
-- `$dynamicRef` / `$dynamicAnchor` full scoping (treated like
-  `$ref` / `$anchor`; covers most cases)
+- `$dynamicRef` / `$dynamicAnchor` full scoping (treated like `$ref` /
+  `$anchor`; covers most static cases)
 - IDNA-2008 punycode validation for `format: hostname` / `idn-hostname`
+  (would need libidn / ICU)
 
 ## Internals
 
@@ -126,13 +140,15 @@ Run with `ruby test/run_official_suite.rb` (default = draft-07);
 - `compile!` iterates all entries calling `astro_cs_compile` + one
   `astro_cs_build` + `astro_cs_reload` + per-entry `astro_cs_load`, with
   Ruby header cflags injected (`Arjsv::RUBY_HEADER_CFLAGS`)
-- ~38 node kinds: validate_root, pass, fail, seq, type_check, required(+_unsafe),
-  property(+_unsafe), items_uniform(+_unsafe), items_tuple, additional_items,
-  no_additional_items, min_items, max_items, unique_items, min_properties,
-  max_properties, pattern_property, additional_properties_schema,
+- ~45 node kinds: validate_root, pass, fail, seq, type_check, required(+_unsafe),
+  property(+_unsafe, +_with_default), items_uniform(+_unsafe), items_tuple,
+  additional_items, no_additional_items, min_items, max_items, unique_items,
+  min_properties, max_properties, pattern_property, additional_properties_schema,
   no_additional_properties, property_names, minimum, maximum, multiple_of,
   min_length, max_length, pattern, format, content_check, const, enum, not,
-  if_then_else, any_of, one_of, one_of_step, ref, dependency, contains
+  if_then_else, any_of, one_of, one_of_step, ref, dependency, contains,
+  eval_scope, unevaluated_properties_schema, no_unevaluated_properties,
+  unevaluated_items_schema, no_unevaluated_items
 - **Type-guard fast path**: when a schema's `type` is the single string
   "object" (resp. "array"), `node_property_unsafe` /
   `node_required_unsafe` (resp. `node_items_uniform_unsafe`) skip the
@@ -144,6 +160,23 @@ Run with `ruby test/run_official_suite.rb` (default = draft-07);
   (`rb_funcall` → Ruby Proc).  Saves ~700 ns / format check on the hot
   path.  Stdlib-parsing formats (date, time, uri, ipv6, hostname, …)
   still go through Procs
+- **Symbol-key data**: `node_property` / `node_required` / `node_dependency`
+  try the String form first (the JSON spec form, also `JSON.parse`
+  default — full speed in this case) and fall back to the Symbol form
+  only on miss.  String-key callers see no overhead; Symbol-key callers
+  pay one extra `rb_hash_lookup2` per property check
+- **Symbol-key schemas**: `Arjsv.schema(type: :integer, ...)` is
+  normalised to String-keyed at build time (one shot); `enum` / `const`
+  / `default` / `examples` *values* are left untouched so the user's
+  data shapes still match
+- **Annotation tracking** (for `unevaluatedProperties` / `unevaluatedItems`):
+  `c->eval_keys` (Hash) and `c->eval_items` (count) are populated by
+  successful property / pattern_property / additional_properties /
+  items_uniform / items_tuple / additional_items / contains nodes when
+  the surrounding `eval_scope` has activated tracking.  Combinators
+  (`anyOf` / `oneOf` / `not` / `if-then-else`) implement the spec's
+  evaluation propagation rules (only matched branches contribute;
+  `not` blocks contribution; failing branches roll back via `dup`)
 - Properties / required / enum / pattern_property / etc. are right-recursive
   chains terminated by `pass` / `fail`
 - Property names are interned as frozen Ruby Strings in the Schema's `consts`

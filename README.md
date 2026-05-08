@@ -94,7 +94,7 @@ ASTro samples span a wide range of language families to exercise the framework a
 - [`nuq`](./sample/nuq/) — **`jq` clone** (~50 nodes), full jq filter language modulo regex / assignment-style operators: pipe / comma, `if-elif-else`, `try-catch`, `reduce` / `foreach`, `label` / `break`, user `def`s, `@uri` / `@base64` / etc., 70+ builtins.
   338 / 338 tests pass; about half are differential against system `jq`.
 - [`arjsv`](./sample/arjsv/) — **JSON Schema validator** (draft-07 + 2020-12, ~38 nodes), CRuby C extension with a `json_schemer`-compatible API.
-  Each schema lowers to its own SD; property names, regexes, and `$defs` targets live in a Schema-side `consts` array so per-call validation does no allocation.  JSON Schema Test Suite: 1501 / 1584 (94.76%) on draft-07, 1854 / 2069 (89.61%) on 2020-12.  4–19× faster than `rj_schema` (Rust + RapidJSON via FFI) on the gateway-flow benchmark; 30–175× faster than `json_schemer` (pure Ruby).
+  Each schema lowers to its own SD; property names, regexes, and `$defs` targets live in a Schema-side `consts` array so per-call validation does no allocation.  JSON Schema Test Suite: draft-04 98.4%, draft-06 98.0%, draft-07 94.8%, 2020-12 93.0%.  Drop-in for `json_schemer` (`valid?` / `validate` / `valid_schema?` / `formats:` / `insert_property_defaults:` 互換).  4–11× faster than `rj_schema` (Rust + RapidJSON via FFI) on the gateway-flow benchmark; 25–180× faster than `json_schemer` (pure Ruby).
 
 ## References
 

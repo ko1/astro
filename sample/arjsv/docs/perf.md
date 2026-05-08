@@ -1,11 +1,10 @@
 # arjsv performance notes
 
-draft-07 + draft 2020-12 (auto-detected via `$schema`).  Full keyword
-matrix in `docs/done.md`.  Note: since the bench schemas now include
-`format: email` and `additionalProperties: false`, the absolute numbers
-sit lower than the original Tier 1 numbers — but vs json_schemer /
-rj_schema the multipliers are comparable, and the schemas are more
-representative of real OpenAPI workloads.
+draft-04 / 06 / 07 / 2019-09 / 2020-12 (auto-detected via `$schema`).
+Full keyword matrix in [`done.md`](./done.md), implementation in
+[`runtime.md`](./runtime.md).  Bench schemas exercise `format: email`,
+`additionalProperties: false`, `$ref`, `enum`, etc. — representative of
+real OpenAPI workloads.
 
 ## 3-way benchmark (ruby 4.0.2 / x86_64 / `benchmark/run.rb`)
 
@@ -26,21 +25,21 @@ Two scenarios per schema:
 
 | schema | json_schemer | arjsv interp | arjsv AOT | rj_schema (Hash→JSON) | arjsv vs rj_schema |
 |---|---:|---:|---:|---:|---:|
-| simple int (valid)        |   78k |   7.41M |   7.45M |  259k | **29×** |
-| user object (valid)       | 4.90k |    460k |    449k |  112k | **4.0×** |
-| user object (invalid)     |  73k  |  11.76M |  11.98M |  148k | **81×** |
-| api response x5  (valid)  | 1.71k |    143k |    143k |  19.3k | **7.4×** |
-| api response x50 (valid)  |   208 |   17.7k |   18.0k |  2.48k | **7.3×** |
+| simple int (valid)        |  182k |  14.83M |  14.87M |  606k | **25×** |
+| user object (valid)       | 11.5k |   1.12M |   1.11M |  125k | **8.9×** |
+| user object (invalid)     | 62.6k |  11.13M |  11.21M |  130k | **86×** |
+| api response x5  (valid)  | 1.60k |    136k |    133k | 18.2k | **7.5×** |
+| api response x50 (valid)  |   163 |   13.6k |   13.3k | 1.97k | **6.9×** |
 
 ### (B) JSON string in
 
 | schema | json_schemer (parse+v) | arjsv interp (parse+v) | arjsv AOT (parse+v) | rj_schema (preloaded) | arjsv vs rj_schema |
 |---|---:|---:|---:|---:|---:|
-| simple int (valid)        |  204k |   6.50M | 6.08M  |  316k | **19×** |
-| user object (valid)       | 12.3k |    630k |  641k  |  153k | **4.2×** |
-| user object (invalid)     |  67k  |   1.78M | 1.76M  |  157k | **11×** |
-| api response x5  (valid)  | 1.70k |   86.3k | 87.0k  | 20.1k | **4.3×** |
-| api response x50 (valid)  |   223 |   11.0k | 11.0k  |  2.55k | **4.3×** |
+| simple int (valid)        |  179k |   6.21M | 6.24M  |  712k | **8.8×** |
+| user object (valid)       | 11.2k |    545k |  555k  |  137k | **4.0×** |
+| user object (invalid)     | 59.8k |   1.61M | 1.61M  |  143k | **11×** |
+| api response x5  (valid)  | 1.54k |  77.4k  | 77.3k  | 18.7k | **4.1×** |
+| api response x50 (valid)  |   157 |  8.69k  | 8.73k  | 2.07k | **4.2×** |
 
 `api response x5` and `x50` exercise `$ref` (recursive User+Address),
 `additionalProperties:false`, `pattern`, `format`, `enum`, `uniqueItems`,
@@ -49,14 +48,14 @@ schema, not just primitives.
 
 ### Headline takeaways
 
-- **arjsv ≥ 4.5× faster than `rj_schema` (Rust+RapidJSON) in scenario B**
-  (gateway flow, native form of rj_schema), and 7×–84× in scenario A.
-- The win over Rust comes from two places: rj_schema pays an FFI
-  call boundary plus per-call data-JSON parsing on every validate; arjsv
-  takes parsed Ruby objects directly and stays in-process.  Even when arjsv
+- **arjsv ≥ 4× faster than `rj_schema` (Rust+RapidJSON) in scenario B**
+  (gateway flow, rj_schema's native form), and 7×–86× in scenario A.
+- The win over Rust comes from two places: rj_schema pays an FFI call
+  boundary plus per-call data-JSON parsing on every validate; arjsv takes
+  parsed Ruby objects directly and stays in-process.  Even when arjsv
   pays `JSON.parse` (scenario B), CRuby's parser + arjsv's specialised
   validator beats RapidJSON parse + RapidJSON validate.
-- vs `json_schemer`: 30×–175× across the matrix.
+- vs `json_schemer`: 25×–180× across the matrix.
 
 ## Fix 1: per-`node_property` / `node_required` fstring cache
 
@@ -78,6 +77,22 @@ once at schema build time and indexes it from the node:
 `perf record` post-fix shows `gc_sweep_step` and `str_enc_new` are gone;
 `SD_<root>` (the AOT specialised dispatcher) now takes ~16 % of CPU,
 i.e. it's doing real work, not just dispatch.
+
+## Spec-compliance overhead
+
+The 2019-09+ `unevaluatedProperties` / `unevaluatedItems` work added a
+per-call save/restore of `c->eval_keys` and `c->eval_items` to every
+property / items / pattern_property / etc. node — even for schemas that
+don't use the `unevaluated_*` keywords.  Currently unconditional (not
+conditioned on `c->eval_keys != Qnil`).  Cost ≈ 4 register saves + 4
+stores + 4 restores per sub-schema descent.
+
+Measured on user_object (with no `unevaluated_*` in the schema): no
+visible regression in the headline bench above (~1.1M ips both directions),
+because the writes are to the same VALUE the read just produced and the
+compiler / hardware coalesces them well.  Conditionalising the
+save/restore is on the todo list as "branch on `c->eval_keys != Qnil`"
+in `docs/todo.md`.
 
 ## AOT vs interp on small schemas: still ~tied
 
