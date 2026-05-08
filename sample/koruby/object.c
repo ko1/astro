@@ -2809,6 +2809,7 @@ uint64_t korb_g_next_frame_id = 0;
  * dispatch.  Coarse-grained (any redefinition flips it forever), but
  * common-case correct and zero-cost on the normal path. */
 bool korb_g_basic_op_redefined = false;
+bool korb_g_array_op_redefined = false;
 
 /* Called from node_def_full when a Ruby-level `def` lands.  Flip the
  * basic-op fast-path flag only when both the target class AND the
@@ -2846,9 +2847,18 @@ static bool korb_is_basic_op_id(ID name) {
 
 void korb_check_basic_op_redef(struct korb_class *target, ID name) {
     if (!korb_vm) return;
-    /* Only Integer/Float/Numeric redef trips the global FIXNUM/FLONUM
+    if (!korb_is_basic_op_id(name)) return;
+    /* Array#<< has its own fast path (`arr << x` without method dispatch
+     * in node_lshift) — trip a dedicated Array flag so a user-defined
+     * Array#<< actually runs.  Other Array methods don't have inline
+     * fast paths so we don't care about them. */
+    if (target == korb_vm->array_class && name == id_op_lshift) {
+        korb_g_array_op_redefined = true;
+        return;
+    }
+    /* Integer/Float/Numeric redef trips the global FIXNUM/FLONUM
      * fast-path off — those are the basic ops the inline fast paths in
-     * node_plus/minus/mul/div etc. care about.  Hash/Array/String/Symbol
+     * node_plus/minus/mul/div etc. care about.  Hash/String/Symbol
      * redefining their own `<` or `[]` doesn't affect Integer arithmetic
      * dispatch, so don't set the flag for them (otherwise adding any
      * helper to bootstrap.rb on those classes would kill the fast path
@@ -2856,7 +2866,6 @@ void korb_check_basic_op_redef(struct korb_class *target, ID name) {
     if (target != korb_vm->integer_class &&
         target != korb_vm->float_class   &&
         target != korb_vm->numeric_class) return;
-    if (!korb_is_basic_op_id(name)) return;
     korb_g_basic_op_redefined = true;
 }
 
