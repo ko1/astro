@@ -24,22 +24,24 @@ total=394  pass=28  mixed=322  crash/timeout=18  parse_err=22  import_err=4
 
 ### ベンチ ([perf.md](./perf.md) より)
 
-**macro 4/4 で python3 を上回る** (Phase 8 完了):
+5 条件 best-of-5:
 
-| ベンチ | python3 | pystro AOT | 比 |
-|---|---:|---:|---:|
-| richards     | 1.07 s | **0.49 s** | **2.18× FASTER** |
-| crypto_pyaes | 0.54 s | **0.37 s** | **1.46× FASTER** |
-| deltablue    | 0.17 s | **0.14 s** | **1.21× FASTER** |
-| raytrace     | 0.89 s | **0.84 s** | **1.06× FASTER** |
+| ベンチ | py3.12 | py3.14 | py3.14+JIT | pystro AOT |
+|---|---:|---:|---:|---:|
+| richards     | 1.07 s | 0.90 s | 0.84 s | **0.48 s** |
+| crypto_pyaes | 0.56 s | 0.49 s | 0.54 s | **0.40 s** |
+| deltablue    | 0.17 s | 0.15 s | 0.16 s | **0.14 s** |
+| raytrace     | 0.91 s | **0.68 s** | 0.72 s | 0.86 s |
 
-micro 10/10 中 9 で python3 を上回る。 残る負けは `dict_bench` のみ
-(1.27× slow)。
+- vs CPython 3.12: macro **4/4** + micro 9/10
+- vs CPython 3.14: macro **3/4** (raytrace で逆転) + micro 9/10
+- vs CPython 3.14 +JIT: macro **3/4** + micro 9/10 (JIT は本規模では
+  中立 or 微悪化)
 
 Phase 4〜7 で IC 系を整備、 Phase 8 で deltablue/pyaes/raytrace を
-詰めた。 残作業は dict_bench の str-key 専用パス、 minor operator
-dunder の slot 化、 仕様準拠の積み残し。 比較分析の詳細は
-[`vs_cpython.md`](./vs_cpython.md)。
+詰めた。 残作業は **raytrace の 3.14 逆転を取り戻す** (minor operator
+dunder の slot 化)、 dict_bench の str-key 専用パス、 仕様準拠の
+積み残し。 比較分析の詳細は [`vs_cpython.md`](./vs_cpython.md)。
 
 ---
 
@@ -104,11 +106,24 @@ parse 時の検証強化は段階的に。
   group `(...)`、 lazy `*?+??`、 IGNORECASE は対応。
   `{n,m}` brace quantifier、 lookaround、 後方参照、 Unicode property は未対応。
 
+#### raytrace を CPython 3.14 から取り戻す
+
+3.14 が 3.12 比で 25% 速くなり (Tier 2 uops + Vector arithmetic
+specialization と推測)、 pystro AOT (0.86 s) が 3.14 (0.68 s) に
+1.27× 負ける。 攻め所:
+
+- minor operator dunder (`__truediv__` / `__neg__` / `__rmod__` /
+  `__matmul__` 等) を slot 化。 現在 MRO walk + strcmp に落ちている
+- per-pixel の Vector alloc を pool 化 (毎回 GC_malloc を回避)
+- `__init__` の attr_set 経路をさらに削る
+
+詳細は [vs_cpython.md](./vs_cpython.md)。
+
 #### dict_bench で python3 を抜く
 
-現状唯一の負け (1.27× slow)。 CPython は str-key 専用 layout など
-細かい最適化を持っていて、 generic open-addressing 1 種の pystro では
-届かない。 改善案:
+micro 唯一の負け (vs 3.12 で 1.31× slow、 vs 3.14 で 1.23× slow)。
+CPython は str-key 専用 layout など細かい最適化を持っていて、
+generic open-addressing 1 種の pystro では届かない。 改善案:
 - str-key 専用 dict layout 追加 (CPython 風)
 - str-key の hash を `pyobj.str` 内 cache、 strcmp の代わりに
   pointer-compare でショートカット

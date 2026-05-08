@@ -208,39 +208,74 @@ clear / copy` (挿入順保持; Python 3.7+ 仕様)
 保存。uncaught exception で `Traceback (most recent call last): in foo
 ... ClassName: msg` 形式で表示する。
 
-## 性能 (vs. CPython 3.12)
+## 性能 (vs. CPython 3.12 / 3.14 / +JIT)
 
-`make bench` の結果。 詳細は [`perf.md`](./perf.md)、 比較分析は
-[`vs_cpython.md`](./vs_cpython.md)。
-
-### micro (10 本、 best-of-5)
-
-| bench (~1s on python3) | python3 | pystro AOT | pystro/python3 |
-|---|---:|---:|---:|
-| while_loop 10M | 0.97 s | 0.06 s | **16.2×** |
-| for_range 15M (C range) | 0.96 s | 0.07 s | **13.7×** |
-| for_range_pyrange (Py iter) | 2.28 s | 0.41 s | **5.6×** |
-| list 7M append+sum | 0.95 s | 0.19 s | **5.0×** |
-| fib(35) | 1.14 s | 0.40 s | **2.9×** |
-| recursive (tak) | 4.19 s | 1.56 s | **2.7×** |
-| mandel (float-heavy) | 0.72 s | 0.27 s | **2.7×** |
-| nqueens | 0.72 s | 0.36 s | **2.0×** |
-| string 2M split | 0.61 s | 0.54 s | **1.13×** |
-| dict 3M put+get | 0.74 s | 0.94 s | 0.79× (1.27× 遅い) |
-
-**10 / 10 micro 中 9 で python3 を上回る** (`dict_bench` のみ負け)。
+5 条件 best-of-5 (詳細は [`perf.md`](./perf.md)、 比較分析は
+[`vs_cpython.md`](./vs_cpython.md)):
 
 ### macro (4 本、 pyperformance 由来)
 
-| bench | python3 | pystro AOT | pystro/python3 |
-|---|---:|---:|---:|
-| richards (OS sched sim)         | 1.07 s | **0.49 s** | **2.18× FASTER** |
-| crypto_pyaes (pure-Py AES-CTR)  | 0.54 s | **0.37 s** | **1.46× FASTER** |
-| deltablue (constraint solver)   | 0.17 s | **0.14 s** | **1.21× FASTER** |
-| raytrace                        | 0.89 s | **0.84 s** | **1.06× FASTER** |
+| bench | py3.12 | py3.14 | py3.14+JIT | pystro AOT |
+|---|---:|---:|---:|---:|
+| richards     | 1.07 s | 0.90 s | 0.84 s | **0.48 s** |
+| crypto_pyaes | 0.56 s | 0.49 s | 0.54 s | **0.40 s** |
+| deltablue    | 0.17 s | 0.15 s | 0.16 s | **0.14 s** |
+| raytrace     | 0.91 s | **0.68 s** | 0.72 s | 0.86 s |
 
-**4 / 4 macro 全勝** (2026-05-08)。 命令数も全 4 で python3 を下回る
-(やる仕事の絶対量が少ない)。
+- **vs CPython 3.12: 4/4 全勝** (1.06×〜2.23× faster)
+- **vs CPython 3.14: 3/4 勝** (raytrace で逆転される、 1.27× slow)
+- **vs CPython 3.14 +JIT: 3/4 勝** (JIT は本ベンチ規模で大半が中立 or 微悪化)
+
+### micro (10 本)
+
+`while_loop` / `for_range` / `pyrange` / `list_bench` / `fib35` /
+`recursive` / `mandel` / `nqueens` / `string_bench` で **pystro AOT 9 勝**、
+`dict_bench` のみ負け (1.31× slow vs 3.12)。 これは 3.12 / 3.14 / +JIT
+どれを基準にしても変わらない。
+
+### CPython 3.14 / JIT に関する所見
+
+- **3.14 自体が 3.12 比で 12〜32% 速い** (Tier 2 uops + adaptive
+  specialization 拡充)
+- **JIT は本ベンチ規模 (~1s) では大半が中立 or 微悪化**。 macro 4 本
+  中 JIT で改善したのは richards のみ (+7%)、 micro 10 本中は recursive
+  のみ (+3%)。 短時間ベンチで warmup コストを回収しきれない
+
+### 主要な最適化 (時系列、 直近順)
+
+詳細は [`perf.md`](./perf.md)。 ここでは要点のみ。
+
+#### Phase 8 (2026-05-08): macro 全勝 (vs 3.12)
+
+- `node_subscript_get` に fixnum index fast path
+- `node_floordiv` / `node_mod` に fixnum fast path
+- **`node_iadd` 新設** — `lst += [...]` を in-place extend (pyaes O(N²)→O(N))
+- attr_cache に instance-receiver class-attr 用 monomorphic slot
+  (`inst_ca_*`)
+- `pyclass.fast_new` flag — default `__new__` 経路を skip
+- `py_method_resolve` に classmethod IC + `node_method_N` に
+  `t == PY_T_CLASS` branch
+- **parser LHS の `dot+call` fuse** — `self.x().y = z` の中間 `self.x()`
+  を `node_method_0` に fuse (deltablue を 0.57 s → 0.14 s に押し下げ)
+
+#### Phase 7 (前 session): module IC + attr_set fast path
+
+- `node_method_*` の fast path に `t == PY_T_MODULE` branch
+- attr_set fast path で新 instance の attrs alloc を inline 化
+- `py_alloc` を per-type sizing (instance alloc 312B → 32B)
+
+#### Phase 4〜6: IC の積み上げ + bytes/bit ops
+
+- user-class method monomorphic / 4-way IC
+- dunder 24 種を pre-intern + struct pyclass の slot に格納
+- `attrs_id` を class 共有の `shape_version` に置換
+- attr_cache も 4-way polymorphic 化
+- `binop_cache` (node_add/sub/mul の per-call-site IC)
+- bit op の fixnum fast path、 `lm_pop` の memmove 化
+
+最初の baseline (richards 6.83 s / deltablue 2.27 s / raytrace 6.19 s /
+pyaes 2.58 s) → 現在 (0.48 / 0.14 / 0.86 / 0.40):
+**richards 14× / deltablue 16× / raytrace 7× / pyaes 6.5× faster**。
 
 ### 主要な最適化 (時系列、 直近順)
 
