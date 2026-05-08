@@ -3,7 +3,7 @@
 ## まとめ (2026-05-08)
 
 5 条件 (CPython 3.12 / 3.14 / 3.14+JIT / pystro interp / pystro AOT) で
-best-of-5。 詳細表は [現状ベンチ](#現状ベンチ-2026-05-08) を参照。
+best-of-5〜10。 詳細表は [現状ベンチ](#現状ベンチ-2026-05-08) を参照。
 
 - **vs CPython 3.12.3** (Ubuntu 24.04 stock): macro 4/4 + micro 9/10 で勝ち
 - **vs CPython 3.14.4 (no-JIT)**: macro 3/4 + micro 9/10 で勝ち
@@ -11,6 +11,18 @@ best-of-5。 詳細表は [現状ベンチ](#現状ベンチ-2026-05-08) を参�
 - **vs CPython 3.14.4 +JIT**: macro 3/4 + micro 9/10 で勝ち
   (JIT は本ベンチ規模 ~1s では大半が中立 or 微悪化、
   richards のみで JIT が +7%)
+
+### 直近の改善 (2026-05-08)
+
+- `attr_set` の linear-scan 撤去 (`pydict_set_h` 戻り値で eidx 即更新):
+  raytrace 0.86 → 0.81 (~5%)
+- `pys_hash` fixnum fast path をヘッダで static inline 化:
+  dict_bench 0.92 → 0.81 (~12%)、 raytrace の `pys_hash` overhead が
+  4.8% → 2.2% に減
+- 残ステートチェック register 化 (`pys_run_try` 等):
+  setjmp/longjmp 撤去で食った 3-10% を取り戻し
+- fixnum tagged-arithmetic (`a-1+b` パターン): codegen 縮小、
+  richards で marginal 改善、 他は中立
 
 JIT との比較は [vs_cpython.md](./vs_cpython.md) で詳しく分析。
 
@@ -43,19 +55,19 @@ overload、 bignum、 bytes 操作が支配的。
 
 | ベンチ | py3.12 | py3.14 | py3.14+JIT | pystro-i | pystro-AOT | best |
 |---|---:|---:|---:|---:|---:|---|
-| `richards`     | 1.07 s | 0.90 s | 0.84 s | 0.87 s | **0.48 s** | pystro |
-| `deltablue`    | 0.17 s | 0.15 s | 0.16 s | 0.18 s | **0.14 s** | pystro |
-| `raytrace`     | 0.91 s | **0.68 s** | 0.72 s | 1.02 s | 0.86 s | py3.14 |
-| `crypto_pyaes` | 0.56 s | 0.49 s | 0.54 s | 0.47 s | **0.40 s** | pystro |
+| `richards`     | 1.07 s | 0.87 s | 0.83 s | 0.95 s | **0.48 s** | pystro |
+| `deltablue`    | 0.17 s | 0.14 s | 0.17 s | 0.20 s | **0.13 s** | pystro |
+| `raytrace`     | 0.88 s | **0.68 s** | 0.71 s | 1.07 s | 0.81 s | py3.14 |
+| `crypto_pyaes` | 0.56 s | 0.48 s | 0.53 s | 0.53 s | **0.34 s** | pystro |
 
 pystro AOT を CPython 各バージョンと比較した時の比 (1× 未満が pystro 勝):
 
 | ベンチ | vs py3.12 | vs py3.14 | vs py3.14+JIT |
 |---|---:|---:|---:|
-| `richards`     | **0.45× (2.23× faster)** | **0.53× (1.88× faster)** | **0.57× (1.75× faster)** |
-| `deltablue`    | **0.82× (1.21× faster)** | **0.93× (1.07× faster)** | **0.88× (1.14× faster)** |
-| `raytrace`     | **0.95× (1.06× faster)** | 1.26× SLOWER | 1.19× SLOWER |
-| `crypto_pyaes` | **0.71× (1.40× faster)** | **0.82× (1.23× faster)** | **0.74× (1.35× faster)** |
+| `richards`     | **0.45× (2.23× faster)** | **0.55× (1.81× faster)** | **0.58× (1.73× faster)** |
+| `deltablue`    | **0.76× (1.31× faster)** | **0.93× (1.08× faster)** | **0.76× (1.31× faster)** |
+| `raytrace`     | **0.92× (1.09× faster)** | 1.19× SLOWER | 1.14× SLOWER |
+| `crypto_pyaes` | **0.61× (1.65× faster)** | **0.71× (1.41× faster)** | **0.64× (1.56× faster)** |
 
 **3.14 の素の改善が大きい**。 JIT 無しでも 3.12 → 3.14 で
 richards 16% / raytrace 25% / pyaes 13% 速くなっている (Tier 2 uops
@@ -81,15 +93,15 @@ JIT-compiled trace の hot loop が短すぎて bytecode interpreter
 | ベンチ | py3.12 | py3.14 | py3.14+JIT | pystro-i | pystro-AOT | best |
 |---|---:|---:|---:|---:|---:|---|
 | `while_loop`         | 0.88 s | 0.85 s | 0.90 s | 0.18 s | **0.05 s** | pystro |
-| `for_range`          | 0.96 s | 0.89 s | 0.99 s | 0.14 s | **0.08 s** | pystro |
+| `for_range`          | 0.97 s | 0.89 s | 0.97 s | 0.14 s | **0.08 s** | pystro |
 | `for_range_pyrange`  | 2.33 s | 1.81 s | 1.87 s | 0.82 s | **0.37 s** | pystro |
-| `list_bench`         | 0.89 s | 0.86 s | 1.02 s | 0.21 s | **0.19 s** | pystro |
-| `recursive` (tak)    | 3.79 s | 2.70 s | 2.63 s | 2.50 s | **1.39 s** | pystro |
-| `fib(35)`            | 1.14 s | 0.77 s | 0.80 s | 0.68 s | **0.41 s** | pystro |
-| `mandel`             | 0.66 s | 0.60 s | 0.65 s | 0.59 s | **0.25 s** | pystro |
-| `nqueens`            | 0.66 s | 0.61 s | 0.64 s | 0.56 s | **0.33 s** | pystro |
-| `string_bench`       | 0.56 s | 0.68 s | 0.67 s | 0.51 s | **0.49 s** | pystro |
-| `dict_bench`         | **0.75 s** | 0.80 s | 0.84 s | 1.05 s | 0.98 s | py3.12 |
+| `list_bench`         | 0.86 s | 0.86 s | 1.00 s | 0.21 s | **0.18 s** | pystro |
+| `recursive` (tak)    | 3.80 s | 2.63 s | 2.77 s | 2.50 s | **1.43 s** | pystro |
+| `fib(35)`            | 1.12 s | 0.81 s | 0.81 s | 0.68 s | **0.41 s** | pystro |
+| `mandel`             | 0.64 s | 0.61 s | 0.66 s | 0.59 s | **0.24 s** | pystro |
+| `nqueens`            | 0.64 s | 0.60 s | 0.65 s | 0.56 s | **0.33 s** | pystro |
+| `string_bench`       | 0.58 s | 0.69 s | 0.70 s | 0.51 s | **0.48 s** | pystro |
+| `dict_bench`         | **0.73 s** | 0.79 s | 0.86 s | 1.05 s | 0.86 s | py3.12 |
 
 **JIT は micro でも negative**:
 
@@ -110,8 +122,10 @@ JIT-compiled trace の hot loop が短すぎて bytecode interpreter
 のみ。 これは tail-recursive なホット trace が安定しているから JIT
 最適化が効くと思われる。 他はベンチ規模 ~1s で warmup コスト負け。
 
-dict_bench で唯一 pystro が負け (0.98 vs 0.75 = 1.31× slow vs 3.12、
-1.23× slow vs 3.14)。 CPython の str-key 専用 dict layout が強い。
+dict_bench で唯一 pystro が負け (0.86 vs 0.73 = 1.18× slow vs 3.12、
+3.14 とは parity 0.86 vs 0.79、 +JIT は **pystro 勝**)。 `pys_hash`
+inline で 12% 詰め寄ったが、 大型 dict の indices[] random access が
+LLC bound で頭打ち。
 
 ### pystro AOT 比較サマリ
 
