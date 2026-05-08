@@ -9,9 +9,12 @@
 - **optcarrot**: CRuby と動作・出力一致。
 - **CRuby `test/ruby/` (in-scope 67 ファイル)**: 1,108,357 pass / 77.5%。
 - **CRuby `spec/ruby/language/` (rubyspec, 65 ファイル)**:
-  **3,401 pass / 3,633 (93.6%)、 40 ファイルが 100% perfect**。
+  **3,402 pass / 3,634 (93.6%)、 40 ファイルが 100% perfect**。
   本ラウンドで rescue / class_variable / yield / for / safe_navigator が
   perfect 化、 shim の evaluate を it block で wrap した波及で +119 pass。
+- **CRuby `spec/ruby/core/`** にも改善が波及: Array.try_convert を実装、
+  shim の MSpecNegatedExpectation で predicate? 系の should_not 反転を
+  正しく扱う (Hash#empty? / Hash#any? が perfect)。
 - **CRuby `spec/ruby/core/binding/` + `core/kernel/{eval,binding}_spec`**:
   **150 pass** (Binding 自体は 100%、 残るのは Refinements / IRB の out-of-scope のみ)。
 - **CRuby `spec/ruby/core/` 主要カテゴリ**:
