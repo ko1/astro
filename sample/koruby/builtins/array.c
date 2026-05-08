@@ -942,22 +942,17 @@ VALUE ary_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE other = argv[0];
     if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_ARRAY) {
         if (!SPECIAL_CONST_P(other)) {
-            VALUE klass_v = (VALUE)korb_class_of_class(other);
-            if (klass_v && korb_class_find_method((struct korb_class *)klass_v,
-                                                    korb_intern("to_ary"))) {
+            /* Use respond_to? so mock objects (method_missing) and
+             * plain instances both go through #to_ary.  Whatever
+             * to_ary raises (NoMethodError, RuntimeError, etc.)
+             * propagates up unchanged — only the "to_ary returned
+             * non-Array" case yields TypeError. */
+            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
                 other = korb_funcall(c, other, korb_intern("to_ary"), 0, NULL);
                 if (c->state == KORB_RAISE) return Qnil;
-            } else {
-                /* Try method_missing path (mock objects). */
-                other = korb_funcall(c, other, korb_intern("to_ary"), 0, NULL);
-                if (c->state == KORB_RAISE) {
-                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                    c->state = KORB_NORMAL; c->state_value = Qnil;
-                    korb_raise(c, (struct korb_class *)eT,
-                               "no implicit conversion of %s into Array",
-                               korb_id_name(korb_class_of_class(argv[0])->name));
-                    return Qnil;
-                }
             }
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_ARRAY) {

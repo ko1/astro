@@ -1294,6 +1294,16 @@ static VALUE str_hex(CTX *c, VALUE self, int argc, VALUE *argv) {
     bool any = false;
     while (i < len) {
         char ch = s->ptr[i];
+        /* Underscore separator between digits is allowed (CRuby
+         * `"A_BAD_BABE".hex == 0xABADBABE`) but only when surrounded
+         * by valid hex digits. */
+        if (ch == '_' && any && i + 1 < len) {
+            char nx = s->ptr[i + 1];
+            bool nx_hex = (nx >= '0' && nx <= '9') ||
+                          (nx >= 'a' && nx <= 'f') ||
+                          (nx >= 'A' && nx <= 'F');
+            if (nx_hex) { i++; continue; }
+        }
         int d;
         if      (ch >= '0' && ch <= '9') d = ch - '0';
         else if (ch >= 'a' && ch <= 'f') d = 10 + (ch - 'a');
@@ -1326,12 +1336,21 @@ static VALUE str_oct(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (p == 'x' || p == 'X') { base = 16; i += 2; }
         else if (p == 'b' || p == 'B') { base = 2;  i += 2; }
         else if (p == 'o' || p == 'O') { base = 8;  i += 2; }
+        else if (p == 'd' || p == 'D') { base = 10; i += 2; }
         /* otherwise stay at 8, leading '0' itself is part of the number */
     }
     long v = 0;
     bool any = false;
     while (i < len) {
         char ch = s->ptr[i];
+        if (ch == '_' && any && i + 1 < len) {
+            char nx = s->ptr[i + 1];
+            int nd = -1;
+            if      (nx >= '0' && nx <= '9') nd = nx - '0';
+            else if (nx >= 'a' && nx <= 'f') nd = 10 + (nx - 'a');
+            else if (nx >= 'A' && nx <= 'F') nd = 10 + (nx - 'A');
+            if (nd >= 0 && nd < base) { i++; continue; }
+        }
         int d = -1;
         if      (ch >= '0' && ch <= '9') d = ch - '0';
         else if (ch >= 'a' && ch <= 'f') d = 10 + (ch - 'a');
