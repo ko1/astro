@@ -3,14 +3,15 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-08)
+## 現状 (2026-05-08, second pass)
 
-- **自前 test/ruby/**: 24 ファイル中 **23 OK / 1 FAIL** (`ArrayLshiftRedef`
-  のみ既知 regression)。 23 OK の合計 733 件 全 pass。
+- **自前 test/ruby/**: **24/24 全 OK** (ArrayLshiftRedef 解決)。 合計 737 件 全 pass。
 - **optcarrot**: CRuby と動作・出力一致。
 - **CRuby `test/ruby/` (in-scope 67 ファイル)**: 1,108,357 pass / 77.5%。
 - **CRuby `spec/ruby/language/` (rubyspec, 65 ファイル)**:
-  **3,275 pass / 3,507 (93.4%)、 35 ファイルが 100% perfect**。
+  **3,401 pass / 3,633 (93.6%)、 40 ファイルが 100% perfect**。
+  本ラウンドで rescue / class_variable / yield / for / safe_navigator が
+  perfect 化、 shim の evaluate を it block で wrap した波及で +119 pass。
 - **CRuby `spec/ruby/core/binding/` + `core/kernel/{eval,binding}_spec`**:
   **150 pass** (Binding 自体は 100%、 残るのは Refinements / IRB の out-of-scope のみ)。
 - **CRuby `spec/ruby/core/` 主要カテゴリ**:
@@ -52,19 +53,22 @@ mspec_shim はこの一覧の constant を未定義時に skip 扱いにする�
 ## §A 完全 perfect 候補 (残 fail/err が 1〜4 件)
 
 「あと数件で 100% pass」 になる language spec。 直近の作業優先度高め。
+本ラウンドで rescue / class_variable / yield / for / safe_navigator は
+perfect 化済み。
 
 | spec | pass / fail / err | 原因の見当 |
 |---|---|---|
-| `line_spec` | 2 / 0 / 0 | 既に perfect |
-| `class_variable_spec` | 20 / 1 / 0 | "overtaken by" RuntimeError 警告 (Verbose mode の動作) |
-| `variables_spec` | 168 / 2 / 0 | local-variable shadowing の `-W` warn 出力 |
-| `rescue_spec` | 87 / 1 / 0 | backtrace 中の `'block in <enclosing>'` ラベル化 (§B1) |
-| `yield_spec` | 40 / 2 / 0 | 「prism は受け付けるが CRuby は SyntaxError」 系 (yield in singleton class literal) |
-| `method_spec` | 228 / 1 / 1 | block-level method param 取得の 1 件 + 1 err |
+| `variables_spec` | 168 / 2 / 0 | lambda 内 eval から外側 lvar 書き込み (lexical scope chain walk + multi-scope prism 連携) |
+| `method_spec` | 268 / 5 / 0 | Ruby 3.x の特殊 param 系 (`def m(*, a)`、 `def m(a, **nil)` 等) |
 | `class_spec` | 66 / 2 / 2 | Class.new block 内の `class X` の lexical scope (§B3) |
 | `super_spec` | 117 / 1 / 2 | BasicObject 経由 super, 可視性変更後 super, define_method 経由の RuntimeError |
 | `block_spec` | 180 / 2 / 2 | block の SyntaxError 系 (循環引数参照) と to_proc 周り |
+| `metaclass_spec` | 22 / 1 / 1 | metaclass of metaclass (深い singleton chain) |
+| `constants_spec` | 142 / 3 / 1 | private constant access、 unicode const name |
+| `return_spec` | 51 / 3 / 0 | return inside class block の LocalJumpError、 toplevel return warning |
+| `hash_spec` | 66 / 4 / 0 | string key freezing、 Ruby 3.x の `m(**h)` 非コピー特殊規則 |
 | `keyword_arguments_spec` | 45 / 8 / 3 | `**hash` empty 扱い (§B2) |
+| `regexp_spec` | 43 / 26 / 2 | astrorge 待ち |
 
 ## §B 中インパクト項目
 
