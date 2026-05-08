@@ -785,9 +785,16 @@ class SpecEvaluate
   def self.desc; @@desc rescue ""; end
 end
 
-# `evaluate <<-ruby do; ... end` — runs the heredoc as Ruby in a
-# fresh class context.  We just eval it at top level.
+# `evaluate <<-ruby do; ... end` — CRuby's mspec wraps this in a
+# `specify` (= `it` block) so the eval + assertion block run lazily
+# inside the test.  Mirror that here, otherwise multiple consecutive
+# `evaluate` calls in a context redefine `m` at describe-load time and
+# the first block sees the LAST definition (because their assertion
+# blocks are also captured but called late).  Wrapping in `it` runs
+# each (eval, assert) pair sequentially in isolation.
 def evaluate(code, &blk)
-  eval(code)
-  blk.call if blk
+  it("evaluate #{code.lines.first.strip}") do
+    eval(code)
+    blk.call if blk
+  end
 end
