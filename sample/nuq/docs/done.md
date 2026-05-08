@@ -90,8 +90,10 @@ jq 本体も decnum ビルドでないと通らない領域。
   832 MB → 340 MB に。`-n` モードでも `inputs` builtin が同じ
   cursor を共有して lazy pull (詳細は [runtime.md §6](./runtime.md))
 - **JSON parser**: no-escape 文字列の fast path、integer の inline
-  accumulate、SSE2 16-byte stride scanner (`'"' / '\\' / <0x20`
-  探し)。JSONL `identity` (純パススルー) が 6.1× vs jq
+  accumulate、SSE2 / AVX2 stride scanner (`'"' / '\\' / <0x20` 探し、
+  CPU dispatch で AVX2 32-byte に乗る)、object 構築は dedup-skip の
+  `nuq_object_append` 経由。JSONL `identity` (純パススルー) が
+  **6.5× vs jq**
 
 ### AST fusion (parse-time peephole)
 

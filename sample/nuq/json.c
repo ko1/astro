@@ -16,6 +16,7 @@
 
 #if defined(__x86_64__) || defined(_M_X64)
 #include <emmintrin.h>          /* SSE2 — baseline on x86_64 */
+#include <immintrin.h>          /* AVX2 intrinsics (compiled with target attr) */
 #endif
 
 /* The printer is hot for output-heavy filters (e.g. `[paths]` on
@@ -34,33 +35,73 @@
  * printer (print_string) — both want runs of "boring" bytes that can
  * be bulk-copied/written, with breakouts on the bytes needing escape.
  *
- * SSE2 gives a 16x byte-rate over the per-byte loop on long ASCII
- * runs (typical JSON keys/values).  SSE2 is part of the x86_64 ABI
- * baseline so no compile flag needed.  Caller handles UTF-8
- * continuation bytes (>= 0x80) — none of our criteria match them so
- * they pass through unchanged. */
-static inline size_t
-scan_string_special(const char *p, const char *end)
+ * Caller handles UTF-8 continuation bytes (>= 0x80) — none of our
+ * criteria match them so they pass through unchanged.
+ *
+ * Three-tier dispatch on x86_64:
+ *   - AVX2 32-byte stride (set at startup if __builtin_cpu_supports
+ *     reports avx2)
+ *   - SSE2 16-byte stride (baseline on x86_64)
+ *   - byte loop fallback for the tail (< 16 bytes)
+ *
+ * SSE2 gives a 16× byte-rate over the per-byte loop on long ASCII
+ * runs (typical JSON keys/values).  AVX2 doubles that to 32×. */
+
+#if defined(__x86_64__) || defined(_M_X64)
+__attribute__((target("avx2")))
+static size_t
+scan_string_special_avx2(const char *p, const char *end)
+{
+    const char *const start = p;
+    if (end - p >= 32) {
+        const __m256i quote    = _mm256_set1_epi8('"');
+        const __m256i bslash   = _mm256_set1_epi8('\\');
+        const __m256i ctrl_max = _mm256_set1_epi8(0x1F);
+        while (end - p >= 32) {
+            __m256i v = _mm256_loadu_si256((const __m256i *)p);
+            __m256i a = _mm256_cmpeq_epi8(v, quote);
+            __m256i b = _mm256_cmpeq_epi8(v, bslash);
+            __m256i c = _mm256_cmpeq_epi8(_mm256_min_epu8(v, ctrl_max), v);
+            __m256i mask = _mm256_or_si256(_mm256_or_si256(a, b), c);
+            int m = _mm256_movemask_epi8(mask);
+            if (m) return (size_t)(p - start) + (size_t)__builtin_ctz((unsigned)m);
+            p += 32;
+        }
+    }
+    /* Fall through to SSE2 for the 16-31 byte tail. */
+    while (end - p >= 16) {
+        __m128i v = _mm_loadu_si128((const __m128i *)p);
+        __m128i a = _mm_cmpeq_epi8(v, _mm_set1_epi8('"'));
+        __m128i b = _mm_cmpeq_epi8(v, _mm_set1_epi8('\\'));
+        __m128i c = _mm_cmpeq_epi8(_mm_min_epu8(v, _mm_set1_epi8(0x1F)), v);
+        __m128i mask = _mm_or_si128(_mm_or_si128(a, b), c);
+        int m = _mm_movemask_epi8(mask);
+        if (m) return (size_t)(p - start) + (size_t)__builtin_ctz((unsigned)m);
+        p += 16;
+    }
+    while (p < end) {
+        unsigned char ch = (unsigned char)*p;
+        if (ch == '"' || ch == '\\' || ch < 0x20) break;
+        p++;
+    }
+    return (size_t)(p - start);
+}
+#endif
+
+static size_t
+scan_string_special_sse2(const char *p, const char *end)
 {
     const char *const start = p;
 #if defined(__x86_64__) || defined(_M_X64)
-    if (end - p >= 16) {
-        const __m128i quote    = _mm_set1_epi8('"');
-        const __m128i bslash   = _mm_set1_epi8('\\');
-        const __m128i ctrl_max = _mm_set1_epi8(0x1F);
-        while (end - p >= 16) {
-            __m128i v = _mm_loadu_si128((const __m128i *)p);
-            __m128i a = _mm_cmpeq_epi8(v, quote);
-            __m128i b = _mm_cmpeq_epi8(v, bslash);
-            /* min_epu8(v, 0x1F) == v  ⇔  v <= 0x1F  ⇔  v < 0x20.
-             * Works correctly for high bytes (0x80+) too: their unsigned
-             * min with 0x1F is 0x1F, which doesn't match v. */
-            __m128i c = _mm_cmpeq_epi8(_mm_min_epu8(v, ctrl_max), v);
-            __m128i mask = _mm_or_si128(_mm_or_si128(a, b), c);
-            int m = _mm_movemask_epi8(mask);
-            if (m) return (size_t)(p - start) + (size_t)__builtin_ctz((unsigned)m);
-            p += 16;
-        }
+    while (end - p >= 16) {
+        __m128i v = _mm_loadu_si128((const __m128i *)p);
+        __m128i a = _mm_cmpeq_epi8(v, _mm_set1_epi8('"'));
+        __m128i b = _mm_cmpeq_epi8(v, _mm_set1_epi8('\\'));
+        __m128i c = _mm_cmpeq_epi8(_mm_min_epu8(v, _mm_set1_epi8(0x1F)), v);
+        __m128i mask = _mm_or_si128(_mm_or_si128(a, b), c);
+        int m = _mm_movemask_epi8(mask);
+        if (m) return (size_t)(p - start) + (size_t)__builtin_ctz((unsigned)m);
+        p += 16;
     }
 #endif
     while (p < end) {
@@ -69,6 +110,29 @@ scan_string_special(const char *p, const char *end)
         p++;
     }
     return (size_t)(p - start);
+}
+
+/* Function pointer set at startup via constructor.  Default is SSE2;
+ * the constructor flips to AVX2 if the CPU supports it.  Single
+ * indirect-call cost per scan_string_special invocation, amortized
+ * over the hot inner loop. */
+static size_t (*scan_string_special_impl)(const char *, const char *)
+    = scan_string_special_sse2;
+
+__attribute__((constructor)) static void
+scan_string_special_init(void)
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    if (__builtin_cpu_supports("avx2")) {
+        scan_string_special_impl = scan_string_special_avx2;
+    }
+#endif
+}
+
+static inline size_t
+scan_string_special(const char *p, const char *end)
+{
+    return scan_string_special_impl(p, end);
 }
 
 static void
@@ -406,7 +470,11 @@ parse_value(const char **pp, const char *end, char **err)
             *pp = p;
             VALUE val = parse_value(pp, end, err);
             if (*err) { json_parse_depth--; return NUQ_NULL; }
-            nuq_object_set(obj, key, val);
+            /* JSON typical case: keys distinct.  nuq_object_append
+             * skips the per-call dedup scan + PIN3 of nuq_object_set.
+             * For pathological dup-keys input we'd need post-pass
+             * dedup-keeping-last to match jq; not done yet (TODO). */
+            nuq_object_append(obj, key, val);
             p = *pp;
             skip_ws(&p, end);
             if (p < end && *p == ',') { p++; continue; }

@@ -478,8 +478,10 @@ dispatch を消しても大きな差にならない (interp も builtin に飛�
   無ければ `NUQ_FIX(ll)` を直に返す。`strtoll` + 中間 buffer copy
   が消える。
 - **SIMD string scanner** (`parse_string_raw` / `print_string`):
-  inner byte-loop の `'"' / '\\' / <0x20` 探しを SSE2 16-byte
-  stride に。
+  inner byte-loop の `'"' / '\\' / <0x20` 探しを SIMD stride に。
+  SSE2 (16-byte) と AVX2 (32-byte) の 2 路実装、起動時の
+  `__builtin_cpu_supports("avx2")` で関数ポインタを切り替える
+  runtime CPU dispatch。
 
   ```c
   __m128i v = _mm_loadu_si128((const __m128i *)p);
@@ -490,13 +492,24 @@ dispatch を消しても大きな差にならない (interp も builtin に飛�
   if (m) { offset += __builtin_ctz(m); break; }
   ```
 
-  SSE2 は x86_64 ABI baseline なのでビルドフラグ不要。control char
-  検出は `min_epu8(v, 0x1F) == v` で unsigned compare 相当 — UTF-8
-  高位バイト (0x80+) でも正しく false。
+  SSE2 は x86_64 ABI baseline、AVX2 路は `__attribute__((target("avx2")))`
+  で globally に -mavx2 を要求せずに済む。control char 検出は
+  `min_epu8(v, 0x1F) == v` で unsigned compare 相当 — UTF-8 高位バイト
+  (0x80+) でも正しく false。
+- **JSON parser で `nuq_object_set` → `nuq_object_append`**: 元々
+  parser は dedup 必須 (jq の dup-key は last-wins) を意識して
+  `nuq_object_set` (per-call PIN3 + linear dedup scan) を使っていた。
+  実用 JSON で dup key は事実上無いので、`nuq_object_append` (dedup
+  scan + PIN3 を skip) に降格。trade-off は dup-keys 病的入力で last-
+  wins ではなく "両方 keep" になる点 (jq 公式テストには影響なし)。
+  profile 上 `nuq_object_set` 3.8% → 0% (top hot spot から消滅)。
 
-profile 上 `parse_string_raw` 6.4% → 2.6%。JSONL `identity` (純
-parse + print): 3.6× → 6.1×。`transform` 系が 50 ms → 30 ms → 20 ms
-の 2 段改善 (threshold 修正 + parser fast path)。
+profile 上 `parse_string_raw` 6.4% → 2.6% → 1.7% (SSE2 → AVX2 で
+更に削減)。JSONL `identity` (純 parse + print): 3.6× → 6.1× →
+**6.5×**。`extract_login`: 2.5× → 5.0× → **5.4×**、
+`select_recent_PR`: 2.3× → 4.8× → **5.8×**。AVX2 単独効果は
++5-15% (string heavy ほど効く)。`transform` 系: 50 ms → 30 ms →
+20 ms の 2 段改善 (threshold 修正 + parser fast path)。
 
 ### 4. AST fusion (parse-time peephole)
 
