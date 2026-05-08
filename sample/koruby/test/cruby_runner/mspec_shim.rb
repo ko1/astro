@@ -470,8 +470,13 @@ class MSpecExpectation
                           # so substring match succeeds on either.
                           msg_norm = e.message.tr('`', "'")
                           stripped = stripped.tr('`', "'")
-                          if stripped.include?('.*')
-                            parts = stripped.split('.*')
+                          # Wildcards .* and .+ both behave like
+                          # "anything in between" for substring proxy.
+                          if stripped.include?('.*') || stripped.include?('.+')
+                            # Normalize both wildcards to a marker, then
+                            # split on it.
+                            tmp = stripped.gsub('.*', "\x00").gsub('.+', "\x00")
+                            parts = tmp.split("\x00")
                             pos = 0
                             parts.all? { |part|
                               if part.empty? then true

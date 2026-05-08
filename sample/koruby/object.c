@@ -257,6 +257,22 @@ VALUE korb_cvar_get(CTX *c, ID name) {
                    k ? korb_id_name(k->name) : "(unknown)");
         return Qnil;
     }
+    /* Overtaken detection: if a strict ancestor of `owner` also has this
+     * cvar, the value seen by k differs from the chain's authoritative
+     * top — CRuby raises RuntimeError to flag the inconsistency.  Happens
+     * when child sets @@x first, then parent independently sets @@x. */
+    for (struct korb_class *anc = owner->super; anc; anc = anc->super) {
+        for (uint32_t i = 0; i < anc->cvar_cnt; i++) {
+            if (anc->cvars[i].name == name) {
+                korb_raise(c, NULL,
+                           "class variable %s of %s is overtaken by %s",
+                           korb_id_name(name),
+                           anc->name ? korb_id_name(anc->name) : "(anon)",
+                           owner->name ? korb_id_name(owner->name) : "(anon)");
+                return Qnil;
+            }
+        }
+    }
     for (uint32_t i = 0; i < owner->cvar_cnt; i++) {
         if (owner->cvars[i].name == name) return owner->cvars[i].value;
     }
