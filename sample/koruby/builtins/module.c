@@ -597,28 +597,23 @@ static VALUE module_class_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 /* Module#< — true if self is a subclass/submodule of other. */
+extern bool korb_module_has_ancestor(struct korb_class *, struct korb_class *);
 static VALUE module_lt(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
-    if (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE) return Qnil;
-    if (self == argv[0]) return Qnil;  /* CRuby: same → nil, not false */
+    if (SPECIAL_CONST_P(argv[0]) ||
+        (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "compared with non class/module");
+        return Qnil;
+    }
+    if (self == argv[0]) return Qfalse;  /* CRuby: same → false for `<` */
     struct korb_class *target = (struct korb_class *)argv[0];
-    for (struct korb_class *k = (struct korb_class *)self; k; k = k->super) {
-        if (k == target) return Qtrue;
-        for (uint32_t i = 0; i < k->includes_cnt; i++) {
-            if (k->includes[i] == target) return Qtrue;
-        }
-    }
-    /* If target has self as a strict ancestor, return false (we are
-     * the ancestor, target is the subclass).  Else nil (unrelated). */
-    for (struct korb_class *k = target; k; k = k->super) {
-        if (k == (struct korb_class *)self) return Qfalse;
-        for (uint32_t i = 0; i < k->includes_cnt; i++) {
-            if (k->includes[i] == (struct korb_class *)self) return Qfalse;
-        }
-    }
+    /* Use transitive include walk. */
+    if (korb_module_has_ancestor((struct korb_class *)self, target)) return Qtrue;
+    if (korb_module_has_ancestor(target, (struct korb_class *)self)) return Qfalse;
     return Qnil;
 }
-
 /* Module#<=> — -1 if self < target, 0 if equal, 1 if self > target,
  * nil if unrelated. */
 static VALUE module_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -636,7 +631,14 @@ static VALUE module_le(CTX *c, VALUE self, int argc, VALUE *argv) {
     return module_lt(c, self, argc, argv);
 }
 static VALUE module_gt(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) return Qnil;
+    if (argc < 1) return Qnil;
+    if (SPECIAL_CONST_P(argv[0]) ||
+        (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "compared with non class/module");
+        return Qnil;
+    }
     if (self == argv[0]) return Qfalse;
     VALUE swap[1] = {self};
     return module_lt(c, argv[0], 1, swap);
