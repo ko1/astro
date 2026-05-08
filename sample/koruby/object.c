@@ -2610,7 +2610,49 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
                 if (strcmp(name, ops[oi]) == 0) { is_op = true; break; }
             }
             if (!is_op) {
-                if (!(c0 == '_' || (c0 >= 'A' && c0 <= 'Z') || (c0 >= 'a' && c0 <= 'z') || c0 == '@' || c0 == '$')) {
+                if (c0 == '@') {
+                    /* Instance / class variable — `@x` or `@@x`.  Bare
+                     * form requires alnum tail; trailing `!?=` is NOT
+                     * allowed (variables can't end with them).  Allow
+                     * one optional second `@` for class vars. */
+                    size_t i = 1;
+                    if (i < nlen && (unsigned char)name[i] == '@') i++;
+                    if (i == nlen) needs_quote = true; /* bare `@` or `@@` */
+                    for (; i < nlen; i++) {
+                        unsigned char ci = (unsigned char)name[i];
+                        bool is_alnum = (ci == '_' || (ci >= 'A' && ci <= 'Z') ||
+                                         (ci >= 'a' && ci <= 'z') || (ci >= '0' && ci <= '9'));
+                        if (!is_alnum) { needs_quote = true; break; }
+                    }
+                } else if (c0 == '$') {
+                    /* Global variable — many forms.  Bare-display the
+                     * special CRuby gvars (`$~`, `$+`, `$:`, etc.) and
+                     * normal `$ident` forms.  Anything else needs
+                     * quoting.  We accept `$` followed by exactly one
+                     * special punctuation char OR `$ident` (alnum-only
+                     * tail, no trailing `!?=`). */
+                    if (nlen == 1) needs_quote = true;
+                    else if (nlen == 2) {
+                        /* $X — accept all `[!@&`'+~:?<>=].\\\\,/$;]` style;
+                         * simplest is to accept any single punctuation as
+                         * a CRuby gvar literal. */
+                        unsigned char ci = (unsigned char)name[1];
+                        bool is_alnum = (ci == '_' || (ci >= 'A' && ci <= 'Z') ||
+                                         (ci >= 'a' && ci <= 'z') || (ci >= '0' && ci <= '9'));
+                        if (!is_alnum && (ci == '"' || ci == ' ')) needs_quote = true;
+                    } else {
+                        /* $-w / $LOAD_PATH / $stdin etc. */
+                        size_t i = 1;
+                        if (name[1] == '-') i = 2;
+                        for (; i < nlen; i++) {
+                            unsigned char ci = (unsigned char)name[i];
+                            bool is_alnum = (ci == '_' || (ci >= 'A' && ci <= 'Z') ||
+                                             (ci >= 'a' && ci <= 'z') || (ci >= '0' && ci <= '9'));
+                            if (!is_alnum) { needs_quote = true; break; }
+                        }
+                    }
+                } else if (!(c0 == '_' || (c0 >= 'A' && c0 <= 'Z') ||
+                             (c0 >= 'a' && c0 <= 'z'))) {
                     needs_quote = true;
                 } else {
                     for (size_t i = 1; i < nlen; i++) {
