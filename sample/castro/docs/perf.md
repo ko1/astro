@@ -458,6 +458,95 @@ bound 付き unfold パスが必要で、framework レベルの拡張が
 → 1.5–2× の追加効果は見込めるが、cost-benefit と汎用性の観点で
    一旦保留。`docs/todo.md` に記載。
 
+### 16. embedded `func_bodies[]` array in CTX
+
+`c->func_bodies` was a heap-allocated `NODE **` (separately calloc'd
+in load_program).  At every `node_call_recursive` site the SD did
+
+```c
+NODE *body = c->func_bodies[idx];
+```
+
+which gcc lowered to a 2-step chained load:
+
+```
+mov 0x30(%rdi),%rax     ; rax = c->func_bodies (NODE **)
+mov (%rax),%r13          ; r13 = func_bodies[0]
+```
+
+These are dependent loads — the second load can't issue until the
+first completes.  Embedding the table directly in CTX as
+`NODE *func_bodies[CASTRO_MAX_FUNCS]` (8KB at 1024 entries) collapses
+them into a single base+offset load:
+
+```
+mov 0x30(%rdi),%r13      ; r13 = c->func_bodies[0]  (single load)
+```
+
+ICache-friendly and saves one load on every recursive call.  The 1024
+function cap is hardcoded; load_program rejects programs that exceed
+it (none of the c-testsuite or examples do — typical max is ~5).
+
+**効果**: ackermann -17%, fib_big -7%, nqueens -8%, tak -2.5%
+(long-bench, sustained timings).
+
+### 17. `restrict` on `c->globals` (alias-disjointness with fp[])
+
+The qs partition loop was reloading `fp[3]` (i), `fp[4]` (j),
+`fp[1]` (hi), `fp[2]` (pivot) after each `data[j] = t` write,
+because gcc couldn't prove the typed-pointer store through
+`(int64_t *)&c->globals[idx]` doesn't alias the caller-allocated
+`VALUE * restrict fp` frame.
+
+C99 restrict on a parameter says: pointers derived from this one
+don't alias non-derived pointers.  The SD signature already had
+`CTX * restrict c` and `VALUE * restrict fp`; promoting the
+internal `globals` field to `VALUE * restrict` (so every pointer
+that flows from `node_addr_global` carries the restrict tag too)
+gives gcc the information it needs to keep the inner-loop
+locals in registers across global stores.
+
+```c
+typedef struct CTX_struct {
+    ...
+    VALUE * restrict globals;   // was: VALUE *globals
+    ...
+} CTX;
+```
+
+Per-helper extension: `int64_t * restrict ip` etc. on the load /
+store EVAL helpers ensures the cast doesn't drop restrict on the
+typed pointer.
+
+**効果** (long-bench):
+- quicksort: 1.27 → 1.07s (-16%) — partition loop drops 2-3 reloads/iter
+- mandelbrot: 0.90 → 0.79s (-12%)
+- fib_big: 1.70 → 1.56s (-8%)
+- ackermann: 2.22 → 1.85s (-17%)
+- nqueens: 1.01 → 0.88s (-13%)
+
+## ベンチ結果アップデート (2026-05、§16-17 反映後)
+
+長時間ベンチ (sustained ~1s スケール、median of 15) で gcc -O0/-O3
+と比較。ms 表示。short bench は ~50ms スケールで noise dominant の
+ため数値の変動が大きいので参考値。
+
+| bench (long-form) | castro | gcc -O0 | gcc -O3 | castro/-O0 |
+|---|---:|---:|---:|---:|
+| fib_big × 30      | 1560 | 1390 |  520 | 1.12× |
+| sieve × 1000      |  280 |  950 |  210 | **0.29×** (3.4× faster) |
+| matmul × 200      |  480 |  750 |  120 | **0.64×** |
+| mandelbrot × 30   |  790 | 2360 |  830 | **0.33×** (5% faster than -O3) |
+| tak × 100         | 4110 | 2980 | 1020 | 1.38× |
+| ackermann × 80    | 1850 | 2540 |  350 | **0.73×** |
+| quicksort × 60    | 1070 | 1700 |  430 | **0.63×** |
+| nqueens × 60      |  880 | 1870 |  790 | **0.47×** |
+
+**castro が gcc -O0 を超えるケース** (6件、recursion-heavy 含む):
+sieve, matmul, mandelbrot, ackermann, quicksort, nqueens.
+
+**castro が gcc -O3 を上回るケース**: mandelbrot.
+
 ## 残りギャップ
 
 最終的に gcc -O3 比 3〜5× 程度のギャップが残る。内訳推定:
@@ -467,8 +556,8 @@ bound 付き unfold パスが必要で、framework レベルの拡張が
 
 これらは AST インタプリタの構造的限界に近く、現実的には
 gcc -O3 と完全同等は無理。tight inner loop なら gcc -O3 を
-上回るところまで来た (crc32) ので、framework の出来としては
-十分高水準。
+上回るところまで来た (crc32, mandelbrot) ので、framework の
+出来としては十分高水準。
 
 ## 付録: 主要マイルストーン
 

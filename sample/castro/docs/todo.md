@@ -137,11 +137,67 @@ encoding-prefix `L` / `u` / `U` / `u8` は char 寄りだけ受理して、widec
 - ❌ memcpy で構造体ごとコピーするケース、構造体パディング、構造体の中での
   `char` 配列など、ABI 互換が問われる場面で不一致
 
-#### バイト寄せレイアウトに切り替えるなら
+#### バイト寄せレイアウトに切り替えるなら (設計プラン)
 
-VALUE slot を放棄して、すべてを `char fp[]` に直接配置する。各読み書きは
-型に応じたサイズ (`*(int*)&fp[off]`)。これは castro の根本的な再設計に
-近く、現状の interp / AOT specializer の効率と引き換え。
+framework (lib/astrogen.rb / runtime/) には触らずに castro/ 配下のみで
+完結可能。framework は `prefix_args` を文字列で運ぶだけなので
+`fp` の型は castro 側で自由に選べる。
+
+##### 全体方針
+
+- `fp` の型を `void * restrict fp` に統一書き換え (全 NODE_DEF)
+- caller-allocated frame を `_Alignas(8) char F[bytes]` に変更
+  (`_Alignas(8)` は int64 / double / pointer 整列に十分)
+- lget/lset/addr_local/load/store/ptr_add に **byte-offset + type サイズ**
+  バリアントを追加 (`_i8` / `_u8` / `_i16` / `_u16` / `_i32` / `_u32` /
+  `_i64` / `_f32` / `_d` / `_p`)
+- parse.rb が各 local / global の **byte offset と alignment** を計算、
+  AST 各点で対応する typed バリアントを emit
+- pointer arithmetic は pointee の sizeof で **byte stride** に変換
+  して emit (今は 1 = 8byte 固定)
+
+##### SROA は破壊しない (実証済)
+
+`_Alignas(8) char F[24]` を `*(int32_t *)(F+0)` などの mixed-type で
+読み書きしても、`&F` が escape しなければ gcc -O3 は完全に scalar
+化 + vectorize する (検証済). recursive case (`&F` を子 SD に渡す)
+は SROA 効かないが、これは現状の `VALUE F[]` も同じで悪化しない。
+
+##### 段階分け
+
+1. **Phase 1 (globals byte 化)**: 性能利得明確 (matmul の 8-byte slot
+   税 = gcc -O3 比 4× ギャップの大半)。parse.rb の global layout 計算
+   と新 load/store ノードバリアントが要点。frame は触らないので
+   recursion 系の SROA は完全保持。
+2. **Phase 2 (locals byte 化)**: Phase 1 で揃えたノードを使い回し。
+   castro_gen.rb の call_static specializer を `VALUE F[%u]` →
+   `_Alignas(8) char F[%u]` に変更。引数コピーを type-aware に展開。
+   union / bit-field のサポート土台もここで整う。
+3. **Phase 3 (C 標準準拠機能)**: union, bit-field, multi-dim 配列の
+   真レイアウト, `_Generic` 等。
+
+##### 落とし穴
+
+- **SD のシェア率**: 今 `node_lget 4` は全関数で同じ hash → SD chain
+  共有。byte-offset+type 化で `(type, offset)` キー化されるので
+  シェア率は下がる。ただし関数を超えて offset/type 一致なら共有可能、
+  致命的ではない。
+- **再帰の SRA は救えない**: callee に `&F` を fp として渡す以上
+  callee 内部では fp opaque。byte/struct どちらでも一緒。recursive
+  inlining (bound 付き) などの別アプローチが必要。
+- **ABI 互換のレイアウト計算**: x86-64 SysV の alignment / padding
+  を parse.rb が正確に再現する必要。bit-field や `_Alignas` も含めて
+  parse.rb の `CType` に集約する。
+
+##### 工数感
+
+- node.def: fp 型統一 + 新バリアント追加 ~150-200 行
+- castro_gen.rb: call_static specializer 書き換え ~50 行
+- parse.rb: type-aware byte layout + emission ~300-500 行
+- main.c: 軽微 (loader が新 operand 受け取る程度)
+- 動作確認: feature tests + c-testsuite + benchmarks の三点回し
+
+実装 1-2 日 + 検証 1 日。
 
 ## ランタイム / 高速化
 

@@ -956,8 +956,12 @@ load_program(CTX *c, sx_lexer *l)
         c->globals_size = (size_t)globals_size;
     }
     c->func_count = (unsigned)nfuncs;
+    if (nfuncs > CASTRO_MAX_FUNCS) {
+        fprintf(stderr, "castro: program defines %lld functions, exceeds CASTRO_MAX_FUNCS=%d\n",
+                (long long)nfuncs, CASTRO_MAX_FUNCS);
+        exit(1);
+    }
     if (nfuncs > 0) {
-        c->func_bodies = calloc((size_t)nfuncs, sizeof(NODE *));
         c->func_names  = calloc((size_t)nfuncs, sizeof(char *));
     }
 
@@ -1004,7 +1008,6 @@ create_context(void)
     c->env = malloc(sizeof(VALUE) * CASTRO_ENV_SLOTS);
     c->env_end = c->env + CASTRO_ENV_SLOTS;
     c->fp = c->env;
-    c->func_bodies = NULL;
     c->func_names  = NULL;
     c->func_count  = 0;
     return c;

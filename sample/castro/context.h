@@ -79,11 +79,29 @@ typedef struct CTX_struct {
     // allocates `globals_size` slots up-front, fills them with the
     // declared initializers, then leaves them in place for the rest of
     // the program.  Arrays / structs occupy multiple consecutive slots.
-    VALUE *globals;
+    //
+    // `restrict` lets gcc prove that pointers derived from `globals`
+    // (= every `node_addr_global` pointer that flows into a load/store)
+    // don't alias the caller-allocated frame `VALUE * restrict fp` that
+    // every SD takes as its third parameter.  Without this, gcc has to
+    // reload `fp[i]` after every store-through-globals (e.g. `data[j] = t`
+    // in quicksort's partition loop) because both pointers ultimately
+    // type-pun int64_t through their respective unions.
+    VALUE * restrict globals;
     size_t globals_size;
 
     unsigned int func_count;
-    struct Node **func_bodies;
+    // Embedded fixed-size body table: hot-path lookups
+    // (`c->func_bodies[idx]`) collapse from a 2-step load (pointer +
+    // dereference) into a single base+offset load.  CASTRO_MAX_FUNCS is
+    // a hard cap; programs exceeding it are rejected at load time.  At
+    // 1024 entries × 8 bytes the embedded table costs 8KB per CTX,
+    // which is negligible vs the run-time wins on recursion-heavy
+    // benchmarks (fib / ackermann / tak / quicksort).
+#ifndef CASTRO_MAX_FUNCS
+#define CASTRO_MAX_FUNCS 1024
+#endif
+    struct Node *func_bodies[CASTRO_MAX_FUNCS];
     char        **func_names;
 
     // goto support: parse.rb lowers a function with goto into a
