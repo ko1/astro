@@ -731,8 +731,13 @@ static VALUE obj_instance_of_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE obj_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* default === is == */
-    return KORB_BOOL(korb_eq(self, argv[0]));
+    /* default === is "object_id-or-==": same identity (a == b VALUE)
+     * passes immediately, otherwise dispatch through user-defined #==.
+     * This matches CRuby's Kernel#=== behavior — even if a user
+     * overrides #== / #equal? to return false, identical instances
+     * still match. */
+    if (self == argv[0]) return Qtrue;
+    return korb_funcall(c, self, korb_intern("=="), 1, argv);
 }
 
 
