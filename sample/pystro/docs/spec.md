@@ -1,9 +1,9 @@
 # pystro 言語仕様
 
-`pystro` は **Python 3 のサブセット**インタプリタ。CPython 3.12 と同じ
-意味論を目指し、 micro 10 中 8 + macro 4 中 1 で CPython を上回る
+`pystro` は **Python 3 のサブセット**インタプリタ。 CPython 3.12 と同じ
+意味論を目指し、 micro 10 中 9 + **macro 4 中 4 で CPython を上回る**
 範囲をカバーする ([perf.md](perf.md) 参照、 macro の richards で
-**python3 を 2.1× 上回る**)。 R18 時点で **213/213 internal tests** + 28
+**python3 を 2.18× 上回る**)。 213/213 internal tests + 28
 が CPython の `Lib/test/test_*.py` を完全 pass、 322 が test logic を実行
 ([done.md](done.md) 参照)。
 完全な Python 仕様は [Python Language Reference](https://docs.python.org/3/reference/)

@@ -206,7 +206,7 @@ nested class call の outer kwargs leak は R18 で metaclass __call__
 | 定数 | `const_int / const_int64 / const_float / const_str / const_bytes / const_none / const_true / const_false / const_ellipsis / const_int_big` |
 | 変数 | `lref / lset / gref / gset / lref_outer / lset_outer` |
 | 単項 | `neg / not / bit_inv / pos`(builtin 経由) |
-| 算術 | `add / sub / mul / matmul / truediv / floordiv / mod / pow / bit_and / bit_or / bit_xor / lshift / rshift` (fixnum / flonum fast path inline) |
+| 算術 | `add / iadd / sub / mul / matmul / truediv / floordiv / mod / pow / bit_and / bit_or / bit_xor / lshift / rshift` (fixnum / flonum fast path inline、 `iadd` は list `+=` の in-place extend) |
 | 比較 | `lt / le / gt / ge / eq / ne / is / is_not / in / not_in` (fixnum fast path inline + chained 対応) |
 | 論理 | `and / or / not` (short-circuit) |
 | 制御 | `if / while / for_local / for_global / seq / nop / return / break / continue / raise / raise_bare` |
@@ -214,7 +214,7 @@ nested class call の outer kwargs leak は R18 で metaclass __call__
 | 呼出 | `call_0 / call_1 / call_2 / call_3 / call_n / call_kw / call_spread` |
 | メソッド | `method_0 / method_1 / method_2 / method_n` (inline cache) |
 | 属性 | `attr_get / attr_set` (cache) |
-| subscript | `subscript_get / subscript_set` |
+| subscript | `subscript_get / subscript_set` (fixnum index で list/tuple/bytes/bytearray の fast path inline) |
 | slice | `slice / slice_set` |
 | def / class | `def / class_def / class_method_get / class_method_set` |
 | match | `match` (PEP 634) + 各種 pattern node |
@@ -229,13 +229,24 @@ nested class call の outer kwargs leak は R18 で metaclass __call__
 | キャッシュ | 形 | 効果 |
 |---|---|---|
 | `gref_cache` | `{serial, idx}` | global lookup の strcmp 排除 |
-| `attr_cache` | 4-way (cls, shape_version, eidx) | instance attr の dict lookup を class 共有の shape_version で 1 命令検証 |
-| `method_cache` | builtin path: `{type_tag, fn}` / user-class path: 4-way (cls, fn) | bound-method 確保 + MRO walk + strcmp 排除 |
+| `attr_cache` | 4-way (cls, shape_version, eidx) + class-data 用 monomorphic slot (`cls_recv`, `class_value`, `cls_recv_sv`) + instance-receiver class-attr 用 monomorphic slot (`inst_ca_cls`, `inst_ca_val`, `inst_ca_sv`) | instance attr / `Cls.attr` / `instance.classattr` の 3 経路を並列キャッシュ |
+| `method_cache` | builtin path: `{type_tag, fn}` / user-class path: 4-way (cls, fn) / module: 4-way (module_ptr, fn) / classmethod: 4-way (cls, wrapped_fn) | bound-method 確保 + MRO walk + strcmp 排除 |
+| `binop_cache` | `{cls, fn}` | `node_add/sub/mul` の per-call-site IC、 Vector の operator dunder で命中 |
 
-**`attr_cache` の shape_version**: instance ごとの `attrs_id` ではなく
-class が持つ shape_version を比較する設計 (commit `ba3897e`)。 同じ class
-の複数 instance 間で eidx を共有でき、 deltablue で hit 率 11% → 71% に。
-shape_version は `py_class_add_method` で bump される (構造変化のみ)。
+**`attr_cache` の 3 経路**:
+
+1. *instance attr* (4-way) — `self.x` のように instance dict に
+   入っている属性。 `(cls, shape_version)` で eidx を memoize。
+   shape_version は `py_class_add_method` で bump (構造変化のみ)。
+2. *class-data* (`cls_recv`/`class_value`/`cls_recv_sv`) —
+   `Strength.WEAKEST` のように **receiver が class** のときに
+   class object 上の属性を memoize (commit `8af7ef6`)。
+3. *instance-receiver class-attr* (`inst_ca_*`) —
+   `aes.T1` のように **receiver が instance だが** 属性が class
+   レベルにあるケース。 instance dict miss → MRO walk + strcmp が
+   pyaes で 9% 占有していたのを撤去 (Phase 8)。 stamp は **stable
+   data** (list / tuple / dict / str / bytes / int 等、 bound method
+   や property は除外) のときのみ。
 
 **4-way polymorphic IC**: `Constraint` subclass の混合 iteration のような
 polymorphic call site で monomorphic IC は thrash する (richards で
@@ -247,6 +258,26 @@ polymorphic call site で monomorphic IC は thrash する (richards で
 `py_class_lookup_method` の hot path は `name == PYSTRO_INTERN_eq` の
 ようなポインタ一発比較 + フィールド load で済み、 MRO walk + strcmp は
 slow path のみ (commit `bf286e0`)。 詳細は [perf.md](./perf.md) Phase 4。
+
+**`pyclass.fast_new` flag**: user class の `slot_new` が default
+`bi_object_new` で built-in base なし、 例外でなければ、 instantiation
+で `__new__` dispatch を全 skip して `py_make_instance` 直叩き。
+`pyclass_refresh_slots` で事前計算 (Phase 8)。 deltablue / raytrace
+の Constraint / Vector instantiation がここで稼ぐ。
+
+**method_cache の 4 種の type_tag**:
+
+| type_tag | 用途 | dispatch |
+|---|---|---|
+| `PY_T_INSTANCE` (user class) | `inst.method(args)` | `py_apply(fn, [inst, args])` |
+| `PY_T_INSTANCE` + `cache->fn` | 組込型 subclass の primary method (`OrderedCollection.append`) | `cache->fn(c, [primary, args])` |
+| `PY_T_MODULE` | `math.sqrt(x)` | `py_apply(fn, [args])` (self なし) |
+| `PY_T_CLASS` | `Cls.classmethod(args)` | `py_apply(wrapped_fn, [cls, args])` |
+| `cache->fn` (builtin tbl) | `[1,2].append(3)` | `cache->fn(c, [recv, args])` |
+
+`py_method_resolve` がこれらを判別して cache を stamp する。 hot path は
+`PY_PTR(o)->type == cache->type_tag` の一発で経路を選び、 PIC で
+`fn` を引き、 即 dispatch。
 
 ## 6. parser
 
@@ -263,6 +294,23 @@ slow path のみ (commit `bf286e0`)。 詳細は [perf.md](./perf.md) Phase 4。
 - match-case の pattern は専用 `parse_pattern_*` 群。
 - exec/eval/compile からの parse 失敗は parse_error が `parse_error_jmp`
   jmp_buf に longjmp、 runtime 側で `SyntaxError` を raise する。
+
+### parser 側の最適化
+
+- **method call fusion**: `obj.name(args)` は `node_attr_get` + `node_call_N`
+  ではなく **`node_method_N`** に直接 fuse する。 `parse_dot_trailer` で
+  T_DOT の次が T_LPAREN を見たら argc に応じて `node_method_0/1/2/n` を
+  ALLOC する。
+- **LHS の同 fusion**: `self.x().y = z` のような assignable target でも、
+  `parse_assignable_target` の build loop で `TR_DOT + TR_CALL` を
+  `node_method_N` に fuse。 これがないと LHS だけ
+  `node_call_0(node_attr_get(self, "x"))` 経由になり、 method PIC が
+  効かず毎回 bound method alloc + `py_apply_slow` 落ちしていた。
+  deltablue で 4× の決定打 (Phase 8)。
+- **augmented assign の特化**: `lhs += rhs` は通常 `lset(name, add(lref(name), rhs))`
+  に desugar するが、 `+=` だけは `add` ではなく **`iadd`** を使う。
+  `iadd` は list+list のとき in-place extend (CPython の `__iadd__` 相当)、
+  それ以外は `add` と同じ semantics。
 
 ## 7. Code Store / AOT / JIT
 

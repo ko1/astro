@@ -210,54 +210,73 @@ clear / copy` (挿入順保持; Python 3.7+ 仕様)
 
 ## 性能 (vs. CPython 3.12)
 
-`make bench` の結果。詳細は [`perf.md`](./perf.md)。
+`make bench` の結果。 詳細は [`perf.md`](./perf.md)、 比較分析は
+[`vs_cpython.md`](./vs_cpython.md)。
 
 ### micro (10 本、 best-of-5)
 
 | bench (~1s on python3) | python3 | pystro AOT | pystro/python3 |
 |---|---:|---:|---:|
-| while_loop 10M | 0.89 s | 0.06 s | **14.8×** |
-| for_range 15M (C range) | 0.91 s | 0.08 s | **11.4×** |
-| for_range_pyrange (Py iter) | 2.17 s | 0.36 s | **6.0×** |
-| list 7M append+sum | 0.86 s | 0.18 s | **4.8×** |
-| fib(35) | 1.15 s | 0.41 s | **2.8×** |
-| recursive (tak) | 3.87 s | 1.37 s | **2.8×** |
-| mandel (float-heavy) | 0.66 s | 0.28 s | **2.4×** |
-| nqueens | 0.68 s | 0.47 s | **1.45×** |
-| string 2M split | 0.58 s | 0.59 s | 1.0× (≒同等) |
-| dict 3M put+get | 0.79 s | 1.10 s | 0.72× (1.4× 遅い) |
+| while_loop 10M | 0.97 s | 0.06 s | **16.2×** |
+| for_range 15M (C range) | 0.96 s | 0.07 s | **13.7×** |
+| for_range_pyrange (Py iter) | 2.28 s | 0.41 s | **5.6×** |
+| list 7M append+sum | 0.95 s | 0.19 s | **5.0×** |
+| fib(35) | 1.14 s | 0.40 s | **2.9×** |
+| recursive (tak) | 4.19 s | 1.56 s | **2.7×** |
+| mandel (float-heavy) | 0.72 s | 0.27 s | **2.7×** |
+| nqueens | 0.72 s | 0.36 s | **2.0×** |
+| string 2M split | 0.61 s | 0.54 s | **1.13×** |
+| dict 3M put+get | 0.74 s | 0.94 s | 0.79× (1.27× 遅い) |
 
-**10 / 10 micro 中 8 で python3 を上回る** (string ≒同、dict 遅い)。
+**10 / 10 micro 中 9 で python3 を上回る** (`dict_bench` のみ負け)。
 
 ### macro (4 本、 pyperformance 由来)
 
 | bench | python3 | pystro AOT | pystro/python3 |
 |---|---:|---:|---:|
-| richards (OS sched sim) | 1.04 s | **0.48 s** | **2.16× FASTER** |
-| deltablue (constraint solver) | 0.17 s | 0.80 s | 4.7× 遅い |
-| raytrace | 0.87 s | 2.48 s | 2.85× 遅い |
-| crypto_pyaes (pure-Py AES-CTR) | 0.55 s | 2.74 s | 4.99× 遅い |
+| richards (OS sched sim)         | 1.07 s | **0.49 s** | **2.18× FASTER** |
+| crypto_pyaes (pure-Py AES-CTR)  | 0.54 s | **0.37 s** | **1.46× FASTER** |
+| deltablue (constraint solver)   | 0.17 s | **0.14 s** | **1.21× FASTER** |
+| raytrace                        | 0.89 s | **0.84 s** | **1.06× FASTER** |
 
-richards は **python3 を 2.1× 上回る** — small-class polymorphic な
-OS scheduler simulation で、 IC 4 段階の積み上げで完全 dispatch
-overhead を削った。
+**4 / 4 macro 全勝** (2026-05-08)。 命令数も全 4 で python3 を下回る
+(やる仕事の絶対量が少ない)。
 
-### Phase 4: 実アプリ向け IC 最適化 (今ラウンド)
+### 主要な最適化 (時系列、 直近順)
 
-richards で perf record して **`__strcmp_avx2` 28% + `py_class_lookup_method`
-13% = 41% 占有** が判明 → user-class instance method に IC が
-無いのが原因と特定。 5 段階で潰した:
+詳細は [`perf.md`](./perf.md)。 ここでは要点のみ。
 
-| commit | 改善 | 内容 |
-|---|---|---|
-| `ae87e35` | richards -29% | user-class method の monomorphic IC を `method_cache` に追加 |
-| `2eadb18` | richards -10% | 100% IC thrash 計測 (richards 4.93M/4.93M) → 4-way polymorphic IC |
-| `bf286e0` | strcmp 大幅減 | dunder 24 種を pre-intern + struct pyclass の slot に格納 + lazy refresh |
-| `ba3897e` | deltablue -67% | attr_cache を `attrs_id` (instance ごとに異なる) → `shape_version` (class 共有) に置換 |
-| `3e90b55` | richards -78% | attr_cache も 4-way polymorphic 化 |
+#### Phase 8 (2026-05-08): macro 全勝
 
-最初の baseline (6.83 / 2.27 / 6.19 / 2.58) → 現在 (0.48 / 0.80 / 2.48 / 2.74):
-**richards 14.2× / deltablue 2.8× / raytrace 2.5× faster**。
+- `node_subscript_get` に fixnum index fast path
+- `node_floordiv` / `node_mod` に fixnum fast path
+- **`node_iadd` 新設** — `lst += [...]` を in-place extend (pyaes O(N²)→O(N))
+- attr_cache に instance-receiver class-attr 用 monomorphic slot
+  (`inst_ca_*`)
+- `pyclass.fast_new` flag — default `__new__` 経路を skip
+- `py_method_resolve` に classmethod IC + `node_method_N` に
+  `t == PY_T_CLASS` branch
+- **parser LHS の `dot+call` fuse** — `self.x().y = z` の中間 `self.x()`
+  を `node_method_0` に fuse (deltablue を 0.57 s → 0.14 s に押し下げ)
+
+#### Phase 7 (前 session): module IC + attr_set fast path
+
+- `node_method_*` の fast path に `t == PY_T_MODULE` branch
+- attr_set fast path で新 instance の attrs alloc を inline 化
+- `py_alloc` を per-type sizing (instance alloc 312B → 32B)
+
+#### Phase 4〜6: IC の積み上げ + bytes/bit ops
+
+- user-class method monomorphic / 4-way IC
+- dunder 24 種を pre-intern + struct pyclass の slot に格納
+- `attrs_id` を class 共有の `shape_version` に置換
+- attr_cache も 4-way polymorphic 化
+- `binop_cache` (node_add/sub/mul の per-call-site IC)
+- bit op の fixnum fast path、 `lm_pop` の memmove 化
+
+最初の baseline (richards 6.83 s / deltablue 2.27 s / raytrace 6.19 s /
+pyaes 2.58 s) → 現在 (0.49 / 0.14 / 0.84 / 0.37):
+**richards 13.9× / deltablue 16.2× / raytrace 7.4× / pyaes 7.0× faster**。
 
 ### Python 仕様準拠について
 

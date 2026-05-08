@@ -6,7 +6,7 @@
 
 ---
 
-## 現状スナップショット (2026-05-07, R18)
+## 現状スナップショット (2026-05-08, R18 + Phase 8)
 
 ### テスト
 
@@ -24,23 +24,22 @@ total=394  pass=28  mixed=322  crash/timeout=18  parse_err=22  import_err=4
 
 ### ベンチ ([perf.md](./perf.md) より)
 
-micro 10 中 8 で python3 を上回る (`while_loop` 14.8× / `for_range`
-11.4× / `pyrange` 6× / `list_bench` 4.8× / `fib35` 2.8× / `recursive` 2.8×
-/ `mandel` 2.4× / `nqueens` 1.45×)。 `string_bench` 同等、 `dict_bench`
-1.4× 遅い。
-
-macro (pyperformance 由来) 4 本中 1 で python3 を上回る:
+**macro 4/4 で python3 を上回る** (Phase 8 完了):
 
 | ベンチ | python3 | pystro AOT | 比 |
 |---|---:|---:|---:|
-| richards | 1.04 s | **0.48 s** | **2.1× FASTER** |
-| deltablue | 0.17 s | 0.80 s | 4.7× |
-| raytrace | 0.87 s | 2.48 s | 2.85× |
-| crypto_pyaes | 0.55 s | 2.74 s | 4.99× |
+| richards     | 1.07 s | **0.49 s** | **2.18× FASTER** |
+| crypto_pyaes | 0.54 s | **0.37 s** | **1.46× FASTER** |
+| deltablue    | 0.17 s | **0.14 s** | **1.21× FASTER** |
+| raytrace     | 0.89 s | **0.84 s** | **1.06× FASTER** |
 
-method_cache / attr_cache の 4-way polymorphic IC + dunder slot で
-Phase 4 は完了。 残るのは operator dunder の slot 化 (raytrace 用)、
-bytes 操作の専用化 (pyaes 用)、 そして dict_bench の str-key 専用パス。
+micro 10/10 中 9 で python3 を上回る。 残る負けは `dict_bench` のみ
+(1.27× slow)。
+
+Phase 4〜7 で IC 系を整備、 Phase 8 で deltablue/pyaes/raytrace を
+詰めた。 残作業は dict_bench の str-key 専用パス、 minor operator
+dunder の slot 化、 仕様準拠の積み残し。 比較分析の詳細は
+[`vs_cpython.md`](./vs_cpython.md)。
 
 ---
 
@@ -105,36 +104,36 @@ parse 時の検証強化は段階的に。
   group `(...)`、 lazy `*?+??`、 IGNORECASE は対応。
   `{n,m}` brace quantifier、 lookaround、 後方参照、 Unicode property は未対応。
 
-#### operator dunder の slot 化 (raytrace 用)
+#### dict_bench で python3 を抜く
 
-raytrace は Vector の `__add__/__sub__/__mul__/__neg__` が **slot
-未対応** で MRO walk + strcmp に落ち、 `__strcmp_avx2` が 23% 占有。
-struct pyclass を直接拡大するアプローチは struct 全体が膨れて
-attr_cache hot path のキャッシュ効率を下げて net 不利になった
-(試した範囲、 commit せず revert)。
+現状唯一の負け (1.27× slow)。 CPython は str-key 専用 layout など
+細かい最適化を持っていて、 generic open-addressing 1 種の pystro では
+届かない。 改善案:
+- str-key 専用 dict layout 追加 (CPython 風)
+- str-key の hash を `pyobj.str` 内 cache、 strcmp の代わりに
+  pointer-compare でショートカット
+- `py_dict_set` / `pydict_find` を `static inline` 化
+- `PYSTRO_BI_KWC` save/restore (metaclass __call__) の overhead 削減
 
-別アプローチ案:
+#### minor operator dunder の slot 化 (raytrace 残存)
+
+主要 dunder 24 種は既に slot 化済み。 残る `__truediv__` /
+`__rmod__` / `__matmul__` / `__floordiv__` 等が MRO walk + strcmp に
+落ちる。 pyclass struct を肥らせない方法:
+
 - slot を別 struct に切り出して pyclass→slot table へポインタ 1 個
   だけ持たせる (struct pyclass 自体は膨らまない)
 - perfect hash dispatch — `PYSTRO_INTERN_*` の固定アドレスを bucket
   化して 1〜2 compare で slot 解決
-- 直接 py_add/py_sub などから offsetof で slot field 読む (struct
-  拡大の副作用を kill しないと win しない)
 
-#### bytes 操作の専用化 (pyaes 用)
+raytrace でさらに 5% 程度削れる見込み。
 
-`__memmove_avx_unaligned_erms` 4.9% + `__memset_avx2_unaligned_erms`
-4.9% + `GC_malloc_kind` 7.9% で SD 層から触れにくい層が hot。
-XOR / slice / concat に inline path を入れる方向。
+#### bytes 操作のさらなる削減 (pyaes 残存)
 
-#### dict_bench で python3 を抜く
-
-現状 1.4× 遅い ([perf.md](./perf.md))。 CPython は str-key 専用
-layout など細かい最適化を持っていて、 generic open-addressing 1 種の
-pystro では届かない。 改善案:
-- `py_dict_set` / `pydict_find` を `static inline` 化
-- str-key 専用 dict layout 追加 (CPython 風)
-- `PYSTRO_BI_KWC` save/restore (metaclass __call__) の overhead 削減
+Phase 8 で `arr[i]` fast path、 `lst += [...]` の in-place 化、 GMP
+fixnum 経路撤去で 5.2× → 1.46× faster になった。 残る memmove / memset
+は libc + Boehm の GC alloc 経路で SD から触れにくい。 撤去するには
+ASTro 全体の GC 方針変更 (`idea.md`) が必要。
 
 #### chained-raise propagation の overhead 削減
 
@@ -186,3 +185,4 @@ fully-pass** + 322 mixed まで来た。 詳細は [done.md](./done.md) の
 | R11〜R16 (5/5〜5/6) | string slice buffer 共有, dict identity-eq, NotImplemented chain, math dunder dispatch, bytes/bytearray ops, dataclass(frozen/eq/order), match patterns, statistics extras, 多数のエッジ fix |
 | R17 (5/6) | UTF-8 codepoint str, `@` matmul, async sync, eval/exec ns dict, PEP 604 union, collections.abc + typing.Generic, metaclass `__instancecheck__`, lazy genexp, function annotations, PEP 654 `except*`, PEP 695 type alias |
 | R18 (5/7) | CPython テスト互換 (28 fully-pass)、 chained-raise propagation, PYSTRO_BI_KWC leak fix, __class_getitem__ classmethod unwrap, types.MethodType constructible, ABCMeta `_abc_registry`, parser 拡張多数 (PEP 646 starred, multi-element subscript with slice, for-target trailer, chain assign 256), 25+ stdlib stub modules |
+| Phase 8 (5/8) | macro 4/4 で python3 を上回る。 fixnum subscript/mod/floordiv fast path, `node_iadd` (list `+=` の in-place 化), attr_cache に instance-receiver class-attr slot (`inst_ca_*`), `pyclass.fast_new` flag, classmethod IC, **parser LHS の `dot+call` fuse** (deltablue 4×) |
