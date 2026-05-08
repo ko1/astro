@@ -567,7 +567,10 @@ inline する。nuq では:
 
 ### AST fusion (parse-time peephole)
 
-`filter.c` の `nuq_make_pipe(lhs, rhs)` で意味保存の rewrite:
+`filter.c` の `nuq_make_pipe(lhs, rhs)` で意味保存の rewrite。意味
+保存は jq 公式テスト + ローカル差分テストで常時チェック。
+
+**汎用ルール**:
 
 - `map(F) | map(G)` → `map(F | G)` (中間配列消去)
 - `select(F) | select(G)` → `select(F and G)` (短絡保存)
@@ -576,7 +579,19 @@ inline する。nuq では:
   kernel `nuq_add_fold_items` を共有)
 - 右辺エッジ fusion: 左結合 chain `f | g | h` を 1 段ずつ折り畳む
 
-意味保存は jq 公式テスト + ローカル差分テストで常時チェック。
+**`inputs` streaming-pipe fusion** (JSONL aggregation 用):
+
+- `pipe(inputs, F)` → `node_b_inputs_pipe(F)` — input を 1 件ずつ
+  pull → F に流す。inputs 全体を pool に materialize しない
+- `[inputs | F] | length` → `node_b_count_inputs(F)` — Rule 3 の
+  サブで、F の match を pool にも貯めず count だけ
+- `pipe(inputs_pipe(F), G)` → `inputs_pipe(F | G)` — chain
+  absorption。`(inputs | F) | G == inputs | (F | G)` の結合性を
+  使って多段 chain を単一 per-input loop に collapse
+
+JSONL bench の構造的大敗 (`count_pushes` / `top_users` が jq の 0.3×)
+を逆転 (2.4-2.6×)。詳細は [perf.md](./perf.md) §「適用済みの主要
+最適化」§4。
 
 ## 9. Path-mode walk
 

@@ -336,35 +336,44 @@ BENCH_MEM=1 ruby bench/bench.rb big     # big-data ベンチ
 
 ### 大勝の構造
 
-`reverse 1M` (16×)、`min-max 1M` (9.0×)、`last 1M` (6.2×)、`upto 8k`
-(51×) は **tight な C ループに inline される** ケース。SD specializer
-が AST を一括で fold-in、range の emit ループ + 集約処理が 1 SD 関数
-に焼かれる。`to-fromjson 19.6×` は手書き JSON parser/printer の
-スループット。
+micro 系の桁違いの勝ち:
 
-`group-by 7.1×` は qsort + 安定 group。jq は libjq の dict 風内部表現で
-extra alloc がかさむ。
+- **`reverse 1M` 30× / `min-max 1M` 15× / `last 1M` 10× / `upto 8k`
+  53×**: tight な C ループに inline されるケース。SD specializer が
+  AST を一括で fold-in、range の emit ループ + 集約処理が 1 SD 関数
+  に焼かれる。
+- **`to-fromjson 100k` 24×**: 手書き JSON parser / printer のスル
+  ープット (SIMD scanner で更に伸びた)。
+- **`group-by 100k` 20×**: qsort + 安定 group。jq は libjq の dict
+  風内部表現で extra alloc がかさむ。
 
-実用ベンチの普通の field 抽出系 (deep_field / extract_field / sum_score
-/ length / identity) は **1.2-1.5×**。jaq・gojq とほぼ横並び — これらは
-「jq の C 実装と nuq の C 実装の per-op オーバーヘッド差」を測って
-いるとも言える。
+JSONL 系の構造的勝ち:
+
+- **`identity` (純 parse + print) 6.1×**: SIMD string scanner が
+  effective。jq の per-byte scanner との差。
+- **`count_pushes` 2.6× / `top_users` 2.4×**: 元々 0.3× で大敗
+  していた構造的問題を `inputs | F` streaming-pipe fusion で逆転。
+
+実用 (real) bench の field 抽出系 (deep_field / extract_field /
+sum_score / length / identity) は **2.6-3.1×**。jaq・gojq に対して
+も 1.2-1.5× リード。
 
 ### 残る相対的な弱点
 
-#### `upto` で jaq 比 0.6× (構造的)
+#### `upto` で jaq 比 0.7× (構造的)
 
-jaq は recursive `def` を bytecode に compile して tail-call elimination
-する。nuq は tree walker なので各 recursive call が C stack frame +
-EVAL dispatch。**vs jq では 51× で勝っている** が、jaq との差は
-TCE 起因で構造的。CPS 化しても TCE が入るわけではないので限界がある。
+jaq は recursive `def` を bytecode に compile して tail-call
+elimination する。nuq は tree walker なので各 recursive call が C
+stack frame + EVAL dispatch。**vs jq では 53× で勝っている** が、
+jaq との差は TCE 起因で構造的。CPS 化しても TCE が入るわけではない
+ので限界がある。
 
-#### `pyramid 8k` で 0.84×
+#### `pyramid 8k` で 0.77×
 
-deep recursion (8000 ネスト) と multi-emit per level の dispatch 圧で
-律速。jq も同様に苦手だが、libjq の内部表現が比較的軽いのでわずかに
-nuq より速い (jaq・gojq は更に遅い)。pool top の register 常駐化で
-多少改善見込み。
+deep recursion (8000 ネスト) と multi-emit per level の dispatch 圧
+で律速。jq も同様に苦手だが、libjq の内部表現が比較的軽いのでわず
+かに nuq より速い (jaq / gojq は更に遅い 0.6-0.9×)。pool top の
+register 常駐化 (todo B-3) で多少改善見込み。
 
 ### nuq AOT vs nuq interp
 
@@ -372,233 +381,200 @@ nuq より速い (jaq・gojq は更に遅い)。pool top の register 常駐化�
 性質**: jq の hot work は集合演算 (`map / select / sort / add /
 group_by`) に集約されていて、その本体は builtin の C ループ。AST
 レベルの dispatch コストは支配的でないので、SD specialization で
-dispatch を消しても大きな差にならない。
+dispatch を消しても大きな差にならない (interp も builtin に飛び込ん
+で同じ C ループに入る)。
 
-例外: **再帰 def の AST が hot loop になる場合** は AOT が伸びる。
-これを引き出すために `def` 本体を独立 entry として AOT 登録している
-(`nuq_compile_all_def_bodies` / `nuq_load_all_def_bodies` in
-`runtime.c`)。
+例外: **再帰 def の AST が hot loop になる場合** は AOT が伸びる
+(§6 「再帰 def の AOT 補助」)。`upto` の AOT vs interp で差が出る。
 
 ## 適用済みの主要最適化
 
-### EMIT pool
+トピック別にまとめる (時系列の詳細は git log)。
 
-NODE_DEF が `EMIT { items, count }` を返し、items は CTX 上の flat
-VALUE buffer のスライス。per-emit GC alloc ゼロ、SD inline と相性
-良し。startup で 4096 entries pre-grow、以降の realloc は UNLIKELY
-経路。
+### 1. 値表現 + alloc
 
-`pyramid 8k`: 140× 遅 → 0.84× (互角ライン)。
+- **EMIT pool**: NODE_DEF が `EMIT { items, count }` を返し、items
+  は CTX 上の flat VALUE buffer のスライス。per-emit GC alloc
+  ゼロ、SD inline と相性良し。startup で 4096 entries pre-grow、
+  以降の realloc は UNLIKELY 経路。`pyramid 8k`: 140× 遅 → 互角。
+- **Value 演算 fast path inline**: `nuq_op_add / sub / mul / neg`、
+  `nuq_eq`、`nuq_cmp`、`nuq_truthy`、`nuq_make_int` の fixnum
+  fast path を `context.h` の `static inline` に切り出し、slow case
+  を `_slow` 接尾辞付き関数として `value.c` に残す。`nuq_op_div /
+  mod` は jq 仕様で常に double 演算なので fast path なし。
+  `min-max 1M` 6.0× → 9.0× / `sort 300k` 3.5× → 5.6× /
+  `group-by 100k` 5.3× → 7.1× / `cumsum 500k` 5.0× → 7.1×。
+- **Object lookup の lazy hash idx**: `nuq_obj.obj` に `uint32_t
+  *idx` を追加 (open-addressing FNV-1a、load factor ≤ 0.5、
+  threshold 16)。挿入順 parallel array は維持。`add` builtin の
+  `all_objects` fast path で pairwise `nuq_clone` カスケードも
+  撲滅。`kv 5k`: 33× 遅 → 1.5× 速。
+- **`add` builtin の type-dispatch kernel**: array-only の fast
+  path で全長を先に集めて単一 alloc + copy で O(n)。pairwise
+  reduction で O(n²) になっていたバグを撲滅。`keys_aggregate`
+  11× 遅 → 3.2× 速。
+- **Object literal の direct-build fast path**: 全エントリ count==1
+  の典型ケースで cartesian iteration を skip、pool 直書きで
+  per-entry alloc を節約。static key は parser で `nuq_make_string`
+  を 1 度だけ実行 → entry に VALUE で保存。
+- **Object literal の dedup-skip 化**: parse 時
+  (`nuq_obj_ctor_intern`) に entry を見て、全 entry が `kkind == 0`
+  (静的 cstring key) かつ kname が pairwise distinct なら
+  `all_distinct_static = true` を立てる。runtime の fast path が
+  これを見て `nuq_object_set` の dedup linear scan + PIN3 を skip
+  し、専用の `nuq_object_append` で keys[len] / vals[len] 直書き
+  + len++ + lazy hash idx update のみ。`{a, b, top_tag: ...}` の
+  ような typical jq literal が 30K 回呼ばれるシナリオで効く。
 
-### Object lookup の lazy hash idx
+注: 上記の `static inline` は context.h で interp / AOT 両方から
+見えるので、interp と AOT が同程度伸びる。AOT が interp を引き離す
+動きは jq の workload では出ていない (集合演算が builtin C ループ
+に集約しているので AST level の hot loop が薄い)。AOT-only の上振れ
+には PGO 系が要るが、AST fusion の方が相性が良い (todo B-5)。
 
-`nuq_obj.obj` に `uint32_t *idx` を追加 (open-addressing FNV-1a、
-load factor ≤ 0.5、threshold 16)。挿入順 parallel array は維持。
-`add` builtin の `all_objects` fast path で pairwise `nuq_clone`
-カスケードも撲滅。`kv 5k`: 33× 遅 → 1.5× 速。
+### 2. メモリ管理 (per-run arena + Cheney GC)
 
-### Value 演算 fast path inline
+詳細は [runtime.md §5](./runtime.md#5-メモリ管理--per-run-arena--cheney-copying-gc)。
 
-`nuq_op_add / sub / mul / neg`、`nuq_eq`、`nuq_cmp`、`nuq_truthy`、
-`nuq_make_int` の fixnum fast path を `context.h` の `static inline`
-に切り出し、slow case を `_slow` 接尾辞付き関数として `value.c` に
-残す。`nuq_op_div / mod` は jq 仕様で常に double 演算なので fast
-path 無し、slow に直行。
+- **per-run arena**: 中間 VALUE は bump alloc → 16 MB しきい値で
+  Cheney semispace 回収 → run 終了で wholesale reset。永続領域
+  (AST / リテラル / `--arg*` / module data) は plain `calloc` で
+  プロセス終了まで保持。**libgc 依存なし** (`libm` + `libc` のみ)。
+- **線形性解析** (`linearity.c`): `acc + [$i]` 系を AST 静的解析で
+  in-place mutation に降格。reduce が O(N²) → O(N)。N=1e6 で
+  0.09 s vs jq 0.34 s で**逆転勝ち**。
+- **GC scan loop の subtle bug 修正** (correctness): Cheney scan の
+  inner `for(;;)` が transition 直前まで現 chunk に積まれた obj を
+  scan せずに次 chunk に進む silent corruption があった (10K-scale
+  `transform` / `keys_aggregate` の intermittent segfault の根本
+  原因)。`if (scan_ptr >= chunk_end) break;` の単純形に書き直し、
+  毎反復で chunk_end を再評価。詳細は
+  [runtime.md §5.6](./runtime.md#56-cheney-scan-ループの-subtle-bug-修正済み参考)。
+- **`in_arena` を O(N chunks) → O(log N)**: GC 開始時に from-space
+  chunks を `[lo, hi)` ペアに展開して address 順 qsort、
+  `gc_from_min` / `gc_from_max` で envelope pre-check + binary
+  search に。`tree_paths` で `gc_forward_value` の 80% 占めだった
+  hot spot を消滅、3.27 s → 0.93 s で完走 (前は err)。
+- **GC threshold を入力サイズに連動**: `nuq_run` 開始時に
+  `arena_gc_threshold = max(2 × arena_total, NUQ_GC_THRESHOLD)` で
+  初期値を bump。1.9 MB JSON が ~17 MB の内部表現に膨らんで 16 MB
+  閾値で即 GC を踏む overhead を回避。real bench 全 11 件で +30%。
+- **`nuq_make_string` を `NUQ_GC_DEFER` で囲う**: caller が arena
+  内 byte ptr (slice 系の `s` 引数) を渡すパターンを安全に。
+  alloc + memcpy の対を defer で守って source bytes が動かないよう
+  にする。`nuq_op_div_slow` の string split、`nuq_slice_eval` の
+  string slice 等で必須。
 
-`min-max 1M` 6.0× → 9.0× / `sort 300k` 3.5× → 5.6× /
-`group-by 100k` 5.3× → 7.1× / `cumsum 500k` 5.0× → 7.1×。
+### 3. Parse / print スループット
 
-注: `static inline` は両者から見える (context.h を両方が include)
-ので、interp と AOT が両方同じ程度伸びた。AOT が interp を引き離す
-動きは出ていない。AOT-only の上振れには PGO (型 feedback + 仮定
-埋め込み + guard) が要るが、jq は集合演算が中心で AST level の
-hot loop が薄いので、PGO よりも AST fusion の方が相性がいい。
+- **JSON parser の no-escape fast path** (`parse_string_raw`): 開き
+  quote の次から閉じ quote までを一度 scan、`'\\'` も control char
+  も無ければ入力 span の長さが確定する → 1 回の
+  `nuq_make_string(p, len)` で済む (alloc + memcpy 各 1 回)。従来は
+  32-byte growable buffer + 段階 realloc + 最後にもう 1 度 take で
+  copy していたので alloc 2 回 + copy 2 回。
+- **JSON parser の integer fast path** (`parse_number`):
+  `[-]?[0-9]+` を inline accumulate して `'.'` / `'e'` / overflow が
+  無ければ `NUQ_FIX(ll)` を直に返す。`strtoll` + 中間 buffer copy
+  が消える。
+- **SIMD string scanner** (`parse_string_raw` / `print_string`):
+  inner byte-loop の `'"' / '\\' / <0x20` 探しを SSE2 16-byte
+  stride に。
 
-### AST fusion (parse-time peephole)
+  ```c
+  __m128i v = _mm_loadu_si128((const __m128i *)p);
+  __m128i a = _mm_cmpeq_epi8(v, _mm_set1_epi8('"'));
+  __m128i b = _mm_cmpeq_epi8(v, _mm_set1_epi8('\\'));
+  __m128i c = _mm_cmpeq_epi8(_mm_min_epu8(v, _mm_set1_epi8(0x1F)), v);
+  int m = _mm_movemask_epi8(_mm_or_si128(_mm_or_si128(a, b), c));
+  if (m) { offset += __builtin_ctz(m); break; }
+  ```
 
-`filter.c` の `nuq_make_pipe(lhs, rhs)` で意味保存の書き換え:
+  SSE2 は x86_64 ABI baseline なのでビルドフラグ不要。control char
+  検出は `min_epu8(v, 0x1F) == v` で unsigned compare 相当 — UTF-8
+  高位バイト (0x80+) でも正しく false。
+
+profile 上 `parse_string_raw` 6.4% → 2.6%。JSONL `identity` (純
+parse + print): 3.6× → 6.1×。`transform` 系が 50 ms → 30 ms → 20 ms
+の 2 段改善 (threshold 修正 + parser fast path)。
+
+### 4. AST fusion (parse-time peephole)
+
+`filter.c` の `nuq_make_pipe(lhs, rhs)` で意味保存の書き換え。意味
+保存は jq 公式テスト 524 件 + ローカル差分テストで常時チェック。
+
+**汎用ルール**:
 
 - `map(F) | map(G)` → `map(F | G)` (中間配列消去)
 - `select(F) | select(G)` → `select(F and G)` (短絡保存)
-- `[body] | length` → `emit_count(body)` (専用ノード追加)
+- `[body] | length` → `emit_count(body)` (中間配列なしで count)
 - `[body] | add` → `emit_fold_add(body)` (`add` の type-dispatch
-  kernel `nuq_add_fold_items` を共有)
+  kernel `nuq_add_fold_items` を共有、外側 array alloc 削除)
 - **右辺エッジ fusion**: 左結合 chain `f | g | h` を 1 段ずつ折り
   畳む。`f | sel(a) | sel(b) | sel(c)` のような任意長 chain を
-  collapse
-
-意味保存は jq 公式テスト 524 件で確認。`emit_count` ルールが
-`try-catch 500k` の 500k 回の中間配列 alloc を一掃して劇的に効いた:
+  collapse。
 
 | bench | pre-fusion | post-fusion |
 |---|---:|---:|
 | `try-catch 500k` | 0.26× | **10.24×** |
 | `cumsum 500k` | 5.0× | **7.11×** |
-| `keys_aggregate` (real) | 3.25× | **3.18×** (`[X] \| add` fusion) |
-| `min-max 1M` | 9.5× | **9.02×** |
+| `min-max 1M` | 9.5× | **9.02×** (横ばい — 既に builtin が hot) |
 
-### 再帰 def を独立 SD entry に
+**`inputs` streaming-pipe fusion** (3 ルール、JSONL workload 専用):
 
-`nuq_user_call` 内の `EVAL(c, fd->body)` は runtime resolved dispatcher
-なので、top-level filter SD からは inline できない。各 def 本体を
-独立 entry として `astro_cs_compile` に登録 (`nuq_compile_all_def_bodies`
-/ `nuq_load_all_def_bodies` in `runtime.c`)。`upto` AOT vs interp
-が伸びる。
-
-### Object literal の direct-build fast path
-
-全エントリ count==1 の典型ケースで cartesian iteration を skip、
-pool 直書きで per-entry alloc を節約。static key は parser で
-`nuq_make_string` を 1 度だけ実行 → entry に VALUE で保存。
-`transform` 1.31× → 1.43×。
-
-### `add` builtin の type-dispatch kernel
-
-array-only の fast path で全部の長さを先に集めて単一 alloc + copy で
-O(n)。pairwise reduction で O(n²) になっていたバグを撲滅。
-`keys_aggregate` 11× 遅 → 3.2× 速。
-
-### GC scan ループの早期 break バグ修正 (correctness + perf)
-
-`gc_arena_collect` の Cheney scan 内側 `for(;;)` で、毎反復頭で 1 回
-`chunk_end = (scan_chunk == gc_to_current) ? gc_to_cur : ... + used`
-を読んで while で消費していたが、scan 中に gc_to_alloc が新規
-chunk に transition すると、`scan_chunk` は元 chunk を指したまま
-gc_to_current が次 chunk に移る。inner while は古い `chunk_end`
-(transition 直前の gc_to_cur) で止まり、`if (scan_chunk ==
-gc_to_current ...)` も false で抜けて次 chunk に移ってしまう。結果、
-transition 直前まで現 chunk に積まれた obj が scan されず、それらの
-keys / vals 等の VALUE が forward されないまま from-space recycle
-で stale ptr 化。10K-scale `transform` / `keys_aggregate` で
-intermittent segfault を出していた根本原因。
-
-修正: 内側ループを `if (scan_ptr >= chunk_end) break;` の単純形に
-書き直し、毎反復で chunk_end を再評価。副作用として
-`make gctest` (毎 alloc で GC を強制) でも 370/370 PASS。
-
-### `in_arena` を O(N chunks) → O(log N)
-
-`gc_forward_value` が呼ぶ `in_arena()` は arena chunk リストを
-linear scan していた。`tree_paths` のように from-space が数百
-chunk になるワークロードでは、`gc_forward_value` の per-call
-in_arena が GC 全体時間の 80% を占める dominant hot spot に
-(`perf record`)。
-
-GC 開始時に from-space chunks を `[lo, hi)` ペアに展開して address
-順で qsort、`gc_from_min` / `gc_from_max` で envelope pre-check +
-binary search に。GC 終了時に index を tear-down (out-of-GC は
-arena_first 経由の linear fallback)。`tree_paths`: 3.27 s → 0.93 s
-で 14/14 全 big bench 完走 (前は err)。
-
-### GC threshold を入力サイズに連動
-
-`nuq_run` 開始時に `arena_gc_threshold = max(2 × arena_total,
-NUQ_GC_THRESHOLD)` で初期値を bump。Cheney は GC 終了時に閾値を
-`2 × live` に再設定する適応型なので、起動時にも同じプロパティを
-持たせる形。1.9 MB JSON が ~17 MB の内部表現に膨らんで 16 MB 閾値で
-即 GC を踏むのを回避 (filter 開始直後の GC は live = 入力全体で
-全コピー、純粋な overhead)。real bench 全 11 件で +30% 程度。
-
-### JSON parser fast path
-
-- **`parse_string_raw`**: 開き quote の次から閉じ quote までを一度
-  scan、`'\\'` も控制文字も無ければ入力 span の長さが確定する → 1
-  回の `nuq_make_string(p, len)` で済む (alloc + memcpy 各 1 回)。
-  従来は 32-byte growable buffer + 段階 realloc + 最後にもう 1 度
-  `nuq_make_string_take` で copy していたので alloc 2 回 + copy 2 回。
-- **`parse_number`**: `[-]?[0-9]+` を inline accumulate して `'.'` /
-  `'e'` / overflow が無ければ `NUQ_FIX(ll)` を直に返す。`strtoll` +
-  中間 buffer copy が消える。
-
-`transform`: 50 ms → 30 ms → 20 ms と 2 段で改善 (上が threshold 修正、
-下が parser fast path)。
-
-### object literal の dedup-skip 化
-
-parse 時 (`nuq_obj_ctor_intern`) に entry を見て、全 entry が
-`kkind == 0` (静的 cstring key) かつ kname が pairwise distinct な
-ら `all_distinct_static = true` を立てる。runtime の object literal
-fast path がこれを見て `nuq_object_set` の dedup linear scan + PIN3
-を skip し、専用の `nuq_object_append` で keys[len] / vals[len]
-直書き + len++ + lazy hash idx update のみ。`{a, b, top_tag: ...}`
-のような typical jq literal が 9-key user 入力で 30K 回呼ばれる
-シナリオで効く。
-
-### nuq_make_string / nuq_make_string_take を `NUQ_GC_DEFER` で囲う
-
-caller が arena 内 byte ptr (例: 既存 string の slice) を
-`s` 引数で渡すパターンが頻出 (`nuq_op_div_slow` の string split,
-`nuq_slice_eval` の string slice 等)。`s` は VALUE ではないので
-pin できないが、make_string の alloc が GC を起こすと from-space
-が動いて s が stale 化、memcpy で segfault する。alloc + memcpy
-の対を `NUQ_GC_DEFER_BEGIN/END` で囲って GC を suppress すると
-`s` は移動しない。compaction が要るほど大きい alloc を含むケースは
-parse 時のみで、deferr 中も alloc 自体は普通に進む。
-
-### debug build (`make gctest`)
-
-[done.md の GC stress test infra](./done.md) 参照。production
-threshold (16 MB) では届かない latent な pin 漏れを表面化させる。
-本ファイルで列挙した builtin / runtime の pin 修正はほぼ全て、この
-mode で初めて表面化したケース。
-
-### SIMD string scanner (`parse_string_raw` / `print_string`)
-
-JSON parser / printer の inner byte-loop は run of "boring" bytes
-(escape も control char もない printable ASCII) を bulk-copy/write
-するパターン。byte 単位の `if (c == '"' || c == '\\' || c < 0x20)
-break;` を SSE2 16-byte stride に置き換え:
-
-```c
-__m128i v = _mm_loadu_si128((const __m128i *)p);
-__m128i a = _mm_cmpeq_epi8(v, _mm_set1_epi8('"'));
-__m128i b = _mm_cmpeq_epi8(v, _mm_set1_epi8('\\'));
-__m128i c = _mm_cmpeq_epi8(_mm_min_epu8(v, _mm_set1_epi8(0x1F)), v);
-int m = _mm_movemask_epi8(_mm_or_si128(_mm_or_si128(a, b), c));
-if (m) { offset += __builtin_ctz(m); break; }
-```
-
-SSE2 は x86_64 ABI baseline なのでビルドフラグ追加なし。control char
-の検出は `min_epu8(v, 0x1F) == v` で unsigned compare 相当 — UTF-8
-高位バイト (0x80+) でも正しく false。
-
-profile 上 `parse_string_raw` 6.4% → 2.6%。JSONL `identity` が
-3.6× → 6.1×、`extract_login` 2.5× → 5.0× など、string-heavy ワーク
-ロードに均等に効く。
-
-### streaming pipe fusion (`inputs | F`)
-
-JSONL の 30 K records を pool にいっぺんに積まずに、record 単位で
-F を回せるよう parse-time に AST を書き換える。
-
-3 ルール:
-
-1. **`pipe(inputs, F)` → `node_b_inputs_pipe(F)`**: input を 1 件ずつ
-   pull → F に流す → F の emit を pool に accumulate。inputs 全体の
-   materialize を回避。
-2. **`[inputs | F] | length` → `node_b_count_inputs(F)`** (Rule 3 の
-   サブルール): F の match を pool にも貯めず count だけ。
-3. **`pipe(inputs_pipe(F), G)` → `inputs_pipe(F | G)`**: chain
-   absorption。`inputs | F1 | F2 | F3` が単一の per-input loop に
-   collapse する。`pipe(F1, F2)` の再帰 fusion も走るので
-   `select | select` 等の既存 fusion とも合成可能。
+- `pipe(inputs, F)` → `node_b_inputs_pipe(F)`: input を 1 件ずつ
+  pull → F に流す → F の emit のみ pool に accumulate。inputs
+  全体の materialize を回避。
+- `[inputs | F] | length` → `node_b_count_inputs(F)` (Rule 3 サブ):
+  F の match を pool にも貯めず count だけ。
+- `pipe(inputs_pipe(F), G)` → `inputs_pipe(F | G)` (chain
+  absorption): `inputs | F1 | F2 | F3` が単一 per-input loop に
+  collapse。`make_pipe(F, G)` で再帰的に走るので
+  `select | select` 等の既存 fusion とも合成可能。
 
 意味的に `(inputs | F) | G == inputs | (F | G)` — pipe の結合性。
-jq の `count_pushes` / `top_users` (現状 0.33× で大敗) を逆転する
-のが目的だった構造的問題で、Rule 1+2 だけで `count_pushes` 0.35×
-→ 2.57× に。Rule 3 はチェーン pattern の `[inputs | filter | proj]
-| reduce` 系で更に効く。
+JSONL bench の構造的大敗を逆転:
 
-### Pin stack の growable 化
+| bench | pre-streaming | post-streaming |
+|---|---:|---:|
+| `count_pushes` | 0.35× | **2.57×** |
+| `top_users` | 0.33× | **2.38×** |
 
-`nuq_gc_roots` (root pin) と `nuq_gc_arrs` (PIN_ARR) の両方を fixed
-size から heap-allocated growable に変更。元々 `NUQ_GC_ROOTS_CAP =
-65536` / `NUQ_GC_ARR_CAP = 256` の固定 cap で、後者は **bounds
-check 自体が無く** silent buffer overflow → 隣接 global (`arena_first`
-等) を破壊する landmine だった。pyramid のような深い recursive
-filter で表面化する (8000 階の pipe stack が 8000 個の PIN_ARR を
-同時に積む)。`realloc` で 4096/256 → ×2 ずつ伸ばす。push の hot path
-の overhead はキャップ check 1 回のみ。
+### 5. GC root pin protocol + debug infra
+
+helper が VALUE / VALUE[] を arena allocator 越しに保持する箇所は
+`NUQ_GC_PIN1` / `NUQ_GC_PIN_ARR` で root 化、Cheney scan 時に
+forwarding する。binary op、比較系、`node_pipe` / `node_if` /
+`node_as[_pattern]` / reduce / foreach / sort_by / group_by /
+unique / paths walker / json parser まで audit 済み。
+
+- **Pin stack の growable 化**: `nuq_gc_roots` (root pin) /
+  `nuq_gc_arrs` (PIN_ARR) を fixed size から heap-allocated
+  growable へ。元々 65536 / 256 の固定 cap で、後者は **bounds
+  check 自体が無く** silent buffer overflow で隣接 global
+  (`arena_first` 等) を破壊する landmine だった (深い recursive
+  filter `pyramid 8000` で発火)。`realloc` で 4096/256 → ×2 ずつ。
+  push の hot path の overhead は cap check 1 回のみ。
+- **`node_pipe` の `saved` を共有 PIN_ARR slot に統合**: 元々
+  PIN_ARR(local) + PIN1(saved) で per-frame に 2 個積んでいたのを、
+  local の末尾 slot に saved を入れて 1 個の PIN_ARR で済ませる。
+  深い recursive filter での pin stack 圧を 1/2 に。
+- **debug build** (`make gctest`): `-DNUQ_GC_DEBUG_MPROTECT=1
+  -DNUQ_GC_DEBUG_STRESS=1` で pin 漏れの早期検出インフラを
+  提供。詳細は
+  [runtime.md §5.5](./runtime.md#55-debug-build-stale-pointer-を即-segfault-にする)
+  参照。production threshold (16 MB) では届かない latent な pin
+  漏れがこの mode で表面化 — 本ファイルで列挙した builtin /
+  runtime の pin 修正はほぼ全てこの経路で発見。`make test` 370/370
+  / `make gctest` 370/370 を維持。
+
+### 6. 再帰 def の AOT 補助
+
+`nuq_user_call` 内の `EVAL(c, fd->body)` は runtime resolved
+dispatcher なので、top-level filter SD からは inline できない。各
+def 本体を独立 entry として `astro_cs_compile` に登録
+(`nuq_compile_all_def_bodies` / `nuq_load_all_def_bodies` in
+`runtime.c`)。`upto` の AOT vs interp 差が伸びる。
 
 ## 設計上の妥協
 

@@ -30,71 +30,79 @@ jq 本体も decnum ビルドでないと通らない領域。
 
 ## 値モデル
 
+### 値表現
+
 - 整数: 62-bit fixnum (1-bit タグ)
 - 浮動小数: ヒープ box (`struct nuq_obj` の `dbl`)
-- 文字列 / 配列 / オブジェクト: per-run arena bump alloc (eval 中) +
-  plain `malloc` 永続領域 (parser / リテラル / `--arg*` / module data
-  等)。**libgc 依存なし** — `libm` + `libc` のみで動く
 - `null` / `true` / `false`: 静的 singleton
-- オブジェクトは **挿入順を保持** (parallel `keys[]` / `vals[]`)
-- 16 keys 超で **lazy hash idx** を build (open-addressing FNV-1a、
+- 文字列 / 配列 / オブジェクト: ヒープ box
+- オブジェクトは **挿入順を保持** (parallel `keys[]` / `vals[]`)。
+  16 keys 超で **lazy hash idx** を build (open-addressing FNV-1a、
   load factor ≤ 0.5)
-- arena は **Cheney 式 stop-the-world copying GC** で mid-run 回収:
-  16 MB しきい値で trigger、live 値だけ to-space にコピーして
-  from-space を解放。`reduce ([]; . + [$i])` 系の累積 mutation で
-  メモリは O(N²) → O(N) (上限なしで膨らんで OOM していたのが頭打ち)。
-  詳細は [`runtime.md`](./runtime.md) §5
-- **線形性 / エスケープ解析** (`linearity.c`): parse 直後に AST を walk
-  して、各 *dot-scope* (pipe RHS / reduce update / foreach update,extract
-  が境界) で `.` の syntactic 参照数 (alias 含む) を数え、`node_add(., RHS)`
-  がその scope の唯一の dot 消費者なら `node_add_inplace` にカインド書換。
-  runtime の `nuq_op_add_inplace` は `in_arena` ガードで Boehm 上の
-  入力 JSON を誤って mutate しないようにしつつ、acc を `nuq_array_push`
-  で in-place 拡張。`reduce range(N) as $i ([]; . + [$i])` の時間が
-  **O(N²) → O(N)** に降格、N=1e6 で 0.09 s (jq 0.34 s より速い)
-- **scratch arena** (per-run bump、Cheney 非対象): NODE_DEF / runtime の
-  snapshot ターナリ (`(cnt <= 16) ? small : (VALUE *)nuq_scratch_alloc(...)`)
-  全 57 サイトの heap 分岐をここに流す。run 終了で wholesale reset、
-  個別 free 不要。valgrind で per-input \"definitely lost\" がゼロ
-- **streaming 入力経路**: stdin の slurp 後 1 値ずつ lazy parse → 即
-  `nuq_run` → arena reset。30 K records JSONL の peak RSS が 832 MB →
-  340 MB に。`-n` モードでも `inputs` builtin が同じ cursor を共有して
-  lazy pull (詳細は [runtime.md §6](./runtime.md))。
-- **GC root pin protocol の確立**: helper が VALUE / VALUE[] を
-  arena allocator 越しに保持する箇所は `NUQ_GC_PIN1` /
-  `NUQ_GC_PIN_ARR` で root 化。binary op (`+/-/*/etc.`)、比較系、
-  `node_pipe` / `node_if` / `node_as[_pattern]` / reduce / foreach /
-  sort_by / group_by / unique / paths walker / json parser まで
-  audit 済み (`linearity.c` 経由の write-back も含む)
-- **GC stress test infra** (`make gctest`): `-DNUQ_GC_DEBUG_MPROTECT=1
-  -DNUQ_GC_DEBUG_STRESS=1` の debug build で
-  - 全 arena chunk を `mmap` で確保し、from-space は GC 終了時に
-    `mprotect(PROT_NONE) + madvise(MADV_DONTNEED)` で deny。stale
-    arena pointer の deref が即 segfault する。
-  - 全 `nuq_arena_alloc` を slow path 経由にして、毎 alloc で Cheney
-    GC を強制。production の 16 MB threshold まで届かない latent な
-    pin 漏れを表面化させる。
 
-  通常 build と stress build の両方で `make test` 370/370 PASS を
-  維持。pin 抜けが新たに混入したらこの mode で即座に局所化できる。
-  実装詳細は [runtime.md §5.5](./runtime.md#55-debug-build-stale-pointer-を即-segfault-にする)。
-- **JSON parser / printer の SIMD scanner**: `parse_string_raw` /
-  `print_string` の inner byte-loop (`'"' | '\\' | < 0x20` を探す) を
-  SSE2 16-byte stride に。JSONL `identity` (パススルー) が 3.6× →
-  6.1×、real bench も string-heavy なものは +5-15%。
-- **streaming pipe fusion**: `inputs | F` を `node_b_inputs_pipe(F)`
-  に rewrite して record 単位で stream。`[inputs | F] | length` は
-  `node_b_count_inputs(F)` まで畳む (pool accumulation も無し)。
-  chain absorption rule で `inputs | F1 | F2 | ...` も単一 per-input
-  loop に collapse。JSONL `count_pushes` 0.35× → 2.57×、
-  `top_users` 0.33× → 2.38× — 構造的に jq に勝てなかった大敗 2 件
-  が逆転。
-- **Pin stack heap-growable**: `nuq_gc_roots` / `nuq_gc_arrs` を
-  fixed size (65536 / 256) から `realloc` ベースの growable に。
-  特に後者は bounds check すら無く、深い recursive filter (pyramid
-  8000) で隣接 global (`arena_first` 等) を silent overflow で
-  破壊する landmine だった。push hot-path の追加 overhead は cap
-  check 1 回のみ。
+### メモリ管理
+
+- per-run arena + Cheney semispace copying GC (16 MB しきい値で
+  trigger、live 値だけ to-space にコピーして from-space 解放)。
+  per-run の中間 VALUE はここ
+- 永続領域 (parser / リテラル / `--arg*` / module data 等) は
+  plain `calloc` でプロセス終了まで保持
+- **libgc 依存なし** — `libm` + `libc` のみで動く
+- **scratch arena** (per-run bump、Cheney 非対象): NODE_DEF /
+  runtime の snapshot ターナリ (`(cnt <= 16) ? small :
+  (VALUE *)nuq_scratch_alloc(...)`) 全 57 サイトの heap 分岐をここに
+  流す。run 終了で wholesale reset、個別 free 不要。valgrind で
+  per-input "definitely lost" がゼロ
+- **線形性解析** (`linearity.c`): parse 後の AST 解析で `acc + [$i]`
+  系の `node_add` を `node_add_inplace` に書き換える。
+  `reduce range(N) as $i ([]; . + [$i])` が **O(N²) → O(N)**、
+  N=1e6 で 0.09 s vs jq 0.34 s で**逆転**
+
+詳細は [runtime.md §5](./runtime.md#5-メモリ管理--per-run-arena--cheney-copying-gc)。
+
+### GC root pin protocol
+
+- helper が VALUE / VALUE[] を arena allocator 越しに保持する箇所
+  は `NUQ_GC_PIN1` / `NUQ_GC_PIN_ARR` で root 化。binary op、比較系、
+  `node_pipe` / `node_if` / `node_as[_pattern]` / reduce / foreach
+  / sort_by / group_by / unique / paths walker / json parser まで
+  audit 済み (`linearity.c` 経由の write-back も含む)
+- pin stack は両方とも `realloc` ベースの growable
+  (`nuq_gc_roots` / `nuq_gc_arrs`)。元々は固定 cap (65536 / 256)
+  で、後者は bounds check すら無かった landmine (深い recursive
+  filter で隣接 global を silent に破壊)
+- **debug build** (`make gctest`): `-DNUQ_GC_DEBUG_MPROTECT=1
+  -DNUQ_GC_DEBUG_STRESS=1` で
+  - chunk を `mmap` で page-aligned 確保 → from-space を GC 終了時に
+    `mprotect(PROT_NONE) + madvise(MADV_DONTNEED)` で deny。stale
+    arena pointer の deref が即 segfault に化ける
+  - 全 `nuq_arena_alloc` を slow path 経由にして毎 alloc で Cheney
+    強制。production の 16 MB threshold まで届かない latent な pin
+    漏れを表面化
+
+  本番 build と stress build の両方で `make test` 370/370 PASS。
+  詳細は [runtime.md §5.5](./runtime.md#55-debug-build-stale-pointer-を即-segfault-にする)
+
+### I/O
+
+- **streaming 入力経路**: stdin の slurp 後、1 値ずつ lazy parse →
+  即 `nuq_run` → arena reset。30 K records JSONL の peak RSS が
+  832 MB → 340 MB に。`-n` モードでも `inputs` builtin が同じ
+  cursor を共有して lazy pull (詳細は [runtime.md §6](./runtime.md))
+- **JSON parser**: no-escape 文字列の fast path、integer の inline
+  accumulate、SSE2 16-byte stride scanner (`'"' / '\\' / <0x20`
+  探し)。JSONL `identity` (純パススルー) が 6.1× vs jq
+
+### AST fusion (parse-time peephole)
+
+- 汎用 4 ルール: `map | map`、`select | select`、`[body] | length`、
+  `[body] | add`、+ 右辺エッジ fusion
+- **`inputs` streaming-pipe fusion** 3 ルール: `pipe(inputs, F)` →
+  `inputs_pipe(F)` (per-record stream)、`[inputs | F] | length` →
+  `count_inputs(F)` (pool accumulation 無しで count)、
+  `pipe(inputs_pipe(F), G)` → `inputs_pipe(F | G)` (chain
+  absorption)。JSONL の構造的大敗 (`count_pushes` 0.35×、
+  `top_users` 0.33×) を 2.4-2.6× に逆転
 
 ## フィルタ言語
 
