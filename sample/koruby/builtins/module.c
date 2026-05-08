@@ -401,12 +401,18 @@ static VALUE module_methods_by_vis(CTX *c, VALUE self, int argc, VALUE *argv,
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
     struct korb_class *k = (struct korb_class *)self;
     VALUE r = korb_ary_new();
+    bool first = true;
     while (k) {
         for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
             for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
+                /* When inherit=false, only methods defined DIRECTLY on
+                 * this class count — drop entries that came from an
+                 * included module (include_depth > 0). */
+                if (!include_inherited && first && e->include_depth > 0) continue;
                 if (e->method && e->method->visibility == vis) korb_ary_push(r, korb_id2sym(e->name));
             }
         }
+        first = false;
         if (!include_inherited) break;
         k = k->super;
     }
