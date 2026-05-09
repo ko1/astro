@@ -12392,6 +12392,16 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // pystro's simpler ABCMeta until super-spread is fixed.
         "abc.py",
         "_py_abc.py",
+        // enum.py — CPython's EnumMeta.__prepare__ returns a custom
+        // _EnumDict that pystro can't propagate to the class-body
+        // namespace (__prepare__ hook not implemented).  pystro's
+        // enum.py works enough for `class C(Enum): A = 1`.
+        "enum.py",
+        // re.py — CPython's re is a package (re/_compiler.py /
+        // re/_parser.py / re/__init__.py) and uses bytecode-level
+        // pattern compilation.  pystro's re.py is a small Python
+        // matcher; supports the common cases we need.
+        "re.py",
         NULL,
     };
     bool pystro_wins = false;
