@@ -207,9 +207,15 @@ end
 # IO / File constants — many tests dereference these at toplevel.
 unless defined?(Bug)
   module Bug
-    Integer = Module.new
-    Bignum = Module.new
-    String = Module.new
+    module Integer
+      def self.to_bignum(*); 0; end
+      def self.from_bignum(*); 0; end
+      def self.to_fixnum(*); 0; end
+    end
+    Bignum = Integer
+    module String
+      def self.spec_to_str(*); ""; end
+    end
   end
 end
 unless defined?(Socket)
@@ -241,6 +247,14 @@ class IO
     NOFOLLOW = 0x20000; NOCTTY = 0x100; DIRECT = 0x4000
     SEEK_SET = 0; SEEK_CUR = 1; SEEK_END = 2; SEEK_DATA = 3; SEEK_HOLE = 4
     FNM_SYSCASE = 0; LOCK_SH = 1; LOCK_EX = 2; LOCK_UN = 8; LOCK_NB = 4
+  end
+  unless const_defined?(:Buffer)
+    class Buffer
+      def initialize(size = 0); @size = size; @data = "\0" * size; end
+      def size; @size; end
+      def get_string(*); @data; end
+      def set_string(*); end
+    end
   end
   def close_on_exec?; false; end unless method_defined?(:close_on_exec?)
   def close_on_exec=(_); end unless method_defined?(:close_on_exec=)
@@ -530,6 +544,8 @@ unless defined?(Thread::Queue)
       def wait(*); self; end
       def signal; self; end
       def broadcast; self; end
+      def marshal_dump; nil; end
+      def marshal_load(_); end
     end
     class Mutex
       def synchronize; yield; end
@@ -657,6 +673,9 @@ module Test
       def self.test_methods
         instance_methods.select { |m| m.to_s.start_with?("test_") }.sort
       end
+      def self.warn(*); end
+      def self.print(*); end
+      def self.puts(*); end
       def setup; end
       def teardown; end
 
