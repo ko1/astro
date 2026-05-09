@@ -288,8 +288,39 @@ class Match:
         return True
 
 
+def _strip_verbose(pat):
+    """Remove unescaped whitespace and '# ...' comments from a VERBOSE
+    pattern.  Mirror CPython behavior — char classes [...] and escapes
+    are preserved verbatim."""
+    out = []
+    i = 0
+    L = len(pat)
+    while i < L:
+        c = pat[i]
+        if c == "\\" and i + 1 < L:
+            out.append(pat[i:i+2]); i += 2; continue
+        if c == "[":
+            end = pat.find("]", i + 1)
+            if end < 0: end = L - 1
+            out.append(pat[i:end+1]); i = end + 1; continue
+        if c in " \t\n\r":
+            i += 1; continue
+        if c == "#":
+            # Skip to end-of-line.
+            nl = pat.find("\n", i)
+            i = nl + 1 if nl >= 0 else L
+            continue
+        out.append(c); i += 1
+    return "".join(out)
+
+
 class Pattern:
     def __init__(self, pat, flags=0):
+        # PEP-related: VERBOSE / re.X flag strips whitespace and comments
+        # before regex engine sees the pattern.  Real CPython does this
+        # at compile-time too.
+        if flags & VERBOSE:
+            pat = _strip_verbose(pat)
         self.pattern = pat
         self.flags = flags
 

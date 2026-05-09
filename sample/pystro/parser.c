@@ -3061,12 +3061,29 @@ parse_def(void)
     }
 
     // Module/function-level def: bind, then attach __annotations__ via
-    // attribute set on the bound name.
+    // attribute set on the bound name.  Wrap annotation eval in
+    // try/except so undefined names (common when relying on PEP 563
+    // `from __future__ import annotations` deferral) don't kill the
+    // def — same pattern we already use for class-body annotations.
     NODE *bind = make_store(fname, def_node);
     if (ann_set) {
         NODE *load = make_load(fname);
         NODE *setann = ALLOC_node_attr_set(load, intern_name("__annotations__", 15), ann_set);
-        return ALLOC_node_seq(bind, setann);
+        struct pyshandler hs[1];
+        memset(hs, 0, sizeof(hs));
+        NODE *exc_tuple_items[3] = {
+            ALLOC_node_gref(intern_name("NameError", 9)),
+            ALLOC_node_gref(intern_name("AttributeError", 14)),
+            ALLOC_node_gref(intern_name("TypeError", 9)),
+        };
+        size_t exc_base = node_table_reserve(exc_tuple_items, 3);
+        hs[0].exc_class = ALLOC_node_make_tuple((uint32_t)exc_base, 3);
+        hs[0].body = ALLOC_node_nop();
+        hs[0].name = NULL;
+        size_t hbase = handlers_reserve(hs, 1);
+        NODE *guarded = ALLOC_node_try(setann, (uint32_t)hbase, 1,
+                                        ALLOC_node_nop(), ALLOC_node_nop());
+        return ALLOC_node_seq(bind, guarded);
     }
     return bind;
 }
