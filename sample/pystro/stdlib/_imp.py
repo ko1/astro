@@ -36,6 +36,22 @@ def get_magic():
     return b"\x00\x00\x00\x00"
 
 
+# CPython 3.12+ added this — used by importlib._bootstrap_external
+# when validating .pyc files.  pystro doesn't compile bytecode, but
+# the constant must exist to satisfy import-time access.
+def pyc_magic_number_token():
+    return 0
+
+
+# CPython 3.12+ — also referenced by warnings.py / importlib loaders.
+def find_frozen(name, *, withdata=False):
+    return None
+def get_frozen_data(name):
+    return None
+def is_lazy_imports_active():
+    return False
+
+
 def extension_suffixes():
     return [".so"]
 
