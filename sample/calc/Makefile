@@ -15,9 +15,9 @@ optflags=-O3
 READLINE_CFLAGS := $(shell echo 'int main(){return 0;}' | gcc -x c -lreadline - -o /dev/null 2>/dev/null && echo "-DUSE_READLINE")
 READLINE_LDFLAGS := $(if $(READLINE_CFLAGS),-lreadline)
 
-calc: main.c node.c Makefile $(NODE_GENFILES) context.h node.h
+calc: main.c parse.c node.c Makefile $(NODE_GENFILES) context.h node.h parse.h
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall $(READLINE_CFLAGS) \
-            -o calc main.c node.c -ldl $(READLINE_LDFLAGS)
+            -o calc main.c parse.c node.c -ldl $(READLINE_LDFLAGS)
 
 node_eval.c: ../../lib/* node.def
 	ruby -I ../../lib -r astrogen -e 'ASTroGen.start []'
