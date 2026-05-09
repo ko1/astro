@@ -3569,10 +3569,19 @@ pys_contains(CTX *c, VALUE container, VALUE v)
     if (pys_is_instance(container)) {
         VALUE cls = PYS_OBJ_VAL(PYS_PTR(container)->inst.cls);
         VALUE m = pys_class_lookup_method(cls, PYS_INTERN_contains);
+        // CPython: `__contains__ = None` blocks the iter fallback.
         if (m != PYS_NONE) {
             VALUE av[2] = { container, v };
             VALUE r = pys_apply(c, m, 2, av);
             return pys_is_truthy(r);
+        } else if (pys_class_has_method(cls, "__contains__")) {
+            // The class explicitly defines __contains__ as None.
+            extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+            VALUE av_t[1] = { container };
+            VALUE tt = bi_type(c, 1, av_t);
+            const char *tn = (pys_is_class(tt)) ? PYS_PTR(tt)->cls.name : "?";
+            PYS_RAISE_EXC(c, c->EXC_TypeError, "argument of type '%s' is not iterable", tn);
+            return false;
         }
         // Built-in subclass: forward to primary.
         if (PYS_PTR(container)->inst.primary)
