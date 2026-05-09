@@ -4706,6 +4706,15 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             int32_t eidx = pydict_find(c, o->func.attrs, key, h);
             if (eidx >= 0) return o->func.attrs->entries[eidx].value;
         }
+        // Universal dunders (__hash__, __eq__, __repr__, __str__) — every
+        // function object has these via inheritance from object.  CPython
+        // tests like `inspect.isfunction(f) and hash(f.__hash__) ...` reach
+        // for them; pystro previously raised AttributeError.
+        {
+            extern VALUE pys_dunder_bound(CTX *c, VALUE recv, const char *name);
+            VALUE bm = pys_dunder_bound(c, v, name);
+            if (bm != PYS_NONE) return bm;
+        }
         PYS_RAISE_EXC(c, c->EXC_AttributeError, "function has no attribute '%s'", name);
     }
     if (pys_is_builtin(v)) {
@@ -12310,6 +12319,12 @@ bi_import(CTX *c, int argc, VALUE *argv)
             pkg_len = (size_t)(last - pkg_str);
         }
         // Build absolute name: pkg_str[0..pkg_len] + "." + p2 (rest).
+        // p2 may itself start with '.' when the side-import path was
+        // built as `<rel>.submod` from a relative form whose rest was
+        // empty (e.g. `from . import aliases` → side-import name
+        // "\11\1.aliases"); strip the leading dot to avoid producing
+        // "encodings..aliases".
+        if (*p2 == '.') p2++;
         char abs[1024];
         size_t al = 0;
         if (pkg_len > 0) { memcpy(abs, pkg_str, pkg_len); al = pkg_len; }

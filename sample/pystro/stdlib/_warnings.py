@@ -7,6 +7,12 @@ _filters = []
 _defaultaction = "default"
 _onceregistry = {}
 
+# CPython's `warnings.py` reads `_warnings.filters` and other public
+# names; provide non-underscore aliases.
+filters = _filters
+defaultaction = _defaultaction
+onceregistry = _onceregistry
+
 
 def warn(message, category=None, stacklevel=1, source=None):
     if category is None:

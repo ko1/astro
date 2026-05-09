@@ -8,6 +8,17 @@ def release_lock(): pass
 def lock_held(): return False
 
 
+def create_builtin(spec):
+    # CPython creates the C-level builtin module here; pystro doesn't
+    # have any (we expose pure-Python stubs via stdlib/).  Return None
+    # so the loader's caller falls back to the regular path.
+    return None
+
+
+def exec_builtin(module):
+    return 0
+
+
 def is_builtin(name):
     return name in sys.builtin_module_names if hasattr(sys, "builtin_module_names") else False
 
