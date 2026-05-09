@@ -7,11 +7,29 @@ CC ?= gcc
 optflags ?= -O2
 PRISM_DIR = ./prism
 PGO_DIR = $(CURDIR)/pgo-data
-CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -flto=auto -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable
-LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=auto
-LIBS = -lprism -lgc -lgmp -lm
 
-SRCS = main.c node.c parse.c object.c builtins.c bootstrap_src.c
+# Bignum backend: by default link the system GMP (`-lgmp`); set
+# `MINI_GMP=1` to compile the in-tree mini-gmp (single .c file) instead.
+# mini-gmp is ABI-incompatible with full GMP — choose once at build
+# time.  Useful when targeting wasm / embedded / GMP-less environments.
+# Performance: mini-gmp is ~10x slower than GMP on large bignums but
+# parity-ish for the small Bignums koruby actually produces.
+MINI_GMP ?= 0
+ifeq ($(MINI_GMP),1)
+  GMP_CFLAGS = -DKORB_USE_MINI_GMP -Ivendor/mini-gmp
+  GMP_SRCS = vendor/mini-gmp/mini-gmp.c
+  GMP_LIBS =
+else
+  GMP_CFLAGS =
+  GMP_SRCS =
+  GMP_LIBS = -lgmp
+endif
+
+CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -flto=auto -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable $(GMP_CFLAGS)
+LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=auto
+LIBS = -lprism -lgc $(GMP_LIBS) -lm
+
+SRCS = main.c node.c parse.c object.c builtins.c bootstrap_src.c $(GMP_SRCS)
 # builtins/*.c are #included from builtins.c, but list them here so
 # `make` rebuilds when any of them changes.  Same for the shared
 # runtime files included from node.c.

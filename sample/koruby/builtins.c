@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-#include <gmp.h>
+#include "korb_gmp.h"
 #include "context.h"
 #include "object.h"
 #include "node.h"

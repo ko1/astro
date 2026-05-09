@@ -4,7 +4,7 @@
  */
 
 #include <gc.h>
-#include <gmp.h>
+#include "korb_gmp.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
