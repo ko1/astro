@@ -4492,6 +4492,38 @@ skip_plain_unpack: ;
     }
 
     if (is_aug_assign(k2)) {
+        // CPython forbids tuple / list LHS for augmented assignment:
+        // `(a, b) += 1` / `[a] -= 2` are SyntaxError, not runtime.
+        // Detect the leading `(` or `[` form by peeking at lhs_start
+        // (the token where the LHS expression begins).
+        if ((&tok_arr[lhs_start])->kind == T_LPAREN ||
+            (&tok_arr[lhs_start])->kind == T_LBRACK) {
+            // It's only a tuple / list pattern if it would have parsed
+            // as parenthesized comma-separated form.  A bare `(a) +=`
+            // is a single name in parens and IS valid.  Walk to the
+            // matching close-bracket and look for a comma at depth 1.
+            int depth = 0;
+            bool has_comma_at_top = false;
+            int open_kind = (&tok_arr[lhs_start])->kind;
+            int close_kind = (open_kind == T_LPAREN) ? T_RPAREN : T_RBRACK;
+            for (size_t i = lhs_start; i < (size_t)tok_pos; i++) {
+                int kk = tok_arr[i].kind;
+                if (kk == open_kind || kk == T_LPAREN || kk == T_LBRACK) depth++;
+                else if (kk == close_kind || kk == T_RPAREN || kk == T_RBRACK) {
+                    depth--;
+                    if (depth == 0) break;
+                }
+                else if (kk == T_COMMA && depth == 1) {
+                    has_comma_at_top = true; break;
+                }
+            }
+            // List literal `[a]` is unambiguously not assignable in aug
+            // form even with a single element; only paren single-name
+            // is allowed.
+            if (open_kind == T_LBRACK || has_comma_at_top) {
+                parse_error("'tuple' is an illegal expression for augmented assignment");
+            }
+        }
         int op = k2;
         tok_pos++;
         NODE *rhs = parse_expr_list();
