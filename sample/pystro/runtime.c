@@ -10115,9 +10115,18 @@ bi_int(CTX *c, int argc, VALUE *argv)
         VALUE r = pys_normalise_int(z); mpz_clear(z); return r;
     }
     if (pys_is_instance(v)) {
-        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), "__int__");
+        // For built-in subclasses (`class TrapInt(int)`), if the
+        // instance has a primary value (the underlying int), return
+        // it directly to short-circuit `int(self)` recursion in
+        // user-defined __int__ / __index__ methods.
+        struct pysobj *o = PYS_PTR(v);
+        if (o->inst.primary
+            && (PYS_IS_FIXNUM(o->inst.primary) || pys_is_bignum(o->inst.primary)
+                || o->inst.primary == PYS_TRUE || o->inst.primary == PYS_FALSE))
+            return o->inst.primary;
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(o->inst.cls), "__int__");
         if (m != PYS_NONE) { VALUE av[1] = { v }; return pys_apply(c, m, 1, av); }
-        m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), PYS_INTERN_index);
+        m = pys_class_lookup_method(PYS_OBJ_VAL(o->inst.cls), PYS_INTERN_index);
         if (m != PYS_NONE) { VALUE av[1] = { v }; return pys_apply(c, m, 1, av); }
     }
     PYS_RAISE_EXC(c, c->EXC_TypeError, "int() argument type not supported");
