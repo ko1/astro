@@ -373,7 +373,22 @@ read_string_lit(int line, char quote, bool is_fstr)
             }
             src_pos++;
         } else if (ch == '\\' && is_fstr) {
-            // f-string: keep backslash for parser to handle, but process the same escapes.
+            // f-string body.  PEP 701 (3.12+): inside `{...}`, escape
+            // sequences are part of the inner Python expression and the
+            // re-tokenizer there will handle them.  Outside `{...}`,
+            // process escapes the same way a regular string would so
+            // the literal text segments mean what they say.
+            if (brace_depth > 0) {
+                // Pass through verbatim: backslash + next char.
+                src_pos++;
+                char esc = peek(0);
+                if (esc == '\0') lex_error("unterminated f-string");
+                if (len + 2 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                buf[len++] = '\\';
+                buf[len++] = esc;
+                src_pos++;
+                continue;
+            }
             src_pos++;
             char esc = peek(0);
             if (esc == '\0') lex_error("unterminated f-string");
