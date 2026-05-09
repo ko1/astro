@@ -154,10 +154,27 @@ end
 # kw-passing edge cases) won't pass, but the load no longer blocks.
 class Module
   def ruby2_keywords(*_names); nil; end
-  def refine(_klass, &_blk); self; end
+  # We don't implement real refinements.  For *user-defined* classes
+  # we treat `refine C do def foo; end end` as `C.class_eval(&blk)` so
+  # the methods exist globally — that lets tests like test_symbol load
+  # (they reference refined methods at toplevel before `using`
+  # activates).  For built-in classes (String/Integer/Array/Hash/etc)
+  # we keep refine as a no-op — refining e.g. String#>= globally would
+  # break Comparable comparisons in unrelated tests (test_refinement).
+  REFINE_BUILTINS = [::String, ::Integer, ::Float, ::Array, ::Hash,
+                     ::Symbol, ::NilClass, ::TrueClass, ::FalseClass,
+                     ::Object, ::Numeric, ::Comparable, ::Enumerable,
+                     ::BasicObject, ::Range, ::Regexp, ::Proc, ::Method] rescue []
+  def refine(klass, &blk)
+    return self unless blk
+    return self if REFINE_BUILTINS.include?(klass)
+    klass.class_eval(&blk) if klass.respond_to?(:class_eval)
+    self
+  end
   def using(_mod); self; end
   def used_modules; []; end
   def used_refinements; []; end
+  def import_methods(*); self; end
 end
 
 # Patch koruby's built-in Encoding (which only carries constants — no
@@ -216,6 +233,25 @@ unless defined?(Bug)
     module String
       def self.spec_to_str(*); ""; end
     end
+  end
+end
+unless defined?(MemoryViewTestUtils)
+  module MemoryViewTestUtils
+    NATIVE_ENDIAN = :little_endian
+    %w[SHORT INT LONG INT16 INT32 INT64 FLOAT DOUBLE
+       LONG_LONG SIZE_T VOIDP INTPTR].each do |t|
+      const_set("#{t}_ALIGNMENT", 8)
+    end
+    class ExportableString
+      def initialize(s); @s = s; end
+    end
+    class MultiDimensionalView
+      def initialize(*); end
+    end
+    class NDArray
+      def initialize(*); end
+    end
+    def self.fill_contiguous_strides(*); end
   end
 end
 unless defined?(Socket)
