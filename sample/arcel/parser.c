@@ -701,6 +701,146 @@ parse_primary(P *const p)
                 #undef IS
             }
 
+            /* Type identifiers — fold to string literal at parse time.
+             * cel-spec: `int`, `string`, etc. are values whose runtime
+             * representation is the type name.  Since arcel_cel_type_of
+             * already returns the same string for `type(x)`, equality
+             * tests like `type(1) == int` collapse to string compare. */
+            #define IS(name) (id_len == sizeof(name) - 1 && memcmp(id, name, id_len) == 0)
+            if (IS("int")     || IS("uint")     || IS("double") ||
+                IS("bool")    || IS("string")   || IS("bytes")  ||
+                IS("null_type") || IS("list")   || IS("map")    ||
+                IS("type")    || IS("error")) {
+                return ALLOC_node_str_lit(intern_ident(id, id_len), id_len);
+            }
+            /* `google.protobuf.{Timestamp,Duration,Int{32,64}Value,...}`:
+             * recognise as qualified-type-name + fold to string literal.
+             * We're past the IDENT lex; current tok is whatever followed.
+             * If it's `.protobuf.<known>`, consume and emit the literal. */
+            if (IS("google") && p->tok.kind == TK_DOT) {
+                /* Save state in case we don't actually have a known
+                 * dotted-type chain — then the bare ident path takes
+                 * over and `google` falls through as undeclared. */
+                lex(p);  /* consume '.' */
+                if (p->tok.kind == TK_IDENT &&
+                    p->tok.len == 8 && memcmp(p->tok.p, "protobuf", 8) == 0)
+                {
+                    lex(p);  /* consume 'protobuf' */
+                    if (p->tok.kind == TK_DOT) {
+                        lex(p);  /* consume '.' */
+                        if (p->tok.kind == TK_IDENT) {
+                            const char *t  = p->tok.p;
+                            const uint32_t tl = p->tok.len;
+                            #define ISTYPE(s) (tl == sizeof(s)-1 && memcmp(t, s, tl) == 0)
+                            if (ISTYPE("Timestamp")  || ISTYPE("Duration")  ||
+                                ISTYPE("Int32Value") || ISTYPE("Int64Value") ||
+                                ISTYPE("UInt32Value")|| ISTYPE("UInt64Value") ||
+                                ISTYPE("FloatValue") || ISTYPE("DoubleValue") ||
+                                ISTYPE("BoolValue")  || ISTYPE("StringValue") ||
+                                ISTYPE("BytesValue") || ISTYPE("Value")      ||
+                                ISTYPE("ListValue")  || ISTYPE("Struct")     ||
+                                ISTYPE("Any")        || ISTYPE("NullValue"))
+                            {
+                                /* Save the wrapper name for both
+                                 * literal and constructor paths. */
+                                char qbuf[64];
+                                int qn = snprintf(qbuf, sizeof qbuf, "google.protobuf.%.*s", (int)tl, t);
+                                /* Save which wrapper for the {} branch
+                                 * before we re-use `t`. */
+                                const bool w_int    = ISTYPE("Int32Value") || ISTYPE("Int64Value");
+                                const bool w_uint   = ISTYPE("UInt32Value") || ISTYPE("UInt64Value");
+                                const bool w_double = ISTYPE("FloatValue") || ISTYPE("DoubleValue");
+                                const bool w_bool   = ISTYPE("BoolValue");
+                                const bool w_str    = ISTYPE("StringValue");
+                                const bool w_bytes  = ISTYPE("BytesValue");
+                                const bool w_null   = ISTYPE("NullValue");
+                                const bool w_value  = ISTYPE("Value");
+                                const bool w_any    = ISTYPE("Any");
+                                const bool w_unrep  = ISTYPE("ListValue") || ISTYPE("Struct") || w_any;
+                                lex(p);  /* consume the type name */
+                                /* Wrapper-message literal: `<wrapper>{...}`.
+                                 * cel-spec auto-unwraps these to their
+                                 * primitive (or null for empty / NullValue),
+                                 * so we fold at parse time rather than
+                                 * carrying a synthetic message value
+                                 * through the runtime. */
+                                if (p->tok.kind == TK_LBRACE) {
+                                    lex(p);  /* consume '{' */
+                                    /* Empty body → zero value of the
+                                     * wrapped type (cel-spec). */
+                                    if (p->tok.kind == TK_RBRACE) {
+                                        lex(p);
+                                        if (w_int)    return ALLOC_node_int_lit(0);
+                                        if (w_uint)   return ALLOC_node_uint_lit(0);
+                                        if (w_double) return ALLOC_node_double_lit(0.0);
+                                        if (w_bool)   return ALLOC_node_bool_lit(0);
+                                        if (w_str)    return ALLOC_node_str_lit("", 0);
+                                        if (w_bytes)  return ALLOC_node_bytes_lit("", 0);
+                                        if (w_unrep) {
+                                            /* ListValue / Struct / Any — empty form is ill-defined
+                                             * for arcel's zero-runtime-overhead path; per cel-spec
+                                             * they error rather than silently coercing.  Surface
+                                             * a parse-time string the eval can recognise. */
+                                            p_error(p, "wrapper '%.*s' empty literal not supported (use list/map literal instead)", (int)tl, t);
+                                            return NULL;
+                                        }
+                                        return ALLOC_node_null_lit();   /* Value, NullValue */
+                                    }
+                                    /* Single field `name: expr`.  We don't
+                                     * support multi-field bodies here
+                                     * because cel-spec wrapper messages
+                                     * have one tagged value.  For Value,
+                                     * the field name (`bool_value`,
+                                     * `string_value`, etc.) just selects
+                                     * which tag — we ignore it and let
+                                     * the expr's natural type carry the
+                                     * tag. */
+                                    if (p->tok.kind != TK_IDENT) {
+                                        p_error(p, "expected field name in wrapper literal");
+                                        return NULL;
+                                    }
+                                    lex(p);  /* consume field name */
+                                    if (p->tok.kind != TK_COLON) {
+                                        p_error(p, "expected ':' in wrapper literal");
+                                        return NULL;
+                                    }
+                                    lex(p);  /* consume ':' */
+                                    NODE *val = parse_expr(p);
+                                    if (!val) return NULL;
+                                    if (p->tok.kind != TK_RBRACE) {
+                                        p_error(p, "wrapper literal supports only one field");
+                                        return NULL;
+                                    }
+                                    lex(p);  /* consume '}' */
+                                    /* For NullValue{...}, always null. */
+                                    if (w_null)  return ALLOC_node_null_lit();
+                                    /* For Value{...}, the inner expr's type
+                                     * IS the value's type (cel-spec
+                                     * auto-unwraps).  Same for the typed
+                                     * wrappers — `Int32Value{value: X}`
+                                     * IS X.  Skip explicit conversion
+                                     * since the test expr is already in
+                                     * the right type. */
+                                    (void)w_value;
+                                    return val;
+                                }
+                                /* No `{` follows — emit the type-name
+                                 * string literal so `type(x) == <name>`
+                                 * style equality works. */
+                                return ALLOC_node_str_lit(intern_ident(qbuf, (uint32_t)qn), (uint32_t)qn);
+                            }
+                            #undef ISTYPE
+                        }
+                    }
+                }
+                /* Unrecognized chain after `google.` — error out cleanly
+                 * (the alternative is rebuilding the partial AST as
+                 * field accesses, which is not worth the complexity for
+                 * an undefined identifier). */
+                p_error(p, "unrecognized qualified name starting with 'google.'");
+                return NULL;
+            }
+            #undef IS
             /* Bare identifier */
             return ALLOC_node_ident(intern_ident(id, id_len), id_len);
         }
