@@ -1,0 +1,26 @@
+"""ASTro repository — Bazel module declaration.
+
+Currently only sample/arcel is wired up for Bazel; other samples
+build via `make` from their own Makefiles.  This MODULE.bazel
+exists so that `bazel build //sample/arcel:arcel` resolves the
+runtime/ + lib/ dependencies.
+
+External Bazel projects (Envoy filter, gRPC interceptor, etc.) that
+want to embed arcel pull this whole repo:
+
+    bazel_dep(name = "astro", version = "0.0.0-experimental")
+    git_override(
+        module_name = "astro",
+        remote = "https://github.com/<user>/astro",
+        commit = "<sha>",
+    )
+
+then add `deps = ["@astro//sample/arcel:arcel"]` to their cc_library.
+"""
+
+module(
+    name    = "astro",
+    version = "0.0.0-experimental",
+)
+
+bazel_dep(name = "rules_cc", version = "0.0.17")

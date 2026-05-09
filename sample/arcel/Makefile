@@ -1,4 +1,4 @@
-all: arcel libarcel.a libarcel.so examples/embed
+all: arcel libarcel.a libarcel.so examples/embed examples/embed_cc
 
 NODE_GENFILES = node_eval.c \
                 node_dispatch.c \
@@ -43,11 +43,18 @@ libarcel.so: $(LIB_DEPS)
 $(NODE_GENFILES): node.def arcel_gen.rb ../../lib/astrogen.rb
 	ruby -I ../../lib -r ./arcel_gen -e 'ASTroGen.start []'
 
-# Embed example: 50-line C program that uses arcel.h to compile and
+# Embed example: ~50-line C program that uses arcel.h to compile and
 # evaluate a CEL expression.  Demonstrates the embedding path that
 # Envoy / gRPC / custom evaluators would take.
 examples/embed: examples/embed.c libarcel.a arcel.h
 	$(CC) $(CFLAGS) -o $@ examples/embed.c libarcel.a $(LIBS)
+
+# C++ counterpart — wraps the C handles in std::unique_ptr for RAII.
+# Shows that arcel is C++-usable via `extern "C"` without needing a
+# separate arcel.hpp wrapper.
+examples/embed_cc: examples/embed.cc libarcel.a arcel.h
+	$(CXX) -std=c++17 $(CFLAGS) -o $@ examples/embed.cc libarcel.a $(LIBS)
+CXX = g++
 
 # Run the CEL conformance suite against ./arcel.  Defaults to the
 # core / non-proto / non-ext subset; pass --include proto,env,ext etc.
@@ -85,9 +92,11 @@ smoke: arcel
 	@./arcel eval -e '-5 + 10'               | grep -q '^5$$' && echo "  ok  unary minus"
 	@./arcel eval -e '7 / 0'                 | grep -q '^ERROR' && echo "  ok  div0 -> error"
 
-# Embed-side smoke: build and run the C example, sanity-check output.
-smoke-embed: examples/embed
-	@./examples/embed | grep -q '^OK' && echo "  ok  embed example"
+# Embed-side smoke: build and run both example bins (C and C++),
+# sanity-check that they emit the OK lines.
+smoke-embed: examples/embed examples/embed_cc
+	@./examples/embed    | grep -q '^OK' && echo "  ok  embed (C)"
+	@./examples/embed_cc | grep -q '^OK' && echo "  ok  embed (C++)"
 
 clean:
 	rm -f arcel libarcel.a libarcel.so examples/embed *.o $(NODE_GENFILES)

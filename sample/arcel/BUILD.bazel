@@ -1,0 +1,125 @@
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary")
+
+# ASTroGen produces 8 files from node.def + arcel_gen.rb.  Bazel needs
+# them at known paths under bazel-out/, which is what the genrule does.
+#
+# Requires Ruby >= 3.4 on the build PATH (uses the `it` implicit block
+# parameter introduced in 3.4).  Configurable via the ARCEL_RUBY env
+# var if your default `ruby` is older — e.g.:
+#
+#     ARCEL_RUBY=/path/to/ruby-3.4 bazel build //sample/arcel:arcel
+#
+# (Ubuntu's /usr/bin/ruby is 3.2 in noble; rbenv shims have newer.)
+genrule(
+    name = "astrogen_output",
+    srcs = [
+        "node.def",
+        "arcel_gen.rb",
+        "//lib:astrogen.rb",
+    ],
+    outs = [
+        "node_eval.c",
+        "node_dispatch.c",
+        "node_dump.c",
+        "node_specialize.c",
+        "node_replace.c",
+        "node_alloc.c",
+        "node_hash.c",
+        "node_head.h",
+    ],
+    cmd = """
+        # ASTroGen reads node.def from the cwd and writes the 8 outputs
+        # there.  Set up a workdir, copy inputs, run, move outputs.
+        RUBY=$${ARCEL_RUBY:-ruby}
+        WORK=$$(mktemp -d)
+        cp $(location node.def) $(location arcel_gen.rb) $$WORK/
+        cp $(location //lib:astrogen.rb) $$WORK/astrogen.rb
+        (cd $$WORK && $$RUBY -I . -r ./arcel_gen -e 'ASTroGen.start []')
+        cp $$WORK/node_eval.c          $(location node_eval.c)
+        cp $$WORK/node_dispatch.c      $(location node_dispatch.c)
+        cp $$WORK/node_dump.c          $(location node_dump.c)
+        cp $$WORK/node_specialize.c    $(location node_specialize.c)
+        cp $$WORK/node_replace.c       $(location node_replace.c)
+        cp $$WORK/node_alloc.c         $(location node_alloc.c)
+        cp $$WORK/node_hash.c          $(location node_hash.c)
+        cp $$WORK/node_head.h          $(location node_head.h)
+        rm -rf $$WORK
+    """,
+    visibility = ["//visibility:private"],
+)
+
+# The arcel library — what external consumers (Envoy filter / gRPC
+# interceptor / custom evaluator) link against.  Header-only public
+# surface is `arcel.h`; everything else is implementation detail.
+cc_library(
+    name = "arcel",
+    srcs = [
+        "arcel_lib.c",
+        "node.c",
+        "value.c",
+        "input.c",
+        "parser.c",
+    ],
+    hdrs = [
+        "arcel.h",
+    ],
+    textual_hdrs = [
+        # Internal headers — included from the .c files above but not
+        # part of the public surface.
+        "context.h",
+        "node.h",
+        "value.h",
+        "input.h",
+        "parser.h",
+        # ASTroGen-generated `node_*.c` files are `#include`'d FROM
+        # node.c (textual inclusion), not compiled as standalone TUs.
+        # Listing them here tells Bazel "make these visible to other
+        # rules' compile actions, but don't compile them yourself".
+        "node_eval.c",
+        "node_dispatch.c",
+        "node_dump.c",
+        "node_specialize.c",
+        "node_replace.c",
+        "node_alloc.c",
+        "node_hash.c",
+        "node_head.h",
+    ],
+    includes = ["."],
+    copts = [
+        "-D_GNU_SOURCE",
+        "-Wno-unused-function",   # generated SD helpers may be unused per TU
+        "-Wno-unused-variable",
+    ],
+    linkopts = [
+        "-ldl",
+        "-lm",
+    ],
+    deps = [
+        "//runtime:astro_runtime",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# CLI binary (eval / bench / repl).  Same code paths as the library
+# users — main.c just adapts argv to arcel.h calls.
+cc_binary(
+    name = "arcel_bin",
+    srcs = ["main.c"],
+    deps = [":arcel"],
+)
+
+# Embedding example — minimal C client of the library.
+cc_binary(
+    name = "embed",
+    srcs = ["examples/embed.c"],
+    deps = [":arcel"],
+)
+
+# C++ embedding example — uses extern "C" #include arcel.h, wraps
+# resources in std::unique_ptr for RAII.  Demonstrates that we don't
+# need a separate `arcel.hpp` to be C++-friendly.
+cc_binary(
+    name = "embed_cc",
+    srcs = ["examples/embed.cc"],
+    deps = [":arcel"],
+)

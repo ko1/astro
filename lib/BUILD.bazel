@@ -1,0 +1,11 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# ASTroGen — Ruby code generator, exposed as a filegroup so samples
+# can run `ruby -I .. -r astrogen -e 'ASTroGen.start []'` via genrule.
+filegroup(
+    name = "astrogen_files",
+    srcs = ["astrogen.rb"],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["astrogen.rb"])

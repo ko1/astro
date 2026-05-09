@@ -1,0 +1,18 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# ASTro runtime — included via `#include "astro_node.c"` and
+# `#include "astro_code_store.c"` from each sample's node.c, so we
+# expose them as textual_hdrs (Bazel won't try to compile them
+# standalone; they're textually inlined into one TU per sample).
+cc_library(
+    name = "astro_runtime",
+    textual_hdrs = [
+        "astro_node.c",
+        "astro_code_store.c",
+    ],
+    hdrs = [
+        "astro_code_store.h",
+    ],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)

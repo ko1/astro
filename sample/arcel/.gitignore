@@ -13,6 +13,7 @@ arcel
 libarcel.a
 libarcel.so
 examples/embed
+examples/embed_cc
 *.o
 code_store/
 
