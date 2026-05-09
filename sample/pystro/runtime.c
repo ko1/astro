@@ -13021,6 +13021,32 @@ bi_exception_init(CTX *c, int argc, VALUE *argv)
     return PYS_NONE;
 }
 
+// Exception.with_traceback(tb) — `raise X.with_traceback(Y)` sets the
+// exception's __traceback__ and returns the same instance for chaining.
+VALUE
+bi_exception_with_traceback(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    pys_setattr(c, argv[0], "__traceback__", argv[1]);
+    return argv[0];
+}
+
+// Exception.add_note(s) — append to self.__notes__ list (CPython 3.11+).
+VALUE
+bi_exception_add_note(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[1]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "add_note: argument must be a str");
+    VALUE notes = pys_getattr_optional(c, argv[0], "__notes__");
+    if (!notes || notes == PYS_NONE) {
+        notes = pys_make_list(NULL, 0);
+        pys_setattr(c, argv[0], "__notes__", notes);
+    }
+    pys_list_append(c, notes, argv[1]);
+    return PYS_NONE;
+}
+
 // Math primitives surfaced as `__pystro_*__` and wrapped by `math.py`.
 static VALUE
 bi_pystro_sqrt(CTX *c, int argc, VALUE *argv)
@@ -14320,6 +14346,14 @@ install_builtins(CTX *c)
     {
         VALUE init = pys_make_builtin("__init__", bi_exception_init, 1, -1);
         pys_class_add_method(c, c->EXC_BaseException, "__init__", init);
+        // exc.with_traceback(tb) — sets self.__traceback__ and returns self.
+        extern VALUE bi_exception_with_traceback(CTX *c, int argc, VALUE *argv);
+        pys_class_add_method(c, c->EXC_BaseException, "with_traceback",
+            pys_make_builtin("with_traceback", bi_exception_with_traceback, 2, 2));
+        // exc.add_note(s) — append to self.__notes__ list (CPython 3.11+).
+        extern VALUE bi_exception_add_note(CTX *c, int argc, VALUE *argv);
+        pys_class_add_method(c, c->EXC_BaseException, "add_note",
+            pys_make_builtin("add_note", bi_exception_add_note, 2, 2));
     }
     c->EXC_Exception         = pys_make_class("Exception",        c->EXC_BaseException, true);
     c->EXC_SystemExit        = pys_make_class("SystemExit",        c->EXC_BaseException, true);
