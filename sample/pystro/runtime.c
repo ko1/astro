@@ -2342,9 +2342,16 @@ pys_eq(CTX *c, VALUE a, VALUE b)
     if ((pys_is_list(a) && pys_is_list(b)) || (pys_is_tuple(a) && pys_is_tuple(b))) {
         size_t la = PYS_PTR(a)->list.len, lb = PYS_PTR(b)->list.len;
         if (la != lb) return PYS_FALSE;
-        for (size_t i = 0; i < la; i++)
-            if (pys_eq(c, PYS_PTR(a)->list.items[i], PYS_PTR(b)->list.items[i]) != PYS_TRUE)
+        for (size_t i = 0; i < la; i++) {
+            VALUE ai = PYS_PTR(a)->list.items[i];
+            VALUE bi = PYS_PTR(b)->list.items[i];
+            // CPython rule: identity-equality short-circuit. `[nan] ==
+            // [nan]` is True when both elements are the SAME object,
+            // even though `nan == nan` is False.
+            if (ai == bi) continue;
+            if (pys_eq(c, ai, bi) != PYS_TRUE)
                 return PYS_FALSE;
+        }
         return PYS_TRUE;
     }
     if (pys_is_dict(a) && pys_is_dict(b)) {
