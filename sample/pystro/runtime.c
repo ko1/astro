@@ -10212,6 +10212,33 @@ bi_type_call(CTX *c, int argc, VALUE *argv)
     return inst;
 }
 
+// type.__new__(mcls, name, bases, dict) — invoked from CPython
+// metaclass `def __new__(mcls, name, bases, ns)` body when it calls
+// `super().__new__(mcls, ...)`.  Strips the leading mcls and forwards
+// to bi_type's 3-arg class-construction form, then stamps mcls as
+// the new class's metaclass via __metaclass__.
+VALUE
+bi_type_new(CTX *c, int argc, VALUE *argv)
+{
+    if (argc < 4) {
+        // 1-arg / fewer: fall back to default object allocation.
+        extern VALUE bi_object_new(CTX *c, int argc, VALUE *argv);
+        return bi_object_new(c, argc, argv);
+    }
+    extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+    VALUE mcls = argv[0];
+    VALUE three[3] = { argv[1], argv[2], argv[3] };
+    VALUE cls = bi_type(c, 3, three);
+    if (c->state == PYS_STATE_RAISE) return 0;
+    // Stamp mcls as the new class's metaclass so type(C) returns mcls.
+    if (pys_is_class(cls) && pys_is_class(mcls) && mcls != c->TYPE_type) {
+        extern const char *intern_name(const char *s, size_t len);
+        pys_class_add_method(c, cls, intern_name("__metaclass__", 13), mcls);
+        pyclass_refresh_slots(cls);
+    }
+    return cls;
+}
+
 VALUE
 bi_type(CTX *c, int argc, VALUE *argv)
 {
@@ -13707,6 +13734,12 @@ install_builtins(CTX *c)
         extern const char *intern_name(const char *s, size_t len);
         VALUE call = pys_make_builtin("__call__", bi_type_call, 1, -1);
         pys_class_add_method(c, c->TYPE_type, intern_name("__call__", 8), call);
+        // type.__new__(mcls, name, bases, dict) — class construction
+        // protocol.  CPython metaclass `__new__` typically does
+        // `super().__new__(mcls, ...)` which lands here.
+        extern VALUE bi_type_new(CTX *c, int argc, VALUE *argv);
+        VALUE new_b = pys_make_builtin("__new__", bi_type_new, 1, -1);
+        pys_class_add_method(c, c->TYPE_type, intern_name("__new__", 7), new_b);
     }
     c->TYPE_object    = pys_make_class("object", PYS_NONE, false);
     {
