@@ -612,3 +612,46 @@ bench-polybench`。
 PolyBench で、SPEC が動かない castro 級の処理系として強い数字。
 
 `make bench-polybench` で再現可。
+
+## CLBG (非数値系) 結果
+
+PolyBench は数値オンリーなので、別軸として **Computer Language
+Benchmarks Game** から非数値 kernel を 4 本アダプト
+(`benchmark/clbg/`)。malloc 重い系 / control flow / bit ops / FP
+シミュレーションを probe。
+
+| bench | castro | gcc -O0 | gcc -O3 | castro vs -O0 | castro vs -O3 |
+|---|---:|---:|---:|---:|---:|
+| **fannkuch-redux** |  330 |  410 |  210 | **1.24× faster** | 1.57× |
+| binary-trees       |  490 |  300 |  210 | 1.63× slower     | 2.33× |
+| nbody              | 5100 | 1550 |  560 | 3.3× slower      | 9.11× |
+| **md5**            |10140 |  320 |   90 | 31× slower       | **112×** |
+
+PolyBench とは様変わりして「**castro の弱点が露呈する 4 通り**」が
+一覧に出てる:
+
+- **fannkuch-redux** (健闘): 純 int + 制御フロー、配列 permutation。
+  PolyBench 的な得意領域に近く、O0 を超え -O3 比 1.57×
+- **binary-trees** (やや遅い): malloc 集中。castro の `call_malloc`
+  が SD chain 内 inline されない real call、加えて `Tree *` の
+  dereference が slot-stride。gcc は libc/libstdc++ の小サイズ alloc
+  fast path を使う
+- **nbody** (測定上不利): castro に `sqrt` builtin / libm リンクが
+  ないので、20-iter Newton-Raphson `my_sqrt` を kernel に書き込んで
+  る。gcc は `sqrtsd` 1 命令 → これが 9× ギャップの大半を占めてる
+  (= 性能評価としては unfair。`node_call_sqrt` 等の builtin 追加が
+  TODO)
+- **md5** (絶望的): castro の slot モデルが `unsigned int` を
+  8-byte slot に格納するため、C 標準 u32 の自動 truncate が効かず、
+  `& 0xffffffff` を毎 op 書かないと結果がズレる。書いた途端、その
+  AND が **本物の SD chain 命令** になる (gcc は型情報で free)。
+  bit-twiddling 系 (md5 / SHA / CRC / Blowfish 等) は構造的に
+  castro が苦手
+
+要約すると **castro は数値計算が強く、bit-ops / malloc 多用が弱い**。
+これは AST → C → gcc の全展開 inline モデルの本質: 数値 inner loop
+は SROA + register 化が決まると -O3 と並ぶ、けど 8-byte slot 当たり
+1 element しか入らない storage モデルが、bit ops の per-instruction
+coverage を gcc 比 100× 失わせる。
+
+`make bench-clbg` で再現可。詳細は `benchmark/clbg/README.md`。

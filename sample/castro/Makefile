@@ -52,4 +52,10 @@ benchmark/polybench/upstream/.fetched:
 bench-polybench: castro
 	bash benchmark/polybench/run.sh
 
-.PHONY: clean test test-cts bench bench-polybench
+# Computer Language Benchmarks Game — non-numeric kernels (binary-trees,
+# fannkuch-redux, md5, nbody).  Probes the malloc / control-flow /
+# bit-ops / FP-simulation corners that polybench doesn't touch.
+bench-clbg: castro
+	bash benchmark/clbg/run.sh
+
+.PHONY: clean test test-cts bench bench-polybench bench-clbg
