@@ -104,6 +104,44 @@ class BytesIO:
         return self
     def __exit__(self, *a):
         self.close()
+    def getbuffer(self):
+        # Returns the underlying bytes for direct read access.  pystro
+        # doesn't have a real memoryview-buffer protocol; return bytes.
+        return self.getvalue()
+    def readable(self): return True
+    def writable(self): return True
+    def seekable(self): return True
+    def truncate(self, size=None):
+        v = self.getvalue()
+        if size is None: size = self._pos
+        self._chunks = [v[:size]]
+        return size
+    def writelines(self, lines):
+        for line in lines: self.write(line)
+    def readline(self, size=-1):
+        v = self.getvalue()
+        if self._pos >= len(v): return b""
+        nl = v.find(b"\n", self._pos)
+        if nl < 0: end = len(v)
+        else:      end = nl + 1
+        if size >= 0: end = min(end, self._pos + size)
+        r = v[self._pos:end]
+        self._pos = end
+        return r
+    def readlines(self, hint=-1):
+        out = []
+        while True:
+            line = self.readline()
+            if not line: break
+            out.append(line)
+        return out
+    def __iter__(self):
+        while True:
+            line = self.readline()
+            if not line: return
+            yield line
+    @property
+    def closed(self): return self._closed
 
 
 # Many CPython libs reach for io.IOBase / TextIOWrapper / BufferedReader

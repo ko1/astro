@@ -68,23 +68,57 @@ except (ImportError, AttributeError):
         def __init__(self, initial=b""):
             self._buf = bytearray(initial)
             self._pos = 0
+            self._closed = False
         def read(self, n=-1):
             if n is None or n < 0: n = len(self._buf) - self._pos
             r = bytes(self._buf[self._pos:self._pos+n])
             self._pos += len(r); return r
+        def read1(self, n=-1): return self.read(n)
         def write(self, b):
             self._buf[self._pos:self._pos+len(b)] = b
             self._pos += len(b); return len(b)
+        def writelines(self, lines):
+            for line in lines: self.write(line)
         def getvalue(self): return bytes(self._buf)
+        def getbuffer(self):
+            # CPython returns a memoryview; pystro returns the bytearray
+            # (mutable view of the underlying buffer).
+            return self._buf
         def seek(self, p, w=0):
             if w == 0: self._pos = p
             elif w == 1: self._pos += p
             else: self._pos = len(self._buf) + p
             return self._pos
         def tell(self): return self._pos
+        def truncate(self, size=None):
+            if size is None: size = self._pos
+            del self._buf[size:]
+            return size
         def readable(self): return True
         def writable(self): return True
         def seekable(self): return True
+        def readline(self, size=-1):
+            if self._pos >= len(self._buf): return b""
+            nl = self._buf.find(b"\n", self._pos)
+            end = (nl + 1) if nl >= 0 else len(self._buf)
+            if size >= 0: end = min(end, self._pos + size)
+            r = bytes(self._buf[self._pos:end]); self._pos = end
+            return r
+        def readlines(self, hint=-1):
+            out = []
+            while True:
+                line = self.readline()
+                if not line: break
+                out.append(line)
+            return out
+        def __iter__(self):
+            while True:
+                line = self.readline()
+                if not line: return
+                yield line
+        def close(self): self._closed = True
+        @property
+        def closed(self): return self._closed
 
     class StringIO(TextIOBase):
         def __init__(self, initial=""):
