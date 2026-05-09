@@ -9,14 +9,25 @@ do ./pystro $t; done`) で出る非互換を分類し、 修正方針を整理�
 
 ## sweep の現状 (2026-05-09)
 
-最新の sweep スクリプト (`/tmp/pystro_sweep/run.sh`):
+最新の sweep スクリプト (`/tmp/pystro_sweep/run.sh`) は ファイル単位で
+exit code を見るため、 1 件でも fail があると "crash" にカウントされる:
 ```
-total=406  pass=0  mixed=0  crash=~370  parse_err=20  import_err=~10
+total=406  pass=0(file)  mixed=0  crash=375  parse_err=22  import_err=9
 ```
-"no error line" カウント (~130) には テストコード自体が assertion で
-exit する 通常 fail と、 出力末尾に "Error:" を含まない unittest 例外
-が混在しており、 そのうちかなりは進捗あり (e.g. test.support 全体が
-load 出来るようになった).
+
+ただし test ファイル単位の exit は 厳しすぎる指標。 **個別 unit-test 単位**
+で見ると、 42 個の test ファイルが unittest 実行に達し (即 ImportError /
+SyntaxError で死なずに `Ran N tests` を出力する状態)、 その中で
+**287 個の個別 unit-test が pass している**:
+
+```
+ran_count=42
+total_individual_pass=287
+```
+
+例: `test_abc.py` は `Ran 72 tests in 0.211s, FAILED (failures=41, errors=18)`
+→ 13 件 pass。 セッション開始時は file の load すら出来なかった所から
+ここまで届くようになった。
 
 ## このセッションでの主な改善
 
