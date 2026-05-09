@@ -12,9 +12,9 @@ CFLAGS  = -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall \
           -Wno-unused-function -Wno-unused-variable \
           -Wno-unused-parameter -Wno-unused-but-set-variable
 
-aforth: main.c node.c $(NODE_GENFILES) Makefile context.h node.h \
+aforth: main.c parse.c node.c $(NODE_GENFILES) Makefile context.h node.h parse.h \
         $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h
-	$(CC) $(CFLAGS) -rdynamic -o $@ main.c node.c -ldl
+	$(CC) $(CFLAGS) -rdynamic -o $@ main.c parse.c node.c -ldl
 
 $(NODE_GENFILES): node.def $(ASTRO_LIB)/astrogen.rb
 	ruby -I $(ASTRO_LIB) -r astrogen -e 'ASTroGen.start []'
