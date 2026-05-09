@@ -147,7 +147,19 @@ class _Auto:
 
 
 class IntEnum(Enum):
-    pass
+    @classmethod
+    def _convert_(cls, name, module, filter, source=None, *, boundary=None, as_global=False):
+        # CPython internals call this to lift module-level int constants
+        # into an IntEnum.  pystro doesn't have CPython's module-rewriting
+        # machinery; fall back to a plain class with the matching members.
+        if source is None:
+            source = __import__(module)
+        items = []
+        for k in dir(source):
+            v = getattr(source, k, None)
+            if isinstance(v, int) and filter(k):
+                items.append((k, v))
+        return _make_enum(name, items)
 
 
 # IntEnum members compare equal to their int value.

@@ -38,8 +38,9 @@ implementation_name = "pystro"
 # / cache_tag.  CPython tests gate on `sys.implementation.name == 'cpython'`
 # and on version_info; pystro reports as 3.12 to satisfy version-gated paths.
 class _Implementation:
-    name = "cpython"   # claim CPython compatibility for version-gated tests
-    cache_tag = "cpython-312"
+    name = "pystro"     # honest identity — code that wants CPython-only
+                        # paths gates on this and skips
+    cache_tag = "pystro-0"
     _multiarch = "x86_64-linux-gnu"
     def __repr__(self):
         return f"namespace(name={self.name!r}, version={self.version!r})"

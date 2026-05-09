@@ -263,12 +263,23 @@ class time:
 
 
 # Singleton timezone (UTC only — pystro doesn't have a tz database).
-class timezone:
+# tzinfo abstract base — concrete classes (timezone) inherit from this.
+# Many libraries (tomllib, dateutil) gate on `isinstance(x, tzinfo)`.
+class tzinfo:
+    def utcoffset(self, dt): raise NotImplementedError
+    def tzname(self, dt): raise NotImplementedError
+    def dst(self, dt): return None
+    def fromutc(self, dt): return dt + self.utcoffset(dt)
+
+class timezone(tzinfo):
     def __init__(self, offset, name=None):
         self.offset = offset
         self.name = name
     def utcoffset(self, dt): return self.offset
     def tzname(self, dt): return self.name or "UTC"
+    def dst(self, dt): return None
+    def __repr__(self):
+        return f"datetime.timezone({self.offset!r})"
 
 timezone.utc = timezone(timedelta(0), "UTC")
 
