@@ -1,4 +1,5 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_binary", "cc_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
 
 # ASTroGen produces 8 files from node.def + arcel_gen.rb.  Bazel needs
 # them at known paths under bazel-out/, which is what the genrule does.
@@ -131,4 +132,31 @@ cc_binary(
     name = "embed_object",
     srcs = ["examples/embed_object.c"],
     deps = [":arcel"],
+)
+
+# libprotobuf adapter example — concrete proof that the
+# arcel_object_desc pattern handles real protobuf messages with no
+# arcel-side changes.  Protobuf is an OPTIONAL dep that only this
+# target pulls in; arcel itself stays protobuf-free.
+proto_library(
+    name = "user_request_proto",
+    srcs = ["examples/user_request.proto"],
+)
+
+cc_proto_library(
+    name = "user_request_cc_proto",
+    deps = [":user_request_proto"],
+)
+
+cc_binary(
+    name = "embed_protobuf",
+    srcs = [
+        "examples/embed_protobuf.cc",
+        "examples/arcel_protobuf.h",
+    ],
+    deps = [
+        ":arcel",
+        ":user_request_cc_proto",
+        "@protobuf//:protobuf",
+    ],
 )

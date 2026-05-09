@@ -1,0 +1,22 @@
+// Toy schema for the protobuf-adapter example (examples/embed_protobuf.cc).
+//
+// Mirrors the K8s-admission-shape data the other embed examples use,
+// but as a real protobuf message so the adapter goes through full
+// libprotobuf Descriptor + Reflection — same path Envoy / gRPC use.
+
+syntax = "proto3";
+
+package arcel.examples;
+
+message UserRequest {
+    int64  age     = 1;
+    string country = 2;
+    string role    = 3;
+
+    // Nested message — exercises the recursive descriptor path.
+    UserMeta meta  = 4;
+}
+
+message UserMeta {
+    int64 created_at = 1;
+}

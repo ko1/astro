@@ -24,3 +24,9 @@ module(
 )
 
 bazel_dep(name = "rules_cc", version = "0.0.17")
+
+# Optional: protobuf (libprotobuf C++) — only needed by
+# `//sample/arcel:embed_protobuf`, the libprotobuf adapter example.
+# arcel itself has no protobuf dependency.
+bazel_dep(name = "protobuf", version = "33.4")
+bazel_dep(name = "rules_proto", version = "7.1.0")
