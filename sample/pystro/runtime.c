@@ -1372,15 +1372,68 @@ pys_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
     pys_setattr(c, inst, "message", msg);
     if (c->current_handling_exc && c->current_handling_exc != PYS_NONE)
         pys_setattr(c, inst, "__context__", c->current_handling_exc);
+    else
+        pys_setattr(c, inst, "__context__", PYS_NONE);
     // CPython always exposes __cause__ / __suppress_context__ /
     // __context__ — initialise to None for implicit raises so attribute
     // access is consistent.
     pys_setattr(c, inst, "__cause__", PYS_NONE);
     pys_setattr(c, inst, "__suppress_context__", PYS_FALSE);
-    // Capture a snapshot of the active call stack as a list-of-strings
-    // attribute on the exception, so an uncaught exception can show
-    // a traceback even though we longjmp away from this point.
-    if (c->call_top > 0) {
+    // SyntaxError / OSError / ImportError attribute defaults — same
+    // surface as bi_exception_init, applied here for runtime-raised
+    // exceptions that bypass __init__.
+    pys_setattr(c, inst, "filename",   PYS_NONE);
+    pys_setattr(c, inst, "lineno",     PYS_NONE);
+    pys_setattr(c, inst, "offset",     PYS_NONE);
+    pys_setattr(c, inst, "text",       PYS_NONE);
+    pys_setattr(c, inst, "end_lineno", PYS_NONE);
+    pys_setattr(c, inst, "end_offset", PYS_NONE);
+    pys_setattr(c, inst, "msg",        msg);
+    pys_setattr(c, inst, "errno",      PYS_NONE);
+    pys_setattr(c, inst, "strerror",   PYS_NONE);
+    pys_setattr(c, inst, "filename2",  PYS_NONE);
+    pys_setattr(c, inst, "winerror",   PYS_NONE);
+    pys_setattr(c, inst, "name",       PYS_NONE);
+    pys_setattr(c, inst, "path",       PYS_NONE);
+    pys_setattr(c, inst, "encoding",   PYS_NONE);
+    pys_setattr(c, inst, "object",     PYS_NONE);
+    pys_setattr(c, inst, "start",      PYS_NONE);
+    pys_setattr(c, inst, "end",        PYS_NONE);
+    pys_setattr(c, inst, "reason",     PYS_NONE);
+    pys_setattr(c, inst, "obj",        PYS_NONE);
+    // Capture a snapshot of the active call stack as a chain of
+    // traceback objects (TracebackType-like) so CPython introspection
+    // — `tb.tb_frame.f_code.co_name`, `traceback.extract_tb`, etc. —
+    // can walk the stack.  Each tb has tb_frame (a Frame instance with
+    // f_code.co_name + f_globals/f_locals), tb_lineno (best-effort 0),
+    // tb_lasti (-1), and tb_next (the deeper frame).
+    if (c->call_top > 0 && c->TYPE_traceback != 0) {
+        VALUE next = PYS_NONE;
+        for (int i = 0; i < c->call_top; i++) {
+            const char *fn = c->call_stack[i] ? c->call_stack[i] : "<anon>";
+            VALUE frame = pys_make_instance(c->TYPE_frame);
+            VALUE code  = pys_make_instance(c->TYPE_object);
+            pys_setattr(c, code, "co_name", pys_make_str(fn, strlen(fn)));
+            pys_setattr(c, code, "co_filename", pys_make_str("<pystro>", 8));
+            pys_setattr(c, code, "co_firstlineno", PYS_FIX(0));
+            pys_setattr(c, frame, "f_code", code);
+            pys_setattr(c, frame, "f_lineno", PYS_FIX(0));
+            pys_setattr(c, frame, "f_lasti", PYS_FIX(-1));
+            pys_setattr(c, frame, "f_globals", pys_make_dict());
+            pys_setattr(c, frame, "f_locals", pys_make_dict());
+            pys_setattr(c, frame, "f_back", PYS_NONE);
+            pys_setattr(c, frame, "f_trace", PYS_NONE);
+            VALUE tb = pys_make_instance(c->TYPE_traceback);
+            pys_setattr(c, tb, "tb_frame", frame);
+            pys_setattr(c, tb, "tb_lineno", PYS_FIX(0));
+            pys_setattr(c, tb, "tb_lasti", PYS_FIX(-1));
+            pys_setattr(c, tb, "tb_next", next);
+            next = tb;
+        }
+        pys_setattr(c, inst, "__traceback__", next);
+    } else if (c->call_top > 0) {
+        // Fallback (TYPE_traceback not initialised yet — happens during
+        // very early bootstrap before install_builtins).
         VALUE *frames = (VALUE *)alloca(sizeof(VALUE) * c->call_top);
         for (int i = 0; i < c->call_top; i++) {
             const char *fn = c->call_stack[i] ? c->call_stack[i] : "<anon>";
@@ -4442,7 +4495,11 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             if (eidx >= 0) return o->inst.attrs->entries[eidx].value;
         }
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(o->inst.cls), name);
-        if (m != PYS_NONE) {
+        // Disambiguate "not found" from "found, value is None": a class
+        // body that does `x = None` should still resolve to None.
+        bool m_present = (m != PYS_NONE) ||
+                         pys_class_has_method(PYS_OBJ_VAL(o->inst.cls), name);
+        if (m_present) {
             if (PYS_IS_PTR(m)) {
                 int t = PYS_PTR(m)->type;
                 if (t == PYS_T_STATICMETHOD) return PYS_PTR(m)->wrap.wrapped;
@@ -4459,7 +4516,7 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         // No user-class method found.  If the instance's class has a
         // built-in base AND the instance has a primary value, look up
         // the method on the primary's type and bind it.
-        if (m == PYS_NONE && o->inst.primary) {
+        if (!m_present && o->inst.primary) {
             extern VALUE pys_builtin_method(CTX *c, VALUE recv, const char *name);
             VALUE bm = pys_builtin_method(c, o->inst.primary, name);
             if (bm != PYS_NONE) {
@@ -4468,7 +4525,7 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                 return bm;
             }
         }
-        if (m != PYS_NONE) {
+        if (m_present) {
             if (PYS_IS_PTR(m)) {
                 int t = PYS_PTR(m)->type;
                 // User-defined descriptor: if `m` is itself an instance
@@ -4484,6 +4541,8 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             }
             return m;         // immediate (fixnum, None, True, False, flonum)
         }
+        // The class attribute genuinely exists with value None — return it.
+        if (m_present) return PYS_NONE;
         // __getattr__ fallback (only when the regular lookup misses).
         VALUE getattr_m = pys_class_lookup_method(PYS_OBJ_VAL(o->inst.cls), PYS_INTERN_getattr);
         if (getattr_m != PYS_NONE) {
@@ -12552,6 +12611,11 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // (build-time generated); pystro's stub provides plausible
         // defaults for `get_config_var` / `get_paths`.
         "sysconfig.py",
+        // hashlib — CPython's pulls in `_hashlib` C accelerator and
+        // builtin {md5, sha1, ...}; pystro only has md5 + sha256 via
+        // __pystro_*__ builtins.  Stub maps the rest to sha256 so
+        // `hashlib.new("shake_256")` doesn't ValueError.
+        "hashlib.py",
         NULL,
     };
     bool pystro_wins = false;
@@ -12861,6 +12925,35 @@ bi_exception_init(CTX *c, int argc, VALUE *argv)
     pys_setattr(c, self, "__context__", PYS_NONE);
     pys_setattr(c, self, "__traceback__", PYS_NONE);
     pys_setattr(c, self, "__suppress_context__", PYS_FALSE);
+    // SyntaxError exposes filename / lineno / offset / text / msg /
+    // end_lineno / end_offset (None when not set).  Setting them
+    // unconditionally is harmless on other Exception subclasses and
+    // saves a class-check.
+    pys_setattr(c, self, "filename",   PYS_NONE);
+    pys_setattr(c, self, "lineno",     PYS_NONE);
+    pys_setattr(c, self, "offset",     PYS_NONE);
+    pys_setattr(c, self, "text",       PYS_NONE);
+    pys_setattr(c, self, "end_lineno", PYS_NONE);
+    pys_setattr(c, self, "end_offset", PYS_NONE);
+    pys_setattr(c, self, "msg",        nargs >= 1 ? argv[1] : PYS_NONE);
+    // OSError exposes errno / strerror / filename / filename2 / winerror.
+    pys_setattr(c, self, "errno",     PYS_NONE);
+    pys_setattr(c, self, "strerror",  PYS_NONE);
+    pys_setattr(c, self, "filename2", PYS_NONE);
+    pys_setattr(c, self, "winerror",  PYS_NONE);
+    // ImportError / ModuleNotFoundError expose name / path.
+    pys_setattr(c, self, "name", PYS_NONE);
+    pys_setattr(c, self, "path", PYS_NONE);
+    // UnicodeError siblings — encoding / object / start / end / reason.
+    pys_setattr(c, self, "encoding", PYS_NONE);
+    pys_setattr(c, self, "object",   PYS_NONE);
+    pys_setattr(c, self, "start",    PYS_NONE);
+    pys_setattr(c, self, "end",      PYS_NONE);
+    pys_setattr(c, self, "reason",   PYS_NONE);
+    // KeyError / AttributeError / NameError expose .name; the latter
+    // two may also have .obj (AttributeError).  Setting `obj` to None
+    // keeps `e.obj` access alive.
+    pys_setattr(c, self, "obj", PYS_NONE);
     return PYS_NONE;
 }
 
@@ -14035,6 +14128,8 @@ install_builtins(CTX *c)
     c->TYPE_classmethod                 = pys_make_class("classmethod",                  PYS_NONE, false);
     c->TYPE_super                       = pys_make_class("super",                        PYS_NONE, false);
     c->TYPE_cell                        = pys_make_class("cell",                         PYS_NONE, false);
+    c->TYPE_traceback                   = pys_make_class("traceback",                    PYS_NONE, false);
+    c->TYPE_frame                       = pys_make_class("frame",                        PYS_NONE, false);
     // Wire up base classes so issubclass/isinstance walk MRO properly.
     // bool < int < object; everything else < object.  bytes/bytearray
     // share an ancestor (object) — pystro doesn't model the C-level

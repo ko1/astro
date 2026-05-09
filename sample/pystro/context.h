@@ -617,6 +617,8 @@ typedef struct CTX_struct {
     VALUE TYPE_classmethod;
     VALUE TYPE_super;
     VALUE TYPE_cell;
+    VALUE TYPE_traceback;
+    VALUE TYPE_frame;
 
     // True class objects for built-in types — set by install_builtins.
     // type(5) returns TYPE_int; isinstance(5, int) compares against

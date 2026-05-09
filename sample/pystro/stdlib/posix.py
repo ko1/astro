@@ -46,6 +46,34 @@ R_OK = 4
 W_OK = 2
 X_OK = 1
 
+# wait()/waitpid() option flags.
+WNOHANG  = 1
+WUNTRACED = 2
+WCONTINUED = 8
+WEXITED  = 4
+WSTOPPED = 2
+WNOWAIT  = 0x01000000
+
+# Signal-status mask used by W*SIG.
+WCOREDUMP = lambda status: bool(status & 0x80)
+
+# seek constants.
+SEEK_SET = 0
+SEEK_CUR = 1
+SEEK_END = 2
+
+# CLOEXEC / extra openflags.
+O_PATH = 0x200000
+O_TMPFILE = 0x410000
+O_DSYNC = 0x1000
+O_RSYNC = 0x101000
+O_SYNC = 0x101000
+O_NOATIME = 0x40000
+O_NOCTTY = 0x100
+O_NOFOLLOW = 0x20000
+O_LARGEFILE = 0
+O_NDELAY = 2048  # alias for O_NONBLOCK
+
 O_RDONLY = 0
 O_WRONLY = 1
 O_RDWR = 2
@@ -402,7 +430,9 @@ __all__ = [
     "remove", "unlink", "rmdir", "mkdir", "makedirs", "rename",
     "open", "close", "read", "write", "fsync", "fdopen", "pipe",
     "dup", "dup2", "fork", "waitpid", "WEXITSTATUS", "WIFEXITED",
-    "WIFSIGNALED", "kill", "getpid", "getppid", "getuid", "geteuid",
+    "WIFSIGNALED", "WIFSTOPPED", "WTERMSIG", "WSTOPSIG", "WIFCONTINUED",
+    "waitstatus_to_exitcode",
+    "kill", "getpid", "getppid", "getuid", "geteuid",
     "getgid", "getegid", "umask", "chmod", "chown", "utime",
     "readlink", "symlink", "link", "system", "urandom", "error",
     "terminal_size", "get_terminal_size", "stat_result",
@@ -415,5 +445,48 @@ __all__ = [
     "F_OK", "R_OK", "W_OK", "X_OK",
     "O_RDONLY", "O_WRONLY", "O_RDWR", "O_APPEND", "O_CREAT", "O_EXCL",
     "O_TRUNC", "O_NONBLOCK", "O_DIRECTORY", "O_CLOEXEC",
+    "O_PATH", "O_TMPFILE", "O_DSYNC", "O_RSYNC", "O_SYNC",
+    "O_NOATIME", "O_NOCTTY", "O_NOFOLLOW", "O_LARGEFILE", "O_NDELAY",
+    "WNOHANG", "WUNTRACED", "WCONTINUED", "WEXITED", "WNOWAIT",
+    "WCOREDUMP", "SEEK_SET", "SEEK_CUR", "SEEK_END",
     "sep", "altsep", "extsep", "pathsep", "defpath", "linesep", "devnull",
 ]
+
+
+# wait-status helpers — used by subprocess / os.waitstatus_to_exitcode.
+def waitstatus_to_exitcode(status):
+    return status & 0xFF
+
+
+def WIFEXITED(status):  return (status & 0x7F) == 0
+def WIFSIGNALED(status): return (status & 0x7F) != 0 and (status & 0x7F) != 0x7F
+def WIFSTOPPED(status):  return (status & 0xFF) == 0x7F
+def WEXITSTATUS(status): return (status >> 8) & 0xFF
+def WTERMSIG(status):    return status & 0x7F
+def WSTOPSIG(status):    return (status >> 8) & 0xFF
+def WIFCONTINUED(status): return status == 0xFFFF
+
+
+# Process / fork stubs — pystro is single-process.
+def fork():
+    raise OSError("os.fork unsupported")
+
+
+def waitpid(pid, options):
+    return (pid, 0)
+
+
+def getpid():
+    return 1
+
+
+def getppid():
+    return 0
+
+
+def kill(pid, sig):
+    raise OSError("os.kill unsupported")
+
+
+def umask(mask):
+    return 0o022

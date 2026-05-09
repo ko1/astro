@@ -1303,16 +1303,35 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc)
                      "exceptions must derive from BaseException");
     }
     // Stash a traceback snapshot on the raised instance, if not set yet.
-    if (pys_is_instance(v) && c->call_top > 0) {
+    // Build a chain of TracebackType-like instances (tb.tb_frame.f_code...)
+    // so CPython introspection (`traceback.extract_tb`) walks the stack.
+    if (pys_is_instance(v) && c->call_top > 0 && c->TYPE_traceback != 0) {
         VALUE existing = pys_getattr_optional(c, v, "__traceback__");
         if (!existing || existing == PYS_NONE) {
             c->state = PYS_STATE_NORMAL;
-            VALUE *frames = (VALUE *)alloca(sizeof(VALUE) * c->call_top);
+            VALUE next = PYS_NONE;
             for (int i = 0; i < c->call_top; i++) {
                 const char *fn = c->call_stack[i] ? c->call_stack[i] : "<anon>";
-                frames[i] = pys_make_str(fn, strlen(fn));
+                VALUE frame = pys_make_instance(c->TYPE_frame);
+                VALUE code  = pys_make_instance(c->TYPE_object);
+                pys_setattr(c, code, "co_name", pys_make_str(fn, strlen(fn)));
+                pys_setattr(c, code, "co_filename", pys_make_str("<pystro>", 8));
+                pys_setattr(c, code, "co_firstlineno", PYS_FIX(0));
+                pys_setattr(c, frame, "f_code", code);
+                pys_setattr(c, frame, "f_lineno", PYS_FIX(0));
+                pys_setattr(c, frame, "f_lasti", PYS_FIX(-1));
+                pys_setattr(c, frame, "f_globals", pys_make_dict());
+                pys_setattr(c, frame, "f_locals", pys_make_dict());
+                pys_setattr(c, frame, "f_back", PYS_NONE);
+                pys_setattr(c, frame, "f_trace", PYS_NONE);
+                VALUE tb = pys_make_instance(c->TYPE_traceback);
+                pys_setattr(c, tb, "tb_frame", frame);
+                pys_setattr(c, tb, "tb_lineno", PYS_FIX(0));
+                pys_setattr(c, tb, "tb_lasti", PYS_FIX(-1));
+                pys_setattr(c, tb, "tb_next", next);
+                next = tb;
             }
-            pys_setattr(c, v, "__traceback__", pys_make_list(frames, c->call_top));
+            pys_setattr(c, v, "__traceback__", next);
         }
     }
     // Implicit __context__: when raising inside an except handler, the
