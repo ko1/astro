@@ -1020,6 +1020,17 @@ class Rational
   alias num numerator
   alias den denominator
 
+  # Rational#integer? — false (Rational is never an integer-like, even
+  # if denominator happens to be 1, because it's a Rational instance).
+  # CRuby Rational#integer? returns false unconditionally.
+  def integer?
+    false
+  end
+  # Disallow Rational.new (CRuby uses Rational(...) factory only).
+  class << self
+    undef_method(:new) rescue nil
+  end
+
   # Rational#floor / ceil / round — built on integer division of the
   # numerator by the denominator with rounding mode applied.  Without
   # arg returns Integer; with arg returns a Rational.
@@ -1082,9 +1093,9 @@ class Rational
   def +(other)
     case other
     when Rational
-      Rational.new(@numerator * other.denominator + other.numerator * @denominator, @denominator * other.denominator)
+      Rational(@numerator * other.denominator + other.numerator * @denominator, @denominator * other.denominator)
     when Integer
-      Rational.new(@numerator + other * @denominator, @denominator)
+      Rational(@numerator + other * @denominator, @denominator)
     when Float
       to_f + other
     end
@@ -1093,9 +1104,9 @@ class Rational
   def -(other)
     case other
     when Rational
-      Rational.new(@numerator * other.denominator - other.numerator * @denominator, @denominator * other.denominator)
+      Rational(@numerator * other.denominator - other.numerator * @denominator, @denominator * other.denominator)
     when Integer
-      Rational.new(@numerator - other * @denominator, @denominator)
+      Rational(@numerator - other * @denominator, @denominator)
     when Float
       to_f - other
     end
@@ -1104,9 +1115,9 @@ class Rational
   def *(other)
     case other
     when Rational
-      Rational.new(@numerator * other.numerator, @denominator * other.denominator)
+      Rational(@numerator * other.numerator, @denominator * other.denominator)
     when Integer
-      Rational.new(@numerator * other, @denominator)
+      Rational(@numerator * other, @denominator)
     when Float
       to_f * other
     end
@@ -1115,15 +1126,15 @@ class Rational
   def /(other)
     case other
     when Rational
-      Rational.new(@numerator * other.denominator, @denominator * other.numerator)
+      Rational(@numerator * other.denominator, @denominator * other.numerator)
     when Integer
-      Rational.new(@numerator, @denominator * other)
+      Rational(@numerator, @denominator * other)
     when Float
       to_f / other
     end
   end
 
-  def -@; Rational.new(-@numerator, @denominator); end
+  def -@; Rational(-@numerator, @denominator); end
 
   # Rational ** exp — Integer exp stays exact; Rational/Float exp falls
   # back to Float arithmetic (matching CRuby's Rational#** when the
@@ -1132,12 +1143,12 @@ class Rational
     case other
     when Integer
       if other >= 0
-        Rational.new(@numerator ** other, @denominator ** other)
+        Rational(@numerator ** other, @denominator ** other)
       elsif @numerator == 0
         raise ZeroDivisionError, "0**negative"
       else
         # (a/b)^-n = (b/a)^n
-        Rational.new(@denominator ** -other, @numerator ** -other)
+        Rational(@denominator ** -other, @numerator ** -other)
       end
     when Rational
       to_f ** other.to_f
@@ -1178,7 +1189,7 @@ class Rational
   def to_s; "#{@numerator}/#{@denominator}"; end
   def inspect; "(#{@numerator}/#{@denominator})"; end
   def hash; [@numerator, @denominator].hash; end
-  def abs; @numerator < 0 ? Rational.new(-@numerator, @denominator) : self; end
+  def abs; @numerator < 0 ? Rational(-@numerator, @denominator) : self; end
   def negative?; @numerator < 0; end
   def positive?; @numerator > 0; end
   def zero?;     @numerator == 0; end
@@ -1188,7 +1199,7 @@ class Rational
   def coerce(other)
     case other
     when Rational then [other, self]
-    when Integer  then [Rational.new(other, 1), self]
+    when Integer  then [Rational(other, 1), self]
     when Float    then [other, to_f]
     else
       raise TypeError, "#{other.class} can't be coerced into Rational"
@@ -1197,7 +1208,12 @@ class Rational
 end
 
 def Rational(n, d = 1)
-  Rational.new(n, d)
+  # Bypass Rational.new (which is undef-method'd to satisfy CRuby's
+  # "Rational does not respond to new") by allocating + invoking
+  # initialize directly.
+  r = Rational.allocate
+  r.send(:initialize, n, d)
+  r
 end
 
 # Integer/Float arithmetic with Rational/Complex — handled in C-side
