@@ -289,6 +289,87 @@ ASTro framework 共通の `runtime/astro_code_store.{c,h}` を使う:
 SD 側の `castro_invoke_jmp` などの参照が dlopen で解決できず、
 `astro_cs_reload` が黙って NULL を返してずっと interp モードで動く。
 
+### `parsing_phase` ガード — OPTIMIZE per-ALLOC を抑止
+
+ASTroGen が ALLOC\_<kind> 内に自動挿入する `OPTIMIZE(_n)` フックは、
+新しく作られた NODE 1 つずつに対し `astro_cs_load` を呼んで SD を
+当てに行く。これが parse 中の `node_call_static` (callee=NULL) に
+当たると **未 patch の callee で hash が cache** されて、Phase 3 の
+patch 後に `dispatcher_name` が stale 化する → `load_all_funcs` で
+`SD_<wrong_hash>` を引いて見つからず interp に落ちる。
+
+`node.c::OPTIMIZE` は `parsing_phase == true` のとき早期 return する。
+`load_program` が頭で `parsing_phase = true` を立て、Phase 3 後に
+`false` に戻すので、parse 中は cs_load が走らず、hash cache も汚れ
+ない。`load_all_funcs` で初めて全 body を一括 cs_load するので、
+hash は callee patch 済の正しい状態で計算される。
+
+cross-sample な詳細解説は `docs/perf.md §4.5.1` (root)。
+
+## SD 内 inline / extern 判断アルゴリズム
+
+`compile_all_funcs` が各 entry を SD に展開するとき、`call_static` の
+callee を **親の SD に inline 展開する** か **extern SD として外に
+出す** かを決める必要がある。inline 展開は `castro_gen.rb` の
+`castro_build_call_static_specializer` が `SPECIALIZE(fp, callee)` を
+recursive に呼ぶことで実現される (callee の body が同じ .c に
+`static inline` で書き出される)。extern 展開は callee の
+`dispatcher_name` (= `SD_<hash>`) を `extern` 宣言して call するだけ。
+
+判断は `body->head.flags.no_inline` フラグを見る。立っていれば extern、
+落ちていれば inline。
+
+このフラグを **どの関数に立てるか** が parse.rb の責務:
+
+```ruby
+no_inline_threshold = (ENV['CASTRO_NO_INLINE_THRESHOLD'] || 500).to_i
+
+funcs.each do |name, _, body, _|
+  nc = count_nodes(body)
+  fp_loop_kernel = max_loop_depth(body) >= 3 && count_fp_ops(body) >= 5
+  no_inline = nc > no_inline_threshold || fp_loop_kernel
+  emit_sig(name, no_inline ? 'no_inline' : '')
+end
+```
+
+つまり 2 種類のルールの OR:
+
+1. **サイズ閾値** (`nc > 500`): N 個の callsite から呼ばれる helper を
+   inline すると SD source が N×|body| に膨らむ blowup を防ぐ。
+   コンパイル時間と icache pressure 両方の対策。
+2. **register-pressure 防御** (`depth >= 3 && fp >= 5`): 深ネスト +
+   SIMD heavy な kernel を親 SD に inline すると x86-64 の YMM 16本を
+   親側 outer-loop と取り合って spill が出る。inner loop の machine
+   code は inline しても変わらないが、その周辺の bookkeeping spill
+   traffic で IPC が落ちる (gemm: full-inline 480 ms / IPC 2.51 / 24
+   spills → depth-3 hoist 340 ms / IPC 3.06 / 10 spills)。
+
+`max_loop_depth` / `count_fp_ops` の実装は parse.rb の
+sx 木 walk:
+
+```ruby
+fp_ops = %w[mul_d add_d sub_d div_d store_d load_d ge_d le_d lt_d gt_d eq_d neg_d]
+
+max_loop_depth = lambda do |sx, depth = 0|
+  next depth unless sx.is_a?(Array)
+  d2 = (sx[0] == :for || sx[0] == :while) ? depth + 1 : depth
+  ([d2] + sx[1..].map { |x| max_loop_depth.call(x, d2) }).max
+end
+
+count_fp_ops = lambda do |sx|
+  next 0 unless sx.is_a?(Array)
+  c = fp_ops.include?(sx[0].to_s) ? 1 : 0
+  c + sx[1..].sum { |x| count_fp_ops.call(x) }
+end
+```
+
+整数 bit ops 系 (md5、CRC) は `count_fp_ops == 0` で trigger しない →
+inline で OK (GPR 16 本で余裕)。浅 loop kernel (nbody: depth=2) も
+trigger しない → inline で function call overhead を消した方が速い。
+
+(実装は `parse.rb` 末尾の sig emit ループ。`docs/perf.md §4.8` (root)
+にクロスサンプル原則と castro での実測表。)
+
 ## ノード hash と castro 拡張
 
 castro 側の唯一の特殊化: `uint64_t` リテラル。framework 既定の
