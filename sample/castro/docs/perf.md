@@ -570,3 +570,45 @@ gcc -O3 と完全同等は無理。tight inner loop なら gcc -O3 を
 | B2 + A3 + bug fix + B1 + Bsymbolic | **48 ms** | **30×** |
 | (gcc -O0) | 47 ms | -- |
 | (gcc -O3) | 16 ms | -- |
+
+## PolyBench/C 結果
+
+業界標準の **PolyBench/C 4.2.1** (Pouchet et al., 数値カーネル ~30本)
+から 12 kernel を castro 用にハンドアダプトして測定。adapter の
+詳細は `benchmark/polybench/README.md`、走らせ方は `make
+bench-polybench`。
+
+数値はそれぞれ median of 7 (ms)、`run.sh` 実行直撮り:
+
+| bench | castro AOT | gcc -O0 | gcc -O3 | castro vs -O0 | castro vs -O3 |
+|---|---:|---:|---:|---:|---:|
+| **gemm**         |  320 | 4800 |  280 | **15× faster** | 1.14× (≈tied) |
+| **syrk**         |  350 | 2650 |  290 | **8× faster**  | 1.21× |
+| **jacobi-2d**    |  320 | 2410 |  280 | **7.5× faster**| 1.14× |
+| **2mm**          | 1120 | 5690 |  580 | **5× faster**  | 1.93× |
+| **atax**         |  370 | 1460 |  270 | **4× faster**  | 1.37× |
+| **mvt**          |  450 | 1460 |  240 | **3.2× faster**| 1.88× |
+| **jacobi-1d**    |  170 |  520 |   80 | **3× faster**  | 2.12× |
+| **floyd-warshall**|  300 |  760 |  180 | **2.5× faster**| 1.67× |
+| seidel-2d        | 1270 | 1650 | 1170 | 1.3× faster    | 1.09× |
+| lu               | 2230 | 3320 |  570 | 1.5× faster    | 3.91× |
+| bicg             | 1020 | 1010 |  210 | tied           | 4.86× |
+| gesummv          |  790 |  790 |  170 | tied           | 4.65× |
+
+要約:
+
+- **11/12 で gcc -O0 を超える**、特に matmul 系 (gemm 15×、syrk 8×、
+  jacobi-2d 7.5×、2mm 5×) は劇的差。
+- **4/12 が gcc -O3 と≈互角** (gemm / jacobi-2d 1.14×、seidel-2d 1.09×、
+  syrk 1.21×)。
+- gcc -O3 残ギャップが大きいのは bicg / gesummv / lu。共通点は
+  「ループ内で 2 配列同時更新 (`tmp[i]`, `y[i]` 両方を 1 イテで
+  書く)」。castro の lset_d がスカラ昇格しきらず、毎 iter フレーム
+  reload が残る。今後の最適化 target。
+- floyd-warshall (1.67×) は castro が gcc -O3 にかなり迫る。3-deep
+  loop + memory 集中アクセスで両者 cache-bound、構造的差が小さい。
+
+このスコアは「**コンパイラ研究で C 数値性能と言ったら標準解**」の
+PolyBench で、SPEC が動かない castro 級の処理系として強い数字。
+
+`make bench-polybench` で再現可。

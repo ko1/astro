@@ -38,4 +38,18 @@ test-cts: castro
 bench: castro
 	ruby bench.rb
 
-.PHONY: clean test test-cts bench
+# Fetch upstream PolyBench/C 4.2.1 source (one-time setup) into
+# benchmark/polybench/upstream/ for reference / future kernel adapt
+# work.  The adapted kernels in benchmark/polybench/kernels/ ship in-tree
+# and don't need this fetch — but the upstream source is what they
+# track, and having it locally lets you compare line-for-line.
+benchmark/polybench/upstream/.fetched:
+	bash benchmark/polybench/fetch.sh
+	touch benchmark/polybench/upstream/.fetched
+
+# Run all adapted PolyBench kernels under castro AOT vs gcc -O0/-O3.
+# Outputs a median-of-RUNS table (default RUNS=7).
+bench-polybench: castro
+	bash benchmark/polybench/run.sh
+
+.PHONY: clean test test-cts bench bench-polybench
