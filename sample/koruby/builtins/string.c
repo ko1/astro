@@ -1540,9 +1540,11 @@ static VALUE str_succ(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_each_byte(CTX *c, VALUE self, int argc, VALUE *argv) {
     const struct korb_string *s = (const struct korb_string *)self;
     if (!korb_block_given()) {
-        VALUE r = korb_ary_new_capa(s->len);
-        for (long i = 0; i < s->len; i++) korb_ary_push(r, INT2FIX((unsigned char)s->ptr[i]));
-        return r;
+        /* No block: return Enumerator (CRuby semantics).  Call to_enum
+         * with the source method captured so #size works and chained
+         * each(&blk) re-dispatches with the user's block. */
+        VALUE arg = korb_id2sym(korb_intern("each_byte"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
     }
     for (long i = 0; i < s->len; i++) {
         VALUE b = INT2FIX((unsigned char)s->ptr[i]);

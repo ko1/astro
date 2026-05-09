@@ -999,6 +999,9 @@ static VALUE signal_trap(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE signal_list(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE h = korb_hash_new();
+    /* CRuby includes "EXIT" with value 0 — pseudo-signal used by at_exit
+     * dispatch.  Always present even when the OS doesn't define it. */
+    korb_hash_aset(h, korb_str_new_cstr("EXIT"), INT2FIX(0));
     korb_hash_aset(h, korb_str_new_cstr("INT"), INT2FIX(SIGINT));
     korb_hash_aset(h, korb_str_new_cstr("TERM"), INT2FIX(SIGTERM));
     korb_hash_aset(h, korb_str_new_cstr("USR1"), INT2FIX(SIGUSR1));

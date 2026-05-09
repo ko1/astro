@@ -832,10 +832,8 @@ class String
     r = chop
     r == self ? nil : (replace(r); self)
   end
-  def strip!
-    r = strip
-    r == self ? nil : (replace(r); self)
-  end
+  # strip! / lstrip! / rstrip! are implemented in C (str_strip_bang etc.)
+  # — the C versions raise FrozenError unconditionally on frozen self.
   def squeeze!(*a)
     r = squeeze(*a)
     r == self ? nil : (replace(r); self)
@@ -4097,6 +4095,29 @@ end
 module Kernel
   def autoload(_name, _path); nil; end unless method_defined?(:autoload)
   def autoload?(_name, _inherit = true); nil; end unless method_defined?(:autoload?)
+end
+
+# GC — minimal module.  koruby uses libgc (Bartlett-style) so explicit
+# collection is a no-op; this exists for spec compatibility.
+module GC
+  @disabled = false
+  def garbage_collect(*); nil; end
+  def self.start(*); nil; end
+  # disable returns the *previous* state ("was it disabled before"):
+  # false means GC was running, now we disabled it.
+  def self.disable
+    prev = @disabled
+    @disabled = true
+    prev
+  end
+  # enable returns the previous state likewise.
+  def self.enable
+    prev = @disabled
+    @disabled = false
+    prev
+  end
+  def self.count; 0; end
+  def self.stat(*); {} end
 end
 
 
