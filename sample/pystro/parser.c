@@ -4333,6 +4333,7 @@ parse_simple_stmt(void)
         int nn = 0;
         size_t p = tok_pos;
         bool ok = true;
+        bool trailing_comma = false;
         for (;;) {
             bool is_star = false;
             if (tok_arr[p].kind == T_STAR) { is_star = true; p++; }
@@ -4345,12 +4346,14 @@ parse_simple_stmt(void)
             if (tok_arr[p].kind != T_COMMA) { ok = false; break; }
             p++;
             // Trailing comma: `*name, = ...` is a valid 1-target form.
-            if (tok_arr[p].kind == T_ASSIGN) break;
+            if (tok_arr[p].kind == T_ASSIGN) { trailing_comma = true; break; }
         }
-        // Need >= 2 targets (or 1 starred) for unpack form, AND `=` next.
+        // Need >= 2 targets, OR 1 starred, OR 1 with trailing comma
+        // (`a, = (1,)` form).
         bool starred_present = false;
         for (int i = 0; i < nn; i++) if (starred[i]) { starred_present = true; break; }
-        if (ok && tok_arr[p].kind == T_ASSIGN && (nn >= 2 || starred_present)) {
+        if (ok && tok_arr[p].kind == T_ASSIGN
+            && (nn >= 2 || starred_present || trailing_comma)) {
             tok_pos = p + 1;
             NODE *rhs = parse_expr_list();
             struct pyunpack_target ts[16];
