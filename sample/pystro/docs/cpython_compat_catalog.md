@@ -8,19 +8,21 @@ policy: pystro は CPython 3.12.13 (submodule pin) の純 Python stdlib
 
 ### File-level 合格
 
-ファイル単位で `rc=0` を返す test_*.py が **12 件** に到達:
+ファイル単位で `rc=0` を返す test_*.py が **14 件** に到達:
 
 ```
-test_bigaddrspace test_colorsys test_contains test_eintr test_embed
-test_int_literal test_keyword test_osx_env test_sundry
+test_bigaddrspace test_colorsys test_contains test_copyreg test_eintr
+test_embed test_int_literal test_keyword test_osx_env test_sundry
 test_type_annotations test_unary test_urllib_response
+test_xml_dom_minicompat
 ```
 
 - 6 件は all-skip (`OK (skipped=N)`): bigaddrspace / embed / osx_env /
   sundry / type_annotations / eintr。 環境前提を満たさず skip だが
   unittest が走り SystemExit がきれいに 0 終了する。
-- 6 件は実 assertion をパス: colorsys (7) / contains (4) / int_literal
-  (6) / keyword (11) / unary (6) / urllib_response (4) → 計 38 件。
+- 8 件は実 assertion をパス: colorsys (7) / contains (4) / copyreg
+  (6) / int_literal (6) / keyword (11) / unary (6) /
+  urllib_response (4) / xml_dom_minicompat (11) → 計 55 件。
 
 ### 個別 unit-test 合格
 
