@@ -173,7 +173,9 @@ class ExceptionTest(unittest.TestCase):
             self.assertEqual(str(e), "boom")
 
     def test_traceback_attr(self):
-        # __traceback__ attribute is a list of frame names in pystro.
+        # __traceback__ is a TracebackType-like chain of (tb_frame,
+        # tb_lineno, tb_lasti, tb_next) instances. Walk the chain and
+        # collect frame names.
         def deep():
             raise RuntimeError("at deep")
         def mid():
@@ -182,8 +184,12 @@ class ExceptionTest(unittest.TestCase):
             mid()
         except RuntimeError as e:
             tb = e.__traceback__
-            self.assertIn("mid", tb)
-            self.assertIn("deep", tb)
+            names = []
+            while tb is not None:
+                names.append(tb.tb_frame.f_code.co_name)
+                tb = tb.tb_next
+            self.assertIn("mid", names)
+            self.assertIn("deep", names)
 
 
 unittest.main(globals())
