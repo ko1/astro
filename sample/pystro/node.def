@@ -1409,11 +1409,13 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
     const char **pn = nparams > 0 ? &PYS_NAME_TABLE[names_idx] : NULL;
     bool has_va = (flags & 1) != 0;
     bool has_kw = (flags & 2) != 0;
+    bool is_async = (flags & 4) != 0;
     int n_pos_only = (int)((flags >> 8) & 0xFF);
     VALUE fn = pys_make_func(body, c->env, name, (int)nparams, (int)n_pos_named,
                             (int)nlocals, dv, leaf != 0, pn, has_va, has_kw,
                             is_gen != 0);
     PYS_PTR(fn)->func.n_pos_only = n_pos_only;
+    PYS_PTR(fn)->func.is_async = is_async;
     // Docstring: if body's leftmost-spine leaf is a const_str, stash
     // it as `__doc__` on the func.
     {

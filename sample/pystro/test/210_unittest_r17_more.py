@@ -115,15 +115,20 @@ class IntEnumArithTest(unittest.TestCase):
         self.assertTrue(IF.X < IF.Y)
 
 
-class AsyncAsSyncTest(unittest.TestCase):
-    def test_async_def_runs_sync(self):
+class AsyncCoroutineShapeTest(unittest.TestCase):
+    # CPython compat: `async def` returns a coroutine wrapper.  pystro
+    # doesn't run an event loop but exposes the close/send/throw/__await__
+    # methods so import-time `(async def f())().close()` works (CPython's
+    # types.py / _collections_abc.py rely on this).
+    def test_async_def_returns_coroutine(self):
         async def f(): return 42
-        self.assertEqual(f(), 42)
+        result = f()
+        self.assertEqual(type(result).__name__, "coroutine")
 
-    def test_await_passthrough(self):
+    def test_coroutine_close_is_noop(self):
         async def f(): return 99
-        async def g(): return await f()
-        self.assertEqual(g(), 99)
+        result = f()
+        result.close()  # no-op, no exception
 
 
 class GeneratorExceptionTest(unittest.TestCase):

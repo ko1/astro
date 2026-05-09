@@ -4430,6 +4430,18 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             VALUE av[2] = { v, pys_make_str(name, strlen(name)) };
             return pys_apply(c, getattr_m, 2, av);
         }
+        // Universal dunders inherited from object: `__str__` / `__repr__`
+        // / `__hash__` / `__eq__` / `__ne__` / `__bool__` are defined on
+        // every object even when the user class doesn't override.  Return
+        // a builtin shim that produces the default behaviour.  CPython
+        // tests like `obj.__str__()` rely on this.
+        {
+            extern VALUE pys_dunder_bound(CTX *c, VALUE recv, const char *name);
+            VALUE bm = pys_dunder_bound(c, v, name);
+            if (bm != PYS_NONE) return bm;
+        }
+        if (strcmp(name, "__doc__") == 0)    return PYS_NONE;
+        if (strcmp(name, "__module__") == 0) return pys_make_str("__main__", 8);
         PYS_RAISE_EXC(c, c->EXC_AttributeError, "'%s' object has no attribute '%s'",
                      o->inst.cls->cls.name, name);
     }
@@ -5050,6 +5062,16 @@ pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         extern VALUE pys_make_gen(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, VALUE *kwv);
         if (pys_func_is_generator(fn))
             return pys_make_gen(c, fn, argc, argv, kwc, kwnames, kwvalues);
+        // `async def` body — pystro doesn't run an event loop, so we
+        // return a fake coroutine wrapper that satisfies the methods
+        // CPython's stdlib calls at module init (`close()`, `__await__`,
+        // `send()`, `throw()`).  The body is NOT actually executed
+        // (CPython's `_collections_abc.py` / `types.py` etc. don't await
+        // the result; they just call .close()).
+        if (PYS_PTR(fn)->func.is_async) {
+            extern VALUE pys_make_fake_coroutine(CTX *c);
+            return pys_make_fake_coroutine(c);
+        }
         return pys_apply_kw_func(c, fn, argc, argv, kwc, kwnames, kwvalues);
     }
     if (pys_is_builtin(fn)) {
@@ -5776,6 +5798,60 @@ gen_entry(void)
     swapcontext(&g->body_ctx, &g->caller_ctx);
     // unreachable
 }
+
+
+// Builtin methods for the fake-coroutine type.  Pystro doesn't run an
+// event loop; the methods just satisfy CPython stdlib's import-time
+// "(async def f())().close()" / "type((async def f())())" probes.
+static VALUE
+bi_fake_coro_close(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_NONE;
+}
+
+static VALUE
+bi_fake_coro_send(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    PYS_RAISE_EXC(c, c->EXC_StopIteration, "fake coroutine sent into");
+}
+
+static VALUE
+bi_fake_coro_throw(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (argc >= 2) PYS_RAISE_EXC(c, argv[1], "fake coroutine throw");
+    PYS_RAISE_EXC(c, c->EXC_RuntimeError, "fake coroutine throw");
+}
+
+static VALUE
+bi_fake_coro_await(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_NONE;   // already-resolved
+}
+
+VALUE
+pys_make_fake_coroutine(CTX *c)
+{
+    extern const char *intern_name(const char *s, size_t n);
+    // Build an instance of a synthetic class so isinstance checks work.
+    static VALUE coro_cls = 0;
+    if (!coro_cls || coro_cls == PYS_NONE) {
+        coro_cls = pys_make_class("coroutine", PYS_NONE, false);
+        pys_class_add_method(c, coro_cls, intern_name("close", 5),
+            pys_make_builtin("close", bi_fake_coro_close, 1, 1));
+        pys_class_add_method(c, coro_cls, intern_name("send", 4),
+            pys_make_builtin("send", bi_fake_coro_send, 1, 2));
+        pys_class_add_method(c, coro_cls, intern_name("throw", 5),
+            pys_make_builtin("throw", bi_fake_coro_throw, 2, 4));
+        pys_class_add_method(c, coro_cls, intern_name("__await__", 9),
+            pys_make_builtin("__await__", bi_fake_coro_await, 1, 1));
+    }
+    return pys_make_instance(coro_cls);
+}
+
 
 VALUE
 pys_make_gen(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, VALUE *kwv)
@@ -12194,13 +12270,22 @@ bi_import(CTX *c, int argc, VALUE *argv)
     // `(async def)().close()`, code-object cell internals for
     // `types.py`'s `_cell_factory`).  Pystro's smaller stubs are
     // sufficient for user code that only touches the public API.
-    // Empty list — try CPython's pure-Python stdlib first via PYTHONPATH.
-    // Pystro's bundled stubs serve only as a final fallback.  This matches
-    // the "use CPython's library" policy (cpython submodule pinned to
-    // 3.12.13).  If a CPython module ends up needing a C-internal pystro
-    // can't satisfy, surface the error so we can catalog the gap rather
-    // than silently substitute an incomplete stub.
-    static const char *pystro_first_modules[] = { NULL };
+    // Use CPython's pure-Python stdlib via PYTHONPATH wherever possible.
+    // The narrow exception list below is for modules that depend on
+    // CPython-internal C semantics pystro can't simulate yet:
+    //
+    //   types.py — line 57 `FrameType = type(exc.__traceback__.tb_frame)`.
+    //     pystro's __traceback__ is a list of frame-name strings, not
+    //     a real TracebackType with tb_frame / tb_lineno / tb_lasti /
+    //     tb_next.  Until tracebacks are reified, override.
+    //
+    // (`_collections_abc.py`'s `(async def)().close()` and `f.__closure__`
+    // issues are handled at the runtime level — async def returns a
+    // fake coroutine, __closure__ returns synthetic cells.)
+    static const char *pystro_first_modules[] = {
+        "types.py",
+        NULL,
+    };
     bool pystro_wins = false;
     for (const char **pf = pystro_first_modules; *pf; pf++) {
         if (strcmp(modpath, *pf) == 0) { pystro_wins = true; break; }

@@ -237,6 +237,14 @@ struct pysobj {
             bool has_kwargs;        // a `**kwargs` slot is present
             bool is_generator;      // body contains `yield` — call returns
                                     // a PYS_T_GEN, body runs lazily
+            bool is_async;          // `async def` — call returns a fake
+                                    // coroutine wrapper (close / send /
+                                    // throw / __await__).  Pystro doesn't
+                                    // run an event loop, but the return
+                                    // shape needs to satisfy code that
+                                    // does `(async def f())().close()`
+                                    // at module init (CPython types.py /
+                                    // _collections_abc.py).
             VALUE defining_class;   // class this method was defined on
                                     // (PYS_NONE for non-method funcs) —
                                     // used for cooperative super()

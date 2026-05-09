@@ -2948,9 +2948,16 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                | ((uint32_t)n_pos_only << 8);
 }
 
+// Set by parse_stmt / parse_decorated when an `async def` is encountered.
+// parse_def consumes the flag so it's reset after each def.
+static bool g_parse_def_is_async = false;
+
 static NODE *
 parse_def(void)
 {
+    bool is_async = g_parse_def_is_async;
+    g_parse_def_is_async = false;
+    (void)is_async;
     expect(T_DEF, "'def'");
     if (peek_tok(0)->kind != T_NAME) parse_error("expected function name");
     const char *fname = peek_tok(0)->sval;
@@ -2971,6 +2978,8 @@ parse_def(void)
     int nparams, n_pos_named, ndefaults;
     uint32_t didx, nidx, flags;
     parse_params(&sc, &nparams, &n_pos_named, &ndefaults, &didx, &nidx, &flags);
+    // Encode async-ness into flags bit 2 (node_def reads it back).
+    if (is_async) flags |= 4u;
     // Snapshot annotations now (parse_params filled g_ann_*).
     int n_anns = g_ann_count;
     const char *ann_names[MAX_ANNS];
@@ -4836,6 +4845,7 @@ parse_decorated(void)
             && peek_tok(0)->sval == intern_name("async", 5)
             && peek_tok(1)->kind == T_DEF) {
         tok_pos++;     // consume async
+        g_parse_def_is_async = true;
     }
     bool is_class_method_dec = in_class_body && peek_tok(0)->kind == T_DEF;
     if (peek_tok(0)->kind == T_DEF) {
@@ -4898,6 +4908,7 @@ parse_stmt(void)
         int next = peek_tok(1)->kind;
         if (next == T_DEF || next == T_FOR || next == T_WITH) {
             tok_pos++;     // consume "async"
+            if (next == T_DEF) g_parse_def_is_async = true;
             k = peek_tok(0)->kind;
         }
     }

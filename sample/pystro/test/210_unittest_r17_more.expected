@@ -13,8 +13,8 @@ ok FnmatchGlobTest test_glob_present
 ok ShlexTest test_quote_join
 ok ShlexTest test_split_quoted
 ok IntEnumArithTest test_intenum_add
-ok AsyncAsSyncTest test_async_def_runs_sync
-ok AsyncAsSyncTest test_await_passthrough
+ok AsyncCoroutineShapeTest test_async_def_returns_coroutine
+ok AsyncCoroutineShapeTest test_coroutine_close_is_noop
 ok GeneratorExceptionTest test_typeerror_in_yield_from_propagates
 ok GeneratorExceptionTest test_user_iter_with_inner_stopiter
 ok CollectionsAbcMetaTest test_iter_mapping_seq
