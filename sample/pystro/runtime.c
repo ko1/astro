@@ -33,9 +33,15 @@ static void  gmp_free   (void *p, size_t sz)         { (void)p; (void)sz; /* GC 
 static void
 pys_gc_init(void)
 {
+    // GC_INITIAL_HEAP_SIZE — request a 16MB starting heap before
+    // GC_init().  Setting via env (rather than GC_expand_hp post-init)
+    // avoids a heap-corruption window during the first collection
+    // after expansion that flakily segfaulted at module-init shutdown
+    // (test_errno + test_typechecks ~70% reproducer).
+    if (!getenv("GC_INITIAL_HEAP_SIZE"))
+        setenv("GC_INITIAL_HEAP_SIZE", "67108864", 0);   // 64 MiB
     GC_init();
     GC_set_free_space_divisor(1);
-    GC_expand_hp((size_t)16 * 1024 * 1024);
     mp_set_memory_functions(gmp_alloc, gmp_realloc, gmp_free);
 }
 
