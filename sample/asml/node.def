@@ -1,0 +1,1027 @@
+// asml — Standard ML subset on ASTro.
+//
+// Tree-walking; lexical envs are heap-allocated `mlframe` chains; closures
+// hold (body, env, nparams, is_leaf, name).  Most helpers live in main.c
+// so EVAL bodies stay short.
+
+// ---------------------------------------------------------------------------
+// Constants.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_const_int(CTX * restrict c, NODE * restrict n, uint64_t v)
+{
+    (void)c; (void)n;
+    return ML_INT((int64_t)v);
+}
+
+NODE_DEF
+node_const_real(CTX * restrict c, NODE * restrict n, double v)
+{
+    (void)c; (void)n;
+    return ml_make_real(v);
+}
+
+NODE_DEF
+node_const_bool(CTX * restrict c, NODE * restrict n, uint32_t v)
+{
+    (void)c; (void)n;
+    return v ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_const_unit(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return ML_UNIT;
+}
+
+NODE_DEF
+node_const_nil(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return ML_NIL;
+}
+
+NODE_DEF
+node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
+{
+    (void)c; (void)n;
+    return ml_make_string(s, strlen(s));
+}
+
+// ---------------------------------------------------------------------------
+// Variable access.
+// ---------------------------------------------------------------------------
+
+static inline struct mlframe *
+ml_env_at(CTX *c, uint32_t depth)
+{
+    struct mlframe *f = c->env;
+    for (uint32_t i = 0; i < depth; i++) f = f->parent;
+    return f;
+}
+
+NODE_DEF
+node_lref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+{
+    (void)n;
+    return ml_env_at(c, depth)->slots[idx];
+}
+
+NODE_DEF
+node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
+{
+    (void)n;
+    if (LIKELY(cache->serial == c->globals_serial)) return cache->value;
+    VALUE v = ml_global_ref(c, name);
+    cache->serial = c->globals_serial;
+    cache->value = v;
+    return v;
+}
+
+// ---------------------------------------------------------------------------
+// Control flow.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+{
+    (void)n;
+    VALUE cv = EVAL_ARG(c, cond);
+    if (cv == ML_TRUE)  return EVAL_ARG(c, thn);
+    if (cv == ML_FALSE) return EVAL_ARG(c, els);
+    ml_type_error(c, "if", "bool");
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
+{
+    (void)n;
+    EVAL_ARG(c, first);
+    return EVAL_ARG(c, rest);
+}
+
+NODE_DEF
+node_andalso(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (av == ML_FALSE) return ML_FALSE;
+    if (av != ML_TRUE)  ml_type_error(c, "andalso", "bool");
+    return EVAL_ARG(c, b);
+}
+
+NODE_DEF
+node_orelse(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (av == ML_TRUE)  return ML_TRUE;
+    if (av != ML_FALSE) ml_type_error(c, "orelse", "bool");
+    return EVAL_ARG(c, b);
+}
+
+NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (v == ML_TRUE)  return ML_FALSE;
+    if (v == ML_FALSE) return ML_TRUE;
+    ml_type_error(c, "not", "bool");
+}
+
+// `let val x = v in body end`: extends env by one slot.
+NODE_DEF
+node_let(CTX * restrict c, NODE * restrict n, NODE *value, NODE *body)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);
+    struct mlframe *f = ml_new_frame(c->env, 1);
+    f->slots[0] = v;
+    struct mlframe *saved = c->env;
+    c->env = f;
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `fun f x = body` — pre-binds slot 0 so the value (a closure) can
+// reference itself.
+NODE_DEF
+node_letrec(CTX * restrict c, NODE * restrict n, NODE *value, NODE *body)
+{
+    (void)n;
+    struct mlframe *f = ml_new_frame(c->env, 1);
+    f->slots[0] = ML_UNIT;
+    struct mlframe *saved = c->env;
+    c->env = f;
+    f->slots[0] = EVAL_ARG(c, value);
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `fun f ... and g ... and h ... in body` — N-binding letrec.
+NODE_DEF @noinline
+node_letrec_n(CTX * restrict c, NODE * restrict n, uint32_t nbindings, uint32_t values_idx, NODE *body)
+{
+    (void)n;
+    extern NODE **ML_LETREC_VALUES;
+    struct mlframe *f = ml_new_frame(c->env, nbindings);
+    for (uint32_t i = 0; i < nbindings; i++) f->slots[i] = ML_UNIT;
+    struct mlframe *saved = c->env;
+    c->env = f;
+    for (uint32_t i = 0; i < nbindings; i++) {
+        NODE *vexpr = ML_LETREC_VALUES[values_idx + i];
+        f->slots[i] = (*vexpr->head.dispatcher)(c, vexpr);
+    }
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// case arm: like astocaml's match_arm.  `test` evaluates to bool; if
+// true and the pattern has bindings, `arity` extractor expressions are
+// evaluated in the OUTER env, then a fresh frame is pushed and `body`
+// runs.  On test-false: runs `failure`.
+NODE_DEF
+node_match_arm(CTX * restrict c, NODE * restrict n, NODE *test, uint32_t arity, uint32_t extracts_idx, NODE *body, NODE *failure, uint32_t is_leaf)
+{
+    (void)n;
+    extern NODE **ML_EXTRACT_NODES;
+    VALUE tv = EVAL_ARG(c, test);
+    if (tv != ML_TRUE) return EVAL_ARG(c, failure);
+    if (arity == 0) return EVAL_ARG(c, body);
+    struct mlframe *f;
+    if (LIKELY(is_leaf)) {
+        f = (struct mlframe *)alloca(sizeof(struct mlframe) + sizeof(VALUE) * arity);
+        f->parent = c->env;
+        f->nslots = (int)arity;
+    } else {
+        f = ml_new_frame(c->env, (int)arity);
+    }
+    for (uint32_t i = 0; i < arity; i++) {
+        NODE *e = ML_EXTRACT_NODES[extracts_idx + i];
+        f->slots[i] = (*e->head.dispatcher)(c, e);
+    }
+    struct mlframe *saved = c->env;
+    c->env = f;
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// Irrefutable pattern binding: `val (x, y) = ...`.  Evaluates value into
+// a 1-slot pinning frame, then evaluates extractors against that, then
+// pushes a frame with the extracted bindings.
+NODE_DEF @noinline
+node_let_pat(CTX * restrict c, NODE * restrict n, NODE *value, uint32_t arity, uint32_t extracts_idx, NODE *body)
+{
+    (void)n;
+    extern NODE **ML_EXTRACT_NODES;
+    VALUE v = EVAL_ARG(c, value);
+    struct mlframe *bind = ml_new_frame(c->env, 1);
+    bind->slots[0] = v;
+    struct mlframe *saved = c->env;
+    c->env = bind;
+    if (arity == 0) {
+        VALUE r = EVAL_ARG(c, body);
+        c->env = saved;
+        return r;
+    }
+    VALUE *vals = (VALUE *)alloca(sizeof(VALUE) * arity);
+    for (uint32_t i = 0; i < arity; i++) {
+        NODE *e = ML_EXTRACT_NODES[extracts_idx + i];
+        vals[i] = (*e->head.dispatcher)(c, e);
+    }
+    struct mlframe *f = ml_new_frame(c->env, (int)arity);
+    for (uint32_t i = 0; i < arity; i++) f->slots[i] = vals[i];
+    c->env = f;
+    VALUE r = EVAL_ARG(c, body);
+    c->env = saved;
+    return r;
+}
+
+// `raise <expr>` — evaluates the expression, then longjmps to topmost handler.
+NODE_DEF
+node_raise(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    ml_raise(c, v);
+}
+
+// `e handle ...` — runs e under a handler that on raise rebinds the
+// raised value to slot 0 of a fresh frame and runs `handler`.  Sets up
+// setjmp; ASTroGen marks EVAL_node_handle as always_inline normally,
+// but setjmp can't be in inlined functions, so we delegate.
+NODE_DEF @noinline
+node_handle(CTX * restrict c, NODE * restrict n, NODE *body, NODE *handler)
+{
+    (void)n;
+    return ml_run_handle(c, body, handler);
+}
+
+// Match-failure: end of a case-arm chain with no matching arm.
+NODE_DEF
+node_match_fail(CTX * restrict c, NODE * restrict n)
+{
+    (void)n;
+    ml_raise(c, ml_make_variant("Match", 0, NULL));
+}
+
+// ---------------------------------------------------------------------------
+// Functions and application.
+// ---------------------------------------------------------------------------
+
+NODE_DEF @noinline
+node_fn(CTX * restrict c, NODE * restrict n, uint32_t nparams, NODE *body, uint32_t is_leaf, const char *name)
+{
+    (void)n;
+    return ml_make_closure(body, c->env, (int)nparams, is_leaf != 0, name);
+}
+
+NODE_DEF
+node_app0(CTX * restrict c, NODE * restrict n, NODE *fn)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    return ml_apply(c, f, 0, NULL);
+}
+
+#define APPN_FAST_PATH(NP)                                              \
+    do {                                                                \
+        if (LIKELY(cache->fn == f)) {                                   \
+            struct mlframe *_fr = (struct mlframe *)                    \
+                alloca(sizeof(struct mlframe) +                         \
+                       sizeof(VALUE) * (NP));                           \
+            _fr->parent = cache->env;                                   \
+            _fr->nslots = (NP);                                         \
+            for (int _i = 0; _i < (NP); _i++) _fr->slots[_i] = av[_i]; \
+            struct mlframe * const _saved = c->env;                     \
+            c->env = _fr;                                               \
+            VALUE _r = (*cache->body->head.dispatcher)                  \
+                (c, cache->body);                                       \
+            c->env = _saved;                                            \
+            if (LIKELY(!c->tail_call_pending)) return _r;               \
+            c->tail_call_pending = 0;                                   \
+            return ml_apply(c, c->tc_fn, c->tc_argc, c->tc_argv);       \
+        }                                                               \
+        if (LIKELY(ML_IS_CLOSURE(f))) {                                 \
+            struct mlobj * const _cl = ML_PTR(f);                       \
+            if (LIKELY(_cl->closure.nparams == (NP) &&                  \
+                       _cl->closure.is_leaf)) {                         \
+                cache->fn   = f;                                        \
+                cache->body = _cl->closure.body;                        \
+                cache->env  = _cl->closure.env;                         \
+                struct mlframe *_fr = (struct mlframe *)                \
+                    alloca(sizeof(struct mlframe) +                     \
+                           sizeof(VALUE) * (NP));                       \
+                _fr->parent = _cl->closure.env;                         \
+                _fr->nslots = (NP);                                     \
+                for (int _i = 0; _i < (NP); _i++) _fr->slots[_i] = av[_i]; \
+                struct mlframe * const _saved = c->env;                 \
+                c->env = _fr;                                           \
+                VALUE _r = (*_cl->closure.body->head.dispatcher)        \
+                    (c, _cl->closure.body);                             \
+                c->env = _saved;                                        \
+                if (LIKELY(!c->tail_call_pending)) return _r;           \
+                c->tail_call_pending = 0;                               \
+                return ml_apply(c, c->tc_fn, c->tc_argc, c->tc_argv);   \
+            }                                                           \
+        }                                                               \
+    } while (0)
+
+NODE_DEF
+node_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, struct app_cache *cache@ref)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[1];
+    av[0] = EVAL_ARG(c, a0);
+    APPN_FAST_PATH(1);
+    return ml_apply(c, f, 1, av);
+}
+
+NODE_DEF
+node_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, struct app_cache *cache@ref)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[2];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    APPN_FAST_PATH(2);
+    return ml_apply(c, f, 2, av);
+}
+
+NODE_DEF
+node_app3(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1, NODE *a2, struct app_cache *cache@ref)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE av[3];
+    av[0] = EVAL_ARG(c, a0);
+    av[1] = EVAL_ARG(c, a1);
+    av[2] = EVAL_ARG(c, a2);
+    APPN_FAST_PATH(3);
+    return ml_apply(c, f, 3, av);
+}
+
+// Tail-call variants.  Set trampoline state if the call site clearly
+// targets a closure with matching arity; otherwise fall back to ml_apply.
+
+NODE_DEF
+node_tail_app1(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE v0 = EVAL_ARG(c, a0);
+    if (ML_IS_CLOSURE(f) && ML_PTR(f)->closure.nparams == 1) {
+        c->tc_fn = f; c->tc_argc = 1; c->tc_argv[0] = v0;
+        c->tail_call_pending = 1;
+        return 0;
+    }
+    return ml_apply(c, f, 1, &v0);
+}
+
+NODE_DEF
+node_tail_app2(CTX * restrict c, NODE * restrict n, NODE *fn, NODE *a0, NODE *a1)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE v0 = EVAL_ARG(c, a0);
+    VALUE v1 = EVAL_ARG(c, a1);
+    if (ML_IS_CLOSURE(f) && ML_PTR(f)->closure.nparams == 2) {
+        c->tc_fn = f; c->tc_argc = 2;
+        c->tc_argv[0] = v0; c->tc_argv[1] = v1;
+        c->tail_call_pending = 1;
+        return 0;
+    }
+    VALUE av[2] = { v0, v1 };
+    return ml_apply(c, f, 2, av);
+}
+
+NODE_DEF @noinline
+node_appn(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    extern NODE **ML_CALL_ARGS;
+    VALUE f = EVAL_ARG(c, fn);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *arg = ML_CALL_ARGS[args_idx + i];
+        av[i] = (*arg->head.dispatcher)(c, arg);
+    }
+    return ml_apply(c, f, (int)argc, av);
+}
+
+// ---------------------------------------------------------------------------
+// Integer arithmetic.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "+", "int");
+    return ML_INT(ML_INT_VAL(av) + ML_INT_VAL(bv));
+}
+
+NODE_DEF
+node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "-", "int");
+    return ML_INT(ML_INT_VAL(av) - ML_INT_VAL(bv));
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "*", "int");
+    return ML_INT(ML_INT_VAL(av) * ML_INT_VAL(bv));
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "div", "int");
+    int64_t bi = ML_INT_VAL(bv);
+    if (bi == 0) ml_raise(c, ml_make_variant("Div", 0, NULL));
+    int64_t ai = ML_INT_VAL(av);
+    // SML `div` is floor division.
+    int64_t q = ai / bi;
+    int64_t r = ai - q * bi;
+    if ((r != 0) && ((r < 0) != (bi < 0))) q -= 1;
+    return ML_INT(q);
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "mod", "int");
+    int64_t bi = ML_INT_VAL(bv);
+    if (bi == 0) ml_raise(c, ml_make_variant("Div", 0, NULL));
+    int64_t ai = ML_INT_VAL(av);
+    int64_t r = ai % bi;
+    if ((r != 0) && ((r < 0) != (bi < 0))) r += bi;
+    return ML_INT(r);
+}
+
+NODE_DEF
+node_neg(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (LIKELY(ML_IS_INT(v))) return ML_INT(-ML_INT_VAL(v));
+    if (ML_IS_REAL(v)) return ml_make_real(-ML_PTR(v)->dbl);
+    ml_type_error(c, "~", "int or real");
+}
+
+NODE_DEF
+node_abs(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (LIKELY(ML_IS_INT(v))) {
+        int64_t i = ML_INT_VAL(v);
+        return ML_INT(i < 0 ? -i : i);
+    }
+    if (ML_IS_REAL(v)) {
+        double d = ML_PTR(v)->dbl;
+        return ml_make_real(d < 0 ? -d : d);
+    }
+    ml_type_error(c, "abs", "int or real");
+}
+
+// ---------------------------------------------------------------------------
+// Real arithmetic — separate ops (`+. -. *. /.`).  SML uses overloaded
+// `+` etc., resolved by type.  For our simple subset, we expose `+.` etc.
+// as primitives via globals AND emit dedicated nodes for parsed real ops.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_radd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ml_make_real(ml_get_real(av) + ml_get_real(bv));
+}
+
+NODE_DEF
+node_rsub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ml_make_real(ml_get_real(av) - ml_get_real(bv));
+}
+
+NODE_DEF
+node_rmul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ml_make_real(ml_get_real(av) * ml_get_real(bv));
+}
+
+NODE_DEF
+node_rdiv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ml_make_real(ml_get_real(av) / ml_get_real(bv));
+}
+
+// ---------------------------------------------------------------------------
+// Polymorphic comparison.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(ML_IS_INT(av) & ML_IS_INT(bv)))
+        return (ML_INT_VAL(av) <  ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
+    return (ml_compare(av, bv) <  0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(ML_IS_INT(av) & ML_IS_INT(bv)))
+        return (ML_INT_VAL(av) <= ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
+    return (ml_compare(av, bv) <= 0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(ML_IS_INT(av) & ML_IS_INT(bv)))
+        return (ML_INT_VAL(av) >  ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
+    return (ml_compare(av, bv) >  0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (LIKELY(ML_IS_INT(av) & ML_IS_INT(bv)))
+        return (ML_INT_VAL(av) >= ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
+    return (ml_compare(av, bv) >= 0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ml_structural_eq(av, bv) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_ne(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ml_structural_eq(av, bv) ? ML_FALSE : ML_TRUE;
+}
+
+// ---------------------------------------------------------------------------
+// Constructors / inspection.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_cons(CTX * restrict c, NODE * restrict n, NODE *h, NODE *t)
+{
+    (void)n;
+    VALUE hv = EVAL_ARG(c, h);
+    VALUE tv = EVAL_ARG(c, t);
+    return ml_cons(hv, tv);
+}
+
+NODE_DEF
+node_concat(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!(ML_IS_STRING(av) && ML_IS_STRING(bv)))) ml_type_error(c, "^", "string");
+    return ml_string_concat(av, bv);
+}
+
+// `(e1, e2, ..., eN)` — literal tuple of fixed arity.  Stored arity
+// drives the extractor.
+NODE_DEF @noinline
+node_tuple(CTX * restrict c, NODE * restrict n, uint32_t arity, uint32_t items_idx)
+{
+    (void)n;
+    extern NODE **ML_TUPLE_ITEMS;
+    VALUE *vals = (VALUE *)alloca(sizeof(VALUE) * (arity ? arity : 1));
+    for (uint32_t i = 0; i < arity; i++) {
+        NODE *e = ML_TUPLE_ITEMS[items_idx + i];
+        vals[i] = (*e->head.dispatcher)(c, e);
+    }
+    return ml_make_tuple((int)arity, vals);
+}
+
+// User-defined nullary constructor: returns a singleton variant value
+// (re-allocated each time but structurally equal — kept simple).
+NODE_DEF
+node_ctor0(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    (void)c; (void)n;
+    return ml_make_variant(name, 0, NULL);
+}
+
+// `Ctor e` — single-arg constructor application.
+NODE_DEF
+node_ctor1(CTX * restrict c, NODE * restrict n, const char *name, NODE *arg)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, arg);
+    return ml_make_variant(name, 1, &v);
+}
+
+// ---------------------------------------------------------------------------
+// References.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_ref(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    return ml_make_ref(v);
+}
+
+NODE_DEF
+node_deref(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (UNLIKELY(!ML_IS_REF(v))) ml_type_error(c, "!", "ref");
+    return ML_PTR(v)->refval;
+}
+
+NODE_DEF
+node_assign(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE lv = EVAL_ARG(c, l);
+    VALUE rv = EVAL_ARG(c, r);
+    if (UNLIKELY(!ML_IS_REF(lv))) ml_type_error(c, ":=", "ref");
+    ML_PTR(lv)->refval = rv;
+    return ML_UNIT;
+}
+
+// ---------------------------------------------------------------------------
+// Pattern-matching extractors.
+// ---------------------------------------------------------------------------
+//
+// During parse we lower `case e of p1 => e1 | p2 => e2 | ...` to a chain
+// of `node_match_arm` whose `test` is a boolean predicate built from the
+// extractor / constant / wildcard combinators below.  The same scrutinee
+// is bound to slot 0 of an outer 1-slot frame; extractors index it via
+// `lref(0, 0)` and walk into the value via `node_proj_*`.
+
+// `pat_test_int`: scrutinee == int literal?
+NODE_DEF
+node_pat_test_int(CTX * restrict c, NODE * restrict n, NODE *scrut, uint64_t v)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    if (ML_IS_INT(sv) && ML_INT_VAL(sv) == (int64_t)v) return ML_TRUE;
+    return ML_FALSE;
+}
+
+NODE_DEF
+node_pat_test_bool(CTX * restrict c, NODE * restrict n, NODE *scrut, uint32_t v)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    return (sv == (v ? ML_TRUE : ML_FALSE)) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_pat_test_str(CTX * restrict c, NODE * restrict n, NODE *scrut, const char *s)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    if (!ML_IS_STRING(sv)) return ML_FALSE;
+    struct mlobj *o = ML_PTR(sv);
+    size_t l = strlen(s);
+    if (o->str.len != l) return ML_FALSE;
+    return memcmp(o->str.chars, s, l) == 0 ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_pat_test_unit(CTX * restrict c, NODE * restrict n, NODE *scrut)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    return sv == ML_UNIT ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_pat_test_nil(CTX * restrict c, NODE * restrict n, NODE *scrut)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    return sv == ML_NIL ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_pat_test_cons(CTX * restrict c, NODE * restrict n, NODE *scrut)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    return ML_IS_CONS(sv) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_pat_test_tuple(CTX * restrict c, NODE * restrict n, NODE *scrut, uint32_t arity)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    if (!ML_IS_TUPLE(sv)) return ML_FALSE;
+    return (uint32_t)ML_PTR(sv)->tup.n == arity ? ML_TRUE : ML_FALSE;
+}
+
+// Constructor-tag check: variant or one of the built-in singletons whose
+// "tag name" we expose (e.g. Match / Div for raised exns).
+NODE_DEF
+node_pat_test_ctor(CTX * restrict c, NODE * restrict n, NODE *scrut, const char *name)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    if (!ML_IS_VARIANT(sv)) return ML_FALSE;
+    return strcmp(ML_PTR(sv)->var.name, name) == 0 ? ML_TRUE : ML_FALSE;
+}
+
+// AND of pattern-test predicates: short-circuit.
+NODE_DEF
+node_pat_and(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    if (EVAL_ARG(c, a) != ML_TRUE) return ML_FALSE;
+    return EVAL_ARG(c, b);
+}
+
+// `node_proj_cons_head/tail`: read head/tail of a CONS scrutinee.
+// Caller has already established that the scrutinee is a cons (via
+// pat_test_cons), so the type check is omitted in the hot path.
+NODE_DEF
+node_proj_head(CTX * restrict c, NODE * restrict n, NODE *scrut)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    return ML_PTR(sv)->cons.head;
+}
+
+NODE_DEF
+node_proj_tail(CTX * restrict c, NODE * restrict n, NODE *scrut)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    return ML_PTR(sv)->cons.tail;
+}
+
+NODE_DEF
+node_proj_tuple(CTX * restrict c, NODE * restrict n, NODE *scrut, uint32_t idx)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    return ML_PTR(sv)->tup.items[idx];
+}
+
+NODE_DEF
+node_proj_ctor(CTX * restrict c, NODE * restrict n, NODE *scrut)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    return ML_PTR(sv)->var.items[0];
+}
+
+// ---------------------------------------------------------------------------
+// Type-specialised arithmetic / comparison / control.  Same struct
+// layout as their generic counterparts so the lower walker can choose
+// the specialised dispatcher when the type-checker proved the operand
+// types.  These omit the runtime IS_INT / IS_BOOL / IS_REF guard.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+node_add_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ML_INT(ML_INT_VAL(av) + ML_INT_VAL(bv));
+}
+
+NODE_DEF
+node_sub_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ML_INT(ML_INT_VAL(av) - ML_INT_VAL(bv));
+}
+
+NODE_DEF
+node_mul_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return ML_INT(ML_INT_VAL(av) * ML_INT_VAL(bv));
+}
+
+NODE_DEF
+node_div_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    int64_t bi = ML_INT_VAL(bv);
+    if (UNLIKELY(bi == 0)) ml_raise(c, ml_make_variant("Div", 0, NULL));
+    int64_t ai = ML_INT_VAL(av);
+    int64_t q = ai / bi;
+    int64_t r = ai - q * bi;
+    if ((r != 0) && ((r < 0) != (bi < 0))) q -= 1;
+    return ML_INT(q);
+}
+
+NODE_DEF
+node_mod_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    int64_t bi = ML_INT_VAL(bv);
+    if (UNLIKELY(bi == 0)) ml_raise(c, ml_make_variant("Div", 0, NULL));
+    int64_t r = ML_INT_VAL(av) % bi;
+    if ((r != 0) && ((r < 0) != (bi < 0))) r += bi;
+    return ML_INT(r);
+}
+
+NODE_DEF
+node_neg_int(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    return ML_INT(-ML_INT_VAL(v));
+}
+
+NODE_DEF
+node_lt_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (ML_INT_VAL(av) <  ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_le_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (ML_INT_VAL(av) <= ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_gt_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (ML_INT_VAL(av) >  ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_ge_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (ML_INT_VAL(av) >= ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_eq_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (av == bv) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_ne_int(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    VALUE bv = EVAL_ARG(c, b);
+    return (av != bv) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_if_bool(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+{
+    (void)n;
+    VALUE cv = EVAL_ARG(c, cond);
+    return (cv == ML_TRUE) ? EVAL_ARG(c, thn) : EVAL_ARG(c, els);
+}
+
+NODE_DEF
+node_not_bool(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    return (EVAL_ARG(c, e) == ML_TRUE) ? ML_FALSE : ML_TRUE;
+}
+
+NODE_DEF
+node_andalso_bool(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    if (EVAL_ARG(c, a) == ML_FALSE) return ML_FALSE;
+    return EVAL_ARG(c, b);
+}
+
+NODE_DEF
+node_orelse_bool(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    if (EVAL_ARG(c, a) == ML_TRUE) return ML_TRUE;
+    return EVAL_ARG(c, b);
+}
+
+NODE_DEF
+node_concat_str(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)c; (void)n;
+    return ml_string_concat(EVAL_ARG(c, a), EVAL_ARG(c, b));
+}
+
+NODE_DEF
+node_deref_unchecked(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    return ML_PTR(EVAL_ARG(c, e))->refval;
+}
+
+NODE_DEF
+node_assign_unchecked(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE lv = EVAL_ARG(c, l);
+    VALUE rv = EVAL_ARG(c, r);
+    ML_PTR(lv)->refval = rv;
+    return ML_UNIT;
+}
+
+// ---------------------------------------------------------------------------
+// Top-level definitions.
+// ---------------------------------------------------------------------------
+
+NODE_DEF @noinline
+node_topbind(CTX * restrict c, NODE * restrict n, const char *name, NODE *value)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);
+    ml_global_define(c, name, v);
+    return v;
+}
