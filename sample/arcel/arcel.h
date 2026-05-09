@@ -267,6 +267,14 @@ arcel_value arcel_value_error (const char *msg);
  * arcel_eval on the same program. */
 arcel_value arcel_value_list_new(arcel_arena_handle *arena, uint32_t len, const arcel_value *items);
 
+/* Map builder — same shape as the list builder.  Each entry is a
+ * (key, value) pair laid out contiguously in `kv_pairs` (i.e.
+ * kv_pairs[2*i] is the i-th key, kv_pairs[2*i+1] is the i-th value).
+ * `kv_pairs` may be NULL to leave the map empty; otherwise length is
+ * 2 * `len` arcel_value entries.  Used by adapters that surface
+ * `map<K,V>` proto fields or other dictionary types. */
+arcel_value arcel_value_map_new(arcel_arena_handle *arena, uint32_t len, const arcel_value *kv_pairs);
+
 /* Copy `s` (length `len`) into `arena` and return a string value
  * that points at the owned copy.  Useful when the underlying string
  * lives in caller-side scratch storage and would otherwise dangle

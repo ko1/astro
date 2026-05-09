@@ -410,6 +410,24 @@ arcel_value_list_new(arcel_arena_handle *const arena_h, const uint32_t len,
  * value pointing at the owned copy.  Use when the source buffer's
  * lifetime is shorter than the eval (e.g., a std::string scratch
  * inside a descriptor callback). */
+/* Map builder used inside descriptor::field callbacks.  Each entry's
+ * (key, value) is laid out as a contiguous pair in kv_pairs; see
+ * arcel.h. */
+arcel_value
+arcel_value_map_new(arcel_arena_handle *const arena_h, const uint32_t len,
+                    const arcel_value *const kv_pairs)
+{
+    arcel_arena *const arena = (arcel_arena *)arena_h;
+    arcel_map *const m = arcel_map_new(arena, len);
+    if (kv_pairs) {
+        for (uint32_t i = 0; i < len; i++) {
+            m->entries[i].key = to_v(kv_pairs[2 * i]);
+            m->entries[i].val = to_v(kv_pairs[2 * i + 1]);
+        }
+    }
+    return to_av(V_MAP(m));
+}
+
 arcel_value
 arcel_value_string_copy(arcel_arena_handle *const arena_h, const char *const s, const size_t len)
 {

@@ -34,7 +34,8 @@ example(arcel_program *prg, arcel_activation *act,
         const char *what, std::int64_t age,
         const char *country, const char *role,
         std::int64_t created_at,
-        std::initializer_list<const char *> tags)
+        std::initializer_list<const char *> tags,
+        std::initializer_list<std::pair<const char *, const char *>> labels)
 {
     arcel::examples::UserRequest req;
     req.set_age(age);
@@ -42,6 +43,7 @@ example(arcel_program *prg, arcel_activation *act,
     req.set_role(role);
     req.mutable_meta()->set_created_at(created_at);
     for (const char *t : tags) req.add_tags(t);
+    for (auto &[k, v] : labels) (*req.mutable_labels())[k] = v;
 
     arcel_activation_reset(act);
     arcel_activation_set_object(act, "u", &req, &arcel::pbf::descriptor);
@@ -49,9 +51,8 @@ example(arcel_program *prg, arcel_activation *act,
     arcel_value r = arcel_eval(prg, act);
     char buf[64];
     arcel_format_json(r, buf, sizeof buf);
-    std::printf("OK %-25s age=%lld country=%s role=%s meta.created=%lld tags=%zu -> %s\n",
-                what, static_cast<long long>(age), country, role,
-                static_cast<long long>(created_at), tags.size(), buf);
+    std::printf("OK %-25s tags=%zu labels=%zu -> %s\n",
+                what, tags.size(), labels.size(), buf);
 }
 
 }  // namespace
@@ -65,15 +66,18 @@ main()
     // The expression touches scalar fields on the top-level message
     // AND on a nested message — exercises both code paths in the
     // adapter.
-    // The expression now also touches a REPEATED field
-    // (`u.tags.all(t, t.startsWith("env:"))`) — exercises the
-    // list-builder path added in Phase 5.
+    // The expression touches every shape the adapter supports:
+    //   scalar fields   — u.age, u.country, u.role
+    //   nested message  — u.meta.created_at
+    //   repeated string — u.tags.all(t, t.startsWith("env:"))
+    //   map<string,string> — u.labels["team"] == "platform"
     arcel_program *prg = arcel_compile(env,
         "u.age >= 18 "
         "&& u.country == \"JP\" "
         "&& u.role in [\"admin\", \"user\"] "
         "&& u.meta.created_at > 0 "
-        "&& u.tags.all(t, t.startsWith(\"env:\"))",
+        "&& u.tags.all(t, t.startsWith(\"env:\")) "
+        "&& u.labels[\"team\"] == \"platform\"",
         -1, err, sizeof err);
     if (!prg) {
         std::fprintf(stderr, "compile: %s\n", err);
@@ -82,12 +86,16 @@ main()
 
     arcel_activation *act = arcel_activation_new(env);
 
-    example(prg, act, "matches (all env:)",       25, "JP", "admin", 1700000000, {"env:prod", "env:k8s"});
-    example(prg, act, "matches (empty tags)",     25, "JP", "admin", 1700000000, {});
-    example(prg, act, "tag not env:",             25, "JP", "admin", 1700000000, {"env:prod", "owner:alice"});
-    example(prg, act, "wrong country",            25, "US", "admin", 1700000000, {"env:prod"});
-    example(prg, act, "underage",                 16, "JP", "user",  1700000000, {"env:prod"});
-    example(prg, act, "no created_at",            25, "JP", "admin",          0, {"env:prod"});
+    using L = std::initializer_list<std::pair<const char *, const char *>>;
+    L kPlatform = {{"team", "platform"}};
+    L kInfra    = {{"team", "infra"}};
+
+    example(prg, act, "matches",                  25, "JP", "admin", 1700000000, {"env:prod", "env:k8s"}, kPlatform);
+    example(prg, act, "wrong team label",         25, "JP", "admin", 1700000000, {"env:prod"},            kInfra);
+    example(prg, act, "missing label",            25, "JP", "admin", 1700000000, {"env:prod"},            {});
+    example(prg, act, "tag not env:",             25, "JP", "admin", 1700000000, {"env:prod", "owner:x"}, kPlatform);
+    example(prg, act, "wrong country",            25, "US", "admin", 1700000000, {"env:prod"},            kPlatform);
+    example(prg, act, "underage",                 16, "JP", "user",  1700000000, {"env:prod"},            kPlatform);
 
     arcel_activation_free(act);
     arcel_program_free(prg);

@@ -23,7 +23,7 @@
 //   ✅ repeated scalar fields → arcel list (built in the per-eval arena
 //      via arcel_value_list_new — added in arcel.h Phase 5)
 //   ✅ repeated message fields → arcel list of object handles
-//   ⏭ map<K,V>: needs an arcel_value_map_new builder (future)
+//   ✅ map<K,V> fields → arcel map (Phase 6, via arcel_value_map_new)
 //   ⏭ Any / oneof: handled at a higher level
 
 #ifndef ARCEL_PROTOBUF_H
@@ -114,7 +114,56 @@ pb_field(const arcel_object_desc *, const void *obj_,
     auto *fd   = desc->FindFieldByName(std::string(name, name_len));
     if (!fd) return -1;
 
-    // Repeated → list built in the per-eval arena.
+    // map<K, V> is encoded in the descriptor as a repeated MessageEntry
+    // (`fd->is_map()` distinguishes it from a regular repeated message).
+    // Walk via the same RepeatedMessage iteration but materialize as an
+    // arcel map keyed on the entry's `key` field.
+    if (fd->is_map()) {
+        const int n = refl->FieldSize(*msg, fd);
+        constexpr int kStackLimit = 64;
+        arcel_value  stack_kv[kStackLimit * 2];
+        arcel_value *kv = (n <= kStackLimit) ? stack_kv
+                                             : new arcel_value[n * 2];
+        const auto *entry_desc = fd->message_type();
+        const auto *key_fd     = entry_desc->map_key();
+        const auto *val_fd     = entry_desc->map_value();
+        for (int i = 0; i < n; ++i) {
+            const auto &entry = refl->GetRepeatedMessage(*msg, fd, i);
+            // pb_field_at_singular handles a singular field on `entry`.
+            // We inline a minimal version here so we don't have to
+            // refactor pb_field's switch into a separate helper.
+            auto extract = [&](const google::protobuf::FieldDescriptor *xfd) -> arcel_value {
+                const auto *e_refl = entry.GetReflection();
+                switch (xfd->cpp_type()) {
+                    case FieldDescriptor::CPPTYPE_INT32:  return arcel_value_int (e_refl->GetInt32(entry,  xfd));
+                    case FieldDescriptor::CPPTYPE_INT64:  return arcel_value_int (e_refl->GetInt64(entry,  xfd));
+                    case FieldDescriptor::CPPTYPE_UINT32: return arcel_value_uint(e_refl->GetUInt32(entry, xfd));
+                    case FieldDescriptor::CPPTYPE_UINT64: return arcel_value_uint(e_refl->GetUInt64(entry, xfd));
+                    case FieldDescriptor::CPPTYPE_DOUBLE: return arcel_value_double(e_refl->GetDouble(entry, xfd));
+                    case FieldDescriptor::CPPTYPE_FLOAT:  return arcel_value_double(e_refl->GetFloat(entry,  xfd));
+                    case FieldDescriptor::CPPTYPE_BOOL:   return arcel_value_bool  (e_refl->GetBool(entry,   xfd));
+                    case FieldDescriptor::CPPTYPE_ENUM:   return arcel_value_int   (e_refl->GetEnum(entry, xfd)->number());
+                    case FieldDescriptor::CPPTYPE_STRING: {
+                        std::string scratch;
+                        const std::string &s = e_refl->GetStringReference(entry, xfd, &scratch);
+                        return arcel_value_string_copy(arena, s.data(), s.size());
+                    }
+                    case FieldDescriptor::CPPTYPE_MESSAGE: {
+                        const auto &nested = e_refl->GetMessage(entry, xfd);
+                        return arcel_value_object(&nested, &descriptor);
+                    }
+                }
+                return arcel_value_error("map entry: unrecognized cpp_type");
+            };
+            kv[2 * i]     = extract(key_fd);
+            kv[2 * i + 1] = extract(val_fd);
+        }
+        *out = arcel_value_map_new(arena, static_cast<std::uint32_t>(n), kv);
+        if (n > kStackLimit) delete[] kv;
+        return 0;
+    }
+
+    // Plain repeated → list built in the per-eval arena.
     if (fd->is_repeated()) {
         const int n = refl->FieldSize(*msg, fd);
         // Build items array on the stack for small lists; for very

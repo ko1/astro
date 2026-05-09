@@ -20,6 +20,11 @@ message UserRequest {
     // Phase 5.  CEL macros (`u.tags.all(t, ...)`, `"prod" in u.tags`)
     // operate on this as a regular arcel list.
     repeated string tags = 5;
+
+    // Map<K, V> — exercises the map-builder path added in Phase 6.
+    // CEL accesses look like `u.labels["env"] == "prod"`, mirroring
+    // K8s admission's request.object.metadata.labels.
+    map<string, string> labels = 6;
 }
 
 message UserMeta {
