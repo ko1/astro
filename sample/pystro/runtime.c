@@ -11047,10 +11047,39 @@ static VALUE
 bi_sum(CTX *c, int argc, VALUE *argv)
 {
     VALUE acc = (argc >= 2) ? argv[1] : PYS_FIX(0);
+    // CPython explicitly forbids sum() with str / bytes / bytearray
+    // because the obvious implementation is O(N²).  Match that even
+    // when start is the default 0 — `sum(["a","b"])` is TypeError.
+    if (argc < 2 || acc == PYS_FIX(0)) {
+        // Peek the iterable's first element type without consuming it
+        // is awkward; instead, gate on the canonical user error: when
+        // the start value is implicitly 0 and the first element is str
+        // / bytes / bytearray, the resulting `0 + "a"` would already
+        // raise.  Pre-empt with the CPython message.
+        if (pys_is_str(argv[0]))
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                         "sum() can't sum strings [use ''.join(seq) instead]");
+        if (pys_is_bytes(argv[0]) || pys_is_bytearray(argv[0]))
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                         "sum() can't sum bytes [use b''.join(seq) instead]");
+    }
     struct pys_iter it; pys_iter_init(c, &it, argv[0]);
     if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
     VALUE x;
-    while (pys_iter_next(c, &it, &x)) acc = pys_add(c, acc, x);
+    bool first = true;
+    while (pys_iter_next(c, &it, &x)) {
+        if (first && (argc < 2)) {
+            if (pys_is_str(x))
+                PYS_RAISE_EXC(c, c->EXC_TypeError,
+                             "sum() can't sum strings [use ''.join(seq) instead]");
+            if (pys_is_bytes(x) || pys_is_bytearray(x))
+                PYS_RAISE_EXC(c, c->EXC_TypeError,
+                             "sum() can't sum bytes [use b''.join(seq) instead]");
+            first = false;
+        }
+        acc = pys_add(c, acc, x);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    }
     return acc;
 }
 
@@ -12131,10 +12160,29 @@ bi_import(CTX *c, int argc, VALUE *argv)
         if (!src) { snprintf(path, sizeof(path), BASE_FMT, BASE, modpath); src = read_file_into_buf(path); } \
         if (!src) { snprintf(path, sizeof(path), BASE_FMT, BASE, pkgpath); src = read_file_into_buf(path); } \
     } while (0)
-    // CWD-relative.
+    // Search order (CPython-compat priority):
+    //   1. CWD-relative (script-local helpers / packages)
+    //   2. Bundled stdlib (`<bindir>/stdlib/`) — pystro's own sys / types
+    //      / io / _weakref / _io / collections / etc. take precedence
+    //      over the CPython Lib/ versions reachable via PYTHONPATH.
+    //      Without this ordering the CPython types.py reaches into
+    //      `f.__closure__[0]` (cell-object internals pystro doesn't
+    //      have), and CPython's importlib._bootstrap C-internals fail.
+    //      Pystro's stubs match the API surface used by user code.
+    //   3. PYTHONPATH (user packages + cpytest_stubs)
     if (!src) src = read_file_into_buf(modpath);
     if (!src) src = read_file_into_buf(pkgpath);
-    // PYTHONPATH entries.
+    if (!src) {
+        extern const char *PYS_BINDIR;
+        if (PYS_BINDIR) {
+            snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, modpath);
+            src = read_file_into_buf(path);
+            if (!src) {
+                snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, pkgpath);
+                src = read_file_into_buf(path);
+            }
+        }
+    }
     if (!src) {
         const char *pp = getenv("PYTHONPATH");
         while (pp && *pp && !src) {
@@ -12151,19 +12199,6 @@ bi_import(CTX *c, int argc, VALUE *argv)
                 }
             }
             pp = colon ? colon + 1 : NULL;
-        }
-    }
-    if (!src) {
-        extern const char *PYS_BINDIR;
-        if (PYS_BINDIR) {
-            // Bundled stdlib stubs live in `<bindir>/stdlib/` (separated
-            // from the binary's directory to keep the project root tidy).
-            snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, modpath);
-            src = read_file_into_buf(path);
-            if (!src) {
-                snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, pkgpath);
-                src = read_file_into_buf(path);
-            }
         }
     }
     #undef TRY_BOTH
