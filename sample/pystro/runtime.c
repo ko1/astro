@@ -9318,7 +9318,30 @@ bi_int_from_bytes(CTX *c, int argc, VALUE *argv)
         }
         buf = (const char *)tmp;
     } else {
-        PYS_RAISE_EXC(c, c->EXC_TypeError, "from_bytes: bytes-like required");
+        // Generic iterable fallback: walk via __iter__/__next__ and
+        // collect ints in [0,256).  Used by `int.from_bytes(map(...))`.
+        struct pys_iter it; pys_iter_init(c, &it, v);
+        if (c->state == PYS_STATE_RAISE) return 0;
+        size_t cap = 32;
+        tmp = (unsigned char *)GC_malloc_atomic(cap);
+        n = 0;
+        VALUE iv;
+        while (pys_iter_next(c, &it, &iv)) {
+            if (!pys_is_int(iv))
+                PYS_RAISE_EXC(c, c->EXC_TypeError, "from_bytes: items must be ints");
+            long b = pys_int_to_long(c, iv);
+            if (b < 0 || b > 255)
+                PYS_RAISE_EXC(c, c->EXC_ValueError, "from_bytes: byte must be in range(0, 256)");
+            if (n + 1 >= cap) {
+                cap *= 2;
+                unsigned char *nb = (unsigned char *)GC_malloc_atomic(cap);
+                memcpy(nb, tmp, n);
+                tmp = nb;
+            }
+            tmp[n++] = (unsigned char)b;
+        }
+        if (c->state == PYS_STATE_RAISE) return 0;
+        buf = (const char *)tmp;
     }
 
     mpz_t z; mpz_init(z);
@@ -12616,6 +12639,10 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // __pystro_*__ builtins.  Stub maps the rest to sha256 so
         // `hashlib.new("shake_256")` doesn't ValueError.
         "hashlib.py",
+        // socket — CPython's pulls in `_socket` C extension; pystro
+        // is single-process / no networking, the bundled stub exposes
+        // constants + a non-functional socket class for isinstance().
+        "socket.py",
         NULL,
     };
     bool pystro_wins = false;

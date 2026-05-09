@@ -449,6 +449,7 @@ __all__ = [
     "O_NOATIME", "O_NOCTTY", "O_NOFOLLOW", "O_LARGEFILE", "O_NDELAY",
     "WNOHANG", "WUNTRACED", "WCONTINUED", "WEXITED", "WNOWAIT",
     "WCOREDUMP", "SEEK_SET", "SEEK_CUR", "SEEK_END",
+    "register_at_fork",
     "sep", "altsep", "extsep", "pathsep", "defpath", "linesep", "devnull",
 ]
 
@@ -470,6 +471,11 @@ def WIFCONTINUED(status): return status == 0xFFFF
 # Process / fork stubs — pystro is single-process.
 def fork():
     raise OSError("os.fork unsupported")
+
+
+# CPython 3.7+: register fork hooks. Single-process pystro: no-op.
+def register_at_fork(*, before=None, after_in_parent=None, after_in_child=None):
+    pass
 
 
 def waitpid(pid, options):
