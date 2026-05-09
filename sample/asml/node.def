@@ -84,15 +84,8 @@ node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cac
 // Control flow.
 // ---------------------------------------------------------------------------
 
-NODE_DEF
-node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
-{
-    (void)n;
-    VALUE cv = EVAL_ARG(c, cond);
-    if (cv == ML_TRUE)  return EVAL_ARG(c, thn);
-    if (cv == ML_FALSE) return EVAL_ARG(c, els);
-    ml_type_error(c, "if", "bool");
-}
+// `if`, `andalso`, `orelse`, `not` の動的バリアントは型推論器が
+// 全 cond / 両辺を bool に確定させているため未到達。`_bool` 版のみ残す。
 
 NODE_DEF
 node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
@@ -100,36 +93,6 @@ node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
     (void)n;
     EVAL_ARG(c, first);
     return EVAL_ARG(c, rest);
-}
-
-NODE_DEF
-node_andalso(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    if (av == ML_FALSE) return ML_FALSE;
-    if (av != ML_TRUE)  ml_type_error(c, "andalso", "bool");
-    return EVAL_ARG(c, b);
-}
-
-NODE_DEF
-node_orelse(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    if (av == ML_TRUE)  return ML_TRUE;
-    if (av != ML_FALSE) ml_type_error(c, "orelse", "bool");
-    return EVAL_ARG(c, b);
-}
-
-NODE_DEF
-node_not(CTX * restrict c, NODE * restrict n, NODE *e)
-{
-    (void)n;
-    VALUE v = EVAL_ARG(c, e);
-    if (v == ML_TRUE)  return ML_FALSE;
-    if (v == ML_FALSE) return ML_TRUE;
-    ml_type_error(c, "not", "bool");
 }
 
 // `let val x = v in body end`: extends env by one slot.
@@ -213,36 +176,8 @@ node_match_arm(CTX * restrict c, NODE * restrict n, NODE *test, uint32_t arity, 
     return r;
 }
 
-// Irrefutable pattern binding: `val (x, y) = ...`.  Evaluates value into
-// a 1-slot pinning frame, then evaluates extractors against that, then
-// pushes a frame with the extracted bindings.
-NODE_DEF @noinline
-node_let_pat(CTX * restrict c, NODE * restrict n, NODE *value, uint32_t arity, uint32_t extracts_idx, NODE *body)
-{
-    (void)n;
-    extern NODE **ML_EXTRACT_NODES;
-    VALUE v = EVAL_ARG(c, value);
-    struct mlframe *bind = ml_new_frame(c->env, 1);
-    bind->slots[0] = v;
-    struct mlframe *saved = c->env;
-    c->env = bind;
-    if (arity == 0) {
-        VALUE r = EVAL_ARG(c, body);
-        c->env = saved;
-        return r;
-    }
-    VALUE *vals = (VALUE *)alloca(sizeof(VALUE) * arity);
-    for (uint32_t i = 0; i < arity; i++) {
-        NODE *e = ML_EXTRACT_NODES[extracts_idx + i];
-        vals[i] = (*e->head.dispatcher)(c, e);
-    }
-    struct mlframe *f = ml_new_frame(c->env, (int)arity);
-    for (uint32_t i = 0; i < arity; i++) f->slots[i] = vals[i];
-    c->env = f;
-    VALUE r = EVAL_ARG(c, body);
-    c->env = saved;
-    return r;
-}
+// `node_let_pat` は実装したが未使用 (top-level の val (a,b) は
+// case+topbind に desugar、ローカルは未対応)。削除。
 
 // `raise <expr>` — evaluates the expression, then longjmps to topmost handler.
 NODE_DEF
@@ -419,129 +354,9 @@ node_appn(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t args_idx, uint
 }
 
 // ---------------------------------------------------------------------------
-// Integer arithmetic.
+// Real arithmetic.  HM が両辺を real に確定するので `node_rdiv` のみ。
+// `+ - *` は asml では int 専用 (parser 側で BO_ADD 等は int に固定)。
 // ---------------------------------------------------------------------------
-
-NODE_DEF
-node_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "+", "int");
-    return ML_INT(ML_INT_VAL(av) + ML_INT_VAL(bv));
-}
-
-NODE_DEF
-node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "-", "int");
-    return ML_INT(ML_INT_VAL(av) - ML_INT_VAL(bv));
-}
-
-NODE_DEF
-node_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "*", "int");
-    return ML_INT(ML_INT_VAL(av) * ML_INT_VAL(bv));
-}
-
-NODE_DEF
-node_div(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "div", "int");
-    int64_t bi = ML_INT_VAL(bv);
-    if (bi == 0) ml_raise(c, ml_make_variant("Div", 0, NULL));
-    int64_t ai = ML_INT_VAL(av);
-    // SML `div` is floor division.
-    int64_t q = ai / bi;
-    int64_t r = ai - q * bi;
-    if ((r != 0) && ((r < 0) != (bi < 0))) q -= 1;
-    return ML_INT(q);
-}
-
-NODE_DEF
-node_mod(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    if (UNLIKELY(!(ML_IS_INT(av) & ML_IS_INT(bv)))) ml_type_error(c, "mod", "int");
-    int64_t bi = ML_INT_VAL(bv);
-    if (bi == 0) ml_raise(c, ml_make_variant("Div", 0, NULL));
-    int64_t ai = ML_INT_VAL(av);
-    int64_t r = ai % bi;
-    if ((r != 0) && ((r < 0) != (bi < 0))) r += bi;
-    return ML_INT(r);
-}
-
-NODE_DEF
-node_neg(CTX * restrict c, NODE * restrict n, NODE *e)
-{
-    (void)n;
-    VALUE v = EVAL_ARG(c, e);
-    if (LIKELY(ML_IS_INT(v))) return ML_INT(-ML_INT_VAL(v));
-    if (ML_IS_REAL(v)) return ml_make_real(-ML_PTR(v)->dbl);
-    ml_type_error(c, "~", "int or real");
-}
-
-NODE_DEF
-node_abs(CTX * restrict c, NODE * restrict n, NODE *e)
-{
-    (void)n;
-    VALUE v = EVAL_ARG(c, e);
-    if (LIKELY(ML_IS_INT(v))) {
-        int64_t i = ML_INT_VAL(v);
-        return ML_INT(i < 0 ? -i : i);
-    }
-    if (ML_IS_REAL(v)) {
-        double d = ML_PTR(v)->dbl;
-        return ml_make_real(d < 0 ? -d : d);
-    }
-    ml_type_error(c, "abs", "int or real");
-}
-
-// ---------------------------------------------------------------------------
-// Real arithmetic — separate ops (`+. -. *. /.`).  SML uses overloaded
-// `+` etc., resolved by type.  For our simple subset, we expose `+.` etc.
-// as primitives via globals AND emit dedicated nodes for parsed real ops.
-// ---------------------------------------------------------------------------
-
-NODE_DEF
-node_radd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    return ml_make_real(ml_get_real(av) + ml_get_real(bv));
-}
-
-NODE_DEF
-node_rsub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    return ml_make_real(ml_get_real(av) - ml_get_real(bv));
-}
-
-NODE_DEF
-node_rmul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    return ml_make_real(ml_get_real(av) * ml_get_real(bv));
-}
 
 NODE_DEF
 node_rdiv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
@@ -549,73 +364,163 @@ node_rdiv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return ml_make_real(ml_get_real(av) / ml_get_real(bv));
+    return ml_make_real(ML_PTR(av)->dbl / ML_PTR(bv)->dbl);
+}
+
+NODE_DEF
+node_neg_real(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    return ml_make_real(-ML_PTR(v)->dbl);
 }
 
 // ---------------------------------------------------------------------------
-// Polymorphic comparison.
+// Comparison.  整数版は `_int` (上のセクション)、実数版・文字列版・多相版を
+// HM の operand 型で lower 時に振り分ける。多相版は list / tuple / variant /
+// option など structural 比較が必要な型用で、`ml_compare` / `ml_structural_eq`
+// に丸投げ。動的 IS_INT fast-path はもはや不要 (HM が int を排除済み)。
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_lt_real(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(ML_IS_INT(av) & ML_IS_INT(bv)))
-        return (ML_INT_VAL(av) <  ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
-    return (ml_compare(av, bv) <  0) ? ML_TRUE : ML_FALSE;
+    return (ML_PTR(av)->dbl <  ML_PTR(bv)->dbl) ? ML_TRUE : ML_FALSE;
 }
 
 NODE_DEF
-node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_le_real(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(ML_IS_INT(av) & ML_IS_INT(bv)))
-        return (ML_INT_VAL(av) <= ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
-    return (ml_compare(av, bv) <= 0) ? ML_TRUE : ML_FALSE;
+    return (ML_PTR(av)->dbl <= ML_PTR(bv)->dbl) ? ML_TRUE : ML_FALSE;
 }
 
 NODE_DEF
-node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_gt_real(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(ML_IS_INT(av) & ML_IS_INT(bv)))
-        return (ML_INT_VAL(av) >  ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
-    return (ml_compare(av, bv) >  0) ? ML_TRUE : ML_FALSE;
+    return (ML_PTR(av)->dbl >  ML_PTR(bv)->dbl) ? ML_TRUE : ML_FALSE;
 }
 
 NODE_DEF
-node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_ge_real(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    if (LIKELY(ML_IS_INT(av) & ML_IS_INT(bv)))
-        return (ML_INT_VAL(av) >= ML_INT_VAL(bv)) ? ML_TRUE : ML_FALSE;
-    return (ml_compare(av, bv) >= 0) ? ML_TRUE : ML_FALSE;
+    return (ML_PTR(av)->dbl >= ML_PTR(bv)->dbl) ? ML_TRUE : ML_FALSE;
 }
 
 NODE_DEF
-node_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_eq_real(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return ml_structural_eq(av, bv) ? ML_TRUE : ML_FALSE;
+    return (ML_PTR(av)->dbl == ML_PTR(bv)->dbl) ? ML_TRUE : ML_FALSE;
 }
 
 NODE_DEF
-node_ne(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+node_ne_real(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
-    return ml_structural_eq(av, bv) ? ML_FALSE : ML_TRUE;
+    return (ML_PTR(av)->dbl != ML_PTR(bv)->dbl) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_lt_string(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return (ml_compare(EVAL_ARG(c, a), EVAL_ARG(c, b)) <  0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_le_string(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return (ml_compare(EVAL_ARG(c, a), EVAL_ARG(c, b)) <= 0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_gt_string(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return (ml_compare(EVAL_ARG(c, a), EVAL_ARG(c, b)) >  0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_ge_string(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return (ml_compare(EVAL_ARG(c, a), EVAL_ARG(c, b)) >= 0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_eq_string(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return ml_structural_eq(EVAL_ARG(c, a), EVAL_ARG(c, b)) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_ne_string(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return ml_structural_eq(EVAL_ARG(c, a), EVAL_ARG(c, b)) ? ML_FALSE : ML_TRUE;
+}
+
+// 多相版: list / tuple / variant / option / unit / bool / ref など、
+// structural compare が必要な型で。HM が int / real / string を弾くので
+// 動的 fast-path 無し。
+NODE_DEF
+node_lt_poly(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return (ml_compare(EVAL_ARG(c, a), EVAL_ARG(c, b)) <  0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_le_poly(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return (ml_compare(EVAL_ARG(c, a), EVAL_ARG(c, b)) <= 0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_gt_poly(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return (ml_compare(EVAL_ARG(c, a), EVAL_ARG(c, b)) >  0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_ge_poly(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return (ml_compare(EVAL_ARG(c, a), EVAL_ARG(c, b)) >= 0) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_eq_poly(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return ml_structural_eq(EVAL_ARG(c, a), EVAL_ARG(c, b)) ? ML_TRUE : ML_FALSE;
+}
+
+NODE_DEF
+node_ne_poly(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    return ml_structural_eq(EVAL_ARG(c, a), EVAL_ARG(c, b)) ? ML_FALSE : ML_TRUE;
 }
 
 // ---------------------------------------------------------------------------
@@ -631,15 +536,8 @@ node_cons(CTX * restrict c, NODE * restrict n, NODE *h, NODE *t)
     return ml_cons(hv, tv);
 }
 
-NODE_DEF
-node_concat(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
-{
-    (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
-    if (UNLIKELY(!(ML_IS_STRING(av) && ML_IS_STRING(bv)))) ml_type_error(c, "^", "string");
-    return ml_string_concat(av, bv);
-}
+// `node_concat` の動的バリアントは廃止 — `node_concat_str` を直接使う
+// (HM が string operands を保証)。
 
 // `(e1, e2, ..., eN)` — literal tuple of fixed arity.  Stored arity
 // drives the extractor.
@@ -686,25 +584,8 @@ node_ref(CTX * restrict c, NODE * restrict n, NODE *e)
     return ml_make_ref(v);
 }
 
-NODE_DEF
-node_deref(CTX * restrict c, NODE * restrict n, NODE *e)
-{
-    (void)n;
-    VALUE v = EVAL_ARG(c, e);
-    if (UNLIKELY(!ML_IS_REF(v))) ml_type_error(c, "!", "ref");
-    return ML_PTR(v)->refval;
-}
-
-NODE_DEF
-node_assign(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
-{
-    (void)n;
-    VALUE lv = EVAL_ARG(c, l);
-    VALUE rv = EVAL_ARG(c, r);
-    if (UNLIKELY(!ML_IS_REF(lv))) ml_type_error(c, ":=", "ref");
-    ML_PTR(lv)->refval = rv;
-    return ML_UNIT;
-}
+// `node_deref` / `node_assign` の動的バリアントは廃止 — `_unchecked` 版を
+// 直接使う (HM が ref 型を保証)。
 
 // ---------------------------------------------------------------------------
 // Pattern-matching extractors.

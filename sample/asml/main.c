@@ -2921,12 +2921,55 @@ lower_fn_body(EX *fnex)
     return body;
 }
 
-// Returns true if the inferred type of `e` is `int` (deref-aware).
-static bool
-ex_ty_is(EX *e, enum ty_kind k)
+// 推論済み型 (deref-aware) の判別用ヘルパ。
+static enum ty_kind
+ex_ty_kind(EX *e)
 {
-    if (!e->ty) return false;
-    return ty_deref(e->ty)->kind == k;
+    if (!e->ty) return TYK_VAR;     // 推論未走 (起こらないはず)
+    return ty_deref(e->ty)->kind;
+}
+
+// 比較 op の operand 型 (両辺は HM で同一に unify 済みなので l 側を見る)
+// に応じて、最適な NODE を選ぶ。HM が op の operand を多相のまま残した
+// 場合 (e.g. `'a list` の比較) は `_poly` で structural compare に丸投げ。
+static NODE *
+lower_cmp(int op, NODE *l, NODE *r, EX *operand)
+{
+    enum ty_kind k = ex_ty_kind(operand);
+    switch (op) {
+      case BO_LT:
+        if (k == TYK_INT)    return ALLOC_node_lt_int(l, r);
+        if (k == TYK_REAL)   return ALLOC_node_lt_real(l, r);
+        if (k == TYK_STRING) return ALLOC_node_lt_string(l, r);
+        return ALLOC_node_lt_poly(l, r);
+      case BO_LE:
+        if (k == TYK_INT)    return ALLOC_node_le_int(l, r);
+        if (k == TYK_REAL)   return ALLOC_node_le_real(l, r);
+        if (k == TYK_STRING) return ALLOC_node_le_string(l, r);
+        return ALLOC_node_le_poly(l, r);
+      case BO_GT:
+        if (k == TYK_INT)    return ALLOC_node_gt_int(l, r);
+        if (k == TYK_REAL)   return ALLOC_node_gt_real(l, r);
+        if (k == TYK_STRING) return ALLOC_node_gt_string(l, r);
+        return ALLOC_node_gt_poly(l, r);
+      case BO_GE:
+        if (k == TYK_INT)    return ALLOC_node_ge_int(l, r);
+        if (k == TYK_REAL)   return ALLOC_node_ge_real(l, r);
+        if (k == TYK_STRING) return ALLOC_node_ge_string(l, r);
+        return ALLOC_node_ge_poly(l, r);
+      case BO_EQ:
+        if (k == TYK_INT)    return ALLOC_node_eq_int(l, r);
+        if (k == TYK_REAL)   return ALLOC_node_eq_real(l, r);
+        if (k == TYK_STRING) return ALLOC_node_eq_string(l, r);
+        return ALLOC_node_eq_poly(l, r);
+      case BO_NE:
+        if (k == TYK_INT)    return ALLOC_node_ne_int(l, r);
+        if (k == TYK_REAL)   return ALLOC_node_ne_real(l, r);
+        if (k == TYK_STRING) return ALLOC_node_ne_string(l, r);
+        return ALLOC_node_ne_poly(l, r);
+    }
+    fprintf(stderr, "asml: lower_cmp: unknown op %d\n", op);
+    exit(1);
 }
 
 static NODE *
@@ -2935,22 +2978,18 @@ lower_binop(EX *e)
     NODE *l = lower_expr(e->bin.l);
     NODE *r = lower_expr(e->bin.r);
     switch (e->bin.op) {
-      // Arithmetic / int-only ops: emit _int variants (operands proven int by HM).
-      case BO_ADD: return ALLOC_node_add_int(l, r);
-      case BO_SUB: return ALLOC_node_sub_int(l, r);
-      case BO_MUL: return ALLOC_node_mul_int(l, r);
-      case BO_DIV: return ALLOC_node_div_int(l, r);
-      case BO_MOD: return ALLOC_node_mod_int(l, r);
+      // 算術 — HM で int / real が確定済み。
+      case BO_ADD:  return ALLOC_node_add_int(l, r);
+      case BO_SUB:  return ALLOC_node_sub_int(l, r);
+      case BO_MUL:  return ALLOC_node_mul_int(l, r);
+      case BO_DIV:  return ALLOC_node_div_int(l, r);
+      case BO_MOD:  return ALLOC_node_mod_int(l, r);
       case BO_RDIV: return ALLOC_node_rdiv(l, r);
-      // Comparison: pick _int when both operands are int.  Polymorphic
-      // comparison (lists, tuples, strings) falls through to the generic
-      // node_lt etc. which dispatches on the value tag.
-      case BO_LT: return ex_ty_is(e->bin.l, TYK_INT) ? ALLOC_node_lt_int(l, r) : ALLOC_node_lt(l, r);
-      case BO_LE: return ex_ty_is(e->bin.l, TYK_INT) ? ALLOC_node_le_int(l, r) : ALLOC_node_le(l, r);
-      case BO_GT: return ex_ty_is(e->bin.l, TYK_INT) ? ALLOC_node_gt_int(l, r) : ALLOC_node_gt(l, r);
-      case BO_GE: return ex_ty_is(e->bin.l, TYK_INT) ? ALLOC_node_ge_int(l, r) : ALLOC_node_ge(l, r);
-      case BO_EQ: return ex_ty_is(e->bin.l, TYK_INT) ? ALLOC_node_eq_int(l, r) : ALLOC_node_eq(l, r);
-      case BO_NE: return ex_ty_is(e->bin.l, TYK_INT) ? ALLOC_node_ne_int(l, r) : ALLOC_node_ne(l, r);
+      // 比較 — 型ごとに dispatch。
+      case BO_LT: case BO_LE: case BO_GT:
+      case BO_GE: case BO_EQ: case BO_NE:
+        return lower_cmp(e->bin.op, l, r, e->bin.l);
+      // 文字列連結 — string が確定。
       case BO_CONCAT: return ALLOC_node_concat_str(l, r);
     }
     fprintf(stderr, "asml: lower_binop: unknown op %d\n", e->bin.op);
@@ -2962,8 +3001,15 @@ lower_unop(EX *e)
 {
     NODE *x = lower_expr(e->unop.e);
     switch (e->unop.op) {
-      case UO_NEG:
-        return ex_ty_is(e->unop.e, TYK_INT) ? ALLOC_node_neg_int(x) : ALLOC_node_neg(x);
+      case UO_NEG: {
+        enum ty_kind k = ex_ty_kind(e->unop.e);
+        if (k == TYK_INT)  return ALLOC_node_neg_int(x);
+        if (k == TYK_REAL) return ALLOC_node_neg_real(x);
+        // HM は `~` を int|real に絞る — ここに来たら型エラー
+        // (本来 infer 段階で停止しているはず)。
+        fprintf(stderr, "asml: internal: ~ on non-numeric type\n");
+        exit(1);
+      }
       case UO_NOT:   return ALLOC_node_not_bool(x);
       case UO_DEREF: return ALLOC_node_deref_unchecked(x);
     }
@@ -3042,7 +3088,7 @@ lower_expr(EX *e)
       case EX_CASE: return lower_case(e);
       case EX_HANDLE: return lower_handle(e);
       case EX_REF_NEW: return ALLOC_node_ref(lower_expr(e->un.e));
-      case EX_DEREF:   return ALLOC_node_deref(lower_expr(e->un.e));
+      case EX_DEREF:   return ALLOC_node_deref_unchecked(lower_expr(e->un.e));
       case EX_ASSIGN:  return ALLOC_node_assign_unchecked(lower_expr(e->assign.l), lower_expr(e->assign.r));
       case EX_RAISE:   return ALLOC_node_raise(lower_expr(e->un.e));
       case EX_BINOP:   return lower_binop(e);

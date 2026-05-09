@@ -96,23 +96,35 @@ desugar:
 
 ## 型駆動特殊化
 
-`lower_expr` は推論結果 `ex->ty` を見てノードを選ぶ:
+`lower_expr` は推論結果 `ex->ty` を見て、operand 型に応じた専用ノードを
+選ぶ。**動的型チェック (IS_INT, IS_BOOL, IS_REF, IS_STRING) を含む
+generic ノードは node.def から削除済み** — HM が型を絞れなかった式は
+infer 段階で reject される。
 
-| EX 種別 | デフォルト | 型確定時 |
-|---|---|---|
-| `BO_ADD/SUB/MUL/DIV/MOD` | 常に `_int` | (int でなければ型エラー) |
-| `BO_RDIV` | 常に generic `node_rdiv` | (real でなければ型エラー) |
-| `BO_LT/LE/GT/GE/EQ/NE` | `node_lt` 等 (多相) | operand が `int` で `_int` |
-| `UO_NEG` | `node_neg` | operand が `int` で `_int` |
-| `UO_NOT` | (常に bool) | `node_not_bool` |
-| `UO_DEREF` | (常に ref) | `node_deref_unchecked` |
-| `EX_IF` | (常に bool 条件) | `node_if_bool` |
-| `EX_ANDALSO/ORELSE` | (常に bool) | `node_andalso_bool` / `_bool` |
-| `EX_ASSIGN` | (常に ref) | `node_assign_unchecked` |
-| `BO_CONCAT` | (常に string) | `node_concat_str` |
+| EX 種別 | 推論結果 → ノード |
+|---|---|
+| `BO_ADD/SUB/MUL/DIV/MOD` | `_int` (HM が int を保証) |
+| `BO_RDIV` (`/`) | `node_rdiv` (HM が real を保証) |
+| `BO_LT/LE/GT/GE/EQ/NE` | int → `_int` / real → `_real` / string → `_string` / その他 → `_poly` (`ml_compare` / `ml_structural_eq`) |
+| `UO_NEG` | int → `_int` / real → `_real` |
+| `UO_NOT` | `node_not_bool` (HM が bool を保証) |
+| `UO_DEREF` | `node_deref_unchecked` (HM が ref を保証) |
+| `EX_IF` | `node_if_bool` (cond が bool) |
+| `EX_ANDALSO/ORELSE` | `node_andalso_bool` / `_bool` |
+| `EX_ASSIGN` | `node_assign_unchecked` (lhs が ref) |
+| `BO_CONCAT` | `node_concat_str` (両辺が string) |
 
-generic 系 (`node_add` 等) は **コンパイル後 SD 上に残らない** ことを確認済
-(`grep EVAL_node_ code_store/c/*.c`)。
+generic 系は **node.def から物理的に削除済み**。`node_add` を呼ぼうとしても
+リンクエラーになる。コンパイル後 SD には `_int / _bool / _str / _real /
+_string / _poly / _unchecked` 系しか出現しない。
+
+削除した generic ノード:
+- `node_add / sub / mul / div / mod / neg / abs`
+- `node_radd / rsub / rmul` (`+. -. *.` を未サポートなので未到達)
+- `node_lt / le / gt / ge / eq / ne` (動的 IS_INT fast-path 付きだった)
+- `node_if / andalso / orelse / not`
+- `node_concat / deref / assign`
+- `node_let_pat` (実装したが未使用)
 
 ## ASTro 統合
 
