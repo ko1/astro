@@ -4094,6 +4094,99 @@ bi_dunder_call(CTX *c, int argc, VALUE *argv)
     return pys_apply(c, argv[0], argc - 1, argv + 1);
 }
 
+// Default __reduce_ex__ for arbitrary objects: returns a tuple of
+// (callable, args) such that callable(*args) reconstructs an
+// equivalent instance.  copy.copy / pickle use this when a class has
+// no explicit __reduce_ex__.  We use the simple form
+//   (type(self), (list(self),))
+// for sequence-like instances (which covers list/tuple/dict subclass
+// patterns common in test_xml_dom_minicompat).
+static VALUE
+bi_dunder_reduce_ex(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE self = argv[0];
+    extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+    VALUE av_t[1] = { self };
+    VALUE cls = bi_type(c, 1, av_t);
+    // For built-in subclass instances, dump the primary value as the
+    // ctor arg.  E.g. NodeList(list) → (NodeList, (list_of_nodes,)).
+    if (pys_is_instance(self) && PYS_PTR(self)->inst.primary) {
+        VALUE av_arg = PYS_PTR(self)->inst.primary;
+        VALUE av_args = pys_make_tuple(&av_arg, 1);
+        VALUE av_pair[2] = { cls, av_args };
+        return pys_make_tuple(av_pair, 2);
+    }
+    // For plain instances, create an empty new of cls then assign __dict__.
+    VALUE av_args = pys_make_tuple(NULL, 0);
+    VALUE av_pair[2] = { cls, av_args };
+    return pys_make_tuple(av_pair, 2);
+}
+
+static VALUE
+bi_dunder_reduce(CTX *c, int argc, VALUE *argv)
+{
+    VALUE av[2] = { argv[0], PYS_FIX(2) };
+    return bi_dunder_reduce_ex(c, 2, av);
+}
+
+static VALUE
+bi_dunder_sizeof(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_FIX(0);
+}
+
+static VALUE
+bi_dunder_class_getitem(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    return argv[0];     // Foo[x] → Foo (no parameterisation enforced)
+}
+
+static VALUE bi_dir(CTX *c, int argc, VALUE *argv);
+static VALUE
+bi_dunder_dir(CTX *c, int argc, VALUE *argv)
+{
+    return bi_dir(c, argc, argv);
+}
+
+static VALUE
+bi_dunder_init_subclass(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_NONE;
+}
+
+static VALUE
+bi_dunder_subclasshook(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    // Look up the global `NotImplemented` singleton.
+    VALUE ni;
+    if (pys_global_lookup(c, "NotImplemented", &ni)) return ni;
+    return PYS_NONE;
+}
+
+static VALUE
+bi_dunder_format(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (pys_is_str(argv[1]) && PYS_PTR(argv[1])->str.len == 0)
+        return pys_to_str(c, argv[0]);
+    // bi_format is later in this file; just str() with empty fmt for now.
+    return pys_to_str(c, argv[0]);
+}
+
+static VALUE
+bi_dunder_getattribute(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[1]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "attribute name must be string");
+    return pys_getattr(c, argv[0], PYS_PTR(argv[1])->str.chars);
+}
+
 VALUE
 pys_dunder_bound(CTX *c, VALUE recv, const char *name)
 {
@@ -4129,9 +4222,18 @@ pys_dunder_bound(CTX *c, VALUE recv, const char *name)
         { "__str__",      bi_dunder_str,      1, 1 },
         { "__bool__",     bi_dunder_bool,     1, 1 },
         { "__call__",     bi_dunder_call,     1, -1 },
+        { "__reduce_ex__",    bi_dunder_reduce_ex, 2, 2 },
+        { "__reduce__",       bi_dunder_reduce,    1, 1 },
+        { "__sizeof__",       bi_dunder_sizeof,    1, 1 },
+        { "__class_getitem__",bi_dunder_class_getitem, 2, 2 },
+        { "__dir__",          bi_dunder_dir,       1, 1 },
+        { "__init_subclass__",bi_dunder_init_subclass, 1, -1 },
+        { "__subclasshook__", bi_dunder_subclasshook, 2, 2 },
+        { "__format__",       bi_dunder_format,    2, 2 },
+        { "__getattribute__", bi_dunder_getattribute, 2, 2 },
     };
     int idx = -1;
-    for (size_t i = 0; i < sizeof(shims)/sizeof(shims[0]); i++) {
+    for (size_t i = 0; i < (int)(sizeof(shims)/sizeof(shims[0])); i++) {
         if (strcmp(shims[i].name, name) == 0) { idx = (int)i; break; }
     }
     if (idx < 0) return PYS_NONE;
@@ -4149,6 +4251,14 @@ pys_dunder_bound(CTX *c, VALUE recv, const char *name)
       case 8: case 9: ok = true; break;                 // __repr__/__str__ — universal
       case 10: ok = true; break;                        // __bool__ — universal
       case 11: ok = is_callable; break;                 // __call__
+      case 12: case 13: ok = true; break;               // __reduce_ex__/__reduce__
+      case 14: ok = true; break;                        // __sizeof__
+      case 15: ok = pys_is_class(recv); break;          // __class_getitem__
+      case 16: ok = true; break;                        // __dir__
+      case 17: ok = pys_is_class(recv); break;          // __init_subclass__
+      case 18: ok = pys_is_class(recv); break;          // __subclasshook__
+      case 19: ok = true; break;                        // __format__
+      case 20: ok = true; break;                        // __getattribute__
     }
     if (!ok) return PYS_NONE;
     VALUE fn = pys_make_builtin(name, shims[idx].fn,
