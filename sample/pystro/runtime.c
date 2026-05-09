@@ -4623,9 +4623,37 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             pys_setattr(c, code, "co_firstlineno", PYS_FIX(0));
             return code;
         }
-        if (strcmp(name, "__globals__") == 0
-            || strcmp(name, "__closure__") == 0) {
-            return PYS_NONE;
+        if (strcmp(name, "__globals__") == 0) return PYS_NONE;
+        if (strcmp(name, "__closure__") == 0) {
+            // CPython: nested function with free vars returns a tuple
+            // of cell objects; module-level / non-capturing returns None.
+            //
+            // Pystro distinguishes by whether the function was defined
+            // with a non-NULL env (which only happens for nested defs —
+            // module-level def runs at c->env == NULL).  For nested
+            // defs we synthesise a tuple of cell-class instances so
+            // CPython's `types.CellType = type(_cell_factory())` works.
+            // Cell contents snapshot the captured frame slot at lookup
+            // time — no live binding back to the cell.  Adequate for
+            // introspection.
+            if (!o->func.env) return PYS_NONE;
+            if (c->TYPE_cell == 0 || c->TYPE_cell == PYS_NONE) return PYS_NONE;
+            int n = o->func.env->nslots;
+            if (n <= 0) return PYS_NONE;
+            if (n > 32) n = 32;
+            VALUE *items = (VALUE *)alloca(sizeof(VALUE) * n);
+            for (int i = 0; i < n; i++) {
+                struct pysobj *cell = (struct pysobj *)GC_malloc(sizeof(struct pysobj));
+                cell->type = PYS_T_INSTANCE;
+                cell->inst.cls = PYS_PTR(c->TYPE_cell);
+                cell->inst.attrs = pydict_new();
+                cell->inst.primary = 0;
+                VALUE k = pys_make_str("cell_contents", 13);
+                pydict_set_h(c, cell->inst.attrs, k, pys_hash(c, k),
+                            o->func.env->slots[i]);
+                items[i] = PYS_OBJ_VAL(cell);
+            }
+            return pys_make_tuple(items, (size_t)n);
         }
         if (strcmp(name, "__dict__") == 0) {
             // Lazily allocate the function's attribute dict and expose
@@ -12160,16 +12188,40 @@ bi_import(CTX *c, int argc, VALUE *argv)
         if (!src) { snprintf(path, sizeof(path), BASE_FMT, BASE, modpath); src = read_file_into_buf(path); } \
         if (!src) { snprintf(path, sizeof(path), BASE_FMT, BASE, pkgpath); src = read_file_into_buf(path); } \
     } while (0)
+    // Modules where pystro's stub MUST take precedence over CPython's
+    // version reachable via PYTHONPATH.  These depend on CPython-internal
+    // C structure (real coroutines for `_collections_abc.py`'s
+    // `(async def)().close()`, code-object cell internals for
+    // `types.py`'s `_cell_factory`).  Pystro's smaller stubs are
+    // sufficient for user code that only touches the public API.
+    static const char *pystro_first_modules[] = {
+        "_collections_abc.py",
+        "types.py",
+        NULL,
+    };
+    bool pystro_wins = false;
+    for (const char **pf = pystro_first_modules; *pf; pf++) {
+        if (strcmp(modpath, *pf) == 0) { pystro_wins = true; break; }
+    }
     // Search order:
     //   1. CWD-relative (script-local helpers / packages)
-    //   2. PYTHONPATH (user packages + CPython stdlib at `cpython/Lib`)
-    //   3. Bundled stdlib (`<bindir>/stdlib/`) — pystro's stubs for the
-    //      C-extension modules CPython implements in C (`sys`, `_io`,
-    //      `_imp`, `_warnings`, `_weakref`, `posix`, ...) and the
-    //      stdlib subset pystro needs.  Last so user code under
-    //      PYTHONPATH can override, available always otherwise.
+    //   2. (pystro_wins) Bundled stdlib first
+    //   3. PYTHONPATH (user packages + CPython stdlib at `cpython/Lib`)
+    //   4. Bundled stdlib (`<bindir>/stdlib/`) — fallback for everything
+    //      else.  Last so user code under PYTHONPATH can override.
     if (!src) src = read_file_into_buf(modpath);
     if (!src) src = read_file_into_buf(pkgpath);
+    if (pystro_wins && !src) {
+        extern const char *PYS_BINDIR;
+        if (PYS_BINDIR) {
+            snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, modpath);
+            src = read_file_into_buf(path);
+            if (!src) {
+                snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, pkgpath);
+                src = read_file_into_buf(path);
+            }
+        }
+    }
     if (!src) {
         const char *pp = getenv("PYTHONPATH");
         while (pp && *pp && !src) {
@@ -13587,6 +13639,7 @@ install_builtins(CTX *c)
     c->TYPE_staticmethod                = pys_make_class("staticmethod",                 PYS_NONE, false);
     c->TYPE_classmethod                 = pys_make_class("classmethod",                  PYS_NONE, false);
     c->TYPE_super                       = pys_make_class("super",                        PYS_NONE, false);
+    c->TYPE_cell                        = pys_make_class("cell",                         PYS_NONE, false);
     // Wire up base classes so issubclass/isinstance walk MRO properly.
     // bool < int < object; everything else < object.  bytes/bytearray
     // share an ancestor (object) — pystro doesn't model the C-level
