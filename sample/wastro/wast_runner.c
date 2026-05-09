@@ -21,8 +21,7 @@
 //   (assert_invalid ...) | (assert_malformed ...) — reported as skipped
 //   (assert_exhaustion ...) — reported as skipped
 
-static CTX *wastro_instantiate(uint32_t initial_local_slots);
-static VALUE wastro_invoke(CTX *c, int func_idx, VALUE *args, uint32_t argc);
+/* wastro_instantiate / wastro_invoke are now declared in parse.h. */
 
 static void
 wastro_reset_module(void)
@@ -279,7 +278,7 @@ wast_run_assert_trap(int line, CTX *c)
 
 // Walk the .wast file form-by-form.  For each `(module ...)`, reset
 // state and load.  For each assertion, run it.  Print summary.
-static int
+int
 wastro_run_wast(const char *path)
 {
     FILE *f = fopen(path, "rb");

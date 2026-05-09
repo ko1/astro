@@ -18,10 +18,10 @@ FRONTEND_PARTS = wat_tokenizer.c \
                  wasm_decoder.c \
                  wast_runner.c
 
-wastro: main.c node.c Makefile $(NODE_GENFILES) $(FRONTEND_PARTS) context.h node.h
+wastro: main.c parse.c node.c Makefile $(NODE_GENFILES) $(FRONTEND_PARTS) context.h node.h parse.h
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall \
 	    -rdynamic \
-	    -o wastro main.c node.c -ldl -lm
+	    -o wastro main.c parse.c node.c -ldl -lm
 
 node_eval.c: ../../lib/* node.def wastro_gen.rb
 	ruby -I ../../lib -I . -r astrogen -r wastro_gen \
