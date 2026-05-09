@@ -182,6 +182,10 @@ VALUE arcel_matches(CTX *c, VALUE recv, VALUE pattern);
  * 1/2/4/8-byte cmps based on the literal's length. */
 VALUE arcel_field_err_no_key  (CTX *c, const char *name, uint32_t name_len);
 VALUE arcel_field_err_overload(CTX *c, int tag);
+/* Slow path for AC_OBJECT — calls into the descriptor's `field`
+ * callback.  Out-of-line so the inlined arcel_field stays small even
+ * when the embedder's adapter is heavy. */
+VALUE arcel_field_object(CTX *c, VALUE recv, const char *name, uint32_t name_len);
 
 static inline VALUE
 arcel_field(CTX *const c, const VALUE recv, const char *const name, const uint32_t name_len)
@@ -198,6 +202,9 @@ arcel_field(CTX *const c, const VALUE recv, const char *const name, const uint32
             }
         }
         return arcel_field_err_no_key(c, name, name_len);
+    }
+    if (recv.tag == AC_OBJECT) {
+        return arcel_field_object(c, recv, name, name_len);
     }
     return arcel_field_err_overload(c, recv.tag);
 }

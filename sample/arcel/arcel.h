@@ -66,6 +66,8 @@ typedef enum {
     ARCEL_T_BYTES,
     ARCEL_T_LIST,
     ARCEL_T_MAP,
+    ARCEL_T_OBJECT,    /* embedder-supplied opaque object — see
+                          arcel_object_desc below */
 } arcel_type;
 
 /* arcel_value is a value handle.  Internally a 16-byte tagged union
@@ -95,6 +97,65 @@ typedef struct {
 typedef struct arcel_env_struct        arcel_env;
 typedef struct arcel_program_struct    arcel_program;
 typedef struct arcel_activation_struct arcel_activation;
+
+/* ---- object descriptor (embedder dispatch table) ----------------- *
+ *
+ * Lets a caller pass a native object — protobuf message, struct
+ * pointer, dictionary, etc. — straight through arcel without
+ * converting it to an arcel-owned map.  The descriptor is a small
+ * table of function pointers that arcel calls when CEL code accesses
+ * the object's fields:
+ *
+ *     // Embedder side: 20 lines of glue per type
+ *     static int my_user_field(const arcel_object_desc *d, const void *o,
+ *                              const char *name, size_t len, arcel_value *out) {
+ *         const struct my_user *u = o;
+ *         if (len == 3 && memcmp(name, "age", 3) == 0) {
+ *             *out = arcel_value_int(u->age); return 0;
+ *         }
+ *         ...
+ *         return -1;  // missing
+ *     }
+ *     static const arcel_object_desc my_user_desc = {
+ *         .field = my_user_field, .type_name = "User",
+ *     };
+ *
+ *     // Wire it into an activation
+ *     struct my_user u = ...;
+ *     arcel_activation_set_object(act, "u", &u, &my_user_desc);
+ *
+ * Same shape supports protobuf-c (descriptor walks `msg->descriptor`),
+ * libprotobuf (Reflection::FindFieldByName), or any custom encoding.
+ * arcel itself stays protobuf-agnostic.
+ *
+ * The descriptor must outlive every activation and value that
+ * references it (typically a `static const`).  The `obj` pointer must
+ * outlive any eval that touches it (typically the lifetime of a
+ * single request). */
+typedef struct arcel_object_desc arcel_object_desc;
+
+struct arcel_object_desc {
+    /* Required.  Look up `name` (length `name_len`) on `obj`.
+     * Return 0 on success and write the field value to `*out`; return
+     * -1 on missing field.  Other negative values reserved for
+     * type-mismatch errors that should propagate as ARCEL_T_ERR. */
+    int (*field)(const arcel_object_desc *desc, const void *obj,
+                 const char *name, size_t name_len, arcel_value *out);
+
+    /* Optional.  Presence test for the `has(x.field)` macro.  If NULL,
+     * arcel falls back to "field returned 0" = present. */
+    int (*has)(const arcel_object_desc *desc, const void *obj,
+               const char *name, size_t name_len);
+
+    /* Optional.  Render `obj` as JSON for arcel_format_json output.
+     * If NULL, arcel emits `<object:type_name>`.  Same snprintf-style
+     * return convention as arcel_format_json. */
+    size_t (*format_json)(const arcel_object_desc *desc, const void *obj,
+                          char *buf, size_t buf_cap);
+
+    /* Required.  Static type name for diagnostics and `type(x)`. */
+    const char *type_name;
+};
 
 /* ---- env --------------------------------------------------------- */
 
@@ -152,6 +213,33 @@ void arcel_activation_set_bytes (arcel_activation *act, const char *name, const 
  * for large objects).  A native `arcel_value`-tree builder API will
  * follow once we have callers that demand it. */
 void arcel_activation_set_json  (arcel_activation *act, const char *name, const char *json, size_t len);
+
+/* Bind an embedder-supplied opaque object.  `obj` and `desc` must both
+ * outlive every eval that touches this binding; `desc` is typically a
+ * `static const` table.  See `arcel_object_desc` for what the
+ * descriptor must implement. */
+void arcel_activation_set_object(arcel_activation *act, const char *name,
+                                  const void *obj, const arcel_object_desc *desc);
+
+/* ---- value constructors (for use inside arcel_object_desc::field) -- *
+ *
+ * These return arcel_value handles that can be assigned to `*out` in
+ * a `field` callback.  They all just construct an inline VALUE — no
+ * allocation, no arena bookkeeping — so they're safe to use from any
+ * embedder code path.
+ *
+ * For string/bytes the buffer must outlive the returned value (which
+ * means: outlive the eval).  Most embedder callbacks return pointers
+ * into the source object, which already meets that lifetime. */
+arcel_value arcel_value_null  (void);
+arcel_value arcel_value_bool  (bool v);
+arcel_value arcel_value_int   (int64_t v);
+arcel_value arcel_value_uint  (uint64_t v);
+arcel_value arcel_value_double(double v);
+arcel_value arcel_value_string(const char *s, size_t len);
+arcel_value arcel_value_bytes (const char *s, size_t len);
+arcel_value arcel_value_object(const void *obj, const arcel_object_desc *desc);
+arcel_value arcel_value_error (const char *msg);
 
 /* Bulk: parse a JSON object and use each top-level key as a binding
  * (same semantics as the CLI's `-i` flag). */

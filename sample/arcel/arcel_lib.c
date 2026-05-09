@@ -271,6 +271,15 @@ arcel_activation_set_json(arcel_activation *const act, const char *const name,
     e->val = arcel_parse_json(&act->arena, json, (uint32_t)len);
 }
 
+void
+arcel_activation_set_object(arcel_activation *const act, const char *const name,
+                            const void *const obj, const arcel_object_desc *const desc)
+{
+    arcel_map_entry *const e = act_slot(act);
+    e->key = act_str_key(act, name);
+    e->val = V_OBJECT(obj, (const struct arcel_object_desc *)desc);
+}
+
 int
 arcel_activation_load_json(arcel_activation *const act, const char *const json, const size_t len,
                            char *const err_buf, const size_t err_buf_cap)
@@ -363,6 +372,21 @@ arcel_map_val_at(arcel_value av, const uint32_t i)
 {
     return to_av(to_v(av).map->entries[i].val);
 }
+
+/* ---- value constructors (for arcel_object_desc::field callbacks) -- */
+
+arcel_value arcel_value_null  (void)                              { return to_av(V_NULL()); }
+arcel_value arcel_value_bool  (bool v)                            { return to_av(V_BOOL(v)); }
+arcel_value arcel_value_int   (int64_t v)                         { return to_av(V_INT(v)); }
+arcel_value arcel_value_uint  (uint64_t v)                        { return to_av(V_UINT(v)); }
+arcel_value arcel_value_double(double v)                          { return to_av(V_DOUBLE(v)); }
+arcel_value arcel_value_string(const char *s, size_t len)         { return to_av(V_STR(s, (uint32_t)len)); }
+arcel_value arcel_value_bytes (const char *s, size_t len)         { return to_av(V_BYTES(s, (uint32_t)len)); }
+arcel_value arcel_value_object(const void *obj, const arcel_object_desc *desc)
+{
+    return to_av(V_OBJECT(obj, (const struct arcel_object_desc *)desc));
+}
+arcel_value arcel_value_error (const char *msg)                   { return to_av(V_ERR(msg)); }
 
 size_t
 arcel_format_json(arcel_value av, char *const buf, const size_t buf_cap)

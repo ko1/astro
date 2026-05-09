@@ -1,4 +1,4 @@
-all: arcel libarcel.a libarcel.so examples/embed examples/embed_cc
+all: arcel libarcel.a libarcel.so examples/embed examples/embed_cc examples/embed_object
 
 NODE_GENFILES = node_eval.c \
                 node_dispatch.c \
@@ -56,6 +56,12 @@ examples/embed_cc: examples/embed.cc libarcel.a arcel.h
 	$(CXX) -std=c++17 $(CFLAGS) -o $@ examples/embed.cc libarcel.a $(LIBS)
 CXX = g++
 
+# Object-adapter example: embeds against a native C struct via
+# arcel_object_desc — no JSON round-trip, no per-eval activation
+# rebuild.  Same pattern works for protobuf-c / libprotobuf / etc.
+examples/embed_object: examples/embed_object.c libarcel.a arcel.h
+	$(CC) $(CFLAGS) -o $@ examples/embed_object.c libarcel.a $(LIBS)
+
 # Run the CEL conformance suite against ./arcel.  Defaults to the
 # core / non-proto / non-ext subset; pass --include proto,env,ext etc.
 # through TEST_ARGS to widen.
@@ -92,11 +98,12 @@ smoke: arcel
 	@./arcel eval -e '-5 + 10'               | grep -q '^5$$' && echo "  ok  unary minus"
 	@./arcel eval -e '7 / 0'                 | grep -q '^ERROR' && echo "  ok  div0 -> error"
 
-# Embed-side smoke: build and run both example bins (C and C++),
-# sanity-check that they emit the OK lines.
-smoke-embed: examples/embed examples/embed_cc
-	@./examples/embed    | grep -q '^OK' && echo "  ok  embed (C)"
-	@./examples/embed_cc | grep -q '^OK' && echo "  ok  embed (C++)"
+# Embed-side smoke: build and run all three example bins, sanity-
+# check that they emit the OK lines.
+smoke-embed: examples/embed examples/embed_cc examples/embed_object
+	@./examples/embed         | grep -q '^OK' && echo "  ok  embed (C, JSON input)"
+	@./examples/embed_cc      | grep -q '^OK' && echo "  ok  embed (C++, JSON input)"
+	@./examples/embed_object  | grep -q '^OK' && echo "  ok  embed (C, native struct via arcel_object_desc)"
 
 clean:
 	rm -f arcel libarcel.a libarcel.so examples/embed *.o $(NODE_GENFILES)

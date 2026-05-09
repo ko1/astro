@@ -123,3 +123,12 @@ cc_binary(
     srcs = ["examples/embed.cc"],
     deps = [":arcel"],
 )
+
+# Object-adapter example — embeds against a native C struct via
+# arcel_object_desc.  Same pattern protobuf-c / libprotobuf adapters
+# would use to surface proto messages to arcel.
+cc_binary(
+    name = "embed_object",
+    srcs = ["examples/embed_object.c"],
+    deps = [":arcel"],
+)

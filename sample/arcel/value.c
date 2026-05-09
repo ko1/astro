@@ -4,6 +4,11 @@
 #include <limits.h>
 #include <stdarg.h>
 #include "value.h"
+/* arcel.h gives us the full definition of `arcel_object_desc` so the
+ * AC_OBJECT helpers can call into the embedder's dispatch table.
+ * value.h only forward-declares the struct (to keep the internal
+ * header small); the full definition lives in arcel.h. */
+#include "arcel.h"
 
 /* ---- arena -------------------------------------------------------- */
 
@@ -182,6 +187,11 @@ arcel_eq_slow(const VALUE a, const VALUE b)
                 }
                 return true;
             }
+            case AC_OBJECT:
+                /* Same descriptor + same obj pointer → identical.
+                 * Structural equality across descriptor calls would
+                 * require enumerating fields (no API for that yet). */
+                return a.object.desc == b.object.desc && a.object.obj == b.object.obj;
             default: return false;
         }
     }
@@ -476,6 +486,26 @@ arcel_field_err_overload(CTX *const c, const int tag)
     return err(c, "no such overload: field-access on %d", tag);
 }
 
+/* Slow path for AC_OBJECT field access.  Calls into the embedder's
+ * descriptor.field callback; the public arcel_value type returned
+ * has the same in-memory layout as VALUE so we cast back without
+ * marshalling. */
+VALUE
+arcel_field_object(CTX *const c, const VALUE recv, const char *const name, const uint32_t name_len)
+{
+    const struct arcel_object_desc *const d = recv.object.desc;
+    if (!d || !d->field) return err(c, "no such overload: field-access on object");
+
+    /* The descriptor writes an `arcel_value` (24 bytes) — same layout
+     * as VALUE per the static_assert in arcel_lib.c.  Reinterpret. */
+    union { VALUE v; struct { uint64_t _opaque[3]; } av; } u = {0};
+    int rc = d->field(d, recv.object.obj, name, (size_t)name_len,
+                      (void *)&u.av);
+    if (rc == 0) return u.v;
+    if (rc == -1) return err(c, "no such key: %.*s", (int)name_len, name);
+    return err(c, "field-access error on %s", d->type_name ? d->type_name : "object");
+}
+
 VALUE arcel_index_err   (CTX *const c)            { return err(c, "no such overload: index"); }
 VALUE arcel_index_oob   (CTX *const c, int64_t i) { return err(c, "index out of range: %" PRId64, i); }
 VALUE arcel_index_no_key(CTX *const c)            { return err(c, "no such key"); }
@@ -686,6 +716,8 @@ arcel_cel_type_of(CTX *const c, const VALUE x)
         case AC_BYTES:  t = "bytes";  break;
         case AC_LIST:   t = "list";   break;
         case AC_MAP:    t = "map";    break;
+        case AC_OBJECT: t = (x.object.desc && x.object.desc->type_name)
+                            ? x.object.desc->type_name : "object"; break;
         default:        t = "error";  break;
     }
     return V_STR(t, (uint32_t)strlen(t));
@@ -914,6 +946,22 @@ arcel_print_json(FILE *const out, const VALUE v)
                 arcel_print_json(out, v.map->entries[idx[i]].val);
             }
             fputc('}', out);
+            break;
+        }
+        case AC_OBJECT: {
+            const struct arcel_object_desc *const d = v.object.desc;
+            if (d && d->format_json) {
+                /* Embedder-provided renderer.  Two-phase: query length,
+                 * write into local stack buf, copy to fp.  Bounded at
+                 * 1KB so a runaway descriptor can't DoS us. */
+                char obuf[1024];
+                size_t n = d->format_json(d, v.object.obj, obuf, sizeof obuf);
+                if (n >= sizeof obuf) n = sizeof obuf - 1;
+                fwrite(obuf, 1, n, out);
+            } else {
+                fprintf(out, "<object:%s>",
+                        d && d->type_name ? d->type_name : "?");
+            }
             break;
         }
         case AC_ERR:    fprintf(out, "ERROR: %s", v.err ? v.err : "<unknown>"); break;

@@ -14,6 +14,7 @@ libarcel.a
 libarcel.so
 examples/embed
 examples/embed_cc
+examples/embed_object
 *.o
 code_store/
 
