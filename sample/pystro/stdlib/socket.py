@@ -275,3 +275,4 @@ __all__ = ["socket", "socketpair", "create_connection", "create_server",
            "SO_REUSEADDR", "SO_KEEPALIVE",
            "SHUT_RD", "SHUT_WR", "SHUT_RDWR",
            "INADDR_ANY", "INADDR_LOOPBACK", "INADDR_BROADCAST"]
+_GLOBAL_DEFAULT_TIMEOUT = object()

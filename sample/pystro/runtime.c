@@ -6081,6 +6081,14 @@ pys_gen_next(CTX *c, VALUE gen_v)
         VALUE si = pys_make_instance(c->EXC_StopIteration);
         pys_setattr(c, si, "value",
                    g->return_value ? g->return_value : PYS_NONE);
+        // CPython's exception protocol expects __traceback__ /
+        // __context__ / __cause__ on every Exception instance — even
+        // those created without going through __init__.
+        pys_setattr(c, si, "__traceback__", PYS_NONE);
+        pys_setattr(c, si, "__context__", PYS_NONE);
+        pys_setattr(c, si, "__cause__", PYS_NONE);
+        pys_setattr(c, si, "__suppress_context__", PYS_FALSE);
+        pys_setattr(c, si, "args", pys_make_tuple(NULL, 0));
         c->state_value = si;
         return PYS_NONE;
     }
@@ -6137,6 +6145,12 @@ pys_gen_next(CTX *c, VALUE gen_v)
         // args = (value,) when value is non-None, else ()
         if (g->return_value != PYS_NONE)
             pys_setattr(c, si, "args", pys_make_tuple(&g->return_value, 1));
+        else
+            pys_setattr(c, si, "args", pys_make_tuple(NULL, 0));
+        pys_setattr(c, si, "__traceback__", PYS_NONE);
+        pys_setattr(c, si, "__context__", PYS_NONE);
+        pys_setattr(c, si, "__cause__", PYS_NONE);
+        pys_setattr(c, si, "__suppress_context__", PYS_FALSE);
         c->state = PYS_STATE_RAISE;
         c->state_value = si;
         return PYS_NONE;
@@ -13958,6 +13972,12 @@ bi_next(CTX *c, int argc, VALUE *argv)
         // the standard RAISE state path rather than crossing setjmp
         // boundaries.
         VALUE si = pys_make_instance(c->EXC_StopIteration);
+        pys_setattr(c, si, "args", pys_make_tuple(NULL, 0));
+        pys_setattr(c, si, "value", PYS_NONE);
+        pys_setattr(c, si, "__traceback__", PYS_NONE);
+        pys_setattr(c, si, "__context__", PYS_NONE);
+        pys_setattr(c, si, "__cause__", PYS_NONE);
+        pys_setattr(c, si, "__suppress_context__", PYS_FALSE);
         c->state = PYS_STATE_RAISE;
         c->state_value = si;
         return 0;
