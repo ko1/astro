@@ -31,27 +31,27 @@ make bench-clbg   # from sample/castro/
 
 ```
 bench                 castro_ms      O0_ms      O3_ms      vs-O3 castro_rc    O3_rc
-binary-trees                490        300        210      2.33x      174      174
-fannkuch-redux              330        410        210      1.57x       92       92
-md5                       10140        320         90    112.67x      178      178
-nbody                      5100       1550        560      9.11x      203      203
+binary-trees                500        330        230      2.17x      174      174
+fannkuch-redux              360        460        230      1.57x       92       92
+md5                         250        350        100      2.50x      178      178
+nbody                       730       1590        540      1.35x      203      203
 ```
 
 ## Caveats specific to non-numeric kernels
 
-**`md5` is brutal** (~110× of gcc -O3): castro's slot model stores
-every `unsigned int` in an 8-byte slot, so each `& 0xffffffff` mask
-that the C source needs (because castro doesn't truncate on assignment
-to a narrower integer type) becomes a real `and` instruction in the
-SD chain.  gcc's u32 arithmetic auto-truncates for free.  Bit-heavy
-codes pay this tax on every op.
+**`md5`**: ~2.5× of gcc -O3 (was 112× before the cs_load hash bug fix
+in `node.c` — see `docs/perf.md`).  castro stores every `unsigned int`
+in an 8-byte slot, so the `& 0xffffffff` masks the C source needs
+(because castro doesn't truncate on assignment to a narrower integer
+type) become explicit AND ops in the SD chain.  In practice gcc folds
+these masks into `mov eax, eax` zero-extensions, so the bit-heavy
+inner loop is roughly comparable to gcc's u32 codegen.
 
-**`nbody` over-counts** the "vs gcc -O3" gap because of a
-hand-written 20-iteration Newton-Raphson `my_sqrt` (castro has no
+**`nbody`**: 1.35× of gcc -O3 (was 9× before the same fix).  Includes
+a hand-written 20-iteration Newton-Raphson `my_sqrt` (castro has no
 `sqrt` builtin / libm link).  gcc -O3 gets a single `sqrtsd` instruction
-per call; castro runs 20 multiplies + adds.  For an apples-to-apples
-benchmark, castro would need a `node_call_sqrt` builtin (or runtime
-helper that calls libm).  Documented as a future TODO.
+per call; castro runs 20 multiplies + adds.  Adding a `node_call_sqrt`
+builtin (or runtime helper that calls libm) would close that further.
 
 **`binary-trees` slower than gcc -O0** because every `malloc(sizeof Tree)`
 goes through `node_call_malloc` (= a real function call out of the
@@ -59,9 +59,8 @@ SD chain) + the resulting `Tree *` is dereferenced via slot-stride
 pointer arithmetic.  gcc inlines malloc / free for small allocations
 and dereferences via native pointer ops.
 
-**`fannkuch-redux` is the bright spot**: pure int + array indexing,
-castro AOT lands at `1.57×` of gcc -O3 and *beats* gcc -O0.  This is
-the same shape as the polybench wins.
+**`fannkuch-redux`**: pure int + array indexing, castro AOT lands at
+1.57× of gcc -O3 and *beats* gcc -O0.
 
 ## License
 

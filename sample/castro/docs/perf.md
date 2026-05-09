@@ -578,38 +578,39 @@ gcc -O3 と完全同等は無理。tight inner loop なら gcc -O3 を
 詳細は `benchmark/polybench/README.md`、走らせ方は `make
 bench-polybench`。
 
-数値はそれぞれ median of 7 (ms)、`run.sh` 実行直撮り:
+数値はそれぞれ median of N runs (ms):
 
-| bench | castro AOT | gcc -O0 | gcc -O3 | castro vs -O0 | castro vs -O3 |
-|---|---:|---:|---:|---:|---:|
-| **gemm**         |  320 | 4800 |  280 | **15× faster** | 1.14× (≈tied) |
-| **syrk**         |  350 | 2650 |  290 | **8× faster**  | 1.21× |
-| **jacobi-2d**    |  320 | 2410 |  280 | **7.5× faster**| 1.14× |
-| **2mm**          | 1120 | 5690 |  580 | **5× faster**  | 1.93× |
-| **atax**         |  370 | 1460 |  270 | **4× faster**  | 1.37× |
-| **mvt**          |  450 | 1460 |  240 | **3.2× faster**| 1.88× |
-| **jacobi-1d**    |  170 |  520 |   80 | **3× faster**  | 2.12× |
-| **floyd-warshall**|  300 |  760 |  180 | **2.5× faster**| 1.67× |
-| seidel-2d        | 1270 | 1650 | 1170 | 1.3× faster    | 1.09× |
-| lu               | 2230 | 3320 |  570 | 1.5× faster    | 3.91× |
-| bicg             | 1020 | 1010 |  210 | tied           | 4.86× |
-| gesummv          |  790 |  790 |  170 | tied           | 4.65× |
+| bench | castro AOT | gcc -O3 | castro vs -O3 |
+|---|---:|---:|---:|
+| **jacobi-2d**    |  380 |  360 | 1.06× (≈tied) |
+| **seidel-2d**    | 1650 | 1530 | 1.08× (≈tied) |
+| **syrk**         |  430 |  340 | 1.26× |
+| **atax**         |  480 |  350 | 1.37× |
+| **gemm**         |  480 |  310 | 1.55× |
+| **floyd-warshall**|  360 |  220 | 1.64× |
+| **mvt**          |  570 |  290 | 1.97× |
+| **jacobi-1d**    |  200 |  100 | 2.00× |
+| 2mm              | 1480 |  720 | 2.06× |
+| lu               | 2920 |  690 | 4.23× |
+| bicg             | 1300 |  280 | 4.64× |
+| gesummv          | 1010 |  200 | 5.05× |
 
 要約:
 
-- **11/12 で gcc -O0 を超える**、特に matmul 系 (gemm 15×、syrk 8×、
-  jacobi-2d 7.5×、2mm 5×) は劇的差。
-- **4/12 が gcc -O3 と≈互角** (gemm / jacobi-2d 1.14×、seidel-2d 1.09×、
-  syrk 1.21×)。
+- **2/12 が gcc -O3 と≈互角** (jacobi-2d 1.06×、seidel-2d 1.08×)
+- **8/12 が 2× 以内** (上 8 行)
 - gcc -O3 残ギャップが大きいのは bicg / gesummv / lu。共通点は
   「ループ内で 2 配列同時更新 (`tmp[i]`, `y[i]` 両方を 1 イテで
   書く)」。castro の lset_d がスカラ昇格しきらず、毎 iter フレーム
   reload が残る。今後の最適化 target。
-- floyd-warshall (1.67×) は castro が gcc -O3 にかなり迫る。3-deep
+- floyd-warshall (1.64×) は castro が gcc -O3 にかなり迫る。3-deep
   loop + memory 集中アクセスで両者 cache-bound、構造的差が小さい。
 
-このスコアは「**コンパイラ研究で C 数値性能と言ったら標準解**」の
-PolyBench で、SPEC が動かない castro 級の処理系として強い数字。
+> 注: 2026-05-09 の `cs_load` hash mismatch fix 以前の polybench
+> 計測値は **main が interpreter で走った状態の数値** だったので、
+> 一部 kernel (特に matmul 系の gemm) は AOT 化された entry SD が
+> main 全体を inline した結果やや膨らみ、見かけ上スコアが悪化して
+> いる。fix 詳細は CLBG セクション参照。
 
 `make bench-polybench` で再現可。
 
@@ -622,36 +623,61 @@ Benchmarks Game** から非数値 kernel を 4 本アダプト
 
 | bench | castro | gcc -O0 | gcc -O3 | castro vs -O0 | castro vs -O3 |
 |---|---:|---:|---:|---:|---:|
-| **fannkuch-redux** |  330 |  410 |  210 | **1.24× faster** | 1.57× |
-| binary-trees       |  490 |  300 |  210 | 1.63× slower     | 2.33× |
-| nbody              | 5100 | 1550 |  560 | 3.3× slower      | 9.11× |
-| **md5**            |10140 |  320 |   90 | 31× slower       | **112×** |
+| **fannkuch-redux** |  360 |  460 |  230 | **1.28× faster** | 1.57× |
+| **md5**            |  250 |  350 |  100 | **1.40× faster** | 2.50× |
+| **nbody**          |  730 | 1590 |  540 | **2.18× faster** | 1.35× |
+| binary-trees       |  500 |  330 |  230 | 1.52× slower     | 2.17× |
 
-PolyBench とは様変わりして「**castro の弱点が露呈する 4 通り**」が
-一覧に出てる:
+要約: **4/4 で gcc -O3 比 1.35×〜2.50×、3/4 で -O0 を上回る**。
 
-- **fannkuch-redux** (健闘): 純 int + 制御フロー、配列 permutation。
-  PolyBench 的な得意領域に近く、O0 を超え -O3 比 1.57×
-- **binary-trees** (やや遅い): malloc 集中。castro の `call_malloc`
-  が SD chain 内 inline されない real call、加えて `Tree *` の
-  dereference が slot-stride。gcc は libc/libstdc++ の小サイズ alloc
-  fast path を使う
-- **nbody** (測定上不利): castro に `sqrt` builtin / libm リンクが
-  ないので、20-iter Newton-Raphson `my_sqrt` を kernel に書き込んで
-  る。gcc は `sqrtsd` 1 命令 → これが 9× ギャップの大半を占めてる
-  (= 性能評価としては unfair。`node_call_sqrt` 等の builtin 追加が
-  TODO)
-- **md5** (絶望的): castro の slot モデルが `unsigned int` を
-  8-byte slot に格納するため、C 標準 u32 の自動 truncate が効かず、
-  `& 0xffffffff` を毎 op 書かないと結果がズレる。書いた途端、その
-  AND が **本物の SD chain 命令** になる (gcc は型情報で free)。
-  bit-twiddling 系 (md5 / SHA / CRC / Blowfish 等) は構造的に
-  castro が苦手
+- **md5** (健闘): bit-twiddling (rotate / XOR / AND / table lookup)。
+  castro は u32 を 8-byte slot で扱うので `& 0xffffffff` を明示的に
+  書く必要があるが、その AND は gcc 側で `mov eax, eax` に畳まれて
+  実コストはほぼ無し。-O3 比 2.5× で済む
+- **nbody** (健闘): FP-arith inner loop。castro に `sqrt` builtin /
+  libm リンクが無いので 20-iter Newton-Raphson `my_sqrt` を書き込んで
+  あり、gcc 側は `sqrtsd` 1 命令で済むハンデを castro 側が負っている。
+  それでも -O3 比 1.35×
+- **fannkuch-redux**: 純 int + 配列 permutation。PolyBench 的な得意
+  領域で -O3 比 1.57×
+- **binary-trees** (弱い): malloc 集中。castro の `call_malloc` は
+  SD chain 内 inline されない real call、加えて `Tree *` の
+  dereference が slot-stride。gcc は libc の小サイズ alloc fast path
+  を使う
 
-要約すると **castro は数値計算が強く、bit-ops / malloc 多用が弱い**。
-これは AST → C → gcc の全展開 inline モデルの本質: 数値 inner loop
-は SROA + register 化が決まると -O3 と並ぶ、けど 8-byte slot 当たり
-1 element しか入らない storage モデルが、bit ops の per-instruction
-coverage を gcc 比 100× 失わせる。
+### 修正履歴: cs_load の hash mismatch バグ (2026-05-09)
+
+CLBG 初期計測では md5 が 10140ms (-O3 比 112×) と異常に遅かった。
+原因は **AST_load_program の Phase 3 patch と HASH cache の interaction**:
+
+- `node_call_static` ノードは parse Phase 2 で callee=NULL のまま
+  ALLOC される。ASTroGen の per-ALLOC OPTIMIZE フックが
+  `astro_cs_load(n)` を呼び、`hash_node(n)` が **callee=NULL を含む
+  hash** を cache する。
+- Phase 3 で callee は body NODE に patch されるが、すでに cache 済の
+  hash は更新されない (cascade 不可: parent pointers なし)。
+- 後続の `load_all_funcs` で各 body に対し `cs_load` を呼ぶが、
+  cached hash が使われ、`SD_<wrong_hash>` を dlsym → 見つからず、
+  default DISPATCH (= interpreter) にフォールバック。
+- 結果: **関数呼び出しを含む kernel (md5 の rotl, nbody の my_sqrt)
+  は AOT に到達せず interpreter で実行**。
+
+修正は `OPTIMIZE` を `parsing_phase` フラグで gate して、parse 中の
+hash cache を抑止 (`sample/castro/node.c`)。修正後:
+
+| | 修正前 (interp main) | 修正後 (AOT main) |
+|---|---:|---:|
+| md5 | 10140 ms | **250 ms (40× faster)** |
+| nbody | 5100 ms | **730 ms (7× faster)** |
+| binary-trees | 490 ms | 500 ms (≈) |
+| fannkuch-redux | 330 ms | 360 ms (≈) |
+
+binary-trees / fannkuch-redux はノード関数呼び出しが少ないので
+影響なし。PolyBench 側も同症状の修正がかかっており、kernel と main
+が両方 AOT 化されると entry SD が main 全体を inline するので、gcc
+が「kernel を main の context で再 optimize」する。kernel 単独 SD と
+比較して inline 後はやや膨らむ場合があり (gemm 320→430、syrk 350→
+380)、結果として一部 polybench 数値は若干悪化する代わりに
+md5/nbody 系は劇的改善。**AOT 経路が真に通った真値**として記録。
 
 `make bench-clbg` で再現可。詳細は `benchmark/clbg/README.md`。

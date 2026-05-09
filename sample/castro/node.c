@@ -17,10 +17,28 @@ node_allocate(size_t size)
 
 // EVAL is inline in node.h.
 
+// Set to true while load_program is running so the per-ALLOC OPTIMIZE
+// hook (auto-emitted by ASTroGen into every node's ALLOC_xxx) doesn't
+// fire `astro_cs_load`.  Two reasons:
+//
+//   1. Parse-time `node_call_static` nodes are allocated with a NULL
+//      `callee` and patched in phase 3.  cs_load triggers hash_node()
+//      which caches the parent's hash incorporating the *unpatched*
+//      callee → after the patch the cached hash is wrong → cs_load at
+//      load_all_funcs time looks up the wrong SD_<hash> symbol and
+//      silently falls back to the interpreter.  This is exactly why
+//      md5 / any kernel with function calls was getting interp-mode
+//      perf even when the AOT cache was on disk.
+//   2. We don't want N×M dlsym() calls during parse — there's nothing
+//      productive to do at ALLOC time, every body gets cs_load'd at
+//      the end via load_all_funcs anyway.
+bool parsing_phase = false;
+
 NODE *
 OPTIMIZE(NODE *n)
 {
     if (OPTION.no_compiled_code) return n;
+    if (parsing_phase) return n;
     if (astro_cs_load(n, NULL)) {
         if (!OPTION.quiet) {
             fprintf(stderr, "hit!: %s\n", n->head.kind->default_dispatcher_name);

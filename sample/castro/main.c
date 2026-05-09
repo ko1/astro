@@ -934,9 +934,12 @@ build_expr(sx_lexer *l)
 // can call other functions).
 static NODE *G_INIT_EXPR = NULL;
 
+extern bool parsing_phase;  // node.c — gates the per-ALLOC OPTIMIZE hook
+
 static void
 load_program(CTX *c, sx_lexer *l)
 {
+    parsing_phase = true;
     sx_expect(l, TK_LPAREN);
     if (!sx_ident_eq(&l->cur, "program")) sx_err(l, "expected `program`");
     sx_next(l);
@@ -1009,6 +1012,7 @@ load_program(CTX *c, sx_lexer *l)
     call_patch_apply(c);
 
     sx_expect(l, TK_RPAREN);
+    parsing_phase = false;
 }
 
 // =====================================================================
