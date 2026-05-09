@@ -94,6 +94,101 @@ ASTro の partial evaluation がやってる主な仕事:
     として emit。`role in ["admin", "user"]` 系で per-eval alloc 不要に。
     predicate_user が 64 → 44 ns/op。
 
+## ベンチの公平性 — どこまで信じていいか
+
+「conformance 100% で interp ですら cel-go/cel-cpp の 2〜10× 速いって、何か
+ずるしてない?」というのは正当な疑問なので、何が公平で何がそうでないか
+読者向けに開示する。
+
+### 公平にしている点
+
+- **3 binary とも parse は loop の外で 1 回**。bindings も loop の外で 1 回
+  (cel-cpp 公式 bench は `Activation` も per-iter に作るが、こちらは再利用
+  = cel-cpp に有利な側に倒している)。
+- **計測区間は loop だけ**。プロセス起動・builtin 登録 (`RegisterBuiltinFunctions`)
+  ・JIT warmup などはどれも `clock_gettime`/`time.Now`/`steady_clock` の前後
+  にあるので外。
+- **同じ式・同じ入力データ**。conformance suite で意味的等価性は 808/808 で
+  確認済み。
+- **cel-cpp は `-c opt --enable_optimizations`** = cel-cpp 側の constant
+  folding を有効化した状態。
+
+### 構造的に arcel に有利な点 (= ずるではないがバイアス)
+
+| 要素 | arcel | cel-go | cel-cpp |
+|---|---|---|---|
+| 値表現 | 16-byte tagged union (SysV ABI で 2 register 返り) | `ref.Val` Go interface (16-byte fat pointer + heap escape) | `CelValue` (24+ byte variant、box dispatch あり) |
+| dispatcher | 関数ポインタ直接呼び出し | Go interface = vtable lookup + type check | virtual call + type-erased ExpressionStep |
+| field access | `arcel_map.entries[]` の linear scan (typical N=5-10) — cache 線形 / hash 計算ゼロ | `Activation` 経由で Go `map[string]ref.Val` (hash compute) | `absl::flat_hash_map` (hash compute + bucket walk) |
+| per-iter alloc | bump-arena reset (`used = 0` を chain で 5 命令) | Go GC が値オブジェクトを確保 / 回収 | **`google::protobuf::Arena` を毎回コンストラクト** (= 数百 ns の intrinsic コスト、API 上回避不能) |
+| NODE 本体 | 小さい C inline 関数 → gcc が SROA + reg alloc | Go の interface 越しなので escape して heap 行き | C++ だが variant 介在で多段 dispatch |
+
+これらは **言語選択 (Go の interface・C++ の variant) と API 設計 (cel-cpp
+の per-iter arena) の差**で、ASTro/arcel 固有の魔法ではない。同じ設計を Go
+や C++ で書けば arcel に近づくはずだが、両者とも production 用ライブラリ
+として API 互換性を優先して現状を選んでいる。
+
+### 「未対応 features を入れたら遅くならない?」
+
+arcel は cel-spec の ~3.5% (29/837 ケース) を skip している。残り機能を
+入れたときの cost 見積もり:
+
+| 未対応機能 | 既存ベンチへの影響 | 理由 |
+|---|---|---|
+| timestamp / duration | **0%** | 専用 tag + 専用 op で別経路。int/string/list の hot path は無関係 |
+| optional (`x.?y`) | **0%** | `?.` 用に別 node type を作れば AC_MAP の field access は不変 |
+| proto wrappers | **0%** | unwrap は proto 経路のみ |
+| ext.* lib (`strings.replace` 等) | **0%** | 関数を追加するだけで既存 NODE_DEF に手を入れない |
+| container / type_env disable_check | **0%** | parse-time 型検査、runtime cost なし |
+| **proto message literal** (`TestAllTypes{...}`) | **0〜5%** | `arcel_field` に `if (recv.tag == AC_PROTO)` 分岐が増える。always-map なベンチでは branch predictor が常に外すので penalty 数 ns 以下 |
+
+最大のリスクは **proto 対応**で、これは:
+- libprotobuf を抱える (~MB バイナリ増)
+- field access の分岐が `AC_MAP` と `AC_PROTO` の 2-way に
+- VALUE tag の追加で switch case 増 (jump table のまま)
+
+それでも `k8s_admission_ish` のベンチ (cel-cpp 比 22.4×) が 15〜30% 程度
+遅くなるくらいで、**15〜19× の差は維持できる**見積もり。
+
+### 売り文句の現実的な範囲
+
+「**realistic K8s ValidatingAdmissionPolicy で cel-cpp 比 22.4×**」には
+注釈があって、現実の K8s admission webhook は input が **proto message**
+(AdmissionReview) で来る。本ベンチでは入力を map で渡しているので
+field access が hot path を通る。
+
+proto 対応版を作ると:
+- 入力 unmarshalling コスト (proto wire → 内部 repr) は **bench 計測外**
+  (= bindings 構築時にやる) なのでベンチ数値は変わらない
+- 実 K8s 流の比較で cel-cpp も同じ unmarshalling コストを払うので、
+  「**eval 部分だけ**」を比べた相対は維持される
+- ただし field access の `AC_PROTO` 経路ぶん 15-20% 程度の絶対 cost が
+  乗ってくる
+
+数字で言うと予測は:
+
+| | 現状 (map 入力) | proto 対応後 (proto 入力、予想) |
+|---|---:|---:|
+| arith_const (proto 不使用) | 60 ns | 60 ns (無変化) |
+| field_access_* (map → proto) | 24-28 ns | 30-35 ns (~20% 増) |
+| **k8s_admission_ish** | 52 ns | 60-70 ns (15-30% 増) |
+| cel-cpp 比 | **22.4×** | **15-19×** (推定) |
+
+「**残り 4% の機能を入れると 15-20% 遅くなるが、それでも cel-cpp 比は
+15× 残る**」というのが正直な見積もり。
+
+### まとめ
+
+- arcel が速いのは **「tagged union + 直接 function pointer の tree walker は、
+  Go interface VM や C++ variant VM より構造的に速い」** という当たり前の
+  事実を、conformance 守ったまま実測してるから
+- ベンチ harness は **cel-cpp に若干有利**な側に倒してある (Activation
+  再利用、constant_folding 有効化)
+- 未対応機能 (proto 等) を入れると 15-30% 程度のコストが乗るが、cel-cpp
+  比のオーダー (10×〜) は維持できる見込み
+- AOT モードの大勝 (bool_ladder 42.6× 等) は別の話で、ASTro の partial
+  evaluation そのものの効果
+
 ## 残る最適化候補
 
 - **map literal の constant fold** (`{...}` 全要素 literal の時)
