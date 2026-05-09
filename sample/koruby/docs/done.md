@@ -114,14 +114,15 @@ CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
 
 2026-05-09 時点での無 fairness raw sweep (60s/file timeout):
 
-| 状態           | sweep #1 (起点) | sweep #4 (現在) | 主な内訳 |
-|----------------|----------------:|----------------:|---|
-| ≥1 pass        | 62 / 135        | 68 / 135        | (50%) |
-| total=0 (load 失敗等) | 30 / 135 | 17 / 135        | shim 拡張 / require_relative |
-| LOAD ERROR     | 23              | 11              | Encoding / IO / RubyVM / Process / Bug 等 shim |
-| dumped core    | 7               | 7               | test_super / test_case / test_pattern_matching / test_fiber / test_io_m17n→fix済 |
-| timeout (empty)| 3               | 2               | test_signal / test_optimization 等 |
-| pass 合計      | 834,385         | 1,008,552       | (test_integer 蘇生 +171k で大半) |
+| 状態                 | sweep #1 (起点) | sweep #8 (最終) | 主な内訳 |
+|----------------------|----------------:|----------------:|---|
+| ≥1 pass             | 62 / 135        | 79 / 135        | +17 ファイル復活 |
+| total=0 (load 失敗等) | 30              | 11              | shim 拡張 / require_relative |
+| LOAD ERROR           | 23              | 6               | Encoding / IO / RubyVM / Process / Bug 等 shim |
+| dumped core          | 7               | 2               | super-bug fix / mm guard / dbl2int 等で 5 件解消 |
+| timeout (empty)      | 3               | 2               | test_signal / test_optimization 等 |
+| pass 合計            | 834,385         | 1,008,942       | (test_integer 蘇生 +171k 含む) |
+| 全 assertion 合計    | 954,960         | 1,381,246       | +426k assertion |
 
 主な修正:
  - **super dispatch 修正** (object.c:korb_dispatch_binop): caller block の
@@ -137,6 +138,13 @@ CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
    stack overflow を fixnum 範囲外なら 0.0 返却で回避。
  - **Comparable#== 無限再帰**: thread-local depth counter で 16 段で false。
  - **build_exec_argv の NULL CTX**: caller から CTX 渡すように改修。
+ - **bootstrap method_missing recursion**: `self.inspect` が再 raise する
+   class (BasicObject 由来 / inspect 削除済 / 自己 raise) で `"undefined
+   method '...' for #{self.inspect}"` を組む際に無限再帰 → SEGV してい
+   た。 thread-local depth で 4 段以上で `(recursion)` 表示に切替。
+   test_pattern_matching と test_case が SEGV → 蘇生。
+ - **fiber entry の NULL body**: Symbol#to_proc 由来の body=NULL proc を
+   fiber に渡されて EVAL(c, NULL) で SEGV。 NULL なら Qnil 返却。
 
 ### CRuby spec/ruby/language/ (rubyspec 互換)
 
