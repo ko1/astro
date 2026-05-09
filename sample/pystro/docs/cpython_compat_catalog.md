@@ -99,12 +99,26 @@ types.py に存在せず。
 
 ### Phase 1: 巨大効果 (優先度 高)
 
-- [ ] **A1**: type.__new__ を properly 動かす
-- [ ] **A2**: `_io.text_encoding` stub
-- [ ] **A3**: `types.DynamicClassAttribute`
-- [ ] **A4**: `_weakref._remove_dead_weakref`
+- [x] **A1a**: `type.__new__(mcls, name, bases, dict)` 4-arg 形式を bi_type
+  に forward (`bi_type_new`)。 metaclass 経由の class 構築が動くように。
+- [ ] **A1b**: `super().__new__(mcls, ..., **kwargs)` の `**kwargs` spread
+  が pystro super 経由で壊れる。 `super().method(*args, **kw)` 全般で
+  `TypeError: object is not callable`。
+  → 暫定対処: `pystro_first_modules` に `abc.py` / `_py_abc.py` 追加。
+  根本: pystro の super 実装で `**kwargs` spread を直す必要あり。
+- [x] **A2**: `_io.text_encoding`
+- [x] **A3**: `types.DynamicClassAttribute`
+- [x] **A4**: `_weakref._remove_dead_weakref`
 
-これだけで 137 + 165 + 26 + 13 = **341 テストが crash → mixed/pass 化** の見込み。
+### Phase 1.5: 続けて出てきた blocker
+
+- [ ] **`async def` の真の coroutine** (現在は fake coroutine)。 CPython
+  test の中で `coro.send(...)` `await coro` を実行する箇所が失敗する。
+- [ ] **`f.__closure__` が真の cell に bind してない**。 captured value は
+  snapshot で、 cell 経由の writeback が効かない。
+- [ ] **`type(x)` のクラス取り出しが metaclass 経由で正しいか** —
+  CPython の `_DeprecateByteStringMeta` のような特殊 metaclass を持つ
+  class の生成で TypeError。 まだ深掘りせず。
 
 ### Phase 2: test runner 整備
 

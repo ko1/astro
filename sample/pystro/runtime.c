@@ -12333,7 +12333,14 @@ bi_import(CTX *c, int argc, VALUE *argv)
     // issues are handled at the runtime level — async def returns a
     // fake coroutine, __closure__ returns synthetic cells.)
     static const char *pystro_first_modules[] = {
+        // types.py — `tb_frame` access on non-reified __traceback__.
         "types.py",
+        // abc.py / _py_abc.py — CPython's ABCMeta.__new__ uses
+        // `super().__new__(mcls, ..., **kwargs)` which pystro's super()
+        // doesn't spread correctly across builtin __new__ today.  Use
+        // pystro's simpler ABCMeta until super-spread is fixed.
+        "abc.py",
+        "_py_abc.py",
         NULL,
     };
     bool pystro_wins = false;
