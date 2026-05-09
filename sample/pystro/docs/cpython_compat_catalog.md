@@ -8,18 +8,20 @@ policy: pystro は CPython 3.12.13 (submodule pin) の純 Python stdlib
 
 ### File-level 合格
 
-ファイル単位で `rc=0` を返す test_*.py が **16 件 (安定)** に到達:
+ファイル単位で `rc=0` を返す test_*.py が **18 件 (安定)** に到達:
 
 ```
-test_bigaddrspace test_colorsys test_contains test_copyreg test_eintr
-test_embed test_errno test_int_literal test_keyword test_osx_env
-test_sundry test_type_annotations test_typechecks test_unary
-test_urllib_response test_xml_dom_minicompat
+test__osx_support test_bigaddrspace test_colorsys test_contains
+test_copyreg test_eintr test_embed test_errno test_int_literal
+test_keyword test_lltrace test_osx_env test_sundry
+test_type_annotations test_typechecks test_unary test_urllib_response
+test_xml_dom_minicompat
 ```
 
-- 6 件は all-skip (`OK (skipped=N)`): bigaddrspace / embed / osx_env /
-  type_annotations / eintr / errno (errno は実 unittest だが skip)。
-  環境前提を満たさず skip だが unittest が走り SystemExit がきれいに 0 終了する。
+- 8 件は all-skip (`OK (skipped=N)`): _osx_support (16) / bigaddrspace
+  (6) / embed (71) / osx_env (1) / type_annotations / eintr / errno /
+  lltrace (3)。 環境前提を満たさず skip だが unittest が走り
+  SystemExit がきれいに 0 終了する。
 - 10 件は実 assertion をパス: colorsys (7) / contains (4) / copyreg
   (6) / int_literal (6) / keyword (11) / sundry (1) / typechecks (6) /
   unary (6) / urllib_response (4) / xml_dom_minicompat (11)
