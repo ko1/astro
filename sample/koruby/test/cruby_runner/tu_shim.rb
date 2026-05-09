@@ -206,7 +206,33 @@ end
 
 # IO / File constants — many tests dereference these at toplevel.
 unless defined?(Bug)
-  module Bug; end
+  module Bug
+    Integer = Module.new
+    Bignum = Module.new
+    String = Module.new
+  end
+end
+unless defined?(Socket)
+  class Socket
+    AF_INET = 2; AF_INET6 = 10; AF_UNIX = 1
+    SOCK_STREAM = 1; SOCK_DGRAM = 2
+    def initialize(*); end
+    def self.tcp_server_loop(*); yield(self.allocate, nil) if block_given?; end
+    def self.unix_server_loop(*); yield(self.allocate, nil) if block_given?; end
+    def close; end
+    def closed?; true; end
+  end
+  class TCPSocket < Socket; end
+  class UDPSocket < Socket; end
+  class UNIXSocket < Socket; end
+  class TCPServer < Socket
+    def self.open(*); allocate; end
+    def accept; nil; end
+  end
+  class UNIXServer < Socket
+    def self.open(*); allocate; end
+    def accept; nil; end
+  end
 end
 class IO
   unless const_defined?(:BINARY)
@@ -227,14 +253,11 @@ class IO
   def sync; true; end unless method_defined?(:sync)
   def sync=(_); true; end unless method_defined?(:sync=)
 end
-unless defined?(STDIN) && STDIN.respond_to?(:close_on_exec?)
-  Object.send(:remove_const, :STDIN) if defined?(STDIN) rescue nil
-  Object.send(:remove_const, :STDOUT) if defined?(STDOUT) rescue nil
-  Object.send(:remove_const, :STDERR) if defined?(STDERR) rescue nil
-  Object.const_set(:STDIN,  IO.allocate) rescue nil
-  Object.const_set(:STDOUT, IO.allocate) rescue nil
-  Object.const_set(:STDERR, IO.allocate) rescue nil
-end
+# koruby's $stdin happens to come up nil; pin it to STDIN if we have one,
+# else allocate a fresh IO stub.  $stdout / $stderr are already set.
+$stdin ||= (defined?(STDIN) && STDIN ? STDIN : IO.allocate)
+$stdout ||= (defined?(STDOUT) && STDOUT ? STDOUT : IO.allocate)
+$stderr ||= (defined?(STDERR) && STDERR ? STDERR : IO.allocate)
 class File
   unless const_defined?(:ALT_SEPARATOR)
     ALT_SEPARATOR = nil
@@ -242,6 +265,12 @@ class File
     PATH_SEPARATOR = ":"
     Separator     = "/"
   end
+  # File pulls IO::Constants into its own const namespace in CRuby; mirror.
+  RDONLY = 0; WRONLY = 1; RDWR = 2; APPEND = 1024; CREAT = 64
+  EXCL = 128; TRUNC = 512; NONBLOCK = 2048; BINARY = 0
+  LOCK_SH = 1; LOCK_EX = 2; LOCK_UN = 8; LOCK_NB = 4
+  FNM_SYSCASE = 0; FNM_NOESCAPE = 1; FNM_PATHNAME = 2; FNM_DOTMATCH = 4
+  FNM_CASEFOLD = 8; FNM_EXTGLOB = 16; FNM_SHORTNAME = 0
   unless const_defined?(:Constants)
     module Constants
       RDONLY = 0; WRONLY = 1; RDWR = 2; APPEND = 1024; CREAT = 64
@@ -266,6 +295,80 @@ class File
   def self.setgid?(_); false; end unless respond_to?(:setgid?)
   def self.sticky?(_); false; end unless respond_to?(:sticky?)
   def self.identical?(a, b); a == b; end unless respond_to?(:identical?)
+end
+
+# tmpdir / fileutils-style helpers — many tests open ad-hoc temp dirs.
+class Dir
+  unless respond_to?(:mktmpdir)
+    @@_tmp_counter = 0
+    def self.mktmpdir(prefix = "koruby", _parent = nil)
+      @@_tmp_counter += 1
+      path = "/tmp/koruby_test_#{$$}_#{@@_tmp_counter}_#{prefix.to_s.gsub('/', '_')}"
+      Dir.mkdir(path)
+      if block_given?
+        begin
+          yield path
+        ensure
+          # best-effort recursive cleanup
+          rm_rf = lambda do |p|
+            if File.directory?(p)
+              Dir.entries(p).each { |e| next if e == "." || e == ".."; rm_rf.call(File.join(p, e)) }
+              Dir.rmdir(p) rescue nil
+            else
+              File.delete(p) rescue nil
+            end
+          end
+          rm_rf.call(path)
+        end
+      else
+        path
+      end
+    rescue Exception => e
+      raise e if $tu_debug
+      "/tmp"
+    end
+  end
+end
+
+unless defined?(Tempfile)
+  class Tempfile
+    @@_tmp_counter = 0
+    def self.open(prefix = "koruby")
+      @@_tmp_counter += 1
+      path = "/tmp/koruby_tmpfile_#{$$}_#{@@_tmp_counter}"
+      f = File.open(path, "w+")
+      if block_given?
+        begin yield f ensure f.close rescue nil; File.delete(path) rescue nil end
+      else
+        f
+      end
+    end
+    def self.create(prefix = "koruby")
+      open(prefix) { |f| return f.path }
+    end
+  end
+end
+
+unless defined?(FileUtils)
+  module FileUtils
+    def self.mkdir_p(p); Dir.mkdir(p) rescue nil; p; end
+    def self.rm_rf(p)
+      return unless File.exist?(p)
+      if File.directory?(p)
+        Dir.entries(p).each { |e| next if e == "." || e == ".."; rm_rf(File.join(p, e)) }
+        Dir.rmdir(p) rescue nil
+      else
+        File.delete(p) rescue nil
+      end
+    end
+    def self.rm_f(p); File.delete(p) rescue nil; end
+    def self.cp(src, dst); File.write(dst, File.read(src)); end
+    def self.cp_r(src, dst); cp(src, dst); end
+    def self.mv(src, dst); File.rename(src, dst); end
+    def self.touch(p); File.write(p, "") unless File.exist?(p); end
+    def self.chmod(*); end
+    def self.chown(*); end
+  end
 end
 
 # Sundry RubyVM bits some tests query at toplevel.
@@ -466,15 +569,29 @@ unless defined?(GC)
   end
 end
 
-unless defined?(RubyVM)
-  class RubyVM
+class RubyVM
+  unless const_defined?(:InstructionSequence)
     class InstructionSequence
-      def self.compile(*); nil; end
+      def self.compile(*); allocate; end
+      def self.compile_file(*); allocate; end
       def self.of(*); nil; end
       def self.new(*); allocate; end
+      def self.disasm(*); ""; end
+      def self.disassemble(*); ""; end
+      def self.load_from_binary(*); allocate; end
       def to_a; [:nope]; end
+      def to_binary; ""; end
       def disasm; ""; end
+      def disassemble; ""; end
+      def eval; nil; end
+      def absolute_path; nil; end
+      def base_label; "<main>"; end
+      def label; "<main>"; end
+      def first_lineno; 0; end
+      def path; "<unknown>"; end
     end
+  end
+  unless const_defined?(:AbstractSyntaxTree)
     class AbstractSyntaxTree
       class Node
         def children; []; end
@@ -487,6 +604,7 @@ unless defined?(RubyVM)
       def self.parse(*); Node.new; end
       def self.parse_file(*); Node.new; end
       def self.of(*); Node.new; end
+      def self.node_id_for_backtrace_location(*); 0; end
     end
   end
 end
