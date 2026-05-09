@@ -10159,6 +10159,15 @@ static VALUE
 bi_str(CTX *c, int argc, VALUE *argv)
 {
     if (argc == 0) return pys_make_str("", 0);
+    // CPython: `str(bytes, encoding[, errors])` decodes via the given codec.
+    // pystro previously fell through to repr(bytes) which yielded
+    // `"b'...'"` and broke pickle's load_short_binunicode path.
+    if (argc >= 2 && pys_is_byteseq(argv[0])) {
+        // Just route through bytes.decode("utf-8") for simplicity.
+        // Most callers use utf-8; other codecs aren't supported anyway.
+        struct pysobj *b = PYS_PTR(argv[0]);
+        return pys_make_str(b->str.chars, b->str.len);
+    }
     return pys_to_str(c, argv[0]);
 }
 
@@ -10183,9 +10192,10 @@ bi_int(CTX *c, int argc, VALUE *argv)
         mpz_t z; mpz_init(z); mpz_set_d(z, d);
         VALUE r = pys_normalise_int(z); mpz_clear(z); return r;
     }
-    if (pys_is_str(v)) {
+    if (pys_is_str(v) || pys_is_byteseq(v)) {
         // String may be a slice-borrow (no NUL-terminator within bounds);
-        // copy into a stack buffer.
+        // copy into a stack buffer.  bytes/bytearray accepted too:
+        // CPython's int() takes both ASCII bytes and str.
         size_t L = PYS_PTR(v)->str.len;
         char small[64];
         char *buf = (L < sizeof(small)) ? small : (char *)GC_malloc_atomic(L + 1);
