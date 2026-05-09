@@ -33,13 +33,15 @@ void
 example(arcel_program *prg, arcel_activation *act,
         const char *what, std::int64_t age,
         const char *country, const char *role,
-        std::int64_t created_at)
+        std::int64_t created_at,
+        std::initializer_list<const char *> tags)
 {
     arcel::examples::UserRequest req;
     req.set_age(age);
     req.set_country(country);
     req.set_role(role);
     req.mutable_meta()->set_created_at(created_at);
+    for (const char *t : tags) req.add_tags(t);
 
     arcel_activation_reset(act);
     arcel_activation_set_object(act, "u", &req, &arcel::pbf::descriptor);
@@ -47,9 +49,9 @@ example(arcel_program *prg, arcel_activation *act,
     arcel_value r = arcel_eval(prg, act);
     char buf[64];
     arcel_format_json(r, buf, sizeof buf);
-    std::printf("OK %-15s age=%lld country=%s role=%s meta.created=%lld -> %s\n",
+    std::printf("OK %-25s age=%lld country=%s role=%s meta.created=%lld tags=%zu -> %s\n",
                 what, static_cast<long long>(age), country, role,
-                static_cast<long long>(created_at), buf);
+                static_cast<long long>(created_at), tags.size(), buf);
 }
 
 }  // namespace
@@ -63,11 +65,15 @@ main()
     // The expression touches scalar fields on the top-level message
     // AND on a nested message — exercises both code paths in the
     // adapter.
+    // The expression now also touches a REPEATED field
+    // (`u.tags.all(t, t.startsWith("env:"))`) — exercises the
+    // list-builder path added in Phase 5.
     arcel_program *prg = arcel_compile(env,
         "u.age >= 18 "
         "&& u.country == \"JP\" "
         "&& u.role in [\"admin\", \"user\"] "
-        "&& u.meta.created_at > 0",
+        "&& u.meta.created_at > 0 "
+        "&& u.tags.all(t, t.startsWith(\"env:\"))",
         -1, err, sizeof err);
     if (!prg) {
         std::fprintf(stderr, "compile: %s\n", err);
@@ -76,10 +82,12 @@ main()
 
     arcel_activation *act = arcel_activation_new(env);
 
-    example(prg, act, "matches",       25, "JP", "admin", 1700000000);
-    example(prg, act, "wrong country", 25, "US", "admin", 1700000000);
-    example(prg, act, "underage",      16, "JP", "user",  1700000000);
-    example(prg, act, "no created_at", 25, "JP", "admin", 0);
+    example(prg, act, "matches (all env:)",       25, "JP", "admin", 1700000000, {"env:prod", "env:k8s"});
+    example(prg, act, "matches (empty tags)",     25, "JP", "admin", 1700000000, {});
+    example(prg, act, "tag not env:",             25, "JP", "admin", 1700000000, {"env:prod", "owner:alice"});
+    example(prg, act, "wrong country",            25, "US", "admin", 1700000000, {"env:prod"});
+    example(prg, act, "underage",                 16, "JP", "user",  1700000000, {"env:prod"});
+    example(prg, act, "no created_at",            25, "JP", "admin",          0, {"env:prod"});
 
     arcel_activation_free(act);
     arcel_program_free(prg);

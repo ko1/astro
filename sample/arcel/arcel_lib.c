@@ -388,6 +388,44 @@ arcel_value arcel_value_object(const void *obj, const arcel_object_desc *desc)
 }
 arcel_value arcel_value_error (const char *msg)                   { return to_av(V_ERR(msg)); }
 
+/* List builder used inside descriptor::field callbacks.  Allocates
+ * the arcel_list + items array in the per-eval arena (handed in via
+ * the opaque arena handle).  If `items` is non-NULL, copies the
+ * provided values; else leaves the items uninitialised for the
+ * caller to populate (rare — most callbacks build the items array
+ * on the stack and pass it). */
+arcel_value
+arcel_value_list_new(arcel_arena_handle *const arena_h, const uint32_t len,
+                     const arcel_value *const items)
+{
+    arcel_arena *const arena = (arcel_arena *)arena_h;
+    arcel_list *const l = arcel_list_new(arena, len);
+    if (items) {
+        for (uint32_t i = 0; i < len; i++) l->items[i] = to_v(items[i]);
+    }
+    return to_av(V_LIST(l));
+}
+
+/* Copy a borrowed string into the per-eval arena and return a string
+ * value pointing at the owned copy.  Use when the source buffer's
+ * lifetime is shorter than the eval (e.g., a std::string scratch
+ * inside a descriptor callback). */
+arcel_value
+arcel_value_string_copy(arcel_arena_handle *const arena_h, const char *const s, const size_t len)
+{
+    arcel_arena *const arena = (arcel_arena *)arena_h;
+    const char *const owned = arcel_arena_strdup(arena, s, (uint32_t)len);
+    return to_av(V_STR(owned, (uint32_t)len));
+}
+
+arcel_value
+arcel_value_bytes_copy(arcel_arena_handle *const arena_h, const char *const s, const size_t len)
+{
+    arcel_arena *const arena = (arcel_arena *)arena_h;
+    const char *const owned = arcel_arena_strdup(arena, s, (uint32_t)len);
+    return to_av(V_BYTES(owned, (uint32_t)len));
+}
+
 size_t
 arcel_format_json(arcel_value av, char *const buf, const size_t buf_cap)
 {

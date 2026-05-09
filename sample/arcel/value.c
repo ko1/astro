@@ -489,7 +489,9 @@ arcel_field_err_overload(CTX *const c, const int tag)
 /* Slow path for AC_OBJECT field access.  Calls into the embedder's
  * descriptor.field callback; the public arcel_value type returned
  * has the same in-memory layout as VALUE so we cast back without
- * marshalling. */
+ * marshalling.  The CTX's per-eval arena is passed through as an
+ * opaque handle so the callback can build list / map values via
+ * arcel_value_list_new etc. */
 VALUE
 arcel_field_object(CTX *const c, const VALUE recv, const char *const name, const uint32_t name_len)
 {
@@ -500,6 +502,7 @@ arcel_field_object(CTX *const c, const VALUE recv, const char *const name, const
      * as VALUE per the static_assert in arcel_lib.c.  Reinterpret. */
     union { VALUE v; struct { uint64_t _opaque[3]; } av; } u = {0};
     int rc = d->field(d, recv.object.obj, name, (size_t)name_len,
+                      (void *)&c->arena,         /* arena handle */
                       (void *)&u.av);
     if (rc == 0) return u.v;
     if (rc == -1) return err(c, "no such key: %.*s", (int)name_len, name);

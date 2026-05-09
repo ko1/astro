@@ -97,6 +97,13 @@ typedef struct {
 typedef struct arcel_env_struct        arcel_env;
 typedef struct arcel_program_struct    arcel_program;
 typedef struct arcel_activation_struct arcel_activation;
+typedef struct arcel_arena_handle      arcel_arena_handle;
+                /* Per-eval scratch arena, passed to descriptor field
+                 * callbacks (see `arcel_object_desc::field` below) so
+                 * they can construct list / map values without
+                 * managing storage themselves.  Embedders never
+                 * allocate / free this directly; arcel hands it to
+                 * each callback and reclaims it between evals. */
 
 /* ---- object descriptor (embedder dispatch table) ----------------- *
  *
@@ -138,9 +145,16 @@ struct arcel_object_desc {
     /* Required.  Look up `name` (length `name_len`) on `obj`.
      * Return 0 on success and write the field value to `*out`; return
      * -1 on missing field.  Other negative values reserved for
-     * type-mismatch errors that should propagate as ARCEL_T_ERR. */
+     * type-mismatch errors that should propagate as ARCEL_T_ERR.
+     *
+     * `arena` is a per-eval scratch arena.  Pass it to
+     * arcel_value_list_new / arcel_value_string_copy / etc. when the
+     * field's value needs storage (lists, owned strings).  Scalar
+     * fields (int / bool / etc.) and string fields whose underlying
+     * buffer outlives the eval can ignore `arena`. */
     int (*field)(const arcel_object_desc *desc, const void *obj,
-                 const char *name, size_t name_len, arcel_value *out);
+                 const char *name, size_t name_len,
+                 arcel_arena_handle *arena, arcel_value *out);
 
     /* Optional.  Presence test for the `has(x.field)` macro.  If NULL,
      * arcel falls back to "field returned 0" = present. */
@@ -240,6 +254,25 @@ arcel_value arcel_value_string(const char *s, size_t len);
 arcel_value arcel_value_bytes (const char *s, size_t len);
 arcel_value arcel_value_object(const void *obj, const arcel_object_desc *desc);
 arcel_value arcel_value_error (const char *msg);
+
+/* List builder — for use inside `arcel_object_desc::field` callbacks
+ * that need to return a REPEATED proto field, an array, or any other
+ * collection.  `items` may be NULL to allocate an empty list of
+ * length `len` that the caller fills in afterwards via the (TODO)
+ * mutator API; otherwise the items are copied into the list's
+ * backing storage.
+ *
+ * Allocates from `arena` (the same handle the field callback received).
+ * Lifetime: the resulting arcel_value is valid until the next
+ * arcel_eval on the same program. */
+arcel_value arcel_value_list_new(arcel_arena_handle *arena, uint32_t len, const arcel_value *items);
+
+/* Copy `s` (length `len`) into `arena` and return a string value
+ * that points at the owned copy.  Useful when the underlying string
+ * lives in caller-side scratch storage and would otherwise dangle
+ * after the field callback returns. */
+arcel_value arcel_value_string_copy(arcel_arena_handle *arena, const char *s, size_t len);
+arcel_value arcel_value_bytes_copy (arcel_arena_handle *arena, const char *s, size_t len);
 
 /* Bulk: parse a JSON object and use each top-level key as a binding
  * (same semantics as the CLI's `-i` flag). */

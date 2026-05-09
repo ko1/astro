@@ -35,9 +35,13 @@ struct user_request {
  * returns -1 (= missing field, surfaces as `no such key` at eval). */
 static int
 user_request_field(const arcel_object_desc *desc, const void *obj_,
-                   const char *name, size_t name_len, arcel_value *out)
+                   const char *name, size_t name_len,
+                   arcel_arena_handle *arena, arcel_value *out)
 {
     (void)desc;
+    (void)arena;   /* this adapter only returns scalars; lists / owned
+                    * strings would use `arena` via arcel_value_list_new
+                    * or arcel_value_string_copy */
     const struct user_request *const u = (const struct user_request *)obj_;
     if (name_len == 3 && memcmp(name, "age", 3) == 0) {
         *out = arcel_value_int(u->age);

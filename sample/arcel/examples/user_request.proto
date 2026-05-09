@@ -15,6 +15,11 @@ message UserRequest {
 
     // Nested message — exercises the recursive descriptor path.
     UserMeta meta  = 4;
+
+    // Repeated scalar — exercises the list-builder path added in
+    // Phase 5.  CEL macros (`u.tags.all(t, ...)`, `"prod" in u.tags`)
+    // operate on this as a regular arcel list.
+    repeated string tags = 5;
 }
 
 message UserMeta {
