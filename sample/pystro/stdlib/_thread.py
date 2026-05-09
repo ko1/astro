@@ -47,6 +47,16 @@ class _Lock:
 LockType = _Lock
 
 
+# Reentrant lock — same semantics as _Lock for pystro's single-thread
+# model.  CPython's threading module uses RLock for nested acquires.
+class RLock(_Lock):
+    pass
+
+
+def allocate_RLock():
+    return RLock()
+
+
 def start_new_thread(fn, args, kwargs=None):
     fn(*args, **(kwargs or {}))
     return 1

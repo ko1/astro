@@ -117,4 +117,26 @@ class _deque_iterator:
         return v
 
 
-__all__ = ["deque", "defaultdict", "OrderedDict", "_deque_iterator"]
+class _tuplegetter:
+    """Used by `collections.namedtuple`: a property-like descriptor that
+    indexes a tuple at a fixed position."""
+    __slots__ = ("_index", "__doc__")
+    def __init__(self, index, doc=""):
+        self._index = index
+        self.__doc__ = doc
+    def __get__(self, obj, objtype=None):
+        if obj is None: return self
+        return obj[self._index]
+    def __set__(self, obj, value):
+        raise AttributeError("can't set attribute")
+
+
+def _count_elements(mapping, iterable):
+    """Tally elements from `iterable` into mapping (used by Counter)."""
+    mapping_get = mapping.get
+    for elem in iterable:
+        mapping[elem] = mapping_get(elem, 0) + 1
+
+
+__all__ = ["deque", "defaultdict", "OrderedDict", "_deque_iterator",
+           "_tuplegetter", "_count_elements"]

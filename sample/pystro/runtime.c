@@ -4550,6 +4550,18 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                 return m;
             }
         }
+        // Inherited-from-object dunders.  CPython's `class.__ne__` etc.
+        // are implicit on every type even when not defined locally; user
+        // code (including CPython _collections_abc) does
+        // `MutableMapping.__ne__ != ...` at module init.  Return a
+        // builtin shim that delegates to the standard semantics.
+        {
+            extern VALUE pys_dunder_bound(CTX *c, VALUE recv, const char *name);
+            VALUE bm = pys_dunder_bound(c, v, name);
+            if (bm != PYS_NONE) return bm;
+        }
+        if (strcmp(name, "__doc__") == 0)         return PYS_NONE;
+        if (strcmp(name, "__module__") == 0)      return pys_make_str("__main__", 8);
         PYS_RAISE_EXC(c, c->EXC_AttributeError, "type object '%s' has no attribute '%s'",
                      cd->name, name);
     }
