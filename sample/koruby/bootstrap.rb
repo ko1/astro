@@ -2307,6 +2307,31 @@ end
 
 # Range — give it a few enumerable basics it can delegate via to_a.
 class Range
+  # Range#eql? — endpoints compared with eql? (type-strict), so
+  # 0..1 and 0..1.0 are not eql?.  exclude_end must also match.
+  def eql?(other)
+    return false unless other.is_a?(Range)
+    self.exclude_end? == other.exclude_end? &&
+      self.begin.eql?(other.begin) &&
+      self.end.eql?(other.end)
+  end
+
+  # Range#to_s — endpoints rendered via #to_s (CRuby differs from
+  # #inspect, which uses #inspect on endpoints).  nil endpoints are
+  # rendered as the empty string in the bare-end / bare-begin form.
+  def to_s
+    b = self.begin
+    e = self.end
+    sep = exclude_end? ? "..." : ".."
+    b_str = b.nil? ? "" : b.to_s
+    e_str = e.nil? ? "" : e.to_s
+    if b.nil? && e.nil?
+      "nil#{sep}nil"
+    else
+      "#{b_str}#{sep}#{e_str}"
+    end
+  end
+
   def group_by(&blk)
     to_a.group_by(&blk)
   end
@@ -4107,8 +4132,15 @@ end
 # numerical-recipes-style 64-bit LCG.  Adequate for tests.
 class Random
   def initialize(seed = nil)
-    @s = (seed || (Time.now * 1e6).to_i) & 0xffffffffffffffff
+    if seed.nil?
+      seed = (Time.now * 1e6).to_i
+    elsif !seed.is_a?(Integer) && seed.respond_to?(:to_int)
+      seed = seed.to_int
+    end
+    @seed = seed
+    @s = seed & 0xffffffffffffffff
   end
+  def seed; @seed; end
 
   def _next
     @s = (@s * 6364136223846793005 + 1442695040888963407) & 0xffffffffffffffff
@@ -4152,10 +4184,21 @@ class Random
     (0...n).map { _next & 0xff }.pack("C*") rescue (0...n).map { _next & 0xff }.map(&:chr).join
   end
 
-  def seed; @s; end
-
+  @__new_seed_counter = 0
   def self.new_seed
-    (Time.now * 1e9).to_i
+    # Mix nanosecond time with a monotonically increasing counter so
+    # back-to-back calls within the same nanosecond still produce
+    # distinct seeds.  Fold in /dev/urandom bytes for entropy.
+    @__new_seed_counter += 1
+    base = (Time.now.to_f * 1e9).to_i
+    extra = 0
+    begin
+      bytes = File.binread("/dev/urandom", 8)
+      bytes.bytes.each_with_index { |b, i| extra |= (b << (i * 8)) }
+    rescue
+      extra = 0
+    end
+    (base ^ extra ^ (@__new_seed_counter * 0x9e3779b97f4a7c15)) & ((1 << 128) - 1)
   end
 
   def self.rand(*args)
@@ -4164,6 +4207,7 @@ class Random
   end
 
   def self.urandom(n)
+    raise ArgumentError, "negative size: #{n}" if n < 0
     (0...n).map { Random.rand(256).chr }.join
   end
 
