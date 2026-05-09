@@ -227,6 +227,16 @@ main(int argc, char *argv[])
 
     // Bind __file__ to the running script path (CPython convention).
     pys_global_set(c, "__file__", pys_make_str(src_name, strlen(src_name)));
+    // Also bind __name__ / __doc__ / __package__ / __spec__ etc. — the
+    // standard module attribute set CPython exposes at the top of every
+    // module.  `__name__` is "__main__" for the directly-executed script.
+    pys_global_set(c, "__name__",     pys_make_str("__main__", 8));
+    pys_global_set(c, "__doc__",      PYS_NONE);
+    pys_global_set(c, "__package__",  pys_make_str("", 0));
+    pys_global_set(c, "__builtins__", PYS_NONE);
+    pys_global_set(c, "__spec__",     PYS_NONE);
+    pys_global_set(c, "__loader__",   PYS_NONE);
+    pys_global_set(c, "__cached__",   PYS_NONE);
 
     tokenize(src, src_name);
     NODE *body = parse_program();

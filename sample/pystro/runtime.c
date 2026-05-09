@@ -12691,6 +12691,12 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // is single-process / no networking, the bundled stub exposes
         // constants + a non-functional socket class for isinstance().
         "socket.py",
+        // typing — CPython's typing.py is huge and uses
+        // `super().__init__(...)` chains 3+ levels deep + descriptor
+        // tricks pystro can't replicate.  Bundled stub provides the
+        // common surface (List, Dict, Optional, Union, ...) for
+        // annotation usage without enforcement.
+        "typing.py",
         NULL,
     };
     bool pystro_wins = false;
@@ -12858,6 +12864,18 @@ bi_import(CTX *c, int argc, VALUE *argv)
     // import was a package itself).
     pys_global_set(c, "__name__", pys_make_str(name, strlen(name)));
     pys_global_set(c, "__file__", pys_make_str(path, strlen(path)));
+    // CPython modules always have __doc__ defined (None when no docstring
+    // is parsed).  Tests like pdb.py do `__doc__ += ...` at module level
+    // and rely on the name being bound.
+    pys_global_set(c, "__doc__", PYS_NONE);
+    // __builtins__ is exposed for `exec()` etc.
+    pys_global_set(c, "__builtins__", PYS_NONE);
+    // __spec__ is set by importlib in CPython 3.4+.
+    pys_global_set(c, "__spec__", PYS_NONE);
+    // __loader__ also from PEP 302.
+    pys_global_set(c, "__loader__", PYS_NONE);
+    // __cached__ — bytecode cache path; we don't compile so leave None.
+    pys_global_set(c, "__cached__", PYS_NONE);
     {
         // Package: parent of the dotted name, OR name itself if loaded
         // as `<pkg>/__init__.py`.  We approximate by checking whether
