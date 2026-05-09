@@ -7,13 +7,48 @@ policy: pystro は CPython 3.12.13 (submodule pin) の純 Python stdlib
 このドキュメントは sweep (`for t in cpython/Lib/test/test_*.py;
 do ./pystro $t; done`) で出る非互換を分類し、 修正方針を整理する。
 
-## sweep 現状 (2026-05-09)
+## sweep 現状 (2026-05-09 末)
 
 ```
-total=406  pass=0  parse_err=16  crash=390
+total=406  pass=0  mixed=0  crash=389  parse_err=16  import_err=1
 ```
 
-(`pystro_first_modules = { "types.py" }` のみ強制 override 状態。)
+(`pystro_first_modules = { "types.py", "abc.py", "_py_abc.py" }`。 残りは
+CPython の cpython/Lib/*.py をそのまま使用。)
+
+このセッションで対処済み:
+- **A1a** `type.__new__(meta, name, bases, dict)` 4-arg + 2-arg 形式
+  (`bi_type_new`)。 metaclass `super().__new__(mcls, ...)` の class 作成
+  パスが正しく動くように。
+- **A1b** `super().__new__` を auto-bind しない (CPython は __new__ を
+  implicit staticmethod 扱い)。
+- **A2** `_io.text_encoding(encoding, stacklevel)` (PEP 597)
+- **A3** `types.DynamicClassAttribute`
+- **A4** `_weakref._remove_dead_weakref`
+- **B共通** sys.implementation / sys.builtin_module_names /
+  sys.getfilesystemencoding / sys.monitoring (PEP 669)
+- **C共通** posix._path_normpath / posix._have_functions
+- **D共通** _io._IOBase / _RawIOBase / _BufferedIOBase / _TextIOBase /
+  _WindowsConsoleIO aliases、 _collections._tuplegetter /
+  _count_elements、 _thread.RLock
+- **E共通** class-attr lookup が universal dunders (`__ne__` 等) に
+  fall through するように
+- **F共通** `async def` 呼び出しが fake coroutine wrapper を返すように
+  (close/send/throw/__await__ をサポート)
+- **G共通** PEP 701 f-string nested escape (pdb.py の f-string 解消)
+
+## 残ってる top blocker (sweep 数字付き)
+
+| 件数 | エラー | 修正方針 |
+|---:|---|---|
+| 310 | `'classmethod' has no '__func__'` | `pys_make_classmethod` で `__func__` 属性を expose |
+| 19 | `function has no '__hash__'` | `pys_getattr` for func に `__hash__` ハンドリング追加 |
+| 16 | `test.support` 欠落 | cpytest_stubs/test/__init__.py の整備 |
+| 11 | `encodings.aliases` 欠落 | encodings package で aliases stub |
+| 11 | `test.multibytecodec_support` | cpytest_stubs に shim |
+| 6 | `importlib._bootstrap` 内部 attr | importlib._bootstrap_external に追加 |
+| 6 | `_warnings.filters` | filters list を attr expose |
+| 16 | parse_err (主に PEP 646 / async genexp / 複雑 f-string) | parser 個別修正 |
 
 ## カテゴリ別非互換
 
