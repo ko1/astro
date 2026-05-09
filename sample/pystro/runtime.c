@@ -4267,6 +4267,12 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         // If `m` is already a bound method (built-in dispatched via
         // primary in super_lookup), don't re-bind.
         if (pys_is_bound(m)) return m;
+        // CPython treats `__new__` as implicit-staticmethod: super().__new__
+        // is NOT bound to self.  Caller passes cls explicitly:
+        // `super().__new__(cls, name, bases, ns)`.  Without this skip,
+        // pystro auto-prepended self → 5-arg call with garbage av[0],
+        // breaking `super().__new__(mcls, ...)` in metaclass __new__.
+        if (strcmp(name, "__new__") == 0) return m;
         return pys_make_bound(self, m);
     }
     if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_SLICE) {

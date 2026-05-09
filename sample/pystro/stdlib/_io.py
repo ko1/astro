@@ -156,3 +156,29 @@ __all__ = [
     "IncrementalNewlineDecoder", "UnsupportedOperation",
     "BlockingIOError", "DEFAULT_BUFFER_SIZE", "open", "open_code",
 ]
+
+# Internal aliases used by CPython unittest / pathlib (the underscore
+# variants point at the same classes — CPython exposes both).
+_IOBase = IOBase
+_RawIOBase = RawIOBase
+_BufferedIOBase = BufferedIOBase
+_TextIOBase = TextIOBase
+
+# Stub for Windows-only io class — CPython references it on Linux too
+# (just doesn't construct).  Returns a class object so isinstance / type
+# probes don't crash.
+class _WindowsConsoleIO(RawIOBase):
+    def __init__(self, *a, **k):
+        raise OSError("not supported on this platform")
+
+# Internal aliases used by CPython unittest / pathlib (the underscore
+# variants point at the same classes — CPython exposes both).
+_IOBase = IOBase
+_RawIOBase = RawIOBase
+_BufferedIOBase = BufferedIOBase
+_TextIOBase = TextIOBase
+
+class _WindowsConsoleIO(RawIOBase):
+    def __init__(self, *a, **k):
+        raise OSError("not supported on this platform")
+
