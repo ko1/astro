@@ -4370,15 +4370,18 @@ class Set
   def empty?; @h.empty?; end
 
   def each(&blk)
-    if blk
-      @h.each_key(&blk)
-      self
-    else
-      @h.keys
-    end
+    return to_enum(:each) unless blk
+    @h.each_key(&blk)
+    self
   end
 
   def to_a; @h.keys; end
+
+  # Set#inspect — CRuby format.  to_s is a true alias.
+  def inspect
+    "#<Set: {" + to_a.map(&:inspect).join(", ") + "}>"
+  end
+  alias_method :to_s, :inspect
 
   def |(other)
     n = Set.new(@h.keys)
