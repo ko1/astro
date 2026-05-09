@@ -1,5 +1,20 @@
 # pystro stdlib `inspect` (minimal).
 
+# CPython code-object flag constants (subset).  Libraries gate on
+# these — e.g. `iscoroutinefunction(f)` checks `f.__code__.co_flags &
+# CO_COROUTINE`.  Values match CPython for compatibility.
+CO_OPTIMIZED          = 0x0001
+CO_NEWLOCALS          = 0x0002
+CO_VARARGS            = 0x0004
+CO_VARKEYWORDS        = 0x0008
+CO_NESTED             = 0x0010
+CO_GENERATOR          = 0x0020
+CO_NOFREE             = 0x0040
+CO_COROUTINE          = 0x0080
+CO_ITERABLE_COROUTINE = 0x0100
+CO_ASYNC_GENERATOR    = 0x0200
+
+
 def isfunction(o):
     return type(o).__name__ == "function"
 

@@ -166,6 +166,44 @@ def _is_immortal(obj): return False
 def audit(event, *args): pass
 def addaudithook(hook): pass
 
+
+# sys.monitoring (PEP 669, Python 3.12+) — instrumentation API.  pystro
+# doesn't run a tracing loop; expose stubs that no-op.
+class _Monitoring:
+    DEBUGGER_ID = 0
+    COVERAGE_ID = 1
+    PROFILER_ID = 2
+    OPTIMIZER_ID = 5
+    PROFILER_TOOL_ID = PROFILER_ID
+    DEBUGGER_TOOL_ID = DEBUGGER_ID
+    class events:
+        BRANCH = 1; CALL = 2; C_RAISE = 4; C_RETURN = 8; EXCEPTION_HANDLED = 16
+        INSTRUCTION = 32; JUMP = 64; LINE = 128; PY_RESUME = 256; PY_RETURN = 512
+        PY_START = 1024; PY_THROW = 2048; PY_UNWIND = 4096; PY_YIELD = 8192
+        RAISE = 16384; RERAISE = 32768; STOP_ITERATION = 65536; NO_EVENTS = 0
+    MISSING = object()
+    @staticmethod
+    def use_tool_id(tool_id, name): pass
+    @staticmethod
+    def free_tool_id(tool_id): pass
+    @staticmethod
+    def get_tool(tool_id): return None
+    @staticmethod
+    def register_callback(tool_id, event, func): return None
+    @staticmethod
+    def get_events(tool_id): return 0
+    @staticmethod
+    def set_events(tool_id, event_set): pass
+    @staticmethod
+    def get_local_events(tool_id, code): return 0
+    @staticmethod
+    def set_local_events(tool_id, code, event_set): pass
+    @staticmethod
+    def restart_events(): pass
+
+
+monitoring = _Monitoring()
+
 def _getframe(depth=0):
     class _Frame:
         f_globals = {}
