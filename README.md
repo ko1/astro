@@ -92,6 +92,8 @@ ASTro samples span a wide range of language families to exercise the framework a
 - [`nuq`](./sample/nuq/) — **`jq` 1.7-compatible clone** (209 nodes) with full pipeline / `try-catch` / `reduce` / `foreach` / module / call-by-name / 70+ builtins.  Passes **524/526** of jq 1.7's official test suite; real-world 11/11 wins **2.6–5.0× vs jq** (micro `upto` 50×, `reverse` 16×).
 - [`arjsv`](./sample/arjsv/) — **JSON Schema validator** (drafts 04 / 06 / 07 / 2020-12, 47 nodes), CRuby C extension, `json_schemer`-compatible API, per-schema SD with alloc-free `valid?`.
   Test Suite (excl. IDNA / HTTP `$ref` / dynamic `$dynamicRef`): 04 98.8% / 06 98.9% / 07 95.5% / 2020-12 94.6%.  **4–11× vs `rj_schema`** (Rust+RapidJSON FFI), **25–180× vs `json_schemer`** (pure Ruby).
+- [`arcel`](./sample/arcel/) — **CEL (Common Expression Language)** evaluator (57 nodes) — drop-in replacement for `cel-go` / `cel-cpp` aimed at K8s admission / Envoy authz / IAM Conditions hot paths.
+  Passes **808/808** of Google's `cel-spec/tests/simple/testdata` (vs cel-go 89.7% on the same harness).  AOT vs cel-cpp on 11 bench cases: geomean **14×**, realistic K8s ValidatingAdmissionPolicy **52 ns/op (22.4×)**, `bool_ladder` constant-folds to 5 ns/op (**42.6×**).
 
 ## References
 

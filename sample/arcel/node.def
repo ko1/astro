@@ -1,0 +1,761 @@
+/* arcel AST node definitions.  Each NODE_DEF becomes:
+ *   - an interpreter dispatcher (node_dispatch.c)
+ *   - a partial-eval specialization template (node_specialize.c)
+ *   - a Merkle hash function (node_hash.c)
+ *   - an allocator and dumper (node_alloc.c, node_dump.c)
+ *
+ * Variadic children (list / map literals) live in `arcel_node_arr`
+ * and are referenced by `(arr_idx, cnt)` operand pairs (see
+ * parser.c's arcel_node_arr_push_n).
+ */
+
+#include <limits.h>      /* INT_MIN sentinel from arcel_cmp */
+#include "value.h"
+#include "parser.h"   /* arcel_node_arr */
+
+/* ---- literals ---------------------------------------------------- */
+
+NODE_DEF
+node_int_lit(CTX *c, NODE *n, int32_t v)
+{
+    return V_INT((int64_t)v);
+}
+
+NODE_DEF
+node_int64_lit(CTX *c, NODE *n, uint64_t bits)
+{
+    return V_INT((int64_t)bits);
+}
+
+NODE_DEF
+node_uint_lit(CTX *c, NODE *n, uint64_t v)
+{
+    return V_UINT(v);
+}
+
+NODE_DEF
+node_double_lit(CTX *c, NODE *n, double v)
+{
+    return V_DOUBLE(v);
+}
+
+NODE_DEF
+node_bool_lit(CTX *c, NODE *n, uint32_t v)
+{
+    return V_BOOL(v != 0);
+}
+
+NODE_DEF
+node_null_lit(CTX *c, NODE *n)
+{
+    return V_NULL();
+}
+
+/* Operand naming convention (enforced by arcel_gen.rb's specializer):
+ * a `const char *` operand named `<x>` is paired with a `uint32_t`
+ * operand named `<x>_len`.  This lets the SD specializer emit the
+ * blob as a binary-safe C literal of known length. */
+
+NODE_DEF
+node_str_lit(CTX *c, NODE *n, const char *p, uint32_t p_len)
+{
+    return V_STR(p, p_len);
+}
+
+NODE_DEF
+node_bytes_lit(CTX *c, NODE *n, const char *p, uint32_t p_len)
+{
+    return V_BYTES(p, p_len);
+}
+
+/* ---- arithmetic / unary ----------------------------------------- */
+
+NODE_DEF
+node_add(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return arcel_add(c, EVAL_ARG(c, l), EVAL_ARG(c, r));
+}
+
+NODE_DEF
+node_sub(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return arcel_sub(c, EVAL_ARG(c, l), EVAL_ARG(c, r));
+}
+
+NODE_DEF
+node_mul(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return arcel_mul(c, EVAL_ARG(c, l), EVAL_ARG(c, r));
+}
+
+NODE_DEF
+node_div(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return arcel_div(c, EVAL_ARG(c, l), EVAL_ARG(c, r));
+}
+
+NODE_DEF
+node_mod(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    return arcel_mod(c, EVAL_ARG(c, l), EVAL_ARG(c, r));
+}
+
+NODE_DEF
+node_neg(CTX *c, NODE *n, NODE *v)
+{
+    return arcel_neg(c, EVAL_ARG(c, v));
+}
+
+NODE_DEF
+node_not(CTX *c, NODE *n, NODE *v)
+{
+    VALUE x = EVAL_ARG(c, v);
+    if (x.tag == AC_ERR)  return x;
+    if (x.tag == AC_BOOL) return V_BOOL(!x.b);
+    return V_ERR("no such overload: !_");
+}
+
+/* ---- comparison -------------------------------------------------- */
+
+NODE_DEF
+node_eq(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_ERR) return lv;
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_ERR) return rv;
+    return V_BOOL(arcel_eq(lv, rv));
+}
+
+NODE_DEF
+node_ne(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_ERR) return lv;
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_ERR) return rv;
+    return V_BOOL(!arcel_eq(lv, rv));
+}
+
+NODE_DEF
+node_lt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_ERR) return lv;
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_ERR) return rv;
+    int x = arcel_cmp(lv, rv);
+    if (x == INT_MIN) return V_ERR("no such overload: _<_");
+    return V_BOOL(x < 0);
+}
+
+NODE_DEF
+node_le(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_ERR) return lv;
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_ERR) return rv;
+    int x = arcel_cmp(lv, rv);
+    if (x == INT_MIN) return V_ERR("no such overload: _<=_");
+    return V_BOOL(x <= 0);
+}
+
+NODE_DEF
+node_gt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_ERR) return lv;
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_ERR) return rv;
+    int x = arcel_cmp(lv, rv);
+    if (x == INT_MIN) return V_ERR("no such overload: _>_");
+    return V_BOOL(x > 0);
+}
+
+NODE_DEF
+node_ge(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_ERR) return lv;
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_ERR) return rv;
+    int x = arcel_cmp(lv, rv);
+    if (x == INT_MIN) return V_ERR("no such overload: _>=_");
+    return V_BOOL(x >= 0);
+}
+
+NODE_DEF
+node_in_op(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_ERR) return lv;
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_ERR) return rv;
+    return arcel_in(c, lv, rv);
+}
+
+/* ---- logical (short-circuit + commutative-on-error) -------------- */
+
+NODE_DEF
+node_and(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    /* CEL: false && err => false, err && false => false, otherwise the
+     * non-bool side is propagated.  Commutative for errors. */
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_BOOL && !lv.b) return V_BOOL(false);
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_BOOL && !rv.b) return V_BOOL(false);
+    if (lv.tag == AC_ERR) return lv;
+    if (rv.tag == AC_ERR) return rv;
+    if (lv.tag == AC_BOOL && rv.tag == AC_BOOL) return V_BOOL(lv.b && rv.b);
+    return V_ERR("no such overload: _&&_");
+}
+
+NODE_DEF
+node_or(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE lv = EVAL_ARG(c, l);
+    if (lv.tag == AC_BOOL && lv.b) return V_BOOL(true);
+    VALUE rv = EVAL_ARG(c, r);
+    if (rv.tag == AC_BOOL && rv.b) return V_BOOL(true);
+    if (lv.tag == AC_ERR) return lv;
+    if (rv.tag == AC_ERR) return rv;
+    if (lv.tag == AC_BOOL && rv.tag == AC_BOOL) return V_BOOL(lv.b || rv.b);
+    return V_ERR("no such overload: _||_");
+}
+
+NODE_DEF
+node_cond(CTX *c, NODE *n, NODE *cond, NODE *t, NODE *f)
+{
+    VALUE cv = EVAL_ARG(c, cond);
+    if (cv.tag == AC_ERR)  return cv;
+    if (cv.tag != AC_BOOL) return V_ERR("conditional requires bool");
+    return cv.b ? EVAL_ARG(c, t) : EVAL_ARG(c, f);
+}
+
+/* ---- ident / access --------------------------------------------- */
+
+NODE_DEF
+node_ident(CTX *c, NODE *n, const char *name, uint32_t name_len)
+{
+    return arcel_lookup_ident(c, name, name_len);
+}
+
+NODE_DEF
+node_field(CTX *c, NODE *n, NODE *recv, const char *name, uint32_t name_len)
+{
+    return arcel_field(c, EVAL_ARG(c, recv), name, name_len);
+}
+
+NODE_DEF
+node_index(CTX *c, NODE *n, NODE *recv, NODE *key)
+{
+    VALUE rv = EVAL_ARG(c, recv);
+    if (rv.tag == AC_ERR) return rv;
+    VALUE kv = EVAL_ARG(c, key);
+    if (kv.tag == AC_ERR) return kv;
+    return arcel_index(c, rv, kv);
+}
+
+NODE_DEF
+node_has_select(CTX *c, NODE *n, NODE *expr)
+{
+    /* expr is a node_field or node_index.  We "evaluate" it but
+     * convert "missing key" / "no such overload on map" into false
+     * rather than propagating the error.  Cleanest implementation:
+     * walk the expr and decompose; for now we just attempt the eval
+     * and inspect the error message. */
+    VALUE r = EVAL_ARG(c, expr);
+    if (r.tag == AC_ERR) {
+        /* recognise "no such key" / "index out of range" → false; other
+         * errors propagate (e.g. type mismatch). */
+        const char *m = r.err ? r.err : "";
+        if (strstr(m, "no such key") || strstr(m, "index out of range")) {
+            return V_BOOL(false);
+        }
+        return r;
+    }
+    return V_BOOL(true);
+}
+
+/* ---- list / map literal ----------------------------------------- */
+
+/* Constant list literal — built once at parse time, parked in
+ * arcel_const_list_arr[idx], returned as a fresh V_LIST per eval.
+ * Hot in `x in [a, b, c]` style policies. */
+NODE_DEF
+node_const_list(CTX *c, NODE *n, uint32_t idx)
+{
+    return V_LIST(arcel_const_list_arr[idx]);
+}
+
+NODE_DEF
+node_list(CTX *c, NODE *n, uint32_t arr_idx, uint32_t cnt)
+{
+    arcel_list *const out = arcel_list_new(&c->arena, cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        NODE *child = arcel_node_arr[arr_idx + i];
+        out->items[i] = EVAL(c, child);
+        if (out->items[i].tag == AC_ERR) return out->items[i];
+    }
+    return V_LIST(out);
+}
+
+NODE_DEF
+node_map(CTX *c, NODE *n, uint32_t arr_idx, uint32_t cnt)
+{
+    arcel_map *const out = arcel_map_new(&c->arena, cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        NODE *kn = arcel_node_arr[arr_idx + i * 2];
+        NODE *vn = arcel_node_arr[arr_idx + i * 2 + 1];
+        VALUE k = EVAL(c, kn);
+        if (k.tag == AC_ERR) return k;
+        VALUE v = EVAL(c, vn);
+        if (v.tag == AC_ERR) return v;
+        out->entries[i].key = k;
+        out->entries[i].val = v;
+    }
+    return V_MAP(out);
+}
+
+/* ---- builtins ---------------------------------------------------- */
+
+NODE_DEF
+node_size(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_size(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_type(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_type_of(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_to_int(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_to_int(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_to_uint(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_to_uint(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_to_double(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_to_double(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_to_string(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_to_string(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_to_bool(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_to_bool(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_to_bytes(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_to_bytes(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_starts_with(CTX *c, NODE *n, NODE *recv, NODE *arg)
+{
+    VALUE r = EVAL_ARG(c, recv); if (r.tag == AC_ERR) return r;
+    VALUE a = EVAL_ARG(c, arg);  if (a.tag == AC_ERR) return a;
+    return arcel_starts_with(c, r, a);
+}
+
+NODE_DEF
+node_ends_with(CTX *c, NODE *n, NODE *recv, NODE *arg)
+{
+    VALUE r = EVAL_ARG(c, recv); if (r.tag == AC_ERR) return r;
+    VALUE a = EVAL_ARG(c, arg);  if (a.tag == AC_ERR) return a;
+    return arcel_ends_with(c, r, a);
+}
+
+NODE_DEF
+node_contains(CTX *c, NODE *n, NODE *recv, NODE *arg)
+{
+    VALUE r = EVAL_ARG(c, recv); if (r.tag == AC_ERR) return r;
+    VALUE a = EVAL_ARG(c, arg);  if (a.tag == AC_ERR) return a;
+    return arcel_contains(c, r, a);
+}
+
+NODE_DEF
+node_matches(CTX *c, NODE *n, NODE *recv, NODE *arg)
+{
+    VALUE r = EVAL_ARG(c, recv); if (r.tag == AC_ERR) return r;
+    VALUE a = EVAL_ARG(c, arg);  if (a.tag == AC_ERR) return a;
+    return arcel_matches(c, r, a);
+}
+
+/* ---- macros ------------------------------------------------------ */
+
+/* Body-evaluation macros for the macro nodes (`xs.all(x, p)` etc.).
+ *
+ * These MUST expand `EVAL_ARG(c, body)` literally (not call into a
+ * helper function with `NODE *body` as a regular argument), because
+ * EVAL_ARG resolves to `(*body_dispatcher)(c, body)` — the
+ * `body_dispatcher` companion param ASTroGen passes alongside each
+ * NODE* operand.  Through a helper function the dispatcher would not
+ * be in scope and we'd fall back to `n->head.dispatcher`, which
+ * defeats AOT specialization of the macro body's child SD.
+ *
+ * `body` here is a literal token (the operand name of the enclosing
+ * NODE_DEF), not an expression. */
+#define eval_with_bind(c_, name_, len_, elem_, body) ({ \
+    arcel_push_bind((c_), (name_), (len_), (elem_));    \
+    VALUE _r_ = EVAL_ARG((c_), body);                   \
+    arcel_pop_bind((c_));                               \
+    _r_;                                                \
+})
+
+/* Iterator helper: returns the i-th element of `it` (list element,
+ * or map key — cel-spec macros iterate over map keys). */
+static inline VALUE
+iter_elem(VALUE it, uint32_t i)
+{
+    return it.tag == AC_LIST ? it.list->items[i] : it.map->entries[i].key;
+}
+
+static inline uint32_t
+iter_len(VALUE it)
+{
+    return it.tag == AC_LIST ? it.list->len : it.map->len;
+}
+
+NODE_DEF
+node_all(CTX *c, NODE *n, NODE *iter, const char *bind, uint32_t bind_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: all");
+    /* Short-circuit on first false (even if earlier elements errored)
+     * — cel-spec semantics: a definitive `false` wins over `error`. */
+    VALUE saved_err = V_NULL();
+    bool  has_err = false;
+    uint32_t len = iter_len(it);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_bind(c, bind, bind_len, iter_elem(it, i), body);
+        if (r.tag == AC_ERR) { if (!has_err) { saved_err = r; has_err = true; } continue; }
+        if (r.tag != AC_BOOL) return V_ERR("all() body must return bool");
+        if (!r.b) return V_BOOL(false);
+    }
+    return has_err ? saved_err : V_BOOL(true);
+}
+
+NODE_DEF
+node_exists(CTX *c, NODE *n, NODE *iter, const char *bind, uint32_t bind_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: exists");
+    /* Symmetric to `all`: a definitive `true` wins; otherwise propagate
+     * the first error seen. */
+    VALUE saved_err = V_NULL();
+    bool  has_err = false;
+    uint32_t len = iter_len(it);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_bind(c, bind, bind_len, iter_elem(it, i), body);
+        if (r.tag == AC_ERR) { if (!has_err) { saved_err = r; has_err = true; } continue; }
+        if (r.tag != AC_BOOL) return V_ERR("exists() body must return bool");
+        if (r.b) return V_BOOL(true);
+    }
+    return has_err ? saved_err : V_BOOL(false);
+}
+
+NODE_DEF
+node_exists_one(CTX *c, NODE *n, NODE *iter, const char *bind, uint32_t bind_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: exists_one");
+    /* Count must be exact; can't short-circuit before scanning all.
+     * Errors propagate (since any error means we can't know the count). */
+    int hits = 0;
+    VALUE saved_err = V_NULL();
+    bool  has_err = false;
+    uint32_t len = iter_len(it);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_bind(c, bind, bind_len, iter_elem(it, i), body);
+        if (r.tag == AC_ERR) { if (!has_err) { saved_err = r; has_err = true; } continue; }
+        if (r.tag != AC_BOOL) return V_ERR("exists_one() body must return bool");
+        if (r.b) hits++;
+    }
+    if (has_err) return saved_err;
+    return V_BOOL(hits == 1);
+}
+
+NODE_DEF
+node_filter(CTX *c, NODE *n, NODE *iter, const char *bind, uint32_t bind_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: filter");
+    uint32_t len = iter_len(it);
+    /* Two-pass to size exactly. */
+    uint32_t cnt = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_bind(c, bind, bind_len, iter_elem(it, i), body);
+        if (r.tag == AC_ERR)  return r;
+        if (r.tag != AC_BOOL) return V_ERR("filter() body must return bool");
+        if (r.b) cnt++;
+    }
+    arcel_list *const out = arcel_list_new(&c->arena, cnt);
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_bind(c, bind, bind_len, iter_elem(it, i), body);
+        if (r.tag == AC_BOOL && r.b) out->items[k++] = iter_elem(it, i);
+    }
+    return V_LIST(out);
+}
+
+NODE_DEF
+node_map_macro(CTX *c, NODE *n, NODE *iter, const char *bind, uint32_t bind_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: map");
+    uint32_t len = iter_len(it);
+    arcel_list *const out = arcel_list_new(&c->arena, len);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_bind(c, bind, bind_len, iter_elem(it, i), body);
+        if (r.tag == AC_ERR) return r;
+        out->items[i] = r;
+    }
+    return V_LIST(out);
+}
+
+/* ---- two-arg macros: <iter>.<macro>(idx, val, predicate) -------- */
+/* For lists, idx = element index (int), val = element.
+ * For maps, idx = key, val = value.  cel-spec macros2. */
+
+static inline VALUE
+iter_idx(VALUE it, uint32_t i)
+{
+    return it.tag == AC_LIST ? V_INT((int64_t)i) : it.map->entries[i].key;
+}
+
+static inline VALUE
+iter_val(VALUE it, uint32_t i)
+{
+    return it.tag == AC_LIST ? it.list->items[i] : it.map->entries[i].val;
+}
+
+/* Same EVAL_ARG-via-macro trick for the two-bind form (used by
+ * `xs.<macro>(idx, val, body)` style cel-spec macros2 and the
+ * transformList / transformMap helpers).  `body` is a literal
+ * operand-name token; same applies to `pred` when the caller is the
+ * filtered transform variant. */
+#define eval_with_two_binds(c_, n1, l1, v1, n2, l2, v2, body) ({ \
+    arcel_push_bind((c_), (n1), (l1), (v1));                     \
+    arcel_push_bind((c_), (n2), (l2), (v2));                     \
+    VALUE _r_ = EVAL_ARG((c_), body);                            \
+    arcel_pop_bind((c_));                                        \
+    arcel_pop_bind((c_));                                        \
+    _r_;                                                         \
+})
+
+NODE_DEF
+node_all2(CTX *c, NODE *n, NODE *iter, const char *idx_name, uint32_t idx_name_len, const char *val_name, uint32_t val_name_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: all");
+    VALUE saved_err = V_NULL(); bool has_err = false;
+    uint32_t len = iter_len(it);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_two_binds(c,
+                    idx_name, idx_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), body);
+        if (r.tag == AC_ERR)  { if (!has_err) { saved_err = r; has_err = true; } continue; }
+        if (r.tag != AC_BOOL) return V_ERR("all() body must return bool");
+        if (!r.b) return V_BOOL(false);
+    }
+    return has_err ? saved_err : V_BOOL(true);
+}
+
+NODE_DEF
+node_exists2(CTX *c, NODE *n, NODE *iter, const char *idx_name, uint32_t idx_name_len, const char *val_name, uint32_t val_name_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: exists");
+    VALUE saved_err = V_NULL(); bool has_err = false;
+    uint32_t len = iter_len(it);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_two_binds(c,
+                    idx_name, idx_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), body);
+        if (r.tag == AC_ERR)  { if (!has_err) { saved_err = r; has_err = true; } continue; }
+        if (r.tag != AC_BOOL) return V_ERR("exists() body must return bool");
+        if (r.b) return V_BOOL(true);
+    }
+    return has_err ? saved_err : V_BOOL(false);
+}
+
+NODE_DEF
+node_exists_one2(CTX *c, NODE *n, NODE *iter, const char *idx_name, uint32_t idx_name_len, const char *val_name, uint32_t val_name_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: exists_one");
+    int hits = 0;
+    VALUE saved_err = V_NULL(); bool has_err = false;
+    uint32_t len = iter_len(it);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_two_binds(c,
+                    idx_name, idx_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), body);
+        if (r.tag == AC_ERR)  { if (!has_err) { saved_err = r; has_err = true; } continue; }
+        if (r.tag != AC_BOOL) return V_ERR("exists_one() body must return bool");
+        if (r.b) hits++;
+    }
+    if (has_err) return saved_err;
+    return V_BOOL(hits == 1);
+}
+
+NODE_DEF
+node_filter2(CTX *c, NODE *n, NODE *iter, const char *idx_name, uint32_t idx_name_len, const char *val_name, uint32_t val_name_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: filter");
+    uint32_t len = iter_len(it);
+    uint32_t cnt = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_two_binds(c,
+                    idx_name, idx_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), body);
+        if (r.tag == AC_ERR)  return r;
+        if (r.tag != AC_BOOL) return V_ERR("filter() body must return bool");
+        if (r.b) cnt++;
+    }
+    arcel_list *const out = arcel_list_new(&c->arena, cnt);
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_two_binds(c,
+                    idx_name, idx_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), body);
+        if (r.tag == AC_BOOL && r.b) out->items[k++] = iter_elem(it, i);
+    }
+    return V_LIST(out);
+}
+
+NODE_DEF
+node_map_macro2(CTX *c, NODE *n, NODE *iter, const char *idx_name, uint32_t idx_name_len, const char *val_name, uint32_t val_name_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: map");
+    uint32_t len = iter_len(it);
+    arcel_list *const out = arcel_list_new(&c->arena, len);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_two_binds(c,
+                    idx_name, idx_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), body);
+        if (r.tag == AC_ERR) return r;
+        out->items[i] = r;
+    }
+    return V_LIST(out);
+}
+
+/* transformList(i, v, p, t): for each elem, if p(i,v) then emit t(i,v).
+ * Output is a list (no original-index preservation needed since the
+ * harness compares by element value). */
+NODE_DEF
+node_transform_list_f(CTX *c, NODE *n, NODE *iter, const char *idx_name, uint32_t idx_name_len, const char *val_name, uint32_t val_name_len, NODE *pred, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: transformList");
+    uint32_t len = iter_len(it);
+    uint32_t cnt = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE r = eval_with_two_binds(c,
+                    idx_name, idx_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), pred);
+        if (r.tag == AC_ERR)  return r;
+        if (r.tag != AC_BOOL) return V_ERR("transformList() filter must return bool");
+        if (r.b) cnt++;
+    }
+    arcel_list *const out = arcel_list_new(&c->arena, cnt);
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE p = eval_with_two_binds(c,
+                    idx_name, idx_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), pred);
+        if (p.tag == AC_BOOL && p.b) {
+            VALUE r = eval_with_two_binds(c,
+                        idx_name, idx_name_len, iter_idx(it, i),
+                        val_name, val_name_len, iter_val(it, i), body);
+            if (r.tag == AC_ERR) return r;
+            out->items[k++] = r;
+        }
+    }
+    return V_LIST(out);
+}
+
+NODE_DEF
+node_transform_map(CTX *c, NODE *n, NODE *iter, const char *key_name, uint32_t key_name_len, const char *val_name, uint32_t val_name_len, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: transformMap");
+    uint32_t len = iter_len(it);
+    arcel_map *const out = arcel_map_new(&c->arena, len);
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE k = iter_idx(it, i);
+        VALUE v = iter_val(it, i);
+        VALUE r = eval_with_two_binds(c, key_name, key_name_len, k, val_name, val_name_len, v, body);
+        if (r.tag == AC_ERR) return r;
+        out->entries[i].key = k;
+        out->entries[i].val = r;
+    }
+    return V_MAP(out);
+}
+
+NODE_DEF
+node_transform_map_f(CTX *c, NODE *n, NODE *iter, const char *key_name, uint32_t key_name_len, const char *val_name, uint32_t val_name_len, NODE *pred, NODE *body)
+{
+    VALUE it = EVAL_ARG(c, iter);
+    if (it.tag == AC_ERR) return it;
+    if (it.tag != AC_LIST && it.tag != AC_MAP) return V_ERR("no such overload: transformMap");
+    uint32_t len = iter_len(it);
+    uint32_t cnt = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE p = eval_with_two_binds(c,
+                    key_name, key_name_len, iter_idx(it, i),
+                    val_name, val_name_len, iter_val(it, i), pred);
+        if (p.tag == AC_ERR)  return p;
+        if (p.tag != AC_BOOL) return V_ERR("transformMap() filter must return bool");
+        if (p.b) cnt++;
+    }
+    arcel_map *const out = arcel_map_new(&c->arena, cnt);
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < len; i++) {
+        VALUE kk = iter_idx(it, i);
+        VALUE vv = iter_val(it, i);
+        VALUE p = eval_with_two_binds(c, key_name, key_name_len, kk, val_name, val_name_len, vv, pred);
+        if (p.tag == AC_BOOL && p.b) {
+            VALUE r = eval_with_two_binds(c, key_name, key_name_len, kk, val_name, val_name_len, vv, body);
+            if (r.tag == AC_ERR) return r;
+            out->entries[k].key = kk;
+            out->entries[k].val = r;
+            k++;
+        }
+    }
+    return V_MAP(out);
+}

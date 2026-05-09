@@ -1,0 +1,24 @@
+# ASTroGen-generated (regen via `make`)
+node_eval.c
+node_dispatch.c
+node_dump.c
+node_specialize.c
+node_replace.c
+node_alloc.c
+node_hash.c
+node_head.h
+
+# build artefacts
+arcel
+*.o
+code_store/
+
+# cel-go reference build artefact (regen via `make celgo`)
+test/celgo_ref/celgo_ref
+
+# cel-cpp reference build artefact (regen via `make celcpp`)
+# note: source lives in test/celcpp_ref/, build is performed in an
+# out-of-tree cel-cpp checkout via Bazel — see that dir's Makefile
+test/celcpp_ref/celcpp_bench
+# stale prior path during dev
+test/celgo_ref/celcpp_bench

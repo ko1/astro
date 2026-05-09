@@ -1,0 +1,25 @@
+CEL Conformance Test Data
+=========================
+
+The `*.textproto` files in this directory are verbatim copies of the
+Common Expression Language conformance test corpus from:
+
+    Repository: https://github.com/google/cel-spec
+    Path:       tests/simple/testdata/
+    Commit:     see UPSTREAM.sha for the exact pinned commit
+    License:    Apache License 2.0 (see LICENSE)
+
+The original files are Copyright the CEL authors.  They are
+redistributed here unmodified for use as a reference test suite for
+arcel, the CEL evaluator implementation under sample/arcel/.
+
+Re-fetching
+-----------
+
+`fetch.rb` in this directory pulls a fresh copy via the GitHub
+contents API and updates UPSTREAM.sha.  Run it after a `git pull` of
+cel-spec when the upstream conformance suite changes.
+
+The arcel sources (parser, evaluator, harness) are independent of
+these test fixtures and were written from scratch against the CEL
+language specification.

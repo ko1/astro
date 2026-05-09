@@ -3,8 +3,9 @@
 ASTro リポジトリ配下の `sample/*` を **言語特性** と **そこから導かれる
 node.def 構成** を中心に横断分析した文書。各サンプル個別の詳細は
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-を参照。本書は「18 サンプル並べて何が分かるか」を整理する
-(汎用言語 16 + DSL 2 種: JSON フィルタの `nuq`、JSON Schema の `arjsv`)。
+を参照。本書は「19 サンプル並べて何が分かるか」を整理する
+(汎用言語 16 + DSL 3 種: JSON フィルタの `nuq`、JSON Schema の `arjsv`、
+CEL の `arcel`)。
 
 §6 でサンプルバイナリの **コマンドラインオプション** を横断比較、
 §7 で各サンプルの `docs/perf.md` から **定量的な性能まとめ** を出し、
@@ -37,6 +38,7 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 | `astrogre` | (Onigmo 互換 regex) | DSL — 正規表現 | — | — | **マッチエンジン自体が AST**、`are` grep CLI 付属 |
 | `nuq` | (jq 1.7 互換) | DSL — JSON フィルタ | — | tagged fixnum + `nuq_obj` | pipe / comma fan-out / `try-catch` / `reduce` / `foreach` / module / call-by-name / 70+ builtin、jq 1.7 公式 524/526 |
 | `arjsv` | (JSON Schema draft-07 / 2020-12) | DSL — 検証器 | — | CRuby `VALUE` | **CRuby C 拡張**、スキーマ → AST → SD で per-validation がアロケーションフリー |
+| `arcel` | (CEL / Common Expression Language) | DSL — predicate | — | tagged-union 16B | **standalone**、cel-go/cel-cpp の dropin 代替、conformance 808/808、AOT で cel-cpp の geomean 14× / 最大 42× |
 
 パラダイム軸での広がり:
 - **教育用最小**: `calc`
@@ -46,12 +48,12 @@ node.def 構成** を中心に横断分析した文書。各サンプル個別�
 - **OO 純化**: `asom`
 - **データ解析系**: `astr`
 - **スタックマシン**: `aforth` / `wastro`
-- **DSL / エンジン応用**: `astrogre` / `nuq` / `arjsv`
+- **DSL / エンジン応用**: `astrogre` / `nuq` / `arjsv` / `arcel`
 
 直交する軸として **型システム** で切ると:
 - **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `wastro`
 - **動的型**: 動的言語勢 6 つ + Scheme + Smalltalk + R + Forth (cell 単位 untyped)
-- **型なし / DSL**: `calc` / `astrogre` / `nuq` / `arjsv`
+- **型なし / DSL**: `calc` / `astrogre` / `nuq` / `arjsv` / `arcel`
 
 静的型 4 つはそれぞれ違う方向 — Pascal (古典手続き型 + variant record),
 C (低レベル ABI + ポインタ), OCaml (Hindley-Milner + variant + class),
@@ -76,6 +78,7 @@ ASTro が想定外でも嵌まる例になっている。
 | `arjsv`     |  47 |   971 |
 | `astrogre`  |  53 | 1,612 |
 | `ascheme`   |  54 |   778 |
+| `arcel`     |  57 |   761 |
 | `aforth`    |  68 |   639 |
 | `luastro`   |  74 | 1,448 |
 | `asom`      |  80 | 1,262 |
@@ -409,6 +412,7 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 | `astrogre` | `int64_t` (内部表現) | leak | 自前 regex parser | Aho-Corasick prefilter, Boyer-Moore-like memmem, scanner ノード |
 | `nuq` | tagged fixnum + `nuq_obj` | 自前 Cheney コピーGC + per-run arena | 自前 jq lexer + parser + module 解決 | path 更新 (`..\|=F`)、線形性解析で `+= [$i]` を mutation 化、70+ builtin |
 | `arjsv` | CRuby `VALUE` | CRuby GC (Ruby 拡張) | JSON Schema → AST lower (Ruby 側) | per-schema SD bake、Schema 側 consts 配列で per-call alloc 0、`json_schemer` 互換 API |
+| `arcel` | tagged-union 16B (`tag` + payload) | per-eval chunked arena (再利用) + per-program bind arena | 自前 CEL lexer + recursive descent | const-list 折り畳み、value.h で hot helper を `static inline` 化 → SD で memcmp が literal cmp に固定、cel-go/cel-cpp と同形式の `eval`/`bench`/`repl` プロトコル |
 
 注目点:
 - **値表現は 4 系統**: 純 `int64`, low-bit fixnum tagged, CRuby 互換 (3-bit tag),
@@ -459,6 +463,7 @@ ASTro は plain interpreter / AOT / Profile-Guided / JIT の 4 モードを
 | `astrogre`  | ✓ | ✓ |   |   |
 | `nuq`       | ✓ | ✓ |   |   |
 | `arjsv`     | ✓ | ✓ |   |   |
+| `arcel`     | ✓ | ✓ |   |   |
 
 PG をやっているのは `abruby` / `ascheme` / `asom` / `luastro` / `jstro` / `naruby`。
 JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
@@ -496,16 +501,21 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 | `wastro`    | `--no-compile` | `-c` (compile→run) | `--aot` / `--aot-compile` | — | `--clear-cs` / `--ccs` | — | `-q` |
 | `astrogre/are` | (default; opt-in `--aot`) | `--aot` | — | — | — | `--dump PATTERN` | `-q` (grep `-q`) |
 | `nuq`       | `--no-compile` | (default; `code_store/all.so` を使う) | — | — | — | `--dump-ast` | `--quiet` |
+| `arcel`     | `--no-compile` | (default; bench/eval/repl サブコマンド形式) | — | — | — | `--dump-ast` | `-q` |
 
 `arjsv` は CLI を持たない CRuby C 拡張。`Arjsv.schema(...).valid?(value)` の
 ライブラリ呼びで使い、`code_store/all.so` の有無で interp / AOT が自動切替。
+
+`arcel` は cel-go / cel-cpp と互換のサブコマンド形式
+(`eval -e EXPR -i JSON` / `bench -e EXPR -n N` / `repl`) を持ち、harness
+からは binary を入れ替えるだけで切り替えられる。
 
 ### 6.2 命名の不統一が見える
 
 同じ意味のフラグがサンプルごとに名前違い:
 
 - **「code store を引かない」**:
-  - `--no-compile` 系: `aforth` / `astocaml` / `castro` / `jstro` / `luastro` / `nuq` / `pascalast` / `pystro` / `wastro` / `calc`
+  - `--no-compile` 系: `aforth` / `astocaml` / `castro` / `jstro` / `luastro` / `nuq` / `pascalast` / `pystro` / `wastro` / `calc` / `arcel`
   - `--plain` 系: `abruby` / `asom`
   - `-i` / `--plain` 系: `naruby` / `astr`
   - default off: `ascheme` / `astrogre/are` (opt-in が `--aot`)
@@ -554,10 +564,11 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 
 ファイル/コードの渡し方も微妙にバラバラ:
 
-- **`-e <code>` で文字列実行**: `abruby` / `ascheme` / `koruby` / `luastro` / `pystro` (REPL/one-liner で重宝)
+- **`-e <code>` で文字列実行**: `abruby` / `ascheme` / `koruby` / `luastro` / `pystro` (REPL/one-liner で重宝)、`arcel` (各サブコマンドの引数として)
 - **stdin から読む** (`-`): `ascheme` のみ
-- **REPL モード**: `calc` (引数無しで起動)、`ascheme` (script 無しで起動)
+- **REPL モード**: `calc` (引数無しで起動)、`ascheme` (script 無しで起動)、`arcel repl` (1 行 1 JSON envelope を stdin から)
 - **クラス名 / モジュール名指定** (file path ではない): `asom` (`asom <ClassName>`)、`wastro` (`wastro module.wat <export> [args...]`)
+- **サブコマンド形式**: `arcel {eval|bench|repl} -e EXPR ...` (cel-go / cel-cpp と同形式 — harness が binary 入替で切り替えられる)
 - **`--` 末尾 sentinel**: `ascheme` / `luastro` / `pystro` (option 終端、以降は script ARGV)
 
 ### 6.5 環境変数
@@ -613,6 +624,7 @@ CLI に出ないが環境変数で挙動を変えるもの:
 | `pascalast` | (外部 Pascal なし、自 interp との比較のみ) | 4 | interp → AOT で 2× (recursive) 〜 25× (tight loop) |
 | `nuq` | jq 1.7 / jaq 3.0 / gojq | 11 real + 14 micro + 4 big | **real 11/11 vs jq 2.6–5.0×**、micro 13/14 (`min-max 1M` 9×, `reverse 1M` 16×, `upto 8k` 51×)。jq 1.7 公式 524/526 |
 | `arjsv` | json_schemer 2.5 / rj_schema 1.0 (Rust+RapidJSON FFI) | 5 schemas × 2 scenarios | **vs `rj_schema` (parsed-Hash) 7.5–86×**、**vs `json_schemer` 90–280×**。gateway-flow (JSON文字列入力) は rj_schema 比 4–11× |
+| `arcel` | cel-go 0.28 / cel-cpp HEAD | 11 | **vs cel-cpp 6/11 で 8.8–42.6×、最小 1.93×** (geomean ~14×)、realistic K8s ValidatingAdmissionPolicy で **22.4×** (52 ns/op)。`bool_ladder` は constant-fold で `return 1;` まで畳まれて 5 ns/op = cel-cpp 比 42.6×。conformance 808/808 (cel-go reference は同 harness で 89.7%) |
 | `aforth` ~ `wastro` の interp 列は省略。各 perf.md の表参照。 |
 
 ### 7.2 速度をどこで稼げているか (パターン別)
@@ -625,6 +637,10 @@ CLI に出ないが環境変数で挙動を変えるもの:
 - **tight inner loop で型が parser-time に確定**: aforth (gcd 13.9×),
   pystro (while_loop 19×), ascheme (sumloop 20× vs guile),
   asom (Sieve 10×), naruby (loop で C コンパイラがループ自体を消す)
+- **AST literal が hot に乗る predicate / filter**: arcel
+  (`bool_ladder` 42.6× vs cel-cpp、`string_starts` 31.9×) — `node_str_lit`
+  の payload が SD で C リテラル化され、`memcmp(s, "...", N)` が
+  literal-length cmp に固定される
 - **インタプリタ起動が遅い処理系との比較**: jstro vs node は
   cold-start で **53×** 勝つ (V8 の tier-up が間に合わない領域)
 - **バイトコード VM 全般**: SOM++ / chibi-scheme / gforth のような
@@ -769,7 +785,7 @@ CLI に出ないが環境変数で挙動を変えるもの:
 | 純動的 (Scheme) | **○** | ascheme が chibi/guile に並ぶ AOT 性能 |
 | スタック VM (Forth/Wasm) | **○** | aforth が gforth を 8/9 で上回る |
 | DSL (regex) | **○** | astrogre が onigmo の隣に並ぶマッチ性能 |
-| DSL (JSON フィルタ / Schema) | **◎** | nuq が jq を全域 2.6–5.0×、arjsv は Rust+RapidJSON FFI を 4–86×。スキーマ / フィルタ式が SD 1 個に焼き切れる類は ASTro と相性が良い |
+| DSL (JSON フィルタ / Schema / predicate) | **◎** | nuq が jq を全域 2.6–5.0×、arjsv は Rust+RapidJSON FFI を 4–86×、arcel は cel-cpp を geomean 14× / K8s policy 22.4×。スキーマ / フィルタ / policy 式が SD 1 個に焼き切れる類は ASTro と相性が良い |
 | ホスト言語の C 拡張 | **○** | abruby / arjsv が CRuby ext として成立。ホスト VALUE / GC / Parser を借りて初期実装コストを大幅短縮 (代償は §8.2: hot path に host cfunc が残ること) |
 | イベント駆動 / async | **未検証** | サンプル無し |
 | GC の精度が要る (precise GC) | **△** | jstro/luastro が自前 mark-sweep を書いており、フレームワークは助けない |
