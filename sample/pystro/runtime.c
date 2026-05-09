@@ -4131,6 +4131,10 @@ pys_dunder_bound(CTX *c, VALUE recv, const char *name)
     if (!ok) return PYS_NONE;
     VALUE fn = pys_make_builtin(name, shims[idx].fn,
                                shims[idx].min_argc, shims[idx].max_argc);
+    // When recv is a class (`int.__hash__` style), return the unbound
+    // function that takes self as first arg — CPython lets test code
+    // do `int.__hash__(5)` to bypass instance __getattribute__.
+    if (pys_is_class(recv)) return fn;
     return pys_make_bound(recv, fn);
 }
 
