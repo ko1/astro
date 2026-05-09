@@ -4097,6 +4097,30 @@ module Kernel
   def autoload?(_name, _inherit = true); nil; end unless method_defined?(:autoload?)
 end
 
+class Object
+  # Default Object#<=> — 0 when self == other, nil otherwise.  CRuby
+  # exposes this on BasicObject's chain so every object gets it.
+  def <=>(other)
+    self == other ? 0 : nil
+  end unless method_defined?(:<=>)
+
+  # initialize_copy / clone / dup hooks — private, default no-op that
+  # raises FrozenError on a frozen receiver (matches CRuby).
+  def initialize_copy(other)
+    raise FrozenError, "can't modify frozen #{self.class}: #{self.inspect}" if frozen?
+    self
+  end unless private_method_defined?(:initialize_copy) || method_defined?(:initialize_copy)
+  def initialize_clone(other, freeze: nil)
+    initialize_copy(other)
+    self
+  end unless private_method_defined?(:initialize_clone) || method_defined?(:initialize_clone)
+  def initialize_dup(other)
+    initialize_copy(other)
+    self
+  end unless private_method_defined?(:initialize_dup) || method_defined?(:initialize_dup)
+  private :initialize_copy, :initialize_clone, :initialize_dup rescue nil
+end
+
 # GC — minimal module.  koruby uses libgc (Bartlett-style) so explicit
 # collection is a no-op; this exists for spec compatibility.
 module GC
