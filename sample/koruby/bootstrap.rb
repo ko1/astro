@@ -3969,9 +3969,13 @@ class BasicObject
   # Default initialize: BasicObject's initialize takes no args.
   def initialize
   end unless method_defined?(:initialize)
-  # Default method_missing: raise NoMethodError on the missing name.
+  # Default method_missing: raise NoMethodError, recording @name / @receiver
+  # so #name and #receiver readers work on the raised exception.
   def method_missing(name, *args)
-    ::Kernel.raise(::NoMethodError, "undefined method '#{name}' for #{self.inspect}")
+    e = ::NoMethodError.new("undefined method '#{name}' for #{self.inspect}")
+    e.instance_variable_set(:@name, name)
+    e.instance_variable_set(:@receiver, self)
+    ::Kernel.raise(e)
   end unless private_method_defined?(:method_missing) || method_defined?(:method_missing)
 end
 

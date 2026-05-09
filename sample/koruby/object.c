@@ -3740,6 +3740,10 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
         korb_raise(c, (struct korb_class *)eNo, "undefined method '%s' for %s",
                  korb_id_name(name), korb_id_name(klass->name));
+        if (c->state == KORB_RAISE && c->state_value && !SPECIAL_CONST_P(c->state_value)) {
+            korb_ivar_set(c->state_value, korb_intern("@receiver"), recv);
+            korb_ivar_set(c->state_value, korb_intern("@name"), korb_id2sym(name));
+        }
         return Qnil;
     }
     if (m->type == KORB_METHOD_CFUNC) {
