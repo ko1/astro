@@ -10220,12 +10220,18 @@ bi_type_call(CTX *c, int argc, VALUE *argv)
 VALUE
 bi_type_new(CTX *c, int argc, VALUE *argv)
 {
+    extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+    if (argc == 2) {
+        // type.__new__(type, x) — type query form via type's __call__
+        // dispatch.  Just return type(x).
+        VALUE one[1] = { argv[1] };
+        return bi_type(c, 1, one);
+    }
     if (argc < 4) {
-        // 1-arg / fewer: fall back to default object allocation.
+        // 0/1-arg edge cases shouldn't reach here, but be safe.
         extern VALUE bi_object_new(CTX *c, int argc, VALUE *argv);
         return bi_object_new(c, argc, argv);
     }
-    extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
     VALUE mcls = argv[0];
     VALUE three[3] = { argv[1], argv[2], argv[3] };
     VALUE cls = bi_type(c, 3, three);
