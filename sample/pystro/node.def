@@ -1462,17 +1462,23 @@ node_class_method_set(CTX * restrict c, NODE * restrict n, const char *name, NOD
     return PYS_NONE;
 }
 
-// Class-body name load: look up `name` first in the enclosing class
-// (so `@x.setter` after `def x` sees the property), then fall back to
-// the module globals.  Used only in class bodies.
+// Class-body name load: look up `name` first in the enclosing class's
+// own method table (so `@x.setter` after `def x` sees the property),
+// then fall back to module globals.  CPython's class body does NOT
+// traverse base classes — name lookup must skip the MRO so that
+// e.g. `class S(_Base): _select = select.select` resolves `select`
+// to the imported module rather than to a same-named method on _Base.
 NODE_DEF
 node_class_body_load(CTX * restrict c, NODE * restrict n, const char *name)
 {
     (void)n;
-    if (c->current_class != PYS_NONE) {
-        extern VALUE pys_class_lookup_method_pub(VALUE cls, const char *name);
-        VALUE v = pys_class_lookup_method_pub(c->current_class, name);
-        if (v != PYS_NONE) return v;
+    if (c->current_class != PYS_NONE && pys_is_class(c->current_class)) {
+        struct pysclass *cd = &PYS_PTR(c->current_class)->cls;
+        for (int j = 0; j < cd->nmethods; j++) {
+            const char *mn = cd->methods[j].name;
+            if (mn == name || strcmp(mn, name) == 0)
+                return cd->methods[j].value;
+        }
     }
     extern int pys_global_resolve(CTX *c, const char *name);
     int idx = pys_global_resolve(c, name);
@@ -2015,7 +2021,11 @@ node_super_method_explicit(CTX * restrict c, NODE * restrict n, NODE *cls_expr, 
     VALUE self = EVAL_ARG(c, self_expr);
     if (UNLIKELY(!self)) return 0;
     if (!pys_is_class(cls))     PYS_RAISE_EXC(c, c->EXC_TypeError, "super(): first arg must be class");
-    if (!pys_is_instance(self)) PYS_RAISE_EXC(c, c->EXC_TypeError, "super(): second arg must be instance");
+    // Second arg can be instance OR a class that's a subclass of cls
+    // (used when calling classmethods via super, e.g. metaclass methods
+    // and `super(partial, cls).__new__(cls)`).
+    if (!pys_is_instance(self) && !pys_is_class(self))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "super(): second arg must be instance or class");
     VALUE m = pys_super_lookup(c, self, cls, method_name);
     if (m == PYS_NONE) PYS_RAISE_EXC(c, c->EXC_AttributeError,
                                    "'super' object has no attribute '%s'", method_name);

@@ -279,3 +279,71 @@ def ulp(x):
     if isnan(x) or isinf(x): return x
     if x == 0: return 5e-324
     return 2.220446049250313e-16 * abs(x)
+
+
+# Lanczos approximation for the gamma / log-gamma functions.  Accuracy
+# is ~14 digits on positive reals; not bit-exact vs CPython but the
+# relative error is below test tolerances (math test uses ulp tol).
+_LANCZOS_G = 7
+_LANCZOS_P = (
+    0.99999999999980993,
+    676.5203681218851,
+    -1259.1392167224028,
+    771.32342877765313,
+    -176.61502916214059,
+    12.507343278686905,
+    -0.13857109526572012,
+    9.9843695780195716e-6,
+    1.5056327351493116e-7,
+)
+
+
+def _lanczos_g(z):
+    if z < 0.5:
+        return pi / (__pystro_sin__(pi * z) * _lanczos_g(1.0 - z))
+    z -= 1.0
+    x = _LANCZOS_P[0]
+    for i in range(1, len(_LANCZOS_P)):
+        x += _LANCZOS_P[i] / (z + i)
+    t = z + _LANCZOS_G + 0.5
+    return sqrt(2.0 * pi) * (t ** (z + 0.5)) * __pystro_exp__(-t) * x
+
+
+def gamma(x):
+    if isnan(x): return nan
+    if x == 0: raise ValueError("math domain error")
+    if isinf(x):
+        if x > 0: return x
+        raise ValueError("math domain error")
+    if x == int(x) and x < 0:
+        raise ValueError("math domain error")
+    return _lanczos_g(float(x))
+
+
+def lgamma(x):
+    if isnan(x): return nan
+    if isinf(x): return inf
+    if x == int(x) and x <= 0:
+        raise ValueError("math domain error")
+    g = _lanczos_g(float(x))
+    return __pystro_log__(abs(g))
+
+
+def erf(x):
+    # Abramowitz & Stegun 7.1.26 — max abs error ~1.5e-7.
+    sign = 1.0 if x >= 0 else -1.0
+    ax = abs(float(x))
+    if ax > 6: return sign * 1.0
+    a1 =  0.254829592
+    a2 = -0.284496736
+    a3 =  1.421413741
+    a4 = -1.453152027
+    a5 =  1.061405429
+    p  =  0.3275911
+    t = 1.0 / (1.0 + p * ax)
+    y = 1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*__pystro_exp__(-ax*ax)
+    return sign * y
+
+
+def erfc(x):
+    return 1.0 - erf(x)

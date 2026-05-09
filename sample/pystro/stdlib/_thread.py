@@ -47,10 +47,29 @@ class _Lock:
 LockType = _Lock
 
 
-# Reentrant lock — same semantics as _Lock for pystro's single-thread
-# model.  CPython's threading module uses RLock for nested acquires.
-class RLock(_Lock):
-    pass
+# Reentrant lock — pystro is single-threaded, so every acquire from the
+# "same thread" succeeds immediately.  CPython's threading module
+# uses RLock for nested acquires (see logging._acquireLock).
+class RLock:
+    def __init__(self):
+        self._depth = 0
+    def acquire(self, blocking=True, timeout=-1):
+        self._depth += 1
+        return True
+    def release(self):
+        if self._depth <= 0:
+            raise RuntimeError("cannot release un-acquired lock")
+        self._depth -= 1
+    def locked(self):
+        return self._depth > 0
+    def __enter__(self):
+        self.acquire()
+        return self
+    def __exit__(self, *exc):
+        self.release()
+        return False
+    def _is_owned(self):
+        return self._depth > 0
 
 
 def allocate_RLock():
@@ -87,6 +106,38 @@ def daemon_threads_allowed():
 
 def _is_main_interpreter():
     return True
+
+
+def _set_sentinel():
+    return _Lock()
+
+
+def _make_thread_handle(ident):
+    return _ThreadHandle()
+
+
+class _ThreadHandle:
+    def join(self, timeout=None): pass
+    def is_done(self): return True
+    def _set_done(self): pass
+    @property
+    def ident(self): return 1
+
+
+def _shutdown():
+    pass
+
+
+def _excepthook(args):
+    pass
+
+
+def _get_main_thread_ident():
+    return 1
+
+
+def _ExceptHookArgs(args):
+    return args
 
 
 __all__ = ["error", "TIMEOUT_MAX", "get_ident", "get_native_id",

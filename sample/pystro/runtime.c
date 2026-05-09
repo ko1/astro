@@ -319,6 +319,13 @@ pys_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const c
                 }
             }
             if (found != PYS_NONE) {
+                // Unwrap classmethod / staticmethod descriptors —
+                // __init_subclass__ is implicit classmethod, and users
+                // sometimes write @classmethod explicitly.
+                if (PYS_IS_PTR(found) && PYS_PTR(found)->type == PYS_T_CLASSMETHOD)
+                    found = PYS_PTR(found)->wrap.wrapped;
+                else if (PYS_IS_PTR(found) && PYS_PTR(found)->type == PYS_T_STATICMETHOD)
+                    found = PYS_PTR(found)->wrap.wrapped;
                 // Forward class-level kwargs (`class C(B, foo=1)`) as
                 // keyword args to __init_subclass__.
                 struct pysclass *fcd = &PYS_PTR(final_cls)->cls;
@@ -1087,6 +1094,53 @@ static VALUE
 bi_object_init(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc; (void)argv;
+    return PYS_NONE;
+}
+
+// Synthetic slot descriptor for type-level introspection attrs.
+// `descriptor(cls)` returns the matching attribute on cls — used
+// when CPython introspection does
+//   _static_getmro = type.__dict__['__mro__'].__get__
+//   mro = _static_getmro(cls)
+// and similar for __bases__.
+static VALUE
+bi_pyslot_mro(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE cls = argv[0];
+    if (!pys_is_class(cls)) return PYS_NONE;
+    struct pysclass *cd = &PYS_PTR(cls)->cls;
+    return pys_make_tuple(cd->mro, cd->nmro);
+}
+
+static VALUE
+bi_pyslot_bases(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE cls = argv[0];
+    if (!pys_is_class(cls)) return PYS_NONE;
+    struct pysclass *cd = &PYS_PTR(cls)->cls;
+    if (cd->nbases == 0) return pys_make_tuple(&c->TYPE_object, 1);
+    return pys_make_tuple(cd->bases, cd->nbases);
+}
+
+static VALUE
+bi_pyslot_dict(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    extern VALUE pys_getattr(CTX *c, VALUE recv, const char *name);
+    return pys_getattr(c, argv[0], "__dict__");
+}
+
+VALUE
+pys_make_pyslot_descriptor(const char *attr)
+{
+    if (strcmp(attr, "__mro__") == 0)
+        return pys_make_builtin("__mro__", bi_pyslot_mro, 1, 2);
+    if (strcmp(attr, "__bases__") == 0)
+        return pys_make_builtin("__bases__", bi_pyslot_bases, 1, 2);
+    if (strcmp(attr, "__dict__") == 0)
+        return pys_make_builtin("__dict__", bi_pyslot_dict, 1, 2);
     return PYS_NONE;
 }
 
@@ -4483,6 +4537,17 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                 VALUE k = pys_make_str(cd->methods[i].name, strlen(cd->methods[i].name));
                 pys_dict_set(c, d, k, cd->methods[i].value);
             }
+            // Expose synthetic slot descriptors for `__mro__` /
+            // `__bases__` / `__dict__` so introspection tools that do
+            // `type.__dict__['__mro__'].__get__(obj)` (e.g. CPython's
+            // inspect._static_getmro) succeed.
+            extern VALUE pys_make_pyslot_descriptor(const char *attr);
+            VALUE k1 = pys_make_str("__mro__", 7);
+            pys_dict_set(c, d, k1, pys_make_pyslot_descriptor("__mro__"));
+            VALUE k2 = pys_make_str("__bases__", 9);
+            pys_dict_set(c, d, k2, pys_make_pyslot_descriptor("__bases__"));
+            VALUE k3 = pys_make_str("__dict__", 8);
+            pys_dict_set(c, d, k3, pys_make_pyslot_descriptor("__dict__"));
             return d;
         }
         if (strcmp(name, "__qualname__") == 0)
@@ -4493,6 +4558,16 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                 int t = PYS_PTR(m)->type;
                 if (t == PYS_T_STATICMETHOD) return PYS_PTR(m)->wrap.wrapped;
                 if (t == PYS_T_CLASSMETHOD)  return pys_make_bound(v, PYS_PTR(m)->wrap.wrapped);
+            }
+            // CPython treats `__init_subclass__` and `__class_getitem__`
+            // as implicit classmethods even when defined as plain `def`s.
+            // Bind the class so `Cls.__init_subclass__()` works without
+            // requiring the caller to pass `cls`.
+            if (PYS_IS_PTR(m) && (PYS_PTR(m)->type == PYS_T_FUNC ||
+                                   PYS_PTR(m)->type == PYS_T_BUILTIN) &&
+                (strcmp(name, "__init_subclass__") == 0 ||
+                 strcmp(name, "__class_getitem__") == 0)) {
+                return pys_make_bound(v, m);
             }
             // If m is an instance whose class defines __get__, invoke
             // __get__(None, owner) — descriptor protocol at class level.
@@ -4726,6 +4801,11 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "__class__") == 0) return c->TYPE_builtin_function_or_method;
         if (strcmp(name, "__doc__") == 0) return PYS_NONE;
         if (strcmp(name, "__module__") == 0) return pys_make_str("builtins", 8);
+        // `f.__get__` on a builtin descriptor — return the function
+        // itself, so the caller's `f.__get__(obj)` invokes the
+        // descriptor body with `obj` as its first argument.  Used by
+        // CPython's `inspect._static_getmro = type.__dict__['__mro__'].__get__`.
+        if (strcmp(name, "__get__") == 0) return v;
     }
     if (pys_is_bound(v)) {
         // Forward attribute lookup to the underlying func — covers
@@ -9141,8 +9221,7 @@ static struct type_method range_methods[] = {
 static VALUE
 bi_int_from_bytes(CTX *c, int argc, VALUE *argv)
 {
-    if (argc < 1 || !(pys_is_bytes(argv[0]) || pys_is_bytearray(argv[0])))
-        PYS_RAISE_EXC(c, c->EXC_TypeError, "from_bytes: bytes-like required");
+    if (argc < 1) PYS_RAISE_EXC(c, c->EXC_TypeError, "from_bytes: missing argument");
     const char *order = "big";
     if (argc >= 2 && pys_is_str(argv[1])) order = PYS_PTR(argv[1])->str.chars;
     bool is_signed = false;
@@ -9151,17 +9230,47 @@ bi_int_from_bytes(CTX *c, int argc, VALUE *argv)
     VALUE bk = pys_bi_kwarg("byteorder");
     if (bk && pys_is_str(bk)) order = PYS_PTR(bk)->str.chars;
     bool big = strcmp(order, "big") == 0;
-    struct pysobj *o = PYS_PTR(argv[0]);
-    size_t n = o->str.len;
+
+    // Resolve buffer: bytes / bytearray / memoryview / list / tuple.
+    const char *buf = NULL;
+    size_t n = 0;
+    unsigned char *tmp = NULL;
+    VALUE v = argv[0];
+    if (pys_is_bytes(v) || pys_is_bytearray(v)) {
+        buf = PYS_PTR(v)->str.chars;
+        n = PYS_PTR(v)->str.len;
+    } else if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_MEMVIEW) {
+        struct pysobj *mv = PYS_PTR(v);
+        buf = PYS_PTR(mv->memview.source)->str.chars + mv->memview.off;
+        n = mv->memview.len;
+    } else if (PYS_IS_PTR(v) && (PYS_PTR(v)->type == PYS_T_LIST ||
+                                  PYS_PTR(v)->type == PYS_T_TUPLE)) {
+        struct pysobj *seq = PYS_PTR(v);
+        n = seq->list.len;
+        tmp = (unsigned char *)GC_malloc_atomic(n + 1);
+        for (size_t i = 0; i < n; i++) {
+            VALUE iv = seq->list.items[i];
+            if (!pys_is_int(iv))
+                PYS_RAISE_EXC(c, c->EXC_TypeError, "from_bytes: items must be ints");
+            long b = pys_int_to_long(c, iv);
+            if (b < 0 || b > 255)
+                PYS_RAISE_EXC(c, c->EXC_ValueError, "from_bytes: byte must be in range(0, 256)");
+            tmp[i] = (unsigned char)b;
+        }
+        buf = (const char *)tmp;
+    } else {
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "from_bytes: bytes-like required");
+    }
+
     mpz_t z; mpz_init(z);
     for (size_t i = 0; i < n; i++) {
         size_t k = big ? i : (n - 1 - i);
-        unsigned char b = (unsigned char)o->str.chars[k];
+        unsigned char b = (unsigned char)buf[k];
         mpz_mul_ui(z, z, 256);
         mpz_add_ui(z, z, b);
     }
     if (is_signed && n > 0) {
-        unsigned char first = (unsigned char)o->str.chars[big ? 0 : n - 1];
+        unsigned char first = (unsigned char)buf[big ? 0 : n - 1];
         if (first & 0x80) {
             mpz_t cap; mpz_init(cap);
             mpz_ui_pow_ui(cap, 2, (unsigned long)(8 * n));
@@ -9208,6 +9317,22 @@ bi_float_fromhex(CTX *c, int argc, VALUE *argv)
     char *end;
     double d = strtod(PYS_PTR(argv[0])->str.chars, &end);
     return pys_make_float(d);
+}
+
+// float.__getformat__("double" | "float") — CPython exposes the host's
+// IEEE 754 layout as a string.  We check endianness at runtime.
+// Treated as a class-level static call: argv[0] is the typecode arg.
+static VALUE
+bi_float_getformat(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[0]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "__getformat__: str required");
+    union { uint32_t u; uint8_t b[4]; } probe = { 0x01020304 };
+    const char *be = "IEEE, big-endian";
+    const char *le = "IEEE, little-endian";
+    const char *r = (probe.b[0] == 1) ? be : le;
+    return pys_make_str(r, strlen(r));
 }
 
 // dict.fromkeys(iter, default=None)
@@ -9656,6 +9781,18 @@ bm_translate(CTX *c, int argc, VALUE *argv)
     return pys_make_bytes(buf, out);
 }
 
+// bytes/bytearray.copy() → shallow copy. Both immutable bytes and
+// mutable bytearray expose this in CPython 3.
+static VALUE
+bm_copy(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pysobj *o = PYS_PTR(argv[0]);
+    VALUE r = pys_make_bytes(o->str.chars, o->str.len);
+    PYS_PTR(r)->type = o->type;
+    return r;
+}
+
 static struct type_method bytes_methods[] = {
     { "decode",     bm_decode,     1, 3 },
     { "encode",     bm_encode,     1, 3 },
@@ -9693,6 +9830,7 @@ static struct type_method bytes_methods[] = {
     { "rindex",     bm_rindex,     2, 4 },
     { "endswith",   bm_endswith,   2, 4 },
     { "translate",  bm_translate,  2, 3 },
+    { "copy",       bm_copy,       1, 1 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -12402,6 +12540,18 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // pattern compilation.  pystro's re.py is a small Python
         // matcher; supports the common cases we need.
         "re.py",
+        // importlib — CPython's is a package with C-level bootstrap;
+        // pystro's flat stub module is enough for `import_module` /
+        // `find_spec` / `_bootstrap_external` attr access.
+        "importlib.py",
+        // signal — CPython's pulls in `_signal` C accelerator; pystro
+        // is single-threaded with no signal delivery model, so the
+        // bundled no-op stub is sufficient.
+        "signal.py",
+        // sysconfig — CPython's pulls in `_sysconfigdata_*_linux*`
+        // (build-time generated); pystro's stub provides plausible
+        // defaults for `get_config_var` / `get_paths`.
+        "sysconfig.py",
         NULL,
     };
     bool pystro_wins = false;
@@ -13071,6 +13221,38 @@ bi_pystro_isfile(CTX *c, int argc, VALUE *argv)
     struct stat st;
     if (stat(buf, &st) != 0) return PYS_FALSE;
     return S_ISREG(st.st_mode) ? PYS_TRUE : PYS_FALSE;
+}
+
+// posix.stat()-equivalent — returns a tuple of (st_mode, st_ino,
+// st_dev, st_nlink, st_uid, st_gid, st_size, st_atime, st_mtime,
+// st_ctime).  CPython's `os.stat_result` is a structseq; the tuple
+// form satisfies the common consumers (`st.st_mode`, indexing).
+static VALUE
+bi_pystro_stat(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "stat: path must be str");
+    size_t L = PYS_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    struct stat st;
+    bool follow = true;
+    VALUE fk = pys_bi_kwarg("follow_symlinks");
+    if (fk) follow = pys_is_truthy(fk);
+    int rc = follow ? stat(buf, &st) : lstat(buf, &st);
+    if (rc != 0) PYS_RAISE_EXC(c, c->EXC_OSError, "stat: %s: %s", buf, strerror(errno));
+    VALUE items[10];
+    items[0] = pys_make_int((long)st.st_mode);
+    items[1] = pys_make_int((long)st.st_ino);
+    items[2] = pys_make_int((long)st.st_dev);
+    items[3] = pys_make_int((long)st.st_nlink);
+    items[4] = pys_make_int((long)st.st_uid);
+    items[5] = pys_make_int((long)st.st_gid);
+    items[6] = pys_make_int((long)st.st_size);
+    items[7] = pys_make_float((double)st.st_atime);
+    items[8] = pys_make_float((double)st.st_mtime);
+    items[9] = pys_make_float((double)st.st_ctime);
+    return pys_make_tuple(items, 10);
 }
 
 static VALUE
@@ -13778,6 +13960,8 @@ install_builtins(CTX *c)
     c->TYPE_float     = pys_make_builtin_class("float",     bi_float,     PYS_T_FLOAT);
     pys_class_add_method(c, c->TYPE_float, "fromhex",
         pys_make_builtin("fromhex", bi_float_fromhex, 1, 1));
+    pys_class_add_method(c, c->TYPE_float, "__getformat__",
+        pys_make_builtin("__getformat__", bi_float_getformat, 1, 1));
     c->TYPE_complex   = pys_make_builtin_class("complex",   bi_complex,   PYS_T_COMPLEX);
     c->TYPE_bool      = pys_make_builtin_class("bool",      bi_bool,      -1);
     c->TYPE_str       = pys_make_builtin_class("str",       bi_str,       PYS_T_STR);
@@ -14100,7 +14284,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_delattr__",   pys_make_builtin("__pystro_delattr__", bi_pystro_delattr, 2, 2));
     pys_global_define(c, "__pystro_delglobal__", pys_make_builtin("__pystro_delglobal__", bi_pystro_delglobal, 1, 1));
     pys_global_define(c, "__pystro_import__",    pys_make_builtin("__pystro_import__", bi_import, 1, 1));
-    pys_global_define(c, "__import__",           pys_make_builtin("__import__", bi_import, 1, 1));
+    pys_global_define(c, "__import__",           pys_make_builtin("__import__", bi_import, 1, 5));
     pys_global_define(c, "__pystro_try_import__",
         pys_make_builtin("__pystro_try_import__", bi_try_import, 1, 1));
     pys_global_define(c, "__pystro_modules__",
@@ -14151,6 +14335,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_makedirs__",    pys_make_builtin("__pystro_makedirs__",    bi_pystro_makedirs,    1, 2));
     pys_global_define(c, "__pystro_isdir__",       pys_make_builtin("__pystro_isdir__",       bi_pystro_isdir,       1, 1));
     pys_global_define(c, "__pystro_isfile__",      pys_make_builtin("__pystro_isfile__",      bi_pystro_isfile,      1, 1));
+    pys_global_define(c, "__pystro_stat__",        pys_make_builtin("__pystro_stat__",        bi_pystro_stat,        1, 1));
     pys_global_define(c, "__pystro_abspath__",     pys_make_builtin("__pystro_abspath__",     bi_pystro_abspath,     1, 1));
 
     c->current_class = PYS_NONE;

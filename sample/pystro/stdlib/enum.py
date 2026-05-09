@@ -202,12 +202,25 @@ def unique(cls):
 
 
 def _simple_enum(*args, **kwargs):
-    """3.11+ decorator that builds an Enum from a regular class without
-    going through EnumMeta.  pystro just returns the class unchanged."""
+    """3.11+ decorator that builds an Enum-like class from a plain class
+    without going through EnumMeta.  Replaces `auto()` sentinels with
+    sequential ints (1-based, matching IntEnum default) so attribute
+    access on the decorated class returns ints."""
     def deco(cls):
+        next_val = 1
+        for name in dir(cls):
+            if name.startswith("__"):
+                continue
+            try:
+                val = getattr(cls, name)
+            except AttributeError:
+                continue
+            if isinstance(val, _Auto):
+                setattr(cls, name, next_val)
+                next_val += 1
+            elif isinstance(val, int):
+                next_val = val + 1
         return cls
-    if args and callable(args[0]) and len(args) == 1:
-        return deco(args[0])
     return deco
 
 

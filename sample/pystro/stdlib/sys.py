@@ -60,6 +60,114 @@ implementation = _Implementation()
 implementation.version = version_info
 implementation.hexversion = hexversion
 
+# CPython adds these in 3.9+: sysconfig / pathlib / venv all read them.
+platlibdir = "lib"
+exec_prefix = "/usr/local"
+prefix = "/usr/local"
+base_prefix = prefix
+base_exec_prefix = exec_prefix
+abiflags = ""
+maxsize = (1 << 63) - 1
+maxunicode = 0x10FFFF
+float_repr_style = "short"
+api_version = 1013
+
+# `sys.flags` namespace — CPython tests check `sys.flags.optimize` etc.
+class _Flags:
+    debug = 0
+    inspect = 0
+    interactive = 0
+    optimize = 0
+    dont_write_bytecode = 0
+    no_user_site = 0
+    no_site = 0
+    ignore_environment = 0
+    verbose = 0
+    bytes_warning = 0
+    quiet = 0
+    hash_randomization = 1
+    isolated = 0
+    dev_mode = False
+    utf8_mode = 1
+    safe_path = 0
+    int_max_str_digits = 4300
+
+flags = _Flags()
+
+
+# `sys.float_info` — IEEE 754 double constants.
+class _FloatInfo:
+    max = 1.7976931348623157e+308
+    max_exp = 1024
+    max_10_exp = 308
+    min = 2.2250738585072014e-308
+    min_exp = -1021
+    min_10_exp = -307
+    dig = 15
+    mant_dig = 53
+    epsilon = 2.220446049250313e-16
+    radix = 2
+    rounds = 1
+
+float_info = _FloatInfo()
+
+
+# `sys.int_info` — long-int internals (used by serializers).
+class _IntInfo:
+    bits_per_digit = 30
+    sizeof_digit = 4
+    default_max_str_digits = 4300
+    str_digits_check_threshold = 640
+
+int_info = _IntInfo()
+
+
+# `sys.hash_info` — hash randomization parameters.
+class _HashInfo:
+    width = 64
+    modulus = (1 << 61) - 1
+    inf = 314159
+    nan = 0
+    imag = 1000003
+    algorithm = "siphash24"
+    hash_bits = 64
+    seed_bits = 128
+    cutoff = 0
+
+hash_info = _HashInfo()
+
+
+def getrecursionlimit():
+    return 1000
+
+
+def setrecursionlimit(n):
+    return None
+
+
+def getswitchinterval():
+    return 0.005
+
+
+def setswitchinterval(n):
+    return None
+
+
+def get_int_max_str_digits():
+    return 4300
+
+
+def set_int_max_str_digits(n):
+    return None
+
+
+def intern(s):
+    return s
+
+
+def is_finalizing():
+    return False
+
 # Stream sentinels — these are file-like objects; pystro doesn't
 # expose them yet, so we use simple stand-ins.
 class _StdStream:
@@ -222,11 +330,16 @@ monitoring = _Monitoring()
 
 def _getframe(depth=0):
     class _Frame:
-        f_globals = {}
-        f_locals = {}
-        f_lineno = 0
-        f_code = type("Code", (), {"co_name": "<frame>", "co_filename": "<frame>"})()
-        f_back = None
+        def __init__(self):
+            self.f_globals = {}
+            self.f_locals = {}
+            self.f_lineno = 0
+            self.f_code = type("Code", (), {"co_name": "<frame>", "co_filename": "<frame>"})()
+            self.f_back = None
+            self.f_lasti = 0
+            self.f_trace = None
+            self.f_trace_lines = True
+            self.f_trace_opcodes = False
     return _Frame()
 
 class _ExceptionInfo:

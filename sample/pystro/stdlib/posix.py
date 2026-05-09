@@ -84,8 +84,46 @@ def listdir(path="."):
     except (NameError, TypeError): return []
 
 
+class stat_result(tuple):
+    """Tuple-with-named-fields stand-in for posix.stat_result.
+
+    Indices 0-9 mirror CPython's struct stat layout:
+      mode, ino, dev, nlink, uid, gid, size, atime, mtime, ctime
+    """
+    @property
+    def st_mode(self):  return self[0]
+    @property
+    def st_ino(self):   return self[1]
+    @property
+    def st_dev(self):   return self[2]
+    @property
+    def st_nlink(self): return self[3]
+    @property
+    def st_uid(self):   return self[4]
+    @property
+    def st_gid(self):   return self[5]
+    @property
+    def st_size(self):  return self[6]
+    @property
+    def st_atime(self): return self[7]
+    @property
+    def st_mtime(self): return self[8]
+    @property
+    def st_ctime(self): return self[9]
+    @property
+    def st_atime_ns(self): return int(self[7] * 1e9)
+    @property
+    def st_mtime_ns(self): return int(self[8] * 1e9)
+    @property
+    def st_ctime_ns(self): return int(self[9] * 1e9)
+
+
 def stat(path, *, dir_fd=None, follow_symlinks=True):
-    raise NotImplementedError("posix.stat")
+    try:
+        t = __pystro_stat__(path, follow_symlinks=follow_symlinks)
+    except NameError:
+        raise NotImplementedError("posix.stat")
+    return stat_result(t)
 
 
 def lstat(path):
