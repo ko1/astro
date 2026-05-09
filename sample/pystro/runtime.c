@@ -11455,6 +11455,25 @@ bi_issubclass(CTX *c, int argc, VALUE *argv)
     }
     if (!pys_is_class(cls)) PYS_RAISE_EXC(c, c->EXC_TypeError, "issubclass() arg 1 must be a class");
     if (!pys_is_class(info)) PYS_RAISE_EXC(c, c->EXC_TypeError, "issubclass() arg 2 must be a class");
+    // Dispatch via metaclass __subclasscheck__ (not for ABCMeta — that
+    // path's classmethod call mechanics don't survive pys_apply, so
+    // ABCMeta uses the _abc_registry walk below).
+    {
+        VALUE meta = pys_class_lookup_method(info, PYS_INTERN_metaclass);
+        if (meta != PYS_NONE && pys_is_class(meta)) {
+            const char *meta_name = PYS_PTR(meta)->cls.name;
+            bool is_abcmeta = (meta_name && strcmp(meta_name, "ABCMeta") == 0);
+            if (!is_abcmeta) {
+                VALUE m = pys_class_lookup_method(meta, "__subclasscheck__");
+                if (m != PYS_NONE) {
+                    VALUE av[2] = { info, cls };
+                    VALUE r = pys_apply(c, m, 2, av);
+                    if (UNLIKELY(!r)) return false;
+                    return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+                }
+            }
+        }
+    }
     if (class_is_ancestor(cls, info)) return PYS_TRUE;
     // ABCMeta virtual registry: `info._abc_registry` (a set) lists the
     // virtual subclasses of `info`.  Look it up *own-only* (not via
