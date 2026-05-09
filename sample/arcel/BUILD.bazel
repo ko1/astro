@@ -160,3 +160,24 @@ cc_binary(
         "@protobuf//:protobuf",
     ],
 )
+
+# cel-cpp API shim — header-only library that surfaces a cel-cpp-shaped
+# Parse / Activation / Evaluate API on top of arcel.  Lets typical
+# cel-cpp embedder code (CelValue / Activation::InsertValue / etc.)
+# run unmodified against arcel.  No protobuf / absl dependency.
+cc_library(
+    name = "celcpp_compat",
+    hdrs = ["compat/celcpp_compat.hpp"],
+    includes = ["."],
+    deps = [":arcel"],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "embed_celcpp_shim",
+    srcs = ["examples/embed_celcpp_shim.cc"],
+    deps = [
+        ":arcel",
+        ":celcpp_compat",
+    ],
+)
