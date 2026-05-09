@@ -12893,6 +12893,29 @@ bi_import(CTX *c, int argc, VALUE *argv)
 
     c->globals = saved_g;
     pys_dict_set(c, mod_dict, argv[0], mod);
+    // Post-load injection for modules that mutate `globals()` to define
+    // module attrs — pystro's `globals()` returns a snapshot dict so
+    // those mutations are lost.  Hand-inject the well-known cases.
+    if (PYS_PTR(argv[0])->str.len == 7
+        && memcmp(PYS_PTR(argv[0])->str.chars, "inspect", 7) == 0) {
+        // CPython's inspect.py does
+        //   for k, v in dis.COMPILER_FLAG_NAMES.items():
+        //     mod_dict["CO_" + v] = k
+        // Inject the standard 3.12 set explicitly.
+        struct pysglobals *saved = c->globals;
+        c->globals = PYS_PTR(mod)->module.globals;
+        pys_global_set(c, "CO_OPTIMIZED",         PYS_FIX(0x0001));
+        pys_global_set(c, "CO_NEWLOCALS",         PYS_FIX(0x0002));
+        pys_global_set(c, "CO_VARARGS",           PYS_FIX(0x0004));
+        pys_global_set(c, "CO_VARKEYWORDS",       PYS_FIX(0x0008));
+        pys_global_set(c, "CO_NESTED",            PYS_FIX(0x0010));
+        pys_global_set(c, "CO_GENERATOR",         PYS_FIX(0x0020));
+        pys_global_set(c, "CO_NOFREE",            PYS_FIX(0x0040));
+        pys_global_set(c, "CO_COROUTINE",         PYS_FIX(0x0080));
+        pys_global_set(c, "CO_ITERABLE_COROUTINE",PYS_FIX(0x0100));
+        pys_global_set(c, "CO_ASYNC_GENERATOR",   PYS_FIX(0x0200));
+        c->globals = saved;
+    }
     // For dotted modules `a.b`: set `b` as attribute of `a`'s module so
     // user code that does `import a.b` then accesses `a.b.foo` works.
     {
