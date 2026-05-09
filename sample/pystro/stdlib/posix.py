@@ -327,6 +327,34 @@ def get_exec_path(env=None):
     return defpath.split(":")
 
 
+# CPython's os.py iterates `_have_functions` to feature-test the
+# present syscall set.  We claim the basic set we provide stubs for.
+_have_functions = []
+
+
+def _path_normpath(path):
+    # CPython's posix module has a C-accelerated normpath; pystro
+    # fakes it with a Python-level implementation.  Strip './' and
+    # collapse '//', '/x/../', etc.
+    if not path:
+        return "."
+    initial_slashes = path.startswith("/")
+    if initial_slashes and path.startswith("//") and not path.startswith("///"):
+        initial_slashes = 2
+    parts = [p for p in path.split("/") if p and p != "."]
+    new_parts = []
+    for p in parts:
+        if p == "..":
+            if new_parts and new_parts[-1] != "..":
+                new_parts.pop()
+            elif not initial_slashes:
+                new_parts.append("..")
+        else:
+            new_parts.append(p)
+    new = ("/" * initial_slashes) + "/".join(new_parts)
+    return new or "."
+
+
 # Lots of CPython tests check for specific symbol names.  Provide a
 # comprehensive __all__ so `from posix import *` doesn't pull in things
 # that don't exist.

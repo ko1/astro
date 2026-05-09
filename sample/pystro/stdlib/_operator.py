@@ -11,8 +11,17 @@ from operator import (
     matmul, imatmul,
     attrgetter, itemgetter, methodcaller,
 )
-from operator import pow_ as pow
-from operator import abs_ as abs
+# CPython's operator.py exposes `pow` and `abs`; pystro's older stub
+# (when it wins under bindir/stdlib) names them `pow_` / `abs_` to
+# avoid shadowing the builtins.  Try both spellings.
+try:
+    from operator import pow
+except ImportError:
+    from operator import pow_ as pow
+try:
+    from operator import abs
+except ImportError:
+    from operator import abs_ as abs
 
 
 def indexOf(a, b):

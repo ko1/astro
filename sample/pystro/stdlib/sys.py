@@ -34,6 +34,18 @@ exec_prefix = "/usr"
 executable = "pystro"
 implementation_name = "pystro"
 
+# Built-in (statically linked) module names.  CPython's os.py / abc.py
+# / importlib gate behavior on this list.  Include modules pystro
+# provides as built-in stubs (no .py file).
+builtin_module_names = (
+    "_imp", "_warnings", "_weakref", "_io", "_collections_abc",
+    "_collections", "_abc", "_signal", "_thread", "_codecs", "_string",
+    "_ast", "_locale", "_socket", "_contextvars", "_tracemalloc",
+    "_symtable", "_lsprof", "_multibytecodec", "_opcode",
+    "atexit", "errno", "faulthandler", "gc", "marshal", "posix",
+    "pwd", "grp", "select", "sys", "time",
+)
+
 # sys.implementation — namespace object with name / version / hexversion
 # / cache_tag.  CPython tests gate on `sys.implementation.name == 'cpython'`
 # and on version_info; pystro reports as 3.12 to satisfy version-gated paths.
@@ -161,6 +173,10 @@ ps2 = "... "
 def get_coroutine_origin_tracking_depth(): return 0
 def set_coroutine_origin_tracking_depth(n): pass
 def is_finalizing(): return False
+def getfilesystemencoding(): return "utf-8"
+def getfilesystemencodeerrors(): return "surrogateescape"
+def getdefaultencoding(): return "utf-8"
+def setdefaultencoding(enc): pass
 def _is_gil_enabled(): return True
 def _is_immortal(obj): return False
 def audit(event, *args): pass
