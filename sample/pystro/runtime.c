@@ -4726,6 +4726,24 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "__func__") == 0) return inner;
         return pys_getattr(c, inner, name);
     }
+    // classmethod / staticmethod / property descriptor objects expose
+    // `__func__` (the wrapped callable) and `__wrapped__` (alias).
+    // CPython's `inspect.unwrap()` and `functools.wraps` rely on these.
+    if (PYS_IS_PTR(v)) {
+        int t = PYS_PTR(v)->type;
+        if (t == PYS_T_CLASSMETHOD || t == PYS_T_STATICMETHOD) {
+            VALUE wrapped = PYS_PTR(v)->wrap.wrapped;
+            if (strcmp(name, "__func__") == 0)     return wrapped;
+            if (strcmp(name, "__wrapped__") == 0)  return wrapped;
+            if (strcmp(name, "__class__") == 0)
+                return t == PYS_T_CLASSMETHOD ? c->TYPE_classmethod
+                                              : c->TYPE_staticmethod;
+            // Forward most other attrs to the wrapped function (e.g.
+            // __name__, __qualname__, __doc__, __dict__).
+            if (PYS_IS_PTR(wrapped) && PYS_PTR(wrapped)->type == PYS_T_FUNC)
+                return pys_getattr(c, wrapped, name);
+        }
+    }
     VALUE m = pys_builtin_method(c, v, name);
     if (m != PYS_NONE) return m;
     if (strcmp(name, "__class__") == 0) {
