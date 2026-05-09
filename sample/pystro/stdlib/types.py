@@ -220,6 +220,29 @@ def prepare_class(name, bases=(), kwds=None):
     return (type, {}, {})
 
 
+# DynamicClassAttribute — descriptor used by `enum.property`.  Behaves
+# like @property but lets subclasses override on the class itself.
+class DynamicClassAttribute:
+    def __init__(self, fget=None, fset=None, fdel=None, doc=None):
+        self.fget = fget; self.fset = fset; self.fdel = fdel
+        self.__doc__ = doc or (fget.__doc__ if fget else None)
+        self.overwrite_doc = doc is None
+        self.__isabstractmethod__ = False
+    def __get__(self, instance, ownerclass=None):
+        if instance is None: return self
+        if self.fget is None: raise AttributeError("unreadable")
+        return self.fget(instance)
+    def __set__(self, instance, value):
+        if self.fset is None: raise AttributeError("can't set")
+        self.fset(instance, value)
+    def __delete__(self, instance):
+        if self.fdel is None: raise AttributeError("can't delete")
+        self.fdel(instance)
+    def getter(self, fget): return type(self)(fget, self.fset, self.fdel, self.__doc__)
+    def setter(self, fset): return type(self)(self.fget, fset, self.fdel, self.__doc__)
+    def deleter(self, fdel): return type(self)(self.fget, self.fset, fdel, self.__doc__)
+
+
 # GenericAlias — backed by a simple wrapper.  PEP 585 returns this from
 # `list[int]` / `dict[str, int]` etc.  Pystro's runtime returns the
 # class itself for those subscripts, but tests look for `GenericAlias`

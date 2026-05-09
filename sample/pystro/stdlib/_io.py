@@ -132,6 +132,14 @@ class IncrementalNewlineDecoder:
     def decode(self, s, final=False): return s
 
 
+def text_encoding(encoding, stacklevel=2):
+    # PEP 597 (3.10+) — return a default encoding when None.  CPython's
+    # builtin is C; pystro's userland can return "utf-8" / "locale".
+    if encoding is None:
+        return "utf-8"
+    return encoding
+
+
 def open(*args, **kwargs):
     import builtins
     return builtins.open(*args, **kwargs)

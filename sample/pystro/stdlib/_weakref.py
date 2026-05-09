@@ -51,5 +51,12 @@ def getweakrefs(obj):
     return []
 
 
+def _remove_dead_weakref(d, key):
+    # CPython hook for WeakValueDictionary cleanup.  Pystro keeps strong
+    # refs throughout; just discard the entry if present.
+    try: del d[key]
+    except (KeyError, TypeError): pass
+
+
 __all__ = ["ref", "ReferenceType", "ProxyType", "CallableProxyType",
            "getweakrefcount", "getweakrefs", "proxy"]
