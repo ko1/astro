@@ -58,11 +58,16 @@ static VALUE cmp_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
      * invoking #<=>.  Avoids infinite recursion when #<=> calls super
      * and the only resolved super is BasicObject (no <=>). */
     if (argc >= 1 && self == argv[0]) return Qtrue;
-    /* Comparable#== uses <=> too — returns true iff <=> returns 0
-     * (or 0.0 / equivalent zero numeric).  An undefined <=> bubbles up
-     * as NoMethodError and we swallow it to return false (CRuby
-     * compatible). */
+    /* Recursion guard: when a user-defined <=> ends up calling ==
+     * (directly or through Object's eq dispatch), we'd recurse forever.
+     * CRuby's rb_exec_recursive marks (recv, mid) and returns nil on
+     * re-entry; we approximate with a thread-local depth counter,
+     * returning false past a sane depth. */
+    static __thread int cmp_eq_depth = 0;
+    if (cmp_eq_depth >= 16) return Qfalse;
+    cmp_eq_depth++;
     VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, argv);
+    cmp_eq_depth--;
     if (c->state == KORB_RAISE) {
         c->state = KORB_NORMAL;
         c->state_value = Qnil;

@@ -716,7 +716,7 @@ static VALUE process_pid(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Build a NUL-terminated argv array from `cmd, *args`.  Handles the
  * shell-form `system("ls -l")` (single string with spaces → /bin/sh -c)
  * and the exec-form `system("ls", "-l")` (no shell). */
-static char **build_exec_argv(VALUE *strs, int n, bool *use_shell) {
+static char **build_exec_argv(CTX *c, VALUE *strs, int n, bool *use_shell) {
     *use_shell = false;
     if (n == 0) return NULL;
     /* Single-string with shell metachars → shell form. */
@@ -747,7 +747,7 @@ static char **build_exec_argv(VALUE *strs, int n, bool *use_shell) {
     char **argv = korb_xmalloc(sizeof(char *) * (n + 1));
     for (int i = 0; i < n; i++) {
         if (SPECIAL_CONST_P(strs[i]) || BUILTIN_TYPE(strs[i]) != T_STRING) {
-            VALUE s = korb_to_s_dispatch(NULL, strs[i]);
+            VALUE s = korb_to_s_dispatch(c, strs[i]);
             argv[i] = (char *)((struct korb_string *)s)->ptr;
         } else {
             argv[i] = (char *)((struct korb_string *)strs[i])->ptr;
@@ -785,7 +785,7 @@ static VALUE kernel_system(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     bool use_shell;
-    char **xargv = build_exec_argv(argv, argc, &use_shell);
+    char **xargv = build_exec_argv(c, argv, argc, &use_shell);
     if (!xargv) return Qnil;
     pid_t pid = fork();
     if (pid < 0) return Qnil;
@@ -839,7 +839,7 @@ static VALUE kernel_xstring(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE kernel_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     bool use_shell;
-    char **xargv = build_exec_argv(argv, argc, &use_shell);
+    char **xargv = build_exec_argv(c, argv, argc, &use_shell);
     if (!xargv) return Qnil;
     execvp(xargv[0], xargv);
     /* Reach here only if exec failed. */
@@ -854,7 +854,7 @@ static VALUE kernel_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE process_spawn(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     bool use_shell;
-    char **xargv = build_exec_argv(argv, argc, &use_shell);
+    char **xargv = build_exec_argv(c, argv, argc, &use_shell);
     if (!xargv) return Qnil;
     pid_t pid = fork();
     if (pid < 0) return Qnil;
