@@ -177,7 +177,13 @@ class MappingProxyType:
         return self._d | o
     def __ror__(self, o):
         return o | self._d
-ModuleType = type(__import__("os"))
+# Use `sys` to derive ModuleType — sys is built-in (pystro stub), no
+# circular import.  Avoid `__import__("os")` because under PYTHONPATH=
+# cpython/Lib it triggers CPython's os.py which has a deep dependency
+# chain that may not be fully ready when pystro's types.py initializes.
+import sys as _sys_for_modtype
+ModuleType = type(_sys_for_modtype)
+del _sys_for_modtype
 NoneType = type(None)
 EllipsisType = type(Ellipsis)
 NotImplementedType = type(NotImplemented)

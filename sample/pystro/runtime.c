@@ -4526,7 +4526,11 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         }
         // Fall through to the metaclass: class-attr lookup walks
         // __metaclass__ so SingletonMeta._instances is reachable as
-        // S._instances.
+        // S._instances.  For an *instance method* on the metaclass —
+        // i.e. CPython's `def register(cls, subclass)` on ABCMeta —
+        // accessing `MM.register` (where type(MM)=ABCMeta) should
+        // return a bound method with self=MM, so calling
+        // `MM.register(Foo)` passes both cls and subclass.
         VALUE meta_v = pys_class_lookup_method(v, PYS_INTERN_metaclass);
         if (meta_v != PYS_NONE && pys_is_class(meta_v)) {
             if (pys_class_has_method(meta_v, name)) {
@@ -4535,6 +4539,7 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                     int t = PYS_PTR(m)->type;
                     if (t == PYS_T_STATICMETHOD) return PYS_PTR(m)->wrap.wrapped;
                     if (t == PYS_T_CLASSMETHOD)  return pys_make_bound(v, PYS_PTR(m)->wrap.wrapped);
+                    if (t == PYS_T_FUNC)         return pys_make_bound(v, m);
                 }
                 return m;
             }
@@ -10273,7 +10278,19 @@ bi_type(CTX *c, int argc, VALUE *argv)
       case PYS_T_STATICMETHOD: return c->TYPE_staticmethod;
       case PYS_T_CLASSMETHOD: return c->TYPE_classmethod;
       case PYS_T_SUPER: return c->TYPE_super;
-      case PYS_T_CLASS: return c->TYPE_type;
+      case PYS_T_CLASS: {
+          // type(C) where C has metaclass=M returns M, not type.  CPython
+          // tests like `MutableMapping.register(deque)` rely on this:
+          // MutableMapping has metaclass=ABCMeta, so type(MutableMapping)
+          // is ABCMeta, and `MutableMapping.register` finds register on
+          // the ABCMeta class and binds with cls=MutableMapping.
+          struct pysclass *cd_t = &o->cls;
+          if (!cd_t->slots_initialized) pyclass_refresh_slots(v);
+          if (cd_t->slot_metaclass != PYS_NONE
+              && pys_is_class(cd_t->slot_metaclass))
+              return cd_t->slot_metaclass;
+          return c->TYPE_type;
+      }
       case PYS_T_INSTANCE: return PYS_OBJ_VAL(o->inst.cls);
       case PYS_T_FILE:  return c->TYPE_object;
       default: return c->TYPE_object;
