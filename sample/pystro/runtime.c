@@ -1797,6 +1797,9 @@ pys_fdiv(CTX *c, VALUE a, VALUE b)
         mpz_clear(za); mpz_clear(zb); mpz_clear(q);
         return r;
     }
+    if (pys_is_complex(a) || pys_is_complex(b))
+        PYS_RAISE_EXC(c, c->EXC_TypeError,
+                     "unsupported operand type(s) for //");
     double bd = pys_to_double(c, b);
     if (bd == 0.0) PYS_RAISE_EXC(c, c->EXC_ZeroDivisionError, "float floor division by zero");
     return pys_make_float(floor(pys_to_double(c, a) / bd));
@@ -1828,6 +1831,11 @@ pys_mod(CTX *c, VALUE a, VALUE b)
         mpz_clear(za); mpz_clear(zb); mpz_clear(r);
         return rv;
     }
+    // CPython rule: complex % anything → TypeError ("unsupported operand
+    // type(s) for %"). Same for `divmod` / `//` / etc. on complex.
+    if (pys_is_complex(a) || pys_is_complex(b))
+        PYS_RAISE_EXC(c, c->EXC_TypeError,
+                     "unsupported operand type(s) for %% on complex");
     double bd = pys_to_double(c, b);
     if (bd == 0.0) PYS_RAISE_EXC(c, c->EXC_ZeroDivisionError, "float modulo");
     double ad = pys_to_double(c, a);
