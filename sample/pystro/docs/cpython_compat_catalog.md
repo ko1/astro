@@ -8,13 +8,17 @@ policy: pystro は CPython 3.12.13 (submodule pin) の純 Python stdlib
 
 ### File-level 合格
 
-ファイル単位で `rc=0` を返す test_*.py が **14 件** に到達:
+ファイル単位で `rc=0` を返す test_*.py が **14 件 (安定) + 2 件 (フレーキー)** に到達:
 
 ```
+# 安定して 0 終了
 test_bigaddrspace test_colorsys test_contains test_copyreg test_eintr
 test_embed test_int_literal test_keyword test_osx_env test_sundry
 test_type_annotations test_unary test_urllib_response
 test_xml_dom_minicompat
+
+# unittest 結果は OK だが exit-time で確率的に segv (~70%):
+test_errno test_typechecks
 ```
 
 - 6 件は all-skip (`OK (skipped=N)`): bigaddrspace / embed / osx_env /
@@ -23,6 +27,9 @@ test_xml_dom_minicompat
 - 8 件は実 assertion をパス: colorsys (7) / contains (4) / copyreg
   (6) / int_literal (6) / keyword (11) / unary (6) /
   urllib_response (4) / xml_dom_minicompat (11) → 計 55 件。
+- フレーキー 2 件は unittest が完走して `OK` を出すが exit 時に segv。
+  `import errno; import unittest;` 順序で 80% 再現する pys_apply
+  / GC レベルのバグ (順序を逆にすると 100% 安定)。
 
 ### 個別 unit-test 合格
 
