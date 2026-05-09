@@ -69,6 +69,7 @@ ASTro samples span a wide range of language families to exercise the framework a
   Passes 179/179 of chibi's `r5rs-tests.scm`; vs chibi 18/18 wins, vs guile 17/18 (up to 27×).
 - [`astocaml`](./sample/astocaml/) — **OCaml** subset (91 nodes) with HM-lite type inference, ADTs, exceptions, single-inheritance classes, real functor instantiation, TCO.
   35/35 tests; with `-c`, fib / ack / tak beat `ocamlc` bytecode and `ocaml` toplevel.
+- [`asml`](./sample/asml/) — **Standard ML** subset (87 nodes) with **full Hindley–Milner type inference** (Algorithm W + level-based generalisation + value restriction), ADTs with type parameters, pattern match, exceptions, refs.  Type errors halt at compile time; the type-checker drives lower-time dispatcher specialisation so `node_add` / `node_lt` / `node_if` / etc. become `_int` / `_bool` variants in well-typed code (no dynamic IS_INT / IS_BOOL guards remain in compiled SDs).
 - [`asom`](./sample/asom/) — **[SOM](https://som-st.github.io/)** Smalltalk dialect (80 nodes) with type-specialized sends, control-flow inlining, Boehm GC + GMP.
   Passes the full SOM TestSuite (221/221); PG mode beats SOM++ on all 12 AreWeFastYet benches.
 

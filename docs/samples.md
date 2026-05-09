@@ -29,6 +29,7 @@ CEL の `arcel`)。
 | `ascheme` | R5RS Scheme | 関数型 | 動 | 完全数値タワー (GMP 含む) | call/cc, multi-value, port, 完全な末尾呼出最適化 |
 | `asom` | SOM (Smalltalk) | 純 OO, 動的 | 動 | int+double+bignum | AreWeFastYet 16 本完走 / SOM TestSuite 100% |
 | `astocaml` | OCaml サブセット | 関数型, 静的 | 静 | int+float | variant / record / class / module / lazy / 末尾呼出最適化 |
+| `asml` | Standard ML サブセット | 関数型, 静的 | 静 | int+real | **HM full** (Algorithm W + value restriction) / datatype / pattern match / **型駆動 dispatcher 特殊化** |
 | `astr` | R サブセット | 関数型, ベクタ | 動 | int+double+vec+str | tagged VALUE + libgc + ベクタ broadcast |
 | `luastro` | Lua 5.4 | 命令型, 動的 | 動 | int + float | metatable / coroutine (ucontext) / weak table / `__gc` |
 | `pystro` | Python 3 サブセット | OO, 動的 | 動 | int + GMP bignum + float | class / try-except / for-in / f-string / lambda |
@@ -44,14 +45,14 @@ CEL の `arcel`)。
 - **教育用最小**: `calc`
 - **命令型 (古典)**: `pascalast` / `castro`
 - **動的言語のメインストリーム**: `naruby` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro`
-- **関数型**: `ascheme` / `astocaml`
+- **関数型**: `ascheme` / `astocaml` / `asml`
 - **OO 純化**: `asom`
 - **データ解析系**: `astr`
 - **スタックマシン**: `aforth` / `wastro`
 - **DSL / エンジン応用**: `astrogre` / `nuq` / `arjsv` / `arcel`
 
 直交する軸として **型システム** で切ると:
-- **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `wastro`
+- **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `asml` / `wastro`
 - **動的型**: 動的言語勢 6 つ + Scheme + Smalltalk + R + Forth (cell 単位 untyped)
 - **型なし / DSL**: `calc` / `astrogre` / `nuq` / `arjsv` / `arcel`
 
@@ -82,6 +83,7 @@ ASTro が想定外でも嵌まる例になっている。
 | `aforth`    |  68 |   639 |
 | `luastro`   |  74 | 1,448 |
 | `asom`      |  80 | 1,262 |
+| `asml`      |  87 | 1,027 |
 | `astocaml`  |  91 | 1,196 |
 | `pystro`    |  95 | 2,165 |
 | `castro`    | 101 | 1,019 |
@@ -139,6 +141,22 @@ node.def 数値だけ保守する。)
 `astocaml` の `node_add / node_add_int / node_fadd`、
 `wastro` の `node_i32_add / i64_add / f32_add / f64_add` ... のように、
 **parser-time に既に型が決まっている** 場合は別ノードに分ける。
+
+`asml` は同じ「型ごとに別ノード」パターンを **HM 型推論の結果から駆動**
+して採用している。parse 後の expr IR を Algorithm W で型推論し、推論済み
+型情報を `lower_expr` が見て:
+
+```
+EX_BINOP(BO_ADD)  →  ALLOC_node_add_int   (operand が int 確定)
+EX_BINOP(BO_LT)   →  ALLOC_node_lt_int    (両 operand が int 確定)
+EX_IF             →  ALLOC_node_if_bool   (cond は常に bool 確定)
+EX_UNOP(UO_NOT)   →  ALLOC_node_not_bool
+```
+
+を選択する。生成された SD は `node_add` / `node_lt` 等の generic 系を
+**一切含まない** ことを `grep EVAL_node_ code_store/c/*.c` で確認できる。
+parser-time 型情報なしの `astocaml` (HM-lite) と比べて、SML 流の HM full
+は SD レベルでより強い特殊化を保証する。
 
 利点: EVAL body が 1 行 (`return l + r`) になり、特化後は C コンパイラの
 **SROA** (Scalar Replacement of Aggregates — struct/union/小配列を、
@@ -295,6 +313,7 @@ usage の上位:
 | `luastro`  | 46 | 9 |
 | `wastro`   |  8 | 0 |
 | `astocaml` |  0 | 11 |
+| `asml`     |  0 |  7 |
 | `koruby`   |  0 | 16 |
 | `pystro`   |  0 | 11 |
 
@@ -317,6 +336,7 @@ usage の上位:
 | `luastro`  | 10 |
 | `pystro`   |  8 |
 | `astocaml` |  7 |
+| `asml`     |  4 |
 
 `@ref` は **ノード struct の inline 領域** に struct を埋め込みつつ、
 EVAL にはそのアドレスを渡す (`T *foo@ref` 宣言 → struct 内は `T foo` で
@@ -402,6 +422,7 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 | `pystro` | tagged `int64` (low-bit fixnum) | libgc | 自前 lexer + parser | GMP bignum, class, try-except |
 | `ascheme` | tagged `int64` | libgc | S 式 reader → 構文ツリー → AST | 完全な末尾呼出最適化トランポリン, call/cc, 多値, port |
 | `astocaml` | tagged `int64` | libgc | 自前 lexer + parser | クロージャ環境チェイン, lazy, class/module |
+| `asml` | tagged `int64` (low-bit fixnum) | leak (interpreter-grade) | 自前 lexer + 再帰下降 | **HM 型推論 + Algorithm W**, 推論結果駆動の dispatcher 特殊化, value restriction, 末尾呼出トランポリン |
 | `asom` | tagged `intptr_t` | libgc | 自前再帰下降 (`asom_parse.c`) | per-bucket free-list frame pool |
 | `aforth` | `int64_t` (data stack cell) | なし | 自前 tokenizer | DO-loop frame stack 並列, vars[] エリア |
 | `luastro` | tagged `LuaValue` (uint64_t) | 自前 mark-sweep GC | 自前 lexer + 再帰下降 + Pratt 式パーサ | metatable, **ucontext coroutine**, weak table, `__gc` |
@@ -453,6 +474,7 @@ ASTro は plain interpreter / AOT / Profile-Guided / JIT の 4 モードを
 | `ascheme`   | ✓ | ✓ | ✓ |   |
 | `asom`      | ✓ | ✓ | ✓ |   |
 | `astocaml`  | ✓ | ✓ |   |   |
+| `asml`      | ✓ | ✓ |   |   |
 | `astr`      | ✓ | ✓ |   |   |
 | `luastro`   | ✓ | ✓ | ✓ |   |
 | `pystro`    | ✓ | ✓ |   |   |
@@ -492,6 +514,7 @@ JIT は `naruby` のみ (L0/L1/L2 デーモンの試作)。
 | `ascheme`   | (default plain) | `-c` / `--compile` | — | `--pg-compile` / `--pg` | `--clear-cs` | — | `-q` |
 | `asom`      | `--plain` | `-c` / `--aot-compile-first` | — | `-p` / `--pg` | (none) | `--dump-ast` | `-q` |
 | `astocaml`  | `--no-compile` | `-c` / `--compile` | — | — | — | — | `-q` |
+| `asml`      | `--no-compile` | `-c` / `--compile` | — | — | — | — | `-q` |
 | `astr`      | `-i` / `--plain` | `-c` / `--aot` | `--aot-compile` | — | `--ccs` | `--dump-ast` | `-q` |
 | `luastro`   | `--no-compile` | `-c` / `--aot-compile-first` | `--aot-compile` | `-p` / `--pg-compile` | — | `--dump-ast` | `-q` |
 | `pystro`    | `--no-compile` | `-c` | `--aot-compile` | — | — | `--dump-ast` | `-q` |
