@@ -34,6 +34,19 @@ exec_prefix = "/usr"
 executable = "pystro"
 implementation_name = "pystro"
 
+# sys.implementation — namespace object with name / version / hexversion
+# / cache_tag.  CPython tests gate on `sys.implementation.name == 'cpython'`
+# and on version_info; pystro reports as 3.12 to satisfy version-gated paths.
+class _Implementation:
+    name = "cpython"   # claim CPython compatibility for version-gated tests
+    cache_tag = "cpython-312"
+    _multiarch = "x86_64-linux-gnu"
+    def __repr__(self):
+        return f"namespace(name={self.name!r}, version={self.version!r})"
+implementation = _Implementation()
+implementation.version = version_info
+implementation.hexversion = hexversion
+
 # Stream sentinels — these are file-like objects; pystro doesn't
 # expose them yet, so we use simple stand-ins.
 class _StdStream:
