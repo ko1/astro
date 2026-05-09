@@ -1,13 +1,16 @@
 (* N-Queens — classic backtracking search.  10-queens has 724 solutions. *)
 
-fun abs n = if n < 0 then ~n else n
+fun println s = (print s; print "\n")
+
+(* Local `abs` to avoid relying on overloaded basis abs. *)
+fun absi n = if n < 0 then ~n else n
 
 fun safe (q, qs) =
   let
     fun loop (qs, d) =
       case qs of
           []      => true
-        | h :: t  => h <> q andalso abs (h - q) <> d andalso loop (t, d + 1)
+        | h :: t  => h <> q andalso absi (h - q) <> d andalso loop (t, d + 1)
   in
     loop (qs, 1)
   end

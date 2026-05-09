@@ -28,6 +28,45 @@ AOT-cold は build (`make` + `gcc`) のオーバーヘッドが乗るので inte
 ほぼ等しいか若干遅い (fib/ack/tak)。nqueens のように元々遅いベンチでは
 build 時間が相対的に減って AOT-cold でも improvement。
 
+## SML/NJ 比較 (`bench/compare.sh`)
+
+[Standard ML of New Jersey](https://www.smlnj.org/) v110.79 を `sml`
+コマンドで起動。SML/NJ は **type-directed native code compiler** で、
+ロード時にバッチ compile してから実行する。`fun fib n = ...` のような
+小さなプログラムでも JIT-tier ではなく事前 native compile が走る。
+
+| ベンチ        | asml-int | asml-AOT | sml/NJ  | sml/NJ vs asml-AOT |
+|---------------|---------:|---------:|--------:|-------------------:|
+| fib (35)      |  2.13 s  |  1.68 s  | 0.12 s  | **14.0× 速い**     |
+| ack (3, 9)    |  2.67 s  |  2.48 s  | 0.06 s  | **41.3× 速い**     |
+| tak ×5        |  3.16 s  |  3.11 s  | 0.09 s  | **34.6× 速い**     |
+| nqueens ×3    |  2.40 s  |  2.12 s  | 0.07 s  | **30.3× 速い**     |
+
+(`sml` の起動オーバーヘッドはロード + autoload 込みで 0.02 s。
+fib なら実質計算 ~0.10 s。)
+
+**ギャップの内訳** (推定):
+
+1. **SML/NJ は native code を吐く**。asml は AST ノード dispatcher 間接
+   呼び出しのまま (AOT 後も SD 関数を `call` で呼ぶ)。fib ような tight
+   recursion で命令数自体が ~10× 違う。
+2. **SML/NJ の closure call 規約は register-based**。asml は `ml_apply`
+   経由でフレーム malloc / IC 検査が入る。
+3. **inlining**。SML/NJ は `+`, `<` を呼び出し時に inline。asml の AOT
+   も `_int` 系を経由するが、SD 間 inline は LTO 設定なしで limited。
+
+**改善余地** (todo.md と重複):
+
+- `is_leaf` を parser-time に立てて closure frame を C スタック alloca に
+  → fib で 2× 期待
+- AOT に `-flto -finline-limit=10000 ...` (astocaml と同) → 2-3× 期待
+- N-ary 直接呼び出し畳み込み (`f x y` を `app2(f, x, y)` に lower) → ack
+  で 30% 期待
+
+これらを全部入れても native code の SML/NJ には届かないが、astocaml が
+ocamlc bytecode を超えたのと同パターンで、**SML/NJ bytecode (もしあれば) や
+他の SML 実装に対してはイーブンか勝てる** はず。
+
 ## 累積効果
 
 | 段階 | fib(35) | ack(3,9) |
@@ -118,6 +157,30 @@ nqueens(10) ×3:
 ```
 
 generic 演算子ノードは出現せず、全部 _int / _bool 系に置き換わっている。
+
+## generic ノード削除 (Phase 2)
+
+HM 推論が走った後、`node_add` / `node_lt` / `node_if` 等の **動的型
+チェック付き generic ノード** は到達不能になっていた。これを node.def から
+**完全に削除** し、対応する specialised 版だけを残した:
+
+- `node_lt/le/gt/ge/eq/ne` の動的 IS_INT fast-path 付き版を削除
+  → 代わりに `_int` / `_real` / `_string` / `_poly` の 4 系統 (lower_cmp
+    が operand 型で振り分け)
+- `node_if / not / andalso / orelse / concat / deref / assign` 削除
+  → `_bool` / `_str` / `_unchecked` 版を直接呼ぶ
+- `node_add / sub / mul / div / mod / neg` 削除
+  → `_int` のみ (asml では `+ - *` は int 専用)
+- `node_radd / rsub / rmul` 削除 (asml は `+. -. *.` を持たない)
+- `node_let_pat`, `node_abs` 削除 (未使用)
+
+24 個の NODE_DEF を削除、19 個の specialised 版を追加 (-5 net、87 → 82)。
+動的に呼ばれることのないコードがバイナリから消えるので main.c / SD .so
+両方が小さくなる。perf には影響なし (削除前から実行されていなかったので)。
+
+これで「動的型ディスパッチが残っている = 型推論器が型を絞れなかった」が
+**コンパイル時の不変条件** になる。今後新ノードを増やすときも同じ規律が
+保てる。
 
 ## 試したが採用しなかった
 

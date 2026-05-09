@@ -60,8 +60,10 @@ Built-in datatypes: `'a option = NONE | SOME of 'a` (registered as ctors).
 make
 ./asml test/fib.sml
 ./asml -e 'fun fact n = if n <= 1 then 1 else n * fact (n - 1); println (Int.toString (fact 10))'
-make test       # run the test/*.sml suite
-./asml -c file  # AOT-compile each top-level form before evaluating
+make test               # run the test/*.sml suite
+./asml -c file          # AOT-compile each top-level form before evaluating
+bench/run.sh            # asml interp / AOT-cold / AOT-warm 比較
+bench/compare.sh        # 上に加え `sml` (SML/NJ) があれば横並び比較
 ```
 
 ## Files

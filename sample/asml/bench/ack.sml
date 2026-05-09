@@ -1,5 +1,7 @@
 (* Ackermann (3, 9) = 4093.  Heavy on stack depth and recursion. *)
 
+fun println s = (print s; print "\n")
+
 fun ack m n =
   if m = 0 then n + 1
   else if n = 0 then ack (m - 1) 1
