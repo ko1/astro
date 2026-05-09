@@ -100,8 +100,7 @@ def get_main_thread_id():
     return 1
 
 
-def daemon_threads_allowed():
-    return False
+def daemon_threads_allowed(): return True
 
 
 def _is_main_interpreter():
