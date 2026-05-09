@@ -16,10 +16,10 @@ optflags=-O2
 READLINE_CFLAGS := $(shell echo 'int main(){return 0;}' | gcc -x c -lreadline - -o /dev/null 2>/dev/null && echo "-DUSE_READLINE")
 READLINE_LDFLAGS := $(if $(READLINE_CFLAGS),-lreadline)
 
-astocaml: main.c node.c Makefile $(NODE_GENFILES) context.h node.h
+astocaml: main.c parse.c node.c Makefile $(NODE_GENFILES) context.h node.h parse.h
 	gcc -I. -I$(RUNTIME) $(optflags) $(EXTRA_CFLAGS) -ggdb3 -Wall -Wno-unused-function $(READLINE_CFLAGS) \
 	    -rdynamic \
-	    -o astocaml main.c node.c -ldl -lm -lgc \
+	    -o astocaml main.c parse.c node.c -ldl -lm -lgc \
 	    $(READLINE_LDFLAGS) $(EXTRA_LDFLAGS)
 
 # PGO build.  Two cycles:
