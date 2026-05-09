@@ -12160,29 +12160,16 @@ bi_import(CTX *c, int argc, VALUE *argv)
         if (!src) { snprintf(path, sizeof(path), BASE_FMT, BASE, modpath); src = read_file_into_buf(path); } \
         if (!src) { snprintf(path, sizeof(path), BASE_FMT, BASE, pkgpath); src = read_file_into_buf(path); } \
     } while (0)
-    // Search order (CPython-compat priority):
+    // Search order:
     //   1. CWD-relative (script-local helpers / packages)
-    //   2. Bundled stdlib (`<bindir>/stdlib/`) — pystro's own sys / types
-    //      / io / _weakref / _io / collections / etc. take precedence
-    //      over the CPython Lib/ versions reachable via PYTHONPATH.
-    //      Without this ordering the CPython types.py reaches into
-    //      `f.__closure__[0]` (cell-object internals pystro doesn't
-    //      have), and CPython's importlib._bootstrap C-internals fail.
-    //      Pystro's stubs match the API surface used by user code.
-    //   3. PYTHONPATH (user packages + cpytest_stubs)
+    //   2. PYTHONPATH (user packages + CPython stdlib at `cpython/Lib`)
+    //   3. Bundled stdlib (`<bindir>/stdlib/`) — pystro's stubs for the
+    //      C-extension modules CPython implements in C (`sys`, `_io`,
+    //      `_imp`, `_warnings`, `_weakref`, `posix`, ...) and the
+    //      stdlib subset pystro needs.  Last so user code under
+    //      PYTHONPATH can override, available always otherwise.
     if (!src) src = read_file_into_buf(modpath);
     if (!src) src = read_file_into_buf(pkgpath);
-    if (!src) {
-        extern const char *PYS_BINDIR;
-        if (PYS_BINDIR) {
-            snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, modpath);
-            src = read_file_into_buf(path);
-            if (!src) {
-                snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, pkgpath);
-                src = read_file_into_buf(path);
-            }
-        }
-    }
     if (!src) {
         const char *pp = getenv("PYTHONPATH");
         while (pp && *pp && !src) {
@@ -12199,6 +12186,17 @@ bi_import(CTX *c, int argc, VALUE *argv)
                 }
             }
             pp = colon ? colon + 1 : NULL;
+        }
+    }
+    if (!src) {
+        extern const char *PYS_BINDIR;
+        if (PYS_BINDIR) {
+            snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, modpath);
+            src = read_file_into_buf(path);
+            if (!src) {
+                snprintf(path, sizeof(path), "%s/stdlib/%s", PYS_BINDIR, pkgpath);
+                src = read_file_into_buf(path);
+            }
         }
     }
     #undef TRY_BOTH
