@@ -189,6 +189,41 @@ proto 対応版を作ると:
 - AOT モードの大勝 (bool_ladder 42.6× 等) は別の話で、ASTro の partial
   evaluation そのものの効果
 
+## 埋め込み API のコスト
+
+Phase 1 で `arcel.h` (C library API) を切り、CLI もそれ経由に統一した。
+これにより `arcel_eval()` 1 回あたり以下の固定コストが乗る:
+
+- `arcel_arena_reset()` — 1-2 ns
+- 活性化の bindings shape 設定 (3 stores + branch) — 1-2 ns
+- `EVAL` への indirect call — 1-2 ns
+- `arcel_value` 返り値の 24-byte コピー (VALUE → arcel_value 用) — 1-2 ns
+
+合計 **~5 ns/op の wrapper overhead**。ベンチへの実影響:
+
+| case | 旧 (loop 内 EVAL 直書き) | 新 (library 経由) | 増加 |
+|---|---:|---:|---:|
+| bool_ladder | 5 ns/op | 10 ns/op | **+100%** |
+| arith_const | 60 ns/op | 70 ns/op | +17% |
+| field_access_shallow | 24 ns/op | 27 ns/op | +12% |
+| predicate_user | 44 ns/op | 49 ns/op | +11% |
+| k8s_admission_ish | 52 ns/op | 53 ns/op | **+2%** |
+
+Trivial な定数式 (5-10 ns/op の領域) では library overhead が支配的だが、
+realistic policy (40+ ns/op) では誤差レベル。**production 用途で
+embedder が実際に使うパターンには 2% 程度しか影響しない**。
+
+cel-cpp との比較は維持:
+
+| case | arcel-AOT (lib 経由) | cel-cpp | 比 |
+|---|---:|---:|---:|
+| bool_ladder | 10 | 205 | **20.5×** (旧 42.6× の半分だが依然 20×) |
+| field_access_shallow | 27 | 549 | **20.3×** |
+| predicate_user | 49 | 670 | **13.7×** |
+| **k8s_admission_ish** | 53 | 1073 | **20.2×** |
+
+幾何平均は 14× → ~15× 程度に微減。
+
 ## 残る最適化候補
 
 - **map literal の constant fold** (`{...}` 全要素 literal の時)

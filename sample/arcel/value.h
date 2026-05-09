@@ -252,8 +252,10 @@ VALUE arcel_to_string(CTX *c, VALUE x);
 VALUE arcel_to_bytes (CTX *c, VALUE x);
 
 /* type(x): the CEL type of x, returned as a string token like "int",
- * "list(string)" — we just return the simple form for now. */
-VALUE arcel_type_of(CTX *c, VALUE x);
+ * "list(string)" — we just return the simple form for now.  Named
+ * `_cel_type_of` because the embedding API in arcel.h uses
+ * `arcel_type_of` for the C-side enum tag accessor. */
+VALUE arcel_cel_type_of(CTX *c, VALUE x);
 
 /* ---- formatting --------------------------------------------------- */
 
@@ -262,9 +264,10 @@ VALUE arcel_type_of(CTX *c, VALUE x);
  * (timestamp, duration, bytes) we use the closest JSON form. */
 void arcel_print_json(FILE *out, VALUE v);
 
-/* Same but appends to an arena-allocated buffer.  Used for type conv
- * to string. */
-char *arcel_format_json(arcel_arena *a, VALUE v, uint32_t *out_len);
+/* (was: arcel_format_json that appended to an arena buffer; never
+ * actually used internally.  The public arcel_format_json in arcel.h
+ * shadows this name — keep the internal one out of the header to
+ * avoid collision.) */
 
 /* ---- bindings ---------------------------------------------------- */
 

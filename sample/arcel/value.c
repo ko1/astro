@@ -672,7 +672,7 @@ arcel_to_bytes(CTX *const c, const VALUE x)
 }
 
 VALUE
-arcel_type_of(CTX *const c, const VALUE x)
+arcel_cel_type_of(CTX *const c, const VALUE x)
 {
     (void)c;
     const char *t;

@@ -1,105 +1,62 @@
 /* arcel CLI entry point.
  *
- * Subcommands (mirrors test/celgo_ref so the same harness drives both):
+ * Three subcommands, mirroring test/celgo_ref / test/celcpp_ref so the
+ * same harness drives all three:
  *
  *   arcel eval -e '<expr>' [-i '<json>']
  *   arcel bench -e '<expr>' [-i '<json>'] -n <iterations>
- *   arcel repl
+ *   arcel repl                            (1 JSON envelope per stdin line)
  *
  * Global flags accepted *before* the subcommand:
  *   --no-compile       skip ASTro AOT specialization
- *   --dump-ast         print parsed AST to stderr
  *   -q / --quiet       silence hit/miss tracing
+ *
+ * Implementation: this file is a thin wrapper over the public API in
+ * arcel.h / arcel_lib.c.  Same calls embedders use.  Keeping the CLI
+ * on the library API ensures we can't drift into "library says X but
+ * the CLI does Y" territory.
  */
 
 #include <ctype.h>
 #include <inttypes.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
-#include "context.h"
-#include "node.h"
-#include "value.h"
-#include "input.h"
-#include "parser.h"
-#include "astro_code_store.h"
+#include <stdio.h>
+#include <stdbool.h>
+#include "arcel.h"
 
-struct arcel_option OPTION;
+/* CLI-only options; arcel.h has no equivalent because they're
+ * presentation choices for the binary, not eval semantics. */
+static struct {
+    bool no_compile;
+    bool quiet;
+} cli;
 
-/* ---- compile + eval helpers ------------------------------------- */
+/* ---- helpers ----------------------------------------------------- */
 
-static NODE *
-compile_expr(const char *const src, const char **const out_err)
+static void
+die_compile(const char *const expr, const char *const err)
 {
-    NODE *const ast = arcel_parse(src, out_err);
-    if (!ast) return NULL;
-    if (!OPTION.no_compiled_code) {
-        if (!ast->head.flags.is_specialized) {
-            astro_cs_compile(ast, NULL);
-            astro_cs_build(NULL);
-            astro_cs_reload();
-            astro_cs_load(ast, NULL);
-        }
-    }
-    if (OPTION.dump_ast) {
-        DUMP(stderr, ast, true);
-        fputc('\n', stderr);
-    }
-    return ast;
-}
-
-/* Set up the eval context: parse `-i` bindings into the persistent
- * arena and reset the transient arena.  Bindings then survive across
- * many EVAL() calls (bench mode loops without re-parsing JSON every
- * iteration).  Pass `reset_bindings=true` to force reparse. */
-static const char *
-ctx_setup(CTX *const c, const char *const input_json, bool reset_bindings)
-{
-    c->bind_top = 0;
-    c->last_err = NULL;
-    arcel_arena_reset(&c->arena);
-
-    if (reset_bindings || !c->bindings) {
-        arcel_arena_reset(&c->bind_arena);
-        c->bindings = NULL;
-        if (input_json && *input_json) {
-            VALUE v = arcel_parse_json(&c->bind_arena, input_json, (uint32_t)strlen(input_json));
-            if (v.tag == AC_ERR) return v.err;
-            if (v.tag == AC_MAP) {
-                c->bindings = v.map;
-            } else {
-                /* Wrap a non-object input under the conventional name
-                 * "input" (mirrors celgo_ref so the harness sees both
-                 * binaries the same way). */
-                arcel_map *const m = arcel_map_new(&c->bind_arena, 1);
-                m->entries[0].key = V_STR("input", 5);
-                m->entries[0].val = v;
-                c->bindings = m;
-            }
-        }
-    }
-    return NULL;
+    /* Match `ERROR: <msg>` form so the harness's line-protocol stays
+     * synchronized.  expr unused; future could include source span. */
+    (void)expr;
+    printf("ERROR: %s\n", err && *err ? err : "compile failed");
 }
 
 static void
-ctx_init(CTX *const c)
+print_value(arcel_value v)
 {
-    arcel_arena_init(&c->arena);
-    arcel_arena_init(&c->bind_arena);
-    c->bindings = NULL;
-    c->bind_top = 0;
-    c->last_err = NULL;
-}
-
-static void
-ctx_destroy(CTX *const c)
-{
-    arcel_arena_free(&c->arena);
-    arcel_arena_free(&c->bind_arena);
+    char buf[4096];
+    arcel_format_json(v, buf, sizeof buf);
+    fputs(buf, stdout);
+    fputc('\n', stdout);
 }
 
 /* ---- subcommands ------------------------------------------------- */
 
 static int
-cmd_eval(int argc, char **argv)
+cmd_eval(arcel_env *const env, const int argc, char **const argv)
 {
     const char *expr = NULL;
     const char *input = NULL;
@@ -110,23 +67,28 @@ cmd_eval(int argc, char **argv)
     }
     if (!expr) { fprintf(stderr, "arcel eval: -e <expr> required\n"); return 2; }
 
-    const char *err = NULL;
-    NODE *const ast = compile_expr(expr, &err);
-    if (!ast) { printf("ERROR: %s\n", err ? err : "parse failed"); return 0; }
+    char err_buf[256];
+    arcel_program *const prg = arcel_compile(env, expr, -1, err_buf, sizeof err_buf);
+    if (!prg) { die_compile(expr, err_buf); return 0; }
 
-    CTX c; ctx_init(&c);
-    err = ctx_setup(&c, input, true);
-    if (err) { printf("ERROR: %s\n", err); ctx_destroy(&c); return 0; }
+    arcel_activation *const act = arcel_activation_new(env);
+    if (input && *input) {
+        if (arcel_activation_load_json(act, input, strlen(input), err_buf, sizeof err_buf) < 0) {
+            printf("ERROR: %s\n", err_buf);
+            arcel_activation_free(act);
+            arcel_program_free(prg);
+            return 0;
+        }
+    }
 
-    VALUE r = EVAL(&c, ast);
-    arcel_print_json(stdout, r);
-    fputc('\n', stdout);
-    ctx_destroy(&c);
+    print_value(arcel_eval(prg, act));
+    arcel_activation_free(act);
+    arcel_program_free(prg);
     return 0;
 }
 
 static int
-cmd_bench(int argc, char **argv)
+cmd_bench(arcel_env *const env, const int argc, char **const argv)
 {
     const char *expr = NULL;
     const char *input = NULL;
@@ -139,38 +101,33 @@ cmd_bench(int argc, char **argv)
     }
     if (!expr) { fprintf(stderr, "arcel bench: -e <expr> required\n"); return 2; }
 
-    const char *err = NULL;
-    NODE *const ast = compile_expr(expr, &err);
-    if (!ast) { fprintf(stderr, "arcel bench: %s\n", err ? err : "parse failed"); return 1; }
+    char err_buf[256];
+    arcel_program *const prg = arcel_compile(env, expr, -1, err_buf, sizeof err_buf);
+    if (!prg) { fprintf(stderr, "arcel bench: %s\n", err_buf); return 1; }
 
-    CTX c; ctx_init(&c);
-    /* Set up bindings ONCE before the loop — they live in bind_arena
-     * which arena_reset() doesn't touch.  cel-go's bench API is
-     * `prg.Eval(binds)` with bindings reused across calls, so this
-     * keeps the comparison apples-to-apples. */
-    err = ctx_setup(&c, input, true);
-    if (err) { fprintf(stderr, "arcel bench: input: %s\n", err); ctx_destroy(&c); return 1; }
-
-    /* warm */
-    for (int i = 0; i < 1000; i++) {
-        arcel_arena_reset(&c.arena);
-        c.bind_top = 0;
-        (void)EVAL(&c, ast);
+    arcel_activation *const act = arcel_activation_new(env);
+    if (input && *input) {
+        if (arcel_activation_load_json(act, input, strlen(input), err_buf, sizeof err_buf) < 0) {
+            fprintf(stderr, "arcel bench: input: %s\n", err_buf);
+            return 1;
+        }
     }
+
+    /* Warm. */
+    for (int i = 0; i < 1000; i++) (void)arcel_eval(prg, act);
+
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    for (long i = 0; i < iters; i++) {
-        arcel_arena_reset(&c.arena);
-        c.bind_top = 0;
-        (void)EVAL(&c, ast);
-    }
+    for (long i = 0; i < iters; i++) (void)arcel_eval(prg, act);
     clock_gettime(CLOCK_MONOTONIC, &t1);
 
     long long ns = (long long)(t1.tv_sec - t0.tv_sec) * 1000000000LL +
                    (long long)(t1.tv_nsec - t0.tv_nsec);
     double per = (double)ns / (double)iters;
     printf("%ld %lld %.3f\n", iters, ns, per);
-    ctx_destroy(&c);
+
+    arcel_activation_free(act);
+    arcel_program_free(prg);
     return 0;
 }
 
@@ -178,11 +135,10 @@ cmd_bench(int argc, char **argv)
 
 /* Pull a top-level string field "<key>" from `buf` as a fresh
  * allocation (caller frees).  Returns NULL if key missing or value
- * isn't a string. */
+ * isn't a string.  Used for the `e` field which is the CEL source. */
 static char *
 extract_json_string(const char *buf, const char *key, uint32_t *out_len)
 {
-    /* find `"key":` */
     char pat[64];
     snprintf(pat, sizeof(pat), "\"%s\"", key);
     const char *q = strstr(buf, pat);
@@ -194,7 +150,6 @@ extract_json_string(const char *buf, const char *key, uint32_t *out_len)
     while (*q == ' ' || *q == '\t') q++;
     if (*q != '"') return NULL;
     q++;
-    /* consume escaped string into a fresh buffer */
     char *const out = (char *)malloc(strlen(buf) + 1);
     uint32_t n = 0;
     while (*q && *q != '"') {
@@ -243,9 +198,7 @@ extract_json_string(const char *buf, const char *key, uint32_t *out_len)
     return out;
 }
 
-/* Pull the raw `"i": <value>` field as a JSON-encoded string, so the
- * arcel JSON parser can consume it directly.  Returns NULL if `"i"`
- * is missing or null. */
+/* Pull the raw `"i": <value>` field as a JSON snippet (caller frees). */
 static char *
 extract_json_raw(const char *buf, const char *key)
 {
@@ -260,8 +213,6 @@ extract_json_raw(const char *buf, const char *key)
     while (*q == ' ' || *q == '\t') q++;
     if (!*q) return NULL;
     if (strncmp(q, "null", 4) == 0) return NULL;
-    /* find the matching end of value; respect nested quotes/braces.
-     * good enough for the harness's compact JSON. */
     int depth = 0;
     bool in_str = false;
     bool esc = false;
@@ -293,7 +244,7 @@ extract_json_raw(const char *buf, const char *key)
 }
 
 static int
-cmd_repl(int argc, char **argv)
+cmd_repl(arcel_env *const env, int argc, char **argv)
 {
     (void)argc; (void)argv;
 
@@ -301,55 +252,43 @@ cmd_repl(int argc, char **argv)
     size_t cap = 0;
     ssize_t len;
 
-    CTX c; ctx_init(&c);
-
     while ((len = getline(&buf, &cap, stdin)) > 0) {
-        /* Rewind the variadic-children side array before each parse.
-         * Each repl iteration discards the previous AST, so its
-         * arcel_node_arr entries are no longer reachable.  Without
-         * this the array grows linearly with envelope count
-         * (3 entries per `[1,2,3]` literal × N envelopes). */
-        arcel_node_arr_reset();
-        arcel_const_list_reset();
-
         uint32_t expr_len = 0;
         char *const expr = extract_json_string(buf, "e", &expr_len);
         if (!expr) { puts("ERROR: bad envelope"); fflush(stdout); continue; }
 
         char *const input = extract_json_raw(buf, "i");
 
-        const char *err = NULL;
-        /* Use _n form so embedded NULs in bytes-literal source
-         * (`b'\x00'` etc.) don't truncate parsing. */
-        NODE *const ast = arcel_parse_n(expr, expr_len, &err);
-        if (!ast) {
-            printf("ERROR: %s\n", err ? err : "parse failed");
+        char err_buf[256];
+        arcel_program *const prg = arcel_compile(env, expr, expr_len, err_buf, sizeof err_buf);
+        if (!prg) {
+            printf("ERROR: %s\n", err_buf);
             fflush(stdout);
             free(expr); free(input);
             continue;
         }
-        if (!OPTION.no_compiled_code) {
-            if (!ast->head.flags.is_specialized) {
-                astro_cs_compile(ast, NULL);
-                astro_cs_build(NULL);
-                astro_cs_reload();
-                astro_cs_load(ast, NULL);
+
+        arcel_activation *const act = arcel_activation_new(env);
+        if (input) {
+            if (arcel_activation_load_json(act, input, strlen(input), err_buf, sizeof err_buf) < 0) {
+                printf("ERROR: %s\n", err_buf);
+                fflush(stdout);
+                arcel_activation_free(act);
+                arcel_program_free(prg);
+                free(expr); free(input);
+                continue;
             }
         }
 
-        const char *serr = ctx_setup(&c, input, true);
-        if (serr) { printf("ERROR: %s\n", serr); fflush(stdout); free(expr); free(input); continue; }
-
-        VALUE r = EVAL(&c, ast);
-        arcel_print_json(stdout, r);
-        fputc('\n', stdout);
+        print_value(arcel_eval(prg, act));
         fflush(stdout);
 
+        arcel_activation_free(act);
+        arcel_program_free(prg);
         free(expr);
         free(input);
     }
     free(buf);
-    ctx_destroy(&c);
     return 0;
 }
 
@@ -368,7 +307,6 @@ usage(FILE *const out, const char *const progname)
         "\n"
         "Global flags (must precede the subcommand):\n"
         "      --no-compile     interpreter only (skip AOT specialization)\n"
-        "      --dump-ast       print parsed AST to stderr before eval\n"
         "  -q, --quiet          suppress hit/miss progress (default in repl/bench)\n",
         progname);
 }
@@ -376,29 +314,31 @@ usage(FILE *const out, const char *const progname)
 int
 main(int argc, char **argv)
 {
-    OPTION.quiet = true;          /* silent by default; matches harness expectations */
+    cli.quiet = true;     /* default; -v re-enables internally via the OPTION knob */
 
     int idx = 1;
     while (idx < argc && argv[idx][0] == '-') {
-        if      (strcmp(argv[idx], "--no-compile") == 0) OPTION.no_compiled_code = true;
-        else if (strcmp(argv[idx], "-q") == 0 || strcmp(argv[idx], "--quiet") == 0) OPTION.quiet = true;
-        else if (strcmp(argv[idx], "--dump-ast") == 0)   OPTION.dump_ast = true;
-        else if (strcmp(argv[idx], "-v") == 0)           OPTION.quiet = false;
+        if      (strcmp(argv[idx], "--no-compile") == 0) cli.no_compile = true;
+        else if (strcmp(argv[idx], "-q") == 0 || strcmp(argv[idx], "--quiet") == 0) cli.quiet = true;
         else if (strcmp(argv[idx], "-h") == 0 || strcmp(argv[idx], "--help") == 0) { usage(stdout, argv[0]); return 0; }
         else { fprintf(stderr, "arcel: unknown global flag '%s'\n", argv[idx]); return 2; }
         idx++;
     }
     if (idx >= argc) { usage(stderr, argv[0]); return 2; }
 
-    INIT();
+    arcel_env *const env = arcel_env_new();
+    if (cli.no_compile) arcel_env_set_no_compile(env, true);
 
     const char *const cmd = argv[idx++];
-    if      (strcmp(cmd, "eval")  == 0) return cmd_eval(argc - idx,  argv + idx);
-    else if (strcmp(cmd, "bench") == 0) return cmd_bench(argc - idx, argv + idx);
-    else if (strcmp(cmd, "repl")  == 0) return cmd_repl(argc - idx,  argv + idx);
+    int rc;
+    if      (strcmp(cmd, "eval")  == 0) rc = cmd_eval (env, argc - idx, argv + idx);
+    else if (strcmp(cmd, "bench") == 0) rc = cmd_bench(env, argc - idx, argv + idx);
+    else if (strcmp(cmd, "repl")  == 0) rc = cmd_repl (env, argc - idx, argv + idx);
     else {
         fprintf(stderr, "arcel: unknown subcommand '%s'\n", cmd);
         usage(stderr, argv[0]);
-        return 2;
+        rc = 2;
     }
+    arcel_env_free(env);
+    return rc;
 }

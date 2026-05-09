@@ -10,6 +10,9 @@ node_head.h
 
 # build artefacts
 arcel
+libarcel.a
+libarcel.so
+examples/embed
 *.o
 code_store/
 

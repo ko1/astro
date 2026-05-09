@@ -330,7 +330,7 @@ node_size(CTX *c, NODE *n, NODE *arg)
 NODE_DEF
 node_type(CTX *c, NODE *n, NODE *arg)
 {
-    return arcel_type_of(c, EVAL_ARG(c, arg));
+    return arcel_cel_type_of(c, EVAL_ARG(c, arg));
 }
 
 NODE_DEF
