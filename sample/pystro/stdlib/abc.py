@@ -21,6 +21,34 @@ class ABCMeta(type):
             own = set()
             cls._abc_registry = own
         own.add(subclass)
+        # Propagate registration to ABCMeta parents so issubclass(X,
+        # Real) sees `Integral.register(X)`'s effect — pystro's
+        # __subclasscheck__ walks bases (UP the chain) only.
+        # Note: walk __bases__ recursively, not __mro__ (slicing the
+        # synthetic __mro__ tuple-descriptor was a previous segv source).
+        try:
+            seen = set([id(cls)])
+            todo = list(getattr(cls, "__bases__", ()) or ())
+            while todo:
+                b = todo.pop()
+                if id(b) in seen:
+                    continue
+                seen.add(id(b))
+                if not isinstance(b, ABCMeta):
+                    continue
+                bd = b.__dict__
+                if not hasattr(bd, "get"):
+                    continue
+                bown = bd.get("_abc_registry")
+                if bown is None:
+                    bown = set()
+                    b._abc_registry = bown
+                bown.add(subclass)
+                bb = getattr(b, "__bases__", None)
+                if bb:
+                    for x in bb: todo.append(x)
+        except Exception:
+            pass
         return subclass
 
     @classmethod
