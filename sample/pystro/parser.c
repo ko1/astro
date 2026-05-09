@@ -688,6 +688,11 @@ make_load(const char *name)
 static NODE *
 make_store(const char *name, NODE *rhs)
 {
+    // CPython 3.7+ made `async` / `await` hard keywords — assigning to
+    // them is a SyntaxError.  pystro's lexer still treats them as soft
+    // contextual names so we reject the assignment here.
+    if (name && (strcmp(name, "async") == 0 || strcmp(name, "await") == 0))
+        parse_error("cannot assign to keyword");
     // Class body: bindings go to c->current_class.methods (which serves
     // as both the method table and the class attribute namespace).
     if (in_class_body) return ALLOC_node_class_method_set(name, rhs);
