@@ -1875,16 +1875,34 @@ static VALUE ary_combination(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
     long r = FIX2LONG(argv[0]);
     struct korb_array *a = (struct korb_array *)self;
-    if (r < 0 || r > a->len) return korb_ary_new();
-    VALUE buf = korb_ary_new_capa(r);
     extern struct korb_proc *current_block;
-    if (current_block) {
-        ary_combine(c, a, r, 0, buf, Qnil);
-        return self;
+    /* No block: return an Enumerator (CRuby semantics).  Override
+     * @__size to the binomial coefficient C(n, r) so #size reports
+     * the actual combination count (or 0 when r < 0 or r > n). */
+    if (!current_block) {
+        VALUE method_sym = korb_id2sym(korb_intern("combination"));
+        VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
+        call_argv[0] = method_sym;
+        for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
+        VALUE e = korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv);
+        if (c->state == KORB_RAISE || SPECIAL_CONST_P(e)) return e;
+        long n = a->len;
+        long sz = 0;
+        if (r >= 0 && r <= n) {
+            /* Compute C(n, r) using the multiplicative formula. */
+            long k = (r < n - r) ? r : (n - r);
+            sz = 1;
+            for (long i = 0; i < k; i++) {
+                sz = sz * (n - i) / (i + 1);
+            }
+        }
+        korb_ivar_set(e, korb_intern("@__size"), INT2FIX(sz));
+        return e;
     }
-    VALUE result = korb_ary_new();
-    ary_combine(c, a, r, 0, buf, result);
-    return result;
+    if (r < 0 || r > a->len) return self;
+    VALUE buf = korb_ary_new_capa(r);
+    ary_combine(c, a, r, 0, buf, Qnil);
+    return self;
 }
 
 static void ary_perm(CTX *c, struct korb_array *a, long r,
@@ -1911,18 +1929,31 @@ static void ary_perm(CTX *c, struct korb_array *a, long r,
 static VALUE ary_permutation(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     long r = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : a->len;
-    if (r < 0 || r > a->len) return korb_ary_new();
+    extern struct korb_proc *current_block;
+    /* No block: return Enumerator with size = n! / (n-r)! when 0<=r<=n,
+     * else 0.  CRuby semantics. */
+    if (!current_block) {
+        VALUE method_sym = korb_id2sym(korb_intern("permutation"));
+        VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
+        call_argv[0] = method_sym;
+        for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
+        VALUE e = korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv);
+        if (c->state == KORB_RAISE || SPECIAL_CONST_P(e)) return e;
+        long n = a->len;
+        long sz = 0;
+        if (r >= 0 && r <= n) {
+            sz = 1;
+            for (long i = 0; i < r; i++) sz *= (n - i);
+        }
+        korb_ivar_set(e, korb_intern("@__size"), INT2FIX(sz));
+        return e;
+    }
+    if (r < 0 || r > a->len) return self;
     VALUE used = korb_ary_new_capa(a->len);
     for (long i = 0; i < a->len; i++) korb_ary_push(used, Qfalse);
     VALUE buf = korb_ary_new_capa(r);
-    extern struct korb_proc *current_block;
-    if (current_block) {
-        ary_perm(c, a, r, used, buf, Qnil);
-        return self;
-    }
-    VALUE result = korb_ary_new();
-    ary_perm(c, a, r, used, buf, result);
-    return result;
+    ary_perm(c, a, r, used, buf, Qnil);
+    return self;
 }
 
 /* Array#product(*others) — Cartesian product. */

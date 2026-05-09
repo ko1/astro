@@ -644,6 +644,20 @@ class Integer
     Rational(self, 1)
   end unless method_defined?(:to_r)
 
+  # Integer#numerator — self; #denominator — 1.  CRuby's Numeric API.
+  def numerator
+    self
+  end unless method_defined?(:numerator)
+  def denominator
+    1
+  end unless method_defined?(:denominator)
+
+  # Integer#ord — self.  Defined on Integer for CRuby compatibility
+  # (Integer#ord == self because Integer is Unicode codepoint).
+  def ord
+    self
+  end unless method_defined?(:ord)
+
   # Integer#rationalize — same as to_r; the optional precision arg is
   # ignored (CRuby returns the integer-equivalent rational regardless).
   def rationalize(*a)
@@ -753,6 +767,19 @@ class Float
     q = (self / other).floor
     [q, self - q * other]
   end
+
+  # Float#numerator / #denominator — derived from to_r.  For
+  # Infinity / NaN, denominator returns 1 and numerator returns the
+  # Float itself (CRuby semantics — these aren't representable as
+  # rationals but follow the convention of "indivisible whole").
+  def numerator
+    return self if !finite?
+    to_r.numerator
+  end unless method_defined?(:numerator)
+  def denominator
+    return 1 if !finite?
+    to_r.denominator
+  end unless method_defined?(:denominator)
 
   # Float#to_r — produce a Rational that exactly represents the
   # IEEE-754 double's value.  Bignum-based denominator handles
