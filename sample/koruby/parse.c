@@ -2231,7 +2231,17 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           const char *src = (const char *)pm_string_source(&n->unescaped);
           char *buf = korb_xmalloc_atomic(len + 1);
           memcpy(buf, src, len); buf[len] = 0;
-          return ALLOC_node_str_lit(buf, (uint32_t)len);
+          /* prism marks string literals with PM_STRING_FLAGS_FROZEN /
+           * PM_STRING_FLAGS_MUTABLE based on `frozen_string_literal:`
+           * magic comment.  Default (neither flag) is "chilled" in
+           * Ruby 3.4+. */
+          pm_node_flags_t f = n->base.flags;
+          if (f & PM_STRING_FLAGS_FROZEN) {
+              return ALLOC_node_frozen_str_lit(buf, (uint32_t)len);
+          } else if (f & PM_STRING_FLAGS_MUTABLE) {
+              return ALLOC_node_str_lit(buf, (uint32_t)len);
+          }
+          return ALLOC_node_chilled_str_lit(buf, (uint32_t)len);
       }
       case PM_SYMBOL_NODE: {
           pm_symbol_node_t *n = (pm_symbol_node_t *)node;

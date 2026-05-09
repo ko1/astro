@@ -647,6 +647,11 @@ VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
 #define FL_USER(n)    ((VALUE)1 << (FL_USER_SHIFT + (n)))
 #define FL_SINGLETON FL_USER(0)
 #define FL_KWARGS    FL_USER(1)
+/* FL_CHILLED: a String literal that's "chilled" — frozen by virtue of
+ * being a literal but transparently unfrozen on first mutation
+ * (CRuby 3.4+ default).  `frozen?` returns false; `+@` returns a
+ * fresh mutable copy. */
+#define FL_CHILLED   FL_USER(2)
 
 /* Inline cache-hit fast path for method dispatch.  On cache hit (LIKELY),
  * directly call mc->prologue — no function call into the slower path.

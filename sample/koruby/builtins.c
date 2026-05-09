@@ -318,6 +318,7 @@ void korb_init_builtins(void) {
     DEF(cStr, ">=",  str_ge, 1);
     DEF(cStr, "to_s", str_to_s, 0);
     DEF(cStr, "to_sym", str_to_sym, 0);
+    DEF(cStr, "__chilled?", str_chilled_p, 0);
 
     /* Array */
     struct korb_class *cAry = korb_vm->array_class;

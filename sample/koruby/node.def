@@ -51,6 +51,14 @@ node_frozen_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32
 }
 
 NODE_DEF
+node_chilled_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32_t len)
+{
+    VALUE s = korb_str_new(str, len);
+    if (!SPECIAL_CONST_P(s)) RBASIC(s)->flags |= FL_CHILLED;
+    return s;
+}
+
+NODE_DEF
 node_sym_lit(CTX * restrict c, NODE * restrict n, ID id)
 {
     return korb_id2sym(id);

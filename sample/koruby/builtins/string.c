@@ -278,6 +278,12 @@ static VALUE str_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) >= 0);
 }
 static VALUE str_to_s(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
+/* String#__chilled? — internal: true iff FL_CHILLED is set.  Used by
+ * Ruby-level `+@` to decide whether to return a fresh mutable copy. */
+static VALUE str_chilled_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (SPECIAL_CONST_P(self)) return Qfalse;
+    return KORB_BOOL((RBASIC(self)->flags & FL_CHILLED) != 0);
+}
 static VALUE str_to_sym(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_str_to_sym(self);
 }

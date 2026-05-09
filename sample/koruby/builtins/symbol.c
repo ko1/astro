@@ -24,7 +24,11 @@ static VALUE sym_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Symbol ---------- */
 static VALUE sym_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_str_new_cstr(korb_id_name(korb_sym2id(self)));
+    /* CRuby 3.4+: Symbol#to_s returns a "chilled" String — frozen by
+     * virtue of being interned but transparently mutable on demand. */
+    VALUE s = korb_str_new_cstr(korb_id_name(korb_sym2id(self)));
+    if (!SPECIAL_CONST_P(s)) RBASIC(s)->flags |= FL_CHILLED;
+    return s;
 }
 static VALUE sym_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(self == argv[0]);

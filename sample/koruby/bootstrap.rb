@@ -842,7 +842,12 @@ class String
     !(self =~ other)
   end unless method_defined?(:!~)
 
-  def +@; frozen? ? dup : self; end unless method_defined?(:+@)
+  # `+@` returns a fresh mutable copy when self is frozen *or* chilled
+  # (CRuby 3.4+).  For plain mutable strings, returns self for parity
+  # with pre-3.4 behavior.  Internal `__chilled?` is implemented in C.
+  def +@
+    (frozen? || __chilled?) ? dup : self
+  end unless method_defined?(:+@)
   def -@; frozen? ? self : dup.freeze; end unless method_defined?(:-@)
 
   # String#match — Regexp not supported; return nil instead of crashing.
