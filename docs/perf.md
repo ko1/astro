@@ -421,6 +421,72 @@ clang はこの種の CLOBBER 扱いがやや緩く、同様パターンでも�
 にコンパイラが保守的になる**ので過信しない。手で値を消費しない
 ならローカルに名前を付けない。
 
+### 4.8 関数 inline 判断は callee サイズだけでなく register pressure 特性で決める
+
+**ルール**: 子関数の body を見て、
+
+```
+max_loop_depth(body) >= 3  AND  count_fp_ops(body) >= 5
+```
+
+を満たす関数は **`no_inline` フラグを立てて entry SD から hoist**。
+親 SD は `extern SD_<callee_hash>` 経由で呼ぶ。
+
+**Why**: x86-64 は YMM 16本しかなく、深ネスト + SIMD heavy な kernel
+を親 SD に inline すると、親側の outer loop 用変数と callee 内 SIMD
+寄存変数とで競合して **register allocator が spill に逃げる**。
+具体的に castro polybench gemm:
+
+| | full-inline | depth-3 hoist |
+|---|---:|---:|
+| wall | 480 ms (1.55× of -O3) | 340 ms (1.17×) |
+| IPC | 2.51 | 3.06 |
+| stack spill instructions | 24 | 10 |
+
+inner loop 自体は両方 `vmulpd / vaddpd / vmovupd` で同一だが、その
+周りの bookkeeping で spill が出るかどうかで 22% も IPC が変わる。
+
+**How to apply**:
+
+- パーサが `(sig FUNC_NAME no_inline)` フラグを emit、`compile_all_funcs`
+  が body の `head.flags.no_inline` を立てる経路を持っていれば組み込める。
+- castro `parse.rb` 実装 (commit `560f5fe`): `count_fp` と `max_loop_depth`
+  を sx 木で素朴に走査。castro 専用 op 名（`mul_d` 等）に依存するので
+  他サンプルでは値表現に合わせ書き換えが必要。
+- 整数 bit ops 系 (md5、SHA、CRC) は `count_fp == 0` で trigger しないので
+  影響なし — GPR は 16本あって AVX YMM ほど詰まらないため inline で OK。
+- 浅い loop (depth ≤ 2) の callee も対象外。function call overhead が
+  visible になる側で、inline したほうが速い (nbody 等)。
+
+**castro 実測** (commit `aee6143` の cs_load fix と組み合わせ、`560f5fe`):
+
+| polybench kernel | full-inline | depth-3 hoist | 改善 |
+|---|---:|---:|---:|
+| gemm  | 1.55× of -O3 | 1.17× | -29% |
+| 2mm   | 2.06× | 1.86× | -20% |
+| lu    | 4.23× | 3.61× | -21% |
+| floyd | 1.64× | 1.50× | -17% |
+| syrk  | 1.26× | 1.20× | -16% |
+| seidel-2d | 1.08× (1650 ms) | 1.08× (1300 ms) | -21% |
+| jacobi-2d | 1.06× | 1.12× | +6% (slight) |
+
+CLBG（md5 / nbody / binary-trees / fannkuch-redux）は heuristic 不発動
+なので影響なし。
+
+**残課題**: bicg / gesummv は depth=2 だが「2 配列同時更新」で register 食う
+タイプで heuristic が拾えていない (5.00× / 4.67× 残り)。本来は
+**実測 IPC / spill count を読む PGC** で fold-back するのが筋
+（gcc 自身も`-fprofile-use` の inline cost model でこれをやっている）。
+`max_loop_depth >= 3` という構文ベースのヒューリスティックは**第一近似**で、
+最終的には profile-driven にすべき。
+
+**一般化 (cross-sample)**: callee サイズだけで inline/extern を決める
+仕組み（castro 旧来の 500 ノード閾値、abruby `force_inline` 注釈、
+luastro の `@always_inline`）は **callee 単体での gcc compilability**
+しか見ておらず、**inline 後の親側 SD register allocation** までは保証
+していない。SIMD/AVX を多用する数値 kernel では「親 SD が肥大化したとき
+gcc YMM allocator が破綻するか」という別軸の判断が要る。
+
 ## 5. パーサレベル書き換え
 
 EVAL body には触らないが AST 形は整えてよい。**新しいノード kind を

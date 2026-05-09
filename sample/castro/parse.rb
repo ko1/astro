@@ -2542,14 +2542,25 @@ def main
     next 1 unless sx.is_a?(Array)
     1 + sx[1..-1].sum { |x| count_nodes_in.call(x) }
   end
-  # Heuristic: deep-nested FP kernels suffer register pressure when
-  # the parent SD inlines them.  gcc has only 16 YMM regs, so a triple-
-  # nested matmul body that's clean as a standalone SD blows its
-  # vmovq/vmovd register allocation when inlined into a caller's SD
-  # (measured: gemm 320→480 ms, ipc 3.06→2.51 due to 2.4× more stack
-  # spills).  Mark them no_inline so the parent emits an `extern SD_<h>`
-  # call and gcc compiles the kernel against an empty register
-  # environment.
+  # AOT inline policy — additional rule beyond the size threshold:
+  #
+  #   max_loop_depth >= 3  AND  count_fp_ops >= 5  =>  no_inline
+  #
+  # Why: x86-64 has only 16 YMM regs.  A deeply-nested SIMD-heavy kernel
+  # that's clean as a standalone SD (gcc compiles it in an empty
+  # register environment) blows its register allocation when the
+  # parent's SD inlines it — the parent's outer-loop locals and the
+  # kernel's SIMD scratch values fight for the same YMMs and gcc spills
+  # to the stack.  Measured on gemm: full-inline 480 ms (IPC 2.51,
+  # 24 stack-spill insns) vs depth-3 hoist 340 ms (IPC 3.06, 10 spills).
+  # The hot inner loop is identical (vmulpd/vaddpd/vmovupd) — the
+  # difference is bookkeeping spill traffic around it.
+  #
+  # When to apply: triple-nested FP kernels (matmul, jacobi-2d, syrk
+  # etc.).  Integer bit-ops (md5: count_fp = 0) and shallow-nested FP
+  # (nbody: depth = 2) don't trigger — they prefer inline because GPR
+  # pressure is lower and function-call overhead becomes visible.
+  # See docs/perf.md §4.8 (root) for the cross-sample principle.
   fp_ops = %w[mul_d add_d sub_d div_d store_d load_d ge_d le_d lt_d gt_d eq_d neg_d]
   max_loop_depth = lambda do |sx, depth=0|
     next depth unless sx.is_a?(Array)
