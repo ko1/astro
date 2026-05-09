@@ -181,3 +181,21 @@ cc_binary(
         ":celcpp_compat",
     ],
 )
+
+# In-process micro-benchmark across arcel's binding paths (JSON / native
+# struct / libprotobuf / cel-cpp shim) at sustained scale.  No subprocess
+# fork per case — useful for steady-state ns/op numbers you optimize
+# against.  See benchmark/run.rb for the cross-engine subprocess bench.
+cc_binary(
+    name = "embed_bench",
+    srcs = [
+        "examples/embed_bench.cc",
+        "examples/arcel_protobuf.h",
+    ],
+    deps = [
+        ":arcel",
+        ":celcpp_compat",
+        ":user_request_cc_proto",
+        "@protobuf//:protobuf",
+    ],
+)
