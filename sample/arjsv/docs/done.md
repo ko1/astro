@@ -70,14 +70,14 @@ follows RFC 3986 base-URI rules.
 | string | `minLength`          | character count, encoding-aware |
 | string | `maxLength`          | character count, encoding-aware |
 | string | `pattern`            | Ruby Regexp (precompiled at schema build) |
-| string | `format`             | subset: date / date-time / time / email / uri / ipv4 / ipv6 / uuid; unknown formats are annotation-only |
+| string | `format`             | date / date-time / time / duration / email (RFC 5322 + IP-literal) / idn-email (Unicode local-part) / hostname / idn-hostname (loose) / uri / uri-reference / iri / iri-reference / ipv4 / ipv6 / uuid / json-pointer / relative-json-pointer / regex / uri-template; unknown formats are annotation-only |
 | combinator | `allOf`          | chained AND |
 | combinator | `anyOf`          | chain w/ early-success |
 | combinator | `oneOf`          | counter-walk; exactly 1 match |
 | combinator | `not`            | invert |
 | combinator | `if`/`then`/`else` | branch on if-schema |
-| ref    | `$ref`               | `#`, `#/$defs/<name>`, `#/definitions/<name>`, general `#/<json-pointer>`, `<$id>` lookup; recursive refs supported |
-| ref    | `$defs` / `definitions` / `$anchor` | each entry compiles as its own SD; cyclic refs resolved via lazy slot |
+| ref    | `$ref`               | `#`, `#/$defs/<name>`, `#/definitions/<name>`, general `#/<json-pointer>`, `<$id>` lookup; recursive refs supported.  RFC 3986 base-URI resolution: relative refs resolve against the enclosing `$id`, nested `$id`s create new bases, anchors are looked up per-base |
+| ref    | `$defs` / `definitions` / `$anchor` / `$dynamicAnchor` | each entry compiles as its own SD; cyclic refs resolved via lazy slot.  `$dynamicAnchor` registered as both `#name` (legacy) and `<base>#name` (URI) but treated like `$anchor` for resolution (see Out of scope) |
 | dep    | `dependencies` (draft-07) / `dependentRequired` + `dependentSchemas` (2020-12) | unified per-key chain |
 | array  | `contains` (+ `minContains` / `maxContains`) | counts matches against the schema |
 | 2020-12 | `prefixItems`        | normalised to tuple `items` |
@@ -183,10 +183,16 @@ Run with `ruby test/run_official_suite.rb` (default = draft-07);
   `c->eval_keys` (Hash) and `c->eval_items` (count) are populated by
   successful property / pattern_property / additional_properties /
   items_uniform / items_tuple / additional_items / contains nodes when
-  the surrounding `eval_scope` has activated tracking.  Combinators
+  the surrounding `eval_scope` has activated tracking.  Sub-schemas with
+  their own `unevaluated_*` get a fresh `eval_scope`, and on success
+  **merge** their `eval_keys` / advance `eval_items` into the outer
+  scope (the in-place applicator aggregation rule).  Combinators
   (`anyOf` / `oneOf` / `not` / `if-then-else`) implement the spec's
   evaluation propagation rules (only matched branches contribute;
-  `not` blocks contribution; failing branches roll back via `dup`)
+  `not` blocks contribution; failing branches roll back via `dup`).
+  `unevaluatedProperties:true` / `unevaluatedItems:true` emit the
+  schema-form node with a `pass` body so all keys/items are marked as
+  evaluated by that keyword (per spec annotation rule)
 - Properties / required / enum / pattern_property / etc. are right-recursive
   chains terminated by `pass` / `fail`
 - Property names are interned as frozen Ruby Strings in the Schema's `consts`
@@ -195,15 +201,22 @@ Run with `ruby test/run_official_suite.rb` (default = draft-07);
 - `$ref` uses lazy slot indirection: each `$defs` name reserves a `consts`
   slot at preregistration time, then the body lowering writes the
   validate_root wrapper into the slot.  Recursive `$ref`s pick up *the slot*
-  during lowering and read the wrapper from it at runtime.  Three ref
-  resolution paths are supported in order:
-    1. `#`, `#/`              → root validate_root slot
-    2. `#/$defs/<name>` and `#/definitions/<name>` (single segment)
-                             → preregistered slot (forward refs OK)
-    3. General `#/path/seg/...`  → walk the original schema hash, lower
-                                   the pointed-at sub-schema lazily
-    4. `$id`-based ref       → match against an `$id`-map collected by
-                               a one-shot walk before lowering
+  during lowering and read the wrapper from it at runtime.  Resolution
+  order (top match wins):
+    1. `#`, `#/`              → root validate_root slot (only when no
+                               enclosing `$id`; otherwise resolve via 3)
+    2. `#/$defs/<name>` and `#/definitions/<name>` (single segment, no
+       enclosing sub-`$id`)   → preregistered slot (forward refs OK)
+    3. RFC 3986 absolute-URI lookup against `@id_map` (relative refs
+       are resolved against the current `$base_uri` first)
+    4. JSON-pointer `#/...` walk against the **current resource**
+       (= the schema declaring the active `$id`, or the top schema)
+    5. External / unsupported → annotation-only (always-valid)
+- `$id` push/pop: `lower(Hash)` enters a new base URI when the schema
+  declares `$id` (resolved against the parent base via RFC 3986); a
+  pure-fragment `$id` (`#name`) is registered as an anchor and does
+  NOT change the base.  `collect_ids` performs the same walk one-shot
+  before lowering to populate `@id_map`
 - `additionalProperties` / `patternProperties` / `propertyNames` use
   `rb_hash_foreach` with a closure struct carrying the target NODE's
   dispatcher (read at runtime).  Their schema bodies are listed as secondary

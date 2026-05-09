@@ -44,11 +44,17 @@ user_schema (Ruby Hash)
         │  (2) detect_draft
         │      $schema URI で draft 判定 → @assert_content / @ref_keeps_siblings 設定
         │  (3) collect_ids
-        │      schema-position を辿って $id / id / $anchor を id_map に登録
+        │      schema-position を辿って $id / id / $anchor を id_map に登録。
+        │      RFC 3986 で base URI を引き継ぎ、 absolute URI と raw
+        │      string の両方で id_map に登録 (relative ref 解決用)。
+        │      最上位の $id を @top_base に記憶
         │  (4) reserve_root_slot + preregister_defs
-        │      $defs を 2 段階で lower (forward / 再帰 ref 対応)
+        │      $defs を 2 段階で lower (forward / 再帰 ref 対応)。
+        │      lower 中は @base_uri = @top_base にして $id の resolve を有効化
         │  (5) lower(schema)
-        │      keyword ごとに alloc_* を呼んで NODE tree を組み立て
+        │      keyword ごとに alloc_* を呼んで NODE tree を組み立て。
+        │      sub-schema が $id を持つ場合は @base_uri stack を push/pop
+        │      しつつ降りる (ref 解決時に正しい base が見える)
         │
         ▼
   Schema._new(root_node_wrapper, consts_array, entries_array)
@@ -86,10 +92,17 @@ class Builder
                    # 「runtime-dispatch される NODE」
   @defs_idx        # Hash<String, idx> — $defs name → @consts のスロット位置
   @id_map          # Hash<String, sub_schema> — $id / id / $anchor で
-                   # 名前付けられた schema 断片
+                   # 名前付けられた schema 断片。 absolute URI と raw
+                   # ref string の両方をキーにして登録
   @path_cache      # Hash<JSON-pointer, idx> — 同じ pointer に対する
                    # 多重 lower を避けるキャッシュ
   @top_schema      # 全体ルート (general JSON-pointer ref で参照される)
+  @base_uri, @base_uri_stack
+                   # lower() 走行中の RFC 3986 base URI。 sub-schema の
+                   # $id 入退で push/pop される。 lower_ref が相対 ref を
+                   # この base で resolve する
+  @top_base        # 最上位 $id (collect_ids で記憶); preregister_defs
+                   # / lower 開始時に base として使う
   @assert_format   # 常に true (json_schemer 互換)
   @assert_content  # draft-07: true / 2019-09+: false
   @ref_keeps_siblings  # draft-07: false / 2019-09+: true
@@ -142,7 +155,10 @@ keyword を含む schema-level に入った時のみ)。
 - `const(canonical, idx)` / `enum(canonical, idx, next)` — `consts[idx]`
   との `rb_equal`。
 - `minimum(threshold, exclusive)` / `maximum` / `multiple_of(divisor)`
-  — `arjsv_value_to_double` 経由で数値比較。
+  — `arjsv_value_to_double` 経由で数値比較。 `multiple_of` は
+  `v / divisor` が overflow した時 `arjsv_rational_multiple_of`
+  (Ruby `Rational` 経由) に fallback して正確な整数倍判定をする
+  (1e308 / 0.5 系の edge case)。
 - `min_length(n)` / `max_length(n)` — `rb_str_strlen` で character count。
 - `pattern(c_str, regex_idx)` — `rb_reg_match`。 `format` の regex
   shortcut もここを通る。
@@ -193,17 +209,24 @@ wrapper を取り出して `head.dispatcher` 越しに dispatch する (= EVAL_A
 ### Scope / unevaluated_*
 
 `eval_scope(body)` — 実行前に `c->eval_keys = rb_hash_new()`、
-`c->eval_items = 0` を立てて body を実行、 後で restore。 これが
-立っている時だけ property/items 系が `arjsv_track_key` /
-`arjsv_track_item` を呼んで eval state に追加していく。
+`c->eval_items = 0` を立てて body を実行、 後で restore。 ただし
+**body が成功した場合**、 outer scope (saved_keys) が non-Qnil なら
+inner の `eval_keys` を outer に **マージ** してから戻す。 outer の
+`eval_items` も `max(saved, inner)` に進める。 これにより allOf
+member や `$ref` body 等の in-place applicator が inner で評価した
+key/item が enclosing scope の unevaluated_* check に届く (spec の
+"annotations from in-place applicators aggregate up")。
 
 `unevaluated_properties_schema(schema)` / `no_unevaluated_properties()`:
 `rb_hash_foreach` で data Hash を走査、 各 key を `c->eval_keys` で
 チェックし、 含まれていない (unevaluated な) key だけ schema で検証
-(or fail)。
+(or fail)。 `unevaluatedProperties: true` も schema 形式で emit され
+(body は `pass`)、 全 key を評価済みとして mark する (spec の
+annotation 規則)。
 
 `unevaluated_items_schema(schema)` / `no_unevaluated_items()`: data
-配列の `[c->eval_items, len)` レンジを処理。
+配列の `[c->eval_items, len)` レンジを処理。 同様に true 形式は
+schema-form (pass body) で全 item を mark する。
 
 ## 6. アノテーション伝播ルール (unevaluated_* 用)
 
@@ -216,12 +239,18 @@ wrapper を取り出して `head.dispatcher` 越しに dispatch する (= EVAL_A
 | `oneOf` | 各 branch を独立 state で走る | exactly-1 match 時のみその branch の state を復元 |
 | `not` | inner は別スナップショット下で走る | inner contributions は伝播しない |
 | `if/then/else` | if 成功 → then 走る (if + then 累積) / if 失敗 → ロールバックして else | 成否で振り分け |
+| sub-schema with `unevaluated_*` | `eval_scope` が新しい hash で走らせる | 成功時 outer に merge / 失敗時 discard |
+| `additionalItems: true` (= 2020-12 `items: true` after `prefixItems` rewrite) | 全要素を pass body で走査 | `track_items_count(len)` で全 index を mark |
 
 各 sub-schema 再帰 (property の値検証など) では `c->eval_keys = Qnil`
 にリセットする。 inner schema が独自の `eval_scope` を持っていれば
-そこで再 setup される。 持っていなければ inner の property nodes は
-トラッキングを skip するので、 inner contributions が outer eval_keys を
-汚染しない。
+そこで再 setup され、 成功時に merge で outer に annotations を返す。
+持っていなければ inner の property nodes はトラッキングを skip するので、
+inner contributions が outer eval_keys を汚染しない。
+
+**既知の制限**: `c->eval_items` は prefix-count (int) なので、
+`contains` で個別 index を sparse に track できない。 set 表現に変えれば
+2020-12 `unevaluatedItems` の `contains` 連動 2 件が直る。 [`todo.md`](./todo.md) 参照。
 
 ## 7. AOT specialization
 
@@ -272,14 +301,18 @@ code_store/all.so` で確認すると、 残る `call` は `rb_hash_lookup2` /
 - 主たる時間消費は CRuby C API (`rb_hash_lookup2`、 `rb_str_strlen`
   等) と Ruby method dispatch (`vm_exec_core`)。 ASTro 側 dispatch は
   `objdump` で 1 関数に inline 済、 ほぼゼロ。
-- AOT vs interp の差は ~1-2× 程度に留まる (CRuby C API が支配的なため)。
-  ベンチでは AOT が時々わずかに速いが、 interp も branch predictor が
-  hot path を完全に学習するので大差にならない。
-- vs json_schemer: 100-200× の優位 (我々の AST + native dispatcher
-  チェーンに対し、 json_schemer は per-validate で `deep_stringify_keys`
-  + Ruby method dispatch chain)。
-- vs rj_schema (Rust + RapidJSON、 FFI 経由): 4-19×。 rj_schema は
+- AOT vs interp はほぼ tied。 interp の indirect call は branch
+  predictor が hot path を完全に学習しており、 AOT で潰せる残コストが
+  小さい。 `objdump` でも entry SD は AST tree 全体が `static inline`
+  展開されていて、 残る `call` は CRuby C API のみ。
+- vs json_schemer: 25-180× の優位。
+- vs rj_schema (Rust + RapidJSON、 FFI 経由): 4-11×。 rj_schema は
   per-call FFI 境界 + JSON parsing が固定オーバーヘッド。
+- 床は **API 制約由来** (`valid?(ruby_hash)` シグネチャ → 1 property =
+  `rb_hash_lookup2` ~25 ns + Ruby method dispatch ~45 ns)。 これ以上を
+  狙うには `c->consts[idx]` 越しの consts indirection を消す
+  framework-level enhancement (ASTro 側で SD `.rodata` に VALUE を
+  embed) が要る。 [`todo.md`](./todo.md) 参照。
 
 ## 10. デバッグ
 

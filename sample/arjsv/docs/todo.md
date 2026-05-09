@@ -62,6 +62,18 @@
 - [x] Format regex shortcut for pure-regex formats (email/uuid/ipv4
       via `node_pattern` instead of Proc-based `node_format`)
 
+### Tried, no measurable effect (kept rejected)
+- ~~Conditionalise the `eval_keys` / `eval_items` save/restore in
+   property/items nodes (branch on `c->eval_keys != Qnil` to skip
+   when no `unevaluated_*` is in scope)~~.  Implemented as an
+   `ARJSV_TRACK_SAVE/RESTORE` macro pair, measured: user_object
+   303k vs 308k baseline, array150 334k vs 334k — within noise.
+   Reason: 4 register saves + 4 stores + 4 restores are absorbed by
+   L1 + store buffer; the per-node cost is dominated by
+   `rb_hash_lookup2` (~25 ns) which dwarfs the save/restore.
+   Reverted; the unconditional pattern is kept for code clarity.
+   See `docs/perf.md` §"Spec-compliance overhead".
+
 ## Open
 
 ### spec compatibility (deep edges)
@@ -80,19 +92,22 @@
 - [ ] Strict ECMA-262 `pattern` validation (reject `\a` etc.)
 
 ### performance follow-ups
-- [ ] Conditionalise the `eval_keys` / `eval_items` save/restore in
-      property/items nodes — currently unconditional, costs ~25 % on
-      schemas without `unevaluated_*`.  Branch on `c->eval_keys != Qnil`
-- [ ] Numeric fast path in `minimum` / `maximum` (skip `NUM2DBL` for
-      fixnum / flonum)
-- [ ] Type-check specialisation per single-type mask
+ほぼ「やっても意味なし or framework レベルの仕事」 なので arjsv 単体
+ではここで打ち止め。 arjsv の床は CRuby C API 由来で、 framework か
+API 制約を変えないと進まない。
+
 - [ ] **ASTro framework-level**: embed Ruby VALUE constants directly in
       SD `.rodata` via a reload-time fixup pass.  Today `c->consts[idx]`
-      adds one load per property check; with a reload-time fixup the SD
-      could reference fstring VALUEs as literals.  Cross-cutting with
-      naruby / abruby — belongs in `runtime/astro_code_store.{h,c}`
+      adds one load per property check (~1-2 ns); with a reload-time
+      fixup the SD could reference fstring VALUEs as literals, removing
+      one indirection per property.  Cross-cutting with naruby / abruby —
+      belongs in `runtime/astro_code_store.{h,c}`
 - [ ] `pattern` via `sample/astrogre`: replace Onigmo with an
-      astrogre-compiled regex specialiser
+      astrogre-compiled regex specialiser (only helps `pattern` heavy
+      schemas; format regexes already use the shortcut path)
+- [ ] Numeric fast path in `minimum` / `maximum` (skip `NUM2DBL` for
+      fixnum / flonum) — small, schema-shape dependent
+- [ ] Type-check specialisation per single-type mask — small
 
 ### misc
 - [ ] CLI tool: `exe/arjsv` — validate file / stdin against a schema

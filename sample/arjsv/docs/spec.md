@@ -14,15 +14,19 @@ JSON Schema 自体の規範文書は [json-schema.org](https://json-schema.org/)
 
 | draft | 自動検出 | 公式テストスイート |
 |---|---|---|
-| draft-04 | `$schema` に `draft-04` を含む | 902/917 = 98.36% |
-| draft-06 | 同 `draft-06` | 1185/1209 = 98.01% |
-| draft-07 | **default** (no `$schema` / 該当 URI) | 1501/1584 = 94.76% |
-| 2019-09 | 同 `2019-09` | (同種カバー) |
-| 2020-12 | 同 `2020/12` | 1924/2069 = 92.99% |
+| draft-04 | `$schema` に `draft-04` を含む | 906 / 917 = **98.80%** |
+| draft-06 | 同 `draft-06` | 1196 / 1209 = **98.92%** |
+| draft-07 | **default** (no `$schema` / 該当 URI) | 1513 / 1584 = **95.52%** |
+| 2019-09 | 同 `2019-09` | (2020-12 と同種カバー) |
+| 2020-12 | 同 `2020/12` | 1957 / 2069 = **94.59%** |
 
 `$schema` がない場合は draft-07 として扱う。 一部 keyword は draft 間で
 意味が違うので、 アサーション/アノテーション切替や keyword renaming は
 内部で transparent に実施。
+
+残失敗の内訳は [`done.md`](./done.md) §「failure breakdown」参照。 短く
+言うと **外部依存 (libidn / HTTP fetch) が要るもの** と **`$dynamicRef`
+の dynamic-scope 解決** がほぼ全部。
 
 ## Public API
 
@@ -181,7 +185,8 @@ annotation-only がデフォルト。 arjsv は **常に assertion mode**
 | `date-time`          | RFC 3339 + leap second 制約 |
 | `time`               | RFC 3339 §5.6 full-time (timezone offset 必須) |
 | `duration` (2019-09+) | ISO 8601 ABNF (Y/M/D 順序、 W 単独、 fractional `S` は禁止) |
-| `email` / `idn-email` | local part の連続 `.` 不許可 等の loose 規則 |
+| `email` | RFC 5322 dot-atom + quoted-string local part / RFC 5321 domain (label or `[<IPv4>]` / `[IPv6:<IPv6>]`) |
+| `idn-email` | 同 RFC 5322 構造、 ただし local-part / domain label に Unicode `\p{L}\p{N}\p{M}` を許可 |
 | `hostname` / `idn-hostname` | RFC 1123 ベース。 IDNA contextual rules は libidn 無しの近似 |
 | `ipv4` / `ipv6`      | `IPAddr` 経由、 ipv6 の zone-id / netmask は拒否 |
 | `uuid`               | 8-4-4-4-12 hex |
@@ -214,14 +219,21 @@ annotation-only がデフォルト。 arjsv は **常に assertion mode**
 | `$anchor` / `$dynamicAnchor` | local fragment ID |
 | `$dynamicRef`        | 現在 `$ref` 同等扱い (full dynamic scoping は未対応) |
 
-`$ref` の解決パス:
-1. `#` / `#/` → 自分自身 (root pointer)
+`$ref` の解決パス (上から優先):
+1. `#` / `#/` → 自分自身 (root pointer、 ただし enclosing `$id` が
+   無いときのみ; 入子 `$id` 配下では下記 4 経由で resolve される)
 2. `#/$defs/<name>` / `#/definitions/<name>` (single segment) → 事前登録
    slot 経由 (forward / 再帰 ref OK)
-3. `#/<json-pointer>` (multi-segment) → schema を辿って lazy lower
-4. `<$id>` 完全一致 → `$id` map ルックアップ
-5. それ以外 (HTTP / URN / 相対 URI) → annotation 化 (always-valid に
+3. **RFC 3986 base-URI resolution**: 現在の `$id` を base に `$ref` を
+   absolute URI へ resolve し、 `<$id>`-map を引く
+4. `#/<json-pointer>` (multi-segment) → 現在 resource (= 現在 `$id` の
+   schema、 無ければ top schema) を起点に pointer を歩く
+5. それ以外 (外部 HTTP URI / URN) → annotation 化 (always-valid に
    フォールバック、 `$VERBOSE` で警告)
+
+`$id` は declared 時点の `$base_uri` に対し RFC 3986 で resolve され、
+absolute / relative どちらの形でも `id_map` に登録される。 `$anchor`
+/ `$dynamicAnchor` は `<base>#name` と `#name` の両方で登録される。
 
 `$ref` の sibling 扱い:
 - draft-04 / draft-06 / draft-07: sibling 無視 (json_schemer と一致)
@@ -307,11 +319,28 @@ data    # => { 'name' => 'Alice', 'role' => 'user', 'tags' => [] }
 
 ## 制限事項
 
-- 外部 `$ref` (HTTP / URN) は未対応 (always-valid フォールバック)
-- ネストされた `$id` 内での相対 URI 解決は未対応
-- `$dynamicRef` の dynamic scoping は static `$ref` と同等扱い
-- `format: idn-hostname` の IDNA-2008 contextual rules は libidn が
-  無いため近似実装
-- ECMA-262 と Onigmo の正規表現エンジン差異 (一部 \s 文字種など) は
-  best-effort 互換 (`pattern` 内で char-class 外の `\s` / `\S` を Unicode
-  whitespace へ書き換え)
+「外部依存なし」 の方針で意図的に未対応にしている / できない項目:
+
+- **外部 `$ref` (HTTP fetch / URN base URI)**: ネットワーク不要を維持。
+  公式メタスキーマ自体を fetch する必要があるテスト
+  (`refRemote.json` / `definitions.json` の metaschema チェック /
+  `cross-draft.json` / `vocabulary.json`) が落ちる。
+- **`$dynamicRef` の dynamic-scope 解決**: 現状は static `$ref` 同等
+  (matching `$dynamicAnchor` を id_map から探す)。 dynamic scope に
+  よって解決先が変わるケース (2020-12 `dynamicRef.json` の 16 件) は
+  落ちる。
+- **`format: hostname` / `idn-hostname` / `idn-email` の IDNA-2008
+  punycode + Unicode contextual rules**: libidn / ICU テーブル相当が
+  必要。 ASCII / UTF-8 ベースの近似のみ実装。
+- **ECMA-262 strict pattern**: `pattern` を Onigmo で評価 (char-class 外
+  の `\s` / `\S` は Unicode whitespace に書き換え)。 ECMA が拒否する
+  `\a` 等の制御エスケープを arjsv は受け付ける (1 件落ち)。
+- **`unevaluatedItems` + `contains` の sparse 追跡**: `c->eval_items` が
+  prefix-count (int) なので、 contains で matched 個別 index だけを
+  track することができない (2 件落ち)。 sparse-set 表現にすれば
+  fix できる。
+
+実装した範囲 (RFC 3986 base resolution、 quoted-string email、 Rational
+fallback multipleOf、 unevaluated_* annotation propagation、
+`unevaluatedProperties:true` / `unevaluatedItems:true` の全評価マーク等)
+は [`done.md`](./done.md) と [`todo.md`](./todo.md) を参照。

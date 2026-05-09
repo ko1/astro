@@ -83,16 +83,24 @@ i.e. it's doing real work, not just dispatch.
 The 2019-09+ `unevaluatedProperties` / `unevaluatedItems` work added a
 per-call save/restore of `c->eval_keys` and `c->eval_items` to every
 property / items / pattern_property / etc. node — even for schemas that
-don't use the `unevaluated_*` keywords.  Currently unconditional (not
-conditioned on `c->eval_keys != Qnil`).  Cost ≈ 4 register saves + 4
-stores + 4 restores per sub-schema descent.
+don't use the `unevaluated_*` keywords.  Currently unconditional.
 
-Measured on user_object (with no `unevaluated_*` in the schema): no
-visible regression in the headline bench above (~1.1M ips both directions),
-because the writes are to the same VALUE the read just produced and the
-compiler / hardware coalesces them well.  Conditionalising the
-save/restore is on the todo list as "branch on `c->eval_keys != Qnil`"
-in `docs/todo.md`.
+We tried gating the save/restore on `c->eval_keys != Qnil` (so schemas
+without `unevaluated_*` skip the work entirely; in those schemas the
+saved value is always Qnil/-1 anyway, so the writes are dead).  Result:
+**no measurable change** on user_object (303k ± 5% vs 308k ± 4%
+baseline) and array-of-150-ints (334k vs 334k).
+
+Why: the unconditional 4 register saves + 4 stores + 4 restores hit L1
+and the store buffer absorbs them; the writes are to the same VALUE
+the read just produced and the OOO core coalesces.  Branch + skip
+saves the L1 traffic but doesn't move the wall clock because the rest
+of the per-node cost (`rb_hash_lookup2` ~25 ns) is an order of
+magnitude bigger.
+
+The optimisation is dropped from the todo list: cleaner code, no perf
+gain.  This is the typical shape of arjsv's perf landscape — the
+remaining cost is in CRuby C API calls that arjsv can't reach.
 
 ## AOT vs interp on small schemas: still ~tied
 
@@ -130,23 +138,42 @@ This is the opposite trade-off from naruby / calc, where per-node work
 is ~1 ns of arithmetic and dispatch is dominant.  Here per-node work is
 a CRuby C API call (~10–80 ns) that the framework can't reach into.
 
-## Where AOT *could* still help
+## Why AOT doesn't help on JSON Schema (vs astrogre etc.)
 
-1. **Bigger schemas where dispatch counts add up** — at some N the
-   branch predictor capacity gives out and AOT pulls ahead.  The
-   `api response x50` case is hint-ward of this (16k tied — but AOT's
-   variance is lower); not yet decisive.
-2. **Once `rb_hash_lookup2` is reduced** — e.g. by also embedding a
-   per-property hash-slot index cache: the relative weight of dispatch
-   goes up and AOT wins more.  Diminishing-returns territory.
-3. **Embedding the fstring VALUE in the SD as a literal** instead of
-   indirecting through `c->consts[idx]`: noted by the user as an
-   ASTro framework-level enhancement (cross-cutting with abruby etc.).
-   Today consts indices stay stable across SD reuses but the actual
-   Ruby VALUE doesn't (fresh process = fresh fstring identities).  A
-   reload-time fixup pass on the SD's `.rodata` would let SDs reference
-   VALUEs directly, removing one load per property check.  Listed in
-   `docs/todo.md`.
+JSON Schema validation is mostly a linear "type check → property loop
+→ value check" walk.  Branching is shallow and predictable
+(`allOf` / `oneOf` / `if`/`then`/`else` are typically 2-3 way max in
+real schemas).  Per-node work is **a CRuby C API call** (~10-80 ns)
+that gcc can't inline through.
+
+Compare astrogre (regex engine, same framework):
+- per-node work is ~1-2 ns of char compare
+- branching is deep (alternation / repetition / lookahead) and
+  unpredictable
+- AOT fuses the start-position scan loop and the regex chain into one
+  SD → 3-15× wins
+
+For arjsv to benefit from AOT-style fusion you'd need a schema with
+deep `oneOf` chains (20+ branches), huge flat `enum`s, or other
+dispatch-heavy structures.  Real-world OpenAPI schemas don't have those
+shapes, so the benchmarks tie.
+
+## Floor
+
+The floor for "Ruby validator that takes a Ruby Hash" is the cost of:
+- Ruby `valid?` method dispatch: ~45 ns per call (measured against a
+  pure-Ruby `def valid?(_); true; end`)
+- one `rb_hash_lookup2` per property: ~25 ns (CRuby internal, untouchable)
+
+So a 4-property `valid?` on a Hash is ~145 ns floor (45 + 4×25 = 145).
+arjsv interp on user_object hits ~3 µs (≈ 1 µs is the floor for that
+schema's 9-ish lookups + Ruby boundary; rest is format regex + a few
+short-circuits).
+
+To push lower you'd need either (a) drop the Ruby Hash API (e.g. take
+JSON string + own parser, like rj_schema does — but then you lose the
+"already-parsed Hash" speed advantage) or (b) framework-level work to
+remove the `c->consts[idx]` indirection (see `docs/todo.md`).
 
 ## Methodology
 
