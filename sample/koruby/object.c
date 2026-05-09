@@ -3850,7 +3850,15 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         .caller_running_block = running_block,
     };
     c->current_frame = &frame2;
+    /* Reset running_block: this is a fresh method body, not lexically
+     * inside the caller's block.  Without this, `super` inside the
+     * callee resolves via the caller block's defining_method (e.g.
+     * `Class#new` → user `initialize` → `super` ends up looking up the
+     * outer block's enclosing method's name). */
+    struct korb_proc *prev_running2 = running_block;
+    running_block = NULL;
     VALUE r = EVAL(c, m->u.ast.body);
+    running_block = prev_running2;
     c->current_frame = frame2.prev;
     c->fp = prev_fp;
     c->sp = prev_sp;
@@ -4117,12 +4125,43 @@ void korb_runtime_init(void) {
         korb_const_set(cObject, korb_intern("Encoding"), (VALUE)cEnc);
         VALUE utf8 = korb_object_new(cEnc);
         korb_ivar_set(utf8, korb_intern("@name"), korb_str_new_cstr("UTF-8"));
-        korb_const_set(cEnc, korb_intern("UTF_8"),     utf8);
-        korb_const_set(cEnc, korb_intern("ASCII_8BIT"), utf8);
-        korb_const_set(cEnc, korb_intern("BINARY"),    utf8);
-        korb_const_set(cEnc, korb_intern("US_ASCII"),  utf8);
-        korb_const_set(cEnc, korb_intern("EUC_JP"),    utf8);
-        korb_const_set(cEnc, korb_intern("SHIFT_JIS"), utf8);
+        korb_const_set(cEnc, korb_intern("UTF_8"),       utf8);
+        korb_const_set(cEnc, korb_intern("ASCII_8BIT"),  utf8);
+        korb_const_set(cEnc, korb_intern("BINARY"),      utf8);
+        korb_const_set(cEnc, korb_intern("US_ASCII"),    utf8);
+        korb_const_set(cEnc, korb_intern("ASCII"),       utf8);
+        korb_const_set(cEnc, korb_intern("EUC_JP"),      utf8);
+        korb_const_set(cEnc, korb_intern("EUC_TW"),      utf8);
+        korb_const_set(cEnc, korb_intern("SHIFT_JIS"),   utf8);
+        korb_const_set(cEnc, korb_intern("Shift_JIS"),   utf8);
+        korb_const_set(cEnc, korb_intern("Windows_31J"), utf8);
+        korb_const_set(cEnc, korb_intern("UTF_16"),      utf8);
+        korb_const_set(cEnc, korb_intern("UTF_16BE"),    utf8);
+        korb_const_set(cEnc, korb_intern("UTF_16LE"),    utf8);
+        korb_const_set(cEnc, korb_intern("UTF_32"),      utf8);
+        korb_const_set(cEnc, korb_intern("UTF_32BE"),    utf8);
+        korb_const_set(cEnc, korb_intern("UTF_32LE"),    utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_1"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_2"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_3"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_4"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_5"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_6"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_7"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_8"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_9"),  utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_10"), utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_11"), utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_13"), utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_14"), utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_15"), utf8);
+        korb_const_set(cEnc, korb_intern("ISO_8859_16"), utf8);
+        korb_const_set(cEnc, korb_intern("Windows_1252"), utf8);
+        korb_const_set(cEnc, korb_intern("Windows_1251"), utf8);
+        korb_const_set(cEnc, korb_intern("CP932"),       utf8);
+        korb_const_set(cEnc, korb_intern("KOI8_R"),      utf8);
+        korb_const_set(cEnc, korb_intern("Big5"),        utf8);
+        korb_const_set(cEnc, korb_intern("GB18030"),     utf8);
     }
     korb_init_builtins();
     /* $: / $LOAD_PATH: array initialized with at least one path so

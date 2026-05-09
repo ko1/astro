@@ -12,17 +12,43 @@ require_relative "tu_shim"
 # `require 'test/unit'` in the loaded test file silently succeeds.
 # Defining them on Object directly (not via Kernel) so they don't
 # accidentally shadow module-level Kernel.require dispatches.
-unless defined?(@@require_stubbed)
-  @@require_stubbed = true
+$require_stubbed ||= false
+unless $require_stubbed
+  $require_stubbed = true
+  $loaded_features ||= {}
+  $require_target_dir = nil   # set just below to the test file's dir
   class Object
+    # `require` (gem-style) — for `require 'test/unit'` etc. just succeed.
+    # We don't have a load path so support files aren't reachable this way.
     def require(_name); true; end
-    def require_relative(_name); true; end
+
+    # `require_relative 'foo'` — try to actually load the file from the
+    # test's own directory so e.g. test_marshal.rb's
+    # `require_relative 'marshaltestlib'` works.
+    def require_relative(name)
+      base = $require_target_dir
+      return true unless base
+      path = File.join(base, name.to_s)
+      path += ".rb" unless path.end_with?(".rb")
+      return true unless File.exist?(path)
+      return true if $loaded_features[path]
+      $loaded_features[path] = true
+      load path
+      true
+    rescue Exception => e
+      # Failure to load support file: print + carry on.  Tests that
+      # depend on it will fail individually rather than wedging the run.
+      puts "  REQUIRE_RELATIVE FAIL: #{name} — #{e.class}: #{e.message}"
+      true
+    end
+
     def gem(*_args); true; end
   end
 end
 
 target = ARGV[0]
 abort "no test file" unless target
+$require_target_dir = File.dirname(File.expand_path(target))
 
 before = Test::Unit::TestCase.descendants rescue (Test::Unit::TestCase.respond_to?(:descendants) ? Test::Unit::TestCase.descendants : [])
 

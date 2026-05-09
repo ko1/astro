@@ -4097,6 +4097,58 @@ module Kernel
   def autoload?(_name, _inherit = true); nil; end unless method_defined?(:autoload?)
 end
 
+# Regexp — stub class.  koruby doesn't have a regex engine yet (待
+# astrorge); test files that mention Regexp at top level (literals,
+# `is_a?(Regexp)` checks, etc.) only need the constant to exist.
+# Methods are no-ops / returning nil so they don't crash.
+class Regexp
+  IGNORECASE = 1
+  EXTENDED   = 2
+  MULTILINE  = 4
+  FIXEDENCODING = 16
+  NOENCODING    = 32
+
+  def self.escape(s); s.to_s; end
+  def self.quote(s); s.to_s; end
+  def self.compile(*a); new(*a); end
+  def self.union(*); new(""); end
+  def self.last_match(*); nil; end
+  def self.try_convert(obj); obj.is_a?(Regexp) ? obj : nil; end
+
+  attr_reader :source, :options
+  def initialize(src = "", opts = 0)
+    @source = src.to_s
+    @options = opts.is_a?(Integer) ? opts : 0
+  end
+  def =~(_str); nil; end
+  def ===(_obj); false; end
+  def match(*); nil; end
+  def match?(*); false; end
+  def casefold?; (@options & IGNORECASE) != 0; end
+  def to_s; "(?-mix:#{@source})"; end
+  def inspect; "/#{@source}/"; end
+  def names; []; end
+  def named_captures; {}; end
+  def hash; @source.hash; end
+  def ==(o); o.is_a?(Regexp) && o.source == @source && o.options == @options; end
+  def eql?(o); self == o; end
+end
+
+# MatchData — companion stub.  Returned from the (currently nil)
+# Regexp#match.  Tests check `is_a?(MatchData)` on real matches which
+# we can't produce, but constant lookup must not crash.
+class MatchData
+  def initialize(*); end
+  def [](*); nil; end
+  def to_a; []; end
+  def captures; []; end
+  def named_captures; {}; end
+  def names; []; end
+  def size; 0; end
+  alias length size
+  def to_s; ""; end
+end
+
 class Object
   # Default Object#<=> — 0 when self == other, nil otherwise.  CRuby
   # exposes this on BasicObject's chain so every object gets it.
