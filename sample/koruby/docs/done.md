@@ -110,6 +110,34 @@ mock-shim の slot 衝突を解消したことで隠れていた fail が一気�
 CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
 **in-scope 67 ファイル: 1,108,357 / 1,430,888 pass (77.5%)**。
 
+### CRuby test/ruby/ 全 135 ファイル sweep (2026-05-09)
+
+2026-05-09 時点での無 fairness raw sweep (60s/file timeout):
+
+| 状態           | sweep #1 (起点) | sweep #4 (現在) | 主な内訳 |
+|----------------|----------------:|----------------:|---|
+| ≥1 pass        | 62 / 135        | 68 / 135        | (50%) |
+| total=0 (load 失敗等) | 30 / 135 | 17 / 135        | shim 拡張 / require_relative |
+| LOAD ERROR     | 23              | 11              | Encoding / IO / RubyVM / Process / Bug 等 shim |
+| dumped core    | 7               | 7               | test_super / test_case / test_pattern_matching / test_fiber / test_io_m17n→fix済 |
+| timeout (empty)| 3               | 2               | test_signal / test_optimization 等 |
+| pass 合計      | 834,385         | 1,008,552       | (test_integer 蘇生 +171k で大半) |
+
+主な修正:
+ - **super dispatch 修正** (object.c:korb_dispatch_binop): caller block の
+   defining_method を漏らしていた → `Class#new → user initialize → super`
+   が "run_all" などの caller method 名で lookup する致命バグを修正。
+   test_string が 0→1965 pass に。
+ - **tu_shim 大幅拡張**: Encoding (.find / 70 alias) / Process (UID/GID/CLOCK_*) /
+   Thread::Queue / IO 定数 / File::Constants / RubyVM::AbstractSyntaxTree /
+   Bug / Socket / Dir.mktmpdir / Tempfile / FileUtils。
+ - **Float SIGFPE 修正**: `(long)(big_double)` の UB を `korb_dbl2int` (Bignum
+   fallback 付き) に置換。 flt_floor/ceil の n<0 の div-by-0 も修正。
+ - **Integer 無限再帰 SEGV**: `2 ** -2^62` で fixnum overflow → 無限再帰 →
+   stack overflow を fixnum 範囲外なら 0.0 返却で回避。
+ - **Comparable#== 無限再帰**: thread-local depth counter で 16 段で false。
+ - **build_exec_argv の NULL CTX**: caller から CTX 渡すように改修。
+
 ### CRuby spec/ruby/language/ (rubyspec 互換)
 
 CRuby 公式の rubyspec (mspec ベース) を **mspec_shim 経由** で実行。

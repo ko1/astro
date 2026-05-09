@@ -592,7 +592,7 @@ class RubyVM
     end
   end
   unless const_defined?(:AbstractSyntaxTree)
-    class AbstractSyntaxTree
+    module AbstractSyntaxTree
       class Node
         def children; []; end
         def type; :NONE; end
