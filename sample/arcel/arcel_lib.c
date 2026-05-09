@@ -69,6 +69,16 @@ arcel_env_new(void)
 {
     if (!g_inited) {
         OPTION.quiet = true;     /* default for embedders; CLI can flip back */
+        /* astro_cs_build invokes a child `make` to bake the SD .c files
+         * into all.so.  When ccache is wedged onto the build path (e.g.
+         * via /usr/bin masquerade or CC=ccache wrappers) and its cache
+         * dir is unwritable (read-only home, sandbox, CI), the bake
+         * silently fails ("ccache: error: failed to create temporary
+         * file ... Read-only file system").  CCACHE_DISABLE=1 makes
+         * ccache forward to the underlying compiler without touching
+         * the cache.  Set it here so arcel_compile() works out of the
+         * box.  Caller can override by setenv'ing it to "" first. */
+        if (!getenv("CCACHE_DISABLE")) setenv("CCACHE_DISABLE", "1", 1);
         INIT();
         g_inited = true;
     }

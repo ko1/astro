@@ -34,8 +34,9 @@
 `docs/perf.md` 詳細。優先順:
 
 - [ ] AOT 経路を機能させる
-  - [ ] `astro_cs_build` の make が ccache 経由で落ちる問題: env を
+  - [x] `astro_cs_build` の make が ccache 経由で落ちる問題: env を
         透過させるか、Makefile 経路で `CCACHE_DISABLE=1` を強制
+        → Phase 9 (2026-05-09): `arcel_env_new` で `CCACHE_DISABLE` 未設定時に自動で `=1` する
   - [ ] AOT 動作確認後、interp との差を取り直す
 - [ ] map lookup の hash table 化
   - [ ] `arcel_field` / `arcel_index`: 8 entry を超えたら hash table
@@ -52,7 +53,8 @@
 
 ## 機能拡張 (要望に応じて)
 
-- [ ] timestamp / duration の代表的 op (`> < ==`, `+ duration`、文字列 parse)
+- [x] timestamp / duration の代表的 op (`> < ==`, `+ duration`、文字列 parse)
+       → Phase 7 (2026-05-09): AC_TIMESTAMP / AC_DURATION + tz selectors. timestamps suite 71/73 (97.3%)。残 2 は `google.protobuf.Timestamp` 型リテラル参照
 - [ ] cel-go ext: `strings.replace`, `lists.range` 等
 - [ ] `optional` 型 (`x.?y`, `optional.of(...)`)
 - [ ] PG mode (代表入力で実 input shape を観測 → 第 2 段の specialize)
@@ -74,9 +76,10 @@
 
 ## Known issues / 既知の差分
 
-- [ ] `CCACHE_DISABLE=1` を毎回付ける必要がある (`astro_cs_build` の subprocess
+- [x] `CCACHE_DISABLE=1` を毎回付ける必要がある (`astro_cs_build` の subprocess
        が ccache を見にいく)。Makefile 側で吸収するか、astro_cs_build を
        直す
+       → Phase 9 (2026-05-09): `arcel_env_new` 内の setenv で吸収。CLI も embedder も prefix 不要。明示で `CCACHE_DISABLE=` を空に setenv すれば従来動作
 - [ ] AOT が interp と tied — 実は AOT build 自体が失敗していて
        interp に fallback している。詳細は perf.md
 - [ ] map lookup が flat scan: 大きい入力での性能テストはまだ。
