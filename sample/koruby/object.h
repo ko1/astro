@@ -571,6 +571,7 @@ korb_num2dbl(VALUE v) {
 }
 VALUE korb_bignum_new_str(const char *str, int base);
 VALUE korb_bignum_new_long(long v);
+VALUE korb_dbl2int(double v);
 VALUE korb_int_plus(VALUE a, VALUE b);
 VALUE korb_int_minus(VALUE a, VALUE b);
 VALUE korb_int_mul(VALUE a, VALUE b);

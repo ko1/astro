@@ -187,19 +187,28 @@ static VALUE flt_abs2(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE flt_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
     double v = korb_num2dbl(self);
     long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 0;
-    if (n == 0) return INT2FIX((long)floor(v));
+    if (n == 0) return korb_dbl2int(floor(v));
     /* Float#floor(n) returns Float for n > 0, Integer for n < 0. */
-    double m = pow(10.0, (double)n);
-    if (n > 0) return korb_float_new(floor(v * m) / m);
-    return INT2FIX((long)floor(v * m) / (long)m);
+    if (n > 0) {
+        double m = pow(10.0, (double)n);
+        return korb_float_new(floor(v * m) / m);
+    }
+    /* n < 0: round to nearest 10^|n|, return Integer.  Compute via
+     * scale-divide-floor-multiply (instead of v * pow(10, n) which
+     * underflows to 0 for very negative n and triggered a SIGFPE). */
+    double scale = pow(10.0, (double)(-n));
+    return korb_dbl2int(floor(v / scale) * scale);
 }
 static VALUE flt_ceil(CTX *c, VALUE self, int argc, VALUE *argv) {
     double v = korb_num2dbl(self);
     long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 0;
-    if (n == 0) return INT2FIX((long)ceil(v));
-    double m = pow(10.0, (double)n);
-    if (n > 0) return korb_float_new(ceil(v * m) / m);
-    return INT2FIX((long)ceil(v * m) / (long)m);
+    if (n == 0) return korb_dbl2int(ceil(v));
+    if (n > 0) {
+        double m = pow(10.0, (double)n);
+        return korb_float_new(ceil(v * m) / m);
+    }
+    double scale = pow(10.0, (double)(-n));
+    return korb_dbl2int(ceil(v / scale) * scale);
 }
 /* Float#eql? — type-strict.  `1.0.eql?(1) == false` in CRuby; the
  * default Object#eql? falls through to ==, which coerces, so we need
@@ -218,9 +227,9 @@ static VALUE flt_round(CTX *c, VALUE self, int argc, VALUE *argv) {
     double v = korb_num2dbl(self);
     /* No-arg / arg==0 → round to integer, return Integer. */
     if (argc < 1 || (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0)) {
-        return INT2FIX((long)round(v));
+        return korb_dbl2int(round(v));
     }
-    if (!FIXNUM_P(argv[0])) return INT2FIX((long)round(v));
+    if (!FIXNUM_P(argv[0])) return korb_dbl2int(round(v));
     long n = FIX2LONG(argv[0]);
     if (n > 0) {
         /* Round to n decimals, return Float. */
@@ -233,7 +242,8 @@ static VALUE flt_round(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE flt_truncate(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* truncate toward zero — same as to_i for Float. */
-    return INT2FIX((long)korb_num2dbl(self));
+    double v = korb_num2dbl(self);
+    return korb_dbl2int(v >= 0 ? floor(v) : ceil(v));
 }
 
 static VALUE flt_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -285,7 +295,8 @@ static VALUE flt_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
 }
 VALUE flt_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return INT2FIX((long)korb_num2dbl(self));
+    double v = korb_num2dbl(self);
+    return korb_dbl2int(v >= 0 ? floor(v) : ceil(v));
 }
 static VALUE flt_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;

@@ -1811,6 +1811,31 @@ VALUE korb_bignum_new_long(long v) {
     return (VALUE)b;
 }
 
+/* Convert a double (already truncated/rounded by the caller) to an
+ * Integer.  Returns Fixnum when it fits, otherwise Bignum.  Required
+ * for Float#ceil / floor / truncate / to_i / round on values whose
+ * integer part exceeds LONG_MAX (where `(long)v` is UB and SIGFPE on
+ * x86). */
+VALUE korb_dbl2int(double v) {
+    /* NaN / +-Inf: callers should have caught these, but if they
+     * didn't (CRuby would raise FloatDomainError), avoid the UB cast
+     * and return 0 silently — better than SIGFPE on x86. */
+    if (isnan(v) || isinf(v)) return INT2FIX(0);
+    /* LONG_MIN/MAX as exact doubles; the comparison is safe because
+     * (double)LONG_MAX rounds up to 2^63, not down. */
+    if (v >= -9.223372036854775e18 && v <= 9.223372036854775e18) {
+        return korb_bignum_new_long((long)v);
+    }
+    struct korb_bignum *b = korb_xmalloc(sizeof(*b));
+    b->basic.flags = T_BIGNUM;
+    b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
+    mpz_t *z = korb_xmalloc(sizeof(mpz_t));
+    mpz_init_set_d(*z, v);
+    b->mpz = z;
+    korb_bignum_register_finalizer(b);
+    return (VALUE)b;
+}
+
 static void to_mpz(VALUE v, mpz_t out) {
     if (FIXNUM_P(v)) mpz_init_set_si(out, FIX2LONG(v));
     else mpz_init_set(out, (mpz_ptr)((struct korb_bignum *)v)->mpz);

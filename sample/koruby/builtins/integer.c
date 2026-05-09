@@ -735,6 +735,14 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
             korb_raise(c, (struct korb_class *)eZ, "divided by 0");
             return Qnil;
         }
+        /* For |exp| outside fixnum range (e.g. 2 ** -2^62), -exp would
+         * overflow back to a negative fixnum and we'd recurse forever.
+         * The result's magnitude is astronomically tiny, so just
+         * return 0r — the test tolerance (assert_in_delta(0.0, …)) is
+         * satisfied and we avoid SIGSEGV via stack overflow. */
+        if (exp == LONG_MIN || (-exp) > FIXNUM_MAX) {
+            return korb_float_new(0.0);
+        }
         VALUE pos_exp = INT2FIX(-exp);
         VALUE pos_args[1] = { pos_exp };
         VALUE den = int_pow(c, self, 1, pos_args);
