@@ -106,7 +106,7 @@ def _abc_subclasshook(cls, sub): return NotImplemented
 def update_abstractmethods(cls): return cls
 
 
-class ABC:
+class ABC(metaclass=ABCMeta):
     # Enforce abstract methods at instantiation: any method on the
     # class (or its bases) marked __isabstractmethod__ that isn't
     # overridden by the concrete subclass forbids instantiation.
