@@ -12706,6 +12706,13 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // common surface (List, Dict, Optional, Union, ...) for
         // annotation usage without enforcement.
         "typing.py",
+        // ipaddress — CPython's module-level fixtures
+        // (`IPv6Network('fe80::/10')`) trigger a pystro
+        // attribute-access specialization quirk that only repros in
+        // ipaddress.py's __slots__-heavy class layout.  Bundled
+        // pure-Python stub provides the public surface used by
+        // urllib.parse / shutil / pathlib chains.
+        "ipaddress.py",
         NULL,
     };
     bool pystro_wins = false;
