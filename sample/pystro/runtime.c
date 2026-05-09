@@ -4627,6 +4627,16 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             || strcmp(name, "__closure__") == 0) {
             return PYS_NONE;
         }
+        if (strcmp(name, "__dict__") == 0) {
+            // Lazily allocate the function's attribute dict and expose
+            // it as a real PYS_T_DICT — sharing storage so writes via
+            // `f.__dict__["x"] = 1` are visible to subsequent `f.x`.
+            if (!o->func.attrs) o->func.attrs = pydict_new();
+            struct pysobj *d = pys_alloc(PYS_T_DICT);
+            d->dict = o->func.attrs;
+            return PYS_OBJ_VAL(d);
+        }
+        if (strcmp(name, "__class__") == 0) return c->TYPE_function;
         if (o->func.attrs) {
             VALUE key = pys_make_str(name, strlen(name));
             uint64_t h = pys_hash(c, key);
@@ -4672,6 +4682,13 @@ pys_getattr(CTX *c, VALUE v, const char *name)
     extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
     VALUE av[1] = { v };
     VALUE t = bi_type(c, 1, av);
+    // Common dunders any object should expose: `__doc__` / `__module__`
+    // / `__class__`.  Real CPython has these as type-slot attributes;
+    // pystro's per-type method tables don't carry them, so fall through
+    // to a sensible default before raising.
+    if (strcmp(name, "__doc__") == 0)         return PYS_NONE;
+    if (strcmp(name, "__module__") == 0)      return pys_make_str("builtins", 8);
+    if (strcmp(name, "__class__") == 0)       return t;
     const char *tname = "?";
     if (pys_is_class(t)) tname = PYS_PTR(t)->cls.name;
     PYS_RAISE_EXC(c, c->EXC_AttributeError, "'%s' object has no attribute '%s'", tname, name);
