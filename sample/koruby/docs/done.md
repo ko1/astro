@@ -114,15 +114,15 @@ CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
 
 2026-05-09 時点での無 fairness raw sweep (60s/file timeout):
 
-| 状態                 | sweep #1 (起点) | sweep #8 (最終) | 主な内訳 |
+| 状態                 | sweep #1 (起点) | 最終 sweep | 主な内訳 |
 |----------------------|----------------:|----------------:|---|
-| ≥1 pass             | 62 / 135        | 79 / 135        | +17 ファイル復活 |
-| total=0 (load 失敗等) | 30              | 11              | shim 拡張 / require_relative |
-| LOAD ERROR           | 23              | 6               | Encoding / IO / RubyVM / Process / Bug 等 shim |
-| dumped core          | 7               | 2               | super-bug fix / mm guard / dbl2int 等で 5 件解消 |
-| timeout (empty)      | 3               | 2               | test_signal / test_optimization 等 |
-| pass 合計            | 834,385         | 1,008,942       | (test_integer 蘇生 +171k 含む) |
-| 全 assertion 合計    | 954,960         | 1,381,246       | +426k assertion |
+| ≥1 pass             | 62 / 135        | 86 / 135        | +24 ファイル復活 |
+| total=0 (load 失敗等) | 30              | 6               | shim 拡張 / require_relative |
+| LOAD ERROR           | 23              | 1               | 残り test_time_tz のみ (Regexp 必要) |
+| dumped core          | 7               | 0               | super / refinement / mm / fiber / dbl2int 等で全解消 |
+| timeout (empty)      | 3               | 0               | IO.pipe を unbuffered にして全解消 |
+| pass 合計            | 834,385         | 1,010,298       | +175k pass |
+| 全 assertion 合計    | 954,960         | 1,383,044       | +428k assertion |
 
 主な修正:
  - **super dispatch 修正** (object.c:korb_dispatch_binop): caller block の
@@ -145,6 +145,28 @@ CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
    test_pattern_matching と test_case が SEGV → 蘇生。
  - **fiber entry の NULL body**: Symbol#to_proc 由来の body=NULL proc を
    fiber に渡されて EVAL(c, NULL) で SEGV。 NULL なら Qnil 返却。
+ - **UnboundMethod late-binding bug**: `Module#instance_method(:foo)` が
+   名前だけ保存して call 時に再 lookup していたため、 後から
+   define_method 上書きされた new body と無限再帰。 captured_method を
+   即時凍結する形に変更 (test_super で必須)。
+ - **Binding が stack-alloc cref を保存していた**: `class C; B = binding;
+   end` のように class body 内で binding すると当時の cref は C スタッ
+   ク上の korb_cref で、 class body 終了後に dangle → 後で eval(str,
+   binding) が SEGV。 binding_alloc_from で cref chain を heap に
+   deep-copy。
+ - **Struct.new(...) do def foo end の lexical leak**: block を yield す
+   る際に block->cref を一時的に new Struct を指すように swap してい
+   なかったので def が lexical 親に上書きしていた (test_marshal の
+   TestMarshal が壊れた method_missing を継承して SEGV)。
+ - **Class#clone が singleton method を copy していなかった** (test_module
+   の `MyClass = AClass.clone` で AClass の class method `cm1` が消える)。
+   src->basic.klass の method を nk_meta に alias copy。
+ - **A::B::C = 0 ** 0 の slot collision** (test_primitive)。
+   PM_CONSTANT_PATH_WRITE_NODE の transduce で parent_slot/a0/a1 を val
+   transduce 中も hold するように修正。
+ - **IO.pipe が line-buffered**: `w.write "."` (改行なし) が writer の
+   stdio buffer に滞留し reader の readpartial が無限 block。 _IONBF に
+   切替 (test_io / test_optimization の timeout 解消)。
 
 ### CRuby spec/ruby/language/ (rubyspec 互換)
 
