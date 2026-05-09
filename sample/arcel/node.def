@@ -370,6 +370,36 @@ node_to_bytes(CTX *c, NODE *n, NODE *arg)
 }
 
 NODE_DEF
+node_to_timestamp(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_to_timestamp(c, EVAL_ARG(c, arg));
+}
+
+NODE_DEF
+node_to_duration(CTX *c, NODE *n, NODE *arg)
+{
+    return arcel_to_duration(c, EVAL_ARG(c, arg));
+}
+
+/* Timestamp / Duration selector dispatch.  `name` carries the method
+ * name (`getDate`, `getHours`, etc.) so a single SD entry per arity
+ * suffices — arcel_ts_get switches on it.  The 0-arg form passes
+ * V_NULL() for tz; the 1-arg form evaluates tz from the AST. */
+NODE_DEF
+node_ts_get(CTX *c, NODE *n, NODE *recv, const char *name, uint32_t name_len)
+{
+    return arcel_ts_get(c, EVAL_ARG(c, recv), name, name_len, V_NULL());
+}
+
+NODE_DEF
+node_ts_get_tz(CTX *c, NODE *n, NODE *recv, const char *name, uint32_t name_len, NODE *tz)
+{
+    VALUE r = EVAL_ARG(c, recv);  if (r.tag  == AC_ERR) return r;
+    VALUE t = EVAL_ARG(c, tz);    if (t.tag  == AC_ERR) return t;
+    return arcel_ts_get(c, r, name, name_len, t);
+}
+
+NODE_DEF
 node_starts_with(CTX *c, NODE *n, NODE *recv, NODE *arg)
 {
     VALUE r = EVAL_ARG(c, recv); if (r.tag == AC_ERR) return r;

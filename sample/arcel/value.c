@@ -3,6 +3,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <time.h>
 #include "value.h"
 /* arcel.h gives us the full definition of `arcel_object_desc` so the
  * AC_OBJECT helpers can call into the embedder's dispatch table.
@@ -192,6 +193,9 @@ arcel_eq_slow(const VALUE a, const VALUE b)
                  * Structural equality across descriptor calls would
                  * require enumerating fields (no API for that yet). */
                 return a.object.desc == b.object.desc && a.object.obj == b.object.obj;
+            case AC_TIMESTAMP:
+            case AC_DURATION:
+                return a.ts.s == b.ts.s && a.ts.ns == b.ts.ns;
             default: return false;
         }
     }
@@ -248,6 +252,11 @@ arcel_cmp(const VALUE a, const VALUE b)
             }
             case AC_BOOL:   return (int)a.b - (int)b.b;   /* false < true per cel-go */
             case AC_NULL:   return 0;                 /* null == null */
+            case AC_TIMESTAMP:
+            case AC_DURATION:
+                if (a.ts.s != b.ts.s)   return (a.ts.s < b.ts.s) ? -1 : 1;
+                if (a.ts.ns != b.ts.ns) return (a.ts.ns < b.ts.ns) ? -1 : 1;
+                return 0;
             default:        return INCMP;
         }
     }
@@ -311,6 +320,39 @@ arcel_add(CTX *const c, const VALUE a, const VALUE b)
         if (b.list->len) memcpy(out->items + a.list->len,    b.list->items, sizeof(VALUE) * b.list->len);
         return V_LIST(out);
     }
+    /* timestamp / duration arithmetic ---------------------------------
+     * Allowed: TS+DUR, DUR+TS, DUR+DUR.  Result is range-checked
+     * (cel-spec rejects out-of-range timestamps even mid-arithmetic). */
+    if ((a.tag == AC_TIMESTAMP && b.tag == AC_DURATION) ||
+        (a.tag == AC_DURATION  && b.tag == AC_TIMESTAMP) ||
+        (a.tag == AC_DURATION  && b.tag == AC_DURATION)) {
+        int64_t s; int32_t ns;
+        if (__builtin_add_overflow(a.ts.s,  b.ts.s,  &s))  return err(c, "return error: timestamp overflow");
+        ns = a.ts.ns + b.ts.ns;
+        /* Normalize ns into [-1e9, 1e9), carry into seconds. */
+        if (ns >= 1000000000)      { ns -= 1000000000; if (__builtin_add_overflow(s, (int64_t)1, &s)) return err(c, "return error: timestamp overflow"); }
+        else if (ns <= -1000000000){ ns += 1000000000; if (__builtin_sub_overflow(s, (int64_t)1, &s)) return err(c, "return error: timestamp overflow"); }
+        const arcel_tag rt = (a.tag == AC_TIMESTAMP || b.tag == AC_TIMESTAMP) ? AC_TIMESTAMP : AC_DURATION;
+        if (rt == AC_TIMESTAMP) {
+            /* For TIMESTAMP, normalize ns to [0, 1e9). */
+            if (ns < 0) { ns += 1000000000; if (__builtin_sub_overflow(s, (int64_t)1, &s)) return err(c, "return error: timestamp overflow"); }
+            if (s < -62135596800LL || s > 253402300799LL ||
+                (s == 253402300799LL && ns > 999999999))
+                return err(c, "range error: timestamp out of range");
+            return V_TIMESTAMP(s, ns);
+        } else {
+            /* For DURATION, enforce sign(s)==sign(ns). */
+            if (s > 0 && ns < 0) { s -= 1; ns += 1000000000; }
+            else if (s < 0 && ns > 0) { s += 1; ns -= 1000000000; }
+            /* cel-go uses time.Duration (int64 nanoseconds), capping
+             * at ±~9.22e9 seconds (292 years).  Match that so the
+             * conformance corpus's expected ERR(range) for full-span
+             * timestamp diffs and ±200B-second durations triggers. */
+            if (s > 9223372035LL || s < -9223372035LL)
+                return err(c, "range error: duration out of range");
+            return V_DURATION(s, ns);
+        }
+    }
     return err(c, "no such overload: _+_(%d, %d)", a.tag, b.tag);
 }
 
@@ -330,6 +372,34 @@ arcel_sub(CTX *const c, const VALUE a, const VALUE b)
         return V_UINT(r);
     }
     if (a.tag == AC_DOUBLE && b.tag == AC_DOUBLE) return V_DOUBLE(a.d - b.d);
+    /* timestamp / duration subtraction --------------------------------
+     * Allowed: TS-DUR (→TS), TS-TS (→DUR), DUR-DUR (→DUR). */
+    if ((a.tag == AC_TIMESTAMP && b.tag == AC_DURATION) ||
+        (a.tag == AC_TIMESTAMP && b.tag == AC_TIMESTAMP) ||
+        (a.tag == AC_DURATION  && b.tag == AC_DURATION)) {
+        int64_t s; int32_t ns;
+        if (__builtin_sub_overflow(a.ts.s,  b.ts.s,  &s))  return err(c, "return error: timestamp overflow");
+        ns = a.ts.ns - b.ts.ns;
+        if (ns >= 1000000000)      { ns -= 1000000000; if (__builtin_add_overflow(s, (int64_t)1, &s)) return err(c, "return error: timestamp overflow"); }
+        else if (ns <= -1000000000){ ns += 1000000000; if (__builtin_sub_overflow(s, (int64_t)1, &s)) return err(c, "return error: timestamp overflow"); }
+        if (a.tag == AC_TIMESTAMP && b.tag == AC_DURATION) {
+            if (ns < 0) { ns += 1000000000; if (__builtin_sub_overflow(s, (int64_t)1, &s)) return err(c, "return error: timestamp overflow"); }
+            if (s < -62135596800LL || s > 253402300799LL ||
+                (s == 253402300799LL && ns > 999999999))
+                return err(c, "range error: timestamp out of range");
+            return V_TIMESTAMP(s, ns);
+        } else {
+            if (s > 0 && ns < 0) { s -= 1; ns += 1000000000; }
+            else if (s < 0 && ns > 0) { s += 1; ns -= 1000000000; }
+            /* cel-go uses time.Duration (int64 nanoseconds), capping
+             * at ±~9.22e9 seconds (292 years).  Match that so the
+             * conformance corpus's expected ERR(range) for full-span
+             * timestamp diffs and ±200B-second durations triggers. */
+            if (s > 9223372035LL || s < -9223372035LL)
+                return err(c, "range error: duration out of range");
+            return V_DURATION(s, ns);
+        }
+    }
     return err(c, "no such overload: _-_");
 }
 
@@ -559,6 +629,12 @@ arcel_to_int(CTX *const c, const VALUE x)
             return V_INT((int64_t)v);
         }
         case AC_BOOL:   return V_INT(x.b ? 1 : 0);
+        case AC_TIMESTAMP:
+            /* int(timestamp) → Unix epoch seconds (cel-spec: nanos
+             * truncated, sign of ns matters at the boundary).  Our
+             * canonical form has ns >= 0 for AC_TIMESTAMP, so the cast
+             * is straightforward. */
+            return V_INT(x.ts.s);
         case AC_ERR:    return x;
         default:        return err(c, "no such overload: int");
     }
@@ -690,6 +766,71 @@ arcel_to_string(CTX *const c, const VALUE x)
             return V_STR(arcel_arena_strdup(&c->arena, buf, (uint32_t)n), (uint32_t)n);
         }
         case AC_BOOL:   return V_STR(x.b ? "true" : "false", x.b ? 4 : 5);
+        case AC_TIMESTAMP: {
+            /* RFC3339 with optional fractional seconds.  Use gmtime_r
+             * which on glibc handles the full -62135596800..253402300799
+             * second range.  Fractional second: emit only if non-zero,
+             * with the minimum number of digits (3, 6, or 9). */
+            char buf[40];
+            time_t t = (time_t)x.ts.s;
+            struct tm tm;
+            if (!gmtime_r(&t, &tm)) return err(c, "timestamp formatting failed");
+            int n = snprintf(buf, sizeof(buf),
+                "%04d-%02d-%02dT%02d:%02d:%02d",
+                tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                tm.tm_hour, tm.tm_min, tm.tm_sec);
+            if (x.ts.ns != 0) {
+                /* Build the 9-digit fractional part, then trim trailing
+                 * zeros to the next multiple of 3 (RFC3339 convention,
+                 * matches cel-go). */
+                char frac[12];
+                snprintf(frac, sizeof(frac), ".%09d", x.ts.ns);
+                int flen = 10;  /* '.' + 9 digits */
+                while (flen > 4 && frac[flen - 1] == '0' &&
+                       (flen - 1) % 3 == 1) {
+                    flen -= 3;  /* drop a 3-digit group of zeros */
+                }
+                /* Edge case: if the trimmed fractional ends with zeros
+                 * but doesn't fit a clean 3-group cut, fall back to
+                 * trimming any trailing zero. */
+                while (flen > 4 && frac[flen - 1] == '0') flen--;
+                memcpy(buf + n, frac, flen);
+                n += flen;
+            }
+            buf[n++] = 'Z';
+            buf[n] = '\0';
+            return V_STR(arcel_arena_strdup(&c->arena, buf, (uint32_t)n), (uint32_t)n);
+        }
+        case AC_DURATION: {
+            /* "<seconds>s" form.  If ns != 0, emit "<s>.<frac>s" with
+             * minimal-digit trimming.  Sign carried on the seconds. */
+            char buf[40];
+            int n;
+            if (x.ts.ns == 0) {
+                n = snprintf(buf, sizeof(buf), "%llds", (long long)x.ts.s);
+            } else {
+                /* Canonical form has sign(s)==sign(ns).  Move sign to s. */
+                int64_t s = x.ts.s;
+                int32_t ns = x.ts.ns;
+                bool neg = (s < 0) || (s == 0 && ns < 0);
+                if (neg) { s = -s; ns = -ns; }
+                char frac[12];
+                snprintf(frac, sizeof(frac), ".%09d", ns);
+                int flen = 10;
+                while (flen > 4 && frac[flen - 1] == '0' &&
+                       (flen - 1) % 3 == 1) {
+                    flen -= 3;
+                }
+                while (flen > 4 && frac[flen - 1] == '0') flen--;
+                n = snprintf(buf, sizeof(buf), "%s%lld", neg ? "-" : "", (long long)s);
+                memcpy(buf + n, frac, flen);
+                n += flen;
+                buf[n++] = 's';
+                buf[n] = '\0';
+                return V_STR(arcel_arena_strdup(&c->arena, buf, (uint32_t)n), (uint32_t)n);
+            }
+            return V_STR(arcel_arena_strdup(&c->arena, buf, (uint32_t)n), (uint32_t)n);
+        }
         case AC_ERR:    return x;
         default:        return err(c, "no such overload: string");
     }
@@ -721,6 +862,8 @@ arcel_cel_type_of(CTX *const c, const VALUE x)
         case AC_MAP:    t = "map";    break;
         case AC_OBJECT: t = (x.object.desc && x.object.desc->type_name)
                             ? x.object.desc->type_name : "object"; break;
+        case AC_TIMESTAMP: t = "google.protobuf.Timestamp"; break;
+        case AC_DURATION:  t = "google.protobuf.Duration";  break;
         default:        t = "error";  break;
     }
     return V_STR(t, (uint32_t)strlen(t));
@@ -967,6 +1110,382 @@ arcel_print_json(FILE *const out, const VALUE v)
             }
             break;
         }
+        case AC_TIMESTAMP:
+        case AC_DURATION: {
+            /* Render via arcel_to_string into a stack buffer, then quote.
+             * cel-spec serialization is the same as `string(x)` plus
+             * surrounding quotes — RFC3339 / Go-duration text is
+             * JSON-safe (no escaping needed). */
+            char ibuf[40], obuf[44];
+            size_t in_len = arcel_format_value_brief(v, ibuf, sizeof ibuf);
+            int n = snprintf(obuf, sizeof obuf, "\"%.*s\"", (int)in_len, ibuf);
+            fwrite(obuf, 1, (size_t)n, out);
+            break;
+        }
         case AC_ERR:    fprintf(out, "ERROR: %s", v.err ? v.err : "<unknown>"); break;
     }
+}
+
+/* ---- timestamp / duration ---------------------------------------- */
+
+/* Brief text form of a value (same content as arcel_to_string but
+ * never allocates).  Used by the JSON printer and by error messages.
+ * Caller owns `buf`.  Returns bytes written (truncated to cap-1). */
+size_t
+arcel_format_value_brief(const VALUE x, char *const buf, const size_t cap)
+{
+    if (cap == 0) return 0;
+    int n = 0;
+    if (x.tag == AC_TIMESTAMP) {
+        time_t t = (time_t)x.ts.s;
+        struct tm tm;
+        if (!gmtime_r(&t, &tm)) {
+            n = snprintf(buf, cap, "<bad-timestamp>");
+            return (size_t)((n < (int)cap) ? n : (int)cap - 1);
+        }
+        n = snprintf(buf, cap, "%04d-%02d-%02dT%02d:%02d:%02d",
+                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                     tm.tm_hour, tm.tm_min, tm.tm_sec);
+        if (x.ts.ns != 0 && (size_t)n + 11 < cap) {
+            char frac[12];
+            snprintf(frac, sizeof frac, ".%09d", x.ts.ns);
+            int flen = 10;
+            while (flen > 4 && frac[flen - 1] == '0' && (flen - 1) % 3 == 1) flen -= 3;
+            while (flen > 4 && frac[flen - 1] == '0') flen--;
+            memcpy(buf + n, frac, (size_t)flen);
+            n += flen;
+        }
+        if ((size_t)n + 1 < cap) { buf[n++] = 'Z'; buf[n] = '\0'; }
+        return (size_t)n;
+    }
+    if (x.tag == AC_DURATION) {
+        if (x.ts.ns == 0) {
+            n = snprintf(buf, cap, "%llds", (long long)x.ts.s);
+        } else {
+            int64_t s = x.ts.s; int32_t ns = x.ts.ns;
+            bool neg = (s < 0) || (s == 0 && ns < 0);
+            if (neg) { s = -s; ns = -ns; }
+            char frac[12];
+            snprintf(frac, sizeof frac, ".%09d", ns);
+            int flen = 10;
+            while (flen > 4 && frac[flen - 1] == '0' && (flen - 1) % 3 == 1) flen -= 3;
+            while (flen > 4 && frac[flen - 1] == '0') flen--;
+            n = snprintf(buf, cap, "%s%lld", neg ? "-" : "", (long long)s);
+            if ((size_t)n + flen + 2 < cap) {
+                memcpy(buf + n, frac, (size_t)flen);
+                n += flen;
+                buf[n++] = 's';
+                buf[n] = '\0';
+            }
+        }
+        return (size_t)n;
+    }
+    /* Fallback for other tags — short summary. */
+    n = snprintf(buf, cap, "<tag-%d>", (int)x.tag);
+    return (size_t)((n < (int)cap) ? n : (int)cap - 1);
+}
+
+/* Parse a non-negative integer with EXACT `digits` characters from `p`
+ * into `*out`.  Returns 0 on success, -1 on non-digit. */
+static int
+parse_fixed_digits(const char *p, int digits, int *out)
+{
+    int v = 0;
+    for (int i = 0; i < digits; i++) {
+        if (p[i] < '0' || p[i] > '9') return -1;
+        v = v * 10 + (p[i] - '0');
+    }
+    *out = v;
+    return 0;
+}
+
+/* days_from_civil: Howard Hinnant's algorithm.  Returns days since
+ * 1970-01-01 for a (y, m, d) Gregorian date.  Negative for pre-epoch.
+ * Handles years 0001..9999 cleanly. */
+static int64_t
+days_from_civil(int64_t y, unsigned m, unsigned d)
+{
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);                  /* 0..399 */
+    const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;       /* 0..146096 */
+    return era * 146097 + (int64_t)doe - 719468;
+}
+
+VALUE
+arcel_to_timestamp(CTX *const c, const VALUE s)
+{
+    if (s.tag == AC_ERR) return s;
+    if (s.tag != AC_STRING) return err(c, "no such overload: timestamp");
+    /* Minimum well-formed RFC3339 with no fraction & 'Z': 20 chars
+     *   YYYY-MM-DDTHH:MM:SSZ
+     * Fraction is optional; offset can be 'Z' or '+HH:MM' / '-HH:MM'. */
+    if (s.s.len < 20) return err(c, "invalid RFC3339 timestamp");
+    const char *p = s.s.p;
+    const uint32_t n = s.s.len;
+    int year, mon, day, hh, mm, ss;
+    if (parse_fixed_digits(p,        4, &year) != 0) return err(c, "invalid RFC3339 timestamp");
+    if (p[4] != '-')                                  return err(c, "invalid RFC3339 timestamp");
+    if (parse_fixed_digits(p + 5,    2, &mon)  != 0) return err(c, "invalid RFC3339 timestamp");
+    if (p[7] != '-')                                  return err(c, "invalid RFC3339 timestamp");
+    if (parse_fixed_digits(p + 8,    2, &day)  != 0) return err(c, "invalid RFC3339 timestamp");
+    if (p[10] != 'T' && p[10] != 't' && p[10] != ' ') return err(c, "invalid RFC3339 timestamp");
+    if (parse_fixed_digits(p + 11,   2, &hh)   != 0) return err(c, "invalid RFC3339 timestamp");
+    if (p[13] != ':')                                 return err(c, "invalid RFC3339 timestamp");
+    if (parse_fixed_digits(p + 14,   2, &mm)   != 0) return err(c, "invalid RFC3339 timestamp");
+    if (p[16] != ':')                                 return err(c, "invalid RFC3339 timestamp");
+    if (parse_fixed_digits(p + 17,   2, &ss)   != 0) return err(c, "invalid RFC3339 timestamp");
+    uint32_t off = 19;
+    int32_t  ns  = 0;
+    if (off < n && p[off] == '.') {
+        off++;
+        /* Up to 9 digits, padded to 9 with trailing zeros. */
+        int dig = 0; int v = 0;
+        while (off < n && p[off] >= '0' && p[off] <= '9') {
+            if (dig < 9) v = v * 10 + (p[off] - '0');
+            dig++;
+            off++;
+        }
+        if (dig == 0) return err(c, "invalid RFC3339 timestamp");
+        for (int i = dig; i < 9; i++) v *= 10;
+        ns = v;
+    }
+    if (off >= n) return err(c, "invalid RFC3339 timestamp");
+    int tz_off_sec = 0;
+    char z = p[off];
+    if (z == 'Z' || z == 'z') { off++; }
+    else if (z == '+' || z == '-') {
+        int sign = (z == '+') ? 1 : -1;
+        off++;
+        int oh, om;
+        if (off + 4 >= n) return err(c, "invalid RFC3339 timestamp");
+        if (parse_fixed_digits(p + off, 2, &oh) != 0) return err(c, "invalid RFC3339 timestamp");
+        if (p[off + 2] != ':') return err(c, "invalid RFC3339 timestamp");
+        if (parse_fixed_digits(p + off + 3, 2, &om) != 0) return err(c, "invalid RFC3339 timestamp");
+        off += 5;
+        tz_off_sec = sign * (oh * 3600 + om * 60);
+    } else {
+        return err(c, "invalid RFC3339 timestamp");
+    }
+    if (off != n) return err(c, "invalid RFC3339 timestamp (trailing chars)");
+    if (year < 1 || year > 9999) return err(c, "range error: timestamp out of range");
+    if (mon  < 1 || mon  > 12)   return err(c, "invalid RFC3339 timestamp (month)");
+    if (day  < 1 || day  > 31)   return err(c, "invalid RFC3339 timestamp (day)");
+    if (hh   < 0 || hh   > 23)   return err(c, "invalid RFC3339 timestamp (hour)");
+    if (mm   < 0 || mm   > 59)   return err(c, "invalid RFC3339 timestamp (min)");
+    if (ss   < 0 || ss   > 60)   return err(c, "invalid RFC3339 timestamp (sec)");  /* leap second tolerated */
+    int64_t days = days_from_civil(year, (unsigned)mon, (unsigned)day);
+    int64_t sec  = days * 86400 + hh * 3600 + mm * 60 + ss - tz_off_sec;
+    if (sec < -62135596800LL || sec > 253402300799LL ||
+        (sec == 253402300799LL && ns > 999999999))
+        return err(c, "range error: timestamp out of range");
+    return V_TIMESTAMP(sec, ns);
+}
+
+VALUE
+arcel_to_duration(CTX *const c, const VALUE s)
+{
+    if (s.tag == AC_ERR) return s;
+    if (s.tag != AC_STRING) return err(c, "no such overload: duration");
+    /* Go's time.ParseDuration: "<num><unit>(<num><unit>)*", optional
+     * leading '-' or '+'.  Units: ns, us, µs, ms, s, m, h.  Number can
+     * have a decimal fraction. */
+    const char *p = s.s.p;
+    const char *e = p + s.s.len;
+    if (p == e) return err(c, "invalid duration");
+    int sign = 1;
+    if (*p == '+' || *p == '-') { if (*p == '-') sign = -1; p++; }
+    if (p == e) return err(c, "invalid duration");
+    int64_t total_ns_hi = 0;       /* sum of seconds * 1e9 in two parts to avoid overflow */
+    int64_t total_ns_lo = 0;
+    while (p < e) {
+        /* Parse number: digits[.digits] */
+        const char *num_start = p;
+        while (p < e && *p >= '0' && *p <= '9') p++;
+        int int_digits = (int)(p - num_start);
+        int frac_digits = 0;
+        const char *frac_start = NULL;
+        if (p < e && *p == '.') {
+            p++;
+            frac_start = p;
+            while (p < e && *p >= '0' && *p <= '9') p++;
+            frac_digits = (int)(p - frac_start);
+        }
+        if (int_digits == 0 && frac_digits == 0) return err(c, "invalid duration");
+        /* Parse unit. */
+        if (p == e) return err(c, "missing duration unit");
+        int64_t unit_ns = 0;
+        if      (p + 2 <= e && p[0] == 'n' && p[1] == 's') { unit_ns = 1LL;             p += 2; }
+        else if (p + 2 <= e && p[0] == 'u' && p[1] == 's') { unit_ns = 1000LL;          p += 2; }
+        else if (p + 3 <= e && (unsigned char)p[0] == 0xC2 && (unsigned char)p[1] == 0xB5 && p[2] == 's')
+                                                           { unit_ns = 1000LL;          p += 3; }  /* µs (UTF-8) */
+        else if (p + 2 <= e && p[0] == 'm' && p[1] == 's') { unit_ns = 1000000LL;       p += 2; }
+        else if (p + 1 <= e && p[0] == 's')                { unit_ns = 1000000000LL;    p += 1; }
+        else if (p + 1 <= e && p[0] == 'm')                { unit_ns = 60000000000LL;   p += 1; }
+        else if (p + 1 <= e && p[0] == 'h')                { unit_ns = 3600000000000LL; p += 1; }
+        else return err(c, "unknown duration unit");
+        /* Compute integer-part contribution. */
+        int64_t int_val = 0;
+        for (int i = 0; i < int_digits; i++) int_val = int_val * 10 + (num_start[i] - '0');
+        /* int_val * unit_ns can overflow for large s/m/h; be conservative.
+         * Range guard: 315576000000s ≈ 3.16e20 ns — needs __int128 or split. */
+        /* We'll detect overflow via __builtin_mul_overflow; if overflow,
+         * the duration is out of range anyway. */
+        int64_t int_ns;
+        if (__builtin_mul_overflow(int_val, unit_ns, &int_ns))
+            return err(c, "range error: duration out of range");
+        if (__builtin_add_overflow(total_ns_lo, int_ns, &total_ns_lo))
+            return err(c, "range error: duration out of range");
+        /* Fractional contribution: (frac as int) * unit_ns / 10^frac_digits.
+         * For unit_ns up to 3.6e12 and frac_digits up to 9, this fits
+         * within int64 if unit <= ms.  For seconds/minutes/hours with
+         * high-precision fractions we lose a digit or two — acceptable. */
+        if (frac_digits > 0) {
+            int64_t frac_val = 0;
+            for (int i = 0; i < frac_digits; i++) frac_val = frac_val * 10 + (frac_start[i] - '0');
+            int64_t denom = 1;
+            for (int i = 0; i < frac_digits; i++) denom *= 10;
+            /* frac_ns = frac_val * unit_ns / denom — round toward zero. */
+            int64_t prod;
+            if (__builtin_mul_overflow(frac_val, unit_ns, &prod)) {
+                /* For h/m, frac_val * unit_ns can blow up.  Reduce by
+                 * dividing first if the unit is large. */
+                int64_t reduced_unit = unit_ns / denom;
+                prod = frac_val * reduced_unit;
+            }
+            int64_t frac_ns = prod / denom;
+            if (__builtin_add_overflow(total_ns_lo, frac_ns, &total_ns_lo))
+                return err(c, "range error: duration out of range");
+        }
+        (void)total_ns_hi;
+    }
+    /* Apply sign. */
+    if (sign < 0) total_ns_lo = -total_ns_lo;
+    int64_t s_part = total_ns_lo / 1000000000LL;
+    int32_t ns_part = (int32_t)(total_ns_lo % 1000000000LL);
+    /* Range check (matches cel-go's time.Duration int64-ns limit). */
+    if (s_part > 9223372035LL || s_part < -9223372035LL)
+        return err(c, "range error: duration out of range");
+    return V_DURATION(s_part, ns_part);
+}
+
+/* Parse a tz argument into a UTC offset in seconds (and IANA-name
+ * support via setenv("TZ", name); tzset()).  Returns 0 + sets *off,
+ * or -1 if unparseable.  If the name is "UTC" / empty / "Z" → off=0.
+ * For numeric "+HH:MM" / "-HH:MM" → signed seconds.  For IANA names
+ * (any other), uses gmt offset for the given timestamp via tzset
+ * (process-global; arcel is single-threaded eval). */
+static int
+tz_offset_for(const char *const name, const uint32_t name_len,
+              const time_t at, int *const off)
+{
+    if (name_len == 0 ||
+        (name_len == 3 && memcmp(name, "UTC", 3) == 0) ||
+        (name_len == 1 && (name[0] == 'Z' || name[0] == 'z'))) {
+        *off = 0;
+        return 0;
+    }
+    if (name_len >= 5 && (name[0] == '+' || name[0] == '-')) {
+        int sign = (name[0] == '+') ? 1 : -1;
+        int oh, om;
+        if (parse_fixed_digits(name + 1, 2, &oh) != 0) return -1;
+        if (name[3] != ':') return -1;
+        if (parse_fixed_digits(name + 4, 2, &om) != 0) return -1;
+        if (name_len != 6) return -1;
+        *off = sign * (oh * 3600 + om * 60);
+        return 0;
+    }
+    /* Sign-less "HH:MM" — cel-spec accepts as positive offset. */
+    if (name_len == 5 && name[2] == ':') {
+        int oh, om;
+        if (parse_fixed_digits(name,     2, &oh) != 0) return -1;
+        if (parse_fixed_digits(name + 3, 2, &om) != 0) return -1;
+        *off = oh * 3600 + om * 60;
+        return 0;
+    }
+    /* IANA name: NUL-terminate and use TZ + tzset. */
+    char tz[64];
+    if (name_len + 1 > sizeof tz) return -1;
+    memcpy(tz, name, name_len); tz[name_len] = '\0';
+    char *prev = getenv("TZ");
+    char saved[64]; bool had_prev = false;
+    if (prev) {
+        size_t pn = strlen(prev);
+        if (pn + 1 > sizeof saved) return -1;
+        memcpy(saved, prev, pn + 1);
+        had_prev = true;
+    }
+    setenv("TZ", tz, 1);
+    tzset();
+    struct tm tm_local;
+    if (!localtime_r(&at, &tm_local)) {
+        if (had_prev) setenv("TZ", saved, 1); else unsetenv("TZ");
+        tzset();
+        return -1;
+    }
+    int local_off = (int)tm_local.tm_gmtoff;
+    if (had_prev) setenv("TZ", saved, 1); else unsetenv("TZ");
+    tzset();
+    *off = local_off;
+    return 0;
+}
+
+VALUE
+arcel_ts_get(CTX *const c, const VALUE recv,
+             const char *const name, const uint32_t name_len,
+             const VALUE tz)
+{
+    if (recv.tag == AC_ERR) return recv;
+    /* Resolve tz offset for AC_TIMESTAMP path. */
+    int tz_off = 0;
+    if (recv.tag == AC_TIMESTAMP) {
+        if (tz.tag == AC_STRING) {
+            if (tz_offset_for(tz.s.p, tz.s.len, (time_t)recv.ts.s, &tz_off) != 0)
+                return err(c, "invalid timezone");
+        } else if (tz.tag != AC_NULL) {
+            return err(c, "no such overload: timestamp selector tz arg");
+        }
+    } else if (recv.tag == AC_DURATION) {
+        /* Duration selectors don't accept tz. */
+        if (tz.tag != AC_NULL) return err(c, "no such overload: duration selector with tz arg");
+    } else {
+        return err(c, "no such overload: %.*s on tag %d", (int)name_len, name, recv.tag);
+    }
+
+    #define IS(s) (name_len == sizeof(s) - 1 && memcmp(name, s, name_len) == 0)
+
+    /* DURATION selectors return TOTAL units (cel-spec: getHours on
+     * Duration is total hours, possibly negative). */
+    if (recv.tag == AC_DURATION) {
+        int64_t s = recv.ts.s; int32_t ns = recv.ts.ns;
+        if (IS("getHours"))        return V_INT(s / 3600);
+        if (IS("getMinutes"))      return V_INT(s / 60);
+        if (IS("getSeconds"))      return V_INT(s);
+        if (IS("getMilliseconds")) {
+            /* ns part contributes too (ns / 1e6 truncated). */
+            int64_t ms = s * 1000 + (int64_t)(ns / 1000000);
+            return V_INT(ms);
+        }
+        return err(c, "no such overload: %.*s on duration", (int)name_len, name);
+    }
+
+    /* TIMESTAMP selectors: project into struct tm at the given offset. */
+    time_t local_t = (time_t)(recv.ts.s + tz_off);
+    struct tm tm;
+    if (!gmtime_r(&local_t, &tm)) return err(c, "timestamp formatting failed");
+
+    if (IS("getFullYear"))     return V_INT(tm.tm_year + 1900);
+    if (IS("getMonth"))        return V_INT(tm.tm_mon);          /* 0..11 per cel-spec */
+    if (IS("getDate"))         return V_INT(tm.tm_mday);         /* 1..31 */
+    if (IS("getDayOfMonth"))   return V_INT(tm.tm_mday - 1);     /* 0..30 per cel-spec */
+    if (IS("getDayOfYear"))    return V_INT(tm.tm_yday);         /* 0..365 */
+    if (IS("getDayOfWeek"))    return V_INT(tm.tm_wday);         /* 0=Sun..6=Sat */
+    if (IS("getHours"))        return V_INT(tm.tm_hour);
+    if (IS("getMinutes"))      return V_INT(tm.tm_min);
+    if (IS("getSeconds"))      return V_INT(tm.tm_sec);
+    if (IS("getMilliseconds")) return V_INT(recv.ts.ns / 1000000);
+
+    return err(c, "no such overload: %.*s on timestamp", (int)name_len, name);
+    #undef IS
 }

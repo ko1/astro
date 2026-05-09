@@ -86,6 +86,24 @@ VALUE arcel_div(CTX *c, VALUE a, VALUE b);
 VALUE arcel_mod(CTX *c, VALUE a, VALUE b);
 VALUE arcel_neg(CTX *c, VALUE a);
 
+/* timestamp / duration constructors (string -> AC_TIMESTAMP / AC_DURATION).
+ * Both validate range per cel-spec and return AC_ERR on failure.  Errors
+ * are arena-stored so they survive the eval. */
+VALUE arcel_to_timestamp(CTX *c, VALUE s);
+VALUE arcel_to_duration (CTX *c, VALUE s);
+
+/* Selectors on timestamp / duration (.getDate(), .getHours(), etc.).
+ * `name` is the selector method name (no leading dot).  `tz` is either
+ * AC_NULL (no arg given, UTC) or an AC_STRING ("UTC"/"+HH:MM"/"-HH:MM"/
+ * IANA name).  Selectors that don't apply to the receiver tag return
+ * AC_ERR. */
+VALUE arcel_ts_get(CTX *c, VALUE recv, const char *name, uint32_t name_len, VALUE tz);
+
+/* Render a non-container VALUE into a brief text form (RFC3339 for
+ * timestamp, "<sec>s" for duration, fallback "<tag-N>" otherwise) into
+ * `buf` without allocating.  Returns bytes written. */
+size_t arcel_format_value_brief(VALUE x, char *buf, size_t cap);
+
 /* Membership: `x in xs`.  Inlined so that `x in [a, b, c]` (cel-spec
  * idiom for set membership) folds the per-element arcel_eq through —
  * with all the inner comparisons specialized via the inline arcel_eq

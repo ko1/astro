@@ -679,6 +679,8 @@ parse_primary(P *const p)
                 if (IS("bool")   && n == 1) return ALLOC_node_to_bool(args[0]);
                 if (IS("bytes")  && n == 1) return ALLOC_node_to_bytes(args[0]);
                 if (IS("dyn")    && n == 1) return args[0];                 /* identity */
+                if (IS("timestamp") && n == 1) return ALLOC_node_to_timestamp(args[0]);
+                if (IS("duration")  && n == 1) return ALLOC_node_to_duration (args[0]);
                 if (IS("has")    && n == 1) {
                     /* has() arg must be a field-access expression */
                     /* The arg has already been built; we need to peek
@@ -739,6 +741,21 @@ parse_member(P *const p)
                 if (IS("endsWith")    && n == 1) { recv = ALLOC_node_ends_with  (recv, args[0]); continue; }
                 if (IS("contains")    && n == 1) { recv = ALLOC_node_contains   (recv, args[0]); continue; }
                 if (IS("matches")     && n == 1) { recv = ALLOC_node_matches    (recv, args[0]); continue; }
+                /* Timestamp / Duration selectors: getDate / getDayOfMonth /
+                 * getDayOfWeek / getDayOfYear / getFullYear / getHours /
+                 * getMilliseconds / getMinutes / getMonth / getSeconds.
+                 * Resolved to a single dispatch node carrying the method
+                 * name; tag check + selector logic happens at eval time. */
+                if ((IS("getDate") || IS("getDayOfMonth") || IS("getDayOfWeek") ||
+                     IS("getDayOfYear") || IS("getFullYear") || IS("getHours") ||
+                     IS("getMilliseconds") || IS("getMinutes") || IS("getMonth") ||
+                     IS("getSeconds")) && (n == 0 || n == 1)) {
+                    /* Intern the name into the AST string pool so the SD
+                     * specializer bakes it as a literal. */
+                    const char *pname = intern_ident(name, name_len);
+                    if (n == 0) { recv = ALLOC_node_ts_get   (recv, pname, name_len);          continue; }
+                    else        { recv = ALLOC_node_ts_get_tz(recv, pname, name_len, args[0]); continue; }
+                }
                 /* Macros: recv.<macro>(<id>, <body>) */
                 /* transformList / transformMap (cel-spec macros2):
                  *   xs.transformList(i, v, t)        → list of t(i, v)  — 3 args
