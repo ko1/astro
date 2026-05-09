@@ -920,6 +920,20 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
         for (uint32_t i = 0; i < src->includes_cnt; i++) {
             korb_module_include(nk, src->includes[i]);
         }
+        /* For clone (preserve_frozen=true), copy singleton methods so
+         * `B = A.clone` preserves A's class methods.  CRuby semantic:
+         * dup drops singleton class, clone preserves it.  We can't just
+         * share src's metaclass because then mutations to nk's class
+         * methods would also affect src — copy methods instead. */
+        if (preserve_frozen && src->basic.klass) {
+            struct korb_class *src_meta = (struct korb_class *)src->basic.klass;
+            struct korb_class *nk_meta = korb_singleton_class_of((VALUE)nk);
+            for (uint32_t b = 0; b < src_meta->methods.bucket_cnt; b++) {
+                for (struct korb_method_table_entry *e = src_meta->methods.buckets[b]; e; e = e->next) {
+                    if (e->method) korb_class_alias_method(nk_meta, e->name, e->method);
+                }
+            }
+        }
         r = (VALUE)nk;
     } else if (t == T_PROC) {
         /* Shallow copy: alloc a fresh struct, copy fields. */

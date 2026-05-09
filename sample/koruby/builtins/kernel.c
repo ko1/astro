@@ -1267,6 +1267,14 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
             scope_locals_n = n;
         }
     }
+    /* Pass an empty (but non-NULL) scope_locals array even when the
+     * caller has no lvars, so parse.c's eval-mode kicks in and sets
+     * encoding=ASCII-8BIT (test_marshal eval(<non-ASCII>) etc). */
+    if (!scope_locals) {
+        scope_locals = (const char **)korb_xmalloc(sizeof(char *));
+        scope_locals[0] = NULL;
+        scope_locals_n = 0;
+    }
     NODE *ast = koruby_parse_with_scope(s->ptr, (size_t)s->len, filename,
                                          scope_locals, scope_locals_n, &err_msg);
     if (err_msg) {

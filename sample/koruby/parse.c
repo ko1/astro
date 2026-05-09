@@ -2367,10 +2367,16 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
           uint32_t parent_slot = inc_arg_index(tc);
           uint32_t a0 = inc_arg_index(tc);
           uint32_t a1 = inc_arg_index(tc);
-          rewind_arg_index(tc, parent_slot);
+          /* Hold parent_slot / a0 / a1 PERSISTENTLY across the val
+           * transduction.  A nested binop in val (e.g. `0 ** 0` which
+           * allocates its own recv/arg slots in inc_arg_index space)
+           * must not be allowed to collide with our reserved slots.
+           * Without this, `A::B::C = 0 ** 0` ends up with fp[parent_slot]
+           * = the `**` recv = Integer 0, or fp[a0] overwritten before
+           * the const_set call. */
           NODE *save_parent = ALLOC_node_lvar_set(parent_slot, parent);
           NODE *val = T(tc, n->value);
-          rewind_arg_index(tc, a0);
+          rewind_arg_index(tc, a1 + 1);
           NODE *set_a0 = ALLOC_node_lvar_set(a0, ALLOC_node_sym_lit(name));
           NODE *set_a1 = ALLOC_node_lvar_set(a1, val);
           struct method_cache *mc = alloc_method_cache();
@@ -5639,6 +5645,7 @@ koruby_parse_full(const char *src, size_t len, const char *filename, char **err_
     return koruby_parse_with_scope(src, len, filename, NULL, 0, err_msg);
 }
 
+
 NODE *
 koruby_parse_with_scope(const char *src, size_t len, const char *filename,
                         const char **scope_locals, size_t scope_locals_n,
@@ -5671,6 +5678,13 @@ koruby_parse_with_scope_line(const char *src, size_t len, const char *filename,
      * (locals get tagged at depth 0). */
     bool eval_mode = (scope_locals != NULL);
     if (eval_mode) {
+        /* In eval(), the source string may carry arbitrary encoding
+         * (e.g. ISO-8859-1 strings interpolated and re-eval'd as in
+         * test_marshal's nonascii-name tests).  Set encoding to
+         * ASCII-8BIT so prism doesn't reject high bytes as "invalid
+         * multibyte character".  The bytes still propagate verbatim
+         * through string literals and identifiers in the AST. */
+        pm_options_encoding_set(&options, "ASCII-8BIT");
         pm_options_scopes_init(&options, 1);
         pm_options_scope_t *scope = (pm_options_scope_t *)pm_options_scope_get(&options, 0);
         if (scope) {

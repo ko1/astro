@@ -518,7 +518,16 @@ static VALUE struct_class_members(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Struct.new(:a, :b) — create new class */
+    /* Struct.new(:a, :b, keyword_init: true) — strip trailing options
+     * Hash before treating remaining args as member names.  We don't
+     * implement keyword_init semantics differently from positional
+     * (the generated initializer already handles both), but at least
+     * the loader-time `Struct.new(:foo, keyword_init: true)` pattern
+     * (test_marshal:776 etc.) needs to not blow up on the Hash arg. */
+    if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
+        BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
+        argc--;
+    }
     struct korb_class *klass = korb_class_new(korb_intern("Struct"), korb_vm->object_class, T_OBJECT);
     /* save members */
     VALUE members = korb_ary_new_from_values(argc, argv);
@@ -547,21 +556,31 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
                                      struct_class_members, 0);
     }
     /* If a block was given, evaluate it with self = the new class
-     * (Struct.new(:x) { def hello; ... end } pattern). */
+     * (Struct.new(:x) { def hello; ... end } pattern).  Crucially,
+     * also temporarily swap the block's captured cref so `def` inside
+     * the block targets the new Struct, NOT the lexical container.
+     * Without this, `class TM; X = Struct.new(:y) { def foo; end };
+     * end` would leak `foo` onto TM (and worse — `def method_missing`
+     * inside the block would replace TM's method_missing, breaking
+     * every method on TM). */
     extern struct korb_proc *current_block;
     if (current_block) {
         VALUE prev_self = c->self;
         struct korb_class *prev_class = c->current_class;
         struct korb_cref *prev_cref = c->cref;
         struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+        struct korb_cref blk_cref = { .klass = klass, .prev = current_block->cref };
+        struct korb_cref *prev_blk_cref = current_block->cref;
         VALUE prev_blk_self = current_block->self;
         c->self = (VALUE)klass;
         c->current_class = klass;
         c->cref = &new_cref;
         current_block->self = (VALUE)klass;
+        current_block->cref = &blk_cref;
         VALUE av0[1] = { (VALUE)klass };
         korb_yield(c, 1, av0);
         current_block->self = prev_blk_self;
+        current_block->cref = prev_blk_cref;
         c->self = prev_self;
         c->current_class = prev_class;
         c->cref = prev_cref;
