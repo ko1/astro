@@ -17,10 +17,10 @@ optflags=-O3
 READLINE_CFLAGS := $(shell echo 'int main(){return 0;}' | gcc -x c -lreadline - -o /dev/null 2>/dev/null && echo "-DUSE_READLINE")
 READLINE_LDFLAGS := $(if $(READLINE_CFLAGS),-lreadline)
 
-ascheme: main.c node.c Makefile $(NODE_GENFILES) context.h node.h
+ascheme: main.c parse.c node.c Makefile $(NODE_GENFILES) context.h node.h parse.h
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall -Wno-unused-function $(READLINE_CFLAGS) \
 	    -rdynamic \
-	    -o ascheme main.c node.c -ldl -lm -lgmp \
+	    -o ascheme main.c parse.c node.c -ldl -lm -lgmp \
 	    /usr/lib/x86_64-linux-gnu/libgc.so.1 \
 	    $(READLINE_LDFLAGS)
 
