@@ -495,8 +495,20 @@ class Range
     memo
   end unless method_defined?(:each_with_object)
 
-  def enum_for(*args)
-    Enumerator.new { |y| each { |x| y.yield x } }
+  def enum_for(method = :each, *args)
+    receiver = self
+    e = Enumerator.new { |y|
+      receiver.send(method, *args) { |*x|
+        y.yield(x.size == 1 ? x[0] : x)
+      }
+    }
+    # Record size info so Enumerator#size returns the number of pending
+    # yields when the receiver responds to :size (Hash, Array, Range,
+    # etc.).  CRuby uses a "size proc" for laziness; we eagerly call.
+    if receiver.respond_to?(:size)
+      e.instance_variable_set(:@__size, receiver.size)
+    end
+    e
   end unless method_defined?(:enum_for)
 
   alias_method(:to_enum, :enum_for) rescue nil
@@ -2451,6 +2463,14 @@ class Enumerator
     @done = false
     @peeked = nil
     @has_peeked = false
+    @__size = nil
+  end
+
+  # Enumerator#size — when the upstream collection had a known size
+  # (recorded by enum_for), return it; else nil (stream of unknown
+  # length, matches CRuby's "no size proc" case).
+  def size
+    @__size
   end
 
   def _start
@@ -2562,7 +2582,7 @@ class Enumerator
   end
 
   def size
-    nil
+    @__size
   end
 
   # Lazy chain wrapping any Enumerator: each chained map/select/etc.
@@ -4135,7 +4155,14 @@ end
 class Object
   def to_enum(method = :each, *args)
     me = self
-    Enumerator.new { |y| me.send(method, *args) { |*x| y.yield(*x) } }
+    e = Enumerator.new { |y| me.send(method, *args) { |*x| y.yield(*x) } }
+    # Record receiver-known size so `Enumerator#size` returns it.  CRuby
+    # uses a size proc (lazy); we eagerly snapshot when receiver
+    # responds to :size.
+    if me.respond_to?(:size)
+      e.instance_variable_set(:@__size, me.size)
+    end
+    e
   end unless method_defined?(:to_enum)
   alias_method(:enum_for, :to_enum) rescue nil
 
