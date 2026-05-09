@@ -156,13 +156,149 @@ class Module
   def ruby2_keywords(*_names); nil; end
   def refine(_klass, &_blk); self; end
   def using(_mod); self; end
+  def used_modules; []; end
+  def used_refinements; []; end
+end
+
+# Patch koruby's built-in Encoding (which only carries constants — no
+# .find / .name_list).  Tests under test/ruby/ poke .find pervasively.
+class Encoding
+  @@enc_cache = {} unless class_variable_defined?(:@@enc_cache)
+  unless respond_to?(:find)
+    def self.find(n)
+      n = n.to_s.upcase.gsub("-", "_").gsub(/[^A-Z0-9_]/, "")
+      Encoding.const_defined?(n) ? Encoding.const_get(n) : Encoding::UTF_8
+    end
+    def self.list; [Encoding::UTF_8]; end
+    def self.name_list; ["UTF-8"]; end
+    def self.aliases; {}; end
+    def self.default_external; Encoding::UTF_8; end
+    def self.default_internal; nil; end
+    def self.default_external=(_); end
+    def self.default_internal=(_); end
+    def self.compatible?(_, _); Encoding::UTF_8; end
+    def self.locale_charmap; "UTF-8"; end
+  end
+  # Aliases that aren't already covered in object.c's runtime init.
+  utf8 = Encoding::UTF_8
+  { ISO_2022_JP: utf8, ISO_2022_JP_2: utf8, ISO_2022_JP_KDDI: utf8,
+    SJIS: utf8, EUC_JIS_2004: utf8, EUC_JISX0213: utf8,
+    Stateless_ISO_2022_JP: utf8, Stateless_ISO_2022_JP_KDDI: utf8,
+    GBK: utf8, GB12345: utf8, GB2312: utf8, EUC_KR: utf8, EUC_CN: utf8,
+    UTF8_MAC: utf8, UTF8_DoCoMo: utf8, UTF8_KDDI: utf8, UTF8_SoftBank: utf8,
+    SJIS_DoCoMo: utf8, SJIS_KDDI: utf8, SJIS_SoftBank: utf8,
+    MacJapanese: utf8, MacCentEuro: utf8, MacCroatian: utf8, MacCyrillic: utf8,
+    MacGreek: utf8, MacIceland: utf8, MacRoman: utf8, MacRomania: utf8,
+    MacThai: utf8, MacTurkish: utf8, MacUkraine: utf8, MacJapan: utf8,
+    TIS_620: utf8, KOI8_U: utf8, IBM437: utf8, IBM737: utf8, IBM775: utf8,
+    IBM850: utf8, IBM852: utf8, IBM855: utf8, IBM857: utf8, IBM860: utf8,
+    IBM861: utf8, IBM862: utf8, IBM863: utf8, IBM864: utf8, IBM865: utf8,
+    IBM866: utf8, IBM869: utf8, CP737: utf8, CP775: utf8, CP850: utf8,
+    CP852: utf8, CP855: utf8, CP857: utf8, CP860: utf8, CP861: utf8,
+    CP862: utf8, CP863: utf8, CP864: utf8, CP865: utf8, CP866: utf8,
+    CP869: utf8, CP874: utf8, CP949: utf8, CP950: utf8, CP951: utf8,
+    CP1250: utf8, CP1251: utf8, CP1252: utf8, CP1253: utf8, CP1254: utf8,
+    CP1255: utf8, CP1256: utf8, CP1257: utf8, CP1258: utf8,
+    UTF_16: utf8, UTF_32: utf8, UTF_7: utf8, UTF8: utf8,
+    EmacsMule: utf8, External: utf8, Internal: utf8, Locale: utf8,
+  }.each { |name, val| const_set(name, val) unless const_defined?(name) }
+end
+
+# IO / File constants — many tests dereference these at toplevel.
+unless defined?(Bug)
+  module Bug; end
+end
+class IO
+  unless const_defined?(:BINARY)
+    BINARY = 1; RDONLY = 0; WRONLY = 1; RDWR = 2; APPEND = 1024
+    CREAT = 64; EXCL = 128; TRUNC = 512; NONBLOCK = 2048; SYNC = 1052672
+    NOFOLLOW = 0x20000; NOCTTY = 0x100; DIRECT = 0x4000
+    SEEK_SET = 0; SEEK_CUR = 1; SEEK_END = 2; SEEK_DATA = 3; SEEK_HOLE = 4
+    FNM_SYSCASE = 0; LOCK_SH = 1; LOCK_EX = 2; LOCK_UN = 8; LOCK_NB = 4
+  end
+  def close_on_exec?; false; end unless method_defined?(:close_on_exec?)
+  def close_on_exec=(_); end unless method_defined?(:close_on_exec=)
+  def fileno; -1; end unless method_defined?(:fileno)
+  def tty?; false; end unless method_defined?(:tty?)
+  alias_method :isatty, :tty? unless method_defined?(:isatty)
+  def stat; nil; end unless method_defined?(:stat)
+  def fcntl(*); 0; end unless method_defined?(:fcntl)
+  def ioctl(*); 0; end unless method_defined?(:ioctl)
+  def sync; true; end unless method_defined?(:sync)
+  def sync=(_); true; end unless method_defined?(:sync=)
+end
+unless defined?(STDIN) && STDIN.respond_to?(:close_on_exec?)
+  Object.send(:remove_const, :STDIN) if defined?(STDIN) rescue nil
+  Object.send(:remove_const, :STDOUT) if defined?(STDOUT) rescue nil
+  Object.send(:remove_const, :STDERR) if defined?(STDERR) rescue nil
+  Object.const_set(:STDIN,  IO.allocate) rescue nil
+  Object.const_set(:STDOUT, IO.allocate) rescue nil
+  Object.const_set(:STDERR, IO.allocate) rescue nil
+end
+class File
+  unless const_defined?(:ALT_SEPARATOR)
+    ALT_SEPARATOR = nil
+    SEPARATOR     = "/"
+    PATH_SEPARATOR = ":"
+    Separator     = "/"
+  end
+  unless const_defined?(:Constants)
+    module Constants
+      RDONLY = 0; WRONLY = 1; RDWR = 2; APPEND = 1024; CREAT = 64
+      EXCL = 128; TRUNC = 512; NONBLOCK = 2048; BINARY = 0
+      LOCK_SH = 1; LOCK_EX = 2; LOCK_UN = 8; LOCK_NB = 4
+      FNM_SYSCASE = 0; FNM_NOESCAPE = 1; FNM_PATHNAME = 2; FNM_DOTMATCH = 4
+      FNM_CASEFOLD = 8; FNM_EXTGLOB = 16; FNM_SHORTNAME = 0
+    end
+  end
+  def self.executable?(_); false; end unless respond_to?(:executable?)
+  def self.executable_real?(_); false; end unless respond_to?(:executable_real?)
+  def self.readable?(_); true; end unless respond_to?(:readable?)
+  def self.writable?(_); true; end unless respond_to?(:writable?)
+  def self.world_readable?(_); nil; end unless respond_to?(:world_readable?)
+  def self.world_writable?(_); nil; end unless respond_to?(:world_writable?)
+  def self.symlink?(_); false; end unless respond_to?(:symlink?)
+  def self.chardev?(_); false; end unless respond_to?(:chardev?)
+  def self.blockdev?(_); false; end unless respond_to?(:blockdev?)
+  def self.pipe?(_); false; end unless respond_to?(:pipe?)
+  def self.socket?(_); false; end unless respond_to?(:socket?)
+  def self.setuid?(_); false; end unless respond_to?(:setuid?)
+  def self.setgid?(_); false; end unless respond_to?(:setgid?)
+  def self.sticky?(_); false; end unless respond_to?(:sticky?)
+  def self.identical?(a, b); a == b; end unless respond_to?(:identical?)
+end
+
+# Sundry RubyVM bits some tests query at toplevel.
+class RubyVM; end unless defined?(RubyVM)
+unless RubyVM.const_defined?(:INSTRUCTION_NAMES)
+  class RubyVM
+    INSTRUCTION_NAMES = []
+    DEFAULT_PARAMS = { thread_vm_stack_size: 131072, thread_machine_stack_size: 1048576 }
+    OPTS = []
+    module YJIT
+      def self.enabled?; false; end
+      def self.runtime_stats; {}; end
+      def self.stats_enabled?; false; end
+    end unless const_defined?(:YJIT)
+    module MJIT
+      def self.enabled?; false; end
+    end unless const_defined?(:MJIT)
+    module RJIT
+      def self.enabled?; false; end
+    end unless const_defined?(:RJIT)
+  end
 end
 
 # Sundry CRuby globals + Kernel methods many tests reference.
-Object.const_set(:RUBY_VERSION,  "3.5.0")        unless Object.const_defined?(:RUBY_VERSION)
-Object.const_set(:RUBY_PLATFORM, "x86_64-linux") unless Object.const_defined?(:RUBY_PLATFORM)
-Object.const_set(:RUBY_ENGINE,   "koruby")       unless Object.const_defined?(:RUBY_ENGINE)
-Object.const_set(:RUBY_REVISION, "koruby")       unless Object.const_defined?(:RUBY_REVISION)
+Object.const_set(:RUBY_VERSION,     "3.5.0")        unless Object.const_defined?(:RUBY_VERSION)
+Object.const_set(:RUBY_PLATFORM,    "x86_64-linux") unless Object.const_defined?(:RUBY_PLATFORM)
+Object.const_set(:RUBY_ENGINE,      "koruby")       unless Object.const_defined?(:RUBY_ENGINE)
+Object.const_set(:RUBY_REVISION,    "koruby")       unless Object.const_defined?(:RUBY_REVISION)
+Object.const_set(:RUBY_DESCRIPTION, "koruby (ASTro) +experimental")  unless Object.const_defined?(:RUBY_DESCRIPTION)
+Object.const_set(:RUBY_RELEASE_DATE, "2026-01-01")  unless Object.const_defined?(:RUBY_RELEASE_DATE)
+Object.const_set(:RUBY_PATCHLEVEL,  -1)             unless Object.const_defined?(:RUBY_PATCHLEVEL)
+Object.const_set(:RUBY_COPYRIGHT,   "koruby") unless Object.const_defined?(:RUBY_COPYRIGHT)
+Object.const_set(:RUBY_ENGINE_VERSION, "0.1") unless Object.const_defined?(:RUBY_ENGINE_VERSION)
 $VERBOSE = nil
 
 # Warning module — many tests poke at Warning[:deprecated] / [:experimental].
@@ -183,6 +319,68 @@ def system(*_args); false; end
 def `(_cmd); ""; end
 def fork; nil; end
 def spawn(*_args); 0; end
+class << Process
+  def pid; 0; end unless respond_to?(:pid)
+  def ppid; 0; end unless respond_to?(:ppid)
+  def euid; 0; end unless respond_to?(:euid)
+  def uid; 0; end unless respond_to?(:uid)
+  def egid; 0; end unless respond_to?(:egid)
+  def gid; 0; end unless respond_to?(:gid)
+  def waitpid(*); -1; end unless respond_to?(:waitpid)
+  def kill(*); 0; end unless respond_to?(:kill)
+  def clock_gettime(*); 0.0; end unless respond_to?(:clock_gettime)
+  def setrlimit(*); nil; end unless respond_to?(:setrlimit)
+  def getrlimit(*); [0,0]; end unless respond_to?(:getrlimit)
+  def times; t = Struct.new(:utime, :stime, :cutime, :cstime).new(0,0,0,0); t; end unless respond_to?(:times)
+end
+unless Process.const_defined?(:UID)
+  class Process
+    module UID
+      def self.eid; 0; end
+      def self.rid; 0; end
+      def self.change_privilege(*); 0; end
+      def self.grant_privilege(*); 0; end
+      def self.re_exchange; 0; end
+      def self.re_exchangeable?; false; end
+      def self.sid_available?; false; end
+      def self.switch; yield; end
+    end
+    GID = UID.dup
+    Sys = Module.new do
+      def self.getuid; 0; end
+      def self.geteuid; 0; end
+      def self.getgid; 0; end
+      def self.getegid; 0; end
+      def self.setuid(_); end
+      def self.seteuid(_); end
+      def self.setgid(_); end
+      def self.setegid(_); end
+    end
+    Status = Class.new
+    CLOCK_REALTIME = 0
+    CLOCK_MONOTONIC = 1
+    CLOCK_PROCESS_CPUTIME_ID = 2
+    CLOCK_THREAD_CPUTIME_ID = 3
+    PRIO_PROCESS = 0
+    PRIO_PGRP = 1
+    PRIO_USER = 2
+    RLIMIT_AS = 9
+    RLIMIT_CORE = 4
+    RLIMIT_CPU = 0
+    RLIMIT_DATA = 2
+    RLIMIT_FSIZE = 1
+    RLIMIT_MEMLOCK = 8
+    RLIMIT_NOFILE = 7
+    RLIMIT_NPROC = 6
+    RLIMIT_RSS = 5
+    RLIMIT_STACK = 3
+    RLIM_INFINITY = -1
+    RLIM_SAVED_CUR = -2
+    RLIM_SAVED_MAX = -3
+    WNOHANG = 1
+    WUNTRACED = 2
+  end
+end
 
 # Stub Thread so files that mention Thread.current at toplevel can load.
 unless defined?(Thread)
@@ -196,6 +394,52 @@ unless defined?(Thread)
     def alive?; false; end
     def kill; self; end
   end
+end
+
+# Thread::Queue / ConditionVariable — minimal queue/cv stubs so tests
+# that just check existence + basic ops at toplevel can load.
+unless defined?(Thread::Queue)
+  class Thread
+    class Queue
+      def initialize(items = []); @q = items.dup; end
+      def push(v); @q << v; self; end
+      alias enq push
+      alias << push
+      def pop(_non_block = false); @q.shift; end
+      alias deq pop
+      alias shift pop
+      def empty?; @q.empty?; end
+      def size; @q.size; end
+      alias length size
+      def clear; @q.clear; self; end
+      def close; @closed = true; self; end
+      def closed?; !!@closed; end
+      def marshal_dump; @q.dup; end
+      def marshal_load(o); @q = (o || []).dup; end
+      def num_waiting; 0; end
+    end
+    class SizedQueue < Queue
+      def initialize(max); super(); @max = max; end
+      def max; @max; end
+      def max=(m); @max = m; end
+    end
+    class ConditionVariable
+      def wait(*); self; end
+      def signal; self; end
+      def broadcast; self; end
+    end
+    class Mutex
+      def synchronize; yield; end
+      def lock; self; end
+      def unlock; self; end
+      def try_lock; true; end
+      def locked?; false; end
+      def owned?; false; end
+    end unless defined?(Thread::Mutex)
+  end
+  Queue ||= Thread::Queue
+  Mutex ||= Thread::Mutex
+  ConditionVariable ||= Thread::ConditionVariable
 end
 
 # RubyVM stub — most test_iseq use blows up on the first method call;
@@ -223,13 +467,26 @@ unless defined?(GC)
 end
 
 unless defined?(RubyVM)
-  module RubyVM
+  class RubyVM
     class InstructionSequence
       def self.compile(*); nil; end
       def self.of(*); nil; end
       def self.new(*); allocate; end
       def to_a; [:nope]; end
       def disasm; ""; end
+    end
+    class AbstractSyntaxTree
+      class Node
+        def children; []; end
+        def type; :NONE; end
+        def first_lineno; 0; end
+        def last_lineno; 0; end
+        def first_column; 0; end
+        def last_column; 0; end
+      end
+      def self.parse(*); Node.new; end
+      def self.parse_file(*); Node.new; end
+      def self.of(*); Node.new; end
     end
   end
 end
