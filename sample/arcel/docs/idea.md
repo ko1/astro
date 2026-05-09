@@ -54,20 +54,31 @@ NaN-boxing は user feedback (`feedback_no_nan_boxing.md`) で禁止されてい
 代わりに **tagged union** で行く:
 
 ```c
-typedef enum { AC_NULL, AC_BOOL, AC_INT, AC_UINT, AC_DOUBLE,
-               AC_STRING, AC_BYTES, AC_LIST, AC_MAP, AC_ERR } arcel_tag;
+typedef enum { AC_ERR, AC_NULL, AC_BOOL, AC_INT, AC_UINT, AC_DOUBLE,
+               AC_STRING, AC_BYTES, AC_LIST, AC_MAP, AC_OBJECT,
+               AC_TIMESTAMP, AC_DURATION } arcel_tag;
 
 typedef struct {
     arcel_tag tag;
     union { int64_t i; uint64_t u; double d; bool b;
             struct { const char *p; uint32_t len; } s;
             struct arcel_list *list; struct arcel_map *map;
-            const char *err; };
+            const char *err;
+            struct { const void *obj;
+                     const struct arcel_object_desc *desc; } object;
+            struct { int64_t s; int32_t ns; } ts;     /* TIMESTAMP / DURATION */
+    };
 } VALUE;
 ```
 
-サイズは 16 bytes。tag がレジスタに乗りやすく、specialize 後は型分岐ごと
-コンパイラが consteval して消える期待。
+サイズは 24 bytes (16-byte payload + 4-byte tag + padding)。SysV ABI では
+2 register 返り。tag がレジスタに乗りやすく、specialize 後は型分岐ごと
+コンパイラが consteval して消える。
+
+`AC_OBJECT` は embedder が自前 struct / proto message を渡すための pass-
+through で、`arcel_object_desc` (field/has/format_json コールバック群) が
+arcel ↔ embedder 間の境界。これにより arcel 本体は **proto / 任意 binary
+表現を一切知らない** まま、libprotobuf や C struct を直接舐められる。
 
 ## AOT specialization の狙い目
 
@@ -95,10 +106,40 @@ policy 側で参照される field path は静的に分かる (parse 時に coll
 ので、入力 layout を policy 寄りに事前最適化することも将来的にあり得る
 (JIT で起動時に構造変換するイメージ)。
 
-## non-goal
+production 用途では JSON を経由せず、`arcel_object_desc` で **embedder の
+ネイティブ表現** (proto message / C struct) を直接舐めるのが正解。
+`examples/embed_object.c` (C struct) と `examples/embed_protobuf.cc`
+(libprotobuf 経由) がそのテンプレート。
 
-- proto2 / proto3 message のサポート (`TestAllTypes{...}` 構文) — protobuf
-  ランタイムを抱え込むのは scope 外。conformance の `proto*.textproto` は
-  skip 前提。
-- Timestamp / Duration / Any / Wrapper の strict spec 準拠 — 必要に応じて足す
-- 任意精度算術 (CEL 仕様にはない)
+## proto 対応の設計
+
+arcel 本体は protobuf を一切知らない方針を維持しつつ、`AC_OBJECT` 経由で
+任意の proto runtime をブリッジできる。実装:
+
+- `examples/arcel_protobuf.h` — header-only / ~100 行の libprotobuf 用
+  `arcel_object_desc`。`Reflection::FindFieldByName` で全 .pb.h-生成型
+  に対応。scalar / enum / nested message / repeated / map<K,V> をフル
+  カバー (Phase 5–6)。
+- per-eval arena handle (`arcel_arena_handle`) を field callback に
+  渡し、callback 側で `arcel_value_list_new` / `arcel_value_map_new` /
+  `arcel_value_string_copy` を呼べる。これで repeated string や map
+  も copy が一回で済む。
+
+cel-cpp 互換 API は `compat/celcpp_compat.hpp` の単一 header (header-
+only、~340 行) で、`Parse` / `CelExpressionBuilder` / `Activation` /
+`Evaluate` 等の typical cel-cpp embedder コードがそのまま動くよう
+shim を被せる (Phase 4)。
+
+## non-goal (現状)
+
+| 項目 | 状況 |
+|---|---|
+| Timestamp / Duration | ✅ 実装済 (Phase 7、conformance 73/73 = 100%) |
+| google.protobuf.{Timestamp,Duration,*Value} 型識別子 | ✅ 実装済 (Phase 8) |
+| google.protobuf.{Int32Value,...}{value: X} wrapper literal | ✅ 実装済 (Phase 8、auto-unwrap) |
+| **proto2/3 user 定義 message literal** (`TestAllTypes{...}`) | 🚫 still non-goal — 本物の型レジストリ + 任意 proto runtime 抱え込みが必要。embedder hook 経由で cel-cpp shim 側に持たせる選択肢はある |
+| `optional` 型 (`x.?y`, `optional.of(...)`) | 🚫 |
+| `cel.bind` / `cel.block` (ext lib) | 🚫 |
+| 任意精度算術 (CEL 仕様にもない) | 🚫 |
+| ext.* 拡張 (`strings.replace`, `network.url` 等) | 🚫 (個別追加可) |
+| enum 値 (proto enum 名前空間) | 🚫 |

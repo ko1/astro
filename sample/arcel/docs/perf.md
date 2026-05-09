@@ -192,7 +192,10 @@ proto 対応版を作ると:
 ## 埋め込み API のコスト
 
 Phase 1 で `arcel.h` (C library API) を切り、CLI もそれ経由に統一した。
-これにより `arcel_eval()` 1 回あたり以下の固定コストが乗る:
+Phase 9 で `arcel_env_new` が `CCACHE_DISABLE=1` を auto-set するように
+なったので、production 埋め込みでも prefix なしで AOT bake が動く。
+
+`arcel_eval()` 1 回あたり以下の固定コストが乗る:
 
 - `arcel_arena_reset()` — 1-2 ns
 - 活性化の bindings shape 設定 (3 stores + branch) — 1-2 ns
@@ -234,6 +237,56 @@ cel-cpp との比較は維持:
 - **list literal 子要素の節 specialize** — `arcel_node_arr[idx]` 経由
   だと AOT で個別 SD が選ばれない (= variadic children の制約)。
   list 要素ごとに名前付き operand を持つ別 node 種を generate するか
+- **field name embed at AOT** — 現状 `arcel_field(c, recv, "k", 1)` の `"k"`
+  は SD literal として焼かれているが、`arcel_field` 自体が比較ループを
+  持つ。SD specialize で「`k` という単一 key の field access」用の inline
+  match に折りたためる。`embed_bench` 結果 (predicate 全部入りで AOT
+  win ~3%) はこの最適化で改善が期待できる。
+
+## in-process binding-path bench (Phase 10)
+
+`benchmark/run.rb` は subprocess fork で 4-way 比較を回すが、`embed_bench`
+は **同一 binary 内で 4 binding paths を順番に計測**する補助 bench:
+
+| binding | 何を測る |
+|---|---|
+| 1. arcel + JSON       | `arcel_activation_set_json` 経由の per-iter parse コスト含む |
+| 2. arcel + native struct | `arcel_object_desc` で C struct 直接舐め |
+| 3. arcel + libprotobuf | `arcel_protobuf.h` adapter 経由 |
+| 4. arcel via cel-cpp shim | `compat/celcpp_compat.hpp` の `Activation::InsertObject` |
+
+各 cell は同じ K8s-shape predicate (age + role + role-list + meta.created_at +
+tags.all + labels.team) を interp / AOT 両方で sustained ~1s 計測。
+
+サンプル結果 (znver3, 1.5s budget):
+
+```
+binding                       interp              AOT   speedup
+1. arcel + JSON           2155.2 ns/op      2243.8 ns/op   0.96x
+2. arcel + C struct       1283.9 ns/op      1329.8 ns/op   0.97x
+3. arcel + libprotobuf   31626.0 ns/op     30575.8 ns/op   1.03x
+4. cel-cpp shim + struct       n/a         1426.9 ns/op    —
+```
+
+読み取り:
+- libprotobuf binding は native struct より **~24× 遅い**。コストは
+  arcel ではなく `Reflection::FindFieldByName` + `FieldSize` の per-access
+  オーバヘッド。production で proto を CEL に直接食わせるなら覚悟が要る。
+- cel-cpp shim は arcel 直叩き struct AOT に対し **+100ns** 程度の
+  per-iter overhead (`StatusOr` ラップ + Activation insert 経由)。
+- この predicate では **AOT win が ~3% 程度**。string / map / list の
+  hot path が dispatch overhead を上回るため。`benchmark/run.rb` の
+  arith_const / bool_ladder のような pure dispatch ケースでは AOT が
+  数倍効くが、embed_bench の混合 predicate では平坦になる。
+
+実行:
+```sh
+bazel build //sample/arcel:embed_bench
+cd sample/arcel && ./bazel-bin/sample/arcel/embed_bench --secs 2
+```
+
+`sample/arcel` cwd で実行すること (root から実行すると `code_store/` の
+include path 解決でコケる)。
 
 ## 計測手順
 
@@ -252,10 +305,16 @@ objdump -d code_store/all.so | sed -n '/<SD_xxxx>:/,/^$/p'
 
 ## 既知の罠
 
-- **CCACHE_DISABLE=1**: `astro_cs_build` の `make` が ccache 経由で落ちる
-  (sandbox 環境)。`make` / `ruby` を呼ぶ前に prefix 必須。
+- **CCACHE_DISABLE=1** (Phase 9 で解消): `astro_cs_build` の `make` が
+  ccache 経由で落ちる問題は、`arcel_env_new` が
+  `if (!getenv("CCACHE_DISABLE")) setenv("CCACHE_DISABLE", "1", 1)` を
+  自動で行うようになり prefix 不要に。embedder 側で `setenv("CCACHE_DISABLE", "", 1)`
+  すれば従来動作に戻せる。`make` / `ruby` を直接叩くベンチ補助スクリプト
+  からは依然として `CCACHE_DISABLE=1` 明示が必要 (binary が立ち上がる
+  前に make が走るので)。
 - **bench iter 数**: 1M 未満だと subprocess + clock_gettime オーバヘッドで
-  結果が荒れる。2M 以上推奨。
+  結果が荒れる。2M 以上推奨。`embed_bench` (in-process) なら 1s sustained
+  で十分安定する。
 - **CEL string の codepoint vs byte**: `'\377'` は U+00FF (UTF-8 で 2 bytes)、
   `b'\377'` は 1 byte 0xFF。CEL parser は string と bytes literal で
   エスケープの解釈を分ける必要あり (実装済)。
