@@ -502,9 +502,12 @@ class Range
         y.yield(x.size == 1 ? x[0] : x)
       }
     }
-    # Record size info so Enumerator#size returns the number of pending
-    # yields when the receiver responds to :size (Hash, Array, Range,
-    # etc.).  CRuby uses a "size proc" for laziness; we eagerly call.
+    # Source-method memo: Enumerator#each(&blk) re-invokes the
+    # original method with the user's block so methods like
+    # Hash#transform_values aggregate their natural return value.
+    e.instance_variable_set(:@__source_obj,    receiver)
+    e.instance_variable_set(:@__source_method, method)
+    e.instance_variable_set(:@__source_args,   args)
     if receiver.respond_to?(:size)
       e.instance_variable_set(:@__size, receiver.size)
     end
@@ -2523,6 +2526,12 @@ class Enumerator
 
   def each(&blk)
     return self unless blk
+    # If we know the source method, re-dispatch with the user's block
+    # so the source's natural return value (e.g. Hash#transform_values
+    # returns a Hash) is delivered, instead of a fiber-yielded stream.
+    if defined?(@__source_obj) && @__source_obj && @__source_method
+      return @__source_obj.send(@__source_method, *(@__source_args || []), &blk)
+    end
     rewind
     loop do
       blk.call(self.next)
@@ -4165,9 +4174,13 @@ class Object
   def to_enum(method = :each, *args)
     me = self
     e = Enumerator.new { |y| me.send(method, *args) { |*x| y.yield(*x) } }
-    # Record receiver-known size so `Enumerator#size` returns it.  CRuby
-    # uses a size proc (lazy); we eagerly snapshot when receiver
-    # responds to :size.
+    # Record source so Enumerator#each(&blk) can re-invoke the original
+    # method with the user's block — that's how `arr.transform_values
+    # .each(&:succ)` aggregates results back into a Hash.  Also record
+    # size: when receiver responds to :size, snapshot it for #size.
+    e.instance_variable_set(:@__source_obj,    me)
+    e.instance_variable_set(:@__source_method, method)
+    e.instance_variable_set(:@__source_args,   args)
     if me.respond_to?(:size)
       e.instance_variable_set(:@__size, me.size)
     end
