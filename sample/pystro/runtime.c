@@ -1132,6 +1132,18 @@ bi_pyslot_dict(CTX *c, int argc, VALUE *argv)
     return pys_getattr(c, argv[0], "__dict__");
 }
 
+// `cls.mro()` — returns the MRO as a list (mutable).  CPython exposes
+// this and `__mro__` (the tuple form).  Used by typing / tests.
+VALUE
+bi_class_mro(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE cls = argv[0];
+    if (!pys_is_class(cls)) return pys_make_list(NULL, 0);
+    struct pysclass *cd = &PYS_PTR(cls)->cls;
+    return pys_make_list(cd->mro, cd->nmro);
+}
+
 VALUE
 pys_make_pyslot_descriptor(const char *attr)
 {
@@ -4733,6 +4745,12 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         }
         if (strcmp(name, "__mro__") == 0) {
             return pys_make_tuple(cd->mro, cd->nmro);
+        }
+        // `cls.mro()` — list form (CPython convention).  Returns a fresh
+        // list each call (mutable; tests sometimes append to it).
+        if (strcmp(name, "mro") == 0) {
+            extern VALUE bi_class_mro(CTX *c, int argc, VALUE *argv);
+            return pys_make_bound(v, pys_make_builtin("mro", bi_class_mro, 1, 1));
         }
         if (strcmp(name, "__dict__") == 0) {
             VALUE d = pys_make_dict();
