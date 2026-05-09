@@ -3767,6 +3767,14 @@ korb_node_aset_slow(CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_index) {
 
 #undef COLD_BINOP_DEFAULT
 
+/* Forward decl — defined as the body of korb_dispatch_binop after method
+ * lookup.  Used by Method#call to skip lookup and dispatch directly to
+ * a captured method record (so define_method-based redefinition after
+ * `instance_method(:foo)` doesn't redirect the call). */
+VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
+                               struct korb_class *defining_class,
+                               VALUE recv, ID name, int argc, VALUE *argv);
+
 VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
     struct korb_class *klass = korb_class_of_class(recv);
     struct korb_method *m = korb_class_find_method(klass, name);
@@ -3791,6 +3799,12 @@ VALUE korb_dispatch_binop(CTX *c, VALUE recv, ID name, int argc, VALUE *argv) {
         }
         return Qnil;
     }
+    return korb_dispatch_to_method(c, m, klass, recv, name, argc, argv);
+}
+
+VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
+                               struct korb_class *defining_class,
+                               VALUE recv, ID name, int argc, VALUE *argv) {
     if (m->type == KORB_METHOD_CFUNC) {
         VALUE prev_self = c->self;
         c->self = recv;

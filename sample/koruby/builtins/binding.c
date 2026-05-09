@@ -172,7 +172,22 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         names = korb_body_local_names(korb_g_program_body);
         base = 0;
     }
-    b->cref = c->cref;
+    /* Crefs along c->cref are typically stack-allocated (class body /
+     * module body / class << self push `struct korb_cref new_cref;` on
+     * the C stack and link it).  When this binding outlives the stack
+     * frame that pushed those crefs, the saved pointer dangles and
+     * a later `eval(..., binding)` that walks cref->klass reads
+     * uninitialized memory → SEGV.  Deep-copy onto the heap. */
+    {
+        struct korb_cref **dst = &b->cref;
+        for (struct korb_cref *src = c->cref; src; src = src->prev) {
+            struct korb_cref *cp = korb_xmalloc(sizeof(*cp));
+            cp->klass = src->klass;
+            cp->prev  = NULL;
+            *dst = cp;
+            dst = &cp->prev;
+        }
+    }
     if (c->current_frame && c->current_frame->method) {
         b->method_name = c->current_frame->method->name;
     }

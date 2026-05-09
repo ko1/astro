@@ -259,6 +259,18 @@ struct korb_method_obj {
     struct RBasic basic;
     VALUE receiver;
     ID name;
+    /* Captured method record: when `Module#instance_method(:foo)` /
+     * `Object#method(:foo)` is called we resolve the method right then
+     * and freeze the result, so subsequent `define_method`-based
+     * rebinding doesn't make `m.call` re-dispatch through the new
+     * definition (which would loop forever if the new body calls back
+     * through the captured method, see test_super_in_module_unbound_method).
+     * NULL means "use the receiver's current binding" (legacy path,
+     * for code paths that haven't been migrated). */
+    struct korb_method *captured_method;
+    /* Class that owned the resolved method at capture time — needed by
+     * `super` walks inside the captured body. */
+    struct korb_class *captured_owner;
 };
 
 /* Binding — captures a frame's lexical state at the point `binding` is

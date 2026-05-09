@@ -399,6 +399,8 @@ static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->basic.klass = (VALUE)korb_vm->method_class;
     m->receiver = self;   /* class as "receiver" — unbound */
     m->name = name;
+    m->captured_method = km;
+    m->captured_owner = (struct korb_class *)self;
     return (VALUE)m;
 }
 
@@ -412,6 +414,8 @@ static VALUE method_unbind(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Drop the bound receiver — bind() will set it. */
     m->receiver = (VALUE)korb_class_of_class(src->receiver);
     m->name = src->name;
+    m->captured_method = src->captured_method;
+    m->captured_owner = src->captured_owner;
     return (VALUE)m;
 }
 
@@ -424,12 +428,24 @@ static VALUE method_bind(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->basic.klass = (VALUE)korb_vm->method_class;
     m->receiver = argv[0];
     m->name = src->name;
+    m->captured_method = src->captured_method;
+    m->captured_owner = src->captured_owner;
     return (VALUE)m;
 }
 
 static VALUE method_call(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Method#call / Method#[] — dispatch to receiver.name(*args) */
+    /* Method#call / Method#[] — dispatch to receiver.name(*args).
+     * If we captured the method record at instance_method/method time,
+     * dispatch through *that* method directly so a later
+     * define_method(:foo) doesn't redirect us into the new body. */
     struct korb_method_obj *m = (struct korb_method_obj *)self;
+    if (m->captured_method) {
+        extern VALUE korb_dispatch_to_method(CTX *c, struct korb_method *km,
+                                              struct korb_class *defining_class,
+                                              VALUE recv, ID name, int argc, VALUE *argv);
+        return korb_dispatch_to_method(c, m->captured_method, m->captured_owner,
+                                        m->receiver, m->name, argc, argv);
+    }
     return korb_funcall(c, m->receiver, m->name, argc, argv);
 }
 

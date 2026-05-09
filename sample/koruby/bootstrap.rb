@@ -4050,11 +4050,16 @@ class BasicObject
   # (BasicObject, missing #inspect, or a custom inspect that re-raises);
   # we bound the message construction so we don't blow the stack.
   def method_missing(name, *args)
-    desc = (Thread.current[:__korb_mm_depth__] ||= 0) >= 4 ? "(recursion)" : begin
-      Thread.current[:__korb_mm_depth__] = (Thread.current[:__korb_mm_depth__] || 0) + 1
-      r = (self.inspect rescue "(uninspectable)")
-      Thread.current[:__korb_mm_depth__] -= 1
-      r
+    $__korb_mm_depth__ ||= 0
+    if $__korb_mm_depth__ >= 4
+      desc = "(recursion)"
+    else
+      $__korb_mm_depth__ += 1
+      begin
+        desc = (self.inspect rescue "(uninspectable)")
+      ensure
+        $__korb_mm_depth__ -= 1
+      end
     end
     e = ::NoMethodError.new("undefined method '#{name}' for #{desc}")
     e.instance_variable_set(:@name, name)
