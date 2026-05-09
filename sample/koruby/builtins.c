@@ -1531,4 +1531,51 @@ void korb_init_builtins(void) {
         }
         korb_const_set(korb_vm->object_class, korb_intern("ENV"), env);
     }
+
+    /* CRuby treats these as module functions — private instance method
+     * on Object/Kernel + public class method on Kernel.singleton_class.
+     * Done here at the end so all DEFs have run. */
+    {
+        struct korb_class *cObj2 = korb_vm->object_class;
+        struct korb_class *cKerMeta2 = korb_vm->kernel_module
+            ? korb_singleton_class_of(korb_vm->kernel_module) : NULL;
+        const char *names[] = {
+            "abort", "exec", "system", "exit", "exit!",
+            "load", "gets", "puts", "p", "pp",
+            "open", "trap", "`", "throw", "catch",
+            "at_exit", "caller", "caller_locations",
+            "loop", "sleep", "proc", "lambda",
+            "binding", "block_given?", "fork", "spawn",
+            "require", "require_relative", "warn",
+            NULL
+        };
+        for (int i = 0; names[i]; i++) {
+            ID nm = korb_intern(names[i]);
+            struct korb_method *m = korb_class_find_method(cObj2, nm);
+            if (m) {
+                if (cKerMeta2 && !korb_class_find_method(cKerMeta2, nm) &&
+                    m->type == KORB_METHOD_CFUNC) {
+                    korb_class_add_method_cfunc(cKerMeta2, nm,
+                                                 m->u.cfunc.func,
+                                                 m->u.cfunc.argc);
+                }
+                /* Copy as PRIVATE to Kernel module so the spec's
+                 * Kernel.private_method_defined?(:exec) returns true. */
+                if (korb_vm->kernel_module &&
+                    !korb_class_find_method(korb_vm->kernel_module, nm) &&
+                    m->type == KORB_METHOD_CFUNC) {
+                    korb_class_add_method_cfunc(korb_vm->kernel_module, nm,
+                                                 m->u.cfunc.func,
+                                                 m->u.cfunc.argc);
+                    struct korb_method *m2 = korb_class_find_method(korb_vm->kernel_module, nm);
+                    if (m2) m2->visibility = KORB_VIS_PRIVATE;
+                }
+                m->visibility = KORB_VIS_PRIVATE;
+            }
+            if (korb_vm->kernel_module) {
+                m = korb_class_find_method(korb_vm->kernel_module, nm);
+                if (m) m->visibility = KORB_VIS_PRIVATE;
+            }
+        }
+    }
 }
