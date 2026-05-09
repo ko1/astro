@@ -4482,7 +4482,7 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         current_block = NULL;
         struct korb_cref *prev_cref = c->cref;
         if (blk->cref) c->cref = blk->cref;
-        VALUE result = EVAL(c, blk->body);
+        VALUE result = blk->body ? EVAL(c, blk->body) : Qnil;
         c->cref = prev_cref;
         c->self = prev_self;
         current_block = prev_block;
