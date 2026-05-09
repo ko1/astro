@@ -83,8 +83,10 @@ class CastroNodeDef < ASTroGen::NodeDef
           const char *dispatcher_name = alloc_dispatcher_name(n);
           n->head.dispatcher_name = dispatcher_name;
 
-          fprintf(fp, "// (#{@name} idx=%u arg=%u local=%u) -> SD_%lx\\n",
-                  func_idx, arg_index, local_cnt, (unsigned long)callee_hash);
+          if (astro_emit_sd_comments_p()) {
+              fprintf(fp, "// (#{@name} idx=%u arg=%u local=%u) -> SD_%lx\\n",
+                      func_idx, arg_index, local_cnt, (unsigned long)callee_hash);
+          }
           fprintf(fp, "extern RESULT SD_%lx(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                   (unsigned long)callee_hash);
 
@@ -189,8 +191,10 @@ class CastroNodeDef < ASTroGen::NodeDef
               ? DISPATCHER_NAME(callee)
               : callee->head.dispatcher_name;
 
-          fprintf(fp, "// (#{@name} arg=%u local=%u %s)\\n",
-                  arg_index, local_cnt, callee_inline ? "inline" : "extern");
+          if (astro_emit_sd_comments_p()) {
+              fprintf(fp, "// (#{@name} arg=%u local=%u %s)\\n",
+                      arg_index, local_cnt, callee_inline ? "inline" : "extern");
+          }
           if (callee_inline) {
               fprintf(fp, "static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                       callee_disp);
@@ -257,8 +261,10 @@ class CastroNodeDef < ASTroGen::NodeDef
           const char *dispatcher_name = alloc_dispatcher_name(n);
           n->head.dispatcher_name = dispatcher_name;
 
-          fprintf(fp, "// (#{@name} idx=%u local=%u) -> SD_%lx\\n",
-                  func_idx, local_cnt, (unsigned long)callee_hash);
+          if (astro_emit_sd_comments_p()) {
+              fprintf(fp, "// (#{@name} idx=%u local=%u) -> SD_%lx\\n",
+                      func_idx, local_cnt, (unsigned long)callee_hash);
+          }
           fprintf(fp, "extern RESULT SD_%lx(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                   (unsigned long)callee_hash);
 
@@ -324,8 +330,10 @@ class CastroNodeDef < ASTroGen::NodeDef
               ? DISPATCHER_NAME(callee)
               : callee->head.dispatcher_name;
 
-          fprintf(fp, "// (#{@name} local=%u %s)\\n", local_cnt,
-                  callee_inline ? "inline" : "extern");
+          if (astro_emit_sd_comments_p()) {
+              fprintf(fp, "// (#{@name} local=%u %s)\\n", local_cnt,
+                      callee_inline ? "inline" : "extern");
+          }
           if (callee_inline) {
               fprintf(fp, "static inline RESULT %s(CTX *restrict c, NODE *restrict n, VALUE *restrict fp);\\n",
                       callee_disp);

@@ -456,10 +456,16 @@ module ASTroGen
             const char *dispatcher_name = alloc_dispatcher_name(n); // SD_%lx % hash_node(n)
             n->head.dispatcher_name = dispatcher_name;
 
-            // comment
-            fprintf(fp, "// ");
-            DUMP(fp, n, true);
-            fprintf(fp, "\\n");
+            // comment — gated by ASTRO_SD_COMMENTS env var.  On big
+            // programs with many no_inline callees, the framework's
+            // auto-DUMP commentary balloons the SD source size by orders
+            // of magnitude (gcc still has to lex through it).  Default
+            // off; set ASTRO_SD_COMMENTS=1 when debugging the SD chain.
+            if (astro_emit_sd_comments_p()) {
+                fprintf(fp, "// ");
+                DUMP(fp, n, true);
+                fprintf(fp, "\\n");
+            }
 
         #{ decls.join("\n") }
 

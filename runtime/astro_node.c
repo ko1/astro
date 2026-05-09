@@ -179,6 +179,39 @@ astro_fprint_cstr(FILE *fp, const char *s)
 // called in that case.
 static int astro_cs_use_hopt_name = 0;
 
+// ---------------------------------------------------------------------------
+// SD-source comment emission gating
+// ---------------------------------------------------------------------------
+//
+// During SPECIALIZE, the auto-generated SPECIALIZE_node_xxx (lib/astrogen.rb)
+// and the host's custom specializers (e.g. castro_gen.rb's call_static
+// override) emit a `// (node_…)` comment ahead of every dispatcher
+// definition.  These comments document the AST shape the SD was built
+// from — handy when staring at the generated SD source while debugging.
+//
+// However in programs with many no_inline callees (= big shared helpers
+// inlined into N caller TUs), the comment text balloons because each
+// caller's commented dispatcher carries the full callee subtree dump.
+// On a 10K-LOC bench (140 callers × one big helper), the framework's
+// auto-DUMP made the SD source 1.19 GB, of which ≈99.93% was comments —
+// gcc still has to lex through them.
+//
+// `astro_emit_sd_comments_p()` answers "should the comment fprintf
+// fire?" with one cached env-var read.  Default is OFF (= no comments)
+// since the size cost dominates the debugging value at scale; set
+// `ASTRO_SD_COMMENTS=1` to re-enable.
+__attribute__((unused))
+static int
+astro_emit_sd_comments_p(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("ASTRO_SD_COMMENTS");
+        cached = (v && *v && strcmp(v, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 static node_hash_t alloc_dispatcher_name_hash(NODE *n);
 
 static const char *
