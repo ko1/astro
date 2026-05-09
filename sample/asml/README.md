@@ -26,25 +26,30 @@ restriction prevents unsound generalisation of side-effecting RHS (e.g.
 
 ## Supported subset
 
-- Values: `int`, `real`, `string`, `bool`, `unit`, `'a list`, tuples, `'a ref`
+- Values: `int`, `real`, `string`, `bool`, `unit`, `'a list`, tuples,
+  records `{f1 = v1, f2 = v2}`, `'a ref`, ADT constructors
 - Top-level decls: `val pat = e`, `fun f p1 ... pN = e [and ...]`,
-  `datatype id = Ctor | Ctor of <type> | ...`
-- Local: `let val/fun ... in e [; e]* end`
+  `datatype 'a id = Ctor | Ctor of <type> | ...` (type vars + record /
+  list / ref / tycon types in `of` allowed)
+- Local: `let val/fun/datatype ... in e [; e]* end`
 - Expressions: `if / then / else`, `case e of pat => e | ...`,
   `fn pat => e`, `e1 e2` (curried application), `e1 ; e2`,
   `andalso`, `orelse`, `not`,
-  `+ - * div mod` for `int`,
-  `+ - * /` for `real`,
-  `< <= > >= = <>` polymorphic,
+  `+ - * div mod` for `int`, `/` for `real`,
+  `< <= > >= = <>` polymorphic (specialised to `_int` / `_real` /
+  `_string` / `_poly` at lower-time),
   `^` string concat, `::` cons, `@` list append,
   `ref e`, `!e`, `e1 := e2`,
   `raise e`, `e handle pat => e | ...`,
-  `op +` etc. to get an operator as a value
+  `op +` etc. to get an operator as a value,
+  `#field e` field selector (curried selector value `#field` also works)
 - Patterns: `_`, identifier (variable), int literal, `~int`, string literal,
   `true / false`, `()`, `[]`, list literal `[a,b,c]`, cons `p :: p`,
-  tuple `(p, p, ...)`, constructor `Ctor` / `Ctor pat`
-- Types: a type variable (`'a`) and parametric types are accepted but
-  ignored — no type checker
+  tuple `(p, p, ...)`, constructor `Ctor` / `Ctor pat`,
+  record `{f1 = p1, f2 = p2}` / `{f1, f2}` (short)
+- Types in datatype `of`: `'a` / `int` / `real` / `string` / `bool` /
+  `unit` / `exn` / `T list` / `T ref` / `T tycon` / `(T, ...) tycon` /
+  `T1 * T2` / `{f : T, ...}` (records)
 
 ## Builtins
 
@@ -113,12 +118,16 @@ bench/compare.sh        # 上に加え `sml` (SML/NJ) があれば横並び比�
 ## Limitations
 
 This is a teaching-grade subset.  Notable absent features: signatures /
-modules / structures, functors, records, exception declarations,
-mutually recursive datatypes, `local in end`, `where`, `withtype`,
-`abstype`, infix/infixr declarations, character literals (`#"a"`),
-substring / slice operations.  Type annotations on patterns / decls
+modules / structures, functors, exception declarations, mutually
+recursive datatypes, `local in end`, `where`, `withtype`, `abstype`,
+infix/infixr declarations, character literals (`#"a"`), substring /
+slice operations.  Type annotations on patterns / decls
 (`fun f (x: int) = ...`) aren't parsed (the type checker infers
-everything).  Only ASCII source is handled.
+everything).  Record types are not row-polymorphic — `#field e` requires
+that `e`'s type be **fully resolved** to a concrete record type at the
+selector site (use a function-arg pattern `fun f {x, y} = ...` if you'd
+otherwise hit "ambiguous record selector").  Only ASCII source is
+handled.
 
 The parser also has a few pragmatic shortcuts:
 

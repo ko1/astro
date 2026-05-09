@@ -47,6 +47,7 @@ enum mlobj_type {
     MLOBJ_PRIM,
     MLOBJ_VARIANT,      // user constructor application (zero or one payload)
     MLOBJ_EXN,          // raised value (usually wraps a variant)
+    MLOBJ_RECORD,       // record { f1 = v1, f2 = v2 } — sorted fields
 };
 
 struct mlobj;
@@ -82,6 +83,11 @@ struct mlobj {
             int         n;             // 0 (nullary) or 1 (1-arg payload)
             VALUE      *items;
         } var;
+        struct {
+            int           n;           // 0 〜
+            const char  **fields;      // sorted (interned)
+            VALUE        *items;       // parallel to fields
+        } rec;
     };
 };
 
@@ -160,6 +166,7 @@ static inline bool ML_IS_TUPLE(VALUE v)   { return ML_IS_PTR(v) && ML_PTR(v)->ty
 static inline bool ML_IS_REF(VALUE v)     { return ML_IS_PTR(v) && ML_PTR(v)->type == MLOBJ_REF;     }
 static inline bool ML_IS_REAL(VALUE v)    { return ML_IS_PTR(v) && ML_PTR(v)->type == MLOBJ_REAL;    }
 static inline bool ML_IS_VARIANT(VALUE v) { return ML_IS_PTR(v) && ML_PTR(v)->type == MLOBJ_VARIANT; }
+static inline bool ML_IS_RECORD(VALUE v)  { return ML_IS_PTR(v) && ML_PTR(v)->type == MLOBJ_RECORD; }
 static inline bool ML_IS_BOOL(VALUE v)    { return v == ML_TRUE || v == ML_FALSE; }
 
 // Object helpers (defined in main.c).
@@ -172,6 +179,7 @@ VALUE ml_make_ref(VALUE init);
 VALUE ml_make_closure(struct Node *body, struct mlframe *env, int nparams, bool is_leaf, const char *name);
 VALUE ml_make_prim(const char *name, ml_prim_fn fn, int min_argc, int max_argc);
 VALUE ml_make_variant(const char *name, int n, VALUE *items);
+VALUE ml_make_record(int n, const char **fields, VALUE *items);
 VALUE ml_string_concat(VALUE a, VALUE b);
 bool  ml_structural_eq(VALUE a, VALUE b);
 int   ml_compare(VALUE a, VALUE b);

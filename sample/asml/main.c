@@ -134,6 +134,21 @@ ml_make_variant(const char *name, int n, VALUE *items)
     return ML_OBJ_VAL(o);
 }
 
+// fields は呼び出し元で sort 済 (intern も済) を期待。
+VALUE
+ml_make_record(int n, const char **fields, VALUE *items)
+{
+    struct mlobj *o = ml_alloc(MLOBJ_RECORD);
+    o->rec.n = n;
+    o->rec.fields = (const char **)malloc(sizeof(char *) * (n ? n : 1));
+    o->rec.items  = (VALUE *)malloc(sizeof(VALUE) * (n ? n : 1));
+    for (int i = 0; i < n; i++) {
+        o->rec.fields[i] = fields[i];
+        o->rec.items[i]  = items[i];
+    }
+    return ML_OBJ_VAL(o);
+}
+
 VALUE
 ml_string_concat(VALUE a, VALUE b)
 {
@@ -187,6 +202,13 @@ ml_structural_eq(VALUE a, VALUE b)
         for (int i = 0; i < ao->var.n; i++)
             if (!ml_structural_eq(ao->var.items[i], bo->var.items[i]))
                 return false;
+        return true;
+      case MLOBJ_RECORD:
+        if (ao->rec.n != bo->rec.n) return false;
+        for (int i = 0; i < ao->rec.n; i++) {
+            if (strcmp(ao->rec.fields[i], bo->rec.fields[i]) != 0) return false;
+            if (!ml_structural_eq(ao->rec.items[i], bo->rec.items[i])) return false;
+        }
         return true;
       default:
         return false;
@@ -505,6 +527,15 @@ ml_display_inner(FILE *fp, VALUE v, bool inside)
             ml_display_inner(fp, o->var.items[0], true);
         }
         return;
+      case MLOBJ_RECORD:
+        fprintf(fp, "{");
+        for (int i = 0; i < o->rec.n; i++) {
+            if (i) fprintf(fp, ",");
+            fprintf(fp, "%s=", o->rec.fields[i]);
+            ml_display_inner(fp, o->rec.items[i], true);
+        }
+        fprintf(fp, "}");
+        return;
       default:
         fprintf(fp, "<?>");
         return;
@@ -523,6 +554,8 @@ NODE **ML_EXTRACT_NODES = NULL; size_t ML_EXTRACT_NODES_LEN = 0, ML_EXTRACT_NODE
 NODE **ML_TUPLE_ITEMS  = NULL;  size_t ML_TUPLE_ITEMS_LEN  = 0, ML_TUPLE_ITEMS_CAP  = 0;
 NODE **ML_CALL_ARGS    = NULL;  size_t ML_CALL_ARGS_LEN    = 0, ML_CALL_ARGS_CAP    = 0;
 
+const char **ML_RECORD_FIELDS = NULL; size_t ML_RECORD_FIELDS_LEN = 0, ML_RECORD_FIELDS_CAP = 0;
+
 static uint32_t
 push_nodes(NODE ***vec, size_t *len, size_t *cap, NODE **items, size_t n)
 {
@@ -530,6 +563,21 @@ push_nodes(NODE ***vec, size_t *len, size_t *cap, NODE **items, size_t n)
         size_t nc = *cap ? *cap : 16;
         while (*len + n > nc) nc *= 2;
         *vec = (NODE **)realloc(*vec, nc * sizeof(NODE *));
+        *cap = nc;
+    }
+    uint32_t idx = (uint32_t)*len;
+    for (size_t i = 0; i < n; i++) (*vec)[*len + i] = items[i];
+    *len += n;
+    return idx;
+}
+
+static uint32_t
+push_strings(const char ***vec, size_t *len, size_t *cap, const char **items, size_t n)
+{
+    if (*len + n > *cap) {
+        size_t nc = *cap ? *cap : 16;
+        while (*len + n > nc) nc *= 2;
+        *vec = (const char **)realloc(*vec, nc * sizeof(char *));
         *cap = nc;
     }
     uint32_t idx = (uint32_t)*len;
@@ -594,6 +642,8 @@ enum tk {
     TK_TRUE, TK_FALSE, TK_NIL, TK_UNIT_LIT,
     TK_RAISE, TK_HANDLE,
     TK_REF, TK_OP, TK_UNDERSCORE,
+    TK_LBRACE, TK_RBRACE,           // { }
+    TK_HASH,                         // #  (record field selector)
 };
 
 struct token {
@@ -785,6 +835,9 @@ lex(void)
       case '@': tk.kind = TK_AT;     return;
       case '^': tk.kind = TK_CARET;  return;
       case '.': tk.kind = TK_DOT;    return;
+      case '{': tk.kind = TK_LBRACE; return;
+      case '}': tk.kind = TK_RBRACE; return;
+      case '#': tk.kind = TK_HASH;   return;
       default:
         fprintf(stderr, "asml: lex error at line %d: unexpected '%c'\n", src_line, ch);
         exit(1);
@@ -808,6 +861,7 @@ enum ty_kind {
     TYK_LIST,
     TYK_REF,
     TYK_CON,
+    TYK_RECORD,
 };
 
 typedef struct ty TY;
@@ -826,6 +880,7 @@ struct ty {
         TY  *list_elt;
         TY  *ref_elt;
         struct { const char *name; int n; TY **args; } con;
+        struct { int n; const char **fields; TY **types; } rec;   // sorted fields
     };
 };
 
@@ -894,6 +949,21 @@ ty_con(const char *name, int n, TY **args)
     if (n > 0) {
         t->con.args = (TY **)malloc(sizeof(TY *) * n);
         for (int i = 0; i < n; i++) t->con.args[i] = args[i];
+    }
+    return t;
+}
+
+// fields は sort 済を期待。
+static TY *
+ty_record(int n, const char **fields, TY **types)
+{
+    TY *t = ty_alloc(TYK_RECORD);
+    t->rec.n = n;
+    t->rec.fields = (const char **)malloc(sizeof(char *) * (n ? n : 1));
+    t->rec.types  = (TY **)malloc(sizeof(TY *) * (n ? n : 1));
+    for (int i = 0; i < n; i++) {
+        t->rec.fields[i] = fields[i];
+        t->rec.types[i]  = types[i];
     }
     return t;
 }
@@ -1014,6 +1084,17 @@ ty_pp_walk(struct ty_pp *p, TY *t, int prec)
         }
         return;
       }
+      case TYK_RECORD: {
+        ty_pp_ch(p, '{');
+        for (int i = 0; i < t->rec.n; i++) {
+            if (i) ty_pp_str(p, ", ");
+            ty_pp_str(p, t->rec.fields[i]);
+            ty_pp_str(p, ": ");
+            ty_pp_walk(p, t->rec.types[i], 0);
+        }
+        ty_pp_ch(p, '}');
+        return;
+      }
     }
 }
 
@@ -1071,6 +1152,9 @@ ty_adjust_levels(TY *t, int target_level, int v_id, int v_line)
       case TYK_CON:
         for (int i = 0; i < t->con.n; i++) ty_adjust_levels(t->con.args[i], target_level, v_id, v_line);
         return;
+      case TYK_RECORD:
+        for (int i = 0; i < t->rec.n; i++) ty_adjust_levels(t->rec.types[i], target_level, v_id, v_line);
+        return;
       default: return;
     }
 }
@@ -1115,6 +1199,13 @@ ty_unify_at(int line, TY *a, TY *b)
         if (a->con.n != b->con.n) goto mismatch;
         for (int i = 0; i < a->con.n; i++) ty_unify_at(line, a->con.args[i], b->con.args[i]);
         return;
+      case TYK_RECORD:
+        if (a->rec.n != b->rec.n) goto mismatch;
+        for (int i = 0; i < a->rec.n; i++) {
+            if (strcmp(a->rec.fields[i], b->rec.fields[i]) != 0) goto mismatch;
+            ty_unify_at(line, a->rec.types[i], b->rec.types[i]);
+        }
+        return;
       case TYK_VAR: return;     // handled above
     }
 mismatch: {
@@ -1156,6 +1247,9 @@ ty_collect_gen_vars(TY *t, int level)
       case TYK_REF:  ty_collect_gen_vars(t->ref_elt,  level); return;
       case TYK_CON:
         for (int i = 0; i < t->con.n; i++) ty_collect_gen_vars(t->con.args[i], level);
+        return;
+      case TYK_RECORD:
+        for (int i = 0; i < t->rec.n; i++) ty_collect_gen_vars(t->rec.types[i], level);
         return;
       default: return;
     }
@@ -1224,6 +1318,17 @@ ty_instantiate_walk(TY *t, TY **fresh, int n_fresh, int new_level)
         }
         if (!changed) return t;
         return ty_con(t->con.name, t->con.n, its);
+      }
+      case TYK_RECORD: {
+        if (t->rec.n == 0) return t;
+        TY **its = (TY **)alloca(sizeof(TY *) * t->rec.n);
+        bool changed = false;
+        for (int i = 0; i < t->rec.n; i++) {
+            its[i] = ty_instantiate_walk(t->rec.types[i], fresh, n_fresh, new_level);
+            if (its[i] != t->rec.types[i]) changed = true;
+        }
+        if (!changed) return t;
+        return ty_record(t->rec.n, t->rec.fields, its);
       }
       default: return t;
     }
@@ -1517,7 +1622,7 @@ ctor_arity(const char *name)
 
 enum pat_kind {
     P_WILDCARD, P_VAR, P_INT, P_BOOL, P_STR, P_UNIT, P_NIL,
-    P_CONS, P_TUPLE, P_LIST, P_CTOR0, P_CTOR1
+    P_CONS, P_TUPLE, P_LIST, P_CTOR0, P_CTOR1, P_RECORD,
 };
 
 typedef struct pat {
@@ -1531,6 +1636,7 @@ typedef struct pat {
         struct { struct pat **items; int n; } tup;
         struct { struct pat **items; int n; } lst;
         struct { const char *name; struct pat *arg; } ctor1;
+        struct { int n; const char **fields; struct pat **items; } rec;  // sorted
     };
 } PAT;
 
@@ -1596,6 +1702,39 @@ parse_pattern_atom(void)
         PAT *p = pp_alloc(P_LIST); p->lst.items = items; p->lst.n = n;
         return p;
     }
+    if (accept(TK_LBRACE)) {
+        // record パターン: `{f1 = p1, f2 = p2, ...}` または短縮 `{f1, f2, ...}` (= `{f1 = f1, ...}`)
+        const char **fields = NULL; PAT **subs = NULL;
+        int n = 0, cap = 4;
+        fields = (const char **)malloc(sizeof(char *) * cap);
+        subs   = (PAT **)malloc(sizeof(PAT *) * cap);
+        if (!accept(TK_RBRACE)) {
+            for (;;) {
+                if (tk.kind != TK_ID) parse_error("expected field name in record pattern");
+                if (n == cap) { cap *= 2;
+                    fields = (const char **)realloc(fields, sizeof(char *) * cap);
+                    subs   = (PAT **)realloc(subs, sizeof(PAT *) * cap);
+                }
+                const char *fn = tk.str; lex();
+                fields[n] = fn;
+                if (accept(TK_EQ)) subs[n] = parse_pattern();
+                else { PAT *vp = pp_alloc(P_VAR); vp->var_name = fn; subs[n] = vp; }
+                n++;
+                if (!accept(TK_COMMA)) break;
+            }
+            expect(TK_RBRACE, "expected '}'");
+        }
+        // sort fields (insertion sort, expecting small N)
+        for (int i = 1; i < n; i++) {
+            for (int j = i; j > 0 && strcmp(fields[j - 1], fields[j]) > 0; j--) {
+                const char *tf = fields[j]; fields[j] = fields[j - 1]; fields[j - 1] = tf;
+                PAT *tp = subs[j]; subs[j] = subs[j - 1]; subs[j - 1] = tp;
+            }
+        }
+        PAT *p = pp_alloc(P_RECORD);
+        p->rec.n = n; p->rec.fields = fields; p->rec.items = subs;
+        return p;
+    }
     parse_error("expected pattern");
     return NULL;
 }
@@ -1609,6 +1748,7 @@ parse_pattern(void)
             tk.kind == TK_ID || tk.kind == TK_CTOR ||
             tk.kind == TK_INT || tk.kind == TK_STR ||
             tk.kind == TK_LPAREN || tk.kind == TK_LBRACK ||
+            tk.kind == TK_LBRACE ||
             tk.kind == TK_NIL || tk.kind == TK_UNIT_LIT ||
             tk.kind == TK_TRUE || tk.kind == TK_FALSE ||
             tk.kind == TK_UNDERSCORE || tk.kind == TK_TILDE;
@@ -1715,6 +1855,14 @@ compile_pat(PAT *p, NODE *scrut, struct pat_compile *pc)
         compile_pat(p->ctor1.arg, ALLOC_node_proj_ctor(scrut), pc);
         return;
       }
+      case P_RECORD: {
+        // HM が record の field set を保証しているので test は不要。
+        // 各 field の sub-pattern を proj_record で再帰。
+        for (int i = 0; i < p->rec.n; i++)
+            compile_pat(p->rec.items[i],
+                        ALLOC_node_proj_record(scrut, p->rec.fields[i]), pc);
+        return;
+      }
     }
 }
 
@@ -1743,6 +1891,7 @@ enum ex_kind {
     EX_LREF, EX_GREF, EX_CTOR0, EX_CTOR1,
     EX_IF, EX_SEQ, EX_LET, EX_LETREC, EX_FN, EX_APP,
     EX_TUPLE, EX_CONS,
+    EX_RECORD, EX_FIELD,
     EX_CASE, EX_HANDLE,
     EX_REF_NEW, EX_DEREF, EX_ASSIGN,
     EX_RAISE,
@@ -1782,6 +1931,8 @@ struct expr {
         } fn;
         struct { EX *fn; EX *arg; } app;
         struct { int n; EX **items; } tuple;
+        struct { int n; const char **fields; EX **items; } rec;     // sorted fields
+        struct { EX *e; const char *field; } fld;
         struct { EX *head, *tail; } cons;
         struct { EX *scrut; int n_arms; struct case_arm_ir *arms; } cse;
         struct { EX *body; int n_arms; struct case_arm_ir *arms; } handle;
@@ -1854,7 +2005,7 @@ can_start_atom(void)
     switch (tk.kind) {
       case TK_INT: case TK_REAL: case TK_STR: case TK_ID: case TK_CTOR:
       case TK_TRUE: case TK_FALSE: case TK_NIL: case TK_UNIT_LIT:
-      case TK_LPAREN: case TK_LBRACK:
+      case TK_LPAREN: case TK_LBRACK: case TK_LBRACE: case TK_HASH:
       case TK_LET: case TK_IF: case TK_FN: case TK_CASE:
       case TK_TILDE: case TK_NOT: case TK_RAISE: case TK_OP:
         return true;
@@ -1929,6 +2080,71 @@ parse_atom(void)
         for (int i = n - 1; i >= 0; i--) result = ex_cons(items[i], result);
         free(items);
         return result;
+    }
+    if (accept(TK_LBRACE)) {
+        // record literal: `{f1 = e1, f2 = e2, ...}`.  fields ソート済で保持。
+        const char **fields = (const char **)malloc(sizeof(char *) * 8);
+        EX **items = (EX **)malloc(sizeof(EX *) * 8);
+        int n = 0, cap = 8;
+        if (!accept(TK_RBRACE)) {
+            for (;;) {
+                if (tk.kind != TK_ID) parse_error("expected field name in record literal");
+                if (n == cap) { cap *= 2;
+                    fields = (const char **)realloc(fields, sizeof(char *) * cap);
+                    items  = (EX **)realloc(items, sizeof(EX *) * cap);
+                }
+                fields[n] = tk.str; lex();
+                expect(TK_EQ, "expected '=' after field name");
+                items[n] = parse_expr();
+                n++;
+                if (!accept(TK_COMMA)) break;
+            }
+            expect(TK_RBRACE, "expected '}'");
+        }
+        // sort by field name
+        for (int i = 1; i < n; i++) {
+            for (int j = i; j > 0 && strcmp(fields[j - 1], fields[j]) > 0; j--) {
+                const char *tf = fields[j]; fields[j] = fields[j - 1]; fields[j - 1] = tf;
+                EX *te = items[j]; items[j] = items[j - 1]; items[j - 1] = te;
+            }
+        }
+        EX *e = ex_alloc(EX_RECORD);
+        e->rec.n = n; e->rec.fields = fields; e->rec.items = items;
+        return e;
+    }
+    if (accept(TK_HASH)) {
+        // `#field` — field selector. SML 流: `#f r` でフィールドアクセス。
+        // 我々は単独の `#f` も受け付けるが、その時 `fn $r => #f $r` 相当の
+        // closure を emit (型推論で record 型が確定すれば lower で
+        // node_field を選ぶ)。簡単のため、ここでは必ず引数を取る形を要求:
+        // `#f e` のみ。`#f` 単独で値として渡す場合は `(fn r => #f r)` を
+        // 書いてもらう (文書化)。
+        if (tk.kind != TK_ID) parse_error("expected field name after '#'");
+        const char *fname = tk.str; lex();
+        if (!can_start_atom()) {
+            // closure を emit: `fn $r => #fname $r`
+            scope_push();
+            scope_add(intern("$r"), BK_VAR);
+            EX *body = ex_alloc(EX_FIELD);
+            body->fld.e = ex_lref(0, 0, intern("$r"));
+            body->fld.field = fname;
+            scope_pop();
+            EX *fn = ex_alloc(EX_FN);
+            fn->fn.nparams = 1;
+            fn->fn.param_names = (const char **)malloc(sizeof(char *));
+            fn->fn.param_names[0] = intern("$r");
+            fn->fn.param_pats = (PAT **)malloc(sizeof(PAT *));
+            PAT *vp = pp_alloc(P_VAR); vp->var_name = intern("$r");
+            fn->fn.param_pats[0] = vp;
+            fn->fn.body = body;
+            fn->fn.name = intern("<#field>");
+            return fn;
+        }
+        EX *r = parse_atom();
+        EX *e = ex_alloc(EX_FIELD);
+        e->fld.e = r;
+        e->fld.field = fname;
+        return e;
     }
     if (tk.kind == TK_LET) return parse_let();
     if (accept(TK_IF)) {
@@ -2186,6 +2402,11 @@ pat_count_binders(PAT *p)
         return 1;
       }
       case P_CTOR1: return pat_count_binders(p->ctor1.arg);
+      case P_RECORD: {
+        int s = 0;
+        for (int i = 0; i < p->rec.n; i++) s += pat_count_binders(p->rec.items[i]);
+        return s;
+      }
     }
     return 0;
 }
@@ -2204,6 +2425,9 @@ pat_register_binders(PAT *p)
         if (ctor_arity(p->var_name) < 0) scope_add(p->var_name, BK_VAR);
         return;
       case P_CTOR1: pat_register_binders(p->ctor1.arg); return;
+      case P_RECORD:
+        for (int i = 0; i < p->rec.n; i++) pat_register_binders(p->rec.items[i]);
+        return;
     }
 }
 
@@ -2271,7 +2495,7 @@ parse_fun_params(int *out_n)
     int n = 0, cap = 4;
     params = (PAT **)malloc(sizeof(PAT *) * cap);
     while (tk.kind == TK_ID || tk.kind == TK_LPAREN || tk.kind == TK_UNDERSCORE
-           || tk.kind == TK_UNIT_LIT) {
+           || tk.kind == TK_UNIT_LIT || tk.kind == TK_LBRACE) {
         if (n == cap) { cap *= 2; params = (PAT **)realloc(params, sizeof(PAT *) * cap); }
         params[n++] = parse_pattern_atom();
     }
@@ -2376,8 +2600,10 @@ parse_one_decl(int *pushed_scopes_out)
                                    tk.kind == TK_IN || tk.kind == TK_END ||
                                    tk.kind == TK_VAL || tk.kind == TK_FUN ||
                                    tk.kind == TK_DATATYPE)) break;
-                if (tk.kind == TK_LPAREN || tk.kind == TK_LBRACK || tk.kind == TK_LET) depth++;
-                if (tk.kind == TK_RPAREN || tk.kind == TK_RBRACK || tk.kind == TK_END) depth--;
+                if (tk.kind == TK_LPAREN || tk.kind == TK_LBRACK ||
+                    tk.kind == TK_LBRACE || tk.kind == TK_LET) depth++;
+                if (tk.kind == TK_RPAREN || tk.kind == TK_RBRACK ||
+                    tk.kind == TK_RBRACE || tk.kind == TK_END) depth--;
                 lex();
             }
             if (n == cap) { cap *= 2; hdrs = (struct fun_hdr *)realloc(hdrs, sizeof *hdrs * cap); }
@@ -2570,6 +2796,35 @@ parse_type_atom(struct tyvar_env *tv)
             return ty_con(intern(name), 0, NULL);
         }
     }
+    if (accept(TK_LBRACE)) {
+        // record 型: `{f1 : T1, f2 : T2, ...}`
+        const char **fields = (const char **)malloc(sizeof(char *) * 8);
+        TY **types = (TY **)malloc(sizeof(TY *) * 8);
+        int n = 0, cap = 8;
+        if (!accept(TK_RBRACE)) {
+            for (;;) {
+                if (tk.kind != TK_ID) parse_error("expected field name in record type");
+                if (n == cap) { cap *= 2;
+                    fields = (const char **)realloc(fields, sizeof(char *) * cap);
+                    types  = (TY **)realloc(types, sizeof(TY *) * cap);
+                }
+                fields[n] = tk.str; lex();
+                expect(TK_COLON, "expected ':' after field name");
+                types[n] = parse_type_full(tv);
+                n++;
+                if (!accept(TK_COMMA)) break;
+            }
+            expect(TK_RBRACE, "expected '}'");
+        }
+        // sort by name
+        for (int i = 1; i < n; i++) {
+            for (int j = i; j > 0 && strcmp(fields[j - 1], fields[j]) > 0; j--) {
+                const char *tf = fields[j]; fields[j] = fields[j - 1]; fields[j - 1] = tf;
+                TY *tt = types[j]; types[j] = types[j - 1]; types[j - 1] = tt;
+            }
+        }
+        return ty_record(n, fields, types);
+    }
     parse_error("expected type atom");
     return NULL;
 }
@@ -2760,8 +3015,10 @@ parse_top_form(bool *had_form)
                 if (depth == 0 && (tk.kind == TK_AND || tk.kind == TK_SEMI ||
                                    tk.kind == TK_VAL || tk.kind == TK_FUN ||
                                    tk.kind == TK_DATATYPE)) break;
-                if (tk.kind == TK_LPAREN || tk.kind == TK_LBRACK || tk.kind == TK_LET) depth++;
-                if (tk.kind == TK_RPAREN || tk.kind == TK_RBRACK || tk.kind == TK_END) depth--;
+                if (tk.kind == TK_LPAREN || tk.kind == TK_LBRACK ||
+                    tk.kind == TK_LBRACE || tk.kind == TK_LET) depth++;
+                if (tk.kind == TK_RPAREN || tk.kind == TK_RBRACK ||
+                    tk.kind == TK_RBRACE || tk.kind == TK_END) depth--;
                 lex();
             }
             if (n == cap) { cap *= 2; hdrs = (struct fun_hdr *)realloc(hdrs, sizeof *hdrs * cap); }
@@ -3084,6 +3341,17 @@ lower_expr(EX *e)
         free(its);
         return ALLOC_node_tuple((uint32_t)n, idx);
       }
+      case EX_RECORD: {
+        int n = e->rec.n;
+        NODE **its = (NODE **)malloc(sizeof(NODE *) * (n ? n : 1));
+        for (int i = 0; i < n; i++) its[i] = lower_expr(e->rec.items[i]);
+        uint32_t items_idx  = push_nodes(&ML_TUPLE_ITEMS, &ML_TUPLE_ITEMS_LEN, &ML_TUPLE_ITEMS_CAP, its, n);
+        uint32_t fields_idx = push_strings(&ML_RECORD_FIELDS, &ML_RECORD_FIELDS_LEN, &ML_RECORD_FIELDS_CAP,
+                                           e->rec.fields, n);
+        free(its);
+        return ALLOC_node_record((uint32_t)n, fields_idx, items_idx);
+      }
+      case EX_FIELD: return ALLOC_node_field(lower_expr(e->fld.e), e->fld.field);
       case EX_CONS: return ALLOC_node_cons(lower_expr(e->cons.head), lower_expr(e->cons.tail));
       case EX_CASE: return lower_case(e);
       case EX_HANDLE: return lower_handle(e);
@@ -3384,6 +3652,10 @@ ex_is_value(EX *e)
         for (int i = 0; i < e->tuple.n; i++) if (!ex_is_value(e->tuple.items[i])) return false;
         return true;
       }
+      case EX_RECORD: {
+        for (int i = 0; i < e->rec.n; i++) if (!ex_is_value(e->rec.items[i])) return false;
+        return true;
+      }
       case EX_CONS: return ex_is_value(e->cons.head) && ex_is_value(e->cons.tail);
       default: return false;
     }
@@ -3464,6 +3736,16 @@ infer_pat_walk(int level, PAT *p, TY *expected, struct binders_acc *acc, int lin
         TY *cs_d = ty_deref(cs);
         ty_unify_at(line, expected, cs_d->arr.result);
         infer_pat_walk(level, p->ctor1.arg, cs_d->arr.param, acc, line);
+        return;
+      }
+      case P_RECORD: {
+        // pattern's "shape" is a record type with the listed fields.
+        // Each field type is fresh; recurse into each field's sub-pattern.
+        TY **its = (TY **)alloca(sizeof(TY *) * (p->rec.n ? p->rec.n : 1));
+        for (int i = 0; i < p->rec.n; i++) its[i] = ty_var(level);
+        ty_unify_at(line, expected, ty_record(p->rec.n, p->rec.fields, its));
+        for (int i = 0; i < p->rec.n; i++)
+            infer_pat_walk(level, p->rec.items[i], its[i], acc, line);
         return;
       }
     }
@@ -3612,6 +3894,35 @@ infer(int level, EX *e)
         TY **its = (TY **)alloca(sizeof(TY *) * e->tuple.n);
         for (int i = 0; i < e->tuple.n; i++) its[i] = infer(level, e->tuple.items[i]);
         t = ty_tup(e->tuple.n, its);
+        break;
+      }
+      case EX_RECORD: {
+        // 各 field の式を infer。fields 配列はパース時にソート済。
+        TY **its = (TY **)alloca(sizeof(TY *) * (e->rec.n ? e->rec.n : 1));
+        for (int i = 0; i < e->rec.n; i++) its[i] = infer(level, e->rec.items[i]);
+        t = ty_record(e->rec.n, e->rec.fields, its);
+        break;
+      }
+      case EX_FIELD: {
+        // `#f r` — r の型を infer し、record と要求。フィールドが含まれて
+        // いなければ型エラー。SML でいう「曖昧な field selector」を回避する
+        // ため、receiver の型は確定 (TYK_RECORD まで deref できる) を要求
+        // — 行き当たりばったりに row poly を入れない。
+        TY *rt = infer(level, e->fld.e);
+        TY *rd = ty_deref(rt);
+        if (rd->kind != TYK_RECORD)
+            type_error(line, "field selector #%s requires a known record type, got %s",
+                       e->fld.field, ty_format(rt));
+        TY *found = NULL;
+        for (int i = 0; i < rd->rec.n; i++) {
+            if (strcmp(rd->rec.fields[i], e->fld.field) == 0) {
+                found = rd->rec.types[i];
+                break;
+            }
+        }
+        if (!found) type_error(line, "no field '%s' in record %s",
+                                e->fld.field, ty_format(rd));
+        t = found;
         break;
       }
       case EX_CONS: {

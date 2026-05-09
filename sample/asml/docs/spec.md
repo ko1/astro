@@ -178,13 +178,33 @@ asml: type error at line 1: cannot unify bool with int
 `Module.name` 形式の修飾識別子は字句解析時に **単一の TK_ID** として扱う
 (本物の SML のモジュールシステムは持たない)。
 
+## Record
+
+```sml
+val p = {x = 10, y = 20}                  (* リテラル *)
+val px = #x p                              (* フィールド選択 *)
+fun add {x, y} = x + y                     (* パターン (短縮形) *)
+fun first {x = a, y = _} = a               (* パターン (明示) *)
+
+datatype shape = Pt of {x : int, y : int} (* datatype 内 record 型 *)
+val s = Pt {x = 5, y = 6}
+val n = case s of Pt {x, y} => x * 100 + y
+```
+
+特徴:
+- フィールドは登場順序にかかわらず**アルファベット順**で比較・unify
+- 型推論は **行多相 (row polymorphism) なし**: `#x e` の使用時点で `e` の
+  型が record 型に確定している必要がある (型注釈構文がないため、function
+  引数で `fun f {x, y} = ...` のようにパターンで導入するのが定石)
+- `=` / `<>` は構造比較 (フィールド順比較)
+
 ## 未サポートの主要機能
 
 - signature / structure / functor (モジュールシステム)
-- record (`{x = 1, y = 2}`)
 - 型注釈の構文 (`(e : T)`, `fun f (x : int) = ...`)
 - `local in end`, `where`, `withtype`, `abstype`
 - ユーザ定義中置演算子 (`infix`, `infixr`)
 - 文字リテラル (`#"a"`)
 - substring / slice 操作
 - ユーザ定義 exception 宣言
+- record の row polymorphism (`fun area p = #x p * #y p` は曖昧で reject される)

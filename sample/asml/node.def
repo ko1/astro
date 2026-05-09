@@ -554,6 +554,40 @@ node_tuple(CTX * restrict c, NODE * restrict n, uint32_t arity, uint32_t items_i
     return ml_make_tuple((int)arity, vals);
 }
 
+// `{f1 = e1, f2 = e2, ...}` — literal record。fields/items は parser 側で
+// sort 済 (ソート済 field 名の portion を ML_RECORD_FIELDS に push、対応する
+// item 値を ML_TUPLE_ITEMS に push) なので、 ml_make_record にそのまま渡せる。
+NODE_DEF @noinline
+node_record(CTX * restrict c, NODE * restrict n, uint32_t arity, uint32_t fields_idx, uint32_t items_idx)
+{
+    (void)n;
+    extern NODE **ML_TUPLE_ITEMS;
+    extern const char **ML_RECORD_FIELDS;
+    VALUE *vals = (VALUE *)alloca(sizeof(VALUE) * (arity ? arity : 1));
+    for (uint32_t i = 0; i < arity; i++) {
+        NODE *e = ML_TUPLE_ITEMS[items_idx + i];
+        vals[i] = (*e->head.dispatcher)(c, e);
+    }
+    return ml_make_record((int)arity, &ML_RECORD_FIELDS[fields_idx], vals);
+}
+
+// `#field e` — field selector application。HM が record 型を保証して
+// いるので IS_RECORD チェックなし。フィールドは sort 済の小さい N (大半 ≤ 8)
+// なので linear search で十分。
+NODE_DEF
+node_field(CTX * restrict c, NODE * restrict n, NODE *rec, const char *name)
+{
+    (void)n;
+    VALUE r = EVAL_ARG(c, rec);
+    struct mlobj *o = ML_PTR(r);
+    for (int i = 0; i < o->rec.n; i++)
+        if (o->rec.fields[i] == name || strcmp(o->rec.fields[i], name) == 0)
+            return o->rec.items[i];
+    // HM が field の存在を保証しているので、ここに来たら内部矛盾。
+    ml_error(c, "field '%s' not found in record", name);
+    return ML_UNIT;     // unreachable
+}
+
 // User-defined nullary constructor: returns a singleton variant value
 // (re-allocated each time but structurally equal — kept simple).
 NODE_DEF
@@ -713,6 +747,20 @@ node_proj_ctor(CTX * restrict c, NODE * restrict n, NODE *scrut)
     (void)n;
     VALUE sv = EVAL_ARG(c, scrut);
     return ML_PTR(sv)->var.items[0];
+}
+
+// record のフィールド抽出。pattern match の extractor として使用。
+NODE_DEF
+node_proj_record(CTX * restrict c, NODE * restrict n, NODE *scrut, const char *name)
+{
+    (void)n;
+    VALUE sv = EVAL_ARG(c, scrut);
+    struct mlobj *o = ML_PTR(sv);
+    for (int i = 0; i < o->rec.n; i++)
+        if (o->rec.fields[i] == name || strcmp(o->rec.fields[i], name) == 0)
+            return o->rec.items[i];
+    ml_error(c, "field '%s' not found in record", name);
+    return ML_UNIT;
 }
 
 // ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ source → lex → parse → expr (IR) → infer (HM) → lower → NODE → EVA
 - シングルトン: `unit` / `true` / `false` / `nil` を静的 `mlobj` の
   アドレスで表現
 - ヒープ型: `cons` / `string` / `closure` / `prim` / `tuple` / `ref` /
-  `real` (boxed double) / `variant` / `exn`
+  `real` (boxed double) / `variant` / `exn` / `record` (sorted field-name 配列 + 値配列)
 
 ### 制御構造
 
@@ -62,8 +62,22 @@ desugar:
 - タプル `(p1, ..., pN)`
 - 0 引数コンストラクタ `Foo`
 - 1 引数コンストラクタ `Foo p`
+- record `{f1 = p1, ...}` および短縮形 `{f1, f2, ...}` (= `{f1 = f1, ...}`)
 
 裸 ID で未登録のものは pattern では変数束縛として扱う (SML 慣習)。
+
+### Record
+
+- リテラル `{x = 1, y = 2}` — フィールドはパース時にアルファベット順で
+  ソート (型 unify と structural eq が位置比較で済むように)
+- フィールド選択 `#x e` (HM が record 型を確定すると `node_field` が
+  選ばれて IS_RECORD チェックなしの linear search で値を取得)
+- `#x` 単独 (引数なし) は `fn $r => #x $r` の closure に desugar — 高階で
+  渡せる
+- record パターン `{x, y}` / `{x = a, y = b}` を case / fun で使える
+- `datatype foo = Pt of {x : int, y : int}` のような datatype 内 record 型
+  もパース可
+- structural equality / compare は field 名と値ペアを順に比較
 
 ### 演算子
 
