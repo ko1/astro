@@ -180,8 +180,14 @@ VALUE io_class_pipe(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_raise(c, NULL, "IO.pipe fdopen failed");
         return Qnil;
     }
-    /* Line-buffer the writer so puts/print show up promptly. */
-    setvbuf(w, NULL, _IOLBF, 0);
+    /* Unbuffer both ends so the writer's bytes immediately reach the
+     * kernel pipe and the reader's read/readpartial unblock without
+     * waiting for a newline.  CRuby's IO.pipe is also unbuffered.
+     * Without this, test_io / test_optimization hang on
+     *   w.write "."; r.readpartial(n, "")
+     * because line-buffered fputs holds back the single-char write. */
+    setvbuf(w, NULL, _IONBF, 0);
+    setvbuf(r, NULL, _IONBF, 0);
     VALUE rio = korb_io_new((struct korb_class *)self, r);
     VALUE wio = korb_io_new((struct korb_class *)self, w);
     VALUE arr = korb_ary_new_capa(2);
