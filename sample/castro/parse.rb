@@ -2542,9 +2542,29 @@ def main
     next 1 unless sx.is_a?(Array)
     1 + sx[1..-1].sum { |x| count_nodes_in.call(x) }
   end
+  # Heuristic: deep-nested FP kernels suffer register pressure when
+  # the parent SD inlines them.  gcc has only 16 YMM regs, so a triple-
+  # nested matmul body that's clean as a standalone SD blows its
+  # vmovq/vmovd register allocation when inlined into a caller's SD
+  # (measured: gemm 320→480 ms, ipc 3.06→2.51 due to 2.4× more stack
+  # spills).  Mark them no_inline so the parent emits an `extern SD_<h>`
+  # call and gcc compiles the kernel against an empty register
+  # environment.
+  fp_ops = %w[mul_d add_d sub_d div_d store_d load_d ge_d le_d lt_d gt_d eq_d neg_d]
+  max_loop_depth = lambda do |sx, depth=0|
+    next depth unless sx.is_a?(Array)
+    d2 = (sx[0] == :for || sx[0] == :while) ? depth + 1 : depth
+    ([d2] + sx[1..-1].map { |x| max_loop_depth.call(x, d2) }).max
+  end
+  count_fp = lambda do |sx|
+    next 0 unless sx.is_a?(Array)
+    c = fp_ops.include?(sx[0].to_s) ? 1 : 0
+    c + sx[1..-1].sum { |x| count_fp.call(x) }
+  end
   funcs.each do |name, _fn, body_sx, _ret_ty|
     nc = count_nodes_in.call(body_sx)
-    flags = nc > no_inline_threshold ? ' no_inline' : ''
+    fp_loop_kernel = max_loop_depth.call(body_sx) >= 3 && count_fp.call(body_sx) >= 5
+    flags = (nc > no_inline_threshold || fp_loop_kernel) ? ' no_inline' : ''
     out << "  (sig #{name}#{flags})\n"
   end
   funcs.each do |_name, _fn, body_sx, _ret_ty|

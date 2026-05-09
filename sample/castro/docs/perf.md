@@ -582,35 +582,56 @@ bench-polybench`。
 
 | bench | castro AOT | gcc -O3 | castro vs -O3 |
 |---|---:|---:|---:|
-| **jacobi-2d**    |  380 |  360 | 1.06× (≈tied) |
-| **seidel-2d**    | 1650 | 1530 | 1.08× (≈tied) |
-| **syrk**         |  430 |  340 | 1.26× |
-| **atax**         |  480 |  350 | 1.37× |
-| **gemm**         |  480 |  310 | 1.55× |
-| **floyd-warshall**|  360 |  220 | 1.64× |
-| **mvt**          |  570 |  290 | 1.97× |
-| **jacobi-1d**    |  200 |  100 | 2.00× |
-| 2mm              | 1480 |  720 | 2.06× |
-| lu               | 2920 |  690 | 4.23× |
-| bicg             | 1300 |  280 | 4.64× |
-| gesummv          | 1010 |  200 | 5.05× |
+| **seidel-2d**    | 1300 | 1200 | 1.08× (≈tied) |
+| **jacobi-2d**    |  360 |  320 | 1.12× (≈tied) |
+| **gemm**         |  340 |  290 | 1.17× |
+| **syrk**         |  360 |  300 | 1.20× |
+| **atax**         |  430 |  310 | 1.39× |
+| **floyd-warshall**|  300 |  200 | 1.50× |
+| **mvt**          |  470 |  240 | 1.96× |
+| **jacobi-1d**    |  180 |   90 | 2.00× |
+| 2mm              | 1190 |  640 | 1.86× |
+| lu               | 2310 |  640 | 3.61× |
+| gesummv          |  840 |  180 | 4.67× |
+| bicg             | 1150 |  230 | 5.00× |
 
 要約:
 
-- **2/12 が gcc -O3 と≈互角** (jacobi-2d 1.06×、seidel-2d 1.08×)
-- **8/12 が 2× 以内** (上 8 行)
+- **4/12 が gcc -O3 と≈互角** (seidel-2d 1.08×、jacobi-2d 1.12×、
+  gemm 1.17×、syrk 1.20×)
+- **9/12 が 2× 以内**
 - gcc -O3 残ギャップが大きいのは bicg / gesummv / lu。共通点は
   「ループ内で 2 配列同時更新 (`tmp[i]`, `y[i]` 両方を 1 イテで
   書く)」。castro の lset_d がスカラ昇格しきらず、毎 iter フレーム
   reload が残る。今後の最適化 target。
-- floyd-warshall (1.64×) は castro が gcc -O3 にかなり迫る。3-deep
+- floyd-warshall (1.50×) は castro が gcc -O3 にかなり迫る。3-deep
   loop + memory 集中アクセスで両者 cache-bound、構造的差が小さい。
 
-> 注: 2026-05-09 の `cs_load` hash mismatch fix 以前の polybench
-> 計測値は **main が interpreter で走った状態の数値** だったので、
-> 一部 kernel (特に matmul 系の gemm) は AOT 化された entry SD が
-> main 全体を inline した結果やや膨らみ、見かけ上スコアが悪化して
-> いる。fix 詳細は CLBG セクション参照。
+### AOT inline policy: depth-3 FP kernel は `no_inline`
+
+2026-05-09 の `cs_load` 修正後、main も AOT 化されて kernel を
+inline で抱える形になった結果、gemm などは entry SD が肥大化して
+gcc の YMM register allocation を圧迫してしまっていた (gemm: 320→
+480 ms, IPC 3.06→2.51, stack spill 10→24)。
+
+そこで parse.rb で **`max_loop_depth >= 3 && fp_op_count >= 5` の
+関数を `no_inline` 扱い** にして entry SD から hoist。kernel が
+独立 SD として gcc に渡る → empty 環境で register allocation が
+落ち着き、SIMD inner loop の vmulpd/vaddpd が AVX2 そのまま生かせる。
+
+修正前 (full inline) → 修正後 (depth-3 hoist):
+
+| kernel | full inline | depth-3 hoist | 改善 |
+|---|---:|---:|---:|
+| gemm | 480 ms (1.55×) | 340 ms (1.17×) | -29% |
+| 2mm  | 1480 (2.06×)   | 1190 (1.86×)   | -20% |
+| lu   | 2920 (4.23×)   | 2310 (3.61×)   | -21% |
+| floyd-warshall | 360 (1.64×) | 300 (1.50×) | -17% |
+| seidel-2d | 1650 (1.08×) | 1300 (1.08×) | -21% |
+| syrk | 430 (1.26×)    | 360 (1.20×)    | -16% |
+
+CLBG (md5/nbody/binary-trees/fannkuch-redux) は heuristic を trigger
+しないので影響なし。
 
 `make bench-polybench` で再現可。
 
