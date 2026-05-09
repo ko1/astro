@@ -289,16 +289,27 @@ main(int argc, char *argv[])
         if (pys_is_instance(exc)
             && pys_exc_matches(c, exc, c->EXC_SystemExit)) {
             VALUE code = pys_getattr_optional(c, exc, "code");
+            // Clear state before exit so atexit / GC finalisers don't
+            // re-trigger on RAISE.
+            c->state = PYS_STATE_NORMAL;
+            c->state_value = PYS_NONE;
             free(src);
-            if (!code || code == PYS_NONE) return 0;
-            if (PYS_IS_FIXNUM(code)) return (int)PYS_FIXVAL(code);
-            if (pys_is_str(code)) {
+            int rc = 0;
+            if (!code || code == PYS_NONE) rc = 0;
+            else if (PYS_IS_FIXNUM(code)) rc = (int)PYS_FIXVAL(code);
+            else if (code == PYS_TRUE) rc = 1;
+            else if (code == PYS_FALSE) rc = 0;
+            else if (pys_is_str(code)) {
                 fwrite(PYS_PTR(code)->str.chars, 1,
                        PYS_PTR(code)->str.len, stderr);
                 fputc('\n', stderr);
-                return 1;
+                rc = 1;
             }
-            return 1;
+            else rc = 1;
+            // Skip atexit hooks (CPython _Py_Finalize would call them but
+            // our finalisers are minimal); flush stdout/stderr at least.
+            fflush(stdout); fflush(stderr);
+            _exit(rc);
         }
         const char *cls_name = "Exception";
         if (pys_is_instance(exc)) cls_name = PYS_PTR(exc)->inst.cls->cls.name;
