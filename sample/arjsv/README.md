@@ -43,7 +43,21 @@ Symbol-key スキーマも透過に動く。  詳細は [`docs/spec.md`](docs/sp
 内部設計は [`docs/runtime.md`](docs/runtime.md)、
 ベンチは [`docs/perf.md`](docs/perf.md)。
 
-## Build
+## Install
+
+arjsv is a CRuby extension; you need a Ruby with development headers
+(developed against CRuby 3.3+).
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby ruby-dev
+```
+
+Prism is bundled with CRuby, so there is no extra parser setup. On
+non-Debian systems install the equivalent GCC/Make/Ruby-with-mkmf set.
+
+### Build
 
 ```sh
 ruby extconf.rb && make            # builds arjsv.so + generated ASTro files

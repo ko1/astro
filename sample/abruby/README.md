@@ -16,11 +16,24 @@ evaluator itself is a tree-walking interpreter generated from
 > implemented, see [`docs/done.md`](docs/done.md) and
 > [`docs/todo.md`](docs/todo.md).
 
-## Build
+## Install
 
 abruby is a CRuby extension; you need a Ruby with development headers
-(the repo is developed against Ruby 4.0.x under rbenv). From this
-directory:
+(the repo is developed against Ruby 4.0.x under rbenv).
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby ruby-dev
+```
+
+On other systems, install GCC/Make and a Ruby with `mkmf` (Ruby 3.x or
+later). Prism is bundled with CRuby itself, so no extra parser setup is
+needed.
+
+### Build
+
+From this directory:
 
 ```sh
 ruby extconf.rb && make     # builds abruby.so

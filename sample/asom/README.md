@@ -22,10 +22,33 @@ sample/asom/SOM/
 - [docs/todo.md](docs/todo.md) — 未実装・既知の課題（shape-based field unbox / call-graph PE / AreWeFastYet 残り / etc）
 - [docs/perf.md](docs/perf.md) — 性能最適化のステップごとの履歴と最終 bench 結果
 
-## ビルド & 実行
+## インストール
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libgc-dev libgmp-dev git
+```
+
+- `build-essential` — gcc / make
+- `ruby` (3.x) — ASTroGen の実行
+- `libgc-dev` — Boehm GC (オブジェクト割当の裏)
+- `libgmp-dev` — Bignum バックエンド
+
+SOM 標準ライブラリ・テストスイート・AreWeFastYet ベンチは git submodule
+として取り込んでいる:
 
 ```sh
 git submodule update --init sample/asom/SOM
+```
+
+(性能比較で TruffleSOM / SOM++ も使うなら `sample/asom/TruffleSOM` /
+`sample/asom/SOMpp` も追加で submodule init すること。詳細は
+[docs/perf.md](docs/perf.md))。
+
+## ビルド & 実行
+
+```sh
 cd sample/asom
 make
 ```

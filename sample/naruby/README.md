@@ -21,7 +21,18 @@ For details:
 ASTro paper: see [../../docs/idea.md](../../docs/idea.md) §6 for the
 naruby evaluation, §5 for the L0/L1/L2 JIT tier description.
 
-## Build
+## Install
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby ruby-bundler git
+```
+
+ASTroGen is plain Ruby (3.x), so any Ruby with `bundler` works.  Building
+libprism additionally needs the standard C toolchain (already in
+`build-essential`).  No external GC / bignum libraries are required —
+naruby uses C `malloc` only.
 
 ### libprism
 

@@ -8,7 +8,18 @@ ASTro の主要機構 (Merkle ハッシュ → 部分評価 → C コンパイ�
 設計思想は [`../../docs/idea.md`](../../docs/idea.md)、ASTroGen の使い方は
 [`../../docs/usage.md`](../../docs/usage.md) を参照。
 
-## 1. ビルド & 最初の実行
+## 1. インストールと最初の実行
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libreadline-dev   # libreadline-dev は任意
+```
+
+ASTroGen を呼ぶために `ruby` (3.x) が必要。`libreadline-dev` を入れておくと
+REPL で履歴・行編集が使える (なくてもビルドは通り、`fgets` にフォールバック)。
+
+### ビルド
 
 ```sh
 $ make             # ASTroGen を呼んで生成 → ./calc を build
@@ -26,9 +37,6 @@ calc> (10 - 3) % 4
 => 3
 calc> ^D
 ```
-
-`readline` がインストールされていれば自動で使う (履歴・行編集つき)。
-無ければ `fgets` にフォールバック。
 
 ## 2. 言語
 

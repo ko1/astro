@@ -9,6 +9,19 @@ ASTro 上に構築した JavaScript (ECMAScript) インタプリタ。
 
 ES2023+ をかなりカバーする。クラス継承+`super`、destructuring、spread、optional chaining、Map/Set、Symbol、regex、Promise (sync)、CommonJS+ES モジュール、Proxy/Reflect、`eval`、JSON、tagged templates、private fields、static blocks、テキスト pre-scan による関数/let/const ホイスティング、for-let の per-iteration binding まで動く。
 
+## インストール
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby
+```
+
+ASTroGen を `make` から呼ぶため Ruby 3.x が必要。本体は
+`-ldl -lm -lpthread` のみで GMP / GC / readline は不要 (jstro は独自の
+mark-sweep GC を内蔵)。`make bench` / `test/fuzz.rb` で V8 と比較する
+場合は `nodejs` も入れておく。
+
 ## ビルド & 実行
 
 ```sh

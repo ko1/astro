@@ -40,11 +40,22 @@ slot 単位。文字列リテラル `"hello"` も 6 個の slot に展開され�
 | `tests/test_*.c` | 機能ごとの動作確認 |
 | `docs/` | done / todo / runtime |
 
-## 必要なもの
+## インストール
 
-- Ruby 3.0+ + `ruby_tree_sitter` gem (`gem install ruby_tree_sitter`)
-- libtree-sitter (apt: `libtree-sitter0`)
-- gcc, make, ruby (ASTroGen 実行用)
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libtree-sitter0 libtree-sitter-dev git
+gem install --user-install ruby_tree_sitter
+```
+
+- `build-essential` — gcc / make
+- `ruby` (3.0+) — ASTroGen + parse.rb
+- `ruby_tree_sitter` (gem) — Ruby 側の tree-sitter バインディング
+- `libtree-sitter0` / `libtree-sitter-dev` — tree-sitter ランタイム
+
+(他ディストリでは Ruby 3.x + libtree-sitter が入っていれば OK。
+本体のリンクは `-ldl` のみ、GMP / GC / readline は不要。)
 
 ## ビルド
 

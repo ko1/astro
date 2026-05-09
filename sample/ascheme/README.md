@@ -35,6 +35,23 @@ ASTro フレームワーク自体については [`../../docs/idea.md`](../../do
 - **Boehm-スタイル の R5RS 互換** — chibi-scheme の `tests/r5rs-tests.scm`
   を機械変換した 179 テストを 100% パス。
 
+## インストール
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libgc-dev libgmp-dev libreadline-dev   # libreadline-dev は任意
+```
+
+- `build-essential` — gcc / make
+- `ruby` (3.x) — ASTroGen の実行
+- `libgc-dev` — Boehm GC (heap allocation の裏)
+- `libgmp-dev` — bignum / rational
+- `libreadline-dev` — REPL の行編集 (auto-detect、なくても build OK)
+
+`make bench` で chibi-scheme / guile と比較するなら `chibi-scheme` /
+`guile` も必要。
+
 ## 試す
 
 ```sh

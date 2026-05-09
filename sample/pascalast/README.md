@@ -69,6 +69,21 @@ For the full breakdown of what's done and what's outstanding:
 - [`docs/perf.md`](./docs/perf.md) — successful and unsuccessful tuning attempts.
 - [`docs/compare_fpc.md`](./docs/compare_fpc.md) — head-to-head with Free Pascal 3.2.2 (`-O-` and `-O3`) on 16 benchmarks; pascalast AOT now wins or matches `fpc -O3` on 6/16 (constant-folding loops + heron + mandelbrot_int) and is within 1.7-2× on the call-heavy benches (fib / tarai / quicksort).  gcd is at 1.2× — basically measurement-noise close.
 
+## Install
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libgc-dev
+```
+
+- `build-essential` — gcc / make
+- `ruby` (3.x) — ASTroGen runs as part of `make`
+- `libgc-dev` — Boehm GC (Pascal heap allocations go through libgc)
+
+The `docs/compare_fpc.md` head-to-head additionally needs `fpc`
+(`apt install fpc`), but it is not required for the build/test loop.
+
 ## Build & run
 
 ```sh

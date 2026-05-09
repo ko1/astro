@@ -52,6 +52,19 @@ OCaml の Phase 1 + Phase 2 + Phase 3 の主要機能を一通り実装済み:
 - Effect handlers
 - ppx 拡張
 
+## インストール
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libgc-dev libreadline-dev   # libreadline-dev は任意
+```
+
+- `build-essential` — gcc / make
+- `ruby` (3.x) — ASTroGen の実行
+- `libgc-dev` — Boehm GC (`#define malloc GC_malloc` で全 runtime allocation を経由)
+- `libreadline-dev` — REPL の行編集 (auto-detect、なくても build OK)
+
 ## ビルド・実行
 
 ```sh

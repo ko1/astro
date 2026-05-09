@@ -22,6 +22,19 @@ ASTro 上に乗せた **jq インタプリタ**。JSON を入力にとって [jq
 [`docs/todo.md`](./docs/todo.md) (残作業)。
 ASTro 本体は [`../../docs/idea.md`](../../docs/idea.md)。
 
+## インストール
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby
+```
+
+ASTroGen を `make` から呼ぶため Ruby 3.x が必要。本体は `-ldl -lm` のみで
+GMP / GC / readline は不要 (nuq は自前の Cheney copying GC を内蔵)。
+`make jqtest` / `make bench` で本家 jq / jaq / gojq と比較するなら `jq`
+等もそれぞれ別途入れておく。
+
 ## 試す
 
 ```sh

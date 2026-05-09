@@ -55,6 +55,19 @@ CEL 仕様 (`docs/spec.md` 参照) のうち以下を実装済:
 google.protobuf.Any, timestamp / duration の strict spec, optional 型,
 Wrapper 型 (proto)。
 
+## インストール
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby
+```
+
+`make` 中で ASTroGen を呼ぶため Ruby 3.x が必要。本体はリンクが
+`-ldl -lm` のみで GMP / GC / readline は不要。conformance / bench で
+cel-go と比較する場合は別途 `golang-go` も入れておく (`make celgo` で
+`go install` する)。
+
 ## 試す
 
 ```sh

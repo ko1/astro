@@ -9,7 +9,18 @@ runs reuse them.
 
 [code-store]: ../../runtime/astro_code_store.h
 
-## Quick start
+## Install
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby
+```
+
+ASTroGen runs as part of `make`, so any Ruby 3.x is enough; aforth itself
+links only `-ldl` (no GMP / GC / readline required).
+
+### Quick start
 
 ```sh
 make                                 # build aforth

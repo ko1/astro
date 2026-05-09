@@ -54,6 +54,18 @@ restriction prevents unsound generalisation of side-effecting RHS (e.g.
 
 Built-in datatypes: `'a option = NONE | SOME of 'a` (registered as ctors).
 
+## Install
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libreadline-dev   # libreadline-dev is optional
+```
+
+ASTroGen runs from `make` and needs Ruby 3.x.  asml itself links only
+`-ldl -lm` (no GMP / GC).  `libreadline-dev` is auto-detected and gives
+the REPL line-editing; the build still works without it.
+
 ## Building / running
 
 ```sh

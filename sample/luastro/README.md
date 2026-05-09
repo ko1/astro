@@ -18,6 +18,19 @@ For the implemented-feature inventory see
 [`docs/todo.md`](docs/todo.md); the runtime architecture is in
 [`docs/runtime.md`](docs/runtime.md).
 
+## Install
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby
+```
+
+ASTroGen runs from `make` and needs Ruby 3.x.  The binary links
+`-ldl -lm -lpthread`; no GMP / GC / readline are required because
+luastro ships its own mark-sweep GC (`lua_gc.c`).  For the cross-engine
+benchmark also install `lua5.4` and `luajit`.
+
 ## Build
 
 ```sh

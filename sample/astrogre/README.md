@@ -88,6 +88,22 @@ What's not supported (see [`docs/todo.md`](./docs/todo.md)):
 `docs/runtime.md` has the full breakdown including how the SIMD
 prefilter nodes interact with each encoding.
 
+## Install
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby
+```
+
+ASTroGen runs from `make` and needs Ruby 3.x; the engine and the
+`are` CLI link only `-ldl` (no GMP / GC / readline).  No external regex
+parser is bundled — patterns are parsed by `parse.c` itself.
+
+The Onigmo backend (`make WITH_ONIGMO=1`) is built locally from a
+checked-out clone (`./onigmo`); see [docs/done.md](docs/done.md) for
+the exact submodule / clone steps.
+
 ## Build and run
 
 ```sh

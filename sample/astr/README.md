@@ -71,6 +71,22 @@ registers.  Heap object types: `FLOAT`, `STRING`, `NUM_VEC`, `INT_VEC`,
 - `data.frame`, S3 / S4 / R6
 - profile-guided AOT
 
+## Install
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libgc-dev
+```
+
+- `build-essential` — gcc / make
+- `ruby` (3.x) — ASTroGen runs as part of `make`
+- `libgc-dev` — Boehm-Demers-Weiser conservative GC (heap allocations
+  go through libgc)
+
+GNU R (`r-base-core`) is optional and only needed for the `make bench`
+side-by-side comparison.
+
 ## Build
 
 ```

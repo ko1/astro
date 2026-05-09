@@ -51,6 +51,17 @@ Full WebAssembly 1.0 (MVP) plus saturating truncation (wasm 2.0):
   spec-testsuite assertion forms (`assert_return`, `assert_trap`,
   `invoke`, `register`, ...).
 
+## Install
+
+### Prerequisites (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby
+```
+
+ASTroGen runs from `make` and needs Ruby 3.x.  The binary links only
+`-ldl -lm`; no GMP / GC / readline are required.
+
 ## Build
 
 ```sh

@@ -14,6 +14,21 @@ walrus `:=`、多重代入、slice 代入、f-string + format spec、まで実�
 ベンチと最適化の歴史は [`docs/perf.md`](./docs/perf.md)。
 ASTro 本体は [`../../docs/idea.md`](../../docs/idea.md)。
 
+## インストール
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby libgmp-dev libreadline-dev   # libreadline-dev は任意
+```
+
+- `build-essential` — gcc / make
+- `ruby` (3.x) — ASTroGen の実行
+- `libgmp-dev` — bignum バックエンド
+- `libreadline-dev` — REPL の行編集 (auto-detect、なくても build OK)
+
+`make bench` で CPython と比較する場合は `python3` も必要。
+
 ## 試す
 
 ```sh

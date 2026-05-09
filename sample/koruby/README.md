@@ -75,7 +75,24 @@ checksum: 4096
 - AOT 特化で 3.6× 速い
 - YJIT には 1.6× 負け (ASTro の特化はノードグラフのインライン化までで、メソッド呼出ディスパッチ自体は完全には消せない。PG-baked call_static で詰めれば近づく見込み — 詳細は [docs/perf.md](./docs/perf.md))
 
-## ビルド & 実行
+## インストール
+
+### 前提パッケージ (Ubuntu/Debian)
+
+```sh
+sudo apt install build-essential ruby ruby-bundler libgc-dev libgmp-dev git
+```
+
+- `build-essential` — gcc / make
+- `ruby` (3.x) + `bundler` — ASTroGen 実行 + libprism のビルドに必要
+- `libgc-dev` — Boehm GC (conservative GC、ルート登録不要)
+- `libgmp-dev` — Bignum バックエンド
+
+prism は `../naruby/prism` への symlink で共有しているので、
+naruby 側で一度 libprism を build しておく必要がある (詳細は
+[`../naruby/README.md`](../naruby/README.md) の libprism セクション)。
+
+### ビルド & 実行
 
 ```sh
 make                                # 1回目ビルド
@@ -90,8 +107,6 @@ make clean && make                  # 1回目: 普通の interpreter
 touch node.c && make optflags=-O3   # 2回目: 特化を埋め込んでビルド
 ./koruby your_script.rb             # 高速版実行
 ```
-
-依存: `libgc-dev`、`libgmp-dev`、prism (build/static 同梱版を symlink で利用)。
 
 ## アーキテクチャ
 
