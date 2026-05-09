@@ -42,6 +42,9 @@ class _Lock:
     def __exit__(self, *exc):
         self.release()
         return False
+    def _at_fork_reinit(self):
+        # Single-process pystro: no fork, no work to do.
+        self._locked = False
 
 
 LockType = _Lock
@@ -70,6 +73,8 @@ class RLock:
         return False
     def _is_owned(self):
         return self._depth > 0
+    def _at_fork_reinit(self):
+        self._depth = 0
 
 
 def allocate_RLock():
