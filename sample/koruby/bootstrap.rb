@@ -4046,8 +4046,17 @@ class BasicObject
   end unless method_defined?(:initialize)
   # Default method_missing: raise NoMethodError, recording @name / @receiver
   # so #name and #receiver readers work on the raised exception.
+  # Recursion guard: self.inspect itself can land in method_missing
+  # (BasicObject, missing #inspect, or a custom inspect that re-raises);
+  # we bound the message construction so we don't blow the stack.
   def method_missing(name, *args)
-    e = ::NoMethodError.new("undefined method '#{name}' for #{self.inspect}")
+    desc = (Thread.current[:__korb_mm_depth__] ||= 0) >= 4 ? "(recursion)" : begin
+      Thread.current[:__korb_mm_depth__] = (Thread.current[:__korb_mm_depth__] || 0) + 1
+      r = (self.inspect rescue "(uninspectable)")
+      Thread.current[:__korb_mm_depth__] -= 1
+      r
+    end
+    e = ::NoMethodError.new("undefined method '#{name}' for #{desc}")
     e.instance_variable_set(:@name, name)
     e.instance_variable_set(:@receiver, self)
     ::Kernel.raise(e)
