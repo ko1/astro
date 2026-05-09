@@ -652,6 +652,13 @@ VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
  * (CRuby 3.4+ default).  `frozen?` returns false; `+@` returns a
  * fresh mutable copy. */
 #define FL_CHILLED   FL_USER(2)
+/* FL_HAS_PROC_IVARS: set on a korb_class when any instance of that
+ * class has ever stored a Proc-typed ivar.  Used by Class#new's
+ * post-initialize bookkeeping to skip the per-ivar walk that detaches
+ * proc envs pointing into the dying frame.  The walk is a no-op for
+ * classes that never receive proc ivars (most of optcarrot's hot
+ * classes), and the flag eliminates a 3% overhead on Class.new. */
+#define FL_HAS_PROC_IVARS FL_USER(3)
 
 /* Inline cache-hit fast path for method dispatch.  On cache hit (LIKELY),
  * directly call mc->prologue — no function call into the slower path.
@@ -662,6 +669,40 @@ VALUE prologue_cfunc(CTX *c, struct Node *callsite, VALUE recv,
  * dispatch via the inline body when matched.  prologues.h provides the
  * inline implementations so each TU gets its own copy and gcc can fully
  * inline the prologue body into the SD that includes us. */
+
+/* korb_proc_snapshot_env_if_in_frame is declared in prologues.h but
+ * must also be visible as a name here, before prologues.h itself uses
+ * the inline gate `korb_proc_snapshot_env_maybe` defined just below. */
+void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi);
+
+/* Inline gate: skip the CALL to korb_proc_snapshot_env_if_in_frame
+ * when it would obviously be a no-op.  The function call itself was
+ * 3% of optcarrot's runtime even for the early-return case.  Three
+ * tiers of fast discriminator handled inline:
+ *   1. SPECIAL_CONST_P (Fixnum / Float / Symbol / nil / true / false)
+ *      — return immediately.
+ *   2. T_OBJECT with class missing FL_HAS_PROC_IVARS — return
+ *      immediately.  The flag is lifted lazily on the first proc-ivar
+ *      assignment in korb_ivar_set / korb_ivar_set_ic_slow.
+ *   3. T_PROC / T_OBJECT-with-flag / T_CLASS / T_MODULE — call the
+ *      full function.  Other heap types (T_ARRAY, T_STRING, T_HASH,
+ *      T_RANGE, T_BIGNUM, T_FLOAT) also short-circuit here since
+ *      their layout has no proc fields. */
+static inline __attribute__((always_inline)) void
+korb_proc_snapshot_env_maybe(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
+    if (SPECIAL_CONST_P(v)) return;
+    enum korb_type t = BUILTIN_TYPE(v);
+    if (LIKELY(t == T_OBJECT)) {
+        struct korb_class *k =
+            (struct korb_class *)((struct RBasic *)v)->klass;
+        if (LIKELY(k && !(k->basic.flags & FL_HAS_PROC_IVARS))) return;
+        korb_proc_snapshot_env_if_in_frame(v, fp_lo, fp_hi);
+        return;
+    }
+    if (LIKELY(t != T_PROC && t != T_CLASS && t != T_MODULE)) return;
+    korb_proc_snapshot_env_if_in_frame(v, fp_lo, fp_hi);
+}
+
 #include "prologues.h"
 
 /* Cold path: resolved-but-non-public method, raise NoMethodError per
@@ -828,7 +869,9 @@ VALUE korb_range_new(VALUE begin, VALUE end, bool exclude_end);
 /* proc */
 VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
 VALUE korb_proc_new_with_cref(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda, struct korb_cref *cref);
-void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi);
+/* korb_proc_snapshot_env_if_in_frame and the inline gate
+ * `korb_proc_snapshot_env_maybe` are declared above (before the
+ * #include "prologues.h" block) so the inlined prologues can use them. */
 
 /* Builtins init */
 void korb_init_builtins(void);

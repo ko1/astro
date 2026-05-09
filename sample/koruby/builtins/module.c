@@ -786,10 +786,11 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_funcall_with_block(c, obj, id_initialize, argc, argv, blk);
     }
     /* Snapshot any Proc-typed ivar of obj whose env still points at
-     * initialize's freshly-popped frame (or any earlier frame in the
-     * caller's range).  Cheap when no such Proc exists. */
-    extern void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi);
-    korb_proc_snapshot_env_if_in_frame(obj, fp_lo, fp_hi + 1024);
+     * initialize's freshly-popped frame.  Inline gate: most classes
+     * never store procs in ivars, so the CALL is itself the cost we
+     * want to skip — `korb_proc_snapshot_env_maybe` is an inline that
+     * checks FL_HAS_PROC_IVARS on obj's class first. */
+    korb_proc_snapshot_env_maybe(obj, fp_lo, fp_hi + 1024);
     /* Also detach the caller's user block (current_block), in case it
      * was stored into an ivar of obj or used via @blk = blk from
      * &blk parameter — that block's env points at the *outer* frame. */

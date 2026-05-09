@@ -326,9 +326,9 @@ redo_proc:
     running_block = prev_running;
     /* Snapshot any returned proc whose env points into our about-to-be-
      * popped frame. */
-    korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + p->env_size);
+    korb_proc_snapshot_env_maybe(r, new_fp, new_fp + p->env_size);
     if (c->state == KORB_RETURN || c->state == KORB_BREAK) {
-        korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + p->env_size);
+        korb_proc_snapshot_env_maybe(c->state_value, new_fp, new_fp + p->env_size);
     }
     /* If we used a cloned env, write back the closure-captured slots
      * (everything below the block's own param_base) so outer-scope

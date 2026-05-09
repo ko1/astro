@@ -162,9 +162,9 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     /* If we're returning a Proc whose env points into the about-to-be-
      * popped frame, heap-snapshot it so the next stack push doesn't
      * trash the closure's captured state. */
-    korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + mc->locals_cnt);
+    korb_proc_snapshot_env_maybe(r, new_fp, new_fp + mc->locals_cnt);
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + mc->locals_cnt);
+        korb_proc_snapshot_env_maybe(c->state_value, new_fp, new_fp + mc->locals_cnt);
     }
     /* Bindings created in this frame's lifetime: copy fp slots into
      * their heap snapshots so they hold final values after the frame
@@ -297,9 +297,9 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(!simple)) {
         current_block = prev_block;
     }
-    korb_proc_snapshot_env_if_in_frame(r, new_fp, new_fp + mc->locals_cnt);
+    korb_proc_snapshot_env_maybe(r, new_fp, new_fp + mc->locals_cnt);
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
-        korb_proc_snapshot_env_if_in_frame(c->state_value, new_fp, new_fp + mc->locals_cnt);
+        korb_proc_snapshot_env_maybe(c->state_value, new_fp, new_fp + mc->locals_cnt);
     }
     if (UNLIKELY(frame.bindings_head != NULL)) {
         korb_binding_snapshot_frame(&frame);
