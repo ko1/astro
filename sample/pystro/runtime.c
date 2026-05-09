@@ -3519,7 +3519,13 @@ pys_contains(CTX *c, VALUE container, VALUE v)
         return false;
     }
     if (pys_is_dict(container) || pys_is_any_set(container)) return pys_dict_has(c, container, v);
-    if (pys_is_str(container) && pys_is_str(v)) {
+    if (pys_is_str(container)) {
+        // CPython rejects non-str RHS with TypeError.
+        if (!pys_is_str(v)) {
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                "'in <string>' requires string as left operand");
+            return false;
+        }
         return memmem(PYS_PTR(container)->str.chars, PYS_PTR(container)->str.len,
                       PYS_PTR(v)->str.chars, PYS_PTR(v)->str.len) != NULL;
     }

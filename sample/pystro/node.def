@@ -750,7 +750,9 @@ node_in(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     if (UNLIKELY(!av)) return 0;
     VALUE bv = EVAL_ARG(c, b);
     if (UNLIKELY(!bv)) return 0;
-    return pys_contains(c, bv, av) ? PYS_TRUE : PYS_FALSE;
+    bool r = pys_contains(c, bv, av);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    return r ? PYS_TRUE : PYS_FALSE;
 }
 
 NODE_DEF
@@ -761,7 +763,9 @@ node_not_in(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     if (UNLIKELY(!av)) return 0;
     VALUE bv = EVAL_ARG(c, b);
     if (UNLIKELY(!bv)) return 0;
-    return pys_contains(c, bv, av) ? PYS_FALSE : PYS_TRUE;
+    bool r = pys_contains(c, bv, av);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    return r ? PYS_FALSE : PYS_TRUE;
 }
 
 // ---------------------------------------------------------------------------
