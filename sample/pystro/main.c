@@ -272,6 +272,24 @@ main(int argc, char *argv[])
     EVAL(c, body);
     if (c->state == PYS_STATE_RAISE) {
         VALUE exc = c->state_value;
+        // SystemExit propagates as the process exit code (CPython
+        // semantics).  Don't print a traceback for it; just translate
+        // .code to the return value: None / 0 → exit(0), int → exit(int),
+        // str → print to stderr + exit(1).
+        if (pys_is_instance(exc)
+            && pys_exc_matches(c, exc, c->EXC_SystemExit)) {
+            VALUE code = pys_getattr_optional(c, exc, "code");
+            free(src);
+            if (!code || code == PYS_NONE) return 0;
+            if (PYS_IS_FIXNUM(code)) return (int)PYS_FIXVAL(code);
+            if (pys_is_str(code)) {
+                fwrite(PYS_PTR(code)->str.chars, 1,
+                       PYS_PTR(code)->str.len, stderr);
+                fputc('\n', stderr);
+                return 1;
+            }
+            return 1;
+        }
         const char *cls_name = "Exception";
         if (pys_is_instance(exc)) cls_name = PYS_PTR(exc)->inst.cls->cls.name;
         fprintf(stderr, "Traceback (most recent call last):\n");
