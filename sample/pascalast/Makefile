@@ -32,10 +32,10 @@ aot-bench: pascalast
 	@/usr/bin/time -f "%e s" ./pascalast -q --no-compile bench/$(BENCH).pas
 	@:>node_specialized.c
 
-pascalast: main.c node.c Makefile $(NODE_GENFILES) node_specialized.c context.h node.h
+pascalast: main.c parse.c node.c Makefile $(NODE_GENFILES) node_specialized.c context.h node.h parse.h
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall \
 	    -Wno-unused-function -Wno-stringop-truncation \
-	    -o pascalast main.c node.c -lm \
+	    -o pascalast main.c parse.c node.c -lm \
 	    /usr/lib/x86_64-linux-gnu/libgc.so.1
 
 node_eval.c: ../../lib/* node.def pascalast_gen.rb

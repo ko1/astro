@@ -5,6 +5,22 @@
 #include "node.h"
 #include "context.h"
 
+// Generated node_specialize.c calls astro_emit_sd_comments_p() to gate
+// `// (node_…)` source-level comments on the ASTRO_SD_COMMENTS env var
+// (added in 61868fd).  pascalast inlines its own hash helpers rather
+// than `#include "astro_node.c"`, so we provide a local copy.
+__attribute__((unused))
+static int
+astro_emit_sd_comments_p(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("ASTRO_SD_COMMENTS");
+        cached = (v && *v && strcmp(v, "0") != 0) ? 1 : 0;
+    }
+    return cached;
+}
+
 // ---------------------------------------------------------------------------
 // Hash helpers used by generated node_hash.c.
 // ---------------------------------------------------------------------------
