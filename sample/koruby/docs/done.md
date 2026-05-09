@@ -3,6 +3,69 @@
 本書は **すでに動く** 言語機能と、**取り入れた性能改善** を一覧する。
 未実装は [todo.md](./todo.md) に分離してある。
 
+## テストスイートの現状 (2026-05-09, tenth pass)
+
+### 集計
+
+| Suite                          | pass   | fail  | err   | rate  |
+|--------------------------------|--------|-------|-------|-------|
+| 自前 `test/ruby/` (737件)        | 737    | 0     | 0     | 100%  |
+| `spec/ruby/language/`           | 3,745  | 190   | 51    | 94%   |
+| `spec/ruby/core/` 23 cat        | 14,434 | 3,071 | 1,014 | 77.9% |
+| └ うち perfect ファイル          | 313 / 930 = 33.7%                   |
+
+集計対象 23 cat: array hash string integer numeric range comparable module
+proc kernel symbol float exception basicobject set rational random gc signal
+binding class enumerator regexp。
+
+主な未到達領域は encoding (utf-8 / capitalize 系)、 regexp 依存全般、
+Bignum-Float 末尾 ULP、 Struct subclass 細部、 TracePoint / refinements /
+Fiber 系。
+
+### tenth pass の主な改善 (2026-05-09)
+
+- **chilled string 完全実装**: FL_CHILLED フラグ + parse.c が prism の
+  PM_STRING_FLAGS_FROZEN/MUTABLE を読み分けて `node_str_lit` /
+  `node_frozen_str_lit` / `node_chilled_str_lit` を選択。 Symbol#to_s も
+  chilled 返却。 `+@` は `frozen? || __chilled?` で fresh dup。
+  `chilled_string_spec` / `uplus_spec` 共に full pass。
+- **NameError @name/@receiver 復元**: vcall (`foo`) → BasicObject の既定
+  `method_missing` 経由で raise されるパスで、 `e.name = :foo` /
+  `e.receiver = self` を ivar に事前保存してから raise。 `name_error_spec`
+  full pass。
+- **sized Enumerator + each redispatch**: `to_enum` / `enum_for` で
+  `@__source_obj` / `@__source_method` / `@__source_args` を memoize。
+  `Enumerator#each(&blk)` はそこへ block-pass で再 dispatch するので
+  `h.transform_values.each(&:succ)` が Hash で集約される。 `@__size` は
+  receiver の `:size` を snapshot。
+- **Combinatorics の sized Enumerator**: combination(n) / permutation(n)
+  no-block で Enumerator + binomial / factorial size。
+- **30 件の Kernel module function を private 化** + Kernel.singleton_class
+  に public でコピー (abort/exec/exit/loop/proc/lambda/binding etc.)。
+- **Object#<=> / initialize_copy / initialize_clone / initialize_dup** の
+  既定実装。
+- **GC モジュール**: garbage_collect / disable / enable / start / count /
+  stat。 disable / enable は @disabled state を切り替えて前状態を返却。
+- **Range#to_s** 端点を `to_s` で render、 **Range#count** endless で
+  Float::INFINITY、 **Range#eql?** 型厳密。
+- **Random.new_seed** uniqueness、 **Random#seed** to_int coerce。
+- **Integer#allbits/anybits/nobits/sqrt/try_convert/to_r/rationalize/
+  numerator/denominator/ord** を bootstrap 追加。 **Float#numerator/
+  denominator/to_r** も。
+- **Hash#flatten/transform_keys{,!}/to_h(block)/sort(block)/replace
+  (frozen check)**。
+- **Array#fetch/fetch_values/to_a/to_ary/deconstruct**。
+- **String#each_byte Enumerator/strip!/lstrip!/rstrip! を C 版**で frozen
+  check 確実化。 **String#<=>** to_str coerce + mirror <=> + recursion guard。
+- **Symbol#intern/name** + **Symbol#inspect** の bare/quoted 判定 (`@@x`,
+  `$LOAD_PATH`, `$~` 等)。
+- **Rational#integer?=false** + **Rational.new 禁止** (Rational(...)
+  factory に統一)。
+- **Comparable#==** identity 短絡 + Float 0.0 + NoMethodError swallow。
+- **Module lifecycle hook** 既定 (included/extended/prepended/method_added/
+  method_removed/method_undefined/const_added)。
+- **BasicObject** lifecycle hook + initialize / method_missing 既定。
+
 ## テストスイートの現状 (2026-05-08, fifth pass)
 
 ### 直近改善 (rubyspec language sweep)

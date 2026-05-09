@@ -10,6 +10,53 @@
 - コンパイラ: gcc 13.3 (-O2 / -O3)
 - Ruby (比較対象): CRuby 4.0.2 +PRISM (no-JIT / `--yjit`)
 
+## 2026-05-09 tenth pass 後の性能評価
+
+spec 改善 fix が大量に入った後の sustained 計測 (1000 frames optcarrot
++ micro bench)。 chilled string / FL_CHILLED 追加、 to_enum redispatch、
+NameError ivar、 30 件の Kernel privatize 等を含む。
+
+### optcarrot (1000 frames, headless, best of 1)
+
+| target           | FPS    | total[s] | vs CRuby |
+|------------------|-------:|---------:|---------:|
+| ruby             | 37.45  | 26.23    | 1.00x    |
+| ruby --yjit      | 146.12 | 7.12     | 3.90x    |
+| koruby (interp)  | 42.14  | 25.66    | **1.13x**|
+| koruby AOT-cached| 73.82  | 12.97    | **1.97x**|
+
+checksum 60838 が全行一致 (= 同じ計算をしている保証)。
+
+- **koruby interp は CRuby を 12% 上回る**。 yjit には負ける。
+- **AOT-cached は CRuby の 2 倍 / yjit の 0.51 倍**。
+
+### Micro bench (sustained ~1s scale)
+
+| bench         | CRuby   | --yjit  | koruby (interp) | vs CRuby |
+|---------------|--------:|--------:|----------------:|---------:|
+| fib(35)       |  0.842s |  0.102s |  0.823s         |  1.02x   |
+| ack(3, 10)    |  1.607s |  0.167s |  2.549s         |  0.63x   |
+| array map+sum |  0.226s |  0.086s |  0.377s         |  0.60x   |
+| hash insert+lookup | 0.522s | 0.379s | 0.416s        |  **1.25x** |
+| string concat |  0.484s |  0.312s |  0.607s         |  0.80x   |
+
+- fib は parity (call dispatch / immediate Integer 演算が良い形に乗る)。
+- ack は再帰深度が深く、 frame 確保コストが効く (CRuby の VM frame は
+  もっと薄い)。
+- Hash は逆に koruby の方が速い — 単純な insertion-order テーブルが
+  CRuby の table cookie / RB_HASH_TYPE_AR 切替よりオーバーヘッドが少ない。
+- string concat は capa double + 即値 FixNum→str 変換のコストで遅い。
+
+### 退行なし
+
+spec 改善で性能影響を心配したのは:
+1. chilled string FL_CHILLED 判定 → string mutation hot path に分岐 1 つ追加。
+   実測退行なし。
+2. to_enum で @__source_obj を 4 ivar set → enum_for 自体が常時 hot ではないので
+   問題なし。
+3. Object#initialize_copy/clone/dup の Ruby 版追加 → method_missing が
+   hot 経路から外れた限り問題なし。
+
 ## 2026-05-08 Binding 完全実装後の再測定 (HEAD)
 
 Binding object を C 実装し、 prologue で cref を常に save (`mc->def_cref`

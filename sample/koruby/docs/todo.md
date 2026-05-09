@@ -3,11 +3,53 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-08, ninth pass)
+## 現状 (2026-05-09, tenth pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
-- **CRuby `spec/ruby/language/`**: **3,745 pass / 190 fail / 51 err** (前回比同値)。
-- **optcarrot**: 30 frames で **67 fps**。
+- **CRuby `spec/ruby/language/`**: **3,745 pass / 190 fail / 51 err**。
+- **optcarrot**: AOT-cached で **~76 fps** (CRuby 43 fps の 1.8x、 yjit
+  175 fps の 0.43x)。 100 frames best-of-1。
+- **CRuby `spec/ruby/core/` 23 cat 集計** (array hash string integer numeric
+  range comparable module proc kernel symbol float exception basicobject set
+  rational random gc signal binding class enumerator regexp):
+  - **pass=14,434 / fail=3,071 / err=1,014 (= 77.9% pass)**
+  - **313 / 930 ファイル perfect (33.7%)**
+- **tenth pass で perfect 化したもの**:
+  - chilled string 完全実装 (FL_CHILLED + parse.c の prism flag 読み分け +
+    Symbol#to_s も chilled): `string/chilled_string_spec` `string/uplus_spec`
+  - sized Enumerator + each redispatch: `hash/transform_values_spec`
+  - NameError @name/@receiver は method_missing 経由でも記録:
+    `exception/name_error_spec`
+  - Object#<=>/initialize_copy/clone/dup 既定 hook: `kernel/comparison_spec`
+  - GC モジュール (garbage_collect/disable/enable/start): `gc/{garbage_collect,
+    disable,enable,start}_spec`
+  - Random.new_seed の uniqueness 改善 + urandom 負サイズ: `random/{new_seed,
+    urandom,seed}_spec`
+  - Integer#allbits?/anybits?/nobits?/sqrt/try_convert/to_r/rationalize/
+    numerator/denominator/ord: `integer/{allbits,anybits,nobits,sqrt,
+    try_convert,numerator,denominator,ord}_spec`
+  - Float#numerator/denominator/to_r: `float/{numerator,denominator}_spec`
+  - Range#to_s/eql?/count(infinity for endless): `range/{to_s,eql,count}_spec`
+  - Array#combination/permutation Enumerator + binomial size:
+    `array/combination_spec` `array/permutation_spec` (+5)
+  - Array#fetch/fetch_values/to_a/to_ary/deconstruct: 各 spec full
+  - Hash#flatten/transform_keys{,!}/to_h/sort/replace/deconstruct_keys:
+    `hash/{flatten,sort,replace,to_h,deconstruct_keys}_spec`
+  - String#each_byte Enumerator/strip!/lstrip!/rstrip!: 各 spec full
+  - Symbol#intern/name + inspect bare/quoted 判定 fix: `symbol/{intern,name,
+    inspect}_spec`
+  - Rational#integer?=false / Rational.new 禁止: `rational/{integer,
+    rational}_spec`
+  - Set#each Enumerator: `set/each_spec`
+  - Signal::EXIT / Kernel module 関数 30 件 private: `signal/list_spec`,
+    `kernel/{abort,exit}_spec`
+  - Numeric#dup/clone/ceil/floor/round/truncate/fdiv: `numeric/{dup,clone,
+    ceil,floor,round,truncate,fdiv}_spec`
+  - Module lifecycle hook 既定 / BasicObject 既定 hook
+  - Comparable#== identity 短絡 + Float 0.0 + NoMethodError swallow
+
+## 旧現状 (2026-05-08, ninth pass)
+
 - **CRuby `spec/ruby/core/` 14 主要 cat**: ninth pass で perfect 化:
   - `core/numeric/{ceil,floor,round,truncate,fdiv,dup,clone}` (7)
   - `core/integer/{allbits,anybits,nobits,sqrt,try_convert,to_r,rationalize}` (7)
