@@ -16,3 +16,6 @@
 [submodule "sample/asom/mx"]
 	path = sample/asom/mx
 	url = https://github.com/graalvm/mx.git
+[submodule "sample/pystro/cpython"]
+	path = sample/pystro/cpython
+	url = https://github.com/python/cpython.git
