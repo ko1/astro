@@ -8,7 +8,8 @@
  *   arcel repl                            (1 JSON envelope per stdin line)
  *
  * Global flags accepted *before* the subcommand:
- *   --no-compile       skip ASTro AOT specialization
+ *   --compile          enable ASTro AOT specialization (default: interp)
+ *   --no-compile       (legacy alias; default behavior — kept for scripts)
  *   -q / --quiet       silence hit/miss tracing
  *
  * Implementation: this file is a thin wrapper over the public API in
@@ -29,7 +30,7 @@
 /* CLI-only options; arcel.h has no equivalent because they're
  * presentation choices for the binary, not eval semantics. */
 static struct {
-    bool no_compile;
+    bool compile;        /* opt-in AOT (default: interp) */
     bool quiet;
 } cli;
 
@@ -306,7 +307,8 @@ usage(FILE *const out, const char *const progname)
         "  repl                                     stream JSON envelopes from stdin\n"
         "\n"
         "Global flags (must precede the subcommand):\n"
-        "      --no-compile     interpreter only (skip AOT specialization)\n"
+        "      --compile        enable ASTro AOT specialization (default: interp)\n"
+        "      --no-compile     interpreter only (default — kept for compat with old scripts)\n"
         "  -q, --quiet          suppress hit/miss progress (default in repl/bench)\n",
         progname);
 }
@@ -318,7 +320,8 @@ main(int argc, char **argv)
 
     int idx = 1;
     while (idx < argc && argv[idx][0] == '-') {
-        if      (strcmp(argv[idx], "--no-compile") == 0) cli.no_compile = true;
+        if      (strcmp(argv[idx], "--compile")    == 0) cli.compile = true;
+        else if (strcmp(argv[idx], "--no-compile") == 0) cli.compile = false; /* default; kept for compat */
         else if (strcmp(argv[idx], "-q") == 0 || strcmp(argv[idx], "--quiet") == 0) cli.quiet = true;
         else if (strcmp(argv[idx], "-h") == 0 || strcmp(argv[idx], "--help") == 0) { usage(stdout, argv[0]); return 0; }
         else { fprintf(stderr, "arcel: unknown global flag '%s'\n", argv[idx]); return 2; }
@@ -327,7 +330,7 @@ main(int argc, char **argv)
     if (idx >= argc) { usage(stderr, argv[0]); return 2; }
 
     arcel_env *const env = arcel_env_new();
-    if (cli.no_compile) arcel_env_set_no_compile(env, true);
+    if (cli.compile) arcel_env_set_no_compile(env, false);
 
     const char *const cmd = argv[idx++];
     int rc;

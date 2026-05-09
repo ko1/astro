@@ -193,7 +193,17 @@ proto 対応版を作ると:
 
 Phase 1 で `arcel.h` (C library API) を切り、CLI もそれ経由に統一した。
 Phase 9 で `arcel_env_new` が `CCACHE_DISABLE=1` を auto-set するように
-なったので、production 埋め込みでも prefix なしで AOT bake が動く。
+なったので、AOT を opt-in した時の bake も prefix なしで動く。
+
+**Phase 11 (2026-05-09): default を interp に反転**。`arcel_env_new()` は
+no AOT bake / no `make` / no `code_store/` で立ち上がる。AOT が欲しい
+embedder は `arcel_env_set_no_compile(env, false)` を明示で呼ぶ。CLI は
+`arcel --compile <subcmd>`。理由: realistic CEL policy では interp 単体で
+すでに cel-cpp 比 5-9× / cel-go 比 5-10× が出ていて、AOT の追加 win は
+3% 程度。bake の運用コスト (subprocess make / dlopen / disk artifact /
+ccache 周りの罠) を default で支払う価値が薄いため。AOT の効きどころ
+(constant-fold heavy / 純 dispatch) は別なので、`--compile` opt-in で
+ベンチや該当ワークロードでは引き続き使える。
 
 `arcel_eval()` 1 回あたり以下の固定コストが乗る:
 

@@ -84,6 +84,15 @@ arcel_env_new(void)
     }
     arcel_env *const e = (arcel_env *)calloc(1, sizeof *e);
     e->initialized = true;
+    /* Default to interpreter.  AOT bake involves a child `make` +
+     * dlopen + on-disk code_store/, none of which a typical embedder
+     * needs out of the box.  The interp itself already beats cel-go /
+     * cel-cpp on typical CEL policies; AOT is opt-in for cases where
+     * dispatch is the bottleneck (constant-fold heavy predicates,
+     * tight numeric loops).  Enable via arcel_env_set_no_compile(env,
+     * false) — `arcel --compile` from the CLI. */
+    e->no_compile = true;
+    OPTION.no_compiled_code = true;
     return e;
 }
 

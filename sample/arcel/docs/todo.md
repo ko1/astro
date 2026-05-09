@@ -42,6 +42,7 @@
 - [x] **Phase 8**: 型識別子 (`int`, `string`, `google.protobuf.Timestamp`, …) + wrapper-message リテラル (auto-unwrap) を parse-time fold
 - [x] **Phase 9**: AOT bake で `arcel_env_new` が `CCACHE_DISABLE=1` を auto-set (sandbox / read-only HOME 環境でも動く)
 - [x] **Phase 10**: in-process binding-path bench (`examples/embed_bench.cc` — JSON / native struct / libprotobuf / cel-cpp shim を 1 binary で計測)
+- [x] **Phase 11**: default を interp に反転 (`arcel_env_new` が `no_compile=true` で生成)。AOT が欲しい時は `arcel_env_set_no_compile(env, false)` か CLI `--compile`。理由: realistic CEL では interp 単体で cel-cpp 比 5-9× が出ていて、AOT の追加 win 3% に対して bake の運用コスト (subprocess make / dlopen / `code_store/` artifact / ccache 周りの罠) を default で払う価値が薄い
 
 ## 次フェーズ — 性能勝負
 

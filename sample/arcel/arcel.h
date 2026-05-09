@@ -173,16 +173,24 @@ struct arcel_object_desc {
 
 /* ---- env --------------------------------------------------------- */
 
-/* Create an env with default options (AOT specialization on).  The
- * env owns no per-eval state; programs and activations bind to it
- * for shared config (e.g. code-store path).  Free with arcel_env_free. */
+/* Create an env with default options.  Defaults to **interpreter
+ * only** — no AOT bake, no `make` subprocess, no `code_store/` on
+ * disk.  The interp itself already beats cel-go / cel-cpp on typical
+ * CEL policies; AOT is opt-in for cases where dispatch is the
+ * bottleneck (constant-fold heavy predicates, tight numeric loops).
+ *
+ * Enable AOT for this env by calling
+ *     arcel_env_set_no_compile(env, false);
+ * before the first arcel_compile().  On the CLI this is `--compile`.
+ *
+ * The env owns no per-eval state; programs and activations bind to
+ * it for shared config (e.g. code-store path).  Free with
+ * arcel_env_free. */
 arcel_env *arcel_env_new(void);
 void       arcel_env_free(arcel_env *env);
 
-/* Disable AOT specialization for this env.  Programs compiled
- * afterwards will run as plain interpreter (matches `--no-compile`
- * on the CLI).  Useful in test environments where the AOT
- * `astro_cs_build` make step is unwanted. */
+/* Toggle AOT specialization for this env.  `true` = interpreter only
+ * (default), `false` = enable AOT bake on the next arcel_compile. */
 void       arcel_env_set_no_compile(arcel_env *env, bool no_compile);
 
 /* ---- compile ----------------------------------------------------- */

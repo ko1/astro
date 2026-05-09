@@ -138,7 +138,7 @@ CASES = [
 # ---- runner --------------------------------------------------------------
 
 def run_bench(bin, args, expr, input, iters)
-  # arcel parses global flags (e.g. --no-compile) BEFORE the subcommand,
+  # arcel parses global flags (e.g. --compile) BEFORE the subcommand,
   # so put `args` ahead of 'bench'.  celgo_ref ignores these flags.
   # celcpp_bench has no `bench` subcommand — it always benches.
   if bin =~ /celcpp_bench$/
@@ -158,8 +158,8 @@ def run_bench(bin, args, expr, input, iters)
 end
 
 MODE_DESC = {
-  arcel_interp: { label: 'arcel-i', cmd: ->(b) { [b[:arcel_bin], ['--no-compile']] } },
-  arcel_aot:    { label: 'arcel-A', cmd: ->(b) { [b[:arcel_bin], []] } },
+  arcel_interp: { label: 'arcel-i', cmd: ->(b) { [b[:arcel_bin], []] } },              # default = interp
+  arcel_aot:    { label: 'arcel-A', cmd: ->(b) { [b[:arcel_bin], ['--compile']] } },   # opt-in AOT
   celgo:        { label: 'celgo',   cmd: ->(b) { [b[:celgo_bin], []] } },
   celcpp:       { label: 'celcpp',  cmd: ->(b) { [b[:celcpp_bin], []] } },
 }

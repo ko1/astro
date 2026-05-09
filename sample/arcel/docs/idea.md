@@ -80,6 +80,32 @@ through で、`arcel_object_desc` (field/has/format_json コールバック群) 
 arcel ↔ embedder 間の境界。これにより arcel 本体は **proto / 任意 binary
 表現を一切知らない** まま、libprotobuf や C struct を直接舐められる。
 
+## interp default + AOT opt-in
+
+`arcel_env_new()` は **interpreter only** で立ち上がる (Phase 11)。
+realistic CEL policy では interp 単体ですでに cel-cpp 比 5-9× / cel-go
+比 5-10× が出るので、AOT bake (subprocess `make` + `dlopen` +
+`code_store/` artifact) の運用コストを default で払うほどではない。
+
+AOT が刺さるパターン:
+- 純 dispatch overhead が支配的 (`bool_ladder` 11×、`arith_const` 1.2×)
+- `string.startsWith("literal")` のような literal-immediate 比較が hot
+  (gcc が SD specialize 後に memcmp を 1 命令の cmp に固定 → 14×)
+- tight loop で同じ binding shape が繰り返される (`xs.all(...)` で
+  xs が 100+ 要素)
+
+embedder で AOT を有効化:
+```c
+arcel_env *env = arcel_env_new();
+arcel_env_set_no_compile(env, false);    // opt-in AOT
+arcel_program *prg = arcel_compile(env, "<expr>", -1, err, sizeof err);
+```
+
+CLI:
+```
+arcel --compile bench -e '...' -n 1000000
+```
+
 ## AOT specialization の狙い目
 
 CEL の AST は典型的に小さい (10〜30 ノード) ので、specialize で:
