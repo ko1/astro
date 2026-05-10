@@ -110,19 +110,56 @@ mock-shim の slot 衝突を解消したことで隠れていた fail が一気�
 CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
 **in-scope 67 ファイル: 1,108,357 / 1,430,888 pass (77.5%)**。
 
-### CRuby test/ruby/ 全 135 ファイル sweep (2026-05-09)
+### CRuby test/ruby/ 全 135 ファイル sweep (2026-05-10)
 
-2026-05-09 時点での無 fairness raw sweep (60s/file timeout):
+2026-05-10 時点での無 fairness raw sweep (120s/file timeout):
 
 | 状態                 | sweep #1 (起点) | 最終 sweep | 主な内訳 |
 |----------------------|----------------:|----------------:|---|
-| ≥1 pass             | 62 / 135        | 86 / 135        | +24 ファイル復活 |
-| total=0 (load 失敗等) | 30              | 6               | shim 拡張 / require_relative |
+| ≥1 pass             | 62 / 135        | 89 / 135        | +27 ファイル復活 (66%) |
+| total=0 (load 失敗等) | 30              | 6               | yjit/shapes/vm_dump 等 (impl外) |
 | LOAD ERROR           | 23              | 1               | 残り test_time_tz のみ (Regexp 必要) |
 | dumped core          | 7               | 0               | super / refinement / mm / fiber / dbl2int 等で全解消 |
 | timeout (empty)      | 3               | 0               | IO.pipe を unbuffered にして全解消 |
-| pass 合計            | 834,385         | 1,010,298       | +175k pass |
-| 全 assertion 合計    | 954,960         | 1,383,044       | +428k assertion |
+| pass 合計            | 834,385         | 1,026,131       | +192k pass |
+| 全 assertion 合計    | 954,960         | 1,404,777       | +450k assertion |
+
+新たに has_pass に戻った 3 ファイル: test_clone (kwh_save_slot
+defaulting), test_lazy_enumerator (backtrace dangling-frame ガード),
+test_pipe / test_trace (IO#<< / trace_var stubs)。
+
+残 0-pass の 46 ファイルは大半 OOS — TracePoint / ObjectSpace::WeakMap /
+Ractor / 真の Refinements / Encoding (UTF-8 only) / MJIT / 完全な
+Marshal / 真の ARGF (subprocess) / callcc — koruby は意図的に未実装。
+
+### test_array (220 methods) 周りの compatibility 改善
+
+ - parse.c: `recv[*splat]` を index ではなく apply_call として展開
+   (Array[*(1..100).to_a] が 1 要素配列を返していた)。
+ - Array#cycle / repeated_combination / repeated_permutation の C 実装
+   (bootstrap.rb 版は break が nested block を貫通しなかった)。
+ - korb_ary_aset / EVAL_node_aset / ary_aset で `LONG_MAX/sizeof(VALUE)`
+   超えの index に IndexError raise (旧コードは OOM)。
+ - ary_first_n が Bignum で常に RangeError → mpz_fits_slong_p で
+   long に収まれば受理 (test_array LONGP probe が 2^31 ではなく
+   2^63 になるように)。
+ - ary_aset 3-arg form `a[start, len] = val` (val が非 Array) で
+   "len 個削除して val 1 個挿入" の正しい shift/shrink を実装。
+ - ary_product / ary_mul で overflow 検出 → RangeError / ArgumentError。
+
+### sprintf %b / String#[]= / object_id 等の細かい修正
+
+ - sprintf %b に width / precision / 0-pad / negative-prefix を実装
+   (test_sprintf 43 → 69 pass)。
+ - String#[]= を実装 (旧コードは stub。 IndexError raise 含む)
+   test_string 1997 → 2029 pass。
+ - object_id を immediate 値で VALUE 自体に (旧 `(long)self / 8` は
+   Fixnum 1, 2, 3, ... を全部 0 に潰していた → Hash#hash が壊れる)。
+ - kwh_save_slot を未指定時に空 Hash で初期化 (`def initialize_clone
+   (other, freeze: nil)` のような kwarg method を C cfunc から呼ぶと
+   `kwh.has_key?` で nil 落ちしていた)。
+ - korb_build_backtrace に dangling frame ガード (block が parent stack
+   frame を outlive する lazy enumerator パターンで SEGV)。
 
 主な修正:
  - **super dispatch 修正** (object.c:korb_dispatch_binop): caller block の
