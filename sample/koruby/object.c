@@ -3854,18 +3854,20 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         return r;
     }
     /* AST: same as korb_dispatch_call but argv is ad-hoc */
-    /* Drop trailing FL_KWARGS-tagged hash if callee has no kwargs slot
-     * (CRuby Ruby 3 separation: `m(**h)` to `def m(*a)` does NOT add h
-     * to *a if h is empty; if non-empty, kept as positional only when
-     * the method explicitly accepts a Hash positional arg).  We do
-     * the empty-drop here; non-empty stays as positional Hash for now
-     * to match the old behaviour. */
-    if (m->u.ast.kwh_save_slot < 0 && argc > 0 &&
-        !SPECIAL_CONST_P(argv[argc - 1]) &&
+    /* Peel trailing FL_KWARGS-tagged hash so kwarg-aware callees see
+     * it in their kwh_save_slot, and no-kwarg callees don't get a
+     * stray positional Hash. */
+    VALUE peeled_kwh_ad = Qundef;
+    if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
         BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
         (RBASIC(argv[argc - 1])->flags & FL_KWARGS)) {
-        struct korb_hash *h = (struct korb_hash *)argv[argc - 1];
-        if (h->size == 0) argc--;
+        if (m->u.ast.kwh_save_slot >= 0) {
+            peeled_kwh_ad = argv[argc - 1];
+            argc--;
+        } else {
+            struct korb_hash *h = (struct korb_hash *)argv[argc - 1];
+            if (h->size == 0) argc--;
+        }
     }
     if (m->u.ast.rest_slot < 0 && (unsigned)argc > m->u.ast.total_params_cnt) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
@@ -3919,9 +3921,11 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     }
     /* kwh_save_slot: if the callee has kwargs but we (cfunc-side
      * korb_funcall) didn't supply any, default to {} so the prologue's
-     * `kwh.has_key?(:foo)` lookup doesn't blow up. */
+     * `kwh.has_key?(:foo)` lookup doesn't blow up.  When peeled_kwh_ad
+     * was filled in by the FL_KWARGS peel above, use that. */
     if (m->u.ast.kwh_save_slot >= 0 && m->u.ast.kwh_save_slot < (int)m->u.ast.locals_cnt) {
-        c->fp[m->u.ast.kwh_save_slot] = korb_hash_new();
+        c->fp[m->u.ast.kwh_save_slot] = UNDEF_P(peeled_kwh_ad)
+            ? korb_hash_new() : peeled_kwh_ad;
     }
     struct korb_cref *prev_cref2 = c->cref;
     if (m->def_cref) c->cref = m->def_cref;
