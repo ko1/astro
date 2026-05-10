@@ -23,25 +23,47 @@ baruby は GC testbed が主目的なので **絶対性能の最適化はまだ�
 
 ## 2. モード別実測値
 
-`bench/run.rb -n 3` を実行、各 mode で 3 回繰り返した best 値:
+`bench/run.rb -n 3` を実行、各 mode で 3 回繰り返した best 値。
+plain 列の隣に libgc 統計 (`GC_get_total_bytes` / `GC_get_gc_no`):
 
-| bench         | plain (s) | aot (s) | pg (s) | aot 比 | pg 比 |
-|---|---:|---:|---:|---:|---:|
-| binary_trees  | 0.96      | 0.64    | 0.94   | 1.51× | 1.03× |
-| list_alloc    | 1.16      | 0.51    | 0.50   | 2.27× | 2.32× |
-| string_concat | 1.02      | 0.88    | 0.88   | 1.16× | 1.16× |
-
-- `alloc_MB` (plain): binary_trees 320.8 / list_alloc 763.8 / string_concat 1147.3
-- `GCs` (plain): 12 / 1148 / 1706
-  (`GC_get_total_bytes` / `GC_get_gc_no`)
-- どれも plain で ~1s 持続。`alloc/sec` は 350MB/s〜1.1GB/s — 完全に
-  allocator-bound と見なしてよいレンジ。
+| bench         | plain (s) | aot (s) | pg (s) | aot 比 | alloc (MB) | GCs |
+|---|---:|---:|---:|---:|---:|---:|
+| binary_trees  | 0.86      | 0.64    | 0.94   | 1.34× |  320.8     |   12 |
+| list_alloc    | 1.03      | 0.51    | 0.50   | 2.02× |  763.8     | 1148 |
+| string_concat | 0.89      | 0.88    | 0.88   | 1.01× | 1147.3     | 1706 |
+| gc_combined   | 1.07      | 0.39    | —      | 2.74× |  765.3     |  583 |
+| substr_churn  | 1.23      | 0.69    | —      | 1.78× |  842.1     |   52 |
+| fib_pair      | 1.06      | 0.53    | —      | 2.00× | 1022.2     | 1521 |
 
 AOT は `-c` で AST 全体と各関数本体を SD\_\<hash\>.c に bake → all.so に
 リンク → dlopen。PG は `-p` で 1 回プレーン実行のあと cc->body から
 PGSD\_\<hopt\>.c を bake (= 観測した body との直接呼び出しが SD に
 焼き込まれる)。PG が plain と大差ない bench (binary_trees) は 1 回
 ループで終わる構造のため、prof-driven inlining の利得が小さい。
+
+## 3. ベンチの GC プロファイル特性
+
+意図的に **6 つの違う allocation lifecycle** を並べてある。
+
+| bench | パターン | 寿命 | 1 alloc あたり | GC 頻度 |
+|---|---|---|---|---|
+| binary_trees  | 深い二分木 (4M ノード) を build → walk | 全部 long-lived | 16〜24B | 低 (12) |
+| list_alloc    | 4 要素配列を毎回 alloc → 即捨て | 全部 short-lived | ~40B | 高 (1148) |
+| string_concat | `"abc" + "def" + "ghi"` を 5M 回 | 全部 short-lived | 数十 B × 5 | 最高 (1706) |
+| gc_combined   | 50k 要素配列を保持しつつ 10M 回 churn | mixed | 16〜800k B | 中 (583) |
+| substr_churn  | 18MB 文字列を保持、毎オフセットで `[i,5]` slice | 1 long + N short | 5 B substring | 最低 (52) |
+| fib_pair      | 再帰 fib が毎フレームで `[a, b]` を返す | 全部 short-lived, deep stack | ~24B | 高 (1521) |
+
+- **substr_churn の GC 数が極端に少ない (52)** のは、長寿命の 18MB
+  text のおかげで heap が大きく維持され、5 byte substring の alloc が
+  既存空きに収まり続けるため。世代別 GC を入れたとき、ここがどう変わるか
+  楽しみ。
+- **fib_pair** は call stack が深く (depth 28、~317k フレームのピーク
+  時)、root scan のテストには一番厳しい。precise GC を入れるときは
+  frame iterator のスループットがここで効くはず。
+- **gc_combined** は generational-friendly な「長寿命 + 短寿命チャーン」
+  の形。今は libgc (非世代別) なので差は出ないが、世代別 GC の検証
+  ベースラインとして用意。
 
 各ベンチの所感:
 
@@ -78,7 +100,7 @@ PGSD\_\<hopt\>.c を bake (= 観測した body との直接呼び出しが SD �
   generational GC が効くワークロード (libgc は generational じゃない
   のでここでは relatively expensive)。
 
-## 3. 既知のオーバーヘッド
+## 4. 既知のオーバーヘッド
 
 - **タグ操作**: `INT2VAL` / `VAL2INT` が clarity 優先で `<<1` / `>>1`
   + or/mask の 2 命令ずつ。`-O3` で大半は畳まれるが、`node_add` の
@@ -89,14 +111,14 @@ PGSD\_\<hopt\>.c を bake (= 観測した body との直接呼び出しが SD �
   全 method op で type branch が runtime に残る。AOT specialization
   入れて `_ary` / `_str` variant に分けるのが筋 (todo.md P1)。
 
-## 4. 比較対象 (CRuby)
+## 5. 比較対象 (CRuby)
 
 CRuby との並行ベンチは未実施。todo.md にエントリあり。GC stress として
 binary_trees の同等コードを CRuby で書くと、世代別 + write barrier の
 ぶん 2-3× 速い見込み。ただし baruby は AST インタプリタ + libgc という
 極めて単純な構成なので、その差はほぼすべて「処理系の素朴さ」由来。
 
-## 5. AOT / PG モードの動作確認
+## 6. AOT / PG モードの動作確認
 
 §2 の表は 2026-05-10 検証済 (5 テスト + 3 ベンチ全部通過、plain と
 出力一致)。SD\_\<hash\>.c は `-c` 時に `code_store/c/` に書き出される。

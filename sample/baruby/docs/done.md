@@ -3,6 +3,23 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-10 — bench 拡充 (GC stress 3 種追加)
+
+既存の binary_trees / list_alloc / string_concat に追加で:
+
+- **gc_combined** — 50k 要素配列を保持しつつ 10M 回の 4 要素配列 churn。
+  「長寿命 + 短寿命チャーン」の **generational-friendly** 形 (今 libgc が
+  非世代別なので差は出ないが、世代別 GC 投入時のベースライン)。
+- **substr_churn** — 18 MB の text String を保持して、毎オフセットで
+  `[i, 5]` slice。**fine-grained substring alloc + 1 long-lived**。GC
+  回数は 52 と最低 (heap が text サイズで安定するため)。
+- **fib_pair** — 再帰 fib が毎フレームで `[a, b]` 2 要素配列を返す。
+  **frame-escape + deep stack** (depth 28、~317k フレーム peak)。precise
+  GC を入れたとき frame iterator のスループットがここで効く想定。
+
+各々 plain で ~1 s 持続、AOT 比 1.78〜2.74× 速い。perf.md §2 / §3 に
+全 6 bench の表 (実測値 + 寿命プロファイル + GC 頻度) を整理。
+
 ## 2026-05-10 — A+B バッチ (`<=>` / `*` / `<<` / escape / AOT/PG verify / JIT 撤去)
 
 ### A — 残り P1 機能
