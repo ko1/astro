@@ -639,7 +639,11 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return r == -1 ? PYS_TRUE : PYS_FALSE;
         }
     }
-    return pys_cmp(c, av, bv) < 0 ? PYS_TRUE : PYS_FALSE;
+    {
+        int r = pys_cmp(c, av, bv);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        return r < 0 ? PYS_TRUE : PYS_FALSE;
+    }
 }
 
 NODE_DEF
@@ -665,7 +669,11 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return (r == -1 || r == 0) ? PYS_TRUE : PYS_FALSE;
         }
     }
-    return pys_cmp(c, av, bv) <= 0 ? PYS_TRUE : PYS_FALSE;
+    {
+        int r = pys_cmp(c, av, bv);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        return r <= 0 ? PYS_TRUE : PYS_FALSE;
+    }
 }
 
 NODE_DEF
@@ -691,7 +699,11 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return r == 1 ? PYS_TRUE : PYS_FALSE;
         }
     }
-    return pys_cmp(c, av, bv) > 0 ? PYS_TRUE : PYS_FALSE;
+    {
+        int r = pys_cmp(c, av, bv);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        return r > 0 ? PYS_TRUE : PYS_FALSE;
+    }
 }
 
 NODE_DEF
@@ -717,7 +729,11 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return (r == 1 || r == 0) ? PYS_TRUE : PYS_FALSE;
         }
     }
-    return pys_cmp(c, av, bv) >= 0 ? PYS_TRUE : PYS_FALSE;
+    {
+        int r = pys_cmp(c, av, bv);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        return r >= 0 ? PYS_TRUE : PYS_FALSE;
+    }
 }
 
 NODE_DEF
