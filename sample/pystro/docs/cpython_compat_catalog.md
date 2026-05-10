@@ -4,6 +4,30 @@ policy: pystro は CPython 3.12.13 (submodule pin) の純 Python stdlib
 (`cpython/Lib/`) を **PYTHONPATH 経由でそのまま使う**。 互換性が取れない
 箇所だけ pystro 側 (`stdlib/` または C runtime) で吸収する。
 
+## sweep の現状 (2026-05-10)
+
+### このセッションで進んだこと
+
+- **`gc.collect()` を Boehm `GC_gcollect()` に橋渡し** (これまで no-op):
+  test_set フル実行時のピーク RSS が 3.3GB → ~100MB。
+- **dict/set に version カウンタ + iterator snapshot** (bpo-46615 regression
+  test 対応): 反復中の mutation で SEGV ではなく
+  `RuntimeError("Set changed size during iteration")` を上げる。
+- **`pydict_indices_lookup` / `pydict_find` で `pys_eq_bool` 後に
+  `c->state == RAISE` をチェック**: __eq__ が例外を上げた後 lookup ループを
+  回り続けて memory corruption に至る経路を塞いだ。
+- **`pys_iter_init` の defensive default**: 非 iterable で TypeError を
+  上げるとき kind/end を 0 に初期化。 caller が state を見ずに
+  `pys_iter_next` を呼んでも空 iter として false 返却するだけに。
+- **`sm_difference_update` / `sm_intersection_update` / `sm_set_update` /
+  `sm_symmetric_difference_update`** で `argv[0]` を `pys_unwrap_primary`
+  経由に変更 (SetSubclass instance を self に取った場合の SEGV)。
+
+これにより test_set.py の SEGV 位置が test 311 (Set_Dict mutation) →
+test 573 (TestSetSubclass.test_pickling) まで進み、 file-level でも
+`unittest.main()` 経由なら `FAILED (failures=59, errors=110, skipped=2)` に
+到達 (rc=1, 完走後の終了コードが segv ではなく unittest の通常 fail)。
+
 ## sweep の現状 (2026-05-09)
 
 ### File-level 合格
