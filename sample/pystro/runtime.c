@@ -8817,18 +8817,44 @@ sm_union(CTX *c, int argc, VALUE *argv) {
     }
     return r;
 }
+// Materialize a possibly-non-container iterable (generator etc.) into a
+// set so `pys_contains` can be called repeatedly without exhausting it.
+// set/frozenset/dict/list/tuple are returned as-is (already random-access).
+static VALUE pys_set_op_materialize(CTX *c, VALUE v) {
+    VALUE u = pys_unwrap_primary(v);
+    if (pys_is_any_set(u) || pys_is_dict(u) || pys_is_list(u) ||
+        pys_is_tuple(u) || pys_is_str(u) || pys_is_byteseq(u))
+        return v;
+    // Generator / user-iter: drain into a set (single-pass safe).
+    VALUE acc = pys_make_set();
+    struct pys_iter it; pys_iter_init(c, &it, v);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    VALUE x;
+    while (pys_iter_next(c, &it, &x)) {
+        pys_dict_set(c, acc, x, PYS_NONE);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    }
+    return acc;
+}
 static VALUE
 sm_intersection(CTX *c, int argc, VALUE *argv) {
     VALUE r = pys_make_set_like(argv[0]);
     VALUE av0 = pys_unwrap_primary(argv[0]);
     struct pysdict *a = PYS_PTR(av0)->dict;
-    // s.intersection(*others) — keep keys present in ALL others.
+    // s.intersection(*others) — keep keys present in ALL others.  Each
+    // `other` may be a generator that pys_contains would consume in one
+    // pass; materialize first.
+    VALUE *others = argc > 1 ? (VALUE *)alloca(sizeof(VALUE) * argc) : NULL;
+    for (int j = 1; j < argc; j++) {
+        others[j] = pys_set_op_materialize(c, argv[j]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    }
     for (size_t i = 0; i < a->elen; i++) {
         if (!pydict_entry_live(a, i)) continue;
         VALUE k = a->entries[i].key;
         bool ok = true;
         for (int j = 1; j < argc; j++) {
-            if (!pys_contains(c, argv[j], k)) { ok = false; break; }
+            if (!pys_contains(c, others[j], k)) { ok = false; break; }
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         }
         if (ok) pys_dict_set(c, r, k, PYS_NONE);
@@ -8840,13 +8866,18 @@ sm_difference(CTX *c, int argc, VALUE *argv) {
     VALUE r = pys_make_set_like(argv[0]);
     VALUE av0 = pys_unwrap_primary(argv[0]);
     struct pysdict *a = PYS_PTR(av0)->dict;
+    VALUE *others = argc > 1 ? (VALUE *)alloca(sizeof(VALUE) * argc) : NULL;
+    for (int j = 1; j < argc; j++) {
+        others[j] = pys_set_op_materialize(c, argv[j]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    }
     // s.difference(*others) — drop keys present in ANY other.
     for (size_t i = 0; i < a->elen; i++) {
         if (!pydict_entry_live(a, i)) continue;
         VALUE k = a->entries[i].key;
         bool keep = true;
         for (int j = 1; j < argc; j++) {
-            if (pys_contains(c, argv[j], k)) { keep = false; break; }
+            if (pys_contains(c, others[j], k)) { keep = false; break; }
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         }
         if (keep) pys_dict_set(c, r, k, PYS_NONE);
