@@ -4110,6 +4110,12 @@ bi_dunder_setitem(CTX *c, int argc, VALUE *argv)
     (void)argc;
     return pys_list_set(c, argv[0], argv[1], argv[2]);
 }
+static VALUE bi_pystro_del(CTX *c, int argc, VALUE *argv);
+static VALUE
+bi_dunder_delitem(CTX *c, int argc, VALUE *argv)
+{
+    return bi_pystro_del(c, argc, argv);
+}
 static VALUE
 bi_dunder_eq(CTX *c, int argc, VALUE *argv)
 {
@@ -4274,6 +4280,7 @@ pys_dunder_bound(CTX *c, VALUE recv, const char *name)
         { "__iter__",     bi_dunder_iter,     1, 1 },
         { "__getitem__",  bi_dunder_getitem,  2, 2 },
         { "__setitem__",  bi_dunder_setitem,  3, 3 },
+        { "__delitem__",  bi_dunder_delitem,  2, 2 },
         { "__eq__",       bi_dunder_eq,       2, 2 },
         { "__ne__",       bi_dunder_ne,       2, 2 },
         { "__hash__",     bi_dunder_hash,     1, 1 },
@@ -4305,19 +4312,20 @@ pys_dunder_bound(CTX *c, VALUE recv, const char *name)
       case 2: ok = is_iterable; break;                  // __iter__
       case 3: ok = is_subscriptable; break;             // __getitem__
       case 4: ok = is_assignable; break;                // __setitem__
-      case 5: case 6: ok = true; break;                 // __eq__/__ne__ — universal
-      case 7: ok = true; break;                         // __hash__ — universal
-      case 8: case 9: ok = true; break;                 // __repr__/__str__ — universal
-      case 10: ok = true; break;                        // __bool__ — universal
-      case 11: ok = is_callable; break;                 // __call__
-      case 12: case 13: ok = true; break;               // __reduce_ex__/__reduce__
-      case 14: ok = true; break;                        // __sizeof__
-      case 15: ok = pys_is_class(recv); break;          // __class_getitem__
-      case 16: ok = true; break;                        // __dir__
-      case 17: ok = pys_is_class(recv); break;          // __init_subclass__
-      case 18: ok = pys_is_class(recv); break;          // __subclasshook__
-      case 19: ok = true; break;                        // __format__
-      case 20: ok = true; break;                        // __getattribute__
+      case 5: ok = is_assignable; break;                // __delitem__
+      case 6: case 7: ok = true; break;                 // __eq__/__ne__ — universal
+      case 8: ok = true; break;                         // __hash__ — universal
+      case 9: case 10: ok = true; break;                // __repr__/__str__ — universal
+      case 11: ok = true; break;                        // __bool__ — universal
+      case 12: ok = is_callable; break;                 // __call__
+      case 13: case 14: ok = true; break;               // __reduce_ex__/__reduce__
+      case 15: ok = true; break;                        // __sizeof__
+      case 16: ok = pys_is_class(recv); break;          // __class_getitem__
+      case 17: ok = true; break;                        // __dir__
+      case 18: ok = pys_is_class(recv); break;          // __init_subclass__
+      case 19: ok = pys_is_class(recv); break;          // __subclasshook__
+      case 20: ok = true; break;                        // __format__
+      case 21: ok = true; break;                        // __getattribute__
     }
     if (!ok) return PYS_NONE;
     VALUE fn = pys_make_builtin(name, shims[idx].fn,
