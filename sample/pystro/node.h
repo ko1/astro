@@ -60,6 +60,65 @@ EVAL(CTX *c, NODE *n)
 // fold into SD bodies.
 extern VALUE pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv);
 
+// Runtime functions called from node.def (compiled into node_eval.c via
+// node.c).  Without these declarations, calls fall under C's implicit-int
+// rule and any VALUE / pointer return is silently truncated to 32 bits
+// (sign-extended), corrupting downstream pys_apply / dereference.  All
+// VALUE-returning helpers reachable from node.def go here.
+extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
+extern VALUE pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
+                          int kwc, const char **kwnames, VALUE *kwvalues);
+extern VALUE pys_add(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_sub(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_mul(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_div(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_fdiv(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_mod(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_pow(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_bit_and(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_bit_or(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_bit_xor(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_bit_inv(CTX *c, VALUE a);
+extern VALUE pys_lshift(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_rshift(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_eq(CTX *c, VALUE a, VALUE b);
+extern VALUE pys_getattr(CTX *c, VALUE v, const char *name);
+extern VALUE pys_getattr_optional(CTX *c, VALUE v, const char *name);
+extern VALUE pys_make_str(const char *s, size_t len);
+extern VALUE pys_make_int(int64_t v);
+extern VALUE pys_make_float(double d);
+extern VALUE pys_make_list(VALUE *items, size_t n);
+extern VALUE pys_make_tuple(VALUE *items, size_t n);
+extern VALUE pys_make_dict(void);
+extern VALUE pys_make_set(void);
+extern VALUE pys_make_frozenset(void);
+extern VALUE pys_make_bound(VALUE recv, VALUE fn);
+extern VALUE pys_dict_get(CTX *c, VALUE dv, VALUE key);
+extern VALUE pys_list_get(CTX *c, VALUE seq, VALUE idx);
+extern VALUE pys_list_set(CTX *c, VALUE seq, VALUE idx, VALUE val);
+extern VALUE pys_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step);
+extern int   pys_global_resolve(CTX *c, const char *name);
+extern int   pys_global_resolve_or_alloc(CTX *c, const char *name);
+extern VALUE pys_gen_yield(CTX *c, VALUE v);
+extern VALUE pys_neg(CTX *c, VALUE a);
+extern VALUE pys_pos(CTX *c, VALUE a);
+extern VALUE pys_to_repr(CTX *c, VALUE v);
+extern VALUE pys_to_str(CTX *c, VALUE v);
+extern int   pys_cmp(CTX *c, VALUE a, VALUE b);
+extern bool  pys_contains(CTX *c, VALUE container, VALUE v);
+extern bool  pys_dict_has(CTX *c, VALUE dv, VALUE key);
+extern bool  pys_eq_bool(CTX *c, VALUE a, VALUE b);
+extern void  pys_dict_set(CTX *c, VALUE dv, VALUE key, VALUE val);
+extern void  pys_global_define(CTX *c, const char *name, VALUE v);
+extern void  pys_func_set_doc(CTX *c, VALUE fn, const char *s);
+extern void  pys_class_add_method(CTX *c, VALUE cls, const char *name, VALUE fn);
+extern void  pys_class_set_bases(VALUE cls, VALUE *bases, int n);
+extern VALUE pys_class_inherit_metaclass(CTX *c, VALUE cls, VALUE *bases, int nbases, const char *name);
+extern VALUE pys_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name);
+extern void  pys_class_extract_slots(CTX *c, VALUE cls);
+extern bool  pys_class_has_slots_anywhere(VALUE cls);
+extern VALUE pys_class_lookup_method_pub(VALUE cls, const char *name);
+
 // Inline closure-call fast path.  ascheme's `scm_apply_tail` did the
 // same: visible to SD code so the per-call frame setup folds into the
 // caller's SD without a PLT hop into runtime.c.  Cold cases (builtin /
