@@ -28,6 +28,54 @@ AOT-cold は build (`make` + `gcc`) のオーバーヘッドが乗るので inte
 ほぼ等しいか若干遅い (fib/ack/tak)。nqueens のように元々遅いベンチでは
 build 時間が相対的に減って AOT-cold でも improvement。
 
+## Phase 2 後 (`is_leaf` 焼込み + tail-call rewrite + AOT cflags)
+
+「AOT 効いていないんじゃないか」の指摘から perf 調査:
+
+1. SD ファイルを objdump したところ、`SD_269937f320a8ae51` (fib の
+   `app1(fib, sub_int(n,1))` chain) のホットパスに **`-fstack-clash-protection` の
+   probe loop** (`sub $0x1000, %rsp; cmp; jne` 4 命令 × 4KB ごと) が
+   入っていた。
+2. `node_fn` の `is_leaf` を **常に 0** で生成していたため `APPN_FAST_PATH` の
+   inline cache が初回 hit でも fill されず、毎呼び出し ml_apply の partial
+   path → `ml_new_frame` (heap malloc) を踏んでいた。
+3. tail-position の app1/app2 を `node_tail_app*` にリライトする post-pass が
+   存在しなかったため、tail recursion が C スタックを実際に消費していた
+   (= `ex_is_leaf=true` で alloca 経路に乗ると 50M 段で stack overflow)。
+
+**修正**:
+- `ex_is_leaf(EX *)` を実装 (body に EX_FN を含まなければ leaf)。`node_fn`
+  の is_leaf 引数に渡す
+- `mark_tail_calls(NODE *)` post-pass を実装。astocaml と同形式 (seq /
+  let / letrec_n / if_bool / match_arm / handle handler / andalso / orelse の
+  tail position の app1/app2 を `_tail_app*` に in-place 書換)
+- `maybe_aot_compile` で `ASTRO_EXTRA_CFLAGS` に `-fno-stack-clash-protection
+  -fno-stack-protector -flto -finline-functions -finline-small-functions
+  -finline-limit=10000 ...` を注入 (astocaml と同設定)
+
+**結果** (`./asml -q file` interp、`-c` で warm AOT、SML/NJ v110.79 比較):
+
+| ベンチ      | 入力                   | asml-int | asml-AOT | sml/NJ  | sml/NJ vs AOT |
+|-------------|-----------------------|---------:|---------:|--------:|--------------:|
+| fib         | `fib 35`              |   0.45 s |   0.16 s |  0.09 s |    1.78× 速い |
+| ack         | `ack 3 9`             |   1.76 s |   1.52 s |  0.05 s |   30× 速い    |
+| tak         | `tak 24 16 8` ×5      |   2.09 s |   2.01 s |  0.07 s |   29× 速い    |
+| nqueens     | 10-queens ×3          |   1.60 s |   1.46 s |  0.05 s |   29× 速い    |
+| sumlist     | sum 1..1M (tail-rec)  |   0.49 s |   0.46 s |    FAIL |  — (overflow) |
+| refloop     | 50M tight ref-loop    |   3.66 s |   2.63 s |    FAIL |  — (overflow) |
+| recordsum   | 500K record alloc     |   0.18 s |   0.19 s |    FAIL |  — (overflow) |
+| strcat      | "x" 30000 回連結       |   0.28 s |   0.29 s |  0.79 s |  **2.7× 遅い**|
+
+(SML/NJ の Int.maxInt は **2^30 - 1 = 1073741823** で、sumlist / refloop /
+recordsum は数値オーバーフローで Fatal exit。asml は 63-bit fixnum なので
+普通に走る。strcat だけ asml の方が速いのは SML/NJ の `^` 実装が一回毎に
+コピーを 2 回作るためと推定。)
+
+**fib AOT は 1.59 → 0.16 (10× 高速化)**、interp も 2.16 → 0.45 (4.8×)。
+SML/NJ vs asml-AOT の倍率は fib で 14× → **1.78×**、ack/tak/nqueens は
+30× 程度残る (multi-arg curried の partial-state 構築が hot で見える;
+todo.md の「N-ary 直呼び畳み込み」が次の improvement target)。
+
 ## SML/NJ 比較 (`bench/compare.sh`)
 
 [Standard ML of New Jersey](https://www.smlnj.org/) v110.79 を `sml`
@@ -41,6 +89,9 @@ build 時間が相対的に減って AOT-cold でも improvement。
 | ack (3, 9)    |  2.67 s  |  2.48 s  | 0.06 s  | **41.3× 速い**     |
 | tak ×5        |  3.16 s  |  3.11 s  | 0.09 s  | **34.6× 速い**     |
 | nqueens ×3    |  2.40 s  |  2.12 s  | 0.07 s  | **30.3× 速い**     |
+
+(以下の改善余地は Phase 2 で消化済 — `is_leaf` / `-flto` /
+`-fno-stack-clash-protection`。詳細は↑「Phase 2 後」表参照。)
 
 (`sml` の起動オーバーヘッドはロード + autoload 込みで 0.02 s。
 fib なら実質計算 ~0.10 s。)

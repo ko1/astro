@@ -4,17 +4,35 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-bench_files=(bench/fib.sml bench/ack.sml bench/tak.sml bench/nqueens.sml)
+bench_files=(
+    bench/fib.sml         # 再帰 1-arg
+    bench/ack.sml         # 再帰 curry 2-arg
+    bench/tak.sml         # 再帰 1-arg (tuple 引数)
+    bench/nqueens.sml     # 再帰 + パターンマッチ + リスト
+    bench/sumlist.sml     # リスト構築 + tail-rec foldl
+    bench/refloop.sml     # while-loop 風 (ref + tail-rec)
+    bench/recordsum.sml   # record リテラル + #field
+    bench/strcat.sml      # 文字列連結ループ
+)
 
 best_of_3() {
     local cmd="$1"
     local best=999.999
+    local failed=0
     for _ in 1 2 3; do
-        local t
-        t=$( { /usr/bin/time -f '%e' bash -c "$cmd" >/dev/null; } 2>&1 )
+        local out rc
+        out=$( { /usr/bin/time -f '%e' bash -c "$cmd; exit \$?" >/dev/null; } 2>&1 )
+        rc=$?
+        if [ $rc -ne 0 ]; then failed=1; continue; fi
+        local t=$(echo "$out" | tail -1)
+        if [[ ! "$t" =~ ^[0-9.]+$ ]]; then failed=1; continue; fi
         if awk "BEGIN{exit !($t < $best)}"; then best=$t; fi
     done
-    echo "$best"
+    if [ "$best" = "999.999" ] && [ $failed -eq 1 ]; then
+        echo "FAIL"
+    else
+        echo "$best"
+    fi
 }
 
 have_sml=0

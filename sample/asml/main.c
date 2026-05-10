@@ -29,6 +29,59 @@ struct asml_option OPTION;
 extern bool ml_node_to_tail(NODE *n);
 extern bool ml_node_is_app(NODE *n);
 
+// 末尾呼出最適化のポストパス。lower 後の closure body を walk し、
+// 末尾位置の `node_app1` / `node_app2` を `node_tail_app1` / `node_tail_app2`
+// に in-place で書き換える。tail_app は ml_apply のトランポリンに乗り、
+// 一定スタックで深い再帰を回せる (refloop bench で 1M 回が無問題に)。
+static void
+mark_tail_calls(NODE *n)
+{
+    if (!n) return;
+    if (ml_node_is_app(n)) { ml_node_to_tail(n); return; }
+    const char *dn = n->head.kind->default_dispatcher_name;
+    if (strcmp(dn, "DISPATCH_node_seq") == 0) {
+        mark_tail_calls(n->u.node_seq.rest);
+        return;
+    }
+    if (strcmp(dn, "DISPATCH_node_let") == 0) {
+        mark_tail_calls(n->u.node_let.body);
+        return;
+    }
+    if (strcmp(dn, "DISPATCH_node_letrec") == 0) {
+        mark_tail_calls(n->u.node_letrec.body);
+        return;
+    }
+    if (strcmp(dn, "DISPATCH_node_letrec_n") == 0) {
+        mark_tail_calls(n->u.node_letrec_n.body);
+        return;
+    }
+    if (strcmp(dn, "DISPATCH_node_if_bool") == 0) {
+        mark_tail_calls(n->u.node_if_bool.thn);
+        mark_tail_calls(n->u.node_if_bool.els);
+        return;
+    }
+    if (strcmp(dn, "DISPATCH_node_match_arm") == 0) {
+        mark_tail_calls(n->u.node_match_arm.body);
+        mark_tail_calls(n->u.node_match_arm.failure);
+        return;
+    }
+    if (strcmp(dn, "DISPATCH_node_handle") == 0) {
+        // body は setjmp の関係上 tail にできない (raise を catch する必要)。
+        // handler は tail 化可。
+        mark_tail_calls(n->u.node_handle.handler);
+        return;
+    }
+    if (strcmp(dn, "DISPATCH_node_andalso_bool") == 0) {
+        mark_tail_calls(n->u.node_andalso_bool.b);
+        return;
+    }
+    if (strcmp(dn, "DISPATCH_node_orelse_bool") == 0) {
+        mark_tail_calls(n->u.node_orelse_bool.b);
+        return;
+    }
+    // それ以外は末尾呼出を含まない or expr 内部なので何もしない。
+}
+
 // ---------------------------------------------------------------------------
 // Singleton mlobjs.
 // ---------------------------------------------------------------------------
@@ -3186,6 +3239,74 @@ ex_ty_kind(EX *e)
     return ty_deref(e->ty)->kind;
 }
 
+// 「leaf 関数」: body の中に EX_FN を含まない関数。
+// この性質を node_fn の is_leaf に焼くことで:
+//   1. ml_apply が C スタック alloca で frame を取れる (heap malloc 回避)
+//   2. node_appN の APPN_FAST_PATH の inline cache が初回 hit で fill される
+//      (cache->fn が埋まらないとずっと slow path に行く)
+// fib のような末端再帰では巨大な効果。
+static bool
+ex_is_leaf(EX *e)
+{
+    switch (e->kind) {
+      case EX_FN: return false;       // 内側に lambda がある = 非 leaf
+      // リテラル / 参照 — 子無し
+      case EX_INT: case EX_REAL: case EX_STR: case EX_BOOL:
+      case EX_UNIT: case EX_NIL:
+      case EX_LREF: case EX_GREF: case EX_CTOR0:
+      case EX_NOOP:
+        return true;
+      case EX_CTOR1: return ex_is_leaf(e->ctor1.arg);
+      case EX_IF:
+        return ex_is_leaf(e->iff.cond) && ex_is_leaf(e->iff.thn) && ex_is_leaf(e->iff.els);
+      case EX_SEQ: return ex_is_leaf(e->seq.first) && ex_is_leaf(e->seq.rest);
+      case EX_LET: return ex_is_leaf(e->let.value) && ex_is_leaf(e->let.body);
+      case EX_LETREC: {
+        for (int i = 0; i < e->letrec.n; i++)
+            if (!ex_is_leaf(e->letrec.values[i])) return false;
+        return ex_is_leaf(e->letrec.body);
+      }
+      case EX_APP: return ex_is_leaf(e->app.fn) && ex_is_leaf(e->app.arg);
+      case EX_TUPLE: {
+        for (int i = 0; i < e->tuple.n; i++)
+            if (!ex_is_leaf(e->tuple.items[i])) return false;
+        return true;
+      }
+      case EX_RECORD: {
+        for (int i = 0; i < e->rec.n; i++)
+            if (!ex_is_leaf(e->rec.items[i])) return false;
+        return true;
+      }
+      case EX_FIELD: return ex_is_leaf(e->fld.e);
+      case EX_CONS: return ex_is_leaf(e->cons.head) && ex_is_leaf(e->cons.tail);
+      case EX_CASE: {
+        if (!ex_is_leaf(e->cse.scrut)) return false;
+        for (int i = 0; i < e->cse.n_arms; i++)
+            if (!ex_is_leaf(e->cse.arms[i].body)) return false;
+        return true;
+      }
+      case EX_HANDLE: {
+        if (!ex_is_leaf(e->handle.body)) return false;
+        for (int i = 0; i < e->handle.n_arms; i++)
+            if (!ex_is_leaf(e->handle.arms[i].body)) return false;
+        return true;
+      }
+      case EX_REF_NEW: case EX_DEREF: case EX_RAISE: return ex_is_leaf(e->un.e);
+      case EX_ASSIGN:  return ex_is_leaf(e->assign.l) && ex_is_leaf(e->assign.r);
+      case EX_BINOP:   return ex_is_leaf(e->bin.l) && ex_is_leaf(e->bin.r);
+      case EX_UNOP:    return ex_is_leaf(e->unop.e);
+      case EX_ANDALSO: return ex_is_leaf(e->andalso.l) && ex_is_leaf(e->andalso.r);
+      case EX_ORELSE:  return ex_is_leaf(e->orelse.l) && ex_is_leaf(e->orelse.r);
+      case EX_TOPBIND: return ex_is_leaf(e->topbind.value);
+      case EX_TOPLET_FUNS: {
+        for (int i = 0; i < e->toplet.n; i++)
+            if (!ex_is_leaf(e->toplet.values[i])) return false;
+        return true;
+      }
+    }
+    return true;
+}
+
 // 比較 op の operand 型 (両辺は HM で同一に unify 済みなので l 側を見る)
 // に応じて、最適な NODE を選ぶ。HM が op の operand を多相のまま残した
 // 場合 (e.g. `'a list` の比較) は `_poly` で structural compare に丸投げ。
@@ -3327,7 +3448,9 @@ lower_expr(EX *e)
       }
       case EX_FN: {
         NODE *body = lower_fn_body(e);
-        NODE *fn = ALLOC_node_fn((uint32_t)e->fn.nparams, body, /*leaf=*/0,
+        bool leaf = ex_is_leaf(e->fn.body);
+        mark_tail_calls(body);
+        NODE *fn = ALLOC_node_fn((uint32_t)e->fn.nparams, body, leaf ? 1 : 0,
                                  e->fn.name ? e->fn.name : intern("<fn>"));
         aot_add_entry(body);
         return fn;
@@ -4115,6 +4238,36 @@ maybe_aot_compile(NODE *form)
     if (!OPTION.compile || !form) return;
     if (form->head.flags.is_specialized) return;
     setenv("CCACHE_DISABLE", "1", 1);
+
+    // AOT cflags は astocaml と同等の積極設定:
+    // - `-fno-stack-clash-protection`: alloca による frame allocation が
+    //   recursive call の度に 4KB プローブループを emit するのを止める
+    //   (fib のようなホットループでは ~10 inst / call 削れる)
+    // - `-fno-stack-protector`: canary 命令の除去
+    // - `-flto -finline-limit=10000 ...`: SD .o 間の inline を許可、
+    //   `node_app1 → node_lt_int → node_lref` の chain を一直線に畳む
+    {
+        const char *user_cf = getenv("ASTRO_EXTRA_CFLAGS");
+        const char *base_cf = "-fno-stack-clash-protection -fno-stack-protector "
+                              "-flto -finline-functions -finline-small-functions "
+                              "-finline-limit=10000 --param max-inline-insns-auto=400 "
+                              "--param max-inline-insns-single=400 --param inline-unit-growth=300";
+        size_t cap = strlen(base_cf) + (user_cf ? strlen(user_cf) : 0) + 4;
+        char *combined = (char *)malloc(cap);
+        snprintf(combined, cap, "%s%s%s", base_cf,
+                 (user_cf && *user_cf) ? " " : "",
+                 (user_cf && *user_cf) ? user_cf : "");
+        setenv("ASTRO_EXTRA_CFLAGS", combined, 1);
+        const char *user_ld = getenv("ASTRO_EXTRA_LDFLAGS");
+        if (user_ld && *user_ld) {
+            char *combined_ld = (char *)malloc(strlen("-flto ") + strlen(user_ld) + 1);
+            sprintf(combined_ld, "-flto %s", user_ld);
+            setenv("ASTRO_EXTRA_LDFLAGS", combined_ld, 1);
+        } else {
+            setenv("ASTRO_EXTRA_LDFLAGS", "-flto", 1);
+        }
+    }
+
     for (; AOT_COMPILED < AOT_ENTRIES_LEN; AOT_COMPILED++) {
         NODE *e = AOT_ENTRIES[AOT_COMPILED];
         if (e && !e->head.flags.is_specialized) astro_cs_compile(e, NULL);
@@ -4122,9 +4275,20 @@ maybe_aot_compile(NODE *form)
     astro_cs_compile(form, NULL);
     astro_cs_build(NULL);
     astro_cs_reload();
-    for (size_t i = 0; i < AOT_ENTRIES_LEN; i++)
-        if (AOT_ENTRIES[i]) astro_cs_load(AOT_ENTRIES[i], NULL);
+    int patched = 0, missed = 0;
+    for (size_t i = 0; i < AOT_ENTRIES_LEN; i++) {
+        if (AOT_ENTRIES[i]) {
+            if (astro_cs_load(AOT_ENTRIES[i], NULL)) patched++;
+            else missed++;
+        }
+    }
+    // form 自身 (= node_topbind) は SPECIALIZE_node_topbind が空なので
+    // 必ず miss する。値部分 (closure body) は AOT_ENTRIES で patch 済。
     astro_cs_load(form, NULL);
+    if (getenv("ASML_AOT_VERBOSE")) {
+        fprintf(stderr, "asml AOT: entries patched=%d missed=%d (top form is node_topbind, no SD by design)\n",
+                patched, missed);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -46,35 +46,22 @@ Phase 1 の主要機能 (パース / HM 推論 / 型駆動特殊化 / 部分適�
 
 ## 性能向上のための今後の課題
 
-### A. closure に静的 is_leaf を立てる
+### ✅ A. closure に静的 is_leaf を立てる (Phase 2 で実装済)
 
-現状: `node_fn` の `is_leaf` 操作は parse 時に常に 0 (false) を渡している。
-`ml_apply` 側で OOBJ_CLOSURE の `is_leaf` を見て alloca するファストパスは
-存在するが、`is_leaf` フラグが false なので毎回 `ml_new_frame` で malloc
-している。
+`ex_is_leaf(EX *e)` を実装、`node_fn` の is_leaf 引数に渡す。fib / refloop
+で大幅な高速化 (10× / 3.5×)。
 
-提案: parse 時に「この fn の body が他の `node_fn` を含んでいるか」を walk
-で判定し、含まない (= leaf) closure には true を立てる。fib / fact のような
-末端再帰関数は leaf になり、frame 配置を C スタック alloca に切り替えられる。
+### ✅ B. AOT compile flags 追加 (Phase 2 で実装済)
 
-期待効果: fib(35) で 2× 程度 (astocaml の同改善後と同等)
+`maybe_aot_compile` で `ASTRO_EXTRA_CFLAGS` に
+`-fno-stack-clash-protection -fno-stack-protector -flto
+-finline-limit=10000 ...` を設定。fib AOT が 1.59s → 0.16s に。
 
-### B. AOT に astocaml 並みの compile flags
+### ✅ B'. tail-call rewrite (Phase 2 で実装済)
 
-現状の `astro_cs_build(NULL)` は default flags 任せ。astocaml の
-`maybe_aot_compile` は以下を `ASTRO_EXTRA_CFLAGS` に注入:
-
-```
--fno-stack-clash-protection -fno-stack-protector
--flto -finline-functions -finline-small-functions
--finline-limit=10000 --param max-inline-insns-auto=400
---param max-inline-insns-single=400 --param inline-unit-growth=300
-```
-
-特に `-flto` で SD 間 inlining が効くと、`node_app1 → node_lt_int → node_lref`
-等の chain が一直線にインライン化されるはず。
-
-期待効果: AOT-warm が更に 2-3× 高速化 (astocaml fib(35) AOT 0.113 s 並み)
+`mark_tail_calls(NODE *)` post-pass を `lower` 後に呼んで、tail-position の
+app1/app2 を `_tail_app*` に書換。50M 段の tail recursion が定数スタックで
+回るようになった。
 
 ### C. PGO (`-fprofile-use`)
 
