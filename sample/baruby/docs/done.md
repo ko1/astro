@@ -3,6 +3,33 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-10 — Ruby っぽい value semantics
+
+`String#==` / `Array#==` / `Array#+` を実装、`true` / `false` を表示
+できるよう singleton を分離。
+
+- `baruby_value_eq(VALUE, VALUE)` を `node.c` に追加。raw 等価で
+  fixnum / singleton / ポインタ identity を一発カバーし、違うときだけ
+  String の byte 比較 / Array の再帰的要素比較に降りる。
+- `node_eq` / `node_neq` を 2 段 fast path + helper に書き換え。
+  int loop の hot path (`l == r` 直撃) は同じ命令数のまま。
+- `node_add` の type branch に Array+Array (`baruby_ary_plus` で新配列
+  を返す concat) を追加。
+- `VAL_TRUE` を `INT2VAL(1) = 3` から **独立 singleton (raw 2)** に
+  変更。`p (1 == 1)` が `1` ではなく `true` と表示されるようにし、
+  `nil`/`false` と `true` が分かれるよう将来分離 ([todo.md](todo.md))
+  への足場も用意。
+- `IS_PTR` から `VAL_TRUE` を除外。`baruby_print_value` で `true` 表示
+  対応。
+- `PM_PARENTHESES_NODE` を実装 (空 `()` は `false`、それ以外は body を
+  そのまま透過)。`(...)` を含む式が parser に通るようになった。
+
+検証は `test_eq.ba.rb` で:
+- 整数値比較 / mixed-type / String value-eq / Array value-eq
+  (空・ネスト含む) / Array+Array (空配列・チェイン込み)。
+- 既存テストの fib (10946) と test_ary も regression なし。
+- 3 ベンチの alloc/GC 数は不変、wall は noise レンジ内。
+
 ## 2026-05-10 — 初期フォーク
 
 `sample/naruby` から `sample/baruby` を切り出し、Array + String + libgc

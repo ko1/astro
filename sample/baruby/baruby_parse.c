@@ -1163,8 +1163,8 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_PARENTHESES_NODE: {
           pm_parentheses_node_t *n = (pm_parentheses_node_t *)(node);
-          fprintf(stderr, "unsupported node: PM_PARENTHESES_NODE\n");
-          break;
+          // Empty `()` has body == NULL — return false (Ruby returns nil).
+          return n->body ? TRANSDUCE(n->body) : ALLOC_node_false();
       }
       case PM_PINNED_EXPRESSION_NODE: {
           pm_pinned_expression_node_t *n = (pm_pinned_expression_node_t *)(node);

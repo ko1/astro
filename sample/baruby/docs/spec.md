@@ -31,8 +31,11 @@ OO 機能 (class / module / method / instance var / block) は意図的に
 
 | 値 | 意味 |
 |---|---|
-| `false` (= nil) | 唯一の falsy 値 |
+| `false` (= nil) | 唯一の falsy 値 (`nil` と分離していない) |
+| `true` | 真の真偽値 (Integer 1 とは別シングルトン) |
 | 上記以外すべて | truthy (整数 0 も `[]` も `""` も真) |
+
+`p (1 == 1)` は `true` と表示される (整数 `1` ではない)。
 
 **未対応の値型**: 浮動小数 / Hash / Symbol / Range / Regexp / Proc /
 Class / Object / 真の `nil` (= false と区別する `nil`)。
@@ -56,8 +59,9 @@ Class / Object / 真の `nil` (= false と区別する `nil`)。
 [a, [b, c]]  # ネスト OK
 ```
 
-`true` / `false` キーワードは現状 parser に通らない (`unsupported`)。
-真偽値が欲しければ比較式 (`1 == 1` で truthy, `1 == 0` で falsy) を使う。
+`true` / `false` キーワードは現状 parser に通らない (`unsupported` —
+[todo.md](todo.md))。真偽値が欲しければ比較式 (`1 == 1` で `true`、
+`1 == 0` で `false`) を使う。
 
 ## ローカル変数 / 代入
 
@@ -79,18 +83,27 @@ a, b = ...    # 多重代入は未対応
 
 ### 文字列
 
-`+` のみ (concat)。`*` 反復、`<<` 追加、`==` 比較は未対応。
+`+` (concat → 新しい String を返す)。`==` / `!=` は **値比較**
+(`"abc" == "abc"` は `true`)。`*` 反復・`<<` 追加・`<` / `<=` 等の
+順序比較は未対応。
 
 ### Array
 
-`[]` (index get) / `[]=` (index set)。`+` (concat) / `<<` (push) は未対応。
+`[]` (index get) / `[]=` (index set) / `+` (concat → 新配列)。
 インデックス負の値は末尾基準 (`a[-1]` で最終要素)。範囲外 read は
 `false` を返す。範囲外 write は `false` で auto-extend する。
+`==` / `!=` は **要素ごとの値比較** (再帰的、`[1, [2, 3]] == [1, [2,
+3]]` は `true`)。`<<` push・`*` 反復は未対応。
 
 ### 比較
 
-`==`, `!=`, `<`, `<=`, `>`, `>=`。Integer 同士は値比較。それ以外は
-**ポインタ同一性比較** (Ruby の `equal?` 相当)。文字列の値等価比較は
+`==`, `!=` は Ruby と同じ値比較:
+- Integer 同士は値比較。
+- 同型のヒープオブジェクト同士は再帰的に値比較 (String はバイト列、
+  Array は要素ごと)。
+- 異なる型は常に false (`1 == "1"` → `false`)。
+
+`<`, `<=`, `>`, `>=` は **Integer のみ**対応。文字列の順序比較は
 未対応。
 
 ### 論理

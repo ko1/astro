@@ -17,13 +17,16 @@
 
 ## P1 — 言語拡張
 
-- [ ] **`nil` を `false` から分離**。今は両方 raw 0。`nil = 0`,
-      `false = 4` (8-byte align で衝突しない別 reserved value) のような
-      シングルトンを 1 個追加すれば済む。
+- [ ] **`nil` を `false` から分離**。今は両方 raw 0。`true` は raw 2
+      で別 singleton になっているので、`nil` を raw 4 などに割り当てる
+      余地はある。`baruby_value_eq` / `baruby_print_value` /
+      `IS_PTR` を 1 行ずつ拡張すれば済む。
 - [ ] **`true` / `false` リテラル**。今 parser に通らない (`unsupported`)。
       PM_TRUE_NODE / PM_FALSE_NODE を `ALLOC_node_true` / `ALLOC_node_false`
       に流すだけ。
-- [ ] **String compare** (`==`, `<`, `<=>`)。今は `==` がポインタ同一性。
+- [ ] **String の順序比較** (`<`, `<=`, `<=>`)。`==` / `!=` は実装済。
+      今は順序比較が Integer 同士のみ。`baruby_str_cmp` を作って
+      `node_lt` 等の type branch を拡張する形。
 - [ ] **String slice** (`s[i, n]`, `s[i..j]`)。Range 入れたくないので
       多引数 `[]` で代用案。
 - [ ] **`each` どうするか**。block 入れない方針なので、`for x in arr;

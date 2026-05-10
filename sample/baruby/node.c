@@ -260,6 +260,48 @@ baruby_str_new_cstr(const char *cstr)
 }
 
 VALUE
+baruby_ary_plus(VALUE av, VALUE bv)
+{
+    const BaArray *a = VAL2ARY(av);
+    const BaArray *b = VAL2ARY(bv);
+    uint32_t total = a->len + b->len;
+    VALUE rv = baruby_ary_new(total ? total : 1);
+    BaArray *r = VAL2ARY(rv);
+    if (a->len) memcpy(r->items,            a->items, sizeof(VALUE) * a->len);
+    if (b->len) memcpy(r->items + a->len,   b->items, sizeof(VALUE) * b->len);
+    r->len = total;
+    return rv;
+}
+
+bool
+baruby_value_eq(VALUE a, VALUE b)
+{
+    // Identical bits cover fixnum-fixnum, false=false=nil, ptr-identity.
+    if (a == b) return true;
+    // Mixed int / ptr — different by construction.
+    if (IS_INT(a) || IS_INT(b)) return false;
+    // One side is the false / nil singleton (raw 0), the other is a
+    // distinct heap pointer.
+    if (a == VAL_FALSE || b == VAL_FALSE) return false;
+    // Both heap objects of unknown type.
+    uint32_t ta = OBJ_TYPE(a), tb = OBJ_TYPE(b);
+    if (ta != tb) return false;
+    if (ta == OBJ_STRING) {
+        const BaString *sa = VAL2STR(a), *sb = VAL2STR(b);
+        return sa->len == sb->len && memcmp(sa->bytes, sb->bytes, sa->len) == 0;
+    }
+    if (ta == OBJ_ARRAY) {
+        const BaArray *aa = VAL2ARY(a), *ab = VAL2ARY(b);
+        if (aa->len != ab->len) return false;
+        for (uint32_t i = 0; i < aa->len; i++) {
+            if (!baruby_value_eq(aa->items[i], ab->items[i])) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+VALUE
 baruby_str_concat(VALUE av, VALUE bv)
 {
     const BaString *a = VAL2STR(av);
@@ -282,6 +324,9 @@ baruby_print_value(FILE *fp, VALUE v)
 {
     if (v == VAL_FALSE) {
         fputs("false", fp);
+    }
+    else if (v == VAL_TRUE) {
+        fputs("true", fp);
     }
     else if (IS_INT(v)) {
         fprintf(fp, "%ld", (long)VAL2INT(v));

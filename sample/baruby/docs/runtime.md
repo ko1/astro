@@ -41,15 +41,16 @@ AOT/PG 動作は未検証 (`--plain` のみ確認済)。
 ```c
 typedef intptr_t VALUE;
 
-// LSB == 1 → fixnum (signed int63, 算術右シフトで sign-extend)
-// LSB == 0 + ptr != 0 → heap object
-// raw 0 → false / nil 統一 (libgc は NULL を返さないので live と区別可能)
+// LSB == 1                → fixnum (signed int63, 算術右シフトで sign-extend)
+// raw == 0                → false / nil 統一
+// raw == 2                → true singleton (sub-page、ヒープアドレスにならない)
+// LSB == 0, v != 0, 2     → heap object pointer
 #define INT2VAL(i)    ((VALUE)(((uintptr_t)(intptr_t)(i) << 1) | 1u))
 #define VAL2INT(v)    (((intptr_t)(v)) >> 1)
 #define VAL_FALSE     ((VALUE)0)
-#define VAL_TRUE      INT2VAL(1)             // = raw 3
+#define VAL_TRUE      ((VALUE)2)
 #define IS_INT(v)     ((v) & 1)
-#define IS_PTR(v)     ((v) != 0 && ((v) & 1) == 0)
+#define IS_PTR(v)     ((v) != 0 && (v) != 2 && ((v) & 1) == 0)
 ```
 
 設計上の含意:
@@ -60,10 +61,17 @@ typedef intptr_t VALUE;
   トリックは現状未採用 (clarity 優先、`-O3` で gcc が shift pair を
   畳んでくれる場面が多い)。
 - **`if cond`**: C truthy/falsy の意味で `cond != 0` 判定で済む
-  (`VAL_FALSE = 0` のみが falsy、それ以外は raw 値が非 0)。
+  (`VAL_FALSE = 0` のみが falsy、`VAL_TRUE = 2` を含めその他は非 0 の
+  raw 値)。
 - **`&&` / `||` 注意**: `INT2VAL(0) = 1` なので `node_num(0)` を
   「false 相当」として使えない。専用の `node_true` / `node_false`
-  ノードを追加し、parser がそちらを使う。
+  ノードが `VAL_TRUE` / `VAL_FALSE` シングルトンを返す。
+- **`p` の表示**: `VAL_FALSE` → "false"、`VAL_TRUE` → "true"、
+  それ以外は IS_INT / IS_ARY / IS_STR で分岐。`true` と Integer 1 は
+  raw 値が違うので別々に表示される。
+- **`==` / `!=`**: `l == r` の raw 等価で fixnum / シングルトン /
+  ポインタ identity を一発カバー → 違ったら `IS_INT` を見て fast-fail
+  → 残りで `baruby_value_eq` (String byte 比較 / Array 再帰)。
 
 ## 3. ヒープ型
 
@@ -125,8 +133,10 @@ node_call_size(... NODE *recv) {
 ASTro の specialization で profile に応じて `_ary` / `_str` variant に
 分岐する余地はあるが、現状は generic 1 本のみ。
 
-`node_add` も同じ流儀で int+int / str+str を runtime branch する
-(literal だけは LIKELY を入れて int+int のホットパスを優先)。
+`node_add` も同じ流儀で **int+int / str+str / ary+ary** を runtime
+branch する (LIKELY で int+int のホットパスを優先)。`node_eq` /
+`node_neq` も同型で、raw 等価チェックの後に `baruby_value_eq`
+(`node.c`) で再帰的な値比較に降りる。
 
 ## 5. libgc 統合
 

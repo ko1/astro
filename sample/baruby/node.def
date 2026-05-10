@@ -410,6 +410,9 @@ node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NO
     if (IS_STR(l) && IS_STR(r)) {
         return RESULT_OK(baruby_str_concat(l, r));
     }
+    if (IS_ARY(l) && IS_ARY(r)) {
+        return RESULT_OK(baruby_ary_plus(l, r));
+    }
     fprintf(stderr, "type mismatch in +\n");
     return RESULT_OK(VAL_FALSE);
 }
@@ -491,13 +494,20 @@ node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NOD
     return RESULT_OK(l >= r ? VAL_TRUE : VAL_FALSE);
 }
 
+// `==` follows Ruby semantics: same bits ⇒ true (covers fixnum equality
+// and ptr identity); same heap type ⇒ recursive byte / element compare;
+// otherwise false.  The `l == r` fast path keeps the int hot loop at the
+// same cost as before — only heap pointers fall through to the helper.
+
 NODE_DEF
 node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {
     VALUE l = UNWRAP(EVAL_ARG(c, lhs));
     VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return RESULT_OK(l == r ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(l == r)) return RESULT_OK(VAL_TRUE);
+    if (LIKELY(IS_INT(l) || IS_INT(r))) return RESULT_OK(VAL_FALSE);
+    return RESULT_OK(baruby_value_eq(l, r) ? VAL_TRUE : VAL_FALSE);
 }
 
 NODE_DEF
@@ -506,7 +516,9 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NO
     VALUE l = UNWRAP(EVAL_ARG(c, lhs));
     VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return RESULT_OK(l != r ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(l == r)) return RESULT_OK(VAL_FALSE);
+    if (LIKELY(IS_INT(l) || IS_INT(r))) return RESULT_OK(VAL_TRUE);
+    return RESULT_OK(baruby_value_eq(l, r) ? VAL_FALSE : VAL_TRUE);
 }
 
 // -----------------------------------------------------------------------------

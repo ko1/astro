@@ -52,14 +52,18 @@ extern struct baruby_option OPTION;
 // -----------------------------------------------------------------------------
 // Tagged VALUE.
 //
-//   LSB == 1  -> fixnum (signed int63, sign-extends on arithmetic shift)
-//   LSB == 0  -> heap object pointer (8-byte aligned, low 3 bits zero)
-//   == 0      -> false / nil singleton (raw zero, distinguished from any
-//                live heap pointer because libgc never returns NULL)
+//   LSB == 1     -> fixnum (signed int63, sign-extends on arithmetic shift)
+//   raw == 0     -> false / nil singleton
+//   raw == 2     -> true singleton  (sub-page; never a real heap address)
+//   LSB == 0,
+//   v != 0, 2    -> heap object pointer (8-byte aligned, low 3 bits zero)
 //
-// Comparison ops return VAL_TRUE (= INT2VAL(1) = 3) for true, VAL_FALSE
-// (= 0) for false — both honour C's truthy/falsy convention so node_if
-// and node_while keep their plain `if (UNWRAP(...))` test.
+// VAL_TRUE / VAL_FALSE are kept distinct from INT2VAL(1) / INT2VAL(0)
+// so `p (1 == 1)` prints "true" rather than "1", and so future code can
+// tell `nil` apart from int 0 without a separate type tag.  Both
+// singletons honour C's truthy / falsy convention (VAL_TRUE = 2 is
+// truthy, VAL_FALSE = 0 is falsy), so node_if / node_while keep their
+// plain `if (UNWRAP(...))` test.
 //
 // Arithmetic on fixnums goes through VAL2INT / INT2VAL.  The shift pair
 // folds away under -O3 along most call paths; tag-preserving tricks
@@ -71,9 +75,9 @@ typedef uint64_t state_serial_t;
 #define INT2VAL(i)    ((VALUE)(((uintptr_t)(intptr_t)(i) << 1) | (uintptr_t)1))
 #define VAL2INT(v)    (((intptr_t)(v)) >> 1)
 #define VAL_FALSE     ((VALUE)0)
-#define VAL_TRUE      INT2VAL(1)
+#define VAL_TRUE      ((VALUE)2)
 #define IS_INT(v)     (((uintptr_t)(v) & (uintptr_t)1) != 0)
-#define IS_PTR(v)     ((v) != 0 && ((uintptr_t)(v) & (uintptr_t)1) == 0)
+#define IS_PTR(v)     ((v) != VAL_FALSE && (v) != VAL_TRUE && ((uintptr_t)(v) & (uintptr_t)1) == 0)
 
 // Heap object header.  Type tag lets the dispatch nodes branch on
 // receiver type at eval time (e.g. call_size: array vs string).
@@ -185,9 +189,16 @@ typedef struct CTX_struct {
 VALUE baruby_ary_new(uint32_t capa);
 VALUE baruby_ary_new_from(const VALUE *items, uint32_t n);
 void  baruby_ary_push(VALUE ary, VALUE v);
+VALUE baruby_ary_plus(VALUE a, VALUE b);
 VALUE baruby_str_new(const char *bytes, uint32_t len);
 VALUE baruby_str_new_cstr(const char *cstr);
 VALUE baruby_str_concat(VALUE a, VALUE b);
+
+// Value equality (Ruby `==`).  Same bits → true (catches int / nil / ptr
+// identity).  Otherwise: same type → recursive byte / element compare;
+// different types → false.  Mixed (int vs ptr) → false.
+bool  baruby_value_eq(VALUE a, VALUE b);
+
 void  baruby_print_value(FILE *fp, VALUE v);
 
 #endif
