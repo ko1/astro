@@ -8934,13 +8934,16 @@ static VALUE
 sm_symmetric_difference(CTX *c, int argc, VALUE *argv) {
     (void)argc;
     VALUE a = pys_unwrap_primary(argv[0]);
-    VALUE b = pys_unwrap_primary(argv[1]);
+    // Materialize argv[1] so we can scan it twice (gen would be exhausted).
+    VALUE b_input = pys_set_op_materialize(c, argv[1]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    VALUE b = pys_unwrap_primary(b_input);
     VALUE r = pys_make_set_like(argv[0]);
     struct pysdict *aa = PYS_PTR(a)->dict;
     for (size_t i = 0; i < aa->elen; i++)
         if (pydict_entry_live(aa, i) && !pys_contains(c, b, aa->entries[i].key))
             pys_dict_set(c, r, aa->entries[i].key, PYS_NONE);
-    if (pys_is_set(b)) {
+    if (pys_is_any_set(b) || pys_is_dict(b)) {
         struct pysdict *bb = PYS_PTR(b)->dict;
         for (size_t i = 0; i < bb->elen; i++)
             if (pydict_entry_live(bb, i) && !pys_contains(c, a, bb->entries[i].key))
@@ -8951,6 +8954,7 @@ sm_symmetric_difference(CTX *c, int argc, VALUE *argv) {
         while (pys_iter_next(c, &it, &x))
             if (!pys_contains(c, a, x))
                 pys_dict_set(c, r, x, PYS_NONE);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     }
     return r;
 }
