@@ -44,14 +44,30 @@ heap corruption が疑われる。
 **結果 (file-level):**
 
 - 安定 PASS = 18 (変わらず, 既出)
-- **test_list**: SEGV → `FAILED (failures=13, errors=15, skipped=1)` 完走
+- **test_list**: SEGV → `FAILED (failures=14, errors=12, skipped=1)` 完走
 - **test_tuple**: SEGV → `FAILED (failures=6, errors=4, skipped=4)` 完走
-- **test_userlist**: SEGV → `FAILED (failures=10, errors=11)` 完走
+- **test_userlist**: SEGV → `FAILED (failures=9, errors=11)` 完走
 - **test_set**: 既に完走していた (`FAILED (failures=59, errors=110)`) が、
-  inline runner で test 311 → 573 まで SEGV 位置が進んだ
+  本セッションで `failures=45, errors=44` まで縮小 (80 件回復)。
 - **test_dict**: 部分的改善 (test_repr の cyclic+BadRepr で SEGV する経路は
-  解消) も、 test_items_symmetric_difference 経由で Boehm GC 内部 SEGV が
-  残る。
+  解消、 完走時に `FAILED (failures=31, errors=23)`) も、
+  test_items_symmetric_difference 経由で Boehm GC 内部 SEGV が残る (5/6
+  程度 flaky)。
+
+**追加した shim / 機能拡張:**
+
+- `list.__delitem__` (bi_dunder_delitem ↔ bi_pystro_del bridge)
+- `list.__iadd__` (extend + return self、 raise propagation 付き)
+- `reversed(list/tuple)` を proper PYS_T_ITER で返す
+- set / frozenset binop の left-type 維持 (`pys_make_set_like`)
+- set 系 binop で SetSubclass instance を `pys_unwrap_primary` 経由に統一
+- `set.union/intersection/difference` を `*others` 多引数対応
+- `dict.fromkeys` を classmethod として登録 (instance bind されないように)
+- `iter.__length_hint__` (PEP 424)
+- `set.remove` で `KeyError(key)` を投げる (args[0]=key)
+- `sm_symmetric_difference` で raise propagation + 双方 materialize
+- `sm_intersection` / `sm_difference` で iterator を一度 set へ drain
+  (gen を pys_contains に複数回渡すと exhaust する問題)
 
 ## sweep の現状 (2026-05-09)
 
