@@ -563,6 +563,18 @@ static VALUE kernel_nil_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_object_id(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* Distinct id for distinct values.  CRuby uses VALUE itself for
+     * immediates (Fixnum / Symbol / true / false / nil / Flonum) and
+     * a heap-pointer-derived id for objects.  We need DIFFERENT ids
+     * for 1 vs 2 — `(long)self / 8` collapses small integers to 0
+     * and breaks Hash#hash for any container of ints (test_hash etc).
+     */
+    if (SPECIAL_CONST_P(self)) {
+        /* For immediates the VALUE bit pattern itself uniquely
+         * identifies the value — return it directly (matches CRuby
+         * Fixnum: 1.object_id == 3, 2.object_id == 5). */
+        return INT2FIX((long)self);
+    }
     return INT2FIX((long)self / 8);
 }
 
