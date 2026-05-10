@@ -813,21 +813,21 @@ bool  pys_dict_has   (CTX *c, VALUE d, VALUE key);
 bool  pys_dict_remove(CTX *c, VALUE d, VALUE key);
 uint64_t pys_hash_slow(CTX *c, VALUE v);
 
-// Inlinable fast-path hash.  Fixnum / flonum (the dominant int/float
-// keys in dict_bench / general numeric maps) hash without a function
-// call — saves the call+ret + register spills around the hot dict
-// indices_lookup loop.  All other tags fall through to the out-of-line
-// slow path which handles strings, bytes, tuples, frozenset, bound
-// methods, etc.  Whole-int floats (1.0) get the same hash as PYS_FIX(1)
-// in pys_hash_slow; we replicate that normalization here so dicts
-// keyed by mixed int/float still match.
+// Inlinable fast-path hash.  CPython parity: `hash(int) == int` (with
+// -1 → -2 special case), so user classes that override __hash__ to
+// return a value matching another key's hash collide as expected.
+// Whole-int floats / Decimal / Fraction normalise to int before hashing.
 static inline uint64_t
 pys_hash(CTX *c, VALUE v)
 {
     if (PYS_IS_FIXNUM(v)) {
-        uint64_t k = (uint64_t)PYS_FIXVAL(v);
-        k *= 0x9E3779B97F4A7C15ULL;
-        return k ^ (k >> 32);
+        int64_t k = PYS_FIXVAL(v);
+        // CPython: hash(-1) == -2 to keep -1 reserved as the "error"
+        // sentinel.  We don't use -1 for errors, but matching keeps
+        // mixed-key dicts (where one key is hash(-1) from CPython
+        // userland and another is hash(BadCmp)=-2) consistent.
+        if (k == -1) k = -2;
+        return (uint64_t)k;
     }
     return pys_hash_slow(c, v);
 }

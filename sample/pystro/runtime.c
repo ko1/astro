@@ -2348,11 +2348,13 @@ pys_eq(CTX *c, VALUE a, VALUE b)
     // the lookup hits the dunder slot fast path instead of MRO+strcmp.
     // deltablue's `==` was 200K+ slow lookups before this fix.
     VALUE r = pys_try_binop_dunder(c, PYS_INTERN_eq, a, b);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (r && !(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL)) {
         return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
     }
     // a's __eq__ returned NotImplemented (or wasn't defined): try b's.
     r = pys_try_binop_dunder(c, PYS_INTERN_eq, b, a);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (r && !(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL)) {
         return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
     }
@@ -2414,9 +2416,14 @@ pys_eq(CTX *c, VALUE a, VALUE b)
         for (size_t i = 0; i < da->elen; i++) {
             if (!pydict_entry_live(da, i)) continue;
             VALUE k = da->entries[i].key;
-            if (!pys_dict_has(c, b, k)) return PYS_FALSE;
+            bool has = pys_dict_has(c, b, k);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (!has) return PYS_FALSE;
             VALUE vb = pys_dict_get(c, b, k);
-            if (pys_eq(c, da->entries[i].value, vb) != PYS_TRUE) return PYS_FALSE;
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            VALUE eq = pys_eq(c, da->entries[i].value, vb);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (eq != PYS_TRUE) return PYS_FALSE;
         }
         return PYS_TRUE;
     }
@@ -2430,7 +2437,9 @@ pys_eq(CTX *c, VALUE a, VALUE b)
         if (da->used != db->used) return PYS_FALSE;
         for (size_t i = 0; i < da->elen; i++) {
             if (!pydict_entry_live(da, i)) continue;
-            if (!pys_dict_has(c, b, da->entries[i].key)) return PYS_FALSE;
+            bool has = pys_dict_has(c, b, da->entries[i].key);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (!has) return PYS_FALSE;
         }
         return PYS_TRUE;
     }
@@ -2479,10 +2488,11 @@ pys_hash_slow(CTX *c, VALUE v)
     if (PYS_IS_FIXNUM(v)) {
         // Defensive: callers should have taken the inline fast path,
         // but generic dispatch sites (recursive list/tuple hashes) may
-        // land here with fixnums.
-        uint64_t k = (uint64_t)PYS_FIXVAL(v);
-        k *= 0x9E3779B97F4A7C15ULL;
-        return k ^ (k >> 32);
+        // land here with fixnums.  CPython parity: hash(int)==int with
+        // -1 → -2 special case.
+        int64_t k = PYS_FIXVAL(v);
+        if (k == -1) k = -2;
+        return (uint64_t)k;
     }
     if (PYS_IS_FLONUM(v)) {
         double d = pys_flonum_to_double(v);
