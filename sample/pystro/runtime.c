@@ -5744,22 +5744,29 @@ pys_display(FILE *fp, VALUE v, bool repr)
         if (o->type == PYS_T_BYTEARRAY) fputc(')', fp);
         return;
       }
-      case PYS_T_LIST:
+      case PYS_T_LIST: {
         if (pys_display_seen(o)) { fputs("[...]", fp); return; }
-        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+        bool pushed = false;
+        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH) {
             pys_display_visit[pys_display_visit_top++] = o;
+            pushed = true;
+        }
         fputc('[', fp);
         for (size_t i = 0; i < o->list.len; i++) {
             if (i) fputs(", ", fp);
             pys_display(fp, o->list.items[i], true);
         }
         fputc(']', fp);
-        pys_display_visit_top--;
+        if (pushed) pys_display_visit_top--;
         return;
-      case PYS_T_TUPLE:
+      }
+      case PYS_T_TUPLE: {
         if (pys_display_seen(o)) { fputs("(...)", fp); return; }
-        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+        bool pushed = false;
+        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH) {
             pys_display_visit[pys_display_visit_top++] = o;
+            pushed = true;
+        }
         fputc('(', fp);
         for (size_t i = 0; i < o->list.len; i++) {
             if (i) fputs(", ", fp);
@@ -5767,41 +5774,48 @@ pys_display(FILE *fp, VALUE v, bool repr)
         }
         if (o->list.len == 1) fputc(',', fp);
         fputc(')', fp);
-        pys_display_visit_top--;
+        if (pushed) pys_display_visit_top--;
         return;
+      }
       case PYS_T_DICT: {
         if (pys_display_seen(o)) { fputs("{...}", fp); return; }
-        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+        bool pushed = false;
+        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH) {
             pys_display_visit[pys_display_visit_top++] = o;
+            pushed = true;
+        }
         fputc('{', fp);
         struct pysdict *d = o->dict;
         size_t printed = 0;
+        extern CTX *pys_current_ctx;
         for (size_t i = 0; i < d->elen; i++) {
             if (!pydict_entry_live(d, i)) continue;
             if (printed++) fputs(", ", fp);
             pys_display(fp, d->entries[i].key, true);
-            extern CTX *pys_current_ctx;
             if (pys_current_ctx && pys_current_ctx->state == PYS_STATE_RAISE) {
-                pys_display_visit_top--;
+                if (pushed) pys_display_visit_top--;
                 return;
             }
             fputs(": ", fp);
             pys_display(fp, d->entries[i].value, true);
             if (pys_current_ctx && pys_current_ctx->state == PYS_STATE_RAISE) {
-                pys_display_visit_top--;
+                if (pushed) pys_display_visit_top--;
                 return;
             }
         }
         fputc('}', fp);
-        pys_display_visit_top--;
+        if (pushed) pys_display_visit_top--;
         return;
       }
       case PYS_T_SET: {
         if (pys_display_seen(o)) { fputs("set(...)", fp); return; }
         struct pysdict *d = o->dict;
         if (d->used == 0) { fputs("set()", fp); return; }
-        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+        bool pushed = false;
+        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH) {
             pys_display_visit[pys_display_visit_top++] = o;
+            pushed = true;
+        }
         fputc('{', fp);
         size_t printed = 0;
         for (size_t i = 0; i < d->elen; i++) {
@@ -5810,7 +5824,7 @@ pys_display(FILE *fp, VALUE v, bool repr)
             pys_display(fp, d->entries[i].key, true);
         }
         fputc('}', fp);
-        pys_display_visit_top--;
+        if (pushed) pys_display_visit_top--;
         return;
       }
       case PYS_T_FROZENSET: {
@@ -5818,8 +5832,11 @@ pys_display(FILE *fp, VALUE v, bool repr)
         struct pysdict *d = o->dict;
         fputs("frozenset(", fp);
         if (d->used > 0) {
-            if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+            bool pushed = false;
+            if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH) {
                 pys_display_visit[pys_display_visit_top++] = o;
+                pushed = true;
+            }
             fputc('{', fp);
             size_t printed = 0;
             for (size_t i = 0; i < d->elen; i++) {
@@ -5828,7 +5845,7 @@ pys_display(FILE *fp, VALUE v, bool repr)
                 pys_display(fp, d->entries[i].key, true);
             }
             fputc('}', fp);
-            pys_display_visit_top--;
+            if (pushed) pys_display_visit_top--;
         }
         fputc(')', fp);
         return;
@@ -6011,13 +6028,16 @@ pys_to_repr(CTX *c, VALUE v)
         }
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(o->inst.cls), PYS_INTERN_repr);
         if (m != PYS_NONE) {
-            if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+            bool pushed = false;
+            if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH) {
                 pys_display_visit[pys_display_visit_top++] = o;
+                pushed = true;
+            }
             VALUE av[1] = { v };
             VALUE r = pys_apply(c, m, 1, av);
-            if (pys_display_visit_top > 0) pys_display_visit_top--;
-            if (pys_is_str(r)) return r;
+            if (pushed) pys_display_visit_top--;
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (pys_is_str(r)) return r;
         }
     }
     char *big = NULL;
