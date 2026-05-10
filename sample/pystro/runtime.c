@@ -2666,6 +2666,11 @@ pydict_indices_lookup(CTX * restrict c, struct pysdict * restrict d,
                 else if (pys_eq_bool(c, e->key, key)) {
                     *out_bucket = i; *out_eidx = idx; *out_first_tomb = first_tomb; return;
                 }
+                // __eq__ raised: bail out so callers don't operate on
+                // an inconsistent (state==RAISE, eidx=-1) result.
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) {
+                    *out_bucket = i; *out_eidx = -1; *out_first_tomb = first_tomb; return;
+                }
             }
         }
         step++;
@@ -2699,6 +2704,7 @@ pydict_find(CTX * restrict c, struct pysdict * restrict d, VALUE key, uint64_t h
                                            PYS_PTR(e->key)->str.chars, l1) == 0) return idx;
                 }
                 else if (pys_eq_bool(c, e->key, key)) return idx;
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return -1;
             }
         }
         step++;
