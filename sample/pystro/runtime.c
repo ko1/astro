@@ -14256,12 +14256,19 @@ static VALUE
 bi_reversed(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    VALUE r = pys_make_list(NULL, 0);
+    // CPython returns a list_reverseiterator / tuple_reverseiterator.
+    // Build the reversed sequence into a fresh list and wrap it as a
+    // PYS_T_ITER (kind=0 = list iter) so callers' next() / list() work.
     if (pys_is_list(argv[0]) || pys_is_tuple(argv[0])) {
         struct pysobj *o = PYS_PTR(argv[0]);
+        VALUE r = pys_make_list(NULL, 0);
         for (size_t i = o->list.len; i > 0; i--) pys_list_append(c, r, o->list.items[i - 1]);
-        return r;
+        struct pysobj *it_obj = pys_alloc(PYS_T_ITER);
+        it_obj->iter_state = (struct pys_iter *)GC_malloc(sizeof(struct pys_iter));
+        pys_iter_init(c, it_obj->iter_state, r);
+        return PYS_OBJ_VAL(it_obj);
     }
+    VALUE r = pys_make_list(NULL, 0);
     if (pys_is_str(argv[0])) {
         // Reverse codepoint by codepoint, not byte by byte.
         struct pysobj *o = PYS_PTR(argv[0]);
