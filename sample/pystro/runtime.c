@@ -11013,6 +11013,19 @@ bi_list(CTX *c, int argc, VALUE *argv)
 {
     if (argc == 0) return pys_make_list(NULL, 0);
     VALUE r = pys_make_list(NULL, 0);
+    // CPython: iter objects are single-use; `list(it)` consumes it.
+    // Drive the original iter_state in place so a subsequent `next(it)`
+    // raises StopIteration instead of restarting from the beginning.
+    if (PYS_IS_PTR(argv[0]) && PYS_PTR(argv[0])->type == PYS_T_ITER) {
+        struct pys_iter *it = PYS_PTR(argv[0])->iter_state;
+        VALUE x;
+        while (pys_iter_next(c, it, &x)) {
+            pys_list_append(c, r, x);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        }
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        return r;
+    }
     struct pys_iter it; pys_iter_init(c, &it, argv[0]);
     if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
     VALUE x;
