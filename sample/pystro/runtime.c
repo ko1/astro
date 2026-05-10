@@ -8880,15 +8880,17 @@ sm_union(CTX *c, int argc, VALUE *argv) {
     }
     return r;
 }
-// Materialize a possibly-non-container iterable (generator etc.) into a
-// set so `pys_contains` can be called repeatedly without exhausting it.
-// set/frozenset/dict/list/tuple are returned as-is (already random-access).
+// Materialize an iterable into a set so `pys_contains` can be called
+// repeatedly with arbitrary key types.  set/frozenset/dict are returned
+// as-is (already keyed by hash).  list/tuple/str/bytes/generator are
+// drained — for str/bytes this is critical because `pys_contains(str, key)`
+// raises TypeError unless key is also a str (which is wrong for set
+// operations where we just want membership-by-value).
 static VALUE pys_set_op_materialize(CTX *c, VALUE v) {
     VALUE u = pys_unwrap_primary(v);
-    if (pys_is_any_set(u) || pys_is_dict(u) || pys_is_list(u) ||
-        pys_is_tuple(u) || pys_is_str(u) || pys_is_byteseq(u))
+    if (pys_is_any_set(u) || pys_is_dict(u))
         return v;
-    // Generator / user-iter: drain into a set (single-pass safe).
+    // list/tuple/str/bytes/generator/user-iter: drain into a set.
     VALUE acc = pys_make_set();
     struct pys_iter it; pys_iter_init(c, &it, v);
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
