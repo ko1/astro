@@ -29,7 +29,12 @@ source → lex → parse → expr (IR) → infer (HM) → lower → NODE → EVA
 - `let val/fun/datatype ... in expr [; expr]* end`
 - `raise e`, `e handle pat => e | ...` (setjmp/longjmp ベース、深さ 256)
 - `andalso` / `orelse` / `not` 短絡
-- 末尾呼び出しトランポリン (`tc_fn` / `tc_argc` / `tail_call_pending`)
+- 末尾呼び出しトランポリン (`tc_fn` / `tc_argc` / `tail_call_pending`)、
+  parser 後の `mark_tail_calls` post-pass で tail-position の app1/app2 を
+  `_tail_app*` に書換 (50M 段の tail recursion が定数スタックで動く)
+- `ex_is_leaf(EX *)` で fn が leaf 判定 (body に EX_FN を含まない) →
+  `node_fn` の is_leaf=1 で `APPN_FAST_PATH` の inline cache が初回 hit で
+  fill されるので、毎呼び出し ml_apply に行かない
 
 ### 束縛
 
@@ -148,6 +153,13 @@ _string / _poly / _unchecked` 系しか出現しない。
   AOT で全関数本体が specialise される
 - `@ref` operand: `gref_cache` (グローバル参照 IC) と `app_cache`
   (closure call site IC)。`asml_gen.rb` で扱い
+- `maybe_aot_compile` で `ASTRO_EXTRA_CFLAGS` に
+  `-fno-stack-clash-protection -fno-stack-protector -flto -finline-limit=10000
+  --param max-inline-insns-auto=400 --param inline-unit-growth=300` を
+  注入 (astocaml と同). `-flto` で SD 間 inline、stack-clash protection の
+  alloca probe loop を切る。fib(35) AOT が 1.59 → 0.16 s (10× 速)
+- `node_topbind` の specializer は no-op (動的処理のみ)、closure body だけ
+  specialise する戦略
 
 ## CLI
 

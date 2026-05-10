@@ -29,7 +29,7 @@ CEL の `arcel`)。
 | `ascheme` | R5RS Scheme | 関数型 | 動 | 完全数値タワー (GMP 含む) | call/cc, multi-value, port, 完全な末尾呼出最適化 |
 | `asom` | SOM (Smalltalk) | 純 OO, 動的 | 動 | int+double+bignum | AreWeFastYet 16 本完走 / SOM TestSuite 100% |
 | `astocaml` | OCaml サブセット | 関数型, 静的 | 静 | int+float | variant / record / class / module / lazy / 末尾呼出最適化 |
-| `asml` | Standard ML サブセット | 関数型, 静的 | 静 | int+real | **HM full** (Algorithm W + value restriction) / datatype / pattern match / **型駆動 dispatcher 特殊化** |
+| `asml` | Standard ML サブセット | 関数型, 静的 | 静 | int+real | **HM full** (Algorithm W + value restriction) / datatype / record / pattern match / **型駆動 dispatcher 特殊化** / SML/NJ v110.79 比 fib AOT 1.8×, strcat 2.7× 速 |
 | `astr` | R サブセット | 関数型, ベクタ | 動 | int+double+vec+str | tagged VALUE + libgc + ベクタ broadcast |
 | `luastro` | Lua 5.4 | 命令型, 動的 | 動 | int + float | metatable / coroutine (ucontext) / weak table / `__gc` |
 | `pystro` | Python 3 サブセット | OO, 動的 | 動 | int + GMP bignum + float | class / try-except / for-in / f-string / lambda |

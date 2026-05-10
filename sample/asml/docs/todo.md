@@ -1,7 +1,8 @@
 # 残課題
 
-Phase 1 の主要機能 (パース / HM 推論 / 型駆動特殊化 / 部分適用 /
-末尾呼び出し / 例外) は実装済み。
+Phase 1〜2 の主要機能 (パース / HM 推論 / 型駆動特殊化 / 部分適用 /
+末尾呼出 / 例外 / record / generic ノード削除 / is_leaf / tail-call rewrite /
+AOT cflags) は実装済み。
 
 ## 言語仕様 — 未実装
 
@@ -25,10 +26,12 @@ Phase 1 の主要機能 (パース / HM 推論 / 型駆動特殊化 / 部分適�
   動くが、asml では int 専用。`+. -. *.` も無い (`/` が real 専用、それ以外は op
   をプリミティブ経由で使う必要)。本格運用するなら overload か default-int 解決
   を入れたい
+- **record の row polymorphism** — 現状 `#field e` は `e` の型が確定して
+  いないと「ambiguous record selector」で reject される。SML の通常の
+  type inference は flexible record (row var) で対応している
 
 ### 構文・小機能
 - **`exception E of T` 宣言** — 現状は組み込み + datatype で代替
-- **`record` 型** — 現状はタプル経由
 - **文字リテラル `#"a"`** — char 型サポート
 - **`let val (a, b) = ...`** — ローカル val でタプル分解 (top-level のみ実装済み)
 - **複数節 `fun f 0 = "z" | f n = "n"`** — 現状は単節 + case 必須
@@ -63,23 +66,24 @@ Phase 1 の主要機能 (パース / HM 推論 / 型駆動特殊化 / 部分適�
 app1/app2 を `_tail_app*` に書換。50M 段の tail recursion が定数スタックで
 回るようになった。
 
-### C. PGO (`-fprofile-use`)
+### 🔥 C. 関数の N-ary 直接呼び出し最適化 (次の最優先)
+
+現状: `f x y` は parser で `app1(app1(f, x), y)` に lower される。`f` が
+2-arg closure の場合、`ml_apply` 1 段目で partial-state 生成 (heap
+malloc!) → 2 段目で combine して `ml_apply(f, 2, [x, y])` を再呼出。
+
+提案: `parse_app` の loop で連続適用を `node_app2` / `node_app3` に折り
+畳む。fn が closure なら直接 N-arg call (既存の APPN_FAST_PATH(2/3) に乗る)。
+`partial_state` malloc は arity mismatch 時のみに退ける。
+
+期待効果: ack(3,9) で 1.52 → 0.5 s 程度、tak / nqueens でも同程度。
+SML/NJ との 30× ギャップが ~5× 程度まで縮まる見込み。
+
+### D. PGO (`-fprofile-use`)
 
 astocaml の `make pgo` 二段ループ (binary + SD ごと) を asml にも入れる。
 SD の hot path (再帰呼び出し / arm 分岐) で hit-rate ベースの分岐予測情報が
 入って 5〜10% 削れる見込み。
-
-### D. 関数の N-ary 直接呼び出し最適化
-
-現状: `f x y` は parser で `app1(app1(f, x), y)` に lower される。`f` が
-2-arg closure の場合、`ml_apply` 1 段目で partial-state 生成 (malloc!) →
-2 段目で再 loop。
-
-提案: `parse_app` の loop で連続適用を `node_app2` (multi-arg call) に折り
-畳む。fn が closure なら直接 N-arg call。`partial_state` malloc は arity
-mismatch 時のみに退ける。
-
-期待効果: ack / tak (多引数呼び出しベンチ) で 30% 程度
 
 ### E. lref0 micro-specialisation
 
@@ -87,13 +91,17 @@ mismatch 時のみに退ける。
 特殊化して `c->env->slots[K]` の add 演算を fold。astocaml の同名最適化
 参照。
 
-### F. 比較演算 IC
+### F. record field access IC
 
-多相比較 (`< <= > >= = <>`) で型推論が int に決まらなかった場合 (= 多相
-コンテキスト)、現状は generic `node_lt` が `ml_compare` に丸投げ。
-call-site IC で初回のオブジェクト型を覚えれば 2 回目以降の dispatch を
-短縮できる。astocaml は同様の最適化なし (HM の方が完全な情報を持つので
-不要なケースが多い) — asml では list のソート等で効くか要計測。
+`#field e` の field name → array index は linear search。call-site IC で
+last-seen `o->rec.fields` ポインタ + 解決済 index を覚えれば、同じ record
+構造の連続アクセスは 2 load + 1 cmp で済む。
+
+### G. tuple alloca
+
+`(a, b)` のような short-lived tuple を pattern match の中だけで使う
+ケースが多い。escape analysis 風に「ヒープ alloc 不要」を検出して
+スタック alloca に。tak / nqueens で効きそう。
 
 ## 追加すべきテスト
 

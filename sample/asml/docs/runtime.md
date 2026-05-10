@@ -154,7 +154,7 @@ case EX_IF:  return ALLOC_node_if_bool(...);   // 条件は常に bool
 generic な `node_add` 等は実装は残す (interpreter の汎用パスに必要だが、
 推論済み input では到達しない)。
 
-## 5. 関数適用 — `ml_apply`
+## 5. 関数適用 — `ml_apply` + IC + tail-call
 
 ```c
 VALUE ml_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
@@ -165,16 +165,45 @@ VALUE ml_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
 1. `fn` が prim なら呼ぶ (partial-application sentinel なら捕捉済み args
    を combine して再 loop)
 2. fn が closure で argc < nparams なら **partial application** —
-   `partial_state` を `OOBJ_PRIM` 装って sentinel を返す
+   `partial_state` を `MLOBJ_PRIM` 装って sentinel を返す
 3. argc == nparams なら frame allocate (`is_leaf` なら C スタック alloca)、
    `c->env = frame` し body を EVAL
 4. body 終了後 `c->tail_call_pending` 立ってたら fn / argc を入れ替えて
    `goto loop` (トランポリン)
 5. argc > nparams (over-application) なら `r` を fn として再帰
 
-`node_app1/2/3` の hot path は `app_cache` (call site 単位の IC):
-直前 fn と同じなら type-chain 検証をスキップして直接 frame 構築 →
-body dispatcher 呼び出し。
+`node_app1/2/3` の hot path は `app_cache` (call site 単位の IC、`@ref` で
+node 構造体に inline):
+
+```c
+if (LIKELY(cache->fn == f)) {
+    /* alloca frame + copy args + body dispatcher 直呼び */
+}
+if (LIKELY(ML_IS_CLOSURE(f) && _cl->closure.nparams == NP &&
+           _cl->closure.is_leaf)) {
+    /* fill cache、同じ fast path */
+}
+```
+
+**`is_leaf` がここで効く** — false だと cache fill 経路に入れず ml_apply に
+fall through するので、毎呼び出し `ml_new_frame` (heap malloc) を踏む。
+`ex_is_leaf(EX *e)` を parse 時に walk して立てている (body に EX_FN を
+含まない fn が leaf)。
+
+**末尾呼出**: lower 完了後の `mark_tail_calls(NODE *body)` post-pass が
+tail-position の `node_app1` / `node_app2` を `node_tail_app1` / `_tail_app2`
+に in-place で書換。tail variants は cl->closure.nparams が 1/2 で一致する
+ときだけ `c->tail_call_pending = 1` を立てて 0 を返す → ml_apply の
+goto loop が次の iteration で picking up し、frame を C スタックの新規
+alloca から再利用に切替 (heap 不使用)。50M 段の `loop (i+1, n)` がスタック
+一定で動く。
+
+**multi-arg curried call** は弱い: `f x y` が
+`app1(app1(f, x), y)` に lower される。最初の app1 で partial-state を
+heap allocate → 二度目で combine して全引数で `ml_apply`。tail にしても
+partial-state は closure ではないので tail 経路に入らない (`ml_apply` で
+combine → 通常 call)。`f x y` を 1 つの `app2` ノードに畳む lower-time
+最適化が次の improvement target (todo.md)。
 
 ## 6. 例外 — `ml_raise` / `ml_run_handle`
 
@@ -216,10 +245,28 @@ linear search → 再 cache。ベンチでは globals は init 後動かない�
 `-c` で起動した場合、各 top form を:
 
 1. `astro_cs_compile(form, NULL)` → `code_store/c/SD_<hash>.c` を生成
+   (top form は `node_topbind` で specializer が空なので実質的には
+   何も emit されない — 値部分の closure body のみが意味のある SD になる)
 2. 同時に `aot_add_entry` 登録済みの各 closure body も compile
 3. `astro_cs_build(NULL)` → `make` で `code_store/all.so` 生成
 4. `astro_cs_reload()` で dlopen
-5. `astro_cs_load(form, NULL)` で dispatcher を SD に差し替え
+5. `astro_cs_load(body, NULL)` で各 closure body の dispatcher を SD に差替
+
+**ASTRO_EXTRA_CFLAGS** に astocaml と同じ aggressive flags を注入
+(`-fno-stack-clash-protection -fno-stack-protector -flto -finline-limit=10000
+--param max-inline-insns-auto=400 ...`):
+
+- `-fno-stack-clash-protection`: alloca のたびに 4KB ごとの probe loop
+  (`sub $0x1000, %rsp; cmp; jne`) を挿入するのを抑止。fib(35) のような
+  hot recursion で実測 数命令 / call 削れる
+- `-flto`: SD .o 間の inline を許可、`SD_269937 → SD_86b30 → ...` の chain が
+  cross-.o で畳める
+- `-finline-limit=10000`: gcc のデフォルト inline 閾値だと SD 関数が
+  inline されないことが多い。閾値を上げて積極的に inline
+
+`ASML_AOT_VERBOSE=1` を設定すると `entries patched=N missed=0` の進捗が
+stderr に出る (top form が miss するのは `node_topbind` の specializer が
+空なので想定動作)。
 
 `is_specialized` フラグで二度走らせない。
 

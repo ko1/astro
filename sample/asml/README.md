@@ -105,15 +105,47 @@ bench/compare.sh        # 上に加え `sml` (SML/NJ) があれば横並び比�
 - `+ - *` are int-only; real arithmetic uses `/` (returns real) — this
   is a deviation from real SML's overloaded numeric operators.  `div`
   and `mod` are int (SML floor semantics).
-- Comparisons (`< <= > >= = <>`) are polymorphic; lowering picks
-  `node_*_int` when both operands are statically known to be `int`,
-  otherwise the polymorphic `node_*` (which falls back to `ml_compare`).
+- Comparisons (`< <= > >= = <>`) dispatch on inferred type at lower-time:
+  `_int` / `_real` / `_string` / `_poly` (the last for lists, tuples,
+  variants, records).  No dynamic IS_INT fast-path remains — generic
+  `node_lt` etc. were removed from `node.def`.
 - Exceptions: `Match`, `Div`, `Empty`, `Fail of string` and any nullary
   constructors registered via `datatype` can appear in `handle` arms.
   All exceptions share the single type `exn`.
 - Datatype: parametric (`'a list`, `'a option`) and nullary user
   datatypes are supported.  `datatype 'a t = ...` registers each
   constructor with a properly generalised scheme.
+
+## Performance
+
+Vs Standard ML of New Jersey v110.79 (`bench/compare.sh`, best-of-3):
+
+| ベンチ      | asml-int | asml-AOT | sml/NJ  |
+|-------------|---------:|---------:|--------:|
+| fib (35)    |   0.45 s |   0.16 s |  0.09 s |
+| ack (3, 9)  |   1.76 s |   1.52 s |  0.05 s |
+| tak ×5      |   2.09 s |   2.01 s |  0.07 s |
+| nqueens ×3  |   1.60 s |   1.46 s |  0.05 s |
+| sumlist     |   0.49 s |   0.46 s |    FAIL¹|
+| refloop     |   3.66 s |   2.63 s |    FAIL¹|
+| recordsum   |   0.18 s |   0.19 s |    FAIL¹|
+| strcat      |   0.28 s |   0.29 s |  0.79 s |
+
+¹ SML/NJ has 31-bit `Int.int` (max 2^30 − 1); these benches overflow.
+asml uses 63-bit fixnums.
+
+asml AOT is ~1.8× SML/NJ on `fib` and **2.7× faster on `strcat`**.  The
+remaining gap on multi-arg `ack` / `tak` / `nqueens` is the partial-state
+malloc on every curried call (`f x y` lowers to `app1(app1(f, x), y)`);
+folding these into `app2` / `app3` at lower-time is the next perf target
+(see `docs/todo.md` §C).
+
+The AOT pipeline applies astocaml-style aggressive cflags
+(`-fno-stack-clash-protection -flto -finline-limit=10000 ...`), `is_leaf`
+detection so closure frames live on the C stack via alloca, and a
+post-lower `mark_tail_calls` pass that rewrites tail-position `app1` /
+`app2` to `_tail_app*` for trampoline-driven constant-stack tail
+recursion.  See `docs/perf.md` for the full investigation.
 
 ## Limitations
 
