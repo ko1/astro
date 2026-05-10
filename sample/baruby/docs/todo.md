@@ -17,23 +17,21 @@
 
 ## P1 — 言語拡張
 
-- [ ] **`nil` を `false` から分離**。今は両方 raw 0。`true` は raw 2
-      で別 singleton になっているので、`nil` を raw 4 などに割り当てる
-      余地はある。`baruby_value_eq` / `baruby_print_value` /
-      `IS_PTR` を 1 行ずつ拡張すれば済む。
-- [ ] **`true` / `false` リテラル**。今 parser に通らない (`unsupported`)。
-      PM_TRUE_NODE / PM_FALSE_NODE を `ALLOC_node_true` / `ALLOC_node_false`
-      に流すだけ。
-- [ ] **String の順序比較** (`<`, `<=`, `<=>`)。`==` / `!=` は実装済。
-      今は順序比較が Integer 同士のみ。`baruby_str_cmp` を作って
-      `node_lt` 等の type branch を拡張する形。
-- [ ] **String slice** (`s[i, n]`, `s[i..j]`)。Range 入れたくないので
-      多引数 `[]` で代用案。
+- [ ] **`<=>`** (3-way 比較)。`baruby_str_cmp` のラッパー。Integer
+      もサポートしたいなら別ノードか `node_call_<=>` 形。
 - [ ] **`each` どうするか**。block 入れない方針なので、`for x in arr;
       ...; end` を desugar するか、`while + index` で書かせ続けるか。
-- [ ] **String interpolation** (`"#{x}"`)。PM_INTERPOLATED_STRING_NODE を
-      handle すれば対応可。`x.to_s` が要るので `to_s` を先に実装。
-- [ ] **`to_s` / `to_i`**。`call_to_s(recv)` ノード追加 + 型 branch。
+- [ ] **`String#*` / `Array#*`** (反復)。
+- [ ] **`<<` 追加**。Array は push、String は append (mutating)。
+      演算子なので `is_binop` に追加 + `node_add_assign` 系の別ノード。
+- [ ] **String escape の検証**。今は prism の `unescaped` をそのまま
+      コピーしているが、`"\n"` / `"\t"` / `"\xFF"` が期待通りに来るか
+      未検証。
+- [ ] **負の `String#[]` slice 末尾基準**。今は `[-3, 2]` までは動くが
+      `s[-3..]` 形式は Range 必要。
+
+完了: nil/false 分離・true/false/nil リテラル・to_s/to_i・String 順序
+比較・String/Array slice・interpolation。
 
 ## P1 — パフォーマンス
 

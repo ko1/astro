@@ -276,14 +276,15 @@ baruby_ary_plus(VALUE av, VALUE bv)
 bool
 baruby_value_eq(VALUE a, VALUE b)
 {
-    // Identical bits cover fixnum-fixnum, false=false=nil, ptr-identity.
+    // Identical bits cover fixnum identity, singleton identity, and
+    // ptr identity (e.g. same Array compared to itself).
     if (a == b) return true;
     // Mixed int / ptr — different by construction.
     if (IS_INT(a) || IS_INT(b)) return false;
-    // One side is the false / nil singleton (raw 0), the other is a
-    // distinct heap pointer.
-    if (a == VAL_FALSE || b == VAL_FALSE) return false;
-    // Both heap objects of unknown type.
+    // Any side that's a non-ptr singleton (true / false / nil) without
+    // having matched in the identity check above is a different type.
+    if (!IS_PTR(a) || !IS_PTR(b)) return false;
+    // Both heap objects.
     uint32_t ta = OBJ_TYPE(a), tb = OBJ_TYPE(b);
     if (ta != tb) return false;
     if (ta == OBJ_STRING) {
@@ -299,6 +300,95 @@ baruby_value_eq(VALUE a, VALUE b)
         return true;
     }
     return false;
+}
+
+int
+baruby_str_cmp(VALUE av, VALUE bv)
+{
+    const BaString *a = VAL2STR(av);
+    const BaString *b = VAL2STR(bv);
+    uint32_t mn = a->len < b->len ? a->len : b->len;
+    int cmp = memcmp(a->bytes, b->bytes, mn);
+    if (cmp != 0) return cmp;
+    if (a->len < b->len) return -1;
+    if (a->len > b->len) return 1;
+    return 0;
+}
+
+// Append-based libgc-backed string builder.  We can't use
+// open_memstream + libc free here — the `#define free(p) ((void)(p))`
+// shadow in context.h would silently leak the libc buffer, which on
+// any to_s-heavy benchmark turns into runaway memory growth.
+typedef struct {
+    char    *bytes;
+    uint32_t len, capa;
+} StrBuf;
+
+static void
+sb_append(StrBuf *sb, const char *src, uint32_t n)
+{
+    if (sb->len + n + 1 > sb->capa) {
+        uint32_t nc = sb->capa ? sb->capa * 2 : 32;
+        while (nc < sb->len + n + 1) nc *= 2;
+        sb->bytes = (char *)realloc(sb->bytes, nc);
+        sb->capa = nc;
+    }
+    memcpy(sb->bytes + sb->len, src, n);
+    sb->len += n;
+}
+
+// Inspect-style serialization (matches `p` output): strings get quotes,
+// arrays nested, nil → "nil".  baruby_to_s special-cases the top-level
+// case where `nil.to_s == ""` (Ruby semantics).
+static void
+to_s_inner(StrBuf *sb, VALUE v)
+{
+    char tmp[32];
+    if (v == VAL_NIL)   { sb_append(sb, "nil", 3);   return; }
+    if (v == VAL_FALSE) { sb_append(sb, "false", 5); return; }
+    if (v == VAL_TRUE)  { sb_append(sb, "true", 4);  return; }
+    if (IS_INT(v)) {
+        int n = snprintf(tmp, sizeof tmp, "%ld", (long)VAL2INT(v));
+        sb_append(sb, tmp, (uint32_t)n);
+        return;
+    }
+    if (IS_STR(v)) {
+        const BaString *s = VAL2STR(v);
+        sb_append(sb, "\"", 1);
+        sb_append(sb, s->bytes, s->len);
+        sb_append(sb, "\"", 1);
+        return;
+    }
+    if (IS_ARY(v)) {
+        const BaArray *a = VAL2ARY(v);
+        sb_append(sb, "[", 1);
+        for (uint32_t i = 0; i < a->len; i++) {
+            if (i) sb_append(sb, ", ", 2);
+            to_s_inner(sb, a->items[i]);
+        }
+        sb_append(sb, "]", 1);
+        return;
+    }
+}
+
+VALUE
+baruby_to_s(VALUE v)
+{
+    // Top-level shortcut: Ruby's `to_s` on primitives doesn't quote
+    // strings and yields "" for nil.  Compound values fall through to
+    // the inspect-style builder.
+    if (IS_STR(v))      return v;
+    if (v == VAL_NIL)   return baruby_str_new_cstr("");
+    if (v == VAL_FALSE) return baruby_str_new_cstr("false");
+    if (v == VAL_TRUE)  return baruby_str_new_cstr("true");
+    if (IS_INT(v)) {
+        char buf[32];
+        int n = snprintf(buf, sizeof buf, "%ld", (long)VAL2INT(v));
+        return baruby_str_new(buf, (uint32_t)n);
+    }
+    StrBuf sb = {0};
+    to_s_inner(&sb, v);
+    return baruby_str_new(sb.bytes, sb.len);
 }
 
 VALUE
@@ -322,7 +412,10 @@ baruby_str_concat(VALUE av, VALUE bv)
 void
 baruby_print_value(FILE *fp, VALUE v)
 {
-    if (v == VAL_FALSE) {
+    if (v == VAL_NIL) {
+        fputs("nil", fp);
+    }
+    else if (v == VAL_FALSE) {
         fputs("false", fp);
     }
     else if (v == VAL_TRUE) {

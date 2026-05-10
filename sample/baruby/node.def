@@ -7,9 +7,10 @@ node_num(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t num)
     return RESULT_OK(INT2VAL(num));
 }
 
-// Truth-value literals.  Distinct from `node_num(0/1)` because tagged
-// INT2VAL(0) is the raw value 1 (truthy in C), so the parser needs
-// dedicated nodes when desugaring `&&` / `||`.
+// Truth-value / nil literals.  Distinct from `node_num(0/1)` because
+// tagged INT2VAL(0) is the raw value 1 (truthy in C), so the parser
+// needs dedicated nodes when desugaring `&&` / `||` and when emitting
+// `nil` for missing else / out-of-range / etc.
 NODE_DEF
 node_true(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
@@ -20,6 +21,12 @@ NODE_DEF
 node_false(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     return RESULT_OK(VAL_FALSE);
+}
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    return RESULT_OK(VAL_NIL);
 }
 
 // local variables — fp[index] reads/writes the current frame slot
@@ -60,7 +67,9 @@ node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *head, N
 NODE_DEF
 node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *then_node, NODE *else_node)
 {
-    if (UNWRAP(EVAL_ARG(c, cond))) {
+    // `nil = raw 4` is non-zero, so a plain `if (...)` would treat nil as
+    // truthy — explicit IS_TRUTHY test required.
+    if (IS_TRUTHY(UNWRAP(EVAL_ARG(c, cond)))) {
         return EVAL_ARG(c, then_node);
     }
     else {
@@ -71,12 +80,12 @@ node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NO
 NODE_DEF
 node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *body)
 {
-    while (UNWRAP(EVAL_ARG(c, cond))) {
+    while (IS_TRUTHY(UNWRAP(EVAL_ARG(c, cond)))) {
         RESULT r = EVAL_ARG(c, body);
         // RETURN propagates up; the body's value is discarded.
         if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
     }
-    return RESULT_OK(0);
+    return RESULT_OK(VAL_NIL);
 }
 
 // `return expr` — emit RESULT_RETURN.  The enclosing function-call site
@@ -453,10 +462,10 @@ node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NO
     return RESULT_OK(INT2VAL(VAL2INT(l) % VAL2INT(r)));
 }
 
-// Comparison ops compare tagged values as signed — same ordering as the
-// untagged ints because both bits shift left equally.  Equality is
-// pointer-identity for heap objects (matches Ruby's `equal?`); per-type
-// `==` semantics will live on dispatch nodes when string compare lands.
+// Order comparison: tagged ints compare directly (same ordering as
+// untagged because both bits shift left equally).  Same-type strings
+// fall through to memcmp + length tiebreak via baruby_str_cmp.  Mixed
+// types are reported as a runtime type error (false-default).
 
 NODE_DEF
 node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
@@ -464,7 +473,10 @@ node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NOD
     VALUE l = UNWRAP(EVAL_ARG(c, lhs));
     VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return RESULT_OK(l < r ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(IS_INT(l) && IS_INT(r))) return RESULT_OK(l < r ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(l) && IS_STR(r))         return RESULT_OK(baruby_str_cmp(l, r) <  0 ? VAL_TRUE : VAL_FALSE);
+    fprintf(stderr, "type mismatch in <\n");
+    return RESULT_OK(VAL_FALSE);
 }
 
 NODE_DEF
@@ -473,7 +485,10 @@ node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NOD
     VALUE l = UNWRAP(EVAL_ARG(c, lhs));
     VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return RESULT_OK(l <= r ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(IS_INT(l) && IS_INT(r))) return RESULT_OK(l <= r ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(l) && IS_STR(r))         return RESULT_OK(baruby_str_cmp(l, r) <= 0 ? VAL_TRUE : VAL_FALSE);
+    fprintf(stderr, "type mismatch in <=\n");
+    return RESULT_OK(VAL_FALSE);
 }
 
 NODE_DEF
@@ -482,7 +497,10 @@ node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NOD
     VALUE l = UNWRAP(EVAL_ARG(c, lhs));
     VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return RESULT_OK(l > r ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(IS_INT(l) && IS_INT(r))) return RESULT_OK(l > r ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(l) && IS_STR(r))         return RESULT_OK(baruby_str_cmp(l, r) >  0 ? VAL_TRUE : VAL_FALSE);
+    fprintf(stderr, "type mismatch in >\n");
+    return RESULT_OK(VAL_FALSE);
 }
 
 NODE_DEF
@@ -491,7 +509,10 @@ node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NOD
     VALUE l = UNWRAP(EVAL_ARG(c, lhs));
     VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return RESULT_OK(l >= r ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(IS_INT(l) && IS_INT(r))) return RESULT_OK(l >= r ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(l) && IS_STR(r))         return RESULT_OK(baruby_str_cmp(l, r) >= 0 ? VAL_TRUE : VAL_FALSE);
+    fprintf(stderr, "type mismatch in >=\n");
+    return RESULT_OK(VAL_FALSE);
 }
 
 // `==` follows Ruby semantics: same bits ⇒ true (covers fixnum equality
@@ -576,18 +597,51 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *r
     if (IS_ARY(r)) {
         BaArray *a = VAL2ARY(r);
         if (ii < 0) ii += a->len;
-        if (ii < 0 || (uint32_t)ii >= a->len) return RESULT_OK(VAL_FALSE);
+        if (ii < 0 || (uint32_t)ii >= a->len) return RESULT_OK(VAL_NIL);
         return RESULT_OK(a->items[ii]);
     }
     if (IS_STR(r)) {
         BaString *s = VAL2STR(r);
         if (ii < 0) ii += s->len;
-        if (ii < 0 || (uint32_t)ii >= s->len) return RESULT_OK(VAL_FALSE);
+        if (ii < 0 || (uint32_t)ii >= s->len) return RESULT_OK(VAL_NIL);
         // Single-byte slice as a 1-char string (Ruby-ish semantics).
         return RESULT_OK(baruby_str_new(s->bytes + ii, 1));
     }
     fprintf(stderr, "no [] for non-array/string\n");
-    return RESULT_OK(VAL_FALSE);
+    return RESULT_OK(VAL_NIL);
+}
+
+// Two-arg `[]` — string / array slice.  `s[i, n]` returns a sub-string
+// of length `n` (clamped to actual length).  `a[i, n]` returns a new
+// array of `n` elements starting at `i`.  Negative `i` indexes from
+// the end; out-of-range or negative `n` returns nil.
+NODE_DEF
+node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *recv, NODE *idx, NODE *cnt)
+{
+    VALUE r  = UNWRAP(EVAL_ARG(c, recv));
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    VALUE cv = UNWRAP(EVAL_ARG(c, cnt));
+    intptr_t ii = VAL2INT(iv);
+    intptr_t cc = VAL2INT(cv);
+    if (cc < 0) return RESULT_OK(VAL_NIL);
+    if (IS_STR(r)) {
+        const BaString *s = VAL2STR(r);
+        if (ii < 0) ii += s->len;
+        if (ii < 0 || (uint32_t)ii > s->len) return RESULT_OK(VAL_NIL);
+        uint32_t avail = s->len - (uint32_t)ii;
+        uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
+        return RESULT_OK(baruby_str_new(s->bytes + ii, take));
+    }
+    if (IS_ARY(r)) {
+        const BaArray *a = VAL2ARY(r);
+        if (ii < 0) ii += a->len;
+        if (ii < 0 || (uint32_t)ii > a->len) return RESULT_OK(VAL_NIL);
+        uint32_t avail = a->len - (uint32_t)ii;
+        uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
+        return RESULT_OK(baruby_ary_new_from(a->items + ii, take));
+    }
+    fprintf(stderr, "no [i, n] for non-array/string\n");
+    return RESULT_OK(VAL_NIL);
 }
 
 NODE_DEF
@@ -600,14 +654,14 @@ node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *r
         BaArray *a = VAL2ARY(r);
         intptr_t ii = VAL2INT(i);
         if (ii < 0) ii += a->len;
-        if (ii < 0) return RESULT_OK(VAL_FALSE);
-        // Auto-extend with VAL_FALSE for out-of-range writes (Ruby-ish).
-        while ((uint32_t)ii >= a->len) baruby_ary_push(r, VAL_FALSE);
+        if (ii < 0) return RESULT_OK(VAL_NIL);
+        // Auto-extend with nil for out-of-range writes (Ruby semantics).
+        while ((uint32_t)ii >= a->len) baruby_ary_push(r, VAL_NIL);
         a->items[ii] = v;
         return RESULT_OK(v);
     }
     fprintf(stderr, "no []= for non-array\n");
-    return RESULT_OK(VAL_FALSE);
+    return RESULT_OK(VAL_NIL);
 }
 
 NODE_DEF
@@ -620,7 +674,7 @@ node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *r
         return RESULT_OK(r);
     }
     fprintf(stderr, "no push for non-array\n");
-    return RESULT_OK(VAL_FALSE);
+    return RESULT_OK(VAL_NIL);
 }
 
 NODE_DEF
@@ -629,9 +683,32 @@ node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *re
     VALUE r = UNWRAP(EVAL_ARG(c, recv));
     if (IS_ARY(r)) {
         BaArray *a = VAL2ARY(r);
-        if (a->len == 0) return RESULT_OK(VAL_FALSE);
+        if (a->len == 0) return RESULT_OK(VAL_NIL);
         return RESULT_OK(a->items[--a->len]);
     }
     fprintf(stderr, "no pop for non-array\n");
-    return RESULT_OK(VAL_FALSE);
+    return RESULT_OK(VAL_NIL);
+}
+
+// Stringification.  int → decimal string, str → self, ary → "[a, b, c]"
+// via baruby_print_value (consistent with `p`), true/false/nil → name.
+NODE_DEF
+node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *recv)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    return RESULT_OK(baruby_to_s(r));
+}
+
+// Parsing.  str → leading-decimal int (Ruby semantics: stops at non-digit,
+// returns 0 if no digit found).  int → self.
+NODE_DEF
+node_call_to_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *recv)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    if (IS_INT(r)) return RESULT_OK(r);
+    if (IS_STR(r)) {
+        const BaString *s = VAL2STR(r);
+        return RESULT_OK(INT2VAL(strtol(s->bytes, NULL, 10)));
+    }
+    return RESULT_OK(INT2VAL(0));
 }

@@ -575,6 +575,10 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
               if (ceq(tc, n->name, "[]") && args_cnt == 1) {
                   return ALLOC_node_call_aget(TRANSDUCE(lhs), TRANSDUCE(rhs));
               }
+              else if (ceq(tc, n->name, "[]") && args_cnt == 2) {
+                  pm_node_t *cnt_arg = args->arguments.nodes[1];
+                  return ALLOC_node_call_aget2(TRANSDUCE(lhs), TRANSDUCE(rhs), TRANSDUCE(cnt_arg));
+              }
               else if (ceq(tc, n->name, "[]=") && args_cnt == 2) {
                   pm_node_t *vrhs = args->arguments.nodes[1];
                   return ALLOC_node_call_aset(TRANSDUCE(lhs), TRANSDUCE(rhs), TRANSDUCE(vrhs));
@@ -587,6 +591,12 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
               }
               else if (ceq(tc, n->name, "pop") && args_cnt == 0) {
                   return ALLOC_node_call_pop(TRANSDUCE(lhs));
+              }
+              else if (ceq(tc, n->name, "to_s") && args_cnt == 0) {
+                  return ALLOC_node_call_to_s(TRANSDUCE(lhs));
+              }
+              else if (ceq(tc, n->name, "to_i") && args_cnt == 0) {
+                  return ALLOC_node_call_to_i(TRANSDUCE(lhs));
               }
               // fall through to plain call (will likely fail at runtime
               // since baruby has no methods on receivers other than the
@@ -816,7 +826,9 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_EMBEDDED_STATEMENTS_NODE: {
           pm_embedded_statements_node_t *n = (pm_embedded_statements_node_t *)(node);
-          fprintf(stderr, "unsupported node: PM_EMBEDDED_STATEMENTS_NODE\n");
+          // `"...#{expr}..."` — recurse on the inner statements (typically a
+          // single expression).  Empty `#{}` evaluates to nil.
+          return n->statements ? TRANSDUCE(n->statements) : ALLOC_node_nil();
           break;
       }
       case PM_EMBEDDED_VARIABLE_NODE: {
@@ -831,8 +843,8 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_FALSE_NODE: {
           pm_false_node_t *n = (pm_false_node_t *)(node);
-          fprintf(stderr, "unsupported node: PM_FALSE_NODE\n");
-          break;
+          (void)n;
+          return ALLOC_node_false();
       }
       case PM_FIND_PATTERN_NODE: {
           pm_find_pattern_node_t *n = (pm_find_pattern_node_t *)(node);
@@ -912,8 +924,7 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       case PM_IF_NODE: {
           pm_if_node_t *n = (pm_if_node_t *)(node);
           // Missing else branch: Ruby's `if cond; ...; end` returns nil.
-          // We don't have nil yet so use false (also falsy).
-          return ALLOC_node_if(TRANSDUCE(n->predicate), TRANSDUCE(n->statements), n->subsequent ? TRANSDUCE(n->subsequent) : ALLOC_node_false());
+          return ALLOC_node_if(TRANSDUCE(n->predicate), TRANSDUCE(n->statements), n->subsequent ? TRANSDUCE(n->subsequent) : ALLOC_node_nil());
       }
       case PM_IMAGINARY_NODE: {
           pm_imaginary_node_t *n = (pm_imaginary_node_t *)(node);
@@ -1003,8 +1014,20 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_INTERPOLATED_STRING_NODE: {
           pm_interpolated_string_node_t *n = (pm_interpolated_string_node_t *)(node);
-          fprintf(stderr, "unsupported node: PM_INTERPOLATED_STRING_NODE\n");
-          break;
+          // `"a#{expr}b"` parts is a list of PM_STRING_NODE / PM_EMBEDDED_STATEMENTS_NODE.
+          // Build a left-associative chain of `node_add` (str + str), wrapping each
+          // non-string part in `node_call_to_s` so the concat sees only strings.
+          NODE *acc = NULL;
+          for (size_t i = 0; i < n->parts.size; i++) {
+              pm_node_t *part = n->parts.nodes[i];
+              NODE *piece = TRANSDUCE(part);
+              if (part->type != PM_STRING_NODE) {
+                  piece = ALLOC_node_call_to_s(piece);
+              }
+              acc = acc ? ALLOC_node_add(acc, piece) : piece;
+          }
+          // Empty `""` (no parts) → fresh empty string literal.
+          return acc ? acc : ALLOC_node_str_lit("", 0);
       }
       case PM_INTERPOLATED_SYMBOL_NODE: {
           pm_interpolated_symbol_node_t *n = (pm_interpolated_symbol_node_t *)(node);
@@ -1121,8 +1144,8 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_NIL_NODE: {
           pm_nil_node_t *n = (pm_nil_node_t *)(node);
-          fprintf(stderr, "unsupported node: PM_NIL_NODE\n");
-          break;
+          (void)n;
+          return ALLOC_node_nil();
       }
       case PM_NO_KEYWORDS_PARAMETER_NODE: {
           pm_no_keywords_parameter_node_t *n = (pm_no_keywords_parameter_node_t *)(node);
@@ -1163,8 +1186,8 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_PARENTHESES_NODE: {
           pm_parentheses_node_t *n = (pm_parentheses_node_t *)(node);
-          // Empty `()` has body == NULL — return false (Ruby returns nil).
-          return n->body ? TRANSDUCE(n->body) : ALLOC_node_false();
+          // Empty `()` has body == NULL — Ruby returns nil.
+          return n->body ? TRANSDUCE(n->body) : ALLOC_node_nil();
       }
       case PM_PINNED_EXPRESSION_NODE: {
           pm_pinned_expression_node_t *n = (pm_pinned_expression_node_t *)(node);
@@ -1344,8 +1367,8 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_TRUE_NODE: {
           pm_true_node_t *n = (pm_true_node_t *)(node);
-          fprintf(stderr, "unsupported node: PM_TRUE_NODE\n");
-          break;
+          (void)n;
+          return ALLOC_node_true();
       }
       case PM_UNDEF_NODE: {
           pm_undef_node_t *n = (pm_undef_node_t *)(node);

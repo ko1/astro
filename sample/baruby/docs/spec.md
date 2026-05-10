@@ -31,14 +31,16 @@ OO 機能 (class / module / method / instance var / block) は意図的に
 
 | 値 | 意味 |
 |---|---|
-| `false` (= nil) | 唯一の falsy 値 (`nil` と分離していない) |
+| `false` | falsy 値 (Integer 0 / 空配列 / 空文字列とは区別) |
+| `nil` | falsy 値、`false` とは別シングルトン (`nil != false`) |
 | `true` | 真の真偽値 (Integer 1 とは別シングルトン) |
 | 上記以外すべて | truthy (整数 0 も `[]` も `""` も真) |
 
 `p (1 == 1)` は `true` と表示される (整数 `1` ではない)。
+`nil.to_s == ""`、`false.to_s == "false"` (Ruby 互換)。
 
 **未対応の値型**: 浮動小数 / Hash / Symbol / Range / Regexp / Proc /
-Class / Object / 真の `nil` (= false と区別する `nil`)。
+Class / Object。
 
 整数オーバーフローは未定義 (C の signed shift と同じ挙動)。bignum
 自動拡張・range check はなし。範囲は概ね `±2^62` (LSB tag 1 bit を
@@ -59,9 +61,8 @@ Class / Object / 真の `nil` (= false と区別する `nil`)。
 [a, [b, c]]  # ネスト OK
 ```
 
-`true` / `false` キーワードは現状 parser に通らない (`unsupported` —
-[todo.md](todo.md))。真偽値が欲しければ比較式 (`1 == 1` で `true`、
-`1 == 0` で `false`) を使う。
+`true` / `false` / `nil` キーワード対応。比較式 (`1 == 1` 等) も
+`true` / `false` を返す。
 
 ## ローカル変数 / 代入
 
@@ -84,14 +85,14 @@ a, b = ...    # 多重代入は未対応
 ### 文字列
 
 `+` (concat → 新しい String を返す)。`==` / `!=` は **値比較**
-(`"abc" == "abc"` は `true`)。`*` 反復・`<<` 追加・`<` / `<=` 等の
-順序比較は未対応。
+(`"abc" == "abc"` は `true`)。`<` / `<=` / `>` / `>=` は **辞書式比較**
+(memcmp + 長さ tiebreak)。`*` 反復・`<<` 追加は未対応。
 
 ### Array
 
 `[]` (index get) / `[]=` (index set) / `+` (concat → 新配列)。
 インデックス負の値は末尾基準 (`a[-1]` で最終要素)。範囲外 read は
-`false` を返す。範囲外 write は `false` で auto-extend する。
+`nil` を返す。範囲外 write は `nil` で auto-extend する。
 `==` / `!=` は **要素ごとの値比較** (再帰的、`[1, [2, 3]] == [1, [2,
 3]]` は `true`)。`<<` push・`*` 反復は未対応。
 
@@ -101,10 +102,10 @@ a, b = ...    # 多重代入は未対応
 - Integer 同士は値比較。
 - 同型のヒープオブジェクト同士は再帰的に値比較 (String はバイト列、
   Array は要素ごと)。
-- 異なる型は常に false (`1 == "1"` → `false`)。
+- 異なる型は常に false (`1 == "1"` → `false`、`nil == false` → `false`)。
 
-`<`, `<=`, `>`, `>=` は **Integer のみ**対応。文字列の順序比較は
-未対応。
+`<`, `<=`, `>`, `>=` は Integer 同士 / String 同士に対応 (混合型は
+runtime エラー)。
 
 ### 論理
 
@@ -188,15 +189,26 @@ add 1, 2
 | 受信側 | メソッド | 引数 | 戻り値 |
 |---|---|---|---|
 | Array | `size` / `length` | () | Integer |
-| Array | `[]` | (Integer) | element / `false` |
+| Array | `[]` | (Integer) | element / `nil` |
+| Array | `[]` | (Integer, Integer) | 部分配列 / `nil` |
 | Array | `[]=` | (Integer, value) | value |
 | Array | `push` | (value) | self |
-| Array | `pop` | () | last element / `false` |
+| Array | `pop` | () | last element / `nil` |
 | String | `size` / `length` | () | Integer (バイト長) |
-| String | `[]` | (Integer) | 1 文字の String / `false` |
+| String | `[]` | (Integer) | 1 文字の String / `nil` |
+| String | `[]` | (Integer, Integer) | 部分文字列 / `nil` |
+| 任意 | `to_s` | () | String (Ruby `Kernel#to_s` 風) |
+| 任意 | `to_i` | () | Integer (String は先頭 10 進数を解析、それ以外は 0 / 自身) |
 
-これら以外のメソッド名 (`.to_s` / `.each` / `.map` ...) は parser から
-普通の関数呼び出しとして扱われ、未定義関数として失敗する。
+これら以外のメソッド名 (`.each` / `.map` / `.compact` ...) は parser
+から普通の関数呼び出しとして扱われ、未定義関数として失敗する。
+
+### 文字列リテラル / interpolation
+
+`"abc"` の他に `"#{expr}"` 形式の interpolation 対応。各 `#{expr}` は
+parse 時に `expr.to_s` で String 化されて concat される (`node_add`
+の `str + str` 経路)。`"#{x}"` 形式は内部的には `node_call_to_s(x)`
++ `node_str_lit("...", N)` の連結。
 
 ## ビルトイン関数
 
@@ -213,9 +225,7 @@ add 1, 2
 - **OO 機能なし** — `class` / `module` / `def` の中で `self` / `instance var`
 - **block / yield / proc / lambda なし**
 - **例外・`begin/rescue/ensure` なし**
-- **`nil` リテラルなし** (`false` で代用)
 - **Symbol / Hash / Range / Regexp なし**
-- **String interpolation `"#{x}"` なし** (PM_INTERPOLATED_STRING_NODE は未対応)
 - **`require` / `load` なし** (1 ファイルのみ)
 - **stdin / IO 操作なし** (`p` だけ)
 - **`each` / `map` 等の collection iteration なし** — `while` で書く

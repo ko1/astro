@@ -41,16 +41,20 @@ AOT/PG 動作は未検証 (`--plain` のみ確認済)。
 ```c
 typedef intptr_t VALUE;
 
-// LSB == 1                → fixnum (signed int63, 算術右シフトで sign-extend)
-// raw == 0                → false / nil 統一
-// raw == 2                → true singleton (sub-page、ヒープアドレスにならない)
-// LSB == 0, v != 0, 2     → heap object pointer
+// LSB == 1                       → fixnum (signed int63, 算術右シフトで sign-extend)
+// raw == 0                       → false singleton
+// raw == 2                       → true singleton
+// raw == 4                       → nil singleton (false と区別)
+// LSB == 0, v not in {0, 2, 4}   → heap object pointer
 #define INT2VAL(i)    ((VALUE)(((uintptr_t)(intptr_t)(i) << 1) | 1u))
 #define VAL2INT(v)    (((intptr_t)(v)) >> 1)
 #define VAL_FALSE     ((VALUE)0)
 #define VAL_TRUE      ((VALUE)2)
+#define VAL_NIL       ((VALUE)4)
 #define IS_INT(v)     ((v) & 1)
-#define IS_PTR(v)     ((v) != 0 && (v) != 2 && ((v) & 1) == 0)
+#define IS_FALSY(v)   ((v) == VAL_FALSE || (v) == VAL_NIL)
+#define IS_TRUTHY(v)  (!IS_FALSY(v))
+#define IS_PTR(v)     ((v) != 0 && (v) != 2 && (v) != 4 && ((v) & 1) == 0)
 ```
 
 設計上の含意:
@@ -60,18 +64,22 @@ typedef intptr_t VALUE;
 - **加減算は untag → op → tag** が必要。`(a + b - 1)` で tag を保つ
   トリックは現状未採用 (clarity 優先、`-O3` で gcc が shift pair を
   畳んでくれる場面が多い)。
-- **`if cond`**: C truthy/falsy の意味で `cond != 0` 判定で済む
-  (`VAL_FALSE = 0` のみが falsy、`VAL_TRUE = 2` を含めその他は非 0 の
-  raw 値)。
+- **`if cond`**: `nil = raw 4` は C 上で truthy になってしまうので
+  プレーンな `if (...)` ではダメ。**`IS_TRUTHY(v)` 経由**で `VAL_FALSE`
+  と `VAL_NIL` 両方を falsy 判定する。`node_if` / `node_while` 双方
+  この方針。
 - **`&&` / `||` 注意**: `INT2VAL(0) = 1` なので `node_num(0)` を
-  「false 相当」として使えない。専用の `node_true` / `node_false`
-  ノードが `VAL_TRUE` / `VAL_FALSE` シングルトンを返す。
-- **`p` の表示**: `VAL_FALSE` → "false"、`VAL_TRUE` → "true"、
-  それ以外は IS_INT / IS_ARY / IS_STR で分岐。`true` と Integer 1 は
-  raw 値が違うので別々に表示される。
+  「false 相当」として使えない。専用の `node_true` / `node_false` /
+  `node_nil` ノードが各シングルトンを返す。
+- **`p` / `to_s` の表示**: `VAL_NIL` → "nil"、`VAL_FALSE` → "false"、
+  `VAL_TRUE` → "true"、それ以外は IS_INT / IS_ARY / IS_STR で分岐。
+  `true` と Integer 1 は raw 値が違うので別々に表示される。
 - **`==` / `!=`**: `l == r` の raw 等価で fixnum / シングルトン /
   ポインタ identity を一発カバー → 違ったら `IS_INT` を見て fast-fail
   → 残りで `baruby_value_eq` (String byte 比較 / Array 再帰)。
+- **順序比較**: `node_lt` / `node_le` / `node_gt` / `node_ge` も
+  type branch。Int+Int は tag のまま signed compare、Str+Str は
+  `baruby_str_cmp` (memcmp + 長さ tiebreak)。
 
 ## 3. ヒープ型
 
@@ -107,14 +115,22 @@ OO 機能を入れない方針 (spec.md 参照) のもと、`recv.method(args)` 
 
 ```c
 if (lhs != NULL) {
-    if (ceq(name, "[]"))     return ALLOC_node_call_aget(lhs, idx);
-    if (ceq(name, "[]="))    return ALLOC_node_call_aset(lhs, idx, val);
+    if (ceq(name, "[]"))   return ALLOC_node_call_aget (lhs, idx);          // 1-arg
+    if (ceq(name, "[]"))   return ALLOC_node_call_aget2(lhs, idx, count);   // 2-arg slice
+    if (ceq(name, "[]="))  return ALLOC_node_call_aset (lhs, idx, val);
     if (ceq(name, "size") || ceq(name, "length"))
-                             return ALLOC_node_call_size(lhs);
-    if (ceq(name, "push"))   return ALLOC_node_call_push(lhs, val);
-    if (ceq(name, "pop"))    return ALLOC_node_call_pop(lhs);
+                           return ALLOC_node_call_size (lhs);
+    if (ceq(name, "push")) return ALLOC_node_call_push (lhs, val);
+    if (ceq(name, "pop"))  return ALLOC_node_call_pop  (lhs);
+    if (ceq(name, "to_s")) return ALLOC_node_call_to_s (lhs);
+    if (ceq(name, "to_i")) return ALLOC_node_call_to_i (lhs);
 }
 ```
+
+文字列 interpolation `"a#{expr}b"` は parse 時に
+`node_add(node_add(node_str_lit("a"), node_call_to_s(expr)),
+node_str_lit("b"))` に desugar される (`node_add` が
+str+str 経路で concat する既存の挙動を流用)。
 
 各 `node_call_*` は eval 時に recv の型タグ (`IS_ARY` / `IS_STR`) で
 runtime branch する。例:

@@ -3,6 +3,40 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-10 — P1 言語拡張バッチ
+
+`true` / `false` / `nil` リテラル、`to_s` / `to_i`、String 順序比較、
+String / Array slice (2-arg `[]`)、文字列 interpolation を一気に入れた。
+
+- **VAL_NIL を VAL_FALSE から分離** (raw 4 singleton)。`IS_FALSY` /
+  `IS_TRUTHY` macro 追加、`node_if` / `node_while` を `IS_TRUTHY` 経由に
+  書き換え (raw 4 は C 上 truthy なのでプレーン `if` だと nil が
+  truthy 扱いになるバグを回避)。`IS_PTR` から VAL_NIL を除外。
+- **`node_nil` ノード追加**。parser で PM_TRUE_NODE / PM_FALSE_NODE /
+  PM_NIL_NODE を `node_true` / `node_false` / `node_nil` に流す
+  (これまで全部 `unsupported` で死んでいた)。
+- 既存の「nil 相当」フォールバック (if 無 else / 空 parens / 範囲外
+  read / pop empty / aset auto-extend) を `VAL_FALSE` から `VAL_NIL` に
+  切り替え。
+- **`node_call_to_s` / `node_call_to_i`**。`baruby_to_s(v)` を node.c に
+  追加 (libgc-backed StrBuf builder で配列の inspect 風文字列を組む。
+  `open_memstream` + libc free は `free` macro shadow と相性が悪く
+  leak 化するので使わない)。`p` 出力の inspect 表示と to_s top-level
+  の string-without-quotes / nil→"" を分けて実装。
+- **String 順序比較**。`baruby_str_cmp` を node.c に追加、`node_lt` /
+  `node_le` / `node_gt` / `node_ge` を Int+Int / Str+Str の type branch
+  に拡張。
+- **`node_call_aget2`** (recv, idx, count)。String / Array 両方で
+  サブスライス。clamp と negative index 込み。parser で
+  `[]` の args_cnt==2 を分岐。
+- **`PM_INTERPOLATED_STRING_NODE`**。parts 列を walk して、PM_STRING_NODE
+  はそのまま、それ以外は `node_call_to_s` で wrap、左結合の `node_add`
+  で連結。Empty parts は `""` 相当。`PM_EMBEDDED_STATEMENTS_NODE` も
+  実装 (内側 statements を recurse、空 `#{}` は nil)。
+
+検証は `test_p1.ba.rb` で全項目 (43 行)。fib / test_ary / test_eq の
+regression なし、bench の alloc/GC も不変。
+
 ## 2026-05-10 — Ruby っぽい value semantics
 
 `String#==` / `Array#==` / `Array#+` を実装、`true` / `false` を表示

@@ -52,18 +52,22 @@ extern struct baruby_option OPTION;
 // -----------------------------------------------------------------------------
 // Tagged VALUE.
 //
-//   LSB == 1     -> fixnum (signed int63, sign-extends on arithmetic shift)
-//   raw == 0     -> false / nil singleton
-//   raw == 2     -> true singleton  (sub-page; never a real heap address)
-//   LSB == 0,
-//   v != 0, 2    -> heap object pointer (8-byte aligned, low 3 bits zero)
+//   LSB == 1                  -> fixnum (signed int63, sign-extends on shift)
+//   raw == 0                  -> false singleton
+//   raw == 2                  -> true singleton
+//   raw == 4                  -> nil singleton
+//   LSB == 0, v not in {0,2,4}
+//                             -> heap object pointer (8-byte aligned)
 //
-// VAL_TRUE / VAL_FALSE are kept distinct from INT2VAL(1) / INT2VAL(0)
-// so `p (1 == 1)` prints "true" rather than "1", and so future code can
-// tell `nil` apart from int 0 without a separate type tag.  Both
-// singletons honour C's truthy / falsy convention (VAL_TRUE = 2 is
-// truthy, VAL_FALSE = 0 is falsy), so node_if / node_while keep their
-// plain `if (UNWRAP(...))` test.
+// `false` and `nil` are now distinct (Ruby `nil != false`).  They are
+// the only **falsy** values; everything else (including INT2VAL(0),
+// `[]`, `""`, `true`) is truthy.  Because `nil = 4` is non-zero in C,
+// node_if / node_while can NOT use a plain `if (UNWRAP(...))` — they
+// test through the IS_FALSY macro.
+//
+// Sub-page singleton values (0, 2, 4) are guaranteed not to collide
+// with libgc-returned heap pointers because libgc never hands out
+// addresses below the first heap page.
 //
 // Arithmetic on fixnums goes through VAL2INT / INT2VAL.  The shift pair
 // folds away under -O3 along most call paths; tag-preserving tricks
@@ -76,8 +80,12 @@ typedef uint64_t state_serial_t;
 #define VAL2INT(v)    (((intptr_t)(v)) >> 1)
 #define VAL_FALSE     ((VALUE)0)
 #define VAL_TRUE      ((VALUE)2)
+#define VAL_NIL       ((VALUE)4)
 #define IS_INT(v)     (((uintptr_t)(v) & (uintptr_t)1) != 0)
-#define IS_PTR(v)     ((v) != VAL_FALSE && (v) != VAL_TRUE && ((uintptr_t)(v) & (uintptr_t)1) == 0)
+#define IS_FALSY(v)   ((v) == VAL_FALSE || (v) == VAL_NIL)
+#define IS_TRUTHY(v)  (!IS_FALSY(v))
+#define IS_PTR(v)     ((v) != VAL_FALSE && (v) != VAL_TRUE && (v) != VAL_NIL \
+                       && ((uintptr_t)(v) & (uintptr_t)1) == 0)
 
 // Heap object header.  Type tag lets the dispatch nodes branch on
 // receiver type at eval time (e.g. call_size: array vs string).
@@ -198,6 +206,13 @@ VALUE baruby_str_concat(VALUE a, VALUE b);
 // identity).  Otherwise: same type → recursive byte / element compare;
 // different types → false.  Mixed (int vs ptr) → false.
 bool  baruby_value_eq(VALUE a, VALUE b);
+
+// Strict-3-way string compare: <0 / 0 / >0, like memcmp + length tiebreak.
+int   baruby_str_cmp(VALUE a, VALUE b);
+
+// Stringification (Ruby `to_s`).  Heap-alloc'd in all cases except when
+// `v` is already a String (returns self).
+VALUE baruby_to_s(VALUE v);
 
 void  baruby_print_value(FILE *fp, VALUE v);
 
