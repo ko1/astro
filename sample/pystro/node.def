@@ -639,6 +639,21 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return r == -1 ? PYS_TRUE : PYS_FALSE;
         }
     }
+    // Try b.__gt__(a) before falling into pys_cmp's hard-coded TypeError —
+    // CPython rich comparison: `set < instance` consults instance.__gt__.
+    // Try b.__gt__(a) — CPython rich comparison fallback for `set < instance`.
+    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE) {
+        extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
+        VALUE bcls = PYS_OBJ_VAL(PYS_PTR(bv)->inst.cls);
+        VALUE m = pys_class_lookup_method(bcls, "__gt__");
+        if (m != PYS_NONE) {
+            VALUE av_arr[2] = { bv, av };
+            VALUE r = pys_apply(c, m, 2, av_arr);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (!(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL))
+                return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+        }
+    }
     {
         int r = pys_cmp(c, av, bv);
         if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -667,6 +682,17 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
             int r = pys_set_cmp_partial(c, auw, buw);
             return (r == -1 || r == 0) ? PYS_TRUE : PYS_FALSE;
+        }
+    }
+    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE) {
+        extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(bv)->inst.cls), "__ge__");
+        if (m != PYS_NONE) {
+            VALUE av_arr[2] = { bv, av };
+            VALUE r = pys_apply(c, m, 2, av_arr);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (!(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL))
+                return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
         }
     }
     {
@@ -699,6 +725,17 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return r == 1 ? PYS_TRUE : PYS_FALSE;
         }
     }
+    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE) {
+        extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(bv)->inst.cls), "__lt__");
+        if (m != PYS_NONE) {
+            VALUE av_arr[2] = { bv, av };
+            VALUE r = pys_apply(c, m, 2, av_arr);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (!(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL))
+                return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+        }
+    }
     {
         int r = pys_cmp(c, av, bv);
         if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
@@ -727,6 +764,17 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
             int r = pys_set_cmp_partial(c, auw, buw);
             return (r == 1 || r == 0) ? PYS_TRUE : PYS_FALSE;
+        }
+    }
+    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE) {
+        extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(bv)->inst.cls), "__le__");
+        if (m != PYS_NONE) {
+            VALUE av_arr[2] = { bv, av };
+            VALUE r = pys_apply(c, m, 2, av_arr);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (!(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL))
+                return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
         }
     }
     {
