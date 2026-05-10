@@ -8815,15 +8815,34 @@ dm_update(CTX *c, int argc, VALUE *argv)
             for (size_t i = 0; i < sd->elen; i++)
                 if (pydict_entry_live(sd, i))
                     pys_dict_set(c, dst, sd->entries[i].key, sd->entries[i].value);
+        } else if (pys_is_instance(src)
+                   && pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(src)->inst.cls), "keys") != PYS_NONE) {
+            // Mapping protocol: src.keys() + src[key] for each.  CPython
+            // dict.update consults `keys` before falling to (k,v)-pair iteration.
+            VALUE km = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(src)->inst.cls), "keys");
+            VALUE av[1] = { src };
+            VALUE keys = pys_apply(c, km, 1, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+            struct pys_iter it; pys_iter_init(c, &it, keys);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+            VALUE k;
+            while (pys_iter_next(c, &it, &k)) {
+                VALUE v = pys_list_get(c, src, k);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+                pys_dict_set(c, dst, k, v);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+            }
         } else {
             struct pys_iter it; pys_iter_init(c, &it, src);
             if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
             VALUE pair;
             while (pys_iter_next(c, &it, &pair)) {
                 if (!pys_is_tuple(pair) && !pys_is_list(pair)) PYS_RAISE_EXC(c, c->EXC_TypeError, "update: pair");
-                if (PYS_PTR(pair)->list.len != 2) PYS_RAISE_EXC(c, c->EXC_ValueError, "update: pair size");
+                if (PYS_PTR(pair)->list.len != 2) PYS_RAISE_EXC(c, c->EXC_ValueError, "dictionary update sequence element has length %zu; 2 is required", PYS_PTR(pair)->list.len);
                 pys_dict_set(c, dst, PYS_PTR(pair)->list.items[0], PYS_PTR(pair)->list.items[1]);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
             }
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
         }
     }
     // Also pull in kwargs.
