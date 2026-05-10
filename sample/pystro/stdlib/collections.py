@@ -415,6 +415,12 @@ class UserDict:
         c = type(self)()
         c.data = dict(self.data)
         return c
+    @classmethod
+    def fromkeys(cls, iterable, value=None):
+        d = cls()
+        for k in iterable:
+            d[k] = value
+        return d
 
 
 class UserList:

@@ -10108,13 +10108,15 @@ bi_float_getformat(CTX *c, int argc, VALUE *argv)
 
 // dict.fromkeys([cls,] iter[, default=None]).  Accepts both the
 // classmethod form (called as `dict.fromkeys(cls, iter, default)`) and
-// the bare-call form (`dict.fromkeys(iter, default)`) — when argv[0] is
-// a class AND there's a following arg, treat it as the classmethod-bound
-// class and shift over.
+// the bare-call form (`dict.fromkeys(iter, default)`).  For user
+// subclasses (e.g. `class dictlike(dict)`), instantiate cls() so the
+// return value is an instance of the subclass — CPython parity.
 static VALUE
 bi_dict_fromkeys(CTX *c, int argc, VALUE *argv)
 {
+    VALUE cls = 0;
     if (argc >= 2 && pys_is_class(argv[0])) {
+        cls = argv[0];
         argv++;
         argc--;
     }
@@ -10122,12 +10124,22 @@ bi_dict_fromkeys(CTX *c, int argc, VALUE *argv)
         PYS_RAISE_EXC(c, c->EXC_TypeError, "fromkeys: missing iterable arg");
     }
     VALUE def = argc >= 2 ? argv[1] : PYS_NONE;
-    VALUE r = pys_make_dict();
+    // Result container: user subclass → instantiate via cls() so
+    // `MyDictSubclass.fromkeys('a')` returns a MyDictSubclass instance.
+    VALUE r;
+    if (cls && cls != c->TYPE_dict) {
+        r = pys_apply(c, cls, 0, NULL);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    } else {
+        r = pys_make_dict();
+    }
     struct pys_iter it; pys_iter_init(c, &it, argv[0]);
     if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
     VALUE k;
     while (pys_iter_next(c, &it, &k)) {
-        pys_dict_set(c, r, k, def);
+        // Use list_set so user __setitem__ overrides take effect.
+        pys_list_set(c, r, k, def);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     }
     return r;
 }
