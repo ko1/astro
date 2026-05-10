@@ -5780,8 +5780,17 @@ pys_display(FILE *fp, VALUE v, bool repr)
             if (!pydict_entry_live(d, i)) continue;
             if (printed++) fputs(", ", fp);
             pys_display(fp, d->entries[i].key, true);
+            extern CTX *pys_current_ctx;
+            if (pys_current_ctx && pys_current_ctx->state == PYS_STATE_RAISE) {
+                pys_display_visit_top--;
+                return;
+            }
             fputs(": ", fp);
             pys_display(fp, d->entries[i].value, true);
+            if (pys_current_ctx && pys_current_ctx->state == PYS_STATE_RAISE) {
+                pys_display_visit_top--;
+                return;
+            }
         }
         fputc('}', fp);
         pys_display_visit_top--;
@@ -5894,6 +5903,10 @@ pys_display(FILE *fp, VALUE v, bool repr)
             if (m != PYS_NONE) {
                 VALUE av[1] = { v };
                 VALUE r = pys_apply(pys_current_ctx, m, 1, av);
+                // __repr__/__str__ raised: bail out — caller (pys_to_repr /
+                // pys_to_str) will surface the exception.  Don't dereference
+                // r when state is RAISE (r is 0 / NULL).
+                if (UNLIKELY(pys_current_ctx->state == PYS_STATE_RAISE)) return;
                 if (pys_is_str(r)) { fwrite(PYS_PTR(r)->str.chars, 1, PYS_PTR(r)->str.len, fp); return; }
             }
             // Default str() / repr() for exception instances.  CPython
