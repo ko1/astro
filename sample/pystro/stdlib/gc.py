@@ -5,7 +5,12 @@
 def enable(): pass
 def disable(): pass
 def isenabled(): return True
-def collect(generation=2): return 0
+def collect(generation=2):
+    try:
+        __pystro_gc_collect__()
+    except NameError:
+        pass
+    return 0
 def get_count(): return (0, 0, 0)
 def get_threshold(): return (700, 10, 10)
 def set_threshold(*args): pass

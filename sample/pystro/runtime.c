@@ -13660,6 +13660,15 @@ bi_pystro_isfile(CTX *c, int argc, VALUE *argv)
     return S_ISREG(st.st_mode) ? PYS_TRUE : PYS_FALSE;
 }
 
+// gc.collect() — force Boehm full GC and return bytes freed.
+static VALUE
+bi_pystro_gc_collect(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    GC_gcollect();
+    return pys_make_int(0);
+}
+
 // posix.stat()-equivalent — returns a tuple of (st_mode, st_ino,
 // st_dev, st_nlink, st_uid, st_gid, st_size, st_atime, st_mtime,
 // st_ctime).  CPython's `os.stat_result` is a structseq; the tuple
@@ -14790,6 +14799,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_isfile__",      pys_make_builtin("__pystro_isfile__",      bi_pystro_isfile,      1, 1));
     pys_global_define(c, "__pystro_stat__",        pys_make_builtin("__pystro_stat__",        bi_pystro_stat,        1, 1));
     pys_global_define(c, "__pystro_abspath__",     pys_make_builtin("__pystro_abspath__",     bi_pystro_abspath,     1, 1));
+    pys_global_define(c, "__pystro_gc_collect__",  pys_make_builtin("__pystro_gc_collect__",  bi_pystro_gc_collect,  0, 0));
 
     c->current_class = PYS_NONE;
 }
