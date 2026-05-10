@@ -932,11 +932,49 @@ static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
+    /* CRuby Float() options: `exception: false` returns nil instead of
+     * raising on failed conversion. */
+    bool exception_ok = true;
+    if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_HASH) {
+        VALUE excv = korb_hash_aref(argv[1], korb_id2sym(korb_intern("exception")));
+        if (excv == Qfalse) exception_ok = false;
+    }
+    if (NIL_P(argv[0])) {
+        if (!exception_ok) return Qnil;
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT, "can't convert nil into Float");
+        return Qnil;
+    }
     if (KORB_IS_FLOAT(argv[0])) return argv[0];
     if (FIXNUM_P(argv[0])) return korb_float_new((double)FIX2LONG(argv[0]));
-    if (BUILTIN_TYPE(argv[0]) == T_STRING) {
-        return korb_float_new(strtod(korb_str_cstr(argv[0]), NULL));
+    if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
+        return korb_float_new(korb_num2dbl(argv[0]));
     }
+    if (BUILTIN_TYPE(argv[0]) == T_STRING) {
+        const char *s = korb_str_cstr(argv[0]);
+        /* Skip leading whitespace, validate the rest is a valid float
+         * literal; trailing junk → ArgumentError (CRuby Float() is
+         * stricter than String#to_f which silently truncates). */
+        const char *p = s;
+        while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+        char *end;
+        double d = strtod(p, &end);
+        /* Skip trailing whitespace. */
+        while (*end == ' ' || *end == '\t' || *end == '\n') end++;
+        if (end == p || *end != '\0') {
+            if (!exception_ok) return Qnil;
+            VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eA,
+                       "invalid value for Float(): %s", s);
+            return Qnil;
+        }
+        return korb_float_new(d);
+    }
+    if (!exception_ok) return Qnil;
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eT,
+               "can't convert %s into Float",
+               korb_id_name(korb_class_of_class(argv[0])->name));
     return Qnil;
 }
 
