@@ -1226,14 +1226,65 @@ static VALUE kernel_format(CTX *c, VALUE self, int argc, VALUE *argv) {
                     v = ai < argc && FIXNUM_P(argv[ai]) ? FIX2LONG(argv[ai]) : 0;
                 }
                 if (conv == 'b') {
-                    /* binary — manually */
-                    char tmp[64]; int tl = 0;
-                    unsigned long uv = (unsigned long)v;
+                    /* Build raw binary digits, then apply flags/width
+                     * manually (snprintf has no %b).  spec format:
+                     * `%[flags][width][.prec]b`.  Re-parse the spec
+                     * we already built to extract them. */
+                    char tmp[256]; int tl = 0;
+                    bool neg = (v < 0);
+                    unsigned long uv = neg ? (unsigned long)(-v) : (unsigned long)v;
                     if (uv == 0) tmp[tl++] = '0';
                     while (uv) { tmp[tl++] = '0' + (uv & 1); uv >>= 1; }
                     for (int j = 0; j < tl/2; j++) { char tch = tmp[j]; tmp[j] = tmp[tl-1-j]; tmp[tl-1-j] = tch; }
                     tmp[tl] = 0;
-                    snprintf(buf, sizeof(buf), "%s", tmp);
+                    /* Re-parse spec for flags/width/prec.  spec is %[flags][width][.prec]b */
+                    bool flag_minus = false, flag_zero = false, flag_hash = false;
+                    int width = 0, prec = -1;
+                    int p = 1;
+                    while (p < sl && (spec[p] == '-' || spec[p] == '+' || spec[p] == ' ' || spec[p] == '#' || spec[p] == '0')) {
+                        if (spec[p] == '-') flag_minus = true;
+                        if (spec[p] == '0') flag_zero = true;
+                        if (spec[p] == '#') flag_hash = true;
+                        p++;
+                    }
+                    while (p < sl && spec[p] >= '0' && spec[p] <= '9') { width = width*10 + (spec[p]-'0'); p++; }
+                    if (p < sl && spec[p] == '.') {
+                        p++; prec = 0;
+                        while (p < sl && spec[p] >= '0' && spec[p] <= '9') { prec = prec*10 + (spec[p]-'0'); p++; }
+                    }
+                    /* `..1` for negative two's-complement format (CRuby
+                     * semantics for `%b` with neg int): add prefix. */
+                    char prefix[8]; int pfx_len = 0;
+                    if (flag_hash && tl > 0 && tmp[0] != '0') { prefix[pfx_len++] = '0'; prefix[pfx_len++] = 'b'; }
+                    if (neg) {
+                        /* Two's complement representation: prepend "..1" */
+                        prefix[pfx_len++] = '.'; prefix[pfx_len++] = '.'; prefix[pfx_len++] = '1';
+                    }
+                    /* Apply precision: pad digits with leading 0s to prec. */
+                    int digit_pad = 0;
+                    if (prec >= 0 && tl < prec) digit_pad = prec - tl;
+                    int content_len = pfx_len + digit_pad + tl;
+                    /* Apply width with space/zero padding. */
+                    int total_pad = (width > content_len) ? (width - content_len) : 0;
+                    int bp = 0;
+                    if (!flag_minus) {
+                        char pad_ch = (flag_zero && prec < 0) ? '0' : ' ';
+                        if (pad_ch == '0' && pfx_len > 0) {
+                            /* zero-pad goes after prefix */
+                            for (int k = 0; k < pfx_len && bp < (int)sizeof(buf)-1; k++) buf[bp++] = prefix[k];
+                            for (int k = 0; k < total_pad && bp < (int)sizeof(buf)-1; k++) buf[bp++] = '0';
+                            pfx_len = 0;  /* consumed */
+                        } else {
+                            for (int k = 0; k < total_pad && bp < (int)sizeof(buf)-1; k++) buf[bp++] = pad_ch;
+                        }
+                    }
+                    for (int k = 0; k < pfx_len && bp < (int)sizeof(buf)-1; k++) buf[bp++] = prefix[k];
+                    for (int k = 0; k < digit_pad && bp < (int)sizeof(buf)-1; k++) buf[bp++] = '0';
+                    for (int k = 0; k < tl && bp < (int)sizeof(buf)-1; k++) buf[bp++] = tmp[k];
+                    if (flag_minus) {
+                        for (int k = 0; k < total_pad && bp < (int)sizeof(buf)-1; k++) buf[bp++] = ' ';
+                    }
+                    buf[bp] = 0;
                 } else {
                     /* replace conv with ld */
                     if (conv == 'd' || conv == 'i' || conv == 'u') {
