@@ -3513,9 +3513,10 @@ pys_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE
     }
 
     // step != 1: requires matching length, OR nval == 0 (deletion via `del L[::s]`).
+    // Use overflow-safe formula: ((diff - 1) / |st|) + 1.
     size_t target_n = 0;
-    if (st > 0 && a < b) target_n = (size_t)((b - a + st - 1) / st);
-    else if (st < 0 && a > b) target_n = (size_t)((a - b - st - 1) / -st);
+    if (st > 0 && a < b) target_n = (size_t)(((b - a) - 1) / st + 1);
+    else if (st < 0 && a > b) target_n = (size_t)(((a - b) - 1) / (-st) + 1);
     if (nval == 0 && target_n > 0) {
         // Delete the addressed indices.
         bool *del = (bool *)GC_malloc_atomic(len);
