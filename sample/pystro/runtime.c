@@ -8793,45 +8793,63 @@ sm_set_pop(CTX *c, int argc, VALUE *argv) {
 }
 static VALUE
 sm_union(CTX *c, int argc, VALUE *argv) {
-    (void)argc;
     VALUE r = pys_make_set_like(argv[0]);
     VALUE av0 = pys_unwrap_primary(argv[0]);
-    VALUE av1 = pys_unwrap_primary(argv[1]);
     struct pysdict *a = PYS_PTR(av0)->dict;
     for (size_t i = 0; i < a->elen; i++)
         if (pydict_entry_live(a, i)) pys_dict_set(c, r, a->entries[i].key, PYS_NONE);
-    if (pys_is_set(av1) || pys_is_frozenset(av1)) {
-        struct pysdict *b = PYS_PTR(av1)->dict;
-        for (size_t i = 0; i < b->elen; i++)
-            if (pydict_entry_live(b, i)) pys_dict_set(c, r, b->entries[i].key, PYS_NONE);
-    } else {
-        struct pys_iter it; pys_iter_init(c, &it, argv[1]);
-        VALUE x;
-        while (pys_iter_next(c, &it, &x)) pys_dict_set(c, r, x, PYS_NONE);
+    // CPython: set.union(*others) — accept any number of iterables.
+    for (int j = 1; j < argc; j++) {
+        VALUE av_j = pys_unwrap_primary(argv[j]);
+        if (pys_is_set(av_j) || pys_is_frozenset(av_j)) {
+            struct pysdict *b = PYS_PTR(av_j)->dict;
+            for (size_t i = 0; i < b->elen; i++)
+                if (pydict_entry_live(b, i)) pys_dict_set(c, r, b->entries[i].key, PYS_NONE);
+        } else {
+            struct pys_iter it; pys_iter_init(c, &it, argv[j]);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            VALUE x;
+            while (pys_iter_next(c, &it, &x)) {
+                pys_dict_set(c, r, x, PYS_NONE);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            }
+        }
     }
     return r;
 }
 static VALUE
 sm_intersection(CTX *c, int argc, VALUE *argv) {
-    (void)argc;
     VALUE r = pys_make_set_like(argv[0]);
     VALUE av0 = pys_unwrap_primary(argv[0]);
     struct pysdict *a = PYS_PTR(av0)->dict;
+    // s.intersection(*others) — keep keys present in ALL others.
     for (size_t i = 0; i < a->elen; i++) {
-        if (pydict_entry_live(a, i) && pys_contains(c, argv[1], a->entries[i].key))
-            pys_dict_set(c, r, a->entries[i].key, PYS_NONE);
+        if (!pydict_entry_live(a, i)) continue;
+        VALUE k = a->entries[i].key;
+        bool ok = true;
+        for (int j = 1; j < argc; j++) {
+            if (!pys_contains(c, argv[j], k)) { ok = false; break; }
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        }
+        if (ok) pys_dict_set(c, r, k, PYS_NONE);
     }
     return r;
 }
 static VALUE
 sm_difference(CTX *c, int argc, VALUE *argv) {
-    (void)argc;
     VALUE r = pys_make_set_like(argv[0]);
     VALUE av0 = pys_unwrap_primary(argv[0]);
     struct pysdict *a = PYS_PTR(av0)->dict;
+    // s.difference(*others) — drop keys present in ANY other.
     for (size_t i = 0; i < a->elen; i++) {
-        if (pydict_entry_live(a, i) && !pys_contains(c, argv[1], a->entries[i].key))
-            pys_dict_set(c, r, a->entries[i].key, PYS_NONE);
+        if (!pydict_entry_live(a, i)) continue;
+        VALUE k = a->entries[i].key;
+        bool keep = true;
+        for (int j = 1; j < argc; j++) {
+            if (pys_contains(c, argv[j], k)) { keep = false; break; }
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        }
+        if (keep) pys_dict_set(c, r, k, PYS_NONE);
     }
     return r;
 }
@@ -8985,9 +9003,9 @@ static struct type_method set_methods[] = {
     { "clear",                sm_set_clear,            1, 1 },
     { "copy",                 sm_set_copy,             1, 1 },
     { "update",               sm_set_update,           1, -1 },
-    { "union",                sm_union,                2, 2 },
-    { "intersection",         sm_intersection,         2, 2 },
-    { "difference",           sm_difference,           2, 2 },
+    { "union",                sm_union,                1, -1 },
+    { "intersection",         sm_intersection,         1, -1 },
+    { "difference",           sm_difference,           1, -1 },
     { "symmetric_difference", sm_symmetric_difference, 2, 2 },
     { "intersection_update",  sm_intersection_update,  2, 2 },
     { "difference_update",    sm_difference_update,    1, -1 },
@@ -9001,9 +9019,9 @@ static struct type_method set_methods[] = {
 // frozenset: read-only ops only.
 static struct type_method frozenset_methods[] = {
     { "copy",                 sm_set_copy,             1, 1 },
-    { "union",                sm_union,                2, 2 },
-    { "intersection",         sm_intersection,         2, 2 },
-    { "difference",           sm_difference,           2, 2 },
+    { "union",                sm_union,                1, -1 },
+    { "intersection",         sm_intersection,         1, -1 },
+    { "difference",           sm_difference,           1, -1 },
     { "symmetric_difference", sm_symmetric_difference, 2, 2 },
     { "issubset",             sm_issubset,             2, 2 },
     { "issuperset",           sm_issuperset,           2, 2 },
