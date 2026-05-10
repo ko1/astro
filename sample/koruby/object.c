@@ -3338,9 +3338,15 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (mc->block_slot >= 0) {
         c->fp[mc->block_slot] = block ? (VALUE)block : Qnil;
     }
-    /* Stash the peeled kwargs hash where the body prelude can read it. */
-    if (mc->kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
-        c->fp[mc->kwh_save_slot] = peeled_kwh;
+    /* Stash the peeled kwargs hash where the body prelude can read it.
+     * If no kwargs were passed (peeled_kwh == UNDEF), fill the slot
+     * with an empty Hash so the prologue's `kwh.has_key?(:foo)` checks
+     * don't blow up with NoMethodError on nil — happens whenever a C
+     * cfunc (e.g. obj_clone → initialize_clone(other, freeze: nil))
+     * dispatches to an AST method with optional keywords without
+     * forwarding the hash arg. */
+    if (mc->kwh_save_slot >= 0) {
+        c->fp[mc->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
     }
     c->self = recv;
 
@@ -3877,6 +3883,12 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * `def initialize(&blk)`. */
     if (m->u.ast.block_slot >= 0 && m->u.ast.block_slot < (int)m->u.ast.locals_cnt) {
         c->fp[m->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
+    }
+    /* kwh_save_slot: if the callee has kwargs but we (cfunc-side
+     * korb_funcall) didn't supply any, default to {} so the prologue's
+     * `kwh.has_key?(:foo)` lookup doesn't blow up. */
+    if (m->u.ast.kwh_save_slot >= 0 && m->u.ast.kwh_save_slot < (int)m->u.ast.locals_cnt) {
+        c->fp[m->u.ast.kwh_save_slot] = korb_hash_new();
     }
     struct korb_cref *prev_cref2 = c->cref;
     if (m->def_cref) c->cref = m->def_cref;
