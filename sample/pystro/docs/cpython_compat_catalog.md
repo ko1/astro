@@ -47,11 +47,13 @@ heap corruption が疑われる。
 - **test_userdict**: SEGV → `OK` (全 25 tests pass) ✓
 - **test_list**: SEGV → `FAILED (failures=13, errors=6, skipped=1)` 完走
 - **test_tuple**: SEGV → `FAILED (failures=6, errors=2, skipped=4)` 完走
-- **test_userlist**: SEGV → `FAILED (failures=6, errors=1)` 完走
-- **test_set**: 169 fails+errors → **68 fails+errors** (101 件回復)
-  `FAILED (failures=31, errors=37, skipped=2)`
-- **test_dict**: SEGV → `FAILED (failures=12, errors=18, skipped=13)`
+- **test_userlist**: SEGV → `FAILED (failures=4, errors=1)` 完走
+- **test_set**: 169 fails+errors → **66 fails+errors** (103 件回復)
+  `FAILED (failures=33, errors=33, skipped=2)`
+- **test_dict**: SEGV → `FAILED (failures=13, errors=17, skipped=13)`
   完走 (libgc 内部 SEGV は GC_INITIAL_HEAP_SIZE 128MiB で解消)。
+- **test_list**: SEGV → `FAILED (failures=12, errors=5, skipped=1)`
+- **test_tuple**: SEGV → `FAILED (failures=6, errors=2, skipped=4)`
 
 **追加した shim / 機能拡張:**
 
