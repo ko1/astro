@@ -3,35 +3,20 @@
 完了済みは [done.md](done.md) を参照。仕様詳細は [spec.md](spec.md)、
 実装ノートは [runtime.md](runtime.md)。
 
-## P0 — 動作の基本確認
-
-- [ ] **AOT (`-c`) で新ノードが正しく specialize されるか確認**
-      `node_str_lit(const char *, uint32_t)` / `node_call_*` の HORG
-      ハッシュと SD 出力 (`code_store/SD_*.c`) を確認。
-      naruby の `node_call_builtin` の `const char *` 扱いに揃えれば
-      動くはずだが要検証。
-- [ ] **PG (`-p`) でも同様に動作確認**。
-- [ ] **JIT (`-j`) を再有効化するか撤去するか決める**。`astro_jit.c` は
-      フォーク元のまま残してあるが、新ノードが流れたとき何が起こるか
-      未検証。当面 unwired のままで OK。
-
 ## P1 — 言語拡張
 
-- [ ] **`<=>`** (3-way 比較)。`baruby_str_cmp` のラッパー。Integer
-      もサポートしたいなら別ノードか `node_call_<=>` 形。
 - [ ] **`each` どうするか**。block 入れない方針なので、`for x in arr;
       ...; end` を desugar するか、`while + index` で書かせ続けるか。
-- [ ] **`String#*` / `Array#*`** (反復)。
-- [ ] **`<<` 追加**。Array は push、String は append (mutating)。
-      演算子なので `is_binop` に追加 + `node_add_assign` 系の別ノード。
-- [ ] **String escape の検証**。今は prism の `unescaped` をそのまま
-      コピーしているが、`"\n"` / `"\t"` / `"\xFF"` が期待通りに来るか
-      未検証。
+      → 今のところ後者で困っていない。
 - [ ] **負の `String#[]` slice 末尾基準**。今は `[-3, 2]` までは動くが
       `s[-3..]` 形式は Range 必要。
+- [ ] **`Array#<=>`**。Ruby 仕様だと要素ごとに `<=>` を取って最初に
+      非ゼロが出たところを返す。再帰呼び出しで実装可能だがまだ書いて
+      ない。
 
 完了: nil/false 分離・true/false/nil リテラル・to_s/to_i・String 順序
-比較・String/Array slice・interpolation。
+比較・String/Array slice・interpolation・`<=>`・`*` repeat・`<<`・
+escape (`\n`/`\t` 等のハンドリング、`p` 表示の inspect 化)。
 
 ## P1 — パフォーマンス
 

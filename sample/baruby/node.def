@@ -441,7 +441,17 @@ node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NO
     VALUE l = UNWRAP(EVAL_ARG(c, lhs));
     VALUE r = UNWRAP(EVAL_ARG(c, rhs));
 
-    return RESULT_OK(INT2VAL(VAL2INT(l) * VAL2INT(r)));
+    if (LIKELY(IS_INT(l) && IS_INT(r))) {
+        return RESULT_OK(INT2VAL(VAL2INT(l) * VAL2INT(r)));
+    }
+    if (IS_STR(l) && IS_INT(r)) {
+        return RESULT_OK(baruby_str_repeat(l, VAL2INT(r)));
+    }
+    if (IS_ARY(l) && IS_INT(r)) {
+        return RESULT_OK(baruby_ary_repeat(l, VAL2INT(r)));
+    }
+    fprintf(stderr, "type mismatch in *\n");
+    return RESULT_OK(VAL_NIL);
 }
 
 NODE_DEF
@@ -540,6 +550,53 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NO
     if (LIKELY(l == r)) return RESULT_OK(VAL_FALSE);
     if (LIKELY(IS_INT(l) || IS_INT(r))) return RESULT_OK(VAL_TRUE);
     return RESULT_OK(baruby_value_eq(l, r) ? VAL_FALSE : VAL_TRUE);
+}
+
+// 3-way compare.  Returns -1 / 0 / 1 (Integer) for orderable pairs and
+// nil for incomparable types — matches Ruby's `<=>`.
+NODE_DEF
+node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) {
+        if (l < r) return RESULT_OK(INT2VAL(-1));
+        if (l > r) return RESULT_OK(INT2VAL(1));
+        return RESULT_OK(INT2VAL(0));
+    }
+    if (IS_STR(l) && IS_STR(r)) {
+        int cmp = baruby_str_cmp(l, r);
+        if (cmp < 0) return RESULT_OK(INT2VAL(-1));
+        if (cmp > 0) return RESULT_OK(INT2VAL(1));
+        return RESULT_OK(INT2VAL(0));
+    }
+    return RESULT_OK(VAL_NIL);
+}
+
+// `<<` is overloaded:
+//   Integer << Integer  → bit shift
+//   Array   << any      → push (mutating, returns self)
+//   String  << String   → append (mutating, returns self)
+NODE_DEF
+node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) {
+        return RESULT_OK(INT2VAL(VAL2INT(l) << VAL2INT(r)));
+    }
+    if (IS_ARY(l)) {
+        baruby_ary_push(l, r);
+        return RESULT_OK(l);
+    }
+    if (IS_STR(l) && IS_STR(r)) {
+        baruby_str_append(l, r);
+        return RESULT_OK(l);
+    }
+    fprintf(stderr, "type mismatch in <<\n");
+    return RESULT_OK(VAL_NIL);
 }
 
 // -----------------------------------------------------------------------------

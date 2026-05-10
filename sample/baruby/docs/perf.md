@@ -21,20 +21,27 @@ baruby は GC testbed が主目的なので **絶対性能の最適化はまだ�
 `bench/run.rb -n 3` を 3 回回したときの best / median を記載
 (memory note: bench は ~1s 持続スケールで取る)。
 
-## 2. ベースライン (`--plain`)
+## 2. モード別実測値
 
-```
-mode: plain, repeats: 3
-bench                       best(s)     med(s)   alloc_MB        GCs
-binary_trees                  0.93       0.94      320.8         12
-list_alloc                    1.02       1.03      763.8       1148
-string_concat                 0.97       0.98     1147.3       1706
-```
+`bench/run.rb -n 3` を実行、各 mode で 3 回繰り返した best 値:
 
-- `alloc_MB` は libgc の `GC_get_total_bytes`、
-  `GCs` は `GC_get_gc_no` (collection 回数)。
-- どれも ~1s 持続。`alloc/sec` は概ね 350MB/s〜1.2GB/s — 完全に
+| bench         | plain (s) | aot (s) | pg (s) | aot 比 | pg 比 |
+|---|---:|---:|---:|---:|---:|
+| binary_trees  | 0.96      | 0.64    | 0.94   | 1.51× | 1.03× |
+| list_alloc    | 1.16      | 0.51    | 0.50   | 2.27× | 2.32× |
+| string_concat | 1.02      | 0.88    | 0.88   | 1.16× | 1.16× |
+
+- `alloc_MB` (plain): binary_trees 320.8 / list_alloc 763.8 / string_concat 1147.3
+- `GCs` (plain): 12 / 1148 / 1706
+  (`GC_get_total_bytes` / `GC_get_gc_no`)
+- どれも plain で ~1s 持続。`alloc/sec` は 350MB/s〜1.1GB/s — 完全に
   allocator-bound と見なしてよいレンジ。
+
+AOT は `-c` で AST 全体と各関数本体を SD\_\<hash\>.c に bake → all.so に
+リンク → dlopen。PG は `-p` で 1 回プレーン実行のあと cc->body から
+PGSD\_\<hopt\>.c を bake (= 観測した body との直接呼び出しが SD に
+焼き込まれる)。PG が plain と大差ない bench (binary_trees) は 1 回
+ループで終わる構造のため、prof-driven inlining の利得が小さい。
 
 各ベンチの所感:
 
@@ -89,7 +96,20 @@ binary_trees の同等コードを CRuby で書くと、世代別 + write barrie
 ぶん 2-3× 速い見込み。ただし baruby は AST インタプリタ + libgc という
 極めて単純な構成なので、その差はほぼすべて「処理系の素朴さ」由来。
 
-## 5. AOT / PG モード
+## 5. AOT / PG モードの動作確認
 
-未検証 ([todo.md](todo.md) P0)。検証できたら本ドキュメントに `aot:` /
-`pg:` 行を追加する。
+§2 の表は 2026-05-10 検証済 (5 テスト + 3 ベンチ全部通過、plain と
+出力一致)。SD\_\<hash\>.c は `-c` 時に `code_store/c/` に書き出される。
+1 ファイルあたり inline static SD は 100〜400 個 (test_p1b で 403)、
+all.so のエントリ (= public T シンボル) は AST root + 各関数本体ぶん
+4-5 個。
+
+新ノード (`node_str_lit` の `const char *` operand、`node_call_*` の
+recv/idx/val、`node_spaceship`、`node_lshift`、`node_*_repeat`、
+`node_to_s`、`node_to_i` など) はすべて `code_store/SD_*.c` 内で
+`EVAL_<name>(...)` 形式に展開され、専用の HORG / HOPT ハッシュが
+生成される。const char * の扱いは naruby の `node_call_builtin`
+パターンを継承しているので問題なし。
+
+JIT (`-j`) は `lstation.rb` 抜きでは動かないので unwired。`-j` 指定で
+即 exit するように parser で wired ([todo.md](todo.md))。

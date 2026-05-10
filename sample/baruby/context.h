@@ -210,6 +210,14 @@ bool  baruby_value_eq(VALUE a, VALUE b);
 // Strict-3-way string compare: <0 / 0 / >0, like memcmp + length tiebreak.
 int   baruby_str_cmp(VALUE a, VALUE b);
 
+// `s * n` / `a * n` — Ruby-style repeat into a fresh object.  Negative
+// `n` returns an empty result (Ruby raises but we just clamp).
+VALUE baruby_str_repeat(VALUE s, intptr_t n);
+VALUE baruby_ary_repeat(VALUE a, intptr_t n);
+
+// In-place append (`s << t`) — grows `dst`'s buffer and returns `dst`.
+void  baruby_str_append(VALUE dst, VALUE src);
+
 // Stringification (Ruby `to_s`).  Heap-alloc'd in all cases except when
 // `v` is already a String (returns self).
 VALUE baruby_to_s(VALUE v);

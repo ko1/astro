@@ -3,6 +3,48 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-10 — A+B バッチ (`<=>` / `*` / `<<` / escape / AOT/PG verify / JIT 撤去)
+
+### A — 残り P1 機能
+
+- **`<=>`** (`node_spaceship`)。Int+Int / Str+Str は `-1`/`0`/`1`、
+  混合型は `nil` (Ruby 互換)。`is_binop` / `alloc_binop` に追加。
+- **`String#*` / `Array#*`** (`baruby_str_repeat` / `baruby_ary_repeat`)。
+  `node_mul` を type branch に拡張。負の N は空。
+- **`<<`** (`node_lshift`)。Int+Int は bit shift、Array は push、
+  String は in-place append (`baruby_str_append`)。`is_binop` /
+  `alloc_binop` に追加。`a << x << y << z` が左結合チェインで動く。
+- **`p` の inspect 表示**。`baruby_print_value` / `to_s_inner` の String
+  分岐で `\n` / `\t` / `\r` / `\\` / `\"` / `\xNN` (制御文字) を escape。
+  prism の `unescaped` 経由のリテラル (`"a\nb"` 等) が
+  正しく確認できるようになった (見た目は Ruby の `p` と同じ)。
+
+### B — モード検証
+
+- **AOT (`-c`)** 全 5 テスト + 3 bench 通過、plain と出力一致。新ノード
+  (`node_str_lit` の `const char *` operand、`node_call_*`、`<=>` 等)
+  も `code_store/SD_<hash>.c` 内で `EVAL_<name>(...)` 形に展開される。
+  test_p1b のような複雑な script で SD は 1 ファイル内 inline 静的
+  関数 ~400 個、public エントリ 4-5 個。
+- **PG (`-p`)** も同様に通過。`PGSD_<hopt>.c` が出る。bench 結果は
+  perf.md §2 に追記。
+- **JIT (`-j`)** は `lstation.rb` ワーカーなしでは UDS 接続できないので
+  パーサで `-j` 受信時に明示エラー + exit(1) させた。`astro_jit.c` の
+  hooks は再有効化に備えて残置。
+
+### モード別ベンチ結果 (perf.md §2 抜粋)
+
+| bench         | plain  | aot    | pg     | aot 比 |
+|---|---:|---:|---:|---:|
+| binary_trees  | 0.96 s | 0.64 s | 0.94 s | 1.51× |
+| list_alloc    | 1.16 s | 0.51 s | 0.50 s | 2.27× |
+| string_concat | 1.02 s | 0.88 s | 0.88 s | 1.16× |
+
+PG が plain と差が出にくい bench (binary_trees) は 1 回ループで
+終わる構造 — prof-driven inlining 余地が小さい。alloc 量は libgc
+の `GC_get_total_bytes` 由来で、モード間で不変 (~320MB / ~764MB /
+~1.1GB)。
+
 ## 2026-05-10 — P1 言語拡張バッチ
 
 `true` / `false` / `nil` リテラル、`to_s` / `to_i`、String 順序比較、

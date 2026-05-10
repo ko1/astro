@@ -84,17 +84,19 @@ a, b = ...    # 多重代入は未対応
 
 ### 文字列
 
-`+` (concat → 新しい String を返す)。`==` / `!=` は **値比較**
-(`"abc" == "abc"` は `true`)。`<` / `<=` / `>` / `>=` は **辞書式比較**
-(memcmp + 長さ tiebreak)。`*` 反復・`<<` 追加は未対応。
+`+` (concat → 新しい String を返す)、`*` (Integer 倍した新 String)、
+`<<` (mutating append、self を返す)。`==` / `!=` は **値比較**
+(`"abc" == "abc"` は `true`)。`<` / `<=` / `>` / `>=` / `<=>` は
+**辞書式比較** (memcmp + 長さ tiebreak)。
 
 ### Array
 
-`[]` (index get) / `[]=` (index set) / `+` (concat → 新配列)。
+`[]` (index get) / `[]=` (index set) / `+` (concat → 新配列) /
+`*` (Integer 倍した新配列) / `<<` (mutating push、self を返す)。
 インデックス負の値は末尾基準 (`a[-1]` で最終要素)。範囲外 read は
 `nil` を返す。範囲外 write は `nil` で auto-extend する。
 `==` / `!=` は **要素ごとの値比較** (再帰的、`[1, [2, 3]] == [1, [2,
-3]]` は `true`)。`<<` push・`*` 反復は未対応。
+3]]` は `true`)。Array#`<=>` は未対応。
 
 ### 比較
 
@@ -104,8 +106,14 @@ a, b = ...    # 多重代入は未対応
   Array は要素ごと)。
 - 異なる型は常に false (`1 == "1"` → `false`、`nil == false` → `false`)。
 
-`<`, `<=`, `>`, `>=` は Integer 同士 / String 同士に対応 (混合型は
-runtime エラー)。
+`<`, `<=`, `>`, `>=`, `<=>` は Integer 同士 / String 同士に対応。
+`<=>` の混合型は Ruby と同じく `nil` を返す。`<` 等の混合型は
+runtime エラー (`stderr` に "type mismatch")。
+
+### Integer
+
+`+`, `-`, `*`, `/`, `%` は signed 64bit C 演算 (オーバーフロー未定義、
+1 bit は LSB-tag に消費される)。`<<` は左ビットシフト。`<=>` あり。
 
 ### 論理
 

@@ -403,6 +403,8 @@ is_binop(struct transduce_context *tc, pm_constant_id_t name)
     else if (ceq(tc, name, ">=")) return true;
     else if (ceq(tc, name, "!=")) return true;
     else if (ceq(tc, name, "==")) return true;
+    else if (ceq(tc, name, "<<")) return true;
+    else if (ceq(tc, name, "<=>")) return true;
 
     return false;
 }
@@ -443,6 +445,12 @@ alloc_binop(struct transduce_context *tc, pm_constant_id_t name, NODE *lhs, NODE
     }
     else if (ceq(tc, name, "==")) {
         return ALLOC_node_eq(lhs, rhs);
+    }
+    else if (ceq(tc, name, "<<")) {
+        return ALLOC_node_lshift(lhs, rhs);
+    }
+    else if (ceq(tc, name, "<=>")) {
+        return ALLOC_node_spaceship(lhs, rhs);
     }
     else {
         return NULL;
@@ -1483,9 +1491,14 @@ parse_option(int argc, char *argv[])
           case 'b': OPTION.skip_bake     = true; break;
           case 'q': OPTION.quiet         = true; break;
           case 'j':
-            OPTION.jit = true;
-            astro_jit_start("/tmp/astrojit_l1.sock");
-            break;
+            // JIT (-j) requires the lstation.rb worker daemon, which we
+            // intentionally did not carry over from the naruby fork.
+            // The astro_jit.c hooks remain in place for future
+            // re-enabling — see docs/todo.md.
+            fprintf(stderr,
+                    "baruby: JIT (-j) is unwired post-fork; "
+                    "use --plain / -c / -p instead.\n");
+            exit(1);
           default:
             fprintf(stderr, "unknown option: %s\n", arg);
             show_help();

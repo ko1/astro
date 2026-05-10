@@ -315,6 +315,59 @@ baruby_str_cmp(VALUE av, VALUE bv)
     return 0;
 }
 
+VALUE
+baruby_str_repeat(VALUE sv, intptr_t n)
+{
+    if (n <= 0) return baruby_str_new("", 0);
+    const BaString *s = VAL2STR(sv);
+    uint64_t total = (uint64_t)s->len * (uint64_t)n;
+    if (total > UINT32_MAX) total = UINT32_MAX;
+    BaString *r = (BaString *)malloc(sizeof(BaString));
+    r->hdr.type  = OBJ_STRING;
+    r->hdr.flags = 0;
+    r->len  = (uint32_t)total;
+    r->capa = r->len + 1;
+    r->bytes = (char *)malloc(r->capa);
+    for (intptr_t i = 0; i < n; i++) {
+        memcpy(r->bytes + (uint32_t)i * s->len, s->bytes, s->len);
+    }
+    r->bytes[r->len] = '\0';
+    return (VALUE)r;
+}
+
+VALUE
+baruby_ary_repeat(VALUE av, intptr_t n)
+{
+    if (n <= 0) return baruby_ary_new(0);
+    const BaArray *a = VAL2ARY(av);
+    uint64_t total = (uint64_t)a->len * (uint64_t)n;
+    if (total > UINT32_MAX) total = UINT32_MAX;
+    VALUE rv = baruby_ary_new((uint32_t)total ? (uint32_t)total : 1);
+    BaArray *r = VAL2ARY(rv);
+    for (intptr_t i = 0; i < n; i++) {
+        if (a->len) memcpy(r->items + (uint32_t)i * a->len, a->items, sizeof(VALUE) * a->len);
+    }
+    r->len = (uint32_t)total;
+    return rv;
+}
+
+void
+baruby_str_append(VALUE dstv, VALUE srcv)
+{
+    BaString *d = VAL2STR(dstv);
+    const BaString *s = VAL2STR(srcv);
+    uint32_t need = d->len + s->len + 1;
+    if (need > d->capa) {
+        uint32_t nc = d->capa ? d->capa * 2 : 8;
+        while (nc < need) nc *= 2;
+        d->bytes = (char *)realloc(d->bytes, nc);
+        d->capa = nc;
+    }
+    if (s->len) memcpy(d->bytes + d->len, s->bytes, s->len);
+    d->len += s->len;
+    d->bytes[d->len] = '\0';
+}
+
 // Append-based libgc-backed string builder.  We can't use
 // open_memstream + libc free here — the `#define free(p) ((void)(p))`
 // shadow in context.h would silently leak the libc buffer, which on
@@ -355,7 +408,24 @@ to_s_inner(StrBuf *sb, VALUE v)
     if (IS_STR(v)) {
         const BaString *s = VAL2STR(v);
         sb_append(sb, "\"", 1);
-        sb_append(sb, s->bytes, s->len);
+        for (uint32_t i = 0; i < s->len; i++) {
+            unsigned char ch = (unsigned char)s->bytes[i];
+            char buf[8];
+            switch (ch) {
+              case '\n': sb_append(sb, "\\n", 2); break;
+              case '\t': sb_append(sb, "\\t", 2); break;
+              case '\r': sb_append(sb, "\\r", 2); break;
+              case '\\': sb_append(sb, "\\\\", 2); break;
+              case '"':  sb_append(sb, "\\\"", 2); break;
+              default:
+                if (ch < 0x20 || ch == 0x7f) {
+                    int n = snprintf(buf, sizeof buf, "\\x%02X", ch);
+                    sb_append(sb, buf, (uint32_t)n);
+                } else {
+                    sb_append(sb, (const char *)&s->bytes[i], 1);
+                }
+            }
+        }
         sb_append(sb, "\"", 1);
         return;
     }
@@ -436,7 +506,19 @@ baruby_print_value(FILE *fp, VALUE v)
     else if (IS_STR(v)) {
         const BaString *s = VAL2STR(v);
         fputc('"', fp);
-        fwrite(s->bytes, 1, s->len, fp);
+        for (uint32_t i = 0; i < s->len; i++) {
+            unsigned char ch = (unsigned char)s->bytes[i];
+            switch (ch) {
+              case '\n': fputs("\\n", fp); break;
+              case '\t': fputs("\\t", fp); break;
+              case '\r': fputs("\\r", fp); break;
+              case '\\': fputs("\\\\", fp); break;
+              case '"':  fputs("\\\"", fp); break;
+              default:
+                if (ch < 0x20 || ch == 0x7f) fprintf(fp, "\\x%02X", ch);
+                else fputc((int)ch, fp);
+            }
+        }
         fputc('"', fp);
     }
     else {
