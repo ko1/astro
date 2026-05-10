@@ -51,6 +51,8 @@ ASTro samples span a wide range of language families to exercise the framework a
 **Ruby family.**
 - [`naruby`](./sample/naruby/) — ***not a Ruby***: tiny integer-only Ruby subset (32 nodes).
   The original ASTro paper's vehicle and **the only sample exercising all four execution modes** (plain / AOT / PG / JIT) from a single binary.
+- [`baruby`](./sample/baruby/) — ***barely a Ruby***: naruby fork extended with **Array + String + libgc** (42 nodes); LSB-tagged VALUE, parse-time method desugar (no OO machinery).
+  Built as the **first testbed for the unified GC framework** ([`docs/gc_design.md`](./docs/gc_design.md)) — minimal value representation, ships with `binary_trees` / `list_alloc` / `string_concat` benches at ~1 s scale that report wall time + libgc collection counts.
 - [`abruby`](./sample/abruby/) — ***a bit Ruby***: larger Ruby subset as a CRuby C extension (107 nodes), reusing CRuby's `VALUE` / Prism / GC.
   PGC-baked optcarrot **86.5 fps** vs CRuby (no-JIT) 45.6 fps; integer-loop microbenches 4–8×.
 - [`koruby`](./sample/koruby/) — ***kind of Ruby***: standalone (non-CRuby) Ruby with Boehm GC + GMP + Prism (119 nodes).
