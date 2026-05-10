@@ -33,13 +33,21 @@ static void  gmp_free   (void *p, size_t sz)         { (void)p; (void)sz; /* GC 
 static void
 pys_gc_init(void)
 {
-    // GC_INITIAL_HEAP_SIZE — request a 16MB starting heap before
+    // GC_INITIAL_HEAP_SIZE — request a large starting heap before
     // GC_init().  Setting via env (rather than GC_expand_hp post-init)
     // avoids a heap-corruption window during the first collection
     // after expansion that flakily segfaulted at module-init shutdown
     // (test_errno + test_typechecks ~70% reproducer).
+    //
+    // 128 MiB default (was 64 MiB): test_dict / test_userdict / test_set
+    // bench-scale tests grow past 64 MiB and hit a libgc.so internal
+    // SEGV (mark phase NULL deref, ~5/6 reproduction) when the heap
+    // expands.  Setting the initial heap large enough that no expansion
+    // happens during a typical test_*.py run sidesteps the Boehm bug.
+    // Users can override with GC_INITIAL_HEAP_SIZE for memory-tight
+    // setups.
     if (!getenv("GC_INITIAL_HEAP_SIZE"))
-        setenv("GC_INITIAL_HEAP_SIZE", "67108864", 0);   // 64 MiB
+        setenv("GC_INITIAL_HEAP_SIZE", "134217728", 0);   // 128 MiB
     GC_init();
     GC_set_free_space_divisor(1);
     mp_set_memory_functions(gmp_alloc, gmp_realloc, gmp_free);
@@ -9876,13 +9884,17 @@ bi_float_getformat(CTX *c, int argc, VALUE *argv)
 // dict.fromkeys([cls,] iter[, default=None]).  Accepts both the
 // classmethod form (called as `dict.fromkeys(cls, iter, default)`) and
 // the bare-call form (`dict.fromkeys(iter, default)`) — when argv[0] is
-// a class, it's the classmethod-bound class and we shift over.
+// a class AND there's a following arg, treat it as the classmethod-bound
+// class and shift over.
 static VALUE
 bi_dict_fromkeys(CTX *c, int argc, VALUE *argv)
 {
-    if (argc >= 1 && pys_is_class(argv[0])) {
+    if (argc >= 2 && pys_is_class(argv[0])) {
         argv++;
         argc--;
+    }
+    if (argc < 1) {
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "fromkeys: missing iterable arg");
     }
     VALUE def = argc >= 2 ? argv[1] : PYS_NONE;
     VALUE r = pys_make_dict();
