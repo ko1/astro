@@ -3853,7 +3853,12 @@ pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable)
     if (pys_is_dict(iterable) || pys_is_any_set(iterable)) {
         it->kind = 3;
         it->end = (int64_t)PYS_PTR(iterable)->dict->elen;
-        it->version_snapshot = PYS_PTR(iterable)->dict->version;
+        // CPython parity (bpo-46615): snapshot `used` (live count) at
+        // iter creation.  iter_next raises RuntimeError if used changes
+        // mid-iteration.  Note: this is more lenient than version — a
+        // clear+refill that ends with the same count won't trigger
+        // (test_iter_and_mutate / issue 24581 depends on this).
+        it->version_snapshot = (uint64_t)PYS_PTR(iterable)->dict->used;
         return;
     }
     // Already-an-iterator (PYS_T_ITER created by `iter(seq)` builtin):
@@ -4039,7 +4044,7 @@ pys_iter_next(CTX *c, struct pys_iter *it, VALUE *out)
         return true;
       case 3: {
         struct pysdict *d = PYS_PTR(it->container)->dict;
-        if (UNLIKELY(d->version != it->version_snapshot)) {
+        if (UNLIKELY((uint64_t)d->used != it->version_snapshot)) {
             const char *kind = pys_is_any_set(it->container) ? "Set" : "dictionary";
             PYS_RAISE_EXC(c, c->EXC_RuntimeError,
                           "%s changed size during iteration", kind);
