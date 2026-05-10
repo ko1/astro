@@ -1190,6 +1190,7 @@ void korb_init_builtins(void) {
     korb_class_add_method_cfunc(cIO, korb_intern("puts"), kernel_puts, -1);
     korb_class_add_method_cfunc(cIO, korb_intern("print"), kernel_print, -1);
     korb_class_add_method_cfunc(cIO, korb_intern("write"), kernel_print, -1);
+    korb_class_add_method_cfunc(cIO, korb_intern("<<"), kernel_print, 1);
     korb_class_add_method_cfunc(cIO, korb_intern("flush"), kernel_inspect, 0);
     korb_class_add_method_cfunc(cIO, korb_intern("sync="), kernel_inspect, 1);
     /* IO instances also need gets/read/each_line/eof?/close — share

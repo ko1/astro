@@ -535,6 +535,28 @@ def system(*_args); false; end
 def `(_cmd); ""; end
 def fork; nil; end
 def spawn(*_args); 0; end
+# Global-variable trace hooks — koruby has no real impl; act like the
+# trace fired immediately if no $!=, otherwise quiet no-op.
+def trace_var(_name, *_args, &_blk); nil; end
+def untrace_var(_name, *_args); []; end
+# caller_locations / __method__ stubs — koruby provides caller as
+# a method; caller_locations returns array of strings matching caller.
+unless respond_to?(:caller_locations)
+  def caller_locations(*args)
+    cs = caller(*args)
+    cs.is_a?(Array) ? cs.map { |s| Caller_Location.new(s) } : nil
+  end
+  class ::Caller_Location
+    def initialize(s); @s = s; m = s.match(/\A([^:]+):(\d+)/); @path = m ? m[1] : "?"; @lineno = m ? m[2].to_i : 0; end
+    def path; @path; end
+    def absolute_path; @path; end
+    def lineno; @lineno; end
+    def label; "?"; end
+    def base_label; "?"; end
+    def to_s; @s; end
+    def inspect; @s; end
+  end
+end
 class << Process
   def pid; 0; end unless respond_to?(:pid)
   def ppid; 0; end unless respond_to?(:ppid)
