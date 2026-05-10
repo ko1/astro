@@ -43,14 +43,14 @@ heap corruption が疑われる。
 
 **結果 (file-level):**
 
-- 安定 PASS = 18 (変わらず, 既出)
-- **test_list**: SEGV → `FAILED (failures=14, errors=12, skipped=1)` 完走
-- **test_tuple**: SEGV → `FAILED (failures=6, errors=4, skipped=4)` 完走
-- **test_userlist**: SEGV → `FAILED (failures=9, errors=11)` 完走
-- **test_userdict**: SEGV → `FAILED (failures=4)` 完走 (errors 0)
-- **test_set**: 169 fails+errors → **73 fails+errors** (96 件回復)
-  `FAILED (failures=35, errors=38, skipped=2)`
-- **test_dict**: SEGV → `FAILED (failures=30, errors=23, skipped=13)`
+- 安定 PASS = **19** (test_userdict が新たに pass)
+- **test_userdict**: SEGV → `OK` (全 25 tests pass) ✓
+- **test_list**: SEGV → `FAILED (failures=13, errors=6, skipped=1)` 完走
+- **test_tuple**: SEGV → `FAILED (failures=6, errors=2, skipped=4)` 完走
+- **test_userlist**: SEGV → `FAILED (failures=6, errors=1)` 完走
+- **test_set**: 169 fails+errors → **68 fails+errors** (101 件回復)
+  `FAILED (failures=31, errors=37, skipped=2)`
+- **test_dict**: SEGV → `FAILED (failures=12, errors=18, skipped=13)`
   完走 (libgc 内部 SEGV は GC_INITIAL_HEAP_SIZE 128MiB で解消)。
 
 **追加した shim / 機能拡張:**
@@ -97,6 +97,58 @@ heap corruption が疑われる。
   RAISE 確認
 - `node_lt/le/gt/ge` で `pys_cmp` 後の RAISE 伝播 (lambda 経由で
   swallow されていた経路)
+
+### 続き: 比較演算子と hash の CPython parity
+
+- `node_lt/le/gt/ge` で `pys_cmp` 後の state==RAISE 伝播
+  (lambda 経由で swallow されていた経路)。
+- 比較演算子に reflected dunder fallback
+  (`set < instance` で `instance.__gt__` を試す)。
+- `hash(int) == int` (CPython 仕様、 -1→-2)。 これまで golden ratio 乗算で
+  `hash(1) ≠ 1` だったため、 user の `__hash__: return 1` が int の
+  bucket と衝突せず __eq__ が呼ばれなかった。
+- **pys_hash_slow を 62bit non-negative にマスク**:
+  FNV-1a で uint64 (高位 bit set) を返すと PYS_FIX overflow で
+  truncation。 ユーザの __hash__ 経由 hash と直接 pys_hash 経由 hash が
+  異なって dict lookup 失敗。 62bit mask で round-trip 一貫。
+- **str subclass で primary の hash を継承**: `dict[StrSub('key3')] ==
+  dict['key3']` が機能するように。
+
+### List / Tuple / Dict の追加修正
+
+- list: `__delitem__` / `__iadd__` / `__init__` shim、 `reversed()` を
+  proper PYS_T_ITER で返す、 mutation-safe `index`/`remove`/`count`/
+  `__contains__` (bpo-38610 regression: __eq__ で list を clear して
+  も SEGV しない)、 type check で `TypeError "list indices must be ..."`、
+  slice の `n` overflow 修正。
+- set: 多引数 `union/intersection/difference`、 left-type 維持 + Subclass
+  unwrap、 `set.remove` で `KeyError(key)`、 `sm_symmetric_difference`
+  の materialize + raise、 generator materialize、 set-in-frozenset 変換
+  lookup、 set.remove/discard で unhashable set→frozenset 変換。
+- dict: `KeyError(key)` で args[0]=key、 mapping protocol (.keys() +
+  __getitem__)、 dm_getitem/dm_delitem/dm_pop の raise propagation、
+  `fromkeys` で subclass instance を構築。
+- tuple: `index` / `count` の mutation safety + raise propagation。
+- iter: `__iter__` / `__next__` / `__length_hint__` shim (PYS_T_ITER 用)。
+
+### for-loop / repr / pys_to_repr の raise 伝播
+
+- `node_for_local / node_for_global` で `__next__` raise 後の
+  else-clause 突入を防ぐ。
+- `pys_display` の visit-stack push/pop を pushed フラグで対称化、
+  `__repr__` raise 後の NULL deref を回避。
+- `pys_to_repr` 末尾 bottom path で memstream 完了後の state==RAISE 確認、
+  partial 文字列を返さない。
+- **UserDict.__repr__ を CPython 互換 (`repr(self.data)`)** に変更。
+
+### Hash / SEGV / 構造
+
+- `GC_INITIAL_HEAP_SIZE` 64MiB → 128MiB (Boehm の heap-expansion bug 回避)。
+- `bi_dict_fromkeys` の cls-shift 条件を厳しく (argc=1 で argv[0]=cls で
+  empty 引数 deref を回避)。
+- **node.h に runtime extern 宣言群を追加**: node.def → node_eval.c から
+  runtime 関数を呼ぶときに implicit-int truncation で bogus pointer 経由
+  SEGV する経路があった (node_lt rich comparison で実害発覚)。
 
 ## sweep の現状 (2026-05-09)
 
