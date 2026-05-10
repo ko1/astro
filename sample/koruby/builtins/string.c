@@ -652,10 +652,93 @@ static VALUE str_byteslice(CTX *c, VALUE self, int argc, VALUE *argv) {
     return str_aref(c, self, argc, argv);
 }
 
+/* String#[]= — replace a slice of bytes with a string.  Forms:
+ *   s[i] = "..."         → replace 1 char at i (insert if "" or longer)
+ *   s[i, len] = "..."    → replace len chars starting at i
+ *   s[range] = "..."     → replace characters in range
+ *   s[regex] = "..."     → not impl (regex out of scope)
+ *   s[regex, group] = "..." → not impl
+ *   s[match_str] = "..." → replace first occurrence
+ * Returns the rhs value (not self) per CRuby. */
 static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
-    /* not used by optcarrot main path; stub */
-    return Qnil;
+    if (argc < 2) return Qnil;
+    struct korb_string *s = (struct korb_string *)self;
+    /* Normalize rhs to a String. */
+    VALUE val = argv[argc - 1];
+    if (SPECIAL_CONST_P(val) || BUILTIN_TYPE(val) != T_STRING) {
+        VALUE coerced = korb_to_s(val);
+        if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) return val;
+        val = coerced;
+    }
+    struct korb_string *vs = (struct korb_string *)val;
+    long start = 0, len = 0;
+    if (argc == 2 && FIXNUM_P(argv[0])) {
+        start = FIX2LONG(argv[0]);
+        len = 1;
+        if (start < 0) start += s->len;
+        if (start < 0 || start >= s->len) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", FIX2LONG(argv[0]));
+            return val;
+        }
+        /* If replacing with "", `s[i] = ""` deletes one char.  If
+         * replacing with a multi-char string, insert; len=1 covers it. */
+    } else if (argc == 3 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
+        start = FIX2LONG(argv[0]);
+        len = FIX2LONG(argv[1]);
+        if (start < 0) start += s->len;
+        if (start < 0 || start > s->len) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", FIX2LONG(argv[0]));
+            return val;
+        }
+        if (len < 0) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE, "negative length %ld", len);
+            return val;
+        }
+        if (start + len > s->len) len = s->len - start;
+    } else if (argc == 2 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
+        struct korb_range *r = (struct korb_range *)argv[0];
+        long b = NIL_P(r->begin) ? 0 : (FIXNUM_P(r->begin) ? FIX2LONG(r->begin) : 0);
+        long e = NIL_P(r->end) ? s->len - 1 : (FIXNUM_P(r->end) ? FIX2LONG(r->end) : s->len - 1);
+        if (b < 0) b += s->len;
+        if (e < 0) e += s->len;
+        if (r->exclude_end && !NIL_P(r->end)) e--;
+        if (b < 0 || b > s->len) {
+            VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+            korb_raise(c, (struct korb_class *)eR, "out of range");
+            return val;
+        }
+        if (e < b - 1) e = b - 1;
+        start = b; len = e - b + 1;
+        if (start + len > s->len) len = s->len - start;
+    } else if (argc == 2 && BUILTIN_TYPE(argv[0]) == T_STRING) {
+        struct korb_string *needle = (struct korb_string *)argv[0];
+        long pos = -1;
+        for (long i = 0; i + needle->len <= s->len; i++) {
+            if (memcmp(s->ptr + i, needle->ptr, needle->len) == 0) { pos = i; break; }
+        }
+        if (pos < 0) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE, "string not matched");
+            return val;
+        }
+        start = pos; len = needle->len;
+    } else {
+        return val;
+    }
+    /* Splice: s = s[0...start] + vs + s[start+len..] */
+    long new_len = s->len - len + vs->len;
+    char *new_ptr = korb_xmalloc_atomic(new_len + 1);
+    memcpy(new_ptr, s->ptr, start);
+    memcpy(new_ptr + start, vs->ptr, vs->len);
+    memcpy(new_ptr + start + vs->len, s->ptr + start + len, s->len - start - len);
+    new_ptr[new_len] = 0;
+    s->ptr = new_ptr;
+    s->len = new_len;
+    return val;
 }
 
 static VALUE str_index(CTX *c, VALUE self, int argc, VALUE *argv) {
