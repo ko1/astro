@@ -378,6 +378,38 @@ unless defined?(Errno) && Errno.const_defined?(:ENOENT, false)
   end
 end
 
+# Dir extras — koruby's builtin Dir lacks `open` / `each` / `read` /
+# foreach / home; minimal stubs.
+class Dir
+  def self.open(path)
+    if block_given?
+      yield self.allocate
+    else
+      self.allocate
+    end
+  end unless respond_to?(:open)
+  def self.foreach(path, &blk)
+    return enum_for(:foreach, path) unless blk
+    Dir.entries(path).each(&blk)
+    nil
+  end unless respond_to?(:foreach)
+  def self.exist?(path); File.directory?(path); end unless respond_to?(:exist?)
+  def self.exists?(path); exist?(path); end unless respond_to?(:exists?)
+  def self.empty?(path); File.directory?(path) && Dir.entries(path).reject {|n| n=="." || n==".."}.empty?; end unless respond_to?(:empty?)
+  def self.home(*); ENV["HOME"] || "/root"; end unless respond_to?(:home)
+  def self.tmpdir(*); ENV["TMPDIR"] || "/tmp"; end unless respond_to?(:tmpdir)
+  def self.children(path)
+    entries(path).reject {|n| n == "." || n == ".."}
+  end unless respond_to?(:children)
+  def each(&blk); self; end unless method_defined?(:each)
+  def read; nil; end unless method_defined?(:read)
+  def close; self; end unless method_defined?(:close)
+  def path; "(stub)"; end unless method_defined?(:path)
+  def pos; 0; end unless method_defined?(:pos)
+  def pos=(_); 0; end unless method_defined?(:pos=)
+  def rewind; self; end unless method_defined?(:rewind)
+end
+
 # tmpdir / fileutils-style helpers — many tests open ad-hoc temp dirs.
 class Dir
   unless respond_to?(:mktmpdir)
