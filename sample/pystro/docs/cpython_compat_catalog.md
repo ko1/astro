@@ -47,12 +47,11 @@ heap corruption が疑われる。
 - **test_list**: SEGV → `FAILED (failures=14, errors=12, skipped=1)` 完走
 - **test_tuple**: SEGV → `FAILED (failures=6, errors=4, skipped=4)` 完走
 - **test_userlist**: SEGV → `FAILED (failures=9, errors=11)` 完走
-- **test_set**: 既に完走していた (`FAILED (failures=59, errors=110)`) が、
-  本セッションで `failures=45, errors=44` まで縮小 (80 件回復)。
-- **test_dict**: 部分的改善 (test_repr の cyclic+BadRepr で SEGV する経路は
-  解消、 完走時に `FAILED (failures=31, errors=23)`) も、
-  test_items_symmetric_difference 経由で Boehm GC 内部 SEGV が残る (5/6
-  程度 flaky)。
+- **test_userdict**: SEGV → `FAILED (failures=4)` 完走 (errors 0)
+- **test_set**: 169 fails+errors → **73 fails+errors** (96 件回復)
+  `FAILED (failures=35, errors=38, skipped=2)`
+- **test_dict**: SEGV → `FAILED (failures=30, errors=23, skipped=13)`
+  完走 (libgc 内部 SEGV は GC_INITIAL_HEAP_SIZE 128MiB で解消)。
 
 **追加した shim / 機能拡張:**
 
@@ -68,6 +67,36 @@ heap corruption が疑われる。
 - `sm_symmetric_difference` で raise propagation + 双方 materialize
 - `sm_intersection` / `sm_difference` で iterator を一度 set へ drain
   (gen を pys_contains に複数回渡すと exhaust する問題)
+- `pys_contains` で set→frozenset 変換 lookup
+  (`set() in {frozenset()}` を CPython 仕様に揃える)
+- 比較演算子 (lt/le/gt/ge) の reflected dunder fallback
+  (`set < instance` で `instance.__gt__` を試す)
+- `hash(int) == int` (CPython 仕様、 -1→-2 special case)
+  これまで golden ratio 乗算で `hash(1) ≠ 1` だったため、 ユーザの
+  `__hash__: return 1` が int の bucket と衝突せず __eq__ が呼ばれない
+  状態。
+
+**ヒープ・SEGV 系:**
+
+- `GC_INITIAL_HEAP_SIZE` デフォルトを 64MiB → 128MiB に変更。 64MiB だと
+  test_dict 等で heap expansion が走り、 Boehm 直後の mark phase で
+  NULL deref する flake が頻発していた。 expansion せずに済む大きさで
+  Boehm bug を回避。
+- `bi_dict_fromkeys` の cls-shift 条件を `argc>=2` に厳しく
+  (`dict.fromkeys()` が argv[0] = cls 一つだけのとき shift で argc=0
+  になり undef memory deref)。
+- node.h に runtime extern 宣言群を追加。 これまで node.def → node_eval.c
+  から runtime 関数を呼ぶときに implicit-int で 32bit truncate されて
+  bogus pointer 経由で SEGV する経路があった (node_lt rich comparison
+  で実害発覚)。
+
+**raise propagation 系:**
+
+- `pys_eq` で `pys_try_binop_dunder` 後の RAISE 確認
+- `pys_eq` の dict / set 比較ループで `pys_dict_has`/`pys_eq` 後の
+  RAISE 確認
+- `node_lt/le/gt/ge` で `pys_cmp` 後の RAISE 伝播 (lambda 経由で
+  swallow されていた経路)
 
 ## sweep の現状 (2026-05-09)
 
