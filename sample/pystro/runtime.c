@@ -2711,6 +2711,7 @@ pydict_find(CTX * restrict c, struct pysdict * restrict d, VALUE key, uint64_t h
 static void
 pydict_resize(struct pysdict *d, size_t new_icapa, bool compact_entries)
 {
+    d->version++;       // bpo-46615: resize invalidates entries[] indexing
     int32_t *new_indices = (int32_t *)GC_malloc_atomic(sizeof(int32_t) * new_icapa);
     for (size_t i = 0; i < new_icapa; i++) new_indices[i] = DICT_EMPTY_IDX;
     size_t mask = new_icapa - 1;
@@ -2789,6 +2790,7 @@ pydict_set_h(CTX *c, struct pysdict *d, VALUE key, uint64_t h, VALUE val)
     d->entries[new_idx].hash = h;
     d->elen++;
     d->used++;
+    d->version++;       // bpo-46615: mutation invalidates active iterators
     if (first_tomb >= 0) {
         d->indices[first_tomb] = new_idx;
     } else {
@@ -2888,6 +2890,7 @@ pys_dict_remove(CTX *c, VALUE dv, VALUE key)
     d->entries[eidx].key = DICT_DELETED_KEY;
     d->entries[eidx].value = PYS_NONE;
     d->used--;
+    d->version++;       // bpo-46615: mutation invalidates active iterators
     return true;
 }
 
@@ -3683,6 +3686,7 @@ pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable)
     if (pys_is_dict(iterable) || pys_is_any_set(iterable)) {
         it->kind = 3;
         it->end = (int64_t)PYS_PTR(iterable)->dict->elen;
+        it->version_snapshot = PYS_PTR(iterable)->dict->version;
         return;
     }
     // Already-an-iterator (PYS_T_ITER created by `iter(seq)` builtin):
@@ -3868,6 +3872,12 @@ pys_iter_next(CTX *c, struct pys_iter *it, VALUE *out)
         return true;
       case 3: {
         struct pysdict *d = PYS_PTR(it->container)->dict;
+        if (UNLIKELY(d->version != it->version_snapshot)) {
+            const char *kind = pys_is_any_set(it->container) ? "Set" : "dictionary";
+            PYS_RAISE_EXC(c, c->EXC_RuntimeError,
+                          "%s changed size during iteration", kind);
+            return false;
+        }
         while (it->i < it->end) {
             size_t i = (size_t)it->i++;
             if (pydict_entry_live(d, i)) {
@@ -8565,6 +8575,7 @@ dm_clear(CTX *c, int argc, VALUE *argv)
     d->elen = 0;
     d->used = 0;
     d->fill = 0;
+    d->version++;       // bpo-46615: clear invalidates active iterators
     for (size_t i = 0; i < d->icapa; i++) d->indices[i] = DICT_EMPTY_IDX;
     return PYS_NONE;
 }
@@ -8765,18 +8776,28 @@ sm_set_copy(CTX *c, int argc, VALUE *argv) {
 static VALUE
 sm_set_clear(CTX *c, int argc, VALUE *argv) {
     (void)c; (void)argc;
-    PYS_PTR(argv[0])->dict = pydict_new();
+    // In-place clear (matches dm_clear) so active iterators detect the
+    // mutation via d->version rather than dereferencing a stale entries
+    // pointer when we swap to a fresh pydict_new().
+    struct pysdict *d = PYS_PTR(argv[0])->dict;
+    d->elen = 0;
+    d->used = 0;
+    d->fill = 0;
+    d->version++;
+    for (size_t i = 0; i < d->icapa; i++) d->indices[i] = DICT_EMPTY_IDX;
     return PYS_NONE;
 }
 static VALUE
 sm_set_update(CTX *c, int argc, VALUE *argv) {
-    VALUE a = argv[0];
+    VALUE a = pys_unwrap_primary(argv[0]);
     for (int j = 1; j < argc; j++) {
         struct pys_iter it; pys_iter_init(c, &it, argv[j]);
         if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
         VALUE x;
-        while (pys_iter_next(c, &it, &x))
+        while (pys_iter_next(c, &it, &x)) {
             pys_dict_set(c, a, x, PYS_NONE);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+        }
     }
     return PYS_NONE;
 }
@@ -8784,12 +8805,13 @@ sm_set_update(CTX *c, int argc, VALUE *argv) {
 static VALUE
 sm_difference_update(CTX *c, int argc, VALUE *argv)
 {
-    VALUE a = argv[0];
+    VALUE a = pys_unwrap_primary(argv[0]);
     for (int j = 1; j < argc; j++) {
         struct pys_iter it; pys_iter_init(c, &it, argv[j]);
         if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
         VALUE x;
         while (pys_iter_next(c, &it, &x)) pys_dict_remove(c, a, x);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
     }
     return PYS_NONE;
 }
@@ -8797,7 +8819,8 @@ static VALUE
 sm_intersection_update(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    VALUE a = argv[0], b = argv[1];
+    VALUE a = pys_unwrap_primary(argv[0]);
+    VALUE b = argv[1];
     // Build a set of keys in `a` that are NOT in b, then remove.
     struct pysdict *aa = PYS_PTR(a)->dict;
     VALUE *to_remove = (VALUE *)alloca(sizeof(VALUE) * aa->elen);
@@ -8806,20 +8829,26 @@ sm_intersection_update(CTX *c, int argc, VALUE *argv)
         if (!pydict_entry_live(aa, i)) continue;
         if (!pys_contains(c, b, aa->entries[i].key))
             to_remove[n++] = aa->entries[i].key;
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
     }
-    for (int i = 0; i < n; i++) pys_dict_remove(c, a, to_remove[i]);
+    for (int i = 0; i < n; i++) {
+        pys_dict_remove(c, a, to_remove[i]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+    }
     return PYS_NONE;
 }
 static VALUE
 sm_symmetric_difference_update(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    VALUE a = argv[0], b = argv[1];
+    VALUE a = pys_unwrap_primary(argv[0]);
+    VALUE b = argv[1];
     struct pys_iter it; pys_iter_init(c, &it, b);
     VALUE x;
     while (pys_iter_next(c, &it, &x)) {
         if (pys_contains(c, a, x)) pys_dict_remove(c, a, x);
         else pys_dict_set(c, a, x, PYS_NONE);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
     }
     return PYS_NONE;
 }

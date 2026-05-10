@@ -210,6 +210,10 @@ struct pysdict {
     size_t   ecapa;
     size_t   used;          // live entries (= elen - deleted)
     size_t   fill;          // indices[] used (= used + tombstones)
+    uint64_t version;       // bumped on every mutation (insert/delete/clear/
+                            // resize); iterators capture this and raise
+                            // RuntimeError on mismatch (CPython parity for
+                            // bpo-46615 — set/dict mutation during iteration).
 };
 
 struct pysobj {
@@ -858,6 +862,10 @@ struct pys_iter {
     // init.  Without this every call to pys_iter_next does a strcmp
     // scan through the class methods table.
     VALUE next_m;
+    // Snapshot of pysdict.version at iteration start (kind=3 dict/set).
+    // pys_iter_next checks against the live container and raises
+    // RuntimeError on mismatch — CPython parity for bpo-46615.
+    uint64_t version_snapshot;
 };
 void pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable);
 bool pys_iter_next(CTX *c, struct pys_iter *it, VALUE *out);
