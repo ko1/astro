@@ -3694,10 +3694,11 @@ pys_contains(CTX *c, VALUE container, VALUE v)
         // CPython special case: `set() in {frozenset()}` works even
         // though set is unhashable.  set_contains catches the TypeError
         // and retries with a temporary frozenset.  Mirror that here.
-        if (pys_is_set(v)) {
-            // Convert the lookup key to a frozenset (same elements).
+        // SetSubclass instance keys also get unwrapped.
+        VALUE u = pys_unwrap_primary(v);
+        if (pys_is_set(u)) {
             VALUE fsk = pys_make_frozenset();
-            struct pysdict *src = PYS_PTR(v)->dict;
+            struct pysdict *src = PYS_PTR(u)->dict;
             for (size_t i = 0; i < src->elen; i++)
                 if (pydict_entry_live(src, i))
                     pys_dict_set(c, fsk, src->entries[i].key, PYS_NONE);
@@ -9023,10 +9024,12 @@ static VALUE
 sm_add(CTX *c, int argc, VALUE *argv) { (void)argc; pys_dict_set(c, argv[0], argv[1], PYS_NONE); return PYS_NONE; }
 // CPython parity: set.{remove,discard,contains} convert an unhashable set
 // key to a frozenset and retry, so `{frozenset([1])}.remove({1})` works.
+// SetSubclass instances are unwrapped first.
 static inline VALUE pys_set_key_for_lookup(CTX *c, VALUE k) {
-    if (pys_is_set(k)) {
+    VALUE u = pys_unwrap_primary(k);
+    if (pys_is_set(u)) {
         VALUE fsk = pys_make_frozenset();
-        struct pysdict *src = PYS_PTR(k)->dict;
+        struct pysdict *src = PYS_PTR(u)->dict;
         for (size_t i = 0; i < src->elen; i++)
             if (pydict_entry_live(src, i))
                 pys_dict_set(c, fsk, src->entries[i].key, PYS_NONE);
