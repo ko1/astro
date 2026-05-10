@@ -1650,14 +1650,28 @@ pys_add(CTX *c, VALUE a, VALUE b)
 static VALUE sm_union(CTX *c, int argc, VALUE *argv);
 static VALUE sm_intersection(CTX *c, int argc, VALUE *argv);
 static VALUE sm_difference(CTX *c, int argc, VALUE *argv);
+
+// CPython parity: result type matches the LEFT operand for set binops.
+// `frozenset(...) | set(...)` → frozenset; `set(...) | frozenset(...)` → set.
+// SetSubclass instance left → result is set/frozenset of the underlying
+// primary type (CPython parity — subclass __or__ inherits from set/frozenset
+// returning the base type unless overridden).
+static inline VALUE pys_make_set_like(VALUE left) {
+    VALUE u = pys_unwrap_primary(left);
+    return pys_is_frozenset(u) ? pys_make_frozenset() : pys_make_set();
+}
 // (declaration moved above pys_class_inherit_metaclass)
 
 VALUE
 pys_sub(CTX *c, VALUE a, VALUE b)
 {
-    if (pys_is_any_set(a) && pys_is_any_set(b)) {
-        VALUE av[2] = { a, b };
-        return sm_difference(c, 2, av);
+    {
+        VALUE au = pys_unwrap_primary(a);
+        VALUE bu = pys_unwrap_primary(b);
+        if (pys_is_any_set(au) && pys_is_any_set(bu)) {
+            VALUE av[2] = { a, b };
+            return sm_difference(c, 2, av);
+        }
     }
     // list - list as set difference (dict_keys-style courtesy).
     if ((pys_is_list(a) || pys_is_any_set(a)) && (pys_is_list(b) || pys_is_any_set(b))) {
@@ -1942,9 +1956,13 @@ pys_bit_and(CTX *c, VALUE a, VALUE b)
         if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     }
-    if (pys_is_any_set(a) && pys_is_any_set(b)) {
-        VALUE av[2] = { a, b };
-        return sm_intersection(c, 2, av);
+    {
+        VALUE au = pys_unwrap_primary(a);
+        VALUE bu = pys_unwrap_primary(b);
+        if (pys_is_any_set(au) && pys_is_any_set(bu)) {
+            VALUE av[2] = { a, b };
+            return sm_intersection(c, 2, av);
+        }
     }
     // dict_keys / dict_items support set ops in CPython.  Pystro
     // returns lists from .keys()/.items()/.values(); allow set
@@ -1979,9 +1997,13 @@ pys_bit_or(CTX *c, VALUE a, VALUE b)
     rd = pys_try_binop_dunder(c, "__ror__", b, a);
     if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (pys_is_any_set(a) && pys_is_any_set(b)) {
-        VALUE av[2] = { a, b };
-        return sm_union(c, 2, av);
+    {
+        VALUE au = pys_unwrap_primary(a);
+        VALUE bu = pys_unwrap_primary(b);
+        if (pys_is_any_set(au) && pys_is_any_set(bu)) {
+            VALUE av[2] = { a, b };
+            return sm_union(c, 2, av);
+        }
     }
     if (pys_is_dict(a) && pys_is_dict(b)) {
         // dict | dict: merge (RHS wins)
@@ -2075,18 +2097,22 @@ pys_bit_xor(CTX *c, VALUE a, VALUE b)
     rd = pys_try_binop_dunder(c, "__rxor__", b, a);
     if (rd) return rd;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (pys_is_any_set(a) && pys_is_any_set(b)) {
-        // Symmetric difference: (a - b) | (b - a)
-        VALUE r = pys_make_set();
-        struct pysdict *aa = PYS_PTR(a)->dict;
-        struct pysdict *bb = PYS_PTR(b)->dict;
-        for (size_t i = 0; i < aa->elen; i++)
-            if (pydict_entry_live(aa, i) && !pys_contains(c, b, aa->entries[i].key))
-                pys_dict_set(c, r, aa->entries[i].key, PYS_NONE);
-        for (size_t i = 0; i < bb->elen; i++)
-            if (pydict_entry_live(bb, i) && !pys_contains(c, a, bb->entries[i].key))
-                pys_dict_set(c, r, bb->entries[i].key, PYS_NONE);
-        return r;
+    {
+        VALUE au = pys_unwrap_primary(a);
+        VALUE bu = pys_unwrap_primary(b);
+        if (pys_is_any_set(au) && pys_is_any_set(bu)) {
+            // Symmetric difference: (a - b) | (b - a) — left-type result.
+            VALUE r = pys_make_set_like(a);
+            struct pysdict *aa = PYS_PTR(au)->dict;
+            struct pysdict *bb = PYS_PTR(bu)->dict;
+            for (size_t i = 0; i < aa->elen; i++)
+                if (pydict_entry_live(aa, i) && !pys_contains(c, bu, aa->entries[i].key))
+                    pys_dict_set(c, r, aa->entries[i].key, PYS_NONE);
+            for (size_t i = 0; i < bb->elen; i++)
+                if (pydict_entry_live(bb, i) && !pys_contains(c, au, bb->entries[i].key))
+                    pys_dict_set(c, r, bb->entries[i].key, PYS_NONE);
+            return r;
+        }
     }
     // list ^ list as set symmetric_difference.
     if ((pys_is_list(a) || pys_is_any_set(a)) && (pys_is_list(b) || pys_is_any_set(b))) {
@@ -8765,20 +8791,17 @@ sm_set_pop(CTX *c, int argc, VALUE *argv) {
     }
     PYS_RAISE_EXC(c, c->EXC_KeyError, "pop from an empty set");
 }
-// CPython parity: result type matches the LEFT operand for set binops.
-// `frozenset(...) | set(...)` → frozenset; `set(...) | frozenset(...)` → set.
-static inline VALUE pys_make_set_like(VALUE left) {
-    return pys_is_frozenset(left) ? pys_make_frozenset() : pys_make_set();
-}
 static VALUE
 sm_union(CTX *c, int argc, VALUE *argv) {
     (void)argc;
     VALUE r = pys_make_set_like(argv[0]);
-    struct pysdict *a = PYS_PTR(argv[0])->dict;
+    VALUE av0 = pys_unwrap_primary(argv[0]);
+    VALUE av1 = pys_unwrap_primary(argv[1]);
+    struct pysdict *a = PYS_PTR(av0)->dict;
     for (size_t i = 0; i < a->elen; i++)
         if (pydict_entry_live(a, i)) pys_dict_set(c, r, a->entries[i].key, PYS_NONE);
-    if (pys_is_set(argv[1]) || pys_is_frozenset(argv[1])) {
-        struct pysdict *b = PYS_PTR(argv[1])->dict;
+    if (pys_is_set(av1) || pys_is_frozenset(av1)) {
+        struct pysdict *b = PYS_PTR(av1)->dict;
         for (size_t i = 0; i < b->elen; i++)
             if (pydict_entry_live(b, i)) pys_dict_set(c, r, b->entries[i].key, PYS_NONE);
     } else {
@@ -8792,7 +8815,8 @@ static VALUE
 sm_intersection(CTX *c, int argc, VALUE *argv) {
     (void)argc;
     VALUE r = pys_make_set_like(argv[0]);
-    struct pysdict *a = PYS_PTR(argv[0])->dict;
+    VALUE av0 = pys_unwrap_primary(argv[0]);
+    struct pysdict *a = PYS_PTR(av0)->dict;
     for (size_t i = 0; i < a->elen; i++) {
         if (pydict_entry_live(a, i) && pys_contains(c, argv[1], a->entries[i].key))
             pys_dict_set(c, r, a->entries[i].key, PYS_NONE);
@@ -8803,7 +8827,8 @@ static VALUE
 sm_difference(CTX *c, int argc, VALUE *argv) {
     (void)argc;
     VALUE r = pys_make_set_like(argv[0]);
-    struct pysdict *a = PYS_PTR(argv[0])->dict;
+    VALUE av0 = pys_unwrap_primary(argv[0]);
+    struct pysdict *a = PYS_PTR(av0)->dict;
     for (size_t i = 0; i < a->elen; i++) {
         if (pydict_entry_live(a, i) && !pys_contains(c, argv[1], a->entries[i].key))
             pys_dict_set(c, r, a->entries[i].key, PYS_NONE);
@@ -8814,7 +8839,8 @@ sm_difference(CTX *c, int argc, VALUE *argv) {
 static VALUE
 sm_symmetric_difference(CTX *c, int argc, VALUE *argv) {
     (void)argc;
-    VALUE a = argv[0], b = argv[1];
+    VALUE a = pys_unwrap_primary(argv[0]);
+    VALUE b = pys_unwrap_primary(argv[1]);
     VALUE r = pys_make_set_like(argv[0]);
     struct pysdict *aa = PYS_PTR(a)->dict;
     for (size_t i = 0; i < aa->elen; i++)
