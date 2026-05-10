@@ -3628,14 +3628,19 @@ bool
 pys_contains(CTX *c, VALUE container, VALUE v)
 {
     if (pys_is_list(container) || pys_is_tuple(container)) {
-        size_t n = PYS_PTR(container)->list.len;
-        for (size_t i = 0; i < n; i++) {
-            VALUE x = PYS_PTR(container)->list.items[i];
+        // Re-bound on each step: __eq__ may have shrunk the container
+        // (bpo-39453: list/tuple.__contains__ holds strong refs in CPython).
+        for (size_t i = 0; ; i++) {
+            struct pysobj *o = PYS_PTR(container);
+            if (i >= o->list.len) break;
+            VALUE x = o->list.items[i];
             // Identity-equality short-circuit: handles `nan in [nan]`
             // (CPython semantics — same object equals itself even if
             // pys_eq returns False due to NaN).
             if (x == v) return true;
-            if (pys_eq_bool(c, x, v)) return true;
+            bool eq = pys_eq_bool(c, x, v);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return false;
+            if (eq) return true;
         }
         return false;
     }
@@ -8538,10 +8543,16 @@ lm_index(CTX *c, int argc, VALUE *argv)
     if (stop < 0) stop += (int64_t)o->list.len;
     if (stop > (int64_t)o->list.len) stop = (int64_t)o->list.len;
     for (int64_t i = start; i < stop; i++) {
+        // Re-bound on every step: the user's __eq__ may have shrunk the
+        // list (test_count_index_remove_crashes / bpo-38610).
+        if (i >= (int64_t)o->list.len) break;
+        VALUE elt = o->list.items[i];
         // Identity short-circuit so `nan in [nan]` / .index(nan) work
         // (CPython uses PyObject_RichCompareBool which checks identity first).
-        if (o->list.items[i] == argv[1]) return PYS_FIX(i);
-        if (pys_eq_bool(c, o->list.items[i], argv[1])) return PYS_FIX(i);
+        if (elt == argv[1]) return PYS_FIX(i);
+        bool eq = pys_eq_bool(c, elt, argv[1]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (eq) return PYS_FIX(i);
     }
     PYS_RAISE_EXC(c, c->EXC_ValueError, "value not in list");
 }
@@ -8552,9 +8563,13 @@ lm_count(CTX *c, int argc, VALUE *argv)
     (void)argc;
     struct pysobj *o = PYS_PTR(argv[0]);
     int64_t n = 0;
-    for (size_t i = 0; i < o->list.len; i++) {
-        if (o->list.items[i] == argv[1]) { n++; continue; }
-        if (pys_eq_bool(c, o->list.items[i], argv[1])) n++;
+    for (size_t i = 0; ; i++) {
+        if (i >= o->list.len) break;
+        VALUE elt = o->list.items[i];
+        if (elt == argv[1]) { n++; continue; }
+        bool eq = pys_eq_bool(c, elt, argv[1]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (eq) n++;
     }
     return PYS_FIX(n);
 }
@@ -8615,15 +8630,24 @@ lm_remove(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
     struct pysobj *o = PYS_PTR(argv[0]);
-    for (size_t i = 0; i < o->list.len; i++) {
-        if (pys_eq_bool(c, o->list.items[i], argv[1])) {
+    for (size_t i = 0; ; i++) {
+        // Re-check len each step: __eq__ may have shrunk the list
+        // (bpo-38610).
+        if (i >= o->list.len) break;
+        VALUE elt = o->list.items[i];
+        bool eq = pys_eq_bool(c, elt, argv[1]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (eq) {
+            // The list may have been shrunk by __eq__ — re-check before
+            // computing slide bounds.
+            if (i >= o->list.len) break;
             for (size_t j = i; j + 1 < o->list.len; j++)
                 o->list.items[j] = o->list.items[j+1];
             o->list.len--;
             return PYS_NONE;
         }
     }
-    PYS_RAISE_EXC(c, c->EXC_ValueError, "list.remove(x): not in list");
+    PYS_RAISE_EXC(c, c->EXC_ValueError, "list.remove(x): x not in list");
 }
 
 // list.copy() / list.clear().
