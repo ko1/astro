@@ -3191,6 +3191,13 @@ pys_list_set(CTX *c, VALUE seq, VALUE idx, VALUE val)
             PYS_RAISE_EXC(c, c->EXC_TypeError,
                 "list indices must be integers or slices, not %s", tn);
         }
+        // slice-form: forward to pys_list_slice_set so step==0 / length-
+        // mismatch errors come out as ValueError rather than TypeError.
+        if (PYS_IS_PTR(idx) && PYS_PTR(idx)->type == PYS_T_SLICE) {
+            struct pysobj *sl = PYS_PTR(idx);
+            pys_list_slice_set(c, seq, sl->slice_.start, sl->slice_.stop, sl->slice_.step, val);
+            return PYS_NONE;
+        }
         int64_t i = pys_int_to_long(c, idx);
         if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         int64_t len = (int64_t)PYS_PTR(seq)->list.len;
