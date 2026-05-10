@@ -2400,7 +2400,17 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
         korb_ary_push(arr, korb_str_new_cstr(buf));
     }
-    while (f) {
+    /* Cap the walk depth and validate each frame before dereferencing.
+     * The frame chain can dangle: f->prev sometimes points to a stack
+     * frame that already returned, whose memory may now be reused for
+     * something else.  Stop walking if the frame doesn't look sane. */
+    int depth_cap = 200;
+    /* Approximate stack range: anything within 32 MB of our local. */
+    uintptr_t stack_anchor = (uintptr_t)&depth_cap;
+    while (f && depth_cap-- > 0) {
+        uintptr_t fp = (uintptr_t)f;
+        uintptr_t diff = (fp > stack_anchor) ? fp - stack_anchor : stack_anchor - fp;
+        if (diff > (32UL << 20)) break;  /* far from C stack — bail */
         const char *name = (f->method && f->method->name)
                              ? korb_id_name(f->method->name) : "<main>";
         const char *file = default_file;
@@ -2418,19 +2428,26 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
          * and its caller — that block's body is what called us. */
         if (f->caller_running_block) {
             struct korb_proc *cb = (struct korb_proc *)f->caller_running_block;
-            struct korb_frame *parent = f->prev;
-            const char *enc_name = (parent && parent->method && parent->method->name)
-                                      ? korb_id_name(parent->method->name) : "<main>";
-            const char *enc_file = default_file;
-            if (cb->body && cb->body->head.source_file) {
-                enc_file = cb->body->head.source_file;
-            } else if (parent && parent->method && parent->method->type == KORB_METHOD_AST &&
-                parent->method->u.ast.body && parent->method->u.ast.body->head.source_file) {
-                enc_file = parent->method->u.ast.body->head.source_file;
+            /* Skip entirely if cb doesn't look Proc-shaped — it may be
+             * a stale pointer (lazy enumerator block frames live past
+             * their parent's stack frame returning).  Better to omit
+             * one backtrace line than SEGV. */
+            if (cb && !SPECIAL_CONST_P((VALUE)cb) &&
+                (((struct RBasic *)cb)->flags & T_MASK) == T_PROC) {
+                struct korb_method *enc_m = cb->defining_method;
+                const char *enc_name = (enc_m && enc_m->name)
+                                          ? korb_id_name(enc_m->name) : "<main>";
+                const char *enc_file = default_file;
+                if (cb->body && cb->body->head.source_file) {
+                    enc_file = cb->body->head.source_file;
+                } else if (enc_m && enc_m->type == KORB_METHOD_AST &&
+                    enc_m->u.ast.body && enc_m->u.ast.body->head.source_file) {
+                    enc_file = enc_m->u.ast.body->head.source_file;
+                }
+                snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
+                snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
+                korb_ary_push(arr, korb_str_new_cstr(buf));
             }
-            snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
-            snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
-            korb_ary_push(arr, korb_str_new_cstr(buf));
         }
         f = f->prev;
     }
