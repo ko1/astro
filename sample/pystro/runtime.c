@@ -2208,11 +2208,13 @@ pys_cmp(CTX *c, VALUE a, VALUE b)
         if (m != PYS_NONE) {
             VALUE av[2] = { a, b };
             VALUE r = pys_apply(c, m, 2, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
             if (pys_is_truthy(r)) return -1;
             // try __eq__ for == 0
             m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(a)->inst.cls), PYS_INTERN_eq);
             if (m != PYS_NONE) {
                 VALUE r2 = pys_apply(c, m, 2, av);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                 if (pys_is_truthy(r2)) return 0;
             }
             return 1;
@@ -3216,9 +3218,11 @@ pys_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
         if (b > len) b = len;
     }
 
+    // n = ceil(|b-a| / |st|).  Compute via (diff-1)/|st| + 1 to avoid
+    // overflow in `(b-a) + st-1` when st is huge (e.g. sys.maxsize).
     size_t n = 0;
-    if (st > 0 && a < b) n = (size_t)((b - a + st - 1) / st);
-    else if (st < 0 && a > b) n = (size_t)((a - b - st - 1) / -st);
+    if (st > 0 && a < b) n = (size_t)(((b - a) - 1) / st + 1);
+    else if (st < 0 && a > b) n = (size_t)(((a - b) - 1) / (-st) + 1);
 
     if (is_str) {
         // Codepoint indices a / b — convert to byte ranges.  For step 1
@@ -3267,19 +3271,32 @@ pys_list_slice(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step)
         return pys_is_bytes(seq) ? pys_make_bytes(buf, n) : pys_make_bytearray(buf, n);
     }
     if (is_range_seq) {
-        // Slicing a range returns a range when step is 1, else a list of ints.
-        struct pysobj *o = PYS_PTR(seq);
-        VALUE *items = n ? (VALUE *)alloca(sizeof(VALUE) * n) : NULL;
+        // Slicing a range returns a list of ints (step != 1).  Build
+        // directly into the result list's GC-allocated items[] to avoid
+        // alloca stack overflow for large slices.
+        struct pysobj *src_o = PYS_PTR(seq);
+        struct pysobj *o = pys_alloc(PYS_T_LIST);
+        size_t capa = n < 4 ? 4 : n;
+        o->list.items = (VALUE *)GC_malloc(sizeof(VALUE) * capa);
+        o->list.len = n;
+        o->list.capa = capa;
         for (size_t i = 0; i < n; i++) {
             int64_t idx = a + (int64_t)i * st;
-            items[i] = pys_make_int(o->range.start + idx * o->range.step);
+            o->list.items[i] = pys_make_int(src_o->range.start + idx * src_o->range.step);
         }
-        return pys_make_list(items, n);
+        return PYS_OBJ_VAL(o);
     }
-    VALUE *items = n ? (VALUE *)alloca(sizeof(VALUE) * n) : NULL;
+    // List / tuple slice — write directly into a GC-allocated items[]
+    // buffer (alloca for n elements blows the stack for large slices).
+    bool out_is_list = pys_is_list(seq);
+    struct pysobj *o = pys_alloc(out_is_list ? PYS_T_LIST : PYS_T_TUPLE);
+    size_t capa = out_is_list ? (n < 4 ? 4 : n) : n;
+    o->list.items = capa ? (VALUE *)GC_malloc(sizeof(VALUE) * capa) : NULL;
+    o->list.len = n;
+    o->list.capa = capa;
     for (size_t i = 0; i < n; i++)
-        items[i] = PYS_PTR(seq)->list.items[a + (int64_t)i * st];
-    return pys_is_list(seq) ? pys_make_list(items, n) : pys_make_tuple(items, n);
+        o->list.items[i] = PYS_PTR(seq)->list.items[a + (int64_t)i * st];
+    return PYS_OBJ_VAL(o);
 }
 
 // Slice-assign for lists.  For step == 1, supports general resize:
@@ -8431,6 +8448,7 @@ lm_sort(CTX *c, int argc, VALUE *argv)
         while (j > 0) {
             VALUE prev_k = keys ? keys[j - 1] : o->list.items[j - 1];
             int cmp = pys_cmp(c, prev_k, xk);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
             if (reverse ? (cmp >= 0) : (cmp <= 0)) break;
             o->list.items[j] = o->list.items[j - 1];
             if (keys) keys[j] = keys[j - 1];
