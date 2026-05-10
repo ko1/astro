@@ -3854,6 +3854,19 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         return r;
     }
     /* AST: same as korb_dispatch_call but argv is ad-hoc */
+    /* Drop trailing FL_KWARGS-tagged hash if callee has no kwargs slot
+     * (CRuby Ruby 3 separation: `m(**h)` to `def m(*a)` does NOT add h
+     * to *a if h is empty; if non-empty, kept as positional only when
+     * the method explicitly accepts a Hash positional arg).  We do
+     * the empty-drop here; non-empty stays as positional Hash for now
+     * to match the old behaviour. */
+    if (m->u.ast.kwh_save_slot < 0 && argc > 0 &&
+        !SPECIAL_CONST_P(argv[argc - 1]) &&
+        BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
+        (RBASIC(argv[argc - 1])->flags & FL_KWARGS)) {
+        struct korb_hash *h = (struct korb_hash *)argv[argc - 1];
+        if (h->size == 0) argc--;
+    }
     if (m->u.ast.rest_slot < 0 && (unsigned)argc > m->u.ast.total_params_cnt) {
         korb_raise(c, NULL, "wrong arg count for %s", korb_id_name(name));
         return Qnil;
