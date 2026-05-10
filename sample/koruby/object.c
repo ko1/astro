@@ -3868,7 +3868,10 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         if (h->size == 0) argc--;
     }
     if (m->u.ast.rest_slot < 0 && (unsigned)argc > m->u.ast.total_params_cnt) {
-        korb_raise(c, NULL, "wrong arg count for %s", korb_id_name(name));
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected %u) for %s",
+                   argc, m->u.ast.total_params_cnt, korb_id_name(name));
         return Qnil;
     }
     VALUE *prev_fp = c->fp;
