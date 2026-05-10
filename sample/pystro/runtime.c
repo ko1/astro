@@ -14662,6 +14662,14 @@ bi_pow(CTX *c, int argc, VALUE *argv)
     return pys_pow(c, argv[0], argv[1]);
 }
 
+// Wrap a fresh list as a PYS_T_ITER so reversed() returns a proper
+// iterator (matches CPython's listreverseiterator etc.).
+static VALUE pys_wrap_list_as_iter(CTX *c, VALUE lst) {
+    struct pysobj *it_obj = pys_alloc(PYS_T_ITER);
+    it_obj->iter_state = (struct pys_iter *)GC_malloc(sizeof(struct pys_iter));
+    pys_iter_init(c, it_obj->iter_state, lst);
+    return PYS_OBJ_VAL(it_obj);
+}
 static VALUE
 bi_reversed(CTX *c, int argc, VALUE *argv)
 {
@@ -14673,10 +14681,7 @@ bi_reversed(CTX *c, int argc, VALUE *argv)
         struct pysobj *o = PYS_PTR(argv[0]);
         VALUE r = pys_make_list(NULL, 0);
         for (size_t i = o->list.len; i > 0; i--) pys_list_append(c, r, o->list.items[i - 1]);
-        struct pysobj *it_obj = pys_alloc(PYS_T_ITER);
-        it_obj->iter_state = (struct pys_iter *)GC_malloc(sizeof(struct pys_iter));
-        pys_iter_init(c, it_obj->iter_state, r);
-        return PYS_OBJ_VAL(it_obj);
+        return pys_wrap_list_as_iter(c, r);
     }
     VALUE r = pys_make_list(NULL, 0);
     if (pys_is_str(argv[0])) {
@@ -14700,32 +14705,30 @@ bi_reversed(CTX *c, int argc, VALUE *argv)
             size_t b1 = off[k];
             pys_list_append(c, r, pys_make_str(s + b0, b1 - b0));
         }
-        return r;
+        return pys_wrap_list_as_iter(c, r);
     }
     if (pys_is_byteseq(argv[0])) {
         struct pysobj *o = PYS_PTR(argv[0]);
         for (size_t i = o->str.len; i > 0; i--)
             pys_list_append(c, r, pys_make_int((int64_t)(unsigned char)o->str.chars[i - 1]));
-        return r;
+        return pys_wrap_list_as_iter(c, r);
     }
     if (pys_is_range(argv[0])) {
         struct pysobj *o = PYS_PTR(argv[0]);
         int64_t s = o->range.start, e = o->range.stop, st = o->range.step;
-        // last element of a positive-step range: s + ((e-s-1)//st) * st
         int64_t last;
         if (st > 0 && s < e) last = s + ((e - s - 1) / st) * st;
         else if (st < 0 && s > e) last = s + ((s - e - 1) / -st) * st;
-        else return r;
+        else return pys_wrap_list_as_iter(c, r);
         for (int64_t v = last; (st > 0 ? v >= s : v <= s); v -= st)
             pys_list_append(c, r, pys_make_int(v));
-        return r;
+        return pys_wrap_list_as_iter(c, r);
     }
     if (pys_is_dict(argv[0])) {
         struct pysdict *d = PYS_PTR(argv[0])->dict;
-        // Walk entries in reverse insertion order.
         for (size_t i = d->elen; i > 0; i--)
             if (pydict_entry_live(d, i - 1)) pys_list_append(c, r, d->entries[i - 1].key);
-        return r;
+        return pys_wrap_list_as_iter(c, r);
     }
     if (pys_is_instance(argv[0])) {
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(argv[0])->inst.cls), "__reversed__");
