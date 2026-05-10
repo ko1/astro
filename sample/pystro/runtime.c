@@ -9824,10 +9824,17 @@ bi_float_getformat(CTX *c, int argc, VALUE *argv)
     return pys_make_str(r, strlen(r));
 }
 
-// dict.fromkeys(iter, default=None)
+// dict.fromkeys([cls,] iter[, default=None]).  Accepts both the
+// classmethod form (called as `dict.fromkeys(cls, iter, default)`) and
+// the bare-call form (`dict.fromkeys(iter, default)`) — when argv[0] is
+// a class, it's the classmethod-bound class and we shift over.
 static VALUE
 bi_dict_fromkeys(CTX *c, int argc, VALUE *argv)
 {
+    if (argc >= 1 && pys_is_class(argv[0])) {
+        argv++;
+        argc--;
+    }
     VALUE def = argc >= 2 ? argv[1] : PYS_NONE;
     VALUE r = pys_make_dict();
     struct pys_iter it; pys_iter_init(c, &it, argv[0]);
@@ -14641,8 +14648,16 @@ install_builtins(CTX *c)
     c->TYPE_list      = pys_make_builtin_class("list",      bi_list,      PYS_T_LIST);
     c->TYPE_tuple     = pys_make_builtin_class("tuple",     bi_tuple,     PYS_T_TUPLE);
     c->TYPE_dict      = pys_make_builtin_class("dict",      bi_dict,      PYS_T_DICT);
-    pys_class_add_method(c, c->TYPE_dict, "fromkeys",
-        pys_make_builtin("fromkeys", bi_dict_fromkeys, 1, 2));
+    {
+        // dict.fromkeys is a classmethod in CPython — wrapping it here
+        // keeps `t.fromkeys = dict.fromkeys; t.fromkeys(iter)` from
+        // re-binding `self=t` and corrupting the call (test_set's
+        // dict.fromkeys constructor pattern depends on this).
+        VALUE fk = pys_make_builtin("fromkeys", bi_dict_fromkeys, 1, 3);
+        struct pysobj *cm = pys_alloc(PYS_T_CLASSMETHOD);
+        cm->wrap.wrapped = fk;
+        pys_class_add_method(c, c->TYPE_dict, "fromkeys", PYS_OBJ_VAL(cm));
+    }
     c->TYPE_set       = pys_make_builtin_class("set",       bi_set,       PYS_T_SET);
     c->TYPE_frozenset = pys_make_builtin_class("frozenset", bi_frozenset, PYS_T_FROZENSET);
     c->TYPE_range     = pys_make_builtin_class("range",     bi_range,     PYS_T_RANGE);
