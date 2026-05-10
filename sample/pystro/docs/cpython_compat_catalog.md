@@ -8,6 +8,14 @@ policy: pystro は CPython 3.12.13 (submodule pin) の純 Python stdlib
 
 ### このセッションで進んだこと
 
+主要な SEGV を 6 系統まとめて潰し、 大物テスト (test_set / test_dict /
+test_list / test_tuple / test_userlist) のうち 4 つが SEGV → unittest
+完走 (FAILED summary) に進化した。 残る test_dict / test_userdict /
+test_compileall は Boehm GC 内部 SEGV で、 pystro 側ではなく Boehm
+heap corruption が疑われる。
+
+**修正:**
+
 - **`gc.collect()` を Boehm `GC_gcollect()` に橋渡し** (これまで no-op):
   test_set フル実行時のピーク RSS が 3.3GB → ~100MB。
 - **dict/set に version カウンタ + iterator snapshot** (bpo-46615 regression
@@ -22,11 +30,28 @@ policy: pystro は CPython 3.12.13 (submodule pin) の純 Python stdlib
 - **`sm_difference_update` / `sm_intersection_update` / `sm_set_update` /
   `sm_symmetric_difference_update`** で `argv[0]` を `pys_unwrap_primary`
   経由に変更 (SetSubclass instance を self に取った場合の SEGV)。
+- **`pys_display` の visit-stack push/pop を pushed フラグで対称化**:
+  64 段以上のネストで push が抜けて pop だけ走り visit_top が負になり
+  SEGV する経路。 pushed フラグで均衡化。 また `__repr__` raise 後の
+  pys_is_str(NULL) deref を回避。
+- **`pys_list_slice` の alloca → GC_malloc**: 大きな slice で stack
+  overflow。 また `(b - a + st - 1) / st` の overflow を回避する形に
+  n 計算を書き直し。
+- **`pys_cmp` / `lm_sort` で raise 伝播**: __lt__ や key 関数が raise
+  したあと NULL を比較し続けて SEGV する経路を、 cmp 後に state 確認
+  して即 return。
 
-これにより test_set.py の SEGV 位置が test 311 (Set_Dict mutation) →
-test 573 (TestSetSubclass.test_pickling) まで進み、 file-level でも
-`unittest.main()` 経由なら `FAILED (failures=59, errors=110, skipped=2)` に
-到達 (rc=1, 完走後の終了コードが segv ではなく unittest の通常 fail)。
+**結果 (file-level):**
+
+- 安定 PASS = 18 (変わらず, 既出)
+- **test_list**: SEGV → `FAILED (failures=13, errors=15, skipped=1)` 完走
+- **test_tuple**: SEGV → `FAILED (failures=6, errors=4, skipped=4)` 完走
+- **test_userlist**: SEGV → `FAILED (failures=10, errors=11)` 完走
+- **test_set**: 既に完走していた (`FAILED (failures=59, errors=110)`) が、
+  inline runner で test 311 → 573 まで SEGV 位置が進んだ
+- **test_dict**: 部分的改善 (test_repr の cyclic+BadRepr で SEGV する経路は
+  解消) も、 test_items_symmetric_difference 経由で Boehm GC 内部 SEGV が
+  残る。
 
 ## sweep の現状 (2026-05-09)
 
