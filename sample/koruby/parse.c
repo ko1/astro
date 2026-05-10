@@ -3650,6 +3650,30 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
 
           /* a[i] / a[i] = v shortcuts */
           if (n->receiver && ceq(tc, n->name, "[]") && args_cnt == 1 && !n->block) {
+              /* `recv[*splat]` — splat-only [] call.  Don't take the
+               * single-index fast path (which would pass the array as
+               * one index); instead build the args Array at runtime
+               * and dispatch via apply_call.  Required for code like
+               * `Array[*(1..100).to_a]` (test_array). */
+              if (PM_NODE_TYPE_P(args->arguments.nodes[0], PM_SPLAT_NODE)) {
+                  uint32_t recv_slot = inc_arg_index(tc);
+                  uint32_t arr_slot  = inc_arg_index(tc);
+                  uint32_t apply_idx = inc_arg_index(tc);
+                  for (int s = 0; s < 16; s++) inc_arg_index(tc);
+                  rewind_arg_index(tc, recv_slot);
+                  for (int s = 0; s < 3 + 16; s++) inc_arg_index(tc);
+                  NODE *recv_v = T(tc, n->receiver);
+                  NODE *args_arr = build_args_array_with_splat(tc, &args->arguments);
+                  struct method_cache *mc = alloc_method_cache();
+                  NODE *save_recv = ALLOC_node_lvar_set(recv_slot, recv_v);
+                  NODE *save_arr  = ALLOC_node_lvar_set(arr_slot, args_arr);
+                  NODE *call = ALLOC_node_apply_call(
+                      ALLOC_node_lvar_get(recv_slot), korb_intern("[]"),
+                      ALLOC_node_lvar_get(arr_slot), apply_idx,
+                      ALLOC_node_nil(), 1, mc);
+                  return ALLOC_node_seq(save_recv,
+                           ALLOC_node_seq(save_arr, call));
+              }
               uint32_t ai = arg_index(tc);
               inc_arg_index(tc); inc_arg_index(tc); rewind_arg_index(tc, ai);
               return ALLOC_node_aref(T(tc, n->receiver), T(tc, args->arguments.nodes[0]), ai);

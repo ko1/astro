@@ -60,6 +60,7 @@ struct NodeHead {
  * node_eval.c uses korb_* helpers declared in object.h; pull those in
  * here (after struct Node is fully defined so object.h's inline
  * functions can dereference NODE fields). */
+#include <limits.h>
 #include "object.h"
 
 static inline VALUE

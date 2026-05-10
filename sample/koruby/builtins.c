@@ -788,8 +788,11 @@ void korb_init_builtins(void) {
     DEF(cAry, "clone",       ary_clone,       0);
     DEF(cAry, "eql?",        ary_eql,         1);
     DEF(cAry, "<=>",         ary_cmp,         1);
+    DEF(cAry, "cycle",       ary_cycle,      -1);
     DEF(cAry, "combination", ary_combination, 1);
     DEF(cAry, "permutation", ary_permutation, -1);
+    DEF(cAry, "repeated_combination", ary_repeated_combination, -1);
+    DEF(cAry, "repeated_permutation", ary_repeated_permutation, -1);
     DEF(cAry, "product",     ary_product,    -1);
     {
         /* Override Class.new on Array's metaclass so Array.new(n, default)

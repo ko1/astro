@@ -1458,7 +1458,21 @@ node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val,
     if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
         if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
             CHECK_FROZEN_RET(c, r, Qnil);
-            korb_ary_aset(r, FIX2LONG(i), v); return v;
+            long ii = FIX2LONG(i);
+            struct korb_array *aa = (struct korb_array *)r;
+            if (ii < 0 && ii + aa->len < 0) {
+                VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+                korb_raise(c, (struct korb_class *)eIE,
+                           "index %ld too small for array; minimum: -%ld",
+                           ii, aa->len);
+                return v;
+            }
+            if (ii >= (long)(LONG_MAX / sizeof(VALUE))) {
+                VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+                korb_raise(c, (struct korb_class *)eIE, "index %ld too big", ii);
+                return v;
+            }
+            korb_ary_aset(r, ii, v); return v;
         }
         if (BUILTIN_TYPE(r) == T_HASH) {
             CHECK_FROZEN_RET(c, r, Qnil);

@@ -1539,6 +1539,11 @@ void korb_ary_aset(VALUE av, long i, VALUE v) {
     struct korb_array *a = (struct korb_array *)av;
     if (i < 0) i += a->len;
     if (i < 0) return;
+    /* Reject indices that would resize the array to gigabytes — caller
+     * (e.g. test_aset_error's `[0][LONGP] = 2`) should have raised
+     * IndexError but if we got here, just no-op rather than OOM-killing
+     * the process trying to allocate 2^63 slots. */
+    if (i >= (long)(LONG_MAX / sizeof(VALUE))) return;
     while (a->len <= i) {
         if (a->len >= a->capa) {
             long nc = a->capa == 0 ? 4 : a->capa * 2;

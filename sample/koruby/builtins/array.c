@@ -107,11 +107,40 @@ static VALUE ary_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     return Qnil;
 }
+/* Reject indices that would resize the array beyond a reasonable
+ * limit.  CRuby uses LONG_MAX/sizeof(VALUE) (~1.15e18); we use the
+ * same bound — large enough that real code never hits it but small
+ * enough that test_aset_error's `[0][LONGP] = 2` raises IndexError
+ * instead of OOM-killing the process while expanding to 2^63 slots. */
+#define KORB_ARY_MAX_LEN ((long)(LONG_MAX / sizeof(VALUE)))
+static bool korb_ary_check_index(CTX *c, long idx) {
+    if (idx >= KORB_ARY_MAX_LEN) {
+        VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+        korb_raise(c, (struct korb_class *)eIE, "index %ld too big", idx);
+        return false;
+    }
+    return true;
+}
 static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     if (argc == 2 && FIXNUM_P(argv[0])) {
-        korb_ary_aset(self, FIX2LONG(argv[0]), argv[1]);
+        long i = FIX2LONG(argv[0]);
+        struct korb_array *a = (struct korb_array *)self;
+        if (i < 0 && i + a->len < 0) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE,
+                       "index %ld too small for array; minimum: -%ld",
+                       i, a->len);
+            return Qnil;
+        }
+        if (!korb_ary_check_index(c, i)) return Qnil;
+        korb_ary_aset(self, i, argv[1]);
         return argv[1];
+    }
+    if (argc == 2 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
+        VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+        korb_raise(c, (struct korb_class *)eIE, "index too big");
+        return Qnil;
     }
     /* `a[range] = ...` — translate to the (start, len, value) form. */
     if (argc == 2 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
@@ -135,6 +164,7 @@ static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         long len = FIX2LONG(argv[1]);
         if (start < 0) start += a->len;
         if (start < 0 || len < 0) return argv[2];
+        if (!korb_ary_check_index(c, start)) return argv[2];
         VALUE val = argv[2];
         if (BUILTIN_TYPE(val) == T_ARRAY) {
             struct korb_array *src = (struct korb_array *)val;
@@ -161,10 +191,25 @@ static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
                 if (start + i < a->len) a->ptr[start + i] = src->ptr[i];
             }
         } else {
-            /* a[start, len] = single value: replace range with [val] */
-            for (long i = start; i < start + len && i < a->len; i++) {
-                a->ptr[i] = val;
+            /* `a[start, len] = val` — when val is NOT an Array, CRuby
+             * replaces the slice [start, start+len) with the SINGLE
+             * element val (i.e. removes len elements, inserts 1).
+             * If start > a->len, pad with nil first. */
+            if (start > a->len) {
+                while (a->len < start) korb_ary_push(self, Qnil);
             }
+            long avail_len = a->len - start;
+            if (len > avail_len) len = avail_len;
+            long diff = 1 - len;  /* +1 inserted, -len removed */
+            long old = a->len;
+            if (diff > 0) {
+                for (long i = 0; i < diff; i++) korb_ary_push(self, Qnil);
+                for (long i = old - 1; i >= start + len; i--) a->ptr[i + diff] = a->ptr[i];
+            } else if (diff < 0) {
+                for (long i = start + len; i < old; i++) a->ptr[i + diff] = a->ptr[i];
+                a->len += diff;
+            }
+            a->ptr[start] = val;
         }
         return argv[2];
     }
@@ -1856,6 +1901,7 @@ static VALUE ary_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Helpers / impl for combination + permutation. */
 static void ary_combine(CTX *c, struct korb_array *a, long r, long start,
                          VALUE buf, VALUE result_or_nil) {
+    if (c->state != KORB_NORMAL) return;
     if (((struct korb_array *)buf)->len == r) {
         VALUE copy = korb_ary_new_capa(r);
         struct korb_array *bb = (struct korb_array *)buf;
@@ -1868,6 +1914,7 @@ static void ary_combine(CTX *c, struct korb_array *a, long r, long start,
         korb_ary_push(buf, a->ptr[i]);
         ary_combine(c, a, r, i + 1, buf, result_or_nil);
         ((struct korb_array *)buf)->len--;
+        if (c->state != KORB_NORMAL) return;
     }
 }
 
@@ -1907,6 +1954,7 @@ static VALUE ary_combination(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static void ary_perm(CTX *c, struct korb_array *a, long r,
                       VALUE used, VALUE buf, VALUE result_or_nil) {
+    if (c->state != KORB_NORMAL) return;
     if (((struct korb_array *)buf)->len == r) {
         VALUE copy = korb_ary_new_capa(r);
         struct korb_array *bb = (struct korb_array *)buf;
@@ -1923,6 +1971,7 @@ static void ary_perm(CTX *c, struct korb_array *a, long r,
         ary_perm(c, a, r, used, buf, result_or_nil);
         ((struct korb_array *)buf)->len--;
         uu->ptr[i] = Qfalse;
+        if (c->state != KORB_NORMAL) return;
     }
 }
 
@@ -1953,6 +2002,126 @@ static VALUE ary_permutation(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (long i = 0; i < a->len; i++) korb_ary_push(used, Qfalse);
     VALUE buf = korb_ary_new_capa(r);
     ary_perm(c, a, r, used, buf, Qnil);
+    return self;
+}
+
+/* Array#cycle(n=nil) — yield each element n times (or forever if nil).
+ * Implemented in C so `break` from the block cleanly exits all the
+ * nested loops (the bootstrap-Ruby version has nested blk.call inside
+ * each{} inside loop{} and break doesn't propagate out reliably). */
+static VALUE ary_cycle(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_array *a = (struct korb_array *)self;
+    extern struct korb_proc *current_block;
+    if (!current_block) {
+        VALUE method_sym = korb_id2sym(korb_intern("cycle"));
+        VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
+        call_argv[0] = method_sym;
+        for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
+        return korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv);
+    }
+    long n = -1;  /* -1 means infinite */
+    if (argc >= 1 && !NIL_P(argv[0])) {
+        if (FIXNUM_P(argv[0])) n = FIX2LONG(argv[0]);
+        else if (BUILTIN_TYPE(argv[0]) == T_BIGNUM) n = LONG_MAX;
+        if (n <= 0) return Qnil;
+    }
+    if (a->len == 0) return Qnil;
+    long iter = 0;
+    while (n < 0 || iter < n) {
+        for (long i = 0; i < a->len; i++) {
+            korb_yield(c, 1, &a->ptr[i]);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
+        iter++;
+    }
+    return Qnil;
+}
+
+/* Array#repeated_combination(r) — combinations with repetition. */
+static void ary_rcombine(CTX *c, struct korb_array *a, long r, long start,
+                          VALUE buf, VALUE result_or_nil) {
+    if (c->state != KORB_NORMAL) return;
+    if (((struct korb_array *)buf)->len == r) {
+        VALUE copy = korb_ary_new_capa(r);
+        struct korb_array *bb = (struct korb_array *)buf;
+        for (long i = 0; i < bb->len; i++) korb_ary_push(copy, bb->ptr[i]);
+        if (NIL_P(result_or_nil)) korb_yield(c, 1, &copy);
+        else korb_ary_push(result_or_nil, copy);
+        return;
+    }
+    for (long i = start; i < a->len; i++) {
+        korb_ary_push(buf, a->ptr[i]);
+        ary_rcombine(c, a, r, i, buf, result_or_nil);  /* i, not i+1 — repetition */
+        ((struct korb_array *)buf)->len--;
+        if (c->state != KORB_NORMAL) return;
+    }
+}
+
+static VALUE ary_repeated_combination(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long r = FIX2LONG(argv[0]);
+    struct korb_array *a = (struct korb_array *)self;
+    extern struct korb_proc *current_block;
+    if (!current_block) {
+        VALUE method_sym = korb_id2sym(korb_intern("repeated_combination"));
+        VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
+        call_argv[0] = method_sym;
+        for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
+        return korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv);
+    }
+    if (r < 0) return self;
+    if (r == 0) {
+        VALUE empty = korb_ary_new();
+        korb_yield(c, 1, &empty);
+        return self;
+    }
+    if (a->len == 0) return self;
+    VALUE buf = korb_ary_new_capa(r);
+    ary_rcombine(c, a, r, 0, buf, Qnil);
+    return self;
+}
+
+/* Array#repeated_permutation(r) — permutations with repetition. */
+static void ary_rperm(CTX *c, struct korb_array *a, long r,
+                       VALUE buf, VALUE result_or_nil) {
+    if (c->state != KORB_NORMAL) return;
+    if (((struct korb_array *)buf)->len == r) {
+        VALUE copy = korb_ary_new_capa(r);
+        struct korb_array *bb = (struct korb_array *)buf;
+        for (long i = 0; i < bb->len; i++) korb_ary_push(copy, bb->ptr[i]);
+        if (NIL_P(result_or_nil)) korb_yield(c, 1, &copy);
+        else korb_ary_push(result_or_nil, copy);
+        return;
+    }
+    for (long i = 0; i < a->len; i++) {
+        korb_ary_push(buf, a->ptr[i]);
+        ary_rperm(c, a, r, buf, result_or_nil);
+        ((struct korb_array *)buf)->len--;
+        if (c->state != KORB_NORMAL) return;
+    }
+}
+
+static VALUE ary_repeated_permutation(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(argv[0])) return self;
+    long r = FIX2LONG(argv[0]);
+    struct korb_array *a = (struct korb_array *)self;
+    extern struct korb_proc *current_block;
+    if (!current_block) {
+        VALUE method_sym = korb_id2sym(korb_intern("repeated_permutation"));
+        VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
+        call_argv[0] = method_sym;
+        for (int i = 0; i < argc; i++) call_argv[i + 1] = argv[i];
+        return korb_funcall(c, self, korb_intern("to_enum"), argc + 1, call_argv);
+    }
+    if (r < 0) return self;
+    if (r == 0) {
+        VALUE empty = korb_ary_new();
+        korb_yield(c, 1, &empty);
+        return self;
+    }
+    if (a->len == 0) return self;
+    VALUE buf = korb_ary_new_capa(r);
+    ary_rperm(c, a, r, buf, Qnil);
     return self;
 }
 
@@ -2200,10 +2369,17 @@ static VALUE ary_first_n(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(arg)) {
         n = FIX2LONG(arg);
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_BIGNUM) {
-        /* CRuby raises RangeError "bignum too big to convert into long". */
-        VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-        korb_raise(c, (struct korb_class *)eR, "bignum too big to convert into 'long'");
-        return Qnil;
+        /* Bignum that fits in long is fine (CRuby's first/last accept
+         * up to LONG_MAX).  Out-of-long-range bignum → RangeError. */
+        struct korb_bignum *bn = (struct korb_bignum *)arg;
+        mpz_ptr z = (mpz_ptr)bn->mpz;
+        if (mpz_fits_slong_p(z)) {
+            n = mpz_get_si(z);
+        } else {
+            VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+            korb_raise(c, (struct korb_class *)eR, "bignum too big to convert into 'long'");
+            return Qnil;
+        }
     } else {
         korb_raise_type_error(c, "no implicit conversion from %s into Integer",
                               korb_id_name(korb_class_of_class(argv[0])->name));
