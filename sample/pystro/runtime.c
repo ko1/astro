@@ -3074,10 +3074,24 @@ pys_list_get(CTX *c, VALUE seq, VALUE idx)
         return pys_list_slice(c, seq, sl->slice_.start, sl->slice_.stop, sl->slice_.step);
     }
     if (pys_is_list(seq) || pys_is_tuple(seq)) {
+        // CPython's TypeError: "list indices must be integers or slices, not <type>"
+        // wins over IndexError when the index is the wrong type entirely.
+        if (!PYS_IS_FIXNUM(idx) && !pys_is_bignum(idx) && idx != PYS_TRUE && idx != PYS_FALSE
+            && !(pys_is_instance(idx)
+                 && pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(idx)->inst.cls), PYS_INTERN_index) != PYS_NONE)) {
+            extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+            VALUE av_t[1] = { idx };
+            VALUE tt = bi_type(c, 1, av_t);
+            const char *tn = (pys_is_class(tt)) ? PYS_PTR(tt)->cls.name : "?";
+            const char *seqkind = pys_is_list(seq) ? "list" : "tuple";
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                "%s indices must be integers or slices, not %s", seqkind, tn);
+        }
         int64_t i = pys_int_to_long(c, idx);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         int64_t len = (int64_t)PYS_PTR(seq)->list.len;
         i = clamp_idx(i, len, false);
-        if (i < 0 || i >= len) PYS_RAISE_EXC(c, c->EXC_IndexError, "index out of range");
+        if (i < 0 || i >= len) PYS_RAISE_EXC(c, c->EXC_IndexError, "list index out of range");
         return PYS_PTR(seq)->list.items[i];
     }
     if (pys_is_str(seq)) {
@@ -3166,10 +3180,22 @@ pys_list_set(CTX *c, VALUE seq, VALUE idx, VALUE val)
         if (PYS_PTR(seq)->inst.primary) return pys_list_set(c, PYS_PTR(seq)->inst.primary, idx, val);
     }
     if (pys_is_list(seq)) {
+        if (!PYS_IS_FIXNUM(idx) && !pys_is_bignum(idx) && idx != PYS_TRUE && idx != PYS_FALSE
+            && !(pys_is_instance(idx)
+                 && pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(idx)->inst.cls), PYS_INTERN_index) != PYS_NONE)
+            && !(PYS_IS_PTR(idx) && PYS_PTR(idx)->type == PYS_T_SLICE)) {
+            extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+            VALUE av_t[1] = { idx };
+            VALUE tt = bi_type(c, 1, av_t);
+            const char *tn = (pys_is_class(tt)) ? PYS_PTR(tt)->cls.name : "?";
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                "list indices must be integers or slices, not %s", tn);
+        }
         int64_t i = pys_int_to_long(c, idx);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         int64_t len = (int64_t)PYS_PTR(seq)->list.len;
         i = clamp_idx(i, len, false);
-        if (i < 0 || i >= len) PYS_RAISE_EXC(c, c->EXC_IndexError, "list index out of range");
+        if (i < 0 || i >= len) PYS_RAISE_EXC(c, c->EXC_IndexError, "list assignment index out of range");
         PYS_PTR(seq)->list.items[i] = val;
         return PYS_NONE;
     }
