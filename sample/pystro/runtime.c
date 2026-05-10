@@ -6245,6 +6245,10 @@ pys_to_repr(CTX *c, VALUE v)
     FILE *bfp = open_memstream(&big, &cap);
     pys_display(bfp, v, true);
     fclose(bfp);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) {
+        free(big);
+        return 0;
+    }
     VALUE r = pys_make_str(big, strlen(big));
     free(big);
     return r;
@@ -8919,10 +8923,18 @@ static VALUE
 dm_getitem(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!pys_dict_has(c, argv[0], argv[1])) {
-        VALUE r = pys_to_repr(c, argv[1]);
-        PYS_RAISE_EXC(c, c->EXC_KeyError, "%s",
-                     pys_is_str(r) ? PYS_PTR(r)->str.chars : "?");
+    bool has = pys_dict_has(c, argv[0], argv[1]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    if (!has) {
+        // CPython: KeyError(key) — args[0] is the missing key.
+        VALUE inst = pys_make_instance(c->EXC_KeyError);
+        pys_setattr(c, inst, "args", pys_make_tuple(&argv[1], 1));
+        pys_setattr(c, inst, "__context__", c->current_handling_exc ? c->current_handling_exc : PYS_NONE);
+        pys_setattr(c, inst, "__cause__", PYS_NONE);
+        pys_setattr(c, inst, "__suppress_context__", PYS_FALSE);
+        c->state = PYS_STATE_RAISE;
+        c->state_value = inst;
+        return 0;
     }
     return pys_dict_get(c, argv[0], argv[1]);
 }
@@ -8930,10 +8942,17 @@ static VALUE
 dm_delitem(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!pys_dict_remove(c, argv[0], argv[1])) {
-        VALUE r = pys_to_repr(c, argv[1]);
-        PYS_RAISE_EXC(c, c->EXC_KeyError, "%s",
-                     pys_is_str(r) ? PYS_PTR(r)->str.chars : "?");
+    bool removed = pys_dict_remove(c, argv[0], argv[1]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    if (!removed) {
+        VALUE inst = pys_make_instance(c->EXC_KeyError);
+        pys_setattr(c, inst, "args", pys_make_tuple(&argv[1], 1));
+        pys_setattr(c, inst, "__context__", c->current_handling_exc ? c->current_handling_exc : PYS_NONE);
+        pys_setattr(c, inst, "__cause__", PYS_NONE);
+        pys_setattr(c, inst, "__suppress_context__", PYS_FALSE);
+        c->state = PYS_STATE_RAISE;
+        c->state_value = inst;
+        return 0;
     }
     return PYS_NONE;
 }

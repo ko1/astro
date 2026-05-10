@@ -388,7 +388,10 @@ class UserDict:
     def __iter__(self): return iter(self.data)
     def __contains__(self, k): return k in self.data
     def __len__(self): return len(self.data)
-    def __repr__(self): return type(self).__name__ + "(" + repr(self.data) + ")"
+    # CPython: UserDict.__repr__ returns repr(self.data), not
+    # ClassName(...) — tests like mapping_tests.test_repr expect the dict
+    # literal format.
+    def __repr__(self): return repr(self.data)
     def keys(self): return self.data.keys()
     def values(self): return self.data.values()
     def items(self): return self.data.items()
