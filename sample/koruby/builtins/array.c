@@ -1472,8 +1472,19 @@ static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (FIXNUM_P(argv[0])) {
         long n = FIX2LONG(argv[0]);
-        if (n < 0) n = 0;
-        VALUE r = korb_ary_new_capa(a->len * n);
+        if (n < 0) {
+            VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eA, "negative argument");
+            return Qnil;
+        }
+        long total;
+        if (__builtin_mul_overflow(a->len, n, &total) ||
+            total > (long)(LONG_MAX / sizeof(VALUE))) {
+            VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eA, "argument too big");
+            return Qnil;
+        }
+        VALUE r = korb_ary_new_capa(total);
         for (long i = 0; i < n; i++)
             for (long j = 0; j < a->len; j++) korb_ary_push(r, a->ptr[j]);
         return r;
@@ -2028,6 +2039,7 @@ static VALUE ary_cycle(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (a->len == 0) return Qnil;
     long iter = 0;
     while (n < 0 || iter < n) {
+        if (a->len == 0) return Qnil;  /* CRuby: cleared mid-iter → exit */
         for (long i = 0; i < a->len; i++) {
             korb_yield(c, 1, &a->ptr[i]);
             if (c->state != KORB_NORMAL) return Qnil;
@@ -2134,7 +2146,23 @@ static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (BUILTIN_TYPE(argv[i]) != T_ARRAY) return Qnil;
         arrays[i + 1] = (struct korb_array *)argv[i];
     }
-    VALUE result = korb_ary_new();
+    /* Total size sanity: if no block given, materializing > 1e8 rows
+     * is hopeless.  Compute product of sizes with overflow detection
+     * and raise RangeError early (CRuby does the same). */
+    extern struct korb_proc *current_block;
+    if (!current_block) {
+        long total = 1;
+        for (long i = 0; i < n; i++) {
+            if (arrays[i]->len == 0) { total = 0; break; }
+            if (__builtin_mul_overflow(total, arrays[i]->len, &total) ||
+                total > (long)(LONG_MAX / sizeof(VALUE) / 4)) {
+                VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+                korb_raise(c, (struct korb_class *)eR, "too big to product");
+                return Qnil;
+            }
+        }
+    }
+    VALUE result = current_block ? Qnil : korb_ary_new();
     long *idx = korb_xcalloc(n, sizeof(long));
     while (true) {
         VALUE row = korb_ary_new_capa(n);
@@ -2144,7 +2172,12 @@ static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
             korb_ary_push(row, arrays[i]->ptr[idx[i]]);
         }
         if (empty) break;
-        korb_ary_push(result, row);
+        if (current_block) {
+            korb_yield(c, 1, &row);
+            if (c->state != KORB_NORMAL) return self;
+        } else {
+            korb_ary_push(result, row);
+        }
         long j = n - 1;
         while (j >= 0) {
             idx[j]++;
@@ -2154,7 +2187,7 @@ static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (j < 0) break;
     }
-    return result;
+    return current_block ? self : result;
 }
 
 /* Array.new(size = 0, default = nil) — create an array of `size` slots
