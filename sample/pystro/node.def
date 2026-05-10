@@ -393,6 +393,21 @@ node_iadd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_ca
             return av;
         }
     }
+    // CPython: `a += b` tries `a.__iadd__(b)` first (in-place), then
+    // falls back to `a.__add__(b)` (binding to new).  UserList's __iadd__
+    // modifies self.data in place — without this, += creates a new
+    // object and the parent's `a = ...` rebinding produces stale state.
+    if (PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE) {
+        extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(av)->inst.cls), "__iadd__");
+        if (m != PYS_NONE) {
+            VALUE av_arr[2] = { av, bv };
+            VALUE r = pys_apply(c, m, 2, av_arr);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (!(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL))
+                return r;
+        }
+    }
     { VALUE r = pys_node_binop_ic(c, cache, av, bv, "__add__", &PYS_BINOP_INTERNED_add); if (r) return r; }
     return pys_add(c, av, bv);
 }

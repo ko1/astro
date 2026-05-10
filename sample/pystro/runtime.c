@@ -3493,15 +3493,31 @@ pys_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE
     if (st > 0) { if (a < 0) a = 0; if (b > len) b = len; }
     else        { if (a >= len) a = len - 1; }
 
-    // Collect val's elements.
+    // Collect val's elements.  Validate the value is iterable BEFORE
+    // we touch the list — `a[i:j] = 1` should raise TypeError without
+    // partial-modifying `a` (CPython parity; list_tests.test_set_subscript
+    // depends on this).
     VALUE *items = NULL;
     size_t nval = 0;
     if (pys_is_list(val) || pys_is_tuple(val)) {
         nval = PYS_PTR(val)->list.len;
         items = PYS_PTR(val)->list.items;
     } else {
-        // iterable → buffer
         struct pys_iter it; pys_iter_init(c, &it, val);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return;
+        // Reject obviously-not-iterable RHS (int, etc.) — pys_iter_init
+        // for non-iterable sets state==RAISE, but for some types the
+        // defensive defaults yield an empty iter that would silently
+        // run the slice and shrink the list.
+        if (!(pys_is_list(val) || pys_is_tuple(val) || pys_is_str(val) ||
+              pys_is_byteseq(val) || pys_is_range(val) || pys_is_dict(val) ||
+              pys_is_any_set(val) ||
+              (PYS_IS_PTR(val) && (PYS_PTR(val)->type == PYS_T_ITER ||
+                                   PYS_PTR(val)->type == PYS_T_GEN ||
+                                   PYS_PTR(val)->type == PYS_T_INSTANCE)))) {
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                "can only assign an iterable");
+        }
         size_t cap = 16; nval = 0;
         items = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
         VALUE x;
@@ -3509,6 +3525,7 @@ pys_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE
             if (nval == cap) { cap *= 2; items = (VALUE *)GC_realloc(items, sizeof(VALUE) * cap); }
             items[nval++] = x;
         }
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return;
     }
 
     if (st == 1) {
