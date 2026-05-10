@@ -8783,13 +8783,25 @@ static VALUE
 dm_pop(CTX *c, int argc, VALUE *argv)
 {
     VALUE d = argv[0], k = argv[1];
-    if (pys_dict_has(c, d, k)) {
+    bool has = pys_dict_has(c, d, k);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    if (has) {
         VALUE v = pys_dict_get(c, d, k);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         pys_dict_remove(c, d, k);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         return v;
     }
     if (argc >= 3) return argv[2];
-    PYS_RAISE_EXC(c, c->EXC_KeyError, "pop: key not found");
+    // CPython: KeyError(key) — args[0] is the missing key.
+    VALUE inst = pys_make_instance(c->EXC_KeyError);
+    pys_setattr(c, inst, "args", pys_make_tuple(&k, 1));
+    pys_setattr(c, inst, "__context__", c->current_handling_exc ? c->current_handling_exc : PYS_NONE);
+    pys_setattr(c, inst, "__cause__", PYS_NONE);
+    pys_setattr(c, inst, "__suppress_context__", PYS_FALSE);
+    c->state = PYS_STATE_RAISE;
+    c->state_value = inst;
+    return 0;
 }
 
 static VALUE
