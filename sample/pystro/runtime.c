@@ -9784,8 +9784,14 @@ tm_index(CTX *c, int argc, VALUE *argv)
     if (start < 0) start = 0;
     if (stop < 0) stop += (int64_t)o->list.len;
     if (stop > (int64_t)o->list.len) stop = (int64_t)o->list.len;
-    for (int64_t i = start; i < stop; i++)
-        if (pys_eq_bool(c, o->list.items[i], argv[1])) return PYS_FIX(i);
+    for (int64_t i = start; i < stop; i++) {
+        if (i >= (int64_t)o->list.len) break;
+        VALUE elt = o->list.items[i];
+        if (elt == argv[1]) return PYS_FIX(i);
+        bool eq = pys_eq_bool(c, elt, argv[1]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (eq) return PYS_FIX(i);
+    }
     PYS_RAISE_EXC(c, c->EXC_ValueError, "value not in tuple");
 }
 static VALUE
@@ -9794,8 +9800,14 @@ tm_count(CTX *c, int argc, VALUE *argv)
     (void)argc;
     struct pysobj *o = PYS_PTR(argv[0]);
     int64_t n = 0;
-    for (size_t i = 0; i < o->list.len; i++)
-        if (pys_eq_bool(c, o->list.items[i], argv[1])) n++;
+    for (size_t i = 0; ; i++) {
+        if (i >= o->list.len) break;
+        VALUE elt = o->list.items[i];
+        if (elt == argv[1]) { n++; continue; }
+        bool eq = pys_eq_bool(c, elt, argv[1]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (eq) n++;
+    }
     return PYS_FIX(n);
 }
 static struct type_method tuple_methods[] = {
