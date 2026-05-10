@@ -8765,14 +8765,19 @@ sm_set_pop(CTX *c, int argc, VALUE *argv) {
     }
     PYS_RAISE_EXC(c, c->EXC_KeyError, "pop from an empty set");
 }
+// CPython parity: result type matches the LEFT operand for set binops.
+// `frozenset(...) | set(...)` → frozenset; `set(...) | frozenset(...)` → set.
+static inline VALUE pys_make_set_like(VALUE left) {
+    return pys_is_frozenset(left) ? pys_make_frozenset() : pys_make_set();
+}
 static VALUE
 sm_union(CTX *c, int argc, VALUE *argv) {
     (void)argc;
-    VALUE r = pys_make_set();
+    VALUE r = pys_make_set_like(argv[0]);
     struct pysdict *a = PYS_PTR(argv[0])->dict;
     for (size_t i = 0; i < a->elen; i++)
         if (pydict_entry_live(a, i)) pys_dict_set(c, r, a->entries[i].key, PYS_NONE);
-    if (pys_is_set(argv[1])) {
+    if (pys_is_set(argv[1]) || pys_is_frozenset(argv[1])) {
         struct pysdict *b = PYS_PTR(argv[1])->dict;
         for (size_t i = 0; i < b->elen; i++)
             if (pydict_entry_live(b, i)) pys_dict_set(c, r, b->entries[i].key, PYS_NONE);
@@ -8786,7 +8791,7 @@ sm_union(CTX *c, int argc, VALUE *argv) {
 static VALUE
 sm_intersection(CTX *c, int argc, VALUE *argv) {
     (void)argc;
-    VALUE r = pys_make_set();
+    VALUE r = pys_make_set_like(argv[0]);
     struct pysdict *a = PYS_PTR(argv[0])->dict;
     for (size_t i = 0; i < a->elen; i++) {
         if (pydict_entry_live(a, i) && pys_contains(c, argv[1], a->entries[i].key))
@@ -8797,7 +8802,7 @@ sm_intersection(CTX *c, int argc, VALUE *argv) {
 static VALUE
 sm_difference(CTX *c, int argc, VALUE *argv) {
     (void)argc;
-    VALUE r = pys_make_set();
+    VALUE r = pys_make_set_like(argv[0]);
     struct pysdict *a = PYS_PTR(argv[0])->dict;
     for (size_t i = 0; i < a->elen; i++) {
         if (pydict_entry_live(a, i) && !pys_contains(c, argv[1], a->entries[i].key))
@@ -8810,7 +8815,7 @@ static VALUE
 sm_symmetric_difference(CTX *c, int argc, VALUE *argv) {
     (void)argc;
     VALUE a = argv[0], b = argv[1];
-    VALUE r = pys_make_set();
+    VALUE r = pys_make_set_like(argv[0]);
     struct pysdict *aa = PYS_PTR(a)->dict;
     for (size_t i = 0; i < aa->elen; i++)
         if (pydict_entry_live(aa, i) && !pys_contains(c, b, aa->entries[i].key))
