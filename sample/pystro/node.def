@@ -626,10 +626,18 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         return ((int64_t)PYS_FIXVAL(av) < (int64_t)PYS_FIXVAL(bv)) ? PYS_TRUE : PYS_FALSE;
     if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
         return pys_flonum_to_double(av) < pys_flonum_to_double(bv) ? PYS_TRUE : PYS_FALSE;
-    if (pys_is_any_set(av) && pys_is_any_set(bv)) {
-        extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
-        int r = pys_set_cmp_partial(c, av, bv);
-        return r == -1 ? PYS_TRUE : PYS_FALSE;
+    {
+        // For set / frozenset subclass instances, unwrap to primary so
+        // `class S(frozenset): pass; S({1}) < S({1,2})` works.
+        VALUE auw = (PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE
+                     && PYS_PTR(av)->inst.primary) ? PYS_PTR(av)->inst.primary : av;
+        VALUE buw = (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE
+                     && PYS_PTR(bv)->inst.primary) ? PYS_PTR(bv)->inst.primary : bv;
+        if (pys_is_any_set(auw) && pys_is_any_set(buw)) {
+            extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+            int r = pys_set_cmp_partial(c, auw, buw);
+            return r == -1 ? PYS_TRUE : PYS_FALSE;
+        }
     }
     return pys_cmp(c, av, bv) < 0 ? PYS_TRUE : PYS_FALSE;
 }
@@ -646,10 +654,16 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         return ((int64_t)PYS_FIXVAL(av) <= (int64_t)PYS_FIXVAL(bv)) ? PYS_TRUE : PYS_FALSE;
     if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
         return pys_flonum_to_double(av) <= pys_flonum_to_double(bv) ? PYS_TRUE : PYS_FALSE;
-    if (pys_is_any_set(av) && pys_is_any_set(bv)) {
-        extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
-        int r = pys_set_cmp_partial(c, av, bv);
-        return (r == -1 || r == 0) ? PYS_TRUE : PYS_FALSE;
+    {
+        VALUE auw = (PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE
+                     && PYS_PTR(av)->inst.primary) ? PYS_PTR(av)->inst.primary : av;
+        VALUE buw = (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE
+                     && PYS_PTR(bv)->inst.primary) ? PYS_PTR(bv)->inst.primary : bv;
+        if (pys_is_any_set(auw) && pys_is_any_set(buw)) {
+            extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+            int r = pys_set_cmp_partial(c, auw, buw);
+            return (r == -1 || r == 0) ? PYS_TRUE : PYS_FALSE;
+        }
     }
     return pys_cmp(c, av, bv) <= 0 ? PYS_TRUE : PYS_FALSE;
 }
@@ -666,10 +680,16 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         return ((int64_t)PYS_FIXVAL(av) > (int64_t)PYS_FIXVAL(bv)) ? PYS_TRUE : PYS_FALSE;
     if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
         return pys_flonum_to_double(av) > pys_flonum_to_double(bv) ? PYS_TRUE : PYS_FALSE;
-    if (pys_is_any_set(av) && pys_is_any_set(bv)) {
-        extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
-        int r = pys_set_cmp_partial(c, av, bv);
-        return r == 1 ? PYS_TRUE : PYS_FALSE;
+    {
+        VALUE auw = (PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE
+                     && PYS_PTR(av)->inst.primary) ? PYS_PTR(av)->inst.primary : av;
+        VALUE buw = (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE
+                     && PYS_PTR(bv)->inst.primary) ? PYS_PTR(bv)->inst.primary : bv;
+        if (pys_is_any_set(auw) && pys_is_any_set(buw)) {
+            extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+            int r = pys_set_cmp_partial(c, auw, buw);
+            return r == 1 ? PYS_TRUE : PYS_FALSE;
+        }
     }
     return pys_cmp(c, av, bv) > 0 ? PYS_TRUE : PYS_FALSE;
 }
@@ -686,10 +706,16 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         return ((int64_t)PYS_FIXVAL(av) >= (int64_t)PYS_FIXVAL(bv)) ? PYS_TRUE : PYS_FALSE;
     if (LIKELY(PYS_IS_FLONUM(av) & PYS_IS_FLONUM(bv)))
         return pys_flonum_to_double(av) >= pys_flonum_to_double(bv) ? PYS_TRUE : PYS_FALSE;
-    if (pys_is_any_set(av) && pys_is_any_set(bv)) {
-        extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
-        int r = pys_set_cmp_partial(c, av, bv);
-        return (r == 1 || r == 0) ? PYS_TRUE : PYS_FALSE;
+    {
+        VALUE auw = (PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE
+                     && PYS_PTR(av)->inst.primary) ? PYS_PTR(av)->inst.primary : av;
+        VALUE buw = (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE
+                     && PYS_PTR(bv)->inst.primary) ? PYS_PTR(bv)->inst.primary : bv;
+        if (pys_is_any_set(auw) && pys_is_any_set(buw)) {
+            extern int pys_set_cmp_partial(CTX *c, VALUE a, VALUE b);
+            int r = pys_set_cmp_partial(c, auw, buw);
+            return (r == 1 || r == 0) ? PYS_TRUE : PYS_FALSE;
+        }
     }
     return pys_cmp(c, av, bv) >= 0 ? PYS_TRUE : PYS_FALSE;
 }
