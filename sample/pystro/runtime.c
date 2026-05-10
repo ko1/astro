@@ -2482,8 +2482,24 @@ pys_eq_bool(CTX *c, VALUE a, VALUE b)
 // inline pys_hash in context.h to keep the dict-bench hot path off the
 // PLT.  Recursive calls back into pys_hash() from this body re-enter
 // the inline (and may recurse here for nested non-fixnum components).
+//
+// CONVENTION: every return path is masked to 62-bit non-negative
+// (0x3FFF...) by the outer pys_hash_slow wrapper.  This is the value
+// range that survives PYS_FIX round-trip — bi_hash wraps the result in
+// a fixnum, user code can store it via __hash__, and our dict lookups
+// read it back the same.  Without the mask, FNV-1a strings produce
+// uint64 with the top 2 bits set, PYS_FIX truncates them lossy, and a
+// sign-bit-set value at storage time wouldn't match the lookup-time
+// recomputation.
+#define PYS_HASH_MASK 0x3FFFFFFFFFFFFFFFULL
+static uint64_t _pys_hash_compute(CTX *c, VALUE v);
 uint64_t
 pys_hash_slow(CTX *c, VALUE v)
+{
+    return _pys_hash_compute(c, v) & PYS_HASH_MASK;
+}
+static uint64_t
+_pys_hash_compute(CTX *c, VALUE v)
 {
     if (PYS_IS_FIXNUM(v)) {
         // Defensive: callers should have taken the inline fast path,
@@ -2592,6 +2608,11 @@ pys_hash_slow(CTX *c, VALUE v)
             }
             // Non-int return → fall through to identity hash.
         }
+        // Built-in subclass (e.g. StrSub(str)): no user __hash__ defined,
+        // delegate to the primary value's hash so that
+        // `dict[StrSub('key3')] == dict['key3']` works (CPython parity).
+        if (o->inst.primary)
+            return pys_hash(c, o->inst.primary);
         return (uint64_t)(uintptr_t)o * 0x9E3779B97F4A7C15ULL;
       }
       case PYS_T_LIST:
@@ -12970,7 +12991,15 @@ bi_input(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
-bi_hash(CTX *c, int argc, VALUE *argv) { (void)argc; return PYS_FIX((int64_t)(pys_hash(c, argv[0]) & 0x7FFFFFFFFFFFFFFFULL)); }
+bi_hash(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    // CPython parity: hash returns Py_hash_t (signed).  Don't mask the
+    // sign bit — if user code stashes hash(x) and feeds it back to
+    // __hash__, the dict lookup hashes must compare equal (otherwise a
+    // sign-bit-set value computed at storage time wouldn't match the
+    // unmasked computation at lookup time).
+    return PYS_FIX((int64_t)pys_hash(c, argv[0]));
+}
 
 static __thread int pys_skip_delattr_hook = 0;
 
