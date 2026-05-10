@@ -8493,6 +8493,25 @@ lm_append(CTX *c, int argc, VALUE *argv)
     return PYS_NONE;
 }
 
+// list.__init__([iterable]) — CPython parity: clear in place, then extend
+// from iterable.  `a.__init__()` after `a = [1,2,3]` leaves `a == []`.
+static VALUE
+lm_init(CTX *c, int argc, VALUE *argv)
+{
+    struct pysobj *o = PYS_PTR(argv[0]);
+    o->list.len = 0;
+    if (argc >= 2) {
+        struct pys_iter it; pys_iter_init(c, &it, argv[1]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        VALUE x;
+        while (pys_iter_next(c, &it, &x)) {
+            pys_list_append(c, argv[0], x);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        }
+    }
+    return PYS_NONE;
+}
+
 static VALUE
 lm_pop(CTX *c, int argc, VALUE *argv)
 {
@@ -8676,6 +8695,7 @@ lm_clear(CTX *c, int argc, VALUE *argv)
 
 static struct type_method list_methods[] = {
     { "append",  lm_append,  2, 2 },
+    { "__init__", lm_init,   1, 2 },
     { "pop",     lm_pop,     1, 2 },
     { "extend",  lm_extend,  2, 2 },
     { "insert",  lm_insert,  3, 3 },
