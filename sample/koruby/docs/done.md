@@ -110,27 +110,45 @@ mock-shim の slot 衝突を解消したことで隠れていた fail が一気�
 CRuby 公式の `test/ruby/test_*.rb` を tu_shim 経由で実行。
 **in-scope 67 ファイル: 1,108,357 / 1,430,888 pass (77.5%)**。
 
-### CRuby test/ruby/ 全 135 ファイル sweep (2026-05-10)
+### CRuby test/ruby/ 全 135 ファイル sweep (2026-05-10 最終)
 
-2026-05-10 時点での無 fairness raw sweep (120s/file timeout):
+無 fairness raw sweep (120s/file timeout):
 
 | 状態                 | sweep #1 (起点) | 最終 sweep | 主な内訳 |
 |----------------------|----------------:|----------------:|---|
-| ≥1 pass             | 62 / 135        | 89 / 135        | +27 ファイル復活 (66%) |
+| ≥1 pass             | 62 / 135        | 89 / 135 (66%)  | +27 ファイル復活 |
 | total=0 (load 失敗等) | 30              | 6               | yjit/shapes/vm_dump 等 (impl外) |
 | LOAD ERROR           | 23              | 1               | 残り test_time_tz のみ (Regexp 必要) |
 | dumped core          | 7               | 0               | super / refinement / mm / fiber / dbl2int 等で全解消 |
 | timeout (empty)      | 3               | 0               | IO.pipe を unbuffered にして全解消 |
-| pass 合計            | 834,385         | 1,026,131       | +192k pass |
-| 全 assertion 合計    | 954,960         | 1,404,777       | +450k assertion |
+| pass 合計            | 834,385         | 1,050,622       | +216k pass |
+| 全 assertion 合計    | 954,960         | 1,405,004       | +450k assertion |
 
-新たに has_pass に戻った 3 ファイル: test_clone (kwh_save_slot
-defaulting), test_lazy_enumerator (backtrace dangling-frame ガード),
-test_pipe / test_trace (IO#<< / trace_var stubs)。
+残 0-pass の 46 ファイルは大半が **意図的 pending** — TracePoint /
+ObjectSpace::WeakMap / Ractor / 真の Refinements / 非 UTF-8 Encoding /
+MJIT / 完全 Marshal / 真の ARGF (subprocess fork) / callcc。
+koruby は単一プロセス・単一スレッド・UTF-8 only の方針なので、
+これらは sample/astrorge (Regexp) のような外部 dep 整備か独立 PR 待ち。
 
-残 0-pass の 46 ファイルは大半 OOS — TracePoint / ObjectSpace::WeakMap /
-Ractor / 真の Refinements / Encoding (UTF-8 only) / MJIT / 完全な
-Marshal / 真の ARGF (subprocess) / callcc — koruby は意図的に未実装。
+### 残存課題と OOS 線引き
+
+intentional pending (本サンプルでは扱わない):
+
+| 機能 | 影響 test/ruby ファイル |
+|---|---|
+| Regexp (Onigmo 互換) | test_time_tz / test_regexp / test_string の grapheme / test_backref |
+| TracePoint | test_settracefunc / test_trace 一部 |
+| ObjectSpace::WeakMap | test_weakmap / test_objectspace |
+| 真の Refinements (lexical scope) | test_refinement の高度 case |
+| 非 UTF-8 Encoding | test_econv / test_transcode / test_m17n_comb 一部 |
+| MJIT / RJIT | test_mjit / test_rubyvm_mjit |
+| 完全 Marshal (class identity 含む) | test_marshal の binary 系 |
+| 真の ARGF (subprocess) | test_argf |
+| callcc / Continuation | test_continuation |
+
+将来やる場合の **解放可能 test 数**:
+- Regexp 統合だけで test_string +500、 test_regexp +250、 test_time_tz +800 程度を期待
+- TracePoint 実装で test_settracefunc 全 80 余り解放
 
 ### test_array (220 methods) 周りの compatibility 改善
 
@@ -160,6 +178,24 @@ Marshal / 真の ARGF (subprocess) / callcc — koruby は意図的に未実装�
    `kwh.has_key?` で nil 落ちしていた)。
  - korb_build_backtrace に dangling frame ガード (block が parent stack
    frame を outlive する lazy enumerator パターンで SEGV)。
+
+### kwargs 周りの dispatch 整備
+
+ - `korb_dispatch_to_method` (cfunc → AST 経由) でも FL_KWARGS hash の
+   peel 処理を実装。 `Method#call(**{})` / `obj.send(name, **{})` 等で
+   trailing kwargs が `*args` に紛れ込んでいた問題を解消。
+ - kwarg を持つ callee (`def m(*, k:)`) には peeled hash を
+   kwh_save_slot に格納、 持たない callee (`def m(*a)`) で空なら drop。
+ - dispatch_to_method の arg-count error を `RuntimeError` ではなく
+   CRuby 互換の `ArgumentError "wrong number of arguments (given N,
+   expected M)"` に。 これだけで test_keyword 696 → 756 pass (+60)。
+
+### Kernel#Float() の strict 検証
+
+ - 旧コード: `Float("xyz") == 0.0` 黙って返却。 修正: nil → TypeError、
+   "xyz"/"3.14abc"/"" → ArgumentError "invalid value for Float()"、
+   `exception: false` opt → 失敗時 nil、 Bignum も受理 (旧 nil)。
+ - 前後空白許容 (CRuby 互換)。
 
 主な修正:
  - **super dispatch 修正** (object.c:korb_dispatch_binop): caller block の

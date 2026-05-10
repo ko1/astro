@@ -3,9 +3,20 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-09, tenth pass)
+## 現状 (2026-05-10, eleventh pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
+- **CRuby `test/ruby/` (全 135 ファイル)**: **89 / 135 has_pass (66%)、
+  1,050,622 pass / 1,405,004 (74.8%)**。 起点 (2026-05-09 sweep #1) は
+  62/135、 834,385 pass。 +27 ファイル復活、 +216k pass。
+  - dumped core: 7 → 0 (super dispatch / refinement binding cref / mm
+    recursion / fiber NULL body / Float SIGFPE / Integer overflow recursion
+    / Comparable cmp_eq 全解消)
+  - LOAD ERROR: 23 → 1 (残り test_time_tz は Regexp 必要)
+  - timeout: 3 → 0 (IO.pipe を unbuffered に)
+  - 残 0-pass の 46 ファイルは大半 intentional pending (TracePoint /
+    ObjectSpace::WeakMap / Ractor / 真の Refinements / 非 UTF-8 Encoding /
+    MJIT / 完全 Marshal / 真の ARGF / callcc)。
 - **CRuby `spec/ruby/language/`**: **3,745 pass / 190 fail / 51 err**。
 - **optcarrot**: AOT-cached で **~76 fps** (CRuby 43 fps の 1.8x、 yjit
   175 fps の 0.43x)。 100 frames best-of-1。
@@ -14,6 +25,57 @@
   rational random gc signal binding class enumerator regexp):
   - **pass=14,434 / fail=3,071 / err=1,014 (= 77.9% pass)**
   - **313 / 930 ファイル perfect (33.7%)**
+
+## eleventh pass で test/ruby 互換性を全面強化
+
+主要な fix と効果:
+- **super dispatch bug** (object.c:korb_dispatch_binop): caller block の
+  defining_method 漏れ。 `Class#new → user initialize → super` が
+  "run_all" 等で lookup されてた致命バグ。 test_string 0 → 1965 pass。
+- **UnboundMethod late-binding**: instance_method が name しか保存して
+  なかったので、 後で define_method 上書きされると new body へ
+  redirect され無限再帰。 captured_method を凍結。 test_super 蘇生。
+- **Binding が stack-alloc cref を保存**: class body 中に binding する
+  と class body 終了で dangle → SEGV。 cref chain を heap deep-copy。
+  test_refinement 蘇生。
+- **Struct.new {} block の cref leak**: `Struct.new(:x) do def
+  method_missing; ... end end` が outer class の method_missing を
+  上書き。 block->cref を一時 swap。 test_marshal 蘇生。
+- **Class#clone が singleton method を copy しない**: 旧コードは
+  `def AClass.cm1; end` 後 `MyClass = AClass.clone` で cm1 が消失。
+  test_module 0 → 725 pass。
+- **bootstrap method_missing recursion**: `self.inspect` が再 raise
+  する class で `"undefined method '...' for #{self.inspect}"` 構築中
+  に SEGV。 thread-local depth で 4 段以上で `(recursion)`。
+- **Float SIGFPE**: `(long)(big_double)` の UB を `korb_dbl2int`
+  (Bignum fallback) に。 flt_floor/ceil の n<0 div-by-0 修正。
+- **Integer 無限再帰**: `2 ** -2^62` で fixnum overflow → 無限再帰。
+- **A::B::C = 0 ** 0 の slot collision** (test_primitive)。
+- **Array#cycle / repeated_combination / repeated_permutation を C 実装**
+  (bootstrap.rb 版は break が nested block を貫通しなかった)。
+- **巨大 index 防御**: korb_ary_aset / EVAL_node_aset / ary_aset で
+  `LONG_MAX/sizeof(VALUE)` 超え index に IndexError raise (旧 OOM)。
+- **IO.pipe unbuffered**: line-buffered だった → readpartial が無限
+  block。 test_io / test_optimization の timeout 解消。
+- **kwh_save_slot defaulting + FL_KWARGS peeling** in dispatch_to_method:
+  `Method#call(**{})` 等で kwsplat が `*args` に紛れ込まない。
+  test_keyword 613 → 791 pass。
+- **dispatch arg-count error を ArgumentError に**: 旧 RuntimeError
+  だったので assert_raise(ArgumentError) が拾えなかった。
+- **String#[]= 実装**: 旧 stub。 IndexError raise 含む。
+- **object_id を immediate VALUE に**: 旧 `(long)self / 8` は Fixnum
+  小値を全部 0 に潰し Hash#hash 完全破綻。
+- **Kernel#Float() に strict 検証**: "xyz" → ArgumentError、
+  exception:false opt、 nil → TypeError、 Bignum 受理。
+- **sprintf %b の width / precision / 0-pad / negative-prefix**。
+- **tu_shim 大幅拡張**: Errno (130 const) / Encoding (.find / 70 alias /
+  CompatibilityError 等) / Process (UID/GID/CLOCK_*) / Thread::Queue /
+  IO 定数 / File::Constants / RubyVM::AbstractSyntaxTree / Bug /
+  Socket / Dir.mktmpdir / Tempfile / FileUtils / MemoryViewTestUtils /
+  ARGF / trace_var / caller_locations / refine 部分実装。
+
+詳細は [done.md](./done.md) の「CRuby test/ruby/ 全 135 ファイル sweep」
+セクション参照。
 - **tenth pass で perfect 化したもの**:
   - chilled string 完全実装 (FL_CHILLED + parse.c の prism flag 読み分け +
     Symbol#to_s も chilled): `string/chilled_string_spec` `string/uplus_spec`
