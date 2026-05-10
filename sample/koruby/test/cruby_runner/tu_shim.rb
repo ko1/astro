@@ -180,6 +180,14 @@ end
 # Patch koruby's built-in Encoding (which only carries constants — no
 # .find / .name_list).  Tests under test/ruby/ poke .find pervasively.
 class Encoding
+  unless const_defined?(:CompatibilityError, false)
+    CompatibilityError = Class.new(StandardError)
+    InvalidByteSequenceError = Class.new(StandardError) unless const_defined?(:InvalidByteSequenceError, false)
+    UndefinedConversionError = Class.new(StandardError) unless const_defined?(:UndefinedConversionError, false)
+    ConverterNotFoundError = Class.new(StandardError) unless const_defined?(:ConverterNotFoundError, false)
+  end
+end
+class Encoding
   @@enc_cache = {} unless class_variable_defined?(:@@enc_cache)
   unless respond_to?(:find)
     def self.find(n)
@@ -308,6 +316,48 @@ end
 $stdin ||= (defined?(STDIN) && STDIN ? STDIN : IO.allocate)
 $stdout ||= (defined?(STDOUT) && STDOUT ? STDOUT : IO.allocate)
 $stderr ||= (defined?(STDERR) && STDERR ? STDERR : IO.allocate)
+
+# ARGF — pseudo-IO that reads from $stdin / args.  koruby has no real
+# ARGF; provide a thin stub so toplevel `ARGF.each { ... }` doesn't NPE.
+unless defined?(ARGF)
+  module ARGF
+    @@argv = []
+    @@filename = "-"
+    @@lineno = 0
+    def self.argv; @@argv; end
+    def self.filename; @@filename; end
+    def self.path; @@filename; end
+    def self.file; $stdin; end
+    def self.read(*); ""; end
+    def self.readline; nil; end
+    def self.gets(*); nil; end
+    def self.lineno; @@lineno; end
+    def self.lineno=(v); @@lineno = v; end
+    def self.each(*); self; end
+    def self.each_line(*); self; end
+    def self.each_byte(*); self; end
+    def self.each_char(*); self; end
+    def self.each_codepoint(*); self; end
+    def self.eof?; true; end
+    def self.eof; eof?; end
+    def self.close; self; end
+    def self.closed?; false; end
+    def self.skip; self; end
+    def self.tell; 0; end
+    def self.pos; 0; end
+    def self.pos=(v); v; end
+    def self.seek(*); 0; end
+    def self.binmode; self; end
+    def self.binmode?; false; end
+    def self.fileno; -1; end
+    def self.to_io; $stdin; end
+    def self.to_a; []; end
+    def self.inplace_mode; nil; end
+    def self.inplace_mode=(_); nil; end
+    def self.dup; self; end
+    def self.class; ARGF; end
+  end
+end
 class File
   unless const_defined?(:ALT_SEPARATOR)
     ALT_SEPARATOR = nil
