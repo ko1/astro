@@ -5764,8 +5764,11 @@ pys_display(FILE *fp, VALUE v, bool repr)
         return;
       }
       case PYS_T_SET: {
+        if (pys_display_seen(o)) { fputs("set(...)", fp); return; }
         struct pysdict *d = o->dict;
         if (d->used == 0) { fputs("set()", fp); return; }
+        if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+            pys_display_visit[pys_display_visit_top++] = o;
         fputc('{', fp);
         size_t printed = 0;
         for (size_t i = 0; i < d->elen; i++) {
@@ -5774,12 +5777,16 @@ pys_display(FILE *fp, VALUE v, bool repr)
             pys_display(fp, d->entries[i].key, true);
         }
         fputc('}', fp);
+        pys_display_visit_top--;
         return;
       }
       case PYS_T_FROZENSET: {
+        if (pys_display_seen(o)) { fputs("frozenset(...)", fp); return; }
         struct pysdict *d = o->dict;
         fputs("frozenset(", fp);
         if (d->used > 0) {
+            if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+                pys_display_visit[pys_display_visit_top++] = o;
             fputc('{', fp);
             size_t printed = 0;
             for (size_t i = 0; i < d->elen; i++) {
@@ -5788,6 +5795,7 @@ pys_display(FILE *fp, VALUE v, bool repr)
                 pys_display(fp, d->entries[i].key, true);
             }
             fputc('}', fp);
+            pys_display_visit_top--;
         }
         fputc(')', fp);
         return;
@@ -5953,11 +5961,26 @@ VALUE
 pys_to_repr(CTX *c, VALUE v)
 {
     if (pys_is_instance(v)) {
-        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), PYS_INTERN_repr);
+        // Track recursion via the same display-visit array used by
+        // list/dict/set/tuple — a class with `__repr__` that returns
+        // `repr(self.value)` where `self.value` contains self would
+        // otherwise stack-overflow.
+        struct pysobj *o = PYS_PTR(v);
+        if (pys_display_seen(o)) {
+            const char *cn = o->inst.cls->cls.name;
+            char buf[64];
+            int n = snprintf(buf, sizeof(buf), "%s(...)", cn);
+            return pys_make_str(buf, (size_t)n);
+        }
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(o->inst.cls), PYS_INTERN_repr);
         if (m != PYS_NONE) {
+            if (pys_display_visit_top < PYS_DISPLAY_MAX_DEPTH)
+                pys_display_visit[pys_display_visit_top++] = o;
             VALUE av[1] = { v };
             VALUE r = pys_apply(c, m, 1, av);
+            if (pys_display_visit_top > 0) pys_display_visit_top--;
             if (pys_is_str(r)) return r;
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         }
     }
     char *big = NULL;
