@@ -8936,14 +8936,34 @@ static struct type_method dict_methods[] = {
 // Set methods.
 static VALUE
 sm_add(CTX *c, int argc, VALUE *argv) { (void)argc; pys_dict_set(c, argv[0], argv[1], PYS_NONE); return PYS_NONE; }
+// CPython parity: set.{remove,discard,contains} convert an unhashable set
+// key to a frozenset and retry, so `{frozenset([1])}.remove({1})` works.
+static inline VALUE pys_set_key_for_lookup(CTX *c, VALUE k) {
+    if (pys_is_set(k)) {
+        VALUE fsk = pys_make_frozenset();
+        struct pysdict *src = PYS_PTR(k)->dict;
+        for (size_t i = 0; i < src->elen; i++)
+            if (pydict_entry_live(src, i))
+                pys_dict_set(c, fsk, src->entries[i].key, PYS_NONE);
+        return fsk;
+    }
+    return k;
+}
 static VALUE
-sm_discard(CTX *c, int argc, VALUE *argv) { (void)argc; pys_dict_remove(c, argv[0], argv[1]); return PYS_NONE; }
+sm_discard(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    VALUE k = pys_set_key_for_lookup(c, argv[1]);
+    pys_dict_remove(c, argv[0], k);
+    return PYS_NONE;
+}
 static VALUE
 sm_remove(CTX *c, int argc, VALUE *argv) {
     (void)argc;
-    if (pys_dict_remove(c, argv[0], argv[1])) return PYS_NONE;
+    VALUE k = pys_set_key_for_lookup(c, argv[1]);
+    if (pys_dict_remove(c, argv[0], k)) return PYS_NONE;
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    // CPython parity: KeyError(key) — `e.args[0]` must be the missing key.
+    // CPython parity: KeyError(key) — `e.args[0]` must be the missing key
+    // (original argv[1], not the converted frozenset).
     VALUE inst = pys_make_instance(c->EXC_KeyError);
     pys_setattr(c, inst, "args", pys_make_tuple(&argv[1], 1));
     pys_setattr(c, inst, "__context__", c->current_handling_exc ? c->current_handling_exc : PYS_NONE);
