@@ -8810,9 +8810,17 @@ sm_discard(CTX *c, int argc, VALUE *argv) { (void)argc; pys_dict_remove(c, argv[
 static VALUE
 sm_remove(CTX *c, int argc, VALUE *argv) {
     (void)argc;
-    if (!pys_dict_remove(c, argv[0], argv[1]))
-        PYS_RAISE_EXC(c, c->EXC_KeyError, "remove: key not in set");
-    return PYS_NONE;
+    if (pys_dict_remove(c, argv[0], argv[1])) return PYS_NONE;
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    // CPython parity: KeyError(key) — `e.args[0]` must be the missing key.
+    VALUE inst = pys_make_instance(c->EXC_KeyError);
+    pys_setattr(c, inst, "args", pys_make_tuple(&argv[1], 1));
+    pys_setattr(c, inst, "__context__", c->current_handling_exc ? c->current_handling_exc : PYS_NONE);
+    pys_setattr(c, inst, "__cause__", PYS_NONE);
+    pys_setattr(c, inst, "__suppress_context__", PYS_FALSE);
+    c->state = PYS_STATE_RAISE;
+    c->state_value = inst;
+    return 0;
 }
 static VALUE
 sm_set_pop(CTX *c, int argc, VALUE *argv) {
