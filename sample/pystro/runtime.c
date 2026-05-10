@@ -3664,8 +3664,16 @@ pys_contains(CTX *c, VALUE container, VALUE v)
 void
 pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable)
 {
+    // Defensive defaults: if a later path raises before setting kind /
+    // end (e.g. non-iterable TypeError), an iter with kind=0 + end=0
+    // returns false from pys_iter_next without dereferencing the
+    // (possibly non-pointer) container.  Several call sites currently
+    // forget to check c->state after pys_iter_init, so this prevents a
+    // SEGV when they proceed into pys_iter_next.
+    it->kind = 0;
     it->container = iterable;
     it->i = 0;
+    it->end = 0;
     it->step = 1;
     if (pys_is_list(iterable) || pys_is_tuple(iterable)) {
         it->kind = 0;
