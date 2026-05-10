@@ -3613,7 +3613,21 @@ pys_contains(CTX *c, VALUE container, VALUE v)
         }
         return false;
     }
-    if (pys_is_dict(container) || pys_is_any_set(container)) return pys_dict_has(c, container, v);
+    if (pys_is_dict(container) || pys_is_any_set(container)) {
+        // CPython special case: `set() in {frozenset()}` works even
+        // though set is unhashable.  set_contains catches the TypeError
+        // and retries with a temporary frozenset.  Mirror that here.
+        if (pys_is_set(v)) {
+            // Convert the lookup key to a frozenset (same elements).
+            VALUE fsk = pys_make_frozenset();
+            struct pysdict *src = PYS_PTR(v)->dict;
+            for (size_t i = 0; i < src->elen; i++)
+                if (pydict_entry_live(src, i))
+                    pys_dict_set(c, fsk, src->entries[i].key, PYS_NONE);
+            return pys_dict_has(c, container, fsk);
+        }
+        return pys_dict_has(c, container, v);
+    }
     if (pys_is_str(container)) {
         // CPython rejects non-str RHS with TypeError.
         if (!pys_is_str(v)) {
