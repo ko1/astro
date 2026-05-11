@@ -319,6 +319,7 @@ EnumType = EnumMeta
 
 
 IntFlag = Flag    # treat IntFlag as Flag for our purposes
+ReprEnum = Enum   # CPython 3.11 base for IntEnum/StrEnum — same surface in pystro.
 
 
 # CPython 3.11+ FlagBoundary enum — pystro doesn't enforce boundaries

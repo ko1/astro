@@ -44,6 +44,15 @@ def _assert_python(expected_success, /, *args, **env_vars):
     raise unittest.SkipTest("subprocess not supported")
 
 
+def make_pkg(pkg_dir, *modules, init_source=""):
+    """Create a Python package on disk."""
+    import os
+    os.makedirs(pkg_dir, exist_ok=True)
+    with open(os.path.join(pkg_dir, "__init__.py"), "w") as f:
+        f.write(init_source)
+    return pkg_dir
+
+
 __all__ = ["assert_python_ok", "assert_python_failure", "run_python_until_end",
            "spawn_python", "kill_python", "make_script", "make_zip_script",
            "interpreter_requires_environment", "run_test_script"]

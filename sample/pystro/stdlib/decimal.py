@@ -162,3 +162,24 @@ def getcontext():
 class _Context:
     def __init__(self):
         self.prec = 28
+        self.rounding = ROUND_HALF_EVEN
+        # CPython exposes a flags / traps dict keyed by exception class
+        # (InvalidOperation, DivisionByZero, ...); pystro tracks no
+        # arithmetic flags so an empty dict suffices.
+        self.flags = {}
+        self.traps = {}
+        self.Emin = -999999
+        self.Emax = 999999
+        self.capitals = 1
+        self.clamp = 0
+    def copy(self):
+        c = _Context()
+        c.prec = self.prec
+        c.rounding = self.rounding
+        c.flags = dict(self.flags)
+        c.traps = dict(self.traps)
+        c.Emin = self.Emin
+        c.Emax = self.Emax
+        c.capitals = self.capitals
+        c.clamp = self.clamp
+        return c
