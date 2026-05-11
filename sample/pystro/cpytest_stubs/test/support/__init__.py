@@ -616,11 +616,13 @@ def set_recursion_limit(n):
     class _Ctx:
         def __enter__(self): return self
         def __exit__(self, *e): return False
+        def __call__(self, fn): return fn
     return _Ctx()
 def infinite_recursion(*a, **kw):
     class _Ctx:
         def __enter__(self): return self
         def __exit__(self, *e): return False
+        def __call__(self, fn): return fn  # decorator form
     return _Ctx()
 
 
