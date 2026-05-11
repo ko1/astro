@@ -403,10 +403,13 @@ def main(scope=None, *args, **kwargs):
     for cls in cases:
         method_names = []
         for n in dir(cls):
-            # unittest's default loader matches "test*" (not just
+            # unittest's default TestLoader matches "test*" (not just
             # "test_*"); CPython tests sometimes declare a single
-            # `def test(self):` (e.g. test_stringprep).
-            if n.startswith("test"):
+            # `def test(self):` (e.g. test_stringprep).  Limit to the
+            # bare `test` name to avoid pulling in helper methods
+            # whose names happen to start with `test` (which can
+            # break previously-passing test suites).
+            if n == "test" or n.startswith("test_"):
                 # CPython idiom: subclasses set `test_xxx = None` to
                 # disable an inherited test method.  Skip non-callable
                 # entries so they don't end up as "object is not
