@@ -3324,6 +3324,7 @@ parse_pattern_atom(void)
     int k = peek_tok(0)->kind;
     struct pyspat p = {0};
     if (k == T_INT || k == T_FLOAT || k == T_IMAG || k == T_STR
+            || k == T_BYTES
             || k == T_NONE || k == T_TRUE || k == T_FALSE) {
         p.kind = PYPAT_LITERAL;
         p.literal = parse_atom();
