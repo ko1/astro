@@ -325,6 +325,17 @@ static bool in_class_body;
 // outside any class body.
 static NODE *cur_class_base;
 
+// Wrap ALLOC_node_seq so result inherits its first child's line, giving
+// us a sensible func.body line (the body's first statement) regardless of
+// the order in which the parser builds the seq chain bottom-up.
+#define ALLOC_node_seq(a, b) ({                              \
+    NODE *_a_ = (a), *_b_ = (b);                             \
+    NODE *_n_ = (ALLOC_node_seq)(_a_, _b_);                  \
+    if (_a_ && _a_->head.line > 0)                           \
+        _n_->head.line = _a_->head.line;                     \
+    _n_;                                                     \
+})
+
 static int
 scope_local_index(Scope *s, const char *name)
 {
