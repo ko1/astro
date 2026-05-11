@@ -7,8 +7,18 @@
 
 
 class _Meth:
-    def meth(self, *args, **kwargs):
-        return args
+    def meth_varargs(self, *args):
+        return (self,) + args
+    def meth_varargs_keywords(self, *args, **kwargs):
+        return ((self,) + args, kwargs)
+    def meth_noargs(self):
+        return (self,)
+    def meth_o(self, arg):
+        return (self, arg)
+    def meth_fastcall(self, *args):
+        return (self,) + args
+    def meth_fastcall_keywords(self, *args, **kwargs):
+        return ((self,) + args, kwargs)
     def __call__(self, *args, **kwargs):
         return args
 
@@ -19,14 +29,44 @@ class MethInstance(_Meth):
 
 class MethClass:
     @classmethod
-    def cmeth(cls, *args, **kwargs):
-        return args
+    def meth_varargs(cls, *args):
+        return (cls,) + args
+    @classmethod
+    def meth_varargs_keywords(cls, *args, **kwargs):
+        return ((cls,) + args, kwargs)
+    @classmethod
+    def meth_noargs(cls):
+        return (cls,)
+    @classmethod
+    def meth_o(cls, arg):
+        return (cls, arg)
+    @classmethod
+    def meth_fastcall(cls, *args):
+        return (cls,) + args
+    @classmethod
+    def meth_fastcall_keywords(cls, *args, **kwargs):
+        return ((cls,) + args, kwargs)
 
 
 class MethStatic:
     @staticmethod
-    def smeth(*args, **kwargs):
+    def meth_varargs(*args):
         return args
+    @staticmethod
+    def meth_varargs_keywords(*args, **kwargs):
+        return (args, kwargs)
+    @staticmethod
+    def meth_noargs():
+        return ()
+    @staticmethod
+    def meth_o(arg):
+        return arg
+    @staticmethod
+    def meth_fastcall(*args):
+        return args
+    @staticmethod
+    def meth_fastcall_keywords(*args, **kwargs):
+        return (args, kwargs)
 
 
 def _test_long_long_and_overflow(*args, **kwargs):
@@ -67,6 +107,22 @@ def make_vectorcall_class(*args, **kwargs):
 
 def meth_varargs(*args, **kwargs):
     return args
+
+
+def meth_varargs_keywords(*args, **kwargs):
+    return args, kwargs
+
+
+def meth_noargs():
+    return None
+
+
+def meth_fastcall(*args, **kwargs):
+    return args, kwargs
+
+
+def meth_fastcall_keywords(*args, **kwargs):
+    return args, kwargs
 
 
 def meth_o(obj):
