@@ -1124,12 +1124,16 @@ node_printf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fmt,
 {
     (void)n;
     VALUE fmt_v = UNWRAP(EVAL_ARG(c, fmt));
-    if (cnt == 0) { arawk_printf(stdout, fmt_v, NULL, 0); return RESULT_OK(ARAWK_FIX(0)); }
-    VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
-    for (uint32_t i = 0; i < cnt; i++) {
-        vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+    if (cnt == 0) {
+        arawk_printf(stdout, fmt_v, NULL, 0);
     }
-    arawk_printf(stdout, fmt_v, vs, cnt);
+    else {
+        VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
+        for (uint32_t i = 0; i < cnt; i++) {
+            vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+        }
+        arawk_printf(stdout, fmt_v, vs, cnt);
+    }
     return RESULT_OK(ARAWK_FIX(0));
 }
 
@@ -1142,12 +1146,16 @@ node_printf_to(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *f
     VALUE fmt_v  = UNWRAP(EVAL_ARG(c, fmt));
     VALUE dest_v = UNWRAP(EVAL_ARG(c, dest));
     FILE *out = arawk_open_stream(mode, dest_v);
-    if (cnt == 0) { arawk_printf(out, fmt_v, NULL, 0); return RESULT_OK(ARAWK_FIX(0)); }
-    VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
-    for (uint32_t i = 0; i < cnt; i++) {
-        vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+    if (cnt == 0) {
+        arawk_printf(out, fmt_v, NULL, 0);
     }
-    arawk_printf(out, fmt_v, vs, cnt);
+    else {
+        VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
+        for (uint32_t i = 0; i < cnt; i++) {
+            vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+        }
+        arawk_printf(out, fmt_v, vs, cnt);
+    }
     return RESULT_OK(ARAWK_FIX(0));
 }
 
@@ -1156,12 +1164,18 @@ node_sprintf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fmt
 {
     (void)n;
     VALUE fmt_v = UNWRAP(EVAL_ARG(c, fmt));
-    if (cnt == 0) return RESULT_OK(arawk_sprintf_v(fmt_v, NULL, 0));
-    VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
-    for (uint32_t i = 0; i < cnt; i++) {
-        vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+    VALUE result;
+    if (cnt == 0) {
+        result = arawk_sprintf_v(fmt_v, NULL, 0);
     }
-    return RESULT_OK(arawk_sprintf_v(fmt_v, vs, cnt));
+    else {
+        VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
+        for (uint32_t i = 0; i < cnt; i++) {
+            vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+        }
+        result = arawk_sprintf_v(fmt_v, vs, cnt);
+    }
+    return RESULT_OK(result);
 }
 
 // ---------------------------------------------------------------------------
