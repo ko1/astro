@@ -1,0 +1,1227 @@
+// arawk — POSIX awk subset on the ASTro framework.
+//
+// Tagged-VALUE tree-walking interpreter (1-bit fixnum tag, heap-boxed
+// floats / strings / assoc arrays).  Heap memory is managed by Boehm-
+// Demers-Weiser conservative GC (libgc), modeled on astr.
+//
+// Phase 0+1 node set: enough to run `BEGIN { ... }`, single main rule
+// (no pattern matching), `END { ... }`, $N / NR / NF reads, print,
+// arithmetic, string concat, comparisons, if/while.  Regex pattern
+// matching and pattern-action lists land in Phase 2.
+
+// ---------------------------------------------------------------------------
+// Literals.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_int(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t v)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(AWK_FIX(v));
+}
+
+NODE_DEF
+arawk_node_int64(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint64_t bits)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(awk_make_int((int64_t)bits));
+}
+
+NODE_DEF
+arawk_node_float(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint64_t bits)
+{
+    (void)c; (void)n; (void)fp;
+    union { uint64_t u; double d; } pun = { .u = bits };
+    return RESULT_OK(awk_make_float(pun.d));
+}
+
+NODE_DEF
+arawk_node_str(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *s)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(awk_make_string(s, strlen(s)));
+}
+
+NODE_DEF
+arawk_node_uninit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(AWK_UNINIT);
+}
+
+// ---------------------------------------------------------------------------
+// Variables (locals / globals share the same env in Phase 0+1).
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)c; (void)n;
+    return RESULT_OK(fp[index]);
+}
+
+NODE_DEF
+arawk_node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *rhs)
+{
+    (void)n;
+    VALUE v = UNWRAP(EVAL_ARG(c, rhs));
+    fp[index] = v;
+    return RESULT_OK(v);
+}
+
+// ---------------------------------------------------------------------------
+// Special-variable reads (NR / NF).  These read from c->rec / c->env
+// at fixed slots; the input loop updates them.  Writes go through
+// arawk_node_lset on the same slot.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_nr(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)n; (void)fp;
+    return RESULT_OK(awk_get_nr(c));
+}
+
+NODE_DEF
+arawk_node_nf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)n; (void)fp;
+    return RESULT_OK(awk_get_nf(c));
+}
+
+// $expr — `$0` if expr evaluates to 0, else $N (numeric coercion of
+// expr).  Returns the field value as a STRNUM string (or "" if N > NF).
+NODE_DEF
+arawk_node_dollar(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *idx)
+{
+    (void)n;
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    return RESULT_OK(awk_get_field_v(c, iv));
+}
+
+// $N where N is a small integer literal — fast path that skips the
+// VALUE wrap of the index.
+NODE_DEF
+arawk_node_dollar_const(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t n_idx)
+{
+    (void)n; (void)fp;
+    return RESULT_OK(awk_get_field(c, n_idx));
+}
+
+// `$expr = rhs` — assign to field, rebuilds $0 via OFS.
+NODE_DEF
+arawk_node_dollar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *idx, NODE *rhs)
+{
+    (void)n;
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    VALUE rv = UNWRAP(EVAL_ARG(c, rhs));
+    int64_t fi = AWK_IS_FIX(iv) ? AWK_FIX_VAL(iv) : (int64_t)awk_to_num(iv);
+    awk_set_field(c, fi, rv);
+    return RESULT_OK(rv);
+}
+
+// `$N = rhs` (literal N) — fast-path.
+NODE_DEF
+arawk_node_dollar_const_set(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t n_idx, NODE *rhs)
+{
+    (void)n;
+    VALUE rv = UNWRAP(EVAL_ARG(c, rhs));
+    awk_set_field(c, (int64_t)n_idx, rv);
+    return RESULT_OK(rv);
+}
+
+// `$N++` / `$N--` / `++$N` / `--$N` — common in `$N--` (tt.12).
+NODE_DEF
+arawk_node_dollar_postdec(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t n_idx)
+{
+    (void)n; (void)fp;
+    VALUE v = awk_get_field(c, n_idx);
+    VALUE r = AWK_IS_FIX(v) ? v : awk_make_float(awk_to_num(v));
+    awk_set_field(c, (int64_t)n_idx, awk_sub(v, AWK_FIX(1)));
+    return RESULT_OK(r);
+}
+
+NODE_DEF
+arawk_node_dollar_postinc(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t n_idx)
+{
+    (void)n; (void)fp;
+    VALUE v = awk_get_field(c, n_idx);
+    VALUE r = AWK_IS_FIX(v) ? v : awk_make_float(awk_to_num(v));
+    awk_set_field(c, (int64_t)n_idx, awk_add(v, AWK_FIX(1)));
+    return RESULT_OK(r);
+}
+
+// ---------------------------------------------------------------------------
+// Sequencing / control flow.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *head, NODE *tail)
+{
+    (void)n;
+    (void)UNWRAP(EVAL_ARG(c, head));
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+arawk_node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *then_node, NODE *else_node)
+{
+    (void)n;
+    if (awk_is_truthy(UNWRAP(EVAL_ARG(c, cond)))) {
+        return EVAL_ARG(c, then_node);
+    }
+    return EVAL_ARG(c, else_node);
+}
+
+NODE_DEF
+arawk_node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *body)
+{
+    (void)n;
+    while (awk_is_truthy(UNWRAP(EVAL_ARG(c, cond)))) {
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) {
+            if (r.state == RESULT_BREAK)    break;
+            if (r.state == RESULT_CONTINUE) continue;
+            return r;
+        }
+    }
+    return RESULT_OK(AWK_FIX(0));
+}
+
+// `for (init; cond; step) body`.  All four operands are NODE * (use
+// arawk_node_noop for absent init / step).  Empty cond is treated as true
+// — that's the canonical infinite-loop shape `for (;;) body`.
+NODE_DEF
+arawk_node_for(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *init, NODE *cond, NODE *step, NODE *body, uint32_t has_cond)
+{
+    (void)n;
+    (void)UNWRAP(EVAL_ARG(c, init));
+    for (;;) {
+        if (has_cond) {
+            VALUE cv = UNWRAP(EVAL_ARG(c, cond));
+            if (!awk_is_truthy(cv)) break;
+        }
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) {
+            if (r.state == RESULT_BREAK)    break;
+            if (r.state == RESULT_CONTINUE) goto step_label;
+            return r;
+        }
+      step_label:
+        (void)UNWRAP(EVAL_ARG(c, step));
+    }
+    return RESULT_OK(AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_break(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_BREAK_();
+}
+
+NODE_DEF
+arawk_node_continue(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_CONTINUE_();
+}
+
+NODE_DEF
+arawk_node_next(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_NEXT_();
+}
+
+NODE_DEF
+arawk_node_exit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *arg)
+{
+    (void)n;
+    VALUE v = AWK_FIX(0);
+    if (arg) v = UNWRAP(EVAL_ARG(c, arg));
+    return RESULT_EXIT_(v);
+}
+
+// ---------------------------------------------------------------------------
+// Program structure.
+//
+// The framework's dispatcher pre-fetches the `head.dispatcher` field
+// of every NODE * operand, so optional branches can't be NULL.  We
+// use a Null-object NODE (`arawk_node_noop`) for absent parts: missing
+// BEGIN / main / END are filled with `arawk_node_noop`, which evaluates to
+// a no-op.  The input loop is its own node (`arawk_node_main_loop`) wrapping
+// the main action; programs with no main rule pass `arawk_node_noop` in
+// that slot and so never touch stdin.
+//
+// POSIX exit semantics: `exit` from BEGIN skips the main loop but
+// END still runs; `exit` from main skips the rest of main and remaining
+// records but END still runs; `exit` from END terminates immediately.
+// The dispatcher implements this by running each phase unconditionally
+// but latching the first EXIT value.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_noop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_main_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *action)
+{
+    (void)n;
+    while (awk_input_next_record(c)) {
+        RESULT r = EVAL_ARG(c, action);
+        if (r.state == RESULT_NORMAL || r.state == RESULT_NEXT) continue;
+        if (r.state == RESULT_EXIT) return r;
+        // Stray break / continue at top of action — POSIX undefined;
+        // treat as record-skip.
+    }
+    return RESULT_OK(AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_program(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *begin_block, NODE *main_part, NODE *end_block)
+{
+    (void)n;
+    VALUE exit_code = AWK_FIX(0);
+    bool exited = false;
+
+    RESULT r = EVAL_ARG(c, begin_block);
+    if (r.state == RESULT_EXIT) { exit_code = r.value; exited = true; }
+
+    if (!exited) {
+        r = EVAL_ARG(c, main_part);
+        if (r.state == RESULT_EXIT) { exit_code = r.value; exited = true; }
+    }
+
+    r = EVAL_ARG(c, end_block);
+    if (r.state == RESULT_EXIT) exit_code = r.value;
+
+    return RESULT_EXIT_(exit_code);
+}
+
+// ---------------------------------------------------------------------------
+// Output.  `print` prints comma-separated expressions joined by OFS,
+// terminated by ORS.  With zero arguments → prints $0.  The variadic
+// list is passed via ARAWK_NODE_TABLE (base_idx, n).
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_print(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t base_idx, uint32_t cnt)
+{
+    (void)n;
+    if (cnt == 0) {
+        VALUE v0 = awk_get_field(c, 0);
+        awk_print_record(stdout, &v0, 1,
+                         "", 0,
+                         "\n", 1);  // FIXME read OFS/ORS from env once globals wired
+        return RESULT_OK(AWK_FIX(0));
+    }
+    VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        NODE *child = ARAWK_NODE_TABLE[base_idx + i];
+        vs[i] = UNWRAP(EVAL(c, child, fp));
+    }
+    // For Phase 0 we hard-code OFS=" " and ORS="\n"; once the env
+    // globals are populated by the parser, read from there.
+    awk_print_record(stdout, vs, cnt, " ", 1, "\n", 1);
+    return RESULT_OK(AWK_FIX(0));
+}
+
+// `print expr_list | "cmd"` / `print expr_list > "file"` / `>>` — same
+// shape as arawk_node_print plus a `dest` expression and mode tag.
+// `mode` is one of: 'w' (pipe), 'o' (overwrite), 'a' (append) — see
+// awk_open_stream in runtime.c.
+NODE_DEF
+arawk_node_print_to(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t base_idx, uint32_t cnt, NODE *dest, int32_t mode)
+{
+    (void)n;
+    VALUE dest_v = UNWRAP(EVAL_ARG(c, dest));
+    FILE *out = awk_open_stream(mode, dest_v);
+    if (cnt == 0) {
+        VALUE v0 = awk_get_field(c, 0);
+        awk_print_record(out, &v0, 1, "", 0, "\n", 1);
+        return RESULT_OK(AWK_FIX(0));
+    }
+    VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        NODE *child = ARAWK_NODE_TABLE[base_idx + i];
+        vs[i] = UNWRAP(EVAL(c, child, fp));
+    }
+    awk_print_record(out, vs, cnt, " ", 1, "\n", 1);
+    return RESULT_OK(AWK_FIX(0));
+}
+
+// ---------------------------------------------------------------------------
+// Arithmetic.  Awk numbers are double internally; we keep fixnums on
+// the fast path for hot loops.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_add(av, bv));
+}
+
+NODE_DEF
+arawk_node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_sub(av, bv));
+}
+
+NODE_DEF
+arawk_node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_mul(av, bv));
+}
+
+NODE_DEF
+arawk_node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_div(av, bv));
+}
+
+NODE_DEF
+arawk_node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_mod(av, bv));
+}
+
+NODE_DEF
+arawk_node_pow(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_pow(av, bv));
+}
+
+NODE_DEF
+arawk_node_neg(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    return RESULT_OK(awk_neg(av));
+}
+
+// Unary `+` — forces numeric coercion.
+NODE_DEF
+arawk_node_unaryplus(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    if (AWK_IS_FIX(av)) return RESULT_OK(av);
+    return RESULT_OK(awk_make_float(awk_to_num(av)));
+}
+
+// Pre / post increment / decrement on a local-frame slot.
+// Returns the (post|pre)-mutation value; the slot is updated through
+// the same awk_add fast path as `x = x + 1`, so the hot fixnum branch
+// stays branch-free.
+NODE_DEF
+arawk_node_postinc_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)c; (void)n;
+    VALUE v = fp[index];
+    fp[index] = awk_add(v, AWK_FIX(1));
+    if (AWK_IS_FIX(v)) return RESULT_OK(v);
+    return RESULT_OK(awk_make_float(awk_to_num(v)));
+}
+
+NODE_DEF
+arawk_node_postdec_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)c; (void)n;
+    VALUE v = fp[index];
+    fp[index] = awk_sub(v, AWK_FIX(1));
+    if (AWK_IS_FIX(v)) return RESULT_OK(v);
+    return RESULT_OK(awk_make_float(awk_to_num(v)));
+}
+
+NODE_DEF
+arawk_node_preinc_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)c; (void)n;
+    VALUE v = awk_add(fp[index], AWK_FIX(1));
+    fp[index] = v;
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+arawk_node_predec_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)c; (void)n;
+    VALUE v = awk_sub(fp[index], AWK_FIX(1));
+    fp[index] = v;
+    return RESULT_OK(v);
+}
+
+// ---------------------------------------------------------------------------
+// Ternary `cond ? then : else`.  Standard short-circuit semantics.
+NODE_DEF
+arawk_node_ternary(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond, NODE *then_e, NODE *else_e)
+{
+    (void)n;
+    if (awk_is_truthy(UNWRAP(EVAL_ARG(c, cond)))) return EVAL_ARG(c, then_e);
+    return EVAL_ARG(c, else_e);
+}
+
+// ---------------------------------------------------------------------------
+// Associative arrays.  Backed by `awk_obj` of type AWK_T_ARRAY.  The
+// variable slot starts AWK_UNINIT; `a[k] = v` or any read auto-promotes
+// the slot to a fresh array (matching awk's auto-vivification).
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    VALUE av = fp[index];
+    if (av == AWK_UNINIT) {
+        av = awk_make_array();
+        fp[index] = av;
+    }
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    // Reading an unset element auto-creates it as "" in real awk (so
+    // that `k in a` becomes true).  For our subset we return UNINIT
+    // without inserting; `k in a` checks bucket membership.  Most
+    // programs read after writing, so the divergence is rare.
+    VALUE v = awk_arr_get(av, ks, klen);
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+arawk_node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key, NODE *rhs)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    VALUE rv = UNWRAP(EVAL_ARG(c, rhs));
+    VALUE av = fp[index];
+    if (av == AWK_UNINIT) {
+        av = awk_make_array();
+        fp[index] = av;
+    }
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    awk_arr_set(av, ks, klen, rv);
+    return RESULT_OK(rv);
+}
+
+// `k in arr` — returns 1 if key present, 0 otherwise.
+NODE_DEF
+arawk_node_in_arr(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *key, uint32_t arr_index)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    VALUE av = fp[arr_index];
+    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    return RESULT_OK(awk_arr_has(av, ks, klen) ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+// `for (k in arr) body` — iterate over array keys.  Snapshot keys
+// up-front so mutation during iteration is safe (real awk's order is
+// implementation-defined; we preserve insertion-bucket order).
+NODE_DEF
+arawk_node_for_in(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t key_slot, uint32_t arr_slot, NODE *body)
+{
+    (void)n;
+    VALUE av = fp[arr_slot];
+    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    struct awk_obj *o = AWK_PTR(av);
+    if (o->type != AWK_T_ARRAY) return RESULT_OK(AWK_FIX(0));
+
+    // Snapshot keys.
+    size_t cnt = o->arr.entry_cnt;
+    VALUE *keys = (VALUE *)GC_malloc(sizeof(VALUE) * (cnt ? cnt : 1));
+    size_t k = 0;
+    for (size_t i = 0; i < o->arr.bucket_cnt; i++) {
+        for (struct awk_array_entry *e = o->arr.buckets[i]; e; e = e->next) {
+            if (k < cnt) keys[k++] = awk_make_string(e->key, e->key_len);
+        }
+    }
+    for (size_t i = 0; i < k; i++) {
+        fp[key_slot] = keys[i];
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) {
+            if (r.state == RESULT_BREAK)    break;
+            if (r.state == RESULT_CONTINUE) continue;
+            return r;
+        }
+    }
+    return RESULT_OK(AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_delete(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arr_slot, NODE *key)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    VALUE av = fp[arr_slot];
+    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    awk_arr_del(av, ks, klen);
+    return RESULT_OK(AWK_FIX(0));
+}
+
+// Delete the entire array — `delete a` (gawk extension, also in POSIX
+// 2017).  Resets the slot to UNINIT so the next access re-vivifies.
+NODE_DEF
+arawk_node_delete_all(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arr_slot)
+{
+    (void)c; (void)n;
+    fp[arr_slot] = AWK_UNINIT;
+    return RESULT_OK(AWK_FIX(0));
+}
+
+// `length` / `length()` / `length(expr)`.  No-paren and zero-arg
+// forms operate on $0.  The one-arg form covers strings, numbers
+// (number of digits / formatted length) and arrays (entry count).
+NODE_DEF
+arawk_node_length0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)n; (void)fp;
+    return RESULT_OK(AWK_FIX((int64_t)awk_length(awk_get_field(c, 0))));
+}
+
+NODE_DEF
+arawk_node_length1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *arg)
+{
+    (void)n;
+    VALUE v = UNWRAP(EVAL_ARG(c, arg));
+    return RESULT_OK(AWK_FIX((int64_t)awk_length(v)));
+}
+
+// ---------------------------------------------------------------------------
+// String concatenation.  Awk's `a b` (juxtaposition) → concat.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_concat(av, bv));
+}
+
+// ---------------------------------------------------------------------------
+// Comparisons.  Awk's rule: both operands numeric (or strnum-numeric)
+// → numeric compare; else string compare.  Encapsulated in awk_cmp.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_eq(av, bv) ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_ne(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_eq(av, bv) ? AWK_FIX(0) : AWK_FIX(1));
+}
+
+NODE_DEF
+arawk_node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_cmp(av, bv) <  0 ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_cmp(av, bv) <= 0 ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_cmp(av, bv) >  0 ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_cmp(av, bv) >= 0 ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+// Logical not.  Awk: `!x` → 1 if !truthy(x) else 0.
+NODE_DEF
+arawk_node_not(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    return RESULT_OK(awk_is_truthy(av) ? AWK_FIX(0) : AWK_FIX(1));
+}
+
+// Logical and / or with short-circuit.  Returns 0 or 1 (POSIX awk
+// canonicalises booleans; gawk preserves the operand value, but POSIX
+// is fine for Phase 0+1).
+NODE_DEF
+arawk_node_and(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    if (!awk_is_truthy(av)) return RESULT_OK(AWK_FIX(0));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_is_truthy(bv) ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_or(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    if (awk_is_truthy(av)) return RESULT_OK(AWK_FIX(1));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    return RESULT_OK(awk_is_truthy(bv) ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+// ---------------------------------------------------------------------------
+// Global variable access — used inside user-defined function bodies
+// (Phase 1.8).  Top-level code can equivalently use the fp-based
+// arawk_node_lget/lset since fp == env there, but parser emits the
+// g-variants uniformly at top level to keep semantics clear.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_gget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)n; (void)fp;
+    return RESULT_OK(c->env[index]);
+}
+
+NODE_DEF
+arawk_node_gset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *rhs)
+{
+    (void)n;
+    VALUE v = UNWRAP(EVAL_ARG(c, rhs));
+    c->env[index] = v;
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+arawk_node_postinc_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)n; (void)fp;
+    VALUE v = c->env[index];
+    c->env[index] = awk_add(v, AWK_FIX(1));
+    if (AWK_IS_FIX(v)) return RESULT_OK(v);
+    return RESULT_OK(awk_make_float(awk_to_num(v)));
+}
+
+NODE_DEF
+arawk_node_postdec_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)n; (void)fp;
+    VALUE v = c->env[index];
+    c->env[index] = awk_sub(v, AWK_FIX(1));
+    if (AWK_IS_FIX(v)) return RESULT_OK(v);
+    return RESULT_OK(awk_make_float(awk_to_num(v)));
+}
+
+NODE_DEF
+arawk_node_preinc_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)n; (void)fp;
+    VALUE v = awk_add(c->env[index], AWK_FIX(1));
+    c->env[index] = v;
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+arawk_node_predec_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)n; (void)fp;
+    VALUE v = awk_sub(c->env[index], AWK_FIX(1));
+    c->env[index] = v;
+    return RESULT_OK(v);
+}
+
+// Array element ++ / -- — `a[k]++`, `a[k]--`, etc.  Key evaluates
+// once; we reuse its cstring for both get and set.  Auto-vivifies
+// the slot to a fresh array if it's UNINIT (so `w[$i]++` on a
+// not-yet-seen key gives 0→1).
+NODE_DEF
+arawk_node_postinc_a(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    if (fp[index] == AWK_UNINIT) fp[index] = awk_make_array();
+    VALUE v = awk_arr_get(fp[index], ks, klen);
+    awk_arr_set(fp[index], ks, klen, awk_add(v, AWK_FIX(1)));
+    return RESULT_OK(AWK_IS_FIX(v) ? v : awk_make_float(awk_to_num(v)));
+}
+
+NODE_DEF
+arawk_node_postdec_a(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    if (fp[index] == AWK_UNINIT) fp[index] = awk_make_array();
+    VALUE v = awk_arr_get(fp[index], ks, klen);
+    awk_arr_set(fp[index], ks, klen, awk_sub(v, AWK_FIX(1)));
+    return RESULT_OK(AWK_IS_FIX(v) ? v : awk_make_float(awk_to_num(v)));
+}
+
+NODE_DEF
+arawk_node_preinc_a(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    if (fp[index] == AWK_UNINIT) fp[index] = awk_make_array();
+    VALUE v = awk_add(awk_arr_get(fp[index], ks, klen), AWK_FIX(1));
+    awk_arr_set(fp[index], ks, klen, v);
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+arawk_node_predec_a(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    if (fp[index] == AWK_UNINIT) fp[index] = awk_make_array();
+    VALUE v = awk_sub(awk_arr_get(fp[index], ks, klen), AWK_FIX(1));
+    awk_arr_set(fp[index], ks, klen, v);
+    return RESULT_OK(v);
+}
+
+// Same four, but on a global-array slot.
+NODE_DEF
+arawk_node_postinc_ag(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n; (void)fp;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    if (c->env[index] == AWK_UNINIT) c->env[index] = awk_make_array();
+    VALUE v = awk_arr_get(c->env[index], ks, klen);
+    awk_arr_set(c->env[index], ks, klen, awk_add(v, AWK_FIX(1)));
+    return RESULT_OK(AWK_IS_FIX(v) ? v : awk_make_float(awk_to_num(v)));
+}
+
+NODE_DEF
+arawk_node_postdec_ag(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n; (void)fp;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    if (c->env[index] == AWK_UNINIT) c->env[index] = awk_make_array();
+    VALUE v = awk_arr_get(c->env[index], ks, klen);
+    awk_arr_set(c->env[index], ks, klen, awk_sub(v, AWK_FIX(1)));
+    return RESULT_OK(AWK_IS_FIX(v) ? v : awk_make_float(awk_to_num(v)));
+}
+
+NODE_DEF
+arawk_node_preinc_ag(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n; (void)fp;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    if (c->env[index] == AWK_UNINIT) c->env[index] = awk_make_array();
+    VALUE v = awk_add(awk_arr_get(c->env[index], ks, klen), AWK_FIX(1));
+    awk_arr_set(c->env[index], ks, klen, v);
+    return RESULT_OK(v);
+}
+
+NODE_DEF
+arawk_node_predec_ag(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n; (void)fp;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    if (c->env[index] == AWK_UNINIT) c->env[index] = awk_make_array();
+    VALUE v = awk_sub(awk_arr_get(c->env[index], ks, klen), AWK_FIX(1));
+    awk_arr_set(c->env[index], ks, klen, v);
+    return RESULT_OK(v);
+}
+
+// Global array access.  `index` is the abs env slot holding the array.
+NODE_DEF
+arawk_node_aget_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    VALUE av = c->env[index];
+    if (av == AWK_UNINIT) { av = awk_make_array(); c->env[index] = av; }
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    return RESULT_OK(awk_arr_get(av, ks, klen));
+}
+
+NODE_DEF
+arawk_node_aset_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *key, NODE *rhs)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    VALUE rv = UNWRAP(EVAL_ARG(c, rhs));
+    VALUE av = c->env[index];
+    if (av == AWK_UNINIT) { av = awk_make_array(); c->env[index] = av; }
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    awk_arr_set(av, ks, klen, rv);
+    return RESULT_OK(rv);
+}
+
+NODE_DEF
+arawk_node_in_arr_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *key, uint32_t arr_index)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    VALUE av = c->env[arr_index];
+    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    return RESULT_OK(awk_arr_has(av, ks, klen) ? AWK_FIX(1) : AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_for_in_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t key_slot, uint32_t arr_slot, NODE *body)
+{
+    (void)n;
+    VALUE av = c->env[arr_slot];
+    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    struct awk_obj *o = AWK_PTR(av);
+    if (o->type != AWK_T_ARRAY) return RESULT_OK(AWK_FIX(0));
+
+    size_t cnt = o->arr.entry_cnt;
+    VALUE *keys = (VALUE *)GC_malloc(sizeof(VALUE) * (cnt ? cnt : 1));
+    size_t k = 0;
+    for (size_t i = 0; i < o->arr.bucket_cnt; i++) {
+        for (struct awk_array_entry *e = o->arr.buckets[i]; e; e = e->next) {
+            if (k < cnt) keys[k++] = awk_make_string(e->key, e->key_len);
+        }
+    }
+    for (size_t i = 0; i < k; i++) {
+        c->env[key_slot] = keys[i];
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) {
+            if (r.state == RESULT_BREAK)    break;
+            if (r.state == RESULT_CONTINUE) continue;
+            return r;
+        }
+    }
+    return RESULT_OK(AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_delete_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arr_slot, NODE *key)
+{
+    (void)n;
+    VALUE kv = UNWRAP(EVAL_ARG(c, key));
+    VALUE av = c->env[arr_slot];
+    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    char kbuf[64]; size_t klen;
+    const char *ks = awk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
+    awk_arr_del(av, ks, klen);
+    return RESULT_OK(AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_delete_all_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arr_slot)
+{
+    (void)n; (void)fp;
+    c->env[arr_slot] = AWK_UNINIT;
+    return RESULT_OK(AWK_FIX(0));
+}
+
+// ---------------------------------------------------------------------------
+// User-defined functions (Phase 1.8).  Modeled after astr's design:
+// node_def registers the body in c->func_set, node_return propagates a
+// value via RESULT_RETURN, and node_call_user / arity-fixed forms
+// allocate a fresh `F[ARAWK_FRAME_MAX]` VLA frame for the callee.
+//
+// All callee-local variables live in the frame; globals are reached
+// through node_gget / node_gset.  Array parameters: we pass the VALUE
+// pointer through, so mutations on a (pre-vivified) array param are
+// visible to the caller — but auto-vivification of an UNINIT param
+// does NOT propagate back, since assignment writes the frame slot.
+// Programs that need that pattern should pre-create the array.
+// ---------------------------------------------------------------------------
+
+static struct function_entry *
+arawk_get_func_entry(CTX *c, const char *name)
+{
+    for (unsigned int i = 0; i < c->func_set_cnt; i++) {
+        if (strcmp(c->func_set[i].name, name) == 0) return &c->func_set[i];
+    }
+    return &c->func_set[c->func_set_cnt++];
+}
+
+extern NODE *arawk_resolve_body(CTX *c, const char *name, uint32_t *out_params_cnt);
+
+NODE_DEF
+arawk_node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, NODE *body, uint32_t frame_size, uint32_t params_cnt)
+{
+    (void)n; (void)fp;
+    struct function_entry *fe = arawk_get_func_entry(c, name);
+    fe->name = name;
+    fe->body = OPTIMIZE(body);
+    fe->params_cnt = params_cnt;
+    fe->locals_cnt = frame_size;
+    return RESULT_OK(AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *value)
+{
+    (void)n;
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return RESULT_RETURN_(v);
+}
+
+// User function call.  Variadic; args packed into ARAWK_NODE_TABLE.
+// The callee's frame is a VLA on the caller's C stack — same trick as
+// astr.  Excess caller args beyond params_cnt are silently ignored
+// (matches gawk's permissive behaviour).
+NODE_DEF @noinline
+arawk_node_call_user(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *name, uint32_t base_idx, uint32_t argc)
+{
+    (void)n;
+    uint32_t params_cnt = 0;
+    NODE *body = arawk_resolve_body(c, name, &params_cnt);
+    VALUE F[ARAWK_FRAME_MAX];
+    uint32_t fill = argc < ARAWK_FRAME_MAX ? argc : ARAWK_FRAME_MAX;
+    for (uint32_t i = 0; i < fill; i++) {
+        NODE *arg = ARAWK_NODE_TABLE[base_idx + i];
+        F[i] = UNWRAP((*arg->head.dispatcher)(c, arg, fp));
+    }
+    // Remaining slots: UNINIT (acts as "" or 0 in arith context).
+    for (uint32_t i = fill; i < ARAWK_FRAME_MAX; i++) F[i] = AWK_UNINIT;
+    RESULT r = EVAL(c, body, F);
+    // `return` lands as RESULT_RETURN with the value; everything else
+    // (RESULT_NORMAL or stray break/continue) yields 0 to the caller.
+    if (r.state == RESULT_RETURN) return RESULT_OK(r.value);
+    if (r.state == RESULT_EXIT)   return r;   // propagate exit through the call
+    return RESULT_OK(AWK_FIX(0));
+}
+
+// ---------------------------------------------------------------------------
+// printf / sprintf — variadic builtins backed by ARAWK_NODE_TABLE for
+// arg list packing (same convention as `print`).
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_printf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fmt, uint32_t base_idx, uint32_t cnt)
+{
+    (void)n;
+    VALUE fmt_v = UNWRAP(EVAL_ARG(c, fmt));
+    if (cnt == 0) { awk_printf(stdout, fmt_v, NULL, 0); return RESULT_OK(AWK_FIX(0)); }
+    VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+    }
+    awk_printf(stdout, fmt_v, vs, cnt);
+    return RESULT_OK(AWK_FIX(0));
+}
+
+NODE_DEF
+arawk_node_sprintf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fmt, uint32_t base_idx, uint32_t cnt)
+{
+    (void)n;
+    VALUE fmt_v = UNWRAP(EVAL_ARG(c, fmt));
+    if (cnt == 0) return RESULT_OK(awk_sprintf_v(fmt_v, NULL, 0));
+    VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+    }
+    return RESULT_OK(awk_sprintf_v(fmt_v, vs, cnt));
+}
+
+// ---------------------------------------------------------------------------
+// Scalar builtins.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_substr2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s, NODE *pos)
+{
+    (void)n;
+    VALUE sv = UNWRAP(EVAL_ARG(c, s));
+    VALUE pv = UNWRAP(EVAL_ARG(c, pos));
+    return RESULT_OK(awk_substr2(sv, (int64_t)awk_to_num(pv)));
+}
+
+NODE_DEF
+arawk_node_substr3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s, NODE *pos, NODE *len)
+{
+    (void)n;
+    VALUE sv = UNWRAP(EVAL_ARG(c, s));
+    VALUE pv = UNWRAP(EVAL_ARG(c, pos));
+    VALUE lv = UNWRAP(EVAL_ARG(c, len));
+    return RESULT_OK(awk_substr(sv, (int64_t)awk_to_num(pv), (int64_t)awk_to_num(lv)));
+}
+
+NODE_DEF
+arawk_node_index_b(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *hay, NODE *needle)
+{
+    (void)n;
+    VALUE hv = UNWRAP(EVAL_ARG(c, hay));
+    VALUE nv = UNWRAP(EVAL_ARG(c, needle));
+    return RESULT_OK(AWK_FIX(awk_index(hv, nv)));
+}
+
+NODE_DEF
+arawk_node_tolower(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    return RESULT_OK(awk_tolower(UNWRAP(EVAL_ARG(c, a))));
+}
+
+NODE_DEF
+arawk_node_toupper(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    return RESULT_OK(awk_toupper(UNWRAP(EVAL_ARG(c, a))));
+}
+
+NODE_DEF
+arawk_node_int_fn(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    return RESULT_OK(awk_int(UNWRAP(EVAL_ARG(c, a))));
+}
+
+// `split(s, arr)` — uses FS.
+NODE_DEF
+arawk_node_split2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s, uint32_t arr_slot)
+{
+    (void)n;
+    VALUE sv = UNWRAP(EVAL_ARG(c, s));
+    if (fp[arr_slot] == AWK_UNINIT) fp[arr_slot] = awk_make_array();
+    return RESULT_OK(AWK_FIX(awk_split(sv, fp[arr_slot], c->env[AWK_GLOB_FS])));
+}
+
+NODE_DEF
+arawk_node_split3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s, uint32_t arr_slot, NODE *sep)
+{
+    (void)n;
+    VALUE sv  = UNWRAP(EVAL_ARG(c, s));
+    VALUE sep_v = UNWRAP(EVAL_ARG(c, sep));
+    if (fp[arr_slot] == AWK_UNINIT) fp[arr_slot] = awk_make_array();
+    return RESULT_OK(AWK_FIX(awk_split(sv, fp[arr_slot], sep_v)));
+}
+
+// Math: each builtin wraps libm.  Awk's math is double-only.
+NODE_DEF
+arawk_node_sin(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    return RESULT_OK(awk_make_float(sin(awk_to_num(UNWRAP(EVAL_ARG(c, a))))));
+}
+
+NODE_DEF
+arawk_node_cos(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    return RESULT_OK(awk_make_float(cos(awk_to_num(UNWRAP(EVAL_ARG(c, a))))));
+}
+
+NODE_DEF
+arawk_node_sqrt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    return RESULT_OK(awk_make_float(sqrt(awk_to_num(UNWRAP(EVAL_ARG(c, a))))));
+}
+
+NODE_DEF
+arawk_node_exp(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    return RESULT_OK(awk_make_float(exp(awk_to_num(UNWRAP(EVAL_ARG(c, a))))));
+}
+
+NODE_DEF
+arawk_node_log(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    return RESULT_OK(awk_make_float(log(awk_to_num(UNWRAP(EVAL_ARG(c, a))))));
+}
+
+NODE_DEF
+arawk_node_atan2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b)
+{
+    (void)n;
+    double y = awk_to_num(UNWRAP(EVAL_ARG(c, a)));
+    double x = awk_to_num(UNWRAP(EVAL_ARG(c, b)));
+    return RESULT_OK(awk_make_float(atan2(y, x)));
+}
+
+// rand / srand — process-global state.  POSIX awk: rand() returns a
+// double in [0, 1).  srand() seeds (time(NULL) if no arg) and returns
+// the previous seed.
+NODE_DEF
+arawk_node_rand(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    extern double awk_rand(void);
+    return RESULT_OK(awk_make_float(awk_rand()));
+}
+
+NODE_DEF
+arawk_node_srand0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    extern int64_t awk_srand_time(void);
+    return RESULT_OK(AWK_FIX(awk_srand_time()));
+}
+
+NODE_DEF
+arawk_node_srand1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
+{
+    (void)n;
+    extern int64_t awk_srand(int64_t seed);
+    int64_t s = (int64_t)awk_to_num(UNWRAP(EVAL_ARG(c, a)));
+    return RESULT_OK(AWK_FIX(awk_srand(s)));
+}

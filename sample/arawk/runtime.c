@@ -1,0 +1,1190 @@
+// arawk runtime — heap allocators, awk-style numeric/string coercion,
+// associative arrays, field splitting, input loop.  Linked once into
+// the arawk binary; not part of any generated SD .c (those see only
+// the inline arithmetic in context.h plus extern hooks for the heap
+// path).
+
+#include "context.h"
+
+#include <ctype.h>
+#include <errno.h>
+#include <time.h>
+
+// ---------------------------------------------------------------------------
+// Singletons.
+// ---------------------------------------------------------------------------
+
+struct awk_obj AWK_UNINIT_OBJ = { .type = AWK_T_UNINIT };
+
+// ---------------------------------------------------------------------------
+// Heap allocators.  GC_malloc traces; GC_malloc_atomic skips tracing
+// (use it for char[] / double payloads).
+// ---------------------------------------------------------------------------
+
+struct awk_obj *
+awk_alloc(int type)
+{
+    struct awk_obj *o = (struct awk_obj *)GC_malloc(sizeof(struct awk_obj));
+    o->type = type;
+    return o;
+}
+
+VALUE
+awk_make_float(double d)
+{
+    struct awk_obj *o = awk_alloc(AWK_T_FLOAT);
+    o->dbl = d;
+    return AWK_OBJ_VAL(o);
+}
+
+VALUE
+awk_make_int(int64_t v)
+{
+    if (v >= AWK_FIX_MIN && v <= AWK_FIX_MAX) return AWK_FIX(v);
+    return awk_make_float((double)v);
+}
+
+static VALUE
+awk_make_string_typed(const char *s, size_t len, int type)
+{
+    struct awk_obj *o = awk_alloc(type);
+    char *buf = (char *)GC_malloc_atomic(len + 1);
+    if (s && len) memcpy(buf, s, len);
+    buf[len] = '\0';
+    o->str.chars = buf;
+    o->str.len   = len;
+    return AWK_OBJ_VAL(o);
+}
+
+VALUE awk_make_string(const char *s, size_t len) { return awk_make_string_typed(s, len, AWK_T_STRING); }
+VALUE awk_make_strnum(const char *s, size_t len) { return awk_make_string_typed(s, len, AWK_T_STRNUM); }
+
+VALUE
+awk_make_array(void)
+{
+    struct awk_obj *o = awk_alloc(AWK_T_ARRAY);
+    o->arr.bucket_cnt = 16;
+    o->arr.buckets = (struct awk_array_entry **)GC_malloc(sizeof(struct awk_array_entry *) * 16);
+    o->arr.entry_cnt = 0;
+    return AWK_OBJ_VAL(o);
+}
+
+// ---------------------------------------------------------------------------
+// Numeric / string coercion.  Awk: every value has a number view and a
+// string view; the operator picks one.  `strtod` semantics for parsing:
+// leading whitespace is skipped, trailing junk → 0 (unless strnum, in
+// which case fully-parseable strings retain numeric character).
+// ---------------------------------------------------------------------------
+
+double
+awk_to_num(VALUE v)
+{
+    if (LIKELY(AWK_IS_FIX(v))) return (double)AWK_FIX_VAL(v);
+    if (v == AWK_UNINIT) return 0.0;
+    struct awk_obj *o = AWK_PTR(v);
+    switch (o->type) {
+      case AWK_T_FLOAT:  return o->dbl;
+      case AWK_T_STRING:
+      case AWK_T_STRNUM: {
+        if (o->str.len == 0) return 0.0;
+        // strtod recognises "inf" / "infinity" / "nan" as their
+        // special floating-point values (C99); awk's rule is the
+        // leading numeric prefix only.  A *word* like "informed"
+        // starts with "inf" — strtod parses 3 characters into +inf
+        // and reports end = chars+3.  To match awk we need to demand
+        // that the recognised prefix start with a digit, sign-digit,
+        // or `.digit`.  Anything else → 0.
+        const char *s = o->str.chars;
+        size_t len = o->str.len;
+        size_t i = 0;
+        while (i < len && (s[i] == ' ' || s[i] == '\t')) i++;
+        if (i >= len) return 0.0;
+        size_t j = i;
+        if (s[j] == '+' || s[j] == '-') j++;
+        bool ok = false;
+        if (j < len && s[j] >= '0' && s[j] <= '9') ok = true;
+        else if (j < len && s[j] == '.' && j + 1 < len && s[j+1] >= '0' && s[j+1] <= '9') ok = true;
+        if (!ok) return 0.0;
+        char *end;
+        errno = 0;
+        double d = strtod(s, &end);
+        if (end == s) return 0.0;
+        return d;
+      }
+      default: return 0.0;
+    }
+}
+
+// Render to a caller-provided buffer (used by awk_concat / printing).
+// For numbers we use OFMT/CONVFMT-equivalent "%.6g".  Returns a
+// pointer to the rendered text (either inside the buffer or pointing
+// directly at an existing string's chars to avoid a copy).
+const char *
+awk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
+{
+    if (AWK_IS_FIX(v)) {
+        int n = snprintf(buf, buflen, "%lld", (long long)AWK_FIX_VAL(v));
+        if (n < 0) n = 0;
+        *out_len = (size_t)n;
+        return buf;
+    }
+    if (v == AWK_UNINIT) { *out_len = 0; return ""; }
+    struct awk_obj *o = AWK_PTR(v);
+    switch (o->type) {
+      case AWK_T_FLOAT: {
+        // Integer-valued doubles print without ".0" in awk.
+        double d = o->dbl;
+        if (d == (double)(long long)d && d >= -1e15 && d <= 1e15) {
+            int n = snprintf(buf, buflen, "%lld", (long long)d);
+            *out_len = (size_t)(n < 0 ? 0 : n);
+        }
+        else {
+            int n = snprintf(buf, buflen, "%.6g", d);
+            *out_len = (size_t)(n < 0 ? 0 : n);
+        }
+        return buf;
+      }
+      case AWK_T_STRING:
+      case AWK_T_STRNUM:
+        *out_len = o->str.len;
+        return o->str.chars;
+      case AWK_T_ARRAY:
+        // awk forbids using an array in a scalar context; we'd
+        // normally error here.  Phase 0+1 returns empty.
+        *out_len = 0;
+        return "";
+      default:
+        *out_len = 0;
+        return "";
+    }
+}
+
+VALUE
+awk_to_string(VALUE v)
+{
+    if (AWK_IS_PTR(v)) {
+        struct awk_obj *o = AWK_PTR(v);
+        if (o->type == AWK_T_STRING || o->type == AWK_T_STRNUM) return v;
+    }
+    char buf[64];
+    size_t len;
+    const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+    return awk_make_string(s, len);
+}
+
+// awk number-shape test: a string is "numeric" iff (after optional
+// leading/trailing whitespace) it fully parses as a double.  Used to
+// decide numeric vs string comparison for strnum values.
+static bool
+str_is_numeric_shape(const char *s, size_t len)
+{
+    if (len == 0) return false;
+    // Skip leading whitespace.
+    size_t i = 0;
+    while (i < len && isspace((unsigned char)s[i])) i++;
+    if (i == len) return false;
+    char *end;
+    errno = 0;
+    double d = strtod(s + i, &end);
+    (void)d;
+    if (end == s + i) return false;
+    // Skip trailing whitespace.
+    size_t j = (size_t)(end - s);
+    while (j < len && isspace((unsigned char)s[j])) j++;
+    return j == len;
+}
+
+static bool
+val_is_numeric(VALUE v)
+{
+    if (AWK_IS_FIX(v)) return true;
+    if (v == AWK_UNINIT) return true;     // 0 in numeric context
+    struct awk_obj *o = AWK_PTR(v);
+    if (o->type == AWK_T_FLOAT) return true;
+    if (o->type == AWK_T_STRNUM) return str_is_numeric_shape(o->str.chars, o->str.len);
+    return false;
+}
+
+bool
+awk_eq(VALUE a, VALUE b)
+{
+    if (a == b) return true;
+    if (val_is_numeric(a) && val_is_numeric(b)) return awk_to_num(a) == awk_to_num(b);
+    char abuf[64], bbuf[64]; size_t alen, blen;
+    const char *as = awk_to_cstr(a, abuf, sizeof abuf, &alen);
+    const char *bs = awk_to_cstr(b, bbuf, sizeof bbuf, &blen);
+    if (alen != blen) return false;
+    return memcmp(as, bs, alen) == 0;
+}
+
+int
+awk_cmp(VALUE a, VALUE b)
+{
+    if (val_is_numeric(a) && val_is_numeric(b)) {
+        double da = awk_to_num(a), db = awk_to_num(b);
+        if (da < db) return -1;
+        if (da > db) return  1;
+        return 0;
+    }
+    char abuf[64], bbuf[64]; size_t alen, blen;
+    const char *as = awk_to_cstr(a, abuf, sizeof abuf, &alen);
+    const char *bs = awk_to_cstr(b, bbuf, sizeof bbuf, &blen);
+    size_t cmplen = alen < blen ? alen : blen;
+    int r = memcmp(as, bs, cmplen);
+    if (r != 0) return r < 0 ? -1 : 1;
+    if (alen < blen) return -1;
+    if (alen > blen) return  1;
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// String concat.  Result is always AWK_T_STRING.
+// ---------------------------------------------------------------------------
+
+VALUE
+awk_concat(VALUE a, VALUE b)
+{
+    char abuf[64], bbuf[64]; size_t alen, blen;
+    const char *as = awk_to_cstr(a, abuf, sizeof abuf, &alen);
+    const char *bs = awk_to_cstr(b, bbuf, sizeof bbuf, &blen);
+    struct awk_obj *o = awk_alloc(AWK_T_STRING);
+    char *buf = (char *)GC_malloc_atomic(alen + blen + 1);
+    memcpy(buf, as, alen);
+    memcpy(buf + alen, bs, blen);
+    buf[alen + blen] = '\0';
+    o->str.chars = buf;
+    o->str.len   = alen + blen;
+    return AWK_OBJ_VAL(o);
+}
+
+size_t
+awk_length(VALUE v)
+{
+    if (AWK_IS_FIX(v)) {
+        char buf[32];
+        int n = snprintf(buf, sizeof buf, "%lld", (long long)AWK_FIX_VAL(v));
+        return n < 0 ? 0 : (size_t)n;
+    }
+    if (v == AWK_UNINIT) return 0;
+    struct awk_obj *o = AWK_PTR(v);
+    switch (o->type) {
+      case AWK_T_STRING:
+      case AWK_T_STRNUM: return o->str.len;
+      case AWK_T_ARRAY:  return o->arr.entry_cnt;
+      case AWK_T_FLOAT: {
+        char buf[64]; size_t len;
+        (void)awk_to_cstr(v, buf, sizeof buf, &len);
+        return len;
+      }
+      default: return 0;
+    }
+}
+
+VALUE
+awk_substr(VALUE s, int64_t pos, int64_t len)
+{
+    char buf[64]; size_t slen;
+    const char *src = awk_to_cstr(s, buf, sizeof buf, &slen);
+    // awk: 1-based, pos < 1 → adjust len; pos > slen → "".
+    if (pos < 1) { len += (pos - 1); pos = 1; }
+    if ((size_t)pos > slen || len <= 0) return awk_make_string("", 0);
+    size_t start = (size_t)(pos - 1);
+    size_t avail = slen - start;
+    size_t take  = (size_t)len < avail ? (size_t)len : avail;
+    return awk_make_string(src + start, take);
+}
+
+VALUE
+awk_substr2(VALUE s, int64_t pos)
+{
+    char buf[64]; size_t slen;
+    const char *src = awk_to_cstr(s, buf, sizeof buf, &slen);
+    if (pos < 1) pos = 1;
+    if ((size_t)pos > slen) return awk_make_string("", 0);
+    size_t start = (size_t)(pos - 1);
+    return awk_make_string(src + start, slen - start);
+}
+
+int64_t
+awk_index(VALUE haystack, VALUE needle)
+{
+    char hbuf[64], nbuf[64]; size_t hlen, nlen;
+    const char *h = awk_to_cstr(haystack, hbuf, sizeof hbuf, &hlen);
+    const char *n = awk_to_cstr(needle,   nbuf, sizeof nbuf, &nlen);
+    if (nlen == 0) return 0;
+    if (nlen > hlen) return 0;
+    for (size_t i = 0; i + nlen <= hlen; i++) {
+        if (memcmp(h + i, n, nlen) == 0) return (int64_t)(i + 1);
+    }
+    return 0;
+}
+
+VALUE
+awk_tolower(VALUE v)
+{
+    char buf[64]; size_t len;
+    const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+    char *out = (char *)GC_malloc_atomic(len + 1);
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        out[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
+    }
+    out[len] = '\0';
+    struct awk_obj *o = awk_alloc(AWK_T_STRING);
+    o->str.chars = out;
+    o->str.len = len;
+    return AWK_OBJ_VAL(o);
+}
+
+VALUE
+awk_toupper(VALUE v)
+{
+    char buf[64]; size_t len;
+    const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+    char *out = (char *)GC_malloc_atomic(len + 1);
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+    }
+    out[len] = '\0';
+    struct awk_obj *o = awk_alloc(AWK_T_STRING);
+    o->str.chars = out;
+    o->str.len = len;
+    return AWK_OBJ_VAL(o);
+}
+
+VALUE
+awk_int(VALUE v)
+{
+    if (AWK_IS_FIX(v)) return v;
+    double d = awk_to_num(v);
+    return awk_make_int((int64_t)d);
+}
+
+// printf format: %d %i %u %o %x %X %c %s %f %e %E %g %G %%.  Width
+// and precision and flags (- + 0 space #) are handled by delegating
+// to snprintf with a per-spec format-string mini-compiler.
+static void
+awk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
+              VALUE fmt, VALUE *args, size_t nargs)
+{
+    #define OUT_PUT(c) do { \
+        if (*outlen + 2 > *outcap) { *outcap = *outcap ? *outcap * 2 : 64; *outbuf = (char *)GC_realloc(*outbuf, *outcap); } \
+        (*outbuf)[(*outlen)++] = (c); \
+    } while (0)
+    #define OUT_WRITE(s, n) do { \
+        if (*outlen + (n) + 1 > *outcap) { while (*outlen + (n) + 1 > *outcap) *outcap = *outcap ? *outcap * 2 : 64; *outbuf = (char *)GC_realloc(*outbuf, *outcap); } \
+        memcpy(*outbuf + *outlen, (s), (n)); *outlen += (n); \
+    } while (0)
+
+    char fbuf[64]; size_t flen;
+    const char *f = awk_to_cstr(fmt, fbuf, sizeof fbuf, &flen);
+    size_t argi = 0;
+
+    for (size_t i = 0; i < flen; ) {
+        char ch = f[i];
+        if (ch != '%') { OUT_PUT(ch); i++; continue; }
+        if (i + 1 < flen && f[i+1] == '%') { OUT_PUT('%'); i += 2; continue; }
+
+        // Parse a single spec into a local format string we hand to snprintf.
+        char spec[64]; size_t sl = 0;
+        spec[sl++] = '%';
+        i++;
+        // Flags.
+        while (i < flen && (f[i] == '-' || f[i] == '+' || f[i] == ' ' || f[i] == '#' || f[i] == '0')) {
+            if (sl + 2 > sizeof spec) break;
+            spec[sl++] = f[i++];
+        }
+        // Width.
+        int width_from_arg = 0;
+        if (i < flen && f[i] == '*') { width_from_arg = 1; i++; }
+        else while (i < flen && f[i] >= '0' && f[i] <= '9') {
+            if (sl + 2 > sizeof spec) break;
+            spec[sl++] = f[i++];
+        }
+        // Precision.
+        int prec_from_arg = 0;
+        if (i < flen && f[i] == '.') {
+            if (sl + 2 > sizeof spec) break;
+            spec[sl++] = f[i++];
+            if (i < flen && f[i] == '*') { prec_from_arg = 1; i++; }
+            else while (i < flen && f[i] >= '0' && f[i] <= '9') {
+                if (sl + 2 > sizeof spec) break;
+                spec[sl++] = f[i++];
+            }
+        }
+        if (i >= flen) { OUT_PUT('%'); break; }
+        char conv = f[i++];
+
+        int wval = 0, pval = 0;
+        if (width_from_arg) {
+            if (argi < nargs) wval = (int)awk_to_num(args[argi++]);
+            int n = snprintf(spec + sl, sizeof spec - sl, "%d", wval);
+            if (n > 0) sl += (size_t)n;
+        }
+        if (prec_from_arg) {
+            if (argi < nargs) pval = (int)awk_to_num(args[argi++]);
+            int n = snprintf(spec + sl, sizeof spec - sl, "%d", pval);
+            if (n > 0) sl += (size_t)n;
+        }
+
+        VALUE av = argi < nargs ? args[argi++] : AWK_UNINIT;
+        char tmp[256];
+        int wrote = 0;
+        switch (conv) {
+          case 'd': case 'i': {
+            spec[sl++] = 'l'; spec[sl++] = 'l'; spec[sl++] = 'd'; spec[sl] = '\0';
+            wrote = snprintf(tmp, sizeof tmp, spec, (long long)awk_to_num(av));
+            break;
+          }
+          case 'u': case 'o': case 'x': case 'X': {
+            spec[sl++] = 'l'; spec[sl++] = 'l'; spec[sl++] = conv; spec[sl] = '\0';
+            wrote = snprintf(tmp, sizeof tmp, spec, (unsigned long long)(long long)awk_to_num(av));
+            break;
+          }
+          case 'c': {
+            // awk semantics: integer → that ASCII char, string → first char.
+            if (AWK_IS_PTR(av)) {
+                struct awk_obj *o = AWK_PTR(av);
+                if (o->type == AWK_T_STRING || o->type == AWK_T_STRNUM) {
+                    char one = o->str.len ? o->str.chars[0] : '\0';
+                    spec[sl++] = 'c'; spec[sl] = '\0';
+                    wrote = snprintf(tmp, sizeof tmp, spec, (int)(unsigned char)one);
+                    break;
+                }
+            }
+            int code = (int)awk_to_num(av);
+            spec[sl++] = 'c'; spec[sl] = '\0';
+            wrote = snprintf(tmp, sizeof tmp, spec, code);
+            break;
+          }
+          case 's': {
+            char sbuf[256]; size_t slen2;
+            const char *s = awk_to_cstr(av, sbuf, sizeof sbuf, &slen2);
+            // snprintf needs NUL-terminated input.
+            char heap_buf[1024];
+            const char *heap = s;
+            if (slen2 + 1 > sizeof heap_buf) {
+                char *big = (char *)GC_malloc_atomic(slen2 + 1);
+                memcpy(big, s, slen2); big[slen2] = '\0';
+                heap = big;
+            }
+            else if (s != sbuf) {
+                memcpy(heap_buf, s, slen2); heap_buf[slen2] = '\0';
+                heap = heap_buf;
+            }
+            spec[sl++] = 's'; spec[sl] = '\0';
+            wrote = snprintf(tmp, sizeof tmp, spec, heap);
+            break;
+          }
+          case 'f': case 'e': case 'E': case 'g': case 'G': {
+            spec[sl++] = conv; spec[sl] = '\0';
+            wrote = snprintf(tmp, sizeof tmp, spec, awk_to_num(av));
+            break;
+          }
+          default:
+            // Unknown spec — emit verbatim.
+            OUT_WRITE(spec, sl);
+            OUT_PUT(conv);
+            continue;
+        }
+        if (wrote > 0) {
+            size_t w = (size_t)wrote < sizeof tmp ? (size_t)wrote : sizeof tmp - 1;
+            OUT_WRITE(tmp, w);
+        }
+    }
+
+    if (fp) {
+        fwrite(*outbuf, 1, *outlen, fp);
+    }
+
+    #undef OUT_PUT
+    #undef OUT_WRITE
+}
+
+VALUE
+awk_sprintf_v(VALUE fmt, VALUE *args, size_t nargs)
+{
+    char *buf = NULL; size_t cap = 0, len = 0;
+    awk_format_to(NULL, &buf, &cap, &len, fmt, args, nargs);
+    return awk_make_string(buf ? buf : "", len);
+}
+
+void
+awk_printf(FILE *fp, VALUE fmt, VALUE *args, size_t nargs)
+{
+    char *buf = NULL; size_t cap = 0, len = 0;
+    awk_format_to(fp, &buf, &cap, &len, fmt, args, nargs);
+}
+
+int64_t
+awk_split(VALUE s, VALUE arr, VALUE sep)
+{
+    if (!AWK_IS_PTR(arr) || AWK_PTR(arr)->type != AWK_T_ARRAY) return 0;
+    // Clear the array (split overwrites).
+    struct awk_obj *ao = AWK_PTR(arr);
+    for (size_t i = 0; i < ao->arr.bucket_cnt; i++) ao->arr.buckets[i] = NULL;
+    ao->arr.entry_cnt = 0;
+
+    char sbuf[64], pbuf[64]; size_t slen, plen;
+    const char *src = awk_to_cstr(s,   sbuf, sizeof sbuf, &slen);
+    const char *sp  = awk_to_cstr(sep, pbuf, sizeof pbuf, &plen);
+
+    int64_t n = 0;
+    char kbuf[24];
+    bool default_fs = (plen == 1 && sp[0] == ' ');
+    if (default_fs) {
+        size_t i = 0;
+        while (i < slen) {
+            while (i < slen && isspace((unsigned char)src[i])) i++;
+            if (i >= slen) break;
+            size_t start = i;
+            while (i < slen && !isspace((unsigned char)src[i])) i++;
+            int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
+            awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, i - start));
+        }
+    }
+    else if (plen == 1) {
+        char c = sp[0];
+        size_t i = 0, start = 0;
+        while (i < slen) {
+            if (src[i] == c) {
+                int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
+                awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, i - start));
+                i++; start = i;
+            }
+            else i++;
+        }
+        int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
+        awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, slen - start));
+    }
+    else if (plen == 0) {
+        // Empty sep → split into individual characters.
+        for (size_t i = 0; i < slen; i++) {
+            int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
+            awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + i, 1));
+        }
+    }
+    else {
+        size_t i = 0, start = 0;
+        while (i + plen <= slen) {
+            if (memcmp(src + i, sp, plen) == 0) {
+                int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
+                awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, i - start));
+                i += plen; start = i;
+            }
+            else i++;
+        }
+        int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
+        awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, slen - start));
+    }
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// Associative arrays.  Simple chained hash; rehash on load > 0.75.
+// ---------------------------------------------------------------------------
+
+static uint64_t
+awk_str_hash(const char *s, size_t len)
+{
+    // FNV-1a 64-bit.
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < len; i++) {
+        h ^= (uint8_t)s[i];
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
+static void
+awk_arr_rehash(struct awk_array *a, size_t new_cnt)
+{
+    struct awk_array_entry **old_b = a->buckets;
+    size_t old_cnt = a->bucket_cnt;
+    a->buckets = (struct awk_array_entry **)GC_malloc(sizeof(struct awk_array_entry *) * new_cnt);
+    a->bucket_cnt = new_cnt;
+    for (size_t i = 0; i < old_cnt; i++) {
+        struct awk_array_entry *e = old_b[i];
+        while (e) {
+            struct awk_array_entry *next = e->next;
+            uint64_t h = awk_str_hash(e->key, e->key_len);
+            size_t b = (size_t)(h & (new_cnt - 1));
+            e->next = a->buckets[b];
+            a->buckets[b] = e;
+            e = next;
+        }
+    }
+}
+
+VALUE
+awk_arr_get(VALUE arr, const char *key, size_t key_len)
+{
+    if (!AWK_IS_PTR(arr)) return AWK_UNINIT;
+    struct awk_obj *o = AWK_PTR(arr);
+    if (o->type != AWK_T_ARRAY) return AWK_UNINIT;
+    uint64_t h = awk_str_hash(key, key_len);
+    size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
+    for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
+        if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return e->val;
+    }
+    return AWK_UNINIT;
+}
+
+void
+awk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val)
+{
+    if (!AWK_IS_PTR(arr)) return;
+    struct awk_obj *o = AWK_PTR(arr);
+    if (o->type != AWK_T_ARRAY) return;
+    uint64_t h = awk_str_hash(key, key_len);
+    size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
+    for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
+        if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) {
+            e->val = val;
+            return;
+        }
+    }
+    struct awk_array_entry *ne = (struct awk_array_entry *)GC_malloc(sizeof(struct awk_array_entry));
+    char *kbuf = (char *)GC_malloc_atomic(key_len + 1);
+    memcpy(kbuf, key, key_len);
+    kbuf[key_len] = '\0';
+    ne->key = kbuf;
+    ne->key_len = key_len;
+    ne->val = val;
+    ne->next = o->arr.buckets[b];
+    o->arr.buckets[b] = ne;
+    o->arr.entry_cnt++;
+    if (o->arr.entry_cnt * 4 > o->arr.bucket_cnt * 3) {
+        awk_arr_rehash(&o->arr, o->arr.bucket_cnt * 2);
+    }
+}
+
+bool
+awk_arr_has(VALUE arr, const char *key, size_t key_len)
+{
+    if (!AWK_IS_PTR(arr)) return false;
+    struct awk_obj *o = AWK_PTR(arr);
+    if (o->type != AWK_T_ARRAY) return false;
+    uint64_t h = awk_str_hash(key, key_len);
+    size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
+    for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
+        if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return true;
+    }
+    return false;
+}
+
+void
+awk_arr_del(VALUE arr, const char *key, size_t key_len)
+{
+    if (!AWK_IS_PTR(arr)) return;
+    struct awk_obj *o = AWK_PTR(arr);
+    if (o->type != AWK_T_ARRAY) return;
+    uint64_t h = awk_str_hash(key, key_len);
+    size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
+    struct awk_array_entry **pp = &o->arr.buckets[b];
+    while (*pp) {
+        struct awk_array_entry *e = *pp;
+        if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) {
+            *pp = e->next;
+            o->arr.entry_cnt--;
+            return;
+        }
+        pp = &e->next;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Output.
+// ---------------------------------------------------------------------------
+
+void
+awk_print_value(FILE *fp, VALUE v)
+{
+    char buf[64]; size_t len;
+    const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+    fwrite(s, 1, len, fp);
+}
+
+void
+awk_print_record(FILE *fp, VALUE *items, size_t n,
+                 const char *ofs, size_t ofs_len,
+                 const char *ors, size_t ors_len)
+{
+    for (size_t i = 0; i < n; i++) {
+        if (i) fwrite(ofs, 1, ofs_len, fp);
+        awk_print_value(fp, items[i]);
+    }
+    fwrite(ors, 1, ors_len, fp);
+}
+
+// ---------------------------------------------------------------------------
+// Output stream cache.  Each unique (mode, dest) tuple maps to one
+// FILE * for the lifetime of the program — repeated `print | "sort"`
+// statements share the same popen pipe, which is the awk semantic.
+// `awk_close_all_streams` is called from main() after the program
+// finishes; it flushes and pcloses each pipe (so `sort` actually
+// reads EOF and writes its output before the process exits).
+// ---------------------------------------------------------------------------
+
+struct awk_stream {
+    int    mode;
+    char  *dest;
+    FILE  *fp;
+    bool   is_pipe;        // true → pclose, false → fclose
+};
+
+static struct awk_stream *awk_streams = NULL;
+static size_t awk_streams_cnt = 0;
+static size_t awk_streams_capa = 0;
+
+FILE *
+awk_open_stream(int mode, VALUE dest)
+{
+    char dbuf[256]; size_t dlen;
+    const char *dest_s = awk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
+    // NUL-terminate for popen / fopen.
+    char *path = (char *)alloca(dlen + 1);
+    memcpy(path, dest_s, dlen); path[dlen] = '\0';
+
+    for (size_t i = 0; i < awk_streams_cnt; i++) {
+        if (awk_streams[i].mode == mode && strcmp(awk_streams[i].dest, path) == 0) {
+            return awk_streams[i].fp;
+        }
+    }
+    if (awk_streams_cnt >= awk_streams_capa) {
+        size_t cap = awk_streams_capa ? awk_streams_capa * 2 : 8;
+        awk_streams = (struct awk_stream *)realloc(awk_streams, sizeof(struct awk_stream) * cap);
+        awk_streams_capa = cap;
+    }
+
+    FILE *f = NULL;
+    bool is_pipe = false;
+    if (mode == 'w') {
+        f = popen(path, "w");
+        is_pipe = true;
+    } else if (mode == 'o') {
+        f = fopen(path, "w");
+    } else if (mode == 'a') {
+        f = fopen(path, "a");
+    }
+    if (!f) {
+        fprintf(stderr, "arawk: cannot open `%s` (mode %c)\n", path, mode);
+        exit(2);
+    }
+    char *dst_copy = (char *)malloc(dlen + 1);
+    memcpy(dst_copy, path, dlen + 1);
+    awk_streams[awk_streams_cnt++] = (struct awk_stream){ mode, dst_copy, f, is_pipe };
+    return f;
+}
+
+void
+awk_close_all_streams(void)
+{
+    for (size_t i = 0; i < awk_streams_cnt; i++) {
+        if (awk_streams[i].is_pipe) pclose(awk_streams[i].fp);
+        else                        fclose(awk_streams[i].fp);
+        free(awk_streams[i].dest);
+    }
+    awk_streams_cnt = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Special-variable read/write helpers.
+// ---------------------------------------------------------------------------
+
+VALUE
+awk_get_nr(const CTX *c)
+{
+    return c->env[AWK_GLOB_NR];
+}
+
+VALUE
+awk_get_nf(const CTX *c)
+{
+    return c->env[AWK_GLOB_NF];
+}
+
+void
+awk_set_nr(CTX *c, VALUE v)
+{
+    c->env[AWK_GLOB_NR] = v;
+}
+
+void
+awk_set_nf(CTX *c, VALUE v)
+{
+    c->env[AWK_GLOB_NF] = v;
+    // Adjust internal fields/rec if needed.  Phase 0+1 just stores
+    // the value; full POSIX rebuild-$0 semantics is a Phase 2 task.
+}
+
+// Phase 0+1 default FS = " " (awk's "any run of whitespace,
+// leading/trailing trimmed").  Single-char FS and regex FS are Phase 2.
+//
+// We currently split eagerly on every record read.  NF needs to be
+// available before any $N is accessed (e.g. `{ wc += NF }`), so a
+// purely-lazy approach would force a separate counting pass.  Eager
+// strnum allocation is fine for now; the cost is one strnum object
+// per field which libgc collects cheaply.  Phase 2 can split lazily
+// for $N while still pre-computing NF.
+static void
+awk_split_fields(CTX *c)
+{
+    if (c->rec.fields_split) return;
+    c->rec.fields_split = true;
+
+    // Read FS from env (slot 2).  Default to " ".
+    VALUE fsv = c->env[AWK_GLOB_FS];
+    char fsbuf[32]; size_t fslen;
+    const char *fs = awk_to_cstr(fsv, fsbuf, sizeof fsbuf, &fslen);
+    bool fs_default = (fslen == 1 && fs[0] == ' ');
+
+    const char *r = c->rec.record;
+    size_t rlen = c->rec.record_len;
+    int nf = 0;
+
+    // Capacity grow helper.
+    #define GROW_IF_NEEDED() do { \
+        if (nf >= c->rec.fields_capa) { \
+            int new_capa = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8; \
+            VALUE *new_fields = (VALUE *)GC_malloc(sizeof(VALUE) * new_capa); \
+            if (c->rec.fields) memcpy(new_fields, c->rec.fields, sizeof(VALUE) * c->rec.fields_capa); \
+            c->rec.fields = new_fields; \
+            c->rec.fields_capa = new_capa; \
+        } \
+    } while (0)
+
+    if (fs_default) {
+        // Default FS: skip whitespace runs; fields are non-ws spans.
+        size_t i = 0;
+        while (i < rlen) {
+            while (i < rlen && isspace((unsigned char)r[i])) i++;
+            if (i >= rlen) break;
+            size_t start = i;
+            while (i < rlen && !isspace((unsigned char)r[i])) i++;
+            GROW_IF_NEEDED();
+            c->rec.fields[nf++] = awk_make_strnum(r + start, i - start);
+        }
+    }
+    else if (fslen == 1) {
+        char sep = fs[0];
+        size_t i = 0, start = 0;
+        while (i < rlen) {
+            if (r[i] == sep) {
+                GROW_IF_NEEDED();
+                c->rec.fields[nf++] = awk_make_strnum(r + start, i - start);
+                i++;
+                start = i;
+            }
+            else i++;
+        }
+        GROW_IF_NEEDED();
+        c->rec.fields[nf++] = awk_make_strnum(r + start, rlen - start);
+    }
+    else {
+        // Multi-char FS: regex split (Phase 2).  For now treat as
+        // literal-string separator.
+        size_t i = 0, start = 0;
+        while (i + fslen <= rlen) {
+            if (memcmp(r + i, fs, fslen) == 0) {
+                GROW_IF_NEEDED();
+                c->rec.fields[nf++] = awk_make_strnum(r + start, i - start);
+                i += fslen;
+                start = i;
+            }
+            else i++;
+        }
+        GROW_IF_NEEDED();
+        c->rec.fields[nf++] = awk_make_strnum(r + start, rlen - start);
+    }
+    #undef GROW_IF_NEEDED
+
+    c->rec.nf = nf;
+    c->env[AWK_GLOB_NF] = AWK_FIX(nf);
+}
+
+VALUE
+awk_get_field(CTX *c, int64_t n)
+{
+    if (n == 0) {
+        if (c->rec.record_v) return c->rec.record_v;
+        c->rec.record_v = awk_make_strnum(c->rec.record, c->rec.record_len);
+        return c->rec.record_v;
+    }
+    if (n < 0) {
+        fprintf(stderr, "arawk: negative field index $%lld\n", (long long)n);
+        exit(2);
+    }
+    awk_split_fields(c);
+    if (n > c->rec.nf) return awk_make_string("", 0);
+    return c->rec.fields[n - 1];
+}
+
+VALUE
+awk_get_field_v(CTX *c, VALUE idx)
+{
+    int64_t n;
+    if (AWK_IS_FIX(idx)) n = AWK_FIX_VAL(idx);
+    else                 n = (int64_t)awk_to_num(idx);
+    return awk_get_field(c, n);
+}
+
+// Rebuild $0 from the current fields[] using OFS.  Called lazily
+// after a $N (N>0) assignment, when the next reader of $0 wants the
+// updated record.  Sets c->rec.record / record_v / record_len.
+static void
+awk_rebuild_record(CTX *c)
+{
+    awk_split_fields(c);  // ensure fields populated
+    VALUE ofs_v = c->env[AWK_GLOB_OFS];
+    char obuf[32]; size_t olen;
+    const char *ofs = awk_to_cstr(ofs_v, obuf, sizeof obuf, &olen);
+    // Estimate size.
+    size_t total = 0;
+    for (int i = 0; i < c->rec.nf; i++) {
+        char fbuf[64]; size_t flen;
+        (void)awk_to_cstr(c->rec.fields[i], fbuf, sizeof fbuf, &flen);
+        total += flen;
+    }
+    if (c->rec.nf > 0) total += (size_t)(c->rec.nf - 1) * olen;
+    char *buf = (char *)GC_malloc_atomic(total + 1);
+    size_t k = 0;
+    for (int i = 0; i < c->rec.nf; i++) {
+        if (i) { memcpy(buf + k, ofs, olen); k += olen; }
+        char fbuf[64]; size_t flen;
+        const char *fs = awk_to_cstr(c->rec.fields[i], fbuf, sizeof fbuf, &flen);
+        memcpy(buf + k, fs, flen); k += flen;
+    }
+    buf[k] = '\0';
+    c->rec.record = buf;
+    c->rec.record_len = k;
+    c->rec.record_v = 0;
+}
+
+void
+awk_set_field(CTX *c, int64_t n, VALUE v)
+{
+    if (n < 0) {
+        fprintf(stderr, "arawk: negative field index $%lld\n", (long long)n);
+        exit(2);
+    }
+    if (n == 0) {
+        // $0 = ...: store new record and clear field split.
+        char buf[64]; size_t len;
+        const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+        char *nb = (char *)GC_malloc_atomic(len + 1);
+        memcpy(nb, s, len);
+        nb[len] = '\0';
+        c->rec.record = nb;
+        c->rec.record_len = len;
+        c->rec.record_v = 0;
+        c->rec.fields_split = false;
+        c->rec.nf = 0;
+        // Re-split so NF is up to date.
+        awk_split_fields(c);
+        return;
+    }
+    // $N = ... — make sure fields[] exists, grow if needed, set the
+    // element, rebuild $0 lazily.
+    awk_split_fields(c);
+    if ((int)n > c->rec.fields_capa) {
+        int new_capa = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8;
+        while (new_capa < (int)n) new_capa *= 2;
+        VALUE *nf = (VALUE *)GC_malloc(sizeof(VALUE) * new_capa);
+        if (c->rec.fields) memcpy(nf, c->rec.fields, sizeof(VALUE) * c->rec.fields_capa);
+        c->rec.fields = nf;
+        c->rec.fields_capa = new_capa;
+    }
+    // Pad intervening fields with empty strings.
+    for (int i = c->rec.nf; i < (int)n - 1; i++) {
+        c->rec.fields[i] = awk_make_string("", 0);
+    }
+    c->rec.fields[n - 1] = v;
+    if ((int)n > c->rec.nf) {
+        c->rec.nf = (int)n;
+        c->env[AWK_GLOB_NF] = AWK_FIX(c->rec.nf);
+    }
+    awk_rebuild_record(c);
+}
+
+// ---------------------------------------------------------------------------
+// Input loop.
+// ---------------------------------------------------------------------------
+
+static bool
+awk_open_next_input(CTX *c)
+{
+    if (c->cur_input && c->cur_input != stdin) {
+        fclose(c->cur_input);
+        c->cur_input = NULL;
+    }
+    if (OPTION.input_file_cnt == 0) {
+        if (c->cur_input_idx == 0) {
+            c->cur_input = stdin;
+            c->cur_input_idx = 1;
+            c->env[AWK_GLOB_FILENAME] = awk_make_string("", 0);
+            return true;
+        }
+        return false;
+    }
+    while (c->cur_input_idx < OPTION.input_file_cnt) {
+        const char *path = OPTION.input_files[c->cur_input_idx++];
+        FILE *f;
+        if (strcmp(path, "-") == 0) f = stdin;
+        else                        f = fopen(path, "rb");
+        if (!f) {
+            fprintf(stderr, "arawk: cannot open `%s`\n", path);
+            continue;
+        }
+        c->cur_input = f;
+        c->env[AWK_GLOB_FILENAME] = awk_make_string(path, strlen(path));
+        c->env[AWK_GLOB_FNR] = AWK_FIX(0);
+        return true;
+    }
+    return false;
+}
+
+bool
+awk_input_next_record(CTX *c)
+{
+    // Default RS = "\n" — read line-by-line.  Phase 2: regex RS, RS="".
+    if (c->input_done) return false;
+    if (!c->cur_input) {
+        if (!awk_open_next_input(c)) { c->input_done = true; return false; }
+    }
+
+    // Grow record buffer on demand.
+    static char *line_buf = NULL;
+    static size_t line_capa = 0;
+    size_t len = 0;
+
+    for (;;) {
+        int ch = fgetc(c->cur_input);
+        if (ch == EOF) {
+            if (len > 0) break;
+            if (!awk_open_next_input(c)) { c->input_done = true; return false; }
+            continue;
+        }
+        if (ch == '\n') break;
+        if (len + 1 >= line_capa) {
+            size_t new_capa = line_capa ? line_capa * 2 : 256;
+            line_buf = (char *)GC_realloc(line_buf, new_capa);
+            line_capa = new_capa;
+        }
+        line_buf[len++] = (char)ch;
+    }
+    if (len + 1 > line_capa) {
+        size_t new_capa = line_capa ? line_capa * 2 : 256;
+        line_buf = (char *)GC_realloc(line_buf, new_capa);
+        line_capa = new_capa;
+    }
+    line_buf[len] = '\0';
+
+    // Copy into GC-traced storage (line_buf is reused next iter).
+    char *rec = (char *)GC_malloc_atomic(len + 1);
+    memcpy(rec, line_buf, len);
+    rec[len] = '\0';
+    c->rec.record = rec;
+    c->rec.record_len = len;
+    c->rec.record_v = 0;
+    c->rec.fields_split = false;
+    c->rec.nf = 0;
+
+    // Update NR / FNR.
+    int64_t nr = AWK_IS_FIX(c->env[AWK_GLOB_NR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_NR]) : 0;
+    int64_t fnr = AWK_IS_FIX(c->env[AWK_GLOB_FNR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_FNR]) : 0;
+    c->env[AWK_GLOB_NR] = AWK_FIX(nr + 1);
+    c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
+
+    // Eagerly split — NF must be readable before any $N access.
+    awk_split_fields(c);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Arithmetic slow paths.
+// ---------------------------------------------------------------------------
+
+VALUE
+awk_add_slow(VALUE a, VALUE b)
+{
+    return awk_make_float(awk_to_num(a) + awk_to_num(b));
+}
+
+VALUE
+awk_sub_slow(VALUE a, VALUE b)
+{
+    return awk_make_float(awk_to_num(a) - awk_to_num(b));
+}
+
+VALUE
+awk_mul_slow(VALUE a, VALUE b)
+{
+    return awk_make_float(awk_to_num(a) * awk_to_num(b));
+}
+
+VALUE
+awk_div_slow(VALUE a, VALUE b)
+{
+    double db = awk_to_num(b);
+    if (db == 0.0) {
+        fprintf(stderr, "arawk: division by zero\n");
+        exit(2);
+    }
+    return awk_make_float(awk_to_num(a) / db);
+}
+
+VALUE
+awk_mod_slow(VALUE a, VALUE b)
+{
+    double db = awk_to_num(b);
+    if (db == 0.0) {
+        fprintf(stderr, "arawk: division by zero in %%\n");
+        exit(2);
+    }
+    return awk_make_float(fmod(awk_to_num(a), db));
+}
+
+VALUE
+awk_pow_slow(VALUE a, VALUE b)
+{
+    return awk_make_float(pow(awk_to_num(a), awk_to_num(b)));
+}
+
+VALUE
+awk_neg_slow(VALUE a)
+{
+    return awk_make_float(-awk_to_num(a));
+}
+
+// rand / srand — process-global LCG state.  POSIX: rand returns [0,1).
+static int64_t awk_rand_seed = 0;
+static bool    awk_rand_seeded = false;
+
+double
+awk_rand(void)
+{
+    if (!awk_rand_seeded) { srand((unsigned)time(NULL)); awk_rand_seeded = true; }
+    return (double)rand() / ((double)RAND_MAX + 1.0);
+}
+
+int64_t
+awk_srand(int64_t seed)
+{
+    int64_t prev = awk_rand_seed;
+    awk_rand_seed = seed;
+    awk_rand_seeded = true;
+    srand((unsigned)seed);
+    return prev;
+}
+
+int64_t
+awk_srand_time(void)
+{
+    int64_t prev = awk_rand_seed;
+    awk_rand_seed = (int64_t)time(NULL);
+    awk_rand_seeded = true;
+    srand((unsigned)awk_rand_seed);
+    return prev;
+}

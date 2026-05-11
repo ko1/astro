@@ -19,3 +19,6 @@
 [submodule "sample/pystro/cpython"]
 	path = sample/pystro/cpython
 	url = https://github.com/python/cpython.git
+[submodule "sample/arawk/goawk"]
+	path = sample/arawk/goawk
+	url = https://github.com/benhoyt/goawk
