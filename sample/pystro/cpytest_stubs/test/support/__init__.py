@@ -373,6 +373,39 @@ def linked_to_musl():
 
 
 def findfile(filename, *, subdir=None):
+    """Locate a test data file.  CPython looks in test/ relative paths
+    and various fallbacks; pystro tests run from random cwd (jobtmp)
+    via tools/sweep.sh, so they need an absolute lookup through the
+    cpython/Lib/test/[subdir/]filename hierarchy."""
+    import os
+    if os.path.isabs(filename) and os.path.exists(filename):
+        return filename
+    candidates = []
+    if subdir:
+        candidates.append(os.path.join("cpython", "Lib", "test", subdir, filename))
+    candidates.append(os.path.join("cpython", "Lib", "test", filename))
+    candidates.append(filename)
+    # Also try resolving relative to the pystro binary's dir +
+    # ../cpython/Lib/test.
+    try:
+        import sys
+        for p in sys.path:
+            if p:
+                if subdir:
+                    candidates.append(os.path.join(p, "test", subdir, filename))
+                candidates.append(os.path.join(p, "test", filename))
+    except Exception:
+        pass
+    # Final fallback: scan astro repo root.
+    for prefix in ("/home/ko1/ruby/astro/sample/pystro",
+                   os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+        if subdir:
+            candidates.append(os.path.join(prefix, "cpython", "Lib", "test",
+                                            subdir, filename))
+        candidates.append(os.path.join(prefix, "cpython", "Lib", "test", filename))
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
     return filename
 
 
