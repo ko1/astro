@@ -5704,7 +5704,10 @@ pys_setattr(CTX *c, VALUE v, const char *name, VALUE val)
         c->globals = saved;
         return;
     }
-    PYS_RAISE_EXC(c, c->EXC_AttributeError, "object does not support attribute assignment");
+    // CPython: immutable / non-instance types raise TypeError on
+    // attribute assignment (e.g. `(1).__class__ = MyInt`).  Match the
+    // class so `assertRaises(TypeError)` in cpython tests pass.
+    PYS_RAISE_EXC(c, c->EXC_TypeError, "object does not support attribute assignment");
 }
 
 // ---------------------------------------------------------------------------

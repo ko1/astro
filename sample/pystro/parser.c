@@ -5033,10 +5033,15 @@ parse_assignable_target(NODE *rhs)
 paren_base_path: ;
     NODE *paren_base = NULL;
     const char *base_name = NULL;
-    if (t->kind == T_LPAREN) {
-        tok_pos++;            // consume '('
-        paren_base = parse_expr();
-        expect(T_RPAREN, "')'");
+    if (t->kind == T_LPAREN
+        || t->kind == T_STR || t->kind == T_BYTES
+        || t->kind == T_INT || t->kind == T_FLOAT) {
+        // Literal / paren expression as assignment base: e.g.
+        // `(1).__class__ = MyInt`, `"a".__class__ = MyStr`.  CPython
+        // accepts these and raises TypeError at runtime; we parse the
+        // base as a single atom (so subsequent `.` / `[` trailers go
+        // through the loop below and become attr_set / subscript_set).
+        paren_base = parse_atom();
     } else if (t->kind != T_NAME) {
         parse_error("cannot assign to expression");
     } else {
