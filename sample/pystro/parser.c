@@ -187,10 +187,13 @@ unpack_reserve(struct pyunpack_target *src, size_t n)
 // Token helpers.
 // ---------------------------------------------------------------------------
 
-extern int src_line;  // lexer global, repurposed as "current parse line"
+// Track the current parse position's source line so that node_allocate
+// can stamp head.line.  Updated from peek_tok(0); read in node.c.
+int parser_current_line = 0;
+
 static Tok *peek_tok(int off) {
     Tok *t = &tok_arr[tok_pos + off];
-    if (off == 0 && t->line > 0) src_line = t->line;
+    if (off == 0 && t->line > 0) parser_current_line = t->line;
     return t;
 }
 

@@ -9,6 +9,7 @@
 // Allocate NODEs out of the GC heap so any VALUE references they hold
 // (string literals etc.) stay alive without explicit rooting.
 extern int src_line;
+extern int parser_current_line;  // updated from parser.c::peek_tok
 
 static __attribute__((noinline)) NODE *
 node_allocate(size_t size)
@@ -18,7 +19,9 @@ node_allocate(size_t size)
         fprintf(stderr, "pystro: node allocation failed\n");
         exit(1);
     }
-    n->head.line = src_line;
+    // Prefer parser_current_line (set as the parser advances tokens);
+    // fall back to src_line for nodes built outside parse_* (rare).
+    n->head.line = parser_current_line ? parser_current_line : src_line;
     return n;
 }
 
