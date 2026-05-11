@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // koruby AST nodes.
 // EVAL_ARG returns VALUE; if c->state != KORB_NORMAL after a child eval the
 // current frame must propagate by returning Qnil immediately.

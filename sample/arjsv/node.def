@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // arjsv — JSON Schema (draft-07) validator nodes (Tier 1 / MVP).
 //
 // Result convention: 1 = valid, 0 = invalid.

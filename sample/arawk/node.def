@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // arawk — POSIX awk subset on the ASTro framework.
 //
 // Tagged-VALUE tree-walking interpreter (1-bit fixnum tag, heap-boxed

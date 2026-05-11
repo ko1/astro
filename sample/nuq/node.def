@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 /*
  * nuq filter language — AST node definitions (EMIT-return form).
  *

@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 /* aforth — Forth subset on ASTro
  *
  * Each Forth word is a NODE.  Stack ops mutate CTX->dsp directly; control-

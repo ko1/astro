@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // jstro AST node definitions.
 //
 // Each NODE_DEF emits an EVAL_<name>() body.  Signature:

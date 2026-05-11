@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // pascalast — Pascal subset on ASTro.
 //
 // All values are int64.  Booleans use 0/1.  Strings are only allowed as

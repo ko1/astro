@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // astocaml — small OCaml interpreter on ASTro.
 //
 // Tree-walking; lexical envs are heap-allocated `oframe` chains; closures

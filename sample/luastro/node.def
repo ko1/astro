@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // luastro node definitions.
 //
 // Each NODE_DEF emits an EVAL_<name>() body that the dispatcher chain

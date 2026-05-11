@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // astr — R subset on the ASTro framework.
 //
 // Tagged-VALUE tree-walking interpreter (1-bit fixnum tag, heap-boxed

@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 /* arcel AST node definitions.  Each NODE_DEF becomes:
  *   - an interpreter dispatcher (node_dispatch.c)
  *   - a partial-eval specialization template (node_specialize.c)

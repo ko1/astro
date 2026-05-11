@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // asml — Standard ML subset on ASTro.
 //
 // Tree-walking; lexical envs are heap-allocated `mlframe` chains; closures

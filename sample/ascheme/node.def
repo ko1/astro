@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // ascheme — R5RS Scheme on ASTro.
 //
 // Tree-walking interpreter; lexical envs are heap-allocated `sframe`

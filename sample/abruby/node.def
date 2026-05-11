@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // abruby node definitions
 // RESULT is the return type for all node evaluators.
 // UNWRAP extracts VALUE from RESULT, propagating non-normal state.

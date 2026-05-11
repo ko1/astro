@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 // pystro — Python subset on the ASTro framework.
 //
 // Tree-walking interpreter; `def` builds a closure object (body + env);

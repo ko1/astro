@@ -1,3 +1,4 @@
+// -*- mode: c -*-
 
 NODE_DEF
 node_num(CTX *c, NODE *n, int32_t num)
