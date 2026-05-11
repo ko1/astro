@@ -1,4 +1,14 @@
-"""pystro stub for `_pickle` (C accelerator for pickle)."""
+"""pystro stub for `_pickle` (C accelerator for pickle).
+
+Only expose the C-side-introduced classes (PickleBuffer / errors).
+Do NOT shadow dumps / loads / dump / load / Pickler / Unpickler —
+CPython's pickle.py does `from _pickle import dumps, ...` inside a
+try/except ImportError, and falls back to the pure-Python _Pickler
+implementation when this import fails.  Pystro's stub had its
+own dumps/loads that recursively called pickle.dumps, which formed
+an infinite loop after pickle.dumps was bound to it (the pure-Python
+path is fine; the recursive stub was not).
+"""
 
 
 class PickleError(Exception):
@@ -13,20 +23,6 @@ class UnpicklingError(PickleError):
     pass
 
 
-class Pickler:
-    def __init__(self, file, protocol=None, **kw):
-        self._file = file
-    def dump(self, obj):
-        self._file.write(dumps(obj))
-
-
-class Unpickler:
-    def __init__(self, file, **kw):
-        self._file = file
-    def load(self):
-        return loads(self._file.read())
-
-
 class PickleBuffer:
     def __init__(self, buffer):
         self._buffer = buffer
@@ -36,25 +32,4 @@ class PickleBuffer:
         self._buffer = None
 
 
-# CPython's _pickle re-exports the same classes pickle does; pystro's
-# pickle.py already provides them, but tests import via _pickle too.
-def dumps(obj, protocol=None, *, fix_imports=True, buffer_callback=None):
-    import pickle
-    return pickle.dumps(obj, protocol)
-
-
-def loads(b, *, fix_imports=True, encoding="ASCII", errors="strict", buffers=None):
-    import pickle
-    return pickle.loads(b)
-
-
-def dump(obj, fp, protocol=None, *, fix_imports=True, buffer_callback=None):
-    fp.write(dumps(obj, protocol))
-
-
-def load(fp, *, fix_imports=True, encoding="ASCII", errors="strict", buffers=None):
-    return loads(fp.read())
-
-
-__all__ = ["PickleBuffer", "PickleError", "PicklingError", "UnpicklingError",
-           "Pickler", "Unpickler", "dumps", "loads", "dump", "load"]
+__all__ = ["PickleBuffer", "PickleError", "PicklingError", "UnpicklingError"]

@@ -14433,6 +14433,37 @@ bi_try_import(CTX *c, int argc, VALUE *argv)
     return r;
 }
 
+// `from M import N` attribute access: if N isn't a module attr, raise
+// ImportError (matching CPython's IMPORT_FROM semantics) instead of
+// AttributeError.  Lets `try: from _pickle import Pickler; except
+// ImportError: ...` fallback paths work when the stub is partial.
+static VALUE
+bi_from_import_get(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE mod = argv[0];
+    if (!pys_is_str(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "from import: name must be str");
+    const char *name = PYS_PTR(argv[1])->str.chars;
+    int sst = c->state; VALUE sv = c->state_value;
+    c->state = PYS_STATE_NORMAL; c->state_value = PYS_NONE;
+    VALUE r = pys_getattr(c, mod, name);
+    if (c->state == PYS_STATE_RAISE) {
+        // Convert AttributeError → ImportError.  Other exception classes
+        // (RecursionError etc.) propagate as-is.
+        VALUE exc = c->state_value;
+        if (pys_is_instance(exc)
+            && pys_exc_matches(c, exc, c->EXC_AttributeError)) {
+            c->state = sst; c->state_value = sv;
+            const char *modname = pys_is_module(mod) ? PYS_PTR(mod)->module.name : "?";
+            PYS_RAISE_EXC(c, c->EXC_ImportError,
+                         "cannot import name '%s' from '%s'", name, modname);
+        }
+        return 0;
+    }
+    c->state = sst; c->state_value = sv;
+    return r;
+}
+
 // Synthetic Exception.__init__(self, *args) — sets self.args and
 // self.message (= args[0] if there's exactly one arg).
 VALUE
@@ -16171,6 +16202,8 @@ install_builtins(CTX *c)
     pys_global_define(c, "__import__",           pys_make_builtin("__import__", bi_import, 1, 5));
     pys_global_define(c, "__pystro_try_import__",
         pys_make_builtin("__pystro_try_import__", bi_try_import, 1, 1));
+    pys_global_define(c, "__pystro_from_import_get__",
+        pys_make_builtin("__pystro_from_import_get__", bi_from_import_get, 2, 2));
     pys_global_define(c, "__pystro_modules__",
         pys_make_builtin("__pystro_modules__", bi_modules, 0, 0));
     pys_global_define(c, "__name__",             pys_make_str("__main__", 8));

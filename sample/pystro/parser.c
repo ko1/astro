@@ -4422,7 +4422,14 @@ parse_simple_stmt(void)
                     ALLOC_node_const_str(intern_name(sub_path, strlen(sub_path))));
                 result = ALLOC_node_seq(result, side);
             }
-            NODE *get = ALLOC_node_attr_get(load_tmp, src);
+            // Use __pystro_from_import_get__(module, name) so that a
+            // missing attribute raises ImportError (CPython semantics)
+            // rather than the bare-attr-get AttributeError.  Lets
+            // `try: from _pickle import Pickler; except ImportError:`
+            // fall-back paths trigger when the stub is partial.
+            NODE *fimp = ALLOC_node_gref(intern_name("__pystro_from_import_get__", 26));
+            NODE *get = ALLOC_node_call_2(fimp, load_tmp,
+                                          ALLOC_node_const_str(intern_name(src, strlen(src))));
             result = ALLOC_node_seq(result, make_store(target, get));
             if (!match_tok(T_COMMA)) break;
         }
