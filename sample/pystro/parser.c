@@ -4314,6 +4314,38 @@ parse_simple_stmt(void)
             return ALLOC_node_nop();
         }
     }
+    // Paren-wrapped annotated declaration: `(NAME) : ann (= expr)?`.
+    // CPython accepts the parens as a no-op wrapper.  Consume `(`+`)`
+    // so the path below sees a plain NAME : ann.  Required for
+    // cpython/Lib/test/typinganndata/ann_module.py:25 = `(pars): bool`.
+    if (k == T_LPAREN
+            && peek_tok(1)->kind == T_NAME
+            && peek_tok(2)->kind == T_RPAREN
+            && peek_tok(3)->kind == T_COLON) {
+        // Reposition: synthesise tok_pos so peek(0)=NAME, peek(1)=COLON.
+        tok_pos += 1;       // skip '('
+        // Need to also drop ')' which is between NAME and ':'.  Easiest
+        // path: shift the ')' out of the way by advancing later.  Build
+        // a tmp slice — but tok_arr is shared and mutable, so it's
+        // simpler to just remember to skip the RPAREN.
+        const char *nm = peek_tok(0)->sval;
+        tok_pos += 1;       // consume NAME
+        tok_pos += 1;       // consume ')'
+        // Now tok_pos points at ':'.  Fabricate the rest of the bare-NAME
+        // annotation flow by re-using its body.  Implement inline:
+        tok_pos++;          // consume ':'
+        NODE *ann_expr = parse_expr();
+        (void)ann_expr;
+        NODE *result;
+        if (match_tok(T_ASSIGN)) {
+            NODE *rhs = parse_expr_list();
+            result = make_store(nm, rhs);
+        } else {
+            // Bare `(NAME): ann` — just record the name; no value bind.
+            result = ALLOC_node_nop();
+        }
+        return result;
+    }
     // Annotated assignment / declaration: `NAME : ann (= expr)?`
     if (k == T_NAME && peek_tok(1)->kind == T_COLON) {
         size_t save = tok_pos;
