@@ -2498,10 +2498,14 @@ node_match(CTX * restrict c, NODE * restrict n, NODE *subject, uint32_t cases_id
         if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return 0;
         if (cs->guard) {
             VALUE g = EVAL(c, cs->guard);
-            if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
+            if (c->state != PYS_STATE_NORMAL) return 0;
             if (!pys_is_truthy(g)) continue;
         }
         EVAL(c, cs->body);
+        // body may have set state to RETURN / RAISE / BREAK /
+        // CONTINUE; propagate via the "result = 0" convention so the
+        // surrounding node_seq stops walking statements.
+        if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return 0;
         return PYS_NONE;
     }
     return PYS_NONE;
