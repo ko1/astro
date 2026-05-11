@@ -1704,6 +1704,12 @@ parse_lambda(void)
                 if (!match_tok(T_COMMA)) break;
                 continue;
             }
+            // `/` — positional-only marker (PEP 570).  Pystro doesn't
+            // track pos-only on lambdas; just consume the separator.
+            if (match_tok(T_SLASH)) {
+                if (!match_tok(T_COMMA)) break;
+                continue;
+            }
             if (peek_tok(0)->kind != T_NAME) parse_error("expected parameter");
             const char *pn = peek_tok(0)->sval;
             tok_pos++;
