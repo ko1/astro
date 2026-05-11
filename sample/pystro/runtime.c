@@ -13873,11 +13873,19 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // IEEE 754 + context.  Pystro's stub provides int+scale Decimal
         // + Inf/NaN special forms — enough for arithmetic-only tests.
         "decimal.py",
+        // html — CPython uses `re.sub` with a {1,32} brace quantifier
+        // that pystro's bundled re engine doesn't support.  Pystro's
+        // html stub does a manual scan over html.entities.html5 to
+        // implement unescape with the same semantics.
+        "html/__init__.py",
         NULL,
     };
     bool pystro_wins = false;
     for (const char **pf = pystro_first_modules; *pf; pf++) {
-        if (strcmp(modpath, *pf) == 0) { pystro_wins = true; break; }
+        if (strcmp(modpath, *pf) == 0 || strcmp(pkgpath, *pf) == 0) {
+            pystro_wins = true;
+            break;
+        }
     }
     // Search order:
     //   1. CWD-relative (script-local helpers / packages)
