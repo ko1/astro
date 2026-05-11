@@ -81,6 +81,18 @@ def type_get_version(cls):
     return 0
 
 
+def type_assign_specific_version_unsafe(cls, version):
+    pass
+
+
+def type_modified(cls):
+    pass
+
+
+def type_freeze(cls):
+    pass
+
+
 def get_feature_macros():
     return {}
 
