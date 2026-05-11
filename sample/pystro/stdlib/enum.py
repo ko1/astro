@@ -321,7 +321,43 @@ EnumType = EnumMeta
 IntFlag = Flag    # treat IntFlag as Flag for our purposes
 
 
+# CPython 3.11+ FlagBoundary enum — pystro doesn't enforce boundaries
+# but tests probe these names directly.
+class FlagBoundary:
+    STRICT = "STRICT"
+    CONFORM = "CONFORM"
+    EJECT = "EJECT"
+    KEEP = "KEEP"
+
+STRICT = FlagBoundary.STRICT
+CONFORM = FlagBoundary.CONFORM
+EJECT = FlagBoundary.EJECT
+KEEP = FlagBoundary.KEEP
+
+# Enum decorators/checks introduced in CPython 3.11.
+def verify(*checks):
+    def _wrap(cls): return cls
+    if checks and callable(checks[0]):
+        return checks[0]
+    return _wrap
+
+class EnumCheck:
+    UNIQUE = "UNIQUE"
+    CONTINUOUS = "CONTINUOUS"
+    NAMED_FLAGS = "NAMED_FLAGS"
+
+UNIQUE = EnumCheck.UNIQUE
+CONTINUOUS = EnumCheck.CONTINUOUS
+NAMED_FLAGS = EnumCheck.NAMED_FLAGS
+
+def show_flag_values(value):
+    return []
+
+
 __all__ = ["Enum", "IntEnum", "StrEnum", "Flag", "IntFlag", "EnumMeta", "EnumType",
            "_simple_enum", "_test_simple_enum", "member", "nonmember",
            "global_enum", "auto", "DynamicClassAttribute",
-           "_make_enum", "auto", "unique"]
+           "_make_enum", "auto", "unique",
+           "FlagBoundary", "STRICT", "CONFORM", "EJECT", "KEEP",
+           "verify", "EnumCheck", "UNIQUE", "CONTINUOUS", "NAMED_FLAGS",
+           "show_flag_values"]

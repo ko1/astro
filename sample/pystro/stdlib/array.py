@@ -86,4 +86,11 @@ class array:
 ArrayType = array
 
 
-__all__ = ["array", "ArrayType"]
+def _array_reconstructor(arraytype, typecode, mformat_code, items):
+    return arraytype(typecode, items)
+
+
+typecodes = "bBuhHiIlLqQfd"
+
+
+__all__ = ["array", "ArrayType", "typecodes", "_array_reconstructor"]
