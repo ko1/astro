@@ -19,7 +19,7 @@
 NODE *PARSE_SOURCE(const char *source);
 uint32_t arawk_globals_count(void);
 
-struct awk_option OPTION;
+struct arawk_option OPTION;
 size_t node_cnt;
 
 void

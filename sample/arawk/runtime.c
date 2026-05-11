@@ -14,7 +14,7 @@
 // Singletons.
 // ---------------------------------------------------------------------------
 
-struct awk_obj ARAWK_UNINIT_OBJ = { .type = ARAWK_T_UNINIT };
+struct arawk_obj ARAWK_UNINIT_OBJ = { .type = ARAWK_T_UNINIT };
 
 CTX *ARAWK_CURRENT_CTX = NULL;
 
@@ -23,10 +23,10 @@ CTX *ARAWK_CURRENT_CTX = NULL;
 // (use it for char[] / double payloads).
 // ---------------------------------------------------------------------------
 
-struct awk_obj *
+struct arawk_obj *
 arawk_alloc(int type)
 {
-    struct awk_obj *o = (struct awk_obj *)GC_malloc(sizeof(struct awk_obj));
+    struct arawk_obj *o = (struct arawk_obj *)GC_malloc(sizeof(struct arawk_obj));
     o->type = type;
     return o;
 }
@@ -34,7 +34,7 @@ arawk_alloc(int type)
 VALUE
 arawk_make_float(double d)
 {
-    struct awk_obj *o = arawk_alloc(ARAWK_T_FLOAT);
+    struct arawk_obj *o = arawk_alloc(ARAWK_T_FLOAT);
     o->dbl = d;
     return ARAWK_OBJ_VAL(o);
 }
@@ -49,7 +49,7 @@ arawk_make_int(int64_t v)
 static VALUE
 arawk_make_string_typed(const char *s, size_t len, int type)
 {
-    struct awk_obj *o = arawk_alloc(type);
+    struct arawk_obj *o = arawk_alloc(type);
     char *buf = (char *)GC_malloc_atomic(len + 1);
     if (s && len) memcpy(buf, s, len);
     buf[len] = '\0';
@@ -64,9 +64,9 @@ VALUE arawk_make_strnum(const char *s, size_t len) { return arawk_make_string_ty
 VALUE
 arawk_make_array(void)
 {
-    struct awk_obj *o = arawk_alloc(ARAWK_T_ARRAY);
+    struct arawk_obj *o = arawk_alloc(ARAWK_T_ARRAY);
     o->arr.bucket_cnt = 16;
-    o->arr.buckets = (struct awk_array_entry **)GC_malloc(sizeof(struct awk_array_entry *) * 16);
+    o->arr.buckets = (struct arawk_array_entry **)GC_malloc(sizeof(struct arawk_array_entry *) * 16);
     o->arr.entry_cnt = 0;
     return ARAWK_OBJ_VAL(o);
 }
@@ -83,7 +83,7 @@ arawk_to_num(VALUE v)
 {
     if (LIKELY(ARAWK_IS_FIX(v))) return (double)ARAWK_FIX_VAL(v);
     if (v == ARAWK_UNINIT) return 0.0;
-    struct awk_obj *o = ARAWK_PTR(v);
+    struct arawk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
       case ARAWK_T_FLOAT:  return o->dbl;
       case ARAWK_T_STRING:
@@ -135,7 +135,7 @@ arawk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
         return buf;
     }
     if (v == ARAWK_UNINIT) { *out_len = 0; return ""; }
-    struct awk_obj *o = ARAWK_PTR(v);
+    struct arawk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
       case ARAWK_T_FLOAT: {
         // Integer-valued doubles print without ".0" in awk.
@@ -150,7 +150,7 @@ arawk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
             if (ARAWK_CURRENT_CTX) {
                 VALUE cv = ARAWK_CURRENT_CTX->env[ARAWK_GLOB_CONVFMT];
                 if (ARAWK_IS_PTR(cv) && cv != ARAWK_UNINIT) {
-                    struct awk_obj *fo = ARAWK_PTR(cv);
+                    struct arawk_obj *fo = ARAWK_PTR(cv);
                     if ((fo->type == ARAWK_T_STRING || fo->type == ARAWK_T_STRNUM) &&
                         fo->str.len > 0 && fo->str.len < sizeof fmtbuf) {
                         memcpy(fmtbuf, fo->str.chars, fo->str.len);
@@ -183,7 +183,7 @@ VALUE
 arawk_to_string(VALUE v)
 {
     if (ARAWK_IS_PTR(v)) {
-        struct awk_obj *o = ARAWK_PTR(v);
+        struct arawk_obj *o = ARAWK_PTR(v);
         if (o->type == ARAWK_T_STRING || o->type == ARAWK_T_STRNUM) return v;
     }
     char buf[64];
@@ -219,7 +219,7 @@ val_is_numeric(VALUE v)
 {
     if (ARAWK_IS_FIX(v)) return true;
     if (v == ARAWK_UNINIT) return true;     // 0 in numeric context
-    struct awk_obj *o = ARAWK_PTR(v);
+    struct arawk_obj *o = ARAWK_PTR(v);
     if (o->type == ARAWK_T_FLOAT) return true;
     if (o->type == ARAWK_T_STRNUM) return str_is_numeric_shape(o->str.chars, o->str.len);
     return false;
@@ -267,7 +267,7 @@ arawk_concat(VALUE a, VALUE b)
     char abuf[64], bbuf[64]; size_t alen, blen;
     const char *as = arawk_to_cstr(a, abuf, sizeof abuf, &alen);
     const char *bs = arawk_to_cstr(b, bbuf, sizeof bbuf, &blen);
-    struct awk_obj *o = arawk_alloc(ARAWK_T_STRING);
+    struct arawk_obj *o = arawk_alloc(ARAWK_T_STRING);
     char *buf = (char *)GC_malloc_atomic(alen + blen + 1);
     memcpy(buf, as, alen);
     memcpy(buf + alen, bs, blen);
@@ -286,7 +286,7 @@ arawk_length(VALUE v)
         return n < 0 ? 0 : (size_t)n;
     }
     if (v == ARAWK_UNINIT) return 0;
-    struct awk_obj *o = ARAWK_PTR(v);
+    struct arawk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
       case ARAWK_T_STRING:
       case ARAWK_T_STRNUM: return o->str.len;
@@ -350,7 +350,7 @@ arawk_tolower(VALUE v)
         out[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
     }
     out[len] = '\0';
-    struct awk_obj *o = arawk_alloc(ARAWK_T_STRING);
+    struct arawk_obj *o = arawk_alloc(ARAWK_T_STRING);
     o->str.chars = out;
     o->str.len = len;
     return ARAWK_OBJ_VAL(o);
@@ -367,7 +367,7 @@ arawk_toupper(VALUE v)
         out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
     }
     out[len] = '\0';
-    struct awk_obj *o = arawk_alloc(ARAWK_T_STRING);
+    struct arawk_obj *o = arawk_alloc(ARAWK_T_STRING);
     o->str.chars = out;
     o->str.len = len;
     return ARAWK_OBJ_VAL(o);
@@ -465,7 +465,7 @@ arawk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
           case 'c': {
             // awk semantics: integer → that ASCII char, string → first char.
             if (ARAWK_IS_PTR(av)) {
-                struct awk_obj *o = ARAWK_PTR(av);
+                struct arawk_obj *o = ARAWK_PTR(av);
                 if (o->type == ARAWK_T_STRING || o->type == ARAWK_T_STRNUM) {
                     char one = o->str.len ? o->str.chars[0] : '\0';
                     spec[sl++] = 'c'; spec[sl] = '\0';
@@ -542,7 +542,7 @@ arawk_split(VALUE s, VALUE arr, VALUE sep)
 {
     if (!ARAWK_IS_PTR(arr) || ARAWK_PTR(arr)->type != ARAWK_T_ARRAY) return 0;
     // Clear the array (split overwrites).
-    struct awk_obj *ao = ARAWK_PTR(arr);
+    struct arawk_obj *ao = ARAWK_PTR(arr);
     for (size_t i = 0; i < ao->arr.bucket_cnt; i++) ao->arr.buckets[i] = NULL;
     ao->arr.entry_cnt = 0;
 
@@ -618,16 +618,16 @@ arawk_str_hash(const char *s, size_t len)
 }
 
 static void
-arawk_arr_rehash(struct awk_array *a, size_t new_cnt)
+arawk_arr_rehash(struct arawk_array *a, size_t new_cnt)
 {
-    struct awk_array_entry **old_b = a->buckets;
+    struct arawk_array_entry **old_b = a->buckets;
     size_t old_cnt = a->bucket_cnt;
-    a->buckets = (struct awk_array_entry **)GC_malloc(sizeof(struct awk_array_entry *) * new_cnt);
+    a->buckets = (struct arawk_array_entry **)GC_malloc(sizeof(struct arawk_array_entry *) * new_cnt);
     a->bucket_cnt = new_cnt;
     for (size_t i = 0; i < old_cnt; i++) {
-        struct awk_array_entry *e = old_b[i];
+        struct arawk_array_entry *e = old_b[i];
         while (e) {
-            struct awk_array_entry *next = e->next;
+            struct arawk_array_entry *next = e->next;
             uint64_t h = arawk_str_hash(e->key, e->key_len);
             size_t b = (size_t)(h & (new_cnt - 1));
             e->next = a->buckets[b];
@@ -641,11 +641,11 @@ VALUE
 arawk_arr_get(VALUE arr, const char *key, size_t key_len)
 {
     if (!ARAWK_IS_PTR(arr)) return ARAWK_UNINIT;
-    struct awk_obj *o = ARAWK_PTR(arr);
+    struct arawk_obj *o = ARAWK_PTR(arr);
     if (o->type != ARAWK_T_ARRAY) return ARAWK_UNINIT;
     uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
-    for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
+    for (struct arawk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return e->val;
     }
     return ARAWK_UNINIT;
@@ -655,17 +655,17 @@ void
 arawk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val)
 {
     if (!ARAWK_IS_PTR(arr)) return;
-    struct awk_obj *o = ARAWK_PTR(arr);
+    struct arawk_obj *o = ARAWK_PTR(arr);
     if (o->type != ARAWK_T_ARRAY) return;
     uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
-    for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
+    for (struct arawk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) {
             e->val = val;
             return;
         }
     }
-    struct awk_array_entry *ne = (struct awk_array_entry *)GC_malloc(sizeof(struct awk_array_entry));
+    struct arawk_array_entry *ne = (struct arawk_array_entry *)GC_malloc(sizeof(struct arawk_array_entry));
     char *kbuf = (char *)GC_malloc_atomic(key_len + 1);
     memcpy(kbuf, key, key_len);
     kbuf[key_len] = '\0';
@@ -684,11 +684,11 @@ bool
 arawk_arr_has(VALUE arr, const char *key, size_t key_len)
 {
     if (!ARAWK_IS_PTR(arr)) return false;
-    struct awk_obj *o = ARAWK_PTR(arr);
+    struct arawk_obj *o = ARAWK_PTR(arr);
     if (o->type != ARAWK_T_ARRAY) return false;
     uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
-    for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
+    for (struct arawk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return true;
     }
     return false;
@@ -698,13 +698,13 @@ void
 arawk_arr_del(VALUE arr, const char *key, size_t key_len)
 {
     if (!ARAWK_IS_PTR(arr)) return;
-    struct awk_obj *o = ARAWK_PTR(arr);
+    struct arawk_obj *o = ARAWK_PTR(arr);
     if (o->type != ARAWK_T_ARRAY) return;
     uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
-    struct awk_array_entry **pp = &o->arr.buckets[b];
+    struct arawk_array_entry **pp = &o->arr.buckets[b];
     while (*pp) {
-        struct awk_array_entry *e = *pp;
+        struct arawk_array_entry *e = *pp;
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) {
             *pp = e->next;
             o->arr.entry_cnt--;
@@ -747,21 +747,21 @@ arawk_print_record(FILE *fp, VALUE *items, size_t n,
 // reads EOF and writes its output before the process exits).
 // ---------------------------------------------------------------------------
 
-struct awk_stream {
+struct arawk_stream {
     int    mode;
     char  *dest;
     FILE  *fp;
     bool   is_pipe;        // true → pclose, false → fclose
 };
 
-static struct awk_stream *arawk_streams = NULL;
+static struct arawk_stream *arawk_streams = NULL;
 static size_t arawk_streams_cnt = 0;
 static size_t arawk_streams_capa = 0;
 
 // Input-side handles for `getline < file` and `cmd | getline`.
 // Symmetric to arawk_streams (defined here so arawk_close_stream can scan
 // both).
-static struct awk_stream *arawk_inputs = NULL;
+static struct arawk_stream *arawk_inputs = NULL;
 static size_t arawk_inputs_cnt = 0;
 static size_t arawk_inputs_capa = 0;
 
@@ -781,7 +781,7 @@ arawk_open_stream(int mode, VALUE dest)
     }
     if (arawk_streams_cnt >= arawk_streams_capa) {
         size_t cap = arawk_streams_capa ? arawk_streams_capa * 2 : 8;
-        arawk_streams = (struct awk_stream *)realloc(arawk_streams, sizeof(struct awk_stream) * cap);
+        arawk_streams = (struct arawk_stream *)realloc(arawk_streams, sizeof(struct arawk_stream) * cap);
         arawk_streams_capa = cap;
     }
 
@@ -801,7 +801,7 @@ arawk_open_stream(int mode, VALUE dest)
     }
     char *dst_copy = (char *)malloc(dlen + 1);
     memcpy(dst_copy, path, dlen + 1);
-    arawk_streams[arawk_streams_cnt++] = (struct awk_stream){ mode, dst_copy, f, is_pipe };
+    arawk_streams[arawk_streams_cnt++] = (struct arawk_stream){ mode, dst_copy, f, is_pipe };
     return f;
 }
 
@@ -892,7 +892,7 @@ arawk_open_input(int mode, VALUE dest)
     }
     if (arawk_inputs_cnt >= arawk_inputs_capa) {
         size_t cap = arawk_inputs_capa ? arawk_inputs_capa * 2 : 8;
-        arawk_inputs = (struct awk_stream *)realloc(arawk_inputs, sizeof(struct awk_stream) * cap);
+        arawk_inputs = (struct arawk_stream *)realloc(arawk_inputs, sizeof(struct arawk_stream) * cap);
         arawk_inputs_capa = cap;
     }
     FILE *f = NULL;
@@ -902,7 +902,7 @@ arawk_open_input(int mode, VALUE dest)
     if (!f) return NULL;     // getline can fail → return -1 to caller
     char *dst_copy = (char *)malloc(dlen + 1);
     memcpy(dst_copy, path, dlen + 1);
-    arawk_inputs[arawk_inputs_cnt++] = (struct awk_stream){ mode, dst_copy, f, is_pipe };
+    arawk_inputs[arawk_inputs_cnt++] = (struct arawk_stream){ mode, dst_copy, f, is_pipe };
     return f;
 }
 

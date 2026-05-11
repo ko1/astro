@@ -13,7 +13,7 @@ getline / printf redirect) を専用ノード + runtime helper で実装する�
 | `node.def`     | 全 AST ノード定義 (literal / 算術 / 制御 / array / 関数 / I/O 等) |
 | `arawk_gen.rb`   | ASTroGen 用 NodeDef サブクラス (operand 型カスタマイズ) |
 | `node.h`       | NodeHead 宣言 + EVAL inline + 生成 `node_head.h` を include |
-| `context.h`    | VALUE エンコード / `awk_obj` / CTX / RESULT / 公開 API / 算術 fast path |
+| `context.h`    | VALUE エンコード / `arawk_obj` / CTX / RESULT / 公開 API / 算術 fast path |
 | `node.c`       | アロケータ + ASTroGen 生成ファイルの `#include` 集約 |
 | `runtime.c`    | VALUE 構築 / 強制変換 / 連想配列 / 出力 / 入力 / getline / printf 等 |
 | `parse.c`      | tokenizer + 再帰下降 / Pratt パーサ (`PARSE_SOURCE`) |
@@ -26,19 +26,19 @@ ASTroGen が生成: `node_alloc.c` `node_dispatch.c` `node_eval.c` `node_dump.c`
 
 ```
 xxxx_xxx1 → 63-bit signed fixnum (左 1 シフト + 1)
-xxxx_xxx0 → ヒープオブジェクト (`struct awk_obj *`、8-byte aligned)
+xxxx_xxx0 → ヒープオブジェクト (`struct arawk_obj *`、8-byte aligned)
 ```
 
-`ARAWK_UNINIT` は静的 singleton (グローバル `struct awk_obj ARAWK_UNINIT_OBJ`
+`ARAWK_UNINIT` は静的 singleton (グローバル `struct arawk_obj ARAWK_UNINIT_OBJ`
 のアドレス)。fixnum 範囲外の整数は heap-boxed double に昇格。
 
 ```c
-struct awk_obj {
+struct arawk_obj {
     int type;          /* UNINIT / FLOAT / STRING / STRNUM / ARRAY */
     union {
         double dbl;
         struct { char *chars; size_t len; } str;
-        struct awk_array arr;
+        struct arawk_array arr;
     };
 };
 ```
@@ -120,7 +120,7 @@ typedef struct CTX_struct {
     VALUE   *env;                      /* グローバル変数の配列 (~4096) */
     VALUE   *fp;                       /* 現フレーム; トップレベルは fp == env */
 
-    struct awk_record rec;             /* 現レコード状態 */
+    struct arawk_record rec;             /* 現レコード状態 */
 
     struct function_entry *func_set;   /* user function テーブル */
     unsigned int  func_set_cnt;
@@ -163,7 +163,7 @@ CTX グローバルへの単一参照 (`ARAWK_CURRENT_CTX`) も持つ。`arawk_t
 ## 5. レコードとフィールド
 
 ```c
-struct awk_record {
+struct arawk_record {
     char    *record;          /* $0 raw bytes (NUL-terminated) */
     size_t   record_len;
     VALUE    record_v;        /* $0 を VALUE で見たキャッシュ */
@@ -226,7 +226,7 @@ vs gawk)。callcache 実装は perf.md の改善案 #4。
 ### 出力 (`print | "cmd"`, `print > "file"`, `printf` 同上)
 
 ```c
-static struct awk_stream *arawk_streams = NULL;       /* hash 表代わりの線形配列 */
+static struct arawk_stream *arawk_streams = NULL;       /* hash 表代わりの線形配列 */
 
 FILE *arawk_open_stream(int mode, VALUE dest);        /* 'w'=popen, 'o'=fopen w, 'a'=fopen a */
 ```
@@ -239,7 +239,7 @@ runtime で stream を lookup-or-open する。プロセス終了時に
 ### 入力 (`getline`)
 
 ```c
-static struct awk_stream *arawk_inputs = NULL;        /* 入力側 cache */
+static struct arawk_stream *arawk_inputs = NULL;        /* 入力側 cache */
 
 FILE *arawk_open_input(int mode, VALUE dest);       /* 'r'=popen, 'i'=fopen r */
 ```

@@ -536,7 +536,7 @@ node_ternary(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *con
 }
 
 // ---------------------------------------------------------------------------
-// Associative arrays.  Backed by `awk_obj` of type ARAWK_T_ARRAY.  The
+// Associative arrays.  Backed by `arawk_obj` of type ARAWK_T_ARRAY.  The
 // variable slot starts ARAWK_UNINIT; `a[k] = v` or any read auto-promotes
 // the slot to a fresh array (matching awk's auto-vivification).
 // ---------------------------------------------------------------------------
@@ -600,7 +600,7 @@ node_for_in(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t k
     (void)n;
     VALUE av = fp[arr_slot];
     if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
-    struct awk_obj *o = ARAWK_PTR(av);
+    struct arawk_obj *o = ARAWK_PTR(av);
     if (o->type != ARAWK_T_ARRAY) return RESULT_OK(ARAWK_FIX(0));
 
     // Snapshot keys.
@@ -608,7 +608,7 @@ node_for_in(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t k
     VALUE *keys = (VALUE *)GC_malloc(sizeof(VALUE) * (cnt ? cnt : 1));
     size_t k = 0;
     for (size_t i = 0; i < o->arr.bucket_cnt; i++) {
-        for (struct awk_array_entry *e = o->arr.buckets[i]; e; e = e->next) {
+        for (struct arawk_array_entry *e = o->arr.buckets[i]; e; e = e->next) {
             if (k < cnt) keys[k++] = arawk_make_string(e->key, e->key_len);
         }
     }
@@ -996,14 +996,14 @@ node_for_in_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
     (void)n;
     VALUE av = c->env[arr_slot];
     if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
-    struct awk_obj *o = ARAWK_PTR(av);
+    struct arawk_obj *o = ARAWK_PTR(av);
     if (o->type != ARAWK_T_ARRAY) return RESULT_OK(ARAWK_FIX(0));
 
     size_t cnt = o->arr.entry_cnt;
     VALUE *keys = (VALUE *)GC_malloc(sizeof(VALUE) * (cnt ? cnt : 1));
     size_t k = 0;
     for (size_t i = 0; i < o->arr.bucket_cnt; i++) {
-        for (struct awk_array_entry *e = o->arr.buckets[i]; e; e = e->next) {
+        for (struct arawk_array_entry *e = o->arr.buckets[i]; e; e = e->next) {
             if (k < cnt) keys[k++] = arawk_make_string(e->key, e->key_len);
         }
     }

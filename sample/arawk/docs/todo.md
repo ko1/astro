@@ -102,7 +102,7 @@ astrogre を統合する。
 
 ### Level 2: 2 AST traversal interpreter 並存
 - [ ] astrogre 側も `agre_node_*` prefix にする (要 astrogre 改修)
-- [ ] CTX 統合 (awk_record + agre rep_stack)
+- [ ] CTX 統合 (arawk_record + agre rep_stack)
 - [ ] code_store のディレクトリ分離 or 統合
 
 ### Level 3: 単一 interpreter で awk + regex を実行 (本命)

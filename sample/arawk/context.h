@@ -24,11 +24,11 @@ extern void  GC_init(void);
 // VALUE encoding — 1-bit LSB fixnum tag, modeled on astr / pystro:
 //
 //   xxxx_xxx1 → fixnum (signed 63-bit value)
-//   xxxx_xxx0 → ptr to `struct awk_obj` (heap-allocated, 8-byte aligned)
+//   xxxx_xxx0 → ptr to `struct arawk_obj` (heap-allocated, 8-byte aligned)
 //
 // Uninitialised awk variables are ARAWK_UNINIT (singleton); they coerce
 // to "" in string context and 0 in numeric context.  String literals
-// and field values are heap awk_obj with type ARAWK_T_STRING.  Numeric
+// and field values are heap arawk_obj with type ARAWK_T_STRING.  Numeric
 // constants outside fixnum range box to ARAWK_T_FLOAT.  Associative
 // arrays are ARAWK_T_ARRAY.
 typedef int64_t VALUE;
@@ -39,10 +39,10 @@ typedef int64_t VALUE;
 #define ARAWK_FIX(n)      (((VALUE)(int64_t)(n) << 1) | 1LL)
 #define ARAWK_FIX_VAL(v)  ((int64_t)(v) >> 1)
 #define ARAWK_IS_PTR(v)   (((int64_t)(v) & 1LL) == 0)
-#define ARAWK_PTR(v)      ((struct awk_obj *)(uintptr_t)(v))
+#define ARAWK_PTR(v)      ((struct arawk_obj *)(uintptr_t)(v))
 #define ARAWK_OBJ_VAL(p)  ((VALUE)(uintptr_t)(p))
 
-enum awk_type {
+enum arawk_type {
     ARAWK_T_UNINIT = 1,      // singleton — uninitialised awk variable
     ARAWK_T_FLOAT,
     ARAWK_T_STRING,
@@ -50,29 +50,29 @@ enum awk_type {
     ARAWK_T_ARRAY,           // associative array
 };
 
-struct awk_array_entry {
+struct arawk_array_entry {
     char  *key;            // NUL-terminated, GC_malloc_atomic
     size_t key_len;
     VALUE  val;
-    struct awk_array_entry *next;
+    struct arawk_array_entry *next;
 };
 
-struct awk_array {
-    struct awk_array_entry **buckets;
+struct arawk_array {
+    struct arawk_array_entry **buckets;
     size_t bucket_cnt;
     size_t entry_cnt;
 };
 
-struct awk_obj {
+struct arawk_obj {
     int type;
     union {
         double dbl;
         struct { char *chars; size_t len; } str;
-        struct awk_array arr;
+        struct arawk_array arr;
     };
 };
 
-extern struct awk_obj ARAWK_UNINIT_OBJ;
+extern struct arawk_obj ARAWK_UNINIT_OBJ;
 #define ARAWK_UNINIT  ARAWK_OBJ_VAL(&ARAWK_UNINIT_OBJ)
 
 // Thread-local-ish pointer to the active CTX.  Set by main.c right
@@ -84,7 +84,7 @@ struct CTX_struct;
 extern struct CTX_struct *ARAWK_CURRENT_CTX;
 
 // Allocators (runtime.c).
-struct awk_obj *arawk_alloc(int type);
+struct arawk_obj *arawk_alloc(int type);
 VALUE arawk_make_float (double d);
 VALUE arawk_make_int   (int64_t v);                  // fixnum if fits, else heap float
 VALUE arawk_make_string(const char *s, size_t len);  // type = ARAWK_T_STRING
@@ -112,7 +112,7 @@ arawk_is_truthy(VALUE v)
 {
     if (LIKELY(ARAWK_IS_FIX(v))) return ARAWK_FIX_VAL(v) != 0;
     if (v == ARAWK_UNINIT) return false;
-    struct awk_obj *o = ARAWK_PTR(v);
+    struct arawk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
       case ARAWK_T_FLOAT:  return o->dbl != 0.0;
       case ARAWK_T_STRING: return o->str.len != 0;
@@ -213,7 +213,7 @@ typedef struct {
 // CTX / option struct.
 // ---------------------------------------------------------------------------
 
-struct awk_option {
+struct arawk_option {
     bool dump_ast;
     bool plain;
     bool compile_first;
@@ -232,13 +232,13 @@ struct awk_option {
 struct Node;
 void code_repo_add(const char *name, struct Node *body, bool force_add);
 
-extern struct awk_option OPTION;
+extern struct arawk_option OPTION;
 
 // Per-record runtime state.  Fields are split lazily — on first
 // access, arawk_ensure_fields(c) populates `fields[]` from `record`
 // using FS.  Writes to $N or NF rebuild `record` from fields using
 // OFS.  $0 is `record_v` when valid, else freshly built.
-struct awk_record {
+struct arawk_record {
     char    *record;             // $0 raw bytes (GC_malloc_atomic, NUL-terminated)
     size_t   record_len;
     VALUE    record_v;           // cached $0 VALUE, or 0 if unset
@@ -280,7 +280,7 @@ struct function_entry {
 typedef struct CTX_struct {
     VALUE        *env;           // global variable slots (incl. specials at fixed indices)
     VALUE        *fp;            // frame pointer (= env at top level; user func calls install a fresh frame)
-    struct awk_record rec;       // current record state
+    struct arawk_record rec;       // current record state
 
     // User-defined function table.
     struct function_entry *func_set;
