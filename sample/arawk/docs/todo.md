@@ -49,7 +49,7 @@ astrogre を統合する。
 ### Phase 1.9 — pipe / output redirect (print 側)
 - `print ... | "cmd"` (popen, cached per cmd)
 - `print ... > "file"` / `>>` (fopen overwrite / append)
-- `awk_close_all_streams()` を main 末尾で実行
+- `arawk_close_all_streams()` を main 末尾で実行
 
 ### Phase 1.10 — printf 系の redirect
 - `printf "..." | "cmd"`
@@ -76,7 +76,7 @@ astrogre を統合する。
 
 ### Phase 1.15 — 特殊変数の補完
 - **OFS / ORS** を `print` / `print_to` 各ノードが env から読む (変数代入即反映)
-- **CONVFMT** を `awk_to_cstr` の float 変換で読む (CTX_CURRENT 経由)
+- **CONVFMT** を `arawk_to_cstr` の float 変換で読む (CTX_CURRENT 経由)
 - **OFMT** slot は確保 (現状 CONVFMT と統合扱い)
 - **RSTART / RLENGTH** slot は確保 (Phase 2 で `match()` 実装時に使用)
 - **FS** 代入で現レコードの fields_split を invalidate → 次の $N で再 split
@@ -139,7 +139,7 @@ astrogre を統合する。
 ## 既知の制限事項 / 落とし穴 (memory にも記録)
 
 - ASTroGen の `parse_def_head` は `name(params)` を 1 行で要求 (改行不可)
-- ASTro framework は NULL NODE* を許さない → Null object pattern (`arawk_node_noop`) で対応
+- ASTro framework は NULL NODE* を許さない → Null object pattern (`node_noop`) で対応
 - NF は record read 直後に決まる必要あり → eager split で対応
 - strtod は C99 で `inf` / `infinity` / `nan` 認識 → awk 仕様と乖離。先頭が digit/sign-digit/`.digit` でなければ 0 を返すよう特別処理
 - bash heredoc が `!` を escape → Write tool 使用

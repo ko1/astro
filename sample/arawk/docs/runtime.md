@@ -11,7 +11,7 @@ getline / printf redirect) を専用ノード + runtime helper で実装する�
 | ファイル | 内容 |
 |---|---|
 | `node.def`     | 全 AST ノード定義 (literal / 算術 / 制御 / array / 関数 / I/O 等) |
-| `awk_gen.rb`   | ASTroGen 用 NodeDef サブクラス (operand 型カスタマイズ) |
+| `arawk_gen.rb`   | ASTroGen 用 NodeDef サブクラス (operand 型カスタマイズ) |
 | `node.h`       | NodeHead 宣言 + EVAL inline + 生成 `node_head.h` を include |
 | `context.h`    | VALUE エンコード / `awk_obj` / CTX / RESULT / 公開 API / 算術 fast path |
 | `node.c`       | アロケータ + ASTroGen 生成ファイルの `#include` 集約 |
@@ -51,12 +51,12 @@ struct awk_obj {
 | `AWK_T_STRNUM`   | フィールド / getline の入力 — 数値形なら数値、 そうでなければ文字列 |
 | `AWK_T_ARRAY`    | 連想配列 (FNV-1a + chained bucket; load > 0.75 で rehash) |
 
-awk の数値 / 文字列二面性は `awk_to_num` / `awk_to_cstr` / `val_is_numeric`
+awk の数値 / 文字列二面性は `arawk_to_num` / `arawk_to_cstr` / `val_is_numeric`
 が引き受ける。`STRNUM` のみ「数値らしき形」かを毎回 strtod で判定する
 (`val_is_numeric` 参照)。
 
 strtod は C99 で `"inf"` / `"infinity"` / `"nan"` を recognise するが
-awk 仕様では「先頭から数字でなければ 0」が正しい。`awk_to_num` で
+awk 仕様では「先頭から数字でなければ 0」が正しい。`arawk_to_num` で
 sign-digit / `.digit` の prefix check を入れて回避済。
 
 ## 2. RESULT プロトコル
@@ -95,7 +95,7 @@ catch して continue する。EXIT は親へ伝搬。
 
 ```c
 static inline VALUE
-awk_add(VALUE a, VALUE b) {
+arawk_add(VALUE a, VALUE b) {
     if (LIKELY(AWK_IS_FIX(a) & AWK_IS_FIX(b))) {
         int64_t la = AWK_FIX_VAL(a), lb = AWK_FIX_VAL(b), r;
         if (LIKELY(!__builtin_add_overflow(la, lb, &r) &&
@@ -103,7 +103,7 @@ awk_add(VALUE a, VALUE b) {
             return AWK_FIX(r);
         }
     }
-    return awk_add_slow(a, b);
+    return arawk_add_slow(a, b);
 }
 ```
 
@@ -154,10 +154,10 @@ typedef struct CTX_struct {
 | 16+ | ユーザ global |
 
 特殊変数を **普通の global slot 経由**で扱うことで、`NF = 5` のような代入
-は通常の `arawk_node_gset` パスを通る。 `gset` は FS / NF への代入を
+は通常の `node_gset` パスを通る。 `gset` は FS / NF への代入を
 hook して、フィールド分割の invalidate や `$0` 再構築を起こす。
 
-CTX グローバルへの単一参照 (`ARAWK_CURRENT_CTX`) も持つ。`awk_to_cstr`
+CTX グローバルへの単一参照 (`ARAWK_CURRENT_CTX`) も持つ。`arawk_to_cstr`
 等 CTX を引数で受け取らない runtime helper が `CONVFMT` を読むために使う。
 
 ## 5. レコードとフィールド
@@ -174,36 +174,36 @@ struct awk_record {
 };
 ```
 
-入力ループ (`awk_input_next_record`) が新レコードを読むとき:
+入力ループ (`arawk_input_next_record`) が新レコードを読むとき:
 
 1. RS 区切り (現状 `\n` 固定) で 1 レコード読み
 2. `c->rec.record` / `record_len` を更新、`record_v = 0` (キャッシュ無効化)
 3. `NR` / `FNR` を更新
-4. `awk_split_fields(c)` で eager に FS 分割 (= `NF` を即決定)
+4. `arawk_split_fields(c)` で eager に FS 分割 (= `NF` を即決定)
 
-`awk_split_fields` は `c->rec.fields_split` が false のときだけ走る。FS への
+`arawk_split_fields` は `c->rec.fields_split` が false のときだけ走る。FS への
 代入で false に戻し、次の `$N` 読み時に再分割される。
 
-`$N = v` での代入は `awk_set_field(c, N, v)` 経由で:
+`$N = v` での代入は `arawk_set_field(c, N, v)` 経由で:
 1. fields[] が必要なら拡張、不足するフィールドを `""` で埋める
 2. NF を更新
-3. `$0` を OFS で再構築 (`awk_rebuild_record`)
+3. `$0` を OFS で再構築 (`arawk_rebuild_record`)
 
-`NF = N` 代入は `awk_set_nf` 経由で同様にフィールド配列を伸縮 + 再構築。
+`NF = N` 代入は `arawk_set_nf` 経由で同様にフィールド配列を伸縮 + 再構築。
 
 ## 6. ユーザー関数
 
 astr の callcache パターンを未だ採用していない簡易版:
 
 ```c
-NODE_DEF arawk_node_def(c, n, fp, name, body, frame_size, params_cnt)
+NODE_DEF node_def(c, n, fp, name, body, frame_size, params_cnt)
 {
     fe = arawk_get_func_entry(c, name);
     fe->name = name; fe->body = OPTIMIZE(body);
     fe->params_cnt = params_cnt; fe->locals_cnt = frame_size;
 }
 
-NODE_DEF arawk_node_call_user(c, n, fp, name, base_args, argc)
+NODE_DEF node_call_user(c, n, fp, name, base_args, argc)
 {
     body = arawk_resolve_body(c, name, &params_cnt);  /* strcmp ループ */
     VALUE F[ARAWK_FRAME_MAX];                          /* VLA frame */
@@ -216,7 +216,7 @@ NODE_DEF arawk_node_call_user(c, n, fp, name, base_args, argc)
 関数本体内では parser が「**local 名は `fp[slot]` 参照、global 名は
 `c->env[slot]` 参照**」を区別する emit helper (`emit_var_get`, `emit_arr_set`,
 `emit_postinc` 等) を介してノードを発行。 ローカルは `*_l`、 グローバルは
-`*_g` 接尾辞のノード (例: `arawk_node_lget` / `arawk_node_gget`)。
+`*_g` 接尾辞のノード (例: `node_lget` / `node_gget`)。
 
 frame ベース inline cache 未実装のため `tt.14_function_call` は遅い (0.45×
 vs gawk)。callcache 実装は perf.md の改善案 #4。
@@ -226,20 +226,20 @@ vs gawk)。callcache 実装は perf.md の改善案 #4。
 ### 出力 (`print | "cmd"`, `print > "file"`, `printf` 同上)
 
 ```c
-static struct awk_stream *awk_streams = NULL;       /* hash 表代わりの線形配列 */
+static struct awk_stream *arawk_streams = NULL;       /* hash 表代わりの線形配列 */
 
-FILE *awk_open_stream(int mode, VALUE dest);        /* 'w'=popen, 'o'=fopen w, 'a'=fopen a */
+FILE *arawk_open_stream(int mode, VALUE dest);        /* 'w'=popen, 'o'=fopen w, 'a'=fopen a */
 ```
 
 `print` / `print_to` / `printf_to` ノードは `mode` + dest を引数に持ち、
 runtime で stream を lookup-or-open する。プロセス終了時に
-`awk_close_all_streams` が `pclose` / `fclose` を呼ぶ — pipe (sort 等)
+`arawk_close_all_streams` が `pclose` / `fclose` を呼ぶ — pipe (sort 等)
 に EOF を渡して下流を完走させるために必要。
 
 ### 入力 (`getline`)
 
 ```c
-static struct awk_stream *awk_inputs = NULL;        /* 入力側 cache */
+static struct awk_stream *arawk_inputs = NULL;        /* 入力側 cache */
 
 FILE *arawk_open_input(int mode, VALUE dest);       /* 'r'=popen, 'i'=fopen r */
 ```
@@ -248,15 +248,15 @@ FILE *arawk_open_input(int mode, VALUE dest);       /* 'r'=popen, 'i'=fopen r */
 
 | 構文                | ノード                                |
 |---|---|
-| `getline`           | `arawk_node_getline_cur`              |
-| `getline NAME`      | `arawk_node_getline_cur_l/_g`         |
-| `getline < expr`    | `arawk_node_getline_file`             |
-| `getline NAME < expr` | `arawk_node_getline_file_l/_g`      |
-| `expr \| getline`   | `arawk_node_getline_cmd`              |
-| `expr \| getline NAME` | `arawk_node_getline_cmd_l/_g`       |
+| `getline`           | `node_getline_cur`              |
+| `getline NAME`      | `node_getline_cur_l/_g`         |
+| `getline < expr`    | `node_getline_file`             |
+| `getline NAME < expr` | `node_getline_file_l/_g`      |
+| `expr \| getline`   | `node_getline_cmd`              |
+| `expr \| getline NAME` | `node_getline_cmd_l/_g`       |
 
 POSIX の更新仕様 (NR/FNR/$0/NF/FILENAME のどれを更新するか) は
-`runtime.c` の `awk_getline_*` ヘルパが内部で正しい組み合わせを実行。
+`runtime.c` の `arawk_getline_*` ヘルパが内部で正しい組み合わせを実行。
 
 `close(name)` は output / input の両 cache を順に検索する。
 
@@ -320,9 +320,9 @@ strcmp) 等。これは SD bake してもインライン展開できない領域
 
 将来の Phase 2 (astrogre 統合) で 1 binary に 2 つの AST interpreter を
 並存させる際の symbol 衝突を避けるため、 ノード名は **`arawk_node_*`** で
-統一済 (e.g. `arawk_node_add`, `arawk_node_call_user`)。ASTroGen が
+統一済 (e.g. `node_add`, `node_call_user`)。ASTroGen が
 生成する `ALLOC_*` / `EVAL_*` / `DISPATCH_*` / `HASH_*` / `NodeKind`
 enum 値も自動的に `arawk_node_*` prefix で出る。
 
-runtime helper は `awk_*` prefix (e.g. `awk_arr_get`, `awk_getline_cur`)。
+runtime helper は `awk_*` prefix (e.g. `arawk_arr_get`, `arawk_getline_cur`)。
 astrogre 側の `agre_*` と衝突しない。

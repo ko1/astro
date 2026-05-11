@@ -29,7 +29,7 @@ code_repo_add(const char *name, NODE *body, bool force_add)
 }
 
 // Look up a user-defined function body by name.  Called from
-// `arawk_node_call_user` once per call site (no cache yet — Phase 2+
+// `node_call_user` once per call site (no cache yet — Phase 2+
 // can add a callcache pattern like astr's `astr_callcache`).
 NODE *
 arawk_resolve_body(CTX *c, const char *name, uint32_t *out_params_cnt)
@@ -59,14 +59,14 @@ create_context(void)
     c->env[AWK_GLOB_NR]       = AWK_FIX(0);
     c->env[AWK_GLOB_NF]       = AWK_FIX(0);
     c->env[AWK_GLOB_FNR]      = AWK_FIX(0);
-    c->env[AWK_GLOB_FS]       = awk_make_string(" ", 1);
-    c->env[AWK_GLOB_OFS]      = awk_make_string(" ", 1);
-    c->env[AWK_GLOB_ORS]      = awk_make_string("\n", 1);
-    c->env[AWK_GLOB_RS]       = awk_make_string("\n", 1);
-    c->env[AWK_GLOB_FILENAME] = awk_make_string("", 0);
-    c->env[AWK_GLOB_SUBSEP]   = awk_make_string("\034", 1);
-    c->env[AWK_GLOB_CONVFMT]  = awk_make_string("%.6g", 4);
-    c->env[AWK_GLOB_OFMT]     = awk_make_string("%.6g", 4);
+    c->env[AWK_GLOB_FS]       = arawk_make_string(" ", 1);
+    c->env[AWK_GLOB_OFS]      = arawk_make_string(" ", 1);
+    c->env[AWK_GLOB_ORS]      = arawk_make_string("\n", 1);
+    c->env[AWK_GLOB_RS]       = arawk_make_string("\n", 1);
+    c->env[AWK_GLOB_FILENAME] = arawk_make_string("", 0);
+    c->env[AWK_GLOB_SUBSEP]   = arawk_make_string("\034", 1);
+    c->env[AWK_GLOB_CONVFMT]  = arawk_make_string("%.6g", 4);
+    c->env[AWK_GLOB_OFMT]     = arawk_make_string("%.6g", 4);
     c->env[AWK_GLOB_RSTART]   = AWK_FIX(0);
     c->env[AWK_GLOB_RLENGTH]  = AWK_FIX(-1);
     c->rec.record = NULL;
@@ -225,7 +225,7 @@ main(int argc, char *argv[])
     // ENVIRON: populate from libc's `environ`.
     {
         extern char **environ;
-        VALUE arr = awk_make_array();
+        VALUE arr = arawk_make_array();
         c->env[AWK_GLOB_ENVIRON] = arr;
         for (char **ep = environ; *ep; ep++) {
             const char *e = *ep;
@@ -234,25 +234,25 @@ main(int argc, char *argv[])
             size_t klen = (size_t)(eq - e);
             const char *v = eq + 1;
             size_t vlen = strlen(v);
-            awk_arr_set(arr, e, klen, awk_make_string(v, vlen));
+            arawk_arr_set(arr, e, klen, arawk_make_string(v, vlen));
         }
     }
     // ARGC / ARGV: include `arawk` as ARGV[0] and the input files
     // (after the program text/file) as ARGV[1..ARGC-1].  POSIX awk
     // also lets the user mutate ARGV; we honour the value on each
-    // input-file open in awk_open_next_input via a separate mechanism
+    // input-file open in arawk_open_next_input via a separate mechanism
     // (TODO: ARGV-driven input loop; for now ARGV is read-only and
     // input files come from OPTION.input_files).
     {
-        VALUE av = awk_make_array();
+        VALUE av = arawk_make_array();
         c->env[AWK_GLOB_ARGV] = av;
-        awk_arr_set(av, "0", 1, awk_make_string("arawk", 5));
+        arawk_arr_set(av, "0", 1, arawk_make_string("arawk", 5));
         int total = 1 + OPTION.input_file_cnt;
         for (int i = 0; i < OPTION.input_file_cnt; i++) {
             char key[16];
             int kl = snprintf(key, sizeof key, "%d", i + 1);
             const char *path = OPTION.input_files[i];
-            awk_arr_set(av, key, (size_t)kl, awk_make_string(path, strlen(path)));
+            arawk_arr_set(av, key, (size_t)kl, arawk_make_string(path, strlen(path)));
         }
         c->env[AWK_GLOB_ARGC] = AWK_FIX(total);
     }
@@ -261,11 +261,11 @@ main(int argc, char *argv[])
     int rc = 0;
     if (r.state == RESULT_EXIT) {
         if (AWK_IS_FIX(r.value)) rc = (int)AWK_FIX_VAL(r.value);
-        else                     rc = (int)awk_to_num(r.value);
+        else                     rc = (int)arawk_to_num(r.value);
     }
     // Flush + close any pipes / output files opened via `print | ...`,
     // `print > ...`, `print >> ...`.  Pipes need explicit pclose so
     // `sort` etc. finish writing before the awk process exits.
-    awk_close_all_streams();
+    arawk_close_all_streams();
     return rc;
 }

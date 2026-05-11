@@ -24,7 +24,7 @@ CTX *ARAWK_CURRENT_CTX = NULL;
 // ---------------------------------------------------------------------------
 
 struct awk_obj *
-awk_alloc(int type)
+arawk_alloc(int type)
 {
     struct awk_obj *o = (struct awk_obj *)GC_malloc(sizeof(struct awk_obj));
     o->type = type;
@@ -32,24 +32,24 @@ awk_alloc(int type)
 }
 
 VALUE
-awk_make_float(double d)
+arawk_make_float(double d)
 {
-    struct awk_obj *o = awk_alloc(AWK_T_FLOAT);
+    struct awk_obj *o = arawk_alloc(AWK_T_FLOAT);
     o->dbl = d;
     return AWK_OBJ_VAL(o);
 }
 
 VALUE
-awk_make_int(int64_t v)
+arawk_make_int(int64_t v)
 {
     if (v >= AWK_FIX_MIN && v <= AWK_FIX_MAX) return AWK_FIX(v);
-    return awk_make_float((double)v);
+    return arawk_make_float((double)v);
 }
 
 static VALUE
-awk_make_string_typed(const char *s, size_t len, int type)
+arawk_make_string_typed(const char *s, size_t len, int type)
 {
-    struct awk_obj *o = awk_alloc(type);
+    struct awk_obj *o = arawk_alloc(type);
     char *buf = (char *)GC_malloc_atomic(len + 1);
     if (s && len) memcpy(buf, s, len);
     buf[len] = '\0';
@@ -58,13 +58,13 @@ awk_make_string_typed(const char *s, size_t len, int type)
     return AWK_OBJ_VAL(o);
 }
 
-VALUE awk_make_string(const char *s, size_t len) { return awk_make_string_typed(s, len, AWK_T_STRING); }
-VALUE awk_make_strnum(const char *s, size_t len) { return awk_make_string_typed(s, len, AWK_T_STRNUM); }
+VALUE arawk_make_string(const char *s, size_t len) { return arawk_make_string_typed(s, len, AWK_T_STRING); }
+VALUE arawk_make_strnum(const char *s, size_t len) { return arawk_make_string_typed(s, len, AWK_T_STRNUM); }
 
 VALUE
-awk_make_array(void)
+arawk_make_array(void)
 {
-    struct awk_obj *o = awk_alloc(AWK_T_ARRAY);
+    struct awk_obj *o = arawk_alloc(AWK_T_ARRAY);
     o->arr.bucket_cnt = 16;
     o->arr.buckets = (struct awk_array_entry **)GC_malloc(sizeof(struct awk_array_entry *) * 16);
     o->arr.entry_cnt = 0;
@@ -79,7 +79,7 @@ awk_make_array(void)
 // ---------------------------------------------------------------------------
 
 double
-awk_to_num(VALUE v)
+arawk_to_num(VALUE v)
 {
     if (LIKELY(AWK_IS_FIX(v))) return (double)AWK_FIX_VAL(v);
     if (v == AWK_UNINIT) return 0.0;
@@ -117,16 +117,16 @@ awk_to_num(VALUE v)
     }
 }
 
-// Render to a caller-provided buffer (used by awk_concat / printing).
+// Render to a caller-provided buffer (used by arawk_concat / printing).
 // Floats use CONVFMT (or OFMT) from the active CTX's env if set,
 // falling back to `%.6g`.  Awk distinguishes CONVFMT (most string
 // contexts) from OFMT (print), but they default to the same value
 // and most programs leave them in sync — we use CONVFMT here, which
 // is correct for everything except the print-of-bare-float case.
-// arawk_print_with_env / arawk_node_print also read OFMT directly
+// arawk_print_with_env / node_print also read OFMT directly
 // for the truly print-specific path.
 const char *
-awk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
+arawk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
 {
     if (AWK_IS_FIX(v)) {
         int n = snprintf(buf, buflen, "%lld", (long long)AWK_FIX_VAL(v));
@@ -180,7 +180,7 @@ awk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
 }
 
 VALUE
-awk_to_string(VALUE v)
+arawk_to_string(VALUE v)
 {
     if (AWK_IS_PTR(v)) {
         struct awk_obj *o = AWK_PTR(v);
@@ -188,8 +188,8 @@ awk_to_string(VALUE v)
     }
     char buf[64];
     size_t len;
-    const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
-    return awk_make_string(s, len);
+    const char *s = arawk_to_cstr(v, buf, sizeof buf, &len);
+    return arawk_make_string(s, len);
 }
 
 // awk number-shape test: a string is "numeric" iff (after optional
@@ -226,29 +226,29 @@ val_is_numeric(VALUE v)
 }
 
 bool
-awk_eq(VALUE a, VALUE b)
+arawk_eq(VALUE a, VALUE b)
 {
     if (a == b) return true;
-    if (val_is_numeric(a) && val_is_numeric(b)) return awk_to_num(a) == awk_to_num(b);
+    if (val_is_numeric(a) && val_is_numeric(b)) return arawk_to_num(a) == arawk_to_num(b);
     char abuf[64], bbuf[64]; size_t alen, blen;
-    const char *as = awk_to_cstr(a, abuf, sizeof abuf, &alen);
-    const char *bs = awk_to_cstr(b, bbuf, sizeof bbuf, &blen);
+    const char *as = arawk_to_cstr(a, abuf, sizeof abuf, &alen);
+    const char *bs = arawk_to_cstr(b, bbuf, sizeof bbuf, &blen);
     if (alen != blen) return false;
     return memcmp(as, bs, alen) == 0;
 }
 
 int
-awk_cmp(VALUE a, VALUE b)
+arawk_cmp(VALUE a, VALUE b)
 {
     if (val_is_numeric(a) && val_is_numeric(b)) {
-        double da = awk_to_num(a), db = awk_to_num(b);
+        double da = arawk_to_num(a), db = arawk_to_num(b);
         if (da < db) return -1;
         if (da > db) return  1;
         return 0;
     }
     char abuf[64], bbuf[64]; size_t alen, blen;
-    const char *as = awk_to_cstr(a, abuf, sizeof abuf, &alen);
-    const char *bs = awk_to_cstr(b, bbuf, sizeof bbuf, &blen);
+    const char *as = arawk_to_cstr(a, abuf, sizeof abuf, &alen);
+    const char *bs = arawk_to_cstr(b, bbuf, sizeof bbuf, &blen);
     size_t cmplen = alen < blen ? alen : blen;
     int r = memcmp(as, bs, cmplen);
     if (r != 0) return r < 0 ? -1 : 1;
@@ -262,12 +262,12 @@ awk_cmp(VALUE a, VALUE b)
 // ---------------------------------------------------------------------------
 
 VALUE
-awk_concat(VALUE a, VALUE b)
+arawk_concat(VALUE a, VALUE b)
 {
     char abuf[64], bbuf[64]; size_t alen, blen;
-    const char *as = awk_to_cstr(a, abuf, sizeof abuf, &alen);
-    const char *bs = awk_to_cstr(b, bbuf, sizeof bbuf, &blen);
-    struct awk_obj *o = awk_alloc(AWK_T_STRING);
+    const char *as = arawk_to_cstr(a, abuf, sizeof abuf, &alen);
+    const char *bs = arawk_to_cstr(b, bbuf, sizeof bbuf, &blen);
+    struct awk_obj *o = arawk_alloc(AWK_T_STRING);
     char *buf = (char *)GC_malloc_atomic(alen + blen + 1);
     memcpy(buf, as, alen);
     memcpy(buf + alen, bs, blen);
@@ -278,7 +278,7 @@ awk_concat(VALUE a, VALUE b)
 }
 
 size_t
-awk_length(VALUE v)
+arawk_length(VALUE v)
 {
     if (AWK_IS_FIX(v)) {
         char buf[32];
@@ -293,7 +293,7 @@ awk_length(VALUE v)
       case AWK_T_ARRAY:  return o->arr.entry_cnt;
       case AWK_T_FLOAT: {
         char buf[64]; size_t len;
-        (void)awk_to_cstr(v, buf, sizeof buf, &len);
+        (void)arawk_to_cstr(v, buf, sizeof buf, &len);
         return len;
       }
       default: return 0;
@@ -301,36 +301,36 @@ awk_length(VALUE v)
 }
 
 VALUE
-awk_substr(VALUE s, int64_t pos, int64_t len)
+arawk_substr(VALUE s, int64_t pos, int64_t len)
 {
     char buf[64]; size_t slen;
-    const char *src = awk_to_cstr(s, buf, sizeof buf, &slen);
+    const char *src = arawk_to_cstr(s, buf, sizeof buf, &slen);
     // awk: 1-based, pos < 1 → adjust len; pos > slen → "".
     if (pos < 1) { len += (pos - 1); pos = 1; }
-    if ((size_t)pos > slen || len <= 0) return awk_make_string("", 0);
+    if ((size_t)pos > slen || len <= 0) return arawk_make_string("", 0);
     size_t start = (size_t)(pos - 1);
     size_t avail = slen - start;
     size_t take  = (size_t)len < avail ? (size_t)len : avail;
-    return awk_make_string(src + start, take);
+    return arawk_make_string(src + start, take);
 }
 
 VALUE
-awk_substr2(VALUE s, int64_t pos)
+arawk_substr2(VALUE s, int64_t pos)
 {
     char buf[64]; size_t slen;
-    const char *src = awk_to_cstr(s, buf, sizeof buf, &slen);
+    const char *src = arawk_to_cstr(s, buf, sizeof buf, &slen);
     if (pos < 1) pos = 1;
-    if ((size_t)pos > slen) return awk_make_string("", 0);
+    if ((size_t)pos > slen) return arawk_make_string("", 0);
     size_t start = (size_t)(pos - 1);
-    return awk_make_string(src + start, slen - start);
+    return arawk_make_string(src + start, slen - start);
 }
 
 int64_t
-awk_index(VALUE haystack, VALUE needle)
+arawk_index(VALUE haystack, VALUE needle)
 {
     char hbuf[64], nbuf[64]; size_t hlen, nlen;
-    const char *h = awk_to_cstr(haystack, hbuf, sizeof hbuf, &hlen);
-    const char *n = awk_to_cstr(needle,   nbuf, sizeof nbuf, &nlen);
+    const char *h = arawk_to_cstr(haystack, hbuf, sizeof hbuf, &hlen);
+    const char *n = arawk_to_cstr(needle,   nbuf, sizeof nbuf, &nlen);
     if (nlen == 0) return 0;
     if (nlen > hlen) return 0;
     for (size_t i = 0; i + nlen <= hlen; i++) {
@@ -340,52 +340,52 @@ awk_index(VALUE haystack, VALUE needle)
 }
 
 VALUE
-awk_tolower(VALUE v)
+arawk_tolower(VALUE v)
 {
     char buf[64]; size_t len;
-    const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+    const char *s = arawk_to_cstr(v, buf, sizeof buf, &len);
     char *out = (char *)GC_malloc_atomic(len + 1);
     for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)s[i];
         out[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
     }
     out[len] = '\0';
-    struct awk_obj *o = awk_alloc(AWK_T_STRING);
+    struct awk_obj *o = arawk_alloc(AWK_T_STRING);
     o->str.chars = out;
     o->str.len = len;
     return AWK_OBJ_VAL(o);
 }
 
 VALUE
-awk_toupper(VALUE v)
+arawk_toupper(VALUE v)
 {
     char buf[64]; size_t len;
-    const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+    const char *s = arawk_to_cstr(v, buf, sizeof buf, &len);
     char *out = (char *)GC_malloc_atomic(len + 1);
     for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)s[i];
         out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
     }
     out[len] = '\0';
-    struct awk_obj *o = awk_alloc(AWK_T_STRING);
+    struct awk_obj *o = arawk_alloc(AWK_T_STRING);
     o->str.chars = out;
     o->str.len = len;
     return AWK_OBJ_VAL(o);
 }
 
 VALUE
-awk_int(VALUE v)
+arawk_int(VALUE v)
 {
     if (AWK_IS_FIX(v)) return v;
-    double d = awk_to_num(v);
-    return awk_make_int((int64_t)d);
+    double d = arawk_to_num(v);
+    return arawk_make_int((int64_t)d);
 }
 
 // printf format: %d %i %u %o %x %X %c %s %f %e %E %g %G %%.  Width
 // and precision and flags (- + 0 space #) are handled by delegating
 // to snprintf with a per-spec format-string mini-compiler.
 static void
-awk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
+arawk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
               VALUE fmt, VALUE *args, size_t nargs)
 {
     #define OUT_PUT(c) do { \
@@ -398,7 +398,7 @@ awk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
     } while (0)
 
     char fbuf[64]; size_t flen;
-    const char *f = awk_to_cstr(fmt, fbuf, sizeof fbuf, &flen);
+    const char *f = arawk_to_cstr(fmt, fbuf, sizeof fbuf, &flen);
     size_t argi = 0;
 
     for (size_t i = 0; i < flen; ) {
@@ -438,12 +438,12 @@ awk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
 
         int wval = 0, pval = 0;
         if (width_from_arg) {
-            if (argi < nargs) wval = (int)awk_to_num(args[argi++]);
+            if (argi < nargs) wval = (int)arawk_to_num(args[argi++]);
             int n = snprintf(spec + sl, sizeof spec - sl, "%d", wval);
             if (n > 0) sl += (size_t)n;
         }
         if (prec_from_arg) {
-            if (argi < nargs) pval = (int)awk_to_num(args[argi++]);
+            if (argi < nargs) pval = (int)arawk_to_num(args[argi++]);
             int n = snprintf(spec + sl, sizeof spec - sl, "%d", pval);
             if (n > 0) sl += (size_t)n;
         }
@@ -454,12 +454,12 @@ awk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
         switch (conv) {
           case 'd': case 'i': {
             spec[sl++] = 'l'; spec[sl++] = 'l'; spec[sl++] = 'd'; spec[sl] = '\0';
-            wrote = snprintf(tmp, sizeof tmp, spec, (long long)awk_to_num(av));
+            wrote = snprintf(tmp, sizeof tmp, spec, (long long)arawk_to_num(av));
             break;
           }
           case 'u': case 'o': case 'x': case 'X': {
             spec[sl++] = 'l'; spec[sl++] = 'l'; spec[sl++] = conv; spec[sl] = '\0';
-            wrote = snprintf(tmp, sizeof tmp, spec, (unsigned long long)(long long)awk_to_num(av));
+            wrote = snprintf(tmp, sizeof tmp, spec, (unsigned long long)(long long)arawk_to_num(av));
             break;
           }
           case 'c': {
@@ -473,14 +473,14 @@ awk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
                     break;
                 }
             }
-            int code = (int)awk_to_num(av);
+            int code = (int)arawk_to_num(av);
             spec[sl++] = 'c'; spec[sl] = '\0';
             wrote = snprintf(tmp, sizeof tmp, spec, code);
             break;
           }
           case 's': {
             char sbuf[256]; size_t slen2;
-            const char *s = awk_to_cstr(av, sbuf, sizeof sbuf, &slen2);
+            const char *s = arawk_to_cstr(av, sbuf, sizeof sbuf, &slen2);
             // snprintf needs NUL-terminated input.
             char heap_buf[1024];
             const char *heap = s;
@@ -499,7 +499,7 @@ awk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
           }
           case 'f': case 'e': case 'E': case 'g': case 'G': {
             spec[sl++] = conv; spec[sl] = '\0';
-            wrote = snprintf(tmp, sizeof tmp, spec, awk_to_num(av));
+            wrote = snprintf(tmp, sizeof tmp, spec, arawk_to_num(av));
             break;
           }
           default:
@@ -523,22 +523,22 @@ awk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
 }
 
 VALUE
-awk_sprintf_v(VALUE fmt, VALUE *args, size_t nargs)
+arawk_sprintf_v(VALUE fmt, VALUE *args, size_t nargs)
 {
     char *buf = NULL; size_t cap = 0, len = 0;
-    awk_format_to(NULL, &buf, &cap, &len, fmt, args, nargs);
-    return awk_make_string(buf ? buf : "", len);
+    arawk_format_to(NULL, &buf, &cap, &len, fmt, args, nargs);
+    return arawk_make_string(buf ? buf : "", len);
 }
 
 void
-awk_printf(FILE *fp, VALUE fmt, VALUE *args, size_t nargs)
+arawk_printf(FILE *fp, VALUE fmt, VALUE *args, size_t nargs)
 {
     char *buf = NULL; size_t cap = 0, len = 0;
-    awk_format_to(fp, &buf, &cap, &len, fmt, args, nargs);
+    arawk_format_to(fp, &buf, &cap, &len, fmt, args, nargs);
 }
 
 int64_t
-awk_split(VALUE s, VALUE arr, VALUE sep)
+arawk_split(VALUE s, VALUE arr, VALUE sep)
 {
     if (!AWK_IS_PTR(arr) || AWK_PTR(arr)->type != AWK_T_ARRAY) return 0;
     // Clear the array (split overwrites).
@@ -547,8 +547,8 @@ awk_split(VALUE s, VALUE arr, VALUE sep)
     ao->arr.entry_cnt = 0;
 
     char sbuf[64], pbuf[64]; size_t slen, plen;
-    const char *src = awk_to_cstr(s,   sbuf, sizeof sbuf, &slen);
-    const char *sp  = awk_to_cstr(sep, pbuf, sizeof pbuf, &plen);
+    const char *src = arawk_to_cstr(s,   sbuf, sizeof sbuf, &slen);
+    const char *sp  = arawk_to_cstr(sep, pbuf, sizeof pbuf, &plen);
 
     int64_t n = 0;
     char kbuf[24];
@@ -561,7 +561,7 @@ awk_split(VALUE s, VALUE arr, VALUE sep)
             size_t start = i;
             while (i < slen && !isspace((unsigned char)src[i])) i++;
             int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
-            awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, i - start));
+            arawk_arr_set(arr, kbuf, (size_t)kl, arawk_make_strnum(src + start, i - start));
         }
     }
     else if (plen == 1) {
@@ -570,19 +570,19 @@ awk_split(VALUE s, VALUE arr, VALUE sep)
         while (i < slen) {
             if (src[i] == c) {
                 int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
-                awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, i - start));
+                arawk_arr_set(arr, kbuf, (size_t)kl, arawk_make_strnum(src + start, i - start));
                 i++; start = i;
             }
             else i++;
         }
         int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
-        awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, slen - start));
+        arawk_arr_set(arr, kbuf, (size_t)kl, arawk_make_strnum(src + start, slen - start));
     }
     else if (plen == 0) {
         // Empty sep → split into individual characters.
         for (size_t i = 0; i < slen; i++) {
             int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
-            awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + i, 1));
+            arawk_arr_set(arr, kbuf, (size_t)kl, arawk_make_strnum(src + i, 1));
         }
     }
     else {
@@ -590,13 +590,13 @@ awk_split(VALUE s, VALUE arr, VALUE sep)
         while (i + plen <= slen) {
             if (memcmp(src + i, sp, plen) == 0) {
                 int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
-                awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, i - start));
+                arawk_arr_set(arr, kbuf, (size_t)kl, arawk_make_strnum(src + start, i - start));
                 i += plen; start = i;
             }
             else i++;
         }
         int kl = snprintf(kbuf, sizeof kbuf, "%lld", (long long)(++n));
-        awk_arr_set(arr, kbuf, (size_t)kl, awk_make_strnum(src + start, slen - start));
+        arawk_arr_set(arr, kbuf, (size_t)kl, arawk_make_strnum(src + start, slen - start));
     }
     return n;
 }
@@ -606,7 +606,7 @@ awk_split(VALUE s, VALUE arr, VALUE sep)
 // ---------------------------------------------------------------------------
 
 static uint64_t
-awk_str_hash(const char *s, size_t len)
+arawk_str_hash(const char *s, size_t len)
 {
     // FNV-1a 64-bit.
     uint64_t h = 0xcbf29ce484222325ULL;
@@ -618,7 +618,7 @@ awk_str_hash(const char *s, size_t len)
 }
 
 static void
-awk_arr_rehash(struct awk_array *a, size_t new_cnt)
+arawk_arr_rehash(struct awk_array *a, size_t new_cnt)
 {
     struct awk_array_entry **old_b = a->buckets;
     size_t old_cnt = a->bucket_cnt;
@@ -628,7 +628,7 @@ awk_arr_rehash(struct awk_array *a, size_t new_cnt)
         struct awk_array_entry *e = old_b[i];
         while (e) {
             struct awk_array_entry *next = e->next;
-            uint64_t h = awk_str_hash(e->key, e->key_len);
+            uint64_t h = arawk_str_hash(e->key, e->key_len);
             size_t b = (size_t)(h & (new_cnt - 1));
             e->next = a->buckets[b];
             a->buckets[b] = e;
@@ -638,12 +638,12 @@ awk_arr_rehash(struct awk_array *a, size_t new_cnt)
 }
 
 VALUE
-awk_arr_get(VALUE arr, const char *key, size_t key_len)
+arawk_arr_get(VALUE arr, const char *key, size_t key_len)
 {
     if (!AWK_IS_PTR(arr)) return AWK_UNINIT;
     struct awk_obj *o = AWK_PTR(arr);
     if (o->type != AWK_T_ARRAY) return AWK_UNINIT;
-    uint64_t h = awk_str_hash(key, key_len);
+    uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
     for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return e->val;
@@ -652,12 +652,12 @@ awk_arr_get(VALUE arr, const char *key, size_t key_len)
 }
 
 void
-awk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val)
+arawk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val)
 {
     if (!AWK_IS_PTR(arr)) return;
     struct awk_obj *o = AWK_PTR(arr);
     if (o->type != AWK_T_ARRAY) return;
-    uint64_t h = awk_str_hash(key, key_len);
+    uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
     for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) {
@@ -676,17 +676,17 @@ awk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val)
     o->arr.buckets[b] = ne;
     o->arr.entry_cnt++;
     if (o->arr.entry_cnt * 4 > o->arr.bucket_cnt * 3) {
-        awk_arr_rehash(&o->arr, o->arr.bucket_cnt * 2);
+        arawk_arr_rehash(&o->arr, o->arr.bucket_cnt * 2);
     }
 }
 
 bool
-awk_arr_has(VALUE arr, const char *key, size_t key_len)
+arawk_arr_has(VALUE arr, const char *key, size_t key_len)
 {
     if (!AWK_IS_PTR(arr)) return false;
     struct awk_obj *o = AWK_PTR(arr);
     if (o->type != AWK_T_ARRAY) return false;
-    uint64_t h = awk_str_hash(key, key_len);
+    uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
     for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return true;
@@ -695,12 +695,12 @@ awk_arr_has(VALUE arr, const char *key, size_t key_len)
 }
 
 void
-awk_arr_del(VALUE arr, const char *key, size_t key_len)
+arawk_arr_del(VALUE arr, const char *key, size_t key_len)
 {
     if (!AWK_IS_PTR(arr)) return;
     struct awk_obj *o = AWK_PTR(arr);
     if (o->type != AWK_T_ARRAY) return;
-    uint64_t h = awk_str_hash(key, key_len);
+    uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
     struct awk_array_entry **pp = &o->arr.buckets[b];
     while (*pp) {
@@ -719,21 +719,21 @@ awk_arr_del(VALUE arr, const char *key, size_t key_len)
 // ---------------------------------------------------------------------------
 
 void
-awk_print_value(FILE *fp, VALUE v)
+arawk_print_value(FILE *fp, VALUE v)
 {
     char buf[64]; size_t len;
-    const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+    const char *s = arawk_to_cstr(v, buf, sizeof buf, &len);
     fwrite(s, 1, len, fp);
 }
 
 void
-awk_print_record(FILE *fp, VALUE *items, size_t n,
+arawk_print_record(FILE *fp, VALUE *items, size_t n,
                  const char *ofs, size_t ofs_len,
                  const char *ors, size_t ors_len)
 {
     for (size_t i = 0; i < n; i++) {
         if (i) fwrite(ofs, 1, ofs_len, fp);
-        awk_print_value(fp, items[i]);
+        arawk_print_value(fp, items[i]);
     }
     fwrite(ors, 1, ors_len, fp);
 }
@@ -742,7 +742,7 @@ awk_print_record(FILE *fp, VALUE *items, size_t n,
 // Output stream cache.  Each unique (mode, dest) tuple maps to one
 // FILE * for the lifetime of the program — repeated `print | "sort"`
 // statements share the same popen pipe, which is the awk semantic.
-// `awk_close_all_streams` is called from main() after the program
+// `arawk_close_all_streams` is called from main() after the program
 // finishes; it flushes and pcloses each pipe (so `sort` actually
 // reads EOF and writes its output before the process exits).
 // ---------------------------------------------------------------------------
@@ -754,35 +754,35 @@ struct awk_stream {
     bool   is_pipe;        // true → pclose, false → fclose
 };
 
-static struct awk_stream *awk_streams = NULL;
-static size_t awk_streams_cnt = 0;
-static size_t awk_streams_capa = 0;
+static struct awk_stream *arawk_streams = NULL;
+static size_t arawk_streams_cnt = 0;
+static size_t arawk_streams_capa = 0;
 
 // Input-side handles for `getline < file` and `cmd | getline`.
-// Symmetric to awk_streams (defined here so awk_close_stream can scan
+// Symmetric to arawk_streams (defined here so arawk_close_stream can scan
 // both).
-static struct awk_stream *awk_inputs = NULL;
-static size_t awk_inputs_cnt = 0;
-static size_t awk_inputs_capa = 0;
+static struct awk_stream *arawk_inputs = NULL;
+static size_t arawk_inputs_cnt = 0;
+static size_t arawk_inputs_capa = 0;
 
 FILE *
-awk_open_stream(int mode, VALUE dest)
+arawk_open_stream(int mode, VALUE dest)
 {
     char dbuf[256]; size_t dlen;
-    const char *dest_s = awk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
+    const char *dest_s = arawk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
     // NUL-terminate for popen / fopen.
     char *path = (char *)alloca(dlen + 1);
     memcpy(path, dest_s, dlen); path[dlen] = '\0';
 
-    for (size_t i = 0; i < awk_streams_cnt; i++) {
-        if (awk_streams[i].mode == mode && strcmp(awk_streams[i].dest, path) == 0) {
-            return awk_streams[i].fp;
+    for (size_t i = 0; i < arawk_streams_cnt; i++) {
+        if (arawk_streams[i].mode == mode && strcmp(arawk_streams[i].dest, path) == 0) {
+            return arawk_streams[i].fp;
         }
     }
-    if (awk_streams_cnt >= awk_streams_capa) {
-        size_t cap = awk_streams_capa ? awk_streams_capa * 2 : 8;
-        awk_streams = (struct awk_stream *)realloc(awk_streams, sizeof(struct awk_stream) * cap);
-        awk_streams_capa = cap;
+    if (arawk_streams_cnt >= arawk_streams_capa) {
+        size_t cap = arawk_streams_capa ? arawk_streams_capa * 2 : 8;
+        arawk_streams = (struct awk_stream *)realloc(arawk_streams, sizeof(struct awk_stream) * cap);
+        arawk_streams_capa = cap;
     }
 
     FILE *f = NULL;
@@ -801,53 +801,53 @@ awk_open_stream(int mode, VALUE dest)
     }
     char *dst_copy = (char *)malloc(dlen + 1);
     memcpy(dst_copy, path, dlen + 1);
-    awk_streams[awk_streams_cnt++] = (struct awk_stream){ mode, dst_copy, f, is_pipe };
+    arawk_streams[arawk_streams_cnt++] = (struct awk_stream){ mode, dst_copy, f, is_pipe };
     return f;
 }
 
 void
-awk_close_all_streams(void)
+arawk_close_all_streams(void)
 {
-    for (size_t i = 0; i < awk_streams_cnt; i++) {
-        if (awk_streams[i].is_pipe) pclose(awk_streams[i].fp);
-        else                        fclose(awk_streams[i].fp);
-        free(awk_streams[i].dest);
+    for (size_t i = 0; i < arawk_streams_cnt; i++) {
+        if (arawk_streams[i].is_pipe) pclose(arawk_streams[i].fp);
+        else                        fclose(arawk_streams[i].fp);
+        free(arawk_streams[i].dest);
     }
-    awk_streams_cnt = 0;
-    for (size_t i = 0; i < awk_inputs_cnt; i++) {
-        if (awk_inputs[i].is_pipe) pclose(awk_inputs[i].fp);
-        else                       fclose(awk_inputs[i].fp);
-        free(awk_inputs[i].dest);
+    arawk_streams_cnt = 0;
+    for (size_t i = 0; i < arawk_inputs_cnt; i++) {
+        if (arawk_inputs[i].is_pipe) pclose(arawk_inputs[i].fp);
+        else                       fclose(arawk_inputs[i].fp);
+        free(arawk_inputs[i].dest);
     }
-    awk_inputs_cnt = 0;
+    arawk_inputs_cnt = 0;
 }
 
 int
-awk_close_stream(VALUE dest)
+arawk_close_stream(VALUE dest)
 {
     char dbuf[256]; size_t dlen;
-    const char *d = awk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
+    const char *d = arawk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
     char *path = (char *)alloca(dlen + 1);
     memcpy(path, d, dlen); path[dlen] = '\0';
     // Search output side first.
-    for (size_t i = 0; i < awk_streams_cnt; i++) {
-        if (strcmp(awk_streams[i].dest, path) == 0) {
-            int rc = awk_streams[i].is_pipe ? pclose(awk_streams[i].fp)
-                                            : fclose(awk_streams[i].fp);
-            free(awk_streams[i].dest);
-            if (i + 1 < awk_streams_cnt) awk_streams[i] = awk_streams[awk_streams_cnt - 1];
-            awk_streams_cnt--;
+    for (size_t i = 0; i < arawk_streams_cnt; i++) {
+        if (strcmp(arawk_streams[i].dest, path) == 0) {
+            int rc = arawk_streams[i].is_pipe ? pclose(arawk_streams[i].fp)
+                                            : fclose(arawk_streams[i].fp);
+            free(arawk_streams[i].dest);
+            if (i + 1 < arawk_streams_cnt) arawk_streams[i] = arawk_streams[arawk_streams_cnt - 1];
+            arawk_streams_cnt--;
             return rc;
         }
     }
     // Then input streams (file readers, command-pipe readers).
-    for (size_t i = 0; i < awk_inputs_cnt; i++) {
-        if (strcmp(awk_inputs[i].dest, path) == 0) {
-            int rc = awk_inputs[i].is_pipe ? pclose(awk_inputs[i].fp)
-                                           : fclose(awk_inputs[i].fp);
-            free(awk_inputs[i].dest);
-            if (i + 1 < awk_inputs_cnt) awk_inputs[i] = awk_inputs[awk_inputs_cnt - 1];
-            awk_inputs_cnt--;
+    for (size_t i = 0; i < arawk_inputs_cnt; i++) {
+        if (strcmp(arawk_inputs[i].dest, path) == 0) {
+            int rc = arawk_inputs[i].is_pipe ? pclose(arawk_inputs[i].fp)
+                                           : fclose(arawk_inputs[i].fp);
+            free(arawk_inputs[i].dest);
+            if (i + 1 < arawk_inputs_cnt) arawk_inputs[i] = arawk_inputs[arawk_inputs_cnt - 1];
+            arawk_inputs_cnt--;
             return rc;
         }
     }
@@ -855,16 +855,16 @@ awk_close_stream(VALUE dest)
 }
 
 int
-awk_fflush_all(void)
+arawk_fflush_all(void)
 {
     int rc = fflush(stdout);
-    for (size_t i = 0; i < awk_streams_cnt; i++) {
-        if (fflush(awk_streams[i].fp) != 0) rc = -1;
+    for (size_t i = 0; i < arawk_streams_cnt; i++) {
+        if (fflush(arawk_streams[i].fp) != 0) rc = -1;
     }
     return rc;
 }
 
-static void awk_split_fields(CTX *c);
+static void arawk_split_fields(CTX *c);
 
 // ---------------------------------------------------------------------------
 // Input stream cache (Phase 1.12, getline).  Symmetric to the output
@@ -881,19 +881,19 @@ static FILE *
 arawk_open_input(int mode, VALUE dest)
 {
     char dbuf[256]; size_t dlen;
-    const char *d = awk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
+    const char *d = arawk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
     char *path = (char *)alloca(dlen + 1);
     memcpy(path, d, dlen); path[dlen] = '\0';
 
-    for (size_t i = 0; i < awk_inputs_cnt; i++) {
-        if (awk_inputs[i].mode == mode && strcmp(awk_inputs[i].dest, path) == 0) {
-            return awk_inputs[i].fp;
+    for (size_t i = 0; i < arawk_inputs_cnt; i++) {
+        if (arawk_inputs[i].mode == mode && strcmp(arawk_inputs[i].dest, path) == 0) {
+            return arawk_inputs[i].fp;
         }
     }
-    if (awk_inputs_cnt >= awk_inputs_capa) {
-        size_t cap = awk_inputs_capa ? awk_inputs_capa * 2 : 8;
-        awk_inputs = (struct awk_stream *)realloc(awk_inputs, sizeof(struct awk_stream) * cap);
-        awk_inputs_capa = cap;
+    if (arawk_inputs_cnt >= arawk_inputs_capa) {
+        size_t cap = arawk_inputs_capa ? arawk_inputs_capa * 2 : 8;
+        arawk_inputs = (struct awk_stream *)realloc(arawk_inputs, sizeof(struct awk_stream) * cap);
+        arawk_inputs_capa = cap;
     }
     FILE *f = NULL;
     bool is_pipe = false;
@@ -902,14 +902,14 @@ arawk_open_input(int mode, VALUE dest)
     if (!f) return NULL;     // getline can fail → return -1 to caller
     char *dst_copy = (char *)malloc(dlen + 1);
     memcpy(dst_copy, path, dlen + 1);
-    awk_inputs[awk_inputs_cnt++] = (struct awk_stream){ mode, dst_copy, f, is_pipe };
+    arawk_inputs[arawk_inputs_cnt++] = (struct awk_stream){ mode, dst_copy, f, is_pipe };
     return f;
 }
 
 // Read one RS-delimited record into a growable buffer.  Default RS
 // is "\n"; multi-char RS (regex) lands in Phase 2 with astrogre.
 int
-awk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa)
+arawk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa)
 {
     if (!fp) return -1;
     size_t len = 0;
@@ -939,7 +939,7 @@ awk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa)
 }
 
 // Open the next input file if necessary; returns the current FILE *,
-// or NULL at EOF across all inputs.  Adapted from awk_input_next_record's
+// or NULL at EOF across all inputs.  Adapted from arawk_input_next_record's
 // internal logic.
 static FILE *
 arawk_cur_input(CTX *c)
@@ -949,7 +949,7 @@ arawk_cur_input(CTX *c)
             if (c->cur_input_idx == 0) {
                 c->cur_input = stdin;
                 c->cur_input_idx = 1;
-                c->env[AWK_GLOB_FILENAME] = awk_make_string("", 0);
+                c->env[AWK_GLOB_FILENAME] = arawk_make_string("", 0);
             }
             return c->cur_input;
         }
@@ -958,7 +958,7 @@ arawk_cur_input(CTX *c)
             FILE *f = (strcmp(path, "-") == 0) ? stdin : fopen(path, "rb");
             if (!f) { fprintf(stderr, "arawk: cannot open `%s`\n", path); continue; }
             c->cur_input = f;
-            c->env[AWK_GLOB_FILENAME] = awk_make_string(path, strlen(path));
+            c->env[AWK_GLOB_FILENAME] = arawk_make_string(path, strlen(path));
             c->env[AWK_GLOB_FNR] = AWK_FIX(0);
             break;
         }
@@ -984,18 +984,18 @@ arawk_install_record(CTX *c, const char *line, size_t len, bool bump_counters)
         c->env[AWK_GLOB_NR]  = AWK_FIX(nr + 1);
         c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
     }
-    awk_split_fields(c);
+    arawk_split_fields(c);
 }
 
 int
-awk_getline_cur(CTX *c, VALUE *out_line)
+arawk_getline_cur(CTX *c, VALUE *out_line)
 {
     (void)out_line;
     static char *buf = NULL; static size_t cap = 0; size_t len = 0;
     for (;;) {
         FILE *fp = arawk_cur_input(c);
         if (!fp) return 0;
-        int rc = awk_read_record_into(fp, &buf, &len, &cap);
+        int rc = arawk_read_record_into(fp, &buf, &len, &cap);
         if (rc == 1) {
             arawk_install_record(c, buf, len, true);
             return 1;
@@ -1009,19 +1009,19 @@ awk_getline_cur(CTX *c, VALUE *out_line)
 }
 
 int
-awk_getline_cur_var(CTX *c, VALUE *out_line)
+arawk_getline_cur_var(CTX *c, VALUE *out_line)
 {
     static char *buf = NULL; static size_t cap = 0; size_t len = 0;
     for (;;) {
         FILE *fp = arawk_cur_input(c);
         if (!fp) return 0;
-        int rc = awk_read_record_into(fp, &buf, &len, &cap);
+        int rc = arawk_read_record_into(fp, &buf, &len, &cap);
         if (rc == 1) {
             int64_t nr  = AWK_IS_FIX(c->env[AWK_GLOB_NR])  ? AWK_FIX_VAL(c->env[AWK_GLOB_NR])  : 0;
             int64_t fnr = AWK_IS_FIX(c->env[AWK_GLOB_FNR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_FNR]) : 0;
             c->env[AWK_GLOB_NR]  = AWK_FIX(nr + 1);
             c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
-            *out_line = awk_make_strnum(buf, len);
+            *out_line = arawk_make_strnum(buf, len);
             return 1;
         }
         if (rc < 0) return -1;
@@ -1032,68 +1032,68 @@ awk_getline_cur_var(CTX *c, VALUE *out_line)
 }
 
 int
-awk_getline_file(CTX *c, VALUE dest)
+arawk_getline_file(CTX *c, VALUE dest)
 {
     FILE *fp = arawk_open_input('i', dest);
     if (!fp) return -1;
     static char *buf = NULL; static size_t cap = 0; size_t len = 0;
-    int rc = awk_read_record_into(fp, &buf, &len, &cap);
+    int rc = arawk_read_record_into(fp, &buf, &len, &cap);
     if (rc != 1) return rc;
     arawk_install_record(c, buf, len, false);  // file getline: NR/FNR not bumped
     return 1;
 }
 
 int
-awk_getline_file_var(CTX *c, VALUE dest, VALUE *out_line)
+arawk_getline_file_var(CTX *c, VALUE dest, VALUE *out_line)
 {
     (void)c;
     FILE *fp = arawk_open_input('i', dest);
     if (!fp) return -1;
     static char *buf = NULL; static size_t cap = 0; size_t len = 0;
-    int rc = awk_read_record_into(fp, &buf, &len, &cap);
+    int rc = arawk_read_record_into(fp, &buf, &len, &cap);
     if (rc != 1) return rc;
-    *out_line = awk_make_strnum(buf, len);
+    *out_line = arawk_make_strnum(buf, len);
     return 1;
 }
 
 int
-awk_getline_cmd(CTX *c, VALUE cmd)
+arawk_getline_cmd(CTX *c, VALUE cmd)
 {
     FILE *fp = arawk_open_input('r', cmd);
     if (!fp) return -1;
     static char *buf = NULL; static size_t cap = 0; size_t len = 0;
-    int rc = awk_read_record_into(fp, &buf, &len, &cap);
+    int rc = arawk_read_record_into(fp, &buf, &len, &cap);
     if (rc != 1) return rc;
     arawk_install_record(c, buf, len, false);
     return 1;
 }
 
 int
-awk_getline_cmd_var(CTX *c, VALUE cmd, VALUE *out_line)
+arawk_getline_cmd_var(CTX *c, VALUE cmd, VALUE *out_line)
 {
     (void)c;
     FILE *fp = arawk_open_input('r', cmd);
     if (!fp) return -1;
     static char *buf = NULL; static size_t cap = 0; size_t len = 0;
-    int rc = awk_read_record_into(fp, &buf, &len, &cap);
+    int rc = arawk_read_record_into(fp, &buf, &len, &cap);
     if (rc != 1) return rc;
-    *out_line = awk_make_strnum(buf, len);
+    *out_line = arawk_make_strnum(buf, len);
     return 1;
 }
 
 int
-awk_fflush_stream(VALUE dest)
+arawk_fflush_stream(VALUE dest)
 {
     char dbuf[256]; size_t dlen;
-    const char *d = awk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
-    if (dlen == 0) return awk_fflush_all();
+    const char *d = arawk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
+    if (dlen == 0) return arawk_fflush_all();
     char *path = (char *)alloca(dlen + 1);
     memcpy(path, d, dlen); path[dlen] = '\0';
     // awk historical: fflush("stdout") / "stderr" → those streams.
     if (strcmp(path, "stdout") == 0) return fflush(stdout);
     if (strcmp(path, "stderr") == 0) return fflush(stderr);
-    for (size_t i = 0; i < awk_streams_cnt; i++) {
-        if (strcmp(awk_streams[i].dest, path) == 0) return fflush(awk_streams[i].fp);
+    for (size_t i = 0; i < arawk_streams_cnt; i++) {
+        if (strcmp(arawk_streams[i].dest, path) == 0) return fflush(arawk_streams[i].fp);
     }
     return -1;
 }
@@ -1103,19 +1103,19 @@ awk_fflush_stream(VALUE dest)
 // ---------------------------------------------------------------------------
 
 VALUE
-awk_get_nr(const CTX *c)
+arawk_get_nr(const CTX *c)
 {
     return c->env[AWK_GLOB_NR];
 }
 
 VALUE
-awk_get_nf(const CTX *c)
+arawk_get_nf(const CTX *c)
 {
     return c->env[AWK_GLOB_NF];
 }
 
 void
-awk_set_nr(CTX *c, VALUE v)
+arawk_set_nr(CTX *c, VALUE v)
 {
     c->env[AWK_GLOB_NR] = v;
 }
@@ -1125,17 +1125,17 @@ awk_set_nr(CTX *c, VALUE v)
 //   N < NF: drop trailing fields, rebuild $0
 //   N == NF: no-op
 //   N < 0:  error
-static void awk_rebuild_record(CTX *c);
+static void arawk_rebuild_record(CTX *c);
 
 void
-awk_set_nf(CTX *c, VALUE v)
+arawk_set_nf(CTX *c, VALUE v)
 {
-    int64_t new_nf = AWK_IS_FIX(v) ? AWK_FIX_VAL(v) : (int64_t)awk_to_num(v);
+    int64_t new_nf = AWK_IS_FIX(v) ? AWK_FIX_VAL(v) : (int64_t)arawk_to_num(v);
     if (new_nf < 0) {
         fprintf(stderr, "arawk: NF cannot be negative\n");
         exit(2);
     }
-    awk_split_fields(c);
+    arawk_split_fields(c);
     if ((int)new_nf > c->rec.fields_capa) {
         int cap = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8;
         while (cap < (int)new_nf) cap *= 2;
@@ -1144,10 +1144,10 @@ awk_set_nf(CTX *c, VALUE v)
         c->rec.fields = nf;
         c->rec.fields_capa = cap;
     }
-    for (int i = c->rec.nf; i < (int)new_nf; i++) c->rec.fields[i] = awk_make_string("", 0);
+    for (int i = c->rec.nf; i < (int)new_nf; i++) c->rec.fields[i] = arawk_make_string("", 0);
     c->rec.nf = (int)new_nf;
     c->env[AWK_GLOB_NF] = AWK_FIX(new_nf);
-    awk_rebuild_record(c);
+    arawk_rebuild_record(c);
 }
 
 // Phase 0+1 default FS = " " (awk's "any run of whitespace,
@@ -1160,7 +1160,7 @@ awk_set_nf(CTX *c, VALUE v)
 // per field which libgc collects cheaply.  Phase 2 can split lazily
 // for $N while still pre-computing NF.
 static void
-awk_split_fields(CTX *c)
+arawk_split_fields(CTX *c)
 {
     if (c->rec.fields_split) return;
     c->rec.fields_split = true;
@@ -1168,7 +1168,7 @@ awk_split_fields(CTX *c)
     // Read FS from env (slot 2).  Default to " ".
     VALUE fsv = c->env[AWK_GLOB_FS];
     char fsbuf[32]; size_t fslen;
-    const char *fs = awk_to_cstr(fsv, fsbuf, sizeof fsbuf, &fslen);
+    const char *fs = arawk_to_cstr(fsv, fsbuf, sizeof fsbuf, &fslen);
     bool fs_default = (fslen == 1 && fs[0] == ' ');
 
     const char *r = c->rec.record;
@@ -1195,7 +1195,7 @@ awk_split_fields(CTX *c)
             size_t start = i;
             while (i < rlen && !isspace((unsigned char)r[i])) i++;
             GROW_IF_NEEDED();
-            c->rec.fields[nf++] = awk_make_strnum(r + start, i - start);
+            c->rec.fields[nf++] = arawk_make_strnum(r + start, i - start);
         }
     }
     else if (fslen == 1) {
@@ -1204,14 +1204,14 @@ awk_split_fields(CTX *c)
         while (i < rlen) {
             if (r[i] == sep) {
                 GROW_IF_NEEDED();
-                c->rec.fields[nf++] = awk_make_strnum(r + start, i - start);
+                c->rec.fields[nf++] = arawk_make_strnum(r + start, i - start);
                 i++;
                 start = i;
             }
             else i++;
         }
         GROW_IF_NEEDED();
-        c->rec.fields[nf++] = awk_make_strnum(r + start, rlen - start);
+        c->rec.fields[nf++] = arawk_make_strnum(r + start, rlen - start);
     }
     else {
         // Multi-char FS: regex split (Phase 2).  For now treat as
@@ -1220,14 +1220,14 @@ awk_split_fields(CTX *c)
         while (i + fslen <= rlen) {
             if (memcmp(r + i, fs, fslen) == 0) {
                 GROW_IF_NEEDED();
-                c->rec.fields[nf++] = awk_make_strnum(r + start, i - start);
+                c->rec.fields[nf++] = arawk_make_strnum(r + start, i - start);
                 i += fslen;
                 start = i;
             }
             else i++;
         }
         GROW_IF_NEEDED();
-        c->rec.fields[nf++] = awk_make_strnum(r + start, rlen - start);
+        c->rec.fields[nf++] = arawk_make_strnum(r + start, rlen - start);
     }
     #undef GROW_IF_NEEDED
 
@@ -1236,46 +1236,46 @@ awk_split_fields(CTX *c)
 }
 
 VALUE
-awk_get_field(CTX *c, int64_t n)
+arawk_get_field(CTX *c, int64_t n)
 {
     if (n == 0) {
         if (c->rec.record_v) return c->rec.record_v;
-        c->rec.record_v = awk_make_strnum(c->rec.record, c->rec.record_len);
+        c->rec.record_v = arawk_make_strnum(c->rec.record, c->rec.record_len);
         return c->rec.record_v;
     }
     if (n < 0) {
         fprintf(stderr, "arawk: negative field index $%lld\n", (long long)n);
         exit(2);
     }
-    awk_split_fields(c);
-    if (n > c->rec.nf) return awk_make_string("", 0);
+    arawk_split_fields(c);
+    if (n > c->rec.nf) return arawk_make_string("", 0);
     return c->rec.fields[n - 1];
 }
 
 VALUE
-awk_get_field_v(CTX *c, VALUE idx)
+arawk_get_field_v(CTX *c, VALUE idx)
 {
     int64_t n;
     if (AWK_IS_FIX(idx)) n = AWK_FIX_VAL(idx);
-    else                 n = (int64_t)awk_to_num(idx);
-    return awk_get_field(c, n);
+    else                 n = (int64_t)arawk_to_num(idx);
+    return arawk_get_field(c, n);
 }
 
 // Rebuild $0 from the current fields[] using OFS.  Called lazily
 // after a $N (N>0) assignment, when the next reader of $0 wants the
 // updated record.  Sets c->rec.record / record_v / record_len.
 static void
-awk_rebuild_record(CTX *c)
+arawk_rebuild_record(CTX *c)
 {
-    awk_split_fields(c);  // ensure fields populated
+    arawk_split_fields(c);  // ensure fields populated
     VALUE ofs_v = c->env[AWK_GLOB_OFS];
     char obuf[32]; size_t olen;
-    const char *ofs = awk_to_cstr(ofs_v, obuf, sizeof obuf, &olen);
+    const char *ofs = arawk_to_cstr(ofs_v, obuf, sizeof obuf, &olen);
     // Estimate size.
     size_t total = 0;
     for (int i = 0; i < c->rec.nf; i++) {
         char fbuf[64]; size_t flen;
-        (void)awk_to_cstr(c->rec.fields[i], fbuf, sizeof fbuf, &flen);
+        (void)arawk_to_cstr(c->rec.fields[i], fbuf, sizeof fbuf, &flen);
         total += flen;
     }
     if (c->rec.nf > 0) total += (size_t)(c->rec.nf - 1) * olen;
@@ -1284,7 +1284,7 @@ awk_rebuild_record(CTX *c)
     for (int i = 0; i < c->rec.nf; i++) {
         if (i) { memcpy(buf + k, ofs, olen); k += olen; }
         char fbuf[64]; size_t flen;
-        const char *fs = awk_to_cstr(c->rec.fields[i], fbuf, sizeof fbuf, &flen);
+        const char *fs = arawk_to_cstr(c->rec.fields[i], fbuf, sizeof fbuf, &flen);
         memcpy(buf + k, fs, flen); k += flen;
     }
     buf[k] = '\0';
@@ -1294,7 +1294,7 @@ awk_rebuild_record(CTX *c)
 }
 
 void
-awk_set_field(CTX *c, int64_t n, VALUE v)
+arawk_set_field(CTX *c, int64_t n, VALUE v)
 {
     if (n < 0) {
         fprintf(stderr, "arawk: negative field index $%lld\n", (long long)n);
@@ -1303,7 +1303,7 @@ awk_set_field(CTX *c, int64_t n, VALUE v)
     if (n == 0) {
         // $0 = ...: store new record and clear field split.
         char buf[64]; size_t len;
-        const char *s = awk_to_cstr(v, buf, sizeof buf, &len);
+        const char *s = arawk_to_cstr(v, buf, sizeof buf, &len);
         char *nb = (char *)GC_malloc_atomic(len + 1);
         memcpy(nb, s, len);
         nb[len] = '\0';
@@ -1313,12 +1313,12 @@ awk_set_field(CTX *c, int64_t n, VALUE v)
         c->rec.fields_split = false;
         c->rec.nf = 0;
         // Re-split so NF is up to date.
-        awk_split_fields(c);
+        arawk_split_fields(c);
         return;
     }
     // $N = ... — make sure fields[] exists, grow if needed, set the
     // element, rebuild $0 lazily.
-    awk_split_fields(c);
+    arawk_split_fields(c);
     if ((int)n > c->rec.fields_capa) {
         int new_capa = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8;
         while (new_capa < (int)n) new_capa *= 2;
@@ -1329,14 +1329,14 @@ awk_set_field(CTX *c, int64_t n, VALUE v)
     }
     // Pad intervening fields with empty strings.
     for (int i = c->rec.nf; i < (int)n - 1; i++) {
-        c->rec.fields[i] = awk_make_string("", 0);
+        c->rec.fields[i] = arawk_make_string("", 0);
     }
     c->rec.fields[n - 1] = v;
     if ((int)n > c->rec.nf) {
         c->rec.nf = (int)n;
         c->env[AWK_GLOB_NF] = AWK_FIX(c->rec.nf);
     }
-    awk_rebuild_record(c);
+    arawk_rebuild_record(c);
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,7 +1344,7 @@ awk_set_field(CTX *c, int64_t n, VALUE v)
 // ---------------------------------------------------------------------------
 
 static bool
-awk_open_next_input(CTX *c)
+arawk_open_next_input(CTX *c)
 {
     if (c->cur_input && c->cur_input != stdin) {
         fclose(c->cur_input);
@@ -1354,7 +1354,7 @@ awk_open_next_input(CTX *c)
         if (c->cur_input_idx == 0) {
             c->cur_input = stdin;
             c->cur_input_idx = 1;
-            c->env[AWK_GLOB_FILENAME] = awk_make_string("", 0);
+            c->env[AWK_GLOB_FILENAME] = arawk_make_string("", 0);
             return true;
         }
         return false;
@@ -1369,7 +1369,7 @@ awk_open_next_input(CTX *c)
             continue;
         }
         c->cur_input = f;
-        c->env[AWK_GLOB_FILENAME] = awk_make_string(path, strlen(path));
+        c->env[AWK_GLOB_FILENAME] = arawk_make_string(path, strlen(path));
         c->env[AWK_GLOB_FNR] = AWK_FIX(0);
         return true;
     }
@@ -1377,12 +1377,12 @@ awk_open_next_input(CTX *c)
 }
 
 bool
-awk_input_next_record(CTX *c)
+arawk_input_next_record(CTX *c)
 {
     // Default RS = "\n" — read line-by-line.  Phase 2: regex RS, RS="".
     if (c->input_done) return false;
     if (!c->cur_input) {
-        if (!awk_open_next_input(c)) { c->input_done = true; return false; }
+        if (!arawk_open_next_input(c)) { c->input_done = true; return false; }
     }
 
     // Grow record buffer on demand.
@@ -1394,7 +1394,7 @@ awk_input_next_record(CTX *c)
         int ch = fgetc(c->cur_input);
         if (ch == EOF) {
             if (len > 0) break;
-            if (!awk_open_next_input(c)) { c->input_done = true; return false; }
+            if (!arawk_open_next_input(c)) { c->input_done = true; return false; }
             continue;
         }
         if (ch == '\n') break;
@@ -1429,7 +1429,7 @@ awk_input_next_record(CTX *c)
     c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
 
     // Eagerly split — NF must be readable before any $N access.
-    awk_split_fields(c);
+    arawk_split_fields(c);
     return true;
 }
 
@@ -1438,84 +1438,84 @@ awk_input_next_record(CTX *c)
 // ---------------------------------------------------------------------------
 
 VALUE
-awk_add_slow(VALUE a, VALUE b)
+arawk_add_slow(VALUE a, VALUE b)
 {
-    return awk_make_float(awk_to_num(a) + awk_to_num(b));
+    return arawk_make_float(arawk_to_num(a) + arawk_to_num(b));
 }
 
 VALUE
-awk_sub_slow(VALUE a, VALUE b)
+arawk_sub_slow(VALUE a, VALUE b)
 {
-    return awk_make_float(awk_to_num(a) - awk_to_num(b));
+    return arawk_make_float(arawk_to_num(a) - arawk_to_num(b));
 }
 
 VALUE
-awk_mul_slow(VALUE a, VALUE b)
+arawk_mul_slow(VALUE a, VALUE b)
 {
-    return awk_make_float(awk_to_num(a) * awk_to_num(b));
+    return arawk_make_float(arawk_to_num(a) * arawk_to_num(b));
 }
 
 VALUE
-awk_div_slow(VALUE a, VALUE b)
+arawk_div_slow(VALUE a, VALUE b)
 {
-    double db = awk_to_num(b);
+    double db = arawk_to_num(b);
     if (db == 0.0) {
         fprintf(stderr, "arawk: division by zero\n");
         exit(2);
     }
-    return awk_make_float(awk_to_num(a) / db);
+    return arawk_make_float(arawk_to_num(a) / db);
 }
 
 VALUE
-awk_mod_slow(VALUE a, VALUE b)
+arawk_mod_slow(VALUE a, VALUE b)
 {
-    double db = awk_to_num(b);
+    double db = arawk_to_num(b);
     if (db == 0.0) {
         fprintf(stderr, "arawk: division by zero in %%\n");
         exit(2);
     }
-    return awk_make_float(fmod(awk_to_num(a), db));
+    return arawk_make_float(fmod(arawk_to_num(a), db));
 }
 
 VALUE
-awk_pow_slow(VALUE a, VALUE b)
+arawk_pow_slow(VALUE a, VALUE b)
 {
-    return awk_make_float(pow(awk_to_num(a), awk_to_num(b)));
+    return arawk_make_float(pow(arawk_to_num(a), arawk_to_num(b)));
 }
 
 VALUE
-awk_neg_slow(VALUE a)
+arawk_neg_slow(VALUE a)
 {
-    return awk_make_float(-awk_to_num(a));
+    return arawk_make_float(-arawk_to_num(a));
 }
 
 // rand / srand — process-global LCG state.  POSIX: rand returns [0,1).
-static int64_t awk_rand_seed = 0;
-static bool    awk_rand_seeded = false;
+static int64_t arawk_rand_seed = 0;
+static bool    arawk_rand_seeded = false;
 
 double
-awk_rand(void)
+arawk_rand(void)
 {
-    if (!awk_rand_seeded) { srand((unsigned)time(NULL)); awk_rand_seeded = true; }
+    if (!arawk_rand_seeded) { srand((unsigned)time(NULL)); arawk_rand_seeded = true; }
     return (double)rand() / ((double)RAND_MAX + 1.0);
 }
 
 int64_t
-awk_srand(int64_t seed)
+arawk_srand(int64_t seed)
 {
-    int64_t prev = awk_rand_seed;
-    awk_rand_seed = seed;
-    awk_rand_seeded = true;
+    int64_t prev = arawk_rand_seed;
+    arawk_rand_seed = seed;
+    arawk_rand_seeded = true;
     srand((unsigned)seed);
     return prev;
 }
 
 int64_t
-awk_srand_time(void)
+arawk_srand_time(void)
 {
-    int64_t prev = awk_rand_seed;
-    awk_rand_seed = (int64_t)time(NULL);
-    awk_rand_seeded = true;
-    srand((unsigned)awk_rand_seed);
+    int64_t prev = arawk_rand_seed;
+    arawk_rand_seed = (int64_t)time(NULL);
+    arawk_rand_seeded = true;
+    srand((unsigned)arawk_rand_seed);
     return prev;
 }

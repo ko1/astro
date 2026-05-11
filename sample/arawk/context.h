@@ -76,7 +76,7 @@ extern struct awk_obj AWK_UNINIT_OBJ;
 #define AWK_UNINIT  AWK_OBJ_VAL(&AWK_UNINIT_OBJ)
 
 // Thread-local-ish pointer to the active CTX.  Set by main.c right
-// after create_context.  Runtime helpers like awk_to_cstr read
+// after create_context.  Runtime helpers like arawk_to_cstr read
 // CONVFMT / OFMT from `ARAWK_CURRENT_CTX->env[...]` without having
 // to plumb a CTX through every call site.  Single-CTX program model;
 // fine for our embedding.
@@ -84,31 +84,31 @@ struct CTX_struct;
 extern struct CTX_struct *ARAWK_CURRENT_CTX;
 
 // Allocators (runtime.c).
-struct awk_obj *awk_alloc(int type);
-VALUE awk_make_float (double d);
-VALUE awk_make_int   (int64_t v);                  // fixnum if fits, else heap float
-VALUE awk_make_string(const char *s, size_t len);  // type = AWK_T_STRING
-VALUE awk_make_strnum(const char *s, size_t len);  // type = AWK_T_STRNUM (field values)
-VALUE awk_make_array (void);
+struct awk_obj *arawk_alloc(int type);
+VALUE arawk_make_float (double d);
+VALUE arawk_make_int   (int64_t v);                  // fixnum if fits, else heap float
+VALUE arawk_make_string(const char *s, size_t len);  // type = AWK_T_STRING
+VALUE arawk_make_strnum(const char *s, size_t len);  // type = AWK_T_STRNUM (field values)
+VALUE arawk_make_array (void);
 
 // Coercions / accessors.  awk's number/string duality: every value has
 // both a numeric and string view.  Fields and getline input are
 // "string-numeric" (strnum) — they coerce to number if the shape is
 // numeric, otherwise behave as plain strings.
-double      awk_to_num   (VALUE v);
-const char *awk_to_cstr  (VALUE v, char *buf, size_t buflen, size_t *out_len);
-VALUE       awk_to_string(VALUE v);  // forces a STRING VALUE
+double      arawk_to_num   (VALUE v);
+const char *arawk_to_cstr  (VALUE v, char *buf, size_t buflen, size_t *out_len);
+VALUE       arawk_to_string(VALUE v);  // forces a STRING VALUE
 
 // Equality / comparison.  awk's comparison rule: if both operands are
 // numeric (or strnum-with-numeric-shape), compare as numbers; else as
 // strings.
-bool awk_eq(VALUE a, VALUE b);
-int  awk_cmp(VALUE a, VALUE b);
+bool arawk_eq(VALUE a, VALUE b);
+int  arawk_cmp(VALUE a, VALUE b);
 
 // Truthiness: awk's `if (x)` is true iff x is non-zero numeric or
 // non-empty string.  Uninitialised → false.
 static inline bool
-awk_is_truthy(VALUE v)
+arawk_is_truthy(VALUE v)
 {
     if (LIKELY(AWK_IS_FIX(v))) return AWK_FIX_VAL(v) != 0;
     if (v == AWK_UNINIT) return false;
@@ -127,58 +127,58 @@ awk_is_truthy(VALUE v)
 }
 
 // Associative array operations.
-VALUE awk_arr_get(VALUE arr, const char *key, size_t key_len);
-void  awk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val);
-bool  awk_arr_has(VALUE arr, const char *key, size_t key_len);
-void  awk_arr_del(VALUE arr, const char *key, size_t key_len);
+VALUE arawk_arr_get(VALUE arr, const char *key, size_t key_len);
+void  arawk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val);
+bool  arawk_arr_has(VALUE arr, const char *key, size_t key_len);
+void  arawk_arr_del(VALUE arr, const char *key, size_t key_len);
 
 // String operations.
-VALUE awk_concat(VALUE a, VALUE b);
-VALUE awk_substr (VALUE s, int64_t pos, int64_t len);  // 1-based pos
-VALUE awk_substr2(VALUE s, int64_t pos);                // to end
-size_t awk_length(VALUE v);
-int64_t awk_index(VALUE haystack, VALUE needle);        // 1-based, 0 not found
-VALUE awk_tolower(VALUE v);
-VALUE awk_toupper(VALUE v);
+VALUE arawk_concat(VALUE a, VALUE b);
+VALUE arawk_substr (VALUE s, int64_t pos, int64_t len);  // 1-based pos
+VALUE arawk_substr2(VALUE s, int64_t pos);                // to end
+size_t arawk_length(VALUE v);
+int64_t arawk_index(VALUE haystack, VALUE needle);        // 1-based, 0 not found
+VALUE arawk_tolower(VALUE v);
+VALUE arawk_toupper(VALUE v);
 
-// printf-style formatting.  `awk_sprintf_v` builds a fresh STRING
-// VALUE from `(fmt, args[])`; `awk_printf` writes it to fp.
-VALUE awk_sprintf_v(VALUE fmt, VALUE *args, size_t nargs);
-void  awk_printf(FILE *fp, VALUE fmt, VALUE *args, size_t nargs);
+// printf-style formatting.  `arawk_sprintf_v` builds a fresh STRING
+// VALUE from `(fmt, args[])`; `arawk_printf` writes it to fp.
+VALUE arawk_sprintf_v(VALUE fmt, VALUE *args, size_t nargs);
+void  arawk_printf(FILE *fp, VALUE fmt, VALUE *args, size_t nargs);
 
 // split(s, arr, sep) — destructively populates arr (slot index resolved
 // by parser) with the parts of s using sep.  Returns number of parts.
 // If sep is empty, default FS is used.
-int64_t awk_split(VALUE s, VALUE arr, VALUE sep);
+int64_t arawk_split(VALUE s, VALUE arr, VALUE sep);
 
 // `int(x)` — truncate toward zero.
-VALUE awk_int(VALUE v);
+VALUE arawk_int(VALUE v);
 
 // Output.
-void  awk_print_value(FILE *fp, VALUE v);                // OFMT-aware
-void  awk_print_record(FILE *fp, VALUE *items, size_t n,
+void  arawk_print_value(FILE *fp, VALUE v);                // OFMT-aware
+void  arawk_print_record(FILE *fp, VALUE *items, size_t n,
                        const char *ofs, size_t ofs_len,
                        const char *ors, size_t ors_len);
 
-// Output stream cache (Phase 1.9).  `awk_open_*` looks up a cached
+// Output stream cache (Phase 1.9).  `arawk_open_*` looks up a cached
 // FILE * by (mode, dest-string) or opens a new one.  At program exit,
-// `awk_close_all_streams` flushes and pcloses/fcloses each.
+// `arawk_close_all_streams` flushes and pcloses/fcloses each.
 //
 //   mode 'w': popen(dest, "w")           — pipe output
 //   mode 'o': fopen(dest, "w")           — overwrite file
 //   mode 'a': fopen(dest, "a")           — append to file
-FILE *awk_open_stream(int mode, VALUE dest);
-void  awk_close_all_streams(void);
+FILE *arawk_open_stream(int mode, VALUE dest);
+void  arawk_close_all_streams(void);
 
 // `close(name)` — flush + close one previously-opened stream by name.
 // Returns 0 on success, -1 if no stream named `dest` is open.
-int   awk_close_stream(VALUE dest);
+int   arawk_close_stream(VALUE dest);
 
 // `fflush()` / `fflush("")` / `fflush(name)`.  Empty / no arg flushes
 // stdout and all open output streams; a name flushes just that one.
 // Returns 0 on success, -1 if name doesn't refer to an open stream.
-int   awk_fflush_all(void);
-int   awk_fflush_stream(VALUE dest);
+int   arawk_fflush_all(void);
+int   arawk_fflush_stream(VALUE dest);
 
 // ---------------------------------------------------------------------------
 // 2-register RESULT (modeled on naruby / castro / astr).  awk control
@@ -235,7 +235,7 @@ void code_repo_add(const char *name, struct Node *body, bool force_add);
 extern struct awk_option OPTION;
 
 // Per-record runtime state.  Fields are split lazily — on first
-// access, awk_ensure_fields(c) populates `fields[]` from `record`
+// access, arawk_ensure_fields(c) populates `fields[]` from `record`
 // using FS.  Writes to $N or NF rebuild `record` from fields using
 // OFS.  $0 is `record_v` when valid, else freshly built.
 struct awk_record {
@@ -268,8 +268,8 @@ struct awk_record {
 #define AWK_GLOB_ARGV      15
 #define AWK_GLOB_RESERVED  16     // first user slot
 
-// User-defined function (Phase 1.8).  Registered by arawk_node_def at
-// program startup; looked up by arawk_node_call_user via name.
+// User-defined function (Phase 1.8).  Registered by node_def at
+// program startup; looked up by node_call_user via name.
 struct function_entry {
     const char  *name;
     struct Node *body;
@@ -292,35 +292,35 @@ typedef struct CTX_struct {
     bool         input_done;
 } CTX;
 
-// Side table for variadic-arity nodes (e.g. arawk_node_print with N items).
+// Side table for variadic-arity nodes (e.g. node_print with N items).
 // Same convention as astr / pystro: parser packs NODE pointers into a
 // flat array and the operand stores (base_idx, count).
 extern struct Node **ARAWK_NODE_TABLE;
 extern uint32_t      ARAWK_NODE_TABLE_LEN;
 
 // Max number of slots in a single user-function frame (params + extra
-// locals).  Must match the VLA size used in arawk_node_call_user.
+// locals).  Must match the VLA size used in node_call_user.
 #define ARAWK_FRAME_MAX 64
 
 // Special-variable access helpers used by node_eval / runtime.
-VALUE awk_get_nr (const CTX *c);
-VALUE awk_get_nf (const CTX *c);
-VALUE awk_get_field (CTX *c, int64_t n);   // $0 / $N
-VALUE awk_get_field_v (CTX *c, VALUE idx); // $(expr)
-void  awk_set_nr (CTX *c, VALUE v);
-void  awk_set_nf (CTX *c, VALUE v);
-void  awk_set_field (CTX *c, int64_t n, VALUE v);
+VALUE arawk_get_nr (const CTX *c);
+VALUE arawk_get_nf (const CTX *c);
+VALUE arawk_get_field (CTX *c, int64_t n);   // $0 / $N
+VALUE arawk_get_field_v (CTX *c, VALUE idx); // $(expr)
+void  arawk_set_nr (CTX *c, VALUE v);
+void  arawk_set_nf (CTX *c, VALUE v);
+void  arawk_set_field (CTX *c, int64_t n, VALUE v);
 
 // Input loop: read one record from current input source into c->rec.
 // Returns false on EOF (across all input files).  Updates NR / FNR /
 // FILENAME / $0 / NF.  Field splitting happens lazily.
-bool awk_input_next_record(CTX *c);
+bool arawk_input_next_record(CTX *c);
 
 // `getline` low-level read.  Reads one record (RS-delimited) into a
 // caller-supplied growable buffer.  Returns 1 on success, 0 at EOF,
 // -1 on I/O error.  The buffer is owned by the caller and reused
 // across calls; pass `*buf_capa = 0` on first call to allocate.
-int awk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa);
+int arawk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa);
 
 // `getline` builtins — six forms (POSIX) covering current-input /
 // file / cmd × $0-or-var.  Each returns 1 on read, 0 on EOF, -1 on
@@ -332,26 +332,26 @@ int awk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa
 //   getline var < file  →                  (var = line)
 //   cmd | getline       →           NF $0
 //   cmd | getline var   →                  (var = line)
-int awk_getline_cur     (CTX *c, VALUE *out_line);     // out_line ignored (sets $0)
-int awk_getline_cur_var (CTX *c, VALUE *out_line);     // out_line ← line as STRNUM
-int awk_getline_file    (CTX *c, VALUE dest);          // $0
-int awk_getline_file_var(CTX *c, VALUE dest, VALUE *out_line);
-int awk_getline_cmd     (CTX *c, VALUE cmd);           // $0
-int awk_getline_cmd_var (CTX *c, VALUE cmd, VALUE *out_line);
+int arawk_getline_cur     (CTX *c, VALUE *out_line);     // out_line ignored (sets $0)
+int arawk_getline_cur_var (CTX *c, VALUE *out_line);     // out_line ← line as STRNUM
+int arawk_getline_file    (CTX *c, VALUE dest);          // $0
+int arawk_getline_file_var(CTX *c, VALUE dest, VALUE *out_line);
+int arawk_getline_cmd     (CTX *c, VALUE cmd);           // $0
+int arawk_getline_cmd_var (CTX *c, VALUE cmd, VALUE *out_line);
 
 // Slow paths for arithmetic.  Inline fast paths below check fixnum-
 // fixnum first; everything else (string-numeric coercion, float, etc.)
 // goes through the slow path.
-VALUE awk_add_slow(VALUE a, VALUE b);
-VALUE awk_sub_slow(VALUE a, VALUE b);
-VALUE awk_mul_slow(VALUE a, VALUE b);
-VALUE awk_div_slow(VALUE a, VALUE b);
-VALUE awk_mod_slow(VALUE a, VALUE b);
-VALUE awk_pow_slow(VALUE a, VALUE b);
-VALUE awk_neg_slow(VALUE a);
+VALUE arawk_add_slow(VALUE a, VALUE b);
+VALUE arawk_sub_slow(VALUE a, VALUE b);
+VALUE arawk_mul_slow(VALUE a, VALUE b);
+VALUE arawk_div_slow(VALUE a, VALUE b);
+VALUE arawk_mod_slow(VALUE a, VALUE b);
+VALUE arawk_pow_slow(VALUE a, VALUE b);
+VALUE arawk_neg_slow(VALUE a);
 
 static inline VALUE
-awk_add(VALUE a, VALUE b)
+arawk_add(VALUE a, VALUE b)
 {
     if (LIKELY(AWK_IS_FIX(a) & AWK_IS_FIX(b))) {
         int64_t la = AWK_FIX_VAL(a), lb = AWK_FIX_VAL(b), r;
@@ -360,11 +360,11 @@ awk_add(VALUE a, VALUE b)
             return AWK_FIX(r);
         }
     }
-    return awk_add_slow(a, b);
+    return arawk_add_slow(a, b);
 }
 
 static inline VALUE
-awk_sub(VALUE a, VALUE b)
+arawk_sub(VALUE a, VALUE b)
 {
     if (LIKELY(AWK_IS_FIX(a) & AWK_IS_FIX(b))) {
         int64_t la = AWK_FIX_VAL(a), lb = AWK_FIX_VAL(b), r;
@@ -373,11 +373,11 @@ awk_sub(VALUE a, VALUE b)
             return AWK_FIX(r);
         }
     }
-    return awk_sub_slow(a, b);
+    return arawk_sub_slow(a, b);
 }
 
 static inline VALUE
-awk_mul(VALUE a, VALUE b)
+arawk_mul(VALUE a, VALUE b)
 {
     if (LIKELY(AWK_IS_FIX(a) & AWK_IS_FIX(b))) {
         int64_t la = AWK_FIX_VAL(a), lb = AWK_FIX_VAL(b), r;
@@ -386,22 +386,22 @@ awk_mul(VALUE a, VALUE b)
             return AWK_FIX(r);
         }
     }
-    return awk_mul_slow(a, b);
+    return arawk_mul_slow(a, b);
 }
 
 // awk's `/` is always floating-point; no integer-divide fast path.
-static inline VALUE awk_div(VALUE a, VALUE b) { return awk_div_slow(a, b); }
-static inline VALUE awk_mod(VALUE a, VALUE b) { return awk_mod_slow(a, b); }
-static inline VALUE awk_pow(VALUE a, VALUE b) { return awk_pow_slow(a, b); }
+static inline VALUE arawk_div(VALUE a, VALUE b) { return arawk_div_slow(a, b); }
+static inline VALUE arawk_mod(VALUE a, VALUE b) { return arawk_mod_slow(a, b); }
+static inline VALUE arawk_pow(VALUE a, VALUE b) { return arawk_pow_slow(a, b); }
 
 static inline VALUE
-awk_neg(VALUE a)
+arawk_neg(VALUE a)
 {
     if (LIKELY(AWK_IS_FIX(a))) {
         int64_t la = AWK_FIX_VAL(a);
         if (LIKELY(la != AWK_FIX_MIN)) return AWK_FIX(-la);
     }
-    return awk_neg_slow(a);
+    return arawk_neg_slow(a);
 }
 
 #endif // ARAWK_CONTEXT_H

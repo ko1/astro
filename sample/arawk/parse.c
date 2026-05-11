@@ -1,5 +1,5 @@
 // arawk parser — lexer + recursive-descent / Pratt parser for a POSIX
-// awk subset.  Produces a single `arawk_node_program(begin, main, end)` root.
+// awk subset.  Produces a single `node_program(begin, main, end)` root.
 //
 // Phase 0+1 subset:
 //   program  := item*
@@ -24,21 +24,21 @@
 
 // ---------------------------------------------------------------------------
 // ARAWK_NODE_TABLE — flat NODE pointer table for variadic-arity nodes
-// (arawk_node_print).  Same convention as astr / pystro.
+// (node_print).  Same convention as astr / pystro.
 // ---------------------------------------------------------------------------
 
 NODE     **ARAWK_NODE_TABLE     = NULL;
 uint32_t   ARAWK_NODE_TABLE_LEN = 0;
-static uint32_t arawk_node_table_capa = 0;
+static uint32_t node_table_capa = 0;
 
 static uint32_t
-arawk_node_table_push_n(NODE **items, uint32_t n)
+node_table_push_n(NODE **items, uint32_t n)
 {
-    if (ARAWK_NODE_TABLE_LEN + n > arawk_node_table_capa) {
-        uint32_t capa = arawk_node_table_capa ? arawk_node_table_capa * 2 : 16;
+    if (ARAWK_NODE_TABLE_LEN + n > node_table_capa) {
+        uint32_t capa = node_table_capa ? node_table_capa * 2 : 16;
         while (capa < ARAWK_NODE_TABLE_LEN + n) capa *= 2;
         ARAWK_NODE_TABLE = (NODE **)realloc(ARAWK_NODE_TABLE, sizeof(NODE *) * capa);
-        arawk_node_table_capa = capa;
+        node_table_capa = capa;
     }
     uint32_t base = ARAWK_NODE_TABLE_LEN;
     for (uint32_t i = 0; i < n; i++) ARAWK_NODE_TABLE[base + i] = items[i];
@@ -139,7 +139,7 @@ static const struct { const char *kw; TokKind kind; } keywords[] = {
     // NR / NF intentionally NOT in the keyword table — they resolve
     // to the pre-reserved globals_intern slot via the TK_NAME path,
     // which makes `NF = 5` flow through the regular assignment
-    // machinery (where arawk_node_gset has the AWK_GLOB_NF hook).
+    // machinery (where node_gset has the AWK_GLOB_NF hook).
     { NULL, 0 }
 };
 
@@ -516,55 +516,55 @@ scope_add_local(LocalScope *s, const char *name)
 // calls these and never picks the node kind directly.
 static NODE *emit_var_get(Var v)
 {
-    return v.is_local ? ALLOC_arawk_node_lget(v.slot) : ALLOC_arawk_node_gget(v.slot);
+    return v.is_local ? ALLOC_node_lget(v.slot) : ALLOC_node_gget(v.slot);
 }
 static NODE *emit_var_set(Var v, NODE *rhs)
 {
-    return v.is_local ? ALLOC_arawk_node_lset(v.slot, rhs) : ALLOC_arawk_node_gset(v.slot, rhs);
+    return v.is_local ? ALLOC_node_lset(v.slot, rhs) : ALLOC_node_gset(v.slot, rhs);
 }
 static NODE *emit_arr_get(Var v, NODE *key)
 {
-    return v.is_local ? ALLOC_arawk_node_aget(v.slot, key) : ALLOC_arawk_node_aget_g(v.slot, key);
+    return v.is_local ? ALLOC_node_aget(v.slot, key) : ALLOC_node_aget_g(v.slot, key);
 }
 static NODE *emit_arr_set(Var v, NODE *key, NODE *rhs)
 {
-    return v.is_local ? ALLOC_arawk_node_aset(v.slot, key, rhs) : ALLOC_arawk_node_aset_g(v.slot, key, rhs);
+    return v.is_local ? ALLOC_node_aset(v.slot, key, rhs) : ALLOC_node_aset_g(v.slot, key, rhs);
 }
 static NODE *emit_postinc(Var v)
 {
-    return v.is_local ? ALLOC_arawk_node_postinc_l(v.slot) : ALLOC_arawk_node_postinc_g(v.slot);
+    return v.is_local ? ALLOC_node_postinc_l(v.slot) : ALLOC_node_postinc_g(v.slot);
 }
 static NODE *emit_postdec(Var v)
 {
-    return v.is_local ? ALLOC_arawk_node_postdec_l(v.slot) : ALLOC_arawk_node_postdec_g(v.slot);
+    return v.is_local ? ALLOC_node_postdec_l(v.slot) : ALLOC_node_postdec_g(v.slot);
 }
 static NODE *emit_preinc(Var v)
 {
-    return v.is_local ? ALLOC_arawk_node_preinc_l(v.slot) : ALLOC_arawk_node_preinc_g(v.slot);
+    return v.is_local ? ALLOC_node_preinc_l(v.slot) : ALLOC_node_preinc_g(v.slot);
 }
 static NODE *emit_predec(Var v)
 {
-    return v.is_local ? ALLOC_arawk_node_predec_l(v.slot) : ALLOC_arawk_node_predec_g(v.slot);
+    return v.is_local ? ALLOC_node_predec_l(v.slot) : ALLOC_node_predec_g(v.slot);
 }
 static NODE *emit_in_arr(NODE *key, Var v)
 {
-    return v.is_local ? ALLOC_arawk_node_in_arr(key, v.slot) : ALLOC_arawk_node_in_arr_g(key, v.slot);
+    return v.is_local ? ALLOC_node_in_arr(key, v.slot) : ALLOC_node_in_arr_g(key, v.slot);
 }
 static NODE *emit_for_in(Var key_v, Var arr_v, NODE *body)
 {
     if (key_v.is_local && arr_v.is_local)
-        return ALLOC_arawk_node_for_in(key_v.slot, arr_v.slot, body);
+        return ALLOC_node_for_in(key_v.slot, arr_v.slot, body);
     if (!key_v.is_local && !arr_v.is_local)
-        return ALLOC_arawk_node_for_in_g(key_v.slot, arr_v.slot, body);
+        return ALLOC_node_for_in_g(key_v.slot, arr_v.slot, body);
     parse_error("for (k in arr): mixed local/global key+array not supported");
 }
 static NODE *emit_delete(Var v, NODE *key)
 {
-    return v.is_local ? ALLOC_arawk_node_delete(v.slot, key) : ALLOC_arawk_node_delete_g(v.slot, key);
+    return v.is_local ? ALLOC_node_delete(v.slot, key) : ALLOC_node_delete_g(v.slot, key);
 }
 static NODE *emit_delete_all(Var v)
 {
-    return v.is_local ? ALLOC_arawk_node_delete_all(v.slot) : ALLOC_arawk_node_delete_all_g(v.slot);
+    return v.is_local ? ALLOC_node_delete_all(v.slot) : ALLOC_node_delete_all_g(v.slot);
 }
 
 // ---------------------------------------------------------------------------
@@ -643,7 +643,7 @@ parse_ternary_continue(NODE *cond)
         NODE *then_e = parse_ternary_full();
         expect(TK_COLON, ":");
         NODE *else_e = parse_ternary_full();
-        return ALLOC_arawk_node_ternary(cond, then_e, else_e);
+        return ALLOC_node_ternary(cond, then_e, else_e);
     }
     return cond;
 }
@@ -653,7 +653,7 @@ parse_or_continue(NODE *lhs)
 {
     while (peek_tok().kind == TK_OR) {
         (void)take_tok();
-        lhs = ALLOC_arawk_node_or(lhs, parse_and_full());
+        lhs = ALLOC_node_or(lhs, parse_and_full());
     }
     return lhs;
 }
@@ -663,7 +663,7 @@ parse_and_continue(NODE *lhs)
 {
     while (peek_tok().kind == TK_AND) {
         (void)take_tok();
-        lhs = ALLOC_arawk_node_and(lhs, parse_in_full());
+        lhs = ALLOC_node_and(lhs, parse_in_full());
     }
     return lhs;
 }
@@ -692,12 +692,12 @@ parse_rel_continue(NODE *lhs)
         (void)take_tok();
         NODE *rhs = parse_concat_full();
         switch (k) {
-          case TK_LT: return ALLOC_arawk_node_lt(lhs, rhs);
-          case TK_LE: return ALLOC_arawk_node_le(lhs, rhs);
-          case TK_GT: return ALLOC_arawk_node_gt(lhs, rhs);
-          case TK_GE: return ALLOC_arawk_node_ge(lhs, rhs);
-          case TK_EQ: return ALLOC_arawk_node_eq(lhs, rhs);
-          case TK_NE: return ALLOC_arawk_node_ne(lhs, rhs);
+          case TK_LT: return ALLOC_node_lt(lhs, rhs);
+          case TK_LE: return ALLOC_node_le(lhs, rhs);
+          case TK_GT: return ALLOC_node_gt(lhs, rhs);
+          case TK_GE: return ALLOC_node_ge(lhs, rhs);
+          case TK_EQ: return ALLOC_node_eq(lhs, rhs);
+          case TK_NE: return ALLOC_node_ne(lhs, rhs);
           default: break;
         }
     }
@@ -708,7 +708,7 @@ static NODE *
 parse_concat_continue(NODE *lhs)
 {
     while (is_primary_start(peek_tok().kind)) {
-        lhs = ALLOC_arawk_node_concat(lhs, parse_add_full());
+        lhs = ALLOC_node_concat(lhs, parse_add_full());
     }
     // `cmd | getline [NAME]` — the only place an expression-level
     // `|` appears.  Pipe-to-command for print is parsed inside the
@@ -724,10 +724,10 @@ parse_concat_continue(NODE *lhs)
             Token nx = take_tok();
             char *vname = intern_string(nx.start, nx.len);
             Var v = resolve_name(vname);
-            return v.is_local ? ALLOC_arawk_node_getline_cmd_l(v.slot, lhs)
-                              : ALLOC_arawk_node_getline_cmd_g(v.slot, lhs);
+            return v.is_local ? ALLOC_node_getline_cmd_l(v.slot, lhs)
+                              : ALLOC_node_getline_cmd_g(v.slot, lhs);
         }
-        return ALLOC_arawk_node_getline_cmd(lhs);
+        return ALLOC_node_getline_cmd(lhs);
     }
     return lhs;
 }
@@ -740,7 +740,7 @@ parse_add_continue(NODE *lhs)
         if (k != TK_PLUS && k != TK_MINUS) break;
         (void)take_tok();
         NODE *rhs = parse_mul_full();
-        lhs = (k == TK_PLUS) ? ALLOC_arawk_node_add(lhs, rhs) : ALLOC_arawk_node_sub(lhs, rhs);
+        lhs = (k == TK_PLUS) ? ALLOC_node_add(lhs, rhs) : ALLOC_node_sub(lhs, rhs);
     }
     return lhs;
 }
@@ -754,9 +754,9 @@ parse_mul_continue(NODE *lhs)
         (void)take_tok();
         NODE *rhs = parse_unary();
         switch (k) {
-          case TK_STAR:    lhs = ALLOC_arawk_node_mul(lhs, rhs); break;
-          case TK_SLASH:   lhs = ALLOC_arawk_node_div(lhs, rhs); break;
-          case TK_PERCENT: lhs = ALLOC_arawk_node_mod(lhs, rhs); break;
+          case TK_STAR:    lhs = ALLOC_node_mul(lhs, rhs); break;
+          case TK_SLASH:   lhs = ALLOC_node_div(lhs, rhs); break;
+          case TK_PERCENT: lhs = ALLOC_node_mod(lhs, rhs); break;
           default: break;
         }
     }
@@ -771,9 +771,9 @@ static NODE *
 parse_unary(void)
 {
     TokKind k = peek_tok().kind;
-    if (k == TK_NOT)   { (void)take_tok(); NODE *x = parse_unary(); return ALLOC_arawk_node_not(x); }
-    if (k == TK_MINUS) { (void)take_tok(); NODE *x = parse_unary(); return ALLOC_arawk_node_neg(x); }
-    if (k == TK_PLUS)  { (void)take_tok(); NODE *x = parse_unary(); return ALLOC_arawk_node_unaryplus(x); }
+    if (k == TK_NOT)   { (void)take_tok(); NODE *x = parse_unary(); return ALLOC_node_not(x); }
+    if (k == TK_MINUS) { (void)take_tok(); NODE *x = parse_unary(); return ALLOC_node_neg(x); }
+    if (k == TK_PLUS)  { (void)take_tok(); NODE *x = parse_unary(); return ALLOC_node_unaryplus(x); }
     if (k == TK_INC || k == TK_DEC) {
         TokKind op = k;
         (void)take_tok();
@@ -818,25 +818,25 @@ parse_pow_continue(NODE *lhs)
             NODE *key = primary_aget_key;
             primary_lv = PLV_NONE; primary_was_lget = false; primary_aget_key = NULL;
             if (k == TK_INC) {
-                return is_local ? ALLOC_arawk_node_postinc_a(slot, key)
-                                : ALLOC_arawk_node_postinc_ag(slot, key);
+                return is_local ? ALLOC_node_postinc_a(slot, key)
+                                : ALLOC_node_postinc_ag(slot, key);
             } else {
-                return is_local ? ALLOC_arawk_node_postdec_a(slot, key)
-                                : ALLOC_arawk_node_postdec_ag(slot, key);
+                return is_local ? ALLOC_node_postdec_a(slot, key)
+                                : ALLOC_node_postdec_ag(slot, key);
             }
         }
         if (primary_lv == PLV_DOLLAR_CONST) {
             (void)take_tok();
             primary_lv = PLV_NONE;
-            return k == TK_INC ? ALLOC_arawk_node_dollar_postinc(primary_dollar_n)
-                               : ALLOC_arawk_node_dollar_postdec(primary_dollar_n);
+            return k == TK_INC ? ALLOC_node_dollar_postinc(primary_dollar_n)
+                               : ALLOC_node_dollar_postdec(primary_dollar_n);
         }
     }
     primary_lv = PLV_NONE; primary_was_lget = false; primary_aget_key = NULL;
     if (peek_tok().kind == TK_CARET) {
         (void)take_tok();
         NODE *rhs = parse_unary();   // right-associative
-        return ALLOC_arawk_node_pow(lhs, rhs);
+        return ALLOC_node_pow(lhs, rhs);
     }
     return lhs;
 }
@@ -848,16 +848,16 @@ parse_primary(void)
     switch (t.kind) {
       case TK_INT: {
         if (t.inum >= INT32_MIN && t.inum <= INT32_MAX) {
-            return ALLOC_arawk_node_int((int32_t)t.inum);
+            return ALLOC_node_int((int32_t)t.inum);
         }
-        return ALLOC_arawk_node_int64((uint64_t)t.inum);
+        return ALLOC_node_int64((uint64_t)t.inum);
       }
       case TK_FLOAT: {
         union { double d; uint64_t u; } pun = { .d = t.fnum };
-        return ALLOC_arawk_node_float(pun.u);
+        return ALLOC_node_float(pun.u);
       }
       case TK_STRING:
-        return ALLOC_arawk_node_str(t.str);
+        return ALLOC_node_str(t.str);
       case TK_LPAREN: {
         NODE *e = parse_expr();
         expect(TK_RPAREN, ")");
@@ -870,10 +870,10 @@ parse_primary(void)
             (void)take_tok();
             primary_lv = PLV_DOLLAR_CONST;
             primary_dollar_n = (int32_t)nx.inum;
-            return ALLOC_arawk_node_dollar_const((int32_t)nx.inum);
+            return ALLOC_node_dollar_const((int32_t)nx.inum);
         }
         NODE *idx = parse_primary();
-        return ALLOC_arawk_node_dollar(idx);
+        return ALLOC_node_dollar(idx);
       }
       case TK_NAME: {
         char *name = intern_string(t.start, t.len);
@@ -892,8 +892,8 @@ parse_primary(void)
                 }
             }
             expect(TK_RPAREN, ")");
-            uint32_t base = argc ? arawk_node_table_push_n(args, argc) : 0;
-            return ALLOC_arawk_node_call_user(name, base, argc);
+            uint32_t base = argc ? node_table_push_n(args, argc) : 0;
+            return ALLOC_node_call_user(name, base, argc);
         }
         Var v = resolve_name(name);
         // `NAME [ key ]` — array reference (rvalue).
@@ -918,13 +918,13 @@ parse_primary(void)
             (void)take_tok();
             if (peek_tok().kind == TK_RPAREN) {
                 (void)take_tok();
-                return ALLOC_arawk_node_length0();
+                return ALLOC_node_length0();
             }
             NODE *arg = parse_expr();
             expect(TK_RPAREN, ")");
-            return ALLOC_arawk_node_length1(arg);
+            return ALLOC_node_length1(arg);
         }
-        return ALLOC_arawk_node_length0();
+        return ALLOC_node_length0();
       }
       case TK_KW_SUBSTR: {
         expect(TK_LPAREN, "(");
@@ -935,10 +935,10 @@ parse_primary(void)
             (void)take_tok();
             NODE *len = parse_expr();
             expect(TK_RPAREN, ")");
-            return ALLOC_arawk_node_substr3(s, pos, len);
+            return ALLOC_node_substr3(s, pos, len);
         }
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_substr2(s, pos);
+        return ALLOC_node_substr2(s, pos);
       }
       case TK_KW_INDEX: {
         expect(TK_LPAREN, "(");
@@ -946,7 +946,7 @@ parse_primary(void)
         expect(TK_COMMA, ",");
         NODE *n2 = parse_expr();
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_index_b(h, n2);
+        return ALLOC_node_index_b(h, n2);
       }
       case TK_KW_SPLIT: {
         expect(TK_LPAREN, "(");
@@ -964,10 +964,10 @@ parse_primary(void)
             (void)take_tok();
             NODE *sep = parse_expr();
             expect(TK_RPAREN, ")");
-            return ALLOC_arawk_node_split3(s, aslot, sep);
+            return ALLOC_node_split3(s, aslot, sep);
         }
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_split2(s, aslot);
+        return ALLOC_node_split2(s, aslot);
       }
       case TK_KW_TOLOWER: case TK_KW_TOUPPER:
       case TK_KW_INT_FN:
@@ -977,14 +977,14 @@ parse_primary(void)
         NODE *a = parse_expr();
         expect(TK_RPAREN, ")");
         switch (t.kind) {
-          case TK_KW_TOLOWER: return ALLOC_arawk_node_tolower(a);
-          case TK_KW_TOUPPER: return ALLOC_arawk_node_toupper(a);
-          case TK_KW_INT_FN:  return ALLOC_arawk_node_int_fn(a);
-          case TK_KW_SIN:     return ALLOC_arawk_node_sin(a);
-          case TK_KW_COS:     return ALLOC_arawk_node_cos(a);
-          case TK_KW_SQRT:    return ALLOC_arawk_node_sqrt(a);
-          case TK_KW_EXP:     return ALLOC_arawk_node_exp(a);
-          case TK_KW_LOG:     return ALLOC_arawk_node_log(a);
+          case TK_KW_TOLOWER: return ALLOC_node_tolower(a);
+          case TK_KW_TOUPPER: return ALLOC_node_toupper(a);
+          case TK_KW_INT_FN:  return ALLOC_node_int_fn(a);
+          case TK_KW_SIN:     return ALLOC_node_sin(a);
+          case TK_KW_COS:     return ALLOC_node_cos(a);
+          case TK_KW_SQRT:    return ALLOC_node_sqrt(a);
+          case TK_KW_EXP:     return ALLOC_node_exp(a);
+          case TK_KW_LOG:     return ALLOC_node_log(a);
           default: break;
         }
         parse_error("internal: unary builtin dispatch fell through");
@@ -995,19 +995,19 @@ parse_primary(void)
         expect(TK_COMMA, ",");
         NODE *b = parse_expr();
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_atan2(a, b);
+        return ALLOC_node_atan2(a, b);
       }
       case TK_KW_RAND: {
         if (peek_tok().kind == TK_LPAREN) { (void)take_tok(); expect(TK_RPAREN, ")"); }
-        return ALLOC_arawk_node_rand();
+        return ALLOC_node_rand();
       }
       case TK_KW_SRAND: {
-        if (peek_tok().kind != TK_LPAREN) return ALLOC_arawk_node_srand0();
+        if (peek_tok().kind != TK_LPAREN) return ALLOC_node_srand0();
         (void)take_tok();
-        if (peek_tok().kind == TK_RPAREN) { (void)take_tok(); return ALLOC_arawk_node_srand0(); }
+        if (peek_tok().kind == TK_RPAREN) { (void)take_tok(); return ALLOC_node_srand0(); }
         NODE *a = parse_expr();
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_srand1(a);
+        return ALLOC_node_srand1(a);
       }
       case TK_KW_SPRINTF: {
         expect(TK_LPAREN, "(");
@@ -1019,28 +1019,28 @@ parse_primary(void)
             items[n++] = parse_expr();
         }
         expect(TK_RPAREN, ")");
-        uint32_t base = n ? arawk_node_table_push_n(items, n) : 0;
-        return ALLOC_arawk_node_sprintf(fmt, base, n);
+        uint32_t base = n ? node_table_push_n(items, n) : 0;
+        return ALLOC_node_sprintf(fmt, base, n);
       }
       case TK_KW_CLOSE: {
         expect(TK_LPAREN, "(");
         NODE *a = parse_expr();
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_close(a);
+        return ALLOC_node_close(a);
       }
       case TK_KW_FFLUSH: {
-        if (peek_tok().kind != TK_LPAREN) return ALLOC_arawk_node_fflush_0();
+        if (peek_tok().kind != TK_LPAREN) return ALLOC_node_fflush_0();
         (void)take_tok();
-        if (peek_tok().kind == TK_RPAREN) { (void)take_tok(); return ALLOC_arawk_node_fflush_0(); }
+        if (peek_tok().kind == TK_RPAREN) { (void)take_tok(); return ALLOC_node_fflush_0(); }
         NODE *a = parse_expr();
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_fflush_1(a);
+        return ALLOC_node_fflush_1(a);
       }
       case TK_KW_SYSTEM: {
         expect(TK_LPAREN, "(");
         NODE *a = parse_expr();
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_system(a);
+        return ALLOC_node_system(a);
       }
       case TK_KW_GETLINE: {
         // Four leading forms (the two `cmd | getline ...` forms are
@@ -1057,18 +1057,18 @@ parse_primary(void)
             if (peek_tok().kind == TK_LT) {
                 (void)take_tok();
                 NODE *file = parse_unary();
-                return v.is_local ? ALLOC_arawk_node_getline_file_l(v.slot, file)
-                                  : ALLOC_arawk_node_getline_file_g(v.slot, file);
+                return v.is_local ? ALLOC_node_getline_file_l(v.slot, file)
+                                  : ALLOC_node_getline_file_g(v.slot, file);
             }
-            return v.is_local ? ALLOC_arawk_node_getline_cur_l(v.slot)
-                              : ALLOC_arawk_node_getline_cur_g(v.slot);
+            return v.is_local ? ALLOC_node_getline_cur_l(v.slot)
+                              : ALLOC_node_getline_cur_g(v.slot);
         }
         if (la.kind == TK_LT) {
             (void)take_tok();
             NODE *file = parse_unary();
-            return ALLOC_arawk_node_getline_file(file);
+            return ALLOC_node_getline_file(file);
         }
-        return ALLOC_arawk_node_getline_cur();
+        return ALLOC_node_getline_cur();
       }
       default:
         parse_error("unexpected token in primary (kind %d, \"%.*s\")", t.kind, t.len, t.start);
@@ -1081,7 +1081,7 @@ parse_primary(void)
 // (`+=`, etc.) desugar to `lhs = lhs OP rhs`.
 //
 // `NAME[key]` references that are NOT followed by `=` fall through to
-// parse_primary which emits arawk_node_aget — so `a[k] + 1` works naturally.
+// parse_primary which emits node_aget — so `a[k] + 1` works naturally.
 
 static bool
 is_assign_op(TokKind k)
@@ -1096,12 +1096,12 @@ static NODE *
 combine_binop(TokKind compound_op, NODE *lhs, NODE *rhs)
 {
     switch (compound_op) {
-      case TK_PLUS_ASSIGN:    return ALLOC_arawk_node_add(lhs, rhs);
-      case TK_MINUS_ASSIGN:   return ALLOC_arawk_node_sub(lhs, rhs);
-      case TK_STAR_ASSIGN:    return ALLOC_arawk_node_mul(lhs, rhs);
-      case TK_SLASH_ASSIGN:   return ALLOC_arawk_node_div(lhs, rhs);
-      case TK_PERCENT_ASSIGN: return ALLOC_arawk_node_mod(lhs, rhs);
-      case TK_CARET_ASSIGN:   return ALLOC_arawk_node_pow(lhs, rhs);
+      case TK_PLUS_ASSIGN:    return ALLOC_node_add(lhs, rhs);
+      case TK_MINUS_ASSIGN:   return ALLOC_node_sub(lhs, rhs);
+      case TK_STAR_ASSIGN:    return ALLOC_node_mul(lhs, rhs);
+      case TK_SLASH_ASSIGN:   return ALLOC_node_div(lhs, rhs);
+      case TK_PERCENT_ASSIGN: return ALLOC_node_mod(lhs, rhs);
+      case TK_CARET_ASSIGN:   return ALLOC_node_pow(lhs, rhs);
       default: parse_error("internal: bad compound op kind %d", compound_op);
     }
 }
@@ -1123,9 +1123,9 @@ parse_expr(void)
                 (void)take_tok();
                 NODE *rhs = parse_expr();
                 int32_t fi = (int32_t)nx.inum;
-                if (op.kind == TK_ASSIGN) return ALLOC_arawk_node_dollar_const_set(fi, rhs);
-                NODE *get = ALLOC_arawk_node_dollar_const(fi);
-                return ALLOC_arawk_node_dollar_const_set(fi, combine_binop(op.kind, get, rhs));
+                if (op.kind == TK_ASSIGN) return ALLOC_node_dollar_const_set(fi, rhs);
+                NODE *get = ALLOC_node_dollar_const(fi);
+                return ALLOC_node_dollar_const_set(fi, combine_binop(op.kind, get, rhs));
             }
             unread_tok(nx);
             unread_tok(dol);
@@ -1198,8 +1198,8 @@ parse_array_key(void)
     while (peek_tok().kind == TK_COMMA) {
         (void)take_tok();
         NODE *next = parse_ternary_full();
-        NODE *sep  = ALLOC_arawk_node_gget(AWK_GLOB_SUBSEP);
-        acc = ALLOC_arawk_node_concat(ALLOC_arawk_node_concat(acc, sep), next);
+        NODE *sep  = ALLOC_node_gget(AWK_GLOB_SUBSEP);
+        acc = ALLOC_node_concat(ALLOC_node_concat(acc, sep), next);
     }
     return acc;
 }
@@ -1211,10 +1211,10 @@ parse_array_key(void)
 static NODE *
 parse_print_args(void)
 {
-    // print with no args → arawk_node_print(base=0, cnt=0): runtime prints $0.
+    // print with no args → node_print(base=0, cnt=0): runtime prints $0.
     Token la = peek_tok();
     if (la.kind == TK_SEMI || la.kind == TK_NL || la.kind == TK_RBRACE || la.kind == TK_EOF) {
-        return ALLOC_arawk_node_print(0, 0);
+        return ALLOC_node_print(0, 0);
     }
     NODE *items[64];
     uint32_t n = 0;
@@ -1233,11 +1233,11 @@ parse_print_args(void)
         int32_t mode = redir == TK_PIPE   ? 'w'
                      : redir == TK_APPEND ? 'a'
                      :                      'o';
-        uint32_t base = n ? arawk_node_table_push_n(items, n) : 0;
-        return ALLOC_arawk_node_print_to(base, n, dest, mode);
+        uint32_t base = n ? node_table_push_n(items, n) : 0;
+        return ALLOC_node_print_to(base, n, dest, mode);
     }
-    uint32_t base = arawk_node_table_push_n(items, n);
-    return ALLOC_arawk_node_print(base, n);
+    uint32_t base = node_table_push_n(items, n);
+    return ALLOC_node_print(base, n);
 }
 
 NODE *
@@ -1247,14 +1247,14 @@ parse_block(void)
     skip_terminators();
     if (peek_tok().kind == TK_RBRACE) {
         (void)take_tok();
-        return ALLOC_arawk_node_int(0);     // empty block
+        return ALLOC_node_int(0);     // empty block
     }
     NODE *acc = parse_stmt();
     for (;;) {
         skip_terminators();
         if (peek_tok().kind == TK_RBRACE) break;
         NODE *next = parse_stmt();
-        acc = ALLOC_arawk_node_seq(acc, next);
+        acc = ALLOC_node_seq(acc, next);
     }
     expect(TK_RBRACE, "}");
     return acc;
@@ -1291,11 +1291,11 @@ parse_stmt(void)
             int32_t mode = redir == TK_PIPE   ? 'w'
                          : redir == TK_APPEND ? 'a'
                          :                      'o';
-            uint32_t base = n ? arawk_node_table_push_n(items, n) : 0;
-            return ALLOC_arawk_node_printf_to(fmt, base, n, dest, mode);
+            uint32_t base = n ? node_table_push_n(items, n) : 0;
+            return ALLOC_node_printf_to(fmt, base, n, dest, mode);
         }
-        uint32_t base = n ? arawk_node_table_push_n(items, n) : 0;
-        return ALLOC_arawk_node_printf(fmt, base, n);
+        uint32_t base = n ? node_table_push_n(items, n) : 0;
+        return ALLOC_node_printf(fmt, base, n);
       }
       case TK_KW_IF: {
         (void)take_tok();
@@ -1304,14 +1304,14 @@ parse_stmt(void)
         expect(TK_RPAREN, ")");
         skip_terminators();
         NODE *then_s = parse_stmt();
-        NODE *else_s = ALLOC_arawk_node_int(0);
+        NODE *else_s = ALLOC_node_int(0);
         skip_terminators();
         if (peek_tok().kind == TK_KW_ELSE) {
             (void)take_tok();
             skip_terminators();
             else_s = parse_stmt();
         }
-        return ALLOC_arawk_node_if(cond, then_s, else_s);
+        return ALLOC_node_if(cond, then_s, else_s);
       }
       case TK_KW_WHILE: {
         (void)take_tok();
@@ -1320,7 +1320,7 @@ parse_stmt(void)
         expect(TK_RPAREN, ")");
         skip_terminators();
         NODE *body = parse_stmt();
-        return ALLOC_arawk_node_while(cond, body);
+        return ALLOC_node_while(cond, body);
       }
       case TK_KW_DO: {
         (void)take_tok();
@@ -1332,7 +1332,7 @@ parse_stmt(void)
         expect(TK_LPAREN, "(");
         NODE *cond = parse_expr();
         expect(TK_RPAREN, ")");
-        return ALLOC_arawk_node_do_while(body, cond);
+        return ALLOC_node_do_while(body, cond);
       }
       case TK_KW_FOR: {
         (void)take_tok();
@@ -1357,18 +1357,18 @@ parse_stmt(void)
             }
             unread_tok(nk);
         }
-        NODE *init = (peek_tok().kind == TK_SEMI) ? ALLOC_arawk_node_noop() : parse_expr();
+        NODE *init = (peek_tok().kind == TK_SEMI) ? ALLOC_node_noop() : parse_expr();
         expect(TK_SEMI, ";");
         NODE *cond;
         uint32_t has_cond = 1;
-        if (peek_tok().kind == TK_SEMI) { cond = ALLOC_arawk_node_noop(); has_cond = 0; }
+        if (peek_tok().kind == TK_SEMI) { cond = ALLOC_node_noop(); has_cond = 0; }
         else                            { cond = parse_expr(); }
         expect(TK_SEMI, ";");
-        NODE *step = (peek_tok().kind == TK_RPAREN) ? ALLOC_arawk_node_noop() : parse_expr();
+        NODE *step = (peek_tok().kind == TK_RPAREN) ? ALLOC_node_noop() : parse_expr();
         expect(TK_RPAREN, ")");
         skip_terminators();
         NODE *body = parse_stmt();
-        return ALLOC_arawk_node_for(init, cond, step, body, has_cond);
+        return ALLOC_node_for(init, cond, step, body, has_cond);
       }
       case TK_KW_DELETE: {
         (void)take_tok();
@@ -1384,18 +1384,18 @@ parse_stmt(void)
         }
         return emit_delete_all(v);
       }
-      case TK_KW_NEXT:     (void)take_tok(); return ALLOC_arawk_node_next();
-      case TK_KW_NEXTFILE: (void)take_tok(); return ALLOC_arawk_node_nextfile();
-      case TK_KW_BREAK:    (void)take_tok(); return ALLOC_arawk_node_break();
-      case TK_KW_CONTINUE: (void)take_tok(); return ALLOC_arawk_node_continue();
+      case TK_KW_NEXT:     (void)take_tok(); return ALLOC_node_next();
+      case TK_KW_NEXTFILE: (void)take_tok(); return ALLOC_node_nextfile();
+      case TK_KW_BREAK:    (void)take_tok(); return ALLOC_node_break();
+      case TK_KW_CONTINUE: (void)take_tok(); return ALLOC_node_continue();
       case TK_KW_RETURN: {
         (void)take_tok();
         Token nx = peek_tok();
         // Optional return value: stops at `;` / `}` / NL / EOF.
         if (nx.kind == TK_SEMI || nx.kind == TK_NL || nx.kind == TK_RBRACE || nx.kind == TK_EOF) {
-            return ALLOC_arawk_node_return(ALLOC_arawk_node_int(0));
+            return ALLOC_node_return(ALLOC_node_int(0));
         }
-        return ALLOC_arawk_node_return(parse_expr());
+        return ALLOC_node_return(parse_expr());
       }
       case TK_KW_EXIT: {
         (void)take_tok();
@@ -1404,7 +1404,7 @@ parse_stmt(void)
         if (nx.kind != TK_SEMI && nx.kind != TK_NL && nx.kind != TK_RBRACE && nx.kind != TK_EOF) {
             arg = parse_expr();
         }
-        return ALLOC_arawk_node_exit(arg);
+        return ALLOC_node_exit(arg);
       }
       case TK_LBRACE:
         return parse_block();
@@ -1440,12 +1440,12 @@ PARSE_SOURCE(const char *source)
         if (la.kind == TK_KW_BEGIN) {
             (void)take_tok();
             NODE *b = parse_block();
-            begin_acc = begin_acc ? ALLOC_arawk_node_seq(begin_acc, b) : b;
+            begin_acc = begin_acc ? ALLOC_node_seq(begin_acc, b) : b;
         }
         else if (la.kind == TK_KW_END) {
             (void)take_tok();
             NODE *b = parse_block();
-            end_acc = end_acc ? ALLOC_arawk_node_seq(end_acc, b) : b;
+            end_acc = end_acc ? ALLOC_node_seq(end_acc, b) : b;
         }
         else if (la.kind == TK_KW_FUNCTION) {
             // `function NAME ( params ) { body }` — parse with a
@@ -1475,13 +1475,13 @@ PARSE_SOURCE(const char *source)
             skip_terminators();
             NODE *body = parse_block();
             cur_scope = prev;
-            NODE *def = ALLOC_arawk_node_def(name, body, scope.count, scope.params_cnt);
-            defs_acc = defs_acc ? ALLOC_arawk_node_seq(defs_acc, def) : def;
+            NODE *def = ALLOC_node_def(name, body, scope.count, scope.params_cnt);
+            defs_acc = defs_acc ? ALLOC_node_seq(defs_acc, def) : def;
         }
         else if (la.kind == TK_LBRACE) {
             // Patternless action.
             NODE *b = parse_block();
-            main_acc = main_acc ? ALLOC_arawk_node_seq(main_acc, b) : b;
+            main_acc = main_acc ? ALLOC_node_seq(main_acc, b) : b;
         }
         else {
             // Pattern-action: expr [block].  No-block form `expr`
@@ -1493,10 +1493,10 @@ PARSE_SOURCE(const char *source)
                 body = parse_block();
             }
             else {
-                body = ALLOC_arawk_node_print(0, 0);
+                body = ALLOC_node_print(0, 0);
             }
-            NODE *guarded = ALLOC_arawk_node_if(pat, body, ALLOC_arawk_node_int(0));
-            main_acc = main_acc ? ALLOC_arawk_node_seq(main_acc, guarded) : guarded;
+            NODE *guarded = ALLOC_node_if(pat, body, ALLOC_node_int(0));
+            main_acc = main_acc ? ALLOC_node_seq(main_acc, guarded) : guarded;
         }
         skip_terminators();
     }
@@ -1505,18 +1505,18 @@ PARSE_SOURCE(const char *source)
     // in c->func_set, so the order is essentially "register all, then
     // start program proper".  Splice into the begin branch.
     if (defs_acc) {
-        if (begin_acc) begin_acc = ALLOC_arawk_node_seq(defs_acc, begin_acc);
+        if (begin_acc) begin_acc = ALLOC_node_seq(defs_acc, begin_acc);
         else           begin_acc = defs_acc;
     }
 
     // The framework pre-fetches `head.dispatcher` for every NODE *
-    // operand, so we hand `arawk_node_program` non-null branches and use
-    // `arawk_node_noop` as the Null object for absent parts.  The main
-    // action is wrapped in `arawk_node_main_loop` to drive the input loop;
-    // BEGIN-only / END-only programs pass `arawk_node_noop` and so never
+    // operand, so we hand `node_program` non-null branches and use
+    // `node_noop` as the Null object for absent parts.  The main
+    // action is wrapped in `node_main_loop` to drive the input loop;
+    // BEGIN-only / END-only programs pass `node_noop` and so never
     // touch stdin.
-    NODE *begin_part = begin_acc ? begin_acc : ALLOC_arawk_node_noop();
-    NODE *main_part  = main_acc  ? ALLOC_arawk_node_main_loop(main_acc) : ALLOC_arawk_node_noop();
-    NODE *end_part   = end_acc   ? end_acc   : ALLOC_arawk_node_noop();
-    return ALLOC_arawk_node_program(begin_part, main_part, end_part);
+    NODE *begin_part = begin_acc ? begin_acc : ALLOC_node_noop();
+    NODE *main_part  = main_acc  ? ALLOC_node_main_loop(main_acc) : ALLOC_node_noop();
+    NODE *end_part   = end_acc   ? end_acc   : ALLOC_node_noop();
+    return ALLOC_node_program(begin_part, main_part, end_part);
 }

@@ -89,8 +89,8 @@ Phase 1.9 直後の前回計測 (geomean plain 0.58 / aot 0.59) から **ほぼ�
 | 変更 | 影響しそうな点 | 実測 |
 |---|---|---|
 | `print` / `print_to` が env から OFS/ORS を読む | 出力系全テスト微減 | tt.01 0.17→0.17 / tt.02 0.52→0.52: ノイズ範囲 |
-| `awk_to_cstr` が `ARAWK_CURRENT_CTX->env[CONVFMT]` を読む | float 出力系減 | tt.01 0.17→0.17: 変化なし (CONVFMT 読みは float 経路のみ) |
-| `arawk_node_gset` に FS/NF 特殊化 branch | 全 global 代入に branch 1 個 | tt.14 0.45→0.45: 影響なし (UNLIKELY 分岐が branch predictor で当たる) |
+| `arawk_to_cstr` が `ARAWK_CURRENT_CTX->env[CONVFMT]` を読む | float 出力系減 | tt.01 0.17→0.17: 変化なし (CONVFMT 読みは float 経路のみ) |
+| `node_gset` に FS/NF 特殊化 branch | 全 global 代入に branch 1 個 | tt.14 0.45→0.45: 影響なし (UNLIKELY 分岐が branch predictor で当たる) |
 | 新規 `printf_to` / `close` / `system` / `getline` 群 | 既存テストに影響なし | tt.* は呼ばないので変化なし |
 | do-while / nextfile | tt.* に未使用 | 影響なし |
 
@@ -106,16 +106,16 @@ Phase 1.9 直後の前回計測 (geomean plain 0.58 / aot 0.59) から **ほぼ�
 | Test | arawk-aot | 理由 |
 |---|---|---|
 | **tt.x2_sum_loop** | **1.90×** | BEGIN だけの 10M 回 fixnum ループ。AOT bake で for 全体が specialize、`AWK_IS_FIX(a)&AWK_IS_FIX(b)` + `__builtin_add_overflow` が `lea`/`add` 数命令に畳まれる |
-| **tt.13_array_ops** | **1.35×** | 配列読み書きが連続。arawk の `awk_arr_*` (FNV-1a + 単純 chained bucket) は gawk の locale-aware hash よりオーバーヘッド少ない |
+| **tt.13_array_ops** | **1.35×** | 配列読み書きが連続。arawk の `arawk_arr_*` (FNV-1a + 単純 chained bucket) は gawk の locale-aware hash よりオーバーヘッド少ない |
 | **tt.13a_array_printf** | **1.34×** | 同上 + printf |
 
 ## 苦手な場面 (変わらず)
 
 | Test | arawk-aot | 理由 |
 |---|---|---|
-| **tt.01_print** | **0.17×** | `awk_print_value` が要素ごとに `fwrite` を呼ぶ → syscall を稼ぐ。gawk/mawk は内部 buffer で chunked write |
-| **tt.03_sum_length / tt.03a_sum_field** | **0.18-0.19×** | 全行で field 取得 + 算術。`awk_split_fields` が毎行 strnum allocate (GC_malloc_atomic × 6/行) して GC 圧力高い |
-| **tt.08_even_lengths** | **0.26×** | `length` を `$0` に対して呼ぶ。awk_length の cstr 経由が重い |
+| **tt.01_print** | **0.17×** | `arawk_print_value` が要素ごとに `fwrite` を呼ぶ → syscall を稼ぐ。gawk/mawk は内部 buffer で chunked write |
+| **tt.03_sum_length / tt.03a_sum_field** | **0.18-0.19×** | 全行で field 取得 + 算術。`arawk_split_fields` が毎行 strnum allocate (GC_malloc_atomic × 6/行) して GC 圧力高い |
+| **tt.08_even_lengths** | **0.26×** | `length` を `$0` に対して呼ぶ。arawk_length の cstr 経由が重い |
 | **tt.11_substr** | **0.26×** | `substr` 毎回 fresh string allocation |
 | **tt.14_function_call** | **0.45×** | 関数呼び出し毎に `c->func_set` を線形検索 (strcmp)。callcache 未実装 |
 
