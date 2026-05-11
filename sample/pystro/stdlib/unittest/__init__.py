@@ -326,12 +326,44 @@ def main(scope=None, *args, **kwargs):
 
     cases = []
     seen = set()
-    for name in ns:
-        v = ns[name]
-        if isinstance(v, type) and hasattr(v, "_is_test_case_"):
-            if id(v) in seen: continue
-            seen.add(id(v))
-            cases.append(v)
+    # If the module defines `load_tests(loader, tests, pattern)`, honour
+    # it: cpython tests use it to restrict / reorder the suite (e.g.
+    # test_io excludes the abstract IOTest base from direct execution).
+    load_tests = ns.get("load_tests") if isinstance(ns, dict) else None
+    if callable(load_tests):
+        class _DummyLoader:
+            suiteClass = list
+            def loadTestsFromTestCase(self, cls):
+                return [cls]
+        try:
+            result = load_tests(_DummyLoader(), [], None)
+        except Exception:
+            result = None
+        if result is not None:
+            try:
+                for item in result:
+                    # result may be a list of classes or a list of
+                    # [class] lists depending on what loadTestsFromTestCase
+                    # returned.  Flatten one level.
+                    if isinstance(item, type) and hasattr(item, "_is_test_case_"):
+                        if id(item) not in seen:
+                            seen.add(id(item))
+                            cases.append(item)
+                    elif isinstance(item, (list, tuple)):
+                        for sub in item:
+                            if isinstance(sub, type) and hasattr(sub, "_is_test_case_"):
+                                if id(sub) not in seen:
+                                    seen.add(id(sub))
+                                    cases.append(sub)
+            except Exception:
+                pass
+    if not cases:
+        for name in ns:
+            v = ns[name]
+            if isinstance(v, type) and hasattr(v, "_is_test_case_"):
+                if id(v) in seen: continue
+                seen.add(id(v))
+                cases.append(v)
 
     passed = 0
     failed = 0
