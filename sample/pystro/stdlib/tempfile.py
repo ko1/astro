@@ -22,6 +22,23 @@ def _make_name(prefix, suffix):
     return prefix + str(n) + suffix
 
 
+class _RandomNameSequence:
+    """Iterator that yields random tempfile-name suffixes; CPython
+    tests probe this directly for reproducibility."""
+    def __init__(self):
+        self.rng = random
+        self.characters = ("abcdefghijklmnopqrstuvwxyz"
+                           "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+    def __iter__(self):
+        return self
+    def __next__(self):
+        c = self.characters
+        return "".join(self.rng.choice(c) for _ in range(8))
+
+
+_RANDOM_NAME_LEN = 8
+
+
 def mkstemp(suffix="", prefix="tmp", dir=None, text=False):
     if dir is None: dir = gettempdir()
     for _ in range(100):

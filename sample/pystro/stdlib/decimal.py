@@ -20,7 +20,59 @@ MAX_EMAX = 999999999
 MIN_EMIN = -999999999
 
 
-class InvalidOperation(Exception):
+class DecimalException(ArithmeticError):
+    pass
+
+
+class InvalidOperation(DecimalException):
+    pass
+
+
+class Clamped(DecimalException):
+    pass
+
+
+class DivisionByZero(DecimalException, ZeroDivisionError):
+    pass
+
+
+class Inexact(DecimalException):
+    pass
+
+
+class Rounded(DecimalException):
+    pass
+
+
+class Subnormal(DecimalException):
+    pass
+
+
+class Overflow(Inexact, Rounded):
+    pass
+
+
+class Underflow(Inexact, Rounded, Subnormal):
+    pass
+
+
+class FloatOperation(DecimalException, TypeError):
+    pass
+
+
+class DivisionImpossible(InvalidOperation):
+    pass
+
+
+class DivisionUndefined(InvalidOperation, ZeroDivisionError):
+    pass
+
+
+class ConversionSyntax(InvalidOperation):
+    pass
+
+
+class InvalidContext(InvalidOperation):
     pass
 
 

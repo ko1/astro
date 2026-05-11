@@ -355,6 +355,27 @@ def show_flag_values(value):
     return []
 
 
+def _iter_bits_lsb(num):
+    """Yield each single-bit power present in ``num`` (LSB first)."""
+    while num:
+        b = num & -num
+        yield b
+        num ^= b
+
+
+def bit_count(value):
+    if value == 0: return 0
+    return bin(value).count("1")
+
+
+def pickle_by_global_name(self, proto):
+    return self.name
+
+
+def pickle_by_enum_name(self, proto):
+    return (getattr, (self.__class__, self.name))
+
+
 __all__ = ["Enum", "IntEnum", "StrEnum", "Flag", "IntFlag", "EnumMeta", "EnumType",
            "_simple_enum", "_test_simple_enum", "member", "nonmember",
            "global_enum", "auto", "DynamicClassAttribute",

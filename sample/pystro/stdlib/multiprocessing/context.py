@@ -54,3 +54,18 @@ reduction.ForkingPickler = type("ForkingPickler", (), {
 import sys as _sys
 _sys.modules['multiprocessing.context.reduction'] = reduction
 _sys.modules['multiprocessing.reduction'] = reduction
+
+
+def get_spawning_popen():
+    """CPython internal: returns the Popen object spawning the current
+    child, or None outside the spawn machinery.  Pystro is single-process
+    so always None."""
+    return None
+
+
+def set_spawning_popen(popen):
+    pass
+
+
+def assert_spawning(obj):
+    pass
