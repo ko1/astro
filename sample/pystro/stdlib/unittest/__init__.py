@@ -330,21 +330,53 @@ def main(scope=None, *args, **kwargs):
     # it: cpython tests use it to restrict / reorder the suite (e.g.
     # test_io excludes the abstract IOTest base from direct execution).
     load_tests = ns.get("load_tests") if isinstance(ns, dict) else None
-    if callable(load_tests):
-        class _DummyLoader:
-            suiteClass = list
-            def loadTestsFromTestCase(self, cls):
-                return [cls]
+    import sys as _sys
+    if not callable(load_tests):
+        # Sometimes vars(__main__) misses freshly-bound globals; consult
+        # sys.modules['__main__'] directly via __dict__ getattr.
         try:
-            result = load_tests(_DummyLoader(), [], None)
+            mm = _sys.modules.get("__main__")
+            if mm is not None:
+                lt2 = getattr(mm, "load_tests", None)
+                if callable(lt2):
+                    load_tests = lt2
+        except Exception:
+            pass
+    if callable(load_tests):
+        # Provide a CPython-shaped loader so test_io etc.'s suite-building
+        # idioms (`loader.suiteClass()` + `suite.addTest(...)`) work.
+        collected = []
+        class _DummySuite:
+            def __init__(self): self.items = []
+            def addTest(self, test):
+                # Flatten any nested suites / lists.
+                if isinstance(test, (list, tuple)):
+                    for sub in test:
+                        self.addTest(sub)
+                elif hasattr(test, "items"):
+                    for sub in test.items:
+                        self.addTest(sub)
+                elif isinstance(test, type) and hasattr(test, "_is_test_case_"):
+                    self.items.append(test)
+            def __iter__(self):
+                return iter(self.items)
+        class _DummyLoader:
+            suiteClass = _DummySuite
+            def loadTestsFromTestCase(self, cls):
+                s = _DummySuite()
+                s.items.append(cls)
+                return s
+        try:
+            result = load_tests(_DummyLoader(), _DummySuite(), None)
         except Exception:
             result = None
         if result is not None:
             try:
-                for item in result:
-                    # result may be a list of classes or a list of
-                    # [class] lists depending on what loadTestsFromTestCase
-                    # returned.  Flatten one level.
+                if hasattr(result, "items"):
+                    collected = result.items
+                elif isinstance(result, (list, tuple)):
+                    collected = result
+                for item in collected:
                     if isinstance(item, type) and hasattr(item, "_is_test_case_"):
                         if id(item) not in seen:
                             seen.add(id(item))
