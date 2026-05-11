@@ -14253,6 +14253,12 @@ bi_import(CTX *c, int argc, VALUE *argv)
     pys_global_set(c, "__loader__", PYS_NONE);
     // __cached__ — bytecode cache path; we don't compile so leave None.
     pys_global_set(c, "__cached__", PYS_NONE);
+    // PEP 526: at module-level, CPython auto-creates an __annotations__
+    // dict the first time an annotation is encountered.  pystro skips
+    // annotations entirely at the AST level, so user code that probes
+    // `__annotations__` directly (test.typinganndata.ann_module does
+    // `__annotations__[1] = 2`) crashes.  Pre-seed an empty dict.
+    pys_global_set(c, "__annotations__", pys_make_dict());
     {
         // Package: parent of the dotted name, OR name itself if loaded
         // as `<pkg>/__init__.py`.  We approximate by checking whether
