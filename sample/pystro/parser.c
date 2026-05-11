@@ -3653,7 +3653,8 @@ parse_with(void)
             // Plain NAME (no trailers): the cm value binds directly to it.
             if (peek_tok(0)->kind == T_NAME
                     && peek_tok(1)->kind != T_DOT
-                    && peek_tok(1)->kind != T_LBRACK) {
+                    && peek_tok(1)->kind != T_LBRACK
+                    && peek_tok(1)->kind != T_LPAREN) {
                 items[n].as_name = peek_tok(0)->sval;
                 tok_pos++;
             } else if (peek_tok(0)->kind == T_NAME) {
