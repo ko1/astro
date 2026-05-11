@@ -2963,6 +2963,10 @@ pys_is_truthy_instance(VALUE v)
         if (c->state == PYS_STATE_RAISE) return false;
         return PYS_IS_FIXNUM(r) ? PYS_FIXVAL(r) != 0 : true;
     }
+    // Built-in subclass without overrides: defer to primary's truthiness
+    // so `bool(class D(dict): pass; D())` returns False for an empty D.
+    if (PYS_PTR(v)->inst.primary)
+        return pys_is_truthy(PYS_PTR(v)->inst.primary);
     return true;
 }
 
