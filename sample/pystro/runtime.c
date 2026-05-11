@@ -5119,6 +5119,16 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         for (size_t i = 0; i < g->size; i++)
             if (strcmp(g->entries[i].name, name) == 0 && g->entries[i].defined)
                 return g->entries[i].value;
+        // PEP 562: module-level __getattr__ fallback.  Lets cpython's
+        // concurrent.futures lazy-load ProcessPoolExecutor etc.
+        for (size_t i = 0; i < g->size; i++) {
+            if (strcmp(g->entries[i].name, "__getattr__") == 0
+                && g->entries[i].defined) {
+                VALUE getter = g->entries[i].value;
+                VALUE av[1] = { pys_make_str(name, strlen(name)) };
+                return pys_apply(c, getter, 1, av);
+            }
+        }
         PYS_RAISE_EXC(c, c->EXC_AttributeError, "module '%s' has no attribute '%s'",
                      PYS_PTR(v)->module.name, name);
     }

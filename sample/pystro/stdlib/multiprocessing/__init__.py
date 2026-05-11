@@ -74,3 +74,30 @@ def set_start_method(method, force=False):
 
 def get_start_method(allow_none=False):
     return "fork"
+
+
+# Exception types CPython exposes at top-level.
+class AuthenticationError(Exception):
+    pass
+
+
+class BufferTooShort(Exception):
+    pass
+
+
+class ProcessError(Exception):
+    pass
+
+
+class TimeoutError(Exception):
+    pass
+
+
+# multiprocessing.connection submodule placeholder.
+import sys as _sys
+import types as _types
+_conn_mod = _types.ModuleType("multiprocessing.connection")
+_conn_mod.Listener = None
+_conn_mod.Client = None
+_sys.modules['multiprocessing.connection'] = _conn_mod
+connection = _conn_mod

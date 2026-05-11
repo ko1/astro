@@ -41,4 +41,4 @@ model = type("model", (), {
 
 
 __all__ = ["EXPAT_VERSION", "ExpatError", "error", "ParserCreate",
-           "XMLParserType", "errors", "model"]
+           "XMLParserType", "errors", "model", "version_info"]

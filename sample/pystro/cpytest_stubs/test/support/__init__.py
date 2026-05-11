@@ -952,6 +952,24 @@ def thread_cleanup():
     return (0, ())
 
 
+def darwin_malloc_err_warning(name):
+    pass
+
+
+def get_pagesize():
+    return 4096
+
+
+def import_module(name, deprecated=False):
+    import importlib
+    return importlib.import_module(name)
+
+
+# Decimal sometimes asks for an "extra precision" context — minimal stub.
+def adjust_int_max_str_digits(*args, **kwargs):
+    pass
+
+
 def reap_threads(fn):
     # Decorator that runs the test and asserts no threads leaked.  Pystro
     # has no real threading so just return fn unchanged.

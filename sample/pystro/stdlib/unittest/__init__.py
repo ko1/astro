@@ -226,6 +226,7 @@ class TestCase:
             cls._class_cleanups = []
         cls._class_cleanups.append((fn, args, kwargs))
 
+
     def fail(self, msg=""):
         raise AssertionError(msg)
 
@@ -243,6 +244,18 @@ class TestCase:
 
     @classmethod
     def tearDownClass(cls): pass
+
+
+class IsolatedAsyncioTestCase(TestCase):
+    """CPython 3.8+ async-aware TestCase.  pystro runs async tests
+    synchronously via a tiny event loop in run_async; expose the type
+    so tests that subclass it at least don't import-error."""
+    def _run_async(self, coro):
+        try:
+            coro.send(None)
+        except StopIteration as e:
+            return getattr(e, "value", None)
+        return None
 
 
 class _AssertNoOpCM:
