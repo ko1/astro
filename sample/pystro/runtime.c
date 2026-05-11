@@ -9040,6 +9040,8 @@ static struct type_method list_methods[] = {
     { "remove",  lm_remove,  2, 2 },
     { "copy",    lm_copy,    1, 1 },
     { "clear",   lm_clear,   1, 1 },
+    { "__iter__", bi_dunder_iter, 1, 1 },
+    { "__len__",  bi_dunder_len,  1, 1 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -10301,6 +10303,8 @@ tm_count(CTX *c, int argc, VALUE *argv)
 static struct type_method tuple_methods[] = {
     { "index", tm_index, 2, 4 },
     { "count", tm_count, 2, 2 },
+    { "__iter__", bi_dunder_iter, 1, 1 },
+    { "__len__",  bi_dunder_len,  1, 1 },
     { NULL, NULL, 0, 0 }
 };
 
