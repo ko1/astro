@@ -4785,6 +4785,26 @@ skip_plain_unpack: ;
         }
     }
 
+    // `<expr> : <annotation> [= <rhs>]` — annotated assignment with
+    // non-NAME / non-attr-chain LHS (covers `f().new_attr: object = ...`
+    // and `(1).__class__ = MyInt` style code that CPython accepts
+    // syntactically and only raises at runtime).
+    if (k2 == T_COLON) {
+        tok_pos++;            // consume ':'
+        (void)parse_expr();   // discard annotation
+        if (match_tok(T_ASSIGN)) {
+            NODE *rhs = parse_expr_list();
+            // Re-parse LHS as an assignment target.
+            size_t saved2 = tok_pos;
+            tok_pos = lhs_start;
+            NODE *store = parse_assignable_target(rhs);
+            tok_pos = saved2;
+            return store;
+        }
+        // Bare annotation `<expr>: T` — no-op store.
+        return ALLOC_node_nop();
+    }
+
     if (k2 == T_ASSIGN) {
         // Possible chain `a = b = ... = expr` — accumulate target spans
         // and bind via a hidden temp so the RHS evaluates exactly once.
@@ -4915,6 +4935,27 @@ parse_assignable_target(NODE *rhs)
     // Nested-tuple/list pattern: `(a, b, ...) = rhs` or `[a, b] = rhs`.
     // Each child becomes `child_i = __t[i]` recursively.
     if (t->kind == T_LPAREN || t->kind == T_LBRACK) {
+        // First check: is this a parenthesised base for an attribute /
+        // subscript assignment (`(expr).attr = rhs`, `(x)[i] = rhs`)?
+        // Such forms are handled by the trailer logic below, not by the
+        // tuple-unpack code that starts here.  Peek past the matching
+        // close paren and see if a `.` or `[` follows.
+        if (t->kind == T_LPAREN) {
+            int depth = 0;
+            size_t pp = tok_pos;
+            while (tok_arr[pp].kind != T_EOF) {
+                int kk = tok_arr[pp].kind;
+                if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+                else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) {
+                    depth--;
+                    if (depth == 0) { pp++; break; }
+                }
+                pp++;
+            }
+            int after = tok_arr[pp].kind;
+            if (after == T_DOT || after == T_LBRACK)
+                goto paren_base_path;
+        }
         int close = (t->kind == T_LPAREN) ? T_RPAREN : T_RBRACK;
         tok_pos++;
         const char *tmp = new_temp_name("__nupk");
@@ -4985,9 +5026,23 @@ parse_assignable_target(NODE *rhs)
     // here. Maybe you meant '==' instead of '='?" — keep the tail terse so the
     // common assertRaisesRegex(SyntaxError, "cannot assign") in stdlib tests
     // catches it.
-    if (t->kind != T_NAME) parse_error("cannot assign to expression");
-    const char *base_name = t->sval;
-    tok_pos++;
+    // Accept a parenthesized expression as the base (e.g. `(1).__class__
+    // = MyInt` — CPython accepts syntactically and raises TypeError at
+    // runtime).  Parse `( expr )` as a NODE and feed it as `paren_base`
+    // to the trailer loop in place of the NAME load.
+paren_base_path: ;
+    NODE *paren_base = NULL;
+    const char *base_name = NULL;
+    if (t->kind == T_LPAREN) {
+        tok_pos++;            // consume '('
+        paren_base = parse_expr();
+        expect(T_RPAREN, "')'");
+    } else if (t->kind != T_NAME) {
+        parse_error("cannot assign to expression");
+    } else {
+        base_name = t->sval;
+        tok_pos++;
+    }
     // TR_CALL stores the resulting call node directly (parse_call_args
     // builds it on the spot from the partial `cur` we maintain in the
     // build loop below).  Without this the parser silently dropped
@@ -5085,13 +5140,20 @@ parse_assignable_target(NODE *rhs)
             ntr++;
         }
     }
-    if (ntr == 0) return make_store(base_name, rhs);
+    if (ntr == 0) {
+        // No trailers — must be a plain NAME = rhs.  A parenthesized
+        // bare expression here (e.g. `(x) = 1`) reduces to a name
+        // assignment in CPython; require that the inner expr was a
+        // gref-shape but pystro doesn't easily round-trip, so just bail.
+        if (!base_name) parse_error("cannot assign to expression");
+        return make_store(base_name, rhs);
+    }
     // The terminal trailer must be assignable (DOT / SUB / SLICE).  A
     // trailing `()` makes the LHS a call result, which Python rejects
     // ("cannot assign to function call").
     int last = ntr - 1;
     if (trs[last].kind == TR_CALL) parse_error("cannot assign to function call");
-    NODE *cur = make_load(base_name);
+    NODE *cur = paren_base ? paren_base : make_load(base_name);
     for (int i = 0; i < ntr - 1; i++) {
         if (trs[i].kind == TR_DOT) {
             // Fuse `obj.name(args)` into a method call when the next
