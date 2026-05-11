@@ -247,10 +247,22 @@ keyword_kind(const char *s, size_t len)
     return T_NAME;
 }
 
+#include <setjmp.h>
+extern jmp_buf *parse_error_jmp;     // shared with parser.c
+extern char     parse_error_msg[1024];
+extern int      parse_error_line;
+
 __attribute__((noreturn,format(printf,1,2)))
 static void
 lex_error(const char *fmt, ...)
 {
+    if (parse_error_jmp) {
+        va_list ap; va_start(ap, fmt);
+        vsnprintf(parse_error_msg, sizeof(parse_error_msg), fmt, ap);
+        va_end(ap);
+        parse_error_line = src_line;
+        longjmp(*parse_error_jmp, 1);
+    }
     fprintf(stderr, "pystro: %s:%d: ", src_filename ? src_filename : "<input>", src_line);
     va_list ap; va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
