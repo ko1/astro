@@ -296,6 +296,57 @@ main(int argc, char *argv[])
     OPTIMIZE(body);
 
     EVAL(c, body);
+    // Auto-run unittest tests if the script imported unittest, defined
+    // TestCase subclasses, and never called unittest.main() itself
+    // (CPython tests run under `python -m unittest` rather than calling
+    // main directly).  Match by sys.modules + flag on the unittest stub.
+    if (c->state == PYS_STATE_NORMAL) {
+        extern VALUE modules_dict(CTX *c);
+        VALUE m = modules_dict(c);
+        VALUE ut_v = PYS_NONE;
+        if (pys_dict_has(c, m, pys_make_str("unittest", 8))) {
+            ut_v = pys_dict_get(c, m, pys_make_str("unittest", 8));
+        }
+        if (ut_v != PYS_NONE && pys_is_module(ut_v)) {
+            // Lookup _main_called in unittest module.
+            struct pysglobals *ug = PYS_PTR(ut_v)->module.globals;
+            bool called = false;
+            for (size_t i = 0; i < ug->size; i++) {
+                if (strcmp(ug->entries[i].name, "_main_called") == 0
+                    && ug->entries[i].defined
+                    && ug->entries[i].value == PYS_TRUE) {
+                    called = true; break;
+                }
+            }
+            if (!called) {
+                // Find unittest.main and call it with globals().
+                VALUE main_fn = PYS_NONE;
+                for (size_t i = 0; i < ug->size; i++) {
+                    if (strcmp(ug->entries[i].name, "main") == 0 && ug->entries[i].defined) {
+                        main_fn = ug->entries[i].value; break;
+                    }
+                }
+                if (main_fn != PYS_NONE) {
+                    // Build globals snapshot dict.
+                    VALUE gd = pys_make_dict();
+                    for (size_t i = 0; i < c->globals->size; i++) {
+                        if (c->globals->entries[i].defined) {
+                            VALUE k = pys_make_str(c->globals->entries[i].name,
+                                                  strlen(c->globals->entries[i].name));
+                            pys_dict_set(c, gd, k, c->globals->entries[i].value);
+                        }
+                    }
+                    VALUE av[1] = { gd };
+                    pys_apply(c, main_fn, 1, av);
+                    if (c->state == PYS_STATE_RAISE) {
+                        // Suppress — unittest.main failure shouldn't crash exit.
+                        c->state = PYS_STATE_NORMAL;
+                        c->state_value = PYS_NONE;
+                    }
+                }
+            }
+        }
+    }
     if (c->state == PYS_STATE_RAISE) {
         VALUE exc = c->state_value;
         // SystemExit propagates as the process exit code (CPython

@@ -284,9 +284,18 @@ class _AssertRaisesCM:
         return True
 
 
+# Flag the pystro runtime checks at script exit: if main() was never
+# called and the script's globals contain TestCase subclasses, run
+# them.  Lets test files that omit `unittest.main()` (e.g. CPython
+# tests run via `python -m unittest`) still execute.
+_main_called = False
+
+
 # Run all TestCase subclasses' test_* methods declared in the caller's
 # module.  Caller passes globals(), or we walk sys.modules.__main__.
 def main(scope=None, *args, **kwargs):
+    global _main_called
+    _main_called = True
     # CPython's unittest.main accepts module=, exit=, verbosity=, etc.
     # Pystro's stub ignores them.
     if isinstance(scope, dict):
