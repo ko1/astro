@@ -394,10 +394,24 @@ def displayhook(value):
 def excepthook(exc_type, exc_value, tb):
     print(repr(exc_value))
 
+# CPython exposes original (un-patched) hooks as __excepthook__ etc.
+__excepthook__ = excepthook
+__displayhook__ = displayhook
+__breakpointhook__ = lambda *a, **kw: None
+__unraisablehook__ = lambda *a, **kw: None
+
+# Import system internals — empty / stubs.
+meta_path = []
+path_hooks = []
+path_importer_cache = {}
+
 __all__ = ["argv", "path", "version", "version_info", "platform",
            "maxsize", "maxunicode", "byteorder", "prefix", "exec_prefix",
            "executable", "implementation_name",
            "stdin", "stdout", "stderr", "modules",
            "exit", "exc_info", "getrecursionlimit", "setrecursionlimit",
            "getsizeof", "getrefcount", "intern", "settrace", "gettrace",
-           "displayhook", "excepthook"]
+           "displayhook", "excepthook",
+           "__excepthook__", "__displayhook__", "__breakpointhook__",
+           "__unraisablehook__",
+           "meta_path", "path_hooks", "path_importer_cache"]

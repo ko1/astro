@@ -73,7 +73,26 @@ def _getdefaultlocale():
     return (None, None)
 
 
+# nl_langinfo() item identifiers (subset of CPython's _locale).  Tests
+# typically just import the names; pystro doesn't model locale lookup.
+RADIXCHAR = 65536
+THOUSEP = 65537
+YESEXPR = 65538
+NOEXPR = 65539
+CRNCYSTR = 65540
+CODESET = 14
+D_T_FMT = 131072
+D_FMT = 131073
+T_FMT = 131074
+T_FMT_AMPM = 131075
+AM_STR = 131110
+PM_STR = 131111
+
+
 __all__ = ["Error", "setlocale", "getlocale", "localeconv", "nl_langinfo",
            "strcoll", "strxfrm", "LC_ALL", "LC_COLLATE", "LC_CTYPE",
            "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME",
-           "CHAR_MAX", "getencoding"]
+           "CHAR_MAX", "getencoding",
+           "RADIXCHAR", "THOUSEP", "YESEXPR", "NOEXPR", "CRNCYSTR",
+           "CODESET", "D_T_FMT", "D_FMT", "T_FMT", "T_FMT_AMPM",
+           "AM_STR", "PM_STR"]
