@@ -893,6 +893,9 @@ HAVE_DOCSTRINGS = True
 PGO = False  # Profile-guided-optimization build flag.
 Py_GIL_DISABLED = False
 Py_DEBUG = False
+import os as _os_mod
+unix_shell = "/bin/sh" if _os_mod.name == "posix" else None
+del _os_mod
 
 
 class PythonSymlink:
