@@ -14414,6 +14414,19 @@ bi_pystro_getcwd(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_pystro_pipe(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc; (void)argv;
+    int fds[2];
+    if (pipe(fds) != 0) {
+        PYS_RAISE_EXC(c, c->EXC_OSError,
+                     "[Errno %d] pipe: %s", errno, strerror(errno));
+    }
+    VALUE pair[2] = { PYS_FIX(fds[0]), PYS_FIX(fds[1]) };
+    return pys_make_tuple(pair, 2);
+}
+
+static VALUE
 bi_pystro_rename(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -15909,6 +15922,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_getcwd__",    pys_make_builtin("__pystro_getcwd__",    bi_pystro_getcwd,    0, 0));
     pys_global_define(c, "__pystro_chdir__",     pys_make_builtin("__pystro_chdir__",     bi_pystro_chdir,     1, 1));
     pys_global_define(c, "__pystro_rename__",    pys_make_builtin("__pystro_rename__",    bi_pystro_rename,    2, 2));
+    pys_global_define(c, "__pystro_pipe__",      pys_make_builtin("__pystro_pipe__",      bi_pystro_pipe,      0, 0));
     pys_global_define(c, "__pystro_path_exists__", pys_make_builtin("__pystro_path_exists__", bi_pystro_path_exists, 1, 1));
     pys_global_define(c, "__pystro_md5__",     pys_make_builtin("__pystro_md5__",     bi_pystro_md5,     1, 1));
     pys_global_define(c, "__pystro_sha256__",  pys_make_builtin("__pystro_sha256__",  bi_pystro_sha256,  1, 1));

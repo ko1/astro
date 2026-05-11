@@ -247,7 +247,8 @@ def fdopen(fd, *args, **kwargs):
 
 
 def pipe():
-    raise OSError("pipe not supported")
+    try: return __pystro_pipe__()
+    except NameError: raise OSError("pipe not supported")
 
 
 def dup(fd): return fd
