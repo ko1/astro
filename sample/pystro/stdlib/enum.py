@@ -220,12 +220,10 @@ def _simple_enum(*args, **kwargs):
     def deco(cls):
         next_val = 1
         members = {}
-        # `_simple_enum` source classes can declare members as plain ints,
-        # `auto()` sentinels, or tuples whose first element is the
-        # int/str value followed by phrase/description (HTTPStatus style).
-        # We don't synthesise member instances — tests reach for the
-        # plain values via attribute access, and `__members__` exposing
-        # the same values is enough for the introspection paths.
+        # If the source class defines __new__, member values are built
+        # via cls.__new__(cls, *args) — used by HTTPStatus / HTTPMethod
+        # where each member is `NAME = value, phrase, description`.
+        has_new = "__new__" in dir(cls) and callable(getattr(cls, "__new__", None))
         for name in dir(cls):
             if name.startswith("_"):
                 continue
@@ -235,24 +233,35 @@ def _simple_enum(*args, **kwargs):
                 continue
             if callable(val) and not isinstance(val, _Auto):
                 continue
+            built = None
             if isinstance(val, _Auto):
-                members[name] = next_val
-                setattr(cls, name, next_val)
+                built = next_val
                 next_val += 1
-                continue
-            if isinstance(val, tuple) and val and isinstance(val[0], (int, str)):
-                v0 = val[0]
-                members[name] = v0
-                setattr(cls, name, v0)
-                if isinstance(v0, int):
-                    next_val = v0 + 1
-                continue
-            if isinstance(val, int):
-                members[name] = val
+            elif isinstance(val, tuple) and val and isinstance(val[0], (int, str)):
+                if has_new:
+                    try:
+                        built = cls.__new__(cls, *val)
+                    except Exception:
+                        built = val[0]
+                else:
+                    built = val[0]
+                if isinstance(val[0], int):
+                    next_val = val[0] + 1
+            elif isinstance(val, int):
+                if has_new:
+                    try:
+                        built = cls.__new__(cls, val)
+                    except Exception:
+                        built = val
+                else:
+                    built = val
                 next_val = val + 1
+            elif isinstance(val, str):
+                built = val
+            else:
                 continue
-            if isinstance(val, str):
-                members[name] = val
+            members[name] = built
+            setattr(cls, name, built)
         cls.__members__ = members
         cls._by_name_ = dict(members)
         cls._members_ = list(members.values())

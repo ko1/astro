@@ -731,6 +731,34 @@ def skip_if_pgo_task(test):
     return test
 
 
+def patch(test_instance, object_to_patch, attr_name, new_value):
+    """Override `object_to_patch.attr_name` with `new_value`, restoring
+    on test teardown via test_instance.addCleanup."""
+    # raise AttributeError early if the attr doesn't exist
+    getattr(object_to_patch, attr_name)
+    try:
+        old_value = object_to_patch.__dict__[attr_name]
+        attr_is_local = True
+    except (AttributeError, KeyError):
+        old_value = getattr(object_to_patch, attr_name, None)
+        attr_is_local = False
+    def cleanup():
+        if attr_is_local:
+            setattr(object_to_patch, attr_name, old_value)
+        else:
+            try:
+                delattr(object_to_patch, attr_name)
+            except AttributeError:
+                pass
+    test_instance.addCleanup(cleanup)
+    setattr(object_to_patch, attr_name, new_value)
+
+
+def set_sanitizer_env_var(env, option):
+    """No-op: pystro doesn't run with ASAN / TSAN."""
+    return env
+
+
 class SaveSignals:
     """Context manager that saves/restores SIGINT etc.  Pystro has no
     signal delivery model so the body is a pass-through."""
