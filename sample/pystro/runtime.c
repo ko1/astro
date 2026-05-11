@@ -15138,6 +15138,42 @@ bi_pystro_stat(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_pystro_fstat(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_int_or_bool(argv[0]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "fstat: fd must be int");
+    int fd = (int)pys_int_to_long(c, argv[0]);
+    struct stat st;
+    if (fstat(fd, &st) != 0)
+        PYS_RAISE_EXC(c, c->EXC_OSError, "fstat: fd=%d: %s", fd, strerror(errno));
+    VALUE items[10];
+    items[0] = pys_make_int((long)st.st_mode);
+    items[1] = pys_make_int((long)st.st_ino);
+    items[2] = pys_make_int((long)st.st_dev);
+    items[3] = pys_make_int((long)st.st_nlink);
+    items[4] = pys_make_int((long)st.st_uid);
+    items[5] = pys_make_int((long)st.st_gid);
+    items[6] = pys_make_int((long)st.st_size);
+    items[7] = pys_make_float((double)st.st_atime);
+    items[8] = pys_make_float((double)st.st_mtime);
+    items[9] = pys_make_float((double)st.st_ctime);
+    return pys_make_tuple(items, 10);
+}
+
+static VALUE
+bi_pystro_lseek(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    int fd = (int)pys_int_to_long(c, argv[0]);
+    int64_t off = pys_int_to_long(c, argv[1]);
+    int whence = (int)pys_int_to_long(c, argv[2]);
+    off_t r = lseek(fd, (off_t)off, whence);
+    if (r == (off_t)-1) PYS_RAISE_EXC(c, c->EXC_OSError, "lseek: %s", strerror(errno));
+    return pys_make_int((long)r);
+}
+
+static VALUE
 bi_pystro_abspath(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -16290,6 +16326,8 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_isdir__",       pys_make_builtin("__pystro_isdir__",       bi_pystro_isdir,       1, 1));
     pys_global_define(c, "__pystro_isfile__",      pys_make_builtin("__pystro_isfile__",      bi_pystro_isfile,      1, 1));
     pys_global_define(c, "__pystro_stat__",        pys_make_builtin("__pystro_stat__",        bi_pystro_stat,        1, 1));
+    pys_global_define(c, "__pystro_fstat__",       pys_make_builtin("__pystro_fstat__",       bi_pystro_fstat,       1, 1));
+    pys_global_define(c, "__pystro_lseek__",       pys_make_builtin("__pystro_lseek__",       bi_pystro_lseek,       3, 3));
     pys_global_define(c, "__pystro_abspath__",     pys_make_builtin("__pystro_abspath__",     bi_pystro_abspath,     1, 1));
     pys_global_define(c, "__pystro_gc_collect__",  pys_make_builtin("__pystro_gc_collect__",  bi_pystro_gc_collect,  0, 0));
 

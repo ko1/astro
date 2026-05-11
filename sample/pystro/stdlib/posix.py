@@ -164,7 +164,20 @@ def lstat(path):
 
 
 def fstat(fd):
-    raise NotImplementedError("posix.fstat")
+    try:
+        t = __pystro_fstat__(fd)
+    except NameError:
+        raise NotImplementedError("posix.fstat")
+    return stat_result(t)
+
+
+def lseek(fd, pos, how):
+    return __pystro_lseek__(fd, pos, how)
+
+
+SEEK_SET = 0
+SEEK_CUR = 1
+SEEK_END = 2
 
 
 def access(path, mode, *, dir_fd=None, effective_ids=False, follow_symlinks=True):

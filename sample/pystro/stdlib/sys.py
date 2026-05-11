@@ -440,6 +440,40 @@ __stdout__ = stdout
 __stderr__ = stderr
 __stdin__ = stdin
 
+
+# CPython 3.11+: sys._base_executable / _base_executable_realpath are
+# used by venv tests to find the "underlying" interpreter.  Pystro
+# is single-binary, so reuse `executable`.
+_base_executable = executable
+base_executable = executable
+base_prefix = prefix
+base_exec_prefix = exec_prefix
+flags = type("flags", (), {
+    "debug": 0,
+    "inspect": 0,
+    "interactive": 0,
+    "optimize": 0,
+    "dont_write_bytecode": 0,
+    "no_user_site": 0,
+    "no_site": 0,
+    "ignore_environment": 0,
+    "verbose": 0,
+    "bytes_warning": 0,
+    "quiet": 0,
+    "hash_randomization": 0,
+    "isolated": 0,
+    "dev_mode": False,
+    "utf8_mode": 1,
+    "safe_path": False,
+    "int_max_str_digits": 4300,
+})()
+warnoptions = []
+hexversion = 0x030C0000  # 3.12.0
+api_version = 1013
+abiflags = ""
+dont_write_bytecode = False
+pycache_prefix = None
+
 # Build / interpreter metadata referenced by some CPython tests.  Pystro
 # isn't CPython; report enough surface so attribute access doesn't break.
 _git = ("CPython", "", "")
