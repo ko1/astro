@@ -1218,6 +1218,23 @@ parse_genexp_lazy(int saved_remap_at_paren)
         parse_error("expected target NAME in genexp");
     const char *first_var = comp_resolve(peek_tok(0)->sval);
     tok_pos++;
+    // Skip subscript / attr trailers attached to target (parse-only;
+    // see parse_comp_clauses for rationale).
+    while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+        if (match_tok(T_DOT)) {
+            if (peek_tok(0)->kind != T_NAME) parse_error("expected attr name");
+            tok_pos++;
+        } else {
+            tok_pos++;
+            int depth = 1;
+            while (tok_arr[tok_pos].kind != T_EOF && depth > 0) {
+                int kk = tok_arr[tok_pos].kind;
+                if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+                else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) depth--;
+                tok_pos++;
+            }
+        }
+    }
     // Tuple targets: collect names.  `for a, b in xs` → unpack.
     const char *first_extra[16]; int n_first_extra = 0;
     while (match_tok(T_COMMA)) {
@@ -1225,6 +1242,21 @@ parse_genexp_lazy(int saved_remap_at_paren)
         if (n_first_extra >= 16) parse_error("tuple target too long");
         first_extra[n_first_extra++] = comp_resolve(peek_tok(0)->sval);
         tok_pos++;
+        while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+            if (match_tok(T_DOT)) {
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected attr name");
+                tok_pos++;
+            } else {
+                tok_pos++;
+                int depth = 1;
+                while (tok_arr[tok_pos].kind != T_EOF && depth > 0) {
+                    int kk = tok_arr[tok_pos].kind;
+                    if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+                    else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) depth--;
+                    tok_pos++;
+                }
+            }
+        }
     }
     if (paren_target) expect(T_RPAREN, "')'");
     expect(T_IN, "'in'");
@@ -1397,6 +1429,26 @@ parse_comp_clauses(NODE *inner_body)
     int nnames = 0;
     names[nnames++] = comp_resolve(peek_tok(0)->sval);
     tok_pos++;
+    // Consume any `.attr` / `[idx]` trailers attached to the target —
+    // `for (l[0], l) in ...` / `for tgt[0] in ...`.  Pystro doesn't
+    // emit assignment-to-subscript/attr in comprehension targets but
+    // accepts the syntax so the surrounding test can at least observe
+    // the expected UnboundLocalError / runtime behaviour.
+    while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+        if (match_tok(T_DOT)) {
+            if (peek_tok(0)->kind != T_NAME) parse_error("expected attr name");
+            tok_pos++;
+        } else {
+            tok_pos++;  // consume '['
+            int depth = 1;
+            while (tok_arr[tok_pos].kind != T_EOF && depth > 0) {
+                int kk = tok_arr[tok_pos].kind;
+                if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+                else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) depth--;
+                tok_pos++;
+            }
+        }
+    }
     bool trailing_comma = false;
     while (match_tok(T_COMMA)) {
         // Trailing comma: `for x, in [...]` — treat target as 1-tuple
@@ -1416,6 +1468,22 @@ parse_comp_clauses(NODE *inner_body)
         if (nnames >= 16) parse_error("for tuple target too long");
         names[nnames++] = comp_resolve(peek_tok(0)->sval);
         tok_pos++;
+        // Same trailer-skip for each subsequent name.
+        while (peek_tok(0)->kind == T_DOT || peek_tok(0)->kind == T_LBRACK) {
+            if (match_tok(T_DOT)) {
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected attr name");
+                tok_pos++;
+            } else {
+                tok_pos++;
+                int depth = 1;
+                while (tok_arr[tok_pos].kind != T_EOF && depth > 0) {
+                    int kk = tok_arr[tok_pos].kind;
+                    if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+                    else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) depth--;
+                    tok_pos++;
+                }
+            }
+        }
     }
     if (paren_target) expect(T_RPAREN, "')'");
     expect(T_IN, "'in'");
