@@ -78,6 +78,144 @@ KT = "KT"
 VT = "VT"
 T_co = "T_co"
 T_contra = "T_contra"
+
+# Common Generic-Alias bound to a concrete type — pystro treats these
+# as opaque sentinels (you can subscript them via _GenericAlias).
+IO = _GenericAlias(lambda x: x, "typing.IO")
+TextIO = _GenericAlias(lambda x: x, "typing.TextIO")
+BinaryIO = _GenericAlias(lambda x: x, "typing.BinaryIO")
+Pattern = _GenericAlias(lambda x: x, "typing.Pattern")
+Match = _GenericAlias(lambda x: x, "typing.Match")
+Awaitable = _GenericAlias(lambda x: x, "typing.Awaitable")
+Coroutine = _GenericAlias(lambda x: x, "typing.Coroutine")
+AsyncIterable = _GenericAlias(lambda x: x, "typing.AsyncIterable")
+AsyncIterator = _GenericAlias(lambda x: x, "typing.AsyncIterator")
+AsyncGenerator = _GenericAlias(lambda x: x, "typing.AsyncGenerator")
+ContextManager = _GenericAlias(lambda x: x, "typing.ContextManager")
+AsyncContextManager = _GenericAlias(lambda x: x, "typing.AsyncContextManager")
+Mapping = _GenericAlias(dict, "typing.Mapping")
+MutableMapping = _GenericAlias(dict, "typing.MutableMapping")
+Sequence = _GenericAlias(list, "typing.Sequence")
+MutableSequence = _GenericAlias(list, "typing.MutableSequence")
+Container = _GenericAlias(lambda x: x, "typing.Container")
+Collection = _GenericAlias(lambda x: x, "typing.Collection")
+KeysView = _GenericAlias(lambda x: x, "typing.KeysView")
+ValuesView = _GenericAlias(lambda x: x, "typing.ValuesView")
+ItemsView = _GenericAlias(lambda x: x, "typing.ItemsView")
+MappingView = _GenericAlias(lambda x: x, "typing.MappingView")
+Reversible = _GenericAlias(lambda x: x, "typing.Reversible")
+AbstractSet = _GenericAlias(set, "typing.AbstractSet")
+MutableSet = _GenericAlias(set, "typing.MutableSet")
+DefaultDict = _GenericAlias(dict, "typing.DefaultDict")
+OrderedDict = _GenericAlias(dict, "typing.OrderedDict")
+Counter = _GenericAlias(dict, "typing.Counter")
+ChainMap = _GenericAlias(dict, "typing.ChainMap")
+Deque = _GenericAlias(list, "typing.Deque")
+ByteString = _GenericAlias(bytes, "typing.ByteString")
+NamedTupleMeta = type("NamedTupleMeta", (type,), {})
+TypedDict = _GenericAlias(dict, "typing.TypedDict")
+TYPE_CHECKING = False
+
+
+class ForwardRef:
+    """typing.ForwardRef — placeholder for string-based type
+    references.  Pystro doesn't evaluate annotations at runtime, so
+    just store the source string."""
+    __slots__ = ("__forward_arg__", "__forward_evaluated__", "__forward_value__")
+    def __init__(self, arg, is_argument=True, module=None, is_class=False):
+        self.__forward_arg__ = arg
+        self.__forward_evaluated__ = False
+        self.__forward_value__ = None
+    def __eq__(self, other):
+        return isinstance(other, ForwardRef) and self.__forward_arg__ == other.__forward_arg__
+    def __hash__(self):
+        return hash(self.__forward_arg__)
+    def __repr__(self):
+        return f"ForwardRef({self.__forward_arg__!r})"
+
+
+class _SpecialForm:
+    """typing.Final / typing.ClassVar / typing.Literal share this
+    type at the Python level.  Provided for isinstance checks."""
+    def __init__(self, name):
+        self._name = name
+    def __getitem__(self, key):
+        return self
+    def __repr__(self):
+        return "typing." + self._name
+
+
+def cast(typ, val):
+    return val
+
+
+def runtime(cls):
+    return cls
+
+
+# typing.ParamSpec / ParamSpecArgs / ParamSpecKwargs — PEP 612 generics.
+class ParamSpecArgs:
+    def __init__(self, origin=None): self.__origin__ = origin
+
+
+class ParamSpecKwargs:
+    def __init__(self, origin=None): self.__origin__ = origin
+
+
+# Re-bind ParamSpec to have args/kwargs attributes.
+class _ParamSpec:
+    def __init__(self, name, *args, **kwargs):
+        self.__name__ = name
+        self.args = ParamSpecArgs(self)
+        self.kwargs = ParamSpecKwargs(self)
+    def __repr__(self): return "~" + self.__name__
+    def __mro_entries__(self, bases): return ()
+
+
+# Don't override the existing GenericAlias-based ParamSpec; provide a
+# more capable callable form so `P = ParamSpec("P")` works.  Tests then
+# read `P.args` / `P.kwargs` / `P.__name__`.
+def ParamSpec(name, *args, **kwargs):  # noqa: F811
+    return _ParamSpec(name, *args, **kwargs)
+
+
+TypeGuard = _GenericAlias(lambda x: x, "typing.TypeGuard")
+
+
+class TypeAliasType:
+    """PEP 695 type alias (3.12+).  Pystro treats it as a transparent
+    name carrier — value is stored as `__value__`."""
+    def __init__(self, name, value, *, type_params=()):
+        self.__name__ = name
+        self.__value__ = value
+        self.__type_params__ = type_params
+    def __repr__(self):
+        return self.__name__
+    def __class_getitem__(cls, item):
+        return cls
+TypeIs = _GenericAlias(lambda x: x, "typing.TypeIs")
+NotRequired = _GenericAlias(lambda x: x, "typing.NotRequired")
+ClassVar = _GenericAlias(lambda x: x, "typing.ClassVar")
+Final = _GenericAlias(lambda x: x, "typing.Final")
+NewType = NewType  # already defined
+NoReturn = _GenericAlias(lambda: None, "typing.NoReturn")
+
+
+def is_protocol(cls):
+    return False
+
+
+def get_protocol_members(cls):
+    return frozenset()
+
+
+class _CallableGenericAlias(_GenericAlias):
+    pass
+
+
+# Sentinels CPython exposes via internal globals.
+_AnnotatedAlias = _GenericAlias
+_TypedDictMeta = type
 Never = _GenericAlias(lambda: None, "typing.Never")
 LiteralString = _GenericAlias(str, "typing.LiteralString")
 Required = _GenericAlias(lambda x: x, "typing.Required")
@@ -129,7 +267,18 @@ def final(fn):
     return fn
 
 
+def dataclass_transform(*args, **kwargs):
+    def deco(fn): return fn
+    if args and callable(args[0]):
+        return args[0]
+    return deco
+
+
 def no_type_check(fn):
+    return fn
+
+
+def no_type_check_decorator(fn):
     return fn
 
 
