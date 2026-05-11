@@ -187,6 +187,32 @@ class _StdStream:
         return False
     def isatty(self):
         return False
+    def fileno(self):
+        return self.fd
+    @property
+    def buffer(self):
+        # CPython exposes a binary buffer underlying the text stream;
+        # tests probe it but rarely actually use it.  Self is close
+        # enough — methods that take str will still accept str input.
+        return self
+    @property
+    def encoding(self):
+        return "utf-8"
+    @property
+    def errors(self):
+        return "strict"
+    @property
+    def name(self):
+        return ("<stdin>", "<stdout>", "<stderr>")[self.fd]
+    @property
+    def mode(self):
+        return "r" if self.fd == 0 else "w"
+    def writable(self):
+        return self.fd != 0
+    def readable(self):
+        return self.fd == 0
+    def seekable(self):
+        return False
 
 stdin  = _StdStream(0)
 stdout = _StdStream(1)

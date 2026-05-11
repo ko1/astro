@@ -122,6 +122,27 @@ def clear_overloads():
 
 def overload(fn):
     return fn
+
+
+def final(fn):
+    """@typing.final — no-op runtime decorator."""
+    return fn
+
+
+def no_type_check(fn):
+    return fn
+
+
+def get_type_hints(obj, globalns=None, localns=None, include_extras=False):
+    return {}
+
+
+def get_origin(tp):
+    return None
+
+
+def get_args(tp):
+    return ()
 Hashable = _GenericAlias(lambda x: x, "typing.Hashable")
 Sized    = _GenericAlias(lambda x: x, "typing.Sized")
 Container = _GenericAlias(lambda x: x, "typing.Container")

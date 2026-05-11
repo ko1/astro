@@ -964,6 +964,12 @@ def requires_venv_with_pip(fn):
     return _unittest.skip("venv/pip not supported")(fn)
 
 
+def copy_python_src_ignore(path, names):
+    # shutil.copytree ignore callback for venv tests; pystro doesn't
+    # run the venv tests so an empty set is fine.
+    return set()
+
+
 def darwin_malloc_err_warning(name):
     pass
 

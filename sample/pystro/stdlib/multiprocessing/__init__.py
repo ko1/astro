@@ -84,6 +84,27 @@ def set_executable(path):
     pass
 
 
+# multiprocessing.pool submodule placeholder.
+import types as _types_pool
+_pool_mod = _types_pool.ModuleType("multiprocessing.pool")
+class _PoolStub:
+    def __init__(self, *args, **kwargs): pass
+    def apply(self, func, args=(), kwds={}): return func(*args, **kwds)
+    def apply_async(self, *args, **kwargs): return self
+    def map(self, func, iterable, chunksize=None): return [func(x) for x in iterable]
+    def map_async(self, *args, **kwargs): return self
+    def close(self): pass
+    def join(self): pass
+    def terminate(self): pass
+    def __enter__(self): return self
+    def __exit__(self, *e): return False
+_pool_mod.Pool = _PoolStub
+_pool_mod.ThreadPool = _PoolStub
+import sys as _sys_pool
+_sys_pool.modules['multiprocessing.pool'] = _pool_mod
+pool = _pool_mod
+
+
 # Exception types CPython exposes at top-level.
 class AuthenticationError(Exception):
     pass
