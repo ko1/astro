@@ -5903,7 +5903,16 @@ pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         // C constructor directly.  Result is a primitive value, not a
         // PYS_T_INSTANCE, since the constructor returns int/list/etc.
         if (PYS_PTR(fn)->cls.builtin_ctor) {
-            return PYS_PTR(fn)->cls.builtin_ctor(c, argc, argv);
+            // pys_apply (positional-only path) — explicitly zero
+            // PYS_BI_KWC so the ctor doesn't see stale kwargs from the
+            // outer caller's frame.  Saved/restored to keep the outer
+            // scope's view untouched.
+            extern int PYS_BI_KWC;
+            int saved_kwc = PYS_BI_KWC;
+            PYS_BI_KWC = 0;
+            VALUE r = PYS_PTR(fn)->cls.builtin_ctor(c, argc, argv);
+            PYS_BI_KWC = saved_kwc;
+            return r;
         }
         // Metaclass __call__ override (singleton, etc.).
         VALUE meta_s = pys_class_lookup_method(fn, PYS_INTERN_metaclass);
