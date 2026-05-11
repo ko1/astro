@@ -9,8 +9,12 @@ import tempfile
 # the basename through tempfile.gettempdir() so open/remove always
 # succeeds.  Keep the basename starting with "@test" — CPython tests
 # probe `if 'test' in TESTFN`.
+# Per-pid relative path; CPython tests `os.path.basename(make_name)`
+# expect TESTFN to be a short bare name.  Per-job TMPDIR (set by
+# tools/sweep.sh) makes the cwd unique so two parallel jobs don't
+# collide on the same relative `@test_pystro_<pid>`.
 _TESTFN_BASE = "@test_pystro_" + str(os.getpid())
-TESTFN = os.path.join(tempfile.gettempdir(), _TESTFN_BASE)
+TESTFN = _TESTFN_BASE
 TESTFN_ASCII = TESTFN
 TESTFN_UNICODE = TESTFN
 TESTFN_NONASCII = TESTFN + "\xe9"
@@ -69,12 +73,22 @@ def fd_count():
     return 0
 
 
-def change_cwd(path):
+def change_cwd(path, quiet=False):
+    """Context manager that actually changes the cwd (CPython parity)."""
     class _CwdCtx:
         def __enter__(self):
             self.old = os.getcwd()
+            try:
+                os.chdir(path)
+            except OSError:
+                if not quiet:
+                    raise
             return path
         def __exit__(self, *exc):
+            try:
+                os.chdir(self.old)
+            except Exception:
+                pass
             return False
     return _CwdCtx()
 

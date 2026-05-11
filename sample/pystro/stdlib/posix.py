@@ -86,6 +86,11 @@ O_DIRECTORY = 65536
 O_CLOEXEC = 524288
 
 
+def chdir(path):
+    try: return __pystro_chdir__(path)
+    except NameError: raise OSError("chdir not supported")
+
+
 def getcwd():
     return __pystro_getcwd__() if "__pystro_getcwd__" in dir() else "/"
 
@@ -200,7 +205,8 @@ def makedirs(path, mode=0o777, exist_ok=False):
 
 
 def rename(src, dst):
-    raise OSError("rename not supported")
+    try: return __pystro_rename__(src, dst)
+    except NameError: raise OSError("rename not supported")
 
 
 def open(path, flags, mode=0o777, *, dir_fd=None):
@@ -426,7 +432,7 @@ def _path_normpath(path):
 # comprehensive __all__ so `from posix import *` doesn't pull in things
 # that don't exist.
 __all__ = [
-    "environ", "getcwd", "getcwdb", "getenv", "putenv", "unsetenv",
+    "environ", "chdir", "getcwd", "getcwdb", "getenv", "putenv", "unsetenv",
     "listdir", "stat", "lstat", "fstat", "access", "isfile", "isdir",
     "remove", "unlink", "rmdir", "mkdir", "makedirs", "rename",
     "open", "close", "read", "write", "fsync", "fdopen", "pipe",

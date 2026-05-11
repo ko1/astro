@@ -14412,6 +14412,55 @@ bi_pystro_getcwd(CTX *c, int argc, VALUE *argv)
     if (!getcwd(buf, sizeof(buf))) return pys_make_str("", 0);
     return pys_make_str(buf, strlen(buf));
 }
+
+static VALUE
+bi_pystro_rename(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[0]) || !pys_is_str(argv[1]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "rename: paths must be str");
+    size_t Lsrc = PYS_PTR(argv[0])->str.len;
+    size_t Ldst = PYS_PTR(argv[1])->str.len;
+    char *src = (char *)alloca(Lsrc + 1);
+    char *dst = (char *)alloca(Ldst + 1);
+    memcpy(src, PYS_PTR(argv[0])->str.chars, Lsrc); src[Lsrc] = '\0';
+    memcpy(dst, PYS_PTR(argv[1])->str.chars, Ldst); dst[Ldst] = '\0';
+    if (rename(src, dst) != 0) {
+        VALUE cls;
+        switch (errno) {
+          case ENOENT:  cls = c->EXC_FileNotFoundError; break;
+          case ENOTDIR: cls = c->EXC_NotADirectoryError; break;
+          case EACCES:
+          case EPERM:   cls = c->EXC_PermissionError;   break;
+          default:      cls = c->EXC_OSError;           break;
+        }
+        PYS_RAISE_EXC(c, cls, "[Errno %d] %s: '%s' -> '%s'",
+                     errno, strerror(errno), src, dst);
+    }
+    return PYS_NONE;
+}
+
+static VALUE
+bi_pystro_chdir(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "chdir: path must be str");
+    size_t L = PYS_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    if (chdir(buf) != 0) {
+        VALUE cls;
+        switch (errno) {
+          case ENOENT:   cls = c->EXC_FileNotFoundError; break;
+          case ENOTDIR:  cls = c->EXC_NotADirectoryError; break;
+          case EACCES:
+          case EPERM:    cls = c->EXC_PermissionError;   break;
+          default:       cls = c->EXC_OSError;           break;
+        }
+        PYS_RAISE_EXC(c, cls, "[Errno %d] %s: '%s'", errno, strerror(errno), buf);
+    }
+    return PYS_NONE;
+}
 // MD5 — RFC 1321 reference implementation.
 static const uint32_t MD5_K[64] = {
     0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
@@ -15858,6 +15907,8 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_perf_counter__", pys_make_builtin("__pystro_perf_counter__", bi_pystro_perf_counter, 0, 0));
     pys_global_define(c, "__pystro_getenv__",    pys_make_builtin("__pystro_getenv__",    bi_pystro_getenv,    1, 2));
     pys_global_define(c, "__pystro_getcwd__",    pys_make_builtin("__pystro_getcwd__",    bi_pystro_getcwd,    0, 0));
+    pys_global_define(c, "__pystro_chdir__",     pys_make_builtin("__pystro_chdir__",     bi_pystro_chdir,     1, 1));
+    pys_global_define(c, "__pystro_rename__",    pys_make_builtin("__pystro_rename__",    bi_pystro_rename,    2, 2));
     pys_global_define(c, "__pystro_path_exists__", pys_make_builtin("__pystro_path_exists__", bi_pystro_path_exists, 1, 1));
     pys_global_define(c, "__pystro_md5__",     pys_make_builtin("__pystro_md5__",     bi_pystro_md5,     1, 1));
     pys_global_define(c, "__pystro_sha256__",  pys_make_builtin("__pystro_sha256__",  bi_pystro_sha256,  1, 1));

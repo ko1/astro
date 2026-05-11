@@ -3,6 +3,9 @@
 def getcwd():
     return __pystro_getcwd__()
 
+def chdir(path):
+    return __pystro_chdir__(path)
+
 def getenv(name, default=None):
     return __pystro_getenv__(name, default)
 

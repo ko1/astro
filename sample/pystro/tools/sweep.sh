@@ -39,8 +39,12 @@ classify_one() {
     # job races for the same /tmp/@test_pystro_1 path.
     local jobtmp
     jobtmp=$(mktemp -d "${TMPDIR:-/tmp}/pystro_sweep_$name.XXXXXX")
-    timeout 30 env PYTHONPATH=cpytest_stubs:cpython/Lib TMPDIR="$jobtmp" \
-        ./pystro -q "$f" >"$log" 2>&1
+    local repo_root="$PWD"
+    # Run with cwd = jobtmp so relative TESTFN values don't clash with
+    # parallel jobs.  PYTHONPATH stays absolute via $repo_root.
+    timeout 30 env -C "$jobtmp" \
+        PYTHONPATH="$repo_root/cpytest_stubs:$repo_root/cpython/Lib" \
+        TMPDIR="$jobtmp" "$repo_root/pystro" -q "$repo_root/$f" >"$log" 2>&1
     local rc=$?
     rm -rf "$jobtmp" 2>/dev/null
 
