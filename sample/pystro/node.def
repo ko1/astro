@@ -1611,10 +1611,20 @@ NODE_DEF
 node_raise_bare(CTX * restrict c, NODE * restrict n)
 {
     (void)n;
-    if (c->state_value == 0 || c->state_value == PYS_NONE) {
+    // Bare `raise` re-raises the active exception.  `c->state_value`
+    // may have been cleared by an except handler's normal flow (e.g.
+    // calls inside `except E as e:` that themselves raise+catch).
+    // Fall back to the handler's current_handling_exc so re-raise
+    // inside a handler still has something to throw.
+    VALUE active = c->state_value;
+    if (active == 0 || active == PYS_NONE) {
+        active = c->current_handling_exc;
+    }
+    if (active == 0 || active == PYS_NONE) {
         PYS_RAISE_EXC(c, c->EXC_RuntimeError, "No active exception to re-raise");
     }
     c->state = PYS_STATE_RAISE;
+    c->state_value = active;
     return 0;
 }
 
