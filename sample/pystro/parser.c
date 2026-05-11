@@ -2344,7 +2344,11 @@ parse_postfix(void)
         if (peek_tok(0)->kind != T_LPAREN) {
             NODE *super_obj;
             if (bare) {
-                if (!cur_class_base) parse_error("super() called outside a class body");
+                // super() outside a class body is technically a runtime
+                // error (no __class__ available); CPython parses it
+                // syntactically and only complains when called.  Allow
+                // it through so module-level helpers that capture
+                // __class__ at runtime can at least be defined.
                 super_obj = ALLOC_node_super_obj();
             } else {
                 super_obj = ALLOC_node_super_obj_explicit(cls_expr, self_expr);
@@ -2384,7 +2388,11 @@ parse_postfix(void)
             // Build super().attr expression, then parse_call_args.
             NODE *super_obj;
             if (bare) {
-                if (!cur_class_base) parse_error("super() called outside a class body");
+                // super() outside a class body is technically a runtime
+                // error (no __class__ available); CPython parses it
+                // syntactically and only complains when called.  Allow
+                // it through so module-level helpers that capture
+                // __class__ at runtime can at least be defined.
                 super_obj = ALLOC_node_super_obj();
             } else {
                 super_obj = ALLOC_node_super_obj_explicit(cls_expr, self_expr);
@@ -2416,7 +2424,14 @@ parse_postfix(void)
         size_t base = node_table_reserve(args, argc);
         NODE *e;
         if (bare) {
-            if (!cur_class_base) parse_error("super() called outside a class body");
+            if (!cur_class_base) {
+                // super().method(...) outside class body — fall back to
+                // attr_get + call so runtime resolves __class__ via the
+                // enclosing scope (or errors at call time).
+                NODE *super_obj_ = ALLOC_node_super_obj();
+                NODE *attr_ = ALLOC_node_attr_get(super_obj_, method);
+                e = ALLOC_node_call_n(attr_, (uint32_t)base, (uint32_t)argc);
+            } else
             e = ALLOC_node_super_method(cur_class_base, method, (uint32_t)base, (uint32_t)argc);
         } else {
             e = ALLOC_node_super_method_explicit(cls_expr, self_expr, method,
