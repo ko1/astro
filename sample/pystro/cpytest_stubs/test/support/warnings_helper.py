@@ -41,6 +41,11 @@ def import_deprecated(name):
     return __import__(name)
 
 
+def check_syntax_warning(testcase, statement, errtext="", lineno=None, offset=None):
+    """No-op stub: pystro doesn't emit SyntaxWarning."""
+    return None
+
+
 class save_restore_warnings_filters:
     """Context manager that saves/restores warnings.filters."""
     def __enter__(self):
