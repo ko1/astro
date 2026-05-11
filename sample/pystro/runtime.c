@@ -11998,7 +11998,29 @@ bi_setattr(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_open(CTX *c, int argc, VALUE *argv)
 {
-    if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "open: path must be str");
+    VALUE path = argv[0];
+    // Accept PathLike: invoke __fspath__ on instances that define it.
+    if (pys_is_instance(path)) {
+        VALUE fcls = PYS_OBJ_VAL(PYS_PTR(path)->inst.cls);
+        VALUE m = pys_class_lookup_method(fcls, "__fspath__");
+        if (m != PYS_NONE) {
+            VALUE av[1] = { path };
+            VALUE r = pys_apply(c, m, 1, av);
+            if (pys_is_str(r) || pys_is_byteseq(r)) path = r;
+        }
+    }
+    int int_fd = -1;
+    char *path_chars = NULL;
+    size_t path_len = 0;
+    if (pys_is_str(path) || pys_is_byteseq(path)) {
+        path_chars = PYS_PTR(path)->str.chars;
+        path_len   = PYS_PTR(path)->str.len;
+    } else if (pys_int_or_bool(path)) {
+        int_fd = (int)pys_int_to_long(c, path);
+    } else {
+        PYS_RAISE_EXC(c, c->EXC_TypeError,
+                     "open: path must be str, bytes, int or PathLike");
+    }
     const char *modestr = "r";
     if (argc >= 2) {
         if (!pys_is_str(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "open: mode must be str");
@@ -12010,10 +12032,20 @@ bi_open(CTX *c, int argc, VALUE *argv)
     for (const char *p = modestr; *p && mi < 7; p++)
         if (*p != 't') libcmode[mi++] = *p;
     libcmode[mi] = '\0';
-    size_t L = PYS_PTR(argv[0])->str.len;
-    char *pbuf = (char *)alloca(L + 1);
-    memcpy(pbuf, PYS_PTR(argv[0])->str.chars, L); pbuf[L] = '\0';
-    FILE *fp = fopen(pbuf, libcmode);
+    FILE *fp;
+    char *pbuf;
+    if (int_fd >= 0) {
+        // fdopen — re-use the existing fd; do NOT close on file close
+        // (CPython's `closefd=False` default for int fds — pystro's
+        // file struct doesn't track this, accept the leak for now).
+        fp = fdopen(int_fd, libcmode);
+        pbuf = (char *)alloca(32);
+        snprintf(pbuf, 32, "<fd:%d>", int_fd);
+    } else {
+        pbuf = (char *)alloca(path_len + 1);
+        memcpy(pbuf, path_chars, path_len); pbuf[path_len] = '\0';
+        fp = fopen(pbuf, libcmode);
+    }
     if (!fp) {
         VALUE cls;
         switch (errno) {
@@ -12029,8 +12061,9 @@ bi_open(CTX *c, int argc, VALUE *argv)
     }
     struct pysobj *o = pys_alloc(PYS_T_FILE);
     o->file.fp = fp;
-    o->file.path = (char *)GC_malloc_atomic(L + 1);
-    memcpy(o->file.path, pbuf, L + 1);
+    size_t plen = strlen(pbuf);
+    o->file.path = (char *)GC_malloc_atomic(plen + 1);
+    memcpy(o->file.path, pbuf, plen + 1);
     o->file.binary = binary;
     o->file.closed = false;
     return PYS_OBJ_VAL(o);
