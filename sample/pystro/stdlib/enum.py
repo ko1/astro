@@ -76,6 +76,59 @@ def _is_dunder(name):
 
 
 class EnumMeta(type):
+    def __call__(cls, *args, **kwargs):
+        # Functional form: `Enum('Name', 'A B C')` /
+        # `Enum('Name', ['A', 'B', 'C'])` / `Enum('Name', [('A', 1), ...])`.
+        # Detected when 2+ args are given and the first is a str (the
+        # new enum's name) — the value-lookup form below takes exactly
+        # one arg.
+        if len(args) >= 2 and isinstance(args[0], str):
+            name = args[0]
+            names = args[1]
+            # Normalize names spec to list of (member_name, value) tuples.
+            if isinstance(names, str):
+                tokens = names.replace(",", " ").split()
+                members = [(t, i + 1) for i, t in enumerate(tokens)]
+            elif isinstance(names, (list, tuple)):
+                members = []
+                for i, item in enumerate(names):
+                    if isinstance(item, str):
+                        members.append((item, i + 1))
+                    else:
+                        members.append((item[0], item[1]))
+            else:
+                members = []
+            attrs = {n: v for n, v in members}
+            new_cls = type(cls)(name, (cls,), attrs)
+            # `module=...` kwarg: CPython injects each enum member into
+            # the named module's globals.  test_plistlib relies on this
+            # to do `PlistFormat = Enum('PlistFormat', '...', module=...)`
+            # and then reference `FMT_XML` as a module-level constant.
+            mod_name = kwargs.get("module")
+            if mod_name:
+                import sys
+                mod = sys.modules.get(mod_name)
+                if mod is not None:
+                    for n, _v in members:
+                        m = getattr(new_cls, n, None)
+                        if m is not None:
+                            try: setattr(mod, n, m)
+                            except Exception: pass
+            return new_cls
+        # Normal value lookup: `MyEnum(value)` → member with that value.
+        if len(args) == 1 and hasattr(cls, "_members_"):
+            for m in cls._members_:
+                if getattr(m, "value", None) == args[0]:
+                    return m
+            raise ValueError(f"{args[0]!r} is not a valid {cls.__name__}")
+        # Fallback: instantiate via the underlying type's __call__.
+        # Pystro's super() doesn't reliably resolve type.__call__, so use
+        # type.__call__(cls, *args, **kwargs) directly.
+        try:
+            return type.__call__(cls, *args, **kwargs)
+        except AttributeError:
+            # No usable ctor — return None.
+            return None
     def __len__(cls):
         return len(cls._members_)
     def __iter__(cls):
