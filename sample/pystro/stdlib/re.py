@@ -286,6 +286,15 @@ class Match:
         return (self._start, self._end)
     def __bool__(self):
         return True
+    def __getitem__(self, n):
+        # m[0] / m[1] — CPython supports indexing on Match.
+        return self.group(n)
+    def groupdict(self, default=None):
+        # Named-group dict; pystro's regex engine doesn't track names,
+        # return an empty mapping so callers expecting a dict don't break.
+        return {}
+    def __repr__(self):
+        return "<re.Match>"
 
 
 def _strip_verbose(pat):
