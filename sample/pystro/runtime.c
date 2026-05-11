@@ -14518,7 +14518,19 @@ bi_pystro_remove(CTX *c, int argc, VALUE *argv)
     size_t L = PYS_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
     memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
-    if (unlink(buf) != 0) PYS_RAISE_EXC(c, c->EXC_RuntimeError, "remove failed: %s", buf);
+    if (unlink(buf) != 0) {
+        // Map errno to the same exception subclass CPython would raise
+        // (CPython routes through PyErr_SetFromErrnoWithFilenameObject).
+        VALUE cls;
+        switch (errno) {
+          case ENOENT:  cls = c->EXC_FileNotFoundError; break;
+          case EISDIR:  cls = c->EXC_IsADirectoryError; break;
+          case EACCES:
+          case EPERM:   cls = c->EXC_PermissionError;   break;
+          default:      cls = c->EXC_OSError;           break;
+        }
+        PYS_RAISE_EXC(c, cls, "[Errno %d] %s: '%s'", errno, strerror(errno), buf);
+    }
     return PYS_NONE;
 }
 

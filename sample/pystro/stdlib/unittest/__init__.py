@@ -299,6 +299,16 @@ def main(scope=None, *args, **kwargs):
         method_names = []
         for n in dir(cls):
             if n.startswith("test_"):
+                # CPython idiom: subclasses set `test_xxx = None` to
+                # disable an inherited test method.  Skip non-callable
+                # entries so they don't end up as "object is not
+                # callable" errors.
+                try:
+                    v = getattr(cls, n)
+                except AttributeError:
+                    continue
+                if v is None or not callable(v):
+                    continue
                 method_names.append(n)
         for mn in method_names:
             inst = cls()
