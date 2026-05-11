@@ -1389,7 +1389,15 @@ parse_comp_clauses(NODE *inner_body)
     int nnames = 0;
     names[nnames++] = comp_resolve(peek_tok(0)->sval);
     tok_pos++;
+    bool trailing_comma = false;
     while (match_tok(T_COMMA)) {
+        // Trailing comma: `for x, in [...]` — treat target as 1-tuple
+        // unpack, not a plain name.
+        if (peek_tok(0)->kind == T_IN
+            || (paren_target && peek_tok(0)->kind == T_RPAREN)) {
+            trailing_comma = true;
+            break;
+        }
         if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in tuple target");
         if (nnames >= 16) parse_error("for tuple target too long");
         names[nnames++] = comp_resolve(peek_tok(0)->sval);
@@ -1413,7 +1421,7 @@ parse_comp_clauses(NODE *inner_body)
             && peek_tok(1)->kind == T_FOR))
         inner_body = parse_comp_clauses(inner_body);
 
-    if (nnames == 1) return build_for_loop(names[0], iter, inner_body);
+    if (nnames == 1 && !trailing_comma) return build_for_loop(names[0], iter, inner_body);
 
     // Tuple target: introduce a hidden temp to hold the current item,
     // then prepend `name_i = __t[i]` for each name.
@@ -3991,17 +3999,24 @@ parse_del(void)
 static NODE *
 parse_del_one(void)
 {
-    // `del(target)` / `del [a, b]` — peel parens, recurse for paren form.
-    if (peek_tok(0)->kind == T_LPAREN) {
-        // If a single target inside parens, just unwrap.
-        // For `del(a, b)`, treat the comma form as multiple targets.
+    // `del(target)` / `del [a, b]` — peel parens / brackets, recurse for
+    // grouped form.  CPython treats both as equivalent target groupings.
+    if (peek_tok(0)->kind == T_LPAREN || peek_tok(0)->kind == T_LBRACK) {
+        int close = (peek_tok(0)->kind == T_LPAREN) ? T_RPAREN : T_RBRACK;
+        // For `del ()` / `del []` (empty group), CPython accepts and
+        // deletes nothing.
         tok_pos++;
+        if (peek_tok(0)->kind == close) {
+            tok_pos++;
+            return ALLOC_node_nop();
+        }
         NODE *r = parse_del_one();
         while (match_tok(T_COMMA)) {
-            if (peek_tok(0)->kind == T_RPAREN) break;
+            if (peek_tok(0)->kind == close) break;
             r = ALLOC_node_seq(r, parse_del_one());
         }
-        expect(T_RPAREN, "')'");
+        if (close == T_RPAREN) expect(T_RPAREN, "')'");
+        else                   expect(T_RBRACK, "']'");
         return r;
     }
     if (peek_tok(0)->kind != T_NAME) parse_error("del expects a target");
@@ -5225,7 +5240,11 @@ parse_decorated(void)
     int ndecs = 0;
     while (match_tok(T_AT)) {
         if (ndecs >= 16) parse_error("too many decorators");
-        decs[ndecs++] = parse_or();
+        // PEP 614: decorators are arbitrary expressions including walrus
+        // (`:=`) and lambda.  Use parse_expr (= parse_walrus) so forms
+        // like `@d := null`, `@lambda f: null(f)`, `@[..., null, ...][1]`
+        // all accept.
+        decs[ndecs++] = parse_expr();
         expect(T_NEWLINE, "newline after decorator");
         while (match_tok(T_NEWLINE)) {}
     }
