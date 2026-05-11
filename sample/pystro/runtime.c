@@ -4988,6 +4988,14 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                 if (pys_is_instance(self))
                     return PYS_OBJ_VAL(PYS_PTR(self)->inst.cls);
             }
+            // Fallback: try dispatching builtin methods on the primary
+            // before raising.  Catches `super().__iter__()` etc. on
+            // namedtuple-like subclasses.
+            if (pys_is_instance(self) && PYS_PTR(self)->inst.primary) {
+                extern VALUE pys_builtin_method(CTX *c, VALUE recv, const char *name);
+                VALUE bm = pys_builtin_method(c, PYS_PTR(self)->inst.primary, name);
+                if (bm != PYS_NONE) return bm;
+            }
             PYS_RAISE_EXC(c, c->EXC_AttributeError,
                          "'super' object has no attribute '%s'", name);
         }
