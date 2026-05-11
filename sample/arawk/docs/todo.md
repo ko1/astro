@@ -10,7 +10,7 @@ astrogre を統合する。
 - BEGIN / END / pattern-action / `{ ... }`
 - `$N` / `NR` / `NF` (default FS=" ")、`NR`/`NF` は普通の global 扱い (代入も OK)
 - 算術 / 比較 / 論理 / 文字列 concat
-- if / while / break / continue / next / exit
+- if / while / do-while / break / continue / next / nextfile / exit
 - グローバル変数 (parse-time slot)
 - AOT bake (`-c`) + Code Store reload
 
