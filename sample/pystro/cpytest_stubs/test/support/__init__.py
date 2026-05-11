@@ -791,6 +791,23 @@ class _SMALLEST:
 SMALLEST = _SMALLEST()
 
 
+class BrokenIter:
+    """An iterator that raises on a chosen lifecycle hook — used by
+    comprehension / for-loop exception-location tests."""
+    def __init__(self, init_raises=False, next_raises=False, iter_raises=False):
+        if init_raises:
+            1 / 0
+        self.next_raises = next_raises
+        self.iter_raises = iter_raises
+    def __next__(self):
+        if self.next_raises:
+            1 / 0
+    def __iter__(self):
+        if self.iter_raises:
+            1 / 0
+        return self
+
+
 def patch(test_instance, object_to_patch, attr_name, new_value):
     """Override `object_to_patch.attr_name` with `new_value`, restoring
     on test teardown via test_instance.addCleanup."""
