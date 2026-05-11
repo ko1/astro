@@ -37,6 +37,62 @@ def get_recursion_depth():
     return 0
 
 
+def type_get_version(cls):
+    return 0
+
+
+def get_feature_macros():
+    return {}
+
+
+def has_vectorcall_flag(cls):
+    return False
+
+
+def pyobject_fastcall(*args, **kwargs):
+    raise NotImplementedError("pyobject_fastcall")
+
+
+def pyobject_vectorcall(*args, **kwargs):
+    raise NotImplementedError("pyobject_vectorcall")
+
+
+def pyobject_fastcalldict(*args, **kwargs):
+    raise NotImplementedError("pyobject_fastcalldict")
+
+
+def make_vectorcall_class(*args, **kwargs):
+    raise NotImplementedError("make_vectorcall_class")
+
+
+def meth_varargs(*args, **kwargs):
+    return args
+
+
+def meth_o(obj):
+    return obj
+
+
+class LimitedVectorCallClass:
+    pass
+
+
+class MethodDescriptor:
+    pass
+
+
+class MethodDescriptorBase:
+    pass
+
+
+class MethodDescriptorDerived(MethodDescriptor):
+    pass
+
+
+class MethodDescriptorNopGet:
+    pass
+
+
 def raise_exception(*args, **kwargs):
     raise RuntimeError("test")
 
