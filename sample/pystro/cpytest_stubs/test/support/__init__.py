@@ -778,6 +778,19 @@ class _LARGEST:
 LARGEST = _LARGEST()
 
 
+# Mirror sentinel that's smaller than everything.
+class _SMALLEST:
+    def __lt__(self, o): return not isinstance(o, _SMALLEST)
+    def __le__(self, o): return True
+    def __gt__(self, o): return False
+    def __ge__(self, o): return isinstance(o, _SMALLEST)
+    def __eq__(self, o): return isinstance(o, _SMALLEST)
+    def __hash__(self): return 0
+
+
+SMALLEST = _SMALLEST()
+
+
 def patch(test_instance, object_to_patch, attr_name, new_value):
     """Override `object_to_patch.attr_name` with `new_value`, restoring
     on test teardown via test_instance.addCleanup."""
