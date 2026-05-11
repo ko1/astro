@@ -754,6 +754,30 @@ def patch_list(orig):
 control_characters_c0 = "".join(chr(i) for i in range(0x20)) + "\x7f"
 
 
+def impl_detail(msg=None, **guards):
+    """No-op @decorator factory.  CPython gates impl-internal asserts
+    with this; pystro lets them through (it'll often fail-with-message
+    but at least the test runs)."""
+    def deco(fn):
+        return fn
+    if callable(msg):
+        return msg  # bare @impl_detail form
+    return deco
+
+
+# Comparison sentinel that's bigger than any real value.
+class _LARGEST:
+    def __lt__(self, o): return False
+    def __le__(self, o): return isinstance(o, _LARGEST)
+    def __gt__(self, o): return not isinstance(o, _LARGEST)
+    def __ge__(self, o): return True
+    def __eq__(self, o): return isinstance(o, _LARGEST)
+    def __hash__(self): return 0
+
+
+LARGEST = _LARGEST()
+
+
 def patch(test_instance, object_to_patch, attr_name, new_value):
     """Override `object_to_patch.attr_name` with `new_value`, restoring
     on test teardown via test_instance.addCleanup."""

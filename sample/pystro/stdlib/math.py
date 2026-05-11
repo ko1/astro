@@ -347,3 +347,21 @@ def erf(x):
 
 def erfc(x):
     return 1.0 - erf(x)
+
+
+def sumprod(p, q):
+    """Return the dot product of two iterables (Python 3.12+)."""
+    pi_ = iter(p)
+    qi_ = iter(q)
+    total = 0
+    for a in pi_:
+        try:
+            b = next(qi_)
+        except StopIteration:
+            raise ValueError("sumprod: iterables have different lengths")
+        total += a * b
+    try:
+        next(qi_)
+    except StopIteration:
+        return total
+    raise ValueError("sumprod: iterables have different lengths")
