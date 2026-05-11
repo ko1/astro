@@ -520,6 +520,10 @@ typedef struct CTX_struct {
     // instead of globals.  PYS_NONE outside class-body scope.
     VALUE  current_class;
 
+    // Updated on every node dispatch (via EVAL_ARG_CHECK in node.c).
+    // Read by pys_raise_exc to stamp traceback frames.
+    int    current_line;
+
     // While executing a method body, `method_class` is the class on
     // which the method was lexically defined — read by node_super
     // for cooperative MRO walking.  Saved/restored across nested

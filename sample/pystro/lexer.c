@@ -45,7 +45,7 @@ typedef struct {
 
 static const char *src_buf;
 static size_t      src_pos;
-static int         src_line;
+int                src_line;       // exposed so node_allocate can stamp head.line
 static const char *src_filename;
 
 static Tok    *tok_arr;

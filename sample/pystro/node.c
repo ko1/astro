@@ -8,6 +8,8 @@
 
 // Allocate NODEs out of the GC heap so any VALUE references they hold
 // (string literals etc.) stay alive without explicit rooting.
+extern int src_line;
+
 static __attribute__((noinline)) NODE *
 node_allocate(size_t size)
 {
@@ -16,6 +18,7 @@ node_allocate(size_t size)
         fprintf(stderr, "pystro: node allocation failed\n");
         exit(1);
     }
+    n->head.line = src_line;
     return n;
 }
 
@@ -66,6 +69,11 @@ code_repo_add(const char *name, NODE *body, bool force)
     code_repo.entries[code_repo.size].body = body;
     code_repo.size++;
 }
+
+// Stamp c->current_line on every node dispatch so pys_raise_exc can
+// embed the source line into the exception's __traceback__ chain.
+// Called via EVAL_ARG inside generated node_eval.c.
+#define EVAL_ARG_CHECK(n) ((c)->current_line = (n)->head.line)
 
 #include "node_eval.c"
 #include "node_dispatch.c"

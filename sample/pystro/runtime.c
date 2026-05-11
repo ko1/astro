@@ -1463,7 +1463,13 @@ pys_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
     // f_code.co_name + f_globals/f_locals), tb_lineno (best-effort 0),
     // tb_lasti (-1), and tb_next (the deeper frame).
     if (c->call_top > 0 && c->TYPE_traceback != 0) {
-        VALUE next = PYS_NONE;
+        // Build chain root-to-deepest so __traceback__ is the outermost
+        // frame and tb_next descends inwards (CPython parity).  Only
+        // the deepest frame gets c->current_line — outer frames carry 0
+        // (we don't track their resume line on the C stack).
+        VALUE root = PYS_NONE;
+        VALUE prev = PYS_NONE;
+        int raise_line = c->current_line;
         for (int i = 0; i < c->call_top; i++) {
             const char *fn = c->call_stack[i] ? c->call_stack[i] : "<anon>";
             VALUE frame = pys_make_instance(c->TYPE_frame);
@@ -1472,7 +1478,8 @@ pys_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
             pys_setattr(c, code, "co_filename", pys_make_str("<pystro>", 8));
             pys_setattr(c, code, "co_firstlineno", PYS_FIX(0));
             pys_setattr(c, frame, "f_code", code);
-            pys_setattr(c, frame, "f_lineno", PYS_FIX(0));
+            int line = (i == c->call_top - 1) ? raise_line : 0;
+            pys_setattr(c, frame, "f_lineno", PYS_FIX(line));
             pys_setattr(c, frame, "f_lasti", PYS_FIX(-1));
             pys_setattr(c, frame, "f_globals", pys_make_dict());
             pys_setattr(c, frame, "f_locals", pys_make_dict());
@@ -1480,12 +1487,17 @@ pys_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
             pys_setattr(c, frame, "f_trace", PYS_NONE);
             VALUE tb = pys_make_instance(c->TYPE_traceback);
             pys_setattr(c, tb, "tb_frame", frame);
-            pys_setattr(c, tb, "tb_lineno", PYS_FIX(0));
+            pys_setattr(c, tb, "tb_lineno", PYS_FIX(line));
             pys_setattr(c, tb, "tb_lasti", PYS_FIX(-1));
-            pys_setattr(c, tb, "tb_next", next);
-            next = tb;
+            pys_setattr(c, tb, "tb_next", PYS_NONE);
+            if (prev == PYS_NONE) {
+                root = tb;
+            } else {
+                pys_setattr(c, prev, "tb_next", tb);
+            }
+            prev = tb;
         }
-        pys_setattr(c, inst, "__traceback__", next);
+        pys_setattr(c, inst, "__traceback__", root);
     } else if (c->call_top > 0) {
         // Fallback (TYPE_traceback not initialised yet — happens during
         // very early bootstrap before install_builtins).
@@ -5387,7 +5399,10 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                               | (o->func.has_kwargs  ? 0x08 : 0)));
             pys_setattr(c, code, "co_filename",
                        pys_make_str("<pystro>", 8));
-            pys_setattr(c, code, "co_firstlineno", PYS_FIX(0));
+            // Body's root node carries the first source-line stamped
+            // by the parser at allocation time.
+            int first_line = (o->func.body) ? o->func.body->head.line : 0;
+            pys_setattr(c, code, "co_firstlineno", PYS_FIX(first_line));
             return code;
         }
         if (strcmp(name, "__globals__") == 0) return PYS_NONE;

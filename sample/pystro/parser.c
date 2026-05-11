@@ -187,7 +187,12 @@ unpack_reserve(struct pyunpack_target *src, size_t n)
 // Token helpers.
 // ---------------------------------------------------------------------------
 
-static Tok *peek_tok(int off) { return &tok_arr[tok_pos + off]; }
+extern int src_line;  // lexer global, repurposed as "current parse line"
+static Tok *peek_tok(int off) {
+    Tok *t = &tok_arr[tok_pos + off];
+    if (off == 0 && t->line > 0) src_line = t->line;
+    return t;
+}
 
 static bool
 match_tok(int kind)
