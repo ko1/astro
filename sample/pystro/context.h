@@ -671,6 +671,7 @@ typedef struct CTX_struct {
     // pushes the function name on entry and pops on exit.  Capped to
     // 1024 frames; deeper recursion just truncates.
     const char *call_stack[1024];
+    int         call_stack_line[1024];  // line where this frame is currently executing
     int         call_top;
     int         recursion_limit;       // raises RecursionError when exceeded
 } CTX;

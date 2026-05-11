@@ -173,7 +173,13 @@ pys_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
                 pys_raise_exc(c, c->EXC_RecursionError,
                              "maximum recursion depth exceeded");
             }
-            if (saved_call_top < 1024) c->call_stack[c->call_top++] = f->func.name;
+            if (saved_call_top < 1024) {
+                // Stash caller's resume line so a future raise can stamp
+                // every frame in the chain.
+                c->call_stack_line[c->call_top] = c->current_line;
+                c->call_stack[c->call_top] = f->func.name;
+                c->call_top++;
+            }
             c->env = new_env;
             c->method_class = f->func.defining_class;
             if (f->func.fglobals) c->globals = f->func.fglobals;

@@ -1479,7 +1479,12 @@ pys_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
             pys_setattr(c, code, "co_filename", pys_make_str("<pystro>", 8));
             pys_setattr(c, code, "co_firstlineno", PYS_FIX(0));
             pys_setattr(c, frame, "f_code", code);
-            int line = (i == c->call_top - 1) ? raise_line : 0;
+            // Frame i: if it's the deepest, use the live raise line;
+            // otherwise use the line at which the next-deeper frame was
+            // called (stored when that callee was pushed).
+            int line = (i == c->call_top - 1)
+                       ? raise_line
+                       : c->call_stack_line[i + 1];
             pys_setattr(c, frame, "f_lineno", PYS_FIX(line));
             pys_setattr(c, frame, "f_lasti", PYS_FIX(-1));
             pys_setattr(c, frame, "f_globals", pys_make_dict());
