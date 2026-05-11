@@ -186,7 +186,8 @@ unlink = remove
 
 
 def rmdir(path):
-    raise OSError("rmdir not supported")
+    try: return __pystro_rmdir__(path)
+    except NameError: raise OSError("rmdir not supported")
 
 
 def mkdir(path, mode=0o777, *, dir_fd=None):

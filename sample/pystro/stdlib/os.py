@@ -32,7 +32,7 @@ def unlink(path):
 
 
 def rmdir(path):
-    return __pystro_remove__(path)
+    return __pystro_rmdir__(path)
 
 
 def fdopen(fd, mode="r"):

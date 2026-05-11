@@ -14550,6 +14550,29 @@ bi_pystro_remove(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_pystro_rmdir(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "rmdir: path must be str");
+    size_t L = PYS_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    if (rmdir(buf) != 0) {
+        VALUE cls;
+        switch (errno) {
+          case ENOENT:  cls = c->EXC_FileNotFoundError; break;
+          case ENOTDIR: cls = c->EXC_NotADirectoryError; break;
+          case ENOTEMPTY: cls = c->EXC_OSError; break;
+          case EACCES:
+          case EPERM:   cls = c->EXC_PermissionError; break;
+          default:      cls = c->EXC_OSError; break;
+        }
+        PYS_RAISE_EXC(c, cls, "[Errno %d] %s: '%s'", errno, strerror(errno), buf);
+    }
+    return PYS_NONE;
+}
+
+static VALUE
 bi_pystro_makedirs(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -15784,6 +15807,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_sha256__",  pys_make_builtin("__pystro_sha256__",  bi_pystro_sha256,  1, 1));
     pys_global_define(c, "__pystro_listdir__",     pys_make_builtin("__pystro_listdir__",     bi_pystro_listdir,     0, 1));
     pys_global_define(c, "__pystro_remove__",      pys_make_builtin("__pystro_remove__",      bi_pystro_remove,      1, 1));
+    pys_global_define(c, "__pystro_rmdir__",       pys_make_builtin("__pystro_rmdir__",       bi_pystro_rmdir,       1, 1));
     pys_global_define(c, "__pystro_makedirs__",    pys_make_builtin("__pystro_makedirs__",    bi_pystro_makedirs,    1, 2));
     pys_global_define(c, "__pystro_isdir__",       pys_make_builtin("__pystro_isdir__",       bi_pystro_isdir,       1, 1));
     pys_global_define(c, "__pystro_isfile__",      pys_make_builtin("__pystro_isfile__",      bi_pystro_isfile,      1, 1));

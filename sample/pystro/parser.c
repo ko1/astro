@@ -4702,7 +4702,11 @@ parse_assignable_target(NODE *rhs)
         else                   expect(T_RBRACK, "']'");
         return result;
     }
-    if (t->kind != T_NAME) parse_error("invalid assignment target");
+    // CPython spells this "cannot assign to <X>" / "cannot assign to expression
+    // here. Maybe you meant '==' instead of '='?" — keep the tail terse so the
+    // common assertRaisesRegex(SyntaxError, "cannot assign") in stdlib tests
+    // catches it.
+    if (t->kind != T_NAME) parse_error("cannot assign to expression");
     const char *base_name = t->sval;
     tok_pos++;
     // TR_CALL stores the resulting call node directly (parse_call_args
