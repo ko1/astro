@@ -4252,6 +4252,7 @@ static struct type_method str_methods[];
 static struct type_method list_methods[];
 static struct type_method dict_methods[];
 static VALUE bi_dict_fromkeys(CTX *c, int argc, VALUE *argv);
+static VALUE bi_set(CTX *c, int argc, VALUE *argv);
 static VALUE
 dm_fromkeys_bridge(CTX *c, int argc, VALUE *argv)
 {
@@ -9366,22 +9367,31 @@ sm_difference_update(CTX *c, int argc, VALUE *argv)
 static VALUE
 sm_intersection_update(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc;
     VALUE a = pys_unwrap_primary(argv[0]);
-    VALUE b = argv[1];
-    // Build a set of keys in `a` that are NOT in b, then remove.
-    struct pysdict *aa = PYS_PTR(a)->dict;
-    VALUE *to_remove = (VALUE *)alloca(sizeof(VALUE) * aa->elen);
-    int n = 0;
-    for (size_t i = 0; i < aa->elen; i++) {
-        if (!pydict_entry_live(aa, i)) continue;
-        if (!pys_contains(c, b, aa->entries[i].key))
-            to_remove[n++] = aa->entries[i].key;
-        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
-    }
-    for (int i = 0; i < n; i++) {
-        pys_dict_remove(c, a, to_remove[i]);
-        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+    // CPython: `intersection_update(it1, it2, ...)` intersects with all
+    // iterables, raising TypeError on unhashable elements BEFORE mutation.
+    // Materialise each iterable into a set first.
+    for (int k = 1; k < argc; k++) {
+        VALUE b = argv[k];
+        VALUE bu = pys_unwrap_primary(b);
+        if (!pys_is_any_set(bu)) {
+            VALUE av[1] = { b };
+            bu = bi_set(c, 1, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+        }
+        struct pysdict *aa = PYS_PTR(a)->dict;
+        VALUE *to_remove = (VALUE *)alloca(sizeof(VALUE) * aa->elen);
+        int n = 0;
+        for (size_t i = 0; i < aa->elen; i++) {
+            if (!pydict_entry_live(aa, i)) continue;
+            if (!pys_contains(c, bu, aa->entries[i].key))
+                to_remove[n++] = aa->entries[i].key;
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+        }
+        for (int i = 0; i < n; i++) {
+            pys_dict_remove(c, a, to_remove[i]);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+        }
     }
     return PYS_NONE;
 }
@@ -9391,7 +9401,16 @@ sm_symmetric_difference_update(CTX *c, int argc, VALUE *argv)
     (void)argc;
     VALUE a = pys_unwrap_primary(argv[0]);
     VALUE b = argv[1];
-    struct pys_iter it; pys_iter_init(c, &it, b);
+    // CPython: materialise `b` into a set first so unhashable items raise
+    // TypeError before any mutation happens.
+    VALUE bu = pys_unwrap_primary(b);
+    if (!pys_is_any_set(bu)) {
+
+        VALUE av[1] = { b };
+        bu = bi_set(c, 1, av);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+    }
+    struct pys_iter it; pys_iter_init(c, &it, bu);
     VALUE x;
     while (pys_iter_next(c, &it, &x)) {
         if (pys_contains(c, a, x)) pys_dict_remove(c, a, x);
@@ -9401,7 +9420,39 @@ sm_symmetric_difference_update(CTX *c, int argc, VALUE *argv)
     return PYS_NONE;
 }
 
+// set.__init__([iterable]) — CPython parity: clear in place, then add
+// every element of the iterable.  Forwards through to bi_set after
+// clearing.
+static VALUE
+sm_set_init(CTX *c, int argc, VALUE *argv)
+{
+    if (PYS_BI_KWC > 0)
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "set() does not take keyword arguments");
+    if (argc > 2)
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "set expected at most 1 argument, got %d", argc - 1);
+    VALUE target = pys_unwrap_primary(argv[0]);
+    if (!pys_is_set(target))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "descriptor '__init__' requires a 'set' object");
+    // Clear in place (mirrors sm_set_clear).
+    struct pysdict *d = PYS_PTR(target)->dict;
+    d->elen = 0;
+    d->used = 0;
+    d->fill = 0;
+    d->version++;
+    for (size_t i = 0; i < d->icapa; i++) d->indices[i] = DICT_EMPTY_IDX;
+    if (argc < 2) return PYS_NONE;
+    struct pys_iter it; pys_iter_init(c, &it, argv[1]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    VALUE x;
+    while (pys_iter_next(c, &it, &x)) {
+        pys_dict_set(c, target, x, PYS_NONE);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    }
+    return PYS_NONE;
+}
+
 static struct type_method set_methods[] = {
+    { "__init__",             sm_set_init,             1, -1 },
     { "add",                  sm_add,                  2, 2 },
     { "discard",              sm_discard,              2, 2 },
     { "remove",               sm_remove,               2, 2 },
@@ -9413,7 +9464,7 @@ static struct type_method set_methods[] = {
     { "intersection",         sm_intersection,         1, -1 },
     { "difference",           sm_difference,           1, -1 },
     { "symmetric_difference", sm_symmetric_difference, 2, 2 },
-    { "intersection_update",  sm_intersection_update,  2, 2 },
+    { "intersection_update",  sm_intersection_update,  1, -1 },
     { "difference_update",    sm_difference_update,    1, -1 },
     { "symmetric_difference_update", sm_symmetric_difference_update, 2, 2 },
     { "issubset",             sm_issubset,             2, 2 },
