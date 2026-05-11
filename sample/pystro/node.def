@@ -439,6 +439,29 @@ node_imul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     if (UNLIKELY(!av)) return 0;
     VALUE bv = EVAL_ARG(c, b);
     if (UNLIKELY(!bv)) return 0;
+    // list *= n — CPython parity: in-place repetition.  Preserve identity
+    // so `s = []; s2 = s; s *= 2; assert s is s2` holds.
+    bool b_int = PYS_IS_FIXNUM(bv) || bv == PYS_TRUE || bv == PYS_FALSE;
+    if (PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_LIST && b_int) {
+        struct pysobj *la = PYS_PTR(av);
+        int64_t k = PYS_IS_FIXNUM(bv) ? PYS_FIXVAL(bv) : (bv == PYS_TRUE ? 1 : 0);
+        size_t old_len = la->list.len;
+        if (k <= 0) { la->list.len = 0; return av; }
+        if (k == 1) return av;
+        size_t new_len = old_len * (size_t)k;
+        if (new_len > la->list.capa) {
+            size_t cap = la->list.capa ? la->list.capa : 4;
+            while (cap < new_len) cap *= 2;
+            VALUE *items = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
+            if (old_len) memcpy(items, la->list.items, sizeof(VALUE) * old_len);
+            la->list.items = items;
+            la->list.capa = cap;
+        }
+        for (int64_t r = 1; r < k; r++)
+            memcpy(la->list.items + r * old_len, la->list.items, sizeof(VALUE) * old_len);
+        la->list.len = new_len;
+        return av;
+    }
     PYS_AUG_ASSIGN_DUNDER("__imul__", pys_mul);
 }
 
