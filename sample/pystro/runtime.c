@@ -7391,11 +7391,26 @@ pys_run_with(CTX *c, VALUE cm, NODE *body)
             return 0;
         }
     } else {
+        // Body completed normally or executed `return X` / `break` /
+        // `continue` — preserve that state across the __exit__ call so
+        // the caller sees the return / loop-control verbatim.  When
+        // restoring a non-NORMAL state we also return 0 so that
+        // node_seq's `if (!eval(first)) return 0` short-circuit kicks
+        // in and the caller's state inspection runs.
+        int saved_state = c->state;
+        VALUE saved_value = c->state_value;
+        c->state = PYS_STATE_NORMAL;
+        c->state_value = PYS_NONE;
         VALUE av[3] = { PYS_NONE, PYS_NONE, PYS_NONE };
         VALUE exit_m = pys_getattr(c, cm, "__exit__");
         if (UNLIKELY(!exit_m)) return 0;
         pys_apply(c, exit_m, 3, av);
         if (c->state != PYS_STATE_NORMAL) return 0;
+        if (saved_state != PYS_STATE_NORMAL) {
+            c->state = saved_state;
+            c->state_value = saved_value;
+            return 0;
+        }
     }
     return PYS_NONE;
 }
