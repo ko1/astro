@@ -332,6 +332,14 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
             src_pos++;
             char esc = peek(0);
             if (esc == '\0') lex_error("unterminated string");
+            // Backslash-newline at the end of a source line: CPython
+            // (and Python lexer) drops both characters — the literal
+            // string is continued on the next physical line.
+            if (esc == '\n') {
+                src_pos++;
+                src_line++;
+                continue;
+            }
             switch (esc) {
               case 'n': ch = '\n'; break;
               case 't': ch = '\t'; break;
