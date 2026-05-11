@@ -15852,7 +15852,11 @@ install_builtins(CTX *c)
     pys_global_define(c, "setattr",    pys_make_builtin("setattr",    bi_setattr,    3,  3));
     pys_global_define(c, "delattr",    pys_make_builtin("delattr",    bi_delattr,    2,  2));
     pys_global_define(c, "callable",   pys_make_builtin("callable",   bi_callable,   1,  1));
-    pys_global_define(c, "open",       pys_make_builtin("open",       bi_open,       1,  2));
+    // CPython signature: open(file, mode='r', buffering=-1, encoding=None,
+    // errors=None, newline=None, closefd=True, opener=None) — pystro
+    // uses only file + mode; the rest are accepted positionally and
+    // ignored.
+    pys_global_define(c, "open",       pys_make_builtin("open",       bi_open,       1,  8));
     pys_global_define(c, "eval",       pys_make_builtin("eval",       bi_eval,       1,  3));
     pys_global_define(c, "exec",       pys_make_builtin("exec",       bi_exec,       1,  3));
     pys_global_define(c, "min",        pys_make_builtin("min",        bi_min,        1, -1));
