@@ -14422,6 +14422,72 @@ bi_pystro_getcwd(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_pystro_os_open(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.open: path must be str");
+    if (!PYS_IS_FIXNUM(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.open: flags must be int");
+    int mode = 0666;
+    if (argc >= 3 && PYS_IS_FIXNUM(argv[2])) mode = (int)PYS_FIXVAL(argv[2]);
+    size_t L = PYS_PTR(argv[0])->str.len;
+    char *path = (char *)alloca(L + 1);
+    memcpy(path, PYS_PTR(argv[0])->str.chars, L); path[L] = '\0';
+    int fd = open(path, (int)PYS_FIXVAL(argv[1]), mode);
+    if (fd < 0) {
+        VALUE cls;
+        switch (errno) {
+          case ENOENT:  cls = c->EXC_FileNotFoundError; break;
+          case EISDIR:  cls = c->EXC_IsADirectoryError; break;
+          case ENOTDIR: cls = c->EXC_NotADirectoryError; break;
+          case EACCES:
+          case EPERM:   cls = c->EXC_PermissionError;   break;
+          case EEXIST:  cls = c->EXC_FileExistsError;   break;
+          default:      cls = c->EXC_OSError;           break;
+        }
+        PYS_RAISE_EXC(c, cls, "[Errno %d] %s: '%s'", errno, strerror(errno), path);
+    }
+    return PYS_FIX(fd);
+}
+
+static VALUE
+bi_pystro_os_close(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!PYS_IS_FIXNUM(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.close: fd must be int");
+    if (close((int)PYS_FIXVAL(argv[0])) != 0)
+        PYS_RAISE_EXC(c, c->EXC_OSError, "[Errno %d] %s", errno, strerror(errno));
+    return PYS_NONE;
+}
+
+static VALUE
+bi_pystro_os_read(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!PYS_IS_FIXNUM(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.read: fd must be int");
+    if (!PYS_IS_FIXNUM(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.read: n must be int");
+    int fd = (int)PYS_FIXVAL(argv[0]);
+    size_t n = (size_t)PYS_FIXVAL(argv[1]);
+    char *buf = (char *)GC_malloc_atomic(n + 1);
+    ssize_t got = read(fd, buf, n);
+    if (got < 0) PYS_RAISE_EXC(c, c->EXC_OSError, "[Errno %d] %s", errno, strerror(errno));
+    return pys_make_bytes(buf, (size_t)got);
+}
+
+static VALUE
+bi_pystro_os_write(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!PYS_IS_FIXNUM(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.write: fd must be int");
+    if (!pys_is_byteseq(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.write: data must be bytes-like");
+    int fd = (int)PYS_FIXVAL(argv[0]);
+    const char *data = PYS_PTR(argv[1])->str.chars;
+    size_t len = PYS_PTR(argv[1])->str.len;
+    ssize_t put = write(fd, data, len);
+    if (put < 0) PYS_RAISE_EXC(c, c->EXC_OSError, "[Errno %d] %s", errno, strerror(errno));
+    return PYS_FIX((int64_t)put);
+}
+
+static VALUE
 bi_pystro_pipe(CTX *c, int argc, VALUE *argv)
 {
     (void)argc; (void)argv;
@@ -15931,6 +15997,10 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_chdir__",     pys_make_builtin("__pystro_chdir__",     bi_pystro_chdir,     1, 1));
     pys_global_define(c, "__pystro_rename__",    pys_make_builtin("__pystro_rename__",    bi_pystro_rename,    2, 2));
     pys_global_define(c, "__pystro_pipe__",      pys_make_builtin("__pystro_pipe__",      bi_pystro_pipe,      0, 0));
+    pys_global_define(c, "__pystro_os_open__",   pys_make_builtin("__pystro_os_open__",   bi_pystro_os_open,   2, 3));
+    pys_global_define(c, "__pystro_os_close__",  pys_make_builtin("__pystro_os_close__",  bi_pystro_os_close,  1, 1));
+    pys_global_define(c, "__pystro_os_read__",   pys_make_builtin("__pystro_os_read__",   bi_pystro_os_read,   2, 2));
+    pys_global_define(c, "__pystro_os_write__",  pys_make_builtin("__pystro_os_write__",  bi_pystro_os_write,  2, 2));
     pys_global_define(c, "__pystro_path_exists__", pys_make_builtin("__pystro_path_exists__", bi_pystro_path_exists, 1, 1));
     pys_global_define(c, "__pystro_md5__",     pys_make_builtin("__pystro_md5__",     bi_pystro_md5,     1, 1));
     pys_global_define(c, "__pystro_sha256__",  pys_make_builtin("__pystro_sha256__",  bi_pystro_sha256,  1, 1));

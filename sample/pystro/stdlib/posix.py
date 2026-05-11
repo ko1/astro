@@ -223,19 +223,23 @@ def rename(src, dst):
 
 
 def open(path, flags, mode=0o777, *, dir_fd=None):
-    raise OSError("posix.open not supported")
+    try: return __pystro_os_open__(_fspath(path), flags, mode)
+    except NameError: raise OSError("posix.open not supported")
 
 
 def close(fd):
-    pass
+    try: return __pystro_os_close__(fd)
+    except NameError: pass
 
 
 def read(fd, n):
-    return b""
+    try: return __pystro_os_read__(fd, n)
+    except NameError: return b""
 
 
 def write(fd, data):
-    return len(data)
+    try: return __pystro_os_write__(fd, data)
+    except NameError: return len(data)
 
 
 def fsync(fd):
