@@ -105,6 +105,48 @@ _sys_pool.modules['multiprocessing.pool'] = _pool_mod
 pool = _pool_mod
 
 
+# multiprocessing.shared_memory — PEP 580 / 3.8+ shared memory blocks.
+import types as _types_sm
+_sm_mod = _types_sm.ModuleType("multiprocessing.shared_memory")
+class _SharedMemoryStub:
+    def __init__(self, name=None, create=False, size=0, **kw):
+        self.name = name or "shm_stub"
+        self.size = size
+        self.buf = bytearray(size)
+    def close(self): pass
+    def unlink(self): pass
+
+class _ShareableListStub:
+    def __init__(self, sequence=None, *, name=None):
+        self._items = list(sequence or [])
+        self.shm = _SharedMemoryStub()
+    def __len__(self): return len(self._items)
+    def __getitem__(self, i): return self._items[i]
+    def __setitem__(self, i, v): self._items[i] = v
+
+_sm_mod.SharedMemory = _SharedMemoryStub
+_sm_mod.ShareableList = _ShareableListStub
+import sys as _sys_sm
+_sys_sm.modules['multiprocessing.shared_memory'] = _sm_mod
+shared_memory = _sm_mod
+
+
+# multiprocessing.managers - minimal stub.
+import types as _types_mgr
+_mgr_mod = _types_mgr.ModuleType("multiprocessing.managers")
+class _BaseManagerStub:
+    def __init__(self, *args, **kwargs): pass
+    def start(self): pass
+    def shutdown(self): pass
+    def __enter__(self): return self
+    def __exit__(self, *e): return False
+_mgr_mod.BaseManager = _BaseManagerStub
+_mgr_mod.SyncManager = _BaseManagerStub
+import sys as _sys_mgr
+_sys_mgr.modules['multiprocessing.managers'] = _mgr_mod
+managers = _mgr_mod
+
+
 # Exception types CPython exposes at top-level.
 class AuthenticationError(Exception):
     pass
