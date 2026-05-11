@@ -791,6 +791,16 @@ class _SMALLEST:
 SMALLEST = _SMALLEST()
 
 
+def has_no_debug_ranges():
+    """Pystro doesn't emit debug-range tables; behave like a `-X
+    no_debug_ranges` build."""
+    return True
+
+
+def Py_DEBUG():
+    return False
+
+
 class BrokenIter:
     """An iterator that raises on a chosen lifecycle hook — used by
     comprehension / for-loop exception-location tests."""

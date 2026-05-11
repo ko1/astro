@@ -4523,7 +4523,11 @@ skip_plain_unpack: ;
     if (k2 == T_ASSIGN) {
         // Possible chain `a = b = ... = expr` — accumulate target spans
         // and bind via a hidden temp so the RHS evaluates exactly once.
-        size_t starts[256] = { lhs_start };
+        // CPython test_traceback has a 2000-element chain in one stmt
+        // for recursion-depth regression; allow up to 4096.
+        size_t starts_static[256] = { lhs_start };
+        size_t *starts = starts_static;
+        size_t starts_cap = 256;
         int    nt = 1;
         tok_pos++;        // past first '='
         // We've already parsed `lhs_expr` once and seen `=`; the next
@@ -4532,7 +4536,13 @@ skip_plain_unpack: ;
             size_t s = tok_pos;
             (void)parse_expr_list();
             if (peek_tok(0)->kind == T_ASSIGN) {
-                if (nt >= 256) parse_error("too many = chains");
+                if ((size_t)nt >= starts_cap) {
+                    starts_cap *= 2;
+                    size_t *grown = (size_t *)malloc(sizeof(size_t) * starts_cap);
+                    memcpy(grown, starts, sizeof(size_t) * nt);
+                    if (starts != starts_static) free(starts);
+                    starts = grown;
+                }
                 starts[nt++] = s;
                 tok_pos++;
                 continue;
@@ -4554,6 +4564,7 @@ skip_plain_unpack: ;
                 tok_pos = saved2;
                 result = ALLOC_node_seq(result, store);
             }
+            if (starts != starts_static) free(starts);
             return result;
         }
     }
