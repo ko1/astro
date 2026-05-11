@@ -9,8 +9,14 @@ class _GenericAlias:
     def __init__(self, origin, name):
         self._origin = origin
         self._name = name
+        self.__args__ = ()
     @property
     def origin(self):
+        return self._origin
+    @property
+    def __origin__(self):
+        # CPython's typing._GenericAlias.__origin__ is the raw `list`,
+        # `dict`, etc. — used by `get_origin()`.
         return self._origin
     def __getitem__(self, params):
         return self          # `List[int]` => List itself; type-check not enforced

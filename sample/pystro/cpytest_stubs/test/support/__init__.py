@@ -721,6 +721,16 @@ def check_sizeof(test, o, size):
     return None
 
 
+def refcount_test(test):
+    """No-op @decorator (pystro has no CPython-style refcounting)."""
+    return test
+
+
+def skip_if_pgo_task(test):
+    """PGO build skip — pystro is never a PGO build."""
+    return test
+
+
 class SaveSignals:
     """Context manager that saves/restores SIGINT etc.  Pystro has no
     signal delivery model so the body is a pass-through."""

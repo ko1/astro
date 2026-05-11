@@ -13791,6 +13791,13 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // import mock` / `from unittest.mock import MagicMock`.
         "unittest.py",
         "unittest/mock.py",
+        // multiprocessing — CPython's is a 30+ file package that
+        // assumes fork/spawn semantics pystro doesn't have.  Pystro
+        // ships an importable stub package so tests can import
+        // multiprocessing.context / Manager / Process without crashing
+        // (they SkipTest at runtime instead).
+        "multiprocessing.py",
+        "multiprocessing/context.py",
         NULL,
     };
     bool pystro_wins = false;
@@ -13875,6 +13882,13 @@ bi_import(CTX *c, int argc, VALUE *argv)
     // classes as the caller (so `except` matches across modules).
     struct pysglobals *new_g = pys_globals_new();
     struct pysglobals *saved_g = c->globals;
+    // A caller in the middle of a class body (e.g. `class M: from X
+    // import Y`) leaves c->current_class non-NONE.  Module-level code
+    // inside X.py — `def`, `class`, name assigns — would then mis-attach
+    // to the caller's class instead of the module's globals.  Force
+    // PYS_NONE for the nested module init.
+    VALUE saved_current_class = c->current_class;
+    c->current_class = PYS_NONE;
 #define SAVE_EXC(name) VALUE saved_EXC_##name = c->EXC_##name;
     PYS_EXC_LIST(SAVE_EXC)
 #undef SAVE_EXC
@@ -14029,6 +14043,7 @@ bi_import(CTX *c, int argc, VALUE *argv)
         c->state_value = PYS_NONE;
         pys_dict_remove(c, mod_dict, argv[0]);
         c->globals = saved_g;
+        c->current_class = saved_current_class;
         free(src);
         c->state = PYS_STATE_RAISE;
         c->state_value = exc;
@@ -14041,6 +14056,7 @@ bi_import(CTX *c, int argc, VALUE *argv)
     VALUE mod = placeholder;
 
     c->globals = saved_g;
+    c->current_class = saved_current_class;
     pys_dict_set(c, mod_dict, argv[0], mod);
     // Post-load injection for modules that mutate `globals()` to define
     // module attrs — pystro's `globals()` returns a snapshot dict so

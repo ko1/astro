@@ -64,6 +64,7 @@ def _make_enum(typename, items):
     cls.__name__ = typename
     cls._members_ = members
     cls._by_name_ = name_to_member
+    cls.__members__ = dict(name_to_member)
     for m in members:
         setattr(cls, m.name, m)
 
@@ -81,6 +82,11 @@ class EnumMeta(type):
         return iter(cls._members_)
     def __contains__(cls, member):
         return member in cls._members_
+    @property
+    def __members__(cls):
+        # CPython exposes an OrderedDict; pystro is order-preserving by
+        # default so a plain dict suffices.
+        return dict(cls._by_name_)
     def __new__(meta, name, bases, attrs):
         # Collect non-dunder, non-method attributes as enum members; keep methods.
         items = []
@@ -121,6 +127,11 @@ class EnumMeta(type):
             cls._members_.append(m)
             cls._by_name_[n] = m
             setattr(cls, n, m)
+        # Also expose `__members__` directly on the class — CPython parity.
+        # The metaclass property handles direct subclasses, but tests reach
+        # for `cls.__members__` via attribute access which on built-in enums
+        # like HTTPStatus may not consult the metaclass property reliably.
+        cls.__members__ = dict(cls._by_name_)
         return cls
 
 
@@ -208,18 +219,43 @@ def _simple_enum(*args, **kwargs):
     access on the decorated class returns ints."""
     def deco(cls):
         next_val = 1
+        members = {}
+        # `_simple_enum` source classes can declare members as plain ints,
+        # `auto()` sentinels, or tuples whose first element is the
+        # int/str value followed by phrase/description (HTTPStatus style).
+        # We don't synthesise member instances — tests reach for the
+        # plain values via attribute access, and `__members__` exposing
+        # the same values is enough for the introspection paths.
         for name in dir(cls):
-            if name.startswith("__"):
+            if name.startswith("_"):
                 continue
             try:
                 val = getattr(cls, name)
             except AttributeError:
                 continue
+            if callable(val) and not isinstance(val, _Auto):
+                continue
             if isinstance(val, _Auto):
+                members[name] = next_val
                 setattr(cls, name, next_val)
                 next_val += 1
-            elif isinstance(val, int):
+                continue
+            if isinstance(val, tuple) and val and isinstance(val[0], (int, str)):
+                v0 = val[0]
+                members[name] = v0
+                setattr(cls, name, v0)
+                if isinstance(v0, int):
+                    next_val = v0 + 1
+                continue
+            if isinstance(val, int):
+                members[name] = val
                 next_val = val + 1
+                continue
+            if isinstance(val, str):
+                members[name] = val
+        cls.__members__ = members
+        cls._by_name_ = dict(members)
+        cls._members_ = list(members.values())
         return cls
     return deco
 
