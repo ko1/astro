@@ -220,6 +220,11 @@ def _fspath(path):
     return str(path)
 
 
+# CPython-style public entry: same as _fspath but available as
+# posix.fspath / os.fspath.
+fspath = _fspath
+
+
 def mkdir(path, mode=0o777, *, dir_fd=None):
     path = _fspath(path)
     try: return __pystro_makedirs__(path)

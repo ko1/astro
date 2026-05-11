@@ -172,18 +172,55 @@ pys_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
     // If metaclass is a user class with __new__, call __new__(meta, ...).
     // The __new__ implementor is expected to return a class (typically by
     // calling type(name, bases, attrs)).
+    // Pull __class_kwargs__ out of the class methods so we can forward
+    // it to metaclass __new__ / __init__ as keyword args.  CPython does
+    // this for `class C(Base, metaclass=M, kw=v)`.
+    extern VALUE pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
+                              int kwc, const char **kwnames, VALUE *kwvalues);
+    int meta_kwc = 0;
+    const char **meta_kn = NULL;
+    VALUE *meta_kv = NULL;
+    {
+        VALUE kw_dict_meta = PYS_NONE;
+        for (int kk = 0; kk < cd->nmethods; kk++) {
+            if (strcmp(cd->methods[kk].name, "__class_kwargs__") == 0) {
+                kw_dict_meta = cd->methods[kk].value;
+                break;
+            }
+        }
+        if (kw_dict_meta != PYS_NONE && pys_is_dict(kw_dict_meta)) {
+            struct pysdict *dd = PYS_PTR(kw_dict_meta)->dict;
+            if (dd->used > 0) {
+                meta_kn = (const char **)alloca(sizeof(char *) * dd->used);
+                meta_kv = (VALUE *)alloca(sizeof(VALUE) * dd->used);
+                for (size_t ii = 0; ii < dd->elen; ii++) {
+                    VALUE k = dd->entries[ii].key;
+                    if (k == 0 || k == DICT_DELETED_KEY) continue;
+                    if (!pys_is_str(k)) continue;
+                    meta_kn[meta_kwc] = PYS_PTR(k)->str.chars;
+                    meta_kv[meta_kwc] = dd->entries[ii].value;
+                    meta_kwc++;
+                }
+            }
+        }
+    }
     if (pys_is_class(meta)) {
         VALUE new_m = pys_class_lookup_method(meta, PYS_INTERN_new);
         if (new_m != PYS_NONE) {
             VALUE av[4] = { meta, name_v, bases_tuple, attrs };
-            VALUE r = pys_apply(c, new_m, 4, av);
+            VALUE r = meta_kwc > 0
+                ? pys_apply_kw(c, new_m, 4, av, meta_kwc, meta_kn, meta_kv)
+                : pys_apply(c, new_m, 4, av);
             if (c->state == PYS_STATE_RAISE) return 0;
             // If __init__ is also defined, call it on the new class.
             if (pys_is_class(r)) {
                 VALUE init_m = pys_class_lookup_method(meta, PYS_INTERN_init);
                 if (init_m != PYS_NONE) {
                     VALUE iav[4] = { r, name_v, bases_tuple, attrs };
-                    pys_apply(c, init_m, 4, iav);
+                    if (meta_kwc > 0)
+                        pys_apply_kw(c, init_m, 4, iav, meta_kwc, meta_kn, meta_kv);
+                    else
+                        pys_apply(c, init_m, 4, iav);
                     if (c->state == PYS_STATE_RAISE) return 0;
                 }
                 // Stamp metaclass for inheritance.
