@@ -3000,6 +3000,7 @@ parse_def(void)
     bool is_async = g_parse_def_is_async;
     g_parse_def_is_async = false;
     (void)is_async;
+    int def_keyword_line = peek_tok(0)->line;
     expect(T_DEF, "'def'");
     if (peek_tok(0)->kind != T_NAME) parse_error("expected function name");
     const char *fname = peek_tok(0)->sval;
@@ -3080,6 +3081,8 @@ parse_def(void)
                                     nidx, lidx, flags,
                                     (uint32_t)(sc.is_generator ? 1 : 0),
                                     body);
+    // Stamp the def-keyword's line so co_firstlineno matches CPython.
+    if (def_keyword_line > 0) def_node->head.line = def_keyword_line;
 
     // If the function had any annotations, build a dict at function-
     // creation time and attach it via `f.__annotations__ = {...}`.
