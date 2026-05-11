@@ -689,6 +689,8 @@ _b.frozendict = frozendict
 # test_compile etc.  CPython picks these per-build; pystro uses a
 # single moderate default.
 C_RECURSION_LIMIT = 1500
+MISSING_C_DOCSTRINGS = False
+HAVE_DOCSTRINGS = True
 try:
     EXCEEDS_RECURSION_LIMIT = sys.getrecursionlimit() + 1000
 except Exception:

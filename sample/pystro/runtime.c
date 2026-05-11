@@ -15459,6 +15459,10 @@ install_builtins(CTX *c)
     pys_global_define(c, "range",      c->TYPE_range);
     pys_global_define(c, "type",       c->TYPE_type);
     pys_global_define(c, "object",     c->TYPE_object);
+    // `super` is normally handled at parse-time as a special call form,
+    // but plain references (`f = super`, `isinstance(x, super)`) need
+    // the class to be reachable by name.  Expose the synthetic class.
+    pys_global_define(c, "super",      c->TYPE_super);
     // int/float/complex/bool/str/bytes/bytearray/list/tuple/dict/set/
     // frozenset/range/type are registered as TYPE classes above.
     pys_global_define(c, "len",        pys_make_builtin("len",        bi_len,        1,  1));
