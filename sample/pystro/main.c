@@ -155,6 +155,22 @@ main(int argc, char *argv[])
         pys_dict_set(c, modules_dict(c), pys_make_str("__main__", 8), mod);
     }
 
+    // Preload `os` so the genericpath / posixpath / os.path circular
+    // dependency unwinds in the canonical order (genericpath first,
+    // then posixpath, then os).  CPython sets this up at startup too.
+    // User code's first `import genericpath` would otherwise crash on
+    // `splitext.__doc__ = genericpath._splitext.__doc__` inside the
+    // half-initialised posixpath body.
+    {
+        extern VALUE bi_import(CTX *c, int argc, VALUE *argv);
+        VALUE av[1] = { pys_make_str("os", 2) };
+        bi_import(c, 1, av);
+        if (c->state == PYS_STATE_RAISE) {
+            c->state = PYS_STATE_NORMAL;
+            c->state_value = PYS_NONE;
+        }
+    }
+
     if (repl_mode) {
         // Read-eval-print loop.  Each input line is parsed as a
         // top-level program and executed in the same CTX.

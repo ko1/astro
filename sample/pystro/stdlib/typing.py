@@ -80,6 +80,40 @@ ParamSpec = _GenericAlias(lambda x: x, "typing.ParamSpec")
 TypeVarTuple = _GenericAlias(lambda x: x, "typing.TypeVarTuple")
 Concatenate = _GenericAlias(lambda x: x, "typing.Concatenate")
 NoDefault = object()
+
+
+def assert_never(value):
+    """CPython 3.11+: signal exhaustive match failure at the type-checker;
+    at runtime, raise to mirror CPython semantics."""
+    raise AssertionError(f"Expected code to be unreachable; got {value!r}")
+
+
+def assert_type(value, type_):
+    return value
+
+
+def reveal_type(value):
+    return value
+
+
+def override(fn):
+    return fn
+
+
+def is_typeddict(tp):
+    return False
+
+
+def get_overloads(fn):
+    return []
+
+
+def clear_overloads():
+    pass
+
+
+def overload(fn):
+    return fn
 Hashable = _GenericAlias(lambda x: x, "typing.Hashable")
 Sized    = _GenericAlias(lambda x: x, "typing.Sized")
 Container = _GenericAlias(lambda x: x, "typing.Container")

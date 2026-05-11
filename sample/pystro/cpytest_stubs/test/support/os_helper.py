@@ -157,6 +157,18 @@ def skip_unless_hardlink(fn):
     return unittest.skip("no hardlink")(fn)
 
 
+def skip_unless_dac_override(fn):
+    return unittest.skip("no CAP_DAC_OVERRIDE")(fn)
+
+
+def skip_unless_working_chmod(fn):
+    return fn
+
+
+def fd_count():
+    return 0
+
+
 def calling_clean_temp_dir(*a, **kw):
     pass
 

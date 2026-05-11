@@ -200,6 +200,18 @@ HIGHEST_PROTOCOL = 5
 DEFAULT_PROTOCOL = 5
 
 
+class PickleBuffer:
+    """CPython 3.8+ out-of-band buffer holder; pystro doesn't actually
+    do PEP 574, just expose the type so isinstance/AttributeError
+    probes work."""
+    def __init__(self, buffer):
+        self._buffer = buffer
+    def raw(self):
+        return self._buffer
+    def release(self):
+        self._buffer = None
+
+
 class PickleError(Exception):
     pass
 

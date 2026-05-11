@@ -31,6 +31,11 @@ def skip_if_tcp_blackhole(fn):
 
 
 has_gethostname = True
+IPV6_ENABLED = False
+
+
+def skip_unless_bind_unix_socket(fn):
+    return unittest.skip("no AF_UNIX bind")(fn)
 
 
 __all__ = ["HOST", "HOSTv4", "HOSTv6",

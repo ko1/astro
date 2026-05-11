@@ -4,6 +4,22 @@
 # for fixed-precision financial-style arithmetic.  Floats can be lossy
 # but are the only literal source.
 
+# Rounding mode constants — CPython names; pystro's arithmetic uses
+# half-even semantics throughout so these are informational.
+ROUND_DOWN = "ROUND_DOWN"
+ROUND_HALF_UP = "ROUND_HALF_UP"
+ROUND_HALF_EVEN = "ROUND_HALF_EVEN"
+ROUND_CEILING = "ROUND_CEILING"
+ROUND_FLOOR = "ROUND_FLOOR"
+ROUND_UP = "ROUND_UP"
+ROUND_HALF_DOWN = "ROUND_HALF_DOWN"
+ROUND_05UP = "ROUND_05UP"
+
+MAX_PREC = 425000000
+MAX_EMAX = 999999999
+MIN_EMIN = -999999999
+
+
 class InvalidOperation(Exception):
     pass
 

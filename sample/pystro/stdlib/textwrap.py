@@ -65,3 +65,29 @@ def shorten(text, width, placeholder=" [...]"):
     if len(s) <= width:
         return s
     return s[:width - len(placeholder)].rstrip() + placeholder
+
+
+class TextWrapper:
+    """Minimal TextWrapper shim — exposes constructor kwargs and the
+    fill/wrap methods over the module-level helpers."""
+    def __init__(self, width=70, initial_indent="", subsequent_indent="",
+                 expand_tabs=True, replace_whitespace=True,
+                 fix_sentence_endings=False, break_long_words=True,
+                 drop_whitespace=True, break_on_hyphens=True,
+                 tabsize=8, max_lines=None, placeholder=" [...]", **kw):
+        self.width = width
+        self.initial_indent = initial_indent
+        self.subsequent_indent = subsequent_indent
+        self.expand_tabs = expand_tabs
+        self.replace_whitespace = replace_whitespace
+        self.fix_sentence_endings = fix_sentence_endings
+        self.break_long_words = break_long_words
+        self.drop_whitespace = drop_whitespace
+        self.break_on_hyphens = break_on_hyphens
+        self.tabsize = tabsize
+        self.max_lines = max_lines
+        self.placeholder = placeholder
+    def wrap(self, text):
+        return wrap(text, self.width)
+    def fill(self, text):
+        return fill(text, self.width)

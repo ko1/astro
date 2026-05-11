@@ -897,6 +897,36 @@ import os as _os_mod
 unix_shell = "/bin/sh" if _os_mod.name == "posix" else None
 del _os_mod
 
+is_s390x = False
+is_apple = False
+is_apple_mobile = False
+is_emscripten = False
+is_wasi = False
+is_android = False
+
+
+def open_urlresource(url, *args, **kw):
+    raise _unittest.SkipTest("network resources disabled")
+
+
+def iter_builtin_types():
+    # CPython introspection helper; pystro has no _testcapi.builtin types.
+    return iter(())
+
+
+def skip_if_broken_multiprocessing_synchronize():
+    pass
+
+
+def subTests(*args, **kw):
+    # Decorator factory used in CPython 3.13+ tests.  pystro has no
+    # subtest machinery — just return the function untouched.
+    def _wrap(fn):
+        return fn
+    if args and callable(args[0]):
+        return args[0]
+    return _wrap
+
 
 class PythonSymlink:
     """No-op context manager; CPython tests probe this for sysconfig."""

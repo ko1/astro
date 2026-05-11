@@ -15,10 +15,29 @@ VERBOSE = 64
 X = VERBOSE
 ASCII = 256
 A = ASCII
+UNICODE = 32
+U = UNICODE
+LOCALE = 4
+L = LOCALE
+DEBUG = 128
+TEMPLATE = 1
+T = TEMPLATE
+NOFLAG = 0
 
 
 class error(Exception):
     pass
+
+
+class Scanner:
+    """Pystro stub for re.Scanner.  Stores patterns but never actually
+    tokenizes — CPython tests that import this for type checks at least
+    don't AttributeError."""
+    def __init__(self, lexicon, flags=0):
+        self.lexicon = lexicon
+        self.flags = flags
+    def scan(self, string):
+        return ([], string)
 
 
 def _find_group_close(pat, pi):
