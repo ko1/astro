@@ -740,14 +740,21 @@ def sortdict(d):
 
 
 def patch_list(orig):
-    """Context manager that restores ``orig`` to its pre-mutation state
-    (CPython uses this for sys.warnoptions etc.)."""
+    """Context manager *and* decorator that restores ``orig`` to its
+    pre-mutation state.  CPython tests use both ``with patch_list(L):``
+    and ``@patch_list(L)``."""
     class _Ctx:
         def __enter__(self_inner):
             self_inner._saved = list(orig)
+            return self_inner
         def __exit__(self_inner, *exc):
             orig[:] = self_inner._saved
             return False
+        def __call__(self_inner, fn):
+            def wrapper(*args, **kwargs):
+                with self_inner:
+                    return fn(*args, **kwargs)
+            return wrapper
     return _Ctx()
 
 

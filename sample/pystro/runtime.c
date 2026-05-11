@@ -1078,6 +1078,7 @@ pys_make_instance(VALUE cls)
 // does NOT recursively call __getattribute__.  We implement this by
 // temporarily marking the call so pys_getattr skips the user's hook.
 static __thread int pys_skip_getattribute_hook = 0;
+static __thread int pys_skip_setattr_hook = 0;
 
 static VALUE
 bi_object_getattribute(CTX *c, int argc, VALUE *argv)
@@ -1092,13 +1093,17 @@ bi_object_getattribute(CTX *c, int argc, VALUE *argv)
 }
 
 // object.__setattr__(self, name, value) — default attribute set.
+// Bypasses the user's __setattr__ hook (matching CPython semantics — this
+// is the documented escape hatch for immutable types like uuid.UUID).
 static VALUE
 bi_object_setattr(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
     if (!pys_is_str(argv[1]))
         PYS_RAISE_EXC(c, c->EXC_TypeError, "attribute name must be string");
+    pys_skip_setattr_hook++;
     pys_setattr(c, argv[0], PYS_PTR(argv[1])->str.chars, argv[2]);
+    pys_skip_setattr_hook--;
     return PYS_NONE;
 }
 
@@ -5556,8 +5561,6 @@ pys_getattr(CTX *c, VALUE v, const char *name)
     if (pys_is_class(t)) tname = PYS_PTR(t)->cls.name;
     PYS_RAISE_EXC(c, c->EXC_AttributeError, "'%s' object has no attribute '%s'", tname, name);
 }
-
-static __thread int pys_skip_setattr_hook = 0;
 
 void
 pys_setattr(CTX *c, VALUE v, const char *name, VALUE val)
