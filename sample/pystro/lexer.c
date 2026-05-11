@@ -442,7 +442,12 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
             src_pos++;
         } else {
             if (ch == '\n') {
-                if (!triple) lex_error("unterminated string");
+                // PEP 701 (Python 3.12+): f-string with `{...}` brace
+                // open can span multiple lines.  Allow newline inside
+                // an f-string brace; otherwise (plain single-line
+                // string) it's an unterminated literal.
+                if (!triple && !(is_fstr && brace_depth > 0))
+                    lex_error("unterminated string");
                 src_line++;
             }
             src_pos++;
