@@ -430,6 +430,13 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
             src_pos++;
             char esc = peek(0);
             if (esc == '\0') lex_error("unterminated f-string");
+            // f-string line continuation: backslash followed by literal
+            // newline drops both characters (CPython parity).
+            if (esc == '\n') {
+                src_pos++;
+                src_line++;
+                continue;
+            }
             switch (esc) {
               case 'n': ch = '\n'; break;
               case 't': ch = '\t'; break;
