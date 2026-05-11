@@ -1384,7 +1384,15 @@ parse_comp_clauses(NODE *inner_body)
     expect(T_FOR, "'for'");
     // Accept `for X in ...`, `for X, Y in ...`, or `for (X, Y) in ...`.
     bool paren_target = match_tok(T_LPAREN);
-    if (peek_tok(0)->kind != T_NAME) parse_error("expected target NAME in comprehension");
+    // `for *rest, in ...` — leading-star is unusual but valid in CPython.
+    int star_idx = -1;
+    if (peek_tok(0)->kind == T_STAR) {
+        tok_pos++;
+        if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*' in tuple target");
+        star_idx = 0;
+    } else if (peek_tok(0)->kind != T_NAME) {
+        parse_error("expected target NAME in comprehension");
+    }
     const char *names[16];
     int nnames = 0;
     names[nnames++] = comp_resolve(peek_tok(0)->sval);
@@ -1397,6 +1405,12 @@ parse_comp_clauses(NODE *inner_body)
             || (paren_target && peek_tok(0)->kind == T_RPAREN)) {
             trailing_comma = true;
             break;
+        }
+        if (peek_tok(0)->kind == T_STAR) {
+            tok_pos++;
+            if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*' in tuple target");
+            if (star_idx >= 0) parse_error("multiple stars in tuple target");
+            star_idx = nnames;
         }
         if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in tuple target");
         if (nnames >= 16) parse_error("for tuple target too long");
@@ -1428,13 +1442,30 @@ parse_comp_clauses(NODE *inner_body)
     const char *tmp = new_temp_name("__forT");
     NODE *load_tmp;
     NODE *prefix = NULL;
+    // Helper to build element-fetch node from __t for slot i.  For the
+    // starred position, build a slice [i : -(suffix)] (or [i:] if there
+    // are no items after the star).
     if (cur_scope && !scope_is_global_decl(cur_scope, tmp)) {
         int idx = scope_add_local(cur_scope, tmp);
         load_tmp = ALLOC_node_lref((uint32_t)idx);
-        // body: assign each name from __t[i], then run inner_body.
         for (int i = nnames - 1; i >= 0; i--) {
-            NODE *idx_n = ALLOC_node_const_int(i);
-            NODE *el  = ALLOC_node_subscript_get(load_tmp, idx_n);
+            NODE *el;
+            if (i == star_idx) {
+                int suffix = nnames - 1 - i;
+                NODE *sa = ALLOC_node_const_int(i);
+                NODE *sb = (suffix == 0)
+                          ? ALLOC_node_const_none()
+                          : ALLOC_node_const_int(-suffix);
+                el = ALLOC_node_slice(load_tmp, sa, sb, ALLOC_node_const_none());
+            } else if (star_idx >= 0 && i > star_idx) {
+                int after = i - star_idx - 1;       // index in suffix
+                NODE *idx_n = ALLOC_node_const_int(-(nnames - 1 - i + (after - after)));
+                (void)after;
+                idx_n = ALLOC_node_const_int(i - nnames);   // negative index
+                el = ALLOC_node_subscript_get(load_tmp, idx_n);
+            } else {
+                el = ALLOC_node_subscript_get(load_tmp, ALLOC_node_const_int(i));
+            }
             int slot = scope_add_local(cur_scope, names[i]);
             NODE *as = ALLOC_node_lset((uint32_t)slot, el);
             prefix = prefix ? ALLOC_node_seq(as, prefix) : as;
@@ -1446,8 +1477,19 @@ parse_comp_clauses(NODE *inner_body)
     // top-level
     load_tmp = ALLOC_node_gref(tmp);
     for (int i = nnames - 1; i >= 0; i--) {
-        NODE *idx_n = ALLOC_node_const_int(i);
-        NODE *el  = ALLOC_node_subscript_get(load_tmp, idx_n);
+        NODE *el;
+        if (i == star_idx) {
+            int suffix = nnames - 1 - i;
+            NODE *sa = ALLOC_node_const_int(i);
+            NODE *sb = (suffix == 0)
+                      ? ALLOC_node_const_none()
+                      : ALLOC_node_const_int(-suffix);
+            el = ALLOC_node_slice(load_tmp, sa, sb, ALLOC_node_const_none());
+        } else if (star_idx >= 0 && i > star_idx) {
+            el = ALLOC_node_subscript_get(load_tmp, ALLOC_node_const_int(i - nnames));
+        } else {
+            el = ALLOC_node_subscript_get(load_tmp, ALLOC_node_const_int(i));
+        }
         NODE *as = ALLOC_node_gset(names[i], el);
         prefix = prefix ? ALLOC_node_seq(as, prefix) : as;
     }
