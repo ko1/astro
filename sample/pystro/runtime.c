@@ -1202,7 +1202,16 @@ bi_object_new(CTX *c, int argc, VALUE *argv)
         }
         int fwd_argc = (has_user_init || argc <= 1) ? 0 : argc - 1;
         VALUE *fwd_argv = (has_user_init || argc <= 1) ? NULL : argv + 1;
+        // The caller may have set PYS_BI_KWC for the user-level __init__
+        // call (e.g. `Sub(seq, newarg=3)`); built-in ctors like bi_list
+        // forbid kwargs, so suppress while we forward nothing on the
+        // has_user_init path — the user's __init__ will (re)dispatch
+        // super().__init__ with its own kwargs explicitly.
+        extern int PYS_BI_KWC;
+        int saved_kwc = PYS_BI_KWC;
+        if (has_user_init) PYS_BI_KWC = 0;
         VALUE primary = PYS_PTR(bin_base)->cls.builtin_ctor(c, fwd_argc, fwd_argv);
+        PYS_BI_KWC = saved_kwc;
         if (c->state == PYS_STATE_RAISE) return 0;
         PYS_PTR(inst)->inst.primary = primary;
     }
@@ -2955,9 +2964,18 @@ pys_dict_get(CTX *c, VALUE dv, VALUE key)
     size_t bucket; int32_t eidx; ssize_t ft;
     pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &ft);
     if (eidx < 0) {
-        VALUE r = pys_to_repr(c, key);
-        PYS_RAISE_EXC(c, c->EXC_KeyError, "%s",
-                     pys_is_str(r) ? PYS_PTR(r)->str.chars : "?");
+        // KeyError(key) — CPython parity: e.args == (key,), preserving
+        // the original value's type (int, tuple, ...).  Earlier we
+        // stringified the key which broke tests asserting on args[0]
+        // type.
+        VALUE inst = pys_make_instance(c->EXC_KeyError);
+        pys_setattr(c, inst, "args", pys_make_tuple(&key, 1));
+        pys_setattr(c, inst, "__context__", c->current_handling_exc ? c->current_handling_exc : PYS_NONE);
+        pys_setattr(c, inst, "__cause__", PYS_NONE);
+        pys_setattr(c, inst, "__suppress_context__", PYS_FALSE);
+        c->state = PYS_STATE_RAISE;
+        c->state_value = inst;
+        return 0;
     }
     return d->entries[eidx].value;
 }
@@ -3522,7 +3540,16 @@ pys_list_slice_set(CTX *c, VALUE seq, VALUE start, VALUE stop, VALUE step, VALUE
     size_t nval = 0;
     if (pys_is_list(val) || pys_is_tuple(val)) {
         nval = PYS_PTR(val)->list.len;
-        items = PYS_PTR(val)->list.items;
+        // `a[::-1] = a` aliases the RHS with the target — writes into
+        // seq during the loop would clobber unread reads.  Copy when
+        // val and seq share storage.  Tuples can never alias seq's list
+        // storage, but check both cases uniformly.
+        if (val == seq) {
+            items = (VALUE *)GC_malloc(sizeof(VALUE) * (nval ? nval : 1));
+            memcpy(items, PYS_PTR(val)->list.items, sizeof(VALUE) * nval);
+        } else {
+            items = PYS_PTR(val)->list.items;
+        }
     } else {
         struct pys_iter it; pys_iter_init(c, &it, val);
         if (UNLIKELY(c->state == PYS_STATE_RAISE)) return;
@@ -3884,9 +3911,13 @@ pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable)
         return;
     }
     // Already-an-iterator (PYS_T_ITER created by `iter(seq)` builtin):
-    // copy its inner state.  This makes `for x in iter(seq)` work.
+    // drive the wrapped state directly so `for x in it` advances the
+    // ORIGINAL iterator (CPython semantics — `iter(it) is it`).  Copying
+    // state here breaks `iter(a); for x in it: ...; next(it)` because
+    // the for-loop only mutates the local copy.
     if (PYS_IS_PTR(iterable) && PYS_PTR(iterable)->type == PYS_T_ITER) {
-        *it = *PYS_PTR(iterable)->iter_state;
+        it->kind = 14;
+        it->container = iterable;
         return;
     }
     if (pys_is_instance(iterable)) {
@@ -4194,6 +4225,11 @@ pys_iter_next(CTX *c, struct pys_iter *it, VALUE *out)
         it->i++;
         *out = r;
         return true;
+      }
+      case 14: {
+        // Wrapped PYS_T_ITER: drive the underlying iter_state directly so
+        // any `for x in it_value` mutates the original iterator's position.
+        return pys_iter_next(c, PYS_PTR(it->container)->iter_state, out);
       }
     }
     return false;
@@ -8598,17 +8634,24 @@ lm_append(CTX *c, int argc, VALUE *argv)
 
 // list.__init__([iterable]) — CPython parity: clear in place, then extend
 // from iterable.  `a.__init__()` after `a = [1,2,3]` leaves `a == []`.
+// For built-in subclass instances, operate on the primary list value
+// (so `class Sub(list)` followed by `super().__init__(seq)` populates).
 static VALUE
 lm_init(CTX *c, int argc, VALUE *argv)
 {
-    struct pysobj *o = PYS_PTR(argv[0]);
+    VALUE target = argv[0];
+    if (PYS_IS_PTR(target) && PYS_PTR(target)->type == PYS_T_INSTANCE
+        && PYS_PTR(target)->inst.primary
+        && pys_is_list(PYS_PTR(target)->inst.primary))
+        target = PYS_PTR(target)->inst.primary;
+    struct pysobj *o = PYS_PTR(target);
     o->list.len = 0;
     if (argc >= 2) {
         struct pys_iter it; pys_iter_init(c, &it, argv[1]);
         if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         VALUE x;
         while (pys_iter_next(c, &it, &x)) {
-            pys_list_append(c, argv[0], x);
+            pys_list_append(c, target, x);
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         }
     }
@@ -11170,6 +11213,10 @@ bi_dict(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_set(CTX *c, int argc, VALUE *argv)
 {
+    if (PYS_BI_KWC > 0)
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "set() takes no keyword arguments");
+    if (argc > 1)
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "set expected at most 1 argument, got %d", argc);
     VALUE r = pys_make_set();
     if (argc == 0) return r;
     struct pys_iter it; pys_iter_init(c, &it, argv[0]);
@@ -11226,6 +11273,10 @@ bi_bytearray(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_frozenset(CTX *c, int argc, VALUE *argv)
 {
+    if (PYS_BI_KWC > 0)
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "frozenset() takes no keyword arguments");
+    if (argc > 1)
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "frozenset expected at most 1 argument, got %d", argc);
     VALUE r = pys_make_frozenset();
     if (argc == 0) return r;
     struct pys_iter it; pys_iter_init(c, &it, argv[0]);
@@ -11940,12 +11991,46 @@ bi_eval(CTX *c, int argc, VALUE *argv)
     if (!expr) {
         PYS_RAISE_EXC(c, c->EXC_SyntaxError, "%s", parse_error_msg);
     }
-    struct ns_save sg = { 0 }, sl = { 0 };
-    if (argc >= 2) ns_inject(c, argv[1], &sg);
+    // When the caller supplies a globals dict (e.g. namedtuple's
+    // `eval(code, {'_tuple_new': tuple.__new__})`), the resulting
+    // function value's `fglobals` must point to a struct that contains
+    // those entries even after we return — otherwise the lambda's later
+    // gref lookups miss `_tuple_new`.  ns_inject mutates the active
+    // globals in place and ns_restore reverts; that's wrong here.
+    // Instead build a fresh pysglobals (copy of current + ns entries),
+    // swap it in for the EVAL call, then restore.  Any function created
+    // during EVAL captures this fresh struct via `c->globals`.
+    struct pysglobals *saved_g = c->globals;
+    struct pysglobals *eval_g = saved_g;
+    if (argc >= 2 && pys_is_dict(argv[1])) {
+        extern struct pysglobals *pys_globals_new(void);
+        eval_g = pys_globals_new();
+        // Copy current globals, then overlay ns entries.
+        for (size_t i = 0; i < saved_g->size; i++) {
+            int idx = (int)eval_g->size;
+            if (eval_g->size == eval_g->capa) {
+                size_t cap = eval_g->capa ? eval_g->capa * 2 : 32;
+                eval_g->entries = (struct gentry *)GC_realloc(eval_g->entries, cap * sizeof(struct gentry));
+                eval_g->capa = cap;
+            }
+            eval_g->entries[idx] = saved_g->entries[i];
+            eval_g->size++;
+        }
+        c->globals = eval_g;
+        struct pysdict *d = PYS_PTR(argv[1])->dict;
+        for (size_t i = 0; i < d->elen; i++) {
+            if (!pydict_entry_live(d, i)) continue;
+            VALUE k = d->entries[i].key;
+            if (!pys_is_str(k)) continue;
+            const char *name = intern_name(PYS_PTR(k)->str.chars, PYS_PTR(k)->str.len);
+            pys_global_define(c, name, d->entries[i].value);
+        }
+    }
+    struct ns_save sl = { 0 };
     if (argc >= 3) ns_inject(c, argv[2], &sl);
     VALUE r = EVAL(c, expr);
     ns_restore(c, &sl);
-    ns_restore(c, &sg);
+    c->globals = saved_g;
     return r;
 }
 
@@ -15041,6 +15126,10 @@ install_builtins(CTX *c)
     pys_class_add_method(c, c->TYPE_bytearray, "maketrans",
         pys_make_builtin("maketrans", bi_bytes_maketrans, 2, 2));
     c->TYPE_list      = pys_make_builtin_class("list",      bi_list,      PYS_T_LIST);
+    // Register list.__init__ on the class so super().__init__(seq) from a
+    // user-defined `class S(list)` resolves here (not to object.__init__).
+    pys_class_add_method(c, c->TYPE_list, "__init__",
+        pys_make_builtin("__init__", lm_init, 1, 2));
     c->TYPE_tuple     = pys_make_builtin_class("tuple",     bi_tuple,     PYS_T_TUPLE);
     c->TYPE_dict      = pys_make_builtin_class("dict",      bi_dict,      PYS_T_DICT);
     {
