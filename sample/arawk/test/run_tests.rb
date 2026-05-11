@@ -97,6 +97,34 @@ CASES = [
   # All three go through one sort pipe — output is deterministic.
   ['pipe-to-sort',       'BEGIN { print "c" | "sort"; print "a" | "sort"; print "b" | "sort" }', nil, "a\nb\nc\n",                  0],
 
+  # --- Phase 1.10: printf redirect ----------------------------------------
+  ['printf-pipe-sort',   'BEGIN { printf "%d\n", 30 | "sort"; printf "%d\n", 10 | "sort"; printf "%d\n", 20 | "sort" }', nil, "10\n20\n30\n", 0],
+
+  # --- Phase 1.11: close / fflush / system --------------------------------
+  ['close-pipe',         'BEGIN { print "x" | "cat"; close("cat"); print "y" | "cat" }', nil, "x\ny\n",                              0],
+  ['fflush-noop',        'BEGIN { print "a"; fflush() }',                                nil, "a\n",                                 0],
+  ['system-echo',        'BEGIN { print "before"; system("echo mid"); print "after" }',  nil, "before\nmid\nafter\n",                0],
+
+  # --- Phase 1.12: getline ------------------------------------------------
+  ['getline-cmd-var',    'BEGIN { ("echo hi") | getline x; print x }',                   nil, "hi\n",                                0],
+  ['getline-cmd',        'BEGIN { ("echo hi") | getline; print $0 }',                    nil, "hi\n",                                0],
+  ['getline-cur',        'BEGIN { while ((getline) > 0) print "line:", $0 }',            "a\nb\n", "line: a\nline: b\n",            0],
+  ['getline-cur-var',    'BEGIN { while ((getline x) > 0) print "got:", x }',            "a\nb\n", "got: a\ngot: b\n",              0],
+
+  # --- Phase 1.13: ENVIRON / ARGC / ARGV ----------------------------------
+  ['environ-read',       'BEGIN { print ENVIRON["ARAWK_TEST_VAR"] }',                    nil, "smoke-value\n",                       0, { env: { 'ARAWK_TEST_VAR' => 'smoke-value' } }],
+  ['argv-basic',         'BEGIN { print ARGC, ARGV[0] }',                                nil, "1 arawk\n",                            0],
+
+  # --- Phase 1.15b: CONVFMT / FS rebind / NF= -----------------------------
+  ['convfmt-effect',     'BEGIN { CONVFMT = "%.2f"; print 1/3 "" }',                     nil, "0.33\n",                              0],
+  ['fs-rebind',          'BEGIN { FS = "," } { print $2 }',                              "a,b,c\nd,e,f\n", "b\ne\n",                 0],
+  ['nf-grow',            '{ NF = 5; print }',                                            "a b c\n", "a b c  \n",                    0],
+  ['nf-shrink',          '{ NF = 2; print }',                                            "a b c d\n", "a b\n",                       0],
+  ['nf-after-field-assign', '{ $5 = "x"; print NF, $0 }',                                "a b\n", "5 a b   x\n",                     0],
+  # `(i, j) in a` is a gawk extension; in POSIX you check membership by
+  # the joined key directly.  We verify delete by reading post-delete value.
+  ['multi-dim-delete',   'BEGIN { a[1,2] = 99; print a[1,2]; delete a[1,2]; print a[1,2] "_" }', nil, "99\n_\n",                     0],
+
   # --- Boundary / coercion tests ------------------------------------------
   ['uninit-arith',       'BEGIN { print x + 1, x "y" }',                          nil,                "1 y\n",                         0],
   ['empty-string-num',   'BEGIN { print "" + 5 }',                                nil,                "5\n",                           0],
@@ -118,12 +146,15 @@ start = Time.now
 pass = fail = 0
 failures = []
 
-CASES.each do |name, prog, stdin, want_out, want_rc|
+CASES.each do |row|
+  name, prog, stdin, want_out, want_rc, opts = row
+  opts ||= {}
   MODES.each do |mode, flags|
     Dir.mktmpdir('arawk-smoke-') do |dir|
       argv = [BIN, *flags, prog]
       Dir.chdir(dir) do
-        got, err, status = Open3.capture3(*argv, stdin_data: stdin || '')
+        env  = opts[:env] || {}
+        got, err, status = Open3.capture3(env, *argv, stdin_data: stdin || '')
         got_rc = status.exitstatus
         if got == want_out && got_rc == want_rc
           pass += 1

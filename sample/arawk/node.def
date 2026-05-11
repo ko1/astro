@@ -309,15 +309,29 @@ arawk_node_program(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NOD
 // list is passed via ARAWK_NODE_TABLE (base_idx, n).
 // ---------------------------------------------------------------------------
 
+// `print` reads OFS / ORS from env each call.  Cheap because those
+// are env-cached fixed slots; we don't pre-stringify them here so a
+// program that does `OFS = "/"; print a, b` sees the new value
+// immediately even mid-execution.
+static inline void
+arawk_print_with_env(CTX *c, FILE *fp, VALUE *items, size_t n)
+{
+    char obuf[32], rbuf[32]; size_t olen, rlen;
+    const char *ofs = awk_to_cstr(c->env[AWK_GLOB_OFS], obuf, sizeof obuf, &olen);
+    const char *ors = awk_to_cstr(c->env[AWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
+    awk_print_record(fp, items, n, ofs, olen, ors, rlen);
+}
+
 NODE_DEF
 arawk_node_print(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t base_idx, uint32_t cnt)
 {
     (void)n;
     if (cnt == 0) {
         VALUE v0 = awk_get_field(c, 0);
-        awk_print_record(stdout, &v0, 1,
-                         "", 0,
-                         "\n", 1);  // FIXME read OFS/ORS from env once globals wired
+        // No OFS between args when there's only $0; still emit ORS.
+        char rbuf[32]; size_t rlen;
+        const char *ors = awk_to_cstr(c->env[AWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
+        awk_print_record(stdout, &v0, 1, "", 0, ors, rlen);
         return RESULT_OK(AWK_FIX(0));
     }
     VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
@@ -325,9 +339,7 @@ arawk_node_print(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint3
         NODE *child = ARAWK_NODE_TABLE[base_idx + i];
         vs[i] = UNWRAP(EVAL(c, child, fp));
     }
-    // For Phase 0 we hard-code OFS=" " and ORS="\n"; once the env
-    // globals are populated by the parser, read from there.
-    awk_print_record(stdout, vs, cnt, " ", 1, "\n", 1);
+    arawk_print_with_env(c, stdout, vs, cnt);
     return RESULT_OK(AWK_FIX(0));
 }
 
@@ -343,7 +355,9 @@ arawk_node_print_to(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, ui
     FILE *out = awk_open_stream(mode, dest_v);
     if (cnt == 0) {
         VALUE v0 = awk_get_field(c, 0);
-        awk_print_record(out, &v0, 1, "", 0, "\n", 1);
+        char rbuf[32]; size_t rlen;
+        const char *ors = awk_to_cstr(c->env[AWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
+        awk_print_record(out, &v0, 1, "", 0, ors, rlen);
         return RESULT_OK(AWK_FIX(0));
     }
     VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
@@ -351,7 +365,7 @@ arawk_node_print_to(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, ui
         NODE *child = ARAWK_NODE_TABLE[base_idx + i];
         vs[i] = UNWRAP(EVAL(c, child, fp));
     }
-    awk_print_record(out, vs, cnt, " ", 1, "\n", 1);
+    arawk_print_with_env(c, out, vs, cnt);
     return RESULT_OK(AWK_FIX(0));
 }
 
@@ -735,8 +749,20 @@ arawk_node_gget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32
 NODE_DEF
 arawk_node_gset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *rhs)
 {
-    (void)n;
+    (void)n; (void)fp;
     VALUE v = UNWRAP(EVAL_ARG(c, rhs));
+    // FS assignment invalidates the cached field split for the
+    // current record — the next $N read re-splits using the new
+    // separator.  NF assignment triggers a full rebuild via OFS.
+    if (UNLIKELY(index == AWK_GLOB_FS)) {
+        c->env[index] = v;
+        c->rec.fields_split = false;
+        return RESULT_OK(v);
+    }
+    if (UNLIKELY(index == AWK_GLOB_NF)) {
+        awk_set_nf(c, v);
+        return RESULT_OK(v);
+    }
     c->env[index] = v;
     return RESULT_OK(v);
 }
@@ -1070,6 +1096,24 @@ arawk_node_printf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE
     return RESULT_OK(AWK_FIX(0));
 }
 
+// `printf ... | "cmd"` / `> "file"` / `>> "file"` — printf with output
+// redirect.  Mirror of arawk_node_print_to.
+NODE_DEF
+arawk_node_printf_to(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fmt, uint32_t base_idx, uint32_t cnt, NODE *dest, int32_t mode)
+{
+    (void)n;
+    VALUE fmt_v  = UNWRAP(EVAL_ARG(c, fmt));
+    VALUE dest_v = UNWRAP(EVAL_ARG(c, dest));
+    FILE *out = awk_open_stream(mode, dest_v);
+    if (cnt == 0) { awk_printf(out, fmt_v, NULL, 0); return RESULT_OK(AWK_FIX(0)); }
+    VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
+    for (uint32_t i = 0; i < cnt; i++) {
+        vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
+    }
+    awk_printf(out, fmt_v, vs, cnt);
+    return RESULT_OK(AWK_FIX(0));
+}
+
 NODE_DEF
 arawk_node_sprintf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fmt, uint32_t base_idx, uint32_t cnt)
 {
@@ -1227,4 +1271,144 @@ arawk_node_srand1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE
     extern int64_t awk_srand(int64_t seed);
     int64_t s = (int64_t)awk_to_num(UNWRAP(EVAL_ARG(c, a)));
     return RESULT_OK(AWK_FIX(awk_srand(s)));
+}
+
+// ---------------------------------------------------------------------------
+// I/O builtins — close / fflush / system (Phase 1.11).
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_close(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dest)
+{
+    (void)n;
+    VALUE dv = UNWRAP(EVAL_ARG(c, dest));
+    return RESULT_OK(AWK_FIX(awk_close_stream(dv)));
+}
+
+NODE_DEF
+arawk_node_fflush_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return RESULT_OK(AWK_FIX(awk_fflush_all()));
+}
+
+NODE_DEF
+arawk_node_fflush_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dest)
+{
+    (void)n;
+    VALUE dv = UNWRAP(EVAL_ARG(c, dest));
+    return RESULT_OK(AWK_FIX(awk_fflush_stream(dv)));
+}
+
+NODE_DEF
+arawk_node_system(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cmd)
+{
+    (void)n;
+    VALUE cv = UNWRAP(EVAL_ARG(c, cmd));
+    char buf[1024]; size_t len;
+    const char *s = awk_to_cstr(cv, buf, sizeof buf, &len);
+    // Ensure NUL-terminated for system().
+    char *path = (char *)alloca(len + 1);
+    memcpy(path, s, len); path[len] = '\0';
+    // Flush stdout first so awk's prior output appears before the
+    // child's — POSIX awk requires this ordering.
+    fflush(stdout);
+    int rc = system(path);
+    // POSIX: return the wait status as encoded by `system(3)`.  awk
+    // historically reports it as-is (high byte is exit code).
+    return RESULT_OK(AWK_FIX(rc));
+}
+
+// ---------------------------------------------------------------------------
+// getline (Phase 1.12) — 6 forms.  Each returns 1 (read), 0 (EOF),
+// -1 (I/O error).  The runtime helpers in runtime.c manage the
+// per-source FILE * cache so repeated getline against the same
+// file / command continues from where it left off.
+// ---------------------------------------------------------------------------
+
+NODE_DEF
+arawk_node_getline_cur(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)n; (void)fp;
+    return RESULT_OK(AWK_FIX(awk_getline_cur(c, NULL)));
+}
+
+NODE_DEF
+arawk_node_getline_cur_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)n;
+    VALUE line;
+    int rc = awk_getline_cur_var(c, &line);
+    if (rc == 1) fp[index] = line;
+    return RESULT_OK(AWK_FIX(rc));
+}
+
+NODE_DEF
+arawk_node_getline_cur_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
+{
+    (void)n; (void)fp;
+    VALUE line;
+    int rc = awk_getline_cur_var(c, &line);
+    if (rc == 1) c->env[index] = line;
+    return RESULT_OK(AWK_FIX(rc));
+}
+
+NODE_DEF
+arawk_node_getline_file(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *file)
+{
+    (void)n;
+    VALUE fv = UNWRAP(EVAL_ARG(c, file));
+    return RESULT_OK(AWK_FIX(awk_getline_file(c, fv)));
+}
+
+NODE_DEF
+arawk_node_getline_file_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *file)
+{
+    (void)n;
+    VALUE fv = UNWRAP(EVAL_ARG(c, file));
+    VALUE line;
+    int rc = awk_getline_file_var(c, fv, &line);
+    if (rc == 1) fp[index] = line;
+    return RESULT_OK(AWK_FIX(rc));
+}
+
+NODE_DEF
+arawk_node_getline_file_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *file)
+{
+    (void)n; (void)fp;
+    VALUE fv = UNWRAP(EVAL_ARG(c, file));
+    VALUE line;
+    int rc = awk_getline_file_var(c, fv, &line);
+    if (rc == 1) c->env[index] = line;
+    return RESULT_OK(AWK_FIX(rc));
+}
+
+NODE_DEF
+arawk_node_getline_cmd(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cmd)
+{
+    (void)n;
+    VALUE cv = UNWRAP(EVAL_ARG(c, cmd));
+    return RESULT_OK(AWK_FIX(awk_getline_cmd(c, cv)));
+}
+
+NODE_DEF
+arawk_node_getline_cmd_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *cmd)
+{
+    (void)n;
+    VALUE cv = UNWRAP(EVAL_ARG(c, cmd));
+    VALUE line;
+    int rc = awk_getline_cmd_var(c, cv, &line);
+    if (rc == 1) fp[index] = line;
+    return RESULT_OK(AWK_FIX(rc));
+}
+
+NODE_DEF
+arawk_node_getline_cmd_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index, NODE *cmd)
+{
+    (void)n; (void)fp;
+    VALUE cv = UNWRAP(EVAL_ARG(c, cmd));
+    VALUE line;
+    int rc = awk_getline_cmd_var(c, cv, &line);
+    if (rc == 1) c->env[index] = line;
+    return RESULT_OK(AWK_FIX(rc));
 }

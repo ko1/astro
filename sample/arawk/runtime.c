@@ -16,6 +16,8 @@
 
 struct awk_obj AWK_UNINIT_OBJ = { .type = AWK_T_UNINIT };
 
+CTX *ARAWK_CURRENT_CTX = NULL;
+
 // ---------------------------------------------------------------------------
 // Heap allocators.  GC_malloc traces; GC_malloc_atomic skips tracing
 // (use it for char[] / double payloads).
@@ -116,9 +118,13 @@ awk_to_num(VALUE v)
 }
 
 // Render to a caller-provided buffer (used by awk_concat / printing).
-// For numbers we use OFMT/CONVFMT-equivalent "%.6g".  Returns a
-// pointer to the rendered text (either inside the buffer or pointing
-// directly at an existing string's chars to avoid a copy).
+// Floats use CONVFMT (or OFMT) from the active CTX's env if set,
+// falling back to `%.6g`.  Awk distinguishes CONVFMT (most string
+// contexts) from OFMT (print), but they default to the same value
+// and most programs leave them in sync — we use CONVFMT here, which
+// is correct for everything except the print-of-bare-float case.
+// arawk_print_with_env / arawk_node_print also read OFMT directly
+// for the truly print-specific path.
 const char *
 awk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
 {
@@ -139,7 +145,21 @@ awk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
             *out_len = (size_t)(n < 0 ? 0 : n);
         }
         else {
-            int n = snprintf(buf, buflen, "%.6g", d);
+            const char *fmt = "%.6g";
+            char fmtbuf[32];
+            if (ARAWK_CURRENT_CTX) {
+                VALUE cv = ARAWK_CURRENT_CTX->env[AWK_GLOB_CONVFMT];
+                if (AWK_IS_PTR(cv) && cv != AWK_UNINIT) {
+                    struct awk_obj *fo = AWK_PTR(cv);
+                    if ((fo->type == AWK_T_STRING || fo->type == AWK_T_STRNUM) &&
+                        fo->str.len > 0 && fo->str.len < sizeof fmtbuf) {
+                        memcpy(fmtbuf, fo->str.chars, fo->str.len);
+                        fmtbuf[fo->str.len] = '\0';
+                        fmt = fmtbuf;
+                    }
+                }
+            }
+            int n = snprintf(buf, buflen, fmt, d);
             *out_len = (size_t)(n < 0 ? 0 : n);
         }
         return buf;
@@ -738,6 +758,13 @@ static struct awk_stream *awk_streams = NULL;
 static size_t awk_streams_cnt = 0;
 static size_t awk_streams_capa = 0;
 
+// Input-side handles for `getline < file` and `cmd | getline`.
+// Symmetric to awk_streams (defined here so awk_close_stream can scan
+// both).
+static struct awk_stream *awk_inputs = NULL;
+static size_t awk_inputs_cnt = 0;
+static size_t awk_inputs_capa = 0;
+
 FILE *
 awk_open_stream(int mode, VALUE dest)
 {
@@ -787,6 +814,288 @@ awk_close_all_streams(void)
         free(awk_streams[i].dest);
     }
     awk_streams_cnt = 0;
+    for (size_t i = 0; i < awk_inputs_cnt; i++) {
+        if (awk_inputs[i].is_pipe) pclose(awk_inputs[i].fp);
+        else                       fclose(awk_inputs[i].fp);
+        free(awk_inputs[i].dest);
+    }
+    awk_inputs_cnt = 0;
+}
+
+int
+awk_close_stream(VALUE dest)
+{
+    char dbuf[256]; size_t dlen;
+    const char *d = awk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
+    char *path = (char *)alloca(dlen + 1);
+    memcpy(path, d, dlen); path[dlen] = '\0';
+    // Search output side first.
+    for (size_t i = 0; i < awk_streams_cnt; i++) {
+        if (strcmp(awk_streams[i].dest, path) == 0) {
+            int rc = awk_streams[i].is_pipe ? pclose(awk_streams[i].fp)
+                                            : fclose(awk_streams[i].fp);
+            free(awk_streams[i].dest);
+            if (i + 1 < awk_streams_cnt) awk_streams[i] = awk_streams[awk_streams_cnt - 1];
+            awk_streams_cnt--;
+            return rc;
+        }
+    }
+    // Then input streams (file readers, command-pipe readers).
+    for (size_t i = 0; i < awk_inputs_cnt; i++) {
+        if (strcmp(awk_inputs[i].dest, path) == 0) {
+            int rc = awk_inputs[i].is_pipe ? pclose(awk_inputs[i].fp)
+                                           : fclose(awk_inputs[i].fp);
+            free(awk_inputs[i].dest);
+            if (i + 1 < awk_inputs_cnt) awk_inputs[i] = awk_inputs[awk_inputs_cnt - 1];
+            awk_inputs_cnt--;
+            return rc;
+        }
+    }
+    return -1;
+}
+
+int
+awk_fflush_all(void)
+{
+    int rc = fflush(stdout);
+    for (size_t i = 0; i < awk_streams_cnt; i++) {
+        if (fflush(awk_streams[i].fp) != 0) rc = -1;
+    }
+    return rc;
+}
+
+static void awk_split_fields(CTX *c);
+
+// ---------------------------------------------------------------------------
+// Input stream cache (Phase 1.12, getline).  Symmetric to the output
+// cache: every distinct (mode, name) tuple → one FILE * for the run.
+// Modes:
+//   'r' — popen(cmd, "r")        — for `"cmd" | getline`
+//   'i' — fopen(path, "r")       — for `getline < "file"`
+//
+// `getline` reads share these handles, so repeated calls advance
+// through the same stream — exactly the POSIX semantics.
+// ---------------------------------------------------------------------------
+
+static FILE *
+arawk_open_input(int mode, VALUE dest)
+{
+    char dbuf[256]; size_t dlen;
+    const char *d = awk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
+    char *path = (char *)alloca(dlen + 1);
+    memcpy(path, d, dlen); path[dlen] = '\0';
+
+    for (size_t i = 0; i < awk_inputs_cnt; i++) {
+        if (awk_inputs[i].mode == mode && strcmp(awk_inputs[i].dest, path) == 0) {
+            return awk_inputs[i].fp;
+        }
+    }
+    if (awk_inputs_cnt >= awk_inputs_capa) {
+        size_t cap = awk_inputs_capa ? awk_inputs_capa * 2 : 8;
+        awk_inputs = (struct awk_stream *)realloc(awk_inputs, sizeof(struct awk_stream) * cap);
+        awk_inputs_capa = cap;
+    }
+    FILE *f = NULL;
+    bool is_pipe = false;
+    if (mode == 'r') { f = popen(path, "r"); is_pipe = true; }
+    else if (mode == 'i') { f = fopen(path, "r"); }
+    if (!f) return NULL;     // getline can fail → return -1 to caller
+    char *dst_copy = (char *)malloc(dlen + 1);
+    memcpy(dst_copy, path, dlen + 1);
+    awk_inputs[awk_inputs_cnt++] = (struct awk_stream){ mode, dst_copy, f, is_pipe };
+    return f;
+}
+
+// Read one RS-delimited record into a growable buffer.  Default RS
+// is "\n"; multi-char RS (regex) lands in Phase 2 with astrogre.
+int
+awk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa)
+{
+    if (!fp) return -1;
+    size_t len = 0;
+    for (;;) {
+        int ch = fgetc(fp);
+        if (ch == EOF) {
+            if (ferror(fp)) return -1;
+            if (len == 0) return 0;
+            break;
+        }
+        if (ch == '\n') break;
+        if (len + 1 >= *buf_capa) {
+            size_t cap = *buf_capa ? *buf_capa * 2 : 256;
+            *buf = (char *)GC_realloc(*buf, cap);
+            *buf_capa = cap;
+        }
+        (*buf)[len++] = (char)ch;
+    }
+    if (len + 1 > *buf_capa) {
+        size_t cap = *buf_capa ? *buf_capa * 2 : 256;
+        *buf = (char *)GC_realloc(*buf, cap);
+        *buf_capa = cap;
+    }
+    (*buf)[len] = '\0';
+    *buf_len = len;
+    return 1;
+}
+
+// Open the next input file if necessary; returns the current FILE *,
+// or NULL at EOF across all inputs.  Adapted from awk_input_next_record's
+// internal logic.
+static FILE *
+arawk_cur_input(CTX *c)
+{
+    if (!c->cur_input) {
+        if (OPTION.input_file_cnt == 0) {
+            if (c->cur_input_idx == 0) {
+                c->cur_input = stdin;
+                c->cur_input_idx = 1;
+                c->env[AWK_GLOB_FILENAME] = awk_make_string("", 0);
+            }
+            return c->cur_input;
+        }
+        while (c->cur_input_idx < OPTION.input_file_cnt) {
+            const char *path = OPTION.input_files[c->cur_input_idx++];
+            FILE *f = (strcmp(path, "-") == 0) ? stdin : fopen(path, "rb");
+            if (!f) { fprintf(stderr, "arawk: cannot open `%s`\n", path); continue; }
+            c->cur_input = f;
+            c->env[AWK_GLOB_FILENAME] = awk_make_string(path, strlen(path));
+            c->env[AWK_GLOB_FNR] = AWK_FIX(0);
+            break;
+        }
+    }
+    return c->cur_input;
+}
+
+// Internal helper: install a freshly-read record into c->rec and
+// update $0 / NF (and NR / FNR if `bump_counters`).
+static void
+arawk_install_record(CTX *c, const char *line, size_t len, bool bump_counters)
+{
+    char *rec = (char *)GC_malloc_atomic(len + 1);
+    memcpy(rec, line, len); rec[len] = '\0';
+    c->rec.record = rec;
+    c->rec.record_len = len;
+    c->rec.record_v = 0;
+    c->rec.fields_split = false;
+    c->rec.nf = 0;
+    if (bump_counters) {
+        int64_t nr  = AWK_IS_FIX(c->env[AWK_GLOB_NR])  ? AWK_FIX_VAL(c->env[AWK_GLOB_NR])  : 0;
+        int64_t fnr = AWK_IS_FIX(c->env[AWK_GLOB_FNR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_FNR]) : 0;
+        c->env[AWK_GLOB_NR]  = AWK_FIX(nr + 1);
+        c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
+    }
+    awk_split_fields(c);
+}
+
+int
+awk_getline_cur(CTX *c, VALUE *out_line)
+{
+    (void)out_line;
+    static char *buf = NULL; static size_t cap = 0; size_t len = 0;
+    for (;;) {
+        FILE *fp = arawk_cur_input(c);
+        if (!fp) return 0;
+        int rc = awk_read_record_into(fp, &buf, &len, &cap);
+        if (rc == 1) {
+            arawk_install_record(c, buf, len, true);
+            return 1;
+        }
+        if (rc < 0) return -1;
+        // EOF on this stream — try the next input file.
+        if (c->cur_input && c->cur_input != stdin) fclose(c->cur_input);
+        c->cur_input = NULL;
+        if (OPTION.input_file_cnt == 0 || c->cur_input_idx >= OPTION.input_file_cnt) return 0;
+    }
+}
+
+int
+awk_getline_cur_var(CTX *c, VALUE *out_line)
+{
+    static char *buf = NULL; static size_t cap = 0; size_t len = 0;
+    for (;;) {
+        FILE *fp = arawk_cur_input(c);
+        if (!fp) return 0;
+        int rc = awk_read_record_into(fp, &buf, &len, &cap);
+        if (rc == 1) {
+            int64_t nr  = AWK_IS_FIX(c->env[AWK_GLOB_NR])  ? AWK_FIX_VAL(c->env[AWK_GLOB_NR])  : 0;
+            int64_t fnr = AWK_IS_FIX(c->env[AWK_GLOB_FNR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_FNR]) : 0;
+            c->env[AWK_GLOB_NR]  = AWK_FIX(nr + 1);
+            c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
+            *out_line = awk_make_strnum(buf, len);
+            return 1;
+        }
+        if (rc < 0) return -1;
+        if (c->cur_input && c->cur_input != stdin) fclose(c->cur_input);
+        c->cur_input = NULL;
+        if (OPTION.input_file_cnt == 0 || c->cur_input_idx >= OPTION.input_file_cnt) return 0;
+    }
+}
+
+int
+awk_getline_file(CTX *c, VALUE dest)
+{
+    FILE *fp = arawk_open_input('i', dest);
+    if (!fp) return -1;
+    static char *buf = NULL; static size_t cap = 0; size_t len = 0;
+    int rc = awk_read_record_into(fp, &buf, &len, &cap);
+    if (rc != 1) return rc;
+    arawk_install_record(c, buf, len, false);  // file getline: NR/FNR not bumped
+    return 1;
+}
+
+int
+awk_getline_file_var(CTX *c, VALUE dest, VALUE *out_line)
+{
+    (void)c;
+    FILE *fp = arawk_open_input('i', dest);
+    if (!fp) return -1;
+    static char *buf = NULL; static size_t cap = 0; size_t len = 0;
+    int rc = awk_read_record_into(fp, &buf, &len, &cap);
+    if (rc != 1) return rc;
+    *out_line = awk_make_strnum(buf, len);
+    return 1;
+}
+
+int
+awk_getline_cmd(CTX *c, VALUE cmd)
+{
+    FILE *fp = arawk_open_input('r', cmd);
+    if (!fp) return -1;
+    static char *buf = NULL; static size_t cap = 0; size_t len = 0;
+    int rc = awk_read_record_into(fp, &buf, &len, &cap);
+    if (rc != 1) return rc;
+    arawk_install_record(c, buf, len, false);
+    return 1;
+}
+
+int
+awk_getline_cmd_var(CTX *c, VALUE cmd, VALUE *out_line)
+{
+    (void)c;
+    FILE *fp = arawk_open_input('r', cmd);
+    if (!fp) return -1;
+    static char *buf = NULL; static size_t cap = 0; size_t len = 0;
+    int rc = awk_read_record_into(fp, &buf, &len, &cap);
+    if (rc != 1) return rc;
+    *out_line = awk_make_strnum(buf, len);
+    return 1;
+}
+
+int
+awk_fflush_stream(VALUE dest)
+{
+    char dbuf[256]; size_t dlen;
+    const char *d = awk_to_cstr(dest, dbuf, sizeof dbuf, &dlen);
+    if (dlen == 0) return awk_fflush_all();
+    char *path = (char *)alloca(dlen + 1);
+    memcpy(path, d, dlen); path[dlen] = '\0';
+    // awk historical: fflush("stdout") / "stderr" → those streams.
+    if (strcmp(path, "stdout") == 0) return fflush(stdout);
+    if (strcmp(path, "stderr") == 0) return fflush(stderr);
+    for (size_t i = 0; i < awk_streams_cnt; i++) {
+        if (strcmp(awk_streams[i].dest, path) == 0) return fflush(awk_streams[i].fp);
+    }
+    return -1;
 }
 
 // ---------------------------------------------------------------------------
@@ -811,12 +1120,34 @@ awk_set_nr(CTX *c, VALUE v)
     c->env[AWK_GLOB_NR] = v;
 }
 
+// `NF = N` — grow or shrink the current record.  POSIX semantics:
+//   N > NF: extend with "" fields, then rebuild $0 using OFS
+//   N < NF: drop trailing fields, rebuild $0
+//   N == NF: no-op
+//   N < 0:  error
+static void awk_rebuild_record(CTX *c);
+
 void
 awk_set_nf(CTX *c, VALUE v)
 {
-    c->env[AWK_GLOB_NF] = v;
-    // Adjust internal fields/rec if needed.  Phase 0+1 just stores
-    // the value; full POSIX rebuild-$0 semantics is a Phase 2 task.
+    int64_t new_nf = AWK_IS_FIX(v) ? AWK_FIX_VAL(v) : (int64_t)awk_to_num(v);
+    if (new_nf < 0) {
+        fprintf(stderr, "arawk: NF cannot be negative\n");
+        exit(2);
+    }
+    awk_split_fields(c);
+    if ((int)new_nf > c->rec.fields_capa) {
+        int cap = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8;
+        while (cap < (int)new_nf) cap *= 2;
+        VALUE *nf = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
+        if (c->rec.fields) memcpy(nf, c->rec.fields, sizeof(VALUE) * c->rec.fields_capa);
+        c->rec.fields = nf;
+        c->rec.fields_capa = cap;
+    }
+    for (int i = c->rec.nf; i < (int)new_nf; i++) c->rec.fields[i] = awk_make_string("", 0);
+    c->rec.nf = (int)new_nf;
+    c->env[AWK_GLOB_NF] = AWK_FIX(new_nf);
+    awk_rebuild_record(c);
 }
 
 // Phase 0+1 default FS = " " (awk's "any run of whitespace,

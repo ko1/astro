@@ -75,6 +75,14 @@ struct awk_obj {
 extern struct awk_obj AWK_UNINIT_OBJ;
 #define AWK_UNINIT  AWK_OBJ_VAL(&AWK_UNINIT_OBJ)
 
+// Thread-local-ish pointer to the active CTX.  Set by main.c right
+// after create_context.  Runtime helpers like awk_to_cstr read
+// CONVFMT / OFMT from `ARAWK_CURRENT_CTX->env[...]` without having
+// to plumb a CTX through every call site.  Single-CTX program model;
+// fine for our embedding.
+struct CTX_struct;
+extern struct CTX_struct *ARAWK_CURRENT_CTX;
+
 // Allocators (runtime.c).
 struct awk_obj *awk_alloc(int type);
 VALUE awk_make_float (double d);
@@ -162,6 +170,16 @@ void  awk_print_record(FILE *fp, VALUE *items, size_t n,
 FILE *awk_open_stream(int mode, VALUE dest);
 void  awk_close_all_streams(void);
 
+// `close(name)` — flush + close one previously-opened stream by name.
+// Returns 0 on success, -1 if no stream named `dest` is open.
+int   awk_close_stream(VALUE dest);
+
+// `fflush()` / `fflush("")` / `fflush(name)`.  Empty / no arg flushes
+// stdout and all open output streams; a name flushes just that one.
+// Returns 0 on success, -1 if name doesn't refer to an open stream.
+int   awk_fflush_all(void);
+int   awk_fflush_stream(VALUE dest);
+
 // ---------------------------------------------------------------------------
 // 2-register RESULT (modeled on naruby / castro / astr).  awk control
 // flow: `next` (skip to next record), `nextfile`, `exit` propagate as
@@ -232,16 +250,23 @@ struct awk_record {
 
 // Special-variable slots in env (fixed layout, written by input loop).
 // User-visible names map to these slots in the parser.
-#define AWK_GLOB_NR     0
-#define AWK_GLOB_NF     1
-#define AWK_GLOB_FS     2
-#define AWK_GLOB_OFS    3
-#define AWK_GLOB_ORS    4
-#define AWK_GLOB_RS     5
-#define AWK_GLOB_FILENAME 6
-#define AWK_GLOB_FNR    7
-#define AWK_GLOB_SUBSEP 8
-#define AWK_GLOB_RESERVED 16     // first user slot
+#define AWK_GLOB_NR        0
+#define AWK_GLOB_NF        1
+#define AWK_GLOB_FS        2
+#define AWK_GLOB_OFS       3
+#define AWK_GLOB_ORS       4
+#define AWK_GLOB_RS        5
+#define AWK_GLOB_FILENAME  6
+#define AWK_GLOB_FNR       7
+#define AWK_GLOB_SUBSEP    8
+#define AWK_GLOB_CONVFMT   9
+#define AWK_GLOB_OFMT      10
+#define AWK_GLOB_RSTART    11
+#define AWK_GLOB_RLENGTH   12
+#define AWK_GLOB_ENVIRON   13     // associative array populated from `environ`
+#define AWK_GLOB_ARGC      14
+#define AWK_GLOB_ARGV      15
+#define AWK_GLOB_RESERVED  16     // first user slot
 
 // User-defined function (Phase 1.8).  Registered by arawk_node_def at
 // program startup; looked up by arawk_node_call_user via name.
@@ -290,6 +315,29 @@ void  awk_set_field (CTX *c, int64_t n, VALUE v);
 // Returns false on EOF (across all input files).  Updates NR / FNR /
 // FILENAME / $0 / NF.  Field splitting happens lazily.
 bool awk_input_next_record(CTX *c);
+
+// `getline` low-level read.  Reads one record (RS-delimited) into a
+// caller-supplied growable buffer.  Returns 1 on success, 0 at EOF,
+// -1 on I/O error.  The buffer is owned by the caller and reused
+// across calls; pass `*buf_capa = 0` on first call to allocate.
+int awk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa);
+
+// `getline` builtins — six forms (POSIX) covering current-input /
+// file / cmd × $0-or-var.  Each returns 1 on read, 0 on EOF, -1 on
+// I/O error.  Side effects (which of NR / FNR / NF / $0 / FILENAME
+// are updated) follow POSIX:
+//   getline             → NR FNR NF $0 (across-file boundary may also FILENAME)
+//   getline var         → NR FNR        (var = line)
+//   getline < file      →           NF $0
+//   getline var < file  →                  (var = line)
+//   cmd | getline       →           NF $0
+//   cmd | getline var   →                  (var = line)
+int awk_getline_cur     (CTX *c, VALUE *out_line);     // out_line ignored (sets $0)
+int awk_getline_cur_var (CTX *c, VALUE *out_line);     // out_line ← line as STRNUM
+int awk_getline_file    (CTX *c, VALUE dest);          // $0
+int awk_getline_file_var(CTX *c, VALUE dest, VALUE *out_line);
+int awk_getline_cmd     (CTX *c, VALUE cmd);           // $0
+int awk_getline_cmd_var (CTX *c, VALUE cmd, VALUE *out_line);
 
 // Slow paths for arithmetic.  Inline fast paths below check fixnum-
 // fixnum first; everything else (string-numeric coercion, float, etc.)

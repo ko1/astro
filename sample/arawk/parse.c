@@ -77,6 +77,7 @@ typedef enum {
     TK_KW_TOLOWER, TK_KW_TOUPPER, TK_KW_INT_FN,
     TK_KW_SIN, TK_KW_COS, TK_KW_SQRT, TK_KW_EXP, TK_KW_LOG, TK_KW_ATAN2,
     TK_KW_RAND, TK_KW_SRAND,
+    TK_KW_CLOSE, TK_KW_FFLUSH, TK_KW_SYSTEM, TK_KW_GETLINE,
 } TokKind;
 
 typedef struct {
@@ -129,8 +130,14 @@ static const struct { const char *kw; TokKind kind; } keywords[] = {
     { "atan2",    TK_KW_ATAN2 },
     { "rand",     TK_KW_RAND },
     { "srand",    TK_KW_SRAND },
-    { "NR",       TK_KW_NR },
-    { "NF",       TK_KW_NF },
+    { "close",    TK_KW_CLOSE },
+    { "fflush",   TK_KW_FFLUSH },
+    { "system",   TK_KW_SYSTEM },
+    { "getline",  TK_KW_GETLINE },
+    // NR / NF intentionally NOT in the keyword table — they resolve
+    // to the pre-reserved globals_intern slot via the TK_NAME path,
+    // which makes `NF = 5` flow through the regular assignment
+    // machinery (where arawk_node_gset has the AWK_GLOB_NF hook).
     { NULL, 0 }
 };
 
@@ -421,6 +428,13 @@ globals_init(void)
     globals.names[AWK_GLOB_FILENAME] = "FILENAME";
     globals.names[AWK_GLOB_FNR]      = "FNR";
     globals.names[AWK_GLOB_SUBSEP]   = "SUBSEP";
+    globals.names[AWK_GLOB_CONVFMT]  = "CONVFMT";
+    globals.names[AWK_GLOB_OFMT]     = "OFMT";
+    globals.names[AWK_GLOB_RSTART]   = "RSTART";
+    globals.names[AWK_GLOB_RLENGTH]  = "RLENGTH";
+    globals.names[AWK_GLOB_ENVIRON]  = "ENVIRON";
+    globals.names[AWK_GLOB_ARGC]     = "ARGC";
+    globals.names[AWK_GLOB_ARGV]     = "ARGV";
     globals.count = AWK_GLOB_RESERVED;
 }
 
@@ -577,13 +591,15 @@ is_primary_start(TokKind k)
 {
     switch (k) {
       case TK_INT: case TK_FLOAT: case TK_STRING: case TK_NAME:
-      case TK_DOLLAR: case TK_LPAREN: case TK_KW_NR: case TK_KW_NF:
+      case TK_DOLLAR: case TK_LPAREN:
       case TK_KW_LENGTH:  case TK_KW_SPRINTF: case TK_KW_SUBSTR:
       case TK_KW_INDEX:   case TK_KW_SPLIT:
       case TK_KW_TOLOWER: case TK_KW_TOUPPER: case TK_KW_INT_FN:
       case TK_KW_SIN: case TK_KW_COS: case TK_KW_SQRT: case TK_KW_EXP:
       case TK_KW_LOG: case TK_KW_ATAN2:
       case TK_KW_RAND: case TK_KW_SRAND:
+      case TK_KW_CLOSE: case TK_KW_FFLUSH: case TK_KW_SYSTEM:
+      case TK_KW_GETLINE:
         return true;
       default:
         return false;
@@ -691,6 +707,25 @@ parse_concat_continue(NODE *lhs)
 {
     while (is_primary_start(peek_tok().kind)) {
         lhs = ALLOC_arawk_node_concat(lhs, parse_add_full());
+    }
+    // `cmd | getline [NAME]` — the only place an expression-level
+    // `|` appears.  Pipe-to-command for print is parsed inside the
+    // print/printf statement and never reaches here.
+    if (peek_tok().kind == TK_PIPE) {
+        Token p = take_tok();
+        if (peek_tok().kind != TK_KW_GETLINE) {
+            unread_tok(p);
+            return lhs;
+        }
+        (void)take_tok();    // getline
+        if (peek_tok().kind == TK_NAME) {
+            Token nx = take_tok();
+            char *vname = intern_string(nx.start, nx.len);
+            Var v = resolve_name(vname);
+            return v.is_local ? ALLOC_arawk_node_getline_cmd_l(v.slot, lhs)
+                              : ALLOC_arawk_node_getline_cmd_g(v.slot, lhs);
+        }
+        return ALLOC_arawk_node_getline_cmd(lhs);
     }
     return lhs;
 }
@@ -821,10 +856,6 @@ parse_primary(void)
       }
       case TK_STRING:
         return ALLOC_arawk_node_str(t.str);
-      case TK_KW_NR:
-        return ALLOC_arawk_node_nr();
-      case TK_KW_NF:
-        return ALLOC_arawk_node_nf();
       case TK_LPAREN: {
         NODE *e = parse_expr();
         expect(TK_RPAREN, ")");
@@ -988,6 +1019,54 @@ parse_primary(void)
         expect(TK_RPAREN, ")");
         uint32_t base = n ? arawk_node_table_push_n(items, n) : 0;
         return ALLOC_arawk_node_sprintf(fmt, base, n);
+      }
+      case TK_KW_CLOSE: {
+        expect(TK_LPAREN, "(");
+        NODE *a = parse_expr();
+        expect(TK_RPAREN, ")");
+        return ALLOC_arawk_node_close(a);
+      }
+      case TK_KW_FFLUSH: {
+        if (peek_tok().kind != TK_LPAREN) return ALLOC_arawk_node_fflush_0();
+        (void)take_tok();
+        if (peek_tok().kind == TK_RPAREN) { (void)take_tok(); return ALLOC_arawk_node_fflush_0(); }
+        NODE *a = parse_expr();
+        expect(TK_RPAREN, ")");
+        return ALLOC_arawk_node_fflush_1(a);
+      }
+      case TK_KW_SYSTEM: {
+        expect(TK_LPAREN, "(");
+        NODE *a = parse_expr();
+        expect(TK_RPAREN, ")");
+        return ALLOC_arawk_node_system(a);
+      }
+      case TK_KW_GETLINE: {
+        // Four leading forms (the two `cmd | getline ...` forms are
+        // recognised in parse_concat_continue):
+        //   getline           → from current input → $0      (+NR/FNR/NF)
+        //   getline NAME      → from current input → NAME    (+NR/FNR)
+        //   getline < expr    → from file → $0   (no NR bump)
+        //   getline NAME < expr → from file → NAME           (no side effects)
+        Token la = peek_tok();
+        if (la.kind == TK_NAME) {
+            Token nx = take_tok();
+            char *vname = intern_string(nx.start, nx.len);
+            Var v = resolve_name(vname);
+            if (peek_tok().kind == TK_LT) {
+                (void)take_tok();
+                NODE *file = parse_unary();
+                return v.is_local ? ALLOC_arawk_node_getline_file_l(v.slot, file)
+                                  : ALLOC_arawk_node_getline_file_g(v.slot, file);
+            }
+            return v.is_local ? ALLOC_arawk_node_getline_cur_l(v.slot)
+                              : ALLOC_arawk_node_getline_cur_g(v.slot);
+        }
+        if (la.kind == TK_LT) {
+            (void)take_tok();
+            NODE *file = parse_unary();
+            return ALLOC_arawk_node_getline_file(file);
+        }
+        return ALLOC_arawk_node_getline_cur();
       }
       default:
         parse_error("unexpected token in primary (kind %d, \"%.*s\")", t.kind, t.len, t.start);
@@ -1203,6 +1282,16 @@ parse_stmt(void)
             items[n++] = parse_concat_full();
         }
         if (has_paren) expect(TK_RPAREN, ")");
+        TokKind redir = peek_tok().kind;
+        if (redir == TK_PIPE || redir == TK_GT || redir == TK_APPEND) {
+            (void)take_tok();
+            NODE *dest = parse_concat_full();
+            int32_t mode = redir == TK_PIPE   ? 'w'
+                         : redir == TK_APPEND ? 'a'
+                         :                      'o';
+            uint32_t base = n ? arawk_node_table_push_n(items, n) : 0;
+            return ALLOC_arawk_node_printf_to(fmt, base, n, dest, mode);
+        }
         uint32_t base = n ? arawk_node_table_push_n(items, n) : 0;
         return ALLOC_arawk_node_printf(fmt, base, n);
       }

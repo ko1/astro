@@ -65,6 +65,10 @@ create_context(void)
     c->env[AWK_GLOB_RS]       = awk_make_string("\n", 1);
     c->env[AWK_GLOB_FILENAME] = awk_make_string("", 0);
     c->env[AWK_GLOB_SUBSEP]   = awk_make_string("\034", 1);
+    c->env[AWK_GLOB_CONVFMT]  = awk_make_string("%.6g", 4);
+    c->env[AWK_GLOB_OFMT]     = awk_make_string("%.6g", 4);
+    c->env[AWK_GLOB_RSTART]   = AWK_FIX(0);
+    c->env[AWK_GLOB_RLENGTH]  = AWK_FIX(-1);
     c->rec.record = NULL;
     c->rec.record_len = 0;
     c->rec.record_v = 0;
@@ -216,6 +220,43 @@ main(int argc, char *argv[])
     if (OPTION.compile_only) return 0;
 
     CTX *c = create_context();
+    ARAWK_CURRENT_CTX = c;   // for runtime helpers (CONVFMT etc.)
+
+    // ENVIRON: populate from libc's `environ`.
+    {
+        extern char **environ;
+        VALUE arr = awk_make_array();
+        c->env[AWK_GLOB_ENVIRON] = arr;
+        for (char **ep = environ; *ep; ep++) {
+            const char *e = *ep;
+            const char *eq = strchr(e, '=');
+            if (!eq) continue;
+            size_t klen = (size_t)(eq - e);
+            const char *v = eq + 1;
+            size_t vlen = strlen(v);
+            awk_arr_set(arr, e, klen, awk_make_string(v, vlen));
+        }
+    }
+    // ARGC / ARGV: include `arawk` as ARGV[0] and the input files
+    // (after the program text/file) as ARGV[1..ARGC-1].  POSIX awk
+    // also lets the user mutate ARGV; we honour the value on each
+    // input-file open in awk_open_next_input via a separate mechanism
+    // (TODO: ARGV-driven input loop; for now ARGV is read-only and
+    // input files come from OPTION.input_files).
+    {
+        VALUE av = awk_make_array();
+        c->env[AWK_GLOB_ARGV] = av;
+        awk_arr_set(av, "0", 1, awk_make_string("arawk", 5));
+        int total = 1 + OPTION.input_file_cnt;
+        for (int i = 0; i < OPTION.input_file_cnt; i++) {
+            char key[16];
+            int kl = snprintf(key, sizeof key, "%d", i + 1);
+            const char *path = OPTION.input_files[i];
+            awk_arr_set(av, key, (size_t)kl, awk_make_string(path, strlen(path)));
+        }
+        c->env[AWK_GLOB_ARGC] = AWK_FIX(total);
+    }
+
     RESULT r = EVAL(c, ast, c->env);
     int rc = 0;
     if (r.state == RESULT_EXIT) {
