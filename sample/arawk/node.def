@@ -188,6 +188,22 @@ arawk_node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
     return RESULT_OK(AWK_FIX(0));
 }
 
+// `do body while (cond)` — body runs at least once.  POSIX awk.
+NODE_DEF
+arawk_node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *body, NODE *cond)
+{
+    (void)n;
+    do {
+        RESULT r = EVAL_ARG(c, body);
+        if (UNLIKELY(r.state != RESULT_NORMAL)) {
+            if (r.state == RESULT_BREAK)    break;
+            if (r.state == RESULT_CONTINUE) continue;
+            return r;
+        }
+    } while (awk_is_truthy(UNWRAP(EVAL_ARG(c, cond))));
+    return RESULT_OK(AWK_FIX(0));
+}
+
 // `for (init; cond; step) body`.  All four operands are NODE * (use
 // arawk_node_noop for absent init / step).  Empty cond is treated as true
 // — that's the canonical infinite-loop shape `for (;;) body`.
@@ -234,6 +250,16 @@ arawk_node_next(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
     return RESULT_NEXT_();
 }
 
+// `nextfile` — skip remaining records in the current input file, jump
+// to the next one.  POSIX 2017 / SUSv4.  Handled in node_main_loop
+// (which closes the current input and falls through to the next).
+NODE_DEF
+arawk_node_nextfile(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    (void)c; (void)n; (void)fp;
+    return ((RESULT){ AWK_FIX(0), RESULT_NEXTFILE });
+}
+
 NODE_DEF
 arawk_node_exit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *arg)
 {
@@ -275,6 +301,16 @@ arawk_node_main_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, N
     while (awk_input_next_record(c)) {
         RESULT r = EVAL_ARG(c, action);
         if (r.state == RESULT_NORMAL || r.state == RESULT_NEXT) continue;
+        if (r.state == RESULT_NEXTFILE) {
+            // Close the current input file and bump cur_input_idx so
+            // the next awk_input_next_record() opens the next one.
+            // stdin is the implicit single source if no input files
+            // were given; nextfile there ends the loop.
+            if (c->cur_input && c->cur_input != stdin) fclose(c->cur_input);
+            c->cur_input = NULL;
+            if (OPTION.input_file_cnt == 0) return RESULT_OK(AWK_FIX(0));
+            continue;
+        }
         if (r.state == RESULT_EXIT) return r;
         // Stray break / continue at top of action — POSIX undefined;
         // treat as record-skip.

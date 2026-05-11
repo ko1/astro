@@ -66,10 +66,10 @@ typedef enum {
     TK_APPEND,                        // >> — append redirect
     TK_QUESTION, TK_COLON,            // ? :
     TK_KW_BEGIN, TK_KW_END,
-    TK_KW_IF, TK_KW_ELSE, TK_KW_WHILE, TK_KW_FOR, TK_KW_IN,
+    TK_KW_IF, TK_KW_ELSE, TK_KW_WHILE, TK_KW_DO, TK_KW_FOR, TK_KW_IN,
     TK_KW_PRINT, TK_KW_PRINTF, TK_KW_DELETE,
     TK_KW_FUNCTION, TK_KW_RETURN,
-    TK_KW_NEXT, TK_KW_EXIT, TK_KW_BREAK, TK_KW_CONTINUE,
+    TK_KW_NEXT, TK_KW_NEXTFILE, TK_KW_EXIT, TK_KW_BREAK, TK_KW_CONTINUE,
     TK_KW_NR, TK_KW_NF,
     // Builtin function names (treated as keywords; user-defined
     // functions, Phase 1.8, will use plain TK_NAME with `(` peek).
@@ -102,6 +102,7 @@ static const struct { const char *kw; TokKind kind; } keywords[] = {
     { "if",       TK_KW_IF },
     { "else",     TK_KW_ELSE },
     { "while",    TK_KW_WHILE },
+    { "do",       TK_KW_DO },
     { "for",      TK_KW_FOR },
     { "in",       TK_KW_IN },
     { "delete",   TK_KW_DELETE },
@@ -111,6 +112,7 @@ static const struct { const char *kw; TokKind kind; } keywords[] = {
     { "print",    TK_KW_PRINT },
     { "printf",   TK_KW_PRINTF },
     { "next",     TK_KW_NEXT },
+    { "nextfile", TK_KW_NEXTFILE },
     { "exit",     TK_KW_EXIT },
     { "break",    TK_KW_BREAK },
     { "continue", TK_KW_CONTINUE },
@@ -1320,6 +1322,18 @@ parse_stmt(void)
         NODE *body = parse_stmt();
         return ALLOC_arawk_node_while(cond, body);
       }
+      case TK_KW_DO: {
+        (void)take_tok();
+        skip_terminators();
+        NODE *body = parse_stmt();
+        skip_terminators();
+        if (peek_tok().kind != TK_KW_WHILE) parse_error("do: expected `while`");
+        (void)take_tok();
+        expect(TK_LPAREN, "(");
+        NODE *cond = parse_expr();
+        expect(TK_RPAREN, ")");
+        return ALLOC_arawk_node_do_while(body, cond);
+      }
       case TK_KW_FOR: {
         (void)take_tok();
         expect(TK_LPAREN, "(");
@@ -1371,6 +1385,7 @@ parse_stmt(void)
         return emit_delete_all(v);
       }
       case TK_KW_NEXT:     (void)take_tok(); return ALLOC_arawk_node_next();
+      case TK_KW_NEXTFILE: (void)take_tok(); return ALLOC_arawk_node_nextfile();
       case TK_KW_BREAK:    (void)take_tok(); return ALLOC_arawk_node_break();
       case TK_KW_CONTINUE: (void)take_tok(); return ALLOC_arawk_node_continue();
       case TK_KW_RETURN: {

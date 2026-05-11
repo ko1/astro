@@ -125,6 +125,35 @@ CASES = [
   # the joined key directly.  We verify delete by reading post-delete value.
   ['multi-dim-delete',   'BEGIN { a[1,2] = 99; print a[1,2]; delete a[1,2]; print a[1,2] "_" }', nil, "99\n_\n",                     0],
 
+  # --- do-while + nextfile ------------------------------------------------
+  ['do-while-basic',     'BEGIN { i = 0; do { print i; i++ } while (i < 3) }',                 nil, "0\n1\n2\n",                       0],
+  ['do-while-once',      'BEGIN { i = 100; do { print "ran"; i++ } while (i < 3) }',           nil, "ran\n",                           0],
+  ['do-while-break',     'BEGIN { i = 0; do { if (i == 2) break; print i; i++ } while (1) }',  nil, "0\n1\n",                          0],
+  ['do-while-continue',  'BEGIN { i = 0; do { i++; if (i % 2 == 0) continue; print i } while (i < 5) }', nil, "1\n3\n5\n",            0],
+  ['do-while-return',    'function f() { do { return 42 } while (1) } BEGIN { print f() }',    nil, "42\n",                            0],
+
+  # nextfile — uses :files to pre-create two input files.
+  ['nextfile-basic',
+    '$1 == "skip" { nextfile } { print FILENAME ":" $1 }',
+    nil,
+    "in0.txt:keep1\nin0.txt:keep2\nin1.txt:keep3\nin1.txt:keep4\n",
+    0,
+    { files: ["keep1\nkeep2\nskip\nshould_not_appear\n", "keep3\nkeep4\n"] },
+  ],
+  ['nextfile-first-line',
+    'FNR == 1 { print "saw first of", FILENAME; nextfile }',
+    nil,
+    "saw first of in0.txt\nsaw first of in1.txt\n",
+    0,
+    { files: ["A1\nA2\nA3\n", "B1\nB2\n"] },
+  ],
+  ['nextfile-only-file',
+    '$1 == "skip" { nextfile } { print $1 }',
+    "first\nskip\nshould_not_appear\n",
+    "first\n",
+    0,
+  ],
+
   # --- Boundary / coercion tests ------------------------------------------
   ['uninit-arith',       'BEGIN { print x + 1, x "y" }',                          nil,                "1 y\n",                         0],
   ['empty-string-num',   'BEGIN { print "" + 5 }',                                nil,                "5\n",                           0],
@@ -151,8 +180,18 @@ CASES.each do |row|
   opts ||= {}
   MODES.each do |mode, flags|
     Dir.mktmpdir('arawk-smoke-') do |dir|
-      argv = [BIN, *flags, prog]
       Dir.chdir(dir) do
+        # opts[:files] = ["content1", "content2"] — write each as a
+        # *relative* path so FILENAME shows the bare basename in
+        # test expectations.  Useful for nextfile / FILENAME /
+        # multi-file tests where a single stdin is not enough.
+        file_args = []
+        (opts[:files] || []).each_with_index do |content, i|
+          path = "in#{i}.txt"
+          File.write(path, content)
+          file_args << path
+        end
+        argv = [BIN, *flags, prog, *file_args]
         env  = opts[:env] || {}
         got, err, status = Open3.capture3(env, *argv, stdin_data: stdin || '')
         got_rc = status.exitstatus

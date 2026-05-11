@@ -148,6 +148,6 @@ astrogre を統合する。
 ## テストとベンチ
 
 - `make test`:
-  - smoke 90 × {plain, AOT} = 180 ケース
+  - smoke 98 × {plain, AOT} = 196 ケース
   - tt.* 18 × {plain, AOT} = 36 ケース (regex 系 6 skip)
 - `make bench`: gawk / mawk / goawk と比較。geomean arawk-aot 0.59× vs gawk。詳細は `docs/perf.md`
