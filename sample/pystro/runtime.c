@@ -1756,15 +1756,32 @@ pys_mul(CTX *c, VALUE a, VALUE b)
     if (pys_int_or_bool(a) && pys_is_byteseq(b)) return pys_mul(c, b, a);
     if (pys_int_or_bool(a) && (pys_is_list(b) || pys_is_tuple(b))) return pys_mul(c, b, a);
     if ((pys_is_list(a) || pys_is_tuple(a)) && pys_int_or_bool(b)) {
-        int64_t k = PYS_IS_FIXNUM(b) ? PYS_FIXVAL(b) : (b == PYS_TRUE ? 1 : 0);
+        // Bignum factor → also try to fit in int64.
+        int64_t k;
+        if (PYS_IS_FIXNUM(b)) k = PYS_FIXVAL(b);
+        else if (b == PYS_TRUE) k = 1;
+        else if (b == PYS_FALSE) k = 0;
+        else if (pys_is_bignum(b)) {
+            if (mpz_fits_slong_p(PYS_PTR(b)->mpz)) k = mpz_get_si(PYS_PTR(b)->mpz);
+            else PYS_RAISE_EXC(c, c->EXC_OverflowError,
+                              "cannot fit '%s' into an index-sized integer",
+                              pys_is_list(a) ? "list" : "tuple");
+        } else k = 0;
         if (k <= 0) return pys_is_list(a) ? pys_make_list(NULL, 0) : pys_make_tuple(NULL, 0);
         // CPython optimization: tuple * 1 returns the same tuple (immutable).
-        // `id(t) == id(t*1)` is expected to hold (seq_tests.test_repeat).
-        // For lists, * 1 still creates a copy (lists are mutable).
         if (k == 1 && pys_is_tuple(a)) return a;
         size_t la = PYS_PTR(a)->list.len;
-        size_t total = la * (size_t)k;
-        VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (total + 1));
+        // Overflow guard: la * k must fit in size_t and not exceed a
+        // reasonable threshold (~2 GiB worth of VALUE entries = 256M
+        // entries on 64-bit).  CPython raises MemoryError / OverflowError
+        // here; test_overflow / test_list_resize_overflow check this.
+        size_t total;
+        if (la != 0 && (size_t)k > (size_t)-1 / la)
+            PYS_RAISE_EXC(c, c->EXC_OverflowError, "list size exceeds maximum");
+        total = la * (size_t)k;
+        if (total > ((size_t)1 << 28))
+            PYS_RAISE_EXC(c, c->EXC_MemoryError, "list size too large");
+        VALUE *items = (VALUE *)GC_malloc(sizeof(VALUE) * (total + 1));
         for (int64_t i = 0; i < k; i++)
             memcpy(items + i * la, PYS_PTR(a)->list.items, sizeof(VALUE) * la);
         return pys_is_list(a) ? pys_make_list(items, total) : pys_make_tuple(items, total);

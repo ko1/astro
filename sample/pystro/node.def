@@ -448,7 +448,15 @@ node_imul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
         size_t old_len = la->list.len;
         if (k <= 0) { la->list.len = 0; return av; }
         if (k == 1) return av;
+        // Overflow guard for `list *= huge` — CPython raises MemoryError /
+        // OverflowError (test_list_resize_overflow).
+        if (old_len != 0 && (size_t)k > (size_t)-1 / old_len) {
+            PYS_RAISE_EXC(c, c->EXC_OverflowError, "list size exceeds maximum");
+        }
         size_t new_len = old_len * (size_t)k;
+        if (new_len > ((size_t)1 << 28)) {
+            PYS_RAISE_EXC(c, c->EXC_MemoryError, "list size too large");
+        }
         if (new_len > la->list.capa) {
             size_t cap = la->list.capa ? la->list.capa : 4;
             while (cap < new_len) cap *= 2;
