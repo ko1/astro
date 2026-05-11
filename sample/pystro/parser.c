@@ -27,6 +27,26 @@ static size_t name_table_reserve(const char **names, size_t n)
     return base;
 }
 
+// Bag of full-locals name lists (nlocals entries per def) indexed by
+// `locals_names_idx`.  Captured alongside the function so locals()/exec()
+// can map slot → name at runtime.  Separate from PYS_NAME_TABLE because
+// param-name slices and locals-name slices have different lengths.
+const char **PYS_LOCAL_NAMES_TABLE = NULL;
+static size_t pys_local_names_len, pys_local_names_capa;
+static size_t local_names_reserve(const char **names, size_t n)
+{
+    if (pys_local_names_len + n > pys_local_names_capa) {
+        size_t cap = pys_local_names_capa ? pys_local_names_capa * 2 : 32;
+        while (cap < pys_local_names_len + n) cap *= 2;
+        PYS_LOCAL_NAMES_TABLE = (const char **)GC_realloc(PYS_LOCAL_NAMES_TABLE, cap * sizeof(char *));
+        pys_local_names_capa = cap;
+    }
+    size_t base = pys_local_names_len;
+    for (size_t i = 0; i < n; i++) PYS_LOCAL_NAMES_TABLE[base + i] = names[i];
+    pys_local_names_len += n;
+    return base;
+}
+
 // Bag of (name, NODE *) kwargs indexed by node_call_kw's `kwargs_idx`.
 struct pyskwarg *PYS_KWARGS = NULL;
 static size_t pys_kwargs_len, pys_kwargs_capa;
@@ -1202,6 +1222,7 @@ parse_genexp_lazy(int saved_remap_at_paren)
     // Reserve the param-name table.
     const char *param_names[1] = { p0 };
     uint32_t nidx = (uint32_t)name_table_reserve(param_names, 1);
+    uint32_t lidx = (uint32_t)local_names_reserve(sc.locals, sc.nlocals);
     uint32_t didx = (uint32_t)defaults_reserve(NULL, 0);
 
     char buf[32];
@@ -1213,7 +1234,7 @@ parse_genexp_lazy(int saved_remap_at_paren)
                                     (uint32_t)sc.nlocals,
                                     0, didx,
                                     0,                       // leaf
-                                    nidx, 0,                 // flags
+                                    nidx, lidx, 0,           // flags
                                     1,                       // is_gen
                                     outer_loop);
 
@@ -1689,6 +1710,7 @@ parse_lambda(void)
     NODE *body = ALLOC_node_return(body_expr);
     size_t didx = defaults_reserve(defs, ndefaults);
     size_t nidx = name_table_reserve(names, nnames);
+    size_t lidx = local_names_reserve(sc.locals, sc.nlocals);
     uint32_t leaf_bit = (sc.has_nested_def || sc.is_generator) ? 0u : 1u;
     uint32_t leaf_flags = leaf_bit
         | (sc.is_generator ? 2u : 0u)
@@ -1697,7 +1719,8 @@ parse_lambda(void)
         | ((uint32_t)(n_pos_named & 0xFF) << 16);
     return ALLOC_node_lambda((uint32_t)nparams, (uint32_t)sc.nlocals,
                              (uint32_t)ndefaults, (uint32_t)didx,
-                             leaf_flags, (uint32_t)nidx, body);
+                             leaf_flags, (uint32_t)nidx,
+                             (uint32_t)lidx, body);
 }
 
 static NODE *
@@ -3035,11 +3058,12 @@ parse_def(void)
     in_class_body = saved_icb;
     cur_scope = saved;
 
+    uint32_t lidx = (uint32_t)local_names_reserve(sc.locals, sc.nlocals);
     NODE *def_node = ALLOC_node_def(fname, (uint32_t)nparams, (uint32_t)n_pos_named,
                                     (uint32_t)sc.nlocals,
                                     (uint32_t)ndefaults, didx,
                                     (uint32_t)(sc.has_nested_def ? 0 : 1),
-                                    nidx, flags,
+                                    nidx, lidx, flags,
                                     (uint32_t)(sc.is_generator ? 1 : 0),
                                     body);
 

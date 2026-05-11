@@ -594,6 +594,11 @@ pys_make_func(struct Node *body, struct pysframe *env,
     } else {
         o->func.param_names = NULL;
     }
+    // node_def / node_lambda set this immediately after via a setter that
+    // COPIES into per-func storage (the table pointer can move under
+    // GC_realloc).  Default to NULL so locals() is a safe no-op for funcs
+    // created via other paths (built-in shims, etc.).
+    o->func.local_names = NULL;
     o->func.defining_class = PYS_NONE;
     extern CTX *pys_current_ctx;
     o->func.fglobals = pys_current_ctx ? pys_current_ctx->globals : NULL;
@@ -606,6 +611,20 @@ pys_make_func(struct Node *body, struct pysframe *env,
         o->func.defaults = NULL;
     }
     return PYS_OBJ_VAL(o);
+}
+
+// Copy `n` local-name pointers into per-func GC storage and attach.
+// node_def / node_lambda call this immediately after pys_make_func so
+// the function value owns a stable name array regardless of later
+// PYS_LOCAL_NAMES_TABLE realloc.
+void
+pys_func_set_local_names(VALUE fn, const char **names, int n)
+{
+    if (!fn || !PYS_IS_PTR(fn) || PYS_PTR(fn)->type != PYS_T_FUNC) return;
+    if (!names || n <= 0) { PYS_PTR(fn)->func.local_names = NULL; return; }
+    const char **ln = (const char **)GC_malloc(sizeof(char *) * n);
+    for (int i = 0; i < n; i++) ln[i] = names[i];
+    PYS_PTR(fn)->func.local_names = ln;
 }
 
 VALUE
@@ -1238,6 +1257,7 @@ pys_new_frame(struct pysframe *parent, int nslots)
     struct pysframe *f = (struct pysframe *)GC_malloc(
         sizeof(struct pysframe) + sizeof(VALUE) * (nslots ? nslots : 1));
     f->parent = parent;
+    f->slot_names = NULL;
     f->nslots = nslots;
     for (int i = 0; i < nslots; i++) f->slots[i] = PYS_NONE;
     return f;
@@ -5557,6 +5577,7 @@ pys_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
     int kw_slot = has_kw ? (kwonly_start + n_kwonly) : -1;
 
     struct pysframe *new_env = pys_new_frame(f->func.env, f->func.nlocals);
+    new_env->slot_names = f->func.local_names;
     bool *filled = (bool *)alloca(sizeof(bool) * (nparams > 0 ? nparams : 1));
     for (int i = 0; i < nparams; i++) filled[i] = false;
 
@@ -6486,6 +6507,7 @@ gen_entry(void)
     int kw_slot = has_kw ? (kwonly_start + n_kwonly) : -1;
 
     struct pysframe *new_env = pys_new_frame(f->func.env, f->func.nlocals);
+    new_env->slot_names = f->func.local_names;
     bool *filled = (bool *)alloca(sizeof(bool) * (needed > 0 ? needed : 1));
     for (int i = 0; i < needed; i++) filled[i] = false;
     int pos_into = g->argc < n_pos_named ? g->argc : n_pos_named;
@@ -11622,10 +11644,36 @@ static VALUE
 bi_locals(CTX *c, int argc, VALUE *argv)
 {
     (void)argc; (void)argv;
-    // pystro doesn't track names-per-slot, so locals() returns an empty
-    // dict at function scope.  At module scope, fall back to globals.
+    // At module scope, fall back to globals.
     if (!c->env) return bi_globals(c, 0, NULL);
-    return pys_make_dict();
+    VALUE d = pys_make_dict();
+    struct pysframe *env = c->env;
+    const char **ln = env ? env->slot_names : NULL;
+    if (!ln) return d;
+    for (int i = 0; i < env->nslots; i++) {
+        const char *name = ln[i];
+        if (!name) continue;
+        // Skip undefined / never-assigned slots — CPython locals() omits
+        // names that haven't been bound yet (slot reads as 0 sentinel).
+        if (env->slots[i] == (VALUE)0) continue;
+        // Skip pystro's compiler-synthesised slot names (tuple-unpack /
+        // for-tuple / comprehension / aug-assign temps).  All have the
+        // pattern `__<letters><digits>__` or contain `$`.  Real Python
+        // dunders never carry digits or `$`.
+        size_t nlen = strlen(name);
+        if (nlen >= 4 && name[0] == '_' && name[1] == '_'
+            && name[nlen-1] == '_' && name[nlen-2] == '_') {
+            bool has_digit = false, has_dollar = false;
+            for (size_t j = 2; j + 2 < nlen; j++) {
+                if (name[j] >= '0' && name[j] <= '9') has_digit = true;
+                if (name[j] == '$') has_dollar = true;
+            }
+            if (has_digit || has_dollar) continue;
+        }
+        VALUE k = pys_make_str(name, nlen);
+        pys_dict_set(c, d, k, env->slots[i]);
+    }
+    return d;
 }
 
 static VALUE

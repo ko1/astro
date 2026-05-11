@@ -235,6 +235,11 @@ struct pysobj {
             int n_pos_only;         // # of pos-only params (before `/`)
             VALUE *defaults;        // length nparams; (VALUE)0 ⇒ "required" sentinel
             const char **param_names;
+            // All nlocals names — params first (matches param_names),
+            // then non-param locals in slot order.  Used by locals() to
+            // map frame slots back to source names.  Set by node_def /
+            // node_lambda right after pys_make_func; NULL when nlocals==0.
+            const char **local_names;
             int nlocals;
             bool leaf;
             bool has_varargs;       // a `*args` slot is present
@@ -307,6 +312,11 @@ struct pysobj {
 
 struct pysframe {
     struct pysframe *parent;
+    // Slot name array (length matches `nslots`), populated by the call
+    // dispatch so locals() can map slot index → source name without
+    // walking back through the function value.  NULL for env-only frames
+    // created outside a function call (e.g. eval).
+    const char **slot_names;
     int nslots;
     VALUE slots[];
 };
@@ -900,6 +910,7 @@ extern struct Node            **PYS_NODE_TABLE;
 extern struct pyshandler        *PYS_HANDLERS;
 extern struct pyunpack_target  *PYS_UNPACK_TARGETS;
 extern const char             **PYS_NAME_TABLE;     // bag of param name lists for node_def
+extern const char             **PYS_LOCAL_NAMES_TABLE; // bag of all-locals name lists for node_def/lambda
 
 // One kwarg entry: a name and the AST node producing the value.  Both
 // node_call_kw and the `**dict` expansion path share the type.

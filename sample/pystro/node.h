@@ -160,6 +160,7 @@ pys_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
                     sizeof(struct pysframe) + sizeof(VALUE) * (total ? total : 1));
             }
             new_env->parent = f->func.env;
+            new_env->slot_names = f->func.local_names;
             new_env->nslots = total;
             for (int i = 0; i < argc; i++) new_env->slots[i] = argv[i];
             for (int i = argc; i < total; i++) new_env->slots[i] = PYS_NONE;

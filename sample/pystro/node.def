@@ -1653,7 +1653,7 @@ node_with(CTX * restrict c, NODE * restrict n, NODE *cm_expr, NODE *body, uint32
 // If the body starts with a bare string literal, capture it as the
 // function's __doc__ (CPython compatibility).
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams, uint32_t n_pos_named, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, uint32_t flags, uint32_t is_gen, NODE *body)
+node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams, uint32_t n_pos_named, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, uint32_t locals_names_idx, uint32_t flags, uint32_t is_gen, NODE *body)
 {
     (void)n;
     VALUE *dv = NULL;
@@ -1667,6 +1667,7 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
         }
     }
     const char **pn = nparams > 0 ? &PYS_NAME_TABLE[names_idx] : NULL;
+    const char **ln = nlocals > 0 ? &PYS_LOCAL_NAMES_TABLE[locals_names_idx] : NULL;
     bool has_va = (flags & 1) != 0;
     bool has_kw = (flags & 2) != 0;
     bool is_async = (flags & 4) != 0;
@@ -1674,6 +1675,8 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
     VALUE fn = pys_make_func(body, c->env, name, (int)nparams, (int)n_pos_named,
                             (int)nlocals, dv, leaf != 0, pn, has_va, has_kw,
                             is_gen != 0);
+    extern void pys_func_set_local_names(VALUE fn, const char **names, int n);
+    pys_func_set_local_names(fn, ln, (int)nlocals);
     PYS_PTR(fn)->func.n_pos_only = n_pos_only;
     PYS_PTR(fn)->func.is_async = is_async;
     // Docstring: if body's leftmost-spine leaf is a const_str, stash
@@ -1813,7 +1816,7 @@ node_class(CTX * restrict c, NODE * restrict n, const char *name, NODE *base, NO
 }
 
 NODE_DEF @noinline
-node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, NODE *body)
+node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nlocals, uint32_t ndefaults, uint32_t defaults_idx, uint32_t leaf, uint32_t names_idx, uint32_t locals_names_idx, NODE *body)
 {
     (void)n;
     VALUE *dv = NULL;
@@ -1827,6 +1830,7 @@ node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nloc
         }
     }
     const char **pn = nparams > 0 ? &PYS_NAME_TABLE[names_idx] : NULL;
+    const char **ln = nlocals > 0 ? &PYS_LOCAL_NAMES_TABLE[locals_names_idx] : NULL;
     bool leaf_b = (leaf & 1) != 0;
     bool is_gen = (leaf & 2) != 0;
     bool has_va = (leaf & 4) != 0;
@@ -1839,8 +1843,11 @@ node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t nloc
         n_pos_named = (int)nparams;
     }
     const char *fname = is_gen ? "<genexpr>" : "<lambda>";
-    return pys_make_func(body, c->env, fname, (int)nparams, n_pos_named,
+    VALUE fn = pys_make_func(body, c->env, fname, (int)nparams, n_pos_named,
                         (int)nlocals, dv, leaf_b, pn, has_va, has_kw, is_gen);
+    extern void pys_func_set_local_names(VALUE fn, const char **names, int n);
+    pys_func_set_local_names(fn, ln, (int)nlocals);
+    return fn;
 }
 
 // ---------------------------------------------------------------------------
