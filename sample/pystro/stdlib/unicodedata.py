@@ -74,7 +74,27 @@ def is_normalized(form, unistr):
     return True
 
 
-ucd_3_2_0 = None
+# Mini-namespace for the Unicode 3.2.0 database — used by `stringprep`
+# (RFC 3454).  Pystro doesn't actually load a separate UCD, so the
+# functions delegate to the module-level helpers above, and the
+# version string is the literal '3.2.0' that stringprep asserts on.
+class _UCD320:
+    unidata_version = "3.2.0"
+    name = staticmethod(name)
+    lookup = staticmethod(lookup)
+    category = staticmethod(category)
+    bidirectional = staticmethod(bidirectional)
+    east_asian_width = staticmethod(east_asian_width)
+    combining = staticmethod(combining)
+    decimal = staticmethod(decimal)
+    digit = staticmethod(digit)
+    numeric = staticmethod(numeric)
+    mirrored = staticmethod(mirrored)
+    decomposition = staticmethod(decomposition)
+    normalize = staticmethod(normalize)
+    is_normalized = staticmethod(is_normalized)
+
+ucd_3_2_0 = _UCD320()
 
 
 __all__ = ["name", "lookup", "category", "bidirectional", "east_asian_width",
