@@ -14155,10 +14155,33 @@ bi_import(CTX *c, int argc, VALUE *argv)
     extern void  parser_restore_free(void *s);
     void *lexsave = lexer_save_alloc();
     void *parsesave = parser_save_alloc();
-    tokenize(src, path);
-    NODE *body = parse_program();
-    lexer_restore_free(lexsave);
-    parser_restore_free(parsesave);
+    // Set up SyntaxError longjmp so a malformed module surfaces as a
+    // catchable exception in the importing scope (rather than exit(1)).
+    extern jmp_buf *parse_error_jmp;
+    extern char     parse_error_msg[1024];
+    extern int      parse_error_line;
+    jmp_buf *saved_jmp = parse_error_jmp;
+    jmp_buf local_jmp;
+    NODE *body;
+    if (setjmp(local_jmp) == 0) {
+        parse_error_jmp = &local_jmp;
+        tokenize(src, path);
+        body = parse_program();
+        parse_error_jmp = saved_jmp;
+        lexer_restore_free(lexsave);
+        parser_restore_free(parsesave);
+    } else {
+        // Parse / lex error inside the imported module — restore state
+        // and surface as SyntaxError.
+        parse_error_jmp = saved_jmp;
+        lexer_restore_free(lexsave);
+        parser_restore_free(parsesave);
+        c->globals = saved_g;
+        c->current_class = saved_current_class;
+        free(src);
+        PYS_RAISE_EXC(c, c->EXC_SyntaxError,
+                     "%s:%d: %s", path, parse_error_line, parse_error_msg);
+    }
 
     // Cache a placeholder module BEFORE executing the body, so a
     // self-referential import (e.g. test/support/__init__.py doing
