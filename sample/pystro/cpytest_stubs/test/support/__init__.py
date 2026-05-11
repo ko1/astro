@@ -793,6 +793,11 @@ class _SMALLEST:
 SMALLEST = _SMALLEST()
 
 
+def maybe_get_event_loop_policy():
+    """Pystro has no asyncio loop policy; return None."""
+    return None
+
+
 def has_no_debug_ranges():
     """Pystro doesn't emit debug-range tables; behave like a `-X
     no_debug_ranges` build."""

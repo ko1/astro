@@ -15957,6 +15957,7 @@ install_builtins(CTX *c)
     c->EXC_UnicodeError      = pys_make_class("UnicodeError",     c->EXC_ValueError, true);
     c->EXC_UnicodeDecodeError= pys_make_class("UnicodeDecodeError",c->EXC_UnicodeError, true);
     c->EXC_UnicodeEncodeError= pys_make_class("UnicodeEncodeError",c->EXC_UnicodeError, true);
+    c->EXC_UnicodeTranslateError = pys_make_class("UnicodeTranslateError", c->EXC_UnicodeError, true);
     c->EXC_MemoryError       = pys_make_class("MemoryError",      c->EXC_Exception, true);
     c->EXC_BufferError       = pys_make_class("BufferError",      c->EXC_Exception, true);
     c->EXC_ReferenceError    = pys_make_class("ReferenceError",   c->EXC_Exception, true);
@@ -16010,6 +16011,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "UnicodeError",         c->EXC_UnicodeError);
     pys_global_define(c, "UnicodeDecodeError",   c->EXC_UnicodeDecodeError);
     pys_global_define(c, "UnicodeEncodeError",   c->EXC_UnicodeEncodeError);
+    pys_global_define(c, "UnicodeTranslateError",c->EXC_UnicodeTranslateError);
     pys_global_define(c, "MemoryError",          c->EXC_MemoryError);
     pys_global_define(c, "BufferError",          c->EXC_BufferError);
     pys_global_define(c, "ReferenceError",       c->EXC_ReferenceError);

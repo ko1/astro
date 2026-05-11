@@ -569,6 +569,7 @@ typedef struct CTX_struct {
     VALUE EXC_UnicodeError;
     VALUE EXC_UnicodeDecodeError;
     VALUE EXC_UnicodeEncodeError;
+    VALUE EXC_UnicodeTranslateError;
     VALUE EXC_LookupError;
     VALUE EXC_FloatingPointError;
     VALUE EXC_ZeroDivisionError2;   // alias slot — unused
@@ -616,7 +617,7 @@ typedef struct CTX_struct {
     X(NameError) X(UnboundLocalError) X(SystemError) X(RuntimeError) X(NotImplementedError) X(RecursionError) \
     X(SyntaxError) X(IndentationError) X(TabError) \
     X(TypeError) X(ValueError) X(UnicodeError) X(UnicodeDecodeError) \
-    X(UnicodeEncodeError) X(ReferenceError) X(OSError) X(FileNotFoundError) \
+    X(UnicodeEncodeError) X(UnicodeTranslateError) X(ReferenceError) X(OSError) X(FileNotFoundError) \
     X(FileExistsError) X(ProcessLookupError) X(ConnectionAbortedError) \
     X(ConnectionRefusedError) X(ConnectionResetError) \
     X(PermissionError) X(NotADirectoryError) X(IsADirectoryError) \

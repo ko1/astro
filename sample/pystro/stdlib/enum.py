@@ -281,6 +281,33 @@ def nonmember(value):
     return value
 
 def global_enum(cls):
+    """Decorator: copy each member onto the defining module's globals.
+    Used by `calendar.Day` so `calendar.MONDAY` resolves directly."""
+    try:
+        import sys
+        members = getattr(cls, "_by_name_", None) \
+            or getattr(cls, "__members__", {})
+        items = list(members.items()) if hasattr(members, "items") else []
+        # 1) Inject into the caller's frame globals (the module being
+        #    initialized).  Works when sys._getframe is functional.
+        try:
+            caller = sys._getframe(1)
+            g = caller.f_globals
+            for name, value in items:
+                g[name] = value
+        except Exception:
+            pass
+        # 2) Fallback: locate the module by name (pystro often sets
+        #    cls.__module__ to '__main__'; try every import-path
+        #    candidate via sys.modules).
+        mod_name = getattr(cls, "__module__", None)
+        if mod_name and mod_name in sys.modules:
+            mod = sys.modules[mod_name]
+            for name, value in items:
+                try: setattr(mod, name, value)
+                except Exception: pass
+    except Exception:
+        pass
     return cls
 
 def property(fn):
