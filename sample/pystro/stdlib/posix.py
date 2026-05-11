@@ -394,8 +394,34 @@ def truncate(path, length): pass
 def sync(): pass
 def fdatasync(fd): pass
 def replace(src, dst): rename(src, dst)
+class DirEntry:
+    """Lightweight os.DirEntry stub matching CPython's surface."""
+    def __init__(self, name, path):
+        self.name = name
+        self.path = path
+    def __repr__(self):
+        return "<DirEntry %r>" % self.name
+    def is_file(self, *, follow_symlinks=True):
+        return isfile(self.path)
+    def is_dir(self, *, follow_symlinks=True):
+        return isdir(self.path)
+    def is_symlink(self):
+        return False
+    def stat(self, *, follow_symlinks=True):
+        return stat(self.path)
+    def inode(self):
+        return 0
+
+
 def scandir(path="."):
-    raise OSError("scandir not supported")
+    """Return a list of DirEntry — close()-able via context manager."""
+    class _Scan:
+        def __init__(self, p): self._items = [DirEntry(n, p + "/" + n) for n in listdir(p)]
+        def __iter__(self): return iter(self._items)
+        def __enter__(self): return self
+        def __exit__(self, *exc): pass
+        def close(self): pass
+    return _Scan(path)
 def get_exec_path(env=None):
     return defpath.split(":")
 
@@ -435,6 +461,7 @@ __all__ = [
     "environ", "chdir", "getcwd", "getcwdb", "getenv", "putenv", "unsetenv",
     "listdir", "stat", "lstat", "fstat", "access", "isfile", "isdir",
     "remove", "unlink", "rmdir", "mkdir", "makedirs", "rename",
+    "scandir", "DirEntry",
     "open", "close", "read", "write", "fsync", "fdopen", "pipe",
     "dup", "dup2", "fork", "waitpid", "WEXITSTATUS", "WIFEXITED",
     "WIFSIGNALED", "WIFSTOPPED", "WTERMSIG", "WSTOPSIG", "WIFCONTINUED",
