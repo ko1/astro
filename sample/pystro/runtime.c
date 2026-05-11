@@ -13798,6 +13798,12 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // (they SkipTest at runtime instead).
         "multiprocessing.py",
         "multiprocessing/context.py",
+        // tempfile — CPython's queries the candidate dirs by writing a
+        // probe file, which can fail under sandbox (e.g. /tmp visible
+        // but not writable as the test user).  Pystro's stub honours
+        // $TMPDIR / $TEMP / $TMP env vars and falls back to /tmp
+        // without probing.
+        "tempfile.py",
         NULL,
     };
     bool pystro_wins = false;

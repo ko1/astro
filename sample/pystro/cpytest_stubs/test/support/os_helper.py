@@ -1,12 +1,19 @@
 """Stub for test.support.os_helper."""
 import os
 import unittest
+import tempfile
 
 
-TESTFN = "@test"
+# CPython points TESTFN at the test's working dir + "@test_<pid>_tmp".
+# Pystro tests sometimes run from a read-only / sandboxed cwd; route
+# the basename through tempfile.gettempdir() so open/remove always
+# succeeds.  Keep the basename starting with "@test" — CPython tests
+# probe `if 'test' in TESTFN`.
+_TESTFN_BASE = "@test_pystro"
+TESTFN = os.path.join(tempfile.gettempdir(), _TESTFN_BASE)
 TESTFN_ASCII = TESTFN
 TESTFN_UNICODE = TESTFN
-TESTFN_NONASCII = TESTFN
+TESTFN_NONASCII = TESTFN + "\xe9"
 
 
 def unlink(path):
