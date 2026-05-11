@@ -2902,6 +2902,9 @@ pydict_set_h(CTX *c, struct pysdict *d, VALUE key, uint64_t h, VALUE val)
     int32_t eidx;
     ssize_t first_tomb;
     pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &first_tomb);
+    // __eq__ during lookup raised — don't insert with a possibly-stale
+    // bucket/tomb; the caller's exception must propagate.
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return -1;
     if (eidx >= 0) {
         d->entries[eidx].value = val;
         return eidx;
@@ -2985,8 +2988,12 @@ pys_dict_get(CTX *c, VALUE dv, VALUE key)
 {
     struct pysdict *d = PYS_PTR(dv)->dict;
     uint64_t h = pys_hash(c, key);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     size_t bucket; int32_t eidx; ssize_t ft;
     pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &ft);
+    // __eq__ raised while comparing during lookup — don't mask it with
+    // KeyError.
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (eidx < 0) {
         // KeyError(key) — CPython parity: e.args == (key,), preserving
         // the original value's type (int, tuple, ...).  Earlier we
@@ -3019,8 +3026,10 @@ pys_dict_remove(CTX *c, VALUE dv, VALUE key)
 {
     struct pysdict *d = PYS_PTR(dv)->dict;
     uint64_t h = pys_hash(c, key);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return false;
     size_t bucket; int32_t eidx; ssize_t ft;
     pydict_indices_lookup(c, d, key, h, &bucket, &eidx, &ft);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return false;
     if (eidx < 0) return false;
     d->indices[bucket] = DICT_TOMB_IDX;
     d->entries[eidx].key = DICT_DELETED_KEY;
