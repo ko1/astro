@@ -30,6 +30,10 @@ def skip_if_tcp_blackhole(fn):
     return fn
 
 
+has_gethostname = True
+
+
 __all__ = ["HOST", "HOSTv4", "HOSTv6",
            "find_unused_port", "bind_port", "bind_unix_socket",
-           "transient_internet", "skip_if_tcp_blackhole"]
+           "transient_internet", "skip_if_tcp_blackhole",
+           "has_gethostname"]

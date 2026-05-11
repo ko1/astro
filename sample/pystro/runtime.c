@@ -14108,8 +14108,9 @@ bi_import(CTX *c, int argc, VALUE *argv)
         pys_global_set(c, "CO_ASYNC_GENERATOR",   PYS_FIX(0x0200));
         c->globals = saved;
     }
-    // For dotted modules `a.b`: set `b` as attribute of `a`'s module so
-    // user code that does `import a.b` then accesses `a.b.foo` works.
+    // For dotted modules `a.b.c`: ensure each ancestor (`a`, `a.b`) is
+    // loaded and that the immediate parent has the leaf attached as an
+    // attribute, so `import a.b.c; a.b.c.foo` resolves end-to-end.
     {
         const char *last_dot = NULL;
         for (size_t i = 0; i < name_len; i++)
@@ -14117,11 +14118,18 @@ bi_import(CTX *c, int argc, VALUE *argv)
         if (last_dot) {
             size_t parent_len = (size_t)(last_dot - name);
             VALUE parent_name = pys_make_str(name, parent_len);
+            // If parent not yet cached, import it now so it gets a
+            // module object we can attach onto.
+            if (!pys_dict_has(c, mod_dict, parent_name)) {
+                VALUE av[1] = { parent_name };
+                bi_import(c, 1, av);
+                // If parent init raised, propagate.
+                if (c->state == PYS_STATE_RAISE) return 0;
+            }
             if (pys_dict_has(c, mod_dict, parent_name)) {
                 VALUE parent = pys_dict_get(c, mod_dict, parent_name);
                 if (pys_is_module(parent)) {
                     const char *child = last_dot + 1;
-                    // Set on parent module's globals.
                     struct pysglobals *saved = c->globals;
                     c->globals = PYS_PTR(parent)->module.globals;
                     pys_global_set(c, child, mod);
