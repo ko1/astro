@@ -4,11 +4,18 @@
 # for fixed-precision financial-style arithmetic.  Floats can be lossy
 # but are the only literal source.
 
+class InvalidOperation(Exception):
+    pass
+
+
 class Decimal:
+    # Special-form sentinels.  _special is one of '', 'inf', 'nan'.
     def __init__(self, value=0, scale=None):
+        self._special = ''
         if isinstance(value, Decimal):
             self._n = value._n
             self._s = value._s
+            self._special = value._special
             return
         if isinstance(value, str):
             s = value.strip()
@@ -17,14 +24,44 @@ class Decimal:
                 neg = True; s = s[1:]
             elif s.startswith("+"):
                 s = s[1:]
+            # Infinity / NaN special forms (CPython parity).
+            low = s.lower()
+            if low in ("inf", "infinity"):
+                self._n = -1 if neg else 1
+                self._s = 0
+                self._special = 'inf'
+                return
+            if low == "nan" or low.startswith("nan"):
+                self._n = 0
+                self._s = 0
+                self._special = 'nan'
+                return
+            # Exponent form: "1.5e2", "1E-3"
+            exp = 0
+            for sep in ("e", "E"):
+                if sep in s:
+                    s, esuf = s.split(sep, 1)
+                    try:
+                        exp = int(esuf)
+                    except Exception:
+                        raise InvalidOperation("Invalid literal for Decimal: " + repr(value))
+                    break
             if "." in s:
-                w, f = s.split(".")
+                w, f = s.split(".", 1)
             else:
                 w, f = s, ""
-            n = int(w + f) if (w + f) else 0
+            digits = w + f
+            if digits and not digits.lstrip("0123456789") == "":
+                raise InvalidOperation("Invalid literal for Decimal: " + repr(value))
+            n = int(digits) if digits else 0
             if neg: n = -n
+            # Apply exponent: shift the decimal point.
+            scale_after = len(f) - exp
+            if scale_after < 0:
+                n *= 10 ** (-scale_after)
+                scale_after = 0
             self._n = n
-            self._s = len(f)
+            self._s = scale_after
             return
         if isinstance(value, int):
             self._n = value
@@ -33,6 +70,11 @@ class Decimal:
         # float fallback — best-effort.
         s = repr(value)
         return self.__init__(s)
+
+    def is_nan(self): return self._special == 'nan'
+    def is_infinite(self): return self._special == 'inf'
+    def is_finite(self): return self._special == ''
+    def is_signed(self): return self._n < 0 or (self._special == 'inf' and self._n < 0)
 
     def _aligned(self, other):
         a, b = self, other

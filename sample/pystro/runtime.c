@@ -13825,6 +13825,10 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // $TMPDIR / $TEMP / $TMP env vars and falls back to /tmp
         // without probing.
         "tempfile.py",
+        // decimal — CPython's pulls in _decimal C accelerator with full
+        // IEEE 754 + context.  Pystro's stub provides int+scale Decimal
+        // + Inf/NaN special forms — enough for arithmetic-only tests.
+        "decimal.py",
         NULL,
     };
     bool pystro_wins = false;
