@@ -4978,9 +4978,19 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         VALUE self = PYS_PTR(v)->super_.self;
         VALUE start = PYS_PTR(v)->super_.start_cls;
         VALUE m = pys_super_lookup(c, self, start, name);
-        if (m == PYS_NONE)
+        if (m == PYS_NONE) {
+            // Generic dunders that super() must transparently delegate
+            // to the underlying self even when no base class overrides
+            // them.  Without this, `isinstance(super(), Iterable)` /
+            // `for x in super().__iter__()` / pickle's __reduce__ probe
+            // explodes deep inside stdlib imports.
+            if (strcmp(name, "__class__") == 0) {
+                if (pys_is_instance(self))
+                    return PYS_OBJ_VAL(PYS_PTR(self)->inst.cls);
+            }
             PYS_RAISE_EXC(c, c->EXC_AttributeError,
                          "'super' object has no attribute '%s'", name);
+        }
         // If `m` is already a bound method (built-in dispatched via
         // primary in super_lookup), don't re-bind.
         if (pys_is_bound(m)) return m;
