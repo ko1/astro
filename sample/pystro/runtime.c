@@ -11056,6 +11056,9 @@ bi_range(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_list(CTX *c, int argc, VALUE *argv)
 {
+    // CPython: list() takes no keyword arguments.
+    if (PYS_BI_KWC > 0)
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "list() takes no keyword arguments");
     if (argc == 0) return pys_make_list(NULL, 0);
     VALUE r = pys_make_list(NULL, 0);
     // CPython: iter objects are single-use; `list(it)` consumes it.
@@ -11081,6 +11084,8 @@ bi_list(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_tuple(CTX *c, int argc, VALUE *argv)
 {
+    if (PYS_BI_KWC > 0)
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "tuple() takes no keyword arguments");
     if (argc == 0) return pys_make_tuple(NULL, 0);
     VALUE l = bi_list(c, argc, argv);
     return pys_make_tuple(PYS_PTR(l)->list.items, PYS_PTR(l)->list.len);
@@ -12331,7 +12336,13 @@ static VALUE
 bi_sorted(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    // Suppress bi_list's kwarg check — sorted() forwards its key=/reverse=
+    // kwargs to lm_sort, but bi_list now raises TypeError on any kwarg.
+    int saved_kwc = PYS_BI_KWC;
+    PYS_BI_KWC = 0;
     VALUE r = bi_list(c, 1, argv);
+    PYS_BI_KWC = saved_kwc;
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     lm_sort(c, 1, &r);
     return r;
 }
