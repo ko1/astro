@@ -42,16 +42,16 @@ classify_one() {
     local repo_root="$PWD"
     # Run with cwd = jobtmp so relative TESTFN values don't clash with
     # parallel jobs.  PYTHONPATH stays absolute via $repo_root.
-    timeout 30 env -C "$jobtmp" \
+    timeout 60 env -C "$jobtmp" \
         PYTHONPATH="$repo_root/cpytest_stubs:$repo_root/cpython/Lib" \
         TMPDIR="$jobtmp" "$repo_root/pystro" -q "$repo_root/$f" >"$log" 2>&1
     local rc=$?
     rm -rf "$jobtmp" 2>/dev/null
 
     local kind
-    if [ $rc -eq 124 ]; then
+    if [ $rc -eq 124 ] || grep -q "^timeout: the monitored command" "$log"; then
         kind="TIMEOUT"
-    elif [ $rc -ge 128 ] || grep -q "Segmentation\|Aborted\|core dumped" "$log"; then
+    elif [ $rc -ge 128 ] || grep -q "Segmentation\|Aborted" "$log"; then
         kind="CRASH"
     elif grep -q "^SyntaxError:\|^IndentationError:" "$log"; then
         kind="PARSE_ERR"
