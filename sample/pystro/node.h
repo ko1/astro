@@ -223,10 +223,15 @@ static inline __attribute__((always_inline)) bool
 pys_iter_next_inline(CTX *c, struct pys_iter *it, VALUE *out)
 {
     switch (it->kind) {
-      case 0:   // list / tuple
-        if (it->i >= it->end) return false;
+      case 0: {  // list / tuple
+        size_t live_len = PYS_PTR(it->container)->list.len;
+        if ((uint64_t)it->i >= (uint64_t)live_len) {
+            it->i = INT64_MAX;
+            return false;
+        }
         *out = PYS_PTR(it->container)->list.items[it->i++];
         return true;
+      }
       case 2:   // range
         if (it->step > 0 ? it->i >= it->end : it->i <= it->end) return false;
         *out = pys_make_int(it->i);

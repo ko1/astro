@@ -4089,10 +4089,21 @@ pys_iter_next(CTX *c, struct pys_iter *it, VALUE *out)
 {
     (void)c;
     switch (it->kind) {
-      case 0:
-        if (it->i >= it->end) return false;
+      case 0: {
+        // Always read the live length so list iterators see appends
+        // performed after `iter(a)` was taken (CPython parity).  Once
+        // the iter exhausts, mark it permanently sticky by setting
+        // i = INT64_MAX so a subsequent append doesn't resurrect it
+        // (test_exhausted_iterator's exhit must stay empty after
+        // a.append(9) even though len now exceeds the consumed index).
+        size_t live_len = PYS_PTR(it->container)->list.len;
+        if ((uint64_t)it->i >= (uint64_t)live_len) {
+            it->i = INT64_MAX;
+            return false;
+        }
         *out = PYS_PTR(it->container)->list.items[it->i++];
         return true;
+      }
       case 1: {
         // String: it->i is a byte offset, it->end is the byte length.
         // Yield one codepoint per step.
