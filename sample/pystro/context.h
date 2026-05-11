@@ -978,6 +978,11 @@ struct pyspat {
     int nchildren;
     struct Node **keys;         // PYPAT_MAPPING: key NODE *exprs, length nchildren
     const char **attrs;         // PYPAT_CLASS_ARGS: attr name per child
+    // PYPAT_MAPPING: **rest capture.  rest_slot = -2 ⇒ absent, -1 ⇒
+    // global name (in rest_name), >=0 ⇒ local slot.  rest_name is also
+    // -1 for **_ (allowed but doesn't bind).
+    int          rest_slot;
+    const char  *rest_name;
 };
 extern struct pyspat *PYS_PATTERNS;
 

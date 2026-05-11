@@ -3561,13 +3561,36 @@ parse_pattern_atom(void)
         return pat_alloc(p);
     }
     if (k == T_LBRACE) {
-        // mapping pattern: {key_expr: pat, ...}
+        // mapping pattern: {key_expr: pat, ..., **rest}
         tok_pos++;
         NODE *keys[64];
         int child_pats[64];
         int nc = 0;
+        int rest_slot = -2;
+        const char *rest_name = NULL;
         if (peek_tok(0)->kind != T_RBRACE) {
             for (;;) {
+                if (peek_tok(0)->kind == T_STAR_STAR) {
+                    // **NAME — rest capture; must be last.
+                    tok_pos++;
+                    if (peek_tok(0)->kind != T_NAME)
+                        parse_error("expected NAME after '**' in mapping pattern");
+                    const char *nm = peek_tok(0)->sval;
+                    tok_pos++;
+                    if (strcmp(nm, "_") == 0) {
+                        rest_slot = -1;
+                        rest_name = NULL;
+                    } else if (cur_scope && !scope_is_global_decl(cur_scope, nm)) {
+                        rest_slot = scope_add_local(cur_scope, nm);
+                        rest_name = NULL;
+                    } else {
+                        rest_slot = -1;
+                        rest_name = nm;
+                    }
+                    if (match_tok(T_COMMA) && peek_tok(0)->kind != T_RBRACE)
+                        parse_error("'**rest' must be last in mapping pattern");
+                    break;
+                }
                 NODE *kexpr = parse_expr();
                 expect(T_COLON, "':'");
                 int sub = parse_pattern_or();
@@ -3591,6 +3614,8 @@ parse_pattern_atom(void)
         NODE **kn = (NODE **)GC_malloc(sizeof(NODE *) * nc);
         for (int i = 0; i < nc; i++) kn[i] = keys[i];
         p.keys = kn;
+        p.rest_slot = rest_slot;
+        p.rest_name = rest_name;
         return pat_alloc(p);
     }
     {
@@ -3651,12 +3676,86 @@ parse_pattern_or(void)
     return result;
 }
 
+// `case 0, *x:` — open-tuple pattern at case top level wraps to a
+// SEQUENCE without surrounding parens.  parse_pattern_or alone stops at
+// the first comma; this helper collects siblings.
+static int
+parse_seq_star(void)
+{
+    // After consuming '*': parse the (optional) NAME and return a STAR pattern.
+    struct pyspat sp = {0};
+    sp.kind = PYPAT_STAR;
+    if (peek_tok(0)->kind == T_NAME && strcmp(peek_tok(0)->sval, "_") != 0) {
+        sp.name = peek_tok(0)->sval;
+        if (cur_scope && !scope_is_global_decl(cur_scope, sp.name)) {
+            sp.slot = scope_add_local(cur_scope, sp.name);
+            sp.name = NULL;
+        } else sp.slot = -1;
+        tok_pos++;
+    } else if (peek_tok(0)->kind == T_NAME) {
+        sp.slot = -1; sp.name = NULL; tok_pos++;
+    } else { sp.slot = -1; sp.name = NULL; }
+    return pat_alloc(sp);
+}
+
+static int
+parse_case_pattern(void)
+{
+    // Handle `case *x, ...`: leading star at top level.
+    int first;
+    bool leading_star = (peek_tok(0)->kind == T_STAR);
+    if (leading_star) {
+        tok_pos++;
+        first = parse_seq_star();
+    } else {
+        first = parse_pattern_or();
+    }
+    if (!leading_star && peek_tok(0)->kind != T_COMMA) return first;
+    int children[64]; int nc = 0;
+    children[nc++] = first;
+    while (match_tok(T_COMMA)) {
+        int kk = peek_tok(0)->kind;
+        if (kk == T_COLON || kk == T_IF) break;
+        if (kk == T_STAR) {
+            tok_pos++;
+            if (nc >= 64) parse_error("seq pattern too long");
+            children[nc++] = parse_seq_star();
+        } else {
+            if (nc >= 64) parse_error("seq pattern too long");
+            children[nc++] = parse_pattern_or();
+        }
+    }
+    int base = (int)pys_patterns_len;
+    for (int i = 0; i < nc; i++) {
+        struct pyspat copy = PYS_PATTERNS[children[i]];
+        pat_alloc(copy);
+    }
+    struct pyspat p = {0};
+    p.kind = PYPAT_SEQUENCE;
+    p.first_child = base;
+    p.nchildren = nc;
+    return pat_alloc(p);
+}
+
 static NODE *
 parse_match(void)
 {
     // Caller already verified peek(0) is the NAME "match".
     tok_pos++;
     NODE *subject = parse_expr();
+    if (peek_tok(0)->kind == T_COMMA) {
+        // Open-tuple subject: `match x, y, z:` / `match x,:`.
+        NODE *items[64];
+        int n = 0;
+        items[n++] = subject;
+        while (match_tok(T_COMMA)) {
+            if (peek_tok(0)->kind == T_COLON) break;
+            if (n >= 64) parse_error("tuple subject too long");
+            items[n++] = parse_expr();
+        }
+        size_t base = node_table_reserve(items, n);
+        subject = ALLOC_node_make_tuple((uint32_t)base, (uint32_t)n);
+    }
     expect(T_COLON, "':'");
     expect(T_NEWLINE, "newline");
     expect(T_INDENT, "indent");
@@ -3665,7 +3764,7 @@ parse_match(void)
     while (peek_tok(0)->kind == T_NAME &&
            peek_tok(0)->sval == intern_name("case", 4)) {
         tok_pos++;
-        int pat = parse_pattern_or();
+        int pat = parse_case_pattern();
         NODE *guard = NULL;
         if (match_tok(T_IF)) guard = parse_expr();
         NODE *body = parse_suite();

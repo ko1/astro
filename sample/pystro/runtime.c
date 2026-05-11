@@ -7209,6 +7209,8 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
       }
       case PYPAT_MAPPING: {
         if (!pys_is_dict(v)) return false;
+        VALUE matched_keys[64];
+        int nm = 0;
         for (int i = 0; i < p->nchildren; i++) {
             VALUE key = EVAL(c, p->keys[i]);
             if (UNLIKELY(!key)) return false;
@@ -7216,6 +7218,24 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
             VALUE val = pys_dict_get(c, v, key);
             if (UNLIKELY(!val)) return false;
             if (!pys_pat_match(c, p->first_child + i, val)) return false;
+            if (nm < 64) matched_keys[nm++] = key;
+        }
+        // **rest capture: collect remaining keys into a new dict.
+        if (p->rest_slot != -2 || p->rest_name) {
+            VALUE rest = pys_make_dict();
+            struct pysdict *d = PYS_PTR(v)->dict;
+            for (size_t i = 0; i < d->elen; i++) {
+                VALUE k = d->entries[i].key;
+                if (k == 0 || k == DICT_DELETED_KEY) continue;
+                bool seen = false;
+                for (int j = 0; j < nm; j++) {
+                    if (pys_eq(c, k, matched_keys[j]) == PYS_TRUE) { seen = true; break; }
+                }
+                if (!seen) pys_dict_set(c, rest, k, d->entries[i].value);
+            }
+            if (p->rest_slot >= 0)        c->env->slots[p->rest_slot] = rest;
+            else if (p->rest_name)        pys_global_set(c, p->rest_name, rest);
+            // rest_slot == -1 && rest_name == NULL → **_ wildcard (no bind).
         }
         return true;
       }
