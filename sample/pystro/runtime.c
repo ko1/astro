@@ -1758,6 +1758,10 @@ pys_mul(CTX *c, VALUE a, VALUE b)
     if ((pys_is_list(a) || pys_is_tuple(a)) && pys_int_or_bool(b)) {
         int64_t k = PYS_IS_FIXNUM(b) ? PYS_FIXVAL(b) : (b == PYS_TRUE ? 1 : 0);
         if (k <= 0) return pys_is_list(a) ? pys_make_list(NULL, 0) : pys_make_tuple(NULL, 0);
+        // CPython optimization: tuple * 1 returns the same tuple (immutable).
+        // `id(t) == id(t*1)` is expected to hold (seq_tests.test_repeat).
+        // For lists, * 1 still creates a copy (lists are mutable).
+        if (k == 1 && pys_is_tuple(a)) return a;
         size_t la = PYS_PTR(a)->list.len;
         size_t total = la * (size_t)k;
         VALUE *items = (VALUE *)alloca(sizeof(VALUE) * (total + 1));
