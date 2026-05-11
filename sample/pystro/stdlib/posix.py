@@ -365,6 +365,16 @@ class stat_result(tuple):
     def st_mtime(self): return self[8]
     @property
     def st_ctime(self): return self[9]
+    @property
+    def st_atime_ns(self): return int(self[7] * 1_000_000_000)
+    @property
+    def st_mtime_ns(self): return int(self[8] * 1_000_000_000)
+    @property
+    def st_ctime_ns(self): return int(self[9] * 1_000_000_000)
+    @property
+    def st_birthtime(self): return self[8]
+    @property
+    def st_birthtime_ns(self): return int(self[8] * 1_000_000_000)
 
 
 # Lots of CPython internal helpers tests call without using output.
