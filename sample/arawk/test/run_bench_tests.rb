@@ -6,6 +6,7 @@
 # byte-for-byte.
 
 require 'open3'
+require 'fileutils'
 
 ROOT     = File.expand_path('..', __dir__)
 BIN      = File.join(ROOT, 'arawk')
@@ -34,9 +35,19 @@ SKIP = {
   'tt.big_complex_program'   => 'regex (the rest works)',
 }
 
+# arawk runs in both `--plain` (no AOT) and AOT-baked mode.  AOT
+# regressions show up when SD-specialised dispatchers produce different
+# output from the plain interpreter — exactly the surface we care about.
+MODES = [
+  ['plain', ['--plain']],
+  ['aot',   ['-c', '--ccs']],
+]
+
 tests = Dir.glob("#{TESTDATA}/tt.*").sort
 pass  = fail = skipped = 0
 failures = []
+
+start = Time.now
 
 tests.each do |path|
   name = File.basename(path)
@@ -47,48 +58,60 @@ tests.each do |path|
   end
 
   want, _, st_gawk = Open3.capture3('gawk', '-f', path, INPUT)
-  got,  err, st_arawk = Open3.capture3(BIN, '--plain', '-f', path, INPUT)
   if st_gawk.exitstatus != 0
     skipped += 1
     puts format('  SKIP %-30s (gawk error)', name)
     next
   end
 
-  if got == want && st_arawk.exitstatus == 0
+  outcomes = MODES.map do |mode, flags|
+    # `-c` writes a per-mode code_store; isolate them so plain runs
+    # don't pick up an AOT artefact and vice-versa.
+    Dir.chdir(ROOT) do
+      got, err, st = Open3.capture3(BIN, *flags, '-f', path, INPUT)
+      [mode, got, err, st.exitstatus]
+    end
+  end
+
+  bad = outcomes.reject { |mode, got, err, ec| got == want && ec == 0 }
+  if bad.empty?
     pass += 1
     puts format('  ok   %-30s', name)
   else
     fail += 1
-    puts format('  NG   %-30s', name)
-    failures << [name, want, got, err, st_arawk.exitstatus]
+    puts format('  NG   %-30s  (failed in: %s)', name, bad.map(&:first).join(', '))
+    failures << [name, want, outcomes]
   end
 end
+
+elapsed = Time.now - start
 
 if fail > 0
   puts
   puts '=== failures ==='
-  failures.each do |name, want, got, err, ec|
-    puts "--- #{name} (arawk exit=#{ec}) ---"
-    if err && !err.empty?
-      puts "stderr: #{err[0, 400]}"
-    end
-    if got.lines.length > 5 || want.lines.length > 5
-      puts "diff (first 3 lines):"
-      require 'tempfile'
-      Tempfile.create('want') do |fa|
-        Tempfile.create('got') do |fb|
-          fa.write(want); fa.flush
-          fb.write(got);  fb.flush
-          puts `diff #{fa.path} #{fb.path} | head -6`
+  require 'tempfile'
+  failures.each do |name, want, outcomes|
+    outcomes.each do |mode, got, err, ec|
+      next if got == want && ec == 0
+      puts "--- #{name} (#{mode}, exit=#{ec}) ---"
+      puts "stderr: #{err[0, 400]}" if err && !err.empty?
+      if got.lines.length > 5 || want.lines.length > 5
+        Tempfile.create('want') do |fa|
+          Tempfile.create('got') do |fb|
+            fa.write(want); fa.flush
+            fb.write(got);  fb.flush
+            puts "diff (first 4 lines):"
+            puts `diff #{fa.path} #{fb.path} | head -4`
+          end
         end
+      else
+        puts "want: #{want.inspect}"
+        puts "got:  #{got.inspect}"
       end
-    else
-      puts "want: #{want.inspect}"
-      puts "got:  #{got.inspect}"
     end
   end
 end
 
 puts
-puts "#{pass}/#{pass + fail} pass, #{skipped} skipped (#{SKIP.size} features pending)"
+puts "#{pass}/#{pass + fail} pass (#{MODES.size} modes each), #{skipped} skipped (#{SKIP.size} features pending)  (#{'%.2f' % elapsed}s)"
 exit(fail == 0 ? 0 : 1)

@@ -1041,11 +1041,14 @@ arawk_node_call_user(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, c
     // Remaining slots: UNINIT (acts as "" or 0 in arith context).
     for (uint32_t i = fill; i < ARAWK_FRAME_MAX; i++) F[i] = AWK_UNINIT;
     RESULT r = EVAL(c, body, F);
-    // `return` lands as RESULT_RETURN with the value; everything else
-    // (RESULT_NORMAL or stray break/continue) yields 0 to the caller.
+    // `return` lands as RESULT_RETURN with the value; everything
+    // else (fell off the end / stray break/continue) yields the
+    // UNINIT sentinel — which prints as "" and numerically coerces
+    // to 0, matching gawk's "function with no return" semantics
+    // (so `print noret(5) "x"` outputs "x", not "0x").
     if (r.state == RESULT_RETURN) return RESULT_OK(r.value);
     if (r.state == RESULT_EXIT)   return r;   // propagate exit through the call
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(AWK_UNINIT);
 }
 
 // ---------------------------------------------------------------------------
