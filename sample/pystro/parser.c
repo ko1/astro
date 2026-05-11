@@ -2250,6 +2250,7 @@ parse_postfix(void)
     if (super_short_circuit) {
         int n_commas = 0;
         int depth_s = 1;
+        bool has_kwarg = false;
         for (size_t p = tok_pos + 2; depth_s > 0; p++) {
             int kk = tok_arr[p].kind;
             if (kk == T_EOF) break;
@@ -2259,8 +2260,12 @@ parse_postfix(void)
                 if (depth_s == 0) break;
             }
             else if (depth_s == 1 && kk == T_COMMA) n_commas++;
+            // `super(C, kw=1)` — kwargs at top level mean the call should
+            // go through the generic call path (which then raises TypeError
+            // at runtime, matching CPython).
+            else if (depth_s == 1 && kk == T_ASSIGN) has_kwarg = true;
         }
-        if (n_commas > 1) super_short_circuit = false;
+        if (n_commas > 1 || has_kwarg) super_short_circuit = false;
     }
     if (super_short_circuit) {
         // Distinguish bare super() vs super(C, self) vs super(C).
