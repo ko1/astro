@@ -9660,11 +9660,47 @@ static struct type_method frozenset_methods[] = {
 static VALUE
 bm_decode(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
-    // ASCII-equivalent passthrough — pystro doesn't distinguish UTF-8
-    // from raw bytes at the str level.  Encoding arg (if any) ignored.
+    (void)c;
     struct pysobj *o = PYS_PTR(argv[0]);
-    return pys_make_str(o->str.chars, o->str.len);
+    // Pystro stores str internally as UTF-8.  bytes whose source is
+    // already UTF-8 are a direct passthrough; latin-1 / ascii with
+    // bytes >= 0x80 need to be re-encoded so `b'\xc1'.decode('latin-1')`
+    // equals `'\xc1'` (str literal).
+    bool is_latin1 = false;
+    if (argc >= 2 && pys_is_str(argv[1])) {
+        const char *enc = PYS_PTR(argv[1])->str.chars;
+        if (strcasecmp(enc, "latin-1") == 0 || strcasecmp(enc, "latin_1") == 0
+            || strcasecmp(enc, "iso-8859-1") == 0
+            || strcasecmp(enc, "iso8859-1") == 0
+            || strcasecmp(enc, "ascii") == 0) {
+            is_latin1 = true;
+        }
+    }
+    if (!is_latin1) {
+        return pys_make_str(o->str.chars, o->str.len);
+    }
+    // Count high bytes to know the output size.
+    size_t out_len = 0;
+    for (size_t i = 0; i < o->str.len; i++) {
+        unsigned char b = (unsigned char)o->str.chars[i];
+        out_len += (b < 0x80) ? 1 : 2;
+    }
+    if (out_len == o->str.len) {
+        // Pure ASCII — no transcoding needed.
+        return pys_make_str(o->str.chars, o->str.len);
+    }
+    char *buf = (char *)GC_malloc_atomic(out_len + 1);
+    size_t j = 0;
+    for (size_t i = 0; i < o->str.len; i++) {
+        unsigned char b = (unsigned char)o->str.chars[i];
+        if (b < 0x80) buf[j++] = (char)b;
+        else {
+            buf[j++] = (char)(0xC0 | (b >> 6));
+            buf[j++] = (char)(0x80 | (b & 0x3F));
+        }
+    }
+    buf[out_len] = '\0';
+    return pys_make_str(buf, out_len);
 }
 
 static VALUE
