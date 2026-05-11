@@ -265,7 +265,16 @@ peek(int off) { return src_buf[src_pos + off]; }
 static void read_string_lit_raw(int line, char quote, bool is_fstr);
 
 static void
+read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes);
+
+static void
 read_string_lit(int line, char quote, bool is_fstr)
+{
+    read_string_lit_impl(line, quote, is_fstr, false);
+}
+
+static void
+read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
 {
     src_pos++;
     // Triple-quoted string: matches `quote quote ...` at start.
@@ -333,10 +342,19 @@ read_string_lit(int line, char quote, bool is_fstr)
                        : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
                        : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
                 if (hh < 0 || ll < 0) lex_error("invalid \\x escape");
-                ch = (char)((hh << 4) | ll);
-                src_pos += 2;        // already past 'x' via outer src_pos++
-                if (len + 2 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
-                buf[len++] = ch;
+                unsigned cp = (unsigned)((hh << 4) | ll);
+                src_pos += 2;
+                // Bytes literals (b"...") keep the raw byte; str literals
+                // are Unicode strings whose internal encoding is UTF-8 —
+                // emit the proper UTF-8 sequence for cp >= 0x80.
+                if (is_bytes || cp < 0x80) {
+                    if (len + 2 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = (char)cp;
+                } else {
+                    if (len + 3 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = (char)(0xC0 | (cp >> 6));
+                    buf[len++] = (char)(0x80 | (cp & 0x3F));
+                }
                 continue;
               }
               case 'u':
@@ -693,7 +711,7 @@ tokenize(const char *src, const char *filename)
                 int line = src_line;
                 src_pos += look;
                 if (p_raw) read_string_lit_raw(line, peek(0), p_fstr);
-                else       read_string_lit(line, peek(0), p_fstr);
+                else       read_string_lit_impl(line, peek(0), p_fstr, p_bytes);
                 if (p_bytes) tok_last()->kind = T_BYTES;
                 continue;
             }
