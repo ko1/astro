@@ -959,6 +959,20 @@ static const char *new_temp_name(const char *prefix);
 static NODE *build_temp_init(const char *tmp, NODE *init_expr, NODE **out_load);
 static NODE *parse_comp_clauses(NODE *inner_body);
 
+// Returns true if the current token starts a comprehension `for` clause
+// (either bare `for` or `async for`).  Used by comprehension entry
+// points so genexp / setcomp / dictcomp accept the same async form
+// list comprehension does.
+static bool
+at_comp_for(void)
+{
+    if (peek_tok(0)->kind == T_FOR) return true;
+    if (peek_tok(0)->kind == T_NAME
+        && peek_tok(0)->sval == intern_name("async", 5)
+        && peek_tok(1)->kind == T_FOR) return true;
+    return false;
+}
+
 // Helper: register a comp loop-target name with a synthetic local slot
 // AND push a (orig → synth) remap so make_load/make_store inside the
 // comp body resolves the user-visible name to the synthetic slot.
@@ -1183,6 +1197,14 @@ parse_genexp_lazy(int saved_remap_at_paren)
     prescan_comp_targets(T_RPAREN);
 
     NODE *first = parse_expr();
+    // Skip an optional `async` keyword before the leading `for`
+    // (asyncgenexp: `(expr async for x in xs)`).  Pystro doesn't
+    // distinguish async-iter semantics; treat as sync iteration.
+    if (peek_tok(0)->kind == T_NAME
+        && peek_tok(0)->sval == intern_name("async", 5)
+        && peek_tok(1)->kind == T_FOR) {
+        tok_pos++;
+    }
     if (peek_tok(0)->kind != T_FOR) {
         // Should not happen — caller verified genexp lookahead.
         cur_scope = parent_scope;
@@ -1602,7 +1624,7 @@ parse_dict_or_set_literal(void)
     if (peek_tok(0)->kind == T_COLON) {
         tok_pos++;
         NODE *first_v = parse_expr();
-        if (peek_tok(0)->kind == T_FOR) {
+        if (at_comp_for()) {
             const char *tmp = new_temp_name("__dc");
             NODE *load_tmp;
             size_t empty_idx = node_table_reserve(NULL, 0);
@@ -1632,7 +1654,7 @@ parse_dict_or_set_literal(void)
         return ALLOC_node_make_dict((uint32_t)base, (uint32_t)npairs);
     }
     // Set literal / set comprehension.
-    if (peek_tok(0)->kind == T_FOR) {
+    if (at_comp_for()) {
         const char *tmp = new_temp_name("__sc");
         NODE *load_tmp;
         size_t empty_idx = node_table_reserve(NULL, 0);
@@ -2173,7 +2195,7 @@ parse_dot_trailer(NODE *obj)
                 if (argc == 0) prescan_comp_targets(T_RPAREN);
                 NODE *e = parse_expr();
                 // Implicit generator-expression as sole argument.
-                if (peek_tok(0)->kind == T_FOR && argc == 0) {
+                if (at_comp_for() && argc == 0) {
                     const char *tmp = new_temp_name("__ge");
                     NODE *load_tmp;
                     size_t empty_idx = node_table_reserve(NULL, 0);
