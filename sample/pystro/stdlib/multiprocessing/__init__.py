@@ -170,5 +170,19 @@ import types as _types
 _conn_mod = _types.ModuleType("multiprocessing.connection")
 _conn_mod.Listener = None
 _conn_mod.Client = None
+class _ListenerStub:
+    def __init__(self, *args, **kwargs): pass
+    def accept(self): raise NotImplementedError
+    def close(self): pass
+class _ClientStub:
+    def __init__(self, *args, **kwargs): pass
+_conn_mod.Listener = _ListenerStub
+_conn_mod.Client = _ClientStub
+_conn_mod.XmlListener = _ListenerStub
+_conn_mod.XmlClient = _ClientStub
+_conn_mod.AuthenticationError = AuthenticationError
+_conn_mod.BufferTooShort = BufferTooShort
+_conn_mod.deliver_challenge = lambda *a, **k: None
+_conn_mod.answer_challenge = lambda *a, **k: None
 _sys.modules['multiprocessing.connection'] = _conn_mod
 connection = _conn_mod

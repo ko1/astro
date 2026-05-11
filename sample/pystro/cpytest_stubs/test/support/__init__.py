@@ -960,7 +960,11 @@ def iter_slot_wrappers(cls):
     return iter(())
 
 
-def requires_venv_with_pip(fn):
+def requires_venv_with_pip(fn=None):
+    # Used as both `@requires_venv_with_pip` (no parens) and
+    # `@requires_venv_with_pip()` (with parens).
+    if fn is None:
+        return lambda f: _unittest.skip("venv/pip not supported")(f)
     return _unittest.skip("venv/pip not supported")(fn)
 
 
