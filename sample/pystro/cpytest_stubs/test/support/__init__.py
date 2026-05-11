@@ -685,7 +685,58 @@ import builtins as _b
 _b.frozendict = frozendict
 
 
-# Eagerly import sub-modules so `test.support.os_helper.X` works.
+# Recursion-related constants used by test_call, test_descr,
+# test_compile etc.  CPython picks these per-build; pystro uses a
+# single moderate default.
+C_RECURSION_LIMIT = 1500
+try:
+    EXCEEDS_RECURSION_LIMIT = sys.getrecursionlimit() + 1000
+except Exception:
+    EXCEEDS_RECURSION_LIMIT = 11000
+
+
+def run_with_locales(catstr, *locales):
+    """No-op @decorator factory (pystro has minimal locale support)."""
+    def deco(fn):
+        return fn
+    return deco
+
+
+def run_code(code):
+    """Return a globals dict after exec'ing ``code``."""
+    ns = {"__name__": "<run_code>"}
+    exec(code, ns)
+    return ns
+
+
+def requires_legacy_unicode_capi():
+    return _unittest.skip("legacy unicode CAPI not available in pystro")
+
+
+def check_sizeof(test, o, size):
+    """No-op stub.  Pystro does not expose CPython's per-object sizeof
+    layout, so the assertions can't be made byte-for-byte."""
+    return None
+
+
+class SaveSignals:
+    """Context manager that saves/restores SIGINT etc.  Pystro has no
+    signal delivery model so the body is a pass-through."""
+    def save(self): pass
+    def restore(self): pass
+    def __enter__(self): return self
+    def __exit__(self, *exc): return False
+
+
+# `interpreters` — CPython 3.13+ subinterpreters submodule.  Pystro is
+# single-interpreter; expose a sentinel-only stub so attribute access /
+# isinstance probes don't crash.
+class _InterpStub:
+    def create(self, *a, **kw):
+        raise _unittest.SkipTest("subinterpreters not supported")
+    def get_current(self, *a, **kw):
+        raise _unittest.SkipTest("subinterpreters not supported")
+interpreters = _InterpStub()
 from test.support import os_helper
 from test.support import import_helper
 from test.support import warnings_helper

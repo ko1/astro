@@ -550,6 +550,11 @@ typedef struct CTX_struct {
     VALUE EXC_NotImplementedError;
     VALUE EXC_OSError;
     VALUE EXC_FileNotFoundError;
+    VALUE EXC_FileExistsError;
+    VALUE EXC_ProcessLookupError;
+    VALUE EXC_ConnectionAbortedError;
+    VALUE EXC_ConnectionRefusedError;
+    VALUE EXC_ConnectionResetError;
     VALUE EXC_OverflowError;
     VALUE EXC_ArithmeticError;
     VALUE EXC_BaseException;
@@ -607,6 +612,8 @@ typedef struct CTX_struct {
     X(SyntaxError) X(IndentationError) X(TabError) \
     X(TypeError) X(ValueError) X(UnicodeError) X(UnicodeDecodeError) \
     X(UnicodeEncodeError) X(ReferenceError) X(OSError) X(FileNotFoundError) \
+    X(FileExistsError) X(ProcessLookupError) X(ConnectionAbortedError) \
+    X(ConnectionRefusedError) X(ConnectionResetError) \
     X(PermissionError) X(NotADirectoryError) X(IsADirectoryError) \
     X(TimeoutError) X(BrokenPipeError) X(InterruptedError) \
     X(ConnectionError) X(BlockingIOError) X(ChildProcessError) \

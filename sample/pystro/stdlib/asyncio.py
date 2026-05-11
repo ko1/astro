@@ -100,6 +100,25 @@ class Queue:
     def qsize(self): return len(self._items)
 
 
+def iscoroutinefunction(fn):
+    """Pystro treats `async def` as a regular generator function; if
+    `fn.is_async` is reachable, use it; otherwise heuristic-check
+    whether the function was declared with `async def`."""
+    flag = getattr(fn, "is_async", None)
+    if flag is not None:
+        return bool(flag)
+    return getattr(fn, "_is_coroutine", False)
+
+
+def iscoroutine(obj):
+    return iscoroutinefunction(obj) or (
+        hasattr(obj, "send") and hasattr(obj, "throw") and hasattr(obj, "close"))
+
+
+def isfuture(obj):
+    return False
+
+
 def get_event_loop():
     return _DummyLoop()
 
@@ -115,3 +134,19 @@ __all__ = [
     "Lock", "Event", "Queue",
     "get_event_loop",
 ]
+
+
+# Various stdlib / test modules access `asyncio.staggered` even though
+# they never invoke it (e.g. probing the module surface).  Pystro is
+# sync-only so the racer can't actually do anything useful; expose a
+# stub object whose attribute access succeeds.
+class _StaggeredStub:
+    def staggered_race(self, coro_fns, delay, *, loop=None):
+        for fn in coro_fns:
+            try:
+                v = fn() if callable(fn) else fn
+                return v, 0, [None] * len(coro_fns)
+            except Exception:
+                continue
+        return None, None, []
+staggered = _StaggeredStub()

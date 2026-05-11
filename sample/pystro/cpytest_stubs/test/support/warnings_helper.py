@@ -34,5 +34,23 @@ def ignore_warnings(*, category):
     return deco
 
 
+def import_deprecated(name):
+    """Replacement for warnings_helper.import_deprecated — pystro just
+    does a plain __import__ and ignores DeprecationWarning categories
+    (which pystro doesn't enforce anyway)."""
+    return __import__(name)
+
+
+class save_restore_warnings_filters:
+    """Context manager that saves/restores warnings.filters."""
+    def __enter__(self):
+        self._saved = list(warnings.filters)
+        return self
+    def __exit__(self, *exc):
+        warnings.filters[:] = self._saved
+        return False
+
+
 __all__ = ["check_warnings", "check_no_warnings", "ignore_warnings",
-           "WarningsRecorder"]
+           "WarningsRecorder", "import_deprecated",
+           "save_restore_warnings_filters"]

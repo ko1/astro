@@ -33,6 +33,11 @@ def interpreter_requires_environment():
     return False
 
 
+def run_test_script(*args, **kwargs):
+    """Stub: pystro can't shell out to a child interpreter."""
+    raise unittest.SkipTest("subprocess not supported")
+
+
 __all__ = ["assert_python_ok", "assert_python_failure", "run_python_until_end",
            "spawn_python", "kill_python", "make_script", "make_zip_script",
-           "interpreter_requires_environment"]
+           "interpreter_requires_environment", "run_test_script"]

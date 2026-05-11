@@ -13777,6 +13777,20 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // pure-Python stub provides the public surface used by
         // urllib.parse / shutil / pathlib chains.
         "ipaddress.py",
+        // asyncio — CPython's is a multi-file package (base_events
+        // pulls in selector_events + _overlapped on Windows etc.) and
+        // relies on real coroutines.  Pystro is sync-only; the bundled
+        // single-file stub covers `asyncio.run` / `gather` / Lock /
+        // Queue / staggered well enough for test-suite import-time.
+        "asyncio.py",
+        // unittest — CPython's is a package whose mock.py and async_case
+        // submodules pull on real coroutines / descriptor edge cases
+        // pystro can't replicate.  Pystro ships a small package
+        // (stdlib/unittest/) with __init__.py providing TestCase and
+        // mock.py providing the API surface used by `from unittest
+        // import mock` / `from unittest.mock import MagicMock`.
+        "unittest.py",
+        "unittest/mock.py",
         NULL,
     };
     bool pystro_wins = false;
@@ -15561,13 +15575,18 @@ install_builtins(CTX *c)
     c->EXC_ModuleNotFoundError= pys_make_class("ModuleNotFoundError", c->EXC_ImportError, true);
     c->EXC_OSError           = pys_make_class("OSError",          c->EXC_Exception, true);
     c->EXC_FileNotFoundError = pys_make_class("FileNotFoundError",c->EXC_OSError, true);
+    c->EXC_FileExistsError   = pys_make_class("FileExistsError",  c->EXC_OSError, true);
     c->EXC_PermissionError   = pys_make_class("PermissionError",  c->EXC_OSError, true);
     c->EXC_NotADirectoryError= pys_make_class("NotADirectoryError",c->EXC_OSError, true);
     c->EXC_IsADirectoryError = pys_make_class("IsADirectoryError",c->EXC_OSError, true);
     c->EXC_TimeoutError      = pys_make_class("TimeoutError",     c->EXC_OSError, true);
     c->EXC_BrokenPipeError   = pys_make_class("BrokenPipeError",  c->EXC_OSError, true);
     c->EXC_InterruptedError  = pys_make_class("InterruptedError", c->EXC_OSError, true);
+    c->EXC_ProcessLookupError= pys_make_class("ProcessLookupError",c->EXC_OSError, true);
     c->EXC_ConnectionError   = pys_make_class("ConnectionError",  c->EXC_OSError, true);
+    c->EXC_ConnectionAbortedError = pys_make_class("ConnectionAbortedError", c->EXC_ConnectionError, true);
+    c->EXC_ConnectionRefusedError = pys_make_class("ConnectionRefusedError", c->EXC_ConnectionError, true);
+    c->EXC_ConnectionResetError   = pys_make_class("ConnectionResetError",   c->EXC_ConnectionError, true);
     c->EXC_BlockingIOError   = pys_make_class("BlockingIOError",  c->EXC_OSError, true);
     c->EXC_ChildProcessError = pys_make_class("ChildProcessError",c->EXC_OSError, true);
     c->EXC_UnicodeError      = pys_make_class("UnicodeError",     c->EXC_ValueError, true);
@@ -15599,6 +15618,11 @@ install_builtins(CTX *c)
     pys_global_define(c, "OverflowError",        c->EXC_OverflowError);
     pys_global_define(c, "OSError",              c->EXC_OSError);
     pys_global_define(c, "FileNotFoundError",    c->EXC_FileNotFoundError);
+    pys_global_define(c, "FileExistsError",      c->EXC_FileExistsError);
+    pys_global_define(c, "ProcessLookupError",   c->EXC_ProcessLookupError);
+    pys_global_define(c, "ConnectionAbortedError", c->EXC_ConnectionAbortedError);
+    pys_global_define(c, "ConnectionRefusedError", c->EXC_ConnectionRefusedError);
+    pys_global_define(c, "ConnectionResetError",   c->EXC_ConnectionResetError);
     pys_global_define(c, "IOError",              c->EXC_OSError);    // alias
     pys_global_define(c, "EnvironmentError",     c->EXC_OSError);    // alias
     pys_global_define(c, "BaseException",        c->EXC_BaseException);
@@ -15655,6 +15679,10 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_modules__",
         pys_make_builtin("__pystro_modules__", bi_modules, 0, 0));
     pys_global_define(c, "__name__",             pys_make_str("__main__", 8));
+    // CPython 3.x exposes __debug__ unconditionally as True (False only
+    // when started with `-O`).  Several stdlib modules (incl. test/.) read
+    // it module-level; absence triggers NameError at parse-time eval.
+    pys_global_define(c, "__debug__",            PYS_TRUE);
     pys_global_define(c, "__pystro_import_star__", pys_make_builtin("__pystro_import_star__", bi_import_star, 1, 1));
     // C-level math primitives, surfaced through the `math` module (math.py).
     pys_global_define(c, "__pystro_sqrt__",  pys_make_builtin("__pystro_sqrt__",  bi_pystro_sqrt,  1, 1));

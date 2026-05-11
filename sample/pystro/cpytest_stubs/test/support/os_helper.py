@@ -135,5 +135,10 @@ def calling_clean_temp_dir(*a, **kw):
     pass
 
 
+# Non-ASCII filesystem character for filename-encoding tests.  CPython
+# probes os.fsencode for a usable char; pystro hardcodes a safe default.
+FS_NONASCII = "\xe9"
+
+
 __all__ = ["TESTFN", "unlink", "rmtree", "can_symlink", "skip_unless_symlink",
-           "create_empty_file", "EnvironmentVarGuard"]
+           "create_empty_file", "EnvironmentVarGuard", "FS_NONASCII"]
