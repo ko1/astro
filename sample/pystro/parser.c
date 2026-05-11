@@ -2229,9 +2229,29 @@ parse_dot_trailer(NODE *obj)
 static NODE *
 parse_postfix(void)
 {
-    // `super()` and `super(C, self)` short-circuit.
-    if (peek_tok(0)->kind == T_NAME && peek_tok(0)->sval == intern_name("super", 5)
-            && peek_tok(1)->kind == T_LPAREN) {
+    // `super()` and `super(C, self)` short-circuit.  3+ args (e.g.
+    // `super(int, int, int)` in test_super.test_super_argcount) is
+    // invalid at runtime but must parse — fall through to the generic
+    // call path by computing comma count first.
+    bool super_short_circuit = (peek_tok(0)->kind == T_NAME
+            && peek_tok(0)->sval == intern_name("super", 5)
+            && peek_tok(1)->kind == T_LPAREN);
+    if (super_short_circuit) {
+        int n_commas = 0;
+        int depth_s = 1;
+        for (size_t p = tok_pos + 2; depth_s > 0; p++) {
+            int kk = tok_arr[p].kind;
+            if (kk == T_EOF) break;
+            if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth_s++;
+            else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) {
+                depth_s--;
+                if (depth_s == 0) break;
+            }
+            else if (depth_s == 1 && kk == T_COMMA) n_commas++;
+        }
+        if (n_commas > 1) super_short_circuit = false;
+    }
+    if (super_short_circuit) {
         // Distinguish bare super() vs super(C, self) vs super(C).
         bool bare = (peek_tok(2)->kind == T_RPAREN);
         NODE *cls_expr = NULL, *self_expr = NULL;
