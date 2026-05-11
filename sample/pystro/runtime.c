@@ -11915,7 +11915,19 @@ bi_open(CTX *c, int argc, VALUE *argv)
     char *pbuf = (char *)alloca(L + 1);
     memcpy(pbuf, PYS_PTR(argv[0])->str.chars, L); pbuf[L] = '\0';
     FILE *fp = fopen(pbuf, libcmode);
-    if (!fp) PYS_RAISE_EXC(c, c->EXC_RuntimeError, "open: cannot open '%s'", pbuf);
+    if (!fp) {
+        VALUE cls;
+        switch (errno) {
+          case ENOENT:   cls = c->EXC_FileNotFoundError; break;
+          case EISDIR:   cls = c->EXC_IsADirectoryError; break;
+          case ENOTDIR:  cls = c->EXC_NotADirectoryError; break;
+          case EACCES:
+          case EPERM:    cls = c->EXC_PermissionError;   break;
+          case EEXIST:   cls = c->EXC_FileExistsError;   break;
+          default:       cls = c->EXC_OSError;           break;
+        }
+        PYS_RAISE_EXC(c, cls, "[Errno %d] %s: '%s'", errno, strerror(errno), pbuf);
+    }
     struct pysobj *o = pys_alloc(PYS_T_FILE);
     o->file.fp = fp;
     o->file.path = (char *)GC_malloc_atomic(L + 1);
