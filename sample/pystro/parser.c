@@ -4559,10 +4559,13 @@ skip_plain_unpack: ;
     }
 
     if (is_aug_assign(k2)) {
-        // CPython forbids tuple / list LHS for augmented assignment:
-        // `(a, b) += 1` / `[a] -= 2` are SyntaxError, not runtime.
-        // Detect the leading `(` or `[` form by peeking at lhs_start
-        // (the token where the LHS expression begins).
+        // CPython forbids tuple / list / set / dict LHS for augmented
+        // assignment: `(a, b) += 1` / `[a] -= 2` / `{x for ...} += 1` /
+        // `{x:y for ...} += 1` are SyntaxError, not runtime.  Detect the
+        // leading `(` / `[` / `{` form by peeking at lhs_start.
+        if ((&tok_arr[lhs_start])->kind == T_LBRACE) {
+            parse_error("'literal' is an illegal expression for augmented assignment");
+        }
         if ((&tok_arr[lhs_start])->kind == T_LPAREN ||
             (&tok_arr[lhs_start])->kind == T_LBRACK) {
             // It's only a tuple / list pattern if it would have parsed
