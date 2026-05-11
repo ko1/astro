@@ -14,7 +14,7 @@
 // Singletons.
 // ---------------------------------------------------------------------------
 
-struct awk_obj AWK_UNINIT_OBJ = { .type = AWK_T_UNINIT };
+struct awk_obj ARAWK_UNINIT_OBJ = { .type = ARAWK_T_UNINIT };
 
 CTX *ARAWK_CURRENT_CTX = NULL;
 
@@ -34,15 +34,15 @@ arawk_alloc(int type)
 VALUE
 arawk_make_float(double d)
 {
-    struct awk_obj *o = arawk_alloc(AWK_T_FLOAT);
+    struct awk_obj *o = arawk_alloc(ARAWK_T_FLOAT);
     o->dbl = d;
-    return AWK_OBJ_VAL(o);
+    return ARAWK_OBJ_VAL(o);
 }
 
 VALUE
 arawk_make_int(int64_t v)
 {
-    if (v >= AWK_FIX_MIN && v <= AWK_FIX_MAX) return AWK_FIX(v);
+    if (v >= ARAWK_FIX_MIN && v <= ARAWK_FIX_MAX) return ARAWK_FIX(v);
     return arawk_make_float((double)v);
 }
 
@@ -55,20 +55,20 @@ arawk_make_string_typed(const char *s, size_t len, int type)
     buf[len] = '\0';
     o->str.chars = buf;
     o->str.len   = len;
-    return AWK_OBJ_VAL(o);
+    return ARAWK_OBJ_VAL(o);
 }
 
-VALUE arawk_make_string(const char *s, size_t len) { return arawk_make_string_typed(s, len, AWK_T_STRING); }
-VALUE arawk_make_strnum(const char *s, size_t len) { return arawk_make_string_typed(s, len, AWK_T_STRNUM); }
+VALUE arawk_make_string(const char *s, size_t len) { return arawk_make_string_typed(s, len, ARAWK_T_STRING); }
+VALUE arawk_make_strnum(const char *s, size_t len) { return arawk_make_string_typed(s, len, ARAWK_T_STRNUM); }
 
 VALUE
 arawk_make_array(void)
 {
-    struct awk_obj *o = arawk_alloc(AWK_T_ARRAY);
+    struct awk_obj *o = arawk_alloc(ARAWK_T_ARRAY);
     o->arr.bucket_cnt = 16;
     o->arr.buckets = (struct awk_array_entry **)GC_malloc(sizeof(struct awk_array_entry *) * 16);
     o->arr.entry_cnt = 0;
-    return AWK_OBJ_VAL(o);
+    return ARAWK_OBJ_VAL(o);
 }
 
 // ---------------------------------------------------------------------------
@@ -81,13 +81,13 @@ arawk_make_array(void)
 double
 arawk_to_num(VALUE v)
 {
-    if (LIKELY(AWK_IS_FIX(v))) return (double)AWK_FIX_VAL(v);
-    if (v == AWK_UNINIT) return 0.0;
-    struct awk_obj *o = AWK_PTR(v);
+    if (LIKELY(ARAWK_IS_FIX(v))) return (double)ARAWK_FIX_VAL(v);
+    if (v == ARAWK_UNINIT) return 0.0;
+    struct awk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
-      case AWK_T_FLOAT:  return o->dbl;
-      case AWK_T_STRING:
-      case AWK_T_STRNUM: {
+      case ARAWK_T_FLOAT:  return o->dbl;
+      case ARAWK_T_STRING:
+      case ARAWK_T_STRNUM: {
         if (o->str.len == 0) return 0.0;
         // strtod recognises "inf" / "infinity" / "nan" as their
         // special floating-point values (C99); awk's rule is the
@@ -128,16 +128,16 @@ arawk_to_num(VALUE v)
 const char *
 arawk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
 {
-    if (AWK_IS_FIX(v)) {
-        int n = snprintf(buf, buflen, "%lld", (long long)AWK_FIX_VAL(v));
+    if (ARAWK_IS_FIX(v)) {
+        int n = snprintf(buf, buflen, "%lld", (long long)ARAWK_FIX_VAL(v));
         if (n < 0) n = 0;
         *out_len = (size_t)n;
         return buf;
     }
-    if (v == AWK_UNINIT) { *out_len = 0; return ""; }
-    struct awk_obj *o = AWK_PTR(v);
+    if (v == ARAWK_UNINIT) { *out_len = 0; return ""; }
+    struct awk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
-      case AWK_T_FLOAT: {
+      case ARAWK_T_FLOAT: {
         // Integer-valued doubles print without ".0" in awk.
         double d = o->dbl;
         if (d == (double)(long long)d && d >= -1e15 && d <= 1e15) {
@@ -148,10 +148,10 @@ arawk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
             const char *fmt = "%.6g";
             char fmtbuf[32];
             if (ARAWK_CURRENT_CTX) {
-                VALUE cv = ARAWK_CURRENT_CTX->env[AWK_GLOB_CONVFMT];
-                if (AWK_IS_PTR(cv) && cv != AWK_UNINIT) {
-                    struct awk_obj *fo = AWK_PTR(cv);
-                    if ((fo->type == AWK_T_STRING || fo->type == AWK_T_STRNUM) &&
+                VALUE cv = ARAWK_CURRENT_CTX->env[ARAWK_GLOB_CONVFMT];
+                if (ARAWK_IS_PTR(cv) && cv != ARAWK_UNINIT) {
+                    struct awk_obj *fo = ARAWK_PTR(cv);
+                    if ((fo->type == ARAWK_T_STRING || fo->type == ARAWK_T_STRNUM) &&
                         fo->str.len > 0 && fo->str.len < sizeof fmtbuf) {
                         memcpy(fmtbuf, fo->str.chars, fo->str.len);
                         fmtbuf[fo->str.len] = '\0';
@@ -164,11 +164,11 @@ arawk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
         }
         return buf;
       }
-      case AWK_T_STRING:
-      case AWK_T_STRNUM:
+      case ARAWK_T_STRING:
+      case ARAWK_T_STRNUM:
         *out_len = o->str.len;
         return o->str.chars;
-      case AWK_T_ARRAY:
+      case ARAWK_T_ARRAY:
         // awk forbids using an array in a scalar context; we'd
         // normally error here.  Phase 0+1 returns empty.
         *out_len = 0;
@@ -182,9 +182,9 @@ arawk_to_cstr(VALUE v, char *buf, size_t buflen, size_t *out_len)
 VALUE
 arawk_to_string(VALUE v)
 {
-    if (AWK_IS_PTR(v)) {
-        struct awk_obj *o = AWK_PTR(v);
-        if (o->type == AWK_T_STRING || o->type == AWK_T_STRNUM) return v;
+    if (ARAWK_IS_PTR(v)) {
+        struct awk_obj *o = ARAWK_PTR(v);
+        if (o->type == ARAWK_T_STRING || o->type == ARAWK_T_STRNUM) return v;
     }
     char buf[64];
     size_t len;
@@ -217,11 +217,11 @@ str_is_numeric_shape(const char *s, size_t len)
 static bool
 val_is_numeric(VALUE v)
 {
-    if (AWK_IS_FIX(v)) return true;
-    if (v == AWK_UNINIT) return true;     // 0 in numeric context
-    struct awk_obj *o = AWK_PTR(v);
-    if (o->type == AWK_T_FLOAT) return true;
-    if (o->type == AWK_T_STRNUM) return str_is_numeric_shape(o->str.chars, o->str.len);
+    if (ARAWK_IS_FIX(v)) return true;
+    if (v == ARAWK_UNINIT) return true;     // 0 in numeric context
+    struct awk_obj *o = ARAWK_PTR(v);
+    if (o->type == ARAWK_T_FLOAT) return true;
+    if (o->type == ARAWK_T_STRNUM) return str_is_numeric_shape(o->str.chars, o->str.len);
     return false;
 }
 
@@ -258,7 +258,7 @@ arawk_cmp(VALUE a, VALUE b)
 }
 
 // ---------------------------------------------------------------------------
-// String concat.  Result is always AWK_T_STRING.
+// String concat.  Result is always ARAWK_T_STRING.
 // ---------------------------------------------------------------------------
 
 VALUE
@@ -267,31 +267,31 @@ arawk_concat(VALUE a, VALUE b)
     char abuf[64], bbuf[64]; size_t alen, blen;
     const char *as = arawk_to_cstr(a, abuf, sizeof abuf, &alen);
     const char *bs = arawk_to_cstr(b, bbuf, sizeof bbuf, &blen);
-    struct awk_obj *o = arawk_alloc(AWK_T_STRING);
+    struct awk_obj *o = arawk_alloc(ARAWK_T_STRING);
     char *buf = (char *)GC_malloc_atomic(alen + blen + 1);
     memcpy(buf, as, alen);
     memcpy(buf + alen, bs, blen);
     buf[alen + blen] = '\0';
     o->str.chars = buf;
     o->str.len   = alen + blen;
-    return AWK_OBJ_VAL(o);
+    return ARAWK_OBJ_VAL(o);
 }
 
 size_t
 arawk_length(VALUE v)
 {
-    if (AWK_IS_FIX(v)) {
+    if (ARAWK_IS_FIX(v)) {
         char buf[32];
-        int n = snprintf(buf, sizeof buf, "%lld", (long long)AWK_FIX_VAL(v));
+        int n = snprintf(buf, sizeof buf, "%lld", (long long)ARAWK_FIX_VAL(v));
         return n < 0 ? 0 : (size_t)n;
     }
-    if (v == AWK_UNINIT) return 0;
-    struct awk_obj *o = AWK_PTR(v);
+    if (v == ARAWK_UNINIT) return 0;
+    struct awk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
-      case AWK_T_STRING:
-      case AWK_T_STRNUM: return o->str.len;
-      case AWK_T_ARRAY:  return o->arr.entry_cnt;
-      case AWK_T_FLOAT: {
+      case ARAWK_T_STRING:
+      case ARAWK_T_STRNUM: return o->str.len;
+      case ARAWK_T_ARRAY:  return o->arr.entry_cnt;
+      case ARAWK_T_FLOAT: {
         char buf[64]; size_t len;
         (void)arawk_to_cstr(v, buf, sizeof buf, &len);
         return len;
@@ -350,10 +350,10 @@ arawk_tolower(VALUE v)
         out[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
     }
     out[len] = '\0';
-    struct awk_obj *o = arawk_alloc(AWK_T_STRING);
+    struct awk_obj *o = arawk_alloc(ARAWK_T_STRING);
     o->str.chars = out;
     o->str.len = len;
-    return AWK_OBJ_VAL(o);
+    return ARAWK_OBJ_VAL(o);
 }
 
 VALUE
@@ -367,16 +367,16 @@ arawk_toupper(VALUE v)
         out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
     }
     out[len] = '\0';
-    struct awk_obj *o = arawk_alloc(AWK_T_STRING);
+    struct awk_obj *o = arawk_alloc(ARAWK_T_STRING);
     o->str.chars = out;
     o->str.len = len;
-    return AWK_OBJ_VAL(o);
+    return ARAWK_OBJ_VAL(o);
 }
 
 VALUE
 arawk_int(VALUE v)
 {
-    if (AWK_IS_FIX(v)) return v;
+    if (ARAWK_IS_FIX(v)) return v;
     double d = arawk_to_num(v);
     return arawk_make_int((int64_t)d);
 }
@@ -448,7 +448,7 @@ arawk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
             if (n > 0) sl += (size_t)n;
         }
 
-        VALUE av = argi < nargs ? args[argi++] : AWK_UNINIT;
+        VALUE av = argi < nargs ? args[argi++] : ARAWK_UNINIT;
         char tmp[256];
         int wrote = 0;
         switch (conv) {
@@ -464,9 +464,9 @@ arawk_format_to(FILE *fp, char **outbuf, size_t *outcap, size_t *outlen,
           }
           case 'c': {
             // awk semantics: integer → that ASCII char, string → first char.
-            if (AWK_IS_PTR(av)) {
-                struct awk_obj *o = AWK_PTR(av);
-                if (o->type == AWK_T_STRING || o->type == AWK_T_STRNUM) {
+            if (ARAWK_IS_PTR(av)) {
+                struct awk_obj *o = ARAWK_PTR(av);
+                if (o->type == ARAWK_T_STRING || o->type == ARAWK_T_STRNUM) {
                     char one = o->str.len ? o->str.chars[0] : '\0';
                     spec[sl++] = 'c'; spec[sl] = '\0';
                     wrote = snprintf(tmp, sizeof tmp, spec, (int)(unsigned char)one);
@@ -540,9 +540,9 @@ arawk_printf(FILE *fp, VALUE fmt, VALUE *args, size_t nargs)
 int64_t
 arawk_split(VALUE s, VALUE arr, VALUE sep)
 {
-    if (!AWK_IS_PTR(arr) || AWK_PTR(arr)->type != AWK_T_ARRAY) return 0;
+    if (!ARAWK_IS_PTR(arr) || ARAWK_PTR(arr)->type != ARAWK_T_ARRAY) return 0;
     // Clear the array (split overwrites).
-    struct awk_obj *ao = AWK_PTR(arr);
+    struct awk_obj *ao = ARAWK_PTR(arr);
     for (size_t i = 0; i < ao->arr.bucket_cnt; i++) ao->arr.buckets[i] = NULL;
     ao->arr.entry_cnt = 0;
 
@@ -640,23 +640,23 @@ arawk_arr_rehash(struct awk_array *a, size_t new_cnt)
 VALUE
 arawk_arr_get(VALUE arr, const char *key, size_t key_len)
 {
-    if (!AWK_IS_PTR(arr)) return AWK_UNINIT;
-    struct awk_obj *o = AWK_PTR(arr);
-    if (o->type != AWK_T_ARRAY) return AWK_UNINIT;
+    if (!ARAWK_IS_PTR(arr)) return ARAWK_UNINIT;
+    struct awk_obj *o = ARAWK_PTR(arr);
+    if (o->type != ARAWK_T_ARRAY) return ARAWK_UNINIT;
     uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
     for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0) return e->val;
     }
-    return AWK_UNINIT;
+    return ARAWK_UNINIT;
 }
 
 void
 arawk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val)
 {
-    if (!AWK_IS_PTR(arr)) return;
-    struct awk_obj *o = AWK_PTR(arr);
-    if (o->type != AWK_T_ARRAY) return;
+    if (!ARAWK_IS_PTR(arr)) return;
+    struct awk_obj *o = ARAWK_PTR(arr);
+    if (o->type != ARAWK_T_ARRAY) return;
     uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
     for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
@@ -683,9 +683,9 @@ arawk_arr_set(VALUE arr, const char *key, size_t key_len, VALUE val)
 bool
 arawk_arr_has(VALUE arr, const char *key, size_t key_len)
 {
-    if (!AWK_IS_PTR(arr)) return false;
-    struct awk_obj *o = AWK_PTR(arr);
-    if (o->type != AWK_T_ARRAY) return false;
+    if (!ARAWK_IS_PTR(arr)) return false;
+    struct awk_obj *o = ARAWK_PTR(arr);
+    if (o->type != ARAWK_T_ARRAY) return false;
     uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
     for (struct awk_array_entry *e = o->arr.buckets[b]; e; e = e->next) {
@@ -697,9 +697,9 @@ arawk_arr_has(VALUE arr, const char *key, size_t key_len)
 void
 arawk_arr_del(VALUE arr, const char *key, size_t key_len)
 {
-    if (!AWK_IS_PTR(arr)) return;
-    struct awk_obj *o = AWK_PTR(arr);
-    if (o->type != AWK_T_ARRAY) return;
+    if (!ARAWK_IS_PTR(arr)) return;
+    struct awk_obj *o = ARAWK_PTR(arr);
+    if (o->type != ARAWK_T_ARRAY) return;
     uint64_t h = arawk_str_hash(key, key_len);
     size_t b = (size_t)(h & (o->arr.bucket_cnt - 1));
     struct awk_array_entry **pp = &o->arr.buckets[b];
@@ -949,7 +949,7 @@ arawk_cur_input(CTX *c)
             if (c->cur_input_idx == 0) {
                 c->cur_input = stdin;
                 c->cur_input_idx = 1;
-                c->env[AWK_GLOB_FILENAME] = arawk_make_string("", 0);
+                c->env[ARAWK_GLOB_FILENAME] = arawk_make_string("", 0);
             }
             return c->cur_input;
         }
@@ -958,8 +958,8 @@ arawk_cur_input(CTX *c)
             FILE *f = (strcmp(path, "-") == 0) ? stdin : fopen(path, "rb");
             if (!f) { fprintf(stderr, "arawk: cannot open `%s`\n", path); continue; }
             c->cur_input = f;
-            c->env[AWK_GLOB_FILENAME] = arawk_make_string(path, strlen(path));
-            c->env[AWK_GLOB_FNR] = AWK_FIX(0);
+            c->env[ARAWK_GLOB_FILENAME] = arawk_make_string(path, strlen(path));
+            c->env[ARAWK_GLOB_FNR] = ARAWK_FIX(0);
             break;
         }
     }
@@ -979,10 +979,10 @@ arawk_install_record(CTX *c, const char *line, size_t len, bool bump_counters)
     c->rec.fields_split = false;
     c->rec.nf = 0;
     if (bump_counters) {
-        int64_t nr  = AWK_IS_FIX(c->env[AWK_GLOB_NR])  ? AWK_FIX_VAL(c->env[AWK_GLOB_NR])  : 0;
-        int64_t fnr = AWK_IS_FIX(c->env[AWK_GLOB_FNR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_FNR]) : 0;
-        c->env[AWK_GLOB_NR]  = AWK_FIX(nr + 1);
-        c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
+        int64_t nr  = ARAWK_IS_FIX(c->env[ARAWK_GLOB_NR])  ? ARAWK_FIX_VAL(c->env[ARAWK_GLOB_NR])  : 0;
+        int64_t fnr = ARAWK_IS_FIX(c->env[ARAWK_GLOB_FNR]) ? ARAWK_FIX_VAL(c->env[ARAWK_GLOB_FNR]) : 0;
+        c->env[ARAWK_GLOB_NR]  = ARAWK_FIX(nr + 1);
+        c->env[ARAWK_GLOB_FNR] = ARAWK_FIX(fnr + 1);
     }
     arawk_split_fields(c);
 }
@@ -1017,10 +1017,10 @@ arawk_getline_cur_var(CTX *c, VALUE *out_line)
         if (!fp) return 0;
         int rc = arawk_read_record_into(fp, &buf, &len, &cap);
         if (rc == 1) {
-            int64_t nr  = AWK_IS_FIX(c->env[AWK_GLOB_NR])  ? AWK_FIX_VAL(c->env[AWK_GLOB_NR])  : 0;
-            int64_t fnr = AWK_IS_FIX(c->env[AWK_GLOB_FNR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_FNR]) : 0;
-            c->env[AWK_GLOB_NR]  = AWK_FIX(nr + 1);
-            c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
+            int64_t nr  = ARAWK_IS_FIX(c->env[ARAWK_GLOB_NR])  ? ARAWK_FIX_VAL(c->env[ARAWK_GLOB_NR])  : 0;
+            int64_t fnr = ARAWK_IS_FIX(c->env[ARAWK_GLOB_FNR]) ? ARAWK_FIX_VAL(c->env[ARAWK_GLOB_FNR]) : 0;
+            c->env[ARAWK_GLOB_NR]  = ARAWK_FIX(nr + 1);
+            c->env[ARAWK_GLOB_FNR] = ARAWK_FIX(fnr + 1);
             *out_line = arawk_make_strnum(buf, len);
             return 1;
         }
@@ -1105,19 +1105,19 @@ arawk_fflush_stream(VALUE dest)
 VALUE
 arawk_get_nr(const CTX *c)
 {
-    return c->env[AWK_GLOB_NR];
+    return c->env[ARAWK_GLOB_NR];
 }
 
 VALUE
 arawk_get_nf(const CTX *c)
 {
-    return c->env[AWK_GLOB_NF];
+    return c->env[ARAWK_GLOB_NF];
 }
 
 void
 arawk_set_nr(CTX *c, VALUE v)
 {
-    c->env[AWK_GLOB_NR] = v;
+    c->env[ARAWK_GLOB_NR] = v;
 }
 
 // `NF = N` — grow or shrink the current record.  POSIX semantics:
@@ -1130,7 +1130,7 @@ static void arawk_rebuild_record(CTX *c);
 void
 arawk_set_nf(CTX *c, VALUE v)
 {
-    int64_t new_nf = AWK_IS_FIX(v) ? AWK_FIX_VAL(v) : (int64_t)arawk_to_num(v);
+    int64_t new_nf = ARAWK_IS_FIX(v) ? ARAWK_FIX_VAL(v) : (int64_t)arawk_to_num(v);
     if (new_nf < 0) {
         fprintf(stderr, "arawk: NF cannot be negative\n");
         exit(2);
@@ -1146,7 +1146,7 @@ arawk_set_nf(CTX *c, VALUE v)
     }
     for (int i = c->rec.nf; i < (int)new_nf; i++) c->rec.fields[i] = arawk_make_string("", 0);
     c->rec.nf = (int)new_nf;
-    c->env[AWK_GLOB_NF] = AWK_FIX(new_nf);
+    c->env[ARAWK_GLOB_NF] = ARAWK_FIX(new_nf);
     arawk_rebuild_record(c);
 }
 
@@ -1166,7 +1166,7 @@ arawk_split_fields(CTX *c)
     c->rec.fields_split = true;
 
     // Read FS from env (slot 2).  Default to " ".
-    VALUE fsv = c->env[AWK_GLOB_FS];
+    VALUE fsv = c->env[ARAWK_GLOB_FS];
     char fsbuf[32]; size_t fslen;
     const char *fs = arawk_to_cstr(fsv, fsbuf, sizeof fsbuf, &fslen);
     bool fs_default = (fslen == 1 && fs[0] == ' ');
@@ -1232,7 +1232,7 @@ arawk_split_fields(CTX *c)
     #undef GROW_IF_NEEDED
 
     c->rec.nf = nf;
-    c->env[AWK_GLOB_NF] = AWK_FIX(nf);
+    c->env[ARAWK_GLOB_NF] = ARAWK_FIX(nf);
 }
 
 VALUE
@@ -1256,7 +1256,7 @@ VALUE
 arawk_get_field_v(CTX *c, VALUE idx)
 {
     int64_t n;
-    if (AWK_IS_FIX(idx)) n = AWK_FIX_VAL(idx);
+    if (ARAWK_IS_FIX(idx)) n = ARAWK_FIX_VAL(idx);
     else                 n = (int64_t)arawk_to_num(idx);
     return arawk_get_field(c, n);
 }
@@ -1268,7 +1268,7 @@ static void
 arawk_rebuild_record(CTX *c)
 {
     arawk_split_fields(c);  // ensure fields populated
-    VALUE ofs_v = c->env[AWK_GLOB_OFS];
+    VALUE ofs_v = c->env[ARAWK_GLOB_OFS];
     char obuf[32]; size_t olen;
     const char *ofs = arawk_to_cstr(ofs_v, obuf, sizeof obuf, &olen);
     // Estimate size.
@@ -1334,7 +1334,7 @@ arawk_set_field(CTX *c, int64_t n, VALUE v)
     c->rec.fields[n - 1] = v;
     if ((int)n > c->rec.nf) {
         c->rec.nf = (int)n;
-        c->env[AWK_GLOB_NF] = AWK_FIX(c->rec.nf);
+        c->env[ARAWK_GLOB_NF] = ARAWK_FIX(c->rec.nf);
     }
     arawk_rebuild_record(c);
 }
@@ -1354,7 +1354,7 @@ arawk_open_next_input(CTX *c)
         if (c->cur_input_idx == 0) {
             c->cur_input = stdin;
             c->cur_input_idx = 1;
-            c->env[AWK_GLOB_FILENAME] = arawk_make_string("", 0);
+            c->env[ARAWK_GLOB_FILENAME] = arawk_make_string("", 0);
             return true;
         }
         return false;
@@ -1369,8 +1369,8 @@ arawk_open_next_input(CTX *c)
             continue;
         }
         c->cur_input = f;
-        c->env[AWK_GLOB_FILENAME] = arawk_make_string(path, strlen(path));
-        c->env[AWK_GLOB_FNR] = AWK_FIX(0);
+        c->env[ARAWK_GLOB_FILENAME] = arawk_make_string(path, strlen(path));
+        c->env[ARAWK_GLOB_FNR] = ARAWK_FIX(0);
         return true;
     }
     return false;
@@ -1423,10 +1423,10 @@ arawk_input_next_record(CTX *c)
     c->rec.nf = 0;
 
     // Update NR / FNR.
-    int64_t nr = AWK_IS_FIX(c->env[AWK_GLOB_NR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_NR]) : 0;
-    int64_t fnr = AWK_IS_FIX(c->env[AWK_GLOB_FNR]) ? AWK_FIX_VAL(c->env[AWK_GLOB_FNR]) : 0;
-    c->env[AWK_GLOB_NR] = AWK_FIX(nr + 1);
-    c->env[AWK_GLOB_FNR] = AWK_FIX(fnr + 1);
+    int64_t nr = ARAWK_IS_FIX(c->env[ARAWK_GLOB_NR]) ? ARAWK_FIX_VAL(c->env[ARAWK_GLOB_NR]) : 0;
+    int64_t fnr = ARAWK_IS_FIX(c->env[ARAWK_GLOB_FNR]) ? ARAWK_FIX_VAL(c->env[ARAWK_GLOB_FNR]) : 0;
+    c->env[ARAWK_GLOB_NR] = ARAWK_FIX(nr + 1);
+    c->env[ARAWK_GLOB_FNR] = ARAWK_FIX(fnr + 1);
 
     // Eagerly split — NF must be readable before any $N access.
     arawk_split_fields(c);

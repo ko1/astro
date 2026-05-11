@@ -139,7 +139,7 @@ static const struct { const char *kw; TokKind kind; } keywords[] = {
     // NR / NF intentionally NOT in the keyword table — they resolve
     // to the pre-reserved globals_intern slot via the TK_NAME path,
     // which makes `NF = 5` flow through the regular assignment
-    // machinery (where node_gset has the AWK_GLOB_NF hook).
+    // machinery (where node_gset has the ARAWK_GLOB_NF hook).
     { NULL, 0 }
 };
 
@@ -404,7 +404,7 @@ skip_terminators(void)
 
 // ---------------------------------------------------------------------------
 // Scope: maps global variable names to env slots.  Phase 0+1 — single
-// global scope; specials reserved 0..AWK_GLOB_RESERVED-1.
+// global scope; specials reserved 0..ARAWK_GLOB_RESERVED-1.
 // ---------------------------------------------------------------------------
 
 #define MAX_GLOBALS 256
@@ -420,24 +420,24 @@ static void
 globals_init(void)
 {
     // Pre-reserve special slots so they don't collide with user vars.
-    for (uint32_t i = 0; i < AWK_GLOB_RESERVED; i++) globals.names[i] = NULL;
-    globals.names[AWK_GLOB_NR]       = "NR";
-    globals.names[AWK_GLOB_NF]       = "NF";
-    globals.names[AWK_GLOB_FS]       = "FS";
-    globals.names[AWK_GLOB_OFS]      = "OFS";
-    globals.names[AWK_GLOB_ORS]      = "ORS";
-    globals.names[AWK_GLOB_RS]       = "RS";
-    globals.names[AWK_GLOB_FILENAME] = "FILENAME";
-    globals.names[AWK_GLOB_FNR]      = "FNR";
-    globals.names[AWK_GLOB_SUBSEP]   = "SUBSEP";
-    globals.names[AWK_GLOB_CONVFMT]  = "CONVFMT";
-    globals.names[AWK_GLOB_OFMT]     = "OFMT";
-    globals.names[AWK_GLOB_RSTART]   = "RSTART";
-    globals.names[AWK_GLOB_RLENGTH]  = "RLENGTH";
-    globals.names[AWK_GLOB_ENVIRON]  = "ENVIRON";
-    globals.names[AWK_GLOB_ARGC]     = "ARGC";
-    globals.names[AWK_GLOB_ARGV]     = "ARGV";
-    globals.count = AWK_GLOB_RESERVED;
+    for (uint32_t i = 0; i < ARAWK_GLOB_RESERVED; i++) globals.names[i] = NULL;
+    globals.names[ARAWK_GLOB_NR]       = "NR";
+    globals.names[ARAWK_GLOB_NF]       = "NF";
+    globals.names[ARAWK_GLOB_FS]       = "FS";
+    globals.names[ARAWK_GLOB_OFS]      = "OFS";
+    globals.names[ARAWK_GLOB_ORS]      = "ORS";
+    globals.names[ARAWK_GLOB_RS]       = "RS";
+    globals.names[ARAWK_GLOB_FILENAME] = "FILENAME";
+    globals.names[ARAWK_GLOB_FNR]      = "FNR";
+    globals.names[ARAWK_GLOB_SUBSEP]   = "SUBSEP";
+    globals.names[ARAWK_GLOB_CONVFMT]  = "CONVFMT";
+    globals.names[ARAWK_GLOB_OFMT]     = "OFMT";
+    globals.names[ARAWK_GLOB_RSTART]   = "RSTART";
+    globals.names[ARAWK_GLOB_RLENGTH]  = "RLENGTH";
+    globals.names[ARAWK_GLOB_ENVIRON]  = "ENVIRON";
+    globals.names[ARAWK_GLOB_ARGC]     = "ARGC";
+    globals.names[ARAWK_GLOB_ARGV]     = "ARGV";
+    globals.count = ARAWK_GLOB_RESERVED;
 }
 
 static uint32_t
@@ -1198,7 +1198,7 @@ parse_array_key(void)
     while (peek_tok().kind == TK_COMMA) {
         (void)take_tok();
         NODE *next = parse_ternary_full();
-        NODE *sep  = ALLOC_node_gget(AWK_GLOB_SUBSEP);
+        NODE *sep  = ALLOC_node_gget(ARAWK_GLOB_SUBSEP);
         acc = ALLOC_node_concat(ALLOC_node_concat(acc, sep), next);
     }
     return acc;

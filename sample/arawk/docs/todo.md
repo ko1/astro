@@ -107,7 +107,7 @@ astrogre を統合する。
 
 ### Level 3: 単一 interpreter で awk + regex を実行 (本命)
 - [ ] VALUE 統一 (awk LSB-tagged ↔ agre int64 MR_*)
-  - awk の AWK_UNINIT/STRNUM は LSB=0 の heap ptr、 agre MR_* は小整数 0-2 — 値領域は衝突しないので統合可能
+  - awk の ARAWK_UNINIT/STRNUM は LSB=0 の heap ptr、 agre MR_* は小整数 0-2 — 値領域は衝突しないので統合可能
 - [ ] RESULT 状態空間統合 (NEXT/EXIT/RETURN ↔ MR_FAIL/STOP/CONTINUE)
 - [ ] dispatcher テーブル統合
 - [ ] SD bake が両 AST にまたがる挙動を検証

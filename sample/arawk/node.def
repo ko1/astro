@@ -18,7 +18,7 @@ NODE_DEF
 node_int(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, int32_t v)
 {
     (void)c; (void)n; (void)fp;
-    return RESULT_OK(AWK_FIX(v));
+    return RESULT_OK(ARAWK_FIX(v));
 }
 
 NODE_DEF
@@ -47,7 +47,7 @@ NODE_DEF
 node_uninit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     (void)c; (void)n; (void)fp;
-    return RESULT_OK(AWK_UNINIT);
+    return RESULT_OK(ARAWK_UNINIT);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ node_dollar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *
     (void)n;
     VALUE iv = UNWRAP(EVAL_ARG(c, idx));
     VALUE rv = UNWRAP(EVAL_ARG(c, rhs));
-    int64_t fi = AWK_IS_FIX(iv) ? AWK_FIX_VAL(iv) : (int64_t)arawk_to_num(iv);
+    int64_t fi = ARAWK_IS_FIX(iv) ? ARAWK_FIX_VAL(iv) : (int64_t)arawk_to_num(iv);
     arawk_set_field(c, fi, rv);
     return RESULT_OK(rv);
 }
@@ -137,8 +137,8 @@ node_dollar_postdec(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, in
 {
     (void)n; (void)fp;
     VALUE v = arawk_get_field(c, n_idx);
-    VALUE r = AWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v));
-    arawk_set_field(c, (int64_t)n_idx, arawk_sub(v, AWK_FIX(1)));
+    VALUE r = ARAWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v));
+    arawk_set_field(c, (int64_t)n_idx, arawk_sub(v, ARAWK_FIX(1)));
     return RESULT_OK(r);
 }
 
@@ -147,8 +147,8 @@ node_dollar_postinc(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, in
 {
     (void)n; (void)fp;
     VALUE v = arawk_get_field(c, n_idx);
-    VALUE r = AWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v));
-    arawk_set_field(c, (int64_t)n_idx, arawk_add(v, AWK_FIX(1)));
+    VALUE r = ARAWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v));
+    arawk_set_field(c, (int64_t)n_idx, arawk_add(v, ARAWK_FIX(1)));
     return RESULT_OK(r);
 }
 
@@ -186,7 +186,7 @@ node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cond,
             return r;
         }
     }
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 // `do body while (cond)` — body runs at least once.  POSIX awk.
@@ -202,7 +202,7 @@ node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *bo
             return r;
         }
     } while (arawk_is_truthy(UNWRAP(EVAL_ARG(c, cond))));
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 // `for (init; cond; step) body`.  All four operands are NODE * (use
@@ -227,7 +227,7 @@ node_for(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *init, N
       step_label:
         (void)UNWRAP(EVAL_ARG(c, step));
     }
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -258,14 +258,14 @@ NODE_DEF
 node_nextfile(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     (void)c; (void)n; (void)fp;
-    return ((RESULT){ AWK_FIX(0), RESULT_NEXTFILE });
+    return ((RESULT){ ARAWK_FIX(0), RESULT_NEXTFILE });
 }
 
 NODE_DEF
 node_exit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *arg)
 {
     (void)n;
-    VALUE v = AWK_FIX(0);
+    VALUE v = ARAWK_FIX(0);
     if (arg) v = UNWRAP(EVAL_ARG(c, arg));
     return RESULT_EXIT_(v);
 }
@@ -292,7 +292,7 @@ NODE_DEF
 node_noop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     (void)c; (void)n; (void)fp;
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -309,21 +309,21 @@ node_main_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a
             // were given; nextfile there ends the loop.
             if (c->cur_input && c->cur_input != stdin) fclose(c->cur_input);
             c->cur_input = NULL;
-            if (OPTION.input_file_cnt == 0) return RESULT_OK(AWK_FIX(0));
+            if (OPTION.input_file_cnt == 0) return RESULT_OK(ARAWK_FIX(0));
             continue;
         }
         if (r.state == RESULT_EXIT) return r;
         // Stray break / continue at top of action — POSIX undefined;
         // treat as record-skip.
     }
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 NODE_DEF
 node_program(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *begin_block, NODE *main_part, NODE *end_block)
 {
     (void)n;
-    VALUE exit_code = AWK_FIX(0);
+    VALUE exit_code = ARAWK_FIX(0);
     bool exited = false;
 
     RESULT r = EVAL_ARG(c, begin_block);
@@ -354,8 +354,8 @@ static inline void
 arawk_print_with_env(CTX *c, FILE *fp, VALUE *items, size_t n)
 {
     char obuf[32], rbuf[32]; size_t olen, rlen;
-    const char *ofs = arawk_to_cstr(c->env[AWK_GLOB_OFS], obuf, sizeof obuf, &olen);
-    const char *ors = arawk_to_cstr(c->env[AWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
+    const char *ofs = arawk_to_cstr(c->env[ARAWK_GLOB_OFS], obuf, sizeof obuf, &olen);
+    const char *ors = arawk_to_cstr(c->env[ARAWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
     arawk_print_record(fp, items, n, ofs, olen, ors, rlen);
 }
 
@@ -367,9 +367,9 @@ node_print(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t ba
         VALUE v0 = arawk_get_field(c, 0);
         // No OFS between args when there's only $0; still emit ORS.
         char rbuf[32]; size_t rlen;
-        const char *ors = arawk_to_cstr(c->env[AWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
+        const char *ors = arawk_to_cstr(c->env[ARAWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
         arawk_print_record(stdout, &v0, 1, "", 0, ors, rlen);
-        return RESULT_OK(AWK_FIX(0));
+        return RESULT_OK(ARAWK_FIX(0));
     }
     VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
     for (uint32_t i = 0; i < cnt; i++) {
@@ -377,7 +377,7 @@ node_print(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t ba
         vs[i] = UNWRAP(EVAL(c, child, fp));
     }
     arawk_print_with_env(c, stdout, vs, cnt);
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 // `print expr_list | "cmd"` / `print expr_list > "file"` / `>>` — same
@@ -393,9 +393,9 @@ node_print_to(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
     if (cnt == 0) {
         VALUE v0 = arawk_get_field(c, 0);
         char rbuf[32]; size_t rlen;
-        const char *ors = arawk_to_cstr(c->env[AWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
+        const char *ors = arawk_to_cstr(c->env[ARAWK_GLOB_ORS], rbuf, sizeof rbuf, &rlen);
         arawk_print_record(out, &v0, 1, "", 0, ors, rlen);
-        return RESULT_OK(AWK_FIX(0));
+        return RESULT_OK(ARAWK_FIX(0));
     }
     VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
     for (uint32_t i = 0; i < cnt; i++) {
@@ -403,7 +403,7 @@ node_print_to(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
         vs[i] = UNWRAP(EVAL(c, child, fp));
     }
     arawk_print_with_env(c, out, vs, cnt);
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 // ---------------------------------------------------------------------------
@@ -479,7 +479,7 @@ node_unaryplus(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a
 {
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
-    if (AWK_IS_FIX(av)) return RESULT_OK(av);
+    if (ARAWK_IS_FIX(av)) return RESULT_OK(av);
     return RESULT_OK(arawk_make_float(arawk_to_num(av)));
 }
 
@@ -492,8 +492,8 @@ node_postinc_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
 {
     (void)c; (void)n;
     VALUE v = fp[index];
-    fp[index] = arawk_add(v, AWK_FIX(1));
-    if (AWK_IS_FIX(v)) return RESULT_OK(v);
+    fp[index] = arawk_add(v, ARAWK_FIX(1));
+    if (ARAWK_IS_FIX(v)) return RESULT_OK(v);
     return RESULT_OK(arawk_make_float(arawk_to_num(v)));
 }
 
@@ -502,8 +502,8 @@ node_postdec_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
 {
     (void)c; (void)n;
     VALUE v = fp[index];
-    fp[index] = arawk_sub(v, AWK_FIX(1));
-    if (AWK_IS_FIX(v)) return RESULT_OK(v);
+    fp[index] = arawk_sub(v, ARAWK_FIX(1));
+    if (ARAWK_IS_FIX(v)) return RESULT_OK(v);
     return RESULT_OK(arawk_make_float(arawk_to_num(v)));
 }
 
@@ -511,7 +511,7 @@ NODE_DEF
 node_preinc_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
 {
     (void)c; (void)n;
-    VALUE v = arawk_add(fp[index], AWK_FIX(1));
+    VALUE v = arawk_add(fp[index], ARAWK_FIX(1));
     fp[index] = v;
     return RESULT_OK(v);
 }
@@ -520,7 +520,7 @@ NODE_DEF
 node_predec_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
 {
     (void)c; (void)n;
-    VALUE v = arawk_sub(fp[index], AWK_FIX(1));
+    VALUE v = arawk_sub(fp[index], ARAWK_FIX(1));
     fp[index] = v;
     return RESULT_OK(v);
 }
@@ -536,8 +536,8 @@ node_ternary(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *con
 }
 
 // ---------------------------------------------------------------------------
-// Associative arrays.  Backed by `awk_obj` of type AWK_T_ARRAY.  The
-// variable slot starts AWK_UNINIT; `a[k] = v` or any read auto-promotes
+// Associative arrays.  Backed by `awk_obj` of type ARAWK_T_ARRAY.  The
+// variable slot starts ARAWK_UNINIT; `a[k] = v` or any read auto-promotes
 // the slot to a fresh array (matching awk's auto-vivification).
 // ---------------------------------------------------------------------------
 
@@ -547,7 +547,7 @@ node_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t ind
     (void)n;
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     VALUE av = fp[index];
-    if (av == AWK_UNINIT) {
+    if (av == ARAWK_UNINIT) {
         av = arawk_make_array();
         fp[index] = av;
     }
@@ -568,7 +568,7 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t ind
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     VALUE rv = UNWRAP(EVAL_ARG(c, rhs));
     VALUE av = fp[index];
-    if (av == AWK_UNINIT) {
+    if (av == ARAWK_UNINIT) {
         av = arawk_make_array();
         fp[index] = av;
     }
@@ -585,10 +585,10 @@ node_in_arr(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *key,
     (void)n;
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     VALUE av = fp[arr_index];
-    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    return RESULT_OK(arawk_arr_has(av, ks, klen) ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_arr_has(av, ks, klen) ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 // `for (k in arr) body` — iterate over array keys.  Snapshot keys
@@ -599,9 +599,9 @@ node_for_in(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t k
 {
     (void)n;
     VALUE av = fp[arr_slot];
-    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
-    struct awk_obj *o = AWK_PTR(av);
-    if (o->type != AWK_T_ARRAY) return RESULT_OK(AWK_FIX(0));
+    if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
+    struct awk_obj *o = ARAWK_PTR(av);
+    if (o->type != ARAWK_T_ARRAY) return RESULT_OK(ARAWK_FIX(0));
 
     // Snapshot keys.
     size_t cnt = o->arr.entry_cnt;
@@ -621,7 +621,7 @@ node_for_in(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t k
             return r;
         }
     }
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -630,11 +630,11 @@ node_delete(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t a
     (void)n;
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     VALUE av = fp[arr_slot];
-    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
     arawk_arr_del(av, ks, klen);
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 // Delete the entire array — `delete a` (gawk extension, also in POSIX
@@ -643,8 +643,8 @@ NODE_DEF
 node_delete_all(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arr_slot)
 {
     (void)c; (void)n;
-    fp[arr_slot] = AWK_UNINIT;
-    return RESULT_OK(AWK_FIX(0));
+    fp[arr_slot] = ARAWK_UNINIT;
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 // `length` / `length()` / `length(expr)`.  No-paren and zero-arg
@@ -654,7 +654,7 @@ NODE_DEF
 node_length0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     (void)n; (void)fp;
-    return RESULT_OK(AWK_FIX((int64_t)arawk_length(arawk_get_field(c, 0))));
+    return RESULT_OK(ARAWK_FIX((int64_t)arawk_length(arawk_get_field(c, 0))));
 }
 
 NODE_DEF
@@ -662,7 +662,7 @@ node_length1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *arg
 {
     (void)n;
     VALUE v = UNWRAP(EVAL_ARG(c, arg));
-    return RESULT_OK(AWK_FIX((int64_t)arawk_length(v)));
+    return RESULT_OK(ARAWK_FIX((int64_t)arawk_length(v)));
 }
 
 // ---------------------------------------------------------------------------
@@ -689,7 +689,7 @@ node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE 
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
     VALUE bv = UNWRAP(EVAL_ARG(c, b));
-    return RESULT_OK(arawk_eq(av, bv) ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_eq(av, bv) ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -698,7 +698,7 @@ node_ne(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE 
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
     VALUE bv = UNWRAP(EVAL_ARG(c, b));
-    return RESULT_OK(arawk_eq(av, bv) ? AWK_FIX(0) : AWK_FIX(1));
+    return RESULT_OK(arawk_eq(av, bv) ? ARAWK_FIX(0) : ARAWK_FIX(1));
 }
 
 NODE_DEF
@@ -707,7 +707,7 @@ node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE 
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
     VALUE bv = UNWRAP(EVAL_ARG(c, b));
-    return RESULT_OK(arawk_cmp(av, bv) <  0 ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_cmp(av, bv) <  0 ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -716,7 +716,7 @@ node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE 
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
     VALUE bv = UNWRAP(EVAL_ARG(c, b));
-    return RESULT_OK(arawk_cmp(av, bv) <= 0 ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_cmp(av, bv) <= 0 ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -725,7 +725,7 @@ node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE 
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
     VALUE bv = UNWRAP(EVAL_ARG(c, b));
-    return RESULT_OK(arawk_cmp(av, bv) >  0 ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_cmp(av, bv) >  0 ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -734,7 +734,7 @@ node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE 
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
     VALUE bv = UNWRAP(EVAL_ARG(c, b));
-    return RESULT_OK(arawk_cmp(av, bv) >= 0 ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_cmp(av, bv) >= 0 ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 // Logical not.  Awk: `!x` → 1 if !truthy(x) else 0.
@@ -743,7 +743,7 @@ node_not(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
 {
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
-    return RESULT_OK(arawk_is_truthy(av) ? AWK_FIX(0) : AWK_FIX(1));
+    return RESULT_OK(arawk_is_truthy(av) ? ARAWK_FIX(0) : ARAWK_FIX(1));
 }
 
 // Logical and / or with short-circuit.  Returns 0 or 1 (POSIX awk
@@ -754,9 +754,9 @@ node_and(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE
 {
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
-    if (!arawk_is_truthy(av)) return RESULT_OK(AWK_FIX(0));
+    if (!arawk_is_truthy(av)) return RESULT_OK(ARAWK_FIX(0));
     VALUE bv = UNWRAP(EVAL_ARG(c, b));
-    return RESULT_OK(arawk_is_truthy(bv) ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_is_truthy(bv) ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -764,9 +764,9 @@ node_or(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE 
 {
     (void)n;
     VALUE av = UNWRAP(EVAL_ARG(c, a));
-    if (arawk_is_truthy(av)) return RESULT_OK(AWK_FIX(1));
+    if (arawk_is_truthy(av)) return RESULT_OK(ARAWK_FIX(1));
     VALUE bv = UNWRAP(EVAL_ARG(c, b));
-    return RESULT_OK(arawk_is_truthy(bv) ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_is_truthy(bv) ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 // ---------------------------------------------------------------------------
@@ -791,12 +791,12 @@ node_gset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t ind
     // FS assignment invalidates the cached field split for the
     // current record — the next $N read re-splits using the new
     // separator.  NF assignment triggers a full rebuild via OFS.
-    if (UNLIKELY(index == AWK_GLOB_FS)) {
+    if (UNLIKELY(index == ARAWK_GLOB_FS)) {
         c->env[index] = v;
         c->rec.fields_split = false;
         return RESULT_OK(v);
     }
-    if (UNLIKELY(index == AWK_GLOB_NF)) {
+    if (UNLIKELY(index == ARAWK_GLOB_NF)) {
         arawk_set_nf(c, v);
         return RESULT_OK(v);
     }
@@ -809,8 +809,8 @@ node_postinc_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
 {
     (void)n; (void)fp;
     VALUE v = c->env[index];
-    c->env[index] = arawk_add(v, AWK_FIX(1));
-    if (AWK_IS_FIX(v)) return RESULT_OK(v);
+    c->env[index] = arawk_add(v, ARAWK_FIX(1));
+    if (ARAWK_IS_FIX(v)) return RESULT_OK(v);
     return RESULT_OK(arawk_make_float(arawk_to_num(v)));
 }
 
@@ -819,8 +819,8 @@ node_postdec_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
 {
     (void)n; (void)fp;
     VALUE v = c->env[index];
-    c->env[index] = arawk_sub(v, AWK_FIX(1));
-    if (AWK_IS_FIX(v)) return RESULT_OK(v);
+    c->env[index] = arawk_sub(v, ARAWK_FIX(1));
+    if (ARAWK_IS_FIX(v)) return RESULT_OK(v);
     return RESULT_OK(arawk_make_float(arawk_to_num(v)));
 }
 
@@ -828,7 +828,7 @@ NODE_DEF
 node_preinc_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
 {
     (void)n; (void)fp;
-    VALUE v = arawk_add(c->env[index], AWK_FIX(1));
+    VALUE v = arawk_add(c->env[index], ARAWK_FIX(1));
     c->env[index] = v;
     return RESULT_OK(v);
 }
@@ -837,7 +837,7 @@ NODE_DEF
 node_predec_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t index)
 {
     (void)n; (void)fp;
-    VALUE v = arawk_sub(c->env[index], AWK_FIX(1));
+    VALUE v = arawk_sub(c->env[index], ARAWK_FIX(1));
     c->env[index] = v;
     return RESULT_OK(v);
 }
@@ -853,10 +853,10 @@ node_postinc_a(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    if (fp[index] == AWK_UNINIT) fp[index] = arawk_make_array();
+    if (fp[index] == ARAWK_UNINIT) fp[index] = arawk_make_array();
     VALUE v = arawk_arr_get(fp[index], ks, klen);
-    arawk_arr_set(fp[index], ks, klen, arawk_add(v, AWK_FIX(1)));
-    return RESULT_OK(AWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v)));
+    arawk_arr_set(fp[index], ks, klen, arawk_add(v, ARAWK_FIX(1)));
+    return RESULT_OK(ARAWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v)));
 }
 
 NODE_DEF
@@ -866,10 +866,10 @@ node_postdec_a(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    if (fp[index] == AWK_UNINIT) fp[index] = arawk_make_array();
+    if (fp[index] == ARAWK_UNINIT) fp[index] = arawk_make_array();
     VALUE v = arawk_arr_get(fp[index], ks, klen);
-    arawk_arr_set(fp[index], ks, klen, arawk_sub(v, AWK_FIX(1)));
-    return RESULT_OK(AWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v)));
+    arawk_arr_set(fp[index], ks, klen, arawk_sub(v, ARAWK_FIX(1)));
+    return RESULT_OK(ARAWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v)));
 }
 
 NODE_DEF
@@ -879,8 +879,8 @@ node_preinc_a(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    if (fp[index] == AWK_UNINIT) fp[index] = arawk_make_array();
-    VALUE v = arawk_add(arawk_arr_get(fp[index], ks, klen), AWK_FIX(1));
+    if (fp[index] == ARAWK_UNINIT) fp[index] = arawk_make_array();
+    VALUE v = arawk_add(arawk_arr_get(fp[index], ks, klen), ARAWK_FIX(1));
     arawk_arr_set(fp[index], ks, klen, v);
     return RESULT_OK(v);
 }
@@ -892,8 +892,8 @@ node_predec_a(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    if (fp[index] == AWK_UNINIT) fp[index] = arawk_make_array();
-    VALUE v = arawk_sub(arawk_arr_get(fp[index], ks, klen), AWK_FIX(1));
+    if (fp[index] == ARAWK_UNINIT) fp[index] = arawk_make_array();
+    VALUE v = arawk_sub(arawk_arr_get(fp[index], ks, klen), ARAWK_FIX(1));
     arawk_arr_set(fp[index], ks, klen, v);
     return RESULT_OK(v);
 }
@@ -906,10 +906,10 @@ node_postinc_ag(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    if (c->env[index] == AWK_UNINIT) c->env[index] = arawk_make_array();
+    if (c->env[index] == ARAWK_UNINIT) c->env[index] = arawk_make_array();
     VALUE v = arawk_arr_get(c->env[index], ks, klen);
-    arawk_arr_set(c->env[index], ks, klen, arawk_add(v, AWK_FIX(1)));
-    return RESULT_OK(AWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v)));
+    arawk_arr_set(c->env[index], ks, klen, arawk_add(v, ARAWK_FIX(1)));
+    return RESULT_OK(ARAWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v)));
 }
 
 NODE_DEF
@@ -919,10 +919,10 @@ node_postdec_ag(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    if (c->env[index] == AWK_UNINIT) c->env[index] = arawk_make_array();
+    if (c->env[index] == ARAWK_UNINIT) c->env[index] = arawk_make_array();
     VALUE v = arawk_arr_get(c->env[index], ks, klen);
-    arawk_arr_set(c->env[index], ks, klen, arawk_sub(v, AWK_FIX(1)));
-    return RESULT_OK(AWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v)));
+    arawk_arr_set(c->env[index], ks, klen, arawk_sub(v, ARAWK_FIX(1)));
+    return RESULT_OK(ARAWK_IS_FIX(v) ? v : arawk_make_float(arawk_to_num(v)));
 }
 
 NODE_DEF
@@ -932,8 +932,8 @@ node_preinc_ag(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    if (c->env[index] == AWK_UNINIT) c->env[index] = arawk_make_array();
-    VALUE v = arawk_add(arawk_arr_get(c->env[index], ks, klen), AWK_FIX(1));
+    if (c->env[index] == ARAWK_UNINIT) c->env[index] = arawk_make_array();
+    VALUE v = arawk_add(arawk_arr_get(c->env[index], ks, klen), ARAWK_FIX(1));
     arawk_arr_set(c->env[index], ks, klen, v);
     return RESULT_OK(v);
 }
@@ -945,8 +945,8 @@ node_predec_ag(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    if (c->env[index] == AWK_UNINIT) c->env[index] = arawk_make_array();
-    VALUE v = arawk_sub(arawk_arr_get(c->env[index], ks, klen), AWK_FIX(1));
+    if (c->env[index] == ARAWK_UNINIT) c->env[index] = arawk_make_array();
+    VALUE v = arawk_sub(arawk_arr_get(c->env[index], ks, klen), ARAWK_FIX(1));
     arawk_arr_set(c->env[index], ks, klen, v);
     return RESULT_OK(v);
 }
@@ -958,7 +958,7 @@ node_aget_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t i
     (void)n;
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     VALUE av = c->env[index];
-    if (av == AWK_UNINIT) { av = arawk_make_array(); c->env[index] = av; }
+    if (av == ARAWK_UNINIT) { av = arawk_make_array(); c->env[index] = av; }
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
     return RESULT_OK(arawk_arr_get(av, ks, klen));
@@ -971,7 +971,7 @@ node_aset_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t i
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     VALUE rv = UNWRAP(EVAL_ARG(c, rhs));
     VALUE av = c->env[index];
-    if (av == AWK_UNINIT) { av = arawk_make_array(); c->env[index] = av; }
+    if (av == ARAWK_UNINIT) { av = arawk_make_array(); c->env[index] = av; }
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
     arawk_arr_set(av, ks, klen, rv);
@@ -984,10 +984,10 @@ node_in_arr_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *ke
     (void)n;
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     VALUE av = c->env[arr_index];
-    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
-    return RESULT_OK(arawk_arr_has(av, ks, klen) ? AWK_FIX(1) : AWK_FIX(0));
+    return RESULT_OK(arawk_arr_has(av, ks, klen) ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -995,9 +995,9 @@ node_for_in_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
 {
     (void)n;
     VALUE av = c->env[arr_slot];
-    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
-    struct awk_obj *o = AWK_PTR(av);
-    if (o->type != AWK_T_ARRAY) return RESULT_OK(AWK_FIX(0));
+    if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
+    struct awk_obj *o = ARAWK_PTR(av);
+    if (o->type != ARAWK_T_ARRAY) return RESULT_OK(ARAWK_FIX(0));
 
     size_t cnt = o->arr.entry_cnt;
     VALUE *keys = (VALUE *)GC_malloc(sizeof(VALUE) * (cnt ? cnt : 1));
@@ -1016,7 +1016,7 @@ node_for_in_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
             return r;
         }
     }
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -1025,19 +1025,19 @@ node_delete_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
     (void)n;
     VALUE kv = UNWRAP(EVAL_ARG(c, key));
     VALUE av = c->env[arr_slot];
-    if (av == AWK_UNINIT) return RESULT_OK(AWK_FIX(0));
+    if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
     char kbuf[64]; size_t klen;
     const char *ks = arawk_to_cstr(kv, kbuf, sizeof kbuf, &klen);
     arawk_arr_del(av, ks, klen);
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 NODE_DEF
 node_delete_all_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t arr_slot)
 {
     (void)n; (void)fp;
-    c->env[arr_slot] = AWK_UNINIT;
-    return RESULT_OK(AWK_FIX(0));
+    c->env[arr_slot] = ARAWK_UNINIT;
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,7 +1074,7 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *n
     fe->body = OPTIMIZE(body);
     fe->params_cnt = params_cnt;
     fe->locals_cnt = frame_size;
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -1102,7 +1102,7 @@ node_call_user(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const c
         F[i] = UNWRAP((*arg->head.dispatcher)(c, arg, fp));
     }
     // Remaining slots: UNINIT (acts as "" or 0 in arith context).
-    for (uint32_t i = fill; i < ARAWK_FRAME_MAX; i++) F[i] = AWK_UNINIT;
+    for (uint32_t i = fill; i < ARAWK_FRAME_MAX; i++) F[i] = ARAWK_UNINIT;
     RESULT r = EVAL(c, body, F);
     // `return` lands as RESULT_RETURN with the value; everything
     // else (fell off the end / stray break/continue) yields the
@@ -1111,7 +1111,7 @@ node_call_user(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const c
     // (so `print noret(5) "x"` outputs "x", not "0x").
     if (r.state == RESULT_RETURN) return RESULT_OK(r.value);
     if (r.state == RESULT_EXIT)   return r;   // propagate exit through the call
-    return RESULT_OK(AWK_UNINIT);
+    return RESULT_OK(ARAWK_UNINIT);
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,13 +1124,13 @@ node_printf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *fmt,
 {
     (void)n;
     VALUE fmt_v = UNWRAP(EVAL_ARG(c, fmt));
-    if (cnt == 0) { arawk_printf(stdout, fmt_v, NULL, 0); return RESULT_OK(AWK_FIX(0)); }
+    if (cnt == 0) { arawk_printf(stdout, fmt_v, NULL, 0); return RESULT_OK(ARAWK_FIX(0)); }
     VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
     for (uint32_t i = 0; i < cnt; i++) {
         vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
     }
     arawk_printf(stdout, fmt_v, vs, cnt);
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 // `printf ... | "cmd"` / `> "file"` / `>> "file"` — printf with output
@@ -1142,13 +1142,13 @@ node_printf_to(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *f
     VALUE fmt_v  = UNWRAP(EVAL_ARG(c, fmt));
     VALUE dest_v = UNWRAP(EVAL_ARG(c, dest));
     FILE *out = arawk_open_stream(mode, dest_v);
-    if (cnt == 0) { arawk_printf(out, fmt_v, NULL, 0); return RESULT_OK(AWK_FIX(0)); }
+    if (cnt == 0) { arawk_printf(out, fmt_v, NULL, 0); return RESULT_OK(ARAWK_FIX(0)); }
     VALUE *vs = (VALUE *)alloca(sizeof(VALUE) * cnt);
     for (uint32_t i = 0; i < cnt; i++) {
         vs[i] = UNWRAP(EVAL(c, ARAWK_NODE_TABLE[base_idx + i], fp));
     }
     arawk_printf(out, fmt_v, vs, cnt);
-    return RESULT_OK(AWK_FIX(0));
+    return RESULT_OK(ARAWK_FIX(0));
 }
 
 NODE_DEF
@@ -1193,7 +1193,7 @@ node_index_b(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *hay
     (void)n;
     VALUE hv = UNWRAP(EVAL_ARG(c, hay));
     VALUE nv = UNWRAP(EVAL_ARG(c, needle));
-    return RESULT_OK(AWK_FIX(arawk_index(hv, nv)));
+    return RESULT_OK(ARAWK_FIX(arawk_index(hv, nv)));
 }
 
 NODE_DEF
@@ -1223,8 +1223,8 @@ node_split2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s, u
 {
     (void)n;
     VALUE sv = UNWRAP(EVAL_ARG(c, s));
-    if (fp[arr_slot] == AWK_UNINIT) fp[arr_slot] = arawk_make_array();
-    return RESULT_OK(AWK_FIX(arawk_split(sv, fp[arr_slot], c->env[AWK_GLOB_FS])));
+    if (fp[arr_slot] == ARAWK_UNINIT) fp[arr_slot] = arawk_make_array();
+    return RESULT_OK(ARAWK_FIX(arawk_split(sv, fp[arr_slot], c->env[ARAWK_GLOB_FS])));
 }
 
 NODE_DEF
@@ -1233,8 +1233,8 @@ node_split3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *s, u
     (void)n;
     VALUE sv  = UNWRAP(EVAL_ARG(c, s));
     VALUE sep_v = UNWRAP(EVAL_ARG(c, sep));
-    if (fp[arr_slot] == AWK_UNINIT) fp[arr_slot] = arawk_make_array();
-    return RESULT_OK(AWK_FIX(arawk_split(sv, fp[arr_slot], sep_v)));
+    if (fp[arr_slot] == ARAWK_UNINIT) fp[arr_slot] = arawk_make_array();
+    return RESULT_OK(ARAWK_FIX(arawk_split(sv, fp[arr_slot], sep_v)));
 }
 
 // Math: each builtin wraps libm.  Awk's math is double-only.
@@ -1298,7 +1298,7 @@ node_srand0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     (void)c; (void)n; (void)fp;
     extern int64_t arawk_srand_time(void);
-    return RESULT_OK(AWK_FIX(arawk_srand_time()));
+    return RESULT_OK(ARAWK_FIX(arawk_srand_time()));
 }
 
 NODE_DEF
@@ -1307,7 +1307,7 @@ node_srand1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a)
     (void)n;
     extern int64_t arawk_srand(int64_t seed);
     int64_t s = (int64_t)arawk_to_num(UNWRAP(EVAL_ARG(c, a)));
-    return RESULT_OK(AWK_FIX(arawk_srand(s)));
+    return RESULT_OK(ARAWK_FIX(arawk_srand(s)));
 }
 
 // ---------------------------------------------------------------------------
@@ -1319,14 +1319,14 @@ node_close(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *dest)
 {
     (void)n;
     VALUE dv = UNWRAP(EVAL_ARG(c, dest));
-    return RESULT_OK(AWK_FIX(arawk_close_stream(dv)));
+    return RESULT_OK(ARAWK_FIX(arawk_close_stream(dv)));
 }
 
 NODE_DEF
 node_fflush_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     (void)c; (void)n; (void)fp;
-    return RESULT_OK(AWK_FIX(arawk_fflush_all()));
+    return RESULT_OK(ARAWK_FIX(arawk_fflush_all()));
 }
 
 NODE_DEF
@@ -1334,7 +1334,7 @@ node_fflush_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *de
 {
     (void)n;
     VALUE dv = UNWRAP(EVAL_ARG(c, dest));
-    return RESULT_OK(AWK_FIX(arawk_fflush_stream(dv)));
+    return RESULT_OK(ARAWK_FIX(arawk_fflush_stream(dv)));
 }
 
 NODE_DEF
@@ -1353,7 +1353,7 @@ node_system(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *cmd)
     int rc = system(path);
     // POSIX: return the wait status as encoded by `system(3)`.  awk
     // historically reports it as-is (high byte is exit code).
-    return RESULT_OK(AWK_FIX(rc));
+    return RESULT_OK(ARAWK_FIX(rc));
 }
 
 // ---------------------------------------------------------------------------
@@ -1367,7 +1367,7 @@ NODE_DEF
 node_getline_cur(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
 {
     (void)n; (void)fp;
-    return RESULT_OK(AWK_FIX(arawk_getline_cur(c, NULL)));
+    return RESULT_OK(ARAWK_FIX(arawk_getline_cur(c, NULL)));
 }
 
 NODE_DEF
@@ -1377,7 +1377,7 @@ node_getline_cur_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uin
     VALUE line;
     int rc = arawk_getline_cur_var(c, &line);
     if (rc == 1) fp[index] = line;
-    return RESULT_OK(AWK_FIX(rc));
+    return RESULT_OK(ARAWK_FIX(rc));
 }
 
 NODE_DEF
@@ -1387,7 +1387,7 @@ node_getline_cur_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uin
     VALUE line;
     int rc = arawk_getline_cur_var(c, &line);
     if (rc == 1) c->env[index] = line;
-    return RESULT_OK(AWK_FIX(rc));
+    return RESULT_OK(ARAWK_FIX(rc));
 }
 
 NODE_DEF
@@ -1395,7 +1395,7 @@ node_getline_file(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE
 {
     (void)n;
     VALUE fv = UNWRAP(EVAL_ARG(c, file));
-    return RESULT_OK(AWK_FIX(arawk_getline_file(c, fv)));
+    return RESULT_OK(ARAWK_FIX(arawk_getline_file(c, fv)));
 }
 
 NODE_DEF
@@ -1406,7 +1406,7 @@ node_getline_file_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, ui
     VALUE line;
     int rc = arawk_getline_file_var(c, fv, &line);
     if (rc == 1) fp[index] = line;
-    return RESULT_OK(AWK_FIX(rc));
+    return RESULT_OK(ARAWK_FIX(rc));
 }
 
 NODE_DEF
@@ -1417,7 +1417,7 @@ node_getline_file_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, ui
     VALUE line;
     int rc = arawk_getline_file_var(c, fv, &line);
     if (rc == 1) c->env[index] = line;
-    return RESULT_OK(AWK_FIX(rc));
+    return RESULT_OK(ARAWK_FIX(rc));
 }
 
 NODE_DEF
@@ -1425,7 +1425,7 @@ node_getline_cmd(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE 
 {
     (void)n;
     VALUE cv = UNWRAP(EVAL_ARG(c, cmd));
-    return RESULT_OK(AWK_FIX(arawk_getline_cmd(c, cv)));
+    return RESULT_OK(ARAWK_FIX(arawk_getline_cmd(c, cv)));
 }
 
 NODE_DEF
@@ -1436,7 +1436,7 @@ node_getline_cmd_l(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uin
     VALUE line;
     int rc = arawk_getline_cmd_var(c, cv, &line);
     if (rc == 1) fp[index] = line;
-    return RESULT_OK(AWK_FIX(rc));
+    return RESULT_OK(ARAWK_FIX(rc));
 }
 
 NODE_DEF
@@ -1447,5 +1447,5 @@ node_getline_cmd_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uin
     VALUE line;
     int rc = arawk_getline_cmd_var(c, cv, &line);
     if (rc == 1) c->env[index] = line;
-    return RESULT_OK(AWK_FIX(rc));
+    return RESULT_OK(ARAWK_FIX(rc));
 }

@@ -53,22 +53,22 @@ create_context(void)
     c->env = c->fp = (VALUE *)GC_malloc(sizeof(VALUE) * env_size);
     c->func_set = (struct function_entry *)GC_malloc(sizeof(struct function_entry) * 256);
     c->func_set_cnt = 0;
-    // Initialise all globals to AWK_UNINIT, then set specials to
+    // Initialise all globals to ARAWK_UNINIT, then set specials to
     // their POSIX defaults.
-    for (size_t i = 0; i < env_size; i++) c->env[i] = AWK_UNINIT;
-    c->env[AWK_GLOB_NR]       = AWK_FIX(0);
-    c->env[AWK_GLOB_NF]       = AWK_FIX(0);
-    c->env[AWK_GLOB_FNR]      = AWK_FIX(0);
-    c->env[AWK_GLOB_FS]       = arawk_make_string(" ", 1);
-    c->env[AWK_GLOB_OFS]      = arawk_make_string(" ", 1);
-    c->env[AWK_GLOB_ORS]      = arawk_make_string("\n", 1);
-    c->env[AWK_GLOB_RS]       = arawk_make_string("\n", 1);
-    c->env[AWK_GLOB_FILENAME] = arawk_make_string("", 0);
-    c->env[AWK_GLOB_SUBSEP]   = arawk_make_string("\034", 1);
-    c->env[AWK_GLOB_CONVFMT]  = arawk_make_string("%.6g", 4);
-    c->env[AWK_GLOB_OFMT]     = arawk_make_string("%.6g", 4);
-    c->env[AWK_GLOB_RSTART]   = AWK_FIX(0);
-    c->env[AWK_GLOB_RLENGTH]  = AWK_FIX(-1);
+    for (size_t i = 0; i < env_size; i++) c->env[i] = ARAWK_UNINIT;
+    c->env[ARAWK_GLOB_NR]       = ARAWK_FIX(0);
+    c->env[ARAWK_GLOB_NF]       = ARAWK_FIX(0);
+    c->env[ARAWK_GLOB_FNR]      = ARAWK_FIX(0);
+    c->env[ARAWK_GLOB_FS]       = arawk_make_string(" ", 1);
+    c->env[ARAWK_GLOB_OFS]      = arawk_make_string(" ", 1);
+    c->env[ARAWK_GLOB_ORS]      = arawk_make_string("\n", 1);
+    c->env[ARAWK_GLOB_RS]       = arawk_make_string("\n", 1);
+    c->env[ARAWK_GLOB_FILENAME] = arawk_make_string("", 0);
+    c->env[ARAWK_GLOB_SUBSEP]   = arawk_make_string("\034", 1);
+    c->env[ARAWK_GLOB_CONVFMT]  = arawk_make_string("%.6g", 4);
+    c->env[ARAWK_GLOB_OFMT]     = arawk_make_string("%.6g", 4);
+    c->env[ARAWK_GLOB_RSTART]   = ARAWK_FIX(0);
+    c->env[ARAWK_GLOB_RLENGTH]  = ARAWK_FIX(-1);
     c->rec.record = NULL;
     c->rec.record_len = 0;
     c->rec.record_v = 0;
@@ -226,7 +226,7 @@ main(int argc, char *argv[])
     {
         extern char **environ;
         VALUE arr = arawk_make_array();
-        c->env[AWK_GLOB_ENVIRON] = arr;
+        c->env[ARAWK_GLOB_ENVIRON] = arr;
         for (char **ep = environ; *ep; ep++) {
             const char *e = *ep;
             const char *eq = strchr(e, '=');
@@ -245,7 +245,7 @@ main(int argc, char *argv[])
     // input files come from OPTION.input_files).
     {
         VALUE av = arawk_make_array();
-        c->env[AWK_GLOB_ARGV] = av;
+        c->env[ARAWK_GLOB_ARGV] = av;
         arawk_arr_set(av, "0", 1, arawk_make_string("arawk", 5));
         int total = 1 + OPTION.input_file_cnt;
         for (int i = 0; i < OPTION.input_file_cnt; i++) {
@@ -254,13 +254,13 @@ main(int argc, char *argv[])
             const char *path = OPTION.input_files[i];
             arawk_arr_set(av, key, (size_t)kl, arawk_make_string(path, strlen(path)));
         }
-        c->env[AWK_GLOB_ARGC] = AWK_FIX(total);
+        c->env[ARAWK_GLOB_ARGC] = ARAWK_FIX(total);
     }
 
     RESULT r = EVAL(c, ast, c->env);
     int rc = 0;
     if (r.state == RESULT_EXIT) {
-        if (AWK_IS_FIX(r.value)) rc = (int)AWK_FIX_VAL(r.value);
+        if (ARAWK_IS_FIX(r.value)) rc = (int)ARAWK_FIX_VAL(r.value);
         else                     rc = (int)arawk_to_num(r.value);
     }
     // Flush + close any pipes / output files opened via `print | ...`,

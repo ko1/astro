@@ -26,28 +26,28 @@ extern void  GC_init(void);
 //   xxxx_xxx1 → fixnum (signed 63-bit value)
 //   xxxx_xxx0 → ptr to `struct awk_obj` (heap-allocated, 8-byte aligned)
 //
-// Uninitialised awk variables are AWK_UNINIT (singleton); they coerce
+// Uninitialised awk variables are ARAWK_UNINIT (singleton); they coerce
 // to "" in string context and 0 in numeric context.  String literals
-// and field values are heap awk_obj with type AWK_T_STRING.  Numeric
-// constants outside fixnum range box to AWK_T_FLOAT.  Associative
-// arrays are AWK_T_ARRAY.
+// and field values are heap awk_obj with type ARAWK_T_STRING.  Numeric
+// constants outside fixnum range box to ARAWK_T_FLOAT.  Associative
+// arrays are ARAWK_T_ARRAY.
 typedef int64_t VALUE;
 
-#define AWK_FIX_MAX     ((int64_t)((1LL << 62) - 1))
-#define AWK_FIX_MIN     ((int64_t)(-(1LL << 62)))
-#define AWK_IS_FIX(v)   ((int64_t)(v) & 1LL)
-#define AWK_FIX(n)      (((VALUE)(int64_t)(n) << 1) | 1LL)
-#define AWK_FIX_VAL(v)  ((int64_t)(v) >> 1)
-#define AWK_IS_PTR(v)   (((int64_t)(v) & 1LL) == 0)
-#define AWK_PTR(v)      ((struct awk_obj *)(uintptr_t)(v))
-#define AWK_OBJ_VAL(p)  ((VALUE)(uintptr_t)(p))
+#define ARAWK_FIX_MAX     ((int64_t)((1LL << 62) - 1))
+#define ARAWK_FIX_MIN     ((int64_t)(-(1LL << 62)))
+#define ARAWK_IS_FIX(v)   ((int64_t)(v) & 1LL)
+#define ARAWK_FIX(n)      (((VALUE)(int64_t)(n) << 1) | 1LL)
+#define ARAWK_FIX_VAL(v)  ((int64_t)(v) >> 1)
+#define ARAWK_IS_PTR(v)   (((int64_t)(v) & 1LL) == 0)
+#define ARAWK_PTR(v)      ((struct awk_obj *)(uintptr_t)(v))
+#define ARAWK_OBJ_VAL(p)  ((VALUE)(uintptr_t)(p))
 
 enum awk_type {
-    AWK_T_UNINIT = 1,      // singleton — uninitialised awk variable
-    AWK_T_FLOAT,
-    AWK_T_STRING,
-    AWK_T_STRNUM,          // string from field/getline — numeric coercion if shape matches
-    AWK_T_ARRAY,           // associative array
+    ARAWK_T_UNINIT = 1,      // singleton — uninitialised awk variable
+    ARAWK_T_FLOAT,
+    ARAWK_T_STRING,
+    ARAWK_T_STRNUM,          // string from field/getline — numeric coercion if shape matches
+    ARAWK_T_ARRAY,           // associative array
 };
 
 struct awk_array_entry {
@@ -72,8 +72,8 @@ struct awk_obj {
     };
 };
 
-extern struct awk_obj AWK_UNINIT_OBJ;
-#define AWK_UNINIT  AWK_OBJ_VAL(&AWK_UNINIT_OBJ)
+extern struct awk_obj ARAWK_UNINIT_OBJ;
+#define ARAWK_UNINIT  ARAWK_OBJ_VAL(&ARAWK_UNINIT_OBJ)
 
 // Thread-local-ish pointer to the active CTX.  Set by main.c right
 // after create_context.  Runtime helpers like arawk_to_cstr read
@@ -87,8 +87,8 @@ extern struct CTX_struct *ARAWK_CURRENT_CTX;
 struct awk_obj *arawk_alloc(int type);
 VALUE arawk_make_float (double d);
 VALUE arawk_make_int   (int64_t v);                  // fixnum if fits, else heap float
-VALUE arawk_make_string(const char *s, size_t len);  // type = AWK_T_STRING
-VALUE arawk_make_strnum(const char *s, size_t len);  // type = AWK_T_STRNUM (field values)
+VALUE arawk_make_string(const char *s, size_t len);  // type = ARAWK_T_STRING
+VALUE arawk_make_strnum(const char *s, size_t len);  // type = ARAWK_T_STRNUM (field values)
 VALUE arawk_make_array (void);
 
 // Coercions / accessors.  awk's number/string duality: every value has
@@ -110,13 +110,13 @@ int  arawk_cmp(VALUE a, VALUE b);
 static inline bool
 arawk_is_truthy(VALUE v)
 {
-    if (LIKELY(AWK_IS_FIX(v))) return AWK_FIX_VAL(v) != 0;
-    if (v == AWK_UNINIT) return false;
-    struct awk_obj *o = AWK_PTR(v);
+    if (LIKELY(ARAWK_IS_FIX(v))) return ARAWK_FIX_VAL(v) != 0;
+    if (v == ARAWK_UNINIT) return false;
+    struct awk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
-      case AWK_T_FLOAT:  return o->dbl != 0.0;
-      case AWK_T_STRING: return o->str.len != 0;
-      case AWK_T_STRNUM:
+      case ARAWK_T_FLOAT:  return o->dbl != 0.0;
+      case ARAWK_T_STRING: return o->str.len != 0;
+      case ARAWK_T_STRNUM:
         // strnum: number if it parses as one; otherwise string emptiness.
         if (o->str.len == 0) return false;
         { char *end; double d = strtod(o->str.chars, &end);
@@ -201,10 +201,10 @@ typedef struct {
 } RESULT;
 
 #define RESULT_OK(v)         ((RESULT){(v), RESULT_NORMAL})
-#define RESULT_NEXT_()       ((RESULT){AWK_FIX(0), RESULT_NEXT})
+#define RESULT_NEXT_()       ((RESULT){ARAWK_FIX(0), RESULT_NEXT})
 #define RESULT_EXIT_(v)      ((RESULT){(v), RESULT_EXIT})
-#define RESULT_BREAK_()      ((RESULT){AWK_FIX(0), RESULT_BREAK})
-#define RESULT_CONTINUE_()   ((RESULT){AWK_FIX(0), RESULT_CONTINUE})
+#define RESULT_BREAK_()      ((RESULT){ARAWK_FIX(0), RESULT_BREAK})
+#define RESULT_CONTINUE_()   ((RESULT){ARAWK_FIX(0), RESULT_CONTINUE})
 #define RESULT_RETURN_(v)    ((RESULT){(v), RESULT_RETURN})
 
 #define UNWRAP(r) ({ RESULT _r = (r); if (UNLIKELY(_r.state != RESULT_NORMAL)) return _r; _r.value; })
@@ -250,23 +250,23 @@ struct awk_record {
 
 // Special-variable slots in env (fixed layout, written by input loop).
 // User-visible names map to these slots in the parser.
-#define AWK_GLOB_NR        0
-#define AWK_GLOB_NF        1
-#define AWK_GLOB_FS        2
-#define AWK_GLOB_OFS       3
-#define AWK_GLOB_ORS       4
-#define AWK_GLOB_RS        5
-#define AWK_GLOB_FILENAME  6
-#define AWK_GLOB_FNR       7
-#define AWK_GLOB_SUBSEP    8
-#define AWK_GLOB_CONVFMT   9
-#define AWK_GLOB_OFMT      10
-#define AWK_GLOB_RSTART    11
-#define AWK_GLOB_RLENGTH   12
-#define AWK_GLOB_ENVIRON   13     // associative array populated from `environ`
-#define AWK_GLOB_ARGC      14
-#define AWK_GLOB_ARGV      15
-#define AWK_GLOB_RESERVED  16     // first user slot
+#define ARAWK_GLOB_NR        0
+#define ARAWK_GLOB_NF        1
+#define ARAWK_GLOB_FS        2
+#define ARAWK_GLOB_OFS       3
+#define ARAWK_GLOB_ORS       4
+#define ARAWK_GLOB_RS        5
+#define ARAWK_GLOB_FILENAME  6
+#define ARAWK_GLOB_FNR       7
+#define ARAWK_GLOB_SUBSEP    8
+#define ARAWK_GLOB_CONVFMT   9
+#define ARAWK_GLOB_OFMT      10
+#define ARAWK_GLOB_RSTART    11
+#define ARAWK_GLOB_RLENGTH   12
+#define ARAWK_GLOB_ENVIRON   13     // associative array populated from `environ`
+#define ARAWK_GLOB_ARGC      14
+#define ARAWK_GLOB_ARGV      15
+#define ARAWK_GLOB_RESERVED  16     // first user slot
 
 // User-defined function (Phase 1.8).  Registered by node_def at
 // program startup; looked up by node_call_user via name.
@@ -353,11 +353,11 @@ VALUE arawk_neg_slow(VALUE a);
 static inline VALUE
 arawk_add(VALUE a, VALUE b)
 {
-    if (LIKELY(AWK_IS_FIX(a) & AWK_IS_FIX(b))) {
-        int64_t la = AWK_FIX_VAL(a), lb = AWK_FIX_VAL(b), r;
+    if (LIKELY(ARAWK_IS_FIX(a) & ARAWK_IS_FIX(b))) {
+        int64_t la = ARAWK_FIX_VAL(a), lb = ARAWK_FIX_VAL(b), r;
         if (LIKELY(!__builtin_add_overflow(la, lb, &r) &&
-                   r <= AWK_FIX_MAX && r >= AWK_FIX_MIN)) {
-            return AWK_FIX(r);
+                   r <= ARAWK_FIX_MAX && r >= ARAWK_FIX_MIN)) {
+            return ARAWK_FIX(r);
         }
     }
     return arawk_add_slow(a, b);
@@ -366,11 +366,11 @@ arawk_add(VALUE a, VALUE b)
 static inline VALUE
 arawk_sub(VALUE a, VALUE b)
 {
-    if (LIKELY(AWK_IS_FIX(a) & AWK_IS_FIX(b))) {
-        int64_t la = AWK_FIX_VAL(a), lb = AWK_FIX_VAL(b), r;
+    if (LIKELY(ARAWK_IS_FIX(a) & ARAWK_IS_FIX(b))) {
+        int64_t la = ARAWK_FIX_VAL(a), lb = ARAWK_FIX_VAL(b), r;
         if (LIKELY(!__builtin_sub_overflow(la, lb, &r) &&
-                   r <= AWK_FIX_MAX && r >= AWK_FIX_MIN)) {
-            return AWK_FIX(r);
+                   r <= ARAWK_FIX_MAX && r >= ARAWK_FIX_MIN)) {
+            return ARAWK_FIX(r);
         }
     }
     return arawk_sub_slow(a, b);
@@ -379,11 +379,11 @@ arawk_sub(VALUE a, VALUE b)
 static inline VALUE
 arawk_mul(VALUE a, VALUE b)
 {
-    if (LIKELY(AWK_IS_FIX(a) & AWK_IS_FIX(b))) {
-        int64_t la = AWK_FIX_VAL(a), lb = AWK_FIX_VAL(b), r;
+    if (LIKELY(ARAWK_IS_FIX(a) & ARAWK_IS_FIX(b))) {
+        int64_t la = ARAWK_FIX_VAL(a), lb = ARAWK_FIX_VAL(b), r;
         if (LIKELY(!__builtin_mul_overflow(la, lb, &r) &&
-                   r <= AWK_FIX_MAX && r >= AWK_FIX_MIN)) {
-            return AWK_FIX(r);
+                   r <= ARAWK_FIX_MAX && r >= ARAWK_FIX_MIN)) {
+            return ARAWK_FIX(r);
         }
     }
     return arawk_mul_slow(a, b);
@@ -397,9 +397,9 @@ static inline VALUE arawk_pow(VALUE a, VALUE b) { return arawk_pow_slow(a, b); }
 static inline VALUE
 arawk_neg(VALUE a)
 {
-    if (LIKELY(AWK_IS_FIX(a))) {
-        int64_t la = AWK_FIX_VAL(a);
-        if (LIKELY(la != AWK_FIX_MIN)) return AWK_FIX(-la);
+    if (LIKELY(ARAWK_IS_FIX(a))) {
+        int64_t la = ARAWK_FIX_VAL(a);
+        if (LIKELY(la != ARAWK_FIX_MIN)) return ARAWK_FIX(-la);
     }
     return arawk_neg_slow(a);
 }

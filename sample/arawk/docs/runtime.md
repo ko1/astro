@@ -29,7 +29,7 @@ xxxx_xxx1 → 63-bit signed fixnum (左 1 シフト + 1)
 xxxx_xxx0 → ヒープオブジェクト (`struct awk_obj *`、8-byte aligned)
 ```
 
-`AWK_UNINIT` は静的 singleton (グローバル `struct awk_obj AWK_UNINIT_OBJ`
+`ARAWK_UNINIT` は静的 singleton (グローバル `struct awk_obj ARAWK_UNINIT_OBJ`
 のアドレス)。fixnum 範囲外の整数は heap-boxed double に昇格。
 
 ```c
@@ -45,11 +45,11 @@ struct awk_obj {
 
 | `type`           | 用途 |
 |---|---|
-| `AWK_T_UNINIT`   | singleton; 数値文脈で 0、文字列文脈で `""` |
-| `AWK_T_FLOAT`    | double 値 |
-| `AWK_T_STRING`   | 純粋な文字列 (リテラルや関数の戻り値) |
-| `AWK_T_STRNUM`   | フィールド / getline の入力 — 数値形なら数値、 そうでなければ文字列 |
-| `AWK_T_ARRAY`    | 連想配列 (FNV-1a + chained bucket; load > 0.75 で rehash) |
+| `ARAWK_T_UNINIT`   | singleton; 数値文脈で 0、文字列文脈で `""` |
+| `ARAWK_T_FLOAT`    | double 値 |
+| `ARAWK_T_STRING`   | 純粋な文字列 (リテラルや関数の戻り値) |
+| `ARAWK_T_STRNUM`   | フィールド / getline の入力 — 数値形なら数値、 そうでなければ文字列 |
+| `ARAWK_T_ARRAY`    | 連想配列 (FNV-1a + chained bucket; load > 0.75 で rehash) |
 
 awk の数値 / 文字列二面性は `arawk_to_num` / `arawk_to_cstr` / `val_is_numeric`
 が引き受ける。`STRNUM` のみ「数値らしき形」かを毎回 strtod で判定する
@@ -96,11 +96,11 @@ catch して continue する。EXIT は親へ伝搬。
 ```c
 static inline VALUE
 arawk_add(VALUE a, VALUE b) {
-    if (LIKELY(AWK_IS_FIX(a) & AWK_IS_FIX(b))) {
-        int64_t la = AWK_FIX_VAL(a), lb = AWK_FIX_VAL(b), r;
+    if (LIKELY(ARAWK_IS_FIX(a) & ARAWK_IS_FIX(b))) {
+        int64_t la = ARAWK_FIX_VAL(a), lb = ARAWK_FIX_VAL(b), r;
         if (LIKELY(!__builtin_add_overflow(la, lb, &r) &&
-                   r <= AWK_FIX_MAX && r >= AWK_FIX_MIN)) {
-            return AWK_FIX(r);
+                   r <= ARAWK_FIX_MAX && r >= ARAWK_FIX_MIN)) {
+            return ARAWK_FIX(r);
         }
     }
     return arawk_add_slow(a, b);
@@ -131,7 +131,7 @@ typedef struct CTX_struct {
 } CTX;
 ```
 
-`env[0..AWK_GLOB_RESERVED-1]` (= 16 slot) は **特殊変数の固定 slot**:
+`env[0..ARAWK_GLOB_RESERVED-1]` (= 16 slot) は **特殊変数の固定 slot**:
 
 | slot | 名前 |
 |---:|---|
@@ -208,7 +208,7 @@ NODE_DEF node_call_user(c, n, fp, name, base_args, argc)
     body = arawk_resolve_body(c, name, &params_cnt);  /* strcmp ループ */
     VALUE F[ARAWK_FRAME_MAX];                          /* VLA frame */
     F[0..argc-1] = 引数評価結果
-    F[argc..MAX-1] = AWK_UNINIT
+    F[argc..MAX-1] = ARAWK_UNINIT
     return EVAL(c, body, F);                           /* fp 切替 */
 }
 ```
@@ -283,7 +283,7 @@ POSIX の更新仕様 (NR/FNR/$0/NF/FILENAME のどれを更新するか) は
 - `GC_malloc_atomic(sz)`: ポインタを含まない領域 (char buffer / double[] 等)
 - `GC_realloc`: 再確保
 
-明示 free なし。`AWK_UNINIT_OBJ` 等の singleton はグローバル static で
+明示 free なし。`ARAWK_UNINIT_OBJ` 等の singleton はグローバル static で
 libgc の管理外。
 
 GC roots:

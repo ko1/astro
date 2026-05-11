@@ -105,7 +105,7 @@ Phase 1.9 直後の前回計測 (geomean plain 0.58 / aot 0.59) から **ほぼ�
 
 | Test | arawk-aot | 理由 |
 |---|---|---|
-| **tt.x2_sum_loop** | **1.90×** | BEGIN だけの 10M 回 fixnum ループ。AOT bake で for 全体が specialize、`AWK_IS_FIX(a)&AWK_IS_FIX(b)` + `__builtin_add_overflow` が `lea`/`add` 数命令に畳まれる |
+| **tt.x2_sum_loop** | **1.90×** | BEGIN だけの 10M 回 fixnum ループ。AOT bake で for 全体が specialize、`ARAWK_IS_FIX(a)&ARAWK_IS_FIX(b)` + `__builtin_add_overflow` が `lea`/`add` 数命令に畳まれる |
 | **tt.13_array_ops** | **1.35×** | 配列読み書きが連続。arawk の `arawk_arr_*` (FNV-1a + 単純 chained bucket) は gawk の locale-aware hash よりオーバーヘッド少ない |
 | **tt.13a_array_printf** | **1.34×** | 同上 + printf |
 
