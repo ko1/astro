@@ -5188,6 +5188,36 @@ paren_base_path: ;
             // dispatch.  deltablue's `self.output().value = ...` was
             // hitting this every constraint propagation step.
             if (i + 1 < ntr - 1 && trs[i + 1].kind == TR_CALL) {
+                // Probe the call args for kwargs / *args / **kwargs —
+                // the fast method-fuse path below uses plain parse_expr
+                // per arg which can't handle `kw=val`.  Fall back to
+                // attr_get + parse_call_args for those forms.
+                bool has_kwarg = false;
+                {
+                    int depth_c = 0;
+                    for (size_t p = trs[i + 1].call_pos + 1; ; p++) {
+                        int kk = tok_arr[p].kind;
+                        if (kk == T_EOF) break;
+                        if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth_c++;
+                        else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) {
+                            if (depth_c == 0) break;
+                            depth_c--;
+                        }
+                        else if (depth_c == 0 && kk == T_ASSIGN) { has_kwarg = true; break; }
+                        else if (depth_c == 0 && (kk == T_STAR || kk == T_STAR_STAR)) {
+                            // *args / **kwargs also need generic path.
+                            has_kwarg = true; break;
+                        }
+                    }
+                }
+                if (has_kwarg) {
+                    size_t save = tok_pos;
+                    tok_pos = trs[i + 1].call_pos;
+                    cur = parse_call_args(ALLOC_node_attr_get(cur, trs[i].name));
+                    tok_pos = save;
+                    i++;     // skip the TR_CALL we just consumed
+                    continue;
+                }
                 size_t save = tok_pos;
                 tok_pos = trs[i + 1].call_pos;
                 tok_pos++;       // consume '('
