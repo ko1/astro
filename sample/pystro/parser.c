@@ -1406,8 +1406,11 @@ parse_comp_clauses(NODE *inner_body)
         inner_body = ALLOC_node_if(cond, inner_body, ALLOC_node_nop());
     }
 
-    // Inner `for` clause?
-    if (peek_tok(0)->kind == T_FOR)
+    // Inner `for` / `async for` clause?
+    if (peek_tok(0)->kind == T_FOR
+        || (peek_tok(0)->kind == T_NAME
+            && peek_tok(0)->sval == intern_name("async", 5)
+            && peek_tok(1)->kind == T_FOR))
         inner_body = parse_comp_clauses(inner_body);
 
     if (nnames == 1) return build_for_loop(names[0], iter, inner_body);
