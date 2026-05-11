@@ -12310,6 +12310,29 @@ fm_seekable(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+fm_fileno(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    struct pysobj *o = PYS_PTR(argv[0]);
+    if (o->type != PYS_T_FILE || o->file.closed)
+        PYS_RAISE_EXC(c, c->EXC_RuntimeError, "fileno on closed file");
+    int fd = fileno((FILE *)o->file.fp);
+    if (fd < 0) PYS_RAISE_EXC(c, c->EXC_OSError, "no fileno");
+    return PYS_FIX(fd);
+}
+
+static VALUE
+fm_isatty(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pysobj *o = PYS_PTR(argv[0]);
+    if (o->type != PYS_T_FILE || o->file.closed) return PYS_FALSE;
+    int fd = fileno((FILE *)o->file.fp);
+    extern int isatty(int);
+    return isatty(fd) ? PYS_TRUE : PYS_FALSE;
+}
+
+static VALUE
 fm_truncate(CTX *c, int argc, VALUE *argv)
 {
     struct pysobj *o = PYS_PTR(argv[0]);
@@ -12337,6 +12360,8 @@ struct type_method file_methods[] = {
     { "writable",   fm_writable,  1, 1 },
     { "seekable",   fm_seekable,  1, 1 },
     { "truncate",   fm_truncate,  1, 2 },
+    { "fileno",     fm_fileno,    1, 1 },
+    { "isatty",     fm_isatty,    1, 1 },
     { "__enter__",  fm_enter,     1, 1 },
     { "__exit__",   fm_exit,      4, 4 },
     { NULL, NULL, 0, 0 }
