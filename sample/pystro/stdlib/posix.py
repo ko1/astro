@@ -87,7 +87,7 @@ O_CLOEXEC = 524288
 
 
 def chdir(path):
-    try: return __pystro_chdir__(path)
+    try: return __pystro_chdir__(_fspath(path))
     except NameError: raise OSError("chdir not supported")
 
 
@@ -183,6 +183,7 @@ def isdir(path):
 
 
 def remove(path):
+    path = _fspath(path)
     try: return __pystro_remove__(path)
     except (NameError, TypeError): raise OSError("remove not supported")
 
@@ -191,11 +192,23 @@ unlink = remove
 
 
 def rmdir(path):
-    try: return __pystro_rmdir__(path)
+    try: return __pystro_rmdir__(_fspath(path))
     except NameError: raise OSError("rmdir not supported")
 
 
+def _fspath(path):
+    """Convert pathlib.Path / os.PathLike to str.  CPython exposes
+    `os.fspath`; pystro tests reach pathlib paths through here."""
+    if isinstance(path, (str, bytes)):
+        return path if isinstance(path, str) else path.decode("utf-8", "surrogateescape")
+    f = getattr(path, "__fspath__", None)
+    if f is not None:
+        return f()
+    return str(path)
+
+
 def mkdir(path, mode=0o777, *, dir_fd=None):
+    path = _fspath(path)
     try: return __pystro_makedirs__(path)
     except (NameError, TypeError): raise OSError("mkdir not supported")
 
@@ -205,7 +218,7 @@ def makedirs(path, mode=0o777, exist_ok=False):
 
 
 def rename(src, dst):
-    try: return __pystro_rename__(src, dst)
+    try: return __pystro_rename__(_fspath(src), _fspath(dst))
     except NameError: raise OSError("rename not supported")
 
 
