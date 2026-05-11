@@ -23,28 +23,9 @@ CTX *ARAWK_CURRENT_CTX = NULL;
 // (use it for char[] / double payloads).
 // ---------------------------------------------------------------------------
 
-struct arawk_obj *
-arawk_alloc(int type)
-{
-    struct arawk_obj *o = (struct arawk_obj *)GC_malloc(sizeof(struct arawk_obj));
-    o->type = type;
-    return o;
-}
-
-VALUE
-arawk_make_float(double d)
-{
-    struct arawk_obj *o = arawk_alloc(ARAWK_T_FLOAT);
-    o->dbl = d;
-    return ARAWK_OBJ_VAL(o);
-}
-
-VALUE
-arawk_make_int(int64_t v)
-{
-    if (v >= ARAWK_FIX_MIN && v <= ARAWK_FIX_MAX) return ARAWK_FIX(v);
-    return arawk_make_float((double)v);
-}
+// arawk_alloc / arawk_make_float / arawk_make_int / arawk_int /
+// arawk_make_array are now `static inline` in context.h (they are
+// small and very hot — SD-baked bodies inline them directly).
 
 static VALUE
 arawk_make_string_typed(const char *s, size_t len, int type)
@@ -60,16 +41,6 @@ arawk_make_string_typed(const char *s, size_t len, int type)
 
 VALUE arawk_make_string(const char *s, size_t len) { return arawk_make_string_typed(s, len, ARAWK_T_STRING); }
 VALUE arawk_make_strnum(const char *s, size_t len) { return arawk_make_string_typed(s, len, ARAWK_T_STRNUM); }
-
-VALUE
-arawk_make_array(void)
-{
-    struct arawk_obj *o = arawk_alloc(ARAWK_T_ARRAY);
-    o->arr.bucket_cnt = 16;
-    o->arr.buckets = (struct arawk_array_entry **)GC_malloc(sizeof(struct arawk_array_entry *) * 16);
-    o->arr.entry_cnt = 0;
-    return ARAWK_OBJ_VAL(o);
-}
 
 // ---------------------------------------------------------------------------
 // Numeric / string coercion.  Awk: every value has a number view and a
@@ -373,13 +344,7 @@ arawk_toupper(VALUE v)
     return ARAWK_OBJ_VAL(o);
 }
 
-VALUE
-arawk_int(VALUE v)
-{
-    if (ARAWK_IS_FIX(v)) return v;
-    double d = arawk_to_num(v);
-    return arawk_make_int((int64_t)d);
-}
+// arawk_int is `static inline` in context.h.
 
 // printf format: %d %i %u %o %x %X %c %s %f %e %E %g %G %%.  Width
 // and precision and flags (- + 0 space #) are handled by delegating
@@ -1101,24 +1066,6 @@ arawk_fflush_stream(VALUE dest)
 // ---------------------------------------------------------------------------
 // Special-variable read/write helpers.
 // ---------------------------------------------------------------------------
-
-VALUE
-arawk_get_nr(const CTX *c)
-{
-    return c->env[ARAWK_GLOB_NR];
-}
-
-VALUE
-arawk_get_nf(const CTX *c)
-{
-    return c->env[ARAWK_GLOB_NF];
-}
-
-void
-arawk_set_nr(CTX *c, VALUE v)
-{
-    c->env[ARAWK_GLOB_NR] = v;
-}
 
 // `NF = N` — grow or shrink the current record.  POSIX semantics:
 //   N > NF: extend with "" fields, then rebuild $0 using OFS

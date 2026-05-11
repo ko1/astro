@@ -71,27 +71,14 @@ node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t ind
 }
 
 // ---------------------------------------------------------------------------
-// Special-variable reads (NR / NF).  These read from c->rec / c->env
-// at fixed slots; the input loop updates them.  Writes go through
-// node_lset on the same slot.
-// ---------------------------------------------------------------------------
-
-NODE_DEF
-node_nr(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
-{
-    (void)n; (void)fp;
-    return RESULT_OK(arawk_get_nr(c));
-}
-
-NODE_DEF
-node_nf(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
-{
-    (void)n; (void)fp;
-    return RESULT_OK(arawk_get_nf(c));
-}
-
 // $expr — `$0` if expr evaluates to 0, else $N (numeric coercion of
 // expr).  Returns the field value as a STRNUM string (or "" if N > NF).
+//
+// Note: NR / NF / FS / OFS / ... are *not* their own AST nodes — they
+// resolve to globals_intern's reserved slot via the regular TK_NAME
+// path (so `NF = 5` flows through node_gset which has the FS/NF
+// hooks).
+// ---------------------------------------------------------------------------
 NODE_DEF
 node_dollar(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *idx)
 {

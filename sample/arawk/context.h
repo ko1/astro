@@ -84,18 +84,66 @@ struct CTX_struct;
 extern struct CTX_struct *ARAWK_CURRENT_CTX;
 
 // Allocators (runtime.c).
-struct arawk_obj *arawk_alloc(int type);
-VALUE arawk_make_float (double d);
-VALUE arawk_make_int   (int64_t v);                  // fixnum if fits, else heap float
 VALUE arawk_make_string(const char *s, size_t len);  // type = ARAWK_T_STRING
 VALUE arawk_make_strnum(const char *s, size_t len);  // type = ARAWK_T_STRNUM (field values)
-VALUE arawk_make_array (void);
+
+// Tiny hot allocators — `static inline` so they get inlined into the
+// per-node SD bodies that ASTroGen emits (literal float / int-too-big-
+// for-fixnum literal / each math-builtin result).  Larger heap-shaped
+// allocators (string / strnum / array with bucket init) stay in
+// runtime.c as plain externs.
+static inline struct arawk_obj *
+arawk_alloc(int type)
+{
+    struct arawk_obj *o = (struct arawk_obj *)GC_malloc(sizeof(struct arawk_obj));
+    o->type = type;
+    return o;
+}
+
+static inline VALUE
+arawk_make_float(double d)
+{
+    struct arawk_obj *o = arawk_alloc(ARAWK_T_FLOAT);
+    o->dbl = d;
+    return ARAWK_OBJ_VAL(o);
+}
+
+static inline VALUE
+arawk_make_int(int64_t v)
+{
+    if (LIKELY(v >= ARAWK_FIX_MIN && v <= ARAWK_FIX_MAX)) return ARAWK_FIX(v);
+    return arawk_make_float((double)v);
+}
+
+// `int(x)` builtin — fixnum stays as-is, anything else coerces via
+// arawk_to_num.  arawk_to_num is in runtime.c so this still calls
+// across translation units when the input is non-fixnum, but the
+// fixnum fast path is branch-only.
+double arawk_to_num(VALUE v);
+static inline VALUE
+arawk_int(VALUE v)
+{
+    if (LIKELY(ARAWK_IS_FIX(v))) return v;
+    return arawk_make_int((int64_t)arawk_to_num(v));
+}
+
+// Array allocator — small, hot for `a[...]` first touch.
+struct arawk_array_entry;
+static inline VALUE
+arawk_make_array(void)
+{
+    struct arawk_obj *o = arawk_alloc(ARAWK_T_ARRAY);
+    o->arr.bucket_cnt = 16;
+    o->arr.buckets = (struct arawk_array_entry **)GC_malloc(sizeof(struct arawk_array_entry *) * 16);
+    o->arr.entry_cnt = 0;
+    return ARAWK_OBJ_VAL(o);
+}
 
 // Coercions / accessors.  awk's number/string duality: every value has
 // both a numeric and string view.  Fields and getline input are
 // "string-numeric" (strnum) — they coerce to number if the shape is
-// numeric, otherwise behave as plain strings.
-double      arawk_to_num   (VALUE v);
+// numeric, otherwise behave as plain strings.  (arawk_to_num forward-
+// declared above for arawk_int's inline definition.)
 const char *arawk_to_cstr  (VALUE v, char *buf, size_t buflen, size_t *out_len);
 VALUE       arawk_to_string(VALUE v);  // forces a STRING VALUE
 
@@ -152,7 +200,7 @@ void  arawk_printf(FILE *fp, VALUE fmt, VALUE *args, size_t nargs);
 int64_t arawk_split(VALUE s, VALUE arr, VALUE sep);
 
 // `int(x)` — truncate toward zero.
-VALUE arawk_int(VALUE v);
+// (arawk_int is `static inline` above with the small allocators.)
 
 // Output.
 void  arawk_print_value(FILE *fp, VALUE v);                // OFMT-aware
@@ -303,11 +351,10 @@ extern uint32_t      ARAWK_NODE_TABLE_LEN;
 #define ARAWK_FRAME_MAX 64
 
 // Special-variable access helpers used by node_eval / runtime.
-VALUE arawk_get_nr (const CTX *c);
-VALUE arawk_get_nf (const CTX *c);
+// NR / NF / FS / ... are read/written via env[ARAWK_GLOB_*] directly
+// through node_gget / node_gset; no dedicated accessor.
 VALUE arawk_get_field (CTX *c, int64_t n);   // $0 / $N
 VALUE arawk_get_field_v (CTX *c, VALUE idx); // $(expr)
-void  arawk_set_nr (CTX *c, VALUE v);
 void  arawk_set_nf (CTX *c, VALUE v);
 void  arawk_set_field (CTX *c, int64_t n, VALUE v);
 
