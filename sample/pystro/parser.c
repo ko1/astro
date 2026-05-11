@@ -1455,15 +1455,24 @@ parse_list_literal(void)
         return ALLOC_node_seq(init, ALLOC_node_seq(loops, load_tmp));
     }
     comp_remap_top = saved_remap_lc;
-    NODE *items[2048];
-    int n = 0; items[n++] = first;
+    // CPython's test_longexp exercises 64K-element list literals.
+    // Use heap storage with exponential growth so we don't blow the
+    // C stack on enormous literals.
+    size_t cap = 256;
+    NODE **items = (NODE **)malloc(sizeof(NODE *) * cap);
+    int n = 0;
+    items[n++] = first;
     while (match_tok(T_COMMA)) {
         if (peek_tok(0)->kind == T_RBRACK) break;
-        if (n >= 2048) parse_error("list literal too long");
+        if ((size_t)n >= cap) {
+            cap *= 2;
+            items = (NODE **)realloc(items, sizeof(NODE *) * cap);
+        }
         items[n++] = parse_expr();
     }
     expect(T_RBRACK, "']'");
     size_t base = node_table_reserve(items, n);
+    free(items);
     return ALLOC_node_make_list((uint32_t)base, (uint32_t)n);
 }
 

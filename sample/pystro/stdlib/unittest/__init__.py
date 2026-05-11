@@ -157,6 +157,21 @@ class TestCase:
     def assertTupleEqual(self, a, b, msg=""):
         self.assertSequenceEqual(a, b, msg, seq_type=tuple)
 
+    def assertMultiLineEqual(self, a, b, msg=""):
+        # Same as assertEqual for plain strings — pystro doesn't show
+        # the per-line unified diff CPython produces but the truth-value
+        # branch is what tests check.
+        if a != b:
+            self.fail(msg or (repr(a) + " != " + repr(b)))
+
+    def assertDictEqual(self, a, b, msg=""):
+        if a != b:
+            self.fail(msg or (repr(a) + " != " + repr(b)))
+
+    def assertSetEqual(self, a, b, msg=""):
+        if set(a) != set(b):
+            self.fail(msg or (repr(a) + " != " + repr(b)))
+
     def assertDictEqual(self, a, b, msg=""):
         if a != b:
             self.fail(msg or (repr(a) + " != " + repr(b)))

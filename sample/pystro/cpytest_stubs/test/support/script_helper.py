@@ -38,6 +38,12 @@ def run_test_script(*args, **kwargs):
     raise unittest.SkipTest("subprocess not supported")
 
 
+def _assert_python(expected_success, /, *args, **env_vars):
+    """Internal helper used by assert_python_*; pystro has no
+    subprocess, so any caller observing this should also be SkipTest'd."""
+    raise unittest.SkipTest("subprocess not supported")
+
+
 __all__ = ["assert_python_ok", "assert_python_failure", "run_python_until_end",
            "spawn_python", "kill_python", "make_script", "make_zip_script",
            "interpreter_requires_environment", "run_test_script"]
