@@ -13878,6 +13878,10 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // html stub does a manual scan over html.entities.html5 to
         // implement unescape with the same semantics.
         "html/__init__.py",
+        // textwrap — CPython's dedent uses re.MULTILINE flags pystro re
+        // doesn't model.  Pystro's stub does a manual line-by-line
+        // dedent that matches the CPython semantics.
+        "textwrap.py",
         NULL,
     };
     bool pystro_wins = false;
