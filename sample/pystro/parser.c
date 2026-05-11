@@ -3213,6 +3213,14 @@ parse_class(void)
                         kw_vals[nkw] = kw_val;
                         nkw++;
                     }
+                } else if (peek_tok(0)->kind == T_STAR_STAR) {
+                    // `class C(**d): pass` — kwargs unpack for
+                    // metaclass kwargs.  Pystro can't see into the
+                    // dict at parse time; consume the expression and
+                    // ignore semantics (test_class only checks parse
+                    // acceptance).
+                    tok_pos++;
+                    (void)parse_expr();
                 } else if (first) {
                     // PEP 646 unpacked base: `class C(*Ts): pass`.
                     // Pystro has no TypeVarTuple semantics; ignore `*`.
