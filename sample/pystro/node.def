@@ -1693,6 +1693,9 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
     pys_func_set_local_names(fn, ln, (int)nlocals);
     PYS_PTR(fn)->func.n_pos_only = n_pos_only;
     PYS_PTR(fn)->func.is_async = is_async;
+    // Override the body-line default with the `def` keyword line so
+    // co_firstlineno matches CPython.
+    if (n && n->head.line > 0) PYS_PTR(fn)->func.first_line = n->head.line;
     // Docstring: if body's leftmost-spine leaf is a const_str, stash
     // it as `__doc__` on the func.
     {

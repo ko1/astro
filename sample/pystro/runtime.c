@@ -584,6 +584,7 @@ pys_make_func(struct Node *body, struct pysframe *env,
     o->func.has_varargs = has_varargs;
     o->func.has_kwargs = has_kwargs;
     o->func.is_generator = is_generator;
+    o->func.first_line = body ? body->head.line : 0;
     // Copy param_names into a private GC-managed array.  The caller
     // may pass a pointer into PYS_NAME_TABLE which can be moved by
     // a later GC_realloc; per-func storage is stable.
@@ -5399,10 +5400,7 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                               | (o->func.has_kwargs  ? 0x08 : 0)));
             pys_setattr(c, code, "co_filename",
                        pys_make_str("<pystro>", 8));
-            // Body's root node carries the first source-line stamped
-            // by the parser at allocation time.
-            int first_line = (o->func.body) ? o->func.body->head.line : 0;
-            pys_setattr(c, code, "co_firstlineno", PYS_FIX(first_line));
+            pys_setattr(c, code, "co_firstlineno", PYS_FIX(o->func.first_line));
             return code;
         }
         if (strcmp(name, "__globals__") == 0) return PYS_NONE;

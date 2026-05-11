@@ -259,6 +259,7 @@ struct pysobj {
                                     // used for cooperative super()
             struct pysglobals *fglobals;  // captured globals at def time
             struct pysdict *attrs;   // user-set attributes (`f.x = 5`); lazy
+            int first_line;          // source line of the `def` / `lambda` keyword
         } func;
         // PYS_T_MODULE: name + its globals.
         struct {
