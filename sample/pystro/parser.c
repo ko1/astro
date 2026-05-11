@@ -226,6 +226,18 @@ parse_error(const char *fmt, ...)
         parse_error_line = t ? t->line : 0;
         longjmp(*parse_error_jmp, 1);
     }
+    // Debug: dump 5 tokens around tok_pos so we can see what the parser
+    // is looking at when the error fires.
+    if (getenv("PYSTRO_PARSE_DEBUG")) {
+        for (int i = -3; i <= 3; i++) {
+            if ((int)tok_pos + i < 0) continue;
+            if ((size_t)((int)tok_pos + i) >= tok_len) break;
+            Tok *tt = &tok_arr[tok_pos + i];
+            fprintf(stderr, "  [%c%d] kind=%d line=%d%s\n",
+                    i == 0 ? '*' : ' ', i, tt->kind, tt->line,
+                    tt->kind == T_NAME && tt->sval ? tt->sval : "");
+        }
+    }
     fprintf(stderr, "pystro: %s:%d: parse error: ",
             src_filename ? src_filename : "<input>", t ? t->line : 0);
     va_list ap; va_start(ap, fmt);
