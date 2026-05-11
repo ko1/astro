@@ -3764,6 +3764,7 @@ pys_contains(CTX *c, VALUE container, VALUE v)
         if (m != PYS_NONE) {
             VALUE av[2] = { container, v };
             VALUE r = pys_apply(c, m, 2, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return false;
             return pys_is_truthy(r);
         } else if (pys_class_has_method(cls, "__contains__")) {
             // The class explicitly defines __contains__ as None.
