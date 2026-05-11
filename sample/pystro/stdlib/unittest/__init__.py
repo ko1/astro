@@ -431,6 +431,12 @@ def main(scope=None, *args, **kwargs):
             except SkipTest as e:
                 skipped += 1
                 print("skip", cls.__name__, mn, ":", e)
+            except SystemExit as e:
+                # A test that calls sys.exit() (e.g. argparse `-h`) would
+                # otherwise terminate the whole sweep; record as failure.
+                failed += 1
+                print("FAIL", cls.__name__ if hasattr(cls, "__name__") else "?", mn,
+                      ": SystemExit(" + str(getattr(e, "code", "")) + ")")
             except Exception as e:
                 failed += 1
                 print("FAIL", cls.__name__ if hasattr(cls, "__name__") else "?", mn, ":", e)
