@@ -412,6 +412,102 @@ node_iadd(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_ca
     return pys_add(c, av, bv);
 }
 
+// Helper macro for aug-assign nodes: try instance.__iX__(b) first; on
+// NotImplemented or absent, fall through to the regular binop.
+#define PYS_AUG_ASSIGN_DUNDER(iname, fallback_fn)                                \
+    do {                                                                          \
+        if (PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE) {              \
+            extern VALUE pys_class_lookup_method(VALUE cls, const char *name);    \
+            VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(av)->inst.cls), \
+                                              iname);                             \
+            if (m != PYS_NONE) {                                                  \
+                VALUE av_arr[2] = { av, bv };                                     \
+                VALUE r = pys_apply(c, m, 2, av_arr);                             \
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;              \
+                if (!(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL))        \
+                    return r;                                                     \
+            }                                                                     \
+        }                                                                         \
+        return fallback_fn(c, av, bv);                                            \
+    } while (0)
+
+NODE_DEF
+node_imul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(!av)) return 0;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!bv)) return 0;
+    PYS_AUG_ASSIGN_DUNDER("__imul__", pys_mul);
+}
+
+NODE_DEF
+node_isub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(!av)) return 0;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!bv)) return 0;
+    PYS_AUG_ASSIGN_DUNDER("__isub__", pys_sub);
+}
+
+NODE_DEF
+node_ifloordiv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(!av)) return 0;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!bv)) return 0;
+    PYS_AUG_ASSIGN_DUNDER("__ifloordiv__", pys_fdiv);
+}
+
+NODE_DEF
+node_imod(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(!av)) return 0;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!bv)) return 0;
+    PYS_AUG_ASSIGN_DUNDER("__imod__", pys_mod);
+}
+
+NODE_DEF
+node_iand(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(!av)) return 0;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!bv)) return 0;
+    PYS_AUG_ASSIGN_DUNDER("__iand__", pys_bit_and);
+}
+
+NODE_DEF
+node_ior(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(!av)) return 0;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!bv)) return 0;
+    PYS_AUG_ASSIGN_DUNDER("__ior__", pys_bit_or);
+}
+
+NODE_DEF
+node_ixor(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(!av)) return 0;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!bv)) return 0;
+    PYS_AUG_ASSIGN_DUNDER("__ixor__", pys_bit_xor);
+}
+
 NODE_DEF
 node_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct binop_cache *cache@ref)
 {

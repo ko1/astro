@@ -3959,14 +3959,14 @@ augop_apply(int kind, NODE *lhs, NODE *rhs)
 {
     switch (kind) {
       case T_PLUS_EQ:        return ALLOC_node_iadd(lhs, rhs);
-      case T_MINUS_EQ:       return ALLOC_node_sub(lhs, rhs);
-      case T_STAR_EQ:        return ALLOC_node_mul(lhs, rhs);
+      case T_MINUS_EQ:       return ALLOC_node_isub(lhs, rhs);
+      case T_STAR_EQ:        return ALLOC_node_imul(lhs, rhs);
       case T_SLASH_EQ:       return ALLOC_node_truediv(lhs, rhs);
-      case T_SLASH_SLASH_EQ: return ALLOC_node_floordiv(lhs, rhs);
-      case T_PERCENT_EQ:     return ALLOC_node_mod(lhs, rhs);
-      case T_AMP_EQ:         return ALLOC_node_bit_and(lhs, rhs);
-      case T_PIPE_EQ:        return ALLOC_node_bit_or(lhs, rhs);
-      case T_CARET_EQ:       return ALLOC_node_bit_xor(lhs, rhs);
+      case T_SLASH_SLASH_EQ: return ALLOC_node_ifloordiv(lhs, rhs);
+      case T_PERCENT_EQ:     return ALLOC_node_imod(lhs, rhs);
+      case T_AMP_EQ:         return ALLOC_node_iand(lhs, rhs);
+      case T_PIPE_EQ:        return ALLOC_node_ior(lhs, rhs);
+      case T_CARET_EQ:       return ALLOC_node_ixor(lhs, rhs);
       case T_LSHIFT_EQ:      return ALLOC_node_lshift(lhs, rhs);
       case T_RSHIFT_EQ:      return ALLOC_node_rshift(lhs, rhs);
       case T_STAR_STAR_EQ:   return ALLOC_node_pow(lhs, rhs);
