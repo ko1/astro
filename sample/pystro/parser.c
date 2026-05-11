@@ -1698,6 +1698,8 @@ parse_lambda(void)
     bool saw_star = false;
     if (peek_tok(0)->kind != T_COLON) {
         for (;;) {
+            // Trailing comma before `:` — break out cleanly.
+            if (peek_tok(0)->kind == T_COLON) break;
             // *args
             if (match_tok(T_STAR)) {
                 if (peek_tok(0)->kind == T_COMMA || peek_tok(0)->kind == T_COLON) {
@@ -3356,12 +3358,32 @@ parse_pattern_atom(void)
             || k == T_NONE || k == T_TRUE || k == T_FALSE) {
         p.kind = PYPAT_LITERAL;
         p.literal = parse_atom();
+        // Complex literal pattern: real `+`/`-` imag_literal.
+        if ((peek_tok(0)->kind == T_PLUS || peek_tok(0)->kind == T_MINUS)
+                && (peek_tok(1)->kind == T_IMAG || peek_tok(1)->kind == T_INT
+                    || peek_tok(1)->kind == T_FLOAT)) {
+            bool neg = (peek_tok(0)->kind == T_MINUS);
+            tok_pos++;
+            NODE *imag = parse_atom();
+            if (neg) imag = ALLOC_node_neg(imag);
+            p.literal = ALLOC_node_add(p.literal, imag);
+        }
         return pat_alloc(p);
     }
     if (k == T_MINUS) {
-        // negative literal
+        // negative literal, optionally followed by `+/-` imag for the
+        // complex form `-1 + 2j` / `-1 - 2j`.
         p.kind = PYPAT_LITERAL;
         p.literal = parse_factor();
+        if ((peek_tok(0)->kind == T_PLUS || peek_tok(0)->kind == T_MINUS)
+                && (peek_tok(1)->kind == T_IMAG || peek_tok(1)->kind == T_INT
+                    || peek_tok(1)->kind == T_FLOAT)) {
+            bool neg = (peek_tok(0)->kind == T_MINUS);
+            tok_pos++;
+            NODE *imag = parse_atom();
+            if (neg) imag = ALLOC_node_neg(imag);
+            p.literal = ALLOC_node_add(p.literal, imag);
+        }
         return pat_alloc(p);
     }
     if (k == T_NAME) {
