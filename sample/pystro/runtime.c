@@ -6812,7 +6812,30 @@ pys_gen_next(CTX *c, VALUE gen_v)
     c->globals = saved_g;
     c->current_gen = saved_cg;
 
-    if (raised) { c->state = PYS_STATE_RAISE; c->state_value = exc; return PYS_NONE; }
+    if (raised) {
+        // PEP 479: when the generator body itself raises StopIteration
+        // (vs. naturally exhausting), wrap it in RuntimeError so the
+        // caller's iteration loop doesn't silently terminate.  Implicit
+        // exhaust takes the `was_done` path below and is not affected.
+        if (pys_is_instance(exc)
+                && class_is_ancestor(PYS_OBJ_VAL(PYS_PTR(exc)->inst.cls),
+                                     c->EXC_StopIteration)) {
+            VALUE re = pys_make_instance(c->EXC_RuntimeError);
+            VALUE msg = pys_make_str("generator raised StopIteration",
+                                     strlen("generator raised StopIteration"));
+            VALUE args = pys_make_tuple(&msg, 1);
+            pys_setattr(c, re, "args", args);
+            pys_setattr(c, re, "message", msg);
+            pys_setattr(c, re, "__cause__", exc);
+            pys_setattr(c, re, "__context__", exc);
+            pys_setattr(c, re, "__suppress_context__", PYS_TRUE);
+            pys_setattr(c, re, "__traceback__", PYS_NONE);
+            c->state = PYS_STATE_RAISE;
+            c->state_value = re;
+            return PYS_NONE;
+        }
+        c->state = PYS_STATE_RAISE; c->state_value = exc; return PYS_NONE;
+    }
     if (was_done) {
         VALUE si = pys_make_instance(c->EXC_StopIteration);
         pys_setattr(c, si, "value", g->return_value);
