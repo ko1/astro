@@ -3922,12 +3922,18 @@ pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable)
     if (pys_is_dict(iterable) || pys_is_any_set(iterable)) {
         it->kind = 3;
         it->end = (int64_t)PYS_PTR(iterable)->dict->elen;
-        // CPython parity (bpo-46615): snapshot `used` (live count) at
-        // iter creation.  iter_next raises RuntimeError if used changes
-        // mid-iteration.  Note: this is more lenient than version — a
-        // clear+refill that ends with the same count won't trigger
-        // (test_iter_and_mutate / issue 24581 depends on this).
-        it->version_snapshot = (uint64_t)PYS_PTR(iterable)->dict->used;
+        // CPython parity:
+        //   - dict: snapshot `version` (every mutation bumps); del+set
+        //     during iteration must raise RuntimeError even when count
+        //     is unchanged (test_mutating_iteration_delete).
+        //   - set : snapshot `used` (live count only); a clear+refill
+        //     back to the same count must NOT raise (test_iter_and_mutate,
+        //     issue 24581).
+        // High bit flags which mode iter_next should use.
+        if (pys_is_dict(iterable))
+            it->version_snapshot = PYS_PTR(iterable)->dict->version | (1ULL << 63);
+        else
+            it->version_snapshot = (uint64_t)PYS_PTR(iterable)->dict->used;
         return;
     }
     // Already-an-iterator (PYS_T_ITER created by `iter(seq)` builtin):
@@ -4117,7 +4123,12 @@ pys_iter_next(CTX *c, struct pys_iter *it, VALUE *out)
         return true;
       case 3: {
         struct pysdict *d = PYS_PTR(it->container)->dict;
-        if (UNLIKELY((uint64_t)d->used != it->version_snapshot)) {
+        // High bit set ⇒ version snapshot (dict mode); else used count.
+        bool use_version = (it->version_snapshot & (1ULL << 63)) != 0;
+        uint64_t now = use_version
+            ? (d->version | (1ULL << 63))
+            : (uint64_t)d->used;
+        if (UNLIKELY(now != it->version_snapshot)) {
             const char *kind = pys_is_any_set(it->container) ? "Set" : "dictionary";
             PYS_RAISE_EXC(c, c->EXC_RuntimeError,
                           "%s changed size during iteration", kind);
@@ -4348,6 +4359,41 @@ bi_dunder_dict_or(CTX *c, int argc, VALUE *argv)
         return PYS_NONE;
     }
     return pys_bit_or(c, argv[0], argv[1]);
+}
+
+// dict.__ior__(self, other) — CPython parity: accepts any iterable that
+// yields (key, value) pairs (`dict.update(other)` semantics), unlike
+// __or__ which only accepts a dict.  Returns self.  Raises TypeError on
+// None / non-iterable, ValueError if a pair has length != 2.
+VALUE
+bi_dunder_dict_ior(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE self = argv[0];
+    VALUE other = argv[1];
+    if (pys_is_dict(other)) {
+        struct pysdict *src = PYS_PTR(other)->dict;
+        for (size_t i = 0; i < src->elen; i++)
+            if (pydict_entry_live(src, i))
+                pys_dict_set(c, self, src->entries[i].key, src->entries[i].value);
+        return self;
+    }
+    // Iterable of (key, value) pairs.  None / non-iterable → TypeError.
+    struct pys_iter it; pys_iter_init(c, &it, other);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    VALUE x;
+    while (pys_iter_next(c, &it, &x)) {
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (!(pys_is_list(x) || pys_is_tuple(x)))
+            PYS_RAISE_EXC(c, c->EXC_ValueError,
+                "dictionary update sequence element is not a pair");
+        if (PYS_PTR(x)->list.len != 2)
+            PYS_RAISE_EXC(c, c->EXC_ValueError,
+                "dictionary update sequence element has length %zu; 2 required",
+                PYS_PTR(x)->list.len);
+        pys_dict_set(c, self, PYS_PTR(x)->list.items[0], PYS_PTR(x)->list.items[1]);
+    }
+    return self;
 }
 // __next__ for iterators — exposes the iter's pys_iter_next as a method.
 static VALUE
@@ -4587,6 +4633,7 @@ pys_dunder_bound(CTX *c, VALUE recv, const char *name)
         { "__length_hint__", bi_dunder_length_hint, 1, 1 },
         { "__next__",     bi_dunder_next,     1, 1 },
         { "__or__",       bi_dunder_dict_or,  2, 2 },
+        { "__ior__",      bi_dunder_dict_ior, 2, 2 },
         { "__eq__",       bi_dunder_eq,       2, 2 },
         { "__ne__",       bi_dunder_ne,       2, 2 },
         { "__hash__",     bi_dunder_hash,     1, 1 },
@@ -11737,10 +11784,16 @@ bi_hasattr(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_getattr(CTX *c, int argc, VALUE *argv)
 {
-    if (!pys_is_str(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "getattr name must be str");
-    size_t L = PYS_PTR(argv[1])->str.len;
+    // Accept str subclass instances (their primary is a str).
+    VALUE name_v = argv[1];
+    if (!pys_is_str(name_v)) {
+        VALUE up = pys_unwrap_primary(name_v);
+        if (pys_is_str(up)) name_v = up;
+        else PYS_RAISE_EXC(c, c->EXC_TypeError, "getattr name must be str");
+    }
+    size_t L = PYS_PTR(name_v)->str.len;
     char *namebuf = (char *)GC_malloc_atomic(L + 1);
-    memcpy(namebuf, PYS_PTR(argv[1])->str.chars, L);
+    memcpy(namebuf, PYS_PTR(name_v)->str.chars, L);
     namebuf[L] = '\0';
     const char *name = namebuf;
     if (argc < 3) return pys_getattr(c, argv[0], name);
@@ -11759,12 +11812,17 @@ static VALUE
 bi_setattr(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!pys_is_str(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "setattr name must be str");
+    VALUE name_v = argv[1];
+    if (!pys_is_str(name_v)) {
+        VALUE up = pys_unwrap_primary(name_v);
+        if (pys_is_str(up)) name_v = up;
+        else PYS_RAISE_EXC(c, c->EXC_TypeError, "setattr name must be str");
+    }
     // String may be slice-borrowed (no NUL terminator within bounds);
     // copy to a small heap buffer so strlen sees the right length.
-    size_t L = PYS_PTR(argv[1])->str.len;
+    size_t L = PYS_PTR(name_v)->str.len;
     char *buf = (char *)GC_malloc_atomic(L + 1);
-    memcpy(buf, PYS_PTR(argv[1])->str.chars, L);
+    memcpy(buf, PYS_PTR(name_v)->str.chars, L);
     buf[L] = '\0';
     pys_setattr(c, argv[0], buf, argv[2]);
     return PYS_NONE;

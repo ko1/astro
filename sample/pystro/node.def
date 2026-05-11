@@ -525,6 +525,13 @@ node_ior(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
     if (UNLIKELY(!av)) return 0;
     VALUE bv = EVAL_ARG(c, b);
     if (UNLIKELY(!bv)) return 0;
+    // dict |= iterable — CPython parity (PEP 584).  `__or__` only accepts
+    // dict, but `__ior__` accepts any iterable of (k, v) pairs.
+    if (PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_DICT) {
+        extern VALUE bi_dunder_dict_ior(CTX *c, int argc, VALUE *argv);
+        VALUE av_arr[2] = { av, bv };
+        return bi_dunder_dict_ior(c, 2, av_arr);
+    }
     PYS_AUG_ASSIGN_DUNDER("__ior__", pys_bit_or);
 }
 
