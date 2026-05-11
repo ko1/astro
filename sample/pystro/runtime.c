@@ -10746,29 +10746,35 @@ bm_endswith(CTX *c, int argc, VALUE *argv)
     return memcmp(tail_end - p->str.len, p->str.chars, p->str.len) == 0 ? PYS_TRUE : PYS_FALSE;
 }
 
-// bytes.strip / lstrip / rstrip — whitespace only by default.
+// bytes.strip / lstrip / rstrip — whitespace by default, or any byte
+// in the bytes-like arg passed as argv[1].
 static VALUE
 bm_strip_impl(CTX *c, int argc, VALUE *argv, bool left, bool right)
 {
-    (void)c; (void)argc;
+    (void)c;
     struct pysobj *s = PYS_PTR(argv[0]);
+    const unsigned char *chars = (const unsigned char *)s->str.chars;
     size_t start = 0, end = s->str.len;
-    if (left) {
-        while (start < end) {
-            unsigned char ch = s->str.chars[start];
-            if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') start++;
-            else break;
-        }
+    const unsigned char *set = NULL;
+    size_t nset = 0;
+    if (argc >= 2 && argv[1] != PYS_NONE) {
+        if (!pys_is_byteseq(argv[1]))
+            PYS_RAISE_EXC(c, c->EXC_TypeError, "strip: a bytes-like object is required");
+        struct pysobj *sp = PYS_PTR(argv[1]);
+        set = (const unsigned char *)sp->str.chars;
+        nset = sp->str.len;
     }
-    if (right) {
-        while (end > start) {
-            unsigned char ch = s->str.chars[end - 1];
-            if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') end--;
-            else break;
-        }
-    }
+    #define IS_STRIP(ch) (set ? ({                              \
+        bool _hit = false;                                      \
+        for (size_t _i = 0; _i < nset; _i++)                    \
+            if (set[_i] == (ch)) { _hit = true; break; }        \
+        _hit;                                                   \
+    }) : ((ch) == ' ' || (ch) == '\t' || (ch) == '\n' || (ch) == '\r'))
+    if (left)  while (start < end && IS_STRIP(chars[start])) start++;
+    if (right) while (end > start && IS_STRIP(chars[end - 1])) end--;
+    #undef IS_STRIP
     char *buf = (char *)GC_malloc_atomic(end - start + 1);
-    memcpy(buf, s->str.chars + start, end - start);
+    memcpy(buf, chars + start, end - start);
     buf[end - start] = '\0';
     return pys_is_bytearray(argv[0]) ? pys_make_bytearray(buf, end - start)
                                     : pys_make_bytes(buf, end - start);

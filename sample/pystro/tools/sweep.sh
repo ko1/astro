@@ -48,6 +48,11 @@ classify_one() {
         kind="MIXED"
     elif grep -qE "^OK\b|^passed=[0-9]+ failed=0" "$log"; then
         kind="PASS"
+    elif grep -q "^SkipTest:\|^unittest.SkipTest:\|raise unittest\.SkipTest\b" "$log"; then
+        # File-level SkipTest before any unittest runner started:
+        # treat as SKIP rather than OTHER (the test would skip on
+        # CPython too if the resource were missing).
+        kind="SKIP"
     else
         kind="OTHER"
     fi

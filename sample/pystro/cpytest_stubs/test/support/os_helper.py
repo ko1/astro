@@ -14,6 +14,11 @@ TESTFN = os.path.join(tempfile.gettempdir(), _TESTFN_BASE)
 TESTFN_ASCII = TESTFN
 TESTFN_UNICODE = TESTFN
 TESTFN_NONASCII = TESTFN + "\xe9"
+# A name that's *not* decodable in the FS encoding — CPython probes for
+# one; pystro just hands back a name with surrogate-style bytes so
+# tests that gate on `if TESTFN_UNDECODABLE is None: skip` proceed.
+TESTFN_UNDECODABLE = None
+TESTFN_UNENCODABLE = None
 
 
 def unlink(path):

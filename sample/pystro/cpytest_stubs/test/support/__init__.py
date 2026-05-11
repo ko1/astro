@@ -731,6 +731,29 @@ def skip_if_pgo_task(test):
     return test
 
 
+def sortdict(d):
+    """Like repr(dict), but in sorted-key order."""
+    items = sorted(d.items())
+    return "{" + ", ".join("%r: %r" % (k, v) for k, v in items) + "}"
+
+
+def patch_list(orig):
+    """Context manager that restores ``orig`` to its pre-mutation state
+    (CPython uses this for sys.warnoptions etc.)."""
+    class _Ctx:
+        def __enter__(self_inner):
+            self_inner._saved = list(orig)
+        def __exit__(self_inner, *exc):
+            orig[:] = self_inner._saved
+            return False
+    return _Ctx()
+
+
+# CPython 3.13 introduces this constant for tests probing low-byte
+# control characters; expose a plausible list.
+control_characters_c0 = "".join(chr(i) for i in range(0x20)) + "\x7f"
+
+
 def patch(test_instance, object_to_patch, attr_name, new_value):
     """Override `object_to_patch.attr_name` with `new_value`, restoring
     on test teardown via test_instance.addCleanup."""
