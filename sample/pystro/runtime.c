@@ -14428,7 +14428,23 @@ bi_import(CTX *c, int argc, VALUE *argv)
                     const char *child = last_dot + 1;
                     struct pysglobals *saved = c->globals;
                     c->globals = PYS_PTR(parent)->module.globals;
-                    pys_global_set(c, child, mod);
+                    // Only attach the submodule to the parent if the
+                    // parent doesn't already expose a different value
+                    // for `child`.  CPython precedent: a parent's
+                    // module-level `def main(): ...` should not be
+                    // silently shadowed by a same-named submodule when
+                    // the submodule is loaded later.  (unittest.main /
+                    // os.path / multiprocessing.connection are
+                    // examples — pystro's bundled unittest defines
+                    // `main` as a function; eagerly attaching the
+                    // cpython unittest/main.py submodule broke
+                    // `from unittest import main as foo; foo()`.)
+                    VALUE existing = PYS_NONE;
+                    if (!pys_global_lookup(c, child, &existing)
+                        || existing == PYS_NONE
+                        || pys_is_module(existing)) {
+                        pys_global_set(c, child, mod);
+                    }
                     c->globals = saved;
                 }
             }
