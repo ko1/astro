@@ -952,6 +952,18 @@ def thread_cleanup():
     return (0, ())
 
 
+def skip_on_s390x(fn):
+    return fn
+
+
+def iter_slot_wrappers(cls):
+    return iter(())
+
+
+def requires_venv_with_pip(fn):
+    return _unittest.skip("venv/pip not supported")(fn)
+
+
 def darwin_malloc_err_warning(name):
     pass
 

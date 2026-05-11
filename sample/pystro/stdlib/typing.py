@@ -70,6 +70,14 @@ class Generic:
 # AnyStr is a typevar.
 AnyStr = "AnyStr"
 Self = "Self"
+T = "T"
+K = "K"
+V = "V"
+S = "S"
+KT = "KT"
+VT = "VT"
+T_co = "T_co"
+T_contra = "T_contra"
 Never = _GenericAlias(lambda: None, "typing.Never")
 LiteralString = _GenericAlias(str, "typing.LiteralString")
 Required = _GenericAlias(lambda x: x, "typing.Required")

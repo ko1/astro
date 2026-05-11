@@ -76,6 +76,14 @@ def get_start_method(allow_none=False):
     return "fork"
 
 
+def get_all_start_methods():
+    return ["fork"]
+
+
+def set_executable(path):
+    pass
+
+
 # Exception types CPython exposes at top-level.
 class AuthenticationError(Exception):
     pass

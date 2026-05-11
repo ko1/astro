@@ -69,3 +69,11 @@ def set_spawning_popen(popen):
 
 def assert_spawning(obj):
     pass
+
+
+# multiprocessing.context exposes the package-level exception aliases.
+import multiprocessing as _mp_pkg
+ProcessError = _mp_pkg.ProcessError
+AuthenticationError = _mp_pkg.AuthenticationError
+BufferTooShort = _mp_pkg.BufferTooShort
+TimeoutError = _mp_pkg.TimeoutError

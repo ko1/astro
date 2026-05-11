@@ -405,6 +405,15 @@ meta_path = []
 path_hooks = []
 path_importer_cache = {}
 
+
+# Original streams: CPython preserves the un-redirected stdio as
+# __stdout__ / __stderr__ / __stdin__ so test frameworks can swap
+# back if they monkeypatched them.  Pystro never redirects, so they
+# all alias the live streams.
+__stdout__ = stdout
+__stderr__ = stderr
+__stdin__ = stdin
+
 # Build / interpreter metadata referenced by some CPython tests.  Pystro
 # isn't CPython; report enough surface so attribute access doesn't break.
 _git = ("CPython", "", "")
