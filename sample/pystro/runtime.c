@@ -6735,12 +6735,13 @@ pys_gen_next(CTX *c, VALUE gen_v)
 {
     struct pysgen *g = PYS_PTR(gen_v)->gen;
     if (g->done) {
-        // Set RAISE without longjmp so the caller's iter loop can
-        // catch StopIteration without setjmp gymnastics.
-        c->state = PYS_STATE_RAISE;
+        // Build the StopIteration *before* flipping state to RAISE —
+        // pys_setattr / pys_make_instance run nested calls that bail
+        // out early when c->state == RAISE, so setting it first would
+        // strand the instance without .value / .args attributes.
         VALUE si = pys_make_instance(c->EXC_StopIteration);
-        pys_setattr(c, si, "value",
-                   g->return_value ? g->return_value : PYS_NONE);
+        VALUE rv = g->return_value ? g->return_value : PYS_NONE;
+        pys_setattr(c, si, "value", rv);
         // CPython's exception protocol expects __traceback__ /
         // __context__ / __cause__ on every Exception instance — even
         // those created without going through __init__.
@@ -6748,7 +6749,11 @@ pys_gen_next(CTX *c, VALUE gen_v)
         pys_setattr(c, si, "__context__", PYS_NONE);
         pys_setattr(c, si, "__cause__", PYS_NONE);
         pys_setattr(c, si, "__suppress_context__", PYS_FALSE);
-        pys_setattr(c, si, "args", pys_make_tuple(NULL, 0));
+        if (rv != PYS_NONE)
+            pys_setattr(c, si, "args", pys_make_tuple(&rv, 1));
+        else
+            pys_setattr(c, si, "args", pys_make_tuple(NULL, 0));
+        c->state = PYS_STATE_RAISE;
         c->state_value = si;
         return PYS_NONE;
     }
@@ -7365,10 +7370,16 @@ pys_run_with(CTX *c, VALUE cm, NODE *body)
         VALUE r = pys_apply(c, exit_m, 3, av);
         if (c->state == PYS_STATE_RAISE) {
             // __exit__ raised — set the new exc's __context__ to the
-            // original (CPython chains exceptions this way).
+            // original (CPython chains exceptions this way).  Clear
+            // RAISE first so pys_setattr's internal method lookups /
+            // applies don't bail out early; restore it afterwards.
             VALUE new_exc = c->state_value;
             if (pys_is_instance(new_exc) && new_exc != exc) {
+                c->state = PYS_STATE_NORMAL;
+                c->state_value = PYS_NONE;
                 pys_setattr(c, new_exc, "__context__", exc);
+                c->state = PYS_STATE_RAISE;
+                c->state_value = new_exc;
             }
             return 0;
         }
@@ -13997,9 +14008,12 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // Module init raised — restore caller's globals first, then
         // re-raise so the caller's try/except (running on the original
         // globals) sees it.  Remove the placeholder so a retry won't
-        // see the half-initialised module.
-        pys_dict_remove(c, mod_dict, argv[0]);
+        // see the half-initialised module.  pys_dict_remove bails out
+        // when state == RAISE, so clear it across the remove call.
         VALUE exc = c->state_value;
+        c->state = PYS_STATE_NORMAL;
+        c->state_value = PYS_NONE;
+        pys_dict_remove(c, mod_dict, argv[0]);
         c->globals = saved_g;
         free(src);
         c->state = PYS_STATE_RAISE;

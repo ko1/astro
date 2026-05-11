@@ -788,10 +788,14 @@ node_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return r == -1 ? PYS_TRUE : PYS_FALSE;
         }
     }
-    // Try b.__gt__(a) before falling into pys_cmp's hard-coded TypeError —
-    // CPython rich comparison: `set < instance` consults instance.__gt__.
-    // Try b.__gt__(a) — CPython rich comparison fallback for `set < instance`.
-    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE) {
+    // Try b.__gt__(a) only when a is *not* a user instance — CPython
+    // rich comparison: `set < instance` (a has no __lt__) consults
+    // instance.__gt__.  When av is itself an INSTANCE we must defer
+    // to pys_cmp first (which calls a.__lt__(b)); calling b.__gt__(a)
+    // ahead would, for symmetric pairs (e.g. Decimal < Decimal whose
+    // __gt__ is `not (self <= other)`), recurse through __le__/__lt__.
+    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE
+        && !(PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE)) {
         extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
         VALUE bcls = PYS_OBJ_VAL(PYS_PTR(bv)->inst.cls);
         VALUE m = pys_class_lookup_method(bcls, "__gt__");
@@ -833,7 +837,8 @@ node_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return (r == -1 || r == 0) ? PYS_TRUE : PYS_FALSE;
         }
     }
-    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE) {
+    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE
+        && !(PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE)) {
         extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(bv)->inst.cls), "__ge__");
         if (m != PYS_NONE) {
@@ -874,7 +879,8 @@ node_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return r == 1 ? PYS_TRUE : PYS_FALSE;
         }
     }
-    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE) {
+    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE
+        && !(PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE)) {
         extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(bv)->inst.cls), "__lt__");
         if (m != PYS_NONE) {
@@ -915,7 +921,8 @@ node_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
             return (r == 1 || r == 0) ? PYS_TRUE : PYS_FALSE;
         }
     }
-    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE) {
+    if (PYS_IS_PTR(bv) && PYS_PTR(bv)->type == PYS_T_INSTANCE
+        && !(PYS_IS_PTR(av) && PYS_PTR(av)->type == PYS_T_INSTANCE)) {
         extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(bv)->inst.cls), "__le__");
         if (m != PYS_NONE) {
