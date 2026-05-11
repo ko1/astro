@@ -405,6 +405,22 @@ meta_path = []
 path_hooks = []
 path_importer_cache = {}
 
+# Build / interpreter metadata referenced by some CPython tests.  Pystro
+# isn't CPython; report enough surface so attribute access doesn't break.
+_git = ("CPython", "", "")
+thread_info = type("thread_info", (), {
+    "name": "pthread",
+    "lock": "mutex+cond",
+    "version": None,
+})()
+def _clear_type_cache(): pass
+def _getframe(depth=0):
+    # Best-effort: return None for frames pystro doesn't track.
+    return None
+def audit(*args, **kwargs): pass
+def addaudithook(hook): pass
+def is_finalizing(): return False
+
 __all__ = ["argv", "path", "version", "version_info", "platform",
            "maxsize", "maxunicode", "byteorder", "prefix", "exec_prefix",
            "executable", "implementation_name",

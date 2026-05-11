@@ -884,3 +884,50 @@ from test.support import warnings_helper
 from test.support import threading_helper
 from test.support import socket_helper
 from test.support import script_helper
+
+
+# Platform / build-flag sentinels referenced by CPython tests.  Pystro
+# is a non-CPython implementation so most flags are False.
+HAVE_ASAN_FORK_BUG = False
+HAVE_DOCSTRINGS = True
+PGO = False  # Profile-guided-optimization build flag.
+Py_GIL_DISABLED = False
+Py_DEBUG = False
+
+
+class PythonSymlink:
+    """No-op context manager; CPython tests probe this for sysconfig."""
+    def __init__(self, *args, **kwargs): pass
+    def __enter__(self): return self
+    def __exit__(self, *exc): return False
+    def call_real(self, *args, **kwargs): return 0
+    def call_link(self, *args, **kwargs): return 0
+
+
+def catch_unraisable_exception():
+    """CPython 3.8+: capture exceptions raised in destructors etc.
+    Pystro doesn't emit unraisable warnings; return a stub CM."""
+    class _Ctx:
+        def __init__(self): self.unraisable = None
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+    return _Ctx()
+
+
+def thread_cleanup():
+    # CPython internal: returns a (count, names) snapshot.  No-op here.
+    return (0, ())
+
+
+def reap_threads(fn):
+    # Decorator that runs the test and asserts no threads leaked.  Pystro
+    # has no real threading so just return fn unchanged.
+    return fn
+
+
+# Sometimes referenced via `support.requires(...)` etc.  Existing
+# `requires` may already be defined above; the stub below is a fallback
+# guarded by attribute presence.
+def gc_collect():
+    import gc
+    gc.collect()

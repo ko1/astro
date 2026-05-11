@@ -207,6 +207,25 @@ class TestCase:
                 try: fn(*a, **k)
                 except Exception: pass
 
+    def enterContext(self, cm):
+        # CPython 3.11+: enter a context manager and register __exit__
+        # via addCleanup so the test body can use the value directly.
+        v = cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
+        return v
+
+    @classmethod
+    def enterClassContext(cls, cm):
+        v = cm.__enter__()
+        cls.addClassCleanup(cm.__exit__, None, None, None)
+        return v
+
+    @classmethod
+    def addClassCleanup(cls, fn, *args, **kwargs):
+        if not hasattr(cls, "_class_cleanups"):
+            cls._class_cleanups = []
+        cls._class_cleanups.append((fn, args, kwargs))
+
     def fail(self, msg=""):
         raise AssertionError(msg)
 

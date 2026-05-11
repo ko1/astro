@@ -164,6 +164,11 @@ pys_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
     VALUE name_v = pys_make_str(name, strlen(name));
 
     extern const char *intern_name(const char *s, size_t len);
+    // Capture the class's owning module BEFORE we apply the metaclass —
+    // calling Enum.__new__ etc. switches c->globals into the metaclass's
+    // module, so the new class created inside would otherwise get its
+    // __module__ stamped as the metaclass's home.
+    const char *caller_module = cd->module_name;
     // If metaclass is a user class with __new__, call __new__(meta, ...).
     // The __new__ implementor is expected to return a class (typically by
     // calling type(name, bases, attrs)).
@@ -183,6 +188,10 @@ pys_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
                 }
                 // Stamp metaclass for inheritance.
                 pys_class_add_method(c, r, intern_name("__metaclass__", 13), meta);
+                // Restore module ownership to the caller (e.g.
+                // calendar.py rather than enum.py for `class Day(IntEnum):`).
+                if (caller_module && pys_is_class(r))
+                    PYS_PTR(r)->cls.module_name = caller_module;
                 return r;
             }
         }
@@ -742,6 +751,7 @@ pys_make_builtin_class(const char *name, pys_builtin_fn ctor, int tag)
 {
     struct pysobj *o = pys_alloc(PYS_T_CLASS);
     o->cls.name = name;
+    o->cls.module_name = NULL;
     o->cls.methods = NULL;
     o->cls.nmethods = 0;
     o->cls.methods_capa = 0;
@@ -761,6 +771,25 @@ pys_make_class(const char *name, VALUE base, bool is_exception)
 {
     struct pysobj *o = pys_alloc(PYS_T_CLASS);
     o->cls.name = name;
+    // Owning module is the module currently being initialised — read
+    // __name__ from c->globals so __module__ access returns it (instead
+    // of the hard-coded "__main__").  Falls back to NULL if unset.
+    extern CTX *pys_current_ctx;
+    extern bool pys_global_lookup(CTX *c, const char *name, VALUE *out);
+    o->cls.module_name = NULL;
+    if (pys_current_ctx) {
+        VALUE mn = PYS_NONE;
+        if (pys_global_lookup(pys_current_ctx, "__name__", &mn)
+            && mn != PYS_NONE && pys_is_str(mn)) {
+            // Copy into GC-managed storage so the class outlives any
+            // temporary globals_ teardown.
+            size_t L = PYS_PTR(mn)->str.len;
+            char *buf = (char *)GC_malloc_atomic(L + 1);
+            memcpy(buf, PYS_PTR(mn)->str.chars, L);
+            buf[L] = '\0';
+            o->cls.module_name = buf;
+        }
+    }
     o->cls.methods = NULL;
     o->cls.nmethods = 0;
     o->cls.methods_capa = 0;
@@ -5096,6 +5125,11 @@ pys_getattr(CTX *c, VALUE v, const char *name)
     if (pys_is_instance(v)) {
         struct pysobj *o = PYS_PTR(v);
         if (strcmp(name, "__class__") == 0) return PYS_OBJ_VAL(o->inst.cls);
+        if (strcmp(name, "__module__") == 0) {
+            // Instance __module__ delegates to its class.
+            const char *mn = o->inst.cls->cls.module_name;
+            return pys_make_str(mn ? mn : "__main__", strlen(mn ? mn : "__main__"));
+        }
         if (strcmp(name, "__dict__") == 0) {
             // Return a live alias dict over inst.attrs so mutations
             // (`obj.__dict__[k] = v`) actually persist on the instance.
@@ -5210,7 +5244,10 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             VALUE d = pys_class_lookup_method(v, "__doc__");
             return d;        // PYS_NONE if absent
         }
-        if (strcmp(name, "__module__") == 0) return pys_make_str("__main__", 8);
+        if (strcmp(name, "__module__") == 0) {
+            const char *mn = cd->module_name;
+            return pys_make_str(mn ? mn : "__main__", strlen(mn ? mn : "__main__"));
+        }
         if (strcmp(name, "__bases__") == 0) {
             // CPython: a class with no explicit base has __bases__ ==
             // (object,).  Pystro stores nbases=0 in that case but the
@@ -5334,7 +5371,10 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             if (bm != PYS_NONE) return bm;
         }
         if (strcmp(name, "__doc__") == 0)         return PYS_NONE;
-        if (strcmp(name, "__module__") == 0)      return pys_make_str("__main__", 8);
+        if (strcmp(name, "__module__") == 0) {
+            const char *mn = cd->module_name;
+            return pys_make_str(mn ? mn : "__main__", strlen(mn ? mn : "__main__"));
+        }
         PYS_RAISE_EXC(c, c->EXC_AttributeError, "type object '%s' has no attribute '%s'",
                      cd->name, name);
     }

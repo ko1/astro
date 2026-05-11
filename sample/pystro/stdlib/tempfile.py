@@ -2,6 +2,12 @@
 import os
 import random
 
+# Open-flag aliases CPython exposes for tests that probe tempfile
+# internals; the real CPython uses these in os.open() but pystro hands
+# files via plain open() so the values are informational only.
+_text_openflags = getattr(os, "O_RDWR", 0) | getattr(os, "O_CREAT", 0) | getattr(os, "O_EXCL", 0)
+_bin_openflags = _text_openflags
+
 
 def gettempdir():
     for v in ("TMPDIR", "TEMP", "TMP"):

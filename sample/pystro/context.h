@@ -134,6 +134,10 @@ struct pysclass_method {
 };
 struct pysclass {
     const char *name;
+    // Owning module name for __module__ access; NULL falls back to
+    // "__main__".  Set at class creation from the current globals'
+    // __name__.
+    const char *module_name;
     struct pysclass_method *methods;
     int  nmethods, methods_capa;
     bool is_exception;
