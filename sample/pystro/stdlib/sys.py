@@ -466,6 +466,8 @@ flags = type("flags", (), {
     "utf8_mode": 1,
     "safe_path": False,
     "int_max_str_digits": 4300,
+    "warn_default_encoding": 0,
+    "warn_invalid_extension_byte": 0,
 })()
 warnoptions = []
 hexversion = 0x030C0000  # 3.12.0
