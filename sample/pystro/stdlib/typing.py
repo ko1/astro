@@ -70,6 +70,16 @@ class Generic:
 # AnyStr is a typevar.
 AnyStr = "AnyStr"
 Self = "Self"
+Never = _GenericAlias(lambda: None, "typing.Never")
+LiteralString = _GenericAlias(str, "typing.LiteralString")
+Required = _GenericAlias(lambda x: x, "typing.Required")
+NotRequired = _GenericAlias(lambda x: x, "typing.NotRequired")
+Unpack = _GenericAlias(lambda x: x, "typing.Unpack")
+TypeAlias = _GenericAlias(lambda x: x, "typing.TypeAlias")
+ParamSpec = _GenericAlias(lambda x: x, "typing.ParamSpec")
+TypeVarTuple = _GenericAlias(lambda x: x, "typing.TypeVarTuple")
+Concatenate = _GenericAlias(lambda x: x, "typing.Concatenate")
+NoDefault = object()
 Hashable = _GenericAlias(lambda x: x, "typing.Hashable")
 Sized    = _GenericAlias(lambda x: x, "typing.Sized")
 Container = _GenericAlias(lambda x: x, "typing.Container")

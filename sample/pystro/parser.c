@@ -2948,6 +2948,8 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                 // Optional `: annotation` on *args — discard.
                 if (match_tok(T_COLON)) {
                     Scope *saved = cur_scope; cur_scope = sc->parent;
+                    // PEP 646: `*args: *Ts` — allow leading `*` (Unpack).
+                    if (peek_tok(0)->kind == T_STAR) tok_pos++;
                     (void)parse_expr();
                     cur_scope = saved;
                 }
