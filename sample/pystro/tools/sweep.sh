@@ -32,8 +32,17 @@ classify_one() {
     local name
     name=$(basename "$f" .py)
     local log="$OUT/logs/$name.log"
-    timeout 30 env PYTHONPATH=cpytest_stubs:cpython/Lib ./pystro -q "$f" >"$log" 2>&1
+    # Each child pystro gets its own TMPDIR so concurrent jobs don't
+    # collide on TESTFN (which is `tempfile.gettempdir() +
+    # "/@test_pystro_<pid>"`).  Inside the sandbox the spawned pystro
+    # always starts at PID ~1, so without a per-job dir every parallel
+    # job races for the same /tmp/@test_pystro_1 path.
+    local jobtmp
+    jobtmp=$(mktemp -d "${TMPDIR:-/tmp}/pystro_sweep_$name.XXXXXX")
+    timeout 30 env PYTHONPATH=cpytest_stubs:cpython/Lib TMPDIR="$jobtmp" \
+        ./pystro -q "$f" >"$log" 2>&1
     local rc=$?
+    rm -rf "$jobtmp" 2>/dev/null
 
     local kind
     if [ $rc -eq 124 ]; then
