@@ -331,6 +331,8 @@ def main(scope=None, *args, **kwargs):
                 print("FAIL", cls.__name__ if hasattr(cls, "__name__") else "?", mn, ":", e)
             try: inst.tearDown()
             except Exception: pass
+            try: inst.doCleanups()
+            except Exception: pass
     print("---")
     print("passed=" + str(passed) + " failed=" + str(failed) +
           (" skipped=" + str(skipped) if skipped else ""))

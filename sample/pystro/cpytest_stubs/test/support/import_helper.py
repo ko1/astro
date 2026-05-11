@@ -71,6 +71,22 @@ def isolated_modules():
     return _Ctx()
 
 
+def frozen_modules(enabled=True):
+    """No-op context manager — pystro has no frozen modules."""
+    class _Ctx:
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+    return _Ctx()
+
+
+def multi_interp_extensions_check(enabled=True):
+    class _Ctx:
+        def __enter__(self): return self
+        def __exit__(self, *e): return False
+    return _Ctx()
+
+
 __all__ = ["import_module", "import_fresh_module", "unload",
            "CleanImport", "DirsOnSysPath", "ensure_lazy_imports",
-           "modules_setup", "modules_cleanup", "isolated_modules"]
+           "modules_setup", "modules_cleanup", "isolated_modules",
+           "frozen_modules", "multi_interp_extensions_check"]
