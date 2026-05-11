@@ -110,6 +110,53 @@ def tan(z):
     return s / c
 
 
+# Inverse / hyperbolic trig — algebraic identities over complex log/sqrt.
+def acos(z):
+    if not isinstance(z, complex): z = complex(z, 0)
+    return -1j * log(z + 1j * sqrt(1 - z * z))
+
+
+def asin(z):
+    if not isinstance(z, complex): z = complex(z, 0)
+    return -1j * log(1j * z + sqrt(1 - z * z))
+
+
+def atan(z):
+    if not isinstance(z, complex): z = complex(z, 0)
+    return 0.5j * (log(1 - 1j * z) - log(1 + 1j * z))
+
+
+def sinh(z):
+    if not isinstance(z, complex): z = complex(z, 0)
+    return -1j * sin(1j * z)
+
+
+def cosh(z):
+    if not isinstance(z, complex): z = complex(z, 0)
+    return cos(1j * z)
+
+
+def tanh(z):
+    return sinh(z) / cosh(z)
+
+
+def acosh(z):
+    if not isinstance(z, complex): z = complex(z, 0)
+    return log(z + sqrt(z * z - 1))
+
+
+def asinh(z):
+    if not isinstance(z, complex): z = complex(z, 0)
+    return log(z + sqrt(z * z + 1))
+
+
+def atanh(z):
+    if not isinstance(z, complex): z = complex(z, 0)
+    return 0.5 * (log(1 + z) - log(1 - z))
+
+
 __all__ = ["phase", "polar", "rect", "sqrt", "exp", "log", "log10",
            "isfinite", "isinf", "isnan", "isclose",
-           "sin", "cos", "tan", "pi", "e", "tau", "inf", "nan", "infj", "nanj"]
+           "sin", "cos", "tan", "asin", "acos", "atan",
+           "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+           "pi", "e", "tau", "inf", "nan", "infj", "nanj"]
