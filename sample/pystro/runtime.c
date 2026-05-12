@@ -7742,15 +7742,32 @@ pys_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE 
         for (uint32_t i = 0; i < nhandlers; i++)
             if (PYS_HANDLERS[handlers_idx + i].is_star) { has_star = true; break; }
         if (has_star) {
-            // CPython: `except* T` only catches BaseExceptionGroup.  A
-            // bare exception falls through to be re-raised.
+            // CPython: except* implicitly wraps a bare exception in a
+            // single-item BaseExceptionGroup so handlers can match it.
+            // After running handlers, if only one item survives we
+            // unwrap on re-raise (handled by pys_eg_split/_make).
+            bool was_bare = false;
             if (!pys_is_instance(exc)
                     || !class_is_ancestor(PYS_OBJ_VAL(PYS_PTR(exc)->inst.cls),
                                           c->EXC_BaseExceptionGroup)) {
-                c->state = PYS_STATE_RAISE;
-                c->state_value = exc;
-                goto run_finally;
+                // Wrap in BaseExceptionGroup("", [exc]).
+                VALUE msg = pys_make_str("", 0);
+                VALUE items = pys_make_list(&exc, 1);
+                VALUE av[2] = { msg, items };
+                int saved_kwc = PYS_BI_KWC;
+                PYS_BI_KWC = 0;
+                // pys_apply early-returns when c->state == RAISE — clear
+                // before the synthetic constructor call.
+                c->state = PYS_STATE_NORMAL;
+                c->state_value = PYS_NONE;
+                exc = pys_apply(c, c->EXC_BaseExceptionGroup, 2, av);
+                PYS_BI_KWC = saved_kwc;
+                if (c->state == PYS_STATE_RAISE) goto run_finally;
+                c->state = PYS_STATE_NORMAL;
+                c->state_value = PYS_NONE;
+                was_bare = true;
             }
+            (void)was_bare;
             VALUE remaining = exc;
             bool any_raised = false;
             VALUE last_raised = PYS_NONE;
