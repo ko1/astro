@@ -121,8 +121,12 @@ except (ImportError, AttributeError):
         def closed(self): return self._closed
 
     class StringIO(TextIOBase):
-        def __init__(self, initial=""):
+        def __init__(self, initial="", newline="\n"):
+            # `newline` kwarg accepted for CPython parity (e.g. email
+            # feedparser uses `StringIO(newline='')`); pystro doesn't
+            # perform newline translation.
             self._buf = []
+            self._newline = newline
             if initial: self._buf.append(initial)
         def write(self, s):
             self._buf.append(s); return len(s)

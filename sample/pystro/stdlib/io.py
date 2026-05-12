@@ -1,10 +1,16 @@
 # pystro stdlib `io` (minimal).
 
 class StringIO:
-    def __init__(self, initial=""):
+    def __init__(self, initial="", newline="\n"):
+        # CPython StringIO accepts `newline` kwarg (translation control).
+        # Pystro doesn't perform any newline translation; the kwarg is
+        # accepted but ignored except `newline=''` which disables the
+        # implicit `\n` separator on write.
         self._chunks = [initial] if initial else []
         self._closed = False
         self._pos = 0
+        self.newlines = None
+        self._newline = newline
     def write(self, s):
         if self._closed:
             raise ValueError("write on closed StringIO")
