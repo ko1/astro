@@ -9287,7 +9287,12 @@ static VALUE
 dm_keys(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc;
-    struct pysdict *d = PYS_PTR(argv[0])->dict;
+    VALUE target = argv[0];
+    if (PYS_IS_PTR(target) && PYS_PTR(target)->type == PYS_T_INSTANCE
+        && PYS_PTR(target)->inst.primary
+        && pys_is_dict(PYS_PTR(target)->inst.primary))
+        target = PYS_PTR(target)->inst.primary;
+    struct pysdict *d = PYS_PTR(target)->dict;
     VALUE r = pys_make_list(NULL, 0);
     for (size_t i = 0; i < d->elen; i++) {
         if (!pydict_entry_live(d, i)) continue;
@@ -9300,7 +9305,12 @@ static VALUE
 dm_values(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc;
-    struct pysdict *d = PYS_PTR(argv[0])->dict;
+    VALUE target = argv[0];
+    if (PYS_IS_PTR(target) && PYS_PTR(target)->type == PYS_T_INSTANCE
+        && PYS_PTR(target)->inst.primary
+        && pys_is_dict(PYS_PTR(target)->inst.primary))
+        target = PYS_PTR(target)->inst.primary;
+    struct pysdict *d = PYS_PTR(target)->dict;
     VALUE r = pys_make_list(NULL, 0);
     for (size_t i = 0; i < d->elen; i++) {
         if (!pydict_entry_live(d, i)) continue;
@@ -9313,7 +9323,12 @@ static VALUE
 dm_items(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc;
-    struct pysdict *d = PYS_PTR(argv[0])->dict;
+    VALUE target = argv[0];
+    if (PYS_IS_PTR(target) && PYS_PTR(target)->type == PYS_T_INSTANCE
+        && PYS_PTR(target)->inst.primary
+        && pys_is_dict(PYS_PTR(target)->inst.primary))
+        target = PYS_PTR(target)->inst.primary;
+    struct pysdict *d = PYS_PTR(target)->dict;
     VALUE r = pys_make_list(NULL, 0);
     for (size_t i = 0; i < d->elen; i++) {
         if (!pydict_entry_live(d, i)) continue;
@@ -11686,14 +11701,40 @@ static VALUE
 bi_dict(CTX *c, int argc, VALUE *argv)
 {
     VALUE r = pys_make_dict();
-    // dict(dict-subclass-instance) — unwrap primary.
+    // dict(dict-subclass-instance) — unwrap primary unless the user
+    // overrode `.keys()` (CPython parity: a subclass like
+    // `class Rev(dict): def keys(self): return reversed(...)` is
+    // honoured, so dict(rev) iterates via the override).
     VALUE src_dict = (VALUE)0;
     if (argc >= 1 && pys_is_dict(argv[0])) {
         src_dict = argv[0];
     } else if (argc >= 1 && pys_is_instance(argv[0])
                && PYS_PTR(argv[0])->inst.primary
                && pys_is_dict(PYS_PTR(argv[0])->inst.primary)) {
-        src_dict = PYS_PTR(argv[0])->inst.primary;
+        // Check if the user class has its OWN `keys` method (not just
+        // the inherited builtin).  If so, fall through to the mapping
+        // protocol path so the override runs.
+        VALUE cls = PYS_OBJ_VAL(PYS_PTR(argv[0])->inst.cls);
+        bool has_own_keys = false;
+        struct pysclass *cd = &PYS_PTR(cls)->cls;
+        for (int i = 0; i < cd->nmro; i++) {
+            VALUE mro_cls = cd->mro[i];
+            if (!pys_is_class(mro_cls)) continue;
+            struct pysclass *mc = &PYS_PTR(mro_cls)->cls;
+            // dict itself is a built-in class — its `keys` would not
+            // be in the methods array (lives in dict_methods).  Any
+            // method named "keys" in a user class's methods list is
+            // an explicit override.
+            if (mro_cls == c->TYPE_dict) break;
+            for (int j = 0; j < mc->nmethods; j++) {
+                if (strcmp(mc->methods[j].name, "keys") == 0) {
+                    has_own_keys = true;
+                    break;
+                }
+            }
+            if (has_own_keys) break;
+        }
+        if (!has_own_keys) src_dict = PYS_PTR(argv[0])->inst.primary;
     }
     if (src_dict) {
         struct pysdict *src = PYS_PTR(src_dict)->dict;
