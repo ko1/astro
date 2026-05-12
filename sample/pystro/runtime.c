@@ -3147,10 +3147,16 @@ pys_dict_remove(CTX *c, VALUE dv, VALUE key)
 void
 pys_list_append(CTX *c, VALUE lv, VALUE v)
 {
-    (void)c;
     struct pysobj *o = PYS_PTR(lv);
     if (o->list.len == o->list.capa) {
         size_t cap = o->list.capa ? o->list.capa * 2 : 4;
+        // CPython parity: PyObject_GC tracks list size in PY_SSIZE_T_MAX,
+        // but practically `list(range(sys.maxsize//2))` should raise
+        // MemoryError rather than try to allocate.  Cap at 256M entries
+        // (~2 GiB of VALUEs on 64-bit) — well past any reasonable test
+        // case but stops runaway doubling on huge generators.
+        if (cap > ((size_t)1 << 28))
+            PYS_RAISE_EXC(c, c->EXC_MemoryError, "list size too large");
         VALUE *items = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
         if (o->list.len) memcpy(items, o->list.items, sizeof(VALUE) * o->list.len);
         o->list.items = items;
@@ -11584,6 +11590,14 @@ bi_list(CTX *c, int argc, VALUE *argv)
     if (PYS_BI_KWC > 0)
         PYS_RAISE_EXC(c, c->EXC_TypeError, "list() takes no keyword arguments");
     if (argc == 0) return pys_make_list(NULL, 0);
+    // Early bail-out for very large sized iterables (range, etc.) — saves
+    // us from a slow doubling-loop that eventually OOMs.  CPython behavior:
+    // `list(range(sys.maxsize // 2))` raises MemoryError immediately.
+    if (pys_is_range(argv[0])) {
+        size_t hint = pys_seq_len(c, argv[0]);
+        if (hint > ((size_t)1 << 28))
+            PYS_RAISE_EXC(c, c->EXC_MemoryError, "list size too large");
+    }
     VALUE r = pys_make_list(NULL, 0);
     // CPython: iter objects are single-use; `list(it)` consumes it.
     // Drive the original iter_state in place so a subsequent `next(it)`
@@ -11601,7 +11615,10 @@ bi_list(CTX *c, int argc, VALUE *argv)
     struct pys_iter it; pys_iter_init(c, &it, argv[0]);
     if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
     VALUE x;
-    while (pys_iter_next(c, &it, &x)) pys_list_append(c, r, x);
+    while (pys_iter_next(c, &it, &x)) {
+        pys_list_append(c, r, x);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    }
     return r;
 }
 
