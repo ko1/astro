@@ -6856,6 +6856,19 @@ pys_to_str(CTX *c, VALUE v)
 VALUE
 pys_to_repr(CTX *c, VALUE v)
 {
+    if (PYS_IS_PTR(v) && (PYS_PTR(v)->type == PYS_T_CLASSMETHOD
+                          || PYS_PTR(v)->type == PYS_T_STATICMETHOD)) {
+        const char *kind = (PYS_PTR(v)->type == PYS_T_CLASSMETHOD)
+                            ? "classmethod" : "staticmethod";
+        VALUE inner = pys_to_repr(c, PYS_PTR(v)->wrap.wrapped);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        size_t inner_len = pys_is_str(inner) ? PYS_PTR(inner)->str.len : 0;
+        const char *inner_s = pys_is_str(inner) ? PYS_PTR(inner)->str.chars : "?";
+        char *buf = (char *)GC_malloc_atomic(inner_len + 32);
+        int n = snprintf(buf, inner_len + 32, "<%s(%.*s)>", kind,
+                         (int)inner_len, inner_s);
+        return pys_make_str(buf, (size_t)n);
+    }
     if (pys_is_instance(v)) {
         // Track recursion via the same display-visit array used by
         // list/dict/set/tuple — a class with `__repr__` that returns
