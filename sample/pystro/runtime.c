@@ -15495,6 +15495,40 @@ bi_pystro_set_recursion_limit(CTX *c, int argc, VALUE *argv)
     return PYS_NONE;
 }
 
+// Build a struct_time-like instance.  CPython's struct_time is a
+// tuple subclass; we approximate by setting both attribute access AND
+// a tuple primary so `t[3]` works alongside `t.tm_hour`.
+static VALUE
+pys_make_struct_time_from_tm(CTX *c, const struct tm *tm_)
+{
+    static VALUE struct_time_cls = (VALUE)0;
+    if (!struct_time_cls)
+        struct_time_cls = pys_make_class("struct_time", PYS_NONE, false);
+    VALUE inst = pys_make_instance(struct_time_cls);
+    VALUE items[9];
+    items[0] = pys_make_int(tm_->tm_year + 1900);
+    items[1] = pys_make_int(tm_->tm_mon + 1);
+    items[2] = pys_make_int(tm_->tm_mday);
+    items[3] = pys_make_int(tm_->tm_hour);
+    items[4] = pys_make_int(tm_->tm_min);
+    items[5] = pys_make_int(tm_->tm_sec);
+    items[6] = pys_make_int((tm_->tm_wday + 6) % 7);  // Mon=0
+    items[7] = pys_make_int(tm_->tm_yday + 1);
+    items[8] = pys_make_int(tm_->tm_isdst);
+    pys_setattr(c, inst, "tm_year",  items[0]);
+    pys_setattr(c, inst, "tm_mon",   items[1]);
+    pys_setattr(c, inst, "tm_mday",  items[2]);
+    pys_setattr(c, inst, "tm_hour",  items[3]);
+    pys_setattr(c, inst, "tm_min",   items[4]);
+    pys_setattr(c, inst, "tm_sec",   items[5]);
+    pys_setattr(c, inst, "tm_wday",  items[6]);
+    pys_setattr(c, inst, "tm_yday",  items[7]);
+    pys_setattr(c, inst, "tm_isdst", items[8]);
+    // Attach a tuple primary so t[i] / len(t) / iter(t) work.
+    PYS_PTR(inst)->inst.primary = pys_make_tuple(items, 9);
+    return inst;
+}
+
 static VALUE
 bi_pystro_localtime(CTX *c, int argc, VALUE *argv)
 {
@@ -15507,19 +15541,7 @@ bi_pystro_localtime(CTX *c, int argc, VALUE *argv)
     }
     struct tm tm_;
     localtime_r(&t, &tm_);
-    static VALUE struct_time_cls = (VALUE)0;
-    if (!struct_time_cls) struct_time_cls = pys_make_class("struct_time", PYS_NONE, false);
-    VALUE inst = pys_make_instance(struct_time_cls);
-    pys_setattr(c, inst, "tm_year",  pys_make_int(tm_.tm_year + 1900));
-    pys_setattr(c, inst, "tm_mon",   pys_make_int(tm_.tm_mon + 1));
-    pys_setattr(c, inst, "tm_mday",  pys_make_int(tm_.tm_mday));
-    pys_setattr(c, inst, "tm_hour",  pys_make_int(tm_.tm_hour));
-    pys_setattr(c, inst, "tm_min",   pys_make_int(tm_.tm_min));
-    pys_setattr(c, inst, "tm_sec",   pys_make_int(tm_.tm_sec));
-    pys_setattr(c, inst, "tm_wday",  pys_make_int((tm_.tm_wday + 6) % 7));
-    pys_setattr(c, inst, "tm_yday",  pys_make_int(tm_.tm_yday + 1));
-    pys_setattr(c, inst, "tm_isdst", pys_make_int(tm_.tm_isdst));
-    return inst;
+    return pys_make_struct_time_from_tm(c, &tm_);
 }
 
 static VALUE
@@ -15534,19 +15556,8 @@ bi_pystro_gmtime(CTX *c, int argc, VALUE *argv)
     }
     struct tm tm_;
     gmtime_r(&t, &tm_);
-    static VALUE struct_time_cls = (VALUE)0;
-    if (!struct_time_cls) struct_time_cls = pys_make_class("struct_time", PYS_NONE, false);
-    VALUE inst = pys_make_instance(struct_time_cls);
-    pys_setattr(c, inst, "tm_year",  pys_make_int(tm_.tm_year + 1900));
-    pys_setattr(c, inst, "tm_mon",   pys_make_int(tm_.tm_mon + 1));
-    pys_setattr(c, inst, "tm_mday",  pys_make_int(tm_.tm_mday));
-    pys_setattr(c, inst, "tm_hour",  pys_make_int(tm_.tm_hour));
-    pys_setattr(c, inst, "tm_min",   pys_make_int(tm_.tm_min));
-    pys_setattr(c, inst, "tm_sec",   pys_make_int(tm_.tm_sec));
-    pys_setattr(c, inst, "tm_wday",  pys_make_int((tm_.tm_wday + 6) % 7));
-    pys_setattr(c, inst, "tm_yday",  pys_make_int(tm_.tm_yday + 1));
-    pys_setattr(c, inst, "tm_isdst", pys_make_int(0));
-    return inst;
+    tm_.tm_isdst = 0;
+    return pys_make_struct_time_from_tm(c, &tm_);
 }
 
 static VALUE
