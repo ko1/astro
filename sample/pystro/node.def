@@ -1239,12 +1239,23 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // is per-instance, `__module__` is per-class but the str
             // is freshly allocated, etc.).  Otherwise a `v1.__dict__`
             // after `v0.__dict__` returns v0's alias.
+            //
+            // Also skip properties: pys_getattr calls fget(self) to
+            // compute, and the result depends on instance state — so
+            // caching the value would freeze it across all instances.
             bool is_special = (name[0] == '_' && name[1] == '_'
                 && (strcmp(name, "__dict__") == 0
                     || strcmp(name, "__class__") == 0
                     || strcmp(name, "__module__") == 0));
-            bool stamp = false;
+            bool is_property = false;
             if (!is_special) {
+                extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
+                VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(o->inst.cls), name);
+                if (m != PYS_NONE && PYS_IS_PTR(m) && PYS_PTR(m)->type == PYS_T_PROPERTY)
+                    is_property = true;
+            }
+            bool stamp = false;
+            if (!is_special && !is_property) {
                 if (PYS_IS_PTR(r)) {
                     int t = PYS_PTR(r)->type;
                     if (t == PYS_T_LIST || t == PYS_T_TUPLE || t == PYS_T_DICT
