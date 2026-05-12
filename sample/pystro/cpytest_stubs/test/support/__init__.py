@@ -1065,3 +1065,20 @@ def system_must_validate_cert(f):
 import sys
 NHASHBITS = (8 * sys.maxsize.bit_length() // 8) if hasattr(sys, "maxsize") else 64
 if NHASHBITS < 32: NHASHBITS = 64
+
+
+def flush_std_streams():
+    """Flush sys.stdout and sys.stderr (no-op if absent)."""
+    try:
+        if sys.stdout is not None: sys.stdout.flush()
+    except Exception: pass
+    try:
+        if sys.stderr is not None: sys.stderr.flush()
+    except Exception: pass
+
+
+def args_from_interpreter_flags():
+    return []
+
+def optim_args_from_interpreter_flags():
+    return []
