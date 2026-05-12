@@ -139,4 +139,16 @@ def _get_default_scheme():
     return "posix_prefix"
 
 
+def _get_preferred_schemes():
+    return {
+        "prefix": "posix_prefix",
+        "home": "posix_home",
+        "user": "posix_user",
+    }
+
+
+def get_preferred_scheme(key):
+    return _get_preferred_schemes().get(key, "posix_prefix")
+
+
 _PYTHON_BUILD = False

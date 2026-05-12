@@ -86,6 +86,34 @@ def multi_interp_extensions_check(enabled=True):
     return _Ctx()
 
 
+def unlink(filename):
+    """CPython's import_helper.unlink — same as os.unlink with EEXIST/
+    FileNotFoundError swallowed.  Used by tests that probe pyc cache."""
+    import os
+    try:
+        os.unlink(filename)
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def uncache(*names):
+    """Context manager that removes given module names from sys.modules
+    on entry and restores them on exit."""
+    class _Ctx:
+        def __init__(self):
+            self.saved = {}
+            for n in names:
+                if n in sys.modules:
+                    self.saved[n] = sys.modules[n]
+                    del sys.modules[n]
+        def __enter__(self): return self
+        def __exit__(self, *exc):
+            for n, m in self.saved.items():
+                sys.modules[n] = m
+            return False
+    return _Ctx()
+
+
 __all__ = ["import_module", "import_fresh_module", "unload",
            "CleanImport", "DirsOnSysPath", "ensure_lazy_imports",
            "modules_setup", "modules_cleanup", "isolated_modules",
