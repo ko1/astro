@@ -11452,7 +11452,18 @@ bi_int(CTX *c, int argc, VALUE *argv)
         *w = '\0';
         mpz_t z; mpz_init(z);
         if (mpz_set_str(z, p, base) != 0) {
-            mpz_clear(z); PYS_RAISE_EXC(c, c->EXC_ValueError, "invalid literal for int()");
+            mpz_clear(z);
+            // Include the original input (with quotes) in the error, as
+            // CPython does — optparse parses and assertRaises message
+            // patterns require it.
+            char inp[80];
+            // Re-read the original sval (un-stripped) for the message.
+            size_t L2 = PYS_PTR(v)->str.len;
+            size_t shown = L2 < sizeof(inp) - 1 ? L2 : sizeof(inp) - 1;
+            memcpy(inp, PYS_PTR(v)->str.chars, shown);
+            inp[shown] = '\0';
+            PYS_RAISE_EXC(c, c->EXC_ValueError,
+                "invalid literal for int() with base %d: '%s'", base, inp);
         }
         VALUE r = pys_normalise_int(z); mpz_clear(z); return r;
     }
