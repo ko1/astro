@@ -15145,6 +15145,28 @@ bi_exception_add_note(CTX *c, int argc, VALUE *argv)
     return PYS_NONE;
 }
 
+// Exception.__setstate__(d) — for each key/value pair in d, sets it
+// as an attribute on self. Matches CPython's BaseException_setstate.
+VALUE
+bi_exception_setstate(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE state = argv[1];
+    if (state == PYS_NONE) return PYS_NONE;
+    if (!pys_is_dict(state))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "state is not a dictionary");
+    struct pysdict *d = PYS_PTR(state)->dict;
+    for (size_t i = 0; i < d->elen; i++) {
+        VALUE k = d->entries[i].key;
+        if (k == 0 || k == DICT_DELETED_KEY) continue;
+        if (!pys_is_str(k))
+            PYS_RAISE_EXC(c, c->EXC_TypeError, "state key must be str");
+        pys_setattr(c, argv[0], PYS_PTR(k)->str.chars, d->entries[i].value);
+        if (c->state == PYS_STATE_RAISE) return 0;
+    }
+    return PYS_NONE;
+}
+
 // Math primitives surfaced as `__pystro_*__` and wrapped by `math.py`.
 static VALUE
 bi_pystro_sqrt(CTX *c, int argc, VALUE *argv)
@@ -16861,6 +16883,10 @@ install_builtins(CTX *c)
         extern VALUE bi_exception_add_note(CTX *c, int argc, VALUE *argv);
         pys_class_add_method(c, c->EXC_BaseException, "add_note",
             pys_make_builtin_method("add_note", bi_exception_add_note, 2, 2));
+        // __setstate__(state) — used by copy / pickle round-tripping.
+        extern VALUE bi_exception_setstate(CTX *c, int argc, VALUE *argv);
+        pys_class_add_method(c, c->EXC_BaseException, "__setstate__",
+            pys_make_builtin_method("__setstate__", bi_exception_setstate, 2, 2));
     }
     c->EXC_Exception         = pys_make_class("Exception",        c->EXC_BaseException, true);
     c->EXC_SystemExit        = pys_make_class("SystemExit",        c->EXC_BaseException, true);

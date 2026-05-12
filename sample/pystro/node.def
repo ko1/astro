@@ -2011,9 +2011,15 @@ node_call_spread(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t spreads
             kv[kwc] = v;
             kwc++;
         } else if (sa->kind == 3) {
-            // **dict
-            if (!pys_is_dict(v)) PYS_RAISE_EXC(c, c->EXC_TypeError, "argument after ** must be a dict");
-            struct pysdict *d = PYS_PTR(v)->dict;
+            // **dict — accept any mapping. dict subclass instances
+            // (OrderedDict etc.) store the underlying dict as
+            // inst.primary; unwrap to that.
+            VALUE d_v = v;
+            if (pys_is_instance(d_v) && PYS_PTR(d_v)->inst.primary
+                && pys_is_dict(PYS_PTR(d_v)->inst.primary))
+                d_v = PYS_PTR(d_v)->inst.primary;
+            if (!pys_is_dict(d_v)) PYS_RAISE_EXC(c, c->EXC_TypeError, "argument after ** must be a dict");
+            struct pysdict *d = PYS_PTR(d_v)->dict;
             for (size_t j = 0; j < d->elen; j++) {
                 VALUE _k_chk = d->entries[j].key;
                 if (_k_chk != 0 && _k_chk != DICT_DELETED_KEY) {
