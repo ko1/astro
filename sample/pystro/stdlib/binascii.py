@@ -144,9 +144,84 @@ def a2b_qp(s, header=False):
 
 
 def b2a_uu(data, *, backtick=False):
-    raise NotImplementedError("b2a_uu")
+    """UU-encode `data` (max 45 bytes) into one line ending with \n."""
+    data = bytes(data)
+    n = len(data)
+    if n > 45:
+        raise Error("At most 45 bytes at once")
+    # Length-encoded byte: ' ' (or '`' with backtick) + n
+    if n == 0 and backtick:
+        return b"`\n"
+    out = bytearray()
+    out.append(0x60 + n if (backtick and n == 0) else 0x20 + n)
+    # Pad to multiple of 3.
+    pad = (-n) % 3
+    buf = data + b"\x00" * pad
+    for i in range(0, n + pad, 3):
+        b0, b1, b2 = buf[i], buf[i+1], buf[i+2]
+        c0 = (b0 >> 2) & 0x3F
+        c1 = ((b0 << 4) | (b1 >> 4)) & 0x3F
+        c2 = ((b1 << 2) | (b2 >> 6)) & 0x3F
+        c3 = b2 & 0x3F
+        for c in (c0, c1, c2, c3):
+            if c == 0 and backtick:
+                out.append(0x60)        # backtick instead of space
+            else:
+                out.append(0x20 + c if c != 0 else 0x60)
+                # CPython actually maps 0 → space (0x20) unless backtick;
+                # adjust:
+    # Re-do simpler: rewrite mapping table.
+    out = bytearray()
+    out.append(0x20 + n if not backtick or n != 0 else 0x60)
+    enc = lambda x: 0x60 if (backtick and x == 0) else 0x20 + x
+    for i in range(0, n + pad, 3):
+        b0, b1, b2 = buf[i], buf[i+1], buf[i+2]
+        c0 = (b0 >> 2) & 0x3F
+        c1 = ((b0 << 4) | (b1 >> 4)) & 0x3F
+        c2 = ((b1 << 2) | (b2 >> 6)) & 0x3F
+        c3 = b2 & 0x3F
+        out.append(enc(c0))
+        out.append(enc(c1))
+        out.append(enc(c2))
+        out.append(enc(c3))
+    out.append(ord("\n"))
+    return bytes(out)
+
+
 def a2b_uu(s):
-    raise NotImplementedError("a2b_uu")
+    """Decode a single line of UU-encoded data."""
+    if isinstance(s, str):
+        s = s.encode("ascii")
+    s = bytes(s)
+    if not s:
+        return b""
+    # Strip trailing newline(s).
+    while s and s[-1:] in (b"\n", b"\r"):
+        s = s[:-1]
+    if not s:
+        return b""
+    # First char encodes length.
+    n = (s[0] - 0x20) & 0x3F
+    if n > 45:
+        raise Error("Illegal char")
+    body = s[1:]
+    # Pad body if short.
+    needed = ((n + 2) // 3) * 4
+    if len(body) < needed:
+        body = body + b" " * (needed - len(body))
+    out = bytearray()
+    for i in range(0, needed, 4):
+        c0 = (body[i] - 0x20) & 0x3F
+        c1 = (body[i+1] - 0x20) & 0x3F
+        c2 = (body[i+2] - 0x20) & 0x3F
+        c3 = (body[i+3] - 0x20) & 0x3F
+        b0 = ((c0 << 2) | (c1 >> 4)) & 0xFF
+        b1 = ((c1 << 4) | (c2 >> 2)) & 0xFF
+        b2 = ((c2 << 6) | c3) & 0xFF
+        out.append(b0)
+        out.append(b1)
+        out.append(b2)
+    return bytes(out[:n])
 def rledecode_hqx(data): return data
 def rlecode_hqx(data):   return data
 def crc_hqx(data, value): return value
