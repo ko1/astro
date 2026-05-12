@@ -83,6 +83,7 @@ T_contra = "T_contra"
 # as opaque sentinels (you can subscript them via _GenericAlias).
 IO = _GenericAlias(lambda x: x, "typing.IO")
 TextIO = _GenericAlias(lambda x: x, "typing.TextIO")
+Text = str
 BinaryIO = _GenericAlias(lambda x: x, "typing.BinaryIO")
 Pattern = _GenericAlias(lambda x: x, "typing.Pattern")
 Match = _GenericAlias(lambda x: x, "typing.Match")

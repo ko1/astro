@@ -15170,11 +15170,40 @@ bi_from_import_get(CTX *c, int argc, VALUE *argv)
     c->state = PYS_STATE_NORMAL; c->state_value = PYS_NONE;
     VALUE r = pys_getattr(c, mod, name);
     if (c->state == PYS_STATE_RAISE) {
-        // Convert AttributeError → ImportError.  Other exception classes
-        // (RecursionError etc.) propagate as-is.
         VALUE exc = c->state_value;
         if (pys_is_instance(exc)
             && pys_exc_matches(c, exc, c->EXC_AttributeError)) {
+            // CPython: when `from PKG import SUB` fails to find SUB as
+            // an attribute and PKG is a package, try importing SUB as a
+            // submodule (PKG.SUB). The submodule then appears as PKG's
+            // attribute, so re-attempt the getattr.
+            if (pys_is_module(mod)) {
+                c->state = PYS_STATE_NORMAL;
+                c->state_value = PYS_NONE;
+                const char *pkg = PYS_PTR(mod)->module.name;
+                char fq[512];
+                size_t pl = strlen(pkg), nl = strlen(name);
+                if (pl + 1 + nl + 1 <= sizeof(fq)) {
+                    memcpy(fq, pkg, pl);
+                    fq[pl] = '.';
+                    memcpy(fq + pl + 1, name, nl);
+                    fq[pl + 1 + nl] = '\0';
+                    extern VALUE bi_import(CTX *c, int argc, VALUE *argv);
+                    VALUE fqs = pys_make_str(fq, pl + 1 + nl);
+                    VALUE av[1] = { fqs };
+                    bi_import(c, 1, av);
+                    if (c->state == PYS_STATE_RAISE) {
+                        c->state = PYS_STATE_NORMAL;
+                        c->state_value = PYS_NONE;
+                    }
+                    // Re-attempt the attribute lookup.
+                    r = pys_getattr(c, mod, name);
+                    if (c->state == PYS_STATE_NORMAL) {
+                        c->state = sst; c->state_value = sv;
+                        return r;
+                    }
+                }
+            }
             c->state = sst; c->state_value = sv;
             const char *modname = pys_is_module(mod) ? PYS_PTR(mod)->module.name : "?";
             PYS_RAISE_EXC(c, c->EXC_ImportError,
