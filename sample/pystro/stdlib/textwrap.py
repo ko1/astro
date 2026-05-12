@@ -1,17 +1,42 @@
 # pystro stdlib `textwrap` (minimal).
 
+def _split_chunks(paragraph):
+    chunks = []
+    i = 0
+    n = len(paragraph)
+    while i < n:
+        while i < n and paragraph[i] in " \t":
+            i += 1
+        if i >= n:
+            break
+        j = i
+        while j < n and paragraph[j] not in " \t":
+            j += 1
+        word = paragraph[i:j]
+        k = j
+        while k < n and paragraph[k] in " \t":
+            k += 1
+        gap = paragraph[j:k]
+        chunks.append((word, gap))
+        i = k
+    return chunks
+
+
 def wrap(text, width=70):
     out = []
     for paragraph in text.split("\n"):
+        chunks = _split_chunks(paragraph)
         line = ""
-        for word in paragraph.split():
+        pending_gap = ""
+        for word, gap in chunks:
             if not line:
                 line = word
-            elif len(line) + 1 + len(word) <= width:
-                line = line + " " + word
+            elif len(line) + len(pending_gap) + len(word) <= width:
+                line = line + pending_gap + word
             else:
                 out.append(line)
                 line = word
+            pending_gap = gap if gap else " "
         if line:
             out.append(line)
     return out
@@ -23,7 +48,12 @@ def fill(text, width=70, **kwargs):
     if given, ignores the rest."""
     init = kwargs.get("initial_indent", "")
     subs = kwargs.get("subsequent_indent", "")
-    lines = wrap(text, width)
+    # CPython textwrap: each line's prefix counts against `width`.
+    # Wrap to (width - indent) chars then prepend the indent. We use the
+    # subsequent_indent length as the conservative wrap width so wrapped
+    # lines fit; the initial line may be slightly shorter than its budget.
+    inner = max(width - len(subs) if subs else width - len(init), 1)
+    lines = wrap(text, inner)
     if init or subs:
         if not lines:
             lines = [""]

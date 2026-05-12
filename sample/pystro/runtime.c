@@ -2454,9 +2454,17 @@ pys_cmp(CTX *c, VALUE a, VALUE b)
     if ((pys_is_list(a) && pys_is_list(b)) || (pys_is_tuple(a) && pys_is_tuple(b))) {
         size_t la = PYS_PTR(a)->list.len, lb = PYS_PTR(b)->list.len;
         size_t n = la < lb ? la : lb;
+        // CPython tuple/list richcompare scans for the first non-equal
+        // position using `==`, then `< / >`s only on that element. That
+        // way `[None, 1] < [None, 2]` doesn't crash on None < None.
         for (size_t i = 0; i < n; i++) {
-            int r = pys_cmp(c, PYS_PTR(a)->list.items[i], PYS_PTR(b)->list.items[i]);
-            if (r != 0) return r;
+            VALUE ai = PYS_PTR(a)->list.items[i];
+            VALUE bi = PYS_PTR(b)->list.items[i];
+            if (pys_eq(c, ai, bi) == PYS_TRUE) continue;
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            int r = pys_cmp(c, ai, bi);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            return r;
         }
         return la < lb ? -1 : la > lb ? 1 : 0;
     }
@@ -9270,24 +9278,26 @@ lm_sort(CTX *c, int argc, VALUE *argv)
     VALUE key_fn = pys_bi_kwarg("key");
     VALUE rev_v  = pys_bi_kwarg("reverse");
     bool reverse = (rev_v == PYS_TRUE);
-    // CPython detects list mutation during sort and raises ValueError.
-    // Snapshot the initial size + items pointer; if either changes,
-    // some callback modified the list and we abort.
+    // CPython detects list mutation during sort: it swaps the list's
+    // backing storage to NULL during sort so any user-visible append /
+    // del / extend touches a fresh buffer. At the end if items != NULL
+    // or len != 0 we know a mutation happened.
     size_t orig_len = o->list.len;
     VALUE *orig_items = o->list.items;
+    size_t orig_cap = o->list.capa;
+    o->list.len = 0;
+    o->list.items = NULL;
+    o->list.capa = 0;
     // Pre-compute sort keys when key_fn is set (Schwartzian transform).
     VALUE *keys = NULL;
     if (key_fn) {
         keys = (VALUE *)GC_malloc(sizeof(VALUE) * (orig_len ? orig_len : 1));
         for (size_t i = 0; i < orig_len; i++) {
             keys[i] = pys_apply(c, key_fn, 1, &orig_items[i]);
-            if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
-            if (o->list.len != orig_len || o->list.items != orig_items)
-                PYS_RAISE_EXC(c, c->EXC_ValueError,
-                    "list modified during sort");
+            if (c->state != PYS_STATE_NORMAL) goto restore;
         }
     }
-    // Insertion sort over items[] using keys[] for comparison.
+    // Insertion sort over orig_items[] using keys[] for comparison.
     for (size_t i = 1; i < orig_len; i++) {
         VALUE xv = orig_items[i];
         VALUE xk = keys ? keys[i] : xv;
@@ -9295,10 +9305,7 @@ lm_sort(CTX *c, int argc, VALUE *argv)
         while (j > 0) {
             VALUE prev_k = keys ? keys[j - 1] : orig_items[j - 1];
             int cmp = pys_cmp(c, prev_k, xk);
-            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
-            if (o->list.len != orig_len || o->list.items != orig_items)
-                PYS_RAISE_EXC(c, c->EXC_ValueError,
-                    "list modified during sort");
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) goto restore;
             if (reverse ? (cmp >= 0) : (cmp <= 0)) break;
             orig_items[j] = orig_items[j - 1];
             if (keys) keys[j] = keys[j - 1];
@@ -9306,6 +9313,17 @@ lm_sort(CTX *c, int argc, VALUE *argv)
         }
         orig_items[j] = xv;
         if (keys) keys[j] = xk;
+    }
+restore:
+    {
+        bool mutated = (o->list.len != 0 || o->list.items != NULL);
+        o->list.len = orig_len;
+        o->list.items = orig_items;
+        o->list.capa = orig_cap;
+        if (c->state == PYS_STATE_RAISE) return PYS_NONE;
+        if (mutated)
+            PYS_RAISE_EXC(c, c->EXC_ValueError,
+                "list modified during sort");
     }
     return PYS_NONE;
 }
@@ -11664,6 +11682,39 @@ bi_complex(CTX *c, int argc, VALUE *argv)
     if (argc == 0) return pys_make_complex(0, 0);
     double re = 0, im = 0;
     if (argc >= 1) {
+        // Instance: try __complex__, then __float__ — matches CPython
+        // PyNumber_ToComplex behaviour.
+        if (pys_is_instance(argv[0])) {
+            VALUE cls = PYS_OBJ_VAL(PYS_PTR(argv[0])->inst.cls);
+            VALUE m = pys_class_lookup_method(cls, "__complex__");
+            if (m != PYS_NONE) {
+                VALUE av[1] = { argv[0] };
+                VALUE r = pys_apply(c, m, 1, av);
+                if (c->state == PYS_STATE_RAISE) return PYS_NONE;
+                if (pys_is_complex(r)) {
+                    re = PYS_PTR(r)->cpx.re;
+                    im = PYS_PTR(r)->cpx.im;
+                    if (argc == 1) return r;
+                    goto add_imag;
+                }
+                if (pys_int_or_bool(r) || pys_is_float(r)) {
+                    re = pys_to_double(c, r);
+                    if (argc == 1) return pys_make_complex(re, 0);
+                    goto add_imag;
+                }
+                PYS_RAISE_EXC(c, c->EXC_TypeError, "__complex__ returned non-complex");
+            }
+            VALUE fm = pys_class_lookup_method(cls, "__float__");
+            if (fm != PYS_NONE) {
+                VALUE av[1] = { argv[0] };
+                VALUE r = pys_apply(c, fm, 1, av);
+                if (c->state == PYS_STATE_RAISE) return PYS_NONE;
+                re = pys_to_double(c, r);
+                if (argc == 1) return pys_make_complex(re, 0);
+                goto add_imag;
+            }
+            // Subclass with numeric primary: fall through to pys_to_double.
+        }
         if (pys_is_complex(argv[0])) {
             re = PYS_PTR(argv[0])->cpx.re;
             im = PYS_PTR(argv[0])->cpx.im;
@@ -11727,6 +11778,7 @@ bi_complex(CTX *c, int argc, VALUE *argv)
             re = pys_to_double(c, argv[0]);
         }
     }
+add_imag:
     if (argc >= 2) {
         if (pys_is_complex(argv[1])) {
             im += PYS_PTR(argv[1])->cpx.re;
