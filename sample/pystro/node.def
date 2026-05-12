@@ -1233,17 +1233,29 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             // Instance-receiver class-attr stamp: only when the value
             // is stable data (not a bound method, descriptor, or
             // property — those depend on receiver / re-evaluate).
+            //
+            // Skip dunders that resolve via instance-specific hooks
+            // (`__dict__` returns a fresh alias per instance, `__class__`
+            // is per-instance, `__module__` is per-class but the str
+            // is freshly allocated, etc.).  Otherwise a `v1.__dict__`
+            // after `v0.__dict__` returns v0's alias.
+            bool is_special = (name[0] == '_' && name[1] == '_'
+                && (strcmp(name, "__dict__") == 0
+                    || strcmp(name, "__class__") == 0
+                    || strcmp(name, "__module__") == 0));
             bool stamp = false;
-            if (PYS_IS_PTR(r)) {
-                int t = PYS_PTR(r)->type;
-                if (t == PYS_T_LIST || t == PYS_T_TUPLE || t == PYS_T_DICT
-                    || t == PYS_T_STR || t == PYS_T_BYTES || t == PYS_T_BYTEARRAY
-                    || t == PYS_T_SET || t == PYS_T_FROZENSET
-                    || t == PYS_T_BIGNUM || t == PYS_T_RANGE
-                    || t == PYS_T_CLASS)
-                    stamp = true;
-            } else {
-                stamp = true;   // immediate fixnum / flonum / None / bool
+            if (!is_special) {
+                if (PYS_IS_PTR(r)) {
+                    int t = PYS_PTR(r)->type;
+                    if (t == PYS_T_LIST || t == PYS_T_TUPLE || t == PYS_T_DICT
+                        || t == PYS_T_STR || t == PYS_T_BYTES || t == PYS_T_BYTEARRAY
+                        || t == PYS_T_SET || t == PYS_T_FROZENSET
+                        || t == PYS_T_BIGNUM || t == PYS_T_RANGE
+                        || t == PYS_T_CLASS)
+                        stamp = true;
+                } else {
+                    stamp = true;   // immediate fixnum / flonum / None / bool
+                }
             }
             if (stamp) {
                 cache->inst_ca_cls = (void *)o->inst.cls;
