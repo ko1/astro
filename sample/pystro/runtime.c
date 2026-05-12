@@ -5651,6 +5651,17 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             extern VALUE bi_object_new(CTX *c, int argc, VALUE *argv);
             return pys_make_builtin("__new__", bi_object_new, 1, 32);
         }
+        // Python functions are descriptors: hasattr(f, '__get__') is True.
+        // partialmethod (`functools.partial(method)`) uses this to detect
+        // descriptors.  Return the function itself as the "__get__" hook
+        // — hasattr() only checks presence.
+        if (strcmp(name, "__get__") == 0) return v;
+        // PEP 695 / 3.12+: __type_params__ is a tuple of TypeVar etc.
+        // Pystro doesn't model PEP 695 type params; return empty tuple.
+        if (strcmp(name, "__type_params__") == 0) return pys_make_tuple(NULL, 0);
+        // __wrapped__ — functools.wraps stores the wrapped function;
+        // if user didn't set it, raise AttributeError (caller usually
+        // does `hasattr` check).
         if (o->func.attrs) {
             VALUE key = pys_make_str(name, strlen(name));
             uint64_t h = pys_hash(c, key);
