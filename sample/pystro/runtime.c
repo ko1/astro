@@ -15472,6 +15472,19 @@ bi_pystro_fstat(CTX *c, int argc, VALUE *argv)
     return pys_make_tuple(items, 10);
 }
 
+// os.system: run a shell command and return its exit status.
+static VALUE
+bi_pystro_system(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "system: cmd must be str");
+    size_t L = PYS_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    int r = system(buf);
+    return pys_make_int(r);
+}
+
 // time.mktime: convert a 9-tuple struct_time to epoch seconds.
 static VALUE
 bi_pystro_mktime(CTX *c, int argc, VALUE *argv)
@@ -16753,6 +16766,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_lseek__",       pys_make_builtin("__pystro_lseek__",       bi_pystro_lseek,       3, 3));
     pys_global_define(c, "__pystro_chmod__",       pys_make_builtin("__pystro_chmod__",       bi_pystro_chmod,       2, 2));
     pys_global_define(c, "__pystro_mktime__",      pys_make_builtin("__pystro_mktime__",      bi_pystro_mktime,      1, 1));
+    pys_global_define(c, "__pystro_system__",      pys_make_builtin("__pystro_system__",      bi_pystro_system,      1, 1));
     pys_global_define(c, "__pystro_abspath__",     pys_make_builtin("__pystro_abspath__",     bi_pystro_abspath,     1, 1));
     pys_global_define(c, "__pystro_gc_collect__",  pys_make_builtin("__pystro_gc_collect__",  bi_pystro_gc_collect,  0, 0));
 

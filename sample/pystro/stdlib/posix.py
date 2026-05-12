@@ -371,7 +371,10 @@ def link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
 
 
 def system(command):
-    return -1
+    try:
+        return __pystro_system__(command)
+    except NameError:
+        return -1
 
 
 def urandom(n):

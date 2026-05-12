@@ -57,6 +57,14 @@ def fstat(fd):
     import posix
     return posix.fstat(fd)
 
+
+def system(command):
+    """Run command via libc system(3).  Returns the exit status."""
+    try:
+        return __pystro_system__(command)
+    except NameError:
+        return -1
+
 # A simple mapping wrapper.
 class _Environ:
     def __getitem__(self, k):
