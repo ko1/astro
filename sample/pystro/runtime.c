@@ -15864,10 +15864,23 @@ static VALUE
 bi_pystro_stat(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "stat: path must be str");
-    size_t L = PYS_PTR(argv[0])->str.len;
+    VALUE path = argv[0];
+    // os.PathLike: anything with __fspath__ → call it to get the str.
+    if (pys_is_instance(path)) {
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(path)->inst.cls), "__fspath__");
+        if (m != PYS_NONE) {
+            VALUE av[1] = { path };
+            path = pys_apply(c, m, 1, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        } else if (PYS_PTR(path)->inst.primary
+                   && pys_is_str(PYS_PTR(path)->inst.primary)) {
+            path = PYS_PTR(path)->inst.primary;
+        }
+    }
+    if (!pys_is_str(path)) PYS_RAISE_EXC(c, c->EXC_TypeError, "stat: path must be str");
+    size_t L = PYS_PTR(path)->str.len;
     char *buf = (char *)alloca(L + 1);
-    memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    memcpy(buf, PYS_PTR(path)->str.chars, L); buf[L] = '\0';
     struct stat st;
     bool follow = true;
     VALUE fk = pys_bi_kwarg("follow_symlinks");
