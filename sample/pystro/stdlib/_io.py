@@ -138,21 +138,68 @@ class FileIO(RawIOBase):
     def __init__(self, *a, **k): pass
 
 
-class BufferedReader(BufferedIOBase):
-    def __init__(self, raw, *a, **k): self.raw = raw
+class _BufferedBase(BufferedIOBase):
+    """Common pass-through wrapper.  CPython's BufferedReader / Writer
+    / Random aggregate a raw FileIO; the stub just delegates everything
+    to .raw so user code that does `BufferedWriter(open(path,'wb')).write(b)`
+    actually writes.  Read/write are bytes-mode pass-throughs."""
+    def __init__(self, raw, *a, **k):
+        self.raw = raw
+    def read(self, size=-1): return self.raw.read(size)
+    def readline(self, size=-1): return self.raw.readline()
+    def readlines(self, hint=-1):
+        try: return self.raw.readlines()
+        except AttributeError:
+            out = []
+            while True:
+                line = self.readline()
+                if not line: break
+                out.append(line)
+            return out
+    def write(self, b):
+        return self.raw.write(b)
+    def flush(self):
+        try: return self.raw.flush()
+        except AttributeError: return None
+    def close(self):
+        try: return self.raw.close()
+        except AttributeError: return None
+    @property
+    def closed(self):
+        try: return self.raw.closed
+        except AttributeError: return False
+    def seek(self, *a):
+        return self.raw.seek(*a)
+    def tell(self):
+        return self.raw.tell()
+    def fileno(self):
+        try: return self.raw.fileno()
+        except AttributeError: return -1
+    def readable(self): return True
+    def writable(self): return True
+    def seekable(self): return True
+    def __iter__(self):
+        while True:
+            line = self.readline()
+            if not line: break
+            yield line
 
 
-class BufferedWriter(BufferedIOBase):
-    def __init__(self, raw, *a, **k): self.raw = raw
-
-
-class BufferedRandom(BufferedIOBase):
-    def __init__(self, raw, *a, **k): self.raw = raw
+class BufferedReader(_BufferedBase): pass
+class BufferedWriter(_BufferedBase): pass
+class BufferedRandom(_BufferedBase): pass
 
 
 class BufferedRWPair(BufferedIOBase):
     def __init__(self, reader, writer, *a, **k):
         self.reader = reader; self.writer = writer
+    def read(self, size=-1): return self.reader.read(size)
+    def write(self, b): return self.writer.write(b)
+    def close(self):
+        try: self.reader.close()
+        except AttributeError: pass
+        try: self.writer.close()
+        except AttributeError: pass
 
 
 class TextIOWrapper(TextIOBase):
