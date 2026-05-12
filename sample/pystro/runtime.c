@@ -4694,18 +4694,59 @@ bi_dunder_reduce_ex(CTX *c, int argc, VALUE *argv)
         VALUE av_pair[2] = { cls, av_args };
         return pys_make_tuple(av_pair, 2);
     }
-    // Plain instances: (cls, (), state) where state is __dict__ so the
-    // unpickler runs __setstate__ on the recreated empty instance. Lets
-    // collections.UserList / UserDict round-trip through pickle.dumps.
-    VALUE av_args = pys_make_tuple(NULL, 0);
-    if (pys_is_instance(self) && PYS_PTR(self)->inst.attrs
-            && PYS_PTR(self)->inst.attrs->used > 0) {
-        struct pysobj *dwrap = pys_alloc(PYS_T_DICT);
-        dwrap->dict = PYS_PTR(self)->inst.attrs;
-        VALUE state = PYS_OBJ_VAL(dwrap);
-        VALUE av_triple[3] = { cls, av_args, state };
-        return pys_make_tuple(av_triple, 3);
+    // Plain instances: use copyreg.__newobj__(cls) so the unpickler runs
+    // cls.__new__(cls) bypassing __init__ (which may require args), then
+    // applies __setstate__(state) where state is __dict__. Matches
+    // CPython object.__reduce_ex__(2).
+    if (pys_is_instance(self)) {
+        VALUE av_args = pys_make_tuple(NULL, 0);
+        VALUE newobj_args = pys_make_tuple(&cls, 1);
+        // Look up (or import) copyreg.__newobj__.
+        extern VALUE bi_import(CTX *c, int argc, VALUE *argv);
+        VALUE imp_name = pys_make_str("copyreg", 7);
+        VALUE av_imp[1] = { imp_name };
+        VALUE copyreg = bi_import(c, 1, av_imp);
+        if (c->state == PYS_STATE_RAISE) {
+            c->state = PYS_STATE_NORMAL;
+            c->state_value = PYS_NONE;
+            copyreg = PYS_NONE;
+        }
+        VALUE newobj_fn = PYS_NONE;
+        if (copyreg != PYS_NONE) {
+            int sst = c->state; VALUE sval = c->state_value;
+            newobj_fn = pys_getattr(c, copyreg, "__newobj__");
+            if (c->state == PYS_STATE_RAISE) {
+                c->state = sst; c->state_value = sval;
+                newobj_fn = PYS_NONE;
+            }
+        }
+        if (newobj_fn && newobj_fn != PYS_NONE) {
+            // (copyreg.__newobj__, (cls,), state) — pickle inspects this
+            // shape and uses NEWOBJ opcode in protocol 2+.
+            if (PYS_PTR(self)->inst.attrs
+                    && PYS_PTR(self)->inst.attrs->used > 0) {
+                struct pysobj *dwrap = pys_alloc(PYS_T_DICT);
+                dwrap->dict = PYS_PTR(self)->inst.attrs;
+                VALUE state = PYS_OBJ_VAL(dwrap);
+                VALUE av_triple[3] = { newobj_fn, newobj_args, state };
+                return pys_make_tuple(av_triple, 3);
+            }
+            VALUE av_pair[2] = { newobj_fn, newobj_args };
+            return pys_make_tuple(av_pair, 2);
+        }
+        // copyreg not available — fall through to (cls, ()) form.
+        if (PYS_PTR(self)->inst.attrs
+                && PYS_PTR(self)->inst.attrs->used > 0) {
+            struct pysobj *dwrap = pys_alloc(PYS_T_DICT);
+            dwrap->dict = PYS_PTR(self)->inst.attrs;
+            VALUE state = PYS_OBJ_VAL(dwrap);
+            VALUE av_triple[3] = { cls, av_args, state };
+            return pys_make_tuple(av_triple, 3);
+        }
+        VALUE av_pair[2] = { cls, av_args };
+        return pys_make_tuple(av_pair, 2);
     }
+    VALUE av_args = pys_make_tuple(NULL, 0);
     VALUE av_pair[2] = { cls, av_args };
     return pys_make_tuple(av_pair, 2);
 }
@@ -5581,8 +5622,21 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                 int32_t e = pydict_find(c, o->func.attrs, k, pys_hash(c, k));
                 if (e >= 0) return o->func.attrs->entries[e].value;
             }
-            if (!o->func.attrs) o->func.attrs = pydict_new();
+            // Resolve from the defining module's globals __name__. Fall
+            // back to "__main__" if absent.
             VALUE s = pys_make_str("__main__", 8);
+            if (o->func.fglobals) {
+                struct pysglobals *g = o->func.fglobals;
+                for (size_t i = 0; i < g->size; i++) {
+                    if (g->entries[i].defined
+                            && strcmp(g->entries[i].name, "__name__") == 0
+                            && pys_is_str(g->entries[i].value)) {
+                        s = g->entries[i].value;
+                        break;
+                    }
+                }
+            }
+            if (!o->func.attrs) o->func.attrs = pydict_new();
             struct pysobj *dwrap = pys_alloc(PYS_T_DICT);
             dwrap->dict = o->func.attrs;
             VALUE k = pys_make_str("__module__", 10);
@@ -14419,7 +14473,7 @@ extern struct Node *parse_program(void);
 // attribute or a submodule.
 static VALUE bi_try_import(CTX *c, int argc, VALUE *argv);
 
-static VALUE
+VALUE
 bi_import(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
