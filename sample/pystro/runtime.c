@@ -5505,14 +5505,23 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "__name__") == 0 || strcmp(name, "__qualname__") == 0) {
             // If user set __name__ via setattr (e.g. functools.wraps),
             // honour the override; otherwise fall back to the original
-            // function name.
+            // function name.  Cache the synthesized str so repeated
+            // access returns the SAME object (CPython parity — tests
+            // assertIs(f.__name__, ...) rely on this).
             if (o->func.attrs) {
                 VALUE k = pys_make_str(name, strlen(name));
                 int32_t e = pydict_find(c, o->func.attrs, k, pys_hash(c, k));
                 if (e >= 0) return o->func.attrs->entries[e].value;
             }
+            if (!o->func.attrs) o->func.attrs = pydict_new();
             const char *n = o->func.name ? o->func.name : "<func>";
-            return pys_make_str(n, strlen(n));
+            VALUE s = pys_make_str(n, strlen(n));
+            // Wrap attrs in a PYS_T_DICT so pys_dict_set works.
+            struct pysobj *dwrap = pys_alloc(PYS_T_DICT);
+            dwrap->dict = o->func.attrs;
+            VALUE k = pys_make_str(name, strlen(name));
+            pys_dict_set(c, PYS_OBJ_VAL(dwrap), k, s);
+            return s;
         }
         if (strcmp(name, "__doc__") == 0) {
             if (o->func.attrs) {
@@ -5522,10 +5531,39 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             }
             return PYS_NONE;
         }
-        if (strcmp(name, "__module__") == 0) return pys_make_str("__main__", 8);
+        if (strcmp(name, "__module__") == 0) {
+            // Cache so multiple accesses share the same str (CPython
+            // tests rely on `wrapper.__module__ is func.__module__`).
+            if (o->func.attrs) {
+                VALUE k = pys_make_str("__module__", 10);
+                int32_t e = pydict_find(c, o->func.attrs, k, pys_hash(c, k));
+                if (e >= 0) return o->func.attrs->entries[e].value;
+            }
+            if (!o->func.attrs) o->func.attrs = pydict_new();
+            VALUE s = pys_make_str("__main__", 8);
+            struct pysobj *dwrap = pys_alloc(PYS_T_DICT);
+            dwrap->dict = o->func.attrs;
+            VALUE k = pys_make_str("__module__", 10);
+            pys_dict_set(c, PYS_OBJ_VAL(dwrap), k, s);
+            return s;
+        }
         if (strcmp(name, "__annotations__") == 0) {
-            // Read from func.attrs if user set it (parser emits
-            // `f.__annotations__ = {...}` after def for annotated funcs).
+            // Cache an empty dict so repeated access returns the SAME
+            // object (CPython tests rely on identity).  User-set
+            // annotations override below.
+            if (o->func.attrs) {
+                VALUE key = pys_make_str("__annotations__", 15);
+                int32_t e = pydict_find(c, o->func.attrs, key, pys_hash(c, key));
+                if (e >= 0) return o->func.attrs->entries[e].value;
+            }
+            if (!o->func.attrs) o->func.attrs = pydict_new();
+            VALUE ann = pys_make_dict();
+            struct pysobj *dwrap = pys_alloc(PYS_T_DICT);
+            dwrap->dict = o->func.attrs;
+            VALUE key2 = pys_make_str("__annotations__", 15);
+            pys_dict_set(c, PYS_OBJ_VAL(dwrap), key2, ann);
+            return ann;
+            // Unreachable old path below:
             if (o->func.attrs) {
                 VALUE key = pys_make_str("__annotations__", 15);
                 uint64_t h = pys_hash(c, key);
