@@ -139,6 +139,22 @@ arawk_make_array(void)
     return ARAWK_OBJ_VAL(o);
 }
 
+// Zero-copy `arawk_obj` wrap of an existing (caller-owned, GC-traced)
+// byte buffer.  Use only when the buffer's lifetime ≥ this VALUE's
+// lifetime: the libgc conservative scanner sees `chars` and keeps the
+// owner alive as long as this obj is reachable.  Saves the
+// GC_malloc_atomic(len+1) + memcpy that arawk_make_string does.  Used
+// for `for-in` keys (the array entry's `key` buffer is GC-owned and
+// long-lived); avoid for short-lived caller buffers.
+static inline VALUE
+arawk_wrap_string(const char *chars, size_t len)
+{
+    struct arawk_obj *o = arawk_alloc(ARAWK_T_STRING);
+    o->str.chars = (char *)chars;
+    o->str.len   = len;
+    return ARAWK_OBJ_VAL(o);
+}
+
 // Coercions / accessors.  awk's number/string duality: every value has
 // both a numeric and string view.  Fields and getline input are
 // "string-numeric" (strnum) — they coerce to number if the shape is

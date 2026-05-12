@@ -596,7 +596,7 @@ node_for_in(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t k
         struct arawk_array_entry *e = o->arr.buckets[i];
         while (e) {
             struct arawk_array_entry *next = e->next;
-            fp[key_slot] = arawk_make_string(e->key, e->key_len);
+            fp[key_slot] = arawk_wrap_string(e->key, e->key_len);
             RESULT r = EVAL_ARG(c, body);
             if (UNLIKELY(r.state != RESULT_NORMAL)) {
                 if (r.state == RESULT_BREAK)    return RESULT_OK(ARAWK_FIX(0));
@@ -988,7 +988,7 @@ node_for_in_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t
         struct arawk_array_entry *e = o->arr.buckets[i];
         while (e) {
             struct arawk_array_entry *next = e->next;
-            c->env[key_slot] = arawk_make_string(e->key, e->key_len);
+            c->env[key_slot] = arawk_wrap_string(e->key, e->key_len);
             RESULT r = EVAL_ARG(c, body);
             if (UNLIKELY(r.state != RESULT_NORMAL)) {
                 if (r.state == RESULT_BREAK)    return RESULT_OK(ARAWK_FIX(0));
