@@ -1304,6 +1304,7 @@ parse_genexp_lazy(int saved_remap_at_paren)
     // Nested tuple `for x, (a, b) in xs` — record the inner names so
     // a prefix unpack can be emitted before the inner body.
     const char *first_extra[16]; int n_first_extra = 0;
+    bool saw_trailing_comma = false;
     struct sub_tup_ge {
         int slot_in_extras;        // index in first_extra (synthetic
                                     // name lives there; -1 means slot 0
@@ -1314,6 +1315,7 @@ parse_genexp_lazy(int saved_remap_at_paren)
     struct sub_tup_ge ge_subs[8];
     int n_ge_subs = 0;
     while (match_tok(T_COMMA)) {
+        saw_trailing_comma = true;
         if (peek_tok(0)->kind == T_LPAREN) {
             tok_pos++;
             if (n_ge_subs >= 8) parse_error("too many nested tuple targets");
@@ -1409,7 +1411,7 @@ parse_genexp_lazy(int saved_remap_at_paren)
     // Build the outer for-loop: `for first_var in .0: body`.
     NODE *load_p0 = ALLOC_node_lref(0);
     NODE *outer_loop;
-    if (n_first_extra == 0) {
+    if (n_first_extra == 0 && !saw_trailing_comma) {
         outer_loop = build_for_loop(first_var, load_p0, body);
     } else {
         // Tuple target — desugar to `tmp = item; first_var = tmp[0]; ...`.
