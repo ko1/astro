@@ -17,8 +17,21 @@ def wrap(text, width=70):
     return out
 
 
-def fill(text, width=70):
-    return "\n".join(wrap(text, width))
+def fill(text, width=70, **kwargs):
+    """CPython exposes initial_indent / subsequent_indent / break_long_words
+    etc. via kwargs; pystro's stub honours initial_indent / subsequent_indent
+    if given, ignores the rest."""
+    init = kwargs.get("initial_indent", "")
+    subs = kwargs.get("subsequent_indent", "")
+    lines = wrap(text, width)
+    if init or subs:
+        if not lines:
+            lines = [""]
+        out = []
+        for i, line in enumerate(lines):
+            out.append((init if i == 0 else subs) + line)
+        lines = out
+    return "\n".join(lines)
 
 
 def dedent(text):
