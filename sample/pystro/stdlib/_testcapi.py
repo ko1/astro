@@ -85,6 +85,14 @@ def type_assign_specific_version_unsafe(cls, version):
     pass
 
 
+def type_assign_version(cls):
+    return 0
+
+
+def type_get_tp_alloc(cls):
+    return None
+
+
 def type_modified(cls):
     pass
 
