@@ -14813,6 +14813,10 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // 6-tuple unpack with TypeError("object has no len()").  Stub
         // returns a static ("glibc", "2.28") and rebuilds the common API.
         "platform.py",
+        // fnmatch — CPython uses atomic groups (?>) and (?s:) scoped
+        // flags that pystro's re engine doesn't support; pystro's stub
+        // does shell-pattern → simple regex without those features.
+        "fnmatch.py",
         NULL,
     };
     bool pystro_wins = false;
