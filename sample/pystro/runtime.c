@@ -15472,6 +15472,46 @@ bi_pystro_fstat(CTX *c, int argc, VALUE *argv)
     return pys_make_tuple(items, 10);
 }
 
+// time.mktime: convert a 9-tuple struct_time to epoch seconds.
+static VALUE
+bi_pystro_mktime(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE t = argv[0];
+    VALUE *items;
+    size_t n;
+    if (pys_is_tuple(t) || pys_is_list(t)) {
+        items = PYS_PTR(t)->list.items;
+        n = PYS_PTR(t)->list.len;
+    } else if (pys_is_instance(t) && PYS_PTR(t)->inst.primary
+               && (pys_is_tuple(PYS_PTR(t)->inst.primary)
+                   || pys_is_list(PYS_PTR(t)->inst.primary))) {
+        VALUE p = PYS_PTR(t)->inst.primary;
+        items = PYS_PTR(p)->list.items;
+        n = PYS_PTR(p)->list.len;
+    } else {
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "mktime: expected sequence");
+    }
+    if (n < 9) PYS_RAISE_EXC(c, c->EXC_TypeError, "mktime: need 9 items");
+    struct tm tm_;
+    memset(&tm_, 0, sizeof(tm_));
+    tm_.tm_year = (int)pys_int_to_long(c, items[0]) - 1900;
+    tm_.tm_mon  = (int)pys_int_to_long(c, items[1]) - 1;
+    tm_.tm_mday = (int)pys_int_to_long(c, items[2]);
+    tm_.tm_hour = (int)pys_int_to_long(c, items[3]);
+    tm_.tm_min  = (int)pys_int_to_long(c, items[4]);
+    tm_.tm_sec  = (int)pys_int_to_long(c, items[5]);
+    // CPython tm_wday: Mon=0..Sun=6 → POSIX Sun=0..Sat=6.
+    int wday    = (int)pys_int_to_long(c, items[6]);
+    tm_.tm_wday = (wday + 1) % 7;
+    tm_.tm_yday = (int)pys_int_to_long(c, items[7]) - 1;
+    tm_.tm_isdst = (int)pys_int_to_long(c, items[8]);
+    time_t tt = mktime(&tm_);
+    if (tt == (time_t)-1)
+        PYS_RAISE_EXC(c, c->EXC_OverflowError, "mktime argument out of range");
+    return pys_make_float((double)tt);
+}
+
 static VALUE
 bi_pystro_chmod(CTX *c, int argc, VALUE *argv)
 {
@@ -15667,8 +15707,18 @@ bi_pystro_strftime(CTX *c, int argc, VALUE *argv)
         if (pys_int_or_bool(items[3])) tm_.tm_hour = (int)pys_int_to_long(c, items[3]);
         if (pys_int_or_bool(items[4])) tm_.tm_min  = (int)pys_int_to_long(c, items[4]);
         if (pys_int_or_bool(items[5])) tm_.tm_sec  = (int)pys_int_to_long(c, items[5]);
-        if (pys_int_or_bool(items[6])) tm_.tm_wday = (int)pys_int_to_long(c, items[6]);
-        if (pys_int_or_bool(items[7])) tm_.tm_yday = (int)pys_int_to_long(c, items[7]);
+        // CPython struct_time tm_wday: Monday=0 ... Sunday=6.
+        // POSIX struct tm tm_wday: Sunday=0 ... Saturday=6.
+        // Convert: pos = (mon0 + 1) % 7 → (0..6 → 1..6,0).
+        if (pys_int_or_bool(items[6])) {
+            int wday = (int)pys_int_to_long(c, items[6]);
+            tm_.tm_wday = (wday + 1) % 7;
+        }
+        // CPython tm_yday: 1-based.  POSIX tm_yday: 0-based.  Subtract 1.
+        if (pys_int_or_bool(items[7])) {
+            int yday = (int)pys_int_to_long(c, items[7]);
+            tm_.tm_yday = yday - 1;
+        }
         if (pys_int_or_bool(items[8])) tm_.tm_isdst = (int)pys_int_to_long(c, items[8]);
         // Normalize via mktime then re-derive (fills weekday/yday).
         struct tm tmp = tm_;
@@ -16702,6 +16752,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_fstat__",       pys_make_builtin("__pystro_fstat__",       bi_pystro_fstat,       1, 1));
     pys_global_define(c, "__pystro_lseek__",       pys_make_builtin("__pystro_lseek__",       bi_pystro_lseek,       3, 3));
     pys_global_define(c, "__pystro_chmod__",       pys_make_builtin("__pystro_chmod__",       bi_pystro_chmod,       2, 2));
+    pys_global_define(c, "__pystro_mktime__",      pys_make_builtin("__pystro_mktime__",      bi_pystro_mktime,      1, 1));
     pys_global_define(c, "__pystro_abspath__",     pys_make_builtin("__pystro_abspath__",     bi_pystro_abspath,     1, 1));
     pys_global_define(c, "__pystro_gc_collect__",  pys_make_builtin("__pystro_gc_collect__",  bi_pystro_gc_collect,  0, 0));
 

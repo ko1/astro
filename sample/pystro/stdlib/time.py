@@ -28,8 +28,10 @@ def strftime(fmt, t=None):
     return __pystro_strftime__(fmt, t)
 
 def mktime(t):
-    # Approximate via attribute access — pystro doesn't have a true mktime.
-    return 0.0
+    # CPython's time.mktime accepts a 9-tuple (struct_time-compatible)
+    # and returns the equivalent epoch seconds in local time.  Delegate
+    # to the C builtin which calls libc mktime.
+    return float(__pystro_mktime__(t))
 
 def perf_counter_ns():
     return int(perf_counter() * 1e9)
