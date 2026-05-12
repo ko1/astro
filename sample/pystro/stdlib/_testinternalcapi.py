@@ -52,6 +52,18 @@ def perf_map_state_teardown():
     pass
 
 
+def write_perf_map_entry(*args, **kwargs):
+    pass
+
+
+def perf_map_state_init(*args, **kwargs):
+    pass
+
+
+def perf_trampoline_set_persist_after_fork_count():
+    return 0
+
+
 def perf_trampoline_set_persist_after_fork():
     pass
 

@@ -131,4 +131,12 @@ def expand_makefile_vars(s, vars):
     return s
 
 
+def _expand_vars(scheme, vars):
+    return get_paths(scheme, vars)
+
+
+def _get_default_scheme():
+    return "posix_prefix"
+
+
 _PYTHON_BUILD = False

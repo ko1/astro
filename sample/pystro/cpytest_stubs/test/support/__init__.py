@@ -1011,6 +1011,16 @@ def copy_python_src_ignore(path, names):
 # the standard library directory.  Used by test_types and others.
 import os as _os_stdlib
 STDLIB_DIR = "/home/ko1/ruby/astro/sample/pystro/cpython/Lib"
+
+
+def run_in_subinterp(code):
+    # pystro is single-interpreter; reject so tests that gate on
+    # subinterpreter support skip cleanly.
+    raise _unittest.SkipTest("subinterpreters not supported")
+
+
+def run_in_subinterp_with_config(code, **config):
+    raise _unittest.SkipTest("subinterpreters not supported")
 del _os_stdlib
 
 
