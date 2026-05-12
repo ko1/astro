@@ -1059,3 +1059,9 @@ def gc_collect():
 def system_must_validate_cert(f):
     """Stub: no-op test decorator."""
     return f
+
+
+# Hash word size — CPython tests check tuple hashing against this.
+import sys
+NHASHBITS = (8 * sys.maxsize.bit_length() // 8) if hasattr(sys, "maxsize") else 64
+if NHASHBITS < 32: NHASHBITS = 64
