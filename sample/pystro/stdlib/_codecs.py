@@ -36,6 +36,15 @@ def lookup(encoding):
         for fn in _codec_search_path:
             r = fn(enc)
             if r is not None: return r
+        # Default fallback: try `encodings.<name>` package (CPython's
+        # default search). The module's getregentry() returns CodecInfo.
+        try:
+            mod_name = "encodings." + encoding.lower().replace("-", "_")
+            mod = __import__(mod_name, fromlist=["getregentry"])
+            if hasattr(mod, "getregentry"):
+                return mod.getregentry()
+        except (ImportError, AttributeError):
+            pass
         raise LookupError("unknown encoding: " + encoding)
     return _CodecInfo(canonical)
 
