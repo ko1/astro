@@ -1054,3 +1054,8 @@ def reap_threads(fn):
 def gc_collect():
     import gc
     gc.collect()
+
+
+def system_must_validate_cert(f):
+    """Stub: no-op test decorator."""
+    return f
