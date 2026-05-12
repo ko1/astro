@@ -6025,7 +6025,22 @@ pys_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
     c->env = new_env;
     c->method_class = f->func.defining_class;
     if (f->func.fglobals) c->globals = f->func.fglobals;
+    // Zero PYS_BI_KW* before the body runs — the caller's kwargs
+    // have been consumed into local slots, so internal builtin calls
+    // (`tuple()` etc.) shouldn't see them.
+    extern int PYS_BI_KWC;
+    extern const char **PYS_BI_KWNAMES;
+    extern VALUE *PYS_BI_KWVALUES;
+    int saved_kwc = PYS_BI_KWC;
+    const char **saved_kn = PYS_BI_KWNAMES;
+    VALUE *saved_kv = PYS_BI_KWVALUES;
+    PYS_BI_KWC = 0;
+    PYS_BI_KWNAMES = NULL;
+    PYS_BI_KWVALUES = NULL;
     EVAL(c, f->func.body);
+    PYS_BI_KWC = saved_kwc;
+    PYS_BI_KWNAMES = saved_kn;
+    PYS_BI_KWVALUES = saved_kv;
     c->env = saved;
     c->method_class = saved_mc;
     c->globals = saved_g;
@@ -6242,7 +6257,15 @@ pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
                 inst = pys_make_instance(fn);
                 VALUE bin_base = pys_class_find_builtin_base(fn);
                 if (bin_base != PYS_NONE) {
+                    // Zero PYS_BI_KWC around the built-in ctor so it
+                    // doesn't see stale kwargs from the outer caller
+                    // (tuple/list ctors raise "takes no keyword
+                    // arguments" if KWC is non-zero).
+                    extern int PYS_BI_KWC;
+                    int saved_kwc = PYS_BI_KWC;
+                    PYS_BI_KWC = 0;
                     VALUE primary = PYS_PTR(bin_base)->cls.builtin_ctor(c, argc, argv);
+                    PYS_BI_KWC = saved_kwc;
                     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
                     PYS_PTR(inst)->inst.primary = primary;
                 }
