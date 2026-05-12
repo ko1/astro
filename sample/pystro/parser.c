@@ -756,7 +756,7 @@ make_load(const char *name)
             depth++;
         }
     }
-    if (in_class_body) return ALLOC_node_class_body_load(name);
+    if (in_class_body) return ALLOC_node_class_body_load(mangle_name(name));
     return ALLOC_node_gref(name);
 }
 
@@ -775,7 +775,8 @@ make_store(const char *name, NODE *rhs)
         parse_error("cannot assign to keyword");
     // Class body: bindings go to c->current_class.methods (which serves
     // as both the method table and the class attribute namespace).
-    if (in_class_body) return ALLOC_node_class_method_set(name, rhs);
+    // PEP 8 name mangling applies to class-level bindings too.
+    if (in_class_body) return ALLOC_node_class_method_set(mangle_name(name), rhs);
     name = comp_resolve(name);
     if (cur_scope && !scope_is_global_decl(cur_scope, name)) {
         // `nonlocal` decl: write to an outer scope's existing slot.
