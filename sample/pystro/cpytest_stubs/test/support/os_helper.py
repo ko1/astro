@@ -65,6 +65,15 @@ def temp_dir(*a, **kw):
     return _NoOp()
 
 
+def temp_umask(umask):
+    """Context manager that sets umask on entry, restores on exit.
+    pystro just no-ops (we don't model umask)."""
+    class _NoOp:
+        def __enter__(self): return None
+        def __exit__(self, *exc): return False
+    return _NoOp()
+
+
 def make_bad_fd():
     return -1
 
