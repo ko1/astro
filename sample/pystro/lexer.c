@@ -382,6 +382,15 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
                     src_pos++;
                 }
                 continue;
+            } else if (triple && brace_depth > 0 && c == '#') {
+                // PEP 701: comments are allowed inside `{...}` of a
+                // multi-line (triple-quoted) f-string.  Skip to end of
+                // line — don't append the `#...\n` content to the buffer
+                // since the f-string parser will choke on `#` in expr
+                // context.  Newline stays so brace_depth tracking sees
+                // line breaks normally.
+                while (peek(0) != '\0' && peek(0) != '\n') src_pos++;
+                continue;
             }
         }
         char ch = peek(0);
