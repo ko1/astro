@@ -6061,6 +6061,12 @@ pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         PYS_BI_KWVALUES = saved_kv;
         return r;
     }
+    // Python 3.10+: a bare staticmethod (used as a module-level decorator,
+    // e.g. _pyio.open) is callable — forward to the wrapped function.
+    if (PYS_IS_PTR(fn) && PYS_PTR(fn)->type == PYS_T_STATICMETHOD) {
+        VALUE inner = PYS_PTR(fn)->wrap.wrapped;
+        return pys_apply_kw(c, inner, argc, argv, kwc, kwnames, kwvalues);
+    }
     PYS_RAISE_EXC(c, c->EXC_TypeError, "object is not callable");
 }
 
@@ -6191,6 +6197,10 @@ pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
             for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
             return pys_apply(c, call, argc + 1, av);
         }
+    }
+    // Python 3.10+: a bare staticmethod is callable (forwards to wrapped).
+    if (PYS_IS_PTR(fn) && PYS_PTR(fn)->type == PYS_T_STATICMETHOD) {
+        return pys_apply(c, PYS_PTR(fn)->wrap.wrapped, argc, argv);
     }
     PYS_RAISE_EXC(c, c->EXC_TypeError, "object is not callable");
 }

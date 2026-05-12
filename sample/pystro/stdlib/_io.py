@@ -174,9 +174,12 @@ def text_encoding(encoding, stacklevel=2):
     return encoding
 
 
-def open(*args, **kwargs):
-    import builtins
-    return builtins.open(*args, **kwargs)
+# Re-export `builtins.open` directly so `io.open` (= `_io.open` in
+# CPython) is a free function, not a Python def — placing it as a class
+# attribute (e.g. `class T: open = io.open`) should not produce a bound
+# method.
+import builtins as _builtins
+open = _builtins.open
 
 
 def open_code(path):
