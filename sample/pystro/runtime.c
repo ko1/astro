@@ -9085,10 +9085,25 @@ lm_extend(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
     VALUE other = argv[1];
+    // CPython: `a.extend(a)` doubles the list (the iter sees a snapshot
+    // of the original length).  Mirror that by snapshotting len up-front
+    // when extending self with self.
+    if (other == argv[0] && (pys_is_list(argv[0]) || pys_is_tuple(argv[0]))) {
+        struct pysobj *o = PYS_PTR(argv[0]);
+        size_t snap = o->list.len;
+        for (size_t i = 0; i < snap; i++) {
+            pys_list_append(c, argv[0], o->list.items[i]);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        }
+        return PYS_NONE;
+    }
     struct pys_iter it; pys_iter_init(c, &it, other);
     if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
     VALUE x;
-    while (pys_iter_next(c, &it, &x)) pys_list_append(c, argv[0], x);
+    while (pys_iter_next(c, &it, &x)) {
+        pys_list_append(c, argv[0], x);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    }
     return PYS_NONE;
 }
 
