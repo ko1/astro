@@ -15533,16 +15533,28 @@ static VALUE
 pys_fspath(CTX *c, VALUE v)
 {
     if (pys_is_str(v)) return v;
+    // bytes path: decode as UTF-8 (CPython's default for filesystem
+    // encoding on Linux) — pystro's str is already UTF-8-encoded bytes
+    // internally so we just rewrap.
+    if (pys_is_byteseq(v)) {
+        return pys_make_str(PYS_PTR(v)->str.chars, PYS_PTR(v)->str.len);
+    }
     if (pys_is_instance(v)) {
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), "__fspath__");
         if (m != PYS_NONE) {
             VALUE av[1] = { v };
             VALUE r = pys_apply(c, m, 1, av);
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            // The __fspath__ may itself return bytes — decode.
+            if (pys_is_byteseq(r))
+                return pys_make_str(PYS_PTR(r)->str.chars, PYS_PTR(r)->str.len);
             return r;
         }
         if (PYS_PTR(v)->inst.primary && pys_is_str(PYS_PTR(v)->inst.primary))
             return PYS_PTR(v)->inst.primary;
+        if (PYS_PTR(v)->inst.primary && pys_is_byteseq(PYS_PTR(v)->inst.primary))
+            return pys_make_str(PYS_PTR(PYS_PTR(v)->inst.primary)->str.chars,
+                                PYS_PTR(PYS_PTR(v)->inst.primary)->str.len);
     }
     return v;       // caller validates pys_is_str on result
 }
