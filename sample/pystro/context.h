@@ -274,6 +274,12 @@ struct pysobj {
             pys_builtin_fn fn;
             const char *name;
             int min_argc, max_argc;
+            // CPython parity: only function-like descriptors bind on
+            // instance attribute access.  Free-function builtins (`open`,
+            // `len`, ...) registered as class attributes do NOT bind.
+            // Methods registered via `pys_class_add_method_as_method` set
+            // this flag so they bind like Python functions.
+            bool is_method;
         } builtin;
         struct {
             VALUE self;

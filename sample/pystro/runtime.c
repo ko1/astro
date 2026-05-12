@@ -682,7 +682,19 @@ pys_make_builtin(const char *name, pys_builtin_fn fn, int min_argc, int max_argc
     o->builtin.name = name;
     o->builtin.min_argc = min_argc;
     o->builtin.max_argc = max_argc;
+    o->builtin.is_method = false;
     return PYS_OBJ_VAL(o);
+}
+
+// Like pys_make_builtin but marks the result as a method, so it binds
+// to instances on attribute access (mirroring Python functions).  Use
+// for built-in methods registered on a type via pys_class_add_method.
+VALUE
+pys_make_builtin_method(const char *name, pys_builtin_fn fn, int min_argc, int max_argc)
+{
+    VALUE v = pys_make_builtin(name, fn, min_argc, max_argc);
+    PYS_PTR(v)->builtin.is_method = true;
+    return v;
 }
 
 VALUE
@@ -5222,8 +5234,17 @@ pys_getattr(CTX *c, VALUE v, const char *name)
                     VALUE av[1] = { v };
                     return pys_apply(c, PYS_PTR(m)->wrap.wrapped, 1, av);
                 }
-                if (t == PYS_T_FUNC || t == PYS_T_BUILTIN)
+                if (t == PYS_T_FUNC)
                     return pys_make_bound(v, m);
+                if (t == PYS_T_BUILTIN) {
+                    // Only built-in methods (registered via
+                    // pys_make_builtin_method) bind to instances.  Free
+                    // functions (`open`, etc.) stored as class attributes
+                    // do not — CPython parity.
+                    if (PYS_PTR(m)->builtin.is_method)
+                        return pys_make_bound(v, m);
+                    return m;
+                }
             }
             // Otherwise fall through.
         }
@@ -6857,13 +6878,13 @@ pys_make_fake_coroutine(CTX *c)
     if (!coro_cls || coro_cls == PYS_NONE) {
         coro_cls = pys_make_class("coroutine", PYS_NONE, false);
         pys_class_add_method(c, coro_cls, intern_name("close", 5),
-            pys_make_builtin("close", bi_fake_coro_close, 1, 1));
+            pys_make_builtin_method("close", bi_fake_coro_close, 1, 1));
         pys_class_add_method(c, coro_cls, intern_name("send", 4),
-            pys_make_builtin("send", bi_fake_coro_send, 1, 2));
+            pys_make_builtin_method("send", bi_fake_coro_send, 1, 2));
         pys_class_add_method(c, coro_cls, intern_name("throw", 5),
-            pys_make_builtin("throw", bi_fake_coro_throw, 2, 4));
+            pys_make_builtin_method("throw", bi_fake_coro_throw, 2, 4));
         pys_class_add_method(c, coro_cls, intern_name("__await__", 9),
-            pys_make_builtin("__await__", bi_fake_coro_await, 1, 1));
+            pys_make_builtin_method("__await__", bi_fake_coro_await, 1, 1));
     }
     return pys_make_instance(coro_cls);
 }
@@ -16054,39 +16075,39 @@ install_builtins(CTX *c)
     // and class M(int): pass all work via these.
     c->TYPE_int       = pys_make_builtin_class("int",       bi_int,       PYS_T_BIGNUM);
     pys_class_add_method(c, c->TYPE_int, "from_bytes",
-        pys_make_builtin("from_bytes", bi_int_from_bytes, 1, 3));
+        pys_make_builtin_method("from_bytes", bi_int_from_bytes, 1, 3));
     c->TYPE_float     = pys_make_builtin_class("float",     bi_float,     PYS_T_FLOAT);
     pys_class_add_method(c, c->TYPE_float, "fromhex",
-        pys_make_builtin("fromhex", bi_float_fromhex, 1, 1));
+        pys_make_builtin_method("fromhex", bi_float_fromhex, 1, 1));
     pys_class_add_method(c, c->TYPE_float, "__getformat__",
-        pys_make_builtin("__getformat__", bi_float_getformat, 1, 1));
+        pys_make_builtin_method("__getformat__", bi_float_getformat, 1, 1));
     c->TYPE_complex   = pys_make_builtin_class("complex",   bi_complex,   PYS_T_COMPLEX);
     c->TYPE_bool      = pys_make_builtin_class("bool",      bi_bool,      -1);
     c->TYPE_str       = pys_make_builtin_class("str",       bi_str,       PYS_T_STR);
     pys_class_add_method(c, c->TYPE_str, "maketrans",
-        pys_make_builtin("maketrans", bi_str_maketrans, 1, 3));
+        pys_make_builtin_method("maketrans", bi_str_maketrans, 1, 3));
     c->TYPE_bytes     = pys_make_builtin_class("bytes",     bi_bytes,     PYS_T_BYTES);
     pys_class_add_method(c, c->TYPE_bytes, "fromhex",
-        pys_make_builtin("fromhex", bi_bytes_fromhex, 1, 1));
+        pys_make_builtin_method("fromhex", bi_bytes_fromhex, 1, 1));
     pys_class_add_method(c, c->TYPE_bytes, "maketrans",
-        pys_make_builtin("maketrans", bi_bytes_maketrans, 2, 2));
+        pys_make_builtin_method("maketrans", bi_bytes_maketrans, 2, 2));
     c->TYPE_bytearray = pys_make_builtin_class("bytearray", bi_bytearray, PYS_T_BYTEARRAY);
     pys_class_add_method(c, c->TYPE_bytearray, "fromhex",
-        pys_make_builtin("fromhex", bi_bytes_fromhex, 1, 1));
+        pys_make_builtin_method("fromhex", bi_bytes_fromhex, 1, 1));
     pys_class_add_method(c, c->TYPE_bytearray, "maketrans",
-        pys_make_builtin("maketrans", bi_bytes_maketrans, 2, 2));
+        pys_make_builtin_method("maketrans", bi_bytes_maketrans, 2, 2));
     c->TYPE_list      = pys_make_builtin_class("list",      bi_list,      PYS_T_LIST);
     // Register list.__init__ on the class so super().__init__(seq) from a
     // user-defined `class S(list)` resolves here (not to object.__init__).
     pys_class_add_method(c, c->TYPE_list, "__init__",
-        pys_make_builtin("__init__", lm_init, 1, 2));
+        pys_make_builtin_method("__init__", lm_init, 1, 2));
     c->TYPE_tuple     = pys_make_builtin_class("tuple",     bi_tuple,     PYS_T_TUPLE);
     c->TYPE_dict      = pys_make_builtin_class("dict",      bi_dict,      PYS_T_DICT);
     // Register dict.__init__ so super().__init__(mapping) from a user
     // `class S(dict)` resolves to dm_init (populates self in-place)
     // rather than object.__init__ (no-op).  Mirror of the list case.
     pys_class_add_method(c, c->TYPE_dict, "__init__",
-        pys_make_builtin("__init__", dm_init, 1, 2));
+        pys_make_builtin_method("__init__", dm_init, 1, 2));
     {
         // dict.fromkeys is a classmethod in CPython — wrapping it here
         // keeps `t.fromkeys = dict.fromkeys; t.fromkeys(iter)` from
@@ -16120,19 +16141,19 @@ install_builtins(CTX *c)
         // that just allocates a new instance of `cls`.
         extern VALUE bi_object_new(CTX *c, int argc, VALUE *argv);
         pys_class_add_method(c, c->TYPE_object, "__new__",
-            pys_make_builtin("__new__", bi_object_new, 1, -1));
+            pys_make_builtin_method("__new__", bi_object_new, 1, -1));
         pys_class_add_method(c, c->TYPE_object, "__getattribute__",
-            pys_make_builtin("__getattribute__", bi_object_getattribute, 2, 2));
+            pys_make_builtin_method("__getattribute__", bi_object_getattribute, 2, 2));
         pys_class_add_method(c, c->TYPE_object, "__setattr__",
-            pys_make_builtin("__setattr__", bi_object_setattr, 3, 3));
+            pys_make_builtin_method("__setattr__", bi_object_setattr, 3, 3));
         pys_class_add_method(c, c->TYPE_object, "__delattr__",
-            pys_make_builtin("__delattr__", bi_object_delattr, 2, 2));
+            pys_make_builtin_method("__delattr__", bi_object_delattr, 2, 2));
         pys_class_add_method(c, c->TYPE_object, "__init__",
-            pys_make_builtin("__init__", bi_object_init, 1, -1));
+            pys_make_builtin_method("__init__", bi_object_init, 1, -1));
         // object.__init_subclass__ — no-op default so `super().__init_subclass__()`
         // in a __init_subclass__ chain terminates.
         pys_class_add_method(c, c->TYPE_object, "__init_subclass__",
-            pys_make_builtin("__init_subclass__", bi_object_init, 1, -1));
+            pys_make_builtin_method("__init_subclass__", bi_object_init, 1, -1));
     }
     // Synthetic type classes for built-in non-constructable types.
     c->TYPE_NoneType                    = pys_make_class("NoneType",                     PYS_NONE, false);
@@ -16283,11 +16304,11 @@ install_builtins(CTX *c)
         // exc.with_traceback(tb) — sets self.__traceback__ and returns self.
         extern VALUE bi_exception_with_traceback(CTX *c, int argc, VALUE *argv);
         pys_class_add_method(c, c->EXC_BaseException, "with_traceback",
-            pys_make_builtin("with_traceback", bi_exception_with_traceback, 2, 2));
+            pys_make_builtin_method("with_traceback", bi_exception_with_traceback, 2, 2));
         // exc.add_note(s) — append to self.__notes__ list (CPython 3.11+).
         extern VALUE bi_exception_add_note(CTX *c, int argc, VALUE *argv);
         pys_class_add_method(c, c->EXC_BaseException, "add_note",
-            pys_make_builtin("add_note", bi_exception_add_note, 2, 2));
+            pys_make_builtin_method("add_note", bi_exception_add_note, 2, 2));
     }
     c->EXC_Exception         = pys_make_class("Exception",        c->EXC_BaseException, true);
     c->EXC_SystemExit        = pys_make_class("SystemExit",        c->EXC_BaseException, true);
