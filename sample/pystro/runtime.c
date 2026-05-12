@@ -5113,6 +5113,25 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "step") == 0)  return pys_make_int(o->range.step);
         // Fall through to method lookup
     }
+    // CPython: classmethod / staticmethod are descriptors, so they have
+    // `__func__` (the wrapped function) and `__get__` attrs.  functools'
+    // partialmethod() uses `hasattr(func, '__get__')` to distinguish
+    // descriptor-but-not-callable values (e.g. classmethod).
+    if (PYS_IS_PTR(v) && (PYS_PTR(v)->type == PYS_T_CLASSMETHOD
+                          || PYS_PTR(v)->type == PYS_T_STATICMETHOD)) {
+        if (strcmp(name, "__func__") == 0) return PYS_PTR(v)->wrap.wrapped;
+        if (strcmp(name, "__wrapped__") == 0) return PYS_PTR(v)->wrap.wrapped;
+        if (strcmp(name, "__get__") == 0) {
+            // Return a no-op stub — hasattr() only cares about presence.
+            return PYS_PTR(v)->wrap.wrapped;
+        }
+        if (strcmp(name, "__isabstractmethod__") == 0) {
+            VALUE w = PYS_PTR(v)->wrap.wrapped;
+            extern VALUE pys_getattr_optional(CTX *c, VALUE v, const char *name);
+            VALUE r = pys_getattr_optional(c, w, "__isabstractmethod__");
+            return r ? r : PYS_FALSE;
+        }
+    }
     if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_PROPERTY) {
         if (strcmp(name, "fget") == 0) return PYS_PTR(v)->wrap.wrapped;
         if (strcmp(name, "fset") == 0) return PYS_PTR(v)->wrap.setter;
@@ -12756,6 +12775,8 @@ bi_callable(CTX *c, int argc, VALUE *argv)
     (void)c; (void)argc;
     VALUE v = argv[0];
     if (pys_is_func(v) || pys_is_builtin(v) || pys_is_bound(v) || pys_is_class(v)) return PYS_TRUE;
+    // CPython 3.10+: bare staticmethod is callable (forwards to wrapped).
+    if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_STATICMETHOD) return PYS_TRUE;
     if (pys_is_instance(v)) {
         VALUE call = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), PYS_INTERN_call);
         return call != PYS_NONE ? PYS_TRUE : PYS_FALSE;

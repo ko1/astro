@@ -98,16 +98,33 @@ def platform(aliased=0, terse=0):
     return f"{system()}-{release()}-{machine()}"
 
 
+class uname_result(tuple):
+    """CPython's `platform.uname()` returns a tuple with `system` /
+    `node` / `release` / `version` / `machine` / `processor`.  This
+    DIFFERS from `os.uname()` which uses `sysname` / `nodename`."""
+    def __new__(cls, args):
+        return tuple.__new__(cls, args)
+    @property
+    def system(self): return self[0]
+    @property
+    def node(self): return self[1]
+    @property
+    def release(self): return self[2]
+    @property
+    def version(self): return self[3]
+    @property
+    def machine(self): return self[4]
+    @property
+    def processor(self): return self[5] if len(self) > 5 else self[4]
+
+
 def uname():
-    # Returns a namedtuple-like object.
     try:
         u = os.uname()
-        # pystro posix.uname returns a tuple-with-properties — pass through.
-        return u
+        return uname_result((u.sysname, u.nodename, u.release, u.version,
+                             u.machine, u.machine))
     except Exception:
-        class U:
-            system = node = release = version = machine = ""
-        return U()
+        return uname_result(("", "", "", "", "", ""))
 
 
 def mac_ver(release="", versioninfo=("","",""), machine=""):
