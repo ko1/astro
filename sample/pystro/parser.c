@@ -4893,6 +4893,29 @@ parse_simple_stmt(void)
             NODE *try_node = ALLOC_node_try(sset, (uint32_t)hidx, 1,
                                              ALLOC_node_nop(), ALLOC_node_nop());
             track_ann = ALLOC_node_seq(set_ann, try_node);
+        } else if (cur_scope == NULL) {
+            // Module-level annotation `x: int` — record in the global
+            // __annotations__ dict so exec() with a custom ns sees it
+            // (CPython test_opcodes.test_use_existing_annotations).
+            NODE *load_ann = ALLOC_node_gref(intern_name("__annotations__", 15));
+            NODE *key = ALLOC_node_const_str(nm);
+            NODE *sset = ALLOC_node_subscript_set(load_ann, key, ann_expr);
+            NODE *fallback_key = ALLOC_node_const_str(nm);
+            NODE *fallback = ALLOC_node_subscript_set(
+                ALLOC_node_gref(intern_name("__annotations__", 15)),
+                fallback_key, ALLOC_node_const_str(nm));
+            struct pyshandler hs[1] = {0};
+            NODE *exc_tuple_items[3] = {
+                ALLOC_node_gref(intern_name("NameError", 9)),
+                ALLOC_node_gref(intern_name("AttributeError", 14)),
+                ALLOC_node_gref(intern_name("TypeError", 9)),
+            };
+            size_t etb = node_table_reserve(exc_tuple_items, 3);
+            hs[0].exc_class = ALLOC_node_make_tuple((uint32_t)etb, 3);
+            hs[0].body = fallback;
+            size_t hidx = handlers_reserve(hs, 1);
+            track_ann = ALLOC_node_try(sset, (uint32_t)hidx, 1,
+                                       ALLOC_node_nop(), ALLOC_node_nop());
         }
         if (match_tok(T_ASSIGN)) {
             NODE *rhs = parse_expr_list();

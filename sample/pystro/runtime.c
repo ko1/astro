@@ -1309,8 +1309,21 @@ bi_object_new(CTX *c, int argc, VALUE *argv)
             }
             if (has_user_init) break;
         }
-        int fwd_argc = (has_user_init || argc <= 1) ? 0 : argc - 1;
-        VALUE *fwd_argv = (has_user_init || argc <= 1) ? NULL : argv + 1;
+        // For immutable built-in bases (tuple, frozenset, str, bytes, int,
+        // float, complex, bool, bignum), __new__ — not __init__ — is the
+        // one that consumes ctor args in CPython. So even when there's a
+        // user __init__, forward args so the primary is built correctly.
+        int bin_tag = PYS_PTR(bin_base)->cls.builtin_tag;
+        bool is_immutable_base = (bin_tag == PYS_T_TUPLE
+                                  || bin_tag == PYS_T_FROZENSET
+                                  || bin_tag == PYS_T_STR
+                                  || bin_tag == PYS_T_BYTES
+                                  || bin_tag == PYS_T_BIGNUM
+                                  || bin_tag == PYS_T_FLOAT
+                                  || bin_tag == PYS_T_COMPLEX);
+        bool skip_args = (has_user_init && !is_immutable_base) || argc <= 1;
+        int fwd_argc = skip_args ? 0 : argc - 1;
+        VALUE *fwd_argv = skip_args ? NULL : argv + 1;
         // The caller may have set PYS_BI_KWC for the user-level __init__
         // call (e.g. `Sub(seq, newarg=3)`); built-in ctors like bi_list
         // forbid kwargs, so suppress while we forward nothing on the
@@ -5417,6 +5430,17 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         }
         if (strcmp(name, "__qualname__") == 0)
             return pys_make_str(cd->name, strlen(cd->name));
+        if (strcmp(name, "__annotations__") == 0) {
+            // PEP 526: every class has __annotations__ — a dict (possibly
+            // empty) of name → annotation. If the class body assigned
+            // (or `x: int`-style annotated) any names, the dict was put
+            // into the class's methods table at body time; otherwise we
+            // synthesise an empty dict so `C.__annotations__` succeeds.
+            if (pys_class_has_method(v, "__annotations__")) {
+                return pys_class_lookup_method(v, "__annotations__");
+            }
+            return pys_make_dict();
+        }
         if (pys_class_has_method(v, name)) {
             VALUE m = pys_class_lookup_method(v, name);
             if (PYS_IS_PTR(m)) {
@@ -6134,6 +6158,21 @@ pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
                 if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
             } else {
                 inst = pys_make_instance(fn);
+                // Built-in subclass with no user __new__: populate the
+                // primary via the built-in ctor so e.g.
+                // `class S(tuple): def __init__(...): ...; S([1,2])`
+                // ends up with the tuple stored as primary. Matches
+                // pys_apply_slow path. Zero PYS_BI_KWC so the ctor (which
+                // forbids kwargs) doesn't see the user's keyword args.
+                VALUE bin_base = pys_class_find_builtin_base(fn);
+                if (bin_base != PYS_NONE) {
+                    int saved_kwc = PYS_BI_KWC;
+                    PYS_BI_KWC = 0;
+                    VALUE primary = PYS_PTR(bin_base)->cls.builtin_ctor(c, argc, argv);
+                    PYS_BI_KWC = saved_kwc;
+                    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+                    PYS_PTR(inst)->inst.primary = primary;
+                }
             }
             if (cd->is_exception) {
                 pys_setattr(c, inst, "args", pys_make_tuple(argv, argc));
@@ -7689,6 +7728,31 @@ pys_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE 
                 cls_val = EVAL(c, h->exc_class);
                 if (c->state != PYS_STATE_NORMAL) goto run_finally;
                 c->state = sst; c->state_value = sval;
+            }
+            // CPython: catching a non-class (or a non-BaseException class)
+            // raises TypeError. The check fires lazily on the matching
+            // handler so that `except T1, T2:` only validates T1 when an
+            // exception actually arrives.
+            if (h->exc_class) {
+                bool valid = false;
+                if (pys_is_class(cls_val)) {
+                    valid = class_is_ancestor(cls_val, c->EXC_BaseException);
+                } else if (pys_is_tuple(cls_val)) {
+                    valid = true;
+                    size_t n = PYS_PTR(cls_val)->list.len;
+                    for (size_t i = 0; i < n; i++) {
+                        VALUE it = PYS_PTR(cls_val)->list.items[i];
+                        if (!pys_is_class(it)
+                                || !class_is_ancestor(it, c->EXC_BaseException)) {
+                            valid = false; break;
+                        }
+                    }
+                }
+                if (!valid) {
+                    PYS_RAISE_EXC(c, c->EXC_TypeError,
+                        "catching classes that do not inherit from BaseException is not allowed");
+                    goto run_finally;
+                }
             }
             if (!h->exc_class || pys_exc_matches(c, exc, cls_val)) {
                 c->state = PYS_STATE_NORMAL;
@@ -11907,6 +11971,9 @@ bi_tuple(CTX *c, int argc, VALUE *argv)
     if (PYS_BI_KWC > 0)
         PYS_RAISE_EXC(c, c->EXC_TypeError, "tuple() takes no keyword arguments");
     if (argc == 0) return pys_make_tuple(NULL, 0);
+    // CPython: tuple(t) where t is already a tuple returns the SAME
+    // object (identity-preserving). Test relies on `tuple(t0_3) is t0_3`.
+    if (pys_is_tuple(argv[0])) return argv[0];
     VALUE l = bi_list(c, argc, argv);
     return pys_make_tuple(PYS_PTR(l)->list.items, PYS_PTR(l)->list.len);
 }
@@ -16815,8 +16882,19 @@ install_builtins(CTX *c)
     c->EXC_UnicodeWarning    = pys_make_class("UnicodeWarning",    c->EXC_Warning, true);
     c->EXC_BytesWarning      = pys_make_class("BytesWarning",      c->EXC_Warning, true);
     c->EXC_ResourceWarning   = pys_make_class("ResourceWarning",   c->EXC_Warning, true);
+    c->EXC_EncodingWarning   = pys_make_class("EncodingWarning",   c->EXC_Warning, true);
     c->EXC_BaseExceptionGroup = pys_make_class("BaseExceptionGroup", c->EXC_BaseException, true);
     c->EXC_ExceptionGroup    = pys_make_class("ExceptionGroup",   c->EXC_BaseExceptionGroup, true);
+    {
+        // CPython: ExceptionGroup(BaseExceptionGroup, Exception). Multi-
+        // inheritance so `issubclass(ExceptionGroup, Exception)` is True.
+        // Note c->EXC_Exception is created below; if we reorder we need
+        // to ensure it exists first. (It is — see EXC_Exception line a
+        // few lines up.)
+        VALUE bases[2] = { c->EXC_BaseExceptionGroup, c->EXC_Exception };
+        extern void pys_class_set_bases(VALUE cls, VALUE *bases, int n);
+        pys_class_set_bases(c->EXC_ExceptionGroup, bases, 2);
+    }
     c->EXC_LookupError       = pys_make_class("LookupError",       c->EXC_Exception, true);
     c->EXC_IndexError       = pys_make_class("IndexError",       c->EXC_LookupError, true);
     c->EXC_KeyError         = pys_make_class("KeyError",         c->EXC_LookupError, true);
@@ -16840,10 +16918,13 @@ install_builtins(CTX *c)
     c->EXC_NotADirectoryError= pys_make_class("NotADirectoryError",c->EXC_OSError, true);
     c->EXC_IsADirectoryError = pys_make_class("IsADirectoryError",c->EXC_OSError, true);
     c->EXC_TimeoutError      = pys_make_class("TimeoutError",     c->EXC_OSError, true);
-    c->EXC_BrokenPipeError   = pys_make_class("BrokenPipeError",  c->EXC_OSError, true);
     c->EXC_InterruptedError  = pys_make_class("InterruptedError", c->EXC_OSError, true);
     c->EXC_ProcessLookupError= pys_make_class("ProcessLookupError",c->EXC_OSError, true);
+    // CPython hierarchy: BrokenPipeError, ConnectionAbortedError,
+    // ConnectionRefusedError, ConnectionResetError extend ConnectionError
+    // (not bare OSError) — needs ConnectionError defined first.
     c->EXC_ConnectionError   = pys_make_class("ConnectionError",  c->EXC_OSError, true);
+    c->EXC_BrokenPipeError   = pys_make_class("BrokenPipeError",  c->EXC_ConnectionError, true);
     c->EXC_ConnectionAbortedError = pys_make_class("ConnectionAbortedError", c->EXC_ConnectionError, true);
     c->EXC_ConnectionRefusedError = pys_make_class("ConnectionRefusedError", c->EXC_ConnectionError, true);
     c->EXC_ConnectionResetError   = pys_make_class("ConnectionResetError",   c->EXC_ConnectionError, true);
@@ -16927,6 +17008,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "UnicodeWarning",       c->EXC_UnicodeWarning);
     pys_global_define(c, "BytesWarning",         c->EXC_BytesWarning);
     pys_global_define(c, "ResourceWarning",      c->EXC_ResourceWarning);
+    pys_global_define(c, "EncodingWarning",      c->EXC_EncodingWarning);
     pys_global_define(c, "BaseExceptionGroup",   c->EXC_BaseExceptionGroup);
     pys_global_define(c, "ExceptionGroup",       c->EXC_ExceptionGroup);
     pys_global_define(c, "__pystro_del__",   pys_make_builtin("__pystro_del__", bi_pystro_del, 2, 2));

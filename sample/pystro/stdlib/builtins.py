@@ -139,6 +139,7 @@ UnicodeDecodeError = UnicodeDecodeError
 UnicodeEncodeError = UnicodeEncodeError
 UnicodeError = UnicodeError
 UnicodeWarning = UnicodeWarning
+EncodingWarning = EncodingWarning
 UserWarning = UserWarning
 ValueError = ValueError
 Warning = Warning

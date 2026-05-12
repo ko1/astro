@@ -1572,8 +1572,13 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc)
     VALUE v = EVAL_ARG(c, exc);
     if (UNLIKELY(!v)) return 0;
     // Allow `raise SomeClass` (auto-instantiate with no args) or a
-    // ready-made instance.
+    // ready-made instance — but only when the result is a BaseException
+    // subclass. `raise <non-exception>` must raise TypeError.
     if (pys_is_class(v)) {
+        if (!PYS_PTR(v)->cls.is_exception) {
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                         "exceptions must derive from BaseException");
+        }
         v = pys_apply(c, v, 0, NULL);
         if (UNLIKELY(!v && c->state != PYS_STATE_RAISE)) return 0;
     } else if (!pys_is_instance(v) || !PYS_PTR(v)->inst.cls

@@ -616,6 +616,7 @@ typedef struct CTX_struct {
     VALUE EXC_UnicodeWarning;
     VALUE EXC_BytesWarning;
     VALUE EXC_ResourceWarning;
+    VALUE EXC_EncodingWarning;
 
 #define PYS_EXC_LIST(X) \
     X(BaseException) X(Exception) X(SystemExit) X(KeyboardInterrupt) \
@@ -635,7 +636,7 @@ typedef struct CTX_struct {
     X(ConnectionError) X(BlockingIOError) X(ChildProcessError) \
     X(Warning) X(DeprecationWarning) X(UserWarning) X(FutureWarning) \
     X(RuntimeWarning) X(SyntaxWarning) X(ImportWarning) X(UnicodeWarning) \
-    X(BytesWarning) X(ResourceWarning) \
+    X(BytesWarning) X(ResourceWarning) X(EncodingWarning) X(PendingDeprecationWarning) \
     X(BaseExceptionGroup) X(ExceptionGroup)
 
     // Synthetic type classes for things that don't have a builtin_ctor:
