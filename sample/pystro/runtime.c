@@ -5247,10 +5247,22 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "fset") == 0) return PYS_PTR(v)->wrap.setter;
         if (strcmp(name, "fdel") == 0) return PYS_PTR(v)->wrap.deleter;
         if (strcmp(name, "__doc__") == 0) {
-            // Forward to the getter's __doc__ (the @property-decorated function).
+            // Explicit doc= override takes precedence; otherwise forward
+            // to the getter's __doc__.
+            VALUE od = PYS_PTR(v)->wrap.doc_override;
+            if (od != PYS_NONE && od != 0) return od;
             VALUE fg = PYS_PTR(v)->wrap.wrapped;
             if (fg != PYS_NONE && pys_is_func(fg)) return pys_getattr(c, fg, "__doc__");
             return PYS_NONE;
+        }
+        if (strcmp(name, "__isabstractmethod__") == 0) {
+            VALUE fg = PYS_PTR(v)->wrap.wrapped;
+            if (fg != PYS_NONE) {
+                extern VALUE pys_getattr_optional(CTX *c, VALUE v, const char *name);
+                VALUE r = pys_getattr_optional(c, fg, "__isabstractmethod__");
+                if (r) return r;
+            }
+            return PYS_FALSE;
         }
         if (strcmp(name, "setter") == 0) {
             VALUE fn = pys_make_builtin("setter", bi_property_setter_call, 2, 2);
@@ -14310,7 +14322,16 @@ bi_property(CTX *c, int argc, VALUE *argv)
     o->wrap.wrapped = argc >= 1 ? argv[0] : PYS_NONE;
     o->wrap.setter  = argc >= 2 ? argv[1] : PYS_NONE;
     o->wrap.deleter = argc >= 3 ? argv[2] : PYS_NONE;
-    // 4th arg = doc; ignored (no slot to store it on PYS_T_PROPERTY).
+    // 4th positional or `doc` kwarg → explicit doc.
+    o->wrap.doc_override = (argc >= 4) ? argv[3] : PYS_NONE;
+    VALUE dkw = pys_bi_kwarg("doc");
+    if (dkw) o->wrap.doc_override = dkw;
+    VALUE fgetkw = pys_bi_kwarg("fget");
+    if (fgetkw) o->wrap.wrapped = fgetkw;
+    VALUE fsetkw = pys_bi_kwarg("fset");
+    if (fsetkw) o->wrap.setter = fsetkw;
+    VALUE fdelkw = pys_bi_kwarg("fdel");
+    if (fdelkw) o->wrap.deleter = fdelkw;
     return PYS_OBJ_VAL(o);
 }
 
@@ -14323,6 +14344,7 @@ bi_property_setter_call(CTX *c, int argc, VALUE *argv)
     o->wrap.wrapped = src->wrap.wrapped;
     o->wrap.setter  = argv[1];
     o->wrap.deleter = src->wrap.deleter;
+    o->wrap.doc_override = src->wrap.doc_override;
     return PYS_OBJ_VAL(o);
 }
 
@@ -14347,6 +14369,7 @@ bi_property_getter_call(CTX *c, int argc, VALUE *argv)
     o->wrap.wrapped = argv[1];
     o->wrap.setter  = src->wrap.setter;
     o->wrap.deleter = src->wrap.deleter;
+    o->wrap.doc_override = src->wrap.doc_override;
     return PYS_OBJ_VAL(o);
 }
 

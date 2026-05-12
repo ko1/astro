@@ -286,8 +286,12 @@ struct pysobj {
             VALUE func;             // a func or builtin
         } bound;
         // staticmethod / classmethod / property wrap a single func.
-        // For PYS_T_PROPERTY: `wrapped` is the getter; `setter` is the optional setter.
-        struct { VALUE wrapped; VALUE setter; VALUE deleter; } wrap;
+        // For PYS_T_PROPERTY: `wrapped` is the getter; `setter` is the
+        // optional setter; `doc_override` is an explicit doc string
+        // (PYS_NONE when not set — `__doc__` then falls back to the
+        // getter's docstring).
+        struct { VALUE wrapped; VALUE setter; VALUE deleter;
+                 VALUE doc_override; } wrap;
         // PYS_T_ITER: holds a `struct pys_iter` for stateful iteration.
         struct pys_iter *iter_state;
         // PYS_T_GEN: lazy generator (ucontext + body func + saved state).
