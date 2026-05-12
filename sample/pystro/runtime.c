@@ -9262,6 +9262,30 @@ dm_pop(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+dm_update(CTX *c, int argc, VALUE *argv);
+
+// dict.__init__(self[, source][, **kw]) — CPython parity.
+// dict subclass (`class Sub(dict)` + `super().__init__(m)`) populates
+// the instance's primary dict; we unwrap then delegate to dm_update.
+static VALUE
+dm_init(CTX *c, int argc, VALUE *argv)
+{
+    VALUE target = argv[0];
+    if (PYS_IS_PTR(target) && PYS_PTR(target)->type == PYS_T_INSTANCE
+        && PYS_PTR(target)->inst.primary
+        && pys_is_dict(PYS_PTR(target)->inst.primary)) {
+        target = PYS_PTR(target)->inst.primary;
+    }
+    if (argc == 1) {
+        // Still process kwargs via update.
+        VALUE av[1] = { target };
+        return dm_update(c, 1, av);
+    }
+    VALUE av[2] = { target, argv[1] };
+    return dm_update(c, 2, av);
+}
+
+static VALUE
 dm_update(CTX *c, int argc, VALUE *argv)
 {
     VALUE dst = argv[0];
@@ -16043,6 +16067,11 @@ install_builtins(CTX *c)
         pys_make_builtin("__init__", lm_init, 1, 2));
     c->TYPE_tuple     = pys_make_builtin_class("tuple",     bi_tuple,     PYS_T_TUPLE);
     c->TYPE_dict      = pys_make_builtin_class("dict",      bi_dict,      PYS_T_DICT);
+    // Register dict.__init__ so super().__init__(mapping) from a user
+    // `class S(dict)` resolves to dm_init (populates self in-place)
+    // rather than object.__init__ (no-op).  Mirror of the list case.
+    pys_class_add_method(c, c->TYPE_dict, "__init__",
+        pys_make_builtin("__init__", dm_init, 1, 2));
     {
         // dict.fromkeys is a classmethod in CPython — wrapping it here
         // keeps `t.fromkeys = dict.fromkeys; t.fromkeys(iter)` from
