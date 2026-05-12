@@ -1,6 +1,6 @@
 # arawk perf
 
-最後の計測: 2026-05-11 (Phase 1 完了 + do-while/nextfile 後)。
+最後の計測: 2026-05-12 (改善案 A + B + C 完了後)。
 
 ## 環境
 
@@ -19,38 +19,38 @@
 
 - 入力: `sample/arawk/goawk/testdata/foo.td` (4.4 MB, 37,801 行, 6 fields/line)
 - スクリプト: `goawk/testdata/tt.*` (Ben Hoyt 氏 goawk 同梱)
-- スケーリング: gawk で初回計測し、テスト 1 件が `MIN_TIME = 1.0 s` 未満なら入力を repeat (`benchmark/scratch/foo.td.xN` キャッシュ)
+- スケーリング: gawk で初回計測し、テスト 1 件が `MIN_TIME = 1.0 s` 未満なら入力を repeat
 - 各 awk × test を `NUM_RUNS = 5` 回走らせ最小値を採用
-- 正規化: gawk = 1.00 (高いほど速い)
+- 正規化: gawk = 1.00 (>1 が速い)
 
 ## 絶対時間 (秒, 最小値)
 
 | Test                       | arawk-plain | arawk-aot |    gawk |    mawk |   goawk |
 |----------------------------|------------:|----------:|--------:|--------:|--------:|
-| tt.01_print                |       5.456 |     5.785 |   0.990 |   0.503 |   0.552 |
-| tt.02_print_NR_NF          |       1.735 |     1.936 |   1.001 |   0.728 |   0.764 |
-| tt.02a_print_length        |       1.989 |     1.945 |   1.047 |   0.754 |   0.896 |
-| tt.03_sum_length           |       4.285 |     4.289 |   0.819 |   1.249 |   1.608 |
-| tt.03a_sum_field           |       4.675 |     4.730 |   0.871 |   1.414 |   1.751 |
-| tt.04_printf_fields        |       1.753 |     1.613 |   1.018 |   0.608 |   1.473 |
-| tt.05_concat_fields        |       1.656 |     1.564 |   0.992 |   0.731 |   1.121 |
-| tt.06_count_lengths        |       3.023 |     3.267 |   0.860 |   0.961 |   1.224 |
-| tt.07_even_fields          |       2.404 |     3.191 |   1.830 |   1.593 |   2.406 |
-| tt.08_even_lengths         |       2.341 |     2.021 |   0.527 |   0.125 |   0.223 |
-| tt.08z_regex_simple        |         n/a |       n/a |   0.620 |   0.200 |   0.396 |
-| tt.09_regex_starts_with    |         n/a |       n/a |   0.562 |   0.146 |   0.398 |
-| tt.10_regex_ends_with      |         n/a |       n/a |   0.806 |   0.183 |   3.101 |
-| tt.10a_regex_ends_with_var |         n/a |       n/a |   1.065 |   0.237 |   3.933 |
-| tt.11_substr               |       2.880 |     2.830 |   0.724 |   0.155 |   0.237 |
-| tt.12_update_fields        |       1.982 |     1.842 |   0.849 |   0.751 |   0.929 |
-| tt.13_array_ops            |       0.902 |     0.831 |   1.120 |   0.997 |   1.604 |
-| tt.13a_array_printf        |       0.913 |     1.101 |   1.471 |   0.525 |   1.319 |
-| tt.14_function_call        |       0.129 |     0.121 |   0.055 |   0.017 |   0.026 |
-| tt.15_format_lines         |         n/a |       n/a |   1.094 |   0.492 |   0.743 |
-| tt.16_count_words          |       1.260 |     1.163 |   0.661 |   0.364 |   0.458 |
-| tt.big_complex_program     |         n/a |       n/a |   1.946 |   1.031 |   1.907 |
-| tt.x1_mandelbrot           |       0.741 |     0.620 |   0.527 |   0.288 |   0.285 |
-| tt.x2_sum_loop             |       0.400 |     0.288 |   0.546 |   0.231 |   0.317 |
+| tt.01_print                |       1.634 |     1.628 |   0.923 |   0.475 |   0.513 |
+| tt.02_print_NR_NF          |       0.677 |     0.681 |   0.990 |   0.692 |   0.773 |
+| tt.02a_print_length        |       1.625 |     1.627 |   0.995 |   0.711 |   0.838 |
+| tt.03_sum_length           |       1.196 |     1.179 |   0.822 |   1.304 |   1.681 |
+| tt.03a_sum_field           |       1.235 |     1.219 |   0.820 |   1.382 |   1.714 |
+| tt.04_printf_fields        |       1.407 |     1.337 |   1.001 |   0.593 |   1.437 |
+| tt.05_concat_fields        |       1.661 |     1.548 |   1.078 |   0.792 |   1.230 |
+| tt.06_count_lengths        |       0.981 |     0.968 |   0.762 |   0.915 |   1.139 |
+| tt.07_even_fields          |       0.673 |     0.661 |   0.935 |   0.739 |   0.941 |
+| tt.08_even_lengths         |       1.092 |     1.102 |   0.959 |   0.239 |   0.409 |
+| tt.08z_regex_simple        |         n/a |       n/a |   0.796 |   0.268 |   0.541 |
+| tt.09_regex_starts_with    |         n/a |       n/a |   0.709 |   0.172 |   0.506 |
+| tt.10_regex_ends_with      |         n/a |       n/a |   1.009 |   0.230 |   3.878 |
+| tt.10a_regex_ends_with_var |         n/a |       n/a |   0.963 |   0.212 |   3.580 |
+| tt.11_substr               |       1.054 |     1.067 |   0.933 |   0.193 |   0.283 |
+| tt.12_update_fields        |       1.958 |     1.875 |   0.982 |   0.843 |   1.055 |
+| tt.13_array_ops            |       0.872 |     0.798 |   1.019 |   0.506 |   0.631 |
+| tt.13a_array_printf        |       0.846 |     0.796 |   1.110 |   0.474 |   0.783 |
+| tt.14_function_call        |       0.008 |     0.009 |   0.022 |   0.007 |   0.009 |
+| tt.15_format_lines         |         n/a |       n/a |   1.186 |   0.571 |   1.581 |
+| tt.16_count_words          |       0.941 |     0.965 |   0.715 |   0.425 |   0.499 |
+| tt.big_complex_program     |         n/a |       n/a |   1.841 |   0.990 |   1.816 |
+| tt.x1_mandelbrot           |       0.704 |     0.580 |   0.509 |   0.250 |   0.281 |
+| tt.x2_sum_loop             |       0.392 |     0.275 |   0.528 |   0.228 |   0.311 |
 
 `n/a` は arawk が未実装 (regex 系 6 件; Phase 2 = astrogre 統合で解禁予定)。
 
@@ -58,155 +58,119 @@
 
 | Test                | arawk-plain | arawk-aot | gawk | mawk | goawk |
 |---------------------|------------:|----------:|-----:|-----:|------:|
-| tt.01_print         |        0.18 |      0.17 | 1.00 | 1.97 |  1.79 |
-| tt.02_print_NR_NF   |        0.58 |      0.52 | 1.00 | 1.37 |  1.31 |
-| tt.02a_print_length |        0.53 |      0.54 | 1.00 | 1.39 |  1.17 |
-| tt.03_sum_length    |        0.19 |      0.19 | 1.00 | 0.66 |  0.51 |
-| tt.03a_sum_field    |        0.19 |      0.18 | 1.00 | 0.62 |  0.50 |
-| tt.04_printf_fields |        0.58 |      0.63 | 1.00 | 1.67 |  0.69 |
-| tt.05_concat_fields |        0.60 |      0.63 | 1.00 | 1.36 |  0.89 |
-| tt.06_count_lengths |        0.28 |      0.26 | 1.00 | 0.89 |  0.70 |
-| tt.07_even_fields   |        0.76 |      0.57 | 1.00 | 1.15 |  0.76 |
-| tt.08_even_lengths  |        0.23 |      0.26 | 1.00 | 4.20 |  2.37 |
-| tt.11_substr        |        0.25 |      0.26 | 1.00 | 4.68 |  3.05 |
-| tt.12_update_fields |        0.43 |      0.46 | 1.00 | 1.13 |  0.91 |
-| tt.13_array_ops     |        1.24 |      1.35 | 1.00 | 1.12 |  0.70 |
-| tt.13a_array_printf |        1.61 |      1.34 | 1.00 | 2.80 |  1.12 |
-| tt.14_function_call |        0.43 |      0.45 | 1.00 | 3.15 |  2.08 |
-| tt.16_count_words   |        0.52 |      0.57 | 1.00 | 1.82 |  1.44 |
-| tt.x1_mandelbrot    |        0.71 |      0.85 | 1.00 | 1.83 |  1.85 |
-| tt.x2_sum_loop      |        1.36 |      1.90 | 1.00 | 2.37 |  1.73 |
-| **geomean**         |    **0.57** |  **0.58** | 1.00 | 1.92 |  1.04 |
+| tt.01_print         |        0.56 |      0.57 | 1.00 | 1.94 |  1.80 |
+| tt.02_print_NR_NF   |        1.46 |      1.45 | 1.00 | 1.43 |  1.28 |
+| tt.02a_print_length |        0.61 |      0.61 | 1.00 | 1.40 |  1.19 |
+| tt.03_sum_length    |        0.69 |      0.70 | 1.00 | 0.63 |  0.49 |
+| tt.03a_sum_field    |        0.66 |      0.67 | 1.00 | 0.59 |  0.48 |
+| tt.04_printf_fields |        0.71 |      0.75 | 1.00 | 1.69 |  0.70 |
+| tt.05_concat_fields |        0.65 |      0.70 | 1.00 | 1.36 |  0.88 |
+| tt.06_count_lengths |        0.78 |      0.79 | 1.00 | 0.83 |  0.67 |
+| tt.07_even_fields   |        1.39 |      1.41 | 1.00 | 1.26 |  0.99 |
+| tt.08_even_lengths  |        0.88 |      0.87 | 1.00 | 4.01 |  2.35 |
+| tt.11_substr        |        0.88 |      0.87 | 1.00 | 4.83 |  3.30 |
+| tt.12_update_fields |        0.50 |      0.52 | 1.00 | 1.16 |  0.93 |
+| tt.13_array_ops     |        1.17 |      1.28 | 1.00 | 2.01 |  1.61 |
+| tt.13a_array_printf |        1.31 |      1.40 | 1.00 | 2.34 |  1.42 |
+| tt.14_function_call |        2.66 |      2.56 | 1.00 | 3.13 |  2.50 |
+| tt.16_count_words   |        0.76 |      0.74 | 1.00 | 1.68 |  1.43 |
+| tt.x1_mandelbrot    |        0.72 |      0.88 | 1.00 | 2.03 |  1.81 |
+| tt.x2_sum_loop      |        1.35 |      1.92 | 1.00 | 2.32 |  1.70 |
+| **geomean**         |    **0.92** |  **0.95** | 1.00 | 1.95 |  1.07 |
 
-- 最終 geomean: **arawk-plain 0.57×, arawk-aot 0.58× vs gawk**
-- mawk が 1.92× で圧倒的 (bytecode VM + 内部 fastpath)
-- goawk は gawk とほぼ同等 (1.04×)
+## 改善履歴 (実測ベース)
 
-## Phase 1.10-1.16 + do-while/nextfile 後の前回比
+| ステップ | plain | aot | コミット |
+|---|---:|---:|---|
+| 初期実装 (Phase 1.10 直後) | 0.57 | 0.59 | ベースライン |
+| **B**: field の lazy strnum (境界のみ記録、 `$N` アクセス時に allocate) | 0.65 | 0.68 | `52d058b` |
+| **A**: fgetc → fread chunked input (64 KB buffer + memchr) | 0.85 | 0.88 | `2f0eac6` |
+| **C**: for-in を bucket walker に (snapshot 配列を消す) | 0.92 | 0.96 | `d1d6672` |
+| C+ : `arawk_wrap_string` で for-in key の char[] copy を消す | 0.92 | 0.95 | `debe43d` |
 
-Phase 1.9 直後の前回計測 (geomean plain 0.58 / aot 0.59) から **ほぼ変化なし**:
+**1 セッションで geomean 0.59 → 0.95 (+61%)**。 goawk (1.07) は超え、 gawk (1.00) に肉薄。 mawk (1.95) まではまだ。
 
-| 変更 | 影響しそうな点 | 実測 |
-|---|---|---|
-| `print` / `print_to` が env から OFS/ORS を読む | 出力系全テスト微減 | tt.01 0.17→0.17 / tt.02 0.52→0.52: ノイズ範囲 |
-| `arawk_to_cstr` が `ARAWK_CURRENT_CTX->env[CONVFMT]` を読む | float 出力系減 | tt.01 0.17→0.17: 変化なし (CONVFMT 読みは float 経路のみ) |
-| `node_gset` に FS/NF 特殊化 branch | 全 global 代入に branch 1 個 | tt.14 0.45→0.45: 影響なし (UNLIKELY 分岐が branch predictor で当たる) |
-| 新規 `printf_to` / `close` / `system` / `getline` 群 | 既存テストに影響なし | tt.* は呼ばないので変化なし |
-| do-while / nextfile | tt.* に未使用 | 影響なし |
-
-軽微な振れ:
-- `tt.07_even_fields` 0.44→0.57 (aot) 改善
-- `tt.13a_array_printf` 1.38→1.34 (aot) 微減 / 1.33→1.61 (plain) 改善
-- `tt.16_count_words` 0.72→0.57 (aot) 悪化
-
-±0.1× 程度の変動は計測ノイズ範囲 (`MIN_TIME=1s` でも CPU 周波数スケーリング + GC stall で揺れる)。
-
-## arawk が gawk より速い場面 (変わらず)
+## gawk より速い場面
 
 | Test | arawk-aot | 理由 |
 |---|---|---|
-| **tt.x2_sum_loop** | **1.90×** | BEGIN だけの 10M 回 fixnum ループ。AOT bake で for 全体が specialize、`ARAWK_IS_FIX(a)&ARAWK_IS_FIX(b)` + `__builtin_add_overflow` が `lea`/`add` 数命令に畳まれる |
-| **tt.13_array_ops** | **1.35×** | 配列読み書きが連続。arawk の `arawk_arr_*` (FNV-1a + 単純 chained bucket) は gawk の locale-aware hash よりオーバーヘッド少ない |
-| **tt.13a_array_printf** | **1.34×** | 同上 + printf |
+| **tt.14_function_call** | **2.56×** | 二重 for-in (`for i in x; for j in x`) 1M 回。 改善 C で keys[1000] の snapshot 配列確保が消え、 key の `arawk_obj` も lazy share に |
+| **tt.x2_sum_loop** | **1.92×** | BEGIN だけの 10M 回 fixnum ループ。 AOT bake で for 全体が specialize、 fixnum 算術が `lea`/`add` 数命令に畳まれる |
+| **tt.02_print_NR_NF** | **1.45×** | NR / NF / $0 を毎レコード参照。 lazy strnum で `$0` 1 回だけ allocate (旧: 全 field strnum 化) |
+| **tt.07_even_fields** | **1.41×** | `NF % 2 == 0` だけ。 field VALUE 不要 → lazy strnum で完全に skip |
+| **tt.13a_array_printf** | **1.40×** | 配列読み書き連続 + printf。 arawk の `arawk_arr_*` (FNV-1a) が gawk の locale-aware hash よりオーバーヘッド少 |
+| **tt.13_array_ops** | **1.28×** | 同上 |
 
-## 苦手な場面 — `perf record` で実測した hot path
+## まだ苦手な場面
 
-以下は **2026-05-12 に `perf record -F 999` で確認**した実測値。
-最初の version の解説 (「print の per-item fwrite で syscall を稼ぐ」など)
-は **仮説のまま書いていて間違っていた**ので、ここで訂正する。
-
-### tt.01_print (`{ print }`)  0.17×
-
-| % | 関数 | 解釈 |
-|--:|---|---|
-| 18.3% | `_IO_getc` | 入力 1 文字ずつ fgetc |
-| 15.6% | `arawk_split_fields` | 毎レコード eager 分割 + strnum |
-| 11.8% | `GC_malloc_kind` | libgc allocator (split で踏む) |
-|  8.6% | `arawk_input_next_record` | 入力ループ自体 |
-|  3.2% | `fgetc@plt` | PLT 越し |
-
-`print` 自体は top 14 関数に **出てこない**。stdout 関連も同様
-(`strace -c` で arawk / mawk / gawk すべて write 1088 回で一致 — libc が
-block-buffered で纏める)。 本当の問題は **入力 fgetc loop と eager split**。
-
-### tt.03a_sum_field (`{ s += $3 } END { print s }`)  0.18×
-
-| % | 関数 |
-|--:|---|
-| 17.7% | `arawk_split_fields` |
-| 15.3% | `GC_malloc_kind` |
-| 15.0% | `_IO_getc` |
-|  9.5% | `arawk_input_next_record` |
-| ~6%   | libgc 内部 (trampolines) |
-
-split + GC で 33%、 入力ループで 24.5%。 **#B (lazy strnum) と #A
-(chunked input) で大半を削れる**。
-
-### tt.11_substr (`{ print substr($0, 10, 10) }`)  0.26×
-
-| % | 関数 |
-|--:|---|
-| 18.5% | `arawk_split_fields` |
-| 14.1% | `GC_malloc_kind` |
-| 10.4% | `_IO_getc` |
-|  7.5% | `arawk_input_next_record` |
-
-`arawk_substr` / `arawk_make_string` は top 12 に出てこない (<1%)。
-スクリプトが `$0` しか参照しないのに **毎レコード eager 分割が走って
-全 field を strnum 化** している (= 完全に無駄)。 lazy split で消える。
-旧 perf.md で言及した "substr COW" 仮説は外れ。
-
-### tt.14_function_call (`function abs(x) ...` を 1M 回呼ぶ)  0.45×
-
-| % | 関数 |
-|--:|---|
-| 20.3% | `GC_malloc_kind` |
-| 19.8% | libgc 内 (trampolines) |
-| 12.2% | `DISPATCH_node_for_in_g` |
-| 11.7% | `__tls_get_addr` (libgc 内の TLS) |
-|  5.0% | `arawk_make_string` (for-in が key を string 化) |
-|  4.8% | `DISPATCH_node_sub` |
-
-`arawk_resolve_body` (関数 lookup の strcmp ループ) は top 12 に
-**出てこない** — 関数は 1 つしか定義されていないので 1 比較で終わる
-ため。 本当の hot は **for-in が `keys[]` を毎反復 GC_malloc + 各 key を
-arawk_make_string でコピー**するところ。 旧 perf.md の "callcache" 仮説は
-ほぼ無意味。
+| Test | arawk-aot | 残る hot path |
+|---|---|---|
+| **tt.12_update_fields** | **0.52×** | `$3 = "xxx" $3 "xxx"; $4--` で OFS join + record rebuild が毎レコード走る (mawk も 1.16 で gawk と同程度) |
+| **tt.01_print** | **0.57×** | `arawk_split_fields` が依然 47% を占める (eager 分割; record 内をフル scan)。 lazy NF 化や AVX2 scan 化で更に詰められる |
+| **tt.02a_print_length** | **0.61×** | `$2 = length($2); print` で field 書き換え + 全 field rebuild。 行ごとに OFS join 走る |
+| **tt.03 系** | **0.67-0.70×** | field 走査 + 算術。 split + isspace が hot |
+| **tt.16_count_words** | **0.74×** | array 書き込み大量 (`w[$i]++`)。 array_set の hash 操作と `arawk_arr_rehash` が積む |
 
 ## AOT 効果 (plain → aot, 実測)
 
-- **tt.x2_sum_loop**: 0.400s → 0.288s (**28% 短縮**) — 内側ループ全体が
-  specialize される最強形 (fixnum 算術が `lea`/`add` 数命令に畳まれる)
-- **tt.x1_mandelbrot**: 0.741s → 0.620s (16% 短縮)
-- **tt.13a_array_printf**: 0.913s → 1.101s (悪化することも) — variadic
-  printf 経路の specialize が安定しない
+- **tt.x2_sum_loop**: 0.392s → 0.275s (**30% 短縮**) — 内側ループ全体が specialize
+- **tt.x1_mandelbrot**: 0.704s → 0.580s (18% 短縮) — float 演算ループ
+- **tt.13a_array_printf**: 0.846s → 0.796s (6% 短縮)
 
-I/O 系 (tt.01-tt.03) は runtime helper (`arawk_split_fields` / `_IO_getc`
-など) が PLT 越し / 別 .so で固定されているため、 AOT で SD bake しても
-変わらない。
+I/O 系 (tt.01, tt.03) は `arawk_split_fields` 等の runtime helper が PLT 越し
+で specialize しないため、 AOT で SD bake しても変わらない。
+
+## perf record で見た hot path (改善後)
+
+### tt.01_print (現状 0.57×)
+
+```
+47%  arawk_split_fields    ← 引き続き支配的。 lazy NF 化 or AVX2 scan で更に削れる
+ 4%  _IO_file_xsputn       ← stdout への write side
+ 4%  __ctype_b_loc         ← isspace (split 内) の libc helper
+ 3%  __memmove_avx
+ 3%  GC_malloc_kind        ← B で 1/5 になった残り
+ 2%  __memchr_avx2         ← A で導入した chunked read
+```
+
+`_IO_getc` は **完全に消えた**。 残る hot は split 自体。
+
+### tt.14_function_call (現状 2.56×)
+
+```
+56%  libgc 内部 (sym 解像できず)  ← arawk_obj の per-call alloc
+39%  DISPATCH_node_lt              ← abs() の比較
+```
+
+`arawk_make_string` は top 圏外に消えた (C+ の wrap_string 効果)。
+**ボトルネックは個別 `arawk_obj` alloc** — 配列 entry の取得・関数引数評価で
+fixnum 範囲外の数値や string 結果が allocate される。
 
 ## 計測時間
 
 - `make test`: 1.6s (smoke 98×2 modes) + 9.6s (tt.* 18×2 modes) = **~11s**
 - `make bench`: 全 24 tt.* を 5 awk 実装 × 5 runs (scaling 含む) = **数分**
 
-## 次の perf 改善案 (実測に基づく差し替え版)
+## まだ残る改善余地
 
-旧 perf.md の 5 件の改善案は仮説で書いていたが、 上記 `perf record` で
-半分が外れだったので差し替える。
+1. **`arawk_split_fields` 自体の高速化**: isspace を ASCII inline check に
+   置き換える、 default-FS 全行 scan を AVX2 化 (`__ctype_b_loc` 7% が消える)
+2. **arawk_obj の pool 化**: per-call alloc を消す。 small-obj pool で
+   `GC_malloc(struct arawk_obj)` を消せれば tt.14 で更に伸びる
+3. **fixnum 結果の boxing 回避**: 算術結果が arawk_obj に行く場面で
+   fixnum 範囲内なら raw VALUE で完結 (`arawk_make_int` の inline 化済みだが、
+   呼び出し元での生成自体を消す)
+4. **OFS join の chunked write**: tt.12 / tt.02a で record rebuild が毎行
+   走る → `arawk_rebuild_record` の `arawk_to_cstr` × NF を 1 回の buffer
+   build に圧縮
+5. **AOT 内 builtin inline** (前から保留): `length` / `int` 等を SD body に
+   直接 emit。 工数大 (gen.rb 改造)
 
-| # | 改善 | 効くテスト | 期待効果 | 工数 |
-|---|---|---|---|---|
-| **A** | **fgetc → fread chunked input** (`buf + memchr('\n')` ベース) | tt.01 / tt.03 系 / tt.07 (入力 loop で 8-18%) | 中-大 | 中 (1 h) |
-| **B** | **field の lazy strnum** (分割は boundary だけ記録、`$N` アクセス時に allocate) | tt.03 系 / tt.07 / tt.11 (split + GC で 30-35%) | 大 | 中 (1 h) |
-| **C** | **for-in iterator 化** (keys[] 配列確保 → 直接 bucket walk) | tt.14 / tt.16 | 中 (GC 圧減) | 中 (1 h) |
-| **D** | **関数 frame を arena 化** (VLA per-call → pool) | tt.14 (1M 回 frame allocate) | 中-大 | 中 |
-| **E** | **AOT 内 builtin inline** (`length`/`substr` 等を SD body に emit) | math / 文字列 builtin 系 | 小-中 (常に +α) | 大 (gen.rb 改造) |
-
-### 破棄した旧仮説
+## 破棄した旧改善案 (実測で外れ)
 
 | 旧改善案 | 破棄理由 |
 |---|---|
-| **print の chunked write** | strace で全 awk が write 1088 回で一致。 stdio buffering で揃う。print は実は速い |
-| **substr の copy-on-write** | tt.11 で substr は top 12 圏外 (<1%)。 本当の hot は split + GC (= #B 領域) |
-| **function callcache** | 関数 1 つだと strcmp 1 比較で終わる。 hot は for-in key allocate (= #C) |
+| **print の chunked write** | strace で全 awk が write 1088 回で一致。 stdio buffering で揃う。 print は実は速い |
+| **substr の copy-on-write** | tt.11 で substr は top 12 圏外 (<1%)。 本当の hot は split + GC (= B で解消済み) |
+| **function callcache** | 関数 1 つだと strcmp 1 比較で終わる。 hot は for-in key allocate (= C で解消) |
+| **D: 関数 frame を arena 化** | frame は VLA で C stack 上 alloc (cost ほぼゼロ)。 perf で frame allocate は top 圏外 |
