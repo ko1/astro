@@ -5207,6 +5207,31 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "step") == 0)  return pys_make_int(o->range.step);
         // Fall through to method lookup
     }
+    if (pys_is_file(v)) {
+        struct pysobj *o = PYS_PTR(v);
+        if (strcmp(name, "name") == 0) {
+            if (o->file.path)
+                return pys_make_str(o->file.path, strlen(o->file.path));
+            return PYS_NONE;
+        }
+        if (strcmp(name, "mode") == 0) {
+            return pys_make_str(o->file.binary ? "rb" : "r",
+                                o->file.binary ? 2 : 1);
+        }
+        if (strcmp(name, "closed") == 0) {
+            return o->file.closed ? PYS_TRUE : PYS_FALSE;
+        }
+        if (strcmp(name, "encoding") == 0) {
+            return o->file.binary ? PYS_NONE : pys_make_str("utf-8", 5);
+        }
+        if (strcmp(name, "errors") == 0) {
+            return o->file.binary ? PYS_NONE : pys_make_str("strict", 6);
+        }
+        if (strcmp(name, "newlines") == 0) return PYS_NONE;
+        if (strcmp(name, "buffer") == 0)   return v;       // self (text wraps buffer)
+        if (strcmp(name, "raw") == 0)      return v;       // buffered wraps raw
+        // Fall through to file_methods (read/write/etc.).
+    }
     // CPython: classmethod / staticmethod are descriptors, so they have
     // `__func__` (the wrapped function) and `__get__` attrs.  functools'
     // partialmethod() uses `hasattr(func, '__get__')` to distinguish
