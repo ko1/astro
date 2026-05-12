@@ -712,12 +712,78 @@ arawk_print_record(FILE *fp, VALUE *items, size_t n,
 // reads EOF and writes its output before the process exits).
 // ---------------------------------------------------------------------------
 
+// Per-stream read buffer.  Used only by input-side streams (mode 'r'
+// or 'i') and for the implicit cur_input; output streams leave these
+// zero-initialised.  64 KB is large enough to hold a full disk read
+// boundary while staying small enough to avoid wasting memory on
+// many simultaneously-open getline sources.
+struct arawk_rdbuf {
+    char  *data;
+    size_t capa;
+    size_t len;            // valid bytes in data
+    size_t pos;            // next byte to read
+};
+
 struct arawk_stream {
     int    mode;
     char  *dest;
     FILE  *fp;
     bool   is_pipe;        // true → pclose, false → fclose
+    struct arawk_rdbuf rdbuf;
 };
+
+#define ARAWK_RDBUF_SIZE 65536
+
+// Read one RS-delimited record (default RS = "\n") from `fp` using
+// `rb` as a chunk-level buffer.  Returns 1 (read), 0 (EOF), -1
+// (I/O error).  Replaces the per-character fgetc loop — fread fills
+// `rb` once per ~64 KB, then `memchr('\n', ...)` finds record
+// boundaries in user space without crossing the PLT each character.
+static int
+arawk_read_line_buf(FILE *fp, struct arawk_rdbuf *rb,
+                    char **out, size_t *out_len, size_t *out_capa)
+{
+    if (!fp) return -1;
+    if (UNLIKELY(rb->data == NULL)) {
+        rb->capa = ARAWK_RDBUF_SIZE;
+        rb->data = (char *)GC_malloc_atomic(rb->capa);
+    }
+    size_t len = 0;
+    for (;;) {
+        if (rb->pos >= rb->len) {
+            size_t n = fread(rb->data, 1, rb->capa, fp);
+            if (n == 0) {
+                if (ferror(fp)) return -1;
+                if (len == 0) return 0;
+                break;
+            }
+            rb->len = n;
+            rb->pos = 0;
+        }
+        char *base = rb->data + rb->pos;
+        size_t avail = rb->len - rb->pos;
+        char *p = (char *)memchr(base, '\n', avail);
+        size_t chunk = p ? (size_t)(p - base) : avail;
+        if (len + chunk + 1 > *out_capa) {
+            size_t cap = *out_capa ? *out_capa * 2 : 256;
+            while (cap < len + chunk + 1) cap *= 2;
+            *out = (char *)GC_realloc(*out, cap);
+            *out_capa = cap;
+        }
+        memcpy(*out + len, base, chunk);
+        len += chunk;
+        rb->pos += chunk;
+        if (p) { rb->pos++; break; }   // consume the '\n'
+    }
+    if (len + 1 > *out_capa) {
+        size_t cap = *out_capa ? *out_capa * 2 : 256;
+        *out = (char *)GC_realloc(*out, cap);
+        *out_capa = cap;
+    }
+    (*out)[len] = '\0';
+    *out_len = len;
+    return 1;
+}
 
 static struct arawk_stream *arawk_streams = NULL;
 static size_t arawk_streams_cnt = 0;
@@ -871,36 +937,28 @@ arawk_open_input(int mode, VALUE dest)
     return f;
 }
 
-// Read one RS-delimited record into a growable buffer.  Default RS
-// is "\n"; multi-char RS (regex) lands in Phase 2 with astrogre.
+// Locate the per-stream read buffer by FILE *.  arawk_streams[] is
+// linear-scanned (typically 0-2 entries per process).  The implicit
+// cur_input stream has its own static rdbuf since it isn't in the
+// arawk_inputs[] array.
+static struct arawk_rdbuf cur_input_rdbuf;
+
+static struct arawk_rdbuf *
+arawk_rdbuf_for(FILE *fp)
+{
+    for (size_t i = 0; i < arawk_inputs_cnt; i++) {
+        if (arawk_inputs[i].fp == fp) return &arawk_inputs[i].rdbuf;
+    }
+    return &cur_input_rdbuf;
+}
+
+// Public arawk_read_record_into: looks up the right per-FILE buffer
+// and delegates to arawk_read_line_buf.  Kept for getline helpers
+// that operate on already-resolved file handles.
 int
 arawk_read_record_into(FILE *fp, char **buf, size_t *buf_len, size_t *buf_capa)
 {
-    if (!fp) return -1;
-    size_t len = 0;
-    for (;;) {
-        int ch = fgetc(fp);
-        if (ch == EOF) {
-            if (ferror(fp)) return -1;
-            if (len == 0) return 0;
-            break;
-        }
-        if (ch == '\n') break;
-        if (len + 1 >= *buf_capa) {
-            size_t cap = *buf_capa ? *buf_capa * 2 : 256;
-            *buf = (char *)GC_realloc(*buf, cap);
-            *buf_capa = cap;
-        }
-        (*buf)[len++] = (char)ch;
-    }
-    if (len + 1 > *buf_capa) {
-        size_t cap = *buf_capa ? *buf_capa * 2 : 256;
-        *buf = (char *)GC_realloc(*buf, cap);
-        *buf_capa = cap;
-    }
-    (*buf)[len] = '\0';
-    *buf_len = len;
-    return 1;
+    return arawk_read_line_buf(fp, arawk_rdbuf_for(fp), buf, buf_len, buf_capa);
 }
 
 // Open the next input file if necessary; returns the current FILE *,
@@ -1341,6 +1399,12 @@ arawk_open_next_input(CTX *c)
         fclose(c->cur_input);
         c->cur_input = NULL;
     }
+    // The cur_input rdbuf belonged to the previous file (or to the
+    // previous stdin run).  Drop any residual buffered bytes so the
+    // next file doesn't see leftover data — `nextfile` in particular
+    // triggers this path mid-buffer.
+    cur_input_rdbuf.len = 0;
+    cur_input_rdbuf.pos = 0;
     if (OPTION.input_file_cnt == 0) {
         if (c->cur_input_idx == 0) {
             c->cur_input = stdin;
@@ -1376,32 +1440,22 @@ arawk_input_next_record(CTX *c)
         if (!arawk_open_next_input(c)) { c->input_done = true; return false; }
     }
 
-    // Grow record buffer on demand.
     static char *line_buf = NULL;
     static size_t line_capa = 0;
     size_t len = 0;
 
     for (;;) {
-        int ch = fgetc(c->cur_input);
-        if (ch == EOF) {
-            if (len > 0) break;
-            if (!arawk_open_next_input(c)) { c->input_done = true; return false; }
-            continue;
-        }
-        if (ch == '\n') break;
-        if (len + 1 >= line_capa) {
-            size_t new_capa = line_capa ? line_capa * 2 : 256;
-            line_buf = (char *)GC_realloc(line_buf, new_capa);
-            line_capa = new_capa;
-        }
-        line_buf[len++] = (char)ch;
+        int rc = arawk_read_line_buf(c->cur_input, &cur_input_rdbuf,
+                                     &line_buf, &len, &line_capa);
+        if (rc == 1) break;
+        if (rc < 0) { c->input_done = true; return false; }
+        // EOF on this source — try the next input file.  Reset the
+        // buffer because the next FILE * is independent (and we
+        // wouldn't be able to seek backward on a pipe anyway).
+        cur_input_rdbuf.len = 0;
+        cur_input_rdbuf.pos = 0;
+        if (!arawk_open_next_input(c)) { c->input_done = true; return false; }
     }
-    if (len + 1 > line_capa) {
-        size_t new_capa = line_capa ? line_capa * 2 : 256;
-        line_buf = (char *)GC_realloc(line_buf, new_capa);
-        line_capa = new_capa;
-    }
-    line_buf[len] = '\0';
 
     // Copy into GC-traced storage (line_buf is reused next iter).
     char *rec = (char *)GC_malloc_atomic(len + 1);
