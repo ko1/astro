@@ -5701,9 +5701,14 @@ parse_decorated(void)
     bool is_class_method_dec = in_class_body && peek_tok(0)->kind == T_DEF;
     if (peek_tok(0)->kind == T_DEF) {
         target = tok_arr[tok_pos + 1].sval;
+        // Class-body def: name is mangled at parse_def. Apply same
+        // mangling to the decorator target so class_method_get / _set
+        // reach the mangled slot.
+        if (in_class_body) target = mangle_name(target);
         body = parse_def();
     } else if (peek_tok(0)->kind == T_CLASS) {
         target = tok_arr[tok_pos + 1].sval;
+        if (in_class_body) target = mangle_name(target);
         body = parse_class();
     } else {
         parse_error("expected 'def' or 'class' after decorator");
