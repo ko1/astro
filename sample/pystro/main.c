@@ -253,6 +253,8 @@ main(int argc, char *argv[])
     pys_global_set(c, "__spec__",     PYS_NONE);
     pys_global_set(c, "__loader__",   PYS_NONE);
     pys_global_set(c, "__cached__",   PYS_NONE);
+    extern VALUE pys_make_dict(void);
+    pys_global_set(c, "__annotations__", pys_make_dict());
 
     tokenize(src, src_name);
     NODE *body = parse_program();
