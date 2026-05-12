@@ -290,10 +290,18 @@ struct arawk_record {
     char    *record;             // $0 raw bytes (GC_malloc_atomic, NUL-terminated)
     size_t   record_len;
     VALUE    record_v;           // cached $0 VALUE, or 0 if unset
-    VALUE   *fields;              // $1..$NF, lazily allocated; size = fields_capa
-    int      nf;                  // current NF
+    // Lazy field representation.  After arawk_split_fields runs,
+    // field_starts[i] / field_lens[i] hold the boundary into `record`;
+    // fields[i] is 0 (= "not yet materialised") until `$N` is read,
+    // at which point the strnum VALUE is allocated and cached.
+    // `0` is unambiguous as a sentinel: ARAWK_FIX(0) = 1, heap ptrs
+    // are non-zero, AWK_UNINIT is a static struct address.
+    int     *field_starts;
+    int     *field_lens;
+    VALUE   *fields;
+    int      nf;
     int      fields_capa;
-    bool     fields_split;        // false → fields[] needs (re)build from record
+    bool     fields_split;
 };
 
 // Special-variable slots in env (fixed layout, written by input loop).

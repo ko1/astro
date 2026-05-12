@@ -1074,6 +1074,27 @@ arawk_fflush_stream(VALUE dest)
 //   N < 0:  error
 static void arawk_rebuild_record(CTX *c);
 
+// Grow the 3 parallel field arrays so that index `target` (0-based)
+// fits, doubling capacity from the current value.  Called from
+// arawk_set_nf / arawk_set_field.
+static void
+arawk_grow_fields(CTX *c, int target)
+{
+    if (target < c->rec.fields_capa) return;
+    int cap = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8;
+    while (cap <= target) cap *= 2;
+    int   *ns = (int   *)GC_malloc_atomic(sizeof(int)   * cap);
+    int   *nl = (int   *)GC_malloc_atomic(sizeof(int)   * cap);
+    VALUE *nv = (VALUE *)GC_malloc       (sizeof(VALUE) * cap);
+    if (c->rec.field_starts) memcpy(ns, c->rec.field_starts, sizeof(int)   * c->rec.fields_capa);
+    if (c->rec.field_lens)   memcpy(nl, c->rec.field_lens,   sizeof(int)   * c->rec.fields_capa);
+    if (c->rec.fields)       memcpy(nv, c->rec.fields,       sizeof(VALUE) * c->rec.fields_capa);
+    c->rec.field_starts = ns;
+    c->rec.field_lens   = nl;
+    c->rec.fields       = nv;
+    c->rec.fields_capa  = cap;
+}
+
 void
 arawk_set_nf(CTX *c, VALUE v)
 {
@@ -1083,15 +1104,13 @@ arawk_set_nf(CTX *c, VALUE v)
         exit(2);
     }
     arawk_split_fields(c);
-    if ((int)new_nf > c->rec.fields_capa) {
-        int cap = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8;
-        while (cap < (int)new_nf) cap *= 2;
-        VALUE *nf = (VALUE *)GC_malloc(sizeof(VALUE) * cap);
-        if (c->rec.fields) memcpy(nf, c->rec.fields, sizeof(VALUE) * c->rec.fields_capa);
-        c->rec.fields = nf;
-        c->rec.fields_capa = cap;
+    if (new_nf > 0) arawk_grow_fields(c, (int)new_nf - 1);
+    // Extend with empty fields: boundary (0, 0) + sentinel 0 = lazy "".
+    for (int i = c->rec.nf; i < (int)new_nf; i++) {
+        c->rec.field_starts[i] = 0;
+        c->rec.field_lens[i]   = 0;
+        c->rec.fields[i]       = 0;
     }
-    for (int i = c->rec.nf; i < (int)new_nf; i++) c->rec.fields[i] = arawk_make_string("", 0);
     c->rec.nf = (int)new_nf;
     c->env[ARAWK_GLOB_NF] = ARAWK_FIX(new_nf);
     arawk_rebuild_record(c);
@@ -1106,6 +1125,14 @@ arawk_set_nf(CTX *c, VALUE v)
 // strnum allocation is fine for now; the cost is one strnum object
 // per field which libgc collects cheaply.  Phase 2 can split lazily
 // for $N while still pre-computing NF.
+// Lazy split.  We only record the boundary (offset, length) of each
+// field; the strnum VALUE is materialised on first read in
+// arawk_get_field.  Scripts that touch NF / $0 only — or just one or
+// two $N — used to pay the cost of allocating all NF strnums; now
+// they pay just for the fields they actually read.
+//
+// fields_capa now sizes 3 parallel arrays: field_starts / field_lens
+// / fields.  Capacity grows by doubling at the same threshold.
 static void
 arawk_split_fields(CTX *c)
 {
@@ -1122,15 +1149,29 @@ arawk_split_fields(CTX *c)
     size_t rlen = c->rec.record_len;
     int nf = 0;
 
-    // Capacity grow helper.
+    // Capacity grow helper: 3 parallel arrays grow together.  Both
+    // int[] are atomic (no pointers); only the VALUE[] is traced.
     #define GROW_IF_NEEDED() do { \
         if (nf >= c->rec.fields_capa) { \
             int new_capa = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8; \
-            VALUE *new_fields = (VALUE *)GC_malloc(sizeof(VALUE) * new_capa); \
-            if (c->rec.fields) memcpy(new_fields, c->rec.fields, sizeof(VALUE) * c->rec.fields_capa); \
-            c->rec.fields = new_fields; \
-            c->rec.fields_capa = new_capa; \
+            int   *ns = (int   *)GC_malloc_atomic(sizeof(int)   * new_capa); \
+            int   *nl = (int   *)GC_malloc_atomic(sizeof(int)   * new_capa); \
+            VALUE *nv = (VALUE *)GC_malloc       (sizeof(VALUE) * new_capa); \
+            if (c->rec.field_starts) memcpy(ns, c->rec.field_starts, sizeof(int)   * c->rec.fields_capa); \
+            if (c->rec.field_lens)   memcpy(nl, c->rec.field_lens,   sizeof(int)   * c->rec.fields_capa); \
+            if (c->rec.fields)       memcpy(nv, c->rec.fields,       sizeof(VALUE) * c->rec.fields_capa); \
+            c->rec.field_starts = ns; \
+            c->rec.field_lens   = nl; \
+            c->rec.fields       = nv; \
+            c->rec.fields_capa  = new_capa; \
         } \
+    } while (0)
+    #define RECORD_FIELD(start, length) do { \
+        GROW_IF_NEEDED(); \
+        c->rec.field_starts[nf] = (int)(start); \
+        c->rec.field_lens[nf]   = (int)(length); \
+        c->rec.fields[nf]       = 0;            /* lazy sentinel */ \
+        nf++; \
     } while (0)
 
     if (fs_default) {
@@ -1141,8 +1182,7 @@ arawk_split_fields(CTX *c)
             if (i >= rlen) break;
             size_t start = i;
             while (i < rlen && !isspace((unsigned char)r[i])) i++;
-            GROW_IF_NEEDED();
-            c->rec.fields[nf++] = arawk_make_strnum(r + start, i - start);
+            RECORD_FIELD(start, i - start);
         }
     }
     else if (fslen == 1) {
@@ -1150,15 +1190,13 @@ arawk_split_fields(CTX *c)
         size_t i = 0, start = 0;
         while (i < rlen) {
             if (r[i] == sep) {
-                GROW_IF_NEEDED();
-                c->rec.fields[nf++] = arawk_make_strnum(r + start, i - start);
+                RECORD_FIELD(start, i - start);
                 i++;
                 start = i;
             }
             else i++;
         }
-        GROW_IF_NEEDED();
-        c->rec.fields[nf++] = arawk_make_strnum(r + start, rlen - start);
+        RECORD_FIELD(start, rlen - start);
     }
     else {
         // Multi-char FS: regex split (Phase 2).  For now treat as
@@ -1166,16 +1204,15 @@ arawk_split_fields(CTX *c)
         size_t i = 0, start = 0;
         while (i + fslen <= rlen) {
             if (memcmp(r + i, fs, fslen) == 0) {
-                GROW_IF_NEEDED();
-                c->rec.fields[nf++] = arawk_make_strnum(r + start, i - start);
+                RECORD_FIELD(start, i - start);
                 i += fslen;
                 start = i;
             }
             else i++;
         }
-        GROW_IF_NEEDED();
-        c->rec.fields[nf++] = arawk_make_strnum(r + start, rlen - start);
+        RECORD_FIELD(start, rlen - start);
     }
+    #undef RECORD_FIELD
     #undef GROW_IF_NEEDED
 
     c->rec.nf = nf;
@@ -1196,7 +1233,14 @@ arawk_get_field(CTX *c, int64_t n)
     }
     arawk_split_fields(c);
     if (n > c->rec.nf) return arawk_make_string("", 0);
-    return c->rec.fields[n - 1];
+    int idx = (int)n - 1;
+    VALUE v = c->rec.fields[idx];
+    if (v == 0) {
+        v = arawk_make_strnum(c->rec.record + c->rec.field_starts[idx],
+                              c->rec.field_lens[idx]);
+        c->rec.fields[idx] = v;
+    }
+    return v;
 }
 
 VALUE
@@ -1211,18 +1255,22 @@ arawk_get_field_v(CTX *c, VALUE idx)
 // Rebuild $0 from the current fields[] using OFS.  Called lazily
 // after a $N (N>0) assignment, when the next reader of $0 wants the
 // updated record.  Sets c->rec.record / record_v / record_len.
+//
+// Reads every field through arawk_get_field so that lazy boundaries
+// and cached VALUEs are both honoured.  This forces materialisation
+// of all fields — unavoidable when joining the full record.
 static void
 arawk_rebuild_record(CTX *c)
 {
-    arawk_split_fields(c);  // ensure fields populated
+    arawk_split_fields(c);
     VALUE ofs_v = c->env[ARAWK_GLOB_OFS];
     char obuf[32]; size_t olen;
     const char *ofs = arawk_to_cstr(ofs_v, obuf, sizeof obuf, &olen);
-    // Estimate size.
+
     size_t total = 0;
     for (int i = 0; i < c->rec.nf; i++) {
         char fbuf[64]; size_t flen;
-        (void)arawk_to_cstr(c->rec.fields[i], fbuf, sizeof fbuf, &flen);
+        (void)arawk_to_cstr(arawk_get_field(c, i + 1), fbuf, sizeof fbuf, &flen);
         total += flen;
     }
     if (c->rec.nf > 0) total += (size_t)(c->rec.nf - 1) * olen;
@@ -1231,7 +1279,7 @@ arawk_rebuild_record(CTX *c)
     for (int i = 0; i < c->rec.nf; i++) {
         if (i) { memcpy(buf + k, ofs, olen); k += olen; }
         char fbuf[64]; size_t flen;
-        const char *fs = arawk_to_cstr(c->rec.fields[i], fbuf, sizeof fbuf, &flen);
+        const char *fs = arawk_to_cstr(arawk_get_field(c, i + 1), fbuf, sizeof fbuf, &flen);
         memcpy(buf + k, fs, flen); k += flen;
     }
     buf[k] = '\0';
@@ -1266,17 +1314,13 @@ arawk_set_field(CTX *c, int64_t n, VALUE v)
     // $N = ... — make sure fields[] exists, grow if needed, set the
     // element, rebuild $0 lazily.
     arawk_split_fields(c);
-    if ((int)n > c->rec.fields_capa) {
-        int new_capa = c->rec.fields_capa ? c->rec.fields_capa * 2 : 8;
-        while (new_capa < (int)n) new_capa *= 2;
-        VALUE *nf = (VALUE *)GC_malloc(sizeof(VALUE) * new_capa);
-        if (c->rec.fields) memcpy(nf, c->rec.fields, sizeof(VALUE) * c->rec.fields_capa);
-        c->rec.fields = nf;
-        c->rec.fields_capa = new_capa;
-    }
-    // Pad intervening fields with empty strings.
+    arawk_grow_fields(c, (int)n - 1);
+    // Pad intervening fields lazily: boundary (0, 0) + sentinel 0 →
+    // "" generated on demand.
     for (int i = c->rec.nf; i < (int)n - 1; i++) {
-        c->rec.fields[i] = arawk_make_string("", 0);
+        c->rec.field_starts[i] = 0;
+        c->rec.field_lens[i]   = 0;
+        c->rec.fields[i]       = 0;
     }
     c->rec.fields[n - 1] = v;
     if ((int)n > c->rec.nf) {
