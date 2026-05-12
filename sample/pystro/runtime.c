@@ -5165,11 +5165,20 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             // Fallback: try dispatching builtin methods on the primary
             // before raising.  Catches `super().__iter__()` etc. on
             // namedtuple-like subclasses.
-            if (pys_is_instance(self) && PYS_PTR(self)->inst.primary) {
-                extern VALUE pys_builtin_method(CTX *c, VALUE recv, const char *name);
-                VALUE bm = pys_builtin_method(c, PYS_PTR(self)->inst.primary, name);
-                if (bm != PYS_NONE) return bm;
-            }
+            VALUE recv = self;
+            if (pys_is_instance(self) && PYS_PTR(self)->inst.primary)
+                recv = PYS_PTR(self)->inst.primary;
+            extern VALUE pys_builtin_method(CTX *c, VALUE recv, const char *name);
+            VALUE bm = pys_builtin_method(c, recv, name);
+            if (bm != PYS_NONE) return bm;
+            // Universal dunders (__hash__, __eq__, __repr__, etc.) live in
+            // pys_dunder_bound rather than per-type method tables. Try it
+            // before raising AttributeError.
+            extern VALUE pys_dunder_bound(CTX *c, VALUE recv, const char *name);
+            int sst = c->state; VALUE sval = c->state_value;
+            VALUE d = pys_dunder_bound(c, recv, name);
+            if (d && d != PYS_NONE && c->state == PYS_STATE_NORMAL) return d;
+            c->state = sst; c->state_value = sval;
             PYS_RAISE_EXC(c, c->EXC_AttributeError,
                          "'super' object has no attribute '%s'", name);
         }
@@ -15236,9 +15245,14 @@ bi_exception_setstate(CTX *c, int argc, VALUE *argv)
     for (size_t i = 0; i < d->elen; i++) {
         VALUE k = d->entries[i].key;
         if (k == 0 || k == DICT_DELETED_KEY) continue;
-        if (!pys_is_str(k))
+        // Allow str subclass keys: unwrap primary if instance.
+        VALUE k_str = k;
+        if (pys_is_instance(k) && PYS_PTR(k)->inst.primary
+                && pys_is_str(PYS_PTR(k)->inst.primary))
+            k_str = PYS_PTR(k)->inst.primary;
+        if (!pys_is_str(k_str))
             PYS_RAISE_EXC(c, c->EXC_TypeError, "state key must be str");
-        pys_setattr(c, argv[0], PYS_PTR(k)->str.chars, d->entries[i].value);
+        pys_setattr(c, argv[0], PYS_PTR(k_str)->str.chars, d->entries[i].value);
         if (c->state == PYS_STATE_RAISE) return 0;
     }
     return PYS_NONE;
