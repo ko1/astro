@@ -422,12 +422,33 @@ def main(scope=None, *args, **kwargs):
                     continue
                 method_names.append(n)
         for mn in method_names:
-            inst = cls()
+            try:
+                inst = cls()
+            except Exception as e:
+                failed += 1
+                print("FAIL", cls.__name__ if hasattr(cls, "__name__") else "?", mn,
+                      ": __init__ raised", type(e).__name__, ":", e)
+                continue
             try:
                 inst.setUp()
             except SkipTest as e:
                 skipped += 1
                 print("skip", cls.__name__, mn, ":", e)
+                continue
+            except SystemExit as e:
+                failed += 1
+                print("FAIL", cls.__name__ if hasattr(cls, "__name__") else "?", mn,
+                      ": setUp SystemExit")
+                continue
+            except Exception as e:
+                # setUp failure: record as fail and move on (CPython
+                # does the same).  Without this catch, a single test
+                # with broken setUp aborts the entire run (test_pstats
+                # had this — KeyError in StatsTestCase.setUp swallowed
+                # all subsequent tests).
+                failed += 1
+                print("FAIL", cls.__name__ if hasattr(cls, "__name__") else "?", mn,
+                      ": setUp", type(e).__name__, ":", e)
                 continue
             try:
                 m = getattr(inst, mn)
