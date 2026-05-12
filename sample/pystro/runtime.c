@@ -15443,10 +15443,32 @@ bi_pystro_bindir(CTX *c, int argc, VALUE *argv)
     return PYS_NONE;
 }
 
+// Coerce a path-like value (str, bytes, or any object with __fspath__)
+// into a str. Returns 0 + sets RAISE on type mismatch.
+static VALUE
+pys_fspath(CTX *c, VALUE v)
+{
+    if (pys_is_str(v)) return v;
+    if (pys_is_instance(v)) {
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), "__fspath__");
+        if (m != PYS_NONE) {
+            VALUE av[1] = { v };
+            VALUE r = pys_apply(c, m, 1, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            return r;
+        }
+        if (PYS_PTR(v)->inst.primary && pys_is_str(PYS_PTR(v)->inst.primary))
+            return PYS_PTR(v)->inst.primary;
+    }
+    return v;       // caller validates pys_is_str on result
+}
+
 static VALUE
 bi_pystro_os_open(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.open: path must be str");
     if (!PYS_IS_FIXNUM(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.open: flags must be int");
     int mode = 0666;
@@ -15553,6 +15575,8 @@ static VALUE
 bi_pystro_chdir(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "chdir: path must be str");
     size_t L = PYS_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
@@ -15706,6 +15730,8 @@ static VALUE
 bi_pystro_path_exists(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "exists: path must be str");
     size_t L = PYS_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
@@ -15721,6 +15747,10 @@ bi_pystro_listdir(CTX *c, int argc, VALUE *argv)
     extern struct dirent *readdir(DIR *);
     const char *p = ".";
     char buf[1024];
+    if (argc >= 1) {
+        argv[0] = pys_fspath(c, argv[0]);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    }
     if (argc >= 1 && pys_is_str(argv[0])) {
         size_t L = PYS_PTR(argv[0])->str.len;
         if (L >= sizeof(buf)) PYS_RAISE_EXC(c, c->EXC_RuntimeError, "listdir: path too long");
@@ -15743,6 +15773,8 @@ static VALUE
 bi_pystro_remove(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "remove: path must be str");
     size_t L = PYS_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
@@ -15767,6 +15799,8 @@ static VALUE
 bi_pystro_rmdir(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "rmdir: path must be str");
     size_t L = PYS_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
@@ -15790,6 +15824,8 @@ static VALUE
 bi_pystro_makedirs(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "makedirs: path must be str");
     size_t L = PYS_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
@@ -15825,6 +15861,8 @@ static VALUE
 bi_pystro_isdir(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "isdir: path must be str");
     size_t L = PYS_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
@@ -15838,6 +15876,8 @@ static VALUE
 bi_pystro_isfile(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "isfile: path must be str");
     size_t L = PYS_PTR(argv[0])->str.len;
     char *buf = (char *)alloca(L + 1);
@@ -15864,19 +15904,8 @@ static VALUE
 bi_pystro_stat(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    VALUE path = argv[0];
-    // os.PathLike: anything with __fspath__ → call it to get the str.
-    if (pys_is_instance(path)) {
-        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(path)->inst.cls), "__fspath__");
-        if (m != PYS_NONE) {
-            VALUE av[1] = { path };
-            path = pys_apply(c, m, 1, av);
-            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-        } else if (PYS_PTR(path)->inst.primary
-                   && pys_is_str(PYS_PTR(path)->inst.primary)) {
-            path = PYS_PTR(path)->inst.primary;
-        }
-    }
+    VALUE path = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(path)) PYS_RAISE_EXC(c, c->EXC_TypeError, "stat: path must be str");
     size_t L = PYS_PTR(path)->str.len;
     char *buf = (char *)alloca(L + 1);
@@ -15982,6 +16011,8 @@ static VALUE
 bi_pystro_chmod(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "chmod: path must be str");
     if (!pys_int_or_bool(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "chmod: mode must be int");
     size_t L = PYS_PTR(argv[0])->str.len;
@@ -16009,6 +16040,8 @@ static VALUE
 bi_pystro_abspath(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "abspath: path must be str");
     size_t L = PYS_PTR(argv[0])->str.len;
     char in[1024];
