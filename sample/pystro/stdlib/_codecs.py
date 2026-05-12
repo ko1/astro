@@ -41,6 +41,11 @@ def lookup(encoding):
 
 
 class _CodecInfo:
+    # Default: text encoding (utf-8, ascii, latin-1).  CPython's codecs.lookup
+    # returns a CodecInfo with `_is_text_encoding = True` for all built-in
+    # text codecs; tests like test_memoryio.PyStringIOTest check this.
+    _is_text_encoding = True
+
     def __init__(self, name):
         self.name = name
     @property
@@ -55,6 +60,18 @@ class _CodecInfo:
         if self.name == "utf-8": return utf_8_decode
         if self.name == "latin-1": return latin_1_decode
         return utf_8_decode
+    @property
+    def incrementalencoder(self):
+        return None
+    @property
+    def incrementaldecoder(self):
+        return None
+    @property
+    def streamwriter(self):
+        return None
+    @property
+    def streamreader(self):
+        return None
 
 
 # Per-codec encode/decode pairs.
