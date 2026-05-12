@@ -154,6 +154,25 @@ CASES = [
     0,
   ],
 
+  # --- UTF-8 (LC_CTYPE auto-detected as UTF-8 by main.c) ----------------
+  # The test environment runs in C.UTF-8 by default; these tests assert
+  # codepoint-aware semantics matching gawk's default behaviour.
+  ['utf8-length-1char',  'BEGIN { print length("あ") }',                        nil, "1\n",                       0],
+  ['utf8-length-3char',  'BEGIN { print length("あいう") }',                    nil, "3\n",                       0],
+  ['utf8-length-mixed',  'BEGIN { print length("café"), length("hello") }',     nil, "4 5\n",                     0],
+  ['utf8-substr',        'BEGIN { print substr("あいうえお", 2, 2) }',           nil, "いう\n",                    0],
+  ['utf8-substr-end',    'BEGIN { print substr("café", 3) }',                   nil, "fé\n",                      0],
+  ['utf8-index',         'BEGIN { print index("xxあいうyy", "あい") }',         nil, "3\n",                       0],
+  ['utf8-index-ascii',   'BEGIN { print index("xxxあい", "x") }',               nil, "1\n",                       0],
+  ['utf8-index-miss',    'BEGIN { print index("hello", "あ") }',                nil, "0\n",                       0],
+
+  # --- --byte mode overrides locale-driven UTF-8 -------------------------
+  ['byte-length',        'BEGIN { print length("あ") }',                        nil, "3\n",                       0, { flags: ['--byte'] }],
+  ['byte-substr',        'BEGIN { print length(substr("あいうえお", 4, 3)) }',  nil, "3\n",                       0, { flags: ['--byte'] }],
+
+  # --- LC_ALL=C forces byte mode through main.c locale detection --------
+  ['locale-c',           'BEGIN { print length("あ") }',                        nil, "3\n",                       0, { env: { 'LC_ALL' => 'C' } }],
+
   # --- Boundary / coercion tests ------------------------------------------
   ['uninit-arith',       'BEGIN { print x + 1, x "y" }',                          nil,                "1 y\n",                         0],
   ['empty-string-num',   'BEGIN { print "" + 5 }',                                nil,                "5\n",                           0],
@@ -191,7 +210,9 @@ CASES.each do |row|
           File.write(path, content)
           file_args << path
         end
-        argv = [BIN, *flags, prog, *file_args]
+        # opts[:flags] = extra CLI flags appended after the mode flag
+        # (e.g. ['--byte'] for UTF-8 byte-mode regression tests).
+        argv = [BIN, *flags, *(opts[:flags] || []), prog, *file_args]
         env  = opts[:env] || {}
         got, err, status = Open3.capture3(env, *argv, stdin_data: stdin || '')
         got_rc = status.exitstatus

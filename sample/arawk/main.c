@@ -10,6 +10,8 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include <locale.h>
+#include <langinfo.h>
 #include <sys/stat.h>
 
 #include "context.h"
@@ -142,7 +144,8 @@ parse_argv(int argc, char *argv[])
         const char *a = argv[i];
         if      (!strcmp(a, "-i") || !strcmp(a, "--plain"))  OPTION.plain = true;
         else if (!strcmp(a, "-c") || !strcmp(a, "--aot"))    OPTION.compile_first = true;
-        else if (!strcmp(a, "-b"))                           OPTION.skip_bake = true;
+        else if (!strcmp(a, "--byte") || !strcmp(a, "--posix")) OPTION.byte_mode = true;
+        else if (!strcmp(a, "-b") || !strcmp(a, "--skip-bake")) OPTION.skip_bake = true;
         else if (!strcmp(a, "--aot-compile"))                OPTION.compile_only = true;
         else if (!strcmp(a, "--ccs"))                        OPTION.clear_store = true;
         else if (!strcmp(a, "--dump-ast"))                   OPTION.dump_ast = true;
@@ -184,7 +187,18 @@ main(int argc, char *argv[])
 {
     GC_init();
 
+    // Decide string encoding from LC_CTYPE before parsing argv —
+    // `--byte` / `--posix` later overrides it.  Matches gawk: UTF-8
+    // / GB18030 / etc. locales → codepoint mode; C / POSIX → byte.
+    setlocale(LC_CTYPE, "");
+    const char *codeset = nl_langinfo(CODESET);
+    if (codeset && (strstr(codeset, "UTF-8") || strstr(codeset, "utf-8") ||
+                    strstr(codeset, "UTF8")  || strstr(codeset, "utf8"))) {
+        ARAWK_ENCODING = ARAWK_ENC_UTF8;
+    }
+
     parse_argv(argc, argv);
+    if (OPTION.byte_mode) ARAWK_ENCODING = ARAWK_ENC_BYTE;
 
     char *prog_text = NULL;
     if (OPTION.program_file) {

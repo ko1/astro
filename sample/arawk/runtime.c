@@ -18,6 +18,10 @@ struct arawk_obj ARAWK_UNINIT_OBJ = { .type = ARAWK_T_UNINIT };
 
 CTX *ARAWK_CURRENT_CTX = NULL;
 
+// Default = BYTE for safety; main.c sets to UTF8 if LC_CTYPE looks
+// UTF-8.  Tests that don't go through main (rare) get byte mode.
+arawk_encoding_t ARAWK_ENCODING = ARAWK_ENC_BYTE;
+
 // ---------------------------------------------------------------------------
 // Heap allocators.  GC_malloc traces; GC_malloc_atomic skips tracing
 // (use it for char[] / double payloads).
@@ -248,6 +252,77 @@ arawk_concat(VALUE a, VALUE b)
     return ARAWK_OBJ_VAL(o);
 }
 
+// ---------------------------------------------------------------------------
+// UTF-8 helpers.  Used when ARAWK_ENCODING == ARAWK_ENC_UTF8.
+//
+// Strategy:
+//   - char_count: 1 pass over bytes, increment only on non-continuation
+//     bytes (= bytes whose high two bits are NOT 10).  ASCII string
+//     (no high-bit byte) → byte count.
+//   - byte_at_char: walk forward N codepoints using lead-byte length.
+//     Lead bytes: 0xxx = 1, 110x = 2, 1110 = 3, 1111 0xxx = 4.
+//   - Invalid UTF-8 sequences are tolerated: lead byte rules failing
+//     causes us to advance 1 byte (treat as a single faux codepoint),
+//     matching gawk's permissive behaviour.
+// ---------------------------------------------------------------------------
+
+// ASCII fast path: scan 8 bytes at a time looking for any high-bit
+// byte.  Pure-ASCII strings (most awk inputs) return immediately
+// with byte count = codepoint count.  Otherwise fall through to the
+// continuation-byte counting loop.
+static size_t
+arawk_utf8_char_count(const char *s, size_t bytes)
+{
+    static const uint64_t high_bit_mask = 0x8080808080808080ULL;
+    size_t i = 0;
+    while (i + 8 <= bytes) {
+        uint64_t w;
+        memcpy(&w, s + i, 8);
+        if (w & high_bit_mask) goto utf8_slow;
+        i += 8;
+    }
+    for (; i < bytes; i++) if ((unsigned char)s[i] & 0x80) goto utf8_slow;
+    return bytes;
+utf8_slow:
+    {
+        size_t cnt = 0;
+        for (size_t j = 0; j < bytes; j++)
+            if (((unsigned char)s[j] & 0xC0) != 0x80) cnt++;
+        return cnt;
+    }
+}
+
+// Return the byte offset of codepoint `char_pos` (0-based) within
+// `s[0..bytes)`.  Returns `bytes` if `char_pos` is at or past the
+// end (caller may clamp).
+static size_t
+arawk_utf8_byte_at_char(const char *s, size_t bytes, size_t char_pos)
+{
+    size_t byte = 0, cp = 0;
+    while (byte < bytes && cp < char_pos) {
+        unsigned char b = (unsigned char)s[byte];
+        size_t step;
+        if      ((b & 0x80) == 0x00) step = 1;
+        else if ((b & 0xE0) == 0xC0) step = 2;
+        else if ((b & 0xF0) == 0xE0) step = 3;
+        else if ((b & 0xF8) == 0xF0) step = 4;
+        else                         step = 1;     // invalid lead byte
+        if (byte + step > bytes) step = bytes - byte;
+        byte += step;
+        cp++;
+    }
+    return byte;
+}
+
+// Return the codepoint index of byte offset `byte_pos` (clamped).
+// Used by `index` to convert a byte-match result back to char pos.
+static size_t
+arawk_utf8_char_at_byte(const char *s, size_t bytes, size_t byte_pos)
+{
+    if (byte_pos > bytes) byte_pos = bytes;
+    return arawk_utf8_char_count(s, byte_pos);
+}
+
 size_t
 arawk_length(VALUE v)
 {
@@ -260,7 +335,10 @@ arawk_length(VALUE v)
     struct arawk_obj *o = ARAWK_PTR(v);
     switch (o->type) {
       case ARAWK_T_STRING:
-      case ARAWK_T_STRNUM: return o->str.len;
+      case ARAWK_T_STRNUM:
+        if (ARAWK_ENCODING == ARAWK_ENC_UTF8)
+            return arawk_utf8_char_count(o->str.chars, o->str.len);
+        return o->str.len;
       case ARAWK_T_ARRAY:  return o->arr.entry_cnt;
       case ARAWK_T_FLOAT: {
         char buf[64]; size_t len;
@@ -276,13 +354,23 @@ arawk_substr(VALUE s, int64_t pos, int64_t len)
 {
     char buf[64]; size_t slen;
     const char *src = arawk_to_cstr(s, buf, sizeof buf, &slen);
-    // awk: 1-based, pos < 1 → adjust len; pos > slen → "".
+    // awk: 1-based, pos < 1 → adjust len; pos > char_len → "".
     if (pos < 1) { len += (pos - 1); pos = 1; }
-    if ((size_t)pos > slen || len <= 0) return arawk_make_string("", 0);
-    size_t start = (size_t)(pos - 1);
-    size_t avail = slen - start;
-    size_t take  = (size_t)len < avail ? (size_t)len : avail;
-    return arawk_make_string(src + start, take);
+    if (len <= 0) return arawk_make_string("", 0);
+    if (ARAWK_ENCODING == ARAWK_ENC_BYTE) {
+        if ((size_t)pos > slen) return arawk_make_string("", 0);
+        size_t start = (size_t)(pos - 1);
+        size_t avail = slen - start;
+        size_t take  = (size_t)len < avail ? (size_t)len : avail;
+        return arawk_make_string(src + start, take);
+    }
+    // UTF-8: pos / len are codepoint counts.
+    size_t start_byte = arawk_utf8_byte_at_char(src, slen, (size_t)(pos - 1));
+    if (start_byte >= slen) return arawk_make_string("", 0);
+    size_t end_byte   = arawk_utf8_byte_at_char(src + start_byte,
+                                                slen - start_byte,
+                                                (size_t)len);
+    return arawk_make_string(src + start_byte, end_byte);
 }
 
 VALUE
@@ -291,9 +379,14 @@ arawk_substr2(VALUE s, int64_t pos)
     char buf[64]; size_t slen;
     const char *src = arawk_to_cstr(s, buf, sizeof buf, &slen);
     if (pos < 1) pos = 1;
-    if ((size_t)pos > slen) return arawk_make_string("", 0);
-    size_t start = (size_t)(pos - 1);
-    return arawk_make_string(src + start, slen - start);
+    if (ARAWK_ENCODING == ARAWK_ENC_BYTE) {
+        if ((size_t)pos > slen) return arawk_make_string("", 0);
+        size_t start = (size_t)(pos - 1);
+        return arawk_make_string(src + start, slen - start);
+    }
+    size_t start_byte = arawk_utf8_byte_at_char(src, slen, (size_t)(pos - 1));
+    if (start_byte >= slen) return arawk_make_string("", 0);
+    return arawk_make_string(src + start_byte, slen - start_byte);
 }
 
 int64_t
@@ -305,7 +398,13 @@ arawk_index(VALUE haystack, VALUE needle)
     if (nlen == 0) return 0;
     if (nlen > hlen) return 0;
     for (size_t i = 0; i + nlen <= hlen; i++) {
-        if (memcmp(h + i, n, nlen) == 0) return (int64_t)(i + 1);
+        if (memcmp(h + i, n, nlen) == 0) {
+            // Byte match — convert byte position to codepoint position
+            // for UTF-8 mode so the result is in awk's "character units".
+            if (ARAWK_ENCODING == ARAWK_ENC_UTF8)
+                return (int64_t)arawk_utf8_char_at_byte(h, hlen, i) + 1;
+            return (int64_t)(i + 1);
+        }
     }
     return 0;
 }

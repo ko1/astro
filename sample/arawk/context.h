@@ -75,6 +75,18 @@ struct arawk_obj {
 extern struct arawk_obj ARAWK_UNINIT_OBJ;
 #define ARAWK_UNINIT  ARAWK_OBJ_VAL(&ARAWK_UNINIT_OBJ)
 
+// Per-process encoding (decided at startup from LC_CTYPE).  All
+// string-shaped builtins (length / substr / index / tolower /
+// toupper) consult this; ASTROGRE integration (Phase 2) will pass
+// the matching agre_encoding_t to pattern compilation.
+//
+// `--byte` / `--posix` CLI flag forces BYTE regardless of locale.
+typedef enum {
+    ARAWK_ENC_BYTE = 0,    // bytes are chars (POSIX C locale, mawk-style)
+    ARAWK_ENC_UTF8 = 1,    // UTF-8 codepoints
+} arawk_encoding_t;
+extern arawk_encoding_t ARAWK_ENCODING;
+
 // Thread-local-ish pointer to the active CTX.  Set by main.c right
 // after create_context.  Runtime helpers like arawk_to_cstr read
 // CONVFMT / OFMT from `ARAWK_CURRENT_CTX->env[...]` without having
@@ -285,6 +297,7 @@ struct arawk_option {
     bool compile_only;
     bool clear_store;
     bool record_all;              // required by generated node_alloc.c
+    bool byte_mode;               // `-b` / `--byte` / `--posix`: force BYTE
     const char *program_text;     // -e PROG
     const char *program_file;     // -f FILE
     char **input_files;           // remaining argv (NULL → stdin)
