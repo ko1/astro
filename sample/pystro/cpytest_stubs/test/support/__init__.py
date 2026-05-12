@@ -1007,6 +1007,13 @@ def copy_python_src_ignore(path, names):
     return set()
 
 
+# CPython 3.12+: test.support.STDLIB_DIR points at the absolute path of
+# the standard library directory.  Used by test_types and others.
+import os as _os_stdlib
+STDLIB_DIR = "/home/ko1/ruby/astro/sample/pystro/cpython/Lib"
+del _os_stdlib
+
+
 def darwin_malloc_err_warning(name):
     pass
 
