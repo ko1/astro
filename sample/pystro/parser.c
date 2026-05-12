@@ -5080,6 +5080,41 @@ parse_simple_stmt(void)
             && (nn >= 2 || starred_present || trailing_comma)) {
             tok_pos = p + 1;
             NODE *rhs = parse_expr_list();
+            // Class body: targets become class attributes via
+            // class_method_set, not locals/globals. Desugar via a
+            // synthetic temp so the rhs is evaluated once.
+            if (in_class_body) {
+                const char *tmp = new_temp_name("__cutup");
+                NODE *load_tmp;
+                NODE *result = build_temp_init(tmp, rhs, &load_tmp);
+                int after_star_idx = 0;
+                bool seen_star = false;
+                for (int i = 0; i < nn; i++) {
+                    NODE *el;
+                    if (starred[i]) {
+                        int after = nn - 1 - i;
+                        NODE *istart = ALLOC_node_const_int(i);
+                        NODE *istop  = (after == 0)
+                                       ? ALLOC_node_const_none()
+                                       : ALLOC_node_const_int(-after);
+                        el = ALLOC_node_slice(load_tmp, istart, istop,
+                                              ALLOC_node_const_none());
+                        seen_star = true;
+                        after_star_idx = -after;
+                    } else if (seen_star) {
+                        el = ALLOC_node_subscript_get(load_tmp,
+                            ALLOC_node_const_int(after_star_idx));
+                        after_star_idx++;
+                    } else {
+                        el = ALLOC_node_subscript_get(load_tmp,
+                            ALLOC_node_const_int(i));
+                    }
+                    NODE *st = ALLOC_node_class_method_set(
+                        mangle_name(names[i]), el);
+                    result = ALLOC_node_seq(result, st);
+                }
+                return result;
+            }
             struct pyunpack_target ts[16];
             int n_starred = 0;
             for (int i = 0; i < nn; i++) {
