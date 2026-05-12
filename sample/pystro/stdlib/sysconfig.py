@@ -162,3 +162,11 @@ def _main():
 
 
 _PYTHON_BUILD = False
+_HAS_USER_BASE = True
+_USER_BASE = None
+_USER_SITE = None
+_BASE_PREFIX = "/usr"
+_BASE_EXEC_PREFIX = "/usr"
+_PREFIX = "/usr"
+_EXEC_PREFIX = "/usr"
+_PROJECT_BASE = "/usr"

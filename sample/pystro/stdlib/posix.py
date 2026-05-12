@@ -225,6 +225,27 @@ def _fspath(path):
 fspath = _fspath
 
 
+class uname_result(tuple):
+    """Tuple subclass with .sysname / .nodename / .release / .version /
+    .machine — what CPython os.uname returns."""
+    def __new__(cls, args):
+        return tuple.__new__(cls, args)
+    @property
+    def sysname(self): return self[0]
+    @property
+    def nodename(self): return self[1]
+    @property
+    def release(self): return self[2]
+    @property
+    def version(self): return self[3]
+    @property
+    def machine(self): return self[4]
+
+
+def uname():
+    return uname_result(("Linux", "pystro", "0", "#1", "x86_64"))
+
+
 def mkdir(path, mode=0o777, *, dir_fd=None):
     path = _fspath(path)
     try: return __pystro_makedirs__(path)
