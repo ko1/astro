@@ -344,7 +344,10 @@ def umask(mask):
 
 
 def chmod(path, mode, *, dir_fd=None, follow_symlinks=True):
-    pass
+    try:
+        return __pystro_chmod__(path, mode)
+    except NameError:
+        return None
 
 
 def chown(path, uid, gid, *, dir_fd=None, follow_symlinks=True):

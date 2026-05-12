@@ -15401,6 +15401,21 @@ bi_pystro_fstat(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_pystro_chmod(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "chmod: path must be str");
+    if (!pys_int_or_bool(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "chmod: mode must be int");
+    size_t L = PYS_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    mode_t m = (mode_t)pys_int_to_long(c, argv[1]);
+    if (chmod(buf, m) != 0)
+        PYS_RAISE_EXC(c, c->EXC_OSError, "chmod: %s: %s", buf, strerror(errno));
+    return PYS_NONE;
+}
+
+static VALUE
 bi_pystro_lseek(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -16603,6 +16618,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_stat__",        pys_make_builtin("__pystro_stat__",        bi_pystro_stat,        1, 1));
     pys_global_define(c, "__pystro_fstat__",       pys_make_builtin("__pystro_fstat__",       bi_pystro_fstat,       1, 1));
     pys_global_define(c, "__pystro_lseek__",       pys_make_builtin("__pystro_lseek__",       bi_pystro_lseek,       3, 3));
+    pys_global_define(c, "__pystro_chmod__",       pys_make_builtin("__pystro_chmod__",       bi_pystro_chmod,       2, 2));
     pys_global_define(c, "__pystro_abspath__",     pys_make_builtin("__pystro_abspath__",     bi_pystro_abspath,     1, 1));
     pys_global_define(c, "__pystro_gc_collect__",  pys_make_builtin("__pystro_gc_collect__",  bi_pystro_gc_collect,  0, 0));
 
