@@ -1263,8 +1263,21 @@ node_attr_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, 
             if (!is_special) {
                 extern VALUE pys_class_lookup_method(VALUE cls, const char *name);
                 VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(o->inst.cls), name);
-                if (m != PYS_NONE && PYS_IS_PTR(m) && PYS_PTR(m)->type == PYS_T_PROPERTY)
-                    is_property = true;
+                if (m != PYS_NONE && PYS_IS_PTR(m)) {
+                    if (PYS_PTR(m)->type == PYS_T_PROPERTY)
+                        is_property = true;
+                    // User-defined descriptor (instance whose class has
+                    // __get__): `m.__get__(obj, cls)` runs per receiver,
+                    // so the resolved value can't be cached by class.
+                    // Catches collections._tuplegetter (namedtuple field)
+                    // which does `obj[index]` — the index depends on the
+                    // specific receiver.
+                    else if (PYS_PTR(m)->type == PYS_T_INSTANCE) {
+                        VALUE mcls = PYS_OBJ_VAL(PYS_PTR(m)->inst.cls);
+                        if (pys_class_lookup_method(mcls, "__get__") != PYS_NONE)
+                            is_property = true;
+                    }
+                }
             }
             bool stamp = false;
             if (!is_special && !is_property) {

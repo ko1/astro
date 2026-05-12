@@ -14142,6 +14142,14 @@ pys_str_pct_format(CTX *c, VALUE fmt, VALUE args)
 {
     const char *src = PYS_PTR(fmt)->str.chars;
     size_t srclen = PYS_PTR(fmt)->str.len;
+    // namedtuple etc. is a tuple subclass instance; CPython str.__mod__
+    // treats it as a tuple by iterating. Unwrap to the underlying tuple
+    // so each %r/%s/%d consumes one element rather than the whole obj
+    // (which would recurse infinitely via __repr__).
+    if (pys_is_instance(args) && PYS_PTR(args)->inst.primary
+            && pys_is_tuple(PYS_PTR(args)->inst.primary)) {
+        args = PYS_PTR(args)->inst.primary;
+    }
     bool args_is_tuple = pys_is_tuple(args);
     size_t nargs = args_is_tuple ? PYS_PTR(args)->list.len : 1;
     size_t argi = 0;
