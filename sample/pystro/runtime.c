@@ -11485,8 +11485,17 @@ bi_float(CTX *c, int argc, VALUE *argv)
         *w = '\0';
         // Accept "inf", "Infinity", "nan" (case-insensitive).
         char *end;
-        double d = strtod(buf, &end);
-        if (end == buf) PYS_RAISE_EXC(c, c->EXC_ValueError, "could not convert string to float");
+        // Strip leading + trailing whitespace (CPython parity).
+        char *p = buf;
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        char *epb = buf + strlen(buf);
+        while (epb > p && (epb[-1] == ' ' || epb[-1] == '\t'
+                           || epb[-1] == '\n' || epb[-1] == '\r')) epb--;
+        *epb = '\0';
+        double d = strtod(p, &end);
+        if (end == p || *end != '\0')
+            PYS_RAISE_EXC(c, c->EXC_ValueError,
+                "could not convert string to float: '%s'", buf);
         return pys_make_float(d);
     }
     if (pys_is_instance(v)) {
