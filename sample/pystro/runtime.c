@@ -11335,7 +11335,6 @@ static struct type_method gen_methods[] = {
 static VALUE
 bi_print(CTX *c, int argc, VALUE *argv)
 {
-    (void)c;
     VALUE sep_v = pys_bi_kwarg("sep");
     VALUE end_v = pys_bi_kwarg("end");
     VALUE file_v = pys_bi_kwarg("file");
@@ -11349,8 +11348,55 @@ bi_print(CTX *c, int argc, VALUE *argv)
         end = PYS_PTR(end_v)->str.chars;
         end_len = PYS_PTR(end_v)->str.len;
     }
+    // If file kwarg isn't provided OR is None, consult sys.stdout —
+    // when user code does `sys.stdout = StringIO(); print(x)` the
+    // StringIO should get the output.  `print(..., file=None)` also
+    // means "use the current sys.stdout".
+    if (!file_v || file_v == PYS_NONE) {
+        file_v = 0;
+        VALUE sys_mod;
+        if (pys_global_lookup(c, "sys", &sys_mod) && pys_is_module(sys_mod)) {
+            VALUE stdout_v = pys_getattr(c, sys_mod, "stdout");
+            if (c->state == PYS_STATE_NORMAL && stdout_v != PYS_NONE)
+                file_v = stdout_v;
+            c->state = PYS_STATE_NORMAL;
+        }
+    }
+    // file_v is a real file → write via fwrite.  Otherwise (instance
+    // with .write method, e.g. io.StringIO) dispatch to write().
+    if (file_v && pys_is_file(file_v)) {
+        FILE *fp = (FILE *)PYS_PTR(file_v)->file.fp;
+        for (int i = 0; i < argc; i++) {
+            if (i) fwrite(sep, 1, sep_len, fp);
+            pys_display(fp, argv[i], false);
+        }
+        fwrite(end, 1, end_len, fp);
+        return PYS_NONE;
+    }
+    if (file_v && (pys_is_instance(file_v) || pys_is_class(file_v))) {
+        // Build the whole output string then call file_v.write(s).
+        // Uses an in-memory stream via open_memstream — portable on Linux.
+        char *mbuf = NULL; size_t msz = 0;
+        FILE *mfp = open_memstream(&mbuf, &msz);
+        if (mfp) {
+            for (int i = 0; i < argc; i++) {
+                if (i) fwrite(sep, 1, sep_len, mfp);
+                pys_display(mfp, argv[i], false);
+            }
+            fwrite(end, 1, end_len, mfp);
+            fclose(mfp);
+            VALUE s = pys_make_str(mbuf, msz);
+            free(mbuf);
+            VALUE write_m = pys_getattr(c, file_v, "write");
+            if (c->state == PYS_STATE_RAISE) return 0;
+            VALUE av[1] = { s };
+            pys_apply(c, write_m, 1, av);
+            if (c->state == PYS_STATE_RAISE) return 0;
+            return PYS_NONE;
+        }
+    }
+    // Fallback: write to libc stdout.
     FILE *fp = stdout;
-    if (file_v && pys_is_file(file_v)) fp = (FILE *)PYS_PTR(file_v)->file.fp;
     for (int i = 0; i < argc; i++) {
         if (i) fwrite(sep, 1, sep_len, fp);
         pys_display(fp, argv[i], false);
