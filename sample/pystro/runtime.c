@@ -15530,6 +15530,29 @@ bi_code_replace(CTX *c, int argc, VALUE *argv)
     return code;
 }
 
+// Map a libc errno to the most specific OSError subclass.
+static VALUE
+pys_oserror_class(CTX *c, int en)
+{
+    if (en == ENOENT)  return c->EXC_FileNotFoundError;
+    if (en == EEXIST)  return c->EXC_FileExistsError;
+    if (en == EACCES)  return c->EXC_PermissionError;
+    if (en == EPERM)   return c->EXC_PermissionError;
+    if (en == EISDIR)  return c->EXC_IsADirectoryError;
+    if (en == ENOTDIR) return c->EXC_NotADirectoryError;
+    if (en == EINTR)   return c->EXC_InterruptedError;
+    if (en == ECHILD)  return c->EXC_ChildProcessError;
+    if (en == ESRCH)   return c->EXC_ProcessLookupError;
+    if (en == ECONNABORTED) return c->EXC_ConnectionAbortedError;
+    if (en == ECONNREFUSED) return c->EXC_ConnectionRefusedError;
+    if (en == ECONNRESET)   return c->EXC_ConnectionResetError;
+    if (en == EPIPE)        return c->EXC_BrokenPipeError;
+#ifdef EAGAIN
+    if (en == EAGAIN)  return c->EXC_BlockingIOError;
+#endif
+    return c->EXC_OSError;
+}
+
 static VALUE
 bi_pystro_bindir(CTX *c, int argc, VALUE *argv)
 {
@@ -15607,7 +15630,8 @@ bi_pystro_os_close(CTX *c, int argc, VALUE *argv)
     (void)argc;
     if (!PYS_IS_FIXNUM(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "os.close: fd must be int");
     if (close((int)PYS_FIXVAL(argv[0])) != 0)
-        PYS_RAISE_EXC(c, c->EXC_OSError, "[Errno %d] %s", errno, strerror(errno));
+        PYS_RAISE_EXC(c, pys_oserror_class(c, errno),
+                      "[Errno %d] %s", errno, strerror(errno));
     return PYS_NONE;
 }
 
@@ -15621,7 +15645,8 @@ bi_pystro_os_read(CTX *c, int argc, VALUE *argv)
     size_t n = (size_t)PYS_FIXVAL(argv[1]);
     char *buf = (char *)GC_malloc_atomic(n + 1);
     ssize_t got = read(fd, buf, n);
-    if (got < 0) PYS_RAISE_EXC(c, c->EXC_OSError, "[Errno %d] %s", errno, strerror(errno));
+    if (got < 0) PYS_RAISE_EXC(c, pys_oserror_class(c, errno),
+                                "[Errno %d] %s", errno, strerror(errno));
     return pys_make_bytes(buf, (size_t)got);
 }
 
@@ -15635,7 +15660,8 @@ bi_pystro_os_write(CTX *c, int argc, VALUE *argv)
     const char *data = PYS_PTR(argv[1])->str.chars;
     size_t len = PYS_PTR(argv[1])->str.len;
     ssize_t put = write(fd, data, len);
-    if (put < 0) PYS_RAISE_EXC(c, c->EXC_OSError, "[Errno %d] %s", errno, strerror(errno));
+    if (put < 0) PYS_RAISE_EXC(c, pys_oserror_class(c, errno),
+                                "[Errno %d] %s", errno, strerror(errno));
     return PYS_FIX((int64_t)put);
 }
 
@@ -15645,7 +15671,7 @@ bi_pystro_pipe(CTX *c, int argc, VALUE *argv)
     (void)argc; (void)argv;
     int fds[2];
     if (pipe(fds) != 0) {
-        PYS_RAISE_EXC(c, c->EXC_OSError,
+        PYS_RAISE_EXC(c, pys_oserror_class(c, errno),
                      "[Errno %d] pipe: %s", errno, strerror(errno));
     }
     VALUE pair[2] = { PYS_FIX(fds[0]), PYS_FIX(fds[1]) };
@@ -16023,7 +16049,9 @@ bi_pystro_stat(CTX *c, int argc, VALUE *argv)
     VALUE fk = pys_bi_kwarg("follow_symlinks");
     if (fk) follow = pys_is_truthy(fk);
     int rc = follow ? stat(buf, &st) : lstat(buf, &st);
-    if (rc != 0) PYS_RAISE_EXC(c, c->EXC_OSError, "stat: %s: %s", buf, strerror(errno));
+    if (rc != 0)
+        PYS_RAISE_EXC(c, pys_oserror_class(c, errno),
+                      "stat: %s: %s", buf, strerror(errno));
     VALUE items[10];
     items[0] = pys_make_int((long)st.st_mode);
     items[1] = pys_make_int((long)st.st_ino);
@@ -16047,7 +16075,7 @@ bi_pystro_fstat(CTX *c, int argc, VALUE *argv)
     int fd = (int)pys_int_to_long(c, argv[0]);
     struct stat st;
     if (fstat(fd, &st) != 0)
-        PYS_RAISE_EXC(c, c->EXC_OSError, "fstat: fd=%d: %s", fd, strerror(errno));
+        PYS_RAISE_EXC(c, pys_oserror_class(c, errno), "fstat: fd=%d: %s", fd, strerror(errno));
     VALUE items[10];
     items[0] = pys_make_int((long)st.st_mode);
     items[1] = pys_make_int((long)st.st_ino);
@@ -16128,7 +16156,7 @@ bi_pystro_chmod(CTX *c, int argc, VALUE *argv)
     memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
     mode_t m = (mode_t)pys_int_to_long(c, argv[1]);
     if (chmod(buf, m) != 0)
-        PYS_RAISE_EXC(c, c->EXC_OSError, "chmod: %s: %s", buf, strerror(errno));
+        PYS_RAISE_EXC(c, pys_oserror_class(c, errno), "chmod: %s: %s", buf, strerror(errno));
     return PYS_NONE;
 }
 
@@ -16147,7 +16175,7 @@ bi_pystro_symlink(CTX *c, int argc, VALUE *argv)
     memcpy(src, PYS_PTR(argv[0])->str.chars, L0); src[L0] = '\0';
     memcpy(dst, PYS_PTR(argv[1])->str.chars, L1); dst[L1] = '\0';
     if (symlink(src, dst) != 0)
-        PYS_RAISE_EXC(c, c->EXC_OSError, "symlink: %s: %s", dst, strerror(errno));
+        PYS_RAISE_EXC(c, pys_oserror_class(c, errno), "symlink: %s: %s", dst, strerror(errno));
     return PYS_NONE;
 }
 
@@ -16164,7 +16192,7 @@ bi_pystro_readlink(CTX *c, int argc, VALUE *argv)
     memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
     char out[4096];
     ssize_t n = readlink(buf, out, sizeof(out) - 1);
-    if (n < 0) PYS_RAISE_EXC(c, c->EXC_OSError, "readlink: %s: %s", buf, strerror(errno));
+    if (n < 0) PYS_RAISE_EXC(c, pys_oserror_class(c, errno), "readlink: %s: %s", buf, strerror(errno));
     return pys_make_str(out, (size_t)n);
 }
 
@@ -16183,7 +16211,7 @@ bi_pystro_link(CTX *c, int argc, VALUE *argv)
     memcpy(src, PYS_PTR(argv[0])->str.chars, L0); src[L0] = '\0';
     memcpy(dst, PYS_PTR(argv[1])->str.chars, L1); dst[L1] = '\0';
     if (link(src, dst) != 0)
-        PYS_RAISE_EXC(c, c->EXC_OSError, "link: %s: %s", dst, strerror(errno));
+        PYS_RAISE_EXC(c, pys_oserror_class(c, errno), "link: %s: %s", dst, strerror(errno));
     return PYS_NONE;
 }
 
@@ -16195,7 +16223,7 @@ bi_pystro_lseek(CTX *c, int argc, VALUE *argv)
     int64_t off = pys_int_to_long(c, argv[1]);
     int whence = (int)pys_int_to_long(c, argv[2]);
     off_t r = lseek(fd, (off_t)off, whence);
-    if (r == (off_t)-1) PYS_RAISE_EXC(c, c->EXC_OSError, "lseek: %s", strerror(errno));
+    if (r == (off_t)-1) PYS_RAISE_EXC(c, pys_oserror_class(c, errno), "lseek: %s", strerror(errno));
     return pys_make_int((long)r);
 }
 
