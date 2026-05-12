@@ -16538,10 +16538,34 @@ bi_reversed(CTX *c, int argc, VALUE *argv)
         return pys_wrap_list_as_iter(c, r);
     }
     if (pys_is_instance(argv[0])) {
-        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(argv[0])->inst.cls), "__reversed__");
+        VALUE cls = PYS_OBJ_VAL(PYS_PTR(argv[0])->inst.cls);
+        VALUE m = pys_class_lookup_method(cls, "__reversed__");
         if (m != PYS_NONE) {
             VALUE av[1] = { argv[0] };
             return pys_apply(c, m, 1, av);
+        }
+        // Fall back to __len__ + __getitem__ — sequence protocol.
+        VALUE lm = pys_class_lookup_method(cls, "__len__");
+        VALUE gm = pys_class_lookup_method(cls, "__getitem__");
+        if (lm != PYS_NONE && gm != PYS_NONE) {
+            VALUE av1[1] = { argv[0] };
+            VALUE n_v = pys_apply(c, lm, 1, av1);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            int64_t n = pys_int_to_long(c, n_v);
+            for (int64_t i = n - 1; i >= 0; i--) {
+                VALUE av2[2] = { argv[0], pys_make_int(i) };
+                VALUE x = pys_apply(c, gm, 2, av2);
+                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+                pys_list_append(c, r, x);
+            }
+            return pys_wrap_list_as_iter(c, r);
+        }
+        // Built-in subclass with primary value (e.g. NodeList(list)).
+        VALUE p = PYS_PTR(argv[0])->inst.primary;
+        if (p && (pys_is_list(p) || pys_is_tuple(p) || pys_is_str(p)
+                  || pys_is_byteseq(p) || pys_is_range(p) || pys_is_dict(p))) {
+            VALUE av_p[1] = { p };
+            return bi_reversed(c, 1, av_p);
         }
     }
     PYS_RAISE_EXC(c, c->EXC_TypeError, "argument to reversed() must be a sequence");
