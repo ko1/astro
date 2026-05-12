@@ -603,6 +603,18 @@ node_matmul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 }
 
 NODE_DEF
+node_imatmul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
+{
+    (void)n;
+    extern VALUE pys_matmul(CTX *c, VALUE a, VALUE b);
+    VALUE av = EVAL_ARG(c, a);
+    if (UNLIKELY(!av)) return 0;
+    VALUE bv = EVAL_ARG(c, b);
+    if (UNLIKELY(!bv)) return 0;
+    PYS_AUG_ASSIGN_DUNDER("__imatmul__", pys_matmul);
+}
+
+NODE_DEF
 node_truediv(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b)
 {
     (void)n;
