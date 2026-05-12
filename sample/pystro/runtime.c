@@ -4694,8 +4694,18 @@ bi_dunder_reduce_ex(CTX *c, int argc, VALUE *argv)
         VALUE av_pair[2] = { cls, av_args };
         return pys_make_tuple(av_pair, 2);
     }
-    // For plain instances, create an empty new of cls then assign __dict__.
+    // Plain instances: (cls, (), state) where state is __dict__ so the
+    // unpickler runs __setstate__ on the recreated empty instance. Lets
+    // collections.UserList / UserDict round-trip through pickle.dumps.
     VALUE av_args = pys_make_tuple(NULL, 0);
+    if (pys_is_instance(self) && PYS_PTR(self)->inst.attrs
+            && PYS_PTR(self)->inst.attrs->used > 0) {
+        struct pysobj *dwrap = pys_alloc(PYS_T_DICT);
+        dwrap->dict = PYS_PTR(self)->inst.attrs;
+        VALUE state = PYS_OBJ_VAL(dwrap);
+        VALUE av_triple[3] = { cls, av_args, state };
+        return pys_make_tuple(av_triple, 3);
+    }
     VALUE av_pair[2] = { cls, av_args };
     return pys_make_tuple(av_pair, 2);
 }
