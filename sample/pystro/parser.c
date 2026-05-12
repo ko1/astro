@@ -1072,25 +1072,20 @@ prescan_comp_targets(int close_kind)
             tok_pos++;
             // Optional paren-wrapped target: `for (a, b) in ...`.
             if (peek_tok(0)->kind == T_LPAREN) tok_pos++;
-            // Collect NAME (NAME ',')* until 'in'.  Each loop-target
-            // gets a synthetic comp-private local so the original name
-            // doesn't leak into the enclosing scope.
-            while (peek_tok(0)->kind == T_NAME) {
-                const char *orig = peek_tok(0)->sval;
-                if (!scope_is_global_decl(cur_scope, orig) &&
-                    !scope_is_nonlocal_decl(cur_scope, orig)) {
-                    comp_remap_push(orig);
-                    scope_add_local(cur_scope, comp_resolve(orig));
-                }
-                tok_pos++;
+            // Collect targets (NAME or `(NAME, NAME, ...)`) until 'in'.
+            // Each comp target gets a comp-private local so the original
+            // name doesn't leak into the enclosing scope.
+            for (;;) {
                 if (peek_tok(0)->kind == T_LPAREN) {
+                    // Nested-tuple sub-target — register every NAME
+                    // inside as a comp local.
                     int sub = 1;
                     tok_pos++;
                     while (sub > 0 && peek_tok(0)->kind != T_EOF) {
                         int kk = peek_tok(0)->kind;
                         if (kk == T_LPAREN) sub++;
                         else if (kk == T_RPAREN) sub--;
-                        else if (kk == T_NAME && sub == 1) {
+                        else if (kk == T_NAME) {
                             const char *o2 = peek_tok(0)->sval;
                             if (!scope_is_global_decl(cur_scope, o2)) {
                                 comp_remap_push(o2);
@@ -1099,6 +1094,16 @@ prescan_comp_targets(int close_kind)
                         }
                         tok_pos++;
                     }
+                } else if (peek_tok(0)->kind == T_NAME) {
+                    const char *orig = peek_tok(0)->sval;
+                    if (!scope_is_global_decl(cur_scope, orig) &&
+                        !scope_is_nonlocal_decl(cur_scope, orig)) {
+                        comp_remap_push(orig);
+                        scope_add_local(cur_scope, comp_resolve(orig));
+                    }
+                    tok_pos++;
+                } else {
+                    break;
                 }
                 if (!match_tok(T_COMMA)) break;
             }
@@ -1296,8 +1301,43 @@ parse_genexp_lazy(int saved_remap_at_paren)
         }
     }
     // Tuple targets: collect names.  `for a, b in xs` → unpack.
+    // Nested tuple `for x, (a, b) in xs` — record the inner names so
+    // a prefix unpack can be emitted before the inner body.
     const char *first_extra[16]; int n_first_extra = 0;
+    struct sub_tup_ge {
+        int slot_in_extras;        // index in first_extra (synthetic
+                                    // name lives there; -1 means slot 0
+                                    // i.e. first_var)
+        const char *inner[8];
+        int n_inner;
+    };
+    struct sub_tup_ge ge_subs[8];
+    int n_ge_subs = 0;
     while (match_tok(T_COMMA)) {
+        if (peek_tok(0)->kind == T_LPAREN) {
+            tok_pos++;
+            if (n_ge_subs >= 8) parse_error("too many nested tuple targets");
+            struct sub_tup_ge *st = &ge_subs[n_ge_subs++];
+            st->n_inner = 0;
+            st->slot_in_extras = n_first_extra;
+            if (peek_tok(0)->kind != T_NAME)
+                parse_error("expected NAME in nested target");
+            st->inner[st->n_inner++] = peek_tok(0)->sval;
+            tok_pos++;
+            while (match_tok(T_COMMA)) {
+                if (peek_tok(0)->kind == T_RPAREN) break;
+                if (peek_tok(0)->kind != T_NAME)
+                    parse_error("expected NAME in nested target");
+                if (st->n_inner >= 8) parse_error("nested tuple target too long");
+                st->inner[st->n_inner++] = peek_tok(0)->sval;
+                tok_pos++;
+            }
+            expect(T_RPAREN, "')'");
+            if (n_first_extra >= 16) parse_error("tuple target too long");
+            const char *synth = new_temp_name("__forSubG");
+            first_extra[n_first_extra++] = comp_resolve(synth);
+            continue;
+        }
         if (peek_tok(0)->kind != T_NAME) break;
         if (n_first_extra >= 16) parse_error("tuple target too long");
         first_extra[n_first_extra++] = comp_resolve(peek_tok(0)->sval);
@@ -1329,6 +1369,26 @@ parse_genexp_lazy(int saved_remap_at_paren)
 
     // Build inner_body = yield first.
     NODE *body = ALLOC_node_yield(first);
+
+    // For each nested-tuple sub-target, prepend an unpacking assignment
+    // (`inner[0] = synth[0]; ...`) to the body so the inner names are
+    // bound before yield evaluates.
+    for (int sk = 0; sk < n_ge_subs; sk++) {
+        struct sub_tup_ge *st = &ge_subs[sk];
+        // synthetic name lives in first_extra[st->slot_in_extras]
+        const char *synth = first_extra[st->slot_in_extras];
+        int sidx = scope_add_local(&sc, synth);
+        NODE *unpack = NULL;
+        for (int j = st->n_inner - 1; j >= 0; j--) {
+            NODE *load_synth = ALLOC_node_lref((uint32_t)sidx);
+            NODE *el = ALLOC_node_subscript_get(load_synth, ALLOC_node_const_int(j));
+            const char *nm = comp_resolve(st->inner[j]);
+            int slot = scope_add_local(&sc, nm);
+            NODE *as = ALLOC_node_lset((uint32_t)slot, el);
+            unpack = unpack ? ALLOC_node_seq(as, unpack) : as;
+        }
+        body = ALLOC_node_seq(unpack, body);
+    }
 
     // Trailing if-conditions on the outermost for-clause.
     while (peek_tok(0)->kind == T_IF) {
@@ -1478,17 +1538,50 @@ parse_comp_clauses(NODE *inner_body)
     bool paren_target = match_tok(T_LPAREN);
     // `for *rest, in ...` — leading-star is unusual but valid in CPython.
     int star_idx = -1;
+    // Sub-target nested tuples: `for name, (value, children) in ...`.
+    // For each `(...)` encountered as a sub-target, allocate a synthetic
+    // name and remember the inner names so a prefix unpack assignment
+    // can be emitted before the loop body.
+    struct sub_tup {
+        int slot_in_names;       // index in `names[]` of the synthetic
+        const char *inner[8];    // inner target names
+        int n_inner;
+    };
+    struct sub_tup subs[8];
+    int n_subs = 0;
     if (peek_tok(0)->kind == T_STAR) {
         tok_pos++;
         if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*' in tuple target");
         star_idx = 0;
-    } else if (peek_tok(0)->kind != T_NAME) {
+    } else if (peek_tok(0)->kind != T_NAME && peek_tok(0)->kind != T_LPAREN) {
         parse_error("expected target NAME in comprehension");
     }
     const char *names[16];
     int nnames = 0;
-    names[nnames++] = comp_resolve(peek_tok(0)->sval);
-    tok_pos++;
+    if (peek_tok(0)->kind == T_LPAREN) {
+        // Sub-tuple target.  Consume `(name, name, ...)`.
+        tok_pos++;
+        if (n_subs >= 8) parse_error("too many nested tuple targets");
+        struct sub_tup *st = &subs[n_subs++];
+        st->n_inner = 0;
+        st->slot_in_names = 0;  // first slot
+        if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in nested target");
+        st->inner[st->n_inner++] = peek_tok(0)->sval;
+        tok_pos++;
+        while (match_tok(T_COMMA)) {
+            if (peek_tok(0)->kind == T_RPAREN) break;
+            if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in nested target");
+            if (st->n_inner >= 8) parse_error("nested tuple target too long");
+            st->inner[st->n_inner++] = peek_tok(0)->sval;
+            tok_pos++;
+        }
+        expect(T_RPAREN, "')'");
+        const char *synth = new_temp_name("__forSub");
+        names[nnames++] = comp_resolve(synth);
+    } else {
+        names[nnames++] = comp_resolve(peek_tok(0)->sval);
+        tok_pos++;
+    }
     // Consume any `.attr` / `[idx]` trailers attached to the target —
     // `for (l[0], l) in ...` / `for tgt[0] in ...`.  Pystro doesn't
     // emit assignment-to-subscript/attr in comprehension targets but
@@ -1523,6 +1616,29 @@ parse_comp_clauses(NODE *inner_body)
             if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*' in tuple target");
             if (star_idx >= 0) parse_error("multiple stars in tuple target");
             star_idx = nnames;
+        }
+        if (peek_tok(0)->kind == T_LPAREN) {
+            // Nested tuple sub-target: `for x, (a, b) in ...`.
+            tok_pos++;
+            if (n_subs >= 8) parse_error("too many nested tuple targets");
+            struct sub_tup *st = &subs[n_subs++];
+            st->n_inner = 0;
+            st->slot_in_names = nnames;
+            if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in nested target");
+            st->inner[st->n_inner++] = peek_tok(0)->sval;
+            tok_pos++;
+            while (match_tok(T_COMMA)) {
+                if (peek_tok(0)->kind == T_RPAREN) break;
+                if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in nested target");
+                if (st->n_inner >= 8) parse_error("nested tuple target too long");
+                st->inner[st->n_inner++] = peek_tok(0)->sval;
+                tok_pos++;
+            }
+            expect(T_RPAREN, "')'");
+            if (nnames >= 16) parse_error("for tuple target too long");
+            const char *synth = new_temp_name("__forSub");
+            names[nnames++] = comp_resolve(synth);
+            continue;
         }
         if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME in tuple target");
         if (nnames >= 16) parse_error("for tuple target too long");
@@ -1562,6 +1678,36 @@ parse_comp_clauses(NODE *inner_body)
             && peek_tok(0)->sval == intern_name("async", 5)
             && peek_tok(1)->kind == T_FOR))
         inner_body = parse_comp_clauses(inner_body);
+
+    // For each nested-tuple sub-target, prepend an unpacking assignment
+    // (`inner[0], inner[1], ... = synthetic`) to the inner body so the
+    // loop binds the user-visible names from the synthetic capture.
+    for (int sk = 0; sk < n_subs; sk++) {
+        struct sub_tup *st = &subs[sk];
+        const char *synth = names[st->slot_in_names];
+        NODE *rhs;
+        if (cur_scope && !scope_is_global_decl(cur_scope, synth)) {
+            int sidx = scope_add_local(cur_scope, synth);
+            rhs = ALLOC_node_lref((uint32_t)sidx);
+        } else {
+            rhs = ALLOC_node_gref(synth);
+        }
+        // Emit `inner_i = synth[i]` for each inner name.
+        NODE *unpack = NULL;
+        for (int j = st->n_inner - 1; j >= 0; j--) {
+            NODE *el = ALLOC_node_subscript_get(rhs, ALLOC_node_const_int(j));
+            const char *nm = comp_resolve(st->inner[j]);
+            NODE *as;
+            if (cur_scope && !scope_is_global_decl(cur_scope, nm)) {
+                int slot = scope_add_local(cur_scope, nm);
+                as = ALLOC_node_lset((uint32_t)slot, el);
+            } else {
+                as = ALLOC_node_gset(nm, el);
+            }
+            unpack = unpack ? ALLOC_node_seq(as, unpack) : as;
+        }
+        inner_body = ALLOC_node_seq(unpack, inner_body);
+    }
 
     if (nnames == 1 && !trailing_comma) return build_for_loop(names[0], iter, inner_body);
 
