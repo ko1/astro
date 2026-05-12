@@ -15496,8 +15496,8 @@ bi_pystro_strftime(CTX *c, int argc, VALUE *argv)
     if (!pys_is_str(argv[0])) PYS_RAISE_EXC(c, c->EXC_TypeError, "strftime: format must be str");
     struct tm tm_;
     memset(&tm_, 0, sizeof(tm_));
-    if (argc >= 2 && pys_is_instance(argv[1])) {
-        VALUE t = argv[1];
+    VALUE t = (argc >= 2) ? argv[1] : (VALUE)0;
+    if (t && pys_is_instance(t)) {
         VALUE y = pys_getattr(c, t, "tm_year");
         VALUE m = pys_getattr(c, t, "tm_mon");
         VALUE d = pys_getattr(c, t, "tm_mday");
@@ -15512,6 +15512,36 @@ bi_pystro_strftime(CTX *c, int argc, VALUE *argv)
         if (pys_int_or_bool(S)) tm_.tm_sec  = (int)pys_int_to_long(c, S);
         time_t tt = mktime(&tm_);
         if (tt != (time_t)-1) localtime_r(&tt, &tm_);
+    } else if (t && (pys_is_tuple(t) || pys_is_list(t))) {
+        // CPython time.strftime accepts a 9-tuple (struct_time-like)
+        // directly: (year, month, day, hour, min, sec, wday, yday, isdst).
+        struct pysobj *ot = PYS_PTR(t);
+        size_t n = ot->list.len;
+        if (n < 9) PYS_RAISE_EXC(c, c->EXC_TypeError, "argument must be 9-item sequence");
+        VALUE *items = ot->list.items;
+        if (pys_int_or_bool(items[0])) tm_.tm_year = (int)pys_int_to_long(c, items[0]) - 1900;
+        if (pys_int_or_bool(items[1])) tm_.tm_mon  = (int)pys_int_to_long(c, items[1]) - 1;
+        if (pys_int_or_bool(items[2])) tm_.tm_mday = (int)pys_int_to_long(c, items[2]);
+        if (pys_int_or_bool(items[3])) tm_.tm_hour = (int)pys_int_to_long(c, items[3]);
+        if (pys_int_or_bool(items[4])) tm_.tm_min  = (int)pys_int_to_long(c, items[4]);
+        if (pys_int_or_bool(items[5])) tm_.tm_sec  = (int)pys_int_to_long(c, items[5]);
+        if (pys_int_or_bool(items[6])) tm_.tm_wday = (int)pys_int_to_long(c, items[6]);
+        if (pys_int_or_bool(items[7])) tm_.tm_yday = (int)pys_int_to_long(c, items[7]);
+        if (pys_int_or_bool(items[8])) tm_.tm_isdst = (int)pys_int_to_long(c, items[8]);
+        // Normalize via mktime then re-derive (fills weekday/yday).
+        struct tm tmp = tm_;
+        time_t tt = mktime(&tmp);
+        if (tt != (time_t)-1) {
+            // Keep user-provided year if valid range; else use mktime's
+            // normalised tm.
+            int yr = tm_.tm_year;
+            int wday = tm_.tm_wday;
+            int yday = tm_.tm_yday;
+            tm_ = tmp;
+            tm_.tm_year = yr;
+            if (wday) tm_.tm_wday = wday;
+            if (yday) tm_.tm_yday = yday;
+        }
     } else {
         time_t tt = time(NULL);
         localtime_r(&tt, &tm_);

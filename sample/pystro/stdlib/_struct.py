@@ -200,6 +200,18 @@ def _unpack_float(buf, size, little):
 
 
 def pack(fmt, *args):
+    # CPython raises `struct.error` for all conversion / mismatch failures.
+    # Wrap so xdrlib's @raise_conversion_error decorator (which catches
+    # only struct.error) sees the right exception type for `pack('>l', 'string')`.
+    try:
+        return _pack_impl(fmt, *args)
+    except error:
+        raise
+    except (TypeError, ValueError, OverflowError) as e:
+        raise error(str(e)) from None
+
+
+def _pack_impl(fmt, *args):
     little, items = _parse_fmt(fmt)
     out = bytearray()
     ai = 0
@@ -224,10 +236,14 @@ def pack(fmt, *args):
         for _ in range(cnt):
             v = args[ai]; ai += 1
             if code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q", "n", "N"):
+                if not isinstance(v, int):
+                    raise error("required argument is not an integer")
                 signed = code in ("b", "h", "i", "l", "q", "n")
                 size = _SIZES[code]
                 out.extend(_pack_int(int(v), size, little, signed))
             elif code in ("f", "d", "e"):
+                if not isinstance(v, (int, float)):
+                    raise error("required argument is not a float")
                 size = _SIZES[code] if code != "e" else 2
                 if size == 2: raise error("half-precision not supported")
                 out.extend(_pack_float(float(v), size, little))
