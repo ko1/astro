@@ -3652,6 +3652,16 @@ parse_class(void)
     NODE *body = parse_suite();
     in_class_body = saved_icb;
     cur_class_base = saved_base;
+    // Prepend `__annotations__ = {}` to the body so each class gets its
+    // own dict — without this, class-body annotations walked the MRO and
+    // mutated a base class's __annotations__ (test_grammar
+    // test_annotations_inheritance).
+    {
+        NODE *empty = ALLOC_node_make_dict(node_table_reserve(NULL, 0), 0);
+        NODE *set_ann = ALLOC_node_class_method_set(
+            intern_name("__annotations__", 15), empty);
+        body = ALLOC_node_seq(set_ann, body);
+    }
     // Prepend `__class_kwargs__ = {n1: v1, ...}` to the body so the
     // metaclass / __init_subclass__ path can recover them.
     if (nkw > 0) {
