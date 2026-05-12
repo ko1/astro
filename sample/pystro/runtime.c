@@ -11537,6 +11537,59 @@ bm_copy(CTX *c, int argc, VALUE *argv)
     return r;
 }
 
+static VALUE
+bm_partition_impl(CTX *c, int argc, VALUE *argv, bool from_right)
+{
+    (void)argc;
+    struct pysobj *o = PYS_PTR(argv[0]);
+    if (!pys_is_byteseq(argv[1]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "partition needs bytes-like");
+    struct pysobj *sep = PYS_PTR(argv[1]);
+    if (sep->str.len == 0)
+        PYS_RAISE_EXC(c, c->EXC_ValueError, "empty separator");
+    const char *hay = o->str.chars;
+    size_t hl = o->str.len, sl = sep->str.len;
+    const char *p = NULL;
+    if (sl <= hl) {
+        if (from_right) {
+            for (size_t i = hl - sl + 1; i > 0; i--) {
+                if (memcmp(hay + i - 1, sep->str.chars, sl) == 0) {
+                    p = hay + i - 1;
+                    break;
+                }
+            }
+        } else {
+            p = (const char *)memmem(hay, hl, sep->str.chars, sl);
+        }
+    }
+    if (!p) {
+        VALUE empty1 = pys_make_bytes("", 0);
+        PYS_PTR(empty1)->type = o->type;
+        VALUE empty2 = pys_make_bytes("", 0);
+        PYS_PTR(empty2)->type = o->type;
+        VALUE self_copy = pys_make_bytes(hay, hl);
+        PYS_PTR(self_copy)->type = o->type;
+        VALUE items[3];
+        if (from_right) { items[0] = empty1; items[1] = empty2; items[2] = self_copy; }
+        else            { items[0] = self_copy; items[1] = empty1; items[2] = empty2; }
+        return pys_make_tuple(items, 3);
+    }
+    size_t off = (size_t)(p - hay);
+    VALUE before = pys_make_bytes(hay, off);
+    PYS_PTR(before)->type = o->type;
+    VALUE sep_copy = pys_make_bytes(sep->str.chars, sl);
+    PYS_PTR(sep_copy)->type = o->type;
+    VALUE after  = pys_make_bytes(p + sl, hl - off - sl);
+    PYS_PTR(after)->type = o->type;
+    VALUE items[3] = { before, sep_copy, after };
+    return pys_make_tuple(items, 3);
+}
+
+static VALUE bm_partition(CTX *c, int argc, VALUE *argv)
+{ return bm_partition_impl(c, argc, argv, false); }
+static VALUE bm_rpartition(CTX *c, int argc, VALUE *argv)
+{ return bm_partition_impl(c, argc, argv, true); }
+
 static struct type_method bytes_methods[] = {
     { "decode",     bm_decode,     1, 3 },
     { "encode",     bm_encode,     1, 3 },
@@ -11575,6 +11628,8 @@ static struct type_method bytes_methods[] = {
     { "endswith",   bm_endswith,   2, 4 },
     { "translate",  bm_translate,  2, 3 },
     { "copy",       bm_copy,       1, 1 },
+    { "partition",  bm_partition,  2, 2 },
+    { "rpartition", bm_rpartition, 2, 2 },
     { NULL, NULL, 0, 0 }
 };
 
