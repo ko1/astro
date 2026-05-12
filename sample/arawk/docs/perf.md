@@ -109,33 +109,104 @@ Phase 1.9 直後の前回計測 (geomean plain 0.58 / aot 0.59) から **ほぼ�
 | **tt.13_array_ops** | **1.35×** | 配列読み書きが連続。arawk の `arawk_arr_*` (FNV-1a + 単純 chained bucket) は gawk の locale-aware hash よりオーバーヘッド少ない |
 | **tt.13a_array_printf** | **1.34×** | 同上 + printf |
 
-## 苦手な場面 (変わらず)
+## 苦手な場面 — `perf record` で実測した hot path
 
-| Test | arawk-aot | 理由 |
-|---|---|---|
-| **tt.01_print** | **0.17×** | `arawk_print_value` が要素ごとに `fwrite` を呼ぶ → syscall を稼ぐ。gawk/mawk は内部 buffer で chunked write |
-| **tt.03_sum_length / tt.03a_sum_field** | **0.18-0.19×** | 全行で field 取得 + 算術。`arawk_split_fields` が毎行 strnum allocate (GC_malloc_atomic × 6/行) して GC 圧力高い |
-| **tt.08_even_lengths** | **0.26×** | `length` を `$0` に対して呼ぶ。arawk_length の cstr 経由が重い |
-| **tt.11_substr** | **0.26×** | `substr` 毎回 fresh string allocation |
-| **tt.14_function_call** | **0.45×** | 関数呼び出し毎に `c->func_set` を線形検索 (strcmp)。callcache 未実装 |
+以下は **2026-05-12 に `perf record -F 999` で確認**した実測値。
+最初の version の解説 (「print の per-item fwrite で syscall を稼ぐ」など)
+は **仮説のまま書いていて間違っていた**ので、ここで訂正する。
 
-## AOT 効果 (plain → aot)
+### tt.01_print (`{ print }`)  0.17×
 
-- **tt.x2_sum_loop**: 0.400s → 0.288s (**28% 短縮**) — 内側ループ全体が specialize される最強形
-- **tt.x1_mandelbrot**: 0.741s → 0.620s (16% 短縮) — float 演算ループ
-- **tt.13a_array_printf**: 0.913s → 1.101s (悪化) — AOT が printf の variadic 経路で specialize しにくい場合あり
+| % | 関数 | 解釈 |
+|--:|---|---|
+| 18.3% | `_IO_getc` | 入力 1 文字ずつ fgetc |
+| 15.6% | `arawk_split_fields` | 毎レコード eager 分割 + strnum |
+| 11.8% | `GC_malloc_kind` | libgc allocator (split で踏む) |
+|  8.6% | `arawk_input_next_record` | 入力ループ自体 |
+|  3.2% | `fgetc@plt` | PLT 越し |
 
-I/O 系 (tt.01, tt.02) や builtin 系 (tt.11, tt.06) は AOT の効果ほぼなし。
+`print` 自体は top 14 関数に **出てこない**。stdout 関連も同様
+(`strace -c` で arawk / mawk / gawk すべて write 1088 回で一致 — libc が
+block-buffered で纏める)。 本当の問題は **入力 fgetc loop と eager split**。
+
+### tt.03a_sum_field (`{ s += $3 } END { print s }`)  0.18×
+
+| % | 関数 |
+|--:|---|
+| 17.7% | `arawk_split_fields` |
+| 15.3% | `GC_malloc_kind` |
+| 15.0% | `_IO_getc` |
+|  9.5% | `arawk_input_next_record` |
+| ~6%   | libgc 内部 (trampolines) |
+
+split + GC で 33%、 入力ループで 24.5%。 **#B (lazy strnum) と #A
+(chunked input) で大半を削れる**。
+
+### tt.11_substr (`{ print substr($0, 10, 10) }`)  0.26×
+
+| % | 関数 |
+|--:|---|
+| 18.5% | `arawk_split_fields` |
+| 14.1% | `GC_malloc_kind` |
+| 10.4% | `_IO_getc` |
+|  7.5% | `arawk_input_next_record` |
+
+`arawk_substr` / `arawk_make_string` は top 12 に出てこない (<1%)。
+スクリプトが `$0` しか参照しないのに **毎レコード eager 分割が走って
+全 field を strnum 化** している (= 完全に無駄)。 lazy split で消える。
+旧 perf.md で言及した "substr COW" 仮説は外れ。
+
+### tt.14_function_call (`function abs(x) ...` を 1M 回呼ぶ)  0.45×
+
+| % | 関数 |
+|--:|---|
+| 20.3% | `GC_malloc_kind` |
+| 19.8% | libgc 内 (trampolines) |
+| 12.2% | `DISPATCH_node_for_in_g` |
+| 11.7% | `__tls_get_addr` (libgc 内の TLS) |
+|  5.0% | `arawk_make_string` (for-in が key を string 化) |
+|  4.8% | `DISPATCH_node_sub` |
+
+`arawk_resolve_body` (関数 lookup の strcmp ループ) は top 12 に
+**出てこない** — 関数は 1 つしか定義されていないので 1 比較で終わる
+ため。 本当の hot は **for-in が `keys[]` を毎反復 GC_malloc + 各 key を
+arawk_make_string でコピー**するところ。 旧 perf.md の "callcache" 仮説は
+ほぼ無意味。
+
+## AOT 効果 (plain → aot, 実測)
+
+- **tt.x2_sum_loop**: 0.400s → 0.288s (**28% 短縮**) — 内側ループ全体が
+  specialize される最強形 (fixnum 算術が `lea`/`add` 数命令に畳まれる)
+- **tt.x1_mandelbrot**: 0.741s → 0.620s (16% 短縮)
+- **tt.13a_array_printf**: 0.913s → 1.101s (悪化することも) — variadic
+  printf 経路の specialize が安定しない
+
+I/O 系 (tt.01-tt.03) は runtime helper (`arawk_split_fields` / `_IO_getc`
+など) が PLT 越し / 別 .so で固定されているため、 AOT で SD bake しても
+変わらない。
 
 ## 計測時間
 
 - `make test`: 1.6s (smoke 98×2 modes) + 9.6s (tt.* 18×2 modes) = **~11s**
 - `make bench`: 全 24 tt.* を 5 awk 実装 × 5 runs (scaling 含む) = **数分**
 
-## 次の perf 改善案 (未着手)
+## 次の perf 改善案 (実測に基づく差し替え版)
 
-1. **`print` の chunked write**: 1 文 1 fwrite に集約 → tt.01/02 に効くはず
-2. **field の lazy strnum**: 全 field を毎回 allocate せず、`$N` アクセス時に必要なものだけ → tt.03 系
-3. **`substr` の copy-on-write**: heap ptr 共有 → tt.11
-4. **function call cache**: callsite に `function_entry *` を inline 保持 → tt.14
-5. **AOT 内 builtin inline**: `length`/`substr`/`int` 等の hot builtin を SD body に直接埋め込む
+旧 perf.md の 5 件の改善案は仮説で書いていたが、 上記 `perf record` で
+半分が外れだったので差し替える。
+
+| # | 改善 | 効くテスト | 期待効果 | 工数 |
+|---|---|---|---|---|
+| **A** | **fgetc → fread chunked input** (`buf + memchr('\n')` ベース) | tt.01 / tt.03 系 / tt.07 (入力 loop で 8-18%) | 中-大 | 中 (1 h) |
+| **B** | **field の lazy strnum** (分割は boundary だけ記録、`$N` アクセス時に allocate) | tt.03 系 / tt.07 / tt.11 (split + GC で 30-35%) | 大 | 中 (1 h) |
+| **C** | **for-in iterator 化** (keys[] 配列確保 → 直接 bucket walk) | tt.14 / tt.16 | 中 (GC 圧減) | 中 (1 h) |
+| **D** | **関数 frame を arena 化** (VLA per-call → pool) | tt.14 (1M 回 frame allocate) | 中-大 | 中 |
+| **E** | **AOT 内 builtin inline** (`length`/`substr` 等を SD body に emit) | math / 文字列 builtin 系 | 小-中 (常に +α) | 大 (gen.rb 改造) |
+
+### 破棄した旧仮説
+
+| 旧改善案 | 破棄理由 |
+|---|---|
+| **print の chunked write** | strace で全 awk が write 1088 回で一致。 stdio buffering で揃う。print は実は速い |
+| **substr の copy-on-write** | tt.11 で substr は top 12 圏外 (<1%)。 本当の hot は split + GC (= #B 領域) |
+| **function callcache** | 関数 1 つだと strcmp 1 比較で終わる。 hot は for-in key allocate (= #C) |
