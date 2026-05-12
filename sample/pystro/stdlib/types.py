@@ -187,7 +187,26 @@ del _sys_for_modtype
 NoneType = type(None)
 EllipsisType = type(Ellipsis)
 NotImplementedType = type(NotImplemented)
-TracebackType = type(None)   # placeholder; pystro has no tb objects
+# Capture pystro's actual traceback / frame object types via a
+# function-scoped raise.  Pystro only attaches __traceback__ when
+# call_top > 0, so a module-level raise alone wouldn't produce
+# anything.  This lets `isinstance(tb, TracebackType)` in
+# inspect.istraceback / inspect.isframe etc. correctly identify
+# pystro tracebacks (cf. cgitb / traceback inspection paths).
+def _capture_types():
+    global TracebackType, FrameType
+    try:
+        raise Exception("type-capture")
+    except Exception as e:
+        tb = getattr(e, "__traceback__", None)
+        if tb is not None:
+            TracebackType = type(tb)
+            fr = getattr(tb, "tb_frame", None)
+            if fr is not None:
+                FrameType = type(fr)
+TracebackType = type(None)
+_capture_types()
+del _capture_types
 
 
 class SimpleNamespace:

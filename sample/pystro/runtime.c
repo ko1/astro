@@ -14250,6 +14250,9 @@ bi_import(CTX *c, int argc, VALUE *argv)
     VALUE saved_TYPE_NoneType  = c->TYPE_NoneType;
     VALUE saved_TYPE_module    = c->TYPE_module;
     VALUE saved_TYPE_generator = c->TYPE_generator;
+    VALUE saved_TYPE_traceback = c->TYPE_traceback;
+    VALUE saved_TYPE_frame     = c->TYPE_frame;
+    VALUE saved_TYPE_super     = c->TYPE_super;
     c->globals = new_g;
     install_builtins(c);
     // Re-bind the imported module's globals to the caller's exception
@@ -14279,6 +14282,9 @@ bi_import(CTX *c, int argc, VALUE *argv)
     c->TYPE_NoneType  = saved_TYPE_NoneType;
     c->TYPE_module    = saved_TYPE_module;
     c->TYPE_generator = saved_TYPE_generator;
+    c->TYPE_traceback = saved_TYPE_traceback;
+    c->TYPE_frame     = saved_TYPE_frame;
+    c->TYPE_super     = saved_TYPE_super;
     pys_global_set(c, "int",        c->TYPE_int);
     pys_global_set(c, "float",      c->TYPE_float);
     pys_global_set(c, "complex",    c->TYPE_complex);
