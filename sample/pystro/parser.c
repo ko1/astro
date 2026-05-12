@@ -340,6 +340,35 @@ static bool in_class_body;
 // outside any class body.
 static NODE *cur_class_base;
 
+// Lexically-enclosing class name (for PEP 8 name mangling: `self.__x`
+// inside class C is rewritten to `self._C__x`). NULL when not inside
+// any class. Stacked via cls_name_stack so nested classes work.
+static const char *cur_class_name;
+static const char *cls_name_stack[64];
+static int cls_name_stack_top;
+
+static const char *
+mangle_name(const char *name)
+{
+    if (!cur_class_name) return name;
+    size_t L = strlen(name);
+    // Need at least __X, with X not '_' (i.e. not ending __); CPython:
+    // identifier starts with >= 2 underscores AND ends with < 2.
+    if (L < 3 || name[0] != '_' || name[1] != '_') return name;
+    if (L >= 2 && name[L - 1] == '_' && name[L - 2] == '_') return name;
+    const char *cls = cur_class_name;
+    while (*cls == '_') cls++;     // strip leading _ from class name
+    size_t cl = strlen(cls);
+    if (cl == 0) return name;
+    char buf[256];
+    if (1 + cl + L + 1 > sizeof(buf)) return name;
+    buf[0] = '_';
+    memcpy(buf + 1, cls, cl);
+    memcpy(buf + 1 + cl, name, L);
+    buf[1 + cl + L] = '\0';
+    return intern_name(buf, 1 + cl + L);
+}
+
 // Wrap ALLOC_node_seq so result inherits its first child's line, giving
 // us a sensible func.body line (the body's first statement) regardless of
 // the order in which the parser builds the seq chain bottom-up.
@@ -2480,7 +2509,7 @@ parse_dot_trailer(NODE *obj)
 {
     expect(T_DOT, "'.'");
     if (peek_tok(0)->kind != T_NAME) parse_error("expected attribute name");
-    const char *name = peek_tok(0)->sval;
+    const char *name = mangle_name(peek_tok(0)->sval);
     tok_pos++;
     if (peek_tok(0)->kind == T_LPAREN) {
         // method call.  Look ahead for `NAME = expr` (kwarg) or `*` /
@@ -3439,6 +3468,9 @@ parse_def(void)
     expect(T_DEF, "'def'");
     if (peek_tok(0)->kind != T_NAME) parse_error("expected function name");
     const char *fname = peek_tok(0)->sval;
+    // Class-body def: PEP 8 name mangling applies to the method name
+    // too. `def __x(self): ...` inside class C becomes `_C__x`.
+    if (in_class_body) fname = mangle_name(fname);
     tok_pos++;
     // PEP 695: `def f[T](x): ...` — discard type-param list.
     if (match_tok(T_LBRACK)) {
@@ -3647,11 +3679,14 @@ parse_class(void)
     }
     bool saved_icb = in_class_body;
     NODE *saved_base = cur_class_base;
+    const char *saved_class_name = cur_class_name;
     in_class_body = true;
     cur_class_base = base;
+    cur_class_name = cname;
     NODE *body = parse_suite();
     in_class_body = saved_icb;
     cur_class_base = saved_base;
+    cur_class_name = saved_class_name;
     // Prepend `__annotations__ = {}` to the body so each class gets its
     // own dict — without this, class-body annotations walked the MRO and
     // mutated a base class's __annotations__ (test_grammar
@@ -5457,7 +5492,7 @@ paren_base_path: ;
         if (match_tok(T_DOT)) {
             if (peek_tok(0)->kind != T_NAME) parse_error("expected attr name");
             trs[ntr].kind = TR_DOT;
-            trs[ntr].name = peek_tok(0)->sval;
+            trs[ntr].name = mangle_name(peek_tok(0)->sval);
             tok_pos++;
             ntr++;
         } else if (peek_tok(0)->kind == T_LPAREN) {
