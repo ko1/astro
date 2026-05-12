@@ -35,8 +35,17 @@ def countOf(a, b):
     return sum(1 for v in a if v == b)
 
 
-def concat(a, b): return a + b
-def iconcat(a, b): a += b; return a
+def concat(a, b):
+    # CPython concat: only for sequences. int + int is NOT concat.
+    if not hasattr(a, "__getitem__"):
+        raise TypeError(
+            "'%s' object can't be concatenated" % type(a).__name__)
+    return a + b
+def iconcat(a, b):
+    if not hasattr(a, "__getitem__"):
+        raise TypeError(
+            "'%s' object can't be concatenated" % type(a).__name__)
+    a += b; return a
 
 
 def _compare_digest(a, b):
