@@ -10806,22 +10806,22 @@ bm_join(CTX *c, int argc, VALUE *argv)
     VALUE iter = argv[1];
     const char *sep = PYS_PTR(self)->str.chars;
     size_t slen = PYS_PTR(self)->str.len;
-    VALUE items[256]; int n = 0;
+    // Collect into a VALUE list (dynamic) — earlier 256-element stack
+    // array overflowed on test_io's BufferedWriter test (write-heavy).
+    VALUE coll = pys_make_list(NULL, 0);
     if (pys_is_list(iter) || pys_is_tuple(iter)) {
         size_t sn = PYS_PTR(iter)->list.len;
-        if (sn > 256) PYS_RAISE_EXC(c, c->EXC_RuntimeError, "bytes.join too many");
-        for (size_t i = 0; i < sn; i++) items[n++] = PYS_PTR(iter)->list.items[i];
+        for (size_t i = 0; i < sn; i++) pys_list_append(c, coll, PYS_PTR(iter)->list.items[i]);
     } else {
         struct pys_iter it; pys_iter_init(c, &it, iter);
         if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
         VALUE x;
-        while (pys_iter_next(c, &it, &x)) {
-            if (n >= 256) PYS_RAISE_EXC(c, c->EXC_RuntimeError, "bytes.join too many");
-            items[n++] = x;
-        }
+        while (pys_iter_next(c, &it, &x)) pys_list_append(c, coll, x);
     }
+    size_t n = PYS_PTR(coll)->list.len;
+    VALUE *items = PYS_PTR(coll)->list.items;
     size_t total = 0;
-    for (int i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         if (!pys_is_byteseq(items[i]))
             PYS_RAISE_EXC(c, c->EXC_TypeError, "bytes.join element must be bytes-like");
         total += PYS_PTR(items[i])->str.len;
@@ -10829,7 +10829,7 @@ bm_join(CTX *c, int argc, VALUE *argv)
     }
     char *buf = (char *)GC_malloc_atomic(total + 1);
     char *p = buf;
-    for (int i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         if (i) { memcpy(p, sep, slen); p += slen; }
         memcpy(p, PYS_PTR(items[i])->str.chars, PYS_PTR(items[i])->str.len);
         p += PYS_PTR(items[i])->str.len;
