@@ -162,24 +162,21 @@ def _match_one(pat, pi, s, si, flags, groups):
     return False, -1
 
 
-def _match_star(pat, atom_pi, after_quant_pi, s, si, flags, groups, lazy=False):
-    # Greedy by default: match as many as possible, then backtrack.
+def _match_star(pat, atom_pi, after_quant_pi, s, si, flags, groups, lazy=False, kont=None):
     saved_groups = list(groups)
     matches = [(si, list(groups))]
     while True:
-        # Reset groups to before this attempted match.
         del groups[:]
         groups.extend(matches[-1][1])
         ok, ei = _match_one(pat, atom_pi, s, matches[-1][0], flags, groups)
         if not ok or ei == matches[-1][0]:
             break
         matches.append((ei, list(groups)))
-    if lazy: matches = matches  # for symmetry, then iterate left-to-right
     order = list(reversed(matches)) if not lazy else matches
     for cur_si, cur_grps in order:
         del groups[:]
         groups.extend(cur_grps)
-        ok, ei = _match_here(pat, after_quant_pi, s, cur_si, flags, groups)
+        ok, ei = _match_here(pat, after_quant_pi, s, cur_si, flags, groups, kont)
         if ok:
             return True, ei
     del groups[:]
@@ -212,73 +209,111 @@ def _find_top_alt(pat, pi):
     return -1
 
 
-def _match_here(pat, pi, s, si, flags, groups):
+def _match_here(pat, pi, s, si, flags, groups, kont=None):
+    """Match pat[pi:] against s[si:].
+    When pi reaches len(pat), call kont(s, si, groups) → (ok, ei) if
+    given; otherwise return (True, si). kont is the outer continuation
+    used by group atoms so that body matches can backtrack across the
+    group boundary when the outer rest fails to match."""
     # Top-level alternation: try left, then right.  Each branch is
     # `pat[pi:alt]` (left) and `pat[alt+1:]` (right).
     alt = _find_top_alt(pat, pi)
     if alt >= 0:
         saved = list(groups)
-        # Left branch — match left part as a complete sub-pattern.
         left = pat[pi:alt]
-        ok, ei = _match_here(left, 0, s, si, flags, groups)
+        ok, ei = _match_here(left, 0, s, si, flags, groups, kont)
         if ok:
             return True, ei
         del groups[:]; groups.extend(saved)
-        # Right branch — recursively (may itself contain another `|`).
         right_pi = alt + 1
-        return _match_here(pat, right_pi, s, si, flags, groups)
+        return _match_here(pat, right_pi, s, si, flags, groups, kont)
     if pi >= len(pat):
+        if kont is not None:
+            return kont(s, si, groups)
         return True, si
     if pat[pi] == "$" and pi + 1 == len(pat):
         return (si == len(s)), si
     if pat[pi] == "^" and pi == 0:
         if si == 0:
-            return _match_here(pat, pi + 1, s, si, flags, groups)
+            return _match_here(pat, pi + 1, s, si, flags, groups, kont)
         return False, -1
     after = _advance(pat, pi)
     nxt = pat[after] if after < len(pat) else ""
-    # `??`, `*?`, `+?` lazy quantifiers
     lazy = False
     if nxt in ("*", "+", "?"):
         if after + 1 < len(pat) and pat[after + 1] == "?":
             lazy = True
     if nxt == "*":
-        return _match_star(pat, pi, after + 1 + (1 if lazy else 0), s, si, flags, groups, lazy=lazy)
+        return _match_star(pat, pi, after + 1 + (1 if lazy else 0), s, si, flags, groups, lazy=lazy, kont=kont)
     if nxt == "+":
-        # Save groups in case the mandatory match fails.
         saved = list(groups)
         ok, ei = _match_one(pat, pi, s, si, flags, groups)
         if not ok:
             del groups[:]; groups.extend(saved)
             return False, -1
-        return _match_star(pat, pi, after + 1 + (1 if lazy else 0), s, ei, flags, groups, lazy=lazy)
+        return _match_star(pat, pi, after + 1 + (1 if lazy else 0), s, ei, flags, groups, lazy=lazy, kont=kont)
     if nxt == "?":
         saved = list(groups)
         ok, ei = _match_one(pat, pi, s, si, flags, groups)
         next_pi = after + 1 + (1 if lazy else 0)
         if not lazy:
             if ok:
-                ok2, ei2 = _match_here(pat, next_pi, s, ei, flags, groups)
+                ok2, ei2 = _match_here(pat, next_pi, s, ei, flags, groups, kont)
                 if ok2: return True, ei2
             del groups[:]; groups.extend(saved)
-            return _match_here(pat, next_pi, s, si, flags, groups)
+            return _match_here(pat, next_pi, s, si, flags, groups, kont)
         else:
-            # Lazy: try without first.
             saved2 = list(groups)
             del groups[:]; groups.extend(saved2)
-            ok2, ei2 = _match_here(pat, next_pi, s, si, flags, groups)
+            ok2, ei2 = _match_here(pat, next_pi, s, si, flags, groups, kont)
             if ok2: return True, ei2
             del groups[:]; groups.extend(saved)
             if ok:
-                return _match_here(pat, next_pi, s, ei, flags, groups)
+                return _match_here(pat, next_pi, s, ei, flags, groups, kont)
             return False, -1
-    # Atom + remainder.
+    # Atom + remainder. Special-case unquantified `(BODY)`: match BODY
+    # with the outer rest as continuation so internal greedy/lazy
+    # quantifiers can backtrack across the group boundary.
+    if pat[pi] == "(" and nxt not in ("*", "+", "?"):
+        end = _find_group_close(pat, pi)
+        if end >= 0:
+            body = pat[pi + 1:end]
+            is_capt = True
+            if body.startswith("?:"):
+                is_capt = False
+                body = body[2:]
+            elif body.startswith("?P<"):
+                close = body.find(">")
+                if close > 0:
+                    body = body[close + 1:]
+                else:
+                    is_capt = False
+            elif body.startswith("?"):
+                # Lookahead etc — fall through to standard path below.
+                end = -1
+            if end >= 0:
+                grp_idx = -1
+                if is_capt:
+                    grp_idx = len(groups)
+                    groups.append(None)
+                body_start = si
+                rest_pi = end + 1
+                def _kont(s_, si_, groups_):
+                    if is_capt:
+                        groups_[grp_idx] = s_[body_start:si_]
+                    return _match_here(pat, rest_pi, s_, si_, flags, groups_, kont)
+                saved = list(groups)
+                ok, ei = _match_here(body, 0, s, si, flags, groups, _kont)
+                if ok:
+                    return True, ei
+                del groups[:]; groups.extend(saved)
+                return False, -1
     saved = list(groups)
     ok, ei = _match_one(pat, pi, s, si, flags, groups)
     if not ok:
         del groups[:]; groups.extend(saved)
         return False, -1
-    return _match_here(pat, after, s, ei, flags, groups)
+    return _match_here(pat, after, s, ei, flags, groups, kont)
 
 
 class Match:
@@ -288,17 +323,27 @@ class Match:
         self._end = end
         self._groups = groups or []
         self._is_bytes = False
+        self._named = None       # populated by Pattern._wrap
     def _b(self, v):
         if v is None: return None
         if self._is_bytes and isinstance(v, str):
             return v.encode("latin-1")
         return v
+    def _resolve(self, n):
+        if isinstance(n, str):
+            mapped = self._named.get(n) if self._named else None
+            if mapped is None:
+                raise IndexError("no such group: " + n)
+            return mapped
+        return n
     def group(self, *args):
         if not args:
             return self._b(self._s[self._start:self._end])
         if len(args) == 1:
-            n = args[0]
+            n = self._resolve(args[0])
             if n == 0: return self._b(self._s[self._start:self._end])
+            if n - 1 >= len(self._groups):
+                return None
             return self._b(self._groups[n - 1])
         return tuple(self.group(a) for a in args)
     def groups(self, default=None):
@@ -312,12 +357,14 @@ class Match:
     def __bool__(self):
         return True
     def __getitem__(self, n):
-        # m[0] / m[1] — CPython supports indexing on Match.
         return self.group(n)
     def groupdict(self, default=None):
-        # Named-group dict; pystro's regex engine doesn't track names,
-        # return an empty mapping so callers expecting a dict don't break.
-        return {}
+        out = {}
+        if self._named:
+            for nm, idx in self._named.items():
+                v = self._groups[idx - 1] if idx - 1 < len(self._groups) else None
+                out[nm] = self._b(v) if v is not None else default
+        return out
     def __repr__(self):
         return "<re.Match>"
 
@@ -412,11 +459,38 @@ def _build_group_map(pat):
     return out
 
 
+def _build_named_groups(pat):
+    """Map named-group name → 1-based group index."""
+    out = {}
+    idx = 0
+    i = 0
+    L = len(pat)
+    while i < L:
+        c = pat[i]
+        if c == "\\" and i + 1 < L:
+            i += 2; continue
+        if c == "[":
+            j = pat.find("]", i + 1)
+            i = (j + 1) if j >= 0 else L
+            continue
+        if c == "(":
+            if i + 1 < L and pat[i + 1] == "?":
+                if (i + 2 < L and pat[i + 2] == "P"
+                        and i + 3 < L and pat[i + 3] == "<"):
+                    close = pat.find(">", i + 4)
+                    if close > 0:
+                        idx += 1
+                        out[pat[i + 4:close]] = idx
+            else:
+                idx += 1
+            i += 1
+            continue
+        i += 1
+    return out
+
+
 class Pattern:
     def __init__(self, pat, flags=0):
-        # PEP-related: VERBOSE / re.X flag strips whitespace and comments
-        # before regex engine sees the pattern.  Real CPython does this
-        # at compile-time too.
         self._is_bytes = isinstance(pat, (bytes, bytearray))
         if self._is_bytes:
             pat = bytes(pat).decode("latin-1")
@@ -425,6 +499,8 @@ class Pattern:
         self.pattern = pat
         self.flags = flags
         self._n_groups = _count_groups(pat)
+        self._named = _build_named_groups(pat)
+        self.groupindex = dict(self._named)
 
     @property
     def groups(self):
@@ -439,8 +515,7 @@ class Pattern:
         if m is None: return None
         if self._is_bytes:
             m._is_bytes = True
-        # Pad groups list to declared count (alternatives may have left
-        # later groups unset).
+        m._named = self._named
         while len(m._groups) < self._n_groups:
             m._groups.append(None)
         return m
