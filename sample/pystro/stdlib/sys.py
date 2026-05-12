@@ -31,7 +31,25 @@ maxunicode = 1114111
 byteorder = "little"
 prefix = "/usr"
 exec_prefix = "/usr"
-executable = "pystro"
+# Absolute path to the running pystro binary.  Test suites (test_time,
+# test_subprocess etc.) treat sys.executable as a real file path and
+# expect it to exist; relative "pystro" fails when the test runs in a
+# tmpdir cwd.  pystro exposes its bindir via __pystro_bindir__ (when
+# resolvable from /proc/self/exe); fall back to abspath("pystro").
+def _resolve_executable():
+    try:
+        bd = __pystro_bindir__()
+    except NameError:
+        bd = None
+    if bd:
+        import os as _os
+        cand = _os.path.join(bd, "pystro")
+        if _os.path.exists(cand):
+            return cand
+    import os as _os
+    return _os.path.abspath("pystro")
+executable = _resolve_executable()
+del _resolve_executable
 implementation_name = "pystro"
 
 # Built-in (statically linked) module names.  CPython's os.py / abc.py

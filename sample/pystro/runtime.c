@@ -14755,6 +14755,15 @@ bi_pystro_getcwd(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_pystro_bindir(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    extern const char *PYS_BINDIR;
+    if (PYS_BINDIR) return pys_make_str(PYS_BINDIR, strlen(PYS_BINDIR));
+    return PYS_NONE;
+}
+
+static VALUE
 bi_pystro_os_open(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -16371,6 +16380,7 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_perf_counter__", pys_make_builtin("__pystro_perf_counter__", bi_pystro_perf_counter, 0, 0));
     pys_global_define(c, "__pystro_getenv__",    pys_make_builtin("__pystro_getenv__",    bi_pystro_getenv,    1, 2));
     pys_global_define(c, "__pystro_getcwd__",    pys_make_builtin("__pystro_getcwd__",    bi_pystro_getcwd,    0, 0));
+    pys_global_define(c, "__pystro_bindir__",    pys_make_builtin("__pystro_bindir__",    bi_pystro_bindir,    0, 0));
     pys_global_define(c, "__pystro_chdir__",     pys_make_builtin("__pystro_chdir__",     bi_pystro_chdir,     1, 1));
     pys_global_define(c, "__pystro_rename__",    pys_make_builtin("__pystro_rename__",    bi_pystro_rename,    2, 2));
     pys_global_define(c, "__pystro_pipe__",      pys_make_builtin("__pystro_pipe__",      bi_pystro_pipe,      0, 0));
