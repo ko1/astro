@@ -1,6 +1,18 @@
 """pystro stub for the frozen importlib._bootstrap_external module."""
 
 
+class _LoaderBasics:
+    """Common ImportLoader machinery shared between FileLoader subclasses."""
+    def is_package(self, fullname):
+        return False
+    def create_module(self, spec):
+        return None
+    def exec_module(self, module):
+        pass
+    def load_module(self, fullname):
+        return None
+
+
 class _NamespacePath:
     def __init__(self, name, path, getter=None):
         self._name = name
