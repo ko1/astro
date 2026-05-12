@@ -51,7 +51,7 @@ classify_one() {
     local kind
     if [ $rc -eq 124 ] || grep -q "^timeout: the monitored command" "$log"; then
         kind="TIMEOUT"
-    elif [ $rc -ge 128 ] || grep -q "Segmentation\|Aborted" "$log"; then
+    elif [ $rc -ge 128 ] || grep -qE "Segmentation fault|^.*: Aborted" "$log"; then
         kind="CRASH"
     elif grep -q "^SyntaxError:\|^IndentationError:" "$log"; then
         kind="PARSE_ERR"

@@ -825,12 +825,43 @@ parse_fstring_payload(const char *s, size_t len)
             size_t eq_pos = 0;       // position of `=` for debug `{x=}` syntax
             int depth = 1;
             int paren = 0;
+            char inner_q = 0;          // 0 = not inside nested string
+            bool inner_triple = false;
             while (j < len && depth > 0) {
-                if (s[j] == '{') depth++;
-                else if (s[j] == '}') depth--;
-                else if (s[j] == '(' || s[j] == '[') paren++;
-                else if (s[j] == ')' || s[j] == ']') paren--;
-                else if (s[j] == '=' && depth == 1 && paren == 0 && conv_pos == 0
+                char cj = s[j];
+                if (inner_q != 0) {
+                    // Inside a nested string literal — skip everything
+                    // except the matching close.
+                    if (!inner_triple && cj == '\\' && j + 1 < len) {
+                        j += 2;
+                        continue;
+                    }
+                    if (inner_triple && cj == inner_q
+                        && j + 2 < len && s[j+1] == inner_q && s[j+2] == inner_q) {
+                        j += 3;
+                        inner_q = 0;
+                        inner_triple = false;
+                        continue;
+                    }
+                    if (!inner_triple && cj == inner_q) {
+                        j++;
+                        inner_q = 0;
+                        continue;
+                    }
+                    j++;
+                    continue;
+                }
+                if (cj == '\'' || cj == '"') {
+                    inner_q = cj;
+                    inner_triple = (j + 2 < len && s[j+1] == cj && s[j+2] == cj);
+                    j += inner_triple ? 3 : 1;
+                    continue;
+                }
+                if (cj == '{') depth++;
+                else if (cj == '}') depth--;
+                else if (cj == '(' || cj == '[') paren++;
+                else if (cj == ')' || cj == ']') paren--;
+                else if (cj == '=' && depth == 1 && paren == 0 && conv_pos == 0
                          && spec_start == 0 && eq_pos == 0
                          && j + 1 < len
                          && (s[j+1] == '}' || s[j+1] == '!' || s[j+1] == ':')
@@ -839,13 +870,13 @@ parse_fstring_payload(const char *s, size_t len)
                          && s[j+1] != '=') {
                     eq_pos = j;
                 }
-                else if (s[j] == '!' && depth == 1 && paren == 0 && conv_pos == 0
+                else if (cj == '!' && depth == 1 && paren == 0 && conv_pos == 0
                          && spec_start == 0
                          && j + 1 < len && (s[j+1] == 'r' || s[j+1] == 's' || s[j+1] == 'a')
                          && j + 2 < len && (s[j+2] == ':' || s[j+2] == '}')) {
                     conv_pos = j;
                 }
-                else if (s[j] == ':' && depth == 1 && paren == 0 && spec_start == 0) {
+                else if (cj == ':' && depth == 1 && paren == 0 && spec_start == 0) {
                     spec_start = j;
                 }
                 if (depth > 0) j++;

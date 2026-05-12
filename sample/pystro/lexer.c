@@ -297,16 +297,59 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
     // PEP 701 (3.12+): inside an f-string `{...}` part, the same quote
     // can appear as a string literal (e.g. `f'{' '.join(x)}'`).  Track
     // brace depth so we don't treat the inner quote as the f-string
-    // terminator.
+    // terminator.  Additionally track whether we're inside a nested
+    // string literal in the {} expression, so e.g. `f"{a.split('}')}"`
+    // doesn't terminate brace_depth on the `}` inside `'}'`.
     int brace_depth = 0;
+    char inner_str_quote = '\0';   // 0 = not in nested str, else opening quote
+    bool inner_str_triple = false;
     while (peek(0) != '\0') {
         if (triple) {
-            if (peek(0) == quote && peek(1) == quote && peek(2) == quote) break;
+            if (peek(0) == quote && peek(1) == quote && peek(2) == quote
+                && inner_str_quote == '\0') break;
         } else {
-            if (peek(0) == quote && brace_depth == 0) break;
+            if (peek(0) == quote && brace_depth == 0
+                && inner_str_quote == '\0') break;
         }
         if (is_fstr) {
             char c = peek(0);
+            if (inner_str_quote != '\0') {
+                // We're inside a nested string literal — skip everything
+                // except the closing quote (and backslash-escape pairs
+                // for non-triple).
+                if (!inner_str_triple && c == '\\' && peek(1) != '\0') {
+                    if (len + 2 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = c; buf[len++] = peek(1);
+                    if (peek(1) == '\n') src_line++;
+                    src_pos += 2;
+                    continue;
+                }
+                if (inner_str_triple
+                    && c == inner_str_quote && peek(1) == inner_str_quote
+                    && peek(2) == inner_str_quote) {
+                    if (len + 3 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = c; buf[len++] = c; buf[len++] = c;
+                    src_pos += 3;
+                    inner_str_quote = '\0';
+                    inner_str_triple = false;
+                    continue;
+                }
+                if (!inner_str_triple && c == inner_str_quote) {
+                    if (len + 1 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = c;
+                    src_pos++;
+                    inner_str_quote = '\0';
+                    continue;
+                }
+                // Track newlines for triple-quoted (and skip-newline for
+                // non-triple — already implicit since `{` of f-string
+                // body permits newlines).
+                if (c == '\n') src_line++;
+                if (len + 1 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                buf[len++] = c;
+                src_pos++;
+                continue;
+            }
             if (c == '{') {
                 if (brace_depth == 0 && peek(1) == '{') {
                     // Escaped `{{` in literal text — keep both bytes;
@@ -325,6 +368,20 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
                     continue;
                 }
                 if (brace_depth > 0) brace_depth--;
+            } else if (brace_depth > 0 && (c == '\'' || c == '"')) {
+                // Opening a nested string literal inside `{...}`.
+                inner_str_quote = c;
+                inner_str_triple = (peek(1) == c && peek(2) == c);
+                if (inner_str_triple) {
+                    if (len + 3 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = c; buf[len++] = c; buf[len++] = c;
+                    src_pos += 3;
+                } else {
+                    if (len + 1 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = c;
+                    src_pos++;
+                }
+                continue;
             }
         }
         char ch = peek(0);
