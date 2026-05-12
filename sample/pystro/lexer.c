@@ -665,7 +665,16 @@ read_number(void)
         while (isdigit((unsigned char)peek(0)) || peek(0) == '_') src_pos++;
         // Trailing or middle dot: '5.' or '5.0'.  But don't consume '.'
         // if followed by a non-digit (could be method call: 5.bit_length).
+        // Consume '.' to start a float when followed by:
+        //   - a digit (3.14)
+        //   - 'e' or 'E' for exponent (3.e14)
+        //   - 'j' or 'J' for complex (3.j)
+        //   - a non-letter / non-'_' / non-'.' separator (3. | 0 → "3."
+        //     becomes 3.0 followed by '|'). Letter follow (e.g. 3.bit_length)
+        //     keeps the dot as attribute access.
         if (peek(0) == '.' && (isdigit((unsigned char)peek(1)) ||
+                               peek(1) == 'e' || peek(1) == 'E' ||
+                               peek(1) == 'j' || peek(1) == 'J' ||
                                (peek(1) != '_' && peek(1) != '.' &&
                                 !isalpha((unsigned char)peek(1))))) {
             is_float = true;
