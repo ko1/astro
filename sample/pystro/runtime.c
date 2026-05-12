@@ -5131,6 +5131,22 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             VALUE r = pys_getattr_optional(c, w, "__isabstractmethod__");
             return r ? r : PYS_FALSE;
         }
+        // CPython parity: classmethod / staticmethod forward common
+        // function attributes (__module__, __qualname__, __name__,
+        // __doc__, __annotations__) to the wrapped function so that
+        // functools.wraps + introspection works.
+        if (strcmp(name, "__module__") == 0
+            || strcmp(name, "__qualname__") == 0
+            || strcmp(name, "__name__") == 0
+            || strcmp(name, "__doc__") == 0
+            || strcmp(name, "__annotations__") == 0
+            || strcmp(name, "__dict__") == 0
+            || strcmp(name, "__type_params__") == 0) {
+            VALUE w = PYS_PTR(v)->wrap.wrapped;
+            extern VALUE pys_getattr_optional(CTX *c, VALUE v, const char *name);
+            VALUE r = pys_getattr_optional(c, w, name);
+            if (r) return r;
+        }
     }
     if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_PROPERTY) {
         if (strcmp(name, "fget") == 0) return PYS_PTR(v)->wrap.wrapped;
