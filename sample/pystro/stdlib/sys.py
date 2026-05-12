@@ -31,6 +31,9 @@ maxunicode = 1114111
 byteorder = "little"
 prefix = "/usr"
 exec_prefix = "/usr"
+copyright = "Copyright (c) 2024 pystro contributors."
+ps1 = ">>> "
+ps2 = "... "
 # Absolute path to the running pystro binary.  Test suites (test_time,
 # test_subprocess etc.) treat sys.executable as a real file path and
 # expect it to exist.  pystro exposes its bindir via __pystro_bindir__

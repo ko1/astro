@@ -14200,7 +14200,13 @@ bi_import(CTX *c, int argc, VALUE *argv)
             if (c->state == PYS_STATE_NORMAL && parent != PYS_NONE) {
                 VALUE attr = pys_getattr(c, parent, last_dot + 1);
                 if (c->state == PYS_STATE_NORMAL && attr != PYS_NONE) {
-                    pys_dict_set(c, mod_dict, argv[0], attr);
+                    // Only cache in sys.modules if the resolved attr is
+                    // a module — otherwise tests that do `for m in
+                    // set(sys.modules.values())` (e.g. site.abs_paths)
+                    // trip on lists/dicts polluting the table.
+                    if (pys_is_module(attr)) {
+                        pys_dict_set(c, mod_dict, argv[0], attr);
+                    }
                     return attr;
                 }
                 c->state = PYS_STATE_NORMAL;
