@@ -14246,6 +14246,12 @@ bi_import(CTX *c, int argc, VALUE *argv)
         // doesn't model.  Pystro's stub does a manual line-by-line
         // dedent that matches the CPython semantics.
         "textwrap.py",
+        // platform — CPython's platform.libc_ver() does a regex over
+        // bytes read from sys.executable; pystro's bytes-regex returns
+        // alternation groups in the wrong order, which crashes the
+        // 6-tuple unpack with TypeError("object has no len()").  Stub
+        // returns a static ("glibc", "2.28") and rebuilds the common API.
+        "platform.py",
         NULL,
     };
     bool pystro_wins = false;

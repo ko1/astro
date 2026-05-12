@@ -99,6 +99,12 @@ CLOCK_THREAD_CPUTIME_ID = 3
 CLOCK_MONOTONIC_RAW = 4
 CLOCK_BOOTTIME = 5
 
+# CPython exposes the count of fields in struct_time (9 baseline + 2
+# for tm_zone / tm_gmtoff on Linux/macOS).  test_time.skipUnless gates
+# tm_zone tests on this.  pystro's struct_time has just 9 fields, so
+# return 9 so the timezone-aware tests are skipped (not failed).
+_STRUCT_TM_ITEMS = 9
+
 altzone = 0
 daylight = 0
 timezone = 0
