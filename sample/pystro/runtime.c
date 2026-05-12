@@ -1158,6 +1158,12 @@ pys_make_instance(VALUE cls)
 static __thread int pys_skip_getattribute_hook = 0;
 static __thread int pys_skip_setattr_hook = 0;
 
+// Active exec/eval namespace dict.  When non-zero, pys_global_set
+// also writes to it so user-visible bindings (including those from
+// `from X import *` where the value matches an outer-globals builtin)
+// reach the caller's ns dict.  Saved/restored around bi_exec / bi_eval.
+__thread VALUE pys_active_exec_ns = 0;
+
 static VALUE
 bi_object_getattribute(CTX *c, int argc, VALUE *argv)
 {
@@ -1461,6 +1467,13 @@ void
 pys_global_set(CTX *c, const char *name, VALUE v)
 {
     pys_global_define(c, name, v);
+    // Mirror writes into the active exec/eval ns dict so `from X
+    // import *` (and other binding-via-builtin paths) reach the user's
+    // ns even when the value matches what was already in c->globals.
+    if (pys_active_exec_ns) {
+        VALUE k = pys_make_str(name, strlen(name));
+        pys_dict_set(c, pys_active_exec_ns, k, v);
+    }
 }
 
 bool
@@ -12897,7 +12910,13 @@ bi_exec(CTX *c, int argc, VALUE *argv)
     if (argc >= 3) ns_inject(c, argv[2], &sl);
     struct pysdict *snap = NULL;
     if (argc >= 2 && pys_is_dict(argv[1])) ns_snapshot(c, &snap);
+    // Set pys_active_exec_ns to the user-visible globals dict so any
+    // pys_global_set during EVAL mirrors writes into it.
+    extern __thread VALUE pys_active_exec_ns;
+    VALUE saved_ns = pys_active_exec_ns;
+    pys_active_exec_ns = (argc >= 2 && pys_is_dict(argv[1])) ? argv[1] : 0;
     EVAL(c, body);
+    pys_active_exec_ns = saved_ns;
     // CPython convention: when both globals and locals are passed,
     // names defined at the exec'd-code top level land in locals (not
     // globals).  Without a separate locals dict, fall back to globals.
