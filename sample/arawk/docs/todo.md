@@ -1,8 +1,9 @@
 # arawk TODO
 
 最終目標は `sample/astrogre` (regex / are CLI) との AST traversal interpreter
-統合実験。**Phase 1 (regex 抜き POSIX awk subset) 完了**。次は Phase 2 で
-astrogre を統合する。
+統合実験。 **Phase 1 (regex 抜き POSIX awk subset) + UTF-8 対応 + perf
+改善 A/B/C** 完了。 性能は **geomean 0.93× vs gawk** (gawk 並み、
+goawk を上回り mawk には及ばず)。 次は Phase 2 で astrogre を統合する。
 
 ## 完了済み
 
@@ -86,6 +87,26 @@ astrogre を統合する。
 - 多次元 `delete a[i,j]` (key を SUBSEP join するだけで naturally 動く)
 - NF 代入で `$0` が OFS で再構築される
 
+### perf 改善 (実測ベース、 2026-05-12 セッション)
+- **B**: field の lazy strnum (境界のみ記録、 `$N` アクセス時に allocate)
+  - `arawk_split_fields` を boundary-only に、 fields[i]==0 を未生成 sentinel
+  - GC pressure を 1/5 に: tt.07 (NF だけ) 0.46 → 0.67、 tt.02 0.52 → 0.80
+- **A**: fgetc → fread chunked input (64 KB buffer + memchr)
+  - `_IO_getc` 18% を完全に消す: tt.01 0.28 → 0.54、 tt.02 0.80 → 1.40
+- **C**: for-in を bucket walker に (snapshot 配列 + key copy を消す)
+  - keys[1000] の GC_malloc を 1M 回 × 削減: tt.14 0.50 → 2.49
+- **C+**: `arawk_wrap_string` で for-in key の char[] copy も消す
+  - 1 iter = 2 alloc → 1 alloc に
+- 合計効果: geomean 0.59 → 0.93 (+58%)、 gawk 並みに
+
+### Phase 1.17 — UTF-8 対応 (2026-05-12)
+- LC_CTYPE 自動判定 (gawk と同じ): UTF-8 系 → codepoint mode
+- `--byte` / `--posix` で byte mode 強制
+- `length` / `substr` / `index` を codepoint 単位に
+- `arawk_utf8_char_count` に 8-byte word stride ASCII fast path
+- `tolower` / `toupper` は ASCII のみ (POSIX 範囲)
+- 性能 cost: geomean -0.02 (機能対価として許容)
+
 ---
 
 ## Phase 2 — astrogre 統合 (本命)
@@ -94,11 +115,14 @@ astrogre を統合する。
 - [ ] `/regex/` literal トークン化 (slash-vs-division 曖昧性解消)
 - [ ] `~` / `!~` 演算子
 - [ ] `sub(re, repl[, target])` / `gsub(re, repl[, target])` builtin
-- [ ] `match(s, re)` (RSTART / RLENGTH set)
+- [ ] `match(s, re)` (RSTART / RLENGTH set ← slot は既に確保済)
 - [ ] `split(s, arr, re)` 第 3 引数 regex
 - [ ] dynamic regex (`$0 ~ pattern_var`)
 - [ ] FS / RS が regex のとき
 - [ ] sample/astrogre を Makefile で別ターゲットからリンク
+- [ ] `ARAWK_ENCODING` を `agre_encoding_t` (AGRE_ENC_UTF8 / _ASCII) に
+      mapping して astrogre に pass — Phase 1.17 で布石を打った
+      (`docs/runtime.md` §10 参照)
 
 ### Level 2: 2 AST traversal interpreter 並存
 - [ ] astrogre 側も `agre_node_*` prefix にする (要 astrogre 改修)
@@ -114,13 +138,24 @@ astrogre を統合する。
 
 ---
 
-## perf 改善案 (docs/perf.md 連動)
+## perf 改善案 (実測ベース、 残り)
 
-- [ ] **`print` の chunked write** (tt.01 が 0.17×) — 1 文 1 fwrite に集約
-- [ ] **field の lazy strnum** (tt.03 系が 0.19-0.23×) — `$N` アクセス時のみ allocate
-- [ ] **`substr` の copy-on-write** (tt.11 が 0.27×) — shared heap ptr で fresh allocate 回避
-- [ ] **function callcache** (tt.14 が 0.45×) — astr の `astr_callcache` 相当を call site に inline
-- [ ] **AOT 内 builtin inline** — `length` / `substr` / `int` 等の hot builtin を SD body に直接埋め込む
+実測で検証して残ったもの (旧 5 件のうち 3 件は実測で外れ、 削除):
+
+- [ ] **`arawk_split_fields` の高速化**: tt.01 で 47% 占める残る hot。
+      `__ctype_b_loc` (isspace の libc helper) 7% を ASCII inline check に
+- [ ] **`arawk_obj` の small-obj pool 化**: tt.14 で libgc 内 56% が
+      per-call alloc 由来。 GC 全体コストを削減
+- [ ] **OFS join の chunked write**: tt.12 / tt.02a で record rebuild が
+      `arawk_to_cstr` × NF を呼ぶのを 1 回の buffer build に
+- [ ] **AOT 内 builtin inline**: `length` / `substr` / `int` 等の hot
+      builtin を SD body に直接 emit (`awk_gen.rb` 改造)
+
+破棄した旧案 (実測で外れ、 `perf.md` 参照):
+- ❌ `print` の chunked write (stdio buffering で全 awk 揃う)
+- ❌ `substr` COW (substr 自体は <1%、 真の hot は split + GC)
+- ❌ function callcache (関数 1 つだと strcmp 1 比較で終わる)
+- ❌ 関数 frame arena (VLA は stack 上 alloc、 perf で圏外)
 
 ---
 
@@ -148,6 +183,7 @@ astrogre を統合する。
 ## テストとベンチ
 
 - `make test`:
-  - smoke 98 × {plain, AOT} = 196 ケース
+  - smoke 109 × {plain, AOT} = 218 ケース (UTF-8 / byte-mode / nextfile 等のケース込み)
   - tt.* 18 × {plain, AOT} = 36 ケース (regex 系 6 skip)
-- `make bench`: gawk / mawk / goawk と比較。geomean arawk-aot 0.59× vs gawk。詳細は `docs/perf.md`
+- `make bench`: gawk / mawk / goawk と比較。 **geomean arawk-aot 0.93× vs gawk**
+  (gawk 並み、 goawk 1.07× を上回り mawk 1.93× には及ばず)。 詳細は `docs/perf.md`

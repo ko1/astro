@@ -241,6 +241,39 @@ BEGIN {
 }
 ```
 
+## 文字コード
+
+gawk と同じ **LC_CTYPE 自動切替**:
+
+- `LC_CTYPE` が `*UTF-8*` 系 (例: `C.UTF-8`, `ja_JP.UTF-8`) → **UTF-8 mode**
+  - `length` / `substr` / `index` が **codepoint 単位**
+  - 入出力はバイト透過 (`fread` / `fwrite` で UTF-8 を壊さず通す)
+- `LC_ALL=C` 等の単 byte locale → **byte mode** (mawk 互換)
+- CLI で明示切替: `--byte` または `--posix`
+
+例:
+
+```awk
+# LC_CTYPE=C.UTF-8 (default)
+$ ./arawk 'BEGIN { print length("あいう"), substr("café", 3, 2) }'
+3 fé
+
+# byte mode
+$ ./arawk --byte 'BEGIN { print length("あいう") }'
+9            # UTF-8 で 3 codepoint × 3 byte
+```
+
+実装は `length` 経路に **8-byte word stride の ASCII fast path** を入れて、
+全 ASCII 入力 (tt.* 等) では byte 数 = codepoint 数を即返しするので、
+UTF-8 mode による regression はほぼノイズ範囲 (詳細は `perf.md`)。
+
+`tolower` / `toupper` は **ASCII のみ大小化** (POSIX 仕様準拠範囲)。 gawk
+の `tolower("CAFÉ") = "café"` のような non-ASCII 大小変換は未対応。
+
+正規表現の文字コード対応は Phase 2 (astrogre 統合) で。 astrogre 側に
+`AGRE_ENC_UTF8` / `AGRE_ENC_ASCII` の per-pattern flag が既にあるので、
+arawk の `ARAWK_ENCODING` をそのまま渡せる設計。
+
 ## 持たない / 制限
 
 正規表現関連 (Phase 2 で `sample/astrogre` 統合により解禁予定):
@@ -256,6 +289,8 @@ BEGIN {
 
 - gawk 拡張 (`gensub`, `asort`, `asorti`, `mktime`, `strftime`, `systime`, `@f()`, `(i, j) in a`)
 - ARGV を mutate して入力ループを駆動する挙動 (POSIX 標準だが arawk は OPTION.input_files 駆動)
-- 多バイト文字 (UTF-8 等) の正しい長さ計算 / FS 分割 (現状はバイト単位)
+- 単一 char FS のみ (multi-char / regex FS は Phase 2)。 単 char FS は
+  ASCII byte であれば UTF-8 mode でも問題なし (区切りが ASCII)
+- `tolower` / `toupper` の non-ASCII 大小化 (gawk extension)
 
 詳細: [`todo.md`](todo.md) / [`perf.md`](perf.md) / [`runtime.md`](runtime.md)。

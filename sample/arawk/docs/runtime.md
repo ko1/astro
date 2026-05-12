@@ -160,34 +160,51 @@ hook して、フィールド分割の invalidate や `$0` 再構築を起こす
 CTX グローバルへの単一参照 (`ARAWK_CURRENT_CTX`) も持つ。`arawk_to_cstr`
 等 CTX を引数で受け取らない runtime helper が `CONVFMT` を読むために使う。
 
-## 5. レコードとフィールド
+## 5. レコードとフィールド (lazy strnum)
 
 ```c
 struct arawk_record {
     char    *record;          /* $0 raw bytes (NUL-terminated) */
     size_t   record_len;
     VALUE    record_v;        /* $0 を VALUE で見たキャッシュ */
-    VALUE   *fields;          /* $1..$NF の strnum */
+    /* Lazy field representation. */
+    int     *field_starts;    /* record 内 offset (atomic alloc) */
+    int     *field_lens;      /* 長さ                            */
+    VALUE   *fields;          /* lazy: 0 = 未生成 sentinel        */
     int      nf;
     int      fields_capa;
-    bool     fields_split;    /* 分割済か */
+    bool     fields_split;
 };
 ```
 
+**lazy 分割**: `arawk_split_fields` は **境界 (offset, length) を 3 つの
+並列配列に記録するだけ** で、 strnum VALUE は作らない。 `$N` の初回読み
+で `arawk_get_field` が `arawk_make_strnum(record + start, len)` を作って
+`fields[N-1]` に cache。 `fields[i] == 0` が「未生成」 sentinel (heap ptr
+も `ARAWK_FIX(0) = 1` も非ゼロなので衝突しない)。
+
+これで `{ wc += NF }` のような NF だけ使うスクリプトや `$2` 1 個だけ
+読むスクリプトが全 field strnum を allocate せずに済む。 ベンチで
+tt.07 (NF だけ) は 3× 改善、 GC pressure が 1/5 になった。
+
 入力ループ (`arawk_input_next_record`) が新レコードを読むとき:
 
-1. RS 区切り (現状 `\n` 固定) で 1 レコード読み
+1. RS 区切り (現状 `\n` 固定) で 1 レコード読み (§7 の chunked reader 経由)
 2. `c->rec.record` / `record_len` を更新、`record_v = 0` (キャッシュ無効化)
 3. `NR` / `FNR` を更新
-4. `arawk_split_fields(c)` で eager に FS 分割 (= `NF` を即決定)
+4. `arawk_split_fields(c)` で eager に **boundary だけ** 記録 (= `NF` を即決定、 strnum は作らない)
 
-`arawk_split_fields` は `c->rec.fields_split` が false のときだけ走る。FS への
-代入で false に戻し、次の `$N` 読み時に再分割される。
+`arawk_split_fields` は `c->rec.fields_split` が false のときだけ走る。 `FS` への
+代入で false に戻り、 次の `$N` 読み時に再分割される。 `fields[]` も同時
+にクリアされて lazy 状態に戻る。
 
 `$N = v` での代入は `arawk_set_field(c, N, v)` 経由で:
-1. fields[] が必要なら拡張、不足するフィールドを `""` で埋める
-2. NF を更新
-3. `$0` を OFS で再構築 (`arawk_rebuild_record`)
+1. 3 並列配列を `arawk_grow_fields(c, N-1)` で拡張
+2. 不足フィールドの埋め: `field_starts[i] = 0, field_lens[i] = 0,
+   fields[i] = 0` → lazy で `""` が生成される
+3. NF を更新
+4. `$0` を OFS で再構築 (`arawk_rebuild_record`)、 `arawk_get_field`
+   経由で必要な field を materialise
 
 `NF = N` 代入は `arawk_set_nf` 経由で同様にフィールド配列を伸縮 + 再構築。
 
@@ -218,10 +235,12 @@ NODE_DEF node_call_user(c, n, fp, name, base_args, argc)
 `emit_postinc` 等) を介してノードを発行。 ローカルは `*_l`、 グローバルは
 `*_g` 接尾辞のノード (例: `node_lget` / `node_gget`)。
 
-frame ベース inline cache 未実装のため `tt.14_function_call` は遅い (0.45×
-vs gawk)。callcache 実装は perf.md の改善案 #4。
+frame ベース inline cache は未実装だが、 perf record で `arawk_resolve_body`
+の strcmp ループは hot じゃないことが判明 — 改善案 #4 (callcache) は
+仮説外れで採用見送り。 `tt.14_function_call` は for-in iterator 化 (§6.5)
+で 0.50× → 2.56× に。
 
-## 7. 入出力ストリーム
+## 7. 入出力ストリーム (chunked read)
 
 ### 出力 (`print | "cmd"`, `print > "file"`, `printf` 同上)
 
@@ -231,20 +250,35 @@ static struct arawk_stream *arawk_streams = NULL;       /* hash 表代わりの�
 FILE *arawk_open_stream(int mode, VALUE dest);        /* 'w'=popen, 'o'=fopen w, 'a'=fopen a */
 ```
 
-`print` / `print_to` / `printf_to` ノードは `mode` + dest を引数に持ち、
-runtime で stream を lookup-or-open する。プロセス終了時に
-`arawk_close_all_streams` が `pclose` / `fclose` を呼ぶ — pipe (sort 等)
-に EOF を渡して下流を完走させるために必要。
+`node_print` / `node_print_to` / `node_printf_to` は `mode` + dest を
+引数に持ち、 runtime で stream を lookup-or-open する。 プロセス終了
+時に `arawk_close_all_streams` が `pclose` / `fclose` を呼ぶ —
+pipe (sort 等) に EOF を渡して下流を完走させるために必要。
 
-### 入力 (`getline`)
+### 入力 — chunked reader
+
+```c
+struct arawk_rdbuf { char *data; size_t capa, len, pos; };  /* per-stream 64 KB */
+
+static int arawk_read_line_buf(FILE *fp, struct arawk_rdbuf *rb,
+                               char **out, size_t *out_len, size_t *out_capa);
+```
+
+入力は **per-FILE** に 64 KB の chunk バッファを持ち、 `fread` で
+丸ごと読んで `memchr('\n')` で行末を探す。 fgetc を 1 文字ずつ
+PLT 越しに呼ぶ旧実装より `_IO_getc` (18% hot) を完全に消せた。
+
+- `arawk_streams[]` / `arawk_inputs[]` の各 entry が rdbuf を保有
+- cur_input (input loop) 用は静的 `cur_input_rdbuf`、 `arawk_open_next_input` で
+  ファイル切替時に reset (`nextfile` 後の旧 buffer 残骸を捨てる)
+
+### getline 6 形態
 
 ```c
 static struct arawk_stream *arawk_inputs = NULL;        /* 入力側 cache */
 
 FILE *arawk_open_input(int mode, VALUE dest);       /* 'r'=popen, 'i'=fopen r */
 ```
-
-`getline` 6 形態それぞれに対応するノード:
 
 | 構文                | ノード                                |
 |---|---|
@@ -257,7 +291,6 @@ FILE *arawk_open_input(int mode, VALUE dest);       /* 'r'=popen, 'i'=fopen r */
 
 POSIX の更新仕様 (NR/FNR/$0/NF/FILENAME のどれを更新するか) は
 `runtime.c` の `arawk_getline_*` ヘルパが内部で正しい組み合わせを実行。
-
 `close(name)` は output / input の両 cache を順に検索する。
 
 ## 8. パーサーの構造
@@ -291,14 +324,57 @@ GC roots:
 - `parse_ctx` 等のグローバル
 - `CTX->env` / `CTX->func_set` / 各種 stream cache
 
-性能影響:
-- フィールド分割で毎レコード strnum allocate → tt.03 系 (sum_field) が遅い
-- `substr` / `concat` で毎回 fresh string → tt.11 が遅い
+`arawk_wrap_string(chars, len)` (context.h) は **既存の GC-traced buffer を
+shareする zero-copy wrapper**。 caller が buffer の所有権を保持し続ける
+ケース (典型: `for-in` で entry->key を share) で arawk_obj だけ
+allocate して `chars` を共有する。 conservative scanner が wrap obj
+経由で元 buffer を keep するので alive 期間も自動保証。
 
-改善案: フィールドの lazy strnum、 substr の copy-on-write (perf.md 改善案
-#2, #3)。
+## 10. 文字コード
 
-## 10. AOT (Code Store)
+```c
+typedef enum { ARAWK_ENC_BYTE = 0, ARAWK_ENC_UTF8 = 1 } arawk_encoding_t;
+extern arawk_encoding_t ARAWK_ENCODING;
+```
+
+gawk と同じ **LC_CTYPE 自動判定**:
+
+1. main.c で `setlocale(LC_CTYPE, "") + nl_langinfo(CODESET)`
+2. 結果に `UTF-8` / `utf-8` / `UTF8` / `utf8` が含まれれば `ENC_UTF8`
+3. `--byte` / `--posix` CLI flag で override (→ `ENC_BYTE`)
+4. プロセス全体で 1 つ; 文字列 VALUE には encoding tag を持たせない
+
+UTF-8 helper (`runtime.c`):
+
+```c
+static size_t arawk_utf8_char_count(const char *s, size_t bytes);
+static size_t arawk_utf8_byte_at_char(const char *s, size_t bytes, size_t char_pos);
+static size_t arawk_utf8_char_at_byte(const char *s, size_t bytes, size_t byte_pos);
+```
+
+`arawk_utf8_char_count` は **8 byte word stride の ASCII fast path** 付き:
+
+```c
+const uint64_t high_bit_mask = 0x8080808080808080ULL;
+while (i + 8 <= bytes) {
+    uint64_t w; memcpy(&w, s + i, 8);
+    if (w & high_bit_mask) goto utf8_slow;
+    i += 8;
+}
+/* 全 ASCII → byte 数 = codepoint 数で即 return */
+```
+
+全 ASCII の入力 (tt.* の foo.td 等) では 1 pass で済む。 UTF-8 mode に
+することによる regression は geomean -0.02 (2%) の範囲。
+
+`length` / `substr` / `index` が `ARAWK_ENCODING` で分岐。 `tolower` /
+`toupper` は POSIX 仕様準拠範囲 = ASCII のみで処理 (gawk extension の
+non-ASCII 大小化は未対応)。
+
+Phase 2 で astrogre 統合時、 `ARAWK_ENCODING` をそのまま
+`AGRE_ENC_UTF8` / `AGRE_ENC_ASCII` に渡せば regex も encoding-aware に。
+
+## 11. AOT (Code Store)
 
 `-c` フラグで `OPTIMIZE` 時に `astro_cs_compile` → `astro_cs_build` →
 `astro_cs_reload` のサイクルが走り、特定の AST サブツリーが C コード
@@ -307,22 +383,28 @@ GC roots:
 fixup される。
 
 効くケース: tree-walking dispatch + node-to-node inlining が hot な
-ループ。`tt.x2_sum_loop` (BEGIN 10M 回 fixnum 加算) で AOT 1.90× vs gawk。
+ループ。 `tt.x2_sum_loop` (BEGIN 10M 回 fixnum 加算) で AOT 1.92× vs gawk。
 
-効かないケース: runtime helper (PLT call) が hot path のとき。`tt.01_print`
-(fwrite per item)、`tt.03_sum_length` (毎行 split + GC malloc)、
-`tt.11_substr` (毎回 string allocate)、`tt.14_function_call` (関数 lookup
-strcmp) 等。これは SD bake してもインライン展開できない領域。
+効かないケース: runtime helper (PLT call) が hot path のとき。 ただし
+B (lazy strnum) / A (chunked input) / C (for-in walker) で runtime
+helper 側のコストが大幅に減ったため、 改善前は AOT が活きなかった
+tt.* テストも軒並み AOT で更に伸びるようになった。 例: tt.x2_sum_loop
+の AOT 効果は plain 0.392s → AOT 0.275s (30% 短縮)。
 
 詳細は [`perf.md`](perf.md)。
 
-## 11. 名前空間 prefix
+## 12. 名前空間 prefix
 
 将来の Phase 2 (astrogre 統合) で 1 binary に 2 つの AST interpreter を
-並存させる際の symbol 衝突を避けるため、 ノード名は **`arawk_node_*`** で
-統一済 (e.g. `node_add`, `node_call_user`)。ASTroGen が
-生成する `ALLOC_*` / `EVAL_*` / `DISPATCH_*` / `HASH_*` / `NodeKind`
-enum 値も自動的に `arawk_node_*` prefix で出る。
+並存させる際の symbol 衝突を避けるため、 識別子の規約を以下で統一済:
 
-runtime helper は `awk_*` prefix (e.g. `arawk_arr_get`, `arawk_getline_cur`)。
-astrogre 側の `agre_*` と衝突しない。
+| 種類 | prefix | 例 |
+|---|---|---|
+| AST ノード | `node_*` | `node_add`, `node_lget`, `node_getline_cur` |
+| ASTroGen 生成 | `ALLOC_node_*` 等 | `ALLOC_node_add`, `DISPATCH_node_lget` |
+| Runtime 関数 / static global / struct / enum | `arawk_*` | `arawk_to_num`, `arawk_arr_get`, `struct arawk_obj` |
+| マクロ / 定数 / public extern | `ARAWK_*` | `ARAWK_FIX`, `ARAWK_T_STRING`, `ARAWK_GLOB_NR`, `ARAWK_NODE_TABLE`, `ARAWK_CURRENT_CTX` |
+
+ソース内 `\bawk_[a-z]` で始まる識別子は存在しない (検証済)。 Phase 2 で
+astrogre と並ぶ際、 astrogre 側は `agre_*` / `AGRE_*` で対称、 ノード名は
+両者とも `node_*` で AST マージ可能な状態。
