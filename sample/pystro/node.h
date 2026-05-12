@@ -183,7 +183,22 @@ pys_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             c->env = new_env;
             c->method_class = f->func.defining_class;
             if (f->func.fglobals) c->globals = f->func.fglobals;
+            // Zero PYS_BI_KW* before body — caller may have left stale
+            // values that internal builtin calls (tuple/list ctors)
+            // would mistake as their own kwargs.
+            extern int PYS_BI_KWC;
+            extern const char **PYS_BI_KWNAMES;
+            extern VALUE *PYS_BI_KWVALUES;
+            int _saved_kwc = PYS_BI_KWC;
+            const char **_saved_kn = PYS_BI_KWNAMES;
+            VALUE *_saved_kv = PYS_BI_KWVALUES;
+            PYS_BI_KWC = 0;
+            PYS_BI_KWNAMES = NULL;
+            PYS_BI_KWVALUES = NULL;
             EVAL(c, f->func.body);
+            PYS_BI_KWC = _saved_kwc;
+            PYS_BI_KWNAMES = _saved_kn;
+            PYS_BI_KWVALUES = _saved_kv;
             c->env = saved;
             c->method_class = saved_mc;
             c->globals = saved_g;
