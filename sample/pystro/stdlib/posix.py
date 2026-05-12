@@ -359,15 +359,15 @@ def utime(path, times=None, *, ns=None, dir_fd=None, follow_symlinks=True):
 
 
 def readlink(path):
-    raise OSError("readlink not supported")
+    return __pystro_readlink__(path)
 
 
 def symlink(src, dst, target_is_directory=False, *, dir_fd=None):
-    raise OSError("symlink not supported")
+    __pystro_symlink__(src, dst)
 
 
 def link(src, dst, *, src_dir_fd=None, dst_dir_fd=None, follow_symlinks=True):
-    raise OSError("link not supported")
+    __pystro_link__(src, dst)
 
 
 def system(command):

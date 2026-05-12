@@ -16121,6 +16121,61 @@ bi_pystro_chmod(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
+bi_pystro_symlink(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    argv[1] = pys_fspath(c, argv[1]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    if (!pys_is_str(argv[0]) || !pys_is_str(argv[1]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "symlink: paths must be str");
+    size_t L0 = PYS_PTR(argv[0])->str.len, L1 = PYS_PTR(argv[1])->str.len;
+    char *src = (char *)alloca(L0 + 1); char *dst = (char *)alloca(L1 + 1);
+    memcpy(src, PYS_PTR(argv[0])->str.chars, L0); src[L0] = '\0';
+    memcpy(dst, PYS_PTR(argv[1])->str.chars, L1); dst[L1] = '\0';
+    if (symlink(src, dst) != 0)
+        PYS_RAISE_EXC(c, c->EXC_OSError, "symlink: %s: %s", dst, strerror(errno));
+    return PYS_NONE;
+}
+
+static VALUE
+bi_pystro_readlink(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    if (!pys_is_str(argv[0]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "readlink: path must be str");
+    size_t L = PYS_PTR(argv[0])->str.len;
+    char *buf = (char *)alloca(L + 1);
+    memcpy(buf, PYS_PTR(argv[0])->str.chars, L); buf[L] = '\0';
+    char out[4096];
+    ssize_t n = readlink(buf, out, sizeof(out) - 1);
+    if (n < 0) PYS_RAISE_EXC(c, c->EXC_OSError, "readlink: %s: %s", buf, strerror(errno));
+    return pys_make_str(out, (size_t)n);
+}
+
+static VALUE
+bi_pystro_link(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    argv[0] = pys_fspath(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    argv[1] = pys_fspath(c, argv[1]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    if (!pys_is_str(argv[0]) || !pys_is_str(argv[1]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "link: paths must be str");
+    size_t L0 = PYS_PTR(argv[0])->str.len, L1 = PYS_PTR(argv[1])->str.len;
+    char *src = (char *)alloca(L0 + 1); char *dst = (char *)alloca(L1 + 1);
+    memcpy(src, PYS_PTR(argv[0])->str.chars, L0); src[L0] = '\0';
+    memcpy(dst, PYS_PTR(argv[1])->str.chars, L1); dst[L1] = '\0';
+    if (link(src, dst) != 0)
+        PYS_RAISE_EXC(c, c->EXC_OSError, "link: %s: %s", dst, strerror(errno));
+    return PYS_NONE;
+}
+
+static VALUE
 bi_pystro_lseek(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
@@ -17410,6 +17465,9 @@ install_builtins(CTX *c)
     pys_global_define(c, "__pystro_fstat__",       pys_make_builtin("__pystro_fstat__",       bi_pystro_fstat,       1, 1));
     pys_global_define(c, "__pystro_lseek__",       pys_make_builtin("__pystro_lseek__",       bi_pystro_lseek,       3, 3));
     pys_global_define(c, "__pystro_chmod__",       pys_make_builtin("__pystro_chmod__",       bi_pystro_chmod,       2, 2));
+    pys_global_define(c, "__pystro_symlink__",     pys_make_builtin("__pystro_symlink__",     bi_pystro_symlink,     2, 2));
+    pys_global_define(c, "__pystro_readlink__",    pys_make_builtin("__pystro_readlink__",    bi_pystro_readlink,    1, 1));
+    pys_global_define(c, "__pystro_link__",        pys_make_builtin("__pystro_link__",        bi_pystro_link,        2, 2));
     pys_global_define(c, "__pystro_mktime__",      pys_make_builtin("__pystro_mktime__",      bi_pystro_mktime,      1, 1));
     pys_global_define(c, "__pystro_system__",      pys_make_builtin("__pystro_system__",      bi_pystro_system,      1, 1));
     pys_global_define(c, "__pystro_abspath__",     pys_make_builtin("__pystro_abspath__",     bi_pystro_abspath,     1, 1));
