@@ -151,4 +151,14 @@ def get_preferred_scheme(key):
     return _get_preferred_schemes().get(key, "posix_prefix")
 
 
+def _main():
+    """CPython's `python -m sysconfig` entry point — pystro just prints
+    a few summary lines."""
+    import sys
+    print(f"Platform: {get_platform()}")
+    print(f"Python version: {get_python_version()}")
+    for k, v in get_config_vars().items():
+        print(f"  {k}: {v}")
+
+
 _PYTHON_BUILD = False

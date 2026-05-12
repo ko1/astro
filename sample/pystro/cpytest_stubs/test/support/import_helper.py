@@ -96,6 +96,18 @@ def unlink(filename):
         pass
 
 
+def ready_to_import(name, source=None):
+    """CPython test helper: creates a context where importing `name`
+    will read from a fresh temporary file containing `source`.  Pystro
+    skips this rather than building a temp module."""
+    class _Ctx:
+        def __enter__(self):
+            return name, "<tempfile>"
+        def __exit__(self, *exc):
+            return False
+    return _Ctx()
+
+
 def uncache(*names):
     """Context manager that removes given module names from sys.modules
     on entry and restores them on exit."""
