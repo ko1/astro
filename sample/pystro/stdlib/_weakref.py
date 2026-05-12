@@ -6,17 +6,31 @@ for; refs never spontaneously become None, but user code that does
 `ref() is None` only after explicit `del` still works."""
 
 
-class ReferenceType:
+class ref:
+    """CPython exposes `ref` as a class (so `class KeyedRef(ref):` works).
+    pystro doesn't track weak references — Boehm's conservative scanner
+    keeps anything reachable — but we expose the API surface used by
+    `weakref.py` (`__call__` to fetch referent, `__hash__`, `__eq__`)."""
     __slots__ = ("_target", "_callback")
     def __init__(self, target, callback=None):
         self._target = target
         self._callback = callback
+    def __new__(cls, target, callback=None, *a, **kw):
+        # CPython's ref.__new__ accepts subclass extra args (KeyedRef has
+        # a 3rd `key` positional).  Discard them; subclass __init__ /
+        # __new__ takes care of attribute setup.
+        obj = object.__new__(cls)
+        return obj
     def __call__(self):
         return self._target
     def __hash__(self):
         return hash(id(self._target))
     def __eq__(self, other):
-        return isinstance(other, ReferenceType) and self._target is other._target
+        return isinstance(other, ref) and self._target is other._target
+
+
+# Back-compat alias — CPython's `weakref.ReferenceType` IS `_weakref.ref`.
+ReferenceType = ref
 
 
 class ProxyType:
@@ -31,10 +45,6 @@ class ProxyType:
 
 class CallableProxyType(ProxyType):
     pass
-
-
-def ref(target, callback=None):
-    return ReferenceType(target, callback)
 
 
 def proxy(target, callback=None):
