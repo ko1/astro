@@ -552,6 +552,7 @@ __all__ = [
     "WCOREDUMP", "SEEK_SET", "SEEK_CUR", "SEEK_END",
     "register_at_fork",
     "sep", "altsep", "extsep", "pathsep", "defpath", "linesep", "devnull",
+    "uname", "uname_result", "fspath",
 ]
 
 
