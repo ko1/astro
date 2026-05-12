@@ -9247,30 +9247,41 @@ lm_sort(CTX *c, int argc, VALUE *argv)
     VALUE key_fn = pys_bi_kwarg("key");
     VALUE rev_v  = pys_bi_kwarg("reverse");
     bool reverse = (rev_v == PYS_TRUE);
+    // CPython detects list mutation during sort and raises ValueError.
+    // Snapshot the initial size + items pointer; if either changes,
+    // some callback modified the list and we abort.
+    size_t orig_len = o->list.len;
+    VALUE *orig_items = o->list.items;
     // Pre-compute sort keys when key_fn is set (Schwartzian transform).
     VALUE *keys = NULL;
     if (key_fn) {
-        keys = (VALUE *)GC_malloc(sizeof(VALUE) * (o->list.len ? o->list.len : 1));
-        for (size_t i = 0; i < o->list.len; i++) {
-            keys[i] = pys_apply(c, key_fn, 1, &o->list.items[i]);
+        keys = (VALUE *)GC_malloc(sizeof(VALUE) * (orig_len ? orig_len : 1));
+        for (size_t i = 0; i < orig_len; i++) {
+            keys[i] = pys_apply(c, key_fn, 1, &orig_items[i]);
             if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
+            if (o->list.len != orig_len || o->list.items != orig_items)
+                PYS_RAISE_EXC(c, c->EXC_ValueError,
+                    "list modified during sort");
         }
     }
     // Insertion sort over items[] using keys[] for comparison.
-    for (size_t i = 1; i < o->list.len; i++) {
-        VALUE xv = o->list.items[i];
+    for (size_t i = 1; i < orig_len; i++) {
+        VALUE xv = orig_items[i];
         VALUE xk = keys ? keys[i] : xv;
         size_t j = i;
         while (j > 0) {
-            VALUE prev_k = keys ? keys[j - 1] : o->list.items[j - 1];
+            VALUE prev_k = keys ? keys[j - 1] : orig_items[j - 1];
             int cmp = pys_cmp(c, prev_k, xk);
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return PYS_NONE;
+            if (o->list.len != orig_len || o->list.items != orig_items)
+                PYS_RAISE_EXC(c, c->EXC_ValueError,
+                    "list modified during sort");
             if (reverse ? (cmp >= 0) : (cmp <= 0)) break;
-            o->list.items[j] = o->list.items[j - 1];
+            orig_items[j] = orig_items[j - 1];
             if (keys) keys[j] = keys[j - 1];
             j--;
         }
-        o->list.items[j] = xv;
+        orig_items[j] = xv;
         if (keys) keys[j] = xk;
     }
     return PYS_NONE;
