@@ -74,6 +74,22 @@ class IPv4Address(_BaseAddress):
 class IPv6Address(_BaseAddress):
     _version = 6
     _max_prefixlen = 128
+
+    def __init__(self, address):
+        # Scope id: `fe80::1%eth0` — split on `%`, parse rest, store scope.
+        self._scope_id = None
+        if isinstance(address, str) and "%" in address:
+            addr, sep, scope = address.partition("%")
+            if not scope or "%" in scope:
+                raise AddressValueError(f"Invalid IPv6 address: {address!r}")
+            self._scope_id = scope
+            address = addr
+        super().__init__(address)
+
+    @property
+    def scope_id(self):
+        return self._scope_id
+
     @staticmethod
     def _parse(s):
         # Very minimal: handle "::", "1::", "::1", or hex with colons.
@@ -94,7 +110,10 @@ class IPv6Address(_BaseAddress):
     def __str__(self):
         x = self._ip
         parts = [(x >> (16 * (7 - i))) & 0xFFFF for i in range(8)]
-        return ":".join(f"{p:x}" for p in parts)
+        s = ":".join(f"{p:x}" for p in parts)
+        if self._scope_id:
+            s += "%" + self._scope_id
+        return s
     @property
     def packed(self):
         x = self._ip
