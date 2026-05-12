@@ -898,9 +898,21 @@ parse_fstring_payload(const char *s, size_t len)
             Tok   *saved_tok_arr = tok_arr;
             size_t saved_tok_len = tok_len, saved_tok_capa = tok_capa, saved_tok_pos = tok_pos;
 
-            char *expr_src = (char *)GC_malloc_atomic(expr_end - i);
-            memcpy(expr_src, s + i + 1, expr_end - i - 1);
-            expr_src[expr_end - i - 1] = '\0';
+            // Strip leading whitespace + newlines so the tokenizer
+            // doesn't emit a spurious T_INDENT at the start (e.g.
+            // format spec `{value:{ 1}}` recurses with body ` 1`).
+            size_t es_start = i + 1;
+            size_t es_end = expr_end;
+            while (es_start < es_end && (s[es_start] == ' ' || s[es_start] == '\t'
+                                         || s[es_start] == '\n' || s[es_start] == '\r'))
+                es_start++;
+            while (es_end > es_start && (s[es_end-1] == ' ' || s[es_end-1] == '\t'
+                                         || s[es_end-1] == '\n' || s[es_end-1] == '\r'))
+                es_end--;
+            size_t es_len = es_end - es_start;
+            char *expr_src = (char *)GC_malloc_atomic(es_len + 1);
+            memcpy(expr_src, s + es_start, es_len);
+            expr_src[es_len] = '\0';
             tokenize(expr_src, src_filename);
             NODE *expr = parse_expr();
 
