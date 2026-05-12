@@ -41,6 +41,15 @@ EXTENSION_SUFFIXES = []
 SOURCE_SUFFIXES = [".py"]
 BYTECODE_SUFFIXES = [".pyc"]
 
+# Path separator constants used by importlib's bootstrap code.
+import os as _os
+path_sep = _os.sep
+path_separators = [_os.sep]
+if _os.altsep:
+    path_separators.append(_os.altsep)
+_path_separators = "".join(path_separators)
+del _os
+
 
 def _unpack_uint16(data):
     return int.from_bytes(data[:2], "little")
