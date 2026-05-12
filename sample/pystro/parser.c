@@ -910,9 +910,26 @@ parse_fstring_payload(const char *s, size_t len)
                                          || s[es_end-1] == '\n' || s[es_end-1] == '\r'))
                 es_end--;
             size_t es_len = es_end - es_start;
-            char *expr_src = (char *)GC_malloc_atomic(es_len + 1);
-            memcpy(expr_src, s + es_start, es_len);
-            expr_src[es_len] = '\0';
+            // If the expression body contains a newline (multi-line
+            // f-string expression — PEP 701), wrap it in parentheses
+            // so tokenize() treats the body as one logical line and
+            // doesn't emit T_NEWLINE / T_INDENT between expr atoms.
+            bool wrap_paren = false;
+            for (size_t k = es_start; k < es_end; k++) {
+                if (s[k] == '\n') { wrap_paren = true; break; }
+            }
+            char *expr_src;
+            if (wrap_paren) {
+                expr_src = (char *)GC_malloc_atomic(es_len + 3);
+                expr_src[0] = '(';
+                memcpy(expr_src + 1, s + es_start, es_len);
+                expr_src[1 + es_len] = ')';
+                expr_src[2 + es_len] = '\0';
+            } else {
+                expr_src = (char *)GC_malloc_atomic(es_len + 1);
+                memcpy(expr_src, s + es_start, es_len);
+                expr_src[es_len] = '\0';
+            }
             tokenize(expr_src, src_filename);
             NODE *expr = parse_expr();
 

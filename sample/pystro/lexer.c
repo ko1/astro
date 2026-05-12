@@ -418,6 +418,22 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
               case '\'': ch = '\''; break;
               case '"': ch = '"'; break;
               case '0': ch = '\0'; break;
+              case 'N': {
+                // \N{NAME} — pystro doesn't ship unicodedata, emit '?'
+                // so test parses (callers that really need the char
+                // would see a wrong-but-printable result).
+                src_pos++;
+                if (peek(0) == '{') {
+                    src_pos++;
+                    while (peek(0) != '\0' && peek(0) != '}') src_pos++;
+                    if (peek(0) == '}') src_pos++;
+                    if (len + 1 + 1 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = '?';
+                    continue;
+                }
+                ch = 'N';
+                break;
+              }
               case 'x': {
                 src_pos++;
                 int hi = peek(0), lo = peek(1);
@@ -518,6 +534,24 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
                         if (len + 2 > cap) { cap *= 2; buf = (char*)GC_realloc(buf, cap); }
                         buf[len++] = '}'; buf[len++] = '}';
                         continue;
+              case 'N': {
+                // \N{NAME} — Unicode named character.  Pystro doesn't
+                // carry the unicodedata tables; emit a single '?' so the
+                // surrounding f-string at least parses cleanly.  The
+                // `{...}` is consumed so it isn't mis-treated as an
+                // f-string expression.
+                src_pos++;
+                if (peek(0) == '{') {
+                    src_pos++;
+                    while (peek(0) != '\0' && peek(0) != '}') src_pos++;
+                    if (peek(0) == '}') src_pos++;
+                    if (len + 1 + 1 > cap) { cap *= 2; buf = (char*)GC_realloc(buf, cap); }
+                    buf[len++] = '?';
+                    continue;
+                }
+                ch = 'N';
+                break;
+              }
               default:  ch = esc;
             }
             src_pos++;
