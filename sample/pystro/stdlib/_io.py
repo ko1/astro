@@ -159,6 +159,54 @@ class TextIOWrapper(TextIOBase):
     def __init__(self, buffer, *a, **k):
         self.buffer = buffer
         self.encoding = k.get("encoding", "utf-8")
+        self.errors = k.get("errors", "strict")
+        self.newline = k.get("newline", None)
+        self._closed = False
+
+    def _decode(self, b):
+        if isinstance(b, str): return b
+        if isinstance(b, (bytes, bytearray)):
+            try: return bytes(b).decode(self.encoding, self.errors)
+            except Exception: return ""
+        return str(b)
+
+    def read(self, size=-1):
+        return self._decode(self.buffer.read(size))
+
+    def readline(self, size=-1):
+        return self._decode(self.buffer.readline())
+
+    def readlines(self, hint=-1):
+        return self.read().splitlines(keepends=True)
+
+    def write(self, s):
+        if isinstance(s, str):
+            self.buffer.write(s.encode(self.encoding, self.errors))
+        else:
+            self.buffer.write(bytes(s))
+        return len(s)
+
+    def writable(self): return True
+    def readable(self): return True
+    def seekable(self): return getattr(self.buffer, "seekable", lambda: False)()
+    def seek(self, *a): return self.buffer.seek(*a)
+    def tell(self): return self.buffer.tell()
+    def flush(self):
+        try: return self.buffer.flush()
+        except AttributeError: return None
+    def close(self):
+        self._closed = True
+        try: self.buffer.close()
+        except AttributeError: pass
+    @property
+    def closed(self): return self._closed
+    def __iter__(self):
+        while True:
+            line = self.readline()
+            if not line: break
+            yield line
+    def __enter__(self): return self
+    def __exit__(self, *exc): self.close(); return False
 
 
 class IncrementalNewlineDecoder:
