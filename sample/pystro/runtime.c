@@ -12286,6 +12286,12 @@ fm_readline(CTX *c, int argc, VALUE *argv)
         buf[len++] = (char)ch;
         if (ch == '\n') break;
     }
+    if (o->file.binary) {
+        struct pysobj *bo = pys_alloc(PYS_T_BYTES);
+        bo->str.chars = buf;
+        bo->str.len = len;
+        return PYS_OBJ_VAL(bo);
+    }
     return pys_make_str(buf, len);
 }
 
@@ -12296,7 +12302,8 @@ fm_readlines(CTX *c, int argc, VALUE *argv)
     VALUE r = pys_make_list(NULL, 0);
     for (;;) {
         VALUE line = fm_readline(c, 1, argv);
-        if (!pys_is_str(line) || PYS_PTR(line)->str.len == 0) break;
+        if (!(pys_is_str(line) || pys_is_byteseq(line))
+            || PYS_PTR(line)->str.len == 0) break;
         pys_list_append(c, r, line);
     }
     return r;
@@ -13062,6 +13069,14 @@ static VALUE
 bi_ord(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
+    // CPython parity: ord() also accepts a length-1 bytes / bytearray.
+    if (pys_is_byteseq(argv[0])) {
+        size_t bL = PYS_PTR(argv[0])->str.len;
+        if (bL != 1)
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                "ord() expected a character, but string of length %zu found", bL);
+        return PYS_FIX((unsigned char)PYS_PTR(argv[0])->str.chars[0]);
+    }
     if (!pys_is_str(argv[0]))
         PYS_RAISE_EXC(c, c->EXC_TypeError, "ord() expected str");
     const unsigned char *s = (const unsigned char *)PYS_PTR(argv[0])->str.chars;
