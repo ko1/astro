@@ -77,10 +77,53 @@ class _CodecInfo:
         return None
     @property
     def streamwriter(self):
-        return None
+        # Minimal StreamWriter wrapper around any byte sink that has
+        # .write(bytes). It encodes a str input then forwards to the
+        # underlying stream. CPython codecs return a class; we return a
+        # factory class.
+        info = self
+        class _StreamWriter:
+            def __init__(self, stream, errors="strict"):
+                self.stream = stream
+                self.errors = errors
+            def write(self, s):
+                if isinstance(s, str):
+                    encoded, _ = info.encode(s, self.errors)
+                    self.stream.write(encoded)
+                else:
+                    self.stream.write(s)
+            def writelines(self, lines):
+                for line in lines: self.write(line)
+            def flush(self):
+                f = getattr(self.stream, "flush", None)
+                if callable(f): f()
+            def close(self):
+                f = getattr(self.stream, "close", None)
+                if callable(f): f()
+            def __enter__(self): return self
+            def __exit__(self, *a): self.close(); return False
+        return _StreamWriter
     @property
     def streamreader(self):
-        return None
+        info = self
+        class _StreamReader:
+            def __init__(self, stream, errors="strict"):
+                self.stream = stream
+                self.errors = errors
+            def read(self, size=-1):
+                data = self.stream.read(size)
+                decoded, _ = info.decode(data, self.errors)
+                return decoded
+            def readline(self, size=-1):
+                ln = self.stream.readline()
+                decoded, _ = info.decode(ln, self.errors)
+                return decoded
+            def close(self):
+                f = getattr(self.stream, "close", None)
+                if callable(f): f()
+            def __enter__(self): return self
+            def __exit__(self, *a): self.close(); return False
+        return _StreamReader
 
 
 # Per-codec encode/decode pairs.
