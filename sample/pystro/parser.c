@@ -4724,6 +4724,20 @@ parse_simple_stmt(void)
         }
         dotted[dn] = '\0';
         expect(T_IMPORT, "'import'");
+        if (peek_tok(0)->kind == T_STAR) {
+            // `from m import *` — desugar to import_star(__pystro_import__(m))
+            // without binding a temp name into the caller's globals
+            // (`from X import *` shouldn't leave a stray __modNNN in the
+            // namespace — test___all__'s `from X import *` then compare
+            // keys against __all__ checks this).
+            tok_pos++;
+            NODE *imp = ALLOC_node_call_1(
+                ALLOC_node_gref(intern_name("__pystro_import__", 17)),
+                ALLOC_node_const_str(intern_name(dotted, dn)));
+            return ALLOC_node_call_1(
+                ALLOC_node_gref(intern_name("__pystro_import_star__", 22)),
+                imp);
+        }
         const char *tmp = new_temp_name("__mod");
         NODE *load_tmp;
         NODE *init = build_temp_init(tmp,
@@ -4732,16 +4746,6 @@ parse_simple_stmt(void)
                 ALLOC_node_const_str(intern_name(dotted, dn))),
             &load_tmp);
         NODE *result = init;
-        if (peek_tok(0)->kind == T_STAR) {
-            // `from m import *` — desugar to a builtin call that walks
-            // the module's globals and binds each non-underscore name
-            // into the current globals.
-            tok_pos++;
-            NODE *star = ALLOC_node_call_1(
-                ALLOC_node_gref(intern_name("__pystro_import_star__", 22)),
-                load_tmp);
-            return ALLOC_node_seq(result, star);
-        }
         // Parenthesised import list `from m import (a, b, c)` — strip
         // the surrounding parens and let trailing-comma + newline-inside
         // be ignored.  Tokens inside () are already produced normally.

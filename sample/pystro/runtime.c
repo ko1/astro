@@ -15855,11 +15855,31 @@ bi_import_star(CTX *c, int argc, VALUE *argv)
             VALUE nm = PYS_PTR(all)->list.items[i];
             if (!pys_is_str(nm)) continue;
             const char *cname = PYS_PTR(nm)->str.chars;
+            bool found = false;
             for (size_t j = 0; j < g->size; j++) {
                 if (g->entries[j].defined && strcmp(g->entries[j].name, cname) == 0) {
                     pys_global_set(c, cname, g->entries[j].value);
+                    found = true;
                     break;
                 }
+            }
+            // CPython parity: a name in __all__ that's not in the
+            // module's own globals can still be resolved by looking
+            // it up via the module's getattr (covers names re-bound
+            // to a builtin like `BlockingIOError = BlockingIOError`
+            // which pystro may have marked undefined, and CPython's
+            // PEP 562 module __getattr__ hook).
+            if (!found) {
+                // Try the module's full attribute lookup (PEP 562 hook,
+                // builtins fall-through, etc.).  Save state to suppress
+                // any raise the lookup might trigger.
+                int saved_state = c->state;
+                VALUE saved_value = c->state_value;
+                VALUE v = pys_getattr(c, mod, cname);
+                bool ok = (c->state != PYS_STATE_RAISE);
+                c->state = saved_state;
+                c->state_value = saved_value;
+                if (ok && v) pys_global_set(c, cname, v);
             }
         }
     } else {
