@@ -5581,6 +5581,14 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             return PYS_OBJ_VAL(d);
         }
         if (strcmp(name, "__class__") == 0) return c->TYPE_function;
+        // CPython: function objects expose __new__ / __init__ via the
+        // metaclass `type`.  Tests probe these (test_genericalias
+        // does `super().__new__(cls, ...)` and reaches func.__new__).
+        // Return a sentinel callable so the lookup doesn't crash.
+        if (strcmp(name, "__new__") == 0) {
+            extern VALUE bi_object_new(CTX *c, int argc, VALUE *argv);
+            return pys_make_builtin("__new__", bi_object_new, 1, 32);
+        }
         if (o->func.attrs) {
             VALUE key = pys_make_str(name, strlen(name));
             uint64_t h = pys_hash(c, key);
