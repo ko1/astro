@@ -287,16 +287,22 @@ class Match:
         self._start = start
         self._end = end
         self._groups = groups or []
+        self._is_bytes = False
+    def _b(self, v):
+        if v is None: return None
+        if self._is_bytes and isinstance(v, str):
+            return v.encode("latin-1")
+        return v
     def group(self, *args):
         if not args:
-            return self._s[self._start:self._end]
+            return self._b(self._s[self._start:self._end])
         if len(args) == 1:
             n = args[0]
-            if n == 0: return self._s[self._start:self._end]
-            return self._groups[n - 1]
+            if n == 0: return self._b(self._s[self._start:self._end])
+            return self._b(self._groups[n - 1])
         return tuple(self.group(a) for a in args)
     def groups(self, default=None):
-        return tuple((g if g is not None else default) for g in self._groups)
+        return tuple((self._b(g) if g is not None else default) for g in self._groups)
     def start(self, n=0):
         return self._start
     def end(self, n=0):
@@ -342,15 +348,102 @@ def _strip_verbose(pat):
     return "".join(out)
 
 
+def _count_groups(pat):
+    """Count capturing groups in a pattern (skip (?:...), [...], \\(...)."""
+    n = 0
+    i = 0
+    L = len(pat)
+    while i < L:
+        c = pat[i]
+        if c == "\\" and i + 1 < L:
+            i += 2
+            continue
+        if c == "[":
+            j = pat.find("]", i + 1)
+            i = (j + 1) if j >= 0 else L
+            continue
+        if c == "(":
+            # Non-capturing variants: (?:, (?P=, (?P<, (?=, (?!, (?<=, (?<!, (?#, (?P>
+            if i + 1 < L and pat[i + 1] == "?":
+                if i + 2 < L and pat[i + 2] == "P" and i + 3 < L and pat[i + 3] == "<":
+                    n += 1  # named group (?P<name>...)
+            else:
+                n += 1
+            i += 1
+            continue
+        i += 1
+    return n
+
+
+def _build_group_map(pat):
+    """Return dict mapping `(` position in pat to absolute group index
+    (1-based for capturing groups, missing for non-capturing).
+
+    Note: the engine usually receives a *sub-pattern* (e.g. body of a
+    parent group), so positions are relative to that subpattern.  We
+    rebuild the map for each parent and pass it through `_match_here`
+    so children can look up their absolute index.
+    """
+    out = {}
+    idx = 0
+    i = 0
+    L = len(pat)
+    while i < L:
+        c = pat[i]
+        if c == "\\" and i + 1 < L:
+            i += 2
+            continue
+        if c == "[":
+            j = pat.find("]", i + 1)
+            i = (j + 1) if j >= 0 else L
+            continue
+        if c == "(":
+            if i + 1 < L and pat[i + 1] == "?":
+                # (?P<...) is capturing; others are not
+                if i + 2 < L and pat[i + 2] == "P" and i + 3 < L and pat[i + 3] == "<":
+                    idx += 1
+                    out[i] = idx
+            else:
+                idx += 1
+                out[i] = idx
+            i += 1
+            continue
+        i += 1
+    return out
+
+
 class Pattern:
     def __init__(self, pat, flags=0):
         # PEP-related: VERBOSE / re.X flag strips whitespace and comments
         # before regex engine sees the pattern.  Real CPython does this
         # at compile-time too.
+        self._is_bytes = isinstance(pat, (bytes, bytearray))
+        if self._is_bytes:
+            pat = bytes(pat).decode("latin-1")
         if flags & VERBOSE:
             pat = _strip_verbose(pat)
         self.pattern = pat
         self.flags = flags
+        self._n_groups = _count_groups(pat)
+
+    @property
+    def groups(self):
+        return self._n_groups
+
+    def _coerce(self, s):
+        if self._is_bytes and isinstance(s, (bytes, bytearray)):
+            return bytes(s).decode("latin-1")
+        return s
+
+    def _wrap(self, m, s):
+        if m is None: return None
+        if self._is_bytes:
+            m._is_bytes = True
+        # Pad groups list to declared count (alternatives may have left
+        # later groups unset).
+        while len(m._groups) < self._n_groups:
+            m._groups.append(None)
+        return m
 
     def _try_at(self, s, pos):
         pat = self.pattern
@@ -363,19 +456,22 @@ class Pattern:
         return None
 
     def match(self, s, pos=0, endpos=None):
-        return self._try_at(s, pos)
+        s = self._coerce(s)
+        return self._wrap(self._try_at(s, pos), s)
 
     def fullmatch(self, s, pos=0, endpos=None):
-        m = self.match(s, pos)
-        if m and m._end == len(s): return m
+        s = self._coerce(s)
+        m = self._try_at(s, pos)
+        if m and m._end == len(s): return self._wrap(m, s)
         return None
 
     def search(self, s, pos=0, endpos=None):
+        s = self._coerce(s)
         if self.pattern.startswith("^"):
-            return self.match(s, pos)
+            return self._wrap(self._try_at(s, pos), s)
         for i in range(pos, len(s) + 1):
             m = self._try_at(s, i)
-            if m: return m
+            if m: return self._wrap(m, s)
         return None
 
     def findall(self, s, pos=0, endpos=None):

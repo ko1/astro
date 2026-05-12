@@ -43,9 +43,19 @@ def fdopen(fd, mode="r"):
     return None
 
 
-def stat(path):
-    # Minimal: return a tuple-like structure with size/mtime.
-    return None
+def stat(path, *, dir_fd=None, follow_symlinks=True):
+    import posix
+    return posix.stat(path, follow_symlinks=follow_symlinks)
+
+
+def lstat(path, *, dir_fd=None):
+    import posix
+    return posix.lstat(path)
+
+
+def fstat(fd):
+    import posix
+    return posix.fstat(fd)
 
 # A simple mapping wrapper.
 class _Environ:

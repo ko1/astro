@@ -12222,13 +12222,14 @@ fm_read(CTX *c, int argc, VALUE *argv)
     size_t cap = 4096, len = 0;
     char *buf = (char *)GC_malloc_atomic(cap);
     while (limit < 0 || (long)len < limit) {
-        size_t want = (limit < 0) ? (cap - len) : ((size_t)limit - len);
-        if (want == 0) break;
-        if (len + want > cap) {
-            cap = (len + want) * 2;
+        if (len == cap) {
+            cap *= 2;
             char *nb = (char *)GC_malloc_atomic(cap);
             memcpy(nb, buf, len); buf = nb;
         }
+        size_t want = (limit < 0) ? (cap - len) : ((size_t)limit - len);
+        if (want > cap - len) want = cap - len;
+        if (want == 0) break;
         size_t n = fread(buf + len, 1, want, fp);
         if (n == 0) break;
         len += n;
