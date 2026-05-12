@@ -578,9 +578,11 @@ node_in_arr(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *key,
     return RESULT_OK(arawk_arr_has(av, ks, klen) ? ARAWK_FIX(1) : ARAWK_FIX(0));
 }
 
-// `for (k in arr) body` — iterate over array keys.  Snapshot keys
-// up-front so mutation during iteration is safe (real awk's order is
-// implementation-defined; we preserve insertion-bucket order).
+// `for (k in arr) body` — iterate over array keys by walking buckets
+// directly.  POSIX says iter order is implementation-defined and
+// mutation during iteration is undefined behaviour, so we don't need
+// to snapshot upfront.  We do peek `e->next` *before* running the
+// body so a `delete a[k]` on the current entry stays safe.
 NODE_DEF
 node_for_in(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t key_slot, uint32_t arr_slot, NODE *body)
 {
@@ -590,22 +592,18 @@ node_for_in(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t k
     struct arawk_obj *o = ARAWK_PTR(av);
     if (o->type != ARAWK_T_ARRAY) return RESULT_OK(ARAWK_FIX(0));
 
-    // Snapshot keys.
-    size_t cnt = o->arr.entry_cnt;
-    VALUE *keys = (VALUE *)GC_malloc(sizeof(VALUE) * (cnt ? cnt : 1));
-    size_t k = 0;
     for (size_t i = 0; i < o->arr.bucket_cnt; i++) {
-        for (struct arawk_array_entry *e = o->arr.buckets[i]; e; e = e->next) {
-            if (k < cnt) keys[k++] = arawk_make_string(e->key, e->key_len);
-        }
-    }
-    for (size_t i = 0; i < k; i++) {
-        fp[key_slot] = keys[i];
-        RESULT r = EVAL_ARG(c, body);
-        if (UNLIKELY(r.state != RESULT_NORMAL)) {
-            if (r.state == RESULT_BREAK)    break;
-            if (r.state == RESULT_CONTINUE) continue;
-            return r;
+        struct arawk_array_entry *e = o->arr.buckets[i];
+        while (e) {
+            struct arawk_array_entry *next = e->next;
+            fp[key_slot] = arawk_make_string(e->key, e->key_len);
+            RESULT r = EVAL_ARG(c, body);
+            if (UNLIKELY(r.state != RESULT_NORMAL)) {
+                if (r.state == RESULT_BREAK)    return RESULT_OK(ARAWK_FIX(0));
+                if (r.state == RESULT_CONTINUE) { e = next; continue; }
+                return r;
+            }
+            e = next;
         }
     }
     return RESULT_OK(ARAWK_FIX(0));
@@ -980,27 +978,24 @@ node_in_arr_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *ke
 NODE_DEF
 node_for_in_g(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, uint32_t key_slot, uint32_t arr_slot, NODE *body)
 {
-    (void)n;
+    (void)n; (void)fp;
     VALUE av = c->env[arr_slot];
     if (av == ARAWK_UNINIT) return RESULT_OK(ARAWK_FIX(0));
     struct arawk_obj *o = ARAWK_PTR(av);
     if (o->type != ARAWK_T_ARRAY) return RESULT_OK(ARAWK_FIX(0));
 
-    size_t cnt = o->arr.entry_cnt;
-    VALUE *keys = (VALUE *)GC_malloc(sizeof(VALUE) * (cnt ? cnt : 1));
-    size_t k = 0;
     for (size_t i = 0; i < o->arr.bucket_cnt; i++) {
-        for (struct arawk_array_entry *e = o->arr.buckets[i]; e; e = e->next) {
-            if (k < cnt) keys[k++] = arawk_make_string(e->key, e->key_len);
-        }
-    }
-    for (size_t i = 0; i < k; i++) {
-        c->env[key_slot] = keys[i];
-        RESULT r = EVAL_ARG(c, body);
-        if (UNLIKELY(r.state != RESULT_NORMAL)) {
-            if (r.state == RESULT_BREAK)    break;
-            if (r.state == RESULT_CONTINUE) continue;
-            return r;
+        struct arawk_array_entry *e = o->arr.buckets[i];
+        while (e) {
+            struct arawk_array_entry *next = e->next;
+            c->env[key_slot] = arawk_make_string(e->key, e->key_len);
+            RESULT r = EVAL_ARG(c, body);
+            if (UNLIKELY(r.state != RESULT_NORMAL)) {
+                if (r.state == RESULT_BREAK)    return RESULT_OK(ARAWK_FIX(0));
+                if (r.state == RESULT_CONTINUE) { e = next; continue; }
+                return r;
+            }
+            e = next;
         }
     }
     return RESULT_OK(ARAWK_FIX(0));
