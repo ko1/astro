@@ -13,7 +13,7 @@ def check_warnings(*filters, quiet=True):
     return WarningsRecorder()
 
 
-def check_no_warnings(test_case):
+def check_no_warnings(test_case, *args, **kwargs):
     class _NoOp:
         def __enter__(self): return self
         def __exit__(self, *exc): return False
