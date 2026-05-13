@@ -6891,8 +6891,30 @@ pys_fmt_double(char *buf, size_t bufsz, double d)
     }
 }
 
+// Bounded display recursion depth.  Without this, repr() of a deeply
+// nested list / dict / set / tuple blows the C stack.  CPython raises
+// RecursionError; we set the CTX state so callers can pick it up.
+static __thread int pys_display_depth = 0;
+#define PYS_DISPLAY_DEPTH_LIMIT 250
+static void pys_display_inner(FILE *fp, VALUE v, bool repr);
 void
 pys_display(FILE *fp, VALUE v, bool repr)
+{
+    if (UNLIKELY(pys_display_depth >= PYS_DISPLAY_DEPTH_LIMIT)) {
+        extern CTX *pys_current_ctx;
+        if (pys_current_ctx && pys_current_ctx->state != PYS_STATE_RAISE) {
+            pys_raise_exc(pys_current_ctx, pys_current_ctx->EXC_RecursionError,
+                         "maximum recursion depth exceeded");
+        }
+        fputs("...", fp);
+        return;
+    }
+    pys_display_depth++;
+    pys_display_inner(fp, v, repr);
+    pys_display_depth--;
+}
+static void
+pys_display_inner(FILE *fp, VALUE v, bool repr)
 {
     if (PYS_IS_FIXNUM(v)) { fprintf(fp, "%ld", (long)PYS_FIXVAL(v)); return; }
     if (PYS_IS_FLONUM(v)) {
