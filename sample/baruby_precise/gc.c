@@ -149,21 +149,25 @@ static void *
 forward_payload(void *old_payload)
 {
     if (!old_payload) return NULL;
-    // Validate: old_payload must be in current from-space.  Stale pointers
-    // from un-cleared sp[] slots above the current frame's logical top
-    // might point at unrelated memory (uninitialized region of inactive
-    // space, etc.).  Treat such pointers as dead — return NULL so the
-    // root slot reads as 0 (= VAL_FALSE) afterward.
+    // Validate: old_payload must be in current from-space.
     if ((char *)old_payload < from_base_cur ||
         (char *)old_payload >= from_base_cur + REGION_BYTES) {
-        return NULL;
+        fprintf(stderr,
+            "[gc] FORWARD STALE PTR: %p (from-space [%p..%p), to-space [%p..%p))\n",
+            old_payload, (void*)from_base_cur,
+            (void*)(from_base_cur + REGION_BYTES),
+            (void*)to_base, (void*)(to_base + REGION_BYTES));
+        abort();
     }
     GCHeader *oldh = (GCHeader *)old_payload - 1;
     if (oldh->fwd) {
-        // Validate fwd: must point into current to-space.
         if ((char *)oldh->fwd < to_base ||
             (char *)oldh->fwd >= to_base + REGION_BYTES) {
-            return NULL;
+            fprintf(stderr,
+                "[gc] FORWARD STALE FWD: oldh@%p fwd=%p not in to-space [%p..%p)\n",
+                (void*)oldh, oldh->fwd, (void*)to_base,
+                (void*)(to_base + REGION_BYTES));
+            abort();
         }
         return oldh->fwd;
     }
@@ -207,7 +211,17 @@ process_object(GCHeader *h)
       case KIND_PAYLOAD_VAL: {
         VALUE *items = (VALUE *)payload;
         size_t n = h->size / sizeof(VALUE);
+        if (baruby_gc_stress) {
+            fprintf(stderr, "[gc.proc PAYLOAD_VAL @%p n=%zu] BEFORE: ", payload, n);
+            for (size_t i = 0; i < n; i++) fprintf(stderr, "[%zu]=%lx ", i, (long)items[i]);
+            fprintf(stderr, "\n");
+        }
         for (size_t i = 0; i < n; i++) items[i] = forward_value(items[i]);
+        if (baruby_gc_stress) {
+            fprintf(stderr, "[gc.proc PAYLOAD_VAL @%p n=%zu] AFTER:  ", payload, n);
+            for (size_t i = 0; i < n; i++) fprintf(stderr, "[%zu]=%lx ", i, (long)items[i]);
+            fprintf(stderr, "\n");
+        }
         break;
       }
       case KIND_PAYLOAD_BYTE:
@@ -276,6 +290,10 @@ gc_collect_internal(VALUE *sp_top)
     char *scan = to_base;
     while (scan < to_top) {
         GCHeader *h = (GCHeader *)scan;
+        if (baruby_gc_stress) {
+            fprintf(stderr, "[gc.scan] @%p kind=%u size=%u\n",
+                    (void*)(h + 1), h->kind, h->size);
+        }
         process_object(h);
         baruby_gc_stats.heap_bytes += h->size;
         scan += sizeof(GCHeader) + ALIGN8(h->size);

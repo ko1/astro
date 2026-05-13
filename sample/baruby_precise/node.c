@@ -254,6 +254,8 @@ void
 baruby_ary_push(VALUE *av_ref, VALUE x, VALUE *sp_top)
 {
     BaArray *a = VAL2ARY(*av_ref);
+    fprintf(stderr, "[ary_push] a=%p (=*av_ref %lx) items=%p len/capa=%u/%u x=%lx\n",
+            (void*)a, (long)*av_ref, (void*)a->items, a->len, a->capa, (long)x);
     if (a->len < a->capa) {
         a->items[a->len++] = x;
         return;
