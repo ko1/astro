@@ -2123,7 +2123,14 @@ pys_pow(CTX *c, VALUE a, VALUE b)
     {
         // Negative base with non-integer exponent → complex.
         double da = pys_to_double(c, a);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
         double db = pys_to_double(c, b);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        // 0.0 ** negative → ZeroDivisionError (CPython parity).
+        if (da == 0.0 && db < 0.0) {
+            PYS_RAISE_EXC(c, c->EXC_ZeroDivisionError,
+                         "0.0 cannot be raised to a negative power");
+        }
         if (da < 0 && db != (double)(int64_t)db) {
             // (a)^b = exp(b * ln(a)) — a < 0 so use complex formula:
             // ln(-r) = ln(r) + i*pi, so b*ln(-r) = b*ln(r) + i*b*pi
