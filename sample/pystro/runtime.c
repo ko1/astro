@@ -7572,6 +7572,11 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
       case PYPAT_LITERAL: {
         VALUE lit = EVAL(c, p->literal);
         if (UNLIKELY(!lit)) return false;
+        // PEP 634: singleton patterns (True / False / None) use `is`
+        // identity, not `==` equality.  Otherwise `match 0 case False:`
+        // would erroneously match because `0 == False`.
+        if (lit == PYS_TRUE || lit == PYS_FALSE || lit == PYS_NONE)
+            return v == lit;
         return pys_eq(c, v, lit) == PYS_TRUE;
       }
       case PYPAT_VALUE: {
