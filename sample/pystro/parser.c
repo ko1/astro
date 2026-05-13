@@ -2241,20 +2241,22 @@ parse_atom(void)
         // mixing plain and f-string forms, e.g.  "hi " f"{name}" "!".
         // Plain runs are concatenated into one literal; f-strings join
         // via runtime + at the AST level.
-        size_t total = strlen(t->sval);
+        // CPython preserves NUL bytes inside a string literal — use the
+        // token's `slen` so embedded \0 doesn't truncate.
         char buf[65536];
         size_t bl = 0;
-        if (total + 1 > sizeof(buf)) parse_error("implicit concat string too long");
-        memcpy(buf, t->sval, total); bl = total;
+        if (t->slen + 1 > sizeof(buf)) parse_error("implicit concat string too long");
+        memcpy(buf, t->sval, t->slen); bl = t->slen;
         while (peek_tok(0)->kind == T_STR) {
-            const char *s = peek_tok(0)->sval;
-            size_t l = strlen(s);
-            if (bl + l + 1 > sizeof(buf)) parse_error("implicit concat string too long");
-            memcpy(buf + bl, s, l); bl += l;
+            Tok *tt = peek_tok(0);
+            if (bl + tt->slen + 1 > sizeof(buf)) parse_error("implicit concat string too long");
+            memcpy(buf + bl, tt->sval, tt->slen); bl += tt->slen;
             tok_pos++;
         }
         buf[bl] = '\0';
-        NODE *result = ALLOC_node_const_str(intern_name(buf, bl));
+        char *owned = (char *)GC_malloc_atomic(bl + 1);
+        memcpy(owned, buf, bl); owned[bl] = '\0';
+        NODE *result = ALLOC_node_const_str_n(owned, (uint32_t)bl);
         while (peek_tok(0)->kind == T_FSTR || peek_tok(0)->kind == T_STR) {
             if (peek_tok(0)->kind == T_FSTR) {
                 Tok *ft = peek_tok(0);
@@ -2264,14 +2266,15 @@ parse_atom(void)
             } else {
                 size_t bl2 = 0;
                 while (peek_tok(0)->kind == T_STR) {
-                    const char *s = peek_tok(0)->sval;
-                    size_t l = strlen(s);
-                    if (bl2 + l + 1 > sizeof(buf)) parse_error("implicit concat string too long");
-                    memcpy(buf + bl2, s, l); bl2 += l;
+                    Tok *tt = peek_tok(0);
+                    if (bl2 + tt->slen + 1 > sizeof(buf)) parse_error("implicit concat string too long");
+                    memcpy(buf + bl2, tt->sval, tt->slen); bl2 += tt->slen;
                     tok_pos++;
                 }
                 buf[bl2] = '\0';
-                result = ALLOC_node_add(result, ALLOC_node_const_str(intern_name(buf, bl2)));
+                char *owned2 = (char *)GC_malloc_atomic(bl2 + 1);
+                memcpy(owned2, buf, bl2); owned2[bl2] = '\0';
+                result = ALLOC_node_add(result, ALLOC_node_const_str_n(owned2, (uint32_t)bl2));
             }
         }
         return result;

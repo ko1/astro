@@ -6711,12 +6711,15 @@ pys_display(FILE *fp, VALUE v, bool repr)
             char q = (has_sq && !has_dq) ? '"' : '\'';
             fputc(q, fp);
             for (size_t i = 0; i < o->str.len; i++) {
-                char ch = o->str.chars[i];
+                unsigned char ch = (unsigned char)o->str.chars[i];
                 if      (ch == '\\') fputs("\\\\", fp);
-                else if (ch == q)    { fputc('\\', fp); fputc(q, fp); }
+                else if (ch == (unsigned char)q) { fputc('\\', fp); fputc(q, fp); }
                 else if (ch == '\n') fputs("\\n", fp);
                 else if (ch == '\t') fputs("\\t", fp);
-                else                 fputc(ch, fp);
+                else if (ch == '\r') fputs("\\r", fp);
+                else if (ch < 0x20 || ch == 0x7f)
+                    fprintf(fp, "\\x%02x", ch);
+                else                 fputc((char)ch, fp);
             }
             fputc(q, fp);
         } else {

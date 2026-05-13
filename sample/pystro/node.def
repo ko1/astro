@@ -66,6 +66,13 @@ node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
 }
 
 NODE_DEF
+node_const_str_n(CTX * restrict c, NODE * restrict n, const char *s, uint32_t len)
+{
+    (void)c; (void)n;
+    return pys_make_str(s, (size_t)len);
+}
+
+NODE_DEF
 node_const_bytes(CTX * restrict c, NODE * restrict n, const char *s, uint32_t len)
 {
     (void)c; (void)n;
