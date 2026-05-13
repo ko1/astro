@@ -4351,6 +4351,13 @@ parse_try(void)
 static NODE *
 parse_return(void)
 {
+    // `return` is only meaningful inside a function body — cur_scope
+    // is non-NULL exactly when we're parsing one (top-level / class
+    // body / lambda-free expressions all leave it NULL).  Pystro's
+    // class-body inside a def is still inside the def's scope, which
+    // matches CPython parity: top-level `return` is SyntaxError but
+    // a class-level `return` inside a method body is fine.
+    if (!cur_scope) parse_error("'return' outside function");
     expect(T_RETURN, "'return'");
     NODE *v;
     if (peek_tok(0)->kind == T_NEWLINE || peek_tok(0)->kind == T_SEMI)
@@ -4619,6 +4626,10 @@ parse_global_decl(void)
 static NODE *
 parse_nonlocal_decl(void)
 {
+    // `nonlocal` is only legal inside a function — at module level
+    // there's no enclosing scope to bind to, so CPython raises
+    // SyntaxError at parse time.
+    if (!cur_scope) parse_error("nonlocal declaration not allowed at module level");
     expect(T_NONLOCAL, "'nonlocal'");
     while (peek_tok(0)->kind == T_NAME) {
         if (cur_scope) scope_add_nonlocal_decl(cur_scope, peek_tok(0)->sval);
