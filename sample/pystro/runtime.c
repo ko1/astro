@@ -7597,7 +7597,16 @@ pys_gen_close(CTX *c, VALUE gen_v)
     g->throw_exc = pys_make_instance(c->EXC_GeneratorExit);
     pys_setattr(c, g->throw_exc, "message", pys_make_str("GeneratorExit", 13));
     pys_gen_next(c, gen_v);
+    // If the generator caught the GeneratorExit and yielded again (or
+    // never finished), CPython raises RuntimeError("generator ignored
+    // GeneratorExit") — distinct from a normal close-cleanup.
+    bool re_yielded = !g->done && c->state == PYS_STATE_NORMAL;
     g->done = true;
+    if (re_yielded) {
+        PYS_RAISE_EXC(c, c->EXC_RuntimeError,
+                     "generator ignored GeneratorExit");
+        return PYS_NONE;
+    }
     // After close: swallow GeneratorExit / StopIteration (expected); but
     // any *other* exception raised by the generator (e.g. from a
     // `finally` block) propagates to the close() caller — matches CPython.
