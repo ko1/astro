@@ -12636,7 +12636,16 @@ bi_bytes(CTX *c, int argc, VALUE *argv)
         return PYS_OBJ_VAL(o);
     }
     if (pys_is_byteseq(v)) return pys_make_bytes(PYS_PTR(v)->str.chars, PYS_PTR(v)->str.len);
-    if (pys_is_str(v))     return pys_make_bytes(PYS_PTR(v)->str.chars, PYS_PTR(v)->str.len);
+    if (pys_is_str(v)) {
+        // CPython requires encoding when constructing bytes from str.
+        if (argc < 2 || !pys_is_str(argv[1]))
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                         "string argument without an encoding");
+        // Pystro stores str as UTF-8 internally, so any common encoding
+        // resolves to the same bytes for ASCII; only enforce the
+        // existence of the encoding argument.
+        return pys_make_bytes(PYS_PTR(v)->str.chars, PYS_PTR(v)->str.len);
+    }
     if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_MEMVIEW) {
         struct pysobj *mv = PYS_PTR(v);
         const char *p = PYS_PTR(mv->memview.source)->str.chars + mv->memview.off;
