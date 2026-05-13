@@ -334,6 +334,16 @@ comp_resolve(const char *name)
 // the method behind a never-read local / global).
 static bool in_class_body;
 
+// Tracked while parsing the body of a while / for loop so that
+// `break` / `continue` outside any loop fails with SyntaxError (the
+// caller restores `loop_depth` on either path so try/with /
+// comprehension nesting doesn't leak).
+static int loop_depth = 0;
+
+// Non-zero while parsing the body of an `async def`.  `await EXPR`
+// outside such a body is a SyntaxError in CPython.
+static int async_depth = 0;
+
 // AST node producing the lexically-enclosing class's base — captured
 // from `class C(Base):`'s base expression so `super()` inside a method
 // body can resolve the parent without runtime introspection.  NULL
@@ -2199,6 +2209,8 @@ parse_atom(void)
             && peek_tok(1)->kind != T_RPAREN
             && peek_tok(1)->kind != T_ASSIGN
             && peek_tok(1)->kind != T_NEWLINE) {
+        if (async_depth <= 0)
+            parse_error("'await' outside async function");
         tok_pos++;
         return parse_atom();
     }
@@ -3154,11 +3166,7 @@ parse_if(void)
     return ALLOC_node_if(c, t, e);
 }
 
-// Tracked while parsing the body of a while / for loop so that
-// `break` / `continue` outside any loop fails with SyntaxError (the
-// caller restores `loop_depth` on either path so try/with /
-// comprehension nesting doesn't leak).
-static int loop_depth = 0;
+// (loop_depth / async_depth defined above; forward decl moved earlier.)
 
 static NODE *
 parse_while(void)
@@ -3568,6 +3576,10 @@ parse_def(void)
     // `continue` inside a nested def don't refer to the outer loop.
     int saved_loop_depth = loop_depth;
     loop_depth = 0;
+    // async_depth tracks `async def`-nested-ness so `await` outside one
+    // raises SyntaxError.
+    int saved_async_depth = async_depth;
+    async_depth = is_async ? async_depth + 1 : 0;
     NODE *body;
     if (peek_tok(0)->kind == T_NEWLINE) {
         tok_pos++;
@@ -3590,6 +3602,7 @@ parse_def(void)
     }
     in_class_body = saved_icb;
     loop_depth = saved_loop_depth;
+    async_depth = saved_async_depth;
     cur_scope = saved;
 
     uint32_t lidx = (uint32_t)local_names_reserve(sc.locals, sc.nlocals);
