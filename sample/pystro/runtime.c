@@ -2816,6 +2816,16 @@ _pys_hash_compute(CTX *c, VALUE v)
             }
         }
         VALUE hm = pys_class_lookup_method(cls, PYS_INTERN_hash);
+        // CPython's `object.__hash__` is the identity hash.  Pystro
+        // exposes that under `bi_dunder_hash` (the universal __hash__
+        // shim) so `__hash__ = object.__hash__` ends up routing back
+        // into pys_hash and would recurse forever.  Detect the shim
+        // and short-circuit to the identity hash directly.
+        extern void *_pys_bi_dunder_hash_addr;
+        if (hm != PYS_NONE && pys_is_builtin(hm)
+            && (void *)PYS_PTR(hm)->builtin.fn == _pys_bi_dunder_hash_addr) {
+            return (uint64_t)(uintptr_t)PYS_PTR(v);
+        }
         if (hm != PYS_NONE) {
             VALUE av[1] = { v };
             VALUE r = pys_apply(c, hm, 1, av);
@@ -4709,6 +4719,10 @@ bi_dunder_hash(CTX *c, int argc, VALUE *argv)
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     return PYS_FIX(h);
 }
+// Address marker so the hash-recursion check (in _pys_hash_compute) can
+// detect when a user class has bound this very shim back as __hash__
+// (`class X: __hash__ = object.__hash__`) and short-circuit to identity.
+void *_pys_bi_dunder_hash_addr = (void *)bi_dunder_hash;
 static VALUE
 bi_dunder_repr(CTX *c, int argc, VALUE *argv)
 {
