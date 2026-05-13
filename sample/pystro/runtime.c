@@ -11924,6 +11924,46 @@ fm_as_integer_ratio(CTX *c, int argc, VALUE *argv)
     return pys_make_tuple(pair, 2);
 }
 
+// Dunder shims for float — common arithmetic / rounding hooks the
+// numeric tower probes.
+static VALUE
+fm_dunder_add(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_add(c, argv[0], argv[1]); }
+static VALUE
+fm_dunder_sub(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_sub(c, argv[0], argv[1]); }
+static VALUE
+fm_dunder_mul(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_mul(c, argv[0], argv[1]); }
+static VALUE
+fm_dunder_truediv(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_truediv(c, argv[0], argv[1]); }
+static VALUE
+fm_dunder_floordiv(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_fdiv(c, argv[0], argv[1]); }
+static VALUE
+fm_dunder_mod(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_mod(c, argv[0], argv[1]); }
+static VALUE
+fm_dunder_neg(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_neg(c, argv[0]); }
+static VALUE
+fm_dunder_pos(CTX *c, int argc, VALUE *argv) { (void)argc; return argv[0]; }
+static VALUE
+fm_dunder_floor(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    double d = pys_to_double(c, argv[0]);
+    return pys_make_int((int64_t)floor(d));
+}
+static VALUE
+fm_dunder_ceil(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    double d = pys_to_double(c, argv[0]);
+    return pys_make_int((int64_t)ceil(d));
+}
+static VALUE
+fm_dunder_trunc(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    double d = pys_to_double(c, argv[0]);
+    return pys_make_int((int64_t)trunc(d));
+}
+
 static struct type_method float_methods[] = {
     { "is_integer", fm_is_integer, 1, 1, 0 },
     { "hex",        fm_hex,        1, 1, 0 },
@@ -11931,6 +11971,19 @@ static struct type_method float_methods[] = {
     { "real",       fm_real_f,     1, 1, 1 },
     { "imag",       fm_imag_f,     1, 1, 1 },
     { "conjugate",  fm_conj_f,     1, 1, 0 },
+    { "__add__",      fm_dunder_add,      2, 2, 0 },
+    { "__radd__",     fm_dunder_add,      2, 2, 0 },
+    { "__sub__",      fm_dunder_sub,      2, 2, 0 },
+    { "__mul__",      fm_dunder_mul,      2, 2, 0 },
+    { "__rmul__",     fm_dunder_mul,      2, 2, 0 },
+    { "__truediv__",  fm_dunder_truediv,  2, 2, 0 },
+    { "__floordiv__", fm_dunder_floordiv, 2, 2, 0 },
+    { "__mod__",      fm_dunder_mod,      2, 2, 0 },
+    { "__neg__",      fm_dunder_neg,      1, 1, 0 },
+    { "__pos__",      fm_dunder_pos,      1, 1, 0 },
+    { "__floor__",    fm_dunder_floor,    1, 1, 0 },
+    { "__ceil__",     fm_dunder_ceil,     1, 1, 0 },
+    { "__trunc__",    fm_dunder_trunc,    1, 1, 0 },
     { NULL, NULL, 0, 0, 0 }
 };
 
