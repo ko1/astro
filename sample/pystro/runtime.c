@@ -4463,6 +4463,7 @@ static struct type_method float_methods[];
 static struct type_method complex_methods[];
 static struct type_method tuple_methods[];
 static struct type_method range_methods[];
+static struct type_method memview_methods[];
 
 static VALUE
 make_builtin_bound(VALUE self, struct type_method *tm)
@@ -4924,6 +4925,7 @@ pys_builtin_method(CTX *c, VALUE recv, const char *name)
     else if (PYS_IS_PTR(recv) && PYS_PTR(recv)->type == PYS_T_GEN) tbl = gen_methods;
     else if (pys_is_byteseq(recv)) tbl = bytes_methods;
     else if (pys_is_file(recv))    { extern struct type_method file_methods[]; tbl = file_methods; }
+    else if (PYS_IS_PTR(recv) && PYS_PTR(recv)->type == PYS_T_MEMVIEW) tbl = memview_methods;
     else if (pys_int_or_bool(recv)) tbl = int_methods;
     else if (pys_is_float(recv))    tbl = float_methods;
     else if (pys_is_complex(recv))  tbl = complex_methods;
@@ -11492,23 +11494,67 @@ static VALUE bm_strip(CTX *c, int argc, VALUE *argv)  { return bm_strip_impl(c, 
 static VALUE bm_lstrip(CTX *c, int argc, VALUE *argv) { return bm_strip_impl(c, argc, argv, true, false); }
 static VALUE bm_rstrip(CTX *c, int argc, VALUE *argv) { return bm_strip_impl(c, argc, argv, false, true); }
 
+// Coerce a bytes-like (bytes / bytearray / memoryview / array.array
+// instance) into a contiguous (chars, len) view.  Returns true on
+// success, false when the value isn't bytes-like.  For memoryview we
+// reach into the source directly; for other instances we look for a
+// `tobytes()` method.  On the instance path *stash receives the
+// freshly-built bytes so the caller's pointer stays alive.
+static bool
+pys_as_buffer(CTX *c, VALUE v, const char **chars, size_t *len, VALUE *stash)
+{
+    if (pys_is_bytes(v) || pys_is_bytearray(v)) {
+        *chars = PYS_PTR(v)->str.chars;
+        *len   = PYS_PTR(v)->str.len;
+        return true;
+    }
+    if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_MEMVIEW) {
+        struct pysobj *mv = PYS_PTR(v);
+        *chars = PYS_PTR(mv->memview.source)->str.chars + mv->memview.off;
+        *len   = mv->memview.len;
+        return true;
+    }
+    if (pys_is_instance(v)) {
+        VALUE tb = pys_getattr(c, v, "tobytes");
+        if (c->state == PYS_STATE_RAISE) {
+            c->state = PYS_STATE_NORMAL;
+            c->state_value = PYS_NONE;
+            return false;
+        }
+        if (tb != PYS_NONE) {
+            VALUE buf = pys_apply(c, tb, 0, NULL);
+            if (c->state == PYS_STATE_RAISE) return false;
+            if (pys_is_bytes(buf) || pys_is_bytearray(buf)) {
+                if (stash) *stash = buf;
+                *chars = PYS_PTR(buf)->str.chars;
+                *len   = PYS_PTR(buf)->str.len;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // bytes.maketrans(from, to) → 256-byte translation table.
 static VALUE
 bi_bytes_maketrans(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    if (!pys_is_byteseq(argv[0]) || !pys_is_byteseq(argv[1]))
+    const char *ap, *bp;
+    size_t alen, blen;
+    VALUE sa = PYS_NONE, sb = PYS_NONE;
+    if (!pys_as_buffer(c, argv[0], &ap, &alen, &sa) ||
+        !pys_as_buffer(c, argv[1], &bp, &blen, &sb))
         PYS_RAISE_EXC(c, c->EXC_TypeError, "bytes.maketrans requires bytes-like args");
-    struct pysobj *a = PYS_PTR(argv[0]);
-    struct pysobj *b = PYS_PTR(argv[1]);
-    if (a->str.len != b->str.len)
+    if (alen != blen)
         PYS_RAISE_EXC(c, c->EXC_ValueError, "maketrans: from and to differ in length");
     char *table = (char *)GC_malloc_atomic(256);
     for (int i = 0; i < 256; i++) table[i] = (char)i;
-    for (size_t i = 0; i < a->str.len; i++) {
-        unsigned char fk = (unsigned char)a->str.chars[i];
-        table[fk] = b->str.chars[i];
+    for (size_t i = 0; i < alen; i++) {
+        unsigned char fk = (unsigned char)ap[i];
+        table[fk] = bp[i];
     }
+    (void)sa; (void)sb;
     return pys_make_bytes(table, 256);
 }
 
@@ -11655,6 +11701,128 @@ static struct type_method bytes_methods[] = {
     { "copy",       bm_copy,       1, 1 },
     { "partition",  bm_partition,  2, 2 },
     { "rpartition", bm_rpartition, 2, 2 },
+    { NULL, NULL, 0, 0 }
+};
+
+// memoryview methods.  Pystro's memoryview is a thin (source, off, len)
+// view over bytes/bytearray.  We provide tobytes / tolist / hex / cast /
+// release — enough for stdlib (base64, hashlib, struct, codecs) and
+// test_buffer-style probes.  cast() honors only the bytes-compatible
+// shapes ('B' / 'b'); request for wider element formats returns a copy
+// with the same backing buffer (length unchanged).
+static const char *
+mv_chars(VALUE mv, size_t *len_out)
+{
+    struct pysobj *o = PYS_PTR(mv);
+    if (len_out) *len_out = o->memview.len;
+    return PYS_PTR(o->memview.source)->str.chars + o->memview.off;
+}
+
+static VALUE
+mvm_tobytes(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    size_t n;
+    const char *p = mv_chars(argv[0], &n);
+    return pys_make_bytes(p, n);
+}
+
+static VALUE
+mvm_tolist(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    size_t n;
+    const char *p = mv_chars(argv[0], &n);
+    VALUE r = pys_make_list(NULL, 0);
+    for (size_t i = 0; i < n; i++)
+        pys_list_append(c, r, PYS_FIX((unsigned char)p[i]));
+    return r;
+}
+
+static VALUE
+mvm_hex(CTX *c, int argc, VALUE *argv)
+{
+    (void)c;
+    size_t n;
+    const char *p = mv_chars(argv[0], &n);
+    const char *sep = NULL; int bytes_per_sep = 1;
+    if (argc >= 2 && pys_is_str(argv[1])) sep = PYS_PTR(argv[1])->str.chars;
+    if (argc >= 3) bytes_per_sep = (int)pys_int_to_long(c, argv[2]);
+    if (bytes_per_sep < 0) bytes_per_sep = -bytes_per_sep;
+    if (bytes_per_sep == 0) bytes_per_sep = 1;
+    static const char hex[] = "0123456789abcdef";
+    size_t cap = n * 2 + (sep ? n : 0) + 1;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (sep && i > 0 && (i % (size_t)bytes_per_sep) == 0) buf[k++] = sep[0];
+        unsigned char b = (unsigned char)p[i];
+        buf[k++] = hex[b >> 4];
+        buf[k++] = hex[b & 0xF];
+    }
+    return pys_make_str(buf, k);
+}
+
+static VALUE
+mvm_cast(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    // pystro doesn't track element format — return a copy of the same
+    // view.  Callers that iterate or index assume byte access; struct/
+    // array.array based readers go through __getitem__ which already
+    // delivers byte values.
+    struct pysobj *o = PYS_PTR(argv[0]);
+    struct pysobj *r = pys_alloc(PYS_T_MEMVIEW);
+    r->memview.source = o->memview.source;
+    r->memview.off    = o->memview.off;
+    r->memview.len    = o->memview.len;
+    return PYS_OBJ_VAL(r);
+}
+
+static VALUE
+mvm_release(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_NONE;
+}
+
+static VALUE
+mvm_enter(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    return argv[0];
+}
+
+static VALUE
+mvm_exit(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_FALSE;
+}
+
+static VALUE
+mvm_iter(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    size_t n;
+    const char *p = mv_chars(argv[0], &n);
+    VALUE lst = pys_make_list(NULL, 0);
+    for (size_t i = 0; i < n; i++)
+        pys_list_append(c, lst, PYS_FIX((unsigned char)p[i]));
+    extern VALUE bi_iter(CTX *c, int argc, VALUE *argv);
+    VALUE av[1] = { lst };
+    return bi_iter(c, 1, av);
+}
+
+static struct type_method memview_methods[] = {
+    { "tobytes",  mvm_tobytes,  1, 1 },
+    { "tolist",   mvm_tolist,   1, 1 },
+    { "hex",      mvm_hex,      1, 3 },
+    { "cast",     mvm_cast,     2, 3 },
+    { "release",  mvm_release,  1, 1 },
+    { "__enter__",mvm_enter,    1, 1 },
+    { "__exit__", mvm_exit,     4, 4 },
+    { "__iter__", mvm_iter,     1, 1 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -13812,13 +13980,39 @@ bi_memoryview(CTX *c, int argc, VALUE *argv)
 {
     (void)c; (void)argc;
     VALUE v = argv[0];
-    if (!(pys_is_bytes(v) || pys_is_bytearray(v)))
-        PYS_RAISE_EXC(c, c->EXC_TypeError, "memoryview: bytes-like required");
-    struct pysobj *o = pys_alloc(PYS_T_MEMVIEW);
-    o->memview.source = v;
-    o->memview.off = 0;
-    o->memview.len = PYS_PTR(v)->str.len;
-    return PYS_OBJ_VAL(o);
+    if (pys_is_bytes(v) || pys_is_bytearray(v)) {
+        struct pysobj *o = pys_alloc(PYS_T_MEMVIEW);
+        o->memview.source = v;
+        o->memview.off = 0;
+        o->memview.len = PYS_PTR(v)->str.len;
+        return PYS_OBJ_VAL(o);
+    }
+    // memoryview() in CPython accepts any object supporting the
+    // buffer protocol: array.array, mmap, etc.  Pystro doesn't have a
+    // real buffer protocol, but instances exposing `tobytes()` (e.g.
+    // stdlib `array.array`) can supply a copy we can wrap.
+    if (pys_is_instance(v) ||
+        (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_MEMVIEW)) {
+        VALUE tb = pys_getattr(c, v, "tobytes");
+        if (c->state == PYS_STATE_RAISE) {
+            // No tobytes(); clear stale exception state and fall
+            // through to the standard TypeError below.
+            c->state = PYS_STATE_NORMAL;
+            c->state_value = PYS_NONE;
+        } else if (tb != PYS_NONE) {
+            VALUE buf = pys_apply(c, tb, 0, NULL);
+            if (c->state == PYS_STATE_RAISE) return PYS_NONE;
+            if (pys_is_bytes(buf) || pys_is_bytearray(buf)) {
+                struct pysobj *o = pys_alloc(PYS_T_MEMVIEW);
+                o->memview.source = buf;
+                o->memview.off = 0;
+                o->memview.len = PYS_PTR(buf)->str.len;
+                return PYS_OBJ_VAL(o);
+            }
+        }
+    }
+    PYS_RAISE_EXC(c, c->EXC_TypeError, "memoryview: bytes-like required");
+    return PYS_NONE;
 }
 
 static VALUE
@@ -14387,7 +14581,18 @@ pys_str_pct_format(CTX *c, VALUE fmt, VALUE args)
 static VALUE
 bi_staticmethod(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
+    if (argc == 2 && pys_is_class(argv[0])) {
+        VALUE cls = argv[0];
+        VALUE func = argv[1];
+        struct pysobj *sm = pys_alloc(PYS_T_STATICMETHOD);
+        sm->wrap.wrapped = func;
+        if (cls == c->TYPE_staticmethod)
+            return PYS_OBJ_VAL(sm);
+        VALUE inst = pys_make_instance(cls);
+        PYS_PTR(inst)->inst.primary = PYS_OBJ_VAL(sm);
+        return inst;
+    }
     struct pysobj *o = pys_alloc(PYS_T_STATICMETHOD);
     o->wrap.wrapped = argv[0];
     return PYS_OBJ_VAL(o);
@@ -14396,7 +14601,22 @@ bi_staticmethod(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_classmethod(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
+    (void)c;
+    // Called as either `classmethod(func)` (1 arg) or as
+    // `__new__(cls, func)` from a subclass (2 args: cls, func).  In
+    // the subclass form return an INSTANCE of cls so `type(x)` is the
+    // subclass; the underlying classmethod object lives in primary.
+    if (argc == 2 && pys_is_class(argv[0])) {
+        VALUE cls = argv[0];
+        VALUE func = argv[1];
+        struct pysobj *cm = pys_alloc(PYS_T_CLASSMETHOD);
+        cm->wrap.wrapped = func;
+        if (cls == c->TYPE_classmethod)
+            return PYS_OBJ_VAL(cm);
+        VALUE inst = pys_make_instance(cls);
+        PYS_PTR(inst)->inst.primary = PYS_OBJ_VAL(cm);
+        return inst;
+    }
     struct pysobj *o = pys_alloc(PYS_T_CLASSMETHOD);
     o->wrap.wrapped = argv[0];
     return PYS_OBJ_VAL(o);
@@ -16458,6 +16678,31 @@ bi_pystro_strftime(CTX *c, int argc, VALUE *argv)
     return pys_make_str(buf, n);
 }
 
+// time.strptime — parse a date/time string via libc strptime(3).
+// Returns a struct_time-shaped instance matching CPython.
+static VALUE
+bi_pystro_strptime(CTX *c, int argc, VALUE *argv)
+{
+    extern char *strptime(const char *, const char *, struct tm *);
+    if (argc < 1 || !pys_is_str(argv[0]))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "strptime: data must be str");
+    const char *fmt = "%a %b %d %H:%M:%S %Y";
+    if (argc >= 2) {
+        if (!pys_is_str(argv[1]))
+            PYS_RAISE_EXC(c, c->EXC_TypeError, "strptime: format must be str");
+        fmt = PYS_PTR(argv[1])->str.chars;
+    }
+    struct tm tm_;
+    memset(&tm_, 0, sizeof(tm_));
+    tm_.tm_isdst = -1;
+    char *end = strptime(PYS_PTR(argv[0])->str.chars, fmt, &tm_);
+    if (!end)
+        PYS_RAISE_EXC(c, c->EXC_ValueError,
+                      "time data '%s' does not match format '%s'",
+                      PYS_PTR(argv[0])->str.chars, fmt);
+    return pys_make_struct_time_from_tm(c, &tm_);
+}
+
 // Reinterpret a float as its IEEE-754 bits.  Returns int (may be a
 // bignum for double's 64-bit pattern).
 static VALUE
@@ -17268,8 +17513,8 @@ install_builtins(CTX *c)
     pys_global_define(c, "input",      pys_make_builtin("input",      bi_input,      0,  1));
     pys_global_define(c, "hash",       pys_make_builtin("hash",       bi_hash,       1,  1));
     pys_global_define(c, "format",     pys_make_builtin("format",     bi_format,     1,  2));
-    pys_global_define(c, "staticmethod",pys_make_builtin("staticmethod",bi_staticmethod, 1, 1));
-    pys_global_define(c, "classmethod", pys_make_builtin("classmethod", bi_classmethod, 1, 1));
+    pys_global_define(c, "staticmethod",pys_make_builtin("staticmethod",bi_staticmethod, 1, 2));
+    pys_global_define(c, "classmethod", pys_make_builtin("classmethod", bi_classmethod, 1, 2));
     pys_global_define(c, "property",    pys_make_builtin("property",    bi_property,    0, 4));
     pys_global_define(c, "all",         pys_make_builtin("all",         bi_all,        1, 1));
     pys_global_define(c, "any",         pys_make_builtin("any",         bi_any,        1, 1));
@@ -17500,6 +17745,8 @@ install_builtins(CTX *c)
                      pys_make_builtin("__pystro_gmtime__", bi_pystro_gmtime, 0, 1));
     pys_global_define(c, "__pystro_strftime__",
                      pys_make_builtin("__pystro_strftime__", bi_pystro_strftime, 1, 2));
+    pys_global_define(c, "__pystro_strptime__",
+                     pys_make_builtin("__pystro_strptime__", bi_pystro_strptime, 1, 2));
     pys_global_define(c, "__pystro_float_to_bits__",
                      pys_make_builtin("__pystro_float_to_bits__", bi_pystro_float_to_bits, 1, 2));
     pys_global_define(c, "__pystro_bits_to_float__",

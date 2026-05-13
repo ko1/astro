@@ -197,8 +197,83 @@ except (ImportError, AttributeError):
 
 
 class FileIO(RawIOBase):
-    """Stub: real file I/O routes through `open()` builtin."""
-    def __init__(self, *a, **k): pass
+    """Pystro's binary file object accessed through the builtin `open()`.
+    Most code paths in CPython's test suite construct FileIO directly
+    (often as base class for io test mocks) and then call .write/.read
+    on it — so the stub must really wrap an `open()` handle."""
+    def __init__(self, name, mode="r", closefd=True, opener=None):
+        if isinstance(name, int):
+            # fd path: open by descriptor.  Pystro's builtin `open` only
+            # accepts paths, so for fd-based FileIO we keep a sentinel
+            # and let downstream code stub via os.read/os.write if needed.
+            self._fp = None
+            self._fd = name
+            self._name = name
+            self._mode = mode if "b" in mode else (mode + "b")
+            self._closed = False
+            return
+        m = mode
+        if "b" not in m: m = m + "b"
+        # Map "r+b" / "w+b" to pystro builtin open's two-char modes.
+        self._fp = open(name, m)
+        self._fd = -1
+        self._name = name
+        self._mode = m
+        self._closed = False
+    def write(self, b):
+        if self._fp is None: raise OSError("FileIO: no underlying file")
+        return self._fp.write(b)
+    def read(self, size=-1):
+        if self._fp is None: return b""
+        return self._fp.read(size)
+    def readline(self, size=-1):
+        if self._fp is None: return b""
+        return self._fp.readline()
+    def readall(self):
+        if self._fp is None: return b""
+        return self._fp.read()
+    def seek(self, p, w=0):
+        if self._fp is None: return 0
+        return self._fp.seek(p, w)
+    def tell(self):
+        if self._fp is None: return 0
+        return self._fp.tell()
+    def flush(self):
+        if self._fp is None: return None
+        try: return self._fp.flush()
+        except AttributeError: return None
+    def truncate(self, size=None):
+        if self._fp is None: return 0
+        try: return self._fp.truncate(size)
+        except AttributeError: return 0
+    def close(self):
+        if self._closed: return
+        self._closed = True
+        if self._fp is not None:
+            try: self._fp.close()
+            except Exception: pass
+    def readable(self):
+        return "r" in self._mode or "+" in self._mode
+    def writable(self):
+        return "w" in self._mode or "a" in self._mode or "+" in self._mode
+    def seekable(self): return True
+    def fileno(self):
+        if self._fd >= 0: return self._fd
+        if self._fp is None: return -1
+        try: return self._fp.fileno()
+        except AttributeError: return -1
+    def isatty(self): return False
+    @property
+    def closed(self): return self._closed
+    @property
+    def name(self): return self._name
+    @property
+    def mode(self): return self._mode
+    def __enter__(self): return self
+    def __exit__(self, *exc): self.close(); return False
+    def __iter__(self):
+        if self._fp is None: return
+        for line in self._fp: yield line
 
 
 class _BufferedBase(BufferedIOBase):
@@ -317,6 +392,34 @@ class TextIOWrapper(TextIOBase):
             yield line
     def __enter__(self): return self
     def __exit__(self, *exc): self.close(); return False
+    def detach(self):
+        # CPython detach() unwraps the underlying binary buffer and
+        # leaves the text wrapper in a closed state.  We mimic by
+        # returning the buffer and marking the wrapper closed without
+        # propagating .close() to the buffer.
+        buf = self.buffer
+        self.buffer = None
+        self._closed = True
+        return buf
+    def reconfigure(self, *, encoding=None, errors=None, newline=None,
+                    line_buffering=None, write_through=None):
+        if encoding is not None: self.encoding = encoding
+        if errors is not None: self.errors = errors
+        if newline is not None: self.newline = newline
+    def fileno(self):
+        return getattr(self.buffer, "fileno", lambda: -1)()
+    def isatty(self):
+        return getattr(self.buffer, "isatty", lambda: False)()
+    @property
+    def line_buffering(self): return False
+    @property
+    def write_through(self): return False
+    @property
+    def name(self):
+        return getattr(self.buffer, "name", None)
+    @property
+    def mode(self):
+        return getattr(self.buffer, "mode", "r")
 
 
 class IncrementalNewlineDecoder:

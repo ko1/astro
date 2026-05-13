@@ -144,16 +144,24 @@ def abstractmethod(fn):
     return fn
 
 
-def abstractclassmethod(fn):
-    return classmethod(fn)
+class abstractclassmethod(classmethod):
+    """Deprecated form: use @classmethod + @abstractmethod instead.
+    Pystro keeps the legacy class for parity with CPython tests."""
+    __isabstractmethod__ = True
+    def __init__(self, callable):
+        callable.__isabstractmethod__ = True
+        super().__init__(callable)
 
 
-def abstractstaticmethod(fn):
-    return staticmethod(fn)
+class abstractstaticmethod(staticmethod):
+    __isabstractmethod__ = True
+    def __init__(self, callable):
+        callable.__isabstractmethod__ = True
+        super().__init__(callable)
 
 
-def abstractproperty(fn):
-    return property(fn)
+class abstractproperty(property):
+    __isabstractmethod__ = True
 
 
 def get_cache_token():

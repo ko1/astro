@@ -78,7 +78,11 @@ def ctime(secs=None):
 
 
 def strptime(s, fmt="%a %b %d %H:%M:%S %Y"):
-    raise ValueError("strptime not supported")
+    if isinstance(s, bytes):
+        s = s.decode("ascii")
+    if isinstance(fmt, bytes):
+        fmt = fmt.decode("ascii")
+    return __pystro_strptime__(s, fmt)
 
 
 def get_clock_info(name):

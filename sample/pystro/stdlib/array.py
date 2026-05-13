@@ -72,6 +72,48 @@ class array:
         if not isinstance(x, self._t): x = self._t(x)
         self._items.insert(i, x)
     def tolist(self): return list(self._items)
+    def __add__(self, other):
+        if not isinstance(other, array):
+            raise TypeError("can only append array (not '%s') to array"
+                            % type(other).__name__)
+        if other.typecode != self.typecode:
+            raise TypeError(
+                "bad argument type for built-in operation")
+        r = array(self.typecode)
+        r._items = list(self._items) + list(other._items)
+        return r
+    def __iadd__(self, other):
+        if not isinstance(other, array):
+            raise TypeError("can only extend array (not '%s') with array"
+                            % type(other).__name__)
+        if other.typecode != self.typecode:
+            raise TypeError(
+                "bad argument type for built-in operation")
+        self._items = list(self._items) + list(other._items)
+        return self
+    def __mul__(self, n):
+        if not isinstance(n, int):
+            raise TypeError("can't multiply array by non-int")
+        r = array(self.typecode)
+        r._items = list(self._items) * n
+        return r
+    def __rmul__(self, n): return self.__mul__(n)
+    def __imul__(self, n):
+        if not isinstance(n, int):
+            raise TypeError("can't multiply array by non-int")
+        self._items = list(self._items) * n
+        return self
+    def __copy__(self):
+        r = array(self.typecode)
+        r._items = list(self._items)
+        return r
+    def __deepcopy__(self, memo):
+        r = array(self.typecode)
+        r._items = list(self._items)
+        return r
+    def __reduce_ex__(self, proto):
+        return (_array_reconstructor,
+                (array, self.typecode, 0, list(self._items)))
     def tobytes(self):
         # Approximation — only valid for byte typecodes.
         if self.typecode in ("b", "B"):

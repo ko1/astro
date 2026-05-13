@@ -18,6 +18,8 @@ def gettempdir():
 
 
 def _make_name(prefix, suffix):
+    if prefix is None: prefix = "tmp"
+    if suffix is None: suffix = ""
     n = random.randint(0, 0x7fffffff)
     return prefix + str(n) + suffix
 
@@ -44,9 +46,11 @@ def mkstemp(suffix="", prefix="tmp", dir=None, text=False):
     for _ in range(100):
         name = os.path.join(dir, _make_name(prefix, suffix))
         if not os.path.exists(name):
-            mode = "w" if text else "wb"
-            f = open(name, mode)
-            return (f, name)
+            # CPython returns (fd, abspath) — match the contract so
+            # callers can `os.close(fd)` / `os.fdopen(fd, ...)`.
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+            fd = os.open(name, flags, 0o600)
+            return (fd, os.path.abspath(name))
     raise FileExistsError("tempfile: could not generate unique name")
 
 
