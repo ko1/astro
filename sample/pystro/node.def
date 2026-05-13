@@ -2069,6 +2069,19 @@ node_call_spread(CTX * restrict c, NODE * restrict n, NODE *fn, uint32_t spreads
             }
         }
     }
+    // Duplicate kwarg detection: \`f(**{"a":1}, **{"a":2})\` /
+    // \`f(a=1, **{"a":2})\` must raise TypeError at call time per
+    // CPython.  O(N^2) check on the small collected names array.
+    for (int i = 1; i < kwc; i++) {
+        for (int j = 0; j < i; j++) {
+            if (kn[i] == kn[j] || strcmp(kn[i], kn[j]) == 0) {
+                PYS_RAISE_EXC(c, c->EXC_TypeError,
+                             "got multiple values for keyword argument '%s'",
+                             kn[i]);
+                return 0;
+            }
+        }
+    }
     return pys_apply_kw(c, f, argc, av, kwc, kn, kv);
 }
 
