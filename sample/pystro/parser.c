@@ -894,11 +894,19 @@ parse_fstring_payload(const char *s, size_t len)
                 else if (cj == '=' && depth == 1 && paren == 0 && conv_pos == 0
                          && spec_start == 0 && eq_pos == 0
                          && j + 1 < len
-                         && (s[j+1] == '}' || s[j+1] == '!' || s[j+1] == ':')
                          // Avoid mistaking `==` for the debug =.
                          && (j == i + 1 || s[j-1] != '=')
                          && s[j+1] != '=') {
-                    eq_pos = j;
+                    // Skip trailing whitespace after `=` to check the
+                    // next significant char.  PEP 501 debug syntax
+                    // requires `}`, `!conv`, or `:spec` to follow
+                    // (possibly across spaces).
+                    size_t look = j + 1;
+                    while (look < len && (s[look] == ' ' || s[look] == '\t'))
+                        look++;
+                    if (look < len && (s[look] == '}' || s[look] == '!' || s[look] == ':')) {
+                        eq_pos = j;
+                    }
                 }
                 else if (cj == '!' && depth == 1 && paren == 0 && conv_pos == 0
                          && spec_start == 0
@@ -1008,14 +1016,20 @@ parse_fstring_payload(const char *s, size_t len)
                 p = ALLOC_node_call_2(ALLOC_node_gref(intern_name("format", 6)),
                                       expr, empty);
             }
-            // Prepend "<expr text>=" for debug syntax.
+            // Prepend "<expr text>=<trailing ws>" for debug syntax —
+            // CPython preserves whitespace BOTH sides of `=` so
+            // `f"{n = }"` produces "n = 42".  The prefix runs from
+            // just after `{` up to (and including) the `=`, plus any
+            // whitespace between `=` and the next significant char.
             if (eq_pos) {
-                size_t et_len = eq_pos - i - 1;
-                char *et = (char *)GC_malloc_atomic(et_len + 2);
+                size_t pre_end = eq_pos + 1;
+                while (pre_end < j && (s[pre_end] == ' ' || s[pre_end] == '\t'))
+                    pre_end++;
+                size_t et_len = pre_end - (i + 1);
+                char *et = (char *)GC_malloc_atomic(et_len + 1);
                 memcpy(et, s + i + 1, et_len);
-                et[et_len] = '=';
-                et[et_len + 1] = '\0';
-                NODE *prefix = ALLOC_node_const_str(intern_name(et, et_len + 1));
+                et[et_len] = '\0';
+                NODE *prefix = ALLOC_node_const_str(intern_name(et, et_len));
                 p = ALLOC_node_add(prefix, p);
             }
             acc = acc ? ALLOC_node_add(acc, p) : p;
