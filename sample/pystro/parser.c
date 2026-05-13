@@ -6096,5 +6096,14 @@ NODE *
 parse_eval_expr(void)
 {
     while (match_tok(T_NEWLINE)) {}
-    return parse_expr();
+    NODE *e = parse_expr();
+    // eval() mode accepts ONE expression — anything after (including
+    // `=`, which would have made `a = 1` a statement) is a syntax
+    // error.  Skip trailing newlines / semicolons, but reject any
+    // remaining significant token.
+    while (peek_tok(0)->kind == T_NEWLINE || peek_tok(0)->kind == T_SEMI)
+        tok_pos++;
+    if (peek_tok(0)->kind != T_EOF)
+        parse_error("invalid syntax (only expressions allowed in eval mode)");
+    return e;
 }
