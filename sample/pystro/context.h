@@ -188,6 +188,11 @@ struct pysclass {
     // attr_cache stamps this and trusts the cached eidx as long as it
     // matches — eliminating per-instance attrs_id checks.
     uint32_t shape_version;
+
+    // Direct subclasses registered via pys_class_set_bases.  Used by
+    // `cls.__subclasses__()`.  Plain strong refs (no weakref support).
+    VALUE *subclasses;
+    int    nsubclasses, subclasses_capa;
 };
 
 // CPython-style "compact" dict.  Indices table is open-addressed and
