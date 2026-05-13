@@ -13531,12 +13531,21 @@ bi_dir(CTX *c, int argc, VALUE *argv)
     }
     VALUE r = pys_make_list(NULL, 0);
     if (argc == 0) {
-        // dir() with no args: list current frame's local names.  We
-        // don't track param-names per pysframe well, so return globals.
-        struct pysglobals *g = c->globals;
-        for (size_t i = 0; i < g->size; i++)
-            if (g->entries[i].defined)
-                pys_list_append(c, r, pys_make_str(g->entries[i].name, strlen(g->entries[i].name)));
+        // dir() with no args: in function context return local names;
+        // at module level return globals.  c->env points to the active
+        // frame, with slot_names mapping slots to source names.
+        if (c->env && c->env->slot_names && c->env->nslots > 0) {
+            for (int i = 0; i < c->env->nslots; i++) {
+                const char *nm = c->env->slot_names[i];
+                if (!nm || nm[0] == 0) continue;
+                pys_list_append(c, r, pys_make_str(nm, strlen(nm)));
+            }
+        } else {
+            struct pysglobals *g = c->globals;
+            for (size_t i = 0; i < g->size; i++)
+                if (g->entries[i].defined)
+                    pys_list_append(c, r, pys_make_str(g->entries[i].name, strlen(g->entries[i].name)));
+        }
     } else {
         VALUE v = argv[0];
         if (pys_is_module(v)) {
