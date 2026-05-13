@@ -12164,6 +12164,17 @@ bi_float(CTX *c, int argc, VALUE *argv)
         while (epb > p && (epb[-1] == ' ' || epb[-1] == '\t'
                            || epb[-1] == '\n' || epb[-1] == '\r')) epb--;
         *epb = '\0';
+        // CPython's float() rejects hex / binary / octal prefixes
+        // even though strtod() would accept "0x1.5".
+        {
+            char *q2 = p;
+            if (*q2 == '+' || *q2 == '-') q2++;
+            if (q2[0] == '0' && (q2[1] == 'x' || q2[1] == 'X' ||
+                                  q2[1] == 'b' || q2[1] == 'B' ||
+                                  q2[1] == 'o' || q2[1] == 'O'))
+                PYS_RAISE_EXC(c, c->EXC_ValueError,
+                    "could not convert string to float: '%s'", buf);
+        }
         double d = strtod(p, &end);
         if (end == p || *end != '\0')
             PYS_RAISE_EXC(c, c->EXC_ValueError,
