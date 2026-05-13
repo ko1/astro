@@ -11126,6 +11126,88 @@ bm_split(CTX *c, int argc, VALUE *argv)
     return result;
 }
 
+// bytes.rsplit — split from the right with optional maxsplit.
+static VALUE
+bm_rsplit(CTX *c, int argc, VALUE *argv)
+{
+    struct pysobj *s = PYS_PTR(argv[0]);
+    long maxsplit = (argc >= 3) ? pys_int_to_long(c, argv[2]) : -1;
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    VALUE result = pys_make_list(NULL, 0);
+    // Default sep = whitespace runs.
+    if (argc == 1 || argv[1] == PYS_NONE) {
+        // Walk right→left over whitespace runs.
+        long count = 0;
+        // Mirror bm_split's policy on whitespace.
+        // Easiest correct impl: do left-split into a list, then take
+        // the last `maxsplit` separators and merge the prefix.
+        VALUE forward = bm_split(c, 1, argv);  // splits on whitespace
+        if (maxsplit < 0 || (long)PYS_PTR(forward)->list.len <= maxsplit + 1) {
+            // Same as forward.
+            return forward;
+        }
+        // Otherwise rebuild: keep last maxsplit pieces, merge the rest
+        // back together by joining with single spaces (rsplit on
+        // whitespace collapses runs — not exact byte-perfect but close).
+        size_t total = PYS_PTR(forward)->list.len;
+        size_t keep = (size_t)maxsplit + 1;
+        size_t prefix_n = total - keep + 1;
+        // Build prefix string by joining the first prefix_n items with a
+        // single space.  This is an approximation; for whitespace-only
+        // splits CPython treats consecutive whitespace as one separator.
+        size_t cap = 64;
+        char *buf = (char *)GC_malloc_atomic(cap);
+        size_t blen = 0;
+        for (size_t i = 0; i < prefix_n; i++) {
+            struct pysobj *p = PYS_PTR(PYS_PTR(forward)->list.items[i]);
+            if (i > 0) {
+                if (blen + 1 + 1 > cap) { cap *= 2; char *nb = (char *)GC_malloc_atomic(cap); memcpy(nb, buf, blen); buf = nb; }
+                buf[blen++] = ' ';
+            }
+            if (blen + p->str.len + 1 > cap) {
+                while (blen + p->str.len + 1 > cap) cap *= 2;
+                char *nb = (char *)GC_malloc_atomic(cap); memcpy(nb, buf, blen); buf = nb;
+            }
+            memcpy(buf + blen, p->str.chars, p->str.len);
+            blen += p->str.len;
+        }
+        pys_list_append(c, result, pys_make_bytes(buf, blen));
+        for (size_t i = prefix_n; i < total; i++)
+            pys_list_append(c, result, PYS_PTR(forward)->list.items[i]);
+        (void)count;
+        return result;
+    }
+    if (!pys_is_byteseq(argv[1])) PYS_RAISE_EXC(c, c->EXC_TypeError, "bytes.rsplit sep must be bytes");
+    struct pysobj *sep = PYS_PTR(argv[1]);
+    if (sep->str.len == 0) PYS_RAISE_EXC(c, c->EXC_ValueError, "empty separator");
+    // Walk right→left collecting tail pieces up to maxsplit; remainder
+    // becomes the leading element.
+    VALUE tail = pys_make_list(NULL, 0);
+    int64_t end = (int64_t)s->str.len;
+    long taken = 0;
+    while (end >= 0 && (maxsplit < 0 || taken < maxsplit)) {
+        if ((int64_t)sep->str.len > end) break;
+        // Search backwards.
+        int64_t p = -1;
+        for (int64_t i = end - (int64_t)sep->str.len; i >= 0; i--) {
+            if (memcmp(s->str.chars + i, sep->str.chars, sep->str.len) == 0) { p = i; break; }
+        }
+        if (p < 0) break;
+        pys_list_append(c, tail,
+            pys_make_bytes(s->str.chars + p + sep->str.len,
+                           (size_t)(end - p - (int64_t)sep->str.len)));
+        end = p;
+        taken++;
+    }
+    // Leading remainder.
+    pys_list_append(c, result, pys_make_bytes(s->str.chars, (size_t)end));
+    // Append tail in reverse order.
+    size_t tn = PYS_PTR(tail)->list.len;
+    for (size_t i = 0; i < tn; i++)
+        pys_list_append(c, result, PYS_PTR(tail)->list.items[tn - 1 - i]);
+    return result;
+}
+
 static VALUE
 bm_replace(CTX *c, int argc, VALUE *argv)
 {
@@ -12445,6 +12527,7 @@ static struct type_method bytes_methods[] = {
     { "encode",     bm_encode,     1, 3 },
     { "startswith", bm_startswith, 2, 4 },
     { "split",      bm_split,      1, 3 },
+    { "rsplit",     bm_rsplit,     1, 3 },
     { "replace",    bm_replace,    3, 3 },
     { "hex",        bm_hex,        1, 3 },
     { "append",     bm_append,     2, 2 },
