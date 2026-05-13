@@ -7801,6 +7801,35 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
         // Positional sub-patterns (attrs[i] == NULL) need __match_args__
         // resolved against the matched class to map index → attr name.
         VALUE match_args = pys_class_lookup_method(cls, "__match_args__");
+        // First positional pattern check forces __match_args__ to be a
+        // tuple of strings — CPython raises TypeError if not.
+        bool any_positional = false;
+        for (int i = 0; i < p->nchildren; i++) {
+            if (p->attrs[i] == NULL) { any_positional = true; break; }
+        }
+        if (any_positional) {
+            // CPython: explicitly-set __match_args__ that isn't a tuple
+            // is a TypeError.  Distinguish "set to None" vs "absent" by
+            // walking the class methods directly.
+            bool has_ma = pys_class_has_method(cls, "__match_args__");
+            if (has_ma && !pys_is_tuple(match_args)) {
+                PYS_RAISE_EXC(c, c->EXC_TypeError,
+                             "%s.__match_args__ must be a tuple (got %s)",
+                             PYS_PTR(cls)->cls.name,
+                             match_args == PYS_NONE ? "NoneType" : "non-tuple");
+                return false;
+            }
+            if (pys_is_tuple(match_args)) {
+                size_t n = PYS_PTR(match_args)->list.len;
+                for (size_t k = 0; k < n; k++) {
+                    if (!pys_is_str(PYS_PTR(match_args)->list.items[k])) {
+                        PYS_RAISE_EXC(c, c->EXC_TypeError,
+                                     "__match_args__ elements must be strings");
+                        return false;
+                    }
+                }
+            }
+        }
         for (int i = 0; i < p->nchildren; i++) {
             const char *attr_name = p->attrs[i];
             if (attr_name == NULL) {
