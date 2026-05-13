@@ -2566,7 +2566,15 @@ pys_rshift(CTX *c, VALUE a, VALUE b)
         mpz_clear(zb);
         PYS_RAISE_EXC(c, c->EXC_ValueError, "negative shift count");
     }
-    if (!mpz_fits_ulong_p(zb)) { mpz_clear(zb); return PYS_FIX(0); }
+    if (!mpz_fits_ulong_p(zb)) {
+        // Huge shift: result is 0 for non-negative `a`, -1 for negative
+        // (arithmetic right shift floors toward -infinity).
+        mpz_clear(zb);
+        mpz_t za; pys_to_mpz(c, a, za);
+        int sgn = mpz_sgn(za);
+        mpz_clear(za);
+        return PYS_FIX(sgn < 0 ? -1 : 0);
+    }
     unsigned long s = mpz_get_ui(zb);
     mpz_t za; pys_to_mpz(c, a, za);
     mpz_fdiv_q_2exp(za, za, s);
