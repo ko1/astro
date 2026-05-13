@@ -1889,6 +1889,29 @@ pys_mul(CTX *c, VALUE a, VALUE b)
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     a = pys_unwrap_primary(a);
     b = pys_unwrap_primary(b);
+    // Sequence-repeat path: if one side is a built-in sequence and the
+    // other is an instance with __index__, convert and retry — CPython
+    // accepts `"a" * MyIndex` when MyIndex.__index__ returns an int.
+    if ((pys_is_str(b) || pys_is_byteseq(b) || pys_is_list(b)
+            || pys_is_tuple(b)) && pys_is_instance(a)) {
+        VALUE idx = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(a)->inst.cls), PYS_INTERN_index);
+        if (idx != PYS_NONE) {
+            VALUE av[1] = { a };
+            VALUE k = pys_apply(c, idx, 1, av);
+            if (c->state == PYS_STATE_RAISE) return 0;
+            return pys_mul(c, b, k);
+        }
+    }
+    if ((pys_is_str(a) || pys_is_byteseq(a) || pys_is_list(a)
+            || pys_is_tuple(a)) && pys_is_instance(b)) {
+        VALUE idx = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(b)->inst.cls), PYS_INTERN_index);
+        if (idx != PYS_NONE) {
+            VALUE av[1] = { b };
+            VALUE k = pys_apply(c, idx, 1, av);
+            if (c->state == PYS_STATE_RAISE) return 0;
+            return pys_mul(c, a, k);
+        }
+    }
     if (pys_is_str(a) && pys_int_or_bool(b)) {
         int64_t k = PYS_IS_FIXNUM(b) ? PYS_FIXVAL(b) : (b == PYS_TRUE ? 1 : 0);
         if (k <= 0) return pys_make_str("", 0);
