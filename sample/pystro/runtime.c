@@ -4494,7 +4494,9 @@ static VALUE
 bi_dunder_len(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    return PYS_FIX((int64_t)pys_seq_len(c, argv[0]));
+    size_t n = pys_seq_len(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    return PYS_FIX((int64_t)n);
 }
 static VALUE
 bi_dunder_iter(CTX *c, int argc, VALUE *argv)
@@ -12249,7 +12251,13 @@ bi_bool(CTX *c, int argc, VALUE *argv)
 }
 
 static VALUE
-bi_len(CTX *c, int argc, VALUE *argv) { (void)argc; return PYS_FIX((int64_t)pys_seq_len(c, argv[0])); }
+bi_len(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    size_t n = pys_seq_len(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    return PYS_FIX((int64_t)n);
+}
 
 static VALUE
 bi_abs(CTX *c, int argc, VALUE *argv)
