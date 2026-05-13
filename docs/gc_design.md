@@ -101,14 +101,17 @@ VALUE_DEF baruby_obj
 }
 ```
 
-ASTroGen はこの宣言から:
+ASTroGen はこの宣言から、 言語固有 prefix 付きの macro を生成する:
 
-- `KORB_ALLOC_<KIND>(...)` — kind 別 type-specialized allocator
-- `KORB_MARK_<KIND>(obj)` — precise marker (`ref` / `ref_payload` を walk)
-- `KORB_FORWARD_<KIND>(obj)` — moving backend 用 forward fixup
-- `KORB_SET_<field>(obj, val)` — write barrier 込み setter
+- `<P>_ALLOC_<KIND>(...)` — kind 別 type-specialized allocator
+- `<P>_MARK_<KIND>(obj)` — precise marker (`ref` / `ref_payload` を walk)
+- `<P>_FORWARD_<KIND>(obj)` — moving backend 用 forward fixup
+- `<P>_SET_<field>(obj, val)` — write barrier 込み setter
 
-を生成する。
+`<P>` は VALUE_DEF header の `@prefix=...` で指定する。 baruby なら `BA`、
+koruby なら `KORB`、 luastro なら `LUA` といった具合。 サンプル間で名前が
+衝突しないようにし、 各サンプルの既存命名 (koruby は既に `KORB_*` を使う、
+luastro は `lua_*` を使う) と整合させるための明示パラメータ。
 
 #### なぜ
 
@@ -215,8 +218,8 @@ framework が tag を被せると言語の魂と衝突する。
 サンプル側は `value.def` 由来の生成 wrapper か、 自前 wrapper 経由で呼ぶ:
 
 ```c
-// value.def 採用時:
-VALUE v = (VALUE)KORB_ALLOC_OBJ_ARRAY(c, /*capa*/8);  // 言語側で LSB tag を被せる
+// value.def 採用時 (baruby の @prefix=BA):
+VALUE v = (VALUE)BA_ALLOC_OBJ_ARRAY(/*capa*/8);  // 言語側で LSB tag を被せる
 
 // 採用しない場合:
 BaArray *a = astro_gc_alloc(astro_gc_heap(HEAP_VALUE), OBJ_ARRAY, sizeof(BaArray));
@@ -321,7 +324,7 @@ global root (function table、 symbol table 等) は言語が visitor に直接�
 } while (0)
 ```
 
-`value.def` 採用時はその field setter `KORB_SET_<field>(obj, val)` が自動的に
+`value.def` 採用時はその field setter `<P>_SET_<field>(obj, val)` が自動的に
 この経路を踏む。 採用しない場合は BODY で `WB(obj, field, val)` macro を明示的
 に呼ぶ。
 
@@ -397,7 +400,7 @@ NODE_DEF レベルの注釈:
 `@noalloc` だけを残す。
 
 `@noalloc` の違反は CI で検出可能 — ASTroGen が BODY を grep して
-`KORB_ALLOC_*` / `EVAL_ARG` / `astro_gc_alloc` の有無を確認すれば足りる。
+`<P>_ALLOC_*` / `EVAL_ARG` / `astro_gc_alloc` の有無を確認すれば足りる。
 
 preemptive ではなく cooperative にする理由:
 
@@ -545,20 +548,20 @@ node.def に注釈を 1 つも追加しなくてよい。 これが **ゼロコ�
 `node.def` の冒頭に追加:
 
 ```
-VALUE_DEF baruby_obj @header=ObjectHeader @kind_field=type
+VALUE_DEF baruby_obj @header=ObjectHeader @kind_field=type @prefix=BA
 {
     OBJ_ARRAY   => ref_payload(VALUE) items; uint32_t len; uint32_t capa;
     OBJ_STRING  => atomic_payload(char) bytes; uint32_t len; uint32_t capa;
 }
 ```
 
-ASTroGen はこれから `KORB_ALLOC_OBJ_ARRAY` / `KORB_ALLOC_OBJ_STRING` /
-`KORB_MARK_*` / `KORB_FORWARD_*` を生成。 `baruby_ary_new` / `baruby_str_new`
-は `KORB_ALLOC_*` 経由に書き換え:
+ASTroGen はこれから `BA_ALLOC_OBJ_ARRAY` / `BA_ALLOC_OBJ_STRING` /
+`BA_MARK_*` / `BA_FORWARD_*` を生成。 `baruby_ary_new` / `baruby_str_new`
+は `BA_ALLOC_*` 経由に書き換え:
 
 ```c
 VALUE baruby_ary_new(uint32_t capa) {
-    BaArray *a = KORB_ALLOC_OBJ_ARRAY(capa);   // ref_payload も同時 alloc
+    BaArray *a = BA_ALLOC_OBJ_ARRAY(capa);   // ref_payload も同時 alloc
     a->hdr.flags = 0;
     a->len = 0;
     a->capa = capa;
@@ -722,7 +725,7 @@ VALUE x)` のような既存 helper の signature を変えずに precise GC に
 | `node.def` 冒頭 | `VALUE_DEF baruby_obj { ... }` (採用するなら) | ~5 行 |
 | 各 `NODE_DEF` | leaf に `@noalloc`、 alloc/call をまたぐ root に `@roots(...)` | ~40 箇所 |
 | 関数境界 ノード | `@root_array(F, locals_cnt)` | 4 箇所 (call\_0/1/2/3) |
-| `node.c` | `baruby_ary_new` 等を `KORB_ALLOC_*` / framework alloc API 経由に | ~6 関数 |
+| `node.c` | `baruby_ary_new` 等を `BA_ALLOC_*` / framework alloc API 経由に | ~6 関数 |
 | `node.c` | 素の `a->items[ii] = v` を `WB(a, items[ii], v)` に | ~10 箇所 |
 | `main.c` | toplevel frame 登録 | 2 行 |
 | `Makefile` | `GC=marksweep` でリンクする backend ソース指定 | 5 行 |
