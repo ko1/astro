@@ -2,10 +2,11 @@
 
 ASTro framework が GC についてどういうサポートを提供するか、 そしてそれを
 `sample/baruby` に適用するときに使うインターフェースは何か、 をまとめたもの。
-実装はまだ着手していない設計段階のメモ。
+**`§3` に MVP 試作 (`sample/baruby_precise`) の実装と実測ベンチ結果あり**。
 
 関連: `idea.md` §8.2 (未踏項目), `code_store_quirks.md` (AST NODE 不動制約の
-出処), `sample/baruby/` (本案の最初の testbed)。
+出処), `sample/baruby/` (conservative libgc の比較対象), `sample/baruby_precise/`
+(本案の MVP 試作)。
 
 ---
 
@@ -231,22 +232,7 @@ CTX を取らない C helper (`baruby_ary_push` 等) も `int sp_cnt_top` 引数
 - `sp[sp_cnt + IDX]` の indexed access は `mov [reg+reg*8], reg` 1 命令、
   sp_cnt は register に居る前提
 
-**メモリ書込みコストは precise GC の構造的代償**。 完全に消すには stack map +
-libunwind で「register に居る root を safepoint 時に取り出す」 機構が必要で、
-gcc では実装難。
-
-緩和できる範囲:
-
-1. **`@locals` は必要最小限に書く** — child eval をまたいで生存する VALUE
-   だけ宣言する。 最後の式で死ぬ VALUE は素朴な C local のまま OK
-2. **将来の type-specialized SD で削れる** — profile から alloc が起きない
-   ことが確定すれば SD 側で `@locals` を省略した版を生成可能
-3. **`__asm__` clobber で flush を delay** — `astro_gc_alloc` 直前に memory
-   clobber を入れて gcc に「ここで register → memory に書け」 と指示する
-   余地はある (実測未確認)
-
-最終判断は実装してベンチを取ってから。 per-node frame chain よりは確実に
-速いが、 conservative GC とゼロコスト fixnum loop の差は計測必須。
+実測値は §3 (baruby_precise を題材にした testbed) を参照。
 
 #### 1.3.7 callee frame など可変長 root
 
@@ -646,6 +632,127 @@ baruby: $(OBJS)
 **注釈ベースの自動化はしない**。 root の置き方は全部 user が BODY で書く。
 ASTroGen 側は sp を引数で通すだけ。 「裏で何が起きてるか分かりにくい」 を
 避けるトレードオフで、 user の書く量は増える。
+
+---
+
+## 3. 試作: `sample/baruby_precise`
+
+§2 の案を `astrogen.rb` 不変・ベタ書きで実装した試作品。
+`sample/baruby_precise/` に `sample/baruby/` (conservative libgc) を copy
+してから書き換えてある。 比較用に conservative 版もそのまま残る。
+
+### 3.1 実装した範囲
+
+- 共通引数: `common_param_count=4` で `(CTX *c, NODE *n, VALUE *fp, VALUE *sp)`
+  を全 NODE_DEF に通す
+- `BARUBY_EVAL_ARG(c, n, sp_new)` macro: child eval に新しい sp を渡す
+- NODE_DEF (sed で機械的に sig 拡張、 BODY は必要箇所のみ手書き):
+  - `node_call_<N>` / `node_pg_call_<N>`: C 上の VLA `VALUE F[locals_cnt]` を
+    廃止、 callee frame を `sp[0..locals_cnt-1]` (= 共有 VALUE stack 上) に配置
+  - 各 allocator helper (`baruby_ary_new`, `baruby_str_new` 等) に `sp_top`
+    引数を追加、 内部の `baruby_gc_alloc` に通す
+  - `WB` macro は当面 no-op (non-moving M&S なので barrier 不要)
+- `gc.c` / `gc.h` に簡素な precise mark&sweep:
+  - 全 heap object を doubly-linked list で track (per-object `BarubyGCNode`
+    header)
+  - mark: `c->env..c->sp` の VALUE 配列を flat scan、 `BaArray.items` を再帰追跡
+  - sweep: unmarked を `free` + リストから外す
+  - `baruby_gc_alloc` 時に `bytes_since_gc > threshold (4MiB)` で起動
+  - `c->sp` は alloc API が内部で update (`c->sp = sp_top; if (pending) handshake()`)
+- `astrogen.rb` は **無修正**。 `@locals` / `@scratch` などの sugar は使わない。
+  user が手で `sp[0..N-1]` に root を置き、 `BARUBY_EVAL_ARG(c, n, sp+N)` で
+  sp を進める
+
+### 3.2 実装上の判明事項
+
+- **toplevel sp の hardcode**: main.c で `c->sp = c->env + 64` と固定。 本来は
+  parser が toplevel locals_cnt を返してくれば計算できる。 MVP なので妥協
+- **node_call (variadic) の callee sp 計算**: `callee_sp = fp + arg_index +
+  locals_cnt`。 locals_cnt が node operand に無いので `code_repo_find_locals_cnt_by_body`
+  で動的取得。 本来 parser が node_call に焼くべき (現在 node_call_<N> には
+  焼かれている)
+- **node_scope の sp 設定**: `EVAL(c, body, fp + envsize, fp + envsize + 64)`。
+  scope の body の locals_cnt が分からないので保守的に 64 で進めている
+- **heap_bytes 統計の underflow**: `baruby_gc_realloc_payload` が old/new
+  size 差分を tracking していないので、 cumulative の `total_bytes` は正しいが
+  `heap_bytes` は unsigned underflow して桁外れの値が出る。 GC 動作自体は無関係
+
+### 3.3 動作確認
+
+```sh
+$ make
+$ ./baruby_precise --plain test.ba.rb           # fib(20) — fixnum only
+10946
+Result: 10946, node_cnt:22
+__ELAPSED__ 0.000408
+
+$ ./baruby_precise --plain test_ary.ba.rb       # Array / String 操作 (28 行)
+[1, 2, 3]    # ← p a
+3            # ← p a.size
+1            # ← p a[0]
+...
+4            # ← p [10, 20, 30, 40].size
+Result: 4, node_cnt:105
+```
+
+precise GC が **live な Array / String を正しく保持** することを確認 (sp[] に
+spill された root が GC scan で生きる)。
+
+### 3.4 ベンチ結果 (実測)
+
+`sample/baruby/bench/` の各ベンチを **conservative (libgc) と precise (本案)** で
+比較。 計測は 1 run, plain mode と AOT mode (`-c` で SD bake 後の再実行):
+
+| Bench | conservative plain | conservative AOT | precise plain | precise AOT | precise vs conservative |
+|---|---|---|---|---|---|
+| `list_alloc` (560 MB alloc, list 構築) | 0.90 s | 0.38 s | 1.01 s | 0.43 s | plain **+12%**, AOT **+13%** |
+| `string_concat` (1.2 GB alloc, 短命 String) | 0.86 s | 0.66 s | 1.14 s | 0.98 s | plain **+32%**, AOT **+48%** |
+| `binary_trees` | 0.78 s | 0.52 s | (壊) 0.31 s | (壊) 0.20 s | **計算結果が壊れる** ← 要 debug |
+| `test.ba.rb` (fib(20), 純 fixnum) | — | — | 0.000408 s | — | GC 不発火、 影響なし |
+
+| Bench | conservative GC count | precise GC count | precise alloc 総量 |
+|---|---|---|---|
+| `list_alloc` | 1134 | 133 (1/8.5) | 560 MB |
+| `string_concat` | 1691 | 177 (1/9.5) | 745 MB |
+| `binary_trees` | 12 | 55 | 235 MB |
+
+**観察**:
+
+- **AOT も動く** — SD specialize が precise 経路でも正しく生成・dlopen される。
+  `c, n, fp, sp` の 4 引数 dispatcher が SD レベルで通っている
+- precise の GC 回数が conservative の 1/9 程度。 alloc threshold (4 MiB) が
+  比較的大きいことと、 sweep が cheap (linked list 走査のみ) なので少回数で
+  大量回収できる
+- **plain mode で +12〜32% の overhead**: sp[] spill の memory write、
+  callee frame の zero-init、 `astro_gc_realloc_payload` 経由による間接化の合計
+- **AOT mode で +13〜48% の overhead**: SD specialize で BODY は inlined だが、
+  sp threading の register pressure と spill の数は同じ
+- string_concat の overhead が大きいのは alloc 密度が高い (1.2 GB) + 短命
+  String が多いため。 list_alloc は alloc 後に長生きする object が多く、
+  比較的差が小さい
+
+### 3.5 既知の問題
+
+- **`bench/binary_trees` の計算結果が壊れる** (期待 4194303 → 実際 1)。
+  再帰木構造での root 漏れの可能性が高い。 木のノードを return しながら
+  さらに alloc する経路で、 in-flight な subtree pointer が sp[] に
+  spill されていない箇所がある。 ASTroGen の自動 spill が無いことの
+  ツケが具体的に出た形。 要 debug
+- **node.def 内の arithmetic node (`node_add` 等)**: heap-VALUE
+  operands に対する root spill を書いていない。 fixnum-only の場合は
+  問題ないが、 String concat / Array plus を arithmetic 経由でやる場合
+  rooting が必要。 binary_trees 失敗の原因の有力候補
+- **toplevel sp の hardcode 64**: 大きい toplevel フレームを持つ
+  プログラムでは scratch 領域が不足する
+- **heap_bytes stats が underflow**: 表示だけの問題、 GC 動作には影響なし
+
+### 3.6 次の段階で試したいこと
+
+- binary_trees 修正: 木構造 alloc 経路の root spill を node.def で個別に書く
+- toplevel locals_cnt を parser から取って main.c で正しい sp を設定
+- arithmetic / comparison node の heap VALUE rooting
+- `astrogen.rb` 拡張で `@locals` を機械化 (手書きの error-prone を減らす)
+- moving GC backend (semi-space) を同じ interface に乗せて perf 比較
 
 ---
 
