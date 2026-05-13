@@ -39,6 +39,10 @@ class _EnumMember:
     def __or__(self, o): return self.value | (o.value if isinstance(o, _EnumMember) else o)
     def __and__(self, o): return self.value & (o.value if isinstance(o, _EnumMember) else o)
     def __xor__(self, o): return self.value ^ (o.value if isinstance(o, _EnumMember) else o)
+    def __ror__(self, o): return (o.value if isinstance(o, _EnumMember) else o) | self.value
+    def __rand__(self, o): return (o.value if isinstance(o, _EnumMember) else o) & self.value
+    def __rxor__(self, o): return (o.value if isinstance(o, _EnumMember) else o) ^ self.value
+    def __invert__(self): return ~self.value
     def __lt__(self, o): return self.value <  (o.value if isinstance(o, _EnumMember) else o)
     def __le__(self, o): return self.value <= (o.value if isinstance(o, _EnumMember) else o)
     def __gt__(self, o): return self.value >  (o.value if isinstance(o, _EnumMember) else o)

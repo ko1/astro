@@ -5377,6 +5377,18 @@ pys_getattr_optional(CTX *c, VALUE v, const char *name)
             int32_t eidx = pydict_find(c, o->inst.attrs, key, h);
             if (eidx >= 0) return o->inst.attrs->entries[eidx].value;
         }
+        return 0;
+    }
+    // Functions store user-set attributes (e.g. @abstractmethod sets
+    // f.__isabstractmethod__ = True) in `func.attrs`.  Check there.
+    if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_FUNC) {
+        struct pysobj *o = PYS_PTR(v);
+        if (o->func.attrs) {
+            VALUE key = pys_make_str(name, strlen(name));
+            uint64_t h = pys_hash(c, key);
+            int32_t eidx = pydict_find(c, o->func.attrs, key, h);
+            if (eidx >= 0) return o->func.attrs->entries[eidx].value;
+        }
     }
     return 0;
 }
