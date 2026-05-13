@@ -4904,6 +4904,40 @@ bi_dunder_hash(CTX *c, int argc, VALUE *argv)
 // detect when a user class has bound this very shim back as __hash__
 // (`class X: __hash__ = object.__hash__`) and short-circuit to identity.
 void *_pys_bi_dunder_hash_addr = (void *)bi_dunder_hash;
+
+// Direct int hash that bypasses user-class dispatch.  Used as the
+// `__hash__` slot on `int` itself so `int.__hash__(self)` from inside a
+// subclass's __hash__ override doesn't recurse back to user code.  For
+// an int subclass instance we walk to the primary (underlying int).
+static VALUE
+bi_int_dunder_hash(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE v = argv[0];
+    if (pys_is_instance(v) && PYS_PTR(v)->inst.primary)
+        v = PYS_PTR(v)->inst.primary;
+    // Compute hash directly: fixnum identity, bignum FNV, bool → 0/1.
+    if (PYS_IS_FIXNUM(v)) {
+        int64_t k = PYS_FIXVAL(v);
+        if (k == -1) k = -2;
+        return PYS_FIX(k);
+    }
+    if (v == PYS_TRUE)  return PYS_FIX(1);
+    if (v == PYS_FALSE) return PYS_FIX(0);
+    if (pys_is_bignum(v)) {
+        uint64_t h = 0xCBF29CE484222325ULL;
+        struct pysobj *o = PYS_PTR(v);
+        size_t n = mpz_size(o->mpz);
+        for (size_t i = 0; i < n; i++) {
+            mp_limb_t l = mpz_getlimbn(o->mpz, i);
+            h ^= l;
+            h *= 0x100000001B3ULL;
+        }
+        if (mpz_sgn(o->mpz) < 0) h = ~h;
+        return PYS_FIX((int64_t)(h & PYS_HASH_MASK));
+    }
+    PYS_RAISE_EXC(c, c->EXC_TypeError, "int.__hash__: expected int");
+}
 static VALUE
 bi_dunder_repr(CTX *c, int argc, VALUE *argv)
 {
@@ -18449,6 +18483,8 @@ install_builtins(CTX *c)
     c->TYPE_int       = pys_make_builtin_class("int",       bi_int,       PYS_T_BIGNUM);
     pys_class_add_method(c, c->TYPE_int, "from_bytes",
         pys_make_builtin_method("from_bytes", bi_int_from_bytes, 1, 3));
+    pys_class_add_method(c, c->TYPE_int, "__hash__",
+        pys_make_builtin_method("__hash__", bi_int_dunder_hash, 1, 1));
     c->TYPE_float     = pys_make_builtin_class("float",     bi_float,     PYS_T_FLOAT);
     pys_class_add_method(c, c->TYPE_float, "fromhex",
         pys_make_builtin_method("fromhex", bi_float_fromhex, 1, 1));
