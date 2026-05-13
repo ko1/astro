@@ -13067,12 +13067,61 @@ bi_int(CTX *c, int argc, VALUE *argv)
         char *buf = (L < sizeof(small)) ? small : (char *)GC_malloc_atomic(L + 1);
         memcpy(buf, PYS_PTR(v)->str.chars, L);
         buf[L] = '\0';
-        // strip leading/trailing whitespace.
+        // strip leading/trailing whitespace — CPython's int() accepts
+        // any Unicode whitespace (Py_UNICODE_ISSPACE).  Pystro strings
+        // are UTF-8 here, so we check ASCII whitespace plus the common
+        // multi-byte ones (NBSP, en/em spaces, U+2028/9, U+3000 etc.).
+        #define IS_ASCII_WS(ch) ((ch) == ' ' || (ch) == '\t' || (ch) == '\n' \
+                                  || (ch) == '\r' || (ch) == '\v' || (ch) == '\f')
         char *p = buf;
-        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        for (;;) {
+            unsigned char c0 = (unsigned char)*p;
+            if (c0 == 0) break;
+            if (IS_ASCII_WS(c0)) { p++; continue; }
+            // C2 A0: NBSP.  C2 85: NEL.
+            if (c0 == 0xC2 && ((unsigned char)p[1] == 0xA0 || (unsigned char)p[1] == 0x85)) { p += 2; continue; }
+            // E1 9A 80: ogham space.
+            if (c0 == 0xE1 && (unsigned char)p[1] == 0x9A && (unsigned char)p[2] == 0x80) { p += 3; continue; }
+            // E2 80 80..8A (en/em/thin/etc spaces) + 80 A8 (LS) + 80 A9 (PS) + 80 AF (narrow nbsp).
+            if (c0 == 0xE2 && (unsigned char)p[1] == 0x80
+                && ((((unsigned char)p[2]) >= 0x80 && ((unsigned char)p[2]) <= 0x8A)
+                    || (unsigned char)p[2] == 0xA8 || (unsigned char)p[2] == 0xA9
+                    || (unsigned char)p[2] == 0xAF))
+                { p += 3; continue; }
+            // E2 81 9F: medium math space.
+            if (c0 == 0xE2 && (unsigned char)p[1] == 0x81 && (unsigned char)p[2] == 0x9F) { p += 3; continue; }
+            // E3 80 80: ideographic space.
+            if (c0 == 0xE3 && (unsigned char)p[1] == 0x80 && (unsigned char)p[2] == 0x80) { p += 3; continue; }
+            break;
+        }
         char *end_p = buf + strlen(buf);
-        while (end_p > p && (end_p[-1] == ' ' || end_p[-1] == '\t' || end_p[-1] == '\n' || end_p[-1] == '\r')) end_p--;
+        for (;;) {
+            if (end_p <= p) break;
+            unsigned char c0 = (unsigned char)end_p[-1];
+            if (IS_ASCII_WS(c0)) { end_p--; continue; }
+            // Look back for 2/3-byte UTF-8 trailing space.  Cheap check
+            // on the trailing byte first.  3-byte sequences: leading byte
+            // 0xE1/E2/E3 at end_p-3.
+            if (end_p - p >= 2 && (unsigned char)end_p[-2] == 0xC2
+                && (c0 == 0xA0 || c0 == 0x85))
+                { end_p -= 2; continue; }
+            if (end_p - p >= 3 && (unsigned char)end_p[-3] == 0xE1
+                && (unsigned char)end_p[-2] == 0x9A && c0 == 0x80)
+                { end_p -= 3; continue; }
+            if (end_p - p >= 3 && (unsigned char)end_p[-3] == 0xE2
+                && (unsigned char)end_p[-2] == 0x80
+                && ((c0 >= 0x80 && c0 <= 0x8A) || c0 == 0xA8 || c0 == 0xA9 || c0 == 0xAF))
+                { end_p -= 3; continue; }
+            if (end_p - p >= 3 && (unsigned char)end_p[-3] == 0xE2
+                && (unsigned char)end_p[-2] == 0x81 && c0 == 0x9F)
+                { end_p -= 3; continue; }
+            if (end_p - p >= 3 && (unsigned char)end_p[-3] == 0xE3
+                && (unsigned char)end_p[-2] == 0x80 && c0 == 0x80)
+                { end_p -= 3; continue; }
+            break;
+        }
         *end_p = '\0';
+        #undef IS_ASCII_WS
         int base = 10;
         VALUE bk = pys_bi_kwarg("base");
         if (argc >= 2) {
