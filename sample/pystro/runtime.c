@@ -2707,19 +2707,45 @@ pydict_entry_live(const struct pysdict *d, size_t i)
 VALUE
 pys_eq(CTX *c, VALUE a, VALUE b)
 {
-    // Pass PYS_INTERN_eq (interned) instead of "__eq__" literal so
-    // the lookup hits the dunder slot fast path instead of MRO+strcmp.
-    // deltablue's `==` was 200K+ slow lookups before this fix.
-    VALUE r = pys_try_binop_dunder(c, PYS_INTERN_eq, a, b);
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (r && !(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL)) {
-        return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+    // CPython: if b is a proper subclass of type(a) AND b's class
+    // overrides __eq__, call b.__eq__(a) first.  Lets a subclass take
+    // precedence over its parent for comparisons (PEP 207).
+    extern bool class_is_ancestor(VALUE cls, VALUE target);
+    bool reflect_first = false;
+    if (pys_is_instance(a) && pys_is_instance(b)) {
+        VALUE ca = PYS_OBJ_VAL(PYS_PTR(a)->inst.cls);
+        VALUE cb = PYS_OBJ_VAL(PYS_PTR(b)->inst.cls);
+        if (ca != cb && class_is_ancestor(cb, ca) && !class_is_ancestor(ca, cb)) {
+            reflect_first = true;
+        }
     }
-    // a's __eq__ returned NotImplemented (or wasn't defined): try b's.
-    r = pys_try_binop_dunder(c, PYS_INTERN_eq, b, a);
-    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    if (r && !(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL)) {
-        return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+    VALUE r;
+    if (reflect_first) {
+        r = pys_try_binop_dunder(c, PYS_INTERN_eq, b, a);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (r && !(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL)) {
+            return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+        }
+        r = pys_try_binop_dunder(c, PYS_INTERN_eq, a, b);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (r && !(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL)) {
+            return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+        }
+    } else {
+        // Pass PYS_INTERN_eq (interned) instead of "__eq__" literal so
+        // the lookup hits the dunder slot fast path instead of MRO+strcmp.
+        // deltablue's `==` was 200K+ slow lookups before this fix.
+        r = pys_try_binop_dunder(c, PYS_INTERN_eq, a, b);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (r && !(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL)) {
+            return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+        }
+        // a's __eq__ returned NotImplemented (or wasn't defined): try b's.
+        r = pys_try_binop_dunder(c, PYS_INTERN_eq, b, a);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (r && !(PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL)) {
+            return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+        }
     }
     // Built-in subclass instances with no override — compare via primary.
     if (pys_is_instance(a) && PYS_PTR(a)->inst.primary)
