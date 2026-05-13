@@ -5115,9 +5115,27 @@ parse_simple_stmt(void)
         // track_ann is non-NULL only at class / module level; for
         // function-local we wrap ann_expr in a discard-statement node
         // so the side effects propagate.
+        //
+        // Pystro doesn't implement PEP 563 stringification — modules
+        // that rely on `from __future__ import annotations` for forward
+        // references would NameError on otherwise-undefined names like
+        // `Key` inside `if TYPE_CHECKING:`-guarded imports. Wrap the
+        // eval in try/except NameError so those references don't kill
+        // the surrounding function.
         NODE *eval_ann = NULL;
         if (track_ann == NULL && cur_scope != NULL) {
-            eval_ann = ann_expr;
+            struct pyshandler hs[1] = {0};
+            NODE *exc_tuple_items[3] = {
+                ALLOC_node_gref(intern_name("NameError", 9)),
+                ALLOC_node_gref(intern_name("AttributeError", 14)),
+                ALLOC_node_gref(intern_name("TypeError", 9)),
+            };
+            size_t etb = node_table_reserve(exc_tuple_items, 3);
+            hs[0].exc_class = ALLOC_node_make_tuple((uint32_t)etb, 3);
+            hs[0].body = ALLOC_node_nop();
+            size_t hidx = handlers_reserve(hs, 1);
+            eval_ann = ALLOC_node_try(ann_expr, (uint32_t)hidx, 1,
+                                       ALLOC_node_nop(), ALLOC_node_nop());
         }
         if (match_tok(T_ASSIGN)) {
             NODE *rhs = parse_expr_list();
