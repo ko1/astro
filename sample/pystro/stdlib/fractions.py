@@ -113,6 +113,69 @@ class Fraction:
     def __str__(self):
         if self._d == 1: return str(self._n)
         return str(self._n) + "/" + str(self._d)
+    def __float__(self):
+        return self._n / self._d
+    def __int__(self):
+        # Truncate toward zero.
+        if (self._n < 0) != (self._d < 0):
+            return -(abs(self._n) // abs(self._d))
+        return self._n // self._d
+    def __index__(self):
+        if self._d != 1:
+            raise TypeError("Fraction with non-unit denominator is not an integer")
+        return self._n
+    def __bool__(self):
+        return self._n != 0
+    def __floor__(self):
+        return self._n // self._d
+    def __ceil__(self):
+        n, d = self._n, self._d
+        return -(-n // d)
+    def __trunc__(self):
+        return self.__int__()
+    def __floordiv__(self, other):
+        o = self._coerce(other)
+        if o is None: return NotImplemented
+        return (self._n * o._d) // (o._n * self._d)
+    def __mod__(self, other):
+        q = self.__floordiv__(other)
+        if q is NotImplemented: return NotImplemented
+        return self - Fraction(q) * other
+    def __divmod__(self, other):
+        q = self.__floordiv__(other)
+        if q is NotImplemented: return NotImplemented
+        return (q, self - Fraction(q) * other)
+    def __pow__(self, other):
+        if isinstance(other, int):
+            if other >= 0:
+                return Fraction(self._n ** other, self._d ** other)
+            return Fraction(self._d ** -other, self._n ** -other)
+        return (self._n / self._d) ** other
+    def __pos__(self):
+        return self
+    def as_integer_ratio(self):
+        return (self._n, self._d)
+    def limit_denominator(self, max_denominator=1000000):
+        # Simplified implementation — just return self if denominator already
+        # within the cap; otherwise truncate via continued-fraction approximation.
+        if self._d <= max_denominator: return self
+        # Stein-Brocot continued fraction approx.
+        p0, q0, p1, q1 = 0, 1, 1, 0
+        n, d = self._n, self._d
+        while True:
+            a = n // d
+            q2 = q0 + a * q1
+            if q2 > max_denominator: break
+            p0, q0, p1, q1 = p1, q1, p0 + a * p1, q2
+            n, d = d, n - a * d
+            if d == 0: break
+        k = (max_denominator - q0) // q1 if q1 else 0
+        bound1 = Fraction(p0 + k * p1, q0 + k * q1)
+        bound2 = Fraction(p1, q1)
+        # Pick the closer.
+        if abs(bound2 - self) <= abs(bound1 - self):
+            return bound2
+        return bound1
 
 
 def gcd(a, b):

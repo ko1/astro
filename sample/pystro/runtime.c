@@ -1719,6 +1719,23 @@ pys_to_double(CTX *c, VALUE v)
     if (pys_is_bignum(v))    return mpz_get_d(PYS_PTR(v)->mpz);
     if (v == PYS_TRUE)       return 1.0;
     if (v == PYS_FALSE)      return 0.0;
+    // User class: dispatch to __float__ / __int__ / __index__ so types
+    // like fractions.Fraction / decimal.Decimal coerce.
+    if (pys_is_instance(v)) {
+        VALUE cls = PYS_OBJ_VAL(PYS_PTR(v)->inst.cls);
+        VALUE m = pys_class_lookup_method(cls, "__float__");
+        if (m == PYS_NONE) m = pys_class_lookup_method(cls, "__int__");
+        if (m == PYS_NONE) m = pys_class_lookup_method(cls, "__index__");
+        if (m != PYS_NONE) {
+            VALUE av[1] = { v };
+            VALUE r = pys_apply(c, m, 1, av);
+            if (c->state == PYS_STATE_RAISE) return 0.0;
+            return pys_to_double(c, r);
+        }
+        // Numeric subclass with a stashed primary value.
+        if (PYS_PTR(v)->inst.primary)
+            return pys_to_double(c, PYS_PTR(v)->inst.primary);
+    }
     PYS_RAISE_EXC(c, c->EXC_TypeError, "expected a number");
 }
 
