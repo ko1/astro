@@ -15993,6 +15993,11 @@ pys_str_pct_format(CTX *c, VALUE fmt, VALUE args)
                 body[0] = (char)cv; body[1] = '\0'; bl = 1;
             } else if (pys_is_str(arg) && PYS_PTR(arg)->str.len == 1) {
                 body[0] = PYS_PTR(arg)->str.chars[0]; body[1] = '\0'; bl = 1;
+            } else if (pys_pct_bytes_mode && pys_is_byteseq(arg)
+                       && PYS_PTR(arg)->str.len == 1) {
+                // PEP 461: in bytes-mode, %c accepts a single-byte bytes
+                // or bytearray as well as an int.
+                body[0] = PYS_PTR(arg)->str.chars[0]; body[1] = '\0'; bl = 1;
             } else PYS_RAISE_EXC(c, c->EXC_TypeError, "%%c needs int or 1-char str");
         } else {
             PYS_RAISE_EXC(c, c->EXC_ValueError, "unsupported format character '%c'", conv);
