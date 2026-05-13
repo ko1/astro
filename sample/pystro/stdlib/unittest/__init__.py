@@ -614,9 +614,15 @@ def _patch(target, *args, **kwargs):
     # Share a single Mock between context-manager and start/stop forms so
     # that tests reading the value returned from .start() get the same
     # mock that __enter__ would have produced.
+    # When the caller supplies a concrete `new` value (positional or via
+    # `new=...`), CPython does NOT inject anything at decoration time —
+    # the caller has the new value already.  Only the auto-Mock form
+    # injects an extra positional.
+    has_new = len(args) >= 1 or "new" in kwargs
+    new_val = args[0] if len(args) >= 1 else kwargs.get("new")
     class _PatchCM:
         def __init__(self):
-            self._mock = _Mock()
+            self._mock = new_val if has_new else _Mock()
             self._active = False
         def __enter__(self):
             self._active = True
@@ -630,10 +636,17 @@ def _patch(target, *args, **kwargs):
         def stop(self):
             self._active = False
         def __call__(self, fn):
-            # Decorator form: pass the mock as an extra positional arg
-            # so `@patch("x") def test(self, m): ...` receives a Mock.
-            def wrapper(*args, **kwargs):
-                return fn(*(args + (self._mock,)), **kwargs)
+            # Decorator form: when there's no explicit `new`, inject the
+            # auto-Mock as a trailing positional so
+            # `@patch("x") def test(self, m): ...` receives a Mock.  With
+            # a user-supplied `new` value, leave the signature alone —
+            # the user already has the value.
+            if has_new:
+                def wrapper(*args, **kwargs):
+                    return fn(*args, **kwargs)
+            else:
+                def wrapper(*args, **kwargs):
+                    return fn(*(args + (self._mock,)), **kwargs)
             return wrapper
     return _PatchCM()
 
