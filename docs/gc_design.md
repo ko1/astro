@@ -246,17 +246,30 @@ root_array にできる。
 (= DISPATCH\_\<name\>) の論理モデル**。 specialize 経路 (= SD\_\<hash\>) で
 そのままやると tight loop で 4 メモリオペ/node が乗って遅すぎる。
 
-SD は inline tree の全 NODE_DEF をひとつの関数に畳み込んだもの。 SPECIALIZE
-時に ASTroGen が tree 内の `@roots(...)` をすべて拾い集めて **SD 関数ごとに
-1 個のアグリゲート frame** を組み、 push/pop は **SD 関数の入口と出口で 1 回ずつ**
-だけ行う。 §1.3.2 で示した BODY 書き換えは、 SD 集約時には **slot 名を
-inline 位置で一意化** する形で適用する (`l` → `_f.<inline_idx>_l`):
+SD は AST の inline tree をひとつの関数に畳み込んだもの。 例えば `a + b + c`
+をコンパイルすると tree は
+
+```
+node_add               (inline_idx 0)
+├── node_add           (inline_idx 1)
+│   ├── node_lget a   (inline_idx 2)
+│   └── node_lget b   (inline_idx 3)
+└── node_lget c        (inline_idx 4)
+```
+
+SPECIALIZE は tree を pre-order walk しながら **各 node の出現箇所** に通し
+番号 (`inline_idx`) を振る。 同じ NODE_DEF (例: `node_add`) が tree 内の
+別位置に複数回出てきても、 それぞれ別 idx になる。 ASTroGen は tree 全体の
+`@roots(...)` をすべて拾い集めて **SD 関数ごとに 1 個のアグリゲート frame**
+を組み、 push/pop は **SD 関数の入口と出口で 1 回ずつ** だけ行う。 §1.3.2 で
+示した BODY 書き換えは、 SD 集約時には **slot 名を inline_idx で一意化** する
+形で適用する (`l` → `_f.n<inline_idx>_l`):
 
 ```c
 struct frame_SD_<hash> {
-    VALUE n0_l;          // node_add (inline idx 0) の @roots(l)
-    VALUE n1_l;          // node_sub (inline idx 1) の @roots(l)   ←衝突回避
-    VALUE n2_v;          // ...
+    VALUE n0_l;          // 外側の node_add (idx 0) の @roots(l)
+    VALUE n1_l;          // 内側の node_add (idx 1) の @roots(l)   ←同じ var 名でも衝突回避
+    VALUE n4_v;          // ...
 };
 
 static const astro_frame_desc_t FD_SD_<hash> = {
