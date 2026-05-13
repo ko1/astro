@@ -6987,11 +6987,10 @@ pys_display_inner(FILE *fp, VALUE v, bool repr)
         char re[64], im[64];
         pys_fmt_double(re, sizeof(re), o->cpx.re);
         pys_fmt_double(im, sizeof(im), o->cpx.im);
-        // For NaN imag, the sign-check `im >= 0` is false but the
-        // formatted string doesn't carry a leading '-' either, so the
-        // string-leading-char fallback gives us the right separator.
         const char *sep = (im[0] == '-' || im[0] == '+') ? "" : "+";
-        if (o->cpx.re == 0.0) {
+        // Treat `+0` real as missing, but `-0` (negative zero) still
+        // prints as the full `(-0+1j)` form per CPython 3.6+.
+        if (o->cpx.re == 0.0 && !signbit(o->cpx.re)) {
             fprintf(fp, "%sj", im);
         } else {
             fprintf(fp, "(%s%s%sj)", re, sep, im);
