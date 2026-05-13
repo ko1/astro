@@ -8783,8 +8783,94 @@ sm_count(CTX *c, int argc, VALUE *argv)
 static VALUE
 sm_encode(CTX *c, int argc, VALUE *argv)
 {
-    (void)c; (void)argc;
     struct pysobj *o = PYS_PTR(argv[0]);
+    const char *enc = "utf-8";
+    const char *errors = "strict";
+    if (argc >= 2 && pys_is_str(argv[1])) enc = PYS_PTR(argv[1])->str.chars;
+    if (argc >= 3 && pys_is_str(argv[2])) errors = PYS_PTR(argv[2])->str.chars;
+    // Normalise encoding name: lowercase, '-' -> '_'.
+    char enc_norm[32];
+    {
+        size_t n = strlen(enc);
+        if (n > sizeof(enc_norm) - 1) n = sizeof(enc_norm) - 1;
+        for (size_t i = 0; i < n; i++) {
+            char ch = enc[i];
+            if (ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 'a';
+            if (ch == '-') ch = '_';
+            enc_norm[i] = ch;
+        }
+        enc_norm[n] = 0;
+    }
+    bool is_utf8 = (strcmp(enc_norm, "utf_8") == 0
+                    || strcmp(enc_norm, "utf8") == 0
+                    || strcmp(enc_norm, "u8") == 0);
+    bool is_ascii = (strcmp(enc_norm, "ascii") == 0
+                     || strcmp(enc_norm, "us_ascii") == 0
+                     || strcmp(enc_norm, "646") == 0);
+    bool is_latin1 = (strcmp(enc_norm, "latin_1") == 0
+                      || strcmp(enc_norm, "latin1") == 0
+                      || strcmp(enc_norm, "iso_8859_1") == 0
+                      || strcmp(enc_norm, "iso8859_1") == 0
+                      || strcmp(enc_norm, "8859") == 0
+                      || strcmp(enc_norm, "cp819") == 0
+                      || strcmp(enc_norm, "l1") == 0);
+    if (is_utf8) {
+        return pys_make_bytes(o->str.chars, o->str.len);
+    }
+    if (is_ascii) {
+        for (size_t i = 0; i < o->str.len; i++) {
+            if ((unsigned char)o->str.chars[i] >= 0x80) {
+                if (strcmp(errors, "ignore") == 0 || strcmp(errors, "replace") == 0) {
+                    // Build output skipping / replacing non-ASCII (no multi-byte tracking).
+                    char *buf = (char *)GC_malloc_atomic(o->str.len);
+                    size_t out = 0;
+                    for (size_t k = 0; k < o->str.len; k++) {
+                        unsigned char ch = (unsigned char)o->str.chars[k];
+                        if (ch < 0x80) buf[out++] = (char)ch;
+                        else if (strcmp(errors, "replace") == 0) buf[out++] = '?';
+                    }
+                    return pys_make_bytes(buf, out);
+                }
+                PYS_RAISE_EXC(c, c->EXC_UnicodeEncodeError,
+                             "'ascii' codec can't encode character at position %zu", i);
+            }
+        }
+        return pys_make_bytes(o->str.chars, o->str.len);
+    }
+    if (is_latin1) {
+        // UTF-8 → Latin-1: walk codepoints; each must be < 256.
+        char *buf = (char *)GC_malloc_atomic(o->str.len + 1);
+        size_t out = 0;
+        size_t i = 0;
+        while (i < o->str.len) {
+            unsigned char b = (unsigned char)o->str.chars[i];
+            if (b < 0x80) {
+                buf[out++] = (char)b; i++;
+            } else if ((b & 0xE0) == 0xC0 && i + 1 < o->str.len) {
+                unsigned int cp = ((b & 0x1F) << 6)
+                                | ((unsigned char)o->str.chars[i+1] & 0x3F);
+                if (cp < 256) {
+                    buf[out++] = (char)cp; i += 2;
+                } else {
+                    if (strcmp(errors, "ignore") == 0) { i += 2; }
+                    else if (strcmp(errors, "replace") == 0) { buf[out++] = '?'; i += 2; }
+                    else PYS_RAISE_EXC(c, c->EXC_UnicodeEncodeError,
+                                       "'latin-1' codec can't encode character at position %zu", i);
+                }
+            } else {
+                // 3- / 4-byte UTF-8 sequence — codepoint >= 0x800, can't fit in Latin-1.
+                size_t skip = 1;
+                if ((b & 0xF0) == 0xE0) skip = 3;
+                else if ((b & 0xF8) == 0xF0) skip = 4;
+                if (strcmp(errors, "ignore") == 0) { i += skip; }
+                else if (strcmp(errors, "replace") == 0) { buf[out++] = '?'; i += skip; }
+                else PYS_RAISE_EXC(c, c->EXC_UnicodeEncodeError,
+                                   "'latin-1' codec can't encode character at position %zu", i);
+            }
+        }
+        return pys_make_bytes(buf, out);
+    }
+    // Unknown encoding → fall back to UTF-8 bytes (lenient).
     return pys_make_bytes(o->str.chars, o->str.len);
 }
 
@@ -10637,47 +10723,152 @@ static struct type_method frozenset_methods[] = {
 static VALUE
 bm_decode(CTX *c, int argc, VALUE *argv)
 {
-    (void)c;
     struct pysobj *o = PYS_PTR(argv[0]);
-    // Pystro stores str internally as UTF-8.  bytes whose source is
-    // already UTF-8 are a direct passthrough; latin-1 / ascii with
-    // bytes >= 0x80 need to be re-encoded so `b'\xc1'.decode('latin-1')`
-    // equals `'\xc1'` (str literal).
-    bool is_latin1 = false;
-    if (argc >= 2 && pys_is_str(argv[1])) {
-        const char *enc = PYS_PTR(argv[1])->str.chars;
-        if (strcasecmp(enc, "latin-1") == 0 || strcasecmp(enc, "latin_1") == 0
-            || strcasecmp(enc, "iso-8859-1") == 0
-            || strcasecmp(enc, "iso8859-1") == 0
-            || strcasecmp(enc, "ascii") == 0) {
-            is_latin1 = true;
+    // Pystro stores str internally as UTF-8.
+    const char *enc_in = "utf-8";
+    const char *errors = "strict";
+    if (argc >= 2 && pys_is_str(argv[1])) enc_in = PYS_PTR(argv[1])->str.chars;
+    if (argc >= 3 && pys_is_str(argv[2])) errors = PYS_PTR(argv[2])->str.chars;
+    // Normalise enc: lowercase, '-' -> '_'.
+    char enc[32];
+    {
+        size_t n = strlen(enc_in);
+        if (n > sizeof(enc) - 1) n = sizeof(enc) - 1;
+        for (size_t i = 0; i < n; i++) {
+            char ch = enc_in[i];
+            if (ch >= 'A' && ch <= 'Z') ch = ch - 'A' + 'a';
+            if (ch == '-') ch = '_';
+            enc[i] = ch;
         }
+        enc[n] = 0;
     }
-    if (!is_latin1) {
-        return pys_make_str(o->str.chars, o->str.len);
-    }
-    // Count high bytes to know the output size.
-    size_t out_len = 0;
-    for (size_t i = 0; i < o->str.len; i++) {
-        unsigned char b = (unsigned char)o->str.chars[i];
-        out_len += (b < 0x80) ? 1 : 2;
-    }
-    if (out_len == o->str.len) {
-        // Pure ASCII — no transcoding needed.
-        return pys_make_str(o->str.chars, o->str.len);
-    }
-    char *buf = (char *)GC_malloc_atomic(out_len + 1);
-    size_t j = 0;
-    for (size_t i = 0; i < o->str.len; i++) {
-        unsigned char b = (unsigned char)o->str.chars[i];
-        if (b < 0x80) buf[j++] = (char)b;
-        else {
-            buf[j++] = (char)(0xC0 | (b >> 6));
-            buf[j++] = (char)(0x80 | (b & 0x3F));
+    bool is_utf8 = (strcmp(enc, "utf_8") == 0 || strcmp(enc, "utf8") == 0
+                    || strcmp(enc, "u8") == 0);
+    bool is_ascii = (strcmp(enc, "ascii") == 0
+                     || strcmp(enc, "us_ascii") == 0
+                     || strcmp(enc, "646") == 0);
+    bool is_latin1 = (strcmp(enc, "latin_1") == 0 || strcmp(enc, "latin1") == 0
+                      || strcmp(enc, "iso_8859_1") == 0
+                      || strcmp(enc, "iso8859_1") == 0
+                      || strcmp(enc, "l1") == 0
+                      || strcmp(enc, "cp819") == 0);
+    bool strict = (strcmp(errors, "strict") == 0);
+    bool ignore = (strcmp(errors, "ignore") == 0);
+    bool replace = (strcmp(errors, "replace") == 0);
+    // UTF-8 validate-and-pass.
+    if (is_utf8) {
+        // Verify well-formed UTF-8.  If errors=strict and a bad sequence
+        // is found, raise UnicodeDecodeError.  For ignore / replace, build
+        // an output buffer with bad bytes elided or replaced with U+FFFD.
+        size_t i = 0;
+        const unsigned char *s = (const unsigned char *)o->str.chars;
+        bool clean = true;
+        while (i < o->str.len) {
+            unsigned char b = s[i];
+            size_t need;
+            unsigned int min_cp;
+            if (b < 0x80) { i++; continue; }
+            else if ((b & 0xE0) == 0xC0) { need = 2; min_cp = 0x80; }
+            else if ((b & 0xF0) == 0xE0) { need = 3; min_cp = 0x800; }
+            else if ((b & 0xF8) == 0xF0) { need = 4; min_cp = 0x10000; }
+            else { clean = false; break; }
+            if (i + need > o->str.len) { clean = false; break; }
+            unsigned int cp = b & (need == 2 ? 0x1F : need == 3 ? 0x0F : 0x07);
+            bool ok = true;
+            for (size_t k = 1; k < need; k++) {
+                unsigned char cb = s[i + k];
+                if ((cb & 0xC0) != 0x80) { ok = false; break; }
+                cp = (cp << 6) | (cb & 0x3F);
+            }
+            if (!ok || cp < min_cp || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+                clean = false; break;
+            }
+            i += need;
         }
+        if (clean) return pys_make_str(o->str.chars, o->str.len);
+        if (strict) {
+            PYS_RAISE_EXC(c, c->EXC_UnicodeDecodeError,
+                         "'utf-8' codec can't decode byte 0x%02x at position %zu",
+                         (unsigned char)o->str.chars[i], i);
+        }
+        // Build sanitized output.
+        size_t cap = o->str.len * 3 + 4;
+        char *buf = (char *)GC_malloc_atomic(cap + 1);
+        size_t out = 0;
+        i = 0;
+        while (i < o->str.len) {
+            unsigned char b = s[i];
+            size_t need;
+            unsigned int min_cp;
+            if (b < 0x80) { buf[out++] = (char)b; i++; continue; }
+            else if ((b & 0xE0) == 0xC0) { need = 2; min_cp = 0x80; }
+            else if ((b & 0xF0) == 0xE0) { need = 3; min_cp = 0x800; }
+            else if ((b & 0xF8) == 0xF0) { need = 4; min_cp = 0x10000; }
+            else { need = 0; min_cp = 0; }
+            bool ok = (need > 0) && (i + need <= o->str.len);
+            unsigned int cp = 0;
+            if (ok) {
+                cp = b & (need == 2 ? 0x1F : need == 3 ? 0x0F : 0x07);
+                for (size_t k = 1; k < need; k++) {
+                    unsigned char cb = s[i + k];
+                    if ((cb & 0xC0) != 0x80) { ok = false; break; }
+                    cp = (cp << 6) | (cb & 0x3F);
+                }
+                if (cp < min_cp || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) ok = false;
+            }
+            if (ok) {
+                for (size_t k = 0; k < need; k++) buf[out++] = (char)s[i + k];
+                i += need;
+            } else {
+                if (replace) {
+                    // U+FFFD as UTF-8 = EF BF BD.
+                    buf[out++] = (char)0xEF; buf[out++] = (char)0xBF; buf[out++] = (char)0xBD;
+                }
+                i++;  // skip the bad byte
+            }
+        }
+        return pys_make_str(buf, out);
     }
-    buf[out_len] = '\0';
-    return pys_make_str(buf, out_len);
+    if (is_ascii) {
+        // Validate all bytes < 0x80.
+        size_t cap = o->str.len * 3 + 4;
+        char *buf = (char *)GC_malloc_atomic(cap + 1);
+        size_t out = 0;
+        for (size_t i = 0; i < o->str.len; i++) {
+            unsigned char b = (unsigned char)o->str.chars[i];
+            if (b < 0x80) buf[out++] = (char)b;
+            else if (strict) {
+                PYS_RAISE_EXC(c, c->EXC_UnicodeDecodeError,
+                             "'ascii' codec can't decode byte 0x%02x at position %zu", b, i);
+            } else if (replace) {
+                buf[out++] = (char)0xEF; buf[out++] = (char)0xBF; buf[out++] = (char)0xBD;
+            }
+        }
+        return pys_make_str(buf, out);
+    }
+    if (is_latin1) {
+        // Every byte is a valid latin-1 codepoint < 256 → re-encode high bytes
+        // as 2-byte UTF-8.
+        size_t out_len = 0;
+        for (size_t i = 0; i < o->str.len; i++) {
+            unsigned char b = (unsigned char)o->str.chars[i];
+            out_len += (b < 0x80) ? 1 : 2;
+        }
+        if (out_len == o->str.len) return pys_make_str(o->str.chars, o->str.len);
+        char *buf = (char *)GC_malloc_atomic(out_len + 1);
+        size_t j = 0;
+        for (size_t i = 0; i < o->str.len; i++) {
+            unsigned char b = (unsigned char)o->str.chars[i];
+            if (b < 0x80) buf[j++] = (char)b;
+            else {
+                buf[j++] = (char)(0xC0 | (b >> 6));
+                buf[j++] = (char)(0x80 | (b & 0x3F));
+            }
+        }
+        return pys_make_str(buf, out_len);
+    }
+    // Fallback: assume UTF-8.
+    return pys_make_str(o->str.chars, o->str.len);
 }
 
 static VALUE

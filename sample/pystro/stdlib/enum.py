@@ -135,6 +135,12 @@ class EnumMeta(type):
         return iter(cls._members_)
     def __contains__(cls, member):
         return member in cls._members_
+    def __getitem__(cls, name):
+        # `MyEnum["NAME"]` → member by name.  CPython raises KeyError.
+        by_name = getattr(cls, "_by_name_", None)
+        if by_name is None or name not in by_name:
+            raise KeyError(name)
+        return by_name[name]
     @property
     def __members__(cls):
         # CPython exposes an OrderedDict; pystro is order-preserving by

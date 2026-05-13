@@ -6,10 +6,10 @@
 # enforce type parameters.
 
 class _GenericAlias:
-    def __init__(self, origin, name):
+    def __init__(self, origin, name, args=()):
         self._origin = origin
         self._name = name
-        self.__args__ = ()
+        self.__args__ = args if isinstance(args, tuple) else (args,)
     @property
     def origin(self):
         return self._origin
@@ -19,11 +19,35 @@ class _GenericAlias:
         # `dict`, etc. — used by `get_origin()`.
         return self._origin
     def __getitem__(self, params):
-        return self          # `List[int]` => List itself; type-check not enforced
+        # `List[int]` returns a new _GenericAlias remembering the args.
+        # CPython's typing.List[int] reprs as 'typing.List[int]'.
+        if isinstance(params, tuple):
+            new_args = self.__args__ + params
+        else:
+            new_args = self.__args__ + (params,)
+        return _GenericAlias(self._origin, self._name, new_args)
     def __repr__(self):
-        return self._name
+        if not self.__args__:
+            return self._name
+        def _fmt(a):
+            if a is type(None) or a is None:
+                return "None"
+            if a is Ellipsis:
+                return "..."
+            if isinstance(a, type):
+                return getattr(a, "__qualname__", None) or a.__name__
+            if isinstance(a, _GenericAlias):
+                return repr(a)
+            return repr(a)
+        return self._name + "[" + ", ".join(_fmt(a) for a in self.__args__) + "]"
     def __call__(self, *args, **kw):
         return self._origin(*args, **kw)
+    def __eq__(self, other):
+        if not isinstance(other, _GenericAlias):
+            return NotImplemented
+        return self._origin is other._origin and self.__args__ == other.__args__
+    def __hash__(self):
+        return hash((id(self._origin), self.__args__))
 
 
 List       = _GenericAlias(list,       "typing.List")
