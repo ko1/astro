@@ -192,6 +192,51 @@ class Decimal:
         return "Decimal('" + self._format() + "')"
     def __str__(self):
         return self._format()
+    def __int__(self):
+        if self._special == 'nan' or self._special == 'inf':
+            raise ValueError("cannot convert special value to int")
+        if self._s == 0:
+            return int(self._n)
+        if self._s > 0:
+            return int(self._n // (10 ** self._s))
+        return int(self._n * (10 ** -self._s))
+    def __float__(self):
+        if self._special == 'nan': return float('nan')
+        if self._special == 'inf':
+            return float('-inf') if self._n < 0 else float('inf')
+        return self._n / (10 ** self._s) if self._s > 0 else float(self._n * (10 ** -self._s))
+    def __bool__(self):
+        return self._special != '' or self._n != 0
+    def __abs__(self):
+        r = Decimal(self)
+        r._n = -r._n if r._n < 0 else r._n
+        return r
+    def __pos__(self): return Decimal(self)
+    def as_integer_ratio(self):
+        """Return (numerator, denominator) per PEP 3101.  Raises
+        OverflowError for inf and ValueError for NaN, matching CPython."""
+        if self._special == 'inf':
+            raise OverflowError("cannot convert Infinity to integer ratio")
+        if self._special == 'nan':
+            raise ValueError("cannot convert NaN to integer ratio")
+        if self._s == 0:
+            return (int(self._n), 1)
+        if self._s > 0:
+            # value = n / 10**s — reduce by gcd
+            num, den = self._n, 10 ** self._s
+            from math import gcd
+            g = gcd(abs(num), den)
+            return (num // g, den // g)
+        # negative scale: value = n * 10**(-s) — already integer
+        return (int(self._n * (10 ** -self._s)), 1)
+    @property
+    def numerator(self):
+        # Only valid for integer-valued Decimals (CPython raises
+        # AttributeError for non-integer values).  We surface as ratio.
+        return self.as_integer_ratio()[0]
+    @property
+    def denominator(self):
+        return self.as_integer_ratio()[1]
     def _format(self):
         n = self._n
         sign = ""
