@@ -10169,6 +10169,11 @@ sm_expandtabs(CTX *c, int argc, VALUE *argv)
     return pys_make_str(buf, len);
 }
 
+static VALUE lm_add(CTX *c, int argc, VALUE *argv);
+static VALUE lm_mul(CTX *c, int argc, VALUE *argv);
+static VALUE lm_rmul(CTX *c, int argc, VALUE *argv);
+static VALUE lm_getitem(CTX *c, int argc, VALUE *argv);
+static VALUE lm_contains(CTX *c, int argc, VALUE *argv);
 static struct type_method str_methods[] = {
     { "split",         sm_split,         1, 3 },
     { "join",          sm_join,          2, 2 },
@@ -10216,6 +10221,13 @@ static struct type_method str_methods[] = {
     { "format_map",    sm_format_map,    2, 2 },
     { "translate",     sm_translate,     2, 2 },
     { "expandtabs",    sm_expandtabs,    1, 2 },
+    { "__add__",       lm_add,           2, 2 },
+    { "__mul__",       lm_mul,           2, 2 },
+    { "__rmul__",      lm_rmul,          2, 2 },
+    { "__getitem__",   lm_getitem,       2, 2 },
+    { "__len__",       bi_dunder_len,    1, 1 },
+    { "__iter__",      bi_dunder_iter,   1, 1 },
+    { "__contains__",  lm_contains,      2, 2 },
     { NULL, NULL, 0, 0 }
 };
 
