@@ -1,0 +1,201 @@
+# baruby Done
+
+[spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
+[todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
+
+## 2026-05-10 — bench 拡充 (GC stress 3 種追加)
+
+既存の binary_trees / list_alloc / string_concat に追加で:
+
+- **gc_combined** — 50k 要素配列を保持しつつ 10M 回の 4 要素配列 churn。
+  「長寿命 + 短寿命チャーン」の **generational-friendly** 形 (今 libgc が
+  非世代別なので差は出ないが、世代別 GC 投入時のベースライン)。
+- **substr_churn** — 18 MB の text String を保持して、毎オフセットで
+  `[i, 5]` slice。**fine-grained substring alloc + 1 long-lived**。GC
+  回数は 52 と最低 (heap が text サイズで安定するため)。
+- **fib_pair** — 再帰 fib が毎フレームで `[a, b]` 2 要素配列を返す。
+  **frame-escape + deep stack** (depth 28、~317k フレーム peak)。precise
+  GC を入れたとき frame iterator のスループットがここで効く想定。
+
+各々 plain で ~1 s 持続、AOT 比 1.78〜2.74× 速い。perf.md §2 / §3 に
+全 6 bench の表 (実測値 + 寿命プロファイル + GC 頻度) を整理。
+
+## 2026-05-10 — A+B バッチ (`<=>` / `*` / `<<` / escape / AOT/PG verify / JIT 撤去)
+
+### A — 残り P1 機能
+
+- **`<=>`** (`node_spaceship`)。Int+Int / Str+Str は `-1`/`0`/`1`、
+  混合型は `nil` (Ruby 互換)。`is_binop` / `alloc_binop` に追加。
+- **`String#*` / `Array#*`** (`baruby_str_repeat` / `baruby_ary_repeat`)。
+  `node_mul` を type branch に拡張。負の N は空。
+- **`<<`** (`node_lshift`)。Int+Int は bit shift、Array は push、
+  String は in-place append (`baruby_str_append`)。`is_binop` /
+  `alloc_binop` に追加。`a << x << y << z` が左結合チェインで動く。
+- **`p` の inspect 表示**。`baruby_print_value` / `to_s_inner` の String
+  分岐で `\n` / `\t` / `\r` / `\\` / `\"` / `\xNN` (制御文字) を escape。
+  prism の `unescaped` 経由のリテラル (`"a\nb"` 等) が
+  正しく確認できるようになった (見た目は Ruby の `p` と同じ)。
+
+### B — モード検証
+
+- **AOT (`-c`)** 全 5 テスト + 3 bench 通過、plain と出力一致。新ノード
+  (`node_str_lit` の `const char *` operand、`node_call_*`、`<=>` 等)
+  も `code_store/SD_<hash>.c` 内で `EVAL_<name>(...)` 形に展開される。
+  test_p1b のような複雑な script で SD は 1 ファイル内 inline 静的
+  関数 ~400 個、public エントリ 4-5 個。
+- **PG (`-p`)** も同様に通過。`PGSD_<hopt>.c` が出る。bench 結果は
+  perf.md §2 に追記。
+- **JIT (`-j`)** は `lstation.rb` ワーカーなしでは UDS 接続できないので
+  パーサで `-j` 受信時に明示エラー + exit(1) させた。`astro_jit.c` の
+  hooks は再有効化に備えて残置。
+
+### モード別ベンチ結果 (perf.md §2 抜粋)
+
+| bench         | plain  | aot    | pg     | aot 比 |
+|---|---:|---:|---:|---:|
+| binary_trees  | 0.96 s | 0.64 s | 0.94 s | 1.51× |
+| list_alloc    | 1.16 s | 0.51 s | 0.50 s | 2.27× |
+| string_concat | 1.02 s | 0.88 s | 0.88 s | 1.16× |
+
+PG が plain と差が出にくい bench (binary_trees) は 1 回ループで
+終わる構造 — prof-driven inlining 余地が小さい。alloc 量は libgc
+の `GC_get_total_bytes` 由来で、モード間で不変 (~320MB / ~764MB /
+~1.1GB)。
+
+## 2026-05-10 — P1 言語拡張バッチ
+
+`true` / `false` / `nil` リテラル、`to_s` / `to_i`、String 順序比較、
+String / Array slice (2-arg `[]`)、文字列 interpolation を一気に入れた。
+
+- **VAL_NIL を VAL_FALSE から分離** (raw 4 singleton)。`IS_FALSY` /
+  `IS_TRUTHY` macro 追加、`node_if` / `node_while` を `IS_TRUTHY` 経由に
+  書き換え (raw 4 は C 上 truthy なのでプレーン `if` だと nil が
+  truthy 扱いになるバグを回避)。`IS_PTR` から VAL_NIL を除外。
+- **`node_nil` ノード追加**。parser で PM_TRUE_NODE / PM_FALSE_NODE /
+  PM_NIL_NODE を `node_true` / `node_false` / `node_nil` に流す
+  (これまで全部 `unsupported` で死んでいた)。
+- 既存の「nil 相当」フォールバック (if 無 else / 空 parens / 範囲外
+  read / pop empty / aset auto-extend) を `VAL_FALSE` から `VAL_NIL` に
+  切り替え。
+- **`node_call_to_s` / `node_call_to_i`**。`baruby_to_s(v)` を node.c に
+  追加 (libgc-backed StrBuf builder で配列の inspect 風文字列を組む。
+  `open_memstream` + libc free は `free` macro shadow と相性が悪く
+  leak 化するので使わない)。`p` 出力の inspect 表示と to_s top-level
+  の string-without-quotes / nil→"" を分けて実装。
+- **String 順序比較**。`baruby_str_cmp` を node.c に追加、`node_lt` /
+  `node_le` / `node_gt` / `node_ge` を Int+Int / Str+Str の type branch
+  に拡張。
+- **`node_call_aget2`** (recv, idx, count)。String / Array 両方で
+  サブスライス。clamp と negative index 込み。parser で
+  `[]` の args_cnt==2 を分岐。
+- **`PM_INTERPOLATED_STRING_NODE`**。parts 列を walk して、PM_STRING_NODE
+  はそのまま、それ以外は `node_call_to_s` で wrap、左結合の `node_add`
+  で連結。Empty parts は `""` 相当。`PM_EMBEDDED_STATEMENTS_NODE` も
+  実装 (内側 statements を recurse、空 `#{}` は nil)。
+
+検証は `test_p1.ba.rb` で全項目 (43 行)。fib / test_ary / test_eq の
+regression なし、bench の alloc/GC も不変。
+
+## 2026-05-10 — Ruby っぽい value semantics
+
+`String#==` / `Array#==` / `Array#+` を実装、`true` / `false` を表示
+できるよう singleton を分離。
+
+- `baruby_value_eq(VALUE, VALUE)` を `node.c` に追加。raw 等価で
+  fixnum / singleton / ポインタ identity を一発カバーし、違うときだけ
+  String の byte 比較 / Array の再帰的要素比較に降りる。
+- `node_eq` / `node_neq` を 2 段 fast path + helper に書き換え。
+  int loop の hot path (`l == r` 直撃) は同じ命令数のまま。
+- `node_add` の type branch に Array+Array (`baruby_ary_plus` で新配列
+  を返す concat) を追加。
+- `VAL_TRUE` を `INT2VAL(1) = 3` から **独立 singleton (raw 2)** に
+  変更。`p (1 == 1)` が `1` ではなく `true` と表示されるようにし、
+  `nil`/`false` と `true` が分かれるよう将来分離 ([todo.md](todo.md))
+  への足場も用意。
+- `IS_PTR` から `VAL_TRUE` を除外。`baruby_print_value` で `true` 表示
+  対応。
+- `PM_PARENTHESES_NODE` を実装 (空 `()` は `false`、それ以外は body を
+  そのまま透過)。`(...)` を含む式が parser に通るようになった。
+
+検証は `test_eq.ba.rb` で:
+- 整数値比較 / mixed-type / String value-eq / Array value-eq
+  (空・ネスト含む) / Array+Array (空配列・チェイン込み)。
+- 既存テストの fib (10946) と test_ary も regression なし。
+- 3 ベンチの alloc/GC 数は不変、wall は noise レンジ内。
+
+## 2026-05-10 — 初期フォーク
+
+`sample/naruby` から `sample/baruby` を切り出し、Array + String + libgc
+を導入。GC testbed として独り立ちさせた。
+
+### 言語面
+
+- naruby の int64-only から **LSB-tagged VALUE** に拡張 (1 = fixnum、
+  0 = ptr、raw 0 = false/nil)。
+- ヒープ型 **Array (BaArray)** と **String (BaString)** を追加。
+  共通 `ObjectHeader` に type tag。
+- 比較 / `&&` / `||` を `VAL_TRUE` / `VAL_FALSE` 正規化に変更。
+  既存の `&&` 実装が `node_num(0)` (= INT2VAL(0) = raw 1, truthy) を
+  false 相当として使っていた潜在バグを修正。
+- 専用ノード `node_true` / `node_false` 追加。
+
+### ノード追加
+
+- `node_ary_new` / `node_ary_push` — リテラル評価のチェイン展開用。
+- `node_str_lit(const char *, uint32_t)` — eval 毎に fresh alloc。
+- メソッド desugar 用 dispatch nodes:
+  `node_call_size`, `node_call_aget`, `node_call_aset`,
+  `node_call_push`, `node_call_pop`。型タグで Array/String を branch。
+
+### パーサ
+
+`PM_ARRAY_NODE` / `PM_STRING_NODE` の "unsupported" stub を実装に置換。
+`PM_CALL_NODE` で receiver が non-NULL かつメソッド名が builtin 表に
+ある場合は対応する dispatch ノードに lower。
+`PM_OR_NODE` も実装 (`PM_AND_NODE` と同型)。
+
+### 値表現と既存ノードの調整
+
+- `node_num`: `INT2VAL(num)` で wrap。
+- `node_add`/`sub`/`mul`/`div`/`mod`: untag → op → tag。`node_add` のみ
+  string concat (`baruby_str_concat`) も runtime branch で受け持つ。
+- `node_lt`/`le`/`gt`/`ge`/`eq`/`neq`: tagged 値のまま signed 比較
+  (untag 不要)、結果を `VAL_TRUE`/`VAL_FALSE` に正規化。
+
+### libgc 統合
+
+- `context.h` で全 system header の後ろに `malloc` / `calloc` /
+  `realloc` / `strdup` / `free` を `GC_*` macro で wrap (asom と同じ
+  パターン)。
+- `main.c` 冒頭で `GC_INIT()`。
+- Makefile の link line に `-lgc`。
+- `BARUBY_GC_STATS=1` で `__GC_STATS__` 行を出力 (alloc_bytes /
+  heap_bytes / gc_count、libgc の `GC_get_*` 由来)。
+
+### ベンチ
+
+`bench/binary_trees.ba.rb` (depth 21、~1s)、`bench/list_alloc.ba.rb`
+(10M iter、~1s)、`bench/string_concat.ba.rb` (5M iter、~1s)。
+ランナー `bench/run.rb` が plain/aot/pg を選んで全 bench を順に実行、
+時間 + GC 統計を表示。`make bench` でも一発実行可。
+
+### 動作確認 (`--plain` のみ)
+
+- `test.ba.rb` (fib 20) で再帰 + 整数演算 OK (10946)。
+- `test_ary.ba.rb` で配列 / 文字列 / index / size / push / pop /
+  concat の挙動が期待通り。
+- 3 ベンチがすべて完走、時間が ~1s スケールで GC が走っていることを
+  確認 (12〜1700 collections)。
+
+AOT / PG / JIT モードでの新ノード動作は未検証 ([todo.md](todo.md) P0)。
+
+### 削除した naruby 資産
+
+- `naruby_codegen.rb` (本人コメントで obsolete)
+- `naruby_code.c` (生成済み AST のテストダンプ)
+- `lstation.rb` (JIT サーバ — `-j` 自体を unwired にした)
+
+## 過去の経緯
+
+baruby 命名: naruby = "**n**ot **a** ruby"、abruby = "**a b**it ruby"
+の中間 — "**ba**rely a ruby" → baruby。

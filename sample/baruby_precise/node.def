@@ -1,0 +1,760 @@
+// -*- mode: c -*-
+
+// literal
+
+NODE_DEF
+node_num(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, int32_t num)
+{
+    return RESULT_OK(INT2VAL(num));
+}
+
+// Truth-value / nil literals.  Distinct from `node_num(0/1)` because
+// tagged INT2VAL(0) is the raw value 1 (truthy in C), so the parser
+// needs dedicated nodes when desugaring `&&` / `||` and when emitting
+// `nil` for missing else / out-of-range / etc.
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+{
+    return RESULT_OK(VAL_TRUE);
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+{
+    return RESULT_OK(VAL_FALSE);
+}
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+{
+    return RESULT_OK(VAL_NIL);
+}
+
+// local variables — fp[index] reads/writes the current frame slot
+// directly, so the SD chain never has to round-trip through `c->fp`.
+
+NODE_DEF
+node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, uint32_t index)
+{
+    return RESULT_OK(fp[index]);
+}
+
+NODE_DEF
+node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, uint32_t index, NODE *rhs)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, rhs));
+    fp[index] = v;
+    return RESULT_OK(v);
+}
+
+// syntax
+
+NODE_DEF
+node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, uint32_t envsize, NODE *body)
+{
+    // Advance fp by envsize (matches conservative-baruby convention).
+    // sp must stay above where the body's locals live; conservatively
+    // use a fixed offset.  baruby_precise MVP: 64 slots is enough.
+    return EVAL(c, body, fp + envsize, fp + envsize + 64);
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *head, NODE *tail)
+{
+    // Discard head's value but propagate non-NORMAL state (e.g. RETURN
+    // inside an `if` whose branch is `head`).  UNWRAP returns from the
+    // current function on non-NORMAL.
+    (void)UNWRAP(EVAL_ARG(c, head));
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *cond, NODE *then_node, NODE *else_node)
+{
+    // `nil = raw 4` is non-zero, so a plain `if (...)` would treat nil as
+    // truthy — explicit IS_TRUTHY test required.
+    if (IS_TRUTHY(UNWRAP(EVAL_ARG(c, cond)))) {
+        return EVAL_ARG(c, then_node);
+    }
+    else {
+        return EVAL_ARG(c, else_node);
+    }
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *cond, NODE *body)
+{
+    while (IS_TRUTHY(UNWRAP(EVAL_ARG(c, cond)))) {
+        RESULT r = EVAL_ARG(c, body);
+        // RETURN propagates up; the body's value is discarded.
+        if (UNLIKELY(r.state != RESULT_NORMAL)) return r;
+    }
+    return RESULT_OK(VAL_NIL);
+}
+
+// `return expr` — emit RESULT_RETURN.  The enclosing function-call site
+// (call_body / node_call2's fast path) catches it and converts back to
+// RESULT_NORMAL so the caller sees a normal return value.
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *value)
+{
+    VALUE v = UNWRAP(EVAL_ARG(c, value));
+    return RESULT_RETURN_(v);
+}
+
+// functions
+
+static struct function_entry *
+get_func_entry(CTX * restrict c, const char *name)
+{
+    for (int i=0; i<c->func_set_cnt; i++) {
+        // override
+        if (strcmp(c->func_set[i].name, name) == 0) {
+            return &c->func_set[i];
+        }
+    }
+    return &c->func_set[c->func_set_cnt++];
+}
+
+NODE_DEF @noinline
+node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    struct function_entry *fe = get_func_entry(c, name);
+    fe->name = name;
+    fe->body = OPTIMIZE(body);
+    // Override OPTIMIZE's AOT-only cs_load with a PGC-aware load: pass
+    // `name` as `file` so cs_load consults the hopt_index for a
+    // profile-baked PGSD_<HOPT>, falling back to SD_<HORG>.
+    (void)astro_cs_load(fe->body, name);
+    fe->params_cnt = params_cnt;
+    fe->locals_cnt = locals_cnt;
+    c->serial++;
+
+    return RESULT_OK(0);
+}
+
+#define CALL_DEBUG 0
+
+// All cold paths (cc refresh, function lookup, error reporting,
+// slow-mode arg eval) live in node_slowpath.c (= main `naruby` binary
+// only).  The fast path here checks gates and either dispatches the
+// hot path or tail-calls the variant's slowpath.  Result: each call
+// site SD adds only `cmp/jne <slowpath>` + the body of the hot path
+// to all.so — no in-SD slowpath setup, no duplicated lookup helpers.
+//
+// `fp` is the caller's frame.  For node_call / node_call2 (argc > 3
+// fallbacks) the callee's frame aliases `fp + arg_index` (args laid
+// down by parser-emitted lset chain).  For arity-N specialised
+// node_call_<N> / node_pg_call_<N>, args are explicit operands and
+// the callee gets a fresh VLA frame `F[locals_cnt]`.
+
+NODE_DEF
+node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref)
+{
+    (void)name; (void)params_cnt; (void)sp;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_slowpath(c, n, fp, sp);
+    }
+    NODE *body = cc->body;
+#ifndef ASTRO_SPECIALIZED
+    if (OPTION.jit &&
+        (body->head.jit_status != JIT_STATUS_Compiled ||
+         body->head.jit_status != JIT_STATUS_Compiling)) {
+        body->head.dispatch_cnt++;
+        if (body->head.dispatch_cnt == 100) {
+            void astro_jit_submit_compile(NODE *);
+            astro_jit_submit_compile(body);
+        }
+    }
+#endif
+    uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(body);
+    if (locals_cnt == 0) locals_cnt = params_cnt;
+    VALUE *callee_fp = fp + arg_index;
+    RESULT r = EVAL(c, body, callee_fp, callee_fp + locals_cnt);
+    return RESULT_OK(r.value);
+}
+
+// Arity-specialized AOT/interp call sites.  Mirror `node_pg_call_<N>`
+// but **without** `sp_body` — the body is resolved through `cc` on
+// every call (just like `node_call`).
+//
+// Why these exist:
+//   PG mode's `node_pg_call_<N>` combines two effects — (a) baked
+//   direct call to `SD_<HASH(sp_body)>` (= the inlining win), and
+//   (b) arity-N specialization (explicit arg operands + fresh callee
+//   frame `F[locals_cnt]`, no node_lset chain).  To isolate (a) in
+//   the AOT-vs-PG comparison, the AOT/interp path also needs (b).
+//   These nodes provide it: same arg-eval / fresh-frame shape as
+//   `node_pg_call_<N>`, but dispatch goes through the dynamic
+//   `cc->body` (= the AOT convention).
+//
+// Like `node_pg_call_<N>`, `arg_index` is unused at runtime (we use
+// the fresh frame F, not caller_fp + arg_index) but kept as an
+// operand for parser/locals_cnt patching consistency.
+
+// Fast paths below are check-first: on guard failure we tail-call the
+// variant's slowpath (defined in node_slowpath.c, main binary only).
+// Args evaluated *after* the gate so a missed gate doesn't have to spill
+// already-computed VALUEs to a stack array.  The slowpath re-evaluates
+// arg operands against the caller's `fp` — a one-time cost on the cold
+// path, never on the hot path.
+
+// baruby_precise: callee frame is on the shared VALUE stack (sp[0..locals_cnt-1])
+// so GC can scan it.  Args are evaluated with sp + locals_cnt as scratch top
+// (= above where callee locals live) and the results are placed at sp[0..N-1].
+
+NODE_DEF
+node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref)
+{
+    (void)name; (void)arg_index; (void)fp;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_0_slowpath(c, n, fp, sp);
+    }
+    // Zero-init callee locals (untouched by args here).
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0)
+{
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_1_slowpath(c, n, fp, sp);
+    }
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1)
+{
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_2_slowpath(c, n, fp, sp);
+    }
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
+    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial)) {
+        return node_call_3_slowpath(c, n, fp, sp);
+    }
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
+    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
+    sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, a2, sp + locals_cnt));
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref, NODE *sp_body)
+{
+    (void)name; (void)params_cnt; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_call2_slowpath(c, n, fp, sp);
+    }
+    if (CALL_DEBUG) fprintf(stderr, "name:%s hit!\n", name);
+    // baruby_precise: callee frame at fp[arg_index..] (parser-set), callee
+    // sp = callee_fp + locals_cnt (from code repo).
+    uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(sp_body);
+    if (locals_cnt == 0) locals_cnt = params_cnt;
+    VALUE *callee_fp = fp + arg_index;
+    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_fp + locals_cnt);
+    return RESULT_OK(r.value);
+}
+
+// Arity-specialised PG call sites.  Each `node_pg_call_<N>` evaluates
+// its `N` argument operands inline and dispatches the speculatively
+// linked body with a fresh VLA frame `F[locals_cnt]`.  The framework's
+// SPECIALIZE recurses into operands so each arg eval, the `F[i] = vi`
+// store, and the body dispatch end up in one SD body — gcc can fuse
+// them together.
+//
+// `locals_cnt` is patched at parse time by `callsite_resolve` to the
+// callee's full frame size (params + temporaries).  `arg_index` is
+// unused at runtime (the callee frame is F, not caller_fp + arg_index)
+// but kept as an operand for the parser's pending-callsite machinery.
+//
+// `restrict fp` + the alloca-style fresh F let gcc keep the caller's
+// locals in registers across the recursive call instead of reloading
+// after each recursion (jstro pattern).
+//
+// Two-step guard:
+//   (1) `c->serial == cc->serial` — cc is fresh (no def has bumped
+//       serial since cc was last filled).
+//   (2) `cc->body == sp_body` — the current body equals the
+//       speculatively-linked body baked into this call site at parse
+//       time.  Required because the SD's baked direct call uses
+//       `SD_<HASH(parse_time_sp_body)>` as a *compile-time constant*
+//       — if the actual body has changed (e.g. interleaved def/call)
+//       the baked SD would be invoked with mismatched NODE structure.
+//
+// Both must hold to take the fast (baked-direct) path.  Otherwise
+// tail-call the variant's slowpath in node_slowpath.c, which
+// dispatches via `cc->body` indirect.  The slowpath never writes
+// `sp_body` — it stays at its parse-time value so the baked SD
+// constant is always valid in the matched case.
+
+NODE_DEF
+node_pg_call0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body)
+{
+    (void)name; (void)arg_index; (void)fp;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call0_slowpath(c, n, fp, sp);
+    }
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_pg_call1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0)
+{
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call1_slowpath(c, n, fp, sp);
+    }
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_pg_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1)
+{
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call2_slowpath(c, n, fp, sp);
+    }
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
+    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_pg_call3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1, NODE *a2)
+{
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call3_slowpath(c, n, fp, sp);
+    }
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
+    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
+    sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, a2, sp + locals_cnt));
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *body, uint32_t arg_index)
+{
+    (void)arg_index;
+    // body's locals_cnt unknown here at compile time — use sp as both fp and
+    // sp base; body will read its locals via fp + index from caller's layout.
+    return RESULT_OK((*body_dispatcher)(c, body, fp + arg_index, sp).value);
+}
+
+NODE_DEF
+node_call_builtin(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, struct builtin_func *bf, builtin_func_ptr func_ptr, uint32_t params_cnt)
+{
+    VALUE v;
+    switch (params_cnt) {
+      case 0:
+        v = (*func_ptr)();
+        break;
+      case 1:
+        v = (*(builtin_func1_ptr)func_ptr)(fp[0]);
+        break;
+      case 2:
+        v = (*(builtin_func2_ptr)func_ptr)(fp[0], fp[1]);
+        break;
+      case 3:
+        v = (*(builtin_func3_ptr)func_ptr)(fp[0], fp[1], fp[2]);
+        break;
+      case 4:
+        v = (*(builtin_func4_ptr)func_ptr)(fp[0], fp[1], fp[2], fp[3]);
+        break;
+      default:
+        fprintf(stderr, "too much params:%u\n", params_cnt);
+        v = 0;
+    }
+    return RESULT_OK(v);
+}
+
+// binary operators
+
+// Fixnum arithmetic.  All operands assumed tagged int (no string + or
+// array * yet — those ops will live on dedicated dispatch nodes).
+// VAL2INT(t) = (intptr_t)t >> 1, INT2VAL(i) = (i << 1) | 1.
+
+NODE_DEF
+node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) {
+        return RESULT_OK(INT2VAL(VAL2INT(l) + VAL2INT(r)));
+    }
+    if (IS_STR(l) && IS_STR(r)) {
+        return RESULT_OK(baruby_str_concat(l, r, sp));
+    }
+    if (IS_ARY(l) && IS_ARY(r)) {
+        return RESULT_OK(baruby_ary_plus(l, r, sp));
+    }
+    fprintf(stderr, "type mismatch in +\n");
+    return RESULT_OK(VAL_FALSE);
+}
+
+NODE_DEF
+node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    return RESULT_OK(INT2VAL(VAL2INT(l) - VAL2INT(r)));
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) {
+        return RESULT_OK(INT2VAL(VAL2INT(l) * VAL2INT(r)));
+    }
+    if (IS_STR(l) && IS_INT(r)) {
+        return RESULT_OK(baruby_str_repeat(l, VAL2INT(r), sp));
+    }
+    if (IS_ARY(l) && IS_INT(r)) {
+        return RESULT_OK(baruby_ary_repeat(l, VAL2INT(r), sp));
+    }
+    fprintf(stderr, "type mismatch in *\n");
+    return RESULT_OK(VAL_NIL);
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    return RESULT_OK(INT2VAL(VAL2INT(l) / VAL2INT(r)));
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    return RESULT_OK(INT2VAL(VAL2INT(l) % VAL2INT(r)));
+}
+
+// Order comparison: tagged ints compare directly (same ordering as
+// untagged because both bits shift left equally).  Same-type strings
+// fall through to memcmp + length tiebreak via baruby_str_cmp.  Mixed
+// types are reported as a runtime type error (false-default).
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) return RESULT_OK(l < r ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(l) && IS_STR(r))         return RESULT_OK(baruby_str_cmp(l, r) <  0 ? VAL_TRUE : VAL_FALSE);
+    fprintf(stderr, "type mismatch in <\n");
+    return RESULT_OK(VAL_FALSE);
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) return RESULT_OK(l <= r ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(l) && IS_STR(r))         return RESULT_OK(baruby_str_cmp(l, r) <= 0 ? VAL_TRUE : VAL_FALSE);
+    fprintf(stderr, "type mismatch in <=\n");
+    return RESULT_OK(VAL_FALSE);
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) return RESULT_OK(l > r ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(l) && IS_STR(r))         return RESULT_OK(baruby_str_cmp(l, r) >  0 ? VAL_TRUE : VAL_FALSE);
+    fprintf(stderr, "type mismatch in >\n");
+    return RESULT_OK(VAL_FALSE);
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) return RESULT_OK(l >= r ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(l) && IS_STR(r))         return RESULT_OK(baruby_str_cmp(l, r) >= 0 ? VAL_TRUE : VAL_FALSE);
+    fprintf(stderr, "type mismatch in >=\n");
+    return RESULT_OK(VAL_FALSE);
+}
+
+// `==` follows Ruby semantics: same bits ⇒ true (covers fixnum equality
+// and ptr identity); same heap type ⇒ recursive byte / element compare;
+// otherwise false.  The `l == r` fast path keeps the int hot loop at the
+// same cost as before — only heap pointers fall through to the helper.
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(l == r)) return RESULT_OK(VAL_TRUE);
+    if (LIKELY(IS_INT(l) || IS_INT(r))) return RESULT_OK(VAL_FALSE);
+    return RESULT_OK(baruby_value_eq(l, r) ? VAL_TRUE : VAL_FALSE);
+}
+
+NODE_DEF
+node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(l == r)) return RESULT_OK(VAL_FALSE);
+    if (LIKELY(IS_INT(l) || IS_INT(r))) return RESULT_OK(VAL_TRUE);
+    return RESULT_OK(baruby_value_eq(l, r) ? VAL_FALSE : VAL_TRUE);
+}
+
+// 3-way compare.  Returns -1 / 0 / 1 (Integer) for orderable pairs and
+// nil for incomparable types — matches Ruby's `<=>`.
+NODE_DEF
+node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) {
+        if (l < r) return RESULT_OK(INT2VAL(-1));
+        if (l > r) return RESULT_OK(INT2VAL(1));
+        return RESULT_OK(INT2VAL(0));
+    }
+    if (IS_STR(l) && IS_STR(r)) {
+        int cmp = baruby_str_cmp(l, r);
+        if (cmp < 0) return RESULT_OK(INT2VAL(-1));
+        if (cmp > 0) return RESULT_OK(INT2VAL(1));
+        return RESULT_OK(INT2VAL(0));
+    }
+    return RESULT_OK(VAL_NIL);
+}
+
+// `<<` is overloaded:
+//   Integer << Integer  → bit shift
+//   Array   << any      → push (mutating, returns self)
+//   String  << String   → append (mutating, returns self)
+NODE_DEF
+node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+{
+    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+
+    if (LIKELY(IS_INT(l) && IS_INT(r))) {
+        return RESULT_OK(INT2VAL(VAL2INT(l) << VAL2INT(r)));
+    }
+    if (IS_ARY(l)) {
+        baruby_ary_push(l, r, sp);
+        return RESULT_OK(l);
+    }
+    if (IS_STR(l) && IS_STR(r)) {
+        baruby_str_append(l, r, sp);
+        return RESULT_OK(l);
+    }
+    fprintf(stderr, "type mismatch in <<\n");
+    return RESULT_OK(VAL_NIL);
+}
+
+// -----------------------------------------------------------------------------
+// Heap object operations.
+//
+// Array literals compile to a chain of `ary_push(... ary_push(ary_new(),
+// e0) ..., eN)`: the innermost `ary_new` allocates once, every `ary_push`
+// returns the same array.  String literals allocate fresh on every eval
+// — intentional for the GC testbed (each rerun stresses the collector).
+//
+// Method dispatch nodes (`call_size`, `call_aget`, ...) branch on
+// receiver type at eval.  Specialization can later split each into
+// `_ary` / `_str` variants based on observed type.
+// -----------------------------------------------------------------------------
+
+NODE_DEF
+node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+{
+    return RESULT_OK(baruby_ary_new(0, sp));
+}
+
+NODE_DEF
+node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *val)
+{
+    VALUE a = UNWRAP(EVAL_ARG(c, recv));
+    VALUE v = UNWRAP(EVAL_ARG(c, val));
+    baruby_ary_push(a, v, sp);
+    return RESULT_OK(a);
+}
+
+NODE_DEF
+node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *bytes, uint32_t len)
+{
+    // Fresh allocation per eval — gives the collector something to do.
+    // Consider a parse-time intern pool if/when this dominates.
+    return RESULT_OK(baruby_str_new(bytes, len, sp));
+}
+
+NODE_DEF
+node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    if (IS_ARY(r)) return RESULT_OK(INT2VAL(VAL2ARY(r)->len));
+    if (IS_STR(r)) return RESULT_OK(INT2VAL(VAL2STR(r)->len));
+    fprintf(stderr, "no size for non-array/string\n");
+    return RESULT_OK(INT2VAL(0));
+}
+
+NODE_DEF
+node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *idx)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    VALUE i = UNWRAP(EVAL_ARG(c, idx));
+    intptr_t ii = VAL2INT(i);
+    if (IS_ARY(r)) {
+        BaArray *a = VAL2ARY(r);
+        if (ii < 0) ii += a->len;
+        if (ii < 0 || (uint32_t)ii >= a->len) return RESULT_OK(VAL_NIL);
+        return RESULT_OK(a->items[ii]);
+    }
+    if (IS_STR(r)) {
+        BaString *s = VAL2STR(r);
+        if (ii < 0) ii += s->len;
+        if (ii < 0 || (uint32_t)ii >= s->len) return RESULT_OK(VAL_NIL);
+        // Single-byte slice as a 1-char string (Ruby-ish semantics).
+        return RESULT_OK(baruby_str_new(s->bytes + ii, 1, sp));
+    }
+    fprintf(stderr, "no [] for non-array/string\n");
+    return RESULT_OK(VAL_NIL);
+}
+
+// Two-arg `[]` — string / array slice.  `s[i, n]` returns a sub-string
+// of length `n` (clamped to actual length).  `a[i, n]` returns a new
+// array of `n` elements starting at `i`.  Negative `i` indexes from
+// the end; out-of-range or negative `n` returns nil.
+NODE_DEF
+node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *idx, NODE *cnt)
+{
+    VALUE r  = UNWRAP(EVAL_ARG(c, recv));
+    VALUE iv = UNWRAP(EVAL_ARG(c, idx));
+    VALUE cv = UNWRAP(EVAL_ARG(c, cnt));
+    intptr_t ii = VAL2INT(iv);
+    intptr_t cc = VAL2INT(cv);
+    if (cc < 0) return RESULT_OK(VAL_NIL);
+    if (IS_STR(r)) {
+        const BaString *s = VAL2STR(r);
+        if (ii < 0) ii += s->len;
+        if (ii < 0 || (uint32_t)ii > s->len) return RESULT_OK(VAL_NIL);
+        uint32_t avail = s->len - (uint32_t)ii;
+        uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
+        return RESULT_OK(baruby_str_new(s->bytes + ii, take, sp));
+    }
+    if (IS_ARY(r)) {
+        const BaArray *a = VAL2ARY(r);
+        if (ii < 0) ii += a->len;
+        if (ii < 0 || (uint32_t)ii > a->len) return RESULT_OK(VAL_NIL);
+        uint32_t avail = a->len - (uint32_t)ii;
+        uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
+        return RESULT_OK(baruby_ary_new_from(a->items + ii, take, sp));
+    }
+    fprintf(stderr, "no [i, n] for non-array/string\n");
+    return RESULT_OK(VAL_NIL);
+}
+
+NODE_DEF
+node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *idx, NODE *val)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    VALUE i = UNWRAP(EVAL_ARG(c, idx));
+    VALUE v = UNWRAP(EVAL_ARG(c, val));
+    if (IS_ARY(r)) {
+        BaArray *a = VAL2ARY(r);
+        intptr_t ii = VAL2INT(i);
+        if (ii < 0) ii += a->len;
+        if (ii < 0) return RESULT_OK(VAL_NIL);
+        // Auto-extend with nil for out-of-range writes (Ruby semantics).
+        while ((uint32_t)ii >= a->len) baruby_ary_push(r, VAL_NIL, sp);
+        a->items[ii] = v;
+        return RESULT_OK(v);
+    }
+    fprintf(stderr, "no []= for non-array\n");
+    return RESULT_OK(VAL_NIL);
+}
+
+NODE_DEF
+node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *val)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    VALUE v = UNWRAP(EVAL_ARG(c, val));
+    if (IS_ARY(r)) {
+        baruby_ary_push(r, v, sp);
+        return RESULT_OK(r);
+    }
+    fprintf(stderr, "no push for non-array\n");
+    return RESULT_OK(VAL_NIL);
+}
+
+NODE_DEF
+node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    if (IS_ARY(r)) {
+        BaArray *a = VAL2ARY(r);
+        if (a->len == 0) return RESULT_OK(VAL_NIL);
+        return RESULT_OK(a->items[--a->len]);
+    }
+    fprintf(stderr, "no pop for non-array\n");
+    return RESULT_OK(VAL_NIL);
+}
+
+// Stringification.  int → decimal string, str → self, ary → "[a, b, c]"
+// via baruby_print_value (consistent with `p`), true/false/nil → name.
+NODE_DEF
+node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    return RESULT_OK(baruby_to_s(r, sp));
+}
+
+// Parsing.  str → leading-decimal int (Ruby semantics: stops at non-digit,
+// returns 0 if no digit found).  int → self.
+NODE_DEF
+node_call_to_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv)
+{
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));
+    if (IS_INT(r)) return RESULT_OK(r);
+    if (IS_STR(r)) {
+        const BaString *s = VAL2STR(r);
+        return RESULT_OK(INT2VAL(strtol(s->bytes, NULL, 10)));
+    }
+    return RESULT_OK(INT2VAL(0));
+}
