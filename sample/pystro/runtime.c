@@ -1989,8 +1989,11 @@ pys_truediv(CTX *c, VALUE a, VALUE b)
         }
     }
     double bd = pys_to_double(c, b);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (bd == 0.0) PYS_RAISE_EXC(c, c->EXC_ZeroDivisionError, "division by zero");
-    return pys_make_float(pys_to_double(c, a) / bd);
+    double ad = pys_to_double(c, a);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    return pys_make_float(ad / bd);
 }
 
 VALUE
@@ -2018,8 +2021,11 @@ pys_fdiv(CTX *c, VALUE a, VALUE b)
         PYS_RAISE_EXC(c, c->EXC_TypeError,
                      "unsupported operand type(s) for //");
     double bd = pys_to_double(c, b);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (bd == 0.0) PYS_RAISE_EXC(c, c->EXC_ZeroDivisionError, "float floor division by zero");
-    return pys_make_float(floor(pys_to_double(c, a) / bd));
+    double ad = pys_to_double(c, a);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    return pys_make_float(floor(ad / bd));
 }
 
 extern VALUE pys_str_pct_format(CTX *c, VALUE fmt, VALUE args);  // forward
@@ -2054,8 +2060,10 @@ pys_mod(CTX *c, VALUE a, VALUE b)
         PYS_RAISE_EXC(c, c->EXC_TypeError,
                      "unsupported operand type(s) for %% on complex");
     double bd = pys_to_double(c, b);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (bd == 0.0) PYS_RAISE_EXC(c, c->EXC_ZeroDivisionError, "float modulo");
     double ad = pys_to_double(c, a);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     double r = fmod(ad, bd);
     if ((r != 0.0) && ((r < 0) != (bd < 0))) r += bd;
     return pys_make_float(r);
