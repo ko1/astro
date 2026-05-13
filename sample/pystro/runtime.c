@@ -15588,17 +15588,37 @@ pys_str_pct_format(CTX *c, VALUE fmt, VALUE args)
         body[0] = '\0';
         size_t bl = 0;
         if (conv == 'd' || conv == 'i' || conv == 'u') {
+            char numbuf[256];
+            size_t nl = 0;
+            bool is_neg = false;
             if (pys_is_bignum(arg)) {
                 char *bs = mpz_get_str(NULL, 10, PYS_PTR(arg)->mpz);
-                bl = strlen(bs);
-                if (bl >= sizeof(body)) bl = sizeof(body) - 1;
-                memcpy(body, bs, bl); body[bl] = '\0';
+                nl = strlen(bs);
+                if (nl >= sizeof(numbuf)) nl = sizeof(numbuf) - 1;
+                memcpy(numbuf, bs, nl); numbuf[nl] = '\0';
             } else {
                 long long iv = pys_int_to_long(c, arg);
-                if (flag_plus && iv >= 0)       bl = snprintf(body, sizeof(body), "+%lld", iv);
-                else if (flag_space && iv >= 0) bl = snprintf(body, sizeof(body), " %lld", iv);
-                else                            bl = snprintf(body, sizeof(body), "%lld", iv);
+                if (iv < 0) { is_neg = true; iv = -iv; }
+                nl = snprintf(numbuf, sizeof(numbuf), "%lld", iv);
             }
+            // Strip the leading '-' for the digit-only portion (we'll
+            // re-add when emitting), so precision pads correctly.
+            const char *digits = numbuf;
+            if (!is_neg && numbuf[0] == '-') { is_neg = true; digits = numbuf + 1; nl--; }
+            size_t prec_pad = 0;
+            if (precision > 0 && nl < (size_t)precision) prec_pad = (size_t)precision - nl;
+            // Build the body: sign + leading zeros + digits.
+            size_t j = 0;
+            if (is_neg) body[j++] = '-';
+            else if (flag_plus) body[j++] = '+';
+            else if (flag_space) body[j++] = ' ';
+            for (size_t k = 0; k < prec_pad && j < sizeof(body) - 1; k++) body[j++] = '0';
+            for (size_t k = 0; k < nl && j < sizeof(body) - 1; k++) body[j++] = digits[k];
+            body[j] = '\0'; bl = j;
+            // CPython: when precision is given, the `0` width-flag is
+            // overridden (only width-padding via spaces).  Suppress
+            // flag_zero so the pad block below uses spaces.
+            if (precision >= 0) flag_zero = false;
         } else if (conv == 'x' || conv == 'X' || conv == 'o') {
             long long iv = pys_int_to_long(c, arg);
             unsigned long long u = (unsigned long long)(iv < 0 ? -iv : iv);
@@ -15607,24 +15627,32 @@ pys_str_pct_format(CTX *c, VALUE fmt, VALUE args)
             if (conv == 'x') nl = snprintf(numbuf, sizeof(numbuf), "%llx", u);
             else if (conv == 'X') nl = snprintf(numbuf, sizeof(numbuf), "%llX", u);
             else nl = snprintf(numbuf, sizeof(numbuf), "%llo", u);
+            size_t prec_pad = 0;
+            if (precision > 0 && (size_t)nl < (size_t)precision) prec_pad = (size_t)precision - (size_t)nl;
             int j = 0;
             if (iv < 0) body[j++] = '-';
             if (flag_hash) {
                 body[j++] = '0';
                 body[j++] = (conv == 'X') ? 'X' : (conv == 'o' ? 'o' : 'x');
             }
+            for (size_t k = 0; k < prec_pad && j < (int)sizeof(body) - 1; k++) body[j++] = '0';
             for (int k = 0; k < nl && j < (int)sizeof(body) - 1; k++) body[j++] = numbuf[k];
             body[j] = '\0'; bl = (size_t)j;
+            if (precision >= 0) flag_zero = false;
         } else if (conv == 'b') {
             long long iv = pys_int_to_long(c, arg);
             unsigned long long u = (unsigned long long)(iv < 0 ? -iv : iv);
             char buf[80]; int p = 0;
             if (u == 0) buf[p++] = '0';
             while (u) { buf[p++] = (u & 1) + '0'; u >>= 1; }
+            size_t prec_pad = 0;
+            if (precision > 0 && (size_t)p < (size_t)precision) prec_pad = (size_t)precision - (size_t)p;
             int j = 0;
             if (iv < 0) body[j++] = '-';
+            for (size_t k = 0; k < prec_pad && j < (int)sizeof(body) - 1; k++) body[j++] = '0';
             for (int k = p - 1; k >= 0; k--) body[j++] = buf[k];
             body[j] = '\0'; bl = (size_t)j;
+            if (precision >= 0) flag_zero = false;
         } else if (conv == 'f' || conv == 'F' || conv == 'e' || conv == 'E' || conv == 'g' || conv == 'G') {
             double d = pys_to_double(c, arg);
             char fmtb[16];
