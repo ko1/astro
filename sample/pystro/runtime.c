@@ -13652,10 +13652,21 @@ bi_complex(CTX *c, int argc, VALUE *argv)
 add_imag:
     if (argc >= 2) {
         if (pys_is_complex(argv[1])) {
-            im += PYS_PTR(argv[1])->cpx.re;
+            // Preserve -0 sign when initial im is +0 by assigning,
+            // not adding (IEEE: +0 + -0 = +0).
+            if (im == 0.0 && !signbit(im)) {
+                im = PYS_PTR(argv[1])->cpx.re;
+            } else {
+                im += PYS_PTR(argv[1])->cpx.re;
+            }
             re -= PYS_PTR(argv[1])->cpx.im;
         } else {
-            im += pys_to_double(c, argv[1]);
+            double imv = pys_to_double(c, argv[1]);
+            if (im == 0.0 && !signbit(im)) {
+                im = imv;
+            } else {
+                im += imv;
+            }
         }
     }
     return pys_make_complex(re, im);

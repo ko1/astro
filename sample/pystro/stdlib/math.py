@@ -123,7 +123,11 @@ def trunc(x):
     return ceil(x)
 
 def copysign(x, y):
-    if y < 0:
+    # Use the bit representation to detect the sign of y, so -0.0 is
+    # treated as negative (CPython parity).  Float-to-bits is a pystro
+    # builtin.
+    bits = __pystro_float_to_bits__(float(y))
+    if bits >> 63:
         return -fabs(x)
     return fabs(x)
 
