@@ -4035,6 +4035,12 @@ pys_contains(CTX *c, VALUE container, VALUE v)
             for (size_t i = 0; i < n; i++) if ((unsigned char)s[i] == (unsigned char)b) return true;
             return false;
         }
+        // CPython rejects str / list / dict / etc. — only bytes-like
+        // or int are valid LHS for `in bytes`.
+        PYS_RAISE_EXC(c, c->EXC_TypeError,
+                     "a bytes-like object is required, not '%s'",
+                     pys_is_str(v) ? "str" : "non-bytes");
+        return false;
     }
     if (pys_is_range(container) && pys_int_or_bool(v)) {
         int64_t x = pys_int_to_long(c, v);
