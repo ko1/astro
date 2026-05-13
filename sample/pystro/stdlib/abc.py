@@ -98,6 +98,53 @@ class ABCMeta(type):
         return NotImplemented
 
 
+# Note: a metaclass `__call__` would let ABCMeta intercept every
+# instantiation, but pystro's `type.__call__` isn't usable from Python
+# so we'd have to reimplement allocation + init by hand.  Doing so
+# triggered regressions in unrelated stdlib tests (5 MIXED → TIMEOUT /
+# CRASH), so the abstract-method check lives only on `ABC.__new__`.
+# Tests that use `metaclass=ABCMeta` directly miss the runtime check
+# but `_collect_abstracts` is still available for callers that want
+# `__abstractmethods__` populated.
+
+
+def _collect_abstracts(cls):
+    """Walk the MRO and return the set of method names still abstract on
+    `cls` (i.e. defined as abstract somewhere and not overridden by a
+    concrete impl closer to `cls` in the MRO)."""
+    abstracts = set()
+    seen = set()
+    try:
+        mro = cls.__mro__
+    except AttributeError:
+        mro = [cls]
+    for base in mro:
+        try:
+            bdict = base.__dict__
+        except Exception:
+            continue
+        items = bdict.items() if hasattr(bdict, "items") else []
+        for name, val in items:
+            if name in seen:
+                continue
+            # Pystro stashes per-decorator temporaries in the class body
+            # under synthetic `__pystro_dec$N$<target>__` names so the
+            # decorator can be applied AFTER the def runs.  These leak
+            # into __dict__ but aren't user-visible methods, so skip.
+            if name.startswith("__pystro_dec"):
+                continue
+            seen.add(name)
+            if getattr(val, "__isabstractmethod__", False):
+                abstracts.add(name)
+    # Pystro stores the cached set on the class so consumers like
+    # `inspect.isabstract` can pick it up.  Same name CPython uses.
+    try:
+        cls.__abstractmethods__ = frozenset(abstracts)
+    except Exception:
+        pass
+    return abstracts
+
+
 def _abc_caches_clear(cls): pass
 def _abc_init(cls): pass
 def _abc_register(cls, sub): return sub
@@ -125,7 +172,7 @@ class ABC(metaclass=ABCMeta):
             except Exception:
                 continue
             for name, val in bdict.items() if hasattr(bdict, "items") else []:
-                if name in seen:
+                if name in seen or name.startswith("__pystro_dec"):
                     continue
                 seen.add(name)
                 if getattr(val, "__isabstractmethod__", False):
