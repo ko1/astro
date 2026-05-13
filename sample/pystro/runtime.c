@@ -13188,12 +13188,21 @@ bi_bool(CTX *c, int argc, VALUE *argv)
         if (m != PYS_NONE) {
             VALUE av[1] = { v };
             VALUE r = pys_apply(c, m, 1, av);
-            return pys_is_truthy(r) ? PYS_TRUE : PYS_FALSE;
+            if (c->state == PYS_STATE_RAISE) return 0;
+            // CPython: __bool__ must return bool. int is rejected too
+            // (only True / False / a true bool subclass).
+            if (r != PYS_TRUE && r != PYS_FALSE) {
+                PYS_RAISE_EXC(c, c->EXC_TypeError,
+                             "__bool__ should return bool, returned %s",
+                             PYS_PTR(cls)->cls.name);
+            }
+            return r;
         }
         VALUE lm = pys_class_lookup_method(cls, PYS_INTERN_len);
         if (lm != PYS_NONE) {
             VALUE av[1] = { v };
             VALUE r = pys_apply(c, lm, 1, av);
+            if (c->state == PYS_STATE_RAISE) return 0;
             return pys_int_to_long(c, r) != 0 ? PYS_TRUE : PYS_FALSE;
         }
     }
@@ -14298,9 +14307,21 @@ bi_eval(CTX *c, int argc, VALUE *argv)
     } else {
         PYS_RAISE_EXC(c, c->EXC_TypeError, "eval: code must be str or bytes");
     }
-    char *src = (char *)GC_malloc_atomic(L + 2);
-    memcpy(src, code_chars, L);
-    src[L] = '\n'; src[L+1] = '\0';
+    // CPython strips leading whitespace + trailing whitespace from the
+    // eval string.  Pystro's lexer otherwise emits an INDENT token for
+    // leading spaces which the expression parser rejects.
+    size_t start = 0;
+    while (start < L && (code_chars[start] == ' ' || code_chars[start] == '\t'
+                          || code_chars[start] == '\n' || code_chars[start] == '\r'))
+        start++;
+    size_t end = L;
+    while (end > start && (code_chars[end-1] == ' ' || code_chars[end-1] == '\t'
+                            || code_chars[end-1] == '\n' || code_chars[end-1] == '\r'))
+        end--;
+    size_t L2 = end - start;
+    char *src = (char *)GC_malloc_atomic(L2 + 2);
+    memcpy(src, code_chars + start, L2);
+    src[L2] = '\n'; src[L2+1] = '\0';
     extern void *lexer_save_alloc(void);
     extern void  lexer_restore_free(void *s);
     extern void *parser_save_alloc(void);

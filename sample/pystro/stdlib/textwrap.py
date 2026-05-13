@@ -23,6 +23,8 @@ def _split_chunks(paragraph):
 
 
 def wrap(text, width=70):
+    if width <= 0:
+        raise ValueError("invalid width %r (must be > 0)" % (width,))
     out = []
     for paragraph in text.split("\n"):
         chunks = _split_chunks(paragraph)

@@ -737,6 +737,21 @@ read_number(void)
         }
     }
     size_t len = src_pos - start;
+    // Python 3: leading-zero decimal integer is a SyntaxError (the old
+    // Python 2 octal form `0777`).  Only an integer literal made up of
+    // all zeros (e.g. `0`, `00`, `000`) is legal.  Floats / underscored
+    // forms with a fractional component / imaginary suffix are exempt.
+    if (base == 10 && !is_float && peek(0) != 'j' && peek(0) != 'J'
+        && len >= 2 && src_buf[start] == '0') {
+        bool all_zero = true;
+        for (size_t i = 0; i < len; i++) {
+            char ch = src_buf[start + i];
+            if (ch == '_') continue;
+            if (ch != '0') { all_zero = false; break; }
+        }
+        if (!all_zero)
+            lex_error("leading zeros in decimal integer literals are not permitted; use an 0o prefix for octal integers");
+    }
     // PEP 515 validation for the whole literal: no consecutive `__`,
     // no `_` adjacent to `.` / `e` / `E` / `j` / `J`, no trailing `_`.
     // Hex/bin/oct already validated their digit run above; this catches
