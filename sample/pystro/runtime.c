@@ -7828,6 +7828,39 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
                         return false;
                     }
                 }
+                // Duplicate names → "got multiple subpatterns for
+                // attribute X" (CPython).  Quadratic but n is small.
+                for (size_t k = 0; k < n; k++) {
+                    const char *a = PYS_PTR(PYS_PTR(match_args)->list.items[k])->str.chars;
+                    for (size_t j = 0; j < k; j++) {
+                        const char *b = PYS_PTR(PYS_PTR(match_args)->list.items[j])->str.chars;
+                        if (strcmp(a, b) == 0) {
+                            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                                         "%s() got multiple sub-patterns for attribute '%s'",
+                                         PYS_PTR(cls)->cls.name, a);
+                            return false;
+                        }
+                    }
+                }
+                // Also check the explicit kw attrs against the positional
+                // ones — CPython rejects \`Class(x, y, x=1)\` similarly.
+                for (int kw_i = 0; kw_i < p->nchildren; kw_i++) {
+                    if (!p->attrs[kw_i]) continue;
+                    // p->attrs[kw_i] is a kw attr name; check it didn't
+                    // already appear as a positional (i.e. in __match_args__
+                    // at index < the kw position).
+                    for (int pi = 0; pi < kw_i; pi++) {
+                        if (p->attrs[pi]) continue;  // positional
+                        if ((size_t)pi >= n) break;
+                        const char *pn = PYS_PTR(PYS_PTR(match_args)->list.items[pi])->str.chars;
+                        if (strcmp(pn, p->attrs[kw_i]) == 0) {
+                            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                                         "%s() got multiple sub-patterns for attribute '%s'",
+                                         PYS_PTR(cls)->cls.name, pn);
+                            return false;
+                        }
+                    }
+                }
             }
         }
         for (int i = 0; i < p->nchildren; i++) {

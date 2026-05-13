@@ -2597,7 +2597,13 @@ node_match(CTX * restrict c, NODE * restrict n, NODE *subject, uint32_t cases_id
     if (UNLIKELY(!sv)) return 0;
     for (uint32_t i = 0; i < ncases; i++) {
         struct pyscase *cs = &PYS_CASES[cases_idx + i];
-        if (!pys_pat_match(c, cs->pat_idx, sv)) continue;
+        if (!pys_pat_match(c, cs->pat_idx, sv)) {
+            // pys_pat_match may have raised (TypeError on bad
+            // __match_args__ etc.) — propagate instead of silently
+            // moving to the next case.
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            continue;
+        }
         if (UNLIKELY(c->state != PYS_STATE_NORMAL)) return 0;
         if (cs->guard) {
             VALUE g = EVAL(c, cs->guard);
