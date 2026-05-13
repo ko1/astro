@@ -4385,15 +4385,20 @@ parse_try(void)
 
     struct pyshandler hs[16];
     int nh = 0;
+    bool seen_bare = false;
+    bool seen_star = false;
+    bool seen_nonstar = false;
     while (peek_tok(0)->kind == T_EXCEPT) {
         tok_pos++;
         struct pyshandler h = {0};
         // PEP 654: `except*` — exception group split-and-handle.
         if (match_tok(T_STAR)) {
             h.is_star = true;
+            seen_star = true;
         }
         if (peek_tok(0)->kind != T_COLON) {
             h.exc_class = parse_expr();
+            if (!h.is_star) seen_nonstar = true;
             if (match_tok(T_AS)) {
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after 'as'");
                 const char *nm = peek_tok(0)->sval;
@@ -4407,11 +4412,29 @@ parse_try(void)
                     h.name_is_global = true;
                 }
             }
+        } else {
+            // Bare `except:` (no expression) — must be the last clause
+            // and must NOT appear in an except* chain.
+            if (h.is_star)
+                parse_error("'except*' must have an exception type");
+            if (seen_bare)
+                parse_error("default 'except:' must be last");
+            seen_bare = true;
+        }
+        // CPython parity: once we've seen a bare `except:`, any
+        // following `except`/`except*` is unreachable.
+        if (seen_bare && nh > 0 && peek_tok(0)->kind == T_EXCEPT) {
+            // checked at top of next iteration via seen_bare
         }
         h.body = parse_suite();
         if (nh >= 16) parse_error("too many except handlers");
         hs[nh++] = h;
+        if (seen_bare && peek_tok(0)->kind == T_EXCEPT)
+            parse_error("default 'except:' must be last");
     }
+    // PEP 654: can't mix `except` and `except*`.
+    if (seen_star && seen_nonstar)
+        parse_error("cannot have both 'except' and 'except*' on the same 'try'");
     NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
     NODE *finally_body = NULL;
     if (match_tok(T_FINALLY)) finally_body = parse_suite();
