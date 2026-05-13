@@ -4188,6 +4188,16 @@ pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable)
         it->container = iterable;
         return;
     }
+    // memoryview: yield byte values 0..255 from the underlying buffer.
+    if (PYS_IS_PTR(iterable) && PYS_PTR(iterable)->type == PYS_T_MEMVIEW) {
+        it->kind = 6;  // same as bytes (yield int 0..255)
+        struct pysobj *mv = PYS_PTR(iterable);
+        // Re-route container so kind 6 reads from the right buffer.
+        it->container = mv->memview.source;
+        it->i = (int64_t)mv->memview.off;
+        it->end = (int64_t)(mv->memview.off + mv->memview.len);
+        return;
+    }
     if (pys_is_instance(iterable)) {
         VALUE cls = PYS_OBJ_VAL(PYS_PTR(iterable)->inst.cls);
         VALUE im = pys_class_lookup_method(cls, PYS_INTERN_iter);
