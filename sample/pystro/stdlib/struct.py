@@ -174,7 +174,12 @@ class error(Exception):
 
 class Struct:
     def __init__(self, fmt):
-        self.format = fmt
+        # CPython 3.x exposes the format attribute as str even when the
+        # constructor was called with bytes.
+        if isinstance(fmt, (bytes, bytearray)):
+            self.format = fmt.decode("ascii")
+        else:
+            self.format = fmt
         self.size = calcsize(fmt)
     def pack(self, *args):
         return pack(self.format, *args)
