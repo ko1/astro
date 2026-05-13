@@ -495,3 +495,365 @@ abruby は既に `node_mark.c` を生成している = **ASTroGen が GC marker 
 
 両方とも既存サンプルが小〜中規模で完結しており、koruby / pystro のような巨大
 サンプルを巻き込まずに「4 backend が同居する設計」のミニ証明ができる。
+
+---
+
+# node.def 統合インターフェース案
+
+GC を ASTroGen の生成パイプラインに組み込むときに **`node.def` に何を書き、
+何を ASTroGen に生成させるか** の interface 案。`value.def` の採否自体は
+**未決のまま残す** (§28 で trade-off を整理)。
+
+## 18. 全体方針
+
+§2 の `value.def` を導入するか否かに関わらず、**先に固められる範囲**を
+切り出して書く:
+
+- (A) **NODE_DEF オペランド GC 注釈** (§20) — operand に `@ref(value)` /
+  `@imm` / `@weak` 等を足し、 abruby の `node_mark.c` 相当を framework 標準化
+- (B) **NODE_DEF レベル GC オプション** (§21) — `@allocates` / `@safepoint`
+  / `@roots(...)` で frame descriptor + safepoint 配置を declarative 化
+- (C) **BODY 内 GC macro** (§22) — `WB` / `KORB_NEW_*` / `PIN` / `SAFEPOINT`
+  / `LD`。 backend 切替で `GC=none` のとき identity / `(void)0` に潰せること
+
+(A)+(B)+(C) は **値表現の宣言 DSL なしで成立する**。 frame iterator の
+mechanism + write barrier 配置の declarative 化までを node.def 側で完結
+させる、というスコープに絞れる。
+
+値表現自体 (struct kind union とその marker) を別途 DSL 化するのが §2 の
+`value.def` だが、
+
+- 言語ごとに値表現が極端に違う (LSB tag / NaN-box / pointer-only / etc.)
+- abruby/arjsv は CRuby の `VALUE` を変えられない、 luastro は NaN-box を
+  変えられない (`feedback_no_nan_boxing`)
+- ASTroGen が「root の場所」だけ知っていれば marker は言語側手書きで足りる
+  可能性が十分ある
+
+ので、 `value.def` を入れるか入れないかは独立に検討する。決め打ち前提で
+node.def 統合を設計しない、というのが本案の立て付け。
+
+重要な原則:
+
+- **後方互換**: GC 関連オプションを足さない既存 NODE_DEF + `make GC=none`
+  のとき、生成される C コードは現状とビット同一 (calc / naruby / castro
+  regression なし = ゼロコスト性の gate)
+- **BODY 非侵襲**: BODY 内で必要な GC 介入は **すべて macro 経由**
+- **opt-in**: 既存サンプルは GC オプションを足さない限り従来の動作。
+  GC を本気で入れるサンプルだけが新しい注釈を書く
+
+## 19. VALUE_DEF (採用する場合の構文 — §26 で採否を議論)
+
+§2 の例を `node.def` の syntax で素直に書けるよう、`NODE_DEF` と同じ
+header + body 形式に揃える:
+
+```
+VALUE_DEF korb_obj @header=korb_obj_header @kind_field=kind
+{
+    KIND_STR    => atomic_payload(char) chars; size_t len;
+    KIND_ARY    => ref_payload(VALUE) items; size_t len;
+    KIND_HASH   => ref(struct kh_table *) tbl;
+    KIND_PROC   => ref(NODE *) @immortal body;
+                   ref(VALUE) self;
+                   ref(VALUE) cref;
+                   int32_t arity;
+    KIND_BIGNUM => atomic_payload(mp_limb_t) limbs;
+                   @finalizer korb_bn_fin;
+}
+```
+
+`VALUE_DEF <type-name> [@option ...]` を header、波括弧内を kind 別フィールド
+リストとして parse する。`NODE_DEF` の operand parser を ほぼ流用できる
+(`@ref` 注釈の認識を `@immortal` / `@finalizer` / `weak` 等に拡張するだけ)。
+
+ASTroGen が出すのは §2 と同じ:
+
+| 生成シンボル | 役割 |
+|---|---|
+| `KORB_ALLOC_<KIND>(...)` | kind 別 type-specialized allocator |
+| `KORB_MARK_<KIND>(obj)` | precise marker (`ref` / `ref_payload` を walk) |
+| `KORB_FORWARD_<KIND>(obj)` | moving 用 forward fixup |
+| `KORB_SET_<field>(obj, val)` | write barrier 込み setter |
+| `<type>_kind_t kind_table[]` | kind → marker/forward function テーブル |
+
+`abruby` が既に `register_gen_task :mark` で marker を出しているのが先例。
+これを framework 標準として `:gc` task に格上げする形になる。
+
+**ただし** これは「採用するならこういう形」というスケッチであって、
+本当に DSL 化するメリットが言語ごとの値表現の癖を吸収するコストを
+上回るかは §28 で改めて議論する。
+
+## 20. NODE_DEF オペランド GC 注釈の拡張
+
+既存の `<type> <name>@ref` (struct 内 inline 化、hash skip) に GC 関連の
+意味を持つ注釈を足す:
+
+| 注釈 | 意味 | 使用例 |
+|---|---|---|
+| `@ref` | 既存。 inline 格納 + hash skip。**GC は touch しない** (mutable な metadata) | `struct ic *cache@ref` |
+| `@ref(value)` | `@ref` かつ中身が `VALUE` (or VALUE 配列)。 marker は mark する | `VALUE last_recv@ref(value)` |
+| `@imm` | この operand は `HEAP_IMMORTAL` 上の永続オブジェクトを指す。marker は touch せず recurse のみ。 default は AST NODE * | `NODE *body@imm` (実質 default) |
+| `@weak` | 弱参照。 backend に「mark queue に積まない」を指示 | `VALUE key@weak` |
+| `@atomic` | bytes 列、deep mark 不要。 `const char *` などのプリミティブのデフォルト動作を明示化 | `const char *name@atomic` |
+
+注釈の有無で `node_gc.c` (新規 task) の per-node marker 生成内容が決まる:
+
+```c
+// 例: node_call(CTX *c, NODE *n, NODE *recv, NODE *args,
+//                struct ic *cache@ref, VALUE last_recv@ref(value))
+static void
+GC_MARK_node_call(NODE *n)
+{
+    /* recv, args: @imm な NODE * → 自動再帰 (AST NODE は immortal なので
+       実体 touch ではなく to-process queue に push のみ) */
+    astro_gc_mark_node(n->u.node_call.recv);
+    astro_gc_mark_node(n->u.node_call.args);
+    /* cache: @ref のみ → skip */
+    /* last_recv: @ref(value) → mark */
+    astro_gc_mark_value(n->u.node_call.last_recv);
+}
+```
+
+`abruby/node_mark.c` のロジックを「`@ref(value)` でない `@ref` は skip、
+`@ref(value)` は mark」に正規化したものに相当する。
+
+## 21. NODE_DEF レベルオプション (GC 系)
+
+`NODE_DEF @noinline` と同じ位置にぶら下げる GC 関連オプション:
+
+| オプション | 意味 |
+|---|---|
+| `@allocates` | この node の BODY は値を allocate する可能性がある。ASTroGen は BODY 直前に `ASTRO_SAFEPOINT(c)` を挿入する権利を持つ |
+| `@noalloc` | BODY は allocate しない (静的アサーション)。 backend は frame flush を省略可能。leaf node (literal / 変数参照系) で使う |
+| `@safepoint` | 明示的な safepoint 配置 (loop back-edge ノード、call ノード等)。 `@allocates` の自動挿入とは独立に強制する |
+| `@roots(name1, name2, ...)` | BODY 内のローカル `VALUE name` を frame descriptor の ref_offsets に追加。 ASTroGen は BODY を frame ENTER/LEAVE で包む |
+| `@root_array(base, count)` | ローカル `VALUE *base` と `size_t count` を可変長 root 列として扱う (frame_desc.ref_array) |
+
+例:
+
+```c
+NODE_DEF @allocates @roots(r)
+node_call1(CTX *c, NODE *n, NODE *recv, NODE *arg, struct ic *ic@ref)
+{
+    VALUE r = EVAL_ARG(c, recv);    // r が arg 評価をまたいで生存
+    VALUE a = EVAL_ARG(c, arg);     // arg 評価中に r が GC のルートになる必要
+    return korb_send1(c, r, a, ic);
+}
+```
+
+ASTroGen が生成する EVAL\_node\_call1 ラッパは概念的にはこうなる
+(`@roots(r)` 由来で frame slot を 1 つ確保、ENTER/LEAVE で挟む):
+
+```c
+static inline __attribute__((always_inline)) VALUE
+EVAL_node_call1(CTX *c, NODE *n, NODE *recv, ndf_t recv_d,
+                NODE *arg, ndf_t arg_d, struct ic *ic)
+{
+    struct { VALUE r; } _f;
+    ASTRO_FRAME_ENTER(c, &SD_node_call1_FD, &_f);
+    _f.r = EVAL_ARG(c, recv);
+    VALUE a = EVAL_ARG(c, arg);
+    VALUE _ret = korb_send1(c, _f.r, a, ic);
+    ASTRO_FRAME_LEAVE(c);
+    return _ret;
+}
+```
+
+BODY 中の `r` は実体としては `_f.r` だが、ここは macro `#define r _f.r` を
+ASTroGen が emit することで BODY のテキストを変えずに済ませる。
+**BODY-text untouched 原則の物理的実現**。
+
+frame_desc は `SD_<hash>` 単位で `static const`:
+
+```c
+static const astro_frame_desc_t SD_node_call1_FD = {
+    .size = sizeof(struct { VALUE r; }),
+    .n_refs = 1,
+    .ref_offsets = { offsetof(struct { VALUE r; }, r) },
+};
+```
+
+`@roots` で名前を宣言した変数の型は `VALUE` 固定 (ASTroGen が BODY 内
+`VALUE\s+<name>` の宣言を発見できなければ error)。一旦これで十分;
+複雑な型は後段で考える。
+
+## 22. BODY 内 API (macro 経由)
+
+`@roots` で済まないケース用に、BODY 内で明示的に書く macro を 5 つ定義する。
+backend 切替で `GC=none` のとき全部 no-op に潰せることが条件:
+
+| macro | 役割 | none backend での展開 |
+|---|---|---|
+| `KORB_NEW_<KIND>(...)` | value.def 由来の type-specialized allocator wrapper | `malloc` ベース |
+| `WB(holder, field, val)` | ref 書き込みの write barrier 経由化 | `(holder)->field = (val)` |
+| `LD(p)` | read barrier (realtime backend で Brooks forwarding) | `(p)` |
+| `SAFEPOINT(c)` | 任意 safepoint poll (`@safepoint` で済まないとき) | `(void)0` |
+| `PIN(c, expr)` | 短命に式 1 個を root 化したい時用 (`@roots` の式版) | `(expr)` |
+
+これらは `<lang>_gc.h` で backend 切替して定義する。生成コード側からは
+backend 不可知。
+
+BODY での使用例 (koruby `node_iv_set` 相当):
+
+```c
+NODE_DEF
+node_iv_set(CTX *c, NODE *n, NODE *recv, NODE *val, const char *name@atomic)
+{
+    VALUE r = EVAL_ARG(c, recv);   // r は val 評価をまたぐが PIN で済む
+    WB(r, ivars[id_of(name)], EVAL_ARG(c, val));
+    return r;
+}
+```
+
+`r` を `@roots(r)` するか、書き換えを `WB` macro 経由にするかは設計判断
+だが、両方を許して embedder に選ばせる。
+
+## 23. frame descriptor 生成のフロー
+
+ASTroGen が `node_gc.c` (新 task) に集約する artifact:
+
+1. **per-NODE_DEF marker**: `GC_MARK_<name>` — operand 注釈から生成
+2. **per-NODE_DEF frame descriptor**: `SD_<name>_FD` — `@roots` / `@root_array`
+   から生成 (= specialize 時の `SD_<hash>` ごとに per-hash 化される版が別途必要)
+3. **kind table**: `value.def` の各 kind の marker/forward テーブル
+4. **frame iter root**: 言語が 1 つ実装する `<lang>_gc_iter_roots()` の C 雛形
+
+NodeKind に `gc_marker` / `frame_desc` を生やすために
+`register_gen_task :gc, kind_field: "...; const astro_frame_desc_t *frame_desc;"`
+を使う。これは既存 `register_gen_task` インタフェースに収まるので **コア DSL
+の枠を破らない**。
+
+## 24. ASTroGen 実装に必要な変更 (規模感)
+
+`lib/astrogen.rb` 側で具体的に追加するもの:
+
+| 変更 | 規模 |
+|---|---|
+| `NODE_DEF` parse に `@allocates / @noalloc / @safepoint / @roots(...) / @root_array(b,c)` を追加 | `Node#initialize` の `@option` 解釈に分岐数行 |
+| `Operand` に `@ref(value) / @imm / @weak / @atomic` 認識 | `Operand#initialize` の正規表現拡張 |
+| `VALUE_DEF` parser (`parse_value_def`) | 新規 ~100 行、 `parse` 内で分岐 |
+| `:gc` task の build_gc + per-node `build_gc` (marker + frame_desc) | 新規 ~150 行 |
+| EVAL\_ ラッパに `@roots` 由来の frame ENTER/LEAVE + `#define name _f.name` を埋め込む | `build_eval_body` 内で 30 行程度 |
+| SPECIALIZE 出力に SD\_\<hash\> 別 frame_desc を焼く | `build_specializer` を拡張 |
+
+合計で `astrogen.rb` (現状 787 行) に対し +400 行程度。 数字は荒いが、
+abruby が `register_gen_task :mark` 経由で実装した規模感 (~200 行) と
+整合する。
+
+## 25. サンプル展開 (interface 視点)
+
+各 phase で `node.def` に何が増えるかを示すミニ例:
+
+**Phase 0 — naruby/calc (GC なし)**: `node.def` は **一切変更しない**。
+`make GC=none` で生成コード現状維持を gate にする。
+
+**Phase 1 — asml (semispace)**:
+
+```
+VALUE_DEF asml_value
+{
+    INT     => atomic_payload(int64_t) i;
+    CONS    => ref(VALUE) hd; ref(VALUE) tl;
+    CLOSURE => ref(NODE *) @immortal body; ref_payload(VALUE) env;
+    VARIANT => uint32_t ctor; ref_payload(VALUE) args;
+}
+
+NODE_DEF @allocates @roots(hd_v)
+node_cons(CTX *c, NODE *n, NODE *hd, NODE *tl)
+{
+    VALUE hd_v = EVAL_ARG(c, hd);
+    VALUE tl_v = EVAL_ARG(c, tl);
+    return KORB_NEW_CONS(c, hd_v, tl_v);
+}
+```
+
+**Phase 4 — koruby (generational)**: 全 allocate 系 NODE_DEF に
+`@allocates`、loop back-edge / call に `@safepoint`、 `@ref(value)` を
+inline cache に付与。`korb_obj` の `VALUE_DEF` は §2 例ほぼそのまま。
+
+**Phase 7 — abruby (cruby backend)**: 同じ `VALUE_DEF` から
+CRuby の `dmark` (rb_gc_mark callback) を生成する別 task を追加。
+これは `register_gen_task :cruby_mark` で **既存の `:mark` を置き換え**、
+embedder ごとに backend を選ぶ形にする。同じ DSL から 2 backend の
+marker が出ることが framework 抽象化の正しさの proof になる (§15 の
+副産物項目とも合流)。
+
+## 26. `value.def` 採否の trade-off
+
+ここまで (A)+(B)+(C) = §20-22 は **`value.def` 不要でも成立する** よう設計
+してある。ここでは「`value.def` を更に上に乗せるか」だけを独立に検討する。
+
+### 26.1 採用する場合の利得
+
+- **abruby の `node_mark.c` を framework 標準に昇格** できる。 1 つの DSL
+  から CRuby backend と precise backend の **両方** の marker が生成される
+  ことが抽象化の正しさの proof になる (§15 副産物の中心)
+- moving backend で必要な `KORB_FORWARD_<KIND>`、 generational で必要な
+  `kind → mark function` テーブル等の boilerplate を 1 箇所に集約できる
+- `asml` で HM 型推論結果から `atomic` payload を自動推定する将来拡張が、
+  値の DSL 表現を経由してまとまる (§15)
+
+### 26.2 採用しない場合の利得
+
+- **言語側の値表現の癖を DSL に押し込まない**。 luastro NaN-box, naruby
+  生 int64, koruby Flonum-tag, asml bit0=int 等を一つの構文に統合する圧力
+  が消える (`feedback_no_nan_boxing` の方針と整合)
+- abruby の `register_gen_task :mark` はサンプル個別の extension として残し、
+  framework は **「root の場所」と「barrier 経路」だけ** 標準化する
+- backend 移植時の自由度が高い (CRuby のような **既存 GC 経由 backend** を
+  追加するときに DSL 同居制約に縛られない)
+- 実装規模が小さい (§24 の `+400 行` のうち `VALUE_DEF` parser + `:gc` task
+  だけで ~250 行を占めるので、 不採用なら +150 行程度に収まる)
+
+### 26.3 折衷案: NODE オペランド注釈のみ採用、 VALUE_DEF は当面なし
+
+§20 の operand 注釈 (`@ref(value)` / `@imm` / `@weak`) と §21 の `@roots` /
+`@allocates` だけを採用し、 **value 側は当面言語ごとの C ヘッダに手書き
+marker を持つ** という路線。
+
+- abruby 流の per-sample `register_gen_task :mark` でも書ける
+- root 列挙と barrier 経路は標準化される (= GC 切替の最重要部分は手に入る)
+- value DSL の表現力チェックリスト (§13) を埋めずに済む
+- ある程度サンプルが揃ってから「やはり共通 DSL が要る」となった時に
+  後乗せできる (`VALUE_DEF` はあくまで *追加* 構文で、 既存サンプルの
+  影響半径ゼロ)
+
+**現実的にはこれが最も筋が良さそう**。 §17 の「arcel + asml をまず掘る」と
+組み合わせると、 値表現の異なる 2 サンプルで「value DSL なしで GC 切替が
+回せるか」を確かめてから採否を決められる。
+
+### 26.4 判断保留
+
+`value.def` 採否は arcel + asml で §20-22 を試してから決める。 §19 は
+「もし採用するならこういう形」という参考スケッチ扱いに留め、 実装は §20-22
+を先行させる。
+
+## 27. 残るオープン項目
+
+§16 で挙げた未決事項に対する、interface 視点での仮回答:
+
+- (a) 同居/分離 → **同居**。本案の前提
+- (b) `astro_gc_alloc` 戻り値の tag → **タグなし**、`KORB_NEW_*` macro が
+  per-language の tag を被せる (現状の `KORB_PROC_NEW` 等の慣習延長)
+- (c) JIT 生成 SD の frame descriptor → **`static const` を SD\_\<hash\>.c に
+  焼く**。 `astro_cs_compile` で `SPECIALIZE_<name>` が SD 本体と一緒に
+  frame_desc も emit する
+- (d) `HEAP_FINALIZABLE` semantics → **BDW 風 topological** をデフォルト、
+  `value.def` で `@finalizer F @order=<n>` の数値指定で override 可
+- (e) `ref_array` 長さ表現 → **`count_var` 単独**。 begin/end は moving
+  時の fixup が複雑になるので採用しない
+- (f) `@linear` (nuq) → 当面 **保留**。 nuq の `linearity.c` が独自解析を
+  持っており、 ASTro 標準 DSL に持ち上げる前に nuq 単体で `@linear`
+  annotation を試す phase を挟む
+
+## 28. interface design のまとめ
+
+1 サンプルが `node.def` に書き足すのは最大で:
+- `VALUE_DEF <type> { ... }` 1 ブロック
+- 既存 `NODE_DEF` に `@allocates` / `@roots(...)` 系オプション
+- `@ref` の sub-annotation (`(value)` 等)
+
+BODY 内は **既存サンプルでは無変更**。GC 化に踏み込むサンプルだけが
+`WB` / `KORB_NEW_*` / `PIN` macro を使う。 backend 切替で `GC=none` を
+選んだとき全 macro が `(void)0` か identity に潰れることがゼロコスト性の
+gate になる。
+
