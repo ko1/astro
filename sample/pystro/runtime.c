@@ -2667,11 +2667,17 @@ pys_cmp(CTX *c, VALUE a, VALUE b)
         VALUE tb = bi_type(c, 1, av_b);
         const char *na = (pys_is_class(ta)) ? PYS_PTR(ta)->cls.name : "?";
         const char *nb = (pys_is_class(tb)) ? PYS_PTR(tb)->cls.name : "?";
+        extern __thread const char *pys_cmp_op;
+        const char *op = pys_cmp_op ? pys_cmp_op : "<";
         PYS_RAISE_EXC(c, c->EXC_TypeError,
-                     "'<' not supported between instances of '%s' and '%s'",
-                     na, nb);
+                     "'%s' not supported between instances of '%s' and '%s'",
+                     op, na, nb);
     }
 }
+
+// Set by node_lt/le/gt/ge before calling pys_cmp so the TypeError
+// message names the actual operator the user wrote.
+__thread const char *pys_cmp_op = NULL;
 
 // Set comparison helper.  Returns -1 (a strict subset of b), 0 (equal),
 // 1 (a strict superset), or -2 (incomparable).  The set node_lt/le/gt/ge
