@@ -127,7 +127,7 @@ node_add(CTX *c, NODE *n, NODE *lv, NODE *rv)
 }
 ```
 
-これを見て ASTroGen は **2 つのもの** を生成する。
+これを見て ASTroGen は **3 つのもの** を生成する。
 
 **(1) この node 専用の frame 構造体と、 その descriptor**:
 
@@ -144,7 +144,35 @@ static const astro_frame_desc_t FD_node_add = {
 `FD_node_add` は per-NODE_DEF で 1 個だけ。 `.ref_offsets` を見れば「この
 frame の先頭から 0 バイト目に VALUE root がある」 が分かる。
 
-**(2) EVAL ラッパで frame の push/pop + ローカル名のリダイレクト**:
+**(2) BODY の書き換え**: ASTroGen が BODY を tokenize した上で、 `@roots(...)`
+で列挙された名前については
+
+- `VALUE <name>` という宣言を **取り除き** (slot は frame 構造体側に確保済)
+- 残った `<name>` の参照を **`_f.<name>` に置換**
+
+する。 `#define` は使わない (declaration を変えられない + scope が予測しづらい
+ため)。 元の BODY:
+
+```c
+VALUE l = EVAL_ARG(c, lv);
+VALUE r = EVAL_ARG(c, rv);
+return l + r;
+```
+
+ASTroGen 書き換え後:
+
+```c
+_f.l = EVAL_ARG(c, lv);
+VALUE r = EVAL_ARG(c, rv);   /* r は @roots に無いので素のまま */
+return _f.l + r;
+```
+
+これは「BODY のテキスト原文は変えない (= node.def のソースは人間が読む形)」
+原則を保ちながら、 codegen 段階で frame slot 経由に変換する手段。 `@roots`
+に列挙した名前と BODY 内の `VALUE <name>` 宣言が **対応していないと ASTroGen
+が error** で止まる (タイポ検出)。
+
+**(3) EVAL ラッパで frame の push/pop**:
 
 ```c
 static inline VALUE
@@ -152,19 +180,14 @@ EVAL_node_add(CTX *c, NODE *n, NODE *lv, /*...*/, NODE *rv, /*...*/)
 {
     struct frame_node_add _f;
     ASTRO_FRAME_ENTER(c, &FD_node_add, &_f);   // c->fp_chain に push
-#define l (_f.l)                                // BODY を変えずに l を frame slot に
-    VALUE l = EVAL_ARG(c, lv);
+    /* 書き換え済 BODY */
+    _f.l = EVAL_ARG(c, lv);
     VALUE r = EVAL_ARG(c, rv);
-    VALUE _ret = l + r;
-#undef l
+    VALUE _ret = _f.l + r;
     ASTRO_FRAME_LEAVE(c);                       // pop
     return _ret;
 }
 ```
-
-`#define l (_f.l)` を BODY の直前に挟むことで、 **BODY のテキストは 1 文字も
-変えずに** 当該変数を frame slot 経由のアクセスに変える、 というのが仕掛けの
-中心。
 
 #### 1.3.3 GC は frame chain を辿るだけ
 
@@ -226,12 +249,13 @@ root_array にできる。
 SD は inline tree の全 NODE_DEF をひとつの関数に畳み込んだもの。 SPECIALIZE
 時に ASTroGen が tree 内の `@roots(...)` をすべて拾い集めて **SD 関数ごとに
 1 個のアグリゲート frame** を組み、 push/pop は **SD 関数の入口と出口で 1 回ずつ**
-だけ行う:
+だけ行う。 §1.3.2 で示した BODY 書き換えは、 SD 集約時には **slot 名を
+inline 位置で一意化** する形で適用する (`l` → `_f.<inline_idx>_l`):
 
 ```c
 struct frame_SD_<hash> {
-    VALUE n0_l;          // node_add の @roots(l)
-    VALUE n1_r;          // 内側の別 node の @roots(r)
+    VALUE n0_l;          // node_add (inline idx 0) の @roots(l)
+    VALUE n1_l;          // node_sub (inline idx 1) の @roots(l)   ←衝突回避
     VALUE n2_v;          // ...
 };
 
@@ -239,7 +263,7 @@ static const astro_frame_desc_t FD_SD_<hash> = {
     .size        = sizeof(struct frame_SD_<hash>),
     .n_refs      = 3,
     .ref_offsets = { offsetof(struct frame_SD_<hash>, n0_l),
-                     offsetof(struct frame_SD_<hash>, n1_r),
+                     offsetof(struct frame_SD_<hash>, n1_l),
                      offsetof(struct frame_SD_<hash>, n2_v) },
 };
 
@@ -247,17 +271,21 @@ VALUE SD_<hash>(CTX *c, NODE *n)
 {
     struct frame_SD_<hash> _f;
     ASTRO_FRAME_ENTER(c, &FD_SD_<hash>, &_f);   // SD 入口で 1 回だけ
-    /* inlined tree — 個別 ENTER/LEAVE は出さない、
-       BODY 内の `l` / `r` / `v` は #define で _f.n0_l 等に展開 */
+    /* node_add (idx 0) inline、 元の BODY の l を _f.n0_l に書き換え */
+    _f.n0_l = ...;
+    ...
+    /* node_sub (idx 1) inline、 元の BODY の l を _f.n1_l に書き換え */
+    _f.n1_l = ...;
     ...
     ASTRO_FRAME_LEAVE(c);                        // SD 出口で 1 回だけ
     return _ret;
 }
 ```
 
-これでチェーン操作は **関数呼出し境界の頻度** に下がる (= 言語の call の頻度。
-node 評価の頻度より 1〜2 桁低い)。 個別 EVAL\_\<name\> 内には ENTER/LEAVE を
-出さず、 frame slot のリダイレクトだけ生成する。
+inline_idx は SPECIALIZE が tree を walk しながら採番。 同じ NODE_DEF が
+複数箇所で inline されても slot が衝突しない。 frame chain 操作は **関数呼出し
+境界の頻度** に下がる (= 言語の call の頻度。 node 評価の頻度より 1〜2 桁低い)。
+個別 EVAL\_\<name\> の per-node ENTER/LEAVE は **SD 経路では生成しない**。
 
 | 経路 | frame の単位 | push/pop コスト |
 |---|---|---|
