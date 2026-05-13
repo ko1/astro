@@ -6,6 +6,77 @@ ASTro framework のサンプル横断で使える pluggable な precise GC 基�
 関連: `idea.md` §8.2 (未踏項目), `code_store_quirks.md` (AST NODE 不動制約の出処),
 `perf.md` (CTX hot member lift 議論)。
 
+## 概観
+
+### なぜこの設計案を書いているか
+
+ASTro framework には現在 19 個ほどのサンプル言語実装があり、 値の lifetime
+管理は **サンプルごとに完全にバラバラ** になっている:
+
+| 現状 | サンプル | 性格 |
+|---|---|---|
+| GC なし | `calc`, `naruby`, `pascalast`, `castro`, `aforth`, `wastro` | int / static 型のみ |
+| `libgc` 直叩き (conservative) | `koruby`, `pystro`, `asom`, `astr`, `baruby` 等 | 動的言語、 ヒープ多用 |
+| 自前 mark&sweep | `luastro` | NaN-box + weak table |
+| CRuby GC ホスト | `abruby`, `arjsv` | C 拡張、 host VM 委譲 |
+| arena / region | `arcel` | activation 単位 reset |
+
+「サンプルごとに 5 種の GC が乱立している」状態を、 **1 つの framework 機構**
+に統合したい、 というのがこの設計案の出発点。
+
+### 何を統一して、 何を統一しないか
+
+| 統一する | 統一しない |
+|---|---|
+| Allocation / mark / safepoint / write barrier の **API 形** | 値の表現 (LSB tag / NaN-box / Flonum など) |
+| **Root 列挙の mechanism** (frame descriptor) | 言語ごとの値の構造体定義 |
+| AST NODE の扱い (= 絶対動かさない) | node.def の BODY |
+| `node.def` declarative codegen の文化 | サンプル固有の builtin / runtime |
+
+Algorithm (non-moving / semispace / generational / realtime) は **backend として
+差し替え可能** にする。 同じ言語実装が `make GC=semispace` で moving に切り替わる、
+というのを最終的な姿に置く。
+
+### ASTro 特有の制約 2 つ
+
+1. **AST NODE は移動不可**。 Code Store が SD\_\<hash\>.so 内に NODE \* を
+   ポインタ literal として焼き込んでいるため、 moving GC backend を選んだとしても
+   AST NODE だけは固定アドレスでなければ壊れる
+2. **node.def の BODY テキストは触らない**。 これは `idea.md` の根本主張で、
+   GC を入れる時も BODY を侵襲しない手段で WB / safepoint を仕込む必要がある
+
+この 2 つの制約が、 「世の中の GC interface 設計を転用するだけでは足りない」
+という ASTro 固有の課題になっている。
+
+### 提案の骨子 (1 枚絵)
+
+統一 GC を可能にするために framework が提供するのは以下の 4 つ。 全部が
+**declarative** — つまり「言語側がデータとして宣言 → ASTroGen が必要な C を
+吐く」形式で揃える:
+
+1. **値の型宣言** (`value.def` 採否は §26 で議論、 §2 に構文案) — kind 別 marker /
+   setter / allocator を生成
+2. **Root 列挙** (frame descriptor、 §5) — node.def の `@roots` 注釈から
+   per-SD `astro_frame_desc_t` を生成
+3. **Write barrier 経路** (§6) — `@ref` setter / `WB` macro 経由で
+   backend に応じた barrier を挿入
+4. **Safepoint 配置** (§7) — `@allocates` / loop back-edge ノードに
+   ASTroGen が自動で poll を入れる
+
+backend (algorithm) は **compile-time** で 1 個選ぶ。 `GC=none` を選ぶと全部の
+hook が `(void)0` に潰れて現行コードと等価になる、 を **ゼロコスト性の gate**
+にする。
+
+### 読み方
+
+| 知りたいこと | 読む順序 |
+|---|---|
+| 何を解決したいか / 全体像 | §0 設計目標 → §11 サンプル俯瞰 → §17 最初の一手 |
+| 抽象化の中身 (mechanism) | §1 4 層 → §2-7 各 API → §8 backend matrix |
+| 各サンプルへの当て込み | §11-14 (Tier 別) |
+| node.def に何を書くか (interface) | §18-28 (後半、 実装規模含む) |
+| 未決事項 (要議論) | §16 + §26 (`value.def` 採否) |
+
 ## 0. 設計目標
 
 - 1 個の interface から **non-moving / moving (semispace) / generational / realtime**
@@ -22,6 +93,17 @@ ASTro framework のサンプル横断で使える pluggable な precise GC 基�
 
 ## 1. 抽象化の 4 層
 
+「allocate / mark / move / barrier」 という GC primitive 群を言語非依存に
+切り出して 4 種類のアルゴリズムを backend として差し替えられるようにする、
+というのが核。 ただし
+
+- **値の表現** (LSB tag / NaN-box / Flonum boxing) は **言語の魂** — backend
+  では決められないので言語側に残す
+- **Root 列挙の中身** (どの局所変数が live か) も言語に固有 — ただし
+  *列挙の mechanism* (frame descriptor を辿る) は framework が提供する
+
+この切り分けに沿って 4 層に分けると、 上から下への依存関係が一方向になる:
+
 ```
 Layer 4  Algorithm:   non-moving / semi-space / generational / realtime
               ↑ implements
@@ -33,8 +115,18 @@ Layer 2  Generated:   ASTroGen が value.def + node.def から
 Layer 1  Language:    value.def (型) + frame iterator (root 列挙)
 ```
 
-「BODY のテキストを触らない」原則は「setter / safepoint / allocator macro 経由
-でしか書かない」に再定義する。
+- **Layer 1** = 言語が宣言する: 値の型 (value.def を採用するなら) + frame
+  iterator の 1 関数だけ
+- **Layer 2** = ASTroGen が自動生成する: kind 別 marker / setter / per-SD
+  frame descriptor。 言語実装者は触らない
+- **Layer 3** = backend 非依存の C API。 `astro_gc_alloc` / `ASTRO_WB_PTR`
+  / `ASTRO_SAFEPOINT` 等の macro 群
+- **Layer 4** = 具体的アルゴリズム実装。 `make GC=<name>` で compile-time に
+  1 つ選ばれる
+
+「BODY のテキストを触らない」原則は、 この層構造の上では **「BODY からは
+Layer 3 の macro 経由でしか GC に触らない」** に再定義される。 これにより
+backend 切替 (Layer 4 差替) は BODY を不変のまま行える。
 
 ## 2. `value.def`: 型宣言 DSL
 
