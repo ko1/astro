@@ -17843,11 +17843,22 @@ install_builtins(CTX *c)
     pys_global_define(c, "memoryview", pys_make_builtin("memoryview", bi_memoryview, 1,  1));
     pys_global_define(c, "breakpoint", pys_make_builtin("breakpoint", bi_breakpoint, 0, -1));
     pys_global_define(c, "compile",    pys_make_builtin("compile",    bi_compile,    3,  6));
+    // Allocate Ellipsis / NotImplemented exactly once across all
+    // install_builtins calls (each module-init re-runs this fn) so
+    // \`is\` comparisons survive module boundaries.
     {
-        struct pysobj *e = pys_alloc(PYS_T_ELLIPSIS);
-        pys_global_define(c, "Ellipsis",       PYS_OBJ_VAL(e));
-        struct pysobj *n = pys_alloc(PYS_T_NOTIMPL);
-        pys_global_define(c, "NotImplemented", PYS_OBJ_VAL(n));
+        static VALUE shared_ellipsis = (VALUE)0;
+        static VALUE shared_notimpl = (VALUE)0;
+        if (!shared_ellipsis) {
+            struct pysobj *e = pys_alloc(PYS_T_ELLIPSIS);
+            shared_ellipsis = PYS_OBJ_VAL(e);
+        }
+        if (!shared_notimpl) {
+            struct pysobj *n = pys_alloc(PYS_T_NOTIMPL);
+            shared_notimpl = PYS_OBJ_VAL(n);
+        }
+        pys_global_define(c, "Ellipsis",       shared_ellipsis);
+        pys_global_define(c, "NotImplemented", shared_notimpl);
     }
     pys_global_define(c, "input",      pys_make_builtin("input",      bi_input,      0,  1));
     pys_global_define(c, "hash",       pys_make_builtin("hash",       bi_hash,       1,  1));

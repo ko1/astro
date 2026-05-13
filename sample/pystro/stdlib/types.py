@@ -279,11 +279,8 @@ class GenericAlias:
     def __hash__(self):
         return hash((self.__origin__, self.__args__))
     def __repr__(self):
-        # Note: comparing to Ellipsis via `is` failed in pystro across
-        # module boundaries; use type().__name__ to detect ellipsis so
-        # `tuple[int, ...]` renders the dots.
         def _fmt(a):
-            if type(a).__name__ == "ellipsis": return "..."
+            if a is Ellipsis: return "..."
             if isinstance(a, type):
                 return a.__qualname__ if hasattr(a, "__qualname__") else a.__name__
             return repr(a)
