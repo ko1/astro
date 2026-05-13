@@ -3,6 +3,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include "context.h"
+#include "astro_debug.h"
 #include "gc.h"
 
 // ----------------------------------------------------------------------------
@@ -12,7 +13,7 @@
 BarubyGCStats baruby_gc_stats = {0, 0, 0};
 int baruby_gc_stress = 0;
 
-#define REGION_BYTES  ((size_t)64u << 20)   // 64 MiB per semispace
+#define REGION_BYTES  ((size_t)512u << 20)   // 512 MiB per semispace (lazy mmap, only used pages occupy physical mem)
 #define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
 
 // Active semispace (where allocations go).  In stress mode, EVERY GC
@@ -79,6 +80,9 @@ static void gc_collect_internal(VALUE *sp_top);
 void *
 baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
 {
+    ASTRO_ASSERT(kind > KIND_FREE && kind <= KIND_PAYLOAD_BYTE);
+    ASTRO_ASSERT(sp_top >= gc_ctx->env);
+
     size_t aligned = ALIGN8(payload_size);
     size_t total   = sizeof(GCHeader) + aligned;
 
@@ -98,6 +102,7 @@ baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
     active_top += total;
 
     void *payload = (void *)(h + 1);
+    ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);   // tagged-VALUE invariant
     memset(payload, 0, aligned);
 
     baruby_gc_stats.total_bytes += payload_size;
@@ -149,25 +154,27 @@ static void *
 forward_payload(void *old_payload)
 {
     if (!old_payload) return NULL;
-    // Validate: old_payload must be in current from-space.
-    if ((char *)old_payload < from_base_cur ||
-        (char *)old_payload >= from_base_cur + REGION_BYTES) {
+    // Range invariants — debug-only.  Under ASTRO_DEBUG these print
+    // diagnostics and trip an ASTRO_ASSERT; in release builds the
+    // entire `if (ASTRO_DEBUG ...)` block constant-folds away.
+    if (ASTRO_DEBUG && ((char *)old_payload < from_base_cur ||
+                        (char *)old_payload >= from_base_cur + REGION_BYTES)) {
         fprintf(stderr,
             "[gc] FORWARD STALE PTR: %p (from-space [%p..%p), to-space [%p..%p))\n",
             old_payload, (void*)from_base_cur,
             (void*)(from_base_cur + REGION_BYTES),
             (void*)to_base, (void*)(to_base + REGION_BYTES));
-        abort();
+        ASTRO_ASSERT(0 && "forward_payload: old_payload outside from-space");
     }
     GCHeader *oldh = (GCHeader *)old_payload - 1;
     if (oldh->fwd) {
-        if ((char *)oldh->fwd < to_base ||
-            (char *)oldh->fwd >= to_base + REGION_BYTES) {
+        if (ASTRO_DEBUG && ((char *)oldh->fwd < to_base ||
+                            (char *)oldh->fwd >= to_base + REGION_BYTES)) {
             fprintf(stderr,
                 "[gc] FORWARD STALE FWD: oldh@%p fwd=%p not in to-space [%p..%p)\n",
                 (void*)oldh, oldh->fwd, (void*)to_base,
                 (void*)(to_base + REGION_BYTES));
-            abort();
+            ASTRO_ASSERT(0 && "forward_payload: fwd outside to-space");
         }
         return oldh->fwd;
     }
@@ -200,33 +207,27 @@ process_object(GCHeader *h)
     switch ((BarubyGCKind)h->kind) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
+        ASTRO_ASSERT(a->hdr.type == OBJ_ARRAY);
         if (a->items) a->items = (VALUE *)forward_payload(a->items);
         break;
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
+        ASTRO_ASSERT(s->hdr.type == OBJ_STRING);
         if (s->bytes) s->bytes = (char *)forward_payload(s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {
         VALUE *items = (VALUE *)payload;
         size_t n = h->size / sizeof(VALUE);
-        if (baruby_gc_stress) {
-            fprintf(stderr, "[gc.proc PAYLOAD_VAL @%p n=%zu] BEFORE: ", payload, n);
-            for (size_t i = 0; i < n; i++) fprintf(stderr, "[%zu]=%lx ", i, (long)items[i]);
-            fprintf(stderr, "\n");
-        }
         for (size_t i = 0; i < n; i++) items[i] = forward_value(items[i]);
-        if (baruby_gc_stress) {
-            fprintf(stderr, "[gc.proc PAYLOAD_VAL @%p n=%zu] AFTER:  ", payload, n);
-            for (size_t i = 0; i < n; i++) fprintf(stderr, "[%zu]=%lx ", i, (long)items[i]);
-            fprintf(stderr, "\n");
-        }
         break;
       }
       case KIND_PAYLOAD_BYTE:
       case KIND_FREE:
         break;
+      default:
+        ASTRO_ASSERT(0 && "process_object: unknown GCHeader kind");
     }
 }
 
@@ -263,10 +264,11 @@ gc_collect_internal(VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    // (Pre-mark assertion) Every IS_PTR slot in scan range must point into
-    // the current from-space.  This MUST run BEFORE the root scan loop
-    // (which mutates *p in-place).
-    if (baruby_gc_stress) {
+    // Pre-mark invariant: every IS_PTR slot in the scan range must point
+    // into the current from-space.  Must run BEFORE the root scan loop
+    // (which mutates *p in-place).  Debug + stress-mode only — under
+    // !ASTRO_DEBUG the whole block constant-folds away.
+    if (ASTRO_DEBUG && baruby_gc_stress) {
         for (VALUE *p = c->env; p < sp_top; p++) {
             VALUE v = *p;
             if (!IS_PTR(v)) continue;
@@ -277,7 +279,7 @@ gc_collect_internal(VALUE *sp_top)
                     "is not in from-space [%p..%p)\n",
                     p - c->env, (long)v, (void*)from_base,
                     (void*)(from_base + REGION_BYTES));
-                abort();
+                ASTRO_ASSERT(0 && "pre-mark: stale heap pointer in sp range");
             }
         }
     }
@@ -290,10 +292,6 @@ gc_collect_internal(VALUE *sp_top)
     char *scan = to_base;
     while (scan < to_top) {
         GCHeader *h = (GCHeader *)scan;
-        if (baruby_gc_stress) {
-            fprintf(stderr, "[gc.scan] @%p kind=%u size=%u\n",
-                    (void*)(h + 1), h->kind, h->size);
-        }
         process_object(h);
         baruby_gc_stats.heap_bytes += h->size;
         scan += sizeof(GCHeader) + ALIGN8(h->size);

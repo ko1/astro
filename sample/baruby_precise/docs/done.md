@@ -3,6 +3,87 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-13 — semi-space moving GC + stress mode + ASTRO_ASSERT
+
+mark&sweep の MVP を **Cheney 風 copying GC** に置き換え、 stress mode で
+moving GC 特有のバグを総当たり退治した。 詳細 [runtime.md §5](runtime.md)。
+
+### gc.c の刷新
+
+- `BarubyGCNode` の linked-list + per-object malloc を捨て、
+  **`mmap` 512 MiB の region 2 本を交互に使う semi-space** に変更
+- alloc は `active_top` を bump するだけ。 collection は Cheney scan-loop で
+  to-space を線形に処理
+- `GCHeader { kind, size, fwd }` を payload 直前に置き、 forwarding pointer は
+  この `fwd` に書く
+
+### Stress mode (`BARUBY_GC_STRESS=1`)
+
+- **毎 alloc で GC 起動** + 古い from-space を `mprotect(PROT_NONE)` +
+  `madvise(MADV_DONTNEED)` で**恒久 retire**。 仮想アドレスは予約継続、
+  物理ページは即解放
+- 過去 GC 由来の stale pointer を deref すると確実に SIGSEGV
+- 新しい to-space は毎 GC で `mmap` 取り直し (アドレス使い捨て)
+- PRE-MARK 不変条件チェック: scan range の `IS_PTR(v)` が必ず現在の
+  from-space を指す事を mark 前に検証
+
+### 摘発したバグ
+
+semi-space に切り替えた瞬間 `bench/binary_trees` が clobber data で
+クラッシュ。 stress mode + verbose assert で次の根本パターンを発見:
+
+- **C local rooting 漏れ** — `VALUE l = EVAL_ARG(c, lhs); VALUE r =
+  EVAL_ARG(c, rhs);` で rhs eval が GC を引くと `l` が stale C local の
+  まま。 該当箇所:
+  - `baruby_ary_push`: x が realloc 後に stale → `VALUE *x_ref` に変更
+  - `node_eq`, `_neq`, `_lt`, `_le`, `_gt`, `_ge`, `_mul`, `_spaceship`,
+    `_call_aget`, `_call_aget2`: heap-typed operand を sp[] spill に統一
+- **Helper 内部の C local** — `baruby_str_concat(VALUE av, ...)` の `av`
+  が内部 alloc 後に stale。 → `VALUE *av_ref` に変更し、 alloc 後に
+  `VAL2STR(*av_ref)` で post-GC アドレスを再取得 (`baruby_ary_plus`,
+  `baruby_str_repeat`, `baruby_ary_repeat`, `baruby_str_append`,
+  `baruby_str_concat`)
+
+### `baruby_str_concat` 最適化
+
+ref pattern 移行のついでに、 旧版で「source bytes を malloc 領域に
+バッファコピーしてから alloc」 と書いていた回避コードを撤去。
+source は ref で post-GC 再取得できるので malloc/memcpy/free を 1 set
+削減 → **string_concat ベンチ 1.468 s → 1.160 s (-21%)**。
+
+### ASTRO_ASSERT / ASTRO_DEBUG
+
+framework 共通の assertion macro を `runtime/astro_debug.h` に新設:
+
+```c
+#if ASTRO_DEBUG
+#  define ASTRO_ASSERT(expr) assert(expr)
+#else
+#  define ASTRO_ASSERT(expr) ((void)0)
+#endif
+```
+
+baruby_precise では `ASTRO_DEBUG=1` がデフォルト (context.h)、
+`make ASTRO_DEBUG=0` で release-shape build が可能。 gc.c の検証コード
+(alloc 時 kind validity, process_object の type タグ、 stress mode の
+PRE-MARK / FORWARD STALE 検出) は全て ASTRO_ASSERT に統一、
+release build では完全に compile out。
+
+### 検証
+
+全テスト stress mode で PASS:
+
+| Test | plain | stress |
+|---|---|---|
+| `test.ba.rb` | ✓ | ✓ |
+| `test_ary.ba.rb` | ✓ | ✓ |
+| `test_eq.ba.rb` | ✓ | ✓ |
+| `bench/binary_trees` | ✓ (0.54 s) | (時間がかかるので未) |
+| `bench/list_alloc` | ✓ (1.15 s) | (時間がかかるので未) |
+| `bench/string_concat` | ✓ (1.16 s) | (時間がかかるので未) |
+
+precise vs conservative の比較は [perf.md §2](perf.md) に。
+
 ## 2026-05-10 — bench 拡充 (GC stress 3 種追加)
 
 既存の binary_trees / list_alloc / string_concat に追加で:

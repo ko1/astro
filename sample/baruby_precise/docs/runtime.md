@@ -4,7 +4,7 @@
 ベンチは [perf.md](perf.md) を参照。
 
 baruby_precise は **`sample/baruby` (libgc conservative) を copy して
-precise mark&sweep GC に置き換えた MVP 試作品**。 設計の背景は
+precise *moving* GC (semi-space) に置き換えた testbed**。 設計の背景は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。 ASTroGen
 自体には手を入れず、 BODY をベタ書きで sp[] spill するスタイル。
 
@@ -12,7 +12,7 @@ precise mark&sweep GC に置き換えた MVP 試作品**。 設計の背景は
 
 1. **共通引数を 4 つに拡張**: `(CTX *c, NODE *n, VALUE *fp, VALUE *sp)`
    — fp は function frame base (既存)、 sp は scratch top (新)
-2. **precise mark&sweep GC** (`gc.c` / `gc.h`) — libgc の代わり
+2. **precise semi-space (Cheney) GC** (`gc.c` / `gc.h`) — libgc の代わり
 3. **sp[] root spill** — NODE_DEF body が VALUE root を `sp[i]` に書き、
    `BARUBY_EVAL_ARG(c, n, sp + N)` で child に sp を進めて渡す
 4. **callee frame を共有 stack 上に** — 旧 `VALUE F[locals_cnt]` の
@@ -160,10 +160,10 @@ branch する (LIKELY で int+int のホットパスを優先)。`node_eq` /
 `node_neq` も同型で、raw 等価チェックの後に `baruby_value_eq`
 (`node.c`) で再帰的な値比較に降りる。
 
-## 5. Precise mark&sweep GC
+## 5. Precise semi-space (Cheney) GC
 
-libgc を捨て、 `gc.c` / `gc.h` に自前の precise mark&sweep を実装した
-(~210 行)。
+libgc を捨て、 `gc.c` / `gc.h` に precise な copying GC を実装
+(~310 行)。
 
 ### 5.1 共有 VALUE stack
 
@@ -172,47 +172,54 @@ libgc を捨て、 `gc.c` / `gc.h` に自前の precise mark&sweep を実装し�
 
 - `c->env` = stack 最下端 (mark phase の起点)
 - `c->fp`  = 現在の function frame base
-- `c->sp`  = 現在の scratch top (= mark phase の上端)
+- `c->sp`  = 現在の scratch top (= scan range の上端)
 
 各 NODE_DEF 共通引数の `fp` / `sp` は `c->fp` / `c->sp` の register
 コピー (毎 dispatch で渡される)。 `c->sp` は alloc API が内部で
 update する (§5.3)。
 
-### 5.2 オブジェクトレイアウト
+### 5.2 半空間レイアウト
 
 ```c
-typedef struct BarubyGCNode {
-    struct BarubyGCNode *prev, *next;   // 全 object の linked list
-    uint32_t marked;
-    uint32_t payload_kind;              // OBJ_ARRAY / OBJ_STRING
-    // ... BaArray or BaString が payload として続く
-} BarubyGCNode;
+typedef struct GCHeader {
+    uint32_t kind;     // KIND_OBJ_ARRAY / OBJ_STRING / PAYLOAD_VAL / PAYLOAD_BYTE
+    uint32_t size;     // payload bytes
+    void    *fwd;      // forwarding pointer (NULL = not yet copied)
+} GCHeader;
 ```
 
-各 heap object は `BarubyGCNode` + payload を 1 つの `malloc` で確保し、
-全 object の doubly-linked list に link する。 sweep 時は list 走査で
-unmarked を free する。
+各 region は **`mmap` 1 回で 512 MiB 確保** (`PROT_READ|PROT_WRITE`)。
+仮想空間だけ予約され、 実メモリは touch したページ分だけ消費される。
+allocation は active region の `active_top` を bump するだけ。 GC が
+走ると Cheney 風に live を **to-space** にコピーして active を切替える。
 
-`BaArray.items` / `BaString.bytes` の可変長 payload は別 `malloc`
-(`baruby_gc_alloc_payload`) で確保。 owner の sweep 時に一緒に free。
+通常モード: `space0` / `space1` の 2 region を `mmap` で確保しておき、
+GC ごとに交互に切替える (classic semispace)。
 
-### 5.3 Alloc API
+### 5.3 Stress mode (`BARUBY_GC_STRESS=1`)
+
+stress mode を有効にすると:
+
+- **毎 alloc で GC を起動** — 「mark 漏れ」が起きていればその場で発覚
+- **古い from-space を恒久 retire** — GC 後に `mprotect(PROT_NONE)` +
+  `madvise(MADV_DONTNEED)` で物理ページを解放しつつ仮想アドレスは予約
+  維持。 過去 GC 由来の stale pointer を deref した瞬間 SIGSEGV
+- **新しい to-space は毎 GC で `mmap` 取り直し** — 仮想アドレスは
+  使い捨て (= 同一アドレスに再 alloc される偶然を排除)
+
+これで「root rooting 漏れ」「helper 内の stale C local」 等の moving
+GC 特有のバグが即座に表面化する。 開発中の事実上の必須モード。
+
+### 5.4 Alloc API
 
 ```c
-void *baruby_gc_alloc(uint32_t kind, size_t payload_size, VALUE *sp_top);
-void *baruby_gc_alloc_payload(size_t size, VALUE *sp_top);
+void *baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top);
 void *baruby_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
 ```
 
-全 alloc が `sp_top` 引数を取る。 内部で:
-
-```c
-c->sp = sp_top;                              // GC が scan する上端を update
-if (bytes_since_gc > gc_threshold) gc_collect_internal(sp_top);
-```
-
-の順で動く。 cooperative — GC は alloc 経由でしか起きない。
-threshold は 4 MiB (固定)。
+全 alloc が `sp_top` 引数を取る。 内部で `c->sp = sp_top` を更新してから
+必要なら `gc_collect_internal(sp_top)` を呼ぶ。 cooperative — GC は
+alloc 経由でしか起きない。
 
 呼び出し側 (NODE_DEF body や C helper) は自分が把握している scratch top
 を `sp_top` に渡す。 例:
@@ -225,23 +232,20 @@ node_ary_new(CTX *c, NODE *n, VALUE *fp, VALUE *sp, /*...*/)
 }
 ```
 
-### 5.4 Mark & sweep
+### 5.5 Cheney copy collector
 
-Mark phase:
-
-1. 全 object の `marked = 0` をクリア
-2. `c->env` から `c->sp` まで VALUE 配列を flat scan
-3. 各 VALUE が `IS_PTR(v)` なら `mark_object` 再帰
-4. `BaArray` なら `items[]` を再帰追跡
-5. `BaString` は leaf (bytes は char、 VALUE root を含まない)
-
-Sweep phase: linked list を全 traverse、 `marked == 0` を `free` +
-list から remove。
+1. **PRE-MARK 不変条件チェック** (stress + ASTRO_DEBUG のみ): `c->env..sp_top`
+   の各 `IS_PTR(v)` slot は現在の from-space 内を指していなければならない
+2. **Root forward**: `c->env..sp_top` を flat scan、 `IS_PTR(v)` を
+   `forward_value` で to-space にコピー (in-place で書き換え)
+3. **Scan-loop**: to-space を `scan` ポインタで前進、 各オブジェクトの
+   outgoing ref を `forward_payload` で順次転送
+4. **Active 切替え** + (stress なら) 旧 region を恒久 retire
 
 per-NODE_DEF の frame chain は **無い**。 GC scan は `c->env..c->sp`
 の 1 続きの flat array を見るだけ。
 
-### 5.5 BARUBY_EVAL_ARG macro
+### 5.6 BARUBY_EVAL_ARG macro
 
 framework の `EVAL_ARG(c, n)` は parent の sp をそのまま child に渡す
 ので、 parent が sp[0..N-1] を root に使う場合は **`BARUBY_EVAL_ARG(c,
@@ -261,12 +265,75 @@ node_call_1(... NODE *a0)
 `#define BARUBY_EVAL_ARG(c, n_node, new_sp) \
     ((*n_node##_dispatcher)(c, n_node, fp, new_sp))` (node.h)
 
-### 5.6 統計出力
+### 5.7 Moving GC で必須の二大パターン
+
+semi-space に切り替えた結果、 mark&sweep 時代には潜伏していたバグが
+顕在化した。 NODE_DEF / C helper を書くときの **絶対ルール**:
+
+**(A) sp[] spill** — heap VALUE を子ノード eval を跨いで保持する場合、
+C local ではなく sp[] slot に置く。 子の eval で GC が走ると in-place
+forward で sp[] は更新されるが、 C local は更新されない。
+
+```c
+// NG: rhs 評価で GC が走ると l が stale → SEGV
+VALUE l = UNWRAP(EVAL_ARG(c, lhs));
+VALUE r = UNWRAP(EVAL_ARG(c, rhs));
+baruby_str_concat(l, r, sp);
+
+// OK
+sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp + 2));
+sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 2));
+baruby_str_concat(&sp[0], &sp[1], sp + 2);
+```
+
+**(B) helper は VALUE* で受ける** — 内部で alloc する helper は VALUE を
+値で受け取らず、 caller の sp[] slot への pointer で受ける。 alloc 後に
+`*ref` を再 deref して post-GC アドレスを取り直す。
+
+```c
+// NG: 内部 alloc 後 av が stale → VAL2STR(av) で SEGV
+VALUE baruby_str_concat(VALUE av, VALUE bv, VALUE *sp_top) {
+    const BaString *a = VAL2STR(av);   // pre-GC ptr
+    ... baruby_gc_alloc(...) ...        // ここで GC 起こりうる
+    a = VAL2STR(av);                    // av は C local のまま stale
+}
+
+// OK
+VALUE baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top) {
+    uint32_t a_len = VAL2STR(*av_ref)->len;   // size だけ pre-alloc で読む
+    ... baruby_gc_alloc(...) ...               // GC で *av_ref は in-place forward
+    const BaString *a = VAL2STR(*av_ref);     // post-GC ptr
+}
+```
+
+この pattern を `baruby_ary_push` / `_plus` / `_repeat`、 `baruby_str_concat`
+/ `_repeat` / `_append` 等に適用。 stress mode で検証済み。
+
+### 5.8 ASTRO_ASSERT / ASTRO_DEBUG
+
+framework 共通の assertion macro。 `runtime/astro_debug.h`:
+
+```c
+#if ASTRO_DEBUG
+#  define ASTRO_ASSERT(expr) assert(expr)
+#else
+#  define ASTRO_ASSERT(expr) ((void)0)
+#endif
+```
+
+baruby_precise では `ASTRO_DEBUG=1` がデフォルト (`context.h` で設定)。
+`make ASTRO_DEBUG=0` でビルドすれば assertion / stress mode の verbose
+check が compile time に消える。
+
+GC 内部の不変条件 (alloc 時の kind validity、 `process_object` の type
+タグ整合、 stress mode の PRE-MARK 範囲 check 等) はすべて
+`ASTRO_ASSERT` 経由。
+
+### 5.9 統計出力
 
 `BARUBY_GC_STATS=1` で `__GC_STATS__ alloc_bytes=... heap_bytes=... gc_count=...`
-を末尾に出力する。 `heap_bytes` は realloc の old/new size 差分を tracking
-してないので underflow して桁外れの値が出るが (= 表示だけの問題)、
-`gc_count` と `alloc_bytes` は正しい値。
+を末尾に出力する。 `alloc_bytes` は累計、 `heap_bytes` は live 量
+(Cheney の scan loop で再計算)、 `gc_count` は collection 回数。
 
 ## 6. 文字列リテラルの fresh alloc
 
@@ -311,15 +378,13 @@ ccache 書込み権限問題回避用。
 
 ## 9. 既知の不整合 / 制約
 
-- **`bench/binary_trees` の計算結果が壊れる** — node.def の手書き root
-  spill に漏れがある。 具体的には arithmetic node (`node_add` 等) が
-  heap-VALUE operand の root を sp[] に置いていない。 詳細 [todo.md](todo.md)
 - **toplevel sp が 64 で hardcode** (`main.c::create_context`)。
   本来は parser が toplevel locals_cnt を返してくれば計算可能。
   大きな toplevel フレームでは scratch 不足の恐れ
-- **`heap_bytes` 統計が underflow**: realloc の old/new size 差分を
-  track してない。 表示だけの問題で GC 動作には影響なし
 - **callee frame zero-init コスト**: `node_call_<N>` で
   `for (i < locals_cnt) sp[i] = 0` を毎 call で実行。 function call
   頻度に比例。 zero-init が要らない (= 全 local が即書きされる) ことを
   parser が保証できれば skip 可能
+- **REGION_BYTES が 512 MiB 固定**: live set がこれを超えるプログラムは
+  OOM で abort。 mmap は lazy なので未使用ページは物理メモリを食わないが、
+  仮想空間は確実に消費する

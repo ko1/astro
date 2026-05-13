@@ -3,10 +3,10 @@
 仕様は [spec.md](spec.md)、実装は [runtime.md](runtime.md)、
 未対応・残タスクは [todo.md](todo.md) を参照。
 
-baruby_precise は **precise mark&sweep GC の MVP 試作品** で、
+baruby_precise は **precise *moving* GC (semi-space) の testbed** で、
 姉妹サンプル `sample/baruby` (conservative libgc) と同じテスト・ベンチ
-スクリプトで動かして「precise rooting のオーバーヘッドはどれくらいか」
-を測ることを目的にしている。 設計の経緯は
+スクリプトで動かして「precise rooting + 移動 GC のオーバーヘッドは
+どれくらいか」を測ることを目的にしている。 設計の経緯は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。
 
 ## 1. 計測環境
@@ -16,82 +16,81 @@ baruby_precise は **precise mark&sweep GC の MVP 試作品** で、
 | CPU | AMD Ryzen 9 5900HX |
 | OS | Linux 6.8 (x86_64) |
 | Compiler | gcc 13.3.0 |
-| GC (precise) | 自前 mark&sweep (`gc.c`、 ~210 行)、 threshold 4 MiB |
+| GC (precise) | 自前 semi-space (`gc.c`、 ~310 行)、 region 512 MiB |
 | GC (conservative 比較対象) | Boehm libgc 8.2.6 (`sample/baruby` 由来) |
-| Build flags | `-O3 -ggdb3 -march=native -fno-plt` |
+| Build flags | `-O3 -ggdb3 -march=native -fno-plt -DASTRO_DEBUG=1` |
 
 **比較対象**: `sample/baruby/` (libgc 経由の conservative scanning) を
 baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共通 — baruby
 を copy したのでファイル単位で同一。 binary 名のみ異なる
 (`./baruby` vs `./baruby_precise`)。 plain mode = AST インタプリタ
-(code_store なし)、 AOT mode = `-c` で SD specialize →
-`code_store/all.so` 再読み込み後の再実行 (= CCACHE_DISABLE=1 必要)。
+(code_store なし)。 AOT mode は moving GC 移行後に未再検証。
 
-## 2. ベンチ実測 (precise vs conservative)
+## 2. ベンチ実測 (precise vs conservative, plain, 3 run 中央値)
 
-| Bench | cons. plain | cons. AOT | precise plain | precise AOT | precise vs cons. |
-|---|---:|---:|---:|---:|---|
-| `list_alloc` (560 MB alloc) | 0.90 s | 0.38 s | 1.01 s | 0.43 s | plain **+12%**, AOT **+13%** |
-| `string_concat` (1.2 GB alloc) | 0.86 s | 0.66 s | 1.14 s | 0.98 s | plain **+32%**, AOT **+48%** |
-| `binary_trees` | 0.78 s | 0.52 s | 🐛 0.31 s | 🐛 0.20 s | **計算結果が壊れる** ← 要 debug |
-| `test.ba.rb` (fib(20), fixnum-only) | — | — | 0.0004 s | — | GC 不発火、 影響なし |
-
-GC count / alloc 量:
-
-| Bench | cons. GC count | precise GC count | precise alloc 総量 |
-|---|---:|---:|---:|
-| `list_alloc` | 1134 | 133 (1/8.5) | 560 MB |
-| `string_concat` | 1691 | 177 (1/9.5) | 745 MB |
-| `binary_trees` | 12 | 55 | 235 MB |
+| Bench | conservative | precise | precise vs cons. |
+|---|---:|---:|---|
+| `binary_trees` | 0.907 s | **0.544 s** | **0.60×** ⬇40% (precise が速い) |
+| `list_alloc` (560 MB alloc) | 1.085 s | 1.152 s | 1.06× ⬆6% |
+| `string_concat` (745 MB alloc) | 0.968 s | 1.160 s | 1.20× ⬆20% |
+| `fib_pair` | 1.127 s | 1.271 s | 1.13× ⬆13% |
+| `substr_churn` | 1.361 s | 1.594 s | 1.17× ⬆17% |
+| `gc_combined` | 1.079 s | 1.231 s | 1.14× ⬆14% |
+| `test.ba.rb` (fib(20), fixnum-only) | — | 0.0004 s | GC 不発火、 影響なし |
 
 **観察**:
 
-- precise の GC 回数は conservative の 1/8〜1/9。 sweep が linked-list
-  走査だけなので少回数で大量回収する形。 threshold 4 MiB が比較的大きいことも要因
-- **AOT も precise で動く** — SD specialize で `(c, n, fp, sp)` の 4 引数
-  dispatcher が正しく通る (`dlopen` 後の dispatcher binding 含む)
-- plain mode の overhead +12〜32%、 AOT mode の overhead +13〜48% は **sp[]
-  への spill memory write、 callee frame の zero-init、 alloc API 経由の
-  間接化** の合計
-- string_concat の overhead が最大なのは alloc 密度 (1.2 GB) + 短命 String
-  が多いため。 list_alloc は alloc 後に長生きする object が多く差が小さい
-
-## 3. オーバーヘッドの内訳 (推定)
-
-| 要因 | 影響 |
-|---|---|
-| `sp[i] = ...` spill memory write | `node_call_<N>` の callee frame 初期化、 引数評価結果の置き場で alloc 1 回ごとに store が乗る |
-| callee frame の zero-init (`for i < locals_cnt: sp[i] = 0`) | call 1 回あたり locals_cnt 回 store。 関数呼出し頻度に比例 |
-| `c->sp = sp_top` 更新 (`baruby_gc_alloc` 内) | alloc 1 回ごとに 1 store。 alloc 頻度に比例 |
-| sp の register pressure | 4 引数 dispatcher で fp + sp の 2 本 register を消費。 inlined SD で他の値が spill しやすくなる |
-| mark&sweep の sweep 時間 | linked-list 全走査。 オブジェクト数に比例 |
+- **binary_trees は precise の方が 40% 速い** — libgc の conservative scan
+  が小オブジェクト大量生成シナリオで重い (stack / data segment 全走査)。
+  Cheney の bump alloc + Active swap だけのモデルが勝つ
+- string_concat / list_alloc / fib_pair / substr_churn / gc_combined は
+  +6〜20% で precise が遅い。 これは:
+  - sp[] への spill memory write
+  - callee frame の zero-init
+  - alloc API 経由による間接化
+  - sp の register pressure
+  - copy collector のコピーコスト (sweep より重い)
+  の合計
 
 `docs/gc_design.md` §1.3.6 で議論した「spill 1 store/root + alloc 時に
-c->sp 更新 1 store」 のコストモデルが、 実測でほぼそのまま観察された形。
+c->sp 更新 1 store」 のコストモデルが、 ほぼ実測で観察された形。
+全体 geomean ~ +7% (binary_trees の大勝で打ち消されて control)。
+
+## 3. Stress mode
+
+`BARUBY_GC_STRESS=1` で「毎 alloc で GC」 + 「古い from-space を恒久
+PROT_NONE + MADV_DONTNEED」 のデバッグモードに切替。 stale pointer を
+deref した瞬間 SIGSEGV するので moving GC 特有のバグ (rooting 漏れ、
+helper 内 C local の更新漏れ) が即発覚する。 詳細は
+[runtime.md §5.3](runtime.md)。
+
+開発中に表面化した代表的バグ:
+
+- `baruby_ary_push(VALUE av, VALUE x, ...)` の `x` が realloc トリガで
+  stale → 新 items[len] に旧アドレス書込 → 子 GC で再 free 失敗で破綻
+  → `VALUE *x_ref` に変更して post-GC 再 read
+- `node_eq` / `_neq` / `_lt` / `_le` / `_gt` / `_ge` / `_mul` /
+  `_spaceship` / `_call_aget` / `_call_aget2` の `VALUE l = EVAL_ARG`
+  パターンを sp[] spill に直す
+- `baruby_str_concat` / `_repeat` / `_append`, `baruby_ary_plus` /
+  `_repeat` の helper を VALUE による値引数から `VALUE *ref` に変更
+- 特に `baruby_str_concat` は malloc/memcpy/free で source bytes を
+  バッファリングしていたのを ref pattern に切り替え、 **1.468 s → 1.160 s
+  (-21%)** に短縮
 
 ## 4. 既知の問題
 
-- **`bench/binary_trees` の計算結果が壊れる** (期待 4194303 → 実際 1)。
-  再帰木構造での root 漏れの可能性が高い。 木のノードを return しながら
-  さらに alloc する経路で、 in-flight な subtree pointer が sp[] に
-  spill されていない。 ASTroGen の自動 spill が無い (= 手書きで書き漏れがある)
-  ことの具体例
-- **node.def 内の arithmetic node**: 例えば `node_add` は `VALUE l =
-  EVAL_ARG(c, lv)` を C local に保持するが、 `r` 評価で String concat や
-  Array plus が走ると heap allocate して `l` の指す object が回収される
-  恐れがある。 binary_trees 失敗の有力な原因
 - **toplevel sp が 64 で hardcode** (`main.c::create_context`)。 大きな
   toplevel フレームを持つプログラムでは scratch 領域不足
-- **`heap_bytes` 統計が unsigned underflow**: `baruby_gc_realloc_payload`
-  が old/new size 差分を tracking していないため。 表示だけの問題、 GC
-  動作には影響なし
+- **REGION_BYTES = 512 MiB が固定**。 live set がこれを超えると OOM
+- **AOT mode は moving GC 移行後に未検証** — SD bake された経路で
+  precise rooting が成立しているかは要再 audit (`-c` 動作含む)
 
 ## 5. 次の段階で試したいこと
 
-- `binary_trees` 修正: 木構造 alloc 経路の root を node.def で明示 spill する
+- AOT mode の再検証 (`make CCACHE_DISABLE=1` で `-c` 経路を回す)
 - toplevel locals_cnt を parser から取って main.c で正しい sp を設定
-- arithmetic / comparison node の heap VALUE rooting (`node_add` 等の修正)
 - `astrogen.rb` 拡張で `@locals` を機械化 (手書きの error-prone を減らす)
-- moving GC backend (semi-space) を同じ interface に乗せて perf 比較
-- `string_concat` の +32〜48% overhead を perf record で内訳を確認 (どれが
-  bottle neck か = spill / sp 更新 / sweep のどれが効くか)
+- string_concat の残存 +20% overhead を perf record で内訳分析
+- region size adaptive 化 (live set に応じて grow)
+- 世代別 GC backend (`gc_combined` ベンチで効くはず) を同 interface に乗せる

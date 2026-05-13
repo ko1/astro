@@ -637,122 +637,137 @@ ASTroGen 側は sp を引数で通すだけ。 「裏で何が起きてるか分
 
 ## 3. 試作: `sample/baruby_precise`
 
-§2 の案を `astrogen.rb` 不変・ベタ書きで実装した試作品。
+§2 の案を `astrogen.rb` 不変・ベタ書きで実装した testbed。
 `sample/baruby_precise/` に `sample/baruby/` (conservative libgc) を copy
 してから書き換えてある。 比較用に conservative 版もそのまま残る。
+初期は precise mark&sweep で書いたが、 **moving GC への切替えを試す
+場として現在は semi-space (Cheney) 実装**。
 
 ### 3.1 実装した範囲
 
 - 共通引数: `common_param_count=4` で `(CTX *c, NODE *n, VALUE *fp, VALUE *sp)`
   を全 NODE_DEF に通す
 - `BARUBY_EVAL_ARG(c, n, sp_new)` macro: child eval に新しい sp を渡す
-- NODE_DEF (sed で機械的に sig 拡張、 BODY は必要箇所のみ手書き):
+- NODE_DEF (sed で機械的に sig 拡張、 BODY は手書き):
   - `node_call_<N>` / `node_pg_call_<N>`: C 上の VLA `VALUE F[locals_cnt]` を
     廃止、 callee frame を `sp[0..locals_cnt-1]` (= 共有 VALUE stack 上) に配置
+  - heap-VALUE を持ち越す node (`node_eq` / `_add` / `_ary_push` 等) は
+    `VALUE l = EVAL_ARG(...)` ではなく `sp[0] = BARUBY_EVAL_ARG(..., sp+N)`
+    で root spill する
   - 各 allocator helper (`baruby_ary_new`, `baruby_str_new` 等) に `sp_top`
     引数を追加、 内部の `baruby_gc_alloc` に通す
-  - `WB` macro は当面 no-op (non-moving M&S なので barrier 不要)
-- `gc.c` / `gc.h` に簡素な precise mark&sweep:
-  - 全 heap object を doubly-linked list で track (per-object `BarubyGCNode`
-    header)
-  - mark: `c->env..c->sp` の VALUE 配列を flat scan、 `BaArray.items` を再帰追跡
-  - sweep: unmarked を `free` + リストから外す
-  - `baruby_gc_alloc` 時に `bytes_since_gc > threshold (4MiB)` で起動
-  - `c->sp` は alloc API が内部で update (`c->sp = sp_top; if (pending) handshake()`)
+  - 内部で alloc する helper (`baruby_ary_plus`, `_repeat`, `_push`,
+    `baruby_str_concat`, `_repeat`, `_append`) は VALUE を値で受け取らず
+    **`VALUE *ref`** で受ける。 alloc 後に `*ref` 再 deref で post-GC
+    アドレスに更新
+- `gc.c` / `gc.h` に semi-space (Cheney) copying GC:
+  - `mmap` で 512 MiB region を 2 本確保 (`PROT_READ|PROT_WRITE`、 lazy
+    page allocation で物理メモリは触ったぶんだけ)
+  - `GCHeader { kind, size, fwd }` を payload 直前に置く。 forwarding
+    pointer は `fwd` フィールド
+  - 通常モードは 2 region を交互に swap。
+    **`BARUBY_GC_STRESS=1`** で stress mode: 毎 alloc で GC、 旧 from-space
+    は `mprotect(PROT_NONE)` + `madvise(MADV_DONTNEED)` で恒久 retire
+    (仮想空間は使い捨て)、 新 to-space は毎回 `mmap` 取り直し。 stale ptr
+    deref が即 SIGSEGV になる
 - `astrogen.rb` は **無修正**。 `@locals` / `@scratch` などの sugar は使わない。
   user が手で `sp[0..N-1]` に root を置き、 `BARUBY_EVAL_ARG(c, n, sp+N)` で
   sp を進める
 
-### 3.2 実装上の判明事項
+### 3.2 ASTRO_ASSERT / ASTRO_DEBUG
 
-- **toplevel sp の hardcode**: main.c で `c->sp = c->env + 64` と固定。 本来は
-  parser が toplevel locals_cnt を返してくれば計算できる。 MVP なので妥協
-- **node_call (variadic) の callee sp 計算**: `callee_sp = fp + arg_index +
-  locals_cnt`。 locals_cnt が node operand に無いので `code_repo_find_locals_cnt_by_body`
-  で動的取得。 本来 parser が node_call に焼くべき (現在 node_call_<N> には
-  焼かれている)
-- **node_scope の sp 設定**: `EVAL(c, body, fp + envsize, fp + envsize + 64)`。
-  scope の body の locals_cnt が分からないので保守的に 64 で進めている
-- **heap_bytes 統計の underflow**: `baruby_gc_realloc_payload` が old/new
-  size 差分を tracking していないので、 cumulative の `total_bytes` は正しいが
-  `heap_bytes` は unsigned underflow して桁外れの値が出る。 GC 動作自体は無関係
+framework 共通の compile-time gated assertion macro を `runtime/astro_debug.h`
+に新設:
 
-### 3.3 動作確認
+```c
+#if ASTRO_DEBUG
+#  include <assert.h>
+#  define ASTRO_ASSERT(expr) assert(expr)
+#else
+#  define ASTRO_ASSERT(expr) ((void)0)
+#endif
+```
+
+baruby_precise では `ASTRO_DEBUG=1` がデフォルト (`context.h`)。
+`make ASTRO_DEBUG=0` で release-shape build に切替え可能。 gc.c の
+内部不変条件 (alloc 時 kind validity、 stress mode の PRE-MARK 範囲
+check、 forward 時の from/to space 範囲 check) は全て `ASTRO_ASSERT`
+経由で書かれている。
+
+### 3.3 Moving GC で必須の二大パターン
+
+mark&sweep 時代には潜伏していたバグが semi-space 化で一斉に表面化。
+NODE_DEF / C helper を書くときの **絶対ルール** が二つ確立した:
+
+**(A) sp[] spill** — heap VALUE を子ノード eval を跨いで保持する場合、
+C local ではなく sp[] slot に置く (子の eval で GC が走ると sp[] は
+in-place forward されるが、 C local は更新されない)
+
+**(B) helper は VALUE* で受ける** — 内部で alloc する helper は VALUE を
+値で受け取らず caller の sp[] slot への pointer で受ける (alloc 後に
+`*ref` を再 deref して post-GC アドレスを取り直す)
+
+詳細とコード例は [sample/baruby_precise/docs/runtime.md §5.7](../sample/baruby_precise/docs/runtime.md)。
+
+### 3.4 動作確認
 
 ```sh
 $ make
 $ ./baruby_precise --plain test.ba.rb           # fib(20) — fixnum only
 10946
 Result: 10946, node_cnt:22
-__ELAPSED__ 0.000408
 
-$ ./baruby_precise --plain test_ary.ba.rb       # Array / String 操作 (28 行)
-[1, 2, 3]    # ← p a
-3            # ← p a.size
-1            # ← p a[0]
-...
-4            # ← p [10, 20, 30, 40].size
-Result: 4, node_cnt:105
+$ BARUBY_GC_STRESS=1 ./baruby_precise --plain test_eq.ba.rb   # 毎 alloc で GC
+true
+false
+... (Array/String の `==`, `!=`, concat 等を網羅)
+Result: true, node_cnt:213
 ```
 
-precise GC が **live な Array / String を正しく保持** することを確認 (sp[] に
-spill された root が GC scan で生きる)。
+stress mode を通したことが moving GC 正しさの強い証拠になっている
+(rooting 漏れ・ helper 内 stale C local が即 SEGV するモードを通せた)。
 
-### 3.4 ベンチ結果 (実測)
+### 3.5 ベンチ結果 (実測、 plain mode、 3 run 中央値)
 
-`sample/baruby/bench/` の各ベンチを **conservative (libgc) と precise (本案)** で
-比較。 計測は 1 run, plain mode と AOT mode (`-c` で SD bake 後の再実行):
-
-| Bench | conservative plain | conservative AOT | precise plain | precise AOT | precise vs conservative |
-|---|---|---|---|---|---|
-| `list_alloc` (560 MB alloc, list 構築) | 0.90 s | 0.38 s | 1.01 s | 0.43 s | plain **+12%**, AOT **+13%** |
-| `string_concat` (1.2 GB alloc, 短命 String) | 0.86 s | 0.66 s | 1.14 s | 0.98 s | plain **+32%**, AOT **+48%** |
-| `binary_trees` | 0.78 s | 0.52 s | (壊) 0.31 s | (壊) 0.20 s | **計算結果が壊れる** ← 要 debug |
-| `test.ba.rb` (fib(20), 純 fixnum) | — | — | 0.000408 s | — | GC 不発火、 影響なし |
-
-| Bench | conservative GC count | precise GC count | precise alloc 総量 |
-|---|---|---|---|
-| `list_alloc` | 1134 | 133 (1/8.5) | 560 MB |
-| `string_concat` | 1691 | 177 (1/9.5) | 745 MB |
-| `binary_trees` | 12 | 55 | 235 MB |
+| Bench | conservative (libgc) | precise (semi-space) | precise vs cons. |
+|---|---:|---:|---|
+| `binary_trees` | 0.907 s | **0.544 s** | **0.60×** ⬇40% (precise が速い) |
+| `list_alloc` | 1.085 s | 1.152 s | 1.06× ⬆6% |
+| `string_concat` | 0.968 s | 1.160 s | 1.20× ⬆20% |
+| `fib_pair` | 1.127 s | 1.271 s | 1.13× ⬆13% |
+| `substr_churn` | 1.361 s | 1.594 s | 1.17× ⬆17% |
+| `gc_combined` | 1.079 s | 1.231 s | 1.14× ⬆14% |
 
 **観察**:
 
-- **AOT も動く** — SD specialize が precise 経路でも正しく生成・dlopen される。
-  `c, n, fp, sp` の 4 引数 dispatcher が SD レベルで通っている
-- precise の GC 回数が conservative の 1/9 程度。 alloc threshold (4 MiB) が
-  比較的大きいことと、 sweep が cheap (linked list 走査のみ) なので少回数で
-  大量回収できる
-- **plain mode で +12〜32% の overhead**: sp[] spill の memory write、
-  callee frame の zero-init、 `astro_gc_realloc_payload` 経由による間接化の合計
-- **AOT mode で +13〜48% の overhead**: SD specialize で BODY は inlined だが、
-  sp threading の register pressure と spill の数は同じ
-- string_concat の overhead が大きいのは alloc 密度が高い (1.2 GB) + 短命
-  String が多いため。 list_alloc は alloc 後に長生きする object が多く、
-  比較的差が小さい
+- **binary_trees は precise の方が 40% 速い** — libgc の conservative scan
+  (stack + data segment 全走査) が小オブジェクト大量生成シナリオで効く
+- 他は +6〜20% で precise が遅い (sp[] spill / zero-init / sp register
+  pressure / copy collector の copy コスト の合計)
+- 全体 geomean ~ +7%。 §1.3.6 のコストモデル「spill 1 store/root + alloc 時に
+  c->sp 更新 1 store」 がほぼ実測で観察された
 
-### 3.5 既知の問題
+`baruby_str_concat` を ref pattern に書き直したことで string_concat は
+1.468 s → 1.160 s (-21%) と短縮。 旧版は malloc/memcpy/free で source bytes
+をバッファコピーしていた回避コードが入っていた (helper が VALUE を値で
+受けていたため)。
 
-- **`bench/binary_trees` の計算結果が壊れる** (期待 4194303 → 実際 1)。
-  再帰木構造での root 漏れの可能性が高い。 木のノードを return しながら
-  さらに alloc する経路で、 in-flight な subtree pointer が sp[] に
-  spill されていない箇所がある。 ASTroGen の自動 spill が無いことの
-  ツケが具体的に出た形。 要 debug
-- **node.def 内の arithmetic node (`node_add` 等)**: heap-VALUE
-  operands に対する root spill を書いていない。 fixnum-only の場合は
-  問題ないが、 String concat / Array plus を arithmetic 経由でやる場合
-  rooting が必要。 binary_trees 失敗の原因の有力候補
-- **toplevel sp の hardcode 64**: 大きい toplevel フレームを持つ
-  プログラムでは scratch 領域が不足する
-- **heap_bytes stats が underflow**: 表示だけの問題、 GC 動作には影響なし
+### 3.6 既知の問題
 
-### 3.6 次の段階で試したいこと
+- **AOT mode は moving GC 移行後に未検証** — SD bake 経路で precise rooting
+  が成立するかを再 audit する必要あり
+- **toplevel sp の hardcode 64** (`main.c::create_context`)。 大きい
+  toplevel フレームを持つプログラムでは scratch 領域が不足する
+- **REGION_BYTES = 512 MiB が固定** — live set がこれを超えると OOM
 
-- binary_trees 修正: 木構造 alloc 経路の root spill を node.def で個別に書く
+### 3.7 次の段階で試したいこと
+
+- AOT mode の再検証
 - toplevel locals_cnt を parser から取って main.c で正しい sp を設定
-- arithmetic / comparison node の heap VALUE rooting
-- `astrogen.rb` 拡張で `@locals` を機械化 (手書きの error-prone を減らす)
-- moving GC backend (semi-space) を同じ interface に乗せて perf 比較
+- `astrogen.rb` 拡張で `@locals` を機械化 (手書きの sp[] spill 漏れを
+  根本的に防ぐ — 過去の rooting バグ群は全部これで消えた)
+- 世代別 GC backend を同じ interface に乗せる (`gc_combined` ベンチで
+  効くはず)
 
 ---
 

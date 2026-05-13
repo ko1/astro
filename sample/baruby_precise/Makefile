@@ -38,9 +38,15 @@ gdb: baruby_precise
 bench: baruby_precise
 	BARUBY_BIN=./baruby_precise ruby bench/run.rb
 
-baruby_precise: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c gc.c $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h
+# ASTRO_DEBUG=1 (default in context.h) enables ASTRO_ASSERT and the
+# stress-mode GC invariant checks.  Override on the command line with
+# `make ASTRO_DEBUG=0` for a release-shape build.
+ASTRO_DEBUG ?=
+
+baruby_precise: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c gc.c $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
 	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
+            $(if $(ASTRO_DEBUG),-DASTRO_DEBUG=$(ASTRO_DEBUG)) \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
             -o baruby_precise main.c node.c node_slowpath.c baruby_parse.c astro_jit.c gc.c -lprism -ldl
 

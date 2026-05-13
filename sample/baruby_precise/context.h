@@ -7,19 +7,13 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
-#include <assert.h>
 
-// baruby_precise: precise mark&sweep instead of libgc.  Heap objects
-// (BaArray/BaString) go through baruby_gc_alloc (gc.c).  Internal data
-// structures (parser arenas, AST nodes, function tables) keep plain
-// libc malloc.
-
-#define BARUBY_DEBUG 1
-#if BARUBY_DEBUG
-#define BARUBY_ASSERT(expr) assert(expr)
-#else
-#define BARUBY_ASSERT(expr) 0
+// baruby_precise is a testbed for the precise GC framework, so ASTRO_DEBUG
+// defaults on.  Override with -DASTRO_DEBUG=0 for a release-shape build.
+#ifndef ASTRO_DEBUG
+#  define ASTRO_DEBUG 1
 #endif
+#include "astro_debug.h"
 
 // Option model — see naruby parent for the rationale.  baruby keeps the
 // orthogonal AOT / PG flags.  JIT (-j) is currently unwired post-fork.
@@ -197,14 +191,15 @@ typedef struct CTX_struct {
 // any potential GC poll.  Helpers that don't allocate (compare, etc.) omit it.
 VALUE baruby_ary_new(uint32_t capa, VALUE *sp_top);
 VALUE baruby_ary_new_from(const VALUE *items, uint32_t n, VALUE *sp_top);
-// av_ref points to the caller's sp slot holding the array VALUE; we
-// re-read through *av_ref after any internal alloc so post-move addresses
-// are picked up.
-void  baruby_ary_push(VALUE *av_ref, VALUE v, VALUE *sp_top);
-VALUE baruby_ary_plus(VALUE a, VALUE b, VALUE *sp_top);
+// Both av_ref and x_ref are pointers to caller's sp slots; we re-read
+// through them after any internal alloc so post-move addresses are
+// picked up.
+void  baruby_ary_push(VALUE *av_ref, VALUE *x_ref, VALUE *sp_top);
+// av/bv are pointers to caller sp slots; reloaded after alloc.
+VALUE baruby_ary_plus(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
 VALUE baruby_str_new(const char *bytes, uint32_t len, VALUE *sp_top);
 VALUE baruby_str_new_cstr(const char *cstr, VALUE *sp_top);
-VALUE baruby_str_concat(VALUE a, VALUE b, VALUE *sp_top);
+VALUE baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
 
 // Value equality (Ruby `==`).  Same bits → true (catches int / nil / ptr
 // identity).  Otherwise: same type → recursive byte / element compare;
@@ -216,11 +211,12 @@ int   baruby_str_cmp(VALUE a, VALUE b);
 
 // `s * n` / `a * n` — Ruby-style repeat into a fresh object.  Negative
 // `n` returns an empty result (Ruby raises but we just clamp).
-VALUE baruby_str_repeat(VALUE s, intptr_t n, VALUE *sp_top);
-VALUE baruby_ary_repeat(VALUE a, intptr_t n, VALUE *sp_top);
+VALUE baruby_str_repeat(VALUE *sv_ref, intptr_t n, VALUE *sp_top);
+VALUE baruby_ary_repeat(VALUE *av_ref, intptr_t n, VALUE *sp_top);
 
 // In-place append (`s << t`) — grows `dst`'s buffer and returns `dst`.
-void  baruby_str_append(VALUE dst, VALUE src, VALUE *sp_top);
+// dst_ref / src_ref are caller sp slots reloaded after realloc.
+void  baruby_str_append(VALUE *dst_ref, VALUE *src_ref, VALUE *sp_top);
 
 // Stringification (Ruby `to_s`).  Heap-alloc'd in all cases except when
 // `v` is already a String (returns self).
