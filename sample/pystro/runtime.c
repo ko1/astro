@@ -16217,6 +16217,14 @@ bi_import(CTX *c, int argc, VALUE *argv)
     VALUE saved_TYPE_traceback = c->TYPE_traceback;
     VALUE saved_TYPE_frame     = c->TYPE_frame;
     VALUE saved_TYPE_super     = c->TYPE_super;
+    VALUE saved_TYPE_builtin_function_or_method = c->TYPE_builtin_function_or_method;
+    VALUE saved_TYPE_ellipsis             = c->TYPE_ellipsis;
+    VALUE saved_TYPE_NotImplementedType    = c->TYPE_NotImplementedType;
+    VALUE saved_TYPE_memoryview            = c->TYPE_memoryview;
+    VALUE saved_TYPE_property              = c->TYPE_property;
+    VALUE saved_TYPE_staticmethod          = c->TYPE_staticmethod;
+    VALUE saved_TYPE_classmethod           = c->TYPE_classmethod;
+    VALUE saved_TYPE_cell                  = c->TYPE_cell;
     c->globals = new_g;
     install_builtins(c);
     // Re-bind the imported module's globals to the caller's exception
@@ -16249,6 +16257,14 @@ bi_import(CTX *c, int argc, VALUE *argv)
     c->TYPE_traceback = saved_TYPE_traceback;
     c->TYPE_frame     = saved_TYPE_frame;
     c->TYPE_super     = saved_TYPE_super;
+    c->TYPE_builtin_function_or_method = saved_TYPE_builtin_function_or_method;
+    c->TYPE_ellipsis             = saved_TYPE_ellipsis;
+    c->TYPE_NotImplementedType   = saved_TYPE_NotImplementedType;
+    c->TYPE_memoryview           = saved_TYPE_memoryview;
+    c->TYPE_property             = saved_TYPE_property;
+    c->TYPE_staticmethod         = saved_TYPE_staticmethod;
+    c->TYPE_classmethod          = saved_TYPE_classmethod;
+    c->TYPE_cell                 = saved_TYPE_cell;
     pys_global_set(c, "int",        c->TYPE_int);
     pys_global_set(c, "float",      c->TYPE_float);
     pys_global_set(c, "complex",    c->TYPE_complex);
