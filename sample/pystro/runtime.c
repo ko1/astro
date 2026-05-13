@@ -2074,6 +2074,22 @@ pys_mod(CTX *c, VALUE a, VALUE b)
 {
     // String % formatting: `"fmt" % args`.
     if (pys_is_str(a)) return pys_str_pct_format(c, a, b);
+    // bytes % formatting (PEP 461): `b"%s %d" % (b"x", 42)`.  Pystro's
+    // str pct formatter operates on chars; reuse it by passing through
+    // the underlying byte buffer and converting the result back to
+    // bytes.  Strict %-conversion checks (no Unicode %s, etc.) skipped
+    // for now — the simple cases work.
+    if (pys_is_byteseq(a)) {
+        VALUE fmt_as_str = pys_make_str(PYS_PTR(a)->str.chars, PYS_PTR(a)->str.len);
+        VALUE r = pys_str_pct_format(c, fmt_as_str, b);
+        if (c->state == PYS_STATE_RAISE) return 0;
+        if (pys_is_str(r)) {
+            VALUE rb = pys_make_bytes(PYS_PTR(r)->str.chars, PYS_PTR(r)->str.len);
+            if (PYS_PTR(a)->type == PYS_T_BYTEARRAY) PYS_PTR(rb)->type = PYS_T_BYTEARRAY;
+            return rb;
+        }
+        return r;
+    }
     {
         VALUE rd = pys_try_binop_dunder(c, PYS_INTERN_mod, a, b);
         if (rd) return rd;
