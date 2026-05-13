@@ -3788,6 +3788,28 @@ parse_class(void)
     in_class_body = saved_icb;
     cur_class_base = saved_base;
     cur_class_name = saved_class_name;
+    // Class-body docstring detection MUST run before we prepend the
+    // synthetic `__annotations__ = {}` (or class kwargs) front matter,
+    // since those would shadow the const_str leaf at the head of the
+    // seq spine.  We walk to the leftmost leaf as before.
+    {
+        extern const struct NodeKind kind_node_seq;
+        extern const struct NodeKind kind_node_const_str;
+        extern const struct NodeKind kind_node_const_str_n;
+        NODE *first = body;
+        NODE *parent = NULL;
+        while (first && first->head.kind == &kind_node_seq) {
+            parent = first;
+            first = first->u.node_seq.first;
+        }
+        if (first && (first->head.kind == &kind_node_const_str
+                      || first->head.kind == &kind_node_const_str_n)) {
+            NODE *doc_set = ALLOC_node_class_method_set(
+                intern_name("__doc__", 7), first);
+            if (parent) parent->u.node_seq.first = doc_set;
+            else        body = doc_set;
+        }
+    }
     // Prepend `__annotations__ = {}` to the body so each class gets its
     // own dict — without this, class-body annotations walked the MRO and
     // mutated a base class's __annotations__ (test_grammar
@@ -3812,25 +3834,8 @@ parse_class(void)
             intern_name("__class_kwargs__", 16), kwd);
         body = ALLOC_node_seq(set_kw, body);
     }
-    // Class-body docstring: if the first statement is a bare string
-    // literal, route it to `__doc__`.  parse_stmt already consumed it
-    // as an expr stmt; we walk the seq's leftmost spine to its leaf.
-    {
-        extern const struct NodeKind kind_node_seq;
-        extern const struct NodeKind kind_node_const_str;
-        NODE *first = body;
-        NODE *parent = NULL;
-        while (first && first->head.kind == &kind_node_seq) {
-            parent = first;
-            first = first->u.node_seq.first;
-        }
-        if (first && first->head.kind == &kind_node_const_str) {
-            NODE *doc_set = ALLOC_node_class_method_set(
-                intern_name("__doc__", 7), first);
-            if (parent) parent->u.node_seq.first = doc_set;
-            else        body = doc_set;
-        }
-    }
+    // (Class-body docstring detection moved earlier — before the
+    // __annotations__ prepend that would shadow the leaf string.)
     NODE *cls;
     if (nextra == 0) {
         cls = ALLOC_node_class(cname, base, body);

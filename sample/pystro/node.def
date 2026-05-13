@@ -1772,12 +1772,15 @@ node_def(CTX * restrict c, NODE * restrict n, const char *name, uint32_t nparams
     {
         extern const struct NodeKind kind_node_seq;
         extern const struct NodeKind kind_node_const_str;
+        extern const struct NodeKind kind_node_const_str_n;
         extern void pys_func_set_doc(CTX *c, VALUE fn, const char *s);
         NODE *first = body;
         while (first && first->head.kind == &kind_node_seq)
             first = first->u.node_seq.first;
         if (first && first->head.kind == &kind_node_const_str)
             pys_func_set_doc(c, fn, first->u.node_const_str.s);
+        else if (first && first->head.kind == &kind_node_const_str_n)
+            pys_func_set_doc(c, fn, first->u.node_const_str_n.s);
     }
     if (c->current_class != PYS_NONE)
         pys_class_add_method(c, c->current_class, name, fn);
