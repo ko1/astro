@@ -14483,6 +14483,23 @@ bi_format(CTX *c, int argc, VALUE *argv)
             for (size_t j = 0; j < left; j++) out[j] = eff_fill;
             memcpy(out + left, body, bl);
             for (size_t j = 0; j < right; j++) out[left + bl + j] = eff_fill;
+        } else if (align == '=') {
+            // PEP 3101 '=' alignment: fill goes BETWEEN sign / prefix
+            // and digits.  Regardless of zero_pad flag (this form is
+            // selected by the user's `=` choice itself).
+            int sign_skip = 0;
+            if (bl > 0 && (body[0] == '-' || body[0] == '+' || body[0] == ' '))
+                sign_skip = 1;
+            int prefix_len = 0;
+            if ((size_t)(sign_skip + 1) < bl && body[sign_skip] == '0'
+                && (body[sign_skip + 1] == 'x' || body[sign_skip + 1] == 'X'
+                    || body[sign_skip + 1] == 'o' || body[sign_skip + 1] == 'b')) {
+                prefix_len = 2;
+            }
+            int head = sign_skip + prefix_len;
+            for (int i = 0; i < head; i++) out[i] = body[i];
+            for (size_t j = 0; j < pad; j++) out[head + j] = fill;
+            memcpy(out + head + pad, body + head, bl - head);
         } else { // '>'
             // For zero-pad: keep sign and any 0x/0o/0b prefix at the start,
             // pad zeros between them and the digits.
