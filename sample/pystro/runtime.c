@@ -2221,7 +2221,18 @@ pys_pow(CTX *c, VALUE a, VALUE b)
         if (pys_to_cpx(c, a, &ra, &ia) && pys_to_cpx(c, b, &rb, &ib)) {
             // (ra+ia*i)^(rb+ib*i) via exp(b * log(a))
             double mod = sqrt(ra * ra + ia * ia);
-            if (mod == 0.0) return pys_make_complex(0, 0);
+            if (mod == 0.0) {
+                // 0**0 → 1.  0**(non-zero) → 0 if exponent is purely
+                // positive-real; CPython raises ZeroDivisionError when
+                // exponent has any imag part or negative real part
+                // (log(0) is undefined).
+                if (rb == 0.0 && ib == 0.0)
+                    return pys_make_complex(1.0, 0.0);
+                if (rb < 0.0 || ib != 0.0)
+                    PYS_RAISE_EXC(c, c->EXC_ZeroDivisionError,
+                                 "0.0 to a negative or complex power");
+                return pys_make_complex(0, 0);
+            }
             double th = atan2(ia, ra);
             double lr = log(mod);
             // b*log(a) = (rb*lr - ib*th) + i*(rb*th + ib*lr)
