@@ -642,15 +642,37 @@ read_number(void)
     size_t start = src_pos;
     bool is_float = false;
     int  base = 10;
+    // PEP 515: underscores are allowed between digits and right after a
+    // base-prefix, but the resulting digit run must contain at least one
+    // actual digit, must not END with `_`, and must not contain `__`.
+#define PYS_VALIDATE_RUN(start, kind) do {                              \
+    size_t _s = (start);                                                \
+    size_t _e = src_pos;                                                \
+    bool   _has_digit = false;                                          \
+    if (_s == _e) lex_error("invalid %s literal", kind);                \
+    if (src_buf[_e - 1] == '_') lex_error("invalid %s literal", kind);  \
+    for (size_t _i = _s; _i < _e; _i++) {                               \
+        if (src_buf[_i] != '_') _has_digit = true;                      \
+        if (src_buf[_i] == '_' && _i + 1 < _e && src_buf[_i + 1] == '_')\
+            lex_error("invalid %s literal", kind);                      \
+    }                                                                   \
+    if (!_has_digit) lex_error("invalid %s literal", kind);             \
+} while (0)
     if (peek(0) == '0' && (peek(1) == 'x' || peek(1) == 'X')) {
         base = 16; src_pos += 2;
+        size_t digits_start = src_pos;
         while (isxdigit((unsigned char)peek(0)) || peek(0) == '_') src_pos++;
+        PYS_VALIDATE_RUN(digits_start, "hexadecimal");
     } else if (peek(0) == '0' && (peek(1) == 'b' || peek(1) == 'B')) {
         base = 2; src_pos += 2;
+        size_t digits_start = src_pos;
         while (peek(0) == '0' || peek(0) == '1' || peek(0) == '_') src_pos++;
+        PYS_VALIDATE_RUN(digits_start, "binary");
     } else if (peek(0) == '0' && (peek(1) == 'o' || peek(1) == 'O')) {
         base = 8; src_pos += 2;
+        size_t digits_start = src_pos;
         while ((peek(0) >= '0' && peek(0) <= '7') || peek(0) == '_') src_pos++;
+        PYS_VALIDATE_RUN(digits_start, "octal");
     } else if (peek(0) == '.') {
         // Leading-dot float: '.5'.
         is_float = true;
@@ -689,6 +711,22 @@ read_number(void)
         }
     }
     size_t len = src_pos - start;
+    // PEP 515 validation for the whole literal: no consecutive `__`,
+    // no `_` adjacent to `.` / `e` / `E` / `j` / `J`, no trailing `_`.
+    // Hex/bin/oct already validated their digit run above; this catches
+    // decimal/float forms like `4_______2`, `1_.5`, `1.5_`, `1_e5`.
+    for (size_t i = 0; i < len; i++) {
+        if (src_buf[start + i] != '_') continue;
+        size_t pos = start + i;
+        if (pos + 1 >= start + len) lex_error("invalid decimal literal");
+        char prev = (pos > start) ? src_buf[pos - 1] : '\0';
+        char next = src_buf[pos + 1];
+        if (next == '_' || next == '.' || next == 'e' || next == 'E' ||
+            next == 'j' || next == 'J')
+            lex_error("invalid decimal literal");
+        if (prev == '.' || prev == 'e' || prev == 'E' || prev == '+' || prev == '-')
+            lex_error("invalid decimal literal");
+    }
     // Strip underscores into a fresh buf.
     char *clean = (char *)GC_malloc_atomic(len + 1);
     size_t cl = 0;
