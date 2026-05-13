@@ -4655,7 +4655,9 @@ static VALUE
 bi_dunder_hash(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    return PYS_FIX((int64_t)pys_hash(c, argv[0]));
+    int64_t h = (int64_t)pys_hash(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    return PYS_FIX(h);
 }
 static VALUE
 bi_dunder_repr(CTX *c, int argc, VALUE *argv)
@@ -14720,7 +14722,9 @@ bi_hash(CTX *c, int argc, VALUE *argv) {
     // __hash__, the dict lookup hashes must compare equal (otherwise a
     // sign-bit-set value computed at storage time wouldn't match the
     // unmasked computation at lookup time).
-    return PYS_FIX((int64_t)pys_hash(c, argv[0]));
+    int64_t h = (int64_t)pys_hash(c, argv[0]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    return PYS_FIX(h);
 }
 
 static __thread int pys_skip_delattr_hook = 0;
