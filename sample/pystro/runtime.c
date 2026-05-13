@@ -876,6 +876,14 @@ pys_make_class(const char *name, VALUE base, bool is_exception)
         o->cls.bases = (VALUE *)GC_malloc(sizeof(VALUE));
         o->cls.bases[0] = base;
         o->cls.nbases = 1;
+        // Register this new class as a direct subclass of `base`.
+        struct pysclass *bd = &PYS_PTR(base)->cls;
+        if (bd->nsubclasses == bd->subclasses_capa) {
+            int cap = bd->subclasses_capa ? bd->subclasses_capa * 2 : 4;
+            bd->subclasses = (VALUE *)GC_realloc(bd->subclasses, sizeof(VALUE) * cap);
+            bd->subclasses_capa = cap;
+        }
+        bd->subclasses[bd->nsubclasses++] = PYS_OBJ_VAL(o);
     }
     pys_compute_mro(PYS_OBJ_VAL(o));
     return PYS_OBJ_VAL(o);
@@ -893,9 +901,23 @@ pys_class_set_bases(VALUE cls, VALUE *bases, int n)
     for (int i = 0; i < n; i++) cd->bases[i] = bases[i];
     cd->nbases = n;
     cd->base = n > 0 ? bases[0] : PYS_NONE;
-    for (int i = 0; i < n; i++)
-        if (pys_is_class(bases[i]) && PYS_PTR(bases[i])->cls.is_exception)
-            cd->is_exception = true;
+    for (int i = 0; i < n; i++) {
+        if (!pys_is_class(bases[i])) continue;
+        if (PYS_PTR(bases[i])->cls.is_exception) cd->is_exception = true;
+        // Register `cls` as a direct subclass of `bases[i]` — backs
+        // `cls.__subclasses__()`.  Skip duplicates (multiple bases path).
+        struct pysclass *bd = &PYS_PTR(bases[i])->cls;
+        bool already = false;
+        for (int k = 0; k < bd->nsubclasses; k++)
+            if (bd->subclasses[k] == cls) { already = true; break; }
+        if (already) continue;
+        if (bd->nsubclasses == bd->subclasses_capa) {
+            int cap = bd->subclasses_capa ? bd->subclasses_capa * 2 : 4;
+            bd->subclasses = (VALUE *)GC_realloc(bd->subclasses, sizeof(VALUE) * cap);
+            bd->subclasses_capa = cap;
+        }
+        bd->subclasses[bd->nsubclasses++] = cls;
+    }
     pys_compute_mro(cls);
 }
 
@@ -1300,6 +1322,17 @@ bi_class_mro(CTX *c, int argc, VALUE *argv)
     if (!pys_is_class(cls)) return pys_make_list(NULL, 0);
     struct pysclass *cd = &PYS_PTR(cls)->cls;
     return pys_make_list(cd->mro, cd->nmro);
+}
+
+// `cls.__subclasses__()` — direct subclasses as a list (fresh each call).
+VALUE
+bi_class_subclasses(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE cls = argv[0];
+    if (!pys_is_class(cls)) return pys_make_list(NULL, 0);
+    struct pysclass *cd = &PYS_PTR(cls)->cls;
+    return pys_make_list(cd->subclasses, cd->nsubclasses);
 }
 
 VALUE
@@ -5706,6 +5739,12 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "mro") == 0) {
             extern VALUE bi_class_mro(CTX *c, int argc, VALUE *argv);
             return pys_make_bound(v, pys_make_builtin("mro", bi_class_mro, 1, 1));
+        }
+        // `cls.__subclasses__()` — direct subclass list.
+        if (strcmp(name, "__subclasses__") == 0) {
+            extern VALUE bi_class_subclasses(CTX *c, int argc, VALUE *argv);
+            return pys_make_bound(v, pys_make_builtin("__subclasses__",
+                                                      bi_class_subclasses, 1, 1));
         }
         if (strcmp(name, "__dict__") == 0) {
             VALUE d = pys_make_dict();
