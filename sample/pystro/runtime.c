@@ -6572,8 +6572,14 @@ pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = inst;
             for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
-            pys_apply_kw(c, init, argc + 1, av, kwc, kwnames, kwvalues);
+            VALUE init_ret = pys_apply_kw(c, init, argc + 1, av, kwc, kwnames, kwvalues);
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            // CPython: __init__ must return None.  Anything else raises TypeError.
+            if (init_ret != PYS_NONE && init_ret != (VALUE)0) {
+                PYS_RAISE_EXC(c, c->EXC_TypeError,
+                             "__init__() should return None, not '%s'",
+                             pys_is_class(fn) ? PYS_PTR(fn)->cls.name : "?");
+            }
         }
         return inst;
     }
@@ -6759,8 +6765,13 @@ pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = inst;
             for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
-            pys_apply(c, init, argc + 1, av);
+            VALUE init_ret = pys_apply(c, init, argc + 1, av);
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            if (init_ret != PYS_NONE && init_ret != (VALUE)0) {
+                PYS_RAISE_EXC(c, c->EXC_TypeError,
+                             "__init__() should return None, not '%s'",
+                             pys_is_class(fn) ? PYS_PTR(fn)->cls.name : "?");
+            }
         }
         return inst;
     }
