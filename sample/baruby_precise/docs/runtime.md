@@ -1,14 +1,22 @@
-# baruby ランタイム構造
+# baruby_precise ランタイム構造
 
 言語仕様は [spec.md](spec.md)、未対応項目は [todo.md](todo.md)、
 ベンチは [perf.md](perf.md) を参照。
 
-baruby は naruby (`sample/naruby`) のフォークで、ASTro フレームワーク
-(`../../lib/astrogen.rb` + `../../runtime/`) の上に乗っている。
-**主な追加点は (1) LSB-tagged VALUE / (2) libgc / (3) ヒープ型 (Array,
-String) / (4) parse-time のメソッド desugar の 4 つ**。Plain / AOT /
-PG の 3 モードは構造的には naruby から継承しているが、新ノードでの
-AOT/PG 動作は未検証 (`--plain` のみ確認済)。
+baruby_precise は **`sample/baruby` (libgc conservative) を copy して
+precise mark&sweep GC に置き換えた MVP 試作品**。 設計の背景は
+[`docs/gc_design.md`](../../../docs/gc_design.md) を参照。 ASTroGen
+自体には手を入れず、 BODY をベタ書きで sp[] spill するスタイル。
+
+主な追加・変更点 (vs baruby):
+
+1. **共通引数を 4 つに拡張**: `(CTX *c, NODE *n, VALUE *fp, VALUE *sp)`
+   — fp は function frame base (既存)、 sp は scratch top (新)
+2. **precise mark&sweep GC** (`gc.c` / `gc.h`) — libgc の代わり
+3. **sp[] root spill** — NODE_DEF body が VALUE root を `sp[i]` に書き、
+   `BARUBY_EVAL_ARG(c, n, sp + N)` で child に sp を進めて渡す
+4. **callee frame を共有 stack 上に** — 旧 `VALUE F[locals_cnt]` の
+   C-stack VLA を廃止、 `sp[0..locals_cnt-1]` に配置 (GC が flat scan)
 
 ## 1. パイプライン
 
@@ -20,21 +28,19 @@ AOT/PG 動作は未検証 (`--plain` のみ確認済)。
        │   pm_node_t* (CRuby と同じ Ruby AST)
        ▼
    transduce  (baruby_parse.c)
-       │   PM_* → ALLOC_node_*  (未対応 PM_* は "unsupported" で exit)
-       │   メソッド呼び出しは parse-time に desugar (§4)
+       │   PM_* → ALLOC_node_*
        ▼
-   NODE 木  (head + 各種 operand 構造体)
+   NODE 木  (head + operand 構造体)
        │
        ▼
    OPTIMIZE() — code_store/all.so から SD/PGSD があれば bind
        │
        ▼
-   EVAL(c, ast, fp)  →  RESULT (= VALUE + state bit)
+   EVAL(c, ast, fp, sp)  →  RESULT (= VALUE + state bit)
 ```
 
-`naruby_gen.rb` 相当の `baruby_gen.rb` が `node.def` から `node_eval.c`
-等を生成する仕組みは naruby と同じ。コードジェネレータには手を入れて
-いない。
+`baruby_gen.rb` は astrogen を継承して `common_param_count=4` だけ
+override。 ASTroGen 自体は無修正。
 
 ## 2. 値表現 (LSB tag)
 
@@ -154,29 +160,113 @@ branch する (LIKELY で int+int のホットパスを優先)。`node_eq` /
 `node_neq` も同型で、raw 等価チェックの後に `baruby_value_eq`
 (`node.c`) で再帰的な値比較に降りる。
 
-## 5. libgc 統合
+## 5. Precise mark&sweep GC
 
-asom と同じ「macro wrap で libc shape を維持」パターン。`context.h`
-で全 system header の **後ろ** に macro を仕込むことで、libc/libgc
-内部実装は plain symbol を保ち、baruby 側のソースだけが GC alloc に
-リダイレクトされる:
+libgc を捨て、 `gc.c` / `gc.h` に自前の precise mark&sweep を実装した
+(~210 行)。
+
+### 5.1 共有 VALUE stack
+
+`main.c::create_context` で `c->env` に 100,000 slot 分の VALUE 配列を
+`calloc` で確保 (zero-init)。 全 live root はこの上に居る:
+
+- `c->env` = stack 最下端 (mark phase の起点)
+- `c->fp`  = 現在の function frame base
+- `c->sp`  = 現在の scratch top (= mark phase の上端)
+
+各 NODE_DEF 共通引数の `fp` / `sp` は `c->fp` / `c->sp` の register
+コピー (毎 dispatch で渡される)。 `c->sp` は alloc API が内部で
+update する (§5.3)。
+
+### 5.2 オブジェクトレイアウト
 
 ```c
-#include <gc.h>
-// ... (system headers above)
-#define malloc(n)      GC_MALLOC(n)
-#define calloc(n, s)   GC_MALLOC((size_t)(n) * (size_t)(s))
-#define realloc(p, n)  GC_REALLOC((p), (n))
-#define strdup(s)      GC_STRDUP(s)
-#define free(p)        ((void)(p))
+typedef struct BarubyGCNode {
+    struct BarubyGCNode *prev, *next;   // 全 object の linked list
+    uint32_t marked;
+    uint32_t payload_kind;              // OBJ_ARRAY / OBJ_STRING
+    // ... BaArray or BaString が payload として続く
+} BarubyGCNode;
 ```
 
-`main.c` 冒頭で `GC_INIT()`、Makefile に `-lgc` を追加 (それだけ)。
+各 heap object は `BarubyGCNode` + payload を 1 つの `malloc` で確保し、
+全 object の doubly-linked list に link する。 sweep 時は list 走査で
+unmarked を free する。
 
-`BARUBY_GC_STATS=1` を環境変数で渡すと、終了時に
-`__GC_STATS__ alloc_bytes=... heap_bytes=... gc_count=...` を出力する
-(`GC_get_total_bytes` / `GC_get_heap_size` / `GC_get_gc_no`)。bench
-ランナー (`bench/run.rb`) はこれをパースして表に出す。
+`BaArray.items` / `BaString.bytes` の可変長 payload は別 `malloc`
+(`baruby_gc_alloc_payload`) で確保。 owner の sweep 時に一緒に free。
+
+### 5.3 Alloc API
+
+```c
+void *baruby_gc_alloc(uint32_t kind, size_t payload_size, VALUE *sp_top);
+void *baruby_gc_alloc_payload(size_t size, VALUE *sp_top);
+void *baruby_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
+```
+
+全 alloc が `sp_top` 引数を取る。 内部で:
+
+```c
+c->sp = sp_top;                              // GC が scan する上端を update
+if (bytes_since_gc > gc_threshold) gc_collect_internal(sp_top);
+```
+
+の順で動く。 cooperative — GC は alloc 経由でしか起きない。
+threshold は 4 MiB (固定)。
+
+呼び出し側 (NODE_DEF body や C helper) は自分が把握している scratch top
+を `sp_top` に渡す。 例:
+
+```c
+NODE_DEF
+node_ary_new(CTX *c, NODE *n, VALUE *fp, VALUE *sp, /*...*/)
+{
+    return RESULT_OK(baruby_ary_new(0, sp));   // sp = 自分の top
+}
+```
+
+### 5.4 Mark & sweep
+
+Mark phase:
+
+1. 全 object の `marked = 0` をクリア
+2. `c->env` から `c->sp` まで VALUE 配列を flat scan
+3. 各 VALUE が `IS_PTR(v)` なら `mark_object` 再帰
+4. `BaArray` なら `items[]` を再帰追跡
+5. `BaString` は leaf (bytes は char、 VALUE root を含まない)
+
+Sweep phase: linked list を全 traverse、 `marked == 0` を `free` +
+list から remove。
+
+per-NODE_DEF の frame chain は **無い**。 GC scan は `c->env..c->sp`
+の 1 続きの flat array を見るだけ。
+
+### 5.5 BARUBY_EVAL_ARG macro
+
+framework の `EVAL_ARG(c, n)` は parent の sp をそのまま child に渡す
+ので、 parent が sp[0..N-1] を root に使う場合は **`BARUBY_EVAL_ARG(c,
+n, sp + N)`** で sp を進めて child に渡す:
+
+```c
+NODE_DEF
+node_call_1(... NODE *a0)
+{
+    /* sp[0..locals_cnt-1] が callee の locals 領域 (root) */
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+}
+```
+
+`#define BARUBY_EVAL_ARG(c, n_node, new_sp) \
+    ((*n_node##_dispatcher)(c, n_node, fp, new_sp))` (node.h)
+
+### 5.6 統計出力
+
+`BARUBY_GC_STATS=1` で `__GC_STATS__ alloc_bytes=... heap_bytes=... gc_count=...`
+を末尾に出力する。 `heap_bytes` は realloc の old/new size 差分を tracking
+してないので underflow して桁外れの値が出るが (= 表示だけの問題)、
+`gc_count` と `alloc_bytes` は正しい値。
 
 ## 6. 文字列リテラルの fresh alloc
 
@@ -206,29 +296,30 @@ ary_push(
 
 ## 8. ベンチ・実行モード
 
-`make` (= `make all`) で `./baruby` ができる。Makefile target:
+`make` で `./baruby_precise` ができる:
 
 | target | 効果 |
 |---|---|
 | `make` | 通常ビルド |
-| `make run` | `./baruby test.ba.rb` |
-| `make c` | `./baruby -c test.ba.rb` (AOT bake & run) — 新ノードで未検証 |
-| `make bench` | `bench/run.rb` で 3 ベンチを順に実行 |
+| `make run` | `./baruby_precise --plain test.ba.rb` |
+| `make bench` | `bench/run.rb` で全 bench を実行 |
 | `make clean` | 生成物 + code_store を消す |
 
-`bench/run.rb` の引数:
+AOT mode: `CCACHE_DISABLE=1 ./baruby_precise -c bench/list_alloc.ba.rb`
+で動作確認済 (perf.md §2 参照)。 CCACHE_DISABLE は sandbox 環境での
+ccache 書込み権限問題回避用。
 
-```
-ruby bench/run.rb [--mode plain|aot|pg] [-n REPEATS] [bench/...]
-```
+## 9. 既知の不整合 / 制約
 
-## 9. 既知の不整合
-
-- `nil` と `false` が同じ raw 0 — `nil`/`false` を区別したいときは別の
-  シングルトン値が要る。
-- AOT (`-c`) / PG (`-p`) で baruby が新ノードを正しく specialize できるかは
-  未検証。少なくとも `node_str_lit(const char *, uint32_t)` の `const char *`
-  オペランドは naruby の関数名と同じ扱いで HORG に取り込まれる想定だが
-  動作確認は未実施。
-- `node_add` の string 経路は branch predictor に依存している (int 多数の
-  ループでは LIKELY のおかげで predict miss しないはず)。
+- **`bench/binary_trees` の計算結果が壊れる** — node.def の手書き root
+  spill に漏れがある。 具体的には arithmetic node (`node_add` 等) が
+  heap-VALUE operand の root を sp[] に置いていない。 詳細 [todo.md](todo.md)
+- **toplevel sp が 64 で hardcode** (`main.c::create_context`)。
+  本来は parser が toplevel locals_cnt を返してくれば計算可能。
+  大きな toplevel フレームでは scratch 不足の恐れ
+- **`heap_bytes` 統計が underflow**: realloc の old/new size 差分を
+  track してない。 表示だけの問題で GC 動作には影響なし
+- **callee frame zero-init コスト**: `node_call_<N>` で
+  `for (i < locals_cnt) sp[i] = 0` を毎 call で実行。 function call
+  頻度に比例。 zero-init が要らない (= 全 local が即書きされる) ことを
+  parser が保証できれば skip 可能

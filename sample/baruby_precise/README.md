@@ -1,72 +1,59 @@
-# baruby — *Barely a Ruby*
+# baruby_precise — baruby + precise mark&sweep GC (MVP)
 
-A naruby fork ([sibling sample](../naruby)) extended with **Array,
-String, and Boehm GC**.  Built on the [ASTro](../../docs/idea.md)
-framework — Prism for parsing, ASTroGen-driven evaluator, dlopen-based
-AOT cache via the shared code store.
+`sample/baruby/` (libgc conservative) を copy して、 **GC を precise
+mark&sweep に置換した試作品**。 [`docs/gc_design.md`](../../docs/gc_design.md)
+で議論した「共有 stack `sp[]` に root を spill する Lua-style モデル」 を
+ベタ書きで実装し、 conservative 版とベンチ比較できる状態にしてある。
 
-Designed as the **first testbed for the unified GC framework**
-([`docs/gc_design.md`](../../docs/gc_design.md)).  Language surface is
-deliberately tiny — fixnum / Array / String only, no OO machinery —
-so the GC implementation has minimal AST root-scanning surface area
-and the `value.def` DSL has only three shapes to express.
+言語仕様 (Array / String / fixnum / 関数定義) は baruby と同一。 GC 周り
+だけが違う。
 
 For details:
-- [docs/spec.md](docs/spec.md) — what the language supports
-- [docs/runtime.md](docs/runtime.md) — VALUE encoding, heap layout,
-  parse-time method desugar, libgc integration
-- [docs/done.md](docs/done.md) — what landed in the initial fork
-- [docs/todo.md](docs/todo.md) — gaps and known limitations
-- [docs/perf.md](docs/perf.md) — benchmark numbers
+- [docs/spec.md](docs/spec.md) — language surface (baruby と同じ)
+- [docs/runtime.md](docs/runtime.md) — sp[] threading, gc.c の precise
+  mark&sweep、 BARUBY_EVAL_ARG macro 等
+- [docs/perf.md](docs/perf.md) — **conservative (libgc) vs precise の
+  実測ベンチ結果**
+- [docs/todo.md](docs/todo.md) — 既知バグ + 残タスク
+- [docs/done.md](docs/done.md) — baruby fork 時の話 (precise 化前)
 
-Naming: naruby = "**N**ot **A** ruby" → abruby = "**A B**it ruby".
-baruby = "**BA**rely a ruby" sits between them: more than naruby (now
-has Array + String) but still less than abruby (no class / proc /
-exception / nil-vs-false / etc.).
+baruby との関係:
+
+| | baruby | baruby_precise |
+|---|---|---|
+| GC | Boehm libgc (conservative) | 自前 mark&sweep (precise) |
+| 共通引数 | `(c, n, fp)` | `(c, n, fp, sp)` |
+| Heap alloc | `GC_MALLOC` macro | `baruby_gc_alloc(kind, size, sp_top)` |
+| Bench | base line | base line +12〜48% (perf.md) |
 
 ## Install
 
 ### Prerequisites (Ubuntu/Debian)
 
 ```sh
-sudo apt install build-essential ruby ruby-bundler git libgc-dev
+sudo apt install build-essential ruby ruby-bundler git
 ```
 
-ASTroGen is plain Ruby (3.x).  baruby additionally needs **libgc**
-(`libgc-dev` package on Debian/Ubuntu, ships Boehm 8.x).  No GMP /
-no other external libraries.
+ASTroGen is plain Ruby (3.x).  baruby_precise does **not** need libgc
+(self-contained mark&sweep in `gc.c`).
 
 ### libprism
 
-baruby shares naruby's prism build via a symlink (`./prism →
-../naruby/prism`).  If you've already built naruby's prism, baruby
-picks it up automatically.  Otherwise:
+prism build を `sample/baruby/prism` から symlink で共有している。
+sibling サンプル (baruby) を先にビルドしておけば自動で拾われる。
+
+### Build
 
 ```sh
-cd ../naruby
-git submodule update --init prism
-# (apply the small patch in ../naruby/README.md)
-cd prism && bundle install && bundle exec rake
-```
-
-This produces `../naruby/prism/build/libprism.so`, which baruby's
-Makefile points at via `-rpath`.
-
-### baruby
-
-`make` builds the host binary `./baruby`.  ASTroGen runs as part of
-the build to regenerate `node_eval.c` / `node_dispatch.c` / etc. from
-`node.def`.
-
-```sh
-make                  # build ./baruby
-make run              # build + ./baruby test.ba.rb
+make                  # build ./baruby_precise
+make run              # build + ./baruby_precise --plain test.ba.rb
 make bench            # build + ruby bench/run.rb
 make clean
 ```
 
-If your environment can't write to ccache (common in sandbox
-profiles), set `CCACHE_DISABLE=1`.
+AOT mode (`-c`): `CCACHE_DISABLE=1 ./baruby_precise -c bench/list_alloc.ba.rb`
+で SD specialize → code_store/all.so 構築 → 再 dlopen。 CCACHE_DISABLE は
+sandbox 環境での ccache 書込み問題回避用。
 
 ## Usage
 
@@ -110,14 +97,15 @@ p s[0]                # "h"
 ### GC stats
 
 ```sh
-BARUBY_GC_STATS=1 ./baruby --plain bench/binary_trees.ba.rb
+BARUBY_GC_STATS=1 ./baruby_precise --plain bench/list_alloc.ba.rb
 # ...
-# __ELAPSED__ 0.931
-# __GC_STATS__ alloc_bytes=336431168 heap_bytes=338685952 gc_count=12
+# __ELAPSED__ 1.01
+# __GC_STATS__ alloc_bytes=560000000 heap_bytes=... gc_count=133
 ```
 
-Numbers come from libgc's `GC_get_total_bytes` / `GC_get_heap_size` /
-`GC_get_gc_no`.
+数字は自前 mark&sweep の `baruby_gc_stats` から。 `heap_bytes` は
+realloc の差分追跡をしていないので unsigned underflow して桁外れの値が
+出るが (= 表示だけの問題)、 `alloc_bytes` と `gc_count` は正しい値。
 
 ### Modes
 
@@ -125,70 +113,44 @@ Numbers come from libgc's `GC_get_total_bytes` / `GC_get_heap_size` /
 |---|---|---|
 | (none) | Plain + AOT bake | Run interpreted, then bake `code_store/all.so` |
 | `-i` / `--plain` | Plain | No AOT load, no bake |
-| `-c` | Compile only | Bake `code_store/all.so` without running the program |
-| `-p` | Profile-guided | PG-bake at exit using observed `cc->body` |
-| `-b` | Benchmark mode | Skip bake (timing-only) |
-| `-j` | JIT | Inherited from naruby; **unwired in baruby** (TODO) |
+| `-c` | Compile only | Bake `code_store/all.so` |
+| `-p` | Profile-guided | PG-bake at exit (動作未検証) |
+| `-b` | Benchmark mode | Skip bake |
 | `--ccs` | Clear store | Wipe `code_store/` before run |
 
-AOT / PG mode work for naruby's nodes; baruby's new nodes
-(`node_ary_*` / `node_str_lit` / `node_call_*`) **have not been
-verified under -c / -p yet** — see [docs/todo.md](docs/todo.md) P0.
-The bench runner defaults to `--plain` for that reason.
+**動作確認済**: plain mode (test.ba.rb / test_ary.ba.rb / bench), AOT mode
+(bench)。 PG mode は precise rooting 経由で未検証。
 
 ### Benchmarks
 
 ```sh
-make bench
-
-# mode: plain, repeats: 3
-# bench                       best(s)     med(s)   alloc_MB        GCs
-# binary_trees                  0.93       0.94      320.8         12
-# list_alloc                    1.02       1.03      763.8       1148
-# string_concat                 0.97       0.98     1147.3       1706
+make bench                              # plain mode (default)
+CCACHE_DISABLE=1 ./baruby_precise -c bench/list_alloc.ba.rb   # AOT
 ```
 
-Three GC-stress benches at ~1 s sustained scale; see
-[docs/perf.md](docs/perf.md) for what each one exercises.
+`docs/perf.md` の §2 に conservative (baruby) との実測比較あり。
 
-```sh
-ruby bench/run.rb --mode plain -n 5      # more repeats
-ruby bench/run.rb bench/binary_trees.ba.rb  # one bench only
-```
+## ベンチでの GC 動作 (要点)
 
-## Differences vs naruby
+| Bench | precise plain | precise AOT | vs baruby (libgc) |
+|---|---:|---:|---|
+| list_alloc | 1.01 s | 0.43 s | +12% / +13% |
+| string_concat | 1.14 s | 0.98 s | +32% / +48% |
+| binary_trees | 🐛 0.31 s | 🐛 0.20 s | **計算結果が壊れる**、 要 debug |
 
-| Aspect | naruby | baruby |
-|---|---|---|
-| Values | int64 only | LSB-tagged: fixnum / heap ptr / `false` |
-| Heap | none | Array, String (libgc-managed) |
-| GC | — | Boehm libgc (single-threaded, conservative) |
-| Method calls | function calls only | `recv.method(args)` for a fixed method table; lowered at parse time to typed dispatch nodes (no class / vtable) |
-| Mode coverage | plain / AOT / PG / **JIT** | plain (verified); AOT / PG / JIT not yet validated for new nodes |
-| Bench focus | int loops, function calls | allocation pressure, GC throughput |
+詳細は [docs/perf.md](docs/perf.md)、 既知バグは [docs/todo.md](docs/todo.md)
+P0 を参照。
 
-Outside of these, the framework integration (NODE layout, ASTroGen
-codegen, `code_store/all.so`, hash-keyed SD lookup) is identical — see
-[docs/runtime.md](docs/runtime.md) §1 for the pipeline diagram.
-
-## Architecture in 10 lines
+## Architecture
 
 ```
 foo.ba.rb
-  └─ Prism (pm_node_t)                # via ../naruby/prism (symlink)
+  └─ Prism (pm_node_t)
        └─ baruby_parse.c transduce  ──► NODE * (ASTroGen format)
-            │   PM_ARRAY_NODE → ary_push chain over ary_new
-            │   PM_STRING_NODE → str_lit
-            │   PM_CALL_NODE w/ recv + known method → call_<op>
-            └─ OPTIMIZE(ast) → astro_cs_load → dlsym SD_<hash>
-            └─ EVAL(c, ast)  =  (*ast->head.dispatcher)(c, ast)
+       └─ OPTIMIZE(ast) → astro_cs_load → dlsym SD_<hash>
+       └─ EVAL(c, ast, fp, sp)  =  (*ast->head.dispatcher)(c, ast, fp, sp)
        └─ build_code_store: astro_cs_compile / build / reload
 ```
 
-Allocations route through libgc via macros in
-[`context.h`](context.h) — every `malloc` / `calloc` / `realloc` /
-`strdup` in baruby code becomes a `GC_*` call.  `main.c`'s entry
-point calls `GC_INIT()` first.
-
-The shared runtime (`../../runtime/astro_node.c`,
-`../../runtime/astro_code_store.c`) is unchanged.
+GC: `gc.c` の mark&sweep が `c->env..c->sp` を flat scan、 全 heap object を
+linked list で管理。 詳細 [docs/runtime.md](docs/runtime.md) §5。

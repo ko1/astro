@@ -1,63 +1,58 @@
-# baruby TODO
+# baruby_precise TODO
 
-完了済みは [done.md](done.md) を参照。仕様詳細は [spec.md](spec.md)、
-実装ノートは [runtime.md](runtime.md)。
+baruby_precise は precise mark&sweep の MVP 試作。 仕様は [spec.md](spec.md)
+(baruby と同じ)、 実装は [runtime.md](runtime.md)、 ベンチは [perf.md](perf.md)。
+設計の経緯は [`docs/gc_design.md`](../../../docs/gc_design.md)。
 
-## P1 — 言語拡張
+## P0 — 既知バグ
 
-- [ ] **`each` どうするか**。block 入れない方針なので、`for x in arr;
-      ...; end` を desugar するか、`while + index` で書かせ続けるか。
-      → 今のところ後者で困っていない。
-- [ ] **負の `String#[]` slice 末尾基準**。今は `[-3, 2]` までは動くが
-      `s[-3..]` 形式は Range 必要。
-- [ ] **`Array#<=>`**。Ruby 仕様だと要素ごとに `<=>` を取って最初に
-      非ゼロが出たところを返す。再帰呼び出しで実装可能だがまだ書いて
-      ない。
+- [ ] **`bench/binary_trees` の計算結果が壊れる** (期待 4194303 → 実際 1)。
+      arithmetic node (`node_add` 等) や method dispatch node で heap-VALUE
+      operand の root spill が抜けている可能性が高い。 例えば node_add:
+      ```c
+      VALUE l = EVAL_ARG(c, lv);   // ← l が String/Array なら、 rv 評価で
+      VALUE r = EVAL_ARG(c, rv);   //    alloc が走ると l が回収される
+      ```
+      これを sp[0] に spill する書き換えが必要。 node.def の sed では sig
+      しか更新していない (BODY は手付かず)
+- [ ] **toplevel sp の hardcode 64** (`main.c::create_context`)。 大きな
+      toplevel フレームを持つプログラムでは scratch 領域が不足する。
+      parser から toplevel locals_cnt を取って計算するべき
 
-完了: nil/false 分離・true/false/nil リテラル・to_s/to_i・String 順序
-比較・String/Array slice・interpolation・`<=>`・`*` repeat・`<<`・
-escape (`\n`/`\t` 等のハンドリング、`p` 表示の inspect 化)。
+## P1 — 性能
 
-## P1 — パフォーマンス
+- [ ] **callee frame の zero-init コストを減らす** — `node_call_<N>` で
+      毎 call 時に `for (i < locals_cnt) sp[i] = 0` が走る。 parser が
+      「全 local が即書きされる」 を保証できれば skip 可能
+- [ ] **realloc の old/new size 差分追跡** — `baruby_gc_realloc_payload`
+      が現状 new_size を total に加算するだけ。 `heap_bytes` が underflow
+      する原因。 threshold 制御も精度が落ちる
+- [ ] **string_concat の +32〜48% overhead** を perf record で内訳分析。
+      spill / sp 更新 / sweep のどれが bottle neck か確かめる
+- [ ] **GC threshold の adaptive 化** — 現在 4 MiB 固定。 live set サイズに
+      応じて伸縮させたい (要 5.1 の old/new tracking)
 
-- [ ] **String literal の intern pool**。今は eval 毎に fresh alloc。
-      これは GC bench としては feature だが、実用には遅い。parse-time に
-      `BaString *` を生成して `node_str_lit_const(BaString *)` ノードで
-      参照するパスを用意する。bench/string_concat とは別の bench を
-      作って差を測る。
-- [ ] **`node_add` の specialization**。
-      profile で int+int だけと判明したら `_int` variant を baked SD に
-      落としたい。今は generic node 1 本。`call_size_ary` / `call_size_str`
-      も同様。
-- [ ] **小さい配列の inline allocation**。len ≤ N の場合 `items` を
-      header 直後に置く。一層化で alloc 1 回 → 0 回 (header が大きくなる
-      だけ)。
+## P2 — design / framework 統合
 
-## P2 — GC 基盤の本命
-
-- [ ] **`docs/gc_design.md` の `value.def` の最初の対象として baruby を使う**。
-      naruby は `none` GC tier だが、baruby は値表現が
-      LSB-tag fixnum + Array + String の 3 種類だけなので一番素直に
-      precise GC が書ける。手順:
-  1. `value.def` の DSL 形式を docs/gc_design.md §4 で固める
-  2. baruby に `value.def` を追加 (BaArray / BaString のフィールド宣言)
-  3. ASTroGen で `node_gc.c` 相当 (alloc / mark) を生成
-  4. libgc を draft 版 precise non-moving に置換、bench で比較
-- [ ] **frame iterator (root 列挙)**。CTX.fp + locals_cnt から root を
-      列挙する関数を生成する仕組み。
-
-## P2 — 言語の毛色
-
-- [ ] **`break` / `next` / `redo`** in `while` ループ。
-- [ ] **多重代入** `a, b = x, y`。
-- [ ] **デフォルト引数** `def f(x, y = 0)`。
-- [ ] **splat** `*args` / `*arr` 展開。
-
-これらはすべて GC testbed としては不要。実装するとしたら baruby を
-拡張するか、別 fork を切るか要相談。
+- [ ] **arithmetic / comparison node の rooting を全部見直す** — 上記
+      binary_trees バグの根本対応。 node.def を読み返して `EVAL_ARG` で
+      heap-VALUE を保持する箇所すべてに sp[] spill を入れる
+- [ ] **`gc.c` / `gc.h` を `runtime/` に格上げ** — 現在は
+      `sample/baruby_precise/gc.{c,h}`。 root mechanism (sp[] flat scan) と
+      object link list は backend として汎用化できそう
+- [ ] **astrogen.rb 拡張 `@locals` を試す** — `docs/gc_design.md` §1.3.2 で
+      想定した sugar。 user が `@locals(l, r)` と書くと ASTroGen が
+      `#define l sp[sp_cnt + 0]; #define r sp[sp_cnt + 1]` を emit する形。
+      手書きの error-prone (binary_trees バグの原因) を減らせる
+- [ ] **moving backend (semi-space) を同 interface に乗せる** — sp[] root
+      列挙が moving と整合するか、 reload pattern が機能するか確認
+- [ ] **`value.def` を baruby_precise で試す** — `docs/gc_design.md` §1.7
+      の任意 DSL。 marker / allocator の自動生成が abruby `node_mark.c`
+      流儀でできるか
 
 ## メンテ
 
-- [ ] `make bench` の plain 行と AOT/PG 行を比較表で出す (今は plain のみ)。
-- [ ] CRuby の参考時間と並べて表に出す (binary_trees / list_alloc /
-      string_concat 同等を CRuby で実行してベースラインに)。
+- [ ] `bench/run.rb` を precise / conservative 両対応にして、 表で並べて
+      出す (現在は手動で各サンプル動かしている)
+- [ ] CRuby の参考時間と並べて (binary_trees / list_alloc / string_concat
+      同等を CRuby で動かす)
