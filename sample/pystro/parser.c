@@ -2379,6 +2379,11 @@ parse_call_args(NODE *fn)
                 spreads[nspreads].kind = 2; spreads[nspreads].name = nm; spreads[nspreads].node = e;
                 nspreads++;
             } else {
+                // Positional after keyword is a SyntaxError in CPython
+                // ("positional argument follows keyword argument").  We
+                // had already accepted these silently.
+                if (kwc > 0)
+                    parse_error("positional argument follows keyword argument");
                 // `f(expr for x in xs)` — implicit lazy gen-expression
                 // as the sole argument.  Lookahead for top-level `for`
                 // before `)` to detect; if found, take the same lazy
