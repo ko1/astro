@@ -6483,7 +6483,14 @@ pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
                          "%s() takes %d-%d arguments but %d were given",
                          f->builtin.name, f->builtin.min_argc,
                          f->builtin.max_argc, argc);
-        return f->builtin.fn(c, argc, argv);
+        VALUE r = f->builtin.fn(c, argc, argv);
+        // Belt-and-braces: a builtin that raised but didn't clear its
+        // VALUE return path (e.g. PYS_FIX wrapping a 0 from a raising
+        // helper) would otherwise look like a successful call to the
+        // node_seq / node_call_N caller.  Force NULL once state==RAISE
+        // so the standard !v early-exit catches it.
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        return r;
     }
     // Instance with __call__ — dispatch to it with self prepended.
     if (pys_is_instance(fn)) {
