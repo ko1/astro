@@ -3130,12 +3130,20 @@ parse_if(void)
     return ALLOC_node_if(c, t, e);
 }
 
+// Tracked while parsing the body of a while / for loop so that
+// `break` / `continue` outside any loop fails with SyntaxError (the
+// caller restores `loop_depth` on either path so try/with /
+// comprehension nesting doesn't leak).
+static int loop_depth = 0;
+
 static NODE *
 parse_while(void)
 {
     expect(T_WHILE, "'while'");
     NODE *c = parse_expr();
+    loop_depth++;
     NODE *b = parse_suite();
+    loop_depth--;
     NODE *e = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
     return ALLOC_node_while(c, b, e);
 }
@@ -3208,7 +3216,9 @@ parse_for(void)
         tok_pos++;
         expect(T_IN, "'in'");
         NODE *iter = parse_expr_list();
+        loop_depth++;
         NODE *body = parse_suite();
+        loop_depth--;
         NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
         if (cur_scope && !scope_is_global_decl(cur_scope, target)) {
             int idx = scope_add_local(cur_scope, target);
@@ -3305,7 +3315,9 @@ parse_for(void)
 for_after_target: ;
     expect(T_IN, "'in'");
     NODE *iter = parse_expr_list();
+    loop_depth++;
     NODE *body = parse_suite();
+    loop_depth--;
     NODE *else_body = match_tok(T_ELSE) ? parse_suite() : ALLOC_node_nop();
     NODE *new_body = ALLOC_node_seq(prefix, body);
     if (cur_scope && tmp_idx >= 0)
@@ -3518,6 +3530,10 @@ parse_def(void)
     // them are local, not class attributes.
     bool saved_icb = in_class_body;
     in_class_body = false;
+    // Function body resets the loop nesting counter — `break` /
+    // `continue` inside a nested def don't refer to the outer loop.
+    int saved_loop_depth = loop_depth;
+    loop_depth = 0;
     NODE *body;
     if (peek_tok(0)->kind == T_NEWLINE) {
         tok_pos++;
@@ -3539,6 +3555,7 @@ parse_def(void)
         expect(T_NEWLINE, "newline");
     }
     in_class_body = saved_icb;
+    loop_depth = saved_loop_depth;
     cur_scope = saved;
 
     uint32_t lidx = (uint32_t)local_names_reserve(sc.locals, sc.nlocals);
@@ -4658,8 +4675,14 @@ parse_simple_stmt(void)
 {
     int k = peek_tok(0)->kind;
     if (k == T_PASS)     { tok_pos++; return ALLOC_node_nop(); }
-    if (k == T_BREAK)    { tok_pos++; return ALLOC_node_break(); }
-    if (k == T_CONTINUE) { tok_pos++; return ALLOC_node_continue(); }
+    if (k == T_BREAK) {
+        if (loop_depth <= 0) parse_error("'break' outside loop");
+        tok_pos++; return ALLOC_node_break();
+    }
+    if (k == T_CONTINUE) {
+        if (loop_depth <= 0) parse_error("'continue' not properly in loop");
+        tok_pos++; return ALLOC_node_continue();
+    }
     if (k == T_RETURN)   return parse_return();
     if (k == T_RAISE)    return parse_raise();
     if (k == T_YIELD)    return parse_yield();
