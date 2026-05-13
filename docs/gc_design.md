@@ -240,65 +240,38 @@ ASTroGen は ENTER 時に `F` と `locals_cnt` を frame 構造体にコピー�
 NODE_DEF の `common_param_count` で渡される frame pointer もそのまま
 root_array にできる。
 
-#### 1.3.5 SD 内では frame を集約する (per-SD 1 個)
+#### 1.3.5 性能上の課題と将来の最適化
 
-ここまで示した「EVAL\_\<name\> ごとに ENTER/LEAVE」 は **インタプリタ経路
-(= DISPATCH\_\<name\>) の論理モデル**。 specialize 経路 (= SD\_\<hash\>) で
-そのままやると tight loop で 4 メモリオペ/node が乗って遅すぎる。
+ここまで示した「EVAL\_\<name\> ごとに ENTER/LEAVE」 をそのまま SD 経路でも
+使うと、 tight loop で **~5 メモリオペ/node** が乗る (`_f.prev = c->fp_chain;
+c->fp_chain = &_f;` で 1 load + 2 store、 LEAVE でさらに 1 load + 1 store)。
+node 評価頻度は秒間百万オーダなので無視できない。
 
-SD は AST の inline tree をひとつの関数に畳み込んだもの。 例えば `a + b + c`
-をコンパイルすると tree は
+理屈の上で欲しいのは **SD 単位で frame を集約**: AST tree の全 `@roots(...)`
+を 1 個の frame に畳んで push/pop を SD 関数の境界 1 回ずつに抑える、 という
+形。 ただし **そのままでは実装が破綻** する:
 
-```
-node_add               (inline_idx 0)
-├── node_add           (inline_idx 1)
-│   ├── node_lget a   (inline_idx 2)
-│   └── node_lget b   (inline_idx 3)
-└── node_lget c        (inline_idx 4)
-```
+- §1.3.2 で示した BODY 書き換え (`l` → `_f.l`) は ASTroGen が **build time**
+  に EVAL\_\<name\> 用に行うので、 slot 名は EVAL レベルで固定される
+- SD は **process runtime** に astro_cs_compile で生成される。 同じ
+  NODE_DEF が tree 内の別位置に出るときの slot 名 (`_f.n0_l` か `_f.n1_l` か)
+  は **SD codegen 時にしか確定しない**
+- ASTroGen の rewrite では SD 時の inline_idx を知る手段がない
 
-SPECIALIZE は tree を pre-order walk しながら **各 node の出現箇所** に通し
-番号 (`inline_idx`) を振る。 同じ NODE_DEF (例: `node_add`) が tree 内の
-別位置に複数回出てきても、 それぞれ別 idx になる。 ASTroGen は tree 全体の
-`@roots(...)` をすべて拾い集めて **SD 関数ごとに 1 個のアグリゲート frame**
-を組み、 push/pop は **SD 関数の入口と出口で 1 回ずつ** だけ行う。 §1.3.2 で
-示した BODY 書き換えは、 SD 集約時には **slot 名を inline_idx で一意化** する
-形で適用する (`l` → `_f.n<inline_idx>_l`):
+実現するなら ASTroGen は BODY を **テンプレートとして** SPECIALIZE\_\<name\>
+に埋め込んで、 SPECIALIZE が runtime に slot 名を差し替えながら C ソースを
+emit する形になる。 現状の SPECIALIZE は `return EVAL_<name>(c, n, ...)` で
+EVAL に委譲しているだけなので、 ここを大きく作り直すことになる。
 
-```c
-struct frame_SD_<hash> {
-    VALUE n0_l;          // 外側の node_add (idx 0) の @roots(l)
-    VALUE n1_l;          // 内側の node_add (idx 1) の @roots(l)   ←同じ var 名でも衝突回避
-    VALUE n4_v;          // ...
-};
+| 設計 | ASTroGen / SPECIALIZE 側のインフラ | 実行時コスト |
+|---|---|---|
+| per-EVAL_\<name\> push/pop (§1.3.2) | 現状の延長で済む | ~5 メモリオペ/node 評価 |
+| SD 集約 (将来候補) | BODY テンプレート化 + SPECIALIZE 書き直し | 1 push + 1 pop / 関数呼出し |
 
-static const astro_frame_desc_t FD_SD_<hash> = {
-    .size        = sizeof(struct frame_SD_<hash>),
-    .n_refs      = 3,
-    .ref_offsets = { offsetof(struct frame_SD_<hash>, n0_l),
-                     offsetof(struct frame_SD_<hash>, n1_l),
-                     offsetof(struct frame_SD_<hash>, n2_v) },
-};
-
-VALUE SD_<hash>(CTX *c, NODE *n)
-{
-    struct frame_SD_<hash> _f;
-    ASTRO_FRAME_ENTER(c, &FD_SD_<hash>, &_f);   // SD 入口で 1 回だけ
-    /* node_add (idx 0) inline、 元の BODY の l を _f.n0_l に書き換え */
-    _f.n0_l = ...;
-    ...
-    /* node_sub (idx 1) inline、 元の BODY の l を _f.n1_l に書き換え */
-    _f.n1_l = ...;
-    ...
-    ASTRO_FRAME_LEAVE(c);                        // SD 出口で 1 回だけ
-    return _ret;
-}
-```
-
-inline_idx は SPECIALIZE が tree を walk しながら採番。 同じ NODE_DEF が
-複数箇所で inline されても slot が衝突しない。 frame chain 操作は **関数呼出し
-境界の頻度** に下がる (= 言語の call の頻度。 node 評価の頻度より 1〜2 桁低い)。
-個別 EVAL\_\<name\> の per-node ENTER/LEAVE は **SD 経路では生成しない**。
+**当面の方針**: §1.3.2 の per-EVAL\_\<name\> を baseline として実装し、
+ベンチで実コストを計測する。 hot path の影響が許容できないと分かってから
+SD 集約のインフラを足す、 の順序にする。 ベンチが取れる前に投資先を決め込ま
+ない。
 
 | 経路 | frame の単位 | push/pop コスト |
 |---|---|---|
