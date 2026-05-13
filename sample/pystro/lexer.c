@@ -417,7 +417,30 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
               case '\\': ch = '\\'; break;
               case '\'': ch = '\''; break;
               case '"': ch = '"'; break;
-              case '0': ch = '\0'; break;
+              case '0': case '1': case '2': case '3':
+              case '4': case '5': case '6': case '7': {
+                // Octal escape: up to 3 octal digits.  `\0` alone gives
+                // NUL; `\101` gives 'A'; `\12` gives '\n'.
+                unsigned cp = (unsigned)(esc - '0');
+                src_pos++;
+                for (int k = 0; k < 2; k++) {
+                    char d = peek(0);
+                    if (d < '0' || d > '7') break;
+                    cp = cp * 8 + (unsigned)(d - '0');
+                    src_pos++;
+                }
+                // Bytes literal: store raw byte (mod 256).
+                // Str literal: encode as UTF-8 if >= 0x80.
+                if (is_bytes || cp < 0x80) {
+                    if (len + 2 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = (char)(cp & 0xff);
+                } else {
+                    if (len + 3 > cap) { cap *= 2; buf = (char *)GC_realloc(buf, cap); }
+                    buf[len++] = (char)(0xC0 | (cp >> 6));
+                    buf[len++] = (char)(0x80 | (cp & 0x3F));
+                }
+                continue;
+              }
               case 'N': {
                 // \N{NAME} — pystro doesn't ship unicodedata, emit '?'
                 // so test parses (callers that really need the char
