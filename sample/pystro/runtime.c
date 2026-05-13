@@ -6131,7 +6131,22 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             pys_setattr(c, code, "replace", pys_make_bound(code, replace_fn));
             return code;
         }
-        if (strcmp(name, "__globals__") == 0) return PYS_NONE;
+        if (strcmp(name, "__globals__") == 0) {
+            // Materialise the function's defining-module globals as a
+            // dict.  CPython exposes this as a live mapping; pystro
+            // returns a snapshot (mutation doesn't write back), which
+            // is enough for inspection / introspection.
+            if (!o->func.fglobals) return PYS_NONE;
+            VALUE d = pys_make_dict();
+            struct pysglobals *g = o->func.fglobals;
+            for (size_t i = 0; i < g->size; i++) {
+                if (g->entries[i].defined) {
+                    VALUE k = pys_make_str(g->entries[i].name, strlen(g->entries[i].name));
+                    pys_dict_set(c, d, k, g->entries[i].value);
+                }
+            }
+            return d;
+        }
         if (strcmp(name, "__closure__") == 0) {
             // CPython: nested function with free vars returns a tuple
             // of cell objects; module-level / non-capturing returns None.
