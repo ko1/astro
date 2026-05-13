@@ -15,46 +15,58 @@ int baruby_gc_stress = 0;
 #define REGION_BYTES  ((size_t)64u << 20)   // 64 MiB per semispace
 #define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
 
+// Active semispace (where allocations go).  In stress mode, EVERY GC
+// allocates a fresh to-space via mmap and PERMANENTLY retires the old
+// active (mprotect PROT_NONE + madvise DONTNEED — physical pages freed,
+// virtual address stays reserved forever so stale pointers segfault
+// no matter how many GCs ago they were valid).
+//
+// In non-stress mode, we use a fixed pair of regions and alternate
+// (classic semispace).
+static char *active_base = NULL;
+static char *active_top  = NULL;
+static char *active_end  = NULL;
+
 static char *space0 = NULL;
-static char *space1 = NULL;
-static int   active = 0;
-static char *active_top = NULL;
-static char *active_end = NULL;
+static char *space1 = NULL;   // non-stress: the alternate region
+static int   active_idx = 0;  // non-stress only
 
 static CTX *gc_ctx = NULL;
-
-static char *
-active_space(void)   { return active == 0 ? space0 : space1; }
-static char *
-inactive_space(void) { return active == 0 ? space1 : space0; }
 
 // ----------------------------------------------------------------------------
 // Initialization
 // ----------------------------------------------------------------------------
 
+static char *
+mmap_region(void)
+{
+    char *p = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
+                           MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { perror("mmap"); abort(); }
+    return p;
+}
+
 void
 baruby_gc_init(CTX *c)
 {
     gc_ctx = c;
-    space0 = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
-                          MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-    space1 = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
-                          MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-    if (space0 == MAP_FAILED || space1 == MAP_FAILED) {
-        perror("baruby_gc_init: mmap"); abort();
-    }
-    active = 0;
-    active_top = space0;
-    active_end = space0 + REGION_BYTES;
-
     if (getenv("BARUBY_GC_STRESS")) {
         baruby_gc_stress = 1;
-        // Inactive starts PROT_NONE (will be flipped to RW at collection start).
-        if (mprotect(space1, REGION_BYTES, PROT_NONE) != 0) {
-            perror("baruby_gc_init: initial mprotect"); abort();
-        }
+        // Stress: start with one fresh region.  Each GC allocates a new
+        // to-space and permanently retires the old active.
+        active_base = mmap_region();
+        active_top  = active_base;
+        active_end  = active_base + REGION_BYTES;
         fprintf(stderr, "[baruby_gc] STRESS mode: collect on every alloc, "
-                        "from-space PROT_NONE after move\n");
+                        "every old space PROT_NONE forever (madvise DONTNEED)\n");
+    } else {
+        // Non-stress: classic 2-region semispace, alternating.
+        space0 = mmap_region();
+        space1 = mmap_region();
+        active_idx  = 0;
+        active_base = space0;
+        active_top  = space0;
+        active_end  = space0 + REGION_BYTES;
     }
 }
 
@@ -207,15 +219,14 @@ process_object(GCHeader *h)
 static void
 gc_collect_internal(VALUE *sp_top)
 {
-    char *from_base = active_space();
-    char *from_end  = active_end;
+    char *from_base = active_base;
 
-    // Make the inactive (= to-space) writable.  In stress mode it was PROT_NONE.
-    char *next_to_base = inactive_space();
+    // Determine the to-space.
+    char *next_to_base;
     if (baruby_gc_stress) {
-        if (mprotect(next_to_base, REGION_BYTES, PROT_READ|PROT_WRITE) != 0) {
-            perror("gc_collect: mprotect RW"); abort();
-        }
+        next_to_base = mmap_region();
+    } else {
+        next_to_base = (active_idx == 0) ? space1 : space0;
     }
 
     to_base = next_to_base;
@@ -225,21 +236,43 @@ gc_collect_internal(VALUE *sp_top)
     // Reset live-bytes counter; we'll add as we copy.
     baruby_gc_stats.heap_bytes = 0;
 
-    // (1) Scan VALUE stack and forward root pointers in place.
     CTX *c = gc_ctx;
-    for (VALUE *p = c->env; p < sp_top; p++) {
-        *p = forward_value(*p);
-    }
 
-    // (2) Cheney scan: walk objects already copied to to-space, forwarding
-    //     their outgoing refs.  Each newly-copied object extends to_top,
-    //     so the loop terminates when scan catches up.
-    // Zero stale slots above current top up to high-water mark.
+    // Zero stale slots above current top up to high-water mark.  Slots
+    // beyond `sp_top` belong to frames that have already returned;
+    // their VALUEs are logically dead but might still look like heap
+    // pointers from a prior GC.  Zero them so the scan / assertion
+    // sees only live state.
     if (sp_high_water == NULL || sp_top > sp_high_water) {
         sp_high_water = sp_top;
     } else {
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
+
+    // (Pre-mark assertion) Every IS_PTR slot in scan range must point into
+    // the current from-space.  This MUST run BEFORE the root scan loop
+    // (which mutates *p in-place).
+    if (baruby_gc_stress) {
+        for (VALUE *p = c->env; p < sp_top; p++) {
+            VALUE v = *p;
+            if (!IS_PTR(v)) continue;
+            char *vp = (char *)v;
+            if (vp < from_base || vp >= from_base + REGION_BYTES) {
+                fprintf(stderr,
+                    "[gc] PRE-MARK ASSERT FAILED: slot c->env[%ld]=%lx "
+                    "is not in from-space [%p..%p)\n",
+                    p - c->env, (long)v, (void*)from_base,
+                    (void*)(from_base + REGION_BYTES));
+                abort();
+            }
+        }
+    }
+
+    // (1) Scan VALUE stack and forward root pointers in place.
+    for (VALUE *p = c->env; p < sp_top; p++) {
+        *p = forward_value(*p);
+    }
+
     char *scan = to_base;
     while (scan < to_top) {
         GCHeader *h = (GCHeader *)scan;
@@ -249,20 +282,27 @@ gc_collect_internal(VALUE *sp_top)
     }
 
     // (3) Swap active.
-    active = 1 - active;
-    active_top = to_top;
-    active_end = next_to_base + REGION_BYTES;
+    if (!baruby_gc_stress) {
+        active_idx = 1 - active_idx;
+    }
+    active_base = next_to_base;
+    active_top  = to_top;
+    active_end  = next_to_base + REGION_BYTES;
 
-    // (4) Stress: lock out the old from-space so stale pointer access SIGSEGVs.
+    // (4) Retire the old active.
     if (baruby_gc_stress) {
+        // PERMANENT retire: PROT_NONE + DONTNEED.  Virtual address stays
+        // reserved forever, physical pages reclaimed.  Stale pointers
+        // from ANY past GC into this region SIGSEGV.
         if (mprotect(from_base, REGION_BYTES, PROT_NONE) != 0) {
             perror("gc_collect: mprotect NONE"); abort();
         }
+        if (madvise(from_base, REGION_BYTES, MADV_DONTNEED) != 0) {
+            perror("gc_collect: madvise DONTNEED"); abort();
+        }
     }
-    (void)from_end;
 
     baruby_gc_stats.gc_count++;
-    // Also keep c->sp current.
     gc_ctx->sp = sp_top;
 }
 
