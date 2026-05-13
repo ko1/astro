@@ -8459,6 +8459,14 @@ pys_run_try(CTX *c, NODE *body, uint32_t handlers_idx, uint32_t nhandlers, NODE 
                 // If the body did not itself raise, clear the active
                 // exception so it doesn't leak past the handler.
                 if (c->state == PYS_STATE_NORMAL) c->state_value = PYS_NONE;
+                // Python 3: `except X as e:` deletes `e` at end of the
+                // handler so it can't leak.  Unbind by clearing the
+                // slot / global.  Don't touch on raise — frame teardown
+                // happens elsewhere and the variable is still in scope.
+                if (h->name) {
+                    if (h->name_is_global) pys_global_undef(c, h->name);
+                    else                   c->env->slots[h->name_slot] = (VALUE)0;
+                }
                 goto run_finally;
             }
         }
