@@ -5614,6 +5614,12 @@ pys_getattr(CTX *c, VALUE v, const char *name)
             }
             return pys_make_tuple(cd->bases, cd->nbases);
         }
+        if (strcmp(name, "__base__") == 0) {
+            // First explicit base, or `object` when there is none.
+            if (cd->nbases > 0) return cd->bases[0];
+            if (v != c->TYPE_object) return c->TYPE_object;
+            return PYS_NONE;
+        }
         if (strcmp(name, "__mro__") == 0) {
             return pys_make_tuple(cd->mro, cd->nmro);
         }
