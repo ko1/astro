@@ -7843,16 +7843,73 @@ pys_gen_yield_from(CTX *c, VALUE iter)
 {
     extern VALUE pys_gen_close(CTX *c, VALUE g);
     extern VALUE pys_gen_throw(CTX *c, VALUE g, VALUE exc);
-    struct pys_iter it;
-    pys_iter_init(c, &it, iter);
-    if (c->state != PYS_STATE_NORMAL) return PYS_NONE;
-    VALUE x;
+    extern VALUE pys_gen_send(CTX *c, VALUE gen_v, VALUE v);
+    extern VALUE pys_gen_next(CTX *c, VALUE gen_v);
+    bool iter_is_gen = (PYS_IS_PTR(iter) && PYS_PTR(iter)->type == PYS_T_GEN);
     VALUE result = PYS_NONE;
-    // Mark the active yield-from inner gen on the enclosing generator
-    // so a close() / throw() on the outer can propagate.
+    // Mark the active yield-from inner on the enclosing generator so
+    // close() / throw() on the outer can propagate.
     struct pysgen *outer_g = c->current_gen;
     VALUE saved_yf = outer_g ? outer_g->yf_inner : PYS_NONE;
     if (outer_g) outer_g->yf_inner = iter;
+    if (iter_is_gen) {
+        // Generator path: forward sent values via .send / .throw so
+        // `yield from inner` is transparent.
+        VALUE x = pys_gen_next(c, iter);
+        if (c->state == PYS_STATE_RAISE) {
+            // StopIteration from inner → capture .value as result.
+            VALUE exc = c->state_value;
+            if (pys_is_instance(exc)
+                && class_is_ancestor(PYS_OBJ_VAL(PYS_PTR(exc)->inst.cls),
+                                     c->EXC_StopIteration)) {
+                VALUE v = pys_getattr_optional(c, exc, "value");
+                if (v) result = v;
+                c->state = PYS_STATE_NORMAL;
+                c->state_value = PYS_NONE;
+            } else {
+                if (outer_g) outer_g->yf_inner = saved_yf;
+                return PYS_NONE;
+            }
+        } else {
+            while (!PYS_PTR(iter)->gen->done) {
+                VALUE sent = pys_gen_yield(c, x);
+                if (c->state == PYS_STATE_RAISE) {
+                    if (outer_g) outer_g->yf_inner = saved_yf;
+                    return PYS_NONE;
+                }
+                // Forward sent value to inner.
+                x = pys_gen_send(c, iter, sent);
+                if (c->state == PYS_STATE_RAISE) {
+                    VALUE exc = c->state_value;
+                    if (pys_is_instance(exc)
+                        && class_is_ancestor(PYS_OBJ_VAL(PYS_PTR(exc)->inst.cls),
+                                             c->EXC_StopIteration)) {
+                        VALUE v = pys_getattr_optional(c, exc, "value");
+                        if (v) result = v;
+                        c->state = PYS_STATE_NORMAL;
+                        c->state_value = PYS_NONE;
+                        break;
+                    }
+                    if (outer_g) outer_g->yf_inner = saved_yf;
+                    return PYS_NONE;
+                }
+            }
+            // Capture return value from inner if present.
+            struct pysgen *gg = PYS_PTR(iter)->gen;
+            if (gg->return_value) result = gg->return_value;
+        }
+        if (outer_g) outer_g->yf_inner = saved_yf;
+        return result;
+    }
+    // Non-generator iterable: yield each value with the original iter
+    // protocol.  Send values to the outer are discarded.
+    struct pys_iter it;
+    pys_iter_init(c, &it, iter);
+    if (c->state != PYS_STATE_NORMAL) {
+        if (outer_g) outer_g->yf_inner = saved_yf;
+        return PYS_NONE;
+    }
+    VALUE x;
     while (pys_iter_next(c, &it, &x)) {
         pys_gen_yield(c, x);
         if (c->state != PYS_STATE_NORMAL) {
@@ -7861,12 +7918,6 @@ pys_gen_yield_from(CTX *c, VALUE iter)
         }
     }
     if (outer_g) outer_g->yf_inner = saved_yf;
-    // Inner exhausted normally.  If the source is a generator with a
-    // captured return-value, surface it as our expression value.
-    if (PYS_IS_PTR(iter) && PYS_PTR(iter)->type == PYS_T_GEN) {
-        struct pysgen *gg = PYS_PTR(iter)->gen;
-        if (gg->return_value) result = gg->return_value;
-    }
     return result;
 }
 
