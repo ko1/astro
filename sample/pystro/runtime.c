@@ -11878,6 +11878,55 @@ im_conjugate(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0
 
 extern VALUE bi_int_as_integer_ratio(CTX *c, int argc, VALUE *argv);
 extern VALUE bi_int_is_integer(CTX *c, int argc, VALUE *argv);
+
+// int dunder shims — delegate to the existing C primitives.  Pystro
+// implements operators directly so these aren't normally on the method
+// table; expose them for direct introspection (e.g. \`(5).__add__(3)\`).
+static VALUE im_dunder_add(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_add(c, argv[0], argv[1]); }
+static VALUE im_dunder_sub(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_sub(c, argv[0], argv[1]); }
+static VALUE im_dunder_mul(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_mul(c, argv[0], argv[1]); }
+static VALUE im_dunder_truediv(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_truediv(c, argv[0], argv[1]); }
+static VALUE im_dunder_floordiv(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_fdiv(c, argv[0], argv[1]); }
+static VALUE im_dunder_mod(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_mod(c, argv[0], argv[1]); }
+static VALUE im_dunder_pow(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_pow(c, argv[0], argv[1]); }
+static VALUE im_dunder_neg(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_neg(c, argv[0]); }
+static VALUE im_dunder_pos(CTX *c, int argc, VALUE *argv) { (void)argc; return argv[0]; }
+static VALUE im_dunder_abs(CTX *c, int argc, VALUE *argv) {
+    (void)c; (void)argc;
+    // Inline: bi_abs is static-defined later, can't extern.  Replicate
+    // the int-specific path here.
+    VALUE v = argv[0];
+    if (v == PYS_TRUE) return PYS_FIX(1);
+    if (v == PYS_FALSE) return PYS_FIX(0);
+    if (PYS_IS_FIXNUM(v)) {
+        int64_t x = PYS_FIXVAL(v);
+        return PYS_FIX(x < 0 ? -x : x);
+    }
+    if (pys_is_bignum(v)) {
+        mpz_t z; mpz_init_set(z, PYS_PTR(v)->mpz);
+        mpz_abs(z, z);
+        VALUE r = pys_normalise_int(z); mpz_clear(z); return r;
+    }
+    return v;
+}
+static VALUE im_dunder_invert(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_bit_inv(c, argv[0]); }
+static VALUE im_dunder_and(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_bit_and(c, argv[0], argv[1]); }
+static VALUE im_dunder_or(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_bit_or(c, argv[0], argv[1]); }
+static VALUE im_dunder_xor(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_bit_xor(c, argv[0], argv[1]); }
+static VALUE im_dunder_lshift(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_lshift(c, argv[0], argv[1]); }
+static VALUE im_dunder_rshift(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_rshift(c, argv[0], argv[1]); }
+static VALUE im_dunder_bool(CTX *c, int argc, VALUE *argv) {
+    (void)c; (void)argc;
+    return pys_is_truthy(argv[0]) ? PYS_TRUE : PYS_FALSE;
+}
+static VALUE im_dunder_floor_int(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+static VALUE im_dunder_ceil_int(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+static VALUE im_dunder_trunc_int(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
+static VALUE im_dunder_float(CTX *c, int argc, VALUE *argv) {
+    (void)argc;
+    return pys_make_float((double)pys_int_to_long(c, argv[0]));
+}
+
 static struct type_method int_methods[] = {
     { "bit_length",  im_bit_length, 1, 1, 0 },
     { "bit_count",   im_bit_count,  1, 1, 0 },
@@ -11891,6 +11940,32 @@ static struct type_method int_methods[] = {
     { "conjugate",   im_conjugate,  1, 1, 0 },
     { "as_integer_ratio", bi_int_as_integer_ratio, 1, 1, 0 },
     { "is_integer",  bi_int_is_integer, 1, 1, 0 },
+    { "__add__",     im_dunder_add,     2, 2, 0 },
+    { "__radd__",    im_dunder_add,     2, 2, 0 },
+    { "__sub__",     im_dunder_sub,     2, 2, 0 },
+    { "__mul__",     im_dunder_mul,     2, 2, 0 },
+    { "__rmul__",    im_dunder_mul,     2, 2, 0 },
+    { "__truediv__", im_dunder_truediv, 2, 2, 0 },
+    { "__floordiv__",im_dunder_floordiv,2, 2, 0 },
+    { "__mod__",     im_dunder_mod,     2, 2, 0 },
+    { "__pow__",     im_dunder_pow,     2, 2, 0 },
+    { "__neg__",     im_dunder_neg,     1, 1, 0 },
+    { "__pos__",     im_dunder_pos,     1, 1, 0 },
+    { "__abs__",     im_dunder_abs,     1, 1, 0 },
+    { "__invert__",  im_dunder_invert,  1, 1, 0 },
+    { "__and__",     im_dunder_and,     2, 2, 0 },
+    { "__rand__",    im_dunder_and,     2, 2, 0 },
+    { "__or__",      im_dunder_or,      2, 2, 0 },
+    { "__ror__",     im_dunder_or,      2, 2, 0 },
+    { "__xor__",     im_dunder_xor,     2, 2, 0 },
+    { "__rxor__",    im_dunder_xor,     2, 2, 0 },
+    { "__lshift__",  im_dunder_lshift,  2, 2, 0 },
+    { "__rshift__",  im_dunder_rshift,  2, 2, 0 },
+    { "__bool__",    im_dunder_bool,    1, 1, 0 },
+    { "__floor__",   im_dunder_floor_int, 1, 1, 0 },
+    { "__ceil__",    im_dunder_ceil_int,  1, 1, 0 },
+    { "__trunc__",   im_dunder_trunc_int, 1, 1, 0 },
+    { "__float__",   im_dunder_float,     1, 1, 0 },
     { NULL, NULL, 0, 0, 0 }
 };
 
@@ -12049,10 +12124,30 @@ cm_conj(CTX *c, int argc, VALUE *argv)
     (void)c; (void)argc;
     return pys_make_complex(PYS_PTR(argv[0])->cpx.re, -PYS_PTR(argv[0])->cpx.im);
 }
+// `c.__complex__()` returns self (or a fresh complex of the same value)
+// — needed by tests that probe the complex protocol directly.
+static VALUE
+cm_dunder_complex(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE v = argv[0];
+    if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_INSTANCE
+        && PYS_PTR(v)->inst.primary
+        && PYS_IS_PTR(PYS_PTR(v)->inst.primary)
+        && PYS_PTR(PYS_PTR(v)->inst.primary)->type == PYS_T_COMPLEX) {
+        v = PYS_PTR(v)->inst.primary;
+    }
+    if (PYS_IS_PTR(v) && PYS_PTR(v)->type == PYS_T_COMPLEX) {
+        return pys_make_complex(PYS_PTR(v)->cpx.re, PYS_PTR(v)->cpx.im);
+    }
+    return v;
+}
+
 static struct type_method complex_methods[] = {
     { "real",      cm_real, 1, 1, 1 },
     { "imag",      cm_imag, 1, 1, 1 },
     { "conjugate", cm_conj, 1, 1, 0 },
+    { "__complex__", cm_dunder_complex, 1, 1, 0 },
     { NULL, NULL, 0, 0, 0 }
 };
 
