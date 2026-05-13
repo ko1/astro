@@ -780,9 +780,12 @@ make_store(const char *name, NODE *rhs)
 {
     // CPython 3.7+ made `async` / `await` hard keywords — assigning to
     // them is a SyntaxError.  pystro's lexer still treats them as soft
-    // contextual names so we reject the assignment here.
+    // contextual names so we reject the assignment here.  `__debug__`
+    // is a builtin constant CPython refuses to rebind.
     if (name && (strcmp(name, "async") == 0 || strcmp(name, "await") == 0))
         parse_error("cannot assign to keyword");
+    if (name && strcmp(name, "__debug__") == 0)
+        parse_error("cannot assign to __debug__");
     // Class body: bindings go to c->current_class.methods (which serves
     // as both the method table and the class attribute namespace).
     // PEP 8 name mangling applies to class-level bindings too.
@@ -2397,6 +2400,11 @@ parse_call_args(NODE *fn)
                 }
                 if (inline_genexp) {
                     e = parse_genexp_lazy(saved_remap_ge);
+                    // Generator expression must be the sole positional
+                    // argument when written without enclosing parens.
+                    // `f(x for x in xs, 2)` is a SyntaxError in CPython.
+                    if (peek_tok(0)->kind != T_RPAREN)
+                        parse_error("Generator expression must be parenthesized");
                 } else {
                     e = parse_expr();
                 }
@@ -2408,6 +2416,26 @@ parse_call_args(NODE *fn)
             }
             if (!match_tok(T_COMMA)) break;
             if (peek_tok(0)->kind == T_RPAREN) break;
+            // After accepting another arg, peek ahead: if we see an
+            // unparenthesised `expr for ...`, that's also a SyntaxError
+            // (`f(100, x for x in xs)`).
+            {
+                size_t look = tok_pos;
+                int depth = 0;
+                while (tok_arr[look].kind != T_EOF) {
+                    int kk = tok_arr[look].kind;
+                    if (kk == T_LPAREN || kk == T_LBRACK || kk == T_LBRACE) depth++;
+                    else if (kk == T_RPAREN || kk == T_RBRACK || kk == T_RBRACE) {
+                        if (depth == 0) break;
+                        depth--;
+                    }
+                    else if (depth == 0 && kk == T_COMMA) break;
+                    else if (depth == 0 && kk == T_FOR) {
+                        parse_error("Generator expression must be parenthesized");
+                    }
+                    look++;
+                }
+            }
         }
     }
     expect(T_RPAREN, "')'");
