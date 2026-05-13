@@ -154,6 +154,10 @@ def update_abstractmethods(cls): return cls
 
 
 class ABC(metaclass=ABCMeta):
+    # CPython's abc.ABC declares an empty __slots__ so subclasses can
+    # add their own without inheriting a __dict__.  Some test code
+    # introspects this directly.
+    __slots__ = ()
     # Enforce abstract methods at instantiation: any method on the
     # class (or its bases) marked __isabstractmethod__ that isn't
     # overridden by the concrete subclass forbids instantiation.
