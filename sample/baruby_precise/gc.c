@@ -1,99 +1,269 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include "context.h"
 #include "gc.h"
 
 // ----------------------------------------------------------------------------
-// Precise mark&sweep, single-threaded.  See gc.h for design overview.
+// Semispace (Cheney) moving GC with stress mode.  See gc.h for design.
 // ----------------------------------------------------------------------------
 
 BarubyGCStats baruby_gc_stats = {0, 0, 0};
+int baruby_gc_stress = 0;
 
-// Doubly-linked list of all live objects.
-static BarubyGCNode all_objects_head = { &all_objects_head, &all_objects_head, 0, 0 };
+#define REGION_BYTES  ((size_t)64u << 20)   // 64 MiB per semispace
+#define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
 
-// Current CTX (single-threaded; set by baruby_gc_init).
-static CTX *gc_ctx;
+static char *space0 = NULL;
+static char *space1 = NULL;
+static int   active = 0;
+static char *active_top = NULL;
+static char *active_end = NULL;
 
-// Cumulative bytes allocated since the last GC.  When this exceeds the
-// threshold, run GC.  Simpler and more robust than tracking live heap
-// size (which would require old/new size tracking on every realloc).
-static size_t bytes_since_gc = 0;
-static size_t gc_threshold = 1u << 22;   // 4 MiB initial
+static CTX *gc_ctx = NULL;
 
-// ----------------------------------------------------------------------------
-// Object linkage helpers
-// ----------------------------------------------------------------------------
-
-static inline void
-gc_list_insert(BarubyGCNode *node)
-{
-    node->prev = &all_objects_head;
-    node->next = all_objects_head.next;
-    all_objects_head.next->prev = node;
-    all_objects_head.next = node;
-}
-
-static inline void
-gc_list_remove(BarubyGCNode *node)
-{
-    node->prev->next = node->next;
-    node->next->prev = node->prev;
-}
+static char *
+active_space(void)   { return active == 0 ? space0 : space1; }
+static char *
+inactive_space(void) { return active == 0 ? space1 : space0; }
 
 // ----------------------------------------------------------------------------
-// Public API
+// Initialization
 // ----------------------------------------------------------------------------
 
 void
 baruby_gc_init(CTX *c)
 {
     gc_ctx = c;
+    space0 = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
+                          MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    space1 = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
+                          MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (space0 == MAP_FAILED || space1 == MAP_FAILED) {
+        perror("baruby_gc_init: mmap"); abort();
+    }
+    active = 0;
+    active_top = space0;
+    active_end = space0 + REGION_BYTES;
+
+    if (getenv("BARUBY_GC_STRESS")) {
+        baruby_gc_stress = 1;
+        // Inactive starts PROT_NONE (will be flipped to RW at collection start).
+        if (mprotect(space1, REGION_BYTES, PROT_NONE) != 0) {
+            perror("baruby_gc_init: initial mprotect"); abort();
+        }
+        fprintf(stderr, "[baruby_gc] STRESS mode: collect on every alloc, "
+                        "from-space PROT_NONE after move\n");
+    }
 }
+
+// ----------------------------------------------------------------------------
+// Allocation
+// ----------------------------------------------------------------------------
 
 static void gc_collect_internal(VALUE *sp_top);
 
 void *
-baruby_gc_alloc(uint32_t kind, size_t payload_size, VALUE *sp_top)
+baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
 {
-    if (bytes_since_gc > gc_threshold) {
+    size_t aligned = ALIGN8(payload_size);
+    size_t total   = sizeof(GCHeader) + aligned;
+
+    if (baruby_gc_stress || (active_top + total) > active_end) {
         gc_collect_internal(sp_top);
-        bytes_since_gc = 0;
+        if (active_top + total > active_end) {
+            fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
+                    total, (size_t)(active_end - active_top));
+            abort();
+        }
     }
-    BarubyGCNode *node = (BarubyGCNode *)malloc(sizeof(BarubyGCNode) + payload_size);
-    if (!node) { fprintf(stderr, "baruby_gc: OOM (%zu bytes)\n", payload_size); abort(); }
-    node->marked = 0;
-    node->payload_kind = kind;
-    gc_list_insert(node);
+
+    GCHeader *h = (GCHeader *)active_top;
+    h->kind = (uint32_t)kind;
+    h->size = (uint32_t)payload_size;
+    h->fwd  = NULL;
+    active_top += total;
+
+    void *payload = (void *)(h + 1);
+    memset(payload, 0, aligned);
+
     baruby_gc_stats.total_bytes += payload_size;
     baruby_gc_stats.heap_bytes  += payload_size;
-    bytes_since_gc += payload_size;
-    memset(node + 1, 0, payload_size);
-    return (void *)(node + 1);
+    return payload;
 }
 
 void *
-baruby_gc_alloc_payload(size_t size, VALUE *sp_top)
+baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
-    (void)sp_top;
-    void *p = malloc(size);
-    if (!p) { fprintf(stderr, "baruby_gc: OOM payload (%zu bytes)\n", size); abort(); }
-    baruby_gc_stats.total_bytes += size;
-    baruby_gc_stats.heap_bytes  += size;
-    bytes_since_gc += size;
-    return p;
+    if (old == NULL) {
+        return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+    }
+    // Read old header BEFORE alloc (alloc may move/mprotect us).
+    GCHeader *oldh = (GCHeader *)old - 1;
+    size_t old_size = oldh->size;
+    BarubyGCKind kind = (BarubyGCKind)oldh->kind;
+    size_t copy_bytes = old_size < new_size ? old_size : new_size;
+
+    // Buffer old's content in plain heap BEFORE the alloc may invalidate it.
+    // Cost is one malloc/free per realloc; acceptable for the testbed.
+    void *buf = malloc(copy_bytes);
+    if (!buf) { fprintf(stderr, "realloc buf OOM\n"); abort(); }
+    memcpy(buf, old, copy_bytes);
+
+    // After this alloc, `old`'s page may be mprotect'd PROT_NONE (stress).
+    void *newp = baruby_gc_alloc(kind, new_size, sp_top);
+    memcpy(newp, buf, copy_bytes);
+    free(buf);
+    return newp;
 }
 
-void *
-baruby_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top)
+// ----------------------------------------------------------------------------
+// Cheney-style copy collector
+// ----------------------------------------------------------------------------
+
+static char *to_top;
+static char *to_base;
+static char *from_base_cur;   // for stale-ptr detection during scan
+
+// Highest sp_top ever passed to an alloc.  We zero slots in
+// [sp_top .. high_water] before each scan so stale heap pointers from
+// returned NODE_DEFs above the current call's top don't confuse the GC.
+static VALUE *sp_high_water = NULL;
+
+// Forward an old payload pointer: copy to to-space if not already done,
+// return new payload address.
+static void *
+forward_payload(void *old_payload)
 {
-    (void)sp_top;
-    void *np = realloc(p, new_size);
-    if (!np) { fprintf(stderr, "baruby_gc: OOM realloc (%zu bytes)\n", new_size); abort(); }
-    baruby_gc_stats.total_bytes += new_size;
-    bytes_since_gc += new_size;
-    return np;
+    if (!old_payload) return NULL;
+    // Validate: old_payload must be in current from-space.  Stale pointers
+    // from un-cleared sp[] slots above the current frame's logical top
+    // might point at unrelated memory (uninitialized region of inactive
+    // space, etc.).  Treat such pointers as dead — return NULL so the
+    // root slot reads as 0 (= VAL_FALSE) afterward.
+    if ((char *)old_payload < from_base_cur ||
+        (char *)old_payload >= from_base_cur + REGION_BYTES) {
+        return NULL;
+    }
+    GCHeader *oldh = (GCHeader *)old_payload - 1;
+    if (oldh->fwd) {
+        // Validate fwd: must point into current to-space.
+        if ((char *)oldh->fwd < to_base ||
+            (char *)oldh->fwd >= to_base + REGION_BYTES) {
+            return NULL;
+        }
+        return oldh->fwd;
+    }
+
+    size_t aligned = ALIGN8(oldh->size);
+    size_t total = sizeof(GCHeader) + aligned;
+
+    GCHeader *newh = (GCHeader *)to_top;
+    memcpy(newh, oldh, total);
+    newh->fwd = NULL;
+    to_top += total;
+
+    void *new_payload = (void *)(newh + 1);
+    oldh->fwd = new_payload;
+    return new_payload;
+}
+
+static VALUE
+forward_value(VALUE v)
+{
+    if (!IS_PTR(v)) return v;
+    return (VALUE)forward_payload((void *)v);
+}
+
+// Walk a freshly-copied object's outgoing refs (in to-space) and forward them.
+static void
+process_object(GCHeader *h)
+{
+    void *payload = (void *)(h + 1);
+    switch ((BarubyGCKind)h->kind) {
+      case KIND_OBJ_ARRAY: {
+        BaArray *a = (BaArray *)payload;
+        if (a->items) a->items = (VALUE *)forward_payload(a->items);
+        break;
+      }
+      case KIND_OBJ_STRING: {
+        BaString *s = (BaString *)payload;
+        if (s->bytes) s->bytes = (char *)forward_payload(s->bytes);
+        break;
+      }
+      case KIND_PAYLOAD_VAL: {
+        VALUE *items = (VALUE *)payload;
+        size_t n = h->size / sizeof(VALUE);
+        for (size_t i = 0; i < n; i++) items[i] = forward_value(items[i]);
+        break;
+      }
+      case KIND_PAYLOAD_BYTE:
+      case KIND_FREE:
+        break;
+    }
+}
+
+static void
+gc_collect_internal(VALUE *sp_top)
+{
+    char *from_base = active_space();
+    char *from_end  = active_end;
+
+    // Make the inactive (= to-space) writable.  In stress mode it was PROT_NONE.
+    char *next_to_base = inactive_space();
+    if (baruby_gc_stress) {
+        if (mprotect(next_to_base, REGION_BYTES, PROT_READ|PROT_WRITE) != 0) {
+            perror("gc_collect: mprotect RW"); abort();
+        }
+    }
+
+    to_base = next_to_base;
+    to_top  = to_base;
+    from_base_cur = from_base;
+
+    // Reset live-bytes counter; we'll add as we copy.
+    baruby_gc_stats.heap_bytes = 0;
+
+    // (1) Scan VALUE stack and forward root pointers in place.
+    CTX *c = gc_ctx;
+    for (VALUE *p = c->env; p < sp_top; p++) {
+        *p = forward_value(*p);
+    }
+
+    // (2) Cheney scan: walk objects already copied to to-space, forwarding
+    //     their outgoing refs.  Each newly-copied object extends to_top,
+    //     so the loop terminates when scan catches up.
+    // Zero stale slots above current top up to high-water mark.
+    if (sp_high_water == NULL || sp_top > sp_high_water) {
+        sp_high_water = sp_top;
+    } else {
+        for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
+    }
+    char *scan = to_base;
+    while (scan < to_top) {
+        GCHeader *h = (GCHeader *)scan;
+        process_object(h);
+        baruby_gc_stats.heap_bytes += h->size;
+        scan += sizeof(GCHeader) + ALIGN8(h->size);
+    }
+
+    // (3) Swap active.
+    active = 1 - active;
+    active_top = to_top;
+    active_end = next_to_base + REGION_BYTES;
+
+    // (4) Stress: lock out the old from-space so stale pointer access SIGSEGVs.
+    if (baruby_gc_stress) {
+        if (mprotect(from_base, REGION_BYTES, PROT_NONE) != 0) {
+            perror("gc_collect: mprotect NONE"); abort();
+        }
+    }
+    (void)from_end;
+
+    baruby_gc_stats.gc_count++;
+    // Also keep c->sp current.
+    gc_ctx->sp = sp_top;
 }
 
 void
@@ -105,124 +275,3 @@ baruby_gc_collect(VALUE *sp_top)
 size_t baruby_gc_total_bytes(void) { return baruby_gc_stats.total_bytes; }
 size_t baruby_gc_heap_bytes (void) { return baruby_gc_stats.heap_bytes;  }
 size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
-
-// ----------------------------------------------------------------------------
-// Mark phase
-// ----------------------------------------------------------------------------
-
-static void mark_value(VALUE v);
-
-static void
-mark_object(void *payload)
-{
-    BarubyGCNode *node = (BarubyGCNode *)payload - 1;
-    if (node->marked) return;
-    node->marked = 1;
-
-    // Recurse into containers.
-    switch (node->payload_kind) {
-      case OBJ_ARRAY: {
-          BaArray *a = (BaArray *)payload;
-          for (uint32_t i = 0; i < a->len; i++) mark_value(a->items[i]);
-          break;
-      }
-      case OBJ_STRING:
-          // No outgoing refs (bytes are raw chars).
-          break;
-      default:
-          // Unknown kind — leave it. Shouldn't happen.
-          break;
-    }
-}
-
-static void
-mark_value(VALUE v)
-{
-    if (!IS_PTR(v)) return;     // fixnum / true / false / nil — no GC tracking
-    mark_object((void *)v);
-}
-
-static void
-mark_phase(VALUE *sp_top)
-{
-    // Clear all marks.
-    for (BarubyGCNode *n = all_objects_head.next; n != &all_objects_head; n = n->next) {
-        n->marked = 0;
-    }
-
-    // Walk the VALUE stack: c->env .. sp_top (= current scratch top).
-    CTX *c = gc_ctx;
-    for (VALUE *p = c->env; p < sp_top; p++) {
-        mark_value(*p);
-    }
-
-    // Walk callcache.body? cc->body is an AST NODE = immortal, not a VALUE — skip.
-    // Function table bodies are AST NODEs = immortal — skip.
-    //
-    // (If we later add inline-cached VALUEs (e.g. last_klass) they'd be
-    // additional roots here.)
-}
-
-// ----------------------------------------------------------------------------
-// Sweep phase
-// ----------------------------------------------------------------------------
-
-static void
-gc_finalize_object(BarubyGCNode *node)
-{
-    void *payload = (void *)(node + 1);
-    switch (node->payload_kind) {
-      case OBJ_ARRAY: {
-          BaArray *a = (BaArray *)payload;
-          if (a->items) {
-              // Approximate: don't track exact bytes — use capa for stats only.
-              baruby_gc_stats.heap_bytes -= sizeof(VALUE) * a->capa;
-              free(a->items);
-          }
-          baruby_gc_stats.heap_bytes -= sizeof(BaArray);
-          break;
-      }
-      case OBJ_STRING: {
-          BaString *s = (BaString *)payload;
-          if (s->bytes) {
-              baruby_gc_stats.heap_bytes -= s->capa;
-              free(s->bytes);
-          }
-          baruby_gc_stats.heap_bytes -= sizeof(BaString);
-          break;
-      }
-      default: break;
-    }
-    free(node);
-}
-
-static void
-sweep_phase(void)
-{
-    BarubyGCNode *n = all_objects_head.next;
-    while (n != &all_objects_head) {
-        BarubyGCNode *next = n->next;
-        if (!n->marked) {
-            gc_list_remove(n);
-            gc_finalize_object(n);
-        }
-        n = next;
-    }
-}
-
-// ----------------------------------------------------------------------------
-// Driver
-// ----------------------------------------------------------------------------
-
-static void
-gc_collect_internal(VALUE *sp_top)
-{
-    gc_ctx->sp = sp_top;
-    mark_phase(sp_top);
-    sweep_phase();
-    baruby_gc_stats.gc_count++;
-    // Threshold stays at the initial value (4 MiB).  A real
-    // implementation would grow based on retained-live-set size, but
-    // tracking that needs old/new size accounting on every realloc,
-    // which we don't do in this MVP.
-}

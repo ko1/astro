@@ -77,8 +77,13 @@ typedef uint64_t state_serial_t;
 #define IS_INT(v)     (((uintptr_t)(v) & (uintptr_t)1) != 0)
 #define IS_FALSY(v)   ((v) == VAL_FALSE || (v) == VAL_NIL)
 #define IS_TRUTHY(v)  (!IS_FALSY(v))
-#define IS_PTR(v)     ((v) != VAL_FALSE && (v) != VAL_TRUE && (v) != VAL_NIL \
-                       && ((uintptr_t)(v) & (uintptr_t)1) == 0)
+// 8-byte aligned heap pointer (baruby_precise: semispace allocations are
+// always 8-byte aligned payloads).  Singletons (true=2, nil=4) have non-zero
+// low bits so they're auto-excluded.  False=0 is excluded explicitly.
+// Strict 8-byte check filters out garbage values that happen to have LSB=0
+// but aren't actual heap pointers (= GC mis-trace bugs).
+#define IS_PTR(v)     ((v) != VAL_FALSE \
+                       && ((uintptr_t)(v) & (uintptr_t)7) == 0)
 
 // Heap object header.  Type tag lets the dispatch nodes branch on
 // receiver type at eval time (e.g. call_size: array vs string).
@@ -192,7 +197,10 @@ typedef struct CTX_struct {
 // any potential GC poll.  Helpers that don't allocate (compare, etc.) omit it.
 VALUE baruby_ary_new(uint32_t capa, VALUE *sp_top);
 VALUE baruby_ary_new_from(const VALUE *items, uint32_t n, VALUE *sp_top);
-void  baruby_ary_push(VALUE ary, VALUE v, VALUE *sp_top);
+// av_ref points to the caller's sp slot holding the array VALUE; we
+// re-read through *av_ref after any internal alloc so post-move addresses
+// are picked up.
+void  baruby_ary_push(VALUE *av_ref, VALUE v, VALUE *sp_top);
 VALUE baruby_ary_plus(VALUE a, VALUE b, VALUE *sp_top);
 VALUE baruby_str_new(const char *bytes, uint32_t len, VALUE *sp_top);
 VALUE baruby_str_new_cstr(const char *cstr, VALUE *sp_top);

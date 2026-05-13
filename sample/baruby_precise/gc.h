@@ -11,79 +11,72 @@ typedef struct CTX_struct CTX;
 typedef intptr_t VALUE;
 
 // ----------------------------------------------------------------------------
-// Precise mark&sweep GC.
+// Precise semispace (Cheney) moving GC with stress mode.
 //
-// Design:
-//   - Single contiguous VALUE stack (baruby_stack_base..baruby_stack_end).
-//     c->fp / c->sp index into this stack.
-//   - Every heap object is malloc'd individually and linked into a global
-//     `all_objects` doubly-linked list via an embedded GC node (one per
-//     object, allocated alongside the payload).
-//   - Mark: walk c->fp_base..c->sp scanning VALUE roots, plus the function
-//     table (function bodies reference AST = immortal, no VALUE roots there),
-//     trace through BaArray.items / BaString fields.
-//   - Sweep: walk all_objects, free unmarked.
+// Two equal-size mmap'd regions.  Allocate from the active region; when full
+// (or in stress mode, on every alloc) GC copies all reachable objects to the
+// inactive region, swaps active, and (in stress mode) mprotect's the old
+// active as PROT_NONE so any stale pointer dereference SIGSEGVs immediately.
 //
-// This is intentionally simple: no freelist, no moving, no generational.
-// Goal is comparable correctness against the conservative-libgc baruby, so
-// the perf delta exposed is the precise-rooting overhead alone (extra
-// memory writes for sp[] spills) on top of plain malloc/free.
+// Stress mode (env var BARUBY_GC_STRESS=1):
+//   - every baruby_gc_alloc triggers a full collection
+//   - old from-space is mprotect'd PROT_NONE after move
+//   This catches: VALUE held in C local across an alloc + use of the C
+//   local after the alloc.  The C local is the OLD (from-space) address;
+//   reading through it segfaults.  Compare with the root in sp[] which GC
+//   has already updated to the new address.
+//
+// Memory layout per allocation:
+//
+//   [ GCHeader (16B) | payload (size bytes, 8-byte aligned) ]
+//
+// GCHeader.fwd is NULL while the object is live; during GC the from-space
+// header's fwd is overwritten with the to-space payload pointer
+// (= forwarding pointer for Cheney's algorithm).
 // ----------------------------------------------------------------------------
 
-// Per-object GC header. Sits in front of each heap object payload so
-// `(BarubyGCNode *)payload - 1` recovers it.
-typedef struct BarubyGCNode {
-    struct BarubyGCNode *prev;
-    struct BarubyGCNode *next;
-    uint32_t marked;       // 0 = unmarked, 1 = marked (reset on mark phase start)
-    uint32_t payload_kind; // OBJ_ARRAY / OBJ_STRING / ... mirrors hdr.type
-    // Followed by the actual object payload (BaArray / BaString).
-} BarubyGCNode;
+typedef enum {
+    KIND_FREE         = 0,
+    KIND_OBJ_ARRAY    = 1,   // BaArray header (items field is a pointer)
+    KIND_OBJ_STRING   = 2,   // BaString header (bytes field is a pointer)
+    KIND_PAYLOAD_VAL  = 3,   // VALUE[] (BaArray.items target)
+    KIND_PAYLOAD_BYTE = 4,   // char[]  (BaString.bytes target)
+} BarubyGCKind;
 
-// Auxiliary record for separately-allocated `items` / `bytes` payloads
-// (BaArray.items, BaString.bytes).  Tracked so sweep can free them too —
-// they aren't reachable as a VALUE, only via their owning object.  We
-// piggyback on the same list with a "payload_kind=0" tag.
-//
-// In this minimal version we just use plain `malloc` for these auxiliary
-// arrays and rely on the owning object's sweep to free them (see
-// gc_finalize_object).  No separate GC node for the items array.
+typedef struct GCHeader {
+    uint32_t kind;
+    uint32_t size;   // payload bytes (not including this header)
+    void    *fwd;    // NULL while live; forwarding-ptr-to-new-payload during/after move
+} GCHeader;
 
-// Stats (matches baruby's libgc counters).
 typedef struct {
-    size_t total_bytes;    // cumulative bytes allocated (never decreases)
-    size_t heap_bytes;     // currently allocated bytes
-    size_t gc_count;       // collection count
+    size_t total_bytes;
+    size_t heap_bytes;
+    size_t gc_count;
 } BarubyGCStats;
 
 extern BarubyGCStats baruby_gc_stats;
+extern int baruby_gc_stress;     // 1 = collect on every alloc + mprotect from-space
 
-// Initialize the GC: allocate the VALUE stack, register the CTX.
-// Must be called once before any allocation.
+// Initialize: mmap two regions, register CTX.
 void baruby_gc_init(CTX *c);
 
-// Allocate `payload_size` bytes for a payload of kind `kind`.  Returns a
-// pointer to the payload (= immediately after the BarubyGCNode header).
-// May trigger a collection if a threshold is exceeded.
-//
-// `sp_top` is the caller's current scratch top.  Before potentially
-// triggering GC, the allocator updates c->sp = sp_top so the mark phase
-// scans the correct root range.
-void *baruby_gc_alloc(uint32_t kind, size_t payload_size, VALUE *sp_top);
+// Allocate `payload_size` bytes for an object of `kind`.  May trigger
+// collection (always in stress mode).  Returns a pointer to the payload
+// (after the GCHeader).
+void *baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top);
 
-// Allocate a "payload buffer" (BaArray.items / BaString.bytes).  These
-// are tracked separately because they're not VALUE roots in their own
-// right — the GC only visits them via their owning object.  In this
-// minimal MVP they're plain malloc; their owning object's finalize frees
-// them.
-void *baruby_gc_alloc_payload(size_t size, VALUE *sp_top);
-void *baruby_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
+// Realloc a payload object.  Allocates a new block of new_size bytes,
+// copies min(old_size, new_size) bytes from the old block, returns the
+// new pointer.  CAUTION: the old block may move during the new alloc
+// (= become stale).  In non-stress mode, the implementation follows the
+// fwd pointer.  In stress mode, dereferencing the stale old pointer to
+// read fwd will SIGSEGV — the bug must be fixed in the caller.
+void *baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top);
 
-// Force a collection now.  Normal allocation triggers this internally
-// when the heap grows past a threshold; this is the explicit entry point.
+// Force a collection now.
 void baruby_gc_collect(VALUE *sp_top);
 
-// Stats helpers (for `__GC_STATS__` print in main.c).
 size_t baruby_gc_total_bytes(void);
 size_t baruby_gc_heap_bytes(void);
 size_t baruby_gc_count(void);
