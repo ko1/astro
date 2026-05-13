@@ -130,29 +130,99 @@ def _match_one(pat, pi, s, si, flags, groups):
         i = 0
         cl = ch.lower() if (flags & IGNORECASE) else ch
         while i < len(cls):
+            # Resolve the next class element ("atom") and how many chars
+            # it consumed.  An atom is either an escape sequence (\d, \w,
+            # \s, \n, \t, or `\<lit>`) or a literal char.  We must handle
+            # this BEFORE the range check so `[\ -~]` parses as range
+            # (space, tilde) — escape-space first, then `-`, then `~`.
+            atom_kind = "lit"        # "lit" | "class"
+            atom_lit = cls[i]
+            atom_class_ok = False
+            advance = 1
             if cls[i] == "\\" and i + 1 < len(cls):
-                # \d \w \s etc inside char class
                 e = cls[i + 1]
-                if e == "d" and ch.isdigit(): matched = True
-                elif e == "w" and (ch.isalnum() or ch == "_"): matched = True
-                elif e == "s" and ch in " \t\n\r\f\v": matched = True
-                elif e == "n" and ch == "\n": matched = True
-                elif e == "t" and ch == "\t": matched = True
-                elif e == ch: matched = True
-                i += 2
-                continue
-            if i + 2 < len(cls) and cls[i + 1] == "-":
-                lo = cls[i]; hi = cls[i + 2]
+                advance = 2
+                if e in "dwsnt":
+                    atom_kind = "class"
+                    if   e == "d": atom_class_ok = ch.isdigit()
+                    elif e == "w": atom_class_ok = (ch.isalnum() or ch == "_")
+                    elif e == "s": atom_class_ok = ch in " \t\n\r\f\v"
+                    elif e == "n": atom_class_ok = (ch == "\n")
+                    elif e == "t": atom_class_ok = (ch == "\t")
+                elif e == "x" and i + 3 < len(cls):
+                    # \xNN — hex byte literal inside a class
+                    h1 = cls[i + 2]; h2 = cls[i + 3]
+                    def _hex(c):
+                        if "0" <= c <= "9": return ord(c) - ord("0")
+                        if "a" <= c <= "f": return ord(c) - ord("a") + 10
+                        if "A" <= c <= "F": return ord(c) - ord("A") + 10
+                        return -1
+                    h1v = _hex(h1); h2v = _hex(h2)
+                    if h1v >= 0 and h2v >= 0:
+                        atom_lit = chr(h1v * 16 + h2v)
+                        advance = 4
+                    else:
+                        atom_lit = e
+                elif e == "b":
+                    atom_lit = "\b"
+                elif e == "f":
+                    atom_lit = "\f"
+                elif e == "r":
+                    atom_lit = "\r"
+                elif e == "v":
+                    atom_lit = "\v"
+                elif e == "0":
+                    atom_lit = "\0"
+                else:
+                    # Literal-escape: \., \\, \[, \ (space), etc.
+                    atom_lit = e
+            # Range form: <atom>-<atom2>.  Character classes (\d etc.)
+            # can't be range endpoints.
+            if (atom_kind == "lit" and i + advance < len(cls)
+                    and cls[i + advance] == "-"
+                    and i + advance + 1 < len(cls)
+                    and cls[i + advance + 1] != "]"):
+                hi_pos = i + advance + 1
+                hi = cls[hi_pos]
+                hi_advance = 1
+                # Endpoint may itself be an escape: `[\x41-\x43]` etc.
+                if cls[hi_pos] == "\\" and hi_pos + 1 < len(cls):
+                    he = cls[hi_pos + 1]
+                    if he == "x" and hi_pos + 3 < len(cls):
+                        hh1 = cls[hi_pos + 2]; hh2 = cls[hi_pos + 3]
+                        def _hex2(cc):
+                            if "0" <= cc <= "9": return ord(cc) - ord("0")
+                            if "a" <= cc <= "f": return ord(cc) - ord("a") + 10
+                            if "A" <= cc <= "F": return ord(cc) - ord("A") + 10
+                            return -1
+                        v1 = _hex2(hh1); v2 = _hex2(hh2)
+                        if v1 >= 0 and v2 >= 0:
+                            hi = chr(v1 * 16 + v2)
+                            hi_advance = 4
+                        else:
+                            hi = he; hi_advance = 2
+                    elif he == "b": hi = "\b"; hi_advance = 2
+                    elif he == "f": hi = "\f"; hi_advance = 2
+                    elif he == "r": hi = "\r"; hi_advance = 2
+                    elif he == "v": hi = "\v"; hi_advance = 2
+                    elif he == "n": hi = "\n"; hi_advance = 2
+                    elif he == "t": hi = "\t"; hi_advance = 2
+                    elif he == "0": hi = "\0"; hi_advance = 2
+                    else: hi = he; hi_advance = 2
+                lo = atom_lit
                 if (flags & IGNORECASE):
                     lo = lo.lower(); hi = hi.lower()
                 if lo <= cl <= hi:
                     matched = True
-                i += 3
+                i += advance + 1 + hi_advance
+                continue
+            if atom_kind == "class":
+                if atom_class_ok: matched = True
             else:
-                cc = cls[i].lower() if (flags & IGNORECASE) else cls[i]
+                cc = atom_lit.lower() if (flags & IGNORECASE) else atom_lit
                 if cc == cl:
                     matched = True
-                i += 1
+            i += advance
         return ((matched != neg), si + 1)
     if flags & IGNORECASE:
         if ch.lower() == pc.lower():
