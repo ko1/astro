@@ -4905,6 +4905,26 @@ bi_dunder_hash(CTX *c, int argc, VALUE *argv)
 // (`class X: __hash__ = object.__hash__`) and short-circuit to identity.
 void *_pys_bi_dunder_hash_addr = (void *)bi_dunder_hash;
 
+// `int.as_integer_ratio()` — always returns (self, 1).
+VALUE
+bi_int_as_integer_ratio(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE v = argv[0];
+    if (pys_is_instance(v) && PYS_PTR(v)->inst.primary)
+        v = PYS_PTR(v)->inst.primary;
+    VALUE pair[2] = { v, PYS_FIX(1) };
+    return pys_make_tuple(pair, 2);
+}
+
+// `int.is_integer()` — always True (Python 3.12+).
+VALUE
+bi_int_is_integer(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_TRUE;
+}
+
 // Direct int hash that bypasses user-class dispatch.  Used as the
 // `__hash__` slot on `int` itself so `int.__hash__(self)` from inside a
 // subclass's __hash__ override doesn't recurse back to user code.  For
@@ -11697,6 +11717,8 @@ im_denominator(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return PYS_
 static VALUE
 im_conjugate(CTX *c, int argc, VALUE *argv) { (void)c; (void)argc; return argv[0]; }
 
+extern VALUE bi_int_as_integer_ratio(CTX *c, int argc, VALUE *argv);
+extern VALUE bi_int_is_integer(CTX *c, int argc, VALUE *argv);
 static struct type_method int_methods[] = {
     { "bit_length",  im_bit_length, 1, 1, 0 },
     { "bit_count",   im_bit_count,  1, 1, 0 },
@@ -11708,6 +11730,8 @@ static struct type_method int_methods[] = {
     { "numerator",   im_numerator,  1, 1, 1 },
     { "denominator", im_denominator,1, 1, 1 },
     { "conjugate",   im_conjugate,  1, 1, 0 },
+    { "as_integer_ratio", bi_int_as_integer_ratio, 1, 1, 0 },
+    { "is_integer",  bi_int_is_integer, 1, 1, 0 },
     { NULL, NULL, 0, 0, 0 }
 };
 
@@ -18512,6 +18536,14 @@ install_builtins(CTX *c)
         pys_make_builtin_method("from_bytes", bi_int_from_bytes, 1, 3));
     pys_class_add_method(c, c->TYPE_int, "__hash__",
         pys_make_builtin_method("__hash__", bi_int_dunder_hash, 1, 1));
+    {
+        extern VALUE bi_int_as_integer_ratio(CTX *c, int argc, VALUE *argv);
+        extern VALUE bi_int_is_integer(CTX *c, int argc, VALUE *argv);
+        pys_class_add_method(c, c->TYPE_int, "as_integer_ratio",
+            pys_make_builtin_method("as_integer_ratio", bi_int_as_integer_ratio, 1, 1));
+        pys_class_add_method(c, c->TYPE_int, "is_integer",
+            pys_make_builtin_method("is_integer", bi_int_is_integer, 1, 1));
+    }
     c->TYPE_float     = pys_make_builtin_class("float",     bi_float,     PYS_T_FLOAT);
     pys_class_add_method(c, c->TYPE_float, "fromhex",
         pys_make_builtin_method("fromhex", bi_float_fromhex, 1, 1));
