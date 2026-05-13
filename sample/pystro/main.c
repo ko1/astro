@@ -30,15 +30,37 @@ read_file(const char *path)
         fprintf(stderr, "pystro: cannot open '%s': %s\n", path, strerror(errno));
         exit(1);
     }
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    char *buf = (char *)malloc(sz + 1);
-    if (fread(buf, 1, sz, fp) != (size_t)sz) {
-        fprintf(stderr, "pystro: read error\n");
-        exit(1);
+    // Try seek/tell for fast pre-sized read on regular files.  For
+    // pipes / fifos / /dev/stdin, ftell returns -1 — fall back to a
+    // chunked grow-on-demand loop so we don't overflow the buffer.
+    long sz = -1;
+    if (fseek(fp, 0, SEEK_END) == 0) {
+        sz = ftell(fp);
+        if (fseek(fp, 0, SEEK_SET) != 0) sz = -1;
     }
-    buf[sz] = '\0';
+    if (sz >= 0) {
+        char *buf = (char *)malloc((size_t)sz + 1);
+        if (fread(buf, 1, (size_t)sz, fp) != (size_t)sz) {
+            fprintf(stderr, "pystro: read error\n");
+            exit(1);
+        }
+        buf[sz] = '\0';
+        fclose(fp);
+        return buf;
+    }
+    // Non-seekable: grow buffer in chunks.
+    size_t capa = 4096, len = 0;
+    char *buf = (char *)malloc(capa);
+    for (;;) {
+        if (len + 4096 + 1 > capa) {
+            capa *= 2;
+            buf = (char *)realloc(buf, capa);
+        }
+        size_t n = fread(buf + len, 1, capa - len - 1, fp);
+        len += n;
+        if (n == 0) break;
+    }
+    buf[len] = '\0';
     fclose(fp);
     return buf;
 }

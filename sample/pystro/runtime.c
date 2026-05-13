@@ -2120,6 +2120,10 @@ pys_fdiv(CTX *c, VALUE a, VALUE b)
 }
 
 extern VALUE pys_str_pct_format(CTX *c, VALUE fmt, VALUE args);  // forward
+// Set when invoking pys_str_pct_format from the bytes-mode wrapper.
+// `%s` then writes raw bytes (PEP 461) instead of the repr-of-bytes
+// pys_to_str would produce.
+__thread bool pys_pct_bytes_mode = false;
 VALUE
 pys_mod(CTX *c, VALUE a, VALUE b)
 {
@@ -2132,7 +2136,10 @@ pys_mod(CTX *c, VALUE a, VALUE b)
     // for now — the simple cases work.
     if (pys_is_byteseq(a)) {
         VALUE fmt_as_str = pys_make_str(PYS_PTR(a)->str.chars, PYS_PTR(a)->str.len);
+        bool prev = pys_pct_bytes_mode;
+        pys_pct_bytes_mode = true;
         VALUE r = pys_str_pct_format(c, fmt_as_str, b);
+        pys_pct_bytes_mode = prev;
         if (c->state == PYS_STATE_RAISE) return 0;
         if (pys_is_str(r)) {
             VALUE rb = pys_make_bytes(PYS_PTR(r)->str.chars, PYS_PTR(r)->str.len);
@@ -7181,6 +7188,67 @@ pys_to_str(CTX *c, VALUE v)
     return r;
 }
 
+// Re-escape any non-ASCII codepoints in `s` as Python-style `\xNN`,
+// `\uXXXX`, or `\UXXXXXXXX` so that `ascii(x)` / `f"{x!a}"` returns a
+// pure-ASCII string.  Walk UTF-8 input; pure-ASCII fast-path returns
+// the original.
+static VALUE
+pys_ascii_escape_str(VALUE s)
+{
+    if (!pys_is_str(s)) return s;
+    const unsigned char *src = (const unsigned char *)PYS_PTR(s)->str.chars;
+    size_t n = PYS_PTR(s)->str.len;
+    bool any_high = false;
+    for (size_t i = 0; i < n; i++) if (src[i] >= 0x80) { any_high = true; break; }
+    if (!any_high) return s;
+    // Worst case: every codepoint expands to \UXXXXXXXX (10 chars).
+    size_t cap = n * 10 + 1;
+    char *buf = (char *)GC_malloc_atomic(cap);
+    size_t out = 0;
+    size_t i = 0;
+    while (i < n) {
+        unsigned char b = src[i];
+        if (b < 0x80) { buf[out++] = (char)b; i++; continue; }
+        unsigned int cp = 0;
+        size_t need;
+        if ((b & 0xE0) == 0xC0) { cp = b & 0x1F; need = 2; }
+        else if ((b & 0xF0) == 0xE0) { cp = b & 0x0F; need = 3; }
+        else if ((b & 0xF8) == 0xF0) { cp = b & 0x07; need = 4; }
+        else { buf[out++] = '\\'; buf[out++] = 'x';
+               static const char hex[] = "0123456789abcdef";
+               buf[out++] = hex[(b >> 4) & 0xF]; buf[out++] = hex[b & 0xF];
+               i++; continue; }
+        bool ok = (i + need <= n);
+        if (ok) {
+            for (size_t k = 1; k < need; k++) {
+                unsigned char cb = src[i + k];
+                if ((cb & 0xC0) != 0x80) { ok = false; break; }
+                cp = (cp << 6) | (cb & 0x3F);
+            }
+        }
+        if (!ok) {
+            // Bad UTF-8: emit \xNN of the leading byte and advance one.
+            static const char hex[] = "0123456789abcdef";
+            buf[out++] = '\\'; buf[out++] = 'x';
+            buf[out++] = hex[(b >> 4) & 0xF]; buf[out++] = hex[b & 0xF];
+            i++; continue;
+        }
+        static const char hex[] = "0123456789abcdef";
+        if (cp <= 0xFF) {
+            buf[out++] = '\\'; buf[out++] = 'x';
+            buf[out++] = hex[(cp >> 4) & 0xF]; buf[out++] = hex[cp & 0xF];
+        } else if (cp <= 0xFFFF) {
+            buf[out++] = '\\'; buf[out++] = 'u';
+            for (int sh = 12; sh >= 0; sh -= 4) buf[out++] = hex[(cp >> sh) & 0xF];
+        } else {
+            buf[out++] = '\\'; buf[out++] = 'U';
+            for (int sh = 28; sh >= 0; sh -= 4) buf[out++] = hex[(cp >> sh) & 0xF];
+        }
+        i += need;
+    }
+    return pys_make_str(buf, out);
+}
+
 VALUE
 pys_to_repr(CTX *c, VALUE v)
 {
@@ -9034,7 +9102,8 @@ sm_format(CTX *c, int argc, VALUE *argv)
                 k++;
                 if (k >= bn) PYS_RAISE_EXC(c, c->EXC_ValueError, "expected conversion");
                 char conv = body[k++];
-                if (conv == 'r' || conv == 'a') val = pys_to_repr(c, val);
+                if (conv == 'r') val = pys_to_repr(c, val);
+                else if (conv == 'a') val = pys_ascii_escape_str(pys_to_repr(c, val));
                 else if (conv == 's')           val = pys_to_str(c, val);
                 else PYS_RAISE_EXC(c, c->EXC_ValueError, "bad conversion");
             }
@@ -9642,7 +9711,8 @@ sm_format_map(CTX *c, int argc, VALUE *argv)
                 k++;
                 if (k >= bn) PYS_RAISE_EXC(c, c->EXC_ValueError, "expected conversion");
                 char conv = body[k++];
-                if (conv == 'r' || conv == 'a') val = pys_to_repr(c, val);
+                if (conv == 'r') val = pys_to_repr(c, val);
+                else if (conv == 'a') val = pys_ascii_escape_str(pys_to_repr(c, val));
                 else if (conv == 's')           val = pys_to_str(c, val);
             }
             VALUE spec_val = pys_make_str("", 0);
@@ -12595,6 +12665,15 @@ bi_str(CTX *c, int argc, VALUE *argv)
 VALUE
 bi_repr(CTX *c, int argc, VALUE *argv) { (void)argc; return pys_to_repr(c, argv[0]); }
 
+VALUE
+bi_ascii(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    VALUE r = pys_to_repr(c, argv[0]);
+    if (c->state == PYS_STATE_RAISE) return 0;
+    return pys_ascii_escape_str(r);
+}
+
 static VALUE
 bi_int(CTX *c, int argc, VALUE *argv)
 {
@@ -15203,8 +15282,21 @@ pys_str_pct_format(CTX *c, VALUE fmt, VALUE args)
                      flag_hash ? "#" : "", p, conv);
             bl = snprintf(body, sizeof(body), fmtb, d);
         } else if (conv == 's') {
-            VALUE sv = pys_to_str(c, arg);
-            if (!pys_is_str(sv)) sv = pys_make_str("?", 1);
+            // PEP 461: in bytes-mode %-format, `%s` writes raw bytes
+            // (only accepting bytes / bytearray); otherwise rendering
+            // them via repr would produce `b'...'` literals.
+            VALUE sv;
+            if (pys_pct_bytes_mode && pys_is_byteseq(arg)) {
+                sv = arg;
+            } else if (pys_pct_bytes_mode) {
+                // CPython actually accepts an object whose __bytes__
+                // returns bytes — pystro keeps it simple: bytes only,
+                // anything else falls back to repr (matches `%a`).
+                sv = pys_to_repr(c, arg);
+            } else {
+                sv = pys_to_str(c, arg);
+            }
+            if (!pys_is_str(sv) && !pys_is_byteseq(sv)) sv = pys_make_str("?", 1);
             bl = PYS_PTR(sv)->str.len;
             if (precision >= 0 && (size_t)precision < bl) bl = (size_t)precision;
             if (bl >= sizeof(body)) bl = sizeof(body) - 1;
@@ -15212,6 +15304,7 @@ pys_str_pct_format(CTX *c, VALUE fmt, VALUE args)
             body[bl] = '\0';
         } else if (conv == 'r' || conv == 'a') {
             VALUE sv = pys_to_repr(c, arg);
+            if (conv == 'a') sv = pys_ascii_escape_str(sv);
             if (!pys_is_str(sv)) sv = pys_make_str("?", 1);
             bl = PYS_PTR(sv)->str.len;
             if (precision >= 0 && (size_t)precision < bl) bl = (size_t)precision;
@@ -17995,7 +18088,10 @@ install_builtins(CTX *c)
     install_interned_names();
     pys_global_define(c, "print",      pys_make_builtin("print",      bi_print,      0, -1));
     pys_global_define(c, "repr",       pys_make_builtin("repr",       bi_repr,       1,  1));
-    pys_global_define(c, "ascii",      pys_make_builtin("ascii",      bi_repr,       1,  1));
+    {
+        extern VALUE bi_ascii(CTX *c, int argc, VALUE *argv);
+        pys_global_define(c, "ascii",  pys_make_builtin("ascii",      bi_ascii,      1,  1));
+    }
     // Built-in type classes — proper class objects whose constructors
     // are the C bi_* functions.  isinstance(5, int), type(5) is int,
     // and class M(int): pass all work via these.
