@@ -1130,13 +1130,31 @@ VALUE
 pys_super_lookup(CTX *c, VALUE self, VALUE start_after_cls, const char *name)
 {
     (void)c;
-    // self may be an instance OR a class (classmethod context).  Use
-    // the relevant MRO either way.
+    // self may be an instance OR a class.  Two class cases:
+    //  - classmethod: self is a subclass of start_after_cls → walk
+    //    self.__mro__
+    //  - metaclass method: self is a *class instance* of start_after_cls
+    //    (i.e. the metaclass) → walk type(self).__mro__
     struct pysclass *cd;
     if (pys_is_instance(self)) {
         cd = &PYS_PTR(self)->inst.cls->cls;
     } else if (pys_is_class(self)) {
-        cd = &PYS_PTR(self)->cls;
+        extern bool class_is_ancestor(VALUE cls, VALUE target);
+        // Classmethod case: super(A, cls) where issubclass(cls, A).
+        if (pys_is_class(start_after_cls)
+            && class_is_ancestor(self, start_after_cls)) {
+            cd = &PYS_PTR(self)->cls;
+        } else {
+            // Metaclass case: walk type(self).__mro__.  The metaclass is
+            // stored as a method named __metaclass__ on the class; if not
+            // present, fall back to the class's own MRO.
+            VALUE meta = pys_class_lookup_method(self, PYS_INTERN_metaclass);
+            if (meta != PYS_NONE && pys_is_class(meta)) {
+                cd = &PYS_PTR(meta)->cls;
+            } else {
+                cd = &PYS_PTR(self)->cls;
+            }
+        }
     } else {
         return PYS_NONE;
     }
@@ -7868,6 +7886,51 @@ pys_pat_match(CTX *c, int pat_idx, VALUE v)
         VALUE cls = EVAL(c, p->literal);
         if (UNLIKELY(!cls)) return false;
         if (!pys_is_class(cls)) return false;
+        // CPython special-case: 11 built-in types (bool, bytearray, bytes,
+        // dict, float, frozenset, int, list, set, str, tuple) treat a
+        // single positional sub-pattern as matching the whole value rather
+        // than going through __match_args__.  Other built-ins with no
+        // __match_args__ would otherwise fail to match.
+        if (cls == c->TYPE_bool || cls == c->TYPE_int
+            || cls == c->TYPE_float || cls == c->TYPE_str
+            || cls == c->TYPE_bytes || cls == c->TYPE_bytearray
+            || cls == c->TYPE_list || cls == c->TYPE_tuple
+            || cls == c->TYPE_dict || cls == c->TYPE_set
+            || cls == c->TYPE_frozenset) {
+            extern VALUE bi_type(CTX *c, int argc, VALUE *argv);
+            VALUE av[1] = { v };
+            VALUE actual_cls = bi_type(c, 1, av);
+            if (UNLIKELY(!actual_cls)) return false;
+            bool type_match = (actual_cls == cls)
+                || (pys_is_class(actual_cls)
+                    && class_is_ancestor(actual_cls, cls));
+            if (!type_match) return false;
+            // Single positional + no kw → bind sub-pattern to whole value.
+            // Multiple positionals or any kw against a built-in type with
+            // no __match_args__ is an error in CPython, but pystro keeps
+            // it as a non-match for simplicity.
+            int npos = 0, nkw = 0;
+            for (int i = 0; i < p->nchildren; i++) {
+                if (p->attrs[i] == NULL) npos++; else nkw++;
+            }
+            if (npos == 1 && nkw == 0) {
+                // The sub-pattern is at first_child + (index of positional).
+                int pi = 0;
+                for (; pi < p->nchildren; pi++)
+                    if (p->attrs[pi] == NULL) break;
+                return pys_pat_match(c, p->first_child + pi, v);
+            }
+            // No positional → just check isinstance.
+            if (npos == 0) {
+                // Fall through to kw-attribute check below (rare for built-ins).
+            } else {
+                // >1 positional against a single-match-self built-in.
+                PYS_RAISE_EXC(c, c->EXC_TypeError,
+                             "%s() accepts only keyword sub-patterns or a single positional sub-pattern",
+                             PYS_PTR(cls)->cls.name);
+                return false;
+            }
+        }
         if (!pys_is_instance(v)) return false;
         if (!class_is_ancestor(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), cls)) return false;
         // Positional sub-patterns (attrs[i] == NULL) need __match_args__
@@ -11651,6 +11714,45 @@ bm_isalpha(CTX *c, int argc, VALUE *argv)
     return PYS_TRUE;
 }
 
+// bytes.isascii() — empty is True (CPython); else all bytes < 0x80.
+static VALUE
+bm_isascii(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pysobj *s = PYS_PTR(argv[0]);
+    for (size_t i = 0; i < s->str.len; i++)
+        if ((unsigned char)s->str.chars[i] >= 0x80) return PYS_FALSE;
+    return PYS_TRUE;
+}
+
+// bytes.isupper / islower / isdigit-extended / etc.
+static VALUE
+bm_islower_b(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pysobj *s = PYS_PTR(argv[0]);
+    bool any_letter = false;
+    for (size_t i = 0; i < s->str.len; i++) {
+        unsigned char ch = (unsigned char)s->str.chars[i];
+        if (ch >= 'A' && ch <= 'Z') return PYS_FALSE;
+        if (ch >= 'a' && ch <= 'z') any_letter = true;
+    }
+    return any_letter ? PYS_TRUE : PYS_FALSE;
+}
+static VALUE
+bm_isupper_b(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pysobj *s = PYS_PTR(argv[0]);
+    bool any_letter = false;
+    for (size_t i = 0; i < s->str.len; i++) {
+        unsigned char ch = (unsigned char)s->str.chars[i];
+        if (ch >= 'a' && ch <= 'z') return PYS_FALSE;
+        if (ch >= 'A' && ch <= 'Z') any_letter = true;
+    }
+    return any_letter ? PYS_TRUE : PYS_FALSE;
+}
+
 static VALUE
 bm_isdigit(CTX *c, int argc, VALUE *argv)
 {
@@ -11998,6 +12100,9 @@ static struct type_method bytes_methods[] = {
     { "isalpha",    bm_isalpha,    1, 1 },
     { "isdigit",    bm_isdigit,    1, 1 },
     { "isspace",    bm_isspace,    1, 1 },
+    { "isascii",    bm_isascii,    1, 1 },
+    { "islower",    bm_islower_b,  1, 1 },
+    { "isupper",    bm_isupper_b,  1, 1 },
     { "find",       bm_find,       2, 4 },
     { "rfind",      bm_rfind,      2, 4 },
     { "index",      bm_index,      2, 4 },

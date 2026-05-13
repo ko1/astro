@@ -1668,6 +1668,98 @@ node_raise(CTX * restrict c, NODE * restrict n, NODE *exc)
 }
 
 NODE_DEF
+node_raise_from(CTX * restrict c, NODE * restrict n, NODE *exc, NODE *cause)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, exc);
+    if (UNLIKELY(!v)) return 0;
+    VALUE cv = EVAL_ARG(c, cause);
+    if (UNLIKELY(!cv)) return 0;
+    // CPython: `raise X from Y` requires Y to be None, an exception
+    // instance, or an exception class. Otherwise → TypeError.
+    bool cause_ok = (cv == PYS_NONE);
+    if (!cause_ok) {
+        if (pys_is_class(cv) && PYS_PTR(cv)->cls.is_exception) cause_ok = true;
+        else if (pys_is_instance(cv) && PYS_PTR(cv)->inst.cls
+                 && PYS_PTR(cv)->inst.cls->cls.is_exception) cause_ok = true;
+    }
+    if (!cause_ok) {
+        PYS_RAISE_EXC(c, c->EXC_TypeError,
+                     "exception causes must derive from BaseException");
+        return 0;
+    }
+    // If the cause is a class, instantiate it (CPython does this).
+    if (pys_is_class(cv) && PYS_PTR(cv)->cls.is_exception) {
+        cv = pys_apply(c, cv, 0, NULL);
+        if (UNLIKELY(!cv && c->state != PYS_STATE_RAISE)) return 0;
+        if (c->state == PYS_STATE_RAISE) return 0;
+    }
+    // Validate / instantiate exc itself (same rules as plain node_raise).
+    if (pys_is_class(v)) {
+        if (!PYS_PTR(v)->cls.is_exception) {
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                         "exceptions must derive from BaseException");
+            return 0;
+        }
+        v = pys_apply(c, v, 0, NULL);
+        if (UNLIKELY(!v && c->state != PYS_STATE_RAISE)) return 0;
+        if (c->state == PYS_STATE_RAISE) return 0;
+    } else if (!pys_is_instance(v) || !PYS_PTR(v)->inst.cls
+               || !PYS_PTR(v)->inst.cls->cls.is_exception) {
+        PYS_RAISE_EXC(c, c->EXC_TypeError,
+                     "exceptions must derive from BaseException");
+        return 0;
+    }
+    // Stash __cause__ and __suppress_context__.
+    pys_setattr(c, v, "__cause__", cv);
+    pys_setattr(c, v, "__suppress_context__", PYS_TRUE);
+    // Reuse the chain / traceback logic from node_raise by calling it.
+    // Easiest: copy the relevant traceback-snapshot block here.
+    if (pys_is_instance(v) && c->call_top > 0 && c->TYPE_traceback != 0) {
+        VALUE existing = pys_getattr_optional(c, v, "__traceback__");
+        if (!existing || existing == PYS_NONE) {
+            c->state = PYS_STATE_NORMAL;
+            VALUE next = PYS_NONE;
+            for (int i = 0; i < c->call_top; i++) {
+                const char *fn = c->call_stack[i] ? c->call_stack[i] : "<anon>";
+                VALUE frame = pys_make_instance(c->TYPE_frame);
+                VALUE code  = pys_make_instance(c->TYPE_object);
+                pys_setattr(c, code, "co_name", pys_make_str(fn, strlen(fn)));
+                pys_setattr(c, code, "co_filename", pys_make_str("<pystro>", 8));
+                pys_setattr(c, code, "co_firstlineno", PYS_FIX(0));
+                pys_setattr(c, frame, "f_code", code);
+                pys_setattr(c, frame, "f_lineno", PYS_FIX(0));
+                pys_setattr(c, frame, "f_lasti", PYS_FIX(-1));
+                pys_setattr(c, frame, "f_globals", pys_make_dict());
+                pys_setattr(c, frame, "f_locals", pys_make_dict());
+                pys_setattr(c, frame, "f_back", PYS_NONE);
+                pys_setattr(c, frame, "f_trace", PYS_NONE);
+                VALUE tb = pys_make_instance(c->TYPE_traceback);
+                pys_setattr(c, tb, "tb_frame", frame);
+                pys_setattr(c, tb, "tb_lineno", PYS_FIX(0));
+                pys_setattr(c, tb, "tb_lasti", PYS_FIX(-1));
+                pys_setattr(c, tb, "tb_next", next);
+                next = tb;
+            }
+            pys_setattr(c, v, "__traceback__", next);
+        }
+    }
+    // Implicit __context__ stash (`raise X from None` keeps suppress=True
+    // but still gets a __context__).
+    if (pys_is_instance(v) && c->current_handling_exc
+        && c->current_handling_exc != PYS_NONE && c->current_handling_exc != v) {
+        VALUE existing = pys_getattr_optional(c, v, "__context__");
+        if (!existing || existing == PYS_NONE) {
+            c->state = PYS_STATE_NORMAL;
+            pys_setattr(c, v, "__context__", c->current_handling_exc);
+        }
+    }
+    c->state = PYS_STATE_RAISE;
+    c->state_value = v;
+    return 0;
+}
+
+NODE_DEF
 node_raise_bare(CTX * restrict c, NODE * restrict n)
 {
     (void)n;

@@ -4699,25 +4699,13 @@ parse_raise(void)
     if (peek_tok(0)->kind == T_NEWLINE || peek_tok(0)->kind == T_SEMI)
         return ALLOC_node_raise_bare();
     NODE *e = parse_expr();
-    // `raise X from Y` — desugar to:
-    //   __cause = Y
-    //   __exc   = X (if a class, instantiate)
-    //   __exc.__cause__ = __cause
-    //   raise __exc
+    // `raise X from Y` — validates Y must be None / Exception (class or
+    // instance), instantiates Y if it's a class, and atomically stashes
+    // __cause__ / __suppress_context__ before raising.
     if (peek_tok(0)->kind == T_FROM) {
         tok_pos++;
         NODE *cause = parse_expr();
-        // Desugar: temp_e = X; temp_e.__cause__ = Y; raise temp_e.
-        const char *te = new_temp_name("__rx");
-        NODE *load_e;
-        NODE *init_e = build_temp_init(te, e, &load_e);
-        NODE *set_cause = ALLOC_node_attr_set(load_e, intern_name("__cause__", 9), cause);
-        NODE *set_suppress = ALLOC_node_attr_set(load_e,
-            intern_name("__suppress_context__", 20), ALLOC_node_const_true());
-        return ALLOC_node_seq(init_e,
-               ALLOC_node_seq(set_cause,
-               ALLOC_node_seq(set_suppress,
-               ALLOC_node_raise(load_e))));
+        return ALLOC_node_raise_from(e, cause);
     }
     return ALLOC_node_raise(e);
 }
