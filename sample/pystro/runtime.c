@@ -13242,16 +13242,88 @@ mvm_iter(CTX *c, int argc, VALUE *argv)
     return bi_iter(c, 1, av);
 }
 
+// memoryview property accessors.
+static VALUE
+mvm_format(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return pys_make_str("B", 1);    // 'B' = unsigned bytes (default)
+}
+static VALUE
+mvm_itemsize(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_FIX(1);
+}
+static VALUE
+mvm_ndim(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_FIX(1);
+}
+static VALUE
+mvm_readonly(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    // True if source is bytes (immutable); False if bytearray.
+    VALUE src = PYS_PTR(argv[0])->memview.source;
+    if (PYS_IS_PTR(src) && PYS_PTR(src)->type == PYS_T_BYTEARRAY) return PYS_FALSE;
+    return PYS_TRUE;
+}
+static VALUE
+mvm_nbytes(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    return PYS_FIX((int64_t)PYS_PTR(argv[0])->memview.len);
+}
+static VALUE
+mvm_shape(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    VALUE one = PYS_FIX((int64_t)PYS_PTR(argv[0])->memview.len);
+    return pys_make_tuple(&one, 1);
+}
+static VALUE
+mvm_strides(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    VALUE one = PYS_FIX(1);
+    return pys_make_tuple(&one, 1);
+}
+static VALUE
+mvm_c_contiguous(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return PYS_TRUE;
+}
+static VALUE
+mvm_suboffsets(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc; (void)argv;
+    return pys_make_tuple(NULL, 0);
+}
+
 static struct type_method memview_methods[] = {
-    { "tobytes",  mvm_tobytes,  1, 1 },
-    { "tolist",   mvm_tolist,   1, 1 },
-    { "hex",      mvm_hex,      1, 3 },
-    { "cast",     mvm_cast,     2, 3 },
-    { "release",  mvm_release,  1, 1 },
-    { "__enter__",mvm_enter,    1, 1 },
-    { "__exit__", mvm_exit,     4, 4 },
-    { "__iter__", mvm_iter,     1, 1 },
-    { NULL, NULL, 0, 0 }
+    { "tobytes",  mvm_tobytes,  1, 1, 0 },
+    { "tolist",   mvm_tolist,   1, 1, 0 },
+    { "hex",      mvm_hex,      1, 3, 0 },
+    { "cast",     mvm_cast,     2, 3, 0 },
+    { "release",  mvm_release,  1, 1, 0 },
+    { "__enter__",mvm_enter,    1, 1, 0 },
+    { "__exit__", mvm_exit,     4, 4, 0 },
+    { "__iter__", mvm_iter,     1, 1, 0 },
+    { "format",   mvm_format,   1, 1, 1 },
+    { "itemsize", mvm_itemsize, 1, 1, 1 },
+    { "ndim",     mvm_ndim,     1, 1, 1 },
+    { "readonly", mvm_readonly, 1, 1, 1 },
+    { "nbytes",   mvm_nbytes,   1, 1, 1 },
+    { "shape",    mvm_shape,    1, 1, 1 },
+    { "strides",  mvm_strides,  1, 1, 1 },
+    { "c_contiguous",   mvm_c_contiguous, 1, 1, 1 },
+    { "f_contiguous",   mvm_c_contiguous, 1, 1, 1 },
+    { "contiguous",     mvm_c_contiguous, 1, 1, 1 },
+    { "suboffsets",     mvm_suboffsets,   1, 1, 1 },
+    { NULL, NULL, 0, 0, 0 }
 };
 
 // generator methods: send / throw / close + __next__ / __iter__.
