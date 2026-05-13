@@ -217,7 +217,57 @@ ASTroGen は ENTER 時に `F` と `locals_cnt` を frame 構造体にコピー�
 NODE_DEF の `common_param_count` で渡される frame pointer もそのまま
 root_array にできる。
 
-#### 1.3.5 descriptor 型まとめ
+#### 1.3.5 SD 内では frame を集約する (per-SD 1 個)
+
+ここまで示した「EVAL\_\<name\> ごとに ENTER/LEAVE」 は **インタプリタ経路
+(= DISPATCH\_\<name\>) の論理モデル**。 specialize 経路 (= SD\_\<hash\>) で
+そのままやると tight loop で 4 メモリオペ/node が乗って遅すぎる。
+
+SD は inline tree の全 NODE_DEF をひとつの関数に畳み込んだもの。 SPECIALIZE
+時に ASTroGen が tree 内の `@roots(...)` をすべて拾い集めて **SD 関数ごとに
+1 個のアグリゲート frame** を組み、 push/pop は **SD 関数の入口と出口で 1 回ずつ**
+だけ行う:
+
+```c
+struct frame_SD_<hash> {
+    VALUE n0_l;          // node_add の @roots(l)
+    VALUE n1_r;          // 内側の別 node の @roots(r)
+    VALUE n2_v;          // ...
+};
+
+static const astro_frame_desc_t FD_SD_<hash> = {
+    .size        = sizeof(struct frame_SD_<hash>),
+    .n_refs      = 3,
+    .ref_offsets = { offsetof(struct frame_SD_<hash>, n0_l),
+                     offsetof(struct frame_SD_<hash>, n1_r),
+                     offsetof(struct frame_SD_<hash>, n2_v) },
+};
+
+VALUE SD_<hash>(CTX *c, NODE *n)
+{
+    struct frame_SD_<hash> _f;
+    ASTRO_FRAME_ENTER(c, &FD_SD_<hash>, &_f);   // SD 入口で 1 回だけ
+    /* inlined tree — 個別 ENTER/LEAVE は出さない、
+       BODY 内の `l` / `r` / `v` は #define で _f.n0_l 等に展開 */
+    ...
+    ASTRO_FRAME_LEAVE(c);                        // SD 出口で 1 回だけ
+    return _ret;
+}
+```
+
+これでチェーン操作は **関数呼出し境界の頻度** に下がる (= 言語の call の頻度。
+node 評価の頻度より 1〜2 桁低い)。 個別 EVAL\_\<name\> 内には ENTER/LEAVE を
+出さず、 frame slot のリダイレクトだけ生成する。
+
+| 経路 | frame の単位 | push/pop コスト |
+|---|---|---|
+| DISPATCH\_\<name\> (インタプリタ) | per-NODE_DEF | 1 push + 1 pop / node call |
+| SD\_\<hash\> (specialize) | per-SD invocation | 1 push + 1 pop / SD 呼出 |
+
+`SD_<hash>` 自体が他の `SD_<hash>` を呼び出す境界 (= 言語の call) で次の SD の
+push が起きるので、 frame chain の深さは関数呼出しの深さに一致する。
+
+#### 1.3.6 descriptor 型まとめ
 
 ```c
 struct astro_frame_desc_t {
