@@ -2069,6 +2069,13 @@ parse_lambda(void)
     bool has_va = false, has_kw = false;
     int n_pos_named = 0;
     bool saw_star = false;
+#define PYS_LAMBDA_CHECK_DUP(name) do {                             \
+    for (int _di = 0; _di < nnames; _di++) {                        \
+        if (strcmp(names[_di], (name)) == 0)                        \
+            parse_error("duplicate argument '%s' in function definition", \
+                        (name));                                    \
+    }                                                               \
+} while (0)
     if (peek_tok(0)->kind != T_COLON) {
         for (;;) {
             // Trailing comma before `:` — break out cleanly.
@@ -2082,6 +2089,7 @@ parse_lambda(void)
                 }
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '*'");
                 const char *pn = peek_tok(0)->sval; tok_pos++;
+                PYS_LAMBDA_CHECK_DUP(pn);
                 scope_add_local(&sc, pn);
                 names[nnames++] = pn;
                 nparams++;
@@ -2094,6 +2102,7 @@ parse_lambda(void)
             if (match_tok(T_STAR_STAR)) {
                 if (peek_tok(0)->kind != T_NAME) parse_error("expected NAME after '**'");
                 const char *pn = peek_tok(0)->sval; tok_pos++;
+                PYS_LAMBDA_CHECK_DUP(pn);
                 scope_add_local(&sc, pn);
                 names[nnames++] = pn;
                 nparams++;
@@ -2110,6 +2119,7 @@ parse_lambda(void)
             if (peek_tok(0)->kind != T_NAME) parse_error("expected parameter");
             const char *pn = peek_tok(0)->sval;
             tok_pos++;
+            PYS_LAMBDA_CHECK_DUP(pn);
             scope_add_local(&sc, pn);
             names[nnames++] = pn;
             int slot = nparams;
@@ -3373,6 +3383,13 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
     bool seen_default_in_pos = false;
     const char *names[32];
     int nnames = 0;
+#define PYS_CHECK_DUP_PARAM(name) do {                              \
+    for (int _di = 0; _di < nnames; _di++) {                        \
+        if (strcmp(names[_di], (name)) == 0)                        \
+            parse_error("duplicate argument '%s' in function definition", \
+                        (name));                                    \
+    }                                                               \
+} while (0)
 
     if (peek_tok(0)->kind != T_RPAREN) {
         for (;;) {
@@ -3389,6 +3406,7 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                     (void)parse_expr();
                     cur_scope = saved;
                 }
+                PYS_CHECK_DUP_PARAM(pn);
                 scope_add_local(sc, pn);
                 names[nnames++] = pn;
                 nparams++;
@@ -3416,6 +3434,7 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                     (void)parse_expr();
                     cur_scope = saved;
                 }
+                PYS_CHECK_DUP_PARAM(pn);
                 scope_add_local(sc, pn);
                 names[nnames++] = pn;
                 nparams++;
@@ -3448,6 +3467,7 @@ parse_params(Scope *sc, int *out_nparams, int *out_n_pos_named, int *out_ndefaul
                     g_ann_count++;
                 }
             }
+            PYS_CHECK_DUP_PARAM(pn);
             scope_add_local(sc, pn);
             names[nnames++] = pn;
             int slot = nparams;
