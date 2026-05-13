@@ -13017,6 +13017,53 @@ static VALUE bm_partition(CTX *c, int argc, VALUE *argv)
 static VALUE bm_rpartition(CTX *c, int argc, VALUE *argv)
 { return bm_partition_impl(c, argc, argv, true); }
 
+// bytes.splitlines(keepends=False) — same logic as sm_splitlines but
+// emits bytes.
+static VALUE
+bm_splitlines(CTX *c, int argc, VALUE *argv)
+{
+    bool keepends = (argc >= 2) && pys_is_truthy(argv[1]);
+    struct pysobj *o = PYS_PTR(argv[0]);
+    VALUE r = pys_make_list(NULL, 0);
+    size_t i = 0;
+    while (i < o->str.len) {
+        size_t j = i;
+        while (j < o->str.len && o->str.chars[j] != '\n' && o->str.chars[j] != '\r') j++;
+        size_t end = j;
+        if (j < o->str.len && o->str.chars[j] == '\r' && j + 1 < o->str.len && o->str.chars[j+1] == '\n') j += 2;
+        else if (j < o->str.len) j++;
+        size_t out_end = keepends ? j : end;
+        pys_list_append(c, r, pys_make_bytes(o->str.chars + i, out_end - i));
+        i = j;
+    }
+    return r;
+}
+
+// bytes.removeprefix(prefix) / .removesuffix(suffix).
+static VALUE
+bm_removeprefix(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pysobj *o = PYS_PTR(argv[0]);
+    if (!pys_is_byteseq(argv[1])) return pys_make_bytes(o->str.chars, o->str.len);
+    struct pysobj *p = PYS_PTR(argv[1]);
+    if (o->str.len >= p->str.len && memcmp(o->str.chars, p->str.chars, p->str.len) == 0)
+        return pys_make_bytes(o->str.chars + p->str.len, o->str.len - p->str.len);
+    return pys_make_bytes(o->str.chars, o->str.len);
+}
+static VALUE
+bm_removesuffix(CTX *c, int argc, VALUE *argv)
+{
+    (void)c; (void)argc;
+    struct pysobj *o = PYS_PTR(argv[0]);
+    if (!pys_is_byteseq(argv[1])) return pys_make_bytes(o->str.chars, o->str.len);
+    struct pysobj *p = PYS_PTR(argv[1]);
+    if (o->str.len >= p->str.len
+        && memcmp(o->str.chars + o->str.len - p->str.len, p->str.chars, p->str.len) == 0)
+        return pys_make_bytes(o->str.chars, o->str.len - p->str.len);
+    return pys_make_bytes(o->str.chars, o->str.len);
+}
+
 static struct type_method bytes_methods[] = {
     { "decode",     bm_decode,     1, 3 },
     { "encode",     bm_encode,     1, 3 },
@@ -13061,6 +13108,9 @@ static struct type_method bytes_methods[] = {
     { "copy",       bm_copy,       1, 1 },
     { "partition",  bm_partition,  2, 2 },
     { "rpartition", bm_rpartition, 2, 2 },
+    { "splitlines", bm_splitlines, 1, 2 },
+    { "removeprefix", bm_removeprefix, 2, 2 },
+    { "removesuffix", bm_removesuffix, 2, 2 },
     { "__add__",    lm_add,        2, 2 },
     { "__mul__",    lm_mul,        2, 2 },
     { "__rmul__",   lm_rmul,       2, 2 },
