@@ -20,8 +20,7 @@ framework が提供するもの:
 
 1. **ヒープの kind 分離** (`HEAP_IMMORTAL` / `HEAP_VALUE` 等) — §1.1
 2. **allocation API** (`astro_gc_alloc` / `astro_gc_alloc_payload`) — §1.2
-3. **Root 列挙の mechanism** (`@roots` / `@root_array` 注釈と frame
-   descriptor 自動生成) — §1.3
+3. **Root 列挙の mechanism** (`@roots` / `@scratch` 注釈で sp[] に spill) — §1.3
 4. **Write barrier macro** (`WB`) — §1.4
 5. **Safepoint 配置** (default は保守側、 leaf は `@noalloc` opt-out) — §1.5
 6. **Operand 注釈** (`@ref(value)` / `@imm` / `@weak`) — §1.6
@@ -90,11 +89,17 @@ void *astro_gc_realloc_payload(astro_heap_t h, void *p, size_t new_size);
 が違うので、 framework が tag を被せると言語側と衝突する。 サンプル側で wrap
 する。
 
-### 1.3 Root 列挙: frame iterator (precise の核)
+### 1.3 Root 列挙: 共有 stack 上の spill
 
-precise GC を動かすには、 「いまどの局所変数が VALUE root か」 を GC が知れる
-必要がある。 ASTro はこれを **`@roots(...)` 注釈** と **ASTroGen が自動生成
-する frame descriptor** の組合せで実現する。
+precise GC を動かすには「いま live な VALUE root が **既知の連続領域** に
+ある」 状態を作る必要がある。 ASTro は Lua / Python と同様の **stack-based**
+モデルを採る:
+
+- 各 NODE_DEF は `VALUE *sp` を共通引数で受け取る (= 共有 stack の top)
+- root にすべき VALUE は **`sp[]` の slot に spill** する
+- GC は `c->fp_base..c->sp` の VALUE 配列を flat scan するだけ
+- **per-node の chain push/pop は無し**。 spill した VALUE は sp[] に置かれた
+  まま親 frame に積み上がり、 関数 return で sp が戻ることで自然に解放される
 
 #### 1.3.1 まず一番素朴な NODE_DEF を見る
 
@@ -113,7 +118,7 @@ precise GC ではここに問題がある: `l` は `EVAL_ARG(c, rv)` を生存�
 C コンパイラから見れば `l` はただのローカル変数で、 中身が GC ヒープのポインタ
 かどうか区別がつかない。
 
-#### 1.3.2 `@roots(l)` で root を宣言する
+#### 1.3.2 `@roots(l)` で root を宣言 → ASTroGen が `sp[]` に spill する
 
 言語側が「`l` は root です」 と教える:
 
@@ -127,187 +132,130 @@ node_add(CTX *c, NODE *n, NODE *lv, NODE *rv)
 }
 ```
 
-これを見て ASTroGen は **3 つのもの** を生成する。
-
-**(1) この node 専用の frame 構造体と、 その descriptor**:
-
-```c
-struct frame_node_add { VALUE l; };
-
-static const astro_frame_desc_t FD_node_add = {
-    .size        = sizeof(struct frame_node_add),
-    .n_refs      = 1,
-    .ref_offsets = { offsetof(struct frame_node_add, l) },
-};
-```
-
-`FD_node_add` は per-NODE_DEF で 1 個だけ。 `.ref_offsets` を見れば「この
-frame の先頭から 0 バイト目に VALUE root がある」 が分かる。
-
-**(2) BODY の書き換え**: ASTroGen が BODY を tokenize した上で、 `@roots(...)`
-で列挙された名前については
-
-- `VALUE <name>` という宣言を **取り除き** (slot は frame 構造体側に確保済)
-- 残った `<name>` の参照を **`_f.<name>` に置換**
-
-する。 `#define` は使わない (declaration を変えられない + scope が予測しづらい
-ため)。 元の BODY:
-
-```c
-VALUE l = EVAL_ARG(c, lv);
-VALUE r = EVAL_ARG(c, rv);
-return l + r;
-```
-
-ASTroGen 書き換え後:
-
-```c
-_f.l = EVAL_ARG(c, lv);
-VALUE r = EVAL_ARG(c, rv);   /* r は @roots に無いので素のまま */
-return _f.l + r;
-```
-
-これは「BODY のテキスト原文は変えない (= node.def のソースは人間が読む形)」
-原則を保ちながら、 codegen 段階で frame slot 経由に変換する手段。 `@roots`
-に列挙した名前と BODY 内の `VALUE <name>` 宣言が **対応していないと ASTroGen
-が error** で止まる (タイポ検出)。
-
-**(3) EVAL ラッパで frame の push/pop**:
+ASTroGen は BODY を書き換えて、 `l` を **`sp[0]` (= 共有 stack の既知 slot)**
+に格納する:
 
 ```c
 static inline VALUE
-EVAL_node_add(CTX *c, NODE *n, NODE *lv, /*...*/, NODE *rv, /*...*/)
+EVAL_node_add(CTX *c, NODE *n, VALUE *sp,
+              NODE *lv, dispatch_t _lv_d,
+              NODE *rv, dispatch_t _rv_d)
 {
-    struct frame_node_add _f;
-    ASTRO_FRAME_ENTER(c, &FD_node_add, &_f);   // c->fp_chain に push
-    /* 書き換え済 BODY */
-    _f.l = EVAL_ARG(c, lv);
-    VALUE r = EVAL_ARG(c, rv);
-    VALUE _ret = _f.l + r;
-    ASTRO_FRAME_LEAVE(c);                       // pop
-    return _ret;
+    /* node_add の spill region: sp[0..0] (l 用 1 slot) */
+    sp[0] = (*_lv_d)(c, lv, sp + 1);   // 子は sp + 1 を受け取る
+    VALUE r = (*_rv_d)(c, rv, sp + 1);
+    return sp[0] + r;
 }
 ```
 
-#### 1.3.3 GC は frame chain を辿るだけ
+ポイント:
 
-`ASTRO_FRAME_ENTER` は `c->fp_chain` の先頭に `{desc=&FD_node_add, data=&_f}`
-を push する。 nested に EVAL\_xxx が呼ばれれば chain が伸びる。 GC 起動時:
+- `l` は C local ではなく **`sp[0]` (memory) に格納**。 子 evaluation で
+  allocate しても `sp[0]` は memory 上に残り、 GC は root として scan できる
+- `r` は最後の `+` でしか使わない (= 子 call をまたがない) ので spill 不要 →
+  **C local のまま OK**。 `@roots` に含めない
+- 子 evaluation には `sp + 1` を渡す。 子は **親の上に** 自分の spill 領域を
+  積み上げる (Lua-style stack)
+
+BODY 書き換えのルール (ASTroGen 側):
+
+- `VALUE <name>` という宣言を **取り除く** (slot は sp[] 側に確保済)
+- 残った `<name>` の参照を **`sp[<slot_idx>]` に置換**
+- slot_idx は `@roots(...)` の列挙順
+
+`@roots` の名前と BODY 中の `VALUE <name>` 宣言が対応していないと ASTroGen
+が error で止まる (タイポ検出)。
+
+#### 1.3.3 GC は sp[] を flat scan するだけ
+
+GC 起動時:
 
 ```c
 void <lang>_gc_iter_roots(astro_root_visitor_t *v) {
-    for (astro_frame_t *f = c->fp_chain; f; f = f->prev) {
-        // f->desc->ref_offsets を見て f->data + offset 位置の VALUE を visit
-        astro_visit_frame(v, f->desc, f->data);
+    for (VALUE *p = c->fp_base; p < c->sp; p++) {
+        astro_visit_value(v, *p);
     }
-    // global root (関数テーブル、 トップレベル frame 等) は v に直接渡す
+    // global root (関数テーブル、 symbol テーブル等) は v に直接渡す
 }
 ```
 
-`<lang>_gc_iter_roots` は **言語が 1 個だけ実装** する。 ref_offsets /
-ref_array を実際に walk する処理は backend に持たせる。
+per-node の frame chain は **無い**。 spill した VALUE は sp[] に置かれた
+まま親 frame に積み上がる。 hot path 中は何もしない。
 
-#### 1.3.4 拡張 1: 可変長 root 列 (`@root_array`)
+#### 1.3.4 `c->sp` の update タイミング
 
-`@roots(l, r)` は **固定個** の名前付きローカル用。 「`n` 個分の VALUE 配列を
-全部 root にしたい」 ケースには `@root_array(base, count)` を使う:
+GC は allocation 経由でしか起きないので、 **allocation site の直前で
+`c->sp` を update** すれば足りる。 framework alloc API がこれを内部で行う:
 
 ```c
-NODE_DEF @root_array(F, locals_cnt)
-node_call_1(CTX *c, NODE *n, VALUE *fp, /*...*/, uint32_t locals_cnt, NODE *a0)
+void *
+astro_gc_alloc(astro_heap_t h, uint32_t kind, size_t size, VALUE *sp_top)
 {
-    VALUE F[locals_cnt];     // VLA、 callee の新 frame
-    F[0] = UNWRAP(EVAL_ARG(c, a0));
-    ...
+    CTX *c = astro_gc_current_ctx();
+    c->sp = sp_top;                              // 1 store
+    if (UNLIKELY(astro_gc_pending)) astro_gc_handshake();
+    return /* freelist bump */;
 }
 ```
 
-これは frame_desc の `ref_array` フィールドに対応する:
+NODE_DEF body から framework alloc を直接呼ぶ場合は `sp_top` を渡す:
 
 ```c
-static const astro_frame_desc_t FD_node_call_1 = {
-    .size      = sizeof(struct frame_node_call_1),
-    .n_refs    = 0,
-    .ref_array = {
-        .base_off  = offsetof(struct frame_node_call_1, F_ptr),
-        .count_off = offsetof(struct frame_node_call_1, F_count),
-    },
-};
+sp[0] = astro_gc_alloc(astro_gc_heap(HEAP_VALUE), OBJ_ARRAY,
+                       sizeof(BaArray), sp + 1);   // ← sp + 1 = 自分の top
 ```
 
-ASTroGen は ENTER 時に `F` と `locals_cnt` を frame 構造体にコピーするコードも
-出す。 `base` / `count` は **ローカル変数だけでなく共通引数** も指定でき、
-NODE_DEF の `common_param_count` で渡される frame pointer もそのまま
-root_array にできる。
+CTX を取らない C helper (`baruby_ary_push` 等) が内部で alloc する場合、
+helper の signature に `VALUE *sp_top` を 1 引数追加して通す。
 
-#### 1.3.5 性能上の課題と将来の最適化
+**hot path 中で `c->sp` を毎 node update する必要はない**。 alloc しない限り
+GC が起きないため。 これが per-node chain push/pop と比べた本質的な利点。
 
-ここまで示した「EVAL\_\<name\> ごとに ENTER/LEAVE」 をそのまま SD 経路でも
-使うと、 tight loop で **~5 メモリオペ/node** が乗る (`_f.prev = c->fp_chain;
-c->fp_chain = &_f;` で 1 load + 2 store、 LEAVE でさらに 1 load + 1 store)。
-node 評価頻度は秒間百万オーダなので無視できない。
+#### 1.3.5 コスト分析
 
-理屈の上で欲しいのは **SD 単位で frame を集約**: AST tree の全 `@roots(...)`
-を 1 個の frame に畳んで push/pop を SD 関数の境界 1 回ずつに抑える、 という
-形。 ただし **そのままでは実装が破綻** する:
-
-- §1.3.2 で示した BODY 書き換え (`l` → `_f.l`) は ASTroGen が **build time**
-  に EVAL\_\<name\> 用に行うので、 slot 名は EVAL レベルで固定される
-- SD は **process runtime** に astro_cs_compile で生成される。 同じ
-  NODE_DEF が tree 内の別位置に出るときの slot 名 (`_f.n0_l` か `_f.n1_l` か)
-  は **SD codegen 時にしか確定しない**
-- ASTroGen の rewrite では SD 時の inline_idx を知る手段がない
-
-実現するなら ASTroGen は BODY を **テンプレートとして** SPECIALIZE\_\<name\>
-に埋め込んで、 SPECIALIZE が runtime に slot 名を差し替えながら C ソースを
-emit する形になる。 現状の SPECIALIZE は `return EVAL_<name>(c, n, ...)` で
-EVAL に委譲しているだけなので、 ここを大きく作り直すことになる。
-
-| 設計 | ASTroGen / SPECIALIZE 側のインフラ | 実行時コスト |
-|---|---|---|
-| per-EVAL_\<name\> push/pop (§1.3.2) | 現状の延長で済む | ~5 メモリオペ/node 評価 |
-| SD 集約 (将来候補) | BODY テンプレート化 + SPECIALIZE 書き直し | 1 push + 1 pop / 関数呼出し |
-
-**当面の方針**: §1.3.2 の per-EVAL\_\<name\> を baseline として実装し、
-ベンチで実コストを計測する。 hot path の影響が許容できないと分かってから
-SD 集約のインフラを足す、 の順序にする。 ベンチが取れる前に投資先を決め込ま
-ない。
-
-| 経路 | frame の単位 | push/pop コスト |
-|---|---|---|
-| DISPATCH\_\<name\> (インタプリタ) | per-NODE_DEF | 1 push + 1 pop / node call |
-| SD\_\<hash\> (specialize) | per-SD invocation | 1 push + 1 pop / SD 呼出 |
-
-`SD_<hash>` 自体が他の `SD_<hash>` を呼び出す境界 (= 言語の call) で次の SD の
-push が起きるので、 frame chain の深さは関数呼出しの深さに一致する。
-
-#### 1.3.6 descriptor 型まとめ
-
-```c
-struct astro_frame_desc_t {
-    uint16_t size;                      // frame 構造体のサイズ
-    uint16_t n_refs;                    // ref_offsets[] の長さ
-    uint16_t ref_offsets[/*n_refs*/];   // 固定個のローカル root (@roots 由来)
-    struct {                            // 可変長 root 列 (@root_array 由来)
-        uint16_t base_off;              //   VALUE * の offset
-        uint16_t count_off;             //   length の offset
-    } ref_array;                        // .count_off==0 なら無し
-};
-
-#define ASTRO_FRAME_ENTER(c, desc, frame_ptr)  /* on-stack chain push */
-#define ASTRO_FRAME_LEAVE(c)                   /* pop */
-```
-
-注釈 → descriptor の対応:
-
-| 注釈 | descriptor field |
+| 設計 | 1 node 評価あたりの hot path コスト |
 |---|---|
-| `@roots(l, r, ...)` | `n_refs` + `ref_offsets[]` |
-| `@root_array(base, count)` | `ref_array.base_off` / `count_off` |
-| 注釈なし | descriptor 生成しない (frame ENTER/LEAVE も無し) |
+| per-NODE_DEF frame chain (没案) | ~5 mem ops (chain push + pop) |
+| **sp[] spill (本案)** | **spill する root 1 個につき 1 store / alloc 1 回につき c->sp 更新 1 store** |
 
-ENTER/LEAVE は安全点 (§1.5) でしか chain 整合性が保証されない cooperative
-設計。 signal-based の preemptive GC は wasm との両立が悪いため不採用。
+具体例:
+
+- 純 fixnum tight loop (`a + b` が fixnum-only): @roots が必要な root に対して
+  spill 1 store/node。 c->sp の更新は alloc がないので 0。 root が最後の式
+  だけなら spill すら不要 (= **完全ゼロコスト**)
+- allocation 込み hot path: spill + c->sp 更新が alloc 1 回ごとに少々。 chain
+  方式の 1/5 以下
+
+per-node ENTER/LEAVE がない = SD 集約問題 (build time vs runtime の inline_idx
+問題) も発生しない。 ASTroGen 時に `l` → `sp[0]` の書き換えで完結する。
+
+#### 1.3.6 callee frame など可変長 root
+
+baruby の `VALUE F[locals_cnt]` (callee の新 frame) のような可変長 root も
+sp の延長で自然に表せる。 親の sp の上に `locals_cnt` 個の slot を確保する
+だけ:
+
+```c
+NODE_DEF @scratch(locals_cnt)         // BODY 開始前に locals_cnt slot 消費
+node_call_1(CTX *c, NODE *n, VALUE *sp, /*...*/, uint32_t locals_cnt, NODE *a0)
+{
+    /* sp[0..locals_cnt-1] が callee の locals 領域 (= 旧 F[]) */
+    sp[0] = (*_a0_d)(c, a0, sp + locals_cnt);    // arg 評価は callee 領域の上
+    return EVAL(c, cc->body, sp);                // callee は sp[0..locals_cnt-1] を見る
+}
+```
+
+`@scratch(<expr>)` は「BODY が開始時に sp 上に確保する slot 数」 を指定する
+注釈。 固定数 (例 `@scratch(3)`) と動的数 (例 `@scratch(locals_cnt)`) の両方
+を許す。 GC scan は `c->fp_base..c->sp` の flat scan なので、 そこに居る限り
+自動的に root として扱われる。
+
+#### 1.3.7 cooperative である理由
+
+c->sp の更新は alloc site のみで OK というのは、 GC が **cooperative** (=
+alloc 経由でしか起きない) だからこそ成立する。 signal-based preemptive GC
+だと、 任意のタイミングで GC が割り込んでくるので c->sp が毎 node 正確に
+最新でないと壊れる。 cooperative の選択はゼロコスト性の前提条件。
 
 ### 1.4 Write barrier
 
@@ -335,40 +283,41 @@ BODY からは `WB(obj, field, val)` macro 経由でしか書き込まない、 
 
 ### 1.5 Safepoint 配置
 
+§1.3.4 で示した通り、 GC は cooperative で **alloc site でのみ poll** する。
+明示的な safepoint macro は alloc を含まない長 loop の back-edge 用:
+
 ```c
-#define ASTRO_SAFEPOINT(c) do {           \
-    if (UNLIKELY(astro_gc_pending)) {     \
-        astro_gc_flush_frame(c);          \
-        astro_gc_handshake();             \
-        astro_gc_reload_frame(c);         \
-    }                                     \
+#define ASTRO_SAFEPOINT(c, sp_top) do {       \
+    if (UNLIKELY(astro_gc_pending)) {         \
+        (c)->sp = (sp_top);                   \
+        astro_gc_handshake();                 \
+    }                                         \
 } while (0)
 ```
 
-挿入箇所 (ASTroGen 自動):
+挿入箇所:
 
-- allocation site の直前
-- call 境界の入口
-- 例外ハンドラ境界
+- allocation site の直前 → framework alloc API が **内部で自動 poll** (§1.3.4)
+- allocation を含まない長 loop back-edge → BODY 内で `ASTRO_SAFEPOINT(c, sp+N)`
+  を明示
 
 NODE_DEF レベルの注釈:
 
 | オプション | 意味 |
 |---|---|
-| `@noalloc` | BODY + 全 transitive children が allocate しないことを保証。 leaf node (literal / 変数参照系) で使う。 ASTroGen は frame ENTER/LEAVE を省略し、 safepoint も入れない |
-| `@safepoint` | BODY 末尾に safepoint poll を強制挿入。 allocation を含まない長い loop back-edge で使う |
+| `@noalloc` | BODY + 全 transitive children が allocate しないことを保証。 leaf node (literal / 変数参照系) で使う。 ASTroGen は spill / c->sp 更新を一切省略 |
+| `@safepoint` | BODY 末尾に safepoint poll を強制挿入。 allocation を含まない長 loop back-edge で使う |
 
-**default の挙動**: `EVAL_ARG` で子を評価する非 leaf ノードは原理的に transitive
-に allocate しうるため、 default を「allocate しうる」 保守側に倒す。 opt-in
-注釈 `@allocates` は持たない (= 全部に書く羽目になり意味がない)。 leaf の
-opt-out として `@noalloc` だけを残す。
+**default の挙動**: `EVAL_ARG` で子を評価する非 leaf ノードは transitive に
+allocate しうるため、 default は「allocate しうる」 保守側に倒す。 opt-in
+注釈 `@allocates` は持たない。 leaf の opt-out として `@noalloc` だけを残す。
 
 **CTX を取らない C helper 内での safepoint**: `baruby_ary_push(VALUE av, VALUE
-x)` のように CTX を引数で受け取らない C helper が内部で allocate する場合、
-framework が提供する `astro_gc_alloc` / `astro_gc_realloc_payload` 等の
-**alloc API は内部で safepoint poll を含む**、 を framework 規約として固定する。
-helper は signature 不変のまま precise GC に対応できる。 内部の現在 CTX は
-TLS 経由 (`astro_gc_current_ctx()`) で取得 (single-thread 前提では グローバル 1 個)。
+x, VALUE *sp_top)` のように CTX を取らない C helper も、 framework が提供
+する alloc / realloc API (`astro_gc_alloc`, `astro_gc_realloc_payload`) を
+経由する限り **API 内部で poll される**。 helper は `sp_top` 引数を 1 つ
+増やしてそれを framework に通すだけ。 現在 CTX は TLS 経由
+(`astro_gc_current_ctx()`) で取得 (single-thread 前提では グローバル 1 個)。
 
 ### 1.6 Operand 注釈の拡張
 
@@ -480,71 +429,99 @@ ASTroGen は `BA_ALLOC_OBJ_ARRAY` / `BA_ALLOC_OBJ_STRING` / `BA_MARK_*` /
 
 ### 2.3 NODE_DEF への root / safepoint 注釈
 
-baruby の典型: `node_call_aset` で `r` と `v` が `baruby_ary_push` (= 潜在的
-allocate) をまたぐ:
+baruby は `common_param_count=3` で `VALUE *fp` を渡しているが、 sp[] モデル
+では **`fp` を sp に置き換え** て (= 共有 stack の一部にする)、 各 NODE_DEF
+は自分の spill 領域を sp の上に積む形にする。
+
+`node_call_aset` の典型 (`r` と `v` が `baruby_ary_push` をまたぐ):
 
 ```c
 NODE_DEF @roots(r, v)
-node_call_aset(CTX *c, NODE *n, VALUE *fp, NODE *recv, NODE *idx, NODE *val)
+node_call_aset(CTX *c, NODE *n, VALUE *sp, NODE *recv, NODE *idx, NODE *val)
 {
-    VALUE r = UNWRAP(EVAL_ARG(c, recv));   // i / v 評価 / push 呼出を生存
-    VALUE i = UNWRAP(EVAL_ARG(c, idx));    // intptr に変換してすぐ死ぬ → root 不要
-    VALUE v = UNWRAP(EVAL_ARG(c, val));    // WB まで生存
+    VALUE r = UNWRAP(EVAL_ARG(c, recv));   // ← ASTroGen により sp[0] に rewrite
+    VALUE i = UNWRAP(EVAL_ARG(c, idx));    // i は intptr に変換してすぐ死ぬ → C local
+    VALUE v = UNWRAP(EVAL_ARG(c, val));    // ← ASTroGen により sp[1] に rewrite
     if (IS_ARY(r)) {
         BaArray *a = VAL2ARY(r);
         intptr_t ii = VAL2INT(i);
         ...
-        while ((uint32_t)ii >= a->len) baruby_ary_push(r, VAL_NIL);
-        WB(a, items[ii], v);               // 素の代入 → WB macro 経由
+        while ((uint32_t)ii >= a->len) baruby_ary_push(r, VAL_NIL, sp + 2);
+        a = VAL2ARY(r);                    // 念のため reload (moving backend 対応)
+        WB(a, items[ii], v);
         return RESULT_OK(v);
     }
     ...
 }
 ```
 
+ASTroGen 書き換え後:
+
+```c
+sp[0] = UNWRAP((*_recv_d)(c, recv, sp + 2));
+VALUE i = UNWRAP((*_idx_d)(c, idx, sp + 2));
+sp[1] = UNWRAP((*_val_d)(c, val, sp + 2));
+if (IS_ARY(sp[0])) {
+    BaArray *a = VAL2ARY(sp[0]);
+    intptr_t ii = VAL2INT(i);
+    ...
+    while ((uint32_t)ii >= a->len) baruby_ary_push(sp[0], VAL_NIL, sp + 2);
+    a = VAL2ARY(sp[0]);
+    WB(a, items[ii], sp[1]);
+    return RESULT_OK(sp[1]);
+}
+```
+
+`baruby_ary_push` は `sp_top` を追加引数で受け、 内部の
+`astro_gc_realloc_payload` に通す。 `c->sp` の更新は framework alloc API の
+中で行われるので NODE_DEF 側からは見えない。
+
 leaf 系には `@noalloc`:
 
 ```c
 NODE_DEF @noalloc
-node_num(CTX *c, NODE *n, VALUE *fp, int32_t num) { return RESULT_OK(INT2VAL(num)); }
-
+node_num (CTX *c, NODE *n, VALUE *sp, int32_t num) { return RESULT_OK(INT2VAL(num)); }
 NODE_DEF @noalloc
-node_lget(CTX *c, NODE *n, VALUE *fp, uint32_t index) { return RESULT_OK(fp[index]); }
-
+node_lget(CTX *c, NODE *n, VALUE *sp, uint32_t index) { return RESULT_OK(/*fp[index]*/); }
 NODE_DEF @noalloc
-node_true(CTX *c, NODE *n, VALUE *fp) { return RESULT_OK(VAL_TRUE); }
+node_true(CTX *c, NODE *n, VALUE *sp) { return RESULT_OK(VAL_TRUE); }
 ```
 
 判断基準: BODY 内に `EVAL_ARG` / `astro_gc_alloc` / `BA_ALLOC_*` / `WB` のいずれも
 無ければ `@noalloc` を付けてよい。 違反は ASTroGen が BODY を grep して CI で
 検出する。
 
-### 2.4 関数境界の root_array
+### 2.4 関数境界: callee frame は sp の上に確保
 
-baruby は function call の節 (`node_call_*` の callee セットアップ部分) で
-新しい frame (`VALUE F[locals_cnt]`) を作る。 ここに `@root_array` を付ける:
+baruby は現状 `VALUE F[locals_cnt]` で C スタック VLA に callee frame を
+取っているが、 sp[] モデルでは **sp の上に locals_cnt 個の slot を確保**
+することで callee frame が自動的に GC scan 対象になる:
 
 ```c
-NODE_DEF @root_array(F, locals_cnt)
-node_call_1(CTX *c, NODE *n, VALUE *fp, const char *name, uint32_t arg_index,
+NODE_DEF @scratch(locals_cnt)
+node_call_1(CTX *c, NODE *n, VALUE *sp, const char *name, uint32_t arg_index,
             uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0)
 {
-    VALUE F[locals_cnt];                 // VLA、 callee の新 frame
-    F[0] = UNWRAP(EVAL_ARG(c, a0));
-    return EVAL(c, cc->body, F);
+    /* sp[0..locals_cnt-1] が callee の locals 領域 */
+    sp[0] = UNWRAP(EVAL_ARG(c, a0));                  // arg を locals[0] に置く
+    return EVAL(c, cc->body, sp);                     // callee は sp[0..] を見る
 }
 ```
+
+ASTroGen は `@scratch(locals_cnt)` を見て「BODY 開始時に sp 上に動的サイズ
+の領域を確保」 することを認識する。 サイズが parser から正しく渡されている
+ことを assert で check。
+
+C VLA を捨てる利点: GC が `c->fp_base..c->sp` を flat scan するだけで callee
+frame まで自動的に含まれる。 別途 `@root_array` で範囲を declare する必要なし。
 
 トップレベルの起点だけは `main.c` で:
 
 ```c
-astro_gc_register_toplevel_frame(c->env, /*size=*/ toplevel_size);
+c->fp_base = c->env;      // stack の最下端を確定
+c->sp      = c->env;      // 初期 top
 RESULT r = EVAL(c, ast, c->env);
-astro_gc_unregister_toplevel_frame();
 ```
-
-caller の `VALUE *fp` 自体は caller の NODE_DEF (= caller の EVAL ラッパ) で
-既に root_array 化されているので、 各 node からは fp は触らなくてよい。
 
 ### 2.5 既存 `@ref` operand
 
@@ -581,14 +558,16 @@ baruby_ary_new(uint32_t capa)
 
 ```c
 void
-baruby_ary_push(VALUE av, VALUE x)
+baruby_ary_push(VALUE av, VALUE x, VALUE *sp_top)
 {
     BaArray *a = VAL2ARY(av);
     if (a->len == a->capa) {
         uint32_t new_capa = a->capa ? a->capa * 2 : 4;
-        // astro_gc_realloc_payload が内部で safepoint poll を含む (§1.5)
+        // astro_gc_realloc_payload は内部で c->sp = sp_top + poll を行う (§1.3.4)
         a->items = astro_gc_realloc_payload(astro_gc_heap(HEAP_REF_PAYLOAD),
-                                            a->items, sizeof(VALUE) * new_capa);
+                                            a->items,
+                                            sizeof(VALUE) * new_capa,
+                                            sp_top);
         a->capa = new_capa;
     }
     WB(a, items[a->len], x);
@@ -596,8 +575,8 @@ baruby_ary_push(VALUE av, VALUE x)
 }
 ```
 
-`baruby_ary_push` の signature は変えていない (CTX を取らない)。 framework
-alloc API が TLS 経由で現在 CTX を見つけて safepoint を打つ。
+`baruby_ary_push` の signature は `sp_top` を 1 つ追加するだけ (CTX は取らない
+まま)。 framework alloc API が `c->sp = sp_top` を書いてから GC handshake する。
 
 ### 2.7 frame iterator (言語側 1 関数)
 
@@ -605,16 +584,17 @@ alloc API が TLS 経由で現在 CTX を見つけて safepoint を打つ。
 void
 baruby_gc_iter_roots(astro_root_visitor_t *v)
 {
-    // 局所 frame chain
-    for (astro_frame_t *f = global_c->fp_chain; f; f = f->prev) {
-        astro_visit_frame(v, f->desc, f->data);
+    // sp[] flat scan: fp_base から現在 top まで
+    for (VALUE *p = global_c->fp_base; p < global_c->sp; p++) {
+        astro_visit_value(v, *p);
     }
     // global root: 関数テーブル (本体は AST = immortal、 走査不要)
-    //              code repo / トップレベル frame 等は別 API で登録済
+    //              code repo / 定数等は別 API で登録済
 }
 ```
 
-これで baruby 側が GC に提供する root 列挙は完了。
+per-NODE_DEF chain を辿る必要なし。 `c->fp_base..c->sp` を flat scan するだけ。
+これが sp[] モデルの一番の利点。
 
 ### 2.8 Makefile
 
@@ -644,16 +624,19 @@ baruby: $(OBJS)
 | 場所 | 追加内容 | 規模 |
 |---|---|---|
 | `node.def` 冒頭 | `VALUE_DEF baruby_obj` (採用するなら) | ~5 行 |
+| 共通引数 | 第 3 引数を `VALUE *fp` → `VALUE *sp` に rename / 意味変更 | baruby_gen.rb 1 行 |
 | 各 `NODE_DEF` header | leaf に `@noalloc`、 alloc/call をまたぐ root に `@roots(...)` | ~40 箇所 |
-| 関数境界 ノード | `@root_array(F, locals_cnt)` | 4 箇所 (call_0/1/2/3) |
+| 関数境界 ノード | `@scratch(locals_cnt)` (callee frame を sp に置く) | 4 箇所 (call_0/1/2/3) |
 | `node.c` | `baruby_ary_new` 等を framework alloc API 経由に | ~6 関数 |
+| `node.c` | CTX 取らない C helper に `sp_top` 引数を追加 | ~4 関数 |
 | `node.c` | 素の `a->items[ii] = v` を `WB(a, items[ii], v)` に | ~10 箇所 |
-| `node.c` | `baruby_gc_iter_roots` を 1 個実装 | 1 関数 |
-| `main.c` | toplevel frame 登録 | 2 行 |
+| `node.c` | `baruby_gc_iter_roots` を 1 個実装 (sp[] flat scan) | 1 関数 |
+| `main.c` | `c->fp_base = c->sp = c->env` の初期化 | 2 行 |
 | `Makefile` | `GC=...` で backend ソースを切替 | 5-10 行 |
 
-NODE_DEF の BODY テキスト自体は **1 行も変更不要**。 header と `node.c` の
-ヘルパだけが変わる。
+NODE_DEF の BODY テキスト自体は **1 行も変更不要**。 ASTroGen が `@roots` から
+`l` → `sp[0]` 等の書き換えを自動で行う。 header と `node.c` の helper だけが
+変わる。
 
 ---
 
@@ -661,8 +644,12 @@ NODE_DEF の BODY テキスト自体は **1 行も変更不要**。 header と `
 
 - `VALUE_DEF` 採否 (§1.7) — 採用すれば marker 自動生成、 不採用なら手書き。
   まず §1.3-1.6 だけで baruby を回し、 marker 手書きの工数が見えてから判断
+- ASTroGen の BODY 書き換え範囲 — `@roots` で挙げた名前以外も「子 call を
+  またぐ VALUE」 を自動検出して spill する live-range 解析を入れるか、
+  `@roots` 明示のみで行くか。 まず明示のみで実装し、 typo を error 検出するに
+  留めるのが安全
 - `HEAP_FINALIZABLE` の解放順序 — BDW 風 topological を default、
   `@finalizer F @order=N` で override 可、 を仮置き
-- `@ref_array` の長さ表現 — `count_var` (単一 unsigned) のみ採用、
-  begin/end ペアは moving fixup が複雑になるので不採用
+- moving backend での pointer reload (`a = VAL2ARY(sp[0])` の自動挿入) —
+  ASTroGen が必要箇所を解析して reload を挟むか、 手書きで対応するか
 - multi-thread での TLS 切替 — single-thread が動いてから検討
