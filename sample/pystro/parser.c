@@ -308,23 +308,25 @@ static int comp_remap_uid = 0;
 static const char *
 comp_remap_lookup(const char *name)
 {
-    // Walk remaps from innermost to outermost.  For lambdas / nested
-    // defs inside a comprehension, the loop target should still resolve
-    // through the comp's synthetic local — otherwise references like
-    // `lambda: i` inside `[lambda: i for i in ...]` fail to capture.
-    //
-    // BUT: if `name` is itself a local (or parameter) of the current
-    // scope, the user explicitly rebound it and the remap must not
-    // override.  e.g. `[lambda i=i: i for i in ...]` — the body's `i`
-    // is the lambda parameter; only the default-RHS `i` (evaluated in
-    // the outer comp scope) goes through the remap.
-    if (cur_scope) {
-        for (int j = 0; j < cur_scope->nlocals; j++) {
-            if (cur_scope->locals[j] == name) return NULL;
-        }
-    }
+    // Walk remaps from innermost to outermost.  For each remap:
+    //   - If the remap's scope matches cur_scope, we're inside the comp
+    //     itself — always apply (comp loop target should never refer
+    //     back to a same-named outer binding).
+    //   - Otherwise we're in a nested scope (lambda / def inside the
+    //     comp body): apply UNLESS cur_scope itself binds `name`
+    //     (e.g. `[lambda i=i: i for i in ...]`'s body uses the param).
     for (int i = comp_remap_top - 1; i >= 0; i--) {
-        if (comp_remap_stack[i].orig == name) return comp_remap_stack[i].synth;
+        if (comp_remap_stack[i].orig != name) continue;
+        if (comp_remap_stack[i].scope == cur_scope) {
+            return comp_remap_stack[i].synth;
+        }
+        bool shadowed = false;
+        if (cur_scope) {
+            for (int j = 0; j < cur_scope->nlocals; j++) {
+                if (cur_scope->locals[j] == name) { shadowed = true; break; }
+            }
+        }
+        if (!shadowed) return comp_remap_stack[i].synth;
     }
     return NULL;
 }
