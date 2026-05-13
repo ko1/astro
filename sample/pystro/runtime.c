@@ -12053,6 +12053,11 @@ static struct type_method tuple_methods[] = {
     { "count", tm_count, 2, 2 },
     { "__iter__", bi_dunder_iter, 1, 1 },
     { "__len__",  bi_dunder_len,  1, 1 },
+    { "__add__",  lm_add,  2, 2 },
+    { "__mul__",  lm_mul,  2, 2 },
+    { "__rmul__", lm_rmul, 2, 2 },
+    { "__getitem__", lm_getitem, 2, 2 },
+    { "__contains__", lm_contains, 2, 2 },
     { NULL, NULL, 0, 0 }
 };
 
@@ -12904,6 +12909,13 @@ static struct type_method bytes_methods[] = {
     { "copy",       bm_copy,       1, 1 },
     { "partition",  bm_partition,  2, 2 },
     { "rpartition", bm_rpartition, 2, 2 },
+    { "__add__",    lm_add,        2, 2 },
+    { "__mul__",    lm_mul,        2, 2 },
+    { "__rmul__",   lm_rmul,       2, 2 },
+    { "__getitem__", lm_getitem,   2, 2 },
+    { "__len__",    bi_dunder_len, 1, 1 },
+    { "__iter__",   bi_dunder_iter, 1, 1 },
+    { "__contains__", lm_contains, 2, 2 },
     { NULL, NULL, 0, 0 }
 };
 
