@@ -13003,6 +13003,26 @@ bi_int(CTX *c, int argc, VALUE *argv)
             if ((p[0] == '0') && (p[1] == 'o' || p[1] == 'O')) { p += 2; base = 8; }
         }
         if (base == 0) base = 10;
+        // CPython rejects whitespace between the sign and the digits
+        // (e.g. `int('+ 1')`) and any embedded whitespace.  GMP's
+        // mpz_set_str is permissive about leading whitespace, so check
+        // explicitly here before re-attaching the sign.
+        for (char *check = p; *check; check++) {
+            if (*check == ' ' || *check == '\t' || *check == '\n' || *check == '\r') {
+                mpz_t z; mpz_init(z);
+                size_t L2 = PYS_PTR(v)->str.len;
+                size_t cap = L2 < sizeof(small) ? L2 : sizeof(small) - 1;
+                char orig[80];
+                size_t copy = L2 < sizeof(orig) - 1 ? L2 : sizeof(orig) - 1;
+                memcpy(orig, PYS_PTR(v)->str.chars, copy);
+                orig[copy] = '\0';
+                (void)cap;
+                mpz_clear(z);
+                PYS_RAISE_EXC(c, c->EXC_ValueError,
+                             "invalid literal for int() with base %d: '%s'",
+                             base, orig);
+            }
+        }
         // Re-attach the sign so mpz_set_str sees a sensible string.
         if (sign == '-') {
             p--;
