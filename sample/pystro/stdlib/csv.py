@@ -17,6 +17,9 @@ class Dialect:
     doublequote = True
     escapechar = None
     skipinitialspace = False
+    def __init__(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
 
 
 excel = Dialect
