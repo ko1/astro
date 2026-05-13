@@ -228,88 +228,169 @@ VALUE v = (VALUE)a;  // baruby は LSB=0 = ptr なのでそのまま
 
 ### 1.4 Root 列挙: frame iterator (precise の核)
 
-#### 何
+precise GC を動かすには、 「いまどの局所変数が VALUE root か」 を GC が知れる
+必要がある。 ASTro はこれを **NODE_DEF の `@roots(...)` 注釈** と
+**ASTroGen が自動生成する frame descriptor** の組合せで実現する。
 
-precise GC の心臓部。 言語側は **frame iterator を 1 個実装** すれば、 各
-NODE_DEF の root は `@roots(...)` / `@root_array(...)` 注釈から ASTroGen が
-自動生成する frame descriptor 経由で列挙される:
+簡単な NODE_DEF から始めて、 そこに何を足すか、 ASTroGen が何を生成するか、
+を順に見ていく。
+
+#### 1.4.1 まず一番素朴な NODE_DEF を見る
 
 ```c
-struct astro_frame_desc_t {              // 各 dispatcher で 1 回 static const
-    uint16_t  size;
-    uint16_t  n_refs;
-    uint16_t  ref_offsets[/* n_refs */];   // F[] 内オフセット
-    struct {                               // VALUE * + count_var 形式の可変長
-        uint16_t base_off;
-        uint16_t count_off;
-    } ref_array;                           // .count_off==0 なら無し
-};
-
-#define ASTRO_FRAME_ENTER(c, desc, frame_ptr)  /* on-stack chain push */
-#define ASTRO_FRAME_LEAVE(c)                   /* pop */
-
-// 言語が 1 回だけ実装
-void <lang>_gc_iter_roots(astro_root_visitor_t *v);
+NODE_DEF
+node_add(CTX *c, NODE *n, NODE *lv, NODE *rv)
+{
+    VALUE l = EVAL_ARG(c, lv);
+    VALUE r = EVAL_ARG(c, rv);
+    return l + r;
+}
 ```
 
-NODE_DEF 側で書ける注釈:
+precise GC ではここに問題がある: `l` は `EVAL_ARG(c, rv)` を生存する必要が
+あるが、 ASTroGen は **「`l` が VALUE root だ」 と知る方法がない**。 普通の
+C コンパイラから見れば `l` はただのローカル変数で、 中身が GC ヒープのポインタ
+かどうか区別がつかない。
 
-| 注釈 | 意味 |
-|---|---|
-| `@roots(name1, name2, ...)` | BODY 内のローカル `VALUE name` を frame descriptor の ref_offsets に追加。 ASTroGen は BODY を frame ENTER/LEAVE で包む |
-| `@root_array(base, count)` | `VALUE *base` と `size_t count` を可変長 root 列として扱う。 `base` / `count` はローカル変数でも **共通引数** でもよい (baruby の `VALUE *fp` のように `common_param_count` で渡される frame pointer も対象にできる) |
+#### 1.4.2 `@roots(l)` で root を宣言する
 
-ASTroGen は `@roots(r)` を見ると EVAL\_\<name\> ラッパをこう書き換える:
+言語側が「`l` は root です」 と教える:
+
+```c
+NODE_DEF @roots(l)
+node_add(CTX *c, NODE *n, NODE *lv, NODE *rv)
+{
+    VALUE l = EVAL_ARG(c, lv);   // この時点から root
+    VALUE r = EVAL_ARG(c, rv);   // ここで GC が走っても l は生きている
+    return l + r;
+}
+```
+
+これを見て ASTroGen は **2 つのもの** を生成する。
+
+**(1) この node 専用の frame 構造体と、 その descriptor**:
+
+```c
+struct frame_node_add { VALUE l; };
+
+static const astro_frame_desc_t FD_node_add = {
+    .size        = sizeof(struct frame_node_add),
+    .n_refs      = 1,
+    .ref_offsets = { offsetof(struct frame_node_add, l) },
+};
+```
+
+`FD_node_add` は per-NODE_DEF で 1 個だけ。 `.ref_offsets` を見れば「この
+frame の先頭から 0 バイト目に VALUE root がある」 が分かる。
+
+**(2) EVAL ラッパで frame の push/pop + ローカル名のリダイレクト**:
 
 ```c
 static inline VALUE
-EVAL_node_call1(CTX *c, NODE *n, VALUE *fp, NODE *recv, /*...*/)
+EVAL_node_add(CTX *c, NODE *n, NODE *lv, /*...*/, NODE *rv, /*...*/)
 {
-    struct { VALUE r; } _f;
-    ASTRO_FRAME_ENTER(c, &SD_node_call1_FD, &_f);
-#define r (_f.r)              // BODY のテキストを変えずに root 化
-    VALUE r = UNWRAP(EVAL_ARG(c, recv));
-    VALUE a = UNWRAP(EVAL_ARG(c, arg));
-    VALUE _ret = baruby_call1(c, r, a);
-#undef r
-    ASTRO_FRAME_LEAVE(c);
+    struct frame_node_add _f;
+    ASTRO_FRAME_ENTER(c, &FD_node_add, &_f);   // c->fp_chain に push
+#define l (_f.l)                                // BODY を変えずに l を frame slot に上げる
+    VALUE l = EVAL_ARG(c, lv);
+    VALUE r = EVAL_ARG(c, rv);
+    VALUE _ret = l + r;
+#undef l
+    ASTRO_FRAME_LEAVE(c);                       // pop
     return _ret;
 }
 ```
 
-`#define name (_f.name)` を BODY 直前に挟むことで、 **BODY のテキストは 1 文字も
-変えずに** 当該変数を frame slot に上げる、 という仕掛け。
+`#define l (_f.l)` を BODY の直前に挟むことで、 **BODY のテキストは 1 文字も
+変えずに** 当該変数を frame slot 経由のアクセスに変える、 というのが仕掛けの
+中心。 BODY 不触原則 (§0.3) の物理的実現。
 
-frame descriptor は SD ごとに `static const`:
+#### 1.4.3 GC は frame chain を辿るだけ
+
+`ASTRO_FRAME_ENTER` は `c->fp_chain` の先頭に `{desc=&FD_node_add, data=&_f}`
+を push する。 nested に EVAL\_xxx が呼ばれれば chain が伸びる。 GC 起動時:
+
+```
+<lang>_gc_iter_roots(visitor) {
+    for (astro_frame_t *f = c->fp_chain; f; f = f->prev) {
+        // f->desc->ref_offsets を見て f->data + offset 位置の VALUE を visit
+        astro_visit_frame(visitor, f->desc, f->data);
+    }
+    // global root (function table、 symbol table 等) は visitor に直接渡す
+}
+```
+
+`<lang>_gc_iter_roots` は **言語が 1 個だけ実装** する。 ref_offsets / ref_array
+を実際に walk する処理は backend に持たせる。
+
+#### 1.4.4 拡張 1: 可変長 root 列 (`@root_array`)
+
+`@roots(l, r)` は **固定個** の名前付きローカル用。 baruby の `VALUE *fp`
+のように「`n` 個分の VALUE 配列を全部 root にしたい」 ケースには
+`@root_array(base, count)` を使う:
 
 ```c
-static const astro_frame_desc_t SD_<hash>_FD = {
-    .size = sizeof(struct { VALUE r; }),
-    .n_refs = 1,
-    .ref_offsets = { offsetof(struct { VALUE r; }, r) },
+NODE_DEF @root_array(F, locals_cnt)
+node_call_1(CTX *c, NODE *n, VALUE *fp, /*...*/, uint32_t locals_cnt, NODE *a0)
+{
+    VALUE F[locals_cnt];           // VLA、 callee の新 frame
+    F[0] = UNWRAP(EVAL_ARG(c, a0));
+    ...
+}
+```
+
+これは frame_desc の **`ref_array` フィールド** に対応する:
+
+```c
+static const astro_frame_desc_t FD_node_call_1 = {
+    .size      = sizeof(struct frame_node_call_1),
+    .n_refs    = 0,
+    .ref_array = {
+        .base_off  = offsetof(struct frame_node_call_1, F_ptr),
+        .count_off = offsetof(struct frame_node_call_1, F_count),
+    },
 };
 ```
 
-#### なぜ
+ASTroGen は ENTER 時に `F` と `locals_cnt` を frame 構造体にコピーする
+コードも出す。 `base` / `count` は **ローカル変数だけでなく共通引数** も指定でき、
+baruby の `VALUE *fp` のように `common_param_count` で渡される frame pointer
+もそのまま root_array にできる。
 
-precise GC の rooting で「local VALUE をどう scan するか」 が常に問題になる。
-ASTro はこれを **CTX hot member lift と同じ mechanism** (frame chain on CTX)
-で実装する:
+#### 1.4.5 frame descriptor の型まとめ
 
-- preemptive ではなく cooperative (safepoint で flush)
-- signal-based を避けることで wasm との両立、 koruby の setjmp/longjmp
-  不使用方針との整合 を確保
-- frame layout を SD レベルで一意にすることで、 JIT / AOT どちらでも同じ
-  mechanism が効く
+ここまでに出てきた構造体型をまとめると:
 
-GC 起動時の root 列挙は:
-
+```c
+struct astro_frame_desc_t {
+    uint16_t size;                      // frame 構造体のサイズ
+    uint16_t n_refs;                    // ref_offsets[] の長さ
+    uint16_t ref_offsets[/*n_refs*/];   // 固定個のローカル root (@roots 由来)
+    struct {                            // 可変長 root 列 (@root_array 由来)
+        uint16_t base_off;              //   VALUE * の offset
+        uint16_t count_off;             //   length の offset
+    } ref_array;                        // .count_off==0 なら無し
+};
 ```
-<lang>_gc_iter_roots() →
-  c->fp_chain を辿る → 各 frame の desc.ref_offsets / ref_array を visit
-```
 
-global root (function table、 symbol table 等) は言語が visitor に直接渡す。
+注釈 → descriptor の対応:
+
+| 注釈 | descriptor field |
+|---|---|
+| `@roots(l, r, ...)` | `n_refs` + `ref_offsets[]` |
+| `@root_array(base, count)` | `ref_array.base_off` / `count_off` |
+| 注釈なし | descriptor 生成しない (frame ENTER/LEAVE も無し) |
+
+#### 1.4.6 なぜ cooperative (signal-based でない) か
+
+ENTER/LEAVE は安全点 (safepoint、 §1.6) でしか chain 整合性が保証されない
+**cooperative** 設計。 signal-based の preemptive GC は
+
+- wasm との両立が悪い (Wasm スタックに signal が届かない)
+- koruby の setjmp/longjmp 不使用方針と整合しない
+
+ため不採用。 ASTro 全体の方針として、 GC が走るのは「全 thread が次の
+safepoint に到達した瞬間」 だけ、 と決めている。
 
 ### 1.5 Write barrier
 
