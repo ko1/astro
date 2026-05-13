@@ -17259,7 +17259,10 @@ bi_round(CTX *c, int argc, VALUE *argv)
             return pys_apply(c, m, argc, argv);
         }
     }
-    int ndig = (argc >= 2) ? (int)pys_int_to_long(c, argv[1]) : 0;
+    // CPython accepts `round(x, None)` as equivalent to round(x).
+    bool ndig_is_none = (argc >= 2 && argv[1] == PYS_NONE);
+    int ndig = (argc >= 2 && !ndig_is_none) ? (int)pys_int_to_long(c, argv[1]) : 0;
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     double d = pys_to_double(c, argv[0]);
     double mul = 1.0;
     for (int i = 0; i < ndig; i++) mul *= 10.0;
@@ -17280,7 +17283,8 @@ bi_round(CTX *c, int argc, VALUE *argv)
     }
     double r = rounded / mul;
     // Python: round(x) → int; round(x, n) → same type as x.
-    if (argc < 2) return PYS_FIX((int64_t)rounded);
+    // round(x, None) is equivalent to round(x) → int.
+    if (argc < 2 || ndig_is_none) return PYS_FIX((int64_t)rounded);
     if (PYS_IS_FIXNUM(argv[0]) || pys_is_bignum(argv[0])) return PYS_FIX((int64_t)r);
     return pys_make_float(r);
 }
