@@ -1603,6 +1603,10 @@ pys_raise_exc(CTX *c, VALUE cls, const char *fmt, ...)
     VALUE msg = pys_make_str(buf, strlen(buf));
     pys_setattr(c, inst, "args", pys_make_tuple(&msg, 1));
     pys_setattr(c, inst, "message", msg);
+    // CPython StopIteration exposes `.value` — falls through to args[0]
+    // when set, else None.  Set it here so generic raise sites get the
+    // attribute even when they don't compute a return value.
+    pys_setattr(c, inst, "value", PYS_NONE);
     if (c->current_handling_exc && c->current_handling_exc != PYS_NONE)
         pys_setattr(c, inst, "__context__", c->current_handling_exc);
     else
@@ -1906,7 +1910,10 @@ pys_sub(CTX *c, VALUE a, VALUE b)
         }
     }
     // list - list as set difference (dict_keys-style courtesy).
-    if ((pys_is_list(a) || pys_is_any_set(a)) && (pys_is_list(b) || pys_is_any_set(b))) {
+    // Restrict to actual list operands; CPython raises TypeError for
+    // set - list, so don't synthesise a result there.  set - set is
+    // already handled by the sm_difference path above.
+    if (pys_is_list(a) && (pys_is_list(b) || pys_is_any_set(b))) {
         VALUE r = pys_make_set();
         size_t na = PYS_PTR(a)->list.len;
         for (size_t i = 0; i < na; i++) {
@@ -6558,15 +6565,26 @@ pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
         extern VALUE pys_make_gen(CTX *c, VALUE fn, int argc, VALUE *argv, int kwc, const char **kwn, VALUE *kwv);
         if (pys_func_is_generator(fn))
             return pys_make_gen(c, fn, argc, argv, kwc, kwnames, kwvalues);
-        // `async def` body — pystro doesn't run an event loop, so we
-        // return a fake coroutine wrapper that satisfies the methods
-        // CPython's stdlib calls at module init (`close()`, `__await__`,
-        // `send()`, `throw()`).  The body is NOT actually executed
-        // (CPython's `_collections_abc.py` / `types.py` etc. don't await
-        // the result; they just call .close()).
+        // `async def` body — pystro doesn't run an event loop.  Eagerly
+        // execute the body so the (non-`await`-ed) return value is
+        // visible through `coro.send(None)` raising
+        // `StopIteration(retval)` — matching CPython semantics for
+        // trivially-completing coroutines (covers most stub uses).
         if (PYS_PTR(fn)->func.is_async) {
             extern VALUE pys_make_fake_coroutine(CTX *c);
-            return pys_make_fake_coroutine(c);
+            VALUE rv = pys_apply_kw_func(c, fn, argc, argv, kwc, kwnames, kwvalues);
+            // If the body raised, propagate via the coroutine — match
+            // CPython where `coro.send(None)` re-raises body exceptions.
+            VALUE coro = pys_make_fake_coroutine(c);
+            if (c->state == PYS_STATE_RAISE) {
+                pys_setattr(c, coro, "__pystro_coro_raised__", c->state_value);
+                c->state = PYS_STATE_NORMAL;
+                c->state_value = 0;
+            } else {
+                pys_setattr(c, coro, "__pystro_coro_value__",
+                            rv ? rv : PYS_NONE);
+            }
+            return coro;
         }
         return pys_apply_kw_func(c, fn, argc, argv, kwc, kwnames, kwvalues);
     }
@@ -6605,6 +6623,24 @@ pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
 VALUE
 pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
 {
+    // `async def` body — eagerly run, capture return value or raised
+    // exception, hand to fake_coroutine so `coro.send(None)` produces
+    // the right result.
+    if (pys_is_func(fn) && PYS_PTR(fn)->func.is_async) {
+        extern VALUE pys_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
+                                       int kwc, const char **kwn, VALUE *kwv);
+        extern VALUE pys_make_fake_coroutine(CTX *c);
+        VALUE rv = pys_apply_kw_func(c, fn, argc, argv, 0, NULL, NULL);
+        VALUE coro = pys_make_fake_coroutine(c);
+        if (c->state == PYS_STATE_RAISE) {
+            pys_setattr(c, coro, "__pystro_coro_raised__", c->state_value);
+            c->state = PYS_STATE_NORMAL;
+            c->state_value = 0;
+        } else {
+            pys_setattr(c, coro, "__pystro_coro_value__", rv ? rv : PYS_NONE);
+        }
+        return coro;
+    }
     if (pys_is_bound(fn)) {
         struct pysobj *bm = PYS_PTR(fn);
         VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
@@ -7513,8 +7549,27 @@ bi_fake_coro_close(CTX *c, int argc, VALUE *argv)
 static VALUE
 bi_fake_coro_send(CTX *c, int argc, VALUE *argv)
 {
-    (void)argc; (void)argv;
-    PYS_RAISE_EXC(c, c->EXC_StopIteration, "fake coroutine sent into");
+    (void)argc;
+    // If the body raised, re-raise the stored exception.
+    VALUE raised = pys_getattr_optional(c, argv[0], "__pystro_coro_raised__");
+    if (raised && raised != PYS_NONE) {
+        c->state = PYS_STATE_RAISE;
+        c->state_value = raised;
+        return 0;
+    }
+    // Otherwise raise StopIteration(stored_value).
+    VALUE rv = pys_getattr_optional(c, argv[0], "__pystro_coro_value__");
+    if (!rv) rv = PYS_NONE;
+    VALUE si = pys_make_instance(c->EXC_StopIteration);
+    pys_setattr(c, si, "value", rv);
+    pys_setattr(c, si, "args", pys_make_tuple(&rv, 1));
+    pys_setattr(c, si, "__traceback__", PYS_NONE);
+    pys_setattr(c, si, "__context__", PYS_NONE);
+    pys_setattr(c, si, "__cause__", PYS_NONE);
+    pys_setattr(c, si, "__suppress_context__", PYS_FALSE);
+    c->state = PYS_STATE_RAISE;
+    c->state_value = si;
+    return 0;
 }
 
 static VALUE

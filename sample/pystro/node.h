@@ -138,13 +138,14 @@ pys_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
     if (LIKELY(PYS_IS_PTR(fn) && PYS_PTR(fn)->type == PYS_T_FUNC)) {
         struct pysobj *f = PYS_PTR(fn);
-        // `async def` body — return a fake coroutine wrapper without
-        // running the body.  CPython's stdlib import-time idiom
-        // `(async def f())().close()` works that way; full event-loop
-        // semantics aren't modeled.
+        // `async def` body — pystro has no event loop, but eagerly run
+        // the body and stash the return value so coro.send(None) raises
+        // `StopIteration(retval)` per CPython semantics for trivially
+        // completing coroutines.  Route to the slow path which now
+        // handles this synchronously.
         if (UNLIKELY(f->func.is_async)) {
-            extern VALUE pys_make_fake_coroutine(CTX *c);
-            return pys_make_fake_coroutine(c);
+            extern VALUE pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv);
+            return pys_apply_slow(c, fn, argc, argv);
         }
         // Fast path only handles plain "exact arity, no varargs/kwargs,
         // not a generator" — anything fancier routes through
