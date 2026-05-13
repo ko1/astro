@@ -29,7 +29,10 @@ def quote_plus(s, safe="", encoding=None, errors=None):
 
 
 def unquote(s, encoding="utf-8", errors="replace"):
-    """Decode percent-encoded string."""
+    """Decode percent-encoded string.  Contiguous %NN escapes are
+    collected as a byte string and decoded together using `encoding`
+    (default utf-8), so multi-byte sequences like %C3%A9 round-trip
+    back to the right character."""
     if isinstance(s, bytes):
         s = s.decode("ascii")
     out = []
@@ -37,15 +40,25 @@ def unquote(s, encoding="utf-8", errors="replace"):
     n = len(s)
     while i < n:
         ch = s[i]
-        if ch == "%" and i + 2 < n:
+        if ch != "%":
+            out.append(ch)
+            i += 1
+            continue
+        # Collect a run of %NN escapes.
+        buf = bytearray()
+        j = i
+        while j + 2 < n and s[j] == "%":
             try:
-                out.append(chr(int(s[i+1:i+3], 16)))
-                i += 3
-                continue
+                buf.append(int(s[j+1:j+3], 16))
+                j += 3
             except ValueError:
-                pass
-        out.append(ch)
-        i += 1
+                break
+        if buf:
+            out.append(bytes(buf).decode(encoding, errors))
+            i = j
+        else:
+            out.append(ch)
+            i += 1
     return "".join(out)
 
 
