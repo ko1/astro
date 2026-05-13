@@ -6943,7 +6943,13 @@ pys_display(FILE *fp, VALUE v, bool repr)
                     if (!repr) {
                         if (n == 0) return;
                         if (n == 1) {
-                            pys_display(fp, PYS_PTR(args)->list.items[0], false);
+                            // KeyError uses repr of its arg even in str(),
+                            // because lookup keys are usually strings and
+                            // CPython wants to disambiguate "" from missing.
+                            bool is_key_err = class_is_ancestor(
+                                PYS_OBJ_VAL(o->inst.cls),
+                                pys_current_ctx->EXC_KeyError);
+                            pys_display(fp, PYS_PTR(args)->list.items[0], is_key_err);
                             return;
                         }
                         // Fall through: print tuple repr.
