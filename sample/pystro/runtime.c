@@ -6412,8 +6412,15 @@ pys_apply_kw(CTX *c, VALUE fn, int argc, VALUE *argv,
                 if (argc >= 1 && pys_is_str(argv[0])) pys_setattr(c, inst, "message", argv[0]);
             }
         }
+        // CPython: __init__ only runs when __new__ returned an instance
+        // of (a subclass of) `fn`.  `__new__` returning a different type
+        // skips __init__ entirely — this is what singleton / immutable
+        // patterns rely on.
+        extern bool class_is_ancestor(VALUE cls, VALUE target);
+        bool inst_of_fn = pys_is_instance(inst)
+            && class_is_ancestor(PYS_OBJ_VAL(PYS_PTR(inst)->inst.cls), fn);
         VALUE init = cd->slot_init;
-        if (init != PYS_NONE) {
+        if (init != PYS_NONE && inst_of_fn) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = inst;
             for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
@@ -6566,7 +6573,12 @@ pys_apply_slow(CTX *c, VALUE fn, int argc, VALUE *argv)
         // would do the same load + branch but as an external call.  cd is
         // already in scope from above (slots_initialized was checked).
         VALUE init = cd_apply->slot_init;
-        if (init != PYS_NONE) {
+        // CPython: __init__ only runs when __new__ returned an instance
+        // of (a subclass of) `fn`.
+        extern bool class_is_ancestor(VALUE cls, VALUE target);
+        bool inst_of_fn = pys_is_instance(inst)
+            && class_is_ancestor(PYS_OBJ_VAL(PYS_PTR(inst)->inst.cls), fn);
+        if (init != PYS_NONE && inst_of_fn) {
             VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc + 1));
             av[0] = inst;
             for (int i = 0; i < argc; i++) av[i + 1] = argv[i];
