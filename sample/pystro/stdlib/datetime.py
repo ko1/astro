@@ -196,6 +196,61 @@ class date:
         return NotImplemented
     def __hash__(self):
         return self.year * 10000 + self.month * 100 + self.day
+    def strftime(self, fmt):
+        return _strftime(fmt, self.year, self.month, self.day, 0, 0, 0, 0)
+
+
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"]
+_DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+              "Saturday", "Sunday"]
+
+def _pad(n, w):
+    s = str(n)
+    return "0" * (w - len(s)) + s if len(s) < w else s
+
+def _strftime(fmt, y, m, d, h, mi, s, us):
+    # Compute weekday: 0=Mon..6=Sun (matches CPython date.weekday()).
+    days = date(y, m, d)._ord_days() - date(1970, 1, 1)._ord_days()
+    wd = (days + 3) % 7
+    # Day of year.
+    doy = 0
+    for mm in range(1, m): doy += _month_days(y, mm)
+    doy += d
+    out = []
+    i = 0
+    n = len(fmt)
+    while i < n:
+        c = fmt[i]
+        if c != "%" or i + 1 >= n:
+            out.append(c); i += 1; continue
+        spec = fmt[i + 1]
+        i += 2
+        if spec == "Y": out.append(_pad(y, 4))
+        elif spec == "y": out.append(_pad(y % 100, 2))
+        elif spec == "m": out.append(_pad(m, 2))
+        elif spec == "d": out.append(_pad(d, 2))
+        elif spec == "H": out.append(_pad(h, 2))
+        elif spec == "M": out.append(_pad(mi, 2))
+        elif spec == "S": out.append(_pad(s, 2))
+        elif spec == "I":
+            hh = h % 12
+            if hh == 0: hh = 12
+            out.append(_pad(hh, 2))
+        elif spec == "p": out.append("AM" if h < 12 else "PM")
+        elif spec == "B": out.append(_MONTH_NAMES[m - 1])
+        elif spec == "b": out.append(_MONTH_NAMES[m - 1][:3])
+        elif spec == "A": out.append(_DAY_NAMES[wd])
+        elif spec == "a": out.append(_DAY_NAMES[wd][:3])
+        elif spec == "j": out.append(_pad(doy, 3))
+        elif spec == "w": out.append(str((wd + 1) % 7))
+        elif spec == "f": out.append(_pad(us, 6))
+        elif spec == "%": out.append("%")
+        elif spec == "Z": out.append("")
+        elif spec == "z": out.append("")
+        else:
+            out.append("%"); out.append(spec)
+    return "".join(out)
 
 
 class datetime(date):
@@ -243,6 +298,9 @@ class datetime(date):
                 + ", " + str(self.hour) + ", " + str(self.minute) + ", " + str(self.second) + ")")
     def __str__(self):
         return self.isoformat(" ")
+    def strftime(self, fmt):
+        return _strftime(fmt, self.year, self.month, self.day,
+                         self.hour, self.minute, self.second, self.microsecond)
 
 
 class time:

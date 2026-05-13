@@ -17762,11 +17762,24 @@ static VALUE
 bi_divmod(CTX *c, int argc, VALUE *argv)
 {
     (void)argc;
-    // Dispatch to __divmod__ on instances.
+    // Dispatch to __divmod__ on lhs first, then __rdivmod__ on rhs.
+    VALUE ni = PYS_NONE;
+    pys_global_lookup(c, "NotImplemented", &ni);
     if (pys_is_instance(argv[0])) {
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(argv[0])->inst.cls), "__divmod__");
         if (m != PYS_NONE) {
-            return pys_apply(c, m, 2, argv);
+            VALUE r = pys_apply(c, m, 2, argv);
+            if (c->state == PYS_STATE_RAISE) return 0;
+            if (r != ni) return r;
+        }
+    }
+    if (pys_is_instance(argv[1])) {
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(argv[1])->inst.cls), "__rdivmod__");
+        if (m != PYS_NONE) {
+            VALUE swapped[2] = { argv[1], argv[0] };
+            VALUE r = pys_apply(c, m, 2, swapped);
+            if (c->state == PYS_STATE_RAISE) return 0;
+            if (r != ni) return r;
         }
     }
     VALUE q = pys_fdiv(c, argv[0], argv[1]);
