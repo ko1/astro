@@ -265,6 +265,23 @@ pys_class_meta_apply(CTX *c, VALUE cls, VALUE meta, const char *name)
 void
 pys_class_extract_slots(CTX *c, VALUE cls)
 {
+    // CPython parity: a class that overrides __eq__ without also
+    // overriding __hash__ has its __hash__ implicitly set to None
+    // (the instance becomes unhashable).  Do this BEFORE the
+    // __slots__ check so even unrelated classes get the treatment.
+    {
+        struct pysclass *cd_check = &PYS_PTR(cls)->cls;
+        bool has_eq = false, has_hash = false;
+        for (int j = 0; j < cd_check->nmethods; j++) {
+            if (strcmp(cd_check->methods[j].name, "__eq__") == 0)   has_eq = true;
+            if (strcmp(cd_check->methods[j].name, "__hash__") == 0) has_hash = true;
+        }
+        if (has_eq && !has_hash) {
+            extern void pys_class_add_method(CTX *c, VALUE cls,
+                                             const char *name, VALUE m);
+            pys_class_add_method(c, cls, "__hash__", PYS_NONE);
+        }
+    }
     // Look up __slots__ ONLY on the class itself, not inherited.
     struct pysclass *cd0 = &PYS_PTR(cls)->cls;
     VALUE sv = PYS_NONE;
