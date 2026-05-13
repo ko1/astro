@@ -13783,7 +13783,7 @@ bi_len(CTX *c, int argc, VALUE *argv)
     (void)argc;
     size_t n = pys_seq_len(c, argv[0]);
     if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-    return PYS_FIX((int64_t)n);
+    return pys_make_int((int64_t)n);
 }
 
 static VALUE
