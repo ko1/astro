@@ -167,12 +167,19 @@ node_lref(CTX * restrict c, NODE * restrict n, uint32_t idx)
 {
     (void)n;
     VALUE v = c->env->slots[idx];
-    // VALUE 0 is the "deleted" sentinel — `del NAME` writes 0 and a
-    // subsequent read should raise NameError (matches Python's
-    // UnboundLocalError after del).  Real values can never be 0
-    // (fixnums set bit 0; pointers are non-NULL).
-    if (UNLIKELY(v == 0))
-        PYS_RAISE_EXC(c, c->EXC_NameError, "local variable referenced after del");
+    // VALUE 0 is the "unbound" sentinel — either `del NAME` cleared it
+    // or it was never assigned.  Read raises UnboundLocalError (a
+    // NameError subclass), matching CPython.  Real values can never be
+    // 0 (fixnums set bit 0; pointers are non-NULL).
+    if (UNLIKELY(v == 0)) {
+        const char *nm = c->env->slot_names ? c->env->slot_names[idx] : NULL;
+        if (nm)
+            PYS_RAISE_EXC(c, c->EXC_UnboundLocalError,
+                         "cannot access local variable '%s' where it is not associated with a value", nm);
+        else
+            PYS_RAISE_EXC(c, c->EXC_UnboundLocalError,
+                         "local variable referenced before assignment");
+    }
     return v;
 }
 

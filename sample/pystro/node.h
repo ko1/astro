@@ -164,7 +164,11 @@ pys_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             new_env->slot_names = f->func.local_names;
             new_env->nslots = total;
             for (int i = 0; i < argc; i++) new_env->slots[i] = argv[i];
-            for (int i = argc; i < total; i++) new_env->slots[i] = PYS_NONE;
+            // Slots beyond nparams are pure locals — leave unbound (0)
+            // so reads before assignment raise UnboundLocalError per
+            // Python semantics.  The `argc` here equals `nparams` on
+            // the fast path, so this clears exactly the locals area.
+            for (int i = argc; i < total; i++) new_env->slots[i] = (VALUE)0;
 
             struct pysframe *saved = c->env;
             VALUE saved_mc = c->method_class;

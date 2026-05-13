@@ -6427,6 +6427,11 @@ pys_apply_kw_func(CTX *c, VALUE fn, int argc, VALUE *argv,
         new_env->slots[i] = d;
     }
 
+    // Slots beyond nparams are pure locals — clear to the unbound
+    // sentinel so reads before assignment raise UnboundLocalError.
+    for (int i = nparams; i < f->func.nlocals; i++)
+        new_env->slots[i] = (VALUE)0;
+
     struct pysframe *saved = c->env;
     VALUE saved_mc = c->method_class;
     struct pysglobals *saved_g = c->globals;
