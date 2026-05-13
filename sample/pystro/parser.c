@@ -4999,13 +4999,28 @@ parse_simple_stmt(void)
             track_ann = ALLOC_node_try(sset, (uint32_t)hidx, 1,
                                        ALLOC_node_nop(), ALLOC_node_nop());
         }
+        // Function-local annotations don't go into __annotations__ but
+        // CPython still EVALUATES the annotation expression (so
+        // `def f(): x: 1/0` raises ZeroDivisionError when called).
+        // track_ann is non-NULL only at class / module level; for
+        // function-local we wrap ann_expr in a discard-statement node
+        // so the side effects propagate.
+        NODE *eval_ann = NULL;
+        if (track_ann == NULL && cur_scope != NULL) {
+            eval_ann = ann_expr;
+        }
         if (match_tok(T_ASSIGN)) {
             NODE *rhs = parse_expr_list();
             NODE *store = make_store(nm, rhs);
-            return track_ann ? ALLOC_node_seq(track_ann, store) : store;
+            if (track_ann) return ALLOC_node_seq(track_ann, store);
+            if (eval_ann) return ALLOC_node_seq(eval_ann, store);
+            return store;
         }
-        // Bare annotation `x: int` — track but no value bound.
-        return track_ann ? track_ann : ALLOC_node_nop();
+        // Bare annotation `x: int` — track but no value bound (function
+        // body just evaluates and discards).
+        if (track_ann) return track_ann;
+        if (eval_ann)  return eval_ann;
+        return ALLOC_node_nop();
         (void)save;
     }
 
