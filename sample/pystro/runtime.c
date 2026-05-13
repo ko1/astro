@@ -4957,6 +4957,46 @@ bi_int_is_integer(CTX *c, int argc, VALUE *argv)
     return PYS_TRUE;
 }
 
+// `slice.indices(length)` — returns (start, stop, step) tuple with the
+// slice clamped to the given length.  CPython's behavior matches what
+// list slicing does internally.
+VALUE
+bi_slice_indices(CTX *c, int argc, VALUE *argv)
+{
+    (void)argc;
+    if (!(PYS_IS_PTR(argv[0]) && PYS_PTR(argv[0])->type == PYS_T_SLICE))
+        PYS_RAISE_EXC(c, c->EXC_TypeError, "slice.indices: not a slice");
+    int64_t length = pys_int_to_long(c, argv[1]);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    if (length < 0) PYS_RAISE_EXC(c, c->EXC_ValueError, "length should not be negative");
+    VALUE sv_start = PYS_PTR(argv[0])->slice_.start;
+    VALUE sv_stop  = PYS_PTR(argv[0])->slice_.stop;
+    VALUE sv_step  = PYS_PTR(argv[0])->slice_.step;
+    int64_t step = 1;
+    if (sv_step != PYS_NONE) step = pys_int_to_long(c, sv_step);
+    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+    if (step == 0) PYS_RAISE_EXC(c, c->EXC_ValueError, "slice step cannot be zero");
+    int64_t start, stop;
+    if (sv_start == PYS_NONE) start = (step > 0) ? 0 : length - 1;
+    else {
+        start = pys_int_to_long(c, sv_start);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (start < 0) start += length;
+        if (start < 0) start = (step > 0) ? 0 : -1;
+        if (start >= length) start = (step > 0) ? length : length - 1;
+    }
+    if (sv_stop == PYS_NONE) stop = (step > 0) ? length : -1;
+    else {
+        stop = pys_int_to_long(c, sv_stop);
+        if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+        if (stop < 0) stop += length;
+        if (stop < 0) stop = (step > 0) ? 0 : -1;
+        if (stop >= length) stop = (step > 0) ? length : length - 1;
+    }
+    VALUE items[3] = { pys_make_int(start), pys_make_int(stop), pys_make_int(step) };
+    return pys_make_tuple(items, 3);
+}
+
 // Direct int hash that bypasses user-class dispatch.  Used as the
 // `__hash__` slot on `int` itself so `int.__hash__(self)` from inside a
 // subclass's __hash__ override doesn't recurse back to user code.  For
@@ -5554,6 +5594,11 @@ pys_getattr(CTX *c, VALUE v, const char *name)
         if (strcmp(name, "start") == 0) return PYS_PTR(v)->slice_.start;
         if (strcmp(name, "stop") == 0)  return PYS_PTR(v)->slice_.stop;
         if (strcmp(name, "step") == 0)  return PYS_PTR(v)->slice_.step;
+        if (strcmp(name, "indices") == 0) {
+            extern VALUE bi_slice_indices(CTX *c, int argc, VALUE *argv);
+            return pys_make_bound(v,
+                pys_make_builtin("indices", bi_slice_indices, 2, 2));
+        }
         PYS_RAISE_EXC(c, c->EXC_AttributeError,
                      "'slice' object has no attribute '%s'", name);
     }
