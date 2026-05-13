@@ -2428,19 +2428,44 @@ pys_cmp(CTX *c, VALUE a, VALUE b)
             VALUE av[2] = { a, b };
             VALUE r = pys_apply(c, m, 2, av);
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-            if (pys_is_truthy(r)) return -1;
-            // try __eq__ for == 0
-            m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(a)->inst.cls), PYS_INTERN_eq);
-            if (m != PYS_NONE) {
-                VALUE r2 = pys_apply(c, m, 2, av);
-                if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
-                if (pys_is_truthy(r2)) return 0;
+            // NotImplemented → try the reflected __gt__ on b (PEP 207).
+            bool ni = (r && PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL);
+            if (!ni) {
+                if (pys_is_truthy(r)) return -1;
+                // try __eq__ for == 0
+                m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(a)->inst.cls), PYS_INTERN_eq);
+                if (m != PYS_NONE) {
+                    VALUE r2 = pys_apply(c, m, 2, av);
+                    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+                    if (pys_is_truthy(r2)) return 0;
+                }
+                return 1;
             }
-            return 1;
+            // Fall through to reflected ops on b.
         }
         // Built-in subclass with no __lt__: compare via primary value.
         if (PYS_PTR(a)->inst.primary)
             a = PYS_PTR(a)->inst.primary;
+    }
+    // Reflected: try b.__gt__(a).
+    if (pys_is_instance(b)) {
+        VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(b)->inst.cls), PYS_INTERN_gt);
+        if (m != PYS_NONE) {
+            VALUE av[2] = { b, a };
+            VALUE r = pys_apply(c, m, 2, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+            bool ni = (r && PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_NOTIMPL);
+            if (!ni) {
+                if (pys_is_truthy(r)) return -1;  // b > a, so a < b
+                VALUE em = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(b)->inst.cls), PYS_INTERN_eq);
+                if (em != PYS_NONE) {
+                    VALUE r2 = pys_apply(c, em, 2, av);
+                    if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
+                    if (pys_is_truthy(r2)) return 0;
+                }
+                return 1;
+            }
+        }
     }
     if (pys_is_instance(b) && PYS_PTR(b)->inst.primary)
         b = PYS_PTR(b)->inst.primary;
