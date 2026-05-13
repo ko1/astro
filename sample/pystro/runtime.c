@@ -3096,6 +3096,15 @@ pys_is_truthy_instance(VALUE v)
     CTX *c = pys_current_ctx;
     VALUE cls = PYS_OBJ_VAL(PYS_PTR(v)->inst.cls);
     VALUE m = pys_class_lookup_method(cls, PYS_INTERN_bool);
+    // CPython: `__bool__ = None` on the class blocks the entire
+    // truthiness protocol — even __len__ fallback is suppressed — and
+    // bool(obj) raises TypeError.
+    if (pys_class_has_method(cls, "__bool__") && m == PYS_NONE) {
+        const char *cn = PYS_PTR(cls)->cls.name;
+        PYS_RAISE_EXC(c, c->EXC_TypeError,
+                     "bool() not supported on '%s' (__bool__ disabled)", cn);
+        return false;
+    }
     if (m != PYS_NONE) {
         VALUE av[1] = { v };
         VALUE r = pys_apply(c, m, 1, av);
@@ -4111,6 +4120,15 @@ pys_iter_init(CTX *c, struct pys_iter *it, VALUE iterable)
     if (pys_is_instance(iterable)) {
         VALUE cls = PYS_OBJ_VAL(PYS_PTR(iterable)->inst.cls);
         VALUE im = pys_class_lookup_method(cls, PYS_INTERN_iter);
+        // CPython: `__iter__ = None` on the class explicitly blocks
+        // iteration, even if __getitem__ is defined (which would
+        // otherwise serve as sequence-protocol fallback).
+        if (pys_class_has_method(cls, "__iter__") && im == PYS_NONE) {
+            const char *cn = PYS_PTR(cls)->cls.name;
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                         "'%s' object is not iterable", cn);
+            return;
+        }
         if (im != PYS_NONE) {
             VALUE av[1] = { iterable };
             VALUE iter_obj = pys_apply(c, im, 1, av);
