@@ -250,9 +250,23 @@ def namedtuple(typename, fields, *, defaults=None):
         for i, d in enumerate(defaults):
             field_defaults[fields[len(fields) - len(defaults) + i]] = d
 
-    class _NT:
+    class _NT(tuple):
         _fields = tuple(fields)
         _field_defaults = dict(field_defaults)
+        def __new__(cls, *args, **kwargs):
+            values = []
+            for i, f in enumerate(cls._fields):
+                if i < len(args):
+                    values.append(args[i])
+                elif f in kwargs:
+                    values.append(kwargs[f])
+                elif f in cls._field_defaults:
+                    values.append(cls._field_defaults[f])
+                else:
+                    raise TypeError("missing arg " + f)
+            obj = tuple.__new__(cls, values)
+            obj._values = tuple(values)
+            return obj
         def __init__(self, *args, **kwargs):
             if args and kwargs:
                 # mix is OK in CPython namedtuple; fill remaining via kwargs
