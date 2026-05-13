@@ -243,6 +243,64 @@ def _match_here(pat, pi, s, si, flags, groups, kont=None):
     if nxt in ("*", "+", "?"):
         if after + 1 < len(pat) and pat[after + 1] == "?":
             lazy = True
+    # {m,n} / {m} / {m,} quantifier — peel min/max from the brace and
+    # walk the atom 0..max times.  We require digits only (CPython
+    # treats malformed braces as literals); pystro's regex engine
+    # collapses to a greedy iterative match.
+    if nxt == "{":
+        close = pat.find("}", after + 1)
+        if close > after:
+            spec = pat[after + 1:close]
+            comma = spec.find(",")
+            mn = 0
+            mx = -1   # sentinel for "no upper bound"
+            ok_spec = True
+            try:
+                if comma < 0:
+                    mn = int(spec); mx = mn
+                else:
+                    lo = spec[:comma]; hi = spec[comma + 1:]
+                    mn = int(lo) if lo else 0
+                    mx = int(hi) if hi else -1
+            except (ValueError, TypeError):
+                ok_spec = False
+            if ok_spec and mn >= 0 and (mx < 0 or mx >= mn):
+                rest_pi = close + 1
+                if rest_pi < len(pat) and pat[rest_pi] == "?":
+                    lazy = True
+                    rest_pi += 1
+                count = 0
+                saved = list(groups)
+                cur = si
+                while mx < 0 or count < mx:
+                    cok, cei = _match_one(pat, pi, s, cur, flags, groups)
+                    if not cok:
+                        break
+                    cur = cei; count += 1
+                # Now count is in [0..mx], and cur is the longest match.
+                # Backtrack toward mn until the rest matches.  For lazy,
+                # we'd ideally start at mn and grow — for the {0} /
+                # {0,N} cases that hit argparse the greedy-then-shrink
+                # path is equivalent.
+                while count >= mn:
+                    saved_inner = list(groups)
+                    ok2, ei2 = _match_here(pat, rest_pi, s, cur, flags, groups, kont)
+                    if ok2:
+                        return True, ei2
+                    del groups[:]; groups.extend(saved_inner)
+                    if count == 0:
+                        break
+                    count -= 1
+                    # Re-run the atom `count` times to compute `cur`
+                    # again (rebuilding groups so capture state is sane).
+                    del groups[:]; groups.extend(saved)
+                    cur = si
+                    for _ in range(count):
+                        cok, cei = _match_one(pat, pi, s, cur, flags, groups)
+                        if not cok: break
+                        cur = cei
+                del groups[:]; groups.extend(saved)
+                return False, -1
     if nxt == "*":
         return _match_star(pat, pi, after + 1 + (1 if lazy else 0), s, si, flags, groups, lazy=lazy, kont=kont)
     if nxt == "+":

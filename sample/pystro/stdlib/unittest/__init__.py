@@ -611,10 +611,30 @@ class _Mock:
 
 
 def _patch(target, *args, **kwargs):
+    # Share a single Mock between context-manager and start/stop forms so
+    # that tests reading the value returned from .start() get the same
+    # mock that __enter__ would have produced.
     class _PatchCM:
-        def __enter__(self): return _Mock()
-        def __exit__(self, *exc): return False
-        def __call__(self, fn): return fn
+        def __init__(self):
+            self._mock = _Mock()
+            self._active = False
+        def __enter__(self):
+            self._active = True
+            return self._mock
+        def __exit__(self, *exc):
+            self._active = False
+            return False
+        def start(self):
+            self._active = True
+            return self._mock
+        def stop(self):
+            self._active = False
+        def __call__(self, fn):
+            # Decorator form: pass the mock as an extra positional arg
+            # so `@patch("x") def test(self, m): ...` receives a Mock.
+            def wrapper(*args, **kwargs):
+                return fn(*(args + (self._mock,)), **kwargs)
+            return wrapper
     return _PatchCM()
 
 
