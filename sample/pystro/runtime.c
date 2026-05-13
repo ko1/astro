@@ -7003,13 +7003,27 @@ VALUE
 pys_to_str(CTX *c, VALUE v)
 {
     if (pys_is_instance(v)) {
+        // Try __str__ first, then __repr__ — but if the user method
+        // returns a non-string, raise TypeError (CPython parity).
+        bool via_str = true;
         VALUE m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), PYS_INTERN_str);
-        if (m == PYS_NONE)
+        if (m == PYS_NONE) {
+            via_str = false;
             m = pys_class_lookup_method(PYS_OBJ_VAL(PYS_PTR(v)->inst.cls), PYS_INTERN_repr);
+        }
         if (m != PYS_NONE) {
             VALUE av[1] = { v };
             VALUE r = pys_apply(c, m, 1, av);
+            if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
             if (pys_is_str(r)) return r;
+            // Defined dunder returned non-string: TypeError.
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                         "__%s__ returned non-string (type %s)",
+                         via_str ? "str" : "repr",
+                         PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_INSTANCE
+                             ? PYS_PTR(r)->inst.cls->cls.name
+                             : "object");
+            return 0;
         }
     }
     if (pys_is_str(v)) return v;
@@ -7072,6 +7086,13 @@ pys_to_repr(CTX *c, VALUE v)
             if (pushed) pys_display_visit_top--;
             if (UNLIKELY(c->state == PYS_STATE_RAISE)) return 0;
             if (pys_is_str(r)) return r;
+            // User __repr__ returned non-string: TypeError.
+            PYS_RAISE_EXC(c, c->EXC_TypeError,
+                         "__repr__ returned non-string (type %s)",
+                         PYS_IS_PTR(r) && PYS_PTR(r)->type == PYS_T_INSTANCE
+                             ? PYS_PTR(r)->inst.cls->cls.name
+                             : "object");
+            return 0;
         }
     }
     char *big = NULL;
