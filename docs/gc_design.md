@@ -60,8 +60,8 @@ Algorithm (non-moving / semispace / generational / realtime) は **backend と�
    per-SD `astro_frame_desc_t` を生成
 3. **Write barrier 経路** (§6) — `@ref` setter / `WB` macro 経由で
    backend に応じた barrier を挿入
-4. **Safepoint 配置** (§7) — `@allocates` / loop back-edge ノードに
-   ASTroGen が自動で poll を入れる
+4. **Safepoint 配置** (§7) — 子を評価する全ノードは原理的に allocate しうる
+   ので **デフォルトで safepoint 候補** とし、 leaf は `@noalloc` で opt-out
 
 backend (algorithm) は **compile-time** で 1 個選ぶ。 `GC=none` を選ぶと全部の
 hook が `(void)0` に潰れて現行コードと等価になる、 を **ゼロコスト性の gate**
@@ -603,8 +603,9 @@ GC を ASTroGen の生成パイプラインに組み込むときに **`node.def`
 
 - (A) **NODE_DEF オペランド GC 注釈** (§20) — operand に `@ref(value)` /
   `@imm` / `@weak` 等を足し、 abruby の `node_mark.c` 相当を framework 標準化
-- (B) **NODE_DEF レベル GC オプション** (§21) — `@allocates` / `@safepoint`
-  / `@roots(...)` で frame descriptor + safepoint 配置を declarative 化
+- (B) **NODE_DEF レベル GC オプション** (§21) — `@noalloc` opt-out (default は
+  allocate しうる) と `@roots(...)` / `@safepoint` で frame descriptor +
+  safepoint 配置を declarative 化
 - (C) **BODY 内 GC macro** (§22) — `WB` / `KORB_NEW_*` / `PIN` / `SAFEPOINT`
   / `LD`。 backend 切替で `GC=none` のとき identity / `(void)0` に潰せること
 
@@ -712,18 +713,31 @@ GC_MARK_node_call(NODE *n)
 
 `NODE_DEF @noinline` と同じ位置にぶら下げる GC 関連オプション:
 
+**前提**: `EVAL_ARG` で子を評価する非 leaf ノードは原理的に allocate しうる
+(子のさらに子で `KORB_NEW_*` が走る可能性は静的に否定できない) ため、
+**デフォルトを「allocate しうる」とする保守側に倒す**。 opt-in 注釈の
+`@allocates` は持たない。 opt-out 側に annotation を寄せる:
+
 | オプション | 意味 |
 |---|---|
-| `@allocates` | この node の BODY は値を allocate する可能性がある。ASTroGen は BODY 直前に `ASTRO_SAFEPOINT(c)` を挿入する権利を持つ |
-| `@noalloc` | BODY は allocate しない (静的アサーション)。 backend は frame flush を省略可能。leaf node (literal / 変数参照系) で使う |
-| `@safepoint` | 明示的な safepoint 配置 (loop back-edge ノード、call ノード等)。 `@allocates` の自動挿入とは独立に強制する |
+| `@noalloc` | BODY + 全 transitive children が allocate しないことを保証 (静的アサーション)。 leaf node (literal / 変数参照系) で使う。 ASTroGen は frame ENTER/LEAVE を省略し、 safepoint も入れない。 違反した場合は CI で検出する仕組みを別途用意 (ASTroGen が BODY を grep して `KORB_NEW_*` / `EVAL_ARG` 等を検知すれば足りる) |
+| `@safepoint` | BODY の **末尾** に safepoint poll を強制挿入する。 主に loop back-edge ノード (`node_while` / `node_for` 系) で使う。 default は「allocation 直前」 にしか入らないので、 allocation を含まない長い loop を回す系で必要 |
 | `@roots(name1, name2, ...)` | BODY 内のローカル `VALUE name` を frame descriptor の ref_offsets に追加。 ASTroGen は BODY を frame ENTER/LEAVE で包む |
 | `@root_array(base, count)` | ローカル `VALUE *base` と `size_t count` を可変長 root 列として扱う (frame_desc.ref_array) |
+
+**default の挙動** (注釈なしの普通の NODE_DEF):
+
+- `@roots(...)` が無い: frame slot 不要。 BODY は frame ENTER/LEAVE で
+  包まない。 ただし子評価をまたいで生存する VALUE が BODY 内にあれば、
+  プログラマは `@roots(...)` を書く責任を負う (= 書き忘れたら GC bug)
+- `@roots(...)` がある: frame ENTER/LEAVE で包む。 safepoint は
+  `KORB_NEW_*` の展開先と allocation の発生する builtin 呼出し直前に
+  自動で入る (allocation site 直前原則、 §7)
 
 例:
 
 ```c
-NODE_DEF @allocates @roots(r)
+NODE_DEF @roots(r)
 node_call1(CTX *c, NODE *n, NODE *recv, NODE *arg, struct ic *ic@ref)
 {
     VALUE r = EVAL_ARG(c, recv);    // r が arg 評価をまたいで生存
@@ -820,7 +834,7 @@ NodeKind に `gc_marker` / `frame_desc` を生やすために
 
 | 変更 | 規模 |
 |---|---|
-| `NODE_DEF` parse に `@allocates / @noalloc / @safepoint / @roots(...) / @root_array(b,c)` を追加 | `Node#initialize` の `@option` 解釈に分岐数行 |
+| `NODE_DEF` parse に `@noalloc / @safepoint / @roots(...) / @root_array(b,c)` を追加 | `Node#initialize` の `@option` 解釈に分岐数行 |
 | `Operand` に `@ref(value) / @imm / @weak / @atomic` 認識 | `Operand#initialize` の正規表現拡張 |
 | `VALUE_DEF` parser (`parse_value_def`) | 新規 ~100 行、 `parse` 内で分岐 |
 | `:gc` task の build_gc + per-node `build_gc` (marker + frame_desc) | 新規 ~150 行 |
@@ -849,17 +863,24 @@ VALUE_DEF asml_value
     VARIANT => uint32_t ctor; ref_payload(VALUE) args;
 }
 
-NODE_DEF @allocates @roots(hd_v)
+NODE_DEF @roots(hd_v)
 node_cons(CTX *c, NODE *n, NODE *hd, NODE *tl)
 {
-    VALUE hd_v = EVAL_ARG(c, hd);
-    VALUE tl_v = EVAL_ARG(c, tl);
+    VALUE hd_v = EVAL_ARG(c, hd);    // tl 評価 / KORB_NEW で生存必要
+    VALUE tl_v = EVAL_ARG(c, tl);    // KORB_NEW 直前で死ぬ、 root 不要
     return KORB_NEW_CONS(c, hd_v, tl_v);
+}
+
+NODE_DEF @noalloc
+node_int(CTX *c, NODE *n, int64_t v)
+{
+    return ASML_INT(v);   // leaf、 EVAL_ARG も KORB_NEW も無い
 }
 ```
 
 **Phase 4 — koruby (generational)**: 全 allocate 系 NODE_DEF に
-`@allocates`、loop back-edge / call に `@safepoint`、 `@ref(value)` を
+leaf 系 NODE_DEF (`node_int` / `node_lvar_get` 等) に `@noalloc`、
+allocation を含まない長い loop back-edge に `@safepoint`、 `@ref(value)` を
 inline cache に付与。`korb_obj` の `VALUE_DEF` は §2 例ほぼそのまま。
 
 **Phase 7 — abruby (cruby backend)**: 同じ `VALUE_DEF` から
@@ -899,8 +920,8 @@ marker が出ることが framework 抽象化の正しさの proof になる (§
 ### 26.3 折衷案: NODE オペランド注釈のみ採用、 VALUE_DEF は当面なし
 
 §20 の operand 注釈 (`@ref(value)` / `@imm` / `@weak`) と §21 の `@roots` /
-`@allocates` だけを採用し、 **value 側は当面言語ごとの C ヘッダに手書き
-marker を持つ** という路線。
+`@noalloc` / `@safepoint` だけを採用し、 **value 側は当面言語ごとの C ヘッダに
+手書き marker を持つ** という路線。
 
 - abruby 流の per-sample `register_gen_task :mark` でも書ける
 - root 列挙と barrier 経路は標準化される (= GC 切替の最重要部分は手に入る)
@@ -941,7 +962,7 @@ marker を持つ** という路線。
 
 1 サンプルが `node.def` に書き足すのは最大で:
 - `VALUE_DEF <type> { ... }` 1 ブロック
-- 既存 `NODE_DEF` に `@allocates` / `@roots(...)` 系オプション
+- 既存 `NODE_DEF` に `@roots(...)` / leaf に `@noalloc` 系オプション
 - `@ref` の sub-annotation (`(value)` 等)
 
 BODY 内は **既存サンプルでは無変更**。GC 化に踏み込むサンプルだけが
