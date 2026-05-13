@@ -3489,12 +3489,39 @@ pys_list_get(CTX *c, VALUE seq, VALUE idx)
         }
         // PEP 585: built-in container generic alias.  list[int],
         // dict[str, int], tuple[int, ...], set[int], frozenset[int],
-        // type[T] — pystro doesn't model the alias type, just return the
-        // class itself so annotations parse without error.
+        // type[T] — build a types.GenericAlias instance so __origin__
+        // / __args__ introspection works.  Loaded lazily.
         const char *nm = PYS_PTR(seq)->cls.name;
         if (strcmp(nm, "list") == 0 || strcmp(nm, "dict") == 0 ||
             strcmp(nm, "tuple") == 0 || strcmp(nm, "set") == 0 ||
             strcmp(nm, "frozenset") == 0 || strcmp(nm, "type") == 0) {
+            static VALUE ga_cls = (VALUE)0;
+            if (!ga_cls) {
+                extern VALUE bi_import(CTX *c, int argc, VALUE *argv);
+                int saved = c->state;
+                VALUE sv = c->state_value;
+                VALUE name_v = pys_make_str("types", 5);
+                VALUE av_imp[1] = { name_v };
+                VALUE types_mod = bi_import(c, 1, av_imp);
+                if (c->state == PYS_STATE_RAISE) {
+                    c->state = saved; c->state_value = sv;
+                } else if (types_mod && types_mod != PYS_NONE) {
+                    ga_cls = pys_getattr(c, types_mod, "GenericAlias");
+                    if (c->state == PYS_STATE_RAISE) {
+                        c->state = saved; c->state_value = sv;
+                        ga_cls = (VALUE)0;
+                    }
+                }
+            }
+            if (ga_cls && pys_is_class(ga_cls)) {
+                // Pack idx into a tuple if not already.
+                VALUE args_t = idx;
+                if (!pys_is_tuple(idx)) {
+                    args_t = pys_make_tuple(&idx, 1);
+                }
+                VALUE av[2] = { seq, args_t };
+                return pys_apply(c, ga_cls, 2, av);
+            }
             return seq;
         }
     }

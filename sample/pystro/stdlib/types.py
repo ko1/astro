@@ -263,16 +263,34 @@ class DynamicClassAttribute:
 
 
 # GenericAlias — backed by a simple wrapper.  PEP 585 returns this from
-# `list[int]` / `dict[str, int]` etc.  Pystro's runtime returns the
-# class itself for those subscripts, but tests look for `GenericAlias`
-# as a class, so expose a wrapper type.
+# `list[int]` / `dict[str, int]` etc.
 class GenericAlias:
     def __init__(self, origin, args):
         self.__origin__ = origin
         self.__args__ = args if isinstance(args, tuple) else (args,)
     def __getitem__(self, params): return self
+    def __call__(self, *a, **kw):
+        # Calling `list[int](...)` constructs an instance of the origin.
+        return self.__origin__(*a, **kw)
+    def __eq__(self, other):
+        if not isinstance(other, GenericAlias): return NotImplemented
+        return (self.__origin__ is other.__origin__
+                and self.__args__ == other.__args__)
+    def __hash__(self):
+        return hash((self.__origin__, self.__args__))
     def __repr__(self):
-        return repr(self.__origin__) + repr(list(self.__args__))
+        # Note: comparing to Ellipsis via `is` failed in pystro across
+        # module boundaries; use type().__name__ to detect ellipsis so
+        # `tuple[int, ...]` renders the dots.
+        def _fmt(a):
+            if type(a).__name__ == "ellipsis": return "..."
+            if isinstance(a, type):
+                return a.__qualname__ if hasattr(a, "__qualname__") else a.__name__
+            return repr(a)
+        cls_name = (self.__origin__.__qualname__
+                    if hasattr(self.__origin__, "__qualname__")
+                    else self.__origin__.__name__)
+        return cls_name + "[" + ", ".join(_fmt(a) for a in self.__args__) + "]"
 
 
 # UnionType (PEP 604) — `int | str`.
