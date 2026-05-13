@@ -6898,10 +6898,14 @@ pys_display(FILE *fp, VALUE v, bool repr)
         char re[64], im[64];
         pys_fmt_double(re, sizeof(re), o->cpx.re);
         pys_fmt_double(im, sizeof(im), o->cpx.im);
+        // For NaN imag, the sign-check `im >= 0` is false but the
+        // formatted string doesn't carry a leading '-' either, so the
+        // string-leading-char fallback gives us the right separator.
+        const char *sep = (im[0] == '-' || im[0] == '+') ? "" : "+";
         if (o->cpx.re == 0.0) {
             fprintf(fp, "%sj", im);
         } else {
-            fprintf(fp, "(%s%s%sj)", re, (o->cpx.im >= 0) ? "+" : "", im);
+            fprintf(fp, "(%s%s%sj)", re, sep, im);
         }
         return;
       }
@@ -16518,6 +16522,10 @@ bi_pystro_log(CTX *c, int argc, VALUE *argv)
     if (argc >= 2) {
         double base = pys_to_double(c, argv[1]);
         if (base <= 0 || base == 1) PYS_RAISE_EXC(c, c->EXC_ValueError, "math domain error");
+        // Use the dedicated C runtime fn for common bases so log(100, 10)
+        // returns exactly 2.0 (CPython parity).
+        if (base == 2.0)  return pys_make_float(log2(x));
+        if (base == 10.0) return pys_make_float(log10(x));
         return pys_make_float(log(x) / log(base));
     }
     return pys_make_float(log(x));

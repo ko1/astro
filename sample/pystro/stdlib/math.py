@@ -91,12 +91,20 @@ def factorial(n):
         i += 1
     return r
 
-def gcd(a, b):
-    if a < 0: a = -a
-    if b < 0: b = -b
-    while b:
-        a, b = b, a % b
-    return a
+def gcd(*args):
+    # CPython 3.9+: variadic; gcd() == 0, gcd(x) == |x|.
+    if len(args) == 0: return 0
+    g = args[0]
+    if g < 0: g = -g
+    for v in args[1:]:
+        a, b = g, v
+        if b < 0: b = -b
+        while b:
+            a, b = b, a % b
+        g = a
+        if g == 1:
+            return 1
+    return g
 
 def isnan(x):
     return x != x
