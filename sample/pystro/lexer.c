@@ -594,6 +594,9 @@ read_string_lit_impl(int line, char quote, bool is_fstr, bool is_bytes)
             cap *= 2;
             buf = (char *)GC_realloc(buf, cap);
         }
+        // CPython: bytes literals cannot contain non-ASCII source chars.
+        if (is_bytes && (unsigned char)ch >= 0x80)
+            lex_error("bytes can only contain ASCII literal characters");
         buf[len++] = ch;
     }
     if (triple) {
