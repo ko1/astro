@@ -3,6 +3,40 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-14 — alloc 周りのオーバーヘッド削減
+
+perf record で hot path を特定し、 string-alloc 系のオーバーヘッドを
+潰した。 詳細 [perf.md §4](perf.md)。
+
+### 変更内容
+
+- `baruby_gc_alloc` を分割: 通常版 (zero-init payload) と
+  `baruby_gc_alloc_byte` (memset スキップ)。 KIND_PAYLOAD_BYTE は
+  caller が即座に bytes を埋めるので memset 不要
+- `baruby_str_new` の malloc バッファ撤去。 caller が source の寿命を
+  保証する前提に変更 (rodata / C スタック / GC-rooted)
+- `baruby_str_slice(VALUE *src_ref, offset, len, sp_top)` を新設、
+  heap interior 起点の slice (node_call_aget / _aget2 の STR 経路)
+  はこちらに移動
+- `baruby_gc_realloc_payload` も内部で kind 別に dispatch
+  (PAYLOAD_BYTE は alloc_byte 経由)
+- `Makefile`: `-flto=auto` を追加。 fib_pair 等で小さい alloc が
+  inline されて -4% 効く
+
+### 性能 (5 run 中央値、 plain mode、 vs `sample/baruby` libgc)
+
+| Bench | conservative | precise (before) | precise (after) |
+|---|---:|---:|---:|
+| binary_trees | 0.907 s | 0.544 s | 0.576 s |
+| list_alloc | 1.085 s | 1.152 s | 1.175 s |
+| **string_concat** | 0.968 s | 1.160 s | **0.961 s** (-17%) |
+| fib_pair | 1.127 s | 1.271 s | 1.285 s |
+| **substr_churn** | 1.361 s | 1.594 s | **1.354 s** (-15%) |
+| gc_combined | 1.079 s | 1.231 s | 1.244 s |
+
+geomean ≈ 0.98× (precise が conservative より 2% 速い)。
+string-heavy ベンチが parity 到達。 stress mode の全テスト PASS 維持。
+
 ## 2026-05-13 — semi-space moving GC + stress mode + ASTRO_ASSERT
 
 mark&sweep の MVP を **Cheney 風 copying GC** に置き換え、 stress mode で

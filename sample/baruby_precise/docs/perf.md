@@ -18,7 +18,7 @@ baruby_precise は **precise *moving* GC (semi-space) の testbed** で、
 | Compiler | gcc 13.3.0 |
 | GC (precise) | 自前 semi-space (`gc.c`、 ~310 行)、 region 512 MiB |
 | GC (conservative 比較対象) | Boehm libgc 8.2.6 (`sample/baruby` 由来) |
-| Build flags | `-O3 -ggdb3 -march=native -fno-plt -DASTRO_DEBUG=1` |
+| Build flags | `-O3 -flto=auto -ggdb3 -march=native -fno-plt -DASTRO_DEBUG=1` |
 
 **比較対象**: `sample/baruby/` (libgc 経由の conservative scanning) を
 baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共通 — baruby
@@ -26,35 +26,39 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 (`./baruby` vs `./baruby_precise`)。 plain mode = AST インタプリタ
 (code_store なし)。 AOT mode は moving GC 移行後に未再検証。
 
-## 2. ベンチ実測 (precise vs conservative, plain, 3 run 中央値)
+## 2. ベンチ実測 (precise vs conservative, plain, 5 run 中央値)
 
 | Bench | conservative | precise | precise vs cons. |
 |---|---:|---:|---|
-| `binary_trees` | 0.907 s | **0.544 s** | **0.60×** ⬇40% (precise が速い) |
-| `list_alloc` (560 MB alloc) | 1.085 s | 1.152 s | 1.06× ⬆6% |
-| `string_concat` (745 MB alloc) | 0.968 s | 1.160 s | 1.20× ⬆20% |
-| `fib_pair` | 1.127 s | 1.271 s | 1.13× ⬆13% |
-| `substr_churn` | 1.361 s | 1.594 s | 1.17× ⬆17% |
-| `gc_combined` | 1.079 s | 1.231 s | 1.14× ⬆14% |
+| `binary_trees` | 0.907 s | **0.576 s** | **0.63×** ⬇37% (precise が速い) |
+| `list_alloc` (560 MB alloc) | 1.085 s | 1.175 s | 1.08× ⬆8% |
+| `string_concat` (745 MB alloc) | 0.968 s | **0.961 s** | **0.99×** (parity) |
+| `fib_pair` | 1.127 s | 1.285 s | 1.14× ⬆14% |
+| `substr_churn` | 1.361 s | **1.354 s** | **1.00×** (parity) |
+| `gc_combined` | 1.079 s | 1.244 s | 1.15× ⬆15% |
 | `test.ba.rb` (fib(20), fixnum-only) | — | 0.0004 s | GC 不発火、 影響なし |
+
+geomean ≈ 0.98× (precise の方が 2% 速い)。
 
 **観察**:
 
-- **binary_trees は precise の方が 40% 速い** — libgc の conservative scan
+- **binary_trees は precise の方が 37% 速い** — libgc の conservative scan
   が小オブジェクト大量生成シナリオで重い (stack / data segment 全走査)。
   Cheney の bump alloc + Active swap だけのモデルが勝つ
-- string_concat / list_alloc / fib_pair / substr_churn / gc_combined は
-  +6〜20% で precise が遅い。 これは:
+- **string_concat / substr_churn は libgc とほぼ同等** — `baruby_str_concat`
+  の sp ref pattern 化 (mallocバッファ撤去) と `KIND_PAYLOAD_BYTE` の memset
+  スキップが効いた。 詳細 §4
+- list_alloc / fib_pair / gc_combined は +8〜15% で precise が遅い。
+  これは:
   - sp[] への spill memory write
   - callee frame の zero-init
   - alloc API 経由による間接化
   - sp の register pressure
-  - copy collector のコピーコスト (sweep より重い)
+  - copy collector のコピーコスト
   の合計
 
 `docs/gc_design.md` §1.3.6 で議論した「spill 1 store/root + alloc 時に
 c->sp 更新 1 store」 のコストモデルが、 ほぼ実測で観察された形。
-全体 geomean ~ +7% (binary_trees の大勝で打ち消されて control)。
 
 ## 3. Stress mode
 
@@ -78,7 +82,35 @@ helper 内 C local の更新漏れ) が即発覚する。 詳細は
   バッファリングしていたのを ref pattern に切り替え、 **1.468 s → 1.160 s
   (-21%)** に短縮
 
-## 4. 既知の問題
+## 4. 効いた最適化 (履歴)
+
+### 4.1 `baruby_str_concat` を ref pattern に
+旧版: 内部 alloc 前に source bytes を libc malloc 領域に退避してから
+alloc 後にコピー (helper が VALUE 値受けの制約)。
+新版: `VALUE *av_ref` / `*bv_ref` で受け、 alloc 後に `*ref` 再 deref
+で post-GC アドレスを取り直す。 malloc/memcpy/free を 2 回ずつ削減。
+→ string_concat 1.468 s → 1.160 s (-21%)。
+
+### 4.2 `baruby_str_new` の malloc バッファ撤去
+旧版: source bytes が heap interior pointer の場合に備えて毎回 malloc
+バッファコピー。 実際の呼び出し元の大半は rodata 文字列 (literal) で、
+無駄。
+新版: `baruby_str_new` は source が survive することを前提とし、
+malloc を撤去。 heap source 用には `baruby_str_slice(*src_ref, off, len)`
+を新設して `node_call_aget` / `_aget2` の substring 経路を分離。
+→ string_concat の malloc/free が消えて 1.160 s → 0.961 s (-17%)、
+   substr_churn は 1.594 s → 1.354 s (-15%)。
+
+### 4.3 `KIND_PAYLOAD_BYTE` の memset スキップ
+String の bytes ペイロードは GC が pointer として読まないので、 alloc
+直後の memset は不要。 `baruby_gc_alloc_byte` を新設して分岐。 caller
+(`baruby_str_*` 系) は即座に bytes を書き込む。
+
+### 4.4 LTO (`-flto=auto`) 有効化
+`baruby_gc_alloc` を含む小関数がコールサイトに inline され、 size 引数
+が定数畳み込みされる。 fib_pair 等の小型 alloc が多いベンチで効く。
+
+## 5. 既知の問題
 
 - **toplevel sp が 64 で hardcode** (`main.c::create_context`)。 大きな
   toplevel フレームを持つプログラムでは scratch 領域不足
@@ -86,11 +118,13 @@ helper 内 C local の更新漏れ) が即発覚する。 詳細は
 - **AOT mode は moving GC 移行後に未検証** — SD bake された経路で
   precise rooting が成立しているかは要再 audit (`-c` 動作含む)
 
-## 5. 次の段階で試したいこと
+## 6. 次の段階で試したいこと
 
 - AOT mode の再検証 (`make CCACHE_DISABLE=1` で `-c` 経路を回す)
 - toplevel locals_cnt を parser から取って main.c で正しい sp を設定
 - `astrogen.rb` 拡張で `@locals` を機械化 (手書きの error-prone を減らす)
-- string_concat の残存 +20% overhead を perf record で内訳分析
+- list_alloc / fib_pair / gc_combined に残る +8〜15% overhead を perf
+  record で内訳分析 (sp[] spill / callee frame zero-init / copy cost
+  のどれが効くか)
 - region size adaptive 化 (live set に応じて grow)
 - 世代別 GC backend (`gc_combined` ベンチで効くはず) を同 interface に乗せる

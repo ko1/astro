@@ -61,10 +61,16 @@ extern int baruby_gc_stress;     // 1 = collect on every alloc + mprotect from-s
 // Initialize: mmap two regions, register CTX.
 void baruby_gc_init(CTX *c);
 
-// Allocate `payload_size` bytes for an object of `kind`.  May trigger
-// collection (always in stress mode).  Returns a pointer to the payload
-// (after the GCHeader).
+// Allocate `payload_size` bytes for an object of `kind` (zero-initialized).
+// Use for KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL — anything
+// the collector scans for pointers / VALUEs.  May trigger GC (always in
+// stress mode).  Returns the payload (after the GCHeader).
 void *baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top);
+
+// Raw byte payload (KIND_PAYLOAD_BYTE) — GC never reads it as pointers,
+// so the memset is skipped.  Caller MUST fill bytes[0..size-1] before the
+// next alloc / GC opportunity.
+void *baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top);
 
 // Realloc a payload object.  Allocates a new block of new_size bytes,
 // copies min(old_size, new_size) bytes from the old block, returns the

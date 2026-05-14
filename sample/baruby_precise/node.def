@@ -660,8 +660,7 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
         if (ii < 0) ii += s->len;
         if (ii < 0 || (uint32_t)ii >= s->len) return RESULT_OK(VAL_NIL);
         // Single-byte slice as a 1-char string (Ruby-ish semantics).
-        // baruby_str_new may move sp[0] — but we're done with it, so OK.
-        return RESULT_OK(baruby_str_new(s->bytes + ii, 1, sp + 1));
+        return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, 1, sp + 1));
     }
     fprintf(stderr, "no [] for non-array/string\n");
     return RESULT_OK(VAL_NIL);
@@ -685,7 +684,7 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE 
         if (ii < 0 || (uint32_t)ii > s->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = s->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
-        return RESULT_OK(baruby_str_new(s->bytes + ii, take, sp + 1));
+        return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, take, sp + 1));
     }
     if (IS_ARY(sp[0])) {
         const BaArray *a = VAL2ARY(sp[0]);

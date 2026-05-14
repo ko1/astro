@@ -77,15 +77,12 @@ baruby_gc_init(CTX *c)
 
 static void gc_collect_internal(VALUE *sp_top);
 
-void *
-baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
+// Internal bump-allocator: reserves header + payload of `aligned` bytes.
+// Triggers GC + retries on OOM.  Does NOT zero the payload — caller decides.
+static inline GCHeader *
+gc_bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
-    ASTRO_ASSERT(kind > KIND_FREE && kind <= KIND_PAYLOAD_BYTE);
-    ASTRO_ASSERT(sp_top >= gc_ctx->env);
-
-    size_t aligned = ALIGN8(payload_size);
-    size_t total   = sizeof(GCHeader) + aligned;
-
+    size_t total = sizeof(GCHeader) + aligned;
     if (baruby_gc_stress || (active_top + total) > active_end) {
         gc_collect_internal(sp_top);
         if (active_top + total > active_end) {
@@ -94,16 +91,46 @@ baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
             abort();
         }
     }
-
     GCHeader *h = (GCHeader *)active_top;
     h->kind = (uint32_t)kind;
     h->size = (uint32_t)payload_size;
     h->fwd  = NULL;
     active_top += total;
+    return h;
+}
 
+// baruby_gc_alloc: zero-initialized payload.  Use for KIND_OBJ_ARRAY /
+// KIND_OBJ_STRING (embedded items / bytes ptr starts NULL) and
+// KIND_PAYLOAD_VAL (trailing slots are VAL_FALSE for GC-safe scanning).
+void *
+baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
+{
+    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
+                 kind == KIND_PAYLOAD_VAL);
+    ASTRO_ASSERT(sp_top >= gc_ctx->env);
+
+    size_t aligned = ALIGN8(payload_size);
+    GCHeader *h = gc_bump(kind, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
-    ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);   // tagged-VALUE invariant
+    ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
+
+    baruby_gc_stats.total_bytes += payload_size;
+    baruby_gc_stats.heap_bytes  += payload_size;
+    return payload;
+}
+
+// baruby_gc_alloc_byte: raw byte payload.  GC never reads it as pointers
+// so we skip the memset.  Caller MUST fill bytes[0..size-1] before any
+// other alloc / GC opportunity.
+void *
+baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+{
+    ASTRO_ASSERT(sp_top >= gc_ctx->env);
+    size_t aligned = ALIGN8(payload_size);
+    GCHeader *h = gc_bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
+    void *payload = (void *)(h + 1);
+    ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
 
     baruby_gc_stats.total_bytes += payload_size;
     baruby_gc_stats.heap_bytes  += payload_size;
@@ -129,7 +156,10 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     memcpy(buf, old, copy_bytes);
 
     // After this alloc, `old`'s page may be mprotect'd PROT_NONE (stress).
-    void *newp = baruby_gc_alloc(kind, new_size, sp_top);
+    // Pick the variant matching the original kind so PAYLOAD_BYTE skips memset.
+    void *newp = (kind == KIND_PAYLOAD_BYTE)
+        ? baruby_gc_alloc_byte(new_size, sp_top)
+        : baruby_gc_alloc(kind, new_size, sp_top);
     memcpy(newp, buf, copy_bytes);
     free(buf);
     return newp;

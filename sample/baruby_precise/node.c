@@ -273,30 +273,24 @@ baruby_ary_push(VALUE *av_ref, VALUE *x_ref, VALUE *sp_top)
     a->items[a->len++] = *x_ref;
 }
 
+// baruby_str_new: source bytes must outlive both internal allocs.
+// Safe sources: rodata (string literals), C-stack buffers in the caller,
+// or anything else GC won't touch.  For sources that live on the GC heap
+// (e.g. a substring of an existing BaString), use baruby_str_slice instead.
 VALUE
 baruby_str_new(const char *bytes, uint32_t len, VALUE *sp_top)
 {
-    // Buffer source bytes BEFORE alloc may move/overwrite them.  The
-    // caller may pass a pointer into a heap String's bytes payload;
-    // after our internal alloc triggers GC, the source moves and the
-    // OLD address points at unrelated memory.  Save on the C heap.
-    char *buf = NULL;
-    if (len) {
-        buf = (char *)malloc(len);
-        memcpy(buf, bytes, len);
-    }
     sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top + 1);
     BaString *s = (BaString *)sp_top[0];
     s->hdr.type = OBJ_STRING;
     s->hdr.flags = 0;
     s->len = len;
     s->capa = len + 1;
-    char *new_bytes = (char *)baruby_gc_alloc(KIND_PAYLOAD_BYTE, s->capa, sp_top + 1);
-    s = (BaString *)sp_top[0];
+    char *new_bytes = (char *)baruby_gc_alloc_byte(s->capa, sp_top + 1);
+    s = (BaString *)sp_top[0];   // reload — second alloc may have moved
     s->bytes = new_bytes;
-    if (len) memcpy(s->bytes, buf, len);
+    if (len) memcpy(s->bytes, bytes, len);
     s->bytes[len] = '\0';
-    if (buf) free(buf);
     return sp_top[0];
 }
 
@@ -304,6 +298,27 @@ VALUE
 baruby_str_new_cstr(const char *cstr, VALUE *sp_top)
 {
     return baruby_str_new(cstr, (uint32_t)strlen(cstr), sp_top);
+}
+
+// baruby_str_slice: new BaString from [offset, offset+len) of *src_ref.
+// src_ref must point at a caller sp slot holding a String; we re-deref
+// after each internal alloc to get the post-GC source address.
+VALUE
+baruby_str_slice(VALUE *src_ref, uint32_t offset, uint32_t len, VALUE *sp_top)
+{
+    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top + 1);
+    BaString *r = (BaString *)sp_top[0];
+    r->hdr.type = OBJ_STRING;
+    r->hdr.flags = 0;
+    r->len = len;
+    r->capa = len + 1;
+    char *new_bytes = (char *)baruby_gc_alloc_byte(r->capa, sp_top + 1);
+    r = (BaString *)sp_top[0];                 // reload after alloc
+    r->bytes = new_bytes;
+    const BaString *src = VAL2STR(*src_ref);   // post-GC source
+    if (len) memcpy(r->bytes, src->bytes + offset, len);
+    r->bytes[len] = '\0';
+    return sp_top[0];
 }
 
 VALUE
@@ -380,7 +395,7 @@ baruby_str_repeat(VALUE *sv_ref, intptr_t n, VALUE *sp_top)
     r->hdr.flags = 0;
     r->len  = (uint32_t)total;
     r->capa = r->len + 1;
-    char *new_bytes = (char *)baruby_gc_alloc(KIND_PAYLOAD_BYTE, r->capa, sp_top + 1);
+    char *new_bytes = (char *)baruby_gc_alloc_byte(r->capa, sp_top + 1);
     r = (BaString *)sp_top[0];
     r->bytes = new_bytes;
     s = VAL2STR(*sv_ref);
@@ -536,7 +551,7 @@ baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top)
     r->hdr.flags = 0;
     r->len = total;
     r->capa = total + 1;
-    char *new_bytes = (char *)baruby_gc_alloc(KIND_PAYLOAD_BYTE, r->capa, sp_top + 1);
+    char *new_bytes = (char *)baruby_gc_alloc_byte(r->capa, sp_top + 1);
     r = (BaString *)sp_top[0];
     r->bytes = new_bytes;
 

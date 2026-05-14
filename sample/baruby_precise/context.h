@@ -199,6 +199,8 @@ void  baruby_ary_push(VALUE *av_ref, VALUE *x_ref, VALUE *sp_top);
 VALUE baruby_ary_plus(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
 VALUE baruby_str_new(const char *bytes, uint32_t len, VALUE *sp_top);
 VALUE baruby_str_new_cstr(const char *cstr, VALUE *sp_top);
+// Slice from a heap source: src_ref is a caller sp slot, re-deref'd post-GC.
+VALUE baruby_str_slice(VALUE *src_ref, uint32_t offset, uint32_t len, VALUE *sp_top);
 VALUE baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
 
 // Value equality (Ruby `==`).  Same bits → true (catches int / nil / ptr

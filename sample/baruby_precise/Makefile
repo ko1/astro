@@ -44,7 +44,7 @@ bench: baruby_precise
 ASTRO_DEBUG ?=
 
 baruby_precise: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c gc.c $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
-	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall  -rdynamic \
+	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
             $(if $(ASTRO_DEBUG),-DASTRO_DEBUG=$(ASTRO_DEBUG)) \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \

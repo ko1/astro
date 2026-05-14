@@ -213,13 +213,21 @@ GC 特有のバグが即座に表面化する。 開発中の事実上の必須�
 ### 5.4 Alloc API
 
 ```c
+// Zero-init payload. OBJ_ARRAY / OBJ_STRING / PAYLOAD_VAL 用。
 void *baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top);
+// 生バイト用 (PAYLOAD_BYTE)。 memset しない — caller が即座に埋める。
+void *baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top);
+// 既存 payload の realloc。 kind は元の header から継承。
 void *baruby_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
 ```
 
-全 alloc が `sp_top` 引数を取る。 内部で `c->sp = sp_top` を更新してから
-必要なら `gc_collect_internal(sp_top)` を呼ぶ。 cooperative — GC は
-alloc 経由でしか起きない。
+全 alloc が `sp_top` 引数を取る。 内部で必要なら `gc_collect_internal(sp_top)`
+を呼ぶ。 cooperative — GC は alloc 経由でしか起きない。
+
+`baruby_gc_alloc` は VALUE / pointer slot を含む payload なので zero-init
+する (GC が未初期化 ptr を辿らないように)。 `baruby_gc_alloc_byte` は
+char[] 専用で、 GC は中身を pointer として読まないので memset を省略。
+String alloc 系のホットパスで memset コスト (3〜4% / total) を削減。
 
 呼び出し側 (NODE_DEF body や C helper) は自分が把握している scratch top
 を `sp_top` に渡す。 例:
@@ -307,7 +315,14 @@ VALUE baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top) {
 ```
 
 この pattern を `baruby_ary_push` / `_plus` / `_repeat`、 `baruby_str_concat`
-/ `_repeat` / `_append` 等に適用。 stress mode で検証済み。
+/ `_repeat` / `_slice` / `_append` 等に適用。 stress mode で検証済み。
+
+`baruby_str_new(const char *bytes, ...)` だけは ref pattern を採らず
+**source bytes が呼び出し中ずっと valid**を caller に要求 (rodata /
+C スタック / GC-rooted)。 これは hot path で literal string が圧倒的に
+多いので、 ref pattern の strict 適用より直接 memcpy が速い。 heap
+interior が source の場合は `baruby_str_slice(VALUE *src_ref, offset,
+len, sp_top)` を使う。
 
 ### 5.8 ASTRO_ASSERT / ASTRO_DEBUG
 
