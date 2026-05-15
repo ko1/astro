@@ -309,7 +309,7 @@ main(int argc, char *argv[])
         INIT();
     }
 
-    if (!OPTION.quiet && false) {
+    if (getenv("BARUBY_DUMP_AST")) {
         DUMP(stdout, ast, true);
         printf("\n");
     }
@@ -343,8 +343,12 @@ main(int argc, char *argv[])
             size_t alloc_bytes = baruby_gc_total_bytes();
             size_t heap_bytes  = baruby_gc_heap_bytes();
             size_t gc_count    = baruby_gc_count();
-            printf("__GC_STATS__ alloc_bytes=%zu heap_bytes=%zu gc_count=%zu\n",
-                    alloc_bytes, heap_bytes, gc_count);
+            size_t minor       = baruby_gc_minor_count();
+            size_t major       = baruby_gc_major_count();
+            printf("__GC_STATS__ backend=%s alloc_bytes=%zu heap_bytes=%zu "
+                   "gc_count=%zu minor=%zu major=%zu\n",
+                    baruby_gc_backend_name, alloc_bytes, heap_bytes,
+                    gc_count, minor, major);
         }
     }
 

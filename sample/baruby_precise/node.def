@@ -662,7 +662,14 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
         // Single-byte slice as a 1-char string (Ruby-ish semantics).
         return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, 1, sp + 1));
     }
-    fprintf(stderr, "no [] for non-array/string\n");
+    fprintf(stderr, "no [] for non-array/string: sp[0]=0x%lx", (long)sp[0]);
+    if (IS_PTR(sp[0])) {
+        fprintf(stderr, " (heap @ %p, type=%u)", (void*)sp[0],
+                (unsigned)((ObjectHeader*)sp[0])->type);
+    } else {
+        fprintf(stderr, " (singleton or int)");
+    }
+    fprintf(stderr, "\n");
     return RESULT_OK(VAL_NIL);
 }
 
@@ -714,7 +721,7 @@ node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
             baruby_ary_push(&sp[0], &sp[2], sp + 3);
         }
         a = VAL2ARY(sp[0]);   // reload after potential GC moves
-        a->items[ii] = sp[1];
+        baruby_gc_wb(a->items, &a->items[ii], sp[1]);
         return RESULT_OK(sp[1]);
     }
     fprintf(stderr, "no []= for non-array\n");

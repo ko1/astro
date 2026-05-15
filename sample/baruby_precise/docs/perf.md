@@ -19,6 +19,7 @@ baruby_precise は **precise *moving* GC (semi-space) の testbed** で、
 | GC (precise) | 自前 semi-space (`gc.c`、 ~310 行)、 region 512 MiB |
 | GC (conservative 比較対象) | Boehm libgc 8.2.6 (`sample/baruby` 由来) |
 | Build flags | `-O3 -flto=auto -ggdb3 -march=native -fno-plt -DASTRO_DEBUG=1` |
+| GC backend  | `make GC=<name>` で選択。 default = `copy` (semispace Cheney) |
 
 **比較対象**: `sample/baruby/` (libgc 経由の conservative scanning) を
 baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共通 — baruby
@@ -26,7 +27,32 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 (`./baruby` vs `./baruby_precise`)。 plain mode = AST インタプリタ
 (code_store なし)。 AOT mode は moving GC 移行後に未再検証。
 
-## 2. ベンチ実測 (precise vs conservative, plain, 5 run 中央値)
+## 2. 全 GC backend のベンチ実測 (plain mode, 1 run)
+
+| Bench         | libgc | none  | mark  | mark_gen | mark_gen_inc | copy  | copy_gen | copy_gen_inc |
+|---------------|------:|------:|------:|---------:|-------------:|------:|---------:|-------------:|
+| binary_trees  | 0.91  | 0.60  | 7.17  | 2.28     | 2.30         | 0.53  | 1.11     | 1.16         |
+| list_alloc    | 1.09  | 1.32  | 1.13  | 1.28     | 1.41         | 1.16  | 0.92     | 0.95         |
+| string_concat | 0.97  | 1.70  | 1.72  | 1.64     | 1.75         | 0.94  | 0.50     | 0.55         |
+| fib_pair      | 1.13  | 1.63  | 1.45  | 1.59     | 1.66         | 1.22  | 0.91     | 0.93         |
+| substr_churn  | 1.36  | 1.74  | 1.23  | 1.64     | 1.78         | 1.31  | 0.87     | 0.92         |
+| gc_combined   | 1.08  | 1.46  | 1.23  | 1.39     | 1.49         | 1.20  | 0.90     | 0.97         |
+
+- **`none`** は GC を全く行わない (= leak)。 sp[] rooting / WB / alloc API
+  間接化のオーバーヘッド単体が見える baseline
+- **`mark`** は per-object malloc + linked list 走査の sweep。 オブジェクト数
+  に比例して binary_trees で爆死 (7.2s)
+- **`mark_gen` / `mark_gen_inc`** は nursery / tenured 分離 + dirty old
+  scan。 binary_trees の long-lived tree が promote されて large old set
+  になり、 minor GC ごとの dirty old scan で遅くなる
+- **`copy`** (semispace Cheney) は default。 small heap でも binary_trees
+  でも安定して速い
+- **`copy_gen`** は string-heavy で大勝 (string_concat 0.50s = libgc の
+  0.52×)。 短命 string の churn が nursery で完結
+- **`copy_gen_inc`** は infra のみ用意 (incremental marking の SATB
+  barrier + gray queue)。 stack-WB が無いため STW で運用
+
+## 3. ベンチ実測 (precise default(copy) vs conservative, plain, 5 run 中央値)
 
 | Bench | conservative | precise | precise vs cons. |
 |---|---:|---:|---|
@@ -60,7 +86,7 @@ geomean ≈ 0.98× (precise の方が 2% 速い)。
 `docs/gc_design.md` §1.3.6 で議論した「spill 1 store/root + alloc 時に
 c->sp 更新 1 store」 のコストモデルが、 ほぼ実測で観察された形。
 
-## 3. Stress mode
+## 4. Stress mode
 
 `BARUBY_GC_STRESS=1` で「毎 alloc で GC」 + 「古い from-space を恒久
 PROT_NONE + MADV_DONTNEED」 のデバッグモードに切替。 stale pointer を
@@ -82,7 +108,7 @@ helper 内 C local の更新漏れ) が即発覚する。 詳細は
   バッファリングしていたのを ref pattern に切り替え、 **1.468 s → 1.160 s
   (-21%)** に短縮
 
-## 4. 効いた最適化 (履歴)
+## 5. 効いた最適化 (履歴)
 
 ### 4.1 `baruby_str_concat` を ref pattern に
 旧版: 内部 alloc 前に source bytes を libc malloc 領域に退避してから
@@ -110,7 +136,7 @@ String の bytes ペイロードは GC が pointer として読まないので�
 `baruby_gc_alloc` を含む小関数がコールサイトに inline され、 size 引数
 が定数畳み込みされる。 fib_pair 等の小型 alloc が多いベンチで効く。
 
-## 5. 既知の問題
+## 6. 既知の問題
 
 - **toplevel sp が 64 で hardcode** (`main.c::create_context`)。 大きな
   toplevel フレームを持つプログラムでは scratch 領域不足
@@ -118,7 +144,7 @@ String の bytes ペイロードは GC が pointer として読まないので�
 - **AOT mode は moving GC 移行後に未検証** — SD bake された経路で
   precise rooting が成立しているかは要再 audit (`-c` 動作含む)
 
-## 6. 次の段階で試したいこと
+## 7. 次の段階で試したいこと
 
 - AOT mode の再検証 (`make CCACHE_DISABLE=1` で `-c` 経路を回す)
 - toplevel locals_cnt を parser から取って main.c で正しい sp を設定

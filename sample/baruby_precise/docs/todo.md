@@ -13,6 +13,10 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 - [ ] **AOT mode の再検証** — moving GC 移行後 `-c` 経路が回るか未確認。
       SD bake された body が `(c, n, fp, sp)` 4 引数で precise rooting を
       正しく行えているか audit
+- [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
+      追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
+      分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で
+      実体は STW major
 
 ## P1 — 性能
 

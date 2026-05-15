@@ -3,6 +3,80 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-15 — GC backend を 7 種から build-time 選択可能に
+
+`Makefile GC=<backend>` で 7 種類の GC アルゴリズムから build-time に
+選べるようにした。 全 backend で test.ba.rb / test_ary / test_eq の
+plain + stress mode、 bench 6 種が PASS。
+
+### Backend 一覧
+
+| GC値 | 名前 | 説明 |
+|---|---|---|
+| 1 | none | malloc + leak (rooting オーバーヘッドの baseline) |
+| 2 | mark | non-moving mark&sweep (linked list of objects) |
+| 3 | mark_gen | mark&sweep + 2-gen (nursery / tenured list) |
+| 4 | mark_gen_inc | mark_gen + SATB 風 incremental marking infra |
+| 5 | copy | semispace Cheney (現状の default) |
+| 6 | copy_gen | nursery (bump) + tenured (semispace) |
+| 7 | copy_gen_inc | copy_gen + 増分 major marking infra |
+
+`make GC=mark_gen` のように選択。 未指定なら `GC=copy` (default)。
+`-DBARUBY_GC=<N>` が Makefile から渡される。
+
+### Infrastructure 整理
+
+- `gc.h` を共通 interface 化 (BarubyGCKind / BarubyGCStats / WB hooks)
+- backend ごとに `gc_<name>.c` (~200〜400 行)
+- WB() macro: 非世代別 backend では no-op (`*slot = v`)、 gen 系は
+  remset (dirty bit) を更新
+- node.c / node.def の heap pointer 書込を全部 `baruby_gc_wb` /
+  `baruby_gc_wb_bulk` 経由に統一 (6 箇所)
+- stats output に `backend=<name>` と minor/major カウントを追加
+
+### 実装と詰まったポイント
+
+- **mark_gen の `promote()` バグ**: major GC で sweep_young が marked を
+  clear してから sweep_old がスキャンすると、 新規 promote が unmarked と
+  判定されて free される。 `promote(h, clear_marked)` を導入、 major では
+  `clear_marked=false` で運用、 minor では `true` で運用
+- **copy_gen の tenured 容量**: binary_trees の live tree は ~352 MB
+  (header + payload 別 alloc で BaArray ノードは 88 byte/個)。 tenured
+  semispace を 512 MiB に拡張
+- **copy_gen の `from_end_cur`**: from-tenured の range check が region
+  全体ではなく valid object 範囲 (= old_active_top まで) でないと、
+  stale pointer が forward 経路に入って memcpy SEGV
+- **copy_gen の pretenuring**: `nursery_size/2` を超える alloc は直接
+  tenured に。 18 MB の string repeat (substr_churn) が小 nursery に
+  入らない問題を回避
+- **inc 系 backend の SATB 限界**: VALUE stack write には barrier が
+  無いため、 純粋な SATB だけでは stack 経由で reachable になった
+  オブジェクトを取りこぼす。 atomic root re-scan を追加したが、
+  testbed としては安全側で「INC_WORK_PER_ALLOC = SIZE_MAX」 = 実質
+  STW major としている。 infra (gray queue / SATB barrier) は残しているので
+  stack-WB を入れれば真の incremental に切替可能
+
+### 性能 (plain mode, 1 run, vs libgc baruby)
+
+| Bench         | libgc | none  | mark  | mark_gen | mark_gen_inc | copy  | copy_gen | copy_gen_inc |
+|---------------|------:|------:|------:|---------:|-------------:|------:|---------:|-------------:|
+| binary_trees  | 0.91  | 0.60  | 7.17  | 2.28     | 2.30         | 0.53  | 1.11     | 1.16         |
+| list_alloc    | 1.09  | 1.32  | 1.13  | 1.28     | 1.41         | 1.16  | 0.92     | 0.95         |
+| string_concat | 0.97  | 1.70  | 1.72  | 1.64     | 1.75         | 0.94  | 0.50     | 0.55         |
+| fib_pair      | 1.13  | 1.63  | 1.45  | 1.59     | 1.66         | 1.22  | 0.91     | 0.93         |
+| substr_churn  | 1.36  | 1.74  | 1.23  | 1.64     | 1.78         | 1.31  | 0.87     | 0.92         |
+| gc_combined   | 1.08  | 1.46  | 1.23  | 1.39     | 1.49         | 1.20  | 0.90     | 0.97         |
+
+**観察**:
+- **copy_gen が string-heavy で圧勝** (string_concat 0.50 s = libgc の 0.52×).
+  短命 string の churn が nursery 経由でほぼ memcpy 不要に処理される
+- **binary_trees は plain copy が最速** (0.53s). gen は long-lived tree
+  の promote コストで遅くなる
+- **mark は binary_trees が極端に遅い** (7.17s). 数百万オブジェクトの
+  per-object malloc + sweep walk
+- **none baseline は意外と遅い**: malloc の overhead で copy より遅い場面が
+  多い。 bump alloc の威力
+
 ## 2026-05-14 — alloc 周りのオーバーヘッド削減
 
 perf record で hot path を特定し、 string-alloc 系のオーバーヘッドを

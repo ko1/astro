@@ -4,7 +4,9 @@
 ベンチは [perf.md](perf.md) を参照。
 
 baruby_precise は **`sample/baruby` (libgc conservative) を copy して
-precise *moving* GC (semi-space) に置き換えた testbed**。 設計の背景は
+precise GC に置き換えた testbed**。 `make GC=<name>` で 7 種類の GC
+アルゴリズム (none / mark / mark_gen / mark_gen_inc / copy / copy_gen /
+copy_gen_inc) から選択できる。 設計の背景は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。 ASTroGen
 自体には手を入れず、 BODY をベタ書きで sp[] spill するスタイル。
 

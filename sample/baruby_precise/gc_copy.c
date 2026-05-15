@@ -10,8 +10,15 @@
 // Semispace (Cheney) moving GC with stress mode.  See gc.h for design.
 // ----------------------------------------------------------------------------
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0};
+BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0};
 int baruby_gc_stress = 0;
+const char *baruby_gc_backend_name = "copy";
+
+typedef struct GCHeader {
+    uint32_t kind;
+    uint32_t size;
+    void    *fwd;
+} GCHeader;
 
 #define REGION_BYTES  ((size_t)512u << 20)   // 512 MiB per semispace (lazy mmap, only used pages occupy physical mem)
 #define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
@@ -361,3 +368,5 @@ baruby_gc_collect(VALUE *sp_top)
 size_t baruby_gc_total_bytes(void) { return baruby_gc_stats.total_bytes; }
 size_t baruby_gc_heap_bytes (void) { return baruby_gc_stats.heap_bytes;  }
 size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
+size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
+size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }

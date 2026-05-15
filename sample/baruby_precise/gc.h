@@ -4,37 +4,53 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 // Forward decls (defined in context.h)
 struct CTX_struct;
 typedef struct CTX_struct CTX;
 typedef intptr_t VALUE;
 
-// ----------------------------------------------------------------------------
-// Precise semispace (Cheney) moving GC with stress mode.
+// ---------------------------------------------------------------------------
+// Pluggable GC backend interface.
 //
-// Two equal-size mmap'd regions.  Allocate from the active region; when full
-// (or in stress mode, on every alloc) GC copies all reachable objects to the
-// inactive region, swaps active, and (in stress mode) mprotect's the old
-// active as PROT_NONE so any stale pointer dereference SIGSEGVs immediately.
+// One of seven backends is selected at build time via -DBARUBY_GC=<n>:
+//   1: none              — no GC, malloc + leak (baseline)
+//   2: mark              — non-moving mark&sweep
+//   3: mark_gen          — mark&sweep + 2-gen
+//   4: mark_gen_inc      — mark&sweep + 2-gen + incremental marking
+//   5: copy              — Cheney semi-space (default)
+//   6: copy_gen          — copying nursery + tenured
+//   7: copy_gen_inc      — generational + incremental copy
 //
-// Stress mode (env var BARUBY_GC_STRESS=1):
-//   - every baruby_gc_alloc triggers a full collection
-//   - old from-space is mprotect'd PROT_NONE after move
-//   This catches: VALUE held in C local across an alloc + use of the C
-//   local after the alloc.  The C local is the OLD (from-space) address;
-//   reading through it segfaults.  Compare with the root in sp[] which GC
-//   has already updated to the new address.
-//
-// Memory layout per allocation:
-//
-//   [ GCHeader (16B) | payload (size bytes, 8-byte aligned) ]
-//
-// GCHeader.fwd is NULL while the object is live; during GC the from-space
-// header's fwd is overwritten with the to-space payload pointer
-// (= forwarding pointer for Cheney's algorithm).
-// ----------------------------------------------------------------------------
+// Gen / inc variants define BARUBY_GC_HAS_WB so callers know they must use
+// baruby_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
+// ---------------------------------------------------------------------------
 
+#define BARUBY_GC_NONE          1
+#define BARUBY_GC_MARK          2
+#define BARUBY_GC_MARK_GEN      3
+#define BARUBY_GC_MARK_GEN_INC  4
+#define BARUBY_GC_COPY          5
+#define BARUBY_GC_COPY_GEN      6
+#define BARUBY_GC_COPY_GEN_INC  7
+
+#ifndef BARUBY_GC
+#  define BARUBY_GC BARUBY_GC_COPY
+#endif
+
+// Backends that need a write barrier (gen / inc variants).  Callers must
+// always go through baruby_gc_wb / _bulk for heap-pointer writes — for
+// non-WB backends it compiles to a plain `*slot = v`, free of cost.
+#if BARUBY_GC == BARUBY_GC_MARK_GEN     || \
+    BARUBY_GC == BARUBY_GC_MARK_GEN_INC || \
+    BARUBY_GC == BARUBY_GC_COPY_GEN     || \
+    BARUBY_GC == BARUBY_GC_COPY_GEN_INC
+#  define BARUBY_GC_HAS_WB 1
+#endif
+
+// Kind tag in GCHeader (each backend has its own header layout but the kind
+// values are shared so node.c can pick the right alloc variant).
 typedef enum {
     KIND_FREE         = 0,
     KIND_OBJ_ARRAY    = 1,   // BaArray header (items field is a pointer)
@@ -43,48 +59,57 @@ typedef enum {
     KIND_PAYLOAD_BYTE = 4,   // char[]  (BaString.bytes target)
 } BarubyGCKind;
 
-typedef struct GCHeader {
-    uint32_t kind;
-    uint32_t size;   // payload bytes (not including this header)
-    void    *fwd;    // NULL while live; forwarding-ptr-to-new-payload during/after move
-} GCHeader;
-
 typedef struct {
-    size_t total_bytes;
-    size_t heap_bytes;
-    size_t gc_count;
+    size_t total_bytes;      // cumulative alloc bytes
+    size_t heap_bytes;       // current live bytes (best-effort)
+    size_t gc_count;         // total collections
+    size_t minor_count;      // minor (= nursery) collections, gen backends
+    size_t major_count;      // major (= whole heap) collections, gen backends
 } BarubyGCStats;
 
 extern BarubyGCStats baruby_gc_stats;
-extern int baruby_gc_stress;     // 1 = collect on every alloc + mprotect from-space
+extern int  baruby_gc_stress;
+extern const char *baruby_gc_backend_name;
 
-// Initialize: mmap two regions, register CTX.
-void baruby_gc_init(CTX *c);
-
-// Allocate `payload_size` bytes for an object of `kind` (zero-initialized).
-// Use for KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL — anything
-// the collector scans for pointers / VALUEs.  May trigger GC (always in
-// stress mode).  Returns the payload (after the GCHeader).
+void  baruby_gc_init(CTX *c);
 void *baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top);
-
-// Raw byte payload (KIND_PAYLOAD_BYTE) — GC never reads it as pointers,
-// so the memset is skipped.  Caller MUST fill bytes[0..size-1] before the
-// next alloc / GC opportunity.
 void *baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top);
-
-// Realloc a payload object.  Allocates a new block of new_size bytes,
-// copies min(old_size, new_size) bytes from the old block, returns the
-// new pointer.  CAUTION: the old block may move during the new alloc
-// (= become stale).  In non-stress mode, the implementation follows the
-// fwd pointer.  In stress mode, dereferencing the stale old pointer to
-// read fwd will SIGSEGV — the bug must be fixed in the caller.
-void *baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top);
-
-// Force a collection now.
-void baruby_gc_collect(VALUE *sp_top);
+void *baruby_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
+void  baruby_gc_collect(VALUE *sp_top);
 
 size_t baruby_gc_total_bytes(void);
 size_t baruby_gc_heap_bytes(void);
 size_t baruby_gc_count(void);
+size_t baruby_gc_minor_count(void);
+size_t baruby_gc_major_count(void);
+
+// Write barrier.
+//
+// `holder` is the heap object (payload pointer) that contains `slot`.  For
+// item-array writes (`a->items[i] = v`) holder is the items payload, not
+// the BaArray.  For pointer-field writes (`a->items = new_payload`) holder
+// is the BaArray.  Use NULL for stack-root writes (= no barrier needed).
+//
+// For non-gen backends WB collapses to `*slot = v`; gen / inc backends
+// override with a real implementation that maintains a remembered set or
+// dirty-card bitmap.
+#ifdef BARUBY_GC_HAS_WB
+void baruby_gc_wb(void *holder, VALUE *slot, VALUE v);
+void baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n);
+#else
+static inline void
+baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
+{
+    (void)holder;
+    *slot = v;
+}
+
+static inline void
+baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
+{
+    (void)holder;
+    if (n) memcpy(dst, src, n * sizeof(VALUE));
+}
+#endif
 
 #endif
