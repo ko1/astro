@@ -14,14 +14,15 @@ typedef intptr_t VALUE;
 // ---------------------------------------------------------------------------
 // Pluggable GC backend interface.
 //
-// One of seven backends is selected at build time via -DBARUBY_GC=<n>:
+// One of eight backends is selected at build time via -DBARUBY_GC=<n>:
 //   1: none              — no GC, malloc + leak (baseline)
-//   2: mark              — non-moving mark&sweep
+//   2: mark              — non-moving mark&sweep (per-object malloc list)
 //   3: mark_gen          — mark&sweep + 2-gen
 //   4: mark_gen_inc      — mark&sweep + 2-gen + incremental marking
 //   5: copy              — Cheney semi-space (default)
 //   6: copy_gen          — copying nursery + tenured
 //   7: copy_gen_inc      — generational + incremental copy
+//   8: mark_compact      — single-region mark + Lisp-2 sliding compactor
 //
 // Gen / inc variants define BARUBY_GC_HAS_WB so callers know they must use
 // baruby_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
@@ -34,6 +35,7 @@ typedef intptr_t VALUE;
 #define BARUBY_GC_COPY          5
 #define BARUBY_GC_COPY_GEN      6
 #define BARUBY_GC_COPY_GEN_INC  7
+#define BARUBY_GC_MARK_COMPACT  8
 
 #ifndef BARUBY_GC
 #  define BARUBY_GC BARUBY_GC_COPY

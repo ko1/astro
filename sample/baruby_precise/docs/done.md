@@ -3,6 +3,34 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (2) — 8 つ目の backend: `mark_compact` (Lisp-2 sliding compactor)
+
+`gc_mark` の per-object malloc/free を回避しつつ非 moving (compaction 時の
+み移動) を実現する 8 つ目の backend。 単一 mmap'd region (1 GiB virtual,
+lazy-paged) からの bump alloc + 古典的「Lisp 2」 圧縮:
+
+1. **Mark**: BFS from roots via gray queue (= mark_gen と同じ)
+2. **Forward-address pass**: region を線形走査、 marked オブジェクトの
+   ->fwd に packed dest 計算
+3. **Update-pointers pass**: 再び線形走査、 marked の outgoing pointer
+   (a->items, s->bytes, items[i]) を target の ->fwd に書き換え。 root も
+4. **Slide pass**: 各 marked を ->fwd へ memmove。 dst ≤ src なので
+   memmove で安全、 連続 src だが間に dead があると memmove は分裂
+
+### 詰まったポイント
+
+- **stress mode で test_eq.ba.rb が SEGV**: `update_pointers` が
+  `s->bytes` 0x7....0220 (region top の少し外) を deref → 高 sp slot に
+  stale heap pointer が残っていて root scan で誤って live と判定された。
+  copy_gen 同様に **high-water-mark zeroing** を追加 (前回の最深 sp 以下、
+  かつ現在の sp_top より上の slot を 0 で埋める) で解決
+- 全 test (plain + stress) + 全 bench で動作確認済み
+
+### 性能 (plain mode, 1 run)
+
+binary_trees で **mark の 7.18s → 0.59s** に (12×)。 list_sort や fib_pair
+は世代別系 (copy_gen) には負けるが、 mark との比較では概ね optimal。
+
 ## 2026-05-16 — gen 系 backend の explicit remset + macro bench 追加
 
 ### 性能改善: explicit remembered set
