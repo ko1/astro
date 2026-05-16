@@ -327,11 +327,12 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     BarubyGCKind kind = (BarubyGCKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    // Non-moving GC: skip buf intermediate (see gc_mark.c for rationale).
+    // Root old via sp_top[0] — uniform with moving-GC backends.
+    sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top)
-        : baruby_gc_alloc(kind, new_size, sp_top);
-    if (copy_bytes) memcpy(newp, old, copy_bytes);
+        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
+        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
 

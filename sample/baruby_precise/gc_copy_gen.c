@@ -193,23 +193,19 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     BarubyGCKind kind = (BarubyGCKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    // CRITICAL: alloc FIRST (which may GC), then copy.  If we memcpy
-    // before the alloc, the buffer captures pre-GC pointer values; the
-    // GC then moves those pointed-to objects, leaving the buffer's
-    // copies as stale ptrs.  Writing those into newp seeds chain.items
-    // with stale entries, breaking forward_obj on the next scan.
-    //
-    // After the alloc's potential GC, the old payload may have been
-    // forwarded: read oldh->fwd to find its post-move location.  The
-    // Cheney scan also updates the *contents* of the forwarded payload,
-    // so reading from there gives forwarded (live-tenured) pointers.
+    // Root `old` via sp_top[0] so GC sees it and updates the pointer
+    // if it moves the source.  Pass sp_top+1 to inner alloc so the
+    // slot is in scan range.  This is universal across moving and
+    // non-moving GCs: non-moving keeps sp_top[0] unchanged; moving
+    // updates it to the new payload location.  Earlier approach
+    // (reading oldh->fwd after alloc) had a latent race: if oldh
+    // was at nursery_base when minor fired, the next alloc would
+    // overwrite oldh's bytes and the fwd field would be gone.
+    sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top)
-        : baruby_gc_alloc(kind, new_size, sp_top);
-    if (copy_bytes) {
-        const void *cur_old = oldh->fwd ? oldh->fwd : old;
-        memcpy(newp, cur_old, copy_bytes);
-    }
+        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
+        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
 

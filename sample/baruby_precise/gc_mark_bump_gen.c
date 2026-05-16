@@ -225,15 +225,13 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     BarubyGCKind kind = (BarubyGCKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    // Alloc-first / fwd-aware memcpy.  See gc_copy_gen.c for the rationale
-    // (memcpy-before-alloc captured stale ptr bits).
+    // Root old via sp_top[0] so GC tracks the source through promotion.
+    // See gc_copy_gen.c for the rationale.
+    sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top)
-        : baruby_gc_alloc(kind, new_size, sp_top);
-    if (copy_bytes) {
-        const void *cur_old = oldh->fwd ? oldh->fwd : old;
-        memcpy(newp, cur_old, copy_bytes);
-    }
+        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
+        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
 

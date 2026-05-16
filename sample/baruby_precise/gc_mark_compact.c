@@ -127,17 +127,14 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     BarubyGCKind kind = (BarubyGCKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    char *buf = NULL;
-    if (copy_bytes) {
-        buf = (char *)malloc(copy_bytes);
-        if (!buf) abort();
-        memcpy(buf, old, copy_bytes);
-    }
+    // Root old via sp_top[0] — major slide-compact updates roots in
+    // its fwd-pointer phase, so sp_top[0] reflects the post-slide
+    // location.  Uniform with other backends.
+    sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top)
-        : baruby_gc_alloc(kind, new_size, sp_top);
-    if (copy_bytes) memcpy(newp, buf, copy_bytes);
-    free(buf);
+        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
+        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
 

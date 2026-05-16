@@ -150,27 +150,19 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     if (old == NULL) {
         return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     }
-    // Read old header BEFORE alloc (alloc may move/mprotect us).
     GCHeader *oldh = (GCHeader *)old - 1;
     size_t old_size = oldh->size;
     BarubyGCKind kind = (BarubyGCKind)oldh->kind;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
-    // Buffer old's content in plain heap BEFORE the alloc may invalidate it.
-    // Cost is one malloc/free per realloc; acceptable for the testbed.
-    // NB: this has the same "stale ptr in buf" bug as the gen variants
-    // had (see gc_copy_gen.c), but we can't apply the alloc-first fix
-    // here because copy mprotects PROT_NONE on from-space pages in
-    // stress mode, making oldh->fwd unreadable after the alloc.  For
-    // single-region copy the bug rarely fires (only 1 GC per usual run).
-    void *buf = malloc(copy_bytes);
-    if (!buf) { fprintf(stderr, "realloc buf OOM\n"); abort(); }
-    memcpy(buf, old, copy_bytes);
+    // Root old via sp_top[0] — GC forwards it to to-space.  Stress mode
+    // mprotects from-space but to-space stays readable, so sp_top[0]
+    // (now pointing into to-space) is safe.  No malloc buf needed.
+    sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top)
-        : baruby_gc_alloc(kind, new_size, sp_top);
-    memcpy(newp, buf, copy_bytes);
-    free(buf);
+        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
+        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
 

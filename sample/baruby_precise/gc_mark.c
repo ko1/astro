@@ -128,13 +128,14 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
-    // Non-moving GC: `old` stays at its address across the alloc's GC.
-    // The owner that called us (a->items live in caller's sp_top) keeps
-    // old reachable so sweep doesn't free it.  Skip the buf intermediate.
+    // Root `old` via sp_top[0] so the GC inside the alloc keeps it
+    // marked.  Non-moving GC: sp_top[0] unchanged after GC.  Uniform
+    // with moving-GC realloc_payload — caller doesn't need to know.
+    sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top)
-        : baruby_gc_alloc(kind, new_size, sp_top);
-    if (copy_bytes) memcpy(newp, old, copy_bytes);
+        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
+        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
 
