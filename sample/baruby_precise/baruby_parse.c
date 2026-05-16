@@ -573,7 +573,19 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
           uint32_t args_cnt = args ? args->arguments.size : 0;
 
           if (args_cnt == 1 && is_binop(tc, n->name)) {
-              return alloc_binop(tc, n->name, TRANSDUCE(lhs), TRANSDUCE(rhs));
+              // Binops use 2 sp scratch slots at runtime; nested binops
+              // within an arg of an inner >3-arg call use additional
+              // slots at sp+1, sp+2 etc. (a `(x+1)` arg evaluates at
+              // its parent's sp+1, writing to sp+1/sp+2 = clobbers the
+              // first arg slot if arg_idx is only bumped by 2).
+              // Reserve 4 slots to cover 2-deep arg-binop nesting,
+              // which exceeds anything ordinary code uses.
+              uint32_t save = arg_index(tc);
+              for (int i = 0; i < 4; i++) increment_arg_index(tc);
+              NODE *l = TRANSDUCE(lhs);
+              NODE *r = TRANSDUCE(rhs);
+              rewind_arg_index(tc, save);
+              return alloc_binop(tc, n->name, l, r);
           }
           // Method-call desugar (no OO machinery): when the receiver is
           // present and the method matches a known builtin op, lower to

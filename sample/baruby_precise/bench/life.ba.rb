@@ -9,10 +9,6 @@
 # - Allocator for mid-size Array bursts (W * H + H allocs per tick)
 # - Tenuring threshold (grid lives just one tick — should never tenure)
 # - Mark/sweep walk (dead-heavy: ~all of previous grid is dead each tick)
-#
-# NB: avoids `n + get(g, w, h, x', y')` style — baruby's parser bug
-# makes calls with >3 args inside binop subexpressions clobber the
-# operand slot.  Each call's result is bound to a local first.
 
 def make_grid(w, h)
   g = []
@@ -65,27 +61,17 @@ def step(g, w, h)
     row = []
     x = 0
     while x < w
-      # Eight-neighbour sum.  Bind each call result to a temp first to
-      # work around baruby parser quirk with >3-arg calls in binops.
-      xm = x - 1
-      yp = y - 1
-      a = get(g, w, h, xm, yp)
-      b = get(g, w, h, x,  yp)
-      xp = x + 1
-      c = get(g, w, h, xp, yp)
-      d = get(g, w, h, xm, y)
-      e = get(g, w, h, xp, y)
-      yn = y + 1
-      f = get(g, w, h, xm, yn)
-      gg = get(g, w, h, x,  yn)
-      hh = get(g, w, h, xp, yn)
-      n = a + b
-      n = n + c
-      n = n + d
-      n = n + e
-      n = n + f
-      n = n + gg
-      n = n + hh
+      # Eight-neighbour sum, inline.  Parser handles >3-arg calls in
+      # binop arg position via 4-slot reserve in alloc_binop (fix in
+      # commit landed alongside this bench).
+      n = get(g, w, h, x - 1, y - 1)
+      n = n + get(g, w, h, x,     y - 1)
+      n = n + get(g, w, h, x + 1, y - 1)
+      n = n + get(g, w, h, x - 1, y)
+      n = n + get(g, w, h, x + 1, y)
+      n = n + get(g, w, h, x - 1, y + 1)
+      n = n + get(g, w, h, x,     y + 1)
+      n = n + get(g, w, h, x + 1, y + 1)
       cur = get(g, w, h, x, y)
       live = 0
       if cur == 1

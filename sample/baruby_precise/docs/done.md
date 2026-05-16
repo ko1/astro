@@ -3,6 +3,28 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (12) — parser バグ修正: binop 内 >3-arg call のオペランド競合
+
+(11) で発見した parser バグを根治。 真因は: `n + foo(a, b, c, d, e)` のように
+binop の RHS が >3 引数 call の場合、 call は (specialized が ≤3 のみ
+対応のため) 一般パスで lset chain + `node_call` を発射する。 lset は
+`fp[arg_idx..]` に args を書く。 arg_idx は parser が決めるが、
+binop が使う sp[0..1] = fp[locals_cnt..locals_cnt+1] と同じ範囲に被ると
+inner binop の rhs eval が arg slot を上書きしてしまう。 また args 内に
+`x + 1` のような binop があると、 inner binop の sp[1] = outer.sp + 2 も
+arg slot に被る (parent's sp + 1 から評価するため)。
+
+修正は `baruby_parse.c::alloc_binop` 呼出前に `arg_index` を 4 slot bump
+してから lhs/rhs を transduce、 後で rewind する。 これで:
+- sp[0..1] (= outer binop の作業領域) は予約済み
+- inner binop の sp[1] = outer.sp + 2 も予約範囲内
+- 2-deep binop nesting in args まで対応 (実用的には十分)
+
+検証: 元の repro (`bench/life.ba.rb` の inline `n + get(g,w,h,x±1,y±1)`
+× 8) が動き、 全 10 backend で final population = 112 を一致確認。
+`life.ba.rb` から workaround の temp-var bind を撤去し inline 形に戻して
+よりシンプル化 (1.54 s → 1.30 s も bonus でついた)。
+
 ## 2026-05-16 (11) — `bench/life.ba.rb` 追加 + parser バグ発見
 
 Conway's Game of Life の 80×80 grid × 200 tick macro bench を追加

@@ -11,13 +11,9 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       ([done.md](done.md) (8) 参照)。 真因は `baruby_gc_realloc_payload`
       の memcpy-to-buf-before-alloc。 副次的に node.def の EVAL_ARG 新 sp_top
       も「初期化済みスロットのみ scan」 になるよう sp+i 段階指定に修正済。
-- [ ] **parser bug: `binop + call(>3 args)` でオペランド競合** — `n = n + get(g, w, h, x, y)`
-      のような binop の RHS に 4+ 引数呼出を置くと、 call が arg を fp[arg_idx..]
-      に書き込む時に binop の sp[0] (= LHS の評価結果) と同じスロットを
-      上書きする。 結果 sp[0] が int から heap ptr に変わり「type mismatch in +」。
-      回避: 呼出結果を一旦 local var に bind してから binop (`bench/life.ba.rb`
-      参照)。 修正は parser の arg_index 計算で外側 binop の sp 使用量を
-      考慮させる必要あり。
+- [x] ~~**parser bug: `binop + call(>3 args)` でオペランド競合**~~ —
+      2026-05-16 (12) 解決。 `alloc_binop` 入口で `arg_index` を 4 slot
+      bump して transduce、 後で rewind。 詳細 [done.md](done.md) (12) 参照。
 - [ ] **toplevel sp の hardcode 64** (`main.c::create_context`)。 大きな
       toplevel フレームを持つプログラムでは scratch 領域が不足する。
       parser から toplevel locals_cnt を取って計算するべき
