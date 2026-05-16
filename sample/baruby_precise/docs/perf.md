@@ -27,20 +27,21 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 (`./baruby` vs `./baruby_precise`)。 plain mode = AST インタプリタ
 (code_store なし)。 AOT mode は moving GC 移行後に未再検証。
 
-## 2. 全 GC backend のベンチ実測 (plain mode, 1 run)
+## 2. 全 GC backend のベンチ実測 (plain mode, 3-run 中央値)
 
-`mark_compact_gen` 列が 9 つ目の backend (nursery copy + tenured mark+compact)。
+10 種類の backend で測定 (新規追加: `mark_compact_gen` = nursery copy +
+tenured mark+compact, `bump` = bump alloc + no GC = baseline floor)。
 
-| Bench         | libgc | none  | mark  | mark_gen | mark_gen_inc | copy  | copy_gen | copy_gen_inc | mark_compact | mark_compact_gen |
-|---------------|------:|------:|------:|---------:|-------------:|------:|---------:|-------------:|-------------:|-----------------:|
-| binary_trees  | 0.88  | 0.64  | 7.06  | 1.55     | 1.57         | 0.55  | 0.82     | 0.82         | **0.61**     | 0.78             |
-| list_alloc    | 1.09  | 1.40  | 1.05  | 1.29     | 1.66         | 1.20  | 0.97     | 0.96         | 1.28         | **0.89**         |
-| string_concat | 1.01  | 1.72  | 1.82  | 1.70     | 1.65         | 0.98  | 0.59     | 0.53         | 1.23         | **0.51**         |
-| fib_pair      | 1.15  | 1.73  | 1.47  | 1.56     | 1.72         | 1.24  | 0.95     | 0.92         | 1.47         | **0.81**         |
-| substr_churn  | 1.35  | 1.66  | 1.30  | 1.67     | 1.78         | 1.30  | **0.92** | 1.04         | 1.51         | 0.93             |
-| gc_combined   | 0.99  | 1.53  | 1.26  | 1.33     | 1.42         | 1.23  | **0.93** | 1.08         | 1.33         | 0.93             |
-| interp_calc   | 1.12  | 1.43  | 1.43  | 1.52     | 1.58         | 1.25  | 1.00     | **0.98**     | 1.24         | 1.00             |
-| list_sort     | 1.07  | 1.24  | 1.29  | 1.28     | 1.32         | 1.24  | 1.13     | 1.16         | 1.19         | **1.08**         |
+| Bench         | libgc | none  | bump  | mark  | mark_gen | mark_gen_inc | copy  | copy_gen | copy_gen_inc | mark_compact | mark_compact_gen |
+|---------------|------:|------:|------:|------:|---------:|-------------:|------:|---------:|-------------:|-------------:|-----------------:|
+| binary_trees  | 0.90  | 0.62  | 0.53  | 7.27  | 1.57     | 1.54         | 0.56  | 0.79     | 0.84         | **0.61**     | 0.82             |
+| list_alloc    | 1.05  | 1.47  | 1.13  | 1.17  | 1.26     | 1.36         | 1.21  | 0.95     | 0.93         | 1.26         | **0.88**         |
+| string_concat | 0.96  | 1.69  | 0.92  | 1.69  | 1.74     | 1.80         | 0.97  | 0.57     | 0.57         | 1.22         | **0.58**         |
+| fib_pair      | 1.15  | 1.68  | 1.26  | 1.47  | 1.55     | 1.55         | 1.31  | 0.96     | 0.98         | 1.59         | **0.91**         |
+| substr_churn  | 1.35  | 1.77  | 1.18  | 1.41  | 1.67     | 1.78         | 1.32  | 0.95     | **0.90**     | 1.53         | 0.96             |
+| gc_combined   | 1.09  | 1.49  | 1.21  | 1.23  | 1.36     | 1.44         | 1.24  | 1.00     | 1.01         | 1.34         | **0.96**         |
+| interp_calc   | 1.15  | 1.34  | 1.18  | 1.30  | 1.52     | 1.60         | 1.24  | 1.06     | 1.07         | 1.33         | **1.03**         |
+| list_sort     | 1.13  | 1.29  | 1.23  | 1.27  | 1.35     | 1.34         | 1.22  | 1.15     | 1.15         | 1.31         | **1.12**         |
 
 - **`none`** は GC を全く行わない (= leak)。 sp[] rooting / WB / alloc API
   間接化のオーバーヘッド単体が見える baseline
@@ -62,8 +63,10 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 - **`mark_compact_gen`** は nursery (copy) + tenured (mark+compact) の hybrid。
   short-lived alloc は nursery で完結、 long-lived のみ tenured へ promote。
   tenured は single region (vs copy_gen の 2×) で in-place compact。
-  binary_trees / list_alloc / string_concat / fib_pair / list_sort の 5/8 で
-  gen 系最速
+  **8 bench 中 6 つで全 backend 最速** (libgc 含む全体トップ)
+- **`bump`** は bump alloc only (no GC, leak)。 baseline floor として、
+  「rooting + WB + dispatch + alloc」の最小コストを示す。 binary_trees が
+  0.53s — copy より速い (GC 自体が無いので)。 OOM 時 abort
 
 ### マクロベンチ
 

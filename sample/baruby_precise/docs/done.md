@@ -3,6 +3,29 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (5) — 10 つ目の backend: `bump` (allocation floor baseline)
+
+GC を全く行わず単一 4 GiB region への bump alloc のみ。 OOM 時 abort。
+`none` (libc malloc + leak) より strictly に速い: malloc 内の bin 管理が
+ないぶん、 alloc は cmp + add のみ。
+
+役割: 「rooting + WB + dispatch + sp[] threading」の最小コストを示す
+baseline。 binary_trees で 0.53s = `copy` の 0.56s より速い (GC オーバー
+ヘッドが完全に消えるので)。
+
+全 8 bench で `none` を上回る:
+
+| Bench         | none  | bump  |
+|---------------|------:|------:|
+| binary_trees  | 0.62  | 0.53  |
+| list_alloc    | 1.47  | 1.13  |
+| string_concat | 1.69  | 0.92  |
+| fib_pair      | 1.68  | 1.26  |
+| substr_churn  | 1.77  | 1.18  |
+| gc_combined   | 1.49  | 1.21  |
+| interp_calc   | 1.34  | 1.18  |
+| list_sort     | 1.29  | 1.23  |
+
 ## 2026-05-16 (4) — 9 つ目の backend: `mark_compact_gen` (gen + Lisp-2 hybrid)
 
 `copy_gen` の major (semispace Cheney) を `mark_compact` (Lisp-2 sliding) に
