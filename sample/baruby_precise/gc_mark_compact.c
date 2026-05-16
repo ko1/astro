@@ -313,19 +313,43 @@ gc_collect_internal(VALUE *sp_top)
     for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value(*p);
 
     // (5) Slide live objects to their forwarding addresses.
+    //     Batch consecutive marked objects (no dead in between) into a
+    //     single memmove — they all share the same src-vs-dst delta.
     {
         char *p = region_base;
         while (p < region_top) {
             GCHeader *h = (GCHeader *)p;
             size_t total = sizeof(GCHeader) + ALIGN8(h->size);
-            if (h->marked) {
-                char *dst = h->fwd;
-                if (dst != (char *)h) memmove(dst, h, total);
-                GCHeader *nh = (GCHeader *)dst;
-                nh->marked = false;
-                nh->fwd    = NULL;
+            if (!h->marked) {
+                p += total;
+                continue;
             }
-            p += total;
+            // Find the end of this contiguous-marked run.  All objects in
+            // the run share the same (src - dst) delta because bump-alloc
+            // packs them contiguously and the forward pass packs survivors
+            // contiguously too.
+            char *run_src_start = p;
+            char *run_dst_start = h->fwd;
+            char *run_p = p;
+            while (run_p < region_top) {
+                GCHeader *rh = (GCHeader *)run_p;
+                if (!rh->marked) break;
+                run_p += sizeof(GCHeader) + ALIGN8(rh->size);
+            }
+            size_t run_size = (size_t)(run_p - run_src_start);
+            if (run_dst_start != run_src_start) {
+                memmove(run_dst_start, run_src_start, run_size);
+            }
+            // Clear marked / fwd on each moved header.
+            char *q = run_dst_start;
+            char *q_end = run_dst_start + run_size;
+            while (q < q_end) {
+                GCHeader *qh = (GCHeader *)q;
+                qh->marked = false;
+                qh->fwd    = NULL;
+                q += sizeof(GCHeader) + ALIGN8(qh->size);
+            }
+            p = run_p;
         }
     }
     region_top = fwd;

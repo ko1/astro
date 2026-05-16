@@ -3,6 +3,16 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (3) — mark_compact の slide 段階を batching
+
+3-pass の最終 (slide) で、 連続 marked オブジェクトは src - dst delta が
+共通なので 1 回の `memmove` に纏められる。 dead が間に挟まると delta が
+変わるので runs を分割。 数百万回の memmove 呼び出しを runs 単位に削減。
+
+影響は限定的: binary_trees / list_alloc などで誤差程度。 mark_compact の
+ホットスポットは GC 自体ではなく dispatch (perf record で DISPATCH_node_if
+13%, _ary_push 9% など) で、 GC 内最適化のリターンが小さいと判明。
+
 ## 2026-05-16 (2) — 8 つ目の backend: `mark_compact` (Lisp-2 sliding compactor)
 
 `gc_mark` の per-object malloc/free を回避しつつ非 moving (compaction 時の
