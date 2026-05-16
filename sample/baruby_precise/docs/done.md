@@ -3,6 +3,31 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (7) — `bench/hash_chain.ba.rb` 追加 + uninitialized sp 穴の診断
+
+Macro bench で「Array on Array」 形式のチェーンドバケット hash table を
+実装。 2048 buckets / 150k keys / 3 rounds で plain ~1.5 s。 long-lived
+buckets + medium-lived chains + short-lived `[k, v]` pairs の 3 層 lifetime
+を持つので、 nursery + remset の組合せが効くワークロード。
+
+10 backend のうち 7 で正常 (none / mark / mark_gen / mark_gen_inc / copy /
+mark_compact / bump)。 残 3 (copy_gen / copy_gen_inc / mark_compact_gen)
+は `process_object: unknown kind` で abort する既知バグを露呈:
+
+> nested array literal (`[k, v]`) を chain.push に渡すと、 `node_call_push`
+> および `node_ary_push` の引数評価で `BARUBY_EVAL_ARG(c, recv, sp + 2)` が
+> 渡されるが、 そのとき `sp[1]` (val スロット) は未初期化のまま GC scan
+> 範囲に入る。 過去フレームの leftover nursery ptr が残っていると
+> forward_obj が stale ヘッダを follow して to-tenured へ corrupt copy →
+> Cheney scan で unknown kind 検出 → abort。 minor GC 入口の高水位
+> zeroing は sp_top retreat 経路でしか働かず、 sp_top が高い状態で
+> uninit slot を拾うケースは未保護。
+
+詳細と修正方針は [todo.md](todo.md) の P0 エントリ
+「uninitialized sp scratch slot in GC scan range」 参照。 単発の `sp + 2`
+を `sp + 1` / `sp` に下げる試みは効かなかった (バグの発火経路が他にも
+あり)。 系統的審査が要る。
+
 ## 2026-05-16 (6) — 全 backend に GC 時間計測 (`gc_seconds` / `gc_pct`)
 
 `BarubyGCStats.total_seconds` を追加し、 各 backend の collect entry を

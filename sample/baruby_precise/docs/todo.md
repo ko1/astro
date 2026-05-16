@@ -7,6 +7,22 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 
 ## P0
 
+- [ ] **uninitialized sp scratch slot in GC scan range** — `bench/hash_chain.ba.rb`
+      で `copy_gen` / `copy_gen_inc` / `mark_compact_gen` が落ちる。
+      原因: `node_call_push` (および類似ノード) は val 引数評価時に
+      `sp + 2` を新 sp_top として渡すが、 そのとき `sp[1]` (val スロット)
+      は未初期化のまま GC scan 範囲に入る。 過去フレームの leftover
+      nursery ptr が残っていると forward_obj が stale ヘッダを follow
+      して to-tenured に corrupt copy → `process_object: unknown kind`
+      で abort。 minor 既存の高水位 zeroing (sp_top retreat 時の追従) は
+      retreat 経路のみで救えず、 sp_top が高い状態で uninit slot を
+      拾うケースは未保護。
+      対策案:
+      - (a) val eval を `sp + 1` で呼ぶ (scan を sp[0] のみに絞り、
+        sp[1] は eval 戻り値で上書きされるので scan 不要)
+      - (b) val eval 直前に `sp[1] = 0` で zeroize
+      - aget も recv eval 前に `sp[0]` 未初期化のまま `sp + 1` を渡す
+        対称な穴がある。 ノード全種を審査して fix。
 - [ ] **toplevel sp の hardcode 64** (`main.c::create_context`)。 大きな
       toplevel フレームを持つプログラムでは scratch 領域が不足する。
       parser から toplevel locals_cnt を取って計算するべき
