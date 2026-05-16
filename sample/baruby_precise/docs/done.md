@@ -3,6 +3,48 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (8) — `baruby_gc_realloc_payload` の stale-ptr バグを根治
+
+前 iter で診断した「3 つの moving-gen backend で hash_chain が落ちる」
+バグの真因を発見し修正。 真の原因は EVAL_ARG の uninit slot ではなく、
+`baruby_gc_realloc_payload` の構造的バグだった:
+
+```c
+// 旧 (バグあり)
+memcpy(buf, old, copy_bytes);           // (1) old の bit pattern を buf に
+void *newp = baruby_gc_alloc(...);      // (2) 中で GC fire → old の指す先が動く
+memcpy(newp, buf, copy_bytes);          // (3) buf 内の ptr 値は pre-GC アドレスのまま
+```
+
+(1) で buf に copy された VALUE ptr 達は、 (2) の GC で移動先 (tenured)
+に forward され、 (3) で newp に書かれるのは pre-GC = stale アドレス。
+chain.items が newp になった後、 次回の minor で scan されると stale
+nursery ptr を forward しようとして `process_object: unknown kind`
+で abort。
+
+修正方針: alloc を先に呼んでから、 forward 情報 (oldh->fwd) を経由して
+post-GC の old location から memcpy:
+
+```c
+// 新
+void *newp = baruby_gc_alloc(...);                     // (1) GC があれば fire
+const void *cur_old = oldh->fwd ? oldh->fwd : old;     // (2) forward 先を解決
+if (copy_bytes) memcpy(newp, cur_old, copy_bytes);     // (3) post-GC の ptr が入る
+```
+
+`gc_copy_gen.c` / `gc_copy_gen_inc.c` / `gc_mark_compact_gen.c` の 3 ファイル
+に適用。 `gc_copy.c` は stress mode で from-space に mprotect PROT_NONE が
+かかる仕様のため oldh->fwd が読めず、 旧 buf 方式のまま残す
+(現状 hash_chain は copy で 1 GC のみなのでバグは表面化していない)。
+
+副次対応として `node.def` の EVAL_ARG 新 sp_top 指定も「初期化済みスロット
+のみ scan」 になるよう `sp + 2` を `sp / sp + 1` に段階化
+(`node_call_aget`, `node_call_aset`, `node_call_push`, `node_ary_push`,
+全 binop)。 これだけでは根治しなかったが、 framework としての健全性は
+上がっており、 別ワークロードで隠れていた同型バグへの防御として残す。
+
+検証: 全 10 backend で test 3 種 (plain + stress) と hash_chain が PASS。
+
 ## 2026-05-16 (7) — `bench/hash_chain.ba.rb` 追加 + uninitialized sp 穴の診断
 
 Macro bench で「Array on Array」 形式のチェーンドバケット hash table を

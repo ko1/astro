@@ -1,13 +1,12 @@
 # hash_chain — macro benchmark: build a chained-bucket hash table on top
 # of Array (baruby has no Hash), insert lots of keys, then look them up.
 #
-# NB: KNOWN-BROKEN on copy_gen / copy_gen_inc / mark_compact_gen due to
-# uninitialized sp scratch slots being in the GC scan range during
-# nested array-literal evaluation.  See docs/todo.md P0 entry
-# "uninitialized sp scratch slot in GC scan range".  Works on the other
-# 7 backends (none, mark, mark_gen, mark_gen_inc, copy, mark_compact,
-# bump) which either don't move (mark variants) or have only a single
-# region so no stale-after-promote window opens (copy, mark_compact).
+# History: this bench surfaced a stale-ptr bug in baruby_gc_realloc_payload
+# (memcpy-to-buf-before-alloc captured pre-GC ptr values; the alloc's GC
+# moved their targets, leaving stale entries in the new payload).  Fixed
+# in gc_copy_gen.c / gc_copy_gen_inc.c / gc_mark_compact_gen.c by allocating
+# first then memcpy'ing from the post-GC (forwarded) old location via
+# oldh->fwd.  Now passes on all 10 backends.
 #
 # Profile:
 # - Long-lived: the 2048-bucket Array

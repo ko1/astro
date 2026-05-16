@@ -221,7 +221,10 @@ INIT(void)
 VALUE
 baruby_ary_new(uint32_t capa, VALUE *sp_top)
 {
-    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_ARRAY, sizeof(BaArray), sp_top + 1);
+    // First alloc passes sp_top (not sp_top+1): sp_top[0] is uninit so
+    // must not be in GC scan range.  Once it holds the new BaArray, the
+    // second alloc can use sp_top+1 to keep it scanned during a move.
+    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_ARRAY, sizeof(BaArray), sp_top);
     BaArray *a = (BaArray *)sp_top[0];
     a->hdr.type = OBJ_ARRAY;
     a->hdr.flags = 0;
@@ -282,7 +285,8 @@ baruby_ary_push(VALUE *av_ref, VALUE *x_ref, VALUE *sp_top)
 VALUE
 baruby_str_new(const char *bytes, uint32_t len, VALUE *sp_top)
 {
-    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top + 1);
+    // First alloc with sp_top (not sp_top+1): sp_top[0] uninit, keep out of scan.
+    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top);
     BaString *s = (BaString *)sp_top[0];
     s->hdr.type = OBJ_STRING;
     s->hdr.flags = 0;
@@ -308,7 +312,8 @@ baruby_str_new_cstr(const char *cstr, VALUE *sp_top)
 VALUE
 baruby_str_slice(VALUE *src_ref, uint32_t offset, uint32_t len, VALUE *sp_top)
 {
-    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top + 1);
+    // First alloc with sp_top (not sp_top+1): sp_top[0] uninit, keep out of scan.
+    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top);
     BaString *r = (BaString *)sp_top[0];
     r->hdr.type = OBJ_STRING;
     r->hdr.flags = 0;
@@ -390,7 +395,7 @@ baruby_str_repeat(VALUE *sv_ref, intptr_t n, VALUE *sp_top)
     const BaString *s = VAL2STR(*sv_ref);
     uint64_t total = (uint64_t)s->len * (uint64_t)n;
     if (total > UINT32_MAX) total = UINT32_MAX;
-    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top + 1);
+    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top);
     BaString *r = (BaString *)sp_top[0];
     s = VAL2STR(*sv_ref);   // reload after alloc
     r->hdr.type  = OBJ_STRING;
@@ -549,7 +554,7 @@ baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top)
     uint32_t b_len = VAL2STR(*bv_ref)->len;
     uint32_t total = a_len + b_len;
 
-    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top + 1);
+    sp_top[0] = (VALUE)baruby_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top);
     BaString *r = (BaString *)sp_top[0];
     r->hdr.type = OBJ_STRING;
     r->hdr.flags = 0;

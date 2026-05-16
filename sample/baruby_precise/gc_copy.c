@@ -158,12 +158,14 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 
     // Buffer old's content in plain heap BEFORE the alloc may invalidate it.
     // Cost is one malloc/free per realloc; acceptable for the testbed.
+    // NB: this has the same "stale ptr in buf" bug as the gen variants
+    // had (see gc_copy_gen.c), but we can't apply the alloc-first fix
+    // here because copy mprotects PROT_NONE on from-space pages in
+    // stress mode, making oldh->fwd unreadable after the alloc.  For
+    // single-region copy the bug rarely fires (only 1 GC per usual run).
     void *buf = malloc(copy_bytes);
     if (!buf) { fprintf(stderr, "realloc buf OOM\n"); abort(); }
     memcpy(buf, old, copy_bytes);
-
-    // After this alloc, `old`'s page may be mprotect'd PROT_NONE (stress).
-    // Pick the variant matching the original kind so PAYLOAD_BYTE skips memset.
     void *newp = (kind == KIND_PAYLOAD_BYTE)
         ? baruby_gc_alloc_byte(new_size, sp_top)
         : baruby_gc_alloc(kind, new_size, sp_top);

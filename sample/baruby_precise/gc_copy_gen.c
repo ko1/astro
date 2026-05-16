@@ -193,17 +193,23 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     BarubyGCKind kind = (BarubyGCKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    char *buf = NULL;
-    if (copy_bytes) {
-        buf = (char *)malloc(copy_bytes);
-        if (!buf) abort();
-        memcpy(buf, old, copy_bytes);
-    }
+    // CRITICAL: alloc FIRST (which may GC), then copy.  If we memcpy
+    // before the alloc, the buffer captures pre-GC pointer values; the
+    // GC then moves those pointed-to objects, leaving the buffer's
+    // copies as stale ptrs.  Writing those into newp seeds chain.items
+    // with stale entries, breaking forward_obj on the next scan.
+    //
+    // After the alloc's potential GC, the old payload may have been
+    // forwarded: read oldh->fwd to find its post-move location.  The
+    // Cheney scan also updates the *contents* of the forwarded payload,
+    // so reading from there gives forwarded (live-tenured) pointers.
     void *newp = (kind == KIND_PAYLOAD_BYTE)
         ? baruby_gc_alloc_byte(new_size, sp_top)
         : baruby_gc_alloc(kind, new_size, sp_top);
-    if (copy_bytes) memcpy(newp, buf, copy_bytes);
-    free(buf);
+    if (copy_bytes) {
+        const void *cur_old = oldh->fwd ? oldh->fwd : old;
+        memcpy(newp, cur_old, copy_bytes);
+    }
     return newp;
 }
 
