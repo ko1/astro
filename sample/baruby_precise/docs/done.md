@@ -3,6 +3,49 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (13) — 11 つ目の backend: `mark_bump_gen`
+
+bump-allocated nursery + linked-list mark&sweep tenured の hybrid。
+既存設計空間における穴を埋める:
+
+| Backend | Nursery | Tenured |
+|---|---|---|
+| `mark_gen` | malloc per-object linked list | malloc per-object linked list (mark&sweep) |
+| `mark_compact_gen` | bump region (16 MiB) | bump region (512 MiB, mark+slide compact) |
+| `mark_bump_gen` (新) | bump region (16 MiB) | malloc per-object linked list (mark&sweep) |
+
+実装:
+- 既存 generational インフラ (remset + WB) を継承
+- Minor: bump nursery を scan、 marked obj を tenured (malloc + 線形リスト
+  link) に promote、 nursery_top を reset。 Cheney FIFO queue で
+  freshly-promoted obj から outgoing refs を follow。
+- Major: 1 パスで「mark 既存 tenured + promote nursery 生存物」 を同時に
+  行う。 root から scan、 nursery ref は in-place で promote 後の addr に
+  書換え、 tenured ref は mark + gray queue。 純粋 mark&sweep の loop と
+  生存物 promote の loop を統合することで O(live) で済む (素朴な
+  「mark → 個別 promote → fixup ループ」 だと O(live × depth) になる)。
+- 旧 generational 同様 adaptive major threshold を採用 (`max(MIN, 2×live)`)
+
+性能特性:
+
+| Bench | mark\_gen | mark\_bump\_gen | 効果 |
+|---|---:|---:|---|
+| string_concat | 1.67 | **0.60** | -64% (短命 alloc が nursery 完結) |
+| fib_pair | 1.65 | **0.97** | -41% |
+| list_alloc | 1.36 | **0.96** | -29% |
+| substr_churn | 1.74 | **0.93** | -47% |
+| binary_trees | **1.38** | 1.49 | +8% (long-lived は逆効果) |
+
+short-lived ワークロードでは bump nursery が劇的に効く (mutator alloc が
+malloc → ポインタ加算で 10× 速く、 死ぬ obj は scan 不要)。 long-lived
+(binary_trees) では major が 2M slot を malloc + memcpy するので
+mark_gen より逆に遅い。 `mark_compact_gen` と比較すると tenured 戦略の
+差 (compact vs linked-list mark&sweep) が major コストに反映 (1.49 s vs
+0.84 s)。
+
+11 backend × test 3 種 (plain + stress) + bench 12 種が全 PASS。
+[perf.md](perf.md) §2 に新 column 追加。
+
 ## 2026-05-16 (12) — parser バグ修正: binop 内 >3-arg call のオペランド競合
 
 (11) で発見した parser バグを根治。 真因は: `n + foo(a, b, c, d, e)` のように

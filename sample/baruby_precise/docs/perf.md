@@ -27,25 +27,26 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 (`./baruby` vs `./baruby_precise`)。 plain mode = AST インタプリタ
 (code_store なし)。 AOT mode は moving GC 移行後に未再検証。
 
-## 2. 全 GC backend のベンチ実測 (plain mode, 3-run 中央値, 11 bench)
+## 2. 全 GC backend のベンチ実測 (plain mode, 3-run 中央値, 11 bench × 11 backend)
 
-10 種類の backend × 11 ベンチ (`hash_chain` `nqueens` 追加、 各 3-run
-中央値)。 単位: 秒。 行ごとの最速に `**` 印。
+11 種類の backend × 11 ベンチ (`mark_bump_gen` 追加で 11 backend、 bench は
+`hash_chain` `nqueens` `life` を含む)、 各 3-run 中央値。 単位: 秒。
+行ごとの最速に `**` 印。
 
-| Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump |
-|---------------|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|
-| binary_trees  | 0.69 | 0.97 | 1.38 | 1.44 | 0.58 | 0.83 | 0.83 | 0.58 | 0.84 | **0.51** |
-| cons_list     | 1.37 | 1.14 | 1.31 | 1.36 | 1.12 | 0.89 | **0.86** | 1.13 | 0.88 | 1.04 |
-| fib_pair      | 1.73 | 1.53 | 1.65 | 1.73 | 1.34 | 0.94 | **0.88** | 1.49 | 0.94 | 1.34 |
-| gc_combined   | 1.52 | 1.25 | 1.44 | 1.51 | 1.26 | 1.05 | **0.99** | 1.25 | 1.02 | 1.24 |
-| hash_chain    | 1.54 | 2.44 | 2.27 | 2.29 | **1.22** | 1.25 | **1.21** | 1.34 | 1.22 | 1.50 |
-| interp_calc   | 1.36 | 1.53 | 1.54 | 1.55 | 1.27 | 1.07 | **0.98** | 1.36 | 1.08 | 1.25 |
-| life          | 1.39 | 1.32 | 1.44 | 1.36 | 1.43 | 1.37 | 1.32 | **1.24** | 1.35 | 1.31 |
-| list_alloc    | 1.40 | 1.22 | 1.36 | 1.34 | 1.20 | 0.94 | 0.94 | 1.32 | **0.92** | 1.20 |
-| list_sort     | 1.27 | 1.31 | 1.37 | 1.32 | 1.26 | 1.14 | **1.04** | 1.28 | 1.13 | 1.28 |
-| nqueens       | 1.04 | 1.04 | 1.07 | **0.98** | 1.05 | 1.04 | 0.96 | 0.96 | 1.00 | 1.07 |
-| string_concat | 1.79 | 2.41 | 1.67 | 1.57 | 0.99 | 0.57 | **0.52** | 1.16 | 0.60 | 1.01 |
-| substr_churn  | 1.85 | 1.53 | 1.74 | 1.59 | 1.34 | 0.97 | **0.87** | 1.59 | 0.97 | 1.23 |
+| Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen |
+|---------------|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|
+| binary_trees  | 0.69 | 0.97 | 1.38 | 1.44 | 0.58 | 0.83 | 0.83 | 0.58 | 0.84 | **0.51** | 1.49 |
+| cons_list     | 1.37 | 1.14 | 1.31 | 1.36 | 1.12 | 0.89 | **0.86** | 1.13 | 0.88 | 1.04 | 0.93 |
+| fib_pair      | 1.73 | 1.53 | 1.65 | 1.73 | 1.34 | 0.94 | **0.88** | 1.49 | 0.94 | 1.34 | 0.97 |
+| gc_combined   | 1.52 | 1.25 | 1.44 | 1.51 | 1.26 | 1.05 | **0.99** | 1.25 | 1.02 | 1.24 | 1.02 |
+| hash_chain    | 1.54 | 2.44 | 2.27 | 2.29 | **1.22** | 1.25 | **1.21** | 1.34 | 1.22 | 1.50 | 1.43 |
+| interp_calc   | 1.36 | 1.53 | 1.54 | 1.55 | 1.27 | 1.07 | **0.98** | 1.36 | 1.08 | 1.25 | 1.16 |
+| life          | 1.39 | 1.32 | 1.44 | 1.36 | 1.43 | 1.37 | 1.32 | **1.24** | 1.35 | 1.31 | 1.39 |
+| list_alloc    | 1.40 | 1.22 | 1.36 | 1.34 | 1.20 | 0.94 | 0.94 | 1.32 | **0.92** | 1.20 | 0.96 |
+| list_sort     | 1.27 | 1.31 | 1.37 | 1.32 | 1.26 | 1.14 | **1.04** | 1.28 | 1.13 | 1.28 | 1.12 |
+| nqueens       | 1.04 | 1.04 | 1.07 | **0.98** | 1.05 | 1.04 | 0.96 | 0.96 | 1.00 | 1.07 | 1.03 |
+| string_concat | 1.79 | 2.41 | 1.67 | 1.57 | 0.99 | 0.57 | **0.52** | 1.16 | 0.60 | 1.01 | 0.60 |
+| substr_churn  | 1.85 | 1.53 | 1.74 | 1.59 | 1.34 | 0.97 | **0.87** | 1.59 | 0.97 | 1.23 | 0.93 |
 
 **勝者分布**: `copy_gen_inc` が 8 bench で最速、 `mark_compact_gen` が 1
 (list_alloc) / `copy` が 1 (hash_chain と tied) / `bump` が 1 (binary_trees
@@ -54,6 +55,24 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 realloc-heavy パスの malloc/free が消えたのが大きい。 `copy_gen` と
 `copy_gen_inc` は ABI 同一だが、 inc 側は SATB flag check (現状は STW
 fallback パスのみ) の最適化ヒントで 3-10% リード。
+
+**`mark_bump_gen` 分析** (2026-05-16 (13) 追加): 11 bench 中で勝つことは
+ないが、 `mark_gen` との比較が「nursery alloc 戦略」 の純粋なコスト
+を可視化する:
+
+| Bench | mark\_gen | mark\_bump\_gen | bump nursery 効果 |
+|---|---:|---:|---|
+| string_concat | 1.67 | **0.60** | -64% (短命 alloc が完全に nursery 完結) |
+| fib_pair | 1.65 | **0.97** | -41% (再帰 frame の per-call pair alloc) |
+| list_alloc | 1.36 | **0.96** | -29% (linked list churn) |
+| substr_churn | 1.74 | **0.93** | -47% |
+| binary_trees | **1.38** | 1.49 | +8% (long-lived は逆効果) |
+
+short-lived workload では bump nursery + 「ほぼ全部 nursery で死ぬ」 の
+組合せが大勝。 long-lived (binary_trees) では major が malloc 2M slot +
+memcpy するので mark_gen より逆に遅い。 `mark_compact_gen` と比べると、
+同じ bump nursery でも tenured 戦略の違い (mark+compact vs 線形 freelist
+mark&sweep) が major コストに反映 — binary_trees で 1.49 s vs 0.84 s。
 
 **2026-05-16 (10) 改善**: `mark` の binary_trees が 7.54 s → **0.97 s
 (7.8×)** に劇的改善。 原因は major threshold を fixed 4 MiB → 適応的
@@ -129,9 +148,9 @@ MIN を超えないので動作は不変。
 | GC レイテンシ最小化 | (現状) `bump` (no GC) または gen 系 minor | major のみ stop-the-world |
 | 純粋な alloc コスト測定 | `bump` (leak base) または `none` (libc malloc) | rooting + dispatch のみ |
 
-10 backend のうち default は `copy` (semispace Cheney) で、 全 backend
+11 backend のうち default は `copy` (semispace Cheney) で、 全 backend
 は plain mode と stress mode (`BARUBY_GC_STRESS=1`) の test 3 種を PASS、
-bench 11 種が全完走。
+bench 12 種が全完走。
 
 ### GC 時間計測 (`gc_seconds` / `gc_pct`)
 
