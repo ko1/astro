@@ -128,19 +128,13 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
-    // Buffer old's content on the C heap because the new alloc may run a GC
-    // and free `old` (whose stale handle the caller no longer roots).
-    char *buf = NULL;
-    if (copy_bytes) {
-        buf = (char *)malloc(copy_bytes);
-        if (!buf) abort();
-        memcpy(buf, old, copy_bytes);
-    }
+    // Non-moving GC: `old` stays at its address across the alloc's GC.
+    // The owner that called us (a->items live in caller's sp_top) keeps
+    // old reachable so sweep doesn't free it.  Skip the buf intermediate.
     void *newp = (kind == KIND_PAYLOAD_BYTE)
         ? baruby_gc_alloc_byte(new_size, sp_top)
         : baruby_gc_alloc(kind, new_size, sp_top);
-    if (copy_bytes) memcpy(newp, buf, copy_bytes);
-    free(buf);
+    if (copy_bytes) memcpy(newp, old, copy_bytes);
     return newp;
 }
 
