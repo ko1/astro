@@ -53,7 +53,7 @@ static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0};
+BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0};
 int baruby_gc_stress = 0;
 const char *baruby_gc_backend_name = "mark_gen";
 
@@ -292,6 +292,7 @@ free_unlink(GCHeader *h)
 static void
 minor_gc(VALUE *sp_top)
 {
+    struct timespec t0 = baruby_gc_time_begin();
     in_minor = true;
     // Step 1: scan the remembered set (explicit list of dirty old).
     // Each entry had a heap write since the previous minor; trace its
@@ -324,11 +325,13 @@ minor_gc(VALUE *sp_top)
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.minor_count++;
     gc_ctx->sp = sp_top;
+    baruby_gc_time_end(t0);
 }
 
 static void
 major_gc(VALUE *sp_top)
 {
+    struct timespec t0 = baruby_gc_time_begin();
     in_minor = false;
     // Discard the remset — major rescans everything anyway, and we'd
     // otherwise hold stale pointers to objects this major frees.
@@ -372,6 +375,7 @@ major_gc(VALUE *sp_top)
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.major_count++;
     gc_ctx->sp = sp_top;
+    baruby_gc_time_end(t0);
 }
 
 void
@@ -385,3 +389,4 @@ size_t baruby_gc_heap_bytes (void) { return baruby_gc_stats.heap_bytes;  }
 size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
 size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
 size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
+double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }

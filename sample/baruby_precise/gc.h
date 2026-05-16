@@ -72,6 +72,7 @@ typedef struct {
     size_t gc_count;         // total collections
     size_t minor_count;      // minor (= nursery) collections, gen backends
     size_t major_count;      // major (= whole heap) collections, gen backends
+    double total_seconds;    // cumulative wall-clock seconds spent in collection
 } BarubyGCStats;
 
 extern BarubyGCStats baruby_gc_stats;
@@ -89,6 +90,39 @@ size_t baruby_gc_heap_bytes(void);
 size_t baruby_gc_count(void);
 size_t baruby_gc_minor_count(void);
 size_t baruby_gc_major_count(void);
+double baruby_gc_total_seconds(void);
+
+// Helper used inside each backend's collect entry point — accumulates wall
+// time into baruby_gc_stats.total_seconds.  Re-entrant: if a major calls
+// minor (gc_mark_compact_gen), only the outermost begin/end pair times
+// the work; inner pairs are no-ops via gc_time_depth.
+#include <time.h>
+
+extern int baruby_gc_time_depth;
+extern struct timespec baruby_gc_time_t0;
+
+static inline struct timespec
+baruby_gc_time_begin(void)
+{
+    struct timespec t = {0, 0};
+    if (baruby_gc_time_depth++ == 0) {
+        clock_gettime(CLOCK_MONOTONIC, &baruby_gc_time_t0);
+    }
+    return t;   // unused — kept for API compat
+}
+
+static inline void
+baruby_gc_time_end(struct timespec t0)
+{
+    (void)t0;
+    if (--baruby_gc_time_depth == 0) {
+        struct timespec t1;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double dt = (double)(t1.tv_sec  - baruby_gc_time_t0.tv_sec) +
+                    (double)(t1.tv_nsec - baruby_gc_time_t0.tv_nsec) / 1e9;
+        baruby_gc_stats.total_seconds += dt;
+    }
+}
 
 // Write barrier.
 //

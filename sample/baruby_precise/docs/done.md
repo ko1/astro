@@ -3,6 +3,33 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (6) — 全 backend に GC 時間計測 (`gc_seconds` / `gc_pct`)
+
+`BarubyGCStats.total_seconds` を追加し、 各 backend の collect entry を
+`baruby_gc_time_begin()` / `baruby_gc_time_end()` で挟むことで
+ミューテータ時間と GC 時間を分離。 `BARUBY_GC_STATS=1` で:
+
+```
+__GC_STATS__ backend=mark_gen alloc_bytes=... gc_count=133 minor=133 major=0 \
+             gc_seconds=0.1648 gc_pct=12.3
+```
+
+実装ポイント:
+- `gc.h` に `extern int baruby_gc_time_depth; extern struct timespec baruby_gc_time_t0;`
+  を置き、 minor が major を呼ぶ (mark_compact_gen 等) re-entrant ケースで
+  最外側だけ計測する depth-guard を入れた。
+- `CLOCK_MONOTONIC` を使うことでサスペンド・時刻変更の影響を排除。
+- 8 backends (`mark`, `mark_gen`, `mark_gen_inc`, `copy`, `copy_gen`,
+  `copy_gen_inc`, `mark_compact`, `mark_compact_gen`) の collect / minor /
+  major / inc_finish_sweep 全 entry に追加。 `none` と `bump` は GC を
+  しないので何もしない (`gc_seconds=0.0000`)。
+
+これで以後の perf チューニングで GC vs mutator の振り分けが clear に
+わかる: 例えば mark_gen_inc の binary_trees で 1.53s 中 0.26s (16.9%) が
+GC、 mark_compact_gen の同 bench は 0.83s 中 0.41s (49.3%) が GC で、
+gen+compact は GC が重い代わりに mutator-side が速い (連続配置による
+cache friendliness) ことが定量化できる。
+
 ## 2026-05-16 (5) — 10 つ目の backend: `bump` (allocation floor baseline)
 
 GC を全く行わず単一 4 GiB region への bump alloc のみ。 OOM 時 abort。

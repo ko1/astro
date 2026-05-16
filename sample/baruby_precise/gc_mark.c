@@ -42,7 +42,7 @@ static GCHeader **gray_buf  = NULL;
 static size_t     gray_cnt  = 0;
 static size_t     gray_capa = 0;
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0};
+BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0};
 int baruby_gc_stress = 0;
 const char *baruby_gc_backend_name = "mark";
 
@@ -219,6 +219,7 @@ sweep(void)
 static void
 gc_collect_internal(VALUE *sp_top)
 {
+    struct timespec t0 = baruby_gc_time_begin();
     CTX *c = gc_ctx;
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
@@ -227,6 +228,7 @@ gc_collect_internal(VALUE *sp_top)
     baruby_gc_stats.gc_count++;
     bytes_since_gc = 0;
     c->sp = sp_top;
+    baruby_gc_time_end(t0);
 }
 
 void
@@ -240,3 +242,4 @@ size_t baruby_gc_heap_bytes (void) { return baruby_gc_stats.heap_bytes;  }
 size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
 size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
 size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
+double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }

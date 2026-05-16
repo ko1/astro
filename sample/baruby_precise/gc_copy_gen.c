@@ -63,7 +63,7 @@ static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0};
+BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0};
 int baruby_gc_stress = 0;
 const char *baruby_gc_backend_name = "copy_gen";
 
@@ -347,6 +347,7 @@ process_object(GCHeader *h)
 static void
 minor_gc(VALUE *sp_top)
 {
+    struct timespec t0 = baruby_gc_time_begin();
     in_minor = true;
     to_base = tenured_base;
     to_top  = tenured_top;            // append onto current tenured
@@ -400,11 +401,13 @@ minor_gc(VALUE *sp_top)
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.minor_count++;
     c->sp = sp_top;
+    baruby_gc_time_end(t0);
 }
 
 static void
 major_gc(VALUE *sp_top)
 {
+    struct timespec t0 = baruby_gc_time_begin();
     in_minor = false;
     // Drop remset — major's Cheney moves every survivor, so old pointers
     // become stale.  Major's full trace doesn't need the remset anyway.
@@ -454,6 +457,7 @@ major_gc(VALUE *sp_top)
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.major_count++;
     c->sp = sp_top;
+    baruby_gc_time_end(t0);
 }
 
 void
@@ -468,3 +472,4 @@ size_t baruby_gc_heap_bytes (void) { return (size_t)(tenured_top - tenured_base)
 size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
 size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
 size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
+double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }

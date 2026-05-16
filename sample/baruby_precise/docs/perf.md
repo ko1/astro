@@ -97,6 +97,25 @@ tenured mark+compact, `bump` = bump alloc + no GC = baseline floor)。
 は plain mode と stress mode (`BARUBY_GC_STRESS=1`) の test 3 種を PASS、
 bench 8 種が全完走。
 
+### GC 時間計測 (`gc_seconds` / `gc_pct`)
+
+`BARUBY_GC_STATS=1` で各 backend がミューテータ時間と GC 時間を分けて
+出す。 8 backends (none / bump を除く) の collect entry を
+`baruby_gc_time_begin/end` で挟み、 `CLOCK_MONOTONIC` で累計。
+minor→major の re-entrant ケースは depth guard で最外側だけ計測。
+
+例 (binary_trees, plain):
+
+```
+backend=mark_gen_inc      gc_count=56 gc_seconds=0.2577 gc_pct=16.9
+backend=mark_compact_gen  gc_count=26 gc_seconds=0.4076 gc_pct=49.3
+backend=copy_gen          gc_count=24 gc_seconds=0.0X   gc_pct=X.X
+```
+
+GC vs mutator の振り分けが定量化できるので、 mark_compact_gen の compact
+コストが効いてくる workload や、 mark_gen の sweep が支配的になる
+workload を実測ベースで区別できる。
+
 ## 3. ベンチ実測 (precise default(copy) vs conservative, plain, 5 run 中央値)
 
 | Bench | conservative | precise | precise vs cons. |
