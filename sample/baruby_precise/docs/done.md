@@ -3,6 +3,20 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (11) — `bench/life.ba.rb` 追加 + parser バグ発見
+
+Conway's Game of Life の 80×80 grid × 200 tick macro bench を追加
+(plain ~1.5 s)。 各 tick で grid を fresh alloc し前 tick を捨てる nursery
+形ワークロード。 baruby は GC pressure が低い (実測 0-7 GC、 gc_pct < 0.5%)
+ので「GC 自体は速いが mutator が支配的」 ケースの代表サンプル。 10
+backend 全てで final population = 112 を一致確認。
+
+副次成果: 実装中に baruby の parser バグを発見。
+`n = n + get(g, w, h, x, y)` のように binop の RHS に 4+ 引数呼出を
+書くと、 call が arg を `fp[arg_idx..]` に書き込む際に binop の sp[0]
+(= LHS) を上書きする ([todo.md](todo.md) P0 参照)。 回避は call 結果を
+一旦 local に bind すること。 `life.ba.rb` ではこのパターンを採用。
+
 ## 2026-05-16 (10) — `mark` family の major threshold を適応的に
 
 `mark` の `gc_threshold` (= GC を発火する累積 alloc bytes) と
