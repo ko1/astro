@@ -29,16 +29,18 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 
 ## 2. 全 GC backend のベンチ実測 (plain mode, 1 run)
 
-| Bench         | libgc | none  | mark  | mark_gen | mark_gen_inc | copy  | copy_gen | copy_gen_inc | mark_compact |
-|---------------|------:|------:|------:|---------:|-------------:|------:|---------:|-------------:|-------------:|
-| binary_trees  | 0.88  | 0.64  | 7.06  | 1.55     | 1.57         | 0.55  | 0.82     | 0.82         | **0.61**     |
-| list_alloc    | 1.09  | 1.40  | 1.05  | 1.29     | 1.66         | 1.20  | 0.97     | 0.96         | 1.28         |
-| string_concat | 1.01  | 1.72  | 1.82  | 1.70     | 1.65         | 0.98  | 0.59     | 0.53         | 1.23         |
-| fib_pair      | 1.15  | 1.73  | 1.47  | 1.56     | 1.72         | 1.24  | 0.95     | 0.92         | 1.47         |
-| substr_churn  | 1.35  | 1.66  | 1.30  | 1.67     | 1.78         | 1.30  | 0.92     | 1.04         | 1.51         |
-| gc_combined   | 0.99  | 1.53  | 1.26  | 1.33     | 1.42         | 1.23  | 0.93     | 1.08         | 1.33         |
-| interp_calc   | 1.12  | 1.43  | 1.43  | 1.52     | 1.58         | 1.25  | 1.00     | 0.98         | 1.24         |
-| list_sort     | 1.07  | 1.24  | 1.29  | 1.28     | 1.32         | 1.24  | 1.13     | 1.16         | 1.19         |
+`mark_compact_gen` 列が 9 つ目の backend (nursery copy + tenured mark+compact)。
+
+| Bench         | libgc | none  | mark  | mark_gen | mark_gen_inc | copy  | copy_gen | copy_gen_inc | mark_compact | mark_compact_gen |
+|---------------|------:|------:|------:|---------:|-------------:|------:|---------:|-------------:|-------------:|-----------------:|
+| binary_trees  | 0.88  | 0.64  | 7.06  | 1.55     | 1.57         | 0.55  | 0.82     | 0.82         | **0.61**     | 0.78             |
+| list_alloc    | 1.09  | 1.40  | 1.05  | 1.29     | 1.66         | 1.20  | 0.97     | 0.96         | 1.28         | **0.89**         |
+| string_concat | 1.01  | 1.72  | 1.82  | 1.70     | 1.65         | 0.98  | 0.59     | 0.53         | 1.23         | **0.51**         |
+| fib_pair      | 1.15  | 1.73  | 1.47  | 1.56     | 1.72         | 1.24  | 0.95     | 0.92         | 1.47         | **0.81**         |
+| substr_churn  | 1.35  | 1.66  | 1.30  | 1.67     | 1.78         | 1.30  | **0.92** | 1.04         | 1.51         | 0.93             |
+| gc_combined   | 0.99  | 1.53  | 1.26  | 1.33     | 1.42         | 1.23  | **0.93** | 1.08         | 1.33         | 0.93             |
+| interp_calc   | 1.12  | 1.43  | 1.43  | 1.52     | 1.58         | 1.25  | 1.00     | **0.98**     | 1.24         | 1.00             |
+| list_sort     | 1.07  | 1.24  | 1.29  | 1.28     | 1.32         | 1.24  | 1.13     | 1.16         | 1.19         | **1.08**         |
 
 - **`none`** は GC を全く行わない (= leak)。 sp[] rooting / WB / alloc API
   間接化のオーバーヘッド単体が見える baseline
@@ -57,6 +59,11 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 - **`mark_compact`** は単一 region bump alloc + Lisp-2 sliding compactor。
   per-object malloc を回避しつつ非 moving (compact 時のみ移動)。
   binary_trees で mark の 7.06s → 0.61s (12×) — region 化の威力
+- **`mark_compact_gen`** は nursery (copy) + tenured (mark+compact) の hybrid。
+  short-lived alloc は nursery で完結、 long-lived のみ tenured へ promote。
+  tenured は single region (vs copy_gen の 2×) で in-place compact。
+  binary_trees / list_alloc / string_concat / fib_pair / list_sort の 5/8 で
+  gen 系最速
 
 ### マクロベンチ
 

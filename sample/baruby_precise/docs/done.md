@@ -3,6 +3,39 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (4) — 9 つ目の backend: `mark_compact_gen` (gen + Lisp-2 hybrid)
+
+`copy_gen` の major (semispace Cheney) を `mark_compact` (Lisp-2 sliding) に
+差し替えた generational hybrid。
+
+- Nursery: 16 MiB bump (`copy_gen` と同じ)
+- Tenured: 512 MiB single region (copy_gen は 2×256 MiB だった)
+- Minor: Cheney-style nursery → tenured (= copy_gen と同じ)
+- Major: tenured 内で mark + Lisp-2 sliding compact (3-pass)
+- WB / remset: copy_gen と同じ
+
+メリット: tenured 仮想空間が 1×512 MiB (vs copy_gen は 2×256 MiB)。
+デメリット: major が semispace より複雑 (3-pass) だが compact 自体は速い
+(連続 marked を memmove で batch)。
+
+性能 (plain, 1 run、 vs copy_gen / copy_gen_inc):
+
+| Bench         | copy_gen | copy_gen_inc | **mark_compact_gen** |
+|---------------|---------:|-------------:|---------------------:|
+| binary_trees  |     0.82 |         0.82 |            **0.78** |
+| list_alloc    |     0.97 |         0.96 |            **0.89** |
+| string_concat |     0.59 |         0.53 |            **0.51** |
+| fib_pair      |     0.95 |         0.92 |            **0.81** |
+| substr_churn  |     0.92 |         1.04 |                0.93 |
+| gc_combined   |     0.93 |         1.08 |                0.93 |
+| interp_calc   |     1.00 |         0.98 |                1.00 |
+| list_sort     |     1.13 |         1.16 |            **1.08** |
+
+binary_trees / list_alloc / string_concat / fib_pair / list_sort の **5/8 で
+mark_compact_gen が gen 系の中で最速**。 copy_gen の Cheney は 2 region 間
+の memcpy が連続するので tenured へ大量 promote する worklload に強いが、
+mark_compact_gen は **in-place compaction で 1 region で済む**ぶん帯域節約。
+
 ## 2026-05-16 (3) — mark_compact の slide 段階を batching
 
 3-pass の最終 (slide) で、 連続 marked オブジェクトは src - dst delta が

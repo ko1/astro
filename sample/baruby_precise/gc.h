@@ -14,28 +14,30 @@ typedef intptr_t VALUE;
 // ---------------------------------------------------------------------------
 // Pluggable GC backend interface.
 //
-// One of eight backends is selected at build time via -DBARUBY_GC=<n>:
+// One of nine backends is selected at build time via -DBARUBY_GC=<n>:
 //   1: none              — no GC, malloc + leak (baseline)
 //   2: mark              — non-moving mark&sweep (per-object malloc list)
 //   3: mark_gen          — mark&sweep + 2-gen
 //   4: mark_gen_inc      — mark&sweep + 2-gen + incremental marking
 //   5: copy              — Cheney semi-space (default)
-//   6: copy_gen          — copying nursery + tenured
+//   6: copy_gen          — copying nursery + tenured (semispace tenured)
 //   7: copy_gen_inc      — generational + incremental copy
 //   8: mark_compact      — single-region mark + Lisp-2 sliding compactor
+//   9: mark_compact_gen  — nursery (copy) + tenured (mark + Lisp-2 compact)
 //
 // Gen / inc variants define BARUBY_GC_HAS_WB so callers know they must use
 // baruby_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
 // ---------------------------------------------------------------------------
 
-#define BARUBY_GC_NONE          1
-#define BARUBY_GC_MARK          2
-#define BARUBY_GC_MARK_GEN      3
-#define BARUBY_GC_MARK_GEN_INC  4
-#define BARUBY_GC_COPY          5
-#define BARUBY_GC_COPY_GEN      6
-#define BARUBY_GC_COPY_GEN_INC  7
-#define BARUBY_GC_MARK_COMPACT  8
+#define BARUBY_GC_NONE             1
+#define BARUBY_GC_MARK             2
+#define BARUBY_GC_MARK_GEN         3
+#define BARUBY_GC_MARK_GEN_INC     4
+#define BARUBY_GC_COPY             5
+#define BARUBY_GC_COPY_GEN         6
+#define BARUBY_GC_COPY_GEN_INC     7
+#define BARUBY_GC_MARK_COMPACT     8
+#define BARUBY_GC_MARK_COMPACT_GEN 9
 
 #ifndef BARUBY_GC
 #  define BARUBY_GC BARUBY_GC_COPY
@@ -44,10 +46,11 @@ typedef intptr_t VALUE;
 // Backends that need a write barrier (gen / inc variants).  Callers must
 // always go through baruby_gc_wb / _bulk for heap-pointer writes — for
 // non-WB backends it compiles to a plain `*slot = v`, free of cost.
-#if BARUBY_GC == BARUBY_GC_MARK_GEN     || \
-    BARUBY_GC == BARUBY_GC_MARK_GEN_INC || \
-    BARUBY_GC == BARUBY_GC_COPY_GEN     || \
-    BARUBY_GC == BARUBY_GC_COPY_GEN_INC
+#if BARUBY_GC == BARUBY_GC_MARK_GEN         || \
+    BARUBY_GC == BARUBY_GC_MARK_GEN_INC     || \
+    BARUBY_GC == BARUBY_GC_COPY_GEN         || \
+    BARUBY_GC == BARUBY_GC_COPY_GEN_INC     || \
+    BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN
 #  define BARUBY_GC_HAS_WB 1
 #endif
 
