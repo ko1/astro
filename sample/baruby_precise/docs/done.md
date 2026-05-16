@@ -3,6 +3,20 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (9) — `bench/nqueens.ba.rb` 追加 + 全 backend bench refresh
+
+N=11 の N-queens を backtracking で解く macro bench を追加。 2680
+solutions を ~1 s で確認。 deep recursion + per-frame Array alloc
+(column set を functional copy で pass-down) という LIFO 短命 alloc 主体の
+形状で、 nursery 完結 backend の benefit が出やすい。
+
+全 10 backend × 11 bench の 3-run 中央値を再測定し
+[perf.md](perf.md) §2 を更新。 `copy_gen_inc` が 11 bench 中 8 で勝ち、
+2026-05-16 (8) の realloc 修正で malloc/free を消したのが string_concat
+(0.52 s) や hash_chain (1.21 s) で効いている。 `mark` は binary_trees で
+7.54 s (89% GC) と相変わらず重く、 per-object malloc + sweep walk の
+コストが浮き彫り。
+
 ## 2026-05-16 (8) — `baruby_gc_realloc_payload` の stale-ptr バグを根治
 
 前 iter で診断した「3 つの moving-gen backend で hash_chain が落ちる」

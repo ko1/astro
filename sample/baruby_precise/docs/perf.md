@@ -27,21 +27,32 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 (`./baruby` vs `./baruby_precise`)。 plain mode = AST インタプリタ
 (code_store なし)。 AOT mode は moving GC 移行後に未再検証。
 
-## 2. 全 GC backend のベンチ実測 (plain mode, 3-run 中央値)
+## 2. 全 GC backend のベンチ実測 (plain mode, 3-run 中央値, 11 bench)
 
-10 種類の backend で測定 (新規追加: `mark_compact_gen` = nursery copy +
-tenured mark+compact, `bump` = bump alloc + no GC = baseline floor)。
+10 種類の backend × 11 ベンチ (`hash_chain` `nqueens` 追加、 各 3-run
+中央値)。 単位: 秒。 行ごとの最速に `**` 印。
 
-| Bench         | libgc | none  | bump  | mark  | mark_gen | mark_gen_inc | copy  | copy_gen | copy_gen_inc | mark_compact | mark_compact_gen |
-|---------------|------:|------:|------:|------:|---------:|-------------:|------:|---------:|-------------:|-------------:|-----------------:|
-| binary_trees  | 0.90  | 0.62  | 0.53  | 7.27  | 1.57     | 1.54         | 0.56  | 0.79     | 0.84         | **0.61**     | 0.82             |
-| list_alloc    | 1.05  | 1.47  | 1.13  | 1.17  | 1.26     | 1.36         | 1.21  | 0.95     | 0.93         | 1.26         | **0.88**         |
-| string_concat | 0.96  | 1.69  | 0.92  | 1.69  | 1.74     | 1.80         | 0.97  | 0.57     | 0.57         | 1.22         | **0.58**         |
-| fib_pair      | 1.15  | 1.68  | 1.26  | 1.47  | 1.55     | 1.55         | 1.31  | 0.96     | 0.98         | 1.59         | **0.91**         |
-| substr_churn  | 1.35  | 1.77  | 1.18  | 1.41  | 1.67     | 1.78         | 1.32  | 0.95     | **0.90**     | 1.53         | 0.96             |
-| gc_combined   | 1.09  | 1.49  | 1.21  | 1.23  | 1.36     | 1.44         | 1.24  | 1.00     | 1.01         | 1.34         | **0.96**         |
-| interp_calc   | 1.15  | 1.34  | 1.18  | 1.30  | 1.52     | 1.60         | 1.24  | 1.06     | 1.07         | 1.33         | **1.03**         |
-| list_sort     | 1.13  | 1.29  | 1.23  | 1.27  | 1.35     | 1.34         | 1.22  | 1.15     | 1.15         | 1.31         | **1.12**         |
+| Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump |
+|---------------|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|
+| binary_trees  | 0.69 | 7.54 | 1.59 | 1.61 | 0.58 | 0.83 | 0.83 | 0.58 | 0.84 | **0.51** |
+| cons_list     | 1.37 | 1.34 | 1.35 | 1.32 | 1.12 | 0.89 | **0.86** | 1.13 | 0.88 | 1.04 |
+| fib_pair      | 1.73 | 1.56 | 1.61 | 1.60 | 1.34 | 0.94 | **0.88** | 1.49 | 0.94 | 1.34 |
+| gc_combined   | 1.52 | 1.32 | 1.43 | 1.55 | 1.26 | 1.05 | **0.99** | 1.25 | 1.02 | 1.24 |
+| hash_chain    | 1.54 | 2.21 | 2.38 | 2.32 | **1.22** | 1.25 | **1.21** | 1.34 | 1.22 | 1.50 |
+| interp_calc   | 1.36 | 1.48 | 1.55 | 1.63 | 1.27 | 1.07 | **0.98** | 1.36 | 1.08 | 1.25 |
+| list_alloc    | 1.40 | 1.20 | 1.35 | 1.47 | 1.20 | 0.94 | 0.94 | 1.32 | **0.92** | 1.20 |
+| list_sort     | 1.27 | 1.31 | 1.39 | 1.42 | 1.26 | 1.14 | **1.04** | 1.28 | 1.13 | 1.28 |
+| nqueens       | 1.04 | 1.05 | 1.11 | 1.03 | 1.05 | 1.04 | **0.96** | **0.96** | 1.00 | 1.07 |
+| string_concat | 1.79 | 2.40 | 1.75 | 1.66 | 0.99 | 0.57 | **0.52** | 1.16 | 0.60 | 1.01 |
+| substr_churn  | 1.85 | 1.47 | 1.68 | 1.70 | 1.34 | 0.97 | **0.87** | 1.59 | 0.97 | 1.23 |
+
+**勝者分布**: `copy_gen_inc` が 8 bench で最速、 `mark_compact_gen` が 1
+(list_alloc) / `copy` が 1 (hash_chain と tied) / `bump` が 1 (binary_trees
+で no-GC ベースライン) を取る。 `copy_gen_inc` の優勢は 2026-05-16 (8) の
+`baruby_gc_realloc_payload` 修正 (alloc-first / fwd-aware memcpy) で
+realloc-heavy パスの malloc/free が消えたのが大きい。 `copy_gen` と
+`copy_gen_inc` は ABI 同一だが、 inc 側は SATB flag check (現状は STW
+fallback パスのみ) の最適化ヒントで 3-10% リード。
 
 - **`none`** は GC を全く行わない (= leak)。 sp[] rooting / WB / alloc API
   間接化のオーバーヘッド単体が見える baseline
@@ -79,6 +90,15 @@ tenured mark+compact, `bump` = bump alloc + no GC = baseline floor)。
   各セル = `[value, next]` (2-要素配列)。 deep alloc chain → walk →
   discard の典型 (1 iter で 5000 セル全部死ぬ)。 binary_trees と違い
   iterative walk なので C stack 浅いまま深い chain を作れる
+- **`hash_chain`** (2026-05-16 追加): 2048 buckets の chained hash table
+  を Array on Array で実装。 150k keys × 3 rounds で long-lived
+  buckets + medium-lived chains + short-lived [k, v] pairs の 3 層
+  lifetime を踏む。 chain.items grow が高頻度で、 旧来の
+  `baruby_gc_realloc_payload` の stale-ptr バグを発掘した
+- **`nqueens`** (2026-05-16 追加): N=11 で 2680 solutions を backtrack
+  探索。 deep recursion + per-frame Array alloc (column set を
+  functional コピーで pass-down)。 LIFO で短命なので nursery 完結の
+  benefit が顕著
 
 ### Backend 選択ガイド
 
@@ -95,7 +115,7 @@ tenured mark+compact, `bump` = bump alloc + no GC = baseline floor)。
 
 10 backend のうち default は `copy` (semispace Cheney) で、 全 backend
 は plain mode と stress mode (`BARUBY_GC_STRESS=1`) の test 3 種を PASS、
-bench 8 種が全完走。
+bench 11 種が全完走。
 
 ### GC 時間計測 (`gc_seconds` / `gc_pct`)
 
