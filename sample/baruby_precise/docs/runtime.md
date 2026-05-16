@@ -10,6 +10,16 @@ copy_gen_inc) から選択できる。 設計の背景は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。 ASTroGen
 自体には手を入れず、 BODY をベタ書きで sp[] spill するスタイル。
 
+### Write barrier と remembered set
+
+`baruby_gc_wb(holder, slot, v)` / `baruby_gc_wb_bulk(holder, dst, src, n)`
+が共通 interface。 非世代別 backend (`none` / `mark` / `copy`) は no-op
+(単に `*slot = v`)。 世代別 backend (`mark_gen` / `mark_gen_inc` /
+`copy_gen` / `copy_gen_inc`) は holder が old なら remset へ push し、
+minor GC は remset 走査だけで old → young pointer を捕捉する。 O(|old|)
+の lazy scan を O(|dirty|) に置換することで binary_trees / interp_calc
+が 30〜50% 改善。
+
 主な追加・変更点 (vs baruby):
 
 1. **共通引数を 4 つに拡張**: `(CTX *c, NODE *n, VALUE *fp, VALUE *sp)`

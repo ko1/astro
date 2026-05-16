@@ -48,6 +48,13 @@ static GCHeader **gray_buf  = NULL;
 static size_t     gray_cnt  = 0;
 static size_t     gray_capa = 0;
 
+// Explicit remembered set: old objects with at least one heap-pointer
+// write since the last minor.  See gc_mark_gen.c for rationale (the
+// dirty-list halves the minor cost when |old| >> |dirty|).
+static GCHeader **remset_buf  = NULL;
+static size_t     remset_cnt  = 0;
+static size_t     remset_capa = 0;
+
 BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0};
 int baruby_gc_stress = 0;
 const char *baruby_gc_backend_name = "mark_gen_inc";
@@ -116,6 +123,17 @@ list_alloc_young(BarubyGCKind kind, size_t payload_size)
 // for the duration of the cycle.
 static void mark_value_satb(VALUE old);
 
+static void
+remset_push(GCHeader *h)
+{
+    if (remset_cnt >= remset_capa) {
+        remset_capa = remset_capa ? remset_capa * 2 : 256;
+        remset_buf = (GCHeader **)realloc(remset_buf, remset_capa * sizeof(GCHeader *));
+        if (!remset_buf) abort();
+    }
+    remset_buf[remset_cnt++] = h;
+}
+
 void
 baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
 {
@@ -126,7 +144,10 @@ baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
     *slot = v;
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old) hh->dirty = true;
+    if (hh->old && !hh->dirty) {
+        hh->dirty = true;
+        remset_push(hh);
+    }
 }
 
 void
@@ -141,7 +162,10 @@ baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old) hh->dirty = true;
+    if (hh->old && !hh->dirty) {
+        hh->dirty = true;
+        remset_push(hh);
+    }
 }
 
 static void minor_gc(VALUE *sp_top);
@@ -237,13 +261,15 @@ inc_finish_sweep(VALUE *sp_top)
             h = next;
         }
     }
-    // Sweep old: clear marked on survivors, free unmarked.
+    // Sweep old: clear marked + dirty on survivors, free unmarked.
+    // dirty + remset are discarded by major since we full-traced everything.
     {
         GCHeader *h = old_head.next;
         while (h != &old_head) {
             GCHeader *next = h->next;
             if (h->marked) {
                 h->marked = false;
+                h->dirty  = false;
             } else {
                 old_bytes -= h->size;
                 free_unlink(h);
@@ -251,6 +277,7 @@ inc_finish_sweep(VALUE *sp_top)
             h = next;
         }
     }
+    remset_cnt = 0;
     young_bytes = 0;
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.major_count++;
@@ -407,15 +434,15 @@ static void
 minor_gc(VALUE *sp_top)
 {
     in_minor = true;
-    // Step 1: scan only dirty old objects (the implicit remembered set).
-    // Each dirty old object had a young pointer written into it since the
-    // previous collection; clear the bit and trace its outgoing for young.
-    for (GCHeader *h = old_head.next; h != &old_head; h = h->next) {
+    // Step 1: scan the remembered set.
+    for (size_t i = 0; i < remset_cnt; i++) {
+        GCHeader *h = remset_buf[i];
         if (h->dirty) {
             scan_outgoing(h);
             h->dirty = false;
         }
     }
+    remset_cnt = 0;
     // Step 2: roots
     for (VALUE *p = gc_ctx->env; p < sp_top; p++) mark_value(*p);
     // Step 3: BFS through young objects
@@ -443,6 +470,8 @@ static void
 major_gc(VALUE *sp_top)
 {
     in_minor = false;
+    // Discard remset — major rescans everything.
+    remset_cnt = 0;
     // Mark from roots through everything.
     for (VALUE *p = gc_ctx->env; p < sp_top; p++) mark_value(*p);
     process_gray();
@@ -459,14 +488,14 @@ major_gc(VALUE *sp_top)
             h = next;
         }
     }
-    // Sweep old: clear marked on survivors (including the just-promoted
-    // young), free unmarked.
+    // Sweep old: clear marked + dirty on survivors, free unmarked.
     {
         GCHeader *h = old_head.next;
         while (h != &old_head) {
             GCHeader *next = h->next;
             if (h->marked) {
                 h->marked = false;
+                h->dirty  = false;
             } else {
                 old_bytes -= h->size;
                 free_unlink(h);

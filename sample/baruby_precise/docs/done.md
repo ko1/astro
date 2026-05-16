@@ -3,6 +3,37 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 — gen 系 backend の explicit remset + macro bench 追加
+
+### 性能改善: explicit remembered set
+
+mark_gen / mark_gen_inc / copy_gen / copy_gen_inc の 4 backend で、
+旧版が minor GC で行っていた「dirty bit を求めて old/tenured 全走査」
+(= O(|old|)) を、 WB で push される明示 remset (= O(|dirty|)) に置換。
+
+- WB: holder->dirty が false なら remset に push し dirty = true
+- minor: remset を走査して dirty=true のものだけ scan_outgoing
+- major: remset を破棄して全 trace、 sweep で生存者の dirty を clear
+
+perf record で interp_calc on mark_gen を見ると minor_gc が 44% を
+占めていた。 remset 化で:
+
+| Bench         | mark_gen 旧 | mark_gen 新 | copy_gen 旧 | copy_gen 新 |
+|---------------|------------:|------------:|------------:|------------:|
+| binary_trees  |        2.28 |    **1.56** |        1.11 |    **0.79** |
+| interp_calc   |        2.87 |    **1.51** |        1.22 |    **1.07** |
+| gc_combined   |        1.39 |        1.33 |        0.93 |        0.91 |
+| list_sort     |        1.36 |        1.33 |        1.16 |        1.05 |
+
+### マクロベンチ追加
+
+- **`interp_calc.ba.rb`**: depth-12 AST を make_expr で構築 → eval_expr で
+  再帰評価。 1000 反復。 build phase が alloc burst、 eval phase は
+  純計算。 short-lived alloc + recursive read の典型
+- **`list_sort.ba.rb`**: 2000 要素の整数 array に merge sort を 350 回
+  実行。 merge 1 回が中規模 alloc burst を生み、 merge 完了で全部死ぬ
+  パターン
+
 ## 2026-05-15 — GC backend を 7 種から build-time 選択可能に
 
 `Makefile GC=<backend>` で 7 種類の GC アルゴリズムから build-time に

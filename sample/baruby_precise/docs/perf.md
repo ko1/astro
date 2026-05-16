@@ -31,26 +31,37 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 
 | Bench         | libgc | none  | mark  | mark_gen | mark_gen_inc | copy  | copy_gen | copy_gen_inc |
 |---------------|------:|------:|------:|---------:|-------------:|------:|---------:|-------------:|
-| binary_trees  | 0.91  | 0.60  | 7.17  | 2.28     | 2.30         | 0.53  | 1.11     | 1.16         |
-| list_alloc    | 1.09  | 1.32  | 1.13  | 1.28     | 1.41         | 1.16  | 0.92     | 0.95         |
-| string_concat | 0.97  | 1.70  | 1.72  | 1.64     | 1.75         | 0.94  | 0.50     | 0.55         |
-| fib_pair      | 1.13  | 1.63  | 1.45  | 1.59     | 1.66         | 1.22  | 0.91     | 0.93         |
-| substr_churn  | 1.36  | 1.74  | 1.23  | 1.64     | 1.78         | 1.31  | 0.87     | 0.92         |
-| gc_combined   | 1.08  | 1.46  | 1.23  | 1.39     | 1.49         | 1.20  | 0.90     | 0.97         |
+| binary_trees  | 0.92  | 0.64  | 7.18  | **1.56** | 1.56         | 0.53  | **0.79** | 0.80         |
+| list_alloc    | 1.11  | 1.35  | 1.20  | 1.25     | 1.23         | 1.15  | 0.94     | 0.93         |
+| string_concat | 0.95  | 1.65  | 1.61  | 1.53     | 1.65         | 0.97  | 0.57     | 0.53         |
+| fib_pair      | 1.06  | 1.61  | 1.51  | 1.54     | 1.47         | 1.29  | 0.97     | 1.18         |
+| substr_churn  | 1.42  | 1.76  | 1.42  | 1.59     | 1.71         | 1.36  | 0.95     | 0.95         |
+| gc_combined   | 1.11  | 1.49  | 1.23  | 1.38     | 1.33         | 1.18  | 0.91     | 0.95         |
+| interp_calc   | 1.10  | 1.35  | 1.26  | **1.51** | 1.57         | 1.24  | **1.07** | 1.06         |
+| list_sort     | 1.13  | 1.27  | 1.26  | 1.33     | 1.23         | 1.18  | 1.05     | 1.07         |
 
 - **`none`** は GC を全く行わない (= leak)。 sp[] rooting / WB / alloc API
   間接化のオーバーヘッド単体が見える baseline
 - **`mark`** は per-object malloc + linked list 走査の sweep。 オブジェクト数
   に比例して binary_trees で爆死 (7.2s)
-- **`mark_gen` / `mark_gen_inc`** は nursery / tenured 分離 + dirty old
-  scan。 binary_trees の long-lived tree が promote されて large old set
-  になり、 minor GC ごとの dirty old scan で遅くなる
+- **`mark_gen` / `mark_gen_inc`** は nursery / tenured 分離 + 明示
+  remembered set (dirty list)。 過去版の lazy dirty scan (O(|old|)) を
+  解消して binary_trees / interp_calc が ~30〜50% 改善
 - **`copy`** (semispace Cheney) は default。 small heap でも binary_trees
   でも安定して速い
-- **`copy_gen`** は string-heavy で大勝 (string_concat 0.50s = libgc の
-  0.52×)。 短命 string の churn が nursery で完結
+- **`copy_gen`** は string-heavy で大勝 (string_concat 0.57s = libgc の
+  0.60×)。 短命 string の churn が nursery で完結。 binary_trees も
+  remset 導入で 0.79s に
 - **`copy_gen_inc`** は infra のみ用意 (incremental marking の SATB
   barrier + gray queue)。 stack-WB が無いため STW で運用
+
+### マクロベンチ
+
+- **`interp_calc`**: 12 段の AST を構築 → 再帰評価 → 合計。 1000 回。
+  AST 構築の alloc burst → 評価中 alloc なし、 という generational
+  benefit が出やすいパターン
+- **`list_sort`**: 2000 要素の整数配列を merge sort。 350 回。 各 merge
+  が中規模 alloc を burst → 完了時に全部死ぬ pattern
 
 ## 3. ベンチ実測 (precise default(copy) vs conservative, plain, 5 run 中央値)
 

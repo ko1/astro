@@ -67,6 +67,11 @@ static char *tenured_alt_base = NULL;  // the "other" tenured region for major C
 static CTX *gc_ctx = NULL;
 static VALUE *sp_high_water = NULL;
 
+// Explicit remembered set.  See gc_copy_gen.c for rationale.
+static GCHeader **remset_buf  = NULL;
+static size_t     remset_cnt  = 0;
+static size_t     remset_capa = 0;
+
 BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0};
 int baruby_gc_stress = 0;
 const char *baruby_gc_backend_name = "copy_gen_inc";
@@ -215,13 +220,27 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 // Write barrier
 // ---------------------------------------------------------------------------
 
+static void
+remset_push(GCHeader *h)
+{
+    if (remset_cnt >= remset_capa) {
+        remset_capa = remset_capa ? remset_capa * 2 : 256;
+        remset_buf = (GCHeader **)realloc(remset_buf, remset_capa * sizeof(GCHeader *));
+        if (!remset_buf) abort();
+    }
+    remset_buf[remset_cnt++] = h;
+}
+
 void
 baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old) hh->dirty = true;
+    if (hh->old && !hh->dirty) {
+        hh->dirty = true;
+        remset_push(hh);
+    }
 }
 
 void
@@ -230,7 +249,10 @@ baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old) hh->dirty = true;
+    if (hh->old && !hh->dirty) {
+        hh->dirty = true;
+        remset_push(hh);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,22 +378,15 @@ minor_gc(VALUE *sp_top)
     // (1) Roots
     for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(*p);
 
-    // (2) Dirty tenured (remset): scan for young pointers, forwarding them.
-    //     Walk tenured up to the *original* tenured_top — anything beyond
-    //     was just promoted and is already in the Cheney scan-loop below.
-    {
-        char *scan_end = tenured_top;   // saved before promotions
-        char *p = tenured_base;
-        while (p < scan_end) {
-            GCHeader *h = (GCHeader *)p;
-            size_t total = sizeof(GCHeader) + ALIGN8(h->size);
-            if (h->dirty) {
-                process_object(h);
-                h->dirty = false;
-            }
-            p += total;
+    // (2) Dirty tenured via explicit remset.
+    for (size_t i = 0; i < remset_cnt; i++) {
+        GCHeader *h = remset_buf[i];
+        if (h->dirty) {
+            process_object(h);
+            h->dirty = false;
         }
     }
+    remset_cnt = 0;
 
     // (3) Cheney scan-loop over freshly-tenured objects (tenured_top..to_top).
     {
@@ -397,6 +412,8 @@ static void
 major_gc(VALUE *sp_top)
 {
     in_minor = false;
+    // Drop remset before swap — old pointers become stale post-Cheney.
+    remset_cnt = 0;
     // Swap tenured regions: from = current active, to = the other.
     char *new_active_base = tenured_alt_base;
     tenured_alt_base = tenured_base;   // old active becomes the alt for next major
