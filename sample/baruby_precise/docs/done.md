@@ -3,6 +3,26 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-16 (10) — `mark` family の major threshold を適応的に
+
+`mark` の `gc_threshold` (= GC を発火する累積 alloc bytes) と
+`mark_gen` / `mark_gen_inc` の `old_major_threshold` を固定値 (4 MiB / 64 MiB)
+から適応的 (`max(MIN, 2 × live_bytes_post_sweep)`) に変更。 各 sweep が
+O(heap) なので、 live 200 MiB のワークロードで 4 MiB ごとに発火していた
+旧版は ~50 回 GC していたが、 新版は 4 回程度で済む。
+
+効果:
+
+| Backend | Bench | 旧 → 新 | 速度 |
+|---|---|---|---|
+| `mark` | binary_trees | 7.54 s → **0.97 s** | **7.8×** |
+| `mark_gen` | binary_trees | 1.59 s → 1.38 s | 13% |
+| `mark_gen_inc` | binary_trees | 1.61 s → 1.44 s | 10% |
+
+short-lived workload (string_concat, list_alloc 等) では heap が MIN
+(4 / 64 MiB) を超えないので動作不変。 `mark_compact` 系は単一 region
+bump alloc なので threshold 概念がなく未変更。
+
 ## 2026-05-16 (9) — `bench/nqueens.ba.rb` 追加 + 全 backend bench refresh
 
 N=11 の N-queens を backtracking で解く macro bench を追加。 2680

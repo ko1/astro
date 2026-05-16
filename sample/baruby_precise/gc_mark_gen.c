@@ -372,6 +372,15 @@ major_gc(VALUE *sp_top)
     }
     young_bytes = 0;
 
+    // Adaptive major threshold: re-tune to 2 × post-sweep old size.
+    // Without this, a fixed 64 MiB threshold fires majors every 64 MiB
+    // even when old is already 200 MiB live, doubling major cost.
+    if (!baruby_gc_stress) {
+        size_t next = old_bytes * 2;
+        old_major_threshold = next < (64u * 1024u * 1024u) ? (64u * 1024u * 1024u) : next;
+    }
+    old_alloc_since_major = 0;
+
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.major_count++;
     gc_ctx->sp = sp_top;

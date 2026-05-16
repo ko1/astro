@@ -34,7 +34,14 @@ typedef struct GCHeader {
 
 static GCHeader head_node;             // sentinel of live object list
 static size_t   bytes_since_gc = 0;
-static size_t   gc_threshold   = 4 * 1024 * 1024;
+// Adaptive threshold: after each GC, reset to max(MIN, 2 * live_bytes).
+// Without this, mark&sweep on a 200 MB live heap with a fixed 4 MB
+// threshold triggers ~50 GCs (each O(heap)), giving 89% GC time on
+// binary_trees.  Adaptive keeps total GC work near O(allocation),
+// not O(allocation × live).
+#define GC_THRESHOLD_MIN     (4u * 1024u * 1024u)
+#define GC_THRESHOLD_FACTOR  2
+static size_t   gc_threshold   = GC_THRESHOLD_MIN;
 static CTX     *gc_ctx         = NULL;
 
 // Gray work list for iterative tracing.
@@ -227,6 +234,13 @@ gc_collect_internal(VALUE *sp_top)
 
     baruby_gc_stats.gc_count++;
     bytes_since_gc = 0;
+    // Re-tune threshold based on post-sweep live size.  stress mode
+    // overrides with 0 so we keep firing every alloc.
+    if (!baruby_gc_stress) {
+        size_t live = baruby_gc_stats.heap_bytes;
+        size_t next = live * GC_THRESHOLD_FACTOR;
+        gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
+    }
     c->sp = sp_top;
     baruby_gc_time_end(t0);
 }
