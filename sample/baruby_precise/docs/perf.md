@@ -75,6 +75,27 @@ tenured mark+compact, `bump` = bump alloc + no GC = baseline floor)。
   benefit が出やすいパターン
 - **`list_sort`**: 2000 要素の整数配列を merge sort。 350 回。 各 merge
   が中規模 alloc を burst → 完了時に全部死ぬ pattern
+- **`cons_list`**: 5000 セルの cons-list を build & walk × 2000 回。
+  各セル = `[value, next]` (2-要素配列)。 deep alloc chain → walk →
+  discard の典型 (1 iter で 5000 セル全部死ぬ)。 binary_trees と違い
+  iterative walk なので C stack 浅いまま深い chain を作れる
+
+### Backend 選択ガイド
+
+ワークロードの性質ごとの推奨:
+
+| パターン | 推奨 backend | 理由 |
+|---|---|---|
+| 短命 alloc 多 (大半が捨てられる) | `mark_compact_gen` または `copy_gen` | nursery で完結、 tenure cost 最小 |
+| 長寿命 heap が大半 (binary_trees 等) | `copy` または `mark_compact` | gen 無しで in-place / semispace の単純さ勝ち |
+| string-heavy (concat / slice 多) | `copy_gen_inc` または `mark_compact_gen` | nursery + sp ref pattern の組合せ |
+| 仮想空間を節約したい | `mark_compact_gen` | tenured 1× region (vs copy_gen の 2×) |
+| GC レイテンシ最小化 | (現状) `bump` (no GC) または gen 系 minor | major のみ stop-the-world |
+| 純粋な alloc コスト測定 | `bump` (leak base) または `none` (libc malloc) | rooting + dispatch のみ |
+
+10 backend のうち default は `copy` (semispace Cheney) で、 全 backend
+は plain mode と stress mode (`BARUBY_GC_STRESS=1`) の test 3 種を PASS、
+bench 8 種が全完走。
 
 ## 3. ベンチ実測 (precise default(copy) vs conservative, plain, 5 run 中央値)
 
