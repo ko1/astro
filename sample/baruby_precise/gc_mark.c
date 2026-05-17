@@ -1,50 +1,114 @@
-// gc_mark.c — backend #2: non-moving mark & sweep.
+// gc_mark.c — backend #2: non-moving mark&sweep with slab-style page heap.
 //
-// Every alloc is a libc malloc with a 32-byte header prepended.  All live
-// objects are linked into a doubly-linked list via prev/next so sweep can
-// walk them and free unmarked ones.
+// Heap is provided by the GC itself, not libc malloc.  Pages are 16 KiB
+// chunks obtained via mmap and divided into fixed-size slots (the size
+// class).  Each size class has its own page chain + freelist.  This
+// removes the per-object linked list and the per-alloc malloc roundtrip
+// of the older "malloc + prev/next" design.  Architecturally similar to
+// CRuby's heap pages.
 //
-// Mark phase: scan the VALUE stack c->env..sp_top; for each IS_PTR(v) value,
-// recover the GCHeader by `(GCHeader*)v - 1`, mark it, and push to a gray
-// queue.  Process the gray queue: each item dispatches on `kind` to mark its
-// outgoing references.  The items / bytes payloads are themselves linked
-// objects (KIND_PAYLOAD_VAL / _BYTE) so they are marked the same way.
+// Layout:
+//   Page = { Page *next; uint16_t class_idx; pad; slot[0]; slot[1]; ... }
+//   Slot = { GCHeader; payload[slot_payload_bytes] }
+//   When free: GCHeader.kind = KIND_FREE and payload[0..7] = next free-link.
 //
-// Sweep phase: walk the list, free unmarked objects, clear marked bit on
-// the rest.
+// Allocation: round payload up to size class, pop slot from freelist.
+// If freelist empty, alloc new page (mmap) and seed freelist with its slots.
+// Allocations larger than the largest size class go to a "large objects"
+// linked list (each large obj is its own mmap region; still no malloc).
 //
-// Stress mode: collect on every alloc (threshold = 0).  No mprotect tricks
-// because objects are not moved.
+// Mark phase: scan VALUE stack roots c->env..sp_top, gray queue traces
+// outgoing refs.  Same as the old linked-list version.
+//
+// Sweep phase: walk all pages, for each slot check `marked` (skip
+// KIND_FREE slots).  Unmarked → kind = KIND_FREE + push to freelist.
+// Marked → clear marked bit.  Also walk the large-objects list with
+// the same logic; freed large objects munmap their region back.
+//
+// Stress mode: collect on every alloc.  Non-moving = no mprotect tricks.
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include "context.h"
 #include "astro_debug.h"
 #include "gc.h"
 
+// 16-byte header, payload follows.  No prev/next linked list — sweep
+// walks pages instead.
 typedef struct GCHeader {
-    struct GCHeader *prev, *next;
-    uint32_t  kind;
-    uint32_t  size;
-    bool      marked;
+    uint32_t kind;
+    uint32_t size;     // requested payload bytes
+    bool     marked;
+    uint8_t  _pad[7];  // explicit so sizeof(GCHeader) == 16, payload 8-aligned
 } GCHeader;
+_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+
+// Free slot overlay: when a slot is unallocated, kind = KIND_FREE and
+// the payload area holds a FreeSlot link.  freelist[class] points to
+// the payload of a free slot (= same address callers would receive
+// from `baruby_gc_alloc`).
+typedef struct FreeSlot {
+    struct FreeSlot *next;
+} FreeSlot;
 
 #define ALIGN8(n) (((n) + 7u) & ~(size_t)7u)
 
-static GCHeader head_node;             // sentinel of live object list
-static size_t   bytes_since_gc = 0;
-// Adaptive threshold: after each GC, reset to max(MIN, 2 * live_bytes).
-// Without this, mark&sweep on a 200 MB live heap with a fixed 4 MB
-// threshold triggers ~50 GCs (each O(heap)), giving 89% GC time on
-// binary_trees.  Adaptive keeps total GC work near O(allocation),
-// not O(allocation × live).
+// Size classes (slot total, header included).  Covers payload sizes up
+// to slot - sizeof(GCHeader).  Smallest 32-byte slot fits a 16-byte
+// payload (e.g., empty PAYLOAD_VAL or 2-entry items).  Largest 4 KiB
+// in-page slot covers most "medium" allocations; bigger ones go to the
+// large-object path (one mmap per large object).
+//
+// Slot sizes chosen so common allocations land on a tight class:
+//   BaArray (24 B payload + 16 B header = 40)  → class 64 (40% waste)
+//   items[4] (32 B + 16 = 48)                  → class 64 (25% waste)
+//   items[8] (64 B + 16 = 80)                  → class 128 (38% waste)
+//   bytes "abc" (4 B + 16 = 20)                → class 32 (38% waste)
+//
+// Trade-off: more classes = less waste but more bookkeeping.  9 classes
+// keep it simple while covering the bulk of allocations.
+#define NUM_SIZE_CLASSES 9
+static const size_t size_class_bytes[NUM_SIZE_CLASSES] = {
+    32, 64, 128, 256, 512, 1024, 2048, 3072, 4096
+};
+
+// Page geometry.
+#define PAGE_SIZE       (16u * 1024u)
+#define PAGE_HDR_BYTES  16
+
+typedef struct Page {
+    struct Page *next;       // next page in same-class chain (and the "all pages" walk)
+    uint16_t class_idx;
+    uint16_t _pad0;
+    uint32_t _pad1;
+} Page;
+_Static_assert(sizeof(Page) == PAGE_HDR_BYTES, "Page header size mismatch");
+
+// Large objects (> max slot) are each their own mmap region.  Linked
+// for sweep + munmap-on-free.
+typedef struct LargeObj {
+    struct LargeObj *next;
+    size_t           map_bytes;  // bytes passed to mmap (for munmap on free)
+    // GCHeader follows
+} LargeObj;
+
+static Page     *page_head[NUM_SIZE_CLASSES];   // pages of each class chain
+static FreeSlot *freelist[NUM_SIZE_CLASSES];    // free slots, head per class
+static Page     *all_pages = NULL;              // for sweep iteration (all pages, any class)
+static LargeObj *large_head = NULL;
+
+static size_t bytes_since_gc = 0;
+// Adaptive threshold (same logic as before adaptive-fix).  After each
+// sweep, threshold becomes max(MIN, 2 * live_bytes_post_sweep).  Saves
+// ~50× GCs vs fixed 4 MiB on long-lived workloads.
 #define GC_THRESHOLD_MIN     (4u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
-static size_t   gc_threshold   = GC_THRESHOLD_MIN;
-static CTX     *gc_ctx         = NULL;
+static size_t gc_threshold = GC_THRESHOLD_MIN;
+static CTX   *gc_ctx       = NULL;
 
-// Gray work list for iterative tracing.
+// Gray queue for mark traversal.
 static GCHeader **gray_buf  = NULL;
 static size_t     gray_cnt  = 0;
 static size_t     gray_capa = 0;
@@ -57,7 +121,6 @@ void
 baruby_gc_init(CTX *c)
 {
     gc_ctx = c;
-    head_node.prev = head_node.next = &head_node;
     if (getenv("BARUBY_GC_STRESS")) {
         baruby_gc_stress = 1;
         gc_threshold = 0;
@@ -65,21 +128,88 @@ baruby_gc_init(CTX *c)
     }
 }
 
-// Allocate a fresh object, link into list head.
-static GCHeader *
-list_alloc(BarubyGCKind kind, size_t payload_size)
+// ---------------------------------------------------------------------------
+// Page / freelist management
+// ---------------------------------------------------------------------------
+
+static int
+size_class_for(size_t slot_total)
 {
-    size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = (GCHeader *)malloc(sizeof(GCHeader) + aligned);
-    if (!h) { fprintf(stderr, "baruby_gc=mark: OOM\n"); abort(); }
+    // Linear scan — 9 classes, branch-predictable for typical sizes.
+    for (int i = 0; i < NUM_SIZE_CLASSES; i++) {
+        if (slot_total <= size_class_bytes[i]) return i;
+    }
+    return -1;   // caller falls back to large_alloc
+}
+
+// Allocate a fresh page (mmap), divide into slots, push them to the
+// class's freelist.
+static void
+new_page(int class_idx)
+{
+    void *raw = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE,
+                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) { perror("mmap"); abort(); }
+    Page *p = (Page *)raw;
+    p->class_idx = (uint16_t)class_idx;
+    p->next = page_head[class_idx];
+    page_head[class_idx] = p;
+    // Also link into all-pages chain (we use a separate field?  no — use
+    // the same next: page chain per class IS the sweep iteration since
+    // we walk all classes).  See sweep() below.
+
+    size_t sb = size_class_bytes[class_idx];
+    char *slot = (char *)p + PAGE_HDR_BYTES;
+    size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
+    for (size_t i = 0; i < n_slots; i++) {
+        GCHeader *h = (GCHeader *)slot;
+        h->kind   = KIND_FREE;
+        h->size   = 0;
+        h->marked = false;
+        FreeSlot *fs = (FreeSlot *)(h + 1);
+        fs->next = freelist[class_idx];
+        freelist[class_idx] = fs;
+        slot += sb;
+    }
+    (void)all_pages;  // see note: per-class chains serve as the sweep iter
+}
+
+// Pop a slot from the freelist of the given class, populate header,
+// return payload pointer.
+static void *
+slab_alloc(BarubyGCKind kind, size_t payload_size, int class_idx)
+{
+    if (!freelist[class_idx]) new_page(class_idx);
+    FreeSlot *fs = freelist[class_idx];
+    freelist[class_idx] = fs->next;
+    void *payload = (void *)fs;
+    GCHeader *h = (GCHeader *)payload - 1;
     h->kind   = (uint32_t)kind;
     h->size   = (uint32_t)payload_size;
     h->marked = false;
-    h->prev   = &head_node;
-    h->next   = head_node.next;
-    head_node.next->prev = h;
-    head_node.next       = h;
-    return h;
+    return payload;
+}
+
+// Large-object path: payload too big for in-page.  mmap a fresh region
+// big enough for the object alone, link it into large_head.
+static void *
+large_alloc(BarubyGCKind kind, size_t payload_size)
+{
+    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
+    // Round up to page multiple for mmap hygiene.
+    size_t map_bytes = (need + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
+    void *raw = mmap(NULL, map_bytes, PROT_READ|PROT_WRITE,
+                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) { perror("mmap"); abort(); }
+    LargeObj *lo = (LargeObj *)raw;
+    lo->next = large_head;
+    lo->map_bytes = map_bytes;
+    large_head = lo;
+    GCHeader *h = (GCHeader *)(lo + 1);
+    h->kind   = (uint32_t)kind;
+    h->size   = (uint32_t)payload_size;
+    h->marked = false;
+    return (void *)(h + 1);
 }
 
 static void gc_collect_internal(VALUE *sp_top);
@@ -92,8 +222,10 @@ baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
     if (baruby_gc_stress || bytes_since_gc + payload_size > gc_threshold) {
         gc_collect_internal(sp_top);
     }
-    GCHeader *h = list_alloc(kind, payload_size);
-    void *payload = (void *)(h + 1);
+    size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
+    int c = size_class_for(slot_total);
+    void *payload = (c >= 0) ? slab_alloc(kind, payload_size, c)
+                             : large_alloc(kind, payload_size);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, ALIGN8(payload_size));
     bytes_since_gc += payload_size;
@@ -108,9 +240,12 @@ baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
     if (baruby_gc_stress || bytes_since_gc + payload_size > gc_threshold) {
         gc_collect_internal(sp_top);
     }
-    GCHeader *h = list_alloc(KIND_PAYLOAD_BYTE, payload_size);
-    void *payload = (void *)(h + 1);
+    size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
+    int c = size_class_for(slot_total);
+    void *payload = (c >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, c)
+                             : large_alloc(KIND_PAYLOAD_BYTE, payload_size);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
+    // No memset for byte payloads (no pointers inside).
     bytes_since_gc += payload_size;
     baruby_gc_stats.total_bytes += payload_size;
     baruby_gc_stats.heap_bytes  += payload_size;
@@ -120,17 +255,13 @@ baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 void *
 baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
-    if (!old) {
-        return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
-    }
+    if (!old) return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
     BarubyGCKind kind = (BarubyGCKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
-
-    // Root `old` via sp_top[0] so the GC inside the alloc keeps it
-    // marked.  Non-moving GC: sp_top[0] unchanged after GC.  Uniform
-    // with moving-GC realloc_payload — caller doesn't need to know.
+    // Root old via sp_top[0] — uniform with other backends.  Non-moving
+    // GC: sp_top[0] unchanged after GC.
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
         ? baruby_gc_alloc_byte(new_size, sp_top + 1)
@@ -197,24 +328,46 @@ process_gray(void)
 }
 
 // ---------------------------------------------------------------------------
-// Sweep phase
+// Sweep phase: walk pages + large objects, freelist unmarked, clear bits.
 // ---------------------------------------------------------------------------
 
 static void
 sweep(void)
 {
-    GCHeader *h = head_node.next;
-    while (h != &head_node) {
-        GCHeader *next = h->next;
+    // Walk each size class's page chain.
+    for (int c = 0; c < NUM_SIZE_CLASSES; c++) {
+        size_t sb = size_class_bytes[c];
+        size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
+        for (Page *p = page_head[c]; p; p = p->next) {
+            char *slot = (char *)p + PAGE_HDR_BYTES;
+            for (size_t i = 0; i < n_slots; i++, slot += sb) {
+                GCHeader *h = (GCHeader *)slot;
+                if (h->kind == KIND_FREE) continue;
+                if (h->marked) {
+                    h->marked = false;
+                } else {
+                    baruby_gc_stats.heap_bytes -= h->size;
+                    h->kind = KIND_FREE;
+                    FreeSlot *fs = (FreeSlot *)(h + 1);
+                    fs->next = freelist[c];
+                    freelist[c] = fs;
+                }
+            }
+        }
+    }
+    // Walk large objects.  Freed ones return their mmap region.
+    LargeObj **link = &large_head;
+    while (*link) {
+        LargeObj *lo = *link;
+        GCHeader *h = (GCHeader *)(lo + 1);
         if (h->marked) {
             h->marked = false;
+            link = &lo->next;
         } else {
-            h->prev->next = h->next;
-            h->next->prev = h->prev;
+            *link = lo->next;
             baruby_gc_stats.heap_bytes -= h->size;
-            free(h);
+            munmap(lo, lo->map_bytes);
         }
-        h = next;
     }
 }
 
@@ -229,8 +382,6 @@ gc_collect_internal(VALUE *sp_top)
 
     baruby_gc_stats.gc_count++;
     bytes_since_gc = 0;
-    // Re-tune threshold based on post-sweep live size.  stress mode
-    // overrides with 0 so we keep firing every alloc.
     if (!baruby_gc_stress) {
         size_t live = baruby_gc_stats.heap_bytes;
         size_t next = live * GC_THRESHOLD_FACTOR;
