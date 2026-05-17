@@ -3,6 +3,38 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-17 (23) — `gc_mark_compact_gen` の leading-minor overflow バグ修正
+
+`BARUBY_GC_STRESS=1` で 11 backend を sweep して見つけた correctness バグ:
+
+```
+baruby_precise: gc_mark_compact_gen.c:261: forward_obj:
+Assertion `to_top + total <= tenured_end' failed.
+```
+
+**原因**: `major_gc` の入口で無条件に leading `minor_gc` を呼ぶが、
+nursery を tenured に折り畳むため `to_top = tenured_top` から bump する。
+tenured が `tenured_end` 近くまで詰まった状態で major が走ると、 leading
+minor が tenured を溢れさせて assertion 発火。 ASTRO_DEBUG=0 ビルドでは
+assert が消えるので memory corruption になる real な correctness bug。
+
+**修正**: `defer_fold` flag を導入。
+- nursery が `tenured_end` を溢れる場合は leading minor を skip
+- mark+compact を先に走らせて tenured の dead を回収
+- compact 後の slide で空いた領域に nursery を fold する trailing minor
+  を走らせる
+- `fwd_payload_compact` は in_nursery pointer を no-op で素通し
+  (defer_fold 中の tenured-to-nursery 参照は trailing minor で fwd)
+- trailing minor は remset 不在 (compact で dirty bit クリア済) のため
+  全 tenured を walk して nursery 参照を拾う
+- 折り畳み前に nursery survivors の `marked` を明示的にクリア
+  (major mark phase で set 済 → memcpy で tenured に伝播するのを防止)
+- `forward_obj` 内の `ASTRO_ASSERT` を「clean abort + 内訳 print」 に
+  差し替え (release build での silent corruption 防止)
+
+stress test (cons_list / interp_calc / list_alloc / nqueens / string_concat)
+で 5/5 PASS。 通常ベンチの perf 影響なし (defer_fold path に入らない)。
+
 ## 2026-05-17 (20) — `gc_mark_gen` / `gc_mark_gen_inc` も slab/page allocator に
 
 (18) で `gc_mark` を slab 化したのに合わせて generational 兄弟 2 つも

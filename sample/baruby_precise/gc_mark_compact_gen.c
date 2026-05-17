@@ -258,7 +258,12 @@ forward_obj(GCHeader *oldh)
     if (oldh->fwd) return oldh->fwd;
     size_t aligned = ALIGN8(oldh->size);
     size_t total = sizeof(GCHeader) + aligned;
-    ASTRO_ASSERT(to_top + total <= tenured_end);
+    if (to_top + total > tenured_end) {
+        fprintf(stderr, "baruby_gc=mark_compact_gen: tenured OOM in forward_obj "
+                        "(need %zu, tenured %zu / %zu)\n",
+                total, (size_t)(to_top - tenured_base), TENURED_BYTES);
+        abort();
+    }
     GCHeader *newh = (GCHeader *)to_top;
     memcpy(newh, oldh, total);
     newh->fwd   = NULL;
@@ -467,6 +472,10 @@ static void *
 fwd_payload_compact(void *p)
 {
     if (!p) return NULL;
+    // In defer-fold mode, nursery survivors are reachable from roots /
+    // marked tenured objects but have no tenured fwd address yet — the
+    // trailing minor will fold them in.  Leave nursery pointers alone.
+    if (in_nursery(p)) return p;
     GCHeader *h = (GCHeader *)p - 1;
     ASTRO_ASSERT(h->marked);
     ASTRO_ASSERT(h->fwd != NULL);
@@ -514,16 +523,22 @@ major_gc(VALUE *sp_top)
 {
     struct timespec t0 = baruby_gc_time_begin();
     in_minor = false;
-    remset_cnt = 0;
 
-    // First, fold the nursery into tenured via a minor.  After this, all
-    // live objects are in tenured and we can compact in-place.
+    // Try to fold nursery into tenured via a leading minor (mainline:
+    // cheap, then mark+compact runs over tenured only).  But if tenured
+    // can't hold the worst-case promotion, the minor's forward_obj would
+    // overflow tenured_end.  Defer the fold to a trailing minor after
+    // compact frees space.
+    bool defer_fold = false;
     if (nursery_top != nursery_base) {
-        minor_gc(sp_top);
-        // Tail-call note: the minor_gc above already did the high-water
-        // zero and root forwarding.  Below, we proceed with mark+compact
-        // over tenured only.
+        size_t max_promotion = (size_t)(nursery_top - nursery_base);
+        if (tenured_top + max_promotion > tenured_end) {
+            defer_fold = true;
+        } else {
+            minor_gc(sp_top);
+        }
     }
+    remset_cnt = 0;
 
     CTX *c = gc_ctx;
 
@@ -603,6 +618,62 @@ major_gc(VALUE *sp_top)
         }
     }
     tenured_top = fwd;
+
+    // (6) Trailing minor fold (defer_fold only).  Nursery survivors were
+    //     marked during the major's mark phase; their marked bit must be
+    //     cleared before forward_obj memcpys the header into tenured
+    //     (otherwise the new tenured copy enters with marked=true, and the
+    //     next major would skip it).  After clearing, run a minor.  Walk
+    //     all tenured rather than the now-empty remset, since any tenured
+    //     object compacted above may still carry a nursery pointer that
+    //     we deliberately left untouched in step (3).
+    if (defer_fold) {
+        char *q = nursery_base;
+        while (q < nursery_top) {
+            GCHeader *h = (GCHeader *)q;
+            h->marked = false;
+            q += sizeof(GCHeader) + ALIGN8(h->size);
+        }
+
+        in_minor = true;
+        to_base = tenured_base;
+        char *old_tenured_top = tenured_top;
+        to_top = tenured_top;
+        from_base_cur = nursery_base;
+        from_end_cur  = nursery_top;
+
+        if (sp_high_water == NULL || sp_top > sp_high_water) {
+            sp_high_water = sp_top;
+        } else {
+            for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
+        }
+
+        for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(*p);
+
+        // Walk pre-fold tenured for nursery refs (remset surrogate).
+        {
+            char *p = tenured_base;
+            while (p < old_tenured_top) {
+                GCHeader *h = (GCHeader *)p;
+                process_object(h);
+                p += sizeof(GCHeader) + ALIGN8(h->size);
+            }
+        }
+        // Cheney scan of freshly-promoted.
+        {
+            char *scan = old_tenured_top;
+            while (scan < to_top) {
+                GCHeader *h = (GCHeader *)scan;
+                process_object(h);
+                scan += sizeof(GCHeader) + ALIGN8(h->size);
+            }
+        }
+        tenured_top = to_top;
+        nursery_top = nursery_base;
+        in_minor = false;
+
+        baruby_gc_stats.minor_count++;
+    }
 
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.major_count++;

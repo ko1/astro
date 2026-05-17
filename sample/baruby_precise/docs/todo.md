@@ -14,6 +14,12 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 - [x] ~~**parser bug: `binop + call(>3 args)` でオペランド競合**~~ —
       2026-05-16 (12) 解決。 `alloc_binop` 入口で `arg_index` を 4 slot
       bump して transduce、 後で rewind。 詳細 [done.md](done.md) (12) 参照。
+- [x] ~~**gc_mark_compact_gen: leading-minor が tenured を溢れる
+      assertion バグ**~~ — 2026-05-17 (23) 解決。 `defer_fold` で
+      mark+compact を先行させ、 trailing minor で nursery を fold する
+      経路を追加 ([done.md](done.md) (23) 参照)。 release build での
+      silent corruption 防止のため `forward_obj` の assert も「clean
+      abort + 内訳 print」 に差替え。
 - [ ] **toplevel sp の hardcode 64** (`main.c::create_context`)。 大きな
       toplevel フレームを持つプログラムでは scratch 領域が不足する。
       parser から toplevel locals_cnt を取って計算するべき
@@ -49,6 +55,20 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 - [ ] **`value.def` を baruby_precise で試す** — `docs/gc_design.md` §1.7
       の任意 DSL。 marker / allocator の自動生成が abruby `node_mark.c`
       流儀でできるか
+
+## stress mode の resource limit
+
+`BARUBY_GC_STRESS=1` での既知制限 (correctness bug ではない):
+
+- **`gc_copy`** — 全 minor で from-space を `PROT_NONE + MADV_DONTNEED`
+  で恒久 retire。 約 65k 回 GC で `/proc/sys/vm/max_map_count` を
+  使い果たして `mmap: Cannot allocate memory` で abort。 短い stress
+  test では問題なし。 長 bench を回したい時は max_map_count を上げるか、
+  retire の circular buffer 化が必要 (TODO)。
+- **`gc_mark_bump_gen`** — tenured 側に compactor を持たないので、
+  long-live old object が溜まると tenured OOM。 `string_concat` のような
+  promotion-heavy bench を stress で回すと 1 GiB tenured を使い切る。
+  これは design limit (compactor 無し)、 `mark_compact_gen` を使えば回避可。
 
 ## メンテ
 
