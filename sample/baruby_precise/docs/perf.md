@@ -35,18 +35,18 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 
 | Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen |
 |---------------|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|
-| binary_trees  | 0.62 | 0.96 | 1.28 | 1.36 | **0.52** | 0.75 | 0.79 | 0.58 | 0.79 | **0.52** | 1.15 |
-| cons_list     | 1.24 | 1.20 | 1.09 | 1.23 | 1.06 | **0.77** | 0.83 | 1.14 | 0.83 | 1.03 | 0.89 |
-| fib_pair      | 1.58 | 1.46 | 1.43 | 1.47 | 1.26 | **0.88** | 0.95 | 1.47 | 0.90 | 1.27 | 0.95 |
-| gc_combined   | 1.40 | 1.25 | 1.26 | 1.33 | 1.19 | **0.94** | 0.99 | 1.28 | 1.01 | 1.22 | 0.95 |
-| hash_chain    | 1.29 | 2.20 | 1.64 | 1.65 | 1.20 | 1.12 | 1.24 | 1.26 | 1.18 | **1.11** | 1.38 |
-| interp_calc   | 1.35 | 1.31 | 1.41 | 1.48 | 1.22 | 1.03 | 1.01 | 1.24 | **1.00** | 1.15 | 1.03 |
-| life          | 1.32 | 1.36 | 1.32 | **1.31** | 1.34 | 1.34 | 1.34 | 1.33 | 1.37 | 1.36 | 1.32 |
-| list_alloc    | 1.33 | 1.15 | 1.19 | 1.26 | 1.15 | 0.91 | **0.87** | 1.22 | 0.94 | 1.18 | 0.89 |
-| list_sort     | 1.17 | 1.18 | 1.23 | 1.24 | 1.21 | 1.12 | 1.06 | 1.19 | 1.10 | 1.21 | **1.05** |
-| nqueens       | 0.98 | 0.99 | 1.00 | 0.99 | 1.00 | 0.98 | 0.98 | 0.95 | **0.90** | 0.98 | 0.96 |
-| string_concat | 1.65 | 1.68 | 1.47 | 1.51 | 0.93 | 0.54 | **0.53** | 1.15 | **0.53** | 0.91 | 0.61 |
-| substr_churn  | 1.70 | 1.44 | 1.46 | 1.58 | 1.28 | 0.93 | 0.90 | 1.48 | **0.90** | 1.13 | 0.90 |
+| binary_trees  | 0.62 | 0.96 | 1.28 | 1.36 | **0.52** | 0.75 | 0.79 | 0.58 | 0.79 | **0.52** | 0.92 |
+| cons_list     | 1.24 | 1.20 | 1.09 | 1.23 | 1.06 | **0.77** | 0.83 | 1.14 | 0.83 | 1.03 | 0.92 |
+| fib_pair      | 1.58 | 1.46 | 1.43 | 1.47 | 1.26 | **0.88** | 0.95 | 1.47 | 0.90 | 1.27 | 0.99 |
+| gc_combined   | 1.40 | 1.25 | 1.26 | 1.33 | 1.19 | **0.94** | 0.99 | 1.28 | 1.01 | 1.22 | 1.00 |
+| hash_chain    | 1.29 | 2.20 | 1.64 | 1.65 | 1.20 | 1.12 | 1.24 | 1.26 | 1.18 | **1.11** | 1.28 |
+| interp_calc   | 1.35 | 1.31 | 1.41 | 1.48 | 1.22 | 1.03 | 1.01 | 1.24 | **1.00** | 1.15 | 1.14 |
+| life          | 1.32 | 1.36 | 1.32 | **1.31** | 1.34 | 1.34 | 1.34 | 1.33 | 1.37 | 1.36 | 1.41 |
+| list_alloc    | 1.33 | 1.15 | 1.19 | 1.26 | 1.15 | 0.91 | **0.87** | 1.22 | 0.94 | 1.18 | 0.97 |
+| list_sort     | 1.17 | 1.18 | 1.23 | 1.24 | 1.21 | 1.12 | 1.06 | 1.19 | 1.10 | 1.21 | **1.15** |
+| nqueens       | 0.98 | 0.99 | 1.00 | 0.99 | 1.00 | 0.98 | 0.98 | 0.95 | **0.90** | 0.98 | 1.04 |
+| string_concat | 1.65 | 1.68 | 1.47 | 1.51 | 0.93 | 0.54 | **0.53** | 1.15 | **0.53** | 0.91 | 0.60 |
+| substr_churn  | 1.70 | 1.44 | 1.46 | 1.58 | 1.28 | 0.93 | 0.90 | 1.48 | **0.90** | 1.13 | 0.99 |
 
 **勝者分布** (2026-05-17 refresh): `copy_gen` が 4 bench で最速
 (cons_list / fib_pair / gc_combined / string_concat tied)、
@@ -65,25 +65,28 @@ substr_churn tied)、 `bump` が 2 (binary_trees tied / hash_chain)、
 (現状は STW fallback パスのみ) の最適化ヒントで bench 依存に
 3-10% 違う。
 
-**`mark_bump_gen` 分析** (2026-05-16 (13) 追加 → 2026-05-17 (15) で
-tenured を bump 化):
+**`mark_bump_gen` 分析** (2026-05-16 (13) 追加 → (15) tenured bump 化
+→ (16) 線形リスト撤廃 + region 走査 sweep):
 
 | Bench | mark\_gen | mark\_bump\_gen | bump nursery 効果 |
 |---|---:|---:|---|
-| string_concat | 1.47 | **0.59** | -60% |
-| fib_pair | 1.43 | **0.96** | -33% |
-| list_alloc | 1.19 | **0.96** | -19% |
-| substr_churn | 1.46 | **0.97** | -34% |
-| binary_trees | **1.28** | 1.15 | -10% (旧 v1 の 1.41 から大きく改善) |
+| string_concat | 1.47 | **0.60** | -59% |
+| fib_pair | 1.43 | **0.99** | -31% |
+| list_alloc | 1.19 | **0.97** | -18% |
+| substr_churn | 1.46 | **0.99** | -32% |
+| binary_trees | 1.28 | **0.92** | -28% (v1 の 1.41 から (16) で 0.92 まで) |
 
 short-lived workload では bump nursery + 「ほぼ全部 nursery で死ぬ」 の
-組合せが大勝。 v1 では tenured が per-object malloc だったため
-binary_trees (long-lived) は逆効果 (1.49 s) だったが、 (15) で tenured も
-bump 化したことで mark_gen より速い (1.15 s)。 `mark_compact_gen` と
-比べると、 同じ bump nursery + bump tenured でも compaction の有無で差が
-出る (mark_bump_gen はサイクル毎に slab 領域を消費し続けるが
-compact しないので fragmentation が累積、 mark_compact_gen は major で
-slide compact して領域を再利用)。
+組合せが大勝。 long-lived (binary_trees) は v3 で大幅改善: tenured が
+bump 化 + sweep が region 走査 (header-size-prefix の sequential scan)
+になり、 linked list pointer chasing の cache miss を除去。 GCHeader も
+40 → 24 bytes に縮小。
+
+`mark_compact_gen` との比較で残る差 (binary_trees で 0.79 vs 0.92) は
+「compaction するか」 のみ — mark_compact_gen は major で slide compact
+して領域を再利用、 mark_bump_gen は累積するだけ (1 GiB で OOM)。
+compaction による cache locality 改善 + region 再利用が ~15% の差を
+生んでいる。
 
 **2026-05-16 (10) 改善**: `mark` の binary_trees が 7.54 s → **0.97 s
 (7.8×)** に劇的改善。 原因は major threshold を fixed 4 MiB → 適応的

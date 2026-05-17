@@ -3,6 +3,31 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-17 (16) — `mark_bump_gen` の線形リスト撤廃 + region 走査 sweep (-20% binary_trees)
+
+(15) で tenured を bump 化したが線形リスト (prev/next) は維持していた。
+今回それを撤廃し、 sweep を「tenured region を header-size-prefix で
+sequential walk」 に変更。
+
+効果:
+- binary_trees: 1.15 → 0.92 s (-20%)。 累積で v1 (1.41 s) の -35%
+- GCHeader: 40 → 24 bytes (prev/next 削除で 16 bytes 縮小)
+- sweep が pointer chasing から sequential scan になり cache miss 激減
+
+設計空間における最終位置付け:
+- `mark_gen`: malloc nursery + malloc 線形リスト tenured (free に返却)
+- `mark_bump_gen` v3: bump nursery + bump tenured + region 走査 sweep
+                      (compaction なし、 領域累積)
+- `mark_compact_gen`: bump nursery + bump tenured + slide compact
+                      (compaction で領域再利用)
+- `copy_gen`: bump nursery + bump tenured + Cheney compact (semispace)
+
+binary_trees で mark_bump_gen 0.92 vs mark_compact_gen 0.79 の差は
+compaction の cache locality 改善 + region 再利用効果 (~15%)。
+
+全 11 backend で test 3 種 (plain + stress) + bench 12 種が PASS。
+perf.md §2 table 更新。
+
 ## 2026-05-17 (15) — `mark_bump_gen` の tenured を bump 化 (-18% binary_trees)
 
 (13) で導入した `mark_bump_gen` の tenured を「per-object malloc + 線形

@@ -45,32 +45,33 @@
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
 typedef struct GCHeader {
-    struct GCHeader *prev, *next;   // tenured linked list (NULL in nursery)
     void    *fwd;                   // forwarding pointer (set during minor for nursery objs)
     uint32_t kind;
     uint32_t size;
     bool     old;                   // false → nursery; true → tenured
     bool     dirty;                 // tenured: written to since last minor (remset entry)
     bool     marked;                // marked during major
-    // 5 bytes padding
+    // 5 bytes padding to keep payload 8-aligned (24-byte header total)
 } GCHeader;
+// NB: no linked list — tenured objects live in a contiguous mmap region,
+// sweep iterates by region walk (header-size-prefix), not by chasing
+// next pointers.  Saves 16 bytes/header and turns sweep into a
+// sequential scan (cache-friendly).
 
 static char *nursery_base = NULL;
 static char *nursery_top  = NULL;
 static char *nursery_end  = NULL;
 
 // Tenured: bump-allocated within a single mmap'd region.  No individual
-// frees (memory leaks within the region until program exit).  This keeps
-// the alloc fast path to a few instructions, much faster than libc malloc.
-// `old_head` linked list still threads through live tenured objects for
-// sweep iteration (mark&sweep semantics retained).  Without compaction
-// the bump pointer never resets, so fragmentation grows over time — for
-// our short-lived benchmarks 1 GiB virtual is plenty.
+// frees (memory leaks within the region until program exit).  Sweep is
+// a sequential walk of the region (header-size-prefix), not a linked-list
+// traversal — cache-friendly and avoids per-object prev/next bookkeeping.
+// Without compaction the bump pointer never resets, so fragmentation
+// grows over time — for our short-lived benchmarks 1 GiB virtual is plenty.
 static char *tenured_base = NULL;
 static char *tenured_top  = NULL;
 static char *tenured_end  = NULL;
 
-static GCHeader old_head;            // sentinel of tenured linked list
 static size_t   old_bytes   = 0;
 static size_t   old_alloc_since_major = 0;
 #define MAJOR_THRESHOLD_MIN  (64u * 1024u * 1024u)
@@ -119,7 +120,6 @@ baruby_gc_init(CTX *c)
     tenured_base = mmap_region(TENURED_BYTES);
     tenured_top  = tenured_base;
     tenured_end  = tenured_base + TENURED_BYTES;
-    old_head.prev = old_head.next = &old_head;
     if (getenv("BARUBY_GC_STRESS")) {
         baruby_gc_stress = 1;
         fprintf(stderr, "[baruby_gc=mark_bump_gen] STRESS mode: collect on every alloc\n");
@@ -133,8 +133,8 @@ baruby_gc_init(CTX *c)
 static void minor_gc(VALUE *sp_top);
 static void major_gc(VALUE *sp_top);
 
-// Allocate a tenured object via bump.  Returns a fresh GCHeader, linked
-// into the old list.  Caller fills kind/size/payload.
+// Allocate a tenured object via bump.  Returns a fresh GCHeader.
+// Caller fills kind/size/payload.
 static GCHeader *
 old_alloc(BarubyGCKind kind, size_t payload_size, size_t aligned)
 {
@@ -152,26 +152,9 @@ old_alloc(BarubyGCKind kind, size_t payload_size, size_t aligned)
     h->old    = true;
     h->dirty  = false;
     h->marked = false;
-    h->prev   = &old_head;
-    h->next   = old_head.next;
-    old_head.next->prev = h;
-    old_head.next       = h;
     old_bytes += payload_size;
     old_alloc_since_major += payload_size;
     return h;
-}
-
-// Sweep-time "free": just unlink from the live list.  Memory stays in
-// the tenured region (no individual free()), eventually OOM if the
-// region fills.  For typical bench programs the region is sized
-// generously enough to not hit OOM.
-static void
-free_unlink(GCHeader *h)
-{
-    h->prev->next = h->next;
-    h->next->prev = h->prev;
-    old_bytes -= h->size;
-    baruby_gc_stats.heap_bytes -= h->size;
 }
 
 static GCHeader *
@@ -207,8 +190,6 @@ nursery_bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_t
     h->old    = false;
     h->dirty  = false;
     h->marked = false;
-    h->prev   = NULL;
-    h->next   = NULL;
     nursery_top += total;
     return h;
 }
@@ -585,20 +566,23 @@ major_gc(VALUE *sp_top)
     }
     scan_head = scan_tail = 0;
 
-    // (3) Sweep tenured.
+    // (3) Sweep tenured by region walk (cache-friendly sequential scan
+    //     of contiguous mmap region, no linked-list pointer chasing).
     {
-        GCHeader *h = old_head.next;
-        while (h != &old_head) {
-            GCHeader *next = h->next;
+        char *p = tenured_base;
+        size_t live = 0;
+        while (p < tenured_top) {
+            GCHeader *h = (GCHeader *)p;
+            size_t total = sizeof(GCHeader) + ALIGN8(h->size);
             if (h->marked) {
                 h->marked = false;
                 h->dirty  = false;
                 h->fwd    = NULL;
-            } else {
-                free_unlink(h);
+                live += h->size;
             }
-            h = next;
+            p += total;
         }
+        old_bytes = live;
     }
 
     // (4) Reset nursery (any non-promoted nursery objs are dead).
