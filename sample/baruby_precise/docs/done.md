@@ -3,6 +3,41 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-17 (18) — `gc_mark` を slab/page allocator に書換え (CRuby 風)
+
+per-object malloc + 線形 prev/next リストを撤廃し、 GC が自前で page
+heap を持つ slab allocator に書換え:
+- 16 KiB page を size class ごとに mmap (32/64/128/256/512/1024/2048/3072/4096 B)
+- size class より大きい alloc は個別 mmap (large object list)
+- free slot は kind=KIND_FREE + payload に FreeSlot.next を overlay
+- sweep は page 内 slot を sequential walk して unmark を freelist に push
+
+malloc 比でわかりやすく速い:
+- string_concat 1.68 → 0.70 s (-58%)
+- fib_pair 1.46 → 0.89 s (-39%)
+- cons_list 1.20 → 0.84 s (-30%)
+- substr_churn 1.44 → 1.14 s (-21%)
+- list_alloc 1.15 → 0.92 s (-20%)
+- binary_trees 0.96 → 0.86 s (-10%)
+
+heap を GC 側が提供する形式は CRuby と同型。 線形リストなし → GCHeader
+12 → 16 bytes (`_Static_assert` で 16 固定)。
+
+## 2026-05-17 (19) — baruby (libgc) との fair 比較を perf.md §3 で公開
+
+姉妹サンプル `sample/baruby` (Boehm libgc 経由 conservative scanning)
+との比較。 fairness のため non-GC な差分 (parser fix iter (12)、 bench
+6 種) を baruby へ port (commit 34be8d2)。 `life.ba.rb` は baruby に
+top-level long while loop の独立バグがあり 11 bench で比較。
+
+結果: baruby_precise の最速 backend が **全 11 bench で libgc を上回る**
+(geomean ~ -22%)。 最大差は string_concat -46% / binary_trees -40%。
+最小差は nqueens -7% / list_sort -9% (mutator 支配ワークロード)。
+
+旧表では precise (`copy` 単体) は libgc と互角〜+15% でバラついて
+いたが、 (5)〜(18) の追加 backend と一連の最適化で「適切な backend を
+選べば全 bench で libgc を超える」 という結果に。
+
 ## 2026-05-17 (17) — `max_pause_ms` 計測を追加 (latency upper-bound)
 
 `BarubyGCStats` に `max_pause_seconds` を追加し、 `baruby_gc_time_end`

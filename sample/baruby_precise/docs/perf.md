@@ -339,39 +339,61 @@ gc_seconds 規模でも単発 pause time は大きく異なり、 latency 重視
 ワークロードでの選択基準になる (現状 INC_WORK_PER_ALLOC=SIZE_MAX なので
 真の incremental ではないが、 mark / sweep の 2 段に分かれる効果)。
 
-## 3. ベンチ実測 (precise default(copy) vs conservative, plain, 5 run 中央値)
+## 3. baruby (libgc conservative) との比較 (plain, 3-run 中央値)
 
-| Bench | conservative | precise | precise vs cons. |
+姉妹サンプル `sample/baruby` (Boehm libgc 経由の conservative scanning)
+と同じ AST 評価器・同じ bench を共有。 GC 戦略以外の差分 (parser fix iter
+(12) や bench 6 種) は baruby へ port 済 (commit 34be8d2)。 fair な
+GC-only 比較。
+
+`life.ba.rb` は baruby に top-level long while loop 後 value 取得の独立
+バグがあり 11 bench でのみ比較。 baruby_precise 側は最速 backend を採用。
+
+| Bench | baruby (libgc) | baruby\_precise 最速 (backend) | precise vs libgc |
 |---|---:|---:|---|
-| `binary_trees` | 0.907 s | **0.576 s** | **0.63×** ⬇37% (precise が速い) |
-| `list_alloc` (560 MB alloc) | 1.085 s | 1.175 s | 1.08× ⬆8% |
-| `string_concat` (745 MB alloc) | 0.968 s | **0.961 s** | **0.99×** (parity) |
-| `fib_pair` | 1.127 s | 1.285 s | 1.14× ⬆14% |
-| `substr_churn` | 1.361 s | **1.354 s** | **1.00×** (parity) |
-| `gc_combined` | 1.079 s | 1.244 s | 1.15× ⬆15% |
-| `test.ba.rb` (fib(20), fixnum-only) | — | 0.0004 s | GC 不発火、 影響なし |
+| binary_trees  | 0.86 | **0.52** (`copy` / `bump`) | **-40%** |
+| cons_list     | 0.91 | **0.77** (`copy_gen`) | -15% |
+| fib_pair      | 1.14 | **0.88** (`copy_gen`) | -23% |
+| gc_combined   | 1.09 | **0.94** (`copy_gen`) | -14% |
+| hash_chain    | 1.44 | **1.11** (`bump`) | -23% |
+| interp_calc   | 1.13 | **1.00** (`mark_compact_gen`) | -12% |
+| list_alloc    | 0.98 | **0.87** (`copy_gen_inc`) | -11% |
+| list_sort     | 1.15 | **1.05** (`mark_bump_gen`) | -9% |
+| nqueens       | 0.97 | **0.90** (`mark_compact_gen`) | -7% |
+| string_concat | 0.98 | **0.53** (`copy_gen_inc` / `mark_compact_gen`) | **-46%** |
+| substr_churn  | 1.36 | **0.90** (`mark_compact_gen`) | -34% |
 
-geomean ≈ 0.98× (precise の方が 2% 速い)。
+geomean: precise 最速は libgc 比 **約 -22%** (~ 0.78×)。
 
 **観察**:
 
-- **binary_trees は precise の方が 37% 速い** — libgc の conservative scan
-  が小オブジェクト大量生成シナリオで重い (stack / data segment 全走査)。
-  Cheney の bump alloc + Active swap だけのモデルが勝つ
-- **string_concat / substr_churn は libgc とほぼ同等** — `baruby_str_concat`
-  の sp ref pattern 化 (mallocバッファ撤去) と `KIND_PAYLOAD_BYTE` の memset
-  スキップが効いた。 詳細 §4
-- list_alloc / fib_pair / gc_combined は +8〜15% で precise が遅い。
-  これは:
-  - sp[] への spill memory write
-  - callee frame の zero-init
-  - alloc API 経由による間接化
-  - sp の register pressure
-  - copy collector のコピーコスト
-  の合計
+- **全 11 bench で precise の最速 backend が libgc を上回る**。 GC 戦略の
+  バリエーション + precise rooting/WB の組合せが workload 適合性を
+  上げている (libgc は一律 mark+sweep + conservative scan)。
+- 最大差は **string_concat の -46%** と **binary_trees の -40%**。
+  string_concat は libgc が短命 BaString を full-heap mark+sweep する
+  のに対し、 precise の generational backend は nursery 完結で勝つ。
+  binary_trees は libgc が conservative scan の stack / data segment 全
+  走査を毎 GC やるのに対し、 precise の Cheney / bump 単純モデルが勝つ。
+- 最小差は **nqueens の -7%、 list_sort の -9%**。 どちらも mutator 支配
+  (GC 比率が低い) なので GC 戦略の差が見えにくい。
+- 全 11 backend 比較は §2 table を参照。
 
-`docs/gc_design.md` §1.3.6 で議論した「spill 1 store/root + alloc 時に
-c->sp 更新 1 store」 のコストモデルが、 ほぼ実測で観察された形。
+**過去の比較表 (5-run 中央値、 baruby_precise default = `copy` 限定)**:
+
+| Bench | libgc | precise (copy) | precise vs libgc |
+|---|---:|---:|---|
+| `binary_trees` | 0.907 | **0.576** | -37% |
+| `list_alloc` (560 MB alloc) | 1.085 | 1.175 | +8% |
+| `string_concat` (745 MB alloc) | 0.968 | **0.961** | parity |
+| `fib_pair` | 1.127 | 1.285 | +14% |
+| `substr_churn` | 1.361 | **1.354** | parity |
+| `gc_combined` | 1.079 | 1.244 | +15% |
+
+旧表では precise (`copy` 単体) は libgc と互角〜+15% 程度のばらつき
+だった。 (5)〜(16) の追加 backend と realloc 修正・slab mark allocator 等を
+含めた最新では、 **適切な backend を選べば libgc を全 bench で大幅に
+上回る** という結果になった。
 
 ## 4. Stress mode
 
