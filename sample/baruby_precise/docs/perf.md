@@ -35,26 +35,35 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 
 | Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen |
 |---------------|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|
-| binary_trees  | 0.69 | 0.97 | 1.38 | 1.44 | 0.58 | 0.83 | 0.83 | 0.58 | 0.84 | **0.51** | 1.49 |
-| cons_list     | 1.37 | 1.14 | 1.31 | 1.36 | 1.12 | 0.89 | **0.86** | 1.13 | 0.88 | 1.04 | 0.93 |
-| fib_pair      | 1.73 | 1.53 | 1.65 | 1.73 | 1.34 | 0.94 | **0.88** | 1.49 | 0.94 | 1.34 | 0.97 |
-| gc_combined   | 1.52 | 1.25 | 1.44 | 1.51 | 1.26 | 1.05 | **0.99** | 1.25 | 1.02 | 1.24 | 1.02 |
-| hash_chain    | 1.54 | 2.44 | 2.27 | 2.29 | **1.22** | 1.25 | **1.21** | 1.34 | 1.22 | 1.50 | 1.43 |
-| interp_calc   | 1.36 | 1.53 | 1.54 | 1.55 | 1.27 | 1.07 | **0.98** | 1.36 | 1.08 | 1.25 | 1.16 |
-| life          | 1.39 | 1.32 | 1.44 | 1.36 | 1.43 | 1.37 | 1.32 | **1.24** | 1.35 | 1.31 | 1.39 |
-| list_alloc    | 1.40 | 1.22 | 1.36 | 1.34 | 1.20 | 0.94 | 0.94 | 1.32 | **0.92** | 1.20 | 0.96 |
-| list_sort     | 1.27 | 1.31 | 1.37 | 1.32 | 1.26 | 1.14 | **1.04** | 1.28 | 1.13 | 1.28 | 1.12 |
-| nqueens       | 1.04 | 1.04 | 1.07 | **0.98** | 1.05 | 1.04 | 0.96 | 0.96 | 1.00 | 1.07 | 1.03 |
-| string_concat | 1.79 | 2.41 | 1.67 | 1.57 | 0.99 | 0.57 | **0.52** | 1.16 | 0.60 | 1.01 | 0.60 |
-| substr_churn  | 1.85 | 1.53 | 1.74 | 1.59 | 1.34 | 0.97 | **0.87** | 1.59 | 0.97 | 1.23 | 0.93 |
+| binary_trees  | 0.62 | 0.96 | 1.28 | 1.36 | **0.52** | 0.75 | 0.79 | 0.58 | 0.79 | **0.52** | 1.41 |
+| cons_list     | 1.24 | 1.20 | 1.09 | 1.23 | 1.06 | **0.77** | 0.83 | 1.14 | 0.83 | 1.03 | 0.89 |
+| fib_pair      | 1.58 | 1.46 | 1.43 | 1.47 | 1.26 | **0.88** | 0.95 | 1.47 | 0.90 | 1.27 | 0.95 |
+| gc_combined   | 1.40 | 1.25 | 1.26 | 1.33 | 1.19 | **0.94** | 0.99 | 1.28 | 1.01 | 1.22 | 0.95 |
+| hash_chain    | 1.29 | 2.20 | 1.64 | 1.65 | 1.20 | 1.12 | 1.24 | 1.26 | 1.18 | **1.11** | 1.38 |
+| interp_calc   | 1.35 | 1.31 | 1.41 | 1.48 | 1.22 | 1.03 | 1.01 | 1.24 | **1.00** | 1.15 | 1.12 |
+| life          | 1.32 | 1.36 | 1.32 | **1.31** | 1.34 | 1.34 | 1.34 | 1.33 | 1.37 | 1.36 | 1.32 |
+| list_alloc    | 1.33 | 1.15 | 1.19 | 1.26 | 1.15 | 0.91 | **0.87** | 1.22 | 0.94 | 1.18 | 0.89 |
+| list_sort     | 1.17 | 1.18 | 1.23 | 1.24 | 1.21 | 1.12 | 1.06 | 1.19 | 1.10 | 1.21 | **1.05** |
+| nqueens       | 0.98 | 0.99 | 1.00 | 0.99 | 1.00 | 0.98 | 0.98 | 0.95 | **0.90** | 0.98 | 0.96 |
+| string_concat | 1.65 | 1.68 | 1.47 | 1.51 | 0.93 | 0.54 | **0.53** | 1.15 | **0.53** | 0.91 | 0.61 |
+| substr_churn  | 1.70 | 1.44 | 1.46 | 1.58 | 1.28 | 0.93 | 0.90 | 1.48 | **0.90** | 1.13 | 0.90 |
 
-**勝者分布**: `copy_gen_inc` が 8 bench で最速、 `mark_compact_gen` が 1
-(list_alloc) / `copy` が 1 (hash_chain と tied) / `bump` が 1 (binary_trees
-で no-GC ベースライン) を取る。 `copy_gen_inc` の優勢は 2026-05-16 (8) の
-`baruby_gc_realloc_payload` 修正 (alloc-first / fwd-aware memcpy) で
-realloc-heavy パスの malloc/free が消えたのが大きい。 `copy_gen` と
-`copy_gen_inc` は ABI 同一だが、 inc 側は SATB flag check (現状は STW
-fallback パスのみ) の最適化ヒントで 3-10% リード。
+**勝者分布** (2026-05-17 refresh): `copy_gen` が 4 bench で最速
+(cons_list / fib_pair / gc_combined / string_concat tied)、
+`copy_gen_inc` が 3 (list_alloc / string_concat / substr_churn tied)、
+`mark_compact_gen` が 3 (interp_calc / nqueens / string_concat tied、
+substr_churn tied)、 `bump` が 2 (binary_trees tied / hash_chain)、
+`copy` が 1 (binary_trees tied)、 `mark_compact` が tied、 `mark_bump_gen`
+が 1 (list_sort)、 `mark_gen_inc` が 1 (life)。
+
+引っかかった改善点 (2026-05-17 unified realloc_payload, commit e5b237f):
+- `mark` の string_concat 2.41 → 1.68 s (-30%)、 substr_churn 1.53 →
+  1.44 s。 buf 中間撤廃で realloc あたり malloc/free を 1 ペア節約。
+- `bump` の hash_chain 1.50 → 1.11 s (-26%)。 同上。
+
+`copy_gen` と `copy_gen_inc` は ABI 同一だが、 inc 側は SATB flag check
+(現状は STW fallback パスのみ) の最適化ヒントで bench 依存に
+3-10% 違う。
 
 **`mark_bump_gen` 分析** (2026-05-16 (13) 追加): 11 bench 中で勝つことは
 ないが、 `mark_gen` との比較が「nursery alloc 戦略」 の純粋なコスト

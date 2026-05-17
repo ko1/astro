@@ -3,6 +3,38 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-17 (14) — `realloc_payload` を sp_top[0] rooting で統一
+
+9 つの GC backend (none / bump を除く) の `baruby_gc_realloc_payload` を
+sp_top[0] に old を root して GC に追跡させる方式に統一 (commit e5b237f)。
+旧来は backend 毎に方式がバラバラ:
+- 非 moving (mark / mark_gen / mark_gen_inc): malloc-buf 中間
+- moving 単一 region (copy): stress mprotect 対策で malloc-buf
+- moving + gen 系: alloc-first + oldh->fwd 参照 (latent race あり)
+- moving + compact (mark_compact): malloc-buf
+
+旧 oldh->fwd 方式に潜む race: oldh が nursery_base 直近で minor が
+fire すると次の alloc が oldh のバイトを上書きし fwd field が読めなく
+なる。 hash_chain 等で稀に発火するが通常は深い nursery 位置なので
+未顕在化していた。
+
+sp_top[0] rooting で:
+- GC が sp_top[0] を root として scan し forward する (universal pattern)
+- 非 moving: sp_top[0] 不変、 sweep が old を free しない保証
+- moving: sp_top[0] に post-move アドレスが入る
+- stress mode mprotect 後でも sp_top[0] は to-space を指すので OK
+
+副次効果 (perf 表 §2 refresh):
+- `mark` string_concat 2.41 → 1.68 s (-30%)、 substr_churn 1.53 → 1.44 s
+- `bump` hash_chain 1.50 → 1.11 s (-26%)
+- 他は noise レベル
+
+`gc_copy.c` だけは戻した (commit 82e84ec): 単一 region semispace は from /
+to が別 region なので race の対象外、 sp_top[0] パターンは正しさには
+寄与せず alloc-heavy bench で 5% 程度の regression が出ていた。
+
+全 11 backend で test 3 種 (plain + stress) + bench 12 種が PASS。
+
 ## 2026-05-16 (13) — 11 つ目の backend: `mark_bump_gen`
 
 bump-allocated nursery + linked-list mark&sweep tenured の hybrid。
