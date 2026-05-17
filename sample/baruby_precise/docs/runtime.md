@@ -359,9 +359,222 @@ GC 内部の不変条件 (alloc 時の kind validity、 `process_object` の typ
 
 ### 5.9 統計出力
 
-`BARUBY_GC_STATS=1` で `__GC_STATS__ alloc_bytes=... heap_bytes=... gc_count=...`
-を末尾に出力する。 `alloc_bytes` は累計、 `heap_bytes` は live 量
-(Cheney の scan loop で再計算)、 `gc_count` は collection 回数。
+`BARUBY_GC_STATS=1` で末尾に出力する:
+
+```
+__GC_STATS__ backend=<name> alloc_bytes=<累計> heap_bytes=<live> \
+             gc_count=<総数> minor=<minor 数> major=<major 数> \
+             gc_seconds=<累計 GC 時間> gc_pct=<GC 比率> \
+             max_pause_ms=<最大 1 回 pause>
+```
+
+- `heap_bytes` は live 量 (各 backend が独自に再計算)
+- `gc_seconds` は `CLOCK_MONOTONIC` で 1 回の collect の wall time を
+  累積。 minor→major の re-entrant ケースは depth guard で最外側だけ計測
+- `max_pause_ms` は単発 collect の最大 pause time。 throughput では
+  差が見えない latency 重視ワークロードの選択基準として、 (17) で追加。
+  例えば binary_trees で mark_gen=288 ms vs mark_gen_inc=54 ms (5.4×
+  短縮) のように顕在化
+
+### 5.10 全 11 GC backend カタログ
+
+`make GC=<name>` で 11 種類の backend を切替えてビルド可能。 切替えは
+build time only (`-DBARUBY_GC=<n>`)。 default は `copy`。 共通インタフェース
+(`gc.h`) は `baruby_gc_init / alloc / alloc_byte / realloc_payload /
+collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装する。
+
+ベンチ性能比較は [perf.md](perf.md) §2 を参照。
+
+#### 1. `none` — no GC, malloc + leak (baseline)
+
+- **Layout**: libc malloc を直叩き、 leak 専用 (`free` を呼ばない)。
+- **Allocation**: malloc(GCHeader + payload)。 オブジェクト毎に分散。
+- **GC trigger**: 無し。
+- **Write barrier**: 不要 (no GC)。 `baruby_gc_wb` は `*slot = v` に inline 化。
+- **特徴**: ロookup heavy 系で per-object malloc の fragmentation が
+  cache miss を生む floor が見える。 binary_trees が 0.62 s。
+- **用途**: GC を完全に抜いた状態でも sp[] rooting / WB ABI / alloc API
+  間接化の overhead がどれくらいかを測る baseline。
+
+#### 2. `mark` — non-moving mark&sweep (per-object malloc list)
+
+- **Layout**: 全 live が doubly-linked list (sentinel `head_node`) に
+  繋がる。 各オブジェクトは独立 malloc 領域。
+- **Allocation**: malloc + リスト head に linked。
+- **GC trigger**: `bytes_since_gc > gc_threshold` で `gc_collect_internal`。
+  threshold は (10) 以降 adaptive (`max(MIN=4 MiB, 2 × live_post_sweep)`) —
+  fixed 4 MiB だと binary_trees で 50 回 sweep していたのを 4 回に削減。
+- **Phases**: ① mark roots (`c->env..sp_top` を flat scan) ② gray queue で
+  outgoing refs を辿る ③ sweep (linked list 走査、 unmarked は `free`)。
+- **Write barrier**: 不要 (non-moving、 non-gen)。 `gc.h` で no-op inline。
+- **特徴**: simplest mark&sweep。 binary_trees で 0.96 s (adaptive 後)、
+  hash_chain で 2.20 s — per-object malloc の cache 局所性のなさが
+  顕在化する典型 backend。
+- **教育的位置**: 「pure mark&sweep だとどこまで遅いか」 の baseline。
+
+#### 3. `mark_gen` — mark&sweep + 2 世代 (linked list 全体)
+
+- **Layout**: young / old の 2 つの linked list (`young_head` / `old_head`)。
+  各オブジェクト独立 malloc、 prev/next で繋がる。
+- **Allocation**: 新 alloc は young list に malloc + link。
+- **GC trigger**: `young_bytes > young_threshold (4 MiB)` で minor、
+  `old_alloc_since_major > old_major_threshold` で major。 (10) 以降
+  major threshold は adaptive。
+- **Minor**: roots + 明示 remset (dirty old) から trace、 mark された
+  young を old list に promote (unlink → relink)、 unmarked は free。
+- **Major**: 全 list を full mark+sweep。
+- **Write barrier**: 必要。 `baruby_gc_wb` が old object に書込み時
+  `dirty=true` + remset push。
+- **特徴**: linked-list throughout、 nursery も per-obj malloc なので
+  alloc が遅い。 binary_trees 1.28 s、 string_concat 1.47 s。
+
+#### 4. `mark_gen_inc` — mark_gen + 増分的マーキング
+
+- **Layout**: mark_gen と同じ (young / old linked list)。
+- **Allocation**: 同上、 加えて `inc_marking` 状態で増分 mark 進行。
+- **GC trigger**: minor は同じ、 major は「inc_start (root mark) →
+  alloc ごとに gray を少量処理 → 空になったら inc_finish_sweep」 に
+  分割。 現状 `INC_WORK_PER_ALLOC = SIZE_MAX` (= 実質 STW で全部処理)
+  だが、 mark phase と sweep phase が別々の time_begin/end で計測される
+  ことで **max_pause が 5.4× 短くなる** (binary_trees: mark_gen 288 ms
+  → mark_gen_inc 54 ms)。
+- **Write barrier**: SATB (snapshot-at-beginning) — `inc_marking` 中、
+  上書きされる OLD 値を gray queue に push。 これで mark 漏れを防ぐ。
+- **特徴**: 真の incremental には VALUE stack WB が必要 (現状未実装)。
+  infrastructure (gray queue + SATB barrier + INC_WORK_PER_ALLOC tuning) は
+  揃っているので、 stack WB を足せばすぐ低 pause 化できる。
+
+#### 5. `copy` — semispace Cheney (default)
+
+- **Layout**: `mmap` 512 MiB の region を 2 つ。 active と to-space。
+  オブジェクトは contiguous bump alloc。
+- **Allocation**: `active_top` bump。 region 満タンで GC fire。
+- **GC trigger**: alloc 失敗時のみ。 1 cycle で全 live が to-space に
+  Cheney コピー、 active 切替。
+- **Phases**: ① root forward (`c->env..sp_top` を walk、 各 IS_PTR を
+  to-space にコピー) ② Cheney scan loop (to-space を進め、 outgoing refs
+  を順次 forward) ③ active swap。
+- **Write barrier**: 不要 (non-gen)。 `gc.h` で no-op inline。
+- **Stress mode**: 旧 from-space を `mprotect(PROT_NONE) +
+  madvise(DONTNEED)`、 to-space を毎回 fresh mmap。 stale pointer が
+  即 SIGSEGV になる開発用モード。
+- **特徴**: 単純さの極み + bump alloc の速さ。 binary_trees 0.52 s
+  (`bump` と並んで最速)、 大規模 live でも Cheney が O(live) で済む。
+- **API歴**: §5.5-5.7 で詳述している backend。 baruby_precise の出発点。
+
+#### 6. `copy_gen` — bump nursery + semispace tenured (2 region)
+
+- **Layout**: nursery 1 region (16 MiB)、 tenured 2 region (各 512 MiB)。
+  両方 bump alloc。 minor は nursery 整理、 major は tenured Cheney swap。
+- **Allocation**: nursery_top bump。 NURSERY_BYTES/2 を超える alloc は
+  pretenured (tenured 直接)。
+- **GC trigger**: nursery 満タンで minor、 `old_alloc_since_major >
+  threshold` で major。
+- **Minor**: roots + remset から nursery 内 live を tenured に
+  Cheney 形式で copy → forward。 Cheney scan loop で chain。
+- **Major**: tenured semispace を Cheney swap、 nursery も巻き込んで
+  全体 reorganize。
+- **Write barrier**: 必要。 `baruby_gc_wb` が tenured object に書込み時
+  dirty + remset push。 explicit remset で minor scan O(|dirty|)。
+- **特徴**: short-lived workload が nursery 完結して大勝。
+  string_concat 0.54 s、 fib_pair 0.88 s、 cons_list 0.77 s。
+- **realloc_payload bug 履歴**: (8) で「memcpy-buf-before-alloc → stale
+  ptr」 を発掘して修正、 (14) で sp_top[0] rooting に統一。
+
+#### 7. `copy_gen_inc` — copy_gen + 増分マーキング infra
+
+- **Layout**: copy_gen と同じ。 加えて SATB barrier。
+- **Allocation**: 同じ。
+- **GC trigger / phases**: 構造は mark_gen_inc と同型 (inc_start →
+  drain → inc_finish_sweep)。 現状 `INC_WORK_PER_ALLOC = SIZE_MAX`。
+- **Write barrier**: SATB + dirty-tracking。 inc_marking 中は上書きされる
+  OLD 値を mark。
+- **特徴**: copy_gen と ABI 同一、 perf も 3-10% 程度の差。
+  list_alloc / string_concat / substr_churn で勝つことが多い。
+
+#### 8. `mark_compact` — single region + Lisp-2 sliding compactor
+
+- **Layout**: `mmap` 1 GiB の単一 region に bump alloc。 linked list 不要
+  (region 走査で対応)。
+- **Allocation**: region_top bump。
+- **GC trigger**: alloc 失敗時のみ。 4 段の Lisp-2 sliding compaction:
+- **Phases**: ① mark (gray queue で trace) ② compute forwarding addresses
+  (region を 1 pass、 marked obj に fwd 設定) ③ update pointers (root
+  + 各 obj の ref を fwd で書換え) ④ slide (memmove で各 obj を fwd 位置
+  へ実体移動)。
+- **Write barrier**: 不要 (non-gen)。
+- **特徴**: copy より single region で済む (1 GiB virtual)、 大型 live で
+  Cheney の 2× メモリを避けられる。 binary_trees 0.58 s。 hash_chain の
+  realloc-payload latent race の対象外 (slide はあるが nursery_base
+  overwrite はない)。
+
+#### 9. `mark_compact_gen` — nursery (copy) + tenured (mark + compact)
+
+- **Layout**: nursery 1 region (bump)、 tenured 1 region (1 GiB bump、
+  major で slide compact)。
+- **Allocation**: nursery_top bump。 大型は pretenured。
+- **GC trigger**: nursery 満タンで minor (Cheney 風に tenured へ promote)、
+  `old_alloc_since_major > threshold` で major (Lisp-2 slide compact)。
+- **Write barrier**: 必要 (dirty + remset)。
+- **特徴**: tenured が 1 region (vs copy_gen の 2) で virtual space 節約。
+  major で compact することで領域再利用 + cache locality 良好。
+  interp_calc / nqueens / substr_churn で勝つ。 binary_trees 0.79 s
+  (compaction が live 密集に貢献)。
+
+#### 10. `bump` — bump alloc only, no GC (allocation floor)
+
+- **Layout**: `mmap` 4 GiB の単一 region。 bump alloc のみ。
+- **Allocation**: region_top bump。 region 満杯で abort (OOM)。
+- **GC trigger**: 無し (leak)。
+- **Write barrier**: 不要。 no-op inline。
+- **特徴**: 「rooting + WB + dispatch」 の最小コスト baseline。
+  `none` より strictly 速い (malloc 内の bin 管理がない)。
+  binary_trees で 0.52 s (`copy` と並ぶ)、 hash_chain で 1.11 s (最速)。
+- **用途**: alloc strategy の差を取り除いた pure mutator コスト測定。
+
+#### 11. `mark_bump_gen` — bump nursery + bump tenured (region) + no compact
+
+- **Layout**: nursery 1 region (16 MiB bump)、 tenured 1 region
+  (1 GiB bump)。 (13)→(15)→(16) で 3 段階に進化:
+  - v1: bump nursery + per-object malloc linked-list tenured
+  - v2: bump nursery + bump tenured + linked-list (sweep が pointer chasing)
+  - v3 (現状): bump nursery + bump tenured、 線形リスト廃止、 sweep は
+    region 走査 (`p += sizeof(GCHeader) + ALIGN8(h->size)`)
+- **Allocation**: 両方 bump、 pretenure 判定あり。
+- **GC trigger**: nursery 満タンで minor (Cheney 形式で tenured へ
+  promote)、 threshold 超過で major。
+- **Phases**: minor は scan_buf を queue にした Cheney FIFO。 major は
+  mark + region 走査 sweep (compact なし、 dead slot は領域内で leak)。
+- **Write barrier**: 必要 (dirty + remset)。
+- **特徴**: 「compaction しない bump tenured」 を mark_compact_gen との
+  対比で見せるための backend。 binary_trees で 0.92 s vs mark_compact_gen
+  0.79 s — 差分 ~15% が compaction の cache locality + 領域再利用効果。
+  long-running では 1 GiB が累積消費されて OOM するが短時間 bench では
+  問題なし。
+- **GCHeader 24 B**: 線形リスト撤廃で prev/next 削除、 fwd + kind/size +
+  3 bits + padding で 24 B (mark_gen の 40 B より 16 B 小さい)。
+
+### 5.11 設計空間の俯瞰
+
+11 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
+眺めた表:
+
+| Backend | Nursery | Tenured | Compact? | Gen? |
+|---|---|---|---|---|
+| `none` | — | malloc list (leak) | — | no |
+| `bump` | — | bump (leak) | — | no |
+| `mark` | — | malloc list | no | no |
+| `copy` | — | semispace (2 region) | Cheney | no |
+| `mark_compact` | — | bump (1 region) | Lisp-2 slide | no |
+| `mark_gen` | malloc list | malloc list | no | yes |
+| `mark_gen_inc` | malloc list | malloc list | no | yes + inc mark |
+| `copy_gen` | bump | semispace (2 region) | Cheney | yes |
+| `copy_gen_inc` | bump | semispace | Cheney | yes + inc mark |
+| `mark_compact_gen` | bump | bump (1 region) | Lisp-2 slide | yes |
+| `mark_bump_gen` | bump | bump (1 region) | no (累積) | yes |
+
+「nursery が bump か」「tenured が bump か」「major で compact するか」 が
+直交軸として並び、 backend を選ぶことで各軸の影響を孤立して測れる。
 
 ## 6. 文字列リテラルの fresh alloc
 

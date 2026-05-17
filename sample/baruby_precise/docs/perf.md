@@ -128,26 +128,175 @@ MIN を超えないので動作は不変。
   「rooting + WB + dispatch + alloc」の最小コストを示す。 binary_trees が
   0.53s — copy より速い (GC 自体が無いので)。 OOM 時 abort
 
-### マクロベンチ
+### ベンチカタログ (全 12 種)
 
-- **`interp_calc`**: 12 段の AST を構築 → 再帰評価 → 合計。 1000 回。
-  AST 構築の alloc burst → 評価中 alloc なし、 という generational
-  benefit が出やすいパターン
-- **`list_sort`**: 2000 要素の整数配列を merge sort。 350 回。 各 merge
-  が中規模 alloc を burst → 完了時に全部死ぬ pattern
-- **`cons_list`**: 5000 セルの cons-list を build & walk × 2000 回。
-  各セル = `[value, next]` (2-要素配列)。 deep alloc chain → walk →
-  discard の典型 (1 iter で 5000 セル全部死ぬ)。 binary_trees と違い
-  iterative walk なので C stack 浅いまま深い chain を作れる
-- **`hash_chain`** (2026-05-16 追加): 2048 buckets の chained hash table
-  を Array on Array で実装。 150k keys × 3 rounds で long-lived
-  buckets + medium-lived chains + short-lived [k, v] pairs の 3 層
-  lifetime を踏む。 chain.items grow が高頻度で、 旧来の
-  `baruby_gc_realloc_payload` の stale-ptr バグを発掘した
-- **`nqueens`** (2026-05-16 追加): N=11 で 2680 solutions を backtrack
-  探索。 deep recursion + per-frame Array alloc (column set を
-  functional コピーで pass-down)。 LIFO で短命なので nursery 完結の
-  benefit が顕著
+各ベンチの「何を / どう alloc して / lifetime はどんな形か」 を一覧。
+GC 評価の観点で workload 分類を意識して揃えている。
+
+#### `binary_trees.ba.rb` — 構造的 long-lived tree
+
+- **What**: Computer Language Benchmarks Game 風の binary tree。
+  `make_tree(depth)` で `[left, right]` の 2-要素 BaArray を再帰生成、
+  `check_tree` で全 node を walk して合計。 depth=21 で root を 1 つ、
+  depth=22 (stretch tree) も作る。 計 ~ 2M nodes / 224 MB alloc。
+- **Alloc pattern**: 各 node は 2-要素 BaArray (40 B 含 header) ×
+  2M ≈ pure short-burst alloc。 木を作り終わるまでは全 node が live。
+- **Lifetime**: 全 node が tree 構築中はずっと live → long-lived。
+  walk 後 root を解放すると一気に die。
+- **テスト対象**: long-lived heap、 mark/sweep 系の sweep walk コスト、
+  Cheney コピーコスト、 compact の領域再利用効果。
+- **特性的な数値**: ベスト 0.52 s (`copy` / `bump`)、 ワースト 1.41 s
+  (`mark_bump_gen` v1 で 1.41 → v3 で 0.92 まで改善)。 全 backend が
+  major を 2 回程度走らせる。
+
+#### `cons_list.ba.rb` — deep linked-list chain
+
+- **What**: 5000 セルの cons-list を build & walk × 2000 回。
+  各セル = `[value, next-cell]` (2-要素 BaArray)。 sentinel 0 で終端。
+- **Alloc pattern**: 1 iter で 5000 cells (~120 KB) alloc → walk →
+  全部 die。 計 ~534 MB alloc 全体。
+- **Lifetime**: 1 iter 内では全 cell が live、 iter 完了で一斉に die。
+  「深い alloc chain → walk → discard」 の典型。
+- **テスト対象**: nursery vs mark+sweep。 iterative walk なので C stack
+  は浅いまま、 long chain だけ作れる (binary_trees の代替)。
+- **特性的な数値**: ベスト 0.77 s (`copy_gen`)、 多くの backend で
+  0.9-1.1 s。
+
+#### `fib_pair.ba.rb` — 再帰 frame escape
+
+- **What**: 再帰 fib variant で各 call が `[a+c, b+d]` の 2-要素
+  pair を return。 depth=28、 ループ 13 回で ~ 4.1M pair allocs。
+- **Alloc pattern**: 各 call が 1 pair alloc、 parent return とともに die。
+  pure short-lived + 深い C stack。
+- **Lifetime**: 全 alloc は frame escape — call return で die。
+- **テスト対象**: nursery 完結率 (LIFO 形 alloc)。 generational 系が
+  大勝するパターン。
+- **特性的な数値**: ベスト 0.88 s (`copy_gen`)、 ワースト 1.73 s
+  (`mark_gen_inc`)。
+
+#### `gc_combined.ba.rb` — long-lived + 短命の steady-state
+
+- **What**: 50k-要素の long-lived array を維持しつつ、 内ループで
+  1M 個の short-lived 4-要素 array を churn。 long array へは
+  index アクセスのみ (mutation なし)。
+- **Alloc pattern**: 535 MB short-lived + 持続 200 KB long-lived。
+- **Lifetime**: 2 層 — permanent long-array + 1-iter で die する short。
+- **テスト対象**: 「permanent dataset + hot alloc path」 の現実形。
+  generational benefit が出るが、 long-lived の存在で minor scan が
+  remset を踏む。
+- **特性的な数値**: ベスト 0.94 s (`copy_gen`)。
+
+#### `hash_chain.ba.rb` — chained bucket hash table (3 層 lifetime)
+
+- **What**: 2048 buckets の chained hash table を Array on Array で
+  実装。 150k keys を 3 rounds 挿入 (重複 key は値更新) → 全 key lookup。
+- **Alloc pattern**: 各 insert で `[k, v]` pair alloc、 chain.items が
+  push で grow。 全 12 MB alloc (long-lived ~10 MB)。
+- **Lifetime**: 3 層 — bucket array (long-lived) / chain arrays
+  (medium-lived) / `[k, v]` pairs (short-lived)。
+- **テスト対象**: WB heavy (chain.push が long-lived bucket 経由で
+  short-lived pair を参照)、 remset の old→young 仲介、 chain.items の
+  realloc-payload の正しさ (本 bench が realloc の latent stale-ptr バグを
+  発掘した — done.md (8))。
+- **特性的な数値**: ベスト 1.11 s (`bump`)、 ワースト 2.20 s (`mark`)。
+  mark family が遅いのは per-object malloc で heap が断片化 → cache
+  miss 多発のため。
+
+#### `interp_calc.ba.rb` — AST 構築 → 評価のミニインタプリタ
+
+- **What**: depth=12 の balanced AST (kind/lhs/rhs の 3-要素 BaArray) を
+  構築 → 再帰評価 → 合計。 1000 回反復。
+- **Alloc pattern**: 構築 phase で O(2^12) = 4096 sub-array burst、
+  評価 phase で alloc なし。
+- **Lifetime**: 1 iter 内で構築 → 評価 → 全体 die。
+- **テスト対象**: alloc burst → 静止状態 の generational benefit。
+- **特性的な数値**: ベスト 1.00 s (`mark_compact_gen`)。
+
+#### `life.ba.rb` — Conway's Life simulation
+
+- **What**: 80×80 grid を 200 tick simulate。 各 tick で 6400 cell
+  ×ick: `[0/1]` を含む row Array を H 個生成 → outer Array に push。
+- **Alloc pattern**: tick あたり H + 1 = 81 alloc (row + outer)。
+  total ~31 MB / 200 ticks。
+- **Lifetime**: tick lifetime ((H+1) × W = 6481 cells)、 完了直後 die。
+- **テスト対象**: GC pressure が低い (allocate << region size)、 mutator
+  支配的なケースの差を見る。 全 backend が ~1.3 s で集まる (GC 影響なし)。
+- **特性的な数値**: ベスト 1.31 s (`mark_gen_inc`)。 全 backend 1.31-1.41 s
+  に集中。
+- **歴史**: 2026-05-16 追加。 実装中に baruby parser の
+  「binop + >3-arg call でオペランド競合」 バグを発掘 (done.md (11)/(12))。
+
+#### `list_alloc.ba.rb` — pure allocation pressure
+
+- **What**: 1000 万回ループで毎 iter 4-要素 array alloc + sum。
+  array は次 iter で捨てる。
+- **Alloc pattern**: 534 MB total / 10M iter。 1 iter = 1 alloc。
+- **Lifetime**: 1 iter (即 die)。
+- **テスト対象**: 純粋 alloc throughput。 bump alloc 系が圧勝。
+- **特性的な数値**: ベスト 0.87 s (`copy_gen_inc`)、 ワースト 1.33 s
+  (`none`)。
+
+#### `list_sort.ba.rb` — merge sort with allocation-heavy merge
+
+- **What**: 2000 要素整数配列を merge sort、 350 回反復。 各 merge が
+  2 つの half + 出力 array を alloc。
+- **Alloc pattern**: 287 MB total。 各 merge が中規模 alloc burst。
+- **Lifetime**: parent merge return で全部 die — recursion stack 深さに
+  比例する lifetime。
+- **テスト対象**: 中規模 burst alloc → 親 return で die、 nursery 系
+  benefit。
+- **特性的な数値**: ベスト 1.05 s (`mark_bump_gen`)、 ワースト 1.27 s。
+  全 backend が比較的近い (1.05-1.27)。
+
+#### `nqueens.ba.rb` — backtracking with per-frame array
+
+- **What**: N=11 の N-queens を backtracking で解く (2680 solutions)。
+  各 call で column set を functional コピー (Array) して pass-down。
+- **Alloc pattern**: 探索木の各 node で 1 array alloc。 ~26 MB total。
+- **Lifetime**: 厳密 LIFO で短命 (backtrack で即 die)。
+- **テスト対象**: deep recursion + LIFO 短命 alloc。 nursery 完結率
+  100% に近い形。
+- **特性的な数値**: ベスト 0.90 s (`mark_compact_gen`)、 全 backend
+  0.90-1.07 s。 2026-05-16 追加。
+
+#### `string_concat.ba.rb` — small string concat hot loop
+
+- **What**: `"abc" + "def" + "ghi"` を 5M iter。 毎 iter 文字列リテラル
+  3 つ + 連結結果 2 つ = 5 BaString alloc + 2 bytes payload。
+- **Alloc pattern**: 710 MB total。 String 専用 alloc が dominant。
+- **Lifetime**: 1 iter (即 die)。
+- **テスト対象**: BaString + bytes payload の alloc 最適化、 generational
+  完結率。
+- **特性的な数値**: ベスト 0.53 s (`copy_gen_inc` / `mark_compact_gen`
+  tied)、 ワースト 2.41 s (`mark`、 後に 1.68 s に改善)。
+
+#### `substr_churn.ba.rb` — 長寿命 String を sliding window で読む
+
+- **What**: 18 MB の 1 String (`repeat("abcdef", 3M)`) を生成、
+  全 offset から 5-byte substring を切る。 ~3M substr alloc。
+- **Alloc pattern**: 532 MB total (短命 substr) + 持続 18 MB (text)。
+- **Lifetime**: 1 iter 短命 substr + permanent text。
+- **テスト対象**: BaString slice の sp ref pattern、 long-lived + short-
+  lived の混在 (gc_combined と類似だが string 軸)。
+- **特性的な数値**: ベスト 0.87 s (`copy_gen_inc`)、 ワースト 1.85 s
+  (`none`)。
+
+### マクロベンチ評価軸
+
+12 bench がカバーする観点を整理:
+
+| 観点 | 代表 bench |
+|---|---|
+| pure alloc throughput | list_alloc, fib_pair |
+| long-lived heap | binary_trees |
+| 2 層 lifetime (long + short) | gc_combined, substr_churn, hash_chain |
+| LIFO 短命 (nursery 完結率) | fib_pair, nqueens |
+| burst → 静止 | interp_calc, list_sort |
+| String 専用 alloc | string_concat, substr_churn |
+| Write barrier heavy | hash_chain |
+| mutator dominant (GC 影響薄) | life, nqueens |
+| deep alloc chain | cons_list, binary_trees |
+| Realloc-payload heavy | string_concat (str grow), hash_chain (chain.items grow) |
 
 ### Backend 選択ガイド
 
