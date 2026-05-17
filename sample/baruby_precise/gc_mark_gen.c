@@ -1,43 +1,91 @@
-// gc_mark_gen.c — backend #3: non-moving mark&sweep with 2 generations.
+// gc_mark_gen.c — backend #3: non-moving mark&sweep with 2 generations,
+// slab/page allocated.
 //
-// Heap split into a young list (nursery) and an old list (tenured).
-// Allocations go into young.  On minor GC, survivors are promoted to old.
+// Heap layout: same slab pages as gc_mark.c (9 size classes, 16 KiB
+// pages, large-obj path for >4 KiB).  All allocations come from those
+// pages; no libc malloc.
 //
-// Remembered set is *implicit*: we don't run a write barrier in the
-// mutator, so we don't know which old objects hold young pointers.
-// Instead, every minor GC scans ALL old objects' payloads for young
-// pointers (= treat all old as remset).  Cost: O(|old|) per minor GC —
-// fine for a testbed but limits scaling.
+// Generation tracking: each GCHeader carries an `old` bit.  Young
+// objects form a single-linked list through GCHeader.young_next; the
+// list head is `young_head`.  Old objects don't need a list since the
+// major sweep walks pages directly.  Saves 8 B/header vs the old
+// young+old doubly-linked design.
 //
-// Major GC: standard mark&sweep over both lists (clears the implicit
-// remset effect since fewer young pointers exist after promotion).
+// Minor GC:
+//   1. Mark from roots + dirty remset (old objects with heap writes).
+//   2. Walk young_head list.  Marked → promote in place (set old=true,
+//      clear marked); unmarked → return slot to size-class freelist.
+//      The young list is empty post-minor (promoted survivors are no
+//      longer "young").
 //
-// Stress mode: collect on every alloc.
+// Major GC:
+//   1. Mark from roots through both generations.
+//   2. Walk young_head: promote marked young in place; free unmarked.
+//   3. Walk all pages by region (slot-prefix walk).  Free unmarked old
+//      slots; clear marked bit on survivors.  Free slots are skipped.
+//
+// Write barrier: WB on heap-pointer write into an old object marks it
+// dirty + pushes to the remset.  Minor scan walks just the remset, not
+// the whole old set.
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include "context.h"
 #include "astro_debug.h"
 #include "gc.h"
 
 typedef struct GCHeader {
-    struct GCHeader *prev, *next;
+    struct GCHeader *young_next;   // single-linked young list; garbage when old
     uint32_t kind;
     uint32_t size;
     bool     marked;
     bool     old;
-    bool     dirty;   // old object written to since last minor GC (remset entry)
+    bool     dirty;
+    uint8_t  _pad[5];              // pad to 24 B so payload stays 8-aligned
 } GCHeader;
+_Static_assert(sizeof(struct GCHeader) == 24, "GCHeader must be 24 bytes");
+
+typedef struct FreeSlot {
+    struct FreeSlot *next;
+} FreeSlot;
 
 #define ALIGN8(n) (((n) + 7u) & ~(size_t)7u)
 
-static GCHeader young_head, old_head;
+#define NUM_SIZE_CLASSES 9
+static const size_t size_class_bytes[NUM_SIZE_CLASSES] = {
+    32, 64, 128, 256, 512, 1024, 2048, 3072, 4096
+};
+
+#define PAGE_SIZE       (16u * 1024u)
+#define PAGE_HDR_BYTES  16
+
+typedef struct Page {
+    struct Page *next;
+    uint16_t class_idx;
+    uint16_t _pad0;
+    uint32_t _pad1;
+} Page;
+_Static_assert(sizeof(Page) == PAGE_HDR_BYTES, "Page header size mismatch");
+
+typedef struct LargeObj {
+    struct LargeObj *next;
+    size_t           map_bytes;
+} LargeObj;
+
+static Page     *page_head[NUM_SIZE_CLASSES];
+static FreeSlot *freelist[NUM_SIZE_CLASSES];
+static LargeObj *large_head = NULL;
+
+static GCHeader *young_head = NULL;
 static size_t   young_bytes = 0;
 static size_t   old_bytes   = 0;
-static size_t   young_threshold     = 4u * 1024u * 1024u;     // 4 MiB nursery
+static size_t   young_threshold     = 4u * 1024u * 1024u;
 static size_t   old_alloc_since_major = 0;
-static size_t   old_major_threshold = 64u * 1024u * 1024u;    // 64 MiB
+#define MAJOR_THRESHOLD_MIN  (64u * 1024u * 1024u)
+static size_t   old_major_threshold = MAJOR_THRESHOLD_MIN;
+
 static CTX     *gc_ctx = NULL;
 static bool     in_minor = false;
 
@@ -45,10 +93,6 @@ static GCHeader **gray_buf  = NULL;
 static size_t     gray_cnt  = 0;
 static size_t     gray_capa = 0;
 
-// Explicit remembered set: old objects that have had a heap-pointer write
-// since the last minor GC.  WB pushes here (if not already queued);
-// minor_gc walks just this list instead of the entire old list, giving
-// O(|dirty|) instead of O(|old|).
 static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
@@ -61,8 +105,6 @@ void
 baruby_gc_init(CTX *c)
 {
     gc_ctx = c;
-    young_head.prev = young_head.next = &young_head;
-    old_head.prev   = old_head.next   = &old_head;
     if (getenv("BARUBY_GC_STRESS")) {
         baruby_gc_stress = 1;
         young_threshold = 0;
@@ -70,22 +112,183 @@ baruby_gc_init(CTX *c)
     }
 }
 
-static GCHeader *
-list_alloc_young(BarubyGCKind kind, size_t payload_size)
+// ---------------------------------------------------------------------------
+// Slab management
+// ---------------------------------------------------------------------------
+
+static int
+size_class_for(size_t slot_total)
 {
-    size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = (GCHeader *)malloc(sizeof(GCHeader) + aligned);
-    if (!h) { fprintf(stderr, "baruby_gc=mark_gen: OOM\n"); abort(); }
+    for (int i = 0; i < NUM_SIZE_CLASSES; i++) {
+        if (slot_total <= size_class_bytes[i]) return i;
+    }
+    return -1;
+}
+
+static void
+new_page(int class_idx)
+{
+    void *raw = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE,
+                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) { perror("mmap"); abort(); }
+    Page *p = (Page *)raw;
+    p->class_idx = (uint16_t)class_idx;
+    p->next = page_head[class_idx];
+    page_head[class_idx] = p;
+
+    size_t sb = size_class_bytes[class_idx];
+    char *slot = (char *)p + PAGE_HDR_BYTES;
+    size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
+    for (size_t i = 0; i < n_slots; i++) {
+        GCHeader *h = (GCHeader *)slot;
+        h->kind   = KIND_FREE;
+        h->size   = 0;
+        h->marked = false;
+        h->old    = false;
+        h->dirty  = false;
+        FreeSlot *fs = (FreeSlot *)(h + 1);
+        fs->next = freelist[class_idx];
+        freelist[class_idx] = fs;
+        slot += sb;
+    }
+}
+
+static GCHeader *
+slab_alloc(BarubyGCKind kind, size_t payload_size, int class_idx)
+{
+    if (!freelist[class_idx]) new_page(class_idx);
+    FreeSlot *fs = freelist[class_idx];
+    freelist[class_idx] = fs->next;
+    GCHeader *h = (GCHeader *)fs - 1;
     h->kind   = (uint32_t)kind;
     h->size   = (uint32_t)payload_size;
     h->marked = false;
     h->old    = false;
     h->dirty  = false;
-    h->prev   = &young_head;
-    h->next   = young_head.next;
-    young_head.next->prev = h;
-    young_head.next       = h;
+    h->young_next = young_head;
+    young_head = h;
+    young_bytes += payload_size;
     return h;
+}
+
+static GCHeader *
+large_alloc(BarubyGCKind kind, size_t payload_size)
+{
+    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t map_bytes = (need + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
+    void *raw = mmap(NULL, map_bytes, PROT_READ|PROT_WRITE,
+                     MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (raw == MAP_FAILED) { perror("mmap"); abort(); }
+    LargeObj *lo = (LargeObj *)raw;
+    lo->next = large_head;
+    lo->map_bytes = map_bytes;
+    large_head = lo;
+    GCHeader *h = (GCHeader *)(lo + 1);
+    h->kind   = (uint32_t)kind;
+    h->size   = (uint32_t)payload_size;
+    h->marked = false;
+    h->old    = false;
+    h->dirty  = false;
+    h->young_next = young_head;
+    young_head = h;
+    young_bytes += payload_size;
+    return h;
+}
+
+static void
+free_slot(GCHeader *h)
+{
+    size_t total = sizeof(GCHeader) + ALIGN8(h->size);
+    int c = size_class_for(total);
+    if (c >= 0) {
+        h->kind = KIND_FREE;
+        h->size = 0;
+        FreeSlot *fs = (FreeSlot *)(h + 1);
+        fs->next = freelist[c];
+        freelist[c] = fs;
+    } else {
+        // Large object: find + unlink + munmap.
+        LargeObj **link = &large_head;
+        while (*link) {
+            LargeObj *lo = *link;
+            if ((GCHeader *)(lo + 1) == h) {
+                *link = lo->next;
+                munmap(lo, lo->map_bytes);
+                return;
+            }
+            link = &lo->next;
+        }
+        ASTRO_ASSERT(0 && "large_obj not found");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Alloc API
+// ---------------------------------------------------------------------------
+
+static void minor_gc(VALUE *sp_top);
+static void major_gc(VALUE *sp_top);
+
+static inline void
+maybe_collect(size_t add, VALUE *sp_top)
+{
+    if (baruby_gc_stress || young_bytes + add > young_threshold) {
+        if (old_alloc_since_major > old_major_threshold) {
+            major_gc(sp_top);
+            old_alloc_since_major = 0;
+        } else {
+            minor_gc(sp_top);
+        }
+    }
+}
+
+void *
+baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
+{
+    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
+                 kind == KIND_PAYLOAD_VAL);
+    maybe_collect(payload_size, sp_top);
+    size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
+    int c = size_class_for(slot_total);
+    GCHeader *h = (c >= 0) ? slab_alloc(kind, payload_size, c)
+                           : large_alloc(kind, payload_size);
+    void *payload = (void *)(h + 1);
+    ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
+    memset(payload, 0, ALIGN8(payload_size));
+    baruby_gc_stats.total_bytes += payload_size;
+    baruby_gc_stats.heap_bytes  += payload_size;
+    return payload;
+}
+
+void *
+baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+{
+    maybe_collect(payload_size, sp_top);
+    size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
+    int c = size_class_for(slot_total);
+    GCHeader *h = (c >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, c)
+                           : large_alloc(KIND_PAYLOAD_BYTE, payload_size);
+    void *payload = (void *)(h + 1);
+    ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
+    baruby_gc_stats.total_bytes += payload_size;
+    baruby_gc_stats.heap_bytes  += payload_size;
+    return payload;
+}
+
+void *
+baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+{
+    if (!old) return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+    GCHeader *oldh = (GCHeader *)old - 1;
+    BarubyGCKind kind = (BarubyGCKind)oldh->kind;
+    size_t old_size = oldh->size;
+    size_t copy_bytes = old_size < new_size ? old_size : new_size;
+    sp_top[0] = (VALUE)old;
+    void *newp = (kind == KIND_PAYLOAD_BYTE)
+        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
+        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
+    return newp;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,68 +330,8 @@ baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
     }
 }
 
-static void minor_gc(VALUE *sp_top);
-static void major_gc(VALUE *sp_top);
-
-static inline void
-maybe_collect(size_t add, VALUE *sp_top)
-{
-    if (baruby_gc_stress || young_bytes + add > young_threshold) {
-        if (old_alloc_since_major > old_major_threshold) {
-            major_gc(sp_top);
-            old_alloc_since_major = 0;
-        } else {
-            minor_gc(sp_top);
-        }
-    }
-}
-
-void *
-baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
-{
-    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
-                 kind == KIND_PAYLOAD_VAL);
-    maybe_collect(payload_size, sp_top);
-    GCHeader *h = list_alloc_young(kind, payload_size);
-    void *payload = (void *)(h + 1);
-    memset(payload, 0, ALIGN8(payload_size));
-    young_bytes += payload_size;
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
-    return payload;
-}
-
-void *
-baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
-{
-    maybe_collect(payload_size, sp_top);
-    GCHeader *h = list_alloc_young(KIND_PAYLOAD_BYTE, payload_size);
-    void *payload = (void *)(h + 1);
-    young_bytes += payload_size;
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
-    return payload;
-}
-
-void *
-baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
-{
-    if (!old) return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
-    GCHeader *oldh = (GCHeader *)old - 1;
-    BarubyGCKind kind = (BarubyGCKind)oldh->kind;
-    size_t old_size = oldh->size;
-    size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    // Root old via sp_top[0] — uniform with moving-GC backends.
-    sp_top[0] = (VALUE)old;
-    void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
-        : baruby_gc_alloc(kind, new_size, sp_top + 1);
-    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
-    return newp;
-}
-
 // ---------------------------------------------------------------------------
-// Trace + mark
+// Mark phase
 // ---------------------------------------------------------------------------
 
 static void
@@ -207,11 +350,10 @@ mark_value(VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
-    // Minor GC: old objects are assumed live (don't push to gray; their
-    // payloads have already been scanned for young pointers by the
-    // initial remset pass).
-    if (in_minor && h->old) return;
     if (h->marked) return;
+    // Minor: don't traverse already-old objects via root scan; the
+    // remset is responsible for those.  Major: mark everything.
+    if (in_minor && h->old) return;
     h->marked = true;
     gray_push(h);
 }
@@ -254,72 +396,115 @@ process_gray(void)
     }
 }
 
-// Move a marked young object to the old list.  Caller decides when to
-// clear the marked bit — for minor GC we clear it here (sweep stops at
-// young), but for major GC the subsequent old-sweep needs to see the
-// just-promoted object still marked so it doesn't free it.
+// ---------------------------------------------------------------------------
+// Sweep / promote
+// ---------------------------------------------------------------------------
+
+// Walk young list: marked → promote in place; unmarked → free.
+// young_head/young_bytes reset.
+//
+// NB: keep h->marked=true on promoted objects.  In major, sweep_old_pages
+// runs AFTER sweep_young and would otherwise see the just-promoted slot
+// as "old + unmarked" and free it.  The marked bit is cleared during
+// sweep_old_pages instead (which is also when minor's promoted-young
+// would later get cleared on the next minor cycle... actually no, minor
+// doesn't call sweep_old_pages — see clear_marked param).
 static void
-promote(GCHeader *h, bool clear_marked)
+sweep_young(bool clear_marked)
 {
-    if (clear_marked) h->marked = false;
-    // unlink from young list
-    h->prev->next = h->next;
-    h->next->prev = h->prev;
-    // insert into old list (head)
-    h->old  = true;
-    h->prev = &old_head;
-    h->next = old_head.next;
-    old_head.next->prev = h;
-    old_head.next       = h;
-    old_bytes += h->size;
-    old_alloc_since_major += h->size;
+    GCHeader *h = young_head;
+    young_head = NULL;
+    young_bytes = 0;
+    while (h) {
+        GCHeader *next = h->young_next;
+        if (h->marked) {
+            // Promote: stays in place.  In minor, clear marked (no
+            // follow-up scan).  In major, keep marked so the subsequent
+            // sweep_old_pages doesn't free us; it'll clear it then.
+            if (clear_marked) h->marked = false;
+            h->old    = true;
+            old_bytes += h->size;
+            old_alloc_since_major += h->size;
+        } else {
+            baruby_gc_stats.heap_bytes -= h->size;
+            free_slot(h);
+        }
+        h = next;
+    }
 }
 
+// Major: walk slab pages + large objects, free unmarked OLD slots.
+// Young slots have already been handled by sweep_young.
 static void
-free_unlink(GCHeader *h)
+sweep_old_pages(void)
 {
-    h->prev->next = h->next;
-    h->next->prev = h->prev;
-    baruby_gc_stats.heap_bytes -= h->size;
-    free(h);
+    for (int c = 0; c < NUM_SIZE_CLASSES; c++) {
+        size_t sb = size_class_bytes[c];
+        size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
+        for (Page *p = page_head[c]; p; p = p->next) {
+            char *slot = (char *)p + PAGE_HDR_BYTES;
+            for (size_t i = 0; i < n_slots; i++, slot += sb) {
+                GCHeader *h = (GCHeader *)slot;
+                if (h->kind == KIND_FREE) continue;
+                if (!h->old) continue;
+                if (h->marked) {
+                    h->marked = false;
+                    h->dirty  = false;
+                } else {
+                    old_bytes -= h->size;
+                    baruby_gc_stats.heap_bytes -= h->size;
+                    free_slot(h);
+                }
+            }
+        }
+    }
+    LargeObj **link = &large_head;
+    while (*link) {
+        LargeObj *lo = *link;
+        GCHeader *h = (GCHeader *)(lo + 1);
+        if (!h->old) { link = &lo->next; continue; }
+        if (h->marked) {
+            h->marked = false;
+            h->dirty  = false;
+            link = &lo->next;
+        } else {
+            *link = lo->next;
+            old_bytes -= h->size;
+            baruby_gc_stats.heap_bytes -= h->size;
+            munmap(lo, lo->map_bytes);
+        }
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Collection drivers
+// ---------------------------------------------------------------------------
 
 static void
 minor_gc(VALUE *sp_top)
 {
     struct timespec t0 = baruby_gc_time_begin();
     in_minor = true;
-    // Step 1: scan the remembered set (explicit list of dirty old).
-    // Each entry had a heap write since the previous minor; trace its
-    // outgoing for young pointers and clear the dirty bit.
-    for (size_t i = 0; i < remset_cnt; i++) {
-        GCHeader *h = remset_buf[i];
-        if (h->dirty) {
-            scan_outgoing(h);
-            h->dirty = false;
-        }
-    }
-    remset_cnt = 0;
-    // Step 2: roots
-    for (VALUE *p = gc_ctx->env; p < sp_top; p++) mark_value(*p);
-    // Step 3: BFS through young objects
+
+    CTX *c = gc_ctx;
+    for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
 
-    // Step 4: sweep young — promote marked (clearing marked since old
-    // is not being swept in this minor), free unmarked.
-    GCHeader *h = young_head.next;
-    while (h != &young_head) {
-        GCHeader *next = h->next;
-        if (h->marked) promote(h, /*clear_marked=*/true);
-        else           free_unlink(h);
-        h = next;
+    // Process remset: old objects with heap writes since last minor.
+    for (size_t i = 0; i < remset_cnt; i++) {
+        GCHeader *h = remset_buf[i];
+        h->dirty = false;
+        scan_outgoing(h);
     }
-    young_bytes = 0;
-    in_minor = false;
+    remset_cnt = 0;
+    process_gray();
+
+    sweep_young(/*clear_marked=*/true);
 
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.minor_count++;
-    gc_ctx->sp = sp_top;
+    in_minor = false;
+    c->sp = sp_top;
     baruby_gc_time_end(t0);
 }
 
@@ -328,57 +513,26 @@ major_gc(VALUE *sp_top)
 {
     struct timespec t0 = baruby_gc_time_begin();
     in_minor = false;
-    // Discard the remset — major rescans everything anyway, and we'd
-    // otherwise hold stale pointers to objects this major frees.
     remset_cnt = 0;
 
-    // Mark from roots through everything.
-    for (VALUE *p = gc_ctx->env; p < sp_top; p++) mark_value(*p);
+    CTX *c = gc_ctx;
+    for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
 
-    // Sweep young: promote marked (KEEP marked bit set — the old-sweep
-    // below scans the same list including these just-promoted nodes and
-    // needs to see them as marked).  Free unmarked.
-    {
-        GCHeader *h = young_head.next;
-        while (h != &young_head) {
-            GCHeader *next = h->next;
-            if (h->marked) promote(h, /*clear_marked=*/false);
-            else           free_unlink(h);
-            h = next;
-        }
-    }
-    // Sweep old: clear marked + dirty on survivors, free unmarked.  We
-    // discarded the remset at major start, so any leftover dirty bit on
-    // a survivor would leak (next minor wouldn't scan it).  Reset both.
-    {
-        GCHeader *h = old_head.next;
-        while (h != &old_head) {
-            GCHeader *next = h->next;
-            if (h->marked) {
-                h->marked = false;
-                h->dirty  = false;
-            } else {
-                old_bytes -= h->size;
-                free_unlink(h);
-            }
-            h = next;
-        }
-    }
-    young_bytes = 0;
+    // In major, keep marked=true on promoted young objects so the
+    // subsequent sweep_old_pages doesn't free them as unmarked-old.
+    sweep_young(/*clear_marked=*/false);
+    sweep_old_pages();
 
-    // Adaptive major threshold: re-tune to 2 × post-sweep old size.
-    // Without this, a fixed 64 MiB threshold fires majors every 64 MiB
-    // even when old is already 200 MiB live, doubling major cost.
     if (!baruby_gc_stress) {
         size_t next = old_bytes * 2;
-        old_major_threshold = next < (64u * 1024u * 1024u) ? (64u * 1024u * 1024u) : next;
+        old_major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;
     }
     old_alloc_since_major = 0;
 
     baruby_gc_stats.gc_count++;
     baruby_gc_stats.major_count++;
-    gc_ctx->sp = sp_top;
+    c->sp = sp_top;
     baruby_gc_time_end(t0);
 }
 
