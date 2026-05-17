@@ -35,26 +35,31 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 
 | Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen |
 |---------------|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|
-| binary_trees  | 0.62 | 0.88 | 1.11 | 1.16 | **0.52** | 0.75 | 0.79 | 0.58 | 0.79 | **0.52** | 0.92 |
-| cons_list     | 1.24 | 0.87 | 0.96 | 1.04 | 1.06 | **0.77** | 0.83 | 1.14 | 0.83 | 1.03 | 0.92 |
-| fib_pair      | 1.58 | 0.93 | 1.06 | 1.12 | 1.26 | **0.88** | 0.95 | 1.47 | 0.90 | 1.27 | 0.99 |
-| gc_combined   | 1.40 | 1.01 | 1.00 | 1.19 | 1.19 | **0.94** | 0.99 | 1.28 | 1.01 | 1.22 | 1.00 |
-| hash_chain    | 1.29 | 2.48 | 1.72 | 1.73 | 1.20 | 1.12 | 1.24 | 1.26 | 1.18 | **1.11** | 1.28 |
-| interp_calc   | 1.35 | 1.02 | 1.17 | 1.23 | 1.22 | 1.03 | 1.01 | 1.24 | **1.00** | 1.15 | 1.14 |
-| life          | 1.32 | 1.46 | 1.37 | **1.31** | 1.34 | 1.34 | 1.34 | 1.33 | 1.37 | 1.36 | 1.41 |
-| list_alloc    | 1.33 | 0.98 | 0.97 | 1.10 | 1.15 | 0.91 | **0.87** | 1.22 | 0.94 | 1.18 | 0.97 |
-| list_sort     | 1.17 | 1.23 | 1.21 | 1.25 | 1.21 | 1.12 | 1.06 | 1.19 | 1.10 | 1.21 | **1.15** |
-| nqueens       | 0.98 | 1.00 | 0.98 | 0.98 | 1.00 | 0.98 | 0.98 | 0.95 | **0.90** | 0.98 | 1.04 |
-| string_concat | 1.65 | 0.68 | 0.78 | 0.83 | 0.93 | 0.54 | **0.53** | 1.15 | **0.53** | 0.91 | 0.60 |
-| substr_churn  | 1.70 | 1.15 | 1.11 | 1.11 | 1.28 | 0.93 | 0.90 | 1.48 | **0.90** | 1.13 | 0.99 |
+| binary_trees  | 0.64 | 0.90 | 1.18 | 1.23 | 0.55 | 0.79 | 0.78 | 0.61 | 0.78 | **0.51** | 0.87 |
+| cons_list     | 1.26 | 0.81 | 0.92 | 1.00 | 1.05 | 0.85 | 0.84 | 1.17 | **0.79** | 1.01 | 0.83 |
+| fib_pair      | 1.58 | 0.85 | 1.03 | 1.07 | 1.31 | 0.92 | 0.89 | 1.54 | **0.81** | 1.26 | 0.88 |
+| gc_combined   | 1.40 | **0.91** | 1.05 | 1.13 | 1.22 | 0.95 | 0.96 | 1.32 | 0.93 | 1.17 | 0.95 |
+| hash_chain    | 1.45 | 1.58 | 1.62 | 1.62 | 1.15 | 1.15 | 1.18 | 1.28 | 1.15 | **1.12** | 1.15 |
+| interp_calc   | 1.33 | **0.94** | 1.13 | 1.19 | 1.22 | 1.02 | 1.02 | 1.28 | 1.00 | 1.15 | 1.01 |
+| life          | 1.33 | **1.32** | **1.32** | 1.33 | 1.33 | 1.38 | 1.36 | 1.37 | 1.37 | 1.32 | 1.34 |
+| list_alloc    | 1.34 | **0.84** | 0.94 | 1.05 | 1.18 | 0.90 | 0.90 | 1.26 | 0.87 | 1.10 | 0.88 |
+| list_sort     | 1.18 | 1.14 | 1.16 | 1.17 | 1.18 | 1.05 | **1.04** | 1.20 | 1.08 | 1.17 | 1.04 |
+| nqueens       | 0.97 | 0.96 | 0.97 | 0.96 | 0.99 | 0.98 | 0.97 | 1.01 | 0.97 | 1.00 | **0.94** |
+| string_concat | 1.64 | 0.65 | 0.76 | 0.83 | 0.93 | 0.55 | 0.55 | 1.15 | 0.57 | 0.92 | **0.53** |
+| substr_churn  | 1.66 | 1.10 | 1.04 | 1.09 | 1.28 | **0.90** | 0.92 | 1.56 | 0.91 | 1.13 | 0.95 |
 
-**勝者分布** (2026-05-17 refresh): `copy_gen` が 4 bench で最速
-(cons_list / fib_pair / gc_combined / string_concat tied)、
-`copy_gen_inc` が 3 (list_alloc / string_concat / substr_churn tied)、
-`mark_compact_gen` が 3 (interp_calc / nqueens / string_concat tied、
-substr_churn tied)、 `bump` が 2 (binary_trees tied / hash_chain)、
-`copy` が 1 (binary_trees tied)、 `mark_compact` が tied、 `mark_bump_gen`
-が 1 (list_sort)、 `mark_gen_inc` が 1 (life)。
+**勝者分布** (2026-05-17 (22) refresh、 全 backend slab + freelist 順序
+最適化後): `mark` が 4 bench で最速 (gc_combined / interp_calc / life
+tied / list_alloc)、 `mark_compact_gen` が 2 (cons_list / fib_pair)、
+`bump` が 2 (binary_trees / hash_chain)、 `mark_bump_gen` が 2
+(nqueens / string_concat tied)、 `copy_gen_inc` が 1 (list_sort)、
+`copy_gen` が 1 (substr_churn)。
+
+驚くべきことに **`mark` (世代なし non-moving slab) が 4 つの bench で
+最速** になった: gc_combined / interp_calc / list_alloc は適応的閾値で
+GC 回数が抑えられ、 slab alloc + sequential freelist で mutator が速い。
+gen 系の per-alloc 余分な簿記 (young_next link 更新 etc.) がない分が
+効いている。
 
 引っかかった改善点 (2026-05-17 unified realloc_payload, commit e5b237f):
 - `mark` の string_concat 2.41 → 1.68 s (-30%)、 substr_churn 1.53 →
@@ -367,31 +372,42 @@ GC-only 比較。
 
 | Bench | baruby (libgc) | baruby\_precise 最速 (backend) | precise vs libgc |
 |---|---:|---:|---|
-| binary_trees  | 0.86 | **0.52** (`copy` / `bump`) | **-40%** |
-| cons_list     | 0.91 | **0.77** (`copy_gen`) | -15% |
-| fib_pair      | 1.14 | **0.88** (`copy_gen`) | -23% |
-| gc_combined   | 1.09 | **0.94** (`copy_gen`) | -14% |
-| hash_chain    | 1.44 | **1.11** (`bump`) | -23% |
-| interp_calc   | 1.13 | **1.00** (`mark_compact_gen`) | -12% |
-| list_alloc    | 0.98 | **0.87** (`copy_gen_inc`) | -11% |
-| list_sort     | 1.15 | **1.05** (`mark_bump_gen`) | -9% |
-| nqueens       | 0.97 | **0.90** (`mark_compact_gen`) | -7% |
-| string_concat | 0.98 | **0.53** (`copy_gen_inc` / `mark_compact_gen`) | **-46%** |
-| substr_churn  | 1.36 | **0.90** (`mark_compact_gen`) | -34% |
+| binary_trees  | 0.86 | **0.51** (`bump`) | **-41%** |
+| cons_list     | 0.91 | **0.79** (`mark_compact_gen`) | -13% |
+| fib_pair      | 1.14 | **0.81** (`mark_compact_gen`) | **-29%** |
+| gc_combined   | 1.09 | **0.91** (`mark`) | -17% |
+| hash_chain    | 1.44 | **1.12** (`bump`) | -22% |
+| interp_calc   | 1.13 | **0.94** (`mark`) | -17% |
+| list_alloc    | 0.98 | **0.84** (`mark`) | -14% |
+| list_sort     | 1.15 | **1.04** (`copy_gen_inc`) | -10% |
+| nqueens       | 0.97 | **0.94** (`mark_bump_gen`) | -3% |
+| string_concat | 0.98 | **0.53** (`mark_bump_gen`) | **-46%** |
+| substr_churn  | 1.36 | **0.90** (`copy_gen`) | -34% |
 
 geomean: precise 最速は libgc 比 **約 -22%** (~ 0.78×)。
+
+**winner 分布の変化** (slab + freelist 順序最適化後):
+slab allocator 導入 (`mark` / `mark_gen` / `mark_gen_inc`) と freelist の
+HIGH→LOW populate により、 非 moving mark 系のアロケータ性能が大きく改善。
+以前は `copy_gen*` がほぼ全 bench で勝っていたが、 現在は **mark 系 4 bench +
+bump/mark_bump_gen 3 bench + mark_compact_gen 3 bench + copy_gen* 2 bench**
+と winner が分散。 alloc-heavy で再利用が多い workload (`interp_calc`,
+`list_alloc`, `gc_combined`) は mark 系が、 long-live tenured が多い
+workload (`fib_pair`, `cons_list`) は mark_compact_gen が、 short-live
+nursery 支配 (`binary_trees`, `hash_chain`) は bump 系が勝つ、 という
+綺麗な stratification になった。
 
 **観察**:
 
 - **全 11 bench で precise の最速 backend が libgc を上回る**。 GC 戦略の
   バリエーション + precise rooting/WB の組合せが workload 適合性を
   上げている (libgc は一律 mark+sweep + conservative scan)。
-- 最大差は **string_concat の -46%** と **binary_trees の -40%**。
+- 最大差は **string_concat の -46%** と **binary_trees の -41%**。
   string_concat は libgc が短命 BaString を full-heap mark+sweep する
-  のに対し、 precise の generational backend は nursery 完結で勝つ。
+  のに対し、 precise の mark_bump_gen は nursery 完結で勝つ。
   binary_trees は libgc が conservative scan の stack / data segment 全
-  走査を毎 GC やるのに対し、 precise の Cheney / bump 単純モデルが勝つ。
-- 最小差は **nqueens の -7%、 list_sort の -9%**。 どちらも mutator 支配
+  走査を毎 GC やるのに対し、 precise の bump 単純モデルが勝つ。
+- 最小差は **nqueens の -3%、 list_sort の -10%**。 どちらも mutator 支配
   (GC 比率が低い) なので GC 戦略の差が見えにくい。
 - 全 11 backend 比較は §2 table を参照。
 
