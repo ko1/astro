@@ -23,10 +23,14 @@
 //      its outgoing refs.
 //   4. Reset nursery_top.
 //
-// Promotion: malloc a fresh tenured slot, memcpy from nursery, link into
-// old_head list.  Old nursery slot's `fwd` set to new payload pointer.
+// Promotion: bump-alloc a fresh tenured slot, memcpy from nursery.
+// Old nursery slot's `fwd` set to new payload pointer for forwarding.
 //
-// Major GC: standard mark&sweep over the old list.  Discards remset.
+// Major GC: mark + region-walk sweep.  Walks tenured region linearly
+// from base to top, reading header-size-prefix to find each object.
+// No linked list — saves 16 B/header and gives cache-friendly sweep.
+// Without compaction the region's bump pointer never resets, so live
+// + dead objects accumulate until 1 GiB OOM (fine for short benches).
 //
 // Write barrier: when writing a heap pointer into an old object, mark it
 // dirty + push to remset.  Minor GC walks the remset (not the full old
@@ -97,7 +101,7 @@ static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0};
+BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
 int baruby_gc_stress = 0;
 const char *baruby_gc_backend_name = "mark_bump_gen";
 
@@ -613,3 +617,4 @@ size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
 size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
 size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
 double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }
+double baruby_gc_max_pause_seconds(void) { return baruby_gc_stats.max_pause_seconds; }

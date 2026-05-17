@@ -25,8 +25,8 @@ flag = case opts[:mode]
 
 benches = ARGV.empty? ? Dir["#{BENCH_DIR}/*.ba.rb"].sort : ARGV
 puts "mode: #{opts[:mode]}, repeats: #{opts[:repeats]}"
-puts "%-24s %10s %10s %10s %10s %10s %8s" %
-     ["bench", "best(s)", "med(s)", "alloc_MB", "GCs", "gc_s", "gc%"]
+puts "%-24s %10s %10s %10s %10s %10s %8s %10s" %
+     ["bench", "best(s)", "med(s)", "alloc_MB", "GCs", "gc_s", "gc%", "max_ms"]
 
 benches.each do |path|
   name = File.basename(path, ".ba.rb")
@@ -35,6 +35,7 @@ benches.each do |path|
   gcs      = nil
   gc_sec   = nil
   gc_pct   = nil
+  max_ms   = nil
   opts[:repeats].times do
     env = { "BARUBY_GC_STATS" => "1" }
     cmd = [env, BARUBY, *flag, path]
@@ -50,13 +51,16 @@ benches.each do |path|
       gc_sec = m[1].to_f
       gc_pct = m[2].to_f
     end
+    if (m = out.match(/max_pause_ms=([\d.]+)/))
+      max_ms = m[1].to_f
+    end
   end
   if times.empty?
     puts "%-24s  no output" % name
   else
     sorted = times.sort
-    puts "%-24s %10.3f %10.3f %10.1f %10d %10.3f %7.1f%%" %
+    puts "%-24s %10.3f %10.3f %10.1f %10d %10.3f %7.1f%% %10.2f" %
          [name, sorted.first, sorted[sorted.size / 2],
-          alloc_mb || 0.0, gcs || 0, gc_sec || 0.0, gc_pct || 0.0]
+          alloc_mb || 0.0, gcs || 0, gc_sec || 0.0, gc_pct || 0.0, max_ms || 0.0]
   end
 end

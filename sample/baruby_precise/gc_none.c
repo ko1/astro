@@ -14,7 +14,7 @@
 #include "astro_debug.h"
 #include "gc.h"
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0};
+BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
 int baruby_gc_stress = 0;
 const char *baruby_gc_backend_name = "none";
 
@@ -73,3 +73,4 @@ size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
 size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
 size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
 double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }
+double baruby_gc_max_pause_seconds(void) { return baruby_gc_stats.max_pause_seconds; }

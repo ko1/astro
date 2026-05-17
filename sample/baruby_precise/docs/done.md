@@ -3,6 +3,30 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-17 (17) — `max_pause_ms` 計測を追加 (latency upper-bound)
+
+`BarubyGCStats` に `max_pause_seconds` を追加し、 `baruby_gc_time_end`
+で 1 回の collect の最大 wall time を tracking。 GC_STATS 出力に
+`max_pause_ms=...` を追加、 `bench/run.rb` の table にも `max_ms` 列を
+追加。
+
+binary_trees 実測:
+
+| Backend | gc_seconds | max_pause_ms | 解釈 |
+|---|---:|---:|---|
+| mark_gen | 0.55 s | **288 ms** | 1 つの major sweep が支配 |
+| mark_gen_inc | 0.24 s | **54 ms** | inc で mark / finish_sweep が分離 (5.4× short) |
+| copy_gen | 0.43 s | 18 ms | minor のみ、 major なし |
+| mark_compact_gen | 0.43 s | 18 ms | minor のみ |
+| mark_bump_gen | 0.53 s | 55 ms | major: promote + sweep |
+
+latency 重視ワークロードでの backend 選択基準ができた。 mark_gen_inc は
+total throughput では mark_gen と差がない (current INC_WORK_PER_ALLOC =
+SIZE_MAX のため真の incremental ではない) が、 mark / finish_sweep の 2 段
+分割で max pause が大幅に短くなる効果が出ている。
+
+全 11 backend で test 3 種 + bench 12 種が PASS。
+
 ## 2026-05-17 (16) — `mark_bump_gen` の線形リスト撤廃 + region 走査 sweep (-20% binary_trees)
 
 (15) で tenured を bump 化したが線形リスト (prev/next) は維持していた。

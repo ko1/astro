@@ -351,11 +351,13 @@ main(int argc, char *argv[])
             size_t minor       = baruby_gc_minor_count();
             size_t major       = baruby_gc_major_count();
             double gc_seconds  = baruby_gc_total_seconds();
+            double max_pause   = baruby_gc_max_pause_seconds();
             double gc_pct      = elapsed > 0 ? (gc_seconds / elapsed) * 100 : 0;
             printf("__GC_STATS__ backend=%s alloc_bytes=%zu heap_bytes=%zu "
-                   "gc_count=%zu minor=%zu major=%zu gc_seconds=%.4f gc_pct=%.1f\n",
+                   "gc_count=%zu minor=%zu major=%zu "
+                   "gc_seconds=%.4f gc_pct=%.1f max_pause_ms=%.2f\n",
                     baruby_gc_backend_name, alloc_bytes, heap_bytes,
-                    gc_count, minor, major, gc_seconds, gc_pct);
+                    gc_count, minor, major, gc_seconds, gc_pct, max_pause * 1000);
         }
     }
 
