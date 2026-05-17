@@ -3,6 +3,48 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-17 (20) — `gc_mark_gen` / `gc_mark_gen_inc` も slab/page allocator に
+
+(18) で `gc_mark` を slab 化したのに合わせて generational 兄弟 2 つも
+port:
+- 16 KiB page を 9 size class に分ける (mark.c と同じ pool 構造)
+- generation tracking: per-slot に `old` bit、 young は single-linked list
+  (young_next in header)。 old 側は page 走査で済むのでリスト不要
+- minor: walk young_head、 marked → set old=true、 unmarked → freelist 返却
+- major: mark 全 generation → sweep_young → sweep_old_pages
+
+GCHeader は 24 bytes (旧 32 から -8、 mark_bump_gen と同サイズ)。
+
+性能改善 (旧 vs 新、 3-run 中央値):
+
+| Bench | mark\_gen 旧 → 新 | mark\_gen\_inc 旧 → 新 |
+|---|---:|---:|
+| binary_trees | 1.28 → 1.11 (-13%) | 1.44 → 1.16 (-19%) |
+| string_concat | 1.47 → **0.78 (-47%)** | 1.51 → **0.83 (-47%)** |
+| fib_pair | 1.43 → 1.06 (-26%) | 1.47 → 1.12 (-35%) |
+| substr_churn | 1.46 → 1.11 (-24%) | 1.58 → 1.11 (-30%) |
+| cons_list | 1.09 → 0.96 (-12%) | 1.23 → 1.04 (-24%) |
+| list_alloc | 1.19 → 0.97 (-18%) | 1.26 → 1.10 (-18%) |
+| gc_combined | 1.26 → 1.00 (-21%) | 1.33 → 1.19 (-21%) |
+| interp_calc | 1.41 → 1.17 (-17%) | 1.55 → 1.23 (-21%) |
+| hash_chain | 1.64 → 1.72 (noise) | 2.29 → 1.73 (-24%) |
+
+実装中に 2 つのバグを発見・修正:
+
+1. `mark_gen` の major で `sweep_young` が promoted 物の marked bit を
+   clear し、 後続 `sweep_old_pages` が「marked=false の old」 を free に
+   してしまう問題。 `clear_marked` パラメータを sweep_young に追加し、
+   minor は true、 major は false で呼ぶ。
+
+2. `mark_gen_inc` の incremental cycle で「inc_marking 中の新 alloc が
+   stack WB 不在で漏れる」 古典的問題。 binary_trees が 4194301 vs 正解
+   4194303 で off-by-2 になっていた。 `inc_finish_sweep` で root を
+   再走査する mark phase を追加して修正。
+
+全 11 backend で test 3 種 (plain + stress) + 7 bench (binary_trees /
+string_concat / hash_chain / nqueens / life / fib_pair / cons_list)
+が PASS。
+
 ## 2026-05-17 (18) — `gc_mark` を slab/page allocator に書換え (CRuby 風)
 
 per-object malloc + 線形 prev/next リストを撤廃し、 GC が自前で page
