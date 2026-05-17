@@ -35,12 +35,12 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 
 | Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen |
 |---------------|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|
-| binary_trees  | 0.62 | 0.96 | 1.28 | 1.36 | **0.52** | 0.75 | 0.79 | 0.58 | 0.79 | **0.52** | 1.41 |
+| binary_trees  | 0.62 | 0.96 | 1.28 | 1.36 | **0.52** | 0.75 | 0.79 | 0.58 | 0.79 | **0.52** | 1.15 |
 | cons_list     | 1.24 | 1.20 | 1.09 | 1.23 | 1.06 | **0.77** | 0.83 | 1.14 | 0.83 | 1.03 | 0.89 |
 | fib_pair      | 1.58 | 1.46 | 1.43 | 1.47 | 1.26 | **0.88** | 0.95 | 1.47 | 0.90 | 1.27 | 0.95 |
 | gc_combined   | 1.40 | 1.25 | 1.26 | 1.33 | 1.19 | **0.94** | 0.99 | 1.28 | 1.01 | 1.22 | 0.95 |
 | hash_chain    | 1.29 | 2.20 | 1.64 | 1.65 | 1.20 | 1.12 | 1.24 | 1.26 | 1.18 | **1.11** | 1.38 |
-| interp_calc   | 1.35 | 1.31 | 1.41 | 1.48 | 1.22 | 1.03 | 1.01 | 1.24 | **1.00** | 1.15 | 1.12 |
+| interp_calc   | 1.35 | 1.31 | 1.41 | 1.48 | 1.22 | 1.03 | 1.01 | 1.24 | **1.00** | 1.15 | 1.03 |
 | life          | 1.32 | 1.36 | 1.32 | **1.31** | 1.34 | 1.34 | 1.34 | 1.33 | 1.37 | 1.36 | 1.32 |
 | list_alloc    | 1.33 | 1.15 | 1.19 | 1.26 | 1.15 | 0.91 | **0.87** | 1.22 | 0.94 | 1.18 | 0.89 |
 | list_sort     | 1.17 | 1.18 | 1.23 | 1.24 | 1.21 | 1.12 | 1.06 | 1.19 | 1.10 | 1.21 | **1.05** |
@@ -65,23 +65,25 @@ substr_churn tied)、 `bump` が 2 (binary_trees tied / hash_chain)、
 (現状は STW fallback パスのみ) の最適化ヒントで bench 依存に
 3-10% 違う。
 
-**`mark_bump_gen` 分析** (2026-05-16 (13) 追加): 11 bench 中で勝つことは
-ないが、 `mark_gen` との比較が「nursery alloc 戦略」 の純粋なコスト
-を可視化する:
+**`mark_bump_gen` 分析** (2026-05-16 (13) 追加 → 2026-05-17 (15) で
+tenured を bump 化):
 
 | Bench | mark\_gen | mark\_bump\_gen | bump nursery 効果 |
 |---|---:|---:|---|
-| string_concat | 1.67 | **0.60** | -64% (短命 alloc が完全に nursery 完結) |
-| fib_pair | 1.65 | **0.97** | -41% (再帰 frame の per-call pair alloc) |
-| list_alloc | 1.36 | **0.96** | -29% (linked list churn) |
-| substr_churn | 1.74 | **0.93** | -47% |
-| binary_trees | **1.38** | 1.49 | +8% (long-lived は逆効果) |
+| string_concat | 1.47 | **0.59** | -60% |
+| fib_pair | 1.43 | **0.96** | -33% |
+| list_alloc | 1.19 | **0.96** | -19% |
+| substr_churn | 1.46 | **0.97** | -34% |
+| binary_trees | **1.28** | 1.15 | -10% (旧 v1 の 1.41 から大きく改善) |
 
 short-lived workload では bump nursery + 「ほぼ全部 nursery で死ぬ」 の
-組合せが大勝。 long-lived (binary_trees) では major が malloc 2M slot +
-memcpy するので mark_gen より逆に遅い。 `mark_compact_gen` と比べると、
-同じ bump nursery でも tenured 戦略の違い (mark+compact vs 線形 freelist
-mark&sweep) が major コストに反映 — binary_trees で 1.49 s vs 0.84 s。
+組合せが大勝。 v1 では tenured が per-object malloc だったため
+binary_trees (long-lived) は逆効果 (1.49 s) だったが、 (15) で tenured も
+bump 化したことで mark_gen より速い (1.15 s)。 `mark_compact_gen` と
+比べると、 同じ bump nursery + bump tenured でも compaction の有無で差が
+出る (mark_bump_gen はサイクル毎に slab 領域を消費し続けるが
+compact しないので fragmentation が累積、 mark_compact_gen は major で
+slide compact して領域を再利用)。
 
 **2026-05-16 (10) 改善**: `mark` の binary_trees が 7.54 s → **0.97 s
 (7.8×)** に劇的改善。 原因は major threshold を fixed 4 MiB → 適応的

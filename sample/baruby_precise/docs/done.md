@@ -3,6 +3,38 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-17 (15) — `mark_bump_gen` の tenured を bump 化 (-18% binary_trees)
+
+(13) で導入した `mark_bump_gen` の tenured を「per-object malloc + 線形
+リスト」 から「1 GiB mmap region への bump alloc + 線形リスト」 に変更。
+linked list はまだ通すので mark+sweep 意味論は維持、 ただし `free_unlink`
+は個別 free() せずリストから切るだけ (memory leaks until program exit、
+ただし bench は短時間なので OK)。
+
+効果:
+
+| Bench | 旧 (v1: malloc tenured) | 新 (v2: bump tenured) | 差 |
+|---|---:|---:|---:|
+| binary_trees | 1.41 | **1.15** | -18% |
+| interp_calc | 1.12 | **1.03** | -8% |
+| 他多数 | (noise level) | (noise level) | ±5% |
+
+binary_trees は major 中に 2M slot を malloc していたのが bump (~1 ns) に
+なって ~150 ms 削減。
+
+設計空間における位置付け:
+- `mark_gen`: malloc nursery + malloc 線形リスト tenured
+- `mark_bump_gen` v1: bump nursery + malloc 線形リスト tenured
+- `mark_bump_gen` v2 (今): bump nursery + bump tenured (no compact)
+- `mark_compact_gen`: bump nursery + bump tenured + slide compact
+- `copy_gen`: bump nursery + bump tenured + Cheney compact
+
+v2 と mark_compact_gen / copy_gen の違いは「major で compact するか」 だけ。
+compact しない v2 は major 中の slot 移動コストがゼロだが、 領域は
+累積消費 (1 GiB で OOM)。 短時間 bench では問題なし。
+
+全 11 backend で test 3 種 (plain + stress) + bench 12 種が PASS。
+
 ## 2026-05-17 (14) — `realloc_payload` を sp_top[0] rooting で統一
 
 9 つの GC backend (none / bump を除く) の `baruby_gc_realloc_payload` を

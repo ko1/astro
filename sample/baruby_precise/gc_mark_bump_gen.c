@@ -41,6 +41,7 @@
 #include "gc.h"
 
 #define NURSERY_BYTES  ((size_t)16u  << 20)    // 16 MiB
+#define TENURED_BYTES  ((size_t)1u   << 30)    // 1 GiB virtual
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
 typedef struct GCHeader {
@@ -57,6 +58,17 @@ typedef struct GCHeader {
 static char *nursery_base = NULL;
 static char *nursery_top  = NULL;
 static char *nursery_end  = NULL;
+
+// Tenured: bump-allocated within a single mmap'd region.  No individual
+// frees (memory leaks within the region until program exit).  This keeps
+// the alloc fast path to a few instructions, much faster than libc malloc.
+// `old_head` linked list still threads through live tenured objects for
+// sweep iteration (mark&sweep semantics retained).  Without compaction
+// the bump pointer never resets, so fragmentation grows over time — for
+// our short-lived benchmarks 1 GiB virtual is plenty.
+static char *tenured_base = NULL;
+static char *tenured_top  = NULL;
+static char *tenured_end  = NULL;
 
 static GCHeader old_head;            // sentinel of tenured linked list
 static size_t   old_bytes   = 0;
@@ -104,6 +116,9 @@ baruby_gc_init(CTX *c)
     nursery_base = mmap_region(NURSERY_BYTES);
     nursery_top  = nursery_base;
     nursery_end  = nursery_base + NURSERY_BYTES;
+    tenured_base = mmap_region(TENURED_BYTES);
+    tenured_top  = tenured_base;
+    tenured_end  = tenured_base + TENURED_BYTES;
     old_head.prev = old_head.next = &old_head;
     if (getenv("BARUBY_GC_STRESS")) {
         baruby_gc_stress = 1;
@@ -118,14 +133,19 @@ baruby_gc_init(CTX *c)
 static void minor_gc(VALUE *sp_top);
 static void major_gc(VALUE *sp_top);
 
-// Allocate a tenured object directly (pretenuring path for large allocs
-// and the destination for promotion).  Returns a fresh GCHeader, linked
+// Allocate a tenured object via bump.  Returns a fresh GCHeader, linked
 // into the old list.  Caller fills kind/size/payload.
 static GCHeader *
 old_alloc(BarubyGCKind kind, size_t payload_size, size_t aligned)
 {
-    GCHeader *h = (GCHeader *)malloc(sizeof(GCHeader) + aligned);
-    if (!h) { fprintf(stderr, "baruby_gc=mark_bump_gen: OOM\n"); abort(); }
+    size_t total = sizeof(GCHeader) + aligned;
+    if (tenured_top + total > tenured_end) {
+        fprintf(stderr, "baruby_gc=mark_bump_gen: tenured OOM (%zu / %zu)\n",
+                (size_t)(tenured_top - tenured_base), (size_t)TENURED_BYTES);
+        abort();
+    }
+    GCHeader *h = (GCHeader *)tenured_top;
+    tenured_top += total;
     h->kind   = (uint32_t)kind;
     h->size   = (uint32_t)payload_size;
     h->fwd    = NULL;
@@ -141,6 +161,10 @@ old_alloc(BarubyGCKind kind, size_t payload_size, size_t aligned)
     return h;
 }
 
+// Sweep-time "free": just unlink from the live list.  Memory stays in
+// the tenured region (no individual free()), eventually OOM if the
+// region fills.  For typical bench programs the region is sized
+// generously enough to not hit OOM.
 static void
 free_unlink(GCHeader *h)
 {
@@ -148,7 +172,6 @@ free_unlink(GCHeader *h)
     h->next->prev = h->prev;
     old_bytes -= h->size;
     baruby_gc_stats.heap_bytes -= h->size;
-    free(h);
 }
 
 static GCHeader *
