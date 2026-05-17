@@ -136,9 +136,11 @@ new_page(int class_idx)
     p->next = page_head[class_idx];
     page_head[class_idx] = p;
 
+    // Populate freelist HIGH → LOW so pop returns LOW → HIGH (memory
+    // order, friendly to the prefetcher).
     size_t sb = size_class_bytes[class_idx];
-    char *slot = (char *)p + PAGE_HDR_BYTES;
     size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
+    char *slot = (char *)p + PAGE_HDR_BYTES + (n_slots - 1) * sb;
     for (size_t i = 0; i < n_slots; i++) {
         GCHeader *h = (GCHeader *)slot;
         h->kind   = KIND_FREE;
@@ -149,7 +151,7 @@ new_page(int class_idx)
         FreeSlot *fs = (FreeSlot *)(h + 1);
         fs->next = freelist[class_idx];
         freelist[class_idx] = fs;
-        slot += sb;
+        slot -= sb;
     }
 }
 

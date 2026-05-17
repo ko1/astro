@@ -158,9 +158,13 @@ new_page(int class_idx)
     // the same next: page chain per class IS the sweep iteration since
     // we walk all classes).  See sweep() below.
 
+    // Populate freelist HIGH → LOW so pop returns LOW → HIGH (= memory
+    // order).  This gives the prefetcher a forward sequential pattern
+    // on consecutive allocs from this page, matching mark.c's previous
+    // malloc-based allocator's roughly-sequential addresses.
     size_t sb = size_class_bytes[class_idx];
-    char *slot = (char *)p + PAGE_HDR_BYTES;
     size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
+    char *slot = (char *)p + PAGE_HDR_BYTES + (n_slots - 1) * sb;
     for (size_t i = 0; i < n_slots; i++) {
         GCHeader *h = (GCHeader *)slot;
         h->kind   = KIND_FREE;
@@ -169,7 +173,7 @@ new_page(int class_idx)
         FreeSlot *fs = (FreeSlot *)(h + 1);
         fs->next = freelist[class_idx];
         freelist[class_idx] = fs;
-        slot += sb;
+        slot -= sb;
     }
     (void)all_pages;  // see note: per-class chains serve as the sweep iter
 }
