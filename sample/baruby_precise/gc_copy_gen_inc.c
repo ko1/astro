@@ -349,7 +349,10 @@ process_object(GCHeader *h)
 }
 
 
-static void
+/* Keep cold (see gc_copy_gen.c iter (29)): inlining minor_gc into
+ * nursery_bump bloats the alloc hot path past the inliner budget,
+ * leaving an extra `call` on every fast-path alloc. */
+static void __attribute__((noinline))
 minor_gc(VALUE *sp_top)
 {
     struct timespec t0 = aro_gc_time_begin();

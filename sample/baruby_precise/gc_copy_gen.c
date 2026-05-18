@@ -346,7 +346,11 @@ process_object(GCHeader *h)
 }
 
 
-static void
+/* Keep minor_gc out-of-line so the inliner doesn't grow nursery_bump
+ * (which is called only from the alloc fast paths).  Inlining minor_gc
+ * into nursery_bump bloats it past the inliner's budget for aro_gc_alloc,
+ * leaving a `call nursery_bump` on every allocation.  See iter (29). */
+static void __attribute__((noinline))
 minor_gc(VALUE *sp_top)
 {
     struct timespec t0 = aro_gc_time_begin();
