@@ -35,6 +35,15 @@ baruby_precise の 14 backend は、 **「alloc 戦略」 × 「collect 戦略�
 | **write barrier (WB)** | gen / inc GC で必須。 old から young への参照書込を mutator 側で記録する hook。 |
 | **remset (remembered set)** | WB が書き出した old→young 参照の保存先。 minor 時に remset エントリだけを scan すれば全 old を scan しなくて済む。 |
 | **incremental marking** | mark phase を mutator と細切れに交互実行することで pause を分散させる。 SATB barrier が必要。 |
+| **SATB (snapshot-at-the-beginning) barrier** | incremental / concurrent GC で「mark 開始時点に到達可能だったオブジェクトは全部 live と扱う」 を実現する WB の一種。 具体的には mutator が **既存の参照を上書きしようとする時** に、 **上書きされる旧 値** を retain (gray queue に push) する。 こうすることで mark 中の mutator 操作で参照グラフが変わっても、 開始時のスナップショットに居た obj は確実に mark 漏れしない。 対義は incremental update barrier (= 「新参照を retain」 する流派)。 |
+| **incremental update barrier** | SATB の対義。 mutator が「新たに参照を作る時」 の **新値** を retain する。 SATB と比べると "floating garbage" は少ないが、 mark の correctness を保証するために stack scan 等の追加コストが必要。 |
+| **gray queue** | mark phase 用の中間バッファ。 「marked だけどまだ outgoing 参照を辿っていない」 オブジェクトを溜める stack/queue。 to-do 用。 root から mark を辿る BFS / DFS 走査の implementation の一つ。 これが空になったら mark phase 完了。 |
+| **Cheney semispace algorithm** | moving GC の古典。 ヒープを 2 つの等サイズ region (from-space / to-space) に分け、 collect 時に live を from から to に copy。 copy 後 from を破棄。 alloc は bump、 fragmentation 無し。 copy 時に「to に既に copy 済の obj」 を scan ポインタで FIFO 走査するから "scan-loop"。 root → to ヘ copy → outgoing 参照を再帰でなく queue で辿る、 という形。 |
+| **forwarding pointer (fwd)** | moving GC で、 元の場所に「移動先アドレス」 を上書き保存しておくフィールド。 同じ obj への 2 回目以降の参照を辿るとき、 元アドレスを deref すると fwd が見えて新アドレスに転送される。 |
+| **Lisp-2 (slide compaction)** | mark + compact 系のアルゴリズム。 mark 後、 live obj を heap の頭から詰めて並べ替える (= "slide")。 fwd address pass → outgoing pointer 更新 pass → root 更新 pass → 実際の memmove pass、 という 4 段階。 in-place で 1 region 内で完結、 fragmentation 解消。 元論文 Knuth が Lisp-2 で実装したのが名前の由来。 |
+| **hole / line / block (Immix)** | Immix 用語。 **block** = 一定サイズ (32 KiB) の領域、 **line** = block 内の更に細かい単位 (128 B)。 mark phase で「この line に live obj が居る」 を bit で記録、 mark されてない連続 line の run = **hole**。 alloc は hole 内で bump、 hole が尽きたら次の hole を探す。 |
+| **evacuation (Immix v2)** | fragmentation が進んだ block から live obj を別 block に copy 退避すること。 これにより元 block を完全に空けて再利用可能にする。 v1 (本実装) には未搭載 (将来候補)。 |
+| **epoch counter (mark epoch)** | 「mark bit のクリアを heap walk なしに済ませる」 ための trick。 GCHeader に uint8 mark_epoch を持たせ、 mark phase は `cur_epoch` (global) を slot に書き込む。 GC 完了後 cur_epoch を tick (+1) すると、 旧サイクルの値は cur_epoch と一致しなくなる = 自動で「未 marked」 扱いに戻る。 全 mark bit を巡回クリアする O(heap) コストが消える。 |
 
 ## 1. baruby_precise が共通で持つもの
 
