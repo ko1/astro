@@ -27,6 +27,9 @@ typedef intptr_t VALUE;
 //  10: bump              — bump-only, no GC (strictly faster `none`)
 //  11: mark_bump_gen     — bump nursery + linked-list mark&sweep tenured
 //                          (isolates nursery alloc strategy vs mark_gen)
+//  12: immix             — block (32 KiB) / line (128 B) mark-region.
+//                          Non-moving v1 (no evacuation).  Bump-allocate
+//                          within holes (unmarked-line runs).
 //
 // Gen / inc variants define BARUBY_GC_HAS_WB so callers know they must use
 // aro_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
@@ -43,6 +46,7 @@ typedef intptr_t VALUE;
 #define BARUBY_GC_MARK_COMPACT_GEN 9
 #define BARUBY_GC_BUMP             10
 #define BARUBY_GC_MARK_BUMP_GEN    11
+#define BARUBY_GC_IMMIX            12
 
 #ifndef BARUBY_GC
 #  define BARUBY_GC BARUBY_GC_COPY

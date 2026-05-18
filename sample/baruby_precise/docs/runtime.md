@@ -376,11 +376,11 @@ __GC_STATS__ backend=<name> alloc_bytes=<累計> heap_bytes=<live> \
   例えば binary_trees で mark_gen=288 ms vs mark_gen_inc=54 ms (5.4×
   短縮) のように顕在化
 
-### 5.10 全 11 GC backend カタログ
+### 5.10 全 12 GC backend カタログ
 
-`make GC=<name>` で 11 種類の backend を切替えてビルド可能。 切替えは
+`make GC=<name>` で 12 種類の backend を切替えてビルド可能。 切替えは
 build time only (`-DBARUBY_GC=<n>`)。 default は `copy`。 共通インタフェース
-(`gc.h`) は `baruby_gc_init / alloc / alloc_byte / realloc_payload /
+(`gc.h`) は `aro_gc_init / alloc / alloc_byte / realloc_payload /
 collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装する。
 
 ベンチ性能比較は [perf.md](perf.md) §2 を参照。
@@ -554,9 +554,49 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
 - **GCHeader 24 B**: 線形リスト撤廃で prev/next 削除、 fwd + kind/size +
   3 bits + padding で 24 B (mark_gen の 40 B より 16 B 小さい)。
 
+#### 12. `immix` — block (32 KiB) / line (128 B) mark-region (no evac, v1)
+
+- **Layout**: 512 MiB の単一 arena を 32 KiB BLOCK × 16384 個に分割、
+  各 block を 128 B LINE × 256 個に分割。 per-block の `line_marks[256]`
+  bitmap (byte-wide for speed) で「このサイクルで marked line か」 を保持。
+- **Allocation**: "hole" (= 連続した unmarked line の run) 内で bump alloc。
+  `cur_ptr / cur_end` で現在の hole を track。 hole 枯渇時に
+  `find_hole(n_lines)` を呼んで次の hole を探す (block_cursor / line_cursor
+  で前回の続きから resume)。 block 切れたら次の block へ。 arena 全部
+  枯渇したら GC trigger → 再 retry → それでも駄目なら abort (OOM)。
+- **GC trigger**: `bytes_since_gc > gc_threshold` (adaptive、 mark と同じ
+  式)。
+- **Phases**:
+  1. 全 line_marks クリア (`memset(0)` × 全 block、 16384 × 256 B = 4 MiB)
+  2. mark from roots — オブジェクトを marked にすると同時に
+     `mark_lines_for(h)` で span する全 line を mark
+  3. sweep: block 単位で line_marks を集計、 state を FREE / RECYCLABLE /
+     USED に分類。 in-arena オブジェクトの header bit はクリアしない
+     (mark epoch counter で代用)。 large objects (>16 KiB) は別 mmap、
+     unmarked なら munmap で返却。
+  4. `cur_epoch` を tick (1..255 で wrap)。 次サイクル開始時、
+     `h->mark_epoch != cur_epoch` で「未マーク」 と扱われる。
+- **Mark epoch**: GCHeader に `uint8_t mark_epoch` を持たせ、
+  `mark_value` で `h->mark_epoch = cur_epoch` を set、 既に `== cur_epoch`
+  なら skip。 sweep 後に cur_epoch を +1 すると以前の mark は自動的に
+  invalidate される。 これにより heap 全 walk による mark bit クリアが
+  不要 (Immix の従来実装が悩む問題を回避)。
+- **Write barrier**: 不要 (世代分離なし)。
+- **特徴**: 「hole-based bump alloc + non-moving + region-aware sweep」
+  の組合せ。 binary_trees で 0.68 s (`copy` 0.53 / `bump` 0.49 と比べると
+  block metadata の overhead が見える)、 string_concat で 0.70 s
+  (`mark_bump_gen` 0.51 より遅いが `mark` 0.68 と互角)。 mid-pack。
+- **v1 制限**: evacuation を持たない。 long-running で hole の
+  fragmentation (= "1 byte の live object がその line 全体を予約する"
+  Immix 特有の無駄) が積み重なって有効容量が削れる。 v2 で
+  opportunistic evacuation を入れる予定。
+- **学術的意義**: 別の paradigm。 既存の mark/copy/compact/bump 系
+  どれとも違う「line-granularity な sweep」 を ASTro 上で動かして、
+  precise rooting 環境でどう振る舞うかを示せる。
+
 ### 5.11 設計空間の俯瞰
 
-11 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
+12 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
 眺めた表:
 
 | Backend | Nursery | Tenured | Compact? | Gen? |
@@ -572,6 +612,7 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
 | `copy_gen_inc` | bump | semispace | Cheney | yes + inc mark |
 | `mark_compact_gen` | bump | bump (1 region) | Lisp-2 slide | yes |
 | `mark_bump_gen` | bump | bump (1 region) | no (累積) | yes |
+| `immix` | — | hole-bump (block/line) | no (v1) | no |
 
 「nursery が bump か」「tenured が bump か」「major で compact するか」 が
 直交軸として並び、 backend を選ぶことで各軸の影響を孤立して測れる。

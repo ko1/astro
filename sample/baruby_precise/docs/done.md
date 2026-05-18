@@ -3,6 +3,39 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (25) — 12 つ目の backend `immix` (mark-region, no evac v1)
+
+「precise なら immix とかもいけるんじゃない？」 (user 要望) で着手。 v1 は
+non-moving (no evacuation)、 hole-based bump alloc + line-mark sweep。
+
+**設計**:
+- 512 MiB arena を 32 KiB BLOCK × 16384 個、 各 block を 128 B LINE × 256 個
+- per-block `line_marks[256]` (byte-wide) — mark phase で span するライン全てに set
+- "hole" = 連続 unmarked line の run、 これ内で bump alloc
+- `find_hole(n_lines)` で次の hole を block_cursor / line_cursor から resume
+- large object (> 16 KiB) は別 mmap (gc_mark.c 流儀)
+- **mark epoch counter** で sweep 後の bit クリア walk を省略 — `cur_epoch`
+  を tick するだけで全 prior mark が自動 invalidate
+
+**ハマった点**:
+- 初期化で `cur_ptr/cur_end` をセットしつつ `line_cursor` 更新を忘れて
+  block 0 を 2 回 alloc 候補にしてしまい live data overwrite → 「no size for
+  non-array/string」 で crash。 init を `cur_ptr=NULL/cur_end=NULL` にして
+  最初の alloc が必ず `find_hole` を通るように修正
+- `find_hole` が毎回 i=0 から scan していて同じ hole を返すバグ → line_cursor
+  を追加して resume
+
+**性能** (全 13 bench 3-run best):
+- binary_trees 0.68 s (`copy` 0.53 / `bump` 0.49 と比べると block metadata
+  の overhead が見える、 `mark_compact` 0.60 と互角)
+- string_concat 0.70 s (`mark_bump_gen` 0.51 より遅いが `mark` 0.68 と互角)
+- substr_churn 0.91 s — `copy_gen` 0.88 と肉薄、 全 backend で 4 位タイ
+- mid-pack overall。 v1 制限の no evacuation で long-running fragmentation が出る
+  はずだが、 短時間 bench では問題なし。
+
+**docs**: README.md / gc.h コメント / runtime.md §5.10 (#12 entry) +
+§5.11 (設計空間 table) / perf.md §2 (13 列に拡張)。
+
 ## 2026-05-18 (24) — fannkuch macro bench、 `aro_gc_` rename、 perf.md §2 統合
 
 3 件まとめ:
