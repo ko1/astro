@@ -48,15 +48,30 @@
 #define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
+/* 16-byte header (down from 24).  kind + old + dirty + marked packed in flags. */
 typedef struct GCHeader {
     void    *fwd;                   // forwarding pointer (set during minor for nursery objs)
-    uint32_t kind;
+    uint8_t  flags;                 /* bits 0-2: kind, bit 3: marked, bit 4: old, bit 5: dirty */
+    uint8_t  _pad[3];
     uint32_t size;
-    bool     old;                   // false → nursery; true → tenured
-    bool     dirty;                 // tenured: written to since last minor (remset entry)
-    bool     marked;                // marked during major
-    // 5 bytes padding to keep payload 8-aligned (24-byte header total)
 } GCHeader;
+_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+
+#define HDR_KIND_MASK    0x07u
+#define HDR_MARKED_BIT   0x08u
+#define HDR_OLD_BIT      0x10u
+#define HDR_DIRTY_BIT    0x20u
+#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
+#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
+#define HDR_MARKED(h)      (((h)->flags & HDR_MARKED_BIT) != 0)
+#define HDR_SET_MARKED(h)  ((h)->flags |= HDR_MARKED_BIT)
+#define HDR_CLR_MARKED(h)  ((h)->flags &= (uint8_t)~HDR_MARKED_BIT)
+#define HDR_OLD(h)         (((h)->flags & HDR_OLD_BIT) != 0)
+#define HDR_SET_OLD(h)     ((h)->flags |= HDR_OLD_BIT)
+#define HDR_CLR_OLD(h)     ((h)->flags &= (uint8_t)~HDR_OLD_BIT)
+#define HDR_DIRTY(h)       (((h)->flags & HDR_DIRTY_BIT) != 0)
+#define HDR_SET_DIRTY(h)   ((h)->flags |= HDR_DIRTY_BIT)
+#define HDR_CLR_DIRTY(h)   ((h)->flags &= (uint8_t)~HDR_DIRTY_BIT)
 // NB: no linked list — tenured objects live in a contiguous mmap region,
 // sweep iterates by region walk (header-size-prefix), not by chasing
 // next pointers.  Saves 16 bytes/header and turns sweep into a
@@ -150,12 +165,12 @@ old_alloc(AroGcKind kind, size_t payload_size, size_t aligned)
     }
     GCHeader *h = (GCHeader *)tenured_top;
     tenured_top += total;
-    h->kind   = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     h->fwd    = NULL;
-    h->old    = true;
-    h->dirty  = false;
-    h->marked = false;
+    HDR_SET_OLD(h);
+    HDR_CLR_DIRTY(h);
+    HDR_CLR_MARKED(h);
     old_bytes += payload_size;
     old_alloc_since_major += payload_size;
     return h;
@@ -188,12 +203,12 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
         }
     }
     GCHeader *h = (GCHeader *)nursery_top;
-    h->kind   = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     h->fwd    = NULL;
-    h->old    = false;
-    h->dirty  = false;
-    h->marked = false;
+    HDR_CLR_OLD(h);
+    HDR_CLR_DIRTY(h);
+    HDR_CLR_MARKED(h);
     nursery_top += total;
     return h;
 }
@@ -230,7 +245,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
     if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     // Root old via sp_top[0] so GC tracks the source through promotion.
@@ -264,8 +279,8 @@ aro_gc_wb(void *holder, VALUE *slot, VALUE v)
     *slot = v;
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old && !hh->dirty) {
-        hh->dirty = true;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
         remset_push(hh);
     }
 }
@@ -276,8 +291,8 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old && !hh->dirty) {
-        hh->dirty = true;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
         remset_push(hh);
     }
 }
@@ -323,7 +338,7 @@ promote(GCHeader *oldh)
 {
     if (oldh->fwd) return oldh->fwd;
     size_t aligned = ALIGN8(oldh->size);
-    GCHeader *newh = old_alloc((AroGcKind)oldh->kind, oldh->size, aligned);
+    GCHeader *newh = old_alloc(HDR_KIND(oldh), oldh->size, aligned);
     // Copy payload only (the linked-list pointers in newh are already
     // correct from old_alloc; old/marked/dirty are fresh).
     memcpy((void *)(newh + 1), (void *)(oldh + 1), aligned);
@@ -359,7 +374,7 @@ static void
 process_object(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) a->items = (VALUE *)forward_payload_value(a->items);
@@ -406,9 +421,9 @@ minor_gc(VALUE *sp_top)
     // (2) Remset: dirty tenured objects may hold nursery refs.
     for (size_t i = 0; i < remset_cnt; i++) {
         GCHeader *h = remset_buf[i];
-        if (h->dirty) {
+        if (HDR_DIRTY(h)) {
             process_object(h);
-            h->dirty = false;
+            HDR_CLR_DIRTY(h);
         }
     }
     remset_cnt = 0;
@@ -465,9 +480,9 @@ major_promote(GCHeader *oldh)
 {
     if (oldh->fwd) return oldh->fwd;
     size_t aligned = ALIGN8(oldh->size);
-    GCHeader *newh = old_alloc((AroGcKind)oldh->kind, oldh->size, aligned);
+    GCHeader *newh = old_alloc(HDR_KIND(oldh), oldh->size, aligned);
     memcpy((void *)(newh + 1), (void *)(oldh + 1), aligned);
-    newh->marked = true;
+    HDR_SET_MARKED(newh);
     void *new_payload = (void *)(newh + 1);
     oldh->fwd = new_payload;
     return new_payload;
@@ -479,7 +494,7 @@ static void
 major_process(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) {
@@ -487,8 +502,8 @@ major_process(GCHeader *h)
             if (in_nursery(a->items)) {
                 a->items = (VALUE *)major_promote(ih);
                 scan_push((GCHeader *)a->items - 1);
-            } else if (!ih->marked) {
-                ih->marked = true;
+            } else if (!HDR_MARKED(ih)) {
+                HDR_SET_MARKED(ih);
                 gray_push(ih);
             }
         }
@@ -501,8 +516,8 @@ major_process(GCHeader *h)
             if (in_nursery(s->bytes)) {
                 s->bytes = (char *)major_promote(bh);
                 scan_push((GCHeader *)s->bytes - 1);
-            } else if (!bh->marked) {
-                bh->marked = true;
+            } else if (!HDR_MARKED(bh)) {
+                HDR_SET_MARKED(bh);
                 gray_push(bh);
             }
         }
@@ -518,8 +533,8 @@ major_process(GCHeader *h)
             if (in_nursery((void *)v)) {
                 items[i] = (VALUE)major_promote(vh);
                 scan_push((GCHeader *)items[i] - 1);
-            } else if (!vh->marked) {
-                vh->marked = true;
+            } else if (!HDR_MARKED(vh)) {
+                HDR_SET_MARKED(vh);
                 gray_push(vh);
             }
         }
@@ -553,8 +568,8 @@ major_gc(VALUE *sp_top)
         if (in_nursery((void *)v)) {
             *p = (VALUE)major_promote(h);
             scan_push((GCHeader *)*p - 1);
-        } else if (!h->marked) {
-            h->marked = true;
+        } else if (!HDR_MARKED(h)) {
+            HDR_SET_MARKED(h);
             gray_push(h);
         }
     }
@@ -581,9 +596,9 @@ major_gc(VALUE *sp_top)
         while (p < tenured_top) {
             GCHeader *h = (GCHeader *)p;
             size_t total = sizeof(GCHeader) + ALIGN8(h->size);
-            if (h->marked) {
-                h->marked = false;
-                h->dirty  = false;
+            if (HDR_MARKED(h)) {
+                HDR_CLR_MARKED(h);
+                HDR_CLR_DIRTY(h);
                 h->fwd    = NULL;
                 live += h->size;
             }

@@ -46,14 +46,26 @@
 #define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES /* 64 GiB virtual per semispace, lazy-paged */
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
+/* 16-byte header (down from 24).  kind + old + dirty packed in flags. */
 typedef struct GCHeader {
-    uint32_t kind;
+    uint8_t  flags;     /* bits 0-2: kind, bit 3: old, bit 4: dirty */
+    uint8_t  _pad[3];
     uint32_t size;
     void    *fwd;       // NULL → live; non-NULL → forwarding pointer
-    bool     old;       // false → nursery; true → tenured
-    bool     dirty;     // tenured object written to since last minor (remset entry)
-    // 6 bytes padding to keep payload 8-aligned
 } GCHeader;
+_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+
+#define HDR_KIND_MASK    0x07u
+#define HDR_OLD_BIT      0x08u
+#define HDR_DIRTY_BIT    0x10u
+#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
+#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
+#define HDR_OLD(h)         (((h)->flags & HDR_OLD_BIT) != 0)
+#define HDR_SET_OLD(h)     ((h)->flags |= HDR_OLD_BIT)
+#define HDR_CLR_OLD(h)     ((h)->flags &= (uint8_t)~HDR_OLD_BIT)
+#define HDR_DIRTY(h)       (((h)->flags & HDR_DIRTY_BIT) != 0)
+#define HDR_SET_DIRTY(h)   ((h)->flags |= HDR_DIRTY_BIT)
+#define HDR_CLR_DIRTY(h)   ((h)->flags &= (uint8_t)~HDR_DIRTY_BIT)
 
 static char *nursery_base = NULL;
 static char *nursery_top  = NULL;
@@ -137,11 +149,11 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
             }
         }
         GCHeader *h = (GCHeader *)tenured_top;
-        h->kind  = (uint32_t)kind;
+        HDR_SET_KIND(h, kind);
         h->size  = (uint32_t)payload_size;
         h->fwd   = NULL;
-        h->old   = true;    // direct to tenured = "old" from the start
-        h->dirty = false;
+        HDR_SET_OLD(h);    // direct to tenured = "old" from the start
+        HDR_CLR_DIRTY(h);
         tenured_top += total;
         return h;
     }
@@ -167,11 +179,11 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
         }
     }
     GCHeader *h = (GCHeader *)nursery_top;
-    h->kind  = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size  = (uint32_t)payload_size;
     h->fwd   = NULL;
-    h->old   = false;
-    h->dirty = false;
+    HDR_CLR_OLD(h);
+    HDR_CLR_DIRTY(h);
     nursery_top += total;
     return h;
 }
@@ -208,7 +220,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
     if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     // Root old via sp_top[0] so GC tracks the source through any move.
@@ -242,8 +254,8 @@ aro_gc_wb(void *holder, VALUE *slot, VALUE v)
     *slot = v;
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old && !hh->dirty) {
-        hh->dirty = true;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
         remset_push(hh);
     }
 }
@@ -254,8 +266,8 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old && !hh->dirty) {
-        hh->dirty = true;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
         remset_push(hh);
     }
 }
@@ -282,8 +294,8 @@ forward_obj(GCHeader *oldh)
     GCHeader *newh = (GCHeader *)to_top;
     memcpy(newh, oldh, total);
     newh->fwd   = NULL;
-    newh->old   = true;
-    newh->dirty = false;
+    HDR_SET_OLD(newh);
+    HDR_CLR_DIRTY(newh);
     to_top += total;
     void *new_payload = (void *)(newh + 1);
     oldh->fwd = new_payload;
@@ -332,7 +344,7 @@ static void
 process_object(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) a->items = (VALUE *)forward_payload_value(a->items);
@@ -390,9 +402,9 @@ minor_gc(VALUE *sp_top)
     // (2) Dirty tenured via explicit remset.
     for (size_t i = 0; i < remset_cnt; i++) {
         GCHeader *h = remset_buf[i];
-        if (h->dirty) {
+        if (HDR_DIRTY(h)) {
             process_object(h);
-            h->dirty = false;
+            HDR_CLR_DIRTY(h);
         }
     }
     remset_cnt = 0;

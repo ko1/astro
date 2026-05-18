@@ -26,15 +26,30 @@
 #define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
+/* 16-byte header (down from 24).  kind + old + dirty + marked packed in flags. */
 typedef struct GCHeader {
-    uint32_t kind;
+    uint8_t  flags;     /* bits 0-2: kind, bit 3: marked, bit 4: old, bit 5: dirty */
+    uint8_t  _pad[3];
     uint32_t size;
     void    *fwd;       // forwarding pointer (minor: tenured dest; major: compacted dest)
-    bool     old;       // false → nursery; true → tenured
-    bool     dirty;     // tenured object written to since last minor (remset entry)
-    bool     marked;    // tenured object is reachable in the current major
-    // 5 bytes padding to keep payload 8-aligned
 } GCHeader;
+_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+
+#define HDR_KIND_MASK    0x07u
+#define HDR_MARKED_BIT   0x08u
+#define HDR_OLD_BIT      0x10u
+#define HDR_DIRTY_BIT    0x20u
+#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
+#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
+#define HDR_MARKED(h)      (((h)->flags & HDR_MARKED_BIT) != 0)
+#define HDR_SET_MARKED(h)  ((h)->flags |= HDR_MARKED_BIT)
+#define HDR_CLR_MARKED(h)  ((h)->flags &= (uint8_t)~HDR_MARKED_BIT)
+#define HDR_OLD(h)         (((h)->flags & HDR_OLD_BIT) != 0)
+#define HDR_SET_OLD(h)     ((h)->flags |= HDR_OLD_BIT)
+#define HDR_CLR_OLD(h)     ((h)->flags &= (uint8_t)~HDR_OLD_BIT)
+#define HDR_DIRTY(h)       (((h)->flags & HDR_DIRTY_BIT) != 0)
+#define HDR_SET_DIRTY(h)   ((h)->flags |= HDR_DIRTY_BIT)
+#define HDR_CLR_DIRTY(h)   ((h)->flags &= (uint8_t)~HDR_DIRTY_BIT)
 
 static char *nursery_base = NULL;
 static char *nursery_top  = NULL;
@@ -126,12 +141,12 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
             }
         }
         GCHeader *h = (GCHeader *)tenured_top;
-        h->kind   = (uint32_t)kind;
+        HDR_SET_KIND(h, kind);
         h->size   = (uint32_t)payload_size;
         h->fwd    = NULL;
-        h->old    = true;    // direct to tenured = "old" from the start
-        h->dirty  = false;
-        h->marked = false;
+        HDR_SET_OLD(h);    // direct to tenured = "old" from the start
+        HDR_CLR_DIRTY(h);
+        HDR_CLR_MARKED(h);
         tenured_top += total;
         return h;
     }
@@ -157,12 +172,12 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
         }
     }
     GCHeader *h = (GCHeader *)nursery_top;
-    h->kind   = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     h->fwd    = NULL;
-    h->old    = false;
-    h->dirty  = false;
-    h->marked = false;
+    HDR_CLR_OLD(h);
+    HDR_CLR_DIRTY(h);
+    HDR_CLR_MARKED(h);
     nursery_top += total;
     return h;
 }
@@ -199,7 +214,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
     if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     // Root old via sp_top[0] so GC tracks the source through any move
@@ -233,8 +248,8 @@ aro_gc_wb(void *holder, VALUE *slot, VALUE v)
     *slot = v;
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old && !hh->dirty) {
-        hh->dirty = true;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
         remset_push(hh);
     }
 }
@@ -245,8 +260,8 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old && !hh->dirty) {
-        hh->dirty = true;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
         remset_push(hh);
     }
 }
@@ -278,8 +293,8 @@ forward_obj(GCHeader *oldh)
     GCHeader *newh = (GCHeader *)to_top;
     memcpy(newh, oldh, total);
     newh->fwd   = NULL;
-    newh->old   = true;
-    newh->dirty = false;
+    HDR_SET_OLD(newh);
+    HDR_CLR_DIRTY(newh);
     to_top += total;
     void *new_payload = (void *)(newh + 1);
     oldh->fwd = new_payload;
@@ -328,7 +343,7 @@ static void
 process_object(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) a->items = (VALUE *)forward_payload_value(a->items);
@@ -386,9 +401,9 @@ minor_gc(VALUE *sp_top)
     //     dominated minor GC time).
     for (size_t i = 0; i < remset_cnt; i++) {
         GCHeader *h = remset_buf[i];
-        if (h->dirty) {
+        if (HDR_DIRTY(h)) {
             process_object(h);
-            h->dirty = false;
+            HDR_CLR_DIRTY(h);
         }
     }
     remset_cnt = 0;
@@ -437,8 +452,8 @@ mark_value_major(VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
-    if (h->marked) return;
-    h->marked = true;
+    if (HDR_MARKED(h)) return;
+    HDR_SET_MARKED(h);
     gray_push(h);
 }
 
@@ -446,7 +461,7 @@ static void
 scan_outgoing_major(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) mark_value_major((VALUE)a->items);
@@ -489,7 +504,7 @@ fwd_payload_compact(void *p)
     // trailing minor will fold them in.  Leave nursery pointers alone.
     if (in_nursery(p)) return p;
     GCHeader *h = (GCHeader *)p - 1;
-    ASTRO_ASSERT(h->marked);
+    ASTRO_ASSERT(HDR_MARKED(h));
     ASTRO_ASSERT(h->fwd != NULL);
     return (void *)((char *)h->fwd + sizeof(GCHeader));
 }
@@ -505,7 +520,7 @@ static void
 update_pointers_major(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) a->items = (VALUE *)fwd_payload_compact(a->items);
@@ -572,7 +587,7 @@ major_gc(VALUE *sp_top)
         while (p < tenured_top) {
             GCHeader *h = (GCHeader *)p;
             size_t total = sizeof(GCHeader) + ALIGN8(h->size);
-            if (h->marked) {
+            if (HDR_MARKED(h)) {
                 h->fwd = fwd;
                 fwd += total;
             } else {
@@ -588,7 +603,7 @@ major_gc(VALUE *sp_top)
         while (p < tenured_top) {
             GCHeader *h = (GCHeader *)p;
             size_t total = sizeof(GCHeader) + ALIGN8(h->size);
-            if (h->marked) update_pointers_major(h);
+            if (HDR_MARKED(h)) update_pointers_major(h);
             p += total;
         }
     }
@@ -603,7 +618,7 @@ major_gc(VALUE *sp_top)
         while (p < tenured_top) {
             GCHeader *h = (GCHeader *)p;
             size_t total = sizeof(GCHeader) + ALIGN8(h->size);
-            if (!h->marked) {
+            if (!HDR_MARKED(h)) {
                 p += total;
                 continue;
             }
@@ -612,7 +627,7 @@ major_gc(VALUE *sp_top)
             char *run_p   = p;
             while (run_p < tenured_top) {
                 GCHeader *rh = (GCHeader *)run_p;
-                if (!rh->marked) break;
+                if (!HDR_MARKED(rh)) break;
                 run_p += sizeof(GCHeader) + ALIGN8(rh->size);
             }
             size_t run_size = (size_t)(run_p - run_src);
@@ -621,9 +636,9 @@ major_gc(VALUE *sp_top)
             char *q = run_dst, *q_end = run_dst + run_size;
             while (q < q_end) {
                 GCHeader *qh = (GCHeader *)q;
-                qh->marked = false;
+                HDR_CLR_MARKED(qh);
                 qh->fwd    = NULL;
-                qh->dirty  = false;
+                HDR_CLR_DIRTY(qh);
                 q += sizeof(GCHeader) + ALIGN8(qh->size);
             }
             p = run_p;
@@ -643,7 +658,7 @@ major_gc(VALUE *sp_top)
         char *q = nursery_base;
         while (q < nursery_top) {
             GCHeader *h = (GCHeader *)q;
-            h->marked = false;
+            HDR_CLR_MARKED(h);
             q += sizeof(GCHeader) + ALIGN8(h->size);
         }
 
