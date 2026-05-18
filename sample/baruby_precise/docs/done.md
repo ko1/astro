@@ -3,6 +3,51 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (32) — Makefile 再ビルドバグ修正 + iter 31 perf 数値の再計測
+
+### Makefile bug
+`make GC=foo` で GC 切替を行ったとき、 `.c` ファイルの mtime が古いまま
+だと **再 link されない**。 `*.c` glob 依存はすべての .c の mtime しか
+見ず、 `-DBARUBY_GC=N` の値変化や `$(GC_SRC)` 選択変化を mtime に反映
+できないため、 既存バイナリの GC backend が前回のままになっていた。
+
+判明経緯: iter 31 packing 後の perf 数値が「全 backend で 0.86-0.91s に
+収束、 spread 6%」 という異常な tight さ。 `bump` (no-GC) ですら 0.91s と
+iter 30 (0.57s) より遅い。 perf record で `forward_payload_nursery` が
+hot path に出てきたが bump には GC 経路が無いはずなので矛盾。 `strings
+baruby_precise | grep baruby_gc=` で確認したら全部 `immix_gen` だった。
+
+修正:
+- `.built_gc` という marker file を Makefile に追加。 内容は現在の `GC`
+  変数値。 `make` 起動時に `$(shell test -f .built_gc && cat .built_gc)`
+  で前回値を読み、 `$(GC)` と異なれば marker を touch (echo redirect)。
+  `baruby_precise` ターゲットの dep に `.built_gc` を加えたので mtime
+  更新でリンクが走る。
+
+### 真の iter 31 perf 数値
+
+再計測後、 packing 効果は ↑ docs/perf.md §2 の通り **alloc-heavy bench で
+顕著**:
+- `mark` hash_chain: 2.13 → **1.24** (-42%)
+- `mark` binary_trees: 1.07 → **0.89** (-17%)
+- `mark` string_concat: 0.86 → **0.70** (-19%)
+- `mark_bump_gen` string_concat: 0.53 → **0.41** (-23%)
+- `copy` fib_pair: 0.87 → **0.72** (-17%)
+- `bump` binary_trees: 0.57 → **0.45** (-21%) — Makefile bug 修正前の
+  iter 29/30 数値 (0.55-0.57) も別 backend の数字だった可能性
+
+### Stress mode sweep
+fix 後、 12 GC backend × stress test (200 iter × 50 cell cons list、 stress
+mode で全 alloc が GC を起こす) で全 PASS。 packing が introduce した
+correctness regression なし。
+
+### 含意
+- 過去 iter (29/30/31 第一報) の perf 数値表は GC backend が混在した状態の
+  測定。 packing 前後比較は無効。 iter 31 真値が正しい現在値。
+- 「Makefile が *.c に依存している」 という pattern は GC switching を
+  CLI 変数でやる setup で trap になる。 同様の setup を他 sample に持ち込む
+  ときは marker file 戦略を踏襲する。
+
 ## 2026-05-18 (31) — GCHeader を flags byte で全 backend に compact packing
 
 `kind` (uint32) は KIND_OBJ_ARRAY / OBJ_STRING / PAYLOAD_VAL / PAYLOAD_BYTE

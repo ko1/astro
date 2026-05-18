@@ -10,3 +10,4 @@ node_hopt.c
 node_head.h
 code_store/
 default.profraw
+.built_gc

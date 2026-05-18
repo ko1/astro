@@ -68,7 +68,16 @@ ifeq ($(GC_NUM),)
 $(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen)
 endif
 
-baruby_precise: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(GC_SRC) gc.h $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
+# Track current GC selection so a `make GC=foo` after `make GC=bar` actually
+# rebuilds, even when no .c has been touched.  Without this the binary
+# silently kept the previous backend.  The marker file's content is the GC
+# name; we rewrite it (touching mtime) whenever it differs from $(GC).
+GC_MARKER := $(shell test -f .built_gc && cat .built_gc 2>/dev/null)
+ifneq ($(GC_MARKER),$(GC))
+$(shell echo "$(GC)" > .built_gc)
+endif
+
+baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(GC_SRC) gc.h $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
 	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
             -DBARUBY_GC=$(GC_NUM) \

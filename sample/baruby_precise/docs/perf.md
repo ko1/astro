@@ -34,72 +34,79 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 行ごとの最速に `**` 印。 `libgc` 列の `life` は baruby 側の独立 bug で除外
 ([§3 参照](#3-libgc-列の-life-不在について))。
 
-**iter 31 refresh**: 全 backend の GCHeader を **flags byte packing** で 8-16 B に compact 化:
+**iter 31 refresh** (Makefile rebuild bug 修正後の真の数値): 全 backend の
+GCHeader を **flags byte packing** で 8-16 B に compact 化:
 - `mark`: 16 B → **8 B** (-50%)
 - `mark_gen` / `mark_gen_inc` / `copy*` / `mark_compact*` / `mark_bump_gen`: 24 B → **16 B** (-33%)
 - `immix` / `immix_gen`: 16 B → **8 B** (-50%)
 
-`kind` を uint32 → 3 bit (KIND_* は 5 種類だけなので)、 `marked` / `old` / `dirty` の各 bool を同 byte の別 bit に packing。 詳細は [gc_runtime.md §1.3](gc_runtime.md)。 全 14 backend × 3 bench で動作確認済。 ベンチは iter 31 でリラン:
+`kind` を uint32 → 3 bit (KIND_* は 5 種類だけなので)、 `marked` / `old` / `dirty` の各 bool を同 byte の別 bit に packing。 詳細は [gc_runtime.md §1.3](gc_runtime.md)。
+
+⚠ **重要**: iter 31 初回計測は Makefile の latent bug (GC= の切り替えで
+.c の mtime が古いと再 link されない) で全 backend が **同一バイナリの数値**
+(immix_gen) を測っていた。 fix 後の正しい数値が以下。 全 14 backend × 3
+bench で stress mode (BARUBY_GC_STRESS=1) も clean、 sweep 完走。
 
 | Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen | immix | immix\_gen | mark\_bitmap\_gen |
 |---------------| ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: |
-| binary_trees  | 0.87 | 0.88 | 0.90 | 0.88 | 0.87 | 0.87 | 0.87 | **0.86** | 0.86 | 0.91 | 0.87 | 0.87 | 0.89 | 0.89 |
-| cons_list     | 0.66 | 0.67 | 0.68 | 0.66 | **0.65** | 0.68 | 0.66 | 0.67 | 0.68 | 0.69 | 0.69 | 0.66 | 0.71 | 0.68 |
-| fannkuch      | 0.63 | 0.64 | 0.64 | 0.63 | **0.61** | 0.66 | 0.63 | 0.62 | 0.61 | 0.65 | 0.64 | 0.63 | 0.64 | 0.62 |
-| fib_pair      | 0.75 | 0.77 | 0.84 | 0.74 | 0.74 | 0.76 | **0.73** | 0.75 | 0.76 | 0.77 | 0.76 | 0.77 | 0.74 | 0.77 |
-| gc_combined   | 0.81 | 0.83 | **0.76** | 0.79 | 0.79 | 0.81 | 0.81 | 0.76 | 0.81 | 0.79 | 0.79 | 0.78 | 0.79 | 0.80 |
-| hash_chain    | **1.09** | 1.19 | 1.23 | 1.16 | 1.25 | 1.33 | 1.22 | 1.19 | 1.22 | 1.24 | 1.24 | 1.16 | 1.24 | 1.10 |
-| interp_calc   | 0.86 | 0.84 | 0.85 | 0.85 | 0.83 | 0.84 | 0.87 | 0.87 | **0.82** | 0.84 | 0.86 | 0.84 | 0.84 | 0.89 |
-| life          | 1.19 | 1.16 | 1.18 | 1.20 | 1.18 | 1.22 | 1.25 | 1.26 | **1.15** | 1.22 | 1.19 | 1.22 | 1.18 | 1.19 |
-| list_alloc    | 0.75 | 0.74 | 0.76 | 0.75 | **0.71** | 0.76 | 0.75 | 0.77 | 0.73 | 0.75 | 0.74 | 0.75 | 0.75 | 0.75 |
-| list_sort     | 0.94 | 0.96 | **0.93** | 0.97 | 0.94 | 0.96 | 0.94 | 1.00 | 0.94 | 0.94 | 0.96 | 0.95 | 0.95 | 0.94 |
-| nqueens       | 0.83 | 0.85 | 0.86 | 0.84 | 0.86 | **0.81** | 0.82 | 0.87 | 0.86 | 0.86 | 0.88 | 0.86 | 0.83 | 0.81 |
-| sieve         | 1.22 | 1.24 | 1.23 | 1.21 | 1.25 | 1.24 | 1.22 | 1.26 | **1.21** | 1.24 | 1.26 | 1.24 | 1.25 | 1.22 |
-| string_concat | 0.43 | 0.44 | 0.44 | 0.42 | 0.42 | 0.43 | 0.42 | 0.42 | 0.42 | 0.42 | 0.42 | 0.42 | 0.42 | **0.42** |
-| substr_churn  | 0.80 | 0.80 | 0.80 | 0.77 | 0.78 | 0.77 | 0.79 | 0.77 | 0.82 | 0.80 | 0.81 | 0.79 | **0.77** | 0.77 |
+| binary_trees  | 0.54 | 0.89 | 1.01 | 1.05 | 0.75 | 0.94 | 0.97 | 0.76 | 0.94 | **0.45** | 0.79 | 0.80 | 0.87 | 1.33 |
+| cons_list     | 1.07 | 0.77 | 0.80 | 0.91 | **0.65** | 0.73 | 0.68 | 0.86 | 0.72 | 0.90 | 0.72 | 0.69 | 0.66 | 0.85 |
+| fannkuch      | **0.63** | 0.66 | 0.64 | 0.65 | 0.65 | 0.66 | 0.63 | 0.66 | 0.64 | 0.66 | 0.64 | 0.63 | 0.63 | 0.70 |
+| fib_pair      | 1.37 | 0.89 | 0.91 | 0.99 | **0.72** | 0.80 | 0.77 | 1.00 | 0.77 | 1.08 | 0.78 | 0.81 | 0.75 | 0.99 |
+| gc_combined   | 1.22 | 0.90 | 0.88 | 1.01 | **0.77** | 0.81 | 0.81 | 1.04 | 0.80 | 1.02 | 0.87 | 0.85 | 0.80 | 0.93 |
+| hash_chain    | 1.11 | 1.24 | 2.02 | 1.99 | 1.32 | 1.08 | **1.07** | 1.41 | 1.10 | 1.20 | 1.07 | 1.11 | 1.18 | 1.23 |
+| interp_calc   | 1.18 | 0.91 | 0.96 | 1.06 | **0.82** | 0.85 | 0.85 | 0.98 | 0.88 | 1.02 | 0.87 | 0.89 | 0.84 | 1.02 |
+| life          | **1.10** | 1.17 | 1.22 | 1.20 | 1.21 | 1.19 | 1.18 | 1.19 | 1.19 | 1.24 | 1.20 | 1.20 | 1.15 | 1.24 |
+| list_alloc    | 1.21 | 0.86 | 0.85 | 0.94 | 0.74 | 0.76 | 0.76 | 0.96 | 0.75 | 1.00 | 0.78 | 0.79 | **0.74** | 0.93 |
+| list_sort     | 1.06 | 1.10 | 1.10 | 1.10 | 0.95 | 0.96 | 0.93 | 0.99 | 0.95 | 1.10 | **0.93** | 0.98 | 0.95 | 1.21 |
+| nqueens       | **0.81** | 0.87 | 0.83 | 0.87 | 0.88 | 0.85 | 0.86 | 0.85 | 0.87 | 0.83 | 0.87 | 0.84 | 0.83 | 0.90 |
+| sieve         | **1.06** | 1.25 | 1.26 | 1.28 | 1.60 | 1.28 | 1.22 | 1.47 | 1.26 | 1.38 | 1.29 | 1.43 | 1.22 | 1.35 |
+| string_concat | 1.46 | 0.70 | 0.70 | 0.76 | 0.49 | 0.53 | 0.52 | 0.80 | 0.48 | 0.79 | **0.41** | 0.48 | 0.41 | 0.71 |
+| substr_churn  | 1.47 | 0.97 | 0.95 | 0.98 | 0.96 | 0.80 | 0.81 | 1.01 | 0.79 | 1.04 | **0.78** | 0.84 | 0.79 | 0.98 |
 
-iter 31 packing 後は **全 backend の差が大幅縮小** (iter 30 では binary_trees
-0.57 〜 1.52 で 2.7× の spread、 iter 31 では 0.86 〜 0.91 で 1.06× の
-spread のみ)。 これは header が縮んだことで bump alloc を含む全 backend が
-slab/Cheney 構造の内部断片化を減らし、 mark family の cache locality が
-他 backend に肉薄したことを示す。 特に hash_chain で mark 系の劣勢が消えた
-(iter 30: mark 2.13 vs bump 1.16 で 1.84× → iter 31: mark 1.19 vs bump 1.24
-で逆転)。
+iter 30 → iter 31 (packing 後) の主な改善 (3-run best):
+- `mark` binary_trees: 1.07 → **0.89** (-17%) — slab class density 効果
+- `mark` hash_chain: 2.13 → **1.24** (-42%) — header 半減で cache footprint 圧縮
+- `mark` string_concat: 0.86 → **0.70** (-19%)
+- `copy` binary_trees: 0.86 → **0.75** (-13%)
+- `copy` fib_pair: 0.87 → **0.72** (-17%)
+- `mark_bump_gen` string_concat: 0.53 → **0.41** (-23%)
+- `immix` binary_trees: 0.68 → **0.80** (+18%) — packing 後の access pattern 変化
+  で immix のみ若干 regress。 mark_epoch + flags の隣接配置で false-sharing
+  風の問題が出た可能性 (未確認)
+- `bump` binary_trees: 0.57 → **0.45** (-21%) — bump 自身は無変更だが
+  iter 29-30 の measurement が壊れていた可能性 (Makefile bug)
 
-**勝者分布** (2026-05-18 (31) refresh、 GCHeader flags-packing 後):
+**勝者分布** (2026-05-18 (31) refresh、 GCHeader flags-packing 後の正しい数値):
 
-iter 31 後の差は小さいが、 各 bench の最速 backend を読むと:
-- `mark_compact` / `mark_compact_gen` が **5 bench で最速** (binary_trees /
-  interp_calc / life / sieve に加え gc_combined tie) — long-lived tree や
-  低 alloc rate で compaction の locality 効果が見える
-- `copy` が **3 bench で最速** (cons_list / fannkuch / list_alloc) — Cheney
-  semispace の安定した強さ
-- `none` が **1 bench で最速** (hash_chain) — alloc-light なので GC 不要
-- `mark_gen` が **2 bench で最速** (gc_combined tie / list_sort)
-- `copy_gen` が **1 bench で最速** (nqueens)
-- `copy_gen_inc` が **1 bench で最速** (fib_pair)
-- `immix_gen` が **1 bench で最速** (substr_churn)
-- `mark_bitmap_gen` が **1 bench で最速** (string_concat tie)
+- **`bump`** が **2 bench で最速** (binary_trees / string_concat tied):
+  alloc-heavy & 短寿命の GC-less floor。
+- **`copy`** が **4 bench で最速** (cons_list / fib_pair / gc_combined / interp_calc):
+  Cheney semispace の安定した強さ
+- **`copy_gen_inc`** が **1 bench で最速** (hash_chain) — incremental Cheney が
+  large-buckets pointer chase で勝つ
+- **`immix_gen`** が **1 bench で最速** (list_alloc) と **1 bench tied** (string_concat)
+- **`mark_compact_gen`** が **1 bench tied** (string_concat tied with immix_gen と mark_bump_gen)
+- **`mark_bump_gen`** が **2 bench で最速** (list_sort / substr_churn / string_concat tied)
+- **`none`** が **4 bench で最速** (fannkuch / life / nqueens / sieve) — mutator-bound
+  bench で GC overhead が最大の損失
 
-note: iter 31 で **差が極めて小さくなった** (binary_trees 0.86 〜 0.91、
-spread 6%) ため、 勝者分布はノイズに左右されやすい。 統計的に意味のある
-クラスタは:
-- `mark` 系 (mark / mark_gen / mark_gen_inc) は packing 後の cache 改善で
-  iter 30 と同等以上の速度に。 hash_chain の iter 30 劣勢 (2.13) は完全に
-  消えた (1.19)。
-- `copy` 系 + `mark_compact` 系は依然横並び 0.85-0.90s 帯。
-- `bump` (no-GC floor) は **alloc 多い bench で頂点ではなくなった** —
-  header 半減で他 backend が追いついた。
+note: hash_chain は `mark_gen` / `mark_gen_inc` が 2.0+ で大きく劣勢。
+それ以外の backend は 1.07-1.41 帯。 packing で `mark` 単独は 2.13 → 1.24
+(-42%) で大幅改善したが、 gen 系 (mark_gen / mark_gen_inc) は young_next
+linked list 走査が依然 cache-cold で改善が小さい。
 
-iter 31 packing の効果 (主要 bench、 iter 30 → iter 31):
-- `mark` hash_chain: 2.13 → **1.19 s** (-44%) — header 縮小 (16→8B) で
-  cache footprint 半減
-- `mark_gen` binary_trees: 1.10 → **0.90 s** (-18%) — header 24→16B で
-  long-lived tree の alloc density 改善
-- `copy` binary_trees: 0.86 → **0.87 s** (≈) — 既に dense、 header 縮小は
-  marginal
-- `immix_gen` hash_chain: 1.24 → **1.24 s** (同等) — flags 配置変更のみ、
-  payload density は据え置き
+iter 31 packing の効果 (主要 bench、 iter 30 → iter 31 正値):
+- `mark` hash_chain: 2.13 → **1.24** (-42%) — header 縮小で cache footprint 圧縮
+- `mark` binary_trees: 1.07 → **0.89** (-17%)
+- `mark` string_concat: 0.86 → **0.70** (-19%)
+- `mark` substr_churn: 1.20 → **0.97** (-19%)
+- `copy` binary_trees: 0.86 → **0.75** (-13%)
+- `copy` fib_pair: 0.87 → **0.72** (-17%)
+- `mark_bump_gen` string_concat: 0.53 → **0.41** (-23%)
+- `mark_bump_gen` substr_churn: 0.92 → **0.78** (-15%)
+- `bump` binary_trees: 0.57 → **0.45** (-21%) — Makefile bug 修正前は
+  iter 29 数値 0.55 もそもそも別 backend の数値だった可能性
 
 引っかかった改善点 (2026-05-17 unified realloc_payload, commit e5b237f):
 - `mark` の string_concat 2.41 → 1.68 s (-30%)、 substr_churn 1.53 →
