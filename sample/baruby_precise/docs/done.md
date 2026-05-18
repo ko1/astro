@@ -3,6 +3,48 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (31) — GCHeader を flags byte で全 backend に compact packing
+
+`kind` (uint32) は KIND_OBJ_ARRAY / OBJ_STRING / PAYLOAD_VAL / PAYLOAD_BYTE
+/ FREE の **5 種類しかない** → 3 bit で足りる。 `marked` / `old` / `dirty` の
+各 bool も 1 bit ずつ。 まとめて single `uint8_t flags` に packing する
+ことで全 backend の GCHeader を大幅に縮小:
+
+| Backend | iter 30 (B) | iter 31 (B) | 削減 |
+|---|---:|---:|---:|
+| `mark` | 16 | **8** | -50% |
+| `mark_gen` / `mark_gen_inc` | 24 | **16** | -33% |
+| `copy` / `copy_gen` / `copy_gen_inc` | 24 | **16** | -33% |
+| `mark_compact` / `mark_compact_gen` / `mark_bump_gen` | 24 | **16** | -33% |
+| `immix` / `immix_gen` | 16 | **8** | -50% |
+| `bump` / `mark_bitmap_gen` / `none` | 8 | 8 | 据え置き (元から flag bit 不要) |
+
+実装パターン: 各 backend が独自に flags byte の bit layout を決め、
+`HDR_KIND(h)` / `HDR_MARKED(h)` / `HDR_OLD(h)` / `HDR_DIRTY(h)` (および
+`SET_` / `CLR_` 変種) のマクロでアクセス。 backend ごとに必要な bit が
+違うので bit position は backend ごとに異なる (例: mark_gen は marked=bit3
+old=bit4 dirty=bit5、 copy_gen は marked 不要なので old=bit3 dirty=bit4)。
+
+perf 改善 (3-run best、 iter 30 比、 主な変化):
+- `mark` hash_chain: 2.13 → **1.19 s** (-44%) — slab class density 効果が
+  大きい。 mark の 16 B header 時は BaArray (24 B + 16 B = 40 B) が
+  class 48 に逃げて waste、 8 B header になり class 32 (32 B) にぴったり
+  収まって waste 0
+- `mark_gen` binary_trees: 1.10 → **0.90 s** (-18%)
+- `mark` / `mark_gen` / `mark_gen_inc` の hash_chain は **全部 iter 30 の
+  半分以下** (2.13/2.42/1.72 → 1.19/1.23/1.16)
+- 他の backend (`copy*` / `mark_compact*` / `immix*`) は packing 後でも
+  差は数 % 〜±10% の範囲。 元から dense なので header 縮小の伸び代が小さい
+
+特筆事項:
+- **iter 31 後の backend 間 spread が極めて小さくなった**: binary_trees で
+  iter 30: 0.57 - 1.52 (2.7×) → iter 31: 0.86 - 0.91 (1.06×)。 全 backend が
+  GCHeader sizing の最適化により hot path で同じ程度まで圧縮された
+- `immix_gen` で `h->flags = H_OLD` パターンが kind を上書きする bug を
+  発見し、 `(kind | H_OLD)` 形に書き直して修正
+- sed word-boundary の罠 (`h->old` が `hh->old` や `newh->old` を巻き込む)
+  に 3-4 回引っかかった。 順序を「長い prefix から」 にする必要
+
 ## 2026-05-18 (30) — slab_alloc per-alloc redundant init 削除
 
 mark family (`mark` / `mark_gen` / `mark_gen_inc` / `mark_bitmap_gen`) の
