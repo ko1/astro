@@ -6,6 +6,25 @@
 #include <stdbool.h>
 #include <string.h>
 
+/* ---------------------------------------------------------------------------
+ * Virtual-address reservation for region-based backends.
+ *
+ * Region-based backends (copy*, mark_compact*, mark_bump_gen, immix*) used
+ * to declare a fixed REGION_BYTES / ARENA_BYTES / TENURED_BYTES upper
+ * bound (typically 512 MiB - 1 GiB).  That bound was a program-limiting
+ * fixed-length value — heap growth past it aborts as OOM even when
+ * physical memory is plenty.
+ *
+ * We now reserve ARO_GC_REGION_VIRT_BYTES (= 64 GiB) of virtual address
+ * space per region.  Physical pages commit only on first touch (Linux
+ * overcommit + MAP_NORESERVE); collectors may MADV_DONTNEED freed
+ * regions to release physical memory back to the OS.  64 GiB is far
+ * larger than any practical baruby_precise program; the heap is
+ * effectively unbounded.  Per-page / per-block / per-line sizes are
+ * left fixed (they're tuning knobs, not program-limiting).
+ * --------------------------------------------------------------------------- */
+#define ARO_GC_REGION_VIRT_BYTES  ((size_t)64u << 30)   /* 64 GiB virtual */
+
 // Forward decls (defined in context.h)
 struct CTX_struct;
 typedef struct CTX_struct CTX;

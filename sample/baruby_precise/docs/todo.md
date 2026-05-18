@@ -66,9 +66,20 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
   test では問題なし。 長 bench を回したい時は max_map_count を上げるか、
   retire の circular buffer 化が必要 (TODO)。
 - **`gc_mark_bump_gen`** — tenured 側に compactor を持たないので、
-  long-live old object が溜まると tenured OOM。 `string_concat` のような
-  promotion-heavy bench を stress で回すと 1 GiB tenured を使い切る。
-  これは design limit (compactor 無し)、 `mark_compact_gen` を使えば回避可。
+  long-live old object が溜まると tenured 64 GiB virtual を使い切ると
+  OOM になり得る。 これは design limit (compactor 無し)、
+  `mark_compact_gen` を使えば回避可。 (旧: 1 GiB cap → 2026-05-18 (27)
+  で 64 GiB virtual に拡張済)
+
+## 動的成長の更なる改善 (低優先)
+
+(27) で region cap を 64 GiB virtual reservation に置き換えたが、 これ
+自体も上限なので「真の dynamic growth (linked chunks)」 で完全撤廃する案:
+
+- moving backend (copy / copy_gen 等) で from-space を linked chunk list
+  にして、 chunk 単位で `mremap` または追加 mmap で成長
+- 64 GiB を超える heap が必要な workload で意味がある (現状の bench では
+  全て 1 GiB 以下、 64 GiB は実質的に無制限)
 
 ## メンテ
 

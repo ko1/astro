@@ -22,7 +22,7 @@ typedef struct GCHeader {
     uint32_t size;
 } GCHeader;
 
-#define REGION_BYTES ((size_t)4u << 30)   // 4 GiB virtual; lazy-paged
+#define REGION_BYTES ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)    (((n) + 7u) & ~(size_t)7u)
 
 static char *region_base = NULL;
@@ -38,7 +38,7 @@ aro_gc_init(CTX *c)
 {
     (void)c;
     region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
-                               MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                               MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (region_base == MAP_FAILED) { perror("mmap"); abort(); }
     region_top = region_base;
     region_end = region_base + REGION_BYTES;

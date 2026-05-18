@@ -3,6 +3,59 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (27) — プログラム制限の固定長を撤廃 (region cap → 64 GiB virtual)
+
+user 要望「まともな処理系にするために、固定長の部分をまともにしようか / ページ
+サイズとかは固定でいいけど、プログラムに制限を入れる固定長はやめて」。
+
+それまで各 backend は REGION_BYTES / ARENA_BYTES / TENURED_BYTES として
+512 MiB - 4 GiB の固定 cap を持ち、 program の live data がそれを超えると
+OOM abort していた (← gc_combined で immix_gen が踏んだのが直近)。
+
+**対応**: 「huge virtual reservation + lazy commit」 (V8 / ZGC / G1 等の
+標準 modern GC pattern) を採用:
+
+- `gc.h` に共通定数 `ARO_GC_REGION_VIRT_BYTES` = **64 GiB** を導入。 全
+  region 系 backend がこれを参照。
+- 全 mmap 呼出に `MAP_NORESERVE` を付加 (overcommit_memory=2 環境でも
+  失敗しないため)。
+- per-cycle tuning knob である `NURSERY_BYTES` (16 MiB) はそのまま
+  (これは program limit でなく minor 頻度の tuning)。
+- per-chunk size (page 16 KiB / block 32 KiB / line 128 B) はそのまま
+  (user の指示「ページサイズとかは固定でいい」 通り)。
+
+**Immix family** (gc_immix.c / gc_immix_gen.c) の追加対応:
+- `block_meta` 配列も 64 GiB / 32 KiB × 257 B ≈ 514 MB 仮想に巨大化する
+  ので、 これも lazy-paged mmap に変更 (旧 `calloc`)。
+- N_BLOCKS は 2M に膨れたが、 sweep が full N_BLOCKS を walk すると
+  0.5 s/cycle 浪費するので **`max_touched_block` 変数で実際に使った
+  block index の上限を track**、 sweep / mark-clear ループはこの範囲のみ
+  scan する。 hash 表や linked list を持たない一直線 cursor 方式。
+- `find_hole` が touched 範囲で hole 見つからない時は次の virtual block を
+  touch して "1 block 一括 hole" として返す路を追加。 動的成長を実現。
+- sweep で BLK_FREE 化した block は `madvise(MADV_DONTNEED)` で物理 page
+  を OS に返却 (heap_bytes ≈ live_bytes を維持)。
+
+**gc_copy.c**: non-stress mode でも from-space の用済み範囲 (top_pre_collect
+まで) を `madvise(DONTNEED)` するように。 これがないと peak physical =
+2 × live、 これで peak ≈ live。
+
+**影響範囲**:
+- gc.h (定数追加)
+- gc_bump.c (4 GiB → 64 GiB)
+- gc_copy.c (512 MiB → 64 GiB、 madvise 追加)
+- gc_copy_gen.c (512 MiB → 64 GiB)
+- gc_copy_gen_inc.c (同)
+- gc_mark_compact.c (1 GiB → 64 GiB)
+- gc_mark_compact_gen.c (512 MiB → 64 GiB)
+- gc_mark_bump_gen.c (1 GiB → 64 GiB)
+- gc_immix.c (512 MiB → 64 GiB virtual + lazy block_meta + max_touched + madvise)
+- gc_immix_gen.c (同上 + nursery NORESERVE)
+
+mark / mark_gen / mark_gen_inc は元から per-page slab で cap 無し、 無変更。
+
+**テスト**: 全 13 backend × 13 bench で正解 (`make GC=X` × 13 を sweep)。
+
 ## 2026-05-18 (26) — 13 つ目の backend `immix_gen` (generational Immix)
 
 user 要望「immix generational が欲しいかなあ」 で追加。 (25) の `immix` を

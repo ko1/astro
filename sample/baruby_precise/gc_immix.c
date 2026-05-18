@@ -48,8 +48,8 @@
 #define BLOCK_BYTES      (32u * 1024u)
 #define LINES_PER_BLOCK  (BLOCK_BYTES / LINE_BYTES)   /* 256 */
 #define MEDIUM_MAX       (BLOCK_BYTES / 2u)            /* > this → large */
-#define ARENA_BYTES      ((size_t)512u << 20)          /* 512 MiB initial (matches gc_mark_compact_gen tenured) */
-#define N_BLOCKS         (ARENA_BYTES / BLOCK_BYTES)   /* 8192 blocks */
+#define ARENA_BYTES      ARO_GC_REGION_VIRT_BYTES      /* 64 GiB virtual, lazy-paged */
+#define N_BLOCKS         (ARENA_BYTES / BLOCK_BYTES)   /* virtual block count */
 #define ALIGN8(n)        (((n) + 7u) & ~(size_t)7u)
 
 /* mark_epoch: 0 = never marked; otherwise the GC cycle counter value when
@@ -88,6 +88,7 @@ static size_t      block_cursor = 0;        /* current block scanner index */
 static size_t      line_cursor  = 0;        /* line index within block_cursor to resume scan */
 static char       *cur_ptr   = NULL;        /* bump pointer within current hole */
 static char       *cur_end   = NULL;        /* one past last byte of current hole */
+static size_t      max_touched_block = 0;   /* highest block index ever touched (sweep upper bound) */
 static LargeObj   *large_head = NULL;
 
 static size_t      bytes_since_gc = 0;
@@ -114,10 +115,14 @@ aro_gc_init(CTX *c)
 {
     gc_ctx = c;
     arena_base = (char *)mmap(NULL, ARENA_BYTES, PROT_READ|PROT_WRITE,
-                              MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                              MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (arena_base == MAP_FAILED) { perror("immix mmap arena"); abort(); }
-    blocks = (BlockMeta *)calloc(N_BLOCKS, sizeof(BlockMeta));
-    if (!blocks) { perror("immix calloc blocks"); abort(); }
+    /* block_meta array is also virtually reserved + lazy-paged.
+     * 64 GiB / 32 KiB blocks × 257 B/meta ≈ 514 MB virtual. */
+    blocks = (BlockMeta *)mmap(NULL, N_BLOCKS * sizeof(BlockMeta),
+                               PROT_READ|PROT_WRITE,
+                               MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+    if (blocks == MAP_FAILED) { perror("immix mmap blocks"); abort(); }
     /* All blocks start FREE.  Leave cur_ptr/cur_end NULL — the first
      * alloc will fall through to find_hole, which picks up block 0 as
      * one big hole and advances the cursor properly. */
@@ -173,7 +178,10 @@ static bool
 find_hole(size_t n_lines, char **out_start, char **out_end)
 {
     if (n_lines < 1) n_lines = 1;
-    for (size_t b = block_cursor; b < N_BLOCKS; b++) {
+    /* Scan up to max_touched_block+1, with the last block treated as a
+     * fresh (all-free) block — letting us extend the heap one block at a
+     * time without ever scanning the full virtual N_BLOCKS. */
+    for (size_t b = block_cursor; b <= max_touched_block && b < N_BLOCKS; b++) {
         if (blocks[b].state == BLK_USED) { line_cursor = 0; continue; }
         const uint8_t *lm = blocks[b].line_marks;
         size_t i = (b == block_cursor) ? line_cursor : 0;
@@ -187,11 +195,23 @@ find_hole(size_t n_lines, char **out_start, char **out_end)
                 *out_start = bbase + hole_start * LINE_BYTES;
                 *out_end   = bbase + i * LINE_BYTES;
                 block_cursor = b;
-                line_cursor  = i;   /* resume after this hole on next call */
+                line_cursor  = i;
+                if (b > max_touched_block) max_touched_block = b;
                 return true;
             }
         }
         line_cursor = 0;
+    }
+    /* No hole found in touched blocks: extend by touching the next block. */
+    if (max_touched_block + 1 < N_BLOCKS) {
+        max_touched_block++;
+        block_cursor = max_touched_block;
+        line_cursor  = 0;
+        char *bbase = arena_base + max_touched_block * BLOCK_BYTES;
+        *out_start = bbase;
+        *out_end   = bbase + BLOCK_BYTES;
+        line_cursor = LINES_PER_BLOCK;
+        return true;
     }
     return false;
 }
@@ -403,12 +423,15 @@ static void
 sweep(void)
 {
     size_t live = 0;
-    for (size_t b = 0; b < N_BLOCKS; b++) {
+    /* Only walk touched blocks — never the full virtual 2M-block range. */
+    for (size_t b = 0; b <= max_touched_block; b++) {
         const uint8_t *lm = blocks[b].line_marks;
         size_t marked = 0;
         for (size_t i = 0; i < LINES_PER_BLOCK; i++) marked += lm[i];
         if (marked == 0) {
             blocks[b].state = BLK_FREE;
+            /* Return physical pages of fully-free blocks to the OS. */
+            madvise(arena_base + b * BLOCK_BYTES, BLOCK_BYTES, MADV_DONTNEED);
         } else if (marked == LINES_PER_BLOCK) {
             blocks[b].state = BLK_USED;
         } else {
@@ -448,9 +471,9 @@ gc_collect_internal(VALUE *sp_top)
     struct timespec t0 = aro_gc_time_begin();
     CTX *c = gc_ctx;
 
-    /* Reset all line_marks before this mark cycle.  Sweep will set state
-     * based on the marks set during this cycle. */
-    for (size_t b = 0; b < N_BLOCKS; b++) {
+    /* Reset all line_marks before this mark cycle.  Only touched blocks
+     * need clearing — untouched virtual blocks have all-zero metadata. */
+    for (size_t b = 0; b <= max_touched_block; b++) {
         memset(blocks[b].line_marks, 0, LINES_PER_BLOCK);
     }
 

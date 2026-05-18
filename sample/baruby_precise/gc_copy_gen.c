@@ -30,8 +30,8 @@
 #include "astro_debug.h"
 #include "gc.h"
 
-#define NURSERY_BYTES  ((size_t)16u  << 20)    // 16 MiB
-#define TENURED_BYTES  ((size_t)512u << 20)    // 512 MiB per semispace
+#define NURSERY_BYTES  ((size_t)16u  << 20)    /* 16 MiB (tuning knob, not program limit) */
+#define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES /* 64 GiB virtual per semispace, lazy-paged */
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
 typedef struct GCHeader {
@@ -71,7 +71,7 @@ static char *
 mmap_region(size_t bytes)
 {
     char *p = (char *)mmap(NULL, bytes, PROT_READ|PROT_WRITE,
-                           MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                           MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) { perror("mmap"); abort(); }
     return p;
 }

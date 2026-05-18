@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/mman.h>
 #include "context.h"
 #include "astro_debug.h"
@@ -20,7 +21,7 @@ typedef struct GCHeader {
     void    *fwd;
 } GCHeader;
 
-#define REGION_BYTES  ((size_t)512u << 20)   // 512 MiB per semispace (lazy mmap, only used pages occupy physical mem)
+#define REGION_BYTES  ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual per semispace, lazy-paged */
 #define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
 
 // Active semispace (where allocations go).  In stress mode, EVERY GC
@@ -49,7 +50,7 @@ static char *
 mmap_region(void)
 {
     char *p = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
-                           MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                           MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) { perror("mmap"); abort(); }
     return p;
 }
@@ -275,6 +276,7 @@ gc_collect_internal(VALUE *sp_top)
 {
     struct timespec t0 = aro_gc_time_begin();
     char *from_base = active_base;
+    char *from_top_pre = active_top;
 
     // Determine the to-space.
     char *next_to_base;
@@ -355,6 +357,18 @@ gc_collect_internal(VALUE *sp_top)
         }
         if (madvise(from_base, REGION_BYTES, MADV_DONTNEED) != 0) {
             perror("gc_collect: madvise DONTNEED"); abort();
+        }
+    } else {
+        // Non-stress: release physical pages of the dead from-space back
+        // to the OS.  Virtual reservation stays — next cycle re-commits
+        // pages as we touch them.  Without this, peak physical = 2 × live;
+        // with it, peak physical ≈ live.
+        size_t used = (size_t)(from_top_pre - from_base);
+        if (used > 0) {
+            /* Round up to page boundary; madvise requires aligned len. */
+            size_t pagesz = (size_t)sysconf(_SC_PAGESIZE);
+            size_t rounded = (used + pagesz - 1) & ~(pagesz - 1);
+            madvise(from_base, rounded, MADV_DONTNEED);
         }
     }
 

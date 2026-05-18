@@ -30,9 +30,9 @@
 #define BLOCK_BYTES      (32u * 1024u)
 #define LINES_PER_BLOCK  (BLOCK_BYTES / LINE_BYTES)   /* 256 */
 #define MEDIUM_MAX       (BLOCK_BYTES / 2u)
-#define ARENA_BYTES      ((size_t)512u << 20)
+#define ARENA_BYTES      ARO_GC_REGION_VIRT_BYTES      /* 64 GiB virtual, lazy-paged */
 #define N_BLOCKS         (ARENA_BYTES / BLOCK_BYTES)
-#define NURSERY_BYTES    ((size_t)16u  << 20)
+#define NURSERY_BYTES    ((size_t)16u  << 20)          /* 16 MiB (tuning knob, not program limit) */
 #define ALIGN8(n)        (((n) + 7u) & ~(size_t)7u)
 
 /* 16-byte header.  flags bit0 = OLD (tenured), bit1 = DIRTY (remset). */
@@ -70,6 +70,7 @@ static size_t      block_cursor = 0;
 static size_t      line_cursor  = 0;
 static char       *cur_ptr   = NULL;
 static char       *cur_end   = NULL;
+static size_t      max_touched_block = 0;
 static LargeObj   *large_head = NULL;
 
 /* --- Nursery state --- */
@@ -108,17 +109,20 @@ aro_gc_init(CTX *c)
 {
     gc_ctx = c;
     arena_base = (char *)mmap(NULL, ARENA_BYTES, PROT_READ|PROT_WRITE,
-                              MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                              MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (arena_base == MAP_FAILED) { perror("immix_gen mmap arena"); abort(); }
-    blocks = (BlockMeta *)calloc(N_BLOCKS, sizeof(BlockMeta));
-    if (!blocks) { perror("immix_gen calloc blocks"); abort(); }
+    /* block_meta lazy-paged same as gc_immix.c. */
+    blocks = (BlockMeta *)mmap(NULL, N_BLOCKS * sizeof(BlockMeta),
+                               PROT_READ|PROT_WRITE,
+                               MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+    if (blocks == MAP_FAILED) { perror("immix_gen mmap blocks"); abort(); }
     block_cursor = 0;
     line_cursor  = 0;
     cur_ptr = NULL;
     cur_end = NULL;
 
     nursery_base = (char *)mmap(NULL, NURSERY_BYTES, PROT_READ|PROT_WRITE,
-                                MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+                                MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (nursery_base == MAP_FAILED) { perror("immix_gen mmap nursery"); abort(); }
     nursery_top = nursery_base;
     nursery_end = nursery_base + NURSERY_BYTES;
@@ -175,7 +179,7 @@ static bool
 find_hole(size_t n_lines, char **out_start, char **out_end)
 {
     if (n_lines < 1) n_lines = 1;
-    for (size_t b = block_cursor; b < N_BLOCKS; b++) {
+    for (size_t b = block_cursor; b <= max_touched_block && b < N_BLOCKS; b++) {
         if (blocks[b].state == BLK_USED) { line_cursor = 0; continue; }
         const uint8_t *lm = blocks[b].line_marks;
         size_t i = (b == block_cursor) ? line_cursor : 0;
@@ -190,10 +194,21 @@ find_hole(size_t n_lines, char **out_start, char **out_end)
                 *out_end   = bbase + i * LINE_BYTES;
                 block_cursor = b;
                 line_cursor  = i;
+                if (b > max_touched_block) max_touched_block = b;
                 return true;
             }
         }
         line_cursor = 0;
+    }
+    /* No hole in touched blocks: extend by touching the next virtual block. */
+    if (max_touched_block + 1 < N_BLOCKS) {
+        max_touched_block++;
+        block_cursor = max_touched_block;
+        char *bbase = arena_base + max_touched_block * BLOCK_BYTES;
+        *out_start = bbase;
+        *out_end   = bbase + BLOCK_BYTES;
+        line_cursor = LINES_PER_BLOCK;
+        return true;
     }
     return false;
 }
@@ -555,12 +570,14 @@ static void
 sweep_major(void)
 {
     size_t live = 0;
-    for (size_t b = 0; b < N_BLOCKS; b++) {
+    /* Only walk touched blocks. */
+    for (size_t b = 0; b <= max_touched_block; b++) {
         const uint8_t *lm = blocks[b].line_marks;
         size_t marked = 0;
         for (size_t i = 0; i < LINES_PER_BLOCK; i++) marked += lm[i];
         if (marked == 0) {
             blocks[b].state = BLK_FREE;
+            madvise(arena_base + b * BLOCK_BYTES, BLOCK_BYTES, MADV_DONTNEED);
         } else if (marked == LINES_PER_BLOCK) {
             blocks[b].state = BLK_USED;
         } else {
@@ -605,7 +622,7 @@ major_gc(VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    for (size_t b = 0; b < N_BLOCKS; b++) {
+    for (size_t b = 0; b <= max_touched_block; b++) {
         memset(blocks[b].line_marks, 0, LINES_PER_BLOCK);
     }
 
