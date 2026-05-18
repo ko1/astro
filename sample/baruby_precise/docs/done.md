@@ -3,6 +3,60 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (33) — GC phase 計測 + mark_gen 系の hash_chain 大幅高速化
+
+### Phase timing
+各 collect 関数を `aro_gc_phase_begin/end()` で挟んで mark phase と reclaim
+phase の時間を別計上。 `BARUBY_GC_STATS=1` で `mark_seconds=` /
+`reclaim_seconds=` を出力。 詳細は perf.md §2.5。
+
+phase semantics:
+- mark&sweep: mark = trace, reclaim = sweep
+- mark&compact: mark = trace, reclaim = forward + update + slide
+- copy (Cheney): trace と relocate 交錯のため mark=0, 全部 reclaim 計上
+
+### mark_gen / mark_gen_inc の hash_chain regression 解消
+iter 32 の真の perf 数値で mark_gen が hash_chain で 2.02s (mark の 1.24s
+の **1.6×**)、 mark_gen_inc も 1.99s で同じ症状と判明。 perf record で
+GC 時間は 0.008s しかなく、 mutator 側の cache miss 率が 35.95% vs mark の
+17.85% と倍増していた。
+
+**原因**: mark_gen の GCHeader は `young_next` (8 B) + flags(1 B) + pad + size
+= **16 B**。 BaArray (24 B payload) を入れると合計 40 B → slab class 64
+(slot 64 B、 24 B waste)。 一方 mark は header 8 B で BaArray 32 B → slab
+class 32 (slot 32 B、 waste 0)。 結果、 hash_chain の 525K 個 BaArray で
+mark_gen は **16.8 MB → 33.6 MB の heap footprint** に膨らみ LLC を抜ける。
+
+**修正**: `young_next` per-header field を削除し、 external な
+`young_objs[]` 配列 (`static GCHeader **young_objs`) に push して管理。
+header は 16 → **8 B**、 BaArray は class 32 にぴったり収まる。
+
+```c
+// before: per-header linked list
+typedef struct GCHeader {
+    struct GCHeader *young_next;   // 8 B
+    uint8_t flags;  uint8_t _pad[3];  uint32_t size;
+} GCHeader;  // 16 B
+
+// after: external array
+typedef struct GCHeader {
+    uint8_t flags;  uint8_t _pad[3];  uint32_t size;
+} GCHeader;  // 8 B
+static GCHeader **young_objs;  // pushed on each alloc
+```
+
+perf 改善 (iter 32 → iter 33):
+- `mark_gen` hash_chain: 2.02 → **1.36 s** (-33%)
+- `mark_gen_inc` hash_chain: 1.99 → **1.35 s** (-32%)
+- 他の bench は ±5% の noise 範囲
+
+stress mode (BARUBY_GC_STRESS=1) で nqueens / binary_trees / cons_list 全 PASS。
+
+cache locality 観点での副次効果:
+- minor GC の sweep_young が linked-list 走査 (pointer-chasing) → 配列の
+  sequential scan に変わり、 prefetch が効くようになった
+- 24 B BaArray の hot allocate-and-discard ループで footprint 半減
+
 ## 2026-05-18 (32) — Makefile 再ビルドバグ修正 + iter 31 perf 数値の再計測
 
 ### Makefile bug

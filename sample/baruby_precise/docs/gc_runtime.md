@@ -102,7 +102,7 @@ GCHeader が持ち得る field 一覧。 backend ごとに「どれを持つか�
 | `marked` (bit 3) | 1 bit | mark phase で「到達可能」 と印を付けたか。 sweep が free 対象か判定する。 mark 完了後にクリア。 mark_compact_gen / mark_bump_gen は bit 3、 mark_gen の場合も bit 3。 |
 | `old` (bit 3 or 4) | 1 bit | gen 系 backend で「tenured (= 旧世代) に居る」 か。 minor は old skip、 promote 時に set。 marked と同居する backend は bit 4 (mark_gen / mark_compact_gen / mark_bump_gen)、 copy_gen 系は marked field 不要なので bit 3。 |
 | `dirty` (bit 4 or 5) | 1 bit | gen 系で「この (old) obj が remset に既に入ってる」 か。 同じ old obj を二重 push しないための重複防止 flag。 WB が「old & ! dirty なら remset push + dirty set」。 minor 時にクリア。 |
-| `young_next` | GCHeader * | `mark_gen` / `mark_gen_inc` の young 集合用 single-linked list pointer (next young object)。 minor で young を発見するのに使う (O(young) 走査)。 mark_bitmap_gen は廃止して O(heap) page walk に。 |
+| `young_next` (廃止) | — | iter 33 で削除。 `mark_gen` / `mark_gen_inc` は以前 per-header の linked list ポインタを持っていたが、 external `young_objs[]` 配列に移行。 header 16→8 B、 BaArray が slab class 32 に収まり cache locality 向上。 |
 | `fwd` | void * | moving GC (copy* / mark_compact*) で **移動先 payload アドレス**。 同じ obj への 2 回目以降の参照が deref したとき、 元アドレスに置かれた fwd を辿ると新アドレスへ。 |
 | `mark_epoch` | uint8_t | immix family の「sticky-mark 風」 mark 表現。 GC ごとに global `cur_epoch` を +1 し、 mark phase が `h->mark_epoch = cur_epoch`。 epoch tick で旧 mark を heap walk なしに無効化。 immix では別 byte (`flags` の隣)。 |
 | `_pad[N]` | uint8_t | 構造体の **末尾 padding**。 GCHeader 全体のサイズを 8 の倍数に揃えて、 payload (= h+1) が 8-aligned になるようにする。 中身は使わない (read/write 不要)。 |
@@ -116,7 +116,7 @@ GCHeader が持ち得る field 一覧。 backend ごとに「どれを持つか�
 | `none` | — | header なし (pure malloc、 size 情報も持たない) |
 | `bump` | 8 | kind (uint32), size — 元から 8 B、 GC 不要なので flag bit 不要 |
 | `mark` | **8** | flags(kind+marked), _pad[3], size |
-| `mark_gen` / `mark_gen_inc` | **16** | `young_next` (8) + flags(kind+marked+old+dirty), _pad[3], size |
+| `mark_gen` / `mark_gen_inc` | **8** | flags(kind+marked+old+dirty), _pad[3], size — young set は external `young_objs[]` 配列 (iter 33) |
 | `mark_bitmap_gen` | 8 | kind (uint32), size — mark/old/dirty bits は per-page bitmap へ (元から 8 B) |
 | `copy` | **16** | flags(kind), _pad[3], size, `fwd` |
 | `copy_gen` / `copy_gen_inc` | **16** | flags(kind+old+dirty), _pad[3], size, `fwd` (marked 不要 — fwd で代用) |

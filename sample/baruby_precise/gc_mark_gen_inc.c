@@ -27,15 +27,15 @@
 #include "astro_debug.h"
 #include "gc.h"
 
-/* 16-byte header (down from 24).  kind (3 bits) + marked/old/dirty (3 bits)
- * packed into flags byte; size 4 B; young_next 8 B. */
+/* 8-byte header (iter 33).  young set moved to external `young_objs[]`
+ * array; see gc_mark_gen.c for rationale (BaArray density jumps from
+ * class 64 to class 32 = 50% memory saved on hash_chain-shape benches). */
 typedef struct GCHeader {
-    struct GCHeader *young_next;
     uint8_t  flags;     /* bits 0-2: kind, bit 3: marked, bit 4: old, bit 5: dirty */
     uint8_t  _pad[3];
     uint32_t size;
 } GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+_Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
 
 #define HDR_KIND_MASK    0x07u
 #define HDR_MARKED_BIT   0x08u
@@ -84,8 +84,23 @@ static Page     *page_head[NUM_SIZE_CLASSES];
 static FreeSlot *freelist[NUM_SIZE_CLASSES];
 static LargeObj *large_head = NULL;
 
-static GCHeader *young_head = NULL;
+/* young set: contiguous array (was per-header young_next list).  See
+ * gc_mark_gen.c for rationale. */
+static GCHeader **young_objs = NULL;
+static size_t    young_objs_cnt  = 0;
+static size_t    young_objs_capa = 0;
 static size_t   young_bytes = 0;
+
+static inline void
+young_push(GCHeader *h)
+{
+    if (young_objs_cnt >= young_objs_capa) {
+        young_objs_capa = young_objs_capa ? young_objs_capa * 2 : 1024;
+        young_objs = (GCHeader **)realloc(young_objs, young_objs_capa * sizeof(GCHeader *));
+        if (!young_objs) abort();
+    }
+    young_objs[young_objs_cnt++] = h;
+}
 static size_t   old_bytes   = 0;
 static size_t   young_threshold     = 4u * 1024u * 1024u;
 static size_t   old_alloc_since_major = 0;
@@ -180,8 +195,7 @@ slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
     HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     /* marked / old / dirty already 0 by free_slot invariant. */
-    h->young_next = young_head;
-    young_head = h;
+    young_push(h);
     young_bytes += payload_size;
     return h;
 }
@@ -202,8 +216,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     /* marked / old / dirty already 0 from mmap zero. */
-    h->young_next = young_head;
-    young_head = h;
+    young_push(h);
     young_bytes += payload_size;
     return h;
 }
@@ -444,11 +457,9 @@ process_gray(void)
 static void
 sweep_young(bool clear_marked)
 {
-    GCHeader *h = young_head;
-    young_head = NULL;
     young_bytes = 0;
-    while (h) {
-        GCHeader *next = h->young_next;
+    for (size_t i = 0; i < young_objs_cnt; i++) {
+        GCHeader *h = young_objs[i];
         if (HDR_MARKED(h)) {
             if (clear_marked) HDR_CLR_MARKED(h);
             HDR_SET_OLD(h);
@@ -458,8 +469,8 @@ sweep_young(bool clear_marked)
             aro_gc_stats.heap_bytes -= h->size;
             free_slot(h);
         }
-        h = next;
     }
+    young_objs_cnt = 0;
 }
 
 static void
