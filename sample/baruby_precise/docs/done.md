@@ -3,6 +3,37 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (34) — mark_bitmap_gen の adaptive minor threshold
+
+binary_trees で mark_bitmap_gen が 14 minor + 2 major (gc_seconds=0.48,
+gc_pct=38%、 全体 wall 1.43s で worst-of-all) と過剰に minor を発火して
+いた。 原因は固定 `MINOR_THRESHOLD = 16 MiB` で、 binary_trees のように
+**生存率が極端に高い** workload では毎 minor が「young 全部を促進」 する
+だけで no garbage を回収しない。
+
+修正:
+- `MINOR_THRESHOLD` を static `minor_threshold` (initial 16 MiB) に変更
+- 各 minor 終了時に survival ratio を計算:
+  - survival > 75% → threshold × 2 (cap 256 MiB)
+  - survival < 25% → threshold / 2 (floor 16 MiB)
+
+副次的に `size_class_shift[]` table を追加して `locate()` の div を shift
+に置換 (class 32, 64, ..., 4096 で pow2 のもの)。 LTO で constant-prop されて
+いれば測定不変、 そうでなくても fast path 化。
+
+perf 改善 (3-run best、 iter 33 → iter 34):
+- binary_trees: 1.43 → **1.13** (-21%)
+- gc_count: 16 → 4 (生存率高い workload で minor が指数的に sparse 化)
+- gc_seconds: 0.48 → 0.21 (-57%)
+
+stress mode + 13 bench で結果 checksum 一致。
+
+ただし iter 35 で user から **fairness 上の本質的な問題** を 7 件指摘され、
+mark_bitmap_gen の threshold だけ「16 MiB の中身」 が他 backend と違う
+（payload-byte counting vs occupancy-byte counting）など、 単独最適化を
+進めても collector 比較として fair でないことが判明。 iter 35 で
+comparison contract 全体の整理を行う。
+
 ## 2026-05-18 (33) — GC phase 計測 + mark_gen 系の hash_chain 大幅高速化
 
 ### Phase timing
