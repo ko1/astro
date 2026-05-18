@@ -3,6 +3,29 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (28) — sieve macro bench 追加 + MADV_DONTNEED 撤回 + perf.md refresh
+
+(27) 系で入れた MADV_DONTNEED が perf regression を生んでいた:
+- immix string_concat: 0.70 → 1.47 (2× 遅)
+- immix list_alloc: 1.03 → 1.41
+- copy hash_chain: 1.45 → 1.85
+
+原因: alloc-heavy workload で DONTNEED した page を即再利用 → 毎 cycle 全 page
+page-fault → 物理メモリ節約より遥かに高くつく。 撤回。 64 GiB virtual
+reservation 自体は維持 (program-limit cap 撤廃の効果は保持)、 物理は peak
+working set 分使う = OS pressure で必要なら自動 swap。
+
+**新 bench `sieve.ba.rb`**: Sieve of Eratosthenes (N = 10^7、 primes = 664579)。
+1 つの long-lived 80 MB boolean 配列 + 1 つの medium result 配列の組合せ、
+scattered write (`j += i` で page-spread cross-off) が cache locality を負荷。
+既存 14 bench にない「単一 huge object」 系の workload を追加。 ベスト 1.36 s
+(`none`)、 GC-less が勝つ = mutator-dominated。 baruby (libgc) にも port。
+
+**perf.md §2 全面 refresh** (14 bench × 14 構成、 3-run best):
+- 勝者分布で immix_gen が初の bench 最速を 3 件獲得 (gc_combined / hash_chain
+  / list_alloc tied)
+- string_concat 最速 tie: immix / immix_gen の 0.57
+
 ## 2026-05-18 (27c) — VALUE stack の固定 800 KB cap → 8 GiB virtual (lazy-paged)
 
 (27) 系の continuation。 `create_context(10000, 2000)` → calloc(100k slots,
