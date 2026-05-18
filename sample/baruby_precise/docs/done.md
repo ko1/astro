@@ -3,6 +3,42 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (29) — unified 16 MiB adaptive threshold + 全 backend fairness (完)
+
+user 指摘「copy / mark_compact が 64 GiB virtual で region 容量基準でしか
+GC しない = 実質 bump 同然で fair じゃない」 への対応 + 全 backend で
+threshold policy 統一。
+
+統一ポリシー (iter 29 fairness 最終形):
+- 全 GC 系 backend で `bytes_since_gc > threshold` で発火
+- threshold = max(16 MiB, 2 × live_post_collect) で adaptive
+- MIN を全 backend で 16 MiB に統一 (以前は 4 MiB / 64 MiB の不揃い)
+
+修正:
+- `gc_copy.c` / `gc_mark_compact.c`: adaptive threshold を新規追加
+  - copy binary_trees: 0 GC → 3 GC、 0.62s → 0.90s (公平化)
+  - mark_compact binary_trees: 0 → 3 major、 0.65s → 0.96s
+- `gc_copy_gen.c` / `gc_copy_gen_inc.c` / `gc_mark_compact_gen.c`:
+  MAJOR threshold 新規追加 (それ以前は tenured 容量基準 = 実質発火せず)
+- `gc_mark.c` / `gc_immix.c`: MIN 4 MiB → 16 MiB
+- `gc_mark_gen.c` / `gc_mark_gen_inc.c` / `gc_mark_bump_gen.c` /
+  `gc_mark_bitmap_gen.c` / `gc_immix_gen.c`: MIN 64 MiB → 16 MiB
+
+加えて: `mark_bitmap` → `mark_bitmap_gen` リネーム (gen 系の naming 規則
+揃え)。
+
+`docs/gc_runtime.md` 大幅更新:
+- §4 各 backend に「Heap 拡張」「GC trigger」「Minor/Major trigger」 明記
+- §6 を「ヒープ管理 — サイズ戦略と GC 発火条件」 に書き換え:
+  - §6.1 仮想ヒープ予約の意味 (64 GiB は ≠ 上限まで GC しない)
+  - §6.2 adaptive threshold policy (MIN=16 MiB、 factor=2×live)
+  - §6.3 backend ごとの拡張単位 (slab 16 KiB page / Immix 32 KiB block /
+    region 系の lazy commit 4 KiB page)
+  - §6.4 fairness 設定の対比表 + iter 29 変更履歴
+
+全 14 backend × 14 bench で正解返却 (fail=0)。 perf.md §2 は新数値で
+refresh 予定 (sweep 後)。
+
 ## 2026-05-18 (29) — fairness 修正 + gc_runtime.md 入門書 (続)
 
 (29) 後半:
