@@ -376,9 +376,9 @@ __GC_STATS__ backend=<name> alloc_bytes=<累計> heap_bytes=<live> \
   例えば binary_trees で mark_gen=288 ms vs mark_gen_inc=54 ms (5.4×
   短縮) のように顕在化
 
-### 5.10 全 13 GC backend カタログ
+### 5.10 全 14 GC backend カタログ
 
-`make GC=<name>` で 13 種類の backend を切替えてビルド可能。 切替えは
+`make GC=<name>` で 14 種類の backend を切替えてビルド可能。 切替えは
 build time only (`-DBARUBY_GC=<n>`)。 default は `copy`。 共通インタフェース
 (`gc.h`) は `aro_gc_init / alloc / alloc_byte / realloc_payload /
 collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装する。
@@ -626,9 +626,46 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
   promotion 路では既存 hole にしか書けないので、 hole が枯渇したら
   major を強制 trigger する path に依存。
 
+#### 14. `mark_bitmap` — sticky mark&sweep + per-page bitmap (8 B header)
+
+- **Layout**: gc_mark.c と同じ slab/page allocator (9 size class × 16 KiB
+  page) だが **page を 16 KiB aligned** で mmap (over-mmap して trim)、
+  各 page の先頭に **3 つの bitmap** (mark / old / dirty、 各 64 B = 512
+  bit) を配置。 page base は `(ptr & ~0x3fff)` で O(1) 取得。
+- **GCHeader**: **8 B のみ** (kind + size)、 mark/old/dirty/young_next は
+  全て bitmap 化で消去。
+- **Allocation**: slab freelist 路、 free slot は `(GCHeader+1)` (payload
+  領域) に `FreeSlot.next` を持つ (strict aliasing 回避の重要 design)。
+- **GC trigger**: alloc-since-gc が `MINOR_THRESHOLD` (4 MiB) 超で minor、
+  promoted bytes が `old_major_threshold` (adaptive、 max(MIN, 2 × live))
+  超で major。
+- **Phases**:
+  1. minor mark: from roots、 in_minor && old skip optimization
+  2. remset: dirty old object 処理
+  3. minor sweep: 全 page を walk、 各 slot の `old_bm[i] == 0 && marked` →
+     promote (old_bm セット、 mark_bm クリア)、 `old_bm[i] == 0 && !marked` →
+     freelist へ。 O(heap)。
+  4. major: mark from roots、 全 page walk、 unmarked → freelist、 mark
+     クリア。
+- **Write barrier**: 必要。 H_DIRTY を bitmap で表現。
+- **特徴**:
+  - **header 8 B** で **BaArray (24 B payload) が class 32 にぴったり**
+    収まる。 mark_gen は class 64 (40% waste) 払っていた所が 0 waste。
+  - **hash_chain で大勝**: 2.50 (mark) → 1.67 (-33%)。 hot な hash bucket
+    の `[k, v]` array が密に詰まり cache locality 向上。
+  - **binary_trees で苦戦**: 1.00 (mark) → 2.02 (+100%)。 long-live tree
+    workload で minor sweep O(heap) + bitmap op overhead。
+  - mark_gen の linked-list 路と「同じ semantics、 別実装」 — header
+    overhead vs sweep complexity の trade-off を実測できる。
+- **v1 制限**:
+  - minor sweep が全 page walk (mark_gen の O(young) より遅い)。 per-page
+    "all old" flag や 64-bit-wise old_bm scan で改善可能。
+  - mark/set bit ops が hot mark path で per-object overhead を生む。
+    cached page pointer + slot index 計算の lookup-less 化で改善可。
+
 ### 5.11 設計空間の俯瞰
 
-13 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
+14 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
 眺めた表:
 
 | Backend | Nursery | Tenured | Compact? | Gen? |
@@ -646,6 +683,7 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
 | `mark_bump_gen` | bump | bump (1 region) | no (累積) | yes |
 | `immix` | — | hole-bump (block/line) | no (v1) | no |
 | `immix_gen` | bump | hole-bump (block/line) | no (v1) | yes (nursery→tenured copy) |
+| `mark_bitmap` | — | slab + page bitmaps (8 B hdr) | no | yes (sticky) |
 
 「nursery が bump か」「tenured が bump か」「major で compact するか」 が
 直交軸として並び、 backend を選ぶことで各軸の影響を孤立して測れる。
