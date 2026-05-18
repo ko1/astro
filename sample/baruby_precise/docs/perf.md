@@ -30,56 +30,61 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 ## 2. 全 GC backend のベンチ実測 (plain mode, 14 bench × 15 構成, 3-run best)
 
 14 種類の自前 backend + 姉妹 `sample/baruby` (Boehm libgc conservative) を
-**横並び 15 列**で比較 (`mark_bitmap_gen` 追加)。 ベンチは 14 種、 各 3-run 中の
-best。 単位: 秒。 行ごとの最速に `**` 印。 `libgc` 列の `life` は baruby
-側の独立 bug で除外 ([§3 参照](#3-libgc-列の-life-不在について))。
+**横並び 15 列**で比較。 ベンチは 14 種、 各 3-run 中の best。 単位: 秒。
+行ごとの最速に `**` 印。 `libgc` 列の `life` は baruby 側の独立 bug で除外
+([§3 参照](#3-libgc-列の-life-不在について))。
 
-**iter 29 で fairness 修正**: `mark_bitmap_gen` の MAJOR_THRESHOLD_MIN (4 MiB →
-64 MiB)、 MINOR_THRESHOLD (4 MiB → 16 MiB)、 `immix_gen` の
-MAJOR_THRESHOLD_MIN (4 MiB → 64 MiB) を他の sticky 非moving gen 系
-(`mark_gen` / `_inc` / `mark_bump_gen`) に揃えた。 mark_bitmap_gen / immix_gen
-は数値上不利になる方向だが、 同 family 内で同 cadence 比較できる。
+**iter 29 fairness 完成版** ([gc_runtime.md §6](gc_runtime.md) 参照):
+- 全 GC 系 backend で **`bytes_since_gc > threshold` の adaptive trigger**
+  (MIN=16 MiB、 factor=2×live)
+- `copy` / `mark_compact` / `copy_gen` / `copy_gen_inc` / `mark_compact_gen`
+  に iter 29 で新規追加 (それ以前は region/tenured 容量基準のみ = 64 GiB
+  virtual で実質発火せず、 bump 同然の不公平な数値だった)
+- 全 backend で MIN を **16 MiB に統一** (以前は 4 MiB / 64 MiB 混在)
+- `mark_bitmap` は `mark_bitmap_gen` にリネーム (gen 系 naming 一貫性)
 
-| Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen | immix | immix\_gen | mark\_bitmap | libgc |
+| Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen | immix | immix\_gen | mark\_bitmap\_gen | libgc |
 |---------------| ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: |
-| binary_trees  | 0.71 | 1.01 | 1.32 | 1.44 | 0.64 | 0.90 | 0.90 | 0.65 | 0.88 | **0.59** | 0.98 | 0.70 | 1.09 | 1.52 | 0.98 |
-| cons_list     | 1.40 | 0.90 | 1.06 | 1.17 | 1.21 | **0.87** | 0.89 | 1.27 | 0.88 | 1.12 | 0.92 | **0.87** | 0.90 | 1.11 | 1.03 |
-| fannkuch      | 0.82 | 0.80 | 0.80 | 0.83 | 0.86 | 0.79 | **0.78** | 0.82 | 0.79 | 0.83 | 0.82 | 0.79 | 0.84 | 0.86 | 0.79 |
-| fib_pair      | 1.82 | **0.97** | 1.16 | 1.22 | 1.53 | 0.99 | **0.97** | 1.55 | **0.97** | 1.39 | 1.02 | 0.99 | 0.98 | 1.28 | 1.23 |
-| gc_combined   | 1.55 | 0.99 | 1.16 | 1.27 | 1.38 | 1.06 | 0.99 | 1.48 | **0.97** | 1.30 | 1.07 | 0.98 | 1.01 | 1.24 | 1.17 |
-| hash_chain    | 1.50 | 2.34 | 2.32 | 2.45 | 1.57 | 1.45 | 1.37 | 1.87 | 1.42 | 1.49 | 1.42 | 1.47 | **1.35** | 1.51 | 1.54 |
-| interp_calc   | 1.52 | **1.02** | 1.29 | 1.34 | 1.40 | 1.12 | 1.09 | 1.41 | 1.09 | 1.31 | 1.14 | 1.09 | 1.06 | 1.32 | 1.41 |
-| life          | **1.44** | 1.47 | 1.51 | 1.51 | 1.55 | 1.50 | 1.55 | 1.51 | 1.52 | 1.56 | 1.50 | 1.45 | 1.54 | 1.57 | — |
-| list_alloc    | 1.54 | 0.96 | 1.13 | 1.17 | 1.34 | 0.93 | 0.95 | 1.39 | 0.95 | 1.23 | 1.01 | **0.92** | 0.99 | 1.18 | 1.05 |
-| list_sort     | 1.37 | 1.30 | 1.37 | 1.40 | 1.41 | 1.25 | 1.20 | 1.37 | 1.21 | 1.33 | 1.25 | **1.16** | 1.24 | 1.43 | 1.22 |
-| nqueens       | **1.05** | **1.05** | 1.08 | 1.09 | 1.10 | 1.09 | 1.07 | 1.06 | 1.09 | 1.09 | 1.10 | 1.08 | 1.10 | 1.11 | 1.08 |
-| sieve         | **1.37** | 1.42 | 1.52 | 1.61 | 1.92 | 1.55 | 1.50 | 1.75 | 1.56 | 1.77 | 1.60 | 1.69 | 1.57 | 1.63 | 1.59 |
-| string_concat | 1.89 | 0.75 | 0.93 | 0.95 | 1.33 | 0.65 | 0.63 | 1.47 | 0.63 | 1.04 | **0.57** | **0.57** | 0.59 | 0.98 | 1.11 |
-| substr_churn  | 1.86 | 1.22 | 1.22 | 1.29 | 1.58 | 1.05 | 1.06 | 1.71 | 1.05 | 1.36 | **0.94** | 1.08 | 1.00 | 1.30 | 1.45 |
+| binary_trees  | 0.70 | 1.09 | 1.13 | 1.17 | 0.88 | 1.14 | 1.11 | 0.94 | 1.08 | **0.55** | 0.95 | 0.69 | 1.08 | 1.63 | 0.96 |
+| cons_list     | 1.41 | 0.94 | 1.00 | 1.08 | **0.84** | 0.87 | 0.85 | 1.07 | 0.87 | 1.11 | 0.88 | 0.88 | 0.86 | 1.09 | 1.05 |
+| fannkuch      | 0.81 | 0.78 | 0.82 | 0.82 | 0.78 | **0.76** | 0.77 | 0.80 | 0.79 | 0.82 | 0.77 | 0.80 | 0.80 | 0.86 | 0.77 |
+| fib_pair      | 1.82 | 1.05 | 1.15 | 1.22 | **0.88** | 0.95 | 0.96 | 1.22 | 0.98 | 1.36 | 0.94 | 0.99 | 1.00 | 1.29 | 1.27 |
+| gc_combined   | 1.57 | 1.13 | 1.13 | 1.25 | **0.93** | 1.01 | 0.99 | 1.19 | 0.99 | 1.29 | 0.99 | 1.02 | 1.00 | 1.25 | 1.16 |
+| hash_chain    | **1.33** | 2.28 | 2.38 | 2.35 | 1.51 | 1.35 | 1.35 | 2.09 | 1.38 | 1.46 | 1.41 | 1.57 | 1.35 | 1.59 | 1.71 |
+| interp_calc   | 1.51 | 1.08 | 1.19 | 1.29 | **1.02** | 1.04 | 1.07 | 1.23 | 1.10 | 1.27 | 1.10 | 1.06 | 1.04 | 1.32 | 1.38 |
+| life          | 1.50 | 1.43 | **1.40** | 1.43 | 1.48 | 1.49 | 1.46 | 1.46 | 1.52 | 1.46 | 1.49 | 1.48 | 1.51 | 1.51 | — |
+| list_alloc    | 1.53 | 1.02 | 1.13 | 1.22 | **0.91** | 0.98 | 0.96 | 1.16 | 0.96 | 1.32 | 0.94 | 0.95 | 0.92 | 1.18 | 1.16 |
+| list_sort     | 1.33 | 1.34 | 1.33 | 1.37 | **1.12** | 1.16 | 1.16 | 1.28 | 1.16 | 1.33 | 1.24 | 1.15 | 1.19 | 1.47 | 1.24 |
+| nqueens       | 1.06 | 1.07 | 1.06 | 1.08 | 1.04 | 1.04 | 1.04 | 1.09 | 1.08 | 1.06 | 1.07 | 1.07 | 1.08 | 1.08 | **1.01** |
+| sieve         | **1.35** | 1.45 | 1.50 | 1.60 | 2.07 | 1.51 | 1.48 | 1.73 | 1.53 | 1.74 | 1.57 | 1.74 | 1.53 | 1.61 | 1.60 |
+| string_concat | 1.82 | 0.88 | 0.88 | 0.94 | 0.58 | 0.63 | 0.63 | 1.01 | 0.63 | 0.95 | **0.56** | 0.58 | 0.58 | 0.98 | 1.03 |
+| substr_churn  | 1.91 | 1.28 | 1.21 | 1.19 | 1.10 | 0.98 | 0.99 | 1.24 | 1.00 | 1.29 | **0.97** | 1.03 | 0.99 | 1.27 | 1.39 |
 
-**勝者分布** (2026-05-18 (29) refresh、 fairness 修正後、 14 bench × 15 構成):
+**勝者分布** (2026-05-18 (29) refresh、 unified 16 MiB adaptive threshold 後):
 
-- **`immix`** が **4 bench で最速** (cons_list tied / list_alloc / list_sort
-  / string_concat tied) — single-collection の Immix が hole-bump alloc の
-  cache 効率で hash table 系含む alloc-heavy bench を支配
-- **`none`** が **3 bench で最速** (life / nqueens / sieve) — mutator 支配で
-  GC オーバヘッドが見える bench は GC-less ベースラインが優位
-- **`copy_gen_inc` / `copy_gen` / `mark_compact_gen` / `mark_bump_gen` /
-  `immix_gen` / `bump` / `mark`** がそれぞれ 1〜2 bench で最速 — 各 GC 戦略の
-  得意 workload で勝つ典型
-- **`mark_bitmap_gen`** は最速 bench 無し。 fairness 修正 (4 MiB → 64 MiB major
-  threshold) で binary_trees 等が遅くなった反面、 hash_chain では 2.34 (mark)
-  → 1.51 で **mark family 内 -36%** の density 効果は維持
+- **`copy`** が **6 bench で最速** (cons_list / fib_pair / gc_combined /
+  interp_calc / list_alloc / list_sort) — Cheney semispace の alloc 速度 +
+  fragmentation 無し + adaptive trigger で良いバランス
+- **`none`** が **3 bench で最速** (hash_chain / sieve、 そして bump 同然の
+  `bump` と並ぶ binary_trees floor) — mutator 支配 + GC 無しで勝つ pattern
+- **`bump`** が 1 (binary_trees)、 **`copy_gen`** 1 (fannkuch)、
+  **`mark_bump_gen`** 2 (string_concat / substr_churn)、 **`mark_gen`** 1
+  (life)、 **`libgc`** 1 (nqueens)
+- 旧 winner だった `immix` / `immix_gen` / `mark_compact_gen` は今回 0
+  bench で最速 — 16 MiB threshold で全 backend が同じ collection 頻度に
+  なった結果、 Cheney semispace の単純さが勝つ傾向
 
 注目点:
-- **`immix` ファミリーが alloc-heavy で強い**: cons_list / list_alloc /
-  list_sort / string_concat の上位常連
-- **`mark_compact_gen` が gc_combined 単独最速** — long-live + short-live
-  混合の steady-state で compaction が効く
-- **gen 系がほとんどの bench で本家 (`mark` / `copy` / `immix`) を上回る** —
-  期待通り generational 効果が見える
-- **`mark_compact` と `copy` は実質 GC せず bump 同然** (64 GiB virtual
-  region が満杯にならない) — fair comparison として §7 で議論
+- `copy` の躍進: iter 28 までの「実質 GC しないで bump 同然」 から、 16 MiB
+  threshold で Cheney を回しても **多くの bench で全 backend 中の最速**。
+  Cheney の単純さと cache friendliness が見直された
+- `mark_compact_gen` / `copy_gen` の binary_trees regression は依然顕著
+  (1.08 / 1.14 vs `copy` 0.88) — 全 alloc が長寿命なので Cheney promote が
+  逆効果という古典的 anti-pattern
+- `mark_bitmap_gen` の hash_chain (1.59) は mark / mark_gen (2.28 / 2.38)
+  に対し **mark family 内 -32%** の density 効果は維持
+- `mark_compact_gen` は gc_combined / cons_list で 0.99 / 0.87 で trailing
+  competitor、 安定して上位
 - `mark_bump_gen` が **5 bench で最速** (fannkuch / fib_pair / life /
   list_sort / string_concat) — bump nursery + tenured bump の cheapest-alloc
   パスが mutator-bound bench でも勝つ
@@ -505,11 +510,6 @@ String の bytes ペイロードは GC が pointer として読まないので�
 
 ## 7. 次の段階で試したいこと
 
-- **`mark_compact` / `copy` の GC trigger threshold**: 現状は region
-  (64 GiB virtual) が満杯になるまで GC しない = 実質 GC 無しで動作 → 「
-  mark_compact が速い」 結果は GC 不在の `bump` に近く、 実装の特性を
-  ベンチに反映できていない可能性。 mark / immix と同様 4 MiB MIN 適応閾値
-  を入れると比較が公平になる
 - **Immix v2 opportunistic evacuation** (fragmentation 解消)
 - **mark_bitmap_gen minor sweep の最適化**: 64-bit-wise old_bm scan、
   per-page "all old" flag で binary_trees regression を縮小
@@ -517,3 +517,8 @@ String の bytes ペイロードは GC が pointer として読まないので�
 - `astrogen.rb` 拡張で `@locals` を機械化 (手書きの error-prone を減らす)
 - `mark_gen_inc` / `copy_gen_inc` を真の incremental に (stack write
   barrier + work budget)
+
+(iter 29 で完了: `mark_compact` / `copy` / `copy_gen` / `copy_gen_inc` /
+`mark_compact_gen` に adaptive 16 MiB threshold 追加で fair 化。 全 backend
+の MIN を 16 MiB に統一。 詳細は [gc_runtime.md §6](gc_runtime.md) と
+done.md iter 29。)
