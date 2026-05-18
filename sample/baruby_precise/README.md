@@ -1,15 +1,15 @@
-# baruby_precise — precise GC testbed (13 backends)
+# baruby_precise — precise GC testbed (14 backends)
 
 `sample/baruby/` (libgc conservative) を fork して、 **precise rooting +
 複数の自前 GC を切替えてベンチ比較できる testbed**。 共有 `sp[]` で
 root を spill する Lua/Rust 系モデル ([`docs/gc_design.md`](../../docs/gc_design.md))
-を実装し、 13 種類の GC algorithm を **build-time switch** (`make GC=<name>`)
+を実装し、 14 種類の GC algorithm を **build-time switch** (`make GC=<name>`)
 で選べる。
 
 言語仕様 (Array / String / fixnum / 関数定義) は baruby と同一。 GC 周りと
 それを支える rooting / WB / sp threading だけが違う。
 
-## 13 GC backends
+## 14 GC backends
 
 `make GC=<name>` で切替え。 default は `copy`。 詳細は [docs/runtime.md](docs/runtime.md) §5.10。
 
@@ -28,6 +28,7 @@ root を spill する Lua/Rust 系モデル ([`docs/gc_design.md`](../../docs/gc
 | 11 | `mark_bump_gen` | bump nursery + bump tenured, no compact | yes | no |
 | 12 | `immix` | block (32 KiB) + line (128 B) mark-region, no evac | — | no |
 | 13 | `immix_gen` | bump nursery + Immix tenured (mark-region, no evac) | yes | nursery→tenured copy |
+| 14 | `mark_bitmap` | sticky mark&sweep + per-page bitmap (8 B header) | yes | no |
 
 For details:
 - [docs/spec.md](docs/spec.md) — 言語仕様 (baruby と同じ)
@@ -75,7 +76,7 @@ make bench                    # build + ruby bench/run.rb
 make clean
 ```
 
-利用可能な GC: `none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen`
+利用可能な GC: `none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap`
 
 AOT mode (`-c`): `CCACHE_DISABLE=1 ./baruby_precise -c bench/list_alloc.ba.rb`
 で SD specialize → code_store/all.so 構築 → 再 dlopen。 CCACHE_DISABLE は

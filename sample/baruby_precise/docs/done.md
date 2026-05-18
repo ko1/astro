@@ -3,6 +3,64 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (29) — minor_gc noinline 化で 3 backend の alloc fast path 改善 + `mark_bitmap` 追加
+
+**前半: minor_gc noinline**
+
+(28) で copy_gen vs mark_compact_gen の perf 差を分析した際、 LTO の inlining
+判断の偶然差が原因とわかった (詳細 perf.md §5)。 copy_gen / copy_gen_inc /
+mark_bump_gen の 3 つは major_gc が比較的小さく、 LTO が minor_gc を
+nursery_bump に inline → nursery_bump 1100 B 級に膨張 → aro_gc_alloc に
+fast path inline 不成立 → alloc 毎に PLT call が残る、 という構図。
+
+minor_gc に `__attribute__((noinline))` を付けて cold path として別関数
+維持することで nursery_bump スリム化 → aro_gc_alloc に fast path 完全
+inline。 サイズ変化:
+- copy_gen:      aro_gc_alloc 168 → 522 B、 nursery_bump 1118 → 406 B
+- copy_gen_inc:  同上
+- mark_bump_gen: aro_gc_alloc 168 → 591 B、 nursery_bump 消失 (完全 inline)
+
+perf 改善 (主な勝ち bench):
+- copy_gen list_alloc -6%、 gc_combined -3%、 substr_churn -2%
+- copy_gen_inc fib_pair -7%、 gc_combined -9%
+- mark_bump_gen substr_churn -11%、 string_concat -5%、 gc_combined -6%
+
+audit で他 backend に同じ問題なしを確認。 全 13 backend × 14 bench で
+regression 無し。
+
+**後半: 14 つ目の backend `mark_bitmap`**
+
+user「semantics が同じなら sticky M&S を別実装する意味は薄い、 bitmap だけ
+で良い」 という指摘を受けて追加。 sticky mark&sweep を per-page bitmap で
+実装した variant:
+
+- GCHeader 8 B (kind + size のみ) — 元 mark_gen の 24 B から大幅削減
+- mark / old / dirty bit は per-page bitmap (64 B × 3 = 192 B/page)
+- page は 16 KiB **aligned** (over-mmap して trim) → `(ptr & ~0x3fff)` で
+  O(1) で page base 取得
+- young_next linked list 撤廃 — minor sweep は全 page を walk して
+  old_bm 0 の slot を judge (O(heap)、 mark_gen の O(young) に対し)
+
+**密度の副次効果**: 8 B header で **BaArray (24 B payload) が class 32 にぴったり収まる**。 旧 mark_gen では BaArray は class 64 (24 B header + 24 B
+payload = 48 B → 64 B class) で 40% waste していたのが消える。
+
+性能 (14 bench 3-run best):
+- **hash_chain 1.67 (vs mark 2.50、 -33%!)** — 密度向上の効果が大きい
+- string_concat 0.87 (vs mark 0.74、 mark_gen 0.89 と同水準)
+- nqueens / cons_list / fannkuch / list_alloc 等は mark_gen と互角
+- **binary_trees 2.02 (vs mark 1.00、 +100%!)** — minor sweep O(heap) +
+  bitmap op overhead で long-live tree workload で苦戦
+
+設計教訓: bitmap 化は「header 縮小 + 密度向上」 で alloc-heavy workload に
+prefer されるが、 「per-mark bitmap op」 が hot mark phase で per-object
+overhead を生む。 future work: per-page "all old" flag で minor sweep を
+skip、 mark fast path 用の cached page pointer 等。
+
+**アリア sing バグでハマった点**: GCHeader と FreeSlot が同じ 8 byte を共有
+する初版は strict aliasing で GCC が write を reorder → freelist の最初の
+要素が `(kind=3, size=128)` で破壊された (gdb で確認: 0x0000008000000003)。
+gc_mark.c と同じく **FreeSlot を payload 領域 (h+1) に配置** で解決。
+
 ## 2026-05-18 (28) — sieve macro bench 追加 + MADV_DONTNEED 撤回 + perf.md refresh
 
 (27) 系で入れた MADV_DONTNEED が perf regression を生んでいた:
