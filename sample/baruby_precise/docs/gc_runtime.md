@@ -88,16 +88,43 @@ GC は LSB を見て pointer かどうかを判定 (`IS_PTR(v)`)。 即値は無
             VALUE はここを指す (h+1)
 ```
 
-GCHeader のサイズは backend で違う:
+#### field の意味
+
+GCHeader が持ち得る field 一覧。 backend ごとに「どれを持つか」 が違う:
+
+| Field | 型 | 意味 |
+|---|---|---|
+| `kind` | uint32_t | オブジェクトの種類タグ。 `KIND_OBJ_ARRAY` / `KIND_OBJ_STRING` / `KIND_PAYLOAD_VAL` (= VALUE[]、 BaArray.items の中身) / `KIND_PAYLOAD_BYTE` (= char[]、 BaString.bytes の中身) / `KIND_FREE` (freelist 上の slot)。 mark phase が outgoing 参照を辿るとき、 payload を何として解釈するか判定するのに使う。 |
+| `size` | uint32_t | payload バイト数 (アライメント前の logical size)。 sweep でスロット境界を進めるとき + payload の中の VALUE 数 を求めるとき (KIND_PAYLOAD_VAL なら `size / 8` 個) に使う。 |
+| `marked` | bool | mark phase で「到達可能」 と印を付けたか。 sweep が free 対象か判定する。 mark 完了後にクリア。 |
+| `old` | bool | gen 系 backend で「tenured (= 旧世代) に居る」 か。 minor は old skip、 promote 時に true に。 |
+| `dirty` | bool | gen 系で「この (old) obj が remset に既に入ってる」 か。 同じ old obj を二重 push しないための重複防止 flag。 WB が「old & ! dirty なら remset push + dirty=true」。 minor 時にクリア。 |
+| `young_next` | GCHeader * | `mark_gen` / `mark_gen_inc` の young 集合用 single-linked list pointer (next young object)。 minor で young を発見するのに使う (O(young) 走査)。 mark_bitmap_gen は廃止して O(heap) page walk に。 |
+| `fwd` | void * | moving GC (copy* / mark_compact*) で **移動先 payload アドレス**。 同じ obj への 2 回目以降の参照が deref したとき、 元アドレスに置かれた fwd を辿ると新アドレスへ。 |
+| `mark_epoch` | uint8_t | immix family の「sticky-mark 風」 mark 表現。 GC ごとに global `cur_epoch` を +1 し、 mark phase が `h->mark_epoch = cur_epoch`。 epoch tick で旧 mark を heap walk なしに無効化。 |
+| `flags` | uint8_t | immix_gen で `old` / `dirty` を 1 bit ずつにパックした compact 表現。 8 B header の `mark_epoch` 1 byte 隣に置く。 |
+| `_pad[N]` | uint8_t | 構造体の **末尾 padding**。 GCHeader 全体のサイズを 8 の倍数に揃えて、 payload (= h+1) が 8-aligned になるようにする。 例えば mark の場合: kind(4) + size(4) + marked(1) = 9 byte → 16 byte までに 7 byte の `_pad[7]`。 中身は使わない (read/write 不要)。 |
+
+#### backend ごとの header
 
 | Backend | GCHeader (B) | 内容 |
 |---|---:|---|
-| `mark` | 16 | kind, size, marked, _pad |
-| `mark_gen` / `mark_gen_inc` | 24 | + `young_next`, `old`, `dirty` |
-| `mark_bitmap_gen` | **8** | kind, size のみ — bits は per-page bitmap へ |
-| `copy*` / `mark_compact*` | 24 | + `fwd` (forward ptr), `old`, `dirty` |
-| `bump` | 8 | kind, size のみ (no GC) |
-| `immix*` | 16 | + `mark_epoch`, `flags` (gen) |
+| `none` | 16 | kind, size, marked, _pad — `mark` と同じ |
+| `bump` | 8 | kind, size のみ (no GC、 padding なしで 8 B ピッタリ) |
+| `mark` | 16 | kind, size, marked, _pad[7] |
+| `mark_gen` / `mark_gen_inc` | 24 | + `young_next`, `old`, `dirty`, _pad |
+| `mark_bitmap_gen` | **8** | kind, size のみ — mark/old/dirty bits は per-page bitmap へ |
+| `copy*` / `mark_compact*` | 24 | kind, size + `fwd` (8 B) + `old`, `dirty` + _pad |
+| `mark_compact_gen` | 24 | 同上 + `marked` (major mark 用) |
+| `mark_bump_gen` | 24 | kind, size + `fwd` + `old`, `dirty`, `marked` + _pad |
+| `immix` | 16 | kind, size + `mark_epoch` + _pad |
+| `immix_gen` | 16 | kind, size + `mark_epoch` + `flags` (old/dirty bit pack) + _pad |
+
+GCHeader が小さいほど slot に占める割合が減るので、 特に short payload
+(BaArray の 24 byte 等) の **密度が上がる**。 mark_bitmap_gen の 8 B
+header は class 32 に BaArray がぴったり収まる効果が大きい (`mark` の
+class 64 で 40% waste していたのが 0)。 詳細は perf.md hash_chain の
+数値比較。
 
 ### 1.4 Write barrier API
 
