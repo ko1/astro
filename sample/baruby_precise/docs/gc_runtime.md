@@ -176,9 +176,15 @@ freelist が空なら新 page を mmap して populate。
 
 **採用 backend**: `mark`、 `mark_gen`、 `mark_gen_inc`、 `mark_bitmap_gen`。
 
-非 moving なので alloc/free を繰り返しても**アドレスが安定する** = root の
-forwarding が不要。 古典的な malloc 系の親戚で、 CRuby の heap_page と
-よく似た形。
+古典的な malloc 系の親戚で、 CRuby の heap_page とよく似た形。
+
+NB: alloc 戦略は **moving / non-moving と直交**。 slab/page allocator 上で
+collect 時に object を移動する設計も可能 (例えば size class 単位で compact
+する、 別 page にコピーして元 page を解放、 等)。 baruby_precise の現状実装
+は採用 backend 全部が non-moving だが、 これは「slab だから non-moving」
+という必然ではなく **この testbed の実装選択**。 「mark で compact しない」
++「mark_compact_gen は別 region 設計を採用してる」 という都合で、 結果的に
+slab + non-moving の組合せしか居ない、 という状態。
 
 ### パターン C: Semispace (Cheney)
 
