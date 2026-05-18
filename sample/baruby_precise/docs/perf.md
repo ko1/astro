@@ -469,19 +469,23 @@ String の bytes ペイロードは GC が pointer として読まないので�
 
 ## 6. 既知の問題
 
-- **toplevel sp が 64 で hardcode** (`main.c::create_context`)。 大きな
-  toplevel フレームを持つプログラムでは scratch 領域不足
-- **REGION_BYTES = 512 MiB が固定**。 live set がこれを超えると OOM
 - **AOT mode は moving GC 移行後に未検証** — SD bake された経路で
   precise rooting が成立しているかは要再 audit (`-c` 動作含む)
+- `mark` family の `hash_chain` slab 配置 locality (BaArray と items[] が
+  別 page) は `mark_bitmap` で 8 B header にして class 32 に同梱できる
+  と確認したが、 24 B header の既存系は構造改変が必要
 
 ## 7. 次の段階で試したいこと
 
+- **`mark_compact` / `copy` の GC trigger threshold**: 現状は region
+  (64 GiB virtual) が満杯になるまで GC しない = 実質 GC 無しで動作 → 「
+  mark_compact が速い」 結果は GC 不在の `bump` に近く、 実装の特性を
+  ベンチに反映できていない可能性。 mark / immix と同様 4 MiB MIN 適応閾値
+  を入れると比較が公平になる
+- **Immix v2 opportunistic evacuation** (fragmentation 解消)
+- **mark_bitmap minor sweep の最適化**: 64-bit-wise old_bm scan、
+  per-page "all old" flag で binary_trees regression を縮小
 - AOT mode の再検証 (`make CCACHE_DISABLE=1` で `-c` 経路を回す)
-- toplevel locals_cnt を parser から取って main.c で正しい sp を設定
 - `astrogen.rb` 拡張で `@locals` を機械化 (手書きの error-prone を減らす)
-- list_alloc / fib_pair / gc_combined に残る +8〜15% overhead を perf
-  record で内訳分析 (sp[] spill / callee frame zero-init / copy cost
-  のどれが効くか)
-- region size adaptive 化 (live set に応じて grow)
-- 世代別 GC backend (`gc_combined` ベンチで効くはず) を同 interface に乗せる
+- `mark_gen_inc` / `copy_gen_inc` を真の incremental に (stack write
+  barrier + work budget)
