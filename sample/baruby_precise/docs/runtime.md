@@ -3,10 +3,14 @@
 言語仕様は [spec.md](spec.md)、未対応項目は [todo.md](todo.md)、
 ベンチは [perf.md](perf.md) を参照。
 
+**GC を知らない読者向けの入門と 14 backend の早見表は
+[gc_runtime.md](gc_runtime.md) を見てほしい。** こちらは技術詳細の側。
+
 baruby_precise は **`sample/baruby` (libgc conservative) を copy して
-precise GC に置き換えた testbed**。 `make GC=<name>` で **10 種類** の GC
+precise GC に置き換えた testbed**。 `make GC=<name>` で **14 種類** の GC
 アルゴリズム (none / mark / mark_gen / mark_gen_inc / copy / copy_gen /
-copy_gen_inc / mark_compact / mark_compact_gen / bump) から選択できる。
+copy_gen_inc / mark_compact / mark_compact_gen / bump / mark_bump_gen /
+immix / immix_gen / mark_bitmap) から選択できる。
 設計の背景は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。 ASTroGen
 自体には手を入れず、 BODY をベタ書きで sp[] spill するスタイル。

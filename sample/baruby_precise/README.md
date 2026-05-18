@@ -32,8 +32,9 @@ root を spill する Lua/Rust 系モデル ([`docs/gc_design.md`](../../docs/gc
 
 For details:
 - [docs/spec.md](docs/spec.md) — 言語仕様 (baruby と同じ)
-- [docs/runtime.md](docs/runtime.md) — sp[] threading、 11 backend カタログ
-- [docs/perf.md](docs/perf.md) — **全 11 backend × 12 bench 実測 + libgc 比較**
+- [docs/gc_runtime.md](docs/gc_runtime.md) — **GC を知らない人向け入門 + 14 backend 早見表 + 設計空間**
+- [docs/runtime.md](docs/runtime.md) — sp[] threading、 14 backend カタログ (技術詳細)
+- [docs/perf.md](docs/perf.md) — **全 14 backend × 14 bench 実測 + libgc 比較**
 - [docs/todo.md](docs/todo.md) — 既知の制約 + 残タスク
 - [docs/done.md](docs/done.md) — 変更履歴
 
