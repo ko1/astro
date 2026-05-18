@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include "node.h"
 #include "astro_code_store.h"
 #include "astro_jit.h"
@@ -188,10 +189,18 @@ static CTX *
 create_context(int frames, int funcs)
 {
     CTX *c = (CTX *)malloc(sizeof(CTX));
-    // Zero-init the entire VALUE stack so untouched slots scan as 0
-    // (= VAL_FALSE singleton, not a heap pointer).  GC scans c->env..c->sp.
-    size_t stack_slots = (size_t)10 * (size_t)frames;
-    c->env = c->fp = (VALUE *)calloc(stack_slots, sizeof(VALUE));
+    /* VALUE stack: huge virtual reservation, lazy-paged.  Old code used
+     * calloc(10 * frames) ~= 800 KB which capped recursion-depth × per-
+     * frame-locals.  Now reserve 8 GiB virtual (= 1 billion slots);
+     * physical pages commit only as the stack grows.  GC scans
+     * c->env..c->sp, untouched pages stay zero = VAL_FALSE.  No program
+     * limit on recursion depth beyond available memory. */
+    (void)frames;  /* historical: was 10 × frames; now ignored */
+    size_t stack_bytes = (size_t)8u << 30;   /* 8 GiB virtual */
+    c->env = (VALUE *)mmap(NULL, stack_bytes, PROT_READ|PROT_WRITE,
+                           MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+    if (c->env == MAP_FAILED) { perror("mmap value stack"); abort(); }
+    c->fp = c->env;
     // sp will be moved past toplevel locals after PARSE; see main().
     c->sp = c->env;
     c->func_set = malloc(sizeof(struct function_entry) * funcs);

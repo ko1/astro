@@ -3,6 +3,19 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (27c) — VALUE stack の固定 800 KB cap → 8 GiB virtual (lazy-paged)
+
+(27) 系の continuation。 `create_context(10000, 2000)` → calloc(100k slots,
+8B) = 800 KB の VALUE stack は「recursion depth × per-frame locals」 の
+program limit だった (深いプログラムでは crash する)。
+
+修正: stack を `mmap(8 GiB, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE)` に
+変更。 virtual に 1 B (10^9) slots 確保、 物理 page は触ったとき commit。
+GC scan は `c->env..c->sp` のままなので touched 範囲のみ。 untouched は
+zero (VAL_FALSE) で安全。 `frames` 引数は historical で無視。
+
+全 13 backend × 5 bench で regression 無し。
+
 ## 2026-05-18 (27b) — toplevel sp の hardcode "64" 撤廃
 
 (27) と同じ「program-limiting な固定長を撤廃」 方針の続き。
