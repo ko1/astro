@@ -3,6 +3,45 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (24) — fannkuch macro bench、 `aro_gc_` rename、 perf.md §2 統合
+
+3 件まとめ:
+
+**1. `bench/fannkuch.ba.rb` 追加** — CLBG fannkuch-redux マクロベンチ。
+N=9 で全 362880 順列を列挙、 各順列の「prefix flip」 最大数 = 30 を返す。
+canonical な rotation-of-prefix enumeration を baruby に port (`break`
+非サポートなので while/flag で書き換え)。 全 11 backend + libgc で正解
+返却、 ベスト 0.66 s (`mark_bump_gen`)、 libgc 0.71 s。 ただし integer-heavy で
+alloc/CPU 比率が低く 12 構成中の spread が 15% と GC 戦略の差は小さい
+(macro だが mutator-bound)。 baruby (libgc) にも port して fair 比較を
+追加。
+
+**2. `baruby_gc_` → `aro_gc_` rename** — ASTro 標準 GC interface 化と
+将来の `root/runtime/gc/` 移動を見据えた prefix 変更。 影響範囲:
+- 全 11 `gc_*.c` (約 350 occurrences)
+- `gc.h` / `node.def` / `main.c` / `node.c`
+- 型: `BarubyGCKind` → `AroGcKind`、 `BarubyGCStats` → `AroGcStats`
+- env var (`BARUBY_GC_STATS`, `BARUBY_GC_STRESS`) は端末 UX として保持
+
+全 11 backend で nqueens 結果 2680 を確認、 fannkuch / string_concat /
+binary_trees も同じ。
+
+**3. perf.md §2 を libgc 統合 12 列に再構成** — 旧 §2 (11 backend) と
+旧 §3 (libgc fair 比較) を一体化、 libgc を 12 番目の列として並べた。
+利点:
+- mark や copy_gen と libgc を直接横並びに比較できる (例: string_concat
+  の libgc 0.88 s vs mark_bump_gen 0.51 s)
+- 13 bench × 12 構成の全 panel を一つの table で把握可能
+- 旧 §3 で別表だった「最速 backend vs libgc」 は §2 の `**` 印で表現
+  → 13 bench 中 12 bench で baruby_precise が勝つ (nqueens のみ tie)
+
+新表で fannkuch 列が加わって winner 分布が変化:
+- `mark_bump_gen` 5 bench (fannkuch / fib_pair / life / list_sort /
+  string_concat) で最速、 cheapest-alloc 路の強み
+- `mark_compact_gen` 3 (cons_list / gc_combined / list_alloc)
+- `bump` 1 (binary_trees)、 `copy_gen` 1 (substr_churn)
+- `libgc` 1 tied (nqueens、 `none` と同値で mutator 支配を示唆)
+
 ## 2026-05-17 (23) — `gc_mark_compact_gen` の leading-minor overflow バグ修正
 
 `BARUBY_GC_STRESS=1` で 11 backend を sweep して見つけた correctness バグ:

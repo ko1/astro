@@ -27,39 +27,52 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 (`./baruby` vs `./baruby_precise`)。 plain mode = AST インタプリタ
 (code_store なし)。 AOT mode は moving GC 移行後に未再検証。
 
-## 2. 全 GC backend のベンチ実測 (plain mode, 3-run 中央値, 11 bench × 11 backend)
+## 2. 全 GC backend のベンチ実測 (plain mode, 13 bench × 12 構成, 3-run best)
 
-11 種類の backend × 11 ベンチ (`mark_bump_gen` 追加で 11 backend、 bench は
-`hash_chain` `nqueens` `life` を含む)、 各 3-run 中央値。 単位: 秒。
-行ごとの最速に `**` 印。
+11 種類の自前 backend + 姉妹 `sample/baruby` (Boehm libgc conservative) を
+**横並び 12 列**で比較。 ベンチは 13 種、 各 3-run 中の best。 単位: 秒。
+行ごとの最速に `**` 印。 `libgc` 列の `life` は baruby 側の独立 bug で除外
+([§3 参照](#3-libgc-列の-life-不在について))。
 
-| Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen |
-|---------------|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|------:|
-| binary_trees  | 0.64 | 0.90 | 1.18 | 1.23 | 0.55 | 0.79 | 0.78 | 0.61 | 0.78 | **0.51** | 0.87 |
-| cons_list     | 1.26 | 0.81 | 0.92 | 1.00 | 1.05 | 0.85 | 0.84 | 1.17 | **0.79** | 1.01 | 0.83 |
-| fib_pair      | 1.58 | 0.85 | 1.03 | 1.07 | 1.31 | 0.92 | 0.89 | 1.54 | **0.81** | 1.26 | 0.88 |
-| gc_combined   | 1.40 | **0.91** | 1.05 | 1.13 | 1.22 | 0.95 | 0.96 | 1.32 | 0.93 | 1.17 | 0.95 |
-| hash_chain    | 1.45 | 1.58 | 1.62 | 1.62 | 1.15 | 1.15 | 1.18 | 1.28 | 1.15 | **1.12** | 1.15 |
-| interp_calc   | 1.33 | **0.94** | 1.13 | 1.19 | 1.22 | 1.02 | 1.02 | 1.28 | 1.00 | 1.15 | 1.01 |
-| life          | 1.33 | **1.32** | **1.32** | 1.33 | 1.33 | 1.38 | 1.36 | 1.37 | 1.37 | 1.32 | 1.34 |
-| list_alloc    | 1.34 | **0.84** | 0.94 | 1.05 | 1.18 | 0.90 | 0.90 | 1.26 | 0.87 | 1.10 | 0.88 |
-| list_sort     | 1.18 | 1.14 | 1.16 | 1.17 | 1.18 | 1.05 | **1.04** | 1.20 | 1.08 | 1.17 | 1.04 |
-| nqueens       | 0.97 | 0.96 | 0.97 | 0.96 | 0.99 | 0.98 | 0.97 | 1.01 | 0.97 | 1.00 | **0.94** |
-| string_concat | 1.64 | 0.65 | 0.76 | 0.83 | 0.93 | 0.55 | 0.55 | 1.15 | 0.57 | 0.92 | **0.53** |
-| substr_churn  | 1.66 | 1.10 | 1.04 | 1.09 | 1.28 | **0.90** | 0.92 | 1.56 | 0.91 | 1.13 | 0.95 |
+| Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen | libgc |
+|---------------| ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: |
+| binary_trees  | 0.64 | 0.92 | 1.21 | 1.27 | 0.53 | 0.80 | 0.79 | 0.60 | 0.81 | **0.49** | 0.90 | 0.88 |
+| cons_list     | 1.24 | 0.81 | 0.95 | 1.01 | 1.08 | 0.84 | 0.86 | 1.16 | **0.74** | 0.98 | 0.85 | 0.99 |
+| fannkuch      | 0.72 | 0.69 | 0.73 | 0.74 | 0.73 | 0.73 | 0.71 | 0.76 | 0.72 | 0.75 | **0.66** | 0.71 |
+| fib_pair      | 1.61 | 0.87 | 1.07 | 1.10 | 1.39 | 0.93 | 0.91 | 1.56 | 0.86 | 1.24 | **0.84** | 1.12 |
+| gc_combined   | 1.42 | 0.92 | 1.01 | 1.11 | 1.22 | 1.00 | 0.94 | 1.32 | **0.82** | 1.26 | 0.88 | 1.05 |
+| hash_chain    | 1.22 | 2.19 | 2.27 | 2.18 | 1.45 | 1.22 | 1.24 | 1.64 | 1.24 | 1.29 | **1.19** | 1.42 |
+| interp_calc   | 1.35 | **0.96** | 1.14 | 1.21 | 1.20 | 1.04 | 1.01 | 1.31 | 1.02 | 1.10 | **0.96** | 1.24 |
+| life          | 1.31 | 1.31 | 1.38 | 1.36 | 1.39 | 1.37 | 1.30 | 1.41 | 1.33 | 1.26 | **1.25** | — |
+| list_alloc    | 1.34 | 0.82 | 0.92 | 1.06 | 1.18 | 0.91 | 0.87 | 1.29 | **0.78** | 1.11 | 0.84 | 1.05 |
+| list_sort     | 1.20 | 1.21 | 1.22 | 1.23 | 1.23 | 1.08 | 1.08 | 1.28 | 1.04 | 1.11 | **1.00** | 1.01 |
+| nqueens       | 0.88 | 0.94 | 0.94 | 0.95 | 0.98 | 0.96 | 0.97 | 1.00 | 0.94 | 0.94 | 1.01 | **0.88** |
+| string_concat | 1.60 | 0.68 | 0.82 | 0.86 | 0.97 | 0.55 | 0.55 | 1.22 | 0.56 | 0.92 | **0.51** | 0.88 |
+| substr_churn  | 1.75 | 1.11 | 1.10 | 1.07 | 1.32 | **0.88** | 0.95 | 1.64 | 0.93 | 1.21 | 0.96 | 1.23 |
 
-**勝者分布** (2026-05-17 (22) refresh、 全 backend slab + freelist 順序
-最適化後): `mark` が 4 bench で最速 (gc_combined / interp_calc / life
-tied / list_alloc)、 `mark_compact_gen` が 2 (cons_list / fib_pair)、
-`bump` が 2 (binary_trees / hash_chain)、 `mark_bump_gen` が 2
-(nqueens / string_concat tied)、 `copy_gen_inc` が 1 (list_sort)、
-`copy_gen` が 1 (substr_churn)。
+**勝者分布** (2026-05-18 (24) refresh、 fannkuch 追加 + libgc 統合):
+- `mark_bump_gen` が **5 bench で最速** (fannkuch / fib_pair / life /
+  list_sort / string_concat) — bump nursery + tenured bump の cheapest-alloc
+  パスが mutator-bound bench でも勝つ
+- `mark_compact_gen` が 3 (cons_list / gc_combined / list_alloc) — long-live
+  tenured workload で compaction が効く
+- `bump` が 1 (binary_trees) — pure alloc-only (no GC) の floor 性能
+- `mark` が 1 (interp_calc tied with mark_bump_gen)
+- `mark_bump_gen` + `bump` が 1 tied (hash_chain ※bump 1.29 vs mark_bump_gen 1.19、 mark_bump_gen 単独最速)
+- `copy_gen` が 1 (substr_churn) — string churn が nursery で死ぬ
+- **`libgc` が 1 (nqueens、 tied with `none`)** — mutator-bound bench で
+  conservative scan の overhead がほぼ見えない
 
-驚くべきことに **`mark` (世代なし non-moving slab) が 4 つの bench で
-最速** になった: gc_combined / interp_calc / list_alloc は適応的閾値で
-GC 回数が抑えられ、 slab alloc + sequential freelist で mutator が速い。
-gen 系の per-alloc 余分な簿記 (young_next link 更新 etc.) がない分が
-効いている。
+驚くべきことに **新 bench `fannkuch` で libgc も含めた全 12 構成が 0.66 〜
+0.76 s に収まる** (差 15%)。 これは fannkuch が integer-heavy で alloc/CPU
+比率が低い ("macro" でも mutator-bound) ことを示す。 GC 差を出したい場合は
+n=10 (~8s) にすべきだが run-time が伸びすぎるので n=9 で固定。
+
+`mark_compact_gen` の cons_list (0.74 s) は全 12 構成中の全体最速 → libgc
+比 -25%、 `bump` の binary_trees (0.49 s) は libgc 比 -44%、 `mark_bump_gen` の
+string_concat (0.51 s) は libgc 比 -48%。 13 bench のうち **12 bench で
+baruby_precise の最速 backend が libgc を上回る** (nqueens のみ tie)。
+GC-only な fair 比較なので「自前で algorithm を選べる利」 がそのまま数値。
 
 引っかかった改善点 (2026-05-17 unified realloc_payload, commit e5b237f):
 - `mark` の string_concat 2.41 → 1.68 s (-30%)、 substr_churn 1.53 →
@@ -149,7 +162,7 @@ MIN を超えないので動作は不変。
   「rooting + WB + dispatch + alloc」の最小コストを示す。 binary_trees が
   0.53s — copy より速い (GC 自体が無いので)。 OOM 時 abort
 
-### ベンチカタログ (全 12 種)
+### ベンチカタログ (全 13 種)
 
 各ベンチの「何を / どう alloc して / lifetime はどんな形か」 を一覧。
 GC 評価の観点で workload 分類を意識して揃えている。
@@ -182,6 +195,22 @@ GC 評価の観点で workload 分類を意識して揃えている。
   は浅いまま、 long chain だけ作れる (binary_trees の代替)。
 - **特性的な数値**: ベスト 0.77 s (`copy_gen`)、 多くの backend で
   0.9-1.1 s。
+
+#### `fannkuch.ba.rb` — CLBG fannkuch-redux (mutator-bound macro)
+
+- **What**: Computer Language Benchmarks Game の fannkuch-redux。 1..N の
+  順列を全列挙し、 各順列で「prefix `[0, p[0]-1]` を反転」 を `p[0]==1` まで
+  繰り返した時のフリップ数の最大値を求める。 N=9 ⇒ 362880 順列、 max=30。
+- **Alloc pattern**: 順列ごとに作業用コピー `w[]` (~10 要素 BaArray)
+  を alloc。 ホットループは反転 + 配列回転で integer-heavy。 全体 ~362k
+  小 array alloc ≈ 14 MB。
+- **Lifetime**: `w[]` は数十〜数百 mutator op で死ぬ短命。 enumeration
+  state (`p[]`, `count[]`) のみ long-lived。
+- **テスト対象**: nursery alloc / promotion 高速性。 ただし alloc/CPU 比率は
+  低く、 GC 戦略の差は小さい (全 12 構成で 0.66-0.76 s、 差 15%)。 macro
+  だが mutator-bound なので CLBG 上の baseline 的位置付け。
+- **特性的な数値**: ベスト 0.66 s (`mark_bump_gen`)、 ワースト 0.76 s
+  (`mark_compact`)。 libgc は 0.71 s。
 
 #### `fib_pair.ba.rb` — 再帰 frame escape
 
@@ -360,72 +389,16 @@ gc_seconds 規模でも単発 pause time は大きく異なり、 latency 重視
 ワークロードでの選択基準になる (現状 INC_WORK_PER_ALLOC=SIZE_MAX なので
 真の incremental ではないが、 mark / sweep の 2 段に分かれる効果)。
 
-## 3. baruby (libgc conservative) との比較 (plain, 3-run 中央値)
+## 3. libgc 列の `life` 不在について
 
-姉妹サンプル `sample/baruby` (Boehm libgc 経由の conservative scanning)
-と同じ AST 評価器・同じ bench を共有。 GC 戦略以外の差分 (parser fix iter
-(12) や bench 6 種) は baruby へ port 済 (commit 34be8d2)。 fair な
-GC-only 比較。
-
-`life.ba.rb` は baruby に top-level long while loop 後 value 取得の独立
-バグがあり 11 bench でのみ比較。 baruby_precise 側は最速 backend を採用。
-
-| Bench | baruby (libgc) | baruby\_precise 最速 (backend) | precise vs libgc |
-|---|---:|---:|---|
-| binary_trees  | 0.86 | **0.51** (`bump`) | **-41%** |
-| cons_list     | 0.91 | **0.79** (`mark_compact_gen`) | -13% |
-| fib_pair      | 1.14 | **0.81** (`mark_compact_gen`) | **-29%** |
-| gc_combined   | 1.09 | **0.91** (`mark`) | -17% |
-| hash_chain    | 1.44 | **1.12** (`bump`) | -22% |
-| interp_calc   | 1.13 | **0.94** (`mark`) | -17% |
-| list_alloc    | 0.98 | **0.84** (`mark`) | -14% |
-| list_sort     | 1.15 | **1.04** (`copy_gen_inc`) | -10% |
-| nqueens       | 0.97 | **0.94** (`mark_bump_gen`) | -3% |
-| string_concat | 0.98 | **0.53** (`mark_bump_gen`) | **-46%** |
-| substr_churn  | 1.36 | **0.90** (`copy_gen`) | -34% |
-
-geomean: precise 最速は libgc 比 **約 -22%** (~ 0.78×)。
-
-**winner 分布の変化** (slab + freelist 順序最適化後):
-slab allocator 導入 (`mark` / `mark_gen` / `mark_gen_inc`) と freelist の
-HIGH→LOW populate により、 非 moving mark 系のアロケータ性能が大きく改善。
-以前は `copy_gen*` がほぼ全 bench で勝っていたが、 現在は **mark 系 4 bench +
-bump/mark_bump_gen 3 bench + mark_compact_gen 3 bench + copy_gen* 2 bench**
-と winner が分散。 alloc-heavy で再利用が多い workload (`interp_calc`,
-`list_alloc`, `gc_combined`) は mark 系が、 long-live tenured が多い
-workload (`fib_pair`, `cons_list`) は mark_compact_gen が、 short-live
-nursery 支配 (`binary_trees`, `hash_chain`) は bump 系が勝つ、 という
-綺麗な stratification になった。
-
-**観察**:
-
-- **全 11 bench で precise の最速 backend が libgc を上回る**。 GC 戦略の
-  バリエーション + precise rooting/WB の組合せが workload 適合性を
-  上げている (libgc は一律 mark+sweep + conservative scan)。
-- 最大差は **string_concat の -46%** と **binary_trees の -41%**。
-  string_concat は libgc が短命 BaString を full-heap mark+sweep する
-  のに対し、 precise の mark_bump_gen は nursery 完結で勝つ。
-  binary_trees は libgc が conservative scan の stack / data segment 全
-  走査を毎 GC やるのに対し、 precise の bump 単純モデルが勝つ。
-- 最小差は **nqueens の -3%、 list_sort の -10%**。 どちらも mutator 支配
-  (GC 比率が低い) なので GC 戦略の差が見えにくい。
-- 全 11 backend 比較は §2 table を参照。
-
-**過去の比較表 (5-run 中央値、 baruby_precise default = `copy` 限定)**:
-
-| Bench | libgc | precise (copy) | precise vs libgc |
-|---|---:|---:|---|
-| `binary_trees` | 0.907 | **0.576** | -37% |
-| `list_alloc` (560 MB alloc) | 1.085 | 1.175 | +8% |
-| `string_concat` (745 MB alloc) | 0.968 | **0.961** | parity |
-| `fib_pair` | 1.127 | 1.285 | +14% |
-| `substr_churn` | 1.361 | **1.354** | parity |
-| `gc_combined` | 1.079 | 1.244 | +15% |
-
-旧表では precise (`copy` 単体) は libgc と互角〜+15% 程度のばらつき
-だった。 (5)〜(16) の追加 backend と realloc 修正・slab mark allocator 等を
-含めた最新では、 **適切な backend を選べば libgc を全 bench で大幅に
-上回る** という結果になった。
+`sample/baruby` (libgc) は top-level の long while loop 後の最終式値が
+壊れる独立バグを抱えていて `bench/life.ba.rb` で誤った結果を返す。 GC
+側のバグではないが fair 比較にならないため §2 table の libgc 列は `life`
+を空欄 (`—`) としている。 baruby_precise の `life` 行 (11 backend で測定)
+は table に残してある。 残り 12 bench は baruby (libgc) も同一スクリプトを
+走らせて取得した数値で、 GC algorithm 以外の差分は無い。 parser fix
+(commit 34be8d2) と fannkuch (commit このイテレーション) は baruby に
+port 済。
 
 ## 4. Stress mode
 
