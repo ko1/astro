@@ -221,8 +221,7 @@ alloc_dispatcher_name(NODE *n)
     char buff[128];
     snprintf(buff, sizeof(buff), "%s%lx", prefix,
              (unsigned long)alloc_dispatcher_name_hash(n));
-    char *name = malloc(strlen(buff) + 1);
-    strcpy(name, buff);
+    char *name = strdup(buff);
     return name;
 }
 
