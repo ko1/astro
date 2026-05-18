@@ -411,11 +411,11 @@ gc_seconds 規模でも単発 pause time は大きく異なり、 latency 重視
 `sample/baruby` (libgc) は top-level の long while loop 後の最終式値が
 壊れる独立バグを抱えていて `bench/life.ba.rb` で誤った結果を返す。 GC
 側のバグではないが fair 比較にならないため §2 table の libgc 列は `life`
-を空欄 (`—`) としている。 baruby_precise の `life` 行 (11 backend で測定)
-は table に残してある。 残り 12 bench は baruby (libgc) も同一スクリプトを
-走らせて取得した数値で、 GC algorithm 以外の差分は無い。 parser fix
-(commit 34be8d2) と fannkuch (commit このイテレーション) は baruby に
-port 済。
+を空欄 (`—`) としている。 baruby_precise の `life` 行 (13 backend で測定)
+は table に残してある。 残り 13 bench (= 14 - life) は baruby (libgc) も
+同一スクリプトを走らせて取得した数値で、 GC algorithm 以外の差分は無い。
+parser fix (commit 34be8d2)、 fannkuch (iter 24)、 sieve (iter 28) は baruby
+に port 済。
 
 ## 4. Stress mode
 
