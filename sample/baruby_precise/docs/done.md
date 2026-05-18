@@ -3,6 +3,36 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (30) — slab_alloc per-alloc redundant init 削除
+
+mark family (`mark` / `mark_gen` / `mark_gen_inc` / `mark_bitmap_gen`) の
+slab_alloc が、 `h->marked = false` / `h->old = false` / `h->dirty = false`
+を per-alloc に書いていた。 但し sweep / free_slot が free 時に同じ bit を
+0 にしておく invariant を立てれば、 slab_alloc は重複書きを省ける。
+
+修正:
+- `gc_mark.c`: `h->marked = false` を slab_alloc / large_alloc / new_page
+  から削除 (sweep が unmarked のみ free + mmap zero で invariant 成立)
+- `gc_mark_gen.c` / `gc_mark_gen_inc.c`: `free_slot` で marked/old/dirty を
+  クリアするように変更 → slab_alloc / large_alloc / new_page の冗長な
+  reset を削除
+- `gc_mark_bitmap_gen.c`: per-page bitmap 路で **3 個の bm_clr (locate +
+  bit op を含む)** を slab_alloc から削除。 free 時に bitmap bit が既に
+  0 である invariant で OK。
+
+perf 改善 (3-run best、 iter 29 比):
+- mark_bitmap_gen が顕著: binary_trees 1.63 → 1.50 (-8%)、 string_concat
+  0.98 → 0.84 (-14%)、 substr_churn 1.27 → 1.14 (-10%)、 等 alloc-heavy
+  bench で **-5〜-14%** 改善。 per-alloc の locate() + 3 bitmap op が
+  消えた効果。
+- mark_gen / _inc は header byte write 数個減で **-2〜-8%** 改善。
+- mark は 1 byte write 減で大した差なし。
+
+mark_bump_gen は bump nursery (slab でない) なので対象外。 immix family は
+mark_epoch=0 が必須 (sweep が GCHeader を触らないので stale 値の可能性)、
+copy / mark_compact 系も bump alloc で previous content が任意、 共に
+skip 不可。
+
 ## 2026-05-18 (29) — unified 16 MiB adaptive threshold + 全 backend fairness (完)
 
 user 指摘「copy / mark_compact が 64 GiB virtual で region 容量基準でしか
