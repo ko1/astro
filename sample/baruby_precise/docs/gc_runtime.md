@@ -85,7 +85,7 @@ GCHeader のサイズは backend で違う:
 |---|---:|---|
 | `mark` | 16 | kind, size, marked, _pad |
 | `mark_gen` / `mark_gen_inc` | 24 | + `young_next`, `old`, `dirty` |
-| `mark_bitmap` | **8** | kind, size のみ — bits は per-page bitmap へ |
+| `mark_bitmap_gen` | **8** | kind, size のみ — bits は per-page bitmap へ |
 | `copy*` / `mark_compact*` | 24 | + `fwd` (forward ptr), `old`, `dirty` |
 | `bump` | 8 | kind, size のみ (no GC) |
 | `immix*` | 16 | + `mark_epoch`, `flags` (gen) |
@@ -138,7 +138,7 @@ class 128: [page]
 **class** に分けて管理。 alloc は class の **freelist** から 1 slot pop。
 freelist が空なら新 page を mmap して populate。
 
-**採用 backend**: `mark`、 `mark_gen`、 `mark_gen_inc`、 `mark_bitmap`。
+**採用 backend**: `mark`、 `mark_gen`、 `mark_gen_inc`、 `mark_bitmap_gen`。
 
 非 moving なので alloc/free を繰り返しても**アドレスが安定する** = root の
 forwarding が不要。 古典的な malloc 系の親戚で、 CRuby の heap_page と
@@ -211,7 +211,7 @@ overhead + WB API の zero-cost 化」 を測る floor として有用。
 | 11 | `mark_bump_gen` | bump nursery + bump tenured (no compact) | yes | yes (minor) | mark + region sweep | 24 | minor 速 | 累積 |
 | 12 | `immix` | block / line region | — | — | mark + line-bitmap sweep | 16 | hole-based alloc | fragmentation |
 | 13 | `immix_gen` | bump nursery + Immix tenured | yes | yes (minor) | Immix mark + sweep | 16 | both | 同上 |
-| 14 | `mark_bitmap` | Slab + per-page bitmap | yes | — | sticky M&S (bitmap) | **8** | 24B → 8B header、 密度 2× | minor O(heap) |
+| 14 | `mark_bitmap_gen` | Slab + per-page bitmap | yes | — | sticky M&S (bitmap) | **8** | 24B → 8B header、 密度 2× | minor O(heap) |
 
 ## 4. 各 backend のアルゴリズム
 
@@ -354,7 +354,7 @@ sweep は cache-friendly。
 short-live 系で `immix` を上回るが、 binary_trees 等 long-live tree
 workload は Cheney copy が逆効果。
 
-### 4.14 `mark_bitmap` — sticky M&S + per-page bitmap
+### 4.14 `mark_bitmap_gen` — sticky M&S + per-page bitmap
 
 `mark_gen` の **「semantics 同じ、 実装が違う」 変種**。
 
@@ -380,7 +380,7 @@ binary_trees 等は minor sweep O(heap) で不利。
 | `copy` | — | semispace (2 region) | Cheney | no |
 | `mark_compact` | — | bump (1 region) | Lisp-2 slide | no |
 | `immix` | — | block + line region | no (v1) | no |
-| `mark_bitmap` | — | slab + page bitmap (8B hdr) | no | yes (sticky) |
+| `mark_bitmap_gen` | — | slab + page bitmap (8B hdr) | no | yes (sticky) |
 | `mark_gen` | slab + young list | slab | no | yes |
 | `mark_gen_inc` | slab + young list | slab | no | yes + inc mark |
 | `copy_gen` | bump | semispace (2 region) | Cheney | yes |
@@ -405,7 +405,7 @@ binary_trees 等は minor sweep O(heap) で不利。
 |---|---|---|
 | 仮想ヒープ上限 | 64 GiB | 全 region 系 backend で virtual reservation + lazy commit (iter 27)。 `ARO_GC_REGION_VIRT_BYTES` (`gc.h`)。 |
 | Nursery size | 16 MiB | 全 gen 系。 minor 頻度の tuning 共通化。 |
-| Major threshold MIN | 64 MiB | 非moving sticky 系 (`mark_gen` / `mark_gen_inc` / `mark_bump_gen` / `mark_bitmap` / `immix_gen`)。 |
+| Major threshold MIN | 64 MiB | 非moving sticky 系 (`mark_gen` / `mark_gen_inc` / `mark_bump_gen` / `mark_bitmap_gen` / `immix_gen`)。 |
 | Major threshold factor | 2 × live | 同上 (max(MIN, 2×live) で適応)。 |
 | Minor threshold | nursery overflow / 16 MiB 相当 | 全 gen 系。 |
 
@@ -415,7 +415,7 @@ moving GC が minor copy で nursery を完全に回収できるため major を
 しない、 という性質に基づく — fair から外れるのではなく、 設計の違い。
 
 `gc_combined.ba.rb` のような長寿命+短命混合 bench だと、 同じ collection
-頻度同士で比較できるよう、 iter 29 で `immix_gen` と `mark_bitmap` の
+頻度同士で比較できるよう、 iter 29 で `immix_gen` と `mark_bitmap_gen` の
 MAJOR threshold を他の非moving sticky に揃えた (4 MiB → 64 MiB、 詳細
 [done.md](done.md) iter 29 参照)。
 
@@ -427,11 +427,11 @@ MAJOR threshold を他の非moving sticky に揃えた (4 MiB → 64 MiB、 詳�
 |---|---|
 | 短命大量 alloc + 長寿命少 (e.g. `string_concat`, `cons_list`) | `copy_gen`、 `mark_compact_gen`、 `mark_bump_gen`、 `immix_gen` |
 | 長寿命優位 (`binary_trees`) | `bump`、 `copy`、 `mark_compact`、 `immix` |
-| Hash table 系 (`hash_chain`) | `mark_bitmap` (24 B → 8 B header の density 効果)、 `bump`、 `immix_gen` |
+| Hash table 系 (`hash_chain`) | `mark_bitmap_gen` (24 B → 8 B header の density 効果)、 `bump`、 `immix_gen` |
 | 構造 + churn mix (`gc_combined`, `list_alloc`) | `mark_compact_gen` 安定して上位 |
 | Mutator-bound (`fannkuch`, `nqueens`) | どれでも近い (GC 比率小) |
 | Latency 重視 | `*_inc` 系 (incremental mark で pause 短) |
 
 汎用 default は `copy` (Cheney)、 GC を完全に抜いた baseline 比較は `none` /
-`bump`、 worker memory が制約な systems では `mark_bitmap` (8B header) が
+`bump`、 worker memory が制約な systems では `mark_bitmap_gen` (8B header) が
 有利、 等。

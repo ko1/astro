@@ -10,7 +10,7 @@ baruby_precise は **`sample/baruby` (libgc conservative) を copy して
 precise GC に置き換えた testbed**。 `make GC=<name>` で **14 種類** の GC
 アルゴリズム (none / mark / mark_gen / mark_gen_inc / copy / copy_gen /
 copy_gen_inc / mark_compact / mark_compact_gen / bump / mark_bump_gen /
-immix / immix_gen / mark_bitmap) から選択できる。
+immix / immix_gen / mark_bitmap_gen) から選択できる。
 設計の背景は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。 ASTroGen
 自体には手を入れず、 BODY をベタ書きで sp[] spill するスタイル。
@@ -630,7 +630,7 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
   promotion 路では既存 hole にしか書けないので、 hole が枯渇したら
   major を強制 trigger する path に依存。
 
-#### 14. `mark_bitmap` — sticky mark&sweep + per-page bitmap (8 B header)
+#### 14. `mark_bitmap_gen` — sticky mark&sweep + per-page bitmap (8 B header)
 
 - **Layout**: gc_mark.c と同じ slab/page allocator (9 size class × 16 KiB
   page) だが **page を 16 KiB aligned** で mmap (over-mmap して trim)、
@@ -687,7 +687,7 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
 | `mark_bump_gen` | bump | bump (1 region) | no (累積) | yes |
 | `immix` | — | hole-bump (block/line) | no (v1) | no |
 | `immix_gen` | bump | hole-bump (block/line) | no (v1) | yes (nursery→tenured copy) |
-| `mark_bitmap` | — | slab + page bitmaps (8 B hdr) | no | yes (sticky) |
+| `mark_bitmap_gen` | — | slab + page bitmaps (8 B hdr) | no | yes (sticky) |
 
 「nursery が bump か」「tenured が bump か」「major で compact するか」 が
 直交軸として並び、 backend を選ぶことで各軸の影響を孤立して測れる。

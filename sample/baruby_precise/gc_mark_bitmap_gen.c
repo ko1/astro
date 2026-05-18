@@ -97,7 +97,7 @@ static size_t old_bytes = 0;
 static size_t old_alloc_since_major = 0;
 /* MAJOR_THRESHOLD_MIN matches mark_gen / mark_gen_inc / mark_bump_gen so
  * non-moving sticky backends fire major at the same cadence (64 MiB MIN
- * + adaptive 2×live).  Earlier 4 MiB MIN caused mark_bitmap to fire
+ * + adaptive 2×live).  Earlier 4 MiB MIN caused mark_bitmap_gen to fire
  * major 16× more often than its peers on the same workload. */
 #define MAJOR_THRESHOLD_MIN     (64u * 1024u * 1024u)
 #define MAJOR_THRESHOLD_FACTOR  2
@@ -122,7 +122,7 @@ static size_t     remset_capa = 0;
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
 int aro_gc_stress = 0;
-const char *aro_gc_backend_name = "mark_bitmap";
+const char *aro_gc_backend_name = "mark_bitmap_gen";
 
 void
 aro_gc_init(CTX *c)
@@ -131,7 +131,7 @@ aro_gc_init(CTX *c)
     if (getenv("BARUBY_GC_STRESS")) {
         aro_gc_stress = 1;
         old_major_threshold = 0;
-        fprintf(stderr, "[baruby_gc=mark_bitmap] STRESS mode: collect on every alloc\n");
+        fprintf(stderr, "[baruby_gc=mark_bitmap_gen] STRESS mode: collect on every alloc\n");
     }
 }
 

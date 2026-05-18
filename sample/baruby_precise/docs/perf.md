@@ -30,14 +30,14 @@ baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 ## 2. 全 GC backend のベンチ実測 (plain mode, 14 bench × 15 構成, 3-run best)
 
 14 種類の自前 backend + 姉妹 `sample/baruby` (Boehm libgc conservative) を
-**横並び 15 列**で比較 (`mark_bitmap` 追加)。 ベンチは 14 種、 各 3-run 中の
+**横並び 15 列**で比較 (`mark_bitmap_gen` 追加)。 ベンチは 14 種、 各 3-run 中の
 best。 単位: 秒。 行ごとの最速に `**` 印。 `libgc` 列の `life` は baruby
 側の独立 bug で除外 ([§3 参照](#3-libgc-列の-life-不在について))。
 
-**iter 29 で fairness 修正**: `mark_bitmap` の MAJOR_THRESHOLD_MIN (4 MiB →
+**iter 29 で fairness 修正**: `mark_bitmap_gen` の MAJOR_THRESHOLD_MIN (4 MiB →
 64 MiB)、 MINOR_THRESHOLD (4 MiB → 16 MiB)、 `immix_gen` の
 MAJOR_THRESHOLD_MIN (4 MiB → 64 MiB) を他の sticky 非moving gen 系
-(`mark_gen` / `_inc` / `mark_bump_gen`) に揃えた。 mark_bitmap / immix_gen
+(`mark_gen` / `_inc` / `mark_bump_gen`) に揃えた。 mark_bitmap_gen / immix_gen
 は数値上不利になる方向だが、 同 family 内で同 cadence 比較できる。
 
 | Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen | immix | immix\_gen | mark\_bitmap | libgc |
@@ -67,7 +67,7 @@ MAJOR_THRESHOLD_MIN (4 MiB → 64 MiB) を他の sticky 非moving gen 系
 - **`copy_gen_inc` / `copy_gen` / `mark_compact_gen` / `mark_bump_gen` /
   `immix_gen` / `bump` / `mark`** がそれぞれ 1〜2 bench で最速 — 各 GC 戦略の
   得意 workload で勝つ典型
-- **`mark_bitmap`** は最速 bench 無し。 fairness 修正 (4 MiB → 64 MiB major
+- **`mark_bitmap_gen`** は最速 bench 無し。 fairness 修正 (4 MiB → 64 MiB major
   threshold) で binary_trees 等が遅くなった反面、 hash_chain では 2.34 (mark)
   → 1.51 で **mark family 内 -36%** の density 効果は維持
 
@@ -500,7 +500,7 @@ String の bytes ペイロードは GC が pointer として読まないので�
 - **AOT mode は moving GC 移行後に未検証** — SD bake された経路で
   precise rooting が成立しているかは要再 audit (`-c` 動作含む)
 - `mark` family の `hash_chain` slab 配置 locality (BaArray と items[] が
-  別 page) は `mark_bitmap` で 8 B header にして class 32 に同梱できる
+  別 page) は `mark_bitmap_gen` で 8 B header にして class 32 に同梱できる
   と確認したが、 24 B header の既存系は構造改変が必要
 
 ## 7. 次の段階で試したいこと
@@ -511,7 +511,7 @@ String の bytes ペイロードは GC が pointer として読まないので�
   ベンチに反映できていない可能性。 mark / immix と同様 4 MiB MIN 適応閾値
   を入れると比較が公平になる
 - **Immix v2 opportunistic evacuation** (fragmentation 解消)
-- **mark_bitmap minor sweep の最適化**: 64-bit-wise old_bm scan、
+- **mark_bitmap_gen minor sweep の最適化**: 64-bit-wise old_bm scan、
   per-page "all old" flag で binary_trees regression を縮小
 - AOT mode の再検証 (`make CCACHE_DISABLE=1` で `-c` 経路を回す)
 - `astrogen.rb` 拡張で `@locals` を機械化 (手書きの error-prone を減らす)

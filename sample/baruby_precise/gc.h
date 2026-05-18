@@ -53,7 +53,7 @@ typedef intptr_t VALUE;
 //                          Immix tenured (512 MiB).  Minor copy-promotes
 //                          nursery survivors into tenured holes.  Major
 //                          is regular Immix mark + line-mark sweep.
-//  14: mark_bitmap       — sticky mark&sweep with per-page bitmaps.  Same
+//  14: mark_bitmap_gen       — sticky mark&sweep with per-page bitmaps.  Same
 //                          semantics as mark_gen but GCHeader = 8 B (no
 //                          marked/old/dirty bytes — bits live in page
 //                          bitmaps).  Young set found by walking pages
@@ -77,7 +77,7 @@ typedef intptr_t VALUE;
 #define BARUBY_GC_MARK_BUMP_GEN    11
 #define BARUBY_GC_IMMIX            12
 #define BARUBY_GC_IMMIX_GEN        13
-#define BARUBY_GC_MARK_BITMAP      14
+#define BARUBY_GC_MARK_BITMAP_GEN      14
 
 #ifndef BARUBY_GC
 #  define BARUBY_GC BARUBY_GC_COPY
@@ -93,7 +93,7 @@ typedef intptr_t VALUE;
     BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN || \
     BARUBY_GC == BARUBY_GC_MARK_BUMP_GEN    || \
     BARUBY_GC == BARUBY_GC_IMMIX_GEN        || \
-    BARUBY_GC == BARUBY_GC_MARK_BITMAP
+    BARUBY_GC == BARUBY_GC_MARK_BITMAP_GEN
 #  define BARUBY_GC_HAS_WB 1
 #endif
 

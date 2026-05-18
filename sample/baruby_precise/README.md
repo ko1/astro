@@ -28,7 +28,7 @@ root を spill する Lua/Rust 系モデル ([`docs/gc_design.md`](../../docs/gc
 | 11 | `mark_bump_gen` | bump nursery + bump tenured, no compact | yes | no |
 | 12 | `immix` | block (32 KiB) + line (128 B) mark-region, no evac | — | no |
 | 13 | `immix_gen` | bump nursery + Immix tenured (mark-region, no evac) | yes | nursery→tenured copy |
-| 14 | `mark_bitmap` | sticky mark&sweep + per-page bitmap (8 B header) | yes | no |
+| 14 | `mark_bitmap_gen` | sticky mark&sweep + per-page bitmap (8 B header) | yes | no |
 
 For details:
 - [docs/spec.md](docs/spec.md) — 言語仕様 (baruby と同じ)
@@ -77,7 +77,7 @@ make bench                    # build + ruby bench/run.rb
 make clean
 ```
 
-利用可能な GC: `none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap`
+利用可能な GC: `none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen`
 
 AOT mode (`-c`): `CCACHE_DISABLE=1 ./baruby_precise -c bench/list_alloc.ba.rb`
 で SD specialize → code_store/all.so 構築 → 再 dlopen。 CCACHE_DISABLE は
