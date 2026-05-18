@@ -177,6 +177,13 @@ code_repo_find_locals_cnt_by_name(const char *name)
 
 // context management
 
+/* Set by baruby_parse.c after parsing PM_PROGRAM_NODE — the number of
+ * locals slots required by toplevel code.  Used by main() (after PARSE)
+ * to size c->sp correctly.  Default 0 so create_context's initial
+ * c->sp = c->env survives if PARSE somehow doesn't update it; main
+ * always re-applies after PARSE returns. */
+uint32_t aro_toplevel_locals_cnt = 0;
+
 static CTX *
 create_context(int frames, int funcs)
 {
@@ -185,10 +192,8 @@ create_context(int frames, int funcs)
     // (= VAL_FALSE singleton, not a heap pointer).  GC scans c->env..c->sp.
     size_t stack_slots = (size_t)10 * (size_t)frames;
     c->env = c->fp = (VALUE *)calloc(stack_slots, sizeof(VALUE));
-    // sp starts above the toplevel-locals area.  64 slots is generous
-    // for top-level locals; a real implementation would size this based
-    // on parser-computed toplevel locals_cnt.
-    c->sp = c->env + 64;
+    // sp will be moved past toplevel locals after PARSE; see main().
+    c->sp = c->env;
     c->func_set = malloc(sizeof(struct function_entry) * funcs);
     c->func_set_cnt = 0;
     c->serial = 1;
@@ -302,6 +307,9 @@ main(int argc, char *argv[])
     // PARSE has to inspect argv to find OPTION flags (--ccs, --plain, …),
     // but it does not touch code_store — we can clear / cs_init around it.
     NODE *ast = PARSE(argc, argv);
+    /* Move sp past the toplevel locals area now that the parser has
+     * reported the exact size.  No more hardcoded "64" cap. */
+    c->sp = c->env + aro_toplevel_locals_cnt;
 
     // --ccs takes effect AFTER parse so that any logging through cs_init
     // sees the post-clear state.  Then INIT() dlopens whatever's left in

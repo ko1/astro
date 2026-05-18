@@ -20,9 +20,10 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       経路を追加 ([done.md](done.md) (23) 参照)。 release build での
       silent corruption 防止のため `forward_obj` の assert も「clean
       abort + 内訳 print」 に差替え。
-- [ ] **toplevel sp の hardcode 64** (`main.c::create_context`)。 大きな
-      toplevel フレームを持つプログラムでは scratch 領域が不足する。
-      parser から toplevel locals_cnt を取って計算するべき
+- [x] ~~**toplevel sp の hardcode 64**~~ — 2026-05-18 (27) 解決。
+      `aro_toplevel_locals_cnt` を `baruby_parse.c::PM_PROGRAM_NODE` で
+      `tc->frame->max_cnt` から設定、 `main()` で `c->sp = c->env +
+      aro_toplevel_locals_cnt` する。 100 toplevel locals の test program で動作確認。
 - [ ] **AOT mode の再検証** — moving GC 移行後 `-c` 経路が回るか未確認。
       SD bake された body が `(c, n, fp, sp)` 4 引数で precise rooting を
       正しく行えているか audit

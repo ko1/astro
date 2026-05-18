@@ -1236,6 +1236,10 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
           {
               nn = TRANSDUCE(n->statements);
           }
+          /* Expose the toplevel locals count so main can size sp[]
+           * properly instead of using a hardcoded "64". */
+          extern uint32_t aro_toplevel_locals_cnt;
+          aro_toplevel_locals_cnt = tc->frame->max_cnt;
           pop_frame(tc);
           return nn;
       }

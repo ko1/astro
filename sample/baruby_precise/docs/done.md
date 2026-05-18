@@ -3,6 +3,23 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (27b) — toplevel sp の hardcode "64" 撤廃
+
+(27) と同じ「program-limiting な固定長を撤廃」 方針の続き。
+`main.c::create_context` の `c->sp = c->env + 64` は「toplevel locals が
+64 を超えると sp が locals 領域に食い込んで壊れる」 という program limit。
+todo.md の P0 として残っていた。
+
+修正:
+- `baruby_parse.c::PM_PROGRAM_NODE` で `tc->frame->max_cnt` (parser 計算
+  済の toplevel locals 数) を grobal `aro_toplevel_locals_cnt` に書き出す
+- `main()` で PARSE 直後に `c->sp = c->env + aro_toplevel_locals_cnt`
+- `create_context` の sp 初期化を `c->env` (0 offset) に変更
+  (PARSE 前に GC を発火することはない)
+
+検証: 100 toplevel locals の test program (`a01..a100 = ...; p a01 + ...`)
+で正常実行。 全 13 backend × 13 bench で regression 無し。
+
 ## 2026-05-18 (27) — プログラム制限の固定長を撤廃 (region cap → 64 GiB virtual)
 
 user 要望「まともな処理系にするために、固定長の部分をまともにしようか / ページ
