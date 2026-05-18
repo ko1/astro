@@ -577,7 +577,7 @@ sweep_major(void)
         for (size_t i = 0; i < LINES_PER_BLOCK; i++) marked += lm[i];
         if (marked == 0) {
             blocks[b].state = BLK_FREE;
-            madvise(arena_base + b * BLOCK_BYTES, BLOCK_BYTES, MADV_DONTNEED);
+            /* MADV_DONTNEED skipped — see gc_immix.c sweep comment. */
         } else if (marked == LINES_PER_BLOCK) {
             blocks[b].state = BLK_USED;
         } else {

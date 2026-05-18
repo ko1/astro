@@ -430,8 +430,10 @@ sweep(void)
         for (size_t i = 0; i < LINES_PER_BLOCK; i++) marked += lm[i];
         if (marked == 0) {
             blocks[b].state = BLK_FREE;
-            /* Return physical pages of fully-free blocks to the OS. */
-            madvise(arena_base + b * BLOCK_BYTES, BLOCK_BYTES, MADV_DONTNEED);
+            /* (Could MADV_DONTNEED here, but the page-fault cost on
+             * subsequent re-use measured larger than the physical-memory
+             * savings on the workloads we care about.  Leave pages
+             * committed; OS pressure releases them via swap if needed.) */
         } else if (marked == LINES_PER_BLOCK) {
             blocks[b].state = BLK_USED;
         } else {
