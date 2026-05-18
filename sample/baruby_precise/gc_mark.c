@@ -103,7 +103,7 @@ static size_t bytes_since_gc = 0;
 // Adaptive threshold (same logic as before adaptive-fix).  After each
 // sweep, threshold becomes max(MIN, 2 * live_bytes_post_sweep).  Saves
 // ~50× GCs vs fixed 4 MiB on long-lived workloads.
-#define GC_THRESHOLD_MIN     (4u * 1024u * 1024u)
+#define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
 static size_t gc_threshold = GC_THRESHOLD_MIN;
 static CTX   *gc_ctx       = NULL;

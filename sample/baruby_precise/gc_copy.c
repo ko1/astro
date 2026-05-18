@@ -40,6 +40,16 @@ static char *space0 = NULL;
 static char *space1 = NULL;   // non-stress: the alternate region
 static int   active_idx = 0;  // non-stress only
 
+/* Adaptive GC trigger.  Previously copy GC'd only when active region was
+ * full — with 64 GiB virtual reservation (iter 27) that effectively
+ * means "never", so copy degenerated to bump-alloc.  Match the mark /
+ * immix policy: trigger at `bytes_since_gc > gc_threshold`,
+ * gc_threshold = max(4 MiB, 2 × live_post_cheney). */
+#define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
+#define GC_THRESHOLD_FACTOR  2
+static size_t bytes_since_gc = 0;
+static size_t gc_threshold = GC_THRESHOLD_MIN;
+
 static CTX *gc_ctx = NULL;
 
 // ----------------------------------------------------------------------------
@@ -91,7 +101,9 @@ static inline GCHeader *
 gc_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
-    if (aro_gc_stress || (active_top + total) > active_end) {
+    if (aro_gc_stress
+        || bytes_since_gc + payload_size > gc_threshold
+        || (active_top + total) > active_end) {
         gc_collect_internal(sp_top);
         if (active_top + total > active_end) {
             fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
@@ -104,6 +116,7 @@ gc_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
     h->size = (uint32_t)payload_size;
     h->fwd  = NULL;
     active_top += total;
+    bytes_since_gc += payload_size;
     return h;
 }
 
@@ -365,6 +378,15 @@ gc_collect_internal(VALUE *sp_top)
      * alloc-heavy benches).  Peak physical = 2 × live; acceptable for
      * a testbed where 64 GiB virtual is the heap cap. */
     (void)from_top_pre;
+
+    /* Adaptive threshold: same policy as mark / immix.  Next GC fires
+     * at max(MIN, 2 × live_post_cheney). */
+    bytes_since_gc = 0;
+    if (!aro_gc_stress) {
+        size_t live = aro_gc_stats.heap_bytes;
+        size_t next = live * GC_THRESHOLD_FACTOR;
+        gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
+    }
 
     aro_gc_stats.gc_count++;
     gc_ctx->sp = sp_top;

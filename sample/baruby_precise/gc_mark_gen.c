@@ -83,7 +83,7 @@ static size_t   young_bytes = 0;
 static size_t   old_bytes   = 0;
 static size_t   young_threshold     = 4u * 1024u * 1024u;
 static size_t   old_alloc_since_major = 0;
-#define MAJOR_THRESHOLD_MIN  (64u * 1024u * 1024u)
+#define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
 static size_t   old_major_threshold = MAJOR_THRESHOLD_MIN;
 
 static CTX     *gc_ctx = NULL;

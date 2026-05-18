@@ -88,7 +88,7 @@ static size_t bytes_since_major = 0;
 /* MAJOR_THRESHOLD_MIN matches mark_gen / mark_gen_inc / mark_bump_gen so
  * non-moving sticky backends fire major at the same cadence.  Earlier
  * 4 MiB MIN caused immix_gen to fire major 16× more often than peers. */
-#define MAJOR_THRESHOLD_MIN     (64u * 1024u * 1024u)
+#define MAJOR_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define MAJOR_THRESHOLD_FACTOR  2
 static size_t major_threshold = MAJOR_THRESHOLD_MIN;
 

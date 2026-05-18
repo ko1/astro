@@ -43,6 +43,13 @@ static char *region_end  = NULL;
 static CTX  *gc_ctx      = NULL;
 static VALUE *sp_high_water = NULL;
 
+/* Adaptive GC trigger: max(16 MiB, 2 × live_post_compact).  Previously
+ * region-fill basis only (= effectively never with 64 GiB virtual). */
+#define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
+#define GC_THRESHOLD_FACTOR  2
+static size_t bytes_since_gc = 0;
+static size_t gc_threshold   = GC_THRESHOLD_MIN;
+
 static GCHeader **gray_buf  = NULL;
 static size_t     gray_cnt  = 0;
 static size_t     gray_capa = 0;
@@ -76,7 +83,9 @@ static GCHeader *
 bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
-    if (aro_gc_stress || region_top + total > region_end) {
+    if (aro_gc_stress
+        || bytes_since_gc + payload_size > gc_threshold
+        || region_top + total > region_end) {
         gc_collect_internal(sp_top);
         if (region_top + total > region_end) {
             fprintf(stderr, "baruby_gc=mark_compact: OOM (need %zu)\n", total);
@@ -89,6 +98,7 @@ bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
     h->marked = false;
     h->fwd    = NULL;
     region_top += total;
+    bytes_since_gc += payload_size;
     return h;
 }
 
@@ -353,6 +363,12 @@ gc_collect_internal(VALUE *sp_top)
     region_top = fwd;
 
     aro_gc_stats.heap_bytes = live_bytes;
+    /* Adaptive threshold update. */
+    bytes_since_gc = 0;
+    if (!aro_gc_stress) {
+        size_t next = live_bytes * GC_THRESHOLD_FACTOR;
+        gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
+    }
     aro_gc_stats.gc_count++;
     aro_gc_stats.major_count++;
     c->sp = sp_top;

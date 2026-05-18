@@ -63,6 +63,14 @@ static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
+/* Adaptive major threshold: matches other gen backends.  Previously
+ * major triggered only when tenured couldn't hold worst-case promotion,
+ * which with 64 GiB virtual = effectively never. */
+#define MAJOR_THRESHOLD_MIN     (16u * 1024u * 1024u)
+#define MAJOR_THRESHOLD_FACTOR  2
+static size_t old_alloc_since_major = 0;
+static size_t old_major_threshold = MAJOR_THRESHOLD_MIN;
+
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
 int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "copy_gen";
@@ -139,6 +147,12 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
             major_gc(sp_top);
         } else {
             minor_gc(sp_top);
+            /* Adaptive major: fire after minor when old-since-major
+             * exceeds adaptive threshold.  Without this, with 64 GiB
+             * virtual tenured we'd never major. */
+            if (old_alloc_since_major > old_major_threshold) {
+                major_gc(sp_top);
+            }
         }
         if (nursery_top + total > nursery_end) {
             major_gc(sp_top);
@@ -400,6 +414,8 @@ minor_gc(VALUE *sp_top)
     }
 
     // (4) Commit: tenured_top advances to to_top; nursery emptied.
+    /* Track promoted bytes for adaptive major threshold. */
+    old_alloc_since_major += (size_t)(to_top - tenured_top);
     tenured_top = to_top;
     nursery_top = nursery_base;
     in_minor = false;
@@ -459,6 +475,15 @@ major_gc(VALUE *sp_top)
     nursery_top = nursery_base;
 
     (void)old_active_top;   // silence unused-var when ASTRO_DEBUG=0
+
+    /* Adaptive threshold update: re-derive from post-Cheney live size. */
+    size_t live = (size_t)(tenured_top - tenured_base);
+    aro_gc_stats.heap_bytes = live;
+    old_alloc_since_major = 0;
+    if (!aro_gc_stress) {
+        size_t next = live * MAJOR_THRESHOLD_FACTOR;
+        old_major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;
+    }
 
     aro_gc_stats.gc_count++;
     aro_gc_stats.major_count++;

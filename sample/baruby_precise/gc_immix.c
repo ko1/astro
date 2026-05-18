@@ -93,7 +93,7 @@ static LargeObj   *large_head = NULL;
 
 static size_t      bytes_since_gc = 0;
 /* Adaptive threshold: same heuristic as gc_mark.c.  Starts at 4 MiB. */
-#define GC_THRESHOLD_MIN     (4u * 1024u * 1024u)
+#define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
 static size_t gc_threshold = GC_THRESHOLD_MIN;
 
