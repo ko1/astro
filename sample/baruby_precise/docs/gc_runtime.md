@@ -224,10 +224,12 @@ rooting、 alloc API 間接化等) を測るための floor。
 
 slot をサイズクラス別の page で管理 (パターン B)。
 
-- **Alloc**: class の freelist から 1 pop。 空なら new_page で 16 KiB
-  mmap して slot を populate。
+- **Heap 拡張**: class ごとに linked list で page (16 KiB) を追加。
+  freelist 空 → new_page() で 16 KiB mmap → page 内 slot を freelist に
+  populate。 page 数に上限なし (heap が必要なだけ伸びる)。
+- **Alloc**: class の freelist から 1 pop。
 - **GC trigger**: `bytes_since_gc > gc_threshold` (adaptive、
-  `max(4 MiB, 2 × live_post_sweep)`)。
+  `max(16 MiB, 2 × live_post_sweep)`)。
 - **Mark**: roots から `mark_value` → gray queue で BFS。
 - **Sweep**: 全 page の全 slot を walk。 unmarked → freelist に push。
   marked → marked クリア。
@@ -261,7 +263,13 @@ short-lived は class spread が起き易い。
 
 パターン C。 2 つの 64 GiB virtual region を交互に使う。
 
+- **Heap 拡張**: 各 region は **64 GiB virtual + MAP_NORESERVE** で予約済
+  (起動時に mmap)。 物理 page は active_top の前進で OS が demand-paging
+  で commit。 拡張は無く、 region 内で前進・swap。
 - **Alloc**: active 側で bump (`active_top += total`)。
+- **GC trigger**: `bytes_since_gc > gc_threshold` (adaptive、
+  `max(16 MiB, 2 × live_post_cheney)`、 iter 29 で追加)。 region 容量
+  到達でも fallback で発火。
 - **Collect**: active を from-space 化、 alt を to-space として bump 開始、
   roots から `forward_value` で Cheney scan-loop で copy。 swap して終了。
 - **Stress mode**: 古い from-space は PROT_NONE + MADV_DONTNEED で恒久
@@ -274,6 +282,11 @@ binary_trees のような long-live tree workload で目立つ。
 
 nursery (16 MiB bump) + tenured (64 GiB virtual × 2 semispace)。
 
+- **Heap 拡張**: nursery 16 MiB 固定。 tenured は 2 × 64 GiB virtual 予約済、
+  Cheney swap で交互利用、 物理は demand-paging。
+- **Minor trigger**: nursery overflow (16 MiB)。
+- **Major trigger**: `bytes_since_major > old_major_threshold` (adaptive、
+  `max(16 MiB, 2 × live)`、 iter 29 で追加)。 tenured 容量到達でも fallback。
 - **Minor**: nursery 生存者を Cheney で tenured へ copy promote、
   nursery を一括 reset。
 - **Major**: tenured を Cheney で alt 側へ copy。 nursery は leading
@@ -290,7 +303,11 @@ string-heavy で大勝 (`string_concat`)。 ABI は `copy_gen_inc` と同一。
 
 64 GiB virtual の 1 region + bump alloc。
 
+- **Heap 拡張**: 64 GiB virtual 予約済。 region_top の前進で物理 page を
+  demand commit。 collect 時の slide で region_top が縮む。
 - **Alloc**: region_top bump。
+- **GC trigger**: `bytes_since_gc > gc_threshold` (adaptive、
+  `max(16 MiB, 2 × live_post_compact)`、 iter 29 で追加)。
 - **Collect**: mark from roots → forward-address pass (各 marked obj の
   新位置を計算) → update outgoing pointers → update roots → slide live
   objects (memmove)。
@@ -303,6 +320,10 @@ slide で fragmentation を解消。
 nursery (16 MiB bump) + tenured (64 GiB virtual、 1 region で slide
 compact)。
 
+- **Heap 拡張**: nursery 固定 16 MiB + tenured 64 GiB virtual 予約済。
+- **Minor trigger**: nursery overflow。
+- **Major trigger**: `bytes_since_major > old_major_threshold` (adaptive、
+  `max(16 MiB, 2 × live)`、 iter 29 で追加)。 tenured 容量到達でも fallback。
 - **Minor**: nursery 生存者を Cheney で tenured top に append。
 - **Major**: tenured を Lisp-2 slide compact。 nursery を leading minor で
   折り畳んでから実行。
@@ -313,12 +334,16 @@ density と locality のバランスがいい。
 ### 4.10 `bump` — bump alloc only (no GC)
 
 alloc floor baseline。 GC 完全に削除して rooting / WB / dispatch の
-最小 cost を見る。 OOM 時 abort。
+最小 cost を見る。 region 64 GiB virtual 予約、 region_top bump、 OOM 時 abort。
 
 ### 4.11 `mark_bump_gen` — bump nursery + bump tenured (no compact)
 
 `mark_compact_gen` から compact を抜いた変種。
 
+- **Heap 拡張**: nursery 固定 16 MiB + tenured 64 GiB virtual 予約済。
+- **Minor trigger**: nursery overflow。
+- **Major trigger**: `old_alloc_since_major > old_major_threshold` (adaptive、
+  `max(16 MiB, 2 × old_post_sweep)`)。
 - **Tenured**: bump alloc、 sweep は region 走査 (`p += sizeof(GCHeader) +
   ALIGN8(h->size)`) で linked list 不要。
 - **Major**: mark + region sweep (compact なし)。 dead slot は領域内で
@@ -332,8 +357,13 @@ compact 無しの累積 leak で性能上限が見える。 string_concat 等 sh
 パターン D。 64 GiB arena を 32 KiB block × 256 line に分割、 per-block
 line bitmap で mark。
 
+- **Heap 拡張**: 64 GiB virtual で予約済、 **32 KiB block 単位** で
+  `max_touched_block++` して逐次 touch (= sweep / find_hole が walk する
+  範囲を実必要分のみに抑える)。
 - **Alloc**: 現在の hole (= unmarked line の run) で bump、 hole 尽き
   なら次の hole 探索。 hole が無ければ次 block を touch して伸長。
+- **GC trigger**: `bytes_since_gc > gc_threshold` (adaptive、
+  `max(16 MiB, 2 × live)`)。
 - **Mark**: 普通の mark に加え `mark_lines_for(h)` で span line を bitmap
   set。 mark epoch counter で前回 cycle の bit を自動 invalidate。
 - **Sweep**: per-block の line_marks 集計、 全 free → BLK_FREE、 mix →
@@ -346,6 +376,11 @@ sweep は cache-friendly。
 
 `immix` を gen 化。
 
+- **Heap 拡張**: nursery 16 MiB 固定 + tenured 64 GiB virtual arena (immix
+  と同じ block 単位)。
+- **Minor trigger**: nursery overflow。
+- **Major trigger**: `bytes_since_major > major_threshold` (adaptive、
+  `max(16 MiB, 2 × live)`)。
 - **Nursery**: 16 MiB bump。
 - **Minor**: nursery 生存者を Immix の hole に Cheney-copy promote。
   forwarding は `oldh->kind = KIND_FREE` + payload 先頭 8 byte に新 ptr。
@@ -358,11 +393,15 @@ workload は Cheney copy が逆効果。
 
 `mark_gen` の **「semantics 同じ、 実装が違う」 変種**。
 
+- **Heap 拡張**: slab と同じく **16 KiB page 単位** で追加。 ただし page を
+  **16 KiB aligned** で mmap (over-mmap して trim) して `ptr & ~0x3fff` で
+  O(1) で page base 取得を可能にしている。
 - **GCHeader 8 B** (kind, size のみ) — 元 24 B から大幅減
 - **mark / old / dirty bit** は per-page bitmap (64 B × 3 = 192 B/page)
-- **page を 16 KiB aligned** で mmap → `ptr & ~0x3fff` で O(1) で
-  page base 取得
 - **young_next 廃止** → minor sweep は全 page walk (O(heap))
+- **Minor trigger**: `bytes_since_gc > MINOR_THRESHOLD` (16 MiB 固定)
+- **Major trigger**: `old_alloc_since_major > old_major_threshold` (adaptive
+  `max(16 MiB, 2 × live)`)
 
 副次効果: 8 B header で **BaArray (24 B payload) が class 32 にぴったり
 収まる** (`mark_gen` は class 64 で 40% waste)。 hash_chain で -29% 改善。
