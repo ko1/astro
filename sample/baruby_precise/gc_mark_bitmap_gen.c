@@ -220,11 +220,12 @@ slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
     GCHeader *h = (GCHeader *)payload - 1;
     h->kind = (uint32_t)kind;
     h->size = (uint32_t)payload_size;
-    Page *pg = page_of(h);
-    size_t idx = slot_idx_of(pg, h, size_class_bytes[class_idx]);
-    bm_clr(pg->mark_bm,  idx);
-    bm_clr(pg->old_bm,   idx);
-    bm_clr(pg->dirty_bm, idx);
+    /* mark / old / dirty bits are already 0 for this slot:
+     * - fresh page from mmap is zero-initialized
+     * - sweep_page clears all 3 bits when freeing a slot (both minor's
+     *   young-dead and major's any-dead path)
+     * So we don't need to touch the bitmaps here — saves a `locate` +
+     * 3 bitmap ops per alloc. */
     return payload;
 }
 

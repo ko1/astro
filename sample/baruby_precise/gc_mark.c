@@ -168,8 +168,7 @@ new_page(int class_idx)
     for (size_t i = 0; i < n_slots; i++) {
         GCHeader *h = (GCHeader *)slot;
         h->kind   = KIND_FREE;
-        h->size   = 0;
-        h->marked = false;
+        /* h->size, h->marked already 0 from mmap zero. */
         FreeSlot *fs = (FreeSlot *)(h + 1);
         fs->next = freelist[class_idx];
         freelist[class_idx] = fs;
@@ -190,7 +189,9 @@ slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
     GCHeader *h = (GCHeader *)payload - 1;
     h->kind   = (uint32_t)kind;
     h->size   = (uint32_t)payload_size;
-    h->marked = false;
+    /* marked is already false invariant (sweep frees only unmarked slots
+     * + new_page populates with marked=false from mmap zero).  Skip the
+     * extra store. */
     return payload;
 }
 
@@ -212,7 +213,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     GCHeader *h = (GCHeader *)(lo + 1);
     h->kind   = (uint32_t)kind;
     h->size   = (uint32_t)payload_size;
-    h->marked = false;
+    /* h->marked already 0 from mmap zero. */
     return (void *)(h + 1);
 }
 
