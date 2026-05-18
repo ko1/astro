@@ -37,13 +37,25 @@
 
 // 16-byte header, payload follows.  No prev/next linked list — sweep
 // walks pages instead.
+/* 8-byte header.  kind has only ~5 values (fits in 3 bits) and `marked`
+ * is 1 bit — all packed into a single `flags` byte.  Brings GCHeader
+ * from 16 → 8 B, so BaArray (24 B payload) fits class 32 exactly (no
+ * waste) — same density win mark_bitmap_gen got via per-page bitmaps,
+ * but without the bitmap machinery. */
 typedef struct GCHeader {
-    uint32_t kind;
-    uint32_t size;     // requested payload bytes
-    bool     marked;
-    uint8_t  _pad[7];  // explicit so sizeof(GCHeader) == 16, payload 8-aligned
+    uint8_t  flags;    /* bit 0-2: kind (KIND_*); bit 3: marked */
+    uint8_t  _pad[3];  /* size's 4-byte alignment */
+    uint32_t size;     /* requested payload bytes */
 } GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+_Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
+
+#define HDR_KIND_MASK    0x07u
+#define HDR_MARKED_BIT   0x08u
+#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
+#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
+#define HDR_MARKED(h)      (((h)->flags & HDR_MARKED_BIT) != 0)
+#define HDR_SET_MARKED(h)  ((h)->flags |= HDR_MARKED_BIT)
+#define HDR_CLR_MARKED(h)  ((h)->flags &= (uint8_t)~HDR_MARKED_BIT)
 
 // Free slot overlay: when a slot is unallocated, kind = KIND_FREE and
 // the payload area holds a FreeSlot link.  freelist[class] points to
@@ -167,7 +179,7 @@ new_page(int class_idx)
     char *slot = (char *)p + PAGE_HDR_BYTES + (n_slots - 1) * sb;
     for (size_t i = 0; i < n_slots; i++) {
         GCHeader *h = (GCHeader *)slot;
-        h->kind   = KIND_FREE;
+        HDR_SET_KIND(h, KIND_FREE);
         /* h->size, h->marked already 0 from mmap zero. */
         FreeSlot *fs = (FreeSlot *)(h + 1);
         fs->next = freelist[class_idx];
@@ -187,7 +199,7 @@ slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
     freelist[class_idx] = fs->next;
     void *payload = (void *)fs;
     GCHeader *h = (GCHeader *)payload - 1;
-    h->kind   = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     /* marked is already false invariant (sweep frees only unmarked slots
      * + new_page populates with marked=false from mmap zero).  Skip the
@@ -211,7 +223,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     lo->map_bytes = map_bytes;
     large_head = lo;
     GCHeader *h = (GCHeader *)(lo + 1);
-    h->kind   = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     /* h->marked already 0 from mmap zero. */
     return (void *)(h + 1);
@@ -262,7 +274,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
     if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     // Root old via sp_top[0] — uniform with other backends.  Non-moving
@@ -295,8 +307,8 @@ mark_value(VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
-    if (h->marked) return;
-    h->marked = true;
+    if (HDR_MARKED(h)) return;
+    HDR_SET_MARKED(h);
     gray_push(h);
 }
 
@@ -306,7 +318,7 @@ process_gray(void)
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
         void *payload = (void *)(h + 1);
-        switch ((AroGcKind)h->kind) {
+        switch (HDR_KIND(h)) {
           case KIND_OBJ_ARRAY: {
             BaArray *a = (BaArray *)payload;
             if (a->items) mark_value((VALUE)a->items);
@@ -347,12 +359,12 @@ sweep(void)
             char *slot = (char *)p + PAGE_HDR_BYTES;
             for (size_t i = 0; i < n_slots; i++, slot += sb) {
                 GCHeader *h = (GCHeader *)slot;
-                if (h->kind == KIND_FREE) continue;
-                if (h->marked) {
-                    h->marked = false;
+                if (HDR_KIND(h) == KIND_FREE) continue;
+                if (HDR_MARKED(h)) {
+                    HDR_CLR_MARKED(h);
                 } else {
                     aro_gc_stats.heap_bytes -= h->size;
-                    h->kind = KIND_FREE;
+                    HDR_SET_KIND(h, KIND_FREE);
                     FreeSlot *fs = (FreeSlot *)(h + 1);
                     fs->next = freelist[c];
                     freelist[c] = fs;
@@ -365,8 +377,8 @@ sweep(void)
     while (*link) {
         LargeObj *lo = *link;
         GCHeader *h = (GCHeader *)(lo + 1);
-        if (h->marked) {
-            h->marked = false;
+        if (HDR_MARKED(h)) {
+            HDR_CLR_MARKED(h);
             link = &lo->next;
         } else {
             *link = lo->next;
