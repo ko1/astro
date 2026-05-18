@@ -146,11 +146,8 @@ new_page(int class_idx)
     char *slot = (char *)p + PAGE_HDR_BYTES + (n_slots - 1) * sb;
     for (size_t i = 0; i < n_slots; i++) {
         GCHeader *h = (GCHeader *)slot;
-        h->kind   = KIND_FREE;
-        h->size   = 0;
-        h->marked = false;
-        h->old    = false;
-        h->dirty  = false;
+        h->kind = KIND_FREE;
+        /* size / marked / old / dirty already 0 from mmap zero. */
         FreeSlot *fs = (FreeSlot *)(h + 1);
         fs->next = freelist[class_idx];
         freelist[class_idx] = fs;
@@ -167,9 +164,7 @@ slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
     GCHeader *h = (GCHeader *)fs - 1;
     h->kind   = (uint32_t)kind;
     h->size   = (uint32_t)payload_size;
-    h->marked = false;
-    h->old    = false;
-    h->dirty  = false;
+    /* marked / old / dirty already 0 by free_slot invariant. */
     h->young_next = young_head;
     young_head = h;
     young_bytes += payload_size;
@@ -191,9 +186,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     GCHeader *h = (GCHeader *)(lo + 1);
     h->kind   = (uint32_t)kind;
     h->size   = (uint32_t)payload_size;
-    h->marked = false;
-    h->old    = false;
-    h->dirty  = false;
+    /* marked / old / dirty already 0 from mmap zero. */
     h->young_next = young_head;
     young_head = h;
     young_bytes += payload_size;
@@ -208,6 +201,10 @@ free_slot(GCHeader *h)
     if (c >= 0) {
         h->kind = KIND_FREE;
         h->size = 0;
+        /* Clear all gen bits so slab_alloc invariant holds. */
+        h->marked = false;
+        h->old    = false;
+        h->dirty  = false;
         FreeSlot *fs = (FreeSlot *)(h + 1);
         fs->next = freelist[c];
         freelist[c] = fs;
