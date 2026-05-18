@@ -397,27 +397,102 @@ binary_trees 等は minor sweep O(heap) で不利。
   毎 page)、 block+line region (Immix)、 のいずれか
 - **Compact 動作**: なし、 Cheney、 Lisp-2 slide、 のいずれか
 
-## 6. Fairness — 比較するうえで揃えてある設定
+## 6. ヒープ管理 — サイズ戦略と GC 発火条件
+
+### 6.1 仮想ヒープ予約 (全 region 系 backend 共通)
+
+連続領域を持つ backend (`copy*` / `mark_compact*` / `mark_bump_gen` /
+`immix*` / `bump`) は **64 GiB を MAP_NORESERVE で mmap 予約** している:
+
+```c
+ARO_GC_REGION_VIRT_BYTES = 64 GiB     /* gc.h */
+mmap(NULL, 64 GiB, PROT_READ|PROT_WRITE,
+     MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+```
+
+- **virtual** には 64 GiB を確保するが、 **物理** page は最初の write で
+  初めて commit (4 KiB 粒度の demand-paging)
+- `MAP_NORESERVE` で overcommit_memory=2 環境でも失敗しない
+- prgoram-limiting cap として機能しない (iter 27 でこれ意図的に撤廃)
+
+つまり「上限 64 GiB の virtual 予約」 ≠ 「上限まで GC を発火させない」 。
+両者は別軸:
+- **virtual 予約**: アドレス空間を 64 GiB 確保 (物理 commit は別)
+- **GC 発火条件**: 後述の `bytes_since_gc > threshold` で決まる
+
+### 6.2 GC 発火条件 — adaptive threshold
+
+iter 29 以降、 **全 GC 系 backend で統一**:
+
+```
+trigger:  bytes_since_gc > gc_threshold
+発火後:    gc_threshold = max(GC_THRESHOLD_MIN, 2 × live_post_collect)
+GC_THRESHOLD_MIN = 16 MiB
+```
+
+つまり:
+- 初回 GC は **16 MiB alloc** で発火 (小さい heap で頻繁に GC)
+- 以降、 GC ごとに live size を確認、 次の trigger は live × 2 (= heap が 2 倍
+  に膨らんだら GC) で adaptive 化
+- 例: live=1 MB → 次の trigger は 16 MiB MIN まで cap、 live=100 MB → 次は 200 MB
+
+これにより live が大きい workload では GC 頻度が自動的に低下、 live が
+小さい workload では頻繁に GC してメモリ圧迫を抑える。
+
+**設定根拠**:
+- 16 MiB MIN: nursery と同サイズで、 minor / non-gen collection が一致 cadence
+- factor 2: 「heap が 2 倍に膨らむまで放置」 = doubling growth、 amortized
+  O(N) maintenance
+
+### 6.3 backend ごとのヒープ拡張単位
+
+| backend | 拡張単位 | 拡張トリガ |
+|---|---|---|
+| `mark` / `mark_gen` / `mark_gen_inc` | **16 KiB page** (slab) | freelist 空、 size class に新 page 必要時 |
+| `mark_bitmap_gen` | **16 KiB page** (16 KiB-aligned mmap) | 同上 |
+| `mark_compact` | (仮想予約済) — 64 GiB 内で region_top 進行 | bump のみ、 物理は touch で lazy commit |
+| `mark_compact_gen` | nursery 固定 16 MiB + 64 GiB virtual tenured | 同上 |
+| `copy` | 2 × 64 GiB virtual region | 半空間切替時に alt 側が touch される |
+| `copy_gen` / `copy_gen_inc` | nursery 16 MiB + 2 × 64 GiB tenured | 同上 |
+| `bump` | 64 GiB virtual region | bump、 拡張なし (leak) |
+| `mark_bump_gen` | nursery 16 MiB + 64 GiB virtual tenured | bump、 物理は lazy |
+| `immix` / `immix_gen` | **32 KiB block** (Immix arena 内) | hole 枯渇時に `max_touched_block++` で次 block touch |
+
+整理:
+- **slab 系** (mark family / mark_bitmap_gen): heap は **16 KiB page** 単位
+  で追加される。 ある size class が freelist 枯渇 → mmap で新 page →
+  freelist populate。 page 数は無制限 (per-class linked list)。
+- **region 系** (copy / mark_compact / bump / gen 系 tenured): heap は
+  **virtual 64 GiB 予約済**、 拡張は OS の demand-paging に委任 (実質 4 KiB
+  page 単位で物理 commit)。 「page を追加する」 という明示処理は無く、
+  region_top の進行が自動的に新 page を touch する。
+- **Immix arena** (immix / immix_gen): 32 KiB block 単位で論理拡張。
+  `find_hole` が touched 範囲で hole 見つけられないとき `max_touched_block++`
+  して次の virtual block を touch、 全 block 一括 hole として返す。
+
+### 6.4 fairness 設定の対比表
 
 各 backend を「同じ workload に同じ条件」 で当てるため、 以下を揃えている:
 
-| 設定 | 値 | 補足 |
+| 設定 | 値 | 統一範囲 |
 |---|---|---|
-| 仮想ヒープ上限 | 64 GiB | 全 region 系 backend で virtual reservation + lazy commit (iter 27)。 `ARO_GC_REGION_VIRT_BYTES` (`gc.h`)。 |
-| Nursery size | 16 MiB | 全 gen 系。 minor 頻度の tuning 共通化。 |
-| Major threshold MIN | 64 MiB | 非moving sticky 系 (`mark_gen` / `mark_gen_inc` / `mark_bump_gen` / `mark_bitmap_gen` / `immix_gen`)。 |
-| Major threshold factor | 2 × live | 同上 (max(MIN, 2×live) で適応)。 |
-| Minor threshold | nursery overflow / 16 MiB 相当 | 全 gen 系。 |
+| 仮想ヒープ上限 (region 系) | **64 GiB** | 全 region 系 backend |
+| Nursery size (gen 系) | **16 MiB** | 全 gen 系 |
+| GC threshold MIN | **16 MiB** | 全 GC 系 (none / bump 除く) |
+| Threshold factor | **2 × live** | max(MIN, 2 × live) で adaptive、 全 GC 系 |
+| Minor 発火 (gen 系) | nursery overflow (= 16 MiB) | 全 gen 系 |
+| Major 発火 (gen 系) | `bytes_since_major > threshold` | 全 gen 系 (iter 29 で移動 gen に新規追加) |
 
-移動系 (`copy_gen` / `copy_gen_inc` / `mark_compact_gen`) は **明示 major
-threshold を持たず**、 tenured 容量に達するまで minor のみ。 これは設計上
-moving GC が minor copy で nursery を完全に回収できるため major を必要と
-しない、 という性質に基づく — fair から外れるのではなく、 設計の違い。
+**iter 29 で揃えた点**:
+- `copy` / `mark_compact` に `bytes_since_gc > threshold` の adaptive
+  trigger を新規追加 (それ以前は region 容量基準のみ = 64 GiB virtual で
+  実質発火せず、 bump 同然 → 不公平に速い数値だった)
+- `copy_gen` / `copy_gen_inc` / `mark_compact_gen` に MAJOR threshold を
+  新規追加 (同じ理由で major が実質発火していなかった)
+- 全 backend で MIN を **16 MiB に統一** (一部は 4 MiB / 64 MiB の不揃いだった)
 
-`gc_combined.ba.rb` のような長寿命+短命混合 bench だと、 同じ collection
-頻度同士で比較できるよう、 iter 29 で `immix_gen` と `mark_bitmap_gen` の
-MAJOR threshold を他の非moving sticky に揃えた (4 MiB → 64 MiB、 詳細
-[done.md](done.md) iter 29 参照)。
+これにより全 backend が「同じ alloc 量で同じ回数 GC を打つ」 状態になり、
+algorithm の真の差が見える比較になる。
 
 ## 7. どれを使うべきか
 
