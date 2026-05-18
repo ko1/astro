@@ -29,7 +29,7 @@ typedef intptr_t VALUE;
 //                          (isolates nursery alloc strategy vs mark_gen)
 //
 // Gen / inc variants define BARUBY_GC_HAS_WB so callers know they must use
-// baruby_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
+// aro_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
 // ---------------------------------------------------------------------------
 
 #define BARUBY_GC_NONE             1
@@ -49,7 +49,7 @@ typedef intptr_t VALUE;
 #endif
 
 // Backends that need a write barrier (gen / inc variants).  Callers must
-// always go through baruby_gc_wb / _bulk for heap-pointer writes — for
+// always go through aro_gc_wb / _bulk for heap-pointer writes — for
 // non-WB backends it compiles to a plain `*slot = v`, free of cost.
 #if BARUBY_GC == BARUBY_GC_MARK_GEN         || \
     BARUBY_GC == BARUBY_GC_MARK_GEN_INC     || \
@@ -68,7 +68,7 @@ typedef enum {
     KIND_OBJ_STRING   = 2,   // BaString header (bytes field is a pointer)
     KIND_PAYLOAD_VAL  = 3,   // VALUE[] (BaArray.items target)
     KIND_PAYLOAD_BYTE = 4,   // char[]  (BaString.bytes target)
-} BarubyGCKind;
+} AroGcKind;
 
 typedef struct {
     size_t total_bytes;      // cumulative alloc bytes
@@ -78,57 +78,57 @@ typedef struct {
     size_t major_count;      // major (= whole heap) collections, gen backends
     double total_seconds;    // cumulative wall-clock seconds spent in collection
     double max_pause_seconds;// longest single GC pause (latency upper-bound)
-} BarubyGCStats;
+} AroGcStats;
 
-extern BarubyGCStats baruby_gc_stats;
-extern int  baruby_gc_stress;
-extern const char *baruby_gc_backend_name;
+extern AroGcStats aro_gc_stats;
+extern int  aro_gc_stress;
+extern const char *aro_gc_backend_name;
 
-void  baruby_gc_init(CTX *c);
-void *baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top);
-void *baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top);
-void *baruby_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
-void  baruby_gc_collect(VALUE *sp_top);
+void  aro_gc_init(CTX *c);
+void *aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top);
+void *aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top);
+void *aro_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
+void  aro_gc_collect(VALUE *sp_top);
 
-size_t baruby_gc_total_bytes(void);
-size_t baruby_gc_heap_bytes(void);
-size_t baruby_gc_count(void);
-size_t baruby_gc_minor_count(void);
-size_t baruby_gc_major_count(void);
-double baruby_gc_total_seconds(void);
-double baruby_gc_max_pause_seconds(void);
+size_t aro_gc_total_bytes(void);
+size_t aro_gc_heap_bytes(void);
+size_t aro_gc_count(void);
+size_t aro_gc_minor_count(void);
+size_t aro_gc_major_count(void);
+double aro_gc_total_seconds(void);
+double aro_gc_max_pause_seconds(void);
 
 // Helper used inside each backend's collect entry point — accumulates wall
-// time into baruby_gc_stats.total_seconds.  Re-entrant: if a major calls
+// time into aro_gc_stats.total_seconds.  Re-entrant: if a major calls
 // minor (gc_mark_compact_gen), only the outermost begin/end pair times
 // the work; inner pairs are no-ops via gc_time_depth.
 #include <time.h>
 
-extern int baruby_gc_time_depth;
-extern struct timespec baruby_gc_time_t0;
+extern int aro_gc_time_depth;
+extern struct timespec aro_gc_time_t0;
 
 static inline struct timespec
-baruby_gc_time_begin(void)
+aro_gc_time_begin(void)
 {
     struct timespec t = {0, 0};
-    if (baruby_gc_time_depth++ == 0) {
-        clock_gettime(CLOCK_MONOTONIC, &baruby_gc_time_t0);
+    if (aro_gc_time_depth++ == 0) {
+        clock_gettime(CLOCK_MONOTONIC, &aro_gc_time_t0);
     }
     return t;   // unused — kept for API compat
 }
 
 static inline void
-baruby_gc_time_end(struct timespec t0)
+aro_gc_time_end(struct timespec t0)
 {
     (void)t0;
-    if (--baruby_gc_time_depth == 0) {
+    if (--aro_gc_time_depth == 0) {
         struct timespec t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
-        double dt = (double)(t1.tv_sec  - baruby_gc_time_t0.tv_sec) +
-                    (double)(t1.tv_nsec - baruby_gc_time_t0.tv_nsec) / 1e9;
-        baruby_gc_stats.total_seconds += dt;
-        if (dt > baruby_gc_stats.max_pause_seconds) {
-            baruby_gc_stats.max_pause_seconds = dt;
+        double dt = (double)(t1.tv_sec  - aro_gc_time_t0.tv_sec) +
+                    (double)(t1.tv_nsec - aro_gc_time_t0.tv_nsec) / 1e9;
+        aro_gc_stats.total_seconds += dt;
+        if (dt > aro_gc_stats.max_pause_seconds) {
+            aro_gc_stats.max_pause_seconds = dt;
         }
     }
 }
@@ -144,18 +144,18 @@ baruby_gc_time_end(struct timespec t0)
 // override with a real implementation that maintains a remembered set or
 // dirty-card bitmap.
 #ifdef BARUBY_GC_HAS_WB
-void baruby_gc_wb(void *holder, VALUE *slot, VALUE v);
-void baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n);
+void aro_gc_wb(void *holder, VALUE *slot, VALUE v);
+void aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n);
 #else
 static inline void
-baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
+aro_gc_wb(void *holder, VALUE *slot, VALUE v)
 {
     (void)holder;
     *slot = v;
 }
 
 static inline void
-baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     (void)holder;
     if (n) memcpy(dst, src, n * sizeof(VALUE));

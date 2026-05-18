@@ -88,9 +88,9 @@ static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
-int baruby_gc_stress = 0;
-const char *baruby_gc_backend_name = "mark_gen_inc";
+AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
+int aro_gc_stress = 0;
+const char *aro_gc_backend_name = "mark_gen_inc";
 
 // Incremental mark state.  See header comment.
 static bool inc_marking = false;
@@ -105,11 +105,11 @@ static void scan_outgoing(GCHeader *h);
 static void mark_value_satb(VALUE v);
 
 void
-baruby_gc_init(CTX *c)
+aro_gc_init(CTX *c)
 {
     gc_ctx = c;
     if (getenv("BARUBY_GC_STRESS")) {
-        baruby_gc_stress = 1;
+        aro_gc_stress = 1;
         young_threshold = 0;
         fprintf(stderr, "[baruby_gc=mark_gen_inc] STRESS\n");
     }
@@ -159,7 +159,7 @@ new_page(int class_idx)
 }
 
 static GCHeader *
-slab_alloc(BarubyGCKind kind, size_t payload_size, int class_idx)
+slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
 {
     if (!freelist[class_idx]) new_page(class_idx);
     FreeSlot *fs = freelist[class_idx];
@@ -177,7 +177,7 @@ slab_alloc(BarubyGCKind kind, size_t payload_size, int class_idx)
 }
 
 static GCHeader *
-large_alloc(BarubyGCKind kind, size_t payload_size)
+large_alloc(AroGcKind kind, size_t payload_size)
 {
     size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
     size_t map_bytes = (need + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
@@ -241,7 +241,7 @@ maybe_collect(size_t add, VALUE *sp_top)
             inc_finish_sweep(sp_top);
         }
     }
-    if (baruby_gc_stress || young_bytes + add > young_threshold) {
+    if (aro_gc_stress || young_bytes + add > young_threshold) {
         if (!inc_marking && old_alloc_since_major > old_major_threshold) {
             inc_start_major(sp_top);
             old_alloc_since_major = 0;
@@ -252,7 +252,7 @@ maybe_collect(size_t add, VALUE *sp_top)
 }
 
 void *
-baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
@@ -264,13 +264,13 @@ baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, ALIGN8(payload_size));
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
+    aro_gc_stats.total_bytes += payload_size;
+    aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
-baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
     maybe_collect(payload_size, sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
@@ -279,23 +279,23 @@ baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
                            : large_alloc(KIND_PAYLOAD_BYTE, payload_size);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
+    aro_gc_stats.total_bytes += payload_size;
+    aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
-baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
-    if (!old) return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+    if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    BarubyGCKind kind = (BarubyGCKind)oldh->kind;
+    AroGcKind kind = (AroGcKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
-        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+        ? aro_gc_alloc_byte(new_size, sp_top + 1)
+        : aro_gc_alloc(kind, new_size, sp_top + 1);
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
@@ -316,7 +316,7 @@ remset_push(GCHeader *h)
 }
 
 void
-baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
+aro_gc_wb(void *holder, VALUE *slot, VALUE v)
 {
     if (inc_marking) {
         VALUE old = *slot;
@@ -332,7 +332,7 @@ baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
 }
 
 void
-baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     if (inc_marking) {
         for (size_t i = 0; i < n; i++) {
@@ -391,7 +391,7 @@ static void
 scan_outgoing(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((BarubyGCKind)h->kind) {
+    switch ((AroGcKind)h->kind) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) mark_value((VALUE)a->items);
@@ -443,7 +443,7 @@ sweep_young(bool clear_marked)
             old_bytes += h->size;
             old_alloc_since_major += h->size;
         } else {
-            baruby_gc_stats.heap_bytes -= h->size;
+            aro_gc_stats.heap_bytes -= h->size;
             free_slot(h);
         }
         h = next;
@@ -467,7 +467,7 @@ sweep_old_pages(void)
                     h->dirty  = false;
                 } else {
                     old_bytes -= h->size;
-                    baruby_gc_stats.heap_bytes -= h->size;
+                    aro_gc_stats.heap_bytes -= h->size;
                     free_slot(h);
                 }
             }
@@ -485,7 +485,7 @@ sweep_old_pages(void)
         } else {
             *link = lo->next;
             old_bytes -= h->size;
-            baruby_gc_stats.heap_bytes -= h->size;
+            aro_gc_stats.heap_bytes -= h->size;
             munmap(lo, lo->map_bytes);
         }
     }
@@ -498,7 +498,7 @@ sweep_old_pages(void)
 static void
 minor_gc(VALUE *sp_top)
 {
-    struct timespec t0 = baruby_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin();
     in_minor = true;
 
     CTX *c = gc_ctx;
@@ -515,24 +515,24 @@ minor_gc(VALUE *sp_top)
 
     sweep_young(/*clear_marked=*/true);
 
-    baruby_gc_stats.gc_count++;
-    baruby_gc_stats.minor_count++;
+    aro_gc_stats.gc_count++;
+    aro_gc_stats.minor_count++;
     in_minor = false;
     c->sp = sp_top;
-    baruby_gc_time_end(t0);
+    aro_gc_time_end(t0);
 }
 
 static void
 inc_start_major(VALUE *sp_top)
 {
-    struct timespec t0 = baruby_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin();
     in_minor = false;
     inc_marking = true;
     remset_cnt = 0;
     CTX *c = gc_ctx;
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     c->sp = sp_top;
-    baruby_gc_time_end(t0);
+    aro_gc_time_end(t0);
 }
 
 static void
@@ -549,7 +549,7 @@ inc_step(size_t budget)
 static void
 inc_finish_sweep(VALUE *sp_top)
 {
-    struct timespec t0 = baruby_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin();
     // Re-scan roots before sweeping.  Objects allocated during the
     // inc_marking window may have been stored into the VALUE stack
     // by the mutator without going through any write barrier (we
@@ -568,22 +568,22 @@ inc_finish_sweep(VALUE *sp_top)
 
     sweep_young(/*clear_marked=*/false);
     sweep_old_pages();
-    if (!baruby_gc_stress) {
+    if (!aro_gc_stress) {
         size_t next = old_bytes * 2;
         old_major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;
     }
     old_alloc_since_major = 0;
-    baruby_gc_stats.gc_count++;
-    baruby_gc_stats.major_count++;
+    aro_gc_stats.gc_count++;
+    aro_gc_stats.major_count++;
     gc_ctx->sp = sp_top;
-    baruby_gc_time_end(t0);
+    aro_gc_time_end(t0);
 }
 
 void
-baruby_gc_collect(VALUE *sp_top)
+aro_gc_collect(VALUE *sp_top)
 {
     // External full GC: STW major (skip incremental dance).
-    struct timespec t0 = baruby_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin();
     in_minor = false;
     inc_marking = false;
     remset_cnt = 0;
@@ -592,21 +592,21 @@ baruby_gc_collect(VALUE *sp_top)
     process_gray();
     sweep_young(/*clear_marked=*/false);
     sweep_old_pages();
-    if (!baruby_gc_stress) {
+    if (!aro_gc_stress) {
         size_t next = old_bytes * 2;
         old_major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;
     }
     old_alloc_since_major = 0;
-    baruby_gc_stats.gc_count++;
-    baruby_gc_stats.major_count++;
+    aro_gc_stats.gc_count++;
+    aro_gc_stats.major_count++;
     c->sp = sp_top;
-    baruby_gc_time_end(t0);
+    aro_gc_time_end(t0);
 }
 
-size_t baruby_gc_total_bytes(void) { return baruby_gc_stats.total_bytes; }
-size_t baruby_gc_heap_bytes (void) { return baruby_gc_stats.heap_bytes;  }
-size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
-size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
-size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
-double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }
-double baruby_gc_max_pause_seconds(void) { return baruby_gc_stats.max_pause_seconds; }
+size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }
+size_t aro_gc_heap_bytes (void) { return aro_gc_stats.heap_bytes;  }
+size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
+size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
+size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
+double aro_gc_total_seconds(void) { return aro_gc_stats.total_seconds; }
+double aro_gc_max_pause_seconds(void) { return aro_gc_stats.max_pause_seconds; }

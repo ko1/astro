@@ -10,9 +10,9 @@
 // Semispace (Cheney) moving GC with stress mode.  See gc.h for design.
 // ----------------------------------------------------------------------------
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
-int baruby_gc_stress = 0;
-const char *baruby_gc_backend_name = "copy";
+AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
+int aro_gc_stress = 0;
+const char *aro_gc_backend_name = "copy";
 
 typedef struct GCHeader {
     uint32_t kind;
@@ -55,11 +55,11 @@ mmap_region(void)
 }
 
 void
-baruby_gc_init(CTX *c)
+aro_gc_init(CTX *c)
 {
     gc_ctx = c;
     if (getenv("BARUBY_GC_STRESS")) {
-        baruby_gc_stress = 1;
+        aro_gc_stress = 1;
         // Stress: start with one fresh region.  Each GC allocates a new
         // to-space and permanently retires the old active.
         active_base = mmap_region();
@@ -87,10 +87,10 @@ static void gc_collect_internal(VALUE *sp_top);
 // Internal bump-allocator: reserves header + payload of `aligned` bytes.
 // Triggers GC + retries on OOM.  Does NOT zero the payload — caller decides.
 static inline GCHeader *
-gc_bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+gc_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
-    if (baruby_gc_stress || (active_top + total) > active_end) {
+    if (aro_gc_stress || (active_top + total) > active_end) {
         gc_collect_internal(sp_top);
         if (active_top + total > active_end) {
             fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
@@ -106,11 +106,11 @@ gc_bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
     return h;
 }
 
-// baruby_gc_alloc: zero-initialized payload.  Use for KIND_OBJ_ARRAY /
+// aro_gc_alloc: zero-initialized payload.  Use for KIND_OBJ_ARRAY /
 // KIND_OBJ_STRING (embedded items / bytes ptr starts NULL) and
 // KIND_PAYLOAD_VAL (trailing slots are VAL_FALSE for GC-safe scanning).
 void *
-baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
@@ -122,16 +122,16 @@ baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
 
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
+    aro_gc_stats.total_bytes += payload_size;
+    aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
-// baruby_gc_alloc_byte: raw byte payload.  GC never reads it as pointers
+// aro_gc_alloc_byte: raw byte payload.  GC never reads it as pointers
 // so we skip the memset.  Caller MUST fill bytes[0..size-1] before any
 // other alloc / GC opportunity.
 void *
-baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(sp_top >= gc_ctx->env);
     size_t aligned = ALIGN8(payload_size);
@@ -139,21 +139,21 @@ baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
 
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
+    aro_gc_stats.total_bytes += payload_size;
+    aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
-baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
     if (old == NULL) {
-        return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+        return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     }
     // Read old header BEFORE alloc (alloc may move/mprotect us).
     GCHeader *oldh = (GCHeader *)old - 1;
     size_t old_size = oldh->size;
-    BarubyGCKind kind = (BarubyGCKind)oldh->kind;
+    AroGcKind kind = (AroGcKind)oldh->kind;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
     // Buffer old's content in plain heap BEFORE the alloc may invalidate it.
@@ -167,8 +167,8 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     if (!buf) { fprintf(stderr, "realloc buf OOM\n"); abort(); }
     memcpy(buf, old, copy_bytes);
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top)
-        : baruby_gc_alloc(kind, new_size, sp_top);
+        ? aro_gc_alloc_byte(new_size, sp_top)
+        : aro_gc_alloc(kind, new_size, sp_top);
     memcpy(newp, buf, copy_bytes);
     free(buf);
     return newp;
@@ -243,7 +243,7 @@ static void
 process_object(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((BarubyGCKind)h->kind) {
+    switch ((AroGcKind)h->kind) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         ASTRO_ASSERT(a->hdr.type == OBJ_ARRAY);
@@ -273,12 +273,12 @@ process_object(GCHeader *h)
 static void
 gc_collect_internal(VALUE *sp_top)
 {
-    struct timespec t0 = baruby_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin();
     char *from_base = active_base;
 
     // Determine the to-space.
     char *next_to_base;
-    if (baruby_gc_stress) {
+    if (aro_gc_stress) {
         next_to_base = mmap_region();
     } else {
         next_to_base = (active_idx == 0) ? space1 : space0;
@@ -289,7 +289,7 @@ gc_collect_internal(VALUE *sp_top)
     from_base_cur = from_base;
 
     // Reset live-bytes counter; we'll add as we copy.
-    baruby_gc_stats.heap_bytes = 0;
+    aro_gc_stats.heap_bytes = 0;
 
     CTX *c = gc_ctx;
 
@@ -308,7 +308,7 @@ gc_collect_internal(VALUE *sp_top)
     // into the current from-space.  Must run BEFORE the root scan loop
     // (which mutates *p in-place).  Debug + stress-mode only — under
     // !ASTRO_DEBUG the whole block constant-folds away.
-    if (ASTRO_DEBUG && baruby_gc_stress) {
+    if (ASTRO_DEBUG && aro_gc_stress) {
         for (VALUE *p = c->env; p < sp_top; p++) {
             VALUE v = *p;
             if (!IS_PTR(v)) continue;
@@ -333,12 +333,12 @@ gc_collect_internal(VALUE *sp_top)
     while (scan < to_top) {
         GCHeader *h = (GCHeader *)scan;
         process_object(h);
-        baruby_gc_stats.heap_bytes += h->size;
+        aro_gc_stats.heap_bytes += h->size;
         scan += sizeof(GCHeader) + ALIGN8(h->size);
     }
 
     // (3) Swap active.
-    if (!baruby_gc_stress) {
+    if (!aro_gc_stress) {
         active_idx = 1 - active_idx;
     }
     active_base = next_to_base;
@@ -346,7 +346,7 @@ gc_collect_internal(VALUE *sp_top)
     active_end  = next_to_base + REGION_BYTES;
 
     // (4) Retire the old active.
-    if (baruby_gc_stress) {
+    if (aro_gc_stress) {
         // PERMANENT retire: PROT_NONE + DONTNEED.  Virtual address stays
         // reserved forever, physical pages reclaimed.  Stale pointers
         // from ANY past GC into this region SIGSEGV.
@@ -358,21 +358,21 @@ gc_collect_internal(VALUE *sp_top)
         }
     }
 
-    baruby_gc_stats.gc_count++;
+    aro_gc_stats.gc_count++;
     gc_ctx->sp = sp_top;
-    baruby_gc_time_end(t0);
+    aro_gc_time_end(t0);
 }
 
 void
-baruby_gc_collect(VALUE *sp_top)
+aro_gc_collect(VALUE *sp_top)
 {
     gc_collect_internal(sp_top);
 }
 
-size_t baruby_gc_total_bytes(void) { return baruby_gc_stats.total_bytes; }
-size_t baruby_gc_heap_bytes (void) { return baruby_gc_stats.heap_bytes;  }
-size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
-size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
-size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
-double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }
-double baruby_gc_max_pause_seconds(void) { return baruby_gc_stats.max_pause_seconds; }
+size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }
+size_t aro_gc_heap_bytes (void) { return aro_gc_stats.heap_bytes;  }
+size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
+size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
+size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
+double aro_gc_total_seconds(void) { return aro_gc_stats.total_seconds; }
+double aro_gc_max_pause_seconds(void) { return aro_gc_stats.max_pause_seconds; }

@@ -101,9 +101,9 @@ static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
-int baruby_gc_stress = 0;
-const char *baruby_gc_backend_name = "mark_bump_gen";
+AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
+int aro_gc_stress = 0;
+const char *aro_gc_backend_name = "mark_bump_gen";
 
 static char *
 mmap_region(size_t bytes)
@@ -115,7 +115,7 @@ mmap_region(size_t bytes)
 }
 
 void
-baruby_gc_init(CTX *c)
+aro_gc_init(CTX *c)
 {
     gc_ctx = c;
     nursery_base = mmap_region(NURSERY_BYTES);
@@ -125,7 +125,7 @@ baruby_gc_init(CTX *c)
     tenured_top  = tenured_base;
     tenured_end  = tenured_base + TENURED_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
-        baruby_gc_stress = 1;
+        aro_gc_stress = 1;
         fprintf(stderr, "[baruby_gc=mark_bump_gen] STRESS mode: collect on every alloc\n");
     }
 }
@@ -140,7 +140,7 @@ static void major_gc(VALUE *sp_top);
 // Allocate a tenured object via bump.  Returns a fresh GCHeader.
 // Caller fills kind/size/payload.
 static GCHeader *
-old_alloc(BarubyGCKind kind, size_t payload_size, size_t aligned)
+old_alloc(AroGcKind kind, size_t payload_size, size_t aligned)
 {
     size_t total = sizeof(GCHeader) + aligned;
     if (tenured_top + total > tenured_end) {
@@ -162,7 +162,7 @@ old_alloc(BarubyGCKind kind, size_t payload_size, size_t aligned)
 }
 
 static GCHeader *
-nursery_bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
 
@@ -171,7 +171,7 @@ nursery_bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_t
         return old_alloc(kind, payload_size, aligned);
     }
 
-    if (baruby_gc_stress || nursery_top + total > nursery_end) {
+    if (aro_gc_stress || nursery_top + total > nursery_end) {
         if (old_alloc_since_major > old_major_threshold) {
             major_gc(sp_top);
         } else {
@@ -199,7 +199,7 @@ nursery_bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_t
 }
 
 void *
-baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
@@ -208,37 +208,37 @@ baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
+    aro_gc_stats.total_bytes += payload_size;
+    aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
-baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
     size_t aligned = ALIGN8(payload_size);
     GCHeader *h = nursery_bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
+    aro_gc_stats.total_bytes += payload_size;
+    aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
-baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
-    if (!old) return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+    if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    BarubyGCKind kind = (BarubyGCKind)oldh->kind;
+    AroGcKind kind = (AroGcKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     // Root old via sp_top[0] so GC tracks the source through promotion.
     // See gc_copy_gen.c for the rationale.
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
-        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+        ? aro_gc_alloc_byte(new_size, sp_top + 1)
+        : aro_gc_alloc(kind, new_size, sp_top + 1);
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
@@ -259,7 +259,7 @@ remset_push(GCHeader *h)
 }
 
 void
-baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
+aro_gc_wb(void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (holder == NULL) return;
@@ -271,7 +271,7 @@ baruby_gc_wb(void *holder, VALUE *slot, VALUE v)
 }
 
 void
-baruby_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
@@ -323,7 +323,7 @@ promote(GCHeader *oldh)
 {
     if (oldh->fwd) return oldh->fwd;
     size_t aligned = ALIGN8(oldh->size);
-    GCHeader *newh = old_alloc((BarubyGCKind)oldh->kind, oldh->size, aligned);
+    GCHeader *newh = old_alloc((AroGcKind)oldh->kind, oldh->size, aligned);
     // Copy payload only (the linked-list pointers in newh are already
     // correct from old_alloc; old/marked/dirty are fresh).
     memcpy((void *)(newh + 1), (void *)(oldh + 1), aligned);
@@ -359,7 +359,7 @@ static void
 process_object(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((BarubyGCKind)h->kind) {
+    switch ((AroGcKind)h->kind) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) a->items = (VALUE *)forward_payload_value(a->items);
@@ -387,7 +387,7 @@ process_object(GCHeader *h)
 static void
 minor_gc(VALUE *sp_top)
 {
-    struct timespec t0 = baruby_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin();
     in_minor = true;
 
     CTX *c = gc_ctx;
@@ -422,11 +422,11 @@ minor_gc(VALUE *sp_top)
     nursery_top = nursery_base;
     in_minor = false;
 
-    baruby_gc_stats.gc_count++;
-    baruby_gc_stats.minor_count++;
-    baruby_gc_stats.heap_bytes = old_bytes;   // live = promoted-to-tenured
+    aro_gc_stats.gc_count++;
+    aro_gc_stats.minor_count++;
+    aro_gc_stats.heap_bytes = old_bytes;   // live = promoted-to-tenured
     c->sp = sp_top;
-    baruby_gc_time_end(t0);
+    aro_gc_time_end(t0);
 }
 
 // ---------------------------------------------------------------------------
@@ -462,7 +462,7 @@ major_promote(GCHeader *oldh)
 {
     if (oldh->fwd) return oldh->fwd;
     size_t aligned = ALIGN8(oldh->size);
-    GCHeader *newh = old_alloc((BarubyGCKind)oldh->kind, oldh->size, aligned);
+    GCHeader *newh = old_alloc((AroGcKind)oldh->kind, oldh->size, aligned);
     memcpy((void *)(newh + 1), (void *)(oldh + 1), aligned);
     newh->marked = true;
     void *new_payload = (void *)(newh + 1);
@@ -476,7 +476,7 @@ static void
 major_process(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((BarubyGCKind)h->kind) {
+    switch ((AroGcKind)h->kind) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) {
@@ -533,7 +533,7 @@ major_process(GCHeader *h)
 static void
 major_gc(VALUE *sp_top)
 {
-    struct timespec t0 = baruby_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin();
     in_minor = false;
 
     remset_cnt = 0;
@@ -592,29 +592,29 @@ major_gc(VALUE *sp_top)
     // (4) Reset nursery (any non-promoted nursery objs are dead).
     nursery_top = nursery_base;
 
-    if (!baruby_gc_stress) {
+    if (!aro_gc_stress) {
         size_t next = old_bytes * 2;
         old_major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;
     }
     old_alloc_since_major = 0;
 
-    baruby_gc_stats.gc_count++;
-    baruby_gc_stats.major_count++;
-    baruby_gc_stats.heap_bytes = old_bytes;
+    aro_gc_stats.gc_count++;
+    aro_gc_stats.major_count++;
+    aro_gc_stats.heap_bytes = old_bytes;
     c->sp = sp_top;
-    baruby_gc_time_end(t0);
+    aro_gc_time_end(t0);
 }
 
 void
-baruby_gc_collect(VALUE *sp_top)
+aro_gc_collect(VALUE *sp_top)
 {
     major_gc(sp_top);
 }
 
-size_t baruby_gc_total_bytes(void) { return baruby_gc_stats.total_bytes; }
-size_t baruby_gc_heap_bytes (void) { return baruby_gc_stats.heap_bytes;  }
-size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
-size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
-size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
-double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }
-double baruby_gc_max_pause_seconds(void) { return baruby_gc_stats.max_pause_seconds; }
+size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }
+size_t aro_gc_heap_bytes (void) { return aro_gc_stats.heap_bytes;  }
+size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
+size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
+size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
+double aro_gc_total_seconds(void) { return aro_gc_stats.total_seconds; }
+double aro_gc_max_pause_seconds(void) { return aro_gc_stats.max_pause_seconds; }

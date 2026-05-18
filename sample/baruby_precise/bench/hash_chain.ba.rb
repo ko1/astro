@@ -1,7 +1,7 @@
 # hash_chain — macro benchmark: build a chained-bucket hash table on top
 # of Array (baruby has no Hash), insert lots of keys, then look them up.
 #
-# History: this bench surfaced a stale-ptr bug in baruby_gc_realloc_payload
+# History: this bench surfaced a stale-ptr bug in aro_gc_realloc_payload
 # (memcpy-to-buf-before-alloc captured pre-GC ptr values; the alloc's GC
 # moved their targets, leaving stale entries in the new payload).  Fixed
 # in gc_copy_gen.c / gc_copy_gen_inc.c / gc_mark_compact_gen.c by allocating

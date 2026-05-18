@@ -47,12 +47,12 @@ static GCHeader **gray_buf  = NULL;
 static size_t     gray_cnt  = 0;
 static size_t     gray_capa = 0;
 
-BarubyGCStats baruby_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
-int baruby_gc_stress = 0;
-const char *baruby_gc_backend_name = "mark_compact";
+AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
+int aro_gc_stress = 0;
+const char *aro_gc_backend_name = "mark_compact";
 
 void
-baruby_gc_init(CTX *c)
+aro_gc_init(CTX *c)
 {
     gc_ctx = c;
     region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
@@ -61,7 +61,7 @@ baruby_gc_init(CTX *c)
     region_top = region_base;
     region_end = region_base + REGION_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
-        baruby_gc_stress = 1;
+        aro_gc_stress = 1;
         fprintf(stderr, "[baruby_gc=mark_compact] STRESS mode: collect on every alloc\n");
     }
 }
@@ -73,10 +73,10 @@ baruby_gc_init(CTX *c)
 static void gc_collect_internal(VALUE *sp_top);
 
 static GCHeader *
-bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
-    if (baruby_gc_stress || region_top + total > region_end) {
+    if (aro_gc_stress || region_top + total > region_end) {
         gc_collect_internal(sp_top);
         if (region_top + total > region_end) {
             fprintf(stderr, "baruby_gc=mark_compact: OOM (need %zu)\n", total);
@@ -93,7 +93,7 @@ bump(BarubyGCKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 }
 
 void *
-baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
@@ -102,29 +102,29 @@ baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top)
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
+    aro_gc_stats.total_bytes += payload_size;
+    aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
-baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
     size_t aligned = ALIGN8(payload_size);
     GCHeader *h = bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    baruby_gc_stats.total_bytes += payload_size;
-    baruby_gc_stats.heap_bytes  += payload_size;
+    aro_gc_stats.total_bytes += payload_size;
+    aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
-baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
-    if (!old) return baruby_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+    if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    BarubyGCKind kind = (BarubyGCKind)oldh->kind;
+    AroGcKind kind = (AroGcKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     // Root old via sp_top[0] — major slide-compact updates roots in
@@ -132,8 +132,8 @@ baruby_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     // location.  Uniform with other backends.
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? baruby_gc_alloc_byte(new_size, sp_top + 1)
-        : baruby_gc_alloc(kind, new_size, sp_top + 1);
+        ? aro_gc_alloc_byte(new_size, sp_top + 1)
+        : aro_gc_alloc(kind, new_size, sp_top + 1);
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
@@ -167,7 +167,7 @@ static void
 scan_outgoing(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((BarubyGCKind)h->kind) {
+    switch ((AroGcKind)h->kind) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) mark_value((VALUE)a->items);
@@ -228,7 +228,7 @@ static void
 update_pointers(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((BarubyGCKind)h->kind) {
+    switch ((AroGcKind)h->kind) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) a->items = (VALUE *)fwd_payload(a->items);
@@ -260,7 +260,7 @@ update_pointers(GCHeader *h)
 static void
 gc_collect_internal(VALUE *sp_top)
 {
-    struct timespec t0 = baruby_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin();
     CTX *c = gc_ctx;
 
     // High-water-mark zeroing: slots above sp_top that were used at a
@@ -352,23 +352,23 @@ gc_collect_internal(VALUE *sp_top)
     }
     region_top = fwd;
 
-    baruby_gc_stats.heap_bytes = live_bytes;
-    baruby_gc_stats.gc_count++;
-    baruby_gc_stats.major_count++;
+    aro_gc_stats.heap_bytes = live_bytes;
+    aro_gc_stats.gc_count++;
+    aro_gc_stats.major_count++;
     c->sp = sp_top;
-    baruby_gc_time_end(t0);
+    aro_gc_time_end(t0);
 }
 
 void
-baruby_gc_collect(VALUE *sp_top)
+aro_gc_collect(VALUE *sp_top)
 {
     gc_collect_internal(sp_top);
 }
 
-size_t baruby_gc_total_bytes(void) { return baruby_gc_stats.total_bytes; }
-size_t baruby_gc_heap_bytes (void) { return baruby_gc_stats.heap_bytes;  }
-size_t baruby_gc_count      (void) { return baruby_gc_stats.gc_count;    }
-size_t baruby_gc_minor_count(void) { return baruby_gc_stats.minor_count; }
-size_t baruby_gc_major_count(void) { return baruby_gc_stats.major_count; }
-double baruby_gc_total_seconds(void) { return baruby_gc_stats.total_seconds; }
-double baruby_gc_max_pause_seconds(void) { return baruby_gc_stats.max_pause_seconds; }
+size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }
+size_t aro_gc_heap_bytes (void) { return aro_gc_stats.heap_bytes;  }
+size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
+size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
+size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
+double aro_gc_total_seconds(void) { return aro_gc_stats.total_seconds; }
+double aro_gc_max_pause_seconds(void) { return aro_gc_stats.max_pause_seconds; }

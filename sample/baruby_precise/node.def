@@ -721,7 +721,7 @@ node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
             baruby_ary_push(&sp[0], &sp[2], sp + 3);
         }
         a = VAL2ARY(sp[0]);   // reload after potential GC moves
-        baruby_gc_wb(a->items, &a->items[ii], sp[1]);
+        aro_gc_wb(a->items, &a->items[ii], sp[1]);
         return RESULT_OK(sp[1]);
     }
     fprintf(stderr, "no []= for non-array\n");

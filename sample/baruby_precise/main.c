@@ -26,8 +26,8 @@ struct baruby_option OPTION = {
 
 // Re-entrancy guards for GC time tracking — referenced by inline helpers
 // in gc.h.  Defined here so each backend doesn't have to.
-int             baruby_gc_time_depth = 0;
-struct timespec baruby_gc_time_t0    = {0, 0};
+int             aro_gc_time_depth = 0;
+struct timespec aro_gc_time_t0    = {0, 0};
 static CTX *global_c;
 
 size_t node_cnt;
@@ -198,7 +198,7 @@ create_context(int frames, int funcs)
     c->rec_cnt = 0;
 #endif
 
-    baruby_gc_init(c);
+    aro_gc_init(c);
     define_builtin_functions(c);
     return c;
 }
@@ -345,18 +345,18 @@ main(int argc, char *argv[])
         printf("__ELAPSED__ %.6f\n", elapsed);
 
         if (getenv("BARUBY_GC_STATS")) {
-            size_t alloc_bytes = baruby_gc_total_bytes();
-            size_t heap_bytes  = baruby_gc_heap_bytes();
-            size_t gc_count    = baruby_gc_count();
-            size_t minor       = baruby_gc_minor_count();
-            size_t major       = baruby_gc_major_count();
-            double gc_seconds  = baruby_gc_total_seconds();
-            double max_pause   = baruby_gc_max_pause_seconds();
+            size_t alloc_bytes = aro_gc_total_bytes();
+            size_t heap_bytes  = aro_gc_heap_bytes();
+            size_t gc_count    = aro_gc_count();
+            size_t minor       = aro_gc_minor_count();
+            size_t major       = aro_gc_major_count();
+            double gc_seconds  = aro_gc_total_seconds();
+            double max_pause   = aro_gc_max_pause_seconds();
             double gc_pct      = elapsed > 0 ? (gc_seconds / elapsed) * 100 : 0;
             printf("__GC_STATS__ backend=%s alloc_bytes=%zu heap_bytes=%zu "
                    "gc_count=%zu minor=%zu major=%zu "
                    "gc_seconds=%.4f gc_pct=%.1f max_pause_ms=%.2f\n",
-                    baruby_gc_backend_name, alloc_bytes, heap_bytes,
+                    aro_gc_backend_name, alloc_bytes, heap_bytes,
                     gc_count, minor, major, gc_seconds, gc_pct, max_pause * 1000);
         }
     }
