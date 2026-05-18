@@ -15,11 +15,18 @@ AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
 int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "copy";
 
+/* 16-byte header.  kind packed to flags byte. */
 typedef struct GCHeader {
-    uint32_t kind;
+    uint8_t  flags;     /* bits 0-2: kind */
+    uint8_t  _pad[3];
     uint32_t size;
     void    *fwd;
 } GCHeader;
+_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+
+#define HDR_KIND_MASK    0x07u
+#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
+#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
 
 #define REGION_BYTES  ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual per semispace, lazy-paged */
 #define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
@@ -112,7 +119,7 @@ gc_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
         }
     }
     GCHeader *h = (GCHeader *)active_top;
-    h->kind = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size = (uint32_t)payload_size;
     h->fwd  = NULL;
     active_top += total;
@@ -167,7 +174,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     // Read old header BEFORE alloc (alloc may move/mprotect us).
     GCHeader *oldh = (GCHeader *)old - 1;
     size_t old_size = oldh->size;
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
     // Buffer old's content in plain heap BEFORE the alloc may invalidate it.
@@ -257,7 +264,7 @@ static void
 process_object(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         ASTRO_ASSERT(a->hdr.type == OBJ_ARRAY);
