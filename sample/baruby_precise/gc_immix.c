@@ -57,13 +57,19 @@
  * to know "already marked this cycle".  Avoids the need to walk the heap
  * at sweep end to clear stale marked bits — incrementing cur_epoch
  * implicitly invalidates all prior marks. */
+/* 8-byte header (down from 16).  kind packed to 3 bits of flags.
+ * Layout: flags(1) + mark_epoch(1) + _pad(2) + size(4) = 8 B. */
 typedef struct GCHeader {
-    uint32_t kind;
-    uint32_t size;     // requested payload bytes
+    uint8_t  flags;        /* bits 0-2: kind */
     uint8_t  mark_epoch;
-    uint8_t  _pad[7];  // sizeof == 16, payload 8-aligned
+    uint8_t  _pad[2];
+    uint32_t size;
 } GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+_Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
+
+#define HDR_KIND_MASK    0x07u
+#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
+#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
 
 static uint8_t cur_epoch = 1;   /* skips 0 so fresh allocs (mark_epoch=0) are "unmarked" */
 
@@ -235,7 +241,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     lo->map_bytes = map_bytes;
     large_head = lo;
     GCHeader *h = (GCHeader *)(lo + 1);
-    h->kind = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size = (uint32_t)payload_size;
     h->mark_epoch = 0;
     return (void *)(h + 1);
@@ -251,7 +257,7 @@ hole_alloc(AroGcKind kind, size_t payload_size)
     if (cur_ptr + total <= cur_end) {
         GCHeader *h = (GCHeader *)cur_ptr;
         cur_ptr += total;
-        h->kind   = (uint32_t)kind;
+        HDR_SET_KIND(h, kind);
         h->size   = (uint32_t)payload_size;
         h->mark_epoch = 0;
         return (void *)(h + 1);
@@ -264,7 +270,7 @@ hole_alloc(AroGcKind kind, size_t payload_size)
         cur_end = he;
         GCHeader *h = (GCHeader *)cur_ptr;
         cur_ptr += total;
-        h->kind   = (uint32_t)kind;
+        HDR_SET_KIND(h, kind);
         h->size   = (uint32_t)payload_size;
         h->mark_epoch = 0;
         return h + 1;
@@ -336,7 +342,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
     if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     /* Root old via sp_top[0] for uniformity (non-moving, but match other
@@ -387,7 +393,7 @@ process_gray(void)
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
         void *payload = (void *)(h + 1);
-        switch ((AroGcKind)h->kind) {
+        switch (HDR_KIND(h)) {
           case KIND_OBJ_ARRAY: {
             BaArray *a = (BaArray *)payload;
             if (a->items) mark_value((VALUE)a->items);

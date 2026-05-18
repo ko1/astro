@@ -35,18 +35,21 @@
 #define NURSERY_BYTES    ((size_t)16u  << 20)          /* 16 MiB (tuning knob, not program limit) */
 #define ALIGN8(n)        (((n) + 7u) & ~(size_t)7u)
 
-/* 16-byte header.  flags bit0 = OLD (tenured), bit1 = DIRTY (remset). */
+/* 8-byte header (down from 16).  kind + old + dirty packed in flags.
+ * Layout: flags(1) + mark_epoch(1) + _pad(2) + size(4) = 8 B. */
 typedef struct GCHeader {
-    uint32_t kind;
-    uint32_t size;
+    uint8_t  flags;         /* bits 0-2: kind, bit 3: OLD (tenured), bit 4: DIRTY (remset) */
     uint8_t  mark_epoch;
-    uint8_t  flags;
-    uint8_t  _pad[6];
+    uint8_t  _pad[2];
+    uint32_t size;
 } GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+_Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
 
-#define H_OLD    0x01u
-#define H_DIRTY  0x02u
+#define HDR_KIND_MASK    0x07u
+#define H_OLD            0x08u  /* bit 3 */
+#define H_DIRTY          0x10u  /* bit 4 */
+#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
+#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
 
 static uint8_t cur_epoch = 1;
 
@@ -234,10 +237,10 @@ large_alloc(AroGcKind kind, size_t payload_size)
     lo->map_bytes = map_bytes;
     large_head = lo;
     GCHeader *h = (GCHeader *)(lo + 1);
-    h->kind = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size = (uint32_t)payload_size;
     h->mark_epoch = 0;
-    h->flags = H_OLD;
+    h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
     return (void *)(h + 1);
 }
 
@@ -249,10 +252,10 @@ hole_alloc_header(AroGcKind kind, size_t payload_size)
     if (cur_ptr + total <= cur_end) {
         GCHeader *h = (GCHeader *)cur_ptr;
         cur_ptr += total;
-        h->kind = (uint32_t)kind;
+        HDR_SET_KIND(h, kind);
         h->size = (uint32_t)payload_size;
         h->mark_epoch = 0;
-        h->flags = H_OLD;
+        h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
         return h;
     }
     size_t need_lines = (total + LINE_BYTES - 1) / LINE_BYTES;
@@ -262,10 +265,10 @@ hole_alloc_header(AroGcKind kind, size_t payload_size)
         cur_end = he;
         GCHeader *h = (GCHeader *)cur_ptr;
         cur_ptr += total;
-        h->kind = (uint32_t)kind;
+        HDR_SET_KIND(h, kind);
         h->size = (uint32_t)payload_size;
         h->mark_epoch = 0;
-        h->flags = H_OLD;
+        h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
         return h;
     }
     return NULL;
@@ -301,10 +304,10 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
         }
     }
     GCHeader *h = (GCHeader *)nursery_top;
-    h->kind = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size = (uint32_t)payload_size;
     h->mark_epoch = 0;
-    h->flags = 0;
+    h->flags = (uint8_t)((uint8_t)kind & HDR_KIND_MASK);  /* no old/dirty, just kind */
     nursery_top += total;
     return (void *)(h + 1);
 }
@@ -341,7 +344,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
     if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     sp_top[0] = (VALUE)old;
@@ -415,10 +418,10 @@ forward_payload_nursery(void *p)
     if (!p) return NULL;
     if (!in_nursery(p)) return p;
     GCHeader *oldh = (GCHeader *)p - 1;
-    if (oldh->kind == KIND_FREE) {
+    if (HDR_KIND(oldh) == KIND_FREE) {
         return *(void **)p;
     }
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t size = oldh->size;
     GCHeader *newh = hole_alloc_header(kind, size);
     if (!newh) {
@@ -428,7 +431,7 @@ forward_payload_nursery(void *p)
     void *newp = (void *)(newh + 1);
     size_t bytes = ALIGN8(size);
     if (bytes) memcpy(newp, p, bytes);
-    oldh->kind = KIND_FREE;
+    HDR_SET_KIND(oldh, KIND_FREE);
     *(void **)p = newp;
     /* Queue the new tenured copy for outgoing-ref forwarding. */
     gray_push(newh);
@@ -448,7 +451,7 @@ static void
 process_object_minor(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) a->items = (VALUE *)forward_payload_nursery(a->items);
@@ -543,7 +546,7 @@ process_gray_major(void)
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
         void *payload = (void *)(h + 1);
-        switch ((AroGcKind)h->kind) {
+        switch (HDR_KIND(h)) {
           case KIND_OBJ_ARRAY: {
             BaArray *a = (BaArray *)payload;
             if (a->items) mark_value_major((VALUE)a->items);
