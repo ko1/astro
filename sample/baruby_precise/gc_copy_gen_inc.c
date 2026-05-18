@@ -1,16 +1,25 @@
-// gc_copy_gen_inc.c — backend #7: gc_copy_gen + incremental major.
+// gc_copy_gen_inc.c — backend #7: PLACEHOLDER (no actual incremental work).
 //
-// Same nursery + tenured semi-space layout as gc_copy_gen.c.  Minor GC is
-// unchanged.  Major GC is rebuilt as an incremental Cheney scan: when
-// triggered, we start a new to-space, forward roots, then process the
-// to-space scan-loop in increments of INC_WORK_PER_ALLOC bytes per
-// subsequent allocation.  Once the scan-loop finishes, we swap regions.
+// ⚠ iter 35 honesty fix: the file as written is **identical to
+// gc_copy_gen.c** apart from comments and the backend_name string.  Unlike
+// gc_mark_gen_inc.c which at least has inc_start_major / inc_step /
+// inc_finish_sweep + an SATB barrier (even if INC_WORK_PER_ALLOC=SIZE_MAX
+// makes it STW in practice), copy_gen_inc never had any of that
+// infrastructure.  Including it as a separate "algorithm" in the
+// comparison table is misleading.
 //
-// For the same correctness reasons noted in gc_mark_gen_inc.c (the sample
-// has no VALUE-stack write barrier), the incremental driver currently
-// drains all work on the first alloc that fires it — i.e., STW.  The
-// machinery is set up so flipping INC_WORK_PER_ALLOC to a small value once
-// a stack-WB is added would make it truly incremental.
+// Until a real incremental Cheney is implemented here, this backend is
+// **excluded from the matrix runner / perf table**.  Selecting GC=copy_gen_inc
+// in the Makefile is still permitted (so the symbol exists for code-store
+// IDs), but the bench harness treats copy_gen and copy_gen_inc as the same
+// data point — picking either produces redundant rows.
+//
+// Future work (real incremental):
+//   - Add inc_marking flag + start/step/finish entrypoints (analogous to
+//     gc_mark_gen_inc.c).
+//   - Add SATB barrier on heap writes during inc_marking.
+//   - Process N bytes of to-space scan-loop per alloc, not the whole thing.
+//   - Requires VALUE-stack write barrier for correctness (see todo.md).
 //
 // Layout:
 //   - Nursery: one bump region (16 MiB).  All new allocs go here.

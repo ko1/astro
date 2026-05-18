@@ -102,7 +102,7 @@ young_push(GCHeader *h)
     young_objs[young_objs_cnt++] = h;
 }
 static size_t   old_bytes   = 0;
-static size_t   young_threshold     = 4u * 1024u * 1024u;
+static size_t   young_threshold     = 16u * 1024u * 1024u;
 static size_t   old_alloc_since_major = 0;
 #define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
 static size_t   old_major_threshold = MAJOR_THRESHOLD_MIN;
@@ -196,7 +196,7 @@ slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
     h->size   = (uint32_t)payload_size;
     /* marked / old / dirty already 0 by free_slot invariant. */
     young_push(h);
-    young_bytes += payload_size;
+    young_bytes += sizeof(GCHeader) + ALIGN8(payload_size); /* iter 35: alloc-bytes charge */
     return h;
 }
 
@@ -217,7 +217,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     h->size   = (uint32_t)payload_size;
     /* marked / old / dirty already 0 from mmap zero. */
     young_push(h);
-    young_bytes += payload_size;
+    young_bytes += sizeof(GCHeader) + ALIGN8(payload_size); /* iter 35: alloc-bytes charge */
     return h;
 }
 
@@ -281,7 +281,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    maybe_collect(payload_size, sp_top);
+    maybe_collect(sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int c = size_class_for(slot_total);
     GCHeader *h = (c >= 0) ? slab_alloc(kind, payload_size, c)
@@ -297,7 +297,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
-    maybe_collect(payload_size, sp_top);
+    maybe_collect(sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int c = size_class_for(slot_total);
     GCHeader *h = (c >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, c)
@@ -525,6 +525,7 @@ minor_gc(VALUE *sp_top)
     in_minor = true;
 
     CTX *c = gc_ctx;
+    struct timespec tmark = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
 
@@ -535,8 +536,11 @@ minor_gc(VALUE *sp_top)
     }
     remset_cnt = 0;
     process_gray();
+    aro_gc_phase_end(tmark, &aro_gc_stats.mark_seconds);
 
+    struct timespec tsweep = aro_gc_phase_begin();
     sweep_young(/*clear_marked=*/true);
+    aro_gc_phase_end(tsweep, &aro_gc_stats.reclaim_seconds);
 
     aro_gc_stats.gc_count++;
     aro_gc_stats.minor_count++;
@@ -553,7 +557,9 @@ inc_start_major(VALUE *sp_top)
     inc_marking = true;
     remset_cnt = 0;
     CTX *c = gc_ctx;
+    struct timespec tmark = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
+    aro_gc_phase_end(tmark, &aro_gc_stats.mark_seconds);
     c->sp = sp_top;
     aro_gc_time_end(t0);
 }
@@ -561,12 +567,22 @@ inc_start_major(VALUE *sp_top)
 static void
 inc_step(size_t budget)
 {
+    /* iter 35 fairness fix: inc_step is the *bulk of marking work* on the
+     * allocator path.  Without timing it, gc_seconds and max_pause_ms
+     * underreport the collector cost — comparing mark_gen_inc to mark_gen
+     * on those numbers is misleading.  Counted under aro_gc_time_begin so
+     * it accumulates into total_seconds, and under mark_seconds so the
+     * phase split is honest. */
+    struct timespec t0 = aro_gc_time_begin();
+    struct timespec tmark = aro_gc_phase_begin();
     while (gray_cnt > 0 && budget > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
         scan_outgoing(h);
         budget--;
     }
     if (gray_cnt == 0) inc_marking = false;
+    aro_gc_phase_end(tmark, &aro_gc_stats.mark_seconds);
+    aro_gc_time_end(t0);
 }
 
 static void
@@ -579,6 +595,7 @@ inc_finish_sweep(VALUE *sp_top)
     // only have heap-to-heap WB, not stack WB).  Without this re-scan
     // they would be unmarked-young and freed by sweep_young.
     CTX *c = gc_ctx;
+    struct timespec tmark = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) {
         VALUE v = *p;
         if (!IS_PTR(v)) continue;
@@ -588,9 +605,12 @@ inc_finish_sweep(VALUE *sp_top)
         gray_push(h);
     }
     process_gray();
+    aro_gc_phase_end(tmark, &aro_gc_stats.mark_seconds);
 
+    struct timespec tsweep = aro_gc_phase_begin();
     sweep_young(/*clear_marked=*/false);
     sweep_old_pages();
+    aro_gc_phase_end(tsweep, &aro_gc_stats.reclaim_seconds);
     if (!aro_gc_stress) {
         size_t next = old_bytes * 2;
         old_major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;

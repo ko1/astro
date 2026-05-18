@@ -42,15 +42,21 @@ For details:
 
 | | baruby | baruby_precise |
 |---|---|---|
-| GC | Boehm libgc (conservative) | 11 種類の自前 GC を build-time switch |
+| GC | Boehm libgc (conservative) | 13 種類の自前 GC を build-time switch |
 | 共通引数 | `(c, n, fp)` | `(c, n, fp, sp)` |
-| Heap alloc | `GC_MALLOC` macro | `baruby_gc_alloc(kind, size, sp_top)` |
-| Write barrier | 無し (libgc 不要) | gen 系 backend で `baruby_gc_wb` |
-| 最速 backend vs libgc | base line | **全 11 bench で勝つ、 geomean ~ -22%** |
+| Heap alloc | `GC_MALLOC` macro | `aro_gc_alloc(kind, size, sp_top)` |
+| Write barrier | 無し (libgc 不要) | gen 系 backend で `aro_gc_wb` |
 
-[docs/perf.md](docs/perf.md) §3 に libgc との 11 bench fair 比較あり
-(`life.ba.rb` は baruby 側の独立バグで除外)。 string_concat / binary_trees
-で -40〜-46%、 mutator 支配 bench (nqueens / list_sort) でも -7〜-9%。
+⚠ **以前の README には「最速 backend vs libgc で geomean -22%」 と書いて
+あったが、 iter 35 fairness 監査で取り下げ**: 過去の比較は (a) baruby 側に
+`-flto=auto` が無く build 不公平、 (b) Makefile rebuild bug (iter 32) で
+そもそも違う backend を測っていた可能性、 の二重欠陥があった。
+
+iter 35 で baruby 側に `-flto=auto` を追加、 baruby_precise 側で
+Makefile + matrix runner を整備して以降の数値は [docs/perf.md §2](docs/perf.md)
+を参照。 ただし **「GC algorithm の差」 そのものは比較できていない**点に
+注意 — 同じ runtime + 同じ rooting + 違う collector ではなく、 違う
+runtime (precise sp_top scan vs conservative) + 違う collector の合計差。
 
 ## Install
 

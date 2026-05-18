@@ -65,7 +65,7 @@ bench: baruby
 	ruby bench/run.rb
 
 baruby: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h
-	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall  -rdynamic \
+	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
             -o baruby main.c node.c node_slowpath.c baruby_parse.c astro_jit.c -lprism -lgc -ldl

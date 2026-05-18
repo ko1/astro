@@ -372,7 +372,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    if (aro_gc_stress || bytes_since_gc + payload_size > minor_threshold) {
+    if (aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > minor_threshold) {
         gc_collect_minor(sp_top);
         if (old_alloc_since_major > old_major_threshold) {
             gc_collect_major(sp_top);
@@ -384,7 +384,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
                              : large_alloc(kind, payload_size);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, ALIGN8(payload_size));
-    bytes_since_gc += payload_size;
+    bytes_since_gc += sizeof(GCHeader) + ALIGN8(payload_size); /* iter 35: alloc-bytes */
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
@@ -393,7 +393,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
-    if (aro_gc_stress || bytes_since_gc + payload_size > minor_threshold) {
+    if (aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > minor_threshold) {
         gc_collect_minor(sp_top);
         if (old_alloc_since_major > old_major_threshold) {
             gc_collect_major(sp_top);
@@ -404,7 +404,7 @@ aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
     void *payload = (c >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, c)
                              : large_alloc(KIND_PAYLOAD_BYTE, payload_size);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    bytes_since_gc += payload_size;
+    bytes_since_gc += sizeof(GCHeader) + ALIGN8(payload_size); /* iter 35: alloc-bytes */
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
@@ -655,7 +655,10 @@ gc_collect_minor(VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    /* Snapshot for adaptive threshold (post-minor survival ratio). */
+    /* Snapshot for adaptive threshold (post-minor survival ratio).  We
+     * compare promoted *alloc-bytes* against young_alloc *alloc-bytes* —
+     * not payload bytes — to keep the ratio meaningful in the same unit
+     * as the threshold (iter 35 fairness fix). */
     size_t old_bytes_pre = old_bytes;
     size_t young_alloc = bytes_since_gc;
 
@@ -682,14 +685,20 @@ gc_collect_minor(VALUE *sp_top)
      * Low survival means most die → keep threshold small (current behavior).
      */
     if (young_alloc > 0 && !aro_gc_stress) {
-        size_t survived = (old_bytes > old_bytes_pre) ? old_bytes - old_bytes_pre : 0;
-        /* survival > 75% → grow */
-        if (survived * 4 > young_alloc * 3) {
+        /* `old_bytes` is in payload-bytes (legacy: heap_bytes uses payload).
+         * `young_alloc` is in alloc-bytes (header + aligned payload), per the
+         * unified iter 35 charging model.  Worst case for a payload-heavy
+         * BaArray (24 B payload + 8 B header = 32 B alloc), 100% survival
+         * shows as 24/32 = 75% apparent ratio.  Threshold the grow at
+         * apparent 50% so true survival 67%+ still triggers growth. */
+        size_t survived_payload = (old_bytes > old_bytes_pre) ? old_bytes - old_bytes_pre : 0;
+        /* apparent survival > 50% → grow */
+        if (survived_payload * 2 > young_alloc) {
             size_t next = minor_threshold * 2;
             if (next > MINOR_THRESHOLD_MAX) next = MINOR_THRESHOLD_MAX;
             minor_threshold = next;
-        } else if (survived * 4 < young_alloc) {
-            /* survival < 25% → shrink toward min */
+        } else if (survived_payload * 8 < young_alloc) {
+            /* apparent survival < 12.5% → shrink toward min */
             size_t next = minor_threshold / 2;
             if (next < MINOR_THRESHOLD_MIN) next = MINOR_THRESHOLD_MIN;
             minor_threshold = next;

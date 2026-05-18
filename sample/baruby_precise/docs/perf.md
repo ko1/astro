@@ -9,6 +9,41 @@ baruby_precise は **precise *moving* GC (semi-space) の testbed** で、
 どれくらいか」を測ることを目的にしている。 設計の経緯は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。
 
+## 0. Fairness contract (iter 35)
+
+iter 35 で user から fairness 観点の指摘を 7 件受け、 比較契約を以下に固定:
+
+- **Build**: `make GC=<backend> ASTRO_DEBUG=0`  全 backend に同じフラグ
+  (`-O3 -flto=auto -fno-plt -march=native`)。 `ASTRO_DEBUG=0` は perf
+  build 用の release shape。 dev は明示的に `ASTRO_DEBUG=1` で opt-in。
+- **Mode**: `--plain` 固定。 AOT (`-c`) は code_store ビルド経路が壊れて
+  いて再検証中 ([todo.md](todo.md) 参照)。
+- **Repeats / policy**: 各 (backend × bench) を `median of N=3`。
+  iter 34 までの best-of-3 は (ノイズで運の影響大)、 iter 35 から median。
+- **Charging model**: 全 gen backend で **alloc-bytes** で trigger を計測
+  (`sizeof(GCHeader) + ALIGN8(payload_size)`)。 payload bytes と nursery
+  occupancy bytes が混在していたのを統一。
+- **Trigger threshold**: 全 gen backend の minor を統一 16 MiB
+  (`mark_gen` / `mark_gen_inc` の旧 4 MiB から修正)。 全 gen backend の
+  major adaptive threshold MIN を統一 16 MiB。 全 gen backend の major は
+  **old growth** で発火 (`old_alloc_since_major > major_threshold`)。
+  immix_gen の「all alloc で major fire」 バグも修正。
+- **Header sizing**: iter 31 で全 backend GCHeader 8 B or 16 B に packing。
+  iter 33 で mark_gen / mark_gen_inc の 16 → 8 B 化 (young_next →
+  external array)。 全 backend BaArray (24 B payload + 8 B header) が
+  slab class 32 に収まり、 cache footprint が揃った。
+- **Backends excluded**: `copy_gen_inc` は実体が `copy_gen` の clone
+  (inc_step / SATB なし)。 公平な比較として「独立 algorithm」 を主張
+  できないため matrix runner / table から **除外**。 ファイルは
+  `gc_copy_gen_inc.c` 冒頭に明記 (iter 35 honesty note)。
+- **GC timer**: 全 backend で gc_collect_internal / minor_gc / major_gc
+  に加え、 `mark_gen_inc` の `inc_step` も `aro_gc_time_begin/_end` の中。
+  `mark_seconds` / `reclaim_seconds` の phase 分割は backend 個別。
+- **Runner**: `bench/matrix.rb` が canonical。 backend ごと rebuild、
+  `strings` で `baruby_gc=<name>` stamp 検証、 result を `oracle.json`
+  に対して checksum、 CSV + JSON + Markdown で出力。 過去の Makefile bug
+  (iter 32) の再発を防ぐ。
+
 ## 1. 計測環境
 
 | 項目 | 値 |
@@ -16,71 +51,91 @@ baruby_precise は **precise *moving* GC (semi-space) の testbed** で、
 | CPU | AMD Ryzen 9 5900HX |
 | OS | Linux 6.8 (x86_64) |
 | Compiler | gcc 13.3.0 |
-| GC (precise) | 自前 semi-space (`gc.c`、 ~310 行)、 region 512 MiB |
+| GC (precise) | 自前 13 backend、 `gc_<name>.c` |
 | GC (conservative 比較対象) | Boehm libgc 8.2.6 (`sample/baruby` 由来) |
-| Build flags | `-O3 -flto=auto -ggdb3 -march=native -fno-plt -DASTRO_DEBUG=1` |
+| Build flags | `-O3 -flto=auto -ggdb3 -march=native -fno-plt -DASTRO_DEBUG=0` |
 | GC backend  | `make GC=<name>` で選択。 default = `copy` (semispace Cheney) |
+| Run policy  | `ruby bench/matrix.rb` — median of 3, plain mode |
 
 **比較対象**: `sample/baruby/` (libgc 経由の conservative scanning) を
-baseline にする。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共通 — baruby
+baseline にする。 iter 35 で baruby 側にも `-flto=auto` を追加して build
+flags を揃えた。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共通 — baruby
 を copy したのでファイル単位で同一。 binary 名のみ異なる
 (`./baruby` vs `./baruby_precise`)。 plain mode = AST インタプリタ
-(code_store なし)。 AOT mode は moving GC 移行後に未再検証。
+(code_store なし)。 AOT mode は moving GC 移行後に未再検証 + 別件で broken。
 
-## 2. 全 GC backend のベンチ実測 (plain mode, 14 bench × 15 構成, 3-run best)
+⚠ **「libgc との比較」 caveat**: いま測っているのは「collector のみの
+差」 ではなく **「runtime + rooting + collector の合計差」**。 baruby_precise
+は precise rooting (sp_top scan) と moving GC の組合せ、 baruby は
+conservative scanning。 同じ言語 / 同じベンチ / 同じ build flags にした
+ので **環境としては公平**だが、 数値の差を「GC algorithm の差」 と読み
+切るのは過剰解釈。 collector-only 比較が欲しいなら同じ runtime に
+backend を差し込む必要がある (現状は別バイナリ)。
 
-14 種類の自前 backend + 姉妹 `sample/baruby` (Boehm libgc conservative) を
-**横並び 15 列**で比較。 ベンチは 14 種、 各 3-run 中の best。 単位: 秒。
-行ごとの最速に `**` 印。 `libgc` 列の `life` は baruby 側の独立 bug で除外
-([§3 参照](#3-libgc-列の-life-不在について))。
+## 2. 全 GC backend のベンチ実測 (plain mode, fairness contract 適用後)
 
-**iter 31 refresh** (Makefile rebuild bug 修正後の真の数値): 全 backend の
-GCHeader を **flags byte packing** で 8-16 B に compact 化:
-- `mark`: 16 B → **8 B** (-50%)
-- `mark_gen` / `mark_gen_inc` / `copy*` / `mark_compact*` / `mark_bump_gen`: 24 B → **16 B** (-33%)
-- `immix` / `immix_gen`: 16 B → **8 B** (-50%)
+iter 35 で fairness contract (上記 §0) を適用後の median-of-3 (`ruby
+bench/matrix.rb`)。 13 backend × 14 bench。 `copy_gen_inc` は実体が
+copy_gen の clone なので除外。 行ごとの最速に `**` 印。
 
-`kind` を uint32 → 3 bit (KIND_* は 5 種類だけなので)、 `marked` / `old` / `dirty` の各 bool を同 byte の別 bit に packing。 詳細は [gc_runtime.md §1.3](gc_runtime.md)。
+| Bench         | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| binary_trees | 0.62 | 1.00 | 1.18 | 1.23 | 0.78 | 0.98 | 0.84 | 0.95 | **0.48** | 0.85 | 0.82 | 0.93 | 1.48 |
+| cons_list | 1.21 | 0.90 | 0.96 | 1.05 | 0.75 | 0.75 | 0.94 | 0.76 | 0.94 | 0.75 | **0.72** | 0.76 | 0.98 |
+| fannkuch | 0.70 | 0.78 | 0.73 | 0.73 | 0.70 | **0.67** | 0.75 | 0.69 | 0.71 | 0.68 | 0.70 | 0.69 | 0.77 |
+| fib_pair | 1.54 | 1.18 | 1.10 | 1.13 | **0.80** | 0.96 | 1.10 | 0.85 | 1.12 | 0.84 | 0.86 | 0.84 | 1.12 |
+| gc_combined | 1.36 | 1.08 | 1.04 | 1.07 | 0.86 | 0.89 | 1.07 | 0.87 | 1.02 | **0.85** | 0.88 | 0.94 | 1.10 |
+| hash_chain | 1.65 | 1.62 | 1.45 | 1.50 | 1.84 | 1.25 | 1.86 | **1.24** | 1.56 | 1.37 | 1.58 | 1.61 | 1.60 |
+| interp_calc | 1.28 | 1.09 | 1.08 | 1.13 | **0.89** | 0.93 | 1.10 | 0.92 | 1.06 | 0.96 | 0.92 | 0.92 | 1.13 |
+| life | 1.25 | 1.37 | 1.37 | 1.34 | 1.33 | 1.29 | 1.36 | 1.29 | 1.27 | **1.21** | 1.23 | 1.33 | 1.31 |
+| list_alloc | 1.33 | 1.04 | 1.01 | 1.05 | **0.79** | 0.84 | 1.01 | 0.85 | 0.99 | 0.89 | 0.86 | 0.83 | 1.05 |
+| list_sort | 1.17 | 1.20 | 1.23 | 1.26 | 1.06 | **1.00** | 1.19 | 1.03 | 1.15 | 1.07 | 1.06 | 1.03 | 1.26 |
+| nqueens | 0.95 | 0.92 | 0.94 | 1.00 | 0.97 | 0.95 | 0.95 | **0.91** | 0.93 | 1.00 | 0.92 | 0.94 | 0.96 |
+| sieve | **1.20** | 1.30 | 1.32 | 1.34 | 1.90 | 1.36 | 1.54 | 1.32 | 1.48 | 1.43 | 1.51 | 1.30 | 1.35 |
+| string_concat | 1.61 | 0.76 | 0.79 | 0.86 | 0.47 | 0.49 | 0.87 | 0.48 | 0.83 | 0.53 | 0.52 | **0.47** | 0.81 |
+| substr_churn | 1.64 | 1.04 | 1.06 | 1.19 | 0.91 | 0.84 | 1.10 | **0.82** | 1.08 | 0.89 | 0.94 | 0.84 | 1.25 |
 
-⚠ **重要**: iter 31 初回計測は Makefile の latent bug (GC= の切り替えで
-.c の mtime が古いと再 link されない) で全 backend が **同一バイナリの数値**
-(immix_gen) を測っていた。 fix 後の正しい数値が以下。 全 14 backend × 3
-bench で stress mode (BARUBY_GC_STRESS=1) も clean、 sweep 完走。
+**勝者分布** (iter 35 fair contract、 median-of-3):
+- `bump` (no-GC floor) — **1** (binary_trees) — pure alloc-only
+- `copy` (Cheney semispace) — **3** (fib_pair / interp_calc / list_alloc)
+- `copy_gen` — **2** (fannkuch / list_sort)
+- `immix` — **1** (cons_list)
+- `immix_gen` — **1** (string_concat)
+- `mark_bump_gen` — **2** (gc_combined / life)
+- `mark_compact_gen` — **3** (hash_chain / nqueens / substr_churn)
+- `none` — **1** (sieve, mutator-bound)
 
-**iter 33 update**: mark_gen / mark_gen_inc を 16 → **8 B header** に縮小
-(young set を per-header `young_next` から external `young_objs[]` 配列に移行)。
-hash_chain で **2.02 → 1.36** (-33%) の大幅改善。 BaArray が class 64
-(40 B/slot, 24 B waste) → class 32 (32 B/slot, no waste) に移行できた効果。
+iter 31-34 までの「best-of-3」 結果と iter 35 fairness contract 後の数値は
+threshold 統一 / charging 統一 / inc_step timer 入れたことで意味的に
+不連続なので、 過去 iter 比較表は per-iter done.md で保持し、 perf.md は
+fair 数値だけを正本にする。
 
-| Bench         | none | mark | mark\_gen | mark\_gen\_inc | copy | copy\_gen | copy\_gen\_inc | mark\_compact | mark\_compact\_gen | bump | mark\_bump\_gen | immix | immix\_gen | mark\_bitmap\_gen |
-|---------------| ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: | ------: |
-| binary_trees  | 0.62 | 0.97 | 1.03 | 1.08 | 0.79 | 0.99 | 0.98 | 0.82 | 0.97 | **0.49** | 0.86 | 0.85 | 0.93 | 1.43 |
-| cons_list     | 1.22 | 0.87 | 0.86 | 0.96 | 0.74 | 0.74 | 0.77 | 0.93 | 0.75 | 0.97 | 0.77 | 0.77 | **0.71** | 0.91 |
-| fannkuch      | 0.70 | 0.73 | 0.69 | 0.75 | 0.72 | 0.69 | **0.66** | 0.71 | 0.67 | 0.71 | 0.69 | 0.69 | 0.67 | 0.77 |
-| fib_pair      | 1.55 | 0.98 | 0.97 | 1.08 | **0.81** | 0.85 | 0.82 | 1.12 | 0.86 | 1.19 | 0.82 | 0.89 | 0.82 | 1.05 |
-| gc_combined   | 1.38 | 0.97 | 0.96 | 1.08 | 0.89 | 0.89 | 0.88 | 1.07 | 0.86 | 1.13 | **0.84** | 0.90 | 0.88 | 1.04 |
-| hash_chain    | 1.30 | 1.29 | 1.36 | 1.35 | 1.36 | 1.23 | **1.17** | 1.55 | 1.17 | 1.36 | 1.20 | 1.30 | 1.44 | 1.39 |
-| interp_calc   | 1.30 | 0.99 | 1.04 | 1.12 | **0.89** | 0.93 | 0.94 | 1.07 | 0.94 | 1.12 | 0.95 | 0.92 | 0.94 | 1.09 |
-| life          | 1.25 | 1.26 | 1.27 | 1.27 | 1.35 | 1.26 | 1.23 | 1.30 | **1.21** | 1.29 | 1.26 | 1.28 | 1.23 | 1.34 |
-| list_alloc    | 1.36 | 0.91 | 0.93 | 1.04 | 0.83 | 0.85 | 0.84 | 0.98 | **0.81** | 1.09 | 0.84 | 0.83 | 0.85 | 0.97 |
-| list_sort     | 1.19 | 1.18 | 1.17 | 1.20 | 1.04 | **0.99** | 0.99 | 1.10 | 0.99 | 1.12 | 1.00 | 1.01 | 1.02 | 1.23 |
-| nqueens       | 0.92 | 0.92 | 0.95 | 0.90 | 0.93 | 0.91 | **0.89** | 0.93 | 0.93 | 0.93 | 0.89 | 0.94 | 0.89 | 0.92 |
-| sieve         | **1.20** | 1.28 | 1.40 | 1.37 | 1.69 | 1.37 | 1.31 | 1.55 | 1.32 | 1.49 | 1.29 | 1.57 | 1.32 | 1.41 |
-| string_concat | 1.59 | 0.72 | 0.77 | 0.84 | 0.52 | 0.58 | 0.54 | 0.84 | 0.53 | 0.86 | **0.44** | 0.53 | 0.45 | 0.76 |
-| substr_churn  | 1.65 | 1.00 | 1.01 | 1.08 | 0.99 | 0.86 | **0.83** | 1.10 | 0.83 | 1.11 | 0.86 | 0.91 | 0.87 | 1.04 |
+### 観察 (fair contract 下):
 
-iter 30 → iter 31 (packing 後) の主な改善 (3-run best):
-- `mark` binary_trees: 1.07 → **0.89** (-17%) — slab class density 効果
-- `mark` hash_chain: 2.13 → **1.24** (-42%) — header 半減で cache footprint 圧縮
-- `mark` string_concat: 0.86 → **0.70** (-19%)
-- `copy` binary_trees: 0.86 → **0.75** (-13%)
-- `copy` fib_pair: 0.87 → **0.72** (-17%)
-- `mark_bump_gen` string_concat: 0.53 → **0.41** (-23%)
-- `immix` binary_trees: 0.68 → **0.80** (+18%) — packing 後の access pattern 変化
-  で immix のみ若干 regress。 mark_epoch + flags の隣接配置で false-sharing
-  風の問題が出た可能性 (未確認)
-- `bump` binary_trees: 0.57 → **0.45** (-21%) — bump 自身は無変更だが
-  iter 29-30 の measurement が壊れていた可能性 (Makefile bug)
+- **`bump` が binary_trees で圧勝**: 4M Array 全部生きてる workload で
+  GC 不要。 他は皆 GC overhead を払う。
+- **`copy` 系 / `mark_compact_gen` がバランス良し**: 多くの bench で
+  上位。 Cheney と compact が ASTro の「ほぼ全部 short-lived」 と
+  「ほぼ全部 long-lived」 の両極でそれぞれ強い。
+- **`mark_gen` / `mark_gen_inc` は binary_trees で苦戦**: 1.18-1.23 vs
+  mark の 1.00。 promotion をしているが long-lived workload では非
+  moving の page locality が compact 系より劣る。 hash_chain では逆に
+  1.45-1.50 で `mark` の 1.62 より速い (適度に死ぬ workload で gen が
+  効く)。
+- **`mark_bitmap_gen` は依然底辺寄り**: binary_trees 1.48, substr_churn 1.25
+  と worst-of-13。 per-page bitmap の locate() が per-mark で重い。 iter 31
+  で flags packing 後は density 差で他に並べた、 と思っていたが iter 34
+  adaptive threshold + iter 35 charging 統一を入れたら再び劣勢が露呈。
+  bitmap GC は SIMD 向けの bulk 操作で勝つ設計のため、 散発 mark の
+  ASTro 用途では構造的に不利。
+- **`mark_compact` / `mark_compact_gen` は long-lived で勝つ**: heap が
+  compacted 状態のまま増えるので cache locality が高い。
+- **`hash_chain` で軒並み苦戦** (1.24-1.86): bucket chain 走査が pointer-
+  chasing で cache-cold。 mark_compact_gen が **1.24** で最速。
+- **`life` で `mark_bump_gen` が勝つ** (1.21): mutator-bound だが alloc
+  pattern が「bump 連発 + 周期的 GC」 で nursery bump+ tenured mark sweep の
+  両方が刺さる。
+
 
 **勝者分布** (2026-05-18 (31) refresh、 GCHeader flags-packing 後の正しい数値):
 

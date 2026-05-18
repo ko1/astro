@@ -3,6 +3,79 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (35) — Fairness contract: 7 件の比較不整合を一括修正
+
+iter 34 で user から fairness 観点の指摘を 7 件受け、 比較契約全体を見直し。
+各指摘とも妥当だったため、 perf.md / done.md の数値はすべて iter 35 で
+再計測したものを正本にする。
+
+### Critique と対応
+
+1. **`copy_gen_inc` は実体が `copy_gen` の clone** — diff は comment と
+   backend name string のみ、 incremental 実装 (inc_step / SATB) なし。
+   matrix runner / comparison table から **除外**。 ファイル冒頭に honesty
+   note。 将来 real incremental を実装する起点として file は保持。
+
+2. **immix_gen の major trigger が `bytes_since_major` (= 全 alloc)**:
+   他の gen backend は promotion 時の old growth で発火する設計だが
+   immix_gen だけ nursery alloc 含む全 alloc で発火していた。 local list_alloc
+   で immix_gen=42 minor/21 major vs copy_gen=52/0 と発火頻度が違っていた。
+   `bytes_since_major` を削除し `old_alloc_since_major` に統一、 promotion
+   サイト (forward_obj + large_alloc) で increment するように。 binary_trees で
+   major count 21 → 2。
+
+3. **mark_gen / mark_gen_inc の young threshold が 4 MiB**: 他 gen は
+   16 MiB が nominal。 local list_alloc で mark_gen=133 minor vs copy_gen=52、
+   mark_bitmap_gen=33 と policy 不一致。 4 → 16 MiB に統一。 mark_gen の
+   list_alloc minor count 133 → 33。
+
+4. **charging model が backend ごとに違う**: mark_bitmap_gen は payload
+   bytes を threshold に対して数えていたが、 copy_gen / mark_bump_gen は
+   header + aligned payload (nursery occupancy) を見ていた。 nominal 16 MiB
+   でも実効 nursery budget が違う。 全 gen backend で
+   `sizeof(GCHeader) + ALIGN8(payload_size)` (= alloc-bytes) に統一。
+
+5. **mark_gen_inc の inc_step が GC timer の外**: 主要 mark work は
+   allocator-path 上の inc_step にあるが、 `aro_gc_time_begin/_end` に
+   囲まれていなかった。 結果 `gc_seconds` と `max_pause_ms` が他 backend より
+   小さく出る。 inc_step / inc_start_major / minor_gc / major_gc 全て phase
+   timer (`mark_seconds` / `reclaim_seconds`) で囲んだ。 binary_trees で
+   `mark_seconds` が 0 → 0.37 に正常化。
+
+6. **bench/run.rb のパースが壊れていた**: 旧 main.c の出力は
+   `gc_seconds=X gc_pct=Y` 連続だったが、 iter 33 で間に mark_seconds /
+   reclaim_seconds が挟まった。 regex がマッチせず gc_s / gc% 列が常に 0。
+   追加で「各 repeat の stats を上書き、 time だけ sort」 で best time の
+   stats が無関係 run の値だった。 修正: 各 run の (time + stats) を struct で
+   保持、 picked run の stats を表示。 median/best/trimmed を選べる
+   `--choose` オプションも追加。
+
+7. **baruby vs baruby_precise の build flags が不一致**: baruby_precise は
+   `-flto=auto`、 baruby は無し。 user 指示「baruby 側を変更するのがいいと
+   思うね」 に従い baruby/Makefile に `-flto=auto` を追加して align。
+
+### Matrix runner (iter 35 新規)
+`bench/matrix.rb`: backend ごと rebuild → `strings` で `baruby_gc=<name>`
+stamp 検証 → `oracle.json` で result checksum → CSV / JSON / Markdown 出力。
+Iter 32 で発覚した「Makefile が rebuild されず別 backend のバイナリを測る」
+事故を再発防止。
+
+### ASTRO_DEBUG default 変更
+context.h の default が 1 で、 perf 計測も `-DASTRO_DEBUG=1` 込みだった。
+binary_trees で測定差は <1% (assertion が constant-fold される) だが、
+**原則として perf build に assert overhead を含めるべきでない**。 Makefile の
+`ASTRO_DEBUG ?=` を `?= 0` に変更し、 dev は `make ASTRO_DEBUG=1` で
+opt-in。
+
+### 過去 iter 数値の扱い
+- iter 31〜34 の表は (a) Makefile bug (iter 32 で修正)、 (b) charging
+  inconsistency、 (c) inc_step uncounted などで semantically 不連続。
+- 「iter X → iter Y で X% 改善」 系の主張は **iter 35 fair contract 前後で
+  混ぜると無効**。 履歴用 done.md の数値は保存するが、 perf.md の正本は
+  iter 35 fair 数値のみ。
+- README の「全 11 bench で勝つ、 geomean -22%」 主張は取り下げ
+  (build flag 不一致 + Makefile bug の二重欠陥)。
+
 ## 2026-05-18 (34) — mark_bitmap_gen の adaptive minor threshold
 
 binary_trees で mark_bitmap_gen が 14 minor + 2 major (gc_seconds=0.48,

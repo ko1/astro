@@ -24,9 +24,18 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       `aro_toplevel_locals_cnt` を `baruby_parse.c::PM_PROGRAM_NODE` で
       `tc->frame->max_cnt` から設定、 `main()` で `c->sp = c->env +
       aro_toplevel_locals_cnt` する。 100 toplevel locals の test program で動作確認。
-- [ ] **AOT mode の再検証** — moving GC 移行後 `-c` 経路が回るか未確認。
-      SD bake された body が `(c, n, fp, sp)` 4 引数で precise rooting を
-      正しく行えているか audit
+- [ ] **AOT mode の再検証** — iter 35 で確認: `-c` で実行すると
+      `astro_cs_build: make failed (exit 512)` で abort、 interpreter
+      fallback で結果は正しく出る。 code_store/Makefile が `-I../../runtime`
+      を含まず `astro_debug.h` を発見できないのが root cause (`-fno-plt` 等
+      は入っているが include path は空)。 `astro_cs_build()` で
+      `extra_cflags` 経由で `-I` を渡す必要がある (sample 側責任)。
+      moving GC との SD bake compat (`(c, n, fp, sp)` 4 引数) audit は
+      未着手 — まず make fail を直してから。
+- [ ] **plain vs AOT で GC backend の perf 差**: AOT 経路が直ったら計測。
+      仮説: mutator が薄くなる分 GC overhead が相対的に大きく見え、
+      backend 差が拡大する。 但し AOT は GC backend 選択と独立 (SD bake は
+      dispatch path の特化のみ)。 iter 35 user 質問への回答 stub。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で

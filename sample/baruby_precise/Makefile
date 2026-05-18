@@ -38,10 +38,14 @@ gdb: baruby_precise
 bench: baruby_precise
 	BARUBY_BIN=./baruby_precise ruby bench/run.rb
 
-# ASTRO_DEBUG=1 (default in context.h) enables ASTRO_ASSERT and the
-# stress-mode GC invariant checks.  Override on the command line with
-# `make ASTRO_DEBUG=0` for a release-shape build.
-ASTRO_DEBUG ?=
+# ASTRO_DEBUG: enables ASTRO_ASSERT + stress-mode GC invariant checks.
+# Iter 35 fairness fix: the default flipped to 0 (release / perf-friendly).
+# Past perf measurements were taken with ASTRO_DEBUG=1 implicit-from-context.h
+# which is a build-flag bias the user objected to.  Measured impact on
+# binary_trees was <1% (most asserts constant-fold under -O3) but the
+# *principle* — perf builds shouldn't include assert overhead — was correct.
+# Override with `make ASTRO_DEBUG=1` for development / bug hunts.
+ASTRO_DEBUG ?= 0
 
 # GC backend selector.  Default `copy` (= Cheney semi-space).  Available:
 #   none, mark, mark_gen, mark_gen_inc, copy, copy_gen, copy_gen_inc

@@ -112,7 +112,7 @@ young_push(GCHeader *h)
     young_objs[young_objs_cnt++] = h;
 }
 static size_t   old_bytes   = 0;
-static size_t   young_threshold     = 4u * 1024u * 1024u;
+static size_t   young_threshold     = 16u * 1024u * 1024u;
 static size_t   old_alloc_since_major = 0;
 #define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
 static size_t   old_major_threshold = MAJOR_THRESHOLD_MIN;
@@ -194,7 +194,11 @@ slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
     h->size   = (uint32_t)payload_size;
     /* marked/old/dirty already 0 by free_slot's invariant + mmap zero. */
     young_push(h);
-    young_bytes += payload_size;
+    /* iter 35 fairness fix: charge `sizeof(GCHeader) + ALIGN8(payload)`
+     * (= "alloc bytes") instead of bare payload_size, matching the
+     * bump-pointer gen backends' nursery_top measure.  Without this,
+     * 16 MiB threshold meant different things across backends. */
+    young_bytes += sizeof(GCHeader) + ALIGN8(payload_size);
     return h;
 }
 
@@ -215,7 +219,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     h->size   = (uint32_t)payload_size;
     /* marked / old / dirty already 0 from mmap zero. */
     young_push(h);
-    young_bytes += payload_size;
+    young_bytes += sizeof(GCHeader) + ALIGN8(payload_size);
     return h;
 }
 
@@ -276,7 +280,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    maybe_collect(payload_size, sp_top);
+    maybe_collect(sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int c = size_class_for(slot_total);
     GCHeader *h = (c >= 0) ? slab_alloc(kind, payload_size, c)
@@ -292,7 +296,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
-    maybe_collect(payload_size, sp_top);
+    maybe_collect(sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int c = size_class_for(slot_total);
     GCHeader *h = (c >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, c)

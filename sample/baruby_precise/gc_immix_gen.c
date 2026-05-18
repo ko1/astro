@@ -86,11 +86,13 @@ static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
-/* --- GC trigger state --- */
-static size_t bytes_since_major = 0;
-/* MAJOR_THRESHOLD_MIN matches mark_gen / mark_gen_inc / mark_bump_gen so
- * non-moving sticky backends fire major at the same cadence.  Earlier
- * 4 MiB MIN caused immix_gen to fire major 16× more often than peers. */
+/* --- GC trigger state ---
+ * iter 35 fairness fix: was `bytes_since_major += payload_size` in alloc
+ * path, counting nursery alloc.  That double-counted vs other gen backends
+ * which only fire major when *promoted* (tenured) bytes grow.  Now
+ * `old_alloc_since_major` is incremented during promotion in minor_gc /
+ * large_alloc, matching copy_gen / mark_compact_gen / mark_bump_gen. */
+static size_t old_alloc_since_major = 0;
 #define MAJOR_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define MAJOR_THRESHOLD_FACTOR  2
 static size_t major_threshold = MAJOR_THRESHOLD_MIN;
@@ -241,6 +243,8 @@ large_alloc(AroGcKind kind, size_t payload_size)
     h->size = (uint32_t)payload_size;
     h->mark_epoch = 0;
     h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
+    /* Pretenured straight into large/old → counts toward major trigger. */
+    old_alloc_since_major += payload_size;
     return (void *)(h + 1);
 }
 
@@ -292,7 +296,7 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 
     if (aro_gc_stress || nursery_top + total > nursery_end) {
         minor_gc(sp_top);
-        if (bytes_since_major > major_threshold) {
+        if (old_alloc_since_major > major_threshold) {
             major_gc(sp_top);
         }
         if (nursery_top + total > nursery_end) {
@@ -321,7 +325,6 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
     void *payload = nursery_bump(kind, payload_size, aligned, sp_top);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
-    bytes_since_major += payload_size;
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
@@ -333,7 +336,6 @@ aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
     size_t aligned = ALIGN8(payload_size);
     void *payload = nursery_bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    bytes_since_major += payload_size;
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
@@ -433,6 +435,8 @@ forward_payload_nursery(void *p)
     if (bytes) memcpy(newp, p, bytes);
     HDR_SET_KIND(oldh, KIND_FREE);
     *(void **)p = newp;
+    /* Track promoted bytes for fair adaptive major threshold. */
+    old_alloc_since_major += size;
     /* Queue the new tenured copy for outgoing-ref forwarding. */
     gray_push(newh);
     return newp;
@@ -640,7 +644,7 @@ major_gc(VALUE *sp_top)
     aro_gc_stats.gc_count++;
     aro_gc_stats.major_count++;
     cur_epoch = (cur_epoch == 255) ? 1 : (uint8_t)(cur_epoch + 1);
-    bytes_since_major = 0;
+    old_alloc_since_major = 0;
     if (!aro_gc_stress) {
         size_t next = aro_gc_stats.heap_bytes * MAJOR_THRESHOLD_FACTOR;
         major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;
