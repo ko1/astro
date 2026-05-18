@@ -3,6 +3,40 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (29) — fairness 修正 + gc_runtime.md 入門書 (続)
+
+(29) 後半:
+
+**fairness 修正**: gen 系の MAJOR_THRESHOLD_MIN を audit して、 sticky
+非moving gen family 内で揃えた:
+- mark_gen / mark_gen_inc / mark_bump_gen: 元から 64 MiB ✓
+- immix_gen: 4 MiB → **64 MiB** (16× 違いがあった)
+- mark_bitmap: 4 MiB → **64 MiB** + MINOR_THRESHOLD 4 → 16 MiB
+
+修正後 fair sweep で perf.md §2 を 15 列 (14 backend + libgc) × 14 bench に
+全面 refresh。 mark_bitmap / immix_gen は数値悪化方向だが、 同 family 内で
+同 cadence 比較可能に。
+
+**`docs/gc_runtime.md` 新規**: user 要望「runtime.md だけだと heap 管理が
+分かりにくい、 GC 知らない人向けに独立した方が良い」 で作成:
+- §0 GC とは何か + 用語ミニ辞典
+- §1 baruby_precise 共通基盤 (sp[] root、 LSB-tagged VALUE、 GCHeader、 WB)
+- §2 ヒープ管理パターン 4 種 (bump / slab / semispace / Immix) ASCII 図入り
+- §3 14 backend 早見表 (パターン × Gen × Moving × Header size × 強み弱み)
+- §4 各 backend のアルゴリズム解説 1 つずつ
+- §5 設計空間の俯瞰 (nursery × tenured × compact 3 軸)
+- §6 Fairness — 揃えてある設定 (heap size / nursery / major threshold)
+- §7 workload パターン別おすすめ backend
+
+**今 iter の commits**:
+- 860e992 minor_gc noinline (3 backend の alloc fast path 改善)
+- f95469f mark_bitmap 14th backend
+- 3441e8b runtime.md #14 entry
+- 7e68417 fairness 修正 (threshold 揃え)
+- 647ddfd perf.md §6/§7 sync
+- 2d95001 gc_runtime.md 入門書 (新規)
+- 4e41f5d perf.md §2 fair sweep refresh
+
 ## 2026-05-18 (29) — minor_gc noinline 化で 3 backend の alloc fast path 改善 + `mark_bitmap` 追加
 
 **前半: minor_gc noinline**
