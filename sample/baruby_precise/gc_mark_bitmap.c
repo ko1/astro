@@ -95,10 +95,16 @@ static LargeObj *large_head = NULL;
 static size_t bytes_since_gc = 0;
 static size_t old_bytes = 0;
 static size_t old_alloc_since_major = 0;
-#define MAJOR_THRESHOLD_MIN     (4u * 1024u * 1024u)
+/* MAJOR_THRESHOLD_MIN matches mark_gen / mark_gen_inc / mark_bump_gen so
+ * non-moving sticky backends fire major at the same cadence (64 MiB MIN
+ * + adaptive 2×live).  Earlier 4 MiB MIN caused mark_bitmap to fire
+ * major 16× more often than its peers on the same workload. */
+#define MAJOR_THRESHOLD_MIN     (64u * 1024u * 1024u)
 #define MAJOR_THRESHOLD_FACTOR  2
 static size_t old_major_threshold = MAJOR_THRESHOLD_MIN;
-#define MINOR_THRESHOLD         (4u * 1024u * 1024u)
+/* MINOR_THRESHOLD matches NURSERY_BYTES (16 MiB) of the gen backends so
+ * minor cadence is comparable.  Earlier 4 MiB caused 4× more minors. */
+#define MINOR_THRESHOLD         (16u * 1024u * 1024u)
 
 static CTX   *gc_ctx       = NULL;
 static bool   in_minor     = false;
