@@ -29,7 +29,7 @@ static char *region_base = NULL;
 static char *region_top  = NULL;
 static char *region_end  = NULL;
 
-AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
+AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "bump";
 
@@ -120,5 +120,7 @@ size_t aro_gc_heap_bytes (void) { return (size_t)(region_top - region_base); }
 size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
 size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
 size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
+double aro_gc_mark_seconds(void) { return aro_gc_stats.mark_seconds; }
+double aro_gc_reclaim_seconds(void) { return aro_gc_stats.reclaim_seconds; }
 double aro_gc_total_seconds(void) { return aro_gc_stats.total_seconds; }
 double aro_gc_max_pause_seconds(void) { return aro_gc_stats.max_pause_seconds; }

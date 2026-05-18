@@ -115,6 +115,20 @@ typedef struct {
     size_t major_count;      // major (= whole heap) collections, gen backends
     double total_seconds;    // cumulative wall-clock seconds spent in collection
     double max_pause_seconds;// longest single GC pause (latency upper-bound)
+    // Phase split.  Semantics depend on backend:
+    //  - mark&sweep (mark*, mark_bitmap_gen, immix*):
+    //      mark_seconds = reachability tracing,
+    //      reclaim_seconds = sweep / line-mark sweep
+    //  - copy (copy, copy_gen, copy_gen_inc):
+    //      reclaim_seconds = Cheney scan-loop (mark+relocate interleaved),
+    //      mark_seconds = 0
+    //  - mark&compact (mark_compact, mark_compact_gen, mark_bump_gen):
+    //      mark_seconds = trace, reclaim_seconds = forward + update + slide
+    //  - none / bump: both 0 (no GC)
+    // Sum should equal total_seconds modulo a small constant overhead
+    // (root scan, stats bookkeeping).
+    double mark_seconds;
+    double reclaim_seconds;
 } AroGcStats;
 
 extern AroGcStats aro_gc_stats;
@@ -134,6 +148,8 @@ size_t aro_gc_minor_count(void);
 size_t aro_gc_major_count(void);
 double aro_gc_total_seconds(void);
 double aro_gc_max_pause_seconds(void);
+double aro_gc_mark_seconds(void);
+double aro_gc_reclaim_seconds(void);
 
 // Helper used inside each backend's collect entry point — accumulates wall
 // time into aro_gc_stats.total_seconds.  Re-entrant: if a major calls
@@ -168,6 +184,28 @@ aro_gc_time_end(struct timespec t0)
             aro_gc_stats.max_pause_seconds = dt;
         }
     }
+}
+
+// Phase-level timer: brackets a sub-phase (mark, sweep, slide, etc.) within
+// a single collection and adds the elapsed time to *phase_field.  Unlike
+// aro_gc_time_begin / _end this does NOT use a depth counter — phases are
+// expected to be flat (caller wraps each non-overlapping section).
+static inline struct timespec
+aro_gc_phase_begin(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t;
+}
+
+static inline void
+aro_gc_phase_end(struct timespec t0, double *phase_field)
+{
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double dt = (double)(t1.tv_sec  - t0.tv_sec) +
+                (double)(t1.tv_nsec - t0.tv_nsec) / 1e9;
+    *phase_field += dt;
 }
 
 // Write barrier.

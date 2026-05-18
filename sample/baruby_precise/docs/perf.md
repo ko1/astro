@@ -439,6 +439,68 @@ gc_seconds 規模でも単発 pause time は大きく異なり、 latency 重視
 ワークロードでの選択基準になる (現状 INC_WORK_PER_ALLOC=SIZE_MAX なので
 真の incremental ではないが、 mark / sweep の 2 段に分かれる効果)。
 
+## 2.5 GC phase 内訳 (mark 時間 vs sweep / copy / compact 時間)
+
+iter 32 で `BARUBY_GC_STATS=1` 出力に **`mark_seconds` / `reclaim_seconds`** を
+追加。 各 backend の collect 関数で phase ごとに `clock_gettime` を取って
+集計。 phase semantics:
+- **mark&sweep** (`mark` / `mark_gen` / `mark_gen_inc` / `mark_bitmap_gen`):
+  `mark` = root scan + gray queue 処理、 `reclaim` = sweep
+- **mark&compact** (`mark_compact` / `mark_compact_gen` / `mark_bump_gen`):
+  `mark` = trace, `reclaim` = forward-pass + update_pointers + slide
+- **copy** (`copy` / `copy_gen` / `copy_gen_inc`): Cheney は trace と
+  relocate が **交錯した単一 loop**。 mark phase を分離計上できないので
+  `mark` = 0、 全部 `reclaim` に計上
+- **bump / none**: GC 走らないので両方 0
+
+binary_trees (depth 21, ~4M live Array、 mark-heavy):
+
+| backend | mark (s) | reclaim (s) | gc total | gc % | wall (s) |
+|---|---:|---:|---:|---:|---:|
+| mark | 0.161 | 0.032 | 0.194 | 21% | 0.912 |
+| mark_gen | 0.216 | 0.043 | 0.259 | 26% | 1.000 |
+| copy | 0 | 0.252 | 0.252 | 34% | 0.746 |
+| copy_gen | 0 | 0.565 | 0.565 | 61% | 0.933 |
+| mark_compact | 0.127 | 0.127 | 0.254 | 33% | 0.773 |
+| mark_compact_gen | 0.055 | 0.514 | 0.568 | 61% | 0.925 |
+
+cons_list (短命 deep chain、 reclaim-heavy):
+
+| backend | mark (s) | reclaim (s) | gc total | gc % | wall (s) |
+|---|---:|---:|---:|---:|---:|
+| mark | 0.001 | 0.072 | 0.073 | 9% | 0.789 |
+| mark_gen | 0.006 | 0.060 | 0.067 | 9% | 0.763 |
+| copy | 0 | 0.004 | 0.004 | 1% | 0.714 |
+| copy_gen | 0 | 0.021 | 0.021 | 3% | 0.691 |
+| mark_compact | 0.002 | 0.180 | 0.182 | 20% | 0.896 |
+| mark_compact_gen | 0 | 0.022 | 0.022 | 3% | 0.696 |
+
+fib_pair (再帰 stack、 ほぼ全部 garbage):
+
+| backend | mark (s) | reclaim (s) | gc total | gc % | wall (s) |
+|---|---:|---:|---:|---:|---:|
+| mark | 0 | 0.095 | 0.095 | 11% | 0.885 |
+| mark_gen | 0 | 0.068 | 0.068 | 8% | 0.865 |
+| copy | 0 | 0 | 0 | 0% | 0.726 |
+| copy_gen | 0 | 0 | 0 | 0% | 0.763 |
+| mark_compact | 0 | 0.230 | 0.230 | 22% | 1.028 |
+| mark_compact_gen | 0 | 0 | 0 | 0% | 0.781 |
+
+考察:
+- **mark&sweep の mark vs sweep 比は live ratio に直結**:
+  - binary_trees (生存率 99%): mark=0.16s vs sweep=0.03s → mark 5×
+  - cons_list (生存率 < 1%): mark=0.001s vs sweep=0.07s → sweep 70×
+  - mark&sweep は alloc-rate より **|live heap|** に line up
+- **Cheney (copy / copy_gen) の "tracing" コストは reclaim に flat に乗る**:
+  binary_trees で copy が 0.25s 払う vs mark の 0.19s。 全 live を to-space
+  に memcpy するので |live| linear。
+- **mark_compact は mark と reclaim が概ね同等** (0.13s + 0.13s on binary_trees):
+  forward pass + update + slide は heap-walk × 3 倍コスト。 mark の cost と
+  ほぼ同程度。
+- **gen 系の copy_gen / mark_compact_gen は major が 5-6× 重い** (binary_trees
+  で 0.57s vs copy の 0.25s)。 binary_trees は long-lived なので promotion
+  したオブジェクトを毎 major 全部 Cheney する loss。
+
 ## 3. libgc 列の `life` 不在について
 
 `sample/baruby` (libgc) は top-level の long while loop 後の最終式値が

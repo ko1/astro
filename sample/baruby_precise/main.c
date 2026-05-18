@@ -368,13 +368,17 @@ main(int argc, char *argv[])
             size_t minor       = aro_gc_minor_count();
             size_t major       = aro_gc_major_count();
             double gc_seconds  = aro_gc_total_seconds();
+            double mark_sec    = aro_gc_mark_seconds();
+            double reclaim_sec = aro_gc_reclaim_seconds();
             double max_pause   = aro_gc_max_pause_seconds();
             double gc_pct      = elapsed > 0 ? (gc_seconds / elapsed) * 100 : 0;
             printf("__GC_STATS__ backend=%s alloc_bytes=%zu heap_bytes=%zu "
                    "gc_count=%zu minor=%zu major=%zu "
-                   "gc_seconds=%.4f gc_pct=%.1f max_pause_ms=%.2f\n",
+                   "gc_seconds=%.4f mark_seconds=%.4f reclaim_seconds=%.4f "
+                   "gc_pct=%.1f max_pause_ms=%.2f\n",
                     aro_gc_backend_name, alloc_bytes, heap_bytes,
-                    gc_count, minor, major, gc_seconds, gc_pct, max_pause * 1000);
+                    gc_count, minor, major, gc_seconds, mark_sec, reclaim_sec,
+                    gc_pct, max_pause * 1000);
         }
     }
 

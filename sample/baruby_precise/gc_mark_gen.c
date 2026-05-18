@@ -112,7 +112,7 @@ static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
-AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0};
+AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "mark_gen";
 
@@ -502,6 +502,7 @@ minor_gc(VALUE *sp_top)
     in_minor = true;
 
     CTX *c = gc_ctx;
+    struct timespec tmark = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
 
@@ -513,8 +514,11 @@ minor_gc(VALUE *sp_top)
     }
     remset_cnt = 0;
     process_gray();
+    aro_gc_phase_end(tmark, &aro_gc_stats.mark_seconds);
 
+    struct timespec tsweep = aro_gc_phase_begin();
     sweep_young(/*clear_marked=*/true);
+    aro_gc_phase_end(tsweep, &aro_gc_stats.reclaim_seconds);
 
     aro_gc_stats.gc_count++;
     aro_gc_stats.minor_count++;
@@ -531,13 +535,17 @@ major_gc(VALUE *sp_top)
     remset_cnt = 0;
 
     CTX *c = gc_ctx;
+    struct timespec tmark = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
+    aro_gc_phase_end(tmark, &aro_gc_stats.mark_seconds);
 
     // In major, keep marked=true on promoted young objects so the
     // subsequent sweep_old_pages doesn't free them as unmarked-old.
+    struct timespec tsweep = aro_gc_phase_begin();
     sweep_young(/*clear_marked=*/false);
     sweep_old_pages();
+    aro_gc_phase_end(tsweep, &aro_gc_stats.reclaim_seconds);
 
     if (!aro_gc_stress) {
         size_t next = old_bytes * 2;
@@ -562,5 +570,7 @@ size_t aro_gc_heap_bytes (void) { return aro_gc_stats.heap_bytes;  }
 size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
 size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
 size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
+double aro_gc_mark_seconds(void) { return aro_gc_stats.mark_seconds; }
+double aro_gc_reclaim_seconds(void) { return aro_gc_stats.reclaim_seconds; }
 double aro_gc_total_seconds(void) { return aro_gc_stats.total_seconds; }
 double aro_gc_max_pause_seconds(void) { return aro_gc_stats.max_pause_seconds; }
