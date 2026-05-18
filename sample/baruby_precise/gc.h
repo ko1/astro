@@ -30,6 +30,10 @@ typedef intptr_t VALUE;
 //  12: immix             — block (32 KiB) / line (128 B) mark-region.
 //                          Non-moving v1 (no evacuation).  Bump-allocate
 //                          within holes (unmarked-line runs).
+//  13: immix_gen         — generational variant: bump nursery (16 MiB) +
+//                          Immix tenured (512 MiB).  Minor copy-promotes
+//                          nursery survivors into tenured holes.  Major
+//                          is regular Immix mark + line-mark sweep.
 //
 // Gen / inc variants define BARUBY_GC_HAS_WB so callers know they must use
 // aro_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
@@ -47,6 +51,7 @@ typedef intptr_t VALUE;
 #define BARUBY_GC_BUMP             10
 #define BARUBY_GC_MARK_BUMP_GEN    11
 #define BARUBY_GC_IMMIX            12
+#define BARUBY_GC_IMMIX_GEN        13
 
 #ifndef BARUBY_GC
 #  define BARUBY_GC BARUBY_GC_COPY
@@ -60,7 +65,8 @@ typedef intptr_t VALUE;
     BARUBY_GC == BARUBY_GC_COPY_GEN         || \
     BARUBY_GC == BARUBY_GC_COPY_GEN_INC     || \
     BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN || \
-    BARUBY_GC == BARUBY_GC_MARK_BUMP_GEN
+    BARUBY_GC == BARUBY_GC_MARK_BUMP_GEN    || \
+    BARUBY_GC == BARUBY_GC_IMMIX_GEN
 #  define BARUBY_GC_HAS_WB 1
 #endif
 

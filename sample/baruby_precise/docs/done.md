@@ -3,6 +3,43 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-18 (26) — 13 つ目の backend `immix_gen` (generational Immix)
+
+user 要望「immix generational が欲しいかなあ」 で追加。 (25) の `immix` を
+ベースに nursery + remset + minor を載せた generational 変種。
+
+**構成**:
+- nursery: 16 MiB bump region
+- tenured: 512 MiB Immix arena (block 32 KiB / line 128 B)
+- minor: nursery 生存者を `hole_alloc_header` で tenured hole に Cheney-copy promote
+- major: leading minor → line_marks クリア → mark → sweep (immix と同じ)
+- WB: H_OLD / H_DIRTY bit on GCHeader.flags、 remset push
+
+**Forwarding 方式**: `oldh->kind = KIND_FREE` + 古い payload の先頭 8 byte に
+新 ptr を書く (payload は dead-from-source なので破壊 OK)。 GCHeader 16 B
+維持。
+
+**ハマり所**: gc_combined で「tenured arena OOM during promotion」 が
+発生。 原因: `items[65536]` (524 KB) が nursery に入って (旧
+`total > NURSERY_BYTES/2` = 8 MiB の pretenure threshold) 、 promotion 時
+に Immix の単一 block hole (32 KiB) に収まらず find_hole 失敗。 fix:
+pretenure threshold を `MEDIUM_MAX` (16 KiB) に下げる。 これで「nursery に
+入った時点で必ず単一-block hole に promote 可能」 を保証。
+
+**性能** (13 bench 3-run best、 immix non-gen との対比):
+- gc_combined 1.11 → **1.01** (-9%)
+- cons_list 0.96 → 0.88 (-8%)
+- hash_chain 1.49 → 1.38 (-7%)
+- list_alloc 1.03 → 0.96 (-7%)
+- fib_pair 1.10 → 1.02 (-7%)
+- string_concat 0.70 → 0.67 (-4%)
+- **binary_trees 0.68 → 1.15 regression** — long-lived tree workload で
+  Cheney copy が逆効果 (古典的な世代別 GC が苦手な pattern)。 long-lived
+  支配なら immix non-gen を使う運用。
+
+**docs**: README.md / gc.h / runtime.md §5.10 #13 + §5.11 design table /
+perf.md §2 (14 列に拡張)。
+
 ## 2026-05-18 (25) — 12 つ目の backend `immix` (mark-region, no evac v1)
 
 「precise なら immix とかもいけるんじゃない？」 (user 要望) で着手。 v1 は

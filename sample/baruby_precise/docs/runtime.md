@@ -376,9 +376,9 @@ __GC_STATS__ backend=<name> alloc_bytes=<累計> heap_bytes=<live> \
   例えば binary_trees で mark_gen=288 ms vs mark_gen_inc=54 ms (5.4×
   短縮) のように顕在化
 
-### 5.10 全 12 GC backend カタログ
+### 5.10 全 13 GC backend カタログ
 
-`make GC=<name>` で 12 種類の backend を切替えてビルド可能。 切替えは
+`make GC=<name>` で 13 種類の backend を切替えてビルド可能。 切替えは
 build time only (`-DBARUBY_GC=<n>`)。 default は `copy`。 共通インタフェース
 (`gc.h`) は `aro_gc_init / alloc / alloc_byte / realloc_payload /
 collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装する。
@@ -594,9 +594,41 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
   どれとも違う「line-granularity な sweep」 を ASTro 上で動かして、
   precise rooting 環境でどう振る舞うかを示せる。
 
+#### 13. `immix_gen` — bump nursery + Immix tenured (mark-region, no evac v1)
+
+- **Layout**: nursery 16 MiB bump region + tenured 512 MiB Immix arena
+  (block 32 KiB / line 128 B、 `immix` と同じレイアウト)
+- **Allocation**: nursery_bump で nursery に置く。 pretenure threshold は
+  `MEDIUM_MAX` (16 KiB) — これより大きい alloc は最初から large 経由で
+  promote 可能を保証 (immix の単一 block hole に収まる範囲を nursery と
+  tenured で揃える)。
+- **GC trigger**: nursery 満タンで minor、 `bytes_since_major > threshold`
+  で major (minor 後にチェック)。
+- **Minor**: nursery 生存者を `hole_alloc_header` で tenured hole に
+  Cheney-copy promote。 forwarding は `oldh->kind = KIND_FREE` + payload
+  先頭 8 byte に新 ptr を書き込む (payload は dead-from-source なので OK)。
+  remset も処理 (dirty old → forward young refs)。
+- **Major**: nursery を leading minor で fold、 その後 line_marks 全クリア
+  → mark from roots → mark_lines_for で span line を set → sweep で block
+  state を分類 + large objects の munmap。 immix と同じ流れ。
+- **Write barrier**: 必要 (gen 系)。 H_OLD / H_DIRTY bit を `flags` に保持。
+- **特徴**: short-lived 支配の workload で immix non-gen を上回る:
+  - gc_combined 1.11 → **1.01** (-9%)
+  - cons_list 0.96 → 0.88 (-8%)
+  - hash_chain 1.49 → 1.38 (-7%)
+  - list_alloc 1.03 → 0.96 (-7%)
+  - string_concat 0.70 → 0.67 (-4%)
+  - fib_pair 1.10 → 1.02 (-7%)
+- **regression あり**: binary_trees 0.68 → 1.15 — long-lived tree なので
+  Cheney copy の余分な作業が出る (古典的な「世代別 GC が苦手な workload」
+  = 全 alloc が長寿命)。 immix non-gen を使うのが正解。
+- **v1 制限**: tenured で evacuation なし (immix と同じ)。 nursery
+  promotion 路では既存 hole にしか書けないので、 hole が枯渇したら
+  major を強制 trigger する path に依存。
+
 ### 5.11 設計空間の俯瞰
 
-12 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
+13 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
 眺めた表:
 
 | Backend | Nursery | Tenured | Compact? | Gen? |
@@ -613,6 +645,7 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
 | `mark_compact_gen` | bump | bump (1 region) | Lisp-2 slide | yes |
 | `mark_bump_gen` | bump | bump (1 region) | no (累積) | yes |
 | `immix` | — | hole-bump (block/line) | no (v1) | no |
+| `immix_gen` | bump | hole-bump (block/line) | no (v1) | yes (nursery→tenured copy) |
 
 「nursery が bump か」「tenured が bump か」「major で compact するか」 が
 直交軸として並び、 backend を選ぶことで各軸の影響を孤立して測れる。
