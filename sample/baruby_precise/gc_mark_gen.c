@@ -36,16 +36,31 @@
 #include "astro_debug.h"
 #include "gc.h"
 
+/* 16-byte header.  kind (3 bits) + marked/old/dirty (3 bits) packed into
+ * `flags` byte.  size 4 B + young_next 8 B unchanged.  Down from 24 → 16. */
 typedef struct GCHeader {
-    struct GCHeader *young_next;   // single-linked young list; garbage when old
-    uint32_t kind;
-    uint32_t size;
-    bool     marked;
-    bool     old;
-    bool     dirty;
-    uint8_t  _pad[5];              // pad to 24 B so payload stays 8-aligned
+    struct GCHeader *young_next;   /* 8 — single-linked young list */
+    uint8_t  flags;                /* bits 0-2: kind, bit 3: marked, bit 4: old, bit 5: dirty */
+    uint8_t  _pad[3];              /* pad to size's 4-byte alignment */
+    uint32_t size;                 /* payload bytes */
 } GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 24, "GCHeader must be 24 bytes");
+_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+
+#define HDR_KIND_MASK    0x07u
+#define HDR_MARKED_BIT   0x08u
+#define HDR_OLD_BIT      0x10u
+#define HDR_DIRTY_BIT    0x20u
+#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
+#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
+#define HDR_MARKED(h)      (((h)->flags & HDR_MARKED_BIT) != 0)
+#define HDR_SET_MARKED(h)  ((h)->flags |= HDR_MARKED_BIT)
+#define HDR_CLR_MARKED(h)  ((h)->flags &= (uint8_t)~HDR_MARKED_BIT)
+#define HDR_OLD(h)         (((h)->flags & HDR_OLD_BIT) != 0)
+#define HDR_SET_OLD(h)     ((h)->flags |= HDR_OLD_BIT)
+#define HDR_CLR_OLD(h)     ((h)->flags &= (uint8_t)~HDR_OLD_BIT)
+#define HDR_DIRTY(h)       (((h)->flags & HDR_DIRTY_BIT) != 0)
+#define HDR_SET_DIRTY(h)   ((h)->flags |= HDR_DIRTY_BIT)
+#define HDR_CLR_DIRTY(h)   ((h)->flags &= (uint8_t)~HDR_DIRTY_BIT)
 
 typedef struct FreeSlot {
     struct FreeSlot *next;
@@ -143,7 +158,7 @@ new_page(int class_idx)
     char *slot = (char *)p + PAGE_HDR_BYTES + (n_slots - 1) * sb;
     for (size_t i = 0; i < n_slots; i++) {
         GCHeader *h = (GCHeader *)slot;
-        h->kind = KIND_FREE;
+        HDR_SET_KIND(h, KIND_FREE);
         /* size / marked / old / dirty already 0 from mmap zero. */
         FreeSlot *fs = (FreeSlot *)(h + 1);
         fs->next = freelist[class_idx];
@@ -159,7 +174,7 @@ slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
     FreeSlot *fs = freelist[class_idx];
     freelist[class_idx] = fs->next;
     GCHeader *h = (GCHeader *)fs - 1;
-    h->kind   = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     /* marked/old/dirty already 0 by free_slot's invariant + mmap zero. */
     h->young_next = young_head;
@@ -181,7 +196,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     lo->map_bytes = map_bytes;
     large_head = lo;
     GCHeader *h = (GCHeader *)(lo + 1);
-    h->kind   = (uint32_t)kind;
+    HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     /* marked / old / dirty already 0 from mmap zero. */
     h->young_next = young_head;
@@ -196,13 +211,13 @@ free_slot(GCHeader *h)
     size_t total = sizeof(GCHeader) + ALIGN8(h->size);
     int c = size_class_for(total);
     if (c >= 0) {
-        h->kind = KIND_FREE;
+        HDR_SET_KIND(h, KIND_FREE);
         h->size = 0;
         /* Clear all gen bits so slab_alloc invariant holds (free slot
          * has marked=old=dirty=0).  Caller skips redundant resets. */
-        h->marked = false;
-        h->old    = false;
-        h->dirty  = false;
+        HDR_CLR_MARKED(h);
+        HDR_CLR_OLD(h);
+        HDR_CLR_DIRTY(h);
         FreeSlot *fs = (FreeSlot *)(h + 1);
         fs->next = freelist[c];
         freelist[c] = fs;
@@ -280,7 +295,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 {
     if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = (AroGcKind)oldh->kind;
+    AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     sp_top[0] = (VALUE)old;
@@ -312,8 +327,8 @@ aro_gc_wb(void *holder, VALUE *slot, VALUE v)
     *slot = v;
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old && !hh->dirty) {
-        hh->dirty = true;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
         remset_push(hh);
     }
 }
@@ -324,8 +339,8 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (hh->old && !hh->dirty) {
-        hh->dirty = true;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
         remset_push(hh);
     }
 }
@@ -350,11 +365,11 @@ mark_value(VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
-    if (h->marked) return;
+    if (HDR_MARKED(h)) return;
     // Minor: don't traverse already-old objects via root scan; the
     // remset is responsible for those.  Major: mark everything.
-    if (in_minor && h->old) return;
-    h->marked = true;
+    if (in_minor && HDR_OLD(h)) return;
+    HDR_SET_MARKED(h);
     gray_push(h);
 }
 
@@ -362,7 +377,7 @@ static void
 scan_outgoing(GCHeader *h)
 {
     void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
+    switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
         if (a->items) mark_value((VALUE)a->items);
@@ -417,12 +432,12 @@ sweep_young(bool clear_marked)
     young_bytes = 0;
     while (h) {
         GCHeader *next = h->young_next;
-        if (h->marked) {
+        if (HDR_MARKED(h)) {
             // Promote: stays in place.  In minor, clear marked (no
             // follow-up scan).  In major, keep marked so the subsequent
             // sweep_old_pages doesn't free us; it'll clear it then.
-            if (clear_marked) h->marked = false;
-            h->old    = true;
+            if (clear_marked) HDR_CLR_MARKED(h);
+            HDR_SET_OLD(h);
             old_bytes += h->size;
             old_alloc_since_major += h->size;
         } else {
@@ -445,11 +460,11 @@ sweep_old_pages(void)
             char *slot = (char *)p + PAGE_HDR_BYTES;
             for (size_t i = 0; i < n_slots; i++, slot += sb) {
                 GCHeader *h = (GCHeader *)slot;
-                if (h->kind == KIND_FREE) continue;
-                if (!h->old) continue;
-                if (h->marked) {
-                    h->marked = false;
-                    h->dirty  = false;
+                if (HDR_KIND(h) == KIND_FREE) continue;
+                if (!HDR_OLD(h)) continue;
+                if (HDR_MARKED(h)) {
+                    HDR_CLR_MARKED(h);
+                    HDR_CLR_DIRTY(h);
                 } else {
                     old_bytes -= h->size;
                     aro_gc_stats.heap_bytes -= h->size;
@@ -462,10 +477,10 @@ sweep_old_pages(void)
     while (*link) {
         LargeObj *lo = *link;
         GCHeader *h = (GCHeader *)(lo + 1);
-        if (!h->old) { link = &lo->next; continue; }
-        if (h->marked) {
-            h->marked = false;
-            h->dirty  = false;
+        if (!HDR_OLD(h)) { link = &lo->next; continue; }
+        if (HDR_MARKED(h)) {
+            HDR_CLR_MARKED(h);
+            HDR_CLR_DIRTY(h);
             link = &lo->next;
         } else {
             *link = lo->next;
@@ -493,7 +508,7 @@ minor_gc(VALUE *sp_top)
     // Process remset: old objects with heap writes since last minor.
     for (size_t i = 0; i < remset_cnt; i++) {
         GCHeader *h = remset_buf[i];
-        h->dirty = false;
+        HDR_CLR_DIRTY(h);
         scan_outgoing(h);
     }
     remset_cnt = 0;
