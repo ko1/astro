@@ -177,21 +177,32 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     AroGcKind kind = HDR_KIND(oldh);
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
-    // Buffer old's content in plain heap BEFORE the alloc may invalidate it.
-    // Cost is one malloc/free per realloc; acceptable for the testbed.
-    // NB: this has the same "stale ptr in buf" bug as the gen variants
-    // had (see gc_copy_gen.c), but we can't apply the alloc-first fix
-    // here because copy mprotects PROT_NONE on from-space pages in
-    // stress mode, making oldh->fwd unreadable after the alloc.  For
-    // single-region copy the bug rarely fires (only 1 GC per usual run).
-    void *buf = malloc(copy_bytes);
-    if (!buf) { fprintf(stderr, "realloc buf OOM\n"); abort(); }
-    memcpy(buf, old, copy_bytes);
+    if (aro_gc_stress) {
+        // Stress mode retires from-space with PROT_NONE + MADV_DONTNEED, so
+        // we can't read `old` again after the alloc.  Fall back to the
+        // malloc-buffered slow path (one extra malloc/memcpy/free per
+        // realloc; only relevant when BARUBY_GC_STRESS=1).
+        void *buf = malloc(copy_bytes);
+        if (!buf) { fprintf(stderr, "realloc buf OOM\n"); abort(); }
+        memcpy(buf, old, copy_bytes);
+        void *newp = (kind == KIND_PAYLOAD_BYTE)
+            ? aro_gc_alloc_byte(new_size, sp_top)
+            : aro_gc_alloc(kind, new_size, sp_top);
+        memcpy(newp, buf, copy_bytes);
+        free(buf);
+        return newp;
+    }
+
+    // Fast path (iter 36): root `old` via sp_top[0] so Cheney updates it
+    // through any GC fired during alloc, then alloc, then memcpy from the
+    // *post-GC* location.  No temp malloc.  Pattern matches other
+    // backends' realloc_payload.  Safe because non-stress copy leaves
+    // from-space pages readable (just not allocatable) until next GC.
+    sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(new_size, sp_top)
-        : aro_gc_alloc(kind, new_size, sp_top);
-    memcpy(newp, buf, copy_bytes);
-    free(buf);
+        ? aro_gc_alloc_byte(new_size, sp_top + 1)
+        : aro_gc_alloc(kind, new_size, sp_top + 1);
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
 
