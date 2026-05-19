@@ -144,14 +144,21 @@ aro_gc_init(CTX *c)
 // Page / freelist management
 // ---------------------------------------------------------------------------
 
-static int
+static inline int
 size_class_for(size_t slot_total)
 {
-    // Linear scan — 9 classes, branch-predictable for typical sizes.
-    for (int i = 0; i < NUM_SIZE_CLASSES; i++) {
-        if (slot_total <= size_class_bytes[i]) return i;
-    }
-    return -1;   // caller falls back to large_alloc
+    // iter 44: O(1) clz-based dispatch.  Classes are 32, 64, 128, 256, 512,
+    // 1024, 2048, 3072, 4096 — pure powers of 2 except 3072.  ceil-log2
+    // maps directly to class index minus 5, with a one-line adjust for
+    // the 3072 irregularity.  Shrinks aro_gc_alloc body ~30 bytes vs the
+    // 9-cmp unrolled linear scan, helping gcc consider inlining
+    // aro_gc_alloc into baruby_ary_new.
+    if (slot_total <= 32) return 0;
+    if (slot_total > 4096) return -1;
+    int bits = 64 - __builtin_clzll(slot_total - 1);
+    int c = bits - 5;
+    if (c == 7 && slot_total > 3072) c = 8;
+    return c;
 }
 
 // Allocate a fresh page (mmap), divide into slots, push them to the

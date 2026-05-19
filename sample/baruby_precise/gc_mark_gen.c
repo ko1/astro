@@ -147,13 +147,16 @@ aro_gc_init(CTX *c)
 // Slab management
 // ---------------------------------------------------------------------------
 
-static int
+static inline int
 size_class_for(size_t slot_total)
 {
-    for (int i = 0; i < NUM_SIZE_CLASSES; i++) {
-        if (slot_total <= size_class_bytes[i]) return i;
-    }
-    return -1;
+    // iter 44: O(1) clz-based dispatch — see gc_mark.c for rationale.
+    if (slot_total <= 32) return 0;
+    if (slot_total > 4096) return -1;
+    int bits = 64 - __builtin_clzll(slot_total - 1);
+    int c = bits - 5;
+    if (c == 7 && slot_total > 3072) c = 8;
+    return c;
 }
 
 static void

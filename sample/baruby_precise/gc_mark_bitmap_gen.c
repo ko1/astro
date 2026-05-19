@@ -175,13 +175,16 @@ static inline bool bm_get(const uint8_t *bm, size_t i) { return (bm[i >> 3] >> (
 static inline void bm_set(uint8_t *bm, size_t i)       { bm[i >> 3] |= (uint8_t)(1u << (i & 7)); }
 static inline void bm_clr(uint8_t *bm, size_t i)       { bm[i >> 3] &= (uint8_t)~(1u << (i & 7)); }
 
-static int
+static inline int
 size_class_for(size_t slot_total)
 {
-    for (int i = 0; i < NUM_SIZE_CLASSES; i++) {
-        if (slot_total <= size_class_bytes[i]) return i;
-    }
-    return -1;
+    // iter 44: O(1) clz-based dispatch — see gc_mark.c for rationale.
+    if (slot_total <= 32) return 0;
+    if (slot_total > 4096) return -1;
+    int bits = 64 - __builtin_clzll(slot_total - 1);
+    int c = bits - 5;
+    if (c == 7 && slot_total > 3072) c = 8;
+    return c;
 }
 
 /* mmap a 16 KiB-aligned page (over-allocate then trim). */
