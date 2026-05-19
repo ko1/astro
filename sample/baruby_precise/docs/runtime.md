@@ -485,15 +485,12 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
 - **realloc_payload bug 履歴**: (8) で「memcpy-buf-before-alloc → stale
   ptr」 を発掘して修正、 (14) で sp_top[0] rooting に統一。
 
-#### 7. `copy_gen_inc` — copy_gen + 増分マーキング infra
+#### 7. `copy_gen_inc` — **placeholder (実体 copy_gen の clone)**
 
-- **Layout**: copy_gen と同じ。 加えて SATB barrier。
-- **Allocation**: 同じ。
-- **GC trigger / phases**: 構造は mark_gen_inc と同型 (inc_start →
-  drain → inc_finish_sweep)。 現状 `INC_WORK_PER_ALLOC = SIZE_MAX`。
-- **Write barrier**: SATB + dirty-tracking。 inc_marking 中は上書きされる
-  OLD 値を mark。
-- **特徴**: copy_gen と ABI 同一、 perf も 3-10% 程度の差。
+⚠ iter 35 監査で発覚: SATB / inc_step / incremental scan-loop の実装が無く、
+実体は copy_gen 完全コピー (comment + backend_name 文字列のみが違う)。
+matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
+冒頭。 将来 incremental Cheney 実装の起点として file 保持のみ。
   list_alloc / string_concat / substr_churn で勝つことが多い。
 
 #### 8. `mark_compact` — single region + Lisp-2 sliding compactor

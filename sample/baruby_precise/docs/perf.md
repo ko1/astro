@@ -160,61 +160,9 @@ fair 数値だけを正本にする。
   両方が刺さる。
 
 
-**勝者分布** (2026-05-18 (31) refresh、 GCHeader flags-packing 後の正しい数値):
-
-- **`bump`** が **2 bench で最速** (binary_trees / string_concat tied):
-  alloc-heavy & 短寿命の GC-less floor。
-- **`copy`** が **4 bench で最速** (cons_list / fib_pair / gc_combined / interp_calc):
-  Cheney semispace の安定した強さ
-- **`copy_gen_inc`** が **1 bench で最速** (hash_chain) — incremental Cheney が
-  large-buckets pointer chase で勝つ
-- **`immix_gen`** が **1 bench で最速** (list_alloc) と **1 bench tied** (string_concat)
-- **`mark_compact_gen`** が **1 bench tied** (string_concat tied with immix_gen と mark_bump_gen)
-- **`mark_bump_gen`** が **2 bench で最速** (list_sort / substr_churn / string_concat tied)
-- **`none`** が **4 bench で最速** (fannkuch / life / nqueens / sieve) — mutator-bound
-  bench で GC overhead が最大の損失
-
-note: hash_chain は `mark_gen` / `mark_gen_inc` が 2.0+ で大きく劣勢。
-それ以外の backend は 1.07-1.41 帯。 packing で `mark` 単独は 2.13 → 1.24
-(-42%) で大幅改善したが、 gen 系 (mark_gen / mark_gen_inc) は young_next
-linked list 走査が依然 cache-cold で改善が小さい。
-
-iter 31 packing の効果 (主要 bench、 iter 30 → iter 31 正値):
-- `mark` hash_chain: 2.13 → **1.24** (-42%) — header 縮小で cache footprint 圧縮
-- `mark` binary_trees: 1.07 → **0.89** (-17%)
-- `mark` string_concat: 0.86 → **0.70** (-19%)
-- `mark` substr_churn: 1.20 → **0.97** (-19%)
-- `copy` binary_trees: 0.86 → **0.75** (-13%)
-- `copy` fib_pair: 0.87 → **0.72** (-17%)
-- `mark_bump_gen` string_concat: 0.53 → **0.41** (-23%)
-- `mark_bump_gen` substr_churn: 0.92 → **0.78** (-15%)
-- `bump` binary_trees: 0.57 → **0.45** (-21%) — Makefile bug 修正前は
-  iter 29 数値 0.55 もそもそも別 backend の数値だった可能性
-
-引っかかった改善点 (2026-05-17 unified realloc_payload, commit e5b237f):
-- `mark` の string_concat 2.41 → 1.68 s (-30%)、 substr_churn 1.53 →
-  1.44 s。 buf 中間撤廃で realloc あたり malloc/free を 1 ペア節約。
-- `bump` の hash_chain 1.50 → 1.11 s (-26%)。 同上。
-
-引っかかった改善点 (2026-05-17 (18)(20)、 slab/page allocator、
-commits bc61b22 / 6a8b10f):
-- `mark` 全 11 bench で per-object malloc → slab/page。 string_concat
-  1.68 → **0.68 s (-60%)**、 fib_pair 1.46 → 0.93 s (-36%)、 cons_list
-  1.20 → 0.87 s (-28%)、 list_alloc 1.15 → 0.98 s (-15%)、 substr_churn
-  1.44 → 1.15 s (-20%)、 interp_calc 1.31 → 1.02 s (-22%)、 binary_trees
-  0.96 → 0.88 s (-8%)。 ただし hash_chain は変動 (旧表 2.20 / 新表 2.48)
-  だが計測ノイズと判明 (A/B で同等)。
-- `mark_gen` 同様: string_concat 1.47 → **0.78 s (-47%)**、 fib_pair
-  1.43 → 1.06 s (-26%)、 binary_trees 1.28 → 1.11 s (-13%)。
-- `mark_gen_inc` 同様: string_concat 1.51 → **0.83 s (-47%)**、
-  fib_pair 1.47 → 1.12 s (-35%)、 hash_chain 2.29 → 1.73 s (-24%)。
-  実装中に「inc_marking 中の新 alloc が stack WB 不在で漏れる」 古典的な
-  バグ (binary_trees で 4194301 vs 正解 4194303) を発見・修正
-  (finish_sweep で root 再走査追加)。
-
-`copy_gen` と `copy_gen_inc` は ABI 同一だが、 inc 側は SATB flag check
-(現状は STW fallback パスのみ) の最適化ヒントで bench 依存に
-3-10% 違う。
+(iter 31 / 33 / 34 までの勝者分布や per-iter delta は old measurement
+contract での比較なので削除。 現在の正本は §0 の fairness contract に
+基づく iter 36 数値のみ。 履歴は [done.md](done.md) を参照)
 
 **`mark_bump_gen` 分析** (2026-05-16 (13) 追加 → (15) tenured bump 化
 → (16) 線形リスト撤廃 + region 走査 sweep):
@@ -266,8 +214,8 @@ MIN を超えないので動作は不変。
 - **`copy_gen`** は string-heavy で大勝 (string_concat 0.57s = libgc の
   0.60×)。 短命 string の churn が nursery で完結。 binary_trees も
   remset 導入で 0.79s に
-- **`copy_gen_inc`** は infra のみ用意 (incremental marking の SATB
-  barrier + gray queue)。 stack-WB が無いため STW で運用
+- **`copy_gen_inc`** は **placeholder** (実体 copy_gen の clone)。
+  matrix runner / 表から除外。 詳細は `gc_copy_gen_inc.c` の冒頭コメント
 - **`mark_compact`** は単一 region bump alloc + Lisp-2 sliding compactor。
   per-object malloc を回避しつつ非 moving (compact 時のみ移動)。
   binary_trees で mark の 7.06s → 0.61s (12×) — region 化の威力
@@ -400,7 +348,7 @@ GC 評価の観点で workload 分類を意識して揃えている。
 - **Alloc pattern**: 534 MB total / 10M iter。 1 iter = 1 alloc。
 - **Lifetime**: 1 iter (即 die)。
 - **テスト対象**: 純粋 alloc throughput。 bump alloc 系が圧勝。
-- **特性的な数値**: ベスト 0.87 s (`copy_gen_inc`)、 ワースト 1.33 s
+- **特性的な数値**: ベスト ~0.85-0.90 s 帯、 ワースト ~1.30 s (none)
   (`none`)。
 
 #### `list_sort.ba.rb` — merge sort with allocation-heavy merge
@@ -450,7 +398,7 @@ GC 評価の観点で workload 分類を意識して揃えている。
 - **Lifetime**: 1 iter (即 die)。
 - **テスト対象**: BaString + bytes payload の alloc 最適化、 generational
   完結率。
-- **特性的な数値**: ベスト 0.53 s (`copy_gen_inc` / `mark_compact_gen`
+- **特性的な数値**: ベスト ~0.55 s 帯 (`mark_compact_gen`
   tied)、 ワースト 2.41 s (`mark`、 後に 1.68 s に改善)。
 
 #### `substr_churn.ba.rb` — 長寿命 String を sliding window で読む
@@ -461,7 +409,7 @@ GC 評価の観点で workload 分類を意識して揃えている。
 - **Lifetime**: 1 iter 短命 substr + permanent text。
 - **テスト対象**: BaString slice の sp ref pattern、 long-lived + short-
   lived の混在 (gc_combined と類似だが string 軸)。
-- **特性的な数値**: ベスト 0.87 s (`copy_gen_inc`)、 ワースト 1.85 s
+- **特性的な数値**: ベスト ~0.90 s 帯、 ワースト ~1.85 s
   (`none`)。
 
 ### マクロベンチ評価軸
@@ -489,7 +437,7 @@ GC 評価の観点で workload 分類を意識して揃えている。
 |---|---|---|
 | 短命 alloc 多 (大半が捨てられる) | `mark_compact_gen` または `copy_gen` | nursery で完結、 tenure cost 最小 |
 | 長寿命 heap が大半 (binary_trees 等) | `copy` または `mark_compact` | gen 無しで in-place / semispace の単純さ勝ち |
-| string-heavy (concat / slice 多) | `copy_gen_inc` または `mark_compact_gen` | nursery + sp ref pattern の組合せ |
+| string-heavy (concat / slice 多) | `mark_compact_gen` または `mark_bump_gen` | nursery + sp ref pattern の組合せ |
 | 仮想空間を節約したい | `mark_compact_gen` | tenured 1× region (vs copy_gen の 2×) |
 | GC レイテンシ最小化 | (現状) `bump` (no GC) または gen 系 minor | major のみ stop-the-world |
 | 純粋な alloc コスト測定 | `bump` (leak base) または `none` (libc malloc) | rooting + dispatch のみ |
@@ -531,7 +479,7 @@ iter 32 で `BARUBY_GC_STATS=1` 出力に **`mark_seconds` / `reclaim_seconds`**
   `mark` = root scan + gray queue 処理、 `reclaim` = sweep
 - **mark&compact** (`mark_compact` / `mark_compact_gen` / `mark_bump_gen`):
   `mark` = trace, `reclaim` = forward-pass + update_pointers + slide
-- **copy** (`copy` / `copy_gen` / `copy_gen_inc`): Cheney は trace と
+- **copy** (`copy` / `copy_gen`): Cheney は trace と
   relocate が **交錯した単一 loop**。 mark phase を分離計上できないので
   `mark` = 0、 全部 `reclaim` に計上
 - **bump / none**: GC 走らないので両方 0
@@ -660,10 +608,12 @@ String の bytes ペイロードは GC が pointer として読まないので�
   per-page "all old" flag で binary_trees regression を縮小
 - AOT mode の再検証 (`make CCACHE_DISABLE=1` で `-c` 経路を回す)
 - `astrogen.rb` 拡張で `@locals` を機械化 (手書きの error-prone を減らす)
-- `mark_gen_inc` / `copy_gen_inc` を真の incremental に (stack write
-  barrier + work budget)
+- `mark_gen_inc` を真の incremental に (stack write barrier + work budget)。
+  現状は SATB infra のみ で実態は STW。
+- `copy_gen_inc` (現 placeholder) に Cheney 用 incremental scan-loop を
+  実装して真の incremental Cheney 化。
 
-(iter 29 で完了: `mark_compact` / `copy` / `copy_gen` / `copy_gen_inc` /
+(iter 29 で完了: `mark_compact` / `copy` / `copy_gen` /
 `mark_compact_gen` に adaptive 16 MiB threshold 追加で fair 化。 全 backend
 の MIN を 16 MiB に統一。 詳細は [gc_runtime.md §6](gc_runtime.md) と
 done.md iter 29。)

@@ -119,14 +119,12 @@ static size_t old_alloc_since_major = 0;
 #define MAJOR_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define MAJOR_THRESHOLD_FACTOR  2
 static size_t old_major_threshold = MAJOR_THRESHOLD_MIN;
-/* Adaptive minor threshold (iter 34): when survival rate is high
- * (binary_trees, long-lived workloads), grow the minor threshold so we
- * don't pay full-young scan cost every 16 MB.  Starts at 16 MiB to match
- * other gen backends; geometric growth × 2 per minor when survival > 75%;
- * shrinks back when survival < 25% (e.g., transitioning to short-lived). */
-#define MINOR_THRESHOLD_MIN     (16u * 1024u * 1024u)
-#define MINOR_THRESHOLD_MAX     (256u * 1024u * 1024u)
-static size_t minor_threshold = MINOR_THRESHOLD_MIN;
+/* Fixed 16 MiB minor threshold — matches all other gen backends.
+ * Iter 34 added an adaptive 16-256 MiB knob to speed up binary_trees,
+ * but that broke fairness (only this backend had it).  Iter 36 reviewer
+ * caught it; reverted to fixed 16 MiB to keep the comparison contract
+ * one policy across all gen backends. */
+#define MINOR_THRESHOLD         (16u * 1024u * 1024u)
 
 static CTX   *gc_ctx       = NULL;
 static bool   in_minor     = false;
@@ -372,7 +370,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    if (aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > minor_threshold) {
+    if (aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > MINOR_THRESHOLD) {
         gc_collect_minor(sp_top);
         if (old_alloc_since_major > old_major_threshold) {
             gc_collect_major(sp_top);
@@ -393,7 +391,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
-    if (aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > minor_threshold) {
+    if (aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > MINOR_THRESHOLD) {
         gc_collect_minor(sp_top);
         if (old_alloc_since_major > old_major_threshold) {
             gc_collect_major(sp_top);
@@ -576,7 +574,7 @@ sweep_page(Page *pg, bool minor)
                 bm_clr(pg->mark_bm, i);
                 bm_clr(pg->dirty_bm, i);
                 old_bytes += h->size;
-                old_alloc_since_major += h->size;
+                old_alloc_since_major += sizeof(GCHeader) + ALIGN8(h->size); /* iter 36 fairness: occupancy not payload */
             } else {
                 /* Young dead.  Return slot to freelist. */
                 aro_gc_stats.heap_bytes -= h->size;
@@ -631,7 +629,7 @@ sweep(bool minor)
                 lo->mark = false;
                 lo->dirty = false;
                 old_bytes += h->size;
-                old_alloc_since_major += h->size;
+                old_alloc_since_major += sizeof(GCHeader) + ALIGN8(h->size); /* iter 36 fairness: occupancy not payload */
                 link = &lo->next;
             } else {
                 *link = lo->next;
@@ -669,12 +667,8 @@ gc_collect_minor(VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    /* Snapshot for adaptive threshold (post-minor survival ratio).  We
-     * compare promoted *alloc-bytes* against young_alloc *alloc-bytes* —
-     * not payload bytes — to keep the ratio meaningful in the same unit
-     * as the threshold (iter 35 fairness fix). */
-    size_t old_bytes_pre = old_bytes;
-    size_t young_alloc = bytes_since_gc;
+    /* Iter 36 fairness fix: adaptive minor threshold removed — all gen
+     * backends now use a fixed 16 MiB MINOR_THRESHOLD. */
 
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
@@ -691,33 +685,6 @@ gc_collect_minor(VALUE *sp_top)
     process_gray();
 
     sweep(/*minor=*/true);
-
-    /* Adaptive minor threshold.  Survival = (old_bytes - pre) / young_alloc.
-     * High survival means most young objects promote → we're paying full
-     * young trace + sweep cost for little reclamation.  Grow threshold so
-     * we let young grow larger before triggering next minor.
-     * Low survival means most die → keep threshold small (current behavior).
-     */
-    if (young_alloc > 0 && !aro_gc_stress) {
-        /* `old_bytes` is in payload-bytes (legacy: heap_bytes uses payload).
-         * `young_alloc` is in alloc-bytes (header + aligned payload), per the
-         * unified iter 35 charging model.  Worst case for a payload-heavy
-         * BaArray (24 B payload + 8 B header = 32 B alloc), 100% survival
-         * shows as 24/32 = 75% apparent ratio.  Threshold the grow at
-         * apparent 50% so true survival 67%+ still triggers growth. */
-        size_t survived_payload = (old_bytes > old_bytes_pre) ? old_bytes - old_bytes_pre : 0;
-        /* apparent survival > 50% → grow */
-        if (survived_payload * 2 > young_alloc) {
-            size_t next = minor_threshold * 2;
-            if (next > MINOR_THRESHOLD_MAX) next = MINOR_THRESHOLD_MAX;
-            minor_threshold = next;
-        } else if (survived_payload * 8 < young_alloc) {
-            /* apparent survival < 12.5% → shrink toward min */
-            size_t next = minor_threshold / 2;
-            if (next < MINOR_THRESHOLD_MIN) next = MINOR_THRESHOLD_MIN;
-            minor_threshold = next;
-        }
-    }
 
     aro_gc_stats.gc_count++;
     aro_gc_stats.minor_count++;

@@ -244,7 +244,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     h->mark_epoch = 0;
     h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
     /* Pretenured straight into large/old → counts toward major trigger. */
-    old_alloc_since_major += payload_size;
+    old_alloc_since_major += sizeof(GCHeader) + ALIGN8(payload_size); /* iter 36 fairness */
     return (void *)(h + 1);
 }
 
@@ -455,7 +455,7 @@ forward_payload_nursery(void *p)
     HDR_SET_KIND(oldh, KIND_FREE);
     *(void **)p = newp;
     /* Track promoted bytes for fair adaptive major threshold. */
-    old_alloc_since_major += size;
+    old_alloc_since_major += sizeof(GCHeader) + ALIGN8(size); /* iter 36 fairness */
     /* Queue the new tenured copy for outgoing-ref forwarding. */
     gray_push(newh);
     return newp;

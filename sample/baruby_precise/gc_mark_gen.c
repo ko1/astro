@@ -501,7 +501,7 @@ sweep_young(bool clear_marked)
             if (clear_marked) HDR_CLR_MARKED(h);
             HDR_SET_OLD(h);
             old_bytes += h->size;
-            old_alloc_since_major += h->size;
+            old_alloc_since_major += sizeof(GCHeader) + ALIGN8(h->size); /* iter 36 fairness: occupancy not payload */
         } else {
             aro_gc_stats.heap_bytes -= h->size;
             free_slot(h);

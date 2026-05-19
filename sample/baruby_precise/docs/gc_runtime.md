@@ -372,11 +372,13 @@ nursery (16 MiB bump) + tenured (64 GiB virtual × 2 semispace)。
   minor で先に折り畳む。
 - **WB**: remset 経由。
 
-string-heavy で大勝 (`string_concat`)。 ABI は `copy_gen_inc` と同一。
+string-heavy で大勝 (`string_concat`)。
 
-### 4.7 `copy_gen_inc` — copy_gen + SATB
+### 4.7 `copy_gen_inc` — **placeholder (実体 copy_gen の clone)**
 
-`copy_gen` の major に SATB を装備した変種。 v1 は infrastructure。
+⚠ iter 35 監査で「実体が copy_gen と同一、 incremental 実装無し」 と
+判明。 ファイル冒頭の honesty note 参照。 公式 matrix runner / perf table
+から除外。 将来 incremental Cheney を実装する起点として file 保持のみ。
 
 ### 4.8 `mark_compact` — single-region + Lisp-2 slide
 

@@ -18,10 +18,10 @@ root を spill する Lua/Rust 系モデル ([`docs/gc_design.md`](../../docs/gc
 | 1 | `none` | libc malloc + leak | — | no |
 | 2 | `mark` | slab page + mark&sweep | — | no |
 | 3 | `mark_gen` | slab page + mark&sweep, 2-gen | yes | no |
-| 4 | `mark_gen_inc` | mark_gen + 増分マーキング (SATB) | yes | no |
+| 4 | `mark_gen_inc` | mark_gen + 増分マーキング (SATB infra) | yes | no |
 | 5 | `copy` | Cheney semi-space (default) | — | yes |
 | 6 | `copy_gen` | bump nursery + semispace tenured | yes | yes |
-| 7 | `copy_gen_inc` | copy_gen + 増分マーキング (SATB) | yes | yes |
+| 7 | `copy_gen_inc` | **(placeholder: copy_gen の clone)** — see honesty note in `gc_copy_gen_inc.c` | — | — |
 | 8 | `mark_compact` | single region + Lisp-2 slide compact | — | yes |
 | 9 | `mark_compact_gen` | bump nursery + bump tenured + slide compact | yes | yes |
 | 10 | `bump` | bump alloc only, leak (alloc floor baseline) | — | no |
@@ -29,6 +29,11 @@ root を spill する Lua/Rust 系モデル ([`docs/gc_design.md`](../../docs/gc
 | 12 | `immix` | block (32 KiB) + line (128 B) mark-region, no evac | — | no |
 | 13 | `immix_gen` | bump nursery + Immix tenured (mark-region, no evac) | yes | nursery→tenured copy |
 | 14 | `mark_bitmap_gen` | sticky mark&sweep + per-page bitmap (8 B header) | yes | no |
+| 15 | `mark_card_gen` | mark_bitmap_gen + page-level remset (bounded) | yes | no |
+
+⚠ `#7 copy_gen_inc` は **comparison から除外** されています — iter 35 監査で
+「実体が copy_gen と同一 (incremental 実装無し)」 と判明したため。 公式 matrix
+runner と `docs/perf.md §2` ではスキップ。 ファイル冒頭の honesty note 参照。
 
 For details:
 - [docs/spec.md](docs/spec.md) — 言語仕様 (baruby と同じ)
@@ -83,7 +88,7 @@ make bench                    # build + ruby bench/run.rb
 make clean
 ```
 
-利用可能な GC: `none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen`
+利用可能な GC: `none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen` (但し `copy_gen_inc` は incremental 未実装の placeholder)
 
 AOT mode (`-c`): `CCACHE_DISABLE=1 ./baruby_precise -c bench/list_alloc.ba.rb`
 で SD specialize → code_store/all.so 構築 → 再 dlopen。 CCACHE_DISABLE は

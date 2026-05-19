@@ -172,7 +172,7 @@ old_alloc(AroGcKind kind, size_t payload_size, size_t aligned)
     HDR_CLR_DIRTY(h);
     HDR_CLR_MARKED(h);
     old_bytes += payload_size;
-    old_alloc_since_major += payload_size;
+    old_alloc_since_major += sizeof(GCHeader) + ALIGN8(payload_size); /* iter 36 fairness */
     return h;
 }
 
