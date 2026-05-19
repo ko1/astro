@@ -64,9 +64,19 @@ c: baruby
 bench: baruby
 	ruby bench/run.rb
 
+# Absolute paths embedded into the binary so AOT-bake compilations
+# (run in code_store/) can find runtime + sample headers.  Ported from
+# sample/baruby_precise iter 36.
+BARUBY_DIR        := $(abspath .)
+RUNTIME_ABSPATH   := $(abspath $(RUNTIME))
+PRISM_INC_ABSPATH := $(abspath ./prism/include)
+
 baruby: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h
 	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
+            -DBARUBY_DIR='"$(BARUBY_DIR)"' \
+            -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
+            -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
             -o baruby main.c node.c node_slowpath.c baruby_parse.c astro_jit.c -lprism -lgc -ldl
 

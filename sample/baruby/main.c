@@ -199,7 +199,16 @@ static void
 common_build_flags_and_link(void)
 {
     setenv("ASTRO_EXTRA_LDFLAGS", "-Wl,-Bsymbolic", 0);
-    astro_cs_build("--param=early-inlining-insns=100");
+    /* Ported from baruby_precise iter 36: pass absolute -I paths so the
+     * AOT bake compile (run in code_store/) can find runtime + sample
+     * headers (astro_debug.h, prism/parser.h, etc.) regardless of cwd. */
+    char extra_cflags[1024];
+    snprintf(extra_cflags, sizeof(extra_cflags),
+             "--param=early-inlining-insns=100"
+             " -I" BARUBY_DIR
+             " -I" ASTRO_RUNTIME_DIR
+             " -I" ASTRO_PRISM_INC_DIR);
+    astro_cs_build(extra_cflags);
     astro_cs_reload();
 }
 
