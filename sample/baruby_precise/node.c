@@ -201,7 +201,13 @@ hash_node_opt(NODE *n)
 void
 INIT(void)
 {
-    astro_cs_init("code_store", ".", 0);
+    /* Iter 36 AOT fix: pass BARUBY_GC as the version so the code_store
+     * cache invalidates when the binary is rebuilt under a different GC
+     * backend.  Without this, a code_store baked under (e.g.) mark would
+     * be reused after rebuilding under copy_gen, but the GC WB inlining
+     * baked into the SDs would mismatch the new gen runtime → silent
+     * misbehavior or wrong perf. */
+    astro_cs_init("code_store", ".", (uint64_t)BARUBY_GC);
 }
 
 // --- Heap allocators (precise GC) ---

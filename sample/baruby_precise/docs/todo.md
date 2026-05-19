@@ -32,10 +32,21 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       `extra_cflags` 経由で `-I` を渡す必要がある (sample 側責任)。
       moving GC との SD bake compat (`(c, n, fp, sp)` 4 引数) audit は
       未着手 — まず make fail を直してから。
-- [ ] **plain vs AOT で GC backend の perf 差**: AOT 経路が直ったら計測。
-      仮説: mutator が薄くなる分 GC overhead が相対的に大きく見え、
-      backend 差が拡大する。 但し AOT は GC backend 選択と独立 (SD bake は
-      dispatch path の特化のみ)。 iter 35 user 質問への回答 stub。
+- [x] ~~**AOT mode の再検証**~~ — iter 36 で修復済 ([done.md](done.md) (36) 参照)。
+      Makefile に `-DBARUBY_PRECISE_DIR=` 等の絶対パス macro を追加し、
+      main.c::common_build_flags_and_link で extra_cflags 経由で `-I` を
+      渡すように。 また `astro_cs_init(...)` の version 引数に `BARUBY_GC`
+      を渡して backend 切替時の code_store invalidation を効かせる。
+      matrix.rb は AOT/PG モードで bench ごとに `code_store/` を clean
+      する (異 bench の SD pollution で fib_pair が 0.5 → 1.0s に劣化する
+      問題を回避)。 iter 36 fair-AOT 結果は bench-results/aot/matrix.md。
+
+- [ ] **Remset サイズ上限なし (脆弱性)** — `remset_push` は 2× realloc 成長で
+      cap も flush もない。 現 bench では peak |remset| ≤ 22 entries だが、
+      長寿命 dict / cache を sparse update する workload で線形に膨張する
+      可能性。 短期対策: `MAX_REMSET=128K entries` cap、 越えたら minor を
+      強制発火 (空にする)。 長期: card-marking 別 backend を追加して
+      object-level remset と比較。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で

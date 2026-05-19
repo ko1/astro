@@ -81,10 +81,20 @@ ifneq ($(GC_MARKER),$(GC))
 $(shell echo "$(GC)" > .built_gc)
 endif
 
+# Absolute paths embedded into the binary so AOT-bake compilations
+# (run in code_store/) can find runtime + sample headers.  See main.c
+# common_build_flags_and_link.
+BARUBY_PRECISE_DIR := $(abspath .)
+RUNTIME_ABSPATH    := $(abspath $(RUNTIME))
+PRISM_INC_ABSPATH  := $(abspath ./prism/include)
+
 baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(GC_SRC) gc.h $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
 	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
             -DBARUBY_GC=$(GC_NUM) \
+            -DBARUBY_PRECISE_DIR='"$(BARUBY_PRECISE_DIR)"' \
+            -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
+            -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
             $(if $(ASTRO_DEBUG),-DASTRO_DEBUG=$(ASTRO_DEBUG)) \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
             -o baruby_precise main.c node.c node_slowpath.c baruby_parse.c astro_jit.c $(GC_SRC) -lprism -ldl
