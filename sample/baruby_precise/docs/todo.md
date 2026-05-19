@@ -24,14 +24,6 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       `aro_toplevel_locals_cnt` を `baruby_parse.c::PM_PROGRAM_NODE` で
       `tc->frame->max_cnt` から設定、 `main()` で `c->sp = c->env +
       aro_toplevel_locals_cnt` する。 100 toplevel locals の test program で動作確認。
-- [ ] **AOT mode の再検証** — iter 35 で確認: `-c` で実行すると
-      `astro_cs_build: make failed (exit 512)` で abort、 interpreter
-      fallback で結果は正しく出る。 code_store/Makefile が `-I../../runtime`
-      を含まず `astro_debug.h` を発見できないのが root cause (`-fno-plt` 等
-      は入っているが include path は空)。 `astro_cs_build()` で
-      `extra_cflags` 経由で `-I` を渡す必要がある (sample 側責任)。
-      moving GC との SD bake compat (`(c, n, fp, sp)` 4 引数) audit は
-      未着手 — まず make fail を直してから。
 - [x] ~~**AOT mode の再検証**~~ — iter 36 で修復済 ([done.md](done.md) (36) 参照)。
       Makefile に `-DBARUBY_PRECISE_DIR=` 等の絶対パス macro を追加し、
       main.c::common_build_flags_and_link で extra_cflags 経由で `-I` を
@@ -78,10 +70,9 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       「全 local が即書きされる」 を保証できれば skip 可能
 - [ ] **string_concat の残存 +20% overhead** を perf record で内訳分析。
       spill / sp 更新 / copy のどれが bottle neck か確かめる
-- [ ] **REGION_BYTES の adaptive 化** — 現在 512 MiB 固定。 live set に
-      合わせて grow させたい
-- [ ] **世代別 GC backend** — `gc_combined` (長寿命 + 短寿命チャーン) で
-      明らかに効くはず。 同 interface に乗せる
+- [ ] **REGION_BYTES の linked-chunk 化** — iter 28 で 64 GiB virtual に
+      拡張済だが、 64 GiB を超える heap は OOM。 `mremap` か追加 mmap で
+      chunk 単位 grow。 現状の bench では 1 GiB 以下なので低優先。
 
 ## P2 — design / framework 統合
 
@@ -110,16 +101,6 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
   OOM になり得る。 これは design limit (compactor 無し)、
   `mark_compact_gen` を使えば回避可。 (旧: 1 GiB cap → 2026-05-18 (27)
   で 64 GiB virtual に拡張済)
-
-## 動的成長の更なる改善 (低優先)
-
-(27) で region cap を 64 GiB virtual reservation に置き換えたが、 これ
-自体も上限なので「真の dynamic growth (linked chunks)」 で完全撤廃する案:
-
-- moving backend (copy / copy_gen 等) で from-space を linked chunk list
-  にして、 chunk 単位で `mremap` または追加 mmap で成長
-- 64 GiB を超える heap が必要な workload で意味がある (現状の bench では
-  全て 1 GiB 以下、 64 GiB は実質的に無制限)
 
 ## メンテ
 

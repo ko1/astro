@@ -7,10 +7,11 @@
 [gc_runtime.md](gc_runtime.md) を見てほしい。** こちらは技術詳細の側。
 
 baruby_precise は **`sample/baruby` (libgc conservative) を copy して
-precise GC に置き換えた testbed**。 `make GC=<name>` で **14 種類** の GC
+precise GC に置き換えた testbed**。 `make GC=<name>` で **15 種類** の GC
 アルゴリズム (none / mark / mark_gen / mark_gen_inc / copy / copy_gen /
 copy_gen_inc / mark_compact / mark_compact_gen / bump / mark_bump_gen /
-immix / immix_gen / mark_bitmap_gen) から選択できる。
+immix / immix_gen / mark_bitmap_gen / mark_card_gen) から選択できる
+(うち `copy_gen_inc` は実体 placeholder、 perf 比較からは除外)。
 設計の背景は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。 ASTroGen
 自体には手を入れず、 BODY をベタ書きで sp[] spill するスタイル。
@@ -663,10 +664,31 @@ matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
     "all old" flag や 64-bit-wise old_bm scan で改善可能。
   - mark/set bit ops が hot mark path で per-object overhead を生む。
     cached page pointer + slot index 計算の lookup-less 化で改善可。
+- **iter 38**: remset overflow 時 abort 撤去、 per-page `dirty_bm` を
+  直接 scan する heap-walk fallback を導入 (overhead 0)。
+
+#### 15. `mark_card_gen` — mark_bitmap_gen + page-level remset
+
+- **Layout**: `mark_bitmap_gen` と同一 (slab/page allocator、 16 KiB page、
+  8 B GCHeader、 per-page 3 bitmap)。 差は **remset entry が `Page *`** に
+  なっている点 (iter 36 user 提案の bounded design)。
+- **WB**: holder の Page を `card_dirty[]` に push (deduplication あり)。
+  同 page 内に複数 dirty old があっても remset には page 1 つだけ。
+- **Minor**: remset (Page list) を walk、 各 page の `dirty_bm` を内部 scan
+  して dirty slot だけ `scan_outgoing`。 2 段階 enumeration。
+- **特徴**:
+  - remset 上限 = `heap_pages` で自然 bounded (16K page = 256 MB heap)。
+    オーバーフロー概念がない
+  - card-marking GC (Java/Go/CLR でメジャー) の design idea を baruby
+    上で再現したもの
+  - 数値的には `mark_bitmap_gen` ±2% 内 (object→page 化の inner-walk と
+    direct-walk のコスト均衡)。 fundamental win は「remset を heap_pages に
+    bound する」 設計上の安全性
+- **iter 38**: heap-walk fallback は不要 (overflow が原理的に起きない)。
 
 ### 5.11 設計空間の俯瞰
 
-14 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
+15 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
 眺めた表:
 
 | Backend | Nursery | Tenured | Compact? | Gen? |
@@ -677,17 +699,20 @@ matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
 | `copy` | — | semispace (2 region) | Cheney | no |
 | `mark_compact` | — | bump (1 region) | Lisp-2 slide | no |
 | `mark_gen` | malloc list | malloc list | no | yes |
-| `mark_gen_inc` | malloc list | malloc list | no | yes + inc mark |
+| `mark_gen_inc` | malloc list | malloc list | no | yes + inc mark (SATB) |
 | `copy_gen` | bump | semispace (2 region) | Cheney | yes |
-| `copy_gen_inc` | bump | semispace | Cheney | yes + inc mark |
+| `copy_gen_inc` | bump | semispace | Cheney | yes + inc placeholder |
 | `mark_compact_gen` | bump | bump (1 region) | Lisp-2 slide | yes |
 | `mark_bump_gen` | bump | bump (1 region) | no (累積) | yes |
 | `immix` | — | hole-bump (block/line) | no (v1) | no |
 | `immix_gen` | bump | hole-bump (block/line) | no (v1) | yes (nursery→tenured copy) |
 | `mark_bitmap_gen` | — | slab + page bitmaps (8 B hdr) | no | yes (sticky) |
+| `mark_card_gen` | — | slab + page bitmaps + **page-level remset** | no | yes (sticky) |
 
 「nursery が bump か」「tenured が bump か」「major で compact するか」 が
 直交軸として並び、 backend を選ぶことで各軸の影響を孤立して測れる。
+`mark_card_gen` は `mark_bitmap_gen` と layout 同一で、 remset entry 型
+だけが obj→page (iter 36 user 提案の bounded design)。
 
 ## 6. 文字列リテラルの fresh alloc
 
@@ -739,6 +764,13 @@ ccache 書込み権限問題回避用。
   `for (i < locals_cnt) sp[i] = 0` を毎 call で実行。 function call
   頻度に比例。 zero-init が要らない (= 全 local が即書きされる) ことを
   parser が保証できれば skip 可能
-- **REGION_BYTES が 512 MiB 固定**: live set がこれを超えるプログラムは
-  OOM で abort。 mmap は lazy なので未使用ページは物理メモリを食わないが、
-  仮想空間は確実に消費する
+- **REGION_BYTES は 64 GiB virtual** (iter 28 で 512 MiB 固定から拡張)。
+  mmap は lazy なので未使用ページは物理メモリを食わない。 ただし
+  `copy` 系の linked-chunk 化はまだ実装されておらず、 64 GiB を超える
+  heap は OOM で abort。 詳細は [todo.md](todo.md) 「動的成長」 section。
+- **remset overflow 対応**: iter 36 で 7 gen backend に cap 128 K +
+  heap-walk fallback (5 backend) または abort (2 backend) を導入。
+  iter 38 で残 2 backend (immix_gen / mark_bitmap_gen) にも fallback
+  を実装し全 gen backend が bounded correctness。 immix_gen は
+  pressure-triggered minor、 mark_bitmap_gen は per-page dirty_bm scan。
+  詳細は [gc_runtime.md §3](gc_runtime.md)。

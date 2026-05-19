@@ -247,7 +247,7 @@ bump alloc する。 moving と non-moving の中間。
 `none` / `bump` は alloc だけして free しない (leak baseline)。 「rooting
 overhead + WB API の zero-cost 化」 を測る floor として有用。
 
-## 3. 15 backend の早見表 (iter 35-36 fair contract 後)
+## 3. 15 backend の早見表 (iter 35-38 fair contract、 iter 38 で bounded correctness 達成)
 
 `make GC=<name>` で切替え。 default = `copy`。 Header size は iter 31-33
 の flags-byte packing 後の値。 7 番 `copy_gen_inc` は実体が `copy_gen` と
@@ -402,10 +402,12 @@ for (i = 0; i < remset_cnt; i++) {
 | string_concat | 0 | 0 |
 | remset_pressure | 数千 entries | 2 pages |
 
-### Overflow guard 詳細 (iter 36)
+### Overflow guard 詳細 (iter 36 → iter 38 v2 で完結)
 
 object-level remset は理論上 |old objects| まで膨張可能。 現 bench では問題
-ないが、 長寿命 dict / cache に sparse write する workload で危険:
+ないが、 長寿命 dict / cache に sparse write する workload で危険。 iter 36
+で 5 backend に cap+heap-walk、 残 2 に abort を導入。 iter 38 で残 2 backend
+にも fallback を実装し全 8 gen backend が bounded correctness:
 
 | Backend | Overflow 動作 |
 |---|---|

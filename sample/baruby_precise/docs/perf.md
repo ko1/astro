@@ -323,10 +323,23 @@ MIN を超えないので動作は不変。
   「rooting + WB + dispatch + alloc」の最小コストを示す。 binary_trees が
   0.53s — copy より速い (GC 自体が無いので)。 OOM 時 abort
 
-### ベンチカタログ (全 14 種)
+### ベンチカタログ (全 17 種)
 
 各ベンチの「何を / どう alloc して / lifetime はどんな形か」 を一覧。
-GC 評価の観点で workload 分類を意識して揃えている。
+GC 評価の観点で workload 分類を意識して揃えている。 アルファベット順。
+
+#### `ast_eval.ba.rb` — AST builder + repeated evaluator (macro pattern)
+
+- **What**: 木形 AST を作り (depth=N、 op = const / add / mul / sub / ite)、
+  その後 evaluator で繰り返し評価。 各 evaluation は intermediate Array を
+  alloc して結果を組み立てる (macro pattern: build phase + repeated eval)。
+- **Alloc pattern**: build 時に 3-要素 Array が大量に promote される。
+  eval 時は短命 intermediate が大量に。
+- **Lifetime**: AST nodes は long-lived (promote 対象)、 eval intermediate は
+  短命 (nursery で完結)。 gc_combined の親戚で「実 interpreter ループ」 寄り。
+- **テスト対象**: gen backend の世代分離効果、 deep recursion mark cost、
+  remset 圧 (eval から AST nodes へは read のみ、 WB 圧は低い)。
+- **特性的な数値**: 0.34-0.39 s で backend 差小 (mutator-bound)。 oracle=0。
 
 #### `binary_trees.ba.rb` — 構造的 long-lived tree
 
@@ -470,6 +483,21 @@ GC 評価の観点で workload 分類を意識して揃えている。
 - **特性的な数値**: ベスト 0.90 s (`mark_compact_gen`)、 全 backend
   0.90-1.07 s。 2026-05-16 追加。
 
+#### `remset_pressure.ba.rb` — adversarial sparse old→young writes (iter 36)
+
+- **What**: 50K cell cons chain を作って全 promote させた後、 200K iter で
+  ランダム位置 (deterministic step) のセル head を新規 young array で
+  上書き。 各 store が old→young write barrier を発火させる。
+- **Alloc pattern**: 50K cell long-lived + 200K × 2-要素 young array =
+  短命 alloc 800 K + WB push 200 K。
+- **Lifetime**: 50K cells は全 long-lived。 young arrays は immediate die。
+- **テスト対象**: 各 gen backend の remset 実装の質。
+  - cap 128K + heap-walk fallback の発火 (`mark_gen` 系、 `copy_gen` 系)
+  - `mark_card_gen` の page-level remset (自然 bounded)
+  - `immix_gen` v2 の pressure-triggered minor (iter 38)
+- **特性的な数値**: gen backend 全体 0.30-0.40 s、 non-gen は 0.45+ s。
+  `immix_gen` 0.30 が最速。
+
 #### `sieve.ba.rb` — Sieve of Eratosthenes for primes up to 10M
 
 - **What**: 0..N の boolean 配列で素数判定。 sweep で合成数を `false` に
@@ -496,6 +524,20 @@ GC 評価の観点で workload 分類を意識して揃えている。
   完結率。
 - **特性的な数値**: ベスト ~0.55 s 帯 (`mark_compact_gen`
   tied)、 ワースト 2.41 s (`mark`、 後に 1.68 s に改善)。
+
+#### `string_concat_dyn.ba.rb` — dynamic string concat (iter 37)
+
+- **What**: `make_chunk(i)` で `i % 3` に応じた異なる literal を返す関数経由で、
+  動的に 3 string を `a + b + c` で concat、 5_000_000 iter。 iter 37 で
+  `node_str_lit + node_str_lit` を parse-time fold したため、 通常の
+  `string_concat` は const-folded で 1-alloc/iter に縮んでしまった。 本 bench
+  は関数経由で fold を回避し、 本来の "many small string allocs" pattern を
+  保持する。
+- **Alloc pattern**: 3 BaString alloc + 2 concat per iter = 5 alloc / iter。
+  全体 ~750 MB alloc。
+- **Lifetime**: 各 string は 1 iter 内で die、 nursery で完結。
+- **テスト対象**: string allocator + concat の現実的なコスト。
+- **特性的な数値**: `copy` 1.02 s 最速、 `immix_gen` 1.04 s 同位。 oracle=45000000。
 
 #### `substr_churn.ba.rb` — 長寿命 String を sliding window で読む
 
