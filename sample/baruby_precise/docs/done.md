@@ -83,28 +83,38 @@ correctness を達成。 残る 7 backend (none / mark / copy / mark_compact /
 bump / immix) は非 gen (remset 不使用) なので overflow 概念なし。
 [gc_runtime.md §3](gc_runtime.md) の remset 表を更新。
 
-### Perf trade-off (immix_gen)
-`tenured_objs_push` の cache write pressure で **5-15% regression**
-(binary_trees 0.74→0.84、 fib_pair 0.73→0.81、 list_alloc 0.64→0.71、
-cons_list 0.70→0.74)。 試した最適化:
+### Perf trade-off と v2 (pressure-triggered minor)
+v1 (`tenured_objs_push` per promotion) は cache write pressure で **5-15%
+regression** が出た (binary_trees 0.74→0.84、 fib_pair 0.73→0.81、
+list_alloc 0.64→0.71)。 試した最適化:
 - `inline` + `__builtin_expect` で hot path 短縮 → 効果なし
 - 64K 初期 capa で realloc 回数削減 → 効果なし
 - 16 M entries (128 MB virtual) を mmap で preallocate → 効果なし
 - Chunked linked list (1M entry chunks) で memcpy 回避 → 効果なし
 
 本質的に「1M+ promotion 毎に外部 array へ 8 B write」 の cache pollution
-が原因。 line allocator では per-object enumeration が他に手段がない
-(mark_gen は header の slab 位置から復元できる、 immix は line 内 object
-boundary が復元不能)。 mark_bitmap_gen は per-page bitmap で既存の
-`dirty_bm[]` を流用するため push なし、 regression なし。
+が原因 — micro 最適化では消えない。
 
-iter 37 final で immix_gen は plain matrix で **11 wins / 17 bench** だったが、
-iter 38 で 6 wins (life / remset_pressure / string_concat / string_concat_dyn /
-substr_churn + list_sort 同位) に減。 immix (non-gen)、 copy、 bump に
-分散して勝者が広がった (perf.md §2 [iter 38] 参照)。 mark_bitmap_gen は
-影響なし。
+**v2 解決策 (pressure-triggered minor)**: `tenured_objs[]` を撤廃し、
+代わりに `remset_push` で `remset_cnt >= MAX-1` になったら
+`remset_pressure` flag を立てる。 次の alloc safepoint
+(`nursery_bump`) が flag を check して minor を強制発火、 remset を drain。
+WB 単体が hard cap (`MAX_REMSET_ENTRIES`) を超えるのは「alloc-less
+adversarial loop」 のみで、 そこは abort + diagnostic で残す
+(現実の Ruby workload では起きない)。
 
-commit: `fe70397` (initial)、 後続最適化試行は本 iter で commit。
+利点:
+- promotion path に新コードなし — iter 37 と同じ hot path
+- WB は 1 つの compare-and-set 増えるだけ (branch predicted taken)
+- minor 自体は remset_buf を走査するだけ (iter 36 design 通り)
+- fault-inject (cap=128) で 4 bench (binary_trees / cons_list /
+  remset_pressure / list_alloc) を実行し全 oracle pass
+
+mark_bitmap_gen は per-page `dirty_bm[]` の page scan で fallback (overhead
+0)。
+
+commit: `fe70397` (v1)、 `d654841` (v1 regression measurement)、 本 iter で
+v2 commit。
 
 ## 2026-05-19 (37) — Perf 2: string literal const-fold + string_concat_dyn bench
 

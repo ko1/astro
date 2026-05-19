@@ -88,17 +88,17 @@ iter 36-37 で追加:
 - **`node_ary_lit_N` (N=1..4) optimization**: 配列リテラル N=1..4 を 1-shot 化 (chain → direct)
 - **String literal concat fold** (iter 37): parser で `node_str_lit + node_str_lit` を parse-time fold
 
-iter 38 (correctness、 immix_gen のみ perf regression):
-- **Heap-walk fallback for `immix_gen` / `mark_bitmap_gen`**: iter 36 で
-  これらの 2 backend だけは remset overflow 時 abort だったが、 iter 38 で
-  fallback を実装。 mark_bitmap_gen は branch のみで overhead 0。
-  immix_gen は promote 時の `tenured_objs[]` への 1 pointer push が **5-15%
-  regression** を生む (binary_trees / fib_pair / list_alloc / cons_list)。
-  cache write pressure on a growing 8 MB+ array。 inline + `__builtin_expect` +
-  64K initial capacity で micro 最適化したが本質的な cache pressure は残る。
-  Line allocator 環境では per-object enumeration が不可避という構造的制約
-  (mark_gen 等は object pointer を slab 内位置から復元できるので enumeration
-  不要)。 詳細は [done.md (38)](done.md) と [gc_runtime.md §3](gc_runtime.md)。
+iter 38 (correctness; v2 で perf neutral):
+- **`immix_gen` / `mark_bitmap_gen` の remset overflow 対応**: iter 36 で
+  これらの 2 backend だけは abort だったが、 iter 38 で解決。
+  - `mark_bitmap_gen`: per-page `dirty_bm` を直接 scan する heap-walk
+    fallback (overhead 0)
+  - `immix_gen` v1: per-promotion `tenured_objs[]` push → cache pressure で
+    5-15% regression
+  - `immix_gen` v2: **pressure-triggered minor** — `remset_push` で cap-1 に
+    達したら flag、 次 alloc safepoint で minor を強制 → remset drain。
+    promotion path に新コードなし、 regression なし。
+  - 詳細は [done.md (38)](done.md) と [gc_runtime.md §3](gc_runtime.md)。
 
 ### Plain mode matrix (iter 38)
 

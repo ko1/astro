@@ -304,7 +304,7 @@ remset_cnt = 0;
 | `copy_gen` | `GCHeader **` (object) | flags bit 4 (`HDR_DIRTY_BIT=0x10`、 marked 不要なので bit 3-4 で済む) | cap 128K + heap-walk fallback (tenured 全 region 走査) | — |
 | `mark_compact_gen` | `GCHeader **` (object) | flags bit 5 (`HDR_DIRTY_BIT=0x20`、 marked+old+dirty 同居) | cap 128K + heap-walk fallback (tenured 全 region) | — |
 | `mark_bump_gen` | `GCHeader **` (object) | flags bit 5 | cap 128K + heap-walk fallback (tenured 全 region) | — |
-| `immix_gen` | `GCHeader **` (object) | flags bit 4 (`H_DIRTY=0x10`) | cap 128K + **heap-walk fallback** (iter 38: `tenured_objs[]` list、 promote / pretenure で push、 sweep_major で `mark_epoch` で compact) | mark_epoch も同 byte に同居 |
+| `immix_gen` | `GCHeader **` (object) | flags bit 4 (`H_DIRTY=0x10`) | cap 128K + **pressure-triggered minor** (iter 38 v2: remset push 時 cap-1 で flag、 次 alloc safepoint で minor 強制 → remset drain。 per-promotion 列挙不要) | mark_epoch も同 byte に同居 |
 | `mark_bitmap_gen` | `GCHeader **` (object) | **per-page bitmap** (`dirty_bm[64]`) | cap 128K + **heap-walk fallback** (iter 38: 各 page の `dirty_bm` を走査、 large は `lo->dirty` 直接) | dirty bit が GCHeader でなく Page 構造体内 → `locate(h)` で page+slot index 解決 |
 | `mark_card_gen` ★ | **`Page **`** (card) | per-page `card_dirty` flag (Page 構造体) + per-slot `dirty_bm` (内部 walk 用) | **不要** (remset 上限 = heap_size / 16 KiB pages で自然 bounded) | iter 36 user 提案の 2 段階 enumeration |
 
@@ -411,7 +411,8 @@ object-level remset は理論上 |old objects| まで膨張可能。 現 bench �
 |---|---|
 | `mark_gen` / `mark_gen_inc` | cap → flag → `remset_heap_walk` で全 page 走査 + dirty old を visit |
 | `copy_gen` / `mark_compact_gen` / `mark_bump_gen` | cap → flag → 全 tenured region linear walk + dirty old を visit |
-| `immix_gen` / `mark_bitmap_gen` | iter 38: cap → flag set、 minor 開始時に heap walk fallback で全 dirty old を enumerate (immix_gen は `tenured_objs[]` 経由、 mark_bitmap_gen は `dirty_bm` page scan)、 flag clear で次 minor は通常 path に復帰 |
+| `immix_gen` | iter 38 v2: cap-1 で pressure flag、 次 alloc safepoint で minor 強制 → remset drain。 per-promotion 列挙なしで O(|dirty|) minor を保つ |
+| `mark_bitmap_gen` | iter 38: cap で flag set、 minor 開始時に dirty_bm page scan fallback で全 dirty old を enumerate、 flag clear で次 minor は通常 path に復帰 |
 | `mark_card_gen` | overflow しない (page-level cap = heap pages 数で自然 bounded) |
 
 card marking との関係:

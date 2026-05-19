@@ -81,21 +81,6 @@ static char *nursery_base = NULL;
 static char *nursery_top  = NULL;
 static char *nursery_end  = NULL;
 
-/* --- Tenured-object enumeration list (iter 38).  Records every tenured
- *     header at the point of promotion / pretenure.  Used by the heap-walk
- *     fallback path when the remset overflows: we walk this list to find
- *     dirty old objects when the remset_buf would have dropped pushes.
- *     Compacted in sweep_major via mark_epoch so the list stays bounded
- *     by live tenured count (not cumulative).
- *
- *     Cost: 1 store + 1 cap check + occasional realloc per promotion.
- *     binary_trees / fib_pair / list_alloc plain regress ~5% from cache
- *     write pressure on the growing array.  Acceptable trade-off — was
- *     iter 36's abort path before. */
-static GCHeader **tenured_objs  = NULL;
-static size_t     tenured_cnt   = 0;
-static size_t     tenured_capa  = 0;
-
 /* --- Remset (old objects holding young pointers) --- */
 static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
@@ -126,8 +111,7 @@ const char *aro_gc_backend_name = "immix_gen";
 
 static void minor_gc(VALUE *sp_top);
 static void major_gc(VALUE *sp_top);
-static inline void tenured_objs_push(GCHeader *h);
-static void tenured_objs_grow(void);
+static bool remset_pressure;  /* defined below — pressure-triggered minor flag */
 
 void
 aro_gc_init(CTX *c)
@@ -262,7 +246,9 @@ large_alloc(AroGcKind kind, size_t payload_size)
     h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
     /* Pretenured straight into large/old → counts toward major trigger. */
     old_alloc_since_major += sizeof(GCHeader) + ALIGN8(payload_size); /* iter 36 fairness */
-    tenured_objs_push(h);  /* iter 38: heap-walk fallback enumeration */
+    /* iter 38 v2: tenured_objs_push removed from hot path — heap-walk
+     * fallback now uses pressure-triggered minor at alloc safepoints,
+     * not a per-promotion enumeration list. */
     return (void *)(h + 1);
 }
 
@@ -312,7 +298,7 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
         return large_alloc(kind, payload_size);
     }
 
-    if (aro_gc_stress || nursery_top + total > nursery_end) {
+    if (aro_gc_stress || nursery_top + total > nursery_end || remset_pressure) {
         minor_gc(sp_top);
         if (old_alloc_since_major > major_threshold) {
             major_gc(sp_top);
@@ -379,22 +365,33 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
  * Write barrier
  * --------------------------------------------------------------------------- */
 
-/* iter 36 remset overflow guard.  Cap at 128 K entries.  iter 38 wired
- * up a heap-walk fallback via the `tenured_objs[]` list: every tenured
- * header is recorded at promotion / pretenure time, compacted via
- * `mark_epoch` during major sweep, and walked here when the remset
- * overflows.  Cost is O(|live tenured|) on the fallback path (vs O(|dirty|)
- * on the normal path), but the work is bounded — no more abort. */
+/* iter 38 v2 remset overflow guard.  When remset approaches cap, set a
+ * pressure flag.  The alloc path checks this at every safepoint and
+ * drains the remset by forcing a minor before allowing more growth.
+ * Hot path stays a single push (no enumeration list, no tenured_objs[]).
+ *
+ * Soft cap: pressure flag at MAX-1 — leaves room for the LAST WB to
+ * still record its entry (so minor finds all dirty olds).  Hard cap at
+ * MAX: only reached when many WBs happen between two alloc safepoints
+ * (adversarial alloc-less loop).  Aborts with diagnostic.
+ *
+ * In practice, every Ruby iteration creates at least one young object
+ * via the parser-emitted alloc paths, so the soft cap fires far before
+ * the hard cap. */
 #define MAX_REMSET_ENTRIES (1u << 17)
-static bool remset_overflow = false;
+#define REMSET_PRESSURE_THRESH (MAX_REMSET_ENTRIES - 1u)
+static bool remset_pressure = false;
 
 static void
 remset_push(GCHeader *h)
 {
-    if (remset_overflow) return;   /* dirty bit already set in header */
-    if (remset_cnt >= MAX_REMSET_ENTRIES) {
-        remset_overflow = true;
-        return;
+    if (__builtin_expect(remset_cnt >= MAX_REMSET_ENTRIES, 0)) {
+        fprintf(stderr,
+            "baruby_gc=immix_gen: remset hard-cap (%u) hit between alloc "
+            "safepoints — alloc-less adversarial workload.  Increase "
+            "MAX_REMSET_ENTRIES or refactor.\n",
+            MAX_REMSET_ENTRIES);
+        abort();
     }
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
@@ -403,45 +400,9 @@ remset_push(GCHeader *h)
         if (!remset_buf) abort();
     }
     remset_buf[remset_cnt++] = h;
-}
-
-/* Preallocate via mmap a large virtual region (lazy-paged), so push is
- * a pure store with no realloc memcpy.  16 M entries = 128 MB virtual,
- * physical only what's touched.  Bounded by `live tenured count` in
- * practice (compacted at major). */
-#define TENURED_OBJS_CAPA ((size_t)16 * 1024 * 1024)
-
-static void __attribute__((noinline, cold))
-tenured_objs_grow(void)
-{
-    /* Lazy init: mmap on first push. */
-    tenured_objs = (GCHeader **)mmap(NULL,
-                                      TENURED_OBJS_CAPA * sizeof(GCHeader *),
-                                      PROT_READ|PROT_WRITE,
-                                      MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,
-                                      -1, 0);
-    if (tenured_objs == MAP_FAILED) {
-        perror("immix_gen mmap tenured_objs");
-        abort();
+    if (__builtin_expect(remset_cnt >= REMSET_PRESSURE_THRESH, 0)) {
+        remset_pressure = true;
     }
-    tenured_capa = TENURED_OBJS_CAPA;
-}
-
-static inline void
-tenured_objs_push(GCHeader *const h)
-{
-    if (__builtin_expect(tenured_cnt >= tenured_capa, 0)) {
-        if (tenured_capa) {
-            /* Hit the hard cap — bench workloads should never get here,
-             * but if they do, fail loud rather than silently lose track. */
-            fprintf(stderr,
-                "baruby_gc=immix_gen: tenured_objs cap (16 M) exhausted.  "
-                "Increase TENURED_OBJS_CAPA in gc_immix_gen.c.\n");
-            abort();
-        }
-        tenured_objs_grow();
-    }
-    tenured_objs[tenured_cnt++] = h;
 }
 
 void
@@ -509,7 +470,6 @@ forward_payload_nursery(void *p)
     *(void **)p = newp;
     /* Track promoted bytes for fair adaptive major threshold. */
     old_alloc_since_major += sizeof(GCHeader) + ALIGN8(size); /* iter 36 fairness */
-    tenured_objs_push(newh);  /* iter 38: heap-walk fallback enumeration */
     /* Queue the new tenured copy for outgoing-ref forwarding. */
     gray_push(newh);
     return newp;
@@ -573,28 +533,16 @@ minor_gc(VALUE *sp_top)
      *     onto the gray queue via forward_payload_nursery). */
     for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value(*p);
 
-    /* (2) Remset: dirty old objects holding nursery pointers.  On
-     *     overflow, fall back to a heap walk over `tenured_objs[]` — the
-     *     dirty bits in headers are the source of truth. */
-    if (remset_overflow) {
-        for (size_t i = 0; i < tenured_cnt; i++) {
-            GCHeader *const h = tenured_objs[i];
-            if ((h->flags & H_OLD) && (h->flags & H_DIRTY)) {
-                process_object_minor(h);
-                h->flags &= (uint8_t)~H_DIRTY;
-            }
-        }
-        remset_overflow = false;
-    } else {
-        for (size_t i = 0; i < remset_cnt; i++) {
-            GCHeader *const h = remset_buf[i];
-            if (h->flags & H_DIRTY) {
-                process_object_minor(h);
-                h->flags &= (uint8_t)~H_DIRTY;
-            }
+    /* (2) Remset: dirty old objects holding nursery pointers. */
+    for (size_t i = 0; i < remset_cnt; i++) {
+        GCHeader *const h = remset_buf[i];
+        if (h->flags & H_DIRTY) {
+            process_object_minor(h);
+            h->flags &= (uint8_t)~H_DIRTY;
         }
     }
     remset_cnt = 0;
+    remset_pressure = false;  /* drained */
 
     /* (3) Cheney scan via gray queue: process freshly-promoted tenured
      *     objects, forwarding their nursery outgoing refs. */
@@ -694,21 +642,8 @@ sweep_major(void)
             munmap(lo, lo->map_bytes);
         }
     }
-    /* iter 38: compact tenured_objs[] by retaining only headers whose
-     * mark_epoch matches cur_epoch (i.e. survived this major).  Headers
-     * inside the arena that lost their last live line are now dead — the
-     * line space they occupied may be reused by hole_alloc later, so we
-     * must not keep stale pointers. */
-    {
-        size_t w = 0;
-        for (size_t r = 0; r < tenured_cnt; r++) {
-            GCHeader *const h = tenured_objs[r];
-            if (h->mark_epoch == cur_epoch) {
-                tenured_objs[w++] = h;
-            }
-        }
-        tenured_cnt = w;
-    }
+    /* iter 38 v2: tenured_objs[] removed.  Pressure-triggered minor
+     * keeps remset_buf bounded without per-promotion enumeration. */
     block_cursor = 0;
     line_cursor  = 0;
     cur_ptr = NULL;
