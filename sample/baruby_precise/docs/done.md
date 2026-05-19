@@ -3,6 +3,73 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (37) — Perf 2: string literal const-fold + string_concat_dyn bench
+
+`baruby_parse.c::alloc_binop` で `node_str_lit + node_str_lit` の op を
+parse-time fold。 両 byte 列を `malloc` で連結して 1 つの `node_str_lit`
+に縮約する。 `"a" + "b" + "c"` のような完全リテラル連結が 5 alloc / iter
+から 1 static reference / iter に縮む。
+
+実装は単純 (~12 lines):
+
+```c
+else if (ceq(tc, name, "+")) {
+    extern const struct NodeKind kind_node_str_lit;
+    if (lhs->head.kind == &kind_node_str_lit &&
+        rhs->head.kind == &kind_node_str_lit) {
+        uint32_t la = lhs->u.node_str_lit.len;
+        uint32_t lb = rhs->u.node_str_lit.len;
+        uint32_t total = la + lb;
+        char *buf = (char *)malloc((size_t)total + 1);
+        if (la) memcpy(buf, lhs->u.node_str_lit.bytes, la);
+        if (lb) memcpy(buf + la, rhs->u.node_str_lit.bytes, lb);
+        buf[total] = '\0';
+        return ALLOC_node_str_lit(buf, total);
+    }
+    return ALLOC_node_add(lhs, rhs);
+}
+```
+
+効果 (immix_gen):
+- plain string_concat: 0.48 → 0.20 (-58%)
+- AOT  string_concat: 0.34 → 0.07 (-79%)
+
+ただし元の string_concat.ba.rb は意図 (string alloc を 5 個 / iter 測る)
+を失う — fold で 1 個 / iter になる。 そこで `string_concat_dyn.ba.rb` を
+追加:
+- `make_chunk(i)` 関数で `i % 3` で異なる literal を返す → fold できない
+- `a + b + c` で動的 concat (3 alloc / iter)
+- 5_000_000 iter で oracle=45000000
+- 結果: plain immix_gen 1.06s、 AOT immix_gen 0.39s — 本来の dynamic
+  concat コストを保持
+
+baruby (libgc) にも port (commit `bcecebd`):
+- 同じ parser 修正
+- 結果: string_concat 0.29s (libgc) — baruby_precise の immix_gen より
+  遅い (0.20)。 dynamic 版は string_concat_dyn 1.51s で precise immix_gen
+  1.06 の 1.4× (precise の bump nursery + line allocator が効く)
+
+iter 37 final matrix (plain, 17 bench × 14 backend + libgc, median of 3):
+- immix_gen 11 wins (cons_list / fib_pair / gc_combined / life / list_alloc /
+  list_sort / remset_pressure / sieve / string_concat / string_concat_dyn /
+  substr_churn) — iter 36 final の 7 wins から大幅拡大
+- bump 3 wins (ast_eval / binary_trees / hash_chain)
+- immix 2 wins (fannkuch / nqueens)
+- copy 1 win (interp_calc)
+
+教訓:
+- **parse-time fold は bench の semantics を変える**。 win を喜ぶ前に
+  「この最適化で bench が何を測らなくなるか」 を確認する必要がある。
+  本来の workload を保存する別 bench を追加するのが対処。
+- 文字列リテラルだけの fold は安全 (副作用なし、 immutable)。 変数を
+  含む `s + "lit"` は元の semantics を保てないので skip すべき —
+  Ruby の `String#+` は new string を返すので結果は同じだが、 オブジェクト
+  identity / `__id__` の semantics が変わる (lazy 化されると frozen string
+  cache を踏む)。 baruby は `__id__` を持たないので実害ないが、 一般化
+  するときは要注意。
+
+commits: `9a16099` (baruby_precise)、 `bcecebd` (baruby)。
+
 ## 2026-05-19 (36-final) — Perf 1 retry success (array literal 1-shot)
 
 iter 36 で 1 度試して plain で regression と判断した `node_ary_lit_N`、

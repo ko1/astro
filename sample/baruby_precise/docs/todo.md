@@ -52,11 +52,18 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       baruby (libgc) にも port 済。 1 度 plain で regression と誤判定したが
       AOT で profiling し直して真因 (dispatch が plain で 50%) を特定、
       clean rebuild で win 確認。
-- [ ] **文字列 `+` chain の 1-shot 化** — 配列の手法をそのまま適用できそう
-      だが、 parser が `add(add(s1,s2),s3)` を `strcat_K([s1,s2,s3])` に
-      畳むには pm_call_node 構造の認識が要る (PM_ARRAY_NODE と違って
-      operator 名と arity を見て判定)。 string_concat / substr_churn で
-      win 期待。 ary_lit と同じ AOT-friendly な構造で実装可能。
+- [x] ~~**文字列リテラル `+` の parse-time fold**~~ — iter 37 解決
+      ([done.md](done.md) iter (37) 参照)。 `alloc_binop` で
+      `node_str_lit + node_str_lit` を 1 つの `node_str_lit` に縮約。
+      plain で string_concat -58% (immix_gen 0.48→0.20)、 AOT で -79%
+      (0.34→0.07)。 本来の dynamic concat pattern を保存する
+      `string_concat_dyn.ba.rb` も追加 (5_000_000 iter, oracle=45000000)。
+      baruby (libgc) にも port 済。
+- [ ] **文字列 `+` chain の 1-shot 化 (動的 chain)** — `s1 + s2 + s3` で
+      s1/s2/s3 が変数 (literal でない) のケースを `strcat_K([s1,s2,s3])`
+      に畳む。 配列リテラル N=1..4 と同じ構造で、 pm_call_node 認識が要る。
+      string_concat_dyn / substr_churn で win 期待 (現在 immix_gen 1.06s
+      / 0.86s)。 動的版は GC 圧があり ary_lit より win-margin は大きそう。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で
