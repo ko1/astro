@@ -125,51 +125,60 @@ static void major_gc(VALUE *sp_top);
 // the nursery; allocations bigger than half the nursery size go straight
 // into tenured (= pretenured, like Boehm's large-object heap).  Triggers
 // minor / major GC + retry on space pressure.
-static GCHeader *
+// iter 43: cold-path split for inliner-budget friendliness.
+static GCHeader * __attribute__((noinline, cold))
+pretenure_alloc(AroGcKind kind, size_t payload_size, size_t total, VALUE *sp_top)
+{
+    if (tenured_top + total > tenured_end) {
+        major_gc(sp_top);
+        if (tenured_top + total > tenured_end) {
+            fprintf(stderr, "baruby_gc=mark_compact_gen: OOM tenured (need %zu)\n", total);
+            abort();
+        }
+    }
+    GCHeader *h = (GCHeader *)tenured_top;
+    HDR_SET_KIND(h, kind);
+    h->size   = (uint32_t)payload_size;
+    h->fwd    = NULL;
+    HDR_SET_OLD(h);    // direct to tenured = "old" from the start
+    HDR_CLR_DIRTY(h);
+    HDR_CLR_MARKED(h);
+    tenured_top += total;
+    return h;
+}
+
+static void __attribute__((noinline, cold))
+nursery_collect_slow(size_t total, VALUE *sp_top)
+{
+    size_t max_promotion = (size_t)(nursery_top - nursery_base);
+    if (tenured_top + max_promotion > tenured_end) {
+        major_gc(sp_top);
+    } else {
+        minor_gc(sp_top);
+        if (old_alloc_since_major > old_major_threshold) {
+            major_gc(sp_top);
+        }
+    }
+    if (nursery_top + total > nursery_end) {
+        major_gc(sp_top);
+        if (nursery_top + total > nursery_end) {
+            fprintf(stderr, "baruby_gc=mark_compact_gen: OOM (need %zu)\n", total);
+            abort();
+        }
+    }
+}
+
+static inline GCHeader *
 nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
 
-    // Pretenure huge allocations directly into tenured (the nursery is
-    // small and can't hold a single multi-MiB payload).
-    if (total > NURSERY_BYTES / 2) {
-        if (tenured_top + total > tenured_end) {
-            major_gc(sp_top);
-            if (tenured_top + total > tenured_end) {
-                fprintf(stderr, "baruby_gc=mark_compact_gen: OOM tenured (need %zu)\n", total);
-                abort();
-            }
-        }
-        GCHeader *h = (GCHeader *)tenured_top;
-        HDR_SET_KIND(h, kind);
-        h->size   = (uint32_t)payload_size;
-        h->fwd    = NULL;
-        HDR_SET_OLD(h);    // direct to tenured = "old" from the start
-        HDR_CLR_DIRTY(h);
-        HDR_CLR_MARKED(h);
-        tenured_top += total;
-        return h;
+    if (__builtin_expect(total > NURSERY_BYTES / 2, 0)) {
+        return pretenure_alloc(kind, payload_size, total, sp_top);
     }
 
-    if (aro_gc_stress || nursery_top + total > nursery_end) {
-        // If tenured can't safely hold the entire nursery (worst-case
-        // promotion), do a major first to recover dead tenured space.
-        size_t max_promotion = (size_t)(nursery_top - nursery_base);
-        if (tenured_top + max_promotion > tenured_end) {
-            major_gc(sp_top);
-        } else {
-            minor_gc(sp_top);
-            if (old_alloc_since_major > old_major_threshold) {
-                major_gc(sp_top);
-            }
-        }
-        if (nursery_top + total > nursery_end) {
-            major_gc(sp_top);
-            if (nursery_top + total > nursery_end) {
-                fprintf(stderr, "baruby_gc=mark_compact_gen: OOM (need %zu)\n", total);
-                abort();
-            }
-        }
+    if (__builtin_expect(aro_gc_stress || nursery_top + total > nursery_end, 0)) {
+        nursery_collect_slow(total, sp_top);
     }
     GCHeader *h = (GCHeader *)nursery_top;
     HDR_SET_KIND(h, kind);

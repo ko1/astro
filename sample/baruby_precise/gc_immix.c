@@ -278,27 +278,38 @@ hole_alloc(AroGcKind kind, size_t payload_size)
     return NULL;   /* arena exhausted — caller triggers GC */
 }
 
+// iter 43: cold-path split (see gc_copy.c for rationale).
+// All cold paths (threshold-triggered collect + hole_alloc retry + OOM)
+// live here so the alloc hot bodies stay inliner-budget friendly.
+static void * __attribute__((noinline, cold))
+hole_alloc_slow(AroGcKind kind, size_t payload_size, VALUE *sp_top)
+{
+    gc_collect_internal(sp_top);
+    void *payload = hole_alloc(kind, payload_size);
+    if (!payload) {
+        fprintf(stderr, "baruby_gc=immix: OOM (need %zu)\n",
+                sizeof(GCHeader) + ALIGN8(payload_size));
+        abort();
+    }
+    return payload;
+}
+
 void *
 aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    if (aro_gc_stress || bytes_since_gc + payload_size > gc_threshold) {
+    if (__builtin_expect(aro_gc_stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
         gc_collect_internal(sp_top);
     }
     size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
     void *payload;
-    if (total > MEDIUM_MAX) {
+    if (__builtin_expect(total > MEDIUM_MAX, 0)) {
         payload = large_alloc(kind, payload_size);
     } else {
         payload = hole_alloc(kind, payload_size);
-        if (!payload) {
-            gc_collect_internal(sp_top);
-            payload = hole_alloc(kind, payload_size);
-            if (!payload) {
-                fprintf(stderr, "baruby_gc=immix: OOM (need %zu)\n", total);
-                abort();
-            }
+        if (__builtin_expect(!payload, 0)) {
+            payload = hole_alloc_slow(kind, payload_size, sp_top);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
@@ -312,22 +323,17 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
-    if (aro_gc_stress || bytes_since_gc + payload_size > gc_threshold) {
+    if (__builtin_expect(aro_gc_stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
         gc_collect_internal(sp_top);
     }
     size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
     void *payload;
-    if (total > MEDIUM_MAX) {
+    if (__builtin_expect(total > MEDIUM_MAX, 0)) {
         payload = large_alloc(KIND_PAYLOAD_BYTE, payload_size);
     } else {
         payload = hole_alloc(KIND_PAYLOAD_BYTE, payload_size);
-        if (!payload) {
-            gc_collect_internal(sp_top);
-            payload = hole_alloc(KIND_PAYLOAD_BYTE, payload_size);
-            if (!payload) {
-                fprintf(stderr, "baruby_gc=immix: OOM byte (need %zu)\n", total);
-                abort();
-            }
+        if (__builtin_expect(!payload, 0)) {
+            payload = hole_alloc_slow(KIND_PAYLOAD_BYTE, payload_size, sp_top);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);

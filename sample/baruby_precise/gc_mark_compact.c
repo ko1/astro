@@ -89,18 +89,25 @@ aro_gc_init(CTX *c)
 
 static void gc_collect_internal(VALUE *sp_top);
 
-static GCHeader *
+// iter 43: cold-path split (see gc_copy.c for rationale).
+static void __attribute__((noinline, cold))
+bump_slow(size_t total, VALUE *sp_top)
+{
+    gc_collect_internal(sp_top);
+    if (region_top + total > region_end) {
+        fprintf(stderr, "baruby_gc=mark_compact: OOM (need %zu)\n", total);
+        abort();
+    }
+}
+
+static inline GCHeader *
 bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
-    if (aro_gc_stress
-        || bytes_since_gc + payload_size > gc_threshold
-        || region_top + total > region_end) {
-        gc_collect_internal(sp_top);
-        if (region_top + total > region_end) {
-            fprintf(stderr, "baruby_gc=mark_compact: OOM (need %zu)\n", total);
-            abort();
-        }
+    if (__builtin_expect(aro_gc_stress
+                         || bytes_since_gc + payload_size > gc_threshold
+                         || region_top + total > region_end, 0)) {
+        bump_slow(total, sp_top);
     }
     GCHeader *h = (GCHeader *)region_top;
     HDR_SET_KIND(h, kind);

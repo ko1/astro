@@ -143,17 +143,25 @@ alloc_large(AroGcKind kind, size_t payload_size)
     return h;
 }
 
-static GCHeader *
+// iter 43: cold-path split (see gc_copy.c for rationale).
+static void __attribute__((noinline, cold))
+oom_abort(void)
+{
+    fprintf(stderr, "baruby_gc=mark_freelist: region OOM\n");
+    abort();
+}
+
+static inline GCHeader *
 alloc_slot(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
-    if (slot_total > MAX_SLOT_BYTES) {
+    if (__builtin_expect(slot_total > MAX_SLOT_BYTES, 0)) {
         return alloc_large(kind, payload_size);
     }
     int ci = size_class_for(slot_total);
     size_t sb = size_class_bytes[ci];
 
-    if (aro_gc_stress || bytes_since_gc + payload_size > gc_threshold) {
+    if (__builtin_expect(aro_gc_stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
         gc_collect_internal(sp_top);
     }
 
@@ -164,9 +172,8 @@ alloc_slot(AroGcKind kind, size_t payload_size, VALUE *sp_top)
         /* fs is at the payload offset; back up to header. */
         h = (GCHeader *)((char *)fs - sizeof(GCHeader));
     } else {
-        if (region_top + sb > region_end) {
-            fprintf(stderr, "baruby_gc=mark_freelist: region OOM\n");
-            abort();
+        if (__builtin_expect(region_top + sb > region_end, 0)) {
+            oom_abort();
         }
         h = (GCHeader *)region_top;
         region_top += sb;

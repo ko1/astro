@@ -102,21 +102,31 @@ aro_gc_init(CTX *c)
 
 static void gc_collect_internal(VALUE *sp_top);
 
+// iter 43: cold-path split.  gc_collect + OOM check live in a noinline
+// cold helper so gc_bump's hot body stays small enough for inliner to
+// expand `aro_gc_alloc` (and its constprop clones) at all call sites.
+// See done.md (43) for the inline-budget rationale.
+static void __attribute__((noinline, cold))
+gc_bump_slow(size_t total, VALUE *sp_top)
+{
+    gc_collect_internal(sp_top);
+    if (active_top + total > active_end) {
+        fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
+                total, (size_t)(active_end - active_top));
+        abort();
+    }
+}
+
 // Internal bump-allocator: reserves header + payload of `aligned` bytes.
 // Triggers GC + retries on OOM.  Does NOT zero the payload — caller decides.
 static inline GCHeader *
 gc_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
-    if (aro_gc_stress
-        || bytes_since_gc + payload_size > gc_threshold
-        || (active_top + total) > active_end) {
-        gc_collect_internal(sp_top);
-        if (active_top + total > active_end) {
-            fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
-                    total, (size_t)(active_end - active_top));
-            abort();
-        }
+    if (__builtin_expect(aro_gc_stress
+                         || bytes_since_gc + payload_size > gc_threshold
+                         || (active_top + total) > active_end, 0)) {
+        gc_bump_slow(total, sp_top);
     }
     GCHeader *h = (GCHeader *)active_top;
     HDR_SET_KIND(h, kind);

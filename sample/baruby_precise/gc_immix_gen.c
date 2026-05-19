@@ -286,7 +286,24 @@ hole_alloc_header(AroGcKind kind, size_t payload_size)
  * Nursery allocation
  * --------------------------------------------------------------------------- */
 
-static void *
+// iter 43: cold-path split for inliner-budget friendliness.
+static void __attribute__((noinline, cold))
+nursery_collect_slow(size_t total, VALUE *sp_top)
+{
+    minor_gc(sp_top);
+    if (old_alloc_since_major > major_threshold) {
+        major_gc(sp_top);
+    }
+    if (nursery_top + total > nursery_end) {
+        major_gc(sp_top);
+        if (nursery_top + total > nursery_end) {
+            fprintf(stderr, "baruby_gc=immix_gen: OOM nursery (need %zu)\n", total);
+            abort();
+        }
+    }
+}
+
+static inline void *
 nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
@@ -294,22 +311,12 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
     /* Pretenure: anything that won't fit in a single Immix block during
      * promotion goes straight to the large-object space.  This keeps
      * nursery objects guaranteed-promotable into a single-block hole. */
-    if (total > MEDIUM_MAX) {
+    if (__builtin_expect(total > MEDIUM_MAX, 0)) {
         return large_alloc(kind, payload_size);
     }
 
-    if (aro_gc_stress || nursery_top + total > nursery_end || remset_pressure) {
-        minor_gc(sp_top);
-        if (old_alloc_since_major > major_threshold) {
-            major_gc(sp_top);
-        }
-        if (nursery_top + total > nursery_end) {
-            major_gc(sp_top);
-            if (nursery_top + total > nursery_end) {
-                fprintf(stderr, "baruby_gc=immix_gen: OOM nursery (need %zu)\n", total);
-                abort();
-            }
-        }
+    if (__builtin_expect(aro_gc_stress || nursery_top + total > nursery_end || remset_pressure, 0)) {
+        nursery_collect_slow(total, sp_top);
     }
     GCHeader *h = (GCHeader *)nursery_top;
     HDR_SET_KIND(h, kind);

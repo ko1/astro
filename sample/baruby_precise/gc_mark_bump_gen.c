@@ -176,31 +176,36 @@ old_alloc(AroGcKind kind, size_t payload_size, size_t aligned)
     return h;
 }
 
-static GCHeader *
+// iter 43: cold-path split for inliner-budget friendliness.
+static void __attribute__((noinline, cold))
+nursery_collect_slow(size_t total, VALUE *sp_top)
+{
+    if (old_alloc_since_major > old_major_threshold) {
+        major_gc(sp_top);
+    } else {
+        minor_gc(sp_top);
+    }
+    if (nursery_top + total > nursery_end) {
+        major_gc(sp_top);
+        if (nursery_top + total > nursery_end) {
+            fprintf(stderr, "baruby_gc=mark_bump_gen: OOM (need %zu)\n", total);
+            abort();
+        }
+    }
+}
+
+static inline GCHeader *
 nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     size_t total = sizeof(GCHeader) + aligned;
 
     // Pretenure huge allocations (≥ half nursery): go straight to old.
-    if (payload_size >= NURSERY_BYTES / 2) {
+    if (__builtin_expect(payload_size >= NURSERY_BYTES / 2, 0)) {
         return old_alloc(kind, payload_size, aligned);
     }
 
-    if (aro_gc_stress || nursery_top + total > nursery_end) {
-        if (old_alloc_since_major > old_major_threshold) {
-            major_gc(sp_top);
-        } else {
-            minor_gc(sp_top);
-        }
-        if (nursery_top + total > nursery_end) {
-            // Nursery still full after minor (e.g., huge tenure load).
-            // Try a major to free more, then retry.
-            major_gc(sp_top);
-            if (nursery_top + total > nursery_end) {
-                fprintf(stderr, "baruby_gc=mark_bump_gen: OOM (need %zu)\n", total);
-                abort();
-            }
-        }
+    if (__builtin_expect(aro_gc_stress || nursery_top + total > nursery_end, 0)) {
+        nursery_collect_slow(total, sp_top);
     }
     GCHeader *h = (GCHeader *)nursery_top;
     HDR_SET_KIND(h, kind);
