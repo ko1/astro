@@ -3,6 +3,54 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (45) — slab-gen 4 backend に cold-split 展開
+
+iter 43 で region-based 9 backend、 iter 44 で slab 5 backend の clz 化を
+適用。 残る 4 slab-gen backend (`mark_gen` / `mark_gen_inc` /
+`mark_bitmap_gen` / `mark_card_gen`) は `maybe_collect` 内の collect
+dispatch (minor + threshold-major) が inline されて `aro_gc_alloc` body が
+肥大化していた。
+
+### 適用
+`maybe_collect_slow` という `__attribute__((noinline, cold))` の helper を
+新設、 dispatch 部分を extract。 outer threshold check に `__builtin_expect(..., 0)`。
+
+`mark_gen_inc` は per-alloc に走る `inc_step(INC_WORK_PER_ALLOC)` を hot
+path に残置 (これは cold ではない)、 threshold-triggered minor/major のみ
+を slow helper に移動。
+
+### 効果
+mark_bitmap_gen の aro_gc_alloc body: 0x197 → 0x152 (-22%) で mark backend
+(0x15c) と同等 size に。 inline 候補化は成立。
+
+plain matrix iter 44 → iter 45:
+| Bench | backend | iter 44 | iter 45 | Δ |
+|---|---|---:|---:|---:|
+| mark_gen_inc | string_concat | 0.28 | 0.26 | **-7%** |
+| mark_gen_inc | cons_list | 0.90 | 0.86 | -4% |
+| mark_gen_inc | fib_pair | 1.02 | 0.98 | -4% |
+| mark_gen_inc | list_alloc | 0.90 | 0.86 | -4% |
+| mark_card_gen | list_alloc | 0.85 | 0.81 | -5% |
+| mark_bitmap_gen | cons_list | 0.80 | 0.77 | -4% |
+| mark_gen | list_alloc | 0.79 | 0.77 | -3% |
+
+mark_gen_inc が最大の恩恵 (元々 inc_marking で body が大きかった)。
+全体的に 2-7% の improvement で iter 44 mark の 5-8% より控えめだが、
+4 backend で一貫した方向の改善。
+
+### 3 段階の inline 化最適化シリーズ完結
+- iter 43: region-based 9 backend の bump path に cold-split
+- iter 44: slab 5 backend の size_class_for を clz 化
+- iter 45: slab-gen 4 backend の maybe_collect に cold-split
+
+これで **全 15 backend (copy_gen_inc placeholder 除く) の aro_gc_alloc が
+caller 側で inline されるか constprop clone を経由する** 形に統一。
+baruby_ary_new (capa=0 path) と baruby_str_new (BaString header alloc) は
+すべての backend で inline 化、 string-heavy / array-heavy bench で
+plain 2-8%、 AOT 5-14% の改善。
+
+commit: `bb31580` (code)、 docs 別 commit。
+
 ## 2026-05-19 (44) — slab 系 5 backend の size_class_for を O(1) 化
 
 iter 43 で region-based 9 backend に cold-path split を適用。 slab/page 系
