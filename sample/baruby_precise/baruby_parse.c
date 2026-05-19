@@ -414,6 +414,24 @@ alloc_binop(struct transduce_context *tc, pm_constant_id_t name, NODE *lhs, NODE
 {
     if (0) {}
     else if (ceq(tc, name, "+")) {
+        // Iter 37 Perf 2: parse-time constant fold for string literal concat.
+        // `"abc" + "def" + "ghi"` is left-associative, so this triggers
+        // recursively: inner add folds to "abcdef", outer add folds to
+        // "abcdefghi" — collapsing the chain to a single node_str_lit.
+        // Each eval still allocates a fresh BaString (str_lit semantics),
+        // but only 1 alloc per iter instead of 5.
+        extern const struct NodeKind kind_node_str_lit;
+        if (lhs->head.kind == &kind_node_str_lit &&
+            rhs->head.kind == &kind_node_str_lit) {
+            uint32_t la = lhs->u.node_str_lit.len;
+            uint32_t lb = rhs->u.node_str_lit.len;
+            uint32_t total = la + lb;
+            char *buf = (char *)malloc((size_t)total + 1);
+            if (la) memcpy(buf, lhs->u.node_str_lit.bytes, la);
+            if (lb) memcpy(buf + la, rhs->u.node_str_lit.bytes, lb);
+            buf[total] = '\0';
+            return ALLOC_node_str_lit(buf, total);
+        }
         return ALLOC_node_add(lhs, rhs);
     }
     else if (ceq(tc, name, "*")) {
