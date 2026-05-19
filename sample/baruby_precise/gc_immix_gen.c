@@ -85,8 +85,13 @@ static char *nursery_end  = NULL;
  *     header at the point of promotion / pretenure.  Used by the heap-walk
  *     fallback path when the remset overflows: we walk this list to find
  *     dirty old objects when the remset_buf would have dropped pushes.
- *     Compacted in sweep_major via mark_epoch so the list stays bounded by
- *     live tenured count (not cumulative). */
+ *     Compacted in sweep_major via mark_epoch so the list stays bounded
+ *     by live tenured count (not cumulative).
+ *
+ *     Cost: 1 store + 1 cap check + occasional realloc per promotion.
+ *     binary_trees / fib_pair / list_alloc plain regress ~5% from cache
+ *     write pressure on the growing array.  Acceptable trade-off — was
+ *     iter 36's abort path before. */
 static GCHeader **tenured_objs  = NULL;
 static size_t     tenured_cnt   = 0;
 static size_t     tenured_capa  = 0;
@@ -121,7 +126,8 @@ const char *aro_gc_backend_name = "immix_gen";
 
 static void minor_gc(VALUE *sp_top);
 static void major_gc(VALUE *sp_top);
-static void tenured_objs_push(GCHeader *h);
+static inline void tenured_objs_push(GCHeader *h);
+static void tenured_objs_grow(void);
 
 void
 aro_gc_init(CTX *c)
@@ -399,13 +405,41 @@ remset_push(GCHeader *h)
     remset_buf[remset_cnt++] = h;
 }
 
-static void
+/* Preallocate via mmap a large virtual region (lazy-paged), so push is
+ * a pure store with no realloc memcpy.  16 M entries = 128 MB virtual,
+ * physical only what's touched.  Bounded by `live tenured count` in
+ * practice (compacted at major). */
+#define TENURED_OBJS_CAPA ((size_t)16 * 1024 * 1024)
+
+static void __attribute__((noinline, cold))
+tenured_objs_grow(void)
+{
+    /* Lazy init: mmap on first push. */
+    tenured_objs = (GCHeader **)mmap(NULL,
+                                      TENURED_OBJS_CAPA * sizeof(GCHeader *),
+                                      PROT_READ|PROT_WRITE,
+                                      MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,
+                                      -1, 0);
+    if (tenured_objs == MAP_FAILED) {
+        perror("immix_gen mmap tenured_objs");
+        abort();
+    }
+    tenured_capa = TENURED_OBJS_CAPA;
+}
+
+static inline void
 tenured_objs_push(GCHeader *const h)
 {
-    if (tenured_cnt >= tenured_capa) {
-        tenured_capa = tenured_capa ? tenured_capa * 2 : 1024;
-        tenured_objs = (GCHeader **)realloc(tenured_objs, tenured_capa * sizeof(GCHeader *));
-        if (!tenured_objs) abort();
+    if (__builtin_expect(tenured_cnt >= tenured_capa, 0)) {
+        if (tenured_capa) {
+            /* Hit the hard cap — bench workloads should never get here,
+             * but if they do, fail loud rather than silently lose track. */
+            fprintf(stderr,
+                "baruby_gc=immix_gen: tenured_objs cap (16 M) exhausted.  "
+                "Increase TENURED_OBJS_CAPA in gc_immix_gen.c.\n");
+            abort();
+        }
+        tenured_objs_grow();
     }
     tenured_objs[tenured_cnt++] = h;
 }

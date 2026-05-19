@@ -83,6 +83,29 @@ correctness を達成。 残る 7 backend (none / mark / copy / mark_compact /
 bump / immix) は非 gen (remset 不使用) なので overflow 概念なし。
 [gc_runtime.md §3](gc_runtime.md) の remset 表を更新。
 
+### Perf trade-off (immix_gen)
+`tenured_objs_push` の cache write pressure で **5-15% regression**
+(binary_trees 0.74→0.84、 fib_pair 0.73→0.81、 list_alloc 0.64→0.71、
+cons_list 0.70→0.74)。 試した最適化:
+- `inline` + `__builtin_expect` で hot path 短縮 → 効果なし
+- 64K 初期 capa で realloc 回数削減 → 効果なし
+- 16 M entries (128 MB virtual) を mmap で preallocate → 効果なし
+- Chunked linked list (1M entry chunks) で memcpy 回避 → 効果なし
+
+本質的に「1M+ promotion 毎に外部 array へ 8 B write」 の cache pollution
+が原因。 line allocator では per-object enumeration が他に手段がない
+(mark_gen は header の slab 位置から復元できる、 immix は line 内 object
+boundary が復元不能)。 mark_bitmap_gen は per-page bitmap で既存の
+`dirty_bm[]` を流用するため push なし、 regression なし。
+
+iter 37 final で immix_gen は plain matrix で **11 wins / 17 bench** だったが、
+iter 38 で 6 wins (life / remset_pressure / string_concat / string_concat_dyn /
+substr_churn + list_sort 同位) に減。 immix (non-gen)、 copy、 bump に
+分散して勝者が広がった (perf.md §2 [iter 38] 参照)。 mark_bitmap_gen は
+影響なし。
+
+commit: `fe70397` (initial)、 後続最適化試行は本 iter で commit。
+
 ## 2026-05-19 (37) — Perf 2: string literal const-fold + string_concat_dyn bench
 
 `baruby_parse.c::alloc_binop` で `node_str_lit + node_str_lit` の op を

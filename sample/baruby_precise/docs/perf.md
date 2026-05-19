@@ -88,47 +88,59 @@ iter 36-37 で追加:
 - **`node_ary_lit_N` (N=1..4) optimization**: 配列リテラル N=1..4 を 1-shot 化 (chain → direct)
 - **String literal concat fold** (iter 37): parser で `node_str_lit + node_str_lit` を parse-time fold
 
-iter 38 (correctness only、 perf 数値は iter 37 final と同等):
+iter 38 (correctness、 immix_gen のみ perf regression):
 - **Heap-walk fallback for `immix_gen` / `mark_bitmap_gen`**: iter 36 で
   これらの 2 backend だけは remset overflow 時 abort だったが、 iter 38 で
-  fallback を実装。 normal path への overhead は微小 (immix_gen は promote
-  時に `tenured_objs[]` への 1 pointer push、 mark_bitmap_gen は branch のみ)。
-  詳細は [done.md (38)](done.md) と [gc_runtime.md §3](gc_runtime.md)。
+  fallback を実装。 mark_bitmap_gen は branch のみで overhead 0。
+  immix_gen は promote 時の `tenured_objs[]` への 1 pointer push が **5-15%
+  regression** を生む (binary_trees / fib_pair / list_alloc / cons_list)。
+  cache write pressure on a growing 8 MB+ array。 inline + `__builtin_expect` +
+  64K initial capacity で micro 最適化したが本質的な cache pressure は残る。
+  Line allocator 環境では per-object enumeration が不可避という構造的制約
+  (mark_gen 等は object pointer を slab 内位置から復元できるので enumeration
+  不要)。 詳細は [done.md (38)](done.md) と [gc_runtime.md §3](gc_runtime.md)。
 
-### Plain mode matrix
+### Plain mode matrix (iter 38)
 
 | Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | libgc |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ast_eval | 0.37 | 0.38 | 0.36 | 0.36 | 0.37 | 0.37 | 0.37 | 0.39 | **0.36** | 0.37 | 0.36 | 0.37 | 0.36 | 0.38 | 0.39 |
-| binary_trees | 0.77 | 0.79 | 0.87 | 0.85 | 0.79 | 0.74 | 0.78 | 0.75 | **0.47** | 0.87 | 0.53 | 0.74 | 0.92 | 0.94 | 0.80 |
-| cons_list | 1.12 | 0.79 | 0.89 | 0.95 | 0.71 | 0.74 | 0.88 | 0.77 | 0.87 | 0.77 | 0.73 | **0.70** | 0.85 | 0.88 | 0.88 |
-| fannkuch | 0.76 | 0.77 | 0.77 | 0.78 | 0.73 | 0.71 | 0.74 | 0.74 | 0.75 | 0.72 | **0.71** | 0.71 | 0.80 | 0.79 | 0.73 |
-| fib_pair | 1.42 | 0.94 | 1.05 | 1.08 | 0.80 | 0.79 | 0.96 | 0.83 | 0.98 | 0.82 | 0.77 | **0.73** | 0.93 | 0.96 | 1.05 |
-| gc_combined | 1.22 | 0.88 | 0.94 | 0.95 | 0.75 | 0.77 | 0.92 | 0.80 | 0.98 | 0.77 | 0.76 | **0.72** | 0.93 | 0.89 | 0.96 |
-| hash_chain | 1.37 | 1.35 | 1.33 | 1.32 | 1.51 | 1.54 | 1.62 | 1.58 | **1.29** | 1.48 | 1.31 | 1.35 | 1.35 | 1.33 | 1.48 |
-| interp_calc | 1.24 | 0.91 | 1.03 | 1.06 | **0.84** | 0.87 | 1.04 | 0.89 | 0.99 | 0.91 | 0.85 | 0.88 | 1.03 | 0.96 | 1.05 |
-| life | 1.38 | 1.38 | 1.40 | 1.42 | 1.41 | 1.34 | 1.40 | 1.36 | 1.32 | 1.33 | 1.34 | **1.30** | 1.40 | 1.34 | — |
-| list_alloc | 1.19 | 0.84 | 0.91 | 0.95 | 0.72 | 0.72 | 0.86 | 0.76 | 0.92 | 0.71 | 0.71 | **0.64** | 0.87 | 0.87 | 0.92 |
-| list_sort | 1.20 | 1.24 | 1.26 | 1.29 | 1.08 | 1.05 | 1.14 | 1.04 | 1.15 | 1.06 | 1.06 | **1.03** | 1.30 | 1.30 | 1.14 |
-| nqueens | 1.00 | 1.02 | 1.00 | 1.03 | 1.04 | 0.97 | 0.97 | 0.98 | 0.97 | 0.95 | **0.92** | 0.94 | 1.00 | 0.98 | 0.96 |
-| remset_pressure | 0.49 | 0.39 | 0.40 | 0.40 | 0.37 | 0.31 | 0.40 | 0.30 | 0.39 | 0.30 | 0.33 | **0.29** | 0.35 | 0.35 | 0.45 |
-| sieve | 1.34 | 1.40 | 1.45 | 1.38 | 1.64 | 1.39 | 1.66 | 1.45 | 1.55 | 1.44 | 1.54 | **1.33** | 1.43 | 1.47 | 1.39 |
-| string_concat | 0.42 | 0.26 | 0.28 | 0.29 | 0.22 | 0.23 | 0.30 | 0.22 | 0.28 | 0.22 | 0.24 | **0.20** | 0.27 | 0.26 | 0.29 |
-| string_concat_dyn | 2.35 | 1.32 | 1.42 | 1.51 | 1.07 | 1.13 | 1.43 | 1.14 | 1.40 | 1.15 | 1.09 | **1.06** | 1.35 | 1.34 | 1.51 |
-| substr_churn | 1.73 | 1.07 | 1.15 | 1.17 | 0.97 | 0.98 | 1.15 | 0.89 | 1.14 | 0.89 | 0.96 | **0.86** | 1.09 | 1.04 | 1.32 |
+| ast_eval | 0.36 | 0.36 | 0.39 | 0.35 | 0.36 | 0.35 | 0.36 | 0.36 | **0.34** | 0.37 | 0.36 | 0.36 | 0.37 | 0.36 | 0.35 |
+| binary_trees | 0.75 | 0.76 | 0.81 | 0.83 | 0.77 | 0.74 | 0.80 | 0.71 | **0.44** | 0.85 | 0.56 | 0.84 | 0.96 | 0.95 | 0.76 |
+| cons_list | 1.12 | 0.77 | 0.87 | 0.95 | **0.69** | 0.72 | 0.86 | 0.75 | 0.84 | 0.76 | 0.70 | 0.74 | 0.85 | 0.83 | 0.82 |
+| fannkuch | 0.77 | 0.75 | 0.76 | 0.76 | 0.73 | 0.70 | 0.76 | 0.72 | 0.74 | 0.76 | **0.67** | 0.72 | 0.77 | 0.85 | 0.69 |
+| fib_pair | 1.38 | 0.89 | 1.01 | 1.05 | 0.76 | 0.79 | 0.94 | 0.81 | 0.96 | 0.81 | **0.76** | 0.81 | 0.92 | 0.93 | 0.97 |
+| gc_combined | 1.23 | 0.85 | 0.94 | 0.94 | **0.70** | 0.74 | 0.91 | 0.73 | 0.96 | 0.77 | 0.74 | 0.76 | 0.89 | 0.86 | 0.87 |
+| hash_chain | 1.22 | 1.21 | 1.21 | 1.12 | 1.24 | 1.20 | 1.20 | 1.24 | 1.13 | 1.23 | **1.11** | 1.13 | 1.13 | 1.12 | 1.37 |
+| interp_calc | 1.21 | 0.91 | 1.03 | 1.02 | 0.83 | 0.87 | 1.02 | 0.87 | 0.96 | 0.90 | **0.83** | 0.89 | 0.97 | 0.97 | 0.98 |
+| life | 1.32 | 1.33 | 1.36 | 1.34 | 1.32 | 1.28 | 1.34 | 1.41 | 1.28 | 1.35 | 1.30 | **1.27** | 1.32 | 1.34 | — |
+| list_alloc | 1.15 | 0.79 | 0.86 | 0.91 | **0.68** | 0.71 | 0.88 | 0.74 | 0.92 | 0.72 | 0.69 | 0.71 | 0.81 | 0.80 | 0.85 |
+| list_sort | 1.16 | 1.25 | 1.25 | 1.30 | 1.06 | **1.02** | 1.09 | 1.06 | 1.14 | 1.06 | 1.04 | 1.04 | 1.28 | 1.24 | 1.06 |
+| nqueens | 0.98 | 0.98 | 0.95 | 1.00 | 0.93 | 0.94 | 0.95 | 0.96 | 0.91 | 0.94 | **0.89** | 0.97 | 0.95 | 0.97 | 0.92 |
+| remset_pressure | 0.48 | 0.38 | 0.38 | 0.38 | 0.35 | 0.31 | 0.40 | 0.31 | 0.36 | 0.30 | 0.31 | **0.29** | 0.34 | 0.36 | 0.45 |
+| sieve | **1.22** | 1.36 | 1.45 | 1.47 | 1.65 | 1.46 | 1.58 | 1.48 | 1.50 | 1.44 | 1.54 | 1.39 | 1.48 | 1.48 | 1.31 |
+| string_concat | 0.42 | 0.26 | 0.28 | 0.29 | 0.22 | 0.21 | 0.28 | 0.21 | 0.27 | 0.21 | 0.21 | **0.20** | 0.26 | 0.25 | 0.29 |
+| string_concat_dyn | 2.24 | 1.32 | 1.38 | 1.42 | 1.04 | 1.13 | 1.39 | 1.11 | 1.37 | 1.11 | 1.08 | **1.03** | 1.34 | 1.26 | 1.47 |
+| substr_churn | 1.66 | 1.03 | 1.12 | 1.14 | 0.94 | 0.94 | 1.10 | 0.89 | 1.10 | 0.86 | 0.92 | **0.81** | 1.04 | 1.02 | 1.27 |
 
-**勝者分布** (plain, iter 37):
-- `immix_gen` — **11 wins** (cons_list / fib_pair / gc_combined / life /
-  list_alloc / list_sort / remset_pressure / sieve / string_concat /
-  string_concat_dyn / substr_churn) — line allocator + gen のバランスが
-  広いワークロードに刺さる
-- `bump` — **3 wins** (ast_eval / binary_trees / hash_chain) — pure
-  alloc-only floor。 GC をしない workload で頂点
-- `immix` — **2 wins** (fannkuch / nqueens)
-- `copy` — **1 win** (interp_calc)
-- iter 37 で `string_concat_dyn` bench を追加 (parser const-fold で `+`
-  が 1 alloc/iter に縮んだ string_concat の代替)。 immix_gen が広範に
-  支配的になり、 17 bench 中 11 を取った
+**勝者分布** (plain, iter 38):
+- `immix_gen` — **6 wins** (life / remset_pressure / string_concat /
+  string_concat_dyn / substr_churn、 + `list_sort` 同位)。 iter 37 final
+  の 11 wins から大幅減 — heap-walk fallback で gen 系 promote が +10% 程度
+  重くなり、 binary_trees / fib_pair / list_alloc 等で他 backend に
+  抜かれた
+- `bump` — **3 wins** (ast_eval / binary_trees / hash_chain だが hash_chain
+  は今回 immix 1.11 でやや負ける、 net 2 wins) — alloc-only floor は
+  binary_trees で +50% リードを保持
+- `immix` — **4 wins** (fannkuch / fib_pair / interp_calc / nqueens) —
+  non-gen Immix が gen 版 immix_gen を上回るシーン拡大 (iter 38 cost が
+  非 gen には無いため)
+- `copy` — **3 wins** (cons_list / gc_combined / list_alloc) — gen 系の
+  cache pressure が無いので逆転
+- `copy_gen` — **1 win** (list_sort)
+- `none` — **1 win** (sieve)
+- 全体として immix_gen の支配が崩れ、 4 backend (immix / immix_gen /
+  copy / bump) が分散して勝つ図に。 winner total 17 のうち immix family が
+  6 + 4 = 10、 copy family が 3 + 1 = 4、 bump 2、 none 1
 
 ### AOT mode matrix (`ruby bench/matrix.rb --mode aot`)
 
