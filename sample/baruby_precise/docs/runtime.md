@@ -7,11 +7,11 @@
 [gc_runtime.md](gc_runtime.md) を見てほしい。** こちらは技術詳細の側。
 
 baruby_precise は **`sample/baruby` (libgc conservative) を copy して
-precise GC に置き換えた testbed**。 `make GC=<name>` で **15 種類** の GC
+precise GC に置き換えた testbed**。 `make GC=<name>` で **16 種類** の GC
 アルゴリズム (none / mark / mark_gen / mark_gen_inc / copy / copy_gen /
 copy_gen_inc / mark_compact / mark_compact_gen / bump / mark_bump_gen /
-immix / immix_gen / mark_bitmap_gen / mark_card_gen) から選択できる
-(うち `copy_gen_inc` は実体 placeholder、 perf 比較からは除外)。
+immix / immix_gen / mark_bitmap_gen / mark_card_gen / mark_freelist) から
+選択できる (うち `copy_gen_inc` は実体 placeholder、 perf 比較からは除外)。
 設計の背景は
 [`docs/gc_design.md`](../../../docs/gc_design.md) を参照。 ASTroGen
 自体には手を入れず、 BODY をベタ書きで sp[] spill するスタイル。
@@ -667,6 +667,28 @@ matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
 - **iter 38**: remset overflow 時 abort 撤去、 per-page `dirty_bm` を
   直接 scan する heap-walk fallback を導入 (overhead 0)。
 
+#### 16. `mark_freelist` — region + per-class freelist (mark/sweep, no compact)
+
+- **Layout**: 単一の bump region (64 GiB virtual)。 ヘッダは 8 B (`mark` /
+  `mark_bitmap_gen` と同じ flags + size)。 9 size classes (32〜4096 B、
+  `gc_mark.c` と同一)。
+- **Allocation**: per-class freelist (LIFO) を試行、 空なら region_top
+  bump。 大物 (> 4096 B slot) は large object に直接 mmap。
+- **Sweep**: region を base→top に sequential walk、 marked → clear、
+  unmarked → kind=KIND_FREE + size を slot 最大値に round up + class
+  freelist に push。 size を保つことで次回 sweep の region walk が
+  正しく動く (`slot_total = sizeof(GCHeader) + ALIGN8(h->size)`)。
+- **vs `gc_mark`**: malloc/free 介在なし (region + freelist で完結)。
+  per-page metadata なし (block/page chain がない)。
+- **vs `gc_mark_compact`**: compaction なし。 dead bytes は freelist 経由
+  のみ再利用 → 同じ size class でしか戻らない、 fragmentation あり。
+- **特性**:
+  - 「region + non-compact + freelist」 という design point の demonstration。
+    Compact のコスト vs Fragmentation のコストを直接比較できる
+  - Sweep が O(|region|) (全 slot を見る) で gc_mark の O(|live|) より
+    重い。 binary_trees 等で mark_compact より遅め
+- **iter 41 で追加**。 詳細は [done.md](done.md) iter (41)。
+
 #### 15. `mark_card_gen` — mark_bitmap_gen + page-level remset
 
 - **Layout**: `mark_bitmap_gen` と同一 (slab/page allocator、 16 KiB page、
@@ -688,7 +710,7 @@ matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
 
 ### 5.11 設計空間の俯瞰
 
-15 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
+16 backend を「nursery 戦略 × tenured 戦略 × compaction」 の 3 軸で
 眺めた表:
 
 | Backend | Nursery | Tenured | Compact? | Gen? |
@@ -698,6 +720,7 @@ matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
 | `mark` | — | malloc list | no | no |
 | `copy` | — | semispace (2 region) | Cheney | no |
 | `mark_compact` | — | bump (1 region) | Lisp-2 slide | no |
+| `mark_freelist` | — | bump region + per-class freelist | no (累積) | no |
 | `mark_gen` | malloc list | malloc list | no | yes |
 | `mark_gen_inc` | malloc list | malloc list | no | yes + inc mark (SATB) |
 | `copy_gen` | bump | semispace (2 region) | Cheney | yes |

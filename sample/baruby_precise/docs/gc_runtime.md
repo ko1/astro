@@ -247,7 +247,7 @@ bump alloc する。 moving と non-moving の中間。
 `none` / `bump` は alloc だけして free しない (leak baseline)。 「rooting
 overhead + WB API の zero-cost 化」 を測る floor として有用。
 
-## 3. 15 backend の早見表 (iter 35-38 fair contract、 iter 38 で bounded correctness 達成)
+## 3. 16 backend の早見表 (iter 35-41 fair contract、 iter 38 で bounded correctness、 iter 41 で `mark_freelist` 追加)
 
 `make GC=<name>` で切替え。 default = `copy`。 Header size は iter 31-33
 の flags-byte packing 後の値。 7 番 `copy_gen_inc` は実体が `copy_gen` と
@@ -270,6 +270,7 @@ overhead + WB API の zero-cost 化」 を測る floor として有用。
 | 13 | `immix_gen` | bump nursery + Immix tenured | yes | yes (minor) | Immix mark + sweep | **8** | obj-level | both | 同上 |
 | 14 | `mark_bitmap_gen` | Slab + per-page bitmap | yes | — | sticky M&S (bitmap) | **8** | obj-level (bm dirty) | 8B header、 密度 2× | minor O(heap)、 locate cost |
 | 15 | `mark_card_gen` | mark_bitmap_gen + page-level remset | yes | — | sticky M&S | **8** | **page-level** | remset 上限 = page count (bounded) | inner-walk overhead |
+| 16 | `mark_freelist` | 単一 region + per-class freelist | — | — | mark + region sweep | **8** | — | malloc 不要、 page metadata なし | fragmentation (compact なし) |
 
 ### Remset 設計 (iter 36)
 

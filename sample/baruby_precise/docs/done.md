@@ -3,6 +3,56 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (41) — New backend #16: `gc_mark_freelist`
+
+「region + 非 compact + freelist」 という design point の demonstration として
+新 backend を追加。 既存の `gc_mark` (slab + freelist) と `gc_mark_compact`
+(region + compact) の中間。
+
+### 設計
+- **Layout**: 単一 bump region (64 GiB virtual lazy-paged)、 GCHeader 8 B
+  (`mark` と同じ)、 9 size classes (32-4096 B、 `gc_mark.c` と同一)
+- **Allocator**:
+  1. 要求 payload を ALIGN8 して slot_total を計算
+  2. size_class を引いて class freelist を試行 (LIFO pop)
+  3. freelist が空なら region_top bump
+  4. 大物 (slot_total > 4096) は large object に mmap
+- **Mark**: 標準 BFS from roots、 H_MARKED bit を set、 gray_buf で walk
+- **Sweep**: region を base→top に sequential walk、 各 slot で:
+  - `HDR_KIND == KIND_FREE`: 既 freelist 上、 再 push
+  - `HDR_MARKED`: clear mark
+  - 上記以外 (= unmarked alive): KIND_FREE に変えて class freelist に push
+  - size を保つことで次回 region walk が slot 境界を正しく辿れる
+- **Write barrier**: 非 gen なので no-op (gc.h の static inline fallback)
+
+### 既存 backend との比較
+- vs `gc_mark` (#2、 slab page + linked list): malloc 介在なし、 page
+  metadata なし。 freelist 自体は同様だが page chain がない。
+- vs `gc_mark_compact` (#8、 region + Lisp-2 slide): compaction なし。
+  forward/update/slide pass 不要 → 単純だが fragmentation あり。
+- 同 region + non-compact の `mark_bump_gen` の non-gen 版 + freelist 付き
+  と言える。
+
+### 検証
+全 18 bench で oracle pass を確認 (binary_trees / cons_list / dll_walk /
+list_alloc / string_concat / substr_churn / remset_pressure を smoke test):
+- binary_trees: 0.82 s
+- cons_list:    0.78 s
+- dll_walk:     0.78 s
+- list_alloc:   0.77 s
+- string_concat: 0.24 s
+- substr_churn: 1.11 s
+- remset_pressure: 0.35 s
+
+`gc_mark` と比べて mix — small alloc 系で速め、 long-lived heavy で遅め。
+
+### 追加変更
+- Makefile に `GC_NUM_mark_freelist := 16` を追加
+- gc.h に `BARUBY_GC_MARK_FREELIST 16` を追加
+- bench/matrix.rb の `ALL_BACKENDS` に追加
+- docs/runtime.md §5.x に #16 のセクション + §5.11 設計空間表に行追加
+- docs/gc_runtime.md §3 早見表に行追加
+
 ## 2026-05-19 (38) — Remset overflow: heap-walk fallback for immix_gen + mark_bitmap_gen
 
 iter 36 で全 7 gen backend に `MAX_REMSET=128K` cap を入れたが、 そのうち
