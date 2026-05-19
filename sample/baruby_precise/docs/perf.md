@@ -76,9 +76,9 @@ backend を差し込む必要がある (現状は別バイナリ)。
 
 ## 2. 全 GC backend のベンチ実測 (plain mode, fairness contract 適用後)
 
-iter 36-40 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 14 backend
+iter 36-41 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 15 backend
 × 18 bench + libgc column。 `copy_gen_inc` は実体が copy_gen の clone
-なので除外。
+なので除外 (iter 41 で `mark_freelist` を追加し total 16、 列で 15)。
 
 iter 36-40 で追加:
 - **`mark_card_gen` backend** (#15): page-level remset (bounded by page count)
@@ -92,6 +92,11 @@ iter 40 で追加:
 - **`dll_walk` bench**: doubly-linked list build + forward/backward walk。
   cons_list の bidirectional 版 (3-要素 node、 2 refs/node)。 mark phase の
   pointer-count スケーリングと `cur[2] = nxt` の WB stress を測定。
+
+iter 41 で追加:
+- **`mark_freelist` backend** (#16): region + per-class freelist + non-compact
+  M&S。 gc_mark (slab page) と gc_mark_compact (region + slide) の中間。
+  page metadata / malloc 不要、 ただし fragmentation あり。
 
 iter 38 (correctness; v2 で perf neutral):
 - **`immix_gen` / `mark_bitmap_gen` の remset overflow 対応**: iter 36 で
