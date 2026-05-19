@@ -428,21 +428,21 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
  * Write barrier
  * --------------------------------------------------------------------------- */
 
-/* iter 36 remset overflow guard.  Cap at 128 K entries.  Dirty bit lives
- * in per-page bitmap here; the fallback would walk every page's dirty_bm
- * (TODO).  Until then, abort with a clear diagnostic on overflow. */
+/* iter 36 remset overflow guard.  Cap at 128 K entries.  iter 38 wired
+ * up a heap-walk fallback: on overflow, set a flag and on the next minor
+ * walk every page's dirty_bm + the large list for old+dirty objects.
+ * Bitmaps are already the source of truth (header has no dirty bit at
+ * all in this backend), so no extra bookkeeping is needed. */
 #define MAX_REMSET_ENTRIES (1u << 17)
+static bool remset_overflow = false;
 
 static void
 remset_push(GCHeader *h)
 {
+    if (remset_overflow) return;   /* dirty bit already set in per-page bitmap */
     if (remset_cnt >= MAX_REMSET_ENTRIES) {
-        fprintf(stderr,
-            "baruby_gc=mark_bitmap_gen: remset overflow (>%u entries).  "
-            "Switch to mark_gen / copy_gen / mark_compact_gen / mark_bump_gen "
-            "for remset-pressure workloads.\n",
-            MAX_REMSET_ENTRIES);
-        abort();
+        remset_overflow = true;
+        return;
     }
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
@@ -452,6 +452,10 @@ remset_push(GCHeader *h)
     }
     remset_buf[remset_cnt++] = h;
 }
+
+/* Heap-walk fallback: enumerate dirty old objects across all pages + the
+ * large-object list.  Inlined into gc_collect_minor below — the dirty
+ * bits in dirty_bm / lo->dirty are the source of truth. */
 
 void
 aro_gc_wb(void *holder, VALUE *slot, VALUE v)
@@ -673,13 +677,38 @@ gc_collect_minor(VALUE *sp_top)
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
 
-    /* Remset: old objects with heap writes since last minor. */
-    for (size_t i = 0; i < remset_cnt; i++) {
-        GCHeader *h = remset_buf[i];
-        Page *pg; size_t idx;
-        if (locate(h, &pg, &idx)) bm_clr(pg->dirty_bm, idx);
-        else { LargeObj *lo = find_large(h); if (lo) lo->dirty = false; }
-        scan_outgoing(h);
+    /* Remset: old objects with heap writes since last minor.  On
+     * overflow, fall back to a per-page heap walk over the dirty
+     * bitmaps. */
+    if (remset_overflow) {
+        for (int sc = 0; sc < NUM_SIZE_CLASSES; sc++) {
+            const size_t sb = size_class_bytes[sc];
+            for (Page *pg = page_head[sc]; pg; pg = pg->next) {
+                const size_t n = pg->n_slots;
+                char *slot = (char *)pg + SLOTS_REGION_OFFSET;
+                for (size_t i = 0; i < n; i++, slot += sb) {
+                    if (bm_get(pg->old_bm, i) && bm_get(pg->dirty_bm, i)) {
+                        bm_clr(pg->dirty_bm, i);
+                        scan_outgoing((GCHeader *)slot);
+                    }
+                }
+            }
+        }
+        for (LargeObj *lo = large_head; lo; lo = lo->next) {
+            if (lo->old && lo->dirty) {
+                lo->dirty = false;
+                scan_outgoing((GCHeader *)(lo + 1));
+            }
+        }
+        remset_overflow = false;
+    } else {
+        for (size_t i = 0; i < remset_cnt; i++) {
+            GCHeader *h = remset_buf[i];
+            Page *pg; size_t idx;
+            if (locate(h, &pg, &idx)) bm_clr(pg->dirty_bm, idx);
+            else { LargeObj *lo = find_large(h); if (lo) lo->dirty = false; }
+            scan_outgoing(h);
+        }
     }
     remset_cnt = 0;
     process_gray();

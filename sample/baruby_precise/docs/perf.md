@@ -88,6 +88,13 @@ iter 36-37 で追加:
 - **`node_ary_lit_N` (N=1..4) optimization**: 配列リテラル N=1..4 を 1-shot 化 (chain → direct)
 - **String literal concat fold** (iter 37): parser で `node_str_lit + node_str_lit` を parse-time fold
 
+iter 38 (correctness only、 perf 数値は iter 37 final と同等):
+- **Heap-walk fallback for `immix_gen` / `mark_bitmap_gen`**: iter 36 で
+  これらの 2 backend だけは remset overflow 時 abort だったが、 iter 38 で
+  fallback を実装。 normal path への overhead は微小 (immix_gen は promote
+  時に `tenured_objs[]` への 1 pointer push、 mark_bitmap_gen は branch のみ)。
+  詳細は [done.md (38)](done.md) と [gc_runtime.md §3](gc_runtime.md)。
+
 ### Plain mode matrix
 
 | Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | libgc |

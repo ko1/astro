@@ -41,10 +41,12 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       する (異 bench の SD pollution で fib_pair が 0.5 → 1.0s に劣化する
       問題を回避)。 iter 36 fair-AOT 結果は bench-results/aot/matrix.md。
 
-- [x] ~~**Remset サイズ上限なし**~~ — iter 36 解決。 全 7 gen backend で
-      `MAX_REMSET=128K` cap、 5 backend は heap-walk fallback、 残 2 は
-      明示 abort。 加えて `mark_card_gen` (#15) を page-level remset で
-      bounded 化。
+- [x] ~~**Remset サイズ上限なし**~~ — iter 36 半解決、 iter 38 完結。 全 7
+      gen backend で `MAX_REMSET=128K` cap、 **全 backend で heap-walk fallback**。
+      `mark_card_gen` (#15) は page-level remset で root bounded。 iter 38 で
+      `immix_gen` (`tenured_objs[]` 経由) と `mark_bitmap_gen` (per-page
+      `dirty_bm` 走査) の 2 backend に fallback を追加し abort を撤去。
+      これで 8 gen backend 全て bounded correctness。
 - [x] ~~**配列リテラルの 1-shot 化**~~ — iter 36-final 解決済
       ([done.md](done.md) iter (36-final) 参照)。 `node_ary_lit_{1..4}` を
       node.def に追加、 parser dispatch。 plain で -9〜-12% (fib_pair /

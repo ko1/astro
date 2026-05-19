@@ -3,6 +3,86 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (38) — Remset overflow: heap-walk fallback for immix_gen + mark_bitmap_gen
+
+iter 36 で全 7 gen backend に `MAX_REMSET=128K` cap を入れたが、 そのうち
+5 backend (mark_gen / mark_gen_inc / copy_gen / mark_compact_gen /
+mark_bump_gen) のみ heap-walk fallback を持ち、 `immix_gen` /
+`mark_bitmap_gen` は `fprintf(stderr, ...) + abort()` だった。 iter 38 で
+両 backend に fallback を追加。
+
+### `mark_bitmap_gen`
+Dirty bit が GCHeader でなく per-page `dirty_bm[64]` にあるので、 fallback
+は単純: 全 page を size class ごとに辿り、 各 slot で `bm_get(pg->old_bm, i)
+&& bm_get(pg->dirty_bm, i)` を条件に `scan_outgoing` を呼ぶ。 large は
+`lo->old && lo->dirty` 直接。
+
+```c
+if (remset_overflow) {
+    for (int sc = 0; sc < NUM_SIZE_CLASSES; sc++) {
+        const size_t sb = size_class_bytes[sc];
+        for (Page *pg = page_head[sc]; pg; pg = pg->next) {
+            char *slot = (char *)pg + SLOTS_REGION_OFFSET;
+            for (size_t i = 0; i < pg->n_slots; i++, slot += sb) {
+                if (bm_get(pg->old_bm, i) && bm_get(pg->dirty_bm, i)) {
+                    bm_clr(pg->dirty_bm, i);
+                    scan_outgoing((GCHeader *)slot);
+                }
+            }
+        }
+    }
+    /* + lo->old && lo->dirty 走査 */
+    remset_overflow = false;
+}
+```
+
+### `immix_gen`
+Immix の line-allocator は per-slot bookkeeping を持たないので、 単純な
+page walk ができない (lines はマークされるが「どこから object header が
+始まるか」 を line_marks だけからは復元不能)。 そこで **`tenured_objs[]`
+enumeration list** を導入:
+
+- `large_alloc` と `forward_payload_nursery` (promote 後) で push
+- `sweep_major` で `mark_epoch == cur_epoch` の entry のみ retain (compact)
+- overflow 時の minor は remset_buf ではなく tenured_objs を walk
+
+```c
+static void
+tenured_objs_push(GCHeader *const h)
+{
+    if (tenured_cnt >= tenured_capa) {
+        tenured_capa = tenured_capa ? tenured_capa * 2 : 1024;
+        tenured_objs = realloc(tenured_objs, tenured_capa * sizeof(GCHeader *));
+    }
+    tenured_objs[tenured_cnt++] = h;
+}
+
+/* in minor_gc, overflow path: */
+for (size_t i = 0; i < tenured_cnt; i++) {
+    GCHeader *const h = tenured_objs[i];
+    if ((h->flags & H_OLD) && (h->flags & H_DIRTY)) {
+        process_object_minor(h);
+        h->flags &= (uint8_t)~H_DIRTY;
+    }
+}
+```
+
+Promotion path の cost は 1 store + 1 cap check (amortized realloc)。 list
+size は major 後の live tenured count に bounded (compact で stale entry が
+落ちる)。
+
+### 検証
+fault inject (cap を `1u << 7 = 128` に下げて再 build) で 4 bench
+(binary_trees / cons_list / list_alloc / remset_pressure) を実行、 全 oracle
+checksum pass。 cap 復元後 normal path も regression なし (matrix 比較)。
+
+### 影響
+これで 8 gen backend (mark_gen / mark_gen_inc / copy_gen / mark_compact_gen /
+mark_bump_gen / immix_gen / mark_bitmap_gen / mark_card_gen) 全てが bounded
+correctness を達成。 残る 7 backend (none / mark / copy / mark_compact /
+bump / immix) は非 gen (remset 不使用) なので overflow 概念なし。
+[gc_runtime.md §3](gc_runtime.md) の remset 表を更新。
+
 ## 2026-05-19 (37) — Perf 2: string literal const-fold + string_concat_dyn bench
 
 `baruby_parse.c::alloc_binop` で `node_str_lit + node_str_lit` の op を

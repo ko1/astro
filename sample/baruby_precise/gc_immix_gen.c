@@ -81,6 +81,16 @@ static char *nursery_base = NULL;
 static char *nursery_top  = NULL;
 static char *nursery_end  = NULL;
 
+/* --- Tenured-object enumeration list (iter 38).  Records every tenured
+ *     header at the point of promotion / pretenure.  Used by the heap-walk
+ *     fallback path when the remset overflows: we walk this list to find
+ *     dirty old objects when the remset_buf would have dropped pushes.
+ *     Compacted in sweep_major via mark_epoch so the list stays bounded by
+ *     live tenured count (not cumulative). */
+static GCHeader **tenured_objs  = NULL;
+static size_t     tenured_cnt   = 0;
+static size_t     tenured_capa  = 0;
+
 /* --- Remset (old objects holding young pointers) --- */
 static GCHeader **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
@@ -111,6 +121,7 @@ const char *aro_gc_backend_name = "immix_gen";
 
 static void minor_gc(VALUE *sp_top);
 static void major_gc(VALUE *sp_top);
+static void tenured_objs_push(GCHeader *h);
 
 void
 aro_gc_init(CTX *c)
@@ -245,6 +256,7 @@ large_alloc(AroGcKind kind, size_t payload_size)
     h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
     /* Pretenured straight into large/old → counts toward major trigger. */
     old_alloc_since_major += sizeof(GCHeader) + ALIGN8(payload_size); /* iter 36 fairness */
+    tenured_objs_push(h);  /* iter 38: heap-walk fallback enumeration */
     return (void *)(h + 1);
 }
 
@@ -361,26 +373,22 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
  * Write barrier
  * --------------------------------------------------------------------------- */
 
-/* iter 36 remset overflow guard.  Cap at 128 K entries.  Unlike mark_gen /
- * copy_gen / mark_compact_gen / mark_bump_gen we don't implement the
- * heap-walk fallback yet (immix's line-allocator makes O(heap) iteration
- * more involved — slots are variable-size within blocks, no global bump
- * pointer to walk).  Until that's wired up, abort on overflow with a
- * clear diagnostic.  In practice 128 K entries is far above any benign
- * workload's needs (binary_trees peaks at ~22). */
+/* iter 36 remset overflow guard.  Cap at 128 K entries.  iter 38 wired
+ * up a heap-walk fallback via the `tenured_objs[]` list: every tenured
+ * header is recorded at promotion / pretenure time, compacted via
+ * `mark_epoch` during major sweep, and walked here when the remset
+ * overflows.  Cost is O(|live tenured|) on the fallback path (vs O(|dirty|)
+ * on the normal path), but the work is bounded — no more abort. */
 #define MAX_REMSET_ENTRIES (1u << 17)
+static bool remset_overflow = false;
 
 static void
 remset_push(GCHeader *h)
 {
+    if (remset_overflow) return;   /* dirty bit already set in header */
     if (remset_cnt >= MAX_REMSET_ENTRIES) {
-        fprintf(stderr,
-            "baruby_gc=immix_gen: remset overflow (>%u entries).  "
-            "This backend has no heap-walk fallback yet — switch to "
-            "mark_gen / copy_gen / mark_compact_gen / mark_bump_gen for "
-            "remset-pressure workloads.\n",
-            MAX_REMSET_ENTRIES);
-        abort();
+        remset_overflow = true;
+        return;
     }
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
@@ -389,6 +397,17 @@ remset_push(GCHeader *h)
         if (!remset_buf) abort();
     }
     remset_buf[remset_cnt++] = h;
+}
+
+static void
+tenured_objs_push(GCHeader *const h)
+{
+    if (tenured_cnt >= tenured_capa) {
+        tenured_capa = tenured_capa ? tenured_capa * 2 : 1024;
+        tenured_objs = (GCHeader **)realloc(tenured_objs, tenured_capa * sizeof(GCHeader *));
+        if (!tenured_objs) abort();
+    }
+    tenured_objs[tenured_cnt++] = h;
 }
 
 void
@@ -456,6 +475,7 @@ forward_payload_nursery(void *p)
     *(void **)p = newp;
     /* Track promoted bytes for fair adaptive major threshold. */
     old_alloc_since_major += sizeof(GCHeader) + ALIGN8(size); /* iter 36 fairness */
+    tenured_objs_push(newh);  /* iter 38: heap-walk fallback enumeration */
     /* Queue the new tenured copy for outgoing-ref forwarding. */
     gray_push(newh);
     return newp;
@@ -519,12 +539,25 @@ minor_gc(VALUE *sp_top)
      *     onto the gray queue via forward_payload_nursery). */
     for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value(*p);
 
-    /* (2) Remset: dirty old objects holding nursery pointers. */
-    for (size_t i = 0; i < remset_cnt; i++) {
-        GCHeader *h = remset_buf[i];
-        if (h->flags & H_DIRTY) {
-            process_object_minor(h);
-            h->flags &= (uint8_t)~H_DIRTY;
+    /* (2) Remset: dirty old objects holding nursery pointers.  On
+     *     overflow, fall back to a heap walk over `tenured_objs[]` — the
+     *     dirty bits in headers are the source of truth. */
+    if (remset_overflow) {
+        for (size_t i = 0; i < tenured_cnt; i++) {
+            GCHeader *const h = tenured_objs[i];
+            if ((h->flags & H_OLD) && (h->flags & H_DIRTY)) {
+                process_object_minor(h);
+                h->flags &= (uint8_t)~H_DIRTY;
+            }
+        }
+        remset_overflow = false;
+    } else {
+        for (size_t i = 0; i < remset_cnt; i++) {
+            GCHeader *const h = remset_buf[i];
+            if (h->flags & H_DIRTY) {
+                process_object_minor(h);
+                h->flags &= (uint8_t)~H_DIRTY;
+            }
         }
     }
     remset_cnt = 0;
@@ -626,6 +659,21 @@ sweep_major(void)
             *link = lo->next;
             munmap(lo, lo->map_bytes);
         }
+    }
+    /* iter 38: compact tenured_objs[] by retaining only headers whose
+     * mark_epoch matches cur_epoch (i.e. survived this major).  Headers
+     * inside the arena that lost their last live line are now dead — the
+     * line space they occupied may be reused by hole_alloc later, so we
+     * must not keep stale pointers. */
+    {
+        size_t w = 0;
+        for (size_t r = 0; r < tenured_cnt; r++) {
+            GCHeader *const h = tenured_objs[r];
+            if (h->mark_epoch == cur_epoch) {
+                tenured_objs[w++] = h;
+            }
+        }
+        tenured_cnt = w;
     }
     block_cursor = 0;
     line_cursor  = 0;
