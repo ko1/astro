@@ -3,6 +3,42 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (36-final) — Perf 1 retry success (array literal 1-shot)
+
+iter 36 で 1 度試して plain で regression と判断した `node_ary_lit_N`、
+AOT mode で profiling し直したら違う picture だった:
+- plain: DISPATCH 系 50% — array literal の savings がそこに隠れる
+- AOT: DISPATCH SD bake で 7% に消える、 代わりに GC + memmove が 30% を
+  占める。 alloc 削減の効果が直に出る
+
+Retry の実装は前回と同じ (`node_ary_lit_{1,2,3,4}` + parser dispatch)。
+clean rebuild + median-of-3 で測定し直すと真の win が確認できた:
+
+plain mode (copy backend、 主な改善):
+- fib_pair: 0.87 → 0.77 (-11%)
+- gc_combined: 0.86 → 0.76 (-12%)
+- list_alloc: 0.82 → 0.72 (-12%)
+- interp_calc: 0.95 → 0.86 (-9%)
+
+AOT mode (immix_gen backend):
+- gc_combined: 0.28 → 0.19 (-32%)
+- list_alloc: 0.30 → 0.19 (-37%)
+- fib_pair: 0.31 → 0.26 (-16%)
+
+baruby (libgc) にも port:
+- binary_trees: 0.91 → 0.81 (-11%)
+- cons_list: 0.99 → 0.90 (-9%)
+- list_alloc: 1.03 → 0.96 (-7%)
+
+教訓:
+- **plain での regression 判断は noise + stale build の可能性高い**。
+  ASTro 系は dispatch overhead が大きいので、 mutator path の最適化は
+  AOT で見ないと真の signal が見えない。
+- 「reviewer の見立てが間違ってる」 と早合点する前に measurement methodology
+  を疑え。 clean rebuild + 複数 iteration の median を取る。
+
+commits: `5fc85d0` (baruby_precise)、 `25815ea` (baruby)。
+
 ## 2026-05-19 (36) — AOT 修復 + Remset cap + mark_card_gen (#15) + macro benches
 
 ### AOT mode 修復

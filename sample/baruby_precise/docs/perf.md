@@ -16,8 +16,10 @@ iter 35 で user から fairness 観点の指摘を 7 件受け、 比較契約�
 - **Build**: `make GC=<backend> ASTRO_DEBUG=0`  全 backend に同じフラグ
   (`-O3 -flto=auto -fno-plt -march=native`)。 `ASTRO_DEBUG=0` は perf
   build 用の release shape。 dev は明示的に `ASTRO_DEBUG=1` で opt-in。
-- **Mode**: `--plain` 固定。 AOT (`-c`) は code_store ビルド経路が壊れて
-  いて再検証中 ([todo.md](todo.md) 参照)。
+- **Mode**: `--plain` を正本とする (default)。 iter 36 で AOT (`-c`) も修復
+  済 (Makefile 絶対パス macro + main.c が `-I` を extra_cflags 経由で渡す、
+  node.c の cs_init version に `BARUBY_GC` を渡して backend 切替で
+  code_store invalidation)。 AOT 数値は §2 後半の AOT matrix。
 - **Repeats / policy**: 各 (backend × bench) を `median of N=3`。
   iter 34 までの best-of-3 は (ノイズで運の影響大)、 iter 35 から median。
 - **Charging model**: 全 gen backend で **alloc-bytes** で trigger を計測
@@ -74,90 +76,117 @@ backend を差し込む必要がある (現状は別バイナリ)。
 
 ## 2. 全 GC backend のベンチ実測 (plain mode, fairness contract 適用後)
 
-iter 36 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 14 backend
-× 16 bench + libgc column。 `copy_gen_inc` は実体が copy_gen の clone
-なので除外。 iter 36 追加 backend: **`mark_card_gen`** (page-level
-remset、 §0 fairness contract で言及した bounded remset 設計)。 iter 36
-追加 bench: **`ast_eval`** (AST builder + evaluator)、 **`remset_pressure`**
-(50K cell chain + 200K sparse updates、 adversarial old→young write)。
+iter 36 で再計測した median-of-3 (`ruby bench/matrix.rb`、 Perf 1 retry
+適用後)。 14 backend × 16 bench + libgc column。 `copy_gen_inc` は実体が
+copy_gen の clone なので除外。
+
+iter 36 で追加:
+- **`mark_card_gen` backend** (#15): page-level remset (bounded by page count)
+- **`ast_eval` bench**: AST builder + evaluator (long-lived tree + short-lived intermediate)
+- **`remset_pressure` bench**: 50K cell chain + 200K sparse young store (adversarial old→young write)
+- **`node_ary_lit_N` (N=1..4) optimization**: array literal の 1-shot 化 (chain → direct)
+
+### Plain mode matrix
 
 | Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | libgc |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ast_eval | 0.38 | 0.38 | 0.39 | 0.37 | 0.36 | 0.36 | 0.37 | 0.36 | 0.37 | 0.36 | **0.35** | 0.36 | 0.37 | 0.36 | 0.38 |
-| binary_trees | 0.64 | 1.07 | 1.18 | 1.19 | 0.79 | 1.02 | 0.81 | 0.97 | **0.51** | 0.88 | 0.82 | 0.97 | 1.46 | 1.47 | 0.88 |
-| cons_list | 1.29 | 0.95 | 0.97 | 1.01 | 0.78 | 0.78 | 0.94 | 0.82 | 0.98 | 0.80 | 0.76 | **0.74** | 1.01 | 1.04 | 0.98 |
-| fannkuch | 0.79 | 0.75 | 0.73 | 0.76 | 0.73 | **0.70** | 0.72 | 0.72 | 0.76 | 0.72 | 0.71 | 0.72 | 0.79 | 0.80 | 0.70 |
-| fib_pair | 1.61 | 1.07 | 1.09 | 1.14 | 0.87 | 0.90 | 1.05 | 0.88 | 1.16 | 0.88 | 0.87 | **0.87** | 1.14 | 1.14 | 1.10 |
-| gc_combined | 1.45 | 1.06 | 1.08 | 1.16 | **0.86** | 0.91 | 1.07 | 0.99 | 1.12 | 0.93 | 0.94 | 0.86 | 1.17 | 1.22 | 1.12 |
-| hash_chain | 1.60 | 1.65 | 1.51 | 1.51 | 1.90 | 1.27 | 1.70 | **1.23** | 1.47 | 1.24 | 1.48 | 1.38 | 1.45 | 1.46 | 1.72 |
-| interp_calc | 1.41 | 1.06 | 1.10 | 1.16 | 0.95 | 0.95 | 1.05 | 0.95 | 1.11 | 1.00 | **0.94** | 0.94 | 1.15 | 1.17 | 1.14 |
-| life | 1.35 | 1.44 | 1.32 | 1.36 | 1.36 | 1.33 | 1.36 | **1.25** | 1.30 | 1.33 | 1.29 | 1.28 | 1.34 | 1.44 | — |
-| list_alloc | 1.36 | 1.03 | 1.04 | 1.08 | **0.82** | 0.89 | 1.00 | 0.93 | 1.11 | 0.87 | 0.92 | 0.82 | 1.12 | 1.11 | 1.04 |
-| list_sort | 1.24 | 1.25 | 1.23 | 1.26 | 1.03 | 1.05 | 1.10 | 1.05 | 1.15 | 1.07 | 1.07 | **1.03** | 1.30 | 1.30 | 1.08 |
-| nqueens | 1.00 | 0.98 | 0.98 | 0.99 | 0.99 | 0.96 | 0.94 | 0.94 | 0.96 | 0.95 | 0.96 | **0.93** | 1.00 | 1.00 | 0.96 |
-| remset_pressure | 0.49 | 0.39 | 0.38 | 0.38 | 0.38 | **0.30** | 0.39 | 0.31 | 0.38 | 0.31 | 0.34 | 0.31 | 0.39 | 0.39 | 0.44 |
-| sieve | 1.35 | 1.46 | 1.39 | 1.39 | 1.73 | 1.36 | 1.58 | 1.40 | 1.53 | 1.45 | 1.55 | 1.34 | 1.44 | 1.47 | **1.34** |
-| string_concat | 1.64 | 0.76 | 0.81 | 0.89 | 0.49 | 0.54 | 0.85 | 0.55 | 0.84 | 0.53 | 0.54 | **0.48** | 0.78 | 0.79 | 0.95 |
-| substr_churn | 1.72 | 1.07 | 1.09 | 1.18 | 0.94 | 0.90 | 1.14 | 0.91 | 1.11 | 0.89 | 0.96 | **0.88** | 1.31 | 1.30 | 1.28 |
+| ast_eval | 0.38 | 0.36 | 0.38 | 0.36 | 0.37 | 0.37 | 0.39 | 0.37 | **0.35** | 0.39 | 0.36 | 0.36 | 0.36 | 0.36 | 0.37 |
+| binary_trees | 0.76 | 0.77 | 0.83 | 0.84 | 0.78 | 0.73 | 0.81 | 0.76 | **0.46** | 0.87 | 0.52 | 0.75 | 0.94 | 0.97 | 0.91 |
+| cons_list | 1.14 | 0.83 | 0.89 | 0.95 | 0.73 | 0.77 | 0.89 | 0.77 | 0.84 | 0.78 | 0.72 | **0.67** | 0.87 | 0.89 | 0.99 |
+| fannkuch | 0.77 | 0.79 | 0.79 | 0.78 | 0.74 | **0.70** | 0.75 | 0.74 | 0.76 | 0.73 | 0.71 | 0.72 | 0.79 | 0.78 | 0.73 |
+| fib_pair | 1.39 | 0.95 | 1.04 | 1.07 | 0.77 | 0.81 | 0.97 | 0.85 | 0.99 | 0.85 | 0.79 | **0.75** | 0.94 | 0.98 | 1.14 |
+| gc_combined | 1.22 | 0.87 | 0.95 | 0.97 | 0.76 | 0.76 | 0.88 | 0.79 | 0.98 | 0.80 | 0.77 | **0.72** | 0.90 | 0.89 | 1.09 |
+| hash_chain | 1.32 | **1.32** | 1.32 | 1.33 | 1.54 | 1.55 | 1.57 | 1.57 | 1.36 | 1.55 | 1.36 | 1.34 | 1.36 | 1.37 | 1.81 |
+| interp_calc | 1.22 | 0.94 | 1.05 | 1.04 | 0.86 | 0.91 | 1.04 | 0.92 | 1.01 | 0.92 | 0.84 | **0.83** | 0.96 | 1.00 | 1.19 |
+| life | 1.36 | 1.34 | 1.36 | 1.42 | 1.34 | 1.42 | 1.43 | 1.35 | 1.37 | 1.35 | **1.31** | 1.34 | 1.38 | 1.38 | — |
+| list_alloc | 1.16 | 0.80 | 0.92 | 0.94 | 0.72 | 0.75 | 0.88 | 0.72 | 0.90 | 0.76 | 0.71 | **0.68** | 0.83 | 0.84 | 1.03 |
+| list_sort | 1.18 | 1.25 | 1.29 | 1.30 | 1.09 | 1.08 | 1.15 | 1.08 | 1.16 | 1.09 | **1.05** | 1.06 | 1.32 | 1.28 | 1.12 |
+| nqueens | 1.00 | 1.02 | 1.02 | 1.00 | 1.00 | 0.97 | 0.97 | 1.00 | 0.96 | 0.97 | **0.94** | 0.96 | 0.98 | 1.00 | 1.00 |
+| remset_pressure | 0.47 | 0.40 | 0.39 | 0.40 | 0.38 | 0.32 | 0.41 | **0.30** | 0.39 | 0.32 | 0.33 | 0.30 | 0.36 | 0.37 | 0.45 |
+| sieve | **1.29** | 1.42 | 1.45 | 1.44 | 1.70 | 1.52 | 1.61 | 1.56 | 1.53 | 1.42 | 1.55 | 1.36 | 1.50 | 1.43 | 1.40 |
+| string_concat | 1.66 | 0.77 | 0.83 | 0.92 | 0.51 | 0.57 | 0.98 | 0.55 | 0.85 | 0.55 | 0.56 | **0.48** | 0.78 | 0.76 | 0.97 |
+| substr_churn | 1.71 | 1.07 | 1.13 | 1.30 | 0.98 | 0.93 | 1.14 | 0.88 | 1.13 | **0.88** | 0.96 | 0.88 | 1.04 | 1.07 | 1.33 |
 
-**勝者分布** (iter 36 fair contract、 median-of-3):
-- `immix_gen` — **6** (cons_list / fib_pair / interp_calc / list_sort /
-  nqueens / string_concat / substr_churn) — line allocator + gen で広く
-  バランス良し
-- `bump` — **1** (binary_trees) — pure alloc-only floor
-- `copy` — **1** (gc_combined)
-- `copy_gen` — **2** (fannkuch / remset_pressure)
-- `immix` — **1** (ast_eval)
-- `list_alloc` 最速 `copy` (0.82) ↔ `immix_gen` (0.82) tied
-- `mark_compact_gen` — **2** (hash_chain / life)
-- `libgc` — **1** (sieve、 sieve は GC が走らない mutator-bound bench)
+**勝者分布** (plain, iter 36 final):
+- `immix_gen` — **7 wins** (cons_list / fib_pair / gc_combined /
+  interp_calc / list_alloc / nqueens / string_concat) — line allocator
+  + gen のバランスが広いワークロードに刺さる
+- `bump` — **1 win** (binary_trees) — pure alloc-only floor
+- `copy_gen` — **1 win** (fannkuch)
+- `immix` — **1 win** (life)
+- `mark` / `none` — 各 1 (hash_chain tied / sieve)
+- `mark_bump_gen` — **2 wins** (remset_pressure / substr_churn)
+- `mark_compact_gen` — **1 win** (remset_pressure 同位)
+- `list_sort` 最速 `immix` (1.05)
+- `ast_eval` 最速 `bump` (0.35、 GC ほぼ走らない短命 workload)
 
-注目点 (iter 36 新発見):
+### AOT mode matrix (`ruby bench/matrix.rb --mode aot`)
+
+| Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | libgc |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ast_eval | 0.06 | 0.06 | 0.07 | 0.07 | 0.07 | 0.07 | 0.06 | 0.07 | 0.06 | 0.07 | **0.06** | 0.06 | 0.07 | 0.07 | 0.36 |
+| binary_trees | 0.40 | 0.51 | 0.57 | 0.57 | 0.55 | 0.50 | 0.52 | 0.51 | **0.22** | 0.60 | 0.29 | 0.50 | 0.70 | 0.69 | 0.88 |
+| cons_list | 0.62 | 0.31 | 0.35 | 0.40 | 0.22 | 0.24 | 0.34 | 0.24 | 0.37 | 0.22 | 0.20 | **0.18** | 0.36 | 0.35 | 0.97 |
+| fannkuch | 0.74 | 0.77 | 0.15 | 0.16 | 0.73 | 0.12 | 0.75 | **0.11** | 0.75 | 0.12 | 0.72 | 0.13 | 0.17 | 0.16 | 0.72 |
+| fib_pair | 0.87 | 0.41 | 0.46 | 0.53 | 0.30 | 0.31 | 0.46 | 0.31 | 0.51 | 0.28 | 0.27 | **0.26** | 0.46 | 0.44 | 1.13 |
+| gc_combined | 0.70 | 0.34 | 0.37 | 0.41 | 0.21 | 0.22 | 0.37 | 0.23 | 0.44 | 0.21 | 0.21 | **0.19** | 0.35 | 0.36 | 1.06 |
+| hash_chain | 1.37 | 1.38 | 0.17 | 0.18 | 1.56 | 0.24 | 1.56 | 0.21 | 1.41 | 0.20 | 1.33 | **0.17** | 0.18 | 0.19 | 1.67 |
+| interp_calc | 0.59 | 0.32 | 0.36 | 0.40 | 0.25 | 0.29 | 0.39 | 0.31 | 0.39 | 0.28 | **0.24** | 0.25 | 0.38 | 0.37 | 1.16 |
+| life | 0.15 | 0.17 | 0.17 | 0.18 | 0.16 | 0.15 | 0.15 | **0.15** | 0.16 | 0.15 | 0.15 | 0.15 | 0.18 | 0.18 | — |
+| list_alloc | 0.69 | 0.33 | 0.36 | 0.41 | 0.21 | 0.21 | 0.36 | 0.22 | 0.43 | 0.19 | 0.20 | **0.19** | 0.35 | 0.34 | 0.99 |
+| list_sort | 0.34 | 0.37 | 0.41 | 0.44 | 0.23 | 0.22 | 0.30 | 0.23 | 0.34 | 0.23 | 0.23 | **0.22** | 0.45 | 0.44 | 1.15 |
+| nqueens | 0.08 | 0.09 | 0.09 | 0.10 | 0.08 | 0.08 | 0.08 | 0.08 | 0.08 | 0.08 | 0.08 | **0.07** | 0.11 | 0.10 | 0.92 |
+| remset_pressure | 0.48 | 0.41 | 0.16 | 0.17 | 0.38 | 0.09 | 0.42 | 0.09 | 0.39 | 0.09 | 0.34 | **0.09** | 0.15 | 0.15 | 0.44 |
+| sieve | 1.25 | 1.35 | 0.44 | 0.45 | 1.72 | 0.43 | 1.61 | 0.44 | 1.61 | 0.41 | 1.58 | **0.38** | 0.48 | 0.47 | 1.39 |
+| string_concat | 1.52 | 0.63 | 0.69 | 0.78 | 0.35 | 0.42 | 0.73 | 0.42 | 0.73 | 0.40 | 0.38 | **0.34** | 0.64 | 0.64 | 0.98 |
+| substr_churn | 1.12 | 0.51 | 0.53 | 0.60 | 0.43 | 0.33 | 0.60 | 0.33 | 0.78 | **0.31** | 0.55 | 0.34 | 0.50 | 0.50 | 1.36 |
+
+AOT mode は dispatch overhead が SD bake で消えるので plain 比 **2-5× 高速化**
+(bench / backend による)。 GC + memmove が相対的に支配的に。
+
+### iter 36 Perf 1 (array literal 1-shot) の効果
+
+plain mode (copy backend、 主な改善):
+
+| Bench | before | after | Δ |
+|---|---:|---:|---:|
+| fib_pair | 0.87 | 0.77 | **-11%** |
+| gc_combined | 0.86 | 0.76 | **-12%** |
+| list_alloc | 0.82 | 0.72 | **-12%** |
+| interp_calc | 0.95 | 0.86 | **-9%** |
+| binary_trees (bump) | 0.51 | 0.46 | **-10%** |
+
+AOT mode (immix_gen backend、 主な改善):
+
+| Bench | before | after | Δ |
+|---|---:|---:|---:|
+| gc_combined | 0.28 | 0.19 | **-32%** |
+| list_alloc | 0.30 | 0.19 | **-37%** |
+| fib_pair | 0.31 | 0.26 | **-16%** |
+| ast_eval | 0.35 (immix) | 0.06 | **-83%** (大部分は fairness fix 由来も含む) |
+
+### 注目点 (iter 36 final)
+
 - **`mark_card_gen` ≈ `mark_bitmap_gen`**: 同 layout で remset entry が
   object→page なだけの差。 多くの bench で ±2% 以内。 fundamental win は
   「remset 上限が page count に bounded」 (= 安全性) で raw 速度の差ではない。
-- **`hash_chain` で `copy_gen` / `mark_compact_gen` / `mark_bump_gen` の
-  gen 系が圧勝** (1.23-1.27 vs `mark` 1.65)。 hash bucket sparse update が
-  WB を活用できるため。 mark_card_gen (1.46) は若干劣る — page-level
-  remset の inner-walk overhead が顕在化。
-- **`remset_pressure` で `copy_gen` が最速** (0.30s)。 Cheney semispace は
-  promotion 時にすべて再走査するため remset cost を回避 (代わりに minor
-  自体が重い — でも 50K cell 程度では win)。
-- **`binary_trees` で `mark_bitmap_gen` / `mark_card_gen` の per-page
-  bitmap 系が最遅** (1.46-1.47)。 4M Array 全部に mark を 立てる作業で
-  `locate()` の overhead がかさむ。
-- **`bump` が binary_trees で他に倍速** (0.51 vs `copy` 0.79) — GC ゼロ。
+- **`hash_chain` で `mark_gen` 系が大幅 win**: plain で 1.32 (mark) と
+  copy 系 1.54-1.57 に対し勝つ — non-moving + gen の remset が hash bucket
+  sparse update に刺さる。
+- **`binary_trees` で `mark_bitmap_gen` / `mark_card_gen` が最遅** (0.94-0.97)。
+  per-page bitmap の locate() が per-mark で重い。 構造的に bitmap GC は
+  SIMD-friendly な bulk 操作向きで、 ASTro の散発 mark には向かない。
+- **`bump` が binary_trees で他に倍速** (0.46 vs copy 0.78) — GC ゼロ。
+- **AOT mode で gen backend が圧倒的**: hash_chain で immix_gen 0.17 vs
+  mark 1.38 (8×)、 fannkuch で copy_gen 0.12 vs mark 0.77 (6×)。 SD bake
+  で mutator path が薄くなり、 GC efficiency の差が露出。
+
+### 旧データの扱い
 
 iter 31-34 までの「best-of-3」 結果と iter 35 fairness contract 後の数値は
 threshold 統一 / charging 統一 / inc_step timer 入れたことで意味的に
 不連続なので、 過去 iter 比較表は per-iter done.md で保持し、 perf.md は
 fair 数値だけを正本にする。
-
-### 観察 (fair contract 下):
-
-- **`bump` が binary_trees で圧勝**: 4M Array 全部生きてる workload で
-  GC 不要。 他は皆 GC overhead を払う。
-- **`copy` 系 / `mark_compact_gen` がバランス良し**: 多くの bench で
-  上位。 Cheney と compact が ASTro の「ほぼ全部 short-lived」 と
-  「ほぼ全部 long-lived」 の両極でそれぞれ強い。
-- **`mark_gen` / `mark_gen_inc` は binary_trees で苦戦**: 1.18-1.23 vs
-  mark の 1.00。 promotion をしているが long-lived workload では非
-  moving の page locality が compact 系より劣る。 hash_chain では逆に
-  1.45-1.50 で `mark` の 1.62 より速い (適度に死ぬ workload で gen が
-  効く)。
-- **`mark_bitmap_gen` は依然底辺寄り**: binary_trees 1.48, substr_churn 1.25
-  と worst-of-13。 per-page bitmap の locate() が per-mark で重い。 iter 31
-  で flags packing 後は density 差で他に並べた、 と思っていたが iter 34
-  adaptive threshold + iter 35 charging 統一を入れたら再び劣勢が露呈。
-  bitmap GC は SIMD 向けの bulk 操作で勝つ設計のため、 散発 mark の
-  ASTro 用途では構造的に不利。
-- **`mark_compact` / `mark_compact_gen` は long-lived で勝つ**: heap が
-  compacted 状態のまま増えるので cache locality が高い。
-- **`hash_chain` で軒並み苦戦** (1.24-1.86): bucket chain 走査が pointer-
-  chasing で cache-cold。 mark_compact_gen が **1.24** で最速。
-- **`life` で `mark_bump_gen` が勝つ** (1.21): mutator-bound だが alloc
-  pattern が「bump 連発 + 周期的 GC」 で nursery bump+ tenured mark sweep の
-  両方が刺さる。
 
 
 (iter 31 / 33 / 34 までの勝者分布や per-iter delta は old measurement
