@@ -262,15 +262,43 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 // Write barrier
 // ---------------------------------------------------------------------------
 
+/* iter 36 remset overflow guard — see gc_mark_gen.c for rationale. */
+#define MAX_REMSET_ENTRIES (1u << 17)
+static bool remset_overflow = false;
+
 static void
 remset_push(GCHeader *h)
 {
+    if (remset_overflow) return;
+    if (remset_cnt >= MAX_REMSET_ENTRIES) { remset_overflow = true; return; }
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
+        if (remset_capa > MAX_REMSET_ENTRIES) remset_capa = MAX_REMSET_ENTRIES;
         remset_buf = (GCHeader **)realloc(remset_buf, remset_capa * sizeof(GCHeader *));
         if (!remset_buf) abort();
     }
     remset_buf[remset_cnt++] = h;
+}
+
+static void process_object(GCHeader *h);
+static void
+remset_visit_minor(GCHeader *h)
+{
+    if (HDR_DIRTY(h)) {
+        process_object(h);
+        HDR_CLR_DIRTY(h);
+    }
+}
+
+static void
+remset_heap_walk(void (*visit)(GCHeader *))
+{
+    char *scan = tenured_base;
+    while (scan < tenured_top) {
+        GCHeader *h = (GCHeader *)scan;
+        visit(h);
+        scan += sizeof(GCHeader) + ALIGN8(h->size);
+    }
 }
 
 void
@@ -419,11 +447,16 @@ minor_gc(VALUE *sp_top)
     for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(*p);
 
     // (2) Remset: dirty tenured objects may hold nursery refs.
-    for (size_t i = 0; i < remset_cnt; i++) {
-        GCHeader *h = remset_buf[i];
-        if (HDR_DIRTY(h)) {
-            process_object(h);
-            HDR_CLR_DIRTY(h);
+    if (remset_overflow) {
+        remset_heap_walk(remset_visit_minor);
+        remset_overflow = false;
+    } else {
+        for (size_t i = 0; i < remset_cnt; i++) {
+            GCHeader *h = remset_buf[i];
+            if (HDR_DIRTY(h)) {
+                process_object(h);
+                HDR_CLR_DIRTY(h);
+            }
         }
     }
     remset_cnt = 0;

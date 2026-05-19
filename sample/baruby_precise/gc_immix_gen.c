@@ -361,11 +361,30 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
  * Write barrier
  * --------------------------------------------------------------------------- */
 
+/* iter 36 remset overflow guard.  Cap at 128 K entries.  Unlike mark_gen /
+ * copy_gen / mark_compact_gen / mark_bump_gen we don't implement the
+ * heap-walk fallback yet (immix's line-allocator makes O(heap) iteration
+ * more involved — slots are variable-size within blocks, no global bump
+ * pointer to walk).  Until that's wired up, abort on overflow with a
+ * clear diagnostic.  In practice 128 K entries is far above any benign
+ * workload's needs (binary_trees peaks at ~22). */
+#define MAX_REMSET_ENTRIES (1u << 17)
+
 static void
 remset_push(GCHeader *h)
 {
+    if (remset_cnt >= MAX_REMSET_ENTRIES) {
+        fprintf(stderr,
+            "baruby_gc=immix_gen: remset overflow (>%u entries).  "
+            "This backend has no heap-walk fallback yet — switch to "
+            "mark_gen / copy_gen / mark_compact_gen / mark_bump_gen for "
+            "remset-pressure workloads.\n",
+            MAX_REMSET_ENTRIES);
+        abort();
+    }
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
+        if (remset_capa > MAX_REMSET_ENTRIES) remset_capa = MAX_REMSET_ENTRIES;
         remset_buf = (GCHeader **)realloc(remset_buf, remset_capa * sizeof(GCHeader *));
         if (!remset_buf) abort();
     }

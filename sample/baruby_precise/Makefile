@@ -64,12 +64,13 @@ GC_NUM_bump             := 10
 GC_NUM_mark_bump_gen    := 11
 GC_NUM_immix            := 12
 GC_NUM_immix_gen        := 13
-GC_NUM_mark_bitmap_gen      := 14
+GC_NUM_mark_bitmap_gen  := 14
+GC_NUM_mark_card_gen    := 15
 GC_NUM := $(GC_NUM_$(GC))
 GC_SRC := gc_$(GC).c
 
 ifeq ($(GC_NUM),)
-$(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen)
+$(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen)
 endif
 
 # Track current GC selection so a `make GC=foo` after `make GC=bar` actually

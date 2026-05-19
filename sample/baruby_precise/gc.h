@@ -78,6 +78,7 @@ typedef intptr_t VALUE;
 #define BARUBY_GC_IMMIX            12
 #define BARUBY_GC_IMMIX_GEN        13
 #define BARUBY_GC_MARK_BITMAP_GEN      14
+#define BARUBY_GC_MARK_CARD_GEN        15
 
 #ifndef BARUBY_GC
 #  define BARUBY_GC BARUBY_GC_COPY
@@ -93,7 +94,8 @@ typedef intptr_t VALUE;
     BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN || \
     BARUBY_GC == BARUBY_GC_MARK_BUMP_GEN    || \
     BARUBY_GC == BARUBY_GC_IMMIX_GEN        || \
-    BARUBY_GC == BARUBY_GC_MARK_BITMAP_GEN
+    BARUBY_GC == BARUBY_GC_MARK_BITMAP_GEN  || \
+    BARUBY_GC == BARUBY_GC_MARK_CARD_GEN
 #  define BARUBY_GC_HAS_WB 1
 #endif
 

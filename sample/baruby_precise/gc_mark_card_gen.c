@@ -1,4 +1,4 @@
-// gc_mark_bitmap.c — backend #14: sticky mark&sweep with per-page bitmaps.
+// gc_mark_card_gen.c — backend #15: card (page)-level remset variant.
 //
 // Semantically equivalent to gc_mark_gen.c (sticky mark-bits / non-moving
 // promotion, remset, in-place "promote"), but with two structural changes:
@@ -84,7 +84,8 @@ typedef struct Page {
     struct Page *next;
     uint16_t class_idx;
     uint16_t n_slots;
-    uint32_t _pad;
+    uint8_t  card_dirty;   /* iter 36 card_gen: 1 if this page is in remset */
+    uint8_t  _pad[3];
     uint8_t  mark_bm[BITMAP_BYTES];
     uint8_t  old_bm[BITMAP_BYTES];
     uint8_t  dirty_bm[BITMAP_BYTES];
@@ -137,14 +138,16 @@ static GCHeader **gray_buf  = NULL;
 static size_t     gray_cnt  = 0;
 static size_t     gray_capa = 0;
 
-/* Remset: list of dirty old GCHeader*s (we re-derive page from ptr) */
-static GCHeader **remset_buf  = NULL;
+/* Remset: list of dirty Pages (cards).  Each page is pushed at most once
+ * (dedup via Page::card_dirty flag).  Size bounded by total page count
+ * — adversarial old→young write workloads can't blow up the remset. */
+static Page     **remset_buf  = NULL;
 static size_t     remset_cnt  = 0;
 static size_t     remset_capa = 0;
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
-const char *aro_gc_backend_name = "mark_bitmap_gen";
+const char *aro_gc_backend_name = "mark_card_gen";
 
 void
 aro_gc_init(CTX *c)
@@ -153,7 +156,7 @@ aro_gc_init(CTX *c)
     if (getenv("BARUBY_GC_STRESS")) {
         aro_gc_stress = 1;
         old_major_threshold = 0;
-        fprintf(stderr, "[baruby_gc=mark_bitmap_gen] STRESS mode: collect on every alloc\n");
+        fprintf(stderr, "[baruby_gc=mark_card_gen] STRESS mode: collect on every alloc\n");
     }
 }
 
@@ -430,29 +433,40 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
  * Write barrier
  * --------------------------------------------------------------------------- */
 
-/* iter 36 remset overflow guard.  Cap at 128 K entries.  Dirty bit lives
- * in per-page bitmap here; the fallback would walk every page's dirty_bm
- * (TODO).  Until then, abort with a clear diagnostic on overflow. */
-#define MAX_REMSET_ENTRIES (1u << 17)
-
+/* card_gen: remset is page-level, bounded by total page count.  No
+ * MAX_REMSET_ENTRIES cap needed — heap_size / 16 KiB = max # entries. */
 static void
-remset_push(GCHeader *h)
+remset_push_page(Page *pg)
 {
-    if (remset_cnt >= MAX_REMSET_ENTRIES) {
-        fprintf(stderr,
-            "baruby_gc=mark_bitmap_gen: remset overflow (>%u entries).  "
-            "Switch to mark_gen / copy_gen / mark_compact_gen / mark_bump_gen "
-            "for remset-pressure workloads.\n",
-            MAX_REMSET_ENTRIES);
-        abort();
-    }
+    /* No overflow handling needed: dedup via card_dirty + total page count
+     * is the natural cap.  realloc 2× growth from 256 baseline. */
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
-        if (remset_capa > MAX_REMSET_ENTRIES) remset_capa = MAX_REMSET_ENTRIES;
-        remset_buf = (GCHeader **)realloc(remset_buf, remset_capa * sizeof(GCHeader *));
+        remset_buf = (Page **)realloc(remset_buf, remset_capa * sizeof(Page *));
         if (!remset_buf) abort();
     }
-    remset_buf[remset_cnt++] = h;
+    remset_buf[remset_cnt++] = pg;
+}
+
+/* Set per-slot dirty bit AND ensure the holder's page is in remset. */
+static inline void
+mark_dirty(GCHeader *hh)
+{
+    Page *pg; size_t idx;
+    if (locate(hh, &pg, &idx)) {
+        if (!bm_get(pg->dirty_bm, idx)) {
+            bm_set(pg->dirty_bm, idx);
+        }
+        if (!pg->card_dirty) {
+            pg->card_dirty = 1;
+            remset_push_page(pg);
+        }
+    } else {
+        LargeObj *lo = find_large(hh);
+        if (lo && !lo->dirty) lo->dirty = true;
+        /* Large objects are scanned in minor's separate large-list walk;
+         * no remset entry needed (large list is itself iterable). */
+    }
 }
 
 void
@@ -461,10 +475,7 @@ aro_gc_wb(void *holder, VALUE *slot, VALUE v)
     *slot = v;
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (get_old(hh) && !get_dirty(hh)) {
-        set_dirty(hh);
-        remset_push(hh);
-    }
+    if (get_old(hh)) mark_dirty(hh);
 }
 
 void
@@ -473,10 +484,7 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
-    if (get_old(hh) && !get_dirty(hh)) {
-        set_dirty(hh);
-        remset_push(hh);
-    }
+    if (get_old(hh)) mark_dirty(hh);
 }
 
 /* ---------------------------------------------------------------------------
@@ -679,13 +687,33 @@ gc_collect_minor(VALUE *sp_top)
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
 
-    /* Remset: old objects with heap writes since last minor. */
+    /* Remset (card_gen): iterate each dirty page, then walk all slots
+     * inside it.  For each slot whose dirty_bm bit is set, scan_outgoing.
+     * Two-stage enumeration: outer loop O(|dirty cards|), inner loop
+     * O(slots/page).  Total work proportional to "amount of card-area
+     * that has any dirty objects", which is bounded by # pages × slots/
+     * page = total heap slots.  This is fundamentally O(|dirty cards| ×
+     * slots/page) — within a card we MUST scan all slots because we don't
+     * know in advance which are dirty (no per-page dedicated dirty-list). */
     for (size_t i = 0; i < remset_cnt; i++) {
-        GCHeader *h = remset_buf[i];
-        Page *pg; size_t idx;
-        if (locate(h, &pg, &idx)) bm_clr(pg->dirty_bm, idx);
-        else { LargeObj *lo = find_large(h); if (lo) lo->dirty = false; }
-        scan_outgoing(h);
+        Page *pg = remset_buf[i];
+        pg->card_dirty = 0;          /* re-armable for next cycle */
+        size_t sb = size_class_bytes[pg->class_idx];
+        size_t n = pg->n_slots;
+        char *slot = (char *)pg + SLOTS_REGION_OFFSET;
+        for (size_t j = 0; j < n; j++, slot += sb) {
+            if (!bm_get(pg->dirty_bm, j)) continue;
+            bm_clr(pg->dirty_bm, j);
+            scan_outgoing((GCHeader *)slot);
+        }
+    }
+    /* Large dirty objects: walk the large list separately (cheap, list
+     * is short) since large objects aren't part of any page. */
+    for (LargeObj *lo = large_head; lo; lo = lo->next) {
+        if (lo->dirty) {
+            lo->dirty = false;
+            scan_outgoing((GCHeader *)(lo + 1));
+        }
     }
     remset_cnt = 0;
     process_gray();

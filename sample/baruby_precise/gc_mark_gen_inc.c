@@ -329,15 +329,51 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 // Write barrier with SATB during inc_marking
 // ---------------------------------------------------------------------------
 
+/* iter 36 remset overflow guard — see gc_mark_gen.c for rationale. */
+#define MAX_REMSET_ENTRIES (1u << 17)
+static bool remset_overflow = false;
+
 static void
 remset_push(GCHeader *h)
 {
+    if (remset_overflow) return;
+    if (remset_cnt >= MAX_REMSET_ENTRIES) { remset_overflow = true; return; }
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
+        if (remset_capa > MAX_REMSET_ENTRIES) remset_capa = MAX_REMSET_ENTRIES;
         remset_buf = (GCHeader **)realloc(remset_buf, remset_capa * sizeof(GCHeader *));
         if (!remset_buf) abort();
     }
     remset_buf[remset_cnt++] = h;
+}
+
+static void scan_outgoing(GCHeader *h);
+static void
+remset_visit_minor(GCHeader *h)
+{
+    HDR_CLR_DIRTY(h);
+    scan_outgoing(h);
+}
+
+static void
+remset_heap_walk(void (*visit)(GCHeader *))
+{
+    for (int c = 0; c < NUM_SIZE_CLASSES; c++) {
+        size_t sb = size_class_bytes[c];
+        size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
+        for (Page *p = page_head[c]; p; p = p->next) {
+            char *slot = (char *)p + PAGE_HDR_BYTES;
+            for (size_t i = 0; i < n_slots; i++, slot += sb) {
+                GCHeader *h = (GCHeader *)slot;
+                if (HDR_KIND(h) == KIND_FREE) continue;
+                if (HDR_OLD(h) && HDR_DIRTY(h)) visit(h);
+            }
+        }
+    }
+    for (LargeObj *lo = large_head; lo; lo = lo->next) {
+        GCHeader *h = (GCHeader *)(lo + 1);
+        if (HDR_OLD(h) && HDR_DIRTY(h)) visit(h);
+    }
 }
 
 void
@@ -529,10 +565,15 @@ minor_gc(VALUE *sp_top)
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
 
-    for (size_t i = 0; i < remset_cnt; i++) {
-        GCHeader *h = remset_buf[i];
-        HDR_CLR_DIRTY(h);
-        scan_outgoing(h);
+    if (remset_overflow) {
+        remset_heap_walk(remset_visit_minor);
+        remset_overflow = false;
+    } else {
+        for (size_t i = 0; i < remset_cnt; i++) {
+            GCHeader *h = remset_buf[i];
+            HDR_CLR_DIRTY(h);
+            scan_outgoing(h);
+        }
     }
     remset_cnt = 0;
     process_gray();
