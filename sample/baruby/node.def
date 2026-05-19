@@ -628,6 +628,47 @@ node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *re
     return RESULT_OK(a);
 }
 
+// Iter 36 Perf 1 retry (ported from baruby_precise): direct array literal
+// construction for small N.  Parser emits these instead of ary_new + push
+// chain when literal has 1..4 elements.  Most beneficial in AOT mode where
+// dispatch is baked into SDs.
+NODE_DEF
+node_ary_lit_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e0)
+{
+    VALUE items[1] = { UNWRAP(EVAL_ARG(c, e0)) };
+    return RESULT_OK(baruby_ary_new_from(items, 1));
+}
+
+NODE_DEF
+node_ary_lit_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e0, NODE *e1)
+{
+    VALUE items[2];
+    items[0] = UNWRAP(EVAL_ARG(c, e0));
+    items[1] = UNWRAP(EVAL_ARG(c, e1));
+    return RESULT_OK(baruby_ary_new_from(items, 2));
+}
+
+NODE_DEF
+node_ary_lit_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e0, NODE *e1, NODE *e2)
+{
+    VALUE items[3];
+    items[0] = UNWRAP(EVAL_ARG(c, e0));
+    items[1] = UNWRAP(EVAL_ARG(c, e1));
+    items[2] = UNWRAP(EVAL_ARG(c, e2));
+    return RESULT_OK(baruby_ary_new_from(items, 3));
+}
+
+NODE_DEF
+node_ary_lit_4(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *e0, NODE *e1, NODE *e2, NODE *e3)
+{
+    VALUE items[4];
+    items[0] = UNWRAP(EVAL_ARG(c, e0));
+    items[1] = UNWRAP(EVAL_ARG(c, e1));
+    items[2] = UNWRAP(EVAL_ARG(c, e2));
+    items[3] = UNWRAP(EVAL_ARG(c, e3));
+    return RESULT_OK(baruby_ary_new_from(items, 4));
+}
+
 NODE_DEF
 node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, const char *bytes, uint32_t len)
 {
