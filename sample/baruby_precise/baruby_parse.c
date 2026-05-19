@@ -499,8 +499,22 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_ARRAY_NODE: {
           pm_array_node_t *n = (pm_array_node_t *)(node);
+          size_t sz = n->elements.size;
+          // Iter 36 retry Perf 1: direct 1-shot construction for small N.
+          // Saves alloc+wb overhead vs ary_new + ary_push chain.  Most
+          // beneficial in AOT mode where dispatch is baked into SDs.
+          if (sz == 1) return ALLOC_node_ary_lit_1(TRANSDUCE(n->elements.nodes[0]));
+          if (sz == 2) return ALLOC_node_ary_lit_2(TRANSDUCE(n->elements.nodes[0]),
+                                                    TRANSDUCE(n->elements.nodes[1]));
+          if (sz == 3) return ALLOC_node_ary_lit_3(TRANSDUCE(n->elements.nodes[0]),
+                                                    TRANSDUCE(n->elements.nodes[1]),
+                                                    TRANSDUCE(n->elements.nodes[2]));
+          if (sz == 4) return ALLOC_node_ary_lit_4(TRANSDUCE(n->elements.nodes[0]),
+                                                    TRANSDUCE(n->elements.nodes[1]),
+                                                    TRANSDUCE(n->elements.nodes[2]),
+                                                    TRANSDUCE(n->elements.nodes[3]));
           NODE *acc = ALLOC_node_ary_new();
-          for (size_t i = 0; i < n->elements.size; i++) {
+          for (size_t i = 0; i < sz; i++) {
               acc = ALLOC_node_ary_push(acc, TRANSDUCE(n->elements.nodes[i]));
           }
           return acc;

@@ -624,6 +624,44 @@ node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
     return RESULT_OK(sp[0]);
 }
 
+// Iter 36 retry (perf 1): direct array literal construction for small N.
+// Parser emits these instead of ary_new + ary_push chain.  Plain mode
+// regressed (icache from new dispatch entries), but AOT mode bakes
+// dispatch into SD bodies so the per-node overhead disappears.
+NODE_DEF
+node_ary_lit_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *e0)
+{
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, e0, sp));
+    return RESULT_OK(baruby_ary_new_from(sp, 1, sp + 1));
+}
+
+NODE_DEF
+node_ary_lit_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *e0, NODE *e1)
+{
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, e0, sp));
+    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, e1, sp + 1));
+    return RESULT_OK(baruby_ary_new_from(sp, 2, sp + 2));
+}
+
+NODE_DEF
+node_ary_lit_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *e0, NODE *e1, NODE *e2)
+{
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, e0, sp));
+    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, e1, sp + 1));
+    sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, e2, sp + 2));
+    return RESULT_OK(baruby_ary_new_from(sp, 3, sp + 3));
+}
+
+NODE_DEF
+node_ary_lit_4(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *e0, NODE *e1, NODE *e2, NODE *e3)
+{
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, e0, sp));
+    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, e1, sp + 1));
+    sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, e2, sp + 2));
+    sp[3] = UNWRAP(BARUBY_EVAL_ARG(c, e3, sp + 3));
+    return RESULT_OK(baruby_ary_new_from(sp, 4, sp + 4));
+}
+
 NODE_DEF
 node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *bytes, uint32_t len)
 {
