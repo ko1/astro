@@ -3,6 +3,81 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (44) — slab 系 5 backend の size_class_for を O(1) 化
+
+iter 43 で region-based 9 backend に cold-path split を適用。 slab/page 系
+5 backend (`mark` / `mark_gen` / `mark_bitmap_gen` / `mark_card_gen` /
+`mark_freelist`) でも同様の inline 化最適化を試みた。 ただし bump-based と
+違い slab には size class lookup が必要で、 これが aro_gc_alloc body を
+肥大化させて inliner budget を越えていたのが root cause だった。
+
+### 元の `size_class_for`
+```c
+static int
+size_class_for(size_t slot_total)
+{
+    for (int i = 0; i < NUM_SIZE_CLASSES; i++) {
+        if (slot_total <= size_class_bytes[i]) return i;
+    }
+    return -1;
+}
+```
+これが gcc に 9 個の cmp+jbe に展開され、 aro_gc_alloc body の中に
+**30+ bytes** の dead code として残る (典型的に最初の cmp で return するが
+コンパイラはすべての分岐を出力)。
+
+### iter 44 の置換
+9 size classes (32, 64, 128, 256, 512, 1024, 2048, 3072, 4096) は 3072
+以外すべて power-of-2。 ceil(log2) で直接 index 計算可能:
+
+```c
+static inline int
+size_class_for(size_t slot_total)
+{
+    if (slot_total <= 32) return 0;
+    if (slot_total > 4096) return -1;
+    int bits = 64 - __builtin_clzll(slot_total - 1);
+    int c = bits - 5;
+    if (c == 7 && slot_total > 3072) c = 8;
+    return c;
+}
+```
+3072 のみ非 power-of-2 だが one-line conditional で吸収。 BSR/LZCNT 命令 1
+つ + 簡単な arith で 9 cmp の検索が 5 命令に圧縮。
+
+### 効果
+mark backend:
+- `aro_gc_alloc` body: **0x1b8 → 0x15c (-21%)** 縮小
+- `baruby_ary_new` で `call aro_gc_alloc` が消えて **`aro_gc_alloc` 完全 inline**
+  (constprop で size class 0 が定数として伝搬、 直接 `call slab_alloc` に圧縮)
+- `baruby_str_new` も同様 (BaString header alloc 部のみ inline)
+
+plain matrix iter 43 → iter 44:
+| Bench | iter 43 | iter 44 | Δ |
+|---|---:|---:|---:|
+| mark/list_alloc | 0.77 | 0.71 | **-8%** |
+| mark/gc_combined | 0.84 | 0.78 | **-7%** |
+| mark/cons_list | 0.74 | 0.70 | **-5%** |
+| mark/string_concat | 0.25 | 0.23 | **-8%** |
+| mark/binary_trees | 0.74 | 0.72 | -3% |
+| mark_gen/list_alloc | 0.86 | 0.79 | **-8%** |
+| mark_gen/binary_trees | 0.80 | 0.76 | -5% |
+
+`mark_bitmap_gen` / `mark_card_gen` は bitmap/card 操作が aro_gc_alloc 内に
+残るため、 size_class_for を縮めても inline 閾値には届かず effect 小。
+`mark_freelist` は元から body lean で変化なし。
+
+### 学び
+- gcc の inliner heuristic は body size に敏感。 細かな冗長コード (9-cmp
+  linear search) の蓄積が外部 inline の成否を分ける
+- LZCNT/BSR 命令の活用で table lookup や linear scan を O(1) 化できる
+  ケースは多い (今回の class lookup、 hash bucket、 PRNG なども候補)
+- iter 43 の cold-split + iter 44 の clz 置換は **同じ目的 (aro_gc_alloc
+  inline 成立) の補完的アプローチ**: cold-split は call site 不変で
+  callee 縮小、 clz 置換は callee body の主要枝を直接縮める
+
+commits: `e252e66` (code)、 docs 別 commit。
+
 ## 2026-05-19 (43) — Cold-path split for 9 region-based GC backends
 
 ユーザ提案: `gc_bump` 等の bump alloc hot path に hidden な cold body
