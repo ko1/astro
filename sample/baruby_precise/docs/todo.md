@@ -41,12 +41,16 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       する (異 bench の SD pollution で fib_pair が 0.5 → 1.0s に劣化する
       問題を回避)。 iter 36 fair-AOT 結果は bench-results/aot/matrix.md。
 
-- [ ] **Remset サイズ上限なし (脆弱性)** — `remset_push` は 2× realloc 成長で
-      cap も flush もない。 現 bench では peak |remset| ≤ 22 entries だが、
-      長寿命 dict / cache を sparse update する workload で線形に膨張する
-      可能性。 短期対策: `MAX_REMSET=128K entries` cap、 越えたら minor を
-      強制発火 (空にする)。 長期: card-marking 別 backend を追加して
-      object-level remset と比較。
+- [x] ~~**Remset サイズ上限なし**~~ — iter 36 解決。 全 7 gen backend で
+      `MAX_REMSET=128K` cap、 5 backend は heap-walk fallback、 残 2 は
+      明示 abort。 加えて `mark_card_gen` (#15) を page-level remset で
+      bounded 化。
+- [ ] **配列リテラル / 文字列 chain の 1-shot 化** — iter 36 reviewer
+      推奨。 配列は `node_ary_lit_N` で試したが extra dispatch + sp spill で
+      regression (5-15%)。 単純 helper 追加では win せず。 真の win には
+      LTO-friendly な inlined helper か parser-level constant folding が
+      必要。 文字列 `+` chain も同様の構造なので一旦 pending。 追求時は
+      まず perf record で「現状どこに時間が消えているか」 を実証してから。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で

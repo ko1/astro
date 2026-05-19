@@ -273,24 +273,154 @@ overhead + WB API の zero-cost 化」 を測る floor として有用。
 
 ### Remset 設計 (iter 36)
 
-全 gen backend は object-level dirty bit + 動的配列 remset を採用。 iter 36
-で以下を強化:
-- **Overflow cap**: `MAX_REMSET_ENTRIES = 128K (= 1 MiB ptr 配列)`。 越えたら
-  `remset_overflow` フラグを立てて push を skip (dirty bit は header に残す)。
-- **Heap-walk fallback** (mark_gen / mark_gen_inc / copy_gen / mark_compact_gen
-  / mark_bump_gen): overflow 時、 minor が全 page を O(heap) で走査して dirty
-  olds を見つける。 bounded fallback。
-- **Abort on overflow** (immix_gen / mark_bitmap_gen): heap walk 実装が複雑な
-  ため未対応。 明示的に abort + diagnostic で誤動作回避。
-- **`mark_card_gen` (#15)**: 根本対策 — remset entry が page-level なので
-  容量爆発しない。 Inner walk は per-page で O(slots/page) 一定。 ユーザー
-  提案 (iter 36 "card (page) ごとに remset に入れて 2段階 で dirty 列挙")
-  に基づく設計。
+全 gen backend は **explicit remembered set** (= 動的配列) を採用。 共通骨格:
+```c
+// Write barrier (post-write、 holder = source object)
+void aro_gc_wb(void *holder, VALUE *slot, VALUE v) {
+    *slot = v;
+    if (holder == NULL) return;
+    GCHeader *hh = (GCHeader *)holder - 1;
+    if (IS_OLD(hh) && !IS_DIRTY(hh)) {
+        SET_DIRTY(hh);          // dedup flag — 同 holder への 複数書きを 1 push に
+        remset_push(hh);        // 配列に explicit 記録
+    }
+}
 
-実際の現 bench での peak |remset| は:
-- binary_trees: ~22 (mark_gen)、 2 pages (mark_card_gen)
-- hash_chain, string_concat: 0
-- remset_pressure: 数千 entries 級 (mark_gen)、 2 pages (mark_card_gen)
+// Minor GC: 配列を順走査するだけ。 heap 全体は scan しない。
+for (i = 0; i < remset_cnt; i++) {
+    GCHeader *h = remset_buf[i];
+    CLR_DIRTY(h);
+    scan_outgoing(h);   // → young 参照を mark / forward
+}
+remset_cnt = 0;
+```
+
+### Backend ごとの remset 実装一覧
+
+| Backend | Remset entry 型 | Dirty bit 位置 | Overflow 対応 | 特殊処理 |
+|---|---|---|---|---|
+| `mark_gen` | `GCHeader **` (object) | flags bit 5 (`HDR_DIRTY_BIT=0x20`) | cap 128K + heap-walk fallback | — |
+| `mark_gen_inc` | `GCHeader **` (object) | 同上 | cap 128K + heap-walk fallback | **SATB barrier**: inc_marking 中は上書きされる旧値を `mark_value_satb` で snapshot |
+| `copy_gen` | `GCHeader **` (object) | flags bit 4 (`HDR_DIRTY_BIT=0x10`、 marked 不要なので bit 3-4 で済む) | cap 128K + heap-walk fallback (tenured 全 region 走査) | — |
+| `mark_compact_gen` | `GCHeader **` (object) | flags bit 5 (`HDR_DIRTY_BIT=0x20`、 marked+old+dirty 同居) | cap 128K + heap-walk fallback (tenured 全 region) | — |
+| `mark_bump_gen` | `GCHeader **` (object) | flags bit 5 | cap 128K + heap-walk fallback (tenured 全 region) | — |
+| `immix_gen` | `GCHeader **` (object) | flags bit 4 (`H_DIRTY=0x10`) | cap 128K + **abort on overflow** (line allocator の dirty walk が複雑で未実装) | mark_epoch も同 byte に同居 |
+| `mark_bitmap_gen` | `GCHeader **` (object) | **per-page bitmap** (`dirty_bm[64]`) | cap 128K + **abort on overflow** | dirty bit が GCHeader でなく Page 構造体内 → `locate(h)` で page+slot index 解決 |
+| `mark_card_gen` ★ | **`Page **`** (card) | per-page `card_dirty` flag (Page 構造体) + per-slot `dirty_bm` (内部 walk 用) | **不要** (remset 上限 = heap_size / 16 KiB pages で自然 bounded) | iter 36 user 提案の 2 段階 enumeration |
+
+### 各 backend の WB 抜粋 + minor scan
+
+#### `mark_gen` / `mark_gen_inc` (slab + young_objs[])
+```c
+void aro_gc_wb(void *holder, VALUE *slot, VALUE v) {
+    *slot = v;
+    if (!holder) return;
+    GCHeader *hh = (GCHeader *)holder - 1;
+    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        HDR_SET_DIRTY(hh);
+        remset_push(hh);
+    }
+}
+// minor: remset_buf を走査して scan_outgoing
+```
+`mark_gen_inc` は冒頭に `if (inc_marking) { mark_value_satb(*slot); }` を追加。
+inc_marking 中は上書きされる旧値を保護 (SATB: snapshot-at-the-beginning)。
+
+#### `copy_gen` / `mark_compact_gen` / `mark_bump_gen` (bump nursery + tenured)
+基本パターン同じ。 minor で `process_object(h)` を呼んで young refs を forward
+(copy_gen) または mark + Cheney scan (mark_bump_gen) または slide-prep
+(mark_compact_gen) する。
+
+#### `immix_gen` (block/line region + nursery)
+`hh->flags & H_OLD` で判定。 flags byte は kind+old+dirty 同居 (8B header)。
+minor の `process_object` は forward (immix_gen は minor で nursery → tenured
+copy)。
+
+#### `mark_bitmap_gen` (per-page bitmap)
+header に dirty bit を持たない:
+```c
+void aro_gc_wb(void *holder, VALUE *slot, VALUE v) {
+    *slot = v;
+    if (!holder) return;
+    GCHeader *hh = (GCHeader *)holder - 1;
+    if (get_old(hh) && !get_dirty(hh)) {
+        set_dirty(hh);          // = bm_set(page->dirty_bm, idx)
+        remset_push(hh);
+    }
+}
+// minor: walk remset_buf, scan_outgoing for each
+```
+`get_old` / `get_dirty` / `set_dirty` は `locate(h)` で page + slot_idx を
+求めて bitmap 操作。 `locate` 自身は 16 KiB-aligned page + slot_shift table
+で軽量化 (~5 命令)。
+
+#### `mark_card_gen` (page-level remset = 2 段階 enumeration) ★
+remset entry が **Page***。 minor は 2 段階で dirty objects を発見:
+```c
+// WB
+void aro_gc_wb(void *holder, VALUE *slot, VALUE v) {
+    *slot = v;
+    if (!holder) return;
+    GCHeader *hh = (GCHeader *)holder - 1;
+    if (get_old(hh)) {
+        Page *pg; size_t idx; locate(hh, &pg, &idx);
+        bm_set(pg->dirty_bm, idx);    // per-slot dirty (内部 walk 用)
+        if (!pg->card_dirty) {
+            pg->card_dirty = 1;
+            remset_push_page(pg);     // per-page dedup
+        }
+    }
+}
+// Minor (2 段階):
+//   段階1: remset_buf (= dirty pages の list) を走査
+//   段階2: 各 page 内で per-slot dirty_bm を走査して dirty slot だけ scan
+for (i = 0; i < remset_cnt; i++) {
+    Page *pg = remset_buf[i];
+    pg->card_dirty = 0;
+    char *slot = (char *)pg + SLOTS_REGION_OFFSET;
+    for (j = 0; j < pg->n_slots; j++, slot += sb) {
+        if (!bm_get(pg->dirty_bm, j)) continue;
+        bm_clr(pg->dirty_bm, j);
+        scan_outgoing((GCHeader *)slot);
+    }
+}
+```
+
+**Trade-off**:
+- ✓ Remset 容量 bounded by page count (heap_size / 16 KiB)
+- ✓ Spatial-locality がある workload で空間効率良し (同 page の複数 dirty が
+  remset entry 1 個に集約)
+- ✗ 内部 walk が per-page で O(slots/page)、 dirty 密度が低い page では
+  cost が高い (256 slots/page × bitmap check)
+
+実際の現 bench での peak |remset|:
+
+| Bench | mark_gen (object) | mark_card_gen (page) |
+|---|---:|---:|
+| binary_trees | ~22 entries | 2 pages |
+| hash_chain | 0 | 0 |
+| string_concat | 0 | 0 |
+| remset_pressure | 数千 entries | 2 pages |
+
+### Overflow guard 詳細 (iter 36)
+
+object-level remset は理論上 |old objects| まで膨張可能。 現 bench では問題
+ないが、 長寿命 dict / cache に sparse write する workload で危険:
+
+| Backend | Overflow 動作 |
+|---|---|
+| `mark_gen` / `mark_gen_inc` | cap → flag → `remset_heap_walk` で全 page 走査 + dirty old を visit |
+| `copy_gen` / `mark_compact_gen` / `mark_bump_gen` | cap → flag → 全 tenured region linear walk + dirty old を visit |
+| `immix_gen` / `mark_bitmap_gen` | cap → `fprintf(stderr, "remset overflow") + abort()` (heap walk 実装複雑) |
+| `mark_card_gen` | overflow しない (page-level cap = heap pages 数で自然 bounded) |
+
+card marking との関係:
+- baruby_precise は当初 **object-level** dirty bit のみだった。
+- mark_card_gen は **page-level** (= card-level) dirty に切り替えた variant。
+- 真の "card marking" (heap を固定 KB の card に切って per-card bitmap) は
+  未実装。 mark_card_gen は「page = card」 + 「per-slot dirty_bm を card 内
+  enumeration に使う」 hybrid で、 純粋 card marking と object-level の
+  中間。
 
 ## 4. 各 backend のアルゴリズム
 
