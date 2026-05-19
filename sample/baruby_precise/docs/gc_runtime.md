@@ -247,26 +247,50 @@ bump alloc する。 moving と non-moving の中間。
 `none` / `bump` は alloc だけして free しない (leak baseline)。 「rooting
 overhead + WB API の zero-cost 化」 を測る floor として有用。
 
-## 3. 14 backend の早見表
+## 3. 15 backend の早見表 (iter 35-36 fair contract 後)
 
-`make GC=<name>` で切替え。 default = `copy`。
+`make GC=<name>` で切替え。 default = `copy`。 Header size は iter 31-33
+の flags-byte packing 後の値。 7 番 `copy_gen_inc` は実体が `copy_gen` と
+同一なので comparison から除外 (#7 の slot は予約)。
 
-| # | Name | パターン | Gen? | Moving? | Major アルゴリズム | Header | 強み | 弱み |
-|---|---|---|---|---|---|---:|---|---|
-| 1 | `none` | malloc + leak | — | — | 無 | 16 | baseline | leak |
-| 2 | `mark` | Slab + page | — | — | mark&sweep | 16 | 安定、 alloc 速 | 全 heap scan |
-| 3 | `mark_gen` | Slab + young list | yes | — | sticky M&S | 24 | minor O(young) | 24 B header |
-| 4 | `mark_gen_inc` | Slab + young list + SATB | yes | — | 増分 mark&sweep | 24 | 短 pause | 同上 |
-| 5 | `copy` | Semispace | — | yes | Cheney 全コピー | 24 | alloc 最速、 no frag | 2× VA、 全 copy |
-| 6 | `copy_gen` | bump nursery + semispace tenured | yes | yes | Cheney over tenured | 24 | nursery 完結率高 | 同上 |
-| 7 | `copy_gen_inc` | copy_gen + SATB | yes | yes | 増分 Cheney | 24 | 短 pause | 同上 |
-| 8 | `mark_compact` | 単一 region + Lisp-2 slide | — | yes | mark + compact | 24 | 1× VA、 in-place | sweep 重 |
-| 9 | `mark_compact_gen` | bump nursery + bump tenured + slide | yes | yes | mark + slide | 24 | tenured 再利用効率 | major 複雑 |
-| 10 | `bump` | bump only | — | — | 無 | 8 | alloc floor | leak |
-| 11 | `mark_bump_gen` | bump nursery + bump tenured (no compact) | yes | yes (minor) | mark + region sweep | 24 | minor 速 | 累積 |
-| 12 | `immix` | block / line region | — | — | mark + line-bitmap sweep | 16 | hole-based alloc | fragmentation |
-| 13 | `immix_gen` | bump nursery + Immix tenured | yes | yes (minor) | Immix mark + sweep | 16 | both | 同上 |
-| 14 | `mark_bitmap_gen` | Slab + per-page bitmap | yes | — | sticky M&S (bitmap) | **8** | 24B → 8B header、 密度 2× | minor O(heap) |
+| # | Name | パターン | Gen? | Moving? | Major | Header | Remset | 強み | 弱み |
+|---|---|---|---|---|---|---:|---|---|---|
+| 1 | `none` | malloc + leak | — | — | 無 | — | — | baseline floor | leak |
+| 2 | `mark` | Slab page | — | — | mark&sweep | **8** | — | 安定、 alloc 速 | 全 heap scan |
+| 3 | `mark_gen` | Slab + young_objs[] | yes | — | sticky M&S | **8** | obj-level | minor O(young) | obj remset 上限あり |
+| 4 | `mark_gen_inc` | mark_gen + SATB | yes | — | 増分 M&S | **8** | obj-level | 短 pause | 同上 |
+| 5 | `copy` | Semispace | — | yes | Cheney 全コピー | **16** | — | alloc 最速 | 2× VA |
+| 6 | `copy_gen` | bump nursery + semispace tenured | yes | yes | Cheney over tenured | **16** | obj-level | nursery 完結率高 | 同上 |
+| 7 | (`copy_gen_inc`) | (placeholder; copy_gen の clone) | — | — | — | — | — | — | not benchmarked |
+| 8 | `mark_compact` | 単一 region + Lisp-2 slide | — | yes | mark + compact | **16** | — | 1× VA、 in-place | sweep 重 |
+| 9 | `mark_compact_gen` | bump nursery + bump tenured + slide | yes | yes | mark + slide | **16** | obj-level | tenured 再利用効率 | major 複雑 |
+| 10 | `bump` | bump only | — | — | 無 | 8 | — | alloc floor | leak |
+| 11 | `mark_bump_gen` | bump nursery + bump tenured (no compact) | yes | yes (minor) | mark + region sweep | **16** | obj-level | minor 速 | 累積 |
+| 12 | `immix` | block / line region | — | — | mark + line-bitmap sweep | **8** | — | hole-based alloc | fragmentation |
+| 13 | `immix_gen` | bump nursery + Immix tenured | yes | yes (minor) | Immix mark + sweep | **8** | obj-level | both | 同上 |
+| 14 | `mark_bitmap_gen` | Slab + per-page bitmap | yes | — | sticky M&S (bitmap) | **8** | obj-level (bm dirty) | 8B header、 密度 2× | minor O(heap)、 locate cost |
+| 15 | `mark_card_gen` | mark_bitmap_gen + page-level remset | yes | — | sticky M&S | **8** | **page-level** | remset 上限 = page count (bounded) | inner-walk overhead |
+
+### Remset 設計 (iter 36)
+
+全 gen backend は object-level dirty bit + 動的配列 remset を採用。 iter 36
+で以下を強化:
+- **Overflow cap**: `MAX_REMSET_ENTRIES = 128K (= 1 MiB ptr 配列)`。 越えたら
+  `remset_overflow` フラグを立てて push を skip (dirty bit は header に残す)。
+- **Heap-walk fallback** (mark_gen / mark_gen_inc / copy_gen / mark_compact_gen
+  / mark_bump_gen): overflow 時、 minor が全 page を O(heap) で走査して dirty
+  olds を見つける。 bounded fallback。
+- **Abort on overflow** (immix_gen / mark_bitmap_gen): heap walk 実装が複雑な
+  ため未対応。 明示的に abort + diagnostic で誤動作回避。
+- **`mark_card_gen` (#15)**: 根本対策 — remset entry が page-level なので
+  容量爆発しない。 Inner walk は per-page で O(slots/page) 一定。 ユーザー
+  提案 (iter 36 "card (page) ごとに remset に入れて 2段階 で dirty 列挙")
+  に基づく設計。
+
+実際の現 bench での peak |remset| は:
+- binary_trees: ~22 (mark_gen)、 2 pages (mark_card_gen)
+- hash_chain, string_concat: 0
+- remset_pressure: 数千 entries 級 (mark_gen)、 2 pages (mark_card_gen)
 
 ## 4. 各 backend のアルゴリズム
 

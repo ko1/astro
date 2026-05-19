@@ -3,6 +3,75 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (36) — AOT 修復 + Remset cap + mark_card_gen (#15) + macro benches
+
+### AOT mode 修復
+iter 35 で未着手だった「`-c` 起動時に `astro_cs_build: make failed (exit
+512)`」 を解決:
+- Makefile に `BARUBY_PRECISE_DIR` / `ASTRO_RUNTIME_DIR` / `ASTRO_PRISM_INC_DIR`
+  の絶対パス macro を追加。
+- main.c::common_build_flags_and_link で extra_cflags に
+  `-I<abspath> -DBARUBY_GC=<n>` を埋めて astro_cs_build に渡す。
+- node.c::astro_cs_init の version 引数に `BARUBY_GC` を渡して backend
+  切替で code_store cache を自動 invalidate。
+
+これで全 14 backend が `-c` AOT bake で動作。 動作確認 + perf 測定後、
+plain mode から AOT mode で nqueens は 0.95s → 0.07-0.10s (15×)、 life
+は 1.30 → 0.14-0.17s (10×) など mutator-bound bench で大幅高速化。
+
+### matrix.rb 改良
+- `--libgc-bin` (default `../baruby/baruby`) で sample/baruby (libgc) を
+  並列 column として実行。 以前は手動 cross 比較だった。
+- AOT/PG モードで `CCACHE_DISABLE=1` を auto-set + `code_store/` を bench
+  ごとに clear (異 bench の SD pollution で fib_pair が 0.5 → 1.0s 劣化
+  する問題回避)。
+
+### Remset overflow guard (全 gen backend)
+User からの「remset が膨張する危険性?」 指摘への対応:
+- mark_gen / mark_gen_inc / copy_gen / mark_compact_gen / mark_bump_gen:
+  `MAX_REMSET_ENTRIES=128K` cap + heap-walk fallback (overflow 時に全 page
+  を O(heap) 走査して dirty olds を見つける)。 bounded fallback で
+  silent corruption ゼロ。
+- immix_gen / mark_bitmap_gen: cap + 明示的 abort (heap walk 実装が複雑
+  で未対応、 次 iter で対応)。
+- 現 bench での peak |remset| は最大 22 entries (binary_trees on mark_gen)、
+  remset_pressure bench でも数千 entries。 128K cap には到達せず。
+
+### mark_card_gen (#15) — page-level remset の新 backend
+User 提案「card (page) ごとに remset に入れて、 card の中の dirty objects
+を全列挙 (2段階)」 を実装:
+- mark_bitmap_gen の page-aligned slab + per-slot dirty_bm を継承。
+- Remset entry が `GCHeader*` → `Page*`。 同 page への複数 dirty write は
+  `card_dirty` flag で 1 回 push に dedup。
+- 上限 = heap_size / 16 KiB pages (例 64 GiB virtual → 4M pages max)。
+- Minor は remset page を順走査 → page 内全 slot 走査 → dirty_bm 立った
+  slot を scan_outgoing。 2段階 enumeration。
+- remset_pressure で peak remset = **2 pages** (mark_gen の object-level
+  だと数千 entries 相当)。 spatial-locality 利用で大幅メモリ節約。
+- Raw 速度は mark_bitmap_gen と ±2% 以内。 本当の win は容量上限。
+
+### 新 macro bench
+- `bench/remset_pressure.ba.rb`: 50K-cell chain + 200K sparse young store。
+  remset/WB の adversarial pressure test。 全 backend で oracle match。
+- `bench/ast_eval.ba.rb`: 16K-node tree build + 200× iter eval。
+  long-lived + short-lived の混在 workload。
+
+### docs 全般見直し
+- perf.md §2: iter 36 fair matrix (15 backend × 16 bench + libgc) 全面 refresh。
+- gc_runtime.md §3: 早見表を 15 backend + remset 設計欄に拡張。
+- todo.md: AOT の済み印 + remset overflow の対応状況追記。
+- README: libgc 比較主張は iter 35 で取り下げ済。
+
+### 性能観察 (iter 36 fair):
+- `immix_gen` が 6 bench で最速 — line allocator + gen の balance 良好。
+- `copy_gen` / `mark_compact_gen` / `mark_bump_gen` の gen 系が
+  hash_chain で **1.23-1.27** に対し `mark` 1.65、 WB を活用できる
+  bench で顕著。
+- `binary_trees` は per-page bitmap 系 (`mark_bitmap_gen` 1.46 /
+  `mark_card_gen` 1.47) が worst。 `locate()` overhead が 4M Array
+  全 mark で効く。
+- `bump` (no-GC) は binary_trees で他に倍速 (0.51)。
+
 ## 2026-05-18 (35) — Fairness contract: 7 件の比較不整合を一括修正
 
 iter 34 で user から fairness 観点の指摘を 7 件受け、 比較契約全体を見直し。

@@ -74,36 +74,59 @@ backend を差し込む必要がある (現状は別バイナリ)。
 
 ## 2. 全 GC backend のベンチ実測 (plain mode, fairness contract 適用後)
 
-iter 35 で fairness contract (上記 §0) を適用後の median-of-3 (`ruby
-bench/matrix.rb`)。 13 backend × 14 bench。 `copy_gen_inc` は実体が
-copy_gen の clone なので除外。 行ごとの最速に `**` 印。
+iter 36 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 14 backend
+× 16 bench + libgc column。 `copy_gen_inc` は実体が copy_gen の clone
+なので除外。 iter 36 追加 backend: **`mark_card_gen`** (page-level
+remset、 §0 fairness contract で言及した bounded remset 設計)。 iter 36
+追加 bench: **`ast_eval`** (AST builder + evaluator)、 **`remset_pressure`**
+(50K cell chain + 200K sparse updates、 adversarial old→young write)。
 
-| Bench         | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| binary_trees | 0.62 | 1.00 | 1.18 | 1.23 | 0.78 | 0.98 | 0.84 | 0.95 | **0.48** | 0.85 | 0.82 | 0.93 | 1.48 |
-| cons_list | 1.21 | 0.90 | 0.96 | 1.05 | 0.75 | 0.75 | 0.94 | 0.76 | 0.94 | 0.75 | **0.72** | 0.76 | 0.98 |
-| fannkuch | 0.70 | 0.78 | 0.73 | 0.73 | 0.70 | **0.67** | 0.75 | 0.69 | 0.71 | 0.68 | 0.70 | 0.69 | 0.77 |
-| fib_pair | 1.54 | 1.18 | 1.10 | 1.13 | **0.80** | 0.96 | 1.10 | 0.85 | 1.12 | 0.84 | 0.86 | 0.84 | 1.12 |
-| gc_combined | 1.36 | 1.08 | 1.04 | 1.07 | 0.86 | 0.89 | 1.07 | 0.87 | 1.02 | **0.85** | 0.88 | 0.94 | 1.10 |
-| hash_chain | 1.65 | 1.62 | 1.45 | 1.50 | 1.84 | 1.25 | 1.86 | **1.24** | 1.56 | 1.37 | 1.58 | 1.61 | 1.60 |
-| interp_calc | 1.28 | 1.09 | 1.08 | 1.13 | **0.89** | 0.93 | 1.10 | 0.92 | 1.06 | 0.96 | 0.92 | 0.92 | 1.13 |
-| life | 1.25 | 1.37 | 1.37 | 1.34 | 1.33 | 1.29 | 1.36 | 1.29 | 1.27 | **1.21** | 1.23 | 1.33 | 1.31 |
-| list_alloc | 1.33 | 1.04 | 1.01 | 1.05 | **0.79** | 0.84 | 1.01 | 0.85 | 0.99 | 0.89 | 0.86 | 0.83 | 1.05 |
-| list_sort | 1.17 | 1.20 | 1.23 | 1.26 | 1.06 | **1.00** | 1.19 | 1.03 | 1.15 | 1.07 | 1.06 | 1.03 | 1.26 |
-| nqueens | 0.95 | 0.92 | 0.94 | 1.00 | 0.97 | 0.95 | 0.95 | **0.91** | 0.93 | 1.00 | 0.92 | 0.94 | 0.96 |
-| sieve | **1.20** | 1.30 | 1.32 | 1.34 | 1.90 | 1.36 | 1.54 | 1.32 | 1.48 | 1.43 | 1.51 | 1.30 | 1.35 |
-| string_concat | 1.61 | 0.76 | 0.79 | 0.86 | 0.47 | 0.49 | 0.87 | 0.48 | 0.83 | 0.53 | 0.52 | **0.47** | 0.81 |
-| substr_churn | 1.64 | 1.04 | 1.06 | 1.19 | 0.91 | 0.84 | 1.10 | **0.82** | 1.08 | 0.89 | 0.94 | 0.84 | 1.25 |
+| Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | libgc |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ast_eval | 0.38 | 0.38 | 0.39 | 0.37 | 0.36 | 0.36 | 0.37 | 0.36 | 0.37 | 0.36 | **0.35** | 0.36 | 0.37 | 0.36 | 0.38 |
+| binary_trees | 0.64 | 1.07 | 1.18 | 1.19 | 0.79 | 1.02 | 0.81 | 0.97 | **0.51** | 0.88 | 0.82 | 0.97 | 1.46 | 1.47 | 0.88 |
+| cons_list | 1.29 | 0.95 | 0.97 | 1.01 | 0.78 | 0.78 | 0.94 | 0.82 | 0.98 | 0.80 | 0.76 | **0.74** | 1.01 | 1.04 | 0.98 |
+| fannkuch | 0.79 | 0.75 | 0.73 | 0.76 | 0.73 | **0.70** | 0.72 | 0.72 | 0.76 | 0.72 | 0.71 | 0.72 | 0.79 | 0.80 | 0.70 |
+| fib_pair | 1.61 | 1.07 | 1.09 | 1.14 | 0.87 | 0.90 | 1.05 | 0.88 | 1.16 | 0.88 | 0.87 | **0.87** | 1.14 | 1.14 | 1.10 |
+| gc_combined | 1.45 | 1.06 | 1.08 | 1.16 | **0.86** | 0.91 | 1.07 | 0.99 | 1.12 | 0.93 | 0.94 | 0.86 | 1.17 | 1.22 | 1.12 |
+| hash_chain | 1.60 | 1.65 | 1.51 | 1.51 | 1.90 | 1.27 | 1.70 | **1.23** | 1.47 | 1.24 | 1.48 | 1.38 | 1.45 | 1.46 | 1.72 |
+| interp_calc | 1.41 | 1.06 | 1.10 | 1.16 | 0.95 | 0.95 | 1.05 | 0.95 | 1.11 | 1.00 | **0.94** | 0.94 | 1.15 | 1.17 | 1.14 |
+| life | 1.35 | 1.44 | 1.32 | 1.36 | 1.36 | 1.33 | 1.36 | **1.25** | 1.30 | 1.33 | 1.29 | 1.28 | 1.34 | 1.44 | — |
+| list_alloc | 1.36 | 1.03 | 1.04 | 1.08 | **0.82** | 0.89 | 1.00 | 0.93 | 1.11 | 0.87 | 0.92 | 0.82 | 1.12 | 1.11 | 1.04 |
+| list_sort | 1.24 | 1.25 | 1.23 | 1.26 | 1.03 | 1.05 | 1.10 | 1.05 | 1.15 | 1.07 | 1.07 | **1.03** | 1.30 | 1.30 | 1.08 |
+| nqueens | 1.00 | 0.98 | 0.98 | 0.99 | 0.99 | 0.96 | 0.94 | 0.94 | 0.96 | 0.95 | 0.96 | **0.93** | 1.00 | 1.00 | 0.96 |
+| remset_pressure | 0.49 | 0.39 | 0.38 | 0.38 | 0.38 | **0.30** | 0.39 | 0.31 | 0.38 | 0.31 | 0.34 | 0.31 | 0.39 | 0.39 | 0.44 |
+| sieve | 1.35 | 1.46 | 1.39 | 1.39 | 1.73 | 1.36 | 1.58 | 1.40 | 1.53 | 1.45 | 1.55 | 1.34 | 1.44 | 1.47 | **1.34** |
+| string_concat | 1.64 | 0.76 | 0.81 | 0.89 | 0.49 | 0.54 | 0.85 | 0.55 | 0.84 | 0.53 | 0.54 | **0.48** | 0.78 | 0.79 | 0.95 |
+| substr_churn | 1.72 | 1.07 | 1.09 | 1.18 | 0.94 | 0.90 | 1.14 | 0.91 | 1.11 | 0.89 | 0.96 | **0.88** | 1.31 | 1.30 | 1.28 |
 
-**勝者分布** (iter 35 fair contract、 median-of-3):
-- `bump` (no-GC floor) — **1** (binary_trees) — pure alloc-only
-- `copy` (Cheney semispace) — **3** (fib_pair / interp_calc / list_alloc)
-- `copy_gen` — **2** (fannkuch / list_sort)
-- `immix` — **1** (cons_list)
-- `immix_gen` — **1** (string_concat)
-- `mark_bump_gen` — **2** (gc_combined / life)
-- `mark_compact_gen` — **3** (hash_chain / nqueens / substr_churn)
-- `none` — **1** (sieve, mutator-bound)
+**勝者分布** (iter 36 fair contract、 median-of-3):
+- `immix_gen` — **6** (cons_list / fib_pair / interp_calc / list_sort /
+  nqueens / string_concat / substr_churn) — line allocator + gen で広く
+  バランス良し
+- `bump` — **1** (binary_trees) — pure alloc-only floor
+- `copy` — **1** (gc_combined)
+- `copy_gen` — **2** (fannkuch / remset_pressure)
+- `immix` — **1** (ast_eval)
+- `list_alloc` 最速 `copy` (0.82) ↔ `immix_gen` (0.82) tied
+- `mark_compact_gen` — **2** (hash_chain / life)
+- `libgc` — **1** (sieve、 sieve は GC が走らない mutator-bound bench)
+
+注目点 (iter 36 新発見):
+- **`mark_card_gen` ≈ `mark_bitmap_gen`**: 同 layout で remset entry が
+  object→page なだけの差。 多くの bench で ±2% 以内。 fundamental win は
+  「remset 上限が page count に bounded」 (= 安全性) で raw 速度の差ではない。
+- **`hash_chain` で `copy_gen` / `mark_compact_gen` / `mark_bump_gen` の
+  gen 系が圧勝** (1.23-1.27 vs `mark` 1.65)。 hash bucket sparse update が
+  WB を活用できるため。 mark_card_gen (1.46) は若干劣る — page-level
+  remset の inner-walk overhead が顕在化。
+- **`remset_pressure` で `copy_gen` が最速** (0.30s)。 Cheney semispace は
+  promotion 時にすべて再走査するため remset cost を回避 (代わりに minor
+  自体が重い — でも 50K cell 程度では win)。
+- **`binary_trees` で `mark_bitmap_gen` / `mark_card_gen` の per-page
+  bitmap 系が最遅** (1.46-1.47)。 4M Array 全部に mark を 立てる作業で
+  `locate()` の overhead がかさむ。
+- **`bump` が binary_trees で他に倍速** (0.51 vs `copy` 0.79) — GC ゼロ。
 
 iter 31-34 までの「best-of-3」 結果と iter 35 fairness contract 後の数値は
 threshold 統一 / charging 統一 / inc_step timer 入れたことで意味的に
