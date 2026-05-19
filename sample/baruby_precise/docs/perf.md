@@ -197,6 +197,48 @@ gc_combined 0.24、 list_alloc 0.23) で gen に近い数値を出す。 一方
 hash_chain / sieve など非 gen が苦手な領域では同じく苦手 (1.19 / 1.55)。
 「非 gen で freelist の reuse 効率を測る」 backend として位置付け確立。
 
+### CRuby 比較 (iter 42 追加)
+
+baruby benches は意図的に Ruby サブセットで書かれているので、 同じ `.ba.rb`
+を `ruby` (CRuby 3.4) でも実行できる。 ref として median-of-3 を取り、
+baruby_precise の plain 最速 backend / AOT 最速 backend と並べる:
+
+| Bench | CRuby (s) | plain best (backend) | plain 倍率 | AOT best | AOT 倍率 |
+|---|---:|---:|---:|---:|---:|
+| ast_eval | 0.51 | 0.34 (immix) | **1.5×** | 0.06 (mark) | **8.5×** |
+| binary_trees | 1.01 | 0.44 (bump) | **2.3×** | 0.21 (bump) | **4.8×** |
+| cons_list | 1.66 | 0.67 (immix_gen) | **2.5×** | 0.20 (immix_gen) | **8.3×** |
+| dll_walk | 1.72 | 0.71 (mark_freelist) | **2.4×** | 0.17 (immix_gen) | **10.1×** |
+| fannkuch | 0.86 | 0.69 (copy_gen) | **1.2×** | 0.11 (mark_compact_gen) | **7.8×** |
+| fib_pair | 1.20 | 0.73 (immix_gen) | **1.6×** | 0.26 (immix_gen) | **4.6×** |
+| gc_combined | 1.02 | 0.70 (immix_gen) | **1.5×** | 0.20 (immix_gen) | **5.1×** |
+| hash_chain | 1.46 | 1.10 (bump) | **1.3×** | 0.15 (immix_gen) | **9.7×** |
+| interp_calc | 1.38 | 0.80 (immix) | **1.7×** | 0.23 (copy/immix_gen) | **6.0×** |
+| life | 1.19 | 1.25 (bump) | **0.95×** | 0.14 (immix) | **8.5×** |
+| list_alloc | 0.97 | 0.68 (immix_gen) | **1.4×** | 0.19 (immix_gen) | **5.1×** |
+| list_sort | 7.26 | 1.01 (immix_gen) | **7.2×** | 0.21 (copy_gen) | **34.6×** |
+| nqueens | 0.85 | 0.92 (immix_gen) | **0.92×** | 0.07 (mark_compact_gen) | **12.1×** |
+| remset_pressure | 0.58 | 0.28 (immix_gen) | **2.1×** | 0.08 (copy_gen) | **7.3×** |
+| sieve | 1.44 | 1.31 (none) | **1.1×** | 0.36 (immix_gen) | **4.0×** |
+| string_concat | 1.39 | 0.20 (immix_gen) | **7.0×** | 0.07 (immix_gen) | **19.9×** |
+| string_concat_dyn | 2.17 | 1.03 (copy) | **2.1×** | 0.38 (copy) | **5.7×** |
+| substr_churn | 1.95 | 0.85 (immix_gen) | **2.3×** | 0.30 (mark_bump_gen) | **6.5×** |
+
+幾何平均 (18 bench): plain で **CRuby 比 1.83×**、 AOT で **CRuby 比 7.77×**。
+plain で CRuby より遅いのは `life` (0.95×) と `nqueens` (0.92×) — どちらも
+mutator-bound (recursion + integer-only) で baruby の dispatch overhead が
+GC win を相殺。 AOT mode では dispatch が SD bake で消えて全 bench で
+CRuby に勝つ (最低 4×、 最高 34.6×)。
+
+注意:
+- CRuby は JIT 無効 (`ruby` default) で測定。 YJIT/MJIT で測ると数値が
+  変わる可能性
+- list_sort は CRuby が 7.3 s と特に遅い (mark-sort + merge の C extension
+  路を踏まず interpreter 内で動作)。 baruby は同 algorithm を直接インタプリタ
+  で実行している
+- 言語サブセット (no OO / no proc / no eval) なので CRuby と完全公平では
+  ない。 が同一ソースを動かせる意味では参考値として有用
+
 AOT mode は dispatch overhead が SD bake で消えるので plain 比 **2-5× 高速化**
 (bench / backend による)。 GC + memmove が相対的に支配的に。 iter 37 の
 string literal const-fold で AOT string_concat が **0.34 → 0.07s (-79%)**

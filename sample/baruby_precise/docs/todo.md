@@ -106,5 +106,8 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 
 - [ ] `bench/run.rb` を precise / conservative 両対応にして、 表で並べて
       出す (現在は手動で各サンプル動かしている)
-- [ ] CRuby の参考時間と並べる (binary_trees / list_alloc / string_concat
-      同等を CRuby で動かす)
+- [x] ~~**CRuby の参考時間と並べる**~~ — iter 42 解決。 18 bench 全てを
+      CRuby 3.4 で median-of-3 計測、 perf.md §2 末尾に baruby との
+      倍率付き表を追加。 plain で geomean 1.83×、 AOT で 7.77×。
+      最大 list_sort AOT で 34.6×。 plain で唯一 CRuby に負けるのは
+      life (0.95×) と nqueens (0.92×)。

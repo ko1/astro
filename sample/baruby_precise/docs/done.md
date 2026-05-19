@@ -3,6 +3,38 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (42) — CRuby 比較 column + zero-init optimization speculation
+
+### CRuby 比較
+baruby benches は意図的に Ruby サブセットで書かれているので `ruby` (CRuby)
+でも実行可能。 全 18 bench を CRuby 3.4 で median-of-3 計測し、
+baruby_precise plain/AOT の最速 backend と並べた表を perf.md §2 末尾に追加。
+
+結果:
+- plain 幾何平均 1.83× faster than CRuby
+- AOT  幾何平均 7.77× faster than CRuby
+- plain で唯一 CRuby に負けるのは life (0.95×) / nqueens (0.92×) —
+  mutator-bound で baruby の dispatch overhead が GC win を相殺
+- AOT mode では全 bench で CRuby に勝利 (最低 4×、 最高 list_sort 34.6×)
+- 特に string_concat AOT 19.9× は iter 37 の literal const-fold 効果
+
+todo.md「CRuby の参考時間と並べる」 を完了マーク。
+
+### zero-init optimization (試行 → revert)
+node_call_N の callee local zero-init で arg slots (sp[0..N-1]) を skip
+することで N store/call 節約を試みた。 が、 安全性検証で **NG**:
+
+BARUBY_EVAL_ARG が child eval 中、 sp_top = sp + locals_cnt (callee scratch
+top) を渡す。 GC scan range は `c->env..sp_top` なので callee locals 領域
+sp[0..locals_cnt-1] も scan 対象。 zero-init を skip すると stale heap
+pointer が GC に踏まれる危険 (false positive mark / corruption)。
+
+実測でも改善は noise 範囲 (~1%) で、 correctness リスクに見合わず revert。
+教訓: ASTro の precise GC では sp_top にまつわる scan range の不変条件を
+壊さない optimization のみ可。 似たアイデアは「per-arg sp_top adjustment」
+で実装する必要がある (sp_top = sp + i during arg i 評価) — 別 iter で
+検討。
+
 ## 2026-05-19 (41) — New backend #16: `gc_mark_freelist`
 
 「region + 非 compact + freelist」 という design point の demonstration として
