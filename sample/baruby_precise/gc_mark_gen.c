@@ -265,16 +265,26 @@ free_slot(GCHeader *h)
 static void minor_gc(VALUE *sp_top);
 static void major_gc(VALUE *sp_top);
 
+// iter 45: cold-split.  Pull the actual collect dispatch out into a
+// noinline cold helper so maybe_collect's hot body shrinks to 1 branch,
+// helping aro_gc_alloc stay inliner-budget friendly for baruby_ary_new /
+// baruby_str_new.
+static void __attribute__((noinline, cold))
+maybe_collect_slow(VALUE *sp_top)
+{
+    if (old_alloc_since_major > old_major_threshold) {
+        major_gc(sp_top);
+        old_alloc_since_major = 0;
+    } else {
+        minor_gc(sp_top);
+    }
+}
+
 static inline void
 maybe_collect(size_t add, VALUE *sp_top)
 {
-    if (aro_gc_stress || young_bytes + add > young_threshold) {
-        if (old_alloc_since_major > old_major_threshold) {
-            major_gc(sp_top);
-            old_alloc_since_major = 0;
-        } else {
-            minor_gc(sp_top);
-        }
+    if (__builtin_expect(aro_gc_stress || young_bytes + add > young_threshold, 0)) {
+        maybe_collect_slow(sp_top);
     }
 }
 

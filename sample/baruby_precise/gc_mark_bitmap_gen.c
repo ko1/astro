@@ -368,16 +368,24 @@ set_dirty(const GCHeader *h)
 static void gc_collect_minor(VALUE *sp_top);
 static void gc_collect_major(VALUE *sp_top);
 
+// iter 45: cold-split.  Pull collect dispatch into a noinline cold helper
+// so aro_gc_alloc / aro_gc_alloc_byte stay inliner-budget friendly.
+static void __attribute__((noinline, cold))
+maybe_collect_slow(VALUE *sp_top)
+{
+    gc_collect_minor(sp_top);
+    if (old_alloc_since_major > old_major_threshold) {
+        gc_collect_major(sp_top);
+    }
+}
+
 void *
 aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    if (aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > MINOR_THRESHOLD) {
-        gc_collect_minor(sp_top);
-        if (old_alloc_since_major > old_major_threshold) {
-            gc_collect_major(sp_top);
-        }
+    if (__builtin_expect(aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
+        maybe_collect_slow(sp_top);
     }
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int c = size_class_for(slot_total);
@@ -394,11 +402,8 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
-    if (aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > MINOR_THRESHOLD) {
-        gc_collect_minor(sp_top);
-        if (old_alloc_since_major > old_major_threshold) {
-            gc_collect_major(sp_top);
-        }
+    if (__builtin_expect(aro_gc_stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
+        maybe_collect_slow(sp_top);
     }
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int c = size_class_for(slot_total);

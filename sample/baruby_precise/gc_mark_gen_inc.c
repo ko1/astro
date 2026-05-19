@@ -257,6 +257,20 @@ free_slot(GCHeader *h)
 
 static void minor_gc(VALUE *sp_top);
 
+// iter 45: cold-split — pull threshold-triggered collect out of inline
+// path.  inc_marking step stays inline since it runs every alloc when
+// active.
+static void __attribute__((noinline, cold))
+maybe_collect_slow(VALUE *sp_top)
+{
+    if (!inc_marking && old_alloc_since_major > old_major_threshold) {
+        inc_start_major(sp_top);
+        old_alloc_since_major = 0;
+    } else {
+        minor_gc(sp_top);
+    }
+}
+
 static inline void
 maybe_collect(size_t add, VALUE *sp_top)
 {
@@ -266,13 +280,8 @@ maybe_collect(size_t add, VALUE *sp_top)
             inc_finish_sweep(sp_top);
         }
     }
-    if (aro_gc_stress || young_bytes + add > young_threshold) {
-        if (!inc_marking && old_alloc_since_major > old_major_threshold) {
-            inc_start_major(sp_top);
-            old_alloc_since_major = 0;
-        } else {
-            minor_gc(sp_top);
-        }
+    if (__builtin_expect(aro_gc_stress || young_bytes + add > young_threshold, 0)) {
+        maybe_collect_slow(sp_top);
     }
 }
 
