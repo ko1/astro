@@ -76,17 +76,22 @@ backend を差し込む必要がある (現状は別バイナリ)。
 
 ## 2. 全 GC backend のベンチ実測 (plain mode, fairness contract 適用後)
 
-iter 36-37 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 14 backend
-× 17 bench + libgc column。 `copy_gen_inc` は実体が copy_gen の clone
+iter 36-40 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 14 backend
+× 18 bench + libgc column。 `copy_gen_inc` は実体が copy_gen の clone
 なので除外。
 
-iter 36-37 で追加:
+iter 36-40 で追加:
 - **`mark_card_gen` backend** (#15): page-level remset (bounded by page count)
 - **`ast_eval` bench**: AST builder + evaluator (long-lived tree + short-lived intermediate)
 - **`remset_pressure` bench**: 50K cell chain + 200K sparse young store (adversarial old→young write)
 - **`string_concat_dyn` bench**: 関数経由 chunk + 動的 concat (string_concat が parse-time fold で 1-alloc/iter に縮んだので、 本来の N-alloc/iter pattern を保持する別 bench を追加)
 - **`node_ary_lit_N` (N=1..4) optimization**: 配列リテラル N=1..4 を 1-shot 化 (chain → direct)
 - **String literal concat fold** (iter 37): parser で `node_str_lit + node_str_lit` を parse-time fold
+
+iter 40 で追加:
+- **`dll_walk` bench**: doubly-linked list build + forward/backward walk。
+  cons_list の bidirectional 版 (3-要素 node、 2 refs/node)。 mark phase の
+  pointer-count スケーリングと `cur[2] = nxt` の WB stress を測定。
 
 iter 38 (correctness; v2 で perf neutral):
 - **`immix_gen` / `mark_bitmap_gen` の remset overflow 対応**: iter 36 で
@@ -323,7 +328,7 @@ MIN を超えないので動作は不変。
   「rooting + WB + dispatch + alloc」の最小コストを示す。 binary_trees が
   0.53s — copy より速い (GC 自体が無いので)。 OOM 時 abort
 
-### ベンチカタログ (全 17 種)
+### ベンチカタログ (全 18 種)
 
 各ベンチの「何を / どう alloc して / lifetime はどんな形か」 を一覧。
 GC 評価の観点で workload 分類を意識して揃えている。 アルファベット順。
@@ -357,7 +362,7 @@ GC 評価の観点で workload 分類を意識して揃えている。 アルフ
   (`mark_bump_gen` v1 で 1.41 → v3 で 0.92 まで改善)。 全 backend が
   major を 2 回程度走らせる。
 
-#### `cons_list.ba.rb` — deep linked-list chain
+#### `cons_list.ba.rb` — deep linked-list chain (single-linked)
 
 - **What**: 5000 セルの cons-list を build & walk × 2000 回。
   各セル = `[value, next-cell]` (2-要素 BaArray)。 sentinel 0 で終端。
@@ -369,6 +374,26 @@ GC 評価の観点で workload 分類を意識して揃えている。 アルフ
   は浅いまま、 long chain だけ作れる (binary_trees の代替)。
 - **特性的な数値**: ベスト 0.77 s (`copy_gen`)、 多くの backend で
   0.9-1.1 s。
+
+#### `dll_walk.ba.rb` — doubly-linked list, fwd + bwd walk (iter 40)
+
+- **What**: 4000 セルの DLL (each node = `[val, prev, next]` 3-要素 BaArray)
+  を build、 forward walk と backward walk で合計を出す。 1500 iter。
+- **Alloc pattern**: 1 iter で 4000 × 3-要素 array (~128 KB) alloc。 全体
+  ~192 MB alloc。 ノード alloc 中に `cur[2] = nxt` で next pointer を後置きで
+  書き込むため、 gen backend では old→young store (WB) も発生 (cur が
+  prev iter の何回かで promote されている場合)。
+- **Lifetime**: 1 iter 内で全 cell live、 iter 完了で die (cons_list と同じ
+  ライフサイクル)。 違いは「3-要素 node」 と「bidirectional refs」。
+- **テスト対象**:
+  - mark phase の pointer-count スケーリング (cons_list 1 ref/node に対し
+    dll_walk は 2 refs/node)
+  - `cur[2] = nxt` の WB stress (gen backend remset)
+  - 3-要素 alloc (size class 32 → 40 移行コスト、 mark_gen / mark_bitmap_gen
+    で slot 効率に差)
+  - backward walk による reverse pointer chase の cache 挙動
+- **特性的な数値**: `immix_gen` 0.76 s 最速、 多くの backend で 0.8-0.9 s。
+  Oracle = `2 × Σ(0..3999) × 1500 = 23994000000`。
 
 #### `fannkuch.ba.rb` — CLBG fannkuch-redux (mutator-bound macro)
 
