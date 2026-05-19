@@ -66,13 +66,25 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 ## P1 — 性能
 
 - [ ] **callee frame の zero-init コストを減らす** — `node_call_<N>` で
-      毎 call 時に `for (i < locals_cnt) sp[i] = 0` が走る。 parser が
-      「全 local が即書きされる」 を保証できれば skip 可能
-- [ ] **string_concat の残存 +20% overhead** を perf record で内訳分析。
-      spill / sp 更新 / copy のどれが bottle neck か確かめる
+      毎 call 時に `for (i < locals_cnt) sp[i] = 0` が走る。 iter 42 で
+      arg slots を skip する単純化を試みたが unsafe (sp_top = sp +
+      locals_cnt のため arg eval 中の GC scan が arg slot を見る、
+      stale heap pointer 危険) と判明し revert。 真に安全に減らすには
+      `BARUBY_EVAL_ARG(c, ai, sp + i)` のように per-arg sp_top を adjust
+      する API 変更が要る — 別 iter 候補。
+- [x] ~~**string_concat の残存 +20% overhead**~~ — iter 37 const-fold
+      + iter 43-45 inline 化で大幅縮小。 plain string_concat immix_gen
+      0.42→0.17 (-60%)、 AOT 0.29→0.06 (-79%)。 CRuby 比で plain 2.4×、
+      AOT 4.8× faster。 残存 overhead は VALUE stack rooting cost が
+      ほぼ全て (precise GC の固有コスト)。
 - [ ] **REGION_BYTES の linked-chunk 化** — iter 28 で 64 GiB virtual に
       拡張済だが、 64 GiB を超える heap は OOM。 `mremap` か追加 mmap で
       chunk 単位 grow。 現状の bench では 1 GiB 以下なので低優先。
+- [ ] **`aro_gc_alloc_byte` の 2nd alloc inline 化** — `baruby_str_new` /
+      `baruby_str_concat` / `baruby_str_slice` の bytes payload 確保
+      (`aro_gc_alloc_byte(r->capa, sp)`) は変数 size のため iter 43-45
+      inline 化の恩恵を受けず call で残る。 specialized fast-path や
+      always_inline で攻める余地あり。
 
 ## P2 — design / framework 統合
 

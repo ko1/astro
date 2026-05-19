@@ -98,6 +98,26 @@ iter 41 で追加:
   M&S。 gc_mark (slab page) と gc_mark_compact (region + slide) の中間。
   page metadata / malloc 不要、 ただし fragmentation あり。
 
+iter 43-45 inline-friendly optimization series (3 段階):
+- **iter 43**: region-based 9 backend (copy / copy_gen / copy_gen_inc /
+  mark_compact / mark_compact_gen / mark_bump_gen / immix / immix_gen /
+  mark_freelist) の bump path に `__attribute__((noinline, cold))` +
+  `__builtin_expect(..., 0)` を適用。 `aro_gc_alloc.constprop.0` (str_new
+  系の non-inline callee) を 75 LOC → 54 LOC (-28%) 縮小。 string 系 bench
+  で 8-18% 改善。
+- **iter 44**: slab 系 5 backend (mark / mark_gen / mark_bitmap_gen /
+  mark_card_gen / mark_freelist) の `size_class_for` 9-cmp linear scan を
+  `__builtin_clz` based O(1) に置換。 aro_gc_alloc body 21% 縮小、
+  baruby_ary_new に **aro_gc_alloc 完全 inline** 成立。 mark backend で
+  list_alloc -8%、 gc_combined -7% など。
+- **iter 45**: 残る 4 slab-gen backend (mark_gen / mark_gen_inc /
+  mark_bitmap_gen / mark_card_gen) の `maybe_collect` に cold-split。
+  mark_gen_inc string_concat -7% など、 marginal だが consistent な改善。
+
+3 iter で全 15 backend (copy_gen_inc 除く) の `aro_gc_alloc` が caller 側で
+inline (定数 size) または slim な constprop clone 経由になり、 共通の
+`baruby_ary_new` / `baruby_str_new` で広範な improvement。
+
 iter 38 (correctness; v2 で perf neutral):
 - **`immix_gen` / `mark_bitmap_gen` の remset overflow 対応**: iter 36 で
   これらの 2 backend だけは abort だったが、 iter 38 で解決。
