@@ -3,6 +3,68 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-19 (43) — Cold-path split for 9 region-based GC backends
+
+ユーザ提案: `gc_bump` 等の bump alloc hot path に hidden な cold body
+(`gc_collect_internal` + OOM check + retry) を `__attribute__((noinline, cold))`
+helper に extract、 hot branch を `__builtin_expect(..., 0)` で hint。
+目的は **aro_gc_alloc 本体を縮小** し、 inline されない call site
+(`baruby_str_new` など) で gcc が呼ぶ `aro_gc_alloc.constprop.0` を slim に
+すること。
+
+### 適用 backend (9)
+- 未対応だった: `copy`、 `mark_compact`、 `immix`、 `mark_freelist`
+- 既に `noinline on minor_gc` を持つ: `copy_gen`、 `copy_gen_inc`、
+  `mark_bump_gen` (iter 29) → 直交した別レイヤーの最適化
+- 残: `mark_compact_gen`、 `immix_gen`
+
+slab/page 系 (`mark`、 `mark_gen`、 `mark_gen_inc`、 `mark_bitmap_gen`、
+`mark_card_gen`) は freelist + page allocator で bump path がないので未適用。
+
+### 検証フロー
+1. `gc_copy.c` 単独で `__builtin_expect + noinline cold` を試行 →
+   同 session A/B (5 round interleaved) で **noise 範囲、 measurable
+   improvement なし**
+2. user 「inline 化観点」 を指摘 → disassembly 確認:
+   - `baruby_ary_new` は `aro_gc_alloc` を **既に inline** (LTO -O3)
+   - `baruby_str_new` は **constprop clone を call** (inliner budget 越え)
+3. cold-split で `aro_gc_alloc.constprop.0` が **75 LOC → 54 LOC (-28%)**
+4. string bench で 5 round interleaved A/B → `string_concat -3%`、
+   `string_concat_dyn -3%`、 noise 内だが consistent な微減
+5. 全 9 backend に展開 → matrix で `string_concat copy_gen -18%`、
+   `string_concat_dyn copy_gen -14%`、 `substr_churn copy_gen -17%` 等
+   一貫した string-heavy bench での 8-18% 改善を確認
+
+### 効果サマリ (plain matrix iter 41 → iter 43、 string 系)
+| Bench | backend | iter 41 | iter 43 | Δ |
+|---|---|---:|---:|---:|
+| string_concat | copy_gen | 0.22 | 0.18 | **-18%** |
+| string_concat | immix_gen | 0.20 | 0.17 | **-15%** |
+| string_concat | mark_compact_gen | 0.21 | 0.18 | **-14%** |
+| string_concat | mark_bump_gen | 0.21 | 0.18 | **-14%** |
+| string_concat_dyn | copy_gen | 1.11 | 0.95 | **-14%** |
+| string_concat_dyn | immix_gen | 1.05 | 0.91 | **-13%** |
+| substr_churn | copy_gen | 0.95 | 0.79 | **-17%** |
+| substr_churn | mark_compact_gen | 0.89 | 0.77 | **-13%** |
+| cons_list | immix | 0.69 | 0.63 | **-9%** |
+| dll_walk | immix | 0.73 | 0.67 | **-8%** |
+
+### 学び
+- iter 29 で `noinline on minor_gc` した時と同じ idea (inliner budget
+  preservation) を **alloc cold body にも** 展開すれば、 inline されない
+  call site (str_new 系) で透過的に効く
+- 単一 backend での A/B では noise に埋もれて effect 見えない場合でも、
+  **複数 backend × 複数 bench で同方向の signal が一斉に出る** とき
+  noise でないと判定可能 (今回の string-heavy 8-18% 一斉改善)
+- 「`__builtin_expect` だけでは効かない」 という前 commit の hasty conclusion
+  は誤り。 `noinline cold` で **callee の constprop clone を縮める** 効果が
+  本命だった
+
+### 副次変更
+docs/perf.md §2 plain matrix を iter 43 数値に更新、 勝者分布も再計算。
+
+commit: `7d9b96c`、 docs 別 commit。
+
 ## 2026-05-19 (42) — CRuby 比較 column + zero-init optimization speculation
 
 ### CRuby 比較
