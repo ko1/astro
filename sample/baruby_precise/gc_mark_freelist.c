@@ -191,15 +191,27 @@ void *
 aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     GCHeader *h = alloc_slot(kind, payload_size, sp_top);
+    void *payload = (void *)(h + 1);
+    /* iter 48 bug fix: freelist-popped slots contain stale data from
+     * prior allocation (e.g. raw string bytes interpreted later as
+     * BaString.bytes pointer → SEGV in scan_outgoing).  Zero the payload
+     * for object kinds whose fields the GC mark phase walks as pointers
+     * (KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL).  Caller
+     * fills the actual values right after; until then the fields read
+     * as VAL_FALSE which IS_PTR rejects. */
+    if (kind != KIND_PAYLOAD_BYTE) {
+        memset(payload, 0, ALIGN8(payload_size));
+    }
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     bytes_since_gc += payload_size;
-    return (void *)(h + 1);
+    return payload;
 }
 
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
+    /* Byte payloads aren't scanned as pointers — skip the zero-init. */
     return aro_gc_alloc(KIND_PAYLOAD_BYTE, payload_size, sp_top);
 }
 
