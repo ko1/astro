@@ -3,6 +3,98 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-21 — @child operand 全面導入 (libgc + C-local snapshot)
+
+ASTroGen の `@child` operand 機構 (user b4b0eb0 で導入) を baruby
+(libgc) にも適用。 conservative GC なので **sp[] への spill は不要**
+で、 C-local `VALUE _c#{slot}` で snapshot する形を override (詳細
+[sample/baruby_precise/docs/done.md (58)] 参照)。
+
+### baruby 側 override (baruby_gen.rb)
+
+```ruby
+def child_storage_decl(slot) = "VALUE _c#{slot};"
+def child_storage_expr(slot) = "_c#{slot}"
+def child_dispatch_args(slot, field) = "c, #{field}, fp"  # 3-arg dispatcher
+```
+
+生成される DISPATCH の例 (`n = a + b`):
+
+```c
+DISPATCH_node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    VALUE _c0;
+    VALUE _c1;
+    _c0 = UNWRAP((*n->u.node_add.l->head.dispatcher)(c, n->u.node_add.l, fp));
+    _c1 = UNWRAP((*n->u.node_add.r->head.dispatcher)(c, n->u.node_add.r, fp));
+    return EVAL_node_add(c, n, fp, _c0, _c1);
+}
+```
+
+sp[] への store なし、 register 居住で済む可能性が高い code shape。
+libgc は C stack を保守的に scan するので _c0/_c1 は GC root として
+適切に扱われる。
+
+### 変換した node
+
+baruby_precise と同じ集合 (詳細はそちらの done.md (58) を参照):
+arith binop 5 種、 comparison 6 種、 ary_lit_1..4、 ary_push、
+call_size/aget/aget2/aset/push/pop/to_s/to_i、 return。
+
+`node_lset` は意図的に NOT @child (rhs を sp[0] snapshot すると arg-eval
+chain の連続 lset が互いの destination を clobber する)。
+
+### correctness fix: callee_sp aliasing
+
+`baruby_parse.c::PM_DEF_NODE` の `body_locals = n->locals.size` を
+`body_locals = max_cnt` に変更。 これがないと life bench (port した場合)
+が SEGV / stack smashing で落ちる (callee の arg-eval chain が caller の
+args slot と alias)。
+
+### benchmark — libgc 中心 (user 要望)
+
+#### plain mode (median of 3)
+
+iter 53 baseline (cfbebf6 = add/lt/gt のみ @child) との対比:
+
+| bench (.ba.rb) | baseline | iter 58 (full @child) | Δ |
+|----------------|---------:|---------------------:|---:|
+| fannkuch | 0.75 | 0.69 | -8% |
+| nqueens | 1.01 | 0.88 | -13% |
+| interp_calc | 1.17 | 0.99 | -15% |
+| string_concat_dyn | 1.38 | 1.29 | -7% |
+| substr_churn | 1.13 | 1.07 | -5% |
+| json_parse | 1.16 | 1.12 | -3% |
+| hash_chain | 1.32 | 1.25 | -5% |
+| fib_pair | 1.06 | 1.01 | -5% |
+| tokenize | 1.14 | 1.10 | -4% |
+| dll_walk | 0.85 | 0.80 | -6% |
+| cons_list | 0.76 | 0.88 | +16% (異常値、 要調査) |
+| list_alloc | 0.83 | 0.88 | +6% |
+| binary_trees | 0.81 | 0.82 | ±0% |
+| list_sort | 1.15 | 1.14 | ±0% |
+| gc_combined | 0.95 | 0.94 | ±0% |
+
+geomean ほぼ -5% 改善。 cons_list だけ +16% の単独退化 (libgc 限定、
+要調査)。
+
+#### naruby int 系 (no allocation) plain/AOT
+
+| bench | plain | AOT | speedup |
+|-------|------:|----:|--------:|
+| loop  | 1.45  | 0.11 | 13× |
+| fib(40) | 6.22 | 1.55 | 4.0× |
+| tak | 0.70 | 0.22 | 3.2× |
+| ackermann | 6.59 | 1.28 | 5.1× |
+| collatz | 5.80 | 0.35 | 16.5× |
+| compose | 1.42 | 0.24 | 5.9× |
+| chain20 | 7.26 | 2.10 | 3.5× |
+| chain40 | 7.94 | 3.61 | 2.2× |
+| chain_add | 1.18 | 0.36 | 3.3× |
+| gcd | 4.75 | 0.42 | 11.3× |
+
+AOT mode は @child + parser fix 後も大幅 speedup を維持 (3〜17×)。
+
 ## 2026-05-10 — bench 拡充 (GC stress 3 種追加)
 
 既存の binary_trees / list_alloc / string_concat に追加で:

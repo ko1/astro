@@ -5,6 +5,21 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 ベンチは [perf.md](perf.md)、 完了履歴は [done.md](done.md)。 設計の経緯は
 [`docs/gc_design.md`](../../../docs/gc_design.md)。
 
+## 直近 (iter 58 直後の状態)
+
+- [ ] **cons_list libgc +16% 単独退化** — iter 58 @child 化で他 bench は
+      5〜15% 改善したが cons_list だけ +16% 退化 (libgc のみ、 precise
+      backend では問題なし)。 perf record でどの hot 関数が遅くなったか
+      要追跡。 仮説: `[x, list]` cons pair の `ary_lit_2` @child 化で
+      libgc の alloc 頻度が増加 / cache 局所性が悪化。
+- [ ] **bench/life.ba.rb を baruby (libgc) にも copy** — 修正後 baruby
+      でも動くので bench 集合に追加してよい。 iter 58 では一時 copy
+      して動作確認したが、 後で削除した。
+- [ ] **callee_sp safety guard を撤去できるか検証** — node_call /
+      node_call2 内の `if (callee_sp < sp + 4) callee_sp = sp + 4` は
+      defensive 修正。 `body_locals = max_cnt` の parser fix で本来
+      不要なはず。 確認後に削除して 1 cmp + cmov 削減。
+
 ## P0
 
 - [x] ~~**uninitialized sp scratch slot in GC scan range**~~ — 2026-05-16 解決

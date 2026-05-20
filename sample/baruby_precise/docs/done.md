@@ -3,6 +3,228 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-21 (58) — @child operand 全面導入 + callee_sp aliasing fix
+
+ASTroGen に `@child` operand kind が追加された (b4b0eb0, user 側)。
+`VALUE lv@child` と書くと:
+- AST 上の格納は `NODE *` (struct field、 ALLOC 引数も NODE *)
+- DISPATCH が子 dispatcher を呼んで結果を `sp[i]` に snapshot
+- EVAL body は VALUE 受け取り — 手スピル `sp[0] = UNWRAP(BARUBY_EVAL_ARG(...))`
+  が消える
+- SPECIALIZE は `SD_<hash>(...)` 直接呼出で snapshot 統合 (AOT inline 可)
+
+iter 58 で baruby_precise + baruby (libgc) の全 eligible NODE_DEF を
+`@child` 化。 `commit 31c01a5`。
+
+### 変換した node (両 sample 共通)
+
+- arith: `node_sub`, `node_mul`, `node_div`, `node_mod`, `node_lshift`
+- comparison: `node_le`, `node_ge`, `node_eq`, `node_neq`, `node_spaceship`
+  (`node_add`, `node_lt`, `node_gt` は user 側 cfbebf6 で既に変換済)
+- 制御: `node_return` (`value` を @child)
+- 配列リテラル: `node_ary_lit_1..4` (全 element を @child)
+- メソッド (eager 評価): `node_ary_push`, `node_call_size`, `node_call_aget`,
+  `node_call_aget2`, `node_call_aset`, `node_call_push`, `node_call_pop`,
+  `node_call_to_s`, `node_call_to_i`
+
+### あえて @child 化しなかった node
+
+- `node_lset` — rhs を sp[0] に snapshot すると、 arg-eval 用の lset
+  chain (lset(arg_idx+0), lset(arg_idx+1), ...) で次の lset の DISPATCH
+  spill が前の lset destination (fp[arg_idx+0] = sp[?]) を clobber する。
+  user 指摘 [[feedback-eval-arg-vs-child]] とも整合: 返り値を捨てる
+  / 1 度しか使わない operand は @child せず EVAL_ARG で取るのが正解。
+- `node_if` cond — 値は IS_TRUTHY 即時判定で discard。 then/else は
+  条件付き評価なので必ず NODE * のまま。
+- `node_seq` head — 値を discard、 snapshot 不要。
+- `node_while` cond/body — cond はループ毎に再評価、 body も条件付き。
+- `node_scope`, `node_def`, `node_call`, `node_call_N`, `node_call2`,
+  `node_pg_call_N`, `node_call_static`, `node_call_builtin` — 独自の
+  arg-eval / dispatch プロトコル (BARUBY_EVAL_ARG, fresh callee
+  frame、 sp_body 直接呼び等) で @child と互換性なし、 ship 不要。
+- `node_str_lit`, `node_lget`, `node_num`, `node_true/false/nil` — 子なし。
+
+### framework extension (lib/astrogen.rb)
+
+per-language hook を 2 段追加:
+
+1. **`child_storage_decl(slot)` / `child_storage_expr(slot)`** — snapshot
+   の保存先。 default は `sp[slot]` (precise GC 用)、 baruby (libgc) で
+   override し `VALUE _c#{slot}` という C-local に切替。
+2. **`child_dispatch_args(slot, field)`** — 子 dispatcher を呼ぶ際の
+   引数。 default は `c, #{field}, fp, sp + #{slot}` (4-arg dispatcher、
+   precise GC)、 baruby は `c, #{field}, fp` (3-arg dispatcher) を返す。
+
+これで baruby (libgc, common_param_count = 3) でも framework の @child を
+そのまま使え、 C-local snapshot による「sp[] への書き込みゼロ」 が成立。
+
+### correctness fix: callee_sp aliasing (実は cfbebf6 既存の bug)
+
+@child 化を進めて life bench が崩壊した経緯を辿ると、 cfbebf6 (`node_add`
+のみ @child) の時点で実は `n + f(x, y, z, w, e)` のような 「binop の
+rhs が >3-arg call で nested @child を持つ」 パターンで silent corruption
+が発生していた。 偶然 oracle で検出されていなかっただけ。
+
+#### 原因
+
+parser は def の locals_cnt を `n->locals.size` (declared local 数) で
+記録 (`baruby_parse.c` の `body_locals = n->locals.size` 行)。 一方
+runtime node_call は callee_fp = caller_fp + arg_idx、 callee_sp =
+callee_fp + locals_cnt として callee の sp を立てる。
+
+caller (= 親の def) 側で binop @child を評価すると、 そこから dispatch
+される call の lset chain が caller's fp[arg_idx + i] に args を書く。
+arg_idx は parser の `tc->frame->arg_index` の現在値 = locals.size base
+で計算される。
+
+caller の sp は runtime では caller_fp + caller_locals_cnt =
+caller_fp + caller's body_locals (= caller's locals.size) で配置される。
+
+ここで parser が arg_idx を locals.size から bump して call 用 slot を
+取るが、 callee_sp = callee_fp + locals.size = caller_fp + arg_idx +
+callee_locals.size となり、 これが caller_sp + N と一致してしまう。
+specifically callee 側で @child snapshot (callee_sp[0..1]) と caller の
+@child snapshot slot (caller_sp[0..1] = caller_fp[caller_locals.size +
+0..1]) が同じ物理メモリを指す。 callee の sub @child などが発火する瞬間に
+caller の lhs snapshot が clobber される。
+
+#### fix
+
+`baruby_parse.c::PM_DEF_NODE` で `body_locals = max_cnt` (parser の
+arg/scratch 高水位線) に変更。 callee の sp は callee_fp + max_cnt で
+立つので、 nested call arg slots の上に余裕を持って配置される。
+slight over-allocation だが GC root も zero-init で safe。
+
+両 sample に同形の修正を入れた。 fix なしの状態では life が 34 (期待
+112) を返していた。
+
+#### ある意味の発見
+
+cfbebf6 (`node_add` のみ @child) でも life は壊れていた。 ベンチ
+oracle で偶然取りこぼされた pre-existing bug。 `@child` の全面導入で
+顕在化 → 修正 という流れで間接的に既存 bug を直したことになる。
+
+### A/B benchmark — baruby (libgc) 中心 (user 要望)
+
+#### plain mode median of 3
+
+| bench (.ba.rb) | baseline (iter 53) | iter 58 (@child + fix) | Δ |
+|----------------|-------------------:|----------------------:|---:|
+| json_parse | 1.16 | 1.12 | -3% |
+| fib_pair | 1.06 | 1.01 | -5% |
+| hash_chain | 1.32 | 1.25 | -5% |
+| cons_list | 0.76 | 0.88 | +16% regress |
+| binary_trees | 0.81 | 0.82 | ±0% |
+| substr_churn | 1.13 | 1.07 | -5% |
+| tokenize | 1.14 | 1.10 | -4% |
+| string_concat_dyn | 1.38 | 1.29 | -7% |
+| list_alloc | 0.83 | 0.88 | +6% |
+| list_sort | 1.15 | 1.14 | ±0% |
+| nqueens | 1.01 | 0.88 | -13% |
+| fannkuch | 0.75 | 0.69 | -8% |
+| interp_calc | 1.17 | 0.99 | -15% |
+| gc_combined | 0.95 | 0.94 | ±0% |
+| dll_walk | 0.85 | 0.80 | -6% |
+
+geomean は実質 -3〜-5% (string + int 系で揃って小 win、 cons_list だけ
++16% 単独退化 — おそらく `[x, list]` cons pair が @child snapshot 経由で
+hit する code path が GC frequency に影響)。
+
+#### naruby int benches (no allocation) plain / AOT 比較
+
+| bench | plain | AOT | speedup |
+|-------|------:|----:|--------:|
+| loop  | 1.45  | 0.11 | 13× |
+| fib(40) | 6.22 | 1.55 | 4.0× |
+| tak | 0.70 | 0.22 | 3.2× |
+| ackermann | 6.59 | 1.28 | 5.1× |
+| collatz | 5.80 | 0.35 | 16.5× |
+| compose | 1.42 | 0.24 | 5.9× |
+| chain20 | 7.26 | 2.10 | 3.5× |
+| chain40 | 7.94 | 3.61 | 2.2× |
+| chain_add | 1.18 | 0.36 | 3.3× |
+| gcd | 4.75 | 0.42 | 11.3× |
+
+AOT は依然として大幅な speedup を出す (3〜17×)。 @child 投入で
+SD_<hash>() direct call が `sp[i] = UNWRAP(SD_<child_hash>(c, ...))`
+形に集約され、 gcc が cross-SD で register 越し inline する pattern
+は維持。
+
+### code gen 例
+
+baruby (libgc) の `n = a + b` の DISPATCH 生成結果 — sp[] 書き込み無し、
+C-local の `_c0` / `_c1` のみ:
+
+```c
+DISPATCH_node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp)
+{
+    VALUE _c0;
+    VALUE _c1;
+    _c0 = UNWRAP((*n->u.node_add.l->head.dispatcher)(c, n->u.node_add.l, fp));
+    _c1 = UNWRAP((*n->u.node_add.r->head.dispatcher)(c, n->u.node_add.r, fp));
+    return EVAL_node_add(c, n, fp, _c0, _c1);
+}
+```
+
+baruby_precise は sp[i] = ... で同じ pattern (precise GC root scan に
+乗せる)、 違いは storage 先のみ。
+
+## 2026-05-21 (58 補足) — snapshot 戦略 (sp[] vs C-local) は plain/AOT で勝者反転
+
+@child の snapshot 保存先を per-language hook (`child_storage_*`) で
+切替可能にしてあるが、 「どちらが速いか」 は **執行モードに依存** する
+ことが naruby int 系の no-alloc bench (loop/fib/tak/ackermann/collatz/
+compose/chain20/chain40/chain_add/gcd) で明らかになった。 GC ノイズが
+無いので snapshot 戦略の差だけが直接観測できる。
+
+### plain mode (interpreter loop, indirect dispatch)
+
+baruby (libgc, C-local) が再帰 + 多 binop 系で **5〜12% 勝つ**:
+
+| bench | libgc (C-local) | baruby_precise GC=none (sp[]) | sp[] cost |
+|-------|--------:|--------:|---:|
+| fib(40) | 6.22 | 6.53 | +5% |
+| tak | 0.70 | 0.75 | +7% |
+| ackermann | 6.59 | 7.29 | +11% |
+| compose | 1.42 | 1.59 | +12% |
+| chain20 | 7.26 | 8.14 | +12% |
+| chain40 | 7.94 | 8.79 | +11% |
+| (loop / collatz / chain_add / gcd は ±3% で tied) |
+
+理由: dispatcher が関数ポインタ越しの indirect call。 LTO inline が
+効かないので `sp[i] = ...` は実 memory store として残る。 C-local は
+gcc が register 居住させやすく、 ABI 経由で次の SD に渡せる。
+
+### AOT mode (SD inlined chain)
+
+逆転、 baruby_precise (sp[]) が **7〜15% 勝つ**:
+
+| bench | libgc (C-local) | baruby_precise (sp[]) | sp[] adv |
+|-------|--------:|--------:|---:|
+| fib(40) | 1.55 | 1.38 | -11% |
+| tak | 0.22 | 0.19 | -14% |
+| ackermann | 1.28 | 1.19 | -7% |
+| chain20 | 2.10 | 1.94 | -8% |
+| chain40 | 3.61 | 3.06 | -15% |
+| chain_add | 0.36 | 0.32 | -13% |
+| gcd | 0.42 | 0.38 | -10% |
+
+理由 (仮説): SD が静的に bake されると `SD_<child>(c, n->u.X.lv, fp,
+sp + 0)` の `sp + 0` は compile-time-known offset になり、 gcc が
+restrict pointer 配下で完全に SROA + register allocate できる。 store
+は実体として消える。 一方 C-local も同等に optimize されるはずだが、
+4-arg dispatcher (sp 含む) のほうが 3-arg より gcc にとって alias 解析
+の手がかりが多く、 cross-SD inline で register pressure が下がる可能性。
+要 perf record で裏付け。
+
+### 設計示唆
+
+- conservative GC + plain interp → C-local 採用
+- precise GC + AOT 重視 → sp[] 採用 (root scan に必要、 かつ AOT 最適化
+  との相性も良い)
+- ASTroGen の `child_storage_*` per-language hook はこの逆転を吸収する
+  正しい設計判断だった
+
 ## 2026-05-20 (57) — BaArray CONTIG (header+items 同 alloc 内) → 棄却 → 全 revert
 
 iter 56 embed の棄却理由 (BaArray size growth +33%) を回避する別案:
