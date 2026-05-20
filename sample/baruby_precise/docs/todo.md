@@ -85,20 +85,16 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       tokenize / string_concat_dyn / substr_churn など 9 bench で
       +5〜14% 回帰。 BaArray 24B→32B の size growth が embed の恩恵を
       持たない workload で広範に payment され、 geomean net negative。
-- [ ] **BaArray FAM-inline (`VALUE items[]`)** — iter 56 の embed
-      棄却理由は「BaArray の size growth が悪影響」 だった。 別の
-      approach: BaArray を flexible-array-member (FAM) 化し、 items
-      を常に inline で保持、 alloc 時に `sizeof(BaArray) + capa *
-      sizeof(VALUE)` を一括 alloc する。 これなら size growth は
-      capa に比例 (24B → 24+capa*8B)、 24B のままも可能 (capa=0)。
-      ただし growth (push 時) で BaArray 全体を realloc → move、
-      caller が held する `BaArray *` が無効化される。 baruby_precise
-      は precise GC なので caller の VALUE は sp slot 経由で reload
-      可能、 baruby (libgc) は conservative なので問題なし (古い
-      pointer は libgc が prevent freeze)。 ただし code path の
-      reload pattern が ~30 箇所追加で touch。 大きい project、
-      期待 win 不明 (json_parse 系の確実 win + 他 bench の中立) なので
-      別 iter で慎重に scoping。
+- [x] ~~**BaArray inline layout (embed / CONTIG / FAM 系)**~~ —
+      iter 56 embed (棄却) + iter 57 CONTIG (棄却) で BaArray inline
+      化路線は exhausted ([done.md](done.md) iter (56), (57) 参照)。
+      embed は size growth、 CONTIG は size 維持で同じ window のはず
+      だったが、 どちらも hash_chain で +35〜71% regression を生んだ。
+      原因: ASTro の現状 GC interface (OBJ + 子 payload の 2-object
+      model) が mark 系 backend で前提となっており、 inline 化が
+      KIND_PAYLOAD_VAL amortize pattern を壊す。 FAM 案も同じ
+      structural 問題があるので同様の trade-off と推測、 採用しない。
+      BaArray layout 変更 は基本ボツ方向に確定。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で

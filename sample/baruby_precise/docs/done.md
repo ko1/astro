@@ -3,6 +3,87 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (57) — BaArray CONTIG (header+items 同 alloc 内) → 棄却 → 全 revert
+
+iter 56 embed の棄却理由 (BaArray size growth +33%) を回避する別案:
+**CONTIG** — BaArray header は 24 B のまま、 items を同じ allocation
+内に co-locate する (alloc size = sizeof(BaArray) + capa*sizeof(VALUE))。
+`baruby_ary_new_from` (literal-array path) で 1-alloc 化、 `baruby_ary_new`
+(grow target) は従来の 2-alloc を維持。
+
+### 実装
+
+- `OBJ_FLAG_ARY_CONTIG = 0x02u` (SSO=0x01 と区別)
+- `BaArray.items` は heap path で別 alloc、 CONTIG path で `(VALUE *)(a + 1)`
+- 全 15 GC backend の OBJ_ARRAY scan: CONTIG 時に items を inline 走査、
+  moving GC では `a->items = (VALUE *)(a + 1)` で post-move 修正
+- mark_bump_gen は minor + major 両方に修正必要 (major_promote 後の
+  items pointer fixup が major_process で必要だったバグも追加発見)
+- baruby (libgc) port、 conservative GC なので scan 修正不要
+
+全 19 oracle × 全 backend で通過確認。
+
+### A/B 結果 — binary_trees 圧勝、 hash_chain 大幅退化
+
+immix_gen / copy_gen / mark_bump_gen / mark_freelist / libgc × 9 bench
+の median-of-3 plain matrix:
+
+| bench (大 win)      | iter 53 → 57 (代表値) |
+|---------------------|-----------------------|
+| **binary_trees**    | 0.76 → 0.66 (-13%) 全 backend で大 win |
+| cons_list           | 0.74 → 0.70 (-5%)   |
+| json_parse          | ±0%                 |
+| substr_churn        | ±0%                 |
+| string_concat_dyn   | ±0%                 |
+
+| bench (大 regression) | iter 53 → 57 immix_gen | mark_bump_gen | mark_freelist |
+|-----------------------|------------------------|---------------|---------------|
+| **hash_chain**        | 1.16 → 1.98 **+71%**   | 1.23 → 1.72 +40% | 1.23 → 1.66 +35% |
+
+hash_chain の immix_gen +71% regression が決定的に悪い。 clean A/B
+(5-run median): immix_gen baseline 1.46s → CONTIG 2.05s = +40%。
+copy は逆に -10% (1.55 → 1.34s) と win したが、 mark 系 backend は
+全て退化。
+
+### 棄却理由
+
+iter 56 embed (棄却) と同じパターン:
+- 局所的な大 win (binary_trees) はあるが、 hash_chain (一般的な
+  dict-lookup workload) の +35〜71% 退化が許容できない
+- 退化の原因は backend-specific (mark 系で顕著、 copy 系で改善)、
+  「inline items scan vs separate KIND_PAYLOAD_VAL processing」 の
+  どこに work が偏るかの違いだと推測 (perf record 未取得)
+- 「総 mark 仕事量は同じだが、 mark_value_major を OBJ_ARRAY 内で
+  ループ呼びすると、 KIND_PAYLOAD_VAL で一度呼ぶより遅い」 という
+  immix の cache / branch 予測の影響と思われるが、 measurement-backed
+  でないので仮説に留める
+
+### 学び
+
+- BaArray layout 系の変更 (embed / CONTIG / FAM) は hash_chain の
+  ような nested array workload で**必ず**何らかの regression を生む
+- 「メモリ密度」 と 「access pattern」 のどちらを変えても、 immix /
+  mark 系 backend での GC scan の最適化が前提を変えるため、 局所的
+  win が必ず広範な regression と組み合わさる
+- ASTro の現状 GC interface (KIND_OBJ_ARRAY + KIND_PAYLOAD_VAL) は
+  「OBJ + 子 payload」 の 2-object model に最適化されている。 CONTIG
+  / embed / FAM は単一 object に inline するため、 mark 系の amortize
+  パターンを壊す
+
+### iter 57 のまとめ
+
+- ~250 行の変更を実装 (CONTIG layout + 全 15 backend GC scan + 2 sample port)
+- binary_trees -22%、 cons_list -5%、 hash_chain immix_gen +71% など
+  mixed result
+- net negative と判断、 全 revert
+- todo.md の BaArray FAM-inline entry を「試行済 (CONTIG variant) で
+  既に検証、 BaArray layout 変更は基本ボツ」 に更新
+
+iter 53 SSO → iter 56 embed (棄却) → iter 57 CONTIG (棄却) の経緯で、
+BaArray inline 系の最適化路線は exhausted。 別方向 (e.g., 真の
+parser-level optimization、 GC algorithm 追加、 新 bench、 既存 GC
+backend の cache layout 改良) に切替えるべきと判明。
+
 ## 2026-05-20 (56) — BaArray embed (SMALL_N=2) 実装 → A/B で棄却 → 全 revert
 
 iter 55 で todo.md に scoping した BaArray embed=2 を実装。 全 15 GC
