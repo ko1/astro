@@ -170,17 +170,12 @@ node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * rest
     uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(body);
     if (locals_cnt == 0) locals_cnt = params_cnt;
     VALUE *callee_fp = fp + arg_index;
-    /* iter @child fix: callee's sp must not alias caller's @child snapshots
-     * at sp[0..N-1].  Parser's binop reserve (4 slots) bumps arg_index
-     * past caller's binop snapshots in TRANSDUCTION, but callee_fp +
-     * locals_cnt can still land inside caller's sp scratch (e.g. caller's
-     * binop snapshot at main_sp[0] = main_fp[9] coincides with callee's
-     * sp[0] = main_fp[arg_index + locals_cnt] when args+locals == sp_offset).
-     * Push callee_sp up so it starts strictly above caller's sp + 4,
-     * giving caller's binop snapshots safe headroom. */
-    VALUE *callee_sp = callee_fp + locals_cnt;
-    if (callee_sp < sp + 4) callee_sp = sp + 4;
-    RESULT r = EVAL(c, body, callee_fp, callee_sp);
+    /* parser stores body_locals = max_cnt (arg/scratch high-water) in
+     * the callee's locals_cnt, so callee_fp + locals_cnt is guaranteed
+     * to land above caller's @child snapshot slots — no runtime guard
+     * needed (was: `if (callee_sp < sp + 4) callee_sp = sp + 4`).  See
+     * baruby_parse.c::PM_DEF_NODE and docs/done.md (58). */
+    RESULT r = EVAL(c, body, callee_fp, callee_fp + locals_cnt);
     return RESULT_OK(r.value);
 }
 
@@ -277,10 +272,7 @@ node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * res
     uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(sp_body);
     if (locals_cnt == 0) locals_cnt = params_cnt;
     VALUE *callee_fp = fp + arg_index;
-    /* @child aliasing fix: see EVAL_node_call. */
-    VALUE *callee_sp = callee_fp + locals_cnt;
-    if (callee_sp < sp + 4) callee_sp = sp + 4;
-    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_sp);
+    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_fp + locals_cnt);
     return RESULT_OK(r.value);
 }
 
