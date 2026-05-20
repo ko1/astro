@@ -397,21 +397,18 @@ node_call_builtin(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALU
 // VAL2INT(t) = (intptr_t)t >> 1, INT2VAL(i) = (i << 1) | 1.
 
 NODE_DEF
-node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    // Spill `l` to sp[0] so it survives `rhs` evaluation (which may alloc
-    // and move heap-VALUE `l`).  sp[1] holds `r`; concat/plus get sp + 2
-    // headroom for their own scratch.
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]))) {
-        return RESULT_OK(INT2VAL(VAL2INT(sp[0]) + VAL2INT(sp[1])));
+    /* DISPATCH has snapshotted lv/rv at sp[0]/sp[1] already; body's
+     * scratch starts at sp[2] by convention — identical to the legacy
+     * `sp[0]=lhs; sp[1]=rhs;` pattern in baruby_precise. */
+    if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
+        return RESULT_OK(INT2VAL(VAL2INT(lv) + VAL2INT(rv)));
     }
-    if (IS_STR(sp[0]) && IS_STR(sp[1])) {
+    if (IS_STR(lv) && IS_STR(rv)) {
         return RESULT_OK(baruby_str_concat(&sp[0], &sp[1], sp + 2));
     }
-    if (IS_ARY(sp[0]) && IS_ARY(sp[1])) {
+    if (IS_ARY(lv) && IS_ARY(rv)) {
         return RESULT_OK(baruby_ary_plus(&sp[0], &sp[1], sp + 2));
     }
     fprintf(stderr, "type mismatch in +\n");
@@ -475,13 +472,10 @@ node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 // unaffected (sp[0]/sp[1] compare bit-for-bit just like locals would).
 
 NODE_DEF
-node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]))) return RESULT_OK(sp[0] < sp[1] ? VAL_TRUE : VAL_FALSE);
-    if (IS_STR(sp[0]) && IS_STR(sp[1]))         return RESULT_OK(baruby_str_cmp(sp[0], sp[1]) <  0 ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv < rv ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) < 0 ? VAL_TRUE : VAL_FALSE);
     fprintf(stderr, "type mismatch in <\n");
     return RESULT_OK(VAL_FALSE);
 }
@@ -499,13 +493,10 @@ node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 }
 
 NODE_DEF
-node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]))) return RESULT_OK(sp[0] > sp[1] ? VAL_TRUE : VAL_FALSE);
-    if (IS_STR(sp[0]) && IS_STR(sp[1]))         return RESULT_OK(baruby_str_cmp(sp[0], sp[1]) >  0 ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv > rv ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) > 0 ? VAL_TRUE : VAL_FALSE);
     fprintf(stderr, "type mismatch in >\n");
     return RESULT_OK(VAL_FALSE);
 }

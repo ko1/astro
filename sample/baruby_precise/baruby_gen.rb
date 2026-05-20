@@ -51,6 +51,12 @@ class BaRubyNodeDef < ASTroGen::NodeDef
     # `astro_spec_dedup_has` to know whether the symbol is being
     # emitted in-file.
     def build_specializer
+      # Assign sp slots to @child operands BEFORE invoking their
+      # build_specializer (else `sp[]` interpolation in the printf
+      # format string).  Mirrors ASTroGen::NodeDef::Node#build_specializer.
+      child_ops = @operands.select(&:child?)
+      child_ops.each_with_index { |op, i| op.sp_slot = i }
+
       child_nodes = []
       args = []
 
@@ -58,6 +64,21 @@ class BaRubyNodeDef < ASTroGen::NodeDef
         n, arg = op.build_specializer(@name)
         child_nodes << n if n
         args << arg
+      end
+
+      # Pre-eval + spill setup statements for @child operands — emitted
+      # before the `return EVAL_xxx(...)` call in the generated SD body.
+      # LHS comes from child_storage_expr so per-language storage choices
+      # (precise sp[] vs conservative C-locals) flow through.  Declaration
+      # lines (empty by default) come from child_storage_decl.
+      setup_decl_emitters = child_ops.filter_map do |op|
+        d = child_storage_decl(op.sp_slot)
+        next nil if d.empty?
+        "    fprintf(fp, \"    #{d}\\n\");"
+      end
+      setup_emitters = setup_decl_emitters + child_ops.map do |op|
+        field = "n->u.#{@name}.#{op.name}"
+        "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(c, #{field}, fp, sp + #{op.sp_slot}));\\n\", DISPATCHER_NAME(#{field}));"
       end
 
       # Standard decls for non-sp_body NODE * operands.
@@ -118,6 +139,7 @@ class BaRubyNodeDef < ASTroGen::NodeDef
           fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
           fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
           fprintf(fp, "{\\n");
+      #{ setup_emitters.join("\n        ") }
       #{
         if args.empty?
           '            fprintf(fp, "    return EVAL_' + @name + '(' + prefix_call_args.join(', ') + ');\\n");'
