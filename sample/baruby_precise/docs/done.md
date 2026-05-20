@@ -3,6 +3,92 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (50) — Milestone: iter 36-50 のまとめ + gc.h contract 明文化
+
+### iter 36-50 で達成したこと
+
+15 iters (約 5 日 + 2 セッション) で baruby_precise を次のレベルに進めた:
+
+**Backend / 設計空間 (15 → 16)**
+- iter 36: `mark_card_gen` (#15) page-level remset で natural bounded
+- iter 41: `mark_freelist` (#16) region + freelist non-compact M&S
+- 全 16 backend が **bounded correctness** 達成 (iter 38 で immix_gen /
+  mark_bitmap_gen に heap-walk fallback 追加)
+
+**Bench (15 → 19)**
+- iter 36: `ast_eval`, `remset_pressure` (macro pattern + adversarial)
+- iter 37: `string_concat_dyn` (parser fold で吸収された pattern の維持)
+- iter 40: `dll_walk` (bidirectional pointer + WB stress)
+- iter 48: `tokenize` (CSV-like 分割 + push 混合)
+
+**Performance**
+- iter 36: AOT mode 修復 (Makefile + extra_cflags)
+- iter 37: literal `+` parse-time fold → string_concat plain -58%, AOT -79%
+- iter 43-45: 3 段 inline-friendly optimization (cold-split → clz size_class →
+  slab-gen cold-split)。 string-heavy bench で 8-25% AOT improvement
+- CRuby 比 plain 1.83×、 AOT 7.77× geomean faster (iter 42)
+
+**重要なバグ修正**
+- iter 38: immix_gen / mark_bitmap_gen の remset overflow abort →
+  pressure-triggered minor (immix_gen) と dirty_bm scan (mark_bitmap_gen)
+- iter 48: mark_freelist の dormant memset bug (iter 41 から 7 iter
+  気付かなかった、 tokenize bench で顕在化)
+
+**Docs / メタ**
+- iter 39: comprehensive doc review
+- iter 42: CRuby reference times comparison
+- iter 47, 50: docs consolidation
+
+### iter 50 の gc.h contract 明文化
+
+iter 48 の mark_freelist memset bug を二度と起こさないため、 gc.h の
+`aro_gc_alloc` 宣言に **CONTRACT** コメントを追加:
+
+```c
+/* aro_gc_alloc — allocate `payload_size` bytes of a pointer-scanned object.
+ *
+ * **CONTRACT**: every backend MUST zero-initialize the returned payload
+ * before returning.  The GC mark phase walks these fields as VALUEs /
+ * pointers via `scan_outgoing`; stale data → SEGV.  Region-bump backends
+ * get this for free; freelist-recycling backends MUST emit explicit memset.
+ * ...
+ */
+```
+
+将来 backend を追加する時、 この comment が prerequisite として参照
+される設計。 また `aro_gc_alloc_byte` も「raw bytes、 zero-init 不要、
+KIND_PAYLOAD_BYTE は scan_outgoing で skip」 を明記。
+
+### 全体俯瞰
+matrix 数値で見る design space の習熟度 (plain mode、 winner backend):
+- `bump` (no GC): ast_eval, binary_trees — alloc floor
+- `immix_gen`: 6+ benches — line allocator + gen の包括的勝利
+- `mark_compact_gen`: tokenize — alloc-heavy + tenured 圧
+- `mark_bump_gen` / `copy_gen`: substr_churn / 似た workloads — bump nursery
+- `none`: sieve — GC を全く走らせない workload
+- `mark_gen_inc`: ast_eval (1 同位) — non-gen で軽い
+- `immix`: hash_chain — non-gen Immix
+
+AOT mode (`immix_gen` 一強傾向):
+- immix_gen: 10+ wins — gen + line allocator が dispatch baked で最大限活用
+- mark_compact_gen: nqueens / fannkuch (場面別)
+- copy_gen: remset_pressure
+- 残りは mark_bump_gen / bump / none に少数
+
+iter 36 baseline と比べて、 plain で 1-2 backend が独占していた状況から
+`immix_gen` 中心の多様化に変化。 cold-split + clz の効果で各 backend の
+hot path が縮み、 plain でも tight contest が増えた。
+
+### TODO 候補 (今後の方向)
+- `aro_gc_alloc_byte` の inline 化 (variable size のため難航中、 iter 47
+  で flatten 試行 → revert)
+- 動的 string `+` chain fold (str_concat_dyn / substr_churn の win 期待)
+- inc 系 backend を真の incremental に (SATB + stack-WB)
+- framework integration (gc.{c,h} を runtime/ 格上げ、 value.def 試行)
+- CRuby + JIT 比較 (現状 default ruby のみ)
+
+commit: gc.h 明文化のみ (本 iter)。 docs 別 commit。
+
 ## 2026-05-20 (49) — iter 48 tokenize bench を matrix に反映
 
 iter 48 で追加した tokenize bench (CSV-like 分割 + push 混合) を plain matrix

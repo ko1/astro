@@ -139,9 +139,38 @@ extern int  aro_gc_stress;
 extern const char *aro_gc_backend_name;
 
 void  aro_gc_init(CTX *c);
+
+/* aro_gc_alloc — allocate `payload_size` bytes of a pointer-scanned
+ * object (KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL).
+ *
+ * **CONTRACT**: every backend MUST zero-initialize the returned payload
+ * (`memset(payload, 0, ALIGN8(payload_size))` or equivalent) before
+ * returning.  The GC mark phase walks these fields as VALUEs / pointers
+ * via `scan_outgoing`; if any byte is stale heap-pointer-shaped data
+ * from a recycled slot, mark will dereference it and SEGV.  Region-bump
+ * backends get this for free (region is touched once, lazy zero from
+ * the OS); freelist-recycling backends MUST emit an explicit memset.
+ * iter 48 fix in gc_mark_freelist.c was due to this contract being
+ * silently violated.
+ *
+ * `sp_top` is the GC-scan upper bound: roots are `c->env..sp_top`.
+ * Callers must spill any heap pointers they hold into slots below
+ * `sp_top` before calling alloc, or pass a higher sp_top so those slots
+ * fall in the scan range.
+ */
 void *aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top);
+
+/* aro_gc_alloc_byte — allocate `payload_size` raw bytes (no VALUE
+ * scanning, so no zero-init required).  Used for BaString.bytes / other
+ * char[] payloads.  Caller fills the bytes after return.  GC's
+ * `scan_outgoing` skips KIND_PAYLOAD_BYTE so leftover freelist-link
+ * bytes are harmless. */
 void *aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top);
+
+/* aro_gc_realloc_payload — grow a payload, copying contents.  Preserves
+ * the kind/scanability of the original payload. */
 void *aro_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
+
 void  aro_gc_collect(VALUE *sp_top);
 
 size_t aro_gc_total_bytes(void);
