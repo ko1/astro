@@ -849,17 +849,13 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
           }
           pop_frame(tc);
 
-          // The body's "true" locals count = params + declared body
-          // locals (Prism's `n->locals.size`), NOT max_cnt.  max_cnt
-          // includes the slot indices the parser assigned to nested
-          // call args, which were used in the OLD calling convention
-          // (writing args into caller's `fp[arg_index..]` then bumping
-          // fp past them).  In the new pg_call_<N> path each call has
-          // its own VLA frame, so nested call arg slots aren't
-          // allocated in the body's frame.  Sizing F to max_cnt would
-          // over-allocate (e.g. ackermann body has 2 declared locals
-          // but max_cnt = 6 due to 4-deep nested calls).
-          uint32_t body_locals = (uint32_t)n->locals.size;
+          // body_locals MUST be max_cnt (parser's high-water for arg /
+          // nested-call slots), not just n->locals.size.  Smaller values
+          // cause the callee's lset chain (writing fp[arg_idx + i]) to
+          // alias with caller's @child snapshots or arg-eval slots when
+          // a >3-arg call appears inside an @child body.  See
+          // baruby_precise/baruby_parse.c for the matching fix + rationale.
+          uint32_t body_locals = max_cnt;
           code_repo_add2(name, fn, true, body_locals);
           return ALLOC_node_def(name, fn, params_cnt, max_cnt);
       }

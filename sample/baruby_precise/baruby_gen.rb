@@ -78,7 +78,7 @@ class BaRubyNodeDef < ASTroGen::NodeDef
       end
       setup_emitters = setup_decl_emitters + child_ops.map do |op|
         field = "n->u.#{@name}.#{op.name}"
-        "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(c, #{field}, fp, sp + #{op.sp_slot}));\\n\", DISPATCHER_NAME(#{field}));"
+        "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
       end
 
       # Standard decls for non-sp_body NODE * operands.

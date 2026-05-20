@@ -97,9 +97,8 @@ node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * res
 // RESULT_NORMAL so the caller sees a normal return value.
 
 NODE_DEF
-node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *value)
+node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE v@child)
 {
-    VALUE v = UNWRAP(EVAL_ARG(c, value));
     return RESULT_RETURN_(v);
 }
 
@@ -152,7 +151,7 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 NODE_DEF
 node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref)
 {
-    (void)name; (void)params_cnt; (void)sp;
+    (void)name; (void)params_cnt;
     if (UNLIKELY(c->serial != cc->serial)) {
         return node_call_slowpath(c, n, fp, sp);
     }
@@ -171,7 +170,17 @@ node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * rest
     uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(body);
     if (locals_cnt == 0) locals_cnt = params_cnt;
     VALUE *callee_fp = fp + arg_index;
-    RESULT r = EVAL(c, body, callee_fp, callee_fp + locals_cnt);
+    /* iter @child fix: callee's sp must not alias caller's @child snapshots
+     * at sp[0..N-1].  Parser's binop reserve (4 slots) bumps arg_index
+     * past caller's binop snapshots in TRANSDUCTION, but callee_fp +
+     * locals_cnt can still land inside caller's sp scratch (e.g. caller's
+     * binop snapshot at main_sp[0] = main_fp[9] coincides with callee's
+     * sp[0] = main_fp[arg_index + locals_cnt] when args+locals == sp_offset).
+     * Push callee_sp up so it starts strictly above caller's sp + 4,
+     * giving caller's binop snapshots safe headroom. */
+    VALUE *callee_sp = callee_fp + locals_cnt;
+    if (callee_sp < sp + 4) callee_sp = sp + 4;
+    RESULT r = EVAL(c, body, callee_fp, callee_sp);
     return RESULT_OK(r.value);
 }
 
@@ -268,7 +277,10 @@ node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * res
     uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(sp_body);
     if (locals_cnt == 0) locals_cnt = params_cnt;
     VALUE *callee_fp = fp + arg_index;
-    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_fp + locals_cnt);
+    /* @child aliasing fix: see EVAL_node_call. */
+    VALUE *callee_sp = callee_fp + locals_cnt;
+    if (callee_sp < sp + 4) callee_sp = sp + 4;
+    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_sp);
     return RESULT_OK(r.value);
 }
 
@@ -416,50 +428,38 @@ node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 }
 
 NODE_DEF
-node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
-    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
-
-    return RESULT_OK(INT2VAL(VAL2INT(l) - VAL2INT(r)));
+    return RESULT_OK(INT2VAL(VAL2INT(lv) - VAL2INT(rv)));
 }
 
 NODE_DEF
-node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    // Spill `l` to sp[0]; rhs eval may GC before repeat helpers run.
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]))) {
-        return RESULT_OK(INT2VAL(VAL2INT(sp[0]) * VAL2INT(sp[1])));
+    /* DISPATCH spilled lv/rv at sp[0]/sp[1]; &sp[0]/&sp[1] still valid for helpers. */
+    if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
+        return RESULT_OK(INT2VAL(VAL2INT(lv) * VAL2INT(rv)));
     }
-    if (IS_STR(sp[0]) && IS_INT(sp[1])) {
-        return RESULT_OK(baruby_str_repeat(&sp[0], VAL2INT(sp[1]), sp + 2));
+    if (IS_STR(lv) && IS_INT(rv)) {
+        return RESULT_OK(baruby_str_repeat(&sp[0], VAL2INT(rv), sp + 2));
     }
-    if (IS_ARY(sp[0]) && IS_INT(sp[1])) {
-        return RESULT_OK(baruby_ary_repeat(&sp[0], VAL2INT(sp[1]), sp + 2));
+    if (IS_ARY(lv) && IS_INT(rv)) {
+        return RESULT_OK(baruby_ary_repeat(&sp[0], VAL2INT(rv), sp + 2));
     }
     fprintf(stderr, "type mismatch in *\n");
     return RESULT_OK(VAL_NIL);
 }
 
 NODE_DEF
-node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
-    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
-
-    return RESULT_OK(INT2VAL(VAL2INT(l) / VAL2INT(r)));
+    return RESULT_OK(INT2VAL(VAL2INT(lv) / VAL2INT(rv)));
 }
 
 NODE_DEF
-node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    VALUE l = UNWRAP(EVAL_ARG(c, lhs));
-    VALUE r = UNWRAP(EVAL_ARG(c, rhs));
-
-    return RESULT_OK(INT2VAL(VAL2INT(l) % VAL2INT(r)));
+    return RESULT_OK(INT2VAL(VAL2INT(lv) % VAL2INT(rv)));
 }
 
 // Order comparison: tagged ints compare directly (same ordering as
@@ -481,13 +481,10 @@ node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 }
 
 NODE_DEF
-node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]))) return RESULT_OK(sp[0] <= sp[1] ? VAL_TRUE : VAL_FALSE);
-    if (IS_STR(sp[0]) && IS_STR(sp[1]))         return RESULT_OK(baruby_str_cmp(sp[0], sp[1]) <= 0 ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv <= rv ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) <= 0 ? VAL_TRUE : VAL_FALSE);
     fprintf(stderr, "type mismatch in <=\n");
     return RESULT_OK(VAL_FALSE);
 }
@@ -502,13 +499,10 @@ node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 }
 
 NODE_DEF
-node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]))) return RESULT_OK(sp[0] >= sp[1] ? VAL_TRUE : VAL_FALSE);
-    if (IS_STR(sp[0]) && IS_STR(sp[1]))         return RESULT_OK(baruby_str_cmp(sp[0], sp[1]) >= 0 ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv >= rv ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) >= 0 ? VAL_TRUE : VAL_FALSE);
     fprintf(stderr, "type mismatch in >=\n");
     return RESULT_OK(VAL_FALSE);
 }
@@ -519,42 +513,33 @@ node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 // same cost as before — only heap pointers fall through to the helper.
 
 NODE_DEF
-node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(sp[0] == sp[1])) return RESULT_OK(VAL_TRUE);
-    if (LIKELY(IS_INT(sp[0]) || IS_INT(sp[1]))) return RESULT_OK(VAL_FALSE);
-    return RESULT_OK(baruby_value_eq(sp[0], sp[1]) ? VAL_TRUE : VAL_FALSE);
+    if (LIKELY(lv == rv)) return RESULT_OK(VAL_TRUE);
+    if (LIKELY(IS_INT(lv) || IS_INT(rv))) return RESULT_OK(VAL_FALSE);
+    return RESULT_OK(baruby_value_eq(lv, rv) ? VAL_TRUE : VAL_FALSE);
 }
 
 NODE_DEF
-node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(sp[0] == sp[1])) return RESULT_OK(VAL_FALSE);
-    if (LIKELY(IS_INT(sp[0]) || IS_INT(sp[1]))) return RESULT_OK(VAL_TRUE);
-    return RESULT_OK(baruby_value_eq(sp[0], sp[1]) ? VAL_FALSE : VAL_TRUE);
+    if (LIKELY(lv == rv)) return RESULT_OK(VAL_FALSE);
+    if (LIKELY(IS_INT(lv) || IS_INT(rv))) return RESULT_OK(VAL_TRUE);
+    return RESULT_OK(baruby_value_eq(lv, rv) ? VAL_FALSE : VAL_TRUE);
 }
 
 // 3-way compare.  Returns -1 / 0 / 1 (Integer) for orderable pairs and
 // nil for incomparable types — matches Ruby's `<=>`.
 NODE_DEF
-node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]))) {
-        if (sp[0] < sp[1]) return RESULT_OK(INT2VAL(-1));
-        if (sp[0] > sp[1]) return RESULT_OK(INT2VAL(1));
+    if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
+        if (lv < rv) return RESULT_OK(INT2VAL(-1));
+        if (lv > rv) return RESULT_OK(INT2VAL(1));
         return RESULT_OK(INT2VAL(0));
     }
-    if (IS_STR(sp[0]) && IS_STR(sp[1])) {
-        int cmp = baruby_str_cmp(sp[0], sp[1]);
+    if (IS_STR(lv) && IS_STR(rv)) {
+        int cmp = baruby_str_cmp(lv, rv);
         if (cmp < 0) return RESULT_OK(INT2VAL(-1));
         if (cmp > 0) return RESULT_OK(INT2VAL(1));
         return RESULT_OK(INT2VAL(0));
@@ -567,19 +552,16 @@ node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 //   Array   << any      → push (mutating, returns self)
 //   String  << String   → append (mutating, returns self)
 NODE_DEF
-node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 1));
-
-    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]))) {
-        return RESULT_OK(INT2VAL(VAL2INT(sp[0]) << VAL2INT(sp[1])));
+    if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
+        return RESULT_OK(INT2VAL(VAL2INT(lv) << VAL2INT(rv)));
     }
-    if (IS_ARY(sp[0])) {
+    if (IS_ARY(lv)) {
         baruby_ary_push(&sp[0], &sp[1], sp + 2);
         return RESULT_OK(sp[0]);
     }
-    if (IS_STR(sp[0]) && IS_STR(sp[1])) {
+    if (IS_STR(lv) && IS_STR(rv)) {
         baruby_str_append(&sp[0], &sp[1], sp + 2);
         return RESULT_OK(sp[0]);
     }
@@ -607,10 +589,9 @@ node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * r
 }
 
 NODE_DEF
-node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *val)
+node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, recv, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, val, sp + 1));
+    (void)recv; (void)val;
     baruby_ary_push(&sp[0], &sp[1], sp + 2);
     return RESULT_OK(sp[0]);
 }
@@ -620,36 +601,30 @@ node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
 // regressed (icache from new dispatch entries), but AOT mode bakes
 // dispatch into SD bodies so the per-node overhead disappears.
 NODE_DEF
-node_ary_lit_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *e0)
+node_ary_lit_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, e0, sp));
+    (void)e0;
     return RESULT_OK(baruby_ary_new_from(sp, 1, sp + 1));
 }
 
 NODE_DEF
-node_ary_lit_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *e0, NODE *e1)
+node_ary_lit_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, e0, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, e1, sp + 1));
+    (void)e0; (void)e1;
     return RESULT_OK(baruby_ary_new_from(sp, 2, sp + 2));
 }
 
 NODE_DEF
-node_ary_lit_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *e0, NODE *e1, NODE *e2)
+node_ary_lit_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, e0, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, e1, sp + 1));
-    sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, e2, sp + 2));
+    (void)e0; (void)e1; (void)e2;
     return RESULT_OK(baruby_ary_new_from(sp, 3, sp + 3));
 }
 
 NODE_DEF
-node_ary_lit_4(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *e0, NODE *e1, NODE *e2, NODE *e3)
+node_ary_lit_4(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child, VALUE e3@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, e0, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, e1, sp + 1));
-    sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, e2, sp + 2));
-    sp[3] = UNWRAP(BARUBY_EVAL_ARG(c, e3, sp + 3));
+    (void)e0; (void)e1; (void)e2; (void)e3;
     return RESULT_OK(baruby_ary_new_from(sp, 4, sp + 4));
 }
 
@@ -662,9 +637,8 @@ node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * r
 }
 
 NODE_DEF
-node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv)
+node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
 {
-    VALUE r = UNWRAP(EVAL_ARG(c, recv));
     if (IS_ARY(r)) return RESULT_OK(INT2VAL(VAL2ARY(r)->len));
     if (IS_STR(r)) return RESULT_OK(INT2VAL(VAL2STR(r)->len));
     fprintf(stderr, "no size for non-array/string\n");
@@ -672,33 +646,23 @@ node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 }
 
 NODE_DEF
-node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *idx)
+node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE iv@child)
 {
-    // Spill receiver: `idx` eval may GC and move recv.  The STR case
-    // also allocates a 1-byte substring, so recv has to survive that too.
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, recv, sp));
-    intptr_t ii = VAL2INT(UNWRAP(BARUBY_EVAL_ARG(c, idx, sp + 1)));
-    if (IS_ARY(sp[0])) {
-        BaArray *a = VAL2ARY(sp[0]);
+    /* DISPATCH spilled recv at sp[0], iv at sp[1]; STR-slice helper takes &sp[0]. */
+    intptr_t ii = VAL2INT(iv);
+    if (IS_ARY(recv)) {
+        BaArray *a = VAL2ARY(recv);
         if (ii < 0) ii += a->len;
         if (ii < 0 || (uint32_t)ii >= a->len) return RESULT_OK(VAL_NIL);
         return RESULT_OK(a->items[ii]);
     }
-    if (IS_STR(sp[0])) {
-        BaString *s = VAL2STR(sp[0]);
+    if (IS_STR(recv)) {
+        BaString *s = VAL2STR(recv);
         if (ii < 0) ii += s->len;
         if (ii < 0 || (uint32_t)ii >= s->len) return RESULT_OK(VAL_NIL);
-        // Single-byte slice as a 1-char string (Ruby-ish semantics).
-        return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, 1, sp + 1));
+        return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, 1, sp + 2));
     }
-    fprintf(stderr, "no [] for non-array/string: sp[0]=0x%lx", (long)sp[0]);
-    if (IS_PTR(sp[0])) {
-        fprintf(stderr, " (heap @ %p, type=%u)", (void*)sp[0],
-                (unsigned)((ObjectHeader*)sp[0])->type);
-    } else {
-        fprintf(stderr, " (singleton or int)");
-    }
-    fprintf(stderr, "\n");
+    fprintf(stderr, "no [] for non-array/string\n");
     return RESULT_OK(VAL_NIL);
 }
 
@@ -707,61 +671,55 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 // array of `n` elements starting at `i`.  Negative `i` indexes from
 // the end; out-of-range or negative `n` returns nil.
 NODE_DEF
-node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *idx, NODE *cnt)
+node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE iv@child, VALUE cv@child)
 {
-    // Spill receiver: idx/cnt eval (and the slice helpers) may GC.
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, recv, sp));
-    intptr_t ii = VAL2INT(UNWRAP(BARUBY_EVAL_ARG(c, idx, sp + 1)));
-    intptr_t cc = VAL2INT(UNWRAP(BARUBY_EVAL_ARG(c, cnt, sp + 1)));
+    intptr_t ii = VAL2INT(iv);
+    intptr_t cc = VAL2INT(cv);
     if (cc < 0) return RESULT_OK(VAL_NIL);
-    if (IS_STR(sp[0])) {
-        const BaString *s = VAL2STR(sp[0]);
+    if (IS_STR(recv)) {
+        const BaString *s = VAL2STR(recv);
         if (ii < 0) ii += s->len;
         if (ii < 0 || (uint32_t)ii > s->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = s->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
-        return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, take, sp + 1));
+        return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, take, sp + 3));
     }
-    if (IS_ARY(sp[0])) {
-        const BaArray *a = VAL2ARY(sp[0]);
+    if (IS_ARY(recv)) {
+        const BaArray *a = VAL2ARY(recv);
         if (ii < 0) ii += a->len;
         if (ii < 0 || (uint32_t)ii > a->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = a->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
-        return RESULT_OK(baruby_ary_new_from(a->items + ii, take, sp + 1));
+        return RESULT_OK(baruby_ary_new_from(a->items + ii, take, sp + 3));
     }
     fprintf(stderr, "no [i, n] for non-array/string\n");
     return RESULT_OK(VAL_NIL);
 }
 
 NODE_DEF
-node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *idx, NODE *val)
+node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE iv@child, VALUE val@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, recv, sp));   // array
-    VALUE i = UNWRAP(BARUBY_EVAL_ARG(c, idx, sp + 1));  // C local; consumed before alloc
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, val, sp + 1));    // val
-    if (IS_ARY(sp[0])) {
-        intptr_t ii = VAL2INT(i);
-        BaArray *a = VAL2ARY(sp[0]);
+    if (IS_ARY(recv)) {
+        intptr_t ii = VAL2INT(iv);
+        BaArray *a = VAL2ARY(recv);
         if (ii < 0) ii += a->len;
         if (ii < 0) return RESULT_OK(VAL_NIL);
         while ((uint32_t)ii >= VAL2ARY(sp[0])->len) {
-            sp[2] = VAL_NIL;   // VAL_NIL is a singleton, but ary_push needs an l-value
-            baruby_ary_push(&sp[0], &sp[2], sp + 3);
+            sp[1] = VAL_NIL;
+            baruby_ary_push(&sp[0], &sp[1], sp + 3);
         }
-        a = VAL2ARY(sp[0]);   // reload after potential GC moves
-        aro_gc_wb(a->items, &a->items[ii], sp[1]);
-        return RESULT_OK(sp[1]);
+        a = VAL2ARY(sp[0]);
+        aro_gc_wb(a->items, &a->items[ii], sp[2]);
+        return RESULT_OK(sp[2]);
     }
     fprintf(stderr, "no []= for non-array\n");
     return RESULT_OK(VAL_NIL);
 }
 
 NODE_DEF
-node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv, NODE *val)
+node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
 {
-    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, recv, sp));
-    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, val, sp + 1));
+    (void)recv; (void)val;
     if (IS_ARY(sp[0])) {
         baruby_ary_push(&sp[0], &sp[1], sp + 2);
         return RESULT_OK(sp[0]);
@@ -771,9 +729,8 @@ node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 }
 
 NODE_DEF
-node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv)
+node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
 {
-    VALUE r = UNWRAP(EVAL_ARG(c, recv));
     if (IS_ARY(r)) {
         BaArray *a = VAL2ARY(r);
         if (a->len == 0) return RESULT_OK(VAL_NIL);
@@ -786,18 +743,16 @@ node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
 // Stringification.  int → decimal string, str → self, ary → "[a, b, c]"
 // via baruby_print_value (consistent with `p`), true/false/nil → name.
 NODE_DEF
-node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv)
+node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
 {
-    VALUE r = UNWRAP(EVAL_ARG(c, recv));
-    return RESULT_OK(baruby_to_s(r, sp));
+    return RESULT_OK(baruby_to_s(r, sp + 1));
 }
 
 // Parsing.  str → leading-decimal int (Ruby semantics: stops at non-digit,
 // returns 0 if no digit found).  int → self.
 NODE_DEF
-node_call_to_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *recv)
+node_call_to_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
 {
-    VALUE r = UNWRAP(EVAL_ARG(c, recv));
     if (IS_INT(r)) return RESULT_OK(r);
     if (IS_STR(r)) {
         const BaString *s = VAL2STR(r);

@@ -59,15 +59,21 @@ sp_refresh_cc(CTX * restrict c, NODE * restrict call_node,
 
 // Dispatch to `body` with args already in caller's fp[arg_index..]
 // (node_call / node_call2 convention).  Callee's frame base = fp + arg_index,
-// callee's sp = callee_fp + locals_cnt.
+// callee's sp = callee_fp + locals_cnt — but the caller's @child snapshots
+// may live at sp[0..N-1] (binop's 2 slots etc.); see EVAL_node_call in
+// node.def for the matching fast-path fix.  Push callee_sp above caller's
+// sp + 4 to keep caller's snapshots safe.
 static inline RESULT
 sp_dispatch_via_fp(CTX * restrict c, NODE * restrict body,
-                   VALUE * restrict fp, uint32_t arg_index)
+                   VALUE * restrict fp, VALUE * restrict sp,
+                   uint32_t arg_index)
 {
     uint32_t lc = code_repo_find_locals_cnt_by_body(body);
     if (lc == 0) lc = 1;
     VALUE *callee_fp = fp + arg_index;
-    RESULT r = EVAL(c, body, callee_fp, callee_fp + lc);
+    VALUE *callee_sp = callee_fp + lc;
+    if (callee_sp < sp + 4) callee_sp = sp + 4;
+    RESULT r = EVAL(c, body, callee_fp, callee_sp);
     return RESULT_OK(r.value);
 }
 
@@ -97,7 +103,7 @@ node_call_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VAL
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (call)\n", n->u.node_call.name);
     struct callcache *cc = &n->u.node_call.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_call.name, n->u.node_call.params_cnt);
-    return sp_dispatch_via_fp(c, body, fp, n->u.node_call.arg_index);
+    return sp_dispatch_via_fp(c, body, fp, sp, n->u.node_call.arg_index);
 }
 
 // ---------- node_call_<N> (non-PG, arity-N specialized) ----------
@@ -163,7 +169,7 @@ node_call2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VA
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (call2)\n", n->u.node_call2.name);
     struct callcache *cc = &n->u.node_call2.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_call2.name, n->u.node_call2.params_cnt);
-    return sp_dispatch_via_fp(c, body, fp, n->u.node_call2.arg_index);
+    return sp_dispatch_via_fp(c, body, fp, sp, n->u.node_call2.arg_index);
 }
 
 // ---------- node_pg_call_<N> (PG, arity-N specialized) ----------

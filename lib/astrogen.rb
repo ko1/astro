@@ -298,6 +298,16 @@ module ASTroGen
         "sp[#{slot}]"   # precise-GC default: caller's spill region.
       end
 
+      # Args passed when DISPATCH (or SPECIALIZE) calls the child's dispatcher
+      # function.  Default uses the precise-GC convention: pass `sp + slot`
+      # so the child has scratch headroom that doesn't clobber already-spilled
+      # siblings (sp[0..slot-1]).  Conservative-GC languages (e.g. baruby
+      # libgc with 3-arg dispatcher `(c, n, fp)`) override to drop the sp
+      # argument entirely.
+      def child_dispatch_args(slot, field)
+        "c, #{field}, fp, sp + #{slot}"
+      end
+
       # Canonical family name used in structural hashes.  Specialized variants
       # (e.g. node_fixnum_plus → node_plus, node_call1_ast → node_call1) opt
       # in via `NODE_DEF @canonical=BASE` in node.def.  Defaults to @name.
@@ -554,11 +564,13 @@ module ASTroGen
           }.reject(&:empty?).map{|s| "    #{s}" }.join("\n")
 
           # Pre-eval + spill statements.  The LHS is whatever the language
-          # picks via child_storage_expr (default sp[i]).
+          # picks via child_storage_expr (default sp[i]).  The dispatcher
+          # call args come from child_dispatch_args so 3-arg-dispatcher
+          # languages (no sp param) can drop the trailing scratch arg.
           spill_stmts = child_ops.map{|op|
             slot = child_slot[op.name]
             field = "n->u.#{name}.#{op.name}"
-            "    #{child_storage_expr(slot)} = UNWRAP((*#{field}->head.dispatcher)(c, #{field}, fp, sp + #{slot}));"
+            "    #{child_storage_expr(slot)} = UNWRAP((*#{field}->head.dispatcher)(#{child_dispatch_args(slot, field)}));"
           }.join("\n")
 
           # Body call args: @child uses child_storage_expr; others as before.
@@ -622,7 +634,7 @@ module ASTroGen
         end
         setup_emitters = setup_decl_emitters + child_ops.map do |op|
           field = "n->u.#{@name}.#{op.name}"
-          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(c, #{field}, fp, sp + #{op.sp_slot}));\\n\", DISPATCHER_NAME(#{field}));"
+          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
         end
 
         # Pass sp unchanged.  Body sees @child snapshot at sp[0..N) and

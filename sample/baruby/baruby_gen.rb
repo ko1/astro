@@ -26,6 +26,31 @@ class BaRubyNodeDef < ASTroGen::NodeDef
       3
     end
 
+    # @child snapshot storage: libgc is conservative, so we don't need
+    # to spill children to caller's sp[] — the C stack is scanned by
+    # libgc automatically.  Use plain C locals (`VALUE _c0;`) declared
+    # at the top of the DISPATCH / SD body.
+    #
+    # Net effect vs precise (baruby_precise):
+    #   - no `sp[i] = ...` stores in the hot path (one MOV saved per
+    #     @child)
+    #   - the spill flows through register allocation; gcc may keep
+    #     the value entirely in a register
+    def child_storage_decl(slot)
+      "VALUE _c#{slot};"
+    end
+
+    def child_storage_expr(slot)
+      "_c#{slot}"
+    end
+
+    # baruby's dispatcher has no sp parameter — drop the framework
+    # default's `sp + slot` arg.  Spilling is via the C-local declared
+    # by child_storage_decl above (libgc scans the C stack).
+    def child_dispatch_args(slot, field)
+      "c, #{field}, fp"
+    end
+
     # Override the framework's per-NODE-operand forward-decl emission.
     # The default writes `static inline RESULT <name>(...);` for every
     # NODE * operand, which is correct for ordinary children whose
@@ -50,6 +75,13 @@ class BaRubyNodeDef < ASTroGen::NodeDef
     # `astro_spec_dedup_has` to know whether the symbol is being
     # emitted in-file.
     def build_specializer
+      # Assign sp slots to @child operands (left-to-right) so their
+      # build_specializer / setup emitters can reference the right slot
+      # via child_storage_expr.  Mirrors the base ASTroGen::NodeDef::Node
+      # behavior — baruby's override doesn't call super so we replicate.
+      child_ops = @operands.select(&:child?)
+      child_ops.each_with_index { |op, i| op.sp_slot = i }
+
       child_nodes = []
       args = []
 
@@ -57,6 +89,21 @@ class BaRubyNodeDef < ASTroGen::NodeDef
         n, arg = op.build_specializer(@name)
         child_nodes << n if n
         args << arg
+      end
+
+      # Pre-eval + spill setup statements for @child operands — emitted
+      # before the `return EVAL_xxx(...)` call in the generated SD body.
+      # baruby (libgc) stores snapshots in C locals (see child_storage_decl
+      # / child_storage_expr above) and the dispatcher call drops sp via
+      # child_dispatch_args.
+      setup_decl_emitters = child_ops.filter_map do |op|
+        d = child_storage_decl(op.sp_slot)
+        next nil if d.empty?
+        "    fprintf(fp, \"    #{d}\\n\");"
+      end
+      setup_emitters = setup_decl_emitters + child_ops.map do |op|
+        field = "n->u.#{@name}.#{op.name}"
+        "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
       end
 
       # Standard decls for non-sp_body NODE * operands.
@@ -117,6 +164,7 @@ class BaRubyNodeDef < ASTroGen::NodeDef
           fprintf(fp, "__attribute__((no_stack_protector)) #{result_type}\\n");
           fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
           fprintf(fp, "{\\n");
+      #{ setup_emitters.join("\n        ") }
       #{
         if args.empty?
           '            fprintf(fp, "    return EVAL_' + @name + '(' + prefix_call_args.join(', ') + ');\\n");'
