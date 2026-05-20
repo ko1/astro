@@ -3,6 +3,78 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (52) — `node_add3` 棄却の方針確認 + SSO direction docs
+
+iter 51 で `a + b + c` 専用 AST node (`node_add3`) を入れて
+string_concat_dyn -7% を取ったが、 user 棄却 (commit reverted at
+`b4f7573`)。 user 原文: **「add3 とか許すと、最終的にベンチマークの
+計算を全部する 1 個のノードができちゃうから」**。
+
+### 方針確認 (memory に固定)
+
+ASTro の建前は「AST node はセマンティクスを言語仕様レベルで保ち、
+高速化は部分評価器・AOT 特殊化に委ねる」。 bench の hot pattern
+ごとに専用 binop node (`add3`, `add4`, `concat_then_size`, ...) を
+追加するのは:
+- bench 専用最適化を runtime 仕様に焼く方向に滑る
+- 言語実装フレームワークとしての汎用性 (フレームワーク自身が
+  示す方法論) を損なう
+- 配列リテラル `[a,b,c]` の `node_ary_lit_4` のような構文上自然な
+  literal 列挙とは別物 (binop chain の N 化は parser 側の rewrite
+  が必要 → 言語仕様の歪み)
+
+二項演算の arity-固定 special-case node は今後提案しない方針
+(memory `feedback_no_arity_specialized_nodes.md`)。
+
+### AOT 側で fuse できないかの確認
+
+`add3` で取った win (中間 BaString + bytes alloc 1 個削減) を
+AOT 特殊化で recover できるか確認した:
+
+- `astrogen.rb` の SD specialize は each node instance 毎の SD
+  関数を生成、 child SDs を `static inline` で chain する。 LTO
+  + `static inline` で gcc が cross-SD inline を実現する。
+- ただし `aro_gc_alloc` は opaque allocator (side effect: GC 統計
+  更新、 minor trigger 等)。 gcc は「不透明な allocator call 2 個を
+  1 個に融合」する pass を持たない (escape analysis + 連続 alloc
+  merge が必要)。 `__attribute__((malloc))` も付いてないが、 付け
+  ても aliasing 改善どまりで alloc 削除 / merge は起きない。
+- 従って add3 の win 内 "alloc-fusion" 系は AOT 自動には recover
+  されない。 framework 改良で吸収するには
+  - escape analysis ベースの alloc merging pass (重い framework
+    変更)
+  - "freshly-allocated, single-use" の AST-level 印 + runtime
+    fast-path (これは事実上 add3 と同等の AST 認識を必要とする)
+  のどちらか。
+
+結論: alloc fusion 系の win は **rope / cord 等のデータ構造変更**
+か **SSO (small-string optimization)** で取りに行くのが筋。 AST
+側ではなく value 表現側を改良する。
+
+### SSO direction (todo.md に追加)
+
+`baruby_str_slice` の bench `substr_churn` は 5-byte の小 string
+を per-iter 大量に alloc する pattern。 現在 BaString header
+(24 B) + bytes payload (16 B size class) = 約 40 B alloc / 5 B
+payload = メタデータ overhead 8×。
+
+SSO で `len <= 15` の string は BaString 内 inline 配列に格納
+すれば、 2 alloc → 1 alloc になり、 substr_churn は alloc cost
+が半減する見込み。 .bytes アクセス 50 箇所の修正が必要 (todo.md
+に概算入れた)。 別 iter 候補。
+
+### 残作業 + iter 52 で触らなかったこと
+
+- 動的 add chain の fold は「rope / SSO で取る」方針に修正し
+  todo.md エントリを書き直し
+- SSO 検討を独立 todo として追加
+- `aro_gc_alloc` への `__attribute__((malloc, alloc_size(2)))`
+  付与は別 iter で軽く試す価値あり (aliasing 改善で巨視的
+  effect は薄いが、 LTO inline 後の SSA で活きる可能性)
+
+iter 51 + iter 52 (revert + docs) は **コード変更 net 0、 方針
+確認 net +1**。 性能 number は iter 50 と同じ。
+
 ## 2026-05-20 (50) — Milestone: iter 36-50 のまとめ + gc.h contract 明文化
 
 ### iter 36-50 で達成したこと

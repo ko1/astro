@@ -53,11 +53,37 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       (0.34→0.07)。 本来の dynamic concat pattern を保存する
       `string_concat_dyn.ba.rb` も追加 (5_000_000 iter, oracle=45000000)。
       baruby (libgc) にも port 済。
-- [ ] **文字列 `+` chain の 1-shot 化 (動的 chain)** — `s1 + s2 + s3` で
-      s1/s2/s3 が変数 (literal でない) のケースを `strcat_K([s1,s2,s3])`
-      に畳む。 配列リテラル N=1..4 と同じ構造で、 pm_call_node 認識が要る。
-      string_concat_dyn / substr_churn で win 期待 (現在 immix_gen 1.06s
-      / 0.86s)。 動的版は GC 圧があり ary_lit より win-margin は大きそう。
+- [ ] **動的 string `+` chain の alloc-fusion** — `s1 + s2 + s3` で
+      s1/s2/s3 が変数のケースの中間 BaString + bytes 1 個削減を狙う。
+      iter 51 で AST 側 `node_add3` 試したが棄却 (done.md (52) 参照)。
+      AST node を増やす方向は禁止。 代替アプローチ:
+      (a) SSO で小 string を 1 alloc に縮める (下の SSO 項目)
+      (b) rope / cord 構造で BaString concat 自体を amortize
+      (c) `aro_gc_alloc` への `__attribute__((malloc, alloc_size))`
+          付与で gcc の alloc merging を *理論上* 起こす — 期待薄
+          だが軽く試す価値はあり
+      実装するなら (a) → (b) の順。 (c) は単独で win は出ない見込み。
+- [ ] **SSO (small-string optimization)** — `BaString.bytes` を union
+      にして `len <= 15` (or 23) のとき struct 内 inline 配列に格納。
+      期待効果:
+      - substr_churn (5-byte alloc 大量) で alloc 数 2→1 → -40〜-50%
+        見込み (現在 immix_gen 0.78s)
+      - string_concat_dyn の 5..7 byte chunk concat 系も中間が縮む
+      実装スコープ:
+      - `BaString` layout 変更 + `hdr.flags` SSO bit
+      - `.bytes` 直接アクセス 50 箇所をマクロ経由に変更
+        (`BSTR_BYTES(s)` のようなアクセサ)
+      - GC `scan_outgoing` の OBJ_STRING 分岐: SSO のとき `bytes`
+        を pointer として scan しない
+      - libgc 側 (baruby) は GC が conservative なので SSO bit を
+        立てるだけで動作
+      framework gap なし、 純 runtime/value 表現変更。 iter 53 候補。
+- [ ] **`aro_gc_alloc` への `__attribute__((malloc, alloc_size(2)))`
+      付与** — 現在 attribute なし。 付けると gcc が returned ptr が
+      他の pointer と alias しないと知り、 後続 load/store の SSA を
+      改善する可能性。 alloc 削除 / merge は起きないが、 inline 後の
+      register 配置で wins 出るかも。 全 16 backend に同じ宣言を
+      付与する必要あり。 軽く試して bench で差が出るか見る。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で
