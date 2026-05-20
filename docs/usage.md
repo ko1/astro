@@ -95,6 +95,32 @@ Operand-level annotation:
 
 - `<type> <name>@ref` — store the operand by reference rather than embedding its value in the node struct. Use this for mutable side data such as inline method caches that should be shared across specialized copies. `@ref` operands are skipped by the hash function.
 
+- `VALUE <name>@child` — strict-arg form: the operand is stored as a child `NODE *` in the struct, but the EVAL body receives its **pre-evaluated VALUE**. DISPATCH (and SPECIALIZE-generated SD) calls the child's dispatcher, snapshots the result, and passes the value to EVAL. Use this when the body always evaluates the child and would otherwise spell out `sp[i] = UNWRAP(EVAL_ARG(c, child))` boilerplate.
+
+  Example:
+  ```c
+  // Lazy (default): body uses EVAL_ARG explicitly.
+  NODE_DEF
+  node_add(CTX *c, NODE *n, VALUE *fp, VALUE *sp, NODE *lhs, NODE *rhs) {
+      sp[0] = UNWRAP(EVAL_ARG(c, lhs));
+      sp[1] = UNWRAP(EVAL_ARG(c, rhs));
+      return RESULT_OK(INT2VAL(VAL2INT(sp[0]) + VAL2INT(sp[1])));
+  }
+
+  // Strict (@child): DISPATCH pre-evaluates, body receives VALUEs.
+  NODE_DEF
+  node_add(CTX *c, NODE *n, VALUE *fp, VALUE *sp, VALUE lv@child, VALUE rv@child) {
+      // sp[0]=lv, sp[1]=rv already snapshotted by DISPATCH.
+      // Body scratch starts at sp[N] where N = # of @child operands.
+      return RESULT_OK(INT2VAL(VAL2INT(lv) + VAL2INT(rv)));
+  }
+  ```
+
+  **Storage strategy** for the snapshot is per-language: override
+  `Node#child_storage_decl(slot)` / `Node#child_storage_expr(slot)` in your
+  lang_gen.rb (default: spill to `sp[slot]`, suitable for precise GC; a
+  conservative-GC sample may return a C-local instead).
+
 ## Writing `context.h`
 
 Define the value type, execution context, and global options:

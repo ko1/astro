@@ -76,7 +76,10 @@ node_name(CTX *c, NODE *n, type1 operand1, type2 operand2, ...)
 ```
 
 - 最初の2引数 `CTX *c, NODE *n` は必須（コンテキストとノード自身）
-- `NODE *` 型のオペランドは子ノード（ディスパッチャが自動的にディスパッチ関数ポインタも渡す）
+- `NODE *` 型のオペランドは子ノード（lazy: body が `EVAL_ARG` で評価する）
+- `VALUE <name>@child` で **strict 引数化** — DISPATCH が子を評価して VALUE
+  として渡す。snapshot 場所は `Node#child_storage_expr` で言語ごとに選択可
+  (デフォルト `sp[i]`、libgc 系言語なら C ローカルに変更可)
 - `@noinline` オプションで特化時のインライン抑制が可能
 - オペランド名末尾に `@ref` を付けると、ノード本体に値を埋め込まずポインタ経由で扱う（インラインキャッシュ等のミュータブルな副情報用）
 

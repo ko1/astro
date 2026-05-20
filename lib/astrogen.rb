@@ -58,13 +58,36 @@ module ASTroGen
         def initialize type, name
           @ref = name.end_with?('@ref')
           name = name.sub(/@ref$/, '') if @ref
+          # `@child` operand (v2 strict-arg mode):
+          #   - body signature receives the operand as VALUE (pre-evaluated)
+          #   - storage in the NODE struct is `NODE *` (= a child node)
+          #   - DISPATCH wrapper evaluates the child via its dispatcher and
+          #     spills the result to sp[i] before calling EVAL
+          # Author writes e.g. `VALUE lv@child` and the body treats lv as
+          # an already-computed VALUE.  This is opt-in; without @child the
+          # existing `NODE *lhs` convention (lazy eval inside body via
+          # EVAL_ARG) remains the default.
+          @child = name.end_with?('@child')
+          name = name.sub(/@child$/, '') if @child
           @type = type.sub(/\s*\brestrict\s*/, '')
           @name = name
         end
 
         def ref? = @ref
+        def child? = @child
+
+        # Storage type in the NODE struct.  For @child operands, the
+        # author-written type is VALUE (body's view) but storage is NODE *.
+        # All struct/alloc/hash/dump/specialize logic must use this.
+        def storage_type
+          child? ? 'NODE *' : @type
+        end
 
         def node?
+          # @child operands are NODE *-backed in storage, so structural
+          # passes (hash, dump, replace) should treat them as nodes.
+          # The body-side view (VALUE) is handled separately in eval_param.
+          return true if child?
           !ref? && /NODE\s\*/ =~ @type
         end
 
@@ -84,6 +107,9 @@ module ASTroGen
         def eval_param
           if ref?
             "#{@type} #{@name}"
+          elsif child?
+            # body receives the pre-evaluated VALUE; no dispatcher param
+            "#{@type} #{@name}"
           elsif node?
             "#{@type} #{@name}, node_dispatcher_func_t #{@name}_dispatcher"
           else
@@ -91,8 +117,10 @@ module ASTroGen
           end
         end
 
+        # Parameter type/name for the allocator and any storage-shape context.
+        # @child uses storage_type (NODE *) since that's what AST passes in.
         def join
-          "#{@type} #{@name}"
+          "#{storage_type} #{@name}"
         end
 
         # For struct field: @ref strips the pointer — value is stored inline
@@ -110,7 +138,9 @@ module ASTroGen
         # difference is how child NODE* operands are recursed: HORG uses
         # hash_node (cached Horg), HOPT uses hash_node_opt (cached Hopt).
         def hash_call val, kind: :horg
-          case @type
+          # Use storage_type so @child operands (stored as NODE *) hash
+          # via the node recursion rather than as a VALUE scalar.
+          case storage_type
           when 'uint32_t'
             "hash_uint32(#{val})"
           when 'int32_t'
@@ -129,6 +159,10 @@ module ASTroGen
             # — the operand value is determined by other operands /
             # build phase, not by the pointer itself.
             "0ULL"
+          when 'VALUE'
+            # Plain VALUE-typed operand (e.g. baked-immediate literal).
+            # VALUE is intptr_t; hash as a 64-bit scalar.
+            "hash_uint64((uint64_t)(uintptr_t)(#{val}))"
           else
             raise "no hash function: #{self.join}"
           end
@@ -136,7 +170,7 @@ module ASTroGen
 
         def build_dumper name
           return nil if storageless?
-          case @type
+          case storage_type
           when 'NODE *'
             "        DUMP(fp, n->u.#{name}.#{self.name}, oneline);"
           when 'uint32_t'
@@ -159,13 +193,35 @@ module ASTroGen
             # (`<ac>` for an `ac` operand, etc.) so the dump reads
             # naturally and the operand list stays well-formed.
             "        fputs(\"<#{self.name}>\", fp);"
+          when 'VALUE'
+            # Print as hex; VALUE could be a tagged int, singleton, or
+            # heap pointer (latter not reproducible across runs).
+            "        fprintf(fp, \"0x%lx\", (long)n->u.#{name}.#{self.name});"
           else
             raise "unknown operand type: #{self.join}"
           end
         end
 
+        # `sp_slot` is set externally by Node#build_specializer before calling
+        # `build_specializer` on @child operands.  It's the sp[] index this
+        # operand was assigned among siblings.
+        attr_accessor :sp_slot
+        # Owner Node — set by parse_operands.  @child uses this to call back
+        # into Node#child_storage_expr for the per-language storage choice.
+        attr_accessor :owner
+
         def build_specializer name
-          arg = case @type
+          # @child operand: arg in the EVAL call is whatever the owner Node's
+          # `child_storage_expr(slot)` returns (default `sp[slot]`).  The
+          # spill statement is emitted by Node#build_specializer as a
+          # "setup" statement BEFORE the return EVAL_xxx(...) call.  Here we
+          # return cn (recurse SPECIALIZE into child) + the bare arg expr.
+          if child?
+            cn = "    SPECIALIZE(fp, n->u.#{name}.#{self.name});"
+            arg = "    fprintf(fp, \"        #{@owner.child_storage_expr(@sp_slot)}\");"
+            return cn, arg
+          end
+          arg = case storage_type
           when 'NODE *'
             cn = "    SPECIALIZE(fp, n->u.#{name}.#{self.name});"
             "    fprintf(fp, \"        n->u.#{name}.#{self.name},\\n\");\n" +
@@ -186,6 +242,11 @@ module ASTroGen
             # a void* operand should arrange for the pointer to be
             # resolved at runtime (or AOT for those nodes is a no-op).
             "    fprintf(fp, \"        (void *)NULL\");"
+          when 'VALUE'
+            # Bake VALUE as a hex literal cast.  Fine for tagged ints &
+            # singletons; heap pointers are non-reproducible across runs
+            # and shouldn't be baked anyway.
+            "    fprintf(fp, \"        (VALUE)0x%lxL\", (long)n->u.#{name}.#{self.name});"
           else
             raise "unknown operand type: #{self.join}"
           end
@@ -211,6 +272,32 @@ module ASTroGen
       def specializer_prologue = nil
       def specializer_epilogue = nil
 
+      # --------------------------------------------------------------------
+      # @child storage hooks.  ASTroGen base guarantees the @child contract
+      # ("body receives a pre-evaluated VALUE") but lets each language pick
+      # WHERE to keep that value between the dispatcher call and the EVAL
+      # call.
+      #
+      #   Default (precise-GC samples): spill to caller's sp[slot] so the
+      #   GC's root scan can see the value across sibling-eval GC points.
+      #
+      #   Conservative-GC samples (e.g. libgc): override to return a plain
+      #   C-local declaration; the C stack is scanned conservatively, so
+      #   no explicit sp[] root is needed.
+      #
+      # `child_storage_decl(slot)` is emitted ONCE at the top of the
+      # DISPATCH / SD body (or empty if the storage doesn't need a decl).
+      # `child_storage_expr(slot)` is used as the lvalue for the spill
+      # assignment AND as the arg expression passed to EVAL.
+      # --------------------------------------------------------------------
+      def child_storage_decl(slot)
+        ""   # sp[] is already in scope; no decl needed by default.
+      end
+
+      def child_storage_expr(slot)
+        "sp[#{slot}]"   # precise-GC default: caller's spill region.
+      end
+
       # Canonical family name used in structural hashes.  Specialized variants
       # (e.g. node_fixnum_plus → node_plus, node_call1_ast → node_call1) opt
       # in via `NODE_DEF @canonical=BASE` in node.def.  Defaults to @name.
@@ -231,17 +318,25 @@ module ASTroGen
       end
 
       def parse_operands str
+        # Operand-name suffix annotations accepted here:
+        #   @ref    — pointer to caller slot (existing)
+        #   @child  — v2 strict-arg style: storage NODE *, body sees VALUE
+        suffix_re = /(?:@ref|@child)?/
+        owner = self
         @operands = str.split(',').tap do
           @prefix_args = it.shift(common_param_count)
         end.map do
           case it.strip
-          when /(.+)\s+([a-zA-Z_][a-zA-Z0-9_]*(?:@ref)?)$/
-            self.class::Operand.new $1, $2
-          when /(.+\*)([a-zA-Z_][a-zA-Z0-9_]*(?:@ref)?)$/
-            self.class::Operand.new $1, $2
+          when /(.+)\s+([a-zA-Z_][a-zA-Z0-9_]*#{suffix_re.source})$/
+            op = self.class::Operand.new $1, $2
+          when /(.+\*)([a-zA-Z_][a-zA-Z0-9_]*#{suffix_re.source})$/
+            op = self.class::Operand.new $1, $2
           else
             raise "ill-formed field: #{it}"
           end
+          op.owner = owner   # back-ref so @child operands can ask the Node
+                             # for child_storage_expr / child_storage_decl
+          op
         end
       end
 
@@ -402,28 +497,104 @@ module ASTroGen
       end
 
       def build_eval_dispatch
-        <<~C
-        static __attribute__((no_stack_protector)) #{result_type}
-        DISPATCH_#{@name}(#{@prefix_args.join(', ')})
-        {
-            return EVAL_#{name}(#{prefix_call_args.join(', ')}#{
-              comma_operands(@operands.map{
-                if it.storageless?
-                  it.dispatch_default_expr
-                elsif it.ref?
-                  "&n->u.#{name}.#{it.name}"
-                else
-                  arg = +"n->u.#{name}.#{it.name}"
-                  arg << ", n->u.#{name}.#{it.name}->head.dispatcher" if it.node?
-                  arg
-                end
-              })
-            });
-        }
-        C
+        # @child operands need pre-evaluation in DISPATCH: each child is
+        # dispatched first, its result spilled to sp[i], then passed as a
+        # plain VALUE to EVAL.  This implements v2 strict-arg / ANF style
+        # with auto-snapshot for deopt/GC safety.
+        child_ops = @operands.select(&:child?)
+        if child_ops.empty?
+          # Backward-compatible fast path: no @child operands, emit the
+          # original 1-liner DISPATCH that just forwards struct fields.
+          <<~C
+          static __attribute__((no_stack_protector)) #{result_type}
+          DISPATCH_#{@name}(#{@prefix_args.join(', ')})
+          {
+              return EVAL_#{name}(#{prefix_call_args.join(', ')}#{
+                comma_operands(@operands.map{
+                  if it.storageless?
+                    it.dispatch_default_expr
+                  elsif it.ref?
+                    "&n->u.#{name}.#{it.name}"
+                  else
+                    arg = +"n->u.#{name}.#{it.name}"
+                    arg << ", n->u.#{name}.#{it.name}->head.dispatcher" if it.node?
+                    arg
+                  end
+                })
+              });
+          }
+          C
+        else
+          # v2 strict-arg DISPATCH:
+          #   1. Pre-evaluate each @child by calling its dispatcher.
+          #   2. Spill the result to sp[i] (snapshot) before evaluating
+          #      the next @child — protects against GC moving the value
+          #      during a sibling's evaluation.
+          #   3. Pass sp (NOT sp + N) to EVAL.  Body sees the snapshot
+          #      at sp[0..N) and uses sp[N..] as its own scratch —
+          #      matching the existing baruby_precise convention.  This
+          #      avoids re-spilling sp[i] = lv inside the body when a
+          #      helper wants &sp[i] pointer args.
+          #
+          # UNWRAP is the embedder's macro for extracting VALUE from the
+          # dispatcher's return type (RESULT for baruby/castro, VALUE for
+          # calc, etc.).  It must propagate non-NORMAL state via early
+          # return from this DISPATCH function.
+          #
+          # The DISPATCH wrapper is NOT marked inline; gcc decides.  In
+          # practice LTO inlines it into the parent's dispatcher.
+          n_children = child_ops.size
+          # Assign sp[i] indices to each @child in left-to-right order.
+          child_slot = {}
+          child_ops.each_with_index{|op, i| child_slot[op.name] = i }
+
+          # Per-language storage decls (default: empty — sp[] is in scope).
+          decl_stmts = child_ops.map{|op|
+            child_storage_decl(child_slot[op.name])
+          }.reject(&:empty?).map{|s| "    #{s}" }.join("\n")
+
+          # Pre-eval + spill statements.  The LHS is whatever the language
+          # picks via child_storage_expr (default sp[i]).
+          spill_stmts = child_ops.map{|op|
+            slot = child_slot[op.name]
+            field = "n->u.#{name}.#{op.name}"
+            "    #{child_storage_expr(slot)} = UNWRAP((*#{field}->head.dispatcher)(c, #{field}, fp, sp + #{slot}));"
+          }.join("\n")
+
+          # Body call args: @child uses child_storage_expr; others as before.
+          body_args = comma_operands(@operands.map{
+            if it.storageless?
+              it.dispatch_default_expr
+            elsif it.ref?
+              "&n->u.#{name}.#{it.name}"
+            elsif it.child?
+              child_storage_expr(child_slot[it.name])
+            else
+              arg = +"n->u.#{name}.#{it.name}"
+              arg << ", n->u.#{name}.#{it.name}->head.dispatcher" if it.node?
+              arg
+            end
+          })
+
+          # Pass `sp` unchanged: body sees DISPATCH's snapshot at sp[0..N).
+          # Body knows its own scratch starts at sp[N] by convention.
+          <<~C
+          static __attribute__((no_stack_protector)) #{result_type}
+          DISPATCH_#{@name}(#{@prefix_args.join(', ')})
+          {
+          #{decl_stmts.empty? ? "" : decl_stmts + "\n"}#{spill_stmts}
+              return EVAL_#{name}(#{prefix_call_args.join(', ')}#{body_args});
+          }
+          C
+        end
       end
 
       def build_specializer
+        # Assign sp slots to @child operands (left-to-right ordering).
+        child_ops = @operands.select(&:child?)
+        child_ops.each_with_index { |op, i| op.sp_slot = i }
+        n_children = child_ops.size
+
         child_nodes = []
         args = []
 
@@ -432,6 +603,31 @@ module ASTroGen
           child_nodes << n if n
           args << arg
         end
+
+        # @child operands need pre-eval setup emitted into the generated
+        # SD body BEFORE the `return EVAL_xxx(...)` call.  Each setup
+        # statement direct-calls the child's specialized dispatcher (SD_<hash>)
+        # — NOT through head.dispatcher pointer — so gcc can inline it at
+        # AOT compile time.  DISPATCHER_NAME() resolves to the SD's symbol
+        # (a static inline forward-declared just above this SD).
+        #
+        # The LHS of each `... = UNWRAP(...)` comes from child_storage_expr
+        # so languages can swap precise-GC sp[] for C-local under libgc etc.
+        # A separate child_storage_decl line (default empty) is emitted at
+        # the top of the SD body for languages that need to declare locals.
+        setup_decl_emitters = child_ops.filter_map do |op|
+          d = child_storage_decl(op.sp_slot)
+          next nil if d.empty?
+          "    fprintf(fp, \"    #{d}\\n\");"
+        end
+        setup_emitters = setup_decl_emitters + child_ops.map do |op|
+          field = "n->u.#{@name}.#{op.name}"
+          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(c, #{field}, fp, sp + #{op.sp_slot}));\\n\", DISPATCHER_NAME(#{field}));"
+        end
+
+        # Pass sp unchanged.  Body sees @child snapshot at sp[0..N) and
+        # uses sp[N..] as its own scratch (same convention as DISPATCH).
+        eval_prefix_call_args = prefix_call_args
 
         decls = @operands.find_all{it.node?}.map do
           field_name = "n->u.#{@name}.#{it.name}"
@@ -490,6 +686,7 @@ module ASTroGen
             fprintf(fp, "%s(#{@prefix_args.join(', ')})\\n", dispatcher_name);
             fprintf(fp, "{\\n");
 #{ specializer_prologue ? "            fprintf(fp, \"    #{specializer_prologue}\\n\");" : "" }
+        #{ setup_emitters.join("\n        ") }
 #{  # Direct `return EVAL_...(...)` — no named temp.  gcc fails to apply NRVO
     # through the deep static-inline SD chain, and a named `RESULT v` leaves
     # CLOBBER(eol) markers in inner loop bodies that block tree-ssa loop
@@ -497,10 +694,10 @@ module ASTroGen
     # collapses that — measured 30-77% AOT-cached speedups on castro's
     # tight-loop benchmarks.
     if args.empty?
-      '            fprintf(fp, "    return EVAL_' + name + '(' + prefix_call_args.join(', ') + ');\\n");'
+      '            fprintf(fp, "    return EVAL_' + name + '(' + eval_prefix_call_args.join(', ') + ');\\n");'
     else
       <<~INNER.chomp
-                fprintf(fp, "    return EVAL_#{name}(#{prefix_call_args.join(', ')}, \\n");
+                fprintf(fp, "    return EVAL_#{name}(#{eval_prefix_call_args.join(', ')}, \\n");
             #{ args.join("\n    fprintf(fp, \",\\n\");\n")
             }
                 fprintf(fp, "\\n    );\\n");
