@@ -3,6 +3,90 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (49) — iter 48 tokenize bench を matrix に反映
+
+iter 48 で追加した tokenize bench (CSV-like 分割 + push 混合) を plain matrix
+19 bench × 16 backend で計測 (median of 3):
+
+| backend | tokenize plain |
+|---|---:|
+| mark_compact_gen | **0.88 (winner)** |
+| mark_bump_gen | 0.89 |
+| copy / copy_gen / immix_gen | 0.89-0.91 |
+| mark_freelist | 1.08 |
+| mark | 1.14 |
+| mark_card_gen / mark_bitmap_gen | 1.26-1.28 |
+| none | 2.40 |
+| libgc | 1.39 |
+
+mark_compact_gen が勝つのは bump nursery + tenured compact が iter 全体で
+作る大量の短命 BaString + array growth の組合せに刺さるため。 immix_gen は
+複数の似た bench で 1 位を取ってきたが tokenize では mark_compact_gen に
+譲った: tokenize は string が多く tenured 圧が大きく、 Lisp-2 slide
+compaction の方が線形 sweep より効く。
+
+perf.md §2 plain matrix を 19 bench × 15 backend で更新、 ベンチカタログ
+17 → 19 種に増。 AOT matrix は別 commit で予定。
+
+## 2026-05-20 (48) — tokenize bench + critical mark_freelist memset bug fix
+
+### tokenize bench
+新 macro bench: CSV-like 文字列分割 (`,` で 20 × "red,blue,green,yellow,
+orange,purple" を 120 tokens に分解)、 17500 iter。 baruby_str_slice +
+baruby_ary_push を一緒に exercise する初の bench。 oracle = 10500000。
+baruby (libgc) にも port。
+
+### 副次: mark_freelist の dormant memset bug
+bench 投入時に mark_freelist が SEGV するバグを発見。 原因: iter 41 で
+mark_freelist を追加した時に `aro_gc_alloc` の payload zero-init を忘れて
+いた (`gc_mark.c` 等 slab 系には memset がある)。 freelist popped slot は
+前の用途の stale data を保持しており、 bytes payload だった slot を
+BaString header として再利用すると BaString.bytes の 8 byte が文字列 chars
+のままになる。 GC mark phase で `scan_outgoing` が KIND_OBJ_STRING ケースで
+`mark_value((VALUE)s->bytes)` を実行し、 文字列 chars
+(`0x2c6465722c656c70` = "ple,red,") を VALUE pointer と誤解して SEGV。
+
+### 再現条件
+- 多数の class-0 alloc + free のサイクル (BaString header / 短い bytes /
+  小配列)
+- それらが freelist 経由で再利用される
+- BaString と bytes payload が同じ size class で交互に再利用されると確実
+
+既存 17 bench はたまたまこのパターンを踏まなかった (string-heavy bench は
+make_csv で長い文字列を作るが、 substr_churn は long-lived 単一 string で
+short-lived BaString のサイクルが少ない、 string_concat は parse-time fold
+で alloc 数が極端に少ない)。 tokenize bench で初めてヒット。
+
+### 修正
+`aro_gc_alloc` で KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL に
+対し `ALIGN8(payload_size)` bytes を zero。 KIND_PAYLOAD_BYTE はスキャン
+されないので skip (他 backend と同じ pattern)。
+
+```c
+void *
+aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
+{
+    GCHeader *h = alloc_slot(kind, payload_size, sp_top);
+    void *payload = (void *)(h + 1);
+    if (kind != KIND_PAYLOAD_BYTE) {
+        memset(payload, 0, ALIGN8(payload_size));
+    }
+    ...
+}
+```
+
+### 教訓
+- **「ベンチを増やすと隠れたバグが顕在化する」 の典型例**。 iter 41 から
+  iter 47 までの全 matrix は 17 bench でこのコードパスを踏まなかった。
+  18 bench 目で踏んだ。
+- 新 backend を追加する時、 既存 backend のメソッド契約 (ここでは
+  「aro_gc_alloc は payload を zero-init する」) を model checking 不在で
+  follow するのは error-prone。
+- 改善案: `aro_gc_alloc` の semantic contract を gc.h コメントで明文化、
+  または共通の `static inline` wrapper にする。 今後の TODO。
+
+commit: `b1050bd`。
+
 ## 2026-05-19 (45) — slab-gen 4 backend に cold-split 展開
 
 iter 43 で region-based 9 backend、 iter 44 で slab 5 backend の clz 化を

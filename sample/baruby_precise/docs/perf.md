@@ -76,8 +76,8 @@ backend を差し込む必要がある (現状は別バイナリ)。
 
 ## 2. 全 GC backend のベンチ実測 (plain mode, fairness contract 適用後)
 
-iter 36-41 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 15 backend
-× 18 bench + libgc column。 `copy_gen_inc` は実体が copy_gen の clone
+iter 36-49 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 15 backend
+× 19 bench + libgc column。 `copy_gen_inc` は実体が copy_gen の clone
 なので除外 (iter 41 で `mark_freelist` を追加し total 16、 列で 15)。
 
 iter 36-40 で追加:
@@ -97,6 +97,14 @@ iter 41 で追加:
 - **`mark_freelist` backend** (#16): region + per-class freelist + non-compact
   M&S。 gc_mark (slab page) と gc_mark_compact (region + slide) の中間。
   page metadata / malloc 不要、 ただし fragmentation あり。
+
+iter 48 で追加:
+- **`tokenize` bench**: CSV-like 文字列分割 (20 × "red,blue,...,purple" を `,`
+  で 120 tokens に分解 + tokens.push、 17500 iter)。 `baruby_str_slice` と
+  `baruby_ary_push` を一緒に exercise する macro。 mark_compact_gen が
+  winner 0.88 s。 副次: bench 投入時に **mark_freelist の memset 抜けバグ
+  発覚** (iter 41 以来の dormant bug、 freelist popped slot の stale data が
+  BaString.bytes に残って GC mark crash)。 fix も iter 48 で commit。
 
 iter 43-45 inline-friendly optimization series (3 段階):
 - **iter 43**: region-based 9 backend (copy / copy_gen / copy_gen_inc /
@@ -130,28 +138,29 @@ iter 38 (correctness; v2 で perf neutral):
     promotion path に新コードなし、 regression なし。
   - 詳細は [done.md (38)](done.md) と [gc_runtime.md §3](gc_runtime.md)。
 
-### Plain mode matrix (iter 45)
+### Plain mode matrix (iter 49)
 
 | Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | mark_freelist | libgc |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ast_eval | 0.33 | 0.35 | 0.34 | 0.35 | 0.35 | 0.35 | 0.36 | 0.34 | **0.33** | 0.34 | 0.36 | 0.34 | 0.34 | 0.34 | 0.33 | 0.37 |
-| binary_trees | 0.72 | 0.71 | 0.77 | 0.79 | 0.73 | 0.71 | 0.73 | 0.71 | **0.44** | 0.94 | 0.51 | 0.69 | 0.88 | 0.90 | 0.78 | 0.77 |
-| cons_list | 1.08 | 0.70 | 0.81 | 0.86 | 0.66 | 0.70 | 0.78 | 0.72 | 0.82 | 0.71 | 0.69 | **0.63** | 0.77 | 0.84 | 0.70 | 0.86 |
-| dll_walk | 0.95 | 0.72 | 0.79 | 0.81 | 0.71 | 0.73 | 0.80 | 0.75 | 0.82 | 0.72 | **0.68** | 0.69 | 0.78 | 0.79 | 0.72 | 0.83 |
-| fannkuch | 0.73 | 0.72 | 0.74 | 0.73 | 0.67 | 0.69 | 0.72 | 0.70 | 0.71 | **0.65** | 0.70 | 0.67 | 0.77 | 0.77 | 0.74 | 0.68 |
-| fib_pair | 1.33 | 0.79 | 0.91 | 0.98 | 0.72 | 0.75 | 0.89 | 0.76 | 0.94 | 0.74 | 0.73 | **0.68** | 0.86 | 0.91 | 0.75 | 0.98 |
-| gc_combined | 1.14 | 0.78 | 0.86 | 0.91 | **0.65** | 0.73 | 0.80 | 0.72 | 0.89 | 0.72 | 0.68 | 0.67 | 0.83 | 0.89 | 0.77 | 0.89 |
-| hash_chain | 1.09 | 1.07 | 1.06 | 1.08 | 1.18 | 1.17 | 1.17 | 1.17 | 1.11 | 1.11 | **1.04** | 1.13 | 1.13 | 1.14 | 1.20 | 1.09 |
-| interp_calc | 1.18 | 0.89 | 0.92 | 1.00 | 0.79 | 0.87 | 0.97 | 0.83 | 0.96 | 0.87 | 0.79 | **0.79** | 0.92 | 0.95 | 0.86 | 0.97 |
-| life | 1.30 | 1.31 | 1.26 | 1.31 | 1.28 | **1.23** | 1.26 | 1.24 | 1.29 | 1.24 | 1.25 | 1.23 | 1.32 | 1.33 | 1.30 | — |
-| list_alloc | 1.13 | 0.73 | 0.77 | 0.86 | 0.67 | 0.69 | 0.81 | **0.63** | 0.88 | 0.68 | 0.66 | 0.64 | 0.79 | 0.81 | 0.73 | 0.87 |
-| list_sort | 1.13 | 1.14 | 1.18 | 1.17 | 1.00 | 1.03 | 1.08 | 0.99 | 1.12 | 1.03 | **0.96** | 0.98 | 1.24 | 1.26 | 1.17 | 1.07 |
-| nqueens | 0.92 | 0.91 | 0.95 | 0.95 | 0.94 | 0.94 | 0.92 | **0.88** | 0.89 | 0.90 | 0.92 | 0.90 | 0.94 | 0.96 | 0.93 | 0.90 |
-| remset_pressure | 0.46 | 0.32 | 0.34 | 0.37 | 0.35 | 0.29 | 0.40 | 0.29 | 0.35 | 0.29 | 0.32 | **0.28** | 0.32 | 0.31 | 0.33 | 0.42 |
-| sieve | **1.21** | 1.38 | 1.38 | 1.40 | 1.61 | 1.38 | 1.53 | 1.32 | 1.51 | 1.43 | 1.47 | 1.40 | 1.44 | 1.39 | 1.47 | 1.32 |
-| string_concat | 0.41 | 0.23 | 0.25 | 0.26 | 0.20 | 0.18 | 0.26 | 0.18 | 0.27 | 0.18 | 0.20 | **0.17** | 0.25 | 0.25 | 0.22 | 0.28 |
-| string_concat_dyn | 2.15 | 1.14 | 1.26 | 1.39 | 0.96 | 0.96 | 1.30 | 0.95 | 1.33 | 0.95 | 1.03 | **0.93** | 1.21 | 1.26 | 1.11 | 1.41 |
-| substr_churn | 1.62 | 0.94 | 1.00 | 1.17 | 0.92 | 0.78 | 1.09 | 0.76 | 1.06 | 0.77 | 0.93 | **0.74** | 1.00 | 1.01 | 1.02 | 1.26 |
+| ast_eval | 0.35 | 0.34 | 0.35 | **0.34** | 0.36 | 0.36 | 0.37 | 0.39 | 0.36 | 0.36 | 0.34 | 0.34 | 0.35 | 0.35 | 0.38 | 0.37 |
+| binary_trees | 0.74 | 0.79 | 0.83 | 0.81 | 0.75 | 0.77 | 0.76 | 0.71 | **0.44** | 0.92 | 0.53 | 0.76 | 0.94 | 0.95 | 0.78 | 0.79 |
+| cons_list | 1.12 | 0.73 | 0.84 | 0.88 | 0.67 | 0.72 | 0.80 | 0.72 | 0.83 | 0.72 | 0.67 | **0.64** | 0.80 | 0.83 | 0.72 | 0.88 |
+| dll_walk | 0.97 | 0.73 | 0.83 | 0.84 | 0.71 | 0.78 | 0.80 | 0.76 | 0.84 | 0.76 | **0.70** | 0.70 | 0.80 | 0.78 | 0.76 | 0.85 |
+| fannkuch | 0.75 | 0.73 | 0.76 | 0.76 | 0.70 | 0.71 | 0.70 | **0.68** | 0.71 | 0.71 | 0.71 | 0.70 | 0.74 | 0.77 | 0.74 | 0.71 |
+| fib_pair | 1.37 | 0.83 | 0.94 | 1.02 | 0.74 | 0.77 | 0.92 | 0.78 | 0.97 | 0.87 | 0.84 | **0.69** | 0.88 | 0.90 | 0.77 | 1.02 |
+| gc_combined | 1.22 | 0.77 | 0.89 | 0.94 | 0.70 | 0.74 | 0.87 | 0.75 | 0.97 | 0.74 | 0.73 | **0.69** | 0.83 | 0.88 | 0.83 | 0.93 |
+| hash_chain | 1.14 | 1.15 | 1.10 | 1.15 | 1.21 | 1.20 | 1.17 | 1.19 | 1.11 | 1.19 | **1.09** | 1.11 | 1.14 | 1.12 | 1.30 | 1.13 |
+| interp_calc | 1.19 | 0.92 | 0.97 | 1.01 | **0.81** | 0.87 | 0.99 | 0.87 | 0.98 | 0.91 | 0.83 | 0.81 | 0.92 | 0.94 | 0.88 | 1.01 |
+| life | 1.32 | 1.30 | 1.31 | 1.30 | 1.32 | 1.29 | 1.31 | 1.32 | 1.31 | 1.36 | **1.26** | 1.31 | 1.32 | 1.32 | 1.27 | — |
+| list_alloc | 1.16 | 0.75 | 0.81 | 0.85 | 0.68 | 0.71 | 0.84 | 0.68 | 0.92 | 0.70 | 0.69 | **0.66** | 0.78 | 0.79 | 0.79 | 0.85 |
+| list_sort | 1.16 | 1.18 | 1.21 | 1.23 | 1.04 | 1.07 | 1.03 | 1.03 | 1.16 | 1.03 | 1.03 | **1.01** | 1.27 | 1.28 | 1.20 | 1.11 |
+| nqueens | 0.96 | 0.98 | 0.98 | 0.97 | 0.93 | 0.95 | 0.93 | 0.95 | 0.93 | 0.94 | 0.93 | **0.90** | 0.96 | 1.00 | 0.99 | 0.94 |
+| remset_pressure | 0.48 | 0.34 | 0.35 | 0.37 | 0.36 | 0.30 | 0.41 | 0.30 | 0.35 | 0.30 | 0.33 | **0.29** | 0.34 | 0.34 | 0.36 | 0.44 |
+| sieve | **1.22** | 1.35 | 1.46 | 1.40 | 1.61 | 1.42 | 1.61 | 1.42 | 1.55 | 1.42 | 1.63 | 1.40 | 1.45 | 1.44 | 1.51 | 1.36 |
+| string_concat | 0.42 | 0.24 | 0.26 | 0.28 | 0.21 | 0.19 | 0.27 | 0.18 | 0.27 | 0.19 | 0.21 | **0.18** | 0.26 | 0.25 | 0.22 | 0.29 |
+| string_concat_dyn | 2.30 | 1.21 | 1.36 | 1.41 | 0.98 | 0.98 | 1.35 | 0.98 | 1.38 | 0.99 | 1.02 | **0.96** | 1.28 | 1.26 | 1.15 | 1.47 |
+| substr_churn | 1.70 | 0.98 | 1.04 | 1.20 | 0.94 | 0.79 | 1.12 | 0.82 | 1.10 | **0.78** | 1.05 | 0.78 | 1.00 | 1.00 | 0.99 | 1.30 |
+| tokenize | 2.40 | 1.14 | 1.34 | 1.38 | 0.91 | 0.91 | 1.38 | **0.88** | 1.34 | 0.89 | 0.97 | 0.89 | 1.28 | 1.26 | 1.08 | 1.39 |
 
 **勝者分布** (plain, iter 43、 median of 3、 18 bench、 15 backend、
 **iter 43 で cold-path split を 9 backend に展開**):
@@ -469,7 +478,7 @@ MIN を超えないので動作は不変。
   「rooting + WB + dispatch + alloc」の最小コストを示す。 binary_trees が
   0.53s — copy より速い (GC 自体が無いので)。 OOM 時 abort
 
-### ベンチカタログ (全 18 種)
+### ベンチカタログ (全 19 種)
 
 各ベンチの「何を / どう alloc して / lifetime はどんな形か」 を一覧。
 GC 評価の観点で workload 分類を意識して揃えている。 アルファベット順。
@@ -704,6 +713,31 @@ GC 評価の観点で workload 分類を意識して揃えている。 アルフ
 - **Lifetime**: 各 string は 1 iter 内で die、 nursery で完結。
 - **テスト対象**: string allocator + concat の現実的なコスト。
 - **特性的な数値**: `copy` 1.02 s 最速、 `immix_gen` 1.04 s 同位。 oracle=45000000。
+
+#### `tokenize.ba.rb` — CSV-like 分割 (iter 48)
+
+- **What**: 20 × "red,blue,green,yellow,orange,purple" を `,` で join した
+  長文字列を、 各 iter で 120 tokens に分割し tokens.push でリスト化。
+  17500 iter。 各 token の長さ合計を加算、 oracle = 10500000。
+- **Alloc pattern**: 1 iter で約 240 個の class-0 alloc (BaString header +
+  short bytes payload が各 120)、 加えて空 array → 12-128 capa への growth
+  (PAYLOAD_VAL 系)。 BaString と bytes 両方が class 0 を共有するため
+  freelist 再利用が頻発。
+- **Lifetime**: 1 iter 内で全 tokens / array が live、 iter 完了で die。
+  baruby_str_slice + baruby_ary_push の混合 hot path を exercise する初の
+  bench (他 string bench は concat 中心、 substr_churn は long-lived single
+  string)。
+- **テスト対象**:
+  - 同一 size class 内の混合 kind (OBJ_STRING / PAYLOAD_BYTE / PAYLOAD_VAL)
+    の freelist 再利用が壊れていないか
+  - aro_gc_alloc_byte hot path (まだ inline 候補)
+  - array growth path (a->capa doubling)
+- **特性的な数値**: `mark_compact_gen` 0.88 s 最速、 copy / copy_gen /
+  mark_bump_gen / immix_gen は 0.89-0.91 s tied 近い。
+- **iter 48 で mark_freelist の dormant memset bug を発覚**: BaString
+  header 再利用時に bytes 領域が前の用途 (raw 文字列バイト) のままで、
+  scan_outgoing が BaString.bytes を VALUE と解釈して SEGV した。 fix も
+  iter 48 で commit (`b1050bd`)。 詳細 [done.md (48)](done.md)。
 
 #### `substr_churn.ba.rb` — 長寿命 String を sliding window で読む
 
