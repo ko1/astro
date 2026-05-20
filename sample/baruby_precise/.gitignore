@@ -1,4 +1,5 @@
 baruby
+baruby_precise
 node_eval.c
 node_dispatch.c
 node_dump.c
