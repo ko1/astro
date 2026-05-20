@@ -288,20 +288,29 @@ baruby_ary_push(VALUE *av_ref, VALUE *x_ref, VALUE *sp_top)
 // Safe sources: rodata (string literals), C-stack buffers in the caller,
 // or anything else GC won't touch.  For sources that live on the GC heap
 // (e.g. a substring of an existing BaString), use baruby_str_slice instead.
+//
+// iter 53: SSO — `len <= BSTR_SSO_MAX` (7) skips the second alloc and
+// stores bytes inline in the union `small[8]` arm.
 VALUE
 baruby_str_new(const char *bytes, uint32_t len, VALUE *sp_top)
 {
-    // First alloc with sp_top (not sp_top+1): sp_top[0] uninit, keep out of scan.
     sp_top[0] = (VALUE)aro_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top);
     BaString *s = (BaString *)sp_top[0];
     s->hdr.type = OBJ_STRING;
-    s->hdr.flags = 0;
     s->len = len;
+    if (len <= BSTR_SSO_MAX) {
+        s->hdr.flags = OBJ_FLAG_SSO;
+        s->capa = sizeof s->small;
+        if (len) memcpy(s->small, bytes, len);
+        s->small[len] = '\0';
+        return sp_top[0];
+    }
+    s->hdr.flags = 0;
     s->capa = len + 1;
     char *new_bytes = (char *)aro_gc_alloc_byte(s->capa, sp_top + 1);
     s = (BaString *)sp_top[0];   // reload — second alloc may have moved
     aro_gc_wb(s, (VALUE *)&s->bytes, (VALUE)new_bytes);
-    if (len) memcpy(s->bytes, bytes, len);
+    memcpy(s->bytes, bytes, len);
     s->bytes[len] = '\0';
     return sp_top[0];
 }
@@ -315,21 +324,29 @@ baruby_str_new_cstr(const char *cstr, VALUE *sp_top)
 // baruby_str_slice: new BaString from [offset, offset+len) of *src_ref.
 // src_ref must point at a caller sp slot holding a String; we re-deref
 // after each internal alloc to get the post-GC source address.
+// iter 53: SSO short slices (the substr_churn hot path).
 VALUE
 baruby_str_slice(VALUE *src_ref, uint32_t offset, uint32_t len, VALUE *sp_top)
 {
-    // First alloc with sp_top (not sp_top+1): sp_top[0] uninit, keep out of scan.
     sp_top[0] = (VALUE)aro_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top);
     BaString *r = (BaString *)sp_top[0];
     r->hdr.type = OBJ_STRING;
-    r->hdr.flags = 0;
     r->len = len;
+    if (len <= BSTR_SSO_MAX) {
+        r->hdr.flags = OBJ_FLAG_SSO;
+        r->capa = sizeof r->small;
+        const BaString *src = VAL2STR(*src_ref);
+        if (len) memcpy(r->small, bstr_bytes(src) + offset, len);
+        r->small[len] = '\0';
+        return sp_top[0];
+    }
+    r->hdr.flags = 0;
     r->capa = len + 1;
     char *new_bytes = (char *)aro_gc_alloc_byte(r->capa, sp_top + 1);
     r = (BaString *)sp_top[0];                 // reload after alloc
     aro_gc_wb(r, (VALUE *)&r->bytes, (VALUE)new_bytes);
     const BaString *src = VAL2STR(*src_ref);   // post-GC source
-    if (len) memcpy(r->bytes, src->bytes + offset, len);
+    memcpy(r->bytes, bstr_bytes(src) + offset, len);
     r->bytes[len] = '\0';
     return sp_top[0];
 }
@@ -368,7 +385,8 @@ baruby_value_eq(VALUE a, VALUE b)
     if (ta != tb) return false;
     if (ta == OBJ_STRING) {
         const BaString *sa = VAL2STR(a), *sb = VAL2STR(b);
-        return sa->len == sb->len && memcmp(sa->bytes, sb->bytes, sa->len) == 0;
+        return sa->len == sb->len &&
+               memcmp(bstr_bytes(sa), bstr_bytes(sb), sa->len) == 0;
     }
     if (ta == OBJ_ARRAY) {
         const BaArray *aa = VAL2ARY(a), *ab = VAL2ARY(b);
@@ -387,7 +405,7 @@ baruby_str_cmp(VALUE av, VALUE bv)
     const BaString *a = VAL2STR(av);
     const BaString *b = VAL2STR(bv);
     uint32_t mn = a->len < b->len ? a->len : b->len;
-    int cmp = memcmp(a->bytes, b->bytes, mn);
+    int cmp = memcmp(bstr_bytes(a), bstr_bytes(b), mn);
     if (cmp != 0) return cmp;
     if (a->len < b->len) return -1;
     if (a->len > b->len) return 1;
@@ -405,15 +423,24 @@ baruby_str_repeat(VALUE *sv_ref, intptr_t n, VALUE *sp_top)
     BaString *r = (BaString *)sp_top[0];
     s = VAL2STR(*sv_ref);   // reload after alloc
     r->hdr.type  = OBJ_STRING;
-    r->hdr.flags = 0;
     r->len  = (uint32_t)total;
+    if (r->len <= BSTR_SSO_MAX) {
+        r->hdr.flags = OBJ_FLAG_SSO;
+        r->capa = sizeof r->small;
+        for (intptr_t i = 0; i < n; i++) {
+            memcpy(r->small + (uint32_t)i * s->len, bstr_bytes(s), s->len);
+        }
+        r->small[r->len] = '\0';
+        return sp_top[0];
+    }
+    r->hdr.flags = 0;
     r->capa = r->len + 1;
     char *new_bytes = (char *)aro_gc_alloc_byte(r->capa, sp_top + 1);
     r = (BaString *)sp_top[0];
     aro_gc_wb(r, (VALUE *)&r->bytes, (VALUE)new_bytes);
     s = VAL2STR(*sv_ref);
     for (intptr_t i = 0; i < n; i++) {
-        memcpy(r->bytes + (uint32_t)i * s->len, s->bytes, s->len);
+        memcpy(r->bytes + (uint32_t)i * s->len, bstr_bytes(s), s->len);
     }
     r->bytes[r->len] = '\0';
     return sp_top[0];
@@ -443,16 +470,41 @@ baruby_str_append(VALUE *dst_ref, VALUE *src_ref, VALUE *sp_top)
     BaString *d = VAL2STR(*dst_ref);
     const BaString *s = VAL2STR(*src_ref);
     uint32_t need = d->len + s->len + 1;
-    if (need > d->capa) {
+
+    // SSO fast path: result still fits inline.  No alloc, no scan.
+    if (BSTR_IS_SSO(d) && need <= sizeof d->small) {
+        if (s->len) memcpy(d->small + d->len, bstr_bytes(s), s->len);
+        d->len += s->len;
+        d->small[d->len] = '\0';
+        return;
+    }
+
+    if (BSTR_IS_SSO(d)) {
+        // SSO -> heap promotion.  Allocate fresh bytes payload (>= need)
+        // and copy the SSO tail into it.
+        uint32_t nc = 8;
+        while (nc < need) nc *= 2;
+        char small_buf[sizeof d->small];
+        uint32_t d_len = d->len;
+        memcpy(small_buf, d->small, d_len);
+        char *new_bytes = (char *)aro_gc_alloc_byte(nc, sp_top);
+        d = VAL2STR(*dst_ref);   // reload after alloc
+        s = VAL2STR(*src_ref);
+        d->hdr.flags &= ~OBJ_FLAG_SSO;
+        memcpy(new_bytes, small_buf, d_len);
+        aro_gc_wb(d, (VALUE *)&d->bytes, (VALUE)new_bytes);
+        d->capa = nc;
+    }
+    else if (need > d->capa) {
         uint32_t nc = d->capa ? d->capa * 2 : 8;
         while (nc < need) nc *= 2;
         char *new_bytes = (char *)aro_gc_realloc_payload(d->bytes, nc, sp_top);
-        d = VAL2STR(*dst_ref);   // reload after realloc — d/s may have moved
+        d = VAL2STR(*dst_ref);   // reload after realloc
         s = VAL2STR(*src_ref);
         aro_gc_wb(d, (VALUE *)&d->bytes, (VALUE)new_bytes);
         d->capa = nc;
     }
-    if (s->len) memcpy(d->bytes + d->len, s->bytes, s->len);
+    if (s->len) memcpy(d->bytes + d->len, bstr_bytes(s), s->len);
     d->len += s->len;
     d->bytes[d->len] = '\0';
 }
@@ -496,9 +548,10 @@ to_s_inner(StrBuf *sb, VALUE v)
     }
     if (IS_STR(v)) {
         const BaString *s = VAL2STR(v);
+        const char *sb_bytes = bstr_bytes(s);
         sb_append(sb, "\"", 1);
         for (uint32_t i = 0; i < s->len; i++) {
-            unsigned char ch = (unsigned char)s->bytes[i];
+            unsigned char ch = (unsigned char)sb_bytes[i];
             char buf[8];
             switch (ch) {
               case '\n': sb_append(sb, "\\n", 2); break;
@@ -511,7 +564,7 @@ to_s_inner(StrBuf *sb, VALUE v)
                     int n = snprintf(buf, sizeof buf, "\\x%02X", ch);
                     sb_append(sb, buf, (uint32_t)n);
                 } else {
-                    sb_append(sb, (const char *)&s->bytes[i], 1);
+                    sb_append(sb, &sb_bytes[i], 1);
                 }
             }
         }
@@ -555,7 +608,6 @@ baruby_to_s(VALUE v, VALUE *sp_top)
 VALUE
 baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top)
 {
-    // Read sizes before any alloc — they don't change across GC.
     uint32_t a_len = VAL2STR(*av_ref)->len;
     uint32_t b_len = VAL2STR(*bv_ref)->len;
     uint32_t total = a_len + b_len;
@@ -563,19 +615,29 @@ baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top)
     sp_top[0] = (VALUE)aro_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top);
     BaString *r = (BaString *)sp_top[0];
     r->hdr.type = OBJ_STRING;
-    r->hdr.flags = 0;
     r->len = total;
+
+    if (total <= BSTR_SSO_MAX) {
+        r->hdr.flags = OBJ_FLAG_SSO;
+        r->capa = sizeof r->small;
+        const BaString *a = VAL2STR(*av_ref);
+        const BaString *b = VAL2STR(*bv_ref);
+        if (a_len) memcpy(r->small,         bstr_bytes(a), a_len);
+        if (b_len) memcpy(r->small + a_len, bstr_bytes(b), b_len);
+        r->small[total] = '\0';
+        return sp_top[0];
+    }
+
+    r->hdr.flags = 0;
     r->capa = total + 1;
     char *new_bytes = (char *)aro_gc_alloc_byte(r->capa, sp_top + 1);
     r = (BaString *)sp_top[0];
     aro_gc_wb(r, (VALUE *)&r->bytes, (VALUE)new_bytes);
 
-    // Reload sources after the two allocs above — *av_ref / *bv_ref now
-    // point at the post-GC BaStrings (and ->bytes at their new payloads).
     const BaString *a = VAL2STR(*av_ref);
     const BaString *b = VAL2STR(*bv_ref);
-    if (a_len) memcpy(r->bytes,         a->bytes, a_len);
-    if (b_len) memcpy(r->bytes + a_len, b->bytes, b_len);
+    if (a_len) memcpy(r->bytes,         bstr_bytes(a), a_len);
+    if (b_len) memcpy(r->bytes + a_len, bstr_bytes(b), b_len);
     r->bytes[total] = '\0';
     return sp_top[0];
 }
@@ -606,9 +668,10 @@ baruby_print_value(FILE *fp, VALUE v)
     }
     else if (IS_STR(v)) {
         const BaString *s = VAL2STR(v);
+        const char *pb = bstr_bytes(s);
         fputc('"', fp);
         for (uint32_t i = 0; i < s->len; i++) {
-            unsigned char ch = (unsigned char)s->bytes[i];
+            unsigned char ch = (unsigned char)pb[i];
             switch (ch) {
               case '\n': fputs("\\n", fp); break;
               case '\t': fputs("\\t", fp); break;

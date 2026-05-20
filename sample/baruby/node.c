@@ -244,11 +244,18 @@ baruby_str_new(const char *bytes, uint32_t len)
 {
     BaString *s = (BaString *)malloc(sizeof(BaString));
     s->hdr.type = OBJ_STRING;
-    s->hdr.flags = 0;
     s->len = len;
+    if (len <= BSTR_SSO_MAX) {
+        s->hdr.flags = OBJ_FLAG_SSO;
+        s->capa = sizeof s->small;
+        if (len) memcpy(s->small, bytes, len);
+        s->small[len] = '\0';
+        return (VALUE)s;
+    }
+    s->hdr.flags = 0;
     s->capa = len + 1;
     s->bytes = (char *)malloc(s->capa);
-    if (len) memcpy(s->bytes, bytes, len);
+    memcpy(s->bytes, bytes, len);
     s->bytes[len] = '\0';
     return (VALUE)s;
 }
@@ -289,7 +296,8 @@ baruby_value_eq(VALUE a, VALUE b)
     if (ta != tb) return false;
     if (ta == OBJ_STRING) {
         const BaString *sa = VAL2STR(a), *sb = VAL2STR(b);
-        return sa->len == sb->len && memcmp(sa->bytes, sb->bytes, sa->len) == 0;
+        return sa->len == sb->len &&
+               memcmp(bstr_bytes(sa), bstr_bytes(sb), sa->len) == 0;
     }
     if (ta == OBJ_ARRAY) {
         const BaArray *aa = VAL2ARY(a), *ab = VAL2ARY(b);
@@ -308,7 +316,7 @@ baruby_str_cmp(VALUE av, VALUE bv)
     const BaString *a = VAL2STR(av);
     const BaString *b = VAL2STR(bv);
     uint32_t mn = a->len < b->len ? a->len : b->len;
-    int cmp = memcmp(a->bytes, b->bytes, mn);
+    int cmp = memcmp(bstr_bytes(a), bstr_bytes(b), mn);
     if (cmp != 0) return cmp;
     if (a->len < b->len) return -1;
     if (a->len > b->len) return 1;
@@ -324,12 +332,21 @@ baruby_str_repeat(VALUE sv, intptr_t n)
     if (total > UINT32_MAX) total = UINT32_MAX;
     BaString *r = (BaString *)malloc(sizeof(BaString));
     r->hdr.type  = OBJ_STRING;
-    r->hdr.flags = 0;
     r->len  = (uint32_t)total;
+    if (r->len <= BSTR_SSO_MAX) {
+        r->hdr.flags = OBJ_FLAG_SSO;
+        r->capa = sizeof r->small;
+        for (intptr_t i = 0; i < n; i++) {
+            memcpy(r->small + (uint32_t)i * s->len, bstr_bytes(s), s->len);
+        }
+        r->small[r->len] = '\0';
+        return (VALUE)r;
+    }
+    r->hdr.flags = 0;
     r->capa = r->len + 1;
     r->bytes = (char *)malloc(r->capa);
     for (intptr_t i = 0; i < n; i++) {
-        memcpy(r->bytes + (uint32_t)i * s->len, s->bytes, s->len);
+        memcpy(r->bytes + (uint32_t)i * s->len, bstr_bytes(s), s->len);
     }
     r->bytes[r->len] = '\0';
     return (VALUE)r;
@@ -357,13 +374,32 @@ baruby_str_append(VALUE dstv, VALUE srcv)
     BaString *d = VAL2STR(dstv);
     const BaString *s = VAL2STR(srcv);
     uint32_t need = d->len + s->len + 1;
-    if (need > d->capa) {
+
+    // SSO fast path: still fits inline.
+    if (BSTR_IS_SSO(d) && need <= sizeof d->small) {
+        if (s->len) memcpy(d->small + d->len, bstr_bytes(s), s->len);
+        d->len += s->len;
+        d->small[d->len] = '\0';
+        return;
+    }
+
+    if (BSTR_IS_SSO(d)) {
+        // SSO -> heap promotion.
+        uint32_t nc = 8;
+        while (nc < need) nc *= 2;
+        char *new_bytes = (char *)malloc(nc);
+        memcpy(new_bytes, d->small, d->len);
+        d->hdr.flags &= ~OBJ_FLAG_SSO;
+        d->bytes = new_bytes;
+        d->capa = nc;
+    }
+    else if (need > d->capa) {
         uint32_t nc = d->capa ? d->capa * 2 : 8;
         while (nc < need) nc *= 2;
         d->bytes = (char *)realloc(d->bytes, nc);
         d->capa = nc;
     }
-    if (s->len) memcpy(d->bytes + d->len, s->bytes, s->len);
+    if (s->len) memcpy(d->bytes + d->len, bstr_bytes(s), s->len);
     d->len += s->len;
     d->bytes[d->len] = '\0';
 }
@@ -407,9 +443,10 @@ to_s_inner(StrBuf *sb, VALUE v)
     }
     if (IS_STR(v)) {
         const BaString *s = VAL2STR(v);
+        const char *sb_bytes = bstr_bytes(s);
         sb_append(sb, "\"", 1);
         for (uint32_t i = 0; i < s->len; i++) {
-            unsigned char ch = (unsigned char)s->bytes[i];
+            unsigned char ch = (unsigned char)sb_bytes[i];
             char buf[8];
             switch (ch) {
               case '\n': sb_append(sb, "\\n", 2); break;
@@ -422,7 +459,7 @@ to_s_inner(StrBuf *sb, VALUE v)
                     int n = snprintf(buf, sizeof buf, "\\x%02X", ch);
                     sb_append(sb, buf, (uint32_t)n);
                 } else {
-                    sb_append(sb, (const char *)&s->bytes[i], 1);
+                    sb_append(sb, &sb_bytes[i], 1);
                 }
             }
         }
@@ -469,12 +506,20 @@ baruby_str_concat(VALUE av, VALUE bv)
     uint32_t total = a->len + b->len;
     BaString *r = (BaString *)malloc(sizeof(BaString));
     r->hdr.type = OBJ_STRING;
-    r->hdr.flags = 0;
     r->len = total;
+    if (total <= BSTR_SSO_MAX) {
+        r->hdr.flags = OBJ_FLAG_SSO;
+        r->capa = sizeof r->small;
+        memcpy(r->small,         bstr_bytes(a), a->len);
+        memcpy(r->small + a->len, bstr_bytes(b), b->len);
+        r->small[total] = '\0';
+        return (VALUE)r;
+    }
+    r->hdr.flags = 0;
     r->capa = total + 1;
     r->bytes = (char *)malloc(r->capa);
-    memcpy(r->bytes, a->bytes, a->len);
-    memcpy(r->bytes + a->len, b->bytes, b->len);
+    memcpy(r->bytes,         bstr_bytes(a), a->len);
+    memcpy(r->bytes + a->len, bstr_bytes(b), b->len);
     r->bytes[total] = '\0';
     return (VALUE)r;
 }
@@ -505,9 +550,10 @@ baruby_print_value(FILE *fp, VALUE v)
     }
     else if (IS_STR(v)) {
         const BaString *s = VAL2STR(v);
+        const char *pb = bstr_bytes(s);
         fputc('"', fp);
         for (uint32_t i = 0; i < s->len; i++) {
-            unsigned char ch = (unsigned char)s->bytes[i];
+            unsigned char ch = (unsigned char)pb[i];
             switch (ch) {
               case '\n': fputs("\\n", fp); break;
               case '\t': fputs("\\t", fp); break;

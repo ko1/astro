@@ -415,7 +415,7 @@ process_object(GCHeader *h)
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (s->bytes) s->bytes = (char *)forward_payload_value(s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_value(s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {
@@ -549,7 +549,7 @@ major_process(GCHeader *h)
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (s->bytes) {
+        if (!BSTR_IS_SSO(s) && s->bytes) {
             GCHeader *bh = (GCHeader *)s->bytes - 1;
             if (in_nursery(s->bytes)) {
                 s->bytes = (char *)major_promote(bh);

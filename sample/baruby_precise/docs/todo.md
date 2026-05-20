@@ -63,21 +63,14 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
           付与で gcc の alloc merging を *理論上* 起こす — 期待薄
           だが軽く試す価値はあり
       実装するなら (a) → (b) の順。 (c) は単独で win は出ない見込み。
-- [ ] **SSO (small-string optimization)** — `BaString.bytes` を union
-      にして `len <= 15` (or 23) のとき struct 内 inline 配列に格納。
-      期待効果:
-      - substr_churn (5-byte alloc 大量) で alloc 数 2→1 → -40〜-50%
-        見込み (現在 immix_gen 0.78s)
-      - string_concat_dyn の 5..7 byte chunk concat 系も中間が縮む
-      実装スコープ:
-      - `BaString` layout 変更 + `hdr.flags` SSO bit
-      - `.bytes` 直接アクセス 50 箇所をマクロ経由に変更
-        (`BSTR_BYTES(s)` のようなアクセサ)
-      - GC `scan_outgoing` の OBJ_STRING 分岐: SSO のとき `bytes`
-        を pointer として scan しない
-      - libgc 側 (baruby) は GC が conservative なので SSO bit を
-        立てるだけで動作
-      framework gap なし、 純 runtime/value 表現変更。 iter 53 候補。
+- [x] ~~**SSO (small-string optimization)**~~ — iter 53 解決
+      ([done.md](done.md) iter (53) 参照)。 `SSO_MAX=7` で BaString
+      24 B 維持版を実装。 immix_gen で tokenize -17%、 substr_churn -2%、
+      string_concat_dyn -7% (A/B median of 5)。 baruby (libgc) にも
+      port (libgc は conservative なので scan 修正不要)。
+      `SSO_MAX=15` は BaString 32 B に肥大 → fib_pair で +8% regress
+      が出るので採用せず。 将来 short-string が頻出する workload なら
+      再検討の余地あり (build flag 化が候補)。
 - [ ] **`aro_gc_alloc` への `__attribute__((malloc, alloc_size(2)))`
       付与** — 現在 attribute なし。 付けると gcc が returned ptr が
       他の pointer と alias しないと知り、 後続 load/store の SSA を

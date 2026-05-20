@@ -295,7 +295,7 @@ process_object(GCHeader *h)
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
         ASTRO_ASSERT(s->hdr.type == OBJ_STRING);
-        if (s->bytes) s->bytes = (char *)forward_payload(s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload(s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {

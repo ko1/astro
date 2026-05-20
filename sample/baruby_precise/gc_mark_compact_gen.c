@@ -388,7 +388,7 @@ process_object(GCHeader *h)
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (s->bytes) s->bytes = (char *)forward_payload_value(s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_value(s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {
@@ -514,7 +514,7 @@ scan_outgoing_major(GCHeader *h)
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (s->bytes) mark_value_major((VALUE)s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) mark_value_major((VALUE)s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {
@@ -573,7 +573,7 @@ update_pointers_major(GCHeader *h)
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (s->bytes) s->bytes = (char *)fwd_payload_compact(s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)fwd_payload_compact(s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {

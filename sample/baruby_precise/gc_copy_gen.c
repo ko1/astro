@@ -399,7 +399,7 @@ process_object(GCHeader *h)
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (s->bytes) s->bytes = (char *)forward_payload_value(s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_value(s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {

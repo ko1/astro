@@ -810,7 +810,7 @@ node_call_to_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
     if (IS_INT(r)) return RESULT_OK(r);
     if (IS_STR(r)) {
         const BaString *s = VAL2STR(r);
-        return RESULT_OK(INT2VAL(strtol(s->bytes, NULL, 10)));
+        return RESULT_OK(INT2VAL(strtol(bstr_bytes(s), NULL, 10)));
     }
     return RESULT_OK(INT2VAL(0));
 }

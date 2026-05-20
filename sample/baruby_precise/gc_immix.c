@@ -407,7 +407,7 @@ process_gray(void)
           }
           case KIND_OBJ_STRING: {
             BaString *s = (BaString *)payload;
-            if (s->bytes) mark_value((VALUE)s->bytes);
+            if (!BSTR_IS_SSO(s) && s->bytes) mark_value((VALUE)s->bytes);
             break;
           }
           case KIND_PAYLOAD_VAL: {

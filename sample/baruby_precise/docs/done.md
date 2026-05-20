@@ -3,6 +3,94 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (53) — SSO (small-string optimization, SSO_MAX=7)
+
+iter 52 で direction として書いた SSO を実装。 値表現側の
+最適化 (AST には触らない)、 user 方針 [[feedback-no-arity-specialized-nodes]] と
+整合。 baruby (libgc sister) にも port。
+
+### 設計
+
+`BaString.bytes` を anonymous union に変更:
+
+```c
+typedef struct BaString {
+    ObjectHeader hdr;          // 8 B (flags の bit0 で SSO 判定)
+    uint32_t len;              // 4 B
+    uint32_t capa;             // 4 B
+    union {
+        char *bytes;           // heap: separate alloc
+        char  small[8];        // SSO: inline 7 chars + NUL
+    };
+} BaString;
+// total 24 B (unchanged)
+```
+
+`SSO_MAX=7` を選択した理由 — `small[8]` で union が pointer と
+同サイズになり BaString の総サイズが 24 B のまま保たれる。
+`SSO_MAX=15` も実装可能だが BaString が 32 B に肥大 → fib_pair
+で +8% regression が出るため (string 系の win と打ち消し)、 24 B
+維持版を採用。
+
+判定: `BSTR_IS_SSO(s)` macro (`hdr.flags & OBJ_FLAG_SSO`)。
+読み出し: `bstr_bytes(s)` inline 関数 (const char *)、 SSO のとき
+`s->small`、 そうでなければ `s->bytes` を返す。
+
+### 変更スコープ
+
+- context.h: union + accessor 追加
+- node.c / node.def: 50+ の `.bytes` 直接アクセスを `bstr_bytes(s)`
+  経由に。 allocator (`baruby_str_new` / `_slice` / `_repeat` /
+  `_concat`) は `len <= BSTR_SSO_MAX` で 1-alloc fast path。
+  `baruby_str_append` は SSO->heap 昇格パスも追加
+- 全 15 GC backend の OBJ_STRING scan: `if (!BSTR_IS_SSO(s) && s->bytes)`
+  でゲート (mark / forward / fwd_payload / 全 variant)
+- baruby (libgc) も同形で port (port 側は GC が conservative なので
+  scan 修正不要)
+
+### 効果 (A/B median of 5, immix_gen backend, plain mode)
+
+clean A/B (`baruby_precise` を SSO patch あり/なしで rebuild):
+
+| bench             | baseline | SSO=7 | Δ      |
+|-------------------|---------:|------:|-------:|
+| substr_churn      |    0.89s | 0.87s |  -2%   |
+| tokenize          |    0.95s | 0.79s | -17% ★ |
+| string_concat_dyn |    1.06s | 0.99s |  -7%   |
+| fib_pair          |    0.77s | 0.78s |  ±0%   |
+
+tokenize の -17% が一番大きい (CSV-like split の token は 3-6 char
+で全て SSO に収まる)。 substr_churn は 5-char で SSO に収まるが、
+copy 系 backend では bump-pointer cost が薄く win が小さい。
+
+string_concat_dyn は "aaabbbccc" (9 char) で SSO_MAX=7 を超える
+ため fast path に乗らないが、 中間値が SSO に乗る ("aaa", "bbb"
+など 3 char) ことで間接的に win。
+
+oracle: 全 19 bench × 16 backend (= 304 行) で oracle 通過確認。
+
+### baruby (libgc) port
+
+同じ union 化 + accessor + allocator 修正。 libgc は conservative
+GC なので、 SSO 文字列の `bytes` ポインタが garbage であっても
+libgc は単に memory range を scan するだけで dereference しない
+→ scan-side修正不要。 oracle 通過確認、 substr_churn 1.30 → 1.09s
+(-16%)、 tokenize 1.39 → 1.11s (-20%)。
+
+### iter 52 で書いた SSO スコープ見積もりの修正
+
+iter 52 では「`.bytes` 直接アクセス 50 箇所」と書いたが、 実装後
+の実集計は: node.c 〜30、 node.def 3、 gc_*.c 〜20 (15 backend ×
+1-3 site)。 概ね当たり、 sed bulk 置換 + 手動修正で 1 iter 内に
+完了。
+
+### 関連 todo
+
+- 動的 string `+` chain の alloc-fusion: 部分的に SSO で吸収
+  (中間値が SSO に乗る場合)、 9-char 以上の chain は引き続き
+  rope / cord 路線
+- `aro_gc_alloc` への `__attribute__((malloc, alloc_size))`: 別 iter
+
 ## 2026-05-20 (52) — `node_add3` 棄却の方針確認 + SSO direction docs
 
 iter 51 で `a + b + c` 専用 AST node (`node_add3`) を入れて

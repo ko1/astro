@@ -98,12 +98,43 @@ typedef struct BaArray {
     VALUE *items;            // separate alloc; libgc scans it conservatively
 } BaArray;
 
+// iter 53: SSO (small-string optimization).  Strings with `len <=
+// BSTR_SSO_MAX` (7) are stored inline in the `small[8]` arm of the
+// union; longer strings allocate a separate `bytes` payload as before.
+// The discriminator is `hdr.flags & OBJ_FLAG_SSO`.  Layout total
+// stays 24 B (unchanged) — the union overlays the 8-byte pointer slot.
+//
+// Read sites must go through `BSTR_BYTES(s)` (or `bstr_bytes(s)`) —
+// reading `s->bytes` directly is UB for SSO strings (the bytes alias
+// to inline char data interpreted as a pointer).  The GC mark / scan
+// paths must skip the bytes pointer when `BSTR_IS_SSO(s)` (the inline
+// chars are not a separate heap object).
+#define OBJ_FLAG_SSO   0x01u
+#define BSTR_SSO_MAX   7u    /* 7 chars + NUL fits in the 8-byte union */
+
 typedef struct BaString {
     ObjectHeader hdr;
     uint32_t len;            // byte length (not counting NUL)
-    uint32_t capa;
-    char *bytes;             // NUL-terminated for cheap printf interop
+    uint32_t capa;           // SSO: sizeof(small).  heap: len + 1.
+    union {
+        char *bytes;         // heap: NUL-terminated payload (separate alloc)
+        char  small[8];      // SSO: inline chars, NUL at small[len]
+    };
 } BaString;
+
+#define BSTR_IS_SSO(s)  (((s)->hdr.flags & OBJ_FLAG_SSO) != 0u)
+
+static inline const char *
+bstr_bytes(const BaString * const s)
+{
+    return BSTR_IS_SSO(s) ? s->small : s->bytes;
+}
+static inline char *
+bstr_bytes_mut(BaString * const s)
+{
+    return BSTR_IS_SSO(s) ? s->small : s->bytes;
+}
+#define BSTR_BYTES(s)  bstr_bytes(s)
 
 #define OBJ_TYPE(v)   (((ObjectHeader *)(v))->type)
 #define IS_ARY(v)     (IS_PTR(v) && OBJ_TYPE(v) == OBJ_ARRAY)
