@@ -3,6 +3,101 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (56) — BaArray embed (SMALL_N=2) 実装 → A/B で棄却 → 全 revert
+
+iter 55 で todo.md に scoping した BaArray embed=2 を実装。 全 15 GC
+backend の OBJ_ARRAY scan に embed/heap dispatch を入れ、 baruby
+(libgc) にも port、 全 19 oracle 通過 (× 16 backend = 304 行)。
+
+### 実装したもの
+
+- `BaArray.items` を `union { items, embed[2] }` 化 (BaArray 24B → 32B)
+- `OBJ_FLAG_ARY_EMBED = 0x02u`、 `BARY_EMBED_CAPA = 2u`
+- `bary_items(a)` / `bary_items_mut(a)` / `bary_holder(a)` accessor
+- `baruby_ary_new`: capa<=2 で embed path、 zero-init で `[VAL_FALSE,
+  VAL_FALSE]` から始まる
+- `baruby_ary_push`: 3 paths (embed-fast / embed→heap promote / heap-grow)
+- 全 15 GC backend の OBJ_ARRAY scan: embed のとき VALUE を inline scan
+  (mark / forward / fwd_compact / mark_bump_gen の major promote / immix_gen
+  の minor-major 全 variant)
+- `.items` 直接アクセス ~30 箇所、 WB 8 箇所を accessor 経由に変更
+- baruby (libgc) sister port、 conservative GC なので scan 修正不要
+
+### A/B 結果 → 全 19 bench の geomean が net negative
+
+immix_gen / copy_gen × 全 19 bench で測定:
+
+| bench (回帰の例)    | copy_gen 55→56  | immix_gen 55→56 |
+|---------------------|----------------|----------------|
+| hash_chain          | 1.22→1.29 +6%  | 1.16→1.32 +14% |
+| interp_calc         | 0.87→0.95 +9%  | 0.83→0.91 +10% |
+| list_alloc          | 0.71→0.79 +11% | 0.69→0.77 +12% |
+| list_sort           | 1.03→1.14 +11% | 1.06→1.11 +5%  |
+| nqueens             | 0.94→1.02 +9%  | 0.96→1.04 +8%  |
+| tokenize            | 0.74→0.81 +9%  | 0.77→0.81 +5%  |
+| string_concat_dyn   | 0.92→1.00 +9%  | 0.94→0.97 +3%  |
+| substr_churn        | 0.78→0.84 +8%  | 0.80→0.83 +4%  |
+
+| bench (改善の例)    | copy_gen 55→56  | immix_gen 55→56 |
+|---------------------|----------------|----------------|
+| **binary_trees**    | 0.78→0.58 -26% | 0.76→0.60 -21% |
+| fib_pair            | 0.83→0.77 -7%  | 0.72→0.73 +1%  |
+| cons_list           | 0.74→0.72 -3%  | 0.68→0.65 -4%  |
+| json_parse          | 0.83→0.83 0%   | 0.84→0.82 -2%  |
+
+binary_trees は **-26%** で目立つ win (depth=21 で全 BaArray が 2-要素
+`[left, right]` node、 embed が完全に hit してメモリも 24B → 32B で
+items alloc 不要)。 ただし他 9 bench が +5〜14% 範囲で回帰、 geomean は
+明らかに net negative。
+
+### 棄却理由
+
+iter 53 SSO で BSTR_SSO_MAX=15 が fib_pair +8% 退化を理由に棄却された
+先例と同じパターン:
+
+**BaArray を 24B→32B (+33%) するコストが、 embed の恩恵がない bench
+で広範に payment される**。 hash_chain の bucket table、 list_alloc
+の長 array、 tokenize の token array push、 interp_calc の AST node
+など、 capa>2 の array が hot な workload では純粋なコスト増。
+
+binary_trees / fib_pair / cons_list / json_parse のような全要素 N=2
+の pair pattern は embed の恩恵を 100% 受けて勝つが、 そういう
+workload は少数派。
+
+### Path forward (todo.md 更新)
+
+BaArray embed の方向自体は理論上 sound だが、 **size growth が許容
+できない**。 alternative:
+
+1. **inline items via FAM** (flexible array member): `BaArray { hdr;
+   len; capa; VALUE items[]; }`. growth 時は新 BaArray を alloc して
+   コピー。 BaArray 自体が移動するので caller の VALUE *が無効化、
+   GC moving / non-moving 両対応にする必要あり (precise GC では既に
+   moving 前提なので OK だが、 libgc では `BaArray *` を hold する
+   code path に問題)。 さらに大きな変更。
+2. **8-byte SSO_MAX=7 同形の size-preserving embed**: SMALL_N=1 で
+   BaArray 24B 維持 (`union { items, embed[1] }`)。 1-要素 array
+   しか embed 対象にならないので恩恵小、 棄却。
+3. **size growth を許容するなら、 capa<=4 の `embed[4]`**: BaArray
+   48B (+100%) — 確実に悪化、 棄却。
+4. **何もしない**: iter 56 の経験から「BaArray のメモリ密度を
+   下げてはいけない」 を確定。
+
+todo.md エントリを「試行済・採用不可」 に更新、 alternative #1 (FAM)
+は別の big-iter project として記録。
+
+### iter 56 のまとめ
+
+- ~300 行の変更を実装、 全 oracle 通過、 全 backend build OK
+- A/B で net negative と判明、 全 revert
+- BaArray メモリ密度が広範な bench で支配的因子だと確認
+- 「精緻に scoping した large change を実装 → 数値で評価 → 棄却」 を
+  honest に実行したことが iter 55 (scoping) + iter 56 (A/B + revert)
+  の組合せで完結
+
+iter 53 SSO の SSO_MAX=15 vs SSO_MAX=7 のときと同じパターン: 「実装
+規模に対する win 比」 を測ってから ship を決めるのが正しい。
+
 ## 2026-05-20 (55) — alloc attribute 実験 + BaArray embed direction scoping
 
 iter 54 で json_parse macrobench を追加した後、 次の perf 方針として

@@ -78,24 +78,27 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       substr_churn / tokenize) を A/B 計測、 全て noise 範囲内
       (< 3%)。 gcc の -O3 + -flto が既に function body から同等の
       aliasing 性質を推定していると推測。 ship 価値なし。
-- [ ] **BaArray embed (SMALL_N=2, small-vector optimization)** —
-      iter 55 で scoping した結果 multi-iter project。 期待 win:
-      - json_parse の parser helper `[v, idx]` 2-elem returns で
-        ~50 alloc/parse 削減 (現 copy_gen 0.83s から -10%)
-      - hash_chain の [k, v] pair で 450k alloc 削減 (~-5%)
-      - cons_list の `[x, list]` cons pair も embed → win 期待
-      コスト: BaArray を 24B → 32B に肥大化、 非 string 系 bench で
-      fib_pair 同様 +5〜8% regress の可能性。 SSO_MAX=15 が fib_pair
-      regress で不採用になった先例あり、 同じ罠を避けるため A/B 慎重に。
-      実装スコープ:
-      - `BaArray.items` を union `{ items, embed[2] }` 化、 OBJ_FLAG_ARY_EMBED bit
-      - `.items` 直接アクセス 40 箇所、 WB 8 箇所 (holder=a vs holder=a->items
-        の判別を accessor 化)
-      - 全 15 GC backend の OBJ_ARRAY scan: embed のとき inline VALUE scan、
-        heap のとき items ptr forward — variant 全部触る
-      - libgc 側 (baruby) は scan 修正不要 (conservative)
-      iter 56-58 で実装する場合は SSO 同様 3 段で進める (scaffolding → flip →
-      A/B + commit)。
+- [x] ~~**BaArray embed (SMALL_N=2, small-vector optimization)**~~ —
+      iter 56 で実装 → A/B で棄却 ([done.md](done.md) iter (56) 参照)。
+      binary_trees -26%、 cons_list / json_parse / fib_pair で小 win、
+      但し hash_chain / interp_calc / list_alloc / list_sort / nqueens /
+      tokenize / string_concat_dyn / substr_churn など 9 bench で
+      +5〜14% 回帰。 BaArray 24B→32B の size growth が embed の恩恵を
+      持たない workload で広範に payment され、 geomean net negative。
+- [ ] **BaArray FAM-inline (`VALUE items[]`)** — iter 56 の embed
+      棄却理由は「BaArray の size growth が悪影響」 だった。 別の
+      approach: BaArray を flexible-array-member (FAM) 化し、 items
+      を常に inline で保持、 alloc 時に `sizeof(BaArray) + capa *
+      sizeof(VALUE)` を一括 alloc する。 これなら size growth は
+      capa に比例 (24B → 24+capa*8B)、 24B のままも可能 (capa=0)。
+      ただし growth (push 時) で BaArray 全体を realloc → move、
+      caller が held する `BaArray *` が無効化される。 baruby_precise
+      は precise GC なので caller の VALUE は sp slot 経由で reload
+      可能、 baruby (libgc) は conservative なので問題なし (古い
+      pointer は libgc が prevent freeze)。 ただし code path の
+      reload pattern が ~30 箇所追加で touch。 大きい project、
+      期待 win 不明 (json_parse 系の確実 win + 他 bench の中立) なので
+      別 iter で慎重に scoping。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で
