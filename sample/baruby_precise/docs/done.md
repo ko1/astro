@@ -3,6 +3,62 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (55) — alloc attribute 実験 + BaArray embed direction scoping
+
+iter 54 で json_parse macrobench を追加した後、 次の perf 方針として
+2 候補を検討した:
+
+### 候補 A: BaArray embed (SMALL_N=2) → scoping のみ、 multi-iter project
+
+json_parse は parser helper が毎 call で `[v, idx]` を return する
+ため、 2-要素 BaArray の量産がボトルネック。 BaArray を SSO 同形で
+embed[2] 化すれば 1-alloc / pair に縮められる。
+
+期待 win:
+- json_parse copy_gen 0.83s → ~-10% 見込み
+- hash_chain の [k, v] pair 450k 個も embed → ~-5%
+- cons_list の `[x, list]` も embed 対象
+
+コスト:
+- BaArray 24B → 32B (+33%) — SSO_MAX=15 が fib_pair で +8% regress
+  した先例あり、 同じ罠の可能性
+- `.items` 直接アクセス 40 箇所、 WB 8 箇所 (holder=a vs a->items
+  の判別)
+- 全 15 GC backend の OBJ_ARRAY scan: embed のとき inline VALUE
+  scan、 heap のとき items ptr forward
+- libgc 側 (baruby) は scan 修正不要 (conservative)
+
+iter 1 で完結する規模を超える (SSO の 3 倍ぐらいの修正)、
+todo.md に multi-iter project として整理し、 iter 56-58 で
+scaffolding → flip → A/B + commit の 3 段で進める方針に。
+
+### 候補 B: `aro_gc_alloc` への alloc attribute → 試行、 ship 価値なし
+
+`__attribute__((malloc, alloc_size(2), returns_nonnull))` を
+`aro_gc_alloc` / `_byte` / `_realloc_payload` に付与して A/B 計測。
+
+immix_gen / copy_gen × 6 bench (json_parse / fib_pair / hash_chain /
+string_concat_dyn / substr_churn / tokenize) で median-of-3 〜
+median-of-5 を計測した結果、 全 12 cell で差が noise 範囲内 (<3%)。
+特に hash_chain で一時 +15% 退化に見えたが clean A/B では 1.36s →
+1.34s (-1%) で noise 内と確認。
+
+理由考察 (測定の裏付けなし、 仮説): gcc の -O3 + -flto が既に
+function body から `aro_gc_alloc` 等の aliasing 性質を推定して
+おり、 attribute は redundant。 alloc_size も constant size の
+場合は callee の `size_t payload_size` が固定値として伝播する
+ので effect が薄い。
+
+結論: attrs を ship しない、 todo.md エントリを試行済 (棄却) に
+更新、 これは「ASTro framework として AOT specialization 経由で
+既に最適化済の path だった」 ことの確認。
+
+### iter 55 のまとめ
+
+コード変更: なし (gc.h の attrs は revert)。 docs 整理が成果。
+embed direction (BaArray SMALL_N=2) は todo.md に詳細スコープ
+入りで残し、 次の iter で実装着手するか決める。
+
 ## 2026-05-20 (54) — `bench/json_parse.ba.rb` 追加 (macrobench、 SSO 効く)
 
 baruby で書いた recursive-descent JSON parser + 再帰 sum (integer

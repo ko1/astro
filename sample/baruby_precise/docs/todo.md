@@ -71,12 +71,31 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       `SSO_MAX=15` は BaString 32 B に肥大 → fib_pair で +8% regress
       が出るので採用せず。 将来 short-string が頻出する workload なら
       再検討の余地あり (build flag 化が候補)。
-- [ ] **`aro_gc_alloc` への `__attribute__((malloc, alloc_size(2)))`
-      付与** — 現在 attribute なし。 付けると gcc が returned ptr が
-      他の pointer と alias しないと知り、 後続 load/store の SSA を
-      改善する可能性。 alloc 削除 / merge は起きないが、 inline 後の
-      register 配置で wins 出るかも。 全 16 backend に同じ宣言を
-      付与する必要あり。 軽く試して bench で差が出るか見る。
+- [x] ~~**`aro_gc_alloc` への `__attribute__((malloc, alloc_size,
+      returns_nonnull))` 付与**~~ — iter 55 で試行 → 棄却
+      ([done.md](done.md) iter (55) 参照)。 immix_gen / copy_gen で
+      6 bench (json_parse / fib_pair / hash_chain / string_concat_dyn /
+      substr_churn / tokenize) を A/B 計測、 全て noise 範囲内
+      (< 3%)。 gcc の -O3 + -flto が既に function body から同等の
+      aliasing 性質を推定していると推測。 ship 価値なし。
+- [ ] **BaArray embed (SMALL_N=2, small-vector optimization)** —
+      iter 55 で scoping した結果 multi-iter project。 期待 win:
+      - json_parse の parser helper `[v, idx]` 2-elem returns で
+        ~50 alloc/parse 削減 (現 copy_gen 0.83s から -10%)
+      - hash_chain の [k, v] pair で 450k alloc 削減 (~-5%)
+      - cons_list の `[x, list]` cons pair も embed → win 期待
+      コスト: BaArray を 24B → 32B に肥大化、 非 string 系 bench で
+      fib_pair 同様 +5〜8% regress の可能性。 SSO_MAX=15 が fib_pair
+      regress で不採用になった先例あり、 同じ罠を避けるため A/B 慎重に。
+      実装スコープ:
+      - `BaArray.items` を union `{ items, embed[2] }` 化、 OBJ_FLAG_ARY_EMBED bit
+      - `.items` 直接アクセス 40 箇所、 WB 8 箇所 (holder=a vs holder=a->items
+        の判別を accessor 化)
+      - 全 15 GC backend の OBJ_ARRAY scan: embed のとき inline VALUE scan、
+        heap のとき items ptr forward — variant 全部触る
+      - libgc 側 (baruby) は scan 修正不要 (conservative)
+      iter 56-58 で実装する場合は SSO 同様 3 段で進める (scaffolding → flip →
+      A/B + commit)。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で
