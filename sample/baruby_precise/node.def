@@ -418,6 +418,58 @@ node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
     return RESULT_OK(VAL_FALSE);
 }
 
+// iter 51: 3-way add fold.  Parser collapses `add(add(?, ?), ?)` chains
+// into this single node, avoiding the intermediate value (mostly relevant
+// for string concat — 1 alloc instead of 2).  Runtime dispatches by type
+// to fast all-int / all-string / all-array paths; mixed-type chains fall
+// back to sequential pair-add semantics.
+NODE_DEF
+node_add3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *a, NODE *b, NODE *cc)
+{
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a, sp));
+    sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, b, sp + 1));
+    sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, cc, sp + 2));
+
+    if (LIKELY(IS_INT(sp[0]) && IS_INT(sp[1]) && IS_INT(sp[2]))) {
+        return RESULT_OK(INT2VAL(VAL2INT(sp[0]) + VAL2INT(sp[1]) + VAL2INT(sp[2])));
+    }
+    if (IS_STR(sp[0]) && IS_STR(sp[1]) && IS_STR(sp[2])) {
+        return RESULT_OK(baruby_str_concat3(&sp[0], &sp[1], &sp[2], sp + 3));
+    }
+    if (IS_ARY(sp[0]) && IS_ARY(sp[1]) && IS_ARY(sp[2])) {
+        // No 3-way ary helper yet; sequential to preserve semantics.
+        sp[3] = baruby_ary_plus(&sp[0], &sp[1], sp + 4);
+        // Re-spill c (ary_plus may have GC'd) — but sp[2] should still be
+        // valid after the alloc since we hold it in caller's sp slot.
+        return RESULT_OK(baruby_ary_plus(&sp[3], &sp[2], sp + 4));
+    }
+    // Mixed types: sequential dispatch to match `((a+b)+c)` semantics.
+    // First (a+b): replicate node_add's type-dispatch but produce the
+    // intermediate into sp[3].
+    if (IS_INT(sp[0]) && IS_INT(sp[1])) {
+        sp[3] = INT2VAL(VAL2INT(sp[0]) + VAL2INT(sp[1]));
+    } else if (IS_STR(sp[0]) && IS_STR(sp[1])) {
+        sp[3] = baruby_str_concat(&sp[0], &sp[1], sp + 4);
+    } else if (IS_ARY(sp[0]) && IS_ARY(sp[1])) {
+        sp[3] = baruby_ary_plus(&sp[0], &sp[1], sp + 4);
+    } else {
+        fprintf(stderr, "type mismatch in + (a+b)\n");
+        return RESULT_OK(VAL_FALSE);
+    }
+    // Second (intermediate + c): same dispatch.
+    if (IS_INT(sp[3]) && IS_INT(sp[2])) {
+        return RESULT_OK(INT2VAL(VAL2INT(sp[3]) + VAL2INT(sp[2])));
+    }
+    if (IS_STR(sp[3]) && IS_STR(sp[2])) {
+        return RESULT_OK(baruby_str_concat(&sp[3], &sp[2], sp + 4));
+    }
+    if (IS_ARY(sp[3]) && IS_ARY(sp[2])) {
+        return RESULT_OK(baruby_ary_plus(&sp[3], &sp[2], sp + 4));
+    }
+    fprintf(stderr, "type mismatch in + (sum+c)\n");
+    return RESULT_OK(VAL_FALSE);
+}
+
 NODE_DEF
 node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *lhs, NODE *rhs)
 {

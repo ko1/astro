@@ -202,6 +202,9 @@ VALUE baruby_str_new_cstr(const char *cstr, VALUE *sp_top);
 // Slice from a heap source: src_ref is a caller sp slot, re-deref'd post-GC.
 VALUE baruby_str_slice(VALUE *src_ref, uint32_t offset, uint32_t len, VALUE *sp_top);
 VALUE baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
+// iter 51: 3-way concat for `a + b + c` chains; saves 1 BaString + 1 bytes
+// alloc vs sequential pair-concat.
+VALUE baruby_str_concat3(VALUE *av_ref, VALUE *bv_ref, VALUE *cv_ref, VALUE *sp_top);
 
 // Value equality (Ruby `==`).  Same bits → true (catches int / nil / ptr
 // identity).  Otherwise: same type → recursive byte / element compare;

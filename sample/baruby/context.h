@@ -201,6 +201,8 @@ VALUE baruby_ary_plus(VALUE a, VALUE b);
 VALUE baruby_str_new(const char *bytes, uint32_t len);
 VALUE baruby_str_new_cstr(const char *cstr);
 VALUE baruby_str_concat(VALUE a, VALUE b);
+// iter 51: 3-way concat fast path for `a + b + c` chains.
+VALUE baruby_str_concat3(VALUE a, VALUE b, VALUE c);
 
 // Value equality (Ruby `==`).  Same bits → true (catches int / nil / ptr
 // identity).  Otherwise: same type → recursive byte / element compare;

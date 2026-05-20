@@ -427,6 +427,51 @@ node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NO
     return RESULT_OK(VAL_FALSE);
 }
 
+// iter 51 (ported from baruby_precise): 3-way add fold for `a + b + c`
+// chains.  All-string case takes a single-alloc fast path
+// (baruby_str_concat3); int/array all-same paths similarly avoid
+// intermediate.  Mixed-type chains fall back to sequential pair-add.
+NODE_DEF
+node_add3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *a, NODE *b, NODE *cc)
+{
+    VALUE av = UNWRAP(EVAL_ARG(c, a));
+    VALUE bv = UNWRAP(EVAL_ARG(c, b));
+    VALUE cv = UNWRAP(EVAL_ARG(c, cc));
+
+    if (LIKELY(IS_INT(av) && IS_INT(bv) && IS_INT(cv))) {
+        return RESULT_OK(INT2VAL(VAL2INT(av) + VAL2INT(bv) + VAL2INT(cv)));
+    }
+    if (IS_STR(av) && IS_STR(bv) && IS_STR(cv)) {
+        return RESULT_OK(baruby_str_concat3(av, bv, cv));
+    }
+    if (IS_ARY(av) && IS_ARY(bv) && IS_ARY(cv)) {
+        return RESULT_OK(baruby_ary_plus(baruby_ary_plus(av, bv), cv));
+    }
+    // Mixed types: sequential dispatch matching node_add semantics.
+    VALUE sum_ab;
+    if (IS_INT(av) && IS_INT(bv)) {
+        sum_ab = INT2VAL(VAL2INT(av) + VAL2INT(bv));
+    } else if (IS_STR(av) && IS_STR(bv)) {
+        sum_ab = baruby_str_concat(av, bv);
+    } else if (IS_ARY(av) && IS_ARY(bv)) {
+        sum_ab = baruby_ary_plus(av, bv);
+    } else {
+        fprintf(stderr, "type mismatch in + (a+b)\n");
+        return RESULT_OK(VAL_FALSE);
+    }
+    if (IS_INT(sum_ab) && IS_INT(cv)) {
+        return RESULT_OK(INT2VAL(VAL2INT(sum_ab) + VAL2INT(cv)));
+    }
+    if (IS_STR(sum_ab) && IS_STR(cv)) {
+        return RESULT_OK(baruby_str_concat(sum_ab, cv));
+    }
+    if (IS_ARY(sum_ab) && IS_ARY(cv)) {
+        return RESULT_OK(baruby_ary_plus(sum_ab, cv));
+    }
+    fprintf(stderr, "type mismatch in + (sum+c)\n");
+    return RESULT_OK(VAL_FALSE);
+}
+
 NODE_DEF
 node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, NODE *lhs, NODE *rhs)
 {

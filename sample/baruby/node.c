@@ -479,6 +479,28 @@ baruby_str_concat(VALUE av, VALUE bv)
     return (VALUE)r;
 }
 
+// iter 51 (ported from baruby_precise): 3-way concat in a single
+// BaString + bytes alloc.  Parser emits node_add3 for `a + b + c` chains.
+VALUE
+baruby_str_concat3(VALUE av, VALUE bv, VALUE cv)
+{
+    const BaString *a = VAL2STR(av);
+    const BaString *b = VAL2STR(bv);
+    const BaString *cc = VAL2STR(cv);
+    uint32_t total = a->len + b->len + cc->len;
+    BaString *r = (BaString *)malloc(sizeof(BaString));
+    r->hdr.type = OBJ_STRING;
+    r->hdr.flags = 0;
+    r->len = total;
+    r->capa = total + 1;
+    r->bytes = (char *)malloc(r->capa);
+    if (a->len)  memcpy(r->bytes,                       a->bytes,  a->len);
+    if (b->len)  memcpy(r->bytes + a->len,              b->bytes,  b->len);
+    if (cc->len) memcpy(r->bytes + a->len + b->len,     cc->bytes, cc->len);
+    r->bytes[total] = '\0';
+    return (VALUE)r;
+}
+
 void
 baruby_print_value(FILE *fp, VALUE v)
 {
