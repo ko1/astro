@@ -580,40 +580,6 @@ baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top)
     return sp_top[0];
 }
 
-// iter 51: 3-way string concat in a single allocation.  `a + b + c` used to
-// build an intermediate (a+b) BaString then concat with c, doing 2 BaString
-// allocs + 2 bytes allocs.  This version does 1 BaString + 1 bytes alloc
-// with 3 memcpy's — saves 1 BaString + 1 bytes alloc per call.  Parser
-// emits node_add3 (which calls this) when it sees `add(add(?, ?), ?)` chain
-// pattern.
-VALUE
-baruby_str_concat3(VALUE *av_ref, VALUE *bv_ref, VALUE *cv_ref, VALUE *sp_top)
-{
-    uint32_t a_len = VAL2STR(*av_ref)->len;
-    uint32_t b_len = VAL2STR(*bv_ref)->len;
-    uint32_t c_len = VAL2STR(*cv_ref)->len;
-    uint32_t total = a_len + b_len + c_len;
-
-    sp_top[0] = (VALUE)aro_gc_alloc(OBJ_STRING, sizeof(BaString), sp_top);
-    BaString *r = (BaString *)sp_top[0];
-    r->hdr.type = OBJ_STRING;
-    r->hdr.flags = 0;
-    r->len = total;
-    r->capa = total + 1;
-    char *new_bytes = (char *)aro_gc_alloc_byte(r->capa, sp_top + 1);
-    r = (BaString *)sp_top[0];
-    aro_gc_wb(r, (VALUE *)&r->bytes, (VALUE)new_bytes);
-
-    const BaString *a = VAL2STR(*av_ref);
-    const BaString *b = VAL2STR(*bv_ref);
-    const BaString *cc = VAL2STR(*cv_ref);
-    if (a_len) memcpy(r->bytes,                 a->bytes,  a_len);
-    if (b_len) memcpy(r->bytes + a_len,         b->bytes,  b_len);
-    if (c_len) memcpy(r->bytes + a_len + b_len, cc->bytes, c_len);
-    r->bytes[total] = '\0';
-    return sp_top[0];
-}
-
 void
 baruby_print_value(FILE *fp, VALUE v)
 {

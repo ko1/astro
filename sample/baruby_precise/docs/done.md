@@ -3,63 +3,6 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
-## 2026-05-20 (51) — dynamic `+` 3-way fold (`node_add3`)
-
-iter 37 で literal `+` を parse-time fold したが、 dynamic な
-`a + b + c` (loop 内で毎回違う string) は左結合の
-`add(add(a, b), c)` のまま残り、 中間 BaString + bytes が 1 回
-余計に alloc されていた。
-
-`baruby_parse.c::alloc_binop` で「左 child が `node_add` なら
-3-way `node_add3(x, y, rhs)` に rewrite」する 1 ルール fold を
-追加。 runtime 側 `node_add3` は all-string fast path で
-`baruby_str_concat3` (BaString 1 + bytes 1 alloc, intermediate なし)、
-all-int fast path、 all-array fast path を持ち、 mixed type は
-pair-wise sequential dispatch で意味論を保つ。
-
-baruby (libgc sister) にも同じ fold + runtime helper を port。
-
-### 効果 (A/B median of 5, copy backend, plain mode)
-
-clean A/B (`alloc_binop` の add3 分岐 1 行を `if (0 && ...)` で
-disable して計測):
-
-| 計測          | base (no add3) | with add3 | Δ      |
-|---------------|---------------:|----------:|-------:|
-| copy median   |          1.12s |     1.04s |  -7.1% |
-| copy min      |          1.07s |     1.02s |  -4.7% |
-
-iter 51 matrix (full 16 backend) で string_concat_dyn は
-copy=0.99 / copy_gen=0.95 / immix_gen=0.94 / mark_compact_gen=0.95 /
-mark_bump_gen=0.96 / mark=1.13 / mark_freelist=1.10 / none=2.00。
-
-string_concat (single `+`、 fold 対象外) は ±1ms 範囲内で不変、
-tokenize (push 中心) も影響なし → regression なし。
-
-oracle 全 (19/19) 通過確認。
-
-### CRuby 比
-
-string_concat_dyn は CRuby ≈ 1.20s なので、 copy/copy_gen/
-immix_gen ですべて **CRuby より速い** ゾーンに入った
-(0.94〜0.99s = 1.21〜1.27× faster)。 iter 50 までは僅差で
-負け or 同位だった pattern。
-
-### 知見
-
-- Parser-level の AST rewrite は 1 行 `if` で済むのに win が
-  大きい (10% 帯) — runtime に書き直すより安価。
-- 3-way までで打ち止めにした (4-way `+++` は string benchmark
-  でも頻度が下がる)。 必要なら future iter で extend 可能だが、
-  AST node 種類は最小化したい。
-- baruby_precise の `node_add3` は `sp + 3` 越しに `sp_top` 渡す
-  必要あり (precise root scan のため)。 libgc baruby 側は
-  `malloc` で済む単純版。
-
-iter ファイル参照: `node.c::baruby_str_concat3`、
-`node.def::node_add3`、 `baruby_parse.c::alloc_binop` 内
-`kind_node_add` 分岐。
-
 ## 2026-05-20 (50) — Milestone: iter 36-50 のまとめ + gc.h contract 明文化
 
 ### iter 36-50 で達成したこと

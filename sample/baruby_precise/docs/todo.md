@@ -53,15 +53,11 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       (0.34→0.07)。 本来の dynamic concat pattern を保存する
       `string_concat_dyn.ba.rb` も追加 (5_000_000 iter, oracle=45000000)。
       baruby (libgc) にも port 済。
-- [x] ~~**文字列 `+` chain の 1-shot 化 (動的 chain)**~~ — iter 51 解決
-      ([done.md](done.md) iter (51) 参照)。 `alloc_binop` で「左 child
-      が node_add なら 3-way `node_add3` に rewrite」する 1 ルール fold。
-      runtime `node_add3` は all-string で `baruby_str_concat3` (BaString
-      1 + bytes 1 alloc) fast path。 string_concat_dyn 全 backend で
-      -9〜-10% (copy backend 1.09s → 0.99s、 immix_gen 1.04s → 0.94s)。
-      string_concat / tokenize regression なし。 baruby (libgc) にも
-      port 済。 4-way 以降は frequency が下がるので保留 (3-way で
-      string_concat_dyn の hot pattern を吸収済)。
+- [ ] **文字列 `+` chain の 1-shot 化 (動的 chain)** — `s1 + s2 + s3` で
+      s1/s2/s3 が変数 (literal でない) のケースを `strcat_K([s1,s2,s3])`
+      に畳む。 配列リテラル N=1..4 と同じ構造で、 pm_call_node 認識が要る。
+      string_concat_dyn / substr_churn で win 期待 (現在 immix_gen 1.06s
+      / 0.86s)。 動的版は GC 圧があり ary_lit より win-margin は大きそう。
 - [ ] **inc 系 backend を真の incremental に**: VALUE stack write barrier を
       追加して、 SATB + stack-WB の組合せで mutator-与 alloc を細かく
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で

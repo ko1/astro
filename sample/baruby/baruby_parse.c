@@ -428,16 +428,6 @@ alloc_binop(struct transduce_context *tc, pm_constant_id_t name, NODE *lhs, NODE
             buf[total] = '\0';
             return ALLOC_node_str_lit(buf, total);
         }
-        // Iter 51 (ported from baruby_precise): dynamic 3-way add chain
-        // fold.  `a + b + c` → node_add3(a, b, c), single-alloc fast path
-        // for all-string case.  See baruby_precise/baruby_parse.c for
-        // details.
-        extern const struct NodeKind kind_node_add;
-        if (lhs->head.kind == &kind_node_add) {
-            NODE *x = lhs->u.node_add.lhs;
-            NODE *y = lhs->u.node_add.rhs;
-            return ALLOC_node_add3(x, y, rhs);
-        }
         return ALLOC_node_add(lhs, rhs);
     }
     else if (ceq(tc, name, "*")) {

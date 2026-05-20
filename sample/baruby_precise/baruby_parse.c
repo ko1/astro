@@ -432,20 +432,6 @@ alloc_binop(struct transduce_context *tc, pm_constant_id_t name, NODE *lhs, NODE
             buf[total] = '\0';
             return ALLOC_node_str_lit(buf, total);
         }
-        // Iter 51: dynamic 3-way add chain.  If `lhs` is itself an
-        // `add(x, y)`, the expression is `x + y + rhs` (left-associative).
-        // Emit `node_add3(x, y, rhs)` so runtime can take a single-alloc
-        // fast path for the all-string case (string_concat_dyn etc.).
-        // For ints/arrays, semantics are preserved via the slow path.
-        // Only triggers for non-folded chains (literal+literal already
-        // collapsed above).  4-way chains fold the inner 3 only —
-        // `a+b+c+d` becomes `add(add3(a,b,c), d)`.
-        extern const struct NodeKind kind_node_add;
-        if (lhs->head.kind == &kind_node_add) {
-            NODE *x = lhs->u.node_add.lhs;
-            NODE *y = lhs->u.node_add.rhs;
-            return ALLOC_node_add3(x, y, rhs);
-        }
         return ALLOC_node_add(lhs, rhs);
     }
     else if (ceq(tc, name, "*")) {
