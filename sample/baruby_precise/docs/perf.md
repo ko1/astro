@@ -757,6 +757,28 @@ GC 評価の観点で workload 分類を意識して揃えている。 アルフ
 - **特性的な数値**: ベスト ~0.90 s 帯、 ワースト ~1.85 s
   (`none`)。
 
+#### `json_parse.ba.rb` — JSON 再帰下降パーサ (iter 54)
+
+- **What**: 固定の JSON 文書 (5 objects × 3 fields each、 一部に nested
+  array) を baruby で書いた recursive-descent parser で per-iter 構文木
+  化、 `sum_ints` で再帰的に integer leaves を合計。 20000 iter。
+  oracle = 11_300_000。
+- **Alloc pattern**: per iter ~5 records × (header BaString + 3 key/value
+  pairs + tags array) ≈ 60-80 alloc/iter、 加えて parser helper の
+  `[value, next_idx]` 戻り値で 2-要素 BaArray を多数 alloc。 全体
+  ~3M alloc / 1 GB。 token はすべて 7 char 以下 (id/name/tags + 数字)
+  なので SSO に乗る。
+- **Lifetime**: 1 parse 内で全ての sub-tree が短命、 sum_ints 走査直後
+  に die。 nursery で完結する pure short-burst。
+- **テスト対象**:
+  - recursion + alloc が密に絡む macro workload (他 bench は while
+    loop 中心、 これは深さ ~4 の関数 frame stack を pump)
+  - small 2-要素 BaArray の量産 (helper returns)
+  - string slice (token 抽出) + BSTR_BYTES アクセス頻度
+  - object-as-Array-of-pairs パターン (baruby は Hash 無し)
+- **iter 53 SSO 投入後に追加** (iter 54)。 SSO 改善効果が出るはずの
+  workload (full SSO 範囲のトークン)。
+
 ### マクロベンチ評価軸
 
 12 bench がカバーする観点を整理:

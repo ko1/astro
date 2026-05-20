@@ -3,6 +3,78 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (54) — `bench/json_parse.ba.rb` 追加 (macrobench、 SSO 効く)
+
+baruby で書いた recursive-descent JSON parser + 再帰 sum (integer
+leaves) を macrobench として追加。 20000 iter で oracle = 11_300_000、
+immix_gen plain で 0.87s、 libgc で 1.18s。
+
+### 設計意図
+
+iter 53 で導入した SSO は短い string (≤7 chars) の alloc を 1-shot
+化するが、 既存 bench で SSO が「真に効く」 workload は tokenize と
+substr_churn のみ (両方とも string-only)。 json_parse は SSO 効果に
+**加えて**:
+
+- recursion + alloc が密に絡む macro pattern (parser helper が
+  毎呼で `[value, next_idx]` を return → 2-要素 BaArray を多量に alloc)
+- object-as-Array-of-pairs パターン (baruby は Hash 非対応なので
+  自然なマッピング)
+- 短命 string token (id / name / tags の値: 全 ≤7 char で SSO ヒット率
+  100%)
+- 短命 nested array (tags array + object pair array)
+
+を一つで exercise。 既存 bench のどれともプロファイルが被らない。
+
+### oracle
+
+```
+[{"id":1,"name":"alice","tags":[10,20,30]},
+ {"id":2,"name":"bob","tags":[40,50]},
+ {"id":3,"name":"carol","tags":[60,70,80,90]},
+ {"id":4,"name":"dave","tags":[]},
+ {"id":5,"name":"eve","tags":[100]}]
+```
+
+per parse: ids 合計 15 + tags 合計 550 = 565、 20000 iters で 11_300_000。
+
+### 数値 (plain, single run)
+
+| backend          | json_parse |
+|------------------|-----------:|
+| copy_gen         |    0.83s ★ |
+| immix_gen        |    0.84s   |
+| mark_compact_gen |    0.84s   |
+| copy             |    0.87s   |
+| immix            |    0.88s   |
+| mark_bump_gen    |    0.90s   |
+| mark_freelist    |    0.92s   |
+| mark             |    0.98s   |
+| mark_compact     |    1.07s   |
+| mark_gen         |    1.06s   |
+| mark_bitmap_gen  |    1.02s   |
+| mark_card_gen    |    1.03s   |
+| bump             |    1.22s   |
+| none             |    1.64s   |
+| libgc            |    1.18s   |
+
+spread = 2× (best vs worst)、 他 macro bench と同程度の挙動。
+copy_gen / immix_gen / mark_compact_gen が tied、 gen + (copy or
+non-moving incremental) の組合せが winner pattern。
+
+### 実装の制約
+
+baruby に Hash がないため object = Array of `[key, value]` pairs。
+sum_ints は型判定 (`is_a?(Integer)` 等) も使えないため、 bench shape
+を knew にして walk (`sum_tags` / `sum_record` / `sum_ints` の 3 関数)。
+
+iter 53 で「他 bench が SSO 投入で改善した」ことを確認したので、
+新 bench でも SSO ヒット率が高いものを意図的に選んだ — workload に
+SSO 改善を反映する目的。 SSO_MAX=7 で全 token が乗る (max 5 char =
+"carol")。
+
+baruby (libgc) にも port、 同 oracle 通過。
+
 ## 2026-05-20 (53) — SSO (small-string optimization, SSO_MAX=7)
 
 iter 52 で direction として書いた SSO を実装。 値表現側の

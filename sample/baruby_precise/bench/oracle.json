@@ -17,5 +17,6 @@
   "ast_eval": "0",
   "string_concat_dyn": "45000000",
   "dll_walk": "23994000000",
-  "tokenize": "10500000"
+  "tokenize": "10500000",
+  "json_parse": "11300000"
 }
