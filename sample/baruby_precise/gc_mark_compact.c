@@ -138,8 +138,9 @@ bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 {
+    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
@@ -154,8 +155,9 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
+    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
     GCHeader *h = bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
@@ -167,9 +169,10 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
-    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size, sp_top);
+    VALUE *sp_top = c->sp;
+    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
     GCHeader *oldh = (GCHeader *)old - 1;
     AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
@@ -178,9 +181,12 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
     // its fwd-pointer phase, so sp_top[0] reflects the post-slide
     // location.  Uniform with other backends.
     sp_top[0] = (VALUE)old;
+
+    c->sp = sp_top + 1;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(c, new_size, sp_top + 1)
-        : aro_gc_alloc(c, kind, new_size, sp_top + 1);
+        ? aro_gc_alloc_byte(c, new_size)
+        : aro_gc_alloc(c, kind, new_size);
+    c->sp = sp_top;
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
@@ -405,8 +411,9 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
 }
 
 void
-aro_gc_collect(CTX *c, VALUE *sp_top)
+aro_gc_collect(CTX *c)
 {
+    VALUE *sp_top = c->sp;
     gc_collect_internal(c, sp_top);
 }
 

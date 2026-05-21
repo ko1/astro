@@ -37,9 +37,9 @@ aro_gc_init(CTX *c)
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 {
-    (void)kind; (void)sp_top;
+    (void)kind;
     void *p = calloc(1, payload_size ? payload_size : 1);
     if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
@@ -48,9 +48,8 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    (void)sp_top;
     void *p = malloc(payload_size ? payload_size : 1);
     if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
@@ -59,9 +58,8 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
-    (void)sp_top;
     void *p = realloc(old, new_size ? new_size : 1);
     if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
     ASTRO_GC_COMMON(c)->stats.total_bytes += new_size;
@@ -69,8 +67,8 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 }
 
 void
-aro_gc_collect(CTX *c, VALUE *sp_top)
+aro_gc_collect(CTX *c)
 {
-    (void)c; (void)sp_top;
+    (void)c;
     // no-op
 }

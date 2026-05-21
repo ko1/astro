@@ -152,35 +152,40 @@ void  aro_gc_init(CTX *c);
 /* aro_gc_alloc — allocate `payload_size` bytes of a pointer-scanned
  * object (KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL).
  *
- * **CONTRACT**: every backend MUST zero-initialize the returned payload
- * (`memset(payload, 0, ALIGN8(payload_size))` or equivalent) before
- * returning.  The GC mark phase walks these fields as VALUEs / pointers
- * via `scan_outgoing`; if any byte is stale heap-pointer-shaped data
- * from a recycled slot, mark will dereference it and SEGV.  Region-bump
- * backends get this for free (region is touched once, lazy zero from
- * the OS); freelist-recycling backends MUST emit an explicit memset.
- * iter 48 fix in gc_mark_freelist.c was due to this contract being
- * silently violated.
+ * **CONTRACT 1 (zero-init)**: every backend MUST zero-initialize the
+ * returned payload (`memset(payload, 0, ALIGN8(payload_size))` or
+ * equivalent) before returning.  The GC mark phase walks these fields as
+ * VALUEs / pointers via `scan_outgoing`; if any byte is stale
+ * heap-pointer-shaped data from a recycled slot, mark will dereference
+ * it and SEGV.  Region-bump backends get this for free (region is
+ * touched once, lazy zero from the OS); freelist-recycling backends
+ * MUST emit an explicit memset.
  *
- * `sp_top` is the GC-scan upper bound: roots are `c->env..sp_top`.
- * Callers must spill any heap pointers they hold into slots below
- * `sp_top` before calling alloc, or pass a higher sp_top so those slots
- * fall in the scan range.
+ * **CONTRACT 2 (GC-scan bound)**: the caller MUST have updated
+ * `c->sp` to its current spill top before calling.  `c->sp` IS the
+ * GC-scan upper bound; roots are `c->env..c->sp`.  Callers that need
+ * to keep a heap pointer alive across alloc must spill it into a slot
+ * below `c->sp` first (or bump c->sp temporarily — see
+ * aro_gc_realloc_payload for the canonical pattern).  This replaces
+ * the old `VALUE *sp_top` parameter: sample helpers set `c->sp = sp`
+ * on entry and the framework's alloc API now reads c->sp internally.
  */
-void *aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top);
+void *aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size);
 
 /* aro_gc_alloc_byte — allocate `payload_size` raw bytes (no VALUE
  * scanning, so no zero-init required).  Used for BaString.bytes / other
  * char[] payloads.  Caller fills the bytes after return.  GC's
  * `scan_outgoing` skips KIND_PAYLOAD_BYTE so leftover freelist-link
- * bytes are harmless. */
-void *aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top);
+ * bytes are harmless.  Same c->sp contract as aro_gc_alloc. */
+void *aro_gc_alloc_byte(CTX *c, size_t payload_size);
 
 /* aro_gc_realloc_payload — grow a payload, copying contents.  Preserves
- * the kind/scanability of the original payload. */
-void *aro_gc_realloc_payload(CTX *c, void *p, size_t new_size, VALUE *sp_top);
+ * the kind/scanability of the original payload.  Same c->sp contract;
+ * internally bumps c->sp by 1 to park the old payload during the
+ * inner alloc (so it stays scanned through any GC). */
+void *aro_gc_realloc_payload(CTX *c, void *p, size_t new_size);
 
-void  aro_gc_collect(CTX *c, VALUE *sp_top);
+void  aro_gc_collect(CTX *c);
 
 /* Stat readers — all take CTX so the data is sourced from the per-instance
  * common state (no global variable). */

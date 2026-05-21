@@ -123,13 +123,13 @@ aro_gc_init(CTX *c)
 // Allocation
 // ----------------------------------------------------------------------------
 
-static void gc_collect_internal(CTX *c, VALUE *sp_top);
+static void gc_collect_internal(CTX *c);
 
 static void __attribute__((noinline, cold))
-gc_bump_slow(CTX *c, size_t total, VALUE *sp_top)
+gc_bump_slow(CTX *c, size_t total)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(c);
     if (gc->active_top + total > gc->active_end) {
         fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
                 total, (size_t)(gc->active_end - gc->active_top));
@@ -138,14 +138,14 @@ gc_bump_slow(CTX *c, size_t total, VALUE *sp_top)
 }
 
 static inline GCHeader *
-gc_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+gc_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = sizeof(GCHeader) + aligned;
     if (__builtin_expect(ASTRO_GC_COMMON(c)->stress
                          || gc->bytes_since_gc + payload_size > gc->gc_threshold
                          || (gc->active_top + total) > gc->active_end, 0)) {
-        gc_bump_slow(c, total, sp_top);
+        gc_bump_slow(c, total);
     }
     GCHeader *h = (GCHeader *)gc->active_top;
     HDR_SET_KIND(h, kind);
@@ -157,14 +157,14 @@ gc_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_t
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    ASTRO_ASSERT(sp_top >= c->env);
+    ASTRO_ASSERT(c->sp >= c->env);
 
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = gc_bump(c, kind, payload_size, aligned, sp_top);
+    GCHeader *h = gc_bump(c, kind, payload_size, aligned);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_PAYLOAD(payload, aligned);
@@ -175,11 +175,11 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    ASTRO_ASSERT(sp_top >= c->env);
+    ASTRO_ASSERT(c->sp >= c->env);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = gc_bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
+    GCHeader *h = gc_bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
@@ -190,24 +190,25 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
     if (old == NULL) {
-        return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size, sp_top);
+        return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
     }
     GCHeader *oldh = (GCHeader *)old - 1;
     size_t old_size = ASTRO_GC_HEADER_SIZE(oldh);
     AroGcKind kind = HDR_KIND(oldh);
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
-    /* Park `old` in a scanned sp slot so GC forwards it (and its interior
-     * VALUE slots) to to-space.  Post-GC `sp_top[0]` points at the
-     * forwarded copy. */
-    sp_top[0] = (VALUE)old;
+    /* Park `old` in c->sp[0] so GC scans it; bump c->sp temporarily so
+     * the inner alloc sees the parked slot as in-range. */
+    c->sp[0] = (VALUE)old;
+    c->sp++;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(c, new_size, sp_top + 1)
-        : aro_gc_alloc(c, kind, new_size, sp_top + 1);
-    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
+        ? aro_gc_alloc_byte(c, new_size)
+        : aro_gc_alloc(c, kind, new_size);
+    c->sp--;
+    if (copy_bytes) memcpy(newp, (void *)c->sp[0], copy_bytes);
     return newp;
 }
 
@@ -282,9 +283,12 @@ forward_value_edge(void *ctx, void **slot)
 }
 
 static void
-gc_collect_internal(CTX *c, VALUE *sp_top)
+gc_collect_internal(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    /* sp_top is the caller-maintained c->sp; snapshot it for the duration
+     * of this collect (callee shouldn't mutate c->sp until end). */
+    VALUE *sp_top = c->sp;
     struct timespec t0 = aro_gc_time_begin(c);
     char *from_base = gc->active_base;
     char *from_top_pre = gc->active_top;
@@ -326,23 +330,16 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
         }
     }
 
-    /* (1) Root scan: forward VALUE pointers in the sp[] range in place.
-     * Cheney has no separate mark phase — record the whole loop in
-     * reclaim_seconds. */
+    /* (1) Root scan: forward VALUE pointers in the sp[] range in place. */
     struct timespec tcheney = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) {
         forward_value_edge(gc, (void **)p);
     }
 
-    /* (2) Scan-loop in to-space: each freshly-copied object's outgoing
-     * refs are forwarded.  SCAN_EDGES dispatches on kind; the edge_visit
-     * callback decides whether to dereference as VALUE or raw pointer. */
+    /* (2) Scan-loop in to-space. */
     char *scan = gc->to_base;
     while (scan < gc->to_top) {
         GCHeader *h = (GCHeader *)scan;
-        /* For OBJ_ARRAY/STRING the edges are raw pointers; for
-         * PAYLOAD_VAL they are VALUEs.  Pick the right visitor per
-         * kind. */
         switch (HDR_KIND(h)) {
           case KIND_PAYLOAD_VAL: {
               VALUE *slots = (VALUE *)(h + 1);
@@ -384,14 +381,14 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     }
 
     ASTRO_GC_COMMON(c)->stats.gc_count++;
-    c->sp = sp_top;
+    /* c->sp already reflects sp_top (= caller-maintained). */
     aro_gc_time_end(c, t0);
 }
 
 void
-aro_gc_collect(CTX *c, VALUE *sp_top)
+aro_gc_collect(CTX *c)
 {
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(c);
 }
 
 /* Stat readers are static inline in gc.h (read ASTRO_GC_COMMON(c)->stats directly). */

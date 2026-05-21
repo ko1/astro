@@ -424,10 +424,12 @@ node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@chil
         return RESULT_OK(INT2VAL(VAL2INT(lv) + VAL2INT(rv)));
     }
     if (IS_STR(lv) && IS_STR(rv)) {
-        return RESULT_OK(baruby_str_concat(c, &$lv, &$rv, sp));
+        c->sp = sp;
+        return RESULT_OK(baruby_str_concat(c, &$lv, &$rv));
     }
     if (IS_ARY(lv) && IS_ARY(rv)) {
-        return RESULT_OK(baruby_ary_plus(c, &$lv, &$rv, sp));
+        c->sp = sp;
+        return RESULT_OK(baruby_ary_plus(c, &$lv, &$rv));
     }
     fprintf(stderr, "type mismatch in +\n");
     return RESULT_OK(VAL_FALSE);
@@ -447,10 +449,10 @@ node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@chil
         return RESULT_OK(INT2VAL(VAL2INT(lv) * VAL2INT(rv)));
     }
     if (IS_STR(lv) && IS_INT(rv)) {
-        return RESULT_OK(baruby_str_repeat(c, &$lv, VAL2INT(rv), sp));
+        c->sp = sp; return RESULT_OK(baruby_str_repeat(c, &$lv, VAL2INT(rv)));
     }
     if (IS_ARY(lv) && IS_INT(rv)) {
-        return RESULT_OK(baruby_ary_repeat(c, &$lv, VAL2INT(rv), sp));
+        c->sp = sp; return RESULT_OK(baruby_ary_repeat(c, &$lv, VAL2INT(rv)));
     }
     fprintf(stderr, "type mismatch in *\n");
     return RESULT_OK(VAL_NIL);
@@ -564,11 +566,13 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@c
         return RESULT_OK(INT2VAL(VAL2INT(lv) << VAL2INT(rv)));
     }
     if (IS_ARY(lv)) {
-        baruby_ary_push(c, &$lv, &$rv, sp);
+        c->sp = sp;
+        baruby_ary_push(c, &$lv, &$rv);
         return RESULT_OK($lv);
     }
     if (IS_STR(lv) && IS_STR(rv)) {
-        baruby_str_append(c, &$lv, &$rv, sp);
+        c->sp = sp;
+        baruby_str_append(c, &$lv, &$rv);
         return RESULT_OK($lv);
     }
     fprintf(stderr, "type mismatch in <<\n");
@@ -591,14 +595,16 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@c
 NODE_DEF
 node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return RESULT_OK(baruby_ary_new(c, 0, sp));
+    c->sp = sp;
+    return RESULT_OK(baruby_ary_new(c, 0));
 }
 
 NODE_DEF
 node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
 {
     (void)recv; (void)val;
-    baruby_ary_push(c, &$recv, &$val, sp);
+    c->sp = sp;
+    baruby_ary_push(c, &$recv, &$val);
     return RESULT_OK($recv);
 }
 
@@ -610,28 +616,32 @@ NODE_DEF
 node_ary_lit_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE e0@child)
 {
     (void)e0;
-    return RESULT_OK(baruby_ary_new_from(c, &$e0, 1, sp));
+    c->sp = sp;
+    return RESULT_OK(baruby_ary_new_from(c, &$e0, 1));
 }
 
 NODE_DEF
 node_ary_lit_2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE e0@child, VALUE e1@child)
 {
     (void)e0; (void)e1;
-    return RESULT_OK(baruby_ary_new_from(c, &$e0, 2, sp));
+    c->sp = sp;
+    return RESULT_OK(baruby_ary_new_from(c, &$e0, 2));
 }
 
 NODE_DEF
 node_ary_lit_3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child)
 {
     (void)e0; (void)e1; (void)e2;
-    return RESULT_OK(baruby_ary_new_from(c, &$e0, 3, sp));
+    c->sp = sp;
+    return RESULT_OK(baruby_ary_new_from(c, &$e0, 3));
 }
 
 NODE_DEF
 node_ary_lit_4(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child, VALUE e3@child)
 {
     (void)e0; (void)e1; (void)e2; (void)e3;
-    return RESULT_OK(baruby_ary_new_from(c, &$e0, 4, sp));
+    c->sp = sp;
+    return RESULT_OK(baruby_ary_new_from(c, &$e0, 4));
 }
 
 NODE_DEF
@@ -639,7 +649,8 @@ node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const cha
 {
     // Fresh allocation per eval — gives the collector something to do.
     // Consider a parse-time intern pool if/when this dominates.
-    return RESULT_OK(baruby_str_new(c, bytes, len, sp));
+    c->sp = sp;
+    return RESULT_OK(baruby_str_new(c, bytes, len));
 }
 
 NODE_DEF
@@ -666,7 +677,7 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r
         BaString *s = VAL2STR(recv);
         if (ii < 0) ii += s->len;
         if (ii < 0 || (uint32_t)ii >= s->len) return RESULT_OK(VAL_NIL);
-        return RESULT_OK(baruby_str_slice(c, &$recv, (uint32_t)ii, 1, sp));
+        c->sp = sp; return RESULT_OK(baruby_str_slice(c, &$recv, (uint32_t)ii, 1));
     }
     fprintf(stderr, "no [] for non-array/string\n");
     return RESULT_OK(VAL_NIL);
@@ -688,7 +699,7 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE 
         if (ii < 0 || (uint32_t)ii > s->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = s->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
-        return RESULT_OK(baruby_str_slice(c, &$recv, (uint32_t)ii, take, sp));
+        c->sp = sp; return RESULT_OK(baruby_str_slice(c, &$recv, (uint32_t)ii, take));
     }
     if (IS_ARY(recv)) {
         const BaArray *a = VAL2ARY(recv);
@@ -696,7 +707,8 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE 
         if (ii < 0 || (uint32_t)ii > a->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = a->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
-        return RESULT_OK(baruby_ary_new_from(c, a->items + ii, take, sp));
+        c->sp = sp;
+        return RESULT_OK(baruby_ary_new_from(c, a->items + ii, take));
     }
     fprintf(stderr, "no [i, n] for non-array/string\n");
     return RESULT_OK(VAL_NIL);
@@ -712,7 +724,8 @@ node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r
         if (ii < 0) return RESULT_OK(VAL_NIL);
         while ((uint32_t)ii >= VAL2ARY($recv)->len) {
             $iv = VAL_NIL;
-            baruby_ary_push(c, &$recv, &$iv, sp);
+            c->sp = sp;
+            baruby_ary_push(c, &$recv, &$iv);
         }
         a = VAL2ARY($recv);
         aro_gc_wb(c, a->items, &a->items[ii], $val);
@@ -727,7 +740,8 @@ node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r
 {
     (void)recv; (void)val;
     if (IS_ARY($recv)) {
-        baruby_ary_push(c, &$recv, &$val, sp);
+        c->sp = sp;
+        baruby_ary_push(c, &$recv, &$val);
         return RESULT_OK($recv);
     }
     fprintf(stderr, "no push for non-array\n");
@@ -751,7 +765,8 @@ node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@
 NODE_DEF
 node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@child)
 {
-    return RESULT_OK(baruby_to_s(c, r, sp));
+    c->sp = sp;
+    return RESULT_OK(baruby_to_s(c, r));
 }
 
 // Parsing.  str → leading-decimal int (Ruby semantics: stops at non-digit,

@@ -71,8 +71,9 @@ bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned)
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 {
+    VALUE *sp_top = c->sp;
     (void)sp_top;
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
@@ -87,8 +88,9 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
+    VALUE *sp_top = c->sp;
     (void)sp_top;
     size_t aligned = ALIGN8(payload_size);
     GCHeader *h = bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned);
@@ -101,23 +103,25 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
-    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size, sp_top);
+    VALUE *sp_top = c->sp;
+    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
     GCHeader *oldh = (GCHeader *)old - 1;
     AroGcKind kind = (AroGcKind)oldh->kind;
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(c, new_size, sp_top)
-        : aro_gc_alloc(c, kind, new_size, sp_top);
+        ? aro_gc_alloc_byte(c, new_size)
+        : aro_gc_alloc(c, kind, new_size);
     if (copy_bytes) memcpy(newp, old, copy_bytes);
     return newp;
 }
 
 void
-aro_gc_collect(CTX *c, VALUE *sp_top)
+aro_gc_collect(CTX *c)
 {
+    VALUE *sp_top = c->sp;
     (void)c; (void)sp_top;
     // no-op
 }

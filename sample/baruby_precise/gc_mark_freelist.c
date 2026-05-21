@@ -192,8 +192,9 @@ alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 {
+    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     GCHeader *h = alloc_slot(c, kind, payload_size, sp_top);
     void *payload = (void *)(h + 1);
@@ -211,16 +212,19 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
+    VALUE *sp_top = c->sp;
     /* Byte payloads aren't scanned as pointers — skip the zero-init. */
-    return aro_gc_alloc(c, KIND_PAYLOAD_BYTE, payload_size, sp_top);
+    (void)sp_top;
+    return aro_gc_alloc(c, KIND_PAYLOAD_BYTE, payload_size);
 }
 
 void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
-    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size, sp_top);
+    VALUE *sp_top = c->sp;
+    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
     GCHeader *oldh = (GCHeader *)old - 1;
     AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = ASTRO_GC_HEADER_SIZE(oldh);
@@ -228,9 +232,12 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
     /* Root old via sp_top[0] so collection during alloc keeps it live.
      * Non-moving: pointer unchanged after GC. */
     sp_top[0] = (VALUE)old;
+
+    c->sp = sp_top + 1;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(c, new_size, sp_top + 1)
-        : aro_gc_alloc(c, kind, new_size, sp_top + 1);
+        ? aro_gc_alloc_byte(c, new_size)
+        : aro_gc_alloc(c, kind, new_size);
+    c->sp = sp_top;
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
@@ -367,8 +374,9 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
 }
 
 void
-aro_gc_collect(CTX *c, VALUE *sp_top)
+aro_gc_collect(CTX *c)
 {
+    VALUE *sp_top = c->sp;
     gc_collect_internal(c, sp_top);
 }
 
