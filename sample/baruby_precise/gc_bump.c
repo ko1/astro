@@ -41,8 +41,8 @@ const char *aro_gc_backend_name = "bump";
 void
 aro_gc_init(CTX *c)
 {
-    (void)c;
-    AstroGc *gc = (&g_astro_gc);
+    AstroGc *gc = &g_astro_gc;
+    c->astro_gc = gc;             /* CTX → AstroGc を bind */
     gc->region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
                                    MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (gc->region_base == MAP_FAILED) { perror("mmap"); abort(); }

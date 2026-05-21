@@ -132,10 +132,11 @@ const char *aro_gc_backend_name = "mark";
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = (&g_astro_gc);
+    AstroGc *gc = &g_astro_gc;
     memset(gc, 0, sizeof(*gc));
     gc->ctx = c;
     gc->gc_threshold = GC_THRESHOLD_MIN;
+    c->astro_gc = gc;            /* CTX → AstroGc を bind */
     if (getenv("BARUBY_GC_STRESS")) {
         aro_gc_stress = 1;
         gc->gc_threshold = 0;
