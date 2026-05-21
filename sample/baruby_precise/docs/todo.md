@@ -17,6 +17,19 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       astrogen.rb に per-kind child-walk callback の gen task を追加して
       自動生成に畳む。 lget/lset/call の operand bake と call_N args の
       chain += callee_locals_cnt 計算は special-case として残す。
+- [ ] **copy 系 backend に large_alloc 経路を追加 (region-bump + mmap-per-large
+      ハイブリッド)** — sieve AOT で `copy` が 0.72s と `mark` 0.37s の 2×
+      遅い件 (perf stat で命令数同等、 cycles 2× / L1 miss 3.2×)。 真因は
+      growing payload (`s.push(true)` で BaArray items が 128MB まで grow)
+      の dead 領域が semispace に残り続けて cache pressure。 `mark` は
+      large_alloc 経路で個別 mmap → GC sweep で munmap → 物理メモリ即解放、
+      slab も小物 freelist 再利用で working set 小。 同じ「閾値以上は
+      mmap-per-alloc + linked list、 sweep で munmap」 を copy / mark_compact
+      / bump / immix / mark_freelist の region-bump 非 gen 5 backend に適用。
+      mark backend に既存ロジックあり、 そのままポート可。 gen 版は minor GC
+      で nursery クリアされるので影響軽微 (copy_gen は既に 0.38s で sieve 速い)。
+      期待効果: sieve / hash_chain / 大型 BaArray を使う bench で copy 系
+      非 gen が gen 並みの cache profile に近づく。
 
 ## 直近 (iter 59 状態)
 
