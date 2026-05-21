@@ -1,6 +1,7 @@
 {
   "binary_trees": "4194303",
   "cons_list": "24995000000",
+  "graph_bfs": "2400720000",
   "fannkuch": "30",
   "fib_pair": "14948063",
   "gc_combined": "50004990000000",
