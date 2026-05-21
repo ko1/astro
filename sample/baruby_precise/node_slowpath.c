@@ -71,7 +71,7 @@ sp_dispatch_via_fp(CTX * restrict c, NODE * restrict body,
     uint32_t lc = code_repo_find_locals_cnt_by_body(body);
     if (lc == 0) lc = 1;
     VALUE *callee_fp = fp + arg_index;
-    RESULT r = EVAL(c, body, callee_fp, callee_fp + lc);
+    RESULT r = EVAL(c, body, callee_fp, callee_fp + lc + body->head.kind->slot_count);
     return RESULT_OK(r.value);
 }
 
@@ -88,7 +88,7 @@ sp_dispatch_fresh_frame(CTX * restrict c, NODE * restrict body,
     if (lc == 0) lc = 1;
     for (uint32_t i = 0; i < lc; i++) sp[i] = 0;
     for (uint32_t i = 0; i < argc; i++) sp[i] = args[i];
-    RESULT r = EVAL(c, body, sp, sp + lc);
+    RESULT r = EVAL(c, body, sp, sp + lc + body->head.kind->slot_count);
     return RESULT_OK(r.value);
 }
 

@@ -328,8 +328,11 @@ main(int argc, char *argv[])
     // but it does not touch code_store — we can clear / cs_init around it.
     NODE *ast = PARSE(argc, argv);
     /* Move sp past the toplevel locals area now that the parser has
-     * reported the exact size.  No more hardcoded "64" cap. */
+     * reported the exact size.  No more hardcoded "64" cap.
+     * iter 60: also include ast->head.kind->slot_count so the top-level
+     * NODE receives sp at the top of its own slot area (new convention). */
     c->sp = c->env + aro_toplevel_locals_cnt;
+    if (ast) c->sp += ast->head.kind->slot_count;
 
     // --ccs takes effect AFTER parse so that any logging through cs_init
     // sees the post-clear state.  Then INIT() dlopens whatever's left in

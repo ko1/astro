@@ -78,7 +78,17 @@ class BaRubyNodeDef < ASTroGen::NodeDef
       end
       setup_emitters = setup_decl_emitters + child_ops.map do |op|
         field = "n->u.#{@name}.#{op.name}"
-        "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
+        # For SD generation, convert runtime `sp + field->head.kind->slot_count`
+        # to a literal `sp + <N>` baked at SD-emit time so gcc can constant-fold.
+        # Plain DISPATCH (child unknown at compile time) keeps the runtime form.
+        dispatch_args = child_dispatch_args(op.sp_slot, field)
+        slot_count_re = /sp \+ #{Regexp.escape(field)}->head\.kind->slot_count/
+        if dispatch_args.match?(slot_count_re)
+          dispatch_args_format = dispatch_args.sub(slot_count_re, "sp + %u")
+          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args_format}));\\n\", DISPATCHER_NAME(#{field}), #{field}->head.kind->slot_count);"
+        else
+          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args}));\\n\", DISPATCHER_NAME(#{field}));"
+        end
       end
 
       # Standard decls for non-sp_body NODE * operands.

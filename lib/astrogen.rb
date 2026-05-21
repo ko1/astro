@@ -294,18 +294,50 @@ module ASTroGen
         ""   # sp[] is already in scope; no decl needed by default.
       end
 
+      # New "sp = top" convention (Phase 1):
+      #   - sp arg received by a NODE_DEF is positioned at the top of its
+      #     own slot area; slots are accessed via NEGATIVE offsets below sp
+      #   - This NODE's slots layout (low→high address):
+      #       [ $e0, $e1, ..., $e_{K-1}, $tmp1, $tmp2, ..., $tmpM ] sp
+      #     where K = @child operand count, M = author-declared $name count
+      #   - slot_count = K + M is per-NODE static metadata baked into NodeKind
+      #   - Parent invokes child with `sp + child.slot_count` so child also
+      #     receives sp at top of its own area (recursive convention)
+      #   - @child snapshot at index `slot` (0-based) → sp[slot - slot_count]
+      #     so slot 0 (first @child) → sp[-slot_count] (lowest address, base
+      #     of [e0, e1, ...] array)
       def child_storage_expr(slot)
-        "sp[#{slot}]"   # precise-GC default: caller's spill region.
+        offset = slot - slot_count
+        "sp[#{offset}]"
       end
 
-      # Args passed when DISPATCH (or SPECIALIZE) calls the child's dispatcher
-      # function.  Default uses the precise-GC convention: pass `sp + slot`
-      # so the child has scratch headroom that doesn't clobber already-spilled
-      # siblings (sp[0..slot-1]).  Conservative-GC languages (e.g. baruby
-      # libgc with 3-arg dispatcher `(c, n, fp)`) override to drop the sp
-      # argument entirely.
       def child_dispatch_args(slot, field)
-        "c, #{field}, fp, sp + #{slot}"
+        # Pass `sp + child.slot_count` so child receives sp at the top of
+        # its own slot area (= recursive new convention).
+        "c, #{field}, fp, sp + #{field}->head.kind->slot_count"
+      end
+
+      # Slot count for this NODE_DEF = @child operand count + max tmp slot
+      # index discovered in the body.  Used to:
+      #   1. Lay out slots in [@child..., $tmp...] order below sp
+      #   2. Bake into NodeKind.slot_count so parent dispatches can advance
+      #      sp by the right amount when invoking this NODE as a child
+      #   3. Compute negative offsets in substitute_sp_slots / child_storage_expr
+      def slot_count
+        @slot_count ||= compute_slot_count
+      end
+
+      def compute_slot_count
+        child_count = @operands.count(&:child?)
+        tmp_names = []
+        child_names = @operands.select(&:child?).map(&:name).to_set
+        scan_body(@body || "") do |match|
+          next unless match.start_with?('$')
+          name = match[1..]
+          next if child_names.include?(name)  # @child snapshot, not a tmp
+          tmp_names << name unless tmp_names.include?(name)
+        end
+        child_count + tmp_names.size
       end
 
       # Canonical family name used in structural hashes.  Specialized variants
@@ -362,6 +394,73 @@ module ASTroGen
         end
       end
 
+      # Substitute $foo references in @body to sp[N] expressions.
+      # Slot allocation:
+      #   @child operands get slots 0..K-1 (declaration order)
+      #     accessed via $<child_name>, e.g. $lv, $rv for `lv@child, rv@child`
+      #   Author-declared $<other_name> tmp slots get slots K..K+M-1
+      #     (in order of first appearance in body)
+      #
+      # Result: substituted body string + total slot count (K + M).
+      # Skips $foo occurrences inside C comments and string/char literals.
+      def substitute_sp_slots(body)
+        child_ops = @operands.select(&:child?)
+        slot_map = {}
+        child_ops.each_with_index { |op, i| slot_map[op.name] = i }
+        k = child_ops.size
+
+        # Pass 1: find all $<name> occurrences in body (skipping comments/strings)
+        # and assign slot indices to new names not in @child.
+        tmp_idx = k
+        scan_body(body) do |match|
+          if match.start_with?('$')
+            name = match[1..]
+            unless slot_map.key?(name)
+              slot_map[name] = tmp_idx
+              tmp_idx += 1
+            end
+          end
+        end
+
+        # Pass 2: substitute $<name> → sp[slot - total_slots] (= negative
+        # offset from sp top, per new convention).  Skip non-slot text.
+        total_slots = slot_map.size
+        new_body = body.gsub(/
+          (
+            "(?:[^"\\]|\\.)*"          # string literal
+            | '(?:[^'\\]|\\.)*'        # char literal
+            | \/\/[^\n]*                # line comment
+            | \/\*.*?\*\/               # block comment (multiline)
+            | \$\w+                     # ← slot reference
+          )
+        /xm) do |m|
+          if m.start_with?('$')
+            name = m[1..]
+            slot = slot_map[name]
+            raise "unknown slot $#{name} in #{@name}" unless slot
+            offset = slot - total_slots
+            "sp[#{offset}]"
+          else
+            m
+          end
+        end
+
+        [new_body, total_slots]
+      end
+
+      # Helper: walk body tokens (string lit, char lit, line/block comment,
+      # $<name>), yielding each match.  Used by substitute_sp_slots to
+      # discover slot names in pass 1.
+      def scan_body(body)
+        body.scan(/
+          "(?:[^"\\]|\\.)*"
+          | '(?:[^'\\]|\\.)*'
+          | \/\/[^\n]*
+          | \/\*.*?\*\/
+          | \$\w+
+        /xm) { |m| yield m }
+      end
+
       def result_type = "VALUE"
 
       def alloc_dispatcher_expr
@@ -383,6 +482,11 @@ module ASTroGen
 
       def build_eval_body
         operands = @operands.map{it.eval_param}
+        # Substitute `$<name>` references in the body to `sp[N]`.  @child
+        # operands get slots 0..K-1; author-declared `$<tmp>` get slots
+        # K..K+M-1.  Existing NODE_DEFs without `$<name>` usage are
+        # unchanged (substitute_sp_slots is a no-op for those).
+        substituted_body, _slot_count = substitute_sp_slots(@body)
 
         # EVAL_<name> is always force-inlined into its single caller (the
         # DISPATCH or SD wrapper).  Without this, gcc occasionally gives
@@ -396,7 +500,7 @@ module ASTroGen
         static inline __attribute__((always_inline)) #{result_type}
         EVAL_#{@name}(#{@prefix_args.join(', ')}#{comma_operands(operands)})
         {
-        #{@body}}
+        #{substituted_body}}
         C
       end
 
@@ -634,7 +738,19 @@ module ASTroGen
         end
         setup_emitters = setup_decl_emitters + child_ops.map do |op|
           field = "n->u.#{@name}.#{op.name}"
-          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
+          # For SD generation we want gcc to constant-fold the sp advance.
+          # The runtime form `sp + field->head.kind->slot_count` is opaque
+          # to gcc (= 2 memory loads); convert it to a literal `sp + <N>`
+          # baked at SD-emit time, where N is the child's static slot_count.
+          # Plain DISPATCH retains the runtime form (child is dynamic there).
+          dispatch_args = child_dispatch_args(op.sp_slot, field)
+          slot_count_re = /sp \+ #{Regexp.escape(field)}->head\.kind->slot_count/
+          if dispatch_args.match?(slot_count_re)
+            dispatch_args_format = dispatch_args.sub(slot_count_re, "sp + %u")
+            "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args_format}));\\n\", DISPATCHER_NAME(#{field}), #{field}->head.kind->slot_count);"
+          else
+            "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args}));\\n\", DISPATCHER_NAME(#{field}));"
+          end
         end
 
         # Pass sp unchanged.  Body sees @child snapshot at sp[0..N) and
@@ -812,7 +928,13 @@ module ASTroGen
       # scope.  When common_param_count == 2 (default), no extras and the
       # macro stays at the legacy 2-arg form.
       sample = @nodes.values.first
-      extra_call_args = sample ? sample.prefix_call_args.drop(2) : []
+      # New "sp = top" convention: when sp is in the prefix args, EVAL_ARG
+      # auto-advances by the child's slot_count so the child receives sp
+      # at the top of ITS own slot area.  For samples without sp (3-arg,
+      # libgc), no transformation.
+      extra_call_args = sample ? sample.prefix_call_args.drop(2).map { |a|
+        a == "sp" ? "sp + (n)->head.kind->slot_count" : a
+      } : []
       extra_args_str = extra_call_args.empty? ? "" : ", " + extra_call_args.join(", ")
 
       <<~C
@@ -885,6 +1007,7 @@ module ASTroGen
           fields = [
             "    .default_dispatcher_name = \"DISPATCH_#{name}\",",
             "    .default_dispatcher = DISPATCH_#{name},",
+            "    .slot_count = #{n.slot_count},",
           ]
           kind_tasks.each do |task|
             fields << "    .#{task.kind_field.split.last} = #{task.func_prefix}#{name},"
@@ -914,6 +1037,11 @@ module ASTroGen
       kind_fields = [
         "    const char *default_dispatcher_name;",
         "    node_dispatcher_func_t default_dispatcher;",
+        # slot_count: how many sp slots this NODE_DEF uses (= K @children
+        # + M tmp slots).  Parent advances sp by this when invoking the
+        # NODE as @child, positioning the child's sp at the top of its
+        # own slot area (per new "sp = top" convention).
+        "    uint32_t slot_count;",
       ]
       kind_tasks.each { |t| kind_fields << "    #{t.kind_field};" }
 

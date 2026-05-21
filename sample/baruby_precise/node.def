@@ -217,7 +217,7 @@ node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
     }
     // Zero-init callee locals (untouched by args here).
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.kind->slot_count).value);
 }
 
 NODE_DEF
@@ -229,7 +229,7 @@ node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.kind->slot_count).value);
 }
 
 NODE_DEF
@@ -242,7 +242,7 @@ node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.kind->slot_count).value);
 }
 
 NODE_DEF
@@ -256,7 +256,7 @@ node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
     sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, a2, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.kind->slot_count).value);
 }
 
 NODE_DEF
@@ -272,7 +272,7 @@ node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * res
     uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(sp_body);
     if (locals_cnt == 0) locals_cnt = params_cnt;
     VALUE *callee_fp = fp + arg_index;
-    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_fp + locals_cnt);
+    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_fp + locals_cnt + sp_body->head.kind->slot_count);
     return RESULT_OK(r.value);
 }
 
@@ -316,7 +316,7 @@ node_pg_call0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
         return node_pg_call0_slowpath(c, n, fp, sp);
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.kind->slot_count).value);
 }
 
 NODE_DEF
@@ -328,7 +328,7 @@ node_pg_call1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.kind->slot_count).value);
 }
 
 NODE_DEF
@@ -341,7 +341,7 @@ node_pg_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.kind->slot_count).value);
 }
 
 NODE_DEF
@@ -355,7 +355,7 @@ node_pg_call3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
     sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, a2, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.kind->slot_count).value);
 }
 
 NODE_DEF
@@ -403,17 +403,16 @@ node_call_builtin(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALU
 NODE_DEF
 node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    /* DISPATCH has snapshotted lv/rv at sp[0]/sp[1] already; body's
-     * scratch starts at sp[2] by convention — identical to the legacy
-     * `sp[0]=lhs; sp[1]=rhs;` pattern in baruby_precise. */
+    /* DISPATCH snapshotted lv/rv to slots $lv/$rv (= sp[0]/sp[1] post-substitute);
+     * body's scratch starts at sp[2] by convention. */
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
         return RESULT_OK(INT2VAL(VAL2INT(lv) + VAL2INT(rv)));
     }
     if (IS_STR(lv) && IS_STR(rv)) {
-        return RESULT_OK(baruby_str_concat(&sp[0], &sp[1], sp + 2));
+        return RESULT_OK(baruby_str_concat(&$lv, &$rv, sp));
     }
     if (IS_ARY(lv) && IS_ARY(rv)) {
-        return RESULT_OK(baruby_ary_plus(&sp[0], &sp[1], sp + 2));
+        return RESULT_OK(baruby_ary_plus(&$lv, &$rv, sp));
     }
     fprintf(stderr, "type mismatch in +\n");
     return RESULT_OK(VAL_FALSE);
@@ -428,15 +427,15 @@ node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 NODE_DEF
 node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
-    /* DISPATCH spilled lv/rv at sp[0]/sp[1]; &sp[0]/&sp[1] still valid for helpers. */
+    /* DISPATCH spilled lv/rv at $lv/$rv (= sp[0]/sp[1]); &$lv still valid for helpers. */
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
         return RESULT_OK(INT2VAL(VAL2INT(lv) * VAL2INT(rv)));
     }
     if (IS_STR(lv) && IS_INT(rv)) {
-        return RESULT_OK(baruby_str_repeat(&sp[0], VAL2INT(rv), sp + 2));
+        return RESULT_OK(baruby_str_repeat(&$lv, VAL2INT(rv), sp));
     }
     if (IS_ARY(lv) && IS_INT(rv)) {
-        return RESULT_OK(baruby_ary_repeat(&sp[0], VAL2INT(rv), sp + 2));
+        return RESULT_OK(baruby_ary_repeat(&$lv, VAL2INT(rv), sp));
     }
     fprintf(stderr, "type mismatch in *\n");
     return RESULT_OK(VAL_NIL);
@@ -550,12 +549,12 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
         return RESULT_OK(INT2VAL(VAL2INT(lv) << VAL2INT(rv)));
     }
     if (IS_ARY(lv)) {
-        baruby_ary_push(&sp[0], &sp[1], sp + 2);
-        return RESULT_OK(sp[0]);
+        baruby_ary_push(&$lv, &$rv, sp);
+        return RESULT_OK($lv);
     }
     if (IS_STR(lv) && IS_STR(rv)) {
-        baruby_str_append(&sp[0], &sp[1], sp + 2);
-        return RESULT_OK(sp[0]);
+        baruby_str_append(&$lv, &$rv, sp);
+        return RESULT_OK($lv);
     }
     fprintf(stderr, "type mismatch in <<\n");
     return RESULT_OK(VAL_NIL);
@@ -584,8 +583,8 @@ NODE_DEF
 node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
 {
     (void)recv; (void)val;
-    baruby_ary_push(&sp[0], &sp[1], sp + 2);
-    return RESULT_OK(sp[0]);
+    baruby_ary_push(&$recv, &$val, sp);
+    return RESULT_OK($recv);
 }
 
 // Iter 36 retry (perf 1): direct array literal construction for small N.
@@ -596,28 +595,28 @@ NODE_DEF
 node_ary_lit_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child)
 {
     (void)e0;
-    return RESULT_OK(baruby_ary_new_from(sp, 1, sp + 1));
+    return RESULT_OK(baruby_ary_new_from(&$e0, 1, sp));
 }
 
 NODE_DEF
 node_ary_lit_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child)
 {
     (void)e0; (void)e1;
-    return RESULT_OK(baruby_ary_new_from(sp, 2, sp + 2));
+    return RESULT_OK(baruby_ary_new_from(&$e0, 2, sp));
 }
 
 NODE_DEF
 node_ary_lit_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child)
 {
     (void)e0; (void)e1; (void)e2;
-    return RESULT_OK(baruby_ary_new_from(sp, 3, sp + 3));
+    return RESULT_OK(baruby_ary_new_from(&$e0, 3, sp));
 }
 
 NODE_DEF
 node_ary_lit_4(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child, VALUE e3@child)
 {
     (void)e0; (void)e1; (void)e2; (void)e3;
-    return RESULT_OK(baruby_ary_new_from(sp, 4, sp + 4));
+    return RESULT_OK(baruby_ary_new_from(&$e0, 4, sp));
 }
 
 NODE_DEF
@@ -640,7 +639,7 @@ node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 NODE_DEF
 node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE iv@child)
 {
-    /* DISPATCH spilled recv at sp[0], iv at sp[1]; STR-slice helper takes &sp[0]. */
+    /* DISPATCH spilled recv at $recv, iv at $iv; STR-slice helper takes &$recv. */
     intptr_t ii = VAL2INT(iv);
     if (IS_ARY(recv)) {
         BaArray *a = VAL2ARY(recv);
@@ -652,7 +651,7 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
         BaString *s = VAL2STR(recv);
         if (ii < 0) ii += s->len;
         if (ii < 0 || (uint32_t)ii >= s->len) return RESULT_OK(VAL_NIL);
-        return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, 1, sp + 2));
+        return RESULT_OK(baruby_str_slice(&$recv, (uint32_t)ii, 1, sp));
     }
     fprintf(stderr, "no [] for non-array/string\n");
     return RESULT_OK(VAL_NIL);
@@ -674,7 +673,7 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE 
         if (ii < 0 || (uint32_t)ii > s->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = s->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
-        return RESULT_OK(baruby_str_slice(&sp[0], (uint32_t)ii, take, sp + 3));
+        return RESULT_OK(baruby_str_slice(&$recv, (uint32_t)ii, take, sp));
     }
     if (IS_ARY(recv)) {
         const BaArray *a = VAL2ARY(recv);
@@ -682,7 +681,7 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE 
         if (ii < 0 || (uint32_t)ii > a->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = a->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
-        return RESULT_OK(baruby_ary_new_from(a->items + ii, take, sp + 3));
+        return RESULT_OK(baruby_ary_new_from(a->items + ii, take, sp));
     }
     fprintf(stderr, "no [i, n] for non-array/string\n");
     return RESULT_OK(VAL_NIL);
@@ -696,13 +695,13 @@ node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
         BaArray *a = VAL2ARY(recv);
         if (ii < 0) ii += a->len;
         if (ii < 0) return RESULT_OK(VAL_NIL);
-        while ((uint32_t)ii >= VAL2ARY(sp[0])->len) {
-            sp[1] = VAL_NIL;
-            baruby_ary_push(&sp[0], &sp[1], sp + 3);
+        while ((uint32_t)ii >= VAL2ARY($recv)->len) {
+            $iv = VAL_NIL;
+            baruby_ary_push(&$recv, &$iv, sp);
         }
-        a = VAL2ARY(sp[0]);
-        aro_gc_wb(a->items, &a->items[ii], sp[2]);
-        return RESULT_OK(sp[2]);
+        a = VAL2ARY($recv);
+        aro_gc_wb(a->items, &a->items[ii], $val);
+        return RESULT_OK($val);
     }
     fprintf(stderr, "no []= for non-array\n");
     return RESULT_OK(VAL_NIL);
@@ -712,9 +711,9 @@ NODE_DEF
 node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
 {
     (void)recv; (void)val;
-    if (IS_ARY(sp[0])) {
-        baruby_ary_push(&sp[0], &sp[1], sp + 2);
-        return RESULT_OK(sp[0]);
+    if (IS_ARY($recv)) {
+        baruby_ary_push(&$recv, &$val, sp);
+        return RESULT_OK($recv);
     }
     fprintf(stderr, "no push for non-array\n");
     return RESULT_OK(VAL_NIL);
@@ -737,7 +736,7 @@ node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
 NODE_DEF
 node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
 {
-    return RESULT_OK(baruby_to_s(r, sp + 1));
+    return RESULT_OK(baruby_to_s(r, sp));
 }
 
 // Parsing.  str → leading-decimal int (Ruby semantics: stops at non-digit,
