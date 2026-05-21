@@ -80,65 +80,8 @@ static AstroGc g_astro_gc;
  * the AstroGc out of CTX. */
 #define ASTRO_GC_INSTANCE() (&g_astro_gc)
 
-// ----------------------------------------------------------------------------
-// Sample-supplied contract macros (= "what the framework needs to know
-// about VALUE / object shape / init policy").
-//
-// In the runtime/ migration these move to a sample-side header that
-// `gc.c` includes before pulling in `gc_<algo>.c`.  For now they live
-// inline so the PoC is self-contained.
-// ----------------------------------------------------------------------------
-
-/* Object shape: emit slot pointers for outgoing references.  Visitor
- * gets `void **slot` so it can either mark (read) or forward (read +
- * write back).  The same macro drives mark/sweep, copy/forward, and
- * scan-update phases.  KIND_PAYLOAD_BYTE has no edges. */
-#define ASTRO_GC_SCAN_EDGES(h, edge_visit) do {                              \
-    void *_payload = (void *)((h) + 1);                                      \
-    switch (HDR_KIND(h)) {                                                   \
-      case KIND_OBJ_ARRAY: {                                                 \
-          BaArray *_a = (BaArray *)_payload;                                 \
-          ASTRO_ASSERT(_a->hdr.type == OBJ_ARRAY);                           \
-          edge_visit((void **)&_a->items);                                   \
-          break;                                                              \
-      }                                                                       \
-      case KIND_OBJ_STRING: {                                                \
-          BaString *_s = (BaString *)_payload;                               \
-          ASTRO_ASSERT(_s->hdr.type == OBJ_STRING);                          \
-          if (!BSTR_IS_SSO(_s)) edge_visit((void **)&_s->bytes);             \
-          break;                                                              \
-      }                                                                       \
-      case KIND_PAYLOAD_VAL: {                                               \
-          VALUE *_slots = (VALUE *)_payload;                                 \
-          size_t _n = (h)->size / sizeof(VALUE);                             \
-          for (size_t _i = 0; _i < _n; _i++)                                 \
-              edge_visit((void **)&_slots[_i]);                              \
-          break;                                                              \
-      }                                                                       \
-      case KIND_PAYLOAD_BYTE:                                                \
-      case KIND_FREE:                                                        \
-          break;                                                              \
-      default:                                                                \
-          ASTRO_ASSERT(0 && "SCAN_EDGES: unknown GCHeader kind");            \
-    }                                                                         \
-} while (0)
-
-/* Scan-safe init: payload slots may be scanned right after alloc (before
- * caller writes anything).  baruby's VAL_FALSE == 0 so zero-fill is
- * GC-safe. */
-#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes) \
-    memset((payload), 0, (size_bytes))
-
-/* Byte payload init: GC never scans these so we can skip the memset.
- * Caller must fill the bytes before any further alloc. */
-#define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
-
-/* Header layout accessors used by the collector (size, fwd).  Framework
- * default — sample can override if it lays out the header differently. */
-#define ASTRO_GC_HEADER_SIZE(h)         ((h)->size)
-#define ASTRO_GC_HEADER_SET_SIZE(h, s)  ((h)->size = (uint32_t)(s))
-#define ASTRO_GC_HEADER_GET_FWD(h)      ((h)->fwd)
-#define ASTRO_GC_HEADER_SET_FWD(h, p)   ((h)->fwd = (p))
+// Contract macros (ASTRO_GC_SCAN_EDGES / INIT_PAYLOAD / HEADER_* / etc) live
+// in context.h so all backends share them.  See docs/gc_design.md §2.
 
 // ----------------------------------------------------------------------------
 // Initialization

@@ -106,24 +106,25 @@ typedef struct LargeObj {
     // GCHeader follows
 } LargeObj;
 
-static Page     *page_head[NUM_SIZE_CLASSES];   // pages of each class chain
-static FreeSlot *freelist[NUM_SIZE_CLASSES];    // free slots, head per class
-static Page     *all_pages = NULL;              // for sweep iteration (all pages, any class)
-static LargeObj *large_head = NULL;
-
-static size_t bytes_since_gc = 0;
-// Adaptive threshold (same logic as before adaptive-fix).  After each
-// sweep, threshold becomes max(MIN, 2 * live_bytes_post_sweep).  Saves
-// ~50× GCs vs fixed 4 MiB on long-lived workloads.
+// iter 62: process-scope state を struct AstroGc に集約
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
-static size_t gc_threshold = GC_THRESHOLD_MIN;
-static CTX   *gc_ctx       = NULL;
 
-// Gray queue for mark traversal.
-static GCHeader **gray_buf  = NULL;
-static size_t     gray_cnt  = 0;
-static size_t     gray_capa = 0;
+typedef struct AstroGc {
+    Page     *page_head[NUM_SIZE_CLASSES];   // pages of each class chain
+    FreeSlot *freelist[NUM_SIZE_CLASSES];    // free slots, head per class
+    LargeObj *large_head;
+    size_t bytes_since_gc;
+    size_t gc_threshold;
+    CTX   *ctx;
+    /* Gray queue for mark traversal */
+    GCHeader **gray_buf;
+    size_t     gray_cnt;
+    size_t     gray_capa;
+} AstroGc;
+
+static AstroGc g_astro_gc;
+#define ASTRO_GC_INSTANCE() (&g_astro_gc)
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
@@ -132,10 +133,13 @@ const char *aro_gc_backend_name = "mark";
 void
 aro_gc_init(CTX *c)
 {
-    gc_ctx = c;
+    AstroGc *gc = ASTRO_GC_INSTANCE();
+    memset(gc, 0, sizeof(*gc));
+    gc->ctx = c;
+    gc->gc_threshold = GC_THRESHOLD_MIN;
     if (getenv("BARUBY_GC_STRESS")) {
         aro_gc_stress = 1;
-        gc_threshold = 0;
+        gc->gc_threshold = 0;
         fprintf(stderr, "[baruby_gc=mark] STRESS mode: collect on every alloc\n");
     }
 }
@@ -166,73 +170,58 @@ size_class_for(size_t slot_total)
 static void
 new_page(int class_idx)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     void *raw = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE,
                      MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (raw == MAP_FAILED) { perror("mmap"); abort(); }
     Page *p = (Page *)raw;
     p->class_idx = (uint16_t)class_idx;
-    p->next = page_head[class_idx];
-    page_head[class_idx] = p;
-    // Also link into all-pages chain (we use a separate field?  no — use
-    // the same next: page chain per class IS the sweep iteration since
-    // we walk all classes).  See sweep() below.
+    p->next = gc->page_head[class_idx];
+    gc->page_head[class_idx] = p;
 
-    // Populate freelist HIGH → LOW so pop returns LOW → HIGH (= memory
-    // order).  This gives the prefetcher a forward sequential pattern
-    // on consecutive allocs from this page, matching mark.c's previous
-    // malloc-based allocator's roughly-sequential addresses.
     size_t sb = size_class_bytes[class_idx];
     size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
     char *slot = (char *)p + PAGE_HDR_BYTES + (n_slots - 1) * sb;
     for (size_t i = 0; i < n_slots; i++) {
         GCHeader *h = (GCHeader *)slot;
         HDR_SET_KIND(h, KIND_FREE);
-        /* h->size, h->marked already 0 from mmap zero. */
         FreeSlot *fs = (FreeSlot *)(h + 1);
-        fs->next = freelist[class_idx];
-        freelist[class_idx] = fs;
+        fs->next = gc->freelist[class_idx];
+        gc->freelist[class_idx] = fs;
         slot -= sb;
     }
-    (void)all_pages;  // see note: per-class chains serve as the sweep iter
 }
 
-// Pop a slot from the freelist of the given class, populate header,
-// return payload pointer.
 static void *
 slab_alloc(AroGcKind kind, size_t payload_size, int class_idx)
 {
-    if (!freelist[class_idx]) new_page(class_idx);
-    FreeSlot *fs = freelist[class_idx];
-    freelist[class_idx] = fs->next;
+    AstroGc *gc = ASTRO_GC_INSTANCE();
+    if (!gc->freelist[class_idx]) new_page(class_idx);
+    FreeSlot *fs = gc->freelist[class_idx];
+    gc->freelist[class_idx] = fs->next;
     void *payload = (void *)fs;
     GCHeader *h = (GCHeader *)payload - 1;
     HDR_SET_KIND(h, kind);
-    h->size   = (uint32_t)payload_size;
-    /* marked is already false invariant (sweep frees only unmarked slots
-     * + new_page populates with marked=false from mmap zero).  Skip the
-     * extra store. */
+    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
     return payload;
 }
 
-// Large-object path: payload too big for in-page.  mmap a fresh region
-// big enough for the object alone, link it into large_head.
 static void *
 large_alloc(AroGcKind kind, size_t payload_size)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
-    // Round up to page multiple for mmap hygiene.
     size_t map_bytes = (need + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
     void *raw = mmap(NULL, map_bytes, PROT_READ|PROT_WRITE,
                      MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (raw == MAP_FAILED) { perror("mmap"); abort(); }
     LargeObj *lo = (LargeObj *)raw;
-    lo->next = large_head;
+    lo->next = gc->large_head;
     lo->map_bytes = map_bytes;
-    large_head = lo;
+    gc->large_head = lo;
     GCHeader *h = (GCHeader *)(lo + 1);
     HDR_SET_KIND(h, kind);
-    h->size   = (uint32_t)payload_size;
-    /* h->marked already 0 from mmap zero. */
+    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
     return (void *)(h + 1);
 }
 
@@ -241,18 +230,19 @@ static void gc_collect_internal(VALUE *sp_top);
 void *
 aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    if (aro_gc_stress || bytes_since_gc + payload_size > gc_threshold) {
+    if (aro_gc_stress || gc->bytes_since_gc + payload_size > gc->gc_threshold) {
         gc_collect_internal(sp_top);
     }
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
-    int c = size_class_for(slot_total);
-    void *payload = (c >= 0) ? slab_alloc(kind, payload_size, c)
-                             : large_alloc(kind, payload_size);
+    int cls = size_class_for(slot_total);
+    void *payload = (cls >= 0) ? slab_alloc(kind, payload_size, cls)
+                               : large_alloc(kind, payload_size);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    memset(payload, 0, ALIGN8(payload_size));
-    bytes_since_gc += payload_size;
+    ASTRO_GC_INIT_PAYLOAD(payload, ALIGN8(payload_size));
+    gc->bytes_since_gc += payload_size;
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
@@ -261,16 +251,17 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
-    if (aro_gc_stress || bytes_since_gc + payload_size > gc_threshold) {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
+    if (aro_gc_stress || gc->bytes_since_gc + payload_size > gc->gc_threshold) {
         gc_collect_internal(sp_top);
     }
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
-    int c = size_class_for(slot_total);
-    void *payload = (c >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, c)
-                             : large_alloc(KIND_PAYLOAD_BYTE, payload_size);
+    int cls = size_class_for(slot_total);
+    void *payload = (cls >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, cls)
+                               : large_alloc(KIND_PAYLOAD_BYTE, payload_size);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    // No memset for byte payloads (no pointers inside).
-    bytes_since_gc += payload_size;
+    ASTRO_GC_INIT_BYTE_PAYLOAD(payload, ALIGN8(payload_size));
+    gc->bytes_since_gc += payload_size;
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
@@ -282,10 +273,8 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
     AroGcKind kind = HDR_KIND(oldh);
-    size_t old_size = oldh->size;
+    size_t old_size = ASTRO_GC_HEADER_SIZE(oldh);
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    // Root old via sp_top[0] — uniform with other backends.  Non-moving
-    // GC: sp_top[0] unchanged after GC.
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
         ? aro_gc_alloc_byte(new_size, sp_top + 1)
@@ -301,12 +290,13 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 static void
 gray_push(GCHeader *h)
 {
-    if (gray_cnt >= gray_capa) {
-        gray_capa = gray_capa ? gray_capa * 2 : 256;
-        gray_buf = (GCHeader **)realloc(gray_buf, gray_capa * sizeof(GCHeader *));
-        if (!gray_buf) abort();
+    AstroGc *gc = ASTRO_GC_INSTANCE();
+    if (gc->gray_cnt >= gc->gray_capa) {
+        gc->gray_capa = gc->gray_capa ? gc->gray_capa * 2 : 256;
+        gc->gray_buf = (GCHeader **)realloc(gc->gray_buf, gc->gray_capa * sizeof(GCHeader *));
+        if (!gc->gray_buf) abort();
     }
-    gray_buf[gray_cnt++] = h;
+    gc->gray_buf[gc->gray_cnt++] = h;
 }
 
 static void
@@ -319,35 +309,23 @@ mark_value(VALUE v)
     gray_push(h);
 }
 
+/* edge_visit callback for ASTRO_GC_SCAN_EDGES.  Visits a slot pointer
+ * (= where a child reference is stored); reads the slot, marks the
+ * pointee if not already marked.  Slot is NOT mutated (= non-moving). */
+static void
+mark_edge(void **slot)
+{
+    VALUE v = (VALUE)*slot;
+    mark_value(v);
+}
+
 static void
 process_gray(void)
 {
-    while (gray_cnt > 0) {
-        GCHeader *h = gray_buf[--gray_cnt];
-        void *payload = (void *)(h + 1);
-        switch (HDR_KIND(h)) {
-          case KIND_OBJ_ARRAY: {
-            BaArray *a = (BaArray *)payload;
-            if (a->items) mark_value((VALUE)a->items);
-            break;
-          }
-          case KIND_OBJ_STRING: {
-            BaString *s = (BaString *)payload;
-            if (!BSTR_IS_SSO(s) && s->bytes) mark_value((VALUE)s->bytes);
-            break;
-          }
-          case KIND_PAYLOAD_VAL: {
-            VALUE *items = (VALUE *)payload;
-            size_t n = h->size / sizeof(VALUE);
-            for (size_t i = 0; i < n; i++) mark_value(items[i]);
-            break;
-          }
-          case KIND_PAYLOAD_BYTE:
-          case KIND_FREE:
-            break;
-          default:
-            ASTRO_ASSERT(0 && "process_gray: unknown kind");
-        }
+    AstroGc *gc = ASTRO_GC_INSTANCE();
+    while (gc->gray_cnt > 0) {
+        GCHeader *h = gc->gray_buf[--gc->gray_cnt];
+        ASTRO_GC_SCAN_EDGES(h, mark_edge);
     }
 }
 
@@ -358,11 +336,11 @@ process_gray(void)
 static void
 sweep(void)
 {
-    // Walk each size class's page chain.
-    for (int c = 0; c < NUM_SIZE_CLASSES; c++) {
-        size_t sb = size_class_bytes[c];
+    AstroGc *gc = ASTRO_GC_INSTANCE();
+    for (int cls = 0; cls < NUM_SIZE_CLASSES; cls++) {
+        size_t sb = size_class_bytes[cls];
         size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
-        for (Page *p = page_head[c]; p; p = p->next) {
+        for (Page *p = gc->page_head[cls]; p; p = p->next) {
             char *slot = (char *)p + PAGE_HDR_BYTES;
             for (size_t i = 0; i < n_slots; i++, slot += sb) {
                 GCHeader *h = (GCHeader *)slot;
@@ -370,17 +348,16 @@ sweep(void)
                 if (HDR_MARKED(h)) {
                     HDR_CLR_MARKED(h);
                 } else {
-                    aro_gc_stats.heap_bytes -= h->size;
+                    aro_gc_stats.heap_bytes -= ASTRO_GC_HEADER_SIZE(h);
                     HDR_SET_KIND(h, KIND_FREE);
                     FreeSlot *fs = (FreeSlot *)(h + 1);
-                    fs->next = freelist[c];
-                    freelist[c] = fs;
+                    fs->next = gc->freelist[cls];
+                    gc->freelist[cls] = fs;
                 }
             }
         }
     }
-    // Walk large objects.  Freed ones return their mmap region.
-    LargeObj **link = &large_head;
+    LargeObj **link = &gc->large_head;
     while (*link) {
         LargeObj *lo = *link;
         GCHeader *h = (GCHeader *)(lo + 1);
@@ -389,7 +366,7 @@ sweep(void)
             link = &lo->next;
         } else {
             *link = lo->next;
-            aro_gc_stats.heap_bytes -= h->size;
+            aro_gc_stats.heap_bytes -= ASTRO_GC_HEADER_SIZE(h);
             munmap(lo, lo->map_bytes);
         }
     }
@@ -398,8 +375,9 @@ sweep(void)
 static void
 gc_collect_internal(VALUE *sp_top)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     struct timespec t0 = aro_gc_time_begin();
-    CTX *c = gc_ctx;
+    CTX *c = gc->ctx;
 
     struct timespec tmark = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
@@ -411,11 +389,11 @@ gc_collect_internal(VALUE *sp_top)
     aro_gc_phase_end(tsweep, &aro_gc_stats.reclaim_seconds);
 
     aro_gc_stats.gc_count++;
-    bytes_since_gc = 0;
+    gc->bytes_since_gc = 0;
     if (!aro_gc_stress) {
         size_t live = aro_gc_stats.heap_bytes;
         size_t next = live * GC_THRESHOLD_FACTOR;
-        gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
+        gc->gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
     }
     c->sp = sp_top;
     aro_gc_time_end(t0);

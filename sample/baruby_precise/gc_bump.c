@@ -25,9 +25,15 @@ typedef struct GCHeader {
 #define REGION_BYTES ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)    (((n) + 7u) & ~(size_t)7u)
 
-static char *region_base = NULL;
-static char *region_top  = NULL;
-static char *region_end  = NULL;
+/* iter 62: process-scope state を struct AstroGc に集約 */
+typedef struct AstroGc {
+    char *region_base;
+    char *region_top;
+    char *region_end;
+} AstroGc;
+
+static AstroGc g_astro_gc;
+#define ASTRO_GC_INSTANCE() (&g_astro_gc)
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
@@ -37,11 +43,12 @@ void
 aro_gc_init(CTX *c)
 {
     (void)c;
-    region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
-                               MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
-    if (region_base == MAP_FAILED) { perror("mmap"); abort(); }
-    region_top = region_base;
-    region_end = region_base + REGION_BYTES;
+    AstroGc *gc = ASTRO_GC_INSTANCE();
+    gc->region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
+                                   MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+    if (gc->region_base == MAP_FAILED) { perror("mmap"); abort(); }
+    gc->region_top = gc->region_base;
+    gc->region_end = gc->region_base + REGION_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
         fprintf(stderr, "[baruby_gc=bump] STRESS mode requested but ignored — "
                         "no collector to stress\n");
@@ -51,16 +58,17 @@ aro_gc_init(CTX *c)
 static GCHeader *
 bump(AroGcKind kind, size_t payload_size, size_t aligned)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     size_t total = sizeof(GCHeader) + aligned;
-    if (region_top + total > region_end) {
+    if (gc->region_top + total > gc->region_end) {
         fprintf(stderr, "baruby_gc=bump: OOM (need %zu, virtual %p..%p)\n",
-                total, (void *)region_base, (void *)region_end);
+                total, (void *)gc->region_base, (void *)gc->region_end);
         abort();
     }
-    GCHeader *h = (GCHeader *)region_top;
+    GCHeader *h = (GCHeader *)gc->region_top;
     h->kind = (uint32_t)kind;
     h->size = (uint32_t)payload_size;
-    region_top += total;
+    gc->region_top += total;
     return h;
 }
 
@@ -74,7 +82,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
     GCHeader *h = bump(kind, payload_size, aligned);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    memset(payload, 0, aligned);
+    ASTRO_GC_INIT_PAYLOAD(payload, aligned);
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
@@ -88,6 +96,7 @@ aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
     GCHeader *h = bump(KIND_PAYLOAD_BYTE, payload_size, aligned);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
+    ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
@@ -116,7 +125,7 @@ aro_gc_collect(VALUE *sp_top)
 }
 
 size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }
-size_t aro_gc_heap_bytes (void) { return (size_t)(region_top - region_base); }
+size_t aro_gc_heap_bytes (void) { return (size_t)(g_astro_gc.region_top - g_astro_gc.region_base); }
 size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
 size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
 size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }

@@ -216,6 +216,63 @@ typedef struct CTX_struct {
 #define LIKELY(expr) __builtin_expect((expr), 1)
 #define UNLIKELY(expr) __builtin_expect((expr), 0)
 
+// ============================================================================
+// GC contract macros (iter 62) — sample が framework に提供する「contract」。
+//
+// 各 backend (gc_*.c) はこれらを compile-time に展開して使う。
+// 詳細は docs/gc_design.md §2 を参照。
+// ============================================================================
+
+/* Object shape: outgoing reference を slot pointer 列挙。 visit callback は
+ * `void (void **slot)`、 同じ macro で mark / forward / update 全 phase 共有。
+ * GCHeader は forward 宣言 (各 backend が typedef する)。 */
+struct GCHeader;
+#define ASTRO_GC_SCAN_EDGES(h, edge_visit) do {                              \
+    void *_payload = (void *)((h) + 1);                                      \
+    switch (HDR_KIND(h)) {                                                   \
+      case KIND_OBJ_ARRAY: {                                                 \
+          BaArray *_a = (BaArray *)_payload;                                 \
+          ASTRO_ASSERT(_a->hdr.type == OBJ_ARRAY);                           \
+          edge_visit((void **)&_a->items);                                   \
+          break;                                                              \
+      }                                                                       \
+      case KIND_OBJ_STRING: {                                                \
+          BaString *_s = (BaString *)_payload;                               \
+          ASTRO_ASSERT(_s->hdr.type == OBJ_STRING);                          \
+          if (!BSTR_IS_SSO(_s)) edge_visit((void **)&_s->bytes);             \
+          break;                                                              \
+      }                                                                       \
+      case KIND_PAYLOAD_VAL: {                                               \
+          VALUE *_slots = (VALUE *)_payload;                                 \
+          size_t _n = (h)->size / sizeof(VALUE);                             \
+          for (size_t _i = 0; _i < _n; _i++)                                 \
+              edge_visit((void **)&_slots[_i]);                              \
+          break;                                                              \
+      }                                                                       \
+      case KIND_PAYLOAD_BYTE:                                                \
+      case KIND_FREE:                                                        \
+          break;                                                              \
+      default:                                                                \
+          ASTRO_ASSERT(0 && "SCAN_EDGES: unknown GCHeader kind");            \
+    }                                                                         \
+} while (0)
+
+/* Scan-safe init: payload slots may be scanned right after alloc (before
+ * caller writes anything).  baruby's VAL_FALSE == 0 so zero-fill is GC-safe. */
+#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes) \
+    memset((payload), 0, (size_bytes))
+
+/* Byte payload init: GC never scans these so skip memset.  Caller fills
+ * the bytes before any further alloc. */
+#define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
+
+/* Header layout accessors (framework default).  Each backend's GCHeader
+ * has `size` (uint32_t) at the canonical offset; `fwd` is moving-only.  */
+#define ASTRO_GC_HEADER_SIZE(h)         ((h)->size)
+#define ASTRO_GC_HEADER_SET_SIZE(h, s)  ((h)->size = (uint32_t)(s))
+#define ASTRO_GC_HEADER_GET_FWD(h)      ((h)->fwd)
+#define ASTRO_GC_HEADER_SET_FWD(h, p)   ((h)->fwd = (p))
+
 // Heap allocators (defined in node.c).  All take `sp_top` as the last
 // argument: the caller's current scratch top, used to update c->sp before
 // any potential GC poll.  Helpers that don't allocate (compare, etc.) omit it.
