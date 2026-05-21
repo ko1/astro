@@ -52,6 +52,31 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
 
+/* Large-object threshold.  Payloads >= this size go to a separately-
+ * malloc'd non-moving region (gc_copy.c iter 66 — same rationale,
+ * adapted for the Lisp-2 slide compactor: large objs don't slide, so
+ * their pointers stay stable across collect.  Win: sieve / hash_chain
+ * doubling pattern's dead large items get free'd promptly. */
+#define LARGE_THRESHOLD      4096u
+
+typedef struct LargeObj {
+    struct LargeObj *next;        /* live list */
+    struct GCHeader  header;
+    /* payload follows: (void *)(&lo->header + 1) */
+} LargeObj;
+
+static inline LargeObj *
+large_from_payload(void *p)
+{
+    return (LargeObj *)((char *)p - sizeof(struct GCHeader) - offsetof(LargeObj, header));
+}
+
+static inline void *
+large_payload(LargeObj *lo)
+{
+    return (void *)(&lo->header + 1);
+}
+
 // ----------------------------------------------------------------------------
 // ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
@@ -65,6 +90,7 @@ typedef struct ASTroGC {
     struct GCHeader **gray_buf;
     size_t     gray_cnt;
     size_t     gray_capa;
+    LargeObj *large_head;
 } ASTroGC;
 
 #define region_base     (gc->region_base)
@@ -77,6 +103,7 @@ typedef struct ASTroGC {
 #define gray_buf        (gc->gray_buf)
 #define gray_cnt        (gc->gray_cnt)
 #define gray_capa       (gc->gray_capa)
+#define large_head      (gc->large_head)
 
 const char *aro_gc_backend_name = "mark_compact";
 
@@ -137,6 +164,27 @@ bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
     return h;
 }
 
+static GCHeader *
+large_alloc(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (__builtin_expect(gc->common.stress
+                         || bytes_since_gc + payload_size > gc_threshold, 0)) {
+        gc_collect_internal(c, sp_top);
+    }
+    LargeObj *lo = (LargeObj *)malloc(sizeof(LargeObj) + aligned);
+    if (!lo) { fprintf(stderr, "baruby_gc=mark_compact: large OOM (%zu)\n", payload_size); abort(); }
+    lo->next = large_head;
+    large_head = lo;
+    GCHeader *h = &lo->header;
+    HDR_SET_KIND(h, kind);
+    h->size = (uint32_t)payload_size;
+    HDR_CLR_MARKED(h);
+    h->fwd = NULL;
+    bytes_since_gc += payload_size;
+    return h;
+}
+
 void *
 aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 {
@@ -145,7 +193,9 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = bump(c, kind, payload_size, aligned, sp_top);
+    GCHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
+        ? large_alloc(c, kind, payload_size, aligned, sp_top)
+        : bump       (c, kind, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
@@ -160,7 +210,9 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
+    GCHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
+        ? large_alloc(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top)
+        : bump       (c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     gc->common.stats.total_bytes += payload_size;
@@ -306,7 +358,9 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
     struct timespec treclaim = aro_gc_phase_begin();
-    // (2) Forward-address pass: pack live objects to the start of the region.
+    // (2) Forward-address pass: pack live region objects to the start.
+    // Large objs don't move; for them set h->fwd to their own header
+    // so fwd_payload (which adds sizeof(GCHeader)) returns the same payload.
     char *fwd = region_base;
     size_t live_bytes = 0;
     {
@@ -324,8 +378,20 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
             p += total;
         }
     }
+    /* Large objs: marked → fwd = self-header (non-moving), so
+     * fwd_payload returns the same payload pointer.  Unmarked stays
+     * fwd=NULL and will be free'd in the sweep at end. */
+    for (LargeObj *lo = large_head; lo; lo = lo->next) {
+        GCHeader *h = &lo->header;
+        if (HDR_MARKED(h)) {
+            h->fwd = (char *)h;
+            live_bytes += h->size;
+        } else {
+            h->fwd = NULL;
+        }
+    }
 
-    // (3) Update outgoing pointers inside each live object (in place).
+    // (3) Update outgoing pointers inside each live object (region + large).
     {
         char *p = region_base;
         while (p < region_top) {
@@ -335,11 +401,15 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
             p += total;
         }
     }
+    for (LargeObj *lo = large_head; lo; lo = lo->next) {
+        if (HDR_MARKED(&lo->header)) update_pointers(&lo->header);
+    }
 
     // (4) Update roots.
     for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value(*p);
 
-    // (5) Slide live objects to their forwarding addresses.
+    // (5) Slide live region objects to their forwarding addresses.
+    //     Large objs don't slide — they stay in place.
     {
         char *p = region_base;
         while (p < region_top) {
@@ -373,6 +443,23 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
         }
     }
     region_top = fwd;
+
+    // (6) Sweep large_head: clear marked bit + fwd on survivors, free unmarked.
+    {
+        LargeObj **link = &large_head;
+        while (*link) {
+            LargeObj *lo = *link;
+            GCHeader *h = &lo->header;
+            if (HDR_MARKED(h)) {
+                HDR_CLR_MARKED(h);
+                h->fwd = NULL;
+                link = &lo->next;
+            } else {
+                *link = lo->next;
+                free(lo);
+            }
+        }
+    }
     aro_gc_phase_end(treclaim, &gc->common.stats.reclaim_seconds);
 
     gc->common.stats.heap_bytes = live_bytes;
@@ -400,6 +487,12 @@ aro_gc_fini(CTX *c)
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
     if (region_base) munmap(region_base, REGION_BYTES);
+    LargeObj *lo = large_head;
+    while (lo) {
+        LargeObj *next = lo->next;
+        free(lo);
+        lo = next;
+    }
     free(gray_buf);
     free(gc);
     c->astro_gc = NULL;
