@@ -371,6 +371,53 @@ gen variant)。
    この粒度の bench では計測不能。 plain mode で sp[] save が顕在化
    する可能性 (今後の検証項目)。
 
+#### AOT vs plain (3 backend subset、 median of 3)
+
+dispatch overhead がどれだけ AOT で消えるかの定量化。 plain mode は
+AST を再帰下降で interp、 各 NODE で indirect call (dispatcher) +
+result wrap + serial check のオーバーヘッドが per-op に乗る。 AOT は
+SD chain で同じ workload を 1 個の specialized function にコンパイル
+→ ほぼ全 indirect call が direct call → gcc が inline + DCE + constant
+fold → 巨大な縮小。
+
+| Bench | AOT none | plain none | AOT倍率 (none) | AOT immix_gen | plain immix_gen | AOT倍率 (immix_gen) |
+|-------|---------:|-----------:|--------------:|--------------:|----------------:|--------------------:|
+| ackermann | 1.18 | 7.30 | **6.2×** | 1.19 | 7.30 | **6.1×** |
+| branch_dom | 0.23 | 2.06 | **9.0×** | 0.24 | 2.03 | **8.5×** |
+| call | 1.87 | 9.08 | **4.9×** | 1.75 | 9.08 | **5.2×** |
+| chain20 | 2.06 | 8.68 | **4.2×** | 1.93 | 8.60 | **4.5×** |
+| chain40 | 3.37 | 8.77 | **2.6×** | 3.13 | 8.79 | **2.8×** |
+| chain_add | 0.34 | 1.11 | **3.3×** | 0.33 | 1.08 | **3.3×** |
+| collatz | 0.36 | 5.65 | **15.7×** | 0.33 | 5.48 | **16.6×** |
+| compose | 0.26 | 1.53 | **5.9×** | 0.26 | 1.46 | **5.6×** |
+| deep_const | 1.49 | 5.01 | **3.4×** | 1.44 | 4.47 | **3.1×** |
+| early_return | 0.38 | 6.69 | **17.6×** | 0.35 | 6.58 | **18.8×** |
+| fib | 1.37 | 6.72 | **4.9×** | 1.34 | 6.54 | **4.9×** |
+| gcd | 0.38 | 4.57 | **12.0×** | 0.38 | 4.67 | **12.3×** |
+| loop | 0.11 | 1.42 | **12.9×** | 0.10 | 1.41 | **14.1×** |
+| prime_count | 0.65 | 22.54 | **34.7×** | 0.56 | 22.13 | **39.5×** |
+| tak | 0.20 | 0.77 | **3.9×** | 0.18 | 0.76 | **4.2×** |
+
+**観察**:
+
+- **range は 2.6×〜39.5×** で workload による差が大きい。 prime_count が
+  最高 (39.5×) — 内側 while で `n % i != 0` の divisibility check を
+  繰り返すタイトループで、 AOT で SD chain が `node_mod` (整数剰余) と
+  `node_neq` を 1 整数オペレーションに merge できる。 plain では 2 NODE
+  ぶんの dispatch overhead が累積。
+- **call / chain 系は 3-9×** と中程度。 関数呼出の prologue / epilogue
+  (callee_fp setup, return value unwrap) は plain でも relatively cheap で、
+  AOT 加速は 「内部 op の inline」 が主。 deep_const (3.1×) は const ref
+  だけのループで一番伸びない、 早期戻り return ≒ early_return (17×) は
+  flat control flow で SD specialize 効果大。
+- **backend 間差は ±5%**。 これらの bench は GC を実質触らないので
+  GC アルゴリズム選択の影響なし。 immix_gen が tak / fib / call で
+  marginal に勝つのは fast bump nursery (= alloc 1 件以下 / iter でも
+  bump path が短い) の効果が出てくる workload で僅か優位。
+- **geomean (AOT 倍率)**: none = 7.5×、 immix_gen = 8.1× (15 bench
+  幾何平均)。 「GC を触らない、 dispatch overhead 中心」 の workload に
+  対する SD spec の効果の相場感。
+
 ### iter 44 AOT 効果サマリ (vs iter 41 AOT baseline)
 
 slab `mark` backend (size_class_for clz 化 + aro_gc_alloc inline 成立):
