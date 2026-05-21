@@ -75,47 +75,40 @@ match_long_kv(const char *arg, const char *flag, const char **value, char **next
 }
 
 int
-astro_build_parse_args(int *argc_io, char **argv,
-                       struct astro_build_config *cfg)
+astro_build_subcommand_parse(int argc, char **argv,
+                             struct astro_build_config *cfg,
+                             int *rest_argc_out, char ***rest_argv_out)
 {
+    // argv[0] is expected to be "--build".  We're tolerant if the
+    // caller passes us with argv shifted past it already — detect either.
+    int start = 0;
+    if (argc > 0 && strcmp(argv[0], "--build") == 0) start = 1;
+
+    // First positional after --build = output exe path.
+    if (start >= argc) {
+        fprintf(stderr, "astro --build: missing output path\n");
+        return 1;
+    }
+    cfg->out_exe = argv[start++];
+
     struct astro_strarr cflags = {0};
     struct astro_strarr ldflags = {0};
 
-    int argc = *argc_io;
-    int wi = 1;   // write index; argv[0] stays
-    for (int ri = 1; ri < argc; ri++) {
+    // Build the rest_argv list as we go; unknown tokens go here.
+    // We allocate a fresh array so the caller doesn't need to keep
+    // the original argv alive past this call.
+    char **rest = malloc(sizeof(*rest) * (argc + 1));
+    int rest_n = 0;
+
+    for (int ri = start; ri < argc; ri++) {
         const char *a = argv[ri];
         const char *val = NULL;
 
-        // --generate-executable PATH (or =PATH)
-        int m = match_long_kv(a, "--generate-executable", &val,
+        // --cc=PATH (or --cc PATH)
+        int m = match_long_kv(a, "--cc", &val,
                               ri + 1 < argc ? &argv[ri + 1] : NULL);
         if (m) {
-            cfg->out_exe = val;
-            if (m == 2) ri++;
-            continue;
-        }
-        // --cc CC
-        m = match_long_kv(a, "--cc", &val,
-                          ri + 1 < argc ? &argv[ri + 1] : NULL);
-        if (m) {
             cfg->cc = val;
-            if (m == 2) ri++;
-            continue;
-        }
-        // --target TRIPLE
-        m = match_long_kv(a, "--target", &val,
-                          ri + 1 < argc ? &argv[ri + 1] : NULL);
-        if (m) {
-            cfg->target = val;
-            if (m == 2) ri++;
-            continue;
-        }
-        // --sysroot PATH
-        m = match_long_kv(a, "--sysroot", &val,
-                          ri + 1 < argc ? &argv[ri + 1] : NULL);
-        if (m) {
-            cfg->sysroot = val;
             if (m == 2) ri++;
             continue;
         }
@@ -133,34 +126,52 @@ astro_build_parse_args(int *argc_io, char **argv,
             astro_strarr_push(&ldflags, val);
             continue;
         }
-        // Optimization levels (single-arg).
+        // --opt=N (alias for -O<N>)
+        if (match_long_kv(a, "--opt", &val, NULL)) {
+            if (val && *val) {
+                if      (strcmp(val, "0") == 0) cfg->opt_level = 0;
+                else if (strcmp(val, "1") == 0) cfg->opt_level = 1;
+                else if (strcmp(val, "2") == 0) cfg->opt_level = 2;
+                else if (strcmp(val, "3") == 0) cfg->opt_level = 3;
+                else if (strcmp(val, "s") == 0) cfg->opt_level = 5;
+                else if (strcmp(val, "g") == 0) cfg->opt_level = 6;
+                else { fprintf(stderr, "astro --build: unknown --opt=%s\n", val); return 1; }
+            }
+            continue;
+        }
+        // -O0 ... -Og (single-arg).
         if (strcmp(a, "-O0") == 0) { cfg->opt_level = 0; continue; }
         if (strcmp(a, "-O1") == 0) { cfg->opt_level = 1; continue; }
         if (strcmp(a, "-O2") == 0) { cfg->opt_level = 2; continue; }
         if (strcmp(a, "-O3") == 0) { cfg->opt_level = 3; continue; }
-        // -Os / -Og — encoded as 5 / 6 internally (mapped back in
-        // astro_build_executable).  Keeps opt_level a single int while
-        // covering gcc's full set.
         if (strcmp(a, "-Os") == 0) { cfg->opt_level = 5; continue; }
         if (strcmp(a, "-Og") == 0) { cfg->opt_level = 6; continue; }
 
         // Boolean knobs.
-        if (strcmp(a, "--debug")    == 0) { cfg->debug = true;  continue; }
-        if (strcmp(a, "--no-debug") == 0) { cfg->debug = false; continue; }
-        if (strcmp(a, "--strip")    == 0) { cfg->strip = true;  continue; }
-        if (strcmp(a, "--no-strip") == 0) { cfg->strip = false; continue; }
-        if (strcmp(a, "--lto")      == 0) { cfg->lto = true;    continue; }
-        if (strcmp(a, "--no-lto")   == 0) { cfg->lto = false;   continue; }
-        if (strcmp(a, "--static")          == 0) { cfg->static_link = true;  continue; }
-        if (strcmp(a, "--gc-sections")     == 0) { cfg->gc_sections = true;  continue; }
-        if (strcmp(a, "--verbose-build")    == 0) { cfg->verbose = true;     continue; }
-        if (strcmp(a, "--keep-intermediates") == 0) { cfg->keep_intermediates = true; continue; }
+        if (strcmp(a, "--debug")       == 0) { cfg->debug = true;  continue; }
+        if (strcmp(a, "--no-debug")    == 0) { cfg->debug = false; continue; }
+        if (strcmp(a, "--strip")       == 0) { cfg->strip = true;  continue; }
+        if (strcmp(a, "--no-strip")    == 0) { cfg->strip = false; continue; }
+        if (strcmp(a, "--lto")         == 0) { cfg->lto = true;    continue; }
+        if (strcmp(a, "--no-lto")      == 0) { cfg->lto = false;   continue; }
+        if (strcmp(a, "--static")      == 0) { cfg->static_link = true;  continue; }
+        if (strcmp(a, "--gc-sections") == 0) { cfg->gc_sections = true;  continue; }
+        // AOT toggles.  Canonical: --aot-compile / --no-aot-compile.
+        // Short aliases: --aot / --no-aot.
+        if (strcmp(a, "--aot")            == 0 ||
+            strcmp(a, "--aot-compile")    == 0)  { cfg->no_aot = false; continue; }
+        if (strcmp(a, "--no-aot")         == 0 ||
+            strcmp(a, "--no-aot-compile") == 0)  { cfg->no_aot = true;  continue; }
+        if (strcmp(a, "--verbose")     == 0) { cfg->verbose = true; continue; }
+        if (strcmp(a, "--keep")        == 0) { cfg->keep_intermediates = true; continue; }
 
-        // Unmatched — keep for the host's parser.
-        argv[wi++] = argv[ri];
+        // Unknown — pass through to the sample's source parser.
+        rest[rest_n++] = argv[ri];
     }
-    *argc_io = wi;
-    argv[wi] = NULL;
+    rest[rest_n] = NULL;
+
+    *rest_argc_out = rest_n;
+    *rest_argv_out = rest;
 
     if (cflags.size > 0) {
         astro_strarr_terminate(&cflags);
@@ -275,25 +286,6 @@ astro_build_executable(const struct astro_build_config *cfg)
 
     const char *cc = cfg->cc ? cfg->cc : default_cc();
     sb_append(&cmd, &len, &capa, cc);
-
-    // -target / --target.  For clang we'd want `-target TRIPLE`; gcc has
-    // no equivalent flag and instead uses a cross prefix in the
-    // executable name (already covered by setting cc=aarch64-linux-gnu-gcc).
-    // We pick clang-style here and let users embed the cross prefix in
-    // --cc if their host gcc has no -target support; emit a warning
-    // when it's a non-clang cc.
-    if (cfg->target) {
-        sb_append(&cmd, &len, &capa, " -target ");
-        char *q = sh_squote(cfg->target);
-        sb_append(&cmd, &len, &capa, q);
-        free(q);
-    }
-    if (cfg->sysroot) {
-        sb_append(&cmd, &len, &capa, " --sysroot=");
-        char *q = sh_squote(cfg->sysroot);
-        sb_append(&cmd, &len, &capa, q);
-        free(q);
-    }
 
     // Optimization.
     int opt = cfg->opt_level;

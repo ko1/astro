@@ -23,23 +23,6 @@ struct calc_option OPTION;
 #define ASTRO_RUNTIME_DIR "."
 #endif
 
-// Build a standalone exe from a single -e expression.  Caller is
-// responsible for the bake pass (astro_cs_compile) — we just call into
-// the framework's one-shot helper.  Local-copy the config so the
-// caller's heap-tracking (astro_build_config_dispose) isn't confused.
-static int
-generate_executable(NODE *ast, const struct astro_build_config *bcfg_in)
-{
-    struct astro_build_config bcfg = *bcfg_in;
-    bcfg.src_dir = CALC_SRC_DIR;
-    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
-    static const char *sources[] = {
-        "parse.c", "node.c", "exe_main.c", NULL,
-    };
-    bcfg.sources = sources;
-    return astro_build_aot_executable(ast, &bcfg, "code_store");
-}
-
 static char *
 read_line(const char *prompt)
 {
@@ -62,15 +45,21 @@ usage(const char *progname)
 {
     fprintf(stderr,
         "Usage: %s [options] [-e EXPR]\n"
+        "       %s --build OUTPUT [build opts] -e EXPR\n"
         "\n"
+        "Interpreter mode (no --build):\n"
         "  -e EXPR        evaluate EXPR once and exit (no REPL)\n"
         "      --disasm   print x86 disassembly of the specialized code\n"
         "      --no-compile  skip code-store specialization (pure interpreter)\n"
         "  -q, --quiet    suppress hit/miss progress messages\n"
         "  -h, --help     show this help\n"
         "\n"
+        "Build mode (--build OUTPUT ...): writes a standalone exe to OUTPUT.\n"
+        "Common build opts: --aot/--no-aot, -O0..-O3, --strip, --lto,\n"
+        "                   --static, --gc-sections, --cc=PATH.\n"
+        "\n"
         "With no -e, %s starts an interactive REPL.\n",
-        progname, progname);
+        progname, progname, progname);
 }
 
 static VALUE
@@ -89,18 +78,50 @@ evaluate(CTX *const c, const char *const input)
     return EVAL(c, ast);
 }
 
+// Source-spec parser for the --build subcommand.  Handles `-e EXPR`.
+static NODE *
+build_parse_source(int argc, char **argv)
+{
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
+            return parse(argv[i + 1]);
+        }
+    }
+    fprintf(stderr, "calc --build: missing -e EXPR\n");
+    return NULL;
+}
+
 int
 main(int argc, char *argv[])
 {
-    const char *eval_expr = NULL;
+    // --build subcommand: framework-owned argv space.
+    if (argc >= 2 && strcmp(argv[1], "--build") == 0) {
+        struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+        int rest_argc; char **rest_argv;
+        if (astro_build_subcommand_parse(argc - 1, argv + 1, &bcfg,
+                                          &rest_argc, &rest_argv) != 0) {
+            return 1;
+        }
+        INIT();
+        NODE *ast = build_parse_source(rest_argc, rest_argv);
+        free(rest_argv);
+        if (!ast) { astro_build_config_dispose(&bcfg); return 1; }
 
-    // Build-orchestrator framework flags (--generate-executable, --cc,
-    // -O0..-O3, --static, --strip, etc.) are consumed from argv first.
-    // What's left is parsed by calc's own per-sample option loop below.
-    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-    if (astro_build_parse_args(&argc, argv, &bcfg) != 0) {
-        return 1;
+        astro_build_begin_aot_session();
+        if (!bcfg.no_aot) astro_cs_compile(ast, NULL);
+        bcfg.src_dir = CALC_SRC_DIR;
+        bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+        static const char *sources[] = {
+            "parse.c", "node.c", "exe_main.c", NULL,
+        };
+        bcfg.sources = sources;
+        int rc = astro_build_aot_executable(ast, &bcfg, "code_store");
+        astro_build_end_aot_session();
+        astro_build_config_dispose(&bcfg);
+        return rc;
     }
+
+    const char *eval_expr = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
@@ -132,25 +153,6 @@ main(int argc, char *argv[])
 
     INIT();
     CTX *const c = malloc(sizeof(CTX));
-
-    if (bcfg.out_exe) {
-        if (!eval_expr) {
-            fprintf(stderr, "calc: --generate-executable requires -e EXPR\n");
-            return 1;
-        }
-        NODE *ast = parse(eval_expr);
-        // Start logging SD compiles so the generated exe knows which
-        // SD_*.c to link.  With --no-compile, skip the bake → exe runs
-        // as pure interpreter (smaller, slower).
-        astro_build_begin_aot_session();
-        if (!OPTION.no_compiled_code) {
-            astro_cs_compile(ast, NULL);
-        }
-        int rc = generate_executable(ast, &bcfg);
-        astro_build_end_aot_session();
-        astro_build_config_dispose(&bcfg);
-        return rc;
-    }
 
     if (eval_expr) {
         printf("%ld\n", evaluate(c, eval_expr));

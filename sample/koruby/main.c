@@ -96,24 +96,92 @@ extern CTX *koruby_setup_ctx(const char *current_file);
 extern void koruby_eval_bootstrap(CTX *c);
 extern int  koruby_run_ast(CTX *c, NODE *ast);
 
-/* --generate-executable FILE — bake the parsed AST + AOT-compiled SDs
- * into a standalone exe at FILE.  Returns exit code.  Operates on a
- * local copy of bcfg so the static cflag/ldflag arrays don't escape
- * into the caller's heap-tracked config. */
-static int
-koruby_generate_executable(NODE *ast,
-                           const struct astro_build_config *bcfg_in)
+static char *
+koruby_read_file(const char *path, size_t *len_out)
 {
-    struct astro_build_config bcfg = *bcfg_in;
-    bcfg.src_dir = KORUBY_SRC_DIR_DEFAULT;
-    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { perror(path); return NULL; }
+    size_t cap = 4096, len = 0;
+    char *buf = korb_xmalloc_atomic(cap);
+    int c;
+    while ((c = fgetc(fp)) != EOF) {
+        if (len + 1 >= cap) { cap *= 2; buf = korb_xrealloc(buf, cap); }
+        buf[len++] = (char)c;
+    }
+    buf[len] = 0;
+    fclose(fp);
+    *len_out = len;
+    return buf;
+}
+
+/* --build OUTPUT [opts] -e EXPR | file.rb */
+static int
+koruby_build_subcommand(int argc, char **argv)
+{
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    int rest_argc; char **rest_argv;
+    if (astro_build_subcommand_parse(argc, argv, &bcfg,
+                                      &rest_argc, &rest_argv) != 0) {
+        return 1;
+    }
+
+    /* Find source spec in rest_argv: either `-e EXPR` or a file path. */
+    const char *e_code = NULL;
+    const char *file = NULL;
+    for (int i = 0; i < rest_argc; i++) {
+        const char *a = rest_argv[i];
+        if (strcmp(a, "-e") == 0 && i + 1 < rest_argc) {
+            e_code = rest_argv[++i];
+        } else if (!file && a[0] != '-') {
+            file = a;
+        }
+    }
+    free(rest_argv);
+    if (!e_code && !file) {
+        fprintf(stderr, "koruby --build: missing source (-e EXPR or file path)\n");
+        astro_build_config_dispose(&bcfg);
+        return 1;
+    }
+
+    INIT();
+    korb_runtime_init();
+    astro_cs_init("code_store", KORUBY_SRC_DIR_DEFAULT, 0);
+
+    /* Read source.  We DO NOT EVAL it at build time — the build is
+     * side-effect-free (no print, no file I/O).  Consequence: methods
+     * registered at EVAL time (via koruby's node_def) aren't visible
+     * here, so only the program AST is baked.  When require-interception
+     * lands (file-map embedding) all required files will be parsed at
+     * build time, and their methods will be baked too. */
+    char *src = NULL;
+    size_t srclen = 0;
+    if (e_code) {
+        src = (char *)e_code;
+        srclen = strlen(e_code);
+    } else {
+        src = koruby_read_file(file, &srclen);
+        if (!src) { astro_build_config_dispose(&bcfg); return 1; }
+    }
+
+    static NODE *ast;
+    ast = koruby_parse(src, srclen, file ? file : "(eval)");
+
+    astro_build_begin_aot_session();
+    if (!bcfg.no_aot) {
+        astro_cs_compile(ast, NULL);
+        setenv("CCACHE_DISABLE", "1", 0);
+    }
+
+    /* Local copy so static cflag/ldflag arrays don't leak into the
+     * heap-tracked config that dispose() would free. */
+    struct astro_build_config bcfg_local = bcfg;
+    bcfg_local.src_dir = KORUBY_SRC_DIR_DEFAULT;
+    bcfg_local.runtime_dir = ASTRO_RUNTIME_DIR;
     static const char *sources[] = {
         "node.c", "parse.c", "object.c", "builtins.c",
         "bootstrap_src.c", "koruby_runtime.c", "exe_main.c", NULL,
     };
-    bcfg.sources = sources;
-
-    /* koruby links prism + libgc + GMP. */
+    bcfg_local.sources = sources;
     static const char *koruby_ldflags[] = {
         "-Wl,-rpath", KORUBY_SRC_DIR_DEFAULT "/prism/build",
         "-L", KORUBY_SRC_DIR_DEFAULT "/prism/build",
@@ -126,18 +194,21 @@ koruby_generate_executable(NODE *ast,
         "-Wno-unused-parameter", "-Wno-unused-but-set-variable",
         NULL,
     };
-    if (!bcfg.extra_ldflags) bcfg.extra_ldflags = koruby_ldflags;
-    if (!bcfg.extra_cflags)  bcfg.extra_cflags  = koruby_cflags;
+    if (!bcfg_local.extra_ldflags) bcfg_local.extra_ldflags = koruby_ldflags;
+    if (!bcfg_local.extra_cflags)  bcfg_local.extra_cflags  = koruby_cflags;
 
-    return astro_build_aot_executable(ast, &bcfg, "code_store");
+    int rc = astro_build_aot_executable(ast, &bcfg_local, "code_store");
+    astro_build_end_aot_session();
+    astro_build_config_dispose(&bcfg);
+    return rc;
 }
 
 int main(int argc, char *argv[])
 {
-    /* Pull framework build flags out of argv first so koruby's parser
-     * doesn't see them. */
-    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-    if (astro_build_parse_args(&argc, argv, &bcfg) != 0) return 1;
+    /* --build subcommand — framework-owned argv space. */
+    if (argc >= 2 && strcmp(argv[1], "--build") == 0) {
+        return koruby_build_subcommand(argc - 1, argv + 1);
+    }
 
     INIT();
     korb_runtime_init();
@@ -264,16 +335,7 @@ int main(int argc, char *argv[])
     int rc = 0;
     if (!OPTION.compile_only) {
         rc = koruby_run_ast(c, ast);
-        if (rc != 0 && c->state == KORB_RAISE) {
-            /* In compile_only we suppress the early-return on raise so
-             * the bake passes below still fire; in normal mode propagate. */
-            if (bcfg.out_exe) {
-                /* For exe build we proceed regardless — the user wants
-                 * the exe even if the test run raised. */
-            } else {
-                return rc;
-            }
-        }
+        if (rc != 0 && c->state == KORB_RAISE) return rc;
     } else {
         /* compile_only: run and ignore exit code (we still want to bake). */
         (void)koruby_run_ast(c, ast);
@@ -282,31 +344,15 @@ int main(int argc, char *argv[])
     if (OPTION.compile_only) {
         generate_specialized_code(ast);
     }
-    if (g_aot_compile || bcfg.out_exe) {
-        /* Generate per-method SD_<hash>.c.  For --generate-executable
-         * we also turn on the framework's compile log so the exe build
-         * step knows which SDs to link. */
-        if (bcfg.out_exe) astro_build_begin_aot_session();
+    if (g_aot_compile) {
         fprintf(stderr, "[koruby] AOT compile: writing SD_*.c\n");
         astro_cs_compile(ast, NULL);
         for (uint32_t i = 0; i < code_repo.size; i++) {
             astro_cs_compile(code_repo.entries[i].body, NULL);
         }
-        /* Each SD_*.c is unique by content (filename = hash) so ccache
-         * never hits, and it intermittently fails on sandboxed / read-
-         * only home dirs.  Caller-side opt-out (the runtime stays
-         * env-agnostic). */
         setenv("CCACHE_DISABLE", "1", 0);
-        if (g_aot_compile) {
-            fprintf(stderr, "[koruby] AOT compile: building all.so\n");
-            astro_cs_build(NULL);
-        }
-    }
-    if (bcfg.out_exe) {
-        int erc = koruby_generate_executable(ast, &bcfg);
-        astro_build_end_aot_session();
-        astro_build_config_dispose(&bcfg);
-        return erc;
+        fprintf(stderr, "[koruby] AOT compile: building all.so\n");
+        astro_cs_build(NULL);
     }
     return rc;
 }

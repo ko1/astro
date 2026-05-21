@@ -121,38 +121,77 @@ clear_code_store_dir(void)
     }
 }
 
-// --generate-executable support — invoked AFTER the program AST has
-// been built and (optionally) AOT-baked into code_store/c/SD_*.c.
-//
-// Writes _embed.c (DAG-aware AST builder) and _static_table.c, then
-// dispatches to astro_build_aot_executable() with the right source list.
-// Operates on a local copy so we don't accidentally store static arrays
-// into the caller's config (which astro_build_config_dispose() would
-// later try to free as if heap-allocated).
+// --build OUTPUT [opts] [-e/file]  — handled before the interpreter
+// dispatch.  Source spec (`-e EXPR` is NOT supported; naruby always
+// takes a file path) is passed to PARSE via a synthetic argv.
 static int
-generate_naruby_executable(NODE *ast, const struct astro_build_config *bcfg_in)
+naruby_build_subcommand(int argc, char **argv)
 {
-    struct astro_build_config bcfg = *bcfg_in;
-    bcfg.src_dir = NARUBY_SRC_DIR;
-    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    int rest_argc; char **rest_argv;
+    if (astro_build_subcommand_parse(argc, argv, &bcfg,
+                                      &rest_argc, &rest_argv) != 0) {
+        return 1;
+    }
+    if (rest_argc < 1) {
+        fprintf(stderr, "naruby --build: missing source file\n");
+        free(rest_argv);
+        astro_build_config_dispose(&bcfg);
+        return 1;
+    }
+
+    CTX *c = create_context(10000, 2000);
+    global_c = c;
+
+    INIT();   // astro_cs_init etc. — needed so SD_*.c writes go to ./code_store/c/.
+
+    // PARSE expects (argc, argv) with argv[0] = progname placeholder.
+    char **pargv = malloc(sizeof(*pargv) * (rest_argc + 2));
+    pargv[0] = (char *)"naruby";
+    for (int i = 0; i < rest_argc; i++) pargv[i + 1] = rest_argv[i];
+    pargv[rest_argc + 1] = NULL;
+    NODE *ast = PARSE(rest_argc + 1, pargv);
+    free(pargv);
+    free(rest_argv);
+
+    astro_build_begin_aot_session();
+    if (!bcfg.no_aot) {
+        astro_cs_compile(ast, NULL);
+        uint32_t n = naruby_code_repo_size();
+        for (uint32_t i = 0; i < n; i++) {
+            if (naruby_code_repo_skip_specialize(i)) continue;
+            NODE *body = naruby_code_repo_body(i);
+            if (body) astro_cs_compile(body, NULL);
+        }
+    }
+
+    // Local copy so the static cflags array below doesn't escape into
+    // the heap-owned config that dispose() would free.
+    struct astro_build_config bcfg_local = bcfg;
+    bcfg_local.src_dir = NARUBY_SRC_DIR;
+    bcfg_local.runtime_dir = ASTRO_RUNTIME_DIR;
     static const char *sources[] = {
         "node.c", "node_slowpath.c", "naruby_runtime.c", "exe_main.c", NULL,
     };
-    bcfg.sources = sources;
-    static const char *extra_cflags[] = {
+    bcfg_local.sources = sources;
+    static const char *naruby_cflags[] = {
         "--param=early-inlining-insns=100", NULL,
     };
-    if (!bcfg.extra_cflags) bcfg.extra_cflags = extra_cflags;
-    return astro_build_aot_executable(ast, &bcfg, "code_store");
+    if (!bcfg_local.extra_cflags) bcfg_local.extra_cflags = naruby_cflags;
+
+    int rc = astro_build_aot_executable(ast, &bcfg_local, "code_store");
+    astro_build_end_aot_session();
+    astro_build_config_dispose(&bcfg);  // free heap from subcommand_parse
+    return rc;
 }
 
 int
 main(int argc, char *argv[])
 {
-    // Pull astro_build flags (--generate-executable, --cc, -O*, etc.)
-    // out of argv FIRST so the naruby parser doesn't see them.
-    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-    if (astro_build_parse_args(&argc, argv, &bcfg) != 0) return 1;
+    // --build subcommand — framework-owned argv from here onwards.
+    if (argc >= 2 && strcmp(argv[1], "--build") == 0) {
+        return naruby_build_subcommand(argc - 1, argv + 1);
+    }
     // Order:
     //   1. Parse CLI (so we know about --ccs / --plain / -c / -p).
     //   2. Optionally wipe code_store (--ccs).
@@ -209,25 +248,6 @@ main(int argc, char *argv[])
 
     if (OPTION.pg_at_exit && !OPTION.plain && !OPTION.skip_bake) {
         build_code_store_pgsd(ast);
-    }
-
-    if (bcfg.out_exe) {
-        // Begin AOT session — turns on the framework's compile log so
-        // each astro_cs_compile records its SD for the exe link step.
-        astro_build_begin_aot_session();
-        if (!OPTION.plain) {
-            astro_cs_compile(ast, NULL);
-            uint32_t n = naruby_code_repo_size();
-            for (uint32_t i = 0; i < n; i++) {
-                if (naruby_code_repo_skip_specialize(i)) continue;
-                NODE *body = naruby_code_repo_body(i);
-                if (body) astro_cs_compile(body, NULL);
-            }
-        }
-        int rc = generate_naruby_executable(ast, &bcfg);
-        astro_build_end_aot_session();
-        astro_build_config_dispose(&bcfg);
-        return rc;
     }
 
     return 0;

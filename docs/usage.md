@@ -457,41 +457,60 @@ For samples without frame-stored or runtime-indirect dispatch (e.g.
 `sample/calc`, `sample/naruby` for the simple cases), one entry per
 top-level callable (= per method body, per script root) is enough.
 
-## `--generate-executable`: standalone-exe build
+## `--build` subcommand: standalone-exe build
 
 Any sample can produce a self-contained executable that runs one
 pre-parsed program — no parser, no Code Store directory, no shared
-libraries, just the embedded AST + linked-in specialized dispatchers.
+libraries, just the embedded AST + (optionally) linked-in
+specialized dispatchers.
+
+The build interface is a **subcommand**: when `argv[1] == "--build"`
+the sample dispatches to the framework; otherwise the interpreter
+path runs untouched.  The two namespaces never overlap, so framework
+options can never collide with the language's own.
 
 ```sh
-# Calc — bake "1+2*3" into ./foo:
-./calc --generate-executable ./foo -e "1+2*3"
-./foo
-# => 7
+# calc — bake "1+2*3" into ./foo (AOT, fast):
+./calc --build ./foo -e "1+2*3"
 
-# Naruby — bake fib.rb into ./fib:
-./naruby --generate-executable ./fib fib.rb
-./fib
-# => p:55
+# calc — same, but interp-only (smaller, slower):
+./calc --build ./foo --no-aot -e "1+2*3"
+
+# naruby — bake fib.rb into ./fib:
+./naruby --build ./fib fib.rb
+
+# koruby — fib35 — explicit flags:
+./koruby --build ./kfib --aot-compile -O3 --strip kfib.rb
 ```
 
-The framework provides the build pipeline (`runtime/astro_build.{h,c}`),
-the AST → C emitter (`runtime/astro_node.c::astro_emit_ast_c_*`), and
-the static-SD lookup table (`runtime/astro_code_store.c::astro_cs_emit_static_table`).
-Each language sample provides its own `exe_main.c` driver and wires the
-flag into its `main()` via `astro_build_parse_args`.
+Size-vs-speed trade-off (koruby on fib(35), `--aot-compile` (default)
+vs `--no-aot-compile`):
 
-### Build flags (consumed by `astro_build_parse_args`)
+| mode | exe size | runtime |
+|---|---|---|
+| `--aot-compile` (default) | 4.3 MB | 0.36 s |
+| `--no-aot-compile`        | 1.0 MB | 0.74 s |
 
-All long-form, so they don't collide with per-sample short opts:
+### Build subcommand syntax
+
+```
+<prog> --build OUTPUT [build opts]... [source spec]
+```
+
+- `OUTPUT` (first positional after `--build`): path of the exe to write.
+- Build opts (recognised by name, see table below).
+- Source spec (`-e EXPR` and/or a file path): passed through to the
+  sample's existing source parser via `rest_argv`.  Order between
+  build opts and source spec is free.
+
+### Build opts (consumed by `astro_build_subcommand_parse`)
 
 | Flag                          | Effect                                                    |
 |-------------------------------|-----------------------------------------------------------|
-| `--generate-executable PATH`  | Produce a standalone exe at PATH.                         |
-| `--cc CC`                     | C compiler (default: `$ASTRO_CC` → `$CC` → `cc`).        |
-| `--target TRIPLE`             | Cross target (clang-style `-target TRIPLE`).              |
-| `--sysroot PATH`              | `--sysroot=PATH`.                                         |
-| `-O0`/`-O1`/`-O2`/`-O3`/`-Os`/`-Og` | Optimization level (default: `$ASTRO_OPT_LEVEL` → 2). |
+| `--aot-compile` / `--aot`     | Bake AOT SDs into the exe (default).                      |
+| `--no-aot-compile` / `--no-aot` | Skip the AOT bake — pure-interpreter exe (smaller/slower). |
+| `--cc=PATH`                   | C compiler (default: `$ASTRO_CC` → `$CC` → `cc`).        |
+| `-O0`/`-O1`/`-O2`/`-O3`/`-Os`/`-Og`, `--opt=N` | Optimization level (default: `$ASTRO_OPT_LEVEL` → 2). |
 | `--debug` / `--no-debug`      | `-ggdb3` (default off).                                   |
 | `--strip` / `--no-strip`      | Run `strip` post-link (default off).                      |
 | `--lto` / `--no-lto`          | `-flto` (default off).                                    |
@@ -500,32 +519,32 @@ All long-form, so they don't collide with per-sample short opts:
 | `--sanitize=LIST`             | `-fsanitize=LIST` (e.g. `address,undefined`).             |
 | `--cflag=ARG`                 | Repeatable: pass-through compile flag.                    |
 | `--ldflag=ARG`                | Repeatable: pass-through linker flag.                     |
-| `--verbose-build`             | Print the cc command line.                                |
-| `--keep-intermediates`        | Don't unlink `_embed.c`.                                  |
+| `--verbose`                   | Print the cc command line.                                |
+| `--keep`                      | Don't unlink `_embed.c`.                                  |
 
 ### Pipeline
 
-1. Sample's `main()` calls `astro_build_parse_args(&argc, argv, &bcfg)`
-   to consume framework flags out of argv.  Remaining args go through
-   the sample's normal CLI loop.
-2. Source is parsed → AST.
-3. Sample calls `astro_build_begin_aot_session()` (turns on the
-   framework's per-process SD compile log), then calls
-   `astro_cs_compile(ast, NULL)` for the program AST and every
-   `code_repo` entry.  Each call writes (or cache-hits) one
-   `code_store/c/SD_<hash>.c` and logs the hash internally.  Empty SDs
-   (`@noinline` specializers) are unlinked / not logged.
-4. Sample calls its tiny `generate_executable(ast, &bcfg)` helper which
-   sets `bcfg.src_dir` / `sources` / `extra_cflags` etc. and forwards
-   to `astro_build_aot_executable(ast, &bcfg, "code_store")`.
-5. The helper:
-   - Writes `_embed.c` via `astro_emit_ast_c_program` — DAG-aware AST
-     reconstructor + per-node `n->head.dispatcher = SD_<hash>` patches
-     + `ASTRO_SD_PROTO(...)` forward decls for every SD it references.
-   - Walks the compile log to assemble the SD `.c` path list.
-   - Invokes `astro_build_executable` (cc shell-out).
-   - Unlinks `_embed.c` unless `--keep-intermediates`.
-6. Sample calls `astro_build_end_aot_session()` to clear the log.
+1. Sample's `main()` checks `argv[1] == "--build"` and dispatches to
+   a `*_build_subcommand` helper.  Otherwise it runs the interpreter
+   path unchanged.
+2. `astro_build_subcommand_parse(argc, argv, &bcfg, &rest_argc,
+   &rest_argv)` consumes the build opts (sets `bcfg.out_exe`,
+   `bcfg.no_aot`, etc.) and writes the remaining tokens
+   (`-e EXPR` / file path) to `rest_argv`.
+3. The sample parses the source from `rest_argv` using its existing
+   source parser → `NODE *ast`.
+4. `astro_build_begin_aot_session()` turns on the framework's
+   per-process SD compile log.  Unless `--no-aot-compile`, the sample
+   calls `astro_cs_compile(ast, NULL)` and (if it has a code_repo)
+   one `astro_cs_compile(body, NULL)` per function body.  Each call
+   writes (or cache-hits) `code_store/c/SD_<hash>.c` and logs the
+   hash internally.  Empty SDs (`@noinline` specializers) are
+   unlinked / not logged.
+5. `astro_build_aot_executable(ast, &bcfg, "code_store")` writes
+   `_embed.c` (DAG-aware AST builder + per-node dispatcher patches),
+   walks the compile log to gather SD `.c` paths, and invokes
+   `astro_build_executable` (cc shell-out).
+6. `astro_build_end_aot_session()` clears the log.
 
 ### Wiring a new sample
 
@@ -551,19 +570,38 @@ Add three things:
    }
    ```
 
-2. **`main.c` plumbing** — at the start of `main()`:
+2. **`main.c` plumbing** — at the very start of `main()`:
 
    ```c
-   struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-   astro_build_parse_args(&argc, argv, &bcfg);
-   /* ... parse the rest of argv normally ... */
-   if (bcfg.out_exe) {
-       NODE *ast = parse(...);
+   int main(int argc, char *argv[]) {
+       if (argc >= 2 && strcmp(argv[1], "--build") == 0) {
+           return mylang_build_subcommand(argc - 1, argv + 1);
+       }
+       /* ... existing interp parser, unchanged ... */
+   }
+   ```
+
+   `mylang_build_subcommand`:
+   ```c
+   static int mylang_build_subcommand(int argc, char **argv) {
+       struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+       int rest_argc; char **rest_argv;
+       astro_build_subcommand_parse(argc, argv, &bcfg, &rest_argc, &rest_argv);
+       NODE *ast = my_parse_source(rest_argc, rest_argv);  // e.g. handle -e / file
+       free(rest_argv);
        astro_build_begin_aot_session();
-       astro_cs_compile(ast, NULL);
-       /* iterate code_repo and astro_cs_compile each body too */
-       int rc = generate_executable(ast, &bcfg);
+       if (!bcfg.no_aot) {
+           astro_cs_compile(ast, NULL);
+           /* iterate code_repo and astro_cs_compile each body too */
+       }
+       struct astro_build_config bcfg_local = bcfg;
+       bcfg_local.src_dir = MY_SRC_DIR;
+       bcfg_local.runtime_dir = ASTRO_RUNTIME_DIR;
+       static const char *sources[] = {"parse.c","node.c","exe_main.c",NULL};
+       bcfg_local.sources = sources;
+       int rc = astro_build_aot_executable(ast, &bcfg_local, "code_store");
        astro_build_end_aot_session();
+       astro_build_config_dispose(&bcfg);
        return rc;
    }
    ```
@@ -794,7 +832,7 @@ end
 | `astro_emit_ast_c_program(fp, root, name, header)` | `astro_node.h` | Write `<name>(void)` as flat `_n[i] = ALLOC_…` lines + `head.dispatcher = SD_…` patches (the form used by `--generate-executable`). |
 | `astro_cs_log_compiles` (bool)            | `astro_code_store.h` | When true, `astro_cs_compile` records `(hash, "SD_<hash>")` to a per-process log.  Used by the exe builder; set indirectly via `astro_build_begin_aot_session`. |
 | `astro_cs_compile_log_size/get/reset_compile_log` | "             | Accessors for the log (rarely needed directly; the helper uses them). |
-| `astro_build_parse_args(&argc, argv, &cfg)` | `astro_build.h` | Consume `--generate-executable` + build flags from argv. |
+| `astro_build_subcommand_parse(argc, argv, &cfg, &rest_argc, &rest_argv)` | `astro_build.h` | Parse the `--build OUTPUT [opts]` subcommand body; unknown tokens (= source spec) go to `*rest_argv`. |
 | `astro_build_executable(&cfg)`            | "                    | Shell out to cc with the configured flags. |
 | `astro_build_aot_executable(root, &cfg, code_store_dir)` | " | One-shot: emit `_embed.c`, walk the compile log, link the SDs + the exe.  Sample calls after its bake pass. |
 | `astro_build_begin_aot_session()` / `_end_aot_session()` | "    | Bracket the bake-and-link region; toggles `astro_cs_log_compiles` + clears the log. |

@@ -6,20 +6,11 @@
 // source-list / driver C file and any language-specific cflags through
 // the config; argv flag parsing is shared.
 //
-// Typical usage from a sample's main():
-//
-//     struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-//     astro_build_parse_args(&argc, argv, &bcfg);
-//     if (bcfg.out_exe) {
-//         bcfg.src_dir     = MY_SRC_DIR;        // -DMY_SRC_DIR=...
-//         bcfg.runtime_dir = ASTRO_RUNTIME_DIR; // -D... from Makefile
-//         bcfg.sources     = (const char *[]){"parse.c", "node.c",
-//                                             "exe_main.c", NULL};
-//         astro_build_executable(&bcfg);
-//         return 0;
-//     }
-//
-// Then proceed with the normal interpreter loop.
+// The build interface is a subcommand: when argv[1] == "--build" the
+// sample dispatches to the framework; otherwise the existing interp
+// path runs untouched.  That keeps the build option namespace and the
+// language option namespace strictly separate — they live in disjoint
+// argv positions and can never collide.
 
 #ifndef ASTRO_BUILD_H
 #define ASTRO_BUILD_H
@@ -30,17 +21,18 @@
 struct astro_build_config {
     // Toolchain.
     const char *cc;              // NULL → $ASTRO_CC → $CC → "cc"
-    const char *target;          // e.g. "aarch64-linux-gnu"; NULL → host
-    const char *sysroot;         // --sysroot=...; NULL → none
 
     // Optimization / debug.
     int  opt_level;              // -1 = unspecified (then $ASTRO_OPT_LEVEL or 2)
-    bool debug;                  // pass -g3 / -ggdb3
+    bool debug;                  // pass -ggdb3
     bool strip;                  // run `strip` post-link
     bool lto;                    // pass -flto to compile & link
     bool static_link;            // pass -static
     bool gc_sections;            // -ffunction-sections + -Wl,--gc-sections
                                  // (drop unused dispatchers / runtime helpers)
+    bool no_aot;                 // skip the AOT SD bake — exe runs as a
+                                 // pure interpreter (smaller exe, slower
+                                 // run).  Default false (= AOT on).
 
     // Sanitizers.  Empty string or NULL → none.  Comma-separated, e.g.
     // "address,undefined".  Translates to `-fsanitize=...` on both
@@ -61,39 +53,56 @@ struct astro_build_config {
 
     // Behavior.
     bool verbose;                // print the command line
-    bool keep_intermediates;     // don't unlink generated _embed/_table files
+    bool keep_intermediates;     // don't unlink generated _embed file
 };
 
 // opt_level = -1 → "unspecified": falls back to $ASTRO_OPT_LEVEL → 2.
-// Without this sentinel, the zero-init would mean "always -O0".
 #define ASTRO_BUILD_CONFIG_INIT { .opt_level = -1 }
 
-// Parse build-related flags out of argv in-place: matched flags are
-// consumed and the remaining argv is compacted.  Returns 0 on success,
-// non-zero on parse error (and writes to stderr).
+// ---------------------------------------------------------------------------
+// Subcommand parser — used by samples to dispatch the `--build` syntax.
+// ---------------------------------------------------------------------------
 //
-// Recognised flags (long-form only — short opts left to host main()):
-//   --generate-executable PATH
-//   --cc CC
-//   --target TRIPLE
-//   --sysroot PATH
-//   -O0, -O1, -O2, -O3, -Os, -Og
-//   --debug, --no-debug
-//   --strip, --no-strip
-//   --lto, --no-lto
+// Recognised syntax:
+//     <prog> --build <output> [build opts...] [source spec...]
+//
+// `argc` / `argv` should start at the `--build` token (i.e. the sample
+// passes `argc - 1, argv + 1` after detecting argv[1] == "--build").
+//
+// On success:
+//   - cfg->out_exe is set to the first positional argument after --build.
+//   - Build opts (recognised by name; see the table below) are folded
+//     into cfg.
+//   - Remaining tokens (= source spec, e.g. `-e EXPR` or a file path)
+//     are written to *rest_argv / *rest_argc for the sample's source
+//     parser to consume.
+//
+// Recognised build opts:
+//   --aot-compile / --aot       — explicit AOT bake (the default)
+//   --no-aot-compile / --no-aot — skip AOT bake (smaller, slower exe)
+//   --strip / --no-strip
+//   --lto / --no-lto
 //   --static
-//   --gc-sections              (link-time dead-code elimination)
-//   --sanitize=LIST            ("address,undefined")
-//   --cflag=ARG                (repeatable; collected into extra_cflags)
-//   --ldflag=ARG               (repeatable; collected into extra_ldflags)
-//   --verbose-build
-//   --keep-intermediates
+//   --gc-sections
+//   --debug / --no-debug
+//   --cc=PATH
+//   -O0/-O1/-O2/-O3/-Os/-Og
+//   --opt=N                     — same as -O<N>; useful in scripts
+//   --sanitize=LIST
+//   --cflag=ARG (repeatable)
+//   --ldflag=ARG (repeatable)
+//   --verbose                   — print the cc command line
+//   --keep                      — don't unlink _embed.c
 //
-// Internally accumulates --cflag / --ldflag in heap-allocated arrays
-// referenced by cfg->extra_cflags / cfg->extra_ldflags.  Memory
-// ownership is on the cfg; freed by astro_build_config_dispose.
-int astro_build_parse_args(int *argc_io, char **argv,
-                           struct astro_build_config *cfg);
+// `--cflag` / `--ldflag` values are strdup'd into heap-allocated arrays
+// referenced by cfg->extra_cflags / cfg->extra_ldflags; free them via
+// astro_build_config_dispose after the build.
+//
+// Returns 0 on success, non-zero on parse error (with diagnostic on
+// stderr).  Unknown tokens are passed through to *rest_argv unchanged.
+int astro_build_subcommand_parse(int argc, char **argv,
+                                 struct astro_build_config *cfg,
+                                 int *rest_argc, char ***rest_argv);
 
 // Free heap memory owned by cfg (the --cflag / --ldflag arrays).
 void astro_build_config_dispose(struct astro_build_config *cfg);
@@ -103,13 +112,9 @@ void astro_build_config_dispose(struct astro_build_config *cfg);
 // must be set; other fields default sensibly.
 int astro_build_executable(const struct astro_build_config *cfg);
 
-// ---------------------------------------------------------------------------
-// One-shot AOT executable builder
-// ---------------------------------------------------------------------------
-//
-// Wraps the common end of every sample's `--generate-executable` path:
-//
-//   1. Emit `_embed.c` via astro_emit_ast_c_program (= DAG-aware AST
+// One-shot AOT executable builder.  Wraps the common end of every
+// sample's `--build` path:
+//   1. Emit `_embed.c` via astro_emit_ast_c_program (DAG-aware AST
 //      builder + per-node dispatcher patches + ASTRO_SD_PROTO forward
 //      decls for every linked-in SD).
 //   2. Walk the framework's per-process compile log (populated by
@@ -119,22 +124,18 @@ int astro_build_executable(const struct astro_build_config *cfg);
 //   4. Invoke astro_build_executable.
 //   5. Unlink intermediates unless cfg->keep_intermediates.
 //
-// The caller is responsible for everything BEFORE this helper:
-//   - turning `astro_cs_log_compiles = true` so the bake passes are
-//     recorded (this helper does that internally too, but the bake
-//     calls are language-specific — only the sample knows how to
-//     iterate its code_repo);
-//   - calling astro_cs_compile on the program AST and every method /
-//     function body.
+// The caller is responsible for everything BEFORE this helper: turning
+// on the compile log via astro_build_begin_aot_session, then calling
+// astro_cs_compile on the program AST and every method / function body.
 //
 // `code_store_dir` defaults to "code_store" if NULL.
 int astro_build_aot_executable(struct Node *root,
                                struct astro_build_config *cfg,
                                const char *code_store_dir);
 
-// Convenience wrapper around the cs flag.  Call before the bake loop
-// to start logging, and (optionally) after astro_build_aot_executable
-// to turn it back off / clear the log between sessions.
+// Bracket the bake-and-link region.  Begin enables compile-log
+// recording (sets `astro_cs_log_compiles = true` and clears the log);
+// end disables it and clears.
 struct Node;
 void astro_build_begin_aot_session(void);
 void astro_build_end_aot_session(void);
