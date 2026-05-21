@@ -532,18 +532,21 @@ astro_cs_compile(NODE *entry, const char *file)
     // of a duplicate compile-time SD_ definition.
     astro_spec_dedup_clear();
     entry->head.flags.is_specializing = true;
+    long body_start = ftell(fp);
     (*entry->head.kind->specializer)(fp, entry, true);
+    long body_end = ftell(fp);
     entry->head.flags.is_specializing = false;
     astro_spec_dedup_add(h);
 
     fclose(fp);
 
-    // Log the public SD for later static-table emission.  PGC entries
-    // use PGSD_ prefix; AOT use SD_.  The runtime registry is keyed by
-    // hash, so dedupe across AOT/PGC for the same hash is fine — only
-    // one symbol is emitted per filename anyway (the stat() guard above
-    // skips identical-hash re-writes).
-    {
+    // Log the public SD for later static-table emission ONLY if the
+    // specializer actually emitted a body.  @noinline nodes have a no-op
+    // specializer (e.g. naruby/koruby's `node_def`) — they generate just
+    // a file header with no SD_<hash> symbol, so adding them to the
+    // static table produces a dangling extern decl.  PGC entries use
+    // PGSD_ prefix; AOT use SD_.
+    if (body_end > body_start) {
         char sd_name[64];
         snprintf(sd_name, sizeof(sd_name), "%s_%lx", prefix, (unsigned long)h);
         astro_cs_compile_log_add(h, sd_name);

@@ -1,7 +1,11 @@
 all: koruby
 
 NODE_GENFILES = node_eval.c node_dispatch.c node_dump.c node_specialize.c \
-                node_replace.c node_alloc.c node_hash.c node_head.h
+                node_replace.c node_alloc.c node_hash.c node_emit_ast.c \
+                node_head.h
+
+KORUBY_SRC_DIR := $(abspath .)
+ASTRO_RUNTIME_DIR := $(abspath ../../runtime)
 
 CC ?= gcc
 optflags ?= -O2
@@ -25,11 +29,13 @@ else
   GMP_LIBS = -lgmp
 endif
 
-CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -flto=auto -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable $(GMP_CFLAGS)
+CFLAGS = -I$(PRISM_DIR)/include -I. $(optflags) -flto=auto -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable $(GMP_CFLAGS) \
+         -DKORUBY_SRC_DIR_DEFAULT='"$(KORUBY_SRC_DIR)"' \
+         -DASTRO_RUNTIME_DIR='"$(ASTRO_RUNTIME_DIR)"'
 LDFLAGS = -L $(PRISM_DIR)/build -Wl,-rpath=$(CURDIR)/$(PRISM_DIR)/build -flto=auto
 LIBS = -lprism -lgc $(GMP_LIBS) -lm
 
-SRCS = main.c node.c parse.c object.c builtins.c bootstrap_src.c $(GMP_SRCS)
+SRCS = main.c node.c parse.c object.c builtins.c bootstrap_src.c koruby_runtime.c $(GMP_SRCS)
 # builtins/*.c are #included from builtins.c, but list them here so
 # `make` rebuilds when any of them changes.  Same for the shared
 # runtime files included from node.c.

@@ -160,6 +160,9 @@ void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
  * astro_node.c above. */
 #include "../../runtime/astro_code_store.c"
 
+/* Build orchestrator (used by --generate-executable in main.c). */
+#include "../../runtime/astro_build.c"
+
 /* try to include specialized */
 #if __has_include("node_specialized.c")
 #include "node_specialized.c"

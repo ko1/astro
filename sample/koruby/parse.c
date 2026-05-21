@@ -97,6 +97,13 @@ static struct ivar_cache *alloc_ivar_cache(void) {
     return c;
 }
 
+/* Public versions of the cache allocators, for the embedded AST
+ * builder emitted by `--generate-executable`.  Each node_func_call /
+ * node_method_call needs its own fresh mc/ic; non-static so the
+ * generated _embed.c can reference them at exe runtime. */
+struct method_cache *koruby_alloc_method_cache(void) { return alloc_method_cache(); }
+struct ivar_cache   *koruby_alloc_ivar_cache(void)   { return alloc_ivar_cache(); }
+
 static void push_frame(struct transduce_context *tc, pm_constant_id_list_t *locals, bool is_block) {
     struct frame_context *f = korb_xmalloc(sizeof(*f));
     f->prev = tc->frame;

@@ -51,6 +51,43 @@ class KoRubyNodeDef < ASTroGen::NodeDef
           super
         end
       end
+
+      # --generate-executable: emit a C expression that reconstructs this
+      # operand at exe runtime.  ID values are not stable across processes
+      # (interning order varies), so we look the original name up via
+      # `korb_id_name(id)` at emit time and re-intern via `korb_intern(...)`
+      # at exe runtime.  method_cache / ivar_cache pointers point at
+      # per-call-site fresh memory — at exe runtime we allocate a new
+      # one for each node so each call site has its own cache slot.
+      def build_emit_ast(name)
+        return nil if ref? || storageless?
+        field = "n->u.#{name}.#{self.name}"
+        case @type
+        when 'ID'
+          # Bake the symbol name as a C string literal; exe re-interns
+          # at startup via korb_intern.
+          <<~C.chomp
+              fprintf(fp, "korb_intern(");
+              astro_fprintf_cstr(fp, korb_id_name(#{field}));
+              fprintf(fp, ")");
+          C
+        when 'struct method_cache *'
+          # Fresh cache per call site; emit unconditionally (even when
+          # the runtime ptr is NULL — node_func_call etc. always have a
+          # mc allocated by parse.c).
+          "    fprintf(fp, \"koruby_alloc_method_cache()\");"
+        when 'struct ivar_cache *'
+          "    fprintf(fp, \"koruby_alloc_ivar_cache()\");"
+        when 'struct call_cache *', 'struct korb_proc *', 'struct korb_class *'
+          # No emit support — these aren't expected outside @ref slots;
+          # if we ever see one as a regular operand, bake NULL and rely
+          # on first-use init.  The embedded AST builder will need a
+          # paired runtime fixup if these slots are actually consumed.
+          "    fprintf(fp, \"NULL\");"
+        else
+          super
+        end
+      end
     end
   end
 end

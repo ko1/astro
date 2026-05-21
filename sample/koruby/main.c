@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <limits.h>
+#include <dirent.h>
 
 #include "context.h"
 #include "object.h"
@@ -15,8 +16,17 @@ NODE *koruby_parse(const char *src, size_t len, const char *filename);
 
 extern void sc_repo_clear(void);
 
-/* code store API (runtime/astro_code_store.{h,c} via node.c). */
+/* code store + build orchestrator + ast emit (via node.c). */
 #include "../../runtime/astro_code_store.h"
+#include "../../runtime/astro_build.h"
+#include "../../runtime/astro_node.h"
+
+#ifndef KORUBY_SRC_DIR_DEFAULT
+#define KORUBY_SRC_DIR_DEFAULT "."
+#endif
+#ifndef ASTRO_RUNTIME_DIR
+#define ASTRO_RUNTIME_DIR "."
+#endif
 
 /* code repo (defined in node.c) — exposed here so main can iterate the
  * collected per-method AST entries when AOT-compiling. */
@@ -82,8 +92,114 @@ generate_specialized_code(NODE *ast)
     fclose(fp);
 }
 
+/* koruby_setup_ctx / koruby_eval_bootstrap / koruby_run_ast live in
+ * koruby_runtime.c — shared between the REPL main and the exe driver. */
+extern CTX *koruby_setup_ctx(const char *current_file);
+extern void koruby_eval_bootstrap(CTX *c);
+extern int  koruby_run_ast(CTX *c, NODE *ast);
+
+/* --generate-executable FILE — bake the parsed AST + AOT-compiled SDs
+ * into a standalone exe at FILE.  Returns exit code. */
+static int
+koruby_generate_executable(NODE *ast,
+                           const struct astro_build_config *bcfg_in)
+{
+    /* Embed AST in DAG mode (koruby has shared nodes — method bodies in
+     * code_repo are also reachable from the main AST via node_def).  */
+    FILE *fp = fopen("_embed.c", "w");
+    if (!fp) { perror("_embed.c"); return 1; }
+    astro_emit_ast_c_program(fp, ast, "astro_build_embedded_ast", "node.h");
+    fclose(fp);
+
+    /* Static SD table. */
+    fp = fopen("_static_table.c", "w");
+    if (!fp) { perror("_static_table.c"); return 1; }
+    astro_cs_emit_static_table(fp, "ASTRO_SD_PROTO");
+    fclose(fp);
+
+    /* Enumerate SD_*.c / PGSD_*.c. */
+    const char **sd_files = NULL;
+    size_t sd_n = 0, sd_capa = 0;
+    DIR *d = opendir("code_store/c");
+    if (d) {
+        struct dirent *ent;
+        while ((ent = readdir(d)) != NULL) {
+            const char *nm = ent->d_name;
+            size_t l = strlen(nm);
+            if (l < 5) continue;
+            if (strcmp(nm + l - 2, ".c") != 0) continue;
+            if (strncmp(nm, "SD_", 3) != 0 &&
+                strncmp(nm, "PGSD_", 5) != 0) continue;
+            if (sd_n + 1 >= sd_capa) {
+                sd_capa = sd_capa == 0 ? 16 : sd_capa * 2;
+                sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
+            }
+            char *full = malloc(l + 32);
+            snprintf(full, l + 32, "code_store/c/%s", nm);
+            sd_files[sd_n++] = full;
+        }
+        closedir(d);
+    }
+    if (sd_n + 1 >= sd_capa) {
+        sd_capa = sd_n + 1;
+        sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
+    }
+    sd_files[sd_n] = NULL;
+
+    size_t extra_n = 2 + sd_n + 1;
+    const char **extras = malloc(sizeof(*extras) * extra_n);
+    extras[0] = "_embed.c";
+    extras[1] = "_static_table.c";
+    for (size_t i = 0; i < sd_n; i++) extras[2 + i] = sd_files[i];
+    extras[2 + sd_n] = NULL;
+
+    struct astro_build_config bcfg = *bcfg_in;
+    bcfg.src_dir = KORUBY_SRC_DIR_DEFAULT;
+    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+    static const char *sources[] = {
+        "node.c", "parse.c", "object.c", "builtins.c",
+        "bootstrap_src.c", "koruby_runtime.c", "exe_main.c", NULL,
+    };
+    bcfg.sources = sources;
+    bcfg.extra_sources_abs = extras;
+
+    /* koruby links prism + libgc + GMP — pass through as ldflags.  We
+     * keep these fixed for now; mini-gmp / different libc combos can
+     * be wired in later by exposing them via build flags. */
+    const char *koruby_ldflags[] = {
+        "-Wl,-rpath", KORUBY_SRC_DIR_DEFAULT "/prism/build",
+        "-L", KORUBY_SRC_DIR_DEFAULT "/prism/build",
+        "-lprism", "-lgc", "-lgmp", "-lm",
+        NULL,
+    };
+    const char *koruby_cflags[] = {
+        "-I" KORUBY_SRC_DIR_DEFAULT "/prism/include",
+        "-Wno-unused-function", "-Wno-unused-variable",
+        "-Wno-unused-parameter", "-Wno-unused-but-set-variable",
+        NULL,
+    };
+    if (!bcfg.extra_ldflags) bcfg.extra_ldflags = koruby_ldflags;
+    if (!bcfg.extra_cflags)  bcfg.extra_cflags  = koruby_cflags;
+
+    int rc = astro_build_executable(&bcfg);
+
+    if (!bcfg.keep_intermediates) {
+        unlink("_embed.c");
+        unlink("_static_table.c");
+    }
+    free(extras);
+    for (size_t i = 0; i < sd_n; i++) free((void *)sd_files[i]);
+    free(sd_files);
+    return rc;
+}
+
 int main(int argc, char *argv[])
 {
+    /* Pull framework build flags out of argv first so koruby's parser
+     * doesn't see them. */
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    if (astro_build_parse_args(&argc, argv, &bcfg) != 0) return 1;
+
     INIT();
     korb_runtime_init();
 
@@ -184,125 +300,50 @@ int main(int argc, char *argv[])
         printf("\n");
     }
 
-    /* Set up a CTX. Stack is registered with GC by virtue of being a GC alloc. */
-    CTX *c = korb_xcalloc(1, sizeof(CTX));
-    korb_vm->current_ctx = c;
-    /* The value stack is heap allocated so GC scans it.  Use 64K slots. */
-    size_t stack_size = 16 * 1024 * 1024;  /* 16 M slots */
-    c->stack_base = korb_xmalloc(stack_size * sizeof(VALUE));
-    for (size_t i = 0; i < stack_size; i++) c->stack_base[i] = Qnil;
-    c->stack_end  = c->stack_base + stack_size;
-    c->fp = c->stack_base;
-    c->sp = c->fp;
-    c->self = korb_vm->main_obj;
-    c->current_class = korb_vm->object_class;
-    static struct korb_cref top_cref;
-    top_cref.klass = korb_vm->object_class;
-    top_cref.prev = NULL;
-    c->cref = &top_cref;
     /* For -e mode, current_file = ./script.rb so require_relative resolves
      * against cwd. */
     static char ecwd[PATH_MAX] = {0};
+    const char *current_file;
     if (!file) {
         if (!getcwd(ecwd, sizeof(ecwd))) strcpy(ecwd, ".");
         strcat(ecwd, "/-e");
-        c->current_file = ecwd;
+        current_file = ecwd;
     } else {
-        c->current_file = file;
+        current_file = file;
     }
-    c->state = KORB_NORMAL;
-    c->method_serial = korb_vm->method_serial;
+    CTX *c = koruby_setup_ctx(current_file);
 
     OPTIMIZE(ast);
 
     /* Bootstrap: load Ruby-side helpers (Enumerable, Comparable include
      * targets, Rational/Complex, etc.) before running the user program. */
-    {
-        extern const char koruby_bootstrap_src[];
-        extern const size_t koruby_bootstrap_len;
-        VALUE br = korb_eval_string(c, koruby_bootstrap_src,
-                                    koruby_bootstrap_len, "<bootstrap>");
-        (void)br;
-        if (c->state == KORB_RAISE) {
-            VALUE s = korb_inspect(c->state_value);
-            fprintf(stderr, "bootstrap failure: %s\n", korb_str_cstr(s));
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
-        }
-    }
+    koruby_eval_bootstrap(c);
 
     /* In compile_only mode (-c), still run the program so that
      * `require_relative` chains parse all source files (registering all
-     * methods into code_repo) before we emit node_specialized.c.  Stop
-     * the run early via the compile_run_frames knob if you don't want the
-     * program to run to completion. */
-    {
-        VALUE r = EVAL(c, ast);
-        (void)r;
-        if (c->state == KORB_THROW) {
-            /* Unhandled throw propagated to top level — convert to
-             * UncaughtThrowError raise so the error message is visible
-             * (CRuby raises UncaughtThrowError; we synthesize a plain
-             * RuntimeError if the class isn't available). */
-            VALUE eUTE = korb_const_get(korb_vm->object_class, korb_intern("UncaughtThrowError"));
-            VALUE tag = Qnil;
-            if (!SPECIAL_CONST_P(c->state_value) && BUILTIN_TYPE(c->state_value) == T_ARRAY) {
-                struct korb_array *pair = (struct korb_array *)c->state_value;
-                if (pair->len >= 1) tag = pair->ptr[0];
-            }
-            VALUE tag_s = korb_inspect(tag);
-            char buf[256];
-            snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(tag_s));
-            c->state = KORB_RAISE;
-            if (eUTE && !SPECIAL_CONST_P(eUTE) && BUILTIN_TYPE(eUTE) == T_CLASS) {
-                c->state_value = korb_exc_new((struct korb_class *)eUTE, buf);
+     * methods into code_repo) before we emit node_specialized.c. */
+    int rc = 0;
+    if (!OPTION.compile_only) {
+        rc = koruby_run_ast(c, ast);
+        if (rc != 0 && c->state == KORB_RAISE) {
+            /* In compile_only we suppress the early-return on raise so
+             * the bake passes below still fire; in normal mode propagate. */
+            if (bcfg.out_exe) {
+                /* For exe build we proceed regardless — the user wants
+                 * the exe even if the test run raised. */
             } else {
-                c->state_value = korb_exc_new(NULL, buf);
+                return rc;
             }
         }
-        if (c->state == KORB_RAISE) {
-            /* SystemExit short-circuits: exit with @status (CRuby
-             * silent) rather than printing "unhandled exception". */
-            VALUE exc = c->state_value;
-            VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SystemExit"));
-            if (eSE && !SPECIAL_CONST_P(eSE) && !SPECIAL_CONST_P(exc) &&
-                BUILTIN_TYPE(exc) == T_OBJECT) {
-                struct korb_class *exc_cls = (struct korb_class *)((struct RBasic *)exc)->klass;
-                struct korb_class *se_cls  = (struct korb_class *)eSE;
-                bool is_se = false;
-                for (struct korb_class *kk = exc_cls; kk; kk = kk->super) {
-                    if (kk == se_cls) { is_se = true; break; }
-                }
-                if (is_se) {
-                    int code = 0;
-                    VALUE st = korb_ivar_get(exc, korb_intern("@status"));
-                    if (FIXNUM_P(st)) code = (int)FIX2LONG(st);
-                    extern void korb_run_at_exit_hooks(CTX *c);
-                    korb_run_at_exit_hooks(c);
-                    return code;
-                }
-            }
-            VALUE s = korb_inspect(c->state_value);
-            fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
-            if (!OPTION.compile_only) {
-                /* Still run at_exit hooks so cleanup code runs even
-                 * after an uncaught raise — match CRuby. */
-                extern void korb_run_at_exit_hooks(CTX *c);
-                korb_run_at_exit_hooks(c);
-                return 1;
-            }
-        }
-    }
-    /* Normal completion: run at_exit hooks in LIFO order. */
-    {
-        extern void korb_run_at_exit_hooks(CTX *c);
-        korb_run_at_exit_hooks(c);
+    } else {
+        /* compile_only: run and ignore exit code (we still want to bake). */
+        (void)koruby_run_ast(c, ast);
     }
 
     if (OPTION.compile_only) {
         generate_specialized_code(ast);
     }
-    if (g_aot_compile) {
+    if (g_aot_compile || bcfg.out_exe) {
         /* Generate per-method SD_<hash>.c, then build all.so via make. */
         fprintf(stderr, "[koruby] AOT compile: writing SD_*.c\n");
         astro_cs_compile(ast, NULL);
@@ -314,10 +355,17 @@ int main(int argc, char *argv[])
          * only home dirs.  Caller-side opt-out (the runtime stays
          * env-agnostic). */
         setenv("CCACHE_DISABLE", "1", 0);
-        fprintf(stderr, "[koruby] AOT compile: building all.so\n");
-        astro_cs_build(NULL);
+        if (g_aot_compile) {
+            fprintf(stderr, "[koruby] AOT compile: building all.so\n");
+            astro_cs_build(NULL);
+        }
     }
-    return 0;
+    if (bcfg.out_exe) {
+        int erc = koruby_generate_executable(ast, &bcfg);
+        astro_build_config_dispose(&bcfg);
+        return erc;
+    }
+    return rc;
 }
 
 /* hooks for specialized-code generation */

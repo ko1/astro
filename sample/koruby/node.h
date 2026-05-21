@@ -75,4 +75,9 @@ void node_replace(NODE *parent, NODE *old, NODE *new_node);
 /* swap an existing node's dispatcher to a different node type without realloc */
 void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind);
 
+/* Cache allocators exposed for the embedded AST builder emitted by
+ * `--generate-executable` (definitions in parse.c). */
+struct method_cache *koruby_alloc_method_cache(void);
+struct ivar_cache   *koruby_alloc_ivar_cache(void);
+
 #endif /* KORUBY_NODE_H */

@@ -200,6 +200,10 @@ module ASTroGen
             "    fprintf(fp, \"%uU\", #{field});"
           when 'uint64_t'
             "    fprintf(fp, \"%lluULL\", (unsigned long long)#{field});"
+          when 'intptr_t'
+            "    fprintf(fp, \"(intptr_t)%lldLL\", (long long)#{field});"
+          when 'uintptr_t'
+            "    fprintf(fp, \"(uintptr_t)%lluULL\", (unsigned long long)#{field});"
           when 'double'
             "    fprintf(fp, \"%.17g\", #{field});"
           when 'const char *'
