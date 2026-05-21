@@ -583,10 +583,22 @@ MIN を超えないので動作は不変。
   「rooting + WB + dispatch + alloc」の最小コストを示す。 binary_trees が
   0.53s — copy より速い (GC 自体が無いので)。 OOM 時 abort
 
-### ベンチカタログ (全 19 種)
+### ベンチカタログ (GC bench 20 + naruby int bench 15 = 全 35 種)
 
 各ベンチの「何を / どう alloc して / lifetime はどんな形か」 を一覧。
 GC 評価の観点で workload 分類を意識して揃えている。 アルファベット順。
+
+**GC 評価向け** (オリジナル 20、 §2 plain matrix で詳細測定):
+ast_eval, binary_trees, cons_list, dll_walk, fannkuch, fib_pair,
+gc_combined, hash_chain, interp_calc, json_parse, life, list_alloc,
+list_sort, nqueens, remset_pressure, sieve, string_concat,
+string_concat_dyn, substr_churn, tokenize。
+
+**naruby int bench** (iter 59 追加、 15 個、 GC 不発の dispatch bench):
+ackermann, branch_dom, call, chain20, chain40, chain_add, collatz,
+compose, deep_const, early_return, fib, gcd, loop, prime_count, tak。
+これらは sample/naruby/bench/ から copy したもの。 詳細プロファイルは
+[naruby docs](../../naruby/docs/perf.md) (元の用途) を参照。
 
 #### `ast_eval.ba.rb` — AST builder + repeated evaluator (macro pattern)
 
