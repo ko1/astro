@@ -28,13 +28,15 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       / immix の region-bump 系へ展開する余地は残るが、 gen backend は
       pretenure 経路で既に large が tenured 直行するため win 限定的の見込み。
 
-      **未完: resize 経路 realloc(3) 化** — 現状は aro_gc_realloc_payload で
-      新規 large alloc + memcpy + 旧 large を次 GC まで残置。 large→large の
-      resize で realloc(3) (mmap chunk なら mremap で in-place) を使えば
-      memcpy + temp 2x memory を避けられる。 sieve の doubling pattern で
-      ~3% 程度の追加 win が見込めるが、 LargeObj linked list の prev リンク
-      追跡 (singly-linked のため O(N) traversal が必要) と aro_gc_realloc_payload
-      の per-backend 上書きが要る。 priority 低。
+      **完了: resize 経路 realloc(3) 化 (iter 67)** — `aro_gc_realloc_in_place`
+      hook を gc.h に追加、 gc_common.c に weak default、 gc_copy.c に
+      strong override。 large → large の resize は realloc(3) → mremap で
+      in-place 化。 perf 効果: gc_copy で sieve **-11.5%** (1.186 → 1.050)、
+      list_sort -5%、 hash_chain -4%。 commit `4aa6f36b`。
+
+      未適用 backend: gc_mark_compact に同じ override を移植可能 (LargeObj
+      linked list の構造同じ)。 sieve / hash_chain で同程度の win が
+      見込めるので次 iteration で対応予定。
 
 ## 直近 (iter 59 状態)
 
