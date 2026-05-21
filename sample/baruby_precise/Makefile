@@ -38,6 +38,26 @@ gdb: baruby_precise
 bench: baruby_precise
 	BARUBY_BIN=./baruby_precise ruby bench/run.rb
 
+# Tests: current binary で全 T_*.ba.rb を実行、 test/expected/*.expected と
+# 比較。 expected が無ければ初回実行時に生成する (= oracle generation mode)。
+#
+# 派生 target:
+#   make test                    現 binary で全 T_*.ba.rb
+#   make test_all                全 16 backend で rebuild + test
+#   make test_stress             BARUBY_GC_STRESS=1 で全 T_*.ba.rb
+#   make test_all_stress         16 backend × stress mode
+test: baruby_precise
+	ruby test/run.rb
+
+test_stress: baruby_precise
+	ruby test/run.rb --stress
+
+test_all:
+	ruby test/run.rb --all
+
+test_all_stress:
+	ruby test/run.rb --all --stress
+
 # ASTRO_DEBUG: enables ASTRO_ASSERT + stress-mode GC invariant checks.
 # Iter 35 fairness fix: the default flipped to 0 (release / perf-friendly).
 # Past perf measurements were taken with ASTRO_DEBUG=1 implicit-from-context.h
