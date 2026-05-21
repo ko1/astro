@@ -68,26 +68,23 @@ typedef struct LargeObj {
     /* GCHeader follows */
 } LargeObj;
 
-/* iter 62: process-scope state を struct AstroGc に集約 */
+static char       *region_base = NULL;
+static char       *region_top  = NULL;
+static char       *region_end  = NULL;
+static FreeSlot   *freelist[NUM_SIZE_CLASSES];
+static LargeObj   *large_head = NULL;
+
+static CTX        *gc_ctx       = NULL;
+static VALUE      *sp_high_water = NULL;
+static GCHeader  **gray_buf     = NULL;
+static size_t      gray_cnt     = 0;
+static size_t      gray_capa    = 0;
+
+/* Adaptive GC trigger: max(16 MiB, 2 × live_post_sweep). */
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
-
-typedef struct AstroGc {
-    char       *region_base;
-    char       *region_top;
-    char       *region_end;
-    FreeSlot   *freelist[NUM_SIZE_CLASSES];
-    LargeObj   *large_head;
-    CTX        *ctx;
-    VALUE      *sp_high_water;
-    GCHeader  **gray_buf;
-    size_t      gray_cnt;
-    size_t      gray_capa;
-    size_t      bytes_since_gc;
-    size_t      gc_threshold;
-} AstroGc;
-
-static AstroGc g_astro_gc;
+static size_t bytes_since_gc = 0;
+static size_t gc_threshold   = GC_THRESHOLD_MIN;
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
@@ -108,18 +105,15 @@ size_class_for(size_t slot_total)
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = (&g_astro_gc);
-    memset(gc, 0, sizeof(*gc));
-    gc->ctx = c;
-    gc->gc_threshold = GC_THRESHOLD_MIN;
-    gc->region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
-                                   MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
-    if (gc->region_base == MAP_FAILED) {
+    gc_ctx = c;
+    region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
+                               MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+    if (region_base == MAP_FAILED) {
         perror("mark_freelist mmap region");
         abort();
     }
-    gc->region_top = gc->region_base;
-    gc->region_end = gc->region_base + REGION_BYTES;
+    region_top = region_base;
+    region_end = region_base + REGION_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
         aro_gc_stress = 1;
         fprintf(stderr, "[baruby_gc=mark_freelist] STRESS mode: collect on every alloc\n");
@@ -130,12 +124,11 @@ aro_gc_init(CTX *c)
  * Allocation
  * -------------------------------------------------------------------------- */
 
-static void gc_collect_internal(CTX *c, VALUE *sp_top);
+static void gc_collect_internal(VALUE *sp_top);
 
 static GCHeader *
 alloc_large(AroGcKind kind, size_t payload_size)
 {
-    AstroGc *gc = (&g_astro_gc);
     size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     size_t map_bytes = (need + page - 1) & ~(page - 1);
@@ -143,12 +136,12 @@ alloc_large(AroGcKind kind, size_t payload_size)
                      MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (raw == MAP_FAILED) { perror("mark_freelist mmap large"); abort(); }
     LargeObj *lo = (LargeObj *)raw;
-    lo->next = gc->large_head;
+    lo->next = large_head;
     lo->map_bytes = map_bytes;
-    gc->large_head = lo;
+    large_head = lo;
     GCHeader *h = (GCHeader *)(lo + 1);
     HDR_SET_KIND(h, kind);
-    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
+    h->size = (uint32_t)payload_size;
     h->flags &= (uint8_t)~HDR_MARKED_BIT;
     return h;
 }
@@ -162,9 +155,8 @@ oom_abort(void)
 }
 
 static inline GCHeader *
-alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
+alloc_slot(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
-    AstroGc *gc = (&g_astro_gc);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     if (__builtin_expect(slot_total > MAX_SLOT_BYTES, 0)) {
         return alloc_large(kind, payload_size);
@@ -172,24 +164,25 @@ alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
     int ci = size_class_for(slot_total);
     size_t sb = size_class_bytes[ci];
 
-    if (__builtin_expect(aro_gc_stress || gc->bytes_since_gc + payload_size > gc->gc_threshold, 0)) {
-        gc_collect_internal(c, sp_top);
+    if (__builtin_expect(aro_gc_stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
+        gc_collect_internal(sp_top);
     }
 
     GCHeader *h;
-    FreeSlot *fs = gc->freelist[ci];
+    FreeSlot *fs = freelist[ci];
     if (fs) {
-        gc->freelist[ci] = fs->next;
+        freelist[ci] = fs->next;
+        /* fs is at the payload offset; back up to header. */
         h = (GCHeader *)((char *)fs - sizeof(GCHeader));
     } else {
-        if (__builtin_expect(gc->region_top + sb > gc->region_end, 0)) {
+        if (__builtin_expect(region_top + sb > region_end, 0)) {
             oom_abort();
         }
-        h = (GCHeader *)gc->region_top;
-        gc->region_top += sb;
+        h = (GCHeader *)region_top;
+        region_top += sb;
     }
     HDR_SET_KIND(h, kind);
-    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
+    h->size = (uint32_t)payload_size;
     h->flags &= (uint8_t)~HDR_MARKED_BIT;
     return h;
 }
@@ -197,19 +190,21 @@ alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
-    AstroGc *gc = (&g_astro_gc);
-    GCHeader *h = alloc_slot(c, kind, payload_size, sp_top);
+    GCHeader *h = alloc_slot(kind, payload_size, sp_top);
     void *payload = (void *)(h + 1);
-    /* iter 48 bug fix: freelist-popped slots contain stale data; zero
-     * pointer-typed payloads so scan sees VAL_FALSE until caller fills. */
+    /* iter 48 bug fix: freelist-popped slots contain stale data from
+     * prior allocation (e.g. raw string bytes interpreted later as
+     * BaString.bytes pointer → SEGV in scan_outgoing).  Zero the payload
+     * for object kinds whose fields the GC mark phase walks as pointers
+     * (KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL).  Caller
+     * fills the actual values right after; until then the fields read
+     * as VAL_FALSE which IS_PTR rejects. */
     if (kind != KIND_PAYLOAD_BYTE) {
-        ASTRO_GC_INIT_PAYLOAD(payload, ALIGN8(payload_size));
-    } else {
-        ASTRO_GC_INIT_BYTE_PAYLOAD(payload, ALIGN8(payload_size));
+        memset(payload, 0, ALIGN8(payload_size));
     }
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
-    gc->bytes_since_gc += payload_size;
+    bytes_since_gc += payload_size;
     return payload;
 }
 
@@ -226,7 +221,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
     if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
     AroGcKind kind = HDR_KIND(oldh);
-    size_t old_size = ASTRO_GC_HEADER_SIZE(oldh);
+    size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     /* Root old via sp_top[0] so collection during alloc keeps it live.
      * Non-moving: pointer unchanged after GC. */
@@ -247,13 +242,12 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 static void
 gray_push(GCHeader *const h)
 {
-    AstroGc *gc = (&g_astro_gc);
-    if (gc->gray_cnt >= gc->gray_capa) {
-        gc->gray_capa = gc->gray_capa ? gc->gray_capa * 2 : 256;
-        gc->gray_buf = (GCHeader **)realloc(gc->gray_buf, gc->gray_capa * sizeof(GCHeader *));
-        if (!gc->gray_buf) abort();
+    if (gray_cnt >= gray_capa) {
+        gray_capa = gray_capa ? gray_capa * 2 : 256;
+        gray_buf = (GCHeader **)realloc(gray_buf, gray_capa * sizeof(GCHeader *));
+        if (!gray_buf) abort();
     }
-    gc->gray_buf[gc->gray_cnt++] = h;
+    gray_buf[gray_cnt++] = h;
 }
 
 static void
@@ -266,20 +260,41 @@ mark_value(VALUE v)
     gray_push(h);
 }
 
-/* edge_visit callback: mark phase (slot 不変、 pointee に印) */
 static void
-mark_edge(void **slot)
+scan_outgoing(GCHeader *h)
 {
-    mark_value((VALUE)*slot);
+    void *payload = (void *)(h + 1);
+    switch (HDR_KIND(h)) {
+      case KIND_OBJ_ARRAY: {
+        BaArray *a = (BaArray *)payload;
+        if (a->items) mark_value((VALUE)a->items);
+        break;
+      }
+      case KIND_OBJ_STRING: {
+        BaString *s = (BaString *)payload;
+        if (!BSTR_IS_SSO(s) && s->bytes) mark_value((VALUE)s->bytes);
+        break;
+      }
+      case KIND_PAYLOAD_VAL: {
+        VALUE *items = (VALUE *)payload;
+        size_t n = h->size / sizeof(VALUE);
+        for (size_t i = 0; i < n; i++) mark_value(items[i]);
+        break;
+      }
+      case KIND_PAYLOAD_BYTE:
+      case KIND_FREE:
+        break;
+      default:
+        ASTRO_ASSERT(0 && "mark_freelist scan_outgoing: unknown kind");
+    }
 }
 
 static void
 process_gray(void)
 {
-    AstroGc *gc = (&g_astro_gc);
-    while (gc->gray_cnt > 0) {
-        GCHeader *h = gc->gray_buf[--gc->gray_cnt];
-        ASTRO_GC_SCAN_EDGES(h, mark_edge);
+    while (gray_cnt > 0) {
+        GCHeader *h = gray_buf[--gray_cnt];
+        scan_outgoing(h);
     }
 }
 
@@ -290,42 +305,50 @@ process_gray(void)
 static void
 sweep_region(void)
 {
-    AstroGc *gc = (&g_astro_gc);
+    /* Rebuild freelists from scratch. */
     for (int i = 0; i < NUM_SIZE_CLASSES; i++) {
-        gc->freelist[i] = NULL;
+        freelist[i] = NULL;
     }
     size_t live_bytes = 0;
-    char *p = gc->region_base;
-    while (p < gc->region_top) {
+    char *p = region_base;
+    while (p < region_top) {
         GCHeader *const h = (GCHeader *)p;
-        size_t slot_total = sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
+        size_t slot_total = sizeof(GCHeader) + ALIGN8(h->size);
+        /* Locate the class so we can compute the actual slot stride
+         * (allocation rounded up to size_class_bytes[ci]). */
         int ci = size_class_for(slot_total);
         ASTRO_ASSERT(ci >= 0 && "sweep_region: oversized slot in region");
         size_t sb = size_class_bytes[ci];
         if (HDR_KIND(h) == KIND_FREE) {
+            /* Already-free slot from a prior sweep — push back to freelist. */
             FreeSlot *fs = (FreeSlot *)(h + 1);
-            fs->next = gc->freelist[ci];
-            gc->freelist[ci] = fs;
+            fs->next = freelist[ci];
+            freelist[ci] = fs;
         } else if (HDR_MARKED(h)) {
             HDR_CLR_MARKED(h);
-            live_bytes += ASTRO_GC_HEADER_SIZE(h);
+            live_bytes += h->size;
         } else {
+            /* Unmarked → free.  Set size to the maximum payload that fits
+             * the slot, so a subsequent sweep walks past the same span.
+             * (We can't restore the original `size` after rebirth — alloc
+             * resets it.) */
             HDR_SET_KIND(h, KIND_FREE);
-            ASTRO_GC_HEADER_SET_SIZE(h, sb - sizeof(GCHeader));
+            h->size = (uint32_t)(sb - sizeof(GCHeader));
             FreeSlot *fs = (FreeSlot *)(h + 1);
-            fs->next = gc->freelist[ci];
-            gc->freelist[ci] = fs;
+            fs->next = freelist[ci];
+            freelist[ci] = fs;
         }
         p += sb;
     }
 
-    LargeObj **link = &gc->large_head;
+    /* Large objects: separate sweep. */
+    LargeObj **link = &large_head;
     while (*link) {
         LargeObj *lo = *link;
         GCHeader *h = (GCHeader *)(lo + 1);
         if (HDR_MARKED(h)) {
             HDR_CLR_MARKED(h);
-            live_bytes += ASTRO_GC_HEADER_SIZE(h);
+            live_bytes += h->size;
             link = &lo->next;
         } else {
             *link = lo->next;
@@ -340,15 +363,15 @@ sweep_region(void)
  * -------------------------------------------------------------------------- */
 
 static void
-gc_collect_internal(CTX *c, VALUE *sp_top)
+gc_collect_internal(VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin();
+    CTX *c = gc_ctx;
 
-    if (gc->sp_high_water == NULL || sp_top > gc->sp_high_water) {
-        gc->sp_high_water = sp_top;
+    if (sp_high_water == NULL || sp_top > sp_high_water) {
+        sp_high_water = sp_top;
     } else {
-        for (VALUE *p = sp_top; p < gc->sp_high_water; p++) *p = 0;
+        for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
     struct timespec tmark = aro_gc_phase_begin();
@@ -360,10 +383,10 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     sweep_region();
     aro_gc_phase_end(treclaim, &aro_gc_stats.reclaim_seconds);
 
-    gc->bytes_since_gc = 0;
+    bytes_since_gc = 0;
     if (!aro_gc_stress) {
         size_t next = aro_gc_stats.heap_bytes * GC_THRESHOLD_FACTOR;
-        gc->gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
+        gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
     }
     aro_gc_stats.gc_count++;
     aro_gc_stats.major_count++;
@@ -374,7 +397,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
 void
 aro_gc_collect(CTX *c, VALUE *sp_top)
 {
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(sp_top);
 }
 
 size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }
