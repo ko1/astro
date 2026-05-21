@@ -53,6 +53,7 @@ uint32_t code_repo_find_locals_cnt_by_name(const char *name);
 #define ASTRO_NODEHEAD_PARENT
 #define ASTRO_NODEHEAD_JIT_STATUS
 #define ASTRO_NODEHEAD_DISPATCH_CNT
+#define ASTRO_NODEHEAD_SLOT_COUNT
 
 struct NodeHead {
     struct NodeFlags {
@@ -74,6 +75,12 @@ struct NodeHead {
 
     // use in exec
     node_dispatcher_func_t dispatcher;
+
+    // iter 60 Phase 1.5: slot_count cached on the node (= kind->slot_count).
+    // EVAL_ARG / dispatch advance use this to compute `sp + slot_count`
+    // with a SINGLE memory load (instead of `kind->slot_count` which is
+    // 2 dependent loads: kind ptr then field).  Set at ALLOC time.
+    uint32_t slot_count;
 
     enum jit_status {
         JIT_STATUS_Unknown,

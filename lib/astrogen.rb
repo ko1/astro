@@ -313,8 +313,10 @@ module ASTroGen
 
       def child_dispatch_args(slot, field)
         # Pass `sp + child.slot_count` so child receives sp at the top of
-        # its own slot area (= recursive new convention).
-        "c, #{field}, fp, sp + #{field}->head.kind->slot_count"
+        # its own slot area (= recursive new convention).  Uses
+        # `head.slot_count` (1 memory load) instead of `head.kind->slot_count`
+        # (2 dependent loads) — see Phase 1.5.
+        "c, #{field}, fp, sp + #{field}->head.slot_count"
       end
 
       # Slot count for this NODE_DEF = @child operand count + max tmp slot
@@ -584,6 +586,9 @@ module ASTroGen
             _n->head.dispatcher = #{alloc_dispatcher_expr};
             _n->head.dispatcher_name = "DISPATCH_#{@name}";
             _n->head.kind = &kind_#{@name};
+        #ifdef ASTRO_NODEHEAD_SLOT_COUNT
+            _n->head.slot_count = #{slot_count};
+        #endif
         #ifdef ASTRO_NODEHEAD_PARENT
             _n->head.parent = NULL;
         #endif
@@ -933,7 +938,7 @@ module ASTroGen
       # at the top of ITS own slot area.  For samples without sp (3-arg,
       # libgc), no transformation.
       extra_call_args = sample ? sample.prefix_call_args.drop(2).map { |a|
-        a == "sp" ? "sp + (n)->head.kind->slot_count" : a
+        a == "sp" ? "sp + (n)->head.slot_count" : a
       } : []
       extra_args_str = extra_call_args.empty? ? "" : ", " + extra_call_args.join(", ")
 

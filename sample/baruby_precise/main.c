@@ -332,7 +332,7 @@ main(int argc, char *argv[])
      * iter 60: also include ast->head.kind->slot_count so the top-level
      * NODE receives sp at the top of its own slot area (new convention). */
     c->sp = c->env + aro_toplevel_locals_cnt;
-    if (ast) c->sp += ast->head.kind->slot_count;
+    if (ast) c->sp += ast->head.slot_count;
 
     // --ccs takes effect AFTER parse so that any logging through cs_init
     // sees the post-clear state.  Then INIT() dlopens whatever's left in

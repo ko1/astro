@@ -82,10 +82,10 @@ class BaRubyNodeDef < ASTroGen::NodeDef
         # to a literal `sp + <N>` baked at SD-emit time so gcc can constant-fold.
         # Plain DISPATCH (child unknown at compile time) keeps the runtime form.
         dispatch_args = child_dispatch_args(op.sp_slot, field)
-        slot_count_re = /sp \+ #{Regexp.escape(field)}->head\.kind->slot_count/
+        slot_count_re = /sp \+ #{Regexp.escape(field)}->head\.slot_count/
         if dispatch_args.match?(slot_count_re)
           dispatch_args_format = dispatch_args.sub(slot_count_re, "sp + %u")
-          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args_format}));\\n\", DISPATCHER_NAME(#{field}), #{field}->head.kind->slot_count);"
+          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args_format}));\\n\", DISPATCHER_NAME(#{field}), #{field}->head.slot_count);"
         else
           "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args}));\\n\", DISPATCHER_NAME(#{field}));"
         end

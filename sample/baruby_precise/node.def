@@ -217,7 +217,7 @@ node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
     }
     // Zero-init callee locals (untouched by args here).
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.kind->slot_count).value);
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.slot_count).value);
 }
 
 NODE_DEF
@@ -229,7 +229,7 @@ node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.kind->slot_count).value);
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.slot_count).value);
 }
 
 NODE_DEF
@@ -242,7 +242,7 @@ node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.kind->slot_count).value);
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.slot_count).value);
 }
 
 NODE_DEF
@@ -256,7 +256,7 @@ node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
     sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, a2, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.kind->slot_count).value);
+    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt + cc->body->head.slot_count).value);
 }
 
 NODE_DEF
@@ -272,7 +272,7 @@ node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * res
     uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(sp_body);
     if (locals_cnt == 0) locals_cnt = params_cnt;
     VALUE *callee_fp = fp + arg_index;
-    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_fp + locals_cnt + sp_body->head.kind->slot_count);
+    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_fp + locals_cnt + sp_body->head.slot_count);
     return RESULT_OK(r.value);
 }
 
@@ -316,7 +316,7 @@ node_pg_call0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
         return node_pg_call0_slowpath(c, n, fp, sp);
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.kind->slot_count).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.slot_count).value);
 }
 
 NODE_DEF
@@ -328,7 +328,7 @@ node_pg_call1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.kind->slot_count).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.slot_count).value);
 }
 
 NODE_DEF
@@ -341,7 +341,7 @@ node_pg_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.kind->slot_count).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.slot_count).value);
 }
 
 NODE_DEF
@@ -355,7 +355,7 @@ node_pg_call3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
     sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, a2, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.kind->slot_count).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt + sp_body->head.slot_count).value);
 }
 
 NODE_DEF
