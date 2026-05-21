@@ -51,41 +51,58 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define HDR_SET_DIRTY(h)   ((h)->flags |= HDR_DIRTY_BIT)
 #define HDR_CLR_DIRTY(h)   ((h)->flags &= (uint8_t)~HDR_DIRTY_BIT)
 
-static char *nursery_base = NULL;
-static char *nursery_top  = NULL;
-static char *nursery_end  = NULL;
-
-static char *tenured_base = NULL;
-static char *tenured_top  = NULL;
-static char *tenured_end  = NULL;
-
-static CTX *gc_ctx = NULL;
-static VALUE *sp_high_water = NULL;
-
-// Explicit remembered set: tenured objects that have been written to since
-// the last minor GC.  Without this, every minor would scan the whole
-// tenured region looking for dirty bits.  Reset by both minor (after
-// processing) and major (full trace makes it obsolete).
-static GCHeader **remset_buf  = NULL;
-static size_t     remset_cnt  = 0;
-static size_t     remset_capa = 0;
-
-/* Adaptive major threshold (iter 29).  Without this, major fired only
- * when tenured couldn't hold worst-case promotion = effectively never
- * with 64 GiB virtual. */
+/* Adaptive major threshold (iter 29). */
 #define MAJOR_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define MAJOR_THRESHOLD_FACTOR  2
-static size_t old_alloc_since_major = 0;
-static size_t old_major_threshold = MAJOR_THRESHOLD_MIN;
+
+// ----------------------------------------------------------------------------
+// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ----------------------------------------------------------------------------
+typedef struct AstroGc {
+    char *nursery_base, *nursery_top, *nursery_end;
+    char *tenured_base, *tenured_top, *tenured_end;
+    CTX  *ctx;
+    VALUE *sp_high_water;
+    struct GCHeader **remset_buf;
+    size_t            remset_cnt;
+    size_t            remset_capa;
+    bool              remset_overflow;
+    size_t old_alloc_since_major;
+    size_t old_major_threshold;
+    struct GCHeader **gray_buf;
+    size_t            gray_cnt;
+    size_t            gray_capa;
+    char *to_top, *to_base, *from_base_cur, *from_end_cur;
+    bool  in_minor;
+} AstroGc;
+
+static AstroGc g_astro_gc;
+#define nursery_base          (g_astro_gc.nursery_base)
+#define nursery_top           (g_astro_gc.nursery_top)
+#define nursery_end           (g_astro_gc.nursery_end)
+#define tenured_base          (g_astro_gc.tenured_base)
+#define tenured_top           (g_astro_gc.tenured_top)
+#define tenured_end           (g_astro_gc.tenured_end)
+#define gc_ctx                (g_astro_gc.ctx)
+#define sp_high_water         (g_astro_gc.sp_high_water)
+#define remset_buf            (g_astro_gc.remset_buf)
+#define remset_cnt            (g_astro_gc.remset_cnt)
+#define remset_capa           (g_astro_gc.remset_capa)
+#define remset_overflow       (g_astro_gc.remset_overflow)
+#define old_alloc_since_major (g_astro_gc.old_alloc_since_major)
+#define old_major_threshold   (g_astro_gc.old_major_threshold)
+#define gray_buf              (g_astro_gc.gray_buf)
+#define gray_cnt              (g_astro_gc.gray_cnt)
+#define gray_capa             (g_astro_gc.gray_capa)
+#define to_top                (g_astro_gc.to_top)
+#define to_base               (g_astro_gc.to_base)
+#define from_base_cur         (g_astro_gc.from_base_cur)
+#define from_end_cur          (g_astro_gc.from_end_cur)
+#define in_minor              (g_astro_gc.in_minor)
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "mark_compact_gen";
-
-// Gray queue for major mark phase.
-static GCHeader **gray_buf  = NULL;
-static size_t     gray_cnt  = 0;
-static size_t     gray_capa = 0;
 
 static char *
 mmap_region(size_t bytes)
@@ -99,7 +116,11 @@ mmap_region(size_t bytes)
 void
 aro_gc_init(CTX *c)
 {
+    AstroGc *gc = &g_astro_gc;
+    memset(gc, 0, sizeof(*gc));
+    c->astro_gc = gc;
     gc_ctx = c;
+    old_major_threshold = MAJOR_THRESHOLD_MIN;
     nursery_base = mmap_region(NURSERY_BYTES);
     nursery_top  = nursery_base;
     nursery_end  = nursery_base + NURSERY_BYTES;
@@ -240,9 +261,9 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 // Write barrier
 // ---------------------------------------------------------------------------
 
-/* iter 36 remset overflow guard — see gc_mark_gen.c for rationale. */
+/* iter 36 remset overflow guard — see gc_mark_gen.c for rationale.
+ * Storage: AstroGc.remset_overflow (aliased above). */
 #define MAX_REMSET_ENTRIES (1u << 17)
-static bool remset_overflow = false;
 
 static void
 remset_push(GCHeader *h)
@@ -307,10 +328,8 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
 // Cheney copy collector
 // ---------------------------------------------------------------------------
 
-static char *to_top;          // bump pointer into to-tenured
-static char *to_base;
-static char *from_base_cur;   // active region being copied OUT of (for range check)
-static char *from_end_cur;
+// Cheney scratch (to_top / to_base / from_base_cur / from_end_cur)
+// storage moved into AstroGc — aliased above.
 
 // Copy `oldh` (already in nursery or from-tenured) into to-tenured, returning
 // the new payload pointer.  Sets oldh->fwd so future references find the
@@ -340,7 +359,7 @@ forward_obj(GCHeader *oldh)
 
 // During MINOR GC: nursery objects only (in_minor=true).
 // During MAJOR GC: all in from-tenured (and any nursery survivors).
-static bool in_minor = false;
+// Storage: AstroGc.in_minor (aliased above).
 
 static inline bool
 in_nursery(void *p)

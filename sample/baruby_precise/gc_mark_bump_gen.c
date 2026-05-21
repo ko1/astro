@@ -77,44 +77,55 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 // next pointers.  Saves 16 bytes/header and turns sweep into a
 // sequential scan (cache-friendly).
 
-static char *nursery_base = NULL;
-static char *nursery_top  = NULL;
-static char *nursery_end  = NULL;
-
-// Tenured: bump-allocated within a single mmap'd region.  No individual
-// frees (memory leaks within the region until program exit).  Sweep is
-// a sequential walk of the region (header-size-prefix), not a linked-list
-// traversal — cache-friendly and avoids per-object prev/next bookkeeping.
-// Without compaction the bump pointer never resets, so fragmentation
-// grows over time — for our short-lived benchmarks 1 GiB virtual is plenty.
-static char *tenured_base = NULL;
-static char *tenured_top  = NULL;
-static char *tenured_end  = NULL;
-
-static size_t   old_bytes   = 0;
-static size_t   old_alloc_since_major = 0;
 #define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
-static size_t   old_major_threshold = MAJOR_THRESHOLD_MIN;
 
-static CTX *gc_ctx = NULL;
-static VALUE *sp_high_water = NULL;
-static bool in_minor = false;
+// ----------------------------------------------------------------------------
+// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ----------------------------------------------------------------------------
+typedef struct AstroGc {
+    char *nursery_base, *nursery_top, *nursery_end;
+    /* Tenured: bump-allocated within a single mmap'd region. */
+    char *tenured_base, *tenured_top, *tenured_end;
+    size_t old_bytes;
+    size_t old_alloc_since_major;
+    size_t old_major_threshold;
+    CTX  *ctx;
+    VALUE *sp_high_water;
+    bool  in_minor;
+    /* Cheney scan queue for freshly-promoted-during-minor. */
+    struct GCHeader **scan_buf;
+    size_t            scan_head, scan_tail, scan_capa;
+    struct GCHeader **gray_buf;
+    size_t            gray_cnt, gray_capa;
+    struct GCHeader **remset_buf;
+    size_t            remset_cnt, remset_capa;
+    bool              remset_overflow;
+} AstroGc;
 
-// Cheney scan queue for freshly-promoted-during-minor.  Tenured objects
-// are not contiguous (malloc'd), so we can't use a "scan pointer over a
-// region".  Instead, push each promoted obj onto this queue and scan FIFO.
-static GCHeader **scan_buf  = NULL;
-static size_t     scan_head = 0;
-static size_t     scan_tail = 0;
-static size_t     scan_capa = 0;
-
-static GCHeader **gray_buf  = NULL;
-static size_t     gray_cnt  = 0;
-static size_t     gray_capa = 0;
-
-static GCHeader **remset_buf  = NULL;
-static size_t     remset_cnt  = 0;
-static size_t     remset_capa = 0;
+static AstroGc g_astro_gc;
+#define nursery_base          (g_astro_gc.nursery_base)
+#define nursery_top           (g_astro_gc.nursery_top)
+#define nursery_end           (g_astro_gc.nursery_end)
+#define tenured_base          (g_astro_gc.tenured_base)
+#define tenured_top           (g_astro_gc.tenured_top)
+#define tenured_end           (g_astro_gc.tenured_end)
+#define old_bytes             (g_astro_gc.old_bytes)
+#define old_alloc_since_major (g_astro_gc.old_alloc_since_major)
+#define old_major_threshold   (g_astro_gc.old_major_threshold)
+#define gc_ctx                (g_astro_gc.ctx)
+#define sp_high_water         (g_astro_gc.sp_high_water)
+#define in_minor              (g_astro_gc.in_minor)
+#define scan_buf              (g_astro_gc.scan_buf)
+#define scan_head             (g_astro_gc.scan_head)
+#define scan_tail             (g_astro_gc.scan_tail)
+#define scan_capa             (g_astro_gc.scan_capa)
+#define gray_buf              (g_astro_gc.gray_buf)
+#define gray_cnt              (g_astro_gc.gray_cnt)
+#define gray_capa             (g_astro_gc.gray_capa)
+#define remset_buf            (g_astro_gc.remset_buf)
+#define remset_cnt            (g_astro_gc.remset_cnt)
+#define remset_capa           (g_astro_gc.remset_capa)
+#define remset_overflow       (g_astro_gc.remset_overflow)
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
@@ -132,7 +143,11 @@ mmap_region(size_t bytes)
 void
 aro_gc_init(CTX *c)
 {
+    AstroGc *gc = &g_astro_gc;
+    memset(gc, 0, sizeof(*gc));
+    c->astro_gc = gc;
     gc_ctx = c;
+    old_major_threshold = MAJOR_THRESHOLD_MIN;
     nursery_base = mmap_region(NURSERY_BYTES);
     nursery_top  = nursery_base;
     nursery_end  = nursery_base + NURSERY_BYTES;
@@ -267,9 +282,9 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 // Write barrier
 // ---------------------------------------------------------------------------
 
-/* iter 36 remset overflow guard — see gc_mark_gen.c for rationale. */
+/* iter 36 remset overflow guard — see gc_mark_gen.c for rationale.
+ * Storage: AstroGc.remset_overflow (aliased above). */
 #define MAX_REMSET_ENTRIES (1u << 17)
-static bool remset_overflow = false;
 
 static void
 remset_push(GCHeader *h)
