@@ -321,6 +321,59 @@ iter 59 でもノイズ範囲内 (±0.01s)。 gen backend (`*_gen` 列) は
 broken だった列が修正後 0.16s で **2 win に逆転**。 AOT 修正効果が
 backend 序列にも影響している (= broken だった列が compete し直し)。
 
+### iter 61 fp 引数削除 (2026-05-21、 `ruby bench/matrix.rb --mode aot -n 3`)
+
+dispatcher signature を `(c, n, fp, sp)` から `(c, n, sp)` に縮約。
+全ての NODE_DEF body は parse-time に walker が bake した `sp_offset` /
+`callee_fp_offset` operand 経由で sp 相対に local 変数 / 引数 / callee
+フレームを参照する。 fp register (RDX) が解放されて SD chain 越し
+argument shuffle が削減、 関数呼び出し中心 / dispatcher 重い bench で
+**大幅 win** が出た。
+
+vs iter 59 AOT (copy backend で抜粋、 単位: 秒、 削減率):
+
+| bench | iter 59 | iter 61 | Δ |
+|---|---:|---:|---:|
+| ackermann | 1.49 | 1.27 | **-15%** |
+| call | 3.22 | 1.54 | **-52%** |
+| chain20 | 3.43 | 1.62 | **-53%** |
+| chain40 | 4.57 | 2.75 | **-40%** |
+| chain_add | 0.48 | 0.30 | **-37%** |
+| collatz | 0.70 | 0.33 | **-53%** |
+| compose | 0.39 | 0.24 | **-38%** |
+| deep_const | 1.73 | 1.21 | **-30%** |
+| early_return | 1.01 | 0.32 | **-68%** |
+| fannkuch | 0.26 | 0.16 | **-38%** |
+| fib | 1.83 | 1.11 | **-39%** |
+| gcd | 0.81 | 0.36 | **-56%** |
+| hash_chain | 0.30 | 0.16 | **-47%** |
+| interp_calc | 0.28 | 0.21 | **-25%** |
+| json_parse | 0.46 | 0.36 | **-22%** |
+| life | 0.25 | 0.14 | **-44%** |
+| list_alloc | 0.25 | 0.16 | **-36%** |
+| list_sort | 0.31 | 0.19 | **-39%** |
+| loop | 0.22 | 0.09 | **-59%** |
+| nqueens | 0.17 | 0.08 | **-53%** |
+| **prime_count** | **4.67** | **0.52** | **-89%** |
+| sieve | 1.00 | 0.74 | -26% |
+| string_concat | 0.11 | 0.08 | -27% |
+| string_concat_dyn | 0.37 | 0.30 | -19% |
+| substr_churn | 0.50 | 0.33 | -34% |
+| tak | 0.26 | 0.17 | -35% |
+| tokenize | 0.42 | 0.32 | -24% |
+
+最大は **prime_count -89%** (4.67 → 0.52s)。 inner loop が trial-division
+で dispatcher heavy、 GC pressure ゼロ。 fp register 開放が直接効いた典型。
+逆に GC-bound な bench (binary_trees / cons_list / list_alloc 等) は
+20-35% 程度で、 dispatcher overhead 比率の差がそのまま改善幅の差に出ている。
+
+oracle: 15 backend × 35 bench × `-n 3` で **0 FAIL / 0 FATAL** 完走。 全
+backend で同 perf 改善傾向 (列ごとの順位は iter 59 とほぼ同じ、 absolute
+値が一律 -25〜-40% シフト)。
+
+実装詳細は [done.md (61)](done.md) と [`iter61_aot_matrix.md`](../bench-results/iter61_aot_matrix.md)
+の完全 matrix を参照。
+
 ### naruby-style int benches (iter 59、 AOT mode、 9 backend subset)
 
 `sample/naruby/bench/` から 15 個の **GC を実質触らない int-heavy 計算

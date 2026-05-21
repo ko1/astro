@@ -5,6 +5,19 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 ベンチは [perf.md](perf.md)、 完了履歴は [done.md](done.md)。 設計の経緯は
 [`docs/gc_design.md`](../../../docs/gc_design.md)。
 
+## 直近 (iter 61 状態)
+
+- [x] ~~**fp 引数完全削除 (dispatcher signature を 3-arg 化)**~~ — 2026-05-21
+      解決 ([done.md (61)](done.md))。 lget/lset.sp_offset と
+      call/call2/call_static.callee_fp_offset を parse-end walker で bake。
+      AOT で **prime_count -89% / call -52% / chain20 -53% / fib -39%** 等
+      大幅 win。 15 backend × 35 bench × `-n 3` で plain + AOT 両方 oracle pass。
+- [ ] **walker の framework 化** — `baruby_parse.c::walk_bake_sp_offset` は
+      hand-write で全 NODE kind を列挙 (~200 行)。 HASH 系と同じ仕組みで
+      astrogen.rb に per-kind child-walk callback の gen task を追加して
+      自動生成に畳む。 lget/lset/call の operand bake と call_N args の
+      chain += callee_locals_cnt 計算は special-case として残す。
+
 ## 直近 (iter 59 状態)
 
 - [x] ~~**AOT loader が非 gen backend × array-write bench で silently 壊れていた**~~ —

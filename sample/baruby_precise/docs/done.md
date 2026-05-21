@@ -3,6 +3,84 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-21 (61) — fp 引数完全削除 (dispatcher signature を 3-arg 化)
+
+baruby_precise の dispatcher convention を `(c, n, fp, sp)` 4 引数から
+`(c, n, sp)` 3 引数に縮約。 各 NODE_DEF body は parse-time に walker が
+bake した `sp_offset` / `callee_fp_offset` operand 経由で sp 相対に
+ローカル変数 / 引数 / callee フレームを参照する。
+
+### 経緯
+
+iter 60 で `child-self-advance` 規約 (= 各 dispatcher が body 入口で
+`sp += slot_count` する) が定着し、 sp 上の位置関係が一意化。 これで
+fp = sp - locals - chain で再構成できることが parse-time に static に
+計算可能になった。 walker が AST を辿って各 lget/lset の
+`sp_offset = index - chain - locals_cnt` と各 call/call2/call_static の
+`callee_fp_offset = arg_index - chain - locals_cnt` を operand に焼く。
+runtime は sp + offset を一発で読むだけ。
+
+### 主要変更
+
+- `baruby_gen.rb`: `common_param_count` 4→3、 `child_dispatch_args` を
+  `"c, field, sp"` に override
+- `node.h`: `EVAL` / `BARUBY_EVAL_ARG` / slowpath decl から fp を削除、
+  `node_dispatcher_func_t` typedef も 3-arg 化
+- `context.h`: `CTX` 構造体から fp フィールド削除
+- `node.def`:
+  - `node_lget` / `node_lset` に `int32_t sp_offset` operand 追加、
+    `fp[index]` → `sp[sp_offset]`
+  - `node_call` / `node_call2` / `node_call_static` に `int32_t
+    callee_fp_offset` operand 追加、 `fp + arg_index` → `sp + callee_fp_offset`
+  - `node_call_builtin`: `fp[i]` → `sp[-params_cnt + i]` (= callee
+    frame top の下に既に args が並んでいる前提)
+- `baruby_parse.c`: `walk_bake_sp_offset` 追加 (~200 行)。
+  callsite_resolve 完了後 (= forward-ref の locals_cnt patch 後) に
+  toplevel + 全 code_repo entry を walk。 各 NODE kind について:
+  - 構造ノード (seq/if/while/return/binop/ary_lit_N/aget/aset/...) は
+    child_chain = chain + n->head.slot_count で子に再帰
+  - lget/lset/call/call2/call_static は operand bake + 必要なら子に再帰
+  - call_N / pg_call_N は args について chain += callee_locals_cnt
+    (= 子は sp + locals_cnt 起点で evaluate されるため)
+  - lget/lset/call 系で operand 書き換えた後 `clear_hash` で HASH cache
+    invalidate (HASH には sp_offset / callee_fp_offset が含まれるため)
+  - ALLOC_node_lget / lset / call / call_static の全 call site で
+    INT32_MIN sentinel を渡し、 walker が後で本値を書く
+- `node_slowpath.c`: 全 slowpath を 3-arg signature に。 `sp_dispatch_via_fp`
+  を `sp_dispatch_via_callee_fp_offset` に rename、 `n->u.node_call.callee_fp_offset`
+  を直接参照。 旧 `sp + 16` magic を `n->u.node_call_N.locals_cnt` に修正
+  (fastpath と整合させて walker bake と矛盾しないように)
+- `main.c`: `c->fp` 初期化削除、 `EVAL(c, ast, c->sp)`、 walker が iter
+  できるよう `code_repo_count` / `code_repo_body_at` / `code_repo_locals_cnt_at`
+  accessor を export
+
+### 検証
+
+oracle: 15 backend × 35 bench × `-n 3` で **0 FAIL / 0 FATAL** 完走
+(plain mode + AOT mode 両方)。
+
+perf (AOT, copy backend、 抜粋): 詳細は [perf.md §2 iter 61 セクション](perf.md)。
+
+- prime_count 4.67 → 0.52s (**-89%**) — inner loop が trial-division で
+  dispatcher heavy、 GC pressure ゼロ。 fp register 開放 + arg shuffle
+  削減が直接効いた典型例。
+- 関数呼び出し中心の bench (call / chain20 / collatz / early_return /
+  loop / nqueens) で **-50%〜-68%**。 SD chain 越し fp の引き回しが
+  なくなって register pressure 減 + spilll/reload 削減。
+- GC-bound bench (binary_trees / cons_list / list_alloc / fib_pair 等)
+  は -22〜-36%。 dispatcher overhead 比率がそのまま改善幅に出る。
+
+### 制限と将来の整理
+
+walker は `walk_bake_sp_offset` で全 NODE kind を hand-write 列挙
+(~200 行)。 framework (`astrogen.rb`) に generic な per-kind child-walk
+callback を入れて自動生成にする refactor が次の候補 (= HASH 系と同じ
+形)。 別 iter で対応予定。
+
+`node_scope` は現 parser から使われないので tail-EVAL に簡略化のみ。
+将来 lexical scope が parser に追加されたら `envsize` を walker の
+recurse 時 locals_cnt として渡す処理が必要。
+
 ## 2026-05-20 (59) — AOT 読込壊れ修正 (`aro_gc_wb` undefined symbol)
 
 `bench/hash_chain.ba.rb` で AOT 速度が plain と同じだったのを perf で
