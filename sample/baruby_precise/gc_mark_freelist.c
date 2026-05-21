@@ -220,28 +220,6 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     return aro_gc_alloc(c, KIND_PAYLOAD_BYTE, payload_size);
 }
 
-void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
-{
-    VALUE *sp_top = c->sp;
-    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
-    GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = HDR_KIND(oldh);
-    size_t old_size = ASTRO_GC_HEADER_SIZE(oldh);
-    size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    /* Root old via sp_top[0] so collection during alloc keeps it live.
-     * Non-moving: pointer unchanged after GC. */
-    sp_top[0] = (VALUE)old;
-
-    c->sp = sp_top + 1;
-    void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(c, new_size)
-        : aro_gc_alloc(c, kind, new_size);
-    c->sp = sp_top;
-    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
-    return newp;
-}
-
 /* Write barrier: non-generational, so gc.h's static-inline no-op is used. */
 
 /* --------------------------------------------------------------------------
@@ -397,3 +375,17 @@ aro_gc_fini(CTX *c)
     c->astro_gc = NULL;
 }
 
+
+AroGcKind
+aro_gc_kind_of(void *p)
+{
+    GCHeader *h = (GCHeader *)p - 1;
+    return HDR_KIND(h);
+}
+
+size_t
+aro_gc_size_of(void *p)
+{
+    GCHeader *h = (GCHeader *)p - 1;
+    return h->size;
+}

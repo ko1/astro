@@ -193,8 +193,20 @@ void *aro_gc_alloc_byte(CTX *c, size_t payload_size);
 /* aro_gc_realloc_payload — grow a payload, copying contents.  Preserves
  * the kind/scanability of the original payload.  Same c->sp contract;
  * internally bumps c->sp by 1 to park the old payload during the
- * inner alloc (so it stays scanned through any GC). */
+ * inner alloc (so it stays scanned through any GC).
+ *
+ * Default impl lives in gc_common.c and calls back into the backend
+ * via aro_gc_kind_of / aro_gc_size_of (declared below).  Backends with
+ * no per-object header (gc_none) override aro_gc_realloc_payload
+ * themselves and don't implement the accessors. */
 void *aro_gc_realloc_payload(CTX *c, void *p, size_t new_size);
+
+/* Backend-provided header accessors — given a payload pointer (the
+ * value returned by aro_gc_alloc / aro_gc_alloc_byte), return the
+ * stored kind / size.  Used by the shared aro_gc_realloc_payload
+ * default in gc_common.c. */
+AroGcKind aro_gc_kind_of(void *payload);
+size_t    aro_gc_size_of(void *payload);
 
 void  aro_gc_collect(CTX *c);
 

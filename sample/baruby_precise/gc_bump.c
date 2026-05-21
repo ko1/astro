@@ -102,22 +102,6 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     return payload;
 }
 
-void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
-{
-    VALUE *sp_top = c->sp;
-    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
-    GCHeader *oldh = (GCHeader *)old - 1;
-    AroGcKind kind = (AroGcKind)oldh->kind;
-    size_t old_size = oldh->size;
-    size_t copy_bytes = old_size < new_size ? old_size : new_size;
-    void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(c, new_size)
-        : aro_gc_alloc(c, kind, new_size);
-    if (copy_bytes) memcpy(newp, old, copy_bytes);
-    return newp;
-}
-
 void
 aro_gc_collect(CTX *c)
 {
@@ -138,3 +122,17 @@ aro_gc_fini(CTX *c)
     c->astro_gc = NULL;
 }
 
+
+AroGcKind
+aro_gc_kind_of(void *p)
+{
+    GCHeader *h = (GCHeader *)p - 1;
+    return (AroGcKind)h->kind;
+}
+
+size_t
+aro_gc_size_of(void *p)
+{
+    GCHeader *h = (GCHeader *)p - 1;
+    return h->size;
+}

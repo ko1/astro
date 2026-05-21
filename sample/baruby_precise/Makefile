@@ -90,6 +90,15 @@ GC_NUM_mark_freelist    := 16
 GC_NUM := $(GC_NUM_$(GC))
 GC_SRC := gc_$(GC).c
 
+# gc_common.c hosts the default aro_gc_realloc_payload (header-aware).
+# gc_none has no GCHeader, so it provides its own realloc_payload and
+# we exclude the default to avoid multiple-definition.
+ifeq ($(GC),none)
+GC_COMMON_SRC :=
+else
+GC_COMMON_SRC := gc_common.c
+endif
+
 ifeq ($(GC_NUM),)
 $(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist)
 endif
@@ -110,7 +119,7 @@ BARUBY_PRECISE_DIR := $(abspath .)
 RUNTIME_ABSPATH    := $(abspath $(RUNTIME))
 PRISM_INC_ABSPATH  := $(abspath ./prism/include)
 
-baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(GC_SRC) gc.h $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
+baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(GC_COMMON_SRC) $(GC_SRC) gc.h $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
 	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
             -DBARUBY_GC=$(GC_NUM) \
@@ -119,7 +128,7 @@ baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_
             -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
             $(if $(ASTRO_DEBUG),-DASTRO_DEBUG=$(ASTRO_DEBUG)) \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
-            -o baruby_precise main.c node.c node_slowpath.c baruby_parse.c astro_jit.c $(GC_SRC) -lprism -ldl
+            -o baruby_precise main.c node.c node_slowpath.c baruby_parse.c astro_jit.c $(GC_COMMON_SRC) $(GC_SRC) -lprism -ldl
 
 node_eval.c: ../../lib/* node.def baruby_gen.rb
 	ruby -I ../../lib -r ./baruby_gen -e 'ASTroGen.start([], node_def_class: BaRubyNodeDef)'
