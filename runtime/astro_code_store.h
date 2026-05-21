@@ -42,59 +42,25 @@ void astro_cs_reload(void);
 void astro_cs_disasm(NODE *n);
 
 // ---------------------------------------------------------------------------
-// Static (linker-resolved) code store — used by `--generate-executable`.
-//
-// In dlopen mode the code store finds SD_<hash> via dlsym at runtime.  In
-// static mode (= the exe build path), the SD functions are linked directly
-// into the exe and a static table maps hash → function pointer.
-// astro_cs_load consults this table BEFORE falling back to the dlopen
-// path, so a hybrid build (some static + some dlopen) works seamlessly.
-//
-// `name` is optional metadata for diagnostics (objdump / --disasm).  Pass
-// NULL if not needed.
+// Per-process SD compile log (--generate-executable support)
 // ---------------------------------------------------------------------------
-
-struct astro_cs_static_entry {
-    node_hash_t hash;
-    node_dispatcher_func_t func;
-    const char *name;          // "SD_<hash>" or NULL
-};
-
-// Register a static SD table.  `n` is the number of entries.  Subsequent
-// astro_cs_load calls consult this table first.  Safe to call multiple
-// times (entries accumulate); pass NULL to clear (n is ignored).
-void astro_cs_static_init(struct astro_cs_static_entry *table, size_t n);
-
-// Emit a complete C source file defining the static SD lookup table.
-// Each call to astro_cs_compile(entry, NULL) registers the entry's hash
-// internally; this function reads that list, writes extern decls for
-// every SD symbol and a sentinel-terminated static_entry array.
 //
-//   sd_proto_macro — preprocessor name expanding to an SD declaration
-//                    with one argument (the function name).  E.g.:
-//                       #define ASTRO_SD_PROTO(N) RESULT N(CTX *, NODE *, VALUE *)
-//                    The host writes this macro before including the
-//                    emitted file (typically via the host's node.h).
-//                    Pass NULL to use the default name "ASTRO_SD_PROTO".
+// When `astro_cs_log_compiles` is true, every astro_cs_compile call —
+// whether it freshly emits the SD source or hits the on-disk cache —
+// records `(hash, SD_<hash>)` in an internal log.  The exe-build
+// helper iterates this log to know which SD_*.c files to link and
+// which SD symbols to bake into the embedded AST's dispatcher slots.
 //
-// The emitted file looks like:
-//
-//      ASTRO_SD_PROTO(SD_abcd);
-//      ASTRO_SD_PROTO(SD_ef01);
-//      struct astro_cs_static_entry astro_cs_static_table[] = {
-//          { 0xabcd, (node_dispatcher_func_t)SD_abcd, "SD_abcd" },
-//          { 0xef01, (node_dispatcher_func_t)SD_ef01, "SD_ef01" },
-//          { 0, 0, 0 },
-//      };
-//      size_t astro_cs_static_table_size = 2;
-//
-// The exe build links this file alongside the SD_*.o files; the exe
-// driver calls astro_cs_static_init(astro_cs_static_table,
-// astro_cs_static_table_size) right after astro_cs_init.
-void astro_cs_emit_static_table(FILE *fp, const char *sd_proto_macro);
+// Off by default (recording costs memory and is irrelevant for the
+// REPL / JIT / dlopen paths).  astro_build_aot_executable turns it
+// on internally before its bake pass.
 
-// Reset the per-compile registry of static SD entries (call between
-// compile sessions).  Idempotent.
-void astro_cs_reset_static_registry(void);
+extern bool astro_cs_log_compiles;
+
+uint32_t astro_cs_compile_log_size(void);
+void     astro_cs_compile_log_get(uint32_t i,
+                                  node_hash_t *out_hash,
+                                  const char **out_name);
+void     astro_cs_reset_compile_log(void);
 
 #endif

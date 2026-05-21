@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <limits.h>
-#include <dirent.h>
 
 #include "context.h"
 #include "object.h"
@@ -16,10 +15,9 @@ NODE *koruby_parse(const char *src, size_t len, const char *filename);
 
 extern void sc_repo_clear(void);
 
-/* code store + build orchestrator + ast emit (via node.c). */
+/* code store + build orchestrator (via node.c). */
 #include "../../runtime/astro_code_store.h"
 #include "../../runtime/astro_build.h"
-#include "../../runtime/astro_node.h"
 
 #ifndef KORUBY_SRC_DIR_DEFAULT
 #define KORUBY_SRC_DIR_DEFAULT "."
@@ -99,60 +97,13 @@ extern void koruby_eval_bootstrap(CTX *c);
 extern int  koruby_run_ast(CTX *c, NODE *ast);
 
 /* --generate-executable FILE — bake the parsed AST + AOT-compiled SDs
- * into a standalone exe at FILE.  Returns exit code. */
+ * into a standalone exe at FILE.  Returns exit code.  Operates on a
+ * local copy of bcfg so the static cflag/ldflag arrays don't escape
+ * into the caller's heap-tracked config. */
 static int
 koruby_generate_executable(NODE *ast,
                            const struct astro_build_config *bcfg_in)
 {
-    /* Embed AST in DAG mode (koruby has shared nodes — method bodies in
-     * code_repo are also reachable from the main AST via node_def).  */
-    FILE *fp = fopen("_embed.c", "w");
-    if (!fp) { perror("_embed.c"); return 1; }
-    astro_emit_ast_c_program(fp, ast, "astro_build_embedded_ast", "node.h");
-    fclose(fp);
-
-    /* Static SD table. */
-    fp = fopen("_static_table.c", "w");
-    if (!fp) { perror("_static_table.c"); return 1; }
-    astro_cs_emit_static_table(fp, "ASTRO_SD_PROTO");
-    fclose(fp);
-
-    /* Enumerate SD_*.c / PGSD_*.c. */
-    const char **sd_files = NULL;
-    size_t sd_n = 0, sd_capa = 0;
-    DIR *d = opendir("code_store/c");
-    if (d) {
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL) {
-            const char *nm = ent->d_name;
-            size_t l = strlen(nm);
-            if (l < 5) continue;
-            if (strcmp(nm + l - 2, ".c") != 0) continue;
-            if (strncmp(nm, "SD_", 3) != 0 &&
-                strncmp(nm, "PGSD_", 5) != 0) continue;
-            if (sd_n + 1 >= sd_capa) {
-                sd_capa = sd_capa == 0 ? 16 : sd_capa * 2;
-                sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
-            }
-            char *full = malloc(l + 32);
-            snprintf(full, l + 32, "code_store/c/%s", nm);
-            sd_files[sd_n++] = full;
-        }
-        closedir(d);
-    }
-    if (sd_n + 1 >= sd_capa) {
-        sd_capa = sd_n + 1;
-        sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
-    }
-    sd_files[sd_n] = NULL;
-
-    size_t extra_n = 2 + sd_n + 1;
-    const char **extras = malloc(sizeof(*extras) * extra_n);
-    extras[0] = "_embed.c";
-    extras[1] = "_static_table.c";
-    for (size_t i = 0; i < sd_n; i++) extras[2 + i] = sd_files[i];
-    extras[2 + sd_n] = NULL;
-
     struct astro_build_config bcfg = *bcfg_in;
     bcfg.src_dir = KORUBY_SRC_DIR_DEFAULT;
     bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
@@ -161,18 +112,15 @@ koruby_generate_executable(NODE *ast,
         "bootstrap_src.c", "koruby_runtime.c", "exe_main.c", NULL,
     };
     bcfg.sources = sources;
-    bcfg.extra_sources_abs = extras;
 
-    /* koruby links prism + libgc + GMP — pass through as ldflags.  We
-     * keep these fixed for now; mini-gmp / different libc combos can
-     * be wired in later by exposing them via build flags. */
-    const char *koruby_ldflags[] = {
+    /* koruby links prism + libgc + GMP. */
+    static const char *koruby_ldflags[] = {
         "-Wl,-rpath", KORUBY_SRC_DIR_DEFAULT "/prism/build",
         "-L", KORUBY_SRC_DIR_DEFAULT "/prism/build",
         "-lprism", "-lgc", "-lgmp", "-lm",
         NULL,
     };
-    const char *koruby_cflags[] = {
+    static const char *koruby_cflags[] = {
         "-I" KORUBY_SRC_DIR_DEFAULT "/prism/include",
         "-Wno-unused-function", "-Wno-unused-variable",
         "-Wno-unused-parameter", "-Wno-unused-but-set-variable",
@@ -181,16 +129,7 @@ koruby_generate_executable(NODE *ast,
     if (!bcfg.extra_ldflags) bcfg.extra_ldflags = koruby_ldflags;
     if (!bcfg.extra_cflags)  bcfg.extra_cflags  = koruby_cflags;
 
-    int rc = astro_build_executable(&bcfg);
-
-    if (!bcfg.keep_intermediates) {
-        unlink("_embed.c");
-        unlink("_static_table.c");
-    }
-    free(extras);
-    for (size_t i = 0; i < sd_n; i++) free((void *)sd_files[i]);
-    free(sd_files);
-    return rc;
+    return astro_build_aot_executable(ast, &bcfg, "code_store");
 }
 
 int main(int argc, char *argv[])
@@ -344,7 +283,10 @@ int main(int argc, char *argv[])
         generate_specialized_code(ast);
     }
     if (g_aot_compile || bcfg.out_exe) {
-        /* Generate per-method SD_<hash>.c, then build all.so via make. */
+        /* Generate per-method SD_<hash>.c.  For --generate-executable
+         * we also turn on the framework's compile log so the exe build
+         * step knows which SDs to link. */
+        if (bcfg.out_exe) astro_build_begin_aot_session();
         fprintf(stderr, "[koruby] AOT compile: writing SD_*.c\n");
         astro_cs_compile(ast, NULL);
         for (uint32_t i = 0; i < code_repo.size; i++) {
@@ -362,6 +304,7 @@ int main(int argc, char *argv[])
     }
     if (bcfg.out_exe) {
         int erc = koruby_generate_executable(ast, &bcfg);
+        astro_build_end_aot_session();
         astro_build_config_dispose(&bcfg);
         return erc;
     }

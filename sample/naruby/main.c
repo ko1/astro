@@ -4,10 +4,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <dirent.h>
 #include "node.h"
 #include "astro_code_store.h"
-#include "astro_node.h"
 #include "astro_build.h"
 #include "astro_jit.h"
 
@@ -127,60 +125,13 @@ clear_code_store_dir(void)
 // been built and (optionally) AOT-baked into code_store/c/SD_*.c.
 //
 // Writes _embed.c (DAG-aware AST builder) and _static_table.c, then
-// dispatches to astro_build_executable() with the right source list.
+// dispatches to astro_build_aot_executable() with the right source list.
+// Operates on a local copy so we don't accidentally store static arrays
+// into the caller's config (which astro_build_config_dispose() would
+// later try to free as if heap-allocated).
 static int
-generate_naruby_executable(NODE *ast,
-                           const struct astro_build_config *bcfg_in)
+generate_naruby_executable(NODE *ast, const struct astro_build_config *bcfg_in)
 {
-    // Emit the embedded AST builder (DAG mode — naruby has node
-    // sharing via function bodies referenced from multiple sites).
-    FILE *fp = fopen("_embed.c", "w");
-    if (!fp) { perror("_embed.c"); return 1; }
-    astro_emit_ast_c_program(fp, ast, "astro_build_embedded_ast", "node.h");
-    fclose(fp);
-
-    // Emit the static SD lookup table.
-    fp = fopen("_static_table.c", "w");
-    if (!fp) { perror("_static_table.c"); return 1; }
-    astro_cs_emit_static_table(fp, "ASTRO_SD_PROTO");
-    fclose(fp);
-
-    // Enumerate SD_*.c / PGSD_*.c in code_store/c/.
-    const char **sd_files = NULL;
-    size_t sd_n = 0, sd_capa = 0;
-    DIR *d = opendir("code_store/c");
-    if (d) {
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL) {
-            const char *nm = ent->d_name;
-            size_t l = strlen(nm);
-            if (l < 5) continue;
-            if (strcmp(nm + l - 2, ".c") != 0) continue;
-            if (strncmp(nm, "SD_", 3) != 0 &&
-                strncmp(nm, "PGSD_", 5) != 0) continue;
-            if (sd_n + 1 >= sd_capa) {
-                sd_capa = sd_capa == 0 ? 16 : sd_capa * 2;
-                sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
-            }
-            char *full = malloc(l + 32);
-            snprintf(full, l + 32, "code_store/c/%s", nm);
-            sd_files[sd_n++] = full;
-        }
-        closedir(d);
-    }
-    if (sd_n + 1 >= sd_capa) {
-        sd_capa = sd_n + 1;
-        sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
-    }
-    sd_files[sd_n] = NULL;
-
-    size_t extra_n = 2 + sd_n + 1;
-    const char **extras = malloc(sizeof(*extras) * extra_n);
-    extras[0] = "_embed.c";
-    extras[1] = "_static_table.c";
-    for (size_t i = 0; i < sd_n; i++) extras[2 + i] = sd_files[i];
-    extras[2 + sd_n] = NULL;
-
     struct astro_build_config bcfg = *bcfg_in;
     bcfg.src_dir = NARUBY_SRC_DIR;
     bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
@@ -188,24 +139,11 @@ generate_naruby_executable(NODE *ast,
         "node.c", "node_slowpath.c", "naruby_runtime.c", "exe_main.c", NULL,
     };
     bcfg.sources = sources;
-    bcfg.extra_sources_abs = extras;
-    // Naruby's SD code uses gcc's intra-.so symbol resolution to bake
-    // direct calls between SDs.  In an exe build there's no .so, so we
-    // skip -Wl,-Bsymbolic; the exe's flat namespace already gives us
-    // direct call resolution.
-    const char *extra_cflags[] = { "--param=early-inlining-insns=100", NULL };
+    static const char *extra_cflags[] = {
+        "--param=early-inlining-insns=100", NULL,
+    };
     if (!bcfg.extra_cflags) bcfg.extra_cflags = extra_cflags;
-
-    int rc = astro_build_executable(&bcfg);
-
-    if (!bcfg.keep_intermediates) {
-        unlink("_embed.c");
-        unlink("_static_table.c");
-    }
-    free(extras);
-    for (size_t i = 0; i < sd_n; i++) free((void *)sd_files[i]);
-    free(sd_files);
-    return rc;
+    return astro_build_aot_executable(ast, &bcfg, "code_store");
 }
 
 int
@@ -274,8 +212,9 @@ main(int argc, char *argv[])
     }
 
     if (bcfg.out_exe) {
-        // AOT-bake into code_store unless --plain.  The static table
-        // emitter reads the same compile log.
+        // Begin AOT session — turns on the framework's compile log so
+        // each astro_cs_compile records its SD for the exe link step.
+        astro_build_begin_aot_session();
         if (!OPTION.plain) {
             astro_cs_compile(ast, NULL);
             uint32_t n = naruby_code_repo_size();
@@ -286,6 +225,7 @@ main(int argc, char *argv[])
             }
         }
         int rc = generate_naruby_executable(ast, &bcfg);
+        astro_build_end_aot_session();
         astro_build_config_dispose(&bcfg);
         return rc;
     }

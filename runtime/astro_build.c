@@ -4,6 +4,8 @@
 // astro_code_store.c).  Stand-alone unit; no NODE / specializer hooks.
 
 #include "astro_build.h"
+#include "astro_code_store.h"
+#include "astro_node.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -429,4 +431,98 @@ astro_build_executable(const struct astro_build_config *cfg)
     }
 
     return ret;
+}
+
+// ---------------------------------------------------------------------------
+// One-shot AOT executable builder
+// ---------------------------------------------------------------------------
+
+void
+astro_build_begin_aot_session(void)
+{
+    astro_cs_reset_compile_log();
+    astro_cs_log_compiles = true;
+}
+
+void
+astro_build_end_aot_session(void)
+{
+    astro_cs_log_compiles = false;
+    astro_cs_reset_compile_log();
+}
+
+int
+astro_build_aot_executable(struct Node *root,
+                           struct astro_build_config *cfg,
+                           const char *code_store_dir)
+{
+    if (!root || !cfg || !cfg->out_exe) {
+        fprintf(stderr, "astro_build_aot_executable: missing root / cfg / out_exe\n");
+        return 1;
+    }
+    if (!code_store_dir) code_store_dir = "code_store";
+
+    // 1. Emit _embed.c.  astro_emit_ast_c_program walks the compile log
+    // and bakes dispatcher pointers directly, plus ASTRO_SD_PROTO
+    // forward decls for every SD it links to.
+    const char *embed_path = "_embed.c";
+    FILE *fp = fopen(embed_path, "w");
+    if (!fp) { perror(embed_path); return 1; }
+    astro_emit_ast_c_program(fp, root, "astro_build_embedded_ast", "node.h");
+    fclose(fp);
+
+    // 2. Compose the SD path list from the compile log.
+    uint32_t n_sd = astro_cs_compile_log_size();
+    const char **sd_paths = NULL;
+    if (n_sd > 0) {
+        sd_paths = calloc(n_sd, sizeof(*sd_paths));
+        for (uint32_t i = 0; i < n_sd; i++) {
+            node_hash_t h;
+            const char *sd_name = NULL;
+            astro_cs_compile_log_get(i, &h, &sd_name);
+            (void)h;
+            if (!sd_name) continue;
+            size_t cap = strlen(code_store_dir) + 4 + strlen(sd_name) + 4;
+            char *path = malloc(cap);
+            snprintf(path, cap, "%s/c/%s.c", code_store_dir, sd_name);
+            sd_paths[i] = path;
+        }
+    }
+
+    // 3. Build extra_sources_abs = [_embed.c, sd_paths..., NULL].
+    size_t extras_cap = 1 + n_sd + 1;
+    const char **extras = malloc(sizeof(*extras) * extras_cap);
+    extras[0] = embed_path;
+    for (uint32_t i = 0; i < n_sd; i++) extras[1 + i] = sd_paths[i];
+    extras[1 + n_sd] = NULL;
+
+    // Preserve any extras already set by the caller and chain them in.
+    const char *const *prev_extras = cfg->extra_sources_abs;
+    if (prev_extras) {
+        // Reallocate with room for both.
+        size_t prev_n = 0;
+        while (prev_extras[prev_n]) prev_n++;
+        const char **merged = malloc(sizeof(*merged) * (1 + n_sd + prev_n + 1));
+        size_t k = 0;
+        merged[k++] = embed_path;
+        for (uint32_t i = 0; i < n_sd; i++) merged[k++] = sd_paths[i];
+        for (size_t i = 0; i < prev_n; i++) merged[k++] = prev_extras[i];
+        merged[k] = NULL;
+        free(extras);
+        extras = merged;
+    }
+    cfg->extra_sources_abs = extras;
+
+    // 4. Invoke the toolchain.
+    int rc = astro_build_executable(cfg);
+
+    // 5. Cleanup intermediates (unless caller asked to keep).
+    if (!cfg->keep_intermediates) {
+        unlink(embed_path);
+    }
+    cfg->extra_sources_abs = prev_extras;
+    for (uint32_t i = 0; i < n_sd; i++) free((void *)sd_paths[i]);
+    free(sd_paths);
+    free(extras);
+    return rc;
 }

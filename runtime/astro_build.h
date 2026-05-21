@@ -103,4 +103,40 @@ void astro_build_config_dispose(struct astro_build_config *cfg);
 // must be set; other fields default sensibly.
 int astro_build_executable(const struct astro_build_config *cfg);
 
+// ---------------------------------------------------------------------------
+// One-shot AOT executable builder
+// ---------------------------------------------------------------------------
+//
+// Wraps the common end of every sample's `--generate-executable` path:
+//
+//   1. Emit `_embed.c` via astro_emit_ast_c_program (= DAG-aware AST
+//      builder + per-node dispatcher patches + ASTRO_SD_PROTO forward
+//      decls for every linked-in SD).
+//   2. Walk the framework's per-process compile log (populated by
+//      preceding astro_cs_compile calls) and translate each entry into
+//      a `<store_dir>/c/<name>.c` path.
+//   3. Append `_embed.c` + the SD paths to cfg->extra_sources_abs.
+//   4. Invoke astro_build_executable.
+//   5. Unlink intermediates unless cfg->keep_intermediates.
+//
+// The caller is responsible for everything BEFORE this helper:
+//   - turning `astro_cs_log_compiles = true` so the bake passes are
+//     recorded (this helper does that internally too, but the bake
+//     calls are language-specific — only the sample knows how to
+//     iterate its code_repo);
+//   - calling astro_cs_compile on the program AST and every method /
+//     function body.
+//
+// `code_store_dir` defaults to "code_store" if NULL.
+int astro_build_aot_executable(struct Node *root,
+                               struct astro_build_config *cfg,
+                               const char *code_store_dir);
+
+// Convenience wrapper around the cs flag.  Call before the bake loop
+// to start logging, and (optionally) after astro_build_aot_executable
+// to turn it back off / clear the log between sessions.
+struct Node;
+void astro_build_begin_aot_session(void);
+void astro_build_end_aot_session(void);
+
 #endif // ASTRO_BUILD_H

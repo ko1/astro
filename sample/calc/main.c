@@ -3,10 +3,6 @@
 #include "parse.h"
 #include "astro_code_store.h"
 #include "astro_build.h"
-#include "astro_node.h"
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #ifdef USE_READLINE
 #include <readline/readline.h>
@@ -27,72 +23,13 @@ struct calc_option OPTION;
 #define ASTRO_RUNTIME_DIR "."
 #endif
 
-// Build a standalone exe from a single -e expression.  Steps:
-//   1. parse + AST construction (already done by caller)
-//   2. astro_cs_compile → SD_<hash>.c in code_store/c/
-//   3. emit _embed.c (ASTRO_BUILD_EMBEDDED_AST function)
-//   4. emit _static_table.c (static SD table)
-//   5. call astro_build_executable with the right source list
+// Build a standalone exe from a single -e expression.  Caller is
+// responsible for the bake pass (astro_cs_compile) — we just call into
+// the framework's one-shot helper.  Local-copy the config so the
+// caller's heap-tracking (astro_build_config_dispose) isn't confused.
 static int
 generate_executable(NODE *ast, const struct astro_build_config *bcfg_in)
 {
-    // SD_*.c generation is the caller's responsibility (so they can
-    // honor --no-compile).  We only emit the embed/table files and
-    // collect whatever SD_*.c happens to live in code_store/c/.
-
-    // Emit _embed.c next to the calc binary's CWD.
-    char embed_path[] = "_embed.c";
-    FILE *fp = fopen(embed_path, "w");
-    if (!fp) { perror(embed_path); return 1; }
-    astro_emit_ast_c_file(fp, ast, "astro_build_embedded_ast", "node.h");
-    fclose(fp);
-
-    // Emit _static_table.c.
-    char table_path[] = "_static_table.c";
-    fp = fopen(table_path, "w");
-    if (!fp) { perror(table_path); return 1; }
-    astro_cs_emit_static_table(fp, "ASTRO_SD_PROTO");
-    fclose(fp);
-
-    // Enumerate SD_*.c under code_store/c/ (best-effort; if empty,
-    // build still proceeds — static table will be empty too).
-    const char **sd_files = NULL;
-    size_t sd_n = 0, sd_capa = 0;
-    DIR *d = opendir("code_store/c");
-    if (d) {
-        struct dirent *ent;
-        while ((ent = readdir(d)) != NULL) {
-            const char *nm = ent->d_name;
-            size_t l = strlen(nm);
-            if (l < 5) continue;
-            if (strcmp(nm + l - 2, ".c") != 0) continue;
-            if (strncmp(nm, "SD_", 3) != 0 &&
-                strncmp(nm, "PGSD_", 5) != 0) continue;
-            if (sd_n + 1 >= sd_capa) {
-                sd_capa = sd_capa == 0 ? 8 : sd_capa * 2;
-                sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
-            }
-            char *full = malloc(l + 32);
-            snprintf(full, l + 32, "code_store/c/%s", nm);
-            sd_files[sd_n++] = full;
-        }
-        closedir(d);
-    }
-    // NULL-terminate.
-    if (sd_n + 1 >= sd_capa) {
-        sd_capa = sd_n + 1;
-        sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
-    }
-    sd_files[sd_n] = NULL;
-
-    // Compose extra_sources_abs: _embed.c, _static_table.c, then each SD.
-    size_t extra_n = 2 + sd_n + 1;
-    const char **extras = malloc(sizeof(*extras) * extra_n);
-    extras[0] = "_embed.c";
-    extras[1] = "_static_table.c";
-    for (size_t i = 0; i < sd_n; i++) extras[2 + i] = sd_files[i];
-    extras[2 + sd_n] = NULL;
-
     struct astro_build_config bcfg = *bcfg_in;
     bcfg.src_dir = CALC_SRC_DIR;
     bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
@@ -100,19 +37,7 @@ generate_executable(NODE *ast, const struct astro_build_config *bcfg_in)
         "parse.c", "node.c", "exe_main.c", NULL,
     };
     bcfg.sources = sources;
-    bcfg.extra_sources_abs = extras;
-
-    int rc = astro_build_executable(&bcfg);
-
-    // Cleanup intermediates unless --keep-intermediates.
-    if (!bcfg.keep_intermediates) {
-        unlink(embed_path);
-        unlink(table_path);
-    }
-    free(extras);
-    for (size_t i = 0; i < sd_n; i++) free((void *)sd_files[i]);
-    free(sd_files);
-    return rc;
+    return astro_build_aot_executable(ast, &bcfg, "code_store");
 }
 
 static char *
@@ -214,16 +139,15 @@ main(int argc, char *argv[])
             return 1;
         }
         NODE *ast = parse(eval_expr);
-        // AOT-bake unless --no-compile was passed: with --no-compile the
-        // exe runs as a pure-interpreter (smaller, slower).  Without it,
-        // the SD_*.c files are generated and statically linked.
+        // Start logging SD compiles so the generated exe knows which
+        // SD_*.c to link.  With --no-compile, skip the bake → exe runs
+        // as pure interpreter (smaller, slower).
+        astro_build_begin_aot_session();
         if (!OPTION.no_compiled_code) {
             astro_cs_compile(ast, NULL);
         }
-        // We deliberately skip astro_cs_build/_reload — for exe builds
-        // there's no all.so and no dlopen; the static table picks up
-        // the SDs at link time.
         int rc = generate_executable(ast, &bcfg);
+        astro_build_end_aot_session();
         astro_build_config_dispose(&bcfg);
         return rc;
     }

@@ -513,6 +513,31 @@ astro_emit_ctx_emit_node(struct astro_emit_ctx *ctx, FILE *fp, NODE *n)
 // OR (simpler) defer back-edge resolution to a startup-time pass like
 // callsite_resolve.  The naruby driver uses the latter.
 
+// Look up an SD name for `n` in the framework's compile log (populated
+// by astro_cs_compile when astro_cs_log_compiles is on).  Returns the
+// SD function name (e.g. "SD_abcd") if `n`'s hash is known to be a
+// real (non-empty) SD, NULL otherwise.  Implemented in
+// astro_code_store.c via the compile_log accessors.
+extern bool astro_cs_log_compiles;
+extern uint32_t astro_cs_compile_log_size(void);
+extern void     astro_cs_compile_log_get(uint32_t i, node_hash_t *out_hash,
+                                         const char **out_name);
+
+static const char *
+astro_emit_lookup_sd(NODE *n)
+{
+    if (!n) return NULL;
+    node_hash_t h = hash_node(n);
+    uint32_t n_entries = astro_cs_compile_log_size();
+    for (uint32_t i = 0; i < n_entries; i++) {
+        node_hash_t eh;
+        const char *en;
+        astro_cs_compile_log_get(i, &eh, &en);
+        if (eh == h) return en;
+    }
+    return NULL;
+}
+
 void
 astro_emit_ast_c_program(FILE *fp, NODE *root,
                          const char *func_name,
@@ -537,17 +562,41 @@ astro_emit_ast_c_program(FILE *fp, NODE *root,
         fprintf(fp, "#include \"%s\"\n", include_header);
     }
     fprintf(fp, "\n");
+
+    // Forward decls for every SD we'll patch into a node's dispatcher
+    // pointer below.  ASTRO_SD_PROTO is provided by node_head.h, derived
+    // by ASTroGen from the first NODE_DEF's signature.
+    {
+        bool emitted_any = false;
+        for (size_t j = 0; j < ctx.visited_size; j++) {
+            const char *sd = astro_emit_lookup_sd(ctx.visited[j].node);
+            if (!sd) continue;
+            // Dedup: same SD may match several visited entries (hash
+            // collisions in shared subtrees).
+            bool dup = false;
+            for (size_t k = 0; k < j; k++) {
+                const char *prev = astro_emit_lookup_sd(ctx.visited[k].node);
+                if (prev && strcmp(prev, sd) == 0) { dup = true; break; }
+            }
+            if (dup) continue;
+            fprintf(fp, "ASTRO_SD_PROTO(%s);\n", sd);
+            emitted_any = true;
+        }
+        if (emitted_any) fprintf(fp, "\n");
+    }
+
     fprintf(fp, "NODE *\n");
     fprintf(fp, "%s(void)\n", func_name);
     fprintf(fp, "{\n");
     fprintf(fp, "    static NODE *_n[%zu] = {0};\n", ctx.visited_size);
     fprintf(fp, "    if (_n[%d]) return _n[%d];\n", root_id, root_id);
 
-    // Pass 2: emit ALLOC line for each NODE, ordered by ID
-    // (post-order ⇒ children before parents).
+    // Pass 2: emit ALLOC line for each NODE, ordered by ID (post-order
+    // ⇒ children before parents).  For nodes whose hash matches an SD
+    // in the compile log, also patch in the SD dispatcher so the exe
+    // doesn't need any runtime cs_load step.
     ctx.in_collect_phase = false;
     for (int id = 0; id < ctx.next_id; id++) {
-        // Find the node with this id (linear scan — fine for now).
         NODE *n = NULL;
         for (size_t j = 0; j < ctx.visited_size; j++) {
             if (ctx.visited[j].id == id) {
@@ -557,6 +606,13 @@ astro_emit_ast_c_program(FILE *fp, NODE *root,
         }
         if (!n) continue;
         astro_emit_ctx_emit_node(&ctx, fp, n);
+        const char *sd = astro_emit_lookup_sd(n);
+        if (sd) {
+            fprintf(fp,
+                    "    _n[%d]->head.dispatcher = (node_dispatcher_func_t)%s;\n",
+                    id, sd);
+            fprintf(fp, "    _n[%d]->head.flags.is_specialized = true;\n", id);
+        }
     }
     fprintf(fp, "    return _n[%d];\n", root_id);
     fprintf(fp, "}\n");
