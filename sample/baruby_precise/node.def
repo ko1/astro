@@ -715,7 +715,7 @@ node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r
             baruby_ary_push(c, &$recv, &$iv, sp);
         }
         a = VAL2ARY($recv);
-        aro_gc_wb(a->items, &a->items[ii], $val);
+        aro_gc_wb(c, a->items, &a->items[ii], $val);
         return RESULT_OK($val);
     }
     fprintf(stderr, "no []= for non-array\n");

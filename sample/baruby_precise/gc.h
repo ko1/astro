@@ -265,20 +265,20 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 // override with a real implementation that maintains a remembered set or
 // dirty-card bitmap.
 #ifdef BARUBY_GC_HAS_WB
-void aro_gc_wb(void *holder, VALUE *slot, VALUE v);
-void aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n);
+void aro_gc_wb     (CTX *c, void *holder, VALUE *slot, VALUE v);
+void aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
 #else
 static inline void
-aro_gc_wb(void *holder, VALUE *slot, VALUE v)
+aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
-    (void)holder;
+    (void)c; (void)holder;
     *slot = v;
 }
 
 static inline void
-aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
-    (void)holder;
+    (void)c; (void)holder;
     if (n) memcpy(dst, src, n * sizeof(VALUE));
 }
 #endif
