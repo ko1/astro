@@ -783,3 +783,168 @@ stress mode を通したことが moving GC 正しさの強い証拠になって
 - moving backend での pointer reload (`a = VAL2ARY(sp[0])` を allocate 後に
   挿入) は user が手で書く。 ASTroGen の自動化は保留
 - multi-thread での TLS 切替 — single-thread が動いてから検討
+
+---
+
+## 4. Framework 化のための抽象化方針 (2026-05-21 議論)
+
+`sample/baruby_precise/gc.{h,c}` + 16 backend を `runtime/precise_gc/` に
+切り出して他 sample (koruby / pystro / asml / 等) でも使えるようにする際
+の抽象化方針を整理。 設計の参考は MMTk の VMBinding (= callback semantics
++ compile-time monomorphization)。 C では **macro / `static inline` で
+compile-time inline** を実現するのが等価。
+
+### 4.1 ファイル構成
+
+```
+runtime/precise_gc/
+  gc.h             # public API + 推奨 GCHeader 雛形 (extern 宣言)
+  gc.c             # 共通 runtime: ASTRO_PRECISE_GC_<algo> マクロで
+                   # gc_<algo>.c を #include
+  gc_copy.c        # 詳細実装: 各 backend
+  gc_mark.c
+  gc_mark_gen.c
+  ... (16 backend)
+
+sample/<lang>/
+  main.c           # 以下の順で書く:
+                   #   1. sample 自身の VALUE / GCHeader / kind 定義
+                   #   2. ASTRO_GC_* contract macro 群を define
+                   #   3. ASTRO_PRECISE_GC_<algo> を define
+                   #   4. #include "../../runtime/precise_gc/gc.c"
+                   # main.c が 1 つの translation unit として framework
+                   # runtime を取り込み、 LTO で SD chain に inline される
+  gc.h (薄い)      # 他 TU 用、 `aro_gc_alloc` 等の extern 宣言のみ
+```
+
+algorithm 選択は **`-DASTRO_PRECISE_GC_COPY` 等の build flag** で。
+sample の Makefile が現状の `GC=copy` を `-DASTRO_PRECISE_GC_COPY` に変換。
+
+### 4.2 sample が提供する contract macro
+
+framework (`runtime/precise_gc/gc.c` + 各 `gc_<algo>.c`) は以下の macro を
+**sample が `#include "../../runtime/precise_gc/gc.c"` する前に define
+してある** ことを前提に書く。
+
+#### VALUE / header
+
+| macro / typedef | 役割 |
+|---|---|
+| `typedef ... VALUE` | sample 固有の値表現 (LSB-tag intptr_t、 NaN-boxing、 等) |
+| `struct GCHeader` | header layout (推奨雛形を framework が提供、 sample 拡張可) |
+| `ASTRO_GC_VALUE_IS_PTR(v)` | VALUE が heap pointer か判定 (root scan / WB で使う) |
+| `ASTRO_GC_VALUE_TO_HEADER(v)` | VALUE → GCHeader * (= `(GCHeader *)(v) - 1` 等) |
+| `ASTRO_GC_HEADER_TO_VALUE(h)` | GCHeader * → VALUE (forwarding 後の rewrite で使う) |
+
+#### Object shape (= 「graph traversal」 の記述)
+
+GC は object を「graph のノード + pointer のエッジ」 として扱う。 不連続な
+メモリブロック (例: BaArray header + items[] が 2 alloc) は **別々の GC
+object として alloc し、 pointer で繋ぐ**。 GC は kind の意味を知らず、
+sample 提供の macro で children を traverse する。
+
+| macro | 役割 |
+|---|---|
+| `ASTRO_GC_HEADER_KIND(h)` | header から kind 取り出し (mark/sweep 内の switch で使う) |
+| `ASTRO_GC_SCAN_OBJECT(h, visit)` | children traversal、 各子に `visit(child_header)` を呼ぶ |
+| `ASTRO_GC_FORWARD_OBJECT(h, fwd_func)` | moving 後の internal pointer rewrite |
+| `ASTRO_GC_IS_OPAQUE_BYTES(h)` | scan 対象外 (= byte payload 等) なら true |
+| `ASTRO_GC_INIT_PAYLOAD(payload, size)` | scan-safe 初期化 (baruby は memset 0、 NaN-boxing は NIL fill 等) |
+| `ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size)` | byte payload 初期化 (普通 skip) |
+| `ASTRO_GC_OBJECT_SIZE(h)` | payload bytes 取得 (realloc / next-object walk で使う) |
+
+#### Root scan
+
+`c->env..c->sp` の flat-scan は **baruby_precise 固有の root layout**。
+複数 thread / globals registry / finalizer queue 等を持つ sample もある
+ので、 framework は root の場所を知らず、 sample が `SCAN_ROOTS` macro
+で記述する。
+
+| macro | 役割 |
+|---|---|
+| `ASTRO_GC_SCAN_ROOTS(visit_value, current_sp_top)` | 全 root scan。 thread stack / globals / 等を全部歩いて各 VALUE を visit |
+
+`current_sp_top` は GC trigger 時点の現スレッド sp top (= alloc が呼び出された瞬間
+の scan 上限)。 他 thread の sp は safepoint 時点の値を sample 側で参照する
+(future 課題: 現状 single-thread なので current_sp_top のみで十分)。
+
+### 4.3 backend が立てるフラグ (header layout の条件化)
+
+backend ごとに header の必要フィールドが違う:
+
+| backend group | NEEDS_FWD | NEEDS_HEADER_MARK | NEEDS_SIZE |
+|---|---|---|---|
+| moving (copy / copy_gen / mark_compact / immix compact) | ✓ | ✗ | ✓ |
+| non-moving slab (mark / mark_gen / mark_freelist) | ✗ | ✓ | △ slab class で導出可 |
+| non-moving region (bump / mark_freelist) | ✗ | ✓ | ✓ |
+| side-bitmap (mark_bitmap_gen) | ✗ | ✗ (別領域に mark bit) | △ |
+
+各 `gc_<algo>.c` 冒頭で `#define ASTRO_GC_NEEDS_FWD` 等を立て、 framework
+の GCHeader が #ifdef で field を出し入れする:
+
+```c
+struct GCHeader {
+    uint32_t flags;        // kind (sample 定義) + (framework 用 bit)
+    uint32_t size;         // (NEEDS_SIZE backend なら)
+#ifdef ASTRO_GC_NEEDS_FWD
+    void *fwd;
+#endif
+};
+```
+
+これで non-moving の `fwd` 8B 無駄を回避、 small object が slab class
+にぴったり収まる (= baruby BaArray 24B + header 8B = 32B = slab class 32)。
+現状 baruby_precise の `sizeof(GCHeader) = 16` は moving と non-moving を
+両立させた最大公約数。 framework 化を機に backend ごと最適化できる。
+
+### 4.4 framework が提供する API
+
+sample 側コードから呼ぶ public API (= `runtime/precise_gc/gc.h` で
+extern 宣言):
+
+| API | 役割 |
+|---|---|
+| `aro_gc_init(void)` | 初期化 (root range 引数は取らない、 sample の SCAN_ROOTS が独立) |
+| `aro_gc_alloc(size, sp_top)` | object alloc、 sp_top は GC trigger 時 scan 上限 |
+| `aro_gc_alloc_byte(size, sp_top)` | byte payload alloc (scan skip / init skip) |
+| `aro_gc_realloc_payload(old, new_size, sp_top)` | resize (moving 対応の安全な realloc) |
+| `aro_gc_wb(holder, slot, v)` | write barrier (gen backend は remset / dirty card 更新、 non-gen は inline `*slot = v`) |
+| `aro_gc_collect(sp_top)` | 明示 collect 要求 (主に test / stress 用) |
+
+backend 内部関数 (= gc_<algo>.c で defined) は static inline で main.c に
+取り込まれる。 LTO で SD chain に inline される。
+
+### 4.5 移行計画 (PoC)
+
+framework に切り出す前に **baruby_precise 内で 「抽象化のみ」 完了** させる
+のが安全:
+
+1. **Step 1**: baruby_precise の `gc.{h,c}` + 各 `gc_<algo>.c` を contract
+   macro 経由に書き換え。 ファイル位置はそのまま `sample/baruby_precise/`
+   配下。 動作 / perf が変わらないことを 15 backend × 35 bench oracle で確認。
+2. **Step 2**: `runtime/precise_gc/` に移動。 baruby_precise の main.c は
+   `#include "../../runtime/precise_gc/gc.c"` に切替。 再度 oracle 確認。
+3. **Step 3**: 2 つ目の sample (例: koruby か abruby) で `runtime/precise_gc/`
+   を使ってみる。 contract macro 不足が出たら framework 側に戻す。
+4. **Step 4**: 残り sample に展開、 各 sample の自前 GC (= libgc / 専用
+   semi-space 等) を framework 経由に統一できるところは統一。
+
+Step 1 だけで「抽象化が動く」 ことの証明になるので、 工数小さく valuable。
+Step 2 以降は徐々に。
+
+### 4.6 残課題 / 別議論
+
+- **current thread context の取り出し**: multi-thread で「現スレッドの
+  CTX を引っ張る」 API (TLS or pthread_self ベース) — single-thread 動作後
+  に検討
+- **header packing の per-backend optimization**: §4.3 で触れた `NEEDS_FWD`
+  等の #ifdef 化、 framework 化に同伴して進める
+- **walker の framework 化** (= `sample/baruby_precise/baruby_parse.c::
+  walk_bake_sp_offset` を astrogen.rb の per-kind callback で自動生成):
+  GC とは独立した別 todo、 [baruby_precise/docs/todo.md](../sample/baruby_precise/docs/todo.md) 参照
+- **copy 系 backend の large_alloc 経路** (= bump + malloc ハイブリッド):
+  framework 化前に baruby_precise で実装 → contract macro が必要な拡張を
+  framework 化時に持ち上げる
+- **`VALUE_DEF` 採否** (§1.7): 採用すれば SCAN_OBJECT / FORWARD_OBJECT
+  macro を ASTroGen で自動生成できる可能性。 framework 化と同タイミングで
+  再検討する価値あり
