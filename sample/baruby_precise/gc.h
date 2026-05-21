@@ -158,20 +158,20 @@ void  aro_gc_init(CTX *c);
  * `sp_top` before calling alloc, or pass a higher sp_top so those slots
  * fall in the scan range.
  */
-void *aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top);
+void *aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top);
 
 /* aro_gc_alloc_byte — allocate `payload_size` raw bytes (no VALUE
  * scanning, so no zero-init required).  Used for BaString.bytes / other
  * char[] payloads.  Caller fills the bytes after return.  GC's
  * `scan_outgoing` skips KIND_PAYLOAD_BYTE so leftover freelist-link
  * bytes are harmless. */
-void *aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top);
+void *aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top);
 
 /* aro_gc_realloc_payload — grow a payload, copying contents.  Preserves
  * the kind/scanability of the original payload. */
-void *aro_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
+void *aro_gc_realloc_payload(CTX *c, void *p, size_t new_size, VALUE *sp_top);
 
-void  aro_gc_collect(VALUE *sp_top);
+void  aro_gc_collect(CTX *c, VALUE *sp_top);
 
 size_t aro_gc_total_bytes(void);
 size_t aro_gc_heap_bytes(void);

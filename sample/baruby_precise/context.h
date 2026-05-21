@@ -200,9 +200,17 @@ typedef struct builtin_func {
 #define DEBUG_EVAL 0
 #endif
 
+/* iter 62: process-scope GC instance への pointer。 sample 全体で唯一の
+ * GC instance を CTX 経由でアクセスする (contract: ASTRO_GC_INSTANCE(c)
+ * = (c)->astro_gc)。 multi-instance 拡張なら CTX 1 つに 1 instance を
+ * bind するだけで対応可能。 struct AstroGc の中身は各 backend (gc_*.c)
+ * が定義 — sample 視点では opaque pointer。 */
+struct AstroGc;
+
 typedef struct CTX_struct {
     VALUE *env;                  // bottom of VALUE stack (= start of mark range)
     VALUE *sp;                   // current scratch top — updated by alloc API before mark
+    struct AstroGc *astro_gc;    // process-scope GC instance (backend が中身定義)
     unsigned int func_set_cnt;
     struct function_entry *func_set;
     state_serial_t serial;
@@ -222,6 +230,12 @@ typedef struct CTX_struct {
 // 各 backend (gc_*.c) はこれらを compile-time に展開して使う。
 // 詳細は docs/gc_design.md §2 を参照。
 // ============================================================================
+
+/* Instance accessor: CTX → AstroGc *.  各 backend は自分の AstroGc
+ * struct を typedef して、 process 起動時 1 つ (or 複数) allocate +
+ * `(c)->astro_gc` に bind する。 framework 関数は引数 CTX 経由で
+ * AstroGc を取り出して操作する (= module-static なし)。 */
+#define ASTRO_GC_INSTANCE(c)  ((c)->astro_gc)
 
 /* Object shape: outgoing reference を slot pointer 列挙。 visit callback は
  * `void (void **slot)`、 同じ macro で mark / forward / update 全 phase 共有。
@@ -276,19 +290,19 @@ struct GCHeader;
 // Heap allocators (defined in node.c).  All take `sp_top` as the last
 // argument: the caller's current scratch top, used to update c->sp before
 // any potential GC poll.  Helpers that don't allocate (compare, etc.) omit it.
-VALUE baruby_ary_new(uint32_t capa, VALUE *sp_top);
-VALUE baruby_ary_new_from(const VALUE *items, uint32_t n, VALUE *sp_top);
+VALUE baruby_ary_new(CTX *c, uint32_t capa, VALUE *sp_top);
+VALUE baruby_ary_new_from(CTX *c, const VALUE *items, uint32_t n, VALUE *sp_top);
 // Both av_ref and x_ref are pointers to caller's sp slots; we re-read
 // through them after any internal alloc so post-move addresses are
 // picked up.
-void  baruby_ary_push(VALUE *av_ref, VALUE *x_ref, VALUE *sp_top);
+void  baruby_ary_push(CTX *c, VALUE *av_ref, VALUE *x_ref, VALUE *sp_top);
 // av/bv are pointers to caller sp slots; reloaded after alloc.
-VALUE baruby_ary_plus(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
-VALUE baruby_str_new(const char *bytes, uint32_t len, VALUE *sp_top);
-VALUE baruby_str_new_cstr(const char *cstr, VALUE *sp_top);
+VALUE baruby_ary_plus(CTX *c, VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
+VALUE baruby_str_new(CTX *c, const char *bytes, uint32_t len, VALUE *sp_top);
+VALUE baruby_str_new_cstr(CTX *c, const char *cstr, VALUE *sp_top);
 // Slice from a heap source: src_ref is a caller sp slot, re-deref'd post-GC.
-VALUE baruby_str_slice(VALUE *src_ref, uint32_t offset, uint32_t len, VALUE *sp_top);
-VALUE baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
+VALUE baruby_str_slice(CTX *c, VALUE *src_ref, uint32_t offset, uint32_t len, VALUE *sp_top);
+VALUE baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top);
 
 // Value equality (Ruby `==`).  Same bits → true (catches int / nil / ptr
 // identity).  Otherwise: same type → recursive byte / element compare;
@@ -300,16 +314,16 @@ int   baruby_str_cmp(VALUE a, VALUE b);
 
 // `s * n` / `a * n` — Ruby-style repeat into a fresh object.  Negative
 // `n` returns an empty result (Ruby raises but we just clamp).
-VALUE baruby_str_repeat(VALUE *sv_ref, intptr_t n, VALUE *sp_top);
-VALUE baruby_ary_repeat(VALUE *av_ref, intptr_t n, VALUE *sp_top);
+VALUE baruby_str_repeat(CTX *c, VALUE *sv_ref, intptr_t n, VALUE *sp_top);
+VALUE baruby_ary_repeat(CTX *c, VALUE *av_ref, intptr_t n, VALUE *sp_top);
 
 // In-place append (`s << t`) — grows `dst`'s buffer and returns `dst`.
 // dst_ref / src_ref are caller sp slots reloaded after realloc.
-void  baruby_str_append(VALUE *dst_ref, VALUE *src_ref, VALUE *sp_top);
+void  baruby_str_append(CTX *c, VALUE *dst_ref, VALUE *src_ref, VALUE *sp_top);
 
 // Stringification (Ruby `to_s`).  Heap-alloc'd in all cases except when
 // `v` is already a String (returns self).
-VALUE baruby_to_s(VALUE v, VALUE *sp_top);
+VALUE baruby_to_s(CTX *c, VALUE v, VALUE *sp_top);
 
 void  baruby_print_value(FILE *fp, VALUE v);
 

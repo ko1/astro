@@ -29,7 +29,7 @@ aro_gc_init(CTX *c)
 }
 
 void *
-aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     (void)kind; (void)sp_top;
     void *p = calloc(1, payload_size ? payload_size : 1);
@@ -40,7 +40,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 {
     (void)sp_top;
     void *p = malloc(payload_size ? payload_size : 1);
@@ -51,7 +51,7 @@ aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 {
     (void)sp_top;
     void *p = realloc(old, new_size ? new_size : 1);
@@ -61,7 +61,7 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 }
 
 void
-aro_gc_collect(VALUE *sp_top)
+aro_gc_collect(CTX *c, VALUE *sp_top)
 {
     (void)sp_top;
     // no-op

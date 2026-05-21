@@ -192,7 +192,7 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
@@ -207,7 +207,7 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 {
     size_t aligned = ALIGN8(payload_size);
     GCHeader *h = nursery_bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
@@ -219,9 +219,9 @@ aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 {
-    if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
     AroGcKind kind = HDR_KIND(oldh);
     size_t old_size = oldh->size;
@@ -230,8 +230,8 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     // (minor copy-promote or major slide-compact).  See gc_copy_gen.c.
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(new_size, sp_top + 1)
-        : aro_gc_alloc(kind, new_size, sp_top + 1);
+        ? aro_gc_alloc_byte(c, new_size, sp_top + 1)
+        : aro_gc_alloc(c, kind, new_size, sp_top + 1);
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
@@ -767,7 +767,7 @@ major_gc(VALUE *sp_top)
 }
 
 void
-aro_gc_collect(VALUE *sp_top)
+aro_gc_collect(CTX *c, VALUE *sp_top)
 {
     major_gc(sp_top);
 }

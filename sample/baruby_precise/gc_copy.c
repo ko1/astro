@@ -73,12 +73,10 @@ typedef struct AstroGc {
     VALUE *sp_high_water;
 } AstroGc;
 
+/* Single process-scope GC instance for baruby_precise.  CTX::astro_gc
+ * points here (= bound at aro_gc_init).  Multi-instance use case would
+ * allocate multiple AstroGc and wire different CTX instances to each. */
 static AstroGc g_astro_gc;
-
-/* Single-instance accessor.  When framework moves to runtime/, this
- * becomes a sample-supplied macro (= ASTRO_GC_INSTANCE(c)) that picks
- * the AstroGc out of CTX. */
-#define ASTRO_GC_INSTANCE() (&g_astro_gc)
 
 // Contract macros (ASTRO_GC_SCAN_EDGES / INIT_PAYLOAD / HEADER_* / etc) live
 // in context.h so all backends share them.  See docs/gc_design.md §2.
@@ -99,10 +97,11 @@ mmap_region(void)
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE();
+    AstroGc *gc = &g_astro_gc;
     memset(gc, 0, sizeof(*gc));
     gc->ctx = c;
     gc->gc_threshold = GC_THRESHOLD_MIN;
+    c->astro_gc = gc;             /* CTX → AstroGc を bind */
     if (getenv("BARUBY_GC_STRESS")) {
         aro_gc_stress = 1;
         gc->active_base = mmap_region();
@@ -124,13 +123,13 @@ aro_gc_init(CTX *c)
 // Allocation
 // ----------------------------------------------------------------------------
 
-static void gc_collect_internal(VALUE *sp_top);
+static void gc_collect_internal(CTX *c, VALUE *sp_top);
 
 static void __attribute__((noinline, cold))
-gc_bump_slow(size_t total, VALUE *sp_top)
+gc_bump_slow(CTX *c, size_t total, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE();
-    gc_collect_internal(sp_top);
+    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    gc_collect_internal(c, sp_top);
     if (gc->active_top + total > gc->active_end) {
         fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
                 total, (size_t)(gc->active_end - gc->active_top));
@@ -139,14 +138,14 @@ gc_bump_slow(size_t total, VALUE *sp_top)
 }
 
 static inline GCHeader *
-gc_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+gc_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE();
+    AstroGc *gc = ASTRO_GC_INSTANCE(c);
     size_t total = sizeof(GCHeader) + aligned;
     if (__builtin_expect(aro_gc_stress
                          || gc->bytes_since_gc + payload_size > gc->gc_threshold
                          || (gc->active_top + total) > gc->active_end, 0)) {
-        gc_bump_slow(total, sp_top);
+        gc_bump_slow(c, total, sp_top);
     }
     GCHeader *h = (GCHeader *)gc->active_top;
     HDR_SET_KIND(h, kind);
@@ -158,14 +157,14 @@ gc_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    ASTRO_ASSERT(sp_top >= ASTRO_GC_INSTANCE()->ctx->env);
+    ASTRO_ASSERT(sp_top >= c->env);
 
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = gc_bump(kind, payload_size, aligned, sp_top);
+    GCHeader *h = gc_bump(c, kind, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_PAYLOAD(payload, aligned);
@@ -176,11 +175,11 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 {
-    ASTRO_ASSERT(sp_top >= ASTRO_GC_INSTANCE()->ctx->env);
+    ASTRO_ASSERT(sp_top >= c->env);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = gc_bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
+    GCHeader *h = gc_bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
@@ -191,10 +190,10 @@ aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 {
     if (old == NULL) {
-        return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+        return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size, sp_top);
     }
     GCHeader *oldh = (GCHeader *)old - 1;
     size_t old_size = ASTRO_GC_HEADER_SIZE(oldh);
@@ -202,26 +201,21 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
     if (aro_gc_stress) {
-        /* Stress retires from-space immediately; use a malloc buffer to
-         * shield the old contents from the alloc-triggered GC. */
         void *buf = malloc(copy_bytes);
         if (!buf) { fprintf(stderr, "realloc buf OOM\n"); abort(); }
         memcpy(buf, old, copy_bytes);
         void *newp = (kind == KIND_PAYLOAD_BYTE)
-            ? aro_gc_alloc_byte(new_size, sp_top)
-            : aro_gc_alloc(kind, new_size, sp_top);
+            ? aro_gc_alloc_byte(c, new_size, sp_top)
+            : aro_gc_alloc(c, kind, new_size, sp_top);
         memcpy(newp, buf, copy_bytes);
         free(buf);
         return newp;
     }
 
-    /* Root `old` via sp_top[0] so Cheney updates it through any GC
-     * triggered by alloc.  Non-stress copy leaves from-space readable
-     * until the next collection. */
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(new_size, sp_top + 1)
-        : aro_gc_alloc(kind, new_size, sp_top + 1);
+        ? aro_gc_alloc_byte(c, new_size, sp_top + 1)
+        : aro_gc_alloc(c, kind, new_size, sp_top + 1);
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
@@ -232,10 +226,15 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 
 /* Forward an old payload pointer: copy to to-space if not already done,
  * return new payload address. */
+/* Internal helpers below access the AstroGc via the single global —
+ * SCAN_EDGES callback signature doesn't carry CTX so we tap the static
+ * directly.  For multi-instance future, the callback signature would
+ * need to thread CTX (or the gc pointer) through. */
+
 static void *
 forward_payload(void *old_payload)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE();
+    AstroGc *gc = &g_astro_gc;
     if (!old_payload) return NULL;
     if (ASTRO_DEBUG && ((char *)old_payload < gc->from_base_cur ||
                         (char *)old_payload >= gc->from_base_cur + REGION_BYTES)) {
@@ -295,9 +294,9 @@ forward_value_edge(void **slot)
 }
 
 static void
-gc_collect_internal(VALUE *sp_top)
+gc_collect_internal(CTX *c, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE();
+    AstroGc *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin();
     char *from_base = gc->active_base;
     char *from_top_pre = gc->active_top;
@@ -315,8 +314,6 @@ gc_collect_internal(VALUE *sp_top)
     gc->from_base_cur = from_base;
 
     aro_gc_stats.heap_bytes = 0;
-
-    CTX *c = gc->ctx;
 
     /* Zero stale slots above sp_top up to high-water mark. */
     if (gc->sp_high_water == NULL || sp_top > gc->sp_high_water) {
@@ -402,14 +399,14 @@ gc_collect_internal(VALUE *sp_top)
     }
 
     aro_gc_stats.gc_count++;
-    gc->ctx->sp = sp_top;
+    c->sp = sp_top;
     aro_gc_time_end(t0);
 }
 
 void
-aro_gc_collect(VALUE *sp_top)
+aro_gc_collect(CTX *c, VALUE *sp_top)
 {
-    gc_collect_internal(sp_top);
+    gc_collect_internal(c, sp_top);
 }
 
 size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }

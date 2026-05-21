@@ -286,14 +286,14 @@ maybe_collect(size_t add, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
+aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
     maybe_collect(sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
-    int c = size_class_for(slot_total);
-    GCHeader *h = (c >= 0) ? slab_alloc(kind, payload_size, c)
+    int cls = size_class_for(slot_total);
+    GCHeader *h = (cls >= 0) ? slab_alloc(kind, payload_size, cls)
                            : large_alloc(kind, payload_size);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
@@ -304,12 +304,12 @@ aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
+aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 {
     maybe_collect(sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
-    int c = size_class_for(slot_total);
-    GCHeader *h = (c >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, c)
+    int cls = size_class_for(slot_total);
+    GCHeader *h = (cls >= 0) ? slab_alloc(KIND_PAYLOAD_BYTE, payload_size, cls)
                            : large_alloc(KIND_PAYLOAD_BYTE, payload_size);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
@@ -319,17 +319,17 @@ aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 {
-    if (!old) return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
+    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size, sp_top);
     GCHeader *oldh = (GCHeader *)old - 1;
     AroGcKind kind = (AroGcKind)HDR_KIND(oldh);
     size_t old_size = oldh->size;
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(new_size, sp_top + 1)
-        : aro_gc_alloc(kind, new_size, sp_top + 1);
+        ? aro_gc_alloc_byte(c, new_size, sp_top + 1)
+        : aro_gc_alloc(c, kind, new_size, sp_top + 1);
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
 }
@@ -673,14 +673,13 @@ inc_finish_sweep(VALUE *sp_top)
 }
 
 void
-aro_gc_collect(VALUE *sp_top)
+aro_gc_collect(CTX *c, VALUE *sp_top)
 {
     // External full GC: STW major (skip incremental dance).
     struct timespec t0 = aro_gc_time_begin();
     in_minor = false;
     inc_marking = false;
     remset_cnt = 0;
-    CTX *c = gc_ctx;
     for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
     process_gray();
     sweep_young(/*clear_marked=*/false);
