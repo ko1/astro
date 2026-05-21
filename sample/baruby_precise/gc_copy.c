@@ -384,44 +384,65 @@ gc_collect_internal(CTX *c)
         forward_value_edge(gc, (void **)p);
     }
 
-    /* (2) Interleaved scan: drain to-space + large_gray.  Forwards from
-     * either side can add to either queue, so loop until both empty. */
+    /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally. */
     char *scan = gc->to_base;
-    while (scan < gc->to_top || gc->large_gray) {
-        if (scan < gc->to_top) {
-            GCHeader *h = (GCHeader *)scan;
-            switch (HDR_KIND(h)) {
+    while (scan < gc->to_top) {
+        GCHeader *h = (GCHeader *)scan;
+        switch (HDR_KIND(h)) {
+          case KIND_PAYLOAD_VAL: {
+              VALUE *slots = (VALUE *)(h + 1);
+              size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
+              for (size_t i = 0; i < n; i++)
+                  forward_value_edge(gc, (void **)&slots[i]);
+              break;
+          }
+          default:
+              ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
+              break;
+        }
+        ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
+        scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
+    }
+
+    /* (2b) Large-gray drain (only if large objs exist).  Each large gray
+     * scan can produce new to-space objs (which need cheney drain) or
+     * new large gray entries, so loop until both queues empty. */
+    while (gc->large_gray) {
+        LargeObj *lo = gc->large_gray;
+        gc->large_gray = lo->next_gray;
+        lo->next_gray = NULL;
+        GCHeader *h = &lo->header;
+        switch (HDR_KIND(h)) {
+          case KIND_PAYLOAD_VAL: {
+              VALUE *slots = (VALUE *)large_payload(lo);
+              size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
+              for (size_t i = 0; i < n; i++)
+                  forward_value_edge(gc, (void **)&slots[i]);
+              break;
+          }
+          default:
+              ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
+              break;
+        }
+        ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
+        /* Drain any newly-added to-space objs before processing the next
+         * large gray (preserves the cheney-scan order semantics). */
+        while (scan < gc->to_top) {
+            GCHeader *h2 = (GCHeader *)scan;
+            switch (HDR_KIND(h2)) {
               case KIND_PAYLOAD_VAL: {
-                  VALUE *slots = (VALUE *)(h + 1);
-                  size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
+                  VALUE *slots = (VALUE *)(h2 + 1);
+                  size_t n = ASTRO_GC_HEADER_SIZE(h2) / sizeof(VALUE);
                   for (size_t i = 0; i < n; i++)
                       forward_value_edge(gc, (void **)&slots[i]);
                   break;
               }
               default:
-                  ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
+                  ASTRO_GC_SCAN_EDGES(h2, gc, forward_edge);
                   break;
             }
-            ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
-            scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
-        } else {
-            LargeObj *lo = gc->large_gray;
-            gc->large_gray = lo->next_gray;
-            lo->next_gray = NULL;
-            GCHeader *h = &lo->header;
-            switch (HDR_KIND(h)) {
-              case KIND_PAYLOAD_VAL: {
-                  VALUE *slots = (VALUE *)large_payload(lo);
-                  size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
-                  for (size_t i = 0; i < n; i++)
-                      forward_value_edge(gc, (void **)&slots[i]);
-                  break;
-              }
-              default:
-                  ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
-                  break;
-            }
-            ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
+            ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h2);
+            scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h2));
         }
     }
 
