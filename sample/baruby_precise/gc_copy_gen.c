@@ -62,11 +62,11 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define MAJOR_THRESHOLD_FACTOR  2
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // Single-instance binding via c->astro_gc; multi-instance future would
-// allocate multiple AstroGc and wire each to a different CTX.
+// allocate multiple ASTroGC and wire each to a different CTX.
 // ----------------------------------------------------------------------------
-typedef struct AstroGc {
+typedef struct ASTroGC {
     /* Nursery: small bump region for fresh allocations. */
     char *nursery_base;
     char *nursery_top;
@@ -98,12 +98,12 @@ typedef struct AstroGc {
     char *from_base_cur;
     char *from_end_cur;
     bool  in_minor;
-} AstroGc;
+} ASTroGC;
 
-static AstroGc g_astro_gc;
+static ASTroGC g_astro_gc;
 /* Field aliases — keep call-site syntax close to the prior `bare-name`
  * style while the state lives inside g_astro_gc.  Future port: convert
- * helper functions to take `AstroGc *gc` and use `gc->field`. */
+ * helper functions to take `ASTroGC *gc` and use `gc->field`. */
 #define nursery_base          (g_astro_gc.nursery_base)
 #define nursery_top           (g_astro_gc.nursery_top)
 #define nursery_end           (g_astro_gc.nursery_end)
@@ -141,7 +141,7 @@ mmap_region(size_t bytes)
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = &g_astro_gc;
+    ASTroGC *gc = &g_astro_gc;
     memset(gc, 0, sizeof(*gc));
     c->astro_gc = gc;
     gc_ctx = c;
@@ -303,7 +303,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 // ---------------------------------------------------------------------------
 
 /* iter 36 remset overflow guard — see gc_mark_gen.c for rationale.
- * Storage moved to AstroGc.remset_overflow (aliased above). */
+ * Storage moved to ASTroGC.remset_overflow (aliased above). */
 #define MAX_REMSET_ENTRIES (1u << 17)
 
 static void
@@ -370,7 +370,7 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
 // Cheney copy collector
 // ---------------------------------------------------------------------------
 // Cheney scratch (to_top / to_base / from_base_cur / from_end_cur) and
-// `in_minor` storage live in AstroGc — aliased above.
+// `in_minor` storage live in ASTroGC — aliased above.
 
 // Copy `oldh` (already in nursery or from-tenured) into to-tenured, returning
 // the new payload pointer.  Sets oldh->fwd so future references find the
@@ -395,7 +395,7 @@ forward_obj(GCHeader *oldh)
 
 // During MINOR GC: nursery objects only (in_minor=true).
 // During MAJOR GC: all in from-tenured (and any nursery survivors).
-// Storage: AstroGc.in_minor (aliased above).
+// Storage: ASTroGC.in_minor (aliased above).
 
 static inline bool
 in_nursery(void *p)

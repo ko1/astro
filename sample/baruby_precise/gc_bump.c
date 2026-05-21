@@ -25,22 +25,22 @@ typedef struct GCHeader {
 #define REGION_BYTES ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)    (((n) + 7u) & ~(size_t)7u)
 
-/* AstroGc: process-scope GC instance (heap alloc'd in aro_gc_init).
+/* ASTroGC: process-scope GC instance (heap alloc'd in aro_gc_init).
  * `common` MUST be first field — contract for ASTRO_GC_COMMON(c) cast. */
-typedef struct AstroGc {
+typedef struct ASTroGC {
     AroGcCommonState common;
     char *region_base;
     char *region_top;
     char *region_end;
-} AstroGc;
+} ASTroGC;
 
 const char *aro_gc_backend_name = "bump";
 
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = (AstroGc *)calloc(1, sizeof(AstroGc));
-    if (!gc) { perror("calloc AstroGc"); abort(); }
+    ASTroGC *gc = (ASTroGC *)calloc(1, sizeof(ASTroGC));
+    if (!gc) { perror("calloc ASTroGC"); abort(); }
     c->astro_gc = gc;
     gc->region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
                                    MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
@@ -56,7 +56,7 @@ aro_gc_init(CTX *c)
 static GCHeader *
 bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = sizeof(GCHeader) + aligned;
     if (gc->region_top + total > gc->region_end) {
         fprintf(stderr, "baruby_gc=bump: OOM (need %zu, virtual %p..%p)\n",

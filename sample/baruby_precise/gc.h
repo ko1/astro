@@ -124,10 +124,10 @@ typedef struct {
     double reclaim_seconds;
 } AroGcStats;
 
-/* AroGcCommonState: 各 backend の `struct AstroGc` の **先頭 field** に
+/* AroGcCommonState: 各 backend の `struct ASTroGC` の **先頭 field** に
  * 置く約束の「共通ヘッダ」。 gc.h の helper / stat reader は
  * `(AroGcCommonState *)c->astro_gc` で取り出してアクセスするので、
- * backend の追加 field 内容は知らなくて済む (= AstroGc を opaque に
+ * backend の追加 field 内容は知らなくて済む (= ASTroGC を opaque に
  * 保てる)。 stats / stress / re-entrancy timer は backend 横断で必要
  * だが per-instance な値なので、 ここにまとめている。 */
 typedef struct AroGcCommonState {
@@ -137,9 +137,9 @@ typedef struct AroGcCommonState {
     struct timespec time_t0;      /* outermost begin の wall-clock anchor */
 } AroGcCommonState;
 
-/* Accessors.  `c->astro_gc` is `struct AstroGc *` (forward decl in
+/* Accessors.  `c->astro_gc` is `struct ASTroGC *` (forward decl in
  * context.h).  Cast to `AroGcCommonState *` is safe iff each backend's
- * AstroGc has `AroGcCommonState common` as its first field. */
+ * ASTroGC has `AroGcCommonState common` as its first field. */
 #define ASTRO_GC_COMMON(c) ((AroGcCommonState *)((c)->astro_gc))
 
 /* `aro_gc_backend_name` identifies which backend was compiled in (=

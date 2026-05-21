@@ -93,9 +93,9 @@ typedef struct LargeObj {
 #define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
-typedef struct AstroGc {
+typedef struct ASTroGC {
     AroGcCommonState common;   /* MUST be first field */
     Page     *page_head[NUM_SIZE_CLASSES];
     FreeSlot *freelist[NUM_SIZE_CLASSES];
@@ -118,10 +118,10 @@ typedef struct AstroGc {
     size_t            remset_cnt;
     size_t            remset_capa;
     bool              remset_overflow;
-} AstroGc;
+} ASTroGC;
 
 /* Field aliases — expand to `gc->field` so every helper must have an
- * `AstroGc *gc` in scope.  No module-static `g_astro_gc` — instance is
+ * `ASTroGC *gc` in scope.  No module-static `g_astro_gc` — instance is
  * heap-alloc'd in aro_gc_init and reached via `c->astro_gc`. */
 #define page_head             (gc->page_head)
 #define freelist              (gc->freelist)
@@ -145,7 +145,7 @@ typedef struct AstroGc {
 #define remset_overflow       (gc->remset_overflow)
 
 static inline void
-young_push(AstroGc *gc, GCHeader *h)
+young_push(ASTroGC *gc, GCHeader *h)
 {
     if (young_objs_cnt >= young_objs_capa) {
         young_objs_capa = young_objs_capa ? young_objs_capa * 2 : 1024;
@@ -160,8 +160,8 @@ const char *aro_gc_backend_name = "mark_gen";
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = (AstroGc *)calloc(1, sizeof(AstroGc));
-    if (!gc) { perror("calloc AstroGc"); abort(); }
+    ASTroGC *gc = (ASTroGC *)calloc(1, sizeof(ASTroGC));
+    if (!gc) { perror("calloc ASTroGC"); abort(); }
     c->astro_gc = gc;
     gc_ctx = c;
     young_threshold     = 16u * 1024u * 1024u;
@@ -190,7 +190,7 @@ size_class_for(size_t slot_total)
 }
 
 static void
-new_page(AstroGc *gc, int class_idx)
+new_page(ASTroGC *gc, int class_idx)
 {
     void *raw = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE,
                      MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
@@ -217,7 +217,7 @@ new_page(AstroGc *gc, int class_idx)
 }
 
 static GCHeader *
-slab_alloc(AstroGc *gc, AroGcKind kind, size_t payload_size, int class_idx)
+slab_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size, int class_idx)
 {
     if (!freelist[class_idx]) new_page(gc, class_idx);
     FreeSlot *fs = freelist[class_idx];
@@ -236,7 +236,7 @@ slab_alloc(AstroGc *gc, AroGcKind kind, size_t payload_size, int class_idx)
 }
 
 static GCHeader *
-large_alloc(AstroGc *gc, AroGcKind kind, size_t payload_size)
+large_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size)
 {
     size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
     size_t map_bytes = (need + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
@@ -257,7 +257,7 @@ large_alloc(AstroGc *gc, AroGcKind kind, size_t payload_size)
 }
 
 static void
-free_slot(AstroGc *gc, GCHeader *h)
+free_slot(ASTroGC *gc, GCHeader *h)
 {
     size_t total = sizeof(GCHeader) + ALIGN8(h->size);
     int cls = size_class_for(total);
@@ -302,7 +302,7 @@ static void major_gc(CTX *c, VALUE *sp_top);
 static void __attribute__((noinline, cold))
 maybe_collect_slow(CTX *c, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (old_alloc_since_major > old_major_threshold) {
         major_gc(c, sp_top);
         old_alloc_since_major = 0;
@@ -314,7 +314,7 @@ maybe_collect_slow(CTX *c, VALUE *sp_top)
 static inline void
 maybe_collect(CTX *c, size_t add, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(gc->common.stress || young_bytes + add > young_threshold, 0)) {
         maybe_collect_slow(c, sp_top);
     }
@@ -323,7 +323,7 @@ maybe_collect(CTX *c, size_t add, VALUE *sp_top)
 void *
 aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
     maybe_collect(c, sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
@@ -342,7 +342,7 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     maybe_collect(c, sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
@@ -382,10 +382,10 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
  * the overflow flag and heap-walks all pages for dirty olds (O(heap),
  * slower but bounded — never silently drops dirty entries). */
 #define MAX_REMSET_ENTRIES (1u << 17)  /* 128 K entries = 1 MiB ptr array */
-/* remset_overflow storage moved to AstroGc.remset_overflow (aliased above). */
+/* remset_overflow storage moved to ASTroGC.remset_overflow (aliased above). */
 
 static void
-remset_push(AstroGc *gc, GCHeader *h)
+remset_push(ASTroGC *gc, GCHeader *h)
 {
     if (remset_overflow) return;   /* bit already set; minor will heap-walk */
     if (remset_cnt >= MAX_REMSET_ENTRIES) {
@@ -401,9 +401,9 @@ remset_push(AstroGc *gc, GCHeader *h)
     remset_buf[remset_cnt++] = h;
 }
 
-static void scan_outgoing(AstroGc *gc, GCHeader *h);  /* forward decl for visitor */
+static void scan_outgoing(ASTroGC *gc, GCHeader *h);  /* forward decl for visitor */
 static void
-remset_visit_minor(AstroGc *gc, GCHeader *h)
+remset_visit_minor(ASTroGC *gc, GCHeader *h)
 {
     HDR_CLR_DIRTY(h);
     scan_outgoing(gc, h);
@@ -412,7 +412,7 @@ remset_visit_minor(AstroGc *gc, GCHeader *h)
 /* Heap-walk fallback: enumerate dirty old objects across all pages + large
  * list.  Used when remset overflowed.  O(heap) but bounded. */
 static void
-remset_heap_walk(AstroGc *gc, void (*visit)(AstroGc *, GCHeader *))
+remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, GCHeader *))
 {
     for (int cls = 0; cls < NUM_SIZE_CLASSES; cls++) {
         size_t sb = size_class_bytes[cls];
@@ -439,7 +439,7 @@ aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
     if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
-        AstroGc *gc = ASTRO_GC_INSTANCE(c);
+        ASTroGC *gc = ASTRO_GC_INSTANCE(c);
         HDR_SET_DIRTY(hh);
         remset_push(gc, hh);
     }
@@ -452,7 +452,7 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
     if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
-        AstroGc *gc = ASTRO_GC_INSTANCE(c);
+        ASTroGC *gc = ASTRO_GC_INSTANCE(c);
         HDR_SET_DIRTY(hh);
         remset_push(gc, hh);
     }
@@ -463,7 +463,7 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 // ---------------------------------------------------------------------------
 
 static void
-gray_push(AstroGc *gc, GCHeader *h)
+gray_push(ASTroGC *gc, GCHeader *h)
 {
     if (gray_cnt >= gray_capa) {
         gray_capa = gray_capa ? gray_capa * 2 : 256;
@@ -474,7 +474,7 @@ gray_push(AstroGc *gc, GCHeader *h)
 }
 
 static void
-mark_value(AstroGc *gc, VALUE v)
+mark_value(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
@@ -487,7 +487,7 @@ mark_value(AstroGc *gc, VALUE v)
 }
 
 static void
-scan_outgoing(AstroGc *gc, GCHeader *h)
+scan_outgoing(ASTroGC *gc, GCHeader *h)
 {
     void *payload = (void *)(h + 1);
     switch (HDR_KIND(h)) {
@@ -516,7 +516,7 @@ scan_outgoing(AstroGc *gc, GCHeader *h)
 }
 
 static void
-process_gray(AstroGc *gc)
+process_gray(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
@@ -538,7 +538,7 @@ process_gray(AstroGc *gc)
 // would later get cleared on the next minor cycle... actually no, minor
 // doesn't call sweep_old_pages — see clear_marked param).
 static void
-sweep_young(AstroGc *gc, bool clear_marked)
+sweep_young(ASTroGC *gc, bool clear_marked)
 {
     young_bytes = 0;
     for (size_t i = 0; i < young_objs_cnt; i++) {
@@ -562,7 +562,7 @@ sweep_young(AstroGc *gc, bool clear_marked)
 // Major: walk slab pages + large objects, free unmarked OLD slots.
 // Young slots have already been handled by sweep_young.
 static void
-sweep_old_pages(AstroGc *gc)
+sweep_old_pages(ASTroGC *gc)
 {
     for (int cls = 0; cls < NUM_SIZE_CLASSES; cls++) {
         size_t sb = size_class_bytes[cls];
@@ -609,7 +609,7 @@ sweep_old_pages(AstroGc *gc)
 static void
 minor_gc(CTX *c, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = true;
 
@@ -648,7 +648,7 @@ minor_gc(CTX *c, VALUE *sp_top)
 static void
 major_gc(CTX *c, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = false;
     remset_cnt = 0;

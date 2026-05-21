@@ -80,9 +80,9 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
-typedef struct AstroGc {
+typedef struct ASTroGC {
     char *nursery_base, *nursery_top, *nursery_end;
     /* Tenured: bump-allocated within a single mmap'd region. */
     char *tenured_base, *tenured_top, *tenured_end;
@@ -100,9 +100,9 @@ typedef struct AstroGc {
     struct GCHeader **remset_buf;
     size_t            remset_cnt, remset_capa;
     bool              remset_overflow;
-} AstroGc;
+} ASTroGC;
 
-static AstroGc g_astro_gc;
+static ASTroGC g_astro_gc;
 #define nursery_base          (g_astro_gc.nursery_base)
 #define nursery_top           (g_astro_gc.nursery_top)
 #define nursery_end           (g_astro_gc.nursery_end)
@@ -143,7 +143,7 @@ mmap_region(size_t bytes)
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = &g_astro_gc;
+    ASTroGC *gc = &g_astro_gc;
     memset(gc, 0, sizeof(*gc));
     c->astro_gc = gc;
     gc_ctx = c;
@@ -283,7 +283,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 // ---------------------------------------------------------------------------
 
 /* iter 36 remset overflow guard — see gc_mark_gen.c for rationale.
- * Storage: AstroGc.remset_overflow (aliased above). */
+ * Storage: ASTroGC.remset_overflow (aliased above). */
 #define MAX_REMSET_ENTRIES (1u << 17)
 
 static void

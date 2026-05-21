@@ -90,9 +90,9 @@ typedef struct LargeObj {
 #define GC_THRESHOLD_FACTOR  2
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
-typedef struct AstroGc {
+typedef struct ASTroGC {
     uint8_t cur_epoch;            /* skips 0 so fresh allocs (mark_epoch=0) are "unmarked" */
     char       *arena_base;
     BlockMeta  *blocks;
@@ -108,9 +108,9 @@ typedef struct AstroGc {
     struct GCHeader **gray_buf;
     size_t            gray_cnt;
     size_t            gray_capa;
-} AstroGc;
+} ASTroGC;
 
-static AstroGc g_astro_gc;
+static ASTroGC g_astro_gc;
 #define cur_epoch         (g_astro_gc.cur_epoch)
 #define arena_base        (g_astro_gc.arena_base)
 #define blocks            (g_astro_gc.blocks)
@@ -136,7 +136,7 @@ static void gc_collect_internal(VALUE *sp_top);
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = &g_astro_gc;
+    ASTroGC *gc = &g_astro_gc;
     memset(gc, 0, sizeof(*gc));
     c->astro_gc = gc;
     gc_ctx = c;

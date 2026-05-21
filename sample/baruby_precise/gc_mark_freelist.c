@@ -68,11 +68,11 @@ typedef struct LargeObj {
     /* GCHeader follows */
 } LargeObj;
 
-/* iter 62: process-scope state を struct AstroGc に集約 */
+/* iter 62: process-scope state を struct ASTroGC に集約 */
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
 
-typedef struct AstroGc {
+typedef struct ASTroGC {
     AroGcCommonState common;   /* MUST be first field */
     char       *region_base;
     char       *region_top;
@@ -86,7 +86,7 @@ typedef struct AstroGc {
     size_t      gray_capa;
     size_t      bytes_since_gc;
     size_t      gc_threshold;
-} AstroGc;
+} ASTroGC;
 
 const char *aro_gc_backend_name = "mark_freelist";
 
@@ -105,8 +105,8 @@ size_class_for(size_t slot_total)
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = (AstroGc *)calloc(1, sizeof(AstroGc));
-    if (!gc) { perror("calloc AstroGc"); abort(); }
+    ASTroGC *gc = (ASTroGC *)calloc(1, sizeof(ASTroGC));
+    if (!gc) { perror("calloc ASTroGC"); abort(); }
     gc->ctx = c;
     gc->gc_threshold = GC_THRESHOLD_MIN;
     c->astro_gc = gc;
@@ -131,7 +131,7 @@ aro_gc_init(CTX *c)
 static void gc_collect_internal(CTX *c, VALUE *sp_top);
 
 static GCHeader *
-alloc_large(AstroGc *gc, AroGcKind kind, size_t payload_size)
+alloc_large(ASTroGC *gc, AroGcKind kind, size_t payload_size)
 {
     size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
@@ -161,7 +161,7 @@ oom_abort(void)
 static inline GCHeader *
 alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     if (__builtin_expect(slot_total > MAX_SLOT_BYTES, 0)) {
         return alloc_large(gc, kind, payload_size);
@@ -194,7 +194,7 @@ alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     GCHeader *h = alloc_slot(c, kind, payload_size, sp_top);
     void *payload = (void *)(h + 1);
     /* iter 48 bug fix: freelist-popped slots contain stale data; zero
@@ -242,7 +242,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
  * -------------------------------------------------------------------------- */
 
 static void
-gray_push(AstroGc *gc, GCHeader *const h)
+gray_push(ASTroGC *gc, GCHeader *const h)
 {
     if (gc->gray_cnt >= gc->gray_capa) {
         gc->gray_capa = gc->gray_capa ? gc->gray_capa * 2 : 256;
@@ -253,7 +253,7 @@ gray_push(AstroGc *gc, GCHeader *const h)
 }
 
 static void
-mark_value(AstroGc *gc, VALUE v)
+mark_value(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
@@ -262,16 +262,16 @@ mark_value(AstroGc *gc, VALUE v)
     gray_push(gc, h);
 }
 
-/* edge_visit callback: mark phase. `ctx` is `AstroGc *gc`. */
+/* edge_visit callback: mark phase. `ctx` is `ASTroGC *gc`. */
 static void
 mark_edge(void *ctx, void **slot)
 {
-    AstroGc *gc = (AstroGc *)ctx;
+    ASTroGC *gc = (ASTroGC *)ctx;
     mark_value(gc, (VALUE)*slot);
 }
 
 static void
-process_gray(AstroGc *gc)
+process_gray(ASTroGC *gc)
 {
     while (gc->gray_cnt > 0) {
         GCHeader *h = gc->gray_buf[--gc->gray_cnt];
@@ -284,7 +284,7 @@ process_gray(AstroGc *gc)
  * -------------------------------------------------------------------------- */
 
 static void
-sweep_region(AstroGc *gc)
+sweep_region(ASTroGC *gc)
 {
     for (int i = 0; i < NUM_SIZE_CLASSES; i++) {
         gc->freelist[i] = NULL;
@@ -337,7 +337,7 @@ sweep_region(AstroGc *gc)
 static void
 gc_collect_internal(CTX *c, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
 
     if (gc->sp_high_water == NULL || sp_top > gc->sp_high_water) {

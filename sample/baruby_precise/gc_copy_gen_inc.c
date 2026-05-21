@@ -81,9 +81,9 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define MAJOR_THRESHOLD_FACTOR  2
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
-typedef struct AstroGc {
+typedef struct ASTroGC {
     char *nursery_base, *nursery_top, *nursery_end;
     char *tenured_base, *tenured_top, *tenured_end;
     char *tenured_alt_base;   /* "other" tenured region for major Cheney */
@@ -97,9 +97,9 @@ typedef struct AstroGc {
     size_t old_major_threshold;
     char *to_top, *to_base, *from_base_cur, *from_end_cur;
     bool  in_minor;
-} AstroGc;
+} ASTroGC;
 
-static AstroGc g_astro_gc;
+static ASTroGC g_astro_gc;
 #define nursery_base          (g_astro_gc.nursery_base)
 #define nursery_top           (g_astro_gc.nursery_top)
 #define nursery_end           (g_astro_gc.nursery_end)
@@ -137,7 +137,7 @@ mmap_region(size_t bytes)
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = &g_astro_gc;
+    ASTroGC *gc = &g_astro_gc;
     memset(gc, 0, sizeof(*gc));
     c->astro_gc = gc;
     gc_ctx = c;
@@ -322,7 +322,7 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
 // ---------------------------------------------------------------------------
 
 // Cheney scratch (to_top / to_base / from_base_cur / from_end_cur)
-// storage moved into AstroGc — aliased above.
+// storage moved into ASTroGC — aliased above.
 
 // Copy `oldh` (already in nursery or from-tenured) into to-tenured, returning
 // the new payload pointer.  Sets oldh->fwd so future references find the
@@ -347,7 +347,7 @@ forward_obj(GCHeader *oldh)
 
 // During MINOR GC: nursery objects only (in_minor=true).
 // During MAJOR GC: all in from-tenured (and any nursery survivors).
-// Storage: AstroGc.in_minor (aliased above).
+// Storage: ASTroGC.in_minor (aliased above).
 
 static inline bool
 in_nursery(void *p)

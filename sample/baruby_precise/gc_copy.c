@@ -11,10 +11,10 @@
 // Semispace (Cheney) moving GC.
 //
 // iter 62: framework abstraction.  Process-scope state lives in `struct
-// AstroGc`, heap-allocated in `aro_gc_init` and reachable only via
+// ASTroGC`, heap-allocated in `aro_gc_init` and reachable only via
 // `c->astro_gc` (= `ASTRO_GC_INSTANCE(c)`).  No module-static instance
 // pointer exists, so multiple instances can coexist (bind each to its
-// own CTX).  Helpers thread `AstroGc *gc` (or `CTX *c`) explicitly.
+// own CTX).  Helpers thread `ASTroGC *gc` (or `CTX *c`) explicitly.
 // ----------------------------------------------------------------------------
 
 const char *aro_gc_backend_name = "copy";
@@ -45,10 +45,10 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define GC_THRESHOLD_FACTOR  2
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // Heap-allocated in aro_gc_init; lifetime = lifetime of the owning CTX.
 // ----------------------------------------------------------------------------
-typedef struct AstroGc {
+typedef struct ASTroGC {
     /* Common header — must be first field.  See gc.h AroGcCommonState. */
     AroGcCommonState common;
 
@@ -69,7 +69,7 @@ typedef struct AstroGc {
     /* Reserved region size — stress mode uses a much smaller region. */
     size_t region_bytes;
 
-    /* CTX bind (= back-pointer for callbacks that only have AstroGc *). */
+    /* CTX bind (= back-pointer for callbacks that only have ASTroGC *). */
     CTX *ctx;
 
     /* Cheney scratch (used during gc_collect_internal only) */
@@ -77,7 +77,7 @@ typedef struct AstroGc {
     char *to_base;
     char *from_base_cur;
     VALUE *sp_high_water;
-} AstroGc;
+} ASTroGC;
 
 // ----------------------------------------------------------------------------
 // Initialization
@@ -95,11 +95,11 @@ mmap_region(size_t bytes)
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = (AstroGc *)calloc(1, sizeof(AstroGc));
-    if (!gc) { perror("calloc AstroGc"); abort(); }
+    ASTroGC *gc = (ASTroGC *)calloc(1, sizeof(ASTroGC));
+    if (!gc) { perror("calloc ASTroGC"); abort(); }
     gc->ctx = c;
     gc->gc_threshold = GC_THRESHOLD_MIN;
-    c->astro_gc = gc;             /* CTX → AstroGc を bind */
+    c->astro_gc = gc;             /* CTX → ASTroGC を bind */
     if (getenv("BARUBY_GC_STRESS")) {
         ASTRO_GC_COMMON(c)->stress = 1;
         gc->region_bytes = STRESS_REGION_BYTES;
@@ -128,7 +128,7 @@ static void gc_collect_internal(CTX *c, VALUE *sp_top);
 static void __attribute__((noinline, cold))
 gc_bump_slow(CTX *c, size_t total, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     gc_collect_internal(c, sp_top);
     if (gc->active_top + total > gc->active_end) {
         fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
@@ -140,7 +140,7 @@ gc_bump_slow(CTX *c, size_t total, VALUE *sp_top)
 static inline GCHeader *
 gc_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = sizeof(GCHeader) + aligned;
     if (__builtin_expect(ASTRO_GC_COMMON(c)->stress
                          || gc->bytes_since_gc + payload_size > gc->gc_threshold
@@ -219,7 +219,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
  * return new payload address.  `gc` carries the active from/to-space
  * bounds (set by gc_collect_internal). */
 static void *
-forward_payload(AstroGc *gc, void *old_payload)
+forward_payload(ASTroGC *gc, void *old_payload)
 {
     if (!old_payload) return NULL;
     if (ASTRO_DEBUG && ((char *)old_payload < gc->from_base_cur ||
@@ -259,12 +259,12 @@ forward_payload(AstroGc *gc, void *old_payload)
 }
 
 /* edge_visit callback for raw-pointer slots (= heap pointers, not tagged
- * VALUEs).  `ctx` is `AstroGc *gc` passed by SCAN_EDGES.  Threading ctx
- * through the macro keeps `AstroGc` out of the global namespace. */
+ * VALUEs).  `ctx` is `ASTroGC *gc` passed by SCAN_EDGES.  Threading ctx
+ * through the macro keeps `ASTroGC` out of the global namespace. */
 static void
 forward_edge(void *ctx, void **slot)
 {
-    AstroGc *gc = (AstroGc *)ctx;
+    ASTroGC *gc = (ASTroGC *)ctx;
     void *p = *slot;
     if (!p) return;
     *slot = forward_payload(gc, p);
@@ -275,7 +275,7 @@ forward_edge(void *ctx, void **slot)
 static void
 forward_value_edge(void *ctx, void **slot)
 {
-    AstroGc *gc = (AstroGc *)ctx;
+    ASTroGC *gc = (ASTroGC *)ctx;
     VALUE v = (VALUE)*slot;
     if (!IS_PTR(v)) return;
     *slot = (void *)(VALUE)forward_payload(gc, (void *)v);
@@ -284,7 +284,7 @@ forward_value_edge(void *ctx, void **slot)
 static void
 gc_collect_internal(CTX *c, VALUE *sp_top)
 {
-    AstroGc *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     char *from_base = gc->active_base;
     char *from_top_pre = gc->active_top;

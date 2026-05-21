@@ -192,14 +192,61 @@ iterate するだけ — framework に手は入らない。
 
 ### 2.4 Instance accessor
 
+#### 「instance」 とは
+
+GC algorithm 実装 1 つに付随する **mutable state の独立した束** を「instance」
+と呼ぶ。 具体例:
+
+- semispace GC なら: from-space / to-space pointer + active 切替フラグ +
+  stats + stress フラグ + ... の全部を 1 つにまとめた集合
+- mark&sweep なら: page chain + freelist + gray queue + remset + ...
+
+「1 instance == 1 collector の単一実体」 と読み替えてよい。 process 全体で
+1 instance しか動かない場合 (= 今の baruby_precise) は単純に一意の state
+セットが 1 つあるだけだが、 「instance」 という抽象を最初から立てるのは
+multi-instance への拡張余地を framework 側で塞がないため。
+
+#### multi-instance の動機 (= なぜ global を排除したか)
+
+GC を「instance を持つもの」と扱うと、 同一 process 内に複数の独立した
+heap / collector が同居できる。 用途例:
+
+- isolate ごとに独立 GC (V8 / Wasm runtime みたいな multi-tenant)
+- thread per heap (TLAB を物理的に分けてロックレスにする)
+- algorithm を実行時に切り替える (warm-up は bump、 steady state は
+  mark&sweep 等)
+- test 並走 (= 1 process で 2 つの interpreter を走らせて差分テスト)
+
+これらは global variable を 1 つでも残すと出来なくなる。 だから contract
+レベルで「instance を CTX 経由でしか触れない」 を強制する。
+
+#### CTX → instance の bind
+
 ```c
-/* CTX → AstroGc * (= process-scope state へのアクセス経路) */
-#define ASTRO_GC_INSTANCE(c) /* ... */
+/* CTX → ASTroGC * (= GC instance pointer) */
+#define ASTRO_GC_INSTANCE(c) ((c)->astro_gc)
 ```
 
-`(c)->astro_gc` のような形が一般的。 sample が CTX 構造を決め、 そこへの
-アクセス経路を 1 つの macro で提供する。 multi-instance なら 1 CTX が 1
-AstroGc instance に対応するように sample が wire する。
+`aro_gc_init(c)` が `c->astro_gc = calloc(sizeof(ASTroGC))` で 1 instance
+を heap alloc して bind する (=「この CTX に紐づく instance はこれ」)。
+backend 内の helper はすべて `ASTROsGC *gc = ASTRO_GC_INSTANCE(c)` (or
+`ASTroGC *gc` を引数受け取り) して `gc->field` でアクセスする。 module-static
+な `g_astro_gc` を持たないので、 別 instance を別 CTX に bind しても干渉
+しない。
+
+#### 「共通ヘッダ」 contract
+
+stats / stress / timer の保管場所は backend 横断で gc.h 側からも触りたい
+が、 各 backend の `ASTroGC` の中身は backend ごとに違う。 そこで:
+
+- gc.h で `AroGcCommonState` 型 (stats + stress + time_depth + time_t0) を
+  定義
+- 各 backend の `struct ASTroGC` の **先頭 field** に `AroGcCommonState common`
+  を置く約束
+
+これで gc.h の inline helper (stat reader / timer) は
+`(AroGcCommonState *)c->astro_gc` で安全に共通部分へアクセスできる (= C の
+「first member のアドレスは struct のアドレスと一致」 の保証を使う)。
 
 ### 2.5 contract macros 一覧
 
@@ -298,11 +345,16 @@ moving に切替えた瞬間に一斉に表面化するので、 移行時に必
 
 ### (A) sp[] spill
 
-**heap VALUE を子ノード evaluation を跨いで保持する場合、 C local では
-なく sp[] slot に置く**。
+**heap VALUE を 「GC が起こり得る処理」 を跨いで保持する場合、 C local
+ではなく sp[] slot に置く**。
 
-子の eval で GC が走ると sp[] は in-place forward されるが、 C local
-変数 (= register or stack) は更新されない:
+「GC が起こり得る処理」 とは: 子ノードの EVAL (= 子の中で alloc が
+発生し得る) はもちろん、 ary_push / str_concat 等の helper、 さらには
+明示的 `aro_gc_collect()` 呼び出しも含まれる。 つまり 「alloc を内部に
+含む可能性のある関数呼び出し全般」。
+
+そのような呼び出しの GC が走ると sp[] は in-place forward されるが、
+C local 変数 (= register or stack) は更新されない:
 
 ```c
 /* 悪い例: GC が走ると l が stale pointer になる */

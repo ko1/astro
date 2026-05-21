@@ -53,9 +53,9 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define GC_THRESHOLD_FACTOR  2
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
-typedef struct AstroGc {
+typedef struct ASTroGC {
     char *region_base, *region_top, *region_end;
     CTX  *ctx;
     VALUE *sp_high_water;
@@ -64,9 +64,9 @@ typedef struct AstroGc {
     struct GCHeader **gray_buf;
     size_t     gray_cnt;
     size_t     gray_capa;
-} AstroGc;
+} ASTroGC;
 
-static AstroGc g_astro_gc;
+static ASTroGC g_astro_gc;
 #define region_base     (g_astro_gc.region_base)
 #define region_top      (g_astro_gc.region_top)
 #define region_end      (g_astro_gc.region_end)
@@ -85,7 +85,7 @@ const char *aro_gc_backend_name = "mark_compact";
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = &g_astro_gc;
+    ASTroGC *gc = &g_astro_gc;
     memset(gc, 0, sizeof(*gc));
     c->astro_gc = gc;
     gc_ctx = c;

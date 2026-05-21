@@ -68,9 +68,9 @@ typedef struct LargeObj {
 #define MAJOR_THRESHOLD_FACTOR  2
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
-typedef struct AstroGc {
+typedef struct ASTroGC {
     uint8_t cur_epoch;
     char       *arena_base;
     BlockMeta  *blocks;
@@ -89,9 +89,9 @@ typedef struct AstroGc {
     struct GCHeader **gray_buf;
     size_t            gray_cnt, gray_capa;
     bool   remset_pressure;
-} AstroGc;
+} ASTroGC;
 
-static AstroGc g_astro_gc;
+static ASTroGC g_astro_gc;
 #define cur_epoch             (g_astro_gc.cur_epoch)
 #define arena_base            (g_astro_gc.arena_base)
 #define blocks                (g_astro_gc.blocks)
@@ -126,7 +126,7 @@ static void major_gc(VALUE *sp_top);
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = &g_astro_gc;
+    ASTroGC *gc = &g_astro_gc;
     memset(gc, 0, sizeof(*gc));
     c->astro_gc = gc;
     gc_ctx = c;
@@ -403,7 +403,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
  * the hard cap. */
 #define MAX_REMSET_ENTRIES (1u << 17)
 #define REMSET_PRESSURE_THRESH (MAX_REMSET_ENTRIES - 1u)
-/* remset_pressure storage moved to AstroGc.remset_pressure (aliased above). */
+/* remset_pressure storage moved to ASTroGC.remset_pressure (aliased above). */
 
 static void
 remset_push(GCHeader *h)

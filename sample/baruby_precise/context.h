@@ -203,19 +203,19 @@ typedef struct builtin_func {
 /* iter 62: process-scope GC instance への pointer。 sample 全体で唯一の
  * GC instance を CTX 経由でアクセスする (contract: ASTRO_GC_INSTANCE(c)
  * = (c)->astro_gc)。 multi-instance 拡張なら CTX 1 つに 1 instance を
- * bind するだけで対応可能。 struct AstroGc の中身は各 backend (gc_*.c)
+ * bind するだけで対応可能。 struct ASTroGC の中身は各 backend (gc_*.c)
  * が定義 — sample 視点では opaque pointer。
  *
- * stats / stress / timer は per-instance なので AstroGc 内に保持する
- * (= 「共通ヘッダ」 pattern: 各 backend の `struct AstroGc` の先頭に
+ * stats / stress / timer は per-instance なので ASTroGC 内に保持する
+ * (= 「共通ヘッダ」 pattern: 各 backend の `struct ASTroGC` の先頭に
  * `AroGcCommonState common` を置く約束。 gc.h 側で
  * `(AroGcCommonState *)c->astro_gc` で安全に取り出せる)。 */
-struct AstroGc;
+struct ASTroGC;
 
 typedef struct CTX_struct {
     VALUE *env;                  // bottom of VALUE stack (= start of mark range)
     VALUE *sp;                   // current scratch top — updated by alloc API before mark
-    struct AstroGc *astro_gc;    // process-scope GC instance (backend が中身定義)
+    struct ASTroGC *astro_gc;    // process-scope GC instance (backend が中身定義)
     unsigned int func_set_cnt;
     struct function_entry *func_set;
     state_serial_t serial;
@@ -236,16 +236,16 @@ typedef struct CTX_struct {
 // 詳細は docs/gc_design.md §2 を参照。
 // ============================================================================
 
-/* Instance accessor: CTX → AstroGc *.  各 backend は自分の AstroGc
+/* Instance accessor: CTX → ASTroGC *.  各 backend は自分の ASTroGC
  * struct を typedef して、 process 起動時 1 つ (or 複数) allocate +
  * `(c)->astro_gc` に bind する。 framework 関数は引数 CTX 経由で
- * AstroGc を取り出して操作する (= module-static なし)。 */
+ * ASTroGC を取り出して操作する (= module-static なし)。 */
 #define ASTRO_GC_INSTANCE(c)  ((c)->astro_gc)
 
 /* Object shape: outgoing reference を slot pointer 列挙。 visit callback は
  * `void (void *ctx, void **slot)`、 同じ macro で mark / forward / update 全
  * phase 共有。 `ctx` は backend が好きに使える explicit closure
- * (典型的には `AstroGc *gc`)。 GCHeader は forward 宣言 (各 backend が
+ * (典型的には `ASTroGC *gc`)。 GCHeader は forward 宣言 (各 backend が
  * typedef する)。 module-static を global として使わないために ctx 経由
  * を必須にしている。 */
 struct GCHeader;
