@@ -158,6 +158,9 @@ SPECIALIZED_SRC(NODE *n)
 #include "node_hopt.c"
 #include "node_specialize.c"
 #include "node_replace.c"
+#if defined(__has_include) && __has_include("node_emit_ast.c")
+#include "node_emit_ast.c"
+#endif
 #include "node_alloc.c"
 
 // --- Hopt (profile-aware) hash dispatch + cache wrapper.

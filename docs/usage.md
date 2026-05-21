@@ -40,6 +40,7 @@ ASTroGen generates infrastructure code from your node definitions. You provide t
 | `node_dump.c` | `DUMP_xxx()` — AST pretty-printer |
 | `node_specialize.c` | `SPECIALIZE_xxx()` — generates specialized C code |
 | `node_replace.c` | `REPLACER_xxx()` — replaces a child node with another node |
+| `node_emit_ast.c` | `EMIT_AST_xxx()` — writes a textual `ALLOC_xxx(…)` call (for `--generate-executable`) |
 
 ## Writing `node.def`
 
@@ -456,6 +457,160 @@ For samples without frame-stored or runtime-indirect dispatch (e.g.
 `sample/calc`, `sample/naruby` for the simple cases), one entry per
 top-level callable (= per method body, per script root) is enough.
 
+## `--generate-executable`: standalone-exe build
+
+Any sample can produce a self-contained executable that runs one
+pre-parsed program — no parser, no Code Store directory, no shared
+libraries, just the embedded AST + linked-in specialized dispatchers.
+
+```sh
+# Calc — bake "1+2*3" into ./foo:
+./calc --generate-executable ./foo -e "1+2*3"
+./foo
+# => 7
+
+# Naruby — bake fib.rb into ./fib:
+./naruby --generate-executable ./fib fib.rb
+./fib
+# => p:55
+```
+
+The framework provides the build pipeline (`runtime/astro_build.{h,c}`),
+the AST → C emitter (`runtime/astro_node.c::astro_emit_ast_c_*`), and
+the static-SD lookup table (`runtime/astro_code_store.c::astro_cs_emit_static_table`).
+Each language sample provides its own `exe_main.c` driver and wires the
+flag into its `main()` via `astro_build_parse_args`.
+
+### Build flags (consumed by `astro_build_parse_args`)
+
+All long-form, so they don't collide with per-sample short opts:
+
+| Flag                          | Effect                                                    |
+|-------------------------------|-----------------------------------------------------------|
+| `--generate-executable PATH`  | Produce a standalone exe at PATH.                         |
+| `--cc CC`                     | C compiler (default: `$ASTRO_CC` → `$CC` → `cc`).        |
+| `--target TRIPLE`             | Cross target (clang-style `-target TRIPLE`).              |
+| `--sysroot PATH`              | `--sysroot=PATH`.                                         |
+| `-O0`/`-O1`/`-O2`/`-O3`/`-Os`/`-Og` | Optimization level (default: `$ASTRO_OPT_LEVEL` → 2). |
+| `--debug` / `--no-debug`      | `-ggdb3` (default off).                                   |
+| `--strip` / `--no-strip`      | Run `strip` post-link (default off).                      |
+| `--lto` / `--no-lto`          | `-flto` (default off).                                    |
+| `--static`                    | `-static`.                                                |
+| `--gc-sections`               | `-ffunction-sections -fdata-sections -Wl,--gc-sections`.  |
+| `--sanitize=LIST`             | `-fsanitize=LIST` (e.g. `address,undefined`).             |
+| `--cflag=ARG`                 | Repeatable: pass-through compile flag.                    |
+| `--ldflag=ARG`                | Repeatable: pass-through linker flag.                     |
+| `--verbose-build`             | Print the cc command line.                                |
+| `--keep-intermediates`        | Don't unlink `_embed.c` / `_static_table.c`.              |
+
+### Pipeline
+
+1. Sample's `main()` calls `astro_build_parse_args(&argc, argv, &bcfg)`
+   to consume framework flags out of argv.  Remaining args go through
+   the sample's normal CLI loop.
+2. Source is parsed → AST.
+3. If not `--no-compile`-equivalent, the sample calls
+   `astro_cs_compile(ast, NULL)` for the program AST and every
+   `code_repo` entry.  SD_*.c files land in `code_store/c/`.
+4. Sample writes:
+   - `_embed.c` via `astro_emit_ast_c_file` (calc-style, recursive
+     nested ALLOC) or `astro_emit_ast_c_program` (naruby-style, DAG
+     with shared nodes).
+   - `_static_table.c` via `astro_cs_emit_static_table`.
+5. Sample calls `astro_build_executable(&bcfg)` with the right source
+   list (lang's `parse.c`/`node.c`/`exe_main.c` + the generated files
+   + every SD_*.c under `code_store/c/`).
+6. `astro_build_executable` shells out to cc.
+
+### Wiring a new sample
+
+Add three things:
+
+1. **`exe_main.c`** — replaces `main.c` in the exe build.  Skeleton:
+
+   ```c
+   #include "context.h"
+   #include "node.h"
+   #include "astro_code_store.h"
+
+   struct yourlang_option OPTION;
+   extern NODE *astro_build_embedded_ast(void);
+   extern struct astro_cs_static_entry astro_cs_static_table[];
+   extern size_t astro_cs_static_table_size;
+
+   int main(int argc, char *argv[]) {
+       (void)argc; (void)argv;
+       astro_cs_init(NULL, NULL, 0);            // no disk store
+       astro_cs_static_init(astro_cs_static_table,
+                            astro_cs_static_table_size);
+       CTX *c = make_context();                 // your usual init
+       NODE *ast = astro_build_embedded_ast();
+       astro_cs_load(ast, NULL);                // wire from static table
+       /* eval */
+       return 0;
+   }
+   ```
+
+2. **`main.c` plumbing** — at the start of `main()`:
+
+   ```c
+   struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+   astro_build_parse_args(&argc, argv, &bcfg);
+   /* ... parse the rest of argv normally ... */
+   if (bcfg.out_exe) {
+       /* parse source → ast, optionally astro_cs_compile per entry */
+       generate_executable(ast, &bcfg);  // your helper, see calc/naruby
+       return 0;
+   }
+   ```
+
+3. **`node.c`** — add `#include "node_emit_ast.c"` (auto-generated
+   from `node.def`) BEFORE `#include "node_alloc.c"`, and add
+   `#include "astro_build.c"` after `#include "astro_code_store.c"`.
+
+4. **`Makefile`** — `-DLANG_SRC_DIR='"$(abspath .)"'` and
+   `-DASTRO_RUNTIME_DIR='"$(abspath $(RUNTIME))"'` so the host knows
+   where to find its sources at exe-build time.
+
+### Embedder hooks: language-specific operand emission
+
+`Operand#build_emit_ast` in `lib/astrogen.rb` handles the scalar /
+NODE * / const char * cases.  Languages with custom operand types
+(struct pointers, opaque handles, function pointers) override in
+their `node_def_class` subclass — see `sample/naruby/naruby_gen.rb`
+for `struct builtin_func *` and `builtin_func_ptr` examples.
+
+The emitted C is expected to reference functions and tables that
+the exe's startup has already set up (e.g.
+`find_builtin_func_by_name("p")` in naruby relies on
+`define_builtin_functions` having been called first).
+
+### Two emission modes
+
+| Mode | Entry point | Output shape | When to use |
+|------|-------------|--------------|-------------|
+| Recursive | `astro_emit_ast_c_file` | Single nested ALLOC expression | No node sharing, no cycles (calc, simple DSLs) |
+| Flat / DAG | `astro_emit_ast_c_program` | `_n[i] = ALLOC_…(…)` per node, references by `_n[id]` | Shared sub-trees (function bodies, builtins), cycle back-edges (recursion) |
+
+The per-NODE `EMIT_AST_<kind>` helpers (auto-generated) are the same
+in both modes; the dispatcher (`astro_emit_ast_c_child`) switches
+behaviour based on which top-level call is active.
+
+### Static SD table
+
+`astro_cs_compile(entry, NULL)` logs `(hash, "SD_<hash>")` to an
+internal compile registry.  After all compiles finish,
+`astro_cs_emit_static_table(fp, "ASTRO_SD_PROTO")` writes a
+`extern <SD-proto>` block plus a `struct astro_cs_static_entry
+astro_cs_static_table[]` array.  At exe startup, the driver calls
+`astro_cs_static_init(table, size)` which makes
+`astro_cs_load(n, …)` consult that table BEFORE falling back to
+dlopen — for pure-exe builds, dlopen is never reached.
+
+The `ASTRO_SD_PROTO` macro is generated into `node_head.h` from
+the first NODE_DEF's `result_type` + prefix args, so each language
+gets the right per-sample signature without manual configuration.
+
 ## Extending ASTroGen
 
 ASTroGen is designed to be extended via subclassing. The class hierarchy is:
@@ -627,6 +782,12 @@ end
 | `HASH(n)`                                 | (via `astro_node.c`) | Cached structural hash, used as the SD lookup key. |
 | `DUMP(fp, n, oneline)`                    | "                    | Cycle-safe AST pretty-printer. |
 | `EVAL(c, n)` / `EVAL_ARG(c, n)`           | (defined per-sample) | Dispatch macros — see the table above. |
+| `astro_emit_ast_c_file(fp, root, name, header)` | `astro_node.h` | Write `<name>(void)` as nested ALLOC expressions (recursive mode). |
+| `astro_emit_ast_c_program(fp, root, name, header)` | `astro_node.h` | Write `<name>(void)` as flat `_n[i] = ALLOC_…` lines (DAG / cycle-tolerant). |
+| `astro_cs_static_init(table, n)`          | `astro_code_store.h` | Wire a compile-time SD table; consulted by `astro_cs_load` before dlopen. |
+| `astro_cs_emit_static_table(fp, proto)`   | "                    | Write the static SD table .c file using SDs registered by prior `astro_cs_compile` calls. |
+| `astro_build_parse_args(&argc, argv, &cfg)` | `astro_build.h` | Consume `--generate-executable` + build flags from argv. |
+| `astro_build_executable(&cfg)`            | "                    | Shell out to cc with the configured flags. |
 
 ### ASTroGen command-line options
 

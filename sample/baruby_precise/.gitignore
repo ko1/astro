@@ -1,5 +1,6 @@
 baruby
 baruby_precise
+node_emit_ast.c
 node_eval.c
 node_dispatch.c
 node_dump.c

@@ -38,6 +38,10 @@ module ASTroGen
       func_typedef: "typedef void (*node_replacer_func_t)(struct Node *parent, struct Node *old_child, struct Node *new_child);",
       func_prefix: "REPLACER_",
       kind_field: "node_replacer_func_t replacer"
+    register_gen_task :emit_ast,
+      func_typedef: "typedef void (*node_emit_ast_func_t)(FILE *fp, struct Node *n);",
+      func_prefix: "EMIT_AST_",
+      kind_field: "node_emit_ast_func_t emit_ast"
 
     def initialize file, opt
       @file = file
@@ -165,6 +169,50 @@ module ASTroGen
             "hash_uint64((uint64_t)(uintptr_t)(#{val}))"
           else
             raise "no hash function: #{self.join}"
+          end
+        end
+
+        # Emit the C statement(s) that, when run inside an EMIT_AST_<node>
+        # function, write out this operand's value as a C expression
+        # suitable for use as an argument to ALLOC_<node>.
+        #
+        # `node_name` is the parent NODE's @name (e.g. "node_add"), used to
+        # locate the operand in n->u.<node_name>.<this.name>.
+        #
+        # Default handling covers scalar types (int/uint/double/VALUE),
+        # const char *, NODE *.  Languages with custom operand types must
+        # override in their Operand subclass.
+        def build_emit_ast name
+          return nil if ref? || storageless?
+          field = "n->u.#{name}.#{self.name}"
+          case storage_type
+          when 'NODE *'
+            # In "program" emission mode this calls a per-emit-context
+            # helper that writes either `_n[id]` (DAG-aware reference)
+            # or `NULL` for cycle back-edges.  In the simple recursive
+            # mode (used by samples without node sharing), the same
+            # helper recurses into astro_emit_ast_c.  The choice is made
+            # at runtime by the caller of the top-level emit function.
+            "    astro_emit_ast_c_child(fp, #{field});"
+          when 'int32_t'
+            "    fprintf(fp, \"%d\", #{field});"
+          when 'uint32_t'
+            "    fprintf(fp, \"%uU\", #{field});"
+          when 'uint64_t'
+            "    fprintf(fp, \"%lluULL\", (unsigned long long)#{field});"
+          when 'double'
+            "    fprintf(fp, \"%.17g\", #{field});"
+          when 'const char *'
+            "    astro_fprintf_cstr(fp, #{field});"
+          when 'VALUE'
+            "    fprintf(fp, \"(VALUE)0x%lxL\", (long)#{field});"
+          when 'void *'
+            # Opaque per-process pointer; cannot be embedded.  Emit a
+            # NULL placeholder — node-specific code must rebuild the
+            # pointer post-construction if it actually uses the slot.
+            "    fprintf(fp, \"(void *)NULL\");"
+          else
+            raise UnsupportedOperand, "no emit_ast for #{self.join}"
           end
         end
 
@@ -863,6 +911,54 @@ module ASTroGen
         C
       end
 
+      # Emit a per-NODE_DEF function EMIT_AST_<name>(FILE *fp, NODE *n)
+      # that writes a textual `ALLOC_<name>(...)` call reproducing the node.
+      # Recursive NODE * operands recurse through astro_emit_ast_c.
+      #
+      # When an operand has no defined emit_ast (e.g. host-specific struct
+      # pointers), the whole node falls back to a stub that errors out at
+      # runtime — the host should override in its Operand subclass to
+      # provide a sensible representation.
+      def build_emit_ast
+        alloc_ops = @operands.reject{|o| o.ref? || o.storageless?}
+        begin
+          op_emits = alloc_ops.map { it.build_emit_ast(@name) }
+        rescue UnsupportedOperand => e
+          return <<~C
+          static void
+          EMIT_AST_#{@name}(FILE *fp, NODE *n)
+          {
+              (void)n;
+              fprintf(stderr, "astro_emit_ast: #{@name} has un-embeddable operand (#{e.message})\\n");
+              fprintf(fp, "/* UNEMBEDDABLE #{@name} */");
+          }
+          C
+        end
+
+        if alloc_ops.empty?
+          # ALLOC_<name>(void) → no args.
+          body = "    fprintf(fp, \"ALLOC_#{@name}()\");"
+        else
+          parts = []
+          parts << "    fprintf(fp, \"ALLOC_#{@name}(\");"
+          op_emits.each_with_index do |emit, i|
+            parts << "    fprintf(fp, \"#{i.zero? ? '' : ', '}\");" if i > 0
+            parts << emit
+          end
+          parts << "    fprintf(fp, \")\");"
+          body = parts.join("\n")
+        end
+
+        <<~C
+        static void
+        EMIT_AST_#{@name}(FILE *fp, NODE *n)
+        {
+            (void)n;
+        #{body}
+        }
+        C
+      end
+
       def build_dumper
         op_dumpers = @operands.filter_map do
           it.build_dumper @name
@@ -1003,13 +1099,52 @@ module ASTroGen
       C__
     end
 
+    # node_emit_ast.c: per-NODE_DEF emitter that writes C source for
+    # reconstructing the node via ALLOC_<name>(...) calls.  Used by
+    # `--generate-executable` to embed a parsed AST into a generated exe.
+    #
+    # The dispatcher `astro_emit_ast_c_child` is declared `__attribute__((weak))`
+    # with a recursive-mode fallback definition so samples that don't
+    # include the framework's astro_node.c still link.  Samples that DO
+    # include astro_node.c (calc, naruby) get the runtime's stronger
+    # definition, which switches into flat-DAG mode when a program-emit
+    # context is active.
+    def build_emit_ast
+      <<~C__
+      // This file is auto-generated from #{@file}.
+      // AST → C source emitters (used by --generate-executable).
+
+      // Local fallback child dispatcher.  astro_node.c #defines
+      // ASTRO_EMIT_AST_C_CHILD_DEFINED before #include'ing this file,
+      // which suppresses the local definition so the runtime's
+      // stronger (DAG-aware) version is used instead.  Samples that
+      // don't include astro_node.c get the static fallback below
+      // (recursive mode only — fine for samples that never invoke
+      // --generate-executable).
+      #ifndef ASTRO_EMIT_AST_C_CHILD_DEFINED
+      __attribute__((unused)) static void
+      astro_emit_ast_c_child(FILE *fp, struct Node *child)
+      {
+          if (!child) { fprintf(fp, "NULL"); return; }
+          if (child->head.kind && child->head.kind->emit_ast) {
+              (*child->head.kind->emit_ast)(fp, child);
+          } else {
+              fprintf(fp, "NULL");
+          }
+      }
+      #endif
+
+      #{@nodes.map{|name, n| n.build_emit_ast}.join("\n")}
+      C__
+    end
+
     def build_alloc
+      kind_tasks = self.class.gen_tasks.select(&:kind_field)
       allocators = <<~C__
       // This file is auto-generated from #{@file}.
 
       // kinds
       #{
-        kind_tasks = self.class.gen_tasks.select(&:kind_field)
         @nodes.map{|name, n|
           fields = [
             "    .default_dispatcher_name = \"DISPATCH_#{name}\",",
@@ -1076,6 +1211,25 @@ module ASTroGen
       // allocators
       #{@nodes.map{|name, n| n.build_allocator_decl}.join(";\n")}
       C
+
+      # ASTRO_SD_PROTO(N): one specialized-dispatcher function
+      # declaration, with N substituted for the function's name.  Used
+      # by the static SD table emitted during --generate-executable so
+      # that the per-language signature does not need to be hardcoded
+      # in the runtime.  Derived from the first NODE_DEF's result type
+      # and prefix args — all dispatchers in a language share this
+      # signature.
+      sample = @nodes.values.first
+      if sample
+        sig = "#{sample.result_type} N(#{sample.instance_variable_get(:@prefix_args).join(', ')})"
+        output << <<~C
+        // Static SD prototype macro (used by astro_cs_emit_static_table).
+        #ifndef ASTRO_SD_PROTO
+        #define ASTRO_SD_PROTO(N) #{sig}
+        #endif
+        C
+      end
+
       output.join("\n")
     end
 

@@ -185,6 +185,9 @@ mark_child(NODE *child)
 #include "node_replace.c"
 #include "node_mark.c"
 #include "node_profile.c"
+#if defined(__has_include) && __has_include("node_emit_ast.c")
+#include "node_emit_ast.c"
+#endif
 #include "node_alloc.c"
 
 void

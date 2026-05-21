@@ -151,6 +151,9 @@ void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
 #include "node_hash.c"
 #include "node_specialize.c"
 #include "node_replace.c"
+#if defined(__has_include) && __has_include("node_emit_ast.c")
+#include "node_emit_ast.c"
+#endif
 #include "node_alloc.c"
 
 /* Pulled in last — uses HASH/HORG/HOPT and the static helpers from

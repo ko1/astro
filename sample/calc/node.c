@@ -28,6 +28,10 @@ node_allocate(size_t size)
 
 #include "astro_code_store.c"
 
+// --- Build orchestrator (astro_build_*) ---
+
+#include "astro_build.c"
+
 // --- User-provided: EVAL, OPTIMIZE ---
 
 VALUE
@@ -81,6 +85,9 @@ code_repo_add(const char *name, NODE *body, bool force)
 #include "node_hash.c"
 #include "node_specialize.c"
 #include "node_replace.c"
+#if defined(__has_include) && __has_include("node_emit_ast.c")
+#include "node_emit_ast.c"
+#endif
 #include "node_alloc.c"
 
 // --- INIT ---

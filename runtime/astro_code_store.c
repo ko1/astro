@@ -11,6 +11,7 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "astro_code_store.h"
 
 // ---------------------------------------------------------------------------
 // Specialize dedup: tracks which hashes have been generated during a single
@@ -91,6 +92,69 @@ SPECIALIZE(FILE *fp, NODE *n)
             astro_spec_dedup_add(h);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Static SD registry (--generate-executable support)
+// ---------------------------------------------------------------------------
+//
+// Records every public SD emitted by astro_cs_compile so a subsequent
+// astro_cs_emit_static_table can write out the (hash, name) tuples.
+// Also stores the table registered at exe startup via
+// astro_cs_static_init, consulted by astro_cs_load BEFORE the dlopen
+// path.
+//
+// Two separate uses, two separate storages:
+//   - astro_cs_static_compile_log: append-only during compile; read by
+//     astro_cs_emit_static_table at exe build time.
+//   - astro_cs_static_runtime_table: registered once at exe startup;
+//     read by astro_cs_load to bypass dlopen.
+
+struct astro_cs_compile_entry {
+    node_hash_t hash;
+    char name[64];               // "SD_<hash>"
+};
+
+static struct {
+    struct astro_cs_compile_entry *entries;
+    uint32_t size;
+    uint32_t capa;
+} astro_cs_static_compile_log;
+
+static struct {
+    struct astro_cs_static_entry *table;
+    size_t size;
+} astro_cs_static_runtime;
+
+static void
+astro_cs_compile_log_add(node_hash_t h, const char *name)
+{
+    // Dedup: same SD hash ⇒ same compiled body ⇒ same symbol.
+    for (uint32_t i = 0; i < astro_cs_static_compile_log.size; i++) {
+        if (astro_cs_static_compile_log.entries[i].hash == h) return;
+    }
+    if (astro_cs_static_compile_log.size >= astro_cs_static_compile_log.capa) {
+        uint32_t capa = astro_cs_static_compile_log.capa == 0 ? 8 :
+                        astro_cs_static_compile_log.capa * 2;
+        astro_cs_static_compile_log.entries =
+            realloc(astro_cs_static_compile_log.entries,
+                    sizeof(struct astro_cs_compile_entry) * capa);
+        if (!astro_cs_static_compile_log.entries) {
+            fprintf(stderr, "astro_cs: oom (static compile log)\n");
+            exit(1);
+        }
+        astro_cs_static_compile_log.capa = capa;
+    }
+    struct astro_cs_compile_entry *e =
+        &astro_cs_static_compile_log.entries[astro_cs_static_compile_log.size++];
+    e->hash = h;
+    snprintf(e->name, sizeof(e->name), "%s", name);
+}
+
+void
+astro_cs_reset_static_registry(void)
+{
+    astro_cs_static_compile_log.size = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +377,27 @@ astro_cs_init(const char *store_dir, const char *src_dir, uint64_t version)
 bool
 astro_cs_load(NODE *n, const char *file)
 {
+    // Static table (registered by astro_cs_static_init for --generate-executable
+    // builds) is consulted first.  No dlopen, no dlsym — pure compile-time
+    // resolution.
+    if (astro_cs_static_runtime.table) {
+        node_hash_t h = hash_node(n);
+        for (size_t i = 0; i < astro_cs_static_runtime.size; i++) {
+            if (astro_cs_static_runtime.table[i].hash == h) {
+                n->head.dispatcher = astro_cs_static_runtime.table[i].func;
+                n->head.dispatcher_name =
+                    astro_cs_static_runtime.table[i].name
+                        ? astro_cs_static_runtime.table[i].name
+                        : alloc_dispatcher_name(n);
+                n->head.flags.is_specialized = true;
+                return true;
+            }
+        }
+        // No hit in static table.  Fall through to dlopen path only if
+        // all_handle exists — in pure-static builds (no code_store dir),
+        // that's NULL and we return false here.
+    }
+
     if (!astro_cs.all_handle) return false;
 
     // Try PGC first: find a Hopt from the index, dlsym PGSD_<Hopt>.
@@ -452,6 +537,17 @@ astro_cs_compile(NODE *entry, const char *file)
     astro_spec_dedup_add(h);
 
     fclose(fp);
+
+    // Log the public SD for later static-table emission.  PGC entries
+    // use PGSD_ prefix; AOT use SD_.  The runtime registry is keyed by
+    // hash, so dedupe across AOT/PGC for the same hash is fine — only
+    // one symbol is emitted per filename anyway (the stat() guard above
+    // skips identical-hash re-writes).
+    {
+        char sd_name[64];
+        snprintf(sd_name, sizeof(sd_name), "%s_%lx", prefix, (unsigned long)h);
+        astro_cs_compile_log_add(h, sd_name);
+    }
 
     if (file) {
         // Index this entry so the next process can find SD_<Hopt>.
@@ -682,4 +778,55 @@ astro_cs_disasm(NODE *n)
              obj_path, obj_path, so_path, sym_name);
 
     (void)!system(cmd);
+}
+
+// ---------------------------------------------------------------------------
+// Static (linker-resolved) SD table — runtime registration + emitter
+// ---------------------------------------------------------------------------
+
+void
+astro_cs_static_init(struct astro_cs_static_entry *table, size_t n)
+{
+    astro_cs_static_runtime.table = table;
+    astro_cs_static_runtime.size = n;
+}
+
+void
+astro_cs_emit_static_table(FILE *fp, const char *sd_proto_macro)
+{
+    const char *proto = sd_proto_macro ? sd_proto_macro : "ASTRO_SD_PROTO";
+
+    fprintf(fp, "// Auto-generated by astro_cs_emit_static_table.\n");
+    fprintf(fp, "// Static SD lookup table for --generate-executable builds.\n");
+    fprintf(fp, "//\n");
+    fprintf(fp, "// The host must define %s(NAME) (typically in node.h) as a\n",
+            proto);
+    fprintf(fp, "// function declaration of one SD function with one argument NAME.\n");
+    fprintf(fp, "// Example for naruby:\n");
+    fprintf(fp, "//   #define %s(N) RESULT N(CTX *, NODE *, VALUE *)\n", proto);
+    fprintf(fp, "\n");
+    fprintf(fp, "#include \"node.h\"\n");
+    fprintf(fp, "#include \"astro_code_store.h\"\n");
+    fprintf(fp, "\n");
+
+    // Forward declarations.
+    for (uint32_t i = 0; i < astro_cs_static_compile_log.size; i++) {
+        fprintf(fp, "%s(%s);\n", proto,
+                astro_cs_static_compile_log.entries[i].name);
+    }
+    fprintf(fp, "\n");
+
+    // Table.
+    fprintf(fp, "struct astro_cs_static_entry astro_cs_static_table[] = {\n");
+    for (uint32_t i = 0; i < astro_cs_static_compile_log.size; i++) {
+        const struct astro_cs_compile_entry *e =
+            &astro_cs_static_compile_log.entries[i];
+        fprintf(fp,
+                "    { 0x%lxULL, (node_dispatcher_func_t)%s, \"%s\" },\n",
+                (unsigned long)e->hash, e->name, e->name);
+    }
+    fprintf(fp, "    { 0, 0, 0 },\n");
+    fprintf(fp, "};\n");
+    fprintf(fp, "size_t astro_cs_static_table_size = %u;\n",
+            astro_cs_static_compile_log.size);
 }

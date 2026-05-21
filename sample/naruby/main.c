@@ -4,9 +4,19 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include "node.h"
 #include "astro_code_store.h"
+#include "astro_node.h"
+#include "astro_build.h"
 #include "astro_jit.h"
+
+#ifndef NARUBY_SRC_DIR
+#define NARUBY_SRC_DIR "."
+#endif
+#ifndef ASTRO_RUNTIME_DIR
+#define ASTRO_RUNTIME_DIR "."
+#endif
 
 // Forward decl from naruby_parse.c — walks the all_pg_call_nodes list
 // (every node_pg_call_<N> allocated this run) and updates each call
@@ -21,172 +31,19 @@ extern const char *naruby_current_source_file;
 struct naruby_option OPTION = {
     // .static_lang = true,
 };
-static CTX *global_c;
+
+// `global_c`, `define_builtin_functions`, `create_context`, the code
+// repository, and `find_builtin_func_by_name` all live in
+// naruby_runtime.c (shared with exe_main.c).
+extern CTX *global_c;
+extern CTX *create_context(int frames, int funcs);
+extern void define_builtin_functions(CTX *c);
+extern uint32_t  naruby_code_repo_size(void);
+extern NODE     *naruby_code_repo_body(uint32_t i);
+extern const char *naruby_code_repo_name(uint32_t i);
+extern bool      naruby_code_repo_skip_specialize(uint32_t i);
 
 size_t node_cnt;
-
-// builtin functions
-
-static void
-define_func(CTX *c, const char *name, const char *func_name, builtin_func_ptr func, uint32_t params_cnt)
-{
-    struct function_entry *fe = &c->func_set[c->func_set_cnt++];
-    struct builtin_func *bf = malloc(sizeof(struct builtin_func));
-    bf->name = name;
-    bf->func = func;
-    bf->func_name = func_name;
-    bf->have_src = true;
-
-    fe->name = name;
-    fe->body = ALLOC_node_call_builtin(bf, func, params_cnt);
-    fe->params_cnt = params_cnt;
-    fe->locals_cnt = params_cnt;
-
-    // Builtins use params_cnt as locals_cnt — the body just calls the
-    // C function with fp[0..params_cnt-1]; no further temporaries.
-    code_repo_add2(name, fe->body, true, params_cnt);
-}
-
-#define DEFINE_FUNC(c, name, func_name, arity) define_func(c, name, #func_name, (builtin_func_ptr)func_name, arity)
-
-static void
-define_builtin_functions(CTX *c)
-{
-    DEFINE_FUNC(c, "p", narb_p, 1);
-    DEFINE_FUNC(c, "zero", narb_zero, 0);
-    DEFINE_FUNC(c, "bf_add", narb_add, 2);
-}
-
-// code repository
-
-static struct code_repo {
-    uint32_t size;
-    uint32_t capa;
-
-    struct code_entry {
-        const char *name;
-        NODE *body;
-        uint32_t params_cnt;
-        uint32_t locals_cnt;   // = max slot index used by body, ≥ params_cnt
-        bool skip_specialize;
-    } *entries;
-} code_repo;
-
-static struct code_entry *
-code_repo_new_entry(void)
-{
-    if (code_repo.size < code_repo.capa) {
-        return &code_repo.entries[code_repo.size++];
-    }
-    else {
-        uint32_t capa = code_repo.capa * 2;
-        if (capa == 0) {
-            capa = 8;
-        }
-        code_repo.entries = realloc(code_repo.entries, sizeof(struct code_entry) * capa);
-
-        if (code_repo.entries) {
-            code_repo.capa = capa;
-            return code_repo_new_entry();
-        }
-        else {
-            fprintf(stderr, "no memory for capa:%u\n", capa);
-            exit(1);
-        }
-    }
-}
-
-NODE *
-code_repo_find(node_hash_t h)
-{
-    if (h != 0) {
-        for (uint32_t i=0; i<code_repo.size; i++) {
-            NODE *n = code_repo.entries[i].body;
-            if (HASH(n) == h) {
-                return n;
-            }
-        }
-    }
-
-    return NULL;
-}
-
-NODE *
-code_repo_find_by_name(const char *name)
-{
-    for (uint32_t i=0; i<code_repo.size; i++) {
-        if (strcmp(code_repo.entries[i].name, name) == 0) {
-            return code_repo.entries[i].body;
-        }
-    }
-
-    return NULL;
-}
-
-void
-code_repo_add(const char *name, NODE *body, bool force_add)
-{
-    code_repo_add2(name, body, force_add, 0);
-}
-
-void
-code_repo_add2(const char *name, NODE *body, bool force_add, uint32_t locals_cnt)
-{
-    bool found = code_repo_find(HASH(body)) != NULL;
-
-    if (body == NULL || (!force_add && found)) {
-        // ignore
-    }
-    else {
-        struct code_entry *ce = code_repo_new_entry();
-        ce->name = name;
-        ce->body = body;
-        ce->locals_cnt = locals_cnt;
-        ce->skip_specialize = found;
-    }
-}
-
-uint32_t
-code_repo_find_locals_cnt_by_body(NODE *body)
-{
-    for (uint32_t i = 0; i < code_repo.size; i++) {
-        if (code_repo.entries[i].body == body) {
-            return code_repo.entries[i].locals_cnt;
-        }
-    }
-    return 0;
-}
-
-uint32_t
-code_repo_find_locals_cnt_by_name(const char *name)
-{
-    for (uint32_t i = 0; i < code_repo.size; i++) {
-        if (strcmp(code_repo.entries[i].name, name) == 0) {
-            return code_repo.entries[i].locals_cnt;
-        }
-    }
-    return 0;
-}
-
-// context management
-
-static CTX *
-create_context(int frames, int funcs)
-{
-    CTX *c = (CTX *)malloc(sizeof(CTX));
-    c->env = c->fp = (VALUE *)malloc(sizeof(VALUE) * 10 * frames);
-    c->func_set = malloc(sizeof(struct function_entry) * funcs); // supports 100 functions
-    c->func_set_cnt = 0;
-    c->serial = 1;
-
-#if DEBUG_EVAL
-    c->frame_cnt = 0;
-    c->rec_cnt = 0;
-#endif
-
-    define_builtin_functions(c);
-    return c;
-}
 
 // Common knobs for both bakes (AOT and PGSD).  -Wl,-Bsymbolic resolves
 // intra-.so SD→SD references at link time so the body bakes a direct
@@ -209,9 +66,10 @@ static void
 build_code_store_aot(NODE *ast)
 {
     if (ast) astro_cs_compile(ast, NULL);
-    for (uint32_t i = 0; i < code_repo.size; i++) {
-        if (code_repo.entries[i].skip_specialize) continue;
-        NODE *body = code_repo.entries[i].body;
+    uint32_t n = naruby_code_repo_size();
+    for (uint32_t i = 0; i < n; i++) {
+        if (naruby_code_repo_skip_specialize(i)) continue;
+        NODE *body = naruby_code_repo_body(i);
         if (body) astro_cs_compile(body, NULL);
     }
     common_build_flags_and_link();
@@ -240,11 +98,12 @@ build_code_store_pgsd(NODE *ast)
     if (ast) {
         astro_cs_compile(ast, naruby_current_source_file);
     }
-    for (uint32_t i = 0; i < code_repo.size; i++) {
-        if (code_repo.entries[i].skip_specialize) continue;
-        NODE *body = code_repo.entries[i].body;
+    uint32_t n = naruby_code_repo_size();
+    for (uint32_t i = 0; i < n; i++) {
+        if (naruby_code_repo_skip_specialize(i)) continue;
+        NODE *body = naruby_code_repo_body(i);
         if (!body) continue;
-        const char *fname = code_repo.entries[i].name;
+        const char *fname = naruby_code_repo_name(i);
         astro_cs_compile(body, fname);
     }
     common_build_flags_and_link();
@@ -264,9 +123,98 @@ clear_code_store_dir(void)
     }
 }
 
+// --generate-executable support — invoked AFTER the program AST has
+// been built and (optionally) AOT-baked into code_store/c/SD_*.c.
+//
+// Writes _embed.c (DAG-aware AST builder) and _static_table.c, then
+// dispatches to astro_build_executable() with the right source list.
+static int
+generate_naruby_executable(NODE *ast,
+                           const struct astro_build_config *bcfg_in)
+{
+    // Emit the embedded AST builder (DAG mode — naruby has node
+    // sharing via function bodies referenced from multiple sites).
+    FILE *fp = fopen("_embed.c", "w");
+    if (!fp) { perror("_embed.c"); return 1; }
+    astro_emit_ast_c_program(fp, ast, "astro_build_embedded_ast", "node.h");
+    fclose(fp);
+
+    // Emit the static SD lookup table.
+    fp = fopen("_static_table.c", "w");
+    if (!fp) { perror("_static_table.c"); return 1; }
+    astro_cs_emit_static_table(fp, "ASTRO_SD_PROTO");
+    fclose(fp);
+
+    // Enumerate SD_*.c / PGSD_*.c in code_store/c/.
+    const char **sd_files = NULL;
+    size_t sd_n = 0, sd_capa = 0;
+    DIR *d = opendir("code_store/c");
+    if (d) {
+        struct dirent *ent;
+        while ((ent = readdir(d)) != NULL) {
+            const char *nm = ent->d_name;
+            size_t l = strlen(nm);
+            if (l < 5) continue;
+            if (strcmp(nm + l - 2, ".c") != 0) continue;
+            if (strncmp(nm, "SD_", 3) != 0 &&
+                strncmp(nm, "PGSD_", 5) != 0) continue;
+            if (sd_n + 1 >= sd_capa) {
+                sd_capa = sd_capa == 0 ? 16 : sd_capa * 2;
+                sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
+            }
+            char *full = malloc(l + 32);
+            snprintf(full, l + 32, "code_store/c/%s", nm);
+            sd_files[sd_n++] = full;
+        }
+        closedir(d);
+    }
+    if (sd_n + 1 >= sd_capa) {
+        sd_capa = sd_n + 1;
+        sd_files = realloc(sd_files, sizeof(*sd_files) * sd_capa);
+    }
+    sd_files[sd_n] = NULL;
+
+    size_t extra_n = 2 + sd_n + 1;
+    const char **extras = malloc(sizeof(*extras) * extra_n);
+    extras[0] = "_embed.c";
+    extras[1] = "_static_table.c";
+    for (size_t i = 0; i < sd_n; i++) extras[2 + i] = sd_files[i];
+    extras[2 + sd_n] = NULL;
+
+    struct astro_build_config bcfg = *bcfg_in;
+    bcfg.src_dir = NARUBY_SRC_DIR;
+    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+    static const char *sources[] = {
+        "node.c", "node_slowpath.c", "naruby_runtime.c", "exe_main.c", NULL,
+    };
+    bcfg.sources = sources;
+    bcfg.extra_sources_abs = extras;
+    // Naruby's SD code uses gcc's intra-.so symbol resolution to bake
+    // direct calls between SDs.  In an exe build there's no .so, so we
+    // skip -Wl,-Bsymbolic; the exe's flat namespace already gives us
+    // direct call resolution.
+    const char *extra_cflags[] = { "--param=early-inlining-insns=100", NULL };
+    if (!bcfg.extra_cflags) bcfg.extra_cflags = extra_cflags;
+
+    int rc = astro_build_executable(&bcfg);
+
+    if (!bcfg.keep_intermediates) {
+        unlink("_embed.c");
+        unlink("_static_table.c");
+    }
+    free(extras);
+    for (size_t i = 0; i < sd_n; i++) free((void *)sd_files[i]);
+    free(sd_files);
+    return rc;
+}
+
 int
 main(int argc, char *argv[])
 {
+    // Pull astro_build flags (--generate-executable, --cc, -O*, etc.)
+    // out of argv FIRST so the naruby parser doesn't see them.
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    if (astro_build_parse_args(&argc, argv, &bcfg) != 0) return 1;
     // Order:
     //   1. Parse CLI (so we know about --ccs / --plain / -c / -p).
     //   2. Optionally wipe code_store (--ccs).
@@ -323,6 +271,23 @@ main(int argc, char *argv[])
 
     if (OPTION.pg_at_exit && !OPTION.plain && !OPTION.skip_bake) {
         build_code_store_pgsd(ast);
+    }
+
+    if (bcfg.out_exe) {
+        // AOT-bake into code_store unless --plain.  The static table
+        // emitter reads the same compile log.
+        if (!OPTION.plain) {
+            astro_cs_compile(ast, NULL);
+            uint32_t n = naruby_code_repo_size();
+            for (uint32_t i = 0; i < n; i++) {
+                if (naruby_code_repo_skip_specialize(i)) continue;
+                NODE *body = naruby_code_repo_body(i);
+                if (body) astro_cs_compile(body, NULL);
+            }
+        }
+        int rc = generate_naruby_executable(ast, &bcfg);
+        astro_build_config_dispose(&bcfg);
+        return rc;
     }
 
     return 0;

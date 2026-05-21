@@ -47,6 +47,9 @@ code_repo_add(const char *name, NODE *body, bool force)
 #include "node_hash.c"
 #include "node_specialize.c"
 #include "node_replace.c"
+#if defined(__has_include) && __has_include("node_emit_ast.c")
+#include "node_emit_ast.c"
+#endif
 #include "node_alloc.c"
 
 void

@@ -75,6 +75,9 @@ arjsv_mark_child_node(NODE *child)
 #define MARK(child) arjsv_mark_child_node(child)
 
 #include "node_mark.c"
+#if defined(__has_include) && __has_include("node_emit_ast.c")
+#include "node_emit_ast.c"
+#endif
 #include "node_alloc.c"
 
 // --- INIT -----------------------------------------------------------------

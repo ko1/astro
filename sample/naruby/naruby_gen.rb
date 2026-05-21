@@ -135,6 +135,48 @@ class NaRubyNodeDef < ASTroGen::NodeDef
     end
 
     class Operand < ASTroGen::NodeDef::Node::Operand
+      # --generate-executable: emit a C expression that reconstructs this
+      # operand's value when the embedded AST is rebuilt at exe startup.
+      # `find_builtin_func_by_name` and the bf->func_name → C-symbol
+      # reference rely on naruby's exe driver having already called
+      # `define_builtin_functions(c)` before running the embedded AST
+      # builder.
+      def build_emit_ast(name)
+        return nil if ref? || storageless?
+        field = "n->u.#{name}.#{self.name}"
+        case @type
+        when 'struct builtin_func *'
+          # Look up the bf entry by its registered name at exe runtime.
+          <<~C.chomp
+              fprintf(fp, "find_builtin_func_by_name(");
+              astro_fprintf_cstr(fp, #{field}->name);
+              fprintf(fp, ")");
+          C
+        when 'builtin_func_ptr'
+          # Bake the C function name as a direct symbol reference.  The
+          # `func_name` field on bf is the literal C identifier set by
+          # DEFINE_FUNC(...).  Cast to builtin_func_ptr so the ALLOC
+          # parameter type matches.
+          "    fprintf(fp, \"(builtin_func_ptr)%s\", n->u.#{name}.bf->func_name);"
+        when 'state_serial_t', 'struct callcache *'
+          # @ref operands are excluded above; the non-@ref form would be
+          # unusual.  Emit a NULL placeholder so the generated code at
+          # least compiles — node-specific logic at exe startup must fill
+          # this in if it's actually used.
+          "    fprintf(fp, \"NULL\");"
+        when 'NODE *'
+          # `sp_body` and recursive bodies form cycles in naruby.  Cycle
+          # safety in astro_emit_ast_c is handled via the per-node
+          # is_dumping flag inherited from DUMP — see runtime
+          # astro_emit_ast_c() (cycle break emits NULL, the exe's
+          # callsite_resolve_at_startup() re-links sp_body operands at
+          # startup).
+          super
+        else
+          super
+        end
+      end
+
       def hash_call(val, kind: :horg)
         case @type
         when 'struct builtin_func *'

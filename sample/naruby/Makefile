@@ -11,6 +11,7 @@ NODE_GENFILES=node_eval.c \
               node_alloc.c \
               node_hash.c \
               node_hopt.c \
+              node_emit_ast.c \
               node_head.h
 
 RUNTIME=../../runtime
@@ -76,11 +77,20 @@ bench: naruby
 	make bench_c BITEM=$(BITEM)
 	ruby bench/bench.rb $(BITEM)
 
-naruby: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h
+NARUBY_SRC_DIR := $(abspath .)
+ASTRO_RUNTIME_DIR := $(abspath $(RUNTIME))
+
+naruby: *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c \
+        naruby_runtime.c exe_main.c \
+        $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h \
+        $(RUNTIME)/astro_build.c $(RUNTIME)/astro_build.h
 	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
+            -DNARUBY_SRC_DIR='"$(NARUBY_SRC_DIR)"' \
+            -DASTRO_RUNTIME_DIR='"$(ASTRO_RUNTIME_DIR)"' \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
-            -o naruby main.c node.c node_slowpath.c naruby_parse.c astro_jit.c -lprism -ldl
+            -o naruby main.c node.c node_slowpath.c naruby_parse.c astro_jit.c naruby_runtime.c \
+            -lprism -ldl
 
 node_eval.c: ../../lib/* node.def naruby_gen.rb
 	ruby -I ../../lib -r ./naruby_gen -e 'ASTroGen.start([], node_def_class: NaRubyNodeDef)'

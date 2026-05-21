@@ -170,6 +170,9 @@ extern const struct NodeKind kind_node_smi_add_ii;
 #include "node_hopt.c"
 #include "node_specialize.c"
 #include "node_replace.c"
+#if defined(__has_include) && __has_include("node_emit_ast.c")
+#include "node_emit_ast.c"
+#endif
 #include "node_alloc.c"
 
 // node_specialized.c is overwritten by `./jstro -c` / `--aot-compile` to
