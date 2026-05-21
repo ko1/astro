@@ -45,14 +45,29 @@ docs/                   Design notes and papers
 
 ASTro samples span a wide range of language families to exercise the framework against very different value representations, control-flow shapes, and runtime services. All share a uniform layout (`node.def`, `Makefile`, optional ASTroGen extension, per-sample `docs/`). Each sample's own README has the full language scope, build / run, benchmarks, and design notes; [`docs/samples.md`](./docs/samples.md) is the cross-sample analysis. The entries below are one-liners with the most distinctive flagship result.
 
+**At a glance — 23 samples by paradigm:**
+
+| Group | Count | Samples |
+|---|---:|---|
+| Tutorial | 1 | `calc` |
+| Ruby family | 5 | `naruby`, `baruby`, `baruby_precise`, `abruby`, `koruby` |
+| Other dynamic scripting | 3 | `luastro`, `jstro`, `pystro` |
+| Functional / OO academic | 4 | `ascheme`, `astocaml`, `asml`, `asom` |
+| Statically-typed imperative | 2 | `pascalast`, `castro` |
+| Stack-based | 1 | `aforth` |
+| Data processing | 2 | `astr`, `arawk` |
+| Non-source / DSL | 5 | `wastro`, `astrogre`, `nuq`, `arjsv`, `arcel` |
+
 **Tutorial.**
 - [`calc`](./sample/calc/) — **toy 6-node calculator REPL** (`num` + `+`/`-`/`*`/`/`/`%`), the smallest end-to-end ASTroGen example.
 
 **Ruby family.**
 - [`naruby`](./sample/naruby/) — ***not a Ruby***: tiny integer-only Ruby subset (32 nodes).
   The original ASTro paper's vehicle and **the only sample exercising all four execution modes** (plain / AOT / PG / JIT) from a single binary.
-- [`baruby`](./sample/baruby/) — ***barely a Ruby***: naruby fork extended with **Array + String + libgc** (42 nodes); LSB-tagged VALUE, parse-time method desugar (no OO machinery).
+- [`baruby`](./sample/baruby/) — ***barely a Ruby***: naruby fork extended with **Array + String + libgc** (52 nodes); LSB-tagged VALUE, parse-time method desugar (no OO machinery).
   Built as the **first testbed for the unified GC framework** ([`docs/gc_design.md`](./docs/gc_design.md)) — minimal value representation, ships with `binary_trees` / `list_alloc` / `string_concat` benches at ~1 s scale that report wall time + libgc collection counts.
+- [`baruby_precise`](./sample/baruby_precise/) — **precise GC testbed** forked from `baruby`: same language surface, but **14 hand-written GC backends** (`none` / `mark` / `mark_gen` / `mark_gen_inc` / `copy` / `copy_gen` / `mark_compact` / `mark_compact_gen` / `bump` / `mark_bump_gen` / `immix` / `immix_gen` / `mark_bitmap_gen` / `mark_card_gen`) selectable by `make GC=<name>`.
+  Precise rooting via shared `sp[]` spill (Lua/Rust-style; see [`docs/gc_design.md`](./docs/gc_design.md)). Ships a 14-bench × 14-backend perf matrix and per-collector wall time / pause / collection-count breakdown.
 - [`abruby`](./sample/abruby/) — ***a bit Ruby***: larger Ruby subset as a CRuby C extension (107 nodes), reusing CRuby's `VALUE` / Prism / GC.
   PGC-baked optcarrot **86.5 fps** vs CRuby (no-JIT) 45.6 fps; integer-loop microbenches 4–8×.
 - [`koruby`](./sample/koruby/) — ***kind of Ruby***: standalone (non-CRuby) Ruby with Boehm GC + GMP + Prism (119 nodes).
@@ -85,9 +100,11 @@ ASTro samples span a wide range of language families to exercise the framework a
 - [`aforth`](./sample/aforth/) — **Forth** subset (68 nodes) where every word is an AST NODE (no traditional threaded code); calls indirect through a `word_id` → `NODE *` table.
   Wins 8/9 against gforth 0.7.3 (gcd 13.9×, factorial 8.1×, collatz 7.2×; ack 0.95× the only loss).
 
-**Data / vector.**
+**Data processing.**
 - [`astr`](./sample/astr/) — **R** subset (46 nodes) with tagged 64-bit `VALUE`, libgc, vector/scalar broadcast, `c()` / `paste` / `substr` / `1:n` ranges.
   AOT 4.1× on fib(36), 3.8× on ack(3,9).
+- [`arawk`](./sample/arawk/) — **POSIX awk** subset (115 nodes, regex excluded) — BEGIN/END + pattern-action rules, `$N`/`NR`/`NF`, associative arrays, `for-in`, user-defined functions, full `printf`/`sprintf`, six `getline` forms, pipe + redirect I/O, UTF-8 codepoint mode (gawk-style `LC_CTYPE` detect; `--byte`/`--posix` for mawk-compatible byte mode).
+  AOT geomean **0.93× of gawk** on the bench set (beats goawk 1.07×, behind mawk 1.93×). Phase 2 plans an **AST-interpreter merge with [`astrogre`](./sample/astrogre/)** so awk + regex run under a single ASTroGen instance.
 
 **Non-source / DSL.**
 - [`wastro`](./sample/wastro/) — **WebAssembly 1.0+ (MVP)** interpreter (212 nodes).  Reads both `.wat` and `.wasm`, runs the wasm spec-test `.wast` harness; AOT-cached within **3–6× of `gcc -O2`** on tight loops.
