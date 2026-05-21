@@ -25,15 +25,15 @@ typedef struct GCHeader {
 #define REGION_BYTES ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)    (((n) + 7u) & ~(size_t)7u)
 
-/* AstroGc: process-scope GC instance (heap alloc'd in aro_gc_init). */
+/* AstroGc: process-scope GC instance (heap alloc'd in aro_gc_init).
+ * `common` MUST be first field — contract for ASTRO_GC_COMMON(c) cast. */
 typedef struct AstroGc {
+    AroGcCommonState common;
     char *region_base;
     char *region_top;
     char *region_end;
 } AstroGc;
 
-AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
-int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "bump";
 
 void
@@ -81,8 +81,8 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_PAYLOAD(payload, aligned);
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
+    ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return payload;
 }
 
@@ -95,8 +95,8 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
+    ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return payload;
 }
 
@@ -122,12 +122,3 @@ aro_gc_collect(CTX *c, VALUE *sp_top)
     // no-op
 }
 
-size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }
-size_t aro_gc_heap_bytes (void) { return aro_gc_stats.heap_bytes;  }
-size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
-size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
-size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
-double aro_gc_mark_seconds(void) { return aro_gc_stats.mark_seconds; }
-double aro_gc_reclaim_seconds(void) { return aro_gc_stats.reclaim_seconds; }
-double aro_gc_total_seconds(void) { return aro_gc_stats.total_seconds; }
-double aro_gc_max_pause_seconds(void) { return aro_gc_stats.max_pause_seconds; }

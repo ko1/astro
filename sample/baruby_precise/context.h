@@ -204,7 +204,12 @@ typedef struct builtin_func {
  * GC instance を CTX 経由でアクセスする (contract: ASTRO_GC_INSTANCE(c)
  * = (c)->astro_gc)。 multi-instance 拡張なら CTX 1 つに 1 instance を
  * bind するだけで対応可能。 struct AstroGc の中身は各 backend (gc_*.c)
- * が定義 — sample 視点では opaque pointer。 */
+ * が定義 — sample 視点では opaque pointer。
+ *
+ * stats / stress / timer は per-instance なので AstroGc 内に保持する
+ * (= 「共通ヘッダ」 pattern: 各 backend の `struct AstroGc` の先頭に
+ * `AroGcCommonState common` を置く約束。 gc.h 側で
+ * `(AroGcCommonState *)c->astro_gc` で安全に取り出せる)。 */
 struct AstroGc;
 
 typedef struct CTX_struct {

@@ -17,8 +17,6 @@
 // own CTX).  Helpers thread `AstroGc *gc` (or `CTX *c`) explicitly.
 // ----------------------------------------------------------------------------
 
-AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
-int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "copy";
 
 /* 16-byte header.  kind packed to flags byte. */
@@ -51,6 +49,9 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 // Heap-allocated in aro_gc_init; lifetime = lifetime of the owning CTX.
 // ----------------------------------------------------------------------------
 typedef struct AstroGc {
+    /* Common header — must be first field.  See gc.h AroGcCommonState. */
+    AroGcCommonState common;
+
     /* Active semispace (where allocations go).  In stress mode each GC
      * mmaps a fresh to-space; in non-stress mode we alternate the
      * `space0` / `space1` pair. */
@@ -100,7 +101,7 @@ aro_gc_init(CTX *c)
     gc->gc_threshold = GC_THRESHOLD_MIN;
     c->astro_gc = gc;             /* CTX → AstroGc を bind */
     if (getenv("BARUBY_GC_STRESS")) {
-        aro_gc_stress = 1;
+        ASTRO_GC_COMMON(c)->stress = 1;
         gc->region_bytes = STRESS_REGION_BYTES;
         gc->active_base = mmap_region(gc->region_bytes);
         gc->active_top  = gc->active_base;
@@ -141,7 +142,7 @@ gc_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_t
 {
     AstroGc *gc = ASTRO_GC_INSTANCE(c);
     size_t total = sizeof(GCHeader) + aligned;
-    if (__builtin_expect(aro_gc_stress
+    if (__builtin_expect(ASTRO_GC_COMMON(c)->stress
                          || gc->bytes_since_gc + payload_size > gc->gc_threshold
                          || (gc->active_top + total) > gc->active_end, 0)) {
         gc_bump_slow(c, total, sp_top);
@@ -168,8 +169,8 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_PAYLOAD(payload, aligned);
 
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
+    ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return payload;
 }
 
@@ -183,8 +184,8 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
 
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
+    ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return payload;
 }
 
@@ -284,13 +285,13 @@ static void
 gc_collect_internal(CTX *c, VALUE *sp_top)
 {
     AstroGc *gc = ASTRO_GC_INSTANCE(c);
-    struct timespec t0 = aro_gc_time_begin();
+    struct timespec t0 = aro_gc_time_begin(c);
     char *from_base = gc->active_base;
     char *from_top_pre = gc->active_top;
 
     /* Determine the to-space. */
     char *next_to_base;
-    if (aro_gc_stress) {
+    if (ASTRO_GC_COMMON(c)->stress) {
         next_to_base = mmap_region(gc->region_bytes);
     } else {
         next_to_base = (gc->active_idx == 0) ? gc->space1 : gc->space0;
@@ -300,7 +301,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     gc->to_top  = next_to_base;
     gc->from_base_cur = from_base;
 
-    aro_gc_stats.heap_bytes = 0;
+    ASTRO_GC_COMMON(c)->stats.heap_bytes = 0;
 
     /* Zero stale slots above sp_top up to high-water mark. */
     if (gc->sp_high_water == NULL || sp_top > gc->sp_high_water) {
@@ -309,7 +310,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
         for (VALUE *p = sp_top; p < gc->sp_high_water; p++) *p = 0;
     }
 
-    if (ASTRO_DEBUG && aro_gc_stress) {
+    if (ASTRO_DEBUG && ASTRO_GC_COMMON(c)->stress) {
         for (VALUE *p = c->env; p < sp_top; p++) {
             VALUE v = *p;
             if (!IS_PTR(v)) continue;
@@ -354,13 +355,13 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
               ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
               break;
         }
-        aro_gc_stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
+        ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
         scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
     }
-    aro_gc_phase_end(tcheney, &aro_gc_stats.reclaim_seconds);
+    aro_gc_phase_end(tcheney, &ASTRO_GC_COMMON(c)->stats.reclaim_seconds);
 
     /* (3) Swap active. */
-    if (!aro_gc_stress) {
+    if (!ASTRO_GC_COMMON(c)->stress) {
         gc->active_idx = 1 - gc->active_idx;
     }
     gc->active_base = next_to_base;
@@ -368,7 +369,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     gc->active_end  = next_to_base + gc->region_bytes;
 
     /* (4) Retire the old active.  Stress mode unmaps it outright. */
-    if (aro_gc_stress) {
+    if (ASTRO_GC_COMMON(c)->stress) {
         if (munmap(from_base, gc->region_bytes) != 0) {
             perror("gc_collect: munmap retired"); abort();
         }
@@ -376,15 +377,15 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     (void)from_top_pre;
 
     gc->bytes_since_gc = 0;
-    if (!aro_gc_stress) {
-        size_t live = aro_gc_stats.heap_bytes;
+    if (!ASTRO_GC_COMMON(c)->stress) {
+        size_t live = ASTRO_GC_COMMON(c)->stats.heap_bytes;
         size_t next = live * GC_THRESHOLD_FACTOR;
         gc->gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
     }
 
-    aro_gc_stats.gc_count++;
+    ASTRO_GC_COMMON(c)->stats.gc_count++;
     c->sp = sp_top;
-    aro_gc_time_end(t0);
+    aro_gc_time_end(c, t0);
 }
 
 void
@@ -393,12 +394,4 @@ aro_gc_collect(CTX *c, VALUE *sp_top)
     gc_collect_internal(c, sp_top);
 }
 
-size_t aro_gc_total_bytes(void) { return aro_gc_stats.total_bytes; }
-size_t aro_gc_heap_bytes (void) { return aro_gc_stats.heap_bytes;  }
-size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
-size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
-size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
-double aro_gc_total_seconds(void)      { return aro_gc_stats.total_seconds; }
-double aro_gc_max_pause_seconds(void)  { return aro_gc_stats.max_pause_seconds; }
-double aro_gc_mark_seconds(void)       { return aro_gc_stats.mark_seconds; }
-double aro_gc_reclaim_seconds(void)    { return aro_gc_stats.reclaim_seconds; }
+/* Stat readers are static inline in gc.h (read ASTRO_GC_COMMON(c)->stats directly). */

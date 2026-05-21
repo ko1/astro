@@ -25,10 +25,7 @@ struct baruby_option OPTION = {
     // .static_lang = true,
 };
 
-// Re-entrancy guards for GC time tracking — referenced by inline helpers
-// in gc.h.  Defined here so each backend doesn't have to.
-int             aro_gc_time_depth = 0;
-struct timespec aro_gc_time_t0    = {0, 0};
+// GC timer state moved into CTX (= no global mutable state).
 static CTX *global_c;
 
 size_t node_cnt;
@@ -381,15 +378,15 @@ main(int argc, char *argv[])
         printf("__ELAPSED__ %.6f\n", elapsed);
 
         if (getenv("BARUBY_GC_STATS")) {
-            size_t alloc_bytes = aro_gc_total_bytes();
-            size_t heap_bytes  = aro_gc_heap_bytes();
-            size_t gc_count    = aro_gc_count();
-            size_t minor       = aro_gc_minor_count();
-            size_t major       = aro_gc_major_count();
-            double gc_seconds  = aro_gc_total_seconds();
-            double mark_sec    = aro_gc_mark_seconds();
-            double reclaim_sec = aro_gc_reclaim_seconds();
-            double max_pause   = aro_gc_max_pause_seconds();
+            size_t alloc_bytes = aro_gc_total_bytes(c);
+            size_t heap_bytes  = aro_gc_heap_bytes(c);
+            size_t gc_count    = aro_gc_count(c);
+            size_t minor       = aro_gc_minor_count(c);
+            size_t major       = aro_gc_major_count(c);
+            double gc_seconds  = aro_gc_total_seconds(c);
+            double mark_sec    = aro_gc_mark_seconds(c);
+            double reclaim_sec = aro_gc_reclaim_seconds(c);
+            double max_pause   = aro_gc_max_pause_seconds(c);
             double gc_pct      = elapsed > 0 ? (gc_seconds / elapsed) * 100 : 0;
             printf("__GC_STATS__ backend=%s alloc_bytes=%zu heap_bytes=%zu "
                    "gc_count=%zu minor=%zu major=%zu "
