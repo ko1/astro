@@ -622,6 +622,17 @@ astro_cs_reload(void)
         // dlopen succeeded — the kernel now holds the inode via this
         // handle, so we can drop the directory entry.
         (void)unlink(gen_path);
+    } else {
+        // Failed silently before — debugging "AOT not effective" used
+        // to require a tracer in astro_cs_load to spot all_handle=NULL.
+        // Surface the dlerror so the failure mode is loud.  Common
+        // causes: SD .so references a symbol with no definition in the
+        // host binary (e.g. forgetting to include gc.h before the SD
+        // .c expands node_eval.c's `aro_gc_wb` call on non-WB GC
+        // backends).
+        const char *err = dlerror();
+        fprintf(stderr, "astro_cs_reload: dlopen failed for %s: %s\n",
+                gen_path, err ? err : "(no dlerror)");
     }
 }
 

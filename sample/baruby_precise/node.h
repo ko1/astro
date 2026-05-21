@@ -9,6 +9,14 @@
 #include <string.h>
 
 #include "context.h"
+// gc.h defines aro_gc_wb (write barrier) used by EVAL_node_call_aset
+// inside node_eval.c.  Non-gen backends provide it as a `static inline`
+// stub; gen backends export it as an extern.  Either way, SD .c that
+// includes node_eval.c needs the declaration / inline-body in scope —
+// otherwise gcc emits a call to the implicit `extern aro_gc_wb` and
+// dlopen of all.so fails with an undefined symbol on non-WB GC backends
+// (e.g. GC=copy) for any program that touches array write (a[i] = v).
+#include "gc.h"
 // node_def's EVAL body calls astro_cs_load(body, name) for PGC dispatch
 // loading; the SD .c files include node_eval.c so they need the
 // declaration too.  We include only the prototype (not the full
