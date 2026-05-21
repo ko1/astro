@@ -93,6 +93,7 @@ typedef struct LargeObj {
 // ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
 typedef struct ASTroGC {
+    AroGcCommonState common;   /* MUST be first field */
     uint8_t cur_epoch;            /* skips 0 so fresh allocs (mark_epoch=0) are "unmarked" */
     char       *arena_base;
     BlockMeta  *blocks;
@@ -110,34 +111,31 @@ typedef struct ASTroGC {
     size_t            gray_capa;
 } ASTroGC;
 
-static ASTroGC g_astro_gc;
-#define cur_epoch         (g_astro_gc.cur_epoch)
-#define arena_base        (g_astro_gc.arena_base)
-#define blocks            (g_astro_gc.blocks)
-#define block_cursor      (g_astro_gc.block_cursor)
-#define line_cursor       (g_astro_gc.line_cursor)
-#define cur_ptr           (g_astro_gc.cur_ptr)
-#define cur_end           (g_astro_gc.cur_end)
-#define max_touched_block (g_astro_gc.max_touched_block)
-#define large_head        (g_astro_gc.large_head)
-#define bytes_since_gc    (g_astro_gc.bytes_since_gc)
-#define gc_threshold      (g_astro_gc.gc_threshold)
-#define gc_ctx            (g_astro_gc.ctx)
-#define gray_buf          (g_astro_gc.gray_buf)
-#define gray_cnt          (g_astro_gc.gray_cnt)
-#define gray_capa         (g_astro_gc.gray_capa)
+#define cur_epoch         (gc->cur_epoch)
+#define arena_base        (gc->arena_base)
+#define blocks            (gc->blocks)
+#define block_cursor      (gc->block_cursor)
+#define line_cursor       (gc->line_cursor)
+#define cur_ptr           (gc->cur_ptr)
+#define cur_end           (gc->cur_end)
+#define max_touched_block (gc->max_touched_block)
+#define large_head        (gc->large_head)
+#define bytes_since_gc    (gc->bytes_since_gc)
+#define gc_threshold      (gc->gc_threshold)
+#define gc_ctx            (gc->ctx)
+#define gray_buf          (gc->gray_buf)
+#define gray_cnt          (gc->gray_cnt)
+#define gray_capa         (gc->gray_capa)
 
-AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
-int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "immix";
 
-static void gc_collect_internal(VALUE *sp_top);
+static void gc_collect_internal(CTX *c, VALUE *sp_top);
 
 void
 aro_gc_init(CTX *c)
 {
-    ASTroGC *gc = &g_astro_gc;
-    memset(gc, 0, sizeof(*gc));
+    ASTroGC *gc = (ASTroGC *)calloc(1, sizeof(ASTroGC));
+    if (!gc) { perror("calloc ASTroGC"); abort(); }
     c->astro_gc = gc;
     gc_ctx = c;
     cur_epoch    = 1;
@@ -146,21 +144,16 @@ aro_gc_init(CTX *c)
     arena_base = (char *)mmap(NULL, ARENA_BYTES, PROT_READ|PROT_WRITE,
                               MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (arena_base == MAP_FAILED) { perror("immix mmap arena"); abort(); }
-    /* block_meta array is also virtually reserved + lazy-paged.
-     * 64 GiB / 32 KiB blocks × 257 B/meta ≈ 514 MB virtual. */
     blocks = (BlockMeta *)mmap(NULL, N_BLOCKS * sizeof(BlockMeta),
                                PROT_READ|PROT_WRITE,
                                MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (blocks == MAP_FAILED) { perror("immix mmap blocks"); abort(); }
-    /* All blocks start FREE.  Leave cur_ptr/cur_end NULL — the first
-     * alloc will fall through to find_hole, which picks up block 0 as
-     * one big hole and advances the cursor properly. */
     block_cursor = 0;
     line_cursor  = 0;
     cur_ptr = NULL;
     cur_end = NULL;
     if (getenv("BARUBY_GC_STRESS")) {
-        aro_gc_stress = 1;
+        gc->common.stress = true;
         gc_threshold = 0;
         fprintf(stderr, "[baruby_gc=immix] STRESS mode: collect on every alloc\n");
     }
@@ -171,40 +164,33 @@ aro_gc_init(CTX *c)
  * --------------------------------------------------------------------------- */
 
 static inline size_t
-block_of(const void *p)
+block_of(ASTroGC *gc, const void *p)
 {
     return (size_t)(((const char *)p - arena_base) / BLOCK_BYTES);
 }
 
 static inline size_t
-line_of(const void *p)
+line_of(ASTroGC *gc, const void *p)
 {
     return (size_t)(((const char *)p - arena_base) % BLOCK_BYTES) / LINE_BYTES;
 }
 
 /* Mark all lines that an object spans (from its payload pointer + size). */
 static inline void
-mark_lines_for(const GCHeader *h)
+mark_lines_for(ASTroGC *gc, const GCHeader *h)
 {
     const char *start = (const char *)h;
     const char *last  = start + sizeof(GCHeader) + ALIGN8(h->size) - 1;
-    size_t bi = block_of(start);
-    size_t l0 = line_of(start);
-    size_t l1 = line_of(last);
-    /* Conservative line mark: also mark the line after the last payload
-     * byte (the "implicit" line of Immix), so we don't allocate a small
-     * object that bridges across an object boundary in cache.  v1 keeps
-     * it simple — just mark spanning lines exactly. */
+    size_t bi = block_of(gc, start);
+    size_t l0 = line_of(gc, start);
+    size_t l1 = line_of(gc, last);
     for (size_t l = l0; l <= l1; l++) {
         blocks[bi].line_marks[l] = 1;
     }
 }
 
-/* Walk forward from (block_idx, line_idx) and return [hole_start, hole_end).
- * Sets *out_block to the block containing the found hole, and updates
- * block_cursor to that block.  Returns false if no hole >= n_lines exists. */
 static bool
-find_hole(size_t n_lines, char **out_start, char **out_end)
+find_hole(ASTroGC *gc, size_t n_lines, char **out_start, char **out_end)
 {
     if (n_lines < 1) n_lines = 1;
     /* Scan up to max_touched_block+1, with the last block treated as a
@@ -249,9 +235,8 @@ find_hole(size_t n_lines, char **out_start, char **out_end)
  * Allocation
  * --------------------------------------------------------------------------- */
 
-/* Large objects (> MEDIUM_MAX): own mmap region.  Same shape as gc_mark.c. */
 static void *
-large_alloc(AroGcKind kind, size_t payload_size)
+large_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size)
 {
     size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
@@ -270,13 +255,10 @@ large_alloc(AroGcKind kind, size_t payload_size)
     return (void *)(h + 1);
 }
 
-/* Bump-alloc inside the current hole, falling back to find_hole / GC on
- * exhaustion.  Returns payload pointer (8-aligned). */
 static void *
-hole_alloc(AroGcKind kind, size_t payload_size)
+hole_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size)
 {
     size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
-    /* Fast path: enough room in current hole. */
     if (cur_ptr + total <= cur_end) {
         GCHeader *h = (GCHeader *)cur_ptr;
         cur_ptr += total;
@@ -285,10 +267,9 @@ hole_alloc(AroGcKind kind, size_t payload_size)
         h->mark_epoch = 0;
         return (void *)(h + 1);
     }
-    /* Find next hole big enough. */
     size_t need_lines = (total + LINE_BYTES - 1) / LINE_BYTES;
     char *hs, *he;
-    if (find_hole(need_lines, &hs, &he)) {
+    if (find_hole(gc, need_lines, &hs, &he)) {
         cur_ptr = hs;
         cur_end = he;
         GCHeader *h = (GCHeader *)cur_ptr;
@@ -298,17 +279,15 @@ hole_alloc(AroGcKind kind, size_t payload_size)
         h->mark_epoch = 0;
         return h + 1;
     }
-    return NULL;   /* arena exhausted — caller triggers GC */
+    return NULL;
 }
 
-// iter 43: cold-path split (see gc_copy.c for rationale).
-// All cold paths (threshold-triggered collect + hole_alloc retry + OOM)
-// live here so the alloc hot bodies stay inliner-budget friendly.
 static void * __attribute__((noinline, cold))
-hole_alloc_slow(AroGcKind kind, size_t payload_size, VALUE *sp_top)
+hole_alloc_slow(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
-    gc_collect_internal(sp_top);
-    void *payload = hole_alloc(kind, payload_size);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    gc_collect_internal(c, sp_top);
+    void *payload = hole_alloc(gc, kind, payload_size);
     if (!payload) {
         fprintf(stderr, "baruby_gc=immix: OOM (need %zu)\n",
                 sizeof(GCHeader) + ALIGN8(payload_size));
@@ -320,49 +299,51 @@ hole_alloc_slow(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    if (__builtin_expect(aro_gc_stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
-        gc_collect_internal(sp_top);
+    if (__builtin_expect(gc->common.stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
+        gc_collect_internal(c, sp_top);
     }
     size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
     void *payload;
     if (__builtin_expect(total > MEDIUM_MAX, 0)) {
-        payload = large_alloc(kind, payload_size);
+        payload = large_alloc(gc, kind, payload_size);
     } else {
-        payload = hole_alloc(kind, payload_size);
+        payload = hole_alloc(gc, kind, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(kind, payload_size, sp_top);
+            payload = hole_alloc_slow(c, kind, payload_size, sp_top);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, ALIGN8(payload_size));
     bytes_since_gc += payload_size;
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    gc->common.stats.total_bytes += payload_size;
+    gc->common.stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 {
-    if (__builtin_expect(aro_gc_stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
-        gc_collect_internal(sp_top);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (__builtin_expect(gc->common.stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
+        gc_collect_internal(c, sp_top);
     }
     size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
     void *payload;
     if (__builtin_expect(total > MEDIUM_MAX, 0)) {
-        payload = large_alloc(KIND_PAYLOAD_BYTE, payload_size);
+        payload = large_alloc(gc, KIND_PAYLOAD_BYTE, payload_size);
     } else {
-        payload = hole_alloc(KIND_PAYLOAD_BYTE, payload_size);
+        payload = hole_alloc(gc, KIND_PAYLOAD_BYTE, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(KIND_PAYLOAD_BYTE, payload_size, sp_top);
+            payload = hole_alloc_slow(c, KIND_PAYLOAD_BYTE, payload_size, sp_top);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     bytes_since_gc += payload_size;
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    gc->common.stats.total_bytes += payload_size;
+    gc->common.stats.heap_bytes  += payload_size;
     return payload;
 }
 
@@ -389,7 +370,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
  * --------------------------------------------------------------------------- */
 
 static void
-gray_push(GCHeader *h)
+gray_push(ASTroGC *gc, GCHeader *h)
 {
     if (gray_cnt >= gray_capa) {
         gray_capa = gray_capa ? gray_capa * 2 : 256;
@@ -400,24 +381,24 @@ gray_push(GCHeader *h)
 }
 
 static inline bool
-in_arena(const void *p)
+in_arena(ASTroGC *gc, const void *p)
 {
     return (const char *)p >= arena_base && (const char *)p < arena_base + ARENA_BYTES;
 }
 
 static void
-mark_value(VALUE v)
+mark_value(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
     if (h->mark_epoch == cur_epoch) return;
     h->mark_epoch = cur_epoch;
-    if (in_arena(h)) mark_lines_for(h);
-    gray_push(h);
+    if (in_arena(gc, h)) mark_lines_for(gc, h);
+    gray_push(gc, h);
 }
 
 static void
-process_gray(void)
+process_gray(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
@@ -425,18 +406,18 @@ process_gray(void)
         switch (HDR_KIND(h)) {
           case KIND_OBJ_ARRAY: {
             BaArray *a = (BaArray *)payload;
-            if (a->items) mark_value((VALUE)a->items);
+            if (a->items) mark_value(gc, (VALUE)a->items);
             break;
           }
           case KIND_OBJ_STRING: {
             BaString *s = (BaString *)payload;
-            if (!BSTR_IS_SSO(s) && s->bytes) mark_value((VALUE)s->bytes);
+            if (!BSTR_IS_SSO(s) && s->bytes) mark_value(gc, (VALUE)s->bytes);
             break;
           }
           case KIND_PAYLOAD_VAL: {
             VALUE *items = (VALUE *)payload;
             size_t n = h->size / sizeof(VALUE);
-            for (size_t i = 0; i < n; i++) mark_value(items[i]);
+            for (size_t i = 0; i < n; i++) mark_value(gc, items[i]);
             break;
           }
           case KIND_PAYLOAD_BYTE:
@@ -455,20 +436,15 @@ process_gray(void)
  * --------------------------------------------------------------------------- */
 
 static void
-sweep(void)
+sweep(ASTroGC *gc)
 {
     size_t live = 0;
-    /* Only walk touched blocks — never the full virtual 2M-block range. */
     for (size_t b = 0; b <= max_touched_block; b++) {
         const uint8_t *lm = blocks[b].line_marks;
         size_t marked = 0;
         for (size_t i = 0; i < LINES_PER_BLOCK; i++) marked += lm[i];
         if (marked == 0) {
             blocks[b].state = BLK_FREE;
-            /* (Could MADV_DONTNEED here, but the page-fault cost on
-             * subsequent re-use measured larger than the physical-memory
-             * savings on the workloads we care about.  Leave pages
-             * committed; OS pressure releases them via swap if needed.) */
         } else if (marked == LINES_PER_BLOCK) {
             blocks[b].state = BLK_USED;
         } else {
@@ -476,70 +452,56 @@ sweep(void)
         }
         live += marked * LINE_BYTES;
     }
-    aro_gc_stats.heap_bytes = live;
-    /* large objects: unmarked → munmap; marked → keep (epoch tick will
-     * invalidate the mark for the next cycle). */
+    gc->common.stats.heap_bytes = live;
     LargeObj **link = &large_head;
     while (*link) {
         LargeObj *lo = *link;
         GCHeader *h = (GCHeader *)(lo + 1);
         if (h->mark_epoch == cur_epoch) {
-            aro_gc_stats.heap_bytes += h->size;
+            gc->common.stats.heap_bytes += h->size;
             link = &lo->next;
         } else {
             *link = lo->next;
             munmap(lo, lo->map_bytes);
         }
     }
-    /* Reset allocator cursor to start of arena — find_hole will rescan. */
     block_cursor = 0;
     line_cursor  = 0;
     cur_ptr = NULL;
     cur_end = NULL;
 }
 
-/* ---------------------------------------------------------------------------
- * Collect
- * --------------------------------------------------------------------------- */
-
 static void
-gc_collect_internal(VALUE *sp_top)
+gc_collect_internal(CTX *c, VALUE *sp_top)
 {
-    struct timespec t0 = aro_gc_time_begin();
-    CTX *c = gc_ctx;
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    struct timespec t0 = aro_gc_time_begin(c);
 
-    /* Reset all line_marks before this mark cycle.  Only touched blocks
-     * need clearing — untouched virtual blocks have all-zero metadata. */
     for (size_t b = 0; b <= max_touched_block; b++) {
         memset(blocks[b].line_marks, 0, LINES_PER_BLOCK);
     }
 
-    /* Mark. */
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
-    process_gray();
+    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    process_gray(gc);
 
-    /* Sweep / classify. */
-    sweep();
+    sweep(gc);
 
-    /* Tick the mark epoch — all GCHeader.mark_epoch values from this
-     * cycle become implicitly "stale" (!= cur_epoch).  Skip 0 since
-     * fresh allocs initialize mark_epoch=0 to mean "unmarked". */
     cur_epoch = (cur_epoch == 255) ? 1 : (uint8_t)(cur_epoch + 1);
 
-    aro_gc_stats.gc_count++;
+    gc->common.stats.gc_count++;
     bytes_since_gc = 0;
-    if (!aro_gc_stress) {
-        size_t live = aro_gc_stats.heap_bytes;
+    if (!gc->common.stress) {
+        size_t live = gc->common.stats.heap_bytes;
         size_t next = live * GC_THRESHOLD_FACTOR;
         gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
     }
     c->sp = sp_top;
-    aro_gc_time_end(t0);
+    aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c, VALUE *sp_top)
 {
-    gc_collect_internal(sp_top);
+    gc_collect_internal(c, sp_top);
 }
 
