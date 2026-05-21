@@ -30,7 +30,7 @@ typedef struct Node NODE;
 // NODE_DEF that needs roots writes intermediates to sp[0], sp[1], ... and
 // passes `sp + N` to children so the children's scratch sits above ours.
 // baruby_precise: precise mark&sweep scans c->env..c->sp to find roots.
-typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *fp, VALUE *sp);
+typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *sp);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -109,34 +109,29 @@ node_hash_t hash_node_opt(NODE *n);
 #include "bf.h"
 
 static inline RESULT
-EVAL(CTX *c, NODE *n, VALUE *fp, VALUE *sp)
+EVAL(CTX *c, NODE *n, VALUE *sp)
 {
-    return (*n->head.dispatcher)(c, n, fp, sp);
+    return (*n->head.dispatcher)(c, n, sp);
 }
 
-// Custom EVAL_ARG that advances sp for the child.  In NODE_DEF BODY
-// scope, fp and sp are parameters of the enclosing EVAL_<name>.
-// `n_node##_dispatcher` is the per-operand dispatcher pointer the
-// framework adds to the EVAL_<name> signature.
-//
-// Use this whenever the parent NODE_DEF holds a VALUE root in sp[]:
+// Custom EVAL_ARG with explicit new_sp for the child.  In NODE_DEF
+// BODY scope, sp is the parameter of the enclosing EVAL_<name>.
+// Use this when the parent holds VALUE roots in sp[] and the child
+// needs a fresh top above them:
 //   sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lv, sp + 1));
-// to ensure the child writes its own scratch above the parent's slots.
-// For pass-through (no root spill in parent), the framework's plain
-// EVAL_ARG(c, lv) reuses the parent's sp unchanged — equivalent to
-// BARUBY_EVAL_ARG(c, lv, sp).
-#define BARUBY_EVAL_ARG(c, n_node, new_sp) ((*n_node##_dispatcher)(c, n_node, fp, new_sp))
+// iter 61 dropped fp from the dispatcher signature — only sp remains.
+#define BARUBY_EVAL_ARG(c, n_node, new_sp) ((*n_node##_dispatcher)(c, n_node, new_sp))
 
-// Per-variant slowpaths.  Updated to 4-arg sig for sp threading.
-RESULT node_call_slowpath        (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_call_0_slowpath      (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_call_1_slowpath      (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_call_2_slowpath      (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_call_3_slowpath      (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_call2_slowpath       (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_pg_call0_slowpath    (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_pg_call1_slowpath    (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_pg_call2_slowpath    (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
-RESULT node_pg_call3_slowpath    (CTX *c, NODE *n, VALUE *fp, VALUE *sp);
+// Per-variant slowpaths.  3-arg sig (fp eliminated iter 61).
+RESULT node_call_slowpath        (CTX *c, NODE *n, VALUE *sp);
+RESULT node_call_0_slowpath      (CTX *c, NODE *n, VALUE *sp);
+RESULT node_call_1_slowpath      (CTX *c, NODE *n, VALUE *sp);
+RESULT node_call_2_slowpath      (CTX *c, NODE *n, VALUE *sp);
+RESULT node_call_3_slowpath      (CTX *c, NODE *n, VALUE *sp);
+RESULT node_call2_slowpath       (CTX *c, NODE *n, VALUE *sp);
+RESULT node_pg_call0_slowpath    (CTX *c, NODE *n, VALUE *sp);
+RESULT node_pg_call1_slowpath    (CTX *c, NODE *n, VALUE *sp);
+RESULT node_pg_call2_slowpath    (CTX *c, NODE *n, VALUE *sp);
+RESULT node_pg_call3_slowpath    (CTX *c, NODE *n, VALUE *sp);
 
 #endif // NODE_H

@@ -17,14 +17,21 @@ class BaRubyNodeDef < ASTroGen::NodeDef
     # abruby; details in context.h.
     def result_type = "RESULT"
 
-    # Four-arg dispatcher: `(CTX *c, NODE *n, VALUE *fp, VALUE *sp)`.
-    # fp = current function frame base (= local variables 0..locals_cnt-1
-    # live at fp[0..]).  sp = current scratch top: NODE_DEFs that need
-    # roots write to sp[0], sp[1], ... and pass sp + N to children so the
-    # children's scratch sits above ours.  Both are register-passed.
+    # Three-arg dispatcher: `(CTX *c, NODE *n, VALUE *sp)`.  iter 61
+    # eliminated fp entirely — every NODE_DEF body works against sp only.
+    # Local accesses (`lget`/`lset`) bake a parse-time `sp_offset` into
+    # the NODE operand (= `index - chain - locals_cnt`) and read/write
+    # `sp[sp_offset]`.  `node_call_*` similarly bake a `callee_sp_offset`
+    # so the callee frame address is computed from caller's sp alone.
     # baruby_precise: precise mark&sweep scans c->env..c->sp to find roots.
     def common_param_count
-      4
+      3
+    end
+
+    # Drop fp from child dispatcher invocation args.  Framework default
+    # emits "c, field, fp, sp"; here only sp survives.
+    def child_dispatch_args(slot, field)
+      "c, #{field}, sp"
     end
 
     # Override the framework's per-NODE-operand forward-decl emission.

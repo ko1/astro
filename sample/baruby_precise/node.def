@@ -3,7 +3,7 @@
 // literal
 
 NODE_DEF
-node_num(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, int32_t num)
+node_num(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, int32_t num)
 {
     return RESULT_OK(INT2VAL(num));
 }
@@ -13,53 +13,61 @@ node_num(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 // needs dedicated nodes when desugaring `&&` / `||` and when emitting
 // `nil` for missing else / out-of-range / etc.
 NODE_DEF
-node_true(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_true(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     return RESULT_OK(VAL_TRUE);
 }
 
 NODE_DEF
-node_false(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_false(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     return RESULT_OK(VAL_FALSE);
 }
 
 NODE_DEF
-node_nil(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_nil(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     return RESULT_OK(VAL_NIL);
 }
 
-// local variables — fp[index] reads/writes the current frame slot
-// directly, so the SD chain never has to round-trip through `c->fp`.
+// local variables — iter 61 dropped fp.  Walker bakes `sp_offset` =
+// `index - chain - locals_cnt` at parse end (after callsite_resolve),
+// so each lget/lset resolves to a single `sp[sp_offset]` addressing
+// mode at runtime.  See baruby_parse.c::walk_bake_sp_offset.
 
 NODE_DEF
-node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, uint32_t index)
+node_lget(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t index, int32_t sp_offset)
 {
-    return RESULT_OK(fp[index]);
+    (void)index;
+    return RESULT_OK(sp[sp_offset]);
 }
 
 NODE_DEF
-node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, uint32_t index, NODE *rhs)
+node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t index, int32_t sp_offset, NODE *rhs)
 {
+    (void)index;
     VALUE v = UNWRAP(EVAL_ARG(c, rhs));
-    fp[index] = v;
+    sp[sp_offset] = v;
     return RESULT_OK(v);
 }
 
 // syntax
 
 NODE_DEF
-node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, uint32_t envsize, NODE *body)
+node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t envsize, NODE *body)
 {
-    // Advance fp by envsize (matches conservative-baruby convention).
-    // sp must stay above where the body's locals live; conservatively
-    // use a fixed offset.  baruby_precise MVP: 64 slots is enough.
-    return EVAL(c, body, fp + envsize, fp + envsize + 64);
+    /* iter 61: node_scope is unused by current parser (kept for legacy
+     * shape).  In sp-only convention, `envsize` would be folded into the
+     * walker's locals_cnt for body recursion; since no caller exists,
+     * leave as a tail-EVAL passing the parent's sp.  If a future parser
+     * resurrects scope, walker needs a node_scope branch that recurses
+     * with locals_cnt = envsize. */
+    (void)envsize;
+    return EVAL(c, body, sp);
 }
 
 NODE_DEF
-node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *head, NODE *tail)
+node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *head, NODE *tail)
 {
     // Discard head's value but propagate non-NORMAL state (e.g. RETURN
     // inside an `if` whose branch is `head`).  UNWRAP returns from the
@@ -69,7 +77,7 @@ node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 }
 
 NODE_DEF
-node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *cond, NODE *then_node, NODE *else_node)
+node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *then_node, NODE *else_node)
 {
     // `nil = raw 4` is non-zero, so a plain `if (...)` would treat nil as
     // truthy — explicit IS_TRUTHY test required.
@@ -82,7 +90,7 @@ node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 }
 
 NODE_DEF
-node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *cond, NODE *body)
+node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *body)
 {
     while (IS_TRUTHY(UNWRAP(EVAL_ARG(c, cond)))) {
         RESULT r = EVAL_ARG(c, body);
@@ -97,7 +105,7 @@ node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * res
 // RESULT_NORMAL so the caller sees a normal return value.
 
 NODE_DEF
-node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE v@child)
+node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE v@child)
 {
     return RESULT_RETURN_(v);
 }
@@ -117,7 +125,7 @@ get_func_entry(CTX * restrict c, const char *name)
 }
 
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
     struct function_entry *fe = get_func_entry(c, name);
     fe->name = name;
@@ -149,11 +157,11 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 // the callee gets a fresh VLA frame `F[locals_cnt]`.
 
 NODE_DEF
-node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref)
+node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t params_cnt, uint32_t arg_index, int32_t callee_fp_offset, struct callcache *cc@ref)
 {
-    (void)name; (void)params_cnt;
+    (void)name; (void)params_cnt; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial)) {
-        return node_call_slowpath(c, n, fp, sp);
+        return node_call_slowpath(c, n, sp);
     }
     NODE *body = cc->body;
 #ifndef ASTRO_SPECIALIZED
@@ -169,13 +177,12 @@ node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * rest
 #endif
     uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(body);
     if (locals_cnt == 0) locals_cnt = params_cnt;
-    VALUE *callee_fp = fp + arg_index;
-    /* parser stores body_locals = max_cnt (arg/scratch high-water) in
-     * the callee's locals_cnt, so callee_fp + locals_cnt is guaranteed
-     * to land above caller's @child snapshot slots — no runtime guard
-     * needed (was: `if (callee_sp < sp + 4) callee_sp = sp + 4`).  See
-     * baruby_parse.c::PM_DEF_NODE and docs/done.md (58). */
-    RESULT r = EVAL(c, body, callee_fp, callee_fp + locals_cnt);
+    /* iter 61: walker bakes callee_fp_offset = arg_index - caller_locals
+     * - chain at this node.  Args are written by parser's lset chain
+     * into sp[sp_offset] which equals callee_fp + i.  Body dispatches
+     * with callee_sp = callee_fp + locals_cnt. */
+    VALUE *callee_fp = sp + callee_fp_offset;
+    RESULT r = EVAL(c, body, callee_fp + locals_cnt);
     return RESULT_OK(r.value);
 }
 
@@ -209,70 +216,70 @@ node_call(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * rest
 // (= above where callee locals live) and the results are placed at sp[0..N-1].
 
 NODE_DEF
-node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref)
+node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref)
 {
-    (void)name; (void)arg_index; (void)fp;
+    (void)name; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial)) {
-        return node_call_0_slowpath(c, n, fp, sp);
+        return node_call_0_slowpath(c, n, sp);
     }
     // Zero-init callee locals (untouched by args here).
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp + locals_cnt).value);
 }
 
 NODE_DEF
-node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0)
+node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0)
 {
     (void)name; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial)) {
-        return node_call_1_slowpath(c, n, fp, sp);
+        return node_call_1_slowpath(c, n, sp);
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp + locals_cnt).value);
 }
 
 NODE_DEF
-node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1)
+node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1)
 {
     (void)name; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial)) {
-        return node_call_2_slowpath(c, n, fp, sp);
+        return node_call_2_slowpath(c, n, sp);
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp + locals_cnt).value);
 }
 
 NODE_DEF
-node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1, NODE *a2)
+node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *a0, NODE *a1, NODE *a2)
 {
     (void)name; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial)) {
-        return node_call_3_slowpath(c, n, fp, sp);
+        return node_call_3_slowpath(c, n, sp);
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
     sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, a2, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp + locals_cnt).value);
 }
 
 NODE_DEF
-node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t params_cnt, uint32_t arg_index, struct callcache *cc@ref, NODE *sp_body)
+node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t params_cnt, uint32_t arg_index, int32_t callee_fp_offset, struct callcache *cc@ref, NODE *sp_body)
 {
     (void)name; (void)params_cnt; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
-        return node_call2_slowpath(c, n, fp, sp);
+        return node_call2_slowpath(c, n, sp);
     }
     if (CALL_DEBUG) fprintf(stderr, "name:%s hit!\n", name);
-    // baruby_precise: callee frame at fp[arg_index..] (parser-set), callee
-    // sp = callee_fp + locals_cnt (from code repo).
+    /* iter 61: callee_fp_offset baked by walker (= arg_index - caller_locals
+     * - chain).  Callee frame lives at sp[callee_fp_offset..]. */
     uint32_t locals_cnt = code_repo_find_locals_cnt_by_body(sp_body);
     if (locals_cnt == 0) locals_cnt = params_cnt;
-    VALUE *callee_fp = fp + arg_index;
-    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp, callee_fp + locals_cnt);
+    VALUE *callee_fp = sp + callee_fp_offset;
+    RESULT r = (*sp_body_dispatcher)(c, sp_body, callee_fp + locals_cnt);
     return RESULT_OK(r.value);
 }
 
@@ -309,83 +316,91 @@ node_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * res
 // constant is always valid in the matched case.
 
 NODE_DEF
-node_pg_call0(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body)
-{
-    (void)name; (void)arg_index; (void)fp;
-    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
-        return node_pg_call0_slowpath(c, n, fp, sp);
-    }
-    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
-}
-
-NODE_DEF
-node_pg_call1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0)
+node_pg_call0(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body)
 {
     (void)name; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
-        return node_pg_call1_slowpath(c, n, fp, sp);
+        return node_pg_call0_slowpath(c, n, sp);
+    }
+    for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp + locals_cnt).value);
+}
+
+NODE_DEF
+node_pg_call1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0)
+{
+    (void)name; (void)arg_index;
+    if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
+        return node_pg_call1_slowpath(c, n, sp);
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp + locals_cnt).value);
 }
 
 NODE_DEF
-node_pg_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1)
+node_pg_call2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1)
 {
     (void)name; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
-        return node_pg_call2_slowpath(c, n, fp, sp);
+        return node_pg_call2_slowpath(c, n, sp);
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp + locals_cnt).value);
 }
 
 NODE_DEF
-node_pg_call3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1, NODE *a2)
+node_pg_call3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, uint32_t arg_index, uint32_t locals_cnt, struct callcache *cc@ref, NODE *sp_body, NODE *a0, NODE *a1, NODE *a2)
 {
     (void)name; (void)arg_index;
     if (UNLIKELY(c->serial != cc->serial || cc->body != sp_body)) {
-        return node_pg_call3_slowpath(c, n, fp, sp);
+        return node_pg_call3_slowpath(c, n, sp);
     }
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
     sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, a1, sp + locals_cnt));
     sp[2] = UNWRAP(BARUBY_EVAL_ARG(c, a2, sp + locals_cnt));
-    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp, sp + locals_cnt).value);
+    return RESULT_OK((*sp_body_dispatcher)(c, sp_body, sp + locals_cnt).value);
 }
 
 NODE_DEF
-node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, NODE *body, uint32_t arg_index)
+node_call_static(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t arg_index, int32_t callee_fp_offset)
 {
     (void)arg_index;
-    // body's locals_cnt unknown here at compile time — use sp as both fp and
-    // sp base; body will read its locals via fp + index from caller's layout.
-    return RESULT_OK((*body_dispatcher)(c, body, fp + arg_index, sp).value);
+    /* iter 61: callee_fp baked relative to caller's sp (walker output).
+     * callee body's lget reads from sp[sp_offset] which already resolves
+     * to the right slot — but here body's locals_cnt isn't known at
+     * parse time (static_lang shape), so we pass sp at callee_fp top
+     * and let the body's own dispatcher manage. */
+    VALUE *callee_fp = sp + callee_fp_offset;
+    return RESULT_OK((*body_dispatcher)(c, body, callee_fp).value);
 }
 
 NODE_DEF
-node_call_builtin(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, struct builtin_func *bf, builtin_func_ptr func_ptr, uint32_t params_cnt)
+node_call_builtin(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, struct builtin_func *bf, builtin_func_ptr func_ptr, uint32_t params_cnt)
 {
+    /* iter 61: builtin args live at sp[-params_cnt..-1] (= callee_fp[0..])
+     * because the caller advanced sp by params_cnt before invoking the
+     * builtin body. */
+    VALUE *args = sp - params_cnt;
     VALUE v;
     switch (params_cnt) {
       case 0:
         v = (*func_ptr)();
         break;
       case 1:
-        v = (*(builtin_func1_ptr)func_ptr)(fp[0]);
+        v = (*(builtin_func1_ptr)func_ptr)(args[0]);
         break;
       case 2:
-        v = (*(builtin_func2_ptr)func_ptr)(fp[0], fp[1]);
+        v = (*(builtin_func2_ptr)func_ptr)(args[0], args[1]);
         break;
       case 3:
-        v = (*(builtin_func3_ptr)func_ptr)(fp[0], fp[1], fp[2]);
+        v = (*(builtin_func3_ptr)func_ptr)(args[0], args[1], args[2]);
         break;
       case 4:
-        v = (*(builtin_func4_ptr)func_ptr)(fp[0], fp[1], fp[2], fp[3]);
+        v = (*(builtin_func4_ptr)func_ptr)(args[0], args[1], args[2], args[3]);
         break;
       default:
         fprintf(stderr, "too much params:%u\n", params_cnt);
@@ -401,7 +416,7 @@ node_call_builtin(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALU
 // VAL2INT(t) = (intptr_t)t >> 1, INT2VAL(i) = (i << 1) | 1.
 
 NODE_DEF
-node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     /* DISPATCH snapshotted lv/rv to slots $lv/$rv (= sp[0]/sp[1] post-substitute);
      * body's scratch starts at sp[2] by convention. */
@@ -419,13 +434,13 @@ node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 }
 
 NODE_DEF
-node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     return RESULT_OK(INT2VAL(VAL2INT(lv) - VAL2INT(rv)));
 }
 
 NODE_DEF
-node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     /* DISPATCH spilled lv/rv at $lv/$rv (= sp[0]/sp[1]); &$lv still valid for helpers. */
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
@@ -442,13 +457,13 @@ node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 }
 
 NODE_DEF
-node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     return RESULT_OK(INT2VAL(VAL2INT(lv) / VAL2INT(rv)));
 }
 
 NODE_DEF
-node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     return RESULT_OK(INT2VAL(VAL2INT(lv) % VAL2INT(rv)));
 }
@@ -463,7 +478,7 @@ node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 // unaffected (sp[0]/sp[1] compare bit-for-bit just like locals would).
 
 NODE_DEF
-node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv < rv ? VAL_TRUE : VAL_FALSE);
     if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) < 0 ? VAL_TRUE : VAL_FALSE);
@@ -472,7 +487,7 @@ node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 }
 
 NODE_DEF
-node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv <= rv ? VAL_TRUE : VAL_FALSE);
     if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) <= 0 ? VAL_TRUE : VAL_FALSE);
@@ -481,7 +496,7 @@ node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 }
 
 NODE_DEF
-node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv > rv ? VAL_TRUE : VAL_FALSE);
     if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) > 0 ? VAL_TRUE : VAL_FALSE);
@@ -490,7 +505,7 @@ node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 }
 
 NODE_DEF
-node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv >= rv ? VAL_TRUE : VAL_FALSE);
     if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) >= 0 ? VAL_TRUE : VAL_FALSE);
@@ -504,7 +519,7 @@ node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 // same cost as before — only heap pointers fall through to the helper.
 
 NODE_DEF
-node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(lv == rv)) return RESULT_OK(VAL_TRUE);
     if (LIKELY(IS_INT(lv) || IS_INT(rv))) return RESULT_OK(VAL_FALSE);
@@ -512,7 +527,7 @@ node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restri
 }
 
 NODE_DEF
-node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(lv == rv)) return RESULT_OK(VAL_FALSE);
     if (LIKELY(IS_INT(lv) || IS_INT(rv))) return RESULT_OK(VAL_TRUE);
@@ -522,7 +537,7 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restr
 // 3-way compare.  Returns -1 / 0 / 1 (Integer) for orderable pairs and
 // nil for incomparable types — matches Ruby's `<=>`.
 NODE_DEF
-node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
         if (lv < rv) return RESULT_OK(INT2VAL(-1));
@@ -543,7 +558,7 @@ node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 //   Array   << any      → push (mutating, returns self)
 //   String  << String   → append (mutating, returns self)
 NODE_DEF
-node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
+node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
         return RESULT_OK(INT2VAL(VAL2INT(lv) << VAL2INT(rv)));
@@ -574,13 +589,13 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * re
 // -----------------------------------------------------------------------------
 
 NODE_DEF
-node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     return RESULT_OK(baruby_ary_new(0, sp));
 }
 
 NODE_DEF
-node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
+node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
 {
     (void)recv; (void)val;
     baruby_ary_push(&$recv, &$val, sp);
@@ -592,35 +607,35 @@ node_ary_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
 // regressed (icache from new dispatch entries), but AOT mode bakes
 // dispatch into SD bodies so the per-node overhead disappears.
 NODE_DEF
-node_ary_lit_1(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child)
+node_ary_lit_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE e0@child)
 {
     (void)e0;
     return RESULT_OK(baruby_ary_new_from(&$e0, 1, sp));
 }
 
 NODE_DEF
-node_ary_lit_2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child)
+node_ary_lit_2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE e0@child, VALUE e1@child)
 {
     (void)e0; (void)e1;
     return RESULT_OK(baruby_ary_new_from(&$e0, 2, sp));
 }
 
 NODE_DEF
-node_ary_lit_3(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child)
+node_ary_lit_3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child)
 {
     (void)e0; (void)e1; (void)e2;
     return RESULT_OK(baruby_ary_new_from(&$e0, 3, sp));
 }
 
 NODE_DEF
-node_ary_lit_4(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child, VALUE e3@child)
+node_ary_lit_4(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE e0@child, VALUE e1@child, VALUE e2@child, VALUE e3@child)
 {
     (void)e0; (void)e1; (void)e2; (void)e3;
     return RESULT_OK(baruby_ary_new_from(&$e0, 4, sp));
 }
 
 NODE_DEF
-node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, const char *bytes, uint32_t len)
+node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *bytes, uint32_t len)
 {
     // Fresh allocation per eval — gives the collector something to do.
     // Consider a parse-time intern pool if/when this dominates.
@@ -628,7 +643,7 @@ node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * r
 }
 
 NODE_DEF
-node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
+node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@child)
 {
     if (IS_ARY(r)) return RESULT_OK(INT2VAL(VAL2ARY(r)->len));
     if (IS_STR(r)) return RESULT_OK(INT2VAL(VAL2STR(r)->len));
@@ -637,7 +652,7 @@ node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 }
 
 NODE_DEF
-node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE iv@child)
+node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE recv@child, VALUE iv@child)
 {
     /* DISPATCH spilled recv at $recv, iv at $iv; STR-slice helper takes &$recv. */
     intptr_t ii = VAL2INT(iv);
@@ -662,7 +677,7 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 // array of `n` elements starting at `i`.  Negative `i` indexes from
 // the end; out-of-range or negative `n` returns nil.
 NODE_DEF
-node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE iv@child, VALUE cv@child)
+node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE recv@child, VALUE iv@child, VALUE cv@child)
 {
     intptr_t ii = VAL2INT(iv);
     intptr_t cc = VAL2INT(cv);
@@ -688,7 +703,7 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE 
 }
 
 NODE_DEF
-node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE iv@child, VALUE val@child)
+node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE recv@child, VALUE iv@child, VALUE val@child)
 {
     if (IS_ARY(recv)) {
         intptr_t ii = VAL2INT(iv);
@@ -708,7 +723,7 @@ node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 }
 
 NODE_DEF
-node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
+node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
 {
     (void)recv; (void)val;
     if (IS_ARY($recv)) {
@@ -720,7 +735,7 @@ node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 }
 
 NODE_DEF
-node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
+node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@child)
 {
     if (IS_ARY(r)) {
         BaArray *a = VAL2ARY(r);
@@ -734,7 +749,7 @@ node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * 
 // Stringification.  int → decimal string, str → self, ary → "[a, b, c]"
 // via baruby_print_value (consistent with `p`), true/false/nil → name.
 NODE_DEF
-node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
+node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@child)
 {
     return RESULT_OK(baruby_to_s(r, sp));
 }
@@ -742,7 +757,7 @@ node_call_to_s(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE *
 // Parsing.  str → leading-decimal int (Ruby semantics: stops at non-digit,
 // returns 0 if no digit found).  int → self.
 NODE_DEF
-node_call_to_i(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp, VALUE r@child)
+node_call_to_i(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@child)
 {
     if (IS_INT(r)) return RESULT_OK(r);
     if (IS_STR(r)) {

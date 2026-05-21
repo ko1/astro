@@ -165,6 +165,12 @@ code_repo_find_locals_cnt_by_body(NODE *body)
     return 0;
 }
 
+/* iter 61: accessors used by the parse-end walker (baruby_parse.c) to
+ * iterate every registered body and walk it with the right locals_cnt. */
+uint32_t code_repo_count(void) { return code_repo.size; }
+NODE *code_repo_body_at(uint32_t i) { return code_repo.entries[i].body; }
+uint32_t code_repo_locals_cnt_at(uint32_t i) { return code_repo.entries[i].locals_cnt; }
+
 uint32_t
 code_repo_find_locals_cnt_by_name(const char *name)
 {
@@ -200,7 +206,6 @@ create_context(int frames, int funcs)
     c->env = (VALUE *)mmap(NULL, stack_bytes, PROT_READ|PROT_WRITE,
                            MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (c->env == MAP_FAILED) { perror("mmap value stack"); abort(); }
-    c->fp = c->env;
     // sp will be moved past toplevel locals after PARSE; see main().
     c->sp = c->env;
     c->func_set = malloc(sizeof(struct function_entry) * funcs);
@@ -367,7 +372,7 @@ main(int argc, char *argv[])
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         // Top-level EVAL: fp = env, sp leaves room for toplevel locals.
-        RESULT r = EVAL(c, ast, c->env, c->sp);
+        RESULT r = EVAL(c, ast, c->sp);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
         printf("Result: ");

@@ -202,7 +202,6 @@ typedef struct builtin_func {
 
 typedef struct CTX_struct {
     VALUE *env;                  // bottom of VALUE stack (= start of mark range)
-    VALUE *fp;                   // current function frame base (unused now; sp threading replaces)
     VALUE *sp;                   // current scratch top — updated by alloc API before mark
     unsigned int func_set_cnt;
     struct function_entry *func_set;

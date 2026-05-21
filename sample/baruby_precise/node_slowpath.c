@@ -1,5 +1,8 @@
-// baruby_precise slowpaths: 4-arg sig (c, n, fp, sp).  Callee frames live on
-// the shared VALUE stack (= sp[0..locals_cnt-1]) so precise GC can scan them.
+// baruby_precise slowpaths: iter 61 — fp eliminated, dispatchers take
+// (c, n, sp).  Callee frames still live on the shared VALUE stack so
+// precise GC can scan them.  For node_call / node_call2 (= variadic
+// fallback path), the callee_fp baked by the walker as
+// `callee_fp_offset` operand resolves to sp + offset at runtime.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,27 +60,23 @@ sp_refresh_cc(CTX * restrict c, NODE * restrict call_node,
     return cc->body;
 }
 
-// Dispatch to `body` with args already in caller's fp[arg_index..]
-// (node_call / node_call2 convention).  Callee's frame base = fp + arg_index,
-// callee's sp = callee_fp + locals_cnt.  body_locals = max_cnt is stored
-// via baruby_parse.c::PM_DEF_NODE, so callee_fp + locals_cnt lands above
-// caller's @child snapshot slots safely — no runtime guard needed.
+// Dispatch via a walker-baked callee_fp_offset (node_call / node_call2 path).
+// Callee body's frame sits at sp[callee_fp_offset..]; its sp top is
+// callee_fp + locals_cnt.
 static inline RESULT
-sp_dispatch_via_fp(CTX * restrict c, NODE * restrict body,
-                   VALUE * restrict fp, VALUE * restrict sp,
-                   uint32_t arg_index)
+sp_dispatch_via_callee_fp_offset(CTX * restrict c, NODE * restrict body,
+                                 VALUE * restrict sp,
+                                 int32_t callee_fp_offset)
 {
-    (void)sp;
     uint32_t lc = code_repo_find_locals_cnt_by_body(body);
     if (lc == 0) lc = 1;
-    VALUE *callee_fp = fp + arg_index;
-    RESULT r = EVAL(c, body, callee_fp, callee_fp + lc);
+    VALUE *callee_fp = sp + callee_fp_offset;
+    RESULT r = EVAL(c, body, callee_fp + lc);
     return RESULT_OK(r.value);
 }
 
-// Dispatch to `body` with a fresh callee frame allocated from sp.  Used
-// by node_call_<N> / node_pg_call_<N> slowpaths where the callee frame
-// is disjoint from caller's fp.  Args are placed at sp[0..argc-1].
+// Dispatch with a fresh callee frame at sp[0..lc-1] (node_call_<N> /
+// node_pg_call_<N> path).  Args are placed at sp[0..argc-1].
 static inline RESULT
 sp_dispatch_fresh_frame(CTX * restrict c, NODE * restrict body,
                         const VALUE *args, uint32_t argc,
@@ -88,43 +87,41 @@ sp_dispatch_fresh_frame(CTX * restrict c, NODE * restrict body,
     if (lc == 0) lc = 1;
     for (uint32_t i = 0; i < lc; i++) sp[i] = 0;
     for (uint32_t i = 0; i < argc; i++) sp[i] = args[i];
-    RESULT r = EVAL(c, body, sp, sp + lc);
+    RESULT r = EVAL(c, body, sp + lc);
     return RESULT_OK(r.value);
 }
 
 // ---------- node_call (argc > 3, non-PG fallback) ----------
 
 RESULT
-node_call_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_call_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    (void)sp;
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (call)\n", n->u.node_call.name);
     struct callcache *cc = &n->u.node_call.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_call.name, n->u.node_call.params_cnt);
-    return sp_dispatch_via_fp(c, body, fp, sp, n->u.node_call.arg_index);
+    return sp_dispatch_via_callee_fp_offset(c, body, sp, n->u.node_call.callee_fp_offset);
 }
 
 // ---------- node_call_<N> (non-PG, arity-N specialized) ----------
 
 RESULT
-node_call_0_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_call_0_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (call_0)\n", n->u.node_call_0.name);
-    (void)fp;
     struct callcache *cc = &n->u.node_call_0.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_call_0.name, 0);
     return sp_dispatch_fresh_frame(c, body, NULL, 0, sp);
 }
 
 RESULT
-node_call_1_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_call_1_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (call_1)\n", n->u.node_call_1.name);
-    // Re-evaluate arg.  Use a deeper sp (above the to-be-callee region) so
-    // the arg eval's spills don't trample our callee frame.  Use sp + 4 as
-    // a conservative scratch base; we don't know the exact locals_cnt yet.
-    VALUE *arg_sp = sp + 16;
-    VALUE v0 = UNWRAP(EVAL(c, n->u.node_call_1.a0, fp, arg_sp));
+    // arg eval uses sp + locals_cnt as scratch top — same as fastpath
+    // (= ensures the walker-baked sp_offset of the arg's nested lget
+    // resolves correctly).
+    VALUE *arg_sp = sp + n->u.node_call_1.locals_cnt;
+    VALUE v0 = UNWRAP(EVAL(c, n->u.node_call_1.a0, arg_sp));
     struct callcache *cc = &n->u.node_call_1.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_call_1.name, 1);
     VALUE args[1] = { v0 };
@@ -132,12 +129,12 @@ node_call_1_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, V
 }
 
 RESULT
-node_call_2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_call_2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (call_2)\n", n->u.node_call_2.name);
-    VALUE *arg_sp = sp + 16;
-    VALUE v0 = UNWRAP(EVAL(c, n->u.node_call_2.a0, fp, arg_sp));
-    VALUE v1 = UNWRAP(EVAL(c, n->u.node_call_2.a1, fp, arg_sp));
+    VALUE *arg_sp = sp + n->u.node_call_2.locals_cnt;
+    VALUE v0 = UNWRAP(EVAL(c, n->u.node_call_2.a0, arg_sp));
+    VALUE v1 = UNWRAP(EVAL(c, n->u.node_call_2.a1, arg_sp));
     struct callcache *cc = &n->u.node_call_2.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_call_2.name, 2);
     VALUE args[2] = { v0, v1 };
@@ -145,13 +142,13 @@ node_call_2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, V
 }
 
 RESULT
-node_call_3_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_call_3_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (call_3)\n", n->u.node_call_3.name);
-    VALUE *arg_sp = sp + 16;
-    VALUE v0 = UNWRAP(EVAL(c, n->u.node_call_3.a0, fp, arg_sp));
-    VALUE v1 = UNWRAP(EVAL(c, n->u.node_call_3.a1, fp, arg_sp));
-    VALUE v2 = UNWRAP(EVAL(c, n->u.node_call_3.a2, fp, arg_sp));
+    VALUE *arg_sp = sp + n->u.node_call_3.locals_cnt;
+    VALUE v0 = UNWRAP(EVAL(c, n->u.node_call_3.a0, arg_sp));
+    VALUE v1 = UNWRAP(EVAL(c, n->u.node_call_3.a1, arg_sp));
+    VALUE v2 = UNWRAP(EVAL(c, n->u.node_call_3.a2, arg_sp));
     struct callcache *cc = &n->u.node_call_3.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_call_3.name, 3);
     VALUE args[3] = { v0, v1, v2 };
@@ -161,33 +158,31 @@ node_call_3_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, V
 // ---------- node_call2 (argc > 3, PG fallback) ----------
 
 RESULT
-node_call2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_call2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    (void)sp;
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (call2)\n", n->u.node_call2.name);
     struct callcache *cc = &n->u.node_call2.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_call2.name, n->u.node_call2.params_cnt);
-    return sp_dispatch_via_fp(c, body, fp, sp, n->u.node_call2.arg_index);
+    return sp_dispatch_via_callee_fp_offset(c, body, sp, n->u.node_call2.callee_fp_offset);
 }
 
 // ---------- node_pg_call_<N> (PG, arity-N specialized) ----------
 
 RESULT
-node_pg_call0_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_pg_call0_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (pg_call0)\n", n->u.node_pg_call0.name);
-    (void)fp;
     struct callcache *cc = &n->u.node_pg_call0.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_pg_call0.name, 0);
     return sp_dispatch_fresh_frame(c, body, NULL, 0, sp);
 }
 
 RESULT
-node_pg_call1_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_pg_call1_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (pg_call1)\n", n->u.node_pg_call1.name);
-    VALUE *arg_sp = sp + 16;
-    VALUE v0 = UNWRAP(EVAL(c, n->u.node_pg_call1.a0, fp, arg_sp));
+    VALUE *arg_sp = sp + n->u.node_pg_call1.locals_cnt;
+    VALUE v0 = UNWRAP(EVAL(c, n->u.node_pg_call1.a0, arg_sp));
     struct callcache *cc = &n->u.node_pg_call1.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_pg_call1.name, 1);
     VALUE args[1] = { v0 };
@@ -195,12 +190,12 @@ node_pg_call1_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp,
 }
 
 RESULT
-node_pg_call2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_pg_call2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (pg_call2)\n", n->u.node_pg_call2.name);
-    VALUE *arg_sp = sp + 16;
-    VALUE v0 = UNWRAP(EVAL(c, n->u.node_pg_call2.a0, fp, arg_sp));
-    VALUE v1 = UNWRAP(EVAL(c, n->u.node_pg_call2.a1, fp, arg_sp));
+    VALUE *arg_sp = sp + n->u.node_pg_call2.locals_cnt;
+    VALUE v0 = UNWRAP(EVAL(c, n->u.node_pg_call2.a0, arg_sp));
+    VALUE v1 = UNWRAP(EVAL(c, n->u.node_pg_call2.a1, arg_sp));
     struct callcache *cc = &n->u.node_pg_call2.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_pg_call2.name, 2);
     VALUE args[2] = { v0, v1 };
@@ -208,13 +203,13 @@ node_pg_call2_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp,
 }
 
 RESULT
-node_pg_call3_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict fp, VALUE * restrict sp)
+node_pg_call3_slowpath(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (CALL_DEBUG) fprintf(stderr, "name:%s miss (pg_call3)\n", n->u.node_pg_call3.name);
-    VALUE *arg_sp = sp + 16;
-    VALUE v0 = UNWRAP(EVAL(c, n->u.node_pg_call3.a0, fp, arg_sp));
-    VALUE v1 = UNWRAP(EVAL(c, n->u.node_pg_call3.a1, fp, arg_sp));
-    VALUE v2 = UNWRAP(EVAL(c, n->u.node_pg_call3.a2, fp, arg_sp));
+    VALUE *arg_sp = sp + n->u.node_pg_call3.locals_cnt;
+    VALUE v0 = UNWRAP(EVAL(c, n->u.node_pg_call3.a0, arg_sp));
+    VALUE v1 = UNWRAP(EVAL(c, n->u.node_pg_call3.a1, arg_sp));
+    VALUE v2 = UNWRAP(EVAL(c, n->u.node_pg_call3.a2, arg_sp));
     struct callcache *cc = &n->u.node_pg_call3.cc;
     NODE *body = sp_refresh_cc(c, n, cc, n->u.node_pg_call3.name, 3);
     VALUE args[3] = { v0, v1, v2 };
