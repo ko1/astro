@@ -238,29 +238,32 @@ typedef struct CTX_struct {
 #define ASTRO_GC_INSTANCE(c)  ((c)->astro_gc)
 
 /* Object shape: outgoing reference を slot pointer 列挙。 visit callback は
- * `void (void **slot)`、 同じ macro で mark / forward / update 全 phase 共有。
- * GCHeader は forward 宣言 (各 backend が typedef する)。 */
+ * `void (void *ctx, void **slot)`、 同じ macro で mark / forward / update 全
+ * phase 共有。 `ctx` は backend が好きに使える explicit closure
+ * (典型的には `AstroGc *gc`)。 GCHeader は forward 宣言 (各 backend が
+ * typedef する)。 module-static を global として使わないために ctx 経由
+ * を必須にしている。 */
 struct GCHeader;
-#define ASTRO_GC_SCAN_EDGES(h, edge_visit) do {                              \
+#define ASTRO_GC_SCAN_EDGES(h, ctx, edge_visit) do {                         \
     void *_payload = (void *)((h) + 1);                                      \
     switch (HDR_KIND(h)) {                                                   \
       case KIND_OBJ_ARRAY: {                                                 \
           BaArray *_a = (BaArray *)_payload;                                 \
           ASTRO_ASSERT(_a->hdr.type == OBJ_ARRAY);                           \
-          edge_visit((void **)&_a->items);                                   \
+          edge_visit((ctx), (void **)&_a->items);                            \
           break;                                                              \
       }                                                                       \
       case KIND_OBJ_STRING: {                                                \
           BaString *_s = (BaString *)_payload;                               \
           ASTRO_ASSERT(_s->hdr.type == OBJ_STRING);                          \
-          if (!BSTR_IS_SSO(_s)) edge_visit((void **)&_s->bytes);             \
+          if (!BSTR_IS_SSO(_s)) edge_visit((ctx), (void **)&_s->bytes);      \
           break;                                                              \
       }                                                                       \
       case KIND_PAYLOAD_VAL: {                                               \
           VALUE *_slots = (VALUE *)_payload;                                 \
           size_t _n = (h)->size / sizeof(VALUE);                             \
           for (size_t _i = 0; _i < _n; _i++)                                 \
-              edge_visit((void **)&_slots[_i]);                              \
+              edge_visit((ctx), (void **)&_slots[_i]);                       \
           break;                                                              \
       }                                                                       \
       case KIND_PAYLOAD_BYTE:                                                \

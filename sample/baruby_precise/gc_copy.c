@@ -10,10 +10,11 @@
 // ----------------------------------------------------------------------------
 // Semispace (Cheney) moving GC.
 //
-// iter 62: framework abstraction PoC.  This backend now uses the contract
-// macros (ASTRO_GC_SCAN_EDGES, ASTRO_GC_INSTANCE, etc.) and consolidates
-// process-scope state into `struct AstroGc`.  Other backends remain on
-// the old shape (module-static + direct kind switch) until ported.
+// iter 62: framework abstraction.  Process-scope state lives in `struct
+// AstroGc`, heap-allocated in `aro_gc_init` and reachable only via
+// `c->astro_gc` (= `ASTRO_GC_INSTANCE(c)`).  No module-static instance
+// pointer exists, so multiple instances can coexist (bind each to its
+// own CTX).  Helpers thread `AstroGc *gc` (or `CTX *c`) explicitly.
 // ----------------------------------------------------------------------------
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
@@ -34,10 +35,9 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
 
 #define REGION_BYTES  ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual per semispace, lazy-paged */
-/* Stress mode mmaps a fresh to-space every GC and leaves the old one
- * PROT_NONE'd for stale-pointer detection.  At 64 GiB per region that
- * accumulates TiBs of virtual address space (and slows mprotect /
- * madvise per GC), so stress mode uses a much smaller region. */
+/* Stress mode mmaps a fresh to-space every GC and retires the old one;
+ * a 64 GiB region would accumulate TiBs of virtual address space, so
+ * stress mode uses a much smaller region. */
 #define STRESS_REGION_BYTES  ((size_t)64u << 20)  /* 64 MiB */
 #define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
 
@@ -47,10 +47,8 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define GC_THRESHOLD_FACTOR  2
 
 // ----------------------------------------------------------------------------
-// AstroGc: process-scope GC instance.  Allocated once at program start
-// (`aro_gc_init`).  Holds all backend state that used to live in
-// module-static variables.  Future framework version: multiple instances
-// coexist by allocating multiple `AstroGc` and threading them through CTX.
+// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// Heap-allocated in aro_gc_init; lifetime = lifetime of the owning CTX.
 // ----------------------------------------------------------------------------
 typedef struct AstroGc {
     /* Active semispace (where allocations go).  In stress mode each GC
@@ -70,8 +68,7 @@ typedef struct AstroGc {
     /* Reserved region size — stress mode uses a much smaller region. */
     size_t region_bytes;
 
-    /* CTX bind (single-instance only).  Future multi-thread / multi-
-     * instance: CTX → AstroGc pointer via macro. */
+    /* CTX bind (= back-pointer for callbacks that only have AstroGc *). */
     CTX *ctx;
 
     /* Cheney scratch (used during gc_collect_internal only) */
@@ -80,14 +77,6 @@ typedef struct AstroGc {
     char *from_base_cur;
     VALUE *sp_high_water;
 } AstroGc;
-
-/* Single process-scope GC instance for baruby_precise.  CTX::astro_gc
- * points here (= bound at aro_gc_init).  Multi-instance use case would
- * allocate multiple AstroGc and wire different CTX instances to each. */
-static AstroGc g_astro_gc;
-
-// Contract macros (ASTRO_GC_SCAN_EDGES / INIT_PAYLOAD / HEADER_* / etc) live
-// in context.h so all backends share them.  See docs/gc_design.md §2.
 
 // ----------------------------------------------------------------------------
 // Initialization
@@ -105,8 +94,8 @@ mmap_region(size_t bytes)
 void
 aro_gc_init(CTX *c)
 {
-    AstroGc *gc = &g_astro_gc;
-    memset(gc, 0, sizeof(*gc));
+    AstroGc *gc = (AstroGc *)calloc(1, sizeof(AstroGc));
+    if (!gc) { perror("calloc AstroGc"); abort(); }
     gc->ctx = c;
     gc->gc_threshold = GC_THRESHOLD_MIN;
     c->astro_gc = gc;             /* CTX → AstroGc を bind */
@@ -117,7 +106,7 @@ aro_gc_init(CTX *c)
         gc->active_top  = gc->active_base;
         gc->active_end  = gc->active_base + gc->region_bytes;
         fprintf(stderr, "[baruby_gc] STRESS mode: collect on every alloc, "
-                        "every old space PROT_NONE forever (madvise DONTNEED)\n");
+                        "old space munmap'd each GC\n");
     } else {
         gc->region_bytes = REGION_BYTES;
         gc->space0 = mmap_region(gc->region_bytes);
@@ -212,11 +201,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 
     /* Park `old` in a scanned sp slot so GC forwards it (and its interior
      * VALUE slots) to to-space.  Post-GC `sp_top[0]` points at the
-     * forwarded copy; reading it stays safe in stress mode because the
-     * forwarded copy lives in the new (readable) to-space.  Previously
-     * stress mode used a malloc'd shadow buffer, but that hid interior
-     * heap pointers from the scan-loop — memcpy then propagated stale
-     * from-space refs into the new payload, crashing at later print. */
+     * forwarded copy. */
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
         ? aro_gc_alloc_byte(c, new_size, sp_top + 1)
@@ -230,16 +215,11 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 // ----------------------------------------------------------------------------
 
 /* Forward an old payload pointer: copy to to-space if not already done,
- * return new payload address. */
-/* Internal helpers below access the AstroGc via the single global —
- * SCAN_EDGES callback signature doesn't carry CTX so we tap the static
- * directly.  For multi-instance future, the callback signature would
- * need to thread CTX (or the gc pointer) through. */
-
+ * return new payload address.  `gc` carries the active from/to-space
+ * bounds (set by gc_collect_internal). */
 static void *
-forward_payload(void *old_payload)
+forward_payload(AstroGc *gc, void *old_payload)
 {
-    AstroGc *gc = &g_astro_gc;
     if (!old_payload) return NULL;
     if (ASTRO_DEBUG && ((char *)old_payload < gc->from_base_cur ||
                         (char *)old_payload >= gc->from_base_cur + gc->region_bytes)) {
@@ -277,25 +257,27 @@ forward_payload(void *old_payload)
     return new_payload;
 }
 
-/* edge_visit callback used by both root scan and to-space scan loops.
- * Updates `*slot` in place: if it points to from-space, forward and
- * rewrite. */
+/* edge_visit callback for raw-pointer slots (= heap pointers, not tagged
+ * VALUEs).  `ctx` is `AstroGc *gc` passed by SCAN_EDGES.  Threading ctx
+ * through the macro keeps `AstroGc` out of the global namespace. */
 static void
-forward_edge(void **slot)
+forward_edge(void *ctx, void **slot)
 {
+    AstroGc *gc = (AstroGc *)ctx;
     void *p = *slot;
     if (!p) return;
-    *slot = forward_payload(p);
+    *slot = forward_payload(gc, p);
 }
 
 /* edge_visit callback for VALUE slots (= roots, KIND_PAYLOAD_VAL members).
  * The slot may hold a tagged immediate; only IS_PTR values get forwarded. */
 static void
-forward_value_edge(void **slot)
+forward_value_edge(void *ctx, void **slot)
 {
+    AstroGc *gc = (AstroGc *)ctx;
     VALUE v = (VALUE)*slot;
     if (!IS_PTR(v)) return;
-    *slot = (void *)(VALUE)forward_payload((void *)v);
+    *slot = (void *)(VALUE)forward_payload(gc, (void *)v);
 }
 
 static void
@@ -348,7 +330,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
      * reclaim_seconds. */
     struct timespec tcheney = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) {
-        forward_value_edge((void **)p);
+        forward_value_edge(gc, (void **)p);
     }
 
     /* (2) Scan-loop in to-space: each freshly-copied object's outgoing
@@ -365,11 +347,11 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
               VALUE *slots = (VALUE *)(h + 1);
               size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
               for (size_t i = 0; i < n; i++)
-                  forward_value_edge((void **)&slots[i]);
+                  forward_value_edge(gc, (void **)&slots[i]);
               break;
           }
           default:
-              ASTRO_GC_SCAN_EDGES(h, forward_edge);
+              ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
               break;
         }
         aro_gc_stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
@@ -385,10 +367,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     gc->active_top  = gc->to_top;
     gc->active_end  = next_to_base + gc->region_bytes;
 
-    /* (4) Retire the old active.  Stress mode unmaps it outright — we
-     * never reuse it (each GC mmaps a fresh to-space), and leaving it
-     * PROT_NONE'd would accumulate `region_bytes × gc_count` of address
-     * space for the life of the process. */
+    /* (4) Retire the old active.  Stress mode unmaps it outright. */
     if (aro_gc_stress) {
         if (munmap(from_base, gc->region_bytes) != 0) {
             perror("gc_collect: munmap retired"); abort();
