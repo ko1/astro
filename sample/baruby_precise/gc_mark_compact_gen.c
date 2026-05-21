@@ -59,6 +59,7 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 // ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
 typedef struct ASTroGC {
+    AroGcCommonState common;   /* MUST be first field */
     char *nursery_base, *nursery_top, *nursery_end;
     char *tenured_base, *tenured_top, *tenured_end;
     CTX  *ctx;
@@ -76,32 +77,29 @@ typedef struct ASTroGC {
     bool  in_minor;
 } ASTroGC;
 
-static ASTroGC g_astro_gc;
-#define nursery_base          (g_astro_gc.nursery_base)
-#define nursery_top           (g_astro_gc.nursery_top)
-#define nursery_end           (g_astro_gc.nursery_end)
-#define tenured_base          (g_astro_gc.tenured_base)
-#define tenured_top           (g_astro_gc.tenured_top)
-#define tenured_end           (g_astro_gc.tenured_end)
-#define gc_ctx                (g_astro_gc.ctx)
-#define sp_high_water         (g_astro_gc.sp_high_water)
-#define remset_buf            (g_astro_gc.remset_buf)
-#define remset_cnt            (g_astro_gc.remset_cnt)
-#define remset_capa           (g_astro_gc.remset_capa)
-#define remset_overflow       (g_astro_gc.remset_overflow)
-#define old_alloc_since_major (g_astro_gc.old_alloc_since_major)
-#define old_major_threshold   (g_astro_gc.old_major_threshold)
-#define gray_buf              (g_astro_gc.gray_buf)
-#define gray_cnt              (g_astro_gc.gray_cnt)
-#define gray_capa             (g_astro_gc.gray_capa)
-#define to_top                (g_astro_gc.to_top)
-#define to_base               (g_astro_gc.to_base)
-#define from_base_cur         (g_astro_gc.from_base_cur)
-#define from_end_cur          (g_astro_gc.from_end_cur)
-#define in_minor              (g_astro_gc.in_minor)
+#define nursery_base          (gc->nursery_base)
+#define nursery_top           (gc->nursery_top)
+#define nursery_end           (gc->nursery_end)
+#define tenured_base          (gc->tenured_base)
+#define tenured_top           (gc->tenured_top)
+#define tenured_end           (gc->tenured_end)
+#define gc_ctx                (gc->ctx)
+#define sp_high_water         (gc->sp_high_water)
+#define remset_buf            (gc->remset_buf)
+#define remset_cnt            (gc->remset_cnt)
+#define remset_capa           (gc->remset_capa)
+#define remset_overflow       (gc->remset_overflow)
+#define old_alloc_since_major (gc->old_alloc_since_major)
+#define old_major_threshold   (gc->old_major_threshold)
+#define gray_buf              (gc->gray_buf)
+#define gray_cnt              (gc->gray_cnt)
+#define gray_capa             (gc->gray_capa)
+#define to_top                (gc->to_top)
+#define to_base               (gc->to_base)
+#define from_base_cur         (gc->from_base_cur)
+#define from_end_cur          (gc->from_end_cur)
+#define in_minor              (gc->in_minor)
 
-AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
-int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "mark_compact_gen";
 
 static char *
@@ -116,8 +114,8 @@ mmap_region(size_t bytes)
 void
 aro_gc_init(CTX *c)
 {
-    ASTroGC *gc = &g_astro_gc;
-    memset(gc, 0, sizeof(*gc));
+    ASTroGC *gc = (ASTroGC *)calloc(1, sizeof(ASTroGC));
+    if (!gc) { perror("calloc ASTroGC"); abort(); }
     c->astro_gc = gc;
     gc_ctx = c;
     old_major_threshold = MAJOR_THRESHOLD_MIN;
@@ -130,7 +128,7 @@ aro_gc_init(CTX *c)
     tenured_end  = tenured_base + TENURED_BYTES;
 
     if (getenv("BARUBY_GC_STRESS")) {
-        aro_gc_stress = 1;
+        gc->common.stress = true;
         fprintf(stderr, "[baruby_gc=mark_compact_gen] STRESS mode: collect on every alloc\n");
     }
 }
@@ -139,19 +137,15 @@ aro_gc_init(CTX *c)
 // Allocation
 // ---------------------------------------------------------------------------
 
-static void minor_gc(VALUE *sp_top);
-static void major_gc(VALUE *sp_top);
+static void minor_gc(CTX *c, VALUE *sp_top);
+static void major_gc(CTX *c, VALUE *sp_top);
 
-// Allocate `bytes` (header + aligned payload).  Small allocations go in
-// the nursery; allocations bigger than half the nursery size go straight
-// into tenured (= pretenured, like Boehm's large-object heap).  Triggers
-// minor / major GC + retry on space pressure.
-// iter 43: cold-path split for inliner-budget friendliness.
 static GCHeader * __attribute__((noinline, cold))
-pretenure_alloc(AroGcKind kind, size_t payload_size, size_t total, VALUE *sp_top)
+pretenure_alloc(CTX *c, AroGcKind kind, size_t payload_size, size_t total, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (tenured_top + total > tenured_end) {
-        major_gc(sp_top);
+        major_gc(c, sp_top);
         if (tenured_top + total > tenured_end) {
             fprintf(stderr, "baruby_gc=mark_compact_gen: OOM tenured (need %zu)\n", total);
             abort();
@@ -161,7 +155,7 @@ pretenure_alloc(AroGcKind kind, size_t payload_size, size_t total, VALUE *sp_top
     HDR_SET_KIND(h, kind);
     h->size   = (uint32_t)payload_size;
     h->fwd    = NULL;
-    HDR_SET_OLD(h);    // direct to tenured = "old" from the start
+    HDR_SET_OLD(h);
     HDR_CLR_DIRTY(h);
     HDR_CLR_MARKED(h);
     tenured_top += total;
@@ -169,19 +163,20 @@ pretenure_alloc(AroGcKind kind, size_t payload_size, size_t total, VALUE *sp_top
 }
 
 static void __attribute__((noinline, cold))
-nursery_collect_slow(size_t total, VALUE *sp_top)
+nursery_collect_slow(CTX *c, size_t total, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t max_promotion = (size_t)(nursery_top - nursery_base);
     if (tenured_top + max_promotion > tenured_end) {
-        major_gc(sp_top);
+        major_gc(c, sp_top);
     } else {
-        minor_gc(sp_top);
+        minor_gc(c, sp_top);
         if (old_alloc_since_major > old_major_threshold) {
-            major_gc(sp_top);
+            major_gc(c, sp_top);
         }
     }
     if (nursery_top + total > nursery_end) {
-        major_gc(sp_top);
+        major_gc(c, sp_top);
         if (nursery_top + total > nursery_end) {
             fprintf(stderr, "baruby_gc=mark_compact_gen: OOM (need %zu)\n", total);
             abort();
@@ -190,16 +185,17 @@ nursery_collect_slow(size_t total, VALUE *sp_top)
 }
 
 static inline GCHeader *
-nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+nursery_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = sizeof(GCHeader) + aligned;
 
     if (__builtin_expect(total > NURSERY_BYTES / 2, 0)) {
-        return pretenure_alloc(kind, payload_size, total, sp_top);
+        return pretenure_alloc(c, kind, payload_size, total, sp_top);
     }
 
-    if (__builtin_expect(aro_gc_stress || nursery_top + total > nursery_end, 0)) {
-        nursery_collect_slow(total, sp_top);
+    if (__builtin_expect(gc->common.stress || nursery_top + total > nursery_end, 0)) {
+        nursery_collect_slow(c, total, sp_top);
     }
     GCHeader *h = (GCHeader *)nursery_top;
     HDR_SET_KIND(h, kind);
@@ -215,27 +211,29 @@ nursery_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 void *
 aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = nursery_bump(kind, payload_size, aligned, sp_top);
+    GCHeader *h = nursery_bump(c, kind, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    gc->common.stats.total_bytes += payload_size;
+    gc->common.stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = nursery_bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
+    GCHeader *h = nursery_bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    gc->common.stats.total_bytes += payload_size;
+    gc->common.stats.heap_bytes  += payload_size;
     return payload;
 }
 
@@ -266,7 +264,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 #define MAX_REMSET_ENTRIES (1u << 17)
 
 static void
-remset_push(GCHeader *h)
+remset_push(ASTroGC *gc, GCHeader *h)
 {
     if (remset_overflow) return;
     if (remset_cnt >= MAX_REMSET_ENTRIES) { remset_overflow = true; return; }
@@ -279,48 +277,50 @@ remset_push(GCHeader *h)
     remset_buf[remset_cnt++] = h;
 }
 
-static void process_object(GCHeader *h);
+static void process_object(ASTroGC *gc, GCHeader *h);
 static void
-remset_visit_minor(GCHeader *h)
+remset_visit_minor(ASTroGC *gc, GCHeader *h)
 {
     if (HDR_DIRTY(h)) {
-        process_object(h);
+        process_object(gc, h);
         HDR_CLR_DIRTY(h);
     }
 }
 
 static void
-remset_heap_walk(void (*visit)(GCHeader *))
+remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, GCHeader *))
 {
     char *scan = tenured_base;
     while (scan < tenured_top) {
         GCHeader *h = (GCHeader *)scan;
-        visit(h);
+        visit(gc, h);
         scan += sizeof(GCHeader) + ALIGN8(h->size);
     }
 }
 
 void
-aro_gc_wb(void *holder, VALUE *slot, VALUE v)
+aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
     if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        ASTroGC *gc = ASTRO_GC_INSTANCE(c);
         HDR_SET_DIRTY(hh);
-        remset_push(hh);
+        remset_push(gc, hh);
     }
 }
 
 void
-aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
     GCHeader *hh = (GCHeader *)holder - 1;
     if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
+        ASTroGC *gc = ASTRO_GC_INSTANCE(c);
         HDR_SET_DIRTY(hh);
-        remset_push(hh);
+        remset_push(gc, hh);
     }
 }
 
@@ -335,7 +335,7 @@ aro_gc_wb_bulk(void *holder, VALUE *dst, const VALUE *src, size_t n)
 // the new payload pointer.  Sets oldh->fwd so future references find the
 // new home.
 static void *
-forward_obj(GCHeader *oldh)
+forward_obj(ASTroGC *gc, GCHeader *oldh)
 {
     if (oldh->fwd) return oldh->fwd;
     size_t aligned = ALIGN8(oldh->size);
@@ -357,63 +357,57 @@ forward_obj(GCHeader *oldh)
     return new_payload;
 }
 
-// During MINOR GC: nursery objects only (in_minor=true).
-// During MAJOR GC: all in from-tenured (and any nursery survivors).
-// Storage: ASTroGC.in_minor (aliased above).
-
 static inline bool
-in_nursery(void *p)
+in_nursery(ASTroGC *gc, void *p)
 {
     return (char *)p >= nursery_base && (char *)p < nursery_end;
 }
 
 static inline bool
-in_from_tenured(void *p)
+in_from_tenured(ASTroGC *gc, void *p)
 {
     return (char *)p >= from_base_cur && (char *)p < from_end_cur;
 }
 
 static void *
-forward_payload_value(void *p)
+forward_payload_value(ASTroGC *gc, void *p)
 {
     if (!p) return NULL;
     GCHeader *h = (GCHeader *)p - 1;
     if (in_minor) {
-        if (!in_nursery(p)) return p;     // already tenured; nothing to do
+        if (!in_nursery(gc, p)) return p;
     } else {
-        // Major: forward anything in nursery OR from-tenured.
-        if (!in_nursery(p) && !in_from_tenured(p)) return p;
+        if (!in_nursery(gc, p) && !in_from_tenured(gc, p)) return p;
     }
-    return forward_obj(h);
+    return forward_obj(gc, h);
 }
 
 static VALUE
-forward_value(VALUE v)
+forward_value(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return v;
-    return (VALUE)forward_payload_value((void *)v);
+    return (VALUE)forward_payload_value(gc, (void *)v);
 }
 
-// Walk a freshly-copied object's outgoing references and forward them.
 static void
-process_object(GCHeader *h)
+process_object(ASTroGC *gc, GCHeader *h)
 {
     void *payload = (void *)(h + 1);
     switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
-        if (a->items) a->items = (VALUE *)forward_payload_value(a->items);
+        if (a->items) a->items = (VALUE *)forward_payload_value(gc, a->items);
         break;
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_value(s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_value(gc, s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {
         VALUE *items = (VALUE *)payload;
         size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = forward_value(items[i]);
+        for (size_t i = 0; i < n; i++) items[i] = forward_value(gc, items[i]);
         break;
       }
       case KIND_PAYLOAD_BYTE:
@@ -426,72 +420,58 @@ process_object(GCHeader *h)
 
 
 static void
-minor_gc(VALUE *sp_top)
+minor_gc(CTX *c, VALUE *sp_top)
 {
-    struct timespec t0 = aro_gc_time_begin();
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    struct timespec t0 = aro_gc_time_begin(c);
     in_minor = true;
     to_base = tenured_base;
-    to_top  = tenured_top;            // append onto current tenured
+    to_top  = tenured_top;
     from_base_cur = nursery_base;
-    from_end_cur  = nursery_top;      // tight bound on valid nursery objects
+    from_end_cur  = nursery_top;
 
-    // Maintain the high-water-mark invariant: slots above the current sp_top
-    // get zeroed if they had been used at a previous deeper recursion.
-    // Without this, a stale nursery pointer left behind in a higher slot
-    // (after that minor moved its target to tenured AND another later minor
-    // emptied the nursery) could be re-scanned next time sp_top extends past
-    // it, and forward_value would treat it as a live nursery object.
-    CTX *c = gc_ctx;
     if (sp_high_water == NULL || sp_top > sp_high_water) {
         sp_high_water = sp_top;
     } else {
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    /* Minor is pure Cheney → all in reclaim_seconds. */
     struct timespec tminor = aro_gc_phase_begin();
-    // (1) Roots
-    for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(*p);
+    for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
 
-    // (2) Dirty tenured (explicit remset): scan only the dirty entries,
-    //     forwarding their young pointers.  O(|remset|) — vastly cheaper
-    //     than walking the whole tenured region (which on large old heaps
-    //     dominated minor GC time).
     if (remset_overflow) {
-        remset_heap_walk(remset_visit_minor);
+        remset_heap_walk(gc, remset_visit_minor);
         remset_overflow = false;
     } else {
         for (size_t i = 0; i < remset_cnt; i++) {
             GCHeader *h = remset_buf[i];
             if (HDR_DIRTY(h)) {
-                process_object(h);
+                process_object(gc, h);
                 HDR_CLR_DIRTY(h);
             }
         }
     }
     remset_cnt = 0;
 
-    // (3) Cheney scan-loop over freshly-tenured objects (tenured_top..to_top).
     {
         char *scan = tenured_top;
         while (scan < to_top) {
             GCHeader *h = (GCHeader *)scan;
-            process_object(h);
+            process_object(gc, h);
             scan += sizeof(GCHeader) + ALIGN8(h->size);
         }
     }
-    aro_gc_phase_end(tminor, &aro_gc_stats.reclaim_seconds);
+    aro_gc_phase_end(tminor, &gc->common.stats.reclaim_seconds);
 
-    // (4) Commit: tenured_top advances to to_top; nursery emptied.
     old_alloc_since_major += (size_t)(to_top - tenured_top);
     tenured_top = to_top;
     nursery_top = nursery_base;
     in_minor = false;
 
-    aro_gc_stats.gc_count++;
-    aro_gc_stats.minor_count++;
+    gc->common.stats.gc_count++;
+    gc->common.stats.minor_count++;
     c->sp = sp_top;
-    aro_gc_time_end(t0);
+    aro_gc_time_end(c, t0);
 }
 
 // ---------------------------------------------------------------------------
@@ -501,7 +481,7 @@ minor_gc(VALUE *sp_top)
 // ---------------------------------------------------------------------------
 
 static void
-gray_push(GCHeader *h)
+gray_push(ASTroGC *gc, GCHeader *h)
 {
     if (gray_cnt >= gray_capa) {
         gray_capa = gray_capa ? gray_capa * 2 : 256;
@@ -512,34 +492,34 @@ gray_push(GCHeader *h)
 }
 
 static void
-mark_value_major(VALUE v)
+mark_value_major(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
     if (HDR_MARKED(h)) return;
     HDR_SET_MARKED(h);
-    gray_push(h);
+    gray_push(gc, h);
 }
 
 static void
-scan_outgoing_major(GCHeader *h)
+scan_outgoing_major(ASTroGC *gc, GCHeader *h)
 {
     void *payload = (void *)(h + 1);
     switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
-        if (a->items) mark_value_major((VALUE)a->items);
+        if (a->items) mark_value_major(gc, (VALUE)a->items);
         break;
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) mark_value_major((VALUE)s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) mark_value_major(gc, (VALUE)s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {
         VALUE *items = (VALUE *)payload;
         size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) mark_value_major(items[i]);
+        for (size_t i = 0; i < n; i++) mark_value_major(gc, items[i]);
         break;
       }
       case KIND_PAYLOAD_BYTE:
@@ -551,22 +531,19 @@ scan_outgoing_major(GCHeader *h)
 }
 
 static void
-process_gray_major(void)
+process_gray_major(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
-        scan_outgoing_major(h);
+        scan_outgoing_major(gc, h);
     }
 }
 
 static void *
-fwd_payload_compact(void *p)
+fwd_payload_compact(ASTroGC *gc, void *p)
 {
     if (!p) return NULL;
-    // In defer-fold mode, nursery survivors are reachable from roots /
-    // marked tenured objects but have no tenured fwd address yet — the
-    // trailing minor will fold them in.  Leave nursery pointers alone.
-    if (in_nursery(p)) return p;
+    if (in_nursery(gc, p)) return p;
     GCHeader *h = (GCHeader *)p - 1;
     ASTRO_ASSERT(HDR_MARKED(h));
     ASTRO_ASSERT(h->fwd != NULL);
@@ -574,31 +551,31 @@ fwd_payload_compact(void *p)
 }
 
 static VALUE
-fwd_value_compact(VALUE v)
+fwd_value_compact(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return v;
-    return (VALUE)fwd_payload_compact((void *)v);
+    return (VALUE)fwd_payload_compact(gc, (void *)v);
 }
 
 static void
-update_pointers_major(GCHeader *h)
+update_pointers_major(ASTroGC *gc, GCHeader *h)
 {
     void *payload = (void *)(h + 1);
     switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
-        if (a->items) a->items = (VALUE *)fwd_payload_compact(a->items);
+        if (a->items) a->items = (VALUE *)fwd_payload_compact(gc, a->items);
         break;
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)fwd_payload_compact(s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)fwd_payload_compact(gc, s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {
         VALUE *items = (VALUE *)payload;
         size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = fwd_value_compact(items[i]);
+        for (size_t i = 0; i < n; i++) items[i] = fwd_value_compact(gc, items[i]);
         break;
       }
       case KIND_PAYLOAD_BYTE:
@@ -610,44 +587,35 @@ update_pointers_major(GCHeader *h)
 }
 
 static void
-major_gc(VALUE *sp_top)
+major_gc(CTX *c, VALUE *sp_top)
 {
-    struct timespec t0 = aro_gc_time_begin();
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    struct timespec t0 = aro_gc_time_begin(c);
     in_minor = false;
 
-    // Try to fold nursery into tenured via a leading minor (mainline:
-    // cheap, then mark+compact runs over tenured only).  But if tenured
-    // can't hold the worst-case promotion, the minor's forward_obj would
-    // overflow tenured_end.  Defer the fold to a trailing minor after
-    // compact frees space.
     bool defer_fold = false;
     if (nursery_top != nursery_base) {
         size_t max_promotion = (size_t)(nursery_top - nursery_base);
         if (tenured_top + max_promotion > tenured_end) {
             defer_fold = true;
         } else {
-            minor_gc(sp_top);
+            minor_gc(c, sp_top);
         }
     }
     remset_cnt = 0;
 
-    CTX *c = gc_ctx;
-
-    // High-water zero (in case minor wasn't run, e.g., empty nursery).
     if (sp_high_water == NULL || sp_top > sp_high_water) {
         sp_high_water = sp_top;
     } else {
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    // (1) Mark from roots.
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value_major(*p);
-    process_gray_major();
-    aro_gc_phase_end(tmark, &aro_gc_stats.mark_seconds);
+    for (VALUE *p = c->env; p < sp_top; p++) mark_value_major(gc, *p);
+    process_gray_major(gc);
+    aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
     struct timespec treclaim = aro_gc_phase_begin();
-    // (2) Forward-address pass.
     char *fwd = tenured_base;
     {
         char *p = tenured_base;
@@ -664,22 +632,18 @@ major_gc(VALUE *sp_top)
         }
     }
 
-    // (3) Update outgoing pointers in each live object (in place).
     {
         char *p = tenured_base;
         while (p < tenured_top) {
             GCHeader *h = (GCHeader *)p;
             size_t total = sizeof(GCHeader) + ALIGN8(h->size);
-            if (HDR_MARKED(h)) update_pointers_major(h);
+            if (HDR_MARKED(h)) update_pointers_major(gc, h);
             p += total;
         }
     }
 
-    // (4) Update roots.
-    for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value_compact(*p);
+    for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value_compact(gc, *p);
 
-    // (5) Slide live objects to their forwarding addresses.  Batched on
-    //     contiguous-marked runs (same delta).
     {
         char *p = tenured_base;
         while (p < tenured_top) {
@@ -699,7 +663,6 @@ major_gc(VALUE *sp_top)
             }
             size_t run_size = (size_t)(run_p - run_src);
             if (run_dst != run_src) memmove(run_dst, run_src, run_size);
-            // Clear marked / fwd / dirty on each moved header.
             char *q = run_dst, *q_end = run_dst + run_size;
             while (q < q_end) {
                 GCHeader *qh = (GCHeader *)q;
@@ -713,14 +676,6 @@ major_gc(VALUE *sp_top)
     }
     tenured_top = fwd;
 
-    // (6) Trailing minor fold (defer_fold only).  Nursery survivors were
-    //     marked during the major's mark phase; their marked bit must be
-    //     cleared before forward_obj memcpys the header into tenured
-    //     (otherwise the new tenured copy enters with marked=true, and the
-    //     next major would skip it).  After clearing, run a minor.  Walk
-    //     all tenured rather than the now-empty remset, since any tenured
-    //     object compacted above may still carry a nursery pointer that
-    //     we deliberately left untouched in step (3).
     if (defer_fold) {
         char *q = nursery_base;
         while (q < nursery_top) {
@@ -742,23 +697,21 @@ major_gc(VALUE *sp_top)
             for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
         }
 
-        for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(*p);
+        for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
 
-        // Walk pre-fold tenured for nursery refs (remset surrogate).
         {
             char *p = tenured_base;
             while (p < old_tenured_top) {
                 GCHeader *h = (GCHeader *)p;
-                process_object(h);
+                process_object(gc, h);
                 p += sizeof(GCHeader) + ALIGN8(h->size);
             }
         }
-        // Cheney scan of freshly-promoted.
         {
             char *scan = old_tenured_top;
             while (scan < to_top) {
                 GCHeader *h = (GCHeader *)scan;
-                process_object(h);
+                process_object(gc, h);
                 scan += sizeof(GCHeader) + ALIGN8(h->size);
             }
         }
@@ -766,29 +719,26 @@ major_gc(VALUE *sp_top)
         nursery_top = nursery_base;
         in_minor = false;
 
-        aro_gc_stats.minor_count++;
+        gc->common.stats.minor_count++;
     }
-    aro_gc_phase_end(treclaim, &aro_gc_stats.reclaim_seconds);
+    aro_gc_phase_end(treclaim, &gc->common.stats.reclaim_seconds);
 
-    /* Adaptive threshold update. */
     size_t live = (size_t)(tenured_top - tenured_base);
-    aro_gc_stats.heap_bytes = live;
+    gc->common.stats.heap_bytes = live;
     old_alloc_since_major = 0;
-    if (!aro_gc_stress) {
+    if (!gc->common.stress) {
         size_t next = live * MAJOR_THRESHOLD_FACTOR;
         old_major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;
     }
 
-    aro_gc_stats.gc_count++;
-    aro_gc_stats.major_count++;
+    gc->common.stats.gc_count++;
+    gc->common.stats.major_count++;
     c->sp = sp_top;
-    aro_gc_time_end(t0);
+    aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c, VALUE *sp_top)
 {
-    major_gc(sp_top);
+    major_gc(c, sp_top);
 }
-
-                                            (size_t)(nursery_top - nursery_base); }
