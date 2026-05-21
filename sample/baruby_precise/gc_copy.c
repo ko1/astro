@@ -8,7 +8,12 @@
 #include "gc.h"
 
 // ----------------------------------------------------------------------------
-// Semispace (Cheney) moving GC with stress mode.  See gc.h for design.
+// Semispace (Cheney) moving GC.
+//
+// iter 62: framework abstraction PoC.  This backend now uses the contract
+// macros (ASTRO_GC_SCAN_EDGES, ASTRO_GC_INSTANCE, etc.) and consolidates
+// process-scope state into `struct AstroGc`.  Other backends remain on
+// the old shape (module-static + direct kind switch) until ported.
 // ----------------------------------------------------------------------------
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
@@ -31,33 +36,109 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define REGION_BYTES  ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual per semispace, lazy-paged */
 #define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
 
-// Active semispace (where allocations go).  In stress mode, EVERY GC
-// allocates a fresh to-space via mmap and PERMANENTLY retires the old
-// active (mprotect PROT_NONE + madvise DONTNEED — physical pages freed,
-// virtual address stays reserved forever so stale pointers segfault
-// no matter how many GCs ago they were valid).
-//
-// In non-stress mode, we use a fixed pair of regions and alternate
-// (classic semispace).
-static char *active_base = NULL;
-static char *active_top  = NULL;
-static char *active_end  = NULL;
-
-static char *space0 = NULL;
-static char *space1 = NULL;   // non-stress: the alternate region
-static int   active_idx = 0;  // non-stress only
-
-/* Adaptive GC trigger.  Previously copy GC'd only when active region was
- * full — with 64 GiB virtual reservation (iter 27) that effectively
- * means "never", so copy degenerated to bump-alloc.  Match the mark /
- * immix policy: trigger at `bytes_since_gc > gc_threshold`,
- * gc_threshold = max(4 MiB, 2 × live_post_cheney). */
+/* Adaptive GC trigger.  Match the mark / immix policy: trigger at
+ * `bytes_since_gc > gc_threshold`, gc_threshold = max(16 MiB, 2 × live_post_cheney). */
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
-static size_t bytes_since_gc = 0;
-static size_t gc_threshold = GC_THRESHOLD_MIN;
 
-static CTX *gc_ctx = NULL;
+// ----------------------------------------------------------------------------
+// AstroGc: process-scope GC instance.  Allocated once at program start
+// (`aro_gc_init`).  Holds all backend state that used to live in
+// module-static variables.  Future framework version: multiple instances
+// coexist by allocating multiple `AstroGc` and threading them through CTX.
+// ----------------------------------------------------------------------------
+typedef struct AstroGc {
+    /* Active semispace (where allocations go).  In stress mode each GC
+     * mmaps a fresh to-space; in non-stress mode we alternate the
+     * `space0` / `space1` pair. */
+    char *active_base;
+    char *active_top;
+    char *active_end;
+    char *space0;
+    char *space1;
+    int   active_idx;
+
+    /* Adaptive trigger state */
+    size_t bytes_since_gc;
+    size_t gc_threshold;
+
+    /* CTX bind (single-instance only).  Future multi-thread / multi-
+     * instance: CTX → AstroGc pointer via macro. */
+    CTX *ctx;
+
+    /* Cheney scratch (used during gc_collect_internal only) */
+    char *to_top;
+    char *to_base;
+    char *from_base_cur;
+    VALUE *sp_high_water;
+} AstroGc;
+
+static AstroGc g_astro_gc;
+
+/* Single-instance accessor.  When framework moves to runtime/, this
+ * becomes a sample-supplied macro (= ASTRO_GC_INSTANCE(c)) that picks
+ * the AstroGc out of CTX. */
+#define ASTRO_GC_INSTANCE() (&g_astro_gc)
+
+// ----------------------------------------------------------------------------
+// Sample-supplied contract macros (= "what the framework needs to know
+// about VALUE / object shape / init policy").
+//
+// In the runtime/ migration these move to a sample-side header that
+// `gc.c` includes before pulling in `gc_<algo>.c`.  For now they live
+// inline so the PoC is self-contained.
+// ----------------------------------------------------------------------------
+
+/* Object shape: emit slot pointers for outgoing references.  Visitor
+ * gets `void **slot` so it can either mark (read) or forward (read +
+ * write back).  The same macro drives mark/sweep, copy/forward, and
+ * scan-update phases.  KIND_PAYLOAD_BYTE has no edges. */
+#define ASTRO_GC_SCAN_EDGES(h, edge_visit) do {                              \
+    void *_payload = (void *)((h) + 1);                                      \
+    switch (HDR_KIND(h)) {                                                   \
+      case KIND_OBJ_ARRAY: {                                                 \
+          BaArray *_a = (BaArray *)_payload;                                 \
+          ASTRO_ASSERT(_a->hdr.type == OBJ_ARRAY);                           \
+          edge_visit((void **)&_a->items);                                   \
+          break;                                                              \
+      }                                                                       \
+      case KIND_OBJ_STRING: {                                                \
+          BaString *_s = (BaString *)_payload;                               \
+          ASTRO_ASSERT(_s->hdr.type == OBJ_STRING);                          \
+          if (!BSTR_IS_SSO(_s)) edge_visit((void **)&_s->bytes);             \
+          break;                                                              \
+      }                                                                       \
+      case KIND_PAYLOAD_VAL: {                                               \
+          VALUE *_slots = (VALUE *)_payload;                                 \
+          size_t _n = (h)->size / sizeof(VALUE);                             \
+          for (size_t _i = 0; _i < _n; _i++)                                 \
+              edge_visit((void **)&_slots[_i]);                              \
+          break;                                                              \
+      }                                                                       \
+      case KIND_PAYLOAD_BYTE:                                                \
+      case KIND_FREE:                                                        \
+          break;                                                              \
+      default:                                                                \
+          ASTRO_ASSERT(0 && "SCAN_EDGES: unknown GCHeader kind");            \
+    }                                                                         \
+} while (0)
+
+/* Scan-safe init: payload slots may be scanned right after alloc (before
+ * caller writes anything).  baruby's VAL_FALSE == 0 so zero-fill is
+ * GC-safe. */
+#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes) \
+    memset((payload), 0, (size_bytes))
+
+/* Byte payload init: GC never scans these so we can skip the memset.
+ * Caller must fill the bytes before any further alloc. */
+#define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
+
+/* Header layout accessors used by the collector (size, fwd).  Framework
+ * default — sample can override if it lays out the header differently. */
+#define ASTRO_GC_HEADER_SIZE(h)         ((h)->size)
+#define ASTRO_GC_HEADER_SET_SIZE(h, s)  ((h)->size = (uint32_t)(s))
+#define ASTRO_GC_HEADER_GET_FWD(h)      ((h)->fwd)
+#define ASTRO_GC_HEADER_SET_FWD(h, p)   ((h)->fwd = (p))
 
 // ----------------------------------------------------------------------------
 // Initialization
@@ -75,24 +156,24 @@ mmap_region(void)
 void
 aro_gc_init(CTX *c)
 {
-    gc_ctx = c;
+    AstroGc *gc = ASTRO_GC_INSTANCE();
+    memset(gc, 0, sizeof(*gc));
+    gc->ctx = c;
+    gc->gc_threshold = GC_THRESHOLD_MIN;
     if (getenv("BARUBY_GC_STRESS")) {
         aro_gc_stress = 1;
-        // Stress: start with one fresh region.  Each GC allocates a new
-        // to-space and permanently retires the old active.
-        active_base = mmap_region();
-        active_top  = active_base;
-        active_end  = active_base + REGION_BYTES;
+        gc->active_base = mmap_region();
+        gc->active_top  = gc->active_base;
+        gc->active_end  = gc->active_base + REGION_BYTES;
         fprintf(stderr, "[baruby_gc] STRESS mode: collect on every alloc, "
                         "every old space PROT_NONE forever (madvise DONTNEED)\n");
     } else {
-        // Non-stress: classic 2-region semispace, alternating.
-        space0 = mmap_region();
-        space1 = mmap_region();
-        active_idx  = 0;
-        active_base = space0;
-        active_top  = space0;
-        active_end  = space0 + REGION_BYTES;
+        gc->space0 = mmap_region();
+        gc->space1 = mmap_region();
+        gc->active_idx  = 0;
+        gc->active_base = gc->space0;
+        gc->active_top  = gc->space0;
+        gc->active_end  = gc->space0 + REGION_BYTES;
     }
 }
 
@@ -102,73 +183,64 @@ aro_gc_init(CTX *c)
 
 static void gc_collect_internal(VALUE *sp_top);
 
-// iter 43: cold-path split.  gc_collect + OOM check live in a noinline
-// cold helper so gc_bump's hot body stays small enough for inliner to
-// expand `aro_gc_alloc` (and its constprop clones) at all call sites.
-// See done.md (43) for the inline-budget rationale.
 static void __attribute__((noinline, cold))
 gc_bump_slow(size_t total, VALUE *sp_top)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     gc_collect_internal(sp_top);
-    if (active_top + total > active_end) {
+    if (gc->active_top + total > gc->active_end) {
         fprintf(stderr, "baruby_gc: OOM (need %zu, have %zu)\n",
-                total, (size_t)(active_end - active_top));
+                total, (size_t)(gc->active_end - gc->active_top));
         abort();
     }
 }
 
-// Internal bump-allocator: reserves header + payload of `aligned` bytes.
-// Triggers GC + retries on OOM.  Does NOT zero the payload — caller decides.
 static inline GCHeader *
 gc_bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     size_t total = sizeof(GCHeader) + aligned;
     if (__builtin_expect(aro_gc_stress
-                         || bytes_since_gc + payload_size > gc_threshold
-                         || (active_top + total) > active_end, 0)) {
+                         || gc->bytes_since_gc + payload_size > gc->gc_threshold
+                         || (gc->active_top + total) > gc->active_end, 0)) {
         gc_bump_slow(total, sp_top);
     }
-    GCHeader *h = (GCHeader *)active_top;
+    GCHeader *h = (GCHeader *)gc->active_top;
     HDR_SET_KIND(h, kind);
-    h->size = (uint32_t)payload_size;
-    h->fwd  = NULL;
-    active_top += total;
-    bytes_since_gc += payload_size;
+    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
+    ASTRO_GC_HEADER_SET_FWD(h, NULL);
+    gc->active_top += total;
+    gc->bytes_since_gc += payload_size;
     return h;
 }
 
-// aro_gc_alloc: zero-initialized payload.  Use for KIND_OBJ_ARRAY /
-// KIND_OBJ_STRING (embedded items / bytes ptr starts NULL) and
-// KIND_PAYLOAD_VAL (trailing slots are VAL_FALSE for GC-safe scanning).
 void *
 aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
-    ASTRO_ASSERT(sp_top >= gc_ctx->env);
+    ASTRO_ASSERT(sp_top >= ASTRO_GC_INSTANCE()->ctx->env);
 
     size_t aligned = ALIGN8(payload_size);
     GCHeader *h = gc_bump(kind, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    memset(payload, 0, aligned);
+    ASTRO_GC_INIT_PAYLOAD(payload, aligned);
 
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
     return payload;
 }
 
-// aro_gc_alloc_byte: raw byte payload.  GC never reads it as pointers
-// so we skip the memset.  Caller MUST fill bytes[0..size-1] before any
-// other alloc / GC opportunity.
 void *
 aro_gc_alloc_byte(size_t payload_size, VALUE *sp_top)
 {
-    ASTRO_ASSERT(sp_top >= gc_ctx->env);
+    ASTRO_ASSERT(sp_top >= ASTRO_GC_INSTANCE()->ctx->env);
     size_t aligned = ALIGN8(payload_size);
     GCHeader *h = gc_bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
+    ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
 
     aro_gc_stats.total_bytes += payload_size;
     aro_gc_stats.heap_bytes  += payload_size;
@@ -181,17 +253,14 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
     if (old == NULL) {
         return aro_gc_alloc(KIND_PAYLOAD_VAL, new_size, sp_top);
     }
-    // Read old header BEFORE alloc (alloc may move/mprotect us).
     GCHeader *oldh = (GCHeader *)old - 1;
-    size_t old_size = oldh->size;
+    size_t old_size = ASTRO_GC_HEADER_SIZE(oldh);
     AroGcKind kind = HDR_KIND(oldh);
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
     if (aro_gc_stress) {
-        // Stress mode retires from-space with PROT_NONE + MADV_DONTNEED, so
-        // we can't read `old` again after the alloc.  Fall back to the
-        // malloc-buffered slow path (one extra malloc/memcpy/free per
-        // realloc; only relevant when BARUBY_GC_STRESS=1).
+        /* Stress retires from-space immediately; use a malloc buffer to
+         * shield the old contents from the alloc-triggered GC. */
         void *buf = malloc(copy_bytes);
         if (!buf) { fprintf(stderr, "realloc buf OOM\n"); abort(); }
         memcpy(buf, old, copy_bytes);
@@ -203,11 +272,9 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
         return newp;
     }
 
-    // Fast path (iter 36): root `old` via sp_top[0] so Cheney updates it
-    // through any GC fired during alloc, then alloc, then memcpy from the
-    // *post-GC* location.  No temp malloc.  Pattern matches other
-    // backends' realloc_payload.  Safe because non-stress copy leaves
-    // from-space pages readable (just not allocatable) until next GC.
+    /* Root `old` via sp_top[0] so Cheney updates it through any GC
+     * triggered by alloc.  Non-stress copy leaves from-space readable
+     * until the next collection. */
     sp_top[0] = (VALUE)old;
     void *newp = (kind == KIND_PAYLOAD_BYTE)
         ? aro_gc_alloc_byte(new_size, sp_top + 1)
@@ -220,137 +287,101 @@ aro_gc_realloc_payload(void *old, size_t new_size, VALUE *sp_top)
 // Cheney-style copy collector
 // ----------------------------------------------------------------------------
 
-static char *to_top;
-static char *to_base;
-static char *from_base_cur;   // for stale-ptr detection during scan
-
-// Highest sp_top ever passed to an alloc.  We zero slots in
-// [sp_top .. high_water] before each scan so stale heap pointers from
-// returned NODE_DEFs above the current call's top don't confuse the GC.
-static VALUE *sp_high_water = NULL;
-
-// Forward an old payload pointer: copy to to-space if not already done,
-// return new payload address.
+/* Forward an old payload pointer: copy to to-space if not already done,
+ * return new payload address. */
 static void *
 forward_payload(void *old_payload)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     if (!old_payload) return NULL;
-    // Range invariants — debug-only.  Under ASTRO_DEBUG these print
-    // diagnostics and trip an ASTRO_ASSERT; in release builds the
-    // entire `if (ASTRO_DEBUG ...)` block constant-folds away.
-    if (ASTRO_DEBUG && ((char *)old_payload < from_base_cur ||
-                        (char *)old_payload >= from_base_cur + REGION_BYTES)) {
+    if (ASTRO_DEBUG && ((char *)old_payload < gc->from_base_cur ||
+                        (char *)old_payload >= gc->from_base_cur + REGION_BYTES)) {
         fprintf(stderr,
             "[gc] FORWARD STALE PTR: %p (from-space [%p..%p), to-space [%p..%p))\n",
-            old_payload, (void*)from_base_cur,
-            (void*)(from_base_cur + REGION_BYTES),
-            (void*)to_base, (void*)(to_base + REGION_BYTES));
+            old_payload, (void*)gc->from_base_cur,
+            (void*)(gc->from_base_cur + REGION_BYTES),
+            (void*)gc->to_base, (void*)(gc->to_base + REGION_BYTES));
         ASTRO_ASSERT(0 && "forward_payload: old_payload outside from-space");
     }
     GCHeader *oldh = (GCHeader *)old_payload - 1;
-    if (oldh->fwd) {
-        if (ASTRO_DEBUG && ((char *)oldh->fwd < to_base ||
-                            (char *)oldh->fwd >= to_base + REGION_BYTES)) {
+    void *existing_fwd = ASTRO_GC_HEADER_GET_FWD(oldh);
+    if (existing_fwd) {
+        if (ASTRO_DEBUG && ((char *)existing_fwd < gc->to_base ||
+                            (char *)existing_fwd >= gc->to_base + REGION_BYTES)) {
             fprintf(stderr,
                 "[gc] FORWARD STALE FWD: oldh@%p fwd=%p not in to-space [%p..%p)\n",
-                (void*)oldh, oldh->fwd, (void*)to_base,
-                (void*)(to_base + REGION_BYTES));
+                (void*)oldh, existing_fwd, (void*)gc->to_base,
+                (void*)(gc->to_base + REGION_BYTES));
             ASTRO_ASSERT(0 && "forward_payload: fwd outside to-space");
         }
-        return oldh->fwd;
+        return existing_fwd;
     }
 
-    size_t aligned = ALIGN8(oldh->size);
+    size_t aligned = ALIGN8(ASTRO_GC_HEADER_SIZE(oldh));
     size_t total = sizeof(GCHeader) + aligned;
 
-    GCHeader *newh = (GCHeader *)to_top;
+    GCHeader *newh = (GCHeader *)gc->to_top;
     memcpy(newh, oldh, total);
-    newh->fwd = NULL;
-    to_top += total;
+    ASTRO_GC_HEADER_SET_FWD(newh, NULL);
+    gc->to_top += total;
 
     void *new_payload = (void *)(newh + 1);
-    oldh->fwd = new_payload;
+    ASTRO_GC_HEADER_SET_FWD(oldh, new_payload);
     return new_payload;
 }
 
-static VALUE
-forward_value(VALUE v)
+/* edge_visit callback used by both root scan and to-space scan loops.
+ * Updates `*slot` in place: if it points to from-space, forward and
+ * rewrite. */
+static void
+forward_edge(void **slot)
 {
-    if (!IS_PTR(v)) return v;
-    return (VALUE)forward_payload((void *)v);
+    void *p = *slot;
+    if (!p) return;
+    *slot = forward_payload(p);
 }
 
-// Walk a freshly-copied object's outgoing refs (in to-space) and forward them.
+/* edge_visit callback for VALUE slots (= roots, KIND_PAYLOAD_VAL members).
+ * The slot may hold a tagged immediate; only IS_PTR values get forwarded. */
 static void
-process_object(GCHeader *h)
+forward_value_edge(void **slot)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        ASTRO_ASSERT(a->hdr.type == OBJ_ARRAY);
-        if (a->items) a->items = (VALUE *)forward_payload(a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        ASTRO_ASSERT(s->hdr.type == OBJ_STRING);
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload(s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = forward_value(items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "process_object: unknown GCHeader kind");
-    }
+    VALUE v = (VALUE)*slot;
+    if (!IS_PTR(v)) return;
+    *slot = (void *)(VALUE)forward_payload((void *)v);
 }
 
 static void
 gc_collect_internal(VALUE *sp_top)
 {
+    AstroGc *gc = ASTRO_GC_INSTANCE();
     struct timespec t0 = aro_gc_time_begin();
-    char *from_base = active_base;
-    char *from_top_pre = active_top;
+    char *from_base = gc->active_base;
+    char *from_top_pre = gc->active_top;
 
-    // Determine the to-space.
+    /* Determine the to-space. */
     char *next_to_base;
     if (aro_gc_stress) {
         next_to_base = mmap_region();
     } else {
-        next_to_base = (active_idx == 0) ? space1 : space0;
+        next_to_base = (gc->active_idx == 0) ? gc->space1 : gc->space0;
     }
 
-    to_base = next_to_base;
-    to_top  = to_base;
-    from_base_cur = from_base;
+    gc->to_base = next_to_base;
+    gc->to_top  = next_to_base;
+    gc->from_base_cur = from_base;
 
-    // Reset live-bytes counter; we'll add as we copy.
     aro_gc_stats.heap_bytes = 0;
 
-    CTX *c = gc_ctx;
+    CTX *c = gc->ctx;
 
-    // Zero stale slots above current top up to high-water mark.  Slots
-    // beyond `sp_top` belong to frames that have already returned;
-    // their VALUEs are logically dead but might still look like heap
-    // pointers from a prior GC.  Zero them so the scan / assertion
-    // sees only live state.
-    if (sp_high_water == NULL || sp_top > sp_high_water) {
-        sp_high_water = sp_top;
+    /* Zero stale slots above sp_top up to high-water mark. */
+    if (gc->sp_high_water == NULL || sp_top > gc->sp_high_water) {
+        gc->sp_high_water = sp_top;
     } else {
-        for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
+        for (VALUE *p = sp_top; p < gc->sp_high_water; p++) *p = 0;
     }
 
-    // Pre-mark invariant: every IS_PTR slot in the scan range must point
-    // into the current from-space.  Must run BEFORE the root scan loop
-    // (which mutates *p in-place).  Debug + stress-mode only — under
-    // !ASTRO_DEBUG the whole block constant-folds away.
     if (ASTRO_DEBUG && aro_gc_stress) {
         for (VALUE *p = c->env; p < sp_top; p++) {
             VALUE v = *p;
@@ -367,37 +398,50 @@ gc_collect_internal(VALUE *sp_top)
         }
     }
 
-    // (1) Scan VALUE stack and forward root pointers in place.
-    /* Cheney has no separate mark phase: trace and relocate are interleaved.
-     * Record the entire scan loop (including root forwarding) in
-     * reclaim_seconds.  mark_seconds stays 0 for copy backends. */
+    /* (1) Root scan: forward VALUE pointers in the sp[] range in place.
+     * Cheney has no separate mark phase — record the whole loop in
+     * reclaim_seconds. */
     struct timespec tcheney = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) {
-        *p = forward_value(*p);
+        forward_value_edge((void **)p);
     }
 
-    char *scan = to_base;
-    while (scan < to_top) {
+    /* (2) Scan-loop in to-space: each freshly-copied object's outgoing
+     * refs are forwarded.  SCAN_EDGES dispatches on kind; the edge_visit
+     * callback decides whether to dereference as VALUE or raw pointer. */
+    char *scan = gc->to_base;
+    while (scan < gc->to_top) {
         GCHeader *h = (GCHeader *)scan;
-        process_object(h);
-        aro_gc_stats.heap_bytes += h->size;
-        scan += sizeof(GCHeader) + ALIGN8(h->size);
+        /* For OBJ_ARRAY/STRING the edges are raw pointers; for
+         * PAYLOAD_VAL they are VALUEs.  Pick the right visitor per
+         * kind. */
+        switch (HDR_KIND(h)) {
+          case KIND_PAYLOAD_VAL: {
+              VALUE *slots = (VALUE *)(h + 1);
+              size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
+              for (size_t i = 0; i < n; i++)
+                  forward_value_edge((void **)&slots[i]);
+              break;
+          }
+          default:
+              ASTRO_GC_SCAN_EDGES(h, forward_edge);
+              break;
+        }
+        aro_gc_stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
+        scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
     }
     aro_gc_phase_end(tcheney, &aro_gc_stats.reclaim_seconds);
 
-    // (3) Swap active.
+    /* (3) Swap active. */
     if (!aro_gc_stress) {
-        active_idx = 1 - active_idx;
+        gc->active_idx = 1 - gc->active_idx;
     }
-    active_base = next_to_base;
-    active_top  = to_top;
-    active_end  = next_to_base + REGION_BYTES;
+    gc->active_base = next_to_base;
+    gc->active_top  = gc->to_top;
+    gc->active_end  = next_to_base + REGION_BYTES;
 
-    // (4) Retire the old active.
+    /* (4) Retire the old active. */
     if (aro_gc_stress) {
-        // PERMANENT retire: PROT_NONE + DONTNEED.  Virtual address stays
-        // reserved forever, physical pages reclaimed.  Stale pointers
-        // from ANY past GC into this region SIGSEGV.
         if (mprotect(from_base, REGION_BYTES, PROT_NONE) != 0) {
             perror("gc_collect: mprotect NONE"); abort();
         }
@@ -405,24 +449,17 @@ gc_collect_internal(VALUE *sp_top)
             perror("gc_collect: madvise DONTNEED"); abort();
         }
     }
-    /* Non-stress: leave from-space pages committed for fast re-use as
-     * the next to-space.  Aggressive MADV_DONTNEED here would trigger
-     * page faults on every collection cycle (measured -20% to -50% on
-     * alloc-heavy benches).  Peak physical = 2 × live; acceptable for
-     * a testbed where 64 GiB virtual is the heap cap. */
     (void)from_top_pre;
 
-    /* Adaptive threshold: same policy as mark / immix.  Next GC fires
-     * at max(MIN, 2 × live_post_cheney). */
-    bytes_since_gc = 0;
+    gc->bytes_since_gc = 0;
     if (!aro_gc_stress) {
         size_t live = aro_gc_stats.heap_bytes;
         size_t next = live * GC_THRESHOLD_FACTOR;
-        gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
+        gc->gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
     }
 
     aro_gc_stats.gc_count++;
-    gc_ctx->sp = sp_top;
+    gc->ctx->sp = sp_top;
     aro_gc_time_end(t0);
 }
 
@@ -437,7 +474,7 @@ size_t aro_gc_heap_bytes (void) { return aro_gc_stats.heap_bytes;  }
 size_t aro_gc_count      (void) { return aro_gc_stats.gc_count;    }
 size_t aro_gc_minor_count(void) { return aro_gc_stats.minor_count; }
 size_t aro_gc_major_count(void) { return aro_gc_stats.major_count; }
-double aro_gc_mark_seconds(void) { return aro_gc_stats.mark_seconds; }
-double aro_gc_reclaim_seconds(void) { return aro_gc_stats.reclaim_seconds; }
-double aro_gc_total_seconds(void) { return aro_gc_stats.total_seconds; }
-double aro_gc_max_pause_seconds(void) { return aro_gc_stats.max_pause_seconds; }
+double aro_gc_total_seconds(void)      { return aro_gc_stats.total_seconds; }
+double aro_gc_max_pause_seconds(void)  { return aro_gc_stats.max_pause_seconds; }
+double aro_gc_mark_seconds(void)       { return aro_gc_stats.mark_seconds; }
+double aro_gc_reclaim_seconds(void)    { return aro_gc_stats.reclaim_seconds; }
