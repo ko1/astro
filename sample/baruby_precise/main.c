@@ -329,10 +329,10 @@ main(int argc, char *argv[])
     NODE *ast = PARSE(argc, argv);
     /* Move sp past the toplevel locals area now that the parser has
      * reported the exact size.  No more hardcoded "64" cap.
-     * iter 60: also include ast->head.kind->slot_count so the top-level
-     * NODE receives sp at the top of its own slot area (new convention). */
+     * iter 60 child-self-advance: sp is the BASE of the toplevel NODE's
+     * slot area; its DISPATCH prologue advances by ast.slot_count
+     * internally.  So main.c only needs to position sp at locals top. */
     c->sp = c->env + aro_toplevel_locals_cnt;
-    if (ast) c->sp += ast->head.slot_count;
 
     // --ccs takes effect AFTER parse so that any logging through cs_init
     // sees the post-clear state.  Then INIT() dlopens whatever's left in

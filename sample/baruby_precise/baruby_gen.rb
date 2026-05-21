@@ -76,20 +76,17 @@ class BaRubyNodeDef < ASTroGen::NodeDef
         next nil if d.empty?
         "    fprintf(fp, \"    #{d}\\n\");"
       end
+      # iter 60: child-self-advance — `sp` passed to children is parent's top
+      # (= our advanced sp).  child_dispatch_args returns "c, field, fp, sp"
+      # (no advance).  Each child's DISPATCH/SD prologue advances internally.
       setup_emitters = setup_decl_emitters + child_ops.map do |op|
         field = "n->u.#{@name}.#{op.name}"
-        # For SD generation, convert runtime `sp + field->head.kind->slot_count`
-        # to a literal `sp + <N>` baked at SD-emit time so gcc can constant-fold.
-        # Plain DISPATCH (child unknown at compile time) keeps the runtime form.
-        dispatch_args = child_dispatch_args(op.sp_slot, field)
-        slot_count_re = /sp \+ #{Regexp.escape(field)}->head\.slot_count/
-        if dispatch_args.match?(slot_count_re)
-          dispatch_args_format = dispatch_args.sub(slot_count_re, "sp + %u")
-          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args_format}));\\n\", DISPATCHER_NAME(#{field}), #{field}->head.slot_count);"
-        else
-          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args}));\\n\", DISPATCHER_NAME(#{field}));"
-        end
+        "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
       end
+
+      # iter 60: emit `sp += <slot_count>` prologue at top of SD body.
+      sp_advance_emitter = slot_count > 0 ? "    fprintf(fp, \"    sp += #{slot_count};\\n\");" : nil
+      setup_emitters.unshift(sp_advance_emitter) if sp_advance_emitter
 
       # Standard decls for non-sp_body NODE * operands.
       decls = @operands.find_all{|op| op.node? && op.name != 'sp_body' }.map do

@@ -312,11 +312,10 @@ module ASTroGen
       end
 
       def child_dispatch_args(slot, field)
-        # Pass `sp + child.slot_count` so child receives sp at the top of
-        # its own slot area (= recursive new convention).  Uses
-        # `head.slot_count` (1 memory load) instead of `head.kind->slot_count`
-        # (2 dependent loads) — see Phase 1.5.
-        "c, #{field}, fp, sp + #{field}->head.slot_count"
+        # iter 60: pass parent's `sp` unchanged.  The child's DISPATCH/SD
+        # prologue does `sp = sp_in + self.slot_count` to position its own
+        # area top.  No runtime slot_count load on the dispatch path.
+        "c, #{field}, fp, sp"
       end
 
       # Slot count for this NODE_DEF = @child operand count + max tmp slot
@@ -623,12 +622,14 @@ module ASTroGen
         child_ops = @operands.select(&:child?)
         if child_ops.empty?
           # Backward-compatible fast path: no @child operands, emit the
-          # original 1-liner DISPATCH that just forwards struct fields.
+          # forwarder DISPATCH.  iter 60: still need sp advance if this
+          # NODE_DEF declared $tmp slots (M > 0).
+          sp_advance = slot_count > 0 ? "    sp += #{slot_count};\n" : ""
           <<~C
           static __attribute__((no_stack_protector)) #{result_type}
           DISPATCH_#{@name}(#{@prefix_args.join(', ')})
           {
-              return EVAL_#{name}(#{prefix_call_args.join(', ')}#{
+          #{sp_advance}    return EVAL_#{name}(#{prefix_call_args.join(', ')}#{
                 comma_operands(@operands.map{
                   if it.storageless?
                     it.dispatch_default_expr
@@ -697,13 +698,16 @@ module ASTroGen
             end
           })
 
-          # Pass `sp` unchanged: body sees DISPATCH's snapshot at sp[0..N).
-          # Body knows its own scratch starts at sp[N] by convention.
+          # iter 60 child-self-advance: sp param received from parent is
+          # "parent's top".  Advance by self.slot_count to get our own
+          # top.  All subsequent slot accesses and child dispatches use
+          # this advanced sp.  Skip if slot_count == 0 (transparent NODE).
+          sp_advance = slot_count > 0 ? "    sp += #{slot_count};\n" : ""
           <<~C
           static __attribute__((no_stack_protector)) #{result_type}
           DISPATCH_#{@name}(#{@prefix_args.join(', ')})
           {
-          #{decl_stmts.empty? ? "" : decl_stmts + "\n"}#{spill_stmts}
+          #{decl_stmts.empty? ? "" : decl_stmts + "\n"}#{sp_advance}#{spill_stmts}
               return EVAL_#{name}(#{prefix_call_args.join(', ')}#{body_args});
           }
           C
@@ -741,21 +745,16 @@ module ASTroGen
           next nil if d.empty?
           "    fprintf(fp, \"    #{d}\\n\");"
         end
+        # iter 60: child-self-advance — `sp` to child is parent's top (= our
+        # advanced sp).  Child's DISPATCH/SD prologue does the advance.
         setup_emitters = setup_decl_emitters + child_ops.map do |op|
           field = "n->u.#{@name}.#{op.name}"
-          # For SD generation we want gcc to constant-fold the sp advance.
-          # The runtime form `sp + field->head.kind->slot_count` is opaque
-          # to gcc (= 2 memory loads); convert it to a literal `sp + <N>`
-          # baked at SD-emit time, where N is the child's static slot_count.
-          # Plain DISPATCH retains the runtime form (child is dynamic there).
-          dispatch_args = child_dispatch_args(op.sp_slot, field)
-          slot_count_re = /sp \+ #{Regexp.escape(field)}->head\.kind->slot_count/
-          if dispatch_args.match?(slot_count_re)
-            dispatch_args_format = dispatch_args.sub(slot_count_re, "sp + %u")
-            "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args_format}));\\n\", DISPATCHER_NAME(#{field}), #{field}->head.kind->slot_count);"
-          else
-            "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{dispatch_args}));\\n\", DISPATCHER_NAME(#{field}));"
-          end
+          "    fprintf(fp, \"    #{child_storage_expr(op.sp_slot)} = UNWRAP(%s(#{child_dispatch_args(op.sp_slot, field)}));\\n\", DISPATCHER_NAME(#{field}));"
+        end
+
+        # iter 60: emit `sp += <slot_count>` prologue at top of SD body.
+        if slot_count > 0
+          setup_emitters.unshift("    fprintf(fp, \"    sp += #{slot_count};\\n\");")
         end
 
         # Pass sp unchanged.  Body sees @child snapshot at sp[0..N) and
@@ -937,9 +936,12 @@ module ASTroGen
       # auto-advances by the child's slot_count so the child receives sp
       # at the top of ITS own slot area.  For samples without sp (3-arg,
       # libgc), no transformation.
-      extra_call_args = sample ? sample.prefix_call_args.drop(2).map { |a|
-        a == "sp" ? "sp + (n)->head.slot_count" : a
-      } : []
+      # iter 60: EVAL_ARG passes sp unchanged.  Each DISPATCH/SD function
+      # internally advances sp by its own `slot_count` (baked literal) on
+      # entry, so children always receive "parent's top" and compute their
+      # own area inside.  This avoids runtime slot_count loads in EVAL_ARG
+      # entirely.
+      extra_call_args = sample ? sample.prefix_call_args.drop(2) : []
       extra_args_str = extra_call_args.empty? ? "" : ", " + extra_call_args.join(", ")
 
       <<~C
