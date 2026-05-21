@@ -15,11 +15,28 @@
 #include "context.h"
 #include "gc.h"
 
+/* Default in-place realloc hook — returns NULL so the caller falls
+ * through to the alloc + memcpy path.  Backends that track large objs
+ * on a malloc-backed list (gc_copy / gc_mark_compact) override this. */
+__attribute__((weak))
+void *
+aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
+{
+    (void)c; (void)old; (void)new_size;
+    return NULL;
+}
+
 void *
 aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
     VALUE *sp_top = c->sp;
     if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
+
+    /* Try backend in-place growth first.  When this succeeds (large obj
+     * realloc via mremap), we skip the memcpy entirely and the underlying
+     * buffer may stay at the same virtual address even at large sizes. */
+    void *in_place = aro_gc_realloc_in_place(c, old, new_size);
+    if (in_place) return in_place;
 
     AroGcKind kind = aro_gc_kind_of(old);
     size_t old_size = aro_gc_size_of(old);

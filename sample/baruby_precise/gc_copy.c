@@ -256,6 +256,61 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     return payload;
 }
 
+/* In-place realloc for large objs.  Returns NULL to fall through to the
+ * default alloc + memcpy path for: stress mode, small `old`, shrink to
+ * small.  Otherwise realloc(3) the underlying LargeObj — glibc's
+ * M_MMAP_THRESHOLD (≥128 KiB) chunks use mremap, so the buffer may be
+ * resized in-place (or relocated, but always without our memcpy).
+ *
+ * Caller (gc_common.c::aro_gc_realloc_payload) handles NULL by retrying
+ * with the parking + alloc + memcpy fallback. */
+void *
+aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (ASTRO_GC_COMMON(c)->stress) return NULL;
+    if (new_size < LARGE_THRESHOLD) return NULL;
+    char *p = (char *)old;
+    if (p >= gc->active_base && p < gc->active_end) return NULL;
+
+    /* Walk large_head to find lo's slot in the linked list (so we can
+     * patch `next` if realloc moves the LargeObj header).  N is small
+     * for our workloads (1-3 live large objs in flight); the O(N) walk
+     * runs only once per realloc, well outside the per-alloc hot path. */
+    LargeObj **link = &gc->large_head;
+    while (*link && large_payload(*link) != old) link = &(*link)->next;
+    if (!*link) return NULL;
+    LargeObj *lo = *link;
+
+    size_t old_size = ASTRO_GC_HEADER_SIZE(&lo->header);
+    AroGcKind kind = HDR_KIND(&lo->header);
+    size_t old_aligned = ALIGN8(old_size);
+    size_t new_aligned = ALIGN8(new_size);
+    LargeObj *new_lo = (LargeObj *)realloc(lo, sizeof(LargeObj) + new_aligned);
+    if (!new_lo) { perror("baruby_gc=copy: realloc large"); abort(); }
+    *link = new_lo;
+    ASTRO_GC_HEADER_SET_SIZE(&new_lo->header, new_size);
+
+    /* Zero the freshly-grown tail for KIND_PAYLOAD_VAL (the GC mark
+     * phase walks this as VALUE[]; stale bytes from a recycled chunk
+     * would look like heap pointers and crash).  Byte payloads (= raw
+     * char[]) skip the memset by contract — caller will fill them. */
+    if (kind != KIND_PAYLOAD_BYTE && new_aligned > old_aligned) {
+        memset((char *)large_payload(new_lo) + old_aligned, 0,
+               new_aligned - old_aligned);
+    }
+
+    /* stats: charge the growth (mirrors the alloc path).  Adaptive
+     * trigger sees the delta, just like a fresh alloc would. */
+    if (new_size > old_size) {
+        size_t delta = new_size - old_size;
+        ASTRO_GC_COMMON(c)->stats.total_bytes += delta;
+        ASTRO_GC_COMMON(c)->stats.heap_bytes  += delta;
+        gc->bytes_since_gc += delta;
+    }
+    return large_payload(new_lo);
+}
+
 // ----------------------------------------------------------------------------
 // Cheney-style copy collector
 // ----------------------------------------------------------------------------

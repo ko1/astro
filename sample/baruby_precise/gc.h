@@ -208,6 +208,21 @@ void *aro_gc_realloc_payload(CTX *c, void *p, size_t new_size);
 AroGcKind aro_gc_kind_of(void *payload);
 size_t    aro_gc_size_of(void *payload);
 
+/* Optional backend hook: try to grow `old` in place (no alloc + memcpy).
+ * Returns the new payload pointer on success; the underlying buffer may
+ * have moved (e.g., via realloc(3) → mremap), in which case the caller
+ * must use the returned pointer.  Returns NULL to fall through to the
+ * default alloc + memcpy path.
+ *
+ * Default impl in gc_common.c is `__attribute__((weak))` and returns
+ * NULL.  Backends that own large objects on a malloc-backed list (e.g.,
+ * gc_copy / gc_mark_compact via LargeObj) override this to call
+ * realloc(3) on the matching LargeObj for cheap doublings of
+ * BaArray.items / BaString.bytes during sieve / hash_chain workloads.
+ *
+ * NOT called from stress mode (we want every alloc to GC). */
+void *aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size);
+
 void  aro_gc_collect(CTX *c);
 
 /* Stat readers — all take CTX so the data is sourced from the per-instance
