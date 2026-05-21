@@ -3,6 +3,95 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-20 (59) — AOT 読込壊れ修正 (`aro_gc_wb` undefined symbol)
+
+`bench/hash_chain.ba.rb` で AOT 速度が plain と同じだったのを perf で
+追跡 → `cs_load` で `astro_cs.all_handle=(nil)` を発見。 dlopen が
+**`undefined symbol: aro_gc_wb`** で失敗していた。
+
+### 原因
+
+SD `.c` ファイルは `node.h` → `context.h` を include したあと
+`node_eval.c` を直 include する構造。 `node_eval.c` の
+`EVAL_node_call_aset` (= `arr[i] = v`) は `aro_gc_wb` を呼ぶが、
+**どこにも `gc.h` が include されていなかった**。
+
+非 generational backend (`GC=copy`, `none`, `mark` 等) では `gc.h` の
+`aro_gc_wb` は **`static inline`** ストア (`*slot = v`) として
+定義されているので、 gcc がインライン展開してくれれば外部参照は要らない。
+だが gc.h 未 include だと、 gcc は暗黙宣言扱いで extern 関数呼出
+を emit → all.so に `U aro_gc_wb` が残る → dlopen 失敗 → all_handle=NIL
+→ SD load 全部 skip → AOT 効かない (= 「plain と同じ速度」 現象)。
+
+### 影響範囲
+
+`arr[i] = v` (= `node_call_aset`) を含むベンチを、 **非 generational
+backend (`none / mark / copy / mark_compact / bump / immix / mark_freelist`)
+で AOT 実行した場合のみ**。 generational backend (`*_gen`) は
+`aro_gc_wb` を real extern function として main binary に export して
+いるので dlopen は成功 → AOT は元から効いていた。 非 gen 側は
+static inline 想定だったので main binary に export 無し → SD .so
+からの参照が undefined。
+
+配列書込なしのベンチ (cons_list / fib_pair / loop / fib 等) は SD が
+`aro_gc_wb` 参照自体を持たないので、 非 gen backend でも問題なく load
+していた (= iter 49 matrix で cons_list 非 gen が 0.20-0.60 範囲だった
+のはこれが理由)。
+
+### 修正
+
+`node.h` で `#include "gc.h"` を追加 (`context.h` の直後)。
+
+```c
+// gc.h defines aro_gc_wb (write barrier) used by EVAL_node_call_aset
+// inside node_eval.c.  Non-gen backends provide it as a `static inline`
+// stub; gen backends export it as an extern.  Either way, SD .c that
+// includes node_eval.c needs the declaration / inline-body in scope —
+// otherwise gcc emits a call to the implicit `extern aro_gc_wb` and
+// dlopen of all.so fails with an undefined symbol on non-WB GC backends
+// (e.g. GC=copy) for any program that touches array write (a[i] = v).
+#include "gc.h"
+```
+
+### 効果
+
+GC=copy、 AOT mode、 array-write 系ベンチ:
+
+| bench         | plain  | AOT 修正前 | AOT 修正後 | 修正後の対 plain 加速 |
+|---------------|-------:|-----------:|-----------:|----------------------:|
+| hash_chain    | 1.479s |   1.454s   |  **0.227s**|        **6.5×**       |
+| fannkuch      | 0.743s |   0.747s   |  **0.150s**|        **5.0×**       |
+| nqueens       | 0.979s |   1.000s   |  **0.085s**|       **11.5×**       |
+| list_sort     | 1.072s |     ~      |  **0.222s**|        **4.8×**       |
+| life          | 1.365s |     ~      |  **0.160s**|        **8.5×**       |
+| ast_eval      | 0.359s |     ~      |  **0.067s**|        **5.4×**       |
+| dll_walk      | 0.725s |     ~      |  **0.155s**|        **4.7×**       |
+
+これまで AOT mode の効いていた cons_list / fib_pair / list_alloc /
+binary_trees は **影響なし** (元から 2-3.5× 出ていた)。 oracle 20/20
+合格 (plain + AOT)。 全 14 GC backend で build + 基本ベンチ通過確認済。
+
+### 追跡手順 (どう特定したか)
+
+1. `perf record` で hash_chain plain と AOT 比較 — top function 分布が
+   完全に一致 (`DISPATCH_node_lget 25%`, `DISPATCH_node_lt 25%` 等)。
+2. `DISPATCH_node_lget` にカウンタを仕込んで両モードの呼出回数を比較
+   → 両方 209M 回。 **SD が一切実行されていない** ことを確認。
+3. `EVAL_node_def` で `fe->body->head.dispatcher_name` を出力
+   → `DISPATCH_node_seq` (default)。 cs_load が dispatcher を
+   更新できていない。
+4. `astro_cs_load` 入口にトレース → `all_handle=(nil)` で即 false 返し。
+5. `astro_cs_reload` の `dlopen` 直後に `dlerror()` 出力
+   → `undefined symbol: aro_gc_wb`。
+6. `nm code_store/o/SD_*.o` で `U aro_gc_wb` 確認 → gc.h 未 include
+   が真因。
+
+`perf` だけで気付くのは難しい (load 失敗は silent)。 `dlopen` の
+エラー検査と `nm code_store/o/*.o` の `U` シンボル監査を AOT bake
+の自動チェックに加える価値あり。
+
+---
+
 ## 2026-05-21 (58) — @child operand 全面導入 + callee_sp aliasing fix
 
 ASTroGen に `@child` operand kind が追加された (b4b0eb0, user 側)。

@@ -5,20 +5,36 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 ベンチは [perf.md](perf.md)、 完了履歴は [done.md](done.md)。 設計の経緯は
 [`docs/gc_design.md`](../../../docs/gc_design.md)。
 
+## 直近 (iter 59 状態)
+
+- [x] ~~**AOT loader が非 gen backend × array-write bench で silently 壊れていた**~~ —
+      `aro_gc_wb` undefined symbol で `dlopen` 失敗 → `all_handle=NIL` → 全
+      SD load skip。 `node.h` に `#include "gc.h"` 追加で修正。
+      非 gen GC × aset-using bench (hash_chain / fannkuch / sieve / json_parse /
+      remset_pressure / tokenize / dll_walk) で 4-7× の AOT 加速。
+      詳細 [done.md (59)](done.md)。 副次対策として `astro_cs_reload` の
+      dlopen 失敗時に dlerror を stderr 出力するようにした (silent fail 防止)。
+
 ## 直近 (iter 58 直後の状態)
 
-- [ ] **cons_list libgc +16% 単独退化** — iter 58 @child 化で他 bench は
-      5〜15% 改善したが cons_list だけ +16% 退化 (libgc のみ、 precise
-      backend では問題なし)。 perf record でどの hot 関数が遅くなったか
-      要追跡。 仮説: `[x, list]` cons pair の `ary_lit_2` @child 化で
-      libgc の alloc 頻度が増加 / cache 局所性が悪化。
+- [調査済] **cons_list libgc +9% 退化** — iter 59 で perf record 実施。
+      hot 関数 top: GC_malloc_kind 10.80%、 DISPATCH_node_seq 10.68%、
+      DISPATCH_node_lset 9.49%、 DISPATCH_node_lt 8.83%、
+      DISPATCH_node_call_aget 8.70%、 DISPATCH_node_add 7.92%。
+      `[i, list]` per iter = 2 × `GC_malloc` (BaArray 24B + items 16B)
+      で 20M malloc/run。 **libgc native alloc が支配的** で @child 由来の
+      コードシェイプ変化ではない。 dispatcher 1 ロード余分の影響あるが
+      <1% 程度。 **構造的問題なので別アプローチ要**:
+      (a) BaArray の embed items (header 内に 2 slot 持つ; iter 56 で
+      一度 revert したが target 限定で再挑戦の価値あり),
+      (b) bdwgc の typed_alloc / kind hint, (c) cons_list 用 small-cell
+      pool。
 - [ ] **bench/life.ba.rb を baruby (libgc) にも copy** — 修正後 baruby
       でも動くので bench 集合に追加してよい。 iter 58 では一時 copy
       して動作確認したが、 後で削除した。
-- [ ] **callee_sp safety guard を撤去できるか検証** — node_call /
-      node_call2 内の `if (callee_sp < sp + 4) callee_sp = sp + 4` は
-      defensive 修正。 `body_locals = max_cnt` の parser fix で本来
-      不要なはず。 確認後に削除して 1 cmp + cmov 削減。
+- [x] ~~**callee_sp safety guard を撤去できるか検証**~~ — iter 59 (B1)
+      で撤去済。 `8d0912b4 sample/baruby_precise: remove callee_sp safety
+      guard (B1)` commit 参照。 19 oracle 全合格、 perf 影響なし。
 
 ## P0
 

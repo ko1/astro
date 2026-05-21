@@ -239,49 +239,137 @@ iter 43 region cold-split、 iter 44 slab clz、 iter 45 slab-gen cold-split
 の overhead を最小化。 `mark` (slab malloc 経由) より速いのも同 reason +
 page metadata なし。
 
-### AOT mode matrix (iter 49, `ruby bench/matrix.rb --mode aot`)
+### AOT mode matrix (iter 59 — AOT loader fix適用後、 `ruby bench/matrix.rb --mode aot -n 5`)
+
+iter 59 (2026-05-20) で **`aro_gc_wb` undefined symbol で dlopen が
+silent fail → 非 gen backend × aset-using bench で SD load 全 skip
+(= AOT が plain と同じ速度)** という重大バグを発見・修正
+([done.md (59)](done.md))。 iter 49 matrix の `none / mark / copy /
+mark_compact / bump / immix / mark_freelist` 列で `hash_chain` /
+`fannkuch` / `sieve` / `dll_walk` / `tokenize` 等が plain 並み (1.0-1.6s)
+だったのはこれが原因。 修正後は正常な AOT 加速 (0.15-0.5s 程度) に
+回復した。
 
 | Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | mark_freelist | libgc |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ast_eval | 0.06 | 0.06 | 0.06 | 0.06 | 0.06 | 0.07 | 0.07 | 0.07 | **0.06** | 0.07 | 0.06 | 0.06 | 0.06 | 0.06 | 0.06 | 0.36 |
-| binary_trees | 0.39 | 0.48 | 0.53 | 0.55 | 0.53 | 0.50 | 0.50 | 0.46 | **0.21** | 0.68 | 0.30 | 0.48 | 0.67 | 0.67 | 0.48 | 0.78 |
-| cons_list | 0.60 | 0.25 | 0.32 | 0.37 | 0.20 | 0.21 | 0.32 | 0.21 | 0.36 | 0.21 | 0.21 | **0.17** | 0.34 | 0.33 | 0.23 | 0.84 |
-| dll_walk | 0.95 | 0.72 | 0.24 | 0.27 | 0.73 | 0.17 | 0.81 | 0.17 | 0.85 | 0.18 | 0.74 | **0.15** | 0.26 | 0.24 | 0.79 | 0.83 |
-| fannkuch | 0.73 | 0.73 | 0.14 | 0.15 | 0.72 | 0.12 | 0.73 | 0.11 | 0.73 | **0.11** | 0.73 | 0.13 | 0.17 | 0.16 | 0.78 | 0.70 |
-| fib_pair | 0.83 | 0.35 | 0.44 | 0.49 | 0.27 | 0.26 | 0.45 | 0.32 | 0.50 | 0.27 | 0.30 | **0.24** | 0.42 | 0.42 | 0.32 | 1.04 |
-| gc_combined | 0.67 | 0.29 | 0.34 | 0.38 | 0.20 | 0.20 | 0.35 | 0.20 | 0.43 | 0.20 | 0.22 | **0.18** | 0.34 | 0.34 | 0.28 | 0.91 |
-| hash_chain | 1.13 | 1.10 | 0.16 | 0.16 | 1.25 | 0.18 | 1.20 | 0.17 | 1.12 | 0.17 | 1.11 | **0.15** | 0.16 | 0.17 | 1.22 | 1.34 |
-| interp_calc | 0.56 | 0.28 | 0.33 | 0.38 | 0.23 | 0.26 | 0.37 | 0.25 | 0.38 | 0.28 | 0.25 | **0.22** | 0.35 | 0.34 | 0.26 | 0.98 |
-| life | **0.14** | 0.17 | 0.16 | 0.17 | 0.15 | 0.15 | 0.15 | 0.15 | 0.15 | 0.15 | 0.15 | 0.15 | 0.18 | 0.18 | 0.16 | — |
-| list_alloc | 0.66 | 0.29 | 0.33 | 0.38 | 0.19 | 0.19 | 0.34 | 0.22 | 0.42 | 0.19 | 0.21 | **0.17** | 0.33 | 0.33 | 0.27 | 0.84 |
-| list_sort | 0.33 | 0.35 | 0.38 | 0.42 | 0.22 | 0.22 | 0.27 | 0.23 | 0.33 | 0.22 | 0.23 | **0.21** | 0.43 | 0.42 | 0.37 | 1.10 |
-| nqueens | 0.08 | 0.09 | 0.09 | 0.09 | 0.08 | 0.08 | 0.08 | **0.07** | 0.08 | 0.08 | 0.08 | 0.07 | 0.10 | 0.09 | 0.09 | 0.94 |
-| remset_pressure | 0.46 | 0.34 | 0.13 | 0.16 | 0.37 | **0.08** | 0.41 | 0.08 | 0.37 | 0.09 | 0.35 | 0.08 | 0.13 | 0.12 | 0.37 | 0.43 |
-| sieve | 1.22 | 1.32 | 0.42 | 0.43 | 1.64 | 0.43 | 1.62 | 0.43 | 1.60 | 0.41 | 1.61 | **0.38** | 0.47 | 0.46 | 1.56 | 1.33 |
-| string_concat | 0.29 | 0.11 | 0.14 | 0.15 | 0.09 | 0.07 | 0.15 | 0.07 | 0.15 | 0.07 | 0.08 | **0.06** | 0.13 | 0.13 | 0.10 | 0.29 |
-| string_concat_dyn | 1.49 | 0.56 | 0.68 | 0.76 | 0.38 | 0.36 | 0.73 | 0.37 | 0.76 | 0.35 | 0.42 | **0.35** | 0.63 | 0.62 | 0.49 | 1.44 |
-| substr_churn | 1.08 | 0.45 | 0.50 | 0.55 | 0.42 | 0.26 | 0.57 | 0.25 | 0.76 | **0.25** | 0.59 | 0.28 | 0.47 | 0.47 | 0.52 | 1.33 |
-| tokenize | 1.94 | 0.73 | 0.89 | 0.99 | 0.49 | 0.46 | 0.94 | **0.46** | 0.94 | 0.46 | 0.55 | 0.47 | 0.84 | 0.82 | 0.64 | 1.36 |
+| ast_eval | 0.06 | 0.06 | 0.06 | 0.06 | 0.06 | 0.06 | 0.06 | 0.07 | 0.06 | 0.06 | 0.06 | **0.06** | 0.06 | 0.06 | 0.06 | 0.44 |
+| binary_trees | 0.36 | 0.49 | 0.56 | 0.57 | 0.54 | 0.51 | 0.50 | 0.49 | **0.23** | 0.73 | 0.30 | 0.50 | 0.68 | 0.67 | 0.49 | 0.76 |
+| cons_list | 0.60 | 0.26 | 0.33 | 0.38 | 0.19 | 0.21 | 0.33 | 0.21 | 0.37 | 0.21 | 0.21 | **0.17** | 0.34 | 0.33 | 0.23 | 0.84 |
+| dll_walk | 0.39 | 0.19 | 0.24 | 0.28 | **0.15** | 0.17 | 0.23 | 0.17 | 0.26 | 0.18 | 0.16 | 0.15 | 0.25 | 0.24 | 0.17 | 0.79 |
+| fannkuch | 0.13 | 0.12 | 0.16 | 0.16 | 0.15 | 0.13 | 0.13 | **0.12** | 0.16 | 0.12 | 0.14 | 0.14 | 0.18 | 0.16 | 0.13 | 0.66 |
+| fib_pair | 0.85 | 0.37 | 0.45 | 0.51 | 0.27 | 0.27 | 0.46 | 0.28 | 0.51 | 0.27 | 0.29 | **0.24** | 0.42 | 0.42 | 0.32 | 0.98 |
+| gc_combined | 0.68 | 0.30 | 0.35 | 0.39 | 0.20 | 0.20 | 0.35 | 0.19 | 0.43 | 0.20 | 0.21 | **0.18** | 0.35 | 0.34 | 0.28 | 0.88 |
+| hash_chain | 0.17 | 0.18 | 0.19 | 0.19 | 0.21 | 0.22 | 0.20 | 0.20 | **0.16** | 0.20 | 0.16 | 0.16 | 0.19 | 0.20 | 0.22 | 1.42 |
+| interp_calc | 0.57 | 0.29 | 0.35 | 0.39 | 0.23 | 0.24 | 0.38 | 0.25 | 0.39 | 0.28 | 0.26 | **0.23** | 0.35 | 0.35 | 0.27 | 0.99 |
+| json_parse | 1.13 | 0.46 | 0.52 | 0.66 | 0.38 | **0.35** | 0.62 | 0.37 | 0.73 | 0.36 | 0.41 | 0.37 | 0.49 | 0.48 | 0.42 | 1.09 |
+| life | 0.15 | 0.17 | 0.17 | 0.17 | 0.16 | 0.15 | 0.15 | 0.15 | 0.16 | **0.15** | 0.15 | 0.15 | 0.19 | 0.18 | 0.17 | — |
+| list_alloc | 0.68 | 0.30 | 0.34 | 0.39 | 0.19 | 0.19 | 0.35 | 0.19 | 0.43 | 0.19 | 0.21 | **0.17** | 0.35 | 0.33 | 0.28 | 0.87 |
+| list_sort | 0.34 | 0.36 | 0.40 | 0.42 | 0.23 | 0.23 | 0.27 | 0.22 | 0.33 | 0.22 | 0.22 | **0.22** | 0.45 | 0.43 | 0.39 | 1.06 |
+| nqueens | 0.08 | 0.09 | 0.09 | 0.10 | 0.08 | 0.08 | 0.08 | 0.08 | 0.08 | 0.07 | 0.08 | **0.07** | 0.10 | 0.10 | 0.10 | 0.89 |
+| remset_pressure | 0.25 | 0.13 | 0.13 | 0.16 | 0.14 | 0.08 | 0.17 | 0.08 | 0.15 | 0.09 | 0.11 | **0.08** | 0.13 | 0.13 | 0.12 | 0.44 |
+| sieve | **0.26** | 0.40 | 0.44 | 0.45 | 0.82 | 0.43 | 0.77 | 0.43 | 0.71 | 0.41 | 0.75 | 0.37 | 0.46 | 0.44 | 0.74 | 1.22 |
+| string_concat | 0.29 | 0.12 | 0.14 | 0.16 | 0.09 | 0.07 | 0.15 | 0.07 | 0.15 | 0.07 | 0.09 | **0.07** | 0.13 | 0.13 | 0.11 | 0.29 |
+| string_concat_dyn | 0.98 | 0.40 | 0.47 | 0.57 | 0.32 | 0.30 | 0.53 | 0.31 | 0.61 | 0.29 | 0.35 | **0.29** | 0.43 | 0.43 | 0.38 | 1.21 |
+| substr_churn | 0.64 | 0.30 | 0.32 | 0.39 | 0.36 | 0.22 | 0.44 | **0.21** | 0.50 | 0.22 | 0.30 | 0.28 | 0.29 | 0.29 | 0.38 | 1.07 |
+| tokenize | 1.08 | 0.42 | 0.51 | 0.64 | 0.35 | 0.33 | 0.62 | 0.33 | 0.67 | **0.32** | 0.38 | 0.33 | 0.46 | 0.46 | 0.43 | 1.02 |
 
-**勝者分布** (AOT, iter 44、 15 backend × 18 bench):
-- `immix_gen` — **9 wins** (cons_list tied / dll_walk / fib_pair /
-  gc_combined / hash_chain / list_alloc / sieve / string_concat) +
-  immix_gen ≦ 0.01 で他多数の tie
-- `mark_compact_gen` — **2 wins** (fannkuch tied 0.11 / nqueens 0.07)
-- `copy_gen` — **2 wins** (list_sort 0.21 / remset_pressure 0.08)
-- `copy` — **2 wins** (interp_calc 0.23 / string_concat_dyn 0.38)
-- `bump` — **1 win** (binary_trees 0.21)
-- `mark` — **1 win** (ast_eval 0.06)
-- `immix` — **1 win** (life 0.14、 多数 tied)
-- `mark_bump_gen` — **1 win** (substr_churn 0.30)
-- `mark_freelist` (新 #16) — 1 tie (cons_list 0.20 with immix_gen) +
-  競争的だが直接の勝利なし。 AOT で gen backend の minor 効率が支配的に
-  なる workload では gen 系に届かない。
+#### iter 49 (pre-fix) との差分 — `aro_gc_wb` undefined symbol 修正効果
 
-`mark_freelist` AOT 評価: 短命 alloc 多めの workload (cons_list 0.20、
-gc_combined 0.24、 list_alloc 0.23) で gen に近い数値を出す。 一方
-hash_chain / sieve など非 gen が苦手な領域では同じく苦手 (1.19 / 1.55)。
-「非 gen で freelist の reuse 効率を測る」 backend として位置付け確立。
+**配列書込みあり bench × 非 gen backend** で大幅改善 (実際の AOT 効果が
+発現するようになった):
+
+| bench | backend | iter 49 AOT (broken) | iter 59 AOT (fixed) | speedup |
+|-------|---------|---------------------:|--------------------:|--------:|
+| hash_chain | none | 1.13s | **0.17s** | **6.6×** |
+| hash_chain | mark | 1.10s | **0.18s** | **6.1×** |
+| hash_chain | copy | 1.25s | **0.21s** | **6.0×** |
+| hash_chain | mark_compact | 1.20s | **0.20s** | **6.0×** |
+| hash_chain | bump | 1.12s | **0.16s** | **7.0×** |
+| hash_chain | immix | 1.11s | **0.16s** | **6.9×** |
+| hash_chain | mark_freelist | 1.22s | **0.22s** | **5.6×** |
+| fannkuch | (非 gen 6 backends) | 0.72-0.78s | **0.12-0.16s** | **4.5-6×** |
+| sieve | none | 1.22s | **0.26s** | **4.7×** |
+| sieve | copy | 1.64s | **0.82s** | **2.0×** |
+| dll_walk | (非 gen) | 0.73-0.95s | **0.15-0.39s** | **2.4-4.9×** |
+| tokenize | none | 1.94s | **1.08s** | **1.8×** |
+| remset_pressure | none | 0.46s | **0.25s** | **1.8×** |
+
+配列書込みなし bench (cons_list / fib_pair / list_alloc / binary_trees /
+life / ackermann / fib / tak など) は iter 49 で既に AOT 効いていたので
+iter 59 でもノイズ範囲内 (±0.01s)。 gen backend (`*_gen` 列) は
+`aro_gc_wb` が real extern function として export されており dlopen
+解決できたので、 iter 49 から既に動作 → iter 59 で変化なし。
+
+**勝者分布** (AOT, iter 59, 15 backend × 20 bench, median of 5):
+- `immix_gen` — **9 wins** (cons_list 0.17 / fib_pair 0.24 / gc_combined 0.18 /
+  interp_calc 0.23 / list_alloc 0.17 / list_sort 0.22 / nqueens 0.07 /
+  remset_pressure 0.08 / string_concat 0.07 / string_concat_dyn 0.29) +
+  ast_eval 0.06 / dll_walk 0.15 tied
+- `bump` — **2 wins** (binary_trees 0.23 / hash_chain 0.16 tied)
+- `copy_gen` — **1 win** (json_parse 0.35)
+- `mark_compact_gen` — **1 win** (substr_churn 0.21)
+- `mark_bump_gen` — **2 wins** (life 0.15 tied / tokenize 0.32)
+- `mark` — **1 win** (fannkuch 0.12 tied)
+- `none` — **1 win** (sieve 0.26) — 非 gen ベンチで `none` が首位は珍しい:
+  iter 59 fix で hash_chain/fannkuch も非 gen で正常な数値に下りたが、
+  sieve は配列アクセスパターンが `none` (実体は no-op write barrier) で
+  特に inline 化が効く形になった
+- `mark_freelist` — direct win なし、 cons_list / gc_combined / list_alloc で
+  immix_gen に 0.01-0.05s 差で 2 位
+
+`immix_gen` 圧倒的だが、 iter 49 で `bump` が hash_chain で 1.12s と
+broken だった列が修正後 0.16s で **2 win に逆転**。 AOT 修正効果が
+backend 序列にも影響している (= broken だった列が compete し直し)。
+
+### naruby-style int benches (iter 59、 AOT mode、 9 backend subset)
+
+`sample/naruby/bench/` から 15 個の **GC を実質触らない int-heavy 計算
+ベンチ** (dispatch / call / 比較 / loop 中心の workload) を baruby_precise
+に追加。 元の用途は naruby (semi-space GC + int interp) の per-iter
+overhead 測定だったが、 baruby_precise でも完全互換で動く ([oracle](../bench/oracle.json)
+で結果照合済) ので bench/ に追加した。 GC ノイズが入らない workload
+なので **AST dispatch overhead の絶対値**、 **@child snapshot の sp[]
+save 効果**、 **call chain での frame setup コスト** を測るのに有用。
+
+`ruby bench/matrix.rb --mode aot -n 3` median (重い chain40 / call / fib /
+deep_const / ackermann が 1-3s/iter なので -n 3 に設定。 数値は標準
+matrix の -n 5 より変動 ±2-3% あり)。 9 代表 backend (各 family +
+gen variant)。
+
+| Bench | none | mark | mark_gen | copy | copy_gen | mark_compact | bump | immix | immix_gen |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ackermann | 1.18 | 1.23 | 1.18 | 1.18 | 1.21 | 1.16 | **1.15** | 1.20 | 1.19 |
+| branch_dom | 0.23 | 0.25 | 0.23 | 0.23 | 0.23 | 0.23 | **0.23** | 0.23 | 0.24 |
+| call | 1.87 | 1.76 | 1.78 | 1.99 | 1.75 | **1.69** | 1.70 | 1.72 | 1.75 |
+| chain20 | 2.06 | 1.99 | 1.96 | 1.89 | 1.93 | **1.88** | 1.89 | 1.95 | 1.93 |
+| chain40 | 3.37 | 3.23 | 3.22 | 3.16 | 3.13 | 3.08 | **3.07** | 3.13 | 3.13 |
+| chain_add | 0.34 | 0.34 | 0.34 | 0.34 | 0.33 | 0.33 | 0.32 | **0.32** | 0.33 |
+| collatz | 0.36 | 0.35 | 0.35 | 0.34 | 0.34 | 0.33 | 0.33 | **0.33** | 0.33 |
+| compose | 0.26 | 0.27 | 0.27 | 0.29 | 0.26 | 0.26 | 0.26 | **0.25** | 0.26 |
+| deep_const | 1.49 | 1.52 | 1.54 | 1.48 | 1.48 | **1.43** | 1.47 | 1.44 | 1.44 |
+| early_return | 0.38 | 0.36 | 0.36 | 0.35 | 0.35 | 0.34 | 0.35 | **0.34** | 0.35 |
+| fib | 1.37 | 1.39 | 1.36 | 1.34 | 1.33 | 1.31 | 1.40 | **1.30** | 1.34 |
+| gcd | 0.38 | 0.40 | 0.40 | 0.38 | 0.38 | 0.37 | 0.38 | **0.37** | 0.38 |
+| loop | 0.11 | 0.11 | 0.11 | 0.10 | 0.10 | 0.11 | 0.11 | 0.11 | **0.10** |
+| prime_count | 0.65 | 0.60 | 0.60 | 0.57 | 0.57 | 0.58 | 0.58 | 0.58 | **0.56** |
+| tak | 0.20 | 0.19 | 0.18 | 0.19 | 0.18 | **0.18** | 0.19 | 0.19 | 0.18 |
+
+**分布の特徴**:
+
+1. **backend 間で差が小さい** (大半が ±3-5%)。 GC を触らないので GC
+   アルゴリズム選択の影響が出ない。 winner はほぼ noise floor 内 の差で
+   決まる (loop 0.10 vs 0.11 等)。
+2. **絶対値は workload size と DISPATCH overhead で決まる**。 chain40
+   (3.1s) は 40 段関数 chain で per-call overhead が累積、 fib (1.3s)
+   や ackermann (1.2s) も深い再帰。 loop (0.1s) は単純 while。
+3. **AOT 加速の効き方は workload による**。 これらの bench は plain で
+   実行すると 3-7× 遅くなる (例: `fib` plain 7.06s → AOT 1.34s で 5.3×)。
+   call / chain bench で AOT が SD bake で per-call dispatch を inline
+   → 効果大。
+4. **@child sp[] save 影響**は backend 間でほぼ見えない。 precise の
+   sp[] write は L1 hit するので 1 cycle 程度の overhead しかない —
+   この粒度の bench では計測不能。 plain mode で sp[] save が顕在化
+   する可能性 (今後の検証項目)。
 
 ### iter 44 AOT 効果サマリ (vs iter 41 AOT baseline)
 
@@ -322,7 +410,7 @@ baruby_precise の plain 最速 backend / AOT 最速 backend と並べる:
 | list_sort | 7.26 | 1.01 (immix_gen) | **7.2×** | 0.21 (copy_gen) | **34.6×** |
 | nqueens | 0.85 | 0.92 (immix_gen) | **0.92×** | 0.07 (mark_compact_gen) | **12.1×** |
 | remset_pressure | 0.58 | 0.28 (immix_gen) | **2.1×** | 0.08 (copy_gen) | **7.3×** |
-| sieve | 1.44 | 1.31 (none) | **1.1×** | 0.36 (immix_gen) | **4.0×** |
+| sieve | 1.44 | 1.31 (none) | **1.1×** | 0.26 (none) | **5.5×** |
 | string_concat | 1.39 | 0.20 (immix_gen) | **7.0×** | 0.07 (immix_gen) | **19.9×** |
 | string_concat_dyn | 2.17 | 1.03 (copy) | **2.1×** | 0.38 (copy) | **5.7×** |
 | substr_churn | 1.95 | 0.85 (immix_gen) | **2.3×** | 0.30 (mark_bump_gen) | **6.5×** |

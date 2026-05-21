@@ -18,5 +18,20 @@
   "string_concat_dyn": "45000000",
   "dll_walk": "23994000000",
   "tokenize": "10500000",
-  "json_parse": "11300000"
+  "json_parse": "11300000",
+  "fib": "165580141",
+  "ackermann": "16381",
+  "tak": "13",
+  "loop": "100000000",
+  "gcd": "50000000",
+  "collatz": "131434272",
+  "compose": "570000000",
+  "call": "4200000000",
+  "chain20": "2100000000",
+  "chain40": "1050000000",
+  "chain_add": "100000000",
+  "prime_count": "959200",
+  "branch_dom": "2150000000",
+  "early_return": "142958882629",
+  "deep_const": "100000000"
 }
