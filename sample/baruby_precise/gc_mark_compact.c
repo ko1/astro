@@ -56,6 +56,7 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 // ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // ----------------------------------------------------------------------------
 typedef struct ASTroGC {
+    AroGcCommonState common;   /* MUST be first field */
     char *region_base, *region_top, *region_end;
     CTX  *ctx;
     VALUE *sp_high_water;
@@ -66,27 +67,24 @@ typedef struct ASTroGC {
     size_t     gray_capa;
 } ASTroGC;
 
-static ASTroGC g_astro_gc;
-#define region_base     (g_astro_gc.region_base)
-#define region_top      (g_astro_gc.region_top)
-#define region_end      (g_astro_gc.region_end)
-#define gc_ctx          (g_astro_gc.ctx)
-#define sp_high_water   (g_astro_gc.sp_high_water)
-#define bytes_since_gc  (g_astro_gc.bytes_since_gc)
-#define gc_threshold    (g_astro_gc.gc_threshold)
-#define gray_buf        (g_astro_gc.gray_buf)
-#define gray_cnt        (g_astro_gc.gray_cnt)
-#define gray_capa       (g_astro_gc.gray_capa)
+#define region_base     (gc->region_base)
+#define region_top      (gc->region_top)
+#define region_end      (gc->region_end)
+#define gc_ctx          (gc->ctx)
+#define sp_high_water   (gc->sp_high_water)
+#define bytes_since_gc  (gc->bytes_since_gc)
+#define gc_threshold    (gc->gc_threshold)
+#define gray_buf        (gc->gray_buf)
+#define gray_cnt        (gc->gray_cnt)
+#define gray_capa       (gc->gray_capa)
 
-AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
-int aro_gc_stress = 0;
 const char *aro_gc_backend_name = "mark_compact";
 
 void
 aro_gc_init(CTX *c)
 {
-    ASTroGC *gc = &g_astro_gc;
-    memset(gc, 0, sizeof(*gc));
+    ASTroGC *gc = (ASTroGC *)calloc(1, sizeof(ASTroGC));
+    if (!gc) { perror("calloc ASTroGC"); abort(); }
     c->astro_gc = gc;
     gc_ctx = c;
     gc_threshold = GC_THRESHOLD_MIN;
@@ -97,7 +95,7 @@ aro_gc_init(CTX *c)
     region_top = region_base;
     region_end = region_base + REGION_BYTES;
     if (getenv("BARUBY_GC_STRESS")) {
-        aro_gc_stress = 1;
+        gc->common.stress = true;
         fprintf(stderr, "[baruby_gc=mark_compact] STRESS mode: collect on every alloc\n");
     }
 }
@@ -106,13 +104,13 @@ aro_gc_init(CTX *c)
 // Allocation
 // ---------------------------------------------------------------------------
 
-static void gc_collect_internal(VALUE *sp_top);
+static void gc_collect_internal(CTX *c, VALUE *sp_top);
 
-// iter 43: cold-path split (see gc_copy.c for rationale).
 static void __attribute__((noinline, cold))
-bump_slow(size_t total, VALUE *sp_top)
+bump_slow(CTX *c, size_t total, VALUE *sp_top)
 {
-    gc_collect_internal(sp_top);
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    gc_collect_internal(c, sp_top);
     if (region_top + total > region_end) {
         fprintf(stderr, "baruby_gc=mark_compact: OOM (need %zu)\n", total);
         abort();
@@ -120,13 +118,14 @@ bump_slow(size_t total, VALUE *sp_top)
 }
 
 static inline GCHeader *
-bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = sizeof(GCHeader) + aligned;
-    if (__builtin_expect(aro_gc_stress
+    if (__builtin_expect(gc->common.stress
                          || bytes_since_gc + payload_size > gc_threshold
                          || region_top + total > region_end, 0)) {
-        bump_slow(total, sp_top);
+        bump_slow(c, total, sp_top);
     }
     GCHeader *h = (GCHeader *)region_top;
     HDR_SET_KIND(h, kind);
@@ -141,27 +140,29 @@ bump(AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
 void *
 aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
                  kind == KIND_PAYLOAD_VAL);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = bump(kind, payload_size, aligned, sp_top);
+    GCHeader *h = bump(c, kind, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    gc->common.stats.total_bytes += payload_size;
+    gc->common.stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size, VALUE *sp_top)
 {
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = bump(KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
+    GCHeader *h = bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    aro_gc_stats.total_bytes += payload_size;
-    aro_gc_stats.heap_bytes  += payload_size;
+    gc->common.stats.total_bytes += payload_size;
+    gc->common.stats.heap_bytes  += payload_size;
     return payload;
 }
 
@@ -189,7 +190,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
 // ---------------------------------------------------------------------------
 
 static void
-gray_push(GCHeader *h)
+gray_push(ASTroGC *gc, GCHeader *h)
 {
     if (gray_cnt >= gray_capa) {
         gray_capa = gray_capa ? gray_capa * 2 : 256;
@@ -200,34 +201,34 @@ gray_push(GCHeader *h)
 }
 
 static void
-mark_value(VALUE v)
+mark_value(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return;
     GCHeader *h = (GCHeader *)v - 1;
     if (HDR_MARKED(h)) return;
     HDR_SET_MARKED(h);
-    gray_push(h);
+    gray_push(gc, h);
 }
 
 static void
-scan_outgoing(GCHeader *h)
+scan_outgoing(ASTroGC *gc, GCHeader *h)
 {
     void *payload = (void *)(h + 1);
     switch (HDR_KIND(h)) {
       case KIND_OBJ_ARRAY: {
         BaArray *a = (BaArray *)payload;
-        if (a->items) mark_value((VALUE)a->items);
+        if (a->items) mark_value(gc, (VALUE)a->items);
         break;
       }
       case KIND_OBJ_STRING: {
         BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) mark_value((VALUE)s->bytes);
+        if (!BSTR_IS_SSO(s) && s->bytes) mark_value(gc, (VALUE)s->bytes);
         break;
       }
       case KIND_PAYLOAD_VAL: {
         VALUE *items = (VALUE *)payload;
         size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) mark_value(items[i]);
+        for (size_t i = 0; i < n; i++) mark_value(gc, items[i]);
         break;
       }
       case KIND_PAYLOAD_BYTE:
@@ -239,11 +240,11 @@ scan_outgoing(GCHeader *h)
 }
 
 static void
-process_gray(void)
+process_gray(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
-        scan_outgoing(h);
+        scan_outgoing(gc, h);
     }
 }
 
@@ -304,15 +305,11 @@ update_pointers(GCHeader *h)
 // ---------------------------------------------------------------------------
 
 static void
-gc_collect_internal(VALUE *sp_top)
+gc_collect_internal(CTX *c, VALUE *sp_top)
 {
-    struct timespec t0 = aro_gc_time_begin();
-    CTX *c = gc_ctx;
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    struct timespec t0 = aro_gc_time_begin(c);
 
-    // High-water-mark zeroing: slots above sp_top that were used at a
-    // previous deeper recursion may still hold pointers to objects this
-    // GC compacts/moves; if a later recursion's sp_top exceeds these we
-    // could otherwise scan stale pointers as live roots.
     if (sp_high_water == NULL || sp_top > sp_high_water) {
         sp_high_water = sp_top;
     } else {
@@ -321,9 +318,9 @@ gc_collect_internal(VALUE *sp_top)
 
     // (1) Mark from roots.
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(*p);
-    process_gray();
-    aro_gc_phase_end(tmark, &aro_gc_stats.mark_seconds);
+    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    process_gray(gc);
+    aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
     struct timespec treclaim = aro_gc_phase_begin();
     // (2) Forward-address pass: pack live objects to the start of the region.
@@ -360,8 +357,6 @@ gc_collect_internal(VALUE *sp_top)
     for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value(*p);
 
     // (5) Slide live objects to their forwarding addresses.
-    //     Batch consecutive marked objects (no dead in between) into a
-    //     single memmove — they all share the same src-vs-dst delta.
     {
         char *p = region_base;
         while (p < region_top) {
@@ -371,10 +366,6 @@ gc_collect_internal(VALUE *sp_top)
                 p += total;
                 continue;
             }
-            // Find the end of this contiguous-marked run.  All objects in
-            // the run share the same (src - dst) delta because bump-alloc
-            // packs them contiguously and the forward pass packs survivors
-            // contiguously too.
             char *run_src_start = p;
             char *run_dst_start = h->fwd;
             char *run_p = p;
@@ -387,7 +378,6 @@ gc_collect_internal(VALUE *sp_top)
             if (run_dst_start != run_src_start) {
                 memmove(run_dst_start, run_src_start, run_size);
             }
-            // Clear marked / fwd on each moved header.
             char *q = run_dst_start;
             char *q_end = run_dst_start + run_size;
             while (q < q_end) {
@@ -400,24 +390,23 @@ gc_collect_internal(VALUE *sp_top)
         }
     }
     region_top = fwd;
-    aro_gc_phase_end(treclaim, &aro_gc_stats.reclaim_seconds);
+    aro_gc_phase_end(treclaim, &gc->common.stats.reclaim_seconds);
 
-    aro_gc_stats.heap_bytes = live_bytes;
-    /* Adaptive threshold update. */
+    gc->common.stats.heap_bytes = live_bytes;
     bytes_since_gc = 0;
-    if (!aro_gc_stress) {
+    if (!gc->common.stress) {
         size_t next = live_bytes * GC_THRESHOLD_FACTOR;
         gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
     }
-    aro_gc_stats.gc_count++;
-    aro_gc_stats.major_count++;
+    gc->common.stats.gc_count++;
+    gc->common.stats.major_count++;
     c->sp = sp_top;
-    aro_gc_time_end(t0);
+    aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c, VALUE *sp_top)
 {
-    gc_collect_internal(sp_top);
+    gc_collect_internal(c, sp_top);
 }
 
