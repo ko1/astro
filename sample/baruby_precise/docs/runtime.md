@@ -539,6 +539,13 @@ collect / wb / wb_bulk / fini` の 8 関数 + `aro_gc_kind_of` /
   即 SIGSEGV になる開発用モード。
 - **特徴**: 単純さの極み + bump alloc の速さ。 binary_trees 0.52 s
   (`bump` と並んで最速)、 大規模 live でも Cheney が O(live) で済む。
+- **iter 66 large_alloc 経路**: payload ≥ 4096 B は malloc 別領域に
+  non-moving で確保 (LargeObj linked list 経由)。 forward_payload で
+  arena 範囲外の payload は mark + gray_queue にエンキュー、 collect 末で
+  unmarked を free。 glibc が ≥128 KiB chunk を mmap-backed にするので
+  free → munmap で物理メモリ即解放。 sieve / hash_chain で BaArray.items の
+  doubling が semispace を圧迫していた問題が解消。 large_head が NULL の
+  ホットパスは fast-path 分離で binary_trees に regression 残らず +3%。
 - **API歴**: §5.5-5.7 で詳述している backend。 baruby_precise の出発点。
 
 #### 6. `copy_gen` — bump nursery + semispace tenured (2 region)
@@ -583,6 +590,15 @@ matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
   Cheney の 2× メモリを避けられる。 binary_trees 0.58 s。 hash_chain の
   realloc-payload latent race の対象外 (slide はあるが nursery_base
   overwrite はない)。
+- **iter 66 large_alloc 経路**: copy backend と同じ pattern を移植。
+  payload ≥ 4096 B は LargeObj linked list で non-moving 管理。 Lisp-2
+  slide pass では region 内 obj のみ slide、 large obj は不動。 forward
+  address pass で large の `fwd` を self-header に設定して update-pointers
+  pass で正しく動くようにし、 collect 末で sweep_large。 perf 効果は
+  hash_chain で **-27%** (1.393 → 1.011)、 sieve で -4%、 list_alloc /
+  list_sort / cons_list で -4-6%。 mark_compact の slide は元々 dead 領域
+  を毎 collect で memmove していたが、 large が分離されて slide が
+  ずっと軽くなった。
 
 #### 9. `mark_compact_gen` — nursery (copy) + tenured (mark + compact)
 
