@@ -71,8 +71,6 @@ _Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
 #define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
 #define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
 
-static uint8_t cur_epoch = 1;   /* skips 0 so fresh allocs (mark_epoch=0) are "unmarked" */
-
 enum { BLK_FREE = 0, BLK_RECYCLABLE = 1, BLK_USED = 2 };
 
 typedef struct BlockMeta {
@@ -87,28 +85,47 @@ typedef struct LargeObj {
     /* GCHeader follows */
 } LargeObj;
 
-/* --- Global state --- */
-static char       *arena_base = NULL;
-static BlockMeta  *blocks     = NULL;
-static size_t      block_cursor = 0;        /* current block scanner index */
-static size_t      line_cursor  = 0;        /* line index within block_cursor to resume scan */
-static char       *cur_ptr   = NULL;        /* bump pointer within current hole */
-static char       *cur_end   = NULL;        /* one past last byte of current hole */
-static size_t      max_touched_block = 0;   /* highest block index ever touched (sweep upper bound) */
-static LargeObj   *large_head = NULL;
-
-static size_t      bytes_since_gc = 0;
-/* Adaptive threshold: same heuristic as gc_mark.c.  Starts at 4 MiB. */
+/* Adaptive threshold: same heuristic as gc_mark.c.  Starts at 16 MiB. */
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
-static size_t gc_threshold = GC_THRESHOLD_MIN;
 
-static CTX *gc_ctx = NULL;
+// ----------------------------------------------------------------------------
+// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ----------------------------------------------------------------------------
+typedef struct AstroGc {
+    uint8_t cur_epoch;            /* skips 0 so fresh allocs (mark_epoch=0) are "unmarked" */
+    char       *arena_base;
+    BlockMeta  *blocks;
+    size_t      block_cursor;
+    size_t      line_cursor;
+    char       *cur_ptr;
+    char       *cur_end;
+    size_t      max_touched_block;
+    LargeObj   *large_head;
+    size_t      bytes_since_gc;
+    size_t      gc_threshold;
+    CTX        *ctx;
+    struct GCHeader **gray_buf;
+    size_t            gray_cnt;
+    size_t            gray_capa;
+} AstroGc;
 
-/* Gray queue for mark traversal. */
-static GCHeader **gray_buf  = NULL;
-static size_t     gray_cnt  = 0;
-static size_t     gray_capa = 0;
+static AstroGc g_astro_gc;
+#define cur_epoch         (g_astro_gc.cur_epoch)
+#define arena_base        (g_astro_gc.arena_base)
+#define blocks            (g_astro_gc.blocks)
+#define block_cursor      (g_astro_gc.block_cursor)
+#define line_cursor       (g_astro_gc.line_cursor)
+#define cur_ptr           (g_astro_gc.cur_ptr)
+#define cur_end           (g_astro_gc.cur_end)
+#define max_touched_block (g_astro_gc.max_touched_block)
+#define large_head        (g_astro_gc.large_head)
+#define bytes_since_gc    (g_astro_gc.bytes_since_gc)
+#define gc_threshold      (g_astro_gc.gc_threshold)
+#define gc_ctx            (g_astro_gc.ctx)
+#define gray_buf          (g_astro_gc.gray_buf)
+#define gray_cnt          (g_astro_gc.gray_cnt)
+#define gray_capa         (g_astro_gc.gray_capa)
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
@@ -119,7 +136,13 @@ static void gc_collect_internal(VALUE *sp_top);
 void
 aro_gc_init(CTX *c)
 {
+    AstroGc *gc = &g_astro_gc;
+    memset(gc, 0, sizeof(*gc));
+    c->astro_gc = gc;
     gc_ctx = c;
+    cur_epoch    = 1;
+    gc_threshold = GC_THRESHOLD_MIN;
+
     arena_base = (char *)mmap(NULL, ARENA_BYTES, PROT_READ|PROT_WRITE,
                               MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (arena_base == MAP_FAILED) { perror("immix mmap arena"); abort(); }

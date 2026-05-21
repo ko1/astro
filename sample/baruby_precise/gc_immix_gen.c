@@ -51,8 +51,6 @@ _Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
 #define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
 #define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
 
-static uint8_t cur_epoch = 1;
-
 enum { BLK_FREE = 0, BLK_RECYCLABLE = 1, BLK_USED = 2 };
 
 typedef struct BlockMeta {
@@ -66,44 +64,57 @@ typedef struct LargeObj {
     /* GCHeader follows */
 } LargeObj;
 
-/* --- Tenured (Immix arena) state --- */
-static char       *arena_base = NULL;
-static BlockMeta  *blocks     = NULL;
-static size_t      block_cursor = 0;
-static size_t      line_cursor  = 0;
-static char       *cur_ptr   = NULL;
-static char       *cur_end   = NULL;
-static size_t      max_touched_block = 0;
-static LargeObj   *large_head = NULL;
-
-/* --- Nursery state --- */
-static char *nursery_base = NULL;
-static char *nursery_top  = NULL;
-static char *nursery_end  = NULL;
-
-/* --- Remset (old objects holding young pointers) --- */
-static GCHeader **remset_buf  = NULL;
-static size_t     remset_cnt  = 0;
-static size_t     remset_capa = 0;
-
-/* --- GC trigger state ---
- * iter 35 fairness fix: was `bytes_since_major += payload_size` in alloc
- * path, counting nursery alloc.  That double-counted vs other gen backends
- * which only fire major when *promoted* (tenured) bytes grow.  Now
- * `old_alloc_since_major` is incremented during promotion in minor_gc /
- * large_alloc, matching copy_gen / mark_compact_gen / mark_bump_gen. */
-static size_t old_alloc_since_major = 0;
 #define MAJOR_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define MAJOR_THRESHOLD_FACTOR  2
-static size_t major_threshold = MAJOR_THRESHOLD_MIN;
 
-static CTX *gc_ctx = NULL;
-static VALUE *sp_high_water = NULL;
+// ----------------------------------------------------------------------------
+// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ----------------------------------------------------------------------------
+typedef struct AstroGc {
+    uint8_t cur_epoch;
+    char       *arena_base;
+    BlockMeta  *blocks;
+    size_t      block_cursor, line_cursor;
+    char       *cur_ptr, *cur_end;
+    size_t      max_touched_block;
+    LargeObj   *large_head;
+    char *nursery_base, *nursery_top, *nursery_end;
+    struct GCHeader **remset_buf;
+    size_t            remset_cnt, remset_capa;
+    /* iter 35 fairness fix: counts only promoted tenured bytes, not nursery. */
+    size_t old_alloc_since_major;
+    size_t major_threshold;
+    CTX  *ctx;
+    VALUE *sp_high_water;
+    struct GCHeader **gray_buf;
+    size_t            gray_cnt, gray_capa;
+    bool   remset_pressure;
+} AstroGc;
 
-/* Gray queue (used by both minor's promotion-Cheney-scan and major's mark). */
-static GCHeader **gray_buf  = NULL;
-static size_t     gray_cnt  = 0;
-static size_t     gray_capa = 0;
+static AstroGc g_astro_gc;
+#define cur_epoch             (g_astro_gc.cur_epoch)
+#define arena_base            (g_astro_gc.arena_base)
+#define blocks                (g_astro_gc.blocks)
+#define block_cursor          (g_astro_gc.block_cursor)
+#define line_cursor           (g_astro_gc.line_cursor)
+#define cur_ptr               (g_astro_gc.cur_ptr)
+#define cur_end               (g_astro_gc.cur_end)
+#define max_touched_block     (g_astro_gc.max_touched_block)
+#define large_head            (g_astro_gc.large_head)
+#define nursery_base          (g_astro_gc.nursery_base)
+#define nursery_top           (g_astro_gc.nursery_top)
+#define nursery_end           (g_astro_gc.nursery_end)
+#define remset_buf            (g_astro_gc.remset_buf)
+#define remset_cnt            (g_astro_gc.remset_cnt)
+#define remset_capa           (g_astro_gc.remset_capa)
+#define old_alloc_since_major (g_astro_gc.old_alloc_since_major)
+#define major_threshold       (g_astro_gc.major_threshold)
+#define gc_ctx                (g_astro_gc.ctx)
+#define sp_high_water         (g_astro_gc.sp_high_water)
+#define gray_buf              (g_astro_gc.gray_buf)
+#define gray_cnt              (g_astro_gc.gray_cnt)
+#define gray_capa             (g_astro_gc.gray_capa)
+#define remset_pressure       (g_astro_gc.remset_pressure)
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
@@ -111,12 +122,17 @@ const char *aro_gc_backend_name = "immix_gen";
 
 static void minor_gc(VALUE *sp_top);
 static void major_gc(VALUE *sp_top);
-static bool remset_pressure;  /* defined below — pressure-triggered minor flag */
 
 void
 aro_gc_init(CTX *c)
 {
+    AstroGc *gc = &g_astro_gc;
+    memset(gc, 0, sizeof(*gc));
+    c->astro_gc = gc;
     gc_ctx = c;
+    cur_epoch       = 1;
+    major_threshold = MAJOR_THRESHOLD_MIN;
+
     arena_base = (char *)mmap(NULL, ARENA_BYTES, PROT_READ|PROT_WRITE,
                               MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (arena_base == MAP_FAILED) { perror("immix_gen mmap arena"); abort(); }
@@ -387,7 +403,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
  * the hard cap. */
 #define MAX_REMSET_ENTRIES (1u << 17)
 #define REMSET_PRESSURE_THRESH (MAX_REMSET_ENTRIES - 1u)
-static bool remset_pressure = false;
+/* remset_pressure storage moved to AstroGc.remset_pressure (aliased above). */
 
 static void
 remset_push(GCHeader *h)
