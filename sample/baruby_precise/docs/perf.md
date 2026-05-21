@@ -1337,6 +1337,55 @@ String の bytes ペイロードは GC が pointer として読まないので�
 `baruby_gc_alloc` を含む小関数がコールサイトに inline され、 size 引数
 が定数畳み込みされる。 fib_pair 等の小型 alloc が多いベンチで効く。
 
+### 4.5 region-bump backend の large_alloc 経路 (iter 66)
+
+`gc_copy` と `gc_mark_compact` に **LARGE_THRESHOLD=4096 B 以上 → malloc
+別領域 (non-moving, LargeObj linked list)** の経路を追加。 glibc が
+M_MMAP_THRESHOLD (=128 KiB) 以上の chunk を自動 mmap-backed にするので、
+free → munmap で物理メモリ即解放される効果。
+
+実装:
+- `aro_gc_alloc` / `_byte`: `payload_size >= 4096` で `large_alloc` に
+  ディスパッチ (`__builtin_expect` で hot path は bump 側に hint)
+- `forward_payload` / mark phase: arena 範囲外の payload は large obj
+  と判定して non-moving に mark + gray_queue にエンキュー
+- collect 末で `sweep_large`: unmarked → free, marked → mark+fwd クリア
+- gc_copy: scan-loop を fast-path (large 無し時) / interleaved に分離して
+  no-large workload に regression が出ないように
+- gc_mark_compact: Lisp-2 slide pass は region 内のみ slide、 large は
+  不動。 forward-address pass で large の fwd を self-header に
+  設定して update-pointers pass が正しく動く
+
+perf 効果 (median of 3, plain mode):
+
+| Bench         | gc_copy 前 → 後 | gc_mark_compact 前 → 後 |
+|---------------|-----------------|--------------------------|
+| sieve         | 1.244 → 1.149   | 1.183 → 1.138 (-3.8%)   |
+| hash_chain    | 1.211 → 1.065   | 1.393 → **1.011** (-27.4%) |
+| binary_trees  | 0.691 → 0.713 (+3%) | 0.693 → 0.687 (-0.9%) |
+| list_alloc    | 0.596 → 0.577   | 0.742 → 0.700 (-5.7%)   |
+| list_sort     | 0.961 → 0.929   | 1.008 → 0.962 (-4.6%)   |
+| cons_list     | 0.638 → 0.597   | 0.744 → 0.712 (-4.3%)   |
+| string_concat | 0.196 → 0.187   | 0.252 → 0.250           |
+| graph_bfs     | 0.888 → 0.899 (+1%) | 0.864 → 0.881 (+2.0%) |
+| fib_pair      | 0.645 → 0.648   | 0.847 → 0.845           |
+
+geomean: gc_copy で -2.6%、 gc_mark_compact で -5%。
+
+**勝因の説明**:
+- **gc_copy (sieve)**: BaArray.items を 16→128 MiB に doubling する間、
+  dead 旧 items が from-space を占有し続けて cache pressure を生んでいた。
+  large_alloc 経路では古 items が GC 時 free で即 munmap、 from-space は
+  常に小さい状態を保てる。
+- **gc_mark_compact (hash_chain)**: hash chain の Array doubling が
+  slide compactor で毎 collect 巨大 memmove していたが、 large が分離
+  されたことで slide 対象が劇的に縮小。
+
+**未適用 backend**: copy_gen / mark_compact_gen / mark_bump_gen は gen
+backend の pretenure 経路で既に large allocs が tenured に行くため、
+直接的な win は限定的。 ただし tenured 内 dead large の遅延回収が
+気になるなら同じ経路を移植する余地あり。
+
 ## 6. 既知の問題
 
 - **AOT mode は moving GC 移行後に未検証** — SD bake された経路で
