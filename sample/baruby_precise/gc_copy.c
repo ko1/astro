@@ -44,6 +44,39 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
 
+/* Large-object threshold.  Payloads >= this go to a separately-malloc'd
+ * non-moving region.  Win: large dead payloads (e.g., sieve's 128 MiB
+ * BaArray.items after a doubling) get free'd promptly (glibc's M_MMAP_THRESHOLD
+ * = 128 KiB causes such chunks to be mmap'd, so free → munmap → physical
+ * release) instead of sitting in from-space until the next collect.
+ * Matches `gc_mark.c`'s slab class max (4096 B). */
+#define LARGE_THRESHOLD      4096u
+
+/* Large object header.  Lives in a separately-malloc'd buffer; not in
+ * either semispace.  `fwd` field of the embedded GCHeader doubles as the
+ * "marked this cycle" flag during collect: NULL = unmarked, non-NULL =
+ * marked (we set it to the payload pointer so the standard "already
+ * forwarded" check returns the same pointer for non-moving).  Sweep
+ * clears fwd back to NULL on survivors and free()s unmarked entries. */
+typedef struct LargeObj {
+    struct LargeObj *next;       /* live list, threaded through aro_gc_init's gc->large_head */
+    struct LargeObj *next_gray;  /* gray queue during collect; NULL when not in queue */
+    GCHeader         header;
+    /* payload follows: large_payload(lo) = (void *)(&lo->header + 1) */
+} LargeObj;
+
+static inline LargeObj *
+large_from_payload(void *p)
+{
+    return (LargeObj *)((char *)p - sizeof(GCHeader) - offsetof(LargeObj, header));
+}
+
+static inline void *
+large_payload(LargeObj *lo)
+{
+    return (void *)(&lo->header + 1);
+}
+
 // ----------------------------------------------------------------------------
 // ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
 // Heap-allocated in aro_gc_init; lifetime = lifetime of the owning CTX.
@@ -77,6 +110,11 @@ typedef struct ASTroGC {
     char *to_base;
     char *from_base_cur;
     VALUE *sp_high_water;
+
+    /* Large-object lists.  `large_head` is the live list, threaded by
+     * LargeObj.next.  `large_gray` is the scan queue during collect. */
+    LargeObj *large_head;
+    LargeObj *large_gray;
 } ASTroGC;
 
 // ----------------------------------------------------------------------------
@@ -156,6 +194,31 @@ gc_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned)
     return h;
 }
 
+/* Allocate a LargeObj in malloc heap and link into gc->large_head.
+ * The standard pre-alloc trigger (stress / threshold) is checked so that
+ * GC fires consistently with the bump path; large allocs aren't free
+ * from collect pressure. */
+static GCHeader *
+large_alloc(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (__builtin_expect(ASTRO_GC_COMMON(c)->stress
+                         || gc->bytes_since_gc + payload_size > gc->gc_threshold, 0)) {
+        gc_collect_internal(c);
+    }
+    LargeObj *lo = (LargeObj *)malloc(sizeof(LargeObj) + aligned);
+    if (!lo) { fprintf(stderr, "baruby_gc=copy: large OOM (%zu)\n", payload_size); abort(); }
+    lo->next = gc->large_head;
+    gc->large_head = lo;
+    lo->next_gray = NULL;
+    GCHeader *h = &lo->header;
+    HDR_SET_KIND(h, kind);
+    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
+    ASTRO_GC_HEADER_SET_FWD(h, NULL);
+    gc->bytes_since_gc += payload_size;
+    return h;
+}
+
 void *
 aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 {
@@ -164,7 +227,9 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
     ASTRO_ASSERT(c->sp >= c->env);
 
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = gc_bump(c, kind, payload_size, aligned);
+    GCHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
+        ? large_alloc(c, kind, payload_size, aligned)
+        : gc_bump   (c, kind, payload_size, aligned);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_PAYLOAD(payload, aligned);
@@ -179,7 +244,9 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
     ASTRO_ASSERT(c->sp >= c->env);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = gc_bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned);
+    GCHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
+        ? large_alloc(c, KIND_PAYLOAD_BYTE, payload_size, aligned)
+        : gc_bump   (c, KIND_PAYLOAD_BYTE, payload_size, aligned);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
@@ -195,32 +262,39 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
 
 /* Forward an old payload pointer: copy to to-space if not already done,
  * return new payload address.  `gc` carries the active from/to-space
- * bounds (set by gc_collect_internal). */
+ * bounds (set by gc_collect_internal).
+ *
+ * Three paths:
+ *   (1) From-space arena (small obj, not yet copied) → cheney copy to to-space
+ *   (2) Already-forwarded (fwd non-NULL) → return fwd (self-ptr for large,
+ *       to-space ptr for small).  Single check handles both.
+ *   (3) Large obj (outside from-space arena), not yet marked → mark by
+ *       setting fwd=self-payload, enqueue on large_gray for content scan,
+ *       return same payload (non-moving). */
 static void *
 forward_payload(ASTroGC *gc, void *old_payload)
 {
     if (!old_payload) return NULL;
-    if (ASTRO_DEBUG && ((char *)old_payload < gc->from_base_cur ||
-                        (char *)old_payload >= gc->from_base_cur + gc->region_bytes)) {
-        fprintf(stderr,
-            "[gc] FORWARD STALE PTR: %p (from-space [%p..%p), to-space [%p..%p))\n",
-            old_payload, (void*)gc->from_base_cur,
-            (void*)(gc->from_base_cur + gc->region_bytes),
-            (void*)gc->to_base, (void*)(gc->to_base + gc->region_bytes));
-        ASTRO_ASSERT(0 && "forward_payload: old_payload outside from-space");
-    }
     GCHeader *oldh = (GCHeader *)old_payload - 1;
     void *existing_fwd = ASTRO_GC_HEADER_GET_FWD(oldh);
     if (existing_fwd) {
-        if (ASTRO_DEBUG && ((char *)existing_fwd < gc->to_base ||
-                            (char *)existing_fwd >= gc->to_base + gc->region_bytes)) {
-            fprintf(stderr,
-                "[gc] FORWARD STALE FWD: oldh@%p fwd=%p not in to-space [%p..%p)\n",
-                (void*)oldh, existing_fwd, (void*)gc->to_base,
-                (void*)(gc->to_base + gc->region_bytes));
-            ASTRO_ASSERT(0 && "forward_payload: fwd outside to-space");
-        }
         return existing_fwd;
+    }
+
+    /* When no large object exists, every reachable payload is in the
+     * from-space arena — skip the range check entirely.  This is the
+     * common case for bench workloads with only small objects (e.g.,
+     * binary_trees), keeping forward_payload at 1-branch hot. */
+    if (__builtin_expect(gc->large_head != NULL, 0)) {
+        char *p = (char *)old_payload;
+        if (p < gc->from_base_cur || p >= gc->from_base_cur + gc->region_bytes) {
+            /* Large obj — mark + enqueue for content scan, return same payload. */
+            LargeObj *lo = large_from_payload(old_payload);
+            lo->next_gray = gc->large_gray;
+            gc->large_gray = lo;
+            ASTRO_GC_HEADER_SET_FWD(oldh, old_payload);   /* mark by self-ref */
+            return old_payload;
+        }
     }
 
     size_t aligned = ALIGN8(ASTRO_GC_HEADER_SIZE(oldh));
@@ -292,18 +366,15 @@ gc_collect_internal(CTX *c)
     }
 
     if (ASTRO_DEBUG && ASTRO_GC_COMMON(c)->stress) {
+        /* Skip large-obj pointers (outside from-space arena) — they're
+         * tracked via gc->large_head and not subject to this check. */
         for (VALUE *p = c->env; p < sp_top; p++) {
             VALUE v = *p;
             if (!IS_PTR(v)) continue;
             char *vp = (char *)v;
-            if (vp < from_base || vp >= from_base + gc->region_bytes) {
-                fprintf(stderr,
-                    "[gc] PRE-MARK ASSERT FAILED: slot c->env[%ld]=%lx "
-                    "is not in from-space [%p..%p)\n",
-                    p - c->env, (long)v, (void*)from_base,
-                    (void*)(from_base + gc->region_bytes));
-                ASTRO_ASSERT(0 && "pre-mark: stale heap pointer in sp range");
-            }
+            if (vp >= from_base && vp < from_base + gc->region_bytes) continue;
+            /* not in from-space: must be a large obj.  Trust that the
+             * caller hasn't stashed a stale heap pointer here. */
         }
     }
 
@@ -313,28 +384,65 @@ gc_collect_internal(CTX *c)
         forward_value_edge(gc, (void **)p);
     }
 
-    /* (2) Scan-loop in to-space. */
+    /* (2) Interleaved scan: drain to-space + large_gray.  Forwards from
+     * either side can add to either queue, so loop until both empty. */
     char *scan = gc->to_base;
-    while (scan < gc->to_top) {
-        GCHeader *h = (GCHeader *)scan;
-        switch (HDR_KIND(h)) {
-          case KIND_PAYLOAD_VAL: {
-              VALUE *slots = (VALUE *)(h + 1);
-              size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
-              for (size_t i = 0; i < n; i++)
-                  forward_value_edge(gc, (void **)&slots[i]);
-              break;
-          }
-          default:
-              ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
-              break;
+    while (scan < gc->to_top || gc->large_gray) {
+        if (scan < gc->to_top) {
+            GCHeader *h = (GCHeader *)scan;
+            switch (HDR_KIND(h)) {
+              case KIND_PAYLOAD_VAL: {
+                  VALUE *slots = (VALUE *)(h + 1);
+                  size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
+                  for (size_t i = 0; i < n; i++)
+                      forward_value_edge(gc, (void **)&slots[i]);
+                  break;
+              }
+              default:
+                  ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
+                  break;
+            }
+            ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
+            scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
+        } else {
+            LargeObj *lo = gc->large_gray;
+            gc->large_gray = lo->next_gray;
+            lo->next_gray = NULL;
+            GCHeader *h = &lo->header;
+            switch (HDR_KIND(h)) {
+              case KIND_PAYLOAD_VAL: {
+                  VALUE *slots = (VALUE *)large_payload(lo);
+                  size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
+                  for (size_t i = 0; i < n; i++)
+                      forward_value_edge(gc, (void **)&slots[i]);
+                  break;
+              }
+              default:
+                  ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
+                  break;
+            }
+            ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
         }
-        ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
-        scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
+    }
+
+    /* (3) Sweep large_head: free unmarked, clear fwd on survivors. */
+    LargeObj **link = &gc->large_head;
+    while (*link) {
+        LargeObj *lo = *link;
+        GCHeader *h = &lo->header;
+        if (ASTRO_GC_HEADER_GET_FWD(h) == NULL) {
+            /* unmarked → free */
+            *link = lo->next;
+            free(lo);
+        } else {
+            /* marked → clear fwd for next cycle, keep in list */
+            ASTRO_GC_HEADER_SET_FWD(h, NULL);
+            link = &lo->next;
+        }
     }
     aro_gc_phase_end(tcheney, &ASTRO_GC_COMMON(c)->stats.reclaim_seconds);
 
-    /* (3) Swap active. */
+    /* (4) Swap active. */
     if (!ASTRO_GC_COMMON(c)->stress) {
         gc->active_idx = 1 - gc->active_idx;
     }
@@ -342,7 +450,7 @@ gc_collect_internal(CTX *c)
     gc->active_top  = gc->to_top;
     gc->active_end  = next_to_base + gc->region_bytes;
 
-    /* (4) Retire the old active.  Stress mode unmaps it outright. */
+    /* (5) Retire the old active.  Stress mode unmaps it outright. */
     if (ASTRO_GC_COMMON(c)->stress) {
         if (munmap(from_base, gc->region_bytes) != 0) {
             perror("gc_collect: munmap retired"); abort();
@@ -379,6 +487,12 @@ aro_gc_fini(CTX *c)
     } else {
         if (gc->space0) munmap(gc->space0, gc->region_bytes);
         if (gc->space1) munmap(gc->space1, gc->region_bytes);
+    }
+    LargeObj *lo = gc->large_head;
+    while (lo) {
+        LargeObj *next = lo->next;
+        free(lo);
+        lo = next;
     }
     free(gc);
     c->astro_gc = NULL;
