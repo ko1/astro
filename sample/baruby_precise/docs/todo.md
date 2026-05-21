@@ -17,33 +17,24 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       astrogen.rb に per-kind child-walk callback の gen task を追加して
       自動生成に畳む。 lget/lset/call の operand bake と call_N args の
       chain += callee_locals_cnt 計算は special-case として残す。
-- [ ] **copy 系 backend に large_alloc 経路を追加 (bump + malloc ハイブリッド)** —
-      sieve AOT で `copy` が 0.72s と `mark` 0.37s の 2× 遅い件 (perf stat
-      で命令数同等、 cycles 2× / L1 miss 3.2×)。 真因は growing payload
-      (`s.push(true)` で BaArray items が 128MB まで grow) の dead 領域が
-      from 領域に残り続けて cache pressure (semispace で moving しても
-      from 自体は GC まで物理メモリ消費)。
-      設計: 同一 backend 内で 2 経路に分岐:
-      - 閾値 (= **4KB**、 mark の size_class_bytes 最大値と整合) 未満 →
-        従来通り from 領域に **bump alloc (moving)**
-      - 閾値以上 → **malloc で別領域 (non-moving)** + linked list 追加。
-        GC mark で live を辿って large list 内のオブジェクトをマーク、
-        sweep で unmarked を **free(p)** で即解放。
-      glibc 自身が M_MMAP_THRESHOLD (128KB) 以上を自動 mmap/munmap して
-      くれるので、 sieve items (128MB) のような大型は free で即物理解放
-      される。 mmap 自分で管理せず malloc 任せでコード量少。
-      適用先: copy / mark_compact / bump / immix / mark_freelist の
-      region-bump 非 gen 5 backend。 gen 版は minor GC で nursery クリア
-      されるので影響軽微 (copy_gen は既に 0.38s で sieve 速い)。
-      期待効果: sieve / hash_chain / 大型 BaArray を使う bench で copy 系
-      非 gen が gen 並みの cache profile に近づく。
+- [x] ~~**copy 系 backend に large_alloc 経路を追加**~~ — iter 66 で gc_copy
+      (commit `08dd67ad` + scan-loop fast-path 分離 `f3680742`) と
+      gc_mark_compact (commit `4c9a017d`) に実装。 LARGE_THRESHOLD=4096 B
+      以上は malloc 別領域 (non-moving) + linked list。 glibc が ≥128 KiB
+      chunk を mmap-backed にするので free → munmap で物理メモリ即解放。
+      gc_copy で sieve -8% / hash_chain -9% / 6 bench で win (geomean -2.6%)、
+      gc_mark_compact で hash_chain -27% / list_alloc -6% (geomean -5%)。
+      details: perf.md §4.5。 mark_compact / mark_bump_gen / mark_compact_gen
+      / immix の region-bump 系へ展開する余地は残るが、 gen backend は
+      pretenure 経路で既に large が tenured 直行するため win 限定的の見込み。
 
-      **resize 経路**: `aro_gc_realloc_payload` で large 同士の resize 要求
-      は **realloc(p, new_size)** で済ます。 glibc は mmap-backed chunk
-      (= ≥128KB) を `mremap` で in-place 拡張するので、 sieve のような
-      capacity-doubling パターンでも仮想アドレス保持 + 物理ページ追加だけで
-      済み memcpy 不要。 small → large 遷移 (= 閾値を跨ぐ最初の grow) は
-      従来通り別 alloc + memcpy + 旧 bump 領域を放置 (= GC 時 dead 判定)。
+      **未完: resize 経路 realloc(3) 化** — 現状は aro_gc_realloc_payload で
+      新規 large alloc + memcpy + 旧 large を次 GC まで残置。 large→large の
+      resize で realloc(3) (mmap chunk なら mremap で in-place) を使えば
+      memcpy + temp 2x memory を避けられる。 sieve の doubling pattern で
+      ~3% 程度の追加 win が見込めるが、 LargeObj linked list の prev リンク
+      追跡 (singly-linked のため O(N) traversal が必要) と aro_gc_realloc_payload
+      の per-backend 上書きが要る。 priority 低。
 
 ## 直近 (iter 59 状態)
 
