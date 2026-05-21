@@ -1,17 +1,19 @@
-# baruby_precise — precise GC testbed (14 backends)
+# baruby_precise — precise GC testbed (16 backends)
 
 `sample/baruby/` (libgc conservative) を fork して、 **precise rooting +
-複数の自前 GC を切替えてベンチ比較できる testbed**。 共有 `sp[]` で
-root を spill する Lua/Rust 系モデル ([`docs/gc_design.md`](../../docs/gc_design.md))
-を実装し、 14 種類の GC algorithm を **build-time switch** (`make GC=<name>`)
-で選べる。
+複数の自前 GC を切替えてベンチ比較できる testbed**。 共有 `c->env..c->sp`
+で root を spill する Lua/Rust 系モデル
+([`docs/gc_design.md`](../../docs/gc_design.md)) を実装し、 16 種類の GC
+algorithm を **build-time switch** (`make GC=<name>`) で選べる。
 
 言語仕様 (Array / String / fixnum / 関数定義) は baruby と同一。 GC 周りと
 それを支える rooting / WB / sp threading だけが違う。
 
-## 14 GC backends
+## 16 GC backends
 
-`make GC=<name>` で切替え。 default は `copy`。 詳細は [docs/runtime.md](docs/runtime.md) §5.10。
+`make GC=<name>` で切替え。 default は `copy`。 詳細は
+[docs/runtime.md](docs/runtime.md) §5.10、 「GC を知らない読者向け」 入門は
+[docs/gc_runtime.md](docs/gc_runtime.md)。
 
 | # | Name | Strategy | Gen | Moves? |
 |---|---|---|---|---|
@@ -30,6 +32,7 @@ root を spill する Lua/Rust 系モデル ([`docs/gc_design.md`](../../docs/gc
 | 13 | `immix_gen` | bump nursery + Immix tenured (mark-region, no evac) | yes | nursery→tenured copy |
 | 14 | `mark_bitmap_gen` | sticky mark&sweep + per-page bitmap (8 B header) | yes | no |
 | 15 | `mark_card_gen` | mark_bitmap_gen + page-level remset (bounded) | yes | no |
+| 16 | `mark_freelist` | 単一 region + per-class freelist (mark/sweep) | — | no |
 
 ⚠ `#7 copy_gen_inc` は **comparison から除外** されています — iter 35 監査で
 「実体が copy_gen と同一 (incremental 実装無し)」 と判明したため。 公式 matrix
@@ -37,9 +40,9 @@ runner と `docs/perf.md §2` ではスキップ。 ファイル冒頭の honest
 
 For details:
 - [docs/spec.md](docs/spec.md) — 言語仕様 (baruby と同じ)
-- [docs/gc_runtime.md](docs/gc_runtime.md) — **GC を知らない人向け入門 + 14 backend 早見表 + 設計空間**
-- [docs/runtime.md](docs/runtime.md) — sp[] threading、 14 backend カタログ (技術詳細)
-- [docs/perf.md](docs/perf.md) — **全 14 backend × 14 bench 実測 + libgc 比較**
+- [docs/gc_runtime.md](docs/gc_runtime.md) — **GC を知らない人向け入門 + 16 backend 早見表 + 設計空間**
+- [docs/runtime.md](docs/runtime.md) — sp[] threading、 16 backend カタログ (技術詳細)
+- [docs/perf.md](docs/perf.md) — **全 GC backend × bench 実測 + libgc 比較**
 - [docs/todo.md](docs/todo.md) — 既知の制約 + 残タスク
 - [docs/done.md](docs/done.md) — 変更履歴
 
@@ -47,10 +50,12 @@ For details:
 
 | | baruby | baruby_precise |
 |---|---|---|
-| GC | Boehm libgc (conservative) | 13 種類の自前 GC を build-time switch |
-| 共通引数 | `(c, n, fp)` | `(c, n, fp, sp)` |
-| Heap alloc | `GC_MALLOC` macro | `aro_gc_alloc(kind, size, sp_top)` |
-| Write barrier | 無し (libgc 不要) | gen 系 backend で `aro_gc_wb` |
+| GC | Boehm libgc (conservative) | 16 種類の自前 GC を build-time switch |
+| 共通引数 | `(c, n, fp)` | `(c, n, sp)` (iter 61 で fp を bake) |
+| Heap alloc | `GC_MALLOC` macro | `aro_gc_alloc(c, kind, size)` |
+| 共通 instance | global `g_GC` | heap-allocated `c->astro_gc` (iter 62) |
+| Write barrier | 無し (libgc 不要) | gen 系 backend で `aro_gc_wb(c, holder, slot, v)` |
+| Clean shutdown | — | `aro_gc_fini(c)` で全 backend が release |
 
 ⚠ **以前の README には「最速 backend vs libgc で geomean -22%」 と書いて
 あったが、 iter 35 fairness 監査で取り下げ**: 過去の比較は (a) baruby 側に
@@ -61,7 +66,7 @@ iter 35 で baruby 側に `-flto=auto` を追加、 baruby_precise 側で
 Makefile + matrix runner を整備して以降の数値は [docs/perf.md §2](docs/perf.md)
 を参照。 ただし **「GC algorithm の差」 そのものは比較できていない**点に
 注意 — 同じ runtime + 同じ rooting + 違う collector ではなく、 違う
-runtime (precise sp_top scan vs conservative) + 違う collector の合計差。
+runtime (precise scan vs conservative) + 違う collector の合計差。
 
 ## Install
 
@@ -71,7 +76,7 @@ runtime (precise sp_top scan vs conservative) + 違う collector の合計差。
 sudo apt install build-essential ruby ruby-bundler git
 ```
 
-baruby_precise は **libgc を必要としない** (全 11 backend が自前 GC)。
+baruby_precise は **libgc を必要としない** (全 backend が自前 GC)。
 
 ### libprism
 
@@ -85,10 +90,16 @@ make                          # build ./baruby_precise (default GC=copy)
 make GC=mark_gen_inc          # build with mark_gen_inc backend
 make run                      # build + ./baruby_precise --plain test.ba.rb
 make bench                    # build + ruby bench/run.rb
+make test                     # build + 全 T_*.ba.rb (oracle 自動生成 mode あり)
+make test_all                 # 全 16 backend で rebuild + test
+make test_all_stress          # 上 + BARUBY_GC_STRESS=1
 make clean
 ```
 
-利用可能な GC: `none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen` (但し `copy_gen_inc` は incremental 未実装の placeholder)
+利用可能な GC: `none mark mark_gen mark_gen_inc copy copy_gen
+copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix
+immix_gen mark_bitmap_gen mark_card_gen mark_freelist` (但し
+`copy_gen_inc` は incremental 未実装の placeholder)
 
 AOT mode (`-c`): `CCACHE_DISABLE=1 ./baruby_precise -c bench/list_alloc.ba.rb`
 で SD specialize → code_store/all.so 構築 → 再 dlopen。 CCACHE_DISABLE は
@@ -139,7 +150,8 @@ p s[0]                # "h"
 BARUBY_GC_STATS=1 ./baruby_precise --plain bench/list_alloc.ba.rb
 # __ELAPSED__ 0.94
 # __GC_STATS__ backend=copy alloc_bytes=560000000 heap_bytes=... \
-#              gc_count=1 minor=0 major=0 gc_seconds=0.0001 gc_pct=0.0 \
+#              gc_count=1 minor=0 major=0 gc_seconds=0.0001 \
+#              mark_seconds=0.0000 reclaim_seconds=0.0001 gc_pct=0.0 \
 #              max_pause_ms=0.10
 ```
 
@@ -148,7 +160,11 @@ BARUBY_GC_STATS=1 ./baruby_precise --plain bench/list_alloc.ba.rb
 - `alloc_bytes` / `heap_bytes`: 累計 alloc / live size
 - `gc_count` / `minor` / `major`: collection 数
 - `gc_seconds` / `gc_pct`: 累計 GC 時間とミューテータに対する比率
+- `mark_seconds` / `reclaim_seconds`: mark phase と sweep/copy phase の内訳
 - `max_pause_ms`: 1 回 collect の最大 wall time (latency upper-bound)
+
+stat は per-instance (`c->astro_gc->common.stats`) に保持。 reader は
+`aro_gc_total_bytes(c)` 等 (gc.h の static inline)。
 
 ### Stress mode
 
@@ -172,17 +188,18 @@ BARUBY_GC_STRESS=1 ./baruby_precise --plain bench/binary_trees.ba.rb
 | `-b` | Benchmark mode | Skip bake |
 | `--ccs` | Clear store | Wipe `code_store/` before run |
 
-**動作確認済**: plain mode (全 11 backend で test 3 種 + 12 bench)、
-stress mode (test 3 種)、 AOT mode (一部、 [docs/todo.md](docs/todo.md) 参照)。
+**動作確認済**: plain mode (全 16 backend × 8 T_*.ba.rb × stress/non-stress
+= 256/256 PASS)、 AOT mode (一部、 [docs/todo.md](docs/todo.md) 参照)。
 
 ## Benchmarks
 
 ```sh
-make bench                              # plain mode (default), 全 12 bench
+make bench                              # plain mode (default), 全 bench
 BARUBY_BIN=./baruby_precise ruby bench/run.rb -n 3   # 3-run 中央値
+ruby bench/matrix.rb --backends copy,mark --benches binary_trees,graph_bfs
 ```
 
-[docs/perf.md](docs/perf.md) §2 に 11 backend × 12 bench の table 一覧、
+[docs/perf.md](docs/perf.md) §2 に 16 backend × bench の table 一覧、
 §3 に libgc 比較あり。
 
 ## Architecture
@@ -191,11 +208,15 @@ BARUBY_BIN=./baruby_precise ruby bench/run.rb -n 3   # 3-run 中央値
 foo.ba.rb
   └─ Prism (pm_node_t)
        └─ baruby_parse.c transduce  ──► NODE * (ASTroGen format)
+       └─ walk_bake_sp_offset → lget/lset/call の sp_offset を bake
        └─ OPTIMIZE(ast) → astro_cs_load → dlsym SD_<hash>
-       └─ EVAL(c, ast, fp, sp)  =  (*ast->head.dispatcher)(c, ast, fp, sp)
+       └─ EVAL(c, ast, sp)  =  (*ast->head.dispatcher)(c, ast, sp)
        └─ build_code_store: astro_cs_compile / build / reload
+       └─ aro_gc_fini(c)
 ```
 
-GC: `gc_<name>.c` (build 時に 1 つだけリンク) が `c->env..c->sp` を
-flat scan して root を識別。 各 backend の詳細は
+GC: `gc_<name>.c` + `gc_common.c` (build 時に該当 backend だけリンク) が
+`c->env..c->sp` を flat scan して root を識別。 共通 instance state は
+heap 上の `struct ASTroGC` で、 `c->astro_gc` 経由でアクセス
+(`ASTRO_GC_INSTANCE(c)` macro)。 各 backend の詳細は
 [docs/runtime.md](docs/runtime.md) §5.10。

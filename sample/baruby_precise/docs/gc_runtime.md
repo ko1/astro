@@ -1,7 +1,7 @@
 # baruby_precise GC ランタイム入門
 
 このドキュメントは **GC を知らない人でも読めること** を目標に、
-baruby_precise が用意している 14 種類の garbage collector がそれぞれ
+baruby_precise が用意している 16 種類の garbage collector がそれぞれ
 **どうヒープを管理し、 どんなアルゴリズムで動いているか** を説明する。
 
 技術的により深い実装メモは [runtime.md §5](runtime.md) を参照。 ベンチ
@@ -18,7 +18,7 @@ baruby_precise が用意している 14 種類の garbage collector がそれぞ
    いないもの) を識別して領域を再利用可能にする。 これが GC algorithm の
    本体。
 
-baruby_precise の 14 backend は、 **「alloc 戦略」 × 「collect 戦略」**
+baruby_precise の 16 backend は、 **「alloc 戦略」 × 「collect 戦略」**
 の組合せ違いを比較できる testbed。
 
 ### 用語ミニ辞典
@@ -145,14 +145,42 @@ class 32 に BaArray (24 B + 8 B header = 32 B) がぴったり収まる効果�
 は必ず `aro_gc_wb` を経由する:
 
 ```c
-aro_gc_wb(holder, slot, v);     // *slot = v + WB 処理
+void aro_gc_wb     (CTX *c, void *holder, VALUE *slot, VALUE v);
+void aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
 ```
 
 非 gen backend では `aro_gc_wb` は `*slot = v` に inline 化 (zero cost)。
 
+### 1.5 Per-instance state (iter 62)
+
+GC instance は heap 上の `struct ASTroGC` (= per-backend struct で、
+**first field は必ず `AroGcCommonState common`**) で表される。 各 backend
+の `aro_gc_init(c)` が `calloc` して `c->astro_gc` に bind する。
+process-scope の global 変数は無い (複数 instance を 1 process に
+co-exist させられる設計)。
+
+共通 header (gc.h で定義) は:
+```c
+typedef struct AroGcCommonState {
+    AroGcStats stats;
+    bool       stress;
+    int        time_depth;     /* re-entrant collect の最外 1 回だけ計測 */
+    struct timespec time_t0;
+} AroGcCommonState;
+```
+
+`ASTRO_GC_COMMON(c)` macro が `(AroGcCommonState *)c->astro_gc` で
+type-safe にアクセス。 stat reader (`aro_gc_total_bytes(c)` 等) は
+全部 CTX を引数に取る。
+
+shutdown 時は `aro_gc_fini(c)` が backend ごとの resource (mmap 領域 +
+linked list の large object など) を release + `c->astro_gc` を free。
+main.c の `return 0` 直前で呼ばれる。 multi-instance / leak-sanitizer
+clean run のため (iter 65)。
+
 ## 2. ヒープ管理パターン (alloc 戦略)
 
-14 backend は **4 種類のヒープ管理パターン** のいずれか (またはその組合せ)
+16 backend は **4 種類のヒープ管理パターン** のいずれか (またはその組合せ)
 を採用。
 
 ### パターン A: Bump allocator
@@ -622,23 +650,68 @@ workload は Cheney copy が逆効果。
 収まる** (`mark_gen` は class 64 で 40% waste)。 hash_chain で -29% 改善。
 binary_trees 等は minor sweep O(heap) で不利。
 
+### 4.15 `mark_card_gen` — mark_bitmap_gen + page-level remset
+
+`mark_bitmap_gen` と layout 同一 (16 KiB aligned page、 8 B header、
+per-page 3 bitmap)。 **唯一の差**は remset entry の型:
+
+- mark_bitmap_gen: `GCHeader **` (object-level remset)
+- mark_card_gen: `Page **` (page-level / card-level remset)
+
+WB は holder の Page を `card_dirty[]` に push (dedup あり)。 同 page
+内に複数 dirty old があっても remset は page 1 つ。 Minor は remset
+の Page を walk → 各 page の `dirty_bm` を内部 scan → dirty slot だけ
+scan_outgoing (2 段階 enumeration)。
+
+設計上の利点:
+- remset 上限 = `heap_pages` で **自然 bounded** (16K page = 256 MB heap)。
+  overflow 概念なし
+- card-marking GC (Java/Go/CLR でメジャー) の design idea の再現
+
+数値的には mark_bitmap_gen ±2% (object→page 化の inner-walk と direct-walk
+のコスト均衡)。
+
+### 4.16 `mark_freelist` — region + per-class freelist
+
+slab の page 概念を撤廃し、 **単一 region (64 GiB virtual)** に 9 size
+class の slot を per-class freelist で recycle。
+
+- **Heap 拡張**: region_top bump (page 単位の lazy commit、 物理は touch
+  時のみ)。
+- **GCHeader**: 8 B (kind + size、 mark/old/dirty は header flag)。
+- **Allocation**: per-class freelist (LIFO) を試行、 空なら region_top
+  bump。 大物 (> 4096 B) は別 mmap (large_head linked list)。
+- **Sweep**: region を base→top に sequential walk、 marked → clear、
+  unmarked → kind=KIND_FREE + class freelist に push。 size を slot
+  最大値に round up することで次回 region walk が正しく動く。
+
+vs `gc_mark`: malloc/free 介在なし (region + freelist で完結)、 per-page
+metadata なし (block/page chain なし)。 vs `gc_mark_compact`: compact なし、
+dead bytes は freelist 経由のみ再利用 → 同じ size class でしか戻らない、
+fragmentation あり。
+
+「region + non-compact + freelist」 という design point の demonstration。
+Compact のコスト vs Fragmentation のコストを直接比較できる。
+
 ## 5. 設計空間の俯瞰
 
-14 backend を「nursery 戦略 × tenured 戦略 × compact」 の 3 軸で並べる:
+16 backend を「nursery 戦略 × tenured 戦略 × compact」 の 3 軸で並べる:
 
 | Backend | Nursery 戦略 | Tenured 戦略 | Compact? | Gen? |
 |---|---|---|---|---|
 | `none` | — | malloc (leak) | — | no |
 | `bump` | — | bump (leak) | — | no |
 | `mark` | — | slab + page | no | no |
+| `mark_freelist` | — | region + per-class freelist | no | no |
 | `copy` | — | semispace (2 region) | Cheney | no |
 | `mark_compact` | — | bump (1 region) | Lisp-2 slide | no |
 | `immix` | — | block + line region | no (v1) | no |
 | `mark_bitmap_gen` | — | slab + page bitmap (8B hdr) | no | yes (sticky) |
+| `mark_card_gen` | — | slab + page bitmap + **page-level remset** | no | yes (sticky) |
 | `mark_gen` | slab + young list | slab | no | yes |
 | `mark_gen_inc` | slab + young list | slab | no | yes + inc mark |
 | `copy_gen` | bump | semispace (2 region) | Cheney | yes |
-| `copy_gen_inc` | bump | semispace | Cheney | yes + inc mark |
+| `copy_gen_inc` | bump | semispace | Cheney | placeholder (clone of copy_gen) |
 | `mark_compact_gen` | bump | bump (1 region) | Lisp-2 slide | yes |
 | `mark_bump_gen` | bump | bump (1 region) | no (累積) | yes |
 | `immix_gen` | bump | block + line region | no (v1) | yes |

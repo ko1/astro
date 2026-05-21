@@ -3,7 +3,7 @@
 言語仕様は [spec.md](spec.md)、未対応項目は [todo.md](todo.md)、
 ベンチは [perf.md](perf.md) を参照。
 
-**GC を知らない読者向けの入門と 14 backend の早見表は
+**GC を知らない読者向けの入門と 16 backend の早見表は
 [gc_runtime.md](gc_runtime.md) を見てほしい。** こちらは技術詳細の側。
 
 baruby_precise は **`sample/baruby` (libgc conservative) を copy して
@@ -18,7 +18,7 @@ immix / immix_gen / mark_bitmap_gen / mark_card_gen / mark_freelist) から
 
 ### Write barrier と remembered set
 
-`baruby_gc_wb(holder, slot, v)` / `baruby_gc_wb_bulk(holder, dst, src, n)`
+`aro_gc_wb(holder, slot, v)` / `aro_gc_wb_bulk(holder, dst, src, n)`
 が共通 interface。 非世代別 backend (`none` / `mark` / `copy`) は no-op
 (単に `*slot = v`)。 世代別 backend (`mark_gen` / `mark_gen_inc` /
 `copy_gen` / `copy_gen_inc`) は holder が old なら remset へ push し、
@@ -237,35 +237,90 @@ stress mode を有効にすると:
 これで「root rooting 漏れ」「helper 内の stale C local」 等の moving
 GC 特有のバグが即座に表面化する。 開発中の事実上の必須モード。
 
-### 5.4 Alloc API
+### 5.4 Alloc API (iter 62 framework abstraction)
 
 ```c
-// Zero-init payload. OBJ_ARRAY / OBJ_STRING / PAYLOAD_VAL 用。
-void *baruby_gc_alloc(BarubyGCKind kind, size_t payload_size, VALUE *sp_top);
-// 生バイト用 (PAYLOAD_BYTE)。 memset しない — caller が即座に埋める。
-void *baruby_gc_alloc_byte(size_t payload_size, VALUE *sp_top);
-// 既存 payload の realloc。 kind は元の header から継承。
-void *baruby_gc_realloc_payload(void *p, size_t new_size, VALUE *sp_top);
+/* `c->astro_gc` (= `ASTRO_GC_INSTANCE(c)`) が per-instance state。
+ * `c->sp` が GC scan upper bound (root = c->env .. c->sp)。
+ * caller は alloc を呼ぶ手前で `c->sp = sp;` を更新してから渡す。 */
+void *aro_gc_alloc      (CTX *c, AroGcKind kind, size_t payload_size);
+void *aro_gc_alloc_byte (CTX *c,                 size_t payload_size);
+void *aro_gc_realloc_payload(CTX *c, void *p,    size_t new_size);
+void  aro_gc_collect    (CTX *c);
+void  aro_gc_init       (CTX *c);
+void  aro_gc_fini       (CTX *c);    /* clean shutdown: free heap + instance */
 ```
 
-全 alloc が `sp_top` 引数を取る。 内部で必要なら `gc_collect_internal(sp_top)`
-を呼ぶ。 cooperative — GC は alloc 経由でしか起きない。
+cooperative — GC は alloc 経由でしか起きない。
 
-`baruby_gc_alloc` は VALUE / pointer slot を含む payload なので zero-init
-する (GC が未初期化 ptr を辿らないように)。 `baruby_gc_alloc_byte` は
+`aro_gc_alloc` は VALUE / pointer slot を含む payload なので zero-init
+する (GC が未初期化 ptr を辿らないように)。 `aro_gc_alloc_byte` は
 char[] 専用で、 GC は中身を pointer として読まないので memset を省略。
 String alloc 系のホットパスで memset コスト (3〜4% / total) を削減。
 
-呼び出し側 (NODE_DEF body や C helper) は自分が把握している scratch top
-を `sp_top` に渡す。 例:
+`aro_gc_realloc_payload` の共通実装は `gc_common.c` にあり (iter 64)、
+backend は backend-private な header layout だけを公開する 2 個の accessor
+で対応:
+
+```c
+AroGcKind aro_gc_kind_of(void *payload);  /* GCHeader から kind を取り出す */
+size_t    aro_gc_size_of(void *payload);  /* GCHeader から size を取り出す */
+```
+
+`gc_common.c` の default は parking (`sp_top[0] = old`) + 内部 alloc +
+memcpy で書かれていて、 moving GC でも non-moving GC でも安全に動く。
+gc_none は GCHeader を持たない (libc malloc 直) ので、 自前の
+`aro_gc_realloc_payload` を持ち、 Makefile で gc_common.c の link を skip。
+
+呼び出し側 (NODE_DEF body や C helper) は alloc 直前に `c->sp = sp` し、
+helper には sp 引数を渡さない:
 
 ```c
 NODE_DEF
-node_ary_new(CTX *c, NODE *n, VALUE *sp, /*...*/)
+node_ary_new(... NODE *capa_node)
 {
-    return RESULT_OK(baruby_ary_new(0, sp));   // sp = 自分の top
+    sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, capa_node, sp + 1));
+    c->sp = sp;
+    return RESULT_OK(baruby_ary_new(c, (uint32_t)VAL2INT(sp[0])));
 }
 ```
+
+sample helper 側 (`baruby_ary_new` 等 12 関数) も sp 引数なし。 caller の
+`c->sp` を scan upper bound として読む契約に統一済み (iter 63)。
+
+```c
+VALUE
+baruby_ary_new(CTX *c, uint32_t capa)
+{
+    VALUE *sp = c->sp;        /* 自分の scan upper bound を snapshot */
+    sp[0] = (VALUE)aro_gc_alloc(c, OBJ_ARRAY, sizeof(BaArray));
+    BaArray *a = (BaArray *)sp[0];
+    a->len = 0; a->capa = capa;
+    if (capa) {
+        c->sp = sp + 1;       /* 次 alloc は sp[0] を含む */
+        VALUE *items = (VALUE *)aro_gc_alloc(c, KIND_PAYLOAD_VAL, sizeof(VALUE) * capa);
+        a = (BaArray *)sp[0]; /* moving GC で forward された後の addr */
+        aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)items);
+    } else { a->items = NULL; }
+    return sp[0];
+}
+```
+
+### 5.4.1 共通インスタンス state (AroGcCommonState)
+
+per-backend の `ASTroGC` struct は **first field を必ず
+`AroGcCommonState common` にする**。 `ASTRO_GC_COMMON(c)` macro が
+`(AroGcCommonState *)((c)->astro_gc)` で type-safe にアクセスする。
+共通フィールドは:
+
+- `AroGcStats stats` — alloc_bytes / heap_bytes / gc_count / pause time 等
+- `bool stress` — `BARUBY_GC_STRESS=1` で true
+- `int time_depth`、 `struct timespec time_t0` — re-entrant collect の最外
+  だけ計測するための depth guard
+
+stat reader (`aro_gc_total_bytes(c)` 等) は全部 `c` を引数に取る static
+inline で、 ASTRO_GC_COMMON(c)->stats から読む。 global variable は無い
+(複数 instance を 1 process に共存可能な設計)。
 
 ### 5.5 Cheney copy collector
 
@@ -305,20 +360,22 @@ node_call_1(... NODE *a0)
 semi-space に切り替えた結果、 mark&sweep 時代には潜伏していたバグが
 顕在化した。 NODE_DEF / C helper を書くときの **絶対ルール**:
 
-**(A) sp[] spill** — heap VALUE を子ノード eval を跨いで保持する場合、
-C local ではなく sp[] slot に置く。 子の eval で GC が走ると in-place
+**(A) sp[] spill** — heap VALUE を **GC するかもしれない処理** を跨いで
+保持する場合、 C local ではなく sp[] slot に置く。 GC が走ると in-place
 forward で sp[] は更新されるが、 C local は更新されない。
 
 ```c
 // NG: rhs 評価で GC が走ると l が stale → SEGV
 VALUE l = UNWRAP(EVAL_ARG(c, lhs));
 VALUE r = UNWRAP(EVAL_ARG(c, rhs));
-baruby_str_concat(l, r, sp);
+c->sp = sp;
+baruby_str_concat(c, &l_local, &r_local);  // l_local が stale
 
 // OK
 sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, lhs, sp + 2));
 sp[1] = UNWRAP(BARUBY_EVAL_ARG(c, rhs, sp + 2));
-baruby_str_concat(&sp[0], &sp[1], sp + 2);
+c->sp = sp;                  /* alloc / helper を呼ぶ手前で c->sp 更新 */
+baruby_str_concat(c, &sp[0], &sp[1]);
 ```
 
 **(B) helper は VALUE* で受ける** — 内部で alloc する helper は VALUE を
@@ -327,29 +384,34 @@ baruby_str_concat(&sp[0], &sp[1], sp + 2);
 
 ```c
 // NG: 内部 alloc 後 av が stale → VAL2STR(av) で SEGV
-VALUE baruby_str_concat(VALUE av, VALUE bv, VALUE *sp_top) {
+VALUE baruby_str_concat(CTX *c, VALUE av, VALUE bv) {
     const BaString *a = VAL2STR(av);   // pre-GC ptr
-    ... baruby_gc_alloc(...) ...        // ここで GC 起こりうる
+    ... aro_gc_alloc(c, ...) ...        // ここで GC 起こりうる
     a = VAL2STR(av);                    // av は C local のまま stale
 }
 
 // OK
-VALUE baruby_str_concat(VALUE *av_ref, VALUE *bv_ref, VALUE *sp_top) {
+VALUE baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref) {
+    VALUE *sp = c->sp;
     uint32_t a_len = VAL2STR(*av_ref)->len;   // size だけ pre-alloc で読む
-    ... baruby_gc_alloc(...) ...               // GC で *av_ref は in-place forward
+    ... aro_gc_alloc(c, ...) ...              // GC で *av_ref は in-place forward
     const BaString *a = VAL2STR(*av_ref);     // post-GC ptr
 }
 ```
 
+iter 63 で sp 引数自体は削除済み (上記)。 sample helper は `VALUE *sp =
+c->sp;` を entry で snapshot し、 内部 alloc の前に `c->sp` を bump
+する形に統一。
+
 この pattern を `baruby_ary_push` / `_plus` / `_repeat`、 `baruby_str_concat`
 / `_repeat` / `_slice` / `_append` 等に適用。 stress mode で検証済み。
 
-`baruby_str_new(const char *bytes, ...)` だけは ref pattern を採らず
-**source bytes が呼び出し中ずっと valid**を caller に要求 (rodata /
-C スタック / GC-rooted)。 これは hot path で literal string が圧倒的に
-多いので、 ref pattern の strict 適用より直接 memcpy が速い。 heap
-interior が source の場合は `baruby_str_slice(VALUE *src_ref, offset,
-len, sp_top)` を使う。
+`baruby_str_new(CTX *c, const char *bytes, uint32_t len)` だけは ref
+pattern を採らず **source bytes が呼び出し中ずっと valid**を caller に
+要求 (rodata / C スタック / GC-rooted)。 これは hot path で literal
+string が圧倒的に多いので、 ref pattern の strict 適用より直接 memcpy
+が速い。 heap interior が source の場合は
+`baruby_str_slice(c, VALUE *src_ref, offset, len)` を使う。
 
 ### 5.8 ASTRO_ASSERT / ASTRO_DEBUG
 
@@ -392,10 +454,13 @@ __GC_STATS__ backend=<name> alloc_bytes=<累計> heap_bytes=<live> \
 
 ### 5.10 全 14 GC backend カタログ
 
-`make GC=<name>` で 14 種類の backend を切替えてビルド可能。 切替えは
+`make GC=<name>` で 16 種類の backend を切替えてビルド可能。 切替えは
 build time only (`-DBARUBY_GC=<n>`)。 default は `copy`。 共通インタフェース
 (`gc.h`) は `aro_gc_init / alloc / alloc_byte / realloc_payload /
-collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装する。
+collect / wb / wb_bulk / fini` の 8 関数 + `aro_gc_kind_of` /
+`aro_gc_size_of` の per-backend accessor 2 個。 `aro_gc_realloc_payload`
+の共通実装は `gc_common.c` にあり、 backend は header accessor だけ
+公開する (iter 64)。
 
 ベンチ性能比較は [perf.md](perf.md) §2 を参照。
 
@@ -404,7 +469,7 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
 - **Layout**: libc malloc を直叩き、 leak 専用 (`free` を呼ばない)。
 - **Allocation**: malloc(GCHeader + payload)。 オブジェクト毎に分散。
 - **GC trigger**: 無し。
-- **Write barrier**: 不要 (no GC)。 `baruby_gc_wb` は `*slot = v` に inline 化。
+- **Write barrier**: 不要 (no GC)。 `aro_gc_wb` は `*slot = v` に inline 化。
 - **特徴**: ロookup heavy 系で per-object malloc の fragmentation が
   cache miss を生む floor が見える。 binary_trees が 0.62 s。
 - **用途**: GC を完全に抜いた状態でも sp[] rooting / WB ABI / alloc API
@@ -437,7 +502,7 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
 - **Minor**: roots + 明示 remset (dirty old) から trace、 mark された
   young を old list に promote (unlink → relink)、 unmarked は free。
 - **Major**: 全 list を full mark+sweep。
-- **Write barrier**: 必要。 `baruby_gc_wb` が old object に書込み時
+- **Write barrier**: 必要。 `aro_gc_wb` が old object に書込み時
   `dirty=true` + remset push。
 - **特徴**: linked-list throughout、 nursery も per-obj malloc なので
   alloc が遅い。 binary_trees 1.28 s、 string_concat 1.47 s。
@@ -488,7 +553,7 @@ collect / wb / wb_bulk` の 7 関数で、 各 backend がそれぞれ実装す�
   Cheney 形式で copy → forward。 Cheney scan loop で chain。
 - **Major**: tenured semispace を Cheney swap、 nursery も巻き込んで
   全体 reorganize。
-- **Write barrier**: 必要。 `baruby_gc_wb` が tenured object に書込み時
+- **Write barrier**: 必要。 `aro_gc_wb` が tenured object に書込み時
   dirty + remset push。 explicit remset で minor scan O(|dirty|)。
 - **特徴**: short-lived workload が nursery 完結して大勝。
   string_concat 0.54 s、 fib_pair 0.88 s、 cons_list 0.77 s。
@@ -676,6 +741,25 @@ matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
 - **iter 38**: remset overflow 時 abort 撤去、 per-page `dirty_bm` を
   直接 scan する heap-walk fallback を導入 (overhead 0)。
 
+#### 15. `mark_card_gen` — mark_bitmap_gen + page-level remset
+
+- **Layout**: `mark_bitmap_gen` と同一 (slab/page allocator、 16 KiB page、
+  8 B GCHeader、 per-page 3 bitmap)。 差は **remset entry が `Page *`** に
+  なっている点 (iter 36 user 提案の bounded design)。
+- **WB**: holder の Page を `card_dirty[]` に push (deduplication あり)。
+  同 page 内に複数 dirty old があっても remset には page 1 つだけ。
+- **Minor**: remset (Page list) を walk、 各 page の `dirty_bm` を内部 scan
+  して dirty slot だけ `scan_outgoing`。 2 段階 enumeration。
+- **特徴**:
+  - remset 上限 = `heap_pages` で自然 bounded (16K page = 256 MB heap)。
+    オーバーフロー概念がない
+  - card-marking GC (Java/Go/CLR でメジャー) の design idea を baruby
+    上で再現したもの
+  - 数値的には `mark_bitmap_gen` ±2% 内 (object→page 化の inner-walk と
+    direct-walk のコスト均衡)。 fundamental win は「remset を heap_pages に
+    bound する」 設計上の安全性
+- **iter 38**: heap-walk fallback は不要 (overflow が原理的に起きない)。
+
 #### 16. `mark_freelist` — region + per-class freelist (mark/sweep, no compact)
 
 - **Layout**: 単一の bump region (64 GiB virtual)。 ヘッダは 8 B (`mark` /
@@ -697,25 +781,6 @@ matrix runner / perf table から除外。 honesty note は `gc_copy_gen_inc.c`
   - Sweep が O(|region|) (全 slot を見る) で gc_mark の O(|live|) より
     重い。 binary_trees 等で mark_compact より遅め
 - **iter 41 で追加**。 詳細は [done.md](done.md) iter (41)。
-
-#### 15. `mark_card_gen` — mark_bitmap_gen + page-level remset
-
-- **Layout**: `mark_bitmap_gen` と同一 (slab/page allocator、 16 KiB page、
-  8 B GCHeader、 per-page 3 bitmap)。 差は **remset entry が `Page *`** に
-  なっている点 (iter 36 user 提案の bounded design)。
-- **WB**: holder の Page を `card_dirty[]` に push (deduplication あり)。
-  同 page 内に複数 dirty old があっても remset には page 1 つだけ。
-- **Minor**: remset (Page list) を walk、 各 page の `dirty_bm` を内部 scan
-  して dirty slot だけ `scan_outgoing`。 2 段階 enumeration。
-- **特徴**:
-  - remset 上限 = `heap_pages` で自然 bounded (16K page = 256 MB heap)。
-    オーバーフロー概念がない
-  - card-marking GC (Java/Go/CLR でメジャー) の design idea を baruby
-    上で再現したもの
-  - 数値的には `mark_bitmap_gen` ±2% 内 (object→page 化の inner-walk と
-    direct-walk のコスト均衡)。 fundamental win は「remset を heap_pages に
-    bound する」 設計上の安全性
-- **iter 38**: heap-walk fallback は不要 (overflow が原理的に起きない)。
 
 ### 5.11 設計空間の俯瞰
 

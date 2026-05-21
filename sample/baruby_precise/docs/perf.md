@@ -68,7 +68,7 @@ flags を揃えた。 ベンチスクリプト (`bench/*.ba.rb`) は両者で共
 
 ⚠ **「libgc との比較」 caveat**: いま測っているのは「collector のみの
 差」 ではなく **「runtime + rooting + collector の合計差」**。 baruby_precise
-は precise rooting (sp_top scan) と moving GC の組合せ、 baruby は
+は precise rooting (c->env..c->sp の flat scan) と moving GC の組合せ、 baruby は
 conservative scanning。 同じ言語 / 同じベンチ / 同じ build flags にした
 ので **環境としては公平**だが、 数値の差を「GC algorithm の差」 と読み
 切るのは過剰解釈。 collector-only 比較が欲しいなら同じ runtime に
