@@ -28,8 +28,10 @@ minor GC は remset 走査だけで old → young pointer を捕捉する。 O(|
 
 主な追加・変更点 (vs baruby):
 
-1. **共通引数を 4 つに拡張**: `(CTX *c, NODE *n, VALUE *fp, VALUE *sp)`
-   — fp は function frame base (既存)、 sp は scratch top (新)
+1. **共通引数を 3 つに統一** (iter 61): `(CTX *c, NODE *n, VALUE *sp)`
+   — sp が scratch top + frame base を兼ねる。 旧 fp 引数は parse-time
+   walker (`baruby_parse.c::walk_bake_sp_offset`) が `sp_offset` /
+   `callee_fp_offset` operand に焼くことで消失。
 2. **precise semi-space (Cheney) GC** (`gc.c` / `gc.h`) — libgc の代わり
 3. **sp[] root spill** — NODE_DEF body が VALUE root を `sp[i]` に書き、
    `BARUBY_EVAL_ARG(c, n, sp + N)` で child に sp を進めて渡す
@@ -51,14 +53,20 @@ minor GC は remset 走査だけで old → young pointer を捕捉する。 O(|
    NODE 木  (head + operand 構造体)
        │
        ▼
+   callsite_resolve  (forward-ref 解決)
+       │
+       ▼
+   walk_bake_sp_offset  (lget/lset/call の sp 相対 offset を bake)
+       │
+       ▼
    OPTIMIZE() — code_store/all.so から SD/PGSD があれば bind
        │
        ▼
-   EVAL(c, ast, fp, sp)  →  RESULT (= VALUE + state bit)
+   EVAL(c, ast, sp)  →  RESULT (= VALUE + state bit)
 ```
 
-`baruby_gen.rb` は astrogen を継承して `common_param_count=4` だけ
-override。 ASTroGen 自体は無修正。
+`baruby_gen.rb` は astrogen を継承して `common_param_count=3` +
+`child_dispatch_args = "c, field, sp"` を override。 ASTroGen 本体は無修正。
 
 ## 2. 値表現 (LSB tag)
 
@@ -185,16 +193,17 @@ libgc を捨て、 `gc.c` / `gc.h` に precise な copying GC を実装
 
 ### 5.1 共有 VALUE stack
 
-`main.c::create_context` で `c->env` に 100,000 slot 分の VALUE 配列を
-`calloc` で確保 (zero-init)。 全 live root はこの上に居る:
+`main.c::create_context` で `c->env` に 8 GiB virtual の VALUE 配列を
+`mmap(MAP_NORESERVE)` で確保 (lazy-paged, untouched は zero)。 全 live root
+はこの上に居る:
 
 - `c->env` = stack 最下端 (mark phase の起点)
-- `c->fp`  = 現在の function frame base
-- `c->sp`  = 現在の scratch top (= scan range の上端)
+- `c->sp`  = 現在の scratch top (= scan range の上端、 GC alloc が update)
 
-各 NODE_DEF 共通引数の `fp` / `sp` は `c->fp` / `c->sp` の register
-コピー (毎 dispatch で渡される)。 `c->sp` は alloc API が内部で
-update する (§5.3)。
+iter 61 で **`c->fp` フィールドは廃止**。 dispatcher の sp は parse-time
+walker が bake した sp_offset で sp 相対に local / 引数 / callee frame を
+addressing する (詳細は §3.x: dispatcher convention)。 GC scan 範囲は
+`c->env..c->sp` で従来通り (fp の有無に依存しない、 sp が常に top)。
 
 ### 5.2 半空間レイアウト
 
@@ -252,7 +261,7 @@ String alloc 系のホットパスで memset コスト (3〜4% / total) を削�
 
 ```c
 NODE_DEF
-node_ary_new(CTX *c, NODE *n, VALUE *fp, VALUE *sp, /*...*/)
+node_ary_new(CTX *c, NODE *n, VALUE *sp, /*...*/)
 {
     return RESULT_OK(baruby_ary_new(0, sp));   // sp = 自分の top
 }
@@ -284,12 +293,12 @@ node_call_1(... NODE *a0)
     /* sp[0..locals_cnt-1] が callee の locals 領域 (root) */
     for (uint32_t i = 0; i < locals_cnt; i++) sp[i] = 0;
     sp[0] = UNWRAP(BARUBY_EVAL_ARG(c, a0, sp + locals_cnt));
-    return RESULT_OK(EVAL(c, cc->body, sp, sp + locals_cnt).value);
+    return RESULT_OK(EVAL(c, cc->body, sp + locals_cnt).value);
 }
 ```
 
 `#define BARUBY_EVAL_ARG(c, n_node, new_sp) \
-    ((*n_node##_dispatcher)(c, n_node, fp, new_sp))` (node.h)
+    ((*n_node##_dispatcher)(c, n_node, new_sp))` (node.h、 iter 61 で fp 削除)
 
 ### 5.7 Moving GC で必須の二大パターン
 
