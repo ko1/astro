@@ -47,22 +47,36 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
 #define REGION_BYTES ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)    (((n) + 7u) & ~(size_t)7u)
 
-static char *region_base = NULL;
-static char *region_top  = NULL;
-static char *region_end  = NULL;
-static CTX  *gc_ctx      = NULL;
-static VALUE *sp_high_water = NULL;
-
 /* Adaptive GC trigger: max(16 MiB, 2 × live_post_compact).  Previously
  * region-fill basis only (= effectively never with 64 GiB virtual). */
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define GC_THRESHOLD_FACTOR  2
-static size_t bytes_since_gc = 0;
-static size_t gc_threshold   = GC_THRESHOLD_MIN;
 
-static GCHeader **gray_buf  = NULL;
-static size_t     gray_cnt  = 0;
-static size_t     gray_capa = 0;
+// ----------------------------------------------------------------------------
+// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ----------------------------------------------------------------------------
+typedef struct AstroGc {
+    char *region_base, *region_top, *region_end;
+    CTX  *ctx;
+    VALUE *sp_high_water;
+    size_t bytes_since_gc;
+    size_t gc_threshold;
+    struct GCHeader **gray_buf;
+    size_t     gray_cnt;
+    size_t     gray_capa;
+} AstroGc;
+
+static AstroGc g_astro_gc;
+#define region_base     (g_astro_gc.region_base)
+#define region_top      (g_astro_gc.region_top)
+#define region_end      (g_astro_gc.region_end)
+#define gc_ctx          (g_astro_gc.ctx)
+#define sp_high_water   (g_astro_gc.sp_high_water)
+#define bytes_since_gc  (g_astro_gc.bytes_since_gc)
+#define gc_threshold    (g_astro_gc.gc_threshold)
+#define gray_buf        (g_astro_gc.gray_buf)
+#define gray_cnt        (g_astro_gc.gray_cnt)
+#define gray_capa       (g_astro_gc.gray_capa)
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
@@ -71,7 +85,12 @@ const char *aro_gc_backend_name = "mark_compact";
 void
 aro_gc_init(CTX *c)
 {
+    AstroGc *gc = &g_astro_gc;
+    memset(gc, 0, sizeof(*gc));
+    c->astro_gc = gc;
     gc_ctx = c;
+    gc_threshold = GC_THRESHOLD_MIN;
+
     region_base = (char *)mmap(NULL, REGION_BYTES, PROT_READ|PROT_WRITE,
                                MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (region_base == MAP_FAILED) { perror("mmap"); abort(); }

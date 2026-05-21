@@ -90,16 +90,56 @@ typedef struct LargeObj {
     size_t           map_bytes;
 } LargeObj;
 
-static Page     *page_head[NUM_SIZE_CLASSES];
-static FreeSlot *freelist[NUM_SIZE_CLASSES];
-static LargeObj *large_head = NULL;
+#define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
 
-/* young set: contiguous array of pointers (was per-header young_next list).
- * Cache-friendly during minor sweep + lets us shrink the header by 8 B. */
-static GCHeader **young_objs = NULL;
-static size_t    young_objs_cnt  = 0;
-static size_t    young_objs_capa = 0;
-static size_t   young_bytes = 0;
+// ----------------------------------------------------------------------------
+// AstroGc: process-scope GC instance.  See docs/gc_design.md §3.
+// ----------------------------------------------------------------------------
+typedef struct AstroGc {
+    Page     *page_head[NUM_SIZE_CLASSES];
+    FreeSlot *freelist[NUM_SIZE_CLASSES];
+    LargeObj *large_head;
+    /* young set: contiguous array of pointers (was per-header young_next list). */
+    struct GCHeader **young_objs;
+    size_t            young_objs_cnt;
+    size_t            young_objs_capa;
+    size_t young_bytes;
+    size_t old_bytes;
+    size_t young_threshold;
+    size_t old_alloc_since_major;
+    size_t old_major_threshold;
+    CTX  *ctx;
+    bool  in_minor;
+    struct GCHeader **gray_buf;
+    size_t            gray_cnt;
+    size_t            gray_capa;
+    struct GCHeader **remset_buf;
+    size_t            remset_cnt;
+    size_t            remset_capa;
+    bool              remset_overflow;
+} AstroGc;
+
+static AstroGc g_astro_gc;
+#define page_head             (g_astro_gc.page_head)
+#define freelist              (g_astro_gc.freelist)
+#define large_head            (g_astro_gc.large_head)
+#define young_objs            (g_astro_gc.young_objs)
+#define young_objs_cnt        (g_astro_gc.young_objs_cnt)
+#define young_objs_capa       (g_astro_gc.young_objs_capa)
+#define young_bytes           (g_astro_gc.young_bytes)
+#define old_bytes             (g_astro_gc.old_bytes)
+#define young_threshold       (g_astro_gc.young_threshold)
+#define old_alloc_since_major (g_astro_gc.old_alloc_since_major)
+#define old_major_threshold   (g_astro_gc.old_major_threshold)
+#define gc_ctx                (g_astro_gc.ctx)
+#define in_minor              (g_astro_gc.in_minor)
+#define gray_buf              (g_astro_gc.gray_buf)
+#define gray_cnt              (g_astro_gc.gray_cnt)
+#define gray_capa             (g_astro_gc.gray_capa)
+#define remset_buf            (g_astro_gc.remset_buf)
+#define remset_cnt            (g_astro_gc.remset_cnt)
+#define remset_capa           (g_astro_gc.remset_capa)
+#define remset_overflow       (g_astro_gc.remset_overflow)
 
 static inline void
 young_push(GCHeader *h)
@@ -111,22 +151,6 @@ young_push(GCHeader *h)
     }
     young_objs[young_objs_cnt++] = h;
 }
-static size_t   old_bytes   = 0;
-static size_t   young_threshold     = 16u * 1024u * 1024u;
-static size_t   old_alloc_since_major = 0;
-#define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
-static size_t   old_major_threshold = MAJOR_THRESHOLD_MIN;
-
-static CTX     *gc_ctx = NULL;
-static bool     in_minor = false;
-
-static GCHeader **gray_buf  = NULL;
-static size_t     gray_cnt  = 0;
-static size_t     gray_capa = 0;
-
-static GCHeader **remset_buf  = NULL;
-static size_t     remset_cnt  = 0;
-static size_t     remset_capa = 0;
 
 AroGcStats aro_gc_stats = {0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0};
 int aro_gc_stress = 0;
@@ -135,7 +159,12 @@ const char *aro_gc_backend_name = "mark_gen";
 void
 aro_gc_init(CTX *c)
 {
+    AstroGc *gc = &g_astro_gc;
+    memset(gc, 0, sizeof(*gc));
+    c->astro_gc = gc;
     gc_ctx = c;
+    young_threshold     = 16u * 1024u * 1024u;
+    old_major_threshold = MAJOR_THRESHOLD_MIN;
     if (getenv("BARUBY_GC_STRESS")) {
         aro_gc_stress = 1;
         young_threshold = 0;
@@ -348,7 +377,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top)
  * the overflow flag and heap-walks all pages for dirty olds (O(heap),
  * slower but bounded — never silently drops dirty entries). */
 #define MAX_REMSET_ENTRIES (1u << 17)  /* 128 K entries = 1 MiB ptr array */
-static bool remset_overflow = false;
+/* remset_overflow storage moved to AstroGc.remset_overflow (aliased above). */
 
 static void
 remset_push(GCHeader *h)
