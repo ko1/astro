@@ -24,8 +24,8 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       from 領域に残り続けて cache pressure (semispace で moving しても
       from 自体は GC まで物理メモリ消費)。
       設計: 同一 backend 内で 2 経路に分岐:
-      - 閾値 (= 例えば 4KB or 16KB) 未満 → 従来通り from 領域に **bump alloc
-        (moving)**
+      - 閾値 (= **4KB**、 mark の size_class_bytes 最大値と整合) 未満 →
+        従来通り from 領域に **bump alloc (moving)**
       - 閾値以上 → **malloc で別領域 (non-moving)** + linked list 追加。
         GC mark で live を辿って large list 内のオブジェクトをマーク、
         sweep で unmarked を **free(p)** で即解放。
@@ -37,6 +37,13 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       されるので影響軽微 (copy_gen は既に 0.38s で sieve 速い)。
       期待効果: sieve / hash_chain / 大型 BaArray を使う bench で copy 系
       非 gen が gen 並みの cache profile に近づく。
+
+      **resize 経路**: `aro_gc_realloc_payload` で large 同士の resize 要求
+      は **realloc(p, new_size)** で済ます。 glibc は mmap-backed chunk
+      (= ≥128KB) を `mremap` で in-place 拡張するので、 sieve のような
+      capacity-doubling パターンでも仮想アドレス保持 + 物理ページ追加だけで
+      済み memcpy 不要。 small → large 遷移 (= 閾値を跨ぐ最初の grow) は
+      従来通り別 alloc + memcpy + 旧 bump 領域を放置 (= GC 時 dead 判定)。
 
 ## 直近 (iter 59 状態)
 
