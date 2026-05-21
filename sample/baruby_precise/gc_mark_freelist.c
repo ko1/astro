@@ -380,3 +380,20 @@ aro_gc_collect(CTX *c)
     gc_collect_internal(c, sp_top);
 }
 
+void
+aro_gc_fini(CTX *c)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (!gc) return;
+    if (gc->region_base) munmap(gc->region_base, REGION_BYTES);
+    LargeObj *lo = gc->large_head;
+    while (lo) {
+        LargeObj *next = lo->next;
+        munmap(lo, lo->map_bytes);
+        lo = next;
+    }
+    free(gc->gray_buf);
+    free(gc);
+    c->astro_gc = NULL;
+}
+

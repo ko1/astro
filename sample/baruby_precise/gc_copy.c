@@ -391,4 +391,20 @@ aro_gc_collect(CTX *c)
     gc_collect_internal(c);
 }
 
+void
+aro_gc_fini(CTX *c)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (!gc) return;
+    if (ASTRO_GC_COMMON(c)->stress) {
+        /* stress mode: only the current active region is mapped. */
+        if (gc->active_base) munmap(gc->active_base, gc->region_bytes);
+    } else {
+        if (gc->space0) munmap(gc->space0, gc->region_bytes);
+        if (gc->space1) munmap(gc->space1, gc->region_bytes);
+    }
+    free(gc);
+    c->astro_gc = NULL;
+}
+
 /* Stat readers are static inline in gc.h (read ASTRO_GC_COMMON(c)->stats directly). */

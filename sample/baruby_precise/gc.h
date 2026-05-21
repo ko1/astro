@@ -149,6 +149,17 @@ extern const char *aro_gc_backend_name;
 
 void  aro_gc_init(CTX *c);
 
+/* aro_gc_fini — tear down the per-instance ASTroGC: release backend
+ * resources (mmap'd regions, free-lists, mark bitmaps, etc.) and free
+ * the heap-allocated ASTroGC struct itself.  Sets `c->astro_gc` to
+ * NULL.  Safe to call on an already-finalized instance (no-op).
+ *
+ * On process exit the OS reclaims everything anyway, but a symmetric
+ * fini matters for: (a) multi-instance use (creating + destroying
+ * multiple GCs in one process), (b) valgrind / leak-sanitizer clean
+ * runs, (c) future tests that re-init mid-process. */
+void  aro_gc_fini(CTX *c);
+
 /* aro_gc_alloc — allocate `payload_size` bytes of a pointer-scanned
  * object (KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL).
  *

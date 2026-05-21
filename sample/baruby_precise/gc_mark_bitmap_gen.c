@@ -763,3 +763,28 @@ aro_gc_collect(CTX *c)
     gc_collect_major(c, sp_top);
 }
 
+
+void
+aro_gc_fini(CTX *c)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (!gc) return;
+    for (int cls = 0; cls < NUM_SIZE_CLASSES; cls++) {
+        Page *p = page_head[cls];
+        while (p) {
+            Page *next = p->next;
+            munmap(p, PAGE_SIZE);
+            p = next;
+        }
+    }
+    LargeObj *lo = large_head;
+    while (lo) {
+        LargeObj *next = lo->next;
+        munmap(lo, lo->map_bytes);
+        lo = next;
+    }
+    free(gray_buf);
+    free(remset_buf);
+    free(gc);
+    c->astro_gc = NULL;
+}

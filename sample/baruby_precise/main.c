@@ -402,5 +402,6 @@ main(int argc, char *argv[])
         build_code_store_pgsd(ast);
     }
 
+    aro_gc_fini(c);
     return 0;
 }

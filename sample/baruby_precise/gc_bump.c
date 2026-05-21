@@ -126,3 +126,15 @@ aro_gc_collect(CTX *c)
     // no-op
 }
 
+void
+aro_gc_fini(CTX *c)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (!gc) return;
+    if (gc->region_base && gc->region_base != MAP_FAILED) {
+        munmap(gc->region_base, REGION_BYTES);
+    }
+    free(gc);
+    c->astro_gc = NULL;
+}
+

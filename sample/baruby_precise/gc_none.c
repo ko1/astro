@@ -72,3 +72,14 @@ aro_gc_collect(CTX *c)
     (void)c;
     // no-op
 }
+
+/* gc_none never reclaims; on fini we deliberately do NOT free the
+ * objects we handed out — they're leaked-by-design (= libc-malloc
+ * lifetime).  But the ASTroGC instance itself we release. */
+void
+aro_gc_fini(CTX *c)
+{
+    if (!c->astro_gc) return;
+    free(c->astro_gc);
+    c->astro_gc = NULL;
+}

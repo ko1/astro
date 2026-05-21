@@ -206,6 +206,17 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
 - [ ] **`value.def` を baruby_precise で試す** — `docs/gc_design.md` §1.7
       の任意 DSL。 marker / allocator の自動生成が abruby `node_mark.c`
       流儀でできるか
+- [ ] **sp mutation で `c->sp` を常時同期** — 現状の contract は
+      「can-GC helper 呼ぶ前に `c->sp = sp;` を caller が手書き」。
+      1 node あたり最大 1 行で済むが、 新規 NODE 追加時の書き忘れが
+      root 取りこぼし silent bug 化する。 保守的に SP_PUSH / SP_POP /
+      SP_ADD / SP_SUB macro 経由で sp mutation 時に `c->sp` を
+      同期すれば、 helper 呼び出し側で意識不要になる。 cost: sp 動かす
+      毎に CTX への store 1 回追加。 sp mutation は node frame setup
+      でしか起きないので hot inner loop には影響薄い見込み。
+      実装は context.h に macro 追加 → node_eval.c / node.def の sp
+      mutation を macro 化 → `c->sp = sp;` を helper 呼出点から除去
+      → 256/256 PASS + perf bench 確認。
 
 ## stress mode の resource limit
 

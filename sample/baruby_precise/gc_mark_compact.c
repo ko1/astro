@@ -417,3 +417,14 @@ aro_gc_collect(CTX *c)
     gc_collect_internal(c, sp_top);
 }
 
+void
+aro_gc_fini(CTX *c)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (!gc) return;
+    if (region_base) munmap(region_base, REGION_BYTES);
+    free(gray_buf);
+    free(gc);
+    c->astro_gc = NULL;
+}
+

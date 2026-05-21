@@ -664,3 +664,17 @@ aro_gc_collect(CTX *c)
     major_gc(c, sp_top);
 }
 
+void
+aro_gc_fini(CTX *c)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (!gc) return;
+    if (nursery_base) munmap(nursery_base, NURSERY_BYTES);
+    if (tenured_base) munmap(tenured_base, TENURED_BYTES);
+    free(scan_buf);
+    free(gray_buf);
+    free(remset_buf);
+    free(gc);
+    c->astro_gc = NULL;
+}
+

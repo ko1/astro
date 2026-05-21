@@ -699,3 +699,23 @@ aro_gc_collect(CTX *c)
     major_gc(c, sp_top);
 }
 
+
+void
+aro_gc_fini(CTX *c)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (!gc) return;
+    if (arena_base)   munmap(arena_base, ARENA_BYTES);
+    if (blocks)       munmap(blocks, N_BLOCKS * sizeof(BlockMeta));
+    if (nursery_base) munmap(nursery_base, NURSERY_BYTES);
+    LargeObj *lo = large_head;
+    while (lo) {
+        LargeObj *next = lo->next;
+        munmap(lo, lo->map_bytes);
+        lo = next;
+    }
+    free(gray_buf);
+    free(remset_buf);
+    free(gc);
+    c->astro_gc = NULL;
+}
