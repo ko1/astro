@@ -9,28 +9,56 @@
 
 #define TRANSDUCE(n) transduce(tc, (pm_node_t *)(n), indent+1)
 
+/* iter 72: chain-bumping wrapper for @child-parent ALLOC sites.  Each
+ * @child operand at runtime is evaluated AFTER the dispatcher advances
+ * sp by parent.slot_count, so descendants see chain = parent_chain +
+ * slot_count.  Wrap the whole ALLOC expression so chain is bumped
+ * during the TRANSDUCE() arg evaluations and restored before/after.
+ *
+ * Usage:
+ *   return WITH_CHILD_CHAIN(kind_node_add,
+ *       ALLOC_node_add(TRANSDUCE(lhs), TRANSDUCE(rhs)));
+ *
+ * GCC statement-expr: lvalue _saved captures pre-bump chain, BODY runs
+ * with chain bumped, _r captures result, chain restored, _r returned.
+ * For nodes with slot_count = 0 (seq, if, while, return, lset, etc.),
+ * NO wrap is needed — children see parent's chain unchanged. */
+#define WITH_CHILD_CHAIN(kind_const, BODY) ({ \
+    int32_t _saved = tc->chain_sum; \
+    tc->chain_sum = _saved + (int32_t)((kind_const).slot_count); \
+    NODE *_r = (BODY); \
+    tc->chain_sum = _saved; \
+    _r; \
+})
+
 static const char *pm_node_type_name(pm_node_type_t type);
 
 /* ---------------------------------------------------------------------
- * iter 61: fp elimination walker.
+ * iter 72: parse-time sp_offset / callee_fp_offset bake.
  *
- * After parsing + callsite_resolve, every function body (toplevel +
- * each entry in code_repo) is walked once.  For each NODE, we compute
- * `chain_sum` = accumulated slot_count from the body root to this
- * NODE.  At runtime, the NODE's dispatcher sees sp = body_sp_entry +
- * chain_sum.  Bake into operands:
+ * Previously (iter 61) sp_offset / callee_fp_offset were baked by a
+ * post-parse walker (~170 lines of hand-written per-kind structural
+ * recursion).  iter 72 eliminates the walker: chain_sum is threaded
+ * through transduce via the WITH_CHILD_CHAIN macro (= bumped at each
+ * @child-parent ALLOC site), and the partial bake `index - chain` is
+ * stored at ALLOC time inside bake_lget / bake_lset / bake_call /
+ * bake_call_static.  Each bake-target NODE is appended to its frame's
+ * `bake_list`; at pop_frame the final locals_cnt (= max_cnt) is
+ * subtracted from every operand in one flat pass — no structural
+ * recursion needed.
  *
- *   - node_lget / node_lset:  sp_offset = index - chain_sum - locals_cnt
- *                             (resolves to fp[index] at runtime).
+ * Bake formula (unchanged):
+ *   - node_lget / node_lset:  sp_offset = index - chain - locals_cnt
  *   - node_call / node_call2 / node_call_static:
- *                             callee_fp_offset = arg_index - chain_sum
- *                             - locals_cnt (so callee_fp = sp +
- *                             callee_fp_offset == old fp + arg_index).
+ *                             callee_fp_offset = arg_index - chain - locals_cnt
  *
- * `locals_cnt` parameter = ENCLOSING body's max_cnt (= body_locals).
- * Recursion adjusts chain_sum by each visited node's slot_count.
- * `node_call_N` args see chain += callee_locals_cnt because at runtime
- * the arg evaluator is invoked with sp + callee_locals_cnt.
+ * The @child-parent ALLOC sites that need WITH_CHILD_CHAIN (one per
+ * NODE kind with slot_count > 0): all @child binops (add/sub/mul/div/
+ * mod/lshift, lt/le/gt/ge/eq/neq/spaceship), ary_lit_1..4, ary_push,
+ * call_aget, call_aget2, call_aset, call_size, call_pop, call_push,
+ * call_to_s, call_to_i, call_1..3 / pg_call1..3 args loop, node_return.
+ * (PM_ARRAY_NODE > 4 uses iterative ary_push wrapping — chain bump per
+ * iter accounts for the runtime nesting depth.)
  * ------------------------------------------------------------------- */
 
 extern const struct NodeKind
@@ -49,178 +77,6 @@ extern const struct NodeKind
     kind_node_call, kind_node_call2, kind_node_call_static,
     kind_node_pg_call0, kind_node_pg_call1, kind_node_pg_call2, kind_node_pg_call3;
 
-static void
-walk_bake_sp_offset(NODE *n, int32_t chain_sum, uint32_t locals_cnt)
-{
-    if (!n) return;
-    const struct NodeKind *k = n->head.kind;
-    int32_t child_chain = chain_sum + (int32_t)n->head.slot_count;
-
-    /* Leaves with operand bakes. */
-    if (k == &kind_node_lget) {
-        n->u.node_lget.sp_offset =
-            (int32_t)n->u.node_lget.index - child_chain - (int32_t)locals_cnt;
-        clear_hash(n);
-        return;
-    }
-    if (k == &kind_node_lset) {
-        n->u.node_lset.sp_offset =
-            (int32_t)n->u.node_lset.index - child_chain - (int32_t)locals_cnt;
-        clear_hash(n);
-        walk_bake_sp_offset(n->u.node_lset.rhs, child_chain, locals_cnt);
-        return;
-    }
-
-    /* node_call / node_call2 / node_call_static — variadic call shapes
-     * where the callee frame aliases caller's frame at arg_index.  Bake
-     * callee_fp_offset so the dispatcher resolves sp + offset = old fp
-     * + arg_index.  Note: args are written by parser-emitted lset chain
-     * (= sibling nodes of the call inside an outer seq), so walker also
-     * naturally walks those lsets with their own sp_offset bake. */
-    if (k == &kind_node_call) {
-        n->u.node_call.callee_fp_offset =
-            (int32_t)n->u.node_call.arg_index - child_chain - (int32_t)locals_cnt;
-        clear_hash(n);
-        return;
-    }
-    if (k == &kind_node_call2) {
-        n->u.node_call2.callee_fp_offset =
-            (int32_t)n->u.node_call2.arg_index - child_chain - (int32_t)locals_cnt;
-        clear_hash(n);
-        return;
-    }
-    if (k == &kind_node_call_static) {
-        n->u.node_call_static.callee_fp_offset =
-            (int32_t)n->u.node_call_static.arg_index - child_chain - (int32_t)locals_cnt;
-        clear_hash(n);
-        return;
-    }
-
-    /* Structural recursion: visit each NODE * child with child_chain. */
-    if (k == &kind_node_seq) {
-        walk_bake_sp_offset(n->u.node_seq.head, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_seq.tail, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_if) {
-        walk_bake_sp_offset(n->u.node_if.cond, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_if.then_node, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_if.else_node, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_while) {
-        walk_bake_sp_offset(n->u.node_while.cond, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_while.body, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_return) {
-        walk_bake_sp_offset(n->u.node_return.v, child_chain, locals_cnt);
-        return;
-    }
-    /* @child binops + comparisons — same struct layout (lv, rv). */
-    if (k == &kind_node_add || k == &kind_node_sub || k == &kind_node_mul ||
-        k == &kind_node_div || k == &kind_node_mod || k == &kind_node_lshift ||
-        k == &kind_node_lt  || k == &kind_node_le  || k == &kind_node_gt  ||
-        k == &kind_node_ge  || k == &kind_node_eq  || k == &kind_node_neq ||
-        k == &kind_node_spaceship) {
-        walk_bake_sp_offset(n->u.node_add.lv, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_add.rv, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_ary_lit_1) {
-        walk_bake_sp_offset(n->u.node_ary_lit_1.e0, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_ary_lit_2) {
-        walk_bake_sp_offset(n->u.node_ary_lit_2.e0, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_ary_lit_2.e1, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_ary_lit_3) {
-        walk_bake_sp_offset(n->u.node_ary_lit_3.e0, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_ary_lit_3.e1, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_ary_lit_3.e2, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_ary_lit_4) {
-        walk_bake_sp_offset(n->u.node_ary_lit_4.e0, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_ary_lit_4.e1, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_ary_lit_4.e2, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_ary_lit_4.e3, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_ary_push) {
-        walk_bake_sp_offset(n->u.node_ary_push.recv, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_ary_push.val, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_call_size) { walk_bake_sp_offset(n->u.node_call_size.r, child_chain, locals_cnt); return; }
-    if (k == &kind_node_call_pop)  { walk_bake_sp_offset(n->u.node_call_pop.r, child_chain, locals_cnt); return; }
-    if (k == &kind_node_call_to_s) { walk_bake_sp_offset(n->u.node_call_to_s.r, child_chain, locals_cnt); return; }
-    if (k == &kind_node_call_to_i) { walk_bake_sp_offset(n->u.node_call_to_i.r, child_chain, locals_cnt); return; }
-    if (k == &kind_node_call_aget) {
-        walk_bake_sp_offset(n->u.node_call_aget.recv, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_aget.iv, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_call_aget2) {
-        walk_bake_sp_offset(n->u.node_call_aget2.recv, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_aget2.iv, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_aget2.cv, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_call_aset) {
-        walk_bake_sp_offset(n->u.node_call_aset.recv, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_aset.iv, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_aset.val, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_call_push) {
-        walk_bake_sp_offset(n->u.node_call_push.recv, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_push.val, child_chain, locals_cnt);
-        return;
-    }
-    /* iter 71: call_N / pg_call_N の args が @child 化されたので、 framework が
-     * sp += slot_count (= N) を eval 前に走らせる convention に乗る。 walker は
-     * child_chain (= parent_chain + slot_count) をそのまま渡すだけ。 旧
-     * `chain += callee_locals_cnt` は不要。 ただし pg_call_N の sp_body は
-     * 別途 code_repo iter で walk されるので、 ここでは @child args のみを
-     * walk (= sp_body スキップ目的で special-case 維持)。 */
-    if (k == &kind_node_call_1) {
-        walk_bake_sp_offset(n->u.node_call_1.a0, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_call_2) {
-        walk_bake_sp_offset(n->u.node_call_2.a0, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_2.a1, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_call_3) {
-        walk_bake_sp_offset(n->u.node_call_3.a0, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_3.a1, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_3.a2, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_pg_call1) {
-        walk_bake_sp_offset(n->u.node_pg_call1.a0, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_pg_call2) {
-        walk_bake_sp_offset(n->u.node_pg_call2.a0, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_pg_call2.a1, child_chain, locals_cnt);
-        return;
-    }
-    if (k == &kind_node_pg_call3) {
-        walk_bake_sp_offset(n->u.node_pg_call3.a0, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_pg_call3.a1, child_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_pg_call3.a2, child_chain, locals_cnt);
-        return;
-    }
-    /* node_def has its own body, walked separately via code_repo iter. */
-    if (k == &kind_node_def) return;
-    /* Leaves: num / true / false / nil / str_lit / call_0 / pg_call0 /
-     * call_builtin / ary_new / scope (unused) — nothing to recurse. */
-}
 
 static const char *
 alloc_cstr(pm_parser_t *parser, pm_constant_id_t cid)
@@ -360,19 +216,26 @@ callsite_resolve(void)
 // goes through `node_call_static` (parse-time body resolution); the
 // default path emits the plain `node_call` (cc-indirect dispatch, no
 // sp_body — PGSD bake doesn't apply, only AOT SDs).
+struct transduce_context;  // forward decl for bake_X helpers
+static NODE *bake_call(struct transduce_context *tc, const char *fname,
+                       uint32_t args_cnt, uint32_t arg_index);
+static NODE *bake_call_static(struct transduce_context *tc, NODE *body,
+                              uint32_t arg_index);
+
 static NODE *
-alloc_call(const char *fname, uint32_t args_cnt, uint32_t call_arg_idx)
+alloc_call(struct transduce_context *tc, const char *fname,
+           uint32_t args_cnt, uint32_t call_arg_idx)
 {
     if (OPTION.static_lang) {
         NODE *body = code_repo_find_by_name(fname);
         if (body == NULL) {
-            body = ALLOC_node_call_static(NULL, call_arg_idx, INT32_MIN);
+            body = bake_call_static(tc, NULL, call_arg_idx);
             callsite_add(fname, body, &body->u.node_call_static.body);
         }
         return body;
     }
     else {
-        return ALLOC_node_call(fname, args_cnt, call_arg_idx, INT32_MIN);
+        return bake_call(tc, fname, args_cnt, call_arg_idx);
     }
 }
 
@@ -528,13 +391,68 @@ struct frame_context {
     uint32_t max_cnt;
     pm_constant_id_list_t *locals;
     struct frame_context *prev;
+    /* iter 72: per-frame fixup list for sp_offset / callee_fp_offset
+     * bake.  Each lget/lset/call/call2/call_static ALLOC site stores a
+     * partial bake (= index - chain) into the operand at parse time, and
+     * appends the NODE * here.  At pop_frame the list is iterated to
+     * subtract the final locals_cnt (= max_cnt) and invalidate HASH. */
+    NODE **bake_list;
+    uint32_t bake_count;
+    uint32_t bake_capacity;
+    /* iter 72: caller's chain_sum saved here so pop_frame can restore.
+     * Each frame starts with chain_sum = 0 (body's root coordinate). */
+    int32_t saved_chain_sum;
 };
 
 struct transduce_context {
     struct frame_context *frame;
     pm_parser_t *parser;
     bool verbose;
+    /* iter 72: accumulated slot_count from current body root to current
+     * transduce position.  Pushed/popped via WITH_CHILD_CHAIN macro at
+     * each @child-parent ALLOC site.  Used by bake_X helpers to compute
+     * (index - chain) at parse time. */
+    int32_t chain_sum;
 };
+
+static void
+bake_list_add(struct frame_context *f, NODE *n)
+{
+    if (f->bake_count == f->bake_capacity) {
+        f->bake_capacity = f->bake_capacity ? f->bake_capacity * 2 : 32;
+        f->bake_list = realloc(f->bake_list, f->bake_capacity * sizeof(NODE *));
+    }
+    f->bake_list[f->bake_count++] = n;
+}
+
+/* iter 72: applied at pop_frame.  For each NODE * in the frame's
+ * bake_list, subtract the final locals_cnt (= max_cnt) from its
+ * sp_offset / callee_fp_offset operand and invalidate the HASH cache
+ * (since sp_offset/callee_fp_offset are part of the structural hash). */
+static void
+bake_list_finalize(struct frame_context *f)
+{
+    int32_t lc = (int32_t)f->max_cnt;
+    for (uint32_t i = 0; i < f->bake_count; i++) {
+        NODE *n = f->bake_list[i];
+        const struct NodeKind *k = n->head.kind;
+        if (k == &kind_node_lget) {
+            n->u.node_lget.sp_offset -= lc;
+        } else if (k == &kind_node_lset) {
+            n->u.node_lset.sp_offset -= lc;
+        } else if (k == &kind_node_call) {
+            n->u.node_call.callee_fp_offset -= lc;
+        } else if (k == &kind_node_call2) {
+            n->u.node_call2.callee_fp_offset -= lc;
+        } else if (k == &kind_node_call_static) {
+            n->u.node_call_static.callee_fp_offset -= lc;
+        }
+        clear_hash(n);
+    }
+    free(f->bake_list);
+    f->bake_list = NULL;
+    f->bake_count = f->bake_capacity = 0;
+}
 
 static void
 push_frame(struct transduce_context *tc, pm_constant_id_list_t *locals)
@@ -544,12 +462,59 @@ push_frame(struct transduce_context *tc, pm_constant_id_list_t *locals)
     tc->frame = f;
     f->locals = locals;
     f->arg_index = f->max_cnt = locals->size;
+    f->bake_list = NULL;
+    f->bake_count = f->bake_capacity = 0;
+    /* iter 72: each body's chain coordinate starts at 0. */
+    f->saved_chain_sum = tc->chain_sum;
+    tc->chain_sum = 0;
+}
+
+/* iter 72: bake helpers — wrap ALLOC_node_<X>(..., sp_offset=...) /
+ * ALLOC_node_<call*>(..., callee_fp_offset=...) so the offset operand
+ * is set to (index_or_argidx - chain_sum) at parse time and the node is
+ * registered for finalization at pop_frame (subtracts locals_cnt). */
+static NODE *
+bake_lget(struct transduce_context *tc, uint32_t index)
+{
+    NODE *n = ALLOC_node_lget(index, (int32_t)index - tc->chain_sum);
+    bake_list_add(tc->frame, n);
+    return n;
+}
+
+static NODE *
+bake_lset(struct transduce_context *tc, uint32_t index, NODE *rhs)
+{
+    NODE *n = ALLOC_node_lset(index, (int32_t)index - tc->chain_sum, rhs);
+    bake_list_add(tc->frame, n);
+    return n;
+}
+
+static NODE *
+bake_call(struct transduce_context *tc, const char *fname,
+          uint32_t args_cnt, uint32_t arg_index)
+{
+    NODE *n = ALLOC_node_call(fname, args_cnt, arg_index,
+                              (int32_t)arg_index - tc->chain_sum);
+    bake_list_add(tc->frame, n);
+    return n;
+}
+
+static NODE *
+bake_call_static(struct transduce_context *tc, NODE *body,
+                 uint32_t arg_index)
+{
+    NODE *n = ALLOC_node_call_static(body, arg_index,
+                                     (int32_t)arg_index - tc->chain_sum);
+    bake_list_add(tc->frame, n);
+    return n;
 }
 
 static void
 pop_frame(struct transduce_context *tc)
 {
     struct frame_context *f = tc->frame;
+    bake_list_finalize(f);
+    tc->chain_sum = f->saved_chain_sum;
     tc->frame = f->prev;
     free(f);
 }
@@ -736,19 +701,31 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
           // Iter 36 retry Perf 1: direct 1-shot construction for small N.
           // Saves alloc+wb overhead vs ary_new + ary_push chain.  Most
           // beneficial in AOT mode where dispatch is baked into SDs.
-          if (sz == 1) return ALLOC_node_ary_lit_1(TRANSDUCE(n->elements.nodes[0]));
-          if (sz == 2) return ALLOC_node_ary_lit_2(TRANSDUCE(n->elements.nodes[0]),
-                                                    TRANSDUCE(n->elements.nodes[1]));
-          if (sz == 3) return ALLOC_node_ary_lit_3(TRANSDUCE(n->elements.nodes[0]),
-                                                    TRANSDUCE(n->elements.nodes[1]),
-                                                    TRANSDUCE(n->elements.nodes[2]));
-          if (sz == 4) return ALLOC_node_ary_lit_4(TRANSDUCE(n->elements.nodes[0]),
-                                                    TRANSDUCE(n->elements.nodes[1]),
-                                                    TRANSDUCE(n->elements.nodes[2]),
-                                                    TRANSDUCE(n->elements.nodes[3]));
+          if (sz == 1) return WITH_CHILD_CHAIN(kind_node_ary_lit_1,
+              ALLOC_node_ary_lit_1(TRANSDUCE(n->elements.nodes[0])));
+          if (sz == 2) return WITH_CHILD_CHAIN(kind_node_ary_lit_2,
+              ALLOC_node_ary_lit_2(TRANSDUCE(n->elements.nodes[0]),
+                                   TRANSDUCE(n->elements.nodes[1])));
+          if (sz == 3) return WITH_CHILD_CHAIN(kind_node_ary_lit_3,
+              ALLOC_node_ary_lit_3(TRANSDUCE(n->elements.nodes[0]),
+                                   TRANSDUCE(n->elements.nodes[1]),
+                                   TRANSDUCE(n->elements.nodes[2])));
+          if (sz == 4) return WITH_CHILD_CHAIN(kind_node_ary_lit_4,
+              ALLOC_node_ary_lit_4(TRANSDUCE(n->elements.nodes[0]),
+                                   TRANSDUCE(n->elements.nodes[1]),
+                                   TRANSDUCE(n->elements.nodes[2]),
+                                   TRANSDUCE(n->elements.nodes[3])));
           NODE *acc = ALLOC_node_ary_new();
+          /* iter 72: ary_push 連鎖は iter ごとに deep に nested される。
+           * iter i で TRANSDUCE する val_i は最終的に runtime で
+           * `parent_chain + 2 * (sz - i)` の sp で eval されるため、
+           * parse time chain も 2 * (sz - i) bump する必要がある。 */
           for (size_t i = 0; i < sz; i++) {
-              acc = ALLOC_node_ary_push(acc, TRANSDUCE(n->elements.nodes[i]));
+              int32_t _saved = tc->chain_sum;
+              tc->chain_sum = _saved + 2 * (int32_t)(sz - i);
+              NODE *val = TRANSDUCE(n->elements.nodes[i]);
+              tc->chain_sum = _saved;
+              acc = ALLOC_node_ary_push(acc, val);
           }
           return acc;
       }
@@ -829,8 +806,12 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
               // which exceeds anything ordinary code uses.
               uint32_t save = arg_index(tc);
               for (int i = 0; i < 4; i++) increment_arg_index(tc);
+              /* All binops have slot_count = 2 (= @child lv + @child rv). */
+              int32_t _saved_chain = tc->chain_sum;
+              tc->chain_sum = _saved_chain + 2;
               NODE *l = TRANSDUCE(lhs);
               NODE *r = TRANSDUCE(rhs);
+              tc->chain_sum = _saved_chain;
               rewind_arg_index(tc, save);
               return alloc_binop(tc, n->name, l, r);
           }
@@ -840,30 +821,38 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
           // syntax Ruby-ish while avoiding any class / dispatch table.
           else if (lhs != NULL) {
               if (ceq(tc, n->name, "[]") && args_cnt == 1) {
-                  return ALLOC_node_call_aget(TRANSDUCE(lhs), TRANSDUCE(rhs));
+                  return WITH_CHILD_CHAIN(kind_node_call_aget,
+                      ALLOC_node_call_aget(TRANSDUCE(lhs), TRANSDUCE(rhs)));
               }
               else if (ceq(tc, n->name, "[]") && args_cnt == 2) {
                   pm_node_t *cnt_arg = args->arguments.nodes[1];
-                  return ALLOC_node_call_aget2(TRANSDUCE(lhs), TRANSDUCE(rhs), TRANSDUCE(cnt_arg));
+                  return WITH_CHILD_CHAIN(kind_node_call_aget2,
+                      ALLOC_node_call_aget2(TRANSDUCE(lhs), TRANSDUCE(rhs), TRANSDUCE(cnt_arg)));
               }
               else if (ceq(tc, n->name, "[]=") && args_cnt == 2) {
                   pm_node_t *vrhs = args->arguments.nodes[1];
-                  return ALLOC_node_call_aset(TRANSDUCE(lhs), TRANSDUCE(rhs), TRANSDUCE(vrhs));
+                  return WITH_CHILD_CHAIN(kind_node_call_aset,
+                      ALLOC_node_call_aset(TRANSDUCE(lhs), TRANSDUCE(rhs), TRANSDUCE(vrhs)));
               }
               else if ((ceq(tc, n->name, "size") || ceq(tc, n->name, "length")) && args_cnt == 0) {
-                  return ALLOC_node_call_size(TRANSDUCE(lhs));
+                  return WITH_CHILD_CHAIN(kind_node_call_size,
+                      ALLOC_node_call_size(TRANSDUCE(lhs)));
               }
               else if (ceq(tc, n->name, "push") && args_cnt == 1) {
-                  return ALLOC_node_call_push(TRANSDUCE(lhs), TRANSDUCE(rhs));
+                  return WITH_CHILD_CHAIN(kind_node_call_push,
+                      ALLOC_node_call_push(TRANSDUCE(lhs), TRANSDUCE(rhs)));
               }
               else if (ceq(tc, n->name, "pop") && args_cnt == 0) {
-                  return ALLOC_node_call_pop(TRANSDUCE(lhs));
+                  return WITH_CHILD_CHAIN(kind_node_call_pop,
+                      ALLOC_node_call_pop(TRANSDUCE(lhs)));
               }
               else if (ceq(tc, n->name, "to_s") && args_cnt == 0) {
-                  return ALLOC_node_call_to_s(TRANSDUCE(lhs));
+                  return WITH_CHILD_CHAIN(kind_node_call_to_s,
+                      ALLOC_node_call_to_s(TRANSDUCE(lhs)));
               }
               else if (ceq(tc, n->name, "to_i") && args_cnt == 0) {
-                  return ALLOC_node_call_to_i(TRANSDUCE(lhs));
+                  return WITH_CHILD_CHAIN(kind_node_call_to_i,
+                      ALLOC_node_call_to_i(TRANSDUCE(lhs)));
               }
               // fall through to plain call (will likely fail at runtime
               // since baruby has no methods on receivers other than the
@@ -885,9 +874,15 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
                   for (uint32_t i = 0; i < args_cnt; i++) {
                       increment_arg_index(tc);
                   }
+                  /* iter 72: call_N / pg_call_N の args は @child なので
+                   * runtime で sp += args_cnt 後に eval される。 parse
+                   * chain も args_cnt bump。 */
+                  int32_t _saved_chain = tc->chain_sum;
+                  tc->chain_sum = _saved_chain + (int32_t)args_cnt;
                   for (uint32_t i = 0; i < args_cnt; i++) {
                       arg_nodes[i] = TRANSDUCE(args->arguments.nodes[i]);
                   }
+                  tc->chain_sum = _saved_chain;
                   rewind_arg_index(tc, call_arg_idx);
                   if (OPTION.pg_at_exit) {
                       return alloc_pg_call_specialized(fname, call_arg_idx,
@@ -904,7 +899,7 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
                   NODE *nargs = NULL;
 
                   for (size_t i=0; i<args_cnt; i++) {
-                      NODE *arg = ALLOC_node_lset(increment_arg_index(tc), INT32_MIN, TRANSDUCE(args->arguments.nodes[i]));
+                      NODE *arg = bake_lset(tc, increment_arg_index(tc), TRANSDUCE(args->arguments.nodes[i]));
 
                       if (i==0) {
                           nargs = arg;
@@ -914,13 +909,13 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
                       }
                   }
 
-                  NODE *ncall = ALLOC_node_seq(nargs, alloc_call(fname, args_cnt, call_arg_idx));
+                  NODE *ncall = ALLOC_node_seq(nargs, alloc_call(tc, fname, args_cnt, call_arg_idx));
 
                   rewind_arg_index(tc, call_arg_idx);
                   return ncall;
               }
               else {
-                  return alloc_call(fname, args_cnt, call_arg_idx);
+                  return alloc_call(tc, fname, args_cnt, call_arg_idx);
               }
           }
           break;
@@ -1340,12 +1335,12 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: {
           pm_local_variable_operator_write_node_t *n = (pm_local_variable_operator_write_node_t *)(node);
           uint32_t lvar_idx = lvar_index(tc, n->name);
-          NODE *rhs = alloc_binop(tc, n->binary_operator, ALLOC_node_lget(lvar_idx, INT32_MIN), TRANSDUCE(n->value));
+          NODE *rhs = alloc_binop(tc, n->binary_operator, bake_lget(tc, lvar_idx), TRANSDUCE(n->value));
           if (rhs == NULL) {
               fprintf(stderr, "unsupported\n");
               exit(1);
           }
-          return ALLOC_node_lset(lvar_idx, INT32_MIN, rhs);
+          return bake_lset(tc, lvar_idx, rhs);
       }
       case PM_LOCAL_VARIABLE_OR_WRITE_NODE: {
           pm_local_variable_or_write_node_t *n = (pm_local_variable_or_write_node_t *)(node);
@@ -1354,7 +1349,7 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_LOCAL_VARIABLE_READ_NODE: {
           pm_local_variable_read_node_t *n = (pm_local_variable_read_node_t *)(node);
-          return ALLOC_node_lget(lvar_index(tc, n->name), INT32_MIN);
+          return bake_lget(tc, lvar_index(tc, n->name));
       }
       case PM_LOCAL_VARIABLE_TARGET_NODE: {
           pm_local_variable_target_node_t *n = (pm_local_variable_target_node_t *)(node);
@@ -1363,7 +1358,7 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       }
       case PM_LOCAL_VARIABLE_WRITE_NODE: {
           pm_local_variable_write_node_t *n = (pm_local_variable_write_node_t *)(node);
-          return ALLOC_node_lset(lvar_index(tc, n->name), INT32_MIN, TRANSDUCE(n->value));
+          return bake_lset(tc, lvar_index(tc, n->name), TRANSDUCE(n->value));
       }
       case PM_MATCH_LAST_LINE_NODE: {
           pm_match_last_line_node_t *n = (pm_match_last_line_node_t *)(node);
@@ -1544,12 +1539,16 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       case PM_RETURN_NODE: {
           pm_return_node_t *n = (pm_return_node_t *)(node);
           NODE *value;
+          /* iter 72: node_return has v@child (slot_count = 1). */
           if (n->arguments) {
               pm_arguments_node_t *args = (pm_arguments_node_t *)n->arguments;
               // Multiple values (`return a, b`) aren't representable in
               // baruby's int64-only VALUE, so we just take the first.
               if (args->arguments.size > 0) {
+                  int32_t _saved = tc->chain_sum;
+                  tc->chain_sum = _saved + 1;
                   value = TRANSDUCE(args->arguments.nodes[0]);
+                  tc->chain_sum = _saved;
               } else {
                   value = ALLOC_node_num(0);
               }
@@ -1859,21 +1858,8 @@ PARSE(int argc, char *argv[])
 
     pm_parser_free(&parser);
     callsite_resolve();
-    /* iter 61: callsite_resolve has now patched every forward-ref
-     * call site's locals_cnt; walk all bodies to bake sp_offset and
-     * callee_fp_offset operands using the final locals_cnt values. */
-    {
-        extern uint32_t aro_toplevel_locals_cnt;
-        extern uint32_t code_repo_count(void);
-        extern NODE *code_repo_body_at(uint32_t i);
-        extern uint32_t code_repo_locals_cnt_at(uint32_t i);
-        uint32_t n_defs = code_repo_count();
-        for (uint32_t i = 0; i < n_defs; i++) {
-            walk_bake_sp_offset(code_repo_body_at(i), 0,
-                                code_repo_locals_cnt_at(i));
-        }
-        walk_bake_sp_offset(ast, 0, aro_toplevel_locals_cnt);
-    }
+    /* iter 72: walker eliminated — sp_offset / callee_fp_offset baked at
+     * parse time inside bake_X helpers + pop_frame fixup. */
     return ast;
 }
 
