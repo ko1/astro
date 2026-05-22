@@ -157,7 +157,7 @@ run: koruby
 # Two-pass: 1st pass collects specialization C source; 2nd pass compiles it in.
 compiled_koruby: koruby
 	rm -f node_specialized.c
-	./koruby -c $(BENCH)
+	./koruby --aot-compile $(BENCH)
 	$(CC) $(CFLAGS) -O3 -o compiled_koruby $(SRCS) $(LDFLAGS) $(LIBS)
 
 bench-fib: koruby
