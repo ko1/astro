@@ -18,6 +18,7 @@
 // advances, dead bytes return via freelist keyed by exact size class.
 // No coalescing.  Demonstrates the cost of fragmentation vs compaction.
 
+#define _GNU_SOURCE      /* mremap, MREMAP_MAYMOVE */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -388,4 +389,54 @@ aro_gc_size_of(void *p)
 {
     GCHeader *h = (GCHeader *)p - 1;
     return h->size;
+}
+
+/* In-place realloc for large objs via mremap.  See gc_mark.c for the
+ * full rationale.  gc_mark_freelist uses sysconf(_SC_PAGESIZE) for
+ * alignment instead of a fixed PAGE_SIZE macro. */
+void *
+aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (gc->common.stress) return NULL;
+
+    size_t new_slot_total = sizeof(GCHeader) + ALIGN8(new_size);
+    if (new_slot_total <= MAX_SLOT_BYTES) return NULL;  /* fits a freelist slot */
+
+    LargeObj **link = &gc->large_head;
+    while (*link) {
+        char *lo_payload = (char *)(*link) + sizeof(LargeObj) + sizeof(GCHeader);
+        if (lo_payload == (char *)old) break;
+        link = &(*link)->next;
+    }
+    if (!*link) return NULL;
+    LargeObj *lo = *link;
+
+    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(new_size);
+    size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    size_t new_map_bytes = (need + page - 1) & ~(page - 1);
+    GCHeader *h_old = (GCHeader *)(lo + 1);
+    size_t old_size = ASTRO_GC_HEADER_SIZE(h_old);
+    size_t old_map_bytes = lo->map_bytes;
+
+    LargeObj *new_lo;
+    if (new_map_bytes == old_map_bytes) {
+        new_lo = lo;
+    } else {
+        new_lo = (LargeObj *)mremap(lo, old_map_bytes, new_map_bytes, MREMAP_MAYMOVE);
+        if (new_lo == MAP_FAILED) return NULL;
+        *link = new_lo;
+        new_lo->map_bytes = new_map_bytes;
+    }
+    GCHeader *h = (GCHeader *)(new_lo + 1);
+    ASTRO_GC_HEADER_SET_SIZE(h, new_size);
+    void *new_payload = (char *)new_lo + sizeof(LargeObj) + sizeof(GCHeader);
+
+    if (new_size > old_size) {
+        size_t delta = new_size - old_size;
+        gc->common.stats.total_bytes += delta;
+        gc->common.stats.heap_bytes  += delta;
+        gc->bytes_since_gc += delta;
+    }
+    return new_payload;
 }
