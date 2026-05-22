@@ -27,6 +27,7 @@
 //
 // Stress mode: collect on every alloc.  Non-moving = no mprotect tricks.
 
+#define _GNU_SOURCE      /* mremap, MREMAP_MAYMOVE */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -264,6 +265,69 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     gc->common.stats.total_bytes += payload_size;
     gc->common.stats.heap_bytes  += payload_size;
     return payload;
+}
+
+/* In-place realloc for large objs via mremap.  gc_mark's large objs are
+ * individually mmap'd ([LargeObj][GCHeader][payload]) with map_bytes
+ * stored, so mremap (MREMAP_MAYMOVE) can resize the entire mapping in
+ * place — much cheaper than alloc-new + memcpy + free-old for the
+ * sieve / hash_chain doubling pattern. */
+void *
+aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (gc->common.stress) return NULL;
+
+    /* Quick reject: if new fits a slab class, fall through (no slab
+     * realloc support, would have to allocate-new anyway). */
+    size_t new_slot_total = sizeof(GCHeader) + ALIGN8(new_size);
+    if (size_class_for(new_slot_total) >= 0) return NULL;
+
+    /* Walk large_head to find lo whose payload == old.  payload offset
+     * within the mmap'd region is sizeof(LargeObj) + sizeof(GCHeader). */
+    LargeObj **link = &gc->large_head;
+    while (*link) {
+        char *lo_payload = (char *)(*link) + sizeof(LargeObj) + sizeof(GCHeader);
+        if (lo_payload == (char *)old) break;
+        link = &(*link)->next;
+    }
+    if (!*link) return NULL;  /* old is in slab path (small obj) */
+    LargeObj *lo = *link;
+
+    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(new_size);
+    size_t new_map_bytes = (need + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
+    GCHeader *h_old = (GCHeader *)(lo + 1);
+    size_t old_size = ASTRO_GC_HEADER_SIZE(h_old);
+    size_t old_map_bytes = lo->map_bytes;
+
+    LargeObj *new_lo;
+    if (new_map_bytes == old_map_bytes) {
+        new_lo = lo;  /* same map size, no syscall */
+    } else {
+        new_lo = (LargeObj *)mremap(lo, old_map_bytes, new_map_bytes, MREMAP_MAYMOVE);
+        if (new_lo == MAP_FAILED) return NULL;  /* fall through to default */
+        *link = new_lo;
+        new_lo->map_bytes = new_map_bytes;
+        /* Do NOT access `lo` after this point — MREMAP_MAYMOVE may have
+         * unmapped the old VA. */
+    }
+    GCHeader *h = (GCHeader *)(new_lo + 1);
+    ASTRO_GC_HEADER_SET_SIZE(h, new_size);
+    void *new_payload = (char *)new_lo + sizeof(LargeObj) + sizeof(GCHeader);
+
+    /* No memset needed: the underlying memory is always mmap-backed
+     * (whether within the original map_bytes from the original mmap or
+     * freshly-added pages from mremap), so the bytes beyond the previous
+     * logical size are guaranteed zero by the kernel.  (We never shrink
+     * + regrow, so no stale-data recycling case applies.) */
+
+    if (new_size > old_size) {
+        size_t delta = new_size - old_size;
+        gc->common.stats.total_bytes += delta;
+        gc->common.stats.heap_bytes  += delta;
+        gc->bytes_since_gc += delta;
+    }
+    return new_payload;
 }
 
 // ---------------------------------------------------------------------------
