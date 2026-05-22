@@ -19,11 +19,35 @@
 
 const char *aro_gc_backend_name = "copy";
 
-/* iter 75 Step C: framework GCHeader 廃止。 ASTroObjectHeader (gc.h)
- * が payload offset 0 に置かれ、 gc_size / gc_fwd / gc_flags を保持。
- * sample が head.flags で type tag を持つ (= 旧 kind は不要)。 */
-_Static_assert(sizeof(ASTroObjectHeader) == 16,
-               "moving GC: ASTroObjectHeader must be 16 bytes (head + fwd)");
+/* iter 75 Step C+: fwd は payload offset sizeof(ASTroObjectHeader) に
+ * overlay (= 8 B head のみ、 gc_fwd field 不要)。 from-space は次の
+ * collect で捨てるので、 sample data の先頭 8 B を fwd で上書きしても
+ * 問題ない (前提: sample alloc は最低 16 B = head + 8 B payload)。
+ *
+ * 大 obj は移動しないので overlay は使えず、 別途 HDR_MARKED bit で
+ * 印を付ける (= 旧 design の "fwd = self" を bit 化)。 */
+_Static_assert(sizeof(ASTroObjectHeader) == 8,
+               "Cheney: head must be 8 bytes (fwd overlay, no dedicated gc_fwd)");
+
+#define HDR_FORWARDED  (uint16_t)0x0001u   /* small obj copied to to-space */
+#define HDR_MARKED     (uint16_t)0x0002u   /* large obj marked alive */
+#define HDR_IS_FORWARDED(h) (((h)->gc_flags & HDR_FORWARDED) != 0)
+#define HDR_SET_FORWARDED(h) ((h)->gc_flags |= HDR_FORWARDED)
+#define HDR_IS_MARKED(h)    (((h)->gc_flags & HDR_MARKED) != 0)
+#define HDR_SET_MARKED(h)   ((h)->gc_flags |= HDR_MARKED)
+#define HDR_CLR_MARKED(h)   ((h)->gc_flags &= (uint16_t)~HDR_MARKED)
+
+static inline void *
+fwd_overlay_get(ASTroObjectHeader *h)
+{
+    return *(void **)((char *)h + sizeof(ASTroObjectHeader));
+}
+
+static inline void
+fwd_overlay_set(ASTroObjectHeader *h, void *new_payload)
+{
+    *(void **)((char *)h + sizeof(ASTroObjectHeader)) = new_payload;
+}
 
 #define REGION_BYTES  ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual per semispace, lazy-paged */
 /* Stress mode mmaps a fresh to-space every GC and retires the old one;
@@ -191,7 +215,6 @@ gc_bump(CTX *c, size_t payload_size, size_t aligned)
     h->flags    = 0;
     h->gc_flags = 0;
     h->gc_size  = (uint32_t)payload_size;
-    h->gc_fwd   = NULL;
     gc->active_top += aligned;
     gc->bytes_since_gc += payload_size;
     return payload;
@@ -216,7 +239,6 @@ large_alloc(CTX *c, size_t payload_size, size_t aligned)
     h->flags    = 0;
     h->gc_flags = 0;
     h->gc_size  = (uint32_t)payload_size;
-    h->gc_fwd   = NULL;
     gc->bytes_since_gc += payload_size;
     return payload;
 }
@@ -333,34 +355,36 @@ forward_payload(ASTroGC *gc, void *old_payload)
 {
     if (!old_payload) return NULL;
     ASTroObjectHeader *oldh = (ASTroObjectHeader *)old_payload;
-    if (oldh->gc_fwd) {
-        return oldh->gc_fwd;
+    /* Small obj already forwarded → return overlay-stored ptr. */
+    if (oldh->gc_flags & HDR_FORWARDED) {
+        return fwd_overlay_get(oldh);
     }
 
-    /* When no large object exists, every reachable payload is in the
-     * from-space arena — skip the range check entirely.  This is the
-     * common case for bench workloads with only small objects (e.g.,
-     * binary_trees), keeping forward_payload at 1-branch hot. */
+    /* Large object: lives outside the from-space arena, doesn't move.
+     * Mark + enqueue for content scan; return the same payload pointer. */
     if (__builtin_expect(gc->large_head != NULL, 0)) {
         char *p = (char *)old_payload;
         if (p < gc->from_base_cur || p >= gc->from_base_cur + gc->region_bytes) {
-            /* Large obj — mark + enqueue for content scan, return same payload. */
+            if (HDR_IS_MARKED(oldh)) return old_payload;
+            HDR_SET_MARKED(oldh);
             LargeObj *lo = large_from_payload(old_payload);
             lo->next_gray = gc->large_gray;
             gc->large_gray = lo;
-            oldh->gc_fwd = old_payload;   /* mark by self-ref */
             return old_payload;
         }
     }
 
+    /* Cheney copy: from-space → to-space.  After memcpy, mark old as
+     * FORWARDED and store fwd ptr in overlay slot (= payload offset 8,
+     * overwriting first sample field — from-space is discarded after
+     * collect, so destruction is harmless). */
     size_t aligned = ALIGN8(oldh->gc_size);
-
     void *new_payload = gc->to_top;
     memcpy(new_payload, old_payload, aligned);
-    ((ASTroObjectHeader *)new_payload)->gc_fwd = NULL;
+    /* memcpy copied oldh's gc_flags (without FORWARDED yet) — fine. */
     gc->to_top += aligned;
-
-    oldh->gc_fwd = new_payload;
+    HDR_SET_FORWARDED(oldh);
+    fwd_overlay_set(oldh, new_payload);
     return new_payload;
 }
 
@@ -461,18 +485,18 @@ gc_collect_internal(CTX *c)
         }
     }
 
-    /* (3) Sweep large_head: free unmarked, clear fwd on survivors. */
+    /* (3) Sweep large_head: free unmarked, clear marker on survivors. */
     LargeObj **link = &gc->large_head;
     while (*link) {
         LargeObj *lo = *link;
         ASTroObjectHeader *h = large_head(lo);
-        if (h->gc_fwd == NULL) {
+        if (!HDR_IS_MARKED(h)) {
             /* unmarked → free */
             *link = lo->next;
             free(lo);
         } else {
-            /* marked → clear fwd for next cycle, keep in list */
-            h->gc_fwd = NULL;
+            /* marked → clear for next cycle, keep in list */
+            HDR_CLR_MARKED(h);
             link = &lo->next;
         }
     }

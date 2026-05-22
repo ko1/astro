@@ -56,16 +56,14 @@
 #  define BARUBY_GC_HAS_WB 1
 #endif
 
-/* Backends with a forwarding-pointer field in ASTroObjectHeader.  Cheney-
- * style backends could instead overlay fwd in payload — left as future
- * work (iter 75 Step C+).  For now every moving GC reserves the field. */
-#if BARUBY_GC == BARUBY_GC_COPY             || \
-    BARUBY_GC == BARUBY_GC_COPY_GEN         || \
-    BARUBY_GC == BARUBY_GC_COPY_GEN_INC     || \
-    BARUBY_GC == BARUBY_GC_MARK_COMPACT     || \
-    BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN || \
-    BARUBY_GC == BARUBY_GC_MARK_BUMP_GEN    || \
-    BARUBY_GC == BARUBY_GC_IMMIX_GEN
+/* Backends with a dedicated forwarding-pointer field in ASTroObjectHeader.
+ * Only mark_compact-style (slide compactor) backends require it — phase 3
+ * (pointer update) reads sample data AND fwd concurrently, so fwd cannot
+ * overlap with sample payload.  Cheney-style backends (copy*, mark_bump_gen,
+ * immix_gen) use payload-overlay forwarding instead (= 8 B header savings
+ * per object). */
+#if BARUBY_GC == BARUBY_GC_MARK_COMPACT     || \
+    BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN
 #  define ASTRO_GC_HAS_FWD 1
 #endif
 
