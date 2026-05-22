@@ -269,13 +269,11 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
 
 /* In-place realloc for large objs via mremap.  Template-driven via
  * gc_inplace_mremap.h — see that header's docstring. */
-#define large_head                       gc->large_head
 #define ARO_GC_INPLACE_THRESHOLD(n)      (size_class_for(sizeof(GCHeader) + ALIGN8(n)) >= 0)
 #define ARO_GC_INPLACE_PAGE_SIZE         PAGE_SIZE
 #define ARO_GC_INPLACE_MREMAP_FLAGS      MREMAP_MAYMOVE
 #define ARO_GC_INPLACE_BYTES_ACCT(d)     (gc->bytes_since_gc += (d))
 #include "gc_inplace_mremap.h"
-#undef large_head
 
 // ---------------------------------------------------------------------------
 // Mark phase
@@ -408,12 +406,7 @@ aro_gc_fini(CTX *c)
             p = next;
         }
     }
-    LargeObj *lo = gc->large_head;
-    while (lo) {
-        LargeObj *next = lo->next;
-        munmap(lo, lo->map_bytes);
-        lo = next;
-    }
+    aro_gc_free_large_chain_mmap(gc->large_head);
     free(gc->gray_buf);
     free(gc);
     c->astro_gc = NULL;

@@ -365,12 +365,7 @@ aro_gc_fini(CTX *c)
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
     if (gc->region_base) munmap(gc->region_base, REGION_BYTES);
-    LargeObj *lo = gc->large_head;
-    while (lo) {
-        LargeObj *next = lo->next;
-        munmap(lo, lo->map_bytes);
-        lo = next;
-    }
+    aro_gc_free_large_chain_mmap(gc->large_head);
     free(gc->gray_buf);
     free(gc);
     c->astro_gc = NULL;
@@ -394,10 +389,8 @@ aro_gc_size_of(void *p)
 /* In-place realloc for large objs via mremap.  See gc_mark.c for the
  * full rationale.  gc_mark_freelist uses sysconf(_SC_PAGESIZE) for
  * alignment instead of a fixed PAGE_SIZE macro. */
-#define large_head                       gc->large_head
 #define ARO_GC_INPLACE_THRESHOLD(n)      (sizeof(GCHeader) + ALIGN8(n) <= MAX_SLOT_BYTES)
 #define ARO_GC_INPLACE_PAGE_SIZE         sysconf(_SC_PAGESIZE)
 #define ARO_GC_INPLACE_MREMAP_FLAGS      MREMAP_MAYMOVE
 #define ARO_GC_INPLACE_BYTES_ACCT(d)     (gc->bytes_since_gc += (d))
 #include "gc_inplace_mremap.h"
-#undef large_head

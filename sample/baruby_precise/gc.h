@@ -160,6 +160,46 @@ void  aro_gc_init(CTX *c);
  * runs, (c) future tests that re-init mid-process. */
 void  aro_gc_fini(CTX *c);
 
+/* Helpers for aro_gc_fini: release a backend's `large_head` chain.
+ *
+ * mmap-backed (LargeObj layout: { LargeObj *next; size_t map_bytes; ... }
+ *              used by gc_mark / gc_mark_freelist / gc_immix / gc_mark_gen
+ *              / gc_mark_gen_inc / gc_mark_bitmap_gen / gc_mark_card_gen /
+ *              gc_immix_gen): munmap each entry.
+ *
+ * malloc-backed (LargeObj layout: { LargeObj *next; ... } used by
+ *                gc_copy / gc_mark_compact): free each entry.
+ *
+ * Backends cast their `LargeObj *` to (void *)gc->large_head.  Both
+ * helpers assume `next` is the first field — true for all our backends. */
+struct AroGcLargeChainMmap   { struct AroGcLargeChainMmap   *next; size_t map_bytes; };
+struct AroGcLargeChainMalloc { struct AroGcLargeChainMalloc *next; };
+
+#include <sys/mman.h>
+#include <stdlib.h>
+
+static inline void
+aro_gc_free_large_chain_mmap(void *head)
+{
+    struct AroGcLargeChainMmap *lo = (struct AroGcLargeChainMmap *)head;
+    while (lo) {
+        struct AroGcLargeChainMmap *next = lo->next;
+        munmap(lo, lo->map_bytes);
+        lo = next;
+    }
+}
+
+static inline void
+aro_gc_free_large_chain_malloc(void *head)
+{
+    struct AroGcLargeChainMalloc *lo = (struct AroGcLargeChainMalloc *)head;
+    while (lo) {
+        struct AroGcLargeChainMalloc *next = lo->next;
+        free(lo);
+        lo = next;
+    }
+}
+
 /* aro_gc_alloc — allocate `payload_size` bytes of a pointer-scanned
  * object (KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL).
  *

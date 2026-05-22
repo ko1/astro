@@ -564,12 +564,7 @@ aro_gc_fini(CTX *c)
         if (gc->space0) munmap(gc->space0, gc->region_bytes);
         if (gc->space1) munmap(gc->space1, gc->region_bytes);
     }
-    LargeObj *lo = gc->large_head;
-    while (lo) {
-        LargeObj *next = lo->next;
-        free(lo);
-        lo = next;
-    }
+    aro_gc_free_large_chain_malloc(gc->large_head);
     free(gc);
     c->astro_gc = NULL;
 }

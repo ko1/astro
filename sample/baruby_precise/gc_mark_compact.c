@@ -526,12 +526,7 @@ aro_gc_fini(CTX *c)
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
     if (region_base) munmap(region_base, REGION_BYTES);
-    LargeObj *lo = large_head;
-    while (lo) {
-        LargeObj *next = lo->next;
-        free(lo);
-        lo = next;
-    }
+    aro_gc_free_large_chain_malloc(large_head);
     free(gray_buf);
     free(gc);
     c->astro_gc = NULL;

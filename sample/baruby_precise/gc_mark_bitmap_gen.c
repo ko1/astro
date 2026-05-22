@@ -758,12 +758,7 @@ aro_gc_fini(CTX *c)
             p = next;
         }
     }
-    LargeObj *lo = large_head;
-    while (lo) {
-        LargeObj *next = lo->next;
-        munmap(lo, lo->map_bytes);
-        lo = next;
-    }
+    aro_gc_free_large_chain_mmap(large_head);
     free(gray_buf);
     free(remset_buf);
     free(gc);
@@ -786,10 +781,10 @@ aro_gc_size_of(void *p)
 
 /* In-place realloc for large objs via mremap.  Template-driven via
  * gc_inplace_mremap.h — see that header's docstring. */
-#define large_head                       gc->large_head
 #define ARO_GC_INPLACE_THRESHOLD(n)      (size_class_for(sizeof(GCHeader) + ALIGN8(n)) >= 0)
 #define ARO_GC_INPLACE_PAGE_SIZE         PAGE_SIZE
 #define ARO_GC_INPLACE_MREMAP_FLAGS      0
 #define ARO_GC_INPLACE_BYTES_ACCT(d)     (bytes_since_gc += (d))
-#include "gc_inplace_mremap.h"
 #undef large_head
+#include "gc_inplace_mremap.h"
+#define large_head (gc->large_head)
