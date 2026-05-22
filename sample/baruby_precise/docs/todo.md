@@ -28,14 +28,35 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       / immix の region-bump 系へ展開する余地は残るが、 gen backend は
       pretenure 経路で既に large が tenured 直行するため win 限定的の見込み。
 
-      **完了: resize 経路 realloc(3) 化 (iter 67-68)** — `aro_gc_realloc_in_place`
-      hook を gc.h に追加、 gc_common.c に weak default、 gc_copy.c + gc_mark_compact.c
-      に strong override。 large → large の resize は realloc(3) → mremap で
-      in-place 化。 perf 効果:
-      - gc_copy:        sieve **-11.5%** (1.186 → 1.050)、 list_sort -5%、 hash_chain -4%
-      - gc_mark_compact: sieve **-6.2%** (1.138 → 1.067)、 list_alloc -2%
-      commit `4aa6f36b` + `d2b07ddf`。 LargeObj linked list の構造が同じ
-      なので mechanical port が可能だった。
+      **完了: resize 経路 realloc(3) 化 (iter 67-69)** — `aro_gc_realloc_in_place`
+      hook を gc.h に追加、 gc_common.c に weak default、 10 backend に
+      strong override を移植:
+      - malloc-backed LargeObj (gc_copy / gc_mark_compact): **realloc(3)** で
+        in-place、 mmap-backed chunk なら mremap が自動的に
+      - mmap-backed LargeObj non-gen (gc_mark / gc_mark_freelist / gc_immix):
+        **mremap MREMAP_MAYMOVE** で移動も許容 (forward_payload が新 addr を見る)
+      - mmap-backed LargeObj gen (gc_mark_gen / gc_mark_gen_inc /
+        gc_mark_bitmap_gen / gc_mark_card_gen / gc_immix_gen):
+        **mremap (no MAYMOVE)**、 young_objs / remset の stale ptr を回避
+
+      perf 効果 (median of 3-5、 sieve):
+      | backend           | 前 → 後                       | Δ |
+      |-------------------|-------------------------------|----|
+      | gc_copy           | 1.186 → 1.050                 | **-11.5%** |
+      | gc_mark_compact   | 1.138 → 1.067                 | -6.2% |
+      | gc_mark           | 1.094 → 1.020                 | -6.8% |
+      | gc_mark_freelist  | 1.116 → 1.018                 | -8.8% |
+      | gc_immix          | 1.173 → 1.016                 | **-13.4%** |
+      | gc_mark_gen       | 1.428 → 1.122                 | **-21%** |
+      | gc_mark_gen_inc / mark_bitmap_gen / mark_card_gen / immix_gen | (移植のみ、 perf 影響は workload 依存) |
+
+      iter 67: `4aa6f36b`, `d2b07ddf` (malloc 版)
+      iter 68: `93ab6d59` (mark mremap)
+      iter 69: `f6f88a59`, `cd4b77ea`, `173b94a5`, `eae4ceee` (残 7 backend)
+
+      未適用 backend: gc_copy_gen / gc_copy_gen_inc / gc_mark_compact_gen /
+      gc_mark_bump_gen / gc_bump / gc_none。 gen の bump tenured 系は
+      pretenure 経路 + tenured bump ptr 管理の変更が必要なので別 design 検討。
 
 ## 直近 (iter 59 状態)
 

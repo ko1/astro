@@ -1423,12 +1423,61 @@ perf (median of 5-7, plain mode):
 減るので mutator も若干速くなる。
 
 contract:
-- aro_gc_realloc_in_place は GC を発火させない (realloc(3) は libc、 我々の
-  GC は呼ばない)
+- aro_gc_realloc_in_place は GC を発火させない (realloc(3) / mremap は kernel、
+  我々の GC は呼ばない)
 - linked list walk O(N) は in-place 経路でのみ発生、 多 large obj に
   なったら doubly-linked list 化を検討
 - gc_none は LargeObj を持たない (libc realloc 直接) ので独自 realloc_payload
   override 経路で in_place hook の影響を受けない
+
+### 4.6.1 mremap version (iter 68-69)
+
+**malloc-backed LargeObj** (gc_copy / gc_mark_compact) には realloc(3) を、
+**mmap-backed LargeObj** (gc_mark / gc_mark_freelist / gc_immix / gc_mark_gen
+/ gc_mark_gen_inc / gc_mark_bitmap_gen / gc_mark_card_gen / gc_immix_gen)
+には **mremap(2)** で同じ in-place semantics を実装。
+
+gen backend と non-gen backend で MAYMOVE フラグの扱いが違う:
+
+| Backend kind            | mremap flag      | 理由 |
+|-------------------------|------------------|------|
+| non-gen (mark, mark_freelist, immix) | MREMAP_MAYMOVE | LargeObj 移動しても害なし: GC のときに forward_payload が新 addr を見る |
+| **gen** (mark_gen, mark_gen_inc, mark_bitmap_gen, mark_card_gen, immix_gen) | **0 (= no MAYMOVE)** | young_objs[] / remset_buf[] に LargeObj 内 GCHeader へのポインタを保持。 移動すると stale。 kernel が in-place 拡張できなければ NULL → fallback (alloc + memcpy) |
+
+Linux x86_64 では mmap'd 領域の隣接 VA が空いている限り extend in-place
+で成功するので、 実 workload では gen でも no-MAYMOVE がほぼ常に成功。
+
+`_GNU_SOURCE` を一番上で define (system header の前) で mremap が
+declare される。 SETONCE: stdio.h より先に置く必要があるので、 既存
+include 群の最上部に挿入。
+
+perf 効果 (iter 69 で 7 backend へ展開、 median of 3-5):
+
+| Bench       | gc_mark 前→後 | gc_mark_freelist 前→後 | gc_immix 前→後 | gc_mark_gen 前→後 |
+|-------------|----------------|-------------------------|------------------|---------------------|
+| sieve       | 1.094 → 1.020 (-6.8%) | 1.116 → 1.018 (-8.8%) | 1.173 → 1.016 (-13.4%) | 1.428 → 1.122 (-21%) |
+| hash_chain  | 1.023 → 1.037  | 1.120 → 1.142 (+2%, noise) | 0.957 → 1.009    | 1.080 → 1.099 |
+| binary_trees| 0.662 → 0.695  | 0.719 → 0.726          | 0.472 → 0.464    | 0.662 → 0.726 (+10%, 別要因)|
+
+最大 win は gc_mark_gen の sieve **-21%** (1.43 → 1.12)。 元々
+per-page malloc list で sieve が遅かったのが、 items doubling の
+mremap-in-place で他 backend と同等水準まで改善。 immix も -13% の
+clean win。
+
+**カバレッジ**: iter 69 終了時点で 10 backend (= 全 region/slab/immix 系
+backend) に in_place 対応:
+- malloc-backed: gc_copy, gc_mark_compact (realloc(3))
+- mmap-backed non-gen: gc_mark, gc_mark_freelist, gc_immix (MREMAP_MAYMOVE)
+- mmap-backed gen: gc_mark_gen, gc_mark_gen_inc, gc_mark_bitmap_gen,
+  gc_mark_card_gen, gc_immix_gen (mremap no MAYMOVE)
+
+**未対応 backend** (構造的に in_place 化が難しい):
+- gc_none: libc malloc 直接、 独自 realloc_payload (= libc realloc)
+- gc_bump: GC 無し (= leak)、 realloc は alloc-new + memcpy
+- gc_copy_gen, gc_copy_gen_inc: nursery + tenured semispace。 large が
+  pretenure 経由で tenured 直行、 in_place するなら tenured 内の
+  bump ptr / Cheney 関係を巻き込んでの設計変更が要る
+- gc_mark_compact_gen, gc_mark_bump_gen: 同上 (gen + bump tenured)
 
 ## 6. 既知の問題
 
