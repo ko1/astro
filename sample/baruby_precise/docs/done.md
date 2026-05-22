@@ -3,6 +3,66 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-22 (72) — walker 削除、 parse-time sp_offset bake に置換
+
+iter 61 で導入した `walk_bake_sp_offset` (~170 行 hand-written
+per-kind structural recursion) を削除し、 sp_offset /
+callee_fp_offset の bake を transduce 中 (= parse time) に
+完結させた。 user 指摘「parse 時に解決するから walker 要らないって
+話でしょう？」 を直接実装。
+
+### 設計
+
+- `tc->chain_sum` (int32_t) を transduce_context に追加。 push_frame で
+  0 リセット (= 各 body の root coordinate)、 pop_frame で復元。
+- `WITH_CHILD_CHAIN(kind, BODY)` macro: BODY 評価中だけ chain を
+  parent.slot_count だけ bump (= GCC statement-expression)。
+- bake helper (`bake_lget` / `bake_lset` / `bake_call` /
+  `bake_call_static`): `partial = index_or_argidx - tc->chain_sum` を
+  operand に焼き、 NODE を `frame->bake_list` に append。
+- pop_frame で bake_list を iterate、 `*operand -= max_cnt` + clear_hash。
+  最終 locals_cnt は frame の high-water mark なので pop 時に確定済。
+
+### chain bump サイト一覧
+
+iter 70 (= walker auto-gen 試行) で revert された理由 = pg_call_N の
+sp_body を誤って walk する bug は iter 72 では発生しない。 chain bump
+は @child を持つ parent ALLOC site のみで起こり、 sp_body のような
+非 @child NODE * operand は構造的に無関係。
+
+- 二項 (add/sub/mul/div/mod/lshift, lt/le/gt/ge/eq/neq/spaceship): slot_count=2
+- ary_lit_1..4: slot_count=1..4
+- ary_push 連鎖 (sz > 4): iter ごとに `chain += 2 * (sz - i)` で
+  runtime nesting depth を反映
+- call_aget/aget2/aset/size/pop/push/to_s/to_i: slot_count=1..3
+- call_1/2/3 + pg_call1/2/3 args loop: slot_count=N
+- node_return: slot_count=1
+- PM_INTERPOLATED_STRING_NODE iterative add+to_s 連鎖: 後続 commit
+  (`caaafaef`) で対応
+
+### LOC
+
+- baruby_parse.c: 2256 → 2025 行 (-14 net)
+- walker 関数 (170 行) 完全削除
+- chain threading + bake_list infra (~150 行) で置換
+
+### 検証
+
+- 16 backend × 8 T_*.ba.rb × 2 (non-stress + stress) = **256/256 PASS**
+- AOT mode: copy backend で fib_pair 0.245s (= iter 71 と同等)
+- PG mode: copy backend で fib 5.96s
+- 文字列補間 `"hello, #{name}!"` 系 動作確認
+
+### 副次効果
+
+- code_repo 走査 + per-body walker 呼び出しの post-parse loop が消滅。
+- ASTroGen の walker auto-gen task (= iter 70 試行、 revert 済) は
+  根本的に不要になった。 todo.md「walker の framework 化」 解消。
+- iter 71 の per-body self-contained 化 が伏線として効いている
+  (= callee_locals_cnt 依存があったら walker 削除は無理だった)。
+
+commit: `25caede1` + `caaafaef` (interp 対応)
+
 ## 2026-05-22 (71) — call_N / pg_call_N の args を @child 化 (per-body self-contained)
 
 iter 61 で walker は call_N / pg_call_N の args を walk するときに

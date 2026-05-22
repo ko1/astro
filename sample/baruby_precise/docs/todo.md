@@ -12,21 +12,11 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       call/call2/call_static.callee_fp_offset を parse-end walker で bake。
       AOT で **prime_count -89% / call -52% / chain20 -53% / fib -39%** 等
       大幅 win。 15 backend × 35 bench × `-n 3` で plain + AOT 両方 oracle pass。
-- [ ] **walker の framework 化** — `baruby_parse.c::walk_bake_sp_offset` は
-      hand-write で全 NODE kind を列挙 (~200 行)。 HASH 系と同じ仕組みで
-      astrogen.rb に per-kind child-walk callback の gen task を追加して
-      自動生成に畳む。 lget/lset/call の operand bake は special-case
-      として残す。
-
-      **iter 71 で前提条件が整った** — call_N args の `chain +=
-      callee_locals_cnt` 特殊扱いを削除済 (args を @child 化したため
-      generic chain += slot_count で済む)。 walker は完全に
-      `child_chain = chain + slot_count` の structural recursion +
-      lget/lset/call 系の operand bake のみとなり、 ASTroGen の
-      per-kind child enumerator + special-case visitor の組合せで
-      自動生成可能。 iter 70 で試行した auto-gen (commit `54779351`
-      → revert `fbaaccda`) は callee_locals_cnt 依存が framework に
-      漏れて失敗したが、 iter 71 で問題が消えたので再挑戦できる。
+- [x] ~~**walker の framework 化**~~ — 2026-05-22 (iter 72) 解決。
+      ASTroGen で auto-generate するのではなく、 そもそも walker 自体を
+      削除した。 sp_offset / callee_fp_offset の bake を transduce 中
+      (= parse time) に完結させ、 post-parse walker を不要にした。
+      walker 関数 170 行が消滅。 done.md (72) 参照。
 - [x] ~~**copy 系 backend に large_alloc 経路を追加**~~ — iter 66 で gc_copy
       (commit `08dd67ad` + scan-loop fast-path 分離 `f3680742`) と
       gc_mark_compact (commit `4c9a017d`) に実装。 LARGE_THRESHOLD=4096 B
