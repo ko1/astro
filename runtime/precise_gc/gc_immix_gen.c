@@ -321,7 +321,7 @@ nursery_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE 
     size_t total = sizeof(GCHeader) + aligned;
 
     if (__builtin_expect(total > MEDIUM_MAX, 0)) {
-        return large_alloc(gc, kind, payload_size);
+        return large_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
     }
 
     if (__builtin_expect(gc->common.stress || nursery_top + total > nursery_end || remset_pressure, 0)) {
@@ -337,14 +337,12 @@ nursery_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE 
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
+aro_gc_alloc(CTX *c, size_t payload_size)
 {
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
-                 kind == KIND_PAYLOAD_VAL);
     size_t aligned = ALIGN8(payload_size);
-    void *payload = nursery_bump(c, kind, payload_size, aligned, sp_top);
+    void *payload = nursery_bump(c, ASTRO_GC_CAT_SCAN, payload_size, aligned, sp_top);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
     gc->common.stats.total_bytes += payload_size;
@@ -460,7 +458,7 @@ forward_payload_nursery(ASTroGC *gc, void *p)
     }
     AroGcKind kind = HDR_KIND(oldh);
     size_t size = oldh->size;
-    GCHeader *newh = hole_alloc_header(gc, kind, size);
+    GCHeader *newh = hole_alloc_header(gc, ASTRO_GC_CAT_SCAN, size);
     if (!newh) {
         fprintf(stderr, "baruby_gc=immix_gen: tenured arena OOM during promotion\n");
         abort();
@@ -493,7 +491,7 @@ fwd_edge_minor(void *ctx, void **slot)
 static void
 process_object_minor(ASTroGC *gc, GCHeader *h)
 {
-    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, fwd_edge_minor);
+    if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, fwd_edge_minor);
 }
 
 /* ---------------------------------------------------------------------------
@@ -563,7 +561,7 @@ process_gray_major(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
-        ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge_major);
+        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, mark_edge_major);
     }
 }
 

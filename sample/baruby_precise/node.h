@@ -30,7 +30,7 @@ baruby_ary_push(CTX *c, VALUE *av_ref, VALUE *x_ref)
 {
     BaArray *a = VAL2ARY(*av_ref);
     if (__builtin_expect(a->len < a->capa, 1)) {
-        aro_gc_wb(c, a->items, &a->items[a->len], *x_ref);
+        aro_gc_wb(c, a->items, &a->items->data[a->len], *x_ref);
         a->len++;
         return;
     }

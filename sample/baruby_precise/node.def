@@ -668,7 +668,7 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r
         BaArray *a = VAL2ARY(recv);
         if (ii < 0) ii += a->len;
         if (ii < 0 || (uint32_t)ii >= a->len) return RESULT_OK(VAL_NIL);
-        return RESULT_OK(a->items[ii]);
+        return RESULT_OK(a->items->data[ii]);
     }
     if (IS_STR(recv)) {
         BaString *s = VAL2STR(recv);
@@ -705,7 +705,7 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE 
         uint32_t avail = a->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
         c->sp = sp;
-        return RESULT_OK(baruby_ary_new_from(c, a->items + ii, take));
+        return RESULT_OK(baruby_ary_new_from(c, a->items->data + ii, take));
     }
     fprintf(stderr, "no [i, n] for non-array/string\n");
     return RESULT_OK(VAL_NIL);
@@ -725,7 +725,7 @@ node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r
             baruby_ary_push(c, &$recv, &$iv);
         }
         a = VAL2ARY($recv);
-        aro_gc_wb(c, a->items, &a->items[ii], $val);
+        aro_gc_wb(c, a->items, &a->items->data[ii], $val);
         return RESULT_OK($val);
     }
     fprintf(stderr, "no []= for non-array\n");
@@ -751,7 +751,7 @@ node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@
     if (IS_ARY(r)) {
         BaArray *a = VAL2ARY(r);
         if (a->len == 0) return RESULT_OK(VAL_NIL);
-        return RESULT_OK(a->items[--a->len]);
+        return RESULT_OK(a->items->data[--a->len]);
     }
     fprintf(stderr, "no pop for non-array\n");
     return RESULT_OK(VAL_NIL);

@@ -82,8 +82,9 @@ typedef uint64_t state_serial_t;
 // Heap object header.  Type tag lets the dispatch nodes branch on
 // receiver type at eval time (e.g. call_size: array vs string).
 enum obj_type {
-    OBJ_ARRAY  = 1,
-    OBJ_STRING = 2,
+    OBJ_ARRAY       = 1,
+    OBJ_STRING      = 2,
+    OBJ_VALUE_ARRAY = 3,    // raw VALUE[] payload (= BaArrayItems)
 };
 
 typedef struct ObjectHeader {
@@ -91,11 +92,20 @@ typedef struct ObjectHeader {
     uint32_t flags;
 } ObjectHeader;
 
+// Heap object holding a VALUE[] payload.  Allocated separately from the
+// owning BaArray so realloc can grow it without moving the BaArray itself.
+// ObjectHeader prefix lets the framework's SCAN_EDGES dispatch on type:
+// items[] is treated as OBJ_VALUE_ARRAY which scans each data slot.
+typedef struct BaArrayItems {
+    ObjectHeader hdr;
+    VALUE data[];           // flex array; capa is tracked in the owning BaArray
+} BaArrayItems;
+
 typedef struct BaArray {
     ObjectHeader hdr;
     uint32_t len;
     uint32_t capa;
-    VALUE *items;            // separate alloc; libgc scans it conservatively
+    BaArrayItems *items;     // separate alloc; framework forwards via OBJ_VALUE_ARRAY
 } BaArray;
 
 // iter 53: SSO (small-string optimization).  Strings with `len <=
@@ -248,45 +258,41 @@ typedef struct CTX_struct {
  * (典型的には `ASTroGC *gc`)。 GCHeader は forward 宣言 (各 backend が
  * typedef する)。 module-static を global として使わないために ctx 経由
  * を必須にしている。 */
-/* Sample が提供する shape macro。 backend は自分の GCHeader から kind /
- * payload_size_bytes を取り出してこの macro に渡す。 sample は backend の
- * header layout を一切知らない (= HDR_KIND など backend-internal macro に
- * 依存しない)。
+/* Sample が提供する shape macro。 framework が CAT_OBJECT category の
+ * payload に対してのみ呼び出す (= VALS / BYTE / FREE は framework が
+ * 直接 dispatch、 sample に届かない)。 sample 側は自分の object header
+ * (BaArray / BaString) の type tag を見て edge を visit。
  *
  * Args:
- *   payload          : void * — GCHeader 直後の object payload pointer
- *   kind             : AroGcKind — KIND_OBJ_ARRAY 等
- *   payload_size     : size_t — payload のバイト数 (PAYLOAD_VAL の slot 数計算用)
- *   ctx, edge_visit  : 各 slot を visit する callback。
+ *   payload    : void * — GCHeader 直後の object payload pointer
+ *   payload_size : size_t — payload バイト数 (= 通常 ObjectHeader だけ
+ *                  なので使わないが、 framework が一律で渡す)
+ *   ctx, edge_visit : 各 slot を visit する callback (= 通常 ASTroGC *)
  */
-#define ASTRO_GC_SCAN_EDGES(payload, kind, payload_size, ctx, edge_visit) do { \
-    void *_payload = (payload);                                                  \
-    switch ((AroGcKind)(kind)) {                                                 \
-      case KIND_OBJ_ARRAY: {                                                     \
-          BaArray *_a = (BaArray *)_payload;                                     \
-          ASTRO_ASSERT(_a->hdr.type == OBJ_ARRAY);                               \
-          edge_visit((ctx), (void **)&_a->items);                                \
-          break;                                                                  \
-      }                                                                           \
-      case KIND_OBJ_STRING: {                                                    \
-          BaString *_s = (BaString *)_payload;                                   \
-          ASTRO_ASSERT(_s->hdr.type == OBJ_STRING);                              \
-          if (!BSTR_IS_SSO(_s)) edge_visit((ctx), (void **)&_s->bytes);          \
-          break;                                                                  \
-      }                                                                           \
-      case KIND_PAYLOAD_VAL: {                                                   \
-          VALUE *_slots = (VALUE *)_payload;                                     \
-          size_t _n = (size_t)(payload_size) / sizeof(VALUE);                    \
-          for (size_t _i = 0; _i < _n; _i++)                                     \
-              edge_visit((ctx), (void **)&_slots[_i]);                           \
-          break;                                                                  \
-      }                                                                           \
-      case KIND_PAYLOAD_BYTE:                                                    \
-      case KIND_FREE:                                                            \
-          break;                                                                  \
-      default:                                                                    \
-          ASTRO_ASSERT(0 && "SCAN_EDGES: unknown GCHeader kind");                \
-    }                                                                             \
+#define ASTRO_GC_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {  \
+    ObjectHeader *_oh = (ObjectHeader *)(payload);                          \
+    switch (_oh->type) {                                                    \
+      case OBJ_ARRAY: {                                                     \
+          BaArray *_a = (BaArray *)(payload);                               \
+          edge_visit((ctx), (void **)&_a->items);                           \
+          (void)(payload_size);                                              \
+          break;                                                             \
+      }                                                                      \
+      case OBJ_STRING: {                                                    \
+          BaString *_s = (BaString *)(payload);                             \
+          if (!BSTR_IS_SSO(_s)) edge_visit((ctx), (void **)&_s->bytes);     \
+          break;                                                             \
+      }                                                                      \
+      case OBJ_VALUE_ARRAY: {                                               \
+          BaArrayItems *_ai = (BaArrayItems *)(payload);                    \
+          size_t _n = ((payload_size) - sizeof(BaArrayItems)) / sizeof(VALUE); \
+          for (size_t _i = 0; _i < _n; _i++)                                \
+              edge_visit((ctx), (void **)&_ai->data[_i]);                   \
+          break;                                                             \
+      }                                                                      \
+      default:                                                               \
+          ASTRO_ASSERT(0 && "SCAN_EDGES: unknown ObjectHeader.type");       \
+    }                                                                        \
 } while (0)
 
 /* Scan-safe init: payload slots may be scanned right after alloc (before

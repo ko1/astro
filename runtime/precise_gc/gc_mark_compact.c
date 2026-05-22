@@ -186,16 +186,14 @@ large_alloc(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
+aro_gc_alloc(CTX *c, size_t payload_size)
 {
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
-                 kind == KIND_PAYLOAD_VAL);
     size_t aligned = ALIGN8(payload_size);
     GCHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
-        ? large_alloc(c, kind, payload_size, aligned, sp_top)
-        : bump       (c, kind, payload_size, aligned, sp_top);
+        ? large_alloc(c, ASTRO_GC_CAT_SCAN, payload_size, aligned, sp_top)
+        : bump       (c, ASTRO_GC_CAT_SCAN, payload_size, aligned, sp_top);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, aligned);
@@ -298,7 +296,7 @@ process_gray(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
-        ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge);
+        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, mark_edge);
     }
 }
 
@@ -341,7 +339,7 @@ fwd_edge(void *ctx, void **slot)
 static void
 update_pointers(GCHeader *h)
 {
-    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, NULL, fwd_edge);
+    if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, NULL, fwd_edge);
 }
 
 // ---------------------------------------------------------------------------

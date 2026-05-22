@@ -100,15 +100,40 @@ typedef intptr_t VALUE;
 #  define BARUBY_GC_HAS_WB 1
 #endif
 
-// Kind tag in GCHeader (each backend has its own header layout but the kind
-// values are shared so node.c can pick the right alloc variant).
+/* Framework が GCHeader に詰める分類 = "category"。 sample-defined kind
+ * (= OBJ_ARRAY / OBJ_STRING / OBJ_VALUE_ARRAY 等) は sample 側
+ * (context.h) で別 enum、 framework は category だけ持つ。
+ *
+ * - SCAN  : sample の SCAN_EDGES が dispatch して edge を visit
+ *           (sample は ObjectHeader.type で自身の object 種別を識別)
+ * - BYTE  : scan skip (sample が即書き、 GC は touch しない)
+ * - FREE  : backend 内部 sweep marker (= 公開 alloc API 無し)
+ *
+ * 旧 VALS category (= framework が直接 VALUE[] iterate) は廃止。
+ * VALUE 配列も sample 側で ObjectHeader 付き payload にして SCAN
+ * 経由で dispatch する (= e.g. baruby_precise の OBJ_VALUE_ARRAY)。
+ *
+ * 旧 AroGcKind enum (= KIND_OBJ_ARRAY 等を含む) も廃止。 sample kind を
+ * framework が知る必要は無く、 framework は category のみで scan 戦略を決定。 */
 typedef enum {
-    KIND_FREE         = 0,
-    KIND_OBJ_ARRAY    = 1,   // BaArray header (items field is a pointer)
-    KIND_OBJ_STRING   = 2,   // BaString header (bytes field is a pointer)
-    KIND_PAYLOAD_VAL  = 3,   // VALUE[] (BaArray.items target)
-    KIND_PAYLOAD_BYTE = 4,   // char[]  (BaString.bytes target)
-} AroGcKind;
+    ASTRO_GC_CAT_SCAN = 0,
+    ASTRO_GC_CAT_BYTE = 1,
+    ASTRO_GC_CAT_FREE = 2,
+} AstroGcCategory;
+
+/* Transitional alias: 旧 backend コードで `AroGcKind` typename と
+ * `KIND_FREE` 値を使ってる箇所が残っている。 backend が category を
+ * 2 bit 領域に詰めるのを想定して値も一致させる。 全 backend が
+ * AstroGcCategory に移行したら削除する。 */
+typedef AstroGcCategory AroGcKind;
+#define KIND_FREE         ASTRO_GC_CAT_FREE
+#define KIND_SCAN         ASTRO_GC_CAT_SCAN
+#define KIND_BYTE         ASTRO_GC_CAT_BYTE
+/* 旧 framework-internal kind の一時 alias。 iter 75 Step B 移行が
+ * 完了したら backend を直接 CAT_* に書き換え、 削除。 sample-kind
+ * (KIND_OBJ_ARRAY 等) は framework から見えないので alias しない。 */
+#define KIND_PAYLOAD_BYTE ASTRO_GC_CAT_BYTE
+#define KIND_PAYLOAD_VAL  ASTRO_GC_CAT_SCAN
 
 #include <time.h>
 
@@ -200,34 +225,23 @@ aro_gc_free_large_chain_malloc(void *head)
     }
 }
 
-/* aro_gc_alloc — allocate `payload_size` bytes of a pointer-scanned
- * object (KIND_OBJ_ARRAY / KIND_OBJ_STRING / KIND_PAYLOAD_VAL).
+/* aro_gc_alloc — allocate `payload_size` bytes for a sample-defined
+ * scan-safe object.  Category = SCAN (= sample's SCAN_EDGES dispatches
+ * at scan time, typically via sample's own ObjectHeader.type).
  *
- * **CONTRACT 1 (zero-init)**: every backend MUST zero-initialize the
- * returned payload (`memset(payload, 0, ALIGN8(payload_size))` or
- * equivalent) before returning.  The GC mark phase walks these fields as
- * VALUEs / pointers via `scan_outgoing`; if any byte is stale
- * heap-pointer-shaped data from a recycled slot, mark will dereference
- * it and SEGV.  Region-bump backends get this for free (region is
- * touched once, lazy zero from the OS); freelist-recycling backends
- * MUST emit an explicit memset.
+ * **CONTRACT 1 (zero-init)**: backend zero-inits the payload so a GC
+ * scan immediately after alloc sees no stale heap-pointer bits.
  *
- * **CONTRACT 2 (GC-scan bound)**: the caller MUST have updated
- * `c->sp` to its current spill top before calling.  `c->sp` IS the
- * GC-scan upper bound; roots are `c->env..c->sp`.  Callers that need
- * to keep a heap pointer alive across alloc must spill it into a slot
- * below `c->sp` first (or bump c->sp temporarily — see
- * aro_gc_realloc_payload for the canonical pattern).  This replaces
- * the old `VALUE *sp_top` parameter: sample helpers set `c->sp = sp`
- * on entry and the framework's alloc API now reads c->sp internally.
- */
-void *aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size);
+ * **CONTRACT 2 (GC-scan bound)**: caller MUST have set `c->sp` to its
+ * current spill top before calling.  `c->env..c->sp` defines the root
+ * scan range during any inner GC trigger. */
+void *aro_gc_alloc(CTX *c, size_t payload_size);
 
 /* aro_gc_alloc_byte — allocate `payload_size` raw bytes (no VALUE
- * scanning, so no zero-init required).  Used for BaString.bytes / other
- * char[] payloads.  Caller fills the bytes after return.  GC's
- * `scan_outgoing` skips KIND_PAYLOAD_BYTE so leftover freelist-link
- * bytes are harmless.  Same c->sp contract as aro_gc_alloc. */
+ * scanning, no zero-init).  Used for BaString.bytes / other char[]
+ * payloads.  Caller fills the bytes after return.  GC's heap walk
+ * skips this category, so leftover freelist-link bytes are harmless.
+ * Same c->sp contract as aro_gc_alloc. */
 void *aro_gc_alloc_byte(CTX *c, size_t payload_size);
 
 /* aro_gc_realloc_payload — grow a payload, copying contents.  Preserves

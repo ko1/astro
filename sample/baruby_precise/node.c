@@ -232,7 +232,7 @@ baruby_ary_new(CTX *c, uint32_t capa)
     // sp[N] indexing through the rest of this function.
     VALUE *sp = c->sp;
     // First alloc scans up to sp (sp[0] uninit, must not be in range).
-    sp[0] = (VALUE)aro_gc_alloc(c, OBJ_ARRAY, sizeof(BaArray));
+    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaArray));
     BaArray *a = (BaArray *)sp[0];
     a->hdr.type = OBJ_ARRAY;
     a->hdr.flags = 0;
@@ -241,7 +241,10 @@ baruby_ary_new(CTX *c, uint32_t capa)
     if (capa) {
         // Second alloc: extend scan to include sp[0] (= the new BaArray).
         c->sp = sp + 1;
-        VALUE *items = (VALUE *)aro_gc_alloc(c, KIND_PAYLOAD_VAL, sizeof(VALUE) * capa);
+        size_t items_sz = sizeof(BaArrayItems) + capa * sizeof(VALUE);
+        BaArrayItems *items = (BaArrayItems *)aro_gc_alloc(c, items_sz);
+        items->hdr.type  = OBJ_VALUE_ARRAY;
+        items->hdr.flags = 0;
         a = (BaArray *)sp[0];   // reload after potential GC
         aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)items);
     } else {
@@ -255,7 +258,7 @@ baruby_ary_new_from(CTX *c, const VALUE *items, uint32_t n)
 {
     VALUE v = baruby_ary_new(c, n ? n : 1);
     BaArray *a = VAL2ARY(v);
-    aro_gc_wb_bulk(c, a->items, a->items, items, n);
+    aro_gc_wb_bulk(c, a->items, a->items->data, items, n);
     a->len = n;
     return v;
 }
@@ -279,12 +282,20 @@ baruby_ary_push_grow(CTX *c, VALUE *av_ref, VALUE *x_ref)
     // Caller has set c->sp already; realloc internally bumps c->sp to park
     // the old payload during the inner alloc.
     uint32_t new_capa = a->capa ? a->capa * 2 : 4;
-    VALUE *new_items = (VALUE *)aro_gc_realloc_payload(c, a->items, sizeof(VALUE) * new_capa);
+    size_t new_sz = sizeof(BaArrayItems) + new_capa * sizeof(VALUE);
+    BaArrayItems *new_items = (BaArrayItems *)aro_gc_realloc_payload(c, a->items, new_sz);
+    // realloc preserves hdr.type (= OBJ_VALUE_ARRAY).  For a 0→non-zero
+    // first grow (a->items was NULL → realloc became plain alloc) we
+    // still need to set the type tag.
+    if (new_items->hdr.type == 0) {
+        new_items->hdr.type  = OBJ_VALUE_ARRAY;
+        new_items->hdr.flags = 0;
+    }
     // Reload both a and x after potential GC move.
     a = VAL2ARY(*av_ref);
     aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)new_items);
     a->capa = new_capa;
-    aro_gc_wb(c, a->items, &a->items[a->len], *x_ref);
+    aro_gc_wb(c, a->items, &a->items->data[a->len], *x_ref);
     a->len++;
 }
 
@@ -296,7 +307,7 @@ VALUE
 baruby_str_new(CTX *c, const char *bytes, uint32_t len)
 {
     VALUE *sp = c->sp;
-    sp[0] = (VALUE)aro_gc_alloc(c, OBJ_STRING, sizeof(BaString));
+    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaString));
     BaString *s = (BaString *)sp[0];
     s->hdr.type = OBJ_STRING;
     s->len = len;
@@ -330,7 +341,7 @@ VALUE
 baruby_str_slice(CTX *c, VALUE *src_ref, uint32_t offset, uint32_t len)
 {
     VALUE *sp = c->sp;
-    sp[0] = (VALUE)aro_gc_alloc(c, OBJ_STRING, sizeof(BaString));
+    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaString));
     BaString *r = (BaString *)sp[0];
     r->hdr.type = OBJ_STRING;
     r->len = len;
@@ -364,8 +375,8 @@ baruby_ary_plus(CTX *c, VALUE *av_ref, VALUE *bv_ref)
     BaArray *r = VAL2ARY(rv);
     a = VAL2ARY(*av_ref);   // reload after alloc — may have moved
     b = VAL2ARY(*bv_ref);
-    aro_gc_wb_bulk(c, r->items, r->items,          a->items, a->len);
-    aro_gc_wb_bulk(c, r->items, r->items + a->len, b->items, b->len);
+    aro_gc_wb_bulk(c, r->items, r->items->data,          a->items->data, a->len);
+    aro_gc_wb_bulk(c, r->items, r->items->data + a->len, b->items->data, b->len);
     r->len = total;
     return rv;
 }
@@ -393,7 +404,7 @@ baruby_value_eq(VALUE a, VALUE b)
         const BaArray *aa = VAL2ARY(a), *ab = VAL2ARY(b);
         if (aa->len != ab->len) return false;
         for (uint32_t i = 0; i < aa->len; i++) {
-            if (!baruby_value_eq(aa->items[i], ab->items[i])) return false;
+            if (!baruby_value_eq(aa->items->data[i], ab->items->data[i])) return false;
         }
         return true;
     }
@@ -421,7 +432,7 @@ baruby_str_repeat(CTX *c, VALUE *sv_ref, intptr_t n)
     const BaString *s = VAL2STR(*sv_ref);
     uint64_t total = (uint64_t)s->len * (uint64_t)n;
     if (total > UINT32_MAX) total = UINT32_MAX;
-    sp[0] = (VALUE)aro_gc_alloc(c, OBJ_STRING, sizeof(BaString));
+    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaString));
     BaString *r = (BaString *)sp[0];
     s = VAL2STR(*sv_ref);   // reload after alloc
     r->hdr.type  = OBJ_STRING;
@@ -460,8 +471,8 @@ baruby_ary_repeat(CTX *c, VALUE *av_ref, intptr_t n)
     BaArray *r = VAL2ARY(rv);
     a = VAL2ARY(*av_ref);   // reload after alloc
     for (intptr_t i = 0; i < n; i++) {
-        aro_gc_wb_bulk(c, r->items, r->items + (uint32_t)i * a->len,
-                          a->items, a->len);
+        aro_gc_wb_bulk(c, r->items, r->items->data + (uint32_t)i * a->len,
+                          a->items->data, a->len);
     }
     r->len = (uint32_t)total;
     return rv;
@@ -577,7 +588,7 @@ to_s_inner(StrBuf *sb, VALUE v)
         sb_append(sb, "[", 1);
         for (uint32_t i = 0; i < a->len; i++) {
             if (i) sb_append(sb, ", ", 2);
-            to_s_inner(sb, a->items[i]);
+            to_s_inner(sb, a->items->data[i]);
         }
         sb_append(sb, "]", 1);
         return;
@@ -611,7 +622,7 @@ baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref)
     uint32_t b_len = VAL2STR(*bv_ref)->len;
     uint32_t total = a_len + b_len;
 
-    sp[0] = (VALUE)aro_gc_alloc(c, OBJ_STRING, sizeof(BaString));
+    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaString));
     BaString *r = (BaString *)sp[0];
     r->hdr.type = OBJ_STRING;
     r->len = total;
@@ -662,7 +673,7 @@ baruby_print_value(FILE *fp, VALUE v)
         fputc('[', fp);
         for (uint32_t i = 0; i < a->len; i++) {
             if (i) fputs(", ", fp);
-            baruby_print_value(fp, a->items[i]);
+            baruby_print_value(fp, a->items->data[i]);
         }
         fputc(']', fp);
     }

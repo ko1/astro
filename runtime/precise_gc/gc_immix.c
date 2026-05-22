@@ -288,7 +288,7 @@ hole_alloc_slow(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     gc_collect_internal(c, sp_top);
-    void *payload = hole_alloc(gc, kind, payload_size);
+    void *payload = hole_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
     if (!payload) {
         fprintf(stderr, "baruby_gc=immix: OOM (need %zu)\n",
                 sizeof(GCHeader) + ALIGN8(payload_size));
@@ -298,23 +298,21 @@ hole_alloc_slow(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
+aro_gc_alloc(CTX *c, size_t payload_size)
 {
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
-                 kind == KIND_PAYLOAD_VAL);
     if (__builtin_expect(gc->common.stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
         gc_collect_internal(c, sp_top);
     }
     size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
     void *payload;
     if (__builtin_expect(total > MEDIUM_MAX, 0)) {
-        payload = large_alloc(gc, kind, payload_size);
+        payload = large_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
     } else {
-        payload = hole_alloc(gc, kind, payload_size);
+        payload = hole_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(c, kind, payload_size, sp_top);
+            payload = hole_alloc_slow(c, ASTRO_GC_CAT_SCAN, payload_size, sp_top);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
@@ -394,7 +392,7 @@ process_gray(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
-        ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge_immix);
+        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, mark_edge_immix);
     }
 }
 

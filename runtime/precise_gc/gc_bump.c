@@ -54,7 +54,7 @@ aro_gc_init(CTX *c)
 }
 
 static GCHeader *
-bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned)
+bump(CTX *c, AstroGcCategory cat, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = sizeof(GCHeader) + aligned;
@@ -64,21 +64,17 @@ bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned)
         abort();
     }
     GCHeader *h = (GCHeader *)gc->region_top;
-    h->kind = (uint32_t)kind;
+    h->kind = (uint32_t)cat;
     h->size = (uint32_t)payload_size;
     gc->region_top += total;
     return h;
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
+aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
-    (void)sp_top;
-    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
-                 kind == KIND_PAYLOAD_VAL);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = bump(c, kind, payload_size, aligned);
+    GCHeader *h = bump(c, ASTRO_GC_CAT_SCAN, payload_size, aligned);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_PAYLOAD(payload, aligned);
@@ -90,10 +86,8 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
-    (void)sp_top;
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned);
+    GCHeader *h = bump(c, ASTRO_GC_CAT_BYTE, payload_size, aligned);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);

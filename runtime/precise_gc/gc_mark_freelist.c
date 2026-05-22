@@ -165,7 +165,7 @@ alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     if (__builtin_expect(slot_total > MAX_SLOT_BYTES, 0)) {
-        return alloc_large(gc, kind, payload_size);
+        return alloc_large(gc, ASTRO_GC_CAT_SCAN, payload_size);
     }
     int ci = size_class_for(slot_total);
     size_t sb = size_class_bytes[ci];
@@ -192,16 +192,16 @@ alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
     return h;
 }
 
-void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
+static inline void *
+do_alloc(CTX *c, AstroGcCategory cat, size_t payload_size)
 {
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    GCHeader *h = alloc_slot(c, kind, payload_size, sp_top);
+    GCHeader *h = alloc_slot(c, cat, payload_size, sp_top);
     void *payload = (void *)(h + 1);
     /* iter 48 bug fix: freelist-popped slots contain stale data; zero
      * pointer-typed payloads so scan sees VAL_FALSE until caller fills. */
-    if (kind != KIND_PAYLOAD_BYTE) {
+    if (cat != ASTRO_GC_CAT_BYTE) {
         ASTRO_GC_INIT_PAYLOAD(payload, ALIGN8(payload_size));
     } else {
         ASTRO_GC_INIT_BYTE_PAYLOAD(payload, ALIGN8(payload_size));
@@ -213,12 +213,15 @@ aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
 }
 
 void *
+aro_gc_alloc(CTX *c, size_t payload_size)
+{
+    return do_alloc(c, ASTRO_GC_CAT_SCAN, payload_size);
+}
+
+void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
-    /* Byte payloads aren't scanned as pointers — skip the zero-init. */
-    (void)sp_top;
-    return aro_gc_alloc(c, KIND_PAYLOAD_BYTE, payload_size);
+    return do_alloc(c, ASTRO_GC_CAT_BYTE, payload_size);
 }
 
 /* Write barrier: non-generational, so gc.h's static-inline no-op is used. */
@@ -261,7 +264,7 @@ process_gray(ASTroGC *gc)
 {
     while (gc->gray_cnt > 0) {
         GCHeader *h = gc->gray_buf[--gc->gray_cnt];
-        ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge);
+        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, mark_edge);
     }
 }
 

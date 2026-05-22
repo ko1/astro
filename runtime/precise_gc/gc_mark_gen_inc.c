@@ -318,17 +318,15 @@ maybe_collect(CTX *c, size_t add, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
+aro_gc_alloc(CTX *c, size_t payload_size)
 {
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
-                 kind == KIND_PAYLOAD_VAL);
     maybe_collect(c, sizeof(GCHeader) + ALIGN8(payload_size), sp_top);
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
-    GCHeader *h = (cls >= 0) ? slab_alloc(gc, kind, payload_size, cls)
-                           : large_alloc(gc, kind, payload_size);
+    GCHeader *h = (cls >= 0) ? slab_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size, cls)
+                           : large_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
     void *payload = (void *)(h + 1);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, ALIGN8(payload_size));
@@ -479,32 +477,19 @@ mark_value_satb(ASTroGC *gc, VALUE v)
     gray_push(gc, h);
 }
 
+/* edge_visit callback for ASTRO_GC_SCAN_EDGES.  `ctx` is `ASTroGC *gc`. */
+static void
+mark_edge(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    mark_value(gc, (VALUE)*slot);
+}
+
 static void
 scan_outgoing(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) mark_value(gc, (VALUE)a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) mark_value(gc, (VALUE)s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) mark_value(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "scan_outgoing: unknown kind");
+    if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) {
+        ASTRO_GC_SCAN_EDGES((void *)(h + 1), h->size, gc, mark_edge);
     }
 }
 

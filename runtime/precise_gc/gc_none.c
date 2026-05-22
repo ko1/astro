@@ -37,9 +37,8 @@ aro_gc_init(CTX *c)
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
+aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    (void)kind;
     void *p = calloc(1, payload_size ? payload_size : 1);
     if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;

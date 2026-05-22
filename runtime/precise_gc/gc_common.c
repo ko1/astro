@@ -35,7 +35,7 @@ void *
 aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
     VALUE *sp_top = c->sp;
-    if (!old) return aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
+    if (!old) return aro_gc_alloc(c, new_size);
 
     /* Try backend in-place growth first.  When this succeeds (large obj
      * realloc via mremap), we skip the memcpy entirely and the underlying
@@ -48,7 +48,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 
     sp_top[0] = (VALUE)old;
     c->sp = sp_top + 1;
-    void *newp = aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
+    void *newp = aro_gc_alloc(c, new_size);
     c->sp = sp_top;
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;

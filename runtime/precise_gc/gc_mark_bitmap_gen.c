@@ -393,19 +393,17 @@ maybe_collect_slow(CTX *c, VALUE *sp_top)
 }
 
 void *
-aro_gc_alloc(CTX *c, AroGcKind kind, size_t payload_size)
+aro_gc_alloc(CTX *c, size_t payload_size)
 {
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    ASTRO_ASSERT(kind == KIND_OBJ_ARRAY || kind == KIND_OBJ_STRING ||
-                 kind == KIND_PAYLOAD_VAL);
     if (__builtin_expect(gc->common.stress || bytes_since_gc + (sizeof(GCHeader) + ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
         maybe_collect_slow(c, sp_top);
     }
     size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
-    void *payload = (cls >= 0) ? slab_alloc(gc, kind, payload_size, cls)
-                             : large_alloc(gc, kind, payload_size);
+    void *payload = (cls >= 0) ? slab_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size, cls)
+                             : large_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset(payload, 0, ALIGN8(payload_size));
     bytes_since_gc += sizeof(GCHeader) + ALIGN8(payload_size);
@@ -522,7 +520,7 @@ mark_edge(void *ctx, void **slot)
 static void
 scan_outgoing(ASTroGC *gc, GCHeader *h)
 {
-    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge);
+    if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, mark_edge);
 }
 
 static void
