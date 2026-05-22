@@ -712,52 +712,12 @@ aro_gc_size_of(void *p)
     return h->size;
 }
 
-/* In-place realloc for large objs via mremap.  gc_mark_gen is gen, with
- * young_objs[] / remset_buf[] holding GCHeader pointers into LargeObj
- * headers.  We can't safely relocate the LargeObj without updating
- * those tables, so we call mremap WITHOUT MREMAP_MAYMOVE — the kernel
- * either extends in place or fails.  Failures fall back to the
- * alloc + memcpy path. */
-void *
-aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
-{
-    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    if (gc->common.stress) return NULL;
-
-    size_t new_slot_total = sizeof(GCHeader) + ALIGN8(new_size);
-    if (size_class_for(new_slot_total) >= 0) return NULL;  /* fits a slab */
-
-    LargeObj **link = &large_head;
-    while (*link) {
-        char *lo_payload = (char *)(*link) + sizeof(LargeObj) + sizeof(GCHeader);
-        if (lo_payload == (char *)old) break;
-        link = &(*link)->next;
-    }
-    if (!*link) return NULL;
-    LargeObj *lo = *link;
-
-    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(new_size);
-    size_t new_map_bytes = (need + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
-    size_t old_map_bytes = lo->map_bytes;
-    GCHeader *h = (GCHeader *)(lo + 1);
-    size_t old_size = h->size;
-
-    if (new_map_bytes != old_map_bytes) {
-        /* No MREMAP_MAYMOVE: fails if kernel can't extend in place.
-         * Avoids stale GCHeader pointers in young_objs / remset_buf. */
-        void *res = mremap(lo, old_map_bytes, new_map_bytes, 0);
-        if (res == MAP_FAILED) return NULL;
-        ASTRO_ASSERT(res == lo);
-        lo->map_bytes = new_map_bytes;
-    }
-    h->size = (uint32_t)new_size;
-
-    if (new_size > old_size) {
-        size_t delta = sizeof(GCHeader) + ALIGN8(new_size)
-                     - sizeof(GCHeader) - ALIGN8(old_size);
-        gc->common.stats.total_bytes += new_size - old_size;
-        gc->common.stats.heap_bytes  += new_size - old_size;
-        young_bytes += delta;
-    }
-    return old;
-}
+/* In-place realloc for large objs via mremap.  Template-driven via
+ * gc_inplace_mremap.h — see that header's docstring. */
+#define large_head                       gc->large_head
+#define ARO_GC_INPLACE_THRESHOLD(n)      (size_class_for(sizeof(GCHeader) + ALIGN8(n)) >= 0)
+#define ARO_GC_INPLACE_PAGE_SIZE         PAGE_SIZE
+#define ARO_GC_INPLACE_MREMAP_FLAGS      0
+#define ARO_GC_INPLACE_BYTES_ACCT(d)     (young_bytes += (d))
+#include "gc_inplace_mremap.h"
+#undef large_head
