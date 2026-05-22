@@ -17,6 +17,7 @@
 // v1: no evacuation in major (mark-region only).  Same fragmentation
 // limitation as gc_immix.c — v2 may add opportunistic evacuation.
 
+#define _GNU_SOURCE      /* mremap; must precede stdio.h */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -712,4 +713,48 @@ aro_gc_size_of(void *p)
 {
     GCHeader *h = (GCHeader *)p - 1;
     return h->size;
+}
+
+/* In-place realloc for large objs via mremap (no MAYMOVE).  Gen
+ * backend: young_objs / remset may hold GCHeader pointers into LargeObj,
+ * so we cannot tolerate moving — call mremap without MREMAP_MAYMOVE,
+ * fail (and fall back) if kernel can't extend in place. */
+void *
+aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (gc->common.stress) return NULL;
+    if (sizeof(GCHeader) + ALIGN8(new_size) <= MEDIUM_MAX) return NULL;
+
+    LargeObj **link = &large_head;
+    while (*link) {
+        char *lo_payload = (char *)(*link) + sizeof(LargeObj) + sizeof(GCHeader);
+        if (lo_payload == (char *)old) break;
+        link = &(*link)->next;
+    }
+    if (!*link) return NULL;
+    LargeObj *lo = *link;
+
+    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(new_size);
+    size_t new_map_bytes = (need + (size_t)sysconf(_SC_PAGESIZE) - 1) & ~((size_t)sysconf(_SC_PAGESIZE) - 1);
+    size_t old_map_bytes = lo->map_bytes;
+    GCHeader *h = (GCHeader *)(lo + 1);
+    size_t old_size = h->size;
+
+    if (new_map_bytes != old_map_bytes) {
+        void *res = mremap(lo, old_map_bytes, new_map_bytes, 0);
+        if (res == MAP_FAILED) return NULL;
+        lo->map_bytes = new_map_bytes;
+    }
+    h->size = (uint32_t)new_size;
+
+    if (new_size > old_size) {
+        size_t delta = sizeof(GCHeader) + ALIGN8(new_size)
+                     - sizeof(GCHeader) - ALIGN8(old_size);
+        (void)delta;
+        gc->common.stats.total_bytes += new_size - old_size;
+        gc->common.stats.heap_bytes  += new_size - old_size;
+        old_alloc_since_major += delta;
+    }
+    return old;
 }

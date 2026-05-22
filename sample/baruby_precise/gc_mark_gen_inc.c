@@ -19,6 +19,7 @@
 // (mark phase vs sweep phase), reducing max_pause_ms vs mark_gen even
 // without real interleaving.
 
+#define _GNU_SOURCE      /* mremap (no MAYMOVE); must precede stdio.h */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -757,4 +758,49 @@ aro_gc_size_of(void *p)
 {
     GCHeader *h = (GCHeader *)p - 1;
     return h->size;
+}
+
+/* In-place realloc for large objs via mremap (no MAYMOVE).  Gen backend:
+ * young_objs / remset hold GCHeader pointers into LargeObj, so we cannot
+ * tolerate the LargeObj moving — call mremap without MREMAP_MAYMOVE, fail
+ * (and fall back) if kernel can't extend in place. */
+void *
+aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (gc->common.stress) return NULL;
+
+    size_t new_slot_total = sizeof(GCHeader) + ALIGN8(new_size);
+    if (size_class_for(new_slot_total) >= 0) return NULL;
+
+    LargeObj **link = &large_head;
+    while (*link) {
+        char *lo_payload = (char *)(*link) + sizeof(LargeObj) + sizeof(GCHeader);
+        if (lo_payload == (char *)old) break;
+        link = &(*link)->next;
+    }
+    if (!*link) return NULL;
+    LargeObj *lo = *link;
+
+    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(new_size);
+    size_t new_map_bytes = (need + PAGE_SIZE - 1) & ~(size_t)(PAGE_SIZE - 1);
+    size_t old_map_bytes = lo->map_bytes;
+    GCHeader *h = (GCHeader *)(lo + 1);
+    size_t old_size = h->size;
+
+    if (new_map_bytes != old_map_bytes) {
+        void *res = mremap(lo, old_map_bytes, new_map_bytes, 0);
+        if (res == MAP_FAILED) return NULL;
+        lo->map_bytes = new_map_bytes;
+    }
+    h->size = (uint32_t)new_size;
+
+    if (new_size > old_size) {
+        size_t delta = sizeof(GCHeader) + ALIGN8(new_size)
+                     - sizeof(GCHeader) - ALIGN8(old_size);
+        gc->common.stats.total_bytes += new_size - old_size;
+        gc->common.stats.heap_bytes  += new_size - old_size;
+        young_bytes += delta;
+    }
+    return old;
 }
