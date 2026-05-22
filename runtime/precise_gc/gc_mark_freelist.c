@@ -5,7 +5,7 @@
 // Allocator: try per-class freelist first (LIFO), fall back to bump.
 // Collect: mark from roots, then sequential sweep walks region linearly:
 //   - marked   → clear mark
-//   - unmarked → mark KIND_FREE, push to class freelist (size preserved
+//   - unmarked → set HDR_FREE_BIT, push to class freelist (size preserved
 //                so the region walk can skip past dead slots correctly)
 //
 // vs gc_mark (slab pages): no page chain, no page metadata; one

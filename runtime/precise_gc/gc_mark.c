@@ -10,7 +10,8 @@
 // Layout:
 //   Page = { Page *next; uint16_t class_idx; pad; slot[0]; slot[1]; ... }
 //   Slot = { GCHeader; payload[slot_payload_bytes] }
-//   When free: GCHeader.kind = KIND_FREE and payload[0..7] = next free-link.
+//   When free: head.gc_flags has HDR_FREE_BIT, and bytes[8..15] (after head)
+//   hold the FreeSlot.next link.
 //
 // Allocation: round payload up to size class, pop slot from freelist.
 // If freelist empty, alloc new page (mmap) and seed freelist with its slots.
@@ -21,7 +22,7 @@
 // outgoing refs.  Same as the old linked-list version.
 //
 // Sweep phase: walk all pages, for each slot check `marked` (skip
-// KIND_FREE slots).  Unmarked → kind = KIND_FREE + push to freelist.
+// HDR_FREE_BIT slots).  Unmarked → set HDR_FREE_BIT + push to freelist.
 // Marked → clear marked bit.  Also walk the large-objects list with
 // the same logic; freed large objects munmap their region back.
 //

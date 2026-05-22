@@ -5,8 +5,9 @@
 //   - Tenured: 512 MiB Immix arena (block 32 KiB × line 128 B mark-region)
 //
 // Minor GC: copy of nursery survivors into tenured holes via the Immix
-// bump-allocator (hole_alloc_header).  Forwarding: KIND_FREE + payload[0..8]
-// stores fwd pointer (payload is dead-from-source after forwarding).
+// bump-allocator (hole_alloc_header).  Forwarding: HDR_FORWARDED bit +
+// payload[0..8] overlay stores fwd pointer (payload is dead-from-source
+// after forwarding; nursery is reset post-minor).
 //
 // Major GC: regular Immix mark + line-mark sweep over tenured.  Folds
 // nursery via a leading minor first.
