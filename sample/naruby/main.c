@@ -163,6 +163,29 @@ main(int argc, char *argv[])
     struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
     if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
 
+    // Framework universal flags signal early.
+    if (bcfg.help_requested) {
+        extern void show_help(void);
+        show_help();
+        return 0;
+    }
+    if (bcfg.version_requested) {
+        printf("naruby (ASTro %s)\n", ASTRO_VERSION);
+        return 0;
+    }
+
+    // Translate framework flags into naruby's internal OPTION.  The
+    // mapping reflects the new attribute/action vocabulary:
+    //   --plain       → OPTION.plain (no code store)
+    //   --aot-compile alone        → OPTION.compile_only (bake, no run)
+    //   --aot-compile + --run      → OPTION.compile_first (bake then run)
+    //   --pg-compile               → OPTION.pg_at_exit (run + PGSD bake)
+    if (bcfg.plain)                          OPTION.plain         = true;
+    if (bcfg.aot_compile && !bcfg.run)       OPTION.compile_only  = true;
+    if (bcfg.aot_compile && bcfg.run)        OPTION.compile_first = true;
+    if (bcfg.pg_compile)                     OPTION.pg_at_exit    = true;
+    if (bcfg.quiet)                          OPTION.quiet         = true;
+
     // Order:
     //   1. Parse CLI (so we know about --ccs / --plain / -c / -p).
     //   2. Optionally wipe code_store (--ccs).

@@ -52,12 +52,13 @@ static char *read_all(FILE *fp, size_t *out_len) {
 
 static void usage(void) {
     fprintf(stderr,
-        "usage: koruby [options] [file]\n"
-        "  -e <code>      eval code\n"
-        "  --dump         dump AST\n"
-        "  -c             compile only (no run, generate node_specialized.c)\n"
-        "  -q             quiet\n"
-        "  -v             verbose\n");
+        "usage: koruby [options] [file] [argv...]\n"
+        "\n"
+        "Koruby-specific options:\n"
+        "  -e <code>          eval code\n"
+        "      --dump-ast     dump the parsed AST and exit\n"
+        "\n");
+    astro_print_build_help(stderr);
     exit(1);
 }
 
@@ -193,6 +194,28 @@ int main(int argc, char *argv[])
         astro_cs_init(cs, src, 0);
     }
 
+    /* Framework universal flags signal early. */
+    if (bcfg.help_requested) {
+        usage();   /* exits */
+        return 0;
+    }
+    if (bcfg.version_requested) {
+        printf("koruby (ASTro %s)\n", ASTRO_VERSION);
+        return 0;
+    }
+
+    /* Translate framework flags into koruby's internal OPTION. */
+    if (bcfg.quiet)   OPTION.quiet   = true;
+    if (bcfg.verbose) OPTION.verbose = true;
+    /* `koruby -c` was "compile only, do not produce all.so"; map from
+     * --aot-compile (alone, without --run). */
+    if (bcfg.aot_compile && !bcfg.run) OPTION.compile_only = true;
+    /* `koruby --aot-compile` (old; produced all.so via dlopen path) is
+     * the runtime equivalent of "bake then run".  Map --aot-compile + --run
+     * to the legacy g_aot_compile flag so the existing all.so build
+     * pipeline kicks in. */
+    if (bcfg.aot_compile && bcfg.run)  g_aot_compile = true;
+
     const char *e_code = NULL;
     const char *file = NULL;
     int script_arg_start = argc;  /* args beyond the script are passed to ARGV */
@@ -200,11 +223,7 @@ int main(int argc, char *argv[])
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if (strcmp(a, "-e") == 0 && i+1 < argc) { e_code = argv[++i]; }
-        else if (strcmp(a, "--dump") == 0) { OPTION.dump_ast = true; }
-        else if (strcmp(a, "-c") == 0) { OPTION.compile_only = true; }
-        else if (strcmp(a, "-q") == 0) { OPTION.quiet = true; }
-        else if (strcmp(a, "-v") == 0) { OPTION.verbose = true; }
-        else if (strcmp(a, "--aot-compile") == 0) { g_aot_compile = true; }
+        else if (strcmp(a, "--dump-ast") == 0) { OPTION.dump_ast = true; }
         else if (a[0] == '-' && a[1] == '-' && file) { script_arg_start = i; break; }
         else if (a[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", a);

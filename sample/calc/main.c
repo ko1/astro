@@ -45,21 +45,17 @@ usage(const char *progname)
 {
     fprintf(stderr,
         "Usage: %s [options] [-e EXPR]\n"
-        "       %s --build OUTPUT [build opts] -e EXPR\n"
         "\n"
-        "Interpreter mode (no --build):\n"
+        "Calc-specific options:\n"
         "  -e EXPR        evaluate EXPR once and exit (no REPL)\n"
         "      --disasm   print x86 disassembly of the specialized code\n"
-        "      --no-compile  skip code-store specialization (pure interpreter)\n"
-        "  -q, --quiet    suppress hit/miss progress messages\n"
-        "  -h, --help     show this help\n"
-        "\n"
-        "Build mode (--build OUTPUT ...): writes a standalone exe to OUTPUT.\n"
-        "Common build opts: --aot/--no-aot, -O0..-O3, --strip, --lto,\n"
-        "                   --static, --gc-sections, --cc=PATH.\n"
+        "\n",
+        progname);
+    astro_print_build_help(stderr);
+    fprintf(stderr,
         "\n"
         "With no -e, %s starts an interactive REPL.\n",
-        progname, progname, progname);
+        progname);
 }
 
 static VALUE
@@ -87,16 +83,25 @@ main(int argc, char *argv[])
     struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
     if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
 
+    // Framework universal flags signal early.
+    if (bcfg.help_requested) {
+        usage(argv[0]);
+        return 0;
+    }
+    if (bcfg.version_requested) {
+        printf("calc (ASTro %s)\n", ASTRO_VERSION);
+        return 0;
+    }
+
+    // Translate framework flags into calc's internal OPTION.
+    if (bcfg.quiet)            OPTION.quiet = true;
+    if (bcfg.plain)            OPTION.no_compiled_code = true;
+
     const char *eval_expr = NULL;
 
+    // Parse calc-specific flags (--disasm, -e EXPR).
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "--quiet") == 0) {
-            OPTION.quiet = true;
-        }
-        else if (strcmp(argv[i], "--no-compile") == 0) {
-            OPTION.no_compiled_code = true;
-        }
-        else if (strcmp(argv[i], "--disasm") == 0) {
+        if (strcmp(argv[i], "--disasm") == 0) {
             OPTION.disasm = true;
         }
         else if (strcmp(argv[i], "-e") == 0) {
@@ -105,10 +110,6 @@ main(int argc, char *argv[])
                 return 1;
             }
             eval_expr = argv[i];
-        }
-        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-            usage(argv[0]);
-            return 0;
         }
         else {
             fprintf(stderr, "calc: unknown option: %s\n", argv[i]);

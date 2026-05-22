@@ -30,14 +30,12 @@ end
 # (with the matching mode flag) dlopen-loads those SDs.
 #
 # `mode` selects the bake variant:
-#   nil  — `-c`  : compile-only, no profile-aware nodes (`node_call`).
-#   '-p' — `-p`  : run + profile-aware AST (`node_call2`); the run is
-#                  needed for any future PGC layer to gather data.
+#   nil           : --aot-compile --run  — AOT-bake then run with baked.
+#   --pg-compile  : --pg-compile         — run + profile-aware PGSD bake.
 def warm_aot(mode = nil)
   system("rm -rf code_store") || raise
-  cmd = mode ? "./naruby -q #{mode} bench/#{BITEM}.na.rb"
-             : "./naruby -q -c bench/#{BITEM}.na.rb"
-  system(cmd) || raise
+  flags = mode || "--aot-compile --run"
+  system("./naruby --quiet #{flags} bench/#{BITEM}.na.rb") || raise
 end
 
 Benchmark.bm(20) {|x|
@@ -62,24 +60,26 @@ Benchmark.bm(20) {|x|
 
   # Plain mode: no AOT load, no AOT bake.
   x.report("naruby/plain") {
-    system("./naruby -i -q bench/#{BITEM}.na.rb #{null}") || raise
+    system("./naruby --plain --quiet bench/#{BITEM}.na.rb #{null}") || raise
   }
 
   # AOT cached: build code_store/all.so once cold, then time the warm run.
+  # `-b` (= skip both bakes) means the timed run uses cached SDs without
+  # re-baking.
   warm_aot
   x.report("naruby/aot") {
-    system("./naruby -b -q bench/#{BITEM}.na.rb #{null}") || raise
+    system("./naruby -b --quiet bench/#{BITEM}.na.rb #{null}") || raise
   }
 
-  # Profile-guided cached.  `-p` makes the parser emit `node_call2`
-  # with `sp_body` linked at parse time (callsite_resolve walks pending
-  # forward references once each `def` finishes).  HASH excludes
-  # `sp_body` so the live-AST hash matches the bake-time hash, and the
-  # SD's call-site emission uses indirect dispatch through
+  # Profile-guided cached.  --pg-compile makes the parser emit
+  # `node_call2` with `sp_body` linked at parse time (callsite_resolve
+  # walks pending forward references once each `def` finishes).  HASH
+  # excludes `sp_body` so the live-AST hash matches the bake-time hash,
+  # and the SD's call-site emission uses indirect dispatch through
   # `sp_body->head.dispatcher` so method redefinition stays correct.
-  warm_aot("-p")
+  warm_aot("--pg-compile")
   x.report("naruby/pg") {
-    system("./naruby -p -b -q bench/#{BITEM}.na.rb #{null}") || raise
+    system("./naruby --pg-compile -b --quiet bench/#{BITEM}.na.rb #{null}") || raise
   }
 
   x.report("gcc/-O0") { system("./b0 #{null}") || raise } if OPT[:gcc]

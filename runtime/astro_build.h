@@ -35,13 +35,20 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 
 struct astro_build_config {
     // ---------- mode (from argv parsing) ----------
     bool plain;          // --plain        — don't use compiled code
     bool aot_compile;    // --aot-compile  — bake AOT specializations
     bool pg_compile;     // --pg-compile   — bake PG specializations (implies run)
-    bool run;            // --run          — execute during build (or implied by --pg-compile)
+    bool run;            // --run          — execute (default in runtime, opt-in for build)
+
+    // ---------- universal CLI knobs (from argv parsing) ----------
+    bool quiet;             // -q / --quiet         (sample translates to its own quiet state)
+    bool verbose;           // -v / --verbose       (runtime verbose; sample translates)
+    bool help_requested;    // -h / --help          (sample prints its own help and exits)
+    bool version_requested; // --version            (sample prints version and exits)
 
     // ---------- output ----------
     const char *out_exe; // first positional after --build
@@ -57,7 +64,7 @@ struct astro_build_config {
     const char *sanitize;
     const char *const *extra_cflags;   // heap-allocated, from ASTRO_BUILD_OPTS env (freed by dispose)
     const char *const *extra_ldflags;  // heap-allocated, from env
-    bool verbose;
+    bool show_cmd;       // ASTRO_BUILD_OPTS=--show-cmd — print the cc command line
     bool keep_intermediates;
 
     // ---------- sample-supplied (filled by the per-sample build helper) ----------
@@ -87,6 +94,10 @@ struct astro_build_config {
 //   --aot-compile
 //   --pg-compile       (also sets --run)
 //   --plain
+//   -q / --quiet
+//   -v / --verbose
+//   -h / --help        (signal — sample prints its own help and exits)
+//   --version          (signal — sample prints version and exits)
 //
 // Other flags (starting with `-`) are passed through to the sample's
 // parser.  argv is compacted in-place; *argc_io is updated.
@@ -149,5 +160,20 @@ int astro_build_aot_executable(struct Node *root,
 struct Node;
 void astro_build_begin_aot_session(void);
 void astro_build_end_aot_session(void);
+
+// ---------------------------------------------------------------------------
+// Universal CLI helpers
+// ---------------------------------------------------------------------------
+
+// Framework version string.  Embedded in the binary; sample's --version
+// handler typically prints something like "<prog> (ASTro <ver>)".
+#ifndef ASTRO_VERSION
+#define ASTRO_VERSION "0.1"
+#endif
+
+// Print the framework's build-flag help section to fp.  Sample's own
+// usage() / show_help() includes this so the framework flags get
+// documented uniformly across samples.
+void astro_print_build_help(FILE *fp);
 
 #endif // ASTRO_BUILD_H

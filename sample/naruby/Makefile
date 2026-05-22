@@ -33,7 +33,7 @@ run: naruby
 	time -p ./naruby $(NARUBY_OPT) test.na.rb
 
 runb:
-	./naruby -b test.na.rb
+	./naruby -b --quiet test.na.rb
 
 crun:
 	make clean
@@ -42,14 +42,14 @@ crun:
 ptrain:
 	make clean
 	make naruby
-	./naruby $(ITEM) -p
+	./naruby --pg-compile $(ITEM)
 	rm -f naruby
 	make naruby
 
 ctrain:
 	make clean
 	make naruby
-	./naruby -c $(ITEM)
+	./naruby --aot-compile --run $(ITEM)
 	rm -f naruby
 	make naruby
 
@@ -57,7 +57,7 @@ gdb: naruby
 	gdb -ex run --args ./naruby $(NARUBY_OPT) test.na.rb
 
 c: naruby
-	./naruby -c test.na.rb
+	./naruby --aot-compile --run test.na.rb
 
 cc_opt= bench/f0.c bench/f1.c bench/f2.c bench/f3.c bench/f4.c bench/f5.c bench/f6.c bench/f7.c bench/f8.c bench/f9.c
 # -fno-inline -fno-ipa-sra -fno-ipa-cp -fno-early-inlining -fno-tree-sra -fno-tree-dce -fno-tree-ccp -fno-tree-fre -fno-tree-ch -fno-tree-dominator-opts -fno-tree-ter -fno-tree-pre

@@ -131,7 +131,7 @@ parse_c_toolchain_tokens(struct astro_build_config *cfg, char **tokens)
         if (strcmp(a, "--no-lto")      == 0) { cfg->lto = false;   continue; }
         if (strcmp(a, "--static")      == 0) { cfg->static_link = true;  continue; }
         if (strcmp(a, "--gc-sections") == 0) { cfg->gc_sections = true;  continue; }
-        if (strcmp(a, "--verbose")     == 0) { cfg->verbose = true; continue; }
+        if (strcmp(a, "--show-cmd")    == 0) { cfg->show_cmd = true; continue; }
         if (strcmp(a, "--keep")        == 0) { cfg->keep_intermediates = true; continue; }
 
         fprintf(stderr, "ASTRO_BUILD_OPTS: unknown token: %s\n", a);
@@ -216,6 +216,12 @@ astro_build_extract_flags(int *argc_io, char **argv,
         if (strcmp(a, "--pg-compile")  == 0) { cfg->pg_compile = true;
                                                cfg->run = true;         continue; }
         if (strcmp(a, "--run")         == 0) { cfg->run = true;         continue; }
+
+        // Universal CLI knobs.
+        if (strcmp(a, "-q") == 0 || strcmp(a, "--quiet")   == 0) { cfg->quiet = true;             continue; }
+        if (strcmp(a, "-v") == 0 || strcmp(a, "--verbose") == 0) { cfg->verbose = true;           continue; }
+        if (strcmp(a, "-h") == 0 || strcmp(a, "--help")    == 0) { cfg->help_requested = true;    continue; }
+        if (strcmp(a, "--version") == 0)                         { cfg->version_requested = true; continue; }
 
         // Other `-...` token — leave for the sample's parser.
         argv[wi++] = argv[ri];
@@ -459,7 +465,7 @@ astro_build_executable(const struct astro_build_config *cfg)
     // dlopen — astro_code_store.c references dlsym etc.
     sb_append(&cmd, &len, &capa, " -ldl");
 
-    if (cfg->verbose) {
+    if (cfg->show_cmd) {
         fprintf(stderr, "astro_build: %s\n", cmd);
     }
 
@@ -487,7 +493,7 @@ astro_build_executable(const struct astro_build_config *cfg)
         char *q2 = sh_squote(cfg->out_exe);
         sb_append(&strip_cmd, &sl, &sc, q2);
         free(q2);
-        if (cfg->verbose) fprintf(stderr, "astro_build: %s\n", strip_cmd);
+        if (cfg->show_cmd) fprintf(stderr, "astro_build: %s\n", strip_cmd);
         int sret = system(strip_cmd);
         if (sret != 0) {
             fprintf(stderr, "astro_build: strip failed (exit %d)\n", sret);
@@ -591,4 +597,27 @@ astro_build_aot_executable(struct Node *root,
     free(sd_paths);
     free(extras);
     return rc;
+}
+
+void
+astro_print_build_help(FILE *fp)
+{
+    fprintf(fp,
+        "ASTro common flags (handled by framework):\n"
+        "  --plain          run without using compiled code\n"
+        "  --aot-compile    AOT-compile (does not run unless --run is given)\n"
+        "  --pg-compile     profile-guided compile (implies --run)\n"
+        "  --run            execute the program\n"
+        "  --build OUT      produce a standalone executable at OUT\n"
+        "  -q, --quiet      suppress informational output\n"
+        "  -v, --verbose    verbose output\n"
+        "  -h, --help       show help\n"
+        "      --version    show version\n"
+        "\n"
+        "C-toolchain knobs go in $ASTRO_BUILD_OPTS:\n"
+        "  --cc=PATH, -O0..-O3, -Os, -Og, --opt=N,\n"
+        "  --debug/--no-debug, --strip/--no-strip, --lto/--no-lto,\n"
+        "  --static, --gc-sections, --sanitize=LIST,\n"
+        "  --cflag=ARG, --ldflag=ARG, --show-cmd, --keep\n"
+    );
 }
