@@ -16,3 +16,4 @@ code_store/
 
 # chibi-scheme cache for `make compare`
 .chibi/
+sample/ascheme_precise/ascheme_precise
