@@ -52,10 +52,19 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
     c->sp = sp_top;
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     /* iter 75 Step C: head is now at payload offset 0 (= INSIDE payload),
-     * so the memcpy above overwrites newp's freshly-init'd gc_size with
-     * old's gc_size.  Restore it to new_size so subsequent reallocs see
-     * the right size. */
-    ((ASTroObjectHeader *)newp)->gc_size = (uint32_t)new_size;
+     * so the memcpy above overwrites newp's freshly-init'd head with
+     * old's head.  Restore the framework-owned fields:
+     *   - gc_size to new_size (= the alloc size)
+     *   - gc_flags to 0 (= fresh state, no inherited mark/old/dirty/free)
+     *   - gc_fwd to NULL (= for moving GCs, fresh state)
+     * Sample's `flags` field is intentionally preserved (= same logical
+     * object, just bigger). */
+    ASTroObjectHeader *h = (ASTroObjectHeader *)newp;
+    h->gc_size  = (uint32_t)new_size;
+    h->gc_flags = 0;
+#ifdef ASTRO_GC_HAS_FWD
+    h->gc_fwd = NULL;
+#endif
     return newp;
 }
 
@@ -78,7 +87,12 @@ aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
     void *newp = aro_gc_alloc_byte(c, new_size);
     c->sp = sp_top;
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
-    /* Restore gc_size — see note in aro_gc_realloc_payload above. */
-    ((ASTroObjectHeader *)newp)->gc_size = (uint32_t)new_size;
+    /* Restore framework head fields — see note in aro_gc_realloc_payload. */
+    ASTroObjectHeader *h = (ASTroObjectHeader *)newp;
+    h->gc_size  = (uint32_t)new_size;
+    h->gc_flags = 0;
+#ifdef ASTRO_GC_HAS_FWD
+    h->gc_fwd = NULL;
+#endif
     return newp;
 }
