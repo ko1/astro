@@ -1386,6 +1386,50 @@ backend の pretenure 経路で既に large allocs が tenured に行くため�
 直接的な win は限定的。 ただし tenured 内 dead large の遅延回収が
 気になるなら同じ経路を移植する余地あり。
 
+### 4.6 large → large の realloc(3) in-place 化 (iter 67-68)
+
+`aro_gc_realloc_in_place(c, old, new_size)` という per-backend hook を
+gc.h に追加し、 gc_common.c で weak default (NULL を返して fallback) を
+置く。 gc_copy.c / gc_mark_compact.c は強い override を提供して、
+large→large の resize を **realloc(3)** で in-place 化する。
+
+glibc は ≥128 KiB の chunk を mmap-backed で確保するので、 realloc(3)
+は mremap で「物理 page を追加するだけ、 仮想アドレスは保持 (or 同一)」
+で済む。 caller (sieve の BaArray.items doubling) は memcpy + 一時 2x
+メモリ消費を払わなくて良くなる。
+
+実装:
+- arena 範囲外 (= large obj) かつ new_size ≥ LARGE_THRESHOLD のときだけ動く
+- large_head linked list を walk して該当 LargeObj を見つけて realloc(3)
+- realloc が address を変えた場合は linked list の next リンクを patch
+- 新増領域は KIND_PAYLOAD_VAL なら memset(0)、 byte payload なら skip
+- stats / bytes_since_gc を delta 分だけ inc (adaptive trigger 機能)
+- stress mode (毎 alloc GC させたい) では NULL を返して fallback
+- 小 obj の realloc (parking + alloc + memcpy) には影響なし
+
+perf (median of 5-7, plain mode):
+
+| Bench       | gc_copy 前→後   | gc_mark_compact 前→後 |
+|-------------|------------------|------------------------|
+| sieve       | 1.186 → 1.050    | 1.138 → 1.067 (-6.2%)  |
+| hash_chain  | 1.111 → 1.062    | 1.011 → 1.064 (noisy)  |
+| list_sort   | 0.928 → 0.882    | 0.962 → 0.984          |
+| list_alloc  | 0.596 → 0.575    | 0.700 → 0.683 (-2.4%)  |
+| cons_list   | 0.605 → 0.614    | 0.712 → 0.707          |
+| fib_pair    | 0.669 → 0.667    | 0.845 → 0.832          |
+
+最大 win は sieve (gc_copy で **-11.5%**, gc_mark_compact で -6.2%)。
+128 MiB items の doubling で memcpy が消えるのが効く。 cache pressure も
+減るので mutator も若干速くなる。
+
+contract:
+- aro_gc_realloc_in_place は GC を発火させない (realloc(3) は libc、 我々の
+  GC は呼ばない)
+- linked list walk O(N) は in-place 経路でのみ発生、 多 large obj に
+  なったら doubly-linked list 化を検討
+- gc_none は LargeObj を持たない (libc realloc 直接) ので独自 realloc_payload
+  override 経路で in_place hook の影響を受けない
+
 ## 6. 既知の問題
 
 - **AOT mode は moving GC 移行後に未検証** — SD bake された経路で
