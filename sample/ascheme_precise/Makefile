@@ -11,17 +11,59 @@ NODE_GENFILES=node_eval.c \
               node_head.h
 
 RUNTIME=../../runtime
+PRECISE_GC_DIR := $(RUNTIME)/precise_gc
+
+# GC backend selector — identical to baruby_precise.  Phase 1 of the
+# migration uses `none` (= libc malloc, no collection, no rooting needed).
+# Later phases will enable mark / copy etc.
+GC ?= none
+GC_NUM_none             := 1
+GC_NUM_mark             := 2
+GC_NUM_mark_gen         := 3
+GC_NUM_mark_gen_inc     := 4
+GC_NUM_copy             := 5
+GC_NUM_copy_gen         := 6
+GC_NUM_copy_gen_inc     := 7
+GC_NUM_mark_compact     := 8
+GC_NUM_mark_compact_gen := 9
+GC_NUM_bump             := 10
+GC_NUM_mark_bump_gen    := 11
+GC_NUM_immix            := 12
+GC_NUM_immix_gen        := 13
+GC_NUM_mark_bitmap_gen  := 14
+GC_NUM_mark_card_gen    := 15
+GC_NUM_mark_freelist    := 16
+GC_NUM_copy_scramble    := 17
+GC_NUM := $(GC_NUM_$(GC))
+ifeq ($(GC_NUM),)
+$(error Unknown GC backend "$(GC)")
+endif
+
+GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c
+ifeq ($(GC),none)
+GC_COMMON_SRC :=
+else
+GC_COMMON_SRC := $(PRECISE_GC_DIR)/gc_common.c
+endif
+
+# Track current GC selection so a `make GC=foo` after `make GC=bar`
+# actually rebuilds.
+GC_MARKER := $(shell test -f .built_gc && cat .built_gc 2>/dev/null)
+ifneq ($(GC_MARKER),$(GC))
+$(shell echo "$(GC)" > .built_gc)
+endif
 
 optflags=-O3
 
 READLINE_CFLAGS := $(shell echo 'int main(){return 0;}' | gcc -x c -lreadline - -o /dev/null 2>/dev/null && echo "-DUSE_READLINE")
 READLINE_LDFLAGS := $(if $(READLINE_CFLAGS),-lreadline)
 
-ascheme_precise: main.c parse.c node.c Makefile $(NODE_GENFILES) context.h node.h parse.h
+ascheme_precise: main.c parse.c node.c Makefile $(NODE_GENFILES) context.h node.h parse.h .built_gc
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall -Wno-unused-function $(READLINE_CFLAGS) \
 	    -rdynamic \
-	    -o ascheme_precise main.c parse.c node.c -ldl -lm -lgmp \
-	    /usr/lib/x86_64-linux-gnu/libgc.so.1 \
+	    -DBARUBY_GC=$(GC_NUM) \
+	    -o ascheme_precise main.c parse.c node.c $(GC_COMMON_SRC) $(GC_SRC) \
+	    -ldl -lm -lgmp \
 	    $(READLINE_LDFLAGS)
 
 # Alias so existing test/ targets still work without changes.

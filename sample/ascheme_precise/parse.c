@@ -14,6 +14,7 @@
 #include <string.h>
 #include <gmp.h>
 #include "context.h"
+#include "precise_gc/gc.h"
 #include "node.h"
 #include "parse.h"
 
@@ -91,7 +92,7 @@ read_list(CTX *c, struct reader *r)
             reader_skip_ws(r);
             int close = reader_getc(r);
             if (close != ')') scm_error(c, "expected ')' after dotted tail");
-            return scm_cons(car, cdr);
+            return scm_cons(c, car, cdr);
         }
         // not a dotted-tail '.', push back both characters and treat as identifier
         reader_ungetc(r, next);
@@ -100,7 +101,7 @@ read_list(CTX *c, struct reader *r)
         reader_ungetc(r, ch);
     }
     VALUE cdr = read_list(c, r);
-    return scm_cons(car, cdr);
+    return scm_cons(c, car, cdr);
 }
 
 static VALUE
@@ -128,7 +129,7 @@ read_string(CTX *c, struct reader *r)
         buf[n++] = (char)ch;
     }
     buf[n] = '\0';
-    return scm_make_string(buf, n);
+    return scm_make_string(c, buf, n);
 }
 
 static VALUE
@@ -142,7 +143,7 @@ read_hash(CTX *c, struct reader *r)
         VALUE list = read_list(c, r);
         size_t len = 0;
         for (VALUE p = list; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) len++;
-        VALUE vec = scm_make_vector(len, SCM_UNSPEC);
+        VALUE vec = scm_make_vector(c, len, SCM_UNSPEC);
         size_t i = 0;
         for (VALUE p = list; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr, i++)
             SCM_PTR(vec)->vec.items[i] = SCM_PTR(p)->pair.car;
@@ -166,18 +167,18 @@ read_hash(CTX *c, struct reader *r)
                 buf[n++] = (char)e;
             }
             buf[n] = '\0';
-            if (strcmp(buf, "space")   == 0) return scm_make_char(' ');
-            if (strcmp(buf, "newline") == 0) return scm_make_char('\n');
-            if (strcmp(buf, "tab")     == 0) return scm_make_char('\t');
-            if (strcmp(buf, "return")  == 0) return scm_make_char('\r');
-            if (strcmp(buf, "nul")     == 0) return scm_make_char(0);
-            if (strcmp(buf, "null")    == 0) return scm_make_char(0);
-            if (strcmp(buf, "delete")  == 0) return scm_make_char(127);
-            if (strcmp(buf, "escape")  == 0) return scm_make_char(27);
+            if (strcmp(buf, "space")   == 0) return scm_make_char(c, ' ');
+            if (strcmp(buf, "newline") == 0) return scm_make_char(c, '\n');
+            if (strcmp(buf, "tab")     == 0) return scm_make_char(c, '\t');
+            if (strcmp(buf, "return")  == 0) return scm_make_char(c, '\r');
+            if (strcmp(buf, "nul")     == 0) return scm_make_char(c, 0);
+            if (strcmp(buf, "null")    == 0) return scm_make_char(c, 0);
+            if (strcmp(buf, "delete")  == 0) return scm_make_char(c, 127);
+            if (strcmp(buf, "escape")  == 0) return scm_make_char(c, 27);
             scm_error(c, "unknown character name #\\%s", buf);
         }
         reader_ungetc(r, next);
-        return scm_make_char((uint32_t)(unsigned char)first);
+        return scm_make_char(c, (uint32_t)(unsigned char)first);
     }
     scm_error(c, "unsupported # syntax: #%c", ch);
 }
@@ -207,7 +208,7 @@ read_atom(CTX *c, struct reader *r, int first)
             mpz_t num, den;
             if (mpz_init_set_str(num, buf, 10) == 0) {
                 if (mpz_init_set_str(den, slash + 1, 10) == 0 && mpz_sgn(den) != 0) {
-                    VALUE rv = scm_make_rational_zz(num, den);
+                    VALUE rv = scm_make_rational_zz(c, num, den);
                     mpz_clear(num); mpz_clear(den);
                     return rv;
                 }
@@ -219,19 +220,19 @@ read_atom(CTX *c, struct reader *r, int first)
         char *end;
         long long ll = strtoll(buf, &end, 10);
         if (*end == '\0' && errno != ERANGE) {
-            return scm_make_int((int64_t)ll);
+            return scm_make_int(c, (int64_t)ll);
         }
         // try mpz parse for large integers
         mpz_t z;
         if (mpz_init_set_str(z, buf, 10) == 0) {
-            VALUE rv = scm_normalize_int(z); mpz_clear(z); return rv;
+            VALUE rv = scm_normalize_int(c, z); mpz_clear(z); return rv;
         }
         mpz_clear(z);
         // try double
         double d = strtod(buf, &end);
-        if (*end == '\0') return scm_make_double(d);
+        if (*end == '\0') return scm_make_double(c, d);
     }
-    return scm_intern(buf);
+    return scm_intern(c, buf);
 }
 
 static VALUE
@@ -247,11 +248,11 @@ read_form(CTX *c, struct reader *r)
     case '#': return read_hash(c, r);
     case '\'': {
         VALUE v = read_form(c, r);
-        return scm_cons(scm_intern("quote"), scm_cons(v, SCM_NIL));
+        return scm_cons(c, scm_intern(c, "quote"), scm_cons(c, v, SCM_NIL));
     }
     case '`': {
         VALUE v = read_form(c, r);
-        return scm_cons(scm_intern("quasiquote"), scm_cons(v, SCM_NIL));
+        return scm_cons(c, scm_intern(c, "quasiquote"), scm_cons(c, v, SCM_NIL));
     }
     case ',': {
         int next = reader_getc(r);
@@ -259,7 +260,7 @@ read_form(CTX *c, struct reader *r)
         if (next == '@') which = "unquote-splicing";
         else reader_ungetc(r, next);
         VALUE v = read_form(c, r);
-        return scm_cons(scm_intern(which), scm_cons(v, SCM_NIL));
+        return scm_cons(c, scm_intern(c, which), scm_cons(c, v, SCM_NIL));
     }
     default:
         return read_atom(c, r, ch);
@@ -287,7 +288,7 @@ scm_read_all_string(CTX *c, const char *src, size_t len)
         reader_ungetc(&r, ch);
         VALUE v = read_form(c, &r);
         if (v == SCM_EOFV) break;
-        *tail = scm_cons(v, SCM_NIL);
+        *tail = scm_cons(c, v, SCM_NIL);
         tail = &SCM_PTR(*tail)->pair.cdr;
     }
     return forms;

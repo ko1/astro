@@ -28,28 +28,28 @@ NODE_DEF
 node_const_double(CTX * restrict c, NODE * restrict n, double v)
 {
     (void)n;
-    return scm_make_double(v);
+    return scm_make_double(c, v);
 }
 
 NODE_DEF
 node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
 {
     (void)n;
-    return scm_make_string(s, strlen(s));
+    return scm_make_string(c, s, strlen(s));
 }
 
 NODE_DEF
 node_const_sym(CTX * restrict c, NODE * restrict n, const char *s)
 {
     (void)c; (void)n;
-    return scm_intern(s);
+    return scm_intern(c, s);
 }
 
 NODE_DEF
 node_const_char(CTX * restrict c, NODE * restrict n, uint32_t cp)
 {
     (void)c; (void)n;
-    return scm_make_char(cp);
+    return scm_make_char(c, cp);
 }
 
 NODE_DEF
@@ -199,7 +199,7 @@ node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t has_
     // `leaf` is set by the compiler iff the body contains no inner
     // `lambda` form.  scm_apply_tail uses it to enable frame reuse on
     // self-tail-calls without risking a captured-frame corruption.
-    VALUE cl = scm_make_closure(body, c->env, (int)nparams, (int)has_rest);
+    VALUE cl = scm_make_closure(c, body, c->env, (int)nparams, (int)has_rest);
     SCM_PTR(cl)->closure.leaf = leaf ? true : false;
     return cl;
 }
@@ -724,7 +724,7 @@ node_cons_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith
     VALUE av = EVAL_ARG(c, a);
     VALUE bv = EVAL_ARG(c, b);
     if (LIKELY(cache->serial == c->globals_serial))
-        return scm_cons(av, bv);
+        return scm_cons(c, av, bv);
     return arith_dispatch(c, cache, "cons", PRIM_CONS_VAL, av, bv);
 }
 

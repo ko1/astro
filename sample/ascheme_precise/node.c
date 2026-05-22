@@ -2,21 +2,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "node.h"
 #include "context.h"
+#include "precise_gc/gc.h"
+#include "node.h"
 #include "astro_code_store.h"
 
 // Allocation hook used by generated ALLOC_node_* functions.
 //
-// We allocate NODEs out of the GC heap so that scheme values referenced
-// from NODE fields (`node_quote.v`, `node_const_str.s`, etc.) are kept
-// alive by Boehm's conservative scan.  NODEs themselves never need to
-// be reclaimed (they live as long as the program), but skipping GC for
-// them would let referenced strings/lists/closures get freed prematurely.
+// NODEs live as long as the program; we allocate via libc malloc (rather
+// than aro_gc_alloc) because the generated ALLOC_node_* prototype doesn't
+// carry CTX, and NODEs never need reclamation.  The Scheme VALUEs that
+// NODEs reference (e.g. node_quote.v) live on the precise GC heap and are
+// reachable from the GC's roots via c->globals etc. — NODEs are read-only
+// metadata that the GC doesn't have to scan.
 static __attribute__((noinline)) NODE *
 node_allocate(size_t size)
 {
-    NODE *n = (NODE *)GC_malloc(size);
+    NODE *n = (NODE *)calloc(1, size);
     if (n == NULL) {
         fprintf(stderr, "ascheme: node allocation failed\n");
         exit(1);

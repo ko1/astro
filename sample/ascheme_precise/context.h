@@ -12,20 +12,8 @@
 #include <alloca.h>
 #include <gmp.h>
 
-// Boehm-Demers-Weiser conservative GC.  We don't depend on libgc-dev
-// (which provides gc.h), so the few entry points we need are declared
-// here directly.  Linking is via `-lgc`.
-extern void *GC_malloc(size_t);
-extern void *GC_malloc_atomic(size_t);          // no embedded pointers
-extern void *GC_malloc_uncollectable(size_t);   // never GC'd
-extern void *GC_realloc(void *, size_t);
-extern void  GC_free(void *);
-extern void  GC_init(void);
-extern void  GC_gcollect(void);
-extern size_t GC_get_heap_size(void);
-extern size_t GC_get_total_bytes(void);
-extern void  GC_set_finalizer(void *, void (*)(void *, void *), void *,
-                              void (**)(void *, void *), void **);
+// ASTro precise GC framework.  Migration plan: docs/migration.md
+#include "precise_gc/gc_types.h"   /* ASTroObjectHeader, AroGcCommonState */
 
 // VALUE = tagged Scheme value (SVAL).  Tag bits:
 //   xxxx_xxx1 → fixnum (signed 62-bit, shifted left by 1)
@@ -115,6 +103,7 @@ struct sobj;
 struct sframe;
 struct CTX_struct;
 struct Node;
+struct ASTroGC;
 
 typedef VALUE (*scm_prim_fn)(struct CTX_struct *c, int argc, VALUE *argv);
 
@@ -129,8 +118,16 @@ struct scont {
     int     tag;
 };
 
+/* struct sobj head field: ASTroObjectHeader at offset 0 (iter 75 contract).
+ * head.flags low 5 bits hold ascheme's obj_type tag (= ~20 types fit in 5
+ * bits).  Higher head.flags bits are sample-reserved for future use.
+ * head.gc_flags / gc_size are framework-controlled. */
+#define SCM_TYPE_MASK  0x1Fu
+#define SCM_TYPE(o)    ((int)((o)->head.flags & SCM_TYPE_MASK))
+#define SCM_SET_TYPE(o, t)  ((o)->head.flags = (uint16_t)((o)->head.flags & ~SCM_TYPE_MASK) | (uint16_t)(t))
+
 struct sobj {
-    int type;
+    ASTroObjectHeader head;
     union {
         struct { VALUE car, cdr; } pair;
         struct { char *chars; size_t len; } str;
@@ -243,6 +240,12 @@ extern VALUE PRIM_CONS_VAL, PRIM_EQ_P_VAL, PRIM_EQV_P_VAL;
 #define ASCHEME_LOOP_MAX_PARAMS 8
 
 typedef struct CTX_struct {
+    // ASTro precise GC framework: process-scope GC instance.  Backend
+    // defines `struct ASTroGC` internally (must start with `AroGcCommonState
+    // common` for ASTRO_GC_COMMON() cast to work).  Allocated by
+    // aro_gc_init() and freed by aro_gc_fini().
+    struct ASTroGC *astro_gc;
+
     // Current lexical environment chain (closures + call frames).
     struct sframe *env;
 
@@ -304,29 +307,29 @@ extern struct sobj S_NIL_OBJ, S_TRUE_OBJ, S_FALSE_OBJ, S_UNSPEC_OBJ, S_EOF_OBJ;
 #define SCM_EOFV     SCM_OBJ_VAL(&S_EOF_OBJ)
 
 // Type predicates (work for both immediates and heap objects).
-static inline bool scm_is_pair(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_PAIR; }
+static inline bool scm_is_pair(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_PAIR; }
 static inline bool scm_is_null(VALUE v) { return v == SCM_NIL; }
 static inline bool scm_is_true(VALUE v) { return v != SCM_FALSE; }   // R5RS: only #f is false
 static inline bool scm_is_false(VALUE v) { return v == SCM_FALSE; }
 static inline bool scm_is_bool(VALUE v) { return v == SCM_TRUE || v == SCM_FALSE; }
-static inline bool scm_is_symbol(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_SYMBOL; }
-static inline bool scm_is_string(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_STRING; }
-static inline bool scm_is_char(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_CHAR; }
-static inline bool scm_is_vector(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_VECTOR; }
-static inline bool scm_is_closure(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_CLOSURE; }
-static inline bool scm_is_prim(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_PRIM; }
+static inline bool scm_is_symbol(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_SYMBOL; }
+static inline bool scm_is_string(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_STRING; }
+static inline bool scm_is_char(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_CHAR; }
+static inline bool scm_is_vector(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_VECTOR; }
+static inline bool scm_is_closure(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_CLOSURE; }
+static inline bool scm_is_prim(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_PRIM; }
 // "double" covers both inline flonums and the heap-allocated OBJ_DOUBLE.
 // scm_is_heap_double matches only the latter — used by `scm_get_double`
 // and friends to decide whether to dereference.
-static inline bool scm_is_heap_double(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_DOUBLE; }
+static inline bool scm_is_heap_double(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_DOUBLE; }
 static inline bool scm_is_double(VALUE v) { return SCM_IS_FLONUM(v) || scm_is_heap_double(v); }
-static inline bool scm_is_bignum(VALUE v)  { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_BIGNUM; }
-static inline bool scm_is_rational(VALUE v){ return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_RATIONAL; }
-static inline bool scm_is_complex(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_COMPLEX; }
-static inline bool scm_is_mvalues(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_MVALUES; }
-static inline bool scm_is_promise(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_PROMISE; }
-static inline bool scm_is_port(VALUE v)    { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_PORT; }
-static inline bool scm_is_cont(VALUE v) { return SCM_IS_PTR(v) && SCM_PTR(v)->type == OBJ_CONT; }
+static inline bool scm_is_bignum(VALUE v)  { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_BIGNUM; }
+static inline bool scm_is_rational(VALUE v){ return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_RATIONAL; }
+static inline bool scm_is_complex(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_COMPLEX; }
+static inline bool scm_is_mvalues(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_MVALUES; }
+static inline bool scm_is_promise(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_PROMISE; }
+static inline bool scm_is_port(VALUE v)    { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_PORT; }
+static inline bool scm_is_cont(VALUE v) { return SCM_IS_PTR(v) && SCM_TYPE(SCM_PTR(v)) == OBJ_CONT; }
 static inline bool scm_is_proc(VALUE v) {
     return scm_is_closure(v) || scm_is_prim(v) || scm_is_cont(v);
 }
@@ -344,30 +347,31 @@ static inline bool scm_is_number(VALUE v) {
 }
 bool scm_is_integer_value(VALUE v);     // defined in main.c (handles all numeric kinds)
 
-// Object-construction helpers (defined in main.c).
-struct sobj *scm_alloc(int type);
-VALUE scm_cons(VALUE a, VALUE d);
-VALUE scm_intern(const char *name);
-VALUE scm_make_string(const char *s, size_t len);
-VALUE scm_make_string_n(size_t len, char fill);
-VALUE scm_make_char(uint32_t cp);
-VALUE scm_make_vector(size_t len, VALUE fill);
-VALUE scm_make_double(double d);
-VALUE scm_make_int(int64_t v);          // fixnum or bignum if overflows
-VALUE scm_make_bignum_z(mpz_srcptr z);  // copy mpz_t into a fresh bignum sobj
-VALUE scm_make_rational_q(mpq_srcptr q);
-VALUE scm_make_rational_zz(mpz_srcptr num, mpz_srcptr den);
-VALUE scm_make_complex(double re, double im);
-VALUE scm_make_mvalues(int count, VALUE *items);
-VALUE scm_make_closure(struct Node *body, struct sframe *env, int nparams, int has_rest);
-VALUE scm_make_prim(const char *name, scm_prim_fn fn, int min_argc, int max_argc);
+// Object-construction helpers (defined in main.c).  All take CTX so the
+// precise GC framework knows which heap instance to allocate from.
+struct sobj *scm_alloc(CTX *c, int type);
+VALUE scm_cons(CTX *c, VALUE a, VALUE d);
+VALUE scm_intern(CTX *c, const char *name);
+VALUE scm_make_string(CTX *c, const char *s, size_t len);
+VALUE scm_make_string_n(CTX *c, size_t len, char fill);
+VALUE scm_make_char(CTX *c, uint32_t cp);
+VALUE scm_make_vector(CTX *c, size_t len, VALUE fill);
+VALUE scm_make_double(CTX *c, double d);
+VALUE scm_make_int(CTX *c, int64_t v);          // fixnum or bignum if overflows
+VALUE scm_make_bignum_z(CTX *c, mpz_srcptr z);  // copy mpz_t into a fresh bignum sobj
+VALUE scm_make_rational_q(CTX *c, mpq_srcptr q);
+VALUE scm_make_rational_zz(CTX *c, mpz_srcptr num, mpz_srcptr den);
+VALUE scm_make_complex(CTX *c, double re, double im);
+VALUE scm_make_mvalues(CTX *c, int count, VALUE *items);
+VALUE scm_make_closure(CTX *c, struct Node *body, struct sframe *env, int nparams, int has_rest);
+VALUE scm_make_prim(CTX *c, const char *name, scm_prim_fn fn, int min_argc, int max_argc);
 double scm_get_double(VALUE v);          // converts any numeric to C double
-VALUE scm_normalize_int(mpz_srcptr z);   // → fixnum if fits, bignum otherwise
-VALUE scm_normalize_rat(mpq_t q);        // → fixnum / bignum / rational
-VALUE scm_simplify_complex(double re, double im);  // im=0 ⇒ real
+VALUE scm_normalize_int(CTX *c, mpz_srcptr z);   // → fixnum if fits, bignum otherwise
+VALUE scm_normalize_rat(CTX *c, mpq_t q);        // → fixnum / bignum / rational
+VALUE scm_simplify_complex(CTX *c, double re, double im);  // im=0 ⇒ real
 
 // Frame helpers.
-struct sframe *scm_new_frame(struct sframe *parent, int nslots);
+struct sframe *scm_new_frame(CTX *c, struct sframe *parent, int nslots);
 
 // Apply a procedure value.  Used by primitives like apply / map.
 VALUE scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv);
