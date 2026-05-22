@@ -236,6 +236,7 @@ common_build_flags_and_link(void)
     char extra_cflags[1024];
     snprintf(extra_cflags, sizeof(extra_cflags),
              "--param=early-inlining-insns=100"
+             " -fcf-protection=none"           /* drop endbr64 4-byte prologue */
              " -I" BARUBY_PRECISE_DIR
              " -I" ASTRO_RUNTIME_DIR
              " -I" ASTRO_PRISM_INC_DIR
