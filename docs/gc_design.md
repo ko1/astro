@@ -1,9 +1,8 @@
 # ASTro GC 設計
 
 ASTro framework が precise GC についてどんな抽象を提供し、 sample (= 言語実装)
-側が何を差し込むかをまとめた設計ドキュメント。 実装は `sample/baruby_precise/`
-配下に 16 backend の reference impl があり、 iter 62 で gc_copy.c に対して
-contract macro 抽象化の PoC が完了している。
+側が何を差し込むかをまとめた設計ドキュメント。 実装は `runtime/precise_gc/`
+配下に 16 backend、 reference sample は `sample/baruby_precise/`。
 
 関連: `idea.md` §8.2、 `code_store_quirks.md` (AST NODE 不動制約)、
 `sample/baruby/` (conservative libgc 比較対象)、
@@ -13,14 +12,15 @@ contract macro 抽象化の PoC が完了している。
 
 ## 0. 概要
 
-ASTro の precise GC は **MMTk 流の VMBinding 抽象** を C macro で実現する
-形を取る。 大きく 2 層に分離:
+ASTro の precise GC は **MMTk 流の VMBinding 抽象** を C macro で実現する形
+を取る。 大きく 2 層に分離:
 
 ```
 ┌──────────────────────────────────────────────┐
 │ sample (= 言語実装)                          │
-│  - VALUE 表現 / object header                │
-│  - object shape (= traversal / init policy)  │
+│  - VALUE 表現                                │
+│  - object struct (先頭に ASTroObjectHeader)  │
+│  - object shape macro (SCAN_EDGES)           │
 │  - root scan (= sp[] + globals 等)           │
 │  - AstroGc instance の allocation + bind     │
 └──────────────────────────────────────────────┘
@@ -32,32 +32,53 @@ ASTro の precise GC は **MMTk 流の VMBinding 抽象** を C macro で実現�
 │  - GC algorithm (16 backend: copy / mark /   │
 │    immix / immix_gen / ...)                  │
 │  - mmap / region 管理                        │
-│  - allocator API (aro_gc_alloc 等)           │
+│  - allocator API (aro_gc_alloc(c, size))     │
+│  - ASTroObjectHeader 共通型 (gc_types.h)     │
 └──────────────────────────────────────────────┘
 ```
 
-framework は **graph (= GC object と pointer エッジ) しか見ない**。 VALUE
-の tagging 規約、 object の具体的 layout、 root の在処などは sample が
-contract macro で提供する。 framework は与えられた macro を compile-time
-に inline 展開して動く (= MMTk の generic monomorphization と等価)。
+framework は **object header の size と forwarding state しか見ない**。
+VALUE の tagging 規約、 object の具体的 layout、 type tag、 root の在処
+などは sample が contract macro で提供する。 framework は与えられた
+macro を compile-time に inline 展開して動く (= MMTk の generic
+monomorphization と等価)。
 
 これにより:
 
 - 同一 framework で異言語 sample が動く (baruby / koruby / pystro / etc)
-- 同 sample 内で 16 GC backend を `-DASTRO_PRECISE_GC_<algo>` で切替可能
+- 同 sample 内で 16 GC backend を `-DBARUBY_GC=<n>` で切替可能
 - 将来 multi-instance (= 同 process で複数 GC) 拡張も「**AstroGc** struct を
   複数 allocate するだけ」 で対応 (= framework は module-static 持たない)
 
-### 0.1 設計の核心 3 つ
+### 0.1 設計の核心 4 つ
 
-1. **contract macros**: sample が「VALUE 表現」「object shape」「root の場所」
+1. **統一 ASTroObjectHeader**: 全 GC object の先頭 8 B (or 16 B) に置く header。
+   sample 用 `flags` (16b) と framework 用 `gc_flags` (16b) + `gc_size` (32b)
+   + (mark_compact 系のみ) `gc_fwd` を持つ。 旧来の「framework GCHeader prefix
+   + sample ObjectHeader」 の 2 層を 1 層に統合。
+2. **contract macros**: sample が「VALUE 表現」「object shape」「root の場所」
    を C macro で提供。 framework は macro を inline 展開して使う。
-2. **`struct AstroGc`**: GC algorithm が必要とする process-scope state を
+3. **`struct ASTroGC`**: GC algorithm が必要とする process-scope state を
    1 つの struct にまとめる。 sample が instance を 1 つ (or 複数) 確保し、
    `aro_gc_init` で初期化。 framework module-static は **持たない**。
-3. **edges 経由の object scan**: `ASTRO_GC_SCAN_EDGES(h, edge_visit)` macro
-   が outgoing reference を slot pointer で列挙、 mark / forward / update
-   全 phase が同 macro + 違う visit callback で済む (= MMTk 流)。
+4. **edges 経由の object scan**: `ASTRO_GC_SCAN_EDGES(h, size, ctx, visit)`
+   macro が outgoing reference を slot pointer で列挙、 mark / forward /
+   update 全 phase が同 macro + 違う visit callback で済む (= MMTk 流)。
+
+### 0.2 移行履歴 (iter 75)
+
+- **Step A** (iter 75): `aro_gc_kind_of` dead code 削除、 backend が sample
+  kind を直接認知する経路を切る前段整理
+- **Step B** (iter 75): `aro_gc_alloc(c, kind, size)` から `kind` 引数を排除。
+  sample が `head.flags` の type tag (e.g. `OBJ_ARRAY`) で全 dispatch を所有。
+  `aro_gc_alloc_vals` / `AstroGcCategory` 等の framework-side 分類を全廃。
+- **Step C** (iter 75): framework GCHeader prefix を廃止し、 統一
+  `ASTroObjectHeader` を payload offset 0 に置く。 sample 構造体は
+  `ASTroObjectHeader head` を先頭 field に持つ。
+- **Step C+** (iter 75): Cheney 系 backend (= copy / copy_gen / copy_gen_inc /
+  mark_bump_gen / immix_gen) の fwd ptr を payload[8..15] に overlay。
+  ASTroObjectHeader が 16 B → 8 B に縮む。 mark_compact 系 (= phase 3 で fwd と
+  sample data 両方アクセス) のみ dedicated `gc_fwd` field を残す。
 
 ---
 
@@ -69,97 +90,190 @@ GC は **graph (= node = GC object、 edge = inter-object pointer)** しか見�
 ### 1.1 1 GC object = 1 つの連続アロケーション
 
 ```c
-void *aro_gc_alloc(AroGcKind kind, size_t payload_size, VALUE *sp_top);
+void *aro_gc_alloc(CTX *c, size_t payload_size);
+void *aro_gc_alloc_byte(CTX *c, size_t payload_size);   /* zero-fill 省略 */
 ```
 
-1 回の `aro_gc_alloc` 呼び出しが「1 ノード」 を作る。 header + 連続 payload。
+1 回の `aro_gc_alloc` 呼び出しが「1 ノード」 を作る。 返り値は **payload
+先頭 (= ASTroObjectHeader head の位置)**。 sample 構造体は `head` を先頭
+field に持ち、 残りに自身のデータを並べる:
+
+```c
+typedef struct BaArray {
+    ASTroObjectHeader head;   /* offset 0..7  (8 B non-moving) */
+    uint32_t          len;    /* offset 8..11 */
+    uint32_t          capa;   /* offset 12..15 */
+    BaArrayItems     *items;  /* offset 16..23 */
+} BaArray;   /* total 24 B */
+```
+
 **不連続なメモリブロックは別々の GC object** にして pointer で繋ぐ。
 
-例: baruby の Array は **2 object 構造**:
+例: baruby_precise の Array は **2 object 構造**:
 
 ```
-┌─ KIND_OBJ_ARRAY ────────────┐
-│ GCHeader                    │
-│ BaArray {                   │
-│   uint32_t len;             │
-│   uint32_t capa;            │
-│   VALUE *items; ────────────┼──┐
-│ }                           │  │
-└─────────────────────────────┘  │
-                                 ▼
-                 ┌─ KIND_PAYLOAD_VAL ──────┐
-                 │ GCHeader                │
-                 │ VALUE[0]                │
-                 │ VALUE[1]                │
-                 │ ...                     │
-                 └─────────────────────────┘
+┌─ BaArray (head.flags = OBJ_ARRAY) ──┐
+│ ASTroObjectHeader head              │
+│ uint32_t len                        │
+│ uint32_t capa                       │
+│ BaArrayItems *items ────────────────┼──┐
+└─────────────────────────────────────┘  │
+                                         ▼
+                ┌─ BaArrayItems (head.flags = OBJ_VALUE_ARRAY) ─┐
+                │ ASTroObjectHeader head                        │
+                │ VALUE data[0]                                 │
+                │ VALUE data[1]                                 │
+                │ ...                                           │
+                └───────────────────────────────────────────────┘
 ```
 
 - BaArray header (= sample 視点の「Array」 入口) は **items pointer 1 個だけ持つ**
-- VALUE[] payload は **全 slot が VALUE** (= scan 対象)
+- BaArrayItems は head 直後に flex array で VALUE が並ぶ (= 全 slot が VALUE、
+  scan 対象)
 - GC mark で BaArray → items を辿り → 各 VALUE → 各要素 object に伝播
 
 なぜ 2 分けるか:
-- header は **固定 size** (= len/capa/pointer)
-- payload は **可変 size** (= 要素数に依存)
+- BaArray は **固定 size** (= head + len + capa + pointer)
+- BaArrayItems は **可変 size** (= 要素数に依存)
 - 1 object に統合すると `Array.push` の grow で外部 reference 無効化
 
-同様に BaString は header (= len/capa/bytes pointer) + bytes[] (= KIND_PAYLOAD_BYTE)
-の 2 object 構造 (例外: SSO で小文字列だけ 1 object に inline)。
+同様に BaString は header (= head + len + capa + bytes pointer) + BaByteData
+(= head + bytes[]) の 2 object 構造 (例外: SSO で小文字列だけ 1 object に inline)。
 
-### 1.2 GCHeader layout
+### 1.2 ASTroObjectHeader layout
 
-framework が touch する header フィールドは **3 つだけ**:
+`runtime/precise_gc/gc_types.h` 定義:
 
-| field | 用途 | 必要 backend |
+```c
+typedef struct ASTroObjectHeader {
+    uint16_t flags;        /* sample-controlled (type tag + sample bits) */
+    uint16_t gc_flags;     /* framework-controlled (marked/old/dirty/fwd 等) */
+    uint32_t gc_size;      /* allocation size in bytes */
+#ifdef ASTRO_GC_HAS_FWD
+    void    *gc_fwd;       /* mark_compact 系のみ (= phase 3 で fwd 必要) */
+#endif
+} ASTroObjectHeader;
+```
+
+| field | width | controller | 用途 |
+|---|---|---|---|
+| `flags` | 16b | sample | type tag (OBJ_ARRAY / OBJ_STRING / OBJ_VALUE_ARRAY / OBJ_BYTE_DATA 等) + sample-specific bits (SSO 等) |
+| `gc_flags` | 16b | framework | mark / old / dirty / forwarded / free bits。 backend ごとに layout 異なる |
+| `gc_size` | 32b | framework | sample が `aro_gc_alloc(c, sz)` で渡した size。 heap walk で次 object 位置算出 |
+| `gc_fwd` | 64b | framework | mark_compact 系のみ。 forwarding pointer (= phase 2 で書き、 phase 3 / 4 で読む) |
+
+**サイズ統計**: 14 / 16 backend が **8 B** (`ASTRO_GC_HAS_FWD` 未定義)、
+mark_compact + mark_compact_gen のみ **16 B**。
+
+Cheney 系 moving backend (copy / copy_gen / copy_gen_inc / mark_bump_gen /
+immix_gen) は from-space を破棄する性質を利用して、 fwd ptr を payload
+offset 8 (= 先頭 sample field の場所) に **overlay 配置** することで dedicated
+field 不要に。 ASTroObjectHeader が 8 B のまま保てる:
+
+```c
+/* Cheney forward (gc_copy.c 等): */
+static void *
+forward_payload(ASTroGC *gc, void *old_payload)
+{
+    ASTroObjectHeader *oldh = (ASTroObjectHeader *)old_payload;
+    if (oldh->gc_flags & HDR_FORWARDED) {
+        return *(void **)((char *)oldh + sizeof(ASTroObjectHeader));  /* overlay */
+    }
+    /* memcpy old → new in to-space, then mark old + write overlay */
+    void *new_payload = ...;
+    memcpy(new_payload, old_payload, ALIGN8(oldh->gc_size));
+    oldh->gc_flags |= HDR_FORWARDED;
+    *(void **)((char *)oldh + sizeof(ASTroObjectHeader)) = new_payload;
+    return new_payload;
+}
+```
+
+**最低 payload size 制約**: overlay 方式は payload >= 16 B (= 8 B head + 8 B fwd
+overlay 用) が必要。 baruby_precise の全 sample 型 (BaArray / BaString /
+BaArrayItems(capa≥1) / BaByteData(len≥8)) は満たす。
+
+mark_compact 系は **slide phase で sample data と fwd 両方を読む** ので
+overlay 不可、 dedicated `gc_fwd` field が必要 (= head 16 B)。
+
+### 1.3 gc_flags の bit layout (backend 別)
+
+各 backend が必要とする state bit が異なるので、 layout は backend-local:
+
+| backend | gc_flags bits | head size |
 |---|---|---|
-| `size` | moving 系の region walk で次 object 位置に進む | 全 backend が realloc 等で使う |
-| mark bit | live signal | non-moving header-bit 系 (mark / mark_freelist 等) |
-| `fwd` | forwarding pointer | moving 系 (copy / mark_compact / immix compact phase) |
+| none / bump | (なし、 GC せず) | 8 B |
+| mark | MARKED / FREE | 8 B |
+| mark_gen / mark_gen_inc | MARKED / OLD / DIRTY / FREE | 8 B |
+| mark_freelist | MARKED / FREE | 8 B |
+| mark_bitmap_gen / mark_card_gen | FREE のみ (mark/old/dirty は per-page bitmap) | 8 B |
+| immix | mark_epoch (8b, low byte) | 8 B |
+| immix_gen | mark_epoch (8b) + OLD / DIRTY / FORWARDED | 8 B |
+| copy | FORWARDED / MARKED (large only) | 8 B |
+| copy_gen / copy_gen_inc | OLD / DIRTY / FORWARDED | 8 B |
+| mark_bump_gen | MARKED / OLD / DIRTY / FREE / FORWARDED | 8 B |
+| mark_compact | MARKED + `gc_fwd` field | 16 B |
+| mark_compact_gen | MARKED / OLD / DIRTY + `gc_fwd` field | 16 B |
 
-その他 (kind / class 情報 / age bits 等) は **sample 内部の事情**、 framework
-からは opaque。 sample は header に好きなビット allocation で kind 等を埋める。
+`FORWARDED` bit は Cheney 系で「from-space から copy 済」 marker。
+`MARKED` (large object) は copy.c で「移動しない large が live」 marker。
 
-backend ごとに必要フィールドが違うので、 framework は `ASTRO_GC_NEEDS_FWD` /
-`ASTRO_GC_NEEDS_HEADER_MARK` フラグで `struct GCHeader` を #ifdef 化する
-(= moving は 16B、 non-moving slab は 8B など最適化可能)。
+backend 内 file-local に `HDR_<X>` macro として定義。
 
 ---
 
 ## 2. sample が提供する contract
 
-sample は `#include "<framework gc.c>"` の前に以下の typedef + macro を
-define しておく。 framework は macro を compile-time inline 展開して使う。
+sample は `context.h` に以下を define する。 framework は macro を
+compile-time inline 展開して使う。
 
-### 2.1 VALUE / pointer 表現
+### 2.1 VALUE 表現
 
 ```c
-typedef intptr_t VALUE;   // sample 固有の値表現 (LSB tag / NaN-box / etc)
+typedef intptr_t VALUE;   /* sample 固有の値表現 (LSB tag / NaN-box / etc) */
 
-#define ASTRO_GC_VALUE_IS_PTR(v)      /* heap pointer か判定 */
-#define ASTRO_GC_VALUE_TO_HEADER(v)   /* VALUE → GCHeader * */
-#define ASTRO_GC_HEADER_TO_VALUE(h)   /* GCHeader * → VALUE (forward 後 rewrite で使う) */
+#define IS_PTR(v)   /* heap pointer (= 8-aligned non-singleton) 判定 */
 ```
 
-framework は VALUE 内部表現を知らない (= 任意 tagging 戦略 OK)。
+framework は VALUE の tagging 戦略を知らない。 sample が `IS_PTR` で
+「heap pointer かどうか」 を判定する macro を提供。 GC scan の visit
+callback は `IS_PTR` 通過した slot のみ heap として扱う。
+
+VALUE → ASTroObjectHeader* の変換は **plain cast** (= header は payload
+offset 0 にいるので、 VALUE をそのまま `(ASTroObjectHeader *)v` できる)。
 
 ### 2.2 Object shape
 
 ```c
 /* Outgoing reference の列挙。 visit callback は slot pointer を受ける
  * (= mark phase なら read のみ、 forward phase なら read + write back)。
- * KIND ごとに何を edge とするかを sample 内 switch で記述。 */
-#define ASTRO_GC_SCAN_EDGES(h, edge_visit) /* ... */
+ * sample が head.flags の type tag で switch して、 各 type の edges を
+ * visit する。 */
+#define ASTRO_GC_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {  \
+    ASTroObjectHeader *_h = (ASTroObjectHeader *)(payload);                \
+    switch (_h->flags & OBJ_TYPE_MASK) {                                   \
+      case OBJ_ARRAY: {                                                    \
+          BaArray *_a = (BaArray *)(payload);                              \
+          edge_visit((ctx), (void **)&_a->items);                          \
+          break;                                                            \
+      }                                                                     \
+      case OBJ_STRING: { /* ... */ break; }                                \
+      case OBJ_VALUE_ARRAY: { /* iterate VALUE slots */ break; }           \
+      case OBJ_BYTE_DATA: break;  /* raw bytes — no edges */               \
+    }                                                                       \
+} while (0)
 
-/* 新 payload を scan-safe な値で初期化 (alloc 直後 GC が走っても安全) */
-#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes) memset(payload, 0, size_bytes)
+/* 新 payload を scan-safe な値で初期化 (alloc 直後 GC が走っても安全)。
+ * head は backend が init するので、 sample 側は post-head 領域のみ zero。 */
+#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes)                          \
+    memset((char *)(payload) + sizeof(ASTroObjectHeader), 0,                 \
+           (size_bytes) - sizeof(ASTroObjectHeader))
 
 /* byte payload (= scan 対象外) の初期化、 通常 no-op */
 #define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
 ```
 
-`SCAN_EDGES` の visit callback signature は `void (void **slot)`。 slot pointer
-なので visit 内部で deref / 書き換え両方できる。 これにより:
+`SCAN_EDGES` の visit callback signature は `void (void *ctx, void **slot)`。
+slot pointer なので visit 内部で deref / 書き換え両方できる。 これにより:
 
 - **mark phase**: `mark_edge` は `*slot` を読んで grey push (slot は変えない)
 - **forward phase** (moving): `forward_edge` は `*slot = forward(*slot)` で書き換え
@@ -173,22 +287,18 @@ framework は VALUE 内部表現を知らない (= 任意 tagging 戦略 OK)。
 
 ### 2.3 Root scan
 
+framework の `aro_gc_alloc` 内で GC が trigger される際、 caller が `c->sp`
+を「現スレッドの scan 上限」 として set してから alloc を呼ぶ約束。
+backend の root scan は `c->env..c->sp` を iterate する:
+
 ```c
-/* sample が「全 root を visit_value に渡す」 を 1 つの macro で記述。
- * thread 一覧 / globals / finalizer queue 等を全部 sample が iterate する。
- * framework は root の場所を知らない。 */
-#define ASTRO_GC_SCAN_ROOTS(c, edge_visit, sp_top) do {                    \
-    /* 例: 単一 thread の sp[] 走査 */                                     \
-    for (VALUE *p = (c)->env; p < (sp_top); p++)                           \
-        edge_visit((void **)p);                                            \
-    /* 他に追加 root があればここで */                                     \
-} while (0)
+for (VALUE *p = c->env; p < c->sp; p++) {
+    mark_value(gc, *p);   /* IS_PTR チェック後に visit */
+}
 ```
 
-`sp_top` は GC trigger 時点の **現スレッドの scan 上限** (= alloc が呼ばれた
-瞬間に caller が握ってる sp top)。 他 thread の sp は safepoint 時点の値を
-sample 側で参照する。 multi-thread 対応はこの macro 内で thread list を
-iterate するだけ — framework に手は入らない。
+multi-thread 対応はこの walk 部分で thread list を iterate するだけ —
+framework に手は入らない。
 
 ### 2.4 Instance accessor
 
@@ -206,20 +316,6 @@ GC algorithm 実装 1 つに付随する **mutable state の独立した束** �
 セットが 1 つあるだけだが、 「instance」 という抽象を最初から立てるのは
 multi-instance への拡張余地を framework 側で塞がないため。
 
-#### multi-instance の動機 (= なぜ global を排除したか)
-
-GC を「instance を持つもの」と扱うと、 同一 process 内に複数の独立した
-heap / collector が同居できる。 用途例:
-
-- isolate ごとに独立 GC (V8 / Wasm runtime みたいな multi-tenant)
-- thread per heap (TLAB を物理的に分けてロックレスにする)
-- algorithm を実行時に切り替える (warm-up は bump、 steady state は
-  mark&sweep 等)
-- test 並走 (= 1 process で 2 つの interpreter を走らせて差分テスト)
-
-これらは global variable を 1 つでも残すと出来なくなる。 だから contract
-レベルで「instance を CTX 経由でしか触れない」 を強制する。
-
 #### CTX → instance の bind
 
 ```c
@@ -228,18 +324,17 @@ heap / collector が同居できる。 用途例:
 ```
 
 `aro_gc_init(c)` が `c->astro_gc = calloc(sizeof(ASTroGC))` で 1 instance
-を heap alloc して bind する (=「この CTX に紐づく instance はこれ」)。
-backend 内の helper はすべて `ASTROsGC *gc = ASTRO_GC_INSTANCE(c)` (or
-`ASTroGC *gc` を引数受け取り) して `gc->field` でアクセスする。 module-static
-な `g_astro_gc` を持たないので、 別 instance を別 CTX に bind しても干渉
-しない。
+を heap alloc して bind する。 backend 内の helper はすべて
+`ASTroGC *gc = ASTRO_GC_INSTANCE(c)` (or `ASTroGC *gc` を引数受け取り)
+して `gc->field` でアクセスする。 module-static な `g_astro_gc` を持たない
+ので、 別 instance を別 CTX に bind しても干渉しない。
 
 #### 「共通ヘッダ」 contract
 
 stats / stress / timer の保管場所は backend 横断で gc.h 側からも触りたい
 が、 各 backend の `ASTroGC` の中身は backend ごとに違う。 そこで:
 
-- gc.h で `AroGcCommonState` 型 (stats + stress + time_depth + time_t0) を
+- gc_types.h で `AroGcCommonState` 型 (stats + stress + time_depth + time_t0) を
   定義
 - 各 backend の `struct ASTroGC` の **先頭 field** に `AroGcCommonState common`
   を置く約束
@@ -253,62 +348,67 @@ stats / stress / timer の保管場所は backend 横断で gc.h 側からも触
 | 分類 | macro / typedef | 役割 |
 |---|---|---|
 | **A. VALUE** | `VALUE` typedef | sample の値表現 |
-| | `ASTRO_GC_VALUE_IS_PTR(v)` | heap pointer 判定 |
-| | `ASTRO_GC_VALUE_TO_HEADER(v)` | VALUE → GCHeader * |
-| | `ASTRO_GC_HEADER_TO_VALUE(h)` | GCHeader * → VALUE |
-| **B. Shape** | `ASTRO_GC_SCAN_EDGES(h, visit)` | children traversal |
-| | `ASTRO_GC_INIT_PAYLOAD(p, n)` | scan-safe init |
+| | `IS_PTR(v)` | heap pointer 判定 |
+| **B. Shape** | `ASTRO_GC_SCAN_EDGES(payload, size, ctx, visit)` | children traversal |
+| | `ASTRO_GC_INIT_PAYLOAD(p, n)` | scan-safe init (post-head 領域のみ) |
 | | `ASTRO_GC_INIT_BYTE_PAYLOAD(p, n)` | byte init (通常 skip) |
-| **C. Root** | `ASTRO_GC_SCAN_ROOTS(c, visit, sp)` | 全 root 走査 |
-| **D. Instance** | `ASTRO_GC_INSTANCE(c)` | CTX → AstroGc * |
-| **E. Header** | `ASTRO_GC_HEADER_SIZE(h)`, `_SET_SIZE` | header accessor (framework default あり、 sample override 可) |
-| | `_GET_MARK / _SET_MARK` | header-bit backend のみ |
-| | `_GET_FWD / _SET_FWD` | moving backend のみ |
-| **F. Algorithm** | `-DASTRO_PRECISE_GC_<algo>` | backend 選択 |
+| **C. Object header** | `ASTroObjectHeader` (gc_types.h) | sample 構造体先頭 field |
+| | `head.flags`, `head.gc_flags`, `head.gc_size` | accessor は plain field アクセス |
+| **D. Instance** | `ASTRO_GC_INSTANCE(c)` | CTX → ASTroGC * |
+| **E. Common state** | `ASTRO_GC_COMMON(c)` | stats / stress / timer accessor |
+| **F. Algorithm** | `-DBARUBY_GC=<n>` | backend 選択 |
 
 ---
 
 ## 3. framework が提供する API
 
 framework は state-less (= module-static 持たない)。 全 state は `CTX *c` 引数
-+ macro accessor 経由でアクセス。
++ `c->astro_gc` 経由でアクセス。
 
 ```c
-/* process 起動時 1 回。 共有 mmap region 確保、 lock 初期化 etc */
-void aro_gc_process_init(AstroGc *gc);
+/* 初期化 */
+void  aro_gc_init(CTX *c);
 
-/* allocation (scan-safe init 付き) */
-void *aro_gc_alloc(CTX *c, AroGcKind kind, size_t size, VALUE *sp_top);
+/* allocation (sample 構造体の sizeof をそのまま渡す)
+ * 返り値は payload 先頭 (= ASTroObjectHeader head の位置)。
+ * caller は head.flags に type tag を書き込んでから次の alloc に進む。 */
+void *aro_gc_alloc(CTX *c, size_t payload_size);
 
-/* byte payload (init skip) */
-void *aro_gc_alloc_byte(CTX *c, AroGcKind kind, size_t size, VALUE *sp_top);
+/* byte payload (post-head zero-fill を省略) */
+void *aro_gc_alloc_byte(CTX *c, size_t payload_size);
 
-/* resize: VALUE 系 (extension が ASTRO_GC_INIT_PAYLOAD で init) */
-void *aro_gc_realloc_payload(CTX *c, void *old, size_t new_size, VALUE *sp_top);
-
-/* resize: byte 系 (extension は INIT_BYTE_PAYLOAD = 通常 no-op) */
-void *aro_gc_realloc_payload_byte(CTX *c, void *old, size_t new_size, VALUE *sp_top);
+/* resize (scan-safe init: 増分は zero-fill) */
+void *aro_gc_realloc_payload(CTX *c, void *old, size_t new_size);
+/* resize (byte: 増分 init 省略) */
+void *aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size);
 
 /* write barrier (non-gen は static inline `*slot = v`、 gen は remset push) */
-void  aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v);
+void  aro_gc_wb     (CTX *c, void *holder, VALUE *slot, VALUE v);
+void  aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
+
+/* size accessor (sample / framework 共通) */
+size_t aro_gc_size_of(void *payload);
 
 /* 明示 collect (主に test / stress 用) */
-void  aro_gc_collect(CTX *c, VALUE *sp_top);
+void  aro_gc_collect(CTX *c);
+
+/* fini */
+void  aro_gc_fini(CTX *c);
 ```
 
-`sp_top` の意味は各 API で同じ:
-- 現スレッドの VALUE stack top
-- alloc 中に GC 走ったときの root scan 上限
-- mutator が `sp_top` を渡す責任 (= 「ここから上は live」 という宣言)
+**c->sp 規約**: 各 API は内部で GC を発火し得る。 caller は alloc 直前に
+`c->sp` を「自分が握ってる scratch top」 に set する責任を持つ。 backend は
+`c->env..c->sp` を root scan 範囲として参照する。
 
-### 3.1 AstroGc struct
+### 3.1 ASTroGC struct
 
 backend ごとに「algorithm が必要とする process-scope state」 が違うので、
-`AstroGc` struct の中身は backend 依存:
+`ASTroGC` struct の中身は backend 依存:
 
 ```c
 /* gc_copy.c 内 */
-typedef struct AstroGc {
+typedef struct ASTroGC {
+    AroGcCommonState common;          /* MUST be first field */
     char *active_base, *active_top, *active_end;
     char *space0, *space1;
     int   active_idx;
@@ -318,27 +418,28 @@ typedef struct AstroGc {
     /* Cheney scratch */
     char *to_top, *to_base, *from_base_cur;
     VALUE *sp_high_water;
-} AstroGc;
+    LargeObj *large_head, *large_gray;
+} ASTroGC;
 
 /* gc_mark.c 内 (別 backend なので異なる) */
-typedef struct AstroGc {
-    Page *page_head[NUM_SIZE_CLASSES];
+typedef struct ASTroGC {
+    AroGcCommonState common;
+    Page     *page_head[NUM_SIZE_CLASSES];
     FreeSlot *freelist[NUM_SIZE_CLASSES];
     LargeObj *large_head;
     size_t bytes_since_gc;
     /* ... */
-} AstroGc;
+} ASTroGC;
 ```
 
-sample は 1 つ (or 複数) を allocate して `aro_gc_process_init(&gc)` に渡し、
-各 CTX に instance pointer を持たせる。 multi-instance シナリオは「異なる
-AstroGc を別 CTX に bind する」 だけで成立。
+multi-instance シナリオは「異なる ASTroGC を別 CTX に bind する」 だけで
+成立。
 
 ---
 
 ## 4. Sample 実装の規約 (Moving GC 必須二大パターン)
 
-moving GC 系 backend (= copy / mark_compact / immix compact phase) を使う
+moving GC 系 backend (= copy / mark_compact / immix_gen compact phase) を使う
 sample は、 NODE_DEF / C helper コードに **以下二大ルール** を守る必要がある。
 mark&sweep だけで動かしてた時代には潜伏してた precise rooting バグが
 moving に切替えた瞬間に一斉に表面化するので、 移行時に必須:
@@ -387,21 +488,21 @@ ASTroGen の `@child` operand 機構が spill を自動化するので、 大半
 ```c
 /* 悪い例: source bytes が GC で move された時点で stale */
 VALUE
-baruby_str_concat(VALUE lhs, VALUE rhs, VALUE *sp_top) {
+baruby_str_concat(CTX *c, VALUE lhs, VALUE rhs) {
     BaString *l = VAL2STR(lhs);  /* GC 前のアドレス */
     /* ここで alloc → GC → l が stale */
-    VALUE result = aro_gc_alloc(KIND_OBJ_STRING, sizeof(BaString), sp_top);
+    VALUE result = (VALUE)aro_gc_alloc(c, sizeof(BaString));
     BaString *r = VAL2STR(result);
-    memcpy(r->bytes, l->bytes, l->len);  /* stale pointer access */
+    memcpy(r->bytes->data, l->bytes->data, l->len);  /* stale pointer access */
     /* ... */
 }
 
 /* 良い例: VALUE* で受けて post-alloc に再 deref */
 VALUE
-baruby_str_concat(VALUE *lhs_ref, VALUE *rhs_ref, VALUE *sp_top) {
+baruby_str_concat(CTX *c, VALUE *lhs_ref, VALUE *rhs_ref) {
     /* lhs_ref / rhs_ref は sp[] slot を指す。 GC 後も slot 経由で
      * 最新アドレスが取れる */
-    VALUE result = aro_gc_alloc(KIND_OBJ_STRING, sizeof(BaString), sp_top);
+    VALUE result = (VALUE)aro_gc_alloc(c, sizeof(BaString));
     BaString *l = VAL2STR(*lhs_ref);   /* GC 後の正しいアドレス */
     /* ... */
 }
@@ -412,9 +513,8 @@ baruby_str_concat(VALUE *lhs_ref, VALUE *rhs_ref, VALUE *sp_top) {
 
 ### 副次的な注意点
 
-- **stress mode**: `BARUBY_GC_STRESS=1` で毎 alloc に GC 発火。 from-space
-  を即 `mprotect(PROT_NONE) + MADV_DONTNEED` で永久 retire するので、 stale
-  pointer access が即 SIGSEGV になる。 ルール遵守を強制検証する debug 手段。
+- **stress mode**: `BARUBY_GC_STRESS=1` で毎 alloc に GC 発火。 stale pointer
+  access が即 SIGSEGV になりやすく、 ルール遵守を強制検証する debug 手段。
 - **AOT SD**: framework-generated SD chain でも (A)(B) は守られている (= ASTroGen
   が `@child` snapshot を sp[] に出力)。 手書き node_slowpath.c で抜けがちなので
   注意。
@@ -427,7 +527,7 @@ baruby_str_concat(VALUE *lhs_ref, VALUE *rhs_ref, VALUE *sp_top) {
 
 `sample/baruby_precise/` は precise *moving* GC の testbed。 仕様は baruby と
 同じ Ruby サブセット (= naruby fork 由来 + Array / String + LSB tag VALUE)。
-GC backend を 16 個切替可能:
+GC backend を 16 個切替可能 (`make GC=<name>`):
 
 ```
 copy, copy_gen, copy_gen_inc (= clone of copy_gen),
@@ -441,62 +541,88 @@ mark_bitmap_gen, mark_card_gen, mark_freelist, none
 35 bench × 16 backend のマトリクス検証で動作確認 (`bench/matrix.rb`)。
 詳細 perf は [sample/baruby_precise/docs/perf.md](../sample/baruby_precise/docs/perf.md)。
 
-### 5.2 iter 62 PoC: gc_copy.c の framework-style refactor
+### 5.2 sample object 型
 
-framework 化に向けた抽象化 PoC を gc_copy.c に適用 (commit `fc133656` on
-branch `gc-abstraction-poc`)。 主要変更:
+```c
+/* sample/baruby_precise/context.h */
 
-- **`struct AstroGc` 導入** — 9 個の module-static を 1 構造体に集約
-  (`active_base/top/end`, `space0/1`, `active_idx`, `bytes_since_gc`,
-   `gc_threshold`, `ctx`, `to_top/base`, `from_base_cur`, `sp_high_water`)
-- **`ASTRO_GC_SCAN_EDGES` macro** — 旧 `process_object` の switch を
-  slot pointer 列挙に統一、 mark / forward 両 phase で同 macro 利用
-- **`ASTRO_GC_INSTANCE()` macro** — `g_astro_gc` への現在の (single-instance)
-  アクセス。 将来 CTX 経由化で multi-instance 対応
-- **header accessor macro** — `ASTRO_GC_HEADER_SIZE/_SET_SIZE/_GET_FWD/_SET_FWD`
+enum obj_type {
+    OBJ_ARRAY       = 1,
+    OBJ_STRING      = 2,
+    OBJ_VALUE_ARRAY = 3,   /* BaArrayItems */
+    OBJ_BYTE_DATA   = 4,   /* BaByteData */
+};
+#define OBJ_TYPE_MASK  0x07u    /* head.flags 低 3 bits */
+#define OBJ_FLAG_SSO   0x08u    /* head.flags bit 3: BaString SSO */
 
-### 5.3 PoC 検証結果
+typedef struct BaArrayItems {
+    ASTroObjectHeader head;
+    VALUE             data[];    /* flex array */
+} BaArrayItems;
 
-- **oracle**: copy backend × 35 bench × `-n 1` で plain + AOT 両方 0 FAIL /
-  0 FATAL
-- **perf**: iter 61 と同等 (= n=1 noise 範囲内、 binary_trees 0.70s / prime_count
-  0.54s / dll_walk 0.14s 等、 改造前後で差なし)
-- **設計検証**: 「module-static → struct 集約」 で perf 退化なし (gcc が
-  フィールドを register に hoist)、 「switch → macro 統一」 で MMTk 流の
-  callback ベース mark/forward が C で実装可能と確認
+typedef struct BaByteData {
+    ASTroObjectHeader head;
+    char              data[];
+} BaByteData;
 
-他 backend (15 個) は無修正のまま動作継続 — contract 抽象化は **漸進的に
-1 backend ずつ port 可能** という性質も同時に確認。
+typedef struct BaArray {
+    ASTroObjectHeader head;
+    uint32_t          len, capa;
+    BaArrayItems     *items;
+} BaArray;
+
+typedef struct BaString {
+    ASTroObjectHeader head;
+    uint32_t          len, capa;
+    union {
+        BaByteData *bytes;       /* heap-allocated */
+        char        small[8];    /* SSO inline */
+    };
+} BaString;
+```
+
+### 5.3 サイズ比較 (iter 75 前後)
+
+gc_copy backend (= 16 B GCHeader prefix だった moving 系) での 1 BaArray
+あたりサイズ:
+
+| 設計 | overhead | BaArray | 削減率 |
+|---|---|---|---|
+| iter 74 まで | 16 B framework GCHeader prefix + 8 B sample ObjectHeader | 16 + 24 = **40 B** | (baseline) |
+| iter 75 Step C (head 16 B) | 16 B ASTroObjectHeader (dedicated gc_fwd) | 32 B | −20% |
+| iter 75 Step C+ (overlay) | 8 B ASTroObjectHeader (fwd overlay) | **24 B** | **−40%** |
+
+mark / mark_gen 系 (= non-moving、 元から 8 B GCHeader) は overhead が
+8 + 8 = 16 B → 8 B に縮む (−50%)。
+
+### 5.4 256/256 verification
+
+各 backend × 8 test (T_array / T_string / T_methods / ...) × { plain, stress }
+の **256/256 PASS** を維持。 AOT bake (= code_store 経由 SD compile + dlopen)
+も全 backend × stress mode で動作確認済み。
 
 ---
 
-## 6. 移行計画
+## 6. 移行計画 (= 完了状況)
 
-### Step 1: 他 backend を contract に port
+### ✅ Step 1: contract 抽象化 PoC (iter 62)
 
-`gc_mark.c` / `gc_copy_gen.c` / etc を gc_copy.c と同じパターンで refactor。
-各 backend で:
+gc_copy.c で `struct ASTroGC` + `ASTRO_GC_SCAN_EDGES` macro 化を実証。
+他 backend は無修正のまま動作継続。
 
-- module-static → `struct AstroGc` (backend ごとに layout 異なる)
-- `process_object` / `mark_object` の switch → `ASTRO_GC_SCAN_EDGES` 経由
-- `forward_payload` / `mark_payload` → edge_visit callback
+### ✅ Step 2: 全 backend を contract に port (iter 63-73)
 
-各 backend 単独で oracle pass を確認しつつ port。 16 backend なので 1 日
-数 backend ペースで進める想定。
+15 個の他 backend を gc_copy.c と同パターンで refactor。 各 backend 単独で
+oracle pass を確認しつつ port。
 
-### Step 2: contract macro を sample-side header に集約
+### ✅ Step 3: `runtime/precise_gc/` 切り出し (iter 74)
 
-`gc_copy.c` 内 inline 定義の contract macros を、 sample 共通の header
-(`gc_user.h` ではなく、 user 議論で結論したように **`context.h` か新規 sample 側
-ヘッダ**) に切り出す。 全 backend が同 macro を共有することで重複削減。
-
-### Step 3: `runtime/precise_gc/` 切り出し ✅ 完了 (iter 74)
-
-contract が固まったあと、 `gc_<algo>.c` 群を `runtime/precise_gc/` に移動済
-(iter 74 commits `e2c80065` / `ebdd3210` / `0a912e73`)。
+`gc_<algo>.c` 群を `sample/baruby_precise/` から `runtime/precise_gc/` に
+移動。 `context.h` の contract macros を sample side に集約。
 
 ```
 runtime/precise_gc/
+  gc_types.h            # ASTroObjectHeader + AroGcCommonState + AroGcStats
   gc.h                  # public API (aro_gc_alloc / wb / collect / ...)
   gc_common.c           # default realloc_payload (header-aware)
   gc_inplace_mremap.h   # LargeObj realloc(3) / mremap(2) template
@@ -504,7 +630,7 @@ runtime/precise_gc/
   gc_none.c             # libc malloc
   gc_copy.c             # Cheney semispace
   gc_copy_gen.c         # gen Cheney
-  gc_copy_gen_inc.c     # placeholder
+  gc_copy_gen_inc.c     # placeholder (= copy_gen の clone)
   gc_mark.c             # mark+sweep
   gc_mark_gen.c         # gen mark+sweep
   gc_mark_gen_inc.c     # SATB infra
@@ -518,9 +644,10 @@ runtime/precise_gc/
   gc_immix_gen.c        # gen Immix
 
 sample/baruby_precise/
-  context.h             # contract macros (ASTRO_GC_SCAN_EDGES, AroGcKind 拡張)
+  context.h             # contract macros (ASTRO_GC_SCAN_EDGES, ObjectType)
+                        #   + sample struct (BaArray / BaString / ...)
   Makefile              # $(RUNTIME)/precise_gc/gc_$(GC).c を build に組み込む
-  node.h                # #include "precise_gc/gc.h"  ← runtime からの相対 path
+  node.h                # #include "precise_gc/gc.h"
 ```
 
 実装は **直接 `gc.c` umbrella を持たず**、 各 backend `.c` をそのまま
@@ -528,28 +655,25 @@ build に組み込む形 (= Makefile が `GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c
 で選択)。 共通 utility (`aro_gc_realloc_payload` の default 実装) は
 `gc_common.c` に集約。
 
-### Step 3 後の contract
+### ✅ Step B (iter 75): framework から kind 排除
 
-- sample (= context.h) は backend 内部の `HDR_KIND` macro / GCHeader
-  layout に依存しない。 backend が GCHeader から取り出した `kind /
-  payload_size` を sample-side macro に opaque な引数として渡す:
+旧 `aro_gc_alloc(c, kind, size)` の `kind` 引数を排除。 sample が
+`head.flags` の type tag で全 dispatch を所有。 framework は category
+(SCAN / BYTE / FREE) すら知らず、 SCAN_EDGES の callback dispatch で完結。
 
-```c
-/* sample's macro (context.h): */
-#define ASTRO_GC_SCAN_EDGES(payload, kind, payload_size, ctx, edge_visit) \
-    /* sample knows BaArray / BaString layout; switches on kind */
+### ✅ Step C (iter 75): 統一 ASTroObjectHeader
 
-/* backend's call site (e.g. gc_copy.c): */
-ASTRO_GC_SCAN_EDGES((void *)(h+1), HDR_KIND(h), (h)->size, gc, forward_edge);
-```
+framework GCHeader prefix 廃止 → `ASTroObjectHeader` を payload offset 0
+に置く統一 header に。 sample 構造体は `head` を先頭 field に持つ。
+gc_types.h を新設し、 sample の context.h が directly include。
 
-- `AroGcKind` の base 値 (= `KIND_PAYLOAD_VAL` / `KIND_PAYLOAD_BYTE` /
-  `KIND_FREE`) は framework が定義。 sample 固有 kind (= `KIND_OBJ_ARRAY` /
-  `KIND_OBJ_STRING`) は `KIND_USER_BASE` 以降に enum で拡張。
-- ABI 制約はなく、 各 backend が GCHeader layout (8/16/24 B、 flags
-  packing / 独立 field) を自由に選べる。
+### ✅ Step C+ (iter 75): Cheney 系 fwd overlay
 
-### Step 4: 他 sample で採用
+`ASTRO_GC_HAS_FWD` を mark_compact / mark_compact_gen のみに限定。 Cheney
+系 5 backend で fwd ptr を payload[8..15] overlay 配置に変更。 14 / 16
+backend で ASTroObjectHeader = **8 B**。
+
+### Step 4 (未着手): 他 sample で採用
 
 `koruby` / `pystro` / `abruby` 等で `runtime/precise_gc/` を使ってみる。
 sample-specific な部分 (= VALUE 表現、 root layout、 object shape) を contract
@@ -576,17 +700,7 @@ mark&sweep ロジックを framework に統一できる。
 TLAB は contract に optional macro として後付け可能、 STW は framework
 内部実装で吸収できる見込み。
 
-### 7.2 copy 系 backend の large_alloc 経路
-
-sieve AOT で `copy` が `mark` の 2× 遅い問題 (= L1 miss 3.2×) の対策。
-閾値 (= 4KB、 mark の size_class 最大値と整合) 以上の payload は **glibc malloc
-直** + linked list で管理、 GC sweep で `free(p)`。 glibc が 128KB 以上を
-自動 mmap/munmap してくれるので物理メモリ即解放。 details は
-[sample/baruby_precise/docs/todo.md](../sample/baruby_precise/docs/todo.md)。
-
-framework 化前に baruby_precise で実装 → contract に統合。
-
-### 7.3 walker (sp_offset bake) の framework 化
+### 7.2 walker (sp_offset bake) の framework 化
 
 `sample/baruby_precise/baruby_parse.c::walk_bake_sp_offset` は hand-write
 で全 NODE kind を列挙 (~200 行)。 HASH 系と同じ仕組みで astrogen.rb に
@@ -594,18 +708,30 @@ per-kind child-walk callback の gen task を追加して自動生成に畳む�
 
 これは GC とは独立した別 todo (iter 61 fp 削除に付随)。
 
-### 7.4 `VALUE_DEF` 採否
+### 7.3 `VALUE_DEF` 採否
 
 ASTroGen に「`VALUE_DEF` で値の構造宣言」 を追加すれば、 contract macro
 (特に SCAN_EDGES) を自動生成できる可能性。 ただし baruby_precise の現状
 manual macro でも実用可能性が確認できたので、 価値判断は他 sample が
 contract を採用する段で再評価。
 
-### 7.5 finalizer / weak ref
+### 7.4 finalizer / weak ref
 
 ASTro が finalizable object や weak reference を必要とするかは現状未定。
 必要になったら contract に `ASTRO_GC_FINALIZE_OBJECT` / `ASTRO_GC_WEAK_*`
 を追加。 BDW 風の topological finalization が default 想定。
+
+### 7.5 backend-local `HDR_*` macro の統一
+
+各 backend が file-local に `HDR_MARKED` / `HDR_OLD` / `HDR_FORWARDED` 等を
+define してる (= 旧 GCHeader 由来の HDR_ prefix)。 file-local なので衝突は
+ないが、 命名が統一されておらず読みづらい。 将来 `GCF_*` (gc_flags) など
+にまとめる余地。 cosmetic only。
+
+### 7.6 fwd overlay 共通化
+
+Cheney 系 5 backend が `fwd_overlay_get/set` inline helper を重複定義
+(8 行 × 5 = 40 行)。 gc_types.h に集約する余地。 cosmetic only。
 
 ---
 
@@ -621,4 +747,4 @@ ASTro が finalizable object や weak reference を必要とするかは現状�
 - [sample/baruby_precise/docs/perf.md](../sample/baruby_precise/docs/perf.md)
   — 16 backend × 35 bench の matrix 実測
 - [sample/baruby_precise/docs/todo.md](../sample/baruby_precise/docs/todo.md)
-  — 個別 backend 改善の todo (large_alloc 経路、 etc.)
+  — 個別 backend 改善の todo
