@@ -237,10 +237,9 @@ new_page(ASTroGC *gc, int class_idx)
     page_head[class_idx] = p;
 
     /* Populate freelist HIGH → LOW so subsequent pops return LOW → HIGH
-     * (= memory order — prefetcher friendly).  FreeSlot.next is stored
-     * in PAYLOAD area (slot+8), NOT overlapping the GCHeader at slot+0,
-     * so we can freely write h->kind in slab_alloc without strict-
-     * aliasing risk of clobbering the still-needed freelist linkage. */
+     * (= memory order — prefetcher friendly).  Freelist holds SLOT
+     * pointers (= ASTroObjectHeader *).  FreeSlot.next link is at
+     * `slot + sizeof(ASTroObjectHeader)`. */
     char *slot = (char *)p + SLOTS_REGION_OFFSET + (n_slots - 1) * sb;
     for (size_t i = 0; i < n_slots; i++) {
         ASTroObjectHeader *h = (ASTroObjectHeader *)slot;
