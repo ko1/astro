@@ -13,8 +13,6 @@ struct koruby_option OPTION = {0};
 
 NODE *koruby_parse(const char *src, size_t len, const char *filename);
 
-extern void sc_repo_clear(void);
-
 /* code store + build orchestrator (via node.c). */
 #include "../../runtime/astro_code_store.h"
 #include "../../runtime/astro_build.h"
@@ -60,35 +58,6 @@ static void usage(void) {
         "\n");
     astro_print_build_help(stderr);
     exit(1);
-}
-
-static void
-generate_specialized_code(NODE *ast)
-{
-    FILE *fp = fopen("node_specialized.c", "w");
-    if (!fp) { perror("node_specialized.c"); return; }
-    sc_repo_clear();
-
-    /* main */
-    SPECIALIZE(fp, ast);
-
-    /* code repo entries (methods) */
-    extern NODE *code_repo_find(node_hash_t);
-    /* cheating: walk our internal repo via DUMP-friendly iteration not available;
-       Instead, iterate entries directly through accessor below. */
-    extern void koruby_specialize_repo(FILE *fp);
-    koruby_specialize_repo(fp);
-
-    fprintf(fp, "struct specialized_code sc_entries[] = {\n");
-    /* main entry */
-    if (ast && HASH(ast)) {
-        fprintf(fp, "    { .hash = 0x%lxLL, .dispatcher_name = \"%s\", .dispatcher = %s },\n",
-                (unsigned long)HASH(ast), ast->head.dispatcher_name, ast->head.dispatcher_name);
-    }
-    extern void koruby_emit_sc_entries(FILE *fp);
-    koruby_emit_sc_entries(fp);
-    fprintf(fp, "};\n#define NODE_SPECIALIZED_INCLUDED 1\n");
-    fclose(fp);
 }
 
 /* koruby_setup_ctx / koruby_eval_bootstrap / koruby_run_ast live in
@@ -207,14 +176,11 @@ int main(int argc, char *argv[])
     /* Translate framework flags into koruby's internal OPTION. */
     if (bcfg.quiet)   OPTION.quiet   = true;
     if (bcfg.verbose) OPTION.verbose = true;
-    /* `koruby -c` was "compile only, do not produce all.so"; map from
-     * --aot-compile (alone, without --run). */
-    if (bcfg.aot_compile && !bcfg.run) OPTION.compile_only = true;
-    /* `koruby --aot-compile` (old; produced all.so via dlopen path) is
-     * the runtime equivalent of "bake then run".  Map --aot-compile + --run
-     * to the legacy g_aot_compile flag so the existing all.so build
-     * pipeline kicks in. */
-    if (bcfg.aot_compile && bcfg.run)  g_aot_compile = true;
+    /* koruby always has to evaluate to discover method ASTs into
+     * code_repo before they can be AOT-baked; the framework's --run
+     * distinction therefore has no analogue here.  Either way we
+     * funnel into g_aot_compile, which drives the all.so build path. */
+    if (bcfg.aot_compile) g_aot_compile = true;
 
     const char *e_code = NULL;
     const char *file = NULL;
@@ -299,18 +265,13 @@ int main(int argc, char *argv[])
      * targets, Rational/Complex, etc.) before running the user program. */
     koruby_eval_bootstrap(c);
 
-    /* Decide if we should EVAL.  Runtime: yes (unless --compile-only).
+    /* Decide if we should EVAL.  Runtime: always.
      * Build mode (bcfg.out_exe set): only if --run / --pg-compile. */
     int rc = 0;
-    bool should_eval;
-    if (bcfg.out_exe) {
-        should_eval = bcfg.run;
-    } else {
-        should_eval = true;  /* runtime always evals (compile_only also runs first) */
-    }
+    bool should_eval = bcfg.out_exe ? bcfg.run : true;
     if (should_eval) {
         astro_build_begin_aot_session();
-        if (!OPTION.compile_only && !bcfg.out_exe) {
+        if (!bcfg.out_exe) {
             rc = koruby_run_ast(c, ast);
             if (rc != 0 && c->state == KORB_RAISE) return rc;
         } else {
@@ -321,9 +282,6 @@ int main(int argc, char *argv[])
         astro_build_begin_aot_session();
     }
 
-    if (OPTION.compile_only) {
-        generate_specialized_code(ast);
-    }
     if (g_aot_compile) {
         fprintf(stderr, "[koruby] AOT compile: writing SD_*.c\n");
         astro_cs_compile(ast, NULL);
@@ -343,23 +301,4 @@ int main(int argc, char *argv[])
         return erc;
     }
     return rc;
-}
-
-/* hooks for specialized-code generation */
-
-void koruby_specialize_repo(FILE *fp) {
-    extern void SPECIALIZE(FILE *, NODE *);
-    for (uint32_t i = 0; i < code_repo.size; i++) {
-        SPECIALIZE(fp, code_repo.entries[i].body);
-    }
-}
-
-void koruby_emit_sc_entries(FILE *fp) {
-    for (uint32_t i = 0; i < code_repo.size; i++) {
-        NODE *b = code_repo.entries[i].body;
-        if (HASH(b)) {
-            fprintf(fp, "    { .hash = 0x%lxLL, .dispatcher_name = \"%s\", .dispatcher = %s },\n",
-                    (unsigned long)HASH(b), b->head.dispatcher_name, b->head.dispatcher_name);
-        }
-    }
 }

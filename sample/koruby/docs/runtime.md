@@ -459,18 +459,14 @@ korb_load_file(c, path)
 ## 10. AOT 特化フロー
 
 ```
-make                     → koruby (interp 版、SD_*関数なし)
-./koruby -c script.rb    → 実行 + node_specialized.c 出力
-                              SPECIALIZE() が AST をルートから DFS
-                              各ノードに対し SD_<hash>(c, n) を生成
-                              dispatcher = EVAL_<kind>(...) を直接呼ぶ
-                              子ノードは dispatcher_name を引用して SD 直呼び
-touch node.c && make     → SD_xxx を埋め込んで再ビルド
-                              `#include "node_specialized.c"` で取り込み
-                              INIT() が sc_entries[] を sc_repo に登録
-                              ALLOC_node_xxx 中の OPTIMIZE() が hash → SD swap
-./koruby script.rb       → 実行時に各ノードの dispatcher が SD_xxx に置換済み
-                              C コンパイラがインライン展開で大規模に最適化
+make                          → koruby (interp 版、SD_* 関数なし)
+./koruby --aot-compile s.rb   → 実行 + 各 AST から SPECIALIZE() を起動
+                                  SD_<hash>(c, n) を `code_store/c/` に書き出し
+                                  astro_cs_build() で `code_store/all.so` をリンク
+./koruby s.rb                 → 起動時に `code_store/all.so` を auto-dlopen し、
+                                  ALLOC_node_xxx 中の OPTIMIZE() が
+                                  hash → SD ポインタ解決 (astro_cs_load) で swap
+                                  C コンパイラがインライン展開で大規模に最適化
 ```
 
 `SD_<hash>` 関数は再帰的 static inline で構成され、ASTro の Merkle ハッシュにより **同形のサブツリーは同じ SD を共有**する。

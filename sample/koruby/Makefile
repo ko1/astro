@@ -65,7 +65,7 @@ koruby-pgo: $(SRCS) $(NODE_GENFILES) Makefile
 
 # AOT (ahead-of-time specialization) build, abruby-style.
 # 1) Build koruby normally
-# 2) Run optcarrot under --aot-compile: this runs the program once,
+# 2) Run optcarrot under --aot-compile --run: runs the program once,
 #    then for every entry (toplevel + each method body) writes
 #    code_store/c/SD_<hash>.c and builds code_store/all.so.
 # 3) Subsequent runs auto-detect code_store/all.so via dlopen.
@@ -138,12 +138,8 @@ bootstrap_src.c: bootstrap.rb
 	  f.puts "0x00};"; \
 	  f.puts "const size_t koruby_bootstrap_len = #{src.bytesize};" }'
 
-# specialized.c: empty stub on first build
-node_specialized.c:
-	touch -t 200001010000 node_specialized.c
-
 clean:
-	rm -fv $(NODE_GENFILES) node_specialized.c koruby compiled_koruby
+	rm -fv $(NODE_GENFILES) koruby
 	rm -rf pgo-data code_store
 
 # regenerate (force rebuild)
@@ -153,12 +149,6 @@ regen:
 
 run: koruby
 	./koruby test.ko.rb
-
-# Two-pass: 1st pass collects specialization C source; 2nd pass compiles it in.
-compiled_koruby: koruby
-	rm -f node_specialized.c
-	./koruby --aot-compile $(BENCH)
-	$(CC) $(CFLAGS) -O3 -o compiled_koruby $(SRCS) $(LDFLAGS) $(LIBS)
 
 bench-fib: koruby
 	@echo "=== koruby (interp) ==="
@@ -175,4 +165,4 @@ test: koruby
 bench-optcarrot: koruby
 	@bash tools/bench-optcarrot.sh
 
-.PHONY: all clean regen run bench-fib bench-optcarrot compiled_koruby test koruby-pgo koruby-aot koruby-pgo-aot koruby-aot-pgo
+.PHONY: all clean regen run bench-fib bench-optcarrot test koruby-pgo koruby-aot koruby-pgo-aot koruby-aot-pgo

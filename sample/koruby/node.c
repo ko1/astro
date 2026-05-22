@@ -64,51 +64,10 @@ void code_repo_add(const char *name, NODE *body, bool force) {
     code_repo.size++;
 }
 
-/* specialized code repo */
-struct specialized_code {
-    node_hash_t hash;
-    const char *dispatcher_name;
-    node_dispatcher_func_t dispatcher;
-};
-
-static struct sc_repo {
-    uint32_t size, capa;
-    struct specialized_code *entries;
-} sc_repo;
-
-static struct specialized_code *sc_repo_search(NODE *n, node_hash_t h) {
-    for (uint32_t i = 0; i < sc_repo.size; i++) {
-        if (sc_repo.entries[i].hash == h) return &sc_repo.entries[i];
-    }
-    return NULL;
-}
-
-static struct specialized_code *sc_repo_new_entry(void) {
-    if (sc_repo.size < sc_repo.capa) return &sc_repo.entries[sc_repo.size++];
-    sc_repo.capa = sc_repo.capa ? sc_repo.capa * 2 : 8;
-    sc_repo.entries = korb_xrealloc(sc_repo.entries, sc_repo.capa * sizeof(*sc_repo.entries));
-    return sc_repo_new_entry();
-}
-
-static void sc_repo_add(NODE *n, node_hash_t h) {
-    struct specialized_code *sc = sc_repo_new_entry();
-    sc->hash = h;
-    sc->dispatcher_name = n->head.dispatcher_name;
-    sc->dispatcher = n->head.dispatcher;
-}
-
-void sc_repo_clear(void) { sc_repo.size = 0; }
-
 /* alloc_dispatcher_name, astro_fprintf_cstr, astro_fprint_cstr come
  * from runtime/astro_node.c. */
 
 /* OPTIMIZE / SPECIALIZE */
-
-static void fill_with_sc(NODE *n, struct specialized_code *sc) {
-    n->head.dispatcher_name = sc->dispatcher_name;
-    n->head.dispatcher = sc->dispatcher;
-    n->head.flags.is_specialized = true;
-}
 
 /* Code store: AOT lookup goes through the shared runtime/.  Pulled in
  * after astro_node.c so the runtime can use hash_merge / hash_node /
@@ -118,12 +77,9 @@ static void fill_with_sc(NODE *n, struct specialized_code *sc) {
 NODE *OPTIMIZE(NODE *n) {
     if (!n) return n;
     if (OPTION.no_compiled_code) return n;
-    /* First try the runtime code store (dlopen'd all.so).  AOT-only —
+    /* Look up in the runtime code store (dlopen'd all.so).  AOT-only —
      * pass file=NULL so PGC lookup is skipped. */
-    if (astro_cs_load(n, NULL)) return n;
-    node_hash_t h = hash_node(n);
-    struct specialized_code *sc = sc_repo_search(n, h);
-    if (sc) fill_with_sc(n, sc);
+    astro_cs_load(n, NULL);
     return n;
 }
 
@@ -163,22 +119,6 @@ void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
 /* Build orchestrator (used by --generate-executable in main.c). */
 #include "../../runtime/astro_build.c"
 
-/* try to include specialized */
-#if __has_include("node_specialized.c")
-#include "node_specialized.c"
-#endif
-
-#ifndef NODE_SPECIALIZED_INCLUDED
-static struct specialized_code sc_entries[] = {{0}};
-static uint32_t sc_entries_count = 0;
-#define SC_ENTRIES_COUNT 0
-#else
-#define SC_ENTRIES_COUNT (sizeof(sc_entries)/sizeof(sc_entries[0]))
-#endif
-
 void INIT(void) {
-    sc_repo.size = SC_ENTRIES_COUNT;
-    sc_repo.capa = sc_repo.size == 0 ? 4 : sc_repo.size * 2;
-    sc_repo.entries = korb_xmalloc(sc_repo.capa * sizeof(struct specialized_code));
-    if (sc_repo.size > 0) memcpy(sc_repo.entries, sc_entries, sc_repo.size * sizeof(struct specialized_code));
+    /* nothing — kept as a stable symbol for exe_main.c and main.c. */
 }

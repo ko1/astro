@@ -151,8 +151,6 @@ struct korb_proc;
 /* options */
 struct koruby_option {
     bool no_compiled_code;
-    bool compile_only;
-    bool no_generate_specialized_code;
     bool dump_ast;
     bool quiet;
     bool verbose;

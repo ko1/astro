@@ -101,11 +101,10 @@ make                                # 1回目ビルド
 ./koruby --dump -e '...'            # AST ダンプ
 ./koruby file.rb arg1 arg2 ...      # ARGV へ渡す
 
-# AOT 特化 (二段ビルド)
+# AOT 特化 (code_store/all.so を runtime dlopen)
 make clean && make                  # 1回目: 普通の interpreter
-./koruby -c your_script.rb          # node_specialized.c を生成
-touch node.c && make optflags=-O3   # 2回目: 特化を埋め込んでビルド
-./koruby your_script.rb             # 高速版実行
+./koruby --aot-compile your_script.rb  # run + SD_<hash>.c 群 + all.so 生成
+./koruby your_script.rb             # 2 回目以降は all.so を auto-load
 ```
 
 ## アーキテクチャ

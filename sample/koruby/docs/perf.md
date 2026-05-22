@@ -633,8 +633,10 @@ YJIT に勝てる余地はある。 残っている主な技術:
 
 実装ファイル:
 - `node.def` / `koruby_gen.rb` で SPECIALIZE タスク
-- `./koruby -c script.rb` で `node_specialized.c` 生成
-- 2 回目の build で `#include "node_specialized.c"` して取り込む
+- `./koruby --aot-compile script.rb` で `code_store/c/SD_*.c` を吐き、
+  `astro_cs_build` が `code_store/all.so` をリンク
+- 次回以降の `./koruby script.rb` は `astro_cs_load` で `all.so` を dlopen
+  → `OPTIMIZE()` が hash → SD pointer に swap
 
 **学び**: C コンパイラに任せられる範囲が想像より広い。`-O3` + `static inline` + ノードハッシュ共有 の3点で大きな効果。
 
