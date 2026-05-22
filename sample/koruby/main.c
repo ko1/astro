@@ -114,86 +114,28 @@ koruby_read_file(const char *path, size_t *len_out)
     return buf;
 }
 
-/* --build OUTPUT [opts] -e EXPR | file.rb */
+/* Build + bake helper.  Called from main() after parse + (optional)
+ * EVAL when bcfg.out_exe is set. */
 static int
-koruby_build_subcommand(int argc, char **argv)
+koruby_do_build(NODE *ast, struct astro_build_config *bcfg)
 {
-    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-    int rest_argc; char **rest_argv;
-    if (astro_build_subcommand_parse(argc, argv, &bcfg,
-                                      &rest_argc, &rest_argv) != 0) {
-        return 1;
-    }
-
-    /* Find source spec in rest_argv: either `-e EXPR` or a file path. */
-    const char *e_code = NULL;
-    const char *file = NULL;
-    for (int i = 0; i < rest_argc; i++) {
-        const char *a = rest_argv[i];
-        if (strcmp(a, "-e") == 0 && i + 1 < rest_argc) {
-            e_code = rest_argv[++i];
-        } else if (!file && a[0] != '-') {
-            file = a;
-        }
-    }
-    free(rest_argv);
-    if (!e_code && !file) {
-        fprintf(stderr, "koruby --build: missing source (-e EXPR or file path)\n");
-        astro_build_config_dispose(&bcfg);
-        return 1;
-    }
-
-    INIT();
-    korb_runtime_init();
-    astro_cs_init("code_store", KORUBY_SRC_DIR_DEFAULT, 0);
-
-    /* Read source.  We DO NOT EVAL it at build time — the build is
-     * side-effect-free (no print, no file I/O).  Consequence: methods
-     * registered at EVAL time (via koruby's node_def) aren't visible
-     * here, so only the program AST is baked.  When require-interception
-     * lands (file-map embedding) all required files will be parsed at
-     * build time, and their methods will be baked too. */
-    char *src = NULL;
-    size_t srclen = 0;
-    if (e_code) {
-        src = (char *)e_code;
-        srclen = strlen(e_code);
-    } else {
-        src = koruby_read_file(file, &srclen);
-        if (!src) { astro_build_config_dispose(&bcfg); return 1; }
-    }
-
-    static NODE *ast;
-    ast = koruby_parse(src, srclen, file ? file : "(eval)");
-
-    astro_build_begin_aot_session();
-    if (bcfg.aot_compile || bcfg.pg_compile) {
+    if (bcfg->aot_compile || bcfg->pg_compile) {
         astro_cs_compile(ast, NULL);
-        setenv("CCACHE_DISABLE", "1", 0);
-    }
-
-    /* If bcfg.run is set, execute the program once during build for
-     * file discovery (and PG profile if --pg-compile).  TODO: hook
-     * the PGSD bake here once it's wired through the new model. */
-    if (bcfg.run) {
-        CTX *c = koruby_setup_ctx(file ? file : "(eval)");
-        koruby_eval_bootstrap(c);
-        (void)koruby_run_ast(c, ast);
-        /* Re-bake methods registered by the run. */
-        if (bcfg.aot_compile || bcfg.pg_compile) {
+        if (bcfg->run) {
             for (uint32_t i = 0; i < code_repo.size; i++) {
                 astro_cs_compile(code_repo.entries[i].body, NULL);
             }
         }
+        setenv("CCACHE_DISABLE", "1", 0);
     }
 
-    bcfg.src_dir = KORUBY_SRC_DIR_DEFAULT;
-    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+    bcfg->src_dir = KORUBY_SRC_DIR_DEFAULT;
+    bcfg->runtime_dir = ASTRO_RUNTIME_DIR;
     static const char *sources[] = {
         "node.c", "parse.c", "object.c", "builtins.c",
         "bootstrap_src.c", "koruby_runtime.c", "exe_main.c", NULL,
     };
-    bcfg.sources = sources;
+    bcfg->sources = sources;
     static const char *koruby_sample_ldflags[] = {
         "-Wl,-rpath", KORUBY_SRC_DIR_DEFAULT "/prism/build",
         "-L", KORUBY_SRC_DIR_DEFAULT "/prism/build",
@@ -206,21 +148,18 @@ koruby_build_subcommand(int argc, char **argv)
         "-Wno-unused-parameter", "-Wno-unused-but-set-variable",
         NULL,
     };
-    bcfg.sample_ldflags = koruby_sample_ldflags;
-    bcfg.sample_cflags = koruby_sample_cflags;
+    bcfg->sample_ldflags = koruby_sample_ldflags;
+    bcfg->sample_cflags = koruby_sample_cflags;
 
-    int rc = astro_build_aot_executable(ast, &bcfg, "code_store");
-    astro_build_end_aot_session();
-    astro_build_config_dispose(&bcfg);
-    return rc;
+    return astro_build_aot_executable(ast, bcfg, "code_store");
 }
 
 int main(int argc, char *argv[])
 {
-    /* --build subcommand — framework-owned argv space. */
-    if (argc >= 2 && strcmp(argv[1], "--build") == 0) {
-        return koruby_build_subcommand(argc - 1, argv + 1);
-    }
+    /* Pre-scan argv for build-related flags.  Order-free among
+     * themselves, but must come before the source file. */
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
 
     INIT();
     korb_runtime_init();
@@ -341,16 +280,26 @@ int main(int argc, char *argv[])
      * targets, Rational/Complex, etc.) before running the user program. */
     koruby_eval_bootstrap(c);
 
-    /* In compile_only mode (-c), still run the program so that
-     * `require_relative` chains parse all source files (registering all
-     * methods into code_repo) before we emit node_specialized.c. */
+    /* Decide if we should EVAL.  Runtime: yes (unless --compile-only).
+     * Build mode (bcfg.out_exe set): only if --run / --pg-compile. */
     int rc = 0;
-    if (!OPTION.compile_only) {
-        rc = koruby_run_ast(c, ast);
-        if (rc != 0 && c->state == KORB_RAISE) return rc;
+    bool should_eval;
+    if (bcfg.out_exe) {
+        should_eval = bcfg.run;
     } else {
-        /* compile_only: run and ignore exit code (we still want to bake). */
-        (void)koruby_run_ast(c, ast);
+        should_eval = true;  /* runtime always evals (compile_only also runs first) */
+    }
+    if (should_eval) {
+        astro_build_begin_aot_session();
+        if (!OPTION.compile_only && !bcfg.out_exe) {
+            rc = koruby_run_ast(c, ast);
+            if (rc != 0 && c->state == KORB_RAISE) return rc;
+        } else {
+            (void)koruby_run_ast(c, ast);
+        }
+        if (!bcfg.out_exe) astro_build_end_aot_session();
+    } else if (bcfg.out_exe) {
+        astro_build_begin_aot_session();
     }
 
     if (OPTION.compile_only) {
@@ -365,6 +314,14 @@ int main(int argc, char *argv[])
         setenv("CCACHE_DISABLE", "1", 0);
         fprintf(stderr, "[koruby] AOT compile: building all.so\n");
         astro_cs_build(NULL);
+    }
+
+    /* Build mode: emit exe. */
+    if (bcfg.out_exe) {
+        int erc = koruby_do_build(ast, &bcfg);
+        astro_build_end_aot_session();
+        astro_build_config_dispose(&bcfg);
+        return erc;
     }
     return rc;
 }

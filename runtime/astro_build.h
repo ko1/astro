@@ -1,23 +1,27 @@
 // ASTro build orchestrator: cross-sample machinery for invoking the C
 // toolchain to produce standalone executables from a parsed AST.
 //
-// The user CLI is a "--build" subcommand.  Inside it, the flags are
-// organised into two orthogonal axes:
+// The build flags are order-free in argv, but must appear BEFORE the
+// source file (Unix convention: anything after the first positional is
+// passed to the running program).  The flags are organised into two
+// orthogonal axes:
 //
 //   attribute (what kind of compiled code goes into the exe):
 //     --plain         use no compiled code (= AST-walk at exe runtime)
 //     --aot-compile   bake AOT specializations
 //     --pg-compile    bake profile-guided specializations (implies run)
 //
-//   action (whether to run the program during build):
-//     --run           execute the program during build (= use require chain
-//                     to auto-discover the file set).  Implied by --pg-compile.
+//   action:
+//     --run           execute the program (implied by --pg-compile;
+//                     default in runtime context if no other action)
+//     --build OUT     produce an executable at OUT
 //
-// Default (no flag) = "embed entry's AST only, no run, no AOT".
-//
-// Positional handling depends on whether the program runs during build:
-//   - runs: first positional = entry source, rest = ARGV for the run
-//   - doesn't run: all positionals = source files to embed/compile
+// Examples (all equivalent re: build):
+//     naruby --build out --run --aot-compile main.rb
+//     naruby --aot-compile --build out --run main.rb
+//     naruby --run --aot-compile --build out main.rb
+// But not:
+//     naruby main.rb --build out      # "main.rb" --build out are ARGV
 //
 // C-toolchain knobs (CC, -O*, --strip, --lto, --static, --gc-sections,
 // --sanitize, --cflag, --ldflag, --keep, --verbose) are NOT in argv.
@@ -69,30 +73,29 @@ struct astro_build_config {
 #define ASTRO_BUILD_CONFIG_INIT { .opt_level = -1 }
 
 // ---------------------------------------------------------------------------
-// --build subcommand parser
+// astro_build_extract_flags — pre-scan argv for build-related flags
 // ---------------------------------------------------------------------------
 //
-// Recognised syntax:
-//     <prog> --build OUTPUT [mode flags...] [positionals...]
+// Walks argv from argv[1] forward, identifying and removing build flags
+// in place.  Stops at the first non-flag token (= source file under Unix
+// convention; tokens after it stay untouched, becoming source / ARGV
+// for the sample's own parser).
 //
-// `argc` / `argv` should start at the `--build` token (i.e. the sample
-// passes argv+1 from the position where argv[0] == "--build").
+// Recognised flags (order-free among themselves):
+//   --build PATH       (consumes next argv element as PATH)
+//   --run
+//   --aot-compile
+//   --pg-compile       (also sets --run)
+//   --plain
 //
-// On success:
-//   - cfg->out_exe is set to the first positional after `--build`.
-//   - Mode flags (--plain / --aot-compile / --pg-compile / --run) are
-//     folded into cfg.
-//   - ASTRO_BUILD_OPTS environment variable is parsed for C-toolchain
-//     knobs (sets cfg->cc, opt_level, strip, lto, etc.).
-//   - Remaining positional tokens are written to *rest_argc / *rest_argv.
-//     The sample decides how to interpret them based on cfg->run:
-//       - cfg->run == true:  positionals[0] = entry source, [1..] = ARGV
-//       - cfg->run == false: positionals[0..n) = source file list
+// Other flags (starting with `-`) are passed through to the sample's
+// parser.  argv is compacted in-place; *argc_io is updated.
 //
-// Returns 0 on success, non-zero on parse error (with diagnostic on stderr).
-int astro_build_subcommand_parse(int argc, char **argv,
-                                 struct astro_build_config *cfg,
-                                 int *rest_argc, char ***rest_argv);
+// Also calls astro_build_load_env_opts() to parse ASTRO_BUILD_OPTS.
+//
+// Returns 0 on success, non-zero on parse error.
+int astro_build_extract_flags(int *argc_io, char **argv,
+                              struct astro_build_config *cfg);
 
 // Parse the ASTRO_BUILD_OPTS environment variable into cfg.  Called
 // automatically by astro_build_subcommand_parse, but exposed so a

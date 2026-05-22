@@ -182,63 +182,60 @@ astro_build_load_env_opts(struct astro_build_config *cfg)
 }
 
 int
-astro_build_subcommand_parse(int argc, char **argv,
-                             struct astro_build_config *cfg,
-                             int *rest_argc_out, char ***rest_argv_out)
+astro_build_extract_flags(int *argc_io, char **argv,
+                          struct astro_build_config *cfg)
 {
-    // argv[0] is expected to be "--build" (or argv already shifted past it).
-    int start = 0;
-    if (argc > 0 && strcmp(argv[0], "--build") == 0) start = 1;
+    int argc = *argc_io;
+    int wi = 1;   // write index; argv[0] stays
 
-    // First positional after --build = output exe path.
-    if (start >= argc) {
-        fprintf(stderr, "astro --build: missing output path\n");
-        return 1;
-    }
-    cfg->out_exe = argv[start++];
-
-    char **rest = malloc(sizeof(*rest) * (argc + 1));
-    int rest_n = 0;
-
-    for (int ri = start; ri < argc; ri++) {
+    for (int ri = 1; ri < argc; ri++) {
         const char *a = argv[ri];
 
-        // Mode flags (attributes + action).  These are the ONLY flags
-        // the subcommand parser owns — C-toolchain knobs come from
-        // ASTRO_BUILD_OPTS env var (parsed below).
+        // Stop at the first non-flag positional (= source file).
+        // Per Unix convention, tokens after it are passed to the running
+        // program as ARGV; we never touch them.
+        if (a[0] != '-' || a[1] == '\0') {
+            // Copy this and everything after it through unchanged.
+            while (ri < argc) argv[wi++] = argv[ri++];
+            break;
+        }
+
+        // --build PATH: consume next argv element as PATH.
+        if (strcmp(a, "--build") == 0) {
+            if (ri + 1 >= argc) {
+                fprintf(stderr, "astro: --build requires PATH\n");
+                return 1;
+            }
+            cfg->out_exe = argv[ri + 1];
+            ri++;
+            continue;
+        }
+        // Attribute / action flags.
         if (strcmp(a, "--plain")       == 0) { cfg->plain = true;       continue; }
         if (strcmp(a, "--aot-compile") == 0) { cfg->aot_compile = true; continue; }
         if (strcmp(a, "--pg-compile")  == 0) { cfg->pg_compile = true;
                                                cfg->run = true;         continue; }
         if (strcmp(a, "--run")         == 0) { cfg->run = true;         continue; }
 
-        // Sanity: combinations that contradict each other.
-        // (Done after the loop so a single error report covers it.)
-
-        // Unknown — pass through to the sample's source parser.
-        rest[rest_n++] = argv[ri];
+        // Other `-...` token — leave for the sample's parser.
+        argv[wi++] = argv[ri];
     }
-    rest[rest_n] = NULL;
+    argv[wi] = NULL;
+    *argc_io = wi;
 
-    // Contradiction checks.
+    // Contradiction checks (only relevant if any build-related flag was set).
     if (cfg->plain && cfg->aot_compile) {
-        fprintf(stderr, "astro --build: --plain and --aot-compile are mutually exclusive\n");
-        free(rest);
+        fprintf(stderr, "astro: --plain and --aot-compile are mutually exclusive\n");
         return 1;
     }
     if (cfg->plain && cfg->pg_compile) {
-        fprintf(stderr, "astro --build: --plain and --pg-compile are mutually exclusive\n");
-        free(rest);
+        fprintf(stderr, "astro: --plain and --pg-compile are mutually exclusive\n");
         return 1;
     }
     if (cfg->aot_compile && cfg->pg_compile) {
-        fprintf(stderr, "astro --build: --aot-compile and --pg-compile are mutually exclusive\n");
-        free(rest);
+        fprintf(stderr, "astro: --aot-compile and --pg-compile are mutually exclusive\n");
         return 1;
     }
-
-    *rest_argc_out = rest_n;
-    *rest_argv_out = rest;
 
     // Load C-toolchain knobs from env.
     return astro_build_load_env_opts(cfg);

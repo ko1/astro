@@ -121,56 +121,15 @@ clear_code_store_dir(void)
     }
 }
 
-// --build OUTPUT [mode-flags] [files...] — handled before the interp
-// dispatch.  rest_argv interpretation depends on bcfg.run:
-//   bcfg.run == true:  rest_argv[0] = entry file, [1..] = ARGV for the run
-//   bcfg.run == false: rest_argv = source files to embed (entry = first)
-//
-// naruby has no require yet, so multi-file support amounts to "embed
-// these ASTs alongside the main one".  We accept the list but for now
-// only the first file is the entry (others are ignored — placeholder
-// for future require-graph traversal).
+// Bake + build helper.  Called after AST is parsed and (optionally)
+// EVAL'd, when bcfg.out_exe is set.  bcfg already contains all the
+// build-related flags pre-extracted from argv.
 static int
-naruby_build_subcommand(int argc, char **argv)
+naruby_do_build(NODE *ast, struct astro_build_config *bcfg)
 {
-    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-    int rest_argc; char **rest_argv;
-    if (astro_build_subcommand_parse(argc, argv, &bcfg,
-                                      &rest_argc, &rest_argv) != 0) {
-        return 1;
-    }
-    if (rest_argc < 1) {
-        fprintf(stderr, "naruby --build: missing source file\n");
-        free(rest_argv);
-        astro_build_config_dispose(&bcfg);
-        return 1;
-    }
-
-    CTX *c = create_context(10000, 2000);
-    global_c = c;
-    INIT();   // astro_cs_init — SD_*.c writes go to ./code_store/c/
-
-    // PARSE expects (argc, argv) with argv[0] = progname placeholder.
-    // Pass the first rest token as the file; if bcfg.run, the rest are
-    // passed through as ARGV (naruby's PARSE only inspects argv for
-    // file paths today, so additional positional args are ignored —
-    // they'll be plumbed through to ARGV when naruby exposes one).
-    char **pargv = malloc(sizeof(*pargv) * (rest_argc + 2));
-    pargv[0] = (char *)"naruby";
-    for (int i = 0; i < rest_argc; i++) pargv[i + 1] = rest_argv[i];
-    pargv[rest_argc + 1] = NULL;
-    NODE *ast = PARSE(rest_argc + 1, pargv);
-    free(pargv);
-    free(rest_argv);
-
-    astro_build_begin_aot_session();
-
-    // Decide what to bake based on the attribute flag:
-    //   --plain           : nothing baked (= AST-only exe)
-    //   --aot-compile     : AOT bake (no run)
-    //   --pg-compile      : AOT + PGSD bake (after run)
-    //   (none, default)   : nothing baked (= AST-only exe)
-    if (bcfg.aot_compile || bcfg.pg_compile) {
+    // Bake whenever attribute = AOT or PG (--pg-compile already implied
+    // a run; that run happened in main below before we got here).
+    if (bcfg->aot_compile || bcfg->pg_compile) {
         astro_cs_compile(ast, NULL);
         uint32_t n = naruby_code_repo_size();
         for (uint32_t i = 0; i < n; i++) {
@@ -180,44 +139,30 @@ naruby_build_subcommand(int argc, char **argv)
         }
     }
 
-    // If bcfg.run (= --run or --pg-compile), execute the program once
-    // during build.  Side effects of the program WILL happen; this is
-    // opt-in.  For --pg-compile, the run also produces a profile;
-    // PGSD bake happens at end of run (TODO: add the PGSD-bake hook
-    // here once naruby's PGSD machinery is wired through the new
-    // attribute model).
-    if (bcfg.run) {
-        OPTIMIZE(ast);
-        (void)astro_cs_load(ast, naruby_current_source_file);
-        RESULT r = EVAL(c, ast, c->env);
-        (void)r;
-    }
-
-    bcfg.src_dir = NARUBY_SRC_DIR;
-    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+    bcfg->src_dir = NARUBY_SRC_DIR;
+    bcfg->runtime_dir = ASTRO_RUNTIME_DIR;
     static const char *sources[] = {
         "node.c", "node_slowpath.c", "naruby_runtime.c", "exe_main.c", NULL,
     };
-    bcfg.sources = sources;
-    // Naruby-specific cflag (must stay even when ASTRO_BUILD_OPTS is set).
+    bcfg->sources = sources;
     static const char *naruby_sample_cflags[] = {
         "--param=early-inlining-insns=100", NULL,
     };
-    bcfg.sample_cflags = naruby_sample_cflags;
+    bcfg->sample_cflags = naruby_sample_cflags;
 
-    int rc = astro_build_aot_executable(ast, &bcfg, "code_store");
-    astro_build_end_aot_session();
-    astro_build_config_dispose(&bcfg);
-    return rc;
+    return astro_build_aot_executable(ast, bcfg, "code_store");
 }
 
 int
 main(int argc, char *argv[])
 {
-    // --build subcommand — framework-owned argv from here onwards.
-    if (argc >= 2 && strcmp(argv[1], "--build") == 0) {
-        return naruby_build_subcommand(argc - 1, argv + 1);
-    }
+    // Pre-scan argv for build-related flags (--build OUT, --run,
+    // --aot-compile, --pg-compile, --plain).  They're order-free
+    // within the flag block (= before the source file).  Remaining
+    // argv is consumed by naruby's normal parser.
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
+
     // Order:
     //   1. Parse CLI (so we know about --ccs / --plain / -c / -p).
     //   2. Optionally wipe code_store (--ccs).
@@ -267,13 +212,37 @@ main(int argc, char *argv[])
         (void)astro_cs_load(ast, naruby_current_source_file);
     }
 
-    if (!OPTION.compile_only) {
+    // For build mode (--build OUT was on argv): only EVAL if explicitly
+    // requested via --run or --pg-compile.  Otherwise the build is
+    // side-effect free.  For runtime mode, EVAL unconditionally
+    // (unless --aot-compile, which is "bake and exit").
+    bool should_eval;
+    if (bcfg.out_exe) {
+        should_eval = bcfg.run;
+    } else {
+        should_eval = !OPTION.compile_only;
+    }
+    if (should_eval) {
+        astro_build_begin_aot_session();
         RESULT r = EVAL(c, ast, c->env);
-        printf("Result: %ld, node_cnt:%lu\n", r.value, node_cnt);
+        if (!bcfg.out_exe) {
+            printf("Result: %ld, node_cnt:%lu\n", r.value, node_cnt);
+        }
+        astro_build_end_aot_session();
+    } else if (bcfg.out_exe) {
+        astro_build_begin_aot_session();
     }
 
     if (OPTION.pg_at_exit && !OPTION.plain && !OPTION.skip_bake) {
         build_code_store_pgsd(ast);
+    }
+
+    // Build mode: bake + emit exe at bcfg.out_exe.
+    if (bcfg.out_exe) {
+        int rc = naruby_do_build(ast, &bcfg);
+        astro_build_end_aot_session();
+        astro_build_config_dispose(&bcfg);
+        return rc;
     }
 
     return 0;

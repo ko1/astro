@@ -78,56 +78,14 @@ evaluate(CTX *const c, const char *const input)
     return EVAL(c, ast);
 }
 
-// Source-spec parser for the --build subcommand.  Handles `-e EXPR`.
-static NODE *
-build_parse_source(int argc, char **argv)
-{
-    for (int i = 0; i < argc; i++) {
-        if (strcmp(argv[i], "-e") == 0 && i + 1 < argc) {
-            return parse(argv[i + 1]);
-        }
-    }
-    fprintf(stderr, "calc --build: missing -e EXPR\n");
-    return NULL;
-}
-
 int
 main(int argc, char *argv[])
 {
-    // --build subcommand: framework-owned argv space.
-    if (argc >= 2 && strcmp(argv[1], "--build") == 0) {
-        struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-        int rest_argc; char **rest_argv;
-        if (astro_build_subcommand_parse(argc - 1, argv + 1, &bcfg,
-                                          &rest_argc, &rest_argv) != 0) {
-            return 1;
-        }
-        INIT();
-        // Calc has only -e EXPR source spec.  rest_argv contains -e EXPR
-        // (or nothing).  Build the AST from -e.
-        NODE *ast = build_parse_source(rest_argc, rest_argv);
-        free(rest_argv);
-        if (!ast) { astro_build_config_dispose(&bcfg); return 1; }
-
-        astro_build_begin_aot_session();
-        // Bake SDs when --aot-compile is set, OR when --pg-compile (which
-        // also bakes AOT in addition to running for profile).  Calc has
-        // no profile-collecting machinery so --pg-compile collapses to
-        // --aot-compile here.
-        if (bcfg.aot_compile || bcfg.pg_compile) {
-            astro_cs_compile(ast, NULL);
-        }
-        bcfg.src_dir = CALC_SRC_DIR;
-        bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
-        static const char *sources[] = {
-            "parse.c", "node.c", "exe_main.c", NULL,
-        };
-        bcfg.sources = sources;
-        int rc = astro_build_aot_executable(ast, &bcfg, "code_store");
-        astro_build_end_aot_session();
-        astro_build_config_dispose(&bcfg);
-        return rc;
-    }
+    // Extract build-related flags from argv first (--build OUT, --run,
+    // --aot-compile, --pg-compile, --plain).  These are order-free and
+    // disappear from argv before calc's own option loop runs.
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
 
     const char *eval_expr = NULL;
 
@@ -161,6 +119,30 @@ main(int argc, char *argv[])
 
     INIT();
     CTX *const c = malloc(sizeof(CTX));
+
+    // Build mode (--build OUT was on argv).  Calc only has `-e EXPR` as
+    // source, so eval_expr must be set.
+    if (bcfg.out_exe) {
+        if (!eval_expr) {
+            fprintf(stderr, "calc: --build requires -e EXPR\n");
+            return 1;
+        }
+        NODE *ast = parse(eval_expr);
+        astro_build_begin_aot_session();
+        if (bcfg.aot_compile || bcfg.pg_compile) {
+            astro_cs_compile(ast, NULL);
+        }
+        bcfg.src_dir = CALC_SRC_DIR;
+        bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+        static const char *sources[] = {
+            "parse.c", "node.c", "exe_main.c", NULL,
+        };
+        bcfg.sources = sources;
+        int rc = astro_build_aot_executable(ast, &bcfg, "code_store");
+        astro_build_end_aot_session();
+        astro_build_config_dispose(&bcfg);
+        return rc;
+    }
 
     if (eval_expr) {
         printf("%ld\n", evaluate(c, eval_expr));
