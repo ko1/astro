@@ -3,7 +3,7 @@
 // Currently the only resident is `aro_gc_realloc_payload`, which 14 of
 // the 16 backends used to implement with the same 12-line body.  The
 // only backend-specific bits are header layout, which we delegate to
-// the per-backend accessors `aro_gc_kind_of` / `aro_gc_size_of`
+// the per-backend accessor `aro_gc_size_of`
 // declared in gc.h.
 //
 // gc_none and gc_bump-style backends that don't want this default can

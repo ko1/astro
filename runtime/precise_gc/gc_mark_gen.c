@@ -676,13 +676,6 @@ aro_gc_fini(CTX *c)
 }
 
 
-AroGcKind
-aro_gc_kind_of(void *p)
-{
-    GCHeader *h = (GCHeader *)p - 1;
-    return HDR_KIND(h);
-}
-
 size_t
 aro_gc_size_of(void *p)
 {

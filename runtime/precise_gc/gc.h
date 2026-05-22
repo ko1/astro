@@ -236,9 +236,9 @@ void *aro_gc_alloc_byte(CTX *c, size_t payload_size);
  * inner alloc (so it stays scanned through any GC).
  *
  * Default impl lives in gc_common.c and calls back into the backend
- * via aro_gc_kind_of / aro_gc_size_of (declared below).  Backends with
- * no per-object header (gc_none) override aro_gc_realloc_payload
- * themselves and don't implement the accessors. */
+ * via aro_gc_size_of (declared below) for the memcpy length.  Backends
+ * with no per-object header (gc_none) override aro_gc_realloc_payload
+ * themselves and don't implement the accessor. */
 void *aro_gc_realloc_payload(CTX *c, void *p, size_t new_size);
 /* aro_gc_realloc_byte_payload — same shape but for byte payloads (=
  * caller fills the new bytes, framework skips zero-init growth).
