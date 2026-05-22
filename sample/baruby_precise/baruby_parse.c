@@ -476,8 +476,13 @@ push_frame(struct transduce_context *tc, pm_constant_id_list_t *locals)
 /* iter 72: bake helpers — wrap ALLOC_node_<X>(..., sp_offset=...) /
  * ALLOC_node_<call*>(..., callee_fp_offset=...) so the offset operand
  * is set to (index_or_argidx - chain_sum) at parse time and the node is
- * registered for finalization at pop_frame (subtracts locals_cnt). */
-static NODE *
+ * registered for finalization at pop_frame (subtracts locals_cnt).
+ *
+ * noinline + cold: keep these out of transduce's hot loop so LTO doesn't
+ * inline them into transduce body.  transduce inflation pushes runtime
+ * dispatcher functions to different cache lines (= measured -5%
+ * geomean LTO layout regression in iter 72 first draft). */
+static __attribute__((noinline, cold)) NODE *
 bake_lget(struct transduce_context *tc, uint32_t index)
 {
     NODE *n = ALLOC_node_lget(index, (int32_t)index - tc->chain_sum);
@@ -485,7 +490,7 @@ bake_lget(struct transduce_context *tc, uint32_t index)
     return n;
 }
 
-static NODE *
+static __attribute__((noinline, cold)) NODE *
 bake_lset(struct transduce_context *tc, uint32_t index, NODE *rhs)
 {
     NODE *n = ALLOC_node_lset(index, (int32_t)index - tc->chain_sum, rhs);
@@ -493,7 +498,7 @@ bake_lset(struct transduce_context *tc, uint32_t index, NODE *rhs)
     return n;
 }
 
-static NODE *
+static __attribute__((noinline, cold)) NODE *
 bake_call(struct transduce_context *tc, const char *fname,
           uint32_t args_cnt, uint32_t arg_index)
 {
@@ -503,7 +508,7 @@ bake_call(struct transduce_context *tc, const char *fname,
     return n;
 }
 
-static NODE *
+static __attribute__((noinline, cold)) NODE *
 bake_call_static(struct transduce_context *tc, NODE *body,
                  uint32_t arg_index)
 {
