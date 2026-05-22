@@ -6,7 +6,7 @@
 // cost in baruby_precise, isolating those from any heap-management cost.
 //
 // Trade-off vs `none`: no fragmentation, contiguous memory; but a single
-// 4 GiB region (lazy paged) is reserved up front.  Aborts on OOM since
+// 64 GiB region (lazy paged) is reserved up front.  Aborts on OOM since
 // there is no collector.
 
 #include <stdio.h>
@@ -17,10 +17,8 @@
 #include "astro_debug.h"
 #include "gc.h"
 
-typedef struct GCHeader {
-    uint32_t kind;
-    uint32_t size;
-} GCHeader;
+/* iter 75 Step C: framework GCHeader 廃止。 ASTroObjectHeader (= sample
+ * struct head field) が payload offset 0 にあり、 gc_size を保持。 */
 
 #define REGION_BYTES ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)    (((n) + 7u) & ~(size_t)7u)
@@ -53,31 +51,35 @@ aro_gc_init(CTX *c)
     }
 }
 
-static GCHeader *
-bump(CTX *c, AstroGcCategory cat, size_t payload_size, size_t aligned)
+/* Bump payload at region_top.  Writes head at offset 0 of payload. */
+static inline void *
+bump(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    size_t total = sizeof(GCHeader) + aligned;
-    if (gc->region_top + total > gc->region_end) {
+    if (gc->region_top + aligned > gc->region_end) {
         fprintf(stderr, "baruby_gc=bump: OOM (need %zu, virtual %p..%p)\n",
-                total, (void *)gc->region_base, (void *)gc->region_end);
+                aligned, (void *)gc->region_base, (void *)gc->region_end);
         abort();
     }
-    GCHeader *h = (GCHeader *)gc->region_top;
-    h->kind = (uint32_t)cat;
-    h->size = (uint32_t)payload_size;
-    gc->region_top += total;
-    return h;
+    void *payload = gc->region_top;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    h->flags    = 0;
+    h->gc_flags = 0;
+    h->gc_size  = (uint32_t)payload_size;
+    gc->region_top += aligned;
+    return payload;
 }
 
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = bump(c, ASTRO_GC_CAT_SCAN, payload_size, aligned);
-    void *payload = (void *)(h + 1);
+    void *payload = bump(c, payload_size, aligned);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    ASTRO_GC_INIT_PAYLOAD(payload, aligned);
+    /* Zero post-head region so GC scans see no stale heap-pointer bits.
+     * gc_bump backend has no GC, but the contract is uniform. */
+    memset((char *)payload + sizeof(ASTroObjectHeader), 0,
+           aligned - sizeof(ASTroObjectHeader));
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return payload;
@@ -87,10 +89,9 @@ void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = bump(c, ASTRO_GC_CAT_BYTE, payload_size, aligned);
-    void *payload = (void *)(h + 1);
+    void *payload = bump(c, payload_size, aligned);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
+    /* Byte payloads: skip post-head zero-fill (caller writes immediately). */
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return payload;
@@ -99,8 +100,7 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
-    (void)c; (void)sp_top;
+    (void)c;
     // no-op
 }
 
@@ -120,6 +120,5 @@ aro_gc_fini(CTX *c)
 size_t
 aro_gc_size_of(void *p)
 {
-    GCHeader *h = (GCHeader *)p - 1;
-    return h->size;
+    return ((ASTroObjectHeader *)p)->gc_size;
 }

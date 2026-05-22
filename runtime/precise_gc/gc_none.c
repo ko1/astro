@@ -14,10 +14,12 @@
 #include "astro_debug.h"
 #include "gc.h"
 
+/* iter 75 Step C: ASTroObjectHeader at payload offset 0.  gc_none has
+ * no scan / walk so head fields are sample-only (flags) plus gc_size
+ * (preserved for symmetry with other backends). */
+
 /* ASTroGC: process-scope GC instance.  gc_none has no backend-specific
- * state — only the common header (stats / stress / timer) is needed.
- * The struct still gets heap-allocated + bound to c->astro_gc so the
- * uniform `ASTRO_GC_COMMON(c)` accessor works. */
+ * state — only the common header (stats / stress / timer) is needed. */
 typedef struct ASTroGC {
     AroGcCommonState common;
 } ASTroGC;
@@ -41,6 +43,7 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 {
     void *p = calloc(1, payload_size ? payload_size : 1);
     if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
+    ((ASTroObjectHeader *)p)->gc_size = (uint32_t)payload_size;
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return p;
@@ -51,6 +54,12 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
     void *p = malloc(payload_size ? payload_size : 1);
     if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
+    /* malloc doesn't zero — but we need a valid head.gc_size.  Sample
+     * writes head.flags immediately after return. */
+    ASTroObjectHeader *h = (ASTroObjectHeader *)p;
+    h->flags    = 0;
+    h->gc_flags = 0;
+    h->gc_size  = (uint32_t)payload_size;
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return p;
@@ -61,6 +70,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
     void *p = realloc(old, new_size ? new_size : 1);
     if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
+    ((ASTroObjectHeader *)p)->gc_size = (uint32_t)new_size;
     ASTRO_GC_COMMON(c)->stats.total_bytes += new_size;
     return p;
 }
