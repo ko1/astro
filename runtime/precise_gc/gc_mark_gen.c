@@ -425,30 +425,17 @@ remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, ASTroObjectHeader *))
     }
 }
 
-void
-aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+/* aro_gc_remember — WB body.  Caller (gc.h `aro_gc_wb` inline fast path)
+ * already verified holder is non-NULL, old, and not yet dirty.  Mark the
+ * holder DIRTY and push to remset so the next minor GC scans its
+ * outgoing edges for young → old references.  Cold + noinline keeps the
+ * fast path tight (= just bit test + branch). */
+void __attribute__((noinline, cold))
+aro_gc_remember(CTX *c, ASTroObjectHeader *h)
 {
-    *slot = v;
-    if (holder == NULL) return;
-    ASTroObjectHeader *hh = (ASTroObjectHeader *)holder;
-    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
-        ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-        HDR_SET_DIRTY(hh);
-        remset_push(gc, hh);
-    }
-}
-
-void
-aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
-{
-    if (n) memcpy(dst, src, n * sizeof(VALUE));
-    if (holder == NULL) return;
-    ASTroObjectHeader *hh = (ASTroObjectHeader *)holder;
-    if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
-        ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-        HDR_SET_DIRTY(hh);
-        remset_push(gc, hh);
-    }
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    HDR_SET_DIRTY(h);
+    remset_push(gc, h);
 }
 
 // ---------------------------------------------------------------------------

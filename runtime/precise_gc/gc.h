@@ -269,17 +269,70 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 // Write barrier.
 //
 // `holder` is the heap object (payload pointer) that contains `slot`.  For
-// item-array writes (`a->items[i] = v`) holder is the items payload, not
-// the BaArray.  For pointer-field writes (`a->items = new_payload`) holder
-// is the BaArray.  Use NULL for stack-root writes (= no barrier needed).
+// item-array writes (`a->items->data[i] = v`) holder is the BaArrayItems
+// payload, not the BaArray.  For pointer-field writes (`a->items = new_ptr`)
+// holder is the BaArray.  Use NULL for stack-root writes (= no barrier).
 //
-// For non-gen backends WB collapses to `*slot = v`; gen / inc backends
-// override with a real implementation that maintains a remembered set or
-// dirty-card bitmap.
+// For non-WB backends the whole call collapses to `*slot = v` (= zero cost).
+//
+// For WB backends with the bit-in-head layout (= ASTRO_GC_WB_OLD_MASK
+// defined in gc_types.h), `aro_gc_wb` inlines the FAST PATH:
+//
+//   1. *slot = v
+//   2. if (holder == NULL || !(OLD && !DIRTY)) return
+//
+// The COLD path (= set DIRTY + push to remset) is `aro_gc_wb_slow`, an
+// out-of-line extern function.  Splitting like this keeps the WB inline-able
+// at every callsite — `arr.push` and similar hot writes get a few inline
+// instructions plus a rarely-taken branch instead of a full function call.
+//
+// For WB backends without bit-in-head layout (mark_bitmap_gen / mark_card_gen
+// use per-page bitmaps; mark_gen_inc has an extra SATB barrier), the whole
+// aro_gc_wb stays extern.  LTO may still inline it but there's no source-
+// level guarantee.
+
 #ifdef BARUBY_GC_HAS_WB
+
+#ifdef ASTRO_GC_WB_OLD_MASK
+/* Bit-in-head backends: inline fast-path check, out-of-line `remember`
+ * does the actual work (= set DIRTY + push holder to remset).  Single
+ * `remember` is shared by the slot and bulk WB — the action is
+ * holder-centric, not slot-centric. */
+void aro_gc_remember(CTX *c, ASTroObjectHeader *h);
+
+static inline void
+aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+{
+    *slot = v;
+    if (__builtin_expect(holder == NULL, 1)) return;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)holder;
+    if (__builtin_expect(
+        (h->gc_flags & (ASTRO_GC_WB_OLD_MASK | ASTRO_GC_WB_DIRTY_MASK))
+            != ASTRO_GC_WB_OLD_MASK, 1)) return;
+    aro_gc_remember(c, h);
+}
+
+static inline void
+aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+{
+    if (n) memcpy(dst, src, n * sizeof(VALUE));
+    if (__builtin_expect(holder == NULL, 1)) return;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)holder;
+    if (__builtin_expect(
+        (h->gc_flags & (ASTRO_GC_WB_OLD_MASK | ASTRO_GC_WB_DIRTY_MASK))
+            != ASTRO_GC_WB_OLD_MASK, 1)) return;
+    aro_gc_remember(c, h);
+}
+
+#else  /* bitmap_gen / card_gen / mark_gen_inc: WB fully out-of-line */
+
 void aro_gc_wb     (CTX *c, void *holder, VALUE *slot, VALUE v);
 void aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
-#else
+
+#endif
+
+#else  /* non-WB backends: WB collapses to a plain store. */
+
 static inline void
 aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 {

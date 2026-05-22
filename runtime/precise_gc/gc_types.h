@@ -67,6 +67,33 @@
 #  define ASTRO_GC_HAS_FWD 1
 #endif
 
+/* WB fast-path bit mask (= bit-in-head backends).  gc.h's inline
+ * `aro_gc_wb` checks `(gc_flags & MASK) == OLD_ONLY` to decide whether
+ * the slow path (= aro_gc_wb_slow) is needed.  Each gen backend that
+ * keeps OLD/DIRTY bits directly in head.gc_flags exposes its layout
+ * here so the WB hot path inlines without a function call.
+ *
+ * Backends without this define (mark_bitmap_gen, mark_card_gen,
+ * mark_gen_inc) keep the entire aro_gc_wb as an extern function (=
+ * page-bitmap lookup or SATB barrier doesn't fold cleanly into a single
+ * bit test). */
+#if BARUBY_GC == BARUBY_GC_MARK_GEN         || \
+    BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN || \
+    BARUBY_GC == BARUBY_GC_MARK_BUMP_GEN
+   /* head.gc_flags: MARKED=0x0001, OLD=0x0002, DIRTY=0x0004 */
+#  define ASTRO_GC_WB_OLD_MASK   ((uint16_t)0x0002u)
+#  define ASTRO_GC_WB_DIRTY_MASK ((uint16_t)0x0004u)
+#elif BARUBY_GC == BARUBY_GC_COPY_GEN || \
+      BARUBY_GC == BARUBY_GC_COPY_GEN_INC
+   /* head.gc_flags: OLD=0x0001, DIRTY=0x0002 */
+#  define ASTRO_GC_WB_OLD_MASK   ((uint16_t)0x0001u)
+#  define ASTRO_GC_WB_DIRTY_MASK ((uint16_t)0x0002u)
+#elif BARUBY_GC == BARUBY_GC_IMMIX_GEN
+   /* head.gc_flags: epoch low 8 bits, OLD=0x0100, DIRTY=0x0200 */
+#  define ASTRO_GC_WB_OLD_MASK   ((uint16_t)0x0100u)
+#  define ASTRO_GC_WB_DIRTY_MASK ((uint16_t)0x0200u)
+#endif
+
 /* ASTroObjectHeader — every GC-managed object's first member.  Lives at
  * payload offset 0 (= NOT a separate prefix before payload).  Sample's
  * structs must place `ASTroObjectHeader head` as the first field; the

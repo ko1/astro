@@ -418,30 +418,13 @@ remset_push(ASTroGC *gc, ASTroObjectHeader *h)
     }
 }
 
-void
-aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+/* WB body — caller verified holder is old + not-yet-dirty. */
+void __attribute__((noinline, cold))
+aro_gc_remember(CTX *c, ASTroObjectHeader *h)
 {
-    *slot = v;
-    if (holder == NULL) return;
-    ASTroObjectHeader *hh = (ASTroObjectHeader *)holder;
-    if ((hh->gc_flags & H_OLD) && !(hh->gc_flags & H_DIRTY)) {
-        ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-        hh->gc_flags |= H_DIRTY;
-        remset_push(gc, hh);
-    }
-}
-
-void
-aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
-{
-    if (n) memcpy(dst, src, n * sizeof(VALUE));
-    if (holder == NULL) return;
-    ASTroObjectHeader *hh = (ASTroObjectHeader *)holder;
-    if ((hh->gc_flags & H_OLD) && !(hh->gc_flags & H_DIRTY)) {
-        ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-        hh->gc_flags |= H_DIRTY;
-        remset_push(gc, hh);
-    }
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    h->gc_flags |= H_DIRTY;
+    remset_push(gc, h);
 }
 
 /* ---------------------------------------------------------------------------
