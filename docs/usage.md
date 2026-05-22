@@ -457,21 +457,56 @@ For samples without frame-stored or runtime-indirect dispatch (e.g.
 `sample/calc`, `sample/naruby` for the simple cases), one entry per
 top-level callable (= per method body, per script root) is enough.
 
-## `--build` subcommand: standalone-exe build
+## Framework-owned CLI: `--build`, attributes, actions, universal flags
 
-Any sample can produce a self-contained executable that runs one
-pre-parsed program.  Two orthogonal axes:
+Every ASTro sample's CLI is split into two layers:
 
-- **attribute** (what compiled code goes into the exe):
-  - (default) — AST only, no compiled code
-  - `--plain` — no compiled code (= same as default for build context)
+- **Framework layer** (`runtime/astro_build.{c,h}`) — flags whose
+  meaning is identical across all samples (mode flags, build output,
+  quiet/verbose/help/version).
+- **Sample layer** — anything sample-specific (`-e EXPR`, sample
+  parser switches, dump variants, etc.).
+
+The framework parses its own flags first via `astro_build_extract_flags`,
+removes them from argv in place, and hands the residual argv to the
+sample's parser.  Source files are positional: parsing stops at the
+first non-`-` token (Unix convention — everything after it is the
+running program's ARGV).
+
+### Two-axis flag model
+
+Two orthogonal axes describe what the sample should do:
+
+- **attribute** (what compiled code to use):
+  - (default) — interpreter; runtime may auto-load `code_store/all.so`
+    if present
+  - `--plain` — pure interpreter; ignore any compiled code
   - `--aot-compile` — bake AOT-specialized dispatchers
   - `--pg-compile` — bake profile-guided specializations (implies `--run`)
 
-- **action** (whether to execute the program during build):
-  - (default) — do not execute
-  - `--run` — execute during build (enables file-set auto-discovery via
-    require; implied by `--pg-compile`)
+- **action** (what to do with the program):
+  - (default in runtime) — execute it
+  - (default in build) — don't execute
+  - `--run` — execute (opts in during build; harmless in runtime where
+    it's the default anyway)
+  - `--build OUT` — produce an executable at OUT
+
+### Universal CLI knobs
+
+The framework also owns and parses (no aliases, canonical only):
+
+| flag | bcfg field | sample treatment |
+|---|---|---|
+| `-q` / `--quiet` | `bcfg.quiet` | translate to the sample's own quiet state |
+| `-v` / `--verbose` | `bcfg.verbose` | translate to the sample's own verbose state |
+| `-h` / `--help` | `bcfg.help_requested` | signal: sample prints its own help and exits |
+| `--version` | `bcfg.version_requested` | signal: sample prints version and exits |
+
+Sample-specific knobs may add their own short aliases (e.g. naruby
+`-j` for JIT) but **the framework flags above have no aliases.**  This
+guarantees `--quiet` etc. mean exactly the same thing everywhere.
+
+### `ASTRO_BUILD_OPTS` env var
 
 C-toolchain knobs (CC, optimization, strip, lto, etc.) live in the
 `ASTRO_BUILD_OPTS` environment variable, NOT in argv.  This keeps
@@ -482,7 +517,24 @@ ASTRO_BUILD_OPTS="--cc=clang -O3 --strip --gc-sections" \
     naruby --build out main.rb
 ```
 
-### Examples
+Whitespace-separated tokens:
+
+| token | effect |
+|---|---|
+| `--cc=PATH` | C compiler (default: `$ASTRO_CC` → `$CC` → `cc`) |
+| `-O0`/`-O1`/`-O2`/`-O3`/`-Os`/`-Og`, `--opt=N` | Optimization level |
+| `--debug` / `--no-debug` | `-ggdb3` |
+| `--strip` / `--no-strip` | Post-link `strip` |
+| `--lto` / `--no-lto` | `-flto` |
+| `--static` | `-static` |
+| `--gc-sections` | `-ffunction-sections -fdata-sections -Wl,--gc-sections` |
+| `--sanitize=LIST` | `-fsanitize=LIST` |
+| `--cflag=ARG` | Pass-through compile flag (repeatable) |
+| `--ldflag=ARG` | Pass-through linker flag (repeatable) |
+| `--show-cmd` | Print the cc command line |
+| `--keep` | Don't unlink `_embed.c` |
+
+### Examples (build mode)
 
 | command | exe content | runs during build? |
 |---|---|---|
@@ -502,8 +554,9 @@ Size-vs-speed trade-off (koruby fib(35)):
 
 ### Positional argument handling
 
-The interpretation of positional args after OUT depends on whether
-the build runs the program (`--run` or `--pg-compile`):
+The interpretation of positional args depends on whether the program
+runs (true in runtime by default, in build only when `--run` /
+`--pg-compile` is set):
 
 - **runs**: first positional = entry source, rest = ARGV for the run
 - **doesn't run**: positionals = source file list to embed (first = entry)
@@ -511,28 +564,10 @@ the build runs the program (`--run` or `--pg-compile`):
 So `naruby --build out --run foo.rb arg1` runs foo.rb with ARGV=[arg1].
 `naruby --build out foo.rb bar.rb` embeds both files (no run).
 
-### `ASTRO_BUILD_OPTS` env var
-
-Whitespace-separated list of C-toolchain knobs.  Tokens:
-
-| token | effect |
-|---|---|
-| `--cc=PATH` | C compiler (default: `$ASTRO_CC` → `$CC` → `cc`) |
-| `-O0`/`-O1`/`-O2`/`-O3`/`-Os`/`-Og`, `--opt=N` | Optimization level |
-| `--debug` / `--no-debug` | `-ggdb3` |
-| `--strip` / `--no-strip` | Post-link `strip` |
-| `--lto` / `--no-lto` | `-flto` |
-| `--static` | `-static` |
-| `--gc-sections` | `-ffunction-sections -fdata-sections -Wl,--gc-sections` |
-| `--sanitize=LIST` | `-fsanitize=LIST` |
-| `--cflag=ARG` | Pass-through compile flag (repeatable) |
-| `--ldflag=ARG` | Pass-through linker flag (repeatable) |
-| `--verbose` | Print the cc command line |
-| `--keep` | Don't unlink `_embed.c` |
-
 ### Wiring a new sample
 
-Add three things:
+Five touch points (see `sample/calc/main.c` for the smallest worked
+example; calc/naruby/koruby are the three samples currently wired):
 
 1. **`exe_main.c`** — minimal driver, runs alongside the sample's
    regular `main.c`.  The framework has pre-baked the dispatcher
@@ -558,45 +593,62 @@ Add three things:
 
    ```c
    int main(int argc, char *argv[]) {
-       if (argc >= 2 && strcmp(argv[1], "--build") == 0) {
-           return mylang_build_subcommand(argc - 1, argv + 1);
-       }
-       /* ... existing interp parser, unchanged ... */
-   }
-   ```
-
-   `mylang_build_subcommand`:
-   ```c
-   static int mylang_build_subcommand(int argc, char **argv) {
        struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
-       int rest_argc; char **rest_argv;
-       astro_build_subcommand_parse(argc, argv, &bcfg, &rest_argc, &rest_argv);
-       NODE *ast = my_parse_source(rest_argc, rest_argv);  // e.g. handle -e / file
-       free(rest_argv);
-       astro_build_begin_aot_session();
-       if (!bcfg.no_aot) {
-           astro_cs_compile(ast, NULL);
-           /* iterate code_repo and astro_cs_compile each body too */
+       if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
+
+       /* Signal handling: framework set these bools, we act on them. */
+       if (bcfg.help_requested)    { usage(); return 0; }
+       if (bcfg.version_requested) { printf("mylang " ASTRO_VERSION "\n"); return 0; }
+
+       /* Translate framework bcfg → sample's OPTION struct.  Per-sample
+        * mapping; do whatever makes sense for your language. */
+       if (bcfg.quiet)       OPTION.quiet = true;
+       if (bcfg.verbose)     OPTION.verbose = true;
+       if (bcfg.plain)       OPTION.no_compiled_code = true;
+       if (bcfg.aot_compile) OPTION.aot_compile = true;
+       if (bcfg.pg_compile)  OPTION.pg_compile = true;
+
+       /* … existing sample-specific parser walks the remaining argv … */
+
+       /* Build mode: dispatch to astro_build_aot_executable. */
+       if (bcfg.out_exe) {
+           astro_build_begin_aot_session();
+           if (bcfg.aot_compile || bcfg.pg_compile) {
+               astro_cs_compile(ast, NULL);
+               /* iterate code_repo and astro_cs_compile each method body */
+           }
+           bcfg.src_dir = MYLANG_SRC_DIR;
+           bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
+           static const char *sources[] = { "parse.c", "node.c", "exe_main.c", NULL };
+           bcfg.sources = sources;
+           int rc = astro_build_aot_executable(ast, &bcfg, "code_store");
+           astro_build_end_aot_session();
+           astro_build_config_dispose(&bcfg);
+           return rc;
        }
-       struct astro_build_config bcfg_local = bcfg;
-       bcfg_local.src_dir = MY_SRC_DIR;
-       bcfg_local.runtime_dir = ASTRO_RUNTIME_DIR;
-       static const char *sources[] = {"parse.c","node.c","exe_main.c",NULL};
-       bcfg_local.sources = sources;
-       int rc = astro_build_aot_executable(ast, &bcfg_local, "code_store");
-       astro_build_end_aot_session();
-       astro_build_config_dispose(&bcfg);
-       return rc;
+       /* … normal runtime path: run the AST … */
    }
    ```
 
-3. **`node.c`** — add `#include "node_emit_ast.c"` (auto-generated
+3. **Sample's own option parser** — DELETE anything that duplicates a
+   framework flag.  In particular: no per-sample `--plain`,
+   `--aot-compile`, `--aot-compile-first`, `--pg-compile`, `-c`, `-p`,
+   `-i`, `--no-compile`, `-q`, `--quiet`, `-v`, `--verbose`, `-h`,
+   `--help`, `--version`.  Aliases of these were deliberately removed —
+   the framework is the single source of truth.
+
+   Sample's `usage()` / `show_help()` should end with a call to
+   `astro_print_build_help(stderr)` so the framework flag list is
+   reproduced uniformly.
+
+4. **`node.c`** — add `#include "node_emit_ast.c"` (auto-generated
    from `node.def`) BEFORE `#include "node_alloc.c"`, and add
    `#include "astro_build.c"` after `#include "astro_code_store.c"`.
 
-4. **`Makefile`** — `-DLANG_SRC_DIR='"$(abspath .)"'` and
+5. **`Makefile`** — `-DLANG_SRC_DIR='"$(abspath .)"'` and
    `-DASTRO_RUNTIME_DIR='"$(abspath $(RUNTIME))"'` so the host knows
-   where to find its sources at exe-build time.
+   where to find its sources at exe-build time.  Link `astro_build.c`
+   from runtime/ via the `#include` in node.c (no separate compile unit).
 
 ### Embedder hooks: language-specific operand emission
 
@@ -816,8 +868,12 @@ end
 | `astro_emit_ast_c_program(fp, root, name, header)` | `astro_node.h` | Write `<name>(void)` as flat `_n[i] = ALLOC_…` lines + `head.dispatcher = SD_…` patches (the form used by `--generate-executable`). |
 | `astro_cs_log_compiles` (bool)            | `astro_code_store.h` | When true, `astro_cs_compile` records `(hash, "SD_<hash>")` to a per-process log.  Used by the exe builder; set indirectly via `astro_build_begin_aot_session`. |
 | `astro_cs_compile_log_size/get/reset_compile_log` | "             | Accessors for the log (rarely needed directly; the helper uses them). |
-| `astro_build_subcommand_parse(argc, argv, &cfg, &rest_argc, &rest_argv)` | `astro_build.h` | Parse the `--build OUTPUT [opts]` subcommand body; unknown tokens (= source spec) go to `*rest_argv`. |
-| `astro_build_executable(&cfg)`            | "                    | Shell out to cc with the configured flags. |
+| `astro_build_extract_flags(&argc, argv, &cfg)` | `astro_build.h` | Pre-scan argv (order-free) for framework flags, removing them in place; also loads `ASTRO_BUILD_OPTS` env.  Stops at the first non-flag positional. |
+| `astro_build_load_env_opts(&cfg)`          | "                    | Parse `ASTRO_BUILD_OPTS` standalone (called by extract_flags). |
+| `astro_build_config_dispose(&cfg)`         | "                    | Free heap arrays in cfg (extra_cflags / extra_ldflags from env). |
+| `astro_print_build_help(fp)`               | "                    | Emit the framework's flag-list section.  Sample's usage() should call this. |
+| `ASTRO_VERSION` (macro)                    | "                    | Version string embedded in every sample; used by `--version` handlers. |
+| `astro_build_executable(&cfg)`             | "                    | Shell out to cc with the configured flags. |
 | `astro_build_aot_executable(root, &cfg, code_store_dir)` | " | One-shot: emit `_embed.c`, walk the compile log, link the SDs + the exe.  Sample calls after its bake pass. |
 | `astro_build_begin_aot_session()` / `_end_aot_session()` | "    | Bracket the bake-and-link region; toggles `astro_cs_log_compiles` + clears the log. |
 
