@@ -308,9 +308,13 @@ typedef struct CTX_struct {
 } while (0)
 
 /* Scan-safe init: payload slots may be scanned right after alloc (before
- * caller writes anything).  baruby's VAL_FALSE == 0 so zero-fill is GC-safe. */
-#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes) \
-    memset((payload), 0, (size_bytes))
+ * caller writes anything).  baruby's VAL_FALSE == 0 so zero-fill is GC-safe.
+ * iter 75 Step C: head is at payload offset 0 — backend has already
+ * initialized it.  We zero ONLY the post-head region so the head's
+ * gc_size / gc_flags / gc_fwd survive. */
+#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes)                              \
+    memset((char *)(payload) + sizeof(ASTroObjectHeader), 0,                     \
+           (size_bytes) - sizeof(ASTroObjectHeader))
 
 /* Byte payload init: GC never scans these so skip memset.  Caller fills
  * the bytes before any further alloc. */

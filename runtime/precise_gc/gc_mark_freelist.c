@@ -28,32 +28,35 @@
 #include "astro_debug.h"
 #include "gc.h"
 
-/* 8-byte header.  size is requested payload bytes (not slot total). */
-typedef struct GCHeader {
-    uint8_t  flags;     /* bit 0-2: kind (KIND_*); bit 3: marked */
-    uint8_t  _pad[3];
-    uint32_t size;
-} GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
+/* iter 75 Step C: framework GCHeader 廃止、 ASTroObjectHeader が payload
+ * offset 0 にあり gc_size を保持。 region walk は gc_size から次 slot を
+ * 算出するので、 free slot の gc_size には class slot size を入れる
+ * (= 旧 design の `slot_size - sizeof(ASTroObjectHeader)` 相当)。 */
 
-#define HDR_KIND_MASK    0x07u
-#define HDR_MARKED_BIT   0x08u
-#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
-#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
-#define HDR_MARKED(h)      (((h)->flags & HDR_MARKED_BIT) != 0)
-#define HDR_SET_MARKED(h)  ((h)->flags |= HDR_MARKED_BIT)
-#define HDR_CLR_MARKED(h)  ((h)->flags &= (uint8_t)~HDR_MARKED_BIT)
+#define HDR_MARKED_BIT   (uint16_t)0x0001u
+#define HDR_FREE_BIT     (uint16_t)0x0002u
+#define HDR_MARKED(h)      (((h)->gc_flags & HDR_MARKED_BIT) != 0)
+#define HDR_SET_MARKED(h)  ((h)->gc_flags |= HDR_MARKED_BIT)
+#define HDR_CLR_MARKED(h)  ((h)->gc_flags &= (uint16_t)~HDR_MARKED_BIT)
+#define HDR_IS_FREE(h)     (((h)->gc_flags & HDR_FREE_BIT) != 0)
+#define HDR_SET_FREE(h)    ((h)->gc_flags |= HDR_FREE_BIT)
 
-/* Free slot overlay: payload[0..7] holds the freelist link. */
+/* Free slot overlay: payload[sizeof(ASTroObjectHeader)..+7] holds the link. */
 typedef struct FreeSlot {
     struct FreeSlot *next;
 } FreeSlot;
+
+static inline FreeSlot *
+free_slot_link(void *payload)
+{
+    return (FreeSlot *)((char *)payload + sizeof(ASTroObjectHeader));
+}
 
 #define ALIGN8(n) (((n) + 7u) & ~(size_t)7u)
 
 /* Same 9 size classes as gc_mark.c — total slot bytes (header included).
  * For sweep correctness we need to look up the class index from the slot
- * total bytes (computed from header->size + sizeof(GCHeader) + align). */
+ * total bytes (computed from header->size + align). */
 #define NUM_SIZE_CLASSES 9
 static const size_t size_class_bytes[NUM_SIZE_CLASSES] = {
     32, 64, 128, 256, 512, 1024, 2048, 3072, 4096
@@ -66,8 +69,14 @@ static const size_t size_class_bytes[NUM_SIZE_CLASSES] = {
 typedef struct LargeObj {
     struct LargeObj *next;
     size_t           map_bytes;
-    /* GCHeader follows */
+    /* payload follows */
 } LargeObj;
+
+static inline void *
+large_payload(LargeObj *lo)
+{
+    return (void *)(lo + 1);
+}
 
 /* iter 62: process-scope state を struct ASTroGC に集約 */
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
@@ -82,7 +91,7 @@ typedef struct ASTroGC {
     LargeObj   *large_head;
     CTX        *ctx;
     VALUE      *sp_high_water;
-    GCHeader  **gray_buf;
+    ASTroObjectHeader **gray_buf;
     size_t      gray_cnt;
     size_t      gray_capa;
     size_t      bytes_since_gc;
@@ -131,10 +140,10 @@ aro_gc_init(CTX *c)
 
 static void gc_collect_internal(CTX *c, VALUE *sp_top);
 
-static GCHeader *
-alloc_large(ASTroGC *gc, AroGcKind kind, size_t payload_size)
+static ASTroObjectHeader *
+alloc_large(ASTroGC *gc, size_t payload_size)
 {
-    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t need = sizeof(LargeObj) + ALIGN8(payload_size);
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     size_t map_bytes = (need + page - 1) & ~(page - 1);
     void *raw = mmap(NULL, map_bytes, PROT_READ|PROT_WRITE,
@@ -144,10 +153,10 @@ alloc_large(ASTroGC *gc, AroGcKind kind, size_t payload_size)
     lo->next = gc->large_head;
     lo->map_bytes = map_bytes;
     gc->large_head = lo;
-    GCHeader *h = (GCHeader *)(lo + 1);
-    HDR_SET_KIND(h, kind);
-    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
-    h->flags &= (uint8_t)~HDR_MARKED_BIT;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)large_payload(lo);
+    h->flags    = 0;
+    h->gc_flags = 0;
+    h->gc_size  = (uint32_t)payload_size;
     return h;
 }
 
@@ -159,13 +168,15 @@ oom_abort(void)
     abort();
 }
 
-static inline GCHeader *
-alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
+/* Freelist holds slot pointers (= ASTroObjectHeader *).  FreeSlot link
+ * lives at slot + sizeof(ASTroObjectHeader). */
+static inline ASTroObjectHeader *
+alloc_slot(CTX *c, size_t payload_size, VALUE *sp_top)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    size_t slot_total = sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t slot_total = ALIGN8(payload_size);
     if (__builtin_expect(slot_total > MAX_SLOT_BYTES, 0)) {
-        return alloc_large(gc, ASTRO_GC_CAT_SCAN, payload_size);
+        return alloc_large(gc, payload_size);
     }
     int ci = size_class_for(slot_total);
     size_t sb = size_class_bytes[ci];
@@ -174,21 +185,21 @@ alloc_slot(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
         gc_collect_internal(c, sp_top);
     }
 
-    GCHeader *h;
+    ASTroObjectHeader *h;
     FreeSlot *fs = gc->freelist[ci];
     if (fs) {
-        gc->freelist[ci] = fs->next;
-        h = (GCHeader *)((char *)fs - sizeof(GCHeader));
+        h = (ASTroObjectHeader *)fs;
+        gc->freelist[ci] = free_slot_link(h)->next;
     } else {
         if (__builtin_expect(gc->region_top + sb > gc->region_end, 0)) {
             oom_abort();
         }
-        h = (GCHeader *)gc->region_top;
+        h = (ASTroObjectHeader *)gc->region_top;
         gc->region_top += sb;
     }
-    HDR_SET_KIND(h, kind);
-    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
-    h->flags &= (uint8_t)~HDR_MARKED_BIT;
+    h->flags    = 0;
+    h->gc_flags = 0;
+    h->gc_size  = (uint32_t)payload_size;
     return h;
 }
 
@@ -197,8 +208,8 @@ do_alloc(CTX *c, AstroGcCategory cat, size_t payload_size)
 {
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    GCHeader *h = alloc_slot(c, cat, payload_size, sp_top);
-    void *payload = (void *)(h + 1);
+    ASTroObjectHeader *h = alloc_slot(c, payload_size, sp_top);
+    void *payload = (void *)h;
     /* iter 48 bug fix: freelist-popped slots contain stale data; zero
      * pointer-typed payloads so scan sees VAL_FALSE until caller fills. */
     if (cat != ASTRO_GC_CAT_BYTE) {
@@ -231,11 +242,11 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
  * -------------------------------------------------------------------------- */
 
 static void
-gray_push(ASTroGC *gc, GCHeader *const h)
+gray_push(ASTroGC *gc, ASTroObjectHeader *const h)
 {
     if (gc->gray_cnt >= gc->gray_capa) {
         gc->gray_capa = gc->gray_capa ? gc->gray_capa * 2 : 256;
-        gc->gray_buf = (GCHeader **)realloc(gc->gray_buf, gc->gray_capa * sizeof(GCHeader *));
+        gc->gray_buf = (ASTroObjectHeader **)realloc(gc->gray_buf, gc->gray_capa * sizeof(ASTroObjectHeader *));
         if (!gc->gray_buf) abort();
     }
     gc->gray_buf[gc->gray_cnt++] = h;
@@ -245,7 +256,8 @@ static void
 mark_value(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return;
-    GCHeader *h = (GCHeader *)v - 1;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)v;
+    if (HDR_IS_FREE(h)) return;
     if (HDR_MARKED(h)) return;
     HDR_SET_MARKED(h);
     gray_push(gc, h);
@@ -263,8 +275,8 @@ static void
 process_gray(ASTroGC *gc)
 {
     while (gc->gray_cnt > 0) {
-        GCHeader *h = gc->gray_buf[--gc->gray_cnt];
-        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, mark_edge);
+        ASTroObjectHeader *h = gc->gray_buf[--gc->gray_cnt];
+        ASTRO_GC_SCAN_EDGES((void *)h, h->gc_size, gc, mark_edge);
     }
 }
 
@@ -281,24 +293,25 @@ sweep_region(ASTroGC *gc)
     size_t live_bytes = 0;
     char *p = gc->region_base;
     while (p < gc->region_top) {
-        GCHeader *const h = (GCHeader *)p;
-        size_t slot_total = sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
+        ASTroObjectHeader *const h = (ASTroObjectHeader *)p;
+        size_t slot_total = ALIGN8((h)->gc_size);
         int ci = size_class_for(slot_total);
         ASTRO_ASSERT(ci >= 0 && "sweep_region: oversized slot in region");
         size_t sb = size_class_bytes[ci];
-        if (HDR_KIND(h) == KIND_FREE) {
-            FreeSlot *fs = (FreeSlot *)(h + 1);
-            fs->next = gc->freelist[ci];
-            gc->freelist[ci] = fs;
+        if (HDR_IS_FREE(h)) {
+            /* Already free from a prior cycle — re-thread. */
+            free_slot_link(h)->next = gc->freelist[ci];
+            gc->freelist[ci] = (FreeSlot *)h;
         } else if (HDR_MARKED(h)) {
             HDR_CLR_MARKED(h);
-            live_bytes += ASTRO_GC_HEADER_SIZE(h);
+            live_bytes += (h)->gc_size;
         } else {
-            HDR_SET_KIND(h, KIND_FREE);
-            ASTRO_GC_HEADER_SET_SIZE(h, sb - sizeof(GCHeader));
-            FreeSlot *fs = (FreeSlot *)(h + 1);
-            fs->next = gc->freelist[ci];
-            gc->freelist[ci] = fs;
+            /* Unmarked → free.  gc_size = sb so the walker advances by sb. */
+            h->flags    = 0;
+            h->gc_flags = HDR_FREE_BIT;
+            h->gc_size  = (uint32_t)sb;
+            free_slot_link(h)->next = gc->freelist[ci];
+            gc->freelist[ci] = (FreeSlot *)h;
         }
         p += sb;
     }
@@ -306,10 +319,10 @@ sweep_region(ASTroGC *gc)
     LargeObj **link = &gc->large_head;
     while (*link) {
         LargeObj *lo = *link;
-        GCHeader *h = (GCHeader *)(lo + 1);
+        ASTroObjectHeader *h = (ASTroObjectHeader *)large_payload(lo);
         if (HDR_MARKED(h)) {
             HDR_CLR_MARKED(h);
-            live_bytes += ASTRO_GC_HEADER_SIZE(h);
+            live_bytes += (h)->gc_size;
             link = &lo->next;
         } else {
             *link = lo->next;
@@ -378,14 +391,14 @@ aro_gc_fini(CTX *c)
 size_t
 aro_gc_size_of(void *p)
 {
-    GCHeader *h = (GCHeader *)p - 1;
-    return h->size;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)p;
+    return h->gc_size;
 }
 
 /* In-place realloc for large objs via mremap.  See gc_mark.c for the
  * full rationale.  gc_mark_freelist uses sysconf(_SC_PAGESIZE) for
  * alignment instead of a fixed PAGE_SIZE macro. */
-#define ARO_GC_INPLACE_THRESHOLD(n)      (sizeof(GCHeader) + ALIGN8(n) <= MAX_SLOT_BYTES)
+#define ARO_GC_INPLACE_THRESHOLD(n)      (ALIGN8(n) <= MAX_SLOT_BYTES)
 #define ARO_GC_INPLACE_PAGE_SIZE         sysconf(_SC_PAGESIZE)
 #define ARO_GC_INPLACE_MREMAP_FLAGS      MREMAP_MAYMOVE
 #define ARO_GC_INPLACE_BYTES_ACCT(d)     (gc->bytes_since_gc += (d))
