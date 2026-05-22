@@ -374,7 +374,7 @@ main(int argc, char *argv[])
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double elapsed = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
         printf("Result: ");
-        baruby_print_value(stdout, r.value);
+        baruby_print_value(c, stdout, r.value);
         printf(", node_cnt:%lu\n", node_cnt);
         printf("__ELAPSED__ %.6f\n", elapsed);
 

@@ -385,19 +385,19 @@ node_call_builtin(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, stru
     VALUE v;
     switch (params_cnt) {
       case 0:
-        v = (*func_ptr)();
+        v = (*func_ptr)(c);
         break;
       case 1:
-        v = (*(builtin_func1_ptr)func_ptr)(args[0]);
+        v = (*(builtin_func1_ptr)func_ptr)(c, args[0]);
         break;
       case 2:
-        v = (*(builtin_func2_ptr)func_ptr)(args[0], args[1]);
+        v = (*(builtin_func2_ptr)func_ptr)(c, args[0], args[1]);
         break;
       case 3:
-        v = (*(builtin_func3_ptr)func_ptr)(args[0], args[1], args[2]);
+        v = (*(builtin_func3_ptr)func_ptr)(c, args[0], args[1], args[2]);
         break;
       case 4:
-        v = (*(builtin_func4_ptr)func_ptr)(args[0], args[1], args[2], args[3]);
+        v = (*(builtin_func4_ptr)func_ptr)(c, args[0], args[1], args[2], args[3]);
         break;
       default:
         fprintf(stderr, "too much params:%u\n", params_cnt);
@@ -420,11 +420,11 @@ node_add(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@chil
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
         return RESULT_OK(INT2VAL(VAL2INT(lv) + VAL2INT(rv)));
     }
-    if (IS_STR(lv) && IS_STR(rv)) {
+    if (IS_STR(c, lv) && IS_STR(c, rv)) {
         c->sp = sp;
         return RESULT_OK(baruby_str_concat(c, &$lv, &$rv));
     }
-    if (IS_ARY(lv) && IS_ARY(rv)) {
+    if (IS_ARY(c, lv) && IS_ARY(c, rv)) {
         c->sp = sp;
         return RESULT_OK(baruby_ary_plus(c, &$lv, &$rv));
     }
@@ -445,10 +445,10 @@ node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@chil
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
         return RESULT_OK(INT2VAL(VAL2INT(lv) * VAL2INT(rv)));
     }
-    if (IS_STR(lv) && IS_INT(rv)) {
+    if (IS_STR(c, lv) && IS_INT(rv)) {
         c->sp = sp; return RESULT_OK(baruby_str_repeat(c, &$lv, VAL2INT(rv)));
     }
-    if (IS_ARY(lv) && IS_INT(rv)) {
+    if (IS_ARY(c, lv) && IS_INT(rv)) {
         c->sp = sp; return RESULT_OK(baruby_ary_repeat(c, &$lv, VAL2INT(rv)));
     }
     fprintf(stderr, "type mismatch in *\n");
@@ -480,7 +480,7 @@ NODE_DEF
 node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv < rv ? VAL_TRUE : VAL_FALSE);
-    if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) < 0 ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(c, lv) && IS_STR(c, rv))         return RESULT_OK(baruby_str_cmp(c, lv, rv) < 0 ? VAL_TRUE : VAL_FALSE);
     fprintf(stderr, "type mismatch in <\n");
     return RESULT_OK(VAL_FALSE);
 }
@@ -489,7 +489,7 @@ NODE_DEF
 node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv <= rv ? VAL_TRUE : VAL_FALSE);
-    if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) <= 0 ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(c, lv) && IS_STR(c, rv))         return RESULT_OK(baruby_str_cmp(c, lv, rv) <= 0 ? VAL_TRUE : VAL_FALSE);
     fprintf(stderr, "type mismatch in <=\n");
     return RESULT_OK(VAL_FALSE);
 }
@@ -498,7 +498,7 @@ NODE_DEF
 node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv > rv ? VAL_TRUE : VAL_FALSE);
-    if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) > 0 ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(c, lv) && IS_STR(c, rv))         return RESULT_OK(baruby_str_cmp(c, lv, rv) > 0 ? VAL_TRUE : VAL_FALSE);
     fprintf(stderr, "type mismatch in >\n");
     return RESULT_OK(VAL_FALSE);
 }
@@ -507,7 +507,7 @@ NODE_DEF
 node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child, VALUE rv@child)
 {
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) return RESULT_OK(lv >= rv ? VAL_TRUE : VAL_FALSE);
-    if (IS_STR(lv) && IS_STR(rv))         return RESULT_OK(baruby_str_cmp(lv, rv) >= 0 ? VAL_TRUE : VAL_FALSE);
+    if (IS_STR(c, lv) && IS_STR(c, rv))         return RESULT_OK(baruby_str_cmp(c, lv, rv) >= 0 ? VAL_TRUE : VAL_FALSE);
     fprintf(stderr, "type mismatch in >=\n");
     return RESULT_OK(VAL_FALSE);
 }
@@ -522,7 +522,7 @@ node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@child
 {
     if (LIKELY(lv == rv)) return RESULT_OK(VAL_TRUE);
     if (LIKELY(IS_INT(lv) || IS_INT(rv))) return RESULT_OK(VAL_FALSE);
-    return RESULT_OK(baruby_value_eq(lv, rv) ? VAL_TRUE : VAL_FALSE);
+    return RESULT_OK(baruby_value_eq(c, lv, rv) ? VAL_TRUE : VAL_FALSE);
 }
 
 NODE_DEF
@@ -530,7 +530,7 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@chil
 {
     if (LIKELY(lv == rv)) return RESULT_OK(VAL_FALSE);
     if (LIKELY(IS_INT(lv) || IS_INT(rv))) return RESULT_OK(VAL_TRUE);
-    return RESULT_OK(baruby_value_eq(lv, rv) ? VAL_FALSE : VAL_TRUE);
+    return RESULT_OK(baruby_value_eq(c, lv, rv) ? VAL_FALSE : VAL_TRUE);
 }
 
 // 3-way compare.  Returns -1 / 0 / 1 (Integer) for orderable pairs and
@@ -543,8 +543,8 @@ node_spaceship(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE l
         if (lv > rv) return RESULT_OK(INT2VAL(1));
         return RESULT_OK(INT2VAL(0));
     }
-    if (IS_STR(lv) && IS_STR(rv)) {
-        int cmp = baruby_str_cmp(lv, rv);
+    if (IS_STR(c, lv) && IS_STR(c, rv)) {
+        int cmp = baruby_str_cmp(c, lv, rv);
         if (cmp < 0) return RESULT_OK(INT2VAL(-1));
         if (cmp > 0) return RESULT_OK(INT2VAL(1));
         return RESULT_OK(INT2VAL(0));
@@ -562,12 +562,12 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE lv@c
     if (LIKELY(IS_INT(lv) && IS_INT(rv))) {
         return RESULT_OK(INT2VAL(VAL2INT(lv) << VAL2INT(rv)));
     }
-    if (IS_ARY(lv)) {
+    if (IS_ARY(c, lv)) {
         c->sp = sp;
         baruby_ary_push(c, &$lv, &$rv);
         return RESULT_OK($lv);
     }
-    if (IS_STR(lv) && IS_STR(rv)) {
+    if (IS_STR(c, lv) && IS_STR(c, rv)) {
         c->sp = sp;
         baruby_str_append(c, &$lv, &$rv);
         return RESULT_OK($lv);
@@ -653,8 +653,8 @@ node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const cha
 NODE_DEF
 node_call_size(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@child)
 {
-    if (IS_ARY(r)) return RESULT_OK(INT2VAL(VAL2ARY(r)->len));
-    if (IS_STR(r)) return RESULT_OK(INT2VAL(VAL2STR(r)->len));
+    if (IS_ARY(c, r)) return RESULT_OK(INT2VAL(VAL2ARY(c, r)->len));
+    if (IS_STR(c, r)) return RESULT_OK(INT2VAL(VAL2STR(c, r)->len));
     fprintf(stderr, "no size for non-array/string\n");
     return RESULT_OK(INT2VAL(0));
 }
@@ -664,14 +664,14 @@ node_call_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r
 {
     /* DISPATCH spilled recv at $recv, iv at $iv; STR-slice helper takes &$recv. */
     intptr_t ii = VAL2INT(iv);
-    if (IS_ARY(recv)) {
-        BaArray *a = VAL2ARY(recv);
+    if (IS_ARY(c, recv)) {
+        BaArray *a = VAL2ARY(c, recv);
         if (ii < 0) ii += a->len;
         if (ii < 0 || (uint32_t)ii >= a->len) return RESULT_OK(VAL_NIL);
         return RESULT_OK(a->items->data[ii]);
     }
-    if (IS_STR(recv)) {
-        BaString *s = VAL2STR(recv);
+    if (IS_STR(c, recv)) {
+        BaString *s = VAL2STR(c, recv);
         if (ii < 0) ii += s->len;
         if (ii < 0 || (uint32_t)ii >= s->len) return RESULT_OK(VAL_NIL);
         c->sp = sp; return RESULT_OK(baruby_str_slice(c, &$recv, (uint32_t)ii, 1));
@@ -690,16 +690,16 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE 
     intptr_t ii = VAL2INT(iv);
     intptr_t cc = VAL2INT(cv);
     if (cc < 0) return RESULT_OK(VAL_NIL);
-    if (IS_STR(recv)) {
-        const BaString *s = VAL2STR(recv);
+    if (IS_STR(c, recv)) {
+        const BaString *s = VAL2STR(c, recv);
         if (ii < 0) ii += s->len;
         if (ii < 0 || (uint32_t)ii > s->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = s->len - (uint32_t)ii;
         uint32_t take  = (uint32_t)cc < avail ? (uint32_t)cc : avail;
         c->sp = sp; return RESULT_OK(baruby_str_slice(c, &$recv, (uint32_t)ii, take));
     }
-    if (IS_ARY(recv)) {
-        const BaArray *a = VAL2ARY(recv);
+    if (IS_ARY(c, recv)) {
+        const BaArray *a = VAL2ARY(c, recv);
         if (ii < 0) ii += a->len;
         if (ii < 0 || (uint32_t)ii > a->len) return RESULT_OK(VAL_NIL);
         uint32_t avail = a->len - (uint32_t)ii;
@@ -714,17 +714,17 @@ node_call_aget2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE 
 NODE_DEF
 node_call_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE recv@child, VALUE iv@child, VALUE val@child)
 {
-    if (IS_ARY(recv)) {
+    if (IS_ARY(c, recv)) {
         intptr_t ii = VAL2INT(iv);
-        BaArray *a = VAL2ARY(recv);
+        BaArray *a = VAL2ARY(c, recv);
         if (ii < 0) ii += a->len;
         if (ii < 0) return RESULT_OK(VAL_NIL);
-        while ((uint32_t)ii >= VAL2ARY($recv)->len) {
+        while ((uint32_t)ii >= VAL2ARY(c, $recv)->len) {
             $iv = VAL_NIL;
             c->sp = sp;
             baruby_ary_push(c, &$recv, &$iv);
         }
-        a = VAL2ARY($recv);
+        a = VAL2ARY(c, $recv);
         aro_gc_wb(c, a->items, &a->items->data[ii], $val);
         return RESULT_OK($val);
     }
@@ -736,7 +736,7 @@ NODE_DEF
 node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE recv@child, VALUE val@child)
 {
     (void)recv; (void)val;
-    if (IS_ARY($recv)) {
+    if (IS_ARY(c, $recv)) {
         c->sp = sp;
         baruby_ary_push(c, &$recv, &$val);
         return RESULT_OK($recv);
@@ -748,8 +748,8 @@ node_call_push(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r
 NODE_DEF
 node_call_pop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@child)
 {
-    if (IS_ARY(r)) {
-        BaArray *a = VAL2ARY(r);
+    if (IS_ARY(c, r)) {
+        BaArray *a = VAL2ARY(c, r);
         if (a->len == 0) return RESULT_OK(VAL_NIL);
         return RESULT_OK(a->items->data[--a->len]);
     }
@@ -772,8 +772,8 @@ NODE_DEF
 node_call_to_i(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, VALUE r@child)
 {
     if (IS_INT(r)) return RESULT_OK(r);
-    if (IS_STR(r)) {
-        const BaString *s = VAL2STR(r);
+    if (IS_STR(c, r)) {
+        const BaString *s = VAL2STR(c, r);
         return RESULT_OK(INT2VAL(strtol(bstr_bytes(s), NULL, 10)));
     }
     return RESULT_OK(INT2VAL(0));

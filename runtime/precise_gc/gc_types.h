@@ -36,9 +36,20 @@
 #define BARUBY_GC_MARK_BITMAP_GEN  14
 #define BARUBY_GC_MARK_CARD_GEN    15
 #define BARUBY_GC_MARK_FREELIST    16
+#define BARUBY_GC_COPY_SCRAMBLE    17
 
 #ifndef BARUBY_GC
 #  define BARUBY_GC BARUBY_GC_COPY
+#endif
+
+/* Backends that scramble heap-pointer storage (= per-cycle XOR mask R).
+ * Sample-visible storage of any heap pointer holds `raw_ptr ^ R`; sample
+ * decodes via ARO_OBJ macro at deref.  R rotates each GC, so stale slots
+ * (= GC mark/move 漏れ) decode to garbage and SEGV at next deref.  This is
+ * a debug/audit backend to replace BARUBY_GC_STRESS for catching root /
+ * SCAN_EDGES misses with less overhead than full GC-per-alloc. */
+#if BARUBY_GC == BARUBY_GC_COPY_SCRAMBLE
+#  define BARUBY_GC_HAS_SCRAMBLE 1
 #endif
 
 /* Backends that need a write barrier (gen / inc variants).  Callers
@@ -135,6 +146,17 @@ typedef struct AroGcCommonState {
     bool            stress;
     int             time_depth;
     struct timespec time_t0;
+#ifdef BARUBY_GC_HAS_SCRAMBLE
+    /* Per-cycle XOR mask used by ARO_OBJ / ARO_VAL.  Low 3 bits must be 0
+     * to preserve 8-byte heap pointer alignment AND the LSB tag of fixnums
+     * (= bit 0).  scramble_R is the CURRENT (sample-visible) R.
+     * scramble_R_old is the PREVIOUS R, set only during a GC cycle so the
+     * VALUE-slot forwarding wrapper can decode incoming edges with the
+     * pre-GC encoding before re-encoding outgoing edges with the new R.
+     * Outside GC, scramble_R_old is unused (= sample never reads it). */
+    uintptr_t       scramble_R;
+    uintptr_t       scramble_R_old;
+#endif
 } AroGcCommonState;
 
 #endif  /* ASTRO_PRECISE_GC_TYPES_H */

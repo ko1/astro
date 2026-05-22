@@ -155,11 +155,16 @@ bstr_bytes_mut(BaString * const s)
 }
 #define BSTR_BYTES(s)  bstr_bytes(s)
 
-#define OBJ_TYPE(v)   (((ASTroObjectHeader *)(v))->flags & OBJ_TYPE_MASK)
-#define IS_ARY(v)     (IS_PTR(v) && OBJ_TYPE(v) == OBJ_ARRAY)
-#define IS_STR(v)     (IS_PTR(v) && OBJ_TYPE(v) == OBJ_STRING)
-#define VAL2ARY(v)    ((BaArray *)(v))
-#define VAL2STR(v)    ((BaString *)(v))
+/* OBJ_TYPE / VAL2ARY / VAL2STR / IS_ARY / IS_STR — all VALUE→object deref
+ * macros take CTX so the scramble backend can XOR-decode the VALUE before
+ * accessing the header.  For non-scramble backends ARO_OBJ is identity
+ * (= compiles to a plain cast).  IS_PTR/IS_INT/IS_FALSY don't need decode
+ * (scramble R has low 3 bits = 0, preserving LSB and 8-alignment tags). */
+#define OBJ_TYPE(c, v)   (((ASTroObjectHeader *)ARO_OBJ((c), (v)))->flags & OBJ_TYPE_MASK)
+#define IS_ARY(c, v)     (IS_PTR(v) && OBJ_TYPE((c), (v)) == OBJ_ARRAY)
+#define IS_STR(c, v)     (IS_PTR(v) && OBJ_TYPE((c), (v)) == OBJ_STRING)
+#define VAL2ARY(c, v)    ((BaArray *)ARO_OBJ((c), (v)))
+#define VAL2STR(c, v)    ((BaString *)ARO_OBJ((c), (v)))
 
 // RESULT: 2-register return type for non-local exit support (`return`).
 // Same shape as castro / naruby's RESULT — fits in rax:rdx so the
@@ -202,11 +207,16 @@ struct callcache {
     struct Node *body;
 };
 
-typedef VALUE (*builtin_func_ptr)(void);
-typedef VALUE (*builtin_func1_ptr)(VALUE);
-typedef VALUE (*builtin_func2_ptr)(VALUE, VALUE);
-typedef VALUE (*builtin_func3_ptr)(VALUE, VALUE, VALUE);
-typedef VALUE (*builtin_func4_ptr)(VALUE, VALUE, VALUE, VALUE);
+/* Builtin functions take CTX as the first argument so they can access
+ * the scramble backend's R (= ARO_OBJ/ARO_VAL decode), and otherwise
+ * for symmetry.  Non-scramble backends pay no cost (= unused param). */
+struct CTX_struct;
+typedef struct CTX_struct CTX;
+typedef VALUE (*builtin_func_ptr)(CTX *);
+typedef VALUE (*builtin_func1_ptr)(CTX *, VALUE);
+typedef VALUE (*builtin_func2_ptr)(CTX *, VALUE, VALUE);
+typedef VALUE (*builtin_func3_ptr)(CTX *, VALUE, VALUE, VALUE);
+typedef VALUE (*builtin_func4_ptr)(CTX *, VALUE, VALUE, VALUE, VALUE);
 
 typedef struct builtin_func {
     builtin_func_ptr func;
@@ -282,21 +292,25 @@ typedef struct CTX_struct {
     ASTroObjectHeader *_h = (ASTroObjectHeader *)(payload);                 \
     switch (_h->flags & OBJ_TYPE_MASK) {                                    \
       case OBJ_ARRAY: {                                                     \
+          /* `items` is a typed-ptr (= BaArrayItems *) — raw slot. */       \
           BaArray *_a = (BaArray *)(payload);                               \
-          edge_visit((ctx), (void **)&_a->items);                           \
+          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items);            \
           (void)(payload_size);                                              \
           break;                                                             \
       }                                                                      \
       case OBJ_STRING: {                                                    \
+          /* `bytes` is a typed-ptr (= BaByteData *) — raw slot. */         \
           BaString *_s = (BaString *)(payload);                             \
-          if (!BSTR_IS_SSO(_s)) edge_visit((ctx), (void **)&_s->bytes);     \
+          if (!BSTR_IS_SSO(_s))                                              \
+              ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->bytes);        \
           break;                                                             \
       }                                                                      \
       case OBJ_VALUE_ARRAY: {                                               \
+          /* `data[i]` is a VALUE slot — scrambled in scramble backend. */  \
           BaArrayItems *_ai = (BaArrayItems *)(payload);                    \
           size_t _n = ((payload_size) - sizeof(BaArrayItems)) / sizeof(VALUE); \
           for (size_t _i = 0; _i < _n; _i++)                                \
-              edge_visit((ctx), (void **)&_ai->data[_i]);                   \
+              ASTRO_GC_VISIT_EDGE_VAL((ctx), edge_visit, &_ai->data[_i]);    \
           break;                                                             \
       }                                                                      \
       case OBJ_BYTE_DATA:                                                   \
@@ -349,10 +363,10 @@ VALUE baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref);
 // Value equality (Ruby `==`).  Same bits → true (catches int / nil / ptr
 // identity).  Otherwise: same type → recursive byte / element compare;
 // different types → false.  Mixed (int vs ptr) → false.
-bool  baruby_value_eq(VALUE a, VALUE b);
+bool  baruby_value_eq(CTX *c, VALUE a, VALUE b);
 
 // Strict-3-way string compare: <0 / 0 / >0, like memcmp + length tiebreak.
-int   baruby_str_cmp(VALUE a, VALUE b);
+int   baruby_str_cmp(CTX *c, VALUE a, VALUE b);
 
 // `s * n` / `a * n` — Ruby-style repeat into a fresh object.  Negative
 // `n` returns an empty result (Ruby raises but we just clamp).
@@ -367,6 +381,6 @@ void  baruby_str_append(CTX *c, VALUE *dst_ref, VALUE *src_ref);
 // `v` is already a String (returns self).
 VALUE baruby_to_s(CTX *c, VALUE v);
 
-void  baruby_print_value(FILE *fp, VALUE v);
+void  baruby_print_value(CTX *c, FILE *fp, VALUE v);
 
 #endif

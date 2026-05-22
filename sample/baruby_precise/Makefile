@@ -87,6 +87,7 @@ GC_NUM_immix_gen        := 13
 GC_NUM_mark_bitmap_gen  := 14
 GC_NUM_mark_card_gen    := 15
 GC_NUM_mark_freelist    := 16
+GC_NUM_copy_scramble    := 17
 GC_NUM := $(GC_NUM_$(GC))
 # iter 74: precise GC framework は runtime/precise_gc/ 配下に移動。
 # sample 側 (context.h) が ASTRO_GC_SCAN_EDGES macro + AroGcKind 拡張値を
@@ -104,7 +105,7 @@ GC_COMMON_SRC := $(PRECISE_GC_DIR)/gc_common.c
 endif
 
 ifeq ($(GC_NUM),)
-$(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist)
+$(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist copy_scramble)
 endif
 
 # Track current GC selection so a `make GC=foo` after `make GC=bar` actually

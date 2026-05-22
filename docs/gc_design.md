@@ -29,8 +29,8 @@ ASTro の precise GC は **MMTk 流の VMBinding 抽象** を C macro で実現�
                   ▼
 ┌──────────────────────────────────────────────┐
 │ framework (= runtime/precise_gc/)            │
-│  - GC algorithm (16 backend: copy / mark /   │
-│    immix / immix_gen / ...)                  │
+│  - GC algorithm (17 backend: copy / mark /   │
+│    immix / immix_gen / copy_scramble / ...)  │
 │  - mmap / region 管理                        │
 │  - allocator API (aro_gc_alloc(c, size))     │
 │  - ASTroObjectHeader 共通型 (gc_types.h)     │
@@ -469,6 +469,50 @@ typedef struct ASTroGC {
 multi-instance シナリオは「異なる ASTroGC を別 CTX に bind する」 だけで
 成立。
 
+### 3.3 copy_scramble — XOR scramble audit backend
+
+`copy_scramble` は mark/move 漏れの検出を目的とした debug backend。 構造は
+plain copy (= Cheney semispace) と同一だが、 sample-visible な VALUE
+storage を per-GC-cycle の乱数 `R` で XOR scramble する:
+
+```
+encoded_value = real_ptr ^ R     /* GC が slot に書く */
+real_ptr      = encoded_value ^ R /* sample が ARO_OBJ() で復号 */
+```
+
+GC cycle ごとに `R` を rotate。 GC が見逃した slot は old-R 編成のまま残
+り、 次回 sample 読み込み時に new-R で復号 → garbage addr → SEGV。
+
+##### macro (gc.h)
+- `ARO_OBJ(c, v)` = `(v ^ R)` — VALUE → ptr 復号 (sample-side deref)
+- `ARO_VAL(c, raw)` = `(raw ^ R)` — raw ptr → VALUE 符号化 (sample-side store)
+- 非 scramble backend では identity (= no-op)
+
+##### root scan + edge visit
+- `ASTRO_GC_VISIT_EDGE_PTR(ctx, fn, slot)` — raw typed-ptr slot (= 不変)
+- `ASTRO_GC_VISIT_EDGE_VAL(ctx, fn, slot)` — VALUE slot (= scramble 時に
+  `scramble_R_old` で decode → forward → `scramble_R` で re-encode)
+
+##### usage
+```
+$ make GC=copy_scramble                       # 通常 GC + R rotate per cycle
+$ make GC=copy_scramble && BARUBY_GC_STRESS=1 ./baruby_precise script.rb
+                                              # stress mode で R rotate per alloc
+                                              # = max 検出頻度
+```
+
+##### 検出範囲
+- (1) Root / SCAN_EDGES の visit 漏れ → 該当 slot が old-R のまま →
+      sample read で SEGV
+- (2) Sample 側で `(BaArray *)v` 等 raw cast (= ARO_OBJ 忘れ) → scrambled
+      bits をそのまま deref → SEGV
+- (3) Sample 側で raw ptr を VALUE slot に直接 store (= ARO_VAL 忘れ) →
+      次回 GC が decode で garbage → SEGV
+
+stress mode との比較: 検出強度は同等 (= stress は from-space munmap で
+SEGV、 scramble は R rotation で SEGV)。 scramble の独自価値は (2)(3) の
+sample-side 規律違反を encode/decode の対称性で強制すること。
+
 ---
 
 ## 4. Sample 実装の規約 (Moving GC 必須二大パターン)
@@ -561,7 +605,7 @@ baruby_str_concat(CTX *c, VALUE *lhs_ref, VALUE *rhs_ref) {
 
 `sample/baruby_precise/` は precise *moving* GC の testbed。 仕様は baruby と
 同じ Ruby サブセット (= naruby fork 由来 + Array / String + LSB tag VALUE)。
-GC backend を 16 個切替可能 (`make GC=<name>`):
+GC backend を 17 個切替可能 (`make GC=<name>`):
 
 ```
 copy, copy_gen, copy_gen_inc (= clone of copy_gen),
@@ -569,7 +613,8 @@ mark, mark_gen, mark_gen_inc,
 mark_compact, mark_compact_gen,
 mark_bump_gen, bump,
 immix, immix_gen,
-mark_bitmap_gen, mark_card_gen, mark_freelist, none
+mark_bitmap_gen, mark_card_gen, mark_freelist, none,
+copy_scramble  /* audit backend (= XOR scramble), §3.3 */
 ```
 
 35 bench × 16 backend のマトリクス検証で動作確認 (`bench/matrix.rb`)。

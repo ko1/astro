@@ -244,8 +244,8 @@ baruby_ary_new(CTX *c, uint32_t capa)
     // sp[N] indexing through the rest of this function.
     VALUE *sp = c->sp;
     // First alloc scans up to sp (sp[0] uninit, must not be in range).
-    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaArray));
-    BaArray *a = (BaArray *)sp[0];
+    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaArray)));
+    BaArray *a = VAL2ARY(c, sp[0]);
     a->head.flags = OBJ_ARRAY;
     a->len = 0;
     a->capa = capa;
@@ -255,7 +255,7 @@ baruby_ary_new(CTX *c, uint32_t capa)
         size_t items_sz = sizeof(BaArrayItems) + capa * sizeof(VALUE);
         BaArrayItems *items = (BaArrayItems *)aro_gc_alloc(c, items_sz);
         items->head.flags = OBJ_VALUE_ARRAY;
-        a = (BaArray *)sp[0];   // reload after potential GC
+        a = VAL2ARY(c, sp[0]);   // reload after potential GC
         aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)items);
     } else {
         a->items = NULL;
@@ -267,7 +267,7 @@ VALUE
 baruby_ary_new_from(CTX *c, const VALUE *items, uint32_t n)
 {
     VALUE v = baruby_ary_new(c, n ? n : 1);
-    BaArray *a = VAL2ARY(v);
+    BaArray *a = VAL2ARY(c, v);
     aro_gc_wb_bulk(c, a->items, a->items->data, items, n);
     a->len = n;
     return v;
@@ -287,7 +287,7 @@ baruby_ary_new_from(CTX *c, const VALUE *items, uint32_t n)
 void
 baruby_ary_push_grow(CTX *c, VALUE *av_ref, VALUE *x_ref)
 {
-    BaArray *a = VAL2ARY(*av_ref);
+    BaArray *a = VAL2ARY(c, *av_ref);
     // Grow path: realloc_payload may move the owning BaArray AND x's referent.
     // Caller has set c->sp already; realloc internally bumps c->sp to park
     // the old payload during the inner alloc.
@@ -301,7 +301,7 @@ baruby_ary_push_grow(CTX *c, VALUE *av_ref, VALUE *x_ref)
         new_items->head.flags = OBJ_VALUE_ARRAY;
     }
     // Reload both a and x after potential GC move.
-    a = VAL2ARY(*av_ref);
+    a = VAL2ARY(c, *av_ref);
     aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)new_items);
     a->capa = new_capa;
     aro_gc_wb(c, a->items, &a->items->data[a->len], *x_ref);
@@ -316,8 +316,8 @@ VALUE
 baruby_str_new(CTX *c, const char *bytes, uint32_t len)
 {
     VALUE *sp = c->sp;
-    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaString));
-    BaString *s = (BaString *)sp[0];
+    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaString)));
+    BaString *s = VAL2STR(c, sp[0]);
     s->head.flags = OBJ_STRING;
     s->len = len;
     if (len <= BSTR_SSO_MAX) {
@@ -330,7 +330,7 @@ baruby_str_new(CTX *c, const char *bytes, uint32_t len)
     s->capa = len + 1;
     c->sp = sp + 1;
     BaByteData *new_bytes = baruby_bytes_new(c, s->capa);
-    s = (BaString *)sp[0];   // reload — second alloc may have moved
+    s = VAL2STR(c, sp[0]);   // reload — second alloc may have moved
     aro_gc_wb(c, s, (VALUE *)&s->bytes, (VALUE)new_bytes);
     memcpy(s->bytes->data, bytes, len);
     s->bytes->data[len] = '\0';
@@ -349,14 +349,14 @@ VALUE
 baruby_str_slice(CTX *c, VALUE *src_ref, uint32_t offset, uint32_t len)
 {
     VALUE *sp = c->sp;
-    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaString));
-    BaString *r = (BaString *)sp[0];
+    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaString)));
+    BaString *r = VAL2STR(c, sp[0]);
     r->head.flags = OBJ_STRING;
     r->len = len;
     if (len <= BSTR_SSO_MAX) {
         r->head.flags |= OBJ_FLAG_SSO;
         r->capa = sizeof r->small;
-        const BaString *src = VAL2STR(*src_ref);
+        const BaString *src = VAL2STR(c, *src_ref);
         if (len) memcpy(r->small, bstr_bytes(src) + offset, len);
         r->small[len] = '\0';
         return sp[0];
@@ -364,9 +364,9 @@ baruby_str_slice(CTX *c, VALUE *src_ref, uint32_t offset, uint32_t len)
     r->capa = len + 1;
     c->sp = sp + 1;
     BaByteData *new_bytes = baruby_bytes_new(c, r->capa);
-    r = (BaString *)sp[0];                     // reload after alloc
+    r = VAL2STR(c, sp[0]);                     // reload after alloc
     aro_gc_wb(c, r, (VALUE *)&r->bytes, (VALUE)new_bytes);
-    const BaString *src = VAL2STR(*src_ref);   // post-GC source
+    const BaString *src = VAL2STR(c, *src_ref);   // post-GC source
     memcpy(r->bytes->data, bstr_bytes(src) + offset, len);
     r->bytes->data[len] = '\0';
     return sp[0];
@@ -375,13 +375,13 @@ baruby_str_slice(CTX *c, VALUE *src_ref, uint32_t offset, uint32_t len)
 VALUE
 baruby_ary_plus(CTX *c, VALUE *av_ref, VALUE *bv_ref)
 {
-    const BaArray *a = VAL2ARY(*av_ref);
-    const BaArray *b = VAL2ARY(*bv_ref);
+    const BaArray *a = VAL2ARY(c, *av_ref);
+    const BaArray *b = VAL2ARY(c, *bv_ref);
     uint32_t total = a->len + b->len;
     VALUE rv = baruby_ary_new(c, total ? total : 1);
-    BaArray *r = VAL2ARY(rv);
-    a = VAL2ARY(*av_ref);   // reload after alloc — may have moved
-    b = VAL2ARY(*bv_ref);
+    BaArray *r = VAL2ARY(c, rv);
+    a = VAL2ARY(c, *av_ref);   // reload after alloc — may have moved
+    b = VAL2ARY(c, *bv_ref);
     aro_gc_wb_bulk(c, r->items, r->items->data,          a->items->data, a->len);
     aro_gc_wb_bulk(c, r->items, r->items->data + a->len, b->items->data, b->len);
     r->len = total;
@@ -389,7 +389,7 @@ baruby_ary_plus(CTX *c, VALUE *av_ref, VALUE *bv_ref)
 }
 
 bool
-baruby_value_eq(VALUE a, VALUE b)
+baruby_value_eq(CTX *c, VALUE a, VALUE b)
 {
     // Identical bits cover fixnum identity, singleton identity, and
     // ptr identity (e.g. same Array compared to itself).
@@ -400,18 +400,18 @@ baruby_value_eq(VALUE a, VALUE b)
     // having matched in the identity check above is a different type.
     if (!IS_PTR(a) || !IS_PTR(b)) return false;
     // Both heap objects.
-    uint32_t ta = OBJ_TYPE(a), tb = OBJ_TYPE(b);
+    uint32_t ta = OBJ_TYPE(c, a), tb = OBJ_TYPE(c, b);
     if (ta != tb) return false;
     if (ta == OBJ_STRING) {
-        const BaString *sa = VAL2STR(a), *sb = VAL2STR(b);
+        const BaString *sa = VAL2STR(c, a), *sb = VAL2STR(c, b);
         return sa->len == sb->len &&
                memcmp(bstr_bytes(sa), bstr_bytes(sb), sa->len) == 0;
     }
     if (ta == OBJ_ARRAY) {
-        const BaArray *aa = VAL2ARY(a), *ab = VAL2ARY(b);
+        const BaArray *aa = VAL2ARY(c, a), *ab = VAL2ARY(c, b);
         if (aa->len != ab->len) return false;
         for (uint32_t i = 0; i < aa->len; i++) {
-            if (!baruby_value_eq(aa->items->data[i], ab->items->data[i])) return false;
+            if (!baruby_value_eq(c, aa->items->data[i], ab->items->data[i])) return false;
         }
         return true;
     }
@@ -419,10 +419,10 @@ baruby_value_eq(VALUE a, VALUE b)
 }
 
 int
-baruby_str_cmp(VALUE av, VALUE bv)
+baruby_str_cmp(CTX *c, VALUE av, VALUE bv)
 {
-    const BaString *a = VAL2STR(av);
-    const BaString *b = VAL2STR(bv);
+    const BaString *a = VAL2STR(c, av);
+    const BaString *b = VAL2STR(c, bv);
     uint32_t mn = a->len < b->len ? a->len : b->len;
     int cmp = memcmp(bstr_bytes(a), bstr_bytes(b), mn);
     if (cmp != 0) return cmp;
@@ -436,12 +436,12 @@ baruby_str_repeat(CTX *c, VALUE *sv_ref, intptr_t n)
 {
     if (n <= 0) return baruby_str_new(c, "", 0);
     VALUE *sp = c->sp;
-    const BaString *s = VAL2STR(*sv_ref);
+    const BaString *s = VAL2STR(c, *sv_ref);
     uint64_t total = (uint64_t)s->len * (uint64_t)n;
     if (total > UINT32_MAX) total = UINT32_MAX;
-    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaString));
-    BaString *r = (BaString *)sp[0];
-    s = VAL2STR(*sv_ref);   // reload after alloc
+    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaString)));
+    BaString *r = VAL2STR(c, sp[0]);
+    s = VAL2STR(c, *sv_ref);   // reload after alloc
     r->head.flags = OBJ_STRING;
     r->len  = (uint32_t)total;
     if (r->len <= BSTR_SSO_MAX) {
@@ -456,9 +456,9 @@ baruby_str_repeat(CTX *c, VALUE *sv_ref, intptr_t n)
     r->capa = r->len + 1;
     c->sp = sp + 1;
     BaByteData *new_bytes = baruby_bytes_new(c, r->capa);
-    r = (BaString *)sp[0];
+    r = VAL2STR(c, sp[0]);
     aro_gc_wb(c, r, (VALUE *)&r->bytes, (VALUE)new_bytes);
-    s = VAL2STR(*sv_ref);
+    s = VAL2STR(c, *sv_ref);
     for (intptr_t i = 0; i < n; i++) {
         memcpy(r->bytes->data + (uint32_t)i * s->len, bstr_bytes(s), s->len);
     }
@@ -470,12 +470,12 @@ VALUE
 baruby_ary_repeat(CTX *c, VALUE *av_ref, intptr_t n)
 {
     if (n <= 0) return baruby_ary_new(c, 0);
-    const BaArray *a = VAL2ARY(*av_ref);
+    const BaArray *a = VAL2ARY(c, *av_ref);
     uint64_t total = (uint64_t)a->len * (uint64_t)n;
     if (total > UINT32_MAX) total = UINT32_MAX;
     VALUE rv = baruby_ary_new(c, (uint32_t)total ? (uint32_t)total : 1);
-    BaArray *r = VAL2ARY(rv);
-    a = VAL2ARY(*av_ref);   // reload after alloc
+    BaArray *r = VAL2ARY(c, rv);
+    a = VAL2ARY(c, *av_ref);   // reload after alloc
     for (intptr_t i = 0; i < n; i++) {
         aro_gc_wb_bulk(c, r->items, r->items->data + (uint32_t)i * a->len,
                           a->items->data, a->len);
@@ -487,8 +487,8 @@ baruby_ary_repeat(CTX *c, VALUE *av_ref, intptr_t n)
 void
 baruby_str_append(CTX *c, VALUE *dst_ref, VALUE *src_ref)
 {
-    BaString *d = VAL2STR(*dst_ref);
-    const BaString *s = VAL2STR(*src_ref);
+    BaString *d = VAL2STR(c, *dst_ref);
+    const BaString *s = VAL2STR(c, *src_ref);
     uint32_t need = d->len + s->len + 1;
 
     if (BSTR_IS_SSO(d) && need <= sizeof d->small) {
@@ -506,8 +506,8 @@ baruby_str_append(CTX *c, VALUE *dst_ref, VALUE *src_ref)
         memcpy(small_buf, d->small, d_len);
         /* c->sp already set by caller. */
         BaByteData *new_bytes = baruby_bytes_new(c, nc);
-        d = VAL2STR(*dst_ref);   // reload after alloc
-        s = VAL2STR(*src_ref);
+        d = VAL2STR(c, *dst_ref);   // reload after alloc
+        s = VAL2STR(c, *src_ref);
         d->head.flags = OBJ_STRING;  /* drop SSO bit */
         memcpy(new_bytes, small_buf, d_len);
         aro_gc_wb(c, d, (VALUE *)&d->bytes, (VALUE)new_bytes);
@@ -517,8 +517,8 @@ baruby_str_append(CTX *c, VALUE *dst_ref, VALUE *src_ref)
         uint32_t nc = d->capa ? d->capa * 2 : 8;
         while (nc < need) nc *= 2;
         BaByteData *new_bytes = (BaByteData *)aro_gc_realloc_byte_payload(c, d->bytes, sizeof(BaByteData) + nc);
-        d = VAL2STR(*dst_ref);   // reload after realloc
-        s = VAL2STR(*src_ref);
+        d = VAL2STR(c, *dst_ref);   // reload after realloc
+        s = VAL2STR(c, *src_ref);
         aro_gc_wb(c, d, (VALUE *)&d->bytes, (VALUE)new_bytes);
         d->capa = nc;
     }
@@ -553,7 +553,7 @@ sb_append(StrBuf *sb, const char *src, uint32_t n)
 // arrays nested, nil → "nil".  baruby_to_s special-cases the top-level
 // case where `nil.to_s == ""` (Ruby semantics).
 static void
-to_s_inner(StrBuf *sb, VALUE v)
+to_s_inner(CTX *c, StrBuf *sb, VALUE v)
 {
     char tmp[32];
     if (v == VAL_NIL)   { sb_append(sb, "nil", 3);   return; }
@@ -564,8 +564,8 @@ to_s_inner(StrBuf *sb, VALUE v)
         sb_append(sb, tmp, (uint32_t)n);
         return;
     }
-    if (IS_STR(v)) {
-        const BaString *s = VAL2STR(v);
+    if (IS_STR(c, v)) {
+        const BaString *s = VAL2STR(c, v);
         const char *sb_bytes = bstr_bytes(s);
         sb_append(sb, "\"", 1);
         for (uint32_t i = 0; i < s->len; i++) {
@@ -589,12 +589,12 @@ to_s_inner(StrBuf *sb, VALUE v)
         sb_append(sb, "\"", 1);
         return;
     }
-    if (IS_ARY(v)) {
-        const BaArray *a = VAL2ARY(v);
+    if (IS_ARY(c, v)) {
+        const BaArray *a = VAL2ARY(c, v);
         sb_append(sb, "[", 1);
         for (uint32_t i = 0; i < a->len; i++) {
             if (i) sb_append(sb, ", ", 2);
-            to_s_inner(sb, a->items->data[i]);
+            to_s_inner(c, sb, a->items->data[i]);
         }
         sb_append(sb, "]", 1);
         return;
@@ -604,7 +604,7 @@ to_s_inner(StrBuf *sb, VALUE v)
 VALUE
 baruby_to_s(CTX *c, VALUE v)
 {
-    if (IS_STR(v))      return v;
+    if (IS_STR(c, v))      return v;
     if (v == VAL_NIL)   return baruby_str_new_cstr(c, "");
     if (v == VAL_FALSE) return baruby_str_new_cstr(c, "false");
     if (v == VAL_TRUE)  return baruby_str_new_cstr(c, "true");
@@ -614,7 +614,7 @@ baruby_to_s(CTX *c, VALUE v)
         return baruby_str_new(c, buf, (uint32_t)n);
     }
     StrBuf sb = {0};
-    to_s_inner(&sb, v);
+    to_s_inner(c, &sb, v);
     VALUE r = baruby_str_new(c, sb.bytes, sb.len);
     free(sb.bytes);
     return r;
@@ -624,20 +624,20 @@ VALUE
 baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref)
 {
     VALUE *sp = c->sp;
-    uint32_t a_len = VAL2STR(*av_ref)->len;
-    uint32_t b_len = VAL2STR(*bv_ref)->len;
+    uint32_t a_len = VAL2STR(c, *av_ref)->len;
+    uint32_t b_len = VAL2STR(c, *bv_ref)->len;
     uint32_t total = a_len + b_len;
 
-    sp[0] = (VALUE)aro_gc_alloc(c, sizeof(BaString));
-    BaString *r = (BaString *)sp[0];
+    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaString)));
+    BaString *r = VAL2STR(c, sp[0]);
     r->head.flags = OBJ_STRING;
     r->len = total;
 
     if (total <= BSTR_SSO_MAX) {
         r->head.flags |= OBJ_FLAG_SSO;
         r->capa = sizeof r->small;
-        const BaString *a = VAL2STR(*av_ref);
-        const BaString *b = VAL2STR(*bv_ref);
+        const BaString *a = VAL2STR(c, *av_ref);
+        const BaString *b = VAL2STR(c, *bv_ref);
         if (a_len) memcpy(r->small,         bstr_bytes(a), a_len);
         if (b_len) memcpy(r->small + a_len, bstr_bytes(b), b_len);
         r->small[total] = '\0';
@@ -647,11 +647,11 @@ baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref)
     r->capa = total + 1;
     c->sp = sp + 1;
     BaByteData *new_bytes = baruby_bytes_new(c, r->capa);
-    r = (BaString *)sp[0];
+    r = VAL2STR(c, sp[0]);
     aro_gc_wb(c, r, (VALUE *)&r->bytes, (VALUE)new_bytes);
 
-    const BaString *a = VAL2STR(*av_ref);
-    const BaString *b = VAL2STR(*bv_ref);
+    const BaString *a = VAL2STR(c, *av_ref);
+    const BaString *b = VAL2STR(c, *bv_ref);
     if (a_len) memcpy(r->bytes->data,         bstr_bytes(a), a_len);
     if (b_len) memcpy(r->bytes->data + a_len, bstr_bytes(b), b_len);
     r->bytes->data[total] = '\0';
@@ -659,7 +659,7 @@ baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref)
 }
 
 void
-baruby_print_value(FILE *fp, VALUE v)
+baruby_print_value(CTX *c, FILE *fp, VALUE v)
 {
     if (v == VAL_NIL) {
         fputs("nil", fp);
@@ -673,17 +673,17 @@ baruby_print_value(FILE *fp, VALUE v)
     else if (IS_INT(v)) {
         fprintf(fp, "%ld", (long)VAL2INT(v));
     }
-    else if (IS_ARY(v)) {
-        const BaArray *a = VAL2ARY(v);
+    else if (IS_ARY(c, v)) {
+        const BaArray *a = VAL2ARY(c, v);
         fputc('[', fp);
         for (uint32_t i = 0; i < a->len; i++) {
             if (i) fputs(", ", fp);
-            baruby_print_value(fp, a->items->data[i]);
+            baruby_print_value(c, fp, a->items->data[i]);
         }
         fputc(']', fp);
     }
-    else if (IS_STR(v)) {
-        const BaString *s = VAL2STR(v);
+    else if (IS_STR(c, v)) {
+        const BaString *s = VAL2STR(c, v);
         const char *pb = bstr_bytes(s);
         fputc('"', fp);
         for (uint32_t i = 0; i < s->len; i++) {

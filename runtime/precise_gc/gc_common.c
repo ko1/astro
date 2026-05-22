@@ -46,11 +46,15 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
     size_t old_size = aro_gc_size_of(old);
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
-    sp_top[0] = (VALUE)old;
+    /* Park `old` in sp_top[0] across the alloc so the GC scan covers it.
+     * `old` is a raw heap pointer (= typed-ptr coming from sample); root
+     * slots are VALUE-shaped, so encode via ARO_VAL for the scramble
+     * backend.  For non-scramble backends ARO_VAL is identity. */
+    sp_top[0] = ARO_VAL(c, old);
     c->sp = sp_top + 1;
     void *newp = aro_gc_alloc(c, new_size);
     c->sp = sp_top;
-    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
+    if (copy_bytes) memcpy(newp, ARO_OBJ(c, sp_top[0]), copy_bytes);
     /* iter 75 Step C: head is now at payload offset 0 (= INSIDE payload),
      * so the memcpy above overwrites newp's freshly-init'd head with
      * old's head.  Restore the framework-owned fields:
@@ -82,11 +86,11 @@ aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
     size_t old_size = aro_gc_size_of(old);
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
-    sp_top[0] = (VALUE)old;
+    sp_top[0] = ARO_VAL(c, old);
     c->sp = sp_top + 1;
     void *newp = aro_gc_alloc_byte(c, new_size);
     c->sp = sp_top;
-    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
+    if (copy_bytes) memcpy(newp, ARO_OBJ(c, sp_top[0]), copy_bytes);
     /* Restore framework head fields — see note in aro_gc_realloc_payload. */
     ASTroObjectHeader *h = (ASTroObjectHeader *)newp;
     h->gc_size  = (uint32_t)new_size;

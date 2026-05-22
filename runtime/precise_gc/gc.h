@@ -38,7 +38,7 @@ typedef intptr_t VALUE;
 // ---------------------------------------------------------------------------
 // Pluggable GC backend interface.
 //
-// One of eleven backends is selected at build time via -DBARUBY_GC=<n>:
+// One of seventeen backends is selected at build time via -DBARUBY_GC=<n>:
 //   1: none              — no GC, malloc + leak (baseline)
 //   2: mark              — non-moving mark&sweep (per-object malloc list)
 //   3: mark_gen          — mark&sweep + 2-gen
@@ -64,9 +64,19 @@ typedef intptr_t VALUE;
 //                          bitmaps).  Young set found by walking pages
 //                          (no young_next list).  BaArray (24 B payload)
 //                          fits class-32 perfectly = 2× density vs mark_gen.
+//  15: mark_card_gen
+//  16: mark_freelist
+//  17: copy_scramble       — Cheney copy + per-cycle XOR scramble of VALUE
+//                          storage.  Debug / audit backend: sample uses
+//                          ARO_OBJ to decode VALUE → ptr.  Forgetting decode
+//                          (= raw cast) or missing SCAN_EDGES on a slot
+//                          surfaces as SEGV at next deref.  Pair with
+//                          BARUBY_GC_STRESS=1 for max R rotation frequency.
 //
 // Gen / inc variants define BARUBY_GC_HAS_WB so callers know they must use
 // aro_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
+// copy_scramble defines BARUBY_GC_HAS_SCRAMBLE so ARO_OBJ / ARO_VAL macros
+// (gc.h) expand to real XOR ops instead of identity.
 // ---------------------------------------------------------------------------
 
 /* All type definitions (BARUBY_GC_* IDs, ASTRO_GC_HAS_FWD,
@@ -82,6 +92,81 @@ typedef intptr_t VALUE;
  * compile-time constant per binary).  It is not per-instance state, so
  * keeping it as `const char *` global is fine. */
 extern const char *aro_gc_backend_name;
+
+/* ---------------------------------------------------------------------------
+ * Scramble macros (= per-cycle XOR mask on heap-pointer storage).
+ *
+ * Sample-visible storage of every heap pointer (= VALUE slots in sp[],
+ * BaArrayItems.data[], typed-ptr fields like BaArray.items / BaString.bytes)
+ * holds `raw_ptr ^ R`.  Sample must use ARO_OBJ to decode at deref, and
+ * ARO_VAL to encode raw pointers from aro_gc_alloc before storing.
+ *
+ * For non-scramble backends, both macros are identity casts and compile
+ * to no-op.  For scramble backends, R is per-instance state on
+ * AroGcCommonState.scramble_R.
+ *
+ * Fixnums / singletons (LSB=1 / low-bit non-zero) must NOT be passed
+ * through ARO_OBJ/ARO_VAL — they're not heap pointers.  Use IS_PTR(v)
+ * check before decoding.
+ *
+ * Naming convention:
+ *   ARO_OBJ(c, v)   — VALUE (encoded) → void *  (decoded for deref)
+ *   ARO_VAL(c, raw) — void * (raw) → VALUE      (encoded for storage)
+ * --------------------------------------------------------------------------- */
+#ifdef BARUBY_GC_HAS_SCRAMBLE
+#  define ARO_OBJ(c, v)    ((void *)((uintptr_t)(v)   ^ ASTRO_GC_COMMON(c)->scramble_R))
+#  define ARO_VAL(c, raw)  ((VALUE)((uintptr_t)(raw)  ^ ASTRO_GC_COMMON(c)->scramble_R))
+#else
+#  define ARO_OBJ(c, v)    ((void *)(uintptr_t)(v))
+#  define ARO_VAL(c, raw)  ((VALUE)(uintptr_t)(raw))
+#endif
+
+/* ---------------------------------------------------------------------------
+ * SCAN_EDGES helpers — sample's SCAN_EDGES invokes these per slot.
+ *
+ * VISIT_EDGE_PTR : raw typed-ptr slot (e.g., BaArray.items = BaArrayItems*).
+ *                  Slot value is the real address; forward writes the new
+ *                  real address back to the slot.  All backends — including
+ *                  scramble — treat these as raw.
+ *
+ * VISIT_EDGE_VAL : VALUE slot (e.g., BaArrayItems.data[i], sp[i]).
+ *                  In non-scramble backends, identical to VISIT_EDGE_PTR
+ *                  (= slot holds raw addr OR fixnum / singleton — non-ptr
+ *                  values are not visited because the forward function
+ *                  checks IS_PTR-like conditions).
+ *                  In scramble backend, decodes the slot with scramble_R_old,
+ *                  forwards the underlying real address, then re-encodes with
+ *                  the new scramble_R before writing back.  Fixnums /
+ *                  singletons (= low bits non-zero, or v==0) skip both
+ *                  decode and forwarding entirely.
+ *
+ * The CTX passed in (= the SCAN_EDGES `ctx` parameter) is the backend's
+ * ASTroGC * — which must start with AroGcCommonState as its first field
+ * so we can read scramble_R via direct cast.  This is already a
+ * documented invariant of the framework (= ASTRO_GC_COMMON cast).
+ * --------------------------------------------------------------------------- */
+#define ASTRO_GC_VISIT_EDGE_PTR(ctx, fn, slot_ptr)                           \
+    ((fn)((ctx), (void **)(slot_ptr)))
+
+#ifdef BARUBY_GC_HAS_SCRAMBLE
+#  define ASTRO_GC_VISIT_EDGE_VAL(ctx, fn, slot_ptr) do {                    \
+       VALUE *_aro_vs   = (VALUE *)(slot_ptr);                                \
+       VALUE  _aro_v    = *_aro_vs;                                           \
+       /* Skip fixnums / singletons (=0/2/4) — these are NOT heap ptrs and    \
+        * must not be scramble-decoded.  IS_PTR-like check: low 3 bits = 0   \
+        * AND value != 0 (= FALSE).  Scrambled ptrs preserve low 3 bits      \
+        * because R has low 3 bits = 0. */                                   \
+       if (((uintptr_t)_aro_v & 7u) == 0 && _aro_v != 0) {                   \
+           AroGcCommonState *_aro_cs = (AroGcCommonState *)(ctx);            \
+           void *_aro_raw = (void *)((uintptr_t)_aro_v ^ _aro_cs->scramble_R_old); \
+           (fn)((ctx), &_aro_raw);                                            \
+           *_aro_vs = (VALUE)((uintptr_t)_aro_raw ^ _aro_cs->scramble_R);    \
+       }                                                                      \
+   } while (0)
+#else
+#  define ASTRO_GC_VISIT_EDGE_VAL(ctx, fn, slot_ptr)                         \
+       ASTRO_GC_VISIT_EDGE_PTR((ctx), (fn), (slot_ptr))
+#endif
 
 void  aro_gc_init(CTX *c);
 
