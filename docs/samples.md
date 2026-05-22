@@ -27,7 +27,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 | `pascalast` | Pascal | 命令型, 静的 | 静 | int+real+set | record / 1D・2D 配列 / file I/O / try/except / OOP |
 | `naruby` | Ruby サブセット | 命令型, 動的 | 動 (整数のみ) | int64 | **論文評価用** — 1 バイナリで 4 モード切替 |
 | `baruby` | Ruby サブセット | 命令型, 動的 | 動 | int64 + Array + String | naruby fork + libgc、 **統一 GC framework testbed の最初の対象** (LSB-tagged VALUE / parse-time method desugar) |
-| `baruby_precise` | Ruby サブセット | 命令型, 動的 | 動 | int64 + Array + String | baruby fork + **precise rooting (sp[] spill) + 14 種類の自前 GC backend** を `make GC=<name>` で切替えて比較する testbed |
+| `baruby_precise` | Ruby サブセット | 命令型, 動的 | 動 | int64 + Array + String | baruby fork + **precise rooting (sp[] spill)** + framework GC `runtime/precise_gc/` の **16 種類の backend** を `make GC=<name>` で切替えて比較する testbed (iter 74 で sample から framework に extract) |
 | `abruby` | Ruby サブセット | OO, 動的 | 動 | CRuby 互換 | **CRuby C 拡張** (VALUE / Prism / GC を流用) |
 | `koruby` | Ruby サブセット | OO, 動的 | 動 | int + GMP bignum + float | スタンドアロン全機能 Ruby、**optcarrot 完走** |
 | `aforth` | Forth | スタックマシン, 静的 | 動 (cell 単位) | int64 | **すべての word (組み込み + ユーザ定義) が AST NODE** — 伝統的な threaded code を使わず ASTro 流に AST で表現 |
@@ -60,7 +60,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 Ruby サブセット系には階層がある:
 - `naruby` (32 nodes, 整数のみ) ← 論文評価ベース
 - `baruby` (52 nodes, +Array/String/libgc) ← GC testbed の最初の対象
-- `baruby_precise` (52 nodes, +precise rooting + 14 種類の自前 GC) ← GC algorithm 比較 testbed
+- `baruby_precise` (52 nodes, +precise rooting + 16 種類の framework GC (runtime/precise_gc/)) ← GC algorithm 比較 testbed
 - `abruby` (107 nodes) ← CRuby C 拡張、CRuby のサブセット
 - `koruby` (119 nodes) ← スタンドアロンで optcarrot を走らせる
 
@@ -449,7 +449,7 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 | `calc` | `int64_t` | なし | 自前再帰下降パーサ | — |
 | `naruby` | `int64_t` | leak | Prism (CRuby パーサ) | **L0/L1/L2 JIT デーモン** |
 | `baruby` | LSB-tagged `int64` (1-bit fixnum tag) | Boehm libgc (conservative) | Prism (`./prism → ../naruby/prism`) | parse-time method desugar (OO machinery なし)、 `binary_trees` / `list_alloc` / `string_concat` / `gc_combined` / `substr_churn` / `fib_pair` の **6 つの違う GC lifecycle bench** を装備 |
-| `baruby_precise` | LSB-tagged `int64` (1-bit fixnum tag) | **14 種類の自前 GC を build-time switch** (`make GC=<name>`) — `none` / `mark` / `mark_gen` / `mark_gen_inc` / `copy` (default) / `copy_gen` / `mark_compact` / `mark_compact_gen` / `bump` / `mark_bump_gen` / `immix` / `immix_gen` / `mark_bitmap_gen` / `mark_card_gen` | Prism (baruby と共有) | **precise rooting (`sp[]` spill)** + WB + 必要なら moving (Cheney / Immix-gen / Compact)、 backend × bench の matrix runner (`bench/matrix.rb`)、 `mark_seconds` / `reclaim_seconds` / pause histogram の per-collector 計装 |
+| `baruby_precise` | LSB-tagged `int64` (1-bit fixnum tag) | **16 種類の GC を build-time switch** (`make GC=<name>`) — `none` / `mark` / `mark_gen` / `mark_gen_inc` / `copy` (default) / `copy_gen` / `copy_gen_inc` / `mark_compact` / `mark_compact_gen` / `bump` / `mark_bump_gen` / `mark_freelist` / `immix` / `immix_gen` / `mark_bitmap_gen` / `mark_card_gen`。 backend 実装は `runtime/precise_gc/` に framework 化済 (iter 74)、 sample 側は context.h で `ASTRO_GC_SCAN_EDGES` macro + AroGcKind 拡張値を提供する contract | Prism (baruby と共有) | **precise rooting (`sp[]` spill)** + WB + 必要なら moving (Cheney / Immix-gen / Compact)、 backend × bench の matrix runner (`bench/matrix.rb`)、 `mark_seconds` / `reclaim_seconds` / pause histogram の per-collector 計装 |
 | `abruby` | CRuby `VALUE` | CRuby GC (Ruby 拡張) | Prism (lib/abruby.rb) | Fiber / require / 完全ライブラリ |
 | `koruby` | CRuby 互換 (FIXNUM/FLONUM/SYMBOL) | libgc (Boehm) | Prism | state-propagation 例外, 共有 fp closure |
 | `astr` | tagged `int64` (low-bit fixnum) | libgc | 自前再帰下降パーサ | ベクタ broadcast |
@@ -480,9 +480,11 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
   逃したい" 構造を持つ言語で、自前にする動機が立つ。 **自前 Cheney コピー** は
   nuq のみ (per-run arena で短命オブジェクトをまとめてリセット)。
   **ホスト GC を借りる** のは abruby / arjsv の CRuby C 拡張勢。
-  **自前 GC を 14 種類まとめて build-time switch** している外れ値が
-  `baruby_precise` で、 これはサンプルというより「GC algorithm 比較 testbed」
-  そのもの (§7.5 で別途扱う)。
+  **framework GC を 16 種類まとめて build-time switch** している外れ値が
+  `baruby_precise` で、 これは「GC algorithm 比較 testbed」 そのもの (§7.5
+  で別途扱う)。 iter 74 で GC 本体が `runtime/precise_gc/` に extract され、
+  baruby_precise は context.h で contract macro (`ASTRO_GC_SCAN_EDGES` +
+  `AroGcKind` 拡張) を提供する側になった。
 - **パーサ**: Prism (`naruby`, `abruby`, `koruby`) を使うのは Ruby 系
   3 つだけ。残り全部は **手書き再帰下降** か (`castro` だけ)
   **tree-sitter-c**。ASTro 自体はパーサに何の制約も置かない。
@@ -923,7 +925,7 @@ CLI に出ないが環境変数で挙動を変えるもの:
 | DSL (JSON フィルタ / Schema / predicate) | **◎** | nuq が jq を全域 2.6–5.0×、arjsv は Rust+RapidJSON FFI を 4–86×、arcel は cel-cpp を geomean 14× / K8s policy 22.4×。スキーマ / フィルタ / policy 式が SD 1 個に焼き切れる類は ASTro と相性が良い |
 | ホスト言語の C 拡張 | **○** | abruby / arjsv が CRuby ext として成立。ホスト VALUE / GC / Parser を借りて初期実装コストを大幅短縮 (代償は §8.2: hot path に host cfunc が残ること) |
 | イベント駆動 / async | **未検証** | サンプル無し |
-| GC の精度が要る (precise GC) | **△ → ○** | jstro/luastro が自前 mark-sweep を書いており、フレームワーク本体は引き続き助けない。 一方で `baruby_precise` が **precise rooting (`sp[]` spill) + 14 種類の collector を build-time switch** する testbed として成立し、 移動 GC 化に必要なフレームワーク側の補強ポイント (frame iterator / WB / rooting protocol) が `docs/gc_design.md` に成文化された |
+| GC の精度が要る (precise GC) | **△ → ◎** | jstro/luastro が自前 mark-sweep を書いており、 そこは依然 sample 側。 一方 **`runtime/precise_gc/` に 16 種類の precise GC framework を本体化 (iter 74)**、 `baruby_precise` は context.h の contract macro (= `ASTRO_GC_SCAN_EDGES` + `AroGcKind` 拡張) でその framework を呼ぶ形に。 移動 GC 化に必要な抽象 (`AstroGc` instance / edges/visit protocol / rooting protocol) は `docs/gc_design.md` で成文化済、 他 sample が活用可能 |
 | 短命スクリプト (CLI ツール) | **△** | bake コストと dlopen キャッシュの初期化が見える。プレ bake 推奨 |
 
 ### 8.4 まとめ

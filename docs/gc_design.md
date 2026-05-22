@@ -490,22 +490,64 @@ branch `gc-abstraction-poc`)。 主要変更:
 (`gc_user.h` ではなく、 user 議論で結論したように **`context.h` か新規 sample 側
 ヘッダ**) に切り出す。 全 backend が同 macro を共有することで重複削減。
 
-### Step 3: `runtime/precise_gc/` 切り出し
+### Step 3: `runtime/precise_gc/` 切り出し ✅ 完了 (iter 74)
 
-contract が固まったら、 `gc_<algo>.c` を `runtime/precise_gc/` に移動。
-`gc.c` が共通 runtime として algorithm を `#include` する形に整える。
+contract が固まったあと、 `gc_<algo>.c` 群を `runtime/precise_gc/` に移動済
+(iter 74 commits `e2c80065` / `ebdd3210` / `0a912e73`)。
 
 ```
 runtime/precise_gc/
-  gc.h           # public API + 推奨 GCHeader 雛形
-  gc.c           # ASTRO_PRECISE_GC_<algo> マクロで algo を #include
-  gc_copy.c
-  gc_mark.c
-  ... (16 backend)
+  gc.h                  # public API (aro_gc_alloc / wb / collect / ...)
+  gc_common.c           # default realloc_payload (header-aware)
+  gc_inplace_mremap.h   # LargeObj realloc(3) / mremap(2) template
+  gc_bump.c             # no-GC baseline
+  gc_none.c             # libc malloc
+  gc_copy.c             # Cheney semispace
+  gc_copy_gen.c         # gen Cheney
+  gc_copy_gen_inc.c     # placeholder
+  gc_mark.c             # mark+sweep
+  gc_mark_gen.c         # gen mark+sweep
+  gc_mark_gen_inc.c     # SATB infra
+  gc_mark_compact.c     # mark+compact
+  gc_mark_compact_gen.c # gen + compact tenured
+  gc_mark_bump_gen.c    # gen + bump tenured
+  gc_mark_bitmap_gen.c  # gen + page bitmap
+  gc_mark_card_gen.c    # gen + page-level remset
+  gc_mark_freelist.c    # freelist mark+sweep
+  gc_immix.c            # Immix
+  gc_immix_gen.c        # gen Immix
 
 sample/baruby_precise/
-  main.c         # contract macro 定義 → #include "../../runtime/precise_gc/gc.c"
+  context.h             # contract macros (ASTRO_GC_SCAN_EDGES, AroGcKind 拡張)
+  Makefile              # $(RUNTIME)/precise_gc/gc_$(GC).c を build に組み込む
+  node.h                # #include "precise_gc/gc.h"  ← runtime からの相対 path
 ```
+
+実装は **直接 `gc.c` umbrella を持たず**、 各 backend `.c` をそのまま
+build に組み込む形 (= Makefile が `GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c`
+で選択)。 共通 utility (`aro_gc_realloc_payload` の default 実装) は
+`gc_common.c` に集約。
+
+### Step 3 後の contract
+
+- sample (= context.h) は backend 内部の `HDR_KIND` macro / GCHeader
+  layout に依存しない。 backend が GCHeader から取り出した `kind /
+  payload_size` を sample-side macro に opaque な引数として渡す:
+
+```c
+/* sample's macro (context.h): */
+#define ASTRO_GC_SCAN_EDGES(payload, kind, payload_size, ctx, edge_visit) \
+    /* sample knows BaArray / BaString layout; switches on kind */
+
+/* backend's call site (e.g. gc_copy.c): */
+ASTRO_GC_SCAN_EDGES((void *)(h+1), HDR_KIND(h), (h)->size, gc, forward_edge);
+```
+
+- `AroGcKind` の base 値 (= `KIND_PAYLOAD_VAL` / `KIND_PAYLOAD_BYTE` /
+  `KIND_FREE`) は framework が定義。 sample 固有 kind (= `KIND_OBJ_ARRAY` /
+  `KIND_OBJ_STRING`) は `KIND_USER_BASE` 以降に enum で拡張。
+- ABI 制約はなく、 各 backend が GCHeader layout (8/16/24 B、 flags
+  packing / 独立 field) を自由に選べる。
 
 ### Step 4: 他 sample で採用
 
