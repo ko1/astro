@@ -374,32 +374,17 @@ forward_value(ASTroGC *gc, VALUE v)
 }
 
 static void
+forward_edge_minor(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (IS_PTR(v)) *slot = (void *)(VALUE)forward_payload_value(gc, (void *)v);
+}
+
+static void
 process_object(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) a->items = (VALUE *)forward_payload_value(gc, a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_value(gc, s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = forward_value(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "process_object: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, forward_edge_minor);
 }
 
 
@@ -486,32 +471,15 @@ mark_value_major(ASTroGC *gc, VALUE v)
 }
 
 static void
+mark_edge_major(void *ctx, void **slot)
+{
+    mark_value_major((ASTroGC *)ctx, (VALUE)*slot);
+}
+
+static void
 scan_outgoing_major(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) mark_value_major(gc, (VALUE)a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) mark_value_major(gc, (VALUE)s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) mark_value_major(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "scan_outgoing_major: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge_major);
 }
 
 static void
@@ -542,32 +510,17 @@ fwd_value_compact(ASTroGC *gc, VALUE v)
 }
 
 static void
+fwd_edge_compact(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (IS_PTR(v)) *slot = (void *)(VALUE)fwd_payload_compact(gc, (void *)v);
+}
+
+static void
 update_pointers_major(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) a->items = (VALUE *)fwd_payload_compact(gc, a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)fwd_payload_compact(gc, s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = fwd_value_compact(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "update_pointers_major: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, fwd_edge_compact);
 }
 
 static void

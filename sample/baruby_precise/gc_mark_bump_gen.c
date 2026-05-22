@@ -394,32 +394,17 @@ forward_value(ASTroGC *gc, VALUE v)
 }
 
 static void
+forward_edge(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (IS_PTR(v)) *slot = (void *)(VALUE)forward_payload_value(gc, (void *)v);
+}
+
+static void
 process_object(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) a->items = (VALUE *)forward_payload_value(gc, a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_value(gc, s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = forward_value(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "process_object: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, forward_edge);
 }
 
 /* Keep cold (see gc_copy_gen.c iter (29)): inlining minor_gc into
@@ -510,61 +495,25 @@ major_promote(ASTroGC *gc, GCHeader *oldh)
 }
 
 static void
+major_edge(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (!IS_PTR(v)) return;
+    GCHeader *vh = (GCHeader *)v - 1;
+    if (in_nursery(gc, (void *)v)) {
+        *slot = (void *)(VALUE)major_promote(gc, vh);
+        scan_push(gc, (GCHeader *)*slot - 1);
+    } else if (!HDR_MARKED(vh)) {
+        HDR_SET_MARKED(vh);
+        gray_push(gc, vh);
+    }
+}
+
+static void
 major_process(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) {
-            GCHeader *ih = (GCHeader *)a->items - 1;
-            if (in_nursery(gc, a->items)) {
-                a->items = (VALUE *)major_promote(gc, ih);
-                scan_push(gc, (GCHeader *)a->items - 1);
-            } else if (!HDR_MARKED(ih)) {
-                HDR_SET_MARKED(ih);
-                gray_push(gc, ih);
-            }
-        }
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) {
-            GCHeader *bh = (GCHeader *)s->bytes - 1;
-            if (in_nursery(gc, s->bytes)) {
-                s->bytes = (char *)major_promote(gc, bh);
-                scan_push(gc, (GCHeader *)s->bytes - 1);
-            } else if (!HDR_MARKED(bh)) {
-                HDR_SET_MARKED(bh);
-                gray_push(gc, bh);
-            }
-        }
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) {
-            VALUE v = items[i];
-            if (!IS_PTR(v)) continue;
-            GCHeader *vh = (GCHeader *)v - 1;
-            if (in_nursery(gc, (void *)v)) {
-                items[i] = (VALUE)major_promote(gc, vh);
-                scan_push(gc, (GCHeader *)items[i] - 1);
-            } else if (!HDR_MARKED(vh)) {
-                HDR_SET_MARKED(vh);
-                gray_push(gc, vh);
-            }
-        }
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "major_process: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, major_edge);
 }
 
 static void

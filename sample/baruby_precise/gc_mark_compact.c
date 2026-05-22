@@ -284,33 +284,13 @@ mark_value(ASTroGC *gc, VALUE v)
     gray_push(gc, h);
 }
 
+/* edge_visit callback: ctx は ASTroGC *。 mark_value は VALUE 全般を
+ * 受けて IS_PTR check 後に payload を gray push する。 */
 static void
-scan_outgoing(ASTroGC *gc, GCHeader *h)
+mark_edge(void *ctx, void **slot)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) mark_value(gc, (VALUE)a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) mark_value(gc, (VALUE)s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) mark_value(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "scan_outgoing: unknown kind");
-    }
+    ASTroGC *gc = (ASTroGC *)ctx;
+    mark_value(gc, (VALUE)*slot);
 }
 
 static void
@@ -318,7 +298,7 @@ process_gray(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
-        scan_outgoing(gc, h);
+        ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge);
     }
 }
 
@@ -345,33 +325,23 @@ fwd_value(VALUE v)
     return (VALUE)fwd_payload((void *)v);
 }
 
+/* edge_visit callback for writeback (compaction post-move pointer update).
+ * SCAN_EDGES が KIND_OBJ_ARRAY / OBJ_STRING / PAYLOAD_VAL を統一して呼ぶので、
+ * slot は raw pointer (= BaArray.items / BaString.bytes) と tagged VALUE
+ * (= PAYLOAD_VAL の items[i]) のどちらでもあり得る。 IS_PTR check で
+ * 両方を fold。 */
+static void
+fwd_edge(void *ctx, void **slot)
+{
+    (void)ctx;
+    VALUE v = (VALUE)*slot;
+    if (IS_PTR(v)) *slot = (void *)(VALUE)fwd_payload((void *)v);
+}
+
 static void
 update_pointers(GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) a->items = (VALUE *)fwd_payload(a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)fwd_payload(s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = fwd_value(items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "update_pointers: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, NULL, fwd_edge);
 }
 
 // ---------------------------------------------------------------------------

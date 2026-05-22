@@ -401,34 +401,22 @@ forward_value(ASTroGC *gc, VALUE v)
     return (VALUE)forward_payload_value(gc, (void *)v);
 }
 
+// edge_visit callback for writeback: slot is either a raw payload pointer
+// (BaArray.items / BaString.bytes) or a tagged VALUE (PAYLOAD_VAL slot).
+// IS_PTR(v) filters non-PTR tagged values; raw payload ptrs always pass.
+static void
+forward_edge(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (IS_PTR(v)) *slot = (void *)(VALUE)forward_payload_value(gc, (void *)v);
+}
+
 // Walk a freshly-copied object's outgoing references and forward them.
 static void
 process_object(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) a->items = (VALUE *)forward_payload_value(gc, a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_value(gc, s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = forward_value(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "process_object: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, forward_edge);
 }
 
 

@@ -314,7 +314,7 @@ process_gray(ASTroGC *gc)
 {
     while (gc->gray_cnt > 0) {
         GCHeader *h = gc->gray_buf[--gc->gray_cnt];
-        ASTRO_GC_SCAN_EDGES(h, gc, mark_edge);
+        ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge);
     }
 }
 

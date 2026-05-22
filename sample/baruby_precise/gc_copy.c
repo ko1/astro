@@ -452,7 +452,7 @@ gc_collect_internal(CTX *c)
               break;
           }
           default:
-              ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
+              ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, forward_edge);
               break;
         }
         ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
@@ -476,7 +476,7 @@ gc_collect_internal(CTX *c)
               break;
           }
           default:
-              ASTRO_GC_SCAN_EDGES(h, gc, forward_edge);
+              ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, forward_edge);
               break;
         }
         ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
@@ -493,7 +493,7 @@ gc_collect_internal(CTX *c)
                   break;
               }
               default:
-                  ASTRO_GC_SCAN_EDGES(h2, gc, forward_edge);
+                  ASTRO_GC_SCAN_EDGES((void *)((h2)+1), HDR_KIND(h2), (h2)->size, gc, forward_edge);
                   break;
             }
             ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h2);

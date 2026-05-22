@@ -39,6 +39,8 @@ typedef struct GCHeader {
 } GCHeader;
 _Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
 
+#define HDR_KIND(h)  ((AroGcKind)(h)->kind)
+
 typedef struct FreeSlot {
     struct FreeSlot *next;
 } FreeSlot;
@@ -510,32 +512,15 @@ mark_value(ASTroGC *gc, VALUE v)
 }
 
 static void
+mark_edge(void *ctx, void **slot)
+{
+    mark_value((ASTroGC *)ctx, (VALUE)*slot);
+}
+
+static void
 scan_outgoing(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch ((AroGcKind)h->kind) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) mark_value(gc, (VALUE)a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) mark_value(gc, (VALUE)s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) mark_value(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "scan_outgoing: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge);
 }
 
 static void

@@ -483,32 +483,17 @@ fwd_value(ASTroGC *gc, VALUE v)
 }
 
 static void
+fwd_edge_minor(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (IS_PTR(v)) *slot = (void *)(VALUE)forward_payload_nursery(gc, (void *)v);
+}
+
+static void
 process_object_minor(ASTroGC *gc, GCHeader *h)
 {
-    void *payload = (void *)(h + 1);
-    switch (HDR_KIND(h)) {
-      case KIND_OBJ_ARRAY: {
-        BaArray *a = (BaArray *)payload;
-        if (a->items) a->items = (VALUE *)forward_payload_nursery(gc, a->items);
-        break;
-      }
-      case KIND_OBJ_STRING: {
-        BaString *s = (BaString *)payload;
-        if (!BSTR_IS_SSO(s) && s->bytes) s->bytes = (char *)forward_payload_nursery(gc, s->bytes);
-        break;
-      }
-      case KIND_PAYLOAD_VAL: {
-        VALUE *items = (VALUE *)payload;
-        size_t n = h->size / sizeof(VALUE);
-        for (size_t i = 0; i < n; i++) items[i] = fwd_value(gc, items[i]);
-        break;
-      }
-      case KIND_PAYLOAD_BYTE:
-      case KIND_FREE:
-        break;
-      default:
-        ASTRO_ASSERT(0 && "immix_gen process_object_minor: unknown kind");
-    }
+    ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, fwd_edge_minor);
 }
 
 /* ---------------------------------------------------------------------------
@@ -568,34 +553,17 @@ mark_value_major(ASTroGC *gc, VALUE v)
 }
 
 static void
+mark_edge_major(void *ctx, void **slot)
+{
+    mark_value_major((ASTroGC *)ctx, (VALUE)*slot);
+}
+
+static void
 process_gray_major(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
         GCHeader *h = gray_buf[--gray_cnt];
-        void *payload = (void *)(h + 1);
-        switch (HDR_KIND(h)) {
-          case KIND_OBJ_ARRAY: {
-            BaArray *a = (BaArray *)payload;
-            if (a->items) mark_value_major(gc, (VALUE)a->items);
-            break;
-          }
-          case KIND_OBJ_STRING: {
-            BaString *s = (BaString *)payload;
-            if (!BSTR_IS_SSO(s) && s->bytes) mark_value_major(gc, (VALUE)s->bytes);
-            break;
-          }
-          case KIND_PAYLOAD_VAL: {
-            VALUE *items = (VALUE *)payload;
-            size_t n = h->size / sizeof(VALUE);
-            for (size_t i = 0; i < n; i++) mark_value_major(gc, items[i]);
-            break;
-          }
-          case KIND_PAYLOAD_BYTE:
-          case KIND_FREE:
-            break;
-          default:
-            ASTRO_ASSERT(0 && "immix_gen process_gray_major: unknown kind");
-        }
+        ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, mark_edge_major);
     }
 }
 
