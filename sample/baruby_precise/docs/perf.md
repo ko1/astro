@@ -70,27 +70,106 @@ int 15 を合算、 一部省略)。 各 cell の数値は秒 (median of 3)、 *
 [bench-results/matrix.md](../bench-results/matrix.md) に最新の生データ
 (json / csv 含む)。 perf.md は要約のみ。
 
-### 2.1 plain mode
+### 2.1 plain mode matrix (iter 72、 median of 3、 15 backend + libgc × 35 bench)
 
-(matrix.rb 出力をここに貼る — iter 72 計測中、 完了次第更新)
+`ruby bench/matrix.rb --mode plain -n 3` の出力。 **太字** は各 bench の
+最速 backend。 数値は秒。 backend 列の順序は naruby-style int bench
+重視の左から (= ベース → mark 系 → copy 系 → compact 系 → bump 系 →
+immix 系 → bitmap/card 系 → freelist → libgc 比較)。
+
+| Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | mark_freelist | libgc |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ackermann | 6.05 | 5.99 | 6.06 | 6.03 | 6.27 | 6.06 | 6.03 | 6.25 | 6.19 | 6.36 | 6.04 | 6.31 | 6.27 | 5.93 | 6.42 | **5.77** |
+| ast_eval | **0.29** | 0.30 | 0.33 | 0.32 | 0.32 | 0.31 | 0.32 | 0.32 | 0.29 | 0.31 | 0.31 | 0.32 | 0.31 | 0.31 | 0.30 | 0.30 |
+| binary_trees | 0.69 | 0.65 | 0.71 | 0.76 | 0.71 | 0.71 | 0.70 | 0.64 | **0.40** | 0.80 | 0.47 | 0.71 | 0.82 | 0.80 | 0.75 | 0.70 |
+| branch_dom | 1.77 | 1.82 | 1.76 | 1.82 | 1.81 | 1.76 | 1.77 | 1.81 | 1.80 | 1.81 | 1.78 | 1.86 | 1.76 | 1.78 | 1.80 | **1.75** |
+| call | 6.96 | 7.08 | 7.56 | 7.20 | 6.75 | 7.71 | 7.79 | 7.11 | 6.80 | 7.75 | 6.85 | 7.48 | 6.80 | 7.24 | 6.85 | **6.28** |
+| chain20 | 6.44 | 6.20 | 7.15 | 7.03 | 6.45 | 6.97 | 6.87 | 6.47 | 6.67 | 7.18 | 6.18 | 7.09 | 6.29 | 6.26 | 6.13 | **5.96** |
+| chain40 | 6.62 | 6.77 | 7.60 | 7.29 | 6.90 | 7.26 | 7.17 | **6.36** | 6.52 | 7.12 | 6.79 | 7.27 | 6.74 | 6.78 | 6.78 | 7.20 |
+| chain_add | 1.07 | 1.14 | 1.06 | 0.98 | **0.93** | 1.03 | 0.95 | 0.97 | 1.05 | 1.14 | 1.10 | 0.98 | 1.05 | 1.04 | 0.95 | 0.98 |
+| collatz | 4.72 | 4.86 | 4.88 | 5.00 | 4.70 | 5.13 | 5.02 | **4.65** | 4.74 | 4.86 | 4.78 | 4.82 | 4.89 | 4.93 | 5.01 | 5.45 |
+| compose | 1.28 | 1.27 | 1.44 | 1.23 | **1.23** | 1.30 | 1.27 | 1.33 | 1.26 | 1.29 | 1.33 | 1.25 | 1.26 | 1.30 | 1.23 | 1.29 |
+| cons_list | 0.95 | 0.69 | 0.77 | 0.75 | **0.59** | 0.65 | 0.72 | 0.64 | 0.72 | 0.64 | 0.60 | 0.61 | 0.70 | 0.74 | 0.61 | 0.84 |
+| deep_const | 3.64 | **3.63** | 4.31 | 4.14 | 3.71 | 4.38 | 4.18 | 3.68 | 4.23 | 4.18 | 3.65 | 4.17 | 4.36 | 3.77 | 3.75 | 5.18 |
+| dll_walk | 0.80 | 0.61 | 0.74 | 0.72 | **0.59** | 0.66 | 0.68 | 0.65 | 0.72 | 0.64 | 0.63 | 0.66 | 0.69 | 0.70 | 0.63 | 0.78 |
+| early_return | 5.25 | 5.70 | 5.58 | 5.70 | 5.77 | 6.02 | 5.75 | 5.41 | **5.21** | 5.27 | 5.35 | 5.92 | 5.49 | 5.55 | 5.60 | 6.19 |
+| fannkuch | 0.61 | 0.62 | 0.67 | 0.66 | 0.63 | **0.61** | 0.63 | 0.63 | 0.63 | 0.62 | 0.61 | 0.64 | 0.67 | 0.67 | 0.61 | 0.66 |
+| fib | 5.85 | 5.63 | 5.66 | 5.83 | 5.82 | 5.72 | 5.75 | 5.86 | 5.66 | 5.67 | 5.67 | 5.82 | 5.75 | 5.80 | 5.66 | **5.49** |
+| fib_pair | 1.18 | 0.75 | 0.89 | 0.90 | **0.66** | 0.69 | 0.83 | 0.69 | 0.86 | 0.69 | 0.70 | 0.67 | 0.76 | 0.82 | 0.69 | 0.88 |
+| gc_combined | 1.10 | 0.71 | 0.79 | 0.80 | 0.63 | 0.66 | 0.73 | 0.66 | 0.83 | 0.66 | 0.67 | **0.62** | 0.72 | 0.73 | 0.69 | 0.81 |
+| gcd | 4.21 | 4.21 | 4.07 | 4.14 | **3.90** | 4.14 | 4.06 | 3.97 | 4.09 | 4.19 | 4.05 | 4.08 | 4.12 | 4.17 | 4.03 | 3.90 |
+| graph_bfs | 0.87 | 0.88 | 0.99 | 1.00 | 0.87 | 0.87 | **0.84** | 0.93 | 0.91 | 0.89 | 0.92 | 0.99 | 0.99 | 0.96 | 0.89 | 0.84 |
+| hash_chain | 0.90 | 0.91 | 0.93 | 0.93 | 0.89 | 0.91 | 0.94 | 0.91 | **0.89** | 0.98 | 0.89 | 0.93 | 0.93 | 0.91 | 0.94 | 1.12 |
+| interp_calc | 1.04 | 0.77 | 0.85 | 0.87 | 0.73 | 0.79 | 0.87 | 0.77 | 0.88 | 0.78 | 0.73 | **0.73** | 0.82 | 0.80 | 0.80 | 0.82 |
+| json_parse | 1.43 | 0.81 | 0.87 | 0.94 | 0.70 | 0.71 | 0.92 | 0.70 | 1.05 | **0.69** | 0.75 | 0.71 | 0.79 | 0.77 | 0.78 | 0.98 |
+| life | 1.16 | 1.19 | 1.20 | 1.17 | 1.15 | 1.17 | 1.17 | 1.16 | 1.21 | 1.21 | **1.13** | 1.20 | 1.23 | 1.18 | 1.20 | — |
+| list_alloc | 1.04 | 0.68 | 0.75 | 0.76 | 0.57 | 0.64 | 0.71 | 0.63 | 0.83 | 0.63 | 0.62 | **0.57** | 0.66 | 0.69 | 0.68 | 0.76 |
+| list_sort | 1.01 | 1.03 | 1.09 | 1.07 | **0.90** | 0.94 | 0.93 | 0.94 | 1.02 | 0.91 | 0.92 | 0.92 | 1.10 | 1.11 | 1.01 | 0.99 |
+| loop | 1.25 | 1.27 | 1.23 | 1.27 | 1.29 | 1.27 | 1.25 | 1.25 | 1.25 | **1.23** | 1.23 | 1.27 | 1.29 | 1.25 | 1.23 | 1.28 |
+| nqueens | 0.77 | 0.81 | 0.85 | 0.82 | 0.79 | **0.77** | 0.80 | 0.80 | 0.79 | 0.79 | 0.81 | 0.79 | 0.81 | 0.84 | 0.82 | 0.79 |
+| prime_count | 18.44 | 18.48 | 19.17 | 19.55 | 18.85 | 19.96 | 19.20 | 18.68 | 19.14 | 18.62 | 18.56 | 19.99 | **18.36** | 18.62 | 18.70 | 18.62 |
+| remset_pressure | 0.41 | 0.31 | 0.31 | 0.33 | 0.31 | 0.27 | 0.35 | 0.28 | 0.33 | 0.26 | 0.27 | **0.26** | 0.29 | 0.29 | 0.29 | 0.36 |
+| sieve | 1.08 | **1.03** | 1.17 | 1.17 | 1.05 | 1.21 | 1.11 | 1.31 | 1.17 | 1.19 | 1.07 | 1.21 | 1.17 | 1.17 | 1.08 | 1.09 |
+| string_concat | 0.38 | 0.22 | 0.22 | 0.25 | 0.18 | 0.18 | 0.25 | 0.18 | 0.25 | 0.17 | 0.20 | **0.17** | 0.21 | 0.21 | 0.21 | 0.25 |
+| string_concat_dyn | 1.51 | 0.92 | 0.96 | 1.04 | 0.82 | 0.82 | 1.03 | 0.81 | 1.06 | **0.79** | 0.82 | 0.82 | 0.84 | 0.85 | 0.88 | 1.08 |
+| substr_churn | 1.07 | 0.76 | 0.80 | 0.82 | 0.71 | 0.69 | 0.79 | 0.67 | 0.85 | 0.65 | 0.71 | **0.65** | 0.70 | 0.71 | 0.74 | 0.93 |
+| tak | 0.64 | 0.64 | 0.63 | 0.64 | 0.63 | 0.65 | 0.65 | 0.66 | 0.64 | 0.62 | 0.67 | 0.66 | 0.64 | 0.65 | 0.64 | **0.61** |
+| tokenize | 1.31 | 0.75 | 0.84 | 0.90 | **0.64** | 0.66 | 0.94 | 0.66 | 0.95 | 0.65 | 0.72 | 0.65 | 0.74 | 0.74 | 0.74 | 0.91 |
+
+生データ + CSV / JSON は [bench-results/iter72/](../bench-results/iter72/)。
+`life` の libgc 列だけ `—` なのは naruby ベースの parser/main の
+toplevel return value bug (GC 非関連、 別件)。
 
 ### 2.2 AOT mode
 
-(`-c` で code_store に SD を bake してから run。 上記同様 matrix.rb
-`--mode aot` で生成。 後述)
+iter 72 では未取得。 AOT は `-c` モードで code_store に SD を bake
+してから run する形 (詳細 [runtime.md §10](runtime.md))。 iter 61 の
+データだと plain → AOT で sieve / hash_chain / list_sort は 1.6〜6×
+の speedup を出していた (= dispatch cost が SD bake で消えるため)。
 
-### 2.3 観察まとめ
+### 2.3 観察まとめ (iter 72 plain matrix)
 
-- **gen 系 backend は短命 alloc が多い workload で勝つ** (fib_pair /
-  list_alloc / nqueens など)。 minor で nursery scan only で済むため。
-- **non-gen (mark / copy / mark_compact) は long-lived heap で
-  competitive**。 binary_trees 等は世代分離コストが効かない。
-- **immix_gen は generic な strong baseline**。 region-bump alloc +
-  conservative evacuation で多くの workload で middle-best。
-- **mark_compact_gen は string / hash bench 系で強い**。 SSO + bump
-  alloc + compact での再利用率が効く。
-- **iter 67-69 の `realloc_in_place` (realloc(3) / mremap) で sieve /
-  hash_chain で -11〜-21%** (= LargeObj の doubling cost 削減)。
+**naruby-style int bench (alloc 無し、 dispatch コスト dominant)** —
+ackermann / branch_dom / call / chain20 / chain40 / chain_add / collatz
+/ compose / deep_const / early_return / fib / fib_pair / gcd / loop /
+prime_count / tak。 ほぼ全 backend が同水準 (= GC algorithm は
+発火しないので dispatch コストのみ)。 libgc 列も近い。 `mark` /
+`copy` / `mark_compact` / `bump` の最速グループが多い (= bump alloc
+の単純さ)。
+
+**alloc-heavy bench (= 1 行目 dispatch + alloc cost、 大半 short-lived)**:
+
+- `cons_list` / `dll_walk` / `fib_pair` / `gc_combined` / `interp_calc`
+  / `list_alloc`: **gen backend が勝つ** (immix_gen / copy_gen /
+  mark_compact_gen)。 nursery で完結する short alloc が大半なので
+  minor で済む形。 libgc は 30-60% 遅い。
+- `tokenize` / `string_concat_dyn` / `substr_churn` / `json_parse`:
+  **mark_bump_gen / mark_compact_gen / immix_gen が強い**。 string +
+  bytes alloc が頻発するため compact / bump で再利用が効く。 libgc は
+  20-40% 遅い。
+- `binary_trees` (= long-lived heap 大半): **bump が最速** (= 0.40 で
+  圧倒的、 GC が走らない 1-pass alloc)、 次点 immix (0.47)。 gen 系は
+  promote コストで遅い (mark_bump_gen 0.80)。 libgc 0.70 も健闘。
+- `sieve` (= 1 つの巨大 long-lived alloc + sweep stress): **mark が
+  最速** (1.03)。 iter 67-69 の realloc_in_place が効いている。
+  immix_gen は 1.21 で若干遅め。
+- `remset_pressure` (= old→young WB 多発): **immix_gen 最速** (0.26)、
+  続いて mark_bump_gen (0.26) / copy_gen (0.27)。 iter 38 で全 gen
+  backend に remset cap + heap-walk fallback を入れた効果。
+- `life`: 全 backend ほぼ tie (1.13-1.23)。 mutator-bound で alloc 軽め。
+
+**no GC = `bump` の限界**: long-lived heavy (binary_trees) は速いが、
+heap が膨らむ workload (list_alloc / cons_list 等) では未回収のせいで
+cache miss が増えてむしろ遅い。 alloc-pattern によって win/lose が
+極端に分かれる。
+
+**libgc との対比** (= precise rooting + 移動 GC vs conservative scan):
+- libgc が勝つ: 数値 dispatch only (= ackermann / branch_dom / call /
+  chain20 / fib / tak)。 GC が発火しないので rooting overhead だけ差
+  になり、 precise 側がやや負ける (= sp scan の constant cost)。
+- baruby_precise が勝つ: alloc-heavy bench (= cons_list / fib_pair /
+  json_parse / tokenize / substr_churn 等)。 gen GC + bump alloc が効く。
+  特に generational backends は libgc 比 20-60% 速い。
 
 詳細な per-backend 解説は §4。
 
