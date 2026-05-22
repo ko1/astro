@@ -92,9 +92,11 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       一度 revert したが target 限定で再挑戦の価値あり),
       (b) bdwgc の typed_alloc / kind hint, (c) cons_list 用 small-cell
       pool。
-- [ ] **bench/life.ba.rb を baruby (libgc) にも copy** — 修正後 baruby
-      でも動くので bench 集合に追加してよい。 iter 58 では一時 copy
-      して動作確認したが、 後で削除した。
+- [x] ~~**bench/life.ba.rb を baruby (libgc) にも copy**~~ — 2026-05-22
+      解決。 `sample/baruby/bench/life.ba.rb` を新規追加。 baruby (libgc)
+      で 1.04s / oracle 112 で動作確認、 baruby_precise (copy GC) 1.15s と
+      同じ oracle を返す。 baruby の `bench/run.rb` は `Dir[...]` 経由で
+      自動 pick up。
 - [x] ~~**callee_sp safety guard を撤去できるか検証**~~ — iter 59 (B1)
       で撤去済。 `8d0912b4 sample/baruby_precise: remove callee_sp safety
       guard (B1)` commit 参照。 19 oracle 全合格、 perf 影響なし。
