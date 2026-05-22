@@ -11,7 +11,61 @@ class BaRubyNodeDef < ASTroGen::NodeDef
     func_prefix: "HOPT_",
     kind_field: "node_hash_func_t hopt_func"
 
+  # Walk children: iter 70.  Generates node_walk.c with WALK_<name>(n,
+  # func, data) that calls func(child, data) for each NODE * operand,
+  # in declaration order.  Used by baruby_parse.c::walk_bake_sp_offset
+  # to fold the 175-line hand-written per-kind structural recursion
+  # into a generic dispatch through n->head.kind->walk_children.
+  # Special cases (lget/lset bake, call/call_static callee_fp_offset
+  # bake, call_N args chain += locals) stay hand-written in
+  # baruby_parse.c.
+  #
+  # `func` returns bool: true = continue, false = stop walking remaining
+  # siblings.  Allows the caller to bail out early (e.g., after finding
+  # the target NODE), or to skip walking when an inlined-method body is
+  # not reachable.
+  register_gen_task :walk,
+    func_typedef: "typedef bool (*node_walk_visit_t)(struct Node *child, void *data);\n" +
+                  "typedef void (*node_walk_func_t)(struct Node *n, node_walk_visit_t func, void *data);",
+    func_prefix: "WALK_",
+    kind_field: "node_walk_func_t walk_children"
+
+  def build_walk
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // Per-kind structural walkers: visit each NODE * child.
+
+    #{@nodes.map{|name, n| n.build_walk_func}.join("\n")}
+    C__
+  end
+
   class Node < ASTroGen::NodeDef::Node
+    # iter 70 walk-children generator.  Emits per-kind WALK_<name>(n, func,
+    # data) that calls func(child, data) for each NODE * operand.  Used
+    # by baruby_parse.c::walk_bake_sp_offset to delegate the structural
+    # recursion (was 175 lines of hand-written kind dispatch).
+    #
+    # `func` returns `bool` — true to continue walking remaining siblings,
+    # false to stop early (e.g., target NODE found, or this subtree should
+    # be skipped).  Per-field skip ("walk N->a but not N->b") needs the
+    # caller to special-case the parent kind — the framework's generic
+    # walker visits all NODE * operands in declaration order.
+    def build_walk_func
+      node_ops = @operands.select(&:node?)
+      body = node_ops.map { |op|
+        field = "n->u.#{@name}.#{op.name}"
+        "    if (#{field} && !func(#{field}, data)) return;"
+      }.join("\n")
+      <<~C
+      static void
+      WALK_#{name}(struct Node *n, node_walk_visit_t func, void *data)
+      {
+          (void)n; (void)func; (void)data;
+      #{body}
+      }
+      C
+    end
+
     # All dispatchers return `RESULT` (= VALUE + state bits) so `return`
     # propagates as a non-NORMAL state without setjmp.  Same as castro /
     # abruby; details in context.h.
