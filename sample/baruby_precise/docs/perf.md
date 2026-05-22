@@ -74,6 +74,72 @@ conservative scanning。 同じ言語 / 同じベンチ / 同じ build flags に
 切るのは過剰解釈。 collector-only 比較が欲しいなら同じ runtime に
 backend を差し込む必要がある (現状は別バイナリ)。
 
+## 1.5. iter 72 perf 結果 (walker 削除、 noinline/cold fix 後)
+
+iter 72 で walker を削除し sp_offset bake を parse 時に移行した。 動作
+は完全に等価 (= 同じ AST、 同じ sp_offset 値、 同じ dispatcher 命令列)。
+
+### 計測 (copy backend、 plain mode、 median-of-5、 10 hot bench)
+
+| bench         | iter71 | iter72 | delta    |
+|---------------|--------|--------|----------|
+| fib_pair      | 0.660  | 0.684  | +3.6%    |
+| binary_trees  | 0.738  | 0.721  | -2.3%    |
+| list_sort     | 0.956  | 0.901  | **-5.8%** |
+| hash_chain    | 1.117  | 1.060  | **-5.1%** |
+| sieve         | 1.192  | 1.094  | **-8.2%** |
+| list_alloc    | 0.610  | 0.552  | **-9.5%** |
+| cons_list     | 0.604  | 0.647  | +7.1%    |
+| fannkuch      | 0.674  | 0.650  | -3.6%    |
+| json_parse    | 0.721  | 0.719  | -0.3%    |
+| tokenize      | 0.691  | 0.656  | -5.1%    |
+| **geomean**   |        |        | **-3.02%** |
+
+iter 72 は plain mode で **iter 71 より 3% 速い**。 LTO layout 影響を
+打ち消すと walker 削除によるオーバーヘッド削減が表面化する形。
+binary text size 242637 byte (iter 71 243903、 iter72 first draft 245162) で
+iter 71 より小さい。
+
+### iter 72 初版で出ていた regression と修正
+
+iter 72 commit `25caede1` 単独では plain mode geomean **+5.15%
+regression** を観測 (list_sort +14.9%、 list_alloc +12.6%、 tokenize
++11.0% など)。
+
+原因解析 (`perf stat`):
+
+| metric              | iter71 | iter72 初版 | ratio |
+|---------------------|--------|------------|-------|
+| cycles              | 3.59B  | 4.28B      | 1.19× |
+| instructions        | 10.7B  | 11.1B      | 1.04× |
+| IPC                 | 2.76   | 2.58       | 0.93× |
+| cache-misses        | 1.52M  | 8.55M      | **5.6×** |
+| L1-icache misses    | 73k    | 576k       | **7.9×** |
+| branch-misses       | 10.6M  | 17.7M      | 1.68× |
+
+DISPATCH 関数の machine code は byte-by-byte 比較で完全に同一
+(address 部分のみ差異)。 つまり algorithmic な regression ではなく
+**LTO の function reordering 副作用** だった。 iter 72 で追加した
+`bake_lget` / `bake_lset` / `bake_call` / `bake_call_static` helper が
+transduce に inline されて transduce body が肥大、 cold cluster の
+配置が押し出されて DISPATCH_node_num / true / false / nil / lget の
+hot 経路が分散、 i-cache prefetch が無駄打ちに。
+
+**修正** (commit `2dd76623`): bake_X 4 関数すべてに
+`__attribute__((noinline, cold))` を付与し LTO に「これは parse 時
+ホットでないので inline するな・cold cluster に置け」 を明示。
+これで text size が逆に iter 71 より小さくなり (= bake_X 隔離で
+transduce slim 化)、 dispatcher 配置が改善、 上表の **net -3%**
+に到達。
+
+### 教訓
+
+[feedback_inline_register_pressure](memory) (= iter 4.8 castro perf
+todo) と同じ教訓: function size と inline 判断は LTO の reordering を
+trigger するため、 hot path から離れた helper には noinline/cold を
+明示することで安定性が増す。 LTO は親切すぎて hot を後押しすると
+かえって遅くなることがある。
+
 ## 2. 全 GC backend のベンチ実測 (plain mode, fairness contract 適用後)
 
 iter 36-49 で再計測した median-of-3 (`ruby bench/matrix.rb`)。 15 backend

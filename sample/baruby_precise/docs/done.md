@@ -46,12 +46,32 @@ sp_body を誤って walk する bug は iter 72 では発生しない。 chain 
 - walker 関数 (170 行) 完全削除
 - chain threading + bake_list infra (~150 行) で置換
 
-### 検証
+### 検証 + perf
 
 - 16 backend × 8 T_*.ba.rb × 2 (non-stress + stress) = **256/256 PASS**
-- AOT mode: copy backend で fib_pair 0.245s (= iter 71 と同等)
+- AOT mode: copy backend で fib_pair 0.245s
 - PG mode: copy backend で fib 5.96s
 - 文字列補間 `"hello, #{name}!"` 系 動作確認
+- plain mode 10 bench geomean **iter 71 比 -3.02% 高速化**
+  (list_alloc -9.5%、 sieve -8.2%、 list_sort -5.8% など)。 詳細
+  [perf.md §1.5](perf.md)。
+
+### iter 72 初版 → 修正 (commit `2dd76623`)
+
+iter 72 初版 (`25caede1`) では LTO による function reordering 副作用
+で plain mode geomean +5.15% regression を観測。 原因は bake_X helper
+4 個が transduce に inline されて transduce body 肥大 → cold cluster
+が押し出されて dispatcher の cache layout 悪化 (i-cache miss 7.9×、
+cache miss 5.6×)。
+
+修正 = `bake_lget` / `bake_lset` / `bake_call` / `bake_call_static` に
+`__attribute__((noinline, cold))` を付与。 LTO に「parse 時 hot でないので
+inline するな・cold cluster に置け」 を明示することで text size 縮小
+(= iter 71 比 1.3 KB 小)、 上記 net -3.02% に到達。
+
+[feedback_inline_register_pressure](../../../docs/memory)
+の教訓 (= LTO は親切すぎることがあるので hot path から離れた helper
+には noinline/cold を明示) を再確認。
 
 ### 副次効果
 
@@ -61,7 +81,9 @@ sp_body を誤って walk する bug は iter 72 では発生しない。 chain 
 - iter 71 の per-body self-contained 化 が伏線として効いている
   (= callee_locals_cnt 依存があったら walker 削除は無理だった)。
 
-commit: `25caede1` + `caaafaef` (interp 対応)
+commits: `25caede1` (walker 削除) + `caaafaef` (interp 対応) +
+`e9a8742f` (bake_list を tc 共有 + pre-alloc) + `2dd76623`
+(noinline/cold で LTO layout 修正)
 
 ## 2026-05-22 (71) — call_N / pg_call_N の args を @child 化 (per-body self-contained)
 
