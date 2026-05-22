@@ -93,22 +93,6 @@ typedef struct ASTroObjectHeader {
 #endif
 } ASTroObjectHeader;
 
-/* Transitional: framework category enum.  Phasing out as backends migrate
- * to put the "scan vs byte" distinction inside sample's head.flags
- * (= OBJ_BYTE_DATA tag) instead of framework header bits. */
-typedef enum {
-    ASTRO_GC_CAT_SCAN = 0,
-    ASTRO_GC_CAT_BYTE = 1,
-    ASTRO_GC_CAT_FREE = 2,
-} AstroGcCategory;
-
-typedef AstroGcCategory AroGcKind;
-#define KIND_FREE         ASTRO_GC_CAT_FREE
-#define KIND_SCAN         ASTRO_GC_CAT_SCAN
-#define KIND_BYTE         ASTRO_GC_CAT_BYTE
-#define KIND_PAYLOAD_BYTE ASTRO_GC_CAT_BYTE
-#define KIND_PAYLOAD_VAL  ASTRO_GC_CAT_SCAN
-
 typedef struct {
     size_t total_bytes;
     size_t heap_bytes;

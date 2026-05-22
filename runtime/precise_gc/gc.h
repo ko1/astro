@@ -70,8 +70,8 @@ typedef intptr_t VALUE;
 // ---------------------------------------------------------------------------
 
 /* All type definitions (BARUBY_GC_* IDs, ASTRO_GC_HAS_FWD,
- * ASTroObjectHeader, AstroGcCategory + KIND_* aliases, AroGcStats,
- * AroGcCommonState) live in gc_types.h.  Included above. */
+ * ASTroObjectHeader, AroGcStats, AroGcCommonState) live in gc_types.h.
+ * Included above. */
 
 /* Accessors.  `c->astro_gc` is `struct ASTroGC *` (forward decl in
  * context.h).  Cast to `AroGcCommonState *` is safe iff each backend's

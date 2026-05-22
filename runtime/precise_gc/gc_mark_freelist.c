@@ -204,7 +204,7 @@ alloc_slot(CTX *c, size_t payload_size, VALUE *sp_top)
 }
 
 static inline void *
-do_alloc(CTX *c, AstroGcCategory cat, size_t payload_size)
+do_alloc(CTX *c, bool is_byte, size_t payload_size)
 {
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
@@ -212,7 +212,7 @@ do_alloc(CTX *c, AstroGcCategory cat, size_t payload_size)
     void *payload = (void *)h;
     /* iter 48 bug fix: freelist-popped slots contain stale data; zero
      * pointer-typed payloads so scan sees VAL_FALSE until caller fills. */
-    if (cat != ASTRO_GC_CAT_BYTE) {
+    if (!is_byte) {
         ASTRO_GC_INIT_PAYLOAD(payload, ALIGN8(payload_size));
     } else {
         ASTRO_GC_INIT_BYTE_PAYLOAD(payload, ALIGN8(payload_size));
@@ -226,13 +226,13 @@ do_alloc(CTX *c, AstroGcCategory cat, size_t payload_size)
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    return do_alloc(c, ASTRO_GC_CAT_SCAN, payload_size);
+    return do_alloc(c, false, payload_size);
 }
 
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    return do_alloc(c, ASTRO_GC_CAT_BYTE, payload_size);
+    return do_alloc(c, true, payload_size);
 }
 
 /* Write barrier: non-generational, so gc.h's static-inline no-op is used. */
