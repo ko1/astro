@@ -58,19 +58,13 @@
  * to know "already marked this cycle".  Avoids the need to walk the heap
  * at sweep end to clear stale marked bits — incrementing cur_epoch
  * implicitly invalidates all prior marks. */
-/* 8-byte header (down from 16).  kind packed to 3 bits of flags.
- * Layout: flags(1) + mark_epoch(1) + _pad(2) + size(4) = 8 B. */
-typedef struct GCHeader {
-    uint8_t  flags;        /* bits 0-2: kind */
-    uint8_t  mark_epoch;
-    uint8_t  _pad[2];
-    uint32_t size;
-} GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
+/* iter 75 Step C: framework GCHeader 廃止、 ASTroObjectHeader at offset 0。
+ * mark_epoch を gc_flags low 8 bits に詰める (8 epoch beats wrap-handling
+ * vs 16, plenty for typical workloads). */
+_Static_assert(sizeof(ASTroObjectHeader) == 8, "non-moving GC: head must be 8 B");
 
-#define HDR_KIND_MASK    0x07u
-#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
-#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
+#define HDR_EPOCH(h)       ((uint8_t)((h)->gc_flags & 0x00ffu))
+#define HDR_SET_EPOCH(h,e) ((h)->gc_flags = (uint16_t)(((h)->gc_flags & 0xff00u) | ((e) & 0xffu)))
 
 enum { BLK_FREE = 0, BLK_RECYCLABLE = 1, BLK_USED = 2 };
 
@@ -83,8 +77,14 @@ typedef struct BlockMeta {
 typedef struct LargeObj {
     struct LargeObj *next;
     size_t           map_bytes;
-    /* GCHeader follows */
+    /* payload follows */
 } LargeObj;
+
+static inline void *
+large_payload(LargeObj *lo)
+{
+    return (void *)(lo + 1);
+}
 
 /* Adaptive threshold: same heuristic as gc_mark.c.  Starts at 16 MiB. */
 #define GC_THRESHOLD_MIN     (16u * 1024u * 1024u)
@@ -107,7 +107,7 @@ typedef struct ASTroGC {
     size_t      bytes_since_gc;
     size_t      gc_threshold;
     CTX        *ctx;
-    struct GCHeader **gray_buf;
+    struct ASTroObjectHeader **gray_buf;
     size_t            gray_cnt;
     size_t            gray_capa;
 } ASTroGC;
@@ -178,10 +178,10 @@ line_of(ASTroGC *gc, const void *p)
 
 /* Mark all lines that an object spans (from its payload pointer + size). */
 static inline void
-mark_lines_for(ASTroGC *gc, const GCHeader *h)
+mark_lines_for(ASTroGC *gc, const ASTroObjectHeader *h)
 {
     const char *start = (const char *)h;
-    const char *last  = start + sizeof(GCHeader) + ALIGN8(h->size) - 1;
+    const char *last  = start + ALIGN8(h->gc_size) - 1;
     size_t bi = block_of(gc, start);
     size_t l0 = line_of(gc, start);
     size_t l1 = line_of(gc, last);
@@ -237,9 +237,9 @@ find_hole(ASTroGC *gc, size_t n_lines, char **out_start, char **out_end)
  * --------------------------------------------------------------------------- */
 
 static void *
-large_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size)
+large_alloc(ASTroGC *gc, size_t payload_size)
 {
-    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t need = sizeof(LargeObj) + ALIGN8(payload_size);
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     size_t map_bytes = (need + page - 1) & ~(page - 1);
     void *raw = mmap(NULL, map_bytes, PROT_READ|PROT_WRITE,
@@ -249,49 +249,49 @@ large_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size)
     lo->next = large_head;
     lo->map_bytes = map_bytes;
     large_head = lo;
-    GCHeader *h = (GCHeader *)(lo + 1);
-    HDR_SET_KIND(h, kind);
-    h->size = (uint32_t)payload_size;
-    h->mark_epoch = 0;
-    return (void *)(h + 1);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)large_payload(lo);
+    h->flags    = 0;
+    h->gc_flags = 0;
+    h->gc_size  = (uint32_t)payload_size;
+    return (void *)h;
 }
 
 static void *
-hole_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size)
+hole_alloc(ASTroGC *gc, size_t payload_size)
 {
-    size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t total = ALIGN8(payload_size);
     if (cur_ptr + total <= cur_end) {
-        GCHeader *h = (GCHeader *)cur_ptr;
+        ASTroObjectHeader *h = (ASTroObjectHeader *)cur_ptr;
         cur_ptr += total;
-        HDR_SET_KIND(h, kind);
-        h->size   = (uint32_t)payload_size;
-        h->mark_epoch = 0;
-        return (void *)(h + 1);
+        h->flags    = 0;
+        h->gc_flags = 0;
+        h->gc_size  = (uint32_t)payload_size;
+        return (void *)h;
     }
     size_t need_lines = (total + LINE_BYTES - 1) / LINE_BYTES;
     char *hs, *he;
     if (find_hole(gc, need_lines, &hs, &he)) {
         cur_ptr = hs;
         cur_end = he;
-        GCHeader *h = (GCHeader *)cur_ptr;
+        ASTroObjectHeader *h = (ASTroObjectHeader *)cur_ptr;
         cur_ptr += total;
-        HDR_SET_KIND(h, kind);
-        h->size   = (uint32_t)payload_size;
-        h->mark_epoch = 0;
-        return h + 1;
+        h->flags    = 0;
+        h->gc_flags = 0;
+        h->gc_size  = (uint32_t)payload_size;
+        return (void *)h;
     }
     return NULL;
 }
 
 static void * __attribute__((noinline, cold))
-hole_alloc_slow(CTX *c, AroGcKind kind, size_t payload_size, VALUE *sp_top)
+hole_alloc_slow(CTX *c, size_t payload_size, VALUE *sp_top)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     gc_collect_internal(c, sp_top);
-    void *payload = hole_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
+    void *payload = hole_alloc(gc, payload_size);
     if (!payload) {
         fprintf(stderr, "baruby_gc=immix: OOM (need %zu)\n",
-                sizeof(GCHeader) + ALIGN8(payload_size));
+                ALIGN8(payload_size));
         abort();
     }
     return payload;
@@ -305,18 +305,19 @@ aro_gc_alloc(CTX *c, size_t payload_size)
     if (__builtin_expect(gc->common.stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
         gc_collect_internal(c, sp_top);
     }
-    size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t total = ALIGN8(payload_size);
     void *payload;
     if (__builtin_expect(total > MEDIUM_MAX, 0)) {
-        payload = large_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
+        payload = large_alloc(gc, payload_size);
     } else {
-        payload = hole_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
+        payload = hole_alloc(gc, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(c, ASTRO_GC_CAT_SCAN, payload_size, sp_top);
+            payload = hole_alloc_slow(c, payload_size, sp_top);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    memset(payload, 0, ALIGN8(payload_size));
+    memset((char *)payload + sizeof(ASTroObjectHeader), 0,
+           ALIGN8(payload_size) - sizeof(ASTroObjectHeader));
     bytes_since_gc += payload_size;
     gc->common.stats.total_bytes += payload_size;
     gc->common.stats.heap_bytes  += payload_size;
@@ -331,14 +332,14 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     if (__builtin_expect(gc->common.stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
         gc_collect_internal(c, sp_top);
     }
-    size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t total = ALIGN8(payload_size);
     void *payload;
     if (__builtin_expect(total > MEDIUM_MAX, 0)) {
-        payload = large_alloc(gc, KIND_PAYLOAD_BYTE, payload_size);
+        payload = large_alloc(gc, payload_size);
     } else {
-        payload = hole_alloc(gc, KIND_PAYLOAD_BYTE, payload_size);
+        payload = hole_alloc(gc, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(c, KIND_PAYLOAD_BYTE, payload_size, sp_top);
+            payload = hole_alloc_slow(c, payload_size, sp_top);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
@@ -353,11 +354,11 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
  * --------------------------------------------------------------------------- */
 
 static void
-gray_push(ASTroGC *gc, GCHeader *h)
+gray_push(ASTroGC *gc, ASTroObjectHeader *h)
 {
     if (gray_cnt >= gray_capa) {
         gray_capa = gray_capa ? gray_capa * 2 : 256;
-        gray_buf = (GCHeader **)realloc(gray_buf, gray_capa * sizeof(GCHeader *));
+        gray_buf = (ASTroObjectHeader **)realloc(gray_buf, gray_capa * sizeof(ASTroObjectHeader *));
         if (!gray_buf) abort();
     }
     gray_buf[gray_cnt++] = h;
@@ -373,9 +374,9 @@ static void
 mark_value(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return;
-    GCHeader *h = (GCHeader *)v - 1;
-    if (h->mark_epoch == cur_epoch) return;
-    h->mark_epoch = cur_epoch;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)v;
+    if (h->gc_flags == cur_epoch) return;
+    h->gc_flags = cur_epoch;
     if (in_arena(gc, h)) mark_lines_for(gc, h);
     gray_push(gc, h);
 }
@@ -391,8 +392,8 @@ static void
 process_gray(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
-        GCHeader *h = gray_buf[--gray_cnt];
-        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, mark_edge_immix);
+        ASTroObjectHeader *h = gray_buf[--gray_cnt];
+        ASTRO_GC_SCAN_EDGES((void *)h, h->gc_size, gc, mark_edge_immix);
     }
 }
 
@@ -423,9 +424,9 @@ sweep(ASTroGC *gc)
     LargeObj **link = &large_head;
     while (*link) {
         LargeObj *lo = *link;
-        GCHeader *h = (GCHeader *)(lo + 1);
-        if (h->mark_epoch == cur_epoch) {
-            gc->common.stats.heap_bytes += h->size;
+        ASTroObjectHeader *h = (ASTroObjectHeader *)large_payload(lo);
+        if (h->gc_flags == cur_epoch) {
+            gc->common.stats.heap_bytes += h->gc_size;
             link = &lo->next;
         } else {
             *link = lo->next;
@@ -490,13 +491,13 @@ aro_gc_fini(CTX *c)
 size_t
 aro_gc_size_of(void *p)
 {
-    GCHeader *h = (GCHeader *)p - 1;
-    return h->size;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)p;
+    return h->gc_size;
 }
 
 /* In-place realloc for large objs via mremap.  Template-driven via
  * gc_inplace_mremap.h — see that header's docstring. */
-#define ARO_GC_INPLACE_THRESHOLD(n)      (sizeof(GCHeader) + ALIGN8(n) <= MEDIUM_MAX)
+#define ARO_GC_INPLACE_THRESHOLD(n)      (ALIGN8(n) <= MEDIUM_MAX)
 #define ARO_GC_INPLACE_PAGE_SIZE         sysconf(_SC_PAGESIZE)
 #define ARO_GC_INPLACE_MREMAP_FLAGS      MREMAP_MAYMOVE
 #define ARO_GC_INPLACE_BYTES_ACCT(d)     (bytes_since_gc += (d))
