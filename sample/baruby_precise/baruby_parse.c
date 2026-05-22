@@ -1280,10 +1280,31 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
           // `"a#{expr}b"` parts is a list of PM_STRING_NODE / PM_EMBEDDED_STATEMENTS_NODE.
           // Build a left-associative chain of `node_add` (str + str), wrapping each
           // non-string part in `node_call_to_s` so the concat sees only strings.
+          //
+          // iter 72: chain bookkeeping for the iterative wrapping:
+          //   - piece_i ends up as rv of iter i's node_add (i >= 1) or
+          //     lv of iter 1's node_add (i = 0).  Innermost lv/rv (i = 0,1)
+          //     are wrapped in (n-1) layers of add; outer rv (i >= 2) in
+          //     (n - i) layers.  Each add layer adds 2 to chain.
+          //   - additionally, call_to_s wrap (non-string parts) adds 1.
+          size_t nparts = n->parts.size;
           NODE *acc = NULL;
-          for (size_t i = 0; i < n->parts.size; i++) {
+          for (size_t i = 0; i < nparts; i++) {
               pm_node_t *part = n->parts.nodes[i];
+              /* chain bump at runtime when piece_i's TRANSDUCE result runs. */
+              int32_t add_layers;
+              if (nparts <= 1) {
+                  add_layers = 0;
+              } else {
+                  add_layers = (i <= 1) ? (int32_t)(nparts - 1)
+                                        : (int32_t)(nparts - i);
+              }
+              int32_t pos_chain = 2 * add_layers;
+              int32_t to_s_bump = (part->type != PM_STRING_NODE) ? 1 : 0;
+              int32_t _saved = tc->chain_sum;
+              tc->chain_sum = _saved + pos_chain + to_s_bump;
               NODE *piece = TRANSDUCE(part);
+              tc->chain_sum = _saved;
               if (part->type != PM_STRING_NODE) {
                   piece = ALLOC_node_call_to_s(piece);
               }
