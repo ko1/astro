@@ -382,7 +382,8 @@ void *aro_gc_realloc_payload(CTX *c, void *old, size_t new_size);
 /* resize (byte: 増分 init 省略) */
 void *aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size);
 
-/* write barrier (non-gen は static inline `*slot = v`、 gen は remset push) */
+/* write barrier — caller writes via aro_gc_wb / aro_gc_wb_bulk for any
+ * heap-pointer assignment.  Implementation depends on backend (see §3.2). */
 void  aro_gc_wb     (CTX *c, void *holder, VALUE *slot, VALUE v);
 void  aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
 
@@ -400,7 +401,40 @@ void  aro_gc_fini(CTX *c);
 `c->sp` を「自分が握ってる scratch top」 に set する責任を持つ。 backend は
 `c->env..c->sp` を root scan 範囲として参照する。
 
-### 3.1 ASTroGC struct
+### 3.1 Write barrier の inline pattern
+
+`aro_gc_wb` は **3 つの実装パターン**を取る:
+
+| パターン | 該当 backend | 形 |
+|---|---|---|
+| **collapse to store** | non-WB (none, bump, mark, copy, mark_compact, mark_freelist, immix) | `static inline { *slot = v; }` (= cost 0) |
+| **inline fast-path + cold remember** | bit-in-head gen (mark_gen / copy_gen / copy_gen_inc / mark_compact_gen / mark_bump_gen / immix_gen) | `static inline { *slot=v; if (!(old && !dirty)) return; aro_gc_remember(c, h); }` |
+| **fully extern** | bitmap-based / SATB (mark_bitmap_gen / mark_card_gen / mark_gen_inc) | `extern void aro_gc_wb(...)` (LTO 任せの inline) |
+
+bit-in-head 系の fast path は `gc_types.h` の `ASTRO_GC_WB_OLD_MASK` /
+`ASTRO_GC_WB_DIRTY_MASK` を使って:
+
+```c
+/* gc.h — inline fast path: */
+static inline void
+aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+{
+    *slot = v;
+    if (__builtin_expect(holder == NULL, 1)) return;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)holder;
+    if (__builtin_expect(
+        (h->gc_flags & (ASTRO_GC_WB_OLD_MASK | ASTRO_GC_WB_DIRTY_MASK))
+            != ASTRO_GC_WB_OLD_MASK, 1)) return;
+    aro_gc_remember(c, h);   /* ← WB 本体: cold + noinline */
+}
+```
+
+cold 関数 `aro_gc_remember(c, h)` は各 backend の .c に置き、 `DIRTY` bit
+set + remset push のみ実施。 disassembly で `baruby_ary_push` 等の hot
+write 周辺に `addr32 call aro_gc_remember` が分散配置され、 cold 部分
+は `.cold` section に move される (= i-cache 配置最適化)。
+
+### 3.2 ASTroGC struct
 
 backend ごとに「algorithm が必要とする process-scope state」 が違うので、
 `ASTroGC` struct の中身は backend 依存:
