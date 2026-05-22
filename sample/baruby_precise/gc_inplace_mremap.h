@@ -36,7 +36,7 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     if (gc->common.stress) return NULL;
     if (ARO_GC_INPLACE_THRESHOLD(new_size)) return NULL;
 
-    LargeObj **link = &large_head;
+    LargeObj **link = &gc->large_head;
     while (*link) {
         char *lo_payload = (char *)(*link) + sizeof(LargeObj) + sizeof(GCHeader);
         if (lo_payload == (char *)old) break;
