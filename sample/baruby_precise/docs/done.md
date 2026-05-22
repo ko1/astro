@@ -3,6 +3,137 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-22 (69) — 残 7 backend に mremap-based realloc_in_place
+
+`gc_mark_freelist` / `gc_immix` / `gc_mark_gen` / `gc_mark_gen_inc` /
+`gc_mark_bitmap_gen` / `gc_mark_card_gen` / `gc_immix_gen` に
+`aro_gc_realloc_in_place` override を追加。 mmap-backed LargeObj に
+対しては **mremap(2)** で in-place 化 (gc_copy / gc_mark_compact が
+malloc-backed なので realloc(3) を使うのと対称)。
+
+- 非 gen (mark, mark_freelist, immix): MREMAP_MAYMOVE 許容 (forward_payload
+  が新 addr を見る)
+- gen (mark_gen, mark_gen_inc, mark_bitmap_gen, mark_card_gen, immix_gen):
+  MAYMOVE なし (young_objs / remset の stale ptr 回避)
+
+sieve 改善幅: gc_mark_gen で **-21%** (1.43 → 1.12)、 gc_immix で
+**-13.4%**、 gc_mark_freelist で -8.8%、 gc_mark で -6.8%。
+256/256 PASS 維持。
+
+commit: `f6f88a59`, `cd4b77ea`, `173b94a5`, `eae4ceee`, `0a34890c` (docs)
+
+## 2026-05-22 (68) — gc_mark + gc_mark_compact に mremap / realloc(3) realloc_in_place
+
+iter 67 で gc_copy に導入した `aro_gc_realloc_in_place` hook を、
+gc_mark_compact (malloc-backed、 realloc(3)) と gc_mark (mmap-backed、
+mremap MAYMOVE) に展開。
+
+- gc_mark_compact: sieve **-6.2%** (1.138 → 1.067)
+- gc_mark: sieve **-6.8%** (1.094 → 1.020)
+- AOT mode 全 15 backend × 主要 bench で動作確認 (plain → AOT で 1.6-6× 加速、
+  perf.md §6 「未検証」 を解除)
+
+commit: `93ab6d59`, `d2b07ddf`, `de019039` (AOT docs)
+
+## 2026-05-22 (67) — aro_gc_realloc_in_place hook + gc_copy override
+
+`gc.h` に新規 hook `aro_gc_realloc_in_place(c, old, new_size)` を追加、
+`gc_common.c` で `__attribute__((weak))` default (NULL を返して fallback)
+を置く。 gc_copy.c に strong override を実装し、 large→large の
+resize を realloc(3) で in-place 化。
+
+`aro_gc_realloc_payload` の caller (sieve の BaArray.items doubling 等)
+は memcpy + 一時 2x メモリ消費を払わなくて済むようになり、 gc_copy
+で sieve **-11.5%** (1.186 → 1.050)、 list_sort -5%、 hash_chain -4%
+の改善。 256/256 PASS。
+
+contract:
+- 古 payload が arena 内 (= small obj) なら NULL を返して fallback
+- new_size < LARGE_THRESHOLD (= shrink to small) なら NULL
+- stress mode (= 毎 alloc GC 試したい) では NULL
+- LargeObj linked list を walk して該当 obj を見つけて realloc(3)
+- KIND_PAYLOAD_VAL の新増領域は memset(0) (GC scan 安全性)
+
+commit: `4aa6f36b`, `230343ac` (todo)
+
+## 2026-05-22 (66) — region-bump backend の large_alloc 経路
+
+todo.md P0「copy 系 backend に large_alloc 経路を追加」を gc_copy /
+gc_mark_compact に実装。 `LARGE_THRESHOLD = 4096 B` 以上の payload は
+malloc 別領域 (non-moving) + linked list (LargeObj) 管理。 glibc が
+≥128 KiB chunk を mmap-backed にするので、 free → munmap で物理
+メモリ即解放。 sieve / hash_chain の BaArray.items doubling パターンで
+from-space に残る dead 領域問題を解決。
+
+- gc_copy: sieve -8% / hash_chain -9% / 6 bench で win (geomean -2.6%)
+- gc_mark_compact: hash_chain **-27%** (1.393 → 1.011) / list_alloc -6%
+  (geomean -5%)
+- mark_compact では Lisp-2 slide pass が region 内のみに限定、 dead
+  large の memmove が消滅して大勝
+
+scan-loop を fast-path / large-path に分離し、 large_head==NULL の
+ホットパスは fast-path に分岐して binary_trees regression を最小化
+(+3%)。 256/256 PASS。
+
+commit: `08dd67ad`, `f3680742` (gc_copy fast-path 分離), `4c9a017d`
+(gc_mark_compact), `39068bcd` (docs), `bfa7308a` (perf.md §4.5),
+`a010e3ad` (todo 完了)
+
+## 2026-05-22 (65) — aro_gc_fini で全 backend に clean shutdown 追加
+
+全 16 backend に `void aro_gc_fini(CTX *c)` を実装、 main.c の
+`return 0` 直前で呼ぶ。 各 backend が aro_gc_init で確保した resource
+(mmap'd 領域 / linked list の large object / gray buffer / remset
+buffer 等) を release し、 ASTroGC struct 自体も free して
+c->astro_gc を NULL に戻す。
+
+動機: (a) 多重 instance 化への布石、 (b) valgrind / leak-sanitizer
+clean run、 (c) 将来 mid-process re-init を許す setup でテスト可能に。
+
+256/256 PASS。 commit: `3573b427`
+
+## 2026-05-22 (64) — aro_gc_realloc_payload を gc_common.c に集約
+
+これまで 14 backend で完全に同じ body (parking + 内部 alloc + memcpy)
+を個別に持っていた `aro_gc_realloc_payload` を gc_common.c に extract。
+backend 側は backend-specific な header 読み出し (`aro_gc_kind_of` /
+`aro_gc_size_of`) だけ提供。 GCHeader layout は backend ごとに違う
+(flag-packed vs separate kind field; 8-byte vs 16-byte) ので
+per-backend 実装が必要だが、 共通 body は一箇所で管理。
+
+gc_none は GCHeader を持たない (libc malloc 直) ので、 独自の
+aro_gc_realloc_payload を保持。 Makefile で GC=none のときだけ
+gc_common.c の link を skip。
+
+net -47 行、 256/256 PASS。 commit: `ab80cd2d`
+
+## 2026-05-22 (63) — sp_top 引数 + sample helper sp 引数を全廃
+
+`aro_gc_alloc / aro_gc_alloc_byte / aro_gc_realloc_payload / aro_gc_collect`
+から `VALUE *sp_top` 引数削除 (gc.h + 16 backend)。 sample helper
+(baruby_ary_new / str_new / ary_push 等 12 個) から `VALUE *sp`
+引数削除 (context.h + node.c)。
+
+contract:
+- caller が alloc / helper を呼ぶ前に `c->sp = sp;` を更新
+- alloc / helper は `c->sp` を GC scan upper bound として読む
+
+`c->sp` 一本化で「sp_top 引数を渡し忘れ」 のバグが原理的に消えた。
+node.def の helper 呼出点 (11 site) に `c->sp = sp;` 挿入。
+
+256/256 PASS。 commit: `c143a016`
+
+## 2026-05-21 (62) — iter 62 framework abstraction: ASTroGC 化 / global 排除
+
+全 16 backend の process-scope state を heap-alloc な
+`struct ASTroGC *` (c->astro_gc) に集約。 共通 header
+`AroGcCommonState` (stats + bool stress + timer) を **first field**
+に置く約束で `ASTRO_GC_COMMON(c)` macro が type-safe に access。
+process-scope global variable は完全に排除、 複数 instance を 1
+process に co-exist させられる設計に。
+
+256/256 PASS。 commits across iter 62 series.
+
 ## 2026-05-21 (61) — fp 引数完全削除 (dispatcher signature を 3-arg 化)
 
 baruby_precise の dispatcher convention を `(c, n, fp, sp)` 4 引数から
