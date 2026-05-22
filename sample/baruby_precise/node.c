@@ -6,7 +6,7 @@
 #include "node.h"
 #include "context.h"
 #include "astro_jit.h"
-#include "gc.h"
+#include "precise_gc/gc.h"
 
 // --- User-provided: allocation ---
 

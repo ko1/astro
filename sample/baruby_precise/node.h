@@ -16,7 +16,7 @@
 // otherwise gcc emits a call to the implicit `extern aro_gc_wb` and
 // dlopen of all.so fails with an undefined symbol on non-WB GC backends
 // (e.g. GC=copy) for any program that touches array write (a[i] = v).
-#include "gc.h"
+#include "precise_gc/gc.h"
 
 // baruby_ary_push fast-path inline (iter 73): split out the slow
 // realloc path into baruby_ary_push_grow in node.c, keep the

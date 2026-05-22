@@ -9,7 +9,7 @@
 #include "node.h"
 #include "astro_code_store.h"
 #include "astro_jit.h"
-#include "gc.h"
+#include "precise_gc/gc.h"
 
 // Forward decl from baruby_parse.c — walks the all_pg_call_nodes list
 // (every node_pg_call_<N> allocated this run) and updates each call
@@ -238,8 +238,7 @@ common_build_flags_and_link(void)
              "--param=early-inlining-insns=100"
              " -fcf-protection=none"           /* drop endbr64 4-byte prologue */
              " -I" BARUBY_PRECISE_DIR
-             " -I" ASTRO_RUNTIME_DIR
-             " -I" ASTRO_RUNTIME_DIR "/precise_gc"   /* iter 74: gc.h location */
+             " -I" ASTRO_RUNTIME_DIR           /* covers precise_gc/gc.h, astro_node.h, etc. */
              " -I" ASTRO_PRISM_INC_DIR
              " -DBARUBY_GC=%d", BARUBY_GC);
     astro_cs_build(extra_cflags);

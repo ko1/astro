@@ -124,7 +124,7 @@ RUNTIME_ABSPATH    := $(abspath $(RUNTIME))
 PRISM_INC_ABSPATH  := $(abspath ./prism/include)
 
 baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(GC_COMMON_SRC) $(GC_SRC) $(PRECISE_GC_DIR)/gc.h $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
-	$(CC) -I./prism/include -I. -I$(RUNTIME) -I$(PRECISE_GC_DIR) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
+	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
             -DBARUBY_GC=$(GC_NUM) \
             -DBARUBY_PRECISE_DIR='"$(BARUBY_PRECISE_DIR)"' \
