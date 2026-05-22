@@ -374,9 +374,11 @@ workload では mark_gen_inc が選択肢に上がる。
 | 67-69 | LargeObj realloc_in_place (realloc(3) / mremap) | sieve / hash_chain -11〜-21% (10 backend) |
 | 71 | call_N args @child 化 (per-body self-contained) | walker から callee_locals_cnt 依存除去 |
 | 72 | walker 削除 + parse-time bake + noinline/cold | plain geomean -3.02% (vs iter 71) |
+| 73 | baruby_ary_push fast-path inline + AOT bake で endbr64 (CET) 削除 | sieve copy AOT **-8.6%** (= 0.58→0.53s) |
 
 iter 61 + 72 の dispatcher / parse 側 architecture 簡素化が大きい。
-iter 67-69 の `realloc_in_place` が GC 側の最後の大きな win。
+iter 67-69 の `realloc_in_place` が GC 側の最後の大きな win。 iter 73
+は ABI-layer の micro-opt (= SD 内 i-cache 効率と関数 prologue 削減)。
 
 ## 6. 既知の問題
 

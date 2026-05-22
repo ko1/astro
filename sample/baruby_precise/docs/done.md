@@ -3,6 +3,51 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-22 (73) — baruby_ary_push fast-path inline + AOT bake で endbr64 削除
+
+iter 72 で perf 詳細測定 (= plain + AOT matrix 取得) 後、 hot path 分析
+で見つけた 2 つの micro-opt。
+
+### baruby_ary_push fast-path inline (commit `b9a52a23`)
+
+`perf record` で sieve copy AOT を観察したところ baruby_ary_push が
+**23% CPU 占有**。 function prologue 6-reg save + 5-instruction body の
+比率が悪く、 hot push 経路で overhead 過大だった。
+
+split:
+- `static inline baruby_ary_push` を node.h (gc.h 後) に置き、 fast-path
+  (= `a->len < a->capa`) を直接書く。 `__builtin_expect(..., 1)` 付き。
+- 旧 grow path は `baruby_ary_push_grow` に rename して node.c に残し、
+  inline 側が `capa` 不足なら call する形に。
+
+sieve copy AOT: **0.58s → 0.53s (-8.6%)**。
+
+### AOT bake で `-fcf-protection=none` (commit `4e3386f8`)
+
+各 SD の先頭から endbr64 (4 byte、 Intel CET indirect-branch protection)
+を削除。 baruby_precise binary 自体は CET 有効のまま、 dlopen 経由の
+SD shared library だけ CET 抜く trade-off。
+
+Security 観点: SD は AOT bake で baruby_precise が自分で gcc 起動して
+作る ad-hoc な .so なので、 攻撃面としては元 binary 経由でしか到達
+できない。 IBT 保護を切る trade-off は実用的に妥当。
+
+SD function size が 4 byte/関数だけ縮小、 i-cache 圧 軽減。 perf 影響
+は hot loop 0.x% 程度。
+
+### 試したが効かなかったこと
+
+`node_add` の slow path (= String concat / Array plus / type error) を
+`__attribute__((cold))` 関数に分離して .text.unlikely section へ。
+動作は OK だが sieve perf は 0.53 → 0.56 で若干 regression、 revert。
+理由は LTO + static inline で既に slow path が cold branch に隔離
+されていて、 別関数化したことで関数 call overhead だけが追加されたから。
+
+### 教訓
+
+binop の slow path 等 cold pathに 対する手動 cold attribute は LTO が
+うまく最適化済の場合は無意味になる。 measure first 大事。
+
 ## 2026-05-22 (72) — walker 削除、 parse-time sp_offset bake に置換
 
 iter 61 で導入した `walk_bake_sp_offset` (~170 行 hand-written
