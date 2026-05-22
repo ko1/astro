@@ -180,44 +180,40 @@ walk_bake_sp_offset(NODE *n, int32_t chain_sum, uint32_t locals_cnt)
         walk_bake_sp_offset(n->u.node_call_push.val, child_chain, locals_cnt);
         return;
     }
-    /* node_call_N / node_pg_call_N: callee frame is FRESH (sp[0..lc-1]),
-     * args are inline @child operands evaluated with sp + locals_cnt as
-     * the arg scratch top.  So arg children see chain += locals_cnt
-     * (callee's, not this body's). */
+    /* iter 71: call_N / pg_call_N の args が @child 化されたので、 framework が
+     * sp += slot_count (= N) を eval 前に走らせる convention に乗る。 walker は
+     * child_chain (= parent_chain + slot_count) をそのまま渡すだけ。 旧
+     * `chain += callee_locals_cnt` は不要。 ただし pg_call_N の sp_body は
+     * 別途 code_repo iter で walk されるので、 ここでは @child args のみを
+     * walk (= sp_body スキップ目的で special-case 維持)。 */
     if (k == &kind_node_call_1) {
-        int32_t arg_chain = child_chain + (int32_t)n->u.node_call_1.locals_cnt;
-        walk_bake_sp_offset(n->u.node_call_1.a0, arg_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_call_1.a0, child_chain, locals_cnt);
         return;
     }
     if (k == &kind_node_call_2) {
-        int32_t arg_chain = child_chain + (int32_t)n->u.node_call_2.locals_cnt;
-        walk_bake_sp_offset(n->u.node_call_2.a0, arg_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_2.a1, arg_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_call_2.a0, child_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_call_2.a1, child_chain, locals_cnt);
         return;
     }
     if (k == &kind_node_call_3) {
-        int32_t arg_chain = child_chain + (int32_t)n->u.node_call_3.locals_cnt;
-        walk_bake_sp_offset(n->u.node_call_3.a0, arg_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_3.a1, arg_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_call_3.a2, arg_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_call_3.a0, child_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_call_3.a1, child_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_call_3.a2, child_chain, locals_cnt);
         return;
     }
     if (k == &kind_node_pg_call1) {
-        int32_t arg_chain = child_chain + (int32_t)n->u.node_pg_call1.locals_cnt;
-        walk_bake_sp_offset(n->u.node_pg_call1.a0, arg_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call1.a0, child_chain, locals_cnt);
         return;
     }
     if (k == &kind_node_pg_call2) {
-        int32_t arg_chain = child_chain + (int32_t)n->u.node_pg_call2.locals_cnt;
-        walk_bake_sp_offset(n->u.node_pg_call2.a0, arg_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_pg_call2.a1, arg_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call2.a0, child_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call2.a1, child_chain, locals_cnt);
         return;
     }
     if (k == &kind_node_pg_call3) {
-        int32_t arg_chain = child_chain + (int32_t)n->u.node_pg_call3.locals_cnt;
-        walk_bake_sp_offset(n->u.node_pg_call3.a0, arg_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_pg_call3.a1, arg_chain, locals_cnt);
-        walk_bake_sp_offset(n->u.node_pg_call3.a2, arg_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call3.a0, child_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call3.a1, child_chain, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call3.a2, child_chain, locals_cnt);
         return;
     }
     /* node_def has its own body, walked separately via code_repo iter. */
@@ -402,22 +398,25 @@ alloc_call_specialized(const char *fname, uint32_t call_arg_idx,
 
     NODE *cn;
     uint32_t *lc_target;
+    /* iter 71: arg_index operand was removed from call_N — args are now
+     * @child operands spilled to sp[-N..-1] by framework's @child dispatch. */
+    (void)call_arg_idx;
     switch (args_cnt) {
       case 0:
-        cn = ALLOC_node_call_0(fname, call_arg_idx, locals_cnt);
+        cn = ALLOC_node_call_0(fname, locals_cnt);
         lc_target = &cn->u.node_call_0.locals_cnt;
         break;
       case 1:
-        cn = ALLOC_node_call_1(fname, call_arg_idx, locals_cnt, arg_nodes[0]);
+        cn = ALLOC_node_call_1(fname, locals_cnt, arg_nodes[0]);
         lc_target = &cn->u.node_call_1.locals_cnt;
         break;
       case 2:
-        cn = ALLOC_node_call_2(fname, call_arg_idx, locals_cnt,
+        cn = ALLOC_node_call_2(fname, locals_cnt,
                                arg_nodes[0], arg_nodes[1]);
         lc_target = &cn->u.node_call_2.locals_cnt;
         break;
       case 3:
-        cn = ALLOC_node_call_3(fname, call_arg_idx, locals_cnt,
+        cn = ALLOC_node_call_3(fname, locals_cnt,
                                arg_nodes[0], arg_nodes[1], arg_nodes[2]);
         lc_target = &cn->u.node_call_3.locals_cnt;
         break;
@@ -462,26 +461,27 @@ alloc_pg_call_specialized(const char *fname, uint32_t call_arg_idx,
     NODE *cn;
     NODE **sp_target;
     uint32_t *lc_target;
+    (void)call_arg_idx;   /* iter 71: arg_index operand removed */
     switch (args_cnt) {
       case 0:
-        cn = ALLOC_node_pg_call0(fname, call_arg_idx, locals_cnt, placeholder);
+        cn = ALLOC_node_pg_call0(fname, locals_cnt, placeholder);
         sp_target = &cn->u.node_pg_call0.sp_body;
         lc_target = &cn->u.node_pg_call0.locals_cnt;
         break;
       case 1:
-        cn = ALLOC_node_pg_call1(fname, call_arg_idx, locals_cnt, placeholder,
+        cn = ALLOC_node_pg_call1(fname, locals_cnt, placeholder,
                                  arg_nodes[0]);
         sp_target = &cn->u.node_pg_call1.sp_body;
         lc_target = &cn->u.node_pg_call1.locals_cnt;
         break;
       case 2:
-        cn = ALLOC_node_pg_call2(fname, call_arg_idx, locals_cnt, placeholder,
+        cn = ALLOC_node_pg_call2(fname, locals_cnt, placeholder,
                                  arg_nodes[0], arg_nodes[1]);
         sp_target = &cn->u.node_pg_call2.sp_body;
         lc_target = &cn->u.node_pg_call2.locals_cnt;
         break;
       case 3:
-        cn = ALLOC_node_pg_call3(fname, call_arg_idx, locals_cnt, placeholder,
+        cn = ALLOC_node_pg_call3(fname, locals_cnt, placeholder,
                                  arg_nodes[0], arg_nodes[1], arg_nodes[2]);
         sp_target = &cn->u.node_pg_call3.sp_body;
         lc_target = &cn->u.node_pg_call3.locals_cnt;
