@@ -220,6 +220,45 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     return payload;
 }
 
+/* In-place realloc for large objs.  See gc_copy.c::aro_gc_realloc_in_place
+ * for the full rationale.  This backend's GCHeader uses `uint8_t flags`
+ * (bits 0-2 kind, bit 3 marked) and `uint32_t size` directly. */
+void *
+aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    if (gc->common.stress) return NULL;
+    if (new_size < LARGE_THRESHOLD) return NULL;
+    char *p = (char *)old;
+    if (p >= region_base && p < region_top) return NULL;   /* small (in region) */
+
+    LargeObj **link = &large_head;
+    while (*link && large_payload(*link) != old) link = &(*link)->next;
+    if (!*link) return NULL;
+    LargeObj *lo = *link;
+
+    size_t old_size = lo->header.size;
+    AroGcKind kind  = HDR_KIND(&lo->header);
+    size_t old_aligned = ALIGN8(old_size);
+    size_t new_aligned = ALIGN8(new_size);
+    LargeObj *new_lo = (LargeObj *)realloc(lo, sizeof(LargeObj) + new_aligned);
+    if (!new_lo) { perror("baruby_gc=mark_compact: realloc large"); abort(); }
+    *link = new_lo;
+    new_lo->header.size = (uint32_t)new_size;
+
+    if (kind != KIND_PAYLOAD_BYTE && new_aligned > old_aligned) {
+        memset((char *)large_payload(new_lo) + old_aligned, 0,
+               new_aligned - old_aligned);
+    }
+    if (new_size > old_size) {
+        size_t delta = new_size - old_size;
+        gc->common.stats.total_bytes += delta;
+        gc->common.stats.heap_bytes  += delta;
+        bytes_since_gc += delta;
+    }
+    return large_payload(new_lo);
+}
+
 // ---------------------------------------------------------------------------
 // Mark phase
 // ---------------------------------------------------------------------------
