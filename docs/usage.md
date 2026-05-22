@@ -460,91 +460,75 @@ top-level callable (= per method body, per script root) is enough.
 ## `--build` subcommand: standalone-exe build
 
 Any sample can produce a self-contained executable that runs one
-pre-parsed program — no parser, no Code Store directory, no shared
-libraries, just the embedded AST + (optionally) linked-in
-specialized dispatchers.
+pre-parsed program.  Two orthogonal axes:
 
-The build interface is a **subcommand**: when `argv[1] == "--build"`
-the sample dispatches to the framework; otherwise the interpreter
-path runs untouched.  The two namespaces never overlap, so framework
-options can never collide with the language's own.
+- **attribute** (what compiled code goes into the exe):
+  - (default) — AST only, no compiled code
+  - `--plain` — no compiled code (= same as default for build context)
+  - `--aot-compile` — bake AOT-specialized dispatchers
+  - `--pg-compile` — bake profile-guided specializations (implies `--run`)
+
+- **action** (whether to execute the program during build):
+  - (default) — do not execute
+  - `--run` — execute during build (enables file-set auto-discovery via
+    require; implied by `--pg-compile`)
+
+C-toolchain knobs (CC, optimization, strip, lto, etc.) live in the
+`ASTRO_BUILD_OPTS` environment variable, NOT in argv.  This keeps
+argv purely "what to do" and env "how to compile":
 
 ```sh
-# calc — bake "1+2*3" into ./foo (AOT, fast):
-./calc --build ./foo -e "1+2*3"
-
-# calc — same, but interp-only (smaller, slower):
-./calc --build ./foo --no-aot -e "1+2*3"
-
-# naruby — bake fib.rb into ./fib:
-./naruby --build ./fib fib.rb
-
-# koruby — fib35 — explicit flags:
-./koruby --build ./kfib --aot-compile -O3 --strip kfib.rb
+ASTRO_BUILD_OPTS="--cc=clang -O3 --strip --gc-sections" \
+    naruby --build out main.rb
 ```
 
-Size-vs-speed trade-off (koruby on fib(35), `--aot-compile` (default)
-vs `--no-aot-compile`):
+### Examples
 
-| mode | exe size | runtime |
+| command | exe content | runs during build? |
 |---|---|---|
-| `--aot-compile` (default) | 4.3 MB | 0.36 s |
-| `--no-aot-compile`        | 1.0 MB | 0.74 s |
+| `naruby --build out main.rb` | AST only | no |
+| `naruby --build out --aot-compile main.rb` | AOT SDs (main entry only) | no |
+| `naruby --build out --aot-compile --run main.rb` | AOT SDs (auto file set via run) | yes |
+| `naruby --build out --pg-compile main.rb` | AOT + PG SDs | yes (profile) |
+| `naruby --build out main.rb arg1.rb arg2.rb` | AST of all three | no |
 
-### Build subcommand syntax
+Size-vs-speed trade-off (koruby fib(35)):
 
-```
-<prog> --build OUTPUT [build opts]... [source spec]
-```
+| mode | exe size | run time |
+|---|---|---|
+| `--build out` (default) | 1.0 MB | 0.61 s |
+| `--build out --aot-compile` | 1.0 MB | 0.59 s |
+| `--build out --pg-compile` | 4.3 MB | 0.36 s |
 
-- `OUTPUT` (first positional after `--build`): path of the exe to write.
-- Build opts (recognised by name, see table below).
-- Source spec (`-e EXPR` and/or a file path): passed through to the
-  sample's existing source parser via `rest_argv`.  Order between
-  build opts and source spec is free.
+### Positional argument handling
 
-### Build opts (consumed by `astro_build_subcommand_parse`)
+The interpretation of positional args after OUT depends on whether
+the build runs the program (`--run` or `--pg-compile`):
 
-| Flag                          | Effect                                                    |
-|-------------------------------|-----------------------------------------------------------|
-| `--aot-compile` / `--aot`     | Bake AOT SDs into the exe (default).                      |
-| `--no-aot-compile` / `--no-aot` | Skip the AOT bake — pure-interpreter exe (smaller/slower). |
-| `--cc=PATH`                   | C compiler (default: `$ASTRO_CC` → `$CC` → `cc`).        |
-| `-O0`/`-O1`/`-O2`/`-O3`/`-Os`/`-Og`, `--opt=N` | Optimization level (default: `$ASTRO_OPT_LEVEL` → 2). |
-| `--debug` / `--no-debug`      | `-ggdb3` (default off).                                   |
-| `--strip` / `--no-strip`      | Run `strip` post-link (default off).                      |
-| `--lto` / `--no-lto`          | `-flto` (default off).                                    |
-| `--static`                    | `-static`.                                                |
-| `--gc-sections`               | `-ffunction-sections -fdata-sections -Wl,--gc-sections`.  |
-| `--sanitize=LIST`             | `-fsanitize=LIST` (e.g. `address,undefined`).             |
-| `--cflag=ARG`                 | Repeatable: pass-through compile flag.                    |
-| `--ldflag=ARG`                | Repeatable: pass-through linker flag.                     |
-| `--verbose`                   | Print the cc command line.                                |
-| `--keep`                      | Don't unlink `_embed.c`.                                  |
+- **runs**: first positional = entry source, rest = ARGV for the run
+- **doesn't run**: positionals = source file list to embed (first = entry)
 
-### Pipeline
+So `naruby --build out --run foo.rb arg1` runs foo.rb with ARGV=[arg1].
+`naruby --build out foo.rb bar.rb` embeds both files (no run).
 
-1. Sample's `main()` checks `argv[1] == "--build"` and dispatches to
-   a `*_build_subcommand` helper.  Otherwise it runs the interpreter
-   path unchanged.
-2. `astro_build_subcommand_parse(argc, argv, &bcfg, &rest_argc,
-   &rest_argv)` consumes the build opts (sets `bcfg.out_exe`,
-   `bcfg.no_aot`, etc.) and writes the remaining tokens
-   (`-e EXPR` / file path) to `rest_argv`.
-3. The sample parses the source from `rest_argv` using its existing
-   source parser → `NODE *ast`.
-4. `astro_build_begin_aot_session()` turns on the framework's
-   per-process SD compile log.  Unless `--no-aot-compile`, the sample
-   calls `astro_cs_compile(ast, NULL)` and (if it has a code_repo)
-   one `astro_cs_compile(body, NULL)` per function body.  Each call
-   writes (or cache-hits) `code_store/c/SD_<hash>.c` and logs the
-   hash internally.  Empty SDs (`@noinline` specializers) are
-   unlinked / not logged.
-5. `astro_build_aot_executable(ast, &bcfg, "code_store")` writes
-   `_embed.c` (DAG-aware AST builder + per-node dispatcher patches),
-   walks the compile log to gather SD `.c` paths, and invokes
-   `astro_build_executable` (cc shell-out).
-6. `astro_build_end_aot_session()` clears the log.
+### `ASTRO_BUILD_OPTS` env var
+
+Whitespace-separated list of C-toolchain knobs.  Tokens:
+
+| token | effect |
+|---|---|
+| `--cc=PATH` | C compiler (default: `$ASTRO_CC` → `$CC` → `cc`) |
+| `-O0`/`-O1`/`-O2`/`-O3`/`-Os`/`-Og`, `--opt=N` | Optimization level |
+| `--debug` / `--no-debug` | `-ggdb3` |
+| `--strip` / `--no-strip` | Post-link `strip` |
+| `--lto` / `--no-lto` | `-flto` |
+| `--static` | `-static` |
+| `--gc-sections` | `-ffunction-sections -fdata-sections -Wl,--gc-sections` |
+| `--sanitize=LIST` | `-fsanitize=LIST` |
+| `--cflag=ARG` | Pass-through compile flag (repeatable) |
+| `--ldflag=ARG` | Pass-through linker flag (repeatable) |
+| `--verbose` | Print the cc command line |
+| `--keep` | Don't unlink `_embed.c` |
 
 ### Wiring a new sample
 

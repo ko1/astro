@@ -121,9 +121,15 @@ clear_code_store_dir(void)
     }
 }
 
-// --build OUTPUT [opts] [-e/file]  — handled before the interpreter
-// dispatch.  Source spec (`-e EXPR` is NOT supported; naruby always
-// takes a file path) is passed to PARSE via a synthetic argv.
+// --build OUTPUT [mode-flags] [files...] — handled before the interp
+// dispatch.  rest_argv interpretation depends on bcfg.run:
+//   bcfg.run == true:  rest_argv[0] = entry file, [1..] = ARGV for the run
+//   bcfg.run == false: rest_argv = source files to embed (entry = first)
+//
+// naruby has no require yet, so multi-file support amounts to "embed
+// these ASTs alongside the main one".  We accept the list but for now
+// only the first file is the entry (others are ignored — placeholder
+// for future require-graph traversal).
 static int
 naruby_build_subcommand(int argc, char **argv)
 {
@@ -142,10 +148,13 @@ naruby_build_subcommand(int argc, char **argv)
 
     CTX *c = create_context(10000, 2000);
     global_c = c;
-
-    INIT();   // astro_cs_init etc. — needed so SD_*.c writes go to ./code_store/c/.
+    INIT();   // astro_cs_init — SD_*.c writes go to ./code_store/c/
 
     // PARSE expects (argc, argv) with argv[0] = progname placeholder.
+    // Pass the first rest token as the file; if bcfg.run, the rest are
+    // passed through as ARGV (naruby's PARSE only inspects argv for
+    // file paths today, so additional positional args are ignored —
+    // they'll be plumbed through to ARGV when naruby exposes one).
     char **pargv = malloc(sizeof(*pargv) * (rest_argc + 2));
     pargv[0] = (char *)"naruby";
     for (int i = 0; i < rest_argc; i++) pargv[i + 1] = rest_argv[i];
@@ -155,7 +164,13 @@ naruby_build_subcommand(int argc, char **argv)
     free(rest_argv);
 
     astro_build_begin_aot_session();
-    if (!bcfg.no_aot) {
+
+    // Decide what to bake based on the attribute flag:
+    //   --plain           : nothing baked (= AST-only exe)
+    //   --aot-compile     : AOT bake (no run)
+    //   --pg-compile      : AOT + PGSD bake (after run)
+    //   (none, default)   : nothing baked (= AST-only exe)
+    if (bcfg.aot_compile || bcfg.pg_compile) {
         astro_cs_compile(ast, NULL);
         uint32_t n = naruby_code_repo_size();
         for (uint32_t i = 0; i < n; i++) {
@@ -165,23 +180,34 @@ naruby_build_subcommand(int argc, char **argv)
         }
     }
 
-    // Local copy so the static cflags array below doesn't escape into
-    // the heap-owned config that dispose() would free.
-    struct astro_build_config bcfg_local = bcfg;
-    bcfg_local.src_dir = NARUBY_SRC_DIR;
-    bcfg_local.runtime_dir = ASTRO_RUNTIME_DIR;
+    // If bcfg.run (= --run or --pg-compile), execute the program once
+    // during build.  Side effects of the program WILL happen; this is
+    // opt-in.  For --pg-compile, the run also produces a profile;
+    // PGSD bake happens at end of run (TODO: add the PGSD-bake hook
+    // here once naruby's PGSD machinery is wired through the new
+    // attribute model).
+    if (bcfg.run) {
+        OPTIMIZE(ast);
+        (void)astro_cs_load(ast, naruby_current_source_file);
+        RESULT r = EVAL(c, ast, c->env);
+        (void)r;
+    }
+
+    bcfg.src_dir = NARUBY_SRC_DIR;
+    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
     static const char *sources[] = {
         "node.c", "node_slowpath.c", "naruby_runtime.c", "exe_main.c", NULL,
     };
-    bcfg_local.sources = sources;
-    static const char *naruby_cflags[] = {
+    bcfg.sources = sources;
+    // Naruby-specific cflag (must stay even when ASTRO_BUILD_OPTS is set).
+    static const char *naruby_sample_cflags[] = {
         "--param=early-inlining-insns=100", NULL,
     };
-    if (!bcfg_local.extra_cflags) bcfg_local.extra_cflags = naruby_cflags;
+    bcfg.sample_cflags = naruby_sample_cflags;
 
-    int rc = astro_build_aot_executable(ast, &bcfg_local, "code_store");
+    int rc = astro_build_aot_executable(ast, &bcfg, "code_store");
     astro_build_end_aot_session();
-    astro_build_config_dispose(&bcfg);  // free heap from subcommand_parse
+    astro_build_config_dispose(&bcfg);
     return rc;
 }
 

@@ -74,50 +74,30 @@ match_long_kv(const char *arg, const char *flag, const char **value, char **next
     return 0;
 }
 
-int
-astro_build_subcommand_parse(int argc, char **argv,
-                             struct astro_build_config *cfg,
-                             int *rest_argc_out, char ***rest_argv_out)
+// Parse C-toolchain knobs from a tokenised string (whitespace-split
+// ASTRO_BUILD_OPTS value or similar).  Mutates `cfg`.  Returns 0 on success.
+//
+// Tokens are heap-allocated copies; the caller passes ownership of
+// `tokens` (array and strings); we either consume them into cfg->extra_*
+// or free them ourselves.  `tokens` MUST be a NULL-terminated array.
+static int
+parse_c_toolchain_tokens(struct astro_build_config *cfg, char **tokens)
 {
-    // argv[0] is expected to be "--build".  We're tolerant if the
-    // caller passes us with argv shifted past it already — detect either.
-    int start = 0;
-    if (argc > 0 && strcmp(argv[0], "--build") == 0) start = 1;
-
-    // First positional after --build = output exe path.
-    if (start >= argc) {
-        fprintf(stderr, "astro --build: missing output path\n");
-        return 1;
-    }
-    cfg->out_exe = argv[start++];
-
     struct astro_strarr cflags = {0};
     struct astro_strarr ldflags = {0};
 
-    // Build the rest_argv list as we go; unknown tokens go here.
-    // We allocate a fresh array so the caller doesn't need to keep
-    // the original argv alive past this call.
-    char **rest = malloc(sizeof(*rest) * (argc + 1));
-    int rest_n = 0;
-
-    for (int ri = start; ri < argc; ri++) {
-        const char *a = argv[ri];
+    for (int i = 0; tokens[i]; i++) {
+        const char *a = tokens[i];
         const char *val = NULL;
 
-        // --cc=PATH (or --cc PATH)
-        int m = match_long_kv(a, "--cc", &val,
-                              ri + 1 < argc ? &argv[ri + 1] : NULL);
-        if (m) {
-            cfg->cc = val;
-            if (m == 2) ri++;
+        if (match_long_kv(a, "--cc", &val, NULL)) {
+            cfg->cc = strdup(val);
             continue;
         }
-        // --sanitize=LIST (only "=LIST" form to keep parsing simple).
         if (match_long_kv(a, "--sanitize", &val, NULL)) {
-            cfg->sanitize = val;
+            cfg->sanitize = strdup(val);
             continue;
         }
-        // --cflag=ARG / --ldflag=ARG (repeatable).
         if (match_long_kv(a, "--cflag", &val, NULL)) {
             astro_strarr_push(&cflags, val);
             continue;
@@ -126,20 +106,16 @@ astro_build_subcommand_parse(int argc, char **argv,
             astro_strarr_push(&ldflags, val);
             continue;
         }
-        // --opt=N (alias for -O<N>)
         if (match_long_kv(a, "--opt", &val, NULL)) {
-            if (val && *val) {
-                if      (strcmp(val, "0") == 0) cfg->opt_level = 0;
-                else if (strcmp(val, "1") == 0) cfg->opt_level = 1;
-                else if (strcmp(val, "2") == 0) cfg->opt_level = 2;
-                else if (strcmp(val, "3") == 0) cfg->opt_level = 3;
-                else if (strcmp(val, "s") == 0) cfg->opt_level = 5;
-                else if (strcmp(val, "g") == 0) cfg->opt_level = 6;
-                else { fprintf(stderr, "astro --build: unknown --opt=%s\n", val); return 1; }
-            }
+            if      (strcmp(val, "0") == 0) cfg->opt_level = 0;
+            else if (strcmp(val, "1") == 0) cfg->opt_level = 1;
+            else if (strcmp(val, "2") == 0) cfg->opt_level = 2;
+            else if (strcmp(val, "3") == 0) cfg->opt_level = 3;
+            else if (strcmp(val, "s") == 0) cfg->opt_level = 5;
+            else if (strcmp(val, "g") == 0) cfg->opt_level = 6;
+            else { fprintf(stderr, "ASTRO_BUILD_OPTS: unknown --opt=%s\n", val); return 1; }
             continue;
         }
-        // -O0 ... -Og (single-arg).
         if (strcmp(a, "-O0") == 0) { cfg->opt_level = 0; continue; }
         if (strcmp(a, "-O1") == 0) { cfg->opt_level = 1; continue; }
         if (strcmp(a, "-O2") == 0) { cfg->opt_level = 2; continue; }
@@ -147,7 +123,6 @@ astro_build_subcommand_parse(int argc, char **argv,
         if (strcmp(a, "-Os") == 0) { cfg->opt_level = 5; continue; }
         if (strcmp(a, "-Og") == 0) { cfg->opt_level = 6; continue; }
 
-        // Boolean knobs.
         if (strcmp(a, "--debug")       == 0) { cfg->debug = true;  continue; }
         if (strcmp(a, "--no-debug")    == 0) { cfg->debug = false; continue; }
         if (strcmp(a, "--strip")       == 0) { cfg->strip = true;  continue; }
@@ -156,22 +131,12 @@ astro_build_subcommand_parse(int argc, char **argv,
         if (strcmp(a, "--no-lto")      == 0) { cfg->lto = false;   continue; }
         if (strcmp(a, "--static")      == 0) { cfg->static_link = true;  continue; }
         if (strcmp(a, "--gc-sections") == 0) { cfg->gc_sections = true;  continue; }
-        // AOT toggles.  Canonical: --aot-compile / --no-aot-compile.
-        // Short aliases: --aot / --no-aot.
-        if (strcmp(a, "--aot")            == 0 ||
-            strcmp(a, "--aot-compile")    == 0)  { cfg->no_aot = false; continue; }
-        if (strcmp(a, "--no-aot")         == 0 ||
-            strcmp(a, "--no-aot-compile") == 0)  { cfg->no_aot = true;  continue; }
         if (strcmp(a, "--verbose")     == 0) { cfg->verbose = true; continue; }
         if (strcmp(a, "--keep")        == 0) { cfg->keep_intermediates = true; continue; }
 
-        // Unknown — pass through to the sample's source parser.
-        rest[rest_n++] = argv[ri];
+        fprintf(stderr, "ASTRO_BUILD_OPTS: unknown token: %s\n", a);
+        return 1;
     }
-    rest[rest_n] = NULL;
-
-    *rest_argc_out = rest_n;
-    *rest_argv_out = rest;
 
     if (cflags.size > 0) {
         astro_strarr_terminate(&cflags);
@@ -184,10 +149,110 @@ astro_build_subcommand_parse(int argc, char **argv,
     return 0;
 }
 
+int
+astro_build_load_env_opts(struct astro_build_config *cfg)
+{
+    const char *env = getenv("ASTRO_BUILD_OPTS");
+    if (!env || !*env) return 0;
+
+    // Tokenise on whitespace (no quoting support for now — embedded
+    // spaces in values aren't expected for typical opts; if needed
+    // later we can move to a real shell-like tokenizer).
+    char *dup = strdup(env);
+    if (!dup) { fprintf(stderr, "ASTRO_BUILD_OPTS: oom\n"); return 1; }
+
+    size_t tcap = 16, tn = 0;
+    char **tokens = malloc(sizeof(*tokens) * tcap);
+    if (!tokens) { free(dup); return 1; }
+
+    char *p = dup, *tok;
+    while ((tok = strtok_r(p, " \t\n\r", &p)) != NULL) {
+        if (tn + 1 >= tcap) {
+            tcap *= 2;
+            tokens = realloc(tokens, sizeof(*tokens) * tcap);
+        }
+        tokens[tn++] = tok;
+    }
+    tokens[tn] = NULL;
+
+    int rc = parse_c_toolchain_tokens(cfg, tokens);
+    free(dup);
+    free(tokens);
+    return rc;
+}
+
+int
+astro_build_subcommand_parse(int argc, char **argv,
+                             struct astro_build_config *cfg,
+                             int *rest_argc_out, char ***rest_argv_out)
+{
+    // argv[0] is expected to be "--build" (or argv already shifted past it).
+    int start = 0;
+    if (argc > 0 && strcmp(argv[0], "--build") == 0) start = 1;
+
+    // First positional after --build = output exe path.
+    if (start >= argc) {
+        fprintf(stderr, "astro --build: missing output path\n");
+        return 1;
+    }
+    cfg->out_exe = argv[start++];
+
+    char **rest = malloc(sizeof(*rest) * (argc + 1));
+    int rest_n = 0;
+
+    for (int ri = start; ri < argc; ri++) {
+        const char *a = argv[ri];
+
+        // Mode flags (attributes + action).  These are the ONLY flags
+        // the subcommand parser owns — C-toolchain knobs come from
+        // ASTRO_BUILD_OPTS env var (parsed below).
+        if (strcmp(a, "--plain")       == 0) { cfg->plain = true;       continue; }
+        if (strcmp(a, "--aot-compile") == 0) { cfg->aot_compile = true; continue; }
+        if (strcmp(a, "--pg-compile")  == 0) { cfg->pg_compile = true;
+                                               cfg->run = true;         continue; }
+        if (strcmp(a, "--run")         == 0) { cfg->run = true;         continue; }
+
+        // Sanity: combinations that contradict each other.
+        // (Done after the loop so a single error report covers it.)
+
+        // Unknown — pass through to the sample's source parser.
+        rest[rest_n++] = argv[ri];
+    }
+    rest[rest_n] = NULL;
+
+    // Contradiction checks.
+    if (cfg->plain && cfg->aot_compile) {
+        fprintf(stderr, "astro --build: --plain and --aot-compile are mutually exclusive\n");
+        free(rest);
+        return 1;
+    }
+    if (cfg->plain && cfg->pg_compile) {
+        fprintf(stderr, "astro --build: --plain and --pg-compile are mutually exclusive\n");
+        free(rest);
+        return 1;
+    }
+    if (cfg->aot_compile && cfg->pg_compile) {
+        fprintf(stderr, "astro --build: --aot-compile and --pg-compile are mutually exclusive\n");
+        free(rest);
+        return 1;
+    }
+
+    *rest_argc_out = rest_n;
+    *rest_argv_out = rest;
+
+    // Load C-toolchain knobs from env.
+    return astro_build_load_env_opts(cfg);
+}
+
 void
 astro_build_config_dispose(struct astro_build_config *cfg)
 {
-    // Free strdup'd strings and the array containers from parse_args.
+    // Free heap-allocated strings (cc / sanitize from env parse) and
+    // the heap arrays for cflags / ldflags.
+    free((void *)cfg->cc);
+    cfg->cc = NULL;
+    free((void *)cfg->sanitize);
+    cfg->sanitize = NULL;
     if (cfg->extra_cflags) {
         for (const char *const *p = cfg->extra_cflags; *p; p++) {
             free((void *)*p);
@@ -327,13 +392,19 @@ astro_build_executable(const struct astro_build_config *cfg)
     sb_append(&cmd, &len, &capa, q);
     free(q);
 
-    // Extra cflags.
+    // Extra cflags (from env ASTRO_BUILD_OPTS).
     if (cfg->extra_cflags) {
         for (const char *const *p = cfg->extra_cflags; *p; p++) {
             sb_append_arg(&cmd, &len, &capa, *p);
         }
     }
-    // ASTRO_EXTRA_CFLAGS env mirrors Code Store behaviour.
+    // Sample-supplied (non-heap, never freed by dispose).
+    if (cfg->sample_cflags) {
+        for (const char *const *p = cfg->sample_cflags; *p; p++) {
+            sb_append_arg(&cmd, &len, &capa, *p);
+        }
+    }
+    // Legacy ASTRO_EXTRA_CFLAGS env (kept for Code Store back-compat).
     const char *ec = getenv("ASTRO_EXTRA_CFLAGS");
     if (ec && *ec) {
         sb_append(&cmd, &len, &capa, " ");
@@ -370,9 +441,15 @@ astro_build_executable(const struct astro_build_config *cfg)
         }
     }
 
-    // Linker flags.
+    // Linker flags (from env ASTRO_BUILD_OPTS).
     if (cfg->extra_ldflags) {
         for (const char *const *p = cfg->extra_ldflags; *p; p++) {
+            sb_append_arg(&cmd, &len, &capa, *p);
+        }
+    }
+    // Sample-supplied linker flags.
+    if (cfg->sample_ldflags) {
+        for (const char *const *p = cfg->sample_ldflags; *p; p++) {
             sb_append_arg(&cmd, &len, &capa, *p);
         }
     }

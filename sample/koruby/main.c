@@ -167,37 +167,49 @@ koruby_build_subcommand(int argc, char **argv)
     ast = koruby_parse(src, srclen, file ? file : "(eval)");
 
     astro_build_begin_aot_session();
-    if (!bcfg.no_aot) {
+    if (bcfg.aot_compile || bcfg.pg_compile) {
         astro_cs_compile(ast, NULL);
         setenv("CCACHE_DISABLE", "1", 0);
     }
 
-    /* Local copy so static cflag/ldflag arrays don't leak into the
-     * heap-tracked config that dispose() would free. */
-    struct astro_build_config bcfg_local = bcfg;
-    bcfg_local.src_dir = KORUBY_SRC_DIR_DEFAULT;
-    bcfg_local.runtime_dir = ASTRO_RUNTIME_DIR;
+    /* If bcfg.run is set, execute the program once during build for
+     * file discovery (and PG profile if --pg-compile).  TODO: hook
+     * the PGSD bake here once it's wired through the new model. */
+    if (bcfg.run) {
+        CTX *c = koruby_setup_ctx(file ? file : "(eval)");
+        koruby_eval_bootstrap(c);
+        (void)koruby_run_ast(c, ast);
+        /* Re-bake methods registered by the run. */
+        if (bcfg.aot_compile || bcfg.pg_compile) {
+            for (uint32_t i = 0; i < code_repo.size; i++) {
+                astro_cs_compile(code_repo.entries[i].body, NULL);
+            }
+        }
+    }
+
+    bcfg.src_dir = KORUBY_SRC_DIR_DEFAULT;
+    bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
     static const char *sources[] = {
         "node.c", "parse.c", "object.c", "builtins.c",
         "bootstrap_src.c", "koruby_runtime.c", "exe_main.c", NULL,
     };
-    bcfg_local.sources = sources;
-    static const char *koruby_ldflags[] = {
+    bcfg.sources = sources;
+    static const char *koruby_sample_ldflags[] = {
         "-Wl,-rpath", KORUBY_SRC_DIR_DEFAULT "/prism/build",
         "-L", KORUBY_SRC_DIR_DEFAULT "/prism/build",
         "-lprism", "-lgc", "-lgmp", "-lm",
         NULL,
     };
-    static const char *koruby_cflags[] = {
+    static const char *koruby_sample_cflags[] = {
         "-I" KORUBY_SRC_DIR_DEFAULT "/prism/include",
         "-Wno-unused-function", "-Wno-unused-variable",
         "-Wno-unused-parameter", "-Wno-unused-but-set-variable",
         NULL,
     };
-    if (!bcfg_local.extra_ldflags) bcfg_local.extra_ldflags = koruby_ldflags;
-    if (!bcfg_local.extra_cflags)  bcfg_local.extra_cflags  = koruby_cflags;
+    bcfg.sample_ldflags = koruby_sample_ldflags;
+    bcfg.sample_cflags = koruby_sample_cflags;
 
-    int rc = astro_build_aot_executable(ast, &bcfg_local, "code_store");
+    int rc = astro_build_aot_executable(ast, &bcfg, "code_store");
     astro_build_end_aot_session();
     astro_build_config_dispose(&bcfg);
     return rc;

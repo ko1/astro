@@ -103,12 +103,20 @@ main(int argc, char *argv[])
             return 1;
         }
         INIT();
+        // Calc has only -e EXPR source spec.  rest_argv contains -e EXPR
+        // (or nothing).  Build the AST from -e.
         NODE *ast = build_parse_source(rest_argc, rest_argv);
         free(rest_argv);
         if (!ast) { astro_build_config_dispose(&bcfg); return 1; }
 
         astro_build_begin_aot_session();
-        if (!bcfg.no_aot) astro_cs_compile(ast, NULL);
+        // Bake SDs when --aot-compile is set, OR when --pg-compile (which
+        // also bakes AOT in addition to running for profile).  Calc has
+        // no profile-collecting machinery so --pg-compile collapses to
+        // --aot-compile here.
+        if (bcfg.aot_compile || bcfg.pg_compile) {
+            astro_cs_compile(ast, NULL);
+        }
         bcfg.src_dir = CALC_SRC_DIR;
         bcfg.runtime_dir = ASTRO_RUNTIME_DIR;
         static const char *sources[] = {
