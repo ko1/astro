@@ -302,8 +302,10 @@ VALUE baruby_ary_new(CTX *c, uint32_t capa);
 VALUE baruby_ary_new_from(CTX *c, const VALUE *items, uint32_t n);
 // Both av_ref and x_ref are pointers to caller's sp slots; we re-read
 // through them after any internal alloc so post-move addresses are
-// picked up.
-void  baruby_ary_push(CTX *c, VALUE *av_ref, VALUE *x_ref);
+// picked up.  fast-path (= no realloc) is inlined in node.h (after
+// gc.h is visible so aro_gc_wb is in scope); the realloc grow path
+// stays in node.c.  See iter 73 sieve perf note.
+void  baruby_ary_push_grow(CTX *c, VALUE *av_ref, VALUE *x_ref);
 // av/bv are pointers to caller sp slots; reloaded after alloc.
 VALUE baruby_ary_plus(CTX *c, VALUE *av_ref, VALUE *bv_ref);
 VALUE baruby_str_new(CTX *c, const char *bytes, uint32_t len);

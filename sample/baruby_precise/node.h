@@ -17,6 +17,26 @@
 // dlopen of all.so fails with an undefined symbol on non-WB GC backends
 // (e.g. GC=copy) for any program that touches array write (a[i] = v).
 #include "gc.h"
+
+// baruby_ary_push fast-path inline (iter 73): split out the slow
+// realloc path into baruby_ary_push_grow in node.c, keep the
+// `len < capa` fast path inline here so hot push loops (sieve /
+// list.push) don't pay the function prologue cost.  Profile showed
+// 23% of CPU in sieve copy-AOT was the function prologue for a
+// 5-instruction fast-path body.  Place here (not context.h) because
+// aro_gc_wb is declared in gc.h above and must be in scope.
+static inline void
+baruby_ary_push(CTX *c, VALUE *av_ref, VALUE *x_ref)
+{
+    BaArray *a = VAL2ARY(*av_ref);
+    if (__builtin_expect(a->len < a->capa, 1)) {
+        aro_gc_wb(c, a->items, &a->items[a->len], *x_ref);
+        a->len++;
+        return;
+    }
+    baruby_ary_push_grow(c, av_ref, x_ref);
+}
+
 // node_def's EVAL body calls astro_cs_load(body, name) for PGC dispatch
 // loading; the SD .c files include node_eval.c so they need the
 // declaration too.  We include only the prototype (not the full

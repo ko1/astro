@@ -260,18 +260,21 @@ baruby_ary_new_from(CTX *c, const VALUE *items, uint32_t n)
     return v;
 }
 
-// baruby_ary_push: av_ref / x_ref point at caller sp slots so the post-
-// move addresses survive the grow-path GC.  Passing by value would freeze
-// stale pointers.
+// baruby_ary_push_grow: slow path for `baruby_ary_push` (= the inline
+// in context.h calls this when items is full).  Splitting was
+// motivated by iter 73 sieve profiling — fast-path push is 23% of CPU
+// in copy backend AOT, of which ~70% was the function prologue
+// (save/restore 6 regs) for a 5-instruction body.  Inlining the fast
+// path cuts that overhead, keeping the grow path here so the bigger
+// realloc + WB chain isn't duplicated at every call site.
+//
+// av_ref / x_ref point at caller sp slots so the post-realloc
+// addresses survive a GC move during the inner alloc.  Passing by
+// value would freeze stale pointers.
 void
-baruby_ary_push(CTX *c, VALUE *av_ref, VALUE *x_ref)
+baruby_ary_push_grow(CTX *c, VALUE *av_ref, VALUE *x_ref)
 {
     BaArray *a = VAL2ARY(*av_ref);
-    if (a->len < a->capa) {
-        aro_gc_wb(c, a->items, &a->items[a->len], *x_ref);
-        a->len++;
-        return;
-    }
     // Grow path: realloc_payload may move the owning BaArray AND x's referent.
     // Caller has set c->sp already; realloc internally bumps c->sp to park
     // the old payload during the inner alloc.
