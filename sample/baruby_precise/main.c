@@ -239,6 +239,7 @@ common_build_flags_and_link(void)
              " -fcf-protection=none"           /* drop endbr64 4-byte prologue */
              " -I" BARUBY_PRECISE_DIR
              " -I" ASTRO_RUNTIME_DIR
+             " -I" ASTRO_RUNTIME_DIR "/precise_gc"   /* iter 74: gc.h location */
              " -I" ASTRO_PRISM_INC_DIR
              " -DBARUBY_GC=%d", BARUBY_GC);
     astro_cs_build(extra_cflags);

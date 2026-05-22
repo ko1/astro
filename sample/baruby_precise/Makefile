@@ -88,7 +88,11 @@ GC_NUM_mark_bitmap_gen  := 14
 GC_NUM_mark_card_gen    := 15
 GC_NUM_mark_freelist    := 16
 GC_NUM := $(GC_NUM_$(GC))
-GC_SRC := gc_$(GC).c
+# iter 74: precise GC framework は runtime/precise_gc/ 配下に移動。
+# sample 側 (context.h) が ASTRO_GC_SCAN_EDGES macro + AroGcKind 拡張値を
+# 提供して contract が成立する。
+PRECISE_GC_DIR := $(RUNTIME)/precise_gc
+GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c
 
 # gc_common.c hosts the default aro_gc_realloc_payload (header-aware).
 # gc_none has no GCHeader, so it provides its own realloc_payload and
@@ -96,7 +100,7 @@ GC_SRC := gc_$(GC).c
 ifeq ($(GC),none)
 GC_COMMON_SRC :=
 else
-GC_COMMON_SRC := gc_common.c
+GC_COMMON_SRC := $(PRECISE_GC_DIR)/gc_common.c
 endif
 
 ifeq ($(GC_NUM),)
@@ -119,8 +123,8 @@ BARUBY_PRECISE_DIR := $(abspath .)
 RUNTIME_ABSPATH    := $(abspath $(RUNTIME))
 PRISM_INC_ABSPATH  := $(abspath ./prism/include)
 
-baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(GC_COMMON_SRC) $(GC_SRC) gc.h $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
-	$(CC) -I./prism/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
+baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_slowpath.c $(GC_COMMON_SRC) $(GC_SRC) $(PRECISE_GC_DIR)/gc.h $(RUNTIME)/astro_node.c $(RUNTIME)/astro_code_store.c $(RUNTIME)/astro_code_store.h $(RUNTIME)/astro_debug.h
+	$(CC) -I./prism/include -I. -I$(RUNTIME) -I$(PRECISE_GC_DIR) $(optflags) -flto=auto -ggdb3 -Wall  -rdynamic \
             -fno-plt -march=native \
             -DBARUBY_GC=$(GC_NUM) \
             -DBARUBY_PRECISE_DIR='"$(BARUBY_PRECISE_DIR)"' \
