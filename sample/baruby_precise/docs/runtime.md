@@ -30,8 +30,9 @@ minor GC は remset 走査だけで old → young pointer を捕捉する。 O(|
 
 1. **共通引数を 3 つに統一** (iter 61): `(CTX *c, NODE *n, VALUE *sp)`
    — sp が scratch top + frame base を兼ねる。 旧 fp 引数は parse-time
-   walker (`baruby_parse.c::walk_bake_sp_offset`) が `sp_offset` /
-   `callee_fp_offset` operand に焼くことで消失。
+   bake (= `bake_X` helper + `WITH_CHILD_CHAIN` macro が transduce 中に
+   `sp_offset` / `callee_fp_offset` operand に焼く) で消失。
+   iter 72 (`2dd76623`) で post-parse walker は完全に廃止。
 2. **precise semi-space (Cheney) GC** (`gc.c` / `gc.h`) — libgc の代わり
 3. **sp[] root spill** — NODE_DEF body が VALUE root を `sp[i]` に書き、
    `BARUBY_EVAL_ARG(c, n, sp + N)` で child に sp を進めて渡す
@@ -48,15 +49,14 @@ minor GC は remset 走査だけで old → young pointer を捕捉する。 O(|
        │   pm_node_t* (CRuby と同じ Ruby AST)
        ▼
    transduce  (baruby_parse.c)
-       │   PM_* → ALLOC_node_*
+       │   PM_* → ALLOC_node_* + bake_X helper
+       │   (parse-time chain threading + sp_offset bake;
+       │    pop_frame で locals_cnt subtract で finalize)
        ▼
-   NODE 木  (head + operand 構造体)
+   NODE 木  (head + operand 構造体、 sp_offset 焼き込み済)
        │
        ▼
-   callsite_resolve  (forward-ref 解決)
-       │
-       ▼
-   walk_bake_sp_offset  (lget/lset/call の sp 相対 offset を bake)
+   callsite_resolve  (forward-ref の sp_body + locals_cnt 解決)
        │
        ▼
    OPTIMIZE() — code_store/all.so から SD/PGSD があれば bind
@@ -201,8 +201,9 @@ libgc を捨て、 `gc.c` / `gc.h` に precise な copying GC を実装
 - `c->sp`  = 現在の scratch top (= scan range の上端、 GC alloc が update)
 
 iter 61 で **`c->fp` フィールドは廃止**。 dispatcher の sp は parse-time
-walker が bake した sp_offset で sp 相対に local / 引数 / callee frame を
-addressing する (詳細は §3.x: dispatcher convention)。 GC scan 範囲は
+bake (iter 72 で walker → transduce 内 `bake_X` helper に移行) した
+sp_offset で sp 相対に local / 引数 / callee frame を addressing
+する (詳細は §3.x: dispatcher convention)。 GC scan 範囲は
 `c->env..c->sp` で従来通り (fp の有無に依存しない、 sp が常に top)。
 
 ### 5.2 半空間レイアウト
