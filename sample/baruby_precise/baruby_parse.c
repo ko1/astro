@@ -391,14 +391,13 @@ struct frame_context {
     uint32_t max_cnt;
     pm_constant_id_list_t *locals;
     struct frame_context *prev;
-    /* iter 72: per-frame fixup list for sp_offset / callee_fp_offset
-     * bake.  Each lget/lset/call/call2/call_static ALLOC site stores a
-     * partial bake (= index - chain) into the operand at parse time, and
-     * appends the NODE * here.  At pop_frame the list is iterated to
-     * subtract the final locals_cnt (= max_cnt) and invalidate HASH. */
-    NODE **bake_list;
-    uint32_t bake_count;
-    uint32_t bake_capacity;
+    /* iter 72: bake_list 区間.  push_frame で `bake_base = tc->bake_count`、
+     * pop_frame で `[bake_base, tc->bake_count)` の NODE * を iterate して
+     * 最終 locals_cnt = max_cnt を subtract、 tc->bake_count = bake_base に
+     * 復元。 tc 全体で共有する 1 つの malloc 領域を使うことで、 各
+     * ALLOC_node_X malloc との interleaving fragmentation を避ける
+     * (= 旧 per-frame realloc 設計だと list_sort で +11% regression)。 */
+    uint32_t bake_base;
     /* iter 72: caller's chain_sum saved here so pop_frame can restore.
      * Each frame starts with chain_sum = 0 (body's root coordinate). */
     int32_t saved_chain_sum;
@@ -413,28 +412,35 @@ struct transduce_context {
      * each @child-parent ALLOC site.  Used by bake_X helpers to compute
      * (index - chain) at parse time. */
     int32_t chain_sum;
+    /* iter 72: process-scope bake list (= shared by all frames).
+     * Pre-allocated once with a generous capacity; only realloc'd if a
+     * truly enormous program exceeds it.  Avoids fragmenting the NODE
+     * malloc stream that's interleaved with these allocations. */
+    NODE **bake_list;
+    uint32_t bake_count;
+    uint32_t bake_capacity;
 };
 
 static void
-bake_list_add(struct frame_context *f, NODE *n)
+bake_list_add(struct transduce_context *tc, NODE *n)
 {
-    if (f->bake_count == f->bake_capacity) {
-        f->bake_capacity = f->bake_capacity ? f->bake_capacity * 2 : 32;
-        f->bake_list = realloc(f->bake_list, f->bake_capacity * sizeof(NODE *));
+    if (tc->bake_count == tc->bake_capacity) {
+        tc->bake_capacity = tc->bake_capacity ? tc->bake_capacity * 2 : 1024;
+        tc->bake_list = realloc(tc->bake_list, tc->bake_capacity * sizeof(NODE *));
     }
-    f->bake_list[f->bake_count++] = n;
+    tc->bake_list[tc->bake_count++] = n;
 }
 
-/* iter 72: applied at pop_frame.  For each NODE * in the frame's
- * bake_list, subtract the final locals_cnt (= max_cnt) from its
- * sp_offset / callee_fp_offset operand and invalidate the HASH cache
- * (since sp_offset/callee_fp_offset are part of the structural hash). */
+/* iter 72: applied at pop_frame.  For each NODE * the frame appended
+ * to bake_list (= entries [bake_base, tc->bake_count)), subtract the
+ * final locals_cnt (= max_cnt) from sp_offset / callee_fp_offset and
+ * invalidate HASH (sp_offset is part of the structural hash). */
 static void
-bake_list_finalize(struct frame_context *f)
+bake_list_finalize(struct transduce_context *tc, struct frame_context *f)
 {
     int32_t lc = (int32_t)f->max_cnt;
-    for (uint32_t i = 0; i < f->bake_count; i++) {
-        NODE *n = f->bake_list[i];
+    for (uint32_t i = f->bake_base; i < tc->bake_count; i++) {
+        NODE *n = tc->bake_list[i];
         const struct NodeKind *k = n->head.kind;
         if (k == &kind_node_lget) {
             n->u.node_lget.sp_offset -= lc;
@@ -449,9 +455,7 @@ bake_list_finalize(struct frame_context *f)
         }
         clear_hash(n);
     }
-    free(f->bake_list);
-    f->bake_list = NULL;
-    f->bake_count = f->bake_capacity = 0;
+    tc->bake_count = f->bake_base;
 }
 
 static void
@@ -462,8 +466,8 @@ push_frame(struct transduce_context *tc, pm_constant_id_list_t *locals)
     tc->frame = f;
     f->locals = locals;
     f->arg_index = f->max_cnt = locals->size;
-    f->bake_list = NULL;
-    f->bake_count = f->bake_capacity = 0;
+    /* iter 72: shared bake_list, frame owns [bake_base, tc->bake_count). */
+    f->bake_base = tc->bake_count;
     /* iter 72: each body's chain coordinate starts at 0. */
     f->saved_chain_sum = tc->chain_sum;
     tc->chain_sum = 0;
@@ -477,7 +481,7 @@ static NODE *
 bake_lget(struct transduce_context *tc, uint32_t index)
 {
     NODE *n = ALLOC_node_lget(index, (int32_t)index - tc->chain_sum);
-    bake_list_add(tc->frame, n);
+    bake_list_add(tc, n);
     return n;
 }
 
@@ -485,7 +489,7 @@ static NODE *
 bake_lset(struct transduce_context *tc, uint32_t index, NODE *rhs)
 {
     NODE *n = ALLOC_node_lset(index, (int32_t)index - tc->chain_sum, rhs);
-    bake_list_add(tc->frame, n);
+    bake_list_add(tc, n);
     return n;
 }
 
@@ -495,7 +499,7 @@ bake_call(struct transduce_context *tc, const char *fname,
 {
     NODE *n = ALLOC_node_call(fname, args_cnt, arg_index,
                               (int32_t)arg_index - tc->chain_sum);
-    bake_list_add(tc->frame, n);
+    bake_list_add(tc, n);
     return n;
 }
 
@@ -505,7 +509,7 @@ bake_call_static(struct transduce_context *tc, NODE *body,
 {
     NODE *n = ALLOC_node_call_static(body, arg_index,
                                      (int32_t)arg_index - tc->chain_sum);
-    bake_list_add(tc->frame, n);
+    bake_list_add(tc, n);
     return n;
 }
 
@@ -513,7 +517,7 @@ static void
 pop_frame(struct transduce_context *tc)
 {
     struct frame_context *f = tc->frame;
-    bake_list_finalize(f);
+    bake_list_finalize(tc, f);
     tc->chain_sum = f->saved_chain_sum;
     tc->frame = f->prev;
     free(f);
@@ -1868,10 +1872,20 @@ PARSE(int argc, char *argv[])
             .parser = &parser,
             // .verbose = true,
         };
+        /* iter 72: pre-allocate shared bake_list with generous capacity
+         * (= one malloc) so subsequent ALLOC_node_X malloc'd NODE
+         * structs aren't interleaved with bake_list reallocs.  Heap
+         * fragmentation matters for the runtime AST walk's cache
+         * footprint (= measured +11% on list_sort with per-frame
+         * realloc design). */
+        tc.bake_capacity = 4096;
+        tc.bake_list = malloc(tc.bake_capacity * sizeof(NODE *));
+        tc.bake_count = 0;
         ast = transduce(&tc, root, 0);
         if (ast == NULL) {
             ast = ALLOC_node_num(0);
         }
+        free(tc.bake_list);
     } else {
         fprintf(stderr, "Parse failed.\n");
         exit(1);
