@@ -34,18 +34,32 @@
 #define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES /* 64 GiB virtual per semispace, lazy-paged */
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
-/* iter 75 Step C: framework GCHeader 廃止、 ASTroObjectHeader が
- * payload offset 0、 gc_fwd は HAS_FWD で含まれる。 */
-_Static_assert(sizeof(ASTroObjectHeader) == 16, "moving GC: head must be 16 B");
+/* iter 75 Step C+: fwd overlay (8 B head、 no dedicated gc_fwd field). */
+_Static_assert(sizeof(ASTroObjectHeader) == 8, "Cheney: head must be 8 bytes");
 
 #define HDR_OLD_BIT      (uint16_t)0x0001u
 #define HDR_DIRTY_BIT    (uint16_t)0x0002u
+#define HDR_FORWARDED    (uint16_t)0x0004u
 #define HDR_OLD(h)         (((h)->gc_flags & HDR_OLD_BIT) != 0)
 #define HDR_SET_OLD(h)     ((h)->gc_flags |= HDR_OLD_BIT)
 #define HDR_CLR_OLD(h)     ((h)->gc_flags &= (uint16_t)~HDR_OLD_BIT)
 #define HDR_DIRTY(h)       (((h)->gc_flags & HDR_DIRTY_BIT) != 0)
 #define HDR_SET_DIRTY(h)   ((h)->gc_flags |= HDR_DIRTY_BIT)
 #define HDR_CLR_DIRTY(h)   ((h)->gc_flags &= (uint16_t)~HDR_DIRTY_BIT)
+#define HDR_IS_FORWARDED(h)  (((h)->gc_flags & HDR_FORWARDED) != 0)
+#define HDR_SET_FORWARDED(h) ((h)->gc_flags |= HDR_FORWARDED)
+
+static inline void *
+fwd_overlay_get(ASTroObjectHeader *h)
+{
+    return *(void **)((char *)h + sizeof(ASTroObjectHeader));
+}
+
+static inline void
+fwd_overlay_set(ASTroObjectHeader *h, void *new_payload)
+{
+    *(void **)((char *)h + sizeof(ASTroObjectHeader)) = new_payload;
+}
 
 /* Adaptive major threshold: matches other gen backends.  Previously
  * major triggered only when tenured couldn't hold worst-case promotion,
@@ -174,7 +188,6 @@ pretenure_alloc(CTX *c, size_t payload_size, size_t total, VALUE *sp_top)
     h->flags    = 0;
     h->gc_flags = HDR_OLD_BIT;  /* direct to tenured = old from the start */
     h->gc_size  = (uint32_t)payload_size;
-    h->gc_fwd   = NULL;
     tenured_top += total;
     return h;
 }
@@ -222,7 +235,6 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
     h->flags    = 0;
     h->gc_flags = 0;          /* clear OLD/DIRTY for fresh nursery slot */
     h->gc_size  = (uint32_t)payload_size;
-    h->gc_fwd   = NULL;
     nursery_top += total;
     return h;
 }
@@ -336,23 +348,23 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 // `in_minor` storage live in ASTroGC — aliased above.
 
 // Copy `oldh` (already in nursery or from-tenured) into to-tenured, returning
-// the new payload pointer.  Sets oldh->gc_fwd so future references find the
-// new home.
+// the new payload pointer.  Marks oldh as FORWARDED + stores fwd ptr at
+// payload-overlay slot (offset 8) so future references find the new home.
 static void *
 forward_obj(ASTroGC *gc, ASTroObjectHeader *oldh)
 {
-    if (oldh->gc_fwd) return oldh->gc_fwd;
+    if (HDR_IS_FORWARDED(oldh)) return fwd_overlay_get(oldh);
     size_t aligned = ALIGN8(oldh->gc_size);
     size_t total = aligned;
     ASTRO_ASSERT(to_top + total <= tenured_end);
     ASTroObjectHeader *newh = (ASTroObjectHeader *)to_top;
     memcpy(newh, oldh, total);
-    newh->gc_fwd   = NULL;
-    HDR_SET_OLD(newh);
-    HDR_CLR_DIRTY(newh);
+    /* memcpy copied oldh's gc_flags (without FORWARDED yet); reset for new. */
+    newh->gc_flags = HDR_OLD_BIT;  /* fresh tenured slot, no marked/dirty/fwd */
     to_top += total;
     void *new_payload = (void *)newh;
-    oldh->gc_fwd = new_payload;
+    HDR_SET_FORWARDED(oldh);
+    fwd_overlay_set(oldh, new_payload);
     return new_payload;
 }
 

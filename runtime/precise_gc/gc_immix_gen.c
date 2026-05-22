@@ -36,15 +36,29 @@
 #define NURSERY_BYTES    ((size_t)16u  << 20)          /* 16 MiB (tuning knob, not program limit) */
 #define ALIGN8(n)        (((n) + 7u) & ~(size_t)7u)
 
-/* iter 75 Step C: framework GCHeader 廃止、 ASTroObjectHeader at offset 0
- * (16 B for moving — gc_fwd 含む)。 mark_epoch を gc_flags の low 8 bits
- * に詰める。 OLD / DIRTY は high bits。 */
-_Static_assert(sizeof(ASTroObjectHeader) == 16, "moving GC: head must be 16 B");
+/* iter 75 Step C+: fwd overlay (8 B head).  mark_epoch を gc_flags の
+ * low 8 bits に詰める。 OLD / DIRTY / FORWARDED は high bits。 */
+_Static_assert(sizeof(ASTroObjectHeader) == 8, "head must be 8 bytes");
 
 #define H_OLD            (uint16_t)0x0100u   /* gc_flags bit 8 */
 #define H_DIRTY          (uint16_t)0x0200u   /* gc_flags bit 9 */
+#define HDR_FORWARDED    (uint16_t)0x0400u   /* gc_flags bit 10 — nursery→tenured */
 #define HDR_EPOCH(h)       ((uint8_t)((h)->gc_flags & 0x00ffu))
 #define HDR_SET_EPOCH(h,e) ((h)->gc_flags = (uint16_t)(((h)->gc_flags & 0xff00u) | ((e) & 0xffu)))
+#define HDR_IS_FORWARDED(h)  (((h)->gc_flags & HDR_FORWARDED) != 0)
+#define HDR_SET_FORWARDED(h) ((h)->gc_flags |= HDR_FORWARDED)
+
+static inline void *
+fwd_overlay_get(ASTroObjectHeader *h)
+{
+    return *(void **)((char *)h + sizeof(ASTroObjectHeader));
+}
+
+static inline void
+fwd_overlay_set(ASTroObjectHeader *h, void *new_payload)
+{
+    *(void **)((char *)h + sizeof(ASTroObjectHeader)) = new_payload;
+}
 
 enum { BLK_FREE = 0, BLK_RECYCLABLE = 1, BLK_USED = 2 };
 
@@ -258,7 +272,6 @@ large_alloc(ASTroGC *gc, size_t payload_size)
     h->flags    = 0;
     h->gc_flags = H_OLD;       /* epoch 0 + tenured */
     h->gc_size  = (uint32_t)payload_size;
-    h->gc_fwd   = NULL;
     old_alloc_since_major += ALIGN8(payload_size);
     return (void *)h;
 }
@@ -272,7 +285,6 @@ static ASTroObjectHeader *hole_alloc_header(ASTroGC *gc, size_t payload_size)
         h->flags    = 0;
         h->gc_flags = H_OLD;
         h->gc_size  = (uint32_t)payload_size;
-        h->gc_fwd   = NULL;
         return h;
     }
     size_t need_lines = (total + LINE_BYTES - 1) / LINE_BYTES;
@@ -285,7 +297,6 @@ static ASTroObjectHeader *hole_alloc_header(ASTroGC *gc, size_t payload_size)
         h->flags    = 0;
         h->gc_flags = H_OLD;
         h->gc_size  = (uint32_t)payload_size;
-        h->gc_fwd   = NULL;
         return h;
     }
     return NULL;
@@ -330,7 +341,6 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
     h->flags    = 0;
     h->gc_flags = 0;            /* fresh nursery slot: not OLD, epoch 0 */
     h->gc_size  = (uint32_t)payload_size;
-    h->gc_fwd   = NULL;
     nursery_top += total;
     return (void *)h;
 }
@@ -454,7 +464,7 @@ forward_payload_nursery(ASTroGC *gc, void *p)
     if (!p) return NULL;
     if (!in_nursery(gc, p)) return p;
     ASTroObjectHeader *oldh = (ASTroObjectHeader *)p;
-    if (oldh->gc_fwd) return oldh->gc_fwd;
+    if (HDR_IS_FORWARDED(oldh)) return fwd_overlay_get(oldh);
     size_t size = oldh->gc_size;
     ASTroObjectHeader *newh = hole_alloc_header(gc, size);
     if (!newh) {
@@ -466,8 +476,8 @@ forward_payload_nursery(ASTroGC *gc, void *p)
     if (bytes) memcpy(newp, p, bytes);
     /* memcpy overwrote newh's head with oldh's — restore framework state. */
     newh->gc_flags = H_OLD;
-    newh->gc_fwd   = NULL;
-    oldh->gc_fwd = newp;
+    HDR_SET_FORWARDED(oldh);
+    fwd_overlay_set(oldh, newp);
     old_alloc_since_major += ALIGN8(size);
     gray_push(gc, newh);
     return newp;

@@ -48,13 +48,28 @@
 #define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
-/* iter 75 Step C: framework GCHeader 廃止、 ASTroObjectHeader at offset 0. */
-_Static_assert(sizeof(ASTroObjectHeader) == 16, "moving GC: head must be 16 B");
+/* iter 75 Step C+: fwd overlay (8 B head). */
+_Static_assert(sizeof(ASTroObjectHeader) == 8, "head must be 8 bytes");
 
 #define HDR_MARKED_BIT   (uint16_t)0x0001u
 #define HDR_OLD_BIT      (uint16_t)0x0002u
 #define HDR_DIRTY_BIT    (uint16_t)0x0004u
 #define HDR_FREE_BIT     (uint16_t)0x0008u
+#define HDR_FORWARDED    (uint16_t)0x0010u   /* nursery → tenured copied */
+#define HDR_IS_FORWARDED(h)  (((h)->gc_flags & HDR_FORWARDED) != 0)
+#define HDR_SET_FORWARDED(h) ((h)->gc_flags |= HDR_FORWARDED)
+
+static inline void *
+fwd_overlay_get(ASTroObjectHeader *h)
+{
+    return *(void **)((char *)h + sizeof(ASTroObjectHeader));
+}
+
+static inline void
+fwd_overlay_set(ASTroObjectHeader *h, void *new_payload)
+{
+    *(void **)((char *)h + sizeof(ASTroObjectHeader)) = new_payload;
+}
 #define HDR_MARKED(h)      (((h)->gc_flags & HDR_MARKED_BIT) != 0)
 #define HDR_SET_MARKED(h)  ((h)->gc_flags |= HDR_MARKED_BIT)
 #define HDR_CLR_MARKED(h)  ((h)->gc_flags &= (uint16_t)~HDR_MARKED_BIT)
@@ -172,7 +187,6 @@ static ASTroObjectHeader *old_alloc(ASTroGC *gc, size_t payload_size, size_t ali
     h->flags    = 0;
     h->gc_flags = HDR_OLD_BIT;
     h->gc_size  = (uint32_t)payload_size;
-    h->gc_fwd   = NULL;
     old_bytes += payload_size;
     old_alloc_since_major += ALIGN8(payload_size);
     return h;
@@ -213,7 +227,6 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
     h->flags    = 0;
     h->gc_flags = 0;
     h->gc_size  = (uint32_t)payload_size;
-    h->gc_fwd   = NULL;
     nursery_top += total;
     return h;
 }
@@ -352,15 +365,15 @@ gray_push(ASTroGC *gc, ASTroObjectHeader *h)
 static void *
 promote(ASTroGC *gc, ASTroObjectHeader *oldh)
 {
-    if (oldh->gc_fwd) return oldh->gc_fwd;
+    if (HDR_IS_FORWARDED(oldh)) return fwd_overlay_get(oldh);
     size_t aligned = ALIGN8(oldh->gc_size);
     ASTroObjectHeader *newh = old_alloc(gc, oldh->gc_size, aligned);
     memcpy((void *)newh, (void *)oldh, aligned);
-    /* memcpy overwrote newh's head with oldh's — restore framework fields. */
-    newh->gc_flags = HDR_OLD_BIT;     /* fresh tenured slot, no mark/dirty */
-    newh->gc_fwd   = NULL;
+    /* memcpy overwrote newh's head — restore framework fields. */
+    newh->gc_flags = HDR_OLD_BIT;     /* fresh tenured slot, no mark/dirty/fwd */
     void *new_payload = (void *)newh;
-    oldh->gc_fwd = new_payload;
+    HDR_SET_FORWARDED(oldh);
+    fwd_overlay_set(oldh, new_payload);
     scan_push(gc, newh);
     return new_payload;
 }
@@ -475,13 +488,14 @@ minor_gc(CTX *c, VALUE *sp_top)
 static void *
 major_promote(ASTroGC *gc, ASTroObjectHeader *oldh)
 {
-    if (oldh->gc_fwd) return oldh->gc_fwd;
+    if (HDR_IS_FORWARDED(oldh)) return fwd_overlay_get(oldh);
     size_t aligned = ALIGN8(oldh->gc_size);
     ASTroObjectHeader *newh = old_alloc(gc, oldh->gc_size, aligned);
     memcpy((void *)newh, (void *)oldh, aligned);
-    HDR_SET_MARKED(newh);
+    newh->gc_flags = HDR_OLD_BIT | HDR_MARKED_BIT;
     void *new_payload = (void *)newh;
-    oldh->gc_fwd = new_payload;
+    HDR_SET_FORWARDED(oldh);
+    fwd_overlay_set(oldh, new_payload);
     return new_payload;
 }
 
@@ -552,7 +566,8 @@ major_gc(CTX *c, VALUE *sp_top)
             if (HDR_MARKED(h)) {
                 HDR_CLR_MARKED(h);
                 HDR_CLR_DIRTY(h);
-                h->gc_fwd    = NULL;
+                /* FORWARDED bit is meaningful only on from-objects;
+                 * tenured survivors after major_promote don't have it. */
                 live += h->gc_size;
             }
             p += total;
