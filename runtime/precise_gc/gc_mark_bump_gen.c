@@ -48,30 +48,24 @@
 #define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
-/* 16-byte header (down from 24).  kind + old + dirty + marked packed in flags. */
-typedef struct GCHeader {
-    void    *fwd;                   // forwarding pointer (set during minor for nursery objs)
-    uint8_t  flags;                 /* bits 0-2: kind, bit 3: marked, bit 4: old, bit 5: dirty */
-    uint8_t  _pad[3];
-    uint32_t size;
-} GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
+/* iter 75 Step C: framework GCHeader 廃止、 ASTroObjectHeader at offset 0. */
+_Static_assert(sizeof(ASTroObjectHeader) == 16, "moving GC: head must be 16 B");
 
-#define HDR_KIND_MASK    0x07u
-#define HDR_MARKED_BIT   0x08u
-#define HDR_OLD_BIT      0x10u
-#define HDR_DIRTY_BIT    0x20u
-#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
-#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
-#define HDR_MARKED(h)      (((h)->flags & HDR_MARKED_BIT) != 0)
-#define HDR_SET_MARKED(h)  ((h)->flags |= HDR_MARKED_BIT)
-#define HDR_CLR_MARKED(h)  ((h)->flags &= (uint8_t)~HDR_MARKED_BIT)
-#define HDR_OLD(h)         (((h)->flags & HDR_OLD_BIT) != 0)
-#define HDR_SET_OLD(h)     ((h)->flags |= HDR_OLD_BIT)
-#define HDR_CLR_OLD(h)     ((h)->flags &= (uint8_t)~HDR_OLD_BIT)
-#define HDR_DIRTY(h)       (((h)->flags & HDR_DIRTY_BIT) != 0)
-#define HDR_SET_DIRTY(h)   ((h)->flags |= HDR_DIRTY_BIT)
-#define HDR_CLR_DIRTY(h)   ((h)->flags &= (uint8_t)~HDR_DIRTY_BIT)
+#define HDR_MARKED_BIT   (uint16_t)0x0001u
+#define HDR_OLD_BIT      (uint16_t)0x0002u
+#define HDR_DIRTY_BIT    (uint16_t)0x0004u
+#define HDR_FREE_BIT     (uint16_t)0x0008u
+#define HDR_MARKED(h)      (((h)->gc_flags & HDR_MARKED_BIT) != 0)
+#define HDR_SET_MARKED(h)  ((h)->gc_flags |= HDR_MARKED_BIT)
+#define HDR_CLR_MARKED(h)  ((h)->gc_flags &= (uint16_t)~HDR_MARKED_BIT)
+#define HDR_OLD(h)         (((h)->gc_flags & HDR_OLD_BIT) != 0)
+#define HDR_SET_OLD(h)     ((h)->gc_flags |= HDR_OLD_BIT)
+#define HDR_CLR_OLD(h)     ((h)->gc_flags &= (uint16_t)~HDR_OLD_BIT)
+#define HDR_DIRTY(h)       (((h)->gc_flags & HDR_DIRTY_BIT) != 0)
+#define HDR_SET_DIRTY(h)   ((h)->gc_flags |= HDR_DIRTY_BIT)
+#define HDR_CLR_DIRTY(h)   ((h)->gc_flags &= (uint16_t)~HDR_DIRTY_BIT)
+#define HDR_IS_FREE(h)     (((h)->gc_flags & HDR_FREE_BIT) != 0)
+#define HDR_SET_FREE(h)    ((h)->gc_flags |= HDR_FREE_BIT)
 // NB: no linked list — tenured objects live in a contiguous mmap region,
 // sweep iterates by region walk (header-size-prefix), not by chasing
 // next pointers.  Saves 16 bytes/header and turns sweep into a
@@ -94,11 +88,11 @@ typedef struct ASTroGC {
     VALUE *sp_high_water;
     bool  in_minor;
     /* Cheney scan queue for freshly-promoted-during-minor. */
-    struct GCHeader **scan_buf;
+    struct ASTroObjectHeader **scan_buf;
     size_t            scan_head, scan_tail, scan_capa;
-    struct GCHeader **gray_buf;
+    struct ASTroObjectHeader **gray_buf;
     size_t            gray_cnt, gray_capa;
-    struct GCHeader **remset_buf;
+    struct ASTroObjectHeader **remset_buf;
     size_t            remset_cnt, remset_capa;
     bool              remset_overflow;
 } ASTroGC;
@@ -165,25 +159,22 @@ aro_gc_init(CTX *c)
 static void minor_gc(CTX *c, VALUE *sp_top);
 static void major_gc(CTX *c, VALUE *sp_top);
 
-static GCHeader *
-old_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size, size_t aligned)
+static ASTroObjectHeader *old_alloc(ASTroGC *gc, size_t payload_size, size_t aligned)
 {
-    size_t total = sizeof(GCHeader) + aligned;
+    size_t total = aligned;
     if (tenured_top + total > tenured_end) {
         fprintf(stderr, "baruby_gc=mark_bump_gen: tenured OOM (%zu / %zu)\n",
                 (size_t)(tenured_top - tenured_base), (size_t)TENURED_BYTES);
         abort();
     }
-    GCHeader *h = (GCHeader *)tenured_top;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)tenured_top;
     tenured_top += total;
-    HDR_SET_KIND(h, kind);
-    h->size   = (uint32_t)payload_size;
-    h->fwd    = NULL;
-    HDR_SET_OLD(h);
-    HDR_CLR_DIRTY(h);
-    HDR_CLR_MARKED(h);
+    h->flags    = 0;
+    h->gc_flags = HDR_OLD_BIT;
+    h->gc_size  = (uint32_t)payload_size;
+    h->gc_fwd   = NULL;
     old_bytes += payload_size;
-    old_alloc_since_major += sizeof(GCHeader) + ALIGN8(payload_size);
+    old_alloc_since_major += ALIGN8(payload_size);
     return h;
 }
 
@@ -205,26 +196,24 @@ nursery_collect_slow(CTX *c, size_t total, VALUE *sp_top)
     }
 }
 
-static inline GCHeader *
-nursery_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+static inline ASTroObjectHeader *
+nursery_bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    size_t total = sizeof(GCHeader) + aligned;
+    size_t total = aligned;
 
     if (__builtin_expect(payload_size >= NURSERY_BYTES / 2, 0)) {
-        return old_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size, aligned);
+        return old_alloc(gc, payload_size, aligned);
     }
 
     if (__builtin_expect(gc->common.stress || nursery_top + total > nursery_end, 0)) {
         nursery_collect_slow(c, total, sp_top);
     }
-    GCHeader *h = (GCHeader *)nursery_top;
-    HDR_SET_KIND(h, kind);
-    h->size   = (uint32_t)payload_size;
-    h->fwd    = NULL;
-    HDR_CLR_OLD(h);
-    HDR_CLR_DIRTY(h);
-    HDR_CLR_MARKED(h);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)nursery_top;
+    h->flags    = 0;
+    h->gc_flags = 0;
+    h->gc_size  = (uint32_t)payload_size;
+    h->gc_fwd   = NULL;
     nursery_top += total;
     return h;
 }
@@ -235,10 +224,11 @@ aro_gc_alloc(CTX *c, size_t payload_size)
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = nursery_bump(c, ASTRO_GC_CAT_SCAN, payload_size, aligned, sp_top);
-    void *payload = (void *)(h + 1);
+    ASTroObjectHeader *h = nursery_bump(c, payload_size, aligned, sp_top);
+    void *payload = (void *)h;
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    memset(payload, 0, aligned);
+    memset((char *)payload + sizeof(ASTroObjectHeader), 0,
+           aligned - sizeof(ASTroObjectHeader));
     gc->common.stats.total_bytes += payload_size;
     gc->common.stats.heap_bytes  += payload_size;
     return payload;
@@ -250,8 +240,8 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = nursery_bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
-    void *payload = (void *)(h + 1);
+    ASTroObjectHeader *h = nursery_bump(c, payload_size, aligned, sp_top);
+    void *payload = (void *)h;
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     gc->common.stats.total_bytes += payload_size;
     gc->common.stats.heap_bytes  += payload_size;
@@ -267,22 +257,22 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
 #define MAX_REMSET_ENTRIES (1u << 17)
 
 static void
-remset_push(ASTroGC *gc, GCHeader *h)
+remset_push(ASTroGC *gc, ASTroObjectHeader *h)
 {
     if (remset_overflow) return;
     if (remset_cnt >= MAX_REMSET_ENTRIES) { remset_overflow = true; return; }
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
         if (remset_capa > MAX_REMSET_ENTRIES) remset_capa = MAX_REMSET_ENTRIES;
-        remset_buf = (GCHeader **)realloc(remset_buf, remset_capa * sizeof(GCHeader *));
+        remset_buf = (ASTroObjectHeader **)realloc(remset_buf, remset_capa * sizeof(ASTroObjectHeader *));
         if (!remset_buf) abort();
     }
     remset_buf[remset_cnt++] = h;
 }
 
-static void process_object(ASTroGC *gc, GCHeader *h);
+static void process_object(ASTroGC *gc, ASTroObjectHeader *h);
 static void
-remset_visit_minor(ASTroGC *gc, GCHeader *h)
+remset_visit_minor(ASTroGC *gc, ASTroObjectHeader *h)
 {
     if (HDR_DIRTY(h)) {
         process_object(gc, h);
@@ -291,13 +281,13 @@ remset_visit_minor(ASTroGC *gc, GCHeader *h)
 }
 
 static void
-remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, GCHeader *))
+remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, ASTroObjectHeader *))
 {
     char *scan = tenured_base;
     while (scan < tenured_top) {
-        GCHeader *h = (GCHeader *)scan;
+        ASTroObjectHeader *h = (ASTroObjectHeader *)scan;
         visit(gc, h);
-        scan += sizeof(GCHeader) + ALIGN8(h->size);
+        scan += ALIGN8(h->gc_size);
     }
 }
 
@@ -306,7 +296,7 @@ aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (holder == NULL) return;
-    GCHeader *hh = (GCHeader *)holder - 1;
+    ASTroObjectHeader *hh = (ASTroObjectHeader *)holder;
     if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
         ASTroGC *gc = ASTRO_GC_INSTANCE(c);
         HDR_SET_DIRTY(hh);
@@ -319,7 +309,7 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
-    GCHeader *hh = (GCHeader *)holder - 1;
+    ASTroObjectHeader *hh = (ASTroObjectHeader *)holder;
     if (HDR_OLD(hh) && !HDR_DIRTY(hh)) {
         ASTroGC *gc = ASTRO_GC_INSTANCE(c);
         HDR_SET_DIRTY(hh);
@@ -338,36 +328,39 @@ in_nursery(ASTroGC *gc, void *p)
 }
 
 static void
-scan_push(ASTroGC *gc, GCHeader *h)
+scan_push(ASTroGC *gc, ASTroObjectHeader *h)
 {
     if (scan_tail >= scan_capa) {
         scan_capa = scan_capa ? scan_capa * 2 : 256;
-        scan_buf = (GCHeader **)realloc(scan_buf, scan_capa * sizeof(GCHeader *));
+        scan_buf = (ASTroObjectHeader **)realloc(scan_buf, scan_capa * sizeof(ASTroObjectHeader *));
         if (!scan_buf) abort();
     }
     scan_buf[scan_tail++] = h;
 }
 
 static void
-gray_push(ASTroGC *gc, GCHeader *h)
+gray_push(ASTroGC *gc, ASTroObjectHeader *h)
 {
     if (gray_cnt >= gray_capa) {
         gray_capa = gray_capa ? gray_capa * 2 : 256;
-        gray_buf = (GCHeader **)realloc(gray_buf, gray_capa * sizeof(GCHeader *));
+        gray_buf = (ASTroObjectHeader **)realloc(gray_buf, gray_capa * sizeof(ASTroObjectHeader *));
         if (!gray_buf) abort();
     }
     gray_buf[gray_cnt++] = h;
 }
 
 static void *
-promote(ASTroGC *gc, GCHeader *oldh)
+promote(ASTroGC *gc, ASTroObjectHeader *oldh)
 {
-    if (oldh->fwd) return oldh->fwd;
-    size_t aligned = ALIGN8(oldh->size);
-    GCHeader *newh = old_alloc(gc, HDR_KIND(oldh), oldh->size, aligned);
-    memcpy((void *)(newh + 1), (void *)(oldh + 1), aligned);
-    void *new_payload = (void *)(newh + 1);
-    oldh->fwd = new_payload;
+    if (oldh->gc_fwd) return oldh->gc_fwd;
+    size_t aligned = ALIGN8(oldh->gc_size);
+    ASTroObjectHeader *newh = old_alloc(gc, oldh->gc_size, aligned);
+    memcpy((void *)newh, (void *)oldh, aligned);
+    /* memcpy overwrote newh's head with oldh's — restore framework fields. */
+    newh->gc_flags = HDR_OLD_BIT;     /* fresh tenured slot, no mark/dirty */
+    newh->gc_fwd   = NULL;
+    void *new_payload = (void *)newh;
+    oldh->gc_fwd = new_payload;
     scan_push(gc, newh);
     return new_payload;
 }
@@ -376,7 +369,7 @@ static void *
 forward_payload_value(ASTroGC *gc, void *p)
 {
     if (!p) return NULL;
-    GCHeader *h = (GCHeader *)p - 1;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)p;
     if (in_minor) {
         if (!in_nursery(gc, p)) return p;
         return promote(gc, h);
@@ -400,9 +393,9 @@ forward_edge(void *ctx, void **slot)
 }
 
 static void
-process_object(ASTroGC *gc, GCHeader *h)
+process_object(ASTroGC *gc, ASTroObjectHeader *h)
 {
-    if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, forward_edge);
+    ASTRO_GC_SCAN_EDGES((void *)h, h->gc_size, gc, forward_edge);
 }
 
 /* Keep cold (see gc_copy_gen.c iter (29)): inlining minor_gc into
@@ -428,7 +421,7 @@ minor_gc(CTX *c, VALUE *sp_top)
         remset_overflow = false;
     } else {
         for (size_t i = 0; i < remset_cnt; i++) {
-            GCHeader *h = remset_buf[i];
+            ASTroObjectHeader *h = remset_buf[i];
             if (HDR_DIRTY(h)) {
                 process_object(gc, h);
                 HDR_CLR_DIRTY(h);
@@ -438,7 +431,7 @@ minor_gc(CTX *c, VALUE *sp_top)
     remset_cnt = 0;
 
     while (scan_head < scan_tail) {
-        GCHeader *h = scan_buf[scan_head++];
+        ASTroObjectHeader *h = scan_buf[scan_head++];
         process_object(gc, h);
     }
     scan_head = scan_tail = 0;
@@ -480,15 +473,15 @@ minor_gc(CTX *c, VALUE *sp_top)
 // ---------------------------------------------------------------------------
 
 static void *
-major_promote(ASTroGC *gc, GCHeader *oldh)
+major_promote(ASTroGC *gc, ASTroObjectHeader *oldh)
 {
-    if (oldh->fwd) return oldh->fwd;
-    size_t aligned = ALIGN8(oldh->size);
-    GCHeader *newh = old_alloc(gc, HDR_KIND(oldh), oldh->size, aligned);
-    memcpy((void *)(newh + 1), (void *)(oldh + 1), aligned);
+    if (oldh->gc_fwd) return oldh->gc_fwd;
+    size_t aligned = ALIGN8(oldh->gc_size);
+    ASTroObjectHeader *newh = old_alloc(gc, oldh->gc_size, aligned);
+    memcpy((void *)newh, (void *)oldh, aligned);
     HDR_SET_MARKED(newh);
-    void *new_payload = (void *)(newh + 1);
-    oldh->fwd = new_payload;
+    void *new_payload = (void *)newh;
+    oldh->gc_fwd = new_payload;
     return new_payload;
 }
 
@@ -498,10 +491,10 @@ major_edge(void *ctx, void **slot)
     ASTroGC *gc = (ASTroGC *)ctx;
     VALUE v = (VALUE)*slot;
     if (!IS_PTR(v)) return;
-    GCHeader *vh = (GCHeader *)v - 1;
+    ASTroObjectHeader *vh = (ASTroObjectHeader *)v;
     if (in_nursery(gc, (void *)v)) {
         *slot = (void *)(VALUE)major_promote(gc, vh);
-        scan_push(gc, (GCHeader *)*slot - 1);
+        scan_push(gc, (ASTroObjectHeader *)*slot - 1);
     } else if (!HDR_MARKED(vh)) {
         HDR_SET_MARKED(vh);
         gray_push(gc, vh);
@@ -509,9 +502,9 @@ major_edge(void *ctx, void **slot)
 }
 
 static void
-major_process(ASTroGC *gc, GCHeader *h)
+major_process(ASTroGC *gc, ASTroObjectHeader *h)
 {
-    if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, major_edge);
+    ASTRO_GC_SCAN_EDGES((void *)h, h->gc_size, gc, major_edge);
 }
 
 static void
@@ -528,10 +521,10 @@ major_gc(CTX *c, VALUE *sp_top)
     for (VALUE *p = c->env; p < sp_top; p++) {
         VALUE v = *p;
         if (!IS_PTR(v)) continue;
-        GCHeader *h = (GCHeader *)v - 1;
+        ASTroObjectHeader *h = (ASTroObjectHeader *)v;
         if (in_nursery(gc, (void *)v)) {
             *p = (VALUE)major_promote(gc, h);
-            scan_push(gc, (GCHeader *)*p - 1);
+            scan_push(gc, (ASTroObjectHeader *)*p - 1);
         } else if (!HDR_MARKED(h)) {
             HDR_SET_MARKED(h);
             gray_push(gc, h);
@@ -540,11 +533,11 @@ major_gc(CTX *c, VALUE *sp_top)
 
     while (gray_cnt > 0 || scan_head < scan_tail) {
         while (gray_cnt > 0) {
-            GCHeader *h = gray_buf[--gray_cnt];
+            ASTroObjectHeader *h = gray_buf[--gray_cnt];
             major_process(gc, h);
         }
         while (scan_head < scan_tail) {
-            GCHeader *h = scan_buf[scan_head++];
+            ASTroObjectHeader *h = scan_buf[scan_head++];
             major_process(gc, h);
         }
     }
@@ -554,13 +547,13 @@ major_gc(CTX *c, VALUE *sp_top)
         char *p = tenured_base;
         size_t live = 0;
         while (p < tenured_top) {
-            GCHeader *h = (GCHeader *)p;
-            size_t total = sizeof(GCHeader) + ALIGN8(h->size);
+            ASTroObjectHeader *h = (ASTroObjectHeader *)p;
+            size_t total = ALIGN8(h->gc_size);
             if (HDR_MARKED(h)) {
                 HDR_CLR_MARKED(h);
                 HDR_CLR_DIRTY(h);
-                h->fwd    = NULL;
-                live += h->size;
+                h->gc_fwd    = NULL;
+                live += h->gc_size;
             }
             p += total;
         }
@@ -607,6 +600,6 @@ aro_gc_fini(CTX *c)
 size_t
 aro_gc_size_of(void *p)
 {
-    GCHeader *h = (GCHeader *)p - 1;
-    return h->size;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)p;
+    return h->gc_size;
 }
