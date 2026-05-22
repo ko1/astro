@@ -14,6 +14,10 @@
 #  define ASTRO_DEBUG 1
 #endif
 #include "astro_debug.h"
+// Pull ASTroObjectHeader — sample's heap structs embed `head` as first
+// field.  gc_types.h is the types-only slice of gc.h (no CTX-dependent
+// static inlines) so it can be included before CTX_struct is defined.
+#include "precise_gc/gc_types.h"
 
 // Option model — see naruby parent for the rationale.  baruby keeps the
 // orthogonal AOT / PG flags.  JIT (-j) is currently unwired post-fork.
@@ -79,74 +83,79 @@ typedef uint64_t state_serial_t;
 #define IS_PTR(v)     ((v) != VAL_FALSE \
                        && ((uintptr_t)(v) & (uintptr_t)7) == 0)
 
-// Heap object header.  Type tag lets the dispatch nodes branch on
-// receiver type at eval time (e.g. call_size: array vs string).
+// Type tag — stored in head.flags low 3 bits.  Distinct OBJ_BYTE_DATA
+// tag for raw byte buffers (= BaString.bytes wrapped in BaByteData)
+// so the framework's SCAN_EDGES can dispatch uniformly via head.flags
+// (no separate framework "category" needed).
 enum obj_type {
     OBJ_ARRAY       = 1,
     OBJ_STRING      = 2,
     OBJ_VALUE_ARRAY = 3,    // raw VALUE[] payload (= BaArrayItems)
+    OBJ_BYTE_DATA   = 4,    // raw char[] payload (= BaByteData)
 };
-
-typedef struct ObjectHeader {
-    uint32_t type;
-    uint32_t flags;
-} ObjectHeader;
+#define OBJ_TYPE_MASK   0x07u   /* low 3 bits of head.flags */
+#define OBJ_FLAG_SSO    0x08u   /* bit 3: SSO inline (BaString only) */
 
 // Heap object holding a VALUE[] payload.  Allocated separately from the
 // owning BaArray so realloc can grow it without moving the BaArray itself.
-// ObjectHeader prefix lets the framework's SCAN_EDGES dispatch on type:
-// items[] is treated as OBJ_VALUE_ARRAY which scans each data slot.
+// The ASTroObjectHeader.flags is set to OBJ_VALUE_ARRAY so SCAN_EDGES
+// scans each data slot.
 typedef struct BaArrayItems {
-    ObjectHeader hdr;
+    ASTroObjectHeader head;
     VALUE data[];           // flex array; capa is tracked in the owning BaArray
 } BaArrayItems;
 
+// Heap object holding raw bytes (= BaString.bytes after iter 75 Step C).
+// head.flags = OBJ_BYTE_DATA, SCAN_EDGES is a no-op for these.
+typedef struct BaByteData {
+    ASTroObjectHeader head;
+    char data[];            // flex array; size is in head.gc_size
+} BaByteData;
+
 typedef struct BaArray {
-    ObjectHeader hdr;
+    ASTroObjectHeader head;
     uint32_t len;
     uint32_t capa;
-    BaArrayItems *items;     // separate alloc; framework forwards via OBJ_VALUE_ARRAY
+    BaArrayItems *items;
 } BaArray;
 
 // iter 53: SSO (small-string optimization).  Strings with `len <=
 // BSTR_SSO_MAX` (7) are stored inline in the `small[8]` arm of the
-// union; longer strings allocate a separate `bytes` payload as before.
-// The discriminator is `hdr.flags & OBJ_FLAG_SSO`.  Layout total
-// stays 24 B (unchanged) — the union overlays the 8-byte pointer slot.
+// union; longer strings allocate a separate BaByteData payload.
+// The discriminator is OBJ_FLAG_SSO bit in head.flags.  Layout total
+// stays 24 B — the union overlays the 8-byte pointer slot.
 //
 // Read sites must go through `BSTR_BYTES(s)` (or `bstr_bytes(s)`) —
-// reading `s->bytes` directly is UB for SSO strings (the bytes alias
-// to inline char data interpreted as a pointer).  The GC mark / scan
-// paths must skip the bytes pointer when `BSTR_IS_SSO(s)` (the inline
-// chars are not a separate heap object).
-#define OBJ_FLAG_SSO   0x01u
+// reading `s->bytes->data` directly is UB for SSO strings (the bytes
+// alias to inline char data interpreted as a pointer).  The GC mark /
+// scan paths must skip the bytes pointer when `BSTR_IS_SSO(s)`.
 #define BSTR_SSO_MAX   7u    /* 7 chars + NUL fits in the 8-byte union */
 
 typedef struct BaString {
-    ObjectHeader hdr;
+    ASTroObjectHeader head;
     uint32_t len;            // byte length (not counting NUL)
     uint32_t capa;           // SSO: sizeof(small).  heap: len + 1.
     union {
-        char *bytes;         // heap: NUL-terminated payload (separate alloc)
-        char  small[8];      // SSO: inline chars, NUL at small[len]
+        BaByteData *bytes;   // heap: pointer to NUL-terminated payload (separate alloc)
+        char        small[8];// SSO: inline chars, NUL at small[len]
     };
 } BaString;
 
-#define BSTR_IS_SSO(s)  (((s)->hdr.flags & OBJ_FLAG_SSO) != 0u)
+#define BSTR_IS_SSO(s)  (((s)->head.flags & OBJ_FLAG_SSO) != 0u)
 
 static inline const char *
 bstr_bytes(const BaString * const s)
 {
-    return BSTR_IS_SSO(s) ? s->small : s->bytes;
+    return BSTR_IS_SSO(s) ? s->small : s->bytes->data;
 }
 static inline char *
 bstr_bytes_mut(BaString * const s)
 {
-    return BSTR_IS_SSO(s) ? s->small : s->bytes;
+    return BSTR_IS_SSO(s) ? s->small : s->bytes->data;
 }
 #define BSTR_BYTES(s)  bstr_bytes(s)
 
-#define OBJ_TYPE(v)   (((ObjectHeader *)(v))->type)
+#define OBJ_TYPE(v)   (((ASTroObjectHeader *)(v))->flags & OBJ_TYPE_MASK)
 #define IS_ARY(v)     (IS_PTR(v) && OBJ_TYPE(v) == OBJ_ARRAY)
 #define IS_STR(v)     (IS_PTR(v) && OBJ_TYPE(v) == OBJ_STRING)
 #define VAL2ARY(v)    ((BaArray *)(v))
@@ -270,8 +279,8 @@ typedef struct CTX_struct {
  *   ctx, edge_visit : 各 slot を visit する callback (= 通常 ASTroGC *)
  */
 #define ASTRO_GC_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {  \
-    ObjectHeader *_oh = (ObjectHeader *)(payload);                          \
-    switch (_oh->type) {                                                    \
+    ASTroObjectHeader *_h = (ASTroObjectHeader *)(payload);                 \
+    switch (_h->flags & OBJ_TYPE_MASK) {                                    \
       case OBJ_ARRAY: {                                                     \
           BaArray *_a = (BaArray *)(payload);                               \
           edge_visit((ctx), (void **)&_a->items);                           \
@@ -290,8 +299,11 @@ typedef struct CTX_struct {
               edge_visit((ctx), (void **)&_ai->data[_i]);                   \
           break;                                                             \
       }                                                                      \
+      case OBJ_BYTE_DATA:                                                   \
+          /* raw bytes — no edges to scan */                                \
+          break;                                                             \
       default:                                                               \
-          ASTRO_ASSERT(0 && "SCAN_EDGES: unknown ObjectHeader.type");       \
+          ASTRO_ASSERT(0 && "SCAN_EDGES: unknown head.flags type");         \
     }                                                                        \
 } while (0)
 

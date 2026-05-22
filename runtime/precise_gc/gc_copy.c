@@ -19,18 +19,11 @@
 
 const char *aro_gc_backend_name = "copy";
 
-/* 16-byte header.  kind packed to flags byte. */
-typedef struct GCHeader {
-    uint8_t  flags;     /* bits 0-2: kind */
-    uint8_t  _pad[3];
-    uint32_t size;
-    void    *fwd;
-} GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
-
-#define HDR_KIND_MASK    0x07u
-#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
-#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
+/* iter 75 Step C: framework GCHeader 廃止。 ASTroObjectHeader (gc.h)
+ * が payload offset 0 に置かれ、 gc_size / gc_fwd / gc_flags を保持。
+ * sample が head.flags で type tag を持つ (= 旧 kind は不要)。 */
+_Static_assert(sizeof(ASTroObjectHeader) == 16,
+               "moving GC: ASTroObjectHeader must be 16 bytes (head + fwd)");
 
 #define REGION_BYTES  ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual per semispace, lazy-paged */
 /* Stress mode mmaps a fresh to-space every GC and retires the old one;
@@ -52,29 +45,36 @@ _Static_assert(sizeof(struct GCHeader) == 16, "GCHeader must be 16 bytes");
  * Matches `gc_mark.c`'s slab class max (4096 B). */
 #define LARGE_THRESHOLD      4096u
 
-/* Large object header.  Lives in a separately-malloc'd buffer; not in
- * either semispace.  `fwd` field of the embedded GCHeader doubles as the
- * "marked this cycle" flag during collect: NULL = unmarked, non-NULL =
- * marked (we set it to the payload pointer so the standard "already
- * forwarded" check returns the same pointer for non-moving).  Sweep
- * clears fwd back to NULL on survivors and free()s unmarked entries. */
+/* Large object wrapper.  Lives in a separately-malloc'd buffer; not in
+ * either semispace.  Payload (= sample struct starting with
+ * ASTroObjectHeader) immediately follows the next-pointer pair —
+ * `large_payload(lo) = lo + 1`.
+ *
+ * "Forwarded marker" for large objects (= non-moving): set
+ * head.gc_fwd to the payload itself.  Sweep clears it to NULL on
+ * survivors and free()s the entry for unmarked. */
 typedef struct LargeObj {
     struct LargeObj *next;       /* live list, threaded through aro_gc_init's gc->large_head */
     struct LargeObj *next_gray;  /* gray queue during collect; NULL when not in queue */
-    GCHeader         header;
-    /* payload follows: large_payload(lo) = (void *)(&lo->header + 1) */
+    /* payload follows: large_payload(lo) = (void *)(lo + 1) */
 } LargeObj;
 
 static inline LargeObj *
 large_from_payload(void *p)
 {
-    return (LargeObj *)((char *)p - sizeof(GCHeader) - offsetof(LargeObj, header));
+    return (LargeObj *)((char *)p - sizeof(LargeObj));
 }
 
 static inline void *
 large_payload(LargeObj *lo)
 {
-    return (void *)(&lo->header + 1);
+    return (void *)(lo + 1);
+}
+
+static inline ASTroObjectHeader *
+large_head(LargeObj *lo)
+{
+    return (ASTroObjectHeader *)large_payload(lo);
 }
 
 // ----------------------------------------------------------------------------
@@ -175,28 +175,31 @@ gc_bump_slow(CTX *c, size_t total)
     }
 }
 
-static inline GCHeader *
-gc_bump(CTX *c, AstroGcCategory cat, size_t payload_size, size_t aligned)
+/* Bump in semispace.  Returns payload pointer (= ASTroObjectHeader at
+ * offset 0).  Caller (sample) sets head.flags after return. */
+static inline void *
+gc_bump(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    size_t total = sizeof(GCHeader) + aligned;
     if (__builtin_expect(ASTRO_GC_COMMON(c)->stress
                          || gc->bytes_since_gc + payload_size > gc->gc_threshold
-                         || (gc->active_top + total) > gc->active_end, 0)) {
-        gc_bump_slow(c, total);
+                         || (gc->active_top + aligned) > gc->active_end, 0)) {
+        gc_bump_slow(c, aligned);
     }
-    GCHeader *h = (GCHeader *)gc->active_top;
-    HDR_SET_KIND(h, cat);
-    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
-    ASTRO_GC_HEADER_SET_FWD(h, NULL);
-    gc->active_top += total;
+    void *payload = gc->active_top;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    h->flags    = 0;
+    h->gc_flags = 0;
+    h->gc_size  = (uint32_t)payload_size;
+    h->gc_fwd   = NULL;
+    gc->active_top += aligned;
     gc->bytes_since_gc += payload_size;
-    return h;
+    return payload;
 }
 
 /* Allocate a LargeObj in malloc heap and link into gc->large_head. */
-static GCHeader *
-large_alloc(CTX *c, AstroGcCategory cat, size_t payload_size, size_t aligned)
+static void *
+large_alloc(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(ASTRO_GC_COMMON(c)->stress
@@ -208,12 +211,14 @@ large_alloc(CTX *c, AstroGcCategory cat, size_t payload_size, size_t aligned)
     lo->next = gc->large_head;
     gc->large_head = lo;
     lo->next_gray = NULL;
-    GCHeader *h = &lo->header;
-    HDR_SET_KIND(h, cat);
-    ASTRO_GC_HEADER_SET_SIZE(h, payload_size);
-    ASTRO_GC_HEADER_SET_FWD(h, NULL);
+    void *payload = large_payload(lo);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    h->flags    = 0;
+    h->gc_flags = 0;
+    h->gc_size  = (uint32_t)payload_size;
+    h->gc_fwd   = NULL;
     gc->bytes_since_gc += payload_size;
-    return h;
+    return payload;
 }
 
 void *
@@ -221,12 +226,14 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 {
     ASTRO_ASSERT(c->sp >= c->env);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
-        ? large_alloc(c, ASTRO_GC_CAT_SCAN, payload_size, aligned)
-        : gc_bump   (c, ASTRO_GC_CAT_SCAN, payload_size, aligned);
-    void *payload = (void *)(h + 1);
+    void *payload = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
+        ? large_alloc(c, payload_size, aligned)
+        : gc_bump    (c, payload_size, aligned);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    ASTRO_GC_INIT_PAYLOAD(payload, aligned);
+    /* Zero the post-head region so a GC scan immediately after alloc
+     * sees no stale heap-pointer bits.  Head was init'd to zero above. */
+    memset((char *)payload + sizeof(ASTroObjectHeader), 0,
+           aligned - sizeof(ASTroObjectHeader));
 
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
@@ -238,12 +245,12 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
     ASTRO_ASSERT(c->sp >= c->env);
     size_t aligned = ALIGN8(payload_size);
-    GCHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
-        ? large_alloc(c, ASTRO_GC_CAT_BYTE, payload_size, aligned)
-        : gc_bump   (c, ASTRO_GC_CAT_BYTE, payload_size, aligned);
-    void *payload = (void *)(h + 1);
+    void *payload = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
+        ? large_alloc(c, payload_size, aligned)
+        : gc_bump    (c, payload_size, aligned);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    ASTRO_GC_INIT_BYTE_PAYLOAD(payload, aligned);
+    /* Byte payloads: skip post-head zero-fill (caller writes data
+     * immediately).  Head was init'd to zero by the bump/large path. */
 
     ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
     ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
@@ -276,20 +283,21 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     if (!*link) return NULL;
     LargeObj *lo = *link;
 
-    size_t old_size = ASTRO_GC_HEADER_SIZE(&lo->header);
-    AstroGcCategory cat = HDR_KIND(&lo->header);
+    ASTroObjectHeader *oldh = large_head(lo);
+    size_t old_size = oldh->gc_size;
     size_t old_aligned = ALIGN8(old_size);
     size_t new_aligned = ALIGN8(new_size);
     LargeObj *new_lo = (LargeObj *)realloc(lo, sizeof(LargeObj) + new_aligned);
     if (!new_lo) { perror("baruby_gc=copy: realloc large"); abort(); }
     *link = new_lo;
-    ASTRO_GC_HEADER_SET_SIZE(&new_lo->header, new_size);
+    ASTroObjectHeader *newh = large_head(new_lo);
+    newh->gc_size = (uint32_t)new_size;
 
-    /* Zero the freshly-grown tail for SCAN payloads: GC mark phase walks
-     * these as VALUE-bearing; stale bytes from a recycled chunk would
-     * look like heap pointers and crash.  BYTE payloads are filled by
-     * the caller. */
-    if (cat == ASTRO_GC_CAT_SCAN && new_aligned > old_aligned) {
+    /* Zero the freshly-grown tail unconditionally.  Sample-side SCAN_EDGES
+     * for OBJ_BYTE_DATA short-circuits, so even pre-existing stale bytes
+     * never look like pointers to GC.  Cost: one memset per realloc grow
+     * — well outside any hot path. */
+    if (new_aligned > old_aligned) {
         memset((char *)large_payload(new_lo) + old_aligned, 0,
                new_aligned - old_aligned);
     }
@@ -324,10 +332,9 @@ static void *
 forward_payload(ASTroGC *gc, void *old_payload)
 {
     if (!old_payload) return NULL;
-    GCHeader *oldh = (GCHeader *)old_payload - 1;
-    void *existing_fwd = ASTRO_GC_HEADER_GET_FWD(oldh);
-    if (existing_fwd) {
-        return existing_fwd;
+    ASTroObjectHeader *oldh = (ASTroObjectHeader *)old_payload;
+    if (oldh->gc_fwd) {
+        return oldh->gc_fwd;
     }
 
     /* When no large object exists, every reachable payload is in the
@@ -341,21 +348,19 @@ forward_payload(ASTroGC *gc, void *old_payload)
             LargeObj *lo = large_from_payload(old_payload);
             lo->next_gray = gc->large_gray;
             gc->large_gray = lo;
-            ASTRO_GC_HEADER_SET_FWD(oldh, old_payload);   /* mark by self-ref */
+            oldh->gc_fwd = old_payload;   /* mark by self-ref */
             return old_payload;
         }
     }
 
-    size_t aligned = ALIGN8(ASTRO_GC_HEADER_SIZE(oldh));
-    size_t total = sizeof(GCHeader) + aligned;
+    size_t aligned = ALIGN8(oldh->gc_size);
 
-    GCHeader *newh = (GCHeader *)gc->to_top;
-    memcpy(newh, oldh, total);
-    ASTRO_GC_HEADER_SET_FWD(newh, NULL);
-    gc->to_top += total;
+    void *new_payload = gc->to_top;
+    memcpy(new_payload, old_payload, aligned);
+    ((ASTroObjectHeader *)new_payload)->gc_fwd = NULL;
+    gc->to_top += aligned;
 
-    void *new_payload = (void *)(newh + 1);
-    ASTRO_GC_HEADER_SET_FWD(oldh, new_payload);
+    oldh->gc_fwd = new_payload;
     return new_payload;
 }
 
@@ -430,12 +435,10 @@ gc_collect_internal(CTX *c)
      * BYTE / FREE skip.  forward_edge uses IS_PTR to filter values. */
     char *scan = gc->to_base;
     while (scan < gc->to_top) {
-        GCHeader *h = (GCHeader *)scan;
-        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) {
-            ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, forward_edge);
-        }
-        ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
-        scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
+        ASTroObjectHeader *h = (ASTroObjectHeader *)scan;
+        ASTRO_GC_SCAN_EDGES(h, h->gc_size, gc, forward_edge);
+        ASTRO_GC_COMMON(c)->stats.heap_bytes += h->gc_size;
+        scan += ALIGN8(h->gc_size);
     }
 
     /* (2b) Large-gray drain (only if large objs exist).  Each large gray
@@ -445,21 +448,16 @@ gc_collect_internal(CTX *c)
         LargeObj *lo = gc->large_gray;
         gc->large_gray = lo->next_gray;
         lo->next_gray = NULL;
-        GCHeader *h = &lo->header;
-        /* large obj: payload は (void *)large_payload(lo)、 inline と addr が違う */
-        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) {
-            ASTRO_GC_SCAN_EDGES(large_payload(lo), (h)->size, gc, forward_edge);
-        }
-        ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
+        ASTroObjectHeader *h = large_head(lo);
+        ASTRO_GC_SCAN_EDGES((void *)h, h->gc_size, gc, forward_edge);
+        ASTRO_GC_COMMON(c)->stats.heap_bytes += h->gc_size;
         /* Drain any newly-added to-space objs before processing the next
          * large gray (preserves the cheney-scan order semantics). */
         while (scan < gc->to_top) {
-            GCHeader *h2 = (GCHeader *)scan;
-            if (HDR_KIND(h2) == ASTRO_GC_CAT_SCAN) {
-                ASTRO_GC_SCAN_EDGES((void *)((h2)+1), (h2)->size, gc, forward_edge);
-            }
-            ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h2);
-            scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h2));
+            ASTroObjectHeader *h2 = (ASTroObjectHeader *)scan;
+            ASTRO_GC_SCAN_EDGES(h2, h2->gc_size, gc, forward_edge);
+            ASTRO_GC_COMMON(c)->stats.heap_bytes += h2->gc_size;
+            scan += ALIGN8(h2->gc_size);
         }
     }
 
@@ -467,14 +465,14 @@ gc_collect_internal(CTX *c)
     LargeObj **link = &gc->large_head;
     while (*link) {
         LargeObj *lo = *link;
-        GCHeader *h = &lo->header;
-        if (ASTRO_GC_HEADER_GET_FWD(h) == NULL) {
+        ASTroObjectHeader *h = large_head(lo);
+        if (h->gc_fwd == NULL) {
             /* unmarked → free */
             *link = lo->next;
             free(lo);
         } else {
             /* marked → clear fwd for next cycle, keep in list */
-            ASTRO_GC_HEADER_SET_FWD(h, NULL);
+            h->gc_fwd = NULL;
             link = &lo->next;
         }
     }
@@ -536,6 +534,5 @@ aro_gc_fini(CTX *c)
 size_t
 aro_gc_size_of(void *p)
 {
-    GCHeader *h = (GCHeader *)p - 1;
-    return h->size;
+    return ((ASTroObjectHeader *)p)->gc_size;
 }

@@ -6,6 +6,11 @@
 #include <stdbool.h>
 #include <string.h>
 
+/* Types-only header — sample's context.h includes this directly to get
+ * ASTroObjectHeader BEFORE defining CTX_struct.  See gc_types.h for the
+ * layering rationale. */
+#include "gc_types.h"
+
 /* ---------------------------------------------------------------------------
  * Virtual-address reservation for region-based backends.
  *
@@ -64,103 +69,9 @@ typedef intptr_t VALUE;
 // aro_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
 // ---------------------------------------------------------------------------
 
-#define BARUBY_GC_NONE             1
-#define BARUBY_GC_MARK             2
-#define BARUBY_GC_MARK_GEN         3
-#define BARUBY_GC_MARK_GEN_INC     4
-#define BARUBY_GC_COPY             5
-#define BARUBY_GC_COPY_GEN         6
-#define BARUBY_GC_COPY_GEN_INC     7
-#define BARUBY_GC_MARK_COMPACT     8
-#define BARUBY_GC_MARK_COMPACT_GEN 9
-#define BARUBY_GC_BUMP             10
-#define BARUBY_GC_MARK_BUMP_GEN    11
-#define BARUBY_GC_IMMIX            12
-#define BARUBY_GC_IMMIX_GEN        13
-#define BARUBY_GC_MARK_BITMAP_GEN      14
-#define BARUBY_GC_MARK_CARD_GEN        15
-#define BARUBY_GC_MARK_FREELIST        16
-
-#ifndef BARUBY_GC
-#  define BARUBY_GC BARUBY_GC_COPY
-#endif
-
-// Backends that need a write barrier (gen / inc variants).  Callers must
-// always go through aro_gc_wb / _bulk for heap-pointer writes — for
-// non-WB backends it compiles to a plain `*slot = v`, free of cost.
-#if BARUBY_GC == BARUBY_GC_MARK_GEN         || \
-    BARUBY_GC == BARUBY_GC_MARK_GEN_INC     || \
-    BARUBY_GC == BARUBY_GC_COPY_GEN         || \
-    BARUBY_GC == BARUBY_GC_COPY_GEN_INC     || \
-    BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN || \
-    BARUBY_GC == BARUBY_GC_MARK_BUMP_GEN    || \
-    BARUBY_GC == BARUBY_GC_IMMIX_GEN        || \
-    BARUBY_GC == BARUBY_GC_MARK_BITMAP_GEN  || \
-    BARUBY_GC == BARUBY_GC_MARK_CARD_GEN
-#  define BARUBY_GC_HAS_WB 1
-#endif
-
-/* Framework が GCHeader に詰める分類 = "category"。 sample-defined kind
- * (= OBJ_ARRAY / OBJ_STRING / OBJ_VALUE_ARRAY 等) は sample 側
- * (context.h) で別 enum、 framework は category だけ持つ。
- *
- * - SCAN  : sample の SCAN_EDGES が dispatch して edge を visit
- *           (sample は ObjectHeader.type で自身の object 種別を識別)
- * - BYTE  : scan skip (sample が即書き、 GC は touch しない)
- * - FREE  : backend 内部 sweep marker (= 公開 alloc API 無し)
- *
- * 旧 VALS category (= framework が直接 VALUE[] iterate) は廃止。
- * VALUE 配列も sample 側で ObjectHeader 付き payload にして SCAN
- * 経由で dispatch する (= e.g. baruby_precise の OBJ_VALUE_ARRAY)。
- *
- * 旧 AroGcKind enum (= KIND_OBJ_ARRAY 等を含む) も廃止。 sample kind を
- * framework が知る必要は無く、 framework は category のみで scan 戦略を決定。 */
-typedef enum {
-    ASTRO_GC_CAT_SCAN = 0,
-    ASTRO_GC_CAT_BYTE = 1,
-    ASTRO_GC_CAT_FREE = 2,
-} AstroGcCategory;
-
-/* Transitional alias: 旧 backend コードで `AroGcKind` typename と
- * `KIND_FREE` 値を使ってる箇所が残っている。 backend が category を
- * 2 bit 領域に詰めるのを想定して値も一致させる。 全 backend が
- * AstroGcCategory に移行したら削除する。 */
-typedef AstroGcCategory AroGcKind;
-#define KIND_FREE         ASTRO_GC_CAT_FREE
-#define KIND_SCAN         ASTRO_GC_CAT_SCAN
-#define KIND_BYTE         ASTRO_GC_CAT_BYTE
-/* 旧 framework-internal kind の一時 alias。 iter 75 Step B 移行が
- * 完了したら backend を直接 CAT_* に書き換え、 削除。 sample-kind
- * (KIND_OBJ_ARRAY 等) は framework から見えないので alias しない。 */
-#define KIND_PAYLOAD_BYTE ASTRO_GC_CAT_BYTE
-#define KIND_PAYLOAD_VAL  ASTRO_GC_CAT_SCAN
-
-#include <time.h>
-
-typedef struct {
-    size_t total_bytes;      // cumulative alloc bytes
-    size_t heap_bytes;       // current live bytes (best-effort)
-    size_t gc_count;         // total collections
-    size_t minor_count;      // minor (= nursery) collections, gen backends
-    size_t major_count;      // major (= whole heap) collections, gen backends
-    double total_seconds;    // cumulative wall-clock seconds spent in collection
-    double max_pause_seconds;// longest single GC pause (latency upper-bound)
-    double mark_seconds;
-    double reclaim_seconds;
-} AroGcStats;
-
-/* AroGcCommonState: 各 backend の `struct ASTroGC` の **先頭 field** に
- * 置く約束の「共通ヘッダ」。 gc.h の helper / stat reader は
- * `(AroGcCommonState *)c->astro_gc` で取り出してアクセスするので、
- * backend の追加 field 内容は知らなくて済む (= ASTroGC を opaque に
- * 保てる)。 stats / stress / re-entrancy timer は backend 横断で必要
- * だが per-instance な値なので、 ここにまとめている。 */
-typedef struct AroGcCommonState {
-    AroGcStats      stats;
-    bool            stress;       /* BARUBY_GC_STRESS=1 → collect on every alloc */
-    int             time_depth;   /* re-entrancy guard (major calling minor 等) */
-    struct timespec time_t0;      /* outermost begin の wall-clock anchor */
-} AroGcCommonState;
+/* All type definitions (BARUBY_GC_* IDs, ASTRO_GC_HAS_FWD,
+ * ASTroObjectHeader, AstroGcCategory + KIND_* aliases, AroGcStats,
+ * AroGcCommonState) live in gc_types.h.  Included above. */
 
 /* Accessors.  `c->astro_gc` is `struct ASTroGC *` (forward decl in
  * context.h).  Cast to `AroGcCommonState *` is safe iff each backend's
