@@ -124,21 +124,24 @@ walk_bake_sp_offset(NODE *n, int32_t chain_sum, uint32_t locals_cnt)
         return;
     }
     else if (k == &kind_node_pg_call1) {
+        /* sp_body は cached body (= 別途 code_repo iter で walk される)
+         * なので generic walk_children を使うと sp_body にも降りて
+         * しまう。 ここは args のみ手動 iterate。 */
         int32_t a = child_chain + (int32_t)n->u.node_pg_call1.locals_cnt;
-        WalkBakeCtx ctx = { a, locals_cnt };
-        k->walk_children(n, walk_bake_visit, &ctx);
+        walk_bake_sp_offset(n->u.node_pg_call1.a0, a, locals_cnt);
         return;
     }
     else if (k == &kind_node_pg_call2) {
         int32_t a = child_chain + (int32_t)n->u.node_pg_call2.locals_cnt;
-        WalkBakeCtx ctx = { a, locals_cnt };
-        k->walk_children(n, walk_bake_visit, &ctx);
+        walk_bake_sp_offset(n->u.node_pg_call2.a0, a, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call2.a1, a, locals_cnt);
         return;
     }
     else if (k == &kind_node_pg_call3) {
         int32_t a = child_chain + (int32_t)n->u.node_pg_call3.locals_cnt;
-        WalkBakeCtx ctx = { a, locals_cnt };
-        k->walk_children(n, walk_bake_visit, &ctx);
+        walk_bake_sp_offset(n->u.node_pg_call3.a0, a, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call3.a1, a, locals_cnt);
+        walk_bake_sp_offset(n->u.node_pg_call3.a2, a, locals_cnt);
         return;
     }
     /* Special-case 4: node_def has its own body, walked separately via
