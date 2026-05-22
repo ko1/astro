@@ -184,6 +184,45 @@ baruby_precise は precise *moving* (semi-space) GC の testbed。 仕様は
       分割。 現状は infra のみ用意 (`mark_gen_inc` / `copy_gen_inc`) で
       実体は STW major
 
+## graph_bfs で gen backend が non-gen より遅い (iter 70 観察)
+
+bench/graph_bfs.ba.rb は long-lived graph (10k node) + 短寿命 BFS
+working set という generational backend に有利なはずの workload。 だが
+median-of-3 で:
+
+| Backend  | graph_bfs | alloc_bytes | heap_bytes | gc_count |
+|----------|-----------|-------------|------------|----------|
+| copy     | 0.91 s    | 99 MB       | 16 MB      | 5        |
+| mark     | 0.89 s    | 99 MB       | 16 MB      | 5        |
+| copy_gen | 0.93 s    | **190 MB**  | **190 MB** | 11 minor |
+| mark_gen | 1.02 s    | **188 MB**  | 11 MB      | 11 minor |
+
+**観察**:
+- copy_gen: heap_bytes = alloc_bytes (= 全部 tenured へ promote、 major
+  なし)。 dead tenured が累積、 nursery が満タンになる頻度が高い
+- mark_gen: alloc_bytes が 2x なのに heap_bytes は bounded。 minor で
+  unmarked young は freed されている。 が、 minor の per-obj linked
+  list 操作が非 gen より重い
+
+**仮説**:
+- BFS の visited / dist / queue array は minor GC のタイミングで
+  まだ live なので promote されてしまう。 graph_bfs 設計時の「短寿命
+  working set」 仮定が NURSERY_BYTES (16 MiB) の制約と合わない
+- nursery が小さいので各 BFS の visited (10k bool ≒ 80 KB?) + queue
+  + dist で minor 1 回起きる。 そのとき BFS は走行中なので全部 live
+
+**改善案**:
+- (a) graph_bfs の n_bfs を増やして「複数 BFS の間で working set 完了」
+  のターン数を増やす。 但し BFS 自体が長くなって gen の win が薄まる
+- (b) BFS の working set を nursery より小さく (小 graph) → gen が
+  浮く設計
+- (c) nursery 経由しないで visited array を別 alloc 経路に → 設計変更
+- (d) `aro_gc_promote_hint(c, payload)` API で「これは長寿命」 と
+  hint を渡せる API を作る → bench 側で明示
+
+priority 低: 現状の bench も差分が出るので有用、 ただし gen を
+"showcasing" する目的なら nursery と workload の関係を見直すべき
+
 ## P1 — 性能
 
 - [ ] **callee frame の zero-init コストを減らす** — `node_call_<N>` で
