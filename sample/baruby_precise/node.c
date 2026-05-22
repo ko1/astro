@@ -158,7 +158,6 @@ SPECIALIZED_SRC(NODE *n)
 #include "node_hopt.c"
 #include "node_specialize.c"
 #include "node_replace.c"
-#include "node_walk.c"
 #include "node_alloc.c"
 
 // --- Hopt (profile-aware) hash dispatch + cache wrapper.
