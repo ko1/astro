@@ -1432,8 +1432,33 @@ contract:
 
 ## 6. 既知の問題
 
-- **AOT mode は moving GC 移行後に未検証** — SD bake された経路で
-  precise rooting が成立しているかは要再 audit (`-c` 動作含む)
+- ~~**AOT mode は moving GC 移行後に未検証**~~ — iter 68 (2026-05-22) 再検証で
+  全 15 backend × 主要 bench で動作確認、 sieve / hash_chain / list_sort 等で
+  AOT は plain の 1.6-6× 加速。 iter 67 large_alloc + iter 67-68
+  realloc_in_place の変更とも互換 (`gc_copy` / `gc_mark_compact` で AOT 動作確認)。
+  AOT mode 用 verification 表:
+  | Backend | sieve AOT | plain → AOT speedup |
+  |---|---|---|
+  | none            | 0.239s | 4.4× |
+  | mark            | 0.366s | 3.0× |
+  | mark_gen        | 0.380s | 3.2× |
+  | mark_gen_inc    | 0.392s | (similar) |
+  | copy            | 0.580s | 1.8× |
+  | copy_gen        | 0.394s | 2.9× |
+  | mark_compact    | 0.600s | 1.8× |
+  | mark_compact_gen | 0.394s | 2.9× |
+  | bump            | 0.635s | 1.6× |
+  | mark_bump_gen   | 0.375s | (gen の効果) |
+  | immix           | 0.671s | 1.7× |
+  | immix_gen       | 0.344s | (gen の効果が大きい) |
+  | mark_bitmap_gen | 0.411s | (8B header の効果) |
+  | mark_card_gen   | 0.418s | (page-level remset) |
+  | mark_freelist   | 0.644s | (region+freelist) |
+
+  AOT で gen 系が non-gen より速くなる傾向 (sieve で immix_gen 0.34 vs
+  immix 0.67) ・・・ pretenure 経路で BaArray.items が tenured 直行する
+  ことが SD specialized path で効きやすい。
+
 - `mark` family の `hash_chain` slab 配置 locality (BaArray と items[] が
   別 page) は `mark_bitmap_gen` で 8 B header にして class 32 に同梱できる
   と確認したが、 24 B header の既存系は構造改変が必要
