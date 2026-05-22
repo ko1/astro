@@ -3,6 +3,47 @@
 [spec.md](spec.md) — 言語仕様、[runtime.md](runtime.md) — 実装、
 [todo.md](todo.md) — 残タスク、[perf.md](perf.md) — ベンチ。
 
+## 2026-05-22 (71) — call_N / pg_call_N の args を @child 化 (per-body self-contained)
+
+iter 61 で walker は call_N / pg_call_N の args を walk するときに
+`chain += callee_locals_cnt` を加算していた (callee 側 frame の上に
+args 評価結果を置く規約だったため)。 これが walker の **cross-body
+依存** となり、 dynamic dispatch (= 呼び先 body が parse 時に未知)
+では成立しない設計だった。
+
+iter 71 で call convention を再設計:
+
+- `call_N` (call_0..call_3) と `pg_call_N` (pg_call0..pg_call3) の args
+  を `NODE *aN` operand から `VALUE aN@child` に変更。 framework の
+  `@child` dispatch が自動で `sp += N` → `sp[-N..-1]` への spill →
+  body には `VALUE` 引数で渡す経路に乗る (= node_add 等と同じ規約)
+- call_N node の `slot_count` が 0 → N に変わる (= caller 側 sp 消費 N)
+- body は `extras = locals_cnt - N` を zero-init して `sp + extras` で
+  dispatch (callee の sp top = caller_sp + locals_cnt は不変)
+- slowpath は framework が spill 済の `sp[-N..-1]` を読んで
+  `sp_dispatch_fresh_frame(c, body, args, N, sp - N)` を呼ぶ
+- walker の `chain += callee_locals_cnt` 特殊扱い 6 case (call_N + pg_call_N)
+  を削除、 generic な `child_chain = chain + slot_count` のみで args を walk
+- `arg_index` operand が runtime に使われなくなったので node.def から削除
+
+### 意義
+
+- walker bake の semantic が「caller の slot_count (= N) のみに依存」
+  に縮約 → 動的言語 / 呼び先 body 不明でも sp_offset bake が成立する
+  ようになる architectural simplification
+- (iter 70 で実験した walker の ASTroGen auto-gen は revert 済。
+  callee_locals_cnt 依存を framework に sneak させる必要があり、
+  単純な structural recursion で書けなかったのが原因。 iter 71 で
+  callee 依存が消えたので auto-gen が再度視野に入る — 別 iter)
+
+### 検証
+
+- 16 backend × 8 T_*.ba.rb × 2 (non-stress + stress) = **256/256 PASS**
+- AOT mode (PG): `copy` で fib 5.92s 完走
+- 性能影響なし (= 同じ bake 結果を異なる route で生成しているだけ)
+
+commit: `27dfedd1`
+
 ## 2026-05-22 (69) — 残 7 backend に mremap-based realloc_in_place
 
 `gc_mark_freelist` / `gc_immix` / `gc_mark_gen` / `gc_mark_gen_inc` /
