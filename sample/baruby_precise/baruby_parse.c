@@ -1365,7 +1365,16 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
       case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: {
           pm_local_variable_operator_write_node_t *n = (pm_local_variable_operator_write_node_t *)(node);
           uint32_t lvar_idx = lvar_index(tc, n->name);
-          NODE *rhs = alloc_binop(tc, n->binary_operator, bake_lget(tc, lvar_idx), TRANSDUCE(n->value));
+          /* iter 72: binop の lhs (= lget) と rhs (= n->value) は両方
+           * @child なので chain += 2 が必要。 PM_CALL_NODE binop 経路と
+           * 同じ。 これを忘れると `j += 1` で lhs lget の sp_offset が
+           * 2 ずれて type mismatch になる。 */
+          int32_t _saved_chain = tc->chain_sum;
+          tc->chain_sum = _saved_chain + 2;
+          NODE *lget = bake_lget(tc, lvar_idx);
+          NODE *rval = TRANSDUCE(n->value);
+          tc->chain_sum = _saved_chain;
+          NODE *rhs = alloc_binop(tc, n->binary_operator, lget, rval);
           if (rhs == NULL) {
               fprintf(stderr, "unsupported\n");
               exit(1);
