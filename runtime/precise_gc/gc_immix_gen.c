@@ -36,21 +36,15 @@
 #define NURSERY_BYTES    ((size_t)16u  << 20)          /* 16 MiB (tuning knob, not program limit) */
 #define ALIGN8(n)        (((n) + 7u) & ~(size_t)7u)
 
-/* 8-byte header (down from 16).  kind + old + dirty packed in flags.
- * Layout: flags(1) + mark_epoch(1) + _pad(2) + size(4) = 8 B. */
-typedef struct GCHeader {
-    uint8_t  flags;         /* bits 0-2: kind, bit 3: OLD (tenured), bit 4: DIRTY (remset) */
-    uint8_t  mark_epoch;
-    uint8_t  _pad[2];
-    uint32_t size;
-} GCHeader;
-_Static_assert(sizeof(struct GCHeader) == 8, "GCHeader must be 8 bytes");
+/* iter 75 Step C: framework GCHeader 廃止、 ASTroObjectHeader at offset 0
+ * (16 B for moving — gc_fwd 含む)。 mark_epoch を gc_flags の low 8 bits
+ * に詰める。 OLD / DIRTY は high bits。 */
+_Static_assert(sizeof(ASTroObjectHeader) == 16, "moving GC: head must be 16 B");
 
-#define HDR_KIND_MASK    0x07u
-#define H_OLD            0x08u  /* bit 3 */
-#define H_DIRTY          0x10u  /* bit 4 */
-#define HDR_KIND(h)        ((AroGcKind)((h)->flags & HDR_KIND_MASK))
-#define HDR_SET_KIND(h, k) ((h)->flags = (uint8_t)(((h)->flags & ~HDR_KIND_MASK) | ((k) & HDR_KIND_MASK)))
+#define H_OLD            (uint16_t)0x0100u   /* gc_flags bit 8 */
+#define H_DIRTY          (uint16_t)0x0200u   /* gc_flags bit 9 */
+#define HDR_EPOCH(h)       ((uint8_t)((h)->gc_flags & 0x00ffu))
+#define HDR_SET_EPOCH(h,e) ((h)->gc_flags = (uint16_t)(((h)->gc_flags & 0xff00u) | ((e) & 0xffu)))
 
 enum { BLK_FREE = 0, BLK_RECYCLABLE = 1, BLK_USED = 2 };
 
@@ -62,8 +56,14 @@ typedef struct BlockMeta {
 typedef struct LargeObj {
     struct LargeObj *next;
     size_t           map_bytes;
-    /* GCHeader follows */
+    /* payload follows */
 } LargeObj;
+
+static inline void *
+large_payload(LargeObj *lo)
+{
+    return (void *)(lo + 1);
+}
 
 #define MAJOR_THRESHOLD_MIN     (16u * 1024u * 1024u)
 #define MAJOR_THRESHOLD_FACTOR  2
@@ -81,14 +81,14 @@ typedef struct ASTroGC {
     size_t      max_touched_block;
     LargeObj   *large_head;
     char *nursery_base, *nursery_top, *nursery_end;
-    struct GCHeader **remset_buf;
+    struct ASTroObjectHeader **remset_buf;
     size_t            remset_cnt, remset_capa;
     /* iter 35 fairness fix: counts only promoted tenured bytes, not nursery. */
     size_t old_alloc_since_major;
     size_t major_threshold;
     CTX  *ctx;
     VALUE *sp_high_water;
-    struct GCHeader **gray_buf;
+    struct ASTroObjectHeader **gray_buf;
     size_t            gray_cnt, gray_capa;
     bool   remset_pressure;
 } ASTroGC;
@@ -187,10 +187,10 @@ in_nursery(ASTroGC *gc, const void *p)
 }
 
 static inline void
-mark_lines_for(ASTroGC *gc, const GCHeader *h)
+mark_lines_for(ASTroGC *gc, const ASTroObjectHeader *h)
 {
     const char *start = (const char *)h;
-    const char *last  = start + sizeof(GCHeader) + ALIGN8(h->size) - 1;
+    const char *last  = start + ALIGN8(h->gc_size) - 1;
     size_t bi = block_of(gc, start);
     size_t l0 = line_of(gc, start);
     size_t l1 = line_of(gc, last);
@@ -242,9 +242,9 @@ find_hole(ASTroGC *gc, size_t n_lines, char **out_start, char **out_end)
  * --------------------------------------------------------------------------- */
 
 static void *
-large_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size)
+large_alloc(ASTroGC *gc, size_t payload_size)
 {
-    size_t need = sizeof(LargeObj) + sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t need = sizeof(LargeObj) + ALIGN8(payload_size);
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     size_t map_bytes = (need + page - 1) & ~(page - 1);
     void *raw = mmap(NULL, map_bytes, PROT_READ|PROT_WRITE,
@@ -254,26 +254,25 @@ large_alloc(ASTroGC *gc, AroGcKind kind, size_t payload_size)
     lo->next = large_head;
     lo->map_bytes = map_bytes;
     large_head = lo;
-    GCHeader *h = (GCHeader *)(lo + 1);
-    HDR_SET_KIND(h, kind);
-    h->size = (uint32_t)payload_size;
-    h->mark_epoch = 0;
-    h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
-    old_alloc_since_major += sizeof(GCHeader) + ALIGN8(payload_size);
-    return (void *)(h + 1);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)large_payload(lo);
+    h->flags    = 0;
+    h->gc_flags = H_OLD;       /* epoch 0 + tenured */
+    h->gc_size  = (uint32_t)payload_size;
+    h->gc_fwd   = NULL;
+    old_alloc_since_major += ALIGN8(payload_size);
+    return (void *)h;
 }
 
-static GCHeader *
-hole_alloc_header(ASTroGC *gc, AroGcKind kind, size_t payload_size)
+static ASTroObjectHeader *hole_alloc_header(ASTroGC *gc, size_t payload_size)
 {
-    size_t total = sizeof(GCHeader) + ALIGN8(payload_size);
+    size_t total = ALIGN8(payload_size);
     if (cur_ptr + total <= cur_end) {
-        GCHeader *h = (GCHeader *)cur_ptr;
+        ASTroObjectHeader *h = (ASTroObjectHeader *)cur_ptr;
         cur_ptr += total;
-        HDR_SET_KIND(h, kind);
-        h->size = (uint32_t)payload_size;
-        h->mark_epoch = 0;
-        h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
+        h->flags    = 0;
+        h->gc_flags = H_OLD;
+        h->gc_size  = (uint32_t)payload_size;
+        h->gc_fwd   = NULL;
         return h;
     }
     size_t need_lines = (total + LINE_BYTES - 1) / LINE_BYTES;
@@ -281,12 +280,12 @@ hole_alloc_header(ASTroGC *gc, AroGcKind kind, size_t payload_size)
     if (find_hole(gc, need_lines, &hs, &he)) {
         cur_ptr = hs;
         cur_end = he;
-        GCHeader *h = (GCHeader *)cur_ptr;
+        ASTroObjectHeader *h = (ASTroObjectHeader *)cur_ptr;
         cur_ptr += total;
-        HDR_SET_KIND(h, kind);
-        h->size = (uint32_t)payload_size;
-        h->mark_epoch = 0;
-        h->flags = (uint8_t)(((uint8_t)kind & HDR_KIND_MASK) | H_OLD);
+        h->flags    = 0;
+        h->gc_flags = H_OLD;
+        h->gc_size  = (uint32_t)payload_size;
+        h->gc_fwd   = NULL;
         return h;
     }
     return NULL;
@@ -315,25 +314,25 @@ nursery_collect_slow(CTX *c, size_t total, VALUE *sp_top)
 }
 
 static inline void *
-nursery_bump(CTX *c, AroGcKind kind, size_t payload_size, size_t aligned, VALUE *sp_top)
+nursery_bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    size_t total = sizeof(GCHeader) + aligned;
+    size_t total = aligned;
 
     if (__builtin_expect(total > MEDIUM_MAX, 0)) {
-        return large_alloc(gc, ASTRO_GC_CAT_SCAN, payload_size);
+        return large_alloc(gc, payload_size);
     }
 
     if (__builtin_expect(gc->common.stress || nursery_top + total > nursery_end || remset_pressure, 0)) {
         nursery_collect_slow(c, total, sp_top);
     }
-    GCHeader *h = (GCHeader *)nursery_top;
-    HDR_SET_KIND(h, kind);
-    h->size = (uint32_t)payload_size;
-    h->mark_epoch = 0;
-    h->flags = (uint8_t)((uint8_t)kind & HDR_KIND_MASK);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)nursery_top;
+    h->flags    = 0;
+    h->gc_flags = 0;            /* fresh nursery slot: not OLD, epoch 0 */
+    h->gc_size  = (uint32_t)payload_size;
+    h->gc_fwd   = NULL;
     nursery_top += total;
-    return (void *)(h + 1);
+    return (void *)h;
 }
 
 void *
@@ -342,9 +341,10 @@ aro_gc_alloc(CTX *c, size_t payload_size)
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    void *payload = nursery_bump(c, ASTRO_GC_CAT_SCAN, payload_size, aligned, sp_top);
+    void *payload = nursery_bump(c, payload_size, aligned, sp_top);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
-    memset(payload, 0, aligned);
+    memset((char *)payload + sizeof(ASTroObjectHeader), 0,
+           aligned - sizeof(ASTroObjectHeader));
     gc->common.stats.total_bytes += payload_size;
     gc->common.stats.heap_bytes  += payload_size;
     return payload;
@@ -356,8 +356,9 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    void *payload = nursery_bump(c, KIND_PAYLOAD_BYTE, payload_size, aligned, sp_top);
+    void *payload = nursery_bump(c, payload_size, aligned, sp_top);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
+    /* Byte payloads skip post-head zero-fill. */
     gc->common.stats.total_bytes += payload_size;
     gc->common.stats.heap_bytes  += payload_size;
     return payload;
@@ -385,7 +386,7 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
 /* remset_pressure storage moved to ASTroGC.remset_pressure (aliased above). */
 
 static void
-remset_push(ASTroGC *gc, GCHeader *h)
+remset_push(ASTroGC *gc, ASTroObjectHeader *h)
 {
     if (__builtin_expect(remset_cnt >= MAX_REMSET_ENTRIES, 0)) {
         fprintf(stderr,
@@ -397,7 +398,7 @@ remset_push(ASTroGC *gc, GCHeader *h)
     if (remset_cnt >= remset_capa) {
         remset_capa = remset_capa ? remset_capa * 2 : 256;
         if (remset_capa > MAX_REMSET_ENTRIES) remset_capa = MAX_REMSET_ENTRIES;
-        remset_buf = (GCHeader **)realloc(remset_buf, remset_capa * sizeof(GCHeader *));
+        remset_buf = (ASTroObjectHeader **)realloc(remset_buf, remset_capa * sizeof(ASTroObjectHeader *));
         if (!remset_buf) abort();
     }
     remset_buf[remset_cnt++] = h;
@@ -411,10 +412,10 @@ aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (holder == NULL) return;
-    GCHeader *hh = (GCHeader *)holder - 1;
-    if ((hh->flags & H_OLD) && !(hh->flags & H_DIRTY)) {
+    ASTroObjectHeader *hh = (ASTroObjectHeader *)holder;
+    if ((hh->gc_flags & H_OLD) && !(hh->gc_flags & H_DIRTY)) {
         ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-        hh->flags |= H_DIRTY;
+        hh->gc_flags |= H_DIRTY;
         remset_push(gc, hh);
     }
 }
@@ -424,10 +425,10 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;
-    GCHeader *hh = (GCHeader *)holder - 1;
-    if ((hh->flags & H_OLD) && !(hh->flags & H_DIRTY)) {
+    ASTroObjectHeader *hh = (ASTroObjectHeader *)holder;
+    if ((hh->gc_flags & H_OLD) && !(hh->gc_flags & H_DIRTY)) {
         ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-        hh->flags |= H_DIRTY;
+        hh->gc_flags |= H_DIRTY;
         remset_push(gc, hh);
     }
 }
@@ -437,11 +438,11 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
  * --------------------------------------------------------------------------- */
 
 static void
-gray_push(ASTroGC *gc, GCHeader *h)
+gray_push(ASTroGC *gc, ASTroObjectHeader *h)
 {
     if (gray_cnt >= gray_capa) {
         gray_capa = gray_capa ? gray_capa * 2 : 256;
-        gray_buf = (GCHeader **)realloc(gray_buf, gray_capa * sizeof(GCHeader *));
+        gray_buf = (ASTroObjectHeader **)realloc(gray_buf, gray_capa * sizeof(ASTroObjectHeader *));
         if (!gray_buf) abort();
     }
     gray_buf[gray_cnt++] = h;
@@ -452,23 +453,22 @@ forward_payload_nursery(ASTroGC *gc, void *p)
 {
     if (!p) return NULL;
     if (!in_nursery(gc, p)) return p;
-    GCHeader *oldh = (GCHeader *)p - 1;
-    if (HDR_KIND(oldh) == KIND_FREE) {
-        return *(void **)p;
-    }
-    AroGcKind kind = HDR_KIND(oldh);
-    size_t size = oldh->size;
-    GCHeader *newh = hole_alloc_header(gc, ASTRO_GC_CAT_SCAN, size);
+    ASTroObjectHeader *oldh = (ASTroObjectHeader *)p;
+    if (oldh->gc_fwd) return oldh->gc_fwd;
+    size_t size = oldh->gc_size;
+    ASTroObjectHeader *newh = hole_alloc_header(gc, size);
     if (!newh) {
         fprintf(stderr, "baruby_gc=immix_gen: tenured arena OOM during promotion\n");
         abort();
     }
-    void *newp = (void *)(newh + 1);
+    void *newp = (void *)newh;
     size_t bytes = ALIGN8(size);
     if (bytes) memcpy(newp, p, bytes);
-    HDR_SET_KIND(oldh, KIND_FREE);
-    *(void **)p = newp;
-    old_alloc_since_major += sizeof(GCHeader) + ALIGN8(size);
+    /* memcpy overwrote newh's head with oldh's — restore framework state. */
+    newh->gc_flags = H_OLD;
+    newh->gc_fwd   = NULL;
+    oldh->gc_fwd = newp;
+    old_alloc_since_major += ALIGN8(size);
     gray_push(gc, newh);
     return newp;
 }
@@ -489,9 +489,9 @@ fwd_edge_minor(void *ctx, void **slot)
 }
 
 static void
-process_object_minor(ASTroGC *gc, GCHeader *h)
+process_object_minor(ASTroGC *gc, ASTroObjectHeader *h)
 {
-    if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, fwd_edge_minor);
+    ASTRO_GC_SCAN_EDGES((void *)h, h->gc_size, gc, fwd_edge_minor);
 }
 
 /* ---------------------------------------------------------------------------
@@ -513,17 +513,17 @@ minor_gc(CTX *c, VALUE *sp_top)
     for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value(gc, *p);
 
     for (size_t i = 0; i < remset_cnt; i++) {
-        GCHeader *const h = remset_buf[i];
-        if (h->flags & H_DIRTY) {
+        ASTroObjectHeader *const h = remset_buf[i];
+        if (h->gc_flags & H_DIRTY) {
             process_object_minor(gc, h);
-            h->flags &= (uint8_t)~H_DIRTY;
+            h->gc_flags &= (uint16_t)~H_DIRTY;
         }
     }
     remset_cnt = 0;
     remset_pressure = false;
 
     while (gray_cnt > 0) {
-        GCHeader *h = gray_buf[--gray_cnt];
+        ASTroObjectHeader *h = gray_buf[--gray_cnt];
         process_object_minor(gc, h);
     }
 
@@ -543,9 +543,9 @@ static void
 mark_value_major(ASTroGC *gc, VALUE v)
 {
     if (!IS_PTR(v)) return;
-    GCHeader *h = (GCHeader *)v - 1;
-    if (h->mark_epoch == cur_epoch) return;
-    h->mark_epoch = cur_epoch;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)v;
+    if (HDR_EPOCH(h) == cur_epoch) return;
+    HDR_SET_EPOCH(h, cur_epoch);
     if (in_arena(gc, h)) mark_lines_for(gc, h);
     gray_push(gc, h);
 }
@@ -560,8 +560,8 @@ static void
 process_gray_major(ASTroGC *gc)
 {
     while (gray_cnt > 0) {
-        GCHeader *h = gray_buf[--gray_cnt];
-        if (HDR_KIND(h) == ASTRO_GC_CAT_SCAN) ASTRO_GC_SCAN_EDGES((void *)((h)+1), (h)->size, gc, mark_edge_major);
+        ASTroObjectHeader *h = gray_buf[--gray_cnt];
+        ASTRO_GC_SCAN_EDGES((void *)h, h->gc_size, gc, mark_edge_major);
     }
 }
 
@@ -586,9 +586,9 @@ sweep_major(ASTroGC *gc)
     LargeObj **link = &large_head;
     while (*link) {
         LargeObj *lo = *link;
-        GCHeader *h = (GCHeader *)(lo + 1);
-        if (h->mark_epoch == cur_epoch) {
-            gc->common.stats.heap_bytes += h->size;
+        ASTroObjectHeader *h = (ASTroObjectHeader *)large_payload(lo);
+        if (HDR_EPOCH(h) == cur_epoch) {
+            gc->common.stats.heap_bytes += h->gc_size;
             link = &lo->next;
         } else {
             *link = lo->next;
@@ -665,13 +665,13 @@ aro_gc_fini(CTX *c)
 size_t
 aro_gc_size_of(void *p)
 {
-    GCHeader *h = (GCHeader *)p - 1;
-    return h->size;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)p;
+    return h->gc_size;
 }
 
 /* In-place realloc for large objs via mremap.  Template-driven via
  * gc_inplace_mremap.h — see that header's docstring. */
-#define ARO_GC_INPLACE_THRESHOLD(n)      (sizeof(GCHeader) + ALIGN8(n) <= MEDIUM_MAX)
+#define ARO_GC_INPLACE_THRESHOLD(n)      (ALIGN8(n) <= MEDIUM_MAX)
 #define ARO_GC_INPLACE_PAGE_SIZE         sysconf(_SC_PAGESIZE)
 #define ARO_GC_INPLACE_MREMAP_FLAGS      0
 #define ARO_GC_INPLACE_BYTES_ACCT(d)     (old_alloc_since_major += (d))
