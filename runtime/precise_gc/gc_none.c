@@ -66,6 +66,14 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
     return p;
 }
 
+/* gc_none has no GC scan, so byte / scan-safe paths are identical
+ * (= libc realloc).  Provided just to satisfy the linker. */
+void *
+aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
+{
+    return aro_gc_realloc_payload(c, old, new_size);
+}
+
 void
 aro_gc_collect(CTX *c)
 {

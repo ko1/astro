@@ -240,12 +240,16 @@ void *aro_gc_alloc_byte(CTX *c, size_t payload_size);
  * no per-object header (gc_none) override aro_gc_realloc_payload
  * themselves and don't implement the accessors. */
 void *aro_gc_realloc_payload(CTX *c, void *p, size_t new_size);
+/* aro_gc_realloc_byte_payload — same shape but for byte payloads (=
+ * caller fills the new bytes, framework skips zero-init growth).
+ * Pair-wise with aro_gc_alloc_byte.  Caller chooses based on what
+ * they alloc'd; framework does not inspect kind. */
+void *aro_gc_realloc_byte_payload(CTX *c, void *p, size_t new_size);
 
-/* Backend-provided header accessors — given a payload pointer (the
+/* Backend-provided header accessor — given a payload pointer (the
  * value returned by aro_gc_alloc / aro_gc_alloc_byte), return the
- * stored kind / size.  Used by the shared aro_gc_realloc_payload
- * default in gc_common.c. */
-AroGcKind aro_gc_kind_of(void *payload);
+ * stored size.  Used by the shared aro_gc_realloc_payload default in
+ * gc_common.c to compute copy_bytes. */
 size_t    aro_gc_size_of(void *payload);
 
 /* Optional backend hook: try to grow `old` in place (no alloc + memcpy).

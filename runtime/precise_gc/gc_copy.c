@@ -365,22 +365,13 @@ forward_payload(ASTroGC *gc, void *old_payload)
     return new_payload;
 }
 
-/* edge_visit callback for raw-pointer slots (= heap pointers, not tagged
- * VALUEs).  `ctx` is `ASTroGC *gc` passed by SCAN_EDGES.  Threading ctx
- * through the macro keeps `ASTroGC` out of the global namespace. */
+/* edge_visit callback for SCAN_EDGES and for root scan.  Unified: slot
+ * may hold either a raw heap pointer (= BaArray.items / BaString.bytes,
+ * always 8-aligned) or a tagged VALUE (= sp[] / KIND_PAYLOAD_VAL items).
+ * IS_PTR filters out singletons / fixnums; heap pointers pass through
+ * (= 8-aligned, non-singleton).  `ctx` is `ASTroGC *gc` from SCAN_EDGES. */
 static void
 forward_edge(void *ctx, void **slot)
-{
-    ASTroGC *gc = (ASTroGC *)ctx;
-    void *p = *slot;
-    if (!p) return;
-    *slot = forward_payload(gc, p);
-}
-
-/* edge_visit callback for VALUE slots (= roots, KIND_PAYLOAD_VAL members).
- * The slot may hold a tagged immediate; only IS_PTR values get forwarded. */
-static void
-forward_value_edge(void *ctx, void **slot)
 {
     ASTroGC *gc = (ASTroGC *)ctx;
     VALUE v = (VALUE)*slot;
@@ -436,25 +427,17 @@ gc_collect_internal(CTX *c)
     /* (1) Root scan: forward VALUE pointers in the sp[] range in place. */
     struct timespec tcheney = aro_gc_phase_begin();
     for (VALUE *p = c->env; p < sp_top; p++) {
-        forward_value_edge(gc, (void **)p);
+        forward_edge(gc, (void **)p);
     }
 
-    /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally. */
+    /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally.
+     * SCAN_EDGES dispatch (= sample-side macro) handles all kinds uniformly;
+     * forward_edge filters via IS_PTR so VALUE arrays and raw pointer
+     * slots share the same path. */
     char *scan = gc->to_base;
     while (scan < gc->to_top) {
         GCHeader *h = (GCHeader *)scan;
-        switch (HDR_KIND(h)) {
-          case KIND_PAYLOAD_VAL: {
-              VALUE *slots = (VALUE *)(h + 1);
-              size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
-              for (size_t i = 0; i < n; i++)
-                  forward_value_edge(gc, (void **)&slots[i]);
-              break;
-          }
-          default:
-              ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, forward_edge);
-              break;
-        }
+        ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, forward_edge);
         ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
         scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h));
     }
@@ -467,35 +450,14 @@ gc_collect_internal(CTX *c)
         gc->large_gray = lo->next_gray;
         lo->next_gray = NULL;
         GCHeader *h = &lo->header;
-        switch (HDR_KIND(h)) {
-          case KIND_PAYLOAD_VAL: {
-              VALUE *slots = (VALUE *)large_payload(lo);
-              size_t n = ASTRO_GC_HEADER_SIZE(h) / sizeof(VALUE);
-              for (size_t i = 0; i < n; i++)
-                  forward_value_edge(gc, (void **)&slots[i]);
-              break;
-          }
-          default:
-              ASTRO_GC_SCAN_EDGES((void *)((h)+1), HDR_KIND(h), (h)->size, gc, forward_edge);
-              break;
-        }
+        /* large obj: payload は (void *)large_payload(lo)、 inline と addr が違う */
+        ASTRO_GC_SCAN_EDGES(large_payload(lo), HDR_KIND(h), (h)->size, gc, forward_edge);
         ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h);
         /* Drain any newly-added to-space objs before processing the next
          * large gray (preserves the cheney-scan order semantics). */
         while (scan < gc->to_top) {
             GCHeader *h2 = (GCHeader *)scan;
-            switch (HDR_KIND(h2)) {
-              case KIND_PAYLOAD_VAL: {
-                  VALUE *slots = (VALUE *)(h2 + 1);
-                  size_t n = ASTRO_GC_HEADER_SIZE(h2) / sizeof(VALUE);
-                  for (size_t i = 0; i < n; i++)
-                      forward_value_edge(gc, (void **)&slots[i]);
-                  break;
-              }
-              default:
-                  ASTRO_GC_SCAN_EDGES((void *)((h2)+1), HDR_KIND(h2), (h2)->size, gc, forward_edge);
-                  break;
-            }
+            ASTRO_GC_SCAN_EDGES((void *)((h2)+1), HDR_KIND(h2), (h2)->size, gc, forward_edge);
             ASTRO_GC_COMMON(c)->stats.heap_bytes += ASTRO_GC_HEADER_SIZE(h2);
             scan += sizeof(GCHeader) + ALIGN8(ASTRO_GC_HEADER_SIZE(h2));
         }

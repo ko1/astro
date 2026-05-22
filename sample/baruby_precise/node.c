@@ -499,7 +499,7 @@ baruby_str_append(CTX *c, VALUE *dst_ref, VALUE *src_ref)
     else if (need > d->capa) {
         uint32_t nc = d->capa ? d->capa * 2 : 8;
         while (nc < need) nc *= 2;
-        char *new_bytes = (char *)aro_gc_realloc_payload(c, d->bytes, nc);
+        char *new_bytes = (char *)aro_gc_realloc_byte_payload(c, d->bytes, nc);
         d = VAL2STR(*dst_ref);   // reload after realloc
         s = VAL2STR(*src_ref);
         aro_gc_wb(c, d, (VALUE *)&d->bytes, (VALUE)new_bytes);

@@ -26,6 +26,11 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     return NULL;
 }
 
+/* aro_gc_realloc_payload — grow a scan-safe (VALUE-bearing) payload.
+ * Caller is responsible for choosing between this and
+ * aro_gc_realloc_byte_payload based on whether the payload contains
+ * heap-pointer slots (= scan-safe) or raw bytes (= byte). framework
+ * never inspects the payload's stored kind to decide. */
 void *
 aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
@@ -38,21 +43,34 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
     void *in_place = aro_gc_realloc_in_place(c, old, new_size);
     if (in_place) return in_place;
 
-    AroGcKind kind = aro_gc_kind_of(old);
     size_t old_size = aro_gc_size_of(old);
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
-    /* Park `old` in sp_top[0] so GC scans it; bump c->sp by 1 so the
-     * inner alloc sees the parked slot as in-range.  For moving GCs
-     * this also lets the collector forward the slot if the source
-     * payload migrates during the inner alloc's GC trigger.  After
-     * restoring c->sp, read back through sp_top[0] (which now points
-     * at the possibly-moved source) for the memcpy. */
     sp_top[0] = (VALUE)old;
     c->sp = sp_top + 1;
-    void *newp = (kind == KIND_PAYLOAD_BYTE)
-        ? aro_gc_alloc_byte(c, new_size)
-        : aro_gc_alloc(c, kind, new_size);
+    void *newp = aro_gc_alloc(c, KIND_PAYLOAD_VAL, new_size);
+    c->sp = sp_top;
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
+    return newp;
+}
+
+/* aro_gc_realloc_byte_payload — grow a byte (no-scan) payload.  Caller
+ * fills the new bytes; framework does not zero-init the growth region. */
+void *
+aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
+{
+    VALUE *sp_top = c->sp;
+    if (!old) return aro_gc_alloc_byte(c, new_size);
+
+    void *in_place = aro_gc_realloc_in_place(c, old, new_size);
+    if (in_place) return in_place;
+
+    size_t old_size = aro_gc_size_of(old);
+    size_t copy_bytes = old_size < new_size ? old_size : new_size;
+
+    sp_top[0] = (VALUE)old;
+    c->sp = sp_top + 1;
+    void *newp = aro_gc_alloc_byte(c, new_size);
     c->sp = sp_top;
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     return newp;
