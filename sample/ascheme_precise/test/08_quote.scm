@@ -1,0 +1,16 @@
+;; quote, equality
+(display 'hello) (newline)
+(display '()) (newline)
+(display '(1 2 3)) (newline)
+(display '(a (b c) d)) (newline)
+(display ''quoted) (newline)             ; (quote quoted)
+(display (eq? 'foo 'foo)) (newline)
+(display (eq? '(1 2) '(1 2))) (newline)  ; structurally equal but not eq?
+(display (equal? '(1 2 3) '(1 2 3))) (newline)
+(display (equal? '(1 (2 3)) '(1 (2 3)))) (newline)
+(display (equal? "abc" "abc")) (newline)
+(display (eqv? 'a 'a)) (newline)
+(display (eqv? 1 1)) (newline)
+(display (eqv? 1.0 1.0)) (newline)
+(display (symbol? 'x)) (newline)
+(display (symbol? "x")) (newline)
