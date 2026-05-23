@@ -84,27 +84,39 @@ monomorphization と等価)。
 
 ## 1. Object graph 観点
 
-GC は **graph (= node = GC object、 edge = inter-object pointer)** しか見ない。
-所有関係や semantics は知らず、 reachability で live を判定する。
+GC は **object graph (= 頂点 = GC object、 辺 = inter-object pointer)**
+しか見ない。 所有関係や semantics は知らず、 reachability で live を判定
+する。
+
+(注: ASTro の AST `Node` 型とは別概念。 本章で「object」 と呼ぶのは
+`aro_gc_alloc` が返す GC-managed な連続メモリ領域のこと。)
 
 ### 1.1 1 GC object = 1 つの連続アロケーション
+
+**用語**: 本ドキュメントでは「 **payload** 」 を **GC object のメモリ領域
+全体** (= `ASTroObjectHeader head` を含む先頭から末尾まで) として一貫して
+使う。 「head」 は payload offset 0 にある 8 B (non-moving) / 16 B (moving)
+の framework-controlled 領域、 「post-head 領域」 は payload[8..] / payload[16..]
+の sample-controlled 領域 (= iter 75 で framework GCHeader prefix 廃止、
+ASTroObjectHeader を payload offset 0 に embed する設計)。
 
 ```c
 void *aro_gc_alloc(CTX *c, size_t payload_size);
 void *aro_gc_alloc_byte(CTX *c, size_t payload_size);   /* zero-fill 省略 */
 ```
 
-1 回の `aro_gc_alloc` 呼び出しが「1 ノード」 を作る。 返り値は **payload
-先頭 (= ASTroObjectHeader head の位置)**。 sample 構造体は `head` を先頭
-field に持ち、 残りに自身のデータを並べる:
+`payload_size` は **head を含む** 全体サイズ (= `sizeof(struct sobj)`
+そのまま)。 1 回の `aro_gc_alloc` 呼び出しが **1 つの GC object** を作る。
+返り値は **payload 先頭 (= head の先頭、 sample 構造体の先頭)**。 sample
+構造体は `head` を先頭 field に持ち、 残りに自身のデータを並べる:
 
 ```c
 typedef struct BaArray {
-    ASTroObjectHeader head;   /* offset 0..7  (8 B non-moving) */
-    uint32_t          len;    /* offset 8..11 */
-    uint32_t          capa;   /* offset 12..15 */
-    BaArrayItems     *items;  /* offset 16..23 */
-} BaArray;   /* total 24 B */
+    ASTroObjectHeader head;   /* byte offset  0,  size 8 B (non-moving) */
+    uint32_t          len;    /* byte offset  8,  size 4 B */
+    uint32_t          capa;   /* byte offset 12,  size 4 B */
+    BaArrayItems     *items;  /* byte offset 16,  size 8 B */
+} BaArray;                    /* total 24 B */
 ```
 
 **不連続なメモリブロックは別々の GC object** にして pointer で繋ぐ。
@@ -811,6 +823,90 @@ define してる (= 旧 GCHeader 由来の HDR_ prefix)。 file-local なので�
 
 Cheney 系 5 backend が `fwd_overlay_get/set` inline helper を重複定義
 (8 行 × 5 = 40 行)。 gc_types.h に集約する余地。 cosmetic only。
+
+---
+
+## 7.7 conservative GC からの migration: 教訓
+
+`sample/ascheme_precise` (= ascheme の Boehm libgc → precise GC framework
+migration) で得た知見。 同様の migration をやる sample 開発者向け。
+
+### 落とし穴
+
+conservative GC (libgc) で書かれた既存コードは **C local の VALUE を root
+として暗黙に依存** している。 patterns:
+
+```c
+/* (1) C local が VALUE を保持 + alloc 跨ぎ */
+VALUE v = read_form(c, &r);
+*tail = scm_cons(c, v, SCM_NIL);  /* alloc → v が moving GC で迷子 */
+
+/* (2) heap interior pointer + alloc 跨ぎ */
+VALUE *tail = &SCM_PTR(*tail)->pair.cdr;   /* heap obj 内部を指す */
+*tail = scm_cons(c, v, SCM_NIL);            /* alloc → tail が指す obj が move → stale */
+
+/* (3) host-allocated buffer が GC heap 経由 */
+char *src = (char *)aro_gc_alloc_byte(c, sz);  /* root に登録してない */
+parse(src);                                      /* alloc → src の指す buffer が sweep */
+```
+
+libgc は C stack を保守的に scan するので (1)(2) は問題なし。 (3) は libgc
+が heap chunk を scan するので host malloc 経由なら問題なし。
+
+precise GC では:
+- (1) → sp[k] に park し reload
+- (2) → cons cell 自身を sp[k] に park、 update は cell の field access 経由
+- (3) → libc malloc (= GC heap 外) で確保
+
+### 検証戦略: stress + copy_scramble を Phase 1 から必須に
+
+migration の各 phase で **「test 全 PASS」だけ**を成功判定にすると **gentle
+testing** で gap が露呈せず、 後で massive な debug loop が必要になる
+(= ascheme_precise でこれを経験)。
+
+**Phase 1 から `BARUBY_GC_STRESS=1 GC=copy_scramble` で全 test を回す** こと:
+- `stress` = GC trigger point ごとに必ず GC 発火 (= gap 露呈確率 max)
+- `copy_scramble` = VALUE storage を XOR scramble、 stale ptr deref で即 SEGV
+- 組合せ = root tracking gap を **即座に SEGV** で検出
+
+普通の test (= GC 低頻度) では「動いてる」 状態のまま gap が隠れる。
+
+### 推奨 migration 工程
+
+```
+Phase 1. ASTroObjectHeader 追加 + GC_malloc → aro_gc_alloc
+         → stress + copy_scramble で 1 test PASS まで
+
+Phase 2. precise root tracking (sp[] / sframe / VISIT_ROOTS)
+         → stress + copy_scramble で全 test PASS
+
+Phase 3. SCAN_EDGES (各 obj 型)
+         → stress + copy_scramble で全 test PASS
+
+Phase 4. 特殊機構 (call/cc / continuation / etc.)
+         → stress + copy_scramble で全 test PASS
+
+Phase 5. 外部 resource (GMP / FILE * / etc.)
+         → finalizer hook + aro_gc_account_external、 stress で leak 検証
+
+Phase 6. 全 17 backend で stress + 通常 mode 両方 PASS
+```
+
+各 phase で stress + scramble PASS を必須にする。 これを破ると後段で
+返ってくる。
+
+### finalizer / external resource 注意
+
+GMP buffer のような外部 libc-malloc'd memory は:
+1. libc malloc (= GC heap 外) で確保
+2. owning obj (= OBJ_BIGNUM) を `aro_gc_finalize_register` で登録
+3. `ASTRO_GC_FINALIZE` macro で sweep 時に free
+4. `aro_gc_account_external(c, +sz / -sz)` で framework に外部 memory pressure
+   を通知 (= さもないと bignum-heavy code で GC trigger せず leak)
+
+GC heap 内 (= aro_gc_alloc_byte) に external resource を置くと、 owning
+obj から SCAN_EDGES edge がないので sweep で free され、 owning obj の
+内部 ptr が stale 化。 必ず外部 (= libc malloc)。
 
 ---
 
