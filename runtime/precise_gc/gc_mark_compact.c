@@ -398,6 +398,14 @@ gc_collect_internal(CTX *c)
     // (4) Update roots.
     ASTRO_GC_VISIT_ROOTS(c, gc, fwd_edge);
 
+    /* Finalize pass.  At this point each live object's OLD-location header
+     * still has HDR_MARKED set AND its gc_fwd field holds the destination
+     * address (= post-slide new addr, OR self-addr for large objs).
+     * Dead objects have gc_fwd == NULL.  We must run before (5) slide, as
+     * the slide both clears HDR_MARKED/gc_fwd and memmoves the data away
+     * from the OLD location. */
+    aro_gc_finalize_walk(c);
+
     // (5) Slide live region objects to their forwarding addresses.
     //     Large objs don't slide — they stay in place.
     {
@@ -469,11 +477,29 @@ aro_gc_collect(CTX *c)
     gc_collect_internal(c);
 }
 
+/* Called between mark/forward-address pass and the slide.  At this point:
+ *   live region obj    : HDR_MARKED + gc_fwd = post-slide addr
+ *   live large obj     : HDR_MARKED + gc_fwd = self header (non-moving)
+ *   dead either-kind   : !HDR_MARKED, gc_fwd = NULL
+ * Return the new payload pointer (= gc_fwd) for live, NULL for dead. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    (void)c;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (!HDR_MARKED(h)) return NULL;
+    /* gc_fwd holds either the new addr (region) or self (large).  Both
+     * are valid post-finalize entries; the slide will then move the
+     * region data into place at the new addr. */
+    return h->gc_fwd;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (region_base) munmap(region_base, REGION_BYTES);
     aro_gc_free_large_chain_malloc(large_head);
     free(gray_buf);

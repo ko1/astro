@@ -449,6 +449,14 @@ minor_gc(CTX *c)
     }
     aro_gc_phase_end(tcheney, &gc->common.stats.reclaim_seconds);
 
+    /* Finalize pass: live = HDR_FORWARDED (nursery, promoted) or HDR_OLD
+     * (tenured, not visited by minor); dead = nursery-but-not-forwarded.
+     * Run before the nursery commit so the dead-nursery payload memory is
+     * still readable by ASTRO_GC_FINALIZE (the macro reads head.flags).
+     * For moving (forwarded) entries this updates the list to the new
+     * tenured addr — necessary for the next collection to find the obj. */
+    aro_gc_finalize_walk(c);
+
     /* (4) Commit. */
     old_alloc_since_major += (size_t)(to_top - tenured_top);
     tenured_top = to_top;
@@ -493,6 +501,12 @@ major_gc(CTX *c)
     }
     aro_gc_phase_end(tcheney, &gc->common.stats.reclaim_seconds);
 
+    /* Finalize pass: after Cheney into new tenured.  Old-tenured payloads
+     * that were FORWARDED → return fwd_overlay (new addr in alt-tenured);
+     * old-tenured without FORWARDED → dead.  Must run before tenured_top
+     * commit so old-tenured memory is still readable. */
+    aro_gc_finalize_walk(c);
+
     tenured_top = to_top;
     nursery_top = nursery_base;
 
@@ -517,11 +531,32 @@ aro_gc_collect(CTX *c)
     major_gc(c);
 }
 
+/* Liveness for finalizable entry post Cheney pass:
+ *   HDR_FORWARDED on payload header → live, return fwd_overlay (new addr).
+ *   Else, in minor: tenured entries (= not in nursery) are conservatively
+ *     live (we don't trace tenured in minor); nursery entries without
+ *     HDR_FORWARDED are dead.
+ *   Else, in major: anything in from-tenured or nursery without
+ *     HDR_FORWARDED is dead. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (HDR_IS_FORWARDED(h)) return fwd_overlay_get(h);
+    if (in_minor) {
+        return in_nursery(gc, payload) ? NULL : payload;
+    }
+    /* major: nursery or from-tenured without fwd is dead. */
+    return NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (nursery_base)     munmap(nursery_base,     NURSERY_BYTES);
     if (tenured_base)     munmap(tenured_base,     TENURED_BYTES);
     if (tenured_alt_base) munmap(tenured_alt_base, TENURED_BYTES);

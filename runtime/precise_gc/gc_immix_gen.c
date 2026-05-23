@@ -105,9 +105,11 @@ typedef struct ASTroGC {
     struct ASTroObjectHeader **gray_buf;
     size_t            gray_cnt, gray_capa;
     bool   remset_pressure;
+    bool   in_minor;        /* true while minor_gc is in progress */
 } ASTroGC;
 
 #define cur_epoch             (gc->cur_epoch)
+#define in_minor              (gc->in_minor)
 #define arena_base            (gc->arena_base)
 #define blocks                (gc->blocks)
 #define block_cursor          (gc->block_cursor)
@@ -493,6 +495,7 @@ minor_gc(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
+    in_minor = true;
 
     ASTRO_GC_VISIT_ROOTS(c, gc, fwd_edge_minor);
 
@@ -511,7 +514,13 @@ minor_gc(CTX *c)
         process_object_minor(gc, h);
     }
 
+    /* Finalize pass: live nursery entries get HDR_FORWARDED + overlay to
+     * new tenured addr; dead nursery → NULL; tenured entries untouched
+     * (= conservatively live). */
+    aro_gc_finalize_walk(c);
+
     nursery_top = nursery_base;
+    in_minor = false;
 
     gc->common.stats.gc_count++;
     gc->common.stats.minor_count++;
@@ -602,6 +611,10 @@ major_gc(CTX *c)
     ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge_major);
     process_gray_major(gc);
 
+    /* Finalize pass: live = HDR_EPOCH == cur_epoch, dead = anything else.
+     * Must run BEFORE the cur_epoch bump below. */
+    aro_gc_finalize_walk(c);
+
     sweep_major(gc);
 
     gc->common.stats.gc_count++;
@@ -622,11 +635,31 @@ aro_gc_collect(CTX *c)
 }
 
 
+/* Liveness for finalizable entry:
+ *   HDR_FORWARDED on entry → live (promoted nursery), return overlay.
+ *   in_minor:
+ *     in_nursery without FWD → dead.
+ *     else (= tenured) → live (not touched by minor).
+ *   else (major):
+ *     HDR_EPOCH == cur_epoch → live; else dead. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (HDR_IS_FORWARDED(h)) return fwd_overlay_get(h);
+    if (in_minor) {
+        return in_nursery(gc, payload) ? NULL : payload;
+    }
+    return HDR_EPOCH(h) == cur_epoch ? payload : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (arena_base)   munmap(arena_base, ARENA_BYTES);
     if (blocks)       munmap(blocks, N_BLOCKS * sizeof(BlockMeta));
     if (nursery_base) munmap(nursery_base, NURSERY_BYTES);

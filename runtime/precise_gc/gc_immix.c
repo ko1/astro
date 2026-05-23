@@ -450,6 +450,11 @@ gc_collect_internal(CTX *c)
     ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge_immix);
     process_gray(gc);
 
+    /* Finalize pass: live = (gc_flags == cur_epoch), dead = anything
+     * else.  Must run BEFORE the epoch bump below — the check below
+     * reads cur_epoch, and we want the just-completed cycle's value. */
+    aro_gc_finalize_walk(c);
+
     sweep(gc);
 
     cur_epoch = (cur_epoch == 255) ? 1 : (uint8_t)(cur_epoch + 1);
@@ -471,11 +476,20 @@ aro_gc_collect(CTX *c)
 }
 
 
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    return (h->gc_flags == cur_epoch) ? payload : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (arena_base) munmap(arena_base, ARENA_BYTES);
     if (blocks)     munmap(blocks, N_BLOCKS * sizeof(BlockMeta));
     aro_gc_free_large_chain_mmap(large_head);

@@ -385,6 +385,10 @@ gc_collect_internal(CTX *c)
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
+    /* Finalize pass: between mark and sweep, before unmarked slots get
+     * recycled.  Live = MARKED; dead = !MARKED. */
+    aro_gc_finalize_walk(c);
+
     struct timespec tsweep = aro_gc_phase_begin();
     sweep(gc);
     aro_gc_phase_end(tsweep, &gc->common.stats.reclaim_seconds);
@@ -405,11 +409,20 @@ aro_gc_collect(CTX *c)
     gc_collect_internal(c);
 }
 
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    (void)c;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    return HDR_MARKED(h) ? payload : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     for (int cls = 0; cls < NUM_SIZE_CLASSES; cls++) {
         Page *p = gc->page_head[cls];
         while (p) {

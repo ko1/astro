@@ -95,6 +95,17 @@ aro_gc_collect(CTX *c)
     // no-op
 }
 
+/* gc_none never reclaims, so every registered payload is conservatively
+ * "alive forever" — return payload itself.  finalize_walk is never
+ * actually called (aro_gc_collect is a no-op), but we provide the symbol
+ * so the framework links cleanly. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    (void)c;
+    return payload;
+}
+
 /* gc_none never reclaims; on fini we deliberately do NOT free the
  * objects we handed out — they're leaked-by-design (= libc-malloc
  * lifetime).  But the ASTroGC instance itself we release. */
@@ -102,6 +113,7 @@ void
 aro_gc_fini(CTX *c)
 {
     if (!c->astro_gc) return;
+    aro_gc_finalize_fini(c);
     free(c->astro_gc);
     c->astro_gc = NULL;
 }

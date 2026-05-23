@@ -597,6 +597,11 @@ minor_gc(CTX *c)
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
+    /* Finalize pass: before sweep_young.  in_minor=true so the check
+     * treats already-promoted (HDR_OLD) entries as live without
+     * requiring HDR_MARKED. */
+    aro_gc_finalize_walk(c);
+
     struct timespec tsweep = aro_gc_phase_begin();
     sweep_young(gc, /*clear_marked=*/true);
     aro_gc_phase_end(tsweep, &gc->common.stats.reclaim_seconds);
@@ -619,6 +624,10 @@ major_gc(CTX *c)
     ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
+
+    /* Finalize pass: in major, in_minor=false so the check uses
+     * HDR_MARKED only (= old-but-unreachable now reports dead, correctly). */
+    aro_gc_finalize_walk(c);
 
     // In major, keep marked=true on promoted young objects so the
     // subsequent sweep_old_pages doesn't free them as unmarked-old.
@@ -644,11 +653,31 @@ aro_gc_collect(CTX *c)
     major_gc(c);
 }
 
+/* Liveness for finalizable entry post mark-phase:
+ *   minor: OLD object → conservatively live (not collected in minor),
+ *          young object → MARKED means live (will be promoted by sweep_young).
+ *   major: MARKED means live (both young and old).
+ * Non-moving backend: payload pointer is stable, return as-is. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (in_minor) {
+        if (HDR_OLD(h))    return payload;
+        if (HDR_MARKED(h)) return payload;
+        return NULL;
+    }
+    /* major */
+    return HDR_MARKED(h) ? payload : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     for (int cls = 0; cls < NUM_SIZE_CLASSES; cls++) {
         Page *p = page_head[cls];
         while (p) {

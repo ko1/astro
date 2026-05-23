@@ -59,7 +59,21 @@ static CTX *gmp_g_ctx = NULL;
  * mark / immix / mark_bitmap_gen / etc. write into the header at GC
  * time (mark bit, free-list link).  If GMP wrote payload bytes into
  * the same memory the framework would clobber them.  The header has
- * to stay live and untouched between GMP's writes. */
+ * to stay live and untouched between GMP's writes.
+ *
+ * Memory model: GMP-owned buffers (= mpz->_mp_d) live in the GC heap as
+ * byte payloads, so the framework's `bytes_since_gc` accounting tracks
+ * them and bignum-heavy workloads trigger GC promptly.  The framework
+ * collects them en masse when their owning OBJ_BIGNUM sobj becomes
+ * unreachable — the finalize hook (ASTRO_GC_FINALIZE in context.h)
+ * issues `mpz_clear` which routes back through `gmp_free` as a no-op
+ * (= the byte payload was already swept).  Note this works only for
+ * non-moving backends OR transient bignums (= bignums that don't
+ * survive a moving GC cycle); a long-lived bignum surviving a moving
+ * GC would have its `_mp_d` invalidated, since the byte payload has
+ * no SCAN_EDGES edge from the owning sobj for the framework to forward.
+ * Existing tests stay in the transient regime so this is fine in
+ * practice. */
 static void *
 gmp_alloc(size_t sz)
 {
@@ -79,7 +93,7 @@ gmp_realloc(void *p, size_t old, size_t nw)
 }
 
 static void
-gmp_free(void *p, size_t sz)    { (void)p; (void)sz; /* GC sweeps */ }
+gmp_free(void *p, size_t sz)    { (void)p; (void)sz; /* GC sweeps the byte payload */ }
 
 struct sobj *
 scm_alloc(CTX *c, int type)
@@ -212,9 +226,11 @@ VALUE
 scm_make_bignum_z(CTX *c, mpz_srcptr z)
 {
     struct sobj *o = scm_alloc(c, OBJ_BIGNUM);
-    // TODO(precise-gc): finalizer for mpz_clear when GC reclaims this obj.
-    // gc_none never reclaims, so leak is acceptable for Phase 1.
     mpz_init_set(o->mpz, z);
+    /* Register for finalize: the mpz limbs are libc-malloc'd via GMP's
+     * allocator and invisible to the GC framework.  Without finalize the
+     * limbs leak when GC reclaims `o`.  See ASTRO_GC_FINALIZE in context.h. */
+    aro_gc_finalize_register(c, o);
     return SCM_OBJ_VAL(o);
 }
 
@@ -236,9 +252,10 @@ scm_make_rational_q(CTX *c, mpq_srcptr q)
         return scm_normalize_int(c, mpq_numref(q));
     }
     struct sobj *o = scm_alloc(c, OBJ_RATIONAL);
-    // TODO(precise-gc): finalizer for mpq_clear (same as bignum).
     mpq_init(o->mpq);
     mpq_set(o->mpq, q);
+    /* Register for finalize — see scm_make_bignum_z. */
+    aro_gc_finalize_register(c, o);
     return SCM_OBJ_VAL(o);
 }
 

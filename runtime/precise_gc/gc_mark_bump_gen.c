@@ -422,6 +422,10 @@ minor_gc(CTX *c)
     }
     scan_head = scan_tail = 0;
 
+    /* Finalize pass: live nursery → HDR_FORWARDED, return fwd_overlay;
+     * dead nursery → NULL.  Tenured entries untouched. */
+    aro_gc_finalize_walk(c);
+
     nursery_top = nursery_base;
     in_minor = false;
 
@@ -518,6 +522,13 @@ major_gc(CTX *c)
     }
     scan_head = scan_tail = 0;
 
+    /* Finalize pass: between mark drain and the linear sweep below.
+     * The sweep clears HDR_MARKED on survivors, so finalize_check must
+     * read MARKED before that.  For promoted-from-nursery entries the
+     * old payload still has HDR_FORWARDED and the overlay points at the
+     * new tenured addr. */
+    aro_gc_finalize_walk(c);
+
     {
         char *p = tenured_base;
         size_t live = 0;
@@ -556,11 +567,31 @@ aro_gc_collect(CTX *c)
     major_gc(c);
 }
 
+/* Liveness for a finalizable entry post mark/promote:
+ *   HDR_FORWARDED → live (promoted from nursery), return new addr via overlay.
+ *   in_minor && !in_nursery → live (tenured, untouched).
+ *   in_minor &&  in_nursery → dead.
+ *   in_major: HDR_MARKED on payload → live (tenured survived).
+ *   else → dead. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (HDR_IS_FORWARDED(h)) return fwd_overlay_get(h);
+    if (in_minor) {
+        return in_nursery(gc, payload) ? NULL : payload;
+    }
+    /* major: tenured-only check (nursery + forwarded handled above). */
+    return HDR_MARKED(h) ? payload : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (nursery_base) munmap(nursery_base, NURSERY_BYTES);
     if (tenured_base) munmap(tenured_base, TENURED_BYTES);
     free(scan_buf);

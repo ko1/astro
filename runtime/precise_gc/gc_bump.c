@@ -104,11 +104,20 @@ aro_gc_collect(CTX *c)
     // no-op
 }
 
+/* gc_bump never reclaims — same contract as gc_none.  Always-alive. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    (void)c;
+    return payload;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (gc->region_base && gc->region_base != MAP_FAILED) {
         munmap(gc->region_base, REGION_BYTES);
     }

@@ -13,6 +13,7 @@
 // helper を呼ぶ。
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "context.h"  /* CTX_struct + sample-provided ASTRO_GC_VISIT_ROOTS contract macro (= 必須) */
 #include "gc.h"
@@ -49,4 +50,53 @@ aro_gc_reset_payload_header(void *payload, size_t new_size)
 #ifdef ASTRO_GC_HAS_FWD
     h->gc_fwd = NULL;
 #endif
+}
+
+/* ---------------------------------------------------------------------------
+ * Finalizer machinery (= weak ref + post-mark sweep pass).  See gc.h doc.
+ * --------------------------------------------------------------------------- */
+
+void
+aro_gc_finalize_register(CTX *c, void *payload)
+{
+    AroGcCommonState *const cs = ASTRO_GC_COMMON(c);
+    if (cs->finalize_count == cs->finalize_cap) {
+        size_t newcap = cs->finalize_cap ? cs->finalize_cap * 2 : 16;
+        void **newlist = (void **)realloc(cs->finalize_list,
+                                          newcap * sizeof(void *));
+        if (!newlist) {
+            fprintf(stderr, "aro_gc_finalize_register: realloc failed\n");
+            abort();
+        }
+        cs->finalize_list = newlist;
+        cs->finalize_cap  = newcap;
+    }
+    cs->finalize_list[cs->finalize_count++] = payload;
+}
+
+void
+aro_gc_finalize_walk(CTX *c)
+{
+    AroGcCommonState *const cs = ASTRO_GC_COMMON(c);
+    size_t write = 0;
+    for (size_t i = 0; i < cs->finalize_count; i++) {
+        void *const p = cs->finalize_list[i];
+        void *const new_p = aro_gc_finalize_check(c, p);
+        if (new_p) {
+            cs->finalize_list[write++] = new_p;
+        } else {
+            ASTRO_GC_FINALIZE(p);
+        }
+    }
+    cs->finalize_count = write;
+}
+
+void
+aro_gc_finalize_fini(CTX *c)
+{
+    AroGcCommonState *const cs = ASTRO_GC_COMMON(c);
+    free(cs->finalize_list);
+    cs->finalize_list  = NULL;
+    cs->finalize_count = 0;
+    cs->finalize_cap   = 0;
 }

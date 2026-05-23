@@ -345,6 +345,11 @@ gc_collect_internal(CTX *c)
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
+    /* Finalize pass: live = MARKED, dead = !MARKED.  Run before sweep
+     * so unmarked-but-finalize-needed objects' inner resources are
+     * released before the slot becomes a freelist link. */
+    aro_gc_finalize_walk(c);
+
     struct timespec treclaim = aro_gc_phase_begin();
     sweep_region(gc);
     aro_gc_phase_end(treclaim, &gc->common.stats.reclaim_seconds);
@@ -365,11 +370,20 @@ aro_gc_collect(CTX *c)
     gc_collect_internal(c);
 }
 
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    (void)c;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    return HDR_MARKED(h) ? payload : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (gc->region_base) munmap(gc->region_base, REGION_BYTES);
     aro_gc_free_large_chain_mmap(gc->large_head);
     free(gc->gray_buf);

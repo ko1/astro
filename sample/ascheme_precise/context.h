@@ -620,6 +620,28 @@ scm_is_singleton(VALUE v)
  * the bytes before any further alloc. */
 #define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
 
+/* Finalize hook — invoked by the framework's aro_gc_finalize_walk on a
+ * payload that the backend's aro_gc_finalize_check reported as dead.
+ *
+ * We register OBJ_BIGNUM / OBJ_RATIONAL payloads at alloc time (see
+ * scm_make_bignum_z / scm_make_rational_q in main.c).  The matching
+ * finalize releases GMP's libc-malloc'd internal limb buffers — without
+ * this, every collected bignum/rational leaks its mpz/mpq backing store.
+ *
+ * Other GC-managed payloads (closure env / vec / string chars / etc.)
+ * are tracked by the framework directly and need no finalize.  OBJ_PORT
+ * is intentionally not finalized here (its FILE * lifecycle is managed
+ * explicitly via port-close); revisit if we add unowned-port semantics. */
+#define ASTRO_GC_FINALIZE(payload) do {                                       \
+    ASTroObjectHeader *_aro_h = (ASTroObjectHeader *)(payload);               \
+    struct sobj      *_aro_o = (struct sobj *)(payload);                      \
+    switch ((int)(_aro_h->flags & SCM_TYPE_MASK)) {                           \
+      case OBJ_BIGNUM:   mpz_clear(_aro_o->mpz); break;                       \
+      case OBJ_RATIONAL: mpq_clear(_aro_o->mpq); break;                       \
+      default: break;                                                          \
+    }                                                                          \
+} while (0)
+
 /* Header layout accessors (framework default for non-moving backends). */
 #define ASTRO_GC_HEADER_SIZE(h)         ((h)->gc_size)
 #define ASTRO_GC_HEADER_SET_SIZE(h, s)  ((h)->gc_size = (uint32_t)(s))

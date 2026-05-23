@@ -157,6 +157,22 @@ typedef struct AroGcCommonState {
     uintptr_t       scramble_R;
     uintptr_t       scramble_R_old;
 #endif
+    /* Finalizer list — libc-malloc'd dynamic array of payload pointers.
+     * Weak references: framework does NOT visit these in SCAN_EDGES /
+     * VISIT_ROOTS, so they don't keep objects alive.  After mark/forward
+     * but before sweep/swap, each backend calls aro_gc_finalize_walk(c)
+     * which iterates the list:
+     *   - For each payload still alive (= live after mark/forward), update
+     *     the entry to the new addr (= moving GCs forward the entry).
+     *   - For each payload that became unreachable, invoke the sample-
+     *     provided ASTRO_GC_FINALIZE macro (typical use: mpz_clear,
+     *     close FILE *, etc.) and drop the entry.
+     *
+     * Cost is O(finalizable_count) per GC, not O(heap) — preserves the
+     * "GC time is O(live)" property of copying collectors. */
+    void          **finalize_list;
+    size_t          finalize_count;
+    size_t          finalize_cap;
 } AroGcCommonState;
 
 #endif  /* ASTRO_PRECISE_GC_TYPES_H */

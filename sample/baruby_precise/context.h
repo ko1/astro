@@ -368,6 +368,12 @@ extern VALUE *baruby_gc_sp_high_water;
  * the bytes before any further alloc. */
 #define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
 
+/* No sample-managed external resources (= no GMP, no FILE *).  baruby
+ * never calls aro_gc_finalize_register so the macro body is never
+ * actually evaluated, but the framework's `#error` guard requires the
+ * macro to be defined. */
+#define ASTRO_GC_FINALIZE(payload) ((void)(payload))
+
 /* Header layout accessors (framework default).  Each backend's GCHeader
  * has `size` (uint32_t) at the canonical offset; `fwd` is moving-only.  */
 #define ASTRO_GC_HEADER_SIZE(h)         ((h)->size)

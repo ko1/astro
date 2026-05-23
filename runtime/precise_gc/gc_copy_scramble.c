@@ -523,6 +523,9 @@ gc_collect_internal(CTX *c)
         }
     }
 
+    /* Finalize pass: after mark/forward, before sweep large + swap. */
+    aro_gc_finalize_walk(c);
+
     /* (3) Sweep large_head: free unmarked, clear marker on survivors. */
     LargeObj **link = &gc->large_head;
     while (*link) {
@@ -573,11 +576,29 @@ aro_gc_collect(CTX *c)
     gc_collect_internal(c);
 }
 
+/* Same shape as gc_copy.c finalize_check.  Scramble is GC-wise identical
+ * to Cheney copy (the XOR mask applies to VALUE storage only; the
+ * registered payload pointer is raw). */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    (void)c;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (h->gc_flags & HDR_FORWARDED) {
+        return fwd_overlay_get(h);
+    }
+    if (h->gc_flags & HDR_MARKED) {
+        return payload;
+    }
+    return NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (ASTRO_GC_COMMON(c)->stress) {
         /* stress mode: only the current active region is mapped. */
         if (gc->active_base) munmap(gc->active_base, gc->region_bytes);

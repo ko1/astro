@@ -323,6 +323,52 @@ void *aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size);
 
 void  aro_gc_collect(CTX *c);
 
+/* ---------------------------------------------------------------------------
+ * Finalizer API — weak-reference + post-mark sweep pass.
+ *
+ * Use case: sample-allocated payload owns libc-malloc'd inner buffer that
+ * the GC framework can't see (e.g., GMP's mpz/mpq internal limbs, FILE *
+ * for an OBJ_PORT, etc.).  Without a finalizer hook the inner buffer leaks
+ * when the payload becomes unreachable and is reclaimed by GC.
+ *
+ * Workflow:
+ *   1. Sample calls `aro_gc_finalize_register(c, payload)` immediately
+ *      after `aro_gc_alloc` so the GC framework "weakly" tracks payload.
+ *      Weak = list is NOT scanned during root walk / SCAN_EDGES; the
+ *      tracked object is kept alive only by ordinary references.
+ *   2. After mark/forward, each backend's collect entry calls
+ *      `aro_gc_finalize_walk(c)`.  Walk asks the backend
+ *      `aro_gc_finalize_check(c, payload)` per entry:
+ *        - returns payload (or new addr post-move) → alive → entry updated
+ *        - returns NULL                              → dead  → ASTRO_GC_
+ *                                                       FINALIZE invoked +
+ *                                                       entry dropped
+ *   3. Sample's `ASTRO_GC_FINALIZE(payload)` macro (defined in context.h)
+ *      reads payload's type tag and runs the cleanup (mpz_clear, etc.).
+ *      MUST be defined by sample (= compile error otherwise — see below).
+ *
+ * Re-entrancy: register MUST NOT trigger GC (= a register that grows the
+ * list invokes realloc; this is libc malloc, NOT aro_gc_alloc, so safe).
+ * Finalize callback runs OUTSIDE any GC critical section's user-visible
+ * effect window — payload backing memory has already been logically
+ * reclaimed, the callback just releases external resources. */
+void  aro_gc_finalize_register(CTX *c, void *payload);
+void *aro_gc_finalize_check   (CTX *c, void *payload);
+void  aro_gc_finalize_walk    (CTX *c);
+
+/* Release the finalize_list backing storage.  Called from each backend's
+ * aro_gc_fini.  Does NOT invoke ASTRO_GC_FINALIZE on the still-live
+ * entries — the process is exiting and the OS reclaims the inner buffers
+ * anyway.  This matches the "fini == clean valgrind, not graceful
+ * shutdown" contract of the rest of the framework. */
+void  aro_gc_finalize_fini    (CTX *c);
+
+#ifndef ASTRO_GC_FINALIZE
+#  error "Sample must define ASTRO_GC_FINALIZE(payload) in its context.h. " \
+         "Use `#define ASTRO_GC_FINALIZE(payload) ((void)0)` when no " \
+         "sample-managed external resource exists."
+#endif
+
 /* Stat readers — all take CTX so the data is sourced from the per-instance
  * common state (no global variable). */
 static inline size_t aro_gc_total_bytes      (CTX *c) { return ASTRO_GC_COMMON(c)->stats.total_bytes;       }

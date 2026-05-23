@@ -386,6 +386,9 @@ minor_gc(CTX *c)
         }
     }
 
+    /* Finalize pass — see gc_copy_gen.c for the rationale. */
+    aro_gc_finalize_walk(c);
+
     old_alloc_since_major += (size_t)(to_top - tenured_top);
     tenured_top = to_top;
     nursery_top = nursery_base;
@@ -427,6 +430,9 @@ major_gc(CTX *c)
         }
     }
 
+    /* Finalize pass — see gc_copy_gen.c. */
+    aro_gc_finalize_walk(c);
+
     tenured_top = to_top;
     nursery_top = nursery_base;
 
@@ -451,11 +457,25 @@ aro_gc_collect(CTX *c)
     major_gc(c);
 }
 
+/* Same shape as gc_copy_gen.c finalize_check. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (HDR_IS_FORWARDED(h)) return fwd_overlay_get(h);
+    if (in_minor) {
+        return in_nursery(gc, payload) ? NULL : payload;
+    }
+    return NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (nursery_base)     munmap(nursery_base,     NURSERY_BYTES);
     if (tenured_base)     munmap(tenured_base,     TENURED_BYTES);
     if (tenured_alt_base) munmap(tenured_alt_base, TENURED_BYTES);

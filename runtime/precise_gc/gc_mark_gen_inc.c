@@ -601,6 +601,10 @@ minor_gc(CTX *c)
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
+    /* Finalize pass — see gc_mark_gen.c for the rationale.  Non-moving,
+     * so payload pointer stays valid across promotion. */
+    aro_gc_finalize_walk(c);
+
     struct timespec tsweep = aro_gc_phase_begin();
     sweep_young(gc, /*clear_marked=*/true);
     aro_gc_phase_end(tsweep, &gc->common.stats.reclaim_seconds);
@@ -661,6 +665,9 @@ inc_finish_sweep(CTX *c)
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
+    /* Finalize pass — major. */
+    aro_gc_finalize_walk(c);
+
     struct timespec tsweep = aro_gc_phase_begin();
     sweep_young(gc, /*clear_marked=*/false);
     sweep_old_pages(gc);
@@ -686,6 +693,8 @@ aro_gc_collect(CTX *c)
     remset_cnt = 0;
     ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
+    /* Finalize pass — STW major. */
+    aro_gc_finalize_walk(c);
     sweep_young(gc, /*clear_marked=*/false);
     sweep_old_pages(gc);
     if (!gc->common.stress) {
@@ -699,11 +708,31 @@ aro_gc_collect(CTX *c)
 }
 
 
+/* Same generational liveness as gc_mark_gen.c.  Note: during incremental
+ * marking the inc_marking flag is true but the gray queue has not yet
+ * been drained, so HDR_MARKED might be incomplete.  finalize_walk is only
+ * called from inc_finish_sweep / aro_gc_collect (= post-drain) or
+ * minor_gc, never from inc_step, so by the time we get here marking is
+ * complete for the cycle. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (in_minor) {
+        if (HDR_OLD(h))    return payload;
+        if (HDR_MARKED(h)) return payload;
+        return NULL;
+    }
+    return HDR_MARKED(h) ? payload : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     for (int cls = 0; cls < NUM_SIZE_CLASSES; cls++) {
         Page *p = page_head[cls];
         while (p) {

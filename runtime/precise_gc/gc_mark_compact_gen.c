@@ -392,6 +392,10 @@ minor_gc(CTX *c)
     }
     aro_gc_phase_end(tminor, &gc->common.stats.reclaim_seconds);
 
+    /* Finalize pass — see gc_copy_gen.c.  Live nursery → gc_fwd points to
+     * new tenured addr; live tenured → untouched. */
+    aro_gc_finalize_walk(c);
+
     old_alloc_since_major += (size_t)(to_top - tenured_top);
     tenured_top = to_top;
     nursery_top = nursery_base;
@@ -534,6 +538,13 @@ major_gc(CTX *c)
 
     ASTRO_GC_VISIT_ROOTS(c, gc, fwd_edge_compact);
 
+    /* Finalize pass — must run BEFORE the slide.  At this point:
+     *   live tenured: HDR_MARKED + gc_fwd = post-slide new addr
+     *   dead tenured: !HDR_MARKED, gc_fwd == NULL
+     * The slide below clears HDR_MARKED + gc_fwd and memmoves data away
+     * from the OLD location, so finalize_check would lose accuracy. */
+    aro_gc_finalize_walk(c);
+
     {
         char *p = tenured_base;
         while (p < tenured_top) {
@@ -599,6 +610,9 @@ major_gc(CTX *c)
                 scan += ALIGN8(h->gc_size);
             }
         }
+        /* Finalize pass for the deferred-fold minor Cheney. */
+        aro_gc_finalize_walk(c);
+
         tenured_top = to_top;
         nursery_top = nursery_base;
         in_minor = false;
@@ -626,11 +640,34 @@ aro_gc_collect(CTX *c)
     major_gc(c);
 }
 
+/* Liveness for finalizable entry:
+ *   in_minor:
+ *     gc_fwd != NULL on entry's header → live (promoted to tenured),
+ *       return gc_fwd (= new tenured addr).
+ *     entry in nursery without gc_fwd → dead.
+ *     entry in tenured → conservatively live (not touched by minor).
+ *   in_major (between update_roots and slide):
+ *     HDR_MARKED → live, return gc_fwd (= post-slide addr).
+ *     else → dead. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (in_minor) {
+        if (h->gc_fwd) return h->gc_fwd;
+        return in_nursery(gc, payload) ? NULL : payload;
+    }
+    /* major: HDR_MARKED → live; gc_fwd was set by forward-address pass. */
+    return HDR_MARKED(h) ? h->gc_fwd : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (nursery_base) munmap(nursery_base, NURSERY_BYTES);
     if (tenured_base) munmap(tenured_base, TENURED_BYTES);
     free(remset_buf);

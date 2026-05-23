@@ -676,6 +676,11 @@ gc_collect_minor(CTX *c)
     remset_cnt = 0;
     process_gray(gc);
 
+    /* Finalize pass: live = old || marked, dead = neither.  Run before
+     * sweep so mark/old bits are still valid (sweep clears mark on
+     * survivors and frees unmarked slots). */
+    aro_gc_finalize_walk(c);
+
     sweep(gc, /*minor=*/true);
 
     gc->common.stats.gc_count++;
@@ -696,6 +701,9 @@ gc_collect_major(CTX *c)
     ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
 
+    /* Finalize pass: live = marked, dead = !marked. */
+    aro_gc_finalize_walk(c);
+
     sweep(gc, /*minor=*/false);
 
     if (!gc->common.stress) {
@@ -715,11 +723,28 @@ aro_gc_collect(CTX *c)
 }
 
 
+/* Liveness via per-page bitmap (or LargeObj flags for large objs):
+ *   minor: live = old || marked, dead = neither.
+ *   major: live = marked, dead = !marked. */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    const ASTroObjectHeader *h = (const ASTroObjectHeader *)payload;
+    if (in_minor) {
+        if (get_old(gc, h))  return payload;
+        if (get_mark(gc, h)) return payload;
+        return NULL;
+    }
+    return get_mark(gc, h) ? payload : NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     for (int cls = 0; cls < NUM_SIZE_CLASSES; cls++) {
         Page *p = page_head[cls];
         while (p) {

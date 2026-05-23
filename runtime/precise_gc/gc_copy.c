@@ -459,6 +459,11 @@ gc_collect_internal(CTX *c)
         }
     }
 
+    /* Finalize pass: after mark/forward, before sweep/swap.  Backend's
+     * aro_gc_finalize_check below returns fwd_overlay_get(h) for forwarded
+     * small objs, payload itself for marked large objs, NULL for dead. */
+    aro_gc_finalize_walk(c);
+
     /* (3) Sweep large_head: free unmarked, clear marker on survivors. */
     LargeObj **link = &gc->large_head;
     while (*link) {
@@ -509,11 +514,30 @@ aro_gc_collect(CTX *c)
     gc_collect_internal(c);
 }
 
+/* Liveness for a registered finalize payload, post mark/forward:
+ *   - small obj: HDR_FORWARDED → live, return fwd_overlay (= new addr)
+ *   - large obj: HDR_MARKED    → live, payload doesn't move (returned as-is)
+ *   - else: dead → NULL (caller invokes ASTRO_GC_FINALIZE). */
+void *
+aro_gc_finalize_check(CTX *c, void *payload)
+{
+    (void)c;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    if (h->gc_flags & HDR_FORWARDED) {
+        return fwd_overlay_get(h);
+    }
+    if (h->gc_flags & HDR_MARKED) {
+        return payload;
+    }
+    return NULL;
+}
+
 void
 aro_gc_fini(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!gc) return;
+    aro_gc_finalize_fini(c);
     if (ASTRO_GC_COMMON(c)->stress) {
         /* stress mode: only the current active region is mapped. */
         if (gc->active_base) munmap(gc->active_base, gc->region_bytes);
