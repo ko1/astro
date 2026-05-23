@@ -214,12 +214,14 @@ new_page(ASTroGC *gc, int class_idx)
     size_t n_slots = (PAGE_SIZE - PAGE_HDR_BYTES) / sb;
     char *slot = (char *)p + PAGE_HDR_BYTES + (n_slots - 1) * sb;
     for (size_t i = 0; i < n_slots; i++) {
-        AroObjectHeader *h = (AroObjectHeader *)slot;
+        AroObjectHeader * const h = (AroObjectHeader *)slot;
         HDR_SET_FREE(h); h->flags = 0;
         /* size / marked / old / dirty already 0 from mmap zero. */
-        FreeSlot *fs = (FreeSlot *)(h + 1);
-        fs->next = freelist[class_idx];
-        freelist[class_idx] = fs;
+        /* Freelist holds SLOT POINTERS (= AroObjectHeader *), matching
+         * mark_freelist / sweep_old_pages convention.  The FreeSlot link
+         * is overlaid at slot + sizeof(AroObjectHeader) via free_slot_link. */
+        free_slot_link(h)->next = freelist[class_idx];
+        freelist[class_idx] = (FreeSlot *)h;
         slot -= sb;
     }
 }
@@ -229,8 +231,8 @@ slab_alloc(ASTroGC *gc, size_t payload_size, int class_idx)
 {
     if (!freelist[class_idx]) new_page(gc, class_idx);
     FreeSlot *fs = freelist[class_idx];
-    freelist[class_idx] = fs->next;
-    AroObjectHeader *h = (AroObjectHeader *)fs;
+    AroObjectHeader * const h = (AroObjectHeader *)fs;   /* slot start */
+    freelist[class_idx] = free_slot_link(h)->next;        /* link lives at h + sizeof(header) */
     h->flags     = 0;     /* sample sets later */
     h->gc_flags  = 0;     /* clear FREE bit (was set by sweep/new_page) */
     h->gc_size   = (uint32_t)payload_size;
@@ -276,9 +278,9 @@ free_slot(ASTroGC *gc, AroObjectHeader *h)
         HDR_CLR_MARKED(h);
         HDR_CLR_OLD(h);
         HDR_CLR_DIRTY(h);
-        FreeSlot *fs = (FreeSlot *)(h + 1);
-        fs->next = freelist[cls];
-        freelist[cls] = fs;
+        /* Freelist holds slot pointers; link is at h + sizeof(header). */
+        free_slot_link(h)->next = freelist[cls];
+        freelist[cls] = (FreeSlot *)h;
     } else {
         // Large object: find + unlink + munmap.
         LargeObj **link = &large_head;

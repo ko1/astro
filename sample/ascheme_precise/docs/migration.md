@@ -15,15 +15,23 @@ ASTro precise GC framework (`runtime/precise_gc/`) に移行した経過と教�
 | 6 | testing 全 backend × 16 + 179 R5RS (= default mode 全 PASS) | ✅ |
 | 7 | naming + alloc API unification (= ARO_/AROH_、 ARO_LOAD、 alloc returns
        encoded) | ✅ |
-| 8 | WB 統合 + stress mode 全 backend で 17/17 PASS | ✅ (15/17) |
+| 8 | WB 統合 + stress mode 全 backend で 17/17 PASS | ✅ (17/17) |
 
 完成 17 backend × 17 ascheme test + 179 R5RS chibi test (= 全 3315 case)
-default mode で PASS。 stress mode は **15/17 backend** で 17/17 PASS:
-- ✅ none, mark, copy, copy_gen, copy_gen_inc, mark_compact,
-     mark_compact_gen, bump, mark_bump_gen, immix, immix_gen,
+default + stress 両 mode で PASS:
+- ✅ none, mark, mark_gen, mark_gen_inc, copy, copy_gen, copy_gen_inc,
+     mark_compact, mark_compact_gen, bump, mark_bump_gen, immix, immix_gen,
      mark_bitmap_gen, mark_card_gen, mark_freelist, copy_scramble
-- ★ mark_gen, mark_gen_inc は default + R5RS PASS、 stress mode で 8/17
-  (slab_alloc freelist 破壊 — backend 側バグ、 詳細は `docs/perf.md` §7.1)
+
+`mark_gen` / `mark_gen_inc` の stress fail は framework 側 freelist
+encoding bug (= slab_alloc が `(FreeSlot *)(h + 1)` を freelist に push し、
+pop 時に `h = (AroObjectHeader *)fs` で payload=slot+8 を返していた。
+連続再利用で payload が slot+16, +24 と shift し、 pair.cdr が次 slot の
+header に書き込まれ freelist 破壊)。 sample の WB miss ではなく framework
+bug だったため `gc_mark_gen.c` / `gc_mark_gen_inc.c` の slab_alloc /
+new_page / free_slot を mark_freelist 同様の "freelist holds slot pointers"
+convention に揃えて修正。 mark_freelist で動いている convention に合わせる
+だけの局所 fix で、 他 15 backend は影響なし。
 
 ## migration 工程 (= 推奨手順)
 

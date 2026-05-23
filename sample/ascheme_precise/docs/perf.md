@@ -35,7 +35,7 @@
 | none                | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | bump                | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **mark**            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| mark_gen            | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✗ |
+| mark_gen            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | mark_freelist       | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
 | mark_bitmap_gen     | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | (★) |
 | mark_card_gen       | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ |
@@ -179,8 +179,8 @@ default + R5RS + stress の matrix:
 |---------------------|:-------:|:-------:|:-------:|
 | none                | 17/17   | 179/179 | 17/17   |
 | mark                | 17/17   | 179/179 | 17/17   |
-| mark_gen            | 17/17   | 179/179 | 8/17 ★  |
-| mark_gen_inc        | 17/17   | 179/179 | 8/17 ★  |
+| mark_gen            | 17/17   | 179/179 | 17/17   |
+| mark_gen_inc        | 17/17   | 179/179 | 17/17   |
 | copy                | 17/17   | 179/179 | 17/17   |
 | copy_gen            | 17/17   | 179/179 | 17/17   |
 | copy_gen_inc        | 17/17   | 179/179 | 17/17   |
@@ -195,29 +195,17 @@ default + R5RS + stress の matrix:
 | mark_freelist       | 17/17   | 179/179 | 17/17   |
 | copy_scramble       | 17/17   | 179/179 | 17/17   |
 
-15/17 backend で default + R5RS + stress 全 PASS。 `★` の mark_gen /
-mark_gen_inc は default + R5RS で完走するが stress mode で 9/17 fail —
-slab_alloc が freelist 上に live slot を返す (= freelist 破壊) 現象。
-WB 単体では治らない、 backend allocator 側のバグ可能性が高い (= 別 task)。
+17/17 backend で default + R5RS + stress 全 PASS。 過去版で `★` だった
+`mark_gen` / `mark_gen_inc` の stress fail (= slab_alloc が freelist 破壊)
+は framework backend 側の freelist encoding bug (= `freelist[cls]` に
+`(FreeSlot *)(h + 1)` を push し、 pop 時に `h = fs` で payload が slot+8
+に shift する。 再利用で更に shift して pair.cdr が次 slot の header に
+書き込まれ、 freelist 連鎖が破壊される)。 mark_freelist と同じ
+"freelist holds slot pointers" convention に揃えて修正済。
 
 ## 7. 既知 limitation / future work
 
-### 7.1 mark_gen / mark_gen_inc stress mode の freelist 破壊
-
-`mark_gen` と `mark_gen_inc` は default mode + R5RS では完走するが、
-stress mode (= 全 alloc で GC) で 9/17 test が SEGV (slab_alloc が non-FREE
-slot を返す)。 主要 case と lambda / let を含む test で発生 (case5.scm
-trivial 例で再現)。 dump 上、 freelist 先頭 slot の head に garbage が入って
-いて、 そこから fs->next を読むと invalid address (= SEGV)。
-
-mark_bitmap_gen / mark_card_gen は同じ世代別 mark&sweep の bitmap 版で
-PASS。 違いは bit storage 場所 (= mark_gen は head.gc_flags 内、 bitmap は
-page bitmap)。 head に書き込む slot write の影響範囲が異なる。
-
-WB 統合は完了 (= 全 heap slot write が `aro_gc_wb` 経由)。 残バグは
-backend 側で、 ascheme の WB 統合タスクの scope 外。
-
-### 7.2 fib35 overhead 1.98×
+### 7.1 fib35 overhead 1.98×
 
 純再帰の sp[] 更新コスト本質。 改善余地:
 - self-tail-call の frame reuse 強化 (= 既存 `leaf` opt あり、 sp[] park で
@@ -227,7 +215,7 @@ backend 側で、 ascheme の WB 統合タスクの scope 外。
 これらは ascheme 固有最適化、 baruby_precise との codebase 共通性とのトレード
 オフ。
 
-### 7.3 matmul outlier (mark_freelist / mark_bitmap_gen = 107 秒)
+### 7.2 matmul outlier (mark_freelist / mark_bitmap_gen = 107 秒)
 
 13× 遅い (= libgc 8 秒 vs 107 秒)。 推測: matmul の fill-matrix が LCG
 で 巨大 bignum を生成 → GMP allocator (= libc malloc) 経由 → external_bytes
