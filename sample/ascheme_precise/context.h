@@ -118,8 +118,25 @@ typedef VALUE (*scm_prim_fn)(struct CTX_struct *c, int argc, VALUE *argv);
 // inflate every cons cell, vector, and closure to that size.  After this
 // split, sizeof(struct sobj) is ~40 B (dominated by the GMP `mpq_t`).
 struct scont {
+    /* head: ASTroObjectHeader at offset 0 — required by the framework for
+     * any aro_gc_alloc'd payload (size + flags + fwd live in this header).
+     * Without it, moving GCs would read random bytes from jmp_buf as a
+     * header and corrupt their bookkeeping.  flags low bits stay zero;
+     * we don't dispatch on scont via head.flags (the owning sobj OBJ_CONT
+     * case walks it directly). */
+    ASTroObjectHeader head;
     jmp_buf buf;
     VALUE   result;
+    /* Saved CTX state captured at call/cc entry.  These fields hold C-local
+     * temporaries that would otherwise be invisible to the precise root
+     * scanner across the `scm_apply(c, fn, ...)` call below — moving GCs
+     * would leave the local copies stale.  Stashed in the scont (which
+     * IS a scanned root via the OBJ_CONT SCAN_EDGES case) so they survive
+     * arbitrary inner GC activity. */
+    struct sframe *saved_env;
+    VALUE   k_val;          /* the continuation VALUE itself */
+    VALUE   fn_val;          /* the user-supplied procedure */
+    int     saved_tcp;
     int     active;
     int     tag;
 };
@@ -186,11 +203,21 @@ struct ascheme_option {
 };
 extern struct ascheme_option OPTION;
 
+/* `name_payload` points to the BASE of a heap-allocated byte payload
+ * (= aro_gc_alloc_byte result, i.e. the ASTroObjectHeader).  The actual
+ * C string starts at name_payload + sizeof(ASTroObjectHeader).  Storing
+ * the base (not an interior pointer past the header) is essential for
+ * moving GCs: the forward callback expects a payload-base slot so it
+ * can read the header to compute size / lookup forwarding addresses. */
 struct gentry {
-    const char *name;
-    VALUE value;
-    bool defined;
+    char  *name_payload;             /* byte-payload base, NULL = empty slot */
+    VALUE  value;
+    bool   defined;
 };
+#define GENTRY_NAME(ge) \
+    ((const char *)((ge).name_payload \
+                    ? ((ge).name_payload + sizeof(ASTroObjectHeader)) \
+                    : NULL))
 
 // Inline cache stamped at every node_gref call site.  Stored as `@ref`
 // (embedded in the NODE union, not on the structural hash).  `cached`
@@ -436,8 +463,10 @@ scm_is_singleton(VALUE v)
  * mark_value / forward_value to skip values that aren't GC-managed heap
  * pointers.  In ascheme that means fixnums, inline flonums, AND the
  * five process-static singletons (which look like real pointers but
- * aren't in any GC page). */
-#define IS_PTR(v)   (SCM_IS_PTR(v) && !scm_is_singleton((VALUE)(v)))
+ * aren't in any GC page).  NULL (= 0) also passes SCM_IS_PTR so we
+ * filter it explicitly — uninit'd loop_args slots / sp scratch slots
+ * are all zero and must not be visited. */
+#define IS_PTR(v)   ((v) != 0 && SCM_IS_PTR(v) && !scm_is_singleton((VALUE)(v)))
 
 /* Helper: visit one VALUE slot, but skip framework-side dispatch for
  * singletons (they look like ptrs to SCM_IS_PTR but the GC framework
@@ -448,6 +477,20 @@ scm_is_singleton(VALUE v)
     if (SCM_IS_PTR(_av) && !scm_is_singleton(_av)) {                         \
         ASTRO_GC_VISIT_EDGE_VAL((ctx), (fn), _avs);                          \
     }                                                                         \
+} while (0)
+
+/* For symbols / strings, the C-string pointer is INTERIOR (= one header
+ * past the byte payload base).  Moving GCs forward a typed-ptr by reading
+ * its header at offset 0; an interior pointer would corrupt the dispatch.
+ * Workaround: compute the base, visit it (= framework forwards if needed),
+ * then re-derive the interior pointer. */
+#define ASCHEME_VISIT_INTERIOR_CHAR_SLOT(ctx, fn, slot_ptr) do {              \
+    char **__s = (char **)(slot_ptr);                                         \
+    if (*__s) {                                                               \
+        char *__base = *__s - sizeof(ASTroObjectHeader);                      \
+        ASTRO_GC_VISIT_EDGE_PTR((ctx), (fn), (void **)&__base);               \
+        *__s = __base + sizeof(ASTroObjectHeader);                            \
+    }                                                                          \
 } while (0)
 
 /* SCAN_EDGES — invoked by the framework on every live heap object's
@@ -464,16 +507,31 @@ scm_is_singleton(VALUE v)
           ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->pair.cdr);           \
           break;                                                              \
       }                                                                       \
+      case OBJ_SYMBOL: {                                                      \
+          struct sobj *_o = (struct sobj *)(payload);                         \
+          ASCHEME_VISIT_INTERIOR_CHAR_SLOT((ctx), edge_visit, &_o->sym.name);  \
+          break;                                                              \
+      }                                                                       \
+      case OBJ_STRING: {                                                      \
+          struct sobj *_o = (struct sobj *)(payload);                         \
+          ASCHEME_VISIT_INTERIOR_CHAR_SLOT((ctx), edge_visit, &_o->str.chars); \
+          break;                                                              \
+      }                                                                       \
       case OBJ_VECTOR: {                                                      \
           struct sobj *_o = (struct sobj *)(payload);                         \
-          /* items[] is a separate aro_gc_alloc payload (raw VALUE array      \
-           * with an ASTroObjectHeader prefix).  Visit the typed-ptr slot     \
-           * so a moving GC forwards the items pointer, then walk the         \
-           * VALUE entries directly from here — items[] itself has no         \
-           * sample type tag, so SCAN_EDGES on it would fall through. */     \
-          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&_o->vec.items);\
-          for (size_t _i = 0; _i < _o->vec.len; _i++) {                       \
-              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->vec.items[_i]);  \
+          /* items[] payload base is `items - sizeof(header)`.  Forwarding   \
+           * the interior pointer directly would corrupt moving GCs (which   \
+           * read the header at *slot to compute fwd / size).  Compute base, \
+           * visit, re-derive interior pointer.  Then walk the data. */     \
+          if (_o->vec.items) {                                                \
+              char *__base = (char *)_o->vec.items                             \
+                             - sizeof(ASTroObjectHeader);                     \
+              ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__base);   \
+              _o->vec.items = (VALUE *)(__base + sizeof(ASTroObjectHeader));  \
+              for (size_t _i = 0; _i < _o->vec.len; _i++) {                   \
+                  ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit,                   \
+                                          &_o->vec.items[_i]);                \
+              }                                                               \
           }                                                                   \
           break;                                                              \
       }                                                                       \
@@ -492,15 +550,33 @@ scm_is_singleton(VALUE v)
       }                                                                       \
       case OBJ_MVALUES: {                                                     \
           struct sobj *_o = (struct sobj *)(payload);                         \
-          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&_o->mv.items); \
-          for (size_t _i = 0; _i < _o->mv.len; _i++) {                        \
-              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->mv.items[_i]);   \
+          if (_o->mv.items) {                                                 \
+              char *__mb = (char *)_o->mv.items                                \
+                           - sizeof(ASTroObjectHeader);                       \
+              ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__mb);     \
+              _o->mv.items = (VALUE *)(__mb + sizeof(ASTroObjectHeader));     \
+              for (size_t _i = 0; _i < _o->mv.len; _i++) {                    \
+                  ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit,                   \
+                                          &_o->mv.items[_i]);                 \
+              }                                                               \
           }                                                                   \
           break;                                                              \
       }                                                                       \
       case OBJ_CONT: {                                                        \
           struct sobj *_o = (struct sobj *)(payload);                         \
-          ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->result);       \
+          /* `cont` itself is a separately-allocated heap obj (aro_gc_alloc); \
+           * forward the typed-ptr so a moving GC relocates the scont body.  \
+           * Then walk the scanned fields inside it. */                      \
+          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&_o->cont);     \
+          if (_o->cont) {                                                     \
+              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->result);   \
+              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->k_val);    \
+              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->fn_val);   \
+              if (_o->cont->saved_env) {                                      \
+                  ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                  \
+                                           (void **)&_o->cont->saved_env);    \
+              }                                                               \
+          }                                                                   \
           break;                                                              \
       }                                                                       \
       case OBJ_FRAME: {                                                       \

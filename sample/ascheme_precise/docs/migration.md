@@ -10,8 +10,49 @@ mark/move 漏れ audit できるようになる。
 
 ## migration status
 
-**現状: scaffold only**。 ディレクトリは ascheme のコピー、 binary 名は
-`ascheme_precise` に rename 済。 中身は **未だ libgc 依存**。
+**現状: Phase 1-4 完了**。 全 17 GC backend (= non-moving 10 種 + moving 7
+種) で 16/16 ascheme test + 179/179 R5RS chibi test PASS。 binary 名は
+`ascheme_precise`、 `make GC=<backend>` で切替。
+
+Phase 4 の moving backend 対応で発覚した主な fix:
+
+- **scm_global_define の v parking**: v は C-local だったので name buf
+  alloc が GC trigger すると stale 化。 globals[i] slot に value を pre-
+  set してから name alloc。 gentry.name は interior pointer (= payload
+  base + header) だったので、 base を保存する `name_payload` に変更
+  + `GENTRY_NAME()` accessor 経由で読む。
+- **OBJ_SYMBOL / OBJ_STRING の interior char slot**: `sym.name` /
+  `str.chars` は byte payload の `raw + sizeof(header)` を保持する形に
+  なっていて、 moving GC 後に stale 化する。 SCAN_EDGES で base を
+  visit して re-derive する `ASCHEME_VISIT_INTERIOR_CHAR_SLOT`
+  ヘルパを追加。
+- **OBJ_VECTOR / OBJ_MVALUES の items[]**: `aro_gc_alloc(sizeof(VALUE)*N)`
+  で items を確保していたが、 framework header が items[0..1] に被って
+  user write で gc_size が壊れる。 `sizeof(header) + sizeof(VALUE)*N` を
+  alloc して、 items = raw + sizeof(header) に。 SCAN_EDGES も interior
+  pointer ハンドリング。
+- **scm_intern の o parking**: o = scm_alloc → aro_gc_alloc_byte の間で
+  GC が発火すると o が stale。 SYMBOL_TABLE slot に pre-set してから
+  name buf alloc + reload。 `o->sym.name = NULL` で SCAN_EDGES の
+  interior visit を no-op に。
+- **scm_make_string / scm_make_string_n / scm_make_vector /
+  scm_make_mvalues**: 同様に c->sp[0] に sobj を park して inner
+  alloc 後に reload。
+- **scm_callcc の C-local rooting**: `saved_env`, `saved_tcp`, `k`, `fn`
+  を全部 scont の field に移し、 scont 自身 (= aro_gc_alloc 経由) に
+  ASTroObjectHeader 追加。 OBJ_CONT SCAN_EDGES で `_o->cont` typed-ptr
+  forward + scont 内 VALUE/typed-ptr 全部 visit。 setjmp/longjmp 前後で
+  kobj を sp[0] から reload。
+- **lex_scope head 追加**: aro_gc_alloc 経由なのに header 領域が無く、
+  moving GC の region walk で gc_size が parent ポインタと衝突。
+  `ASTroObjectHeader head` を先頭に追加。
+- **scm_alloc_min 導入**: NODE\*\* / char\*\* / VALUE\* といった host
+  pointer array の小サイズ alloc (= 8 B) が `aligned -
+  sizeof(header)` で underflow → 巨大 memset → SEGV。
+  `scm_alloc_min(c, size)` が min サイズを sizeof(header) に丸める。
+- **IS_PTR の v != 0 filter**: ascheme の IS_PTR は singleton filter
+  しかしていなかった。 uninit'd loop_args[i] = 0 が SCM_IS_PTR=true で
+  pass、 forward at 0x0 → SEGV。 v != 0 check を追加。
 
 ## migration plan (= 多段階)
 
