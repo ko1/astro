@@ -81,18 +81,24 @@ read_list(CTX *c, struct reader *r)
     if (ch == ')') return SCM_NIL;
     if (ch == EOF) scm_error(c, "unexpected EOF in list");
     reader_ungetc(r, ch);
-    VALUE car = read_form(c, r);
+    /* Park car / cdr across the recursive read_form / read_list calls (each
+     * may trigger arbitrarily many allocations).  C locals would go stale
+     * under a moving GC. */
+    SP_PUSH(c, sp, 2);   /* sp[0]=car, sp[1]=cdr */
+    sp[0] = read_form(c, r);
     reader_skip_ws(r);
     ch = reader_getc(r);
     if (ch == '.') {
         int next = reader_getc(r);
         if (is_delim(next)) {
             reader_ungetc(r, next);
-            VALUE cdr = read_form(c, r);
+            sp[1] = read_form(c, r);
             reader_skip_ws(r);
             int close = reader_getc(r);
             if (close != ')') scm_error(c, "expected ')' after dotted tail");
-            return scm_cons(c, car, cdr);
+            VALUE rv = scm_cons(c, sp[0], sp[1]);
+            SP_POP(c, sp);
+            return rv;
         }
         // not a dotted-tail '.', push back both characters and treat as identifier
         reader_ungetc(r, next);
@@ -100,8 +106,10 @@ read_list(CTX *c, struct reader *r)
     } else {
         reader_ungetc(r, ch);
     }
-    VALUE cdr = read_list(c, r);
-    return scm_cons(c, car, cdr);
+    sp[1] = read_list(c, r);
+    VALUE rv = scm_cons(c, sp[0], sp[1]);
+    SP_POP(c, sp);
+    return rv;
 }
 
 static VALUE
@@ -140,14 +148,21 @@ read_hash(CTX *c, struct reader *r)
     if (ch == 'f') return SCM_FALSE;
     if (ch == '(') {
         // vector
-        VALUE list = read_list(c, r);
+        /* Park `list` across scm_make_vector — it's a heap pair chain we
+         * must keep alive while the vec sobj + items[] are allocated.
+         * Park `vec` too while we walk `list` reading car cells (no inner
+         * alloc but a defensive root is cheap and survives future edits). */
+        SP_PUSH(c, sp, 2);     /* sp[0]=list, sp[1]=vec */
+        sp[0] = read_list(c, r);
         size_t len = 0;
-        for (VALUE p = list; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) len++;
-        VALUE vec = scm_make_vector(c, len, SCM_UNSPEC);
+        for (VALUE p = sp[0]; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) len++;
+        sp[1] = scm_make_vector(c, len, SCM_UNSPEC);
         size_t i = 0;
-        for (VALUE p = list; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr, i++)
-            SCM_PTR(vec)->vec.items[i] = SCM_PTR(p)->pair.car;
-        return vec;
+        for (VALUE p = sp[0]; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr, i++)
+            SCM_PTR(sp[1])->vec.items[i] = SCM_PTR(p)->pair.car;
+        VALUE rv = sp[1];
+        SP_POP(c, sp);
+        return rv;
     }
     if (ch == '\\') {
         // character
@@ -247,20 +262,38 @@ read_form(CTX *c, struct reader *r)
     case '"': return read_string(c, r);
     case '#': return read_hash(c, r);
     case '\'': {
-        VALUE v = read_form(c, r);
-        return scm_cons(c, scm_intern(c, "quote"), scm_cons(c, v, SCM_NIL));
+        /* Park v + (v) across scm_intern + scm_cons allocations.  Evaluate
+         * each alloc serially and re-park between, to avoid C-arg-order
+         * surprises where scm_intern could trigger GC after sp[1] is read. */
+        SP_PUSH(c, sp, 2);    /* sp[0]=v, sp[1]=tail-cons */
+        sp[0] = read_form(c, r);
+        sp[1] = scm_cons(c, sp[0], SCM_NIL);
+        VALUE q = scm_intern(c, "quote");
+        VALUE rv = scm_cons(c, q, sp[1]);
+        SP_POP(c, sp);
+        return rv;
     }
     case '`': {
-        VALUE v = read_form(c, r);
-        return scm_cons(c, scm_intern(c, "quasiquote"), scm_cons(c, v, SCM_NIL));
+        SP_PUSH(c, sp, 2);
+        sp[0] = read_form(c, r);
+        sp[1] = scm_cons(c, sp[0], SCM_NIL);
+        VALUE q = scm_intern(c, "quasiquote");
+        VALUE rv = scm_cons(c, q, sp[1]);
+        SP_POP(c, sp);
+        return rv;
     }
     case ',': {
         int next = reader_getc(r);
         const char *which = "unquote";
         if (next == '@') which = "unquote-splicing";
         else reader_ungetc(r, next);
-        VALUE v = read_form(c, r);
-        return scm_cons(c, scm_intern(c, which), scm_cons(c, v, SCM_NIL));
+        SP_PUSH(c, sp, 2);
+        sp[0] = read_form(c, r);
+        sp[1] = scm_cons(c, sp[0], SCM_NIL);
+        VALUE q = scm_intern(c, which);
+        VALUE rv = scm_cons(c, q, sp[1]);
+        SP_POP(c, sp);
+        return rv;
     }
     default:
         return read_atom(c, r, ch);
@@ -279,17 +312,28 @@ VALUE
 scm_read_all_string(CTX *c, const char *src, size_t len)
 {
     struct reader r = { .src = src, .len = len, .ungot = -2 };
-    VALUE forms = SCM_NIL;
-    VALUE *tail = &forms;
+    /* Precise rooting: park (head, last cons cell) on c->sp across the
+     * cons allocations so a moving GC can rewrite them.  An interior
+     * pointer `&pair.cdr` would go stale the instant scm_cons triggers a
+     * GC and moves the owning sobj.  Strategy: hold the last cons cell
+     * VALUE in sp[1], and update its .cdr via field access. */
+    SP_PUSH(c, sp, 3);   /* sp[0]=head (forms),  sp[1]=last cell,  sp[2]=v */
     for (;;) {
         reader_skip_ws(&r);
         int ch = reader_getc(&r);
         if (ch == EOF) break;
         reader_ungetc(&r, ch);
-        VALUE v = read_form(c, &r);
-        if (v == SCM_EOFV) break;
-        *tail = scm_cons(c, v, SCM_NIL);
-        tail = &SCM_PTR(*tail)->pair.cdr;
+        sp[2] = read_form(c, &r);
+        if (sp[2] == SCM_EOFV) break;
+        VALUE cell = scm_cons(c, sp[2], SCM_NIL);   /* sp[2] read AFTER alloc-safe park */
+        if (sp[0] == 0 || sp[0] == SCM_NIL) {
+            sp[0] = cell;
+        } else {
+            SCM_PTR(sp[1])->pair.cdr = cell;
+        }
+        sp[1] = cell;
     }
+    VALUE forms = (sp[0] == 0) ? SCM_NIL : sp[0];
+    SP_POP(c, sp);
     return forms;
 }

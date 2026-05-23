@@ -99,17 +99,19 @@ scm_alloc(CTX *c, int type)
     return o;
 }
 
-/* aro_gc_alloc with an enforced minimum so the framework's header
- * (16 B on moving GCs) doesn't overflow into adjacent obj memory.
- * Linear-region backends (mark_compact, mark_compact_gen) walk the heap
- * via h->gc_size; a sub-header-size allocation makes their walk diverge
- * or memset a negative count.  Call sites holding host-side pointer
- * arrays (= char ** / NODE ** / small VALUE *) route through this. */
+/* Compile-time host-side pointer arrays (= char ** / NODE ** / small
+ * VALUE *) used to live on the GC heap, but the lex_scope / call-args
+ * arrays they back have no live root for the compile()'s recursive
+ * scm_cons / scm_intern allocs to keep them anchored.  Move them to libc
+ * malloc — leaked at process exit, but compile-time churn is bounded by
+ * source size, so the leak is acceptable. */
 static inline void *
 scm_alloc_min(CTX *c, size_t size)
 {
-    if (size < sizeof(ASTroObjectHeader)) size = sizeof(ASTroObjectHeader);
-    return aro_gc_alloc(c, size);
+    (void)c;
+    void *p = calloc(1, size);
+    if (!p) { perror("calloc scm_alloc_min"); abort(); }
+    return p;
 }
 
 VALUE
@@ -122,10 +124,20 @@ scm_cons(CTX *c, VALUE a, VALUE d)
     // objects of type OBJ_PAIR.
     static const size_t pair_size = offsetof(struct sobj, pair) +
                                     sizeof(((struct sobj *)0)->pair);
+    /* Park a / d on c->sp across the alloc.  Caller passes the args by
+     * value (bits = heap addresses for ptr VALUEs); a moving GC triggered
+     * by aro_gc_alloc would relocate the referents and the bits in C-local
+     * `a` / `d` would go stale.  By writing them into sp slots *before*
+     * the alloc, the root visitor sees them as live and rewrites the
+     * slots in place; we then read the up-to-date bits back. */
+    SP_PUSH(c, sp, 2);
+    sp[0] = a;
+    sp[1] = d;
     struct sobj *o = (struct sobj *)aro_gc_alloc(c, pair_size);
     SCM_SET_TYPE(o, OBJ_PAIR);
-    o->pair.car = a;
-    o->pair.cdr = d;
+    o->pair.car = sp[0];
+    o->pair.cdr = sp[1];
+    SP_POP(c, sp);
     return SCM_OBJ_VAL(o);
 }
 
@@ -183,15 +195,16 @@ scm_make_char(CTX *c, uint32_t cp)
 VALUE
 scm_make_vector(CTX *c, size_t len, VALUE fill)
 {
-    /* Park the in-flight vector sobj across the items alloc — that alloc
-     * may trigger GC and the local `o` would be stale under a moving
-     * backend. */
-    VALUE *sp = c->sp;
+    /* Park the in-flight vector sobj + the fill VALUE across the inner
+     * allocs.  Both the sobj alloc and the items payload alloc may
+     * trigger GC — without parking, a moving backend leaves `o` and the
+     * C-local `fill` bits pointing to stale (relocated) heap objects. */
+    SP_PUSH(c, sp, 2);    /* sp[0]=o sobj, sp[1]=fill */
+    sp[1] = fill;
     struct sobj *o = scm_alloc(c, OBJ_VECTOR);
     o->vec.items = NULL;
     o->vec.len = 0;
     sp[0] = SCM_OBJ_VAL(o);
-    c->sp = sp + 1;
     /* Allocate `header + N * VALUE`; the items pointer skips past the header
      * so writes to items[0..N-1] don't clobber gc_size — a mark_compact /
      * mark_compact_gen backend walks the region linearly using gc_size and
@@ -201,8 +214,8 @@ scm_make_vector(CTX *c, size_t len, VALUE fill)
     o = SCM_PTR(sp[0]);
     o->vec.items = (VALUE *)(raw + sizeof(ASTroObjectHeader));
     o->vec.len = len;
-    for (size_t i = 0; i < len; i++) o->vec.items[i] = fill;
-    c->sp = sp;
+    for (size_t i = 0; i < len; i++) o->vec.items[i] = sp[1];
+    SP_POP(c, sp);
     return SCM_OBJ_VAL(o);
 }
 
@@ -294,20 +307,29 @@ scm_simplify_complex(CTX *c, double re, double im)
 VALUE
 scm_make_mvalues(CTX *c, int count, VALUE *items)
 {
-    /* Header-prefixed items[] alloc — same rationale as scm_make_vector. */
-    VALUE *sp = c->sp;
+    /* Header-prefixed items[] alloc — same rationale as scm_make_vector.
+     * `items[]` is a C-local VALUE array supplied by the caller (typically
+     * scm_apply argv).  Park each slot on c->sp before scm_alloc so the
+     * root visitor can rewrite stale heap pointers across the two inner
+     * allocs (the o sobj + the items payload). */
+    VALUE *sp_base = c->sp;
+    assert(sp_base + 1 + count <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    /* sp_base[0] = o sobj, sp_base[1 .. 1+count-1] = parked items copies */
+    sp_base[0] = 0;
+    for (int i = 0; i < count; i++) sp_base[1 + i] = items[i];
+    c->sp = sp_base + 1 + count;
+
     struct sobj *o = scm_alloc(c, OBJ_MVALUES);
     o->mv.items = NULL;
     o->mv.len = 0;
-    sp[0] = SCM_OBJ_VAL(o);
-    c->sp = sp + 1;
+    sp_base[0] = SCM_OBJ_VAL(o);
     size_t alloc_sz = sizeof(ASTroObjectHeader) + sizeof(VALUE) * (count ? count : 1);
     char *raw = (char *)aro_gc_alloc(c, alloc_sz);
-    o = SCM_PTR(sp[0]);
+    o = SCM_PTR(sp_base[0]);
     o->mv.items = (VALUE *)(raw + sizeof(ASTroObjectHeader));
     o->mv.len = (size_t)count;
-    for (int i = 0; i < count; i++) o->mv.items[i] = items[i];
-    c->sp = sp;
+    for (int i = 0; i < count; i++) o->mv.items[i] = sp_base[1 + i];
+    c->sp = sp_base;
     return SCM_OBJ_VAL(o);
 }
 
@@ -331,7 +353,16 @@ scm_make_int(CTX *c, int64_t v)
 VALUE
 scm_make_closure(CTX *c, NODE *body, struct sframe *env, int nparams, int has_rest)
 {
+    /* Park `env` across scm_alloc — a moving GC triggered there would
+     * relocate the sframe and the C-local pointer would go stale.
+     * body is libc-malloc'd (host-side NODE), unaffected. */
+    VALUE *sp_base = c->sp;
+    assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    sp_base[0] = (VALUE)env;
+    c->sp = sp_base + 1;
     struct sobj *o = scm_alloc(c, OBJ_CLOSURE);
+    env = (struct sframe *)sp_base[0];   /* reload after GC */
+    c->sp = sp_base;
     o->closure.body = body;
     o->closure.env = env;
     o->closure.nparams = nparams;
@@ -380,8 +411,16 @@ scm_is_integer_value(VALUE v)
 struct sframe *
 scm_new_frame(CTX *c, struct sframe *parent, int nslots)
 {
+    /* Park `parent` across aro_gc_alloc — a moving GC triggered inside
+     * may relocate the parent sframe, leaving the C-local ptr stale. */
+    VALUE *sp_base = c->sp;
+    assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    sp_base[0] = (VALUE)parent;
+    c->sp = sp_base + 1;
     struct sframe *f = (struct sframe *)aro_gc_alloc(c,
         sizeof(struct sframe) + sizeof(VALUE) * (nslots ? nslots : 1));
+    parent = (struct sframe *)sp_base[0];
+    c->sp = sp_base;
     /* Tag the frame so SCAN_EDGES can identify it.  sframe shares the
      * head-at-offset-0 layout with struct sobj, so the framework-stored
      * gc_size / gc_flags survive; we only set the sample type bits. */
@@ -435,6 +474,112 @@ scm_intern(CTX *c, const char *name)
     o->sym.name = raw + sizeof(ASTroObjectHeader);
     memcpy(o->sym.name, name, nlen + 1);
     return SCM_OBJ_VAL(o);
+}
+
+/* ---------------------------------------------------------------------------
+ * Permanent (libc-malloc'd) name pool — used by NODE allocators that
+ * need a stable cstr pointer.  Symbol names on the GC heap can be
+ * relocated by moving collectors, leaving any NODE that stored a
+ * GC-interior cstr with a stale pointer.  Permanent names solve this
+ * by handing out a malloc'd-once cstr per unique string.  Linear-scan
+ * intern table — the size of the program's symbol table is bounded
+ * and parse-time isn't latency-sensitive.
+ * ------------------------------------------------------------------------- */
+static char **PERM_NAMES = NULL;
+static size_t PERM_NAMES_LEN = 0;
+static size_t PERM_NAMES_CAP = 0;
+
+const char *
+scm_perm_name(const char *name)
+{
+    if (!name) return NULL;
+    for (size_t i = 0; i < PERM_NAMES_LEN; i++) {
+        if (strcmp(PERM_NAMES[i], name) == 0) return PERM_NAMES[i];
+    }
+    if (PERM_NAMES_LEN == PERM_NAMES_CAP) {
+        PERM_NAMES_CAP = PERM_NAMES_CAP ? PERM_NAMES_CAP * 2 : 64;
+        PERM_NAMES = (char **)realloc(PERM_NAMES, sizeof(char *) * PERM_NAMES_CAP);
+    }
+    char *dup = strdup(name);
+    PERM_NAMES[PERM_NAMES_LEN++] = dup;
+    return dup;
+}
+
+/* ---------------------------------------------------------------------------
+ * Quote roots — VALUEs embedded in NODE_QUOTE.  Under a moving GC, these
+ * heap pointers stored inside NODEs would go stale without a live root.
+ * `aro_scheme_visit_roots` walks this array and forwards each slot so
+ * the embedded ptr in the NODE remains current (the NODE itself is libc-
+ * malloc'd, so we update the slot in the array and the NODE's stored
+ * bit-pattern stays in sync via the SAME slot — we hand out a pointer
+ * to the slot, not a copy of the value, by storing the SAME address in
+ * both places).  Simplest contract: bake the ptr into the NODE, AND
+ * keep a parallel slot here for the GC to forward; we resync the NODE
+ * before each dispatch (cheap because NODEs run-time read just stores
+ * the bits).  Implementation:
+ *   - scm_register_quote(v) → returns same v (after first run), but
+ *     stores v in QUOTE_ROOTS.
+ *   - When GC forwards QUOTE_ROOTS[i], the slot is updated; the NODE
+ *     still has the OLD bits.  To keep them in sync, store the SLOT
+ *     INDEX in the NODE instead of the value.  Use a different ALLOC
+ *     ... too invasive.
+ *
+ * Instead: keep QUOTE_NODES[i] = NODE pointer, and on each
+ * aro_scheme_visit_roots iteration:
+ *   1. Read NODE's stored v (=ptr bits).
+ *   2. Visit-edge it via the visitor, which forwards if needed.
+ *   3. Write back the new bits into the NODE.
+ * This fixes up every quote NODE on every GC.  Bounded by # of quotes
+ * in the program — typically small.
+ * ------------------------------------------------------------------------- */
+static NODE **QUOTE_NODES = NULL;
+static size_t QUOTE_NODES_LEN = 0;
+static size_t QUOTE_NODES_CAP = 0;
+
+void
+scm_register_quote_node(NODE *n)
+{
+    if (QUOTE_NODES_LEN == QUOTE_NODES_CAP) {
+        QUOTE_NODES_CAP = QUOTE_NODES_CAP ? QUOTE_NODES_CAP * 2 : 64;
+        QUOTE_NODES = (NODE **)realloc(QUOTE_NODES, sizeof(NODE *) * QUOTE_NODES_CAP);
+    }
+    QUOTE_NODES[QUOTE_NODES_LEN++] = n;
+}
+
+/* Wrapper for ALLOC_node_quote that also registers the resulting NODE
+ * with QUOTE_NODES so its embedded VALUE survives moving-GC cycles. */
+static inline NODE *
+scm_alloc_quote(uint64_t v)
+{
+    NODE *n = ALLOC_node_quote(v);
+    scm_register_quote_node(n);
+    return n;
+}
+
+/* scm_cons(c, scm_intern(name), d) helper.  Two C-local hazards to
+ * sidestep:
+ *   (a) C arg eval order is unspecified: a compiler may capture `d`
+ *       (= bits read from a memory slot) BEFORE scm_intern triggers GC,
+ *       leaving the cons call writing a stale heap pointer.  Park `d`
+ *       on c->sp so the pre-GC bits are forwarded by the root visitor.
+ *   (b) scm_intern itself may allocate and trigger GC, relocating the
+ *       symbol it returns; sym's bits as a function-return register are
+ *       fresh by the time scm_cons runs, but `d` (above) is stale unless
+ *       we route it through sp.
+ * We use c->sp directly (NOT the SP_PUSH macro) because this helper is
+ * called from many busy paths and the macro version's assert/zero-init
+ * adds non-trivial overhead. */
+static inline VALUE
+scm_cons_sym(CTX *c, const char *name, VALUE d)
+{
+    VALUE *sp_base = c->sp;
+    assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    sp_base[0] = d;
+    c->sp = sp_base + 1;
+    VALUE sym = scm_intern(c, name);
+    VALUE r = scm_cons(c, sym, sp_base[0]);
+    c->sp = sp_base;
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -702,16 +847,22 @@ scm_display(FILE *fp, VALUE v, bool readable)
  * allocate GC heap memory itself (NODE allocations are host malloc'd via
  * ALLOC_node_*), so no GC trigger can reach it during the dangerous window. */
 struct lex_scope {
-    ASTroObjectHeader head;
+    /* libc-allocated (compile-time only).  Putting lex_scope on the GC
+     * heap would require rooting the whole chain — compile recurses
+     * arbitrarily deep through scm_cons / scm_intern, and the scopes
+     * passed by value have no live anchor.  Leaking is fine because
+     * compile-time scope churn is bounded by program size. */
     struct lex_scope *parent;
     int nslots;
-    char **names;   // symbol C-strings (interned)
+    char **names;   // libc-permanent cstrs (= scm_perm_name)
 };
 
 static struct lex_scope *
 push_scope(CTX *c, struct lex_scope *parent, int nslots, char **names)
 {
-    struct lex_scope *s = (struct lex_scope *)scm_alloc_min(c, sizeof(*s));
+    (void)c;
+    struct lex_scope *s = (struct lex_scope *)calloc(1, sizeof(*s));
+    if (!s) { perror("calloc lex_scope"); abort(); }
     s->parent = parent;
     s->nslots = nslots;
     s->names = names;
@@ -823,44 +974,79 @@ static VALUE
 expand_quasiquote(CTX *c, VALUE form, int depth)
 {
     if (!scm_is_pair(form)) {
-        // Self-evaluating literal vs. a symbol/vector that needs quoting.
         if (SCM_IS_FIXNUM(form) || scm_is_bool(form) || scm_is_null(form) ||
             scm_is_double(form) || scm_is_string(form) || scm_is_char(form) ||
             scm_is_bignum(form) || scm_is_rational(form))
             return form;
-        return scm_cons(c, scm_intern(c, "quote"), scm_cons(c, form, SCM_NIL));
+        /* (quote form) */
+        SP_PUSH(c, sp_q, 1);
+        sp_q[0] = form;
+        VALUE tail_cell = scm_cons(c, sp_q[0], SCM_NIL);
+        VALUE r = scm_cons_sym(c, "quote", tail_cell);
+        SP_POP(c, sp_q);
+        return r;
     }
-    VALUE head = SCM_PTR(form)->pair.car;
-    VALUE tail = SCM_PTR(form)->pair.cdr;
-    if (scm_is_symbol(head)) {
-        const char *name = SCM_PTR(head)->sym.name;
+    /* form is a pair.  sp[0]=form, sp[1]=head, sp[2]=tail, sp[3..]=staging. */
+    SP_PUSH(c, sp, 6);
+    sp[0] = form;
+    sp[1] = SCM_PTR(form)->pair.car;
+    sp[2] = SCM_PTR(form)->pair.cdr;
+    if (scm_is_symbol(sp[1])) {
+        const char *name = SCM_PTR(sp[1])->sym.name;
         if (strcmp(name, "unquote") == 0) {
-            VALUE inner = scm_is_pair(tail) ? SCM_PTR(tail)->pair.car : SCM_NIL;
-            if (depth == 1) return inner;
-            return scm_cons(c, scm_intern(c, "list"),
-                     scm_cons(c, scm_cons(c, scm_intern(c, "quote"), scm_cons(c, head, SCM_NIL)),
-                              scm_cons(c, expand_quasiquote(c, inner, depth - 1), SCM_NIL)));
+            VALUE inner = scm_is_pair(sp[2]) ? SCM_PTR(sp[2])->pair.car : SCM_NIL;
+            if (depth == 1) { SP_POP(c, sp); return inner; }
+            /* (list (quote head) <recur>) */
+            sp[3] = inner;
+            sp[4] = expand_quasiquote(c, sp[3], depth - 1);
+            sp[5] = scm_cons(c, sp[4], SCM_NIL);
+            VALUE quote_tail = scm_cons(c, sp[1], SCM_NIL);
+            sp[3] = quote_tail;
+            sp[3] = scm_cons_sym(c, "quote", sp[3]);
+            sp[3] = scm_cons(c, sp[3], sp[5]);
+            sp[3] = scm_cons_sym(c, "list", sp[3]);
+            VALUE r = sp[3];
+            SP_POP(c, sp);
+            return r;
         }
         if (strcmp(name, "quasiquote") == 0) {
-            VALUE inner = scm_is_pair(tail) ? SCM_PTR(tail)->pair.car : SCM_NIL;
-            return scm_cons(c, scm_intern(c, "list"),
-                     scm_cons(c, scm_cons(c, scm_intern(c, "quote"), scm_cons(c, head, SCM_NIL)),
-                              scm_cons(c, expand_quasiquote(c, inner, depth + 1), SCM_NIL)));
+            VALUE inner = scm_is_pair(sp[2]) ? SCM_PTR(sp[2])->pair.car : SCM_NIL;
+            sp[3] = inner;
+            sp[4] = expand_quasiquote(c, sp[3], depth + 1);
+            sp[5] = scm_cons(c, sp[4], SCM_NIL);
+            VALUE quote_tail = scm_cons(c, sp[1], SCM_NIL);
+            sp[3] = quote_tail;
+            sp[3] = scm_cons_sym(c, "quote", sp[3]);
+            sp[3] = scm_cons(c, sp[3], sp[5]);
+            sp[3] = scm_cons_sym(c, "list", sp[3]);
+            VALUE r = sp[3];
+            SP_POP(c, sp);
+            return r;
         }
     }
-    // ,@x at the head splices into the surrounding list at depth 1.
-    if (depth == 1 && scm_is_pair(head)) {
-        VALUE hh = SCM_PTR(head)->pair.car;
+    if (depth == 1 && scm_is_pair(sp[1])) {
+        VALUE hh = SCM_PTR(sp[1])->pair.car;
         if (scm_is_symbol(hh) && strcmp(SCM_PTR(hh)->sym.name, "unquote-splicing") == 0) {
-            VALUE inner = SCM_PTR(SCM_PTR(head)->pair.cdr)->pair.car;
-            return scm_cons(c, scm_intern(c, "append"),
-                     scm_cons(c, inner,
-                              scm_cons(c, expand_quasiquote(c, tail, depth), SCM_NIL)));
+            VALUE inner = SCM_PTR(SCM_PTR(sp[1])->pair.cdr)->pair.car;
+            sp[3] = inner;
+            sp[4] = expand_quasiquote(c, sp[2], depth);
+            sp[5] = scm_cons(c, sp[4], SCM_NIL);
+            sp[3] = scm_cons(c, sp[3], sp[5]);
+            sp[3] = scm_cons_sym(c, "append", sp[3]);
+            VALUE r = sp[3];
+            SP_POP(c, sp);
+            return r;
         }
     }
-    return scm_cons(c, scm_intern(c, "cons"),
-             scm_cons(c, expand_quasiquote(c, head, depth),
-                      scm_cons(c, expand_quasiquote(c, tail, depth), SCM_NIL)));
+    /* (cons <head-recur> <tail-recur>) */
+    sp[3] = expand_quasiquote(c, sp[1], depth);
+    sp[4] = expand_quasiquote(c, sp[2], depth);
+    sp[5] = scm_cons(c, sp[4], SCM_NIL);
+    sp[3] = scm_cons(c, sp[3], sp[5]);
+    sp[3] = scm_cons_sym(c, "cons", sp[3]);
+    VALUE r = sp[3];
+    SP_POP(c, sp);
+    return r;
 }
 
 // Compile-time helpers used by several special-form lowerings.
@@ -875,12 +1061,22 @@ gensym_at(CTX *c, const char *base)
 static VALUE
 list_append1(CTX *c, VALUE list, VALUE elt)
 {
-    VALUE r = SCM_NIL, *tail = &r;
-    for (VALUE p = list; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) {
-        *tail = scm_cons(c, SCM_PTR(p)->pair.car, SCM_NIL);
-        tail = &SCM_PTR(*tail)->pair.cdr;
+    /* sp[0]=list, sp[1]=elt, sp[2]=result head, sp[3]=last cell,
+     * sp[4]=iter. */
+    SP_PUSH(c, sp, 5);
+    sp[0] = list;
+    sp[1] = elt;
+    sp[2] = SCM_NIL;
+    sp[3] = SCM_NIL;
+    for (sp[4] = sp[0]; scm_is_pair(sp[4]); sp[4] = SCM_PTR(sp[4])->pair.cdr) {
+        VALUE cell = scm_cons(c, SCM_PTR(sp[4])->pair.car, SCM_NIL);
+        if (sp[2] == SCM_NIL) sp[2] = cell; else SCM_PTR(sp[3])->pair.cdr = cell;
+        sp[3] = cell;
     }
-    *tail = scm_cons(c, elt, SCM_NIL);
+    VALUE last = scm_cons(c, sp[1], SCM_NIL);
+    if (sp[2] == SCM_NIL) sp[2] = last; else SCM_PTR(sp[3])->pair.cdr = last;
+    VALUE r = sp[2];
+    SP_POP(c, sp);
     return r;
 }
 
@@ -892,9 +1088,14 @@ compile_seq(CTX *c, VALUE forms, struct lex_scope *scope, bool is_tail)
     if (cdr(forms) == SCM_NIL) {
         return compile(c, car(forms), scope, is_tail);
     }
-    NODE *head = compile(c, car(forms), scope, false);
-    NODE *rest = compile_seq(c, cdr(forms), scope, is_tail);
-    return ALLOC_node_seq(head, rest);
+    /* Park `forms` across the two recursive compile calls. */
+    SP_PUSH(c, sp, 1);
+    sp[0] = forms;
+    NODE *head = compile(c, car(sp[0]), scope, false);
+    NODE *rest = compile_seq(c, cdr(sp[0]), scope, is_tail);
+    NODE *r = ALLOC_node_seq(head, rest);
+    SP_POP(c, sp);
+    return r;
 }
 
 // Try to fold `(<op> ...)` into a specialized node.  Returns NULL when no
@@ -907,10 +1108,18 @@ try_specialize_arith(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope)
 {
     if (!scm_is_symbol(fn_form)) return NULL;
     int argc = list_length(args);
-    const char *name = SCM_PTR(fn_form)->sym.name;
+    /* Use scm_perm_name so `name` survives any subsequent GC trigger.
+     * The lex_scope->names are also perm cstrs so the strcmp below stays
+     * valid. */
+    const char *name = scm_perm_name(SCM_PTR(fn_form)->sym.name);
     uint32_t depth, idx;
     if (lex_lookup(scope, name, &depth, &idx)) return NULL;
 
+    /* Park `args` so the per-arg compile() doesn't lose it under moving GC.
+     * `name` (= sym.name) — keep `fn_form` parked too so the underlying
+     * symbol payload isn't reclaimed, and re-derive `name` if we ever
+     * use it after a GC trigger (here strcmp is done BEFORE each compile,
+     * so `name` stays fresh-enough at each branch entry). */
     // Match the name BEFORE compiling args.  Earlier we compiled the args
     // unconditionally and then picked a node based on the name — but for
     // calls like `(display X)` whose name doesn't match, we'd return NULL
@@ -920,18 +1129,22 @@ try_specialize_arith(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope)
     // pointers whose dispatchers stayed on the slow DISPATCH_node_*
     // host fallbacks — defeating AOT for any program that calls a global
     // 1/2/3-arg function whose name isn't in the specialized set.
+    SP_PUSH(c, sp, 2);
+    sp[0] = fn_form;
+    sp[1] = args;
+    NODE *result = NULL;
     if (argc == 1) {
         if (strcmp(name, "null?") == 0)
-            return ALLOC_node_pred_null(compile(c, car(args), scope, false));
+            { result = ALLOC_node_pred_null(compile(c, car(sp[1]), scope, false)); goto done; }
         if (strcmp(name, "pair?") == 0)
-            return ALLOC_node_pred_pair(compile(c, car(args), scope, false));
+            { result = ALLOC_node_pred_pair(compile(c, car(sp[1]), scope, false)); goto done; }
         if (strcmp(name, "car") == 0)
-            return ALLOC_node_pred_car(compile(c, car(args), scope, false));
+            { result = ALLOC_node_pred_car(compile(c, car(sp[1]), scope, false)); goto done; }
         if (strcmp(name, "cdr") == 0)
-            return ALLOC_node_pred_cdr(compile(c, car(args), scope, false));
+            { result = ALLOC_node_pred_cdr(compile(c, car(sp[1]), scope, false)); goto done; }
         if (strcmp(name, "not") == 0)
-            return ALLOC_node_pred_not(compile(c, car(args), scope, false));
-        return NULL;
+            { result = ALLOC_node_pred_not(compile(c, car(sp[1]), scope, false)); goto done; }
+        goto done;
     }
     if (argc == 2) {
         bool match = (strcmp(name, "+")  == 0 || strcmp(name, "-")  == 0 ||
@@ -942,31 +1155,37 @@ try_specialize_arith(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope)
                       strcmp(name, "cons") == 0 ||
                       strcmp(name, "eq?")  == 0 ||
                       strcmp(name, "eqv?") == 0);
-        if (!match) return NULL;
-        NODE *a = compile(c, car(args),  scope, false);
-        NODE *b = compile(c, cadr(args), scope, false);
-        if (strcmp(name, "+")  == 0) return ALLOC_node_arith_add(a, b);
-        if (strcmp(name, "-")  == 0) return ALLOC_node_arith_sub(a, b);
-        if (strcmp(name, "*")  == 0) return ALLOC_node_arith_mul(a, b);
-        if (strcmp(name, "<")  == 0) return ALLOC_node_arith_lt(a, b);
-        if (strcmp(name, "<=") == 0) return ALLOC_node_arith_le(a, b);
-        if (strcmp(name, ">")  == 0) return ALLOC_node_arith_gt(a, b);
-        if (strcmp(name, ">=") == 0) return ALLOC_node_arith_ge(a, b);
-        if (strcmp(name, "=")  == 0) return ALLOC_node_arith_eq(a, b);
-        if (strcmp(name, "vector-ref") == 0) return ALLOC_node_vec_ref(a, b);
-        if (strcmp(name, "cons") == 0)   return ALLOC_node_cons_op(a, b);
-        if (strcmp(name, "eq?") == 0)    return ALLOC_node_eq_op(a, b);
-        if (strcmp(name, "eqv?") == 0)   return ALLOC_node_eqv_op(a, b);
-        return NULL;
+        if (!match) goto done;
+        NODE *a = compile(c, car(sp[1]),  scope, false);
+        NODE *b = compile(c, cadr(sp[1]), scope, false);
+        /* Re-derive `name` since the symbol payload may have moved during
+         * the two compile() calls above.  fn_form is parked in sp[0]. */
+        const char *nm = SCM_PTR(sp[0])->sym.name;
+        if (strcmp(nm, "+")  == 0) { result = ALLOC_node_arith_add(a, b); goto done; }
+        if (strcmp(nm, "-")  == 0) { result = ALLOC_node_arith_sub(a, b); goto done; }
+        if (strcmp(nm, "*")  == 0) { result = ALLOC_node_arith_mul(a, b); goto done; }
+        if (strcmp(nm, "<")  == 0) { result = ALLOC_node_arith_lt(a, b); goto done; }
+        if (strcmp(nm, "<=") == 0) { result = ALLOC_node_arith_le(a, b); goto done; }
+        if (strcmp(nm, ">")  == 0) { result = ALLOC_node_arith_gt(a, b); goto done; }
+        if (strcmp(nm, ">=") == 0) { result = ALLOC_node_arith_ge(a, b); goto done; }
+        if (strcmp(nm, "=")  == 0) { result = ALLOC_node_arith_eq(a, b); goto done; }
+        if (strcmp(nm, "vector-ref") == 0) { result = ALLOC_node_vec_ref(a, b); goto done; }
+        if (strcmp(nm, "cons") == 0)   { result = ALLOC_node_cons_op(a, b); goto done; }
+        if (strcmp(nm, "eq?") == 0)    { result = ALLOC_node_eq_op(a, b); goto done; }
+        if (strcmp(nm, "eqv?") == 0)   { result = ALLOC_node_eqv_op(a, b); goto done; }
+        goto done;
     }
     if (argc == 3) {
-        if (strcmp(name, "vector-set!") != 0) return NULL;
-        NODE *a = compile(c, car(args),  scope, false);
-        NODE *b = compile(c, cadr(args), scope, false);
-        NODE *d = compile(c, caddr(args), scope, false);
-        return ALLOC_node_vec_set(a, b, d);
+        if (strcmp(name, "vector-set!") != 0) goto done;
+        NODE *a = compile(c, car(sp[1]),  scope, false);
+        NODE *b = compile(c, cadr(sp[1]), scope, false);
+        NODE *d = compile(c, caddr(sp[1]), scope, false);
+        result = ALLOC_node_vec_set(a, b, d);
+        goto done;
     }
-    return NULL;
+done:
+    SP_POP(c, sp);
+    return result;
 }
 
 // When the parser is compiling a named-let body (or single-binding letrec
@@ -1020,6 +1239,14 @@ lex_lookup_full(struct lex_scope *s, const char *name,
 static NODE *
 compile_call(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope, bool is_tail)
 {
+    /* Park fn_form + args across recursive compile()/try_specialize/etc.
+     * — every nested step may trigger arbitrarily many GCs and a C-local
+     * VALUE here would go stale on a moving backend.  sp[0]=fn_form,
+     * sp[1]=args (the head of the arg list), sp[2]=iter `p` (so the for
+     * loop's traversal cursor stays live as well). */
+    SP_PUSH(c, sp_top, 3);
+    sp_top[0] = fn_form;
+    sp_top[1] = args;
     // Self-tail-call recognition.  Two modes selected by
     // CURRENT_SELF_CALL->target_scope:
     //   non-NULL → lex mode (named-let / single-binding letrec).  Match
@@ -1034,10 +1261,12 @@ compile_call(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope, bool is
     //              fast path on globals_serial, so a later
     //              `(set! f g)` (which bumps the serial) drops to slow
     //              path and dispatches via scm_apply_tail.
-    if (is_tail && CURRENT_SELF_CALL && scm_is_symbol(fn_form)) {
-        const char *fn_name = SCM_PTR(fn_form)->sym.name;
+    NODE *result;
+    if (is_tail && CURRENT_SELF_CALL && scm_is_symbol(sp_top[0])) {
+        /* perm_name → survives the recursive compile() GCs below. */
+        const char *fn_name = scm_perm_name(SCM_PTR(sp_top[0])->sym.name);
         if (strcmp(fn_name, CURRENT_SELF_CALL->name) == 0) {
-            int argc = list_length(args);
+            int argc = list_length(sp_top[1]);
             bool match = false;
             if (CURRENT_SELF_CALL->target_scope) {
                 // Lex mode: must resolve to the registered scope.
@@ -1053,57 +1282,70 @@ compile_call(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope, bool is
             if (match && argc == (int)CURRENT_SELF_CALL->nparams && argc <= 4) {
                 NODE *aN[ASCHEME_LOOP_MAX_PARAMS];
                 int i = 0;
-                for (VALUE p = args; scm_is_pair(p); p = cdr(p), i++) {
-                    aN[i] = compile(c, car(p), scope, false);
+                /* Use sp_top[2] as live iter cursor through GC-triggering
+                 * recursive compile() calls. */
+                for (sp_top[2] = sp_top[1]; scm_is_pair(sp_top[2]); sp_top[2] = cdr(sp_top[2]), i++) {
+                    aN[i] = compile(c, car(sp_top[2]), scope, false);
                 }
                 CURRENT_SELF_CALL->used = true;
                 if (CURRENT_SELF_CALL->target_scope) {
                     switch (argc) {
-                    case 0: return ALLOC_node_self_tail_call_0();
-                    case 1: return ALLOC_node_self_tail_call_1(aN[0]);
-                    case 2: return ALLOC_node_self_tail_call_2(aN[0], aN[1]);
-                    case 3: return ALLOC_node_self_tail_call_3(aN[0], aN[1], aN[2]);
-                    case 4: return ALLOC_node_self_tail_call_4(aN[0], aN[1], aN[2], aN[3]);
+                    case 0: result = ALLOC_node_self_tail_call_0(); goto done_call;
+                    case 1: result = ALLOC_node_self_tail_call_1(aN[0]); goto done_call;
+                    case 2: result = ALLOC_node_self_tail_call_2(aN[0], aN[1]); goto done_call;
+                    case 3: result = ALLOC_node_self_tail_call_3(aN[0], aN[1], aN[2]); goto done_call;
+                    case 4: result = ALLOC_node_self_tail_call_4(aN[0], aN[1], aN[2], aN[3]); goto done_call;
                     }
                 } else {
+                    /* Permanent-name cstr: the symbol byte payload moves
+                     * under moving GC, so the NODE must reference a libc
+                     * pool name to stay live across collections. */
+                    const char *pn = scm_perm_name(SCM_PTR(sp_top[0])->sym.name);
                     switch (argc) {
-                    case 0: return ALLOC_node_self_tail_call_global_0(fn_name);
-                    case 1: return ALLOC_node_self_tail_call_global_1(fn_name, aN[0]);
-                    case 2: return ALLOC_node_self_tail_call_global_2(fn_name, aN[0], aN[1]);
-                    case 3: return ALLOC_node_self_tail_call_global_3(fn_name, aN[0], aN[1], aN[2]);
-                    case 4: return ALLOC_node_self_tail_call_global_4(fn_name, aN[0], aN[1], aN[2], aN[3]);
+                    case 0: result = ALLOC_node_self_tail_call_global_0(pn); goto done_call;
+                    case 1: result = ALLOC_node_self_tail_call_global_1(pn, aN[0]); goto done_call;
+                    case 2: result = ALLOC_node_self_tail_call_global_2(pn, aN[0], aN[1]); goto done_call;
+                    case 3: result = ALLOC_node_self_tail_call_global_3(pn, aN[0], aN[1], aN[2]); goto done_call;
+                    case 4: result = ALLOC_node_self_tail_call_global_4(pn, aN[0], aN[1], aN[2], aN[3]); goto done_call;
                     }
                 }
             }
         }
     }
 
-    NODE *spec = try_specialize_arith(c, fn_form, args, scope);
-    if (spec) return spec;
+    {
+        NODE *spec = try_specialize_arith(c, sp_top[0], sp_top[1], scope);
+        if (spec) { result = spec; goto done_call; }
+    }
 
-    NODE *fn = compile(c, fn_form, scope, false);
-    int argc = list_length(args);
-    NODE *aN[8];
-    if (argc <= 4) {
+    {
+        NODE *fn = compile(c, sp_top[0], scope, false);
+        int argc = list_length(sp_top[1]);
+        NODE *aN[8];
+        if (argc <= 4) {
+            int i = 0;
+            for (sp_top[2] = sp_top[1]; scm_is_pair(sp_top[2]); sp_top[2] = cdr(sp_top[2]), i++) {
+                aN[i] = compile(c, car(sp_top[2]), scope, false);
+            }
+            switch (argc) {
+            case 0: result = ALLOC_node_call_0((uint32_t)is_tail, fn); goto done_call;
+            case 1: result = ALLOC_node_call_1((uint32_t)is_tail, fn, aN[0]); goto done_call;
+            case 2: result = ALLOC_node_call_2((uint32_t)is_tail, fn, aN[0], aN[1]); goto done_call;
+            case 3: result = ALLOC_node_call_3((uint32_t)is_tail, fn, aN[0], aN[1], aN[2]); goto done_call;
+            case 4: result = ALLOC_node_call_4((uint32_t)is_tail, fn, aN[0], aN[1], aN[2], aN[3]); goto done_call;
+            }
+        }
+        NODE **abuf = (NODE **)scm_alloc_min(c, sizeof(NODE *) * argc);
         int i = 0;
-        for (VALUE p = args; scm_is_pair(p); p = cdr(p), i++) {
-            aN[i] = compile(c, car(p), scope, false);
+        for (sp_top[2] = sp_top[1]; scm_is_pair(sp_top[2]); sp_top[2] = cdr(sp_top[2]), i++) {
+            abuf[i] = compile(c, car(sp_top[2]), scope, false);
         }
-        switch (argc) {
-        case 0: return ALLOC_node_call_0((uint32_t)is_tail, fn);
-        case 1: return ALLOC_node_call_1((uint32_t)is_tail, fn, aN[0]);
-        case 2: return ALLOC_node_call_2((uint32_t)is_tail, fn, aN[0], aN[1]);
-        case 3: return ALLOC_node_call_3((uint32_t)is_tail, fn, aN[0], aN[1], aN[2]);
-        case 4: return ALLOC_node_call_4((uint32_t)is_tail, fn, aN[0], aN[1], aN[2], aN[3]);
-        }
+        uint32_t base = register_call_args(abuf, (uint32_t)argc);
+        result = ALLOC_node_call_n((uint32_t)is_tail, fn, base, (uint32_t)argc);
     }
-    NODE **abuf = (NODE **)scm_alloc_min(c, sizeof(NODE *) * argc);
-    int i = 0;
-    for (VALUE p = args; scm_is_pair(p); p = cdr(p), i++) {
-        abuf[i] = compile(c, car(p), scope, false);
-    }
-    uint32_t base = register_call_args(abuf, (uint32_t)argc);
-    return ALLOC_node_call_n((uint32_t)is_tail, fn, base, (uint32_t)argc);
+done_call:
+    SP_POP(c, sp_top);
+    return result;
 }
 
 // Build a quoted constant from a (read-only) scheme value.  Symbols/lists/
@@ -1121,11 +1363,11 @@ compile_quote(VALUE v)
     if (v == SCM_TRUE)   return ALLOC_node_const_bool(1);
     if (v == SCM_FALSE)  return ALLOC_node_const_bool(0);
     if (v == SCM_UNSPEC) return ALLOC_node_const_unspec();
-    if (scm_is_symbol(v)) return ALLOC_node_const_sym(SCM_PTR(v)->sym.name);
-    if (scm_is_string(v)) return ALLOC_node_const_str(SCM_PTR(v)->str.chars);
+    if (scm_is_symbol(v)) return ALLOC_node_const_sym(scm_perm_name(SCM_PTR(v)->sym.name));
+    if (scm_is_string(v)) return ALLOC_node_const_str(scm_perm_name(SCM_PTR(v)->str.chars));
     if (scm_is_char(v))   return ALLOC_node_const_char(SCM_PTR(v)->ch);
     if (scm_is_double(v)) return ALLOC_node_const_double(scm_get_double(v));
-    return ALLOC_node_quote((uint64_t)v);
+    return scm_alloc_quote((uint64_t)v);
 }
 
 // Detect leading internal-define forms in a body and rewrite to letrec
@@ -1135,37 +1377,64 @@ static VALUE
 hoist_internal_defines(CTX *c, VALUE body)
 {
     if (!scm_is_pair(body)) return body;
-    // collect leading defines
-    VALUE bindings = SCM_NIL, *bind_tail = &bindings;
-    while (scm_is_pair(body) && scm_is_pair(car(body)) && is_symbol(car(car(body)), "define")) {
-        VALUE def = car(body);
+    /* sp[0] = body (advances across iterations),
+     * sp[1] = bindings head,
+     * sp[2] = bindings last cell,
+     * sp[3..] = per-iter staging (init/lambda + pair). */
+    SP_PUSH(c, sp, 6);
+    sp[0] = body;
+    sp[1] = SCM_NIL;
+    sp[2] = SCM_NIL;
+    while (scm_is_pair(sp[0]) && scm_is_pair(car(sp[0])) && is_symbol(car(car(sp[0])), "define")) {
+        VALUE def = car(sp[0]);
         VALUE name; VALUE init;
         if (scm_is_pair(cadr(def))) {
             // (define (f params) body...)
             name = car(cadr(def));
             VALUE params = cdr(cadr(def));
             VALUE bodydefs = cdr(cdr(def));
-            VALUE lambda = scm_cons(c, scm_intern(c, "lambda"), scm_cons(c, params, bodydefs));
-            init = lambda;
+            sp[3] = params;
+            sp[4] = bodydefs;
+            sp[5] = scm_cons(c, sp[3], sp[4]);
+            sp[5] = scm_cons_sym(c, "lambda", sp[5]);
+            init = sp[5];
         } else {
             name = cadr(def);
             init = caddr(def);
         }
-        VALUE pair = scm_cons(c, name, scm_cons(c, init, SCM_NIL));
-        *bind_tail = scm_cons(c, pair, SCM_NIL);
-        bind_tail = &SCM_PTR(*bind_tail)->pair.cdr;
-        body = cdr(body);
+        /* pair = (name init) */
+        sp[3] = init;
+        sp[4] = name;
+        VALUE init_cell = scm_cons(c, sp[3], SCM_NIL);
+        sp[5] = init_cell;
+        sp[5] = scm_cons(c, sp[4], sp[5]);
+        VALUE pcell = scm_cons(c, sp[5], SCM_NIL);
+        if (sp[1] == SCM_NIL) sp[1] = pcell; else SCM_PTR(sp[2])->pair.cdr = pcell;
+        sp[2] = pcell;
+        sp[0] = SCM_PTR(sp[0])->pair.cdr;
     }
-    if (bindings == SCM_NIL) return body;
-    VALUE letrec = scm_cons(c, scm_intern(c, "letrec"), scm_cons(c, bindings, body));
-    return scm_cons(c, letrec, SCM_NIL);
+    if (sp[1] == SCM_NIL) {
+        VALUE r = sp[0];
+        SP_POP(c, sp);
+        return r;
+    }
+    /* letrec = (letrec bindings body) */
+    sp[5] = scm_cons(c, sp[1], sp[0]);
+    sp[5] = scm_cons_sym(c, "letrec", sp[5]);
+    sp[5] = scm_cons(c, sp[5], SCM_NIL);
+    VALUE r = sp[5];
+    SP_POP(c, sp);
+    return r;
 }
 
 static NODE *
 compile_body(CTX *c, VALUE body, struct lex_scope *scope, bool is_tail)
 {
-    body = hoist_internal_defines(c, body);
-    return compile_seq(c, body, scope, is_tail);
+    SP_PUSH(c, sp, 1);
+    sp[0] = hoist_internal_defines(c, body);
+    NODE *r = compile_seq(c, sp[0], scope, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 // COMPILE_INNER_LAMBDA_SEEN bubbles outward from any `compile_lambda` —
@@ -1184,30 +1453,35 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
 {
     int nparams = 0;
     int has_rest = 0;
-    char *names_buf[64];
+    /* names_buf holds libc-permanent cstrs — stable across moving GC. */
+    const char *names_buf[64];
     int nslots = 0;
 
-    if (scm_is_symbol(params)) {
-        // (lambda x body) — single rest param
-        names_buf[nslots++] = (char *)SCM_PTR(params)->sym.name;
+    /* Park params + body across the scm_alloc_min / push_scope / compile
+     * cascade.  Walk params using sp[0]. */
+    SP_PUSH(c, sp, 2);
+    sp[0] = params;
+    sp[1] = body;
+    if (scm_is_symbol(sp[0])) {
+        names_buf[nslots++] = scm_perm_name(SCM_PTR(sp[0])->sym.name);
         nparams = 0;
         has_rest = 1;
     } else {
-        VALUE p = params;
+        VALUE p = sp[0];
         while (scm_is_pair(p)) {
             if (nslots >= (int)(sizeof(names_buf)/sizeof(names_buf[0])))
                 scm_error(c, "too many lambda parameters");
-            names_buf[nslots++] = (char *)SCM_PTR(car(p))->sym.name;
+            names_buf[nslots++] = scm_perm_name(SCM_PTR(car(p))->sym.name);
             nparams++;
             p = cdr(p);
         }
         if (scm_is_symbol(p)) {
-            names_buf[nslots++] = (char *)SCM_PTR(p)->sym.name;
+            names_buf[nslots++] = scm_perm_name(SCM_PTR(p)->sym.name);
             has_rest = 1;
         }
     }
     char **names = (char **)scm_alloc_min(c, sizeof(char *) * (nslots ? nslots : 1));
-    for (int i = 0; i < nslots; i++) names[i] = names_buf[i];
+    for (int i = 0; i < nslots; i++) names[i] = (char *)names_buf[i];
 
     struct lex_scope *new_scope = push_scope(c, scope, nslots, names);
 
@@ -1228,16 +1502,18 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
     } else {
         CURRENT_SELF_CALL = NULL;
     }
-    NODE *body_node = compile_body(c, body, new_scope, true);   // body is in tail position
+    NODE *body_node = compile_body(c, sp[1], new_scope, true);   // body is in tail position
     bool body_has_inner_lambda = COMPILE_INNER_LAMBDA_SEEN;
     // Bubble the "we are a lambda" flag to the enclosing scope.
     COMPILE_INNER_LAMBDA_SEEN = saved || true;
     CURRENT_SELF_CALL = saved_self_call;
 
     aot_add_entry(body_node);
-    return ALLOC_node_lambda((uint32_t)nparams, (uint32_t)has_rest, (uint32_t)nslots,
-                             body_has_inner_lambda ? 0 : 1,
-                             body_node);
+    NODE *r = ALLOC_node_lambda((uint32_t)nparams, (uint32_t)has_rest, (uint32_t)nslots,
+                                body_has_inner_lambda ? 0 : 1,
+                                body_node);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (let ((a v) (b w)) body) → ((lambda (a b) body) v w)
@@ -1258,21 +1534,27 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         VALUE body = cdr(cdr(cdr(form)));
 
         int nparams = 0;
-        char *param_names[ASCHEME_LOOP_MAX_PARAMS];
+        const char *param_names[ASCHEME_LOOP_MAX_PARAMS];
         for (VALUE b = bindings; scm_is_pair(b); b = cdr(b)) {
             if (nparams >= ASCHEME_LOOP_MAX_PARAMS) goto named_let_fallback;
             VALUE bn = car(car(b));
-            param_names[nparams++] = (char *)SCM_PTR(bn)->sym.name;
+            param_names[nparams++] = scm_perm_name(SCM_PTR(bn)->sym.name);
         }
 
+        /* Park bindings, body, name across the upcoming scm_alloc_min /
+         * compile cascade — all of which can trigger GC. */
+        SP_PUSH(c, sp_nlh, 3);
+        sp_nlh[0] = name;
+        sp_nlh[1] = bindings;
+        sp_nlh[2] = body;
         // Outer scope: just the loop binding.
         char **outer_names = (char **)scm_alloc_min(c, sizeof(char *));
-        outer_names[0] = (char *)SCM_PTR(name)->sym.name;
+        outer_names[0] = (char *)scm_perm_name(SCM_PTR(sp_nlh[0])->sym.name);
         struct lex_scope *outer_scope = push_scope(c, scope, 1, outer_names);
 
         // Inner scope: the loop's params, with parent = outer scope.
         char **inner_names = (char **)scm_alloc_min(c, sizeof(char *) * (nparams ? nparams : 1));
-        for (int i = 0; i < nparams; i++) inner_names[i] = param_names[i];
+        for (int i = 0; i < nparams; i++) inner_names[i] = (char *)param_names[i];
         struct lex_scope *inner_scope = push_scope(c, outer_scope, nparams, inner_names);
 
         // Compile inner body with self-call recognition active.
@@ -1282,7 +1564,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         bool saved_inner = COMPILE_INNER_LAMBDA_SEEN;
         COMPILE_INNER_LAMBDA_SEEN = false;
 
-        NODE *inner_body = compile_body(c, body, inner_scope, /*is_tail=*/true);
+        NODE *inner_body = compile_body(c, sp_nlh[2], inner_scope, /*is_tail=*/true);
 
         bool body_has_inner_lambda = COMPILE_INNER_LAMBDA_SEEN;
         COMPILE_INNER_LAMBDA_SEEN = saved_inner || true;
@@ -1309,17 +1591,14 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         NODE *fn_lref = ALLOC_node_lref(0, 0);
 
         NODE *init_nodes[ASCHEME_LOOP_MAX_PARAMS];
+        /* Walk bindings via sp slot to keep cursor alive across the inner
+         * compile() calls. */
+        SP_PUSH(c, sp_iter, 1);
         int ii = 0;
-        for (VALUE b = bindings; scm_is_pair(b); b = cdr(b), ii++) {
-            // Inits are syntactically in the OUTER caller's scope (R5RS:
-            // they can't reference the loop name), BUT at runtime they
-            // get evaluated INSIDE the wrapper lambda's frame — the
-            // (call_K (lref 0 0) inits...) is in the wrapper body.  So
-            // depth offsets must be measured from outer_scope, not from
-            // scope, otherwise references to outer lexicals come out
-            // one level too shallow.
-            init_nodes[ii] = compile(c, cadr(car(b)), outer_scope, false);
+        for (sp_iter[0] = sp_nlh[1]; scm_is_pair(sp_iter[0]); sp_iter[0] = cdr(sp_iter[0]), ii++) {
+            init_nodes[ii] = compile(c, cadr(car(sp_iter[0])), outer_scope, false);
         }
+        SP_POP(c, sp_iter);
 
         NODE *call_inner;
         switch (nparams) {
@@ -1356,60 +1635,139 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
                                                outer_body);
 
         NODE *unspec = ALLOC_node_const_unspec();
-        return ALLOC_node_call_1((uint32_t)is_tail, outer_lambda, unspec);
+        NODE *r_named = ALLOC_node_call_1((uint32_t)is_tail, outer_lambda, unspec);
+        SP_POP(c, sp_nlh);
+        return r_named;
 
       named_let_fallback:
         ; // fall through to the original letrec desugaring
-        VALUE params = SCM_NIL, *p_tail = &params;
-        VALUE inits  = SCM_NIL, *i_tail = &inits;
-        for (VALUE b = bindings; scm_is_pair(b); b = cdr(b)) {
-            VALUE bn = car(car(b)), bv = cadr(car(b));
-            *p_tail = scm_cons(c, bn, SCM_NIL); p_tail = &SCM_PTR(*p_tail)->pair.cdr;
-            *i_tail = scm_cons(c, bv, SCM_NIL); i_tail = &SCM_PTR(*i_tail)->pair.cdr;
+      {
+        /* Precise rooting: park name + bindings + body, then build params /
+         * inits via head + last-cell pattern with the iter cursor in sp.
+         *   sp[0]=name,  sp[1]=bindings,  sp[2]=body,
+         *   sp[3]=params head, sp[4]=params last,
+         *   sp[5]=inits head,  sp[6]=inits last,
+         *   sp[7]=iter cursor.
+         *   sp[8] = staging slot for intermediate cons chains. */
+        SP_PUSH(c, sp_nl, 9);
+        sp_nl[0] = name;
+        sp_nl[1] = bindings;
+        sp_nl[2] = body;
+        sp_nl[3] = SCM_NIL;
+        sp_nl[4] = SCM_NIL;
+        sp_nl[5] = SCM_NIL;
+        sp_nl[6] = SCM_NIL;
+        for (sp_nl[7] = sp_nl[1]; scm_is_pair(sp_nl[7]);
+             sp_nl[7] = SCM_PTR(sp_nl[7])->pair.cdr) {
+            VALUE bn = car(car(sp_nl[7]));
+            VALUE pcell = scm_cons(c, bn, SCM_NIL);
+            if (sp_nl[3] == SCM_NIL) sp_nl[3] = pcell;
+            else SCM_PTR(sp_nl[4])->pair.cdr = pcell;
+            sp_nl[4] = pcell;
+            VALUE bv = cadr(car(sp_nl[7]));
+            VALUE icell = scm_cons(c, bv, SCM_NIL);
+            if (sp_nl[5] == SCM_NIL) sp_nl[5] = icell;
+            else SCM_PTR(sp_nl[6])->pair.cdr = icell;
+            sp_nl[6] = icell;
         }
-        VALUE lambda = scm_cons(c, scm_intern(c, "lambda"), scm_cons(c, params, body));
-        VALUE letrec_binding = scm_cons(c, name, scm_cons(c, lambda, SCM_NIL));
-        VALUE letrec_bindings = scm_cons(c, letrec_binding, SCM_NIL);
-        VALUE call = scm_cons(c, name, inits);
-        VALUE call_form = scm_cons(c, call, SCM_NIL);
-        VALUE letrec = scm_cons(c, scm_intern(c, "letrec"), scm_cons(c, letrec_bindings, call_form));
-        return compile(c, letrec, scope, is_tail);
+        /* lambda = (lambda params body...) */
+        sp_nl[8] = scm_cons(c, sp_nl[3], sp_nl[2]);
+        sp_nl[8] = scm_cons_sym(c, "lambda", sp_nl[8]);
+        /* letrec_binding = (name lambda) */
+        VALUE lr_lambda = scm_cons(c, sp_nl[8], SCM_NIL);
+        sp_nl[8] = lr_lambda;
+        sp_nl[8] = scm_cons(c, sp_nl[0], sp_nl[8]);
+        /* letrec_bindings = (letrec_binding) */
+        sp_nl[8] = scm_cons(c, sp_nl[8], SCM_NIL);
+        /* call = (name inits...) */
+        sp_nl[4] = scm_cons(c, sp_nl[0], sp_nl[5]);    /* reuse sp_nl[4] */
+        /* call_form = (call) */
+        sp_nl[4] = scm_cons(c, sp_nl[4], SCM_NIL);
+        /* letrec = (letrec letrec_bindings call_form...) — last arg is body
+         * shaped: (letrec letrec_bindings . call_form).  Original code: */
+        VALUE letrec_kw = scm_intern(c, "letrec");
+        sp_nl[4] = scm_cons(c, sp_nl[8], sp_nl[4]);    /* (letrec_bindings . call_form) */
+        sp_nl[4] = scm_cons(c, letrec_kw, sp_nl[4]);
+        NODE *r = compile(c, sp_nl[4], scope, is_tail);
+        SP_POP(c, sp_nl);
+        return r;
+      }
     }
-    VALUE bindings = second;
-    VALUE body = cdr(cdr(form));
-    VALUE params = SCM_NIL, *p_tail = &params;
-    VALUE inits  = SCM_NIL, *i_tail = &inits;
-    for (VALUE b = bindings; scm_is_pair(b); b = cdr(b)) {
-        VALUE bn = car(car(b)), bv = cadr(car(b));
-        *p_tail = scm_cons(c, bn, SCM_NIL); p_tail = &SCM_PTR(*p_tail)->pair.cdr;
-        *i_tail = scm_cons(c, bv, SCM_NIL); i_tail = &SCM_PTR(*i_tail)->pair.cdr;
+    /* Standard let: (let ((a v) (b w)) body) → ((lambda (a b) body) v w).
+     *   sp[0]=form,   sp[1]=bindings head,   sp[2]=body,
+     *   sp[3]=params head,   sp[4]=params last cell,
+     *   sp[5]=inits  head,   sp[6]=inits  last cell,
+     *   sp[7]=iter cursor (b) for safe traversal across cons allocations.
+     */
+    SP_PUSH(c, sp, 8);
+    sp[0] = form;
+    sp[1] = cadr(form);
+    sp[2] = cdr(cdr(form));
+    sp[3] = SCM_NIL;
+    sp[4] = SCM_NIL;
+    sp[5] = SCM_NIL;
+    sp[6] = SCM_NIL;
+    for (sp[7] = sp[1]; scm_is_pair(sp[7]); sp[7] = SCM_PTR(sp[7])->pair.cdr) {
+        VALUE bn = car(car(sp[7]));
+        VALUE bv = cadr(car(sp[7]));
+        VALUE pcell = scm_cons(c, bn, SCM_NIL);
+        if (sp[3] == SCM_NIL) sp[3] = pcell;
+        else SCM_PTR(sp[4])->pair.cdr = pcell;
+        sp[4] = pcell;
+        /* sp[7] still valid (= rooted), but bv (= cadr(car(sp[7]))) was
+         * captured before scm_cons; that VALUE could have moved.  Re-read.
+         */
+        bv = cadr(car(sp[7]));
+        VALUE icell = scm_cons(c, bv, SCM_NIL);
+        if (sp[5] == SCM_NIL) sp[5] = icell;
+        else SCM_PTR(sp[6])->pair.cdr = icell;
+        sp[6] = icell;
     }
-    VALUE lambda = scm_cons(c, scm_intern(c, "lambda"), scm_cons(c, params, body));
-    VALUE call = scm_cons(c, lambda, inits);
-    return compile(c, call, scope, is_tail);
+    /* Build (lambda params body) → call w/ inits.  Stage via sp[4]. */
+    sp[4] = scm_cons(c, sp[3], sp[2]);      /* (params . body) */
+    {
+        VALUE lambda_kw = scm_intern(c, "lambda");
+        sp[4] = scm_cons(c, lambda_kw, sp[4]);   /* (lambda params . body) */
+    }
+    sp[4] = scm_cons(c, sp[4], sp[5]);       /* ((lambda ...) inits...) */
+    NODE *r = compile(c, sp[4], scope, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (let* ((a v) (b w)) body) → (let ((a v)) (let ((b w)) body))
 static NODE *
 compile_letstar(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
-    VALUE bindings = cadr(form);
-    VALUE body = cdr(cdr(form));
-    if (bindings == SCM_NIL) {
-        // R5RS §5.2.2: the body of an empty `let*` is still a body, so
-        // internal defines must hoist.  Going through `let` keeps that
-        // context (compile_let → compile_lambda → compile_body) instead
-        // of degenerating to `begin`, which loses it.
-        VALUE letform = scm_cons(c, scm_intern(c, "let"), scm_cons(c, SCM_NIL, body));
-        return compile(c, letform, scope, is_tail);
+    SP_PUSH(c, sp, 5);
+    sp[0] = form;
+    sp[1] = cadr(form);            /* bindings */
+    sp[2] = cdr(cdr(form));        /* body */
+    if (sp[1] == SCM_NIL) {
+        sp[3] = scm_cons(c, SCM_NIL, sp[2]);
+        sp[3] = scm_cons_sym(c, "let", sp[3]);
+        NODE *r = compile(c, sp[3], scope, is_tail);
+        SP_POP(c, sp);
+        return r;
     }
-    VALUE first = car(bindings);
-    VALUE rest = cdr(bindings);
-    VALUE inner = scm_cons(c, scm_intern(c, "let*"), scm_cons(c, rest, body));
-    VALUE outer = scm_cons(c, scm_intern(c, "let"),
-                           scm_cons(c, scm_cons(c, first, SCM_NIL),
-                                    scm_cons(c, inner, SCM_NIL)));
-    return compile(c, outer, scope, is_tail);
+    VALUE first = car(sp[1]);
+    VALUE rest = cdr(sp[1]);
+    sp[3] = first;
+    sp[4] = rest;
+    /* inner = (let* rest body...) */
+    VALUE inner = scm_cons(c, sp[4], sp[2]);
+    sp[4] = inner;
+    sp[4] = scm_cons_sym(c, "let*", sp[4]);
+    /* outer = (let ((first)) inner) */
+    VALUE first_cell = scm_cons(c, sp[3], SCM_NIL);
+    sp[3] = first_cell;
+    VALUE inner_cell = scm_cons(c, sp[4], SCM_NIL);
+    sp[4] = inner_cell;
+    sp[3] = scm_cons(c, sp[3], sp[4]);   /* ((first) inner) */
+    sp[3] = scm_cons_sym(c, "let", sp[3]);
+    NODE *r = compile(c, sp[3], scope, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (letrec ((a v) ...) body) →
@@ -1417,110 +1775,176 @@ compile_letstar(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 static NODE *
 compile_letrec(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
-    VALUE bindings = cadr(form);
-    VALUE body = cdr(cdr(form));
-    VALUE pairs = SCM_NIL, *p_tail = &pairs;
-    VALUE assigns = SCM_NIL, *a_tail = &assigns;
-    for (VALUE b = bindings; scm_is_pair(b); b = cdr(b)) {
-        VALUE name = car(car(b));
-        VALUE init = cadr(car(b));
-        VALUE undef = scm_cons(c, name, scm_cons(c, SCM_UNSPEC, SCM_NIL));
-        *p_tail = scm_cons(c, undef, SCM_NIL); p_tail = &SCM_PTR(*p_tail)->pair.cdr;
-        VALUE setform = scm_cons(c, scm_intern(c, "set!"), scm_cons(c, name, scm_cons(c, init, SCM_NIL)));
-        *a_tail = scm_cons(c, setform, SCM_NIL); a_tail = &SCM_PTR(*a_tail)->pair.cdr;
+    /* Precise rooting: park form + bindings + body + accumulators across the
+     * many scm_cons / scm_intern calls below.
+     *   sp[0]=form, sp[1]=bindings, sp[2]=body,
+     *   sp[3]=pairs head,  sp[4]=pairs last cell,
+     *   sp[5]=assigns head, sp[6]=assigns last,
+     *   sp[7]=iter cursor, sp[8]=staging. */
+    SP_PUSH(c, sp, 9);
+    sp[0] = form;
+    sp[1] = cadr(form);
+    sp[2] = cdr(cdr(form));
+    sp[3] = SCM_NIL;
+    sp[4] = SCM_NIL;
+    sp[5] = SCM_NIL;
+    sp[6] = SCM_NIL;
+    for (sp[7] = sp[1]; scm_is_pair(sp[7]); sp[7] = SCM_PTR(sp[7])->pair.cdr) {
+        VALUE name = car(car(sp[7]));
+        /* undef = (name SCM_UNSPEC) */
+        VALUE inner_undef = scm_cons(c, SCM_UNSPEC, SCM_NIL);
+        sp[8] = inner_undef;
+        sp[8] = scm_cons(c, name, sp[8]);   /* undef */
+        VALUE pcell = scm_cons(c, sp[8], SCM_NIL);
+        if (sp[3] == SCM_NIL) sp[3] = pcell;
+        else SCM_PTR(sp[4])->pair.cdr = pcell;
+        sp[4] = pcell;
+        /* setform = (set! name init) */
+        VALUE init = cadr(car(sp[7]));
+        VALUE init_cons = scm_cons(c, init, SCM_NIL);
+        sp[8] = init_cons;
+        sp[8] = scm_cons(c, car(car(sp[7])), sp[8]);   /* re-read name */
+        sp[8] = scm_cons_sym(c, "set!", sp[8]);
+        VALUE acell = scm_cons(c, sp[8], SCM_NIL);
+        if (sp[5] == SCM_NIL) sp[5] = acell;
+        else SCM_PTR(sp[6])->pair.cdr = acell;
+        sp[6] = acell;
     }
-    // ((let pairs assigns... body...))
-    VALUE inner_body = assigns;
-    // append body
-    if (assigns == SCM_NIL) {
-        inner_body = body;
+    /* inner_body = append(assigns, body) */
+    if (sp[5] == SCM_NIL) {
+        sp[5] = sp[2];
     } else {
-        VALUE tail = assigns;
-        while (cdr(tail) != SCM_NIL) tail = cdr(tail);
-        SCM_PTR(tail)->pair.cdr = body;
+        SCM_PTR(sp[6])->pair.cdr = sp[2];
     }
-    VALUE letform = scm_cons(c, scm_intern(c, "let"), scm_cons(c, pairs, inner_body));
-    return compile(c, letform, scope, is_tail);
+    /* letform = (let pairs inner_body...) */
+    sp[8] = scm_cons(c, sp[3], sp[5]);
+    sp[8] = scm_cons_sym(c, "let", sp[8]);
+    NODE *r = compile(c, sp[8], scope, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (cond (test e...) ... (else e...))
 static NODE *
 compile_cond(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
+    if (cdr(form) == SCM_NIL) return ALLOC_node_const_unspec();
+    /* Park form + (first clause, rest of clauses, test, body, staging). */
+    SP_PUSH(c, sp, 6);
+    sp[0] = form;
     VALUE clauses = cdr(form);
-    if (clauses == SCM_NIL) return ALLOC_node_const_unspec();
-    VALUE first = car(clauses);
-    VALUE rest = cdr(clauses);
-    VALUE test = car(first);
-    VALUE body = cdr(first);
-    bool is_else = is_symbol(test, "else");
+    sp[1] = car(clauses);              /* first clause */
+    sp[2] = cdr(clauses);              /* rest clauses */
+    sp[3] = car(sp[1]);                /* test */
+    sp[4] = cdr(sp[1]);                /* body */
+    sp[5] = SCM_NIL;                   /* staging */
+    bool is_else = is_symbol(sp[3], "else");
     NODE *thn;
-    if (body == SCM_NIL) {
-        // (cond (test) ...) — value of test is returned when true.
-        // Compile as: (let ((t test)) (if t t <rest>))
-        // Simpler: just treat as (begin test).
-        thn = compile(c, test, scope, is_tail);
-    } else if (scm_is_pair(body) && is_symbol(car(body), "=>")) {
-        // (cond (test => fn) ...) — apply fn to test result.
-        VALUE fn = cadr(body);
-        VALUE call = scm_cons(c, fn, scm_cons(c, test, SCM_NIL));
-        thn = compile(c, call, scope, is_tail);
+    if (sp[4] == SCM_NIL) {
+        thn = compile(c, sp[3], scope, is_tail);
+    } else if (scm_is_pair(sp[4]) && is_symbol(car(sp[4]), "=>")) {
+        /* (cond (test => fn) ...) → (fn test) */
+        VALUE fn = cadr(sp[4]);
+        VALUE test_cell = scm_cons(c, sp[3], SCM_NIL);
+        sp[5] = test_cell;
+        sp[5] = scm_cons(c, fn, sp[5]);
+        thn = compile(c, sp[5], scope, is_tail);
     } else {
-        VALUE begin = scm_cons(c, scm_intern(c, "begin"), body);
-        thn = compile(c, begin, scope, is_tail);
+        VALUE begin_sym = scm_intern(c, "begin");
+        sp[5] = scm_cons(c, begin_sym, sp[4]);
+        thn = compile(c, sp[5], scope, is_tail);
     }
-    if (is_else) return thn;
-    NODE *cnd = compile(c, test, scope, false);
-    NODE *els = (rest == SCM_NIL)
-        ? ALLOC_node_const_unspec()
-        : compile_cond(c, scm_cons(c, scm_intern(c, "cond"), rest), scope, is_tail);
-    return ALLOC_node_if(cnd, thn, els);
+    NODE *r;
+    if (is_else) { r = thn; goto done; }
+    NODE *cnd = compile(c, sp[3], scope, false);
+    NODE *els;
+    if (sp[2] == SCM_NIL) {
+        els = ALLOC_node_const_unspec();
+    } else {
+        VALUE cond_sym = scm_intern(c, "cond");
+        sp[5] = scm_cons(c, cond_sym, sp[2]);
+        els = compile_cond(c, sp[5], scope, is_tail);
+    }
+    r = ALLOC_node_if(cnd, thn, els);
+done:
+    SP_POP(c, sp);
+    return r;
 }
 
 // (case key (vals body...) ... (else body...))
 static NODE *
 compile_case(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
-    VALUE key = cadr(form);
-    VALUE clauses = cdr(cdr(form));
-    // Bind key once: (let ((k <key>)) (cond ((memv k '(vs...)) body...) ...))
-    VALUE k_sym = gensym_at(c, "case-key");
-    VALUE bindings = scm_cons(c, scm_cons(c, k_sym, scm_cons(c, key, SCM_NIL)), SCM_NIL);
-    VALUE cond_clauses = SCM_NIL, *tail = &cond_clauses;
-    for (VALUE cl = clauses; scm_is_pair(cl); cl = cdr(cl)) {
-        VALUE clause = car(cl);
-        VALUE vals = car(clause);
-        VALUE body = cdr(clause);
-        VALUE test;
+    /* sp[0]=form, sp[1]=key, sp[2]=clauses head, sp[3]=k_sym, sp[4]=bindings,
+     * sp[5]=cond_clauses head, sp[6]=cond_clauses last, sp[7]=iter cl,
+     * sp[8]=staging */
+    SP_PUSH(c, sp, 9);
+    sp[0] = form;
+    sp[1] = cadr(form);
+    sp[2] = cdr(cdr(form));
+    sp[3] = gensym_at(c, "case-key");
+    /* bindings = ((k_sym key)) */
+    sp[8] = scm_cons(c, sp[1], SCM_NIL);
+    sp[8] = scm_cons(c, sp[3], sp[8]);
+    sp[4] = scm_cons(c, sp[8], SCM_NIL);
+    sp[5] = SCM_NIL;
+    sp[6] = SCM_NIL;
+    for (sp[7] = sp[2]; scm_is_pair(sp[7]); sp[7] = SCM_PTR(sp[7])->pair.cdr) {
+        VALUE vals = car(car(sp[7]));
         if (is_symbol(vals, "else")) {
-            test = scm_intern(c, "else");
+            /* (else body...) — wrap as (else . body) directly. */
+            VALUE test = scm_intern(c, "else");
+            /* Re-read body_clause AFTER scm_intern (= GC trigger). */
+            VALUE body_clause = cdr(car(sp[7]));
+            sp[8] = scm_cons(c, test, body_clause);
         } else {
-            VALUE quoted_vals = scm_cons(c, scm_intern(c, "quote"), scm_cons(c, vals, SCM_NIL));
-            test = scm_cons(c, scm_intern(c, "memv"),
-                            scm_cons(c, k_sym, scm_cons(c, quoted_vals, SCM_NIL)));
+            /* quoted_vals = (quote vals); test = (memv k_sym quoted_vals) */
+            VALUE qv_tail = scm_cons(c, vals, SCM_NIL);
+            sp[8] = qv_tail;
+            sp[8] = scm_cons_sym(c, "quote", sp[8]);
+            /* test = (memv k_sym sp[8]) */
+            VALUE t_tail = scm_cons(c, sp[8], SCM_NIL);
+            sp[8] = t_tail;
+            sp[8] = scm_cons(c, sp[3], sp[8]);
+            sp[8] = scm_cons_sym(c, "memv", sp[8]);
+            /* re-read clause body since multiple allocs above moved it */
+            VALUE body_clause = cdr(car(sp[7]));
+            sp[8] = scm_cons(c, sp[8], body_clause);
         }
-        VALUE new_clause = scm_cons(c, test, body);
-        *tail = scm_cons(c, new_clause, SCM_NIL);
-        tail = &SCM_PTR(*tail)->pair.cdr;
+        VALUE cell = scm_cons(c, sp[8], SCM_NIL);
+        if (sp[5] == SCM_NIL) sp[5] = cell;
+        else SCM_PTR(sp[6])->pair.cdr = cell;
+        sp[6] = cell;
     }
-    VALUE cnd = scm_cons(c, scm_intern(c, "cond"), cond_clauses);
-    VALUE letform = scm_cons(c, scm_intern(c, "let"),
-                             scm_cons(c, bindings, scm_cons(c, cnd, SCM_NIL)));
-    return compile(c, letform, scope, is_tail);
+    /* cnd = (cond cond_clauses...) */
+    sp[8] = scm_cons_sym(c, "cond", sp[5]);
+    /* letform = (let bindings cnd) */
+    VALUE cnd_cell = scm_cons(c, sp[8], SCM_NIL);
+    sp[8] = cnd_cell;
+    sp[8] = scm_cons(c, sp[4], sp[8]);
+    sp[8] = scm_cons_sym(c, "let", sp[8]);
+    NODE *r = compile(c, sp[8], scope, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (and a b c) → (if a (if b c #f) #f).  (and) → #t.  (and a) → a.
 static NODE *
 compile_and(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
-    VALUE args = cdr(form);
-    if (args == SCM_NIL) return ALLOC_node_const_bool(1);
-    if (cdr(args) == SCM_NIL) return compile(c, car(args), scope, is_tail);
-    NODE *cnd = compile(c, car(args), scope, false);
-    VALUE rest = scm_cons(c, scm_intern(c, "and"), cdr(args));
-    NODE *thn = compile(c, rest, scope, is_tail);
+    if (cdr(form) == SCM_NIL) return ALLOC_node_const_bool(1);
+    if (cdr(cdr(form)) == SCM_NIL) return compile(c, car(cdr(form)), scope, is_tail);
+    SP_PUSH(c, sp, 3);
+    sp[0] = form;
+    sp[1] = cdr(form);                       /* args */
+    sp[2] = SCM_NIL;
+    NODE *cnd = compile(c, car(sp[1]), scope, false);
+    sp[2] = scm_cons_sym(c, "and", cdr(sp[1]));
+    NODE *thn = compile(c, sp[2], scope, is_tail);
     NODE *els = ALLOC_node_const_bool(0);
-    return ALLOC_node_if(cnd, thn, els);
+    NODE *r = ALLOC_node_if(cnd, thn, els);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (or a b c) — returns first truthy or #f.  Implemented as
@@ -1529,17 +1953,32 @@ compile_and(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 static NODE *
 compile_or(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
-    VALUE args = cdr(form);
-    if (args == SCM_NIL) return ALLOC_node_const_bool(0);
-    if (cdr(args) == SCM_NIL) return compile(c, car(args), scope, is_tail);
-    VALUE tmp = gensym_at(c, "or-tmp");
-    VALUE binding = scm_cons(c, scm_cons(c, tmp, scm_cons(c, car(args), SCM_NIL)), SCM_NIL);
-    VALUE rest = scm_cons(c, scm_intern(c, "or"), cdr(args));
-    VALUE iff = scm_cons(c, scm_intern(c, "if"),
-                         scm_cons(c, tmp, scm_cons(c, tmp, scm_cons(c, rest, SCM_NIL))));
-    VALUE letform = scm_cons(c, scm_intern(c, "let"),
-                             scm_cons(c, binding, scm_cons(c, iff, SCM_NIL)));
-    return compile(c, letform, scope, is_tail);
+    if (cdr(form) == SCM_NIL) return ALLOC_node_const_bool(0);
+    if (cdr(cdr(form)) == SCM_NIL) return compile(c, car(cdr(form)), scope, is_tail);
+    /* sp[0]=form, sp[1]=args, sp[2]=tmp sym, sp[3]=binding, sp[4]=rest,
+     * sp[5]=staging iff, sp[6]=letform */
+    SP_PUSH(c, sp, 7);
+    sp[0] = form;
+    sp[1] = cdr(form);
+    sp[2] = gensym_at(c, "or-tmp");
+    /* binding = ((tmp args[0])) */
+    sp[3] = scm_cons(c, car(sp[1]), SCM_NIL);
+    sp[3] = scm_cons(c, sp[2], sp[3]);
+    sp[3] = scm_cons(c, sp[3], SCM_NIL);
+    /* rest = (or args[1..]) */
+    sp[4] = scm_cons_sym(c, "or", cdr(sp[1]));
+    /* iff = (if tmp tmp rest) */
+    sp[5] = scm_cons(c, sp[4], SCM_NIL);
+    sp[5] = scm_cons(c, sp[2], sp[5]);
+    sp[5] = scm_cons(c, sp[2], sp[5]);
+    sp[5] = scm_cons_sym(c, "if", sp[5]);
+    /* letform = (let binding iff) */
+    sp[6] = scm_cons(c, sp[5], SCM_NIL);
+    sp[6] = scm_cons(c, sp[3], sp[6]);
+    sp[6] = scm_cons_sym(c, "let", sp[6]);
+    NODE *r = compile(c, sp[6], scope, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (when test body) → (if test (begin body) <unspec>).  (unless test body)
@@ -1547,23 +1986,33 @@ compile_or(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 static NODE *
 compile_when(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
-    VALUE test = cadr(form);
-    VALUE body = cdr(cdr(form));
-    NODE *cnd = compile(c, test, scope, false);
-    NODE *thn = compile(c, scm_cons(c, scm_intern(c, "begin"), body), scope, is_tail);
+    SP_PUSH(c, sp, 3);
+    sp[0] = form;
+    sp[1] = cadr(form);                  /* test */
+    sp[2] = cdr(cdr(form));              /* body */
+    NODE *cnd = compile(c, sp[1], scope, false);
+    sp[2] = scm_cons_sym(c, "begin", sp[2]);
+    NODE *thn = compile(c, sp[2], scope, is_tail);
     NODE *els = ALLOC_node_const_unspec();
-    return ALLOC_node_if(cnd, thn, els);
+    NODE *r = ALLOC_node_if(cnd, thn, els);
+    SP_POP(c, sp);
+    return r;
 }
 
 static NODE *
 compile_unless(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
-    VALUE test = cadr(form);
-    VALUE body = cdr(cdr(form));
-    NODE *cnd = compile(c, test, scope, false);
+    SP_PUSH(c, sp, 3);
+    sp[0] = form;
+    sp[1] = cadr(form);
+    sp[2] = cdr(cdr(form));
+    NODE *cnd = compile(c, sp[1], scope, false);
     NODE *thn = ALLOC_node_const_unspec();
-    NODE *els = compile(c, scm_cons(c, scm_intern(c, "begin"), body), scope, is_tail);
-    return ALLOC_node_if(cnd, thn, els);
+    sp[2] = scm_cons_sym(c, "begin", sp[2]);
+    NODE *els = compile(c, sp[2], scope, is_tail);
+    NODE *r = ALLOC_node_if(cnd, thn, els);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (do ((var init step) ...) (test result...) body...) →
@@ -1575,42 +2024,82 @@ compile_unless(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 static NODE *
 compile_do(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
-    VALUE specs = cadr(form);
-    VALUE test_clause = caddr(form);
-    VALUE body = cdr(cdr(cdr(form)));
-    VALUE test = car(test_clause);
-    VALUE result = cdr(test_clause);
-
-    VALUE vars  = SCM_NIL, *vt = &vars;
-    VALUE inits = SCM_NIL, *it = &inits;
-    VALUE steps = SCM_NIL, *st = &steps;
-    for (VALUE p = specs; scm_is_pair(p); p = cdr(p)) {
-        VALUE spec = car(p);
+    /* sp[0]=form, sp[1]=specs, sp[2]=test_clause, sp[3]=body, sp[4]=test,
+     * sp[5]=result, sp[6]=vars head, sp[7]=vars last,
+     * sp[8]=inits head, sp[9]=inits last,
+     * sp[10]=steps head, sp[11]=steps last,
+     * sp[12]=iter cursor, sp[13]=loop_sym,
+     * sp[14..]=staging */
+    SP_PUSH(c, sp, 18);
+    sp[0] = form;
+    sp[1] = cadr(form);
+    sp[2] = caddr(form);
+    sp[3] = cdr(cdr(cdr(form)));
+    sp[4] = car(sp[2]);
+    sp[5] = cdr(sp[2]);
+    sp[6] = sp[7] = SCM_NIL;
+    sp[8] = sp[9] = SCM_NIL;
+    sp[10] = sp[11] = SCM_NIL;
+    for (sp[12] = sp[1]; scm_is_pair(sp[12]); sp[12] = SCM_PTR(sp[12])->pair.cdr) {
+        VALUE spec = car(sp[12]);
         VALUE var = car(spec);
-        VALUE init = cadr(spec);
-        VALUE step = (cdr(cdr(spec)) != SCM_NIL) ? caddr(spec) : var;
-        *vt = scm_cons(c, var,  SCM_NIL); vt = &SCM_PTR(*vt)->pair.cdr;
-        *it = scm_cons(c, init, SCM_NIL); it = &SCM_PTR(*it)->pair.cdr;
-        *st = scm_cons(c, step, SCM_NIL); st = &SCM_PTR(*st)->pair.cdr;
+        VALUE vcell = scm_cons(c, var, SCM_NIL);
+        if (sp[6] == SCM_NIL) sp[6] = vcell; else SCM_PTR(sp[7])->pair.cdr = vcell;
+        sp[7] = vcell;
+        VALUE init = cadr(car(sp[12]));
+        VALUE icell = scm_cons(c, init, SCM_NIL);
+        if (sp[8] == SCM_NIL) sp[8] = icell; else SCM_PTR(sp[9])->pair.cdr = icell;
+        sp[9] = icell;
+        VALUE step;
+        if (cdr(cdr(car(sp[12]))) != SCM_NIL) step = caddr(car(sp[12]));
+        else step = car(car(sp[12]));   /* default to var */
+        VALUE scell = scm_cons(c, step, SCM_NIL);
+        if (sp[10] == SCM_NIL) sp[10] = scell; else SCM_PTR(sp[11])->pair.cdr = scell;
+        sp[11] = scell;
     }
-    VALUE loop_sym = gensym_at(c, "do-loop");
-    VALUE recur = scm_cons(c, loop_sym, steps);
-    VALUE result_branch = (result == SCM_NIL)
-        ? scm_cons(c, scm_intern(c, "if"),
-                   scm_cons(c, SCM_TRUE, scm_cons(c, SCM_UNSPEC, SCM_NIL)))   // unspec
-        : scm_cons(c, scm_intern(c, "begin"), result);
-    VALUE body_then_recur = list_append1(c, body, recur);
-    VALUE iff = scm_cons(c, scm_intern(c, "if"),
-                         scm_cons(c, test,
-                                  scm_cons(c, result_branch,
-                                           scm_cons(c, scm_cons(c, scm_intern(c, "begin"), body_then_recur), SCM_NIL))));
-    VALUE lambda = scm_cons(c, scm_intern(c, "lambda"),
-                            scm_cons(c, vars, scm_cons(c, iff, SCM_NIL)));
-    VALUE binding = scm_cons(c, loop_sym, scm_cons(c, lambda, SCM_NIL));
-    VALUE letrec = scm_cons(c, scm_intern(c, "letrec"),
-                            scm_cons(c, scm_cons(c, binding, SCM_NIL),
-                                     scm_cons(c, scm_cons(c, loop_sym, inits), SCM_NIL)));
-    return compile(c, letrec, scope, is_tail);
+    sp[13] = gensym_at(c, "do-loop");
+    /* recur = (loop_sym steps...) → sp[14] */
+    sp[14] = scm_cons(c, sp[13], sp[10]);
+    /* result_branch = (begin result...) or (if #t unspec) → sp[15] */
+    if (sp[5] == SCM_NIL) {
+        sp[15] = scm_cons(c, SCM_UNSPEC, SCM_NIL);
+        sp[15] = scm_cons(c, SCM_TRUE, sp[15]);
+        sp[15] = scm_cons_sym(c, "if", sp[15]);
+    } else {
+        sp[15] = scm_cons_sym(c, "begin", sp[5]);
+    }
+    /* body_then_recur = list_append1(c, body, recur) */
+    sp[16] = list_append1(c, sp[3], sp[14]);
+    /* (begin body_then_recur) → sp[16] */
+    sp[16] = scm_cons_sym(c, "begin", sp[16]);
+    /* iff = (if test result_branch (begin ...))
+     *      = (if . (test . (result_branch . ((begin ...) . NIL)))) */
+    sp[17] = scm_cons(c, sp[16], SCM_NIL);
+    sp[17] = scm_cons(c, sp[15], sp[17]);
+    sp[17] = scm_cons(c, sp[4], sp[17]);
+    sp[17] = scm_cons_sym(c, "if", sp[17]);
+    /* lambda = (lambda vars iff) */
+    VALUE iff_cell = scm_cons(c, sp[17], SCM_NIL);
+    sp[17] = iff_cell;
+    sp[17] = scm_cons(c, sp[6], sp[17]);
+    sp[17] = scm_cons_sym(c, "lambda", sp[17]);
+    /* binding = (loop_sym lambda) */
+    VALUE lambda_cell = scm_cons(c, sp[17], SCM_NIL);
+    sp[17] = lambda_cell;
+    sp[17] = scm_cons(c, sp[13], sp[17]);
+    /* binding_list = (binding) */
+    sp[17] = scm_cons(c, sp[17], SCM_NIL);
+    /* call_inner = (loop_sym inits...) */
+    sp[15] = scm_cons(c, sp[13], sp[8]);   /* reuse sp[15] */
+    /* call_form = (call_inner) */
+    sp[15] = scm_cons(c, sp[15], SCM_NIL);
+    /* letrec = (letrec binding_list call_form...)
+     *        = (letrec . (binding_list . call_form)) */
+    sp[16] = scm_cons(c, sp[17], sp[15]);
+    sp[16] = scm_cons_sym(c, "letrec", sp[16]);
+    NODE *r = compile(c, sp[16], scope, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 static NODE *
@@ -1621,7 +2110,10 @@ compile_define(CTX *c, VALUE form, struct lex_scope *scope)
         VALUE name = car(second);
         VALUE params = cdr(second);
         VALUE body = cdr(cdr(form));
-        const char *name_str = SCM_PTR(name)->sym.name;
+        /* name_str must be a libc-stable cstr — moving GC may relocate the
+         * symbol's byte payload underneath us, leaving the NODE's stored
+         * cstr dangling.  scm_perm_name interns into a libc-malloc'd pool. */
+        const char *name_str = scm_perm_name(SCM_PTR(name)->sym.name);
 
         // For top-level `(define (f params) body)` at the outermost
         // scope, push a global-mode self-call context so compile_call
@@ -1653,44 +2145,56 @@ compile_define(CTX *c, VALUE form, struct lex_scope *scope)
             if (scm_is_symbol(p)) has_rest = true;
 
             if (!has_rest && nparams <= ASCHEME_LOOP_MAX_PARAMS && nparams <= 4) {
-                VALUE lambda = scm_cons(c, scm_intern(c, "lambda"), scm_cons(c, params, body));
+                /* sp[0]=params, sp[1]=body, sp[2]=lambda */
+                SP_PUSH(c, sp_d, 3);
+                sp_d[0] = params;
+                sp_d[1] = body;
+                sp_d[2] = scm_cons(c, sp_d[0], sp_d[1]);
+                sp_d[2] = scm_cons_sym(c, "lambda", sp_d[2]);
                 struct self_call_ctx ctx = { name_str, (uint32_t)nparams, NULL, false };
-                // compile_lambda picks this up for the IMMEDIATE next
-                // lambda compile (this one); nested lambdas in body
-                // still see CURRENT_SELF_CALL = NULL (correct: their
-                // bodies have different env identity).
                 SELF_CALL_FOR_NEXT_LAMBDA = &ctx;
-                NODE *val = compile(c, lambda, scope, false);
-                SELF_CALL_FOR_NEXT_LAMBDA = NULL;   // safety: clear if compile_lambda didn't consume
+                NODE *val = compile(c, sp_d[2], scope, false);
+                SELF_CALL_FOR_NEXT_LAMBDA = NULL;
                 if (ctx.used) {
-                    // val is a node_lambda; wrap its body in node_loop.
-                    // ALLOC_node_lambda allocated it with body field;
-                    // overwrite that field's body operand directly.
-                    // Find the lambda's body via the union; reach into
-                    // it through the pointer arithmetic the framework
-                    // provides via `struct node_lambda_struct`.
                     NODE *lambda_body = val->u.node_lambda.body;
                     NODE *wrapped = ALLOC_node_loop(lambda_body, (uint32_t)nparams);
                     aot_add_entry(wrapped);
                     val->u.node_lambda.body = wrapped;
                 }
+                SP_POP(c, sp_d);
                 return ALLOC_node_gdef(name_str, val);
             }
         }
 
-        VALUE lambda = scm_cons(c, scm_intern(c, "lambda"), scm_cons(c, params, body));
-        NODE *val = compile(c, lambda, scope, false);
-        return ALLOC_node_gdef(name_str, val);
+        {
+            SP_PUSH(c, sp_d, 3);
+            sp_d[0] = params;
+            sp_d[1] = body;
+            sp_d[2] = scm_cons(c, sp_d[0], sp_d[1]);
+            sp_d[2] = scm_cons_sym(c, "lambda", sp_d[2]);
+            NODE *val = compile(c, sp_d[2], scope, false);
+            SP_POP(c, sp_d);
+            return ALLOC_node_gdef(name_str, val);
+        }
     }
     VALUE name = second;
     VALUE val_form = caddr(form);
+    /* Park `name` so we can re-derive name_str via scm_perm_name after the
+     * compile() call may have moved the symbol's byte payload. */
+    SP_PUSH(c, sp_def, 1);
+    sp_def[0] = name;
     NODE *val = compile(c, val_form, scope, false);
-    return ALLOC_node_gdef(SCM_PTR(name)->sym.name, val);
+    const char *nm = scm_perm_name(SCM_PTR(sp_def[0])->sym.name);
+    SP_POP(c, sp_def);
+    return ALLOC_node_gdef(nm, val);
 }
 
 static NODE *
 compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
+    /* Park `form` at the top of compile so it survives any GC triggered
+     * inside recursive scm_cons / scm_intern / compile_* calls.  We read
+     * the live form via sp[0] every time we need to access fields. */
     if (SCM_IS_FIXNUM(form)) {
         int64_t n = SCM_FIXVAL(form);
         if (n >= INT32_MIN && n <= INT32_MAX) return ALLOC_node_const_int((int32_t)n);
@@ -1701,13 +2205,13 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
     if (form == SCM_FALSE)  return ALLOC_node_const_bool(0);
     if (form == SCM_UNSPEC) return ALLOC_node_const_unspec();
     if (scm_is_double(form))return ALLOC_node_const_double(scm_get_double(form));
-    if (scm_is_string(form))return ALLOC_node_const_str(SCM_PTR(form)->str.chars);
+    if (scm_is_string(form))return ALLOC_node_const_str(scm_perm_name(SCM_PTR(form)->str.chars));
     if (scm_is_char(form))  return ALLOC_node_const_char(SCM_PTR(form)->ch);
-    if (scm_is_vector(form))return ALLOC_node_quote((uint64_t)form);
+    if (scm_is_vector(form))return scm_alloc_quote((uint64_t)form);
     if (scm_is_bignum(form) || scm_is_rational(form) || scm_is_complex(form))
-        return ALLOC_node_quote((uint64_t)form);
+        return scm_alloc_quote((uint64_t)form);
     if (scm_is_symbol(form)) {
-        const char *name = SCM_PTR(form)->sym.name;
+        const char *name = scm_perm_name(SCM_PTR(form)->sym.name);
         uint32_t depth, idx;
         if (lex_lookup(scope, name, &depth, &idx)) {
             return ALLOC_node_lref(depth, idx);
@@ -1717,68 +2221,90 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
     if (!scm_is_pair(form)) {
         scm_error(c, "compile: unexpected form");
     }
-    VALUE head = car(form);
+    /* form is a pair — recursive paths below allocate, so park it on sp. */
+    SP_PUSH(c, sp, 1);
+    sp[0] = form;
+    VALUE head = car(form);   /* head is a VALUE; will reload from sp[0] below if needed */
+    NODE *result;
     if (scm_is_symbol(head)) {
         const char *h = SCM_PTR(head)->sym.name;
-        if (strcmp(h, "quote") == 0)    return compile_quote(cadr(form));
+        if (strcmp(h, "quote") == 0)    { result = compile_quote(cadr(sp[0])); goto done; }
         if (strcmp(h, "quasiquote") == 0) {
-            VALUE expanded = expand_quasiquote(c, cadr(form), 1);
-            return compile(c, expanded, scope, is_tail);
+            VALUE expanded = expand_quasiquote(c, cadr(sp[0]), 1);
+            result = compile(c, expanded, scope, is_tail);
+            goto done;
         }
         if (strcmp(h, "delay") == 0) {
             // (delay E) → (|make-promise| (lambda () E))
-            VALUE thunk = scm_cons(c, scm_intern(c, "lambda"),
-                            scm_cons(c, SCM_NIL,
-                                     scm_cons(c, cadr(form), SCM_NIL)));
-            VALUE call  = scm_cons(c, scm_intern(c, "|make-promise|"),
-                            scm_cons(c, thunk, SCM_NIL));
-            return compile(c, call, scope, is_tail);
+            /* Stage cons chain through sp to avoid stale arg bits across
+             * the per-cons GC triggers. */
+            SP_PUSH(c, sp2, 2);  /* sp2[0]=thunk, sp2[1]=call */
+            sp2[0] = scm_cons(c, cadr(sp[0]), SCM_NIL);
+            sp2[0] = scm_cons(c, SCM_NIL, sp2[0]);
+            sp2[0] = scm_cons_sym(c, "lambda", sp2[0]);
+            sp2[1] = scm_cons(c, sp2[0], SCM_NIL);
+            sp2[1] = scm_cons_sym(c, "|make-promise|", sp2[1]);
+            result = compile(c, sp2[1], scope, is_tail);
+            SP_POP(c, sp2);
+            goto done;
         }
         if (strcmp(h, "if") == 0) {
-            NODE *cnd = compile(c, cadr(form), scope, false);
-            NODE *thn = compile(c, caddr(form), scope, is_tail);
-            NODE *els = (cdr(cdr(cdr(form))) == SCM_NIL)
+            NODE *cnd = compile(c, cadr(sp[0]), scope, false);
+            NODE *thn = compile(c, caddr(sp[0]), scope, is_tail);
+            NODE *els = (cdr(cdr(cdr(sp[0]))) == SCM_NIL)
                 ? ALLOC_node_const_unspec()
-                : compile(c, cadddr(form), scope, is_tail);
-            return ALLOC_node_if(cnd, thn, els);
+                : compile(c, cadddr(sp[0]), scope, is_tail);
+            result = ALLOC_node_if(cnd, thn, els);
+            goto done;
         }
         if (strcmp(h, "begin") == 0) {
-            return compile_seq(c, cdr(form), scope, is_tail);
+            result = compile_seq(c, cdr(sp[0]), scope, is_tail);
+            goto done;
         }
         if (strcmp(h, "lambda") == 0) {
-            return compile_lambda(c, cadr(form), cdr(cdr(form)), scope);
+            result = compile_lambda(c, cadr(sp[0]), cdr(cdr(sp[0])), scope);
+            goto done;
         }
         if (strcmp(h, "set!") == 0) {
-            VALUE name = cadr(form);
-            VALUE val_form = caddr(form);
-            const char *nm = SCM_PTR(name)->sym.name;
+            VALUE name = cadr(sp[0]);
+            VALUE val_form = caddr(sp[0]);
+            /* Snapshot the name into the permanent-name pool before the
+             * recursive compile() — the symbol byte payload can move. */
+            const char *nm = scm_perm_name(SCM_PTR(name)->sym.name);
             uint32_t depth, idx;
             if (lex_lookup(scope, nm, &depth, &idx)) {
                 NODE *val = compile(c, val_form, scope, false);
-                return ALLOC_node_lset(depth, idx, val);
+                result = ALLOC_node_lset(depth, idx, val);
+                goto done;
             }
             NODE *val = compile(c, val_form, scope, false);
-            return ALLOC_node_gset(nm, val);
+            result = ALLOC_node_gset(nm, val);
+            goto done;
         }
         if (strcmp(h, "define") == 0) {
-            return compile_define(c, form, scope);
+            result = compile_define(c, sp[0], scope);
+            goto done;
         }
-        if (strcmp(h, "let") == 0)    return compile_let(c, form, scope, is_tail);
-        if (strcmp(h, "let*") == 0)   return compile_letstar(c, form, scope, is_tail);
-        if (strcmp(h, "letrec") == 0) return compile_letrec(c, form, scope, is_tail);
-        if (strcmp(h, "cond") == 0)   return compile_cond(c, form, scope, is_tail);
-        if (strcmp(h, "case") == 0)   return compile_case(c, form, scope, is_tail);
-        if (strcmp(h, "and") == 0)    return compile_and(c, form, scope, is_tail);
-        if (strcmp(h, "or") == 0)     return compile_or(c, form, scope, is_tail);
-        if (strcmp(h, "when") == 0)   return compile_when(c, form, scope, is_tail);
-        if (strcmp(h, "unless") == 0) return compile_unless(c, form, scope, is_tail);
-        if (strcmp(h, "do") == 0)     return compile_do(c, form, scope, is_tail);
+        if (strcmp(h, "let") == 0)    { result = compile_let(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "let*") == 0)   { result = compile_letstar(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "letrec") == 0) { result = compile_letrec(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "cond") == 0)   { result = compile_cond(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "case") == 0)   { result = compile_case(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "and") == 0)    { result = compile_and(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "or") == 0)     { result = compile_or(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "when") == 0)   { result = compile_when(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "unless") == 0) { result = compile_unless(c, sp[0], scope, is_tail); goto done; }
+        if (strcmp(h, "do") == 0)     { result = compile_do(c, sp[0], scope, is_tail); goto done; }
         if (strcmp(h, "call/cc") == 0 || strcmp(h, "call-with-current-continuation") == 0) {
-            NODE *fn = compile(c, cadr(form), scope, false);
-            return ALLOC_node_callcc(fn);
+            NODE *fn = compile(c, cadr(sp[0]), scope, false);
+            result = ALLOC_node_callcc(fn);
+            goto done;
         }
     }
-    return compile_call(c, head, cdr(form), scope, is_tail);
+    result = compile_call(c, car(sp[0]), cdr(sp[0]), scope, is_tail);
+done:
+    SP_POP(c, sp);
+    return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -1798,15 +2324,35 @@ build_frame_for(CTX *c, struct sobj *cl, int argc, VALUE *argv)
     } else {
         if (argc != nparams) scm_error(c, "wrong number of arguments (got %d, expected %d)", argc, nparams);
     }
-    struct sframe *f = scm_new_frame(c, cl->closure.env, total);
-    for (int i = 0; i < nparams; i++) f->slots[i] = argv[i];
+    /* Precise rooting plan:
+     *   sp_base[0]    = closure sobj VALUE              (cl may move)
+     *   sp_base[1]    = rest list (built before frame)  (may move per cons)
+     *   sp_base[2..]  = argv copies                     (may move)
+     *
+     * We build the rest list FIRST (before any frame alloc), then allocate
+     * the frame and copy parked argv + parked rest into slots.  This way
+     * `f` (which can also move during the cons loop) only needs to live
+     * across the trivial slot-copy loop, where no allocs happen. */
+    VALUE *sp_base = c->sp;
+    assert(sp_base + 2 + argc <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    sp_base[0] = SCM_OBJ_VAL(cl);
+    sp_base[1] = SCM_NIL;
+    for (int i = 0; i < argc; i++) sp_base[2 + i] = argv[i];
+    c->sp = sp_base + 2 + argc;
+
+    /* Build rest list first (no frame yet → nothing else to root). */
     if (has_rest) {
-        VALUE rest = SCM_NIL;
         for (int i = argc - 1; i >= nparams; i--) {
-            rest = scm_cons(c, argv[i], rest);
+            sp_base[1] = scm_cons(c, sp_base[2 + i], sp_base[1]);
         }
-        f->slots[nparams] = rest;
     }
+    /* Now allocate the frame.  cl was kept fresh via sp_base[0]; reload
+     * its env via the parked pointer. */
+    struct sframe *f = scm_new_frame(c, SCM_PTR(sp_base[0])->closure.env, total);
+    /* No more allocs from here on — slot copies are pure memory writes. */
+    for (int i = 0; i < nparams; i++) f->slots[i] = sp_base[2 + i];
+    if (has_rest) f->slots[nparams] = sp_base[1];
+    c->sp = sp_base;
     return f;
 }
 
@@ -1866,9 +2412,22 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         } else
 #endif
         {
+            /* Build heap frame.  For moving GC this is the only path. */
+            VALUE *sp_inner = c->sp;
+            assert(sp_inner + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+            sp_inner[0] = fn;
+            c->sp = sp_inner + 1;
             new_env = build_frame_for(c, cl, argc, argv);
+            cl = SCM_PTR(sp_inner[0]);
+            c->sp = sp_inner;
         }
-        struct sframe *saved = c->env;
+        /* Park saved env (= caller's frame) on c->sp so it survives GC
+         * triggered inside the EVAL(body) trampoline below — `saved` is
+         * a C local sframe* and a moving GC would relocate it. */
+        VALUE *sp_base = c->sp;
+        assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+        sp_base[0] = (VALUE)c->env;      /* saved env */
+        c->sp = sp_base + 1;
         NODE *body = cl->closure.body;
         CTX_SET_ENV(c, new_env);
         // Trampoline: re-enter while tail_call_pending is set.  Bumps
@@ -1880,7 +2439,8 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         for (;;) {
             VALUE v = EVAL(c, body);
             if (!c->tail_call_pending) {
-                CTX_SET_ENV(c, saved);
+                CTX_SET_ENV(c, (struct sframe *)sp_base[0]);  /* reload saved */
+                c->sp = sp_base;
                 return v;
             }
             c->tail_call_pending = 0;
@@ -1921,22 +2481,50 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             } else {
                 if (argc != cl->closure.nparams) scm_error(c, "wrong number of arguments");
             }
-            for (int i = 0; i < cl->closure.nparams; i++) c->env->slots[i] = argv[i];
-            if (cl->closure.has_rest) {
-                VALUE rest = SCM_NIL;
-                for (int i = argc - 1; i >= cl->closure.nparams; i--) rest = scm_cons(c, argv[i], rest);
-                c->env->slots[cl->closure.nparams] = rest;
+            int np = cl->closure.nparams;
+            bool hr = cl->closure.has_rest;
+            if (!hr) {
+                /* Pure-slot path — no alloc, argv stays valid. */
+                for (int i = 0; i < np; i++) c->env->slots[i] = argv[i];
+                c->next_body = cl->closure.body;
+                c->next_env = c->env;
+                c->tail_call_pending = 1;
+                return SCM_UNSPEC;
             }
-            c->next_body = cl->closure.body;
+            /* has_rest path: scm_cons can move c->env, argv values, cl.
+             * Park argv copies + rest list + fn on c->sp, build rest first,
+             * then copy parked fixed args + rest into slots — both writes
+             * happen after the last alloc. */
+            VALUE *sp_base = c->sp;
+            assert(sp_base + 2 + argc <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+            sp_base[0] = fn;             /* root the closure VALUE */
+            sp_base[1] = SCM_NIL;        /* rest list  */
+            for (int i = 0; i < argc; i++) sp_base[2 + i] = argv[i];
+            c->sp = sp_base + 2 + argc;
+            for (int i = argc - 1; i >= np; i--) {
+                sp_base[1] = scm_cons(c, sp_base[2 + i], sp_base[1]);
+            }
+            /* No more allocs from here — slot writes are pure memory. */
+            for (int i = 0; i < np; i++) c->env->slots[i] = sp_base[2 + i];
+            c->env->slots[np] = sp_base[1];
+            c->next_body = SCM_PTR(sp_base[0])->closure.body;
             c->next_env = c->env;
             c->tail_call_pending = 1;
+            c->sp = sp_base;
             return SCM_UNSPEC;
         }
 
+        /* Generic build_frame_for — already precise (parks cl + argv). */
+        /* Save body via fn-park so we read it after the alloc. */
+        VALUE *sp_base = c->sp;
+        assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+        sp_base[0] = fn;
+        c->sp = sp_base + 1;
         struct sframe *new_env = build_frame_for(c, cl, argc, argv);
-        c->next_body = cl->closure.body;
+        c->next_body = SCM_PTR(sp_base[0])->closure.body;
         c->next_env = new_env;
         c->tail_call_pending = 1;
+        c->sp = sp_base;
         return SCM_UNSPEC;
     }
     return scm_apply(c, fn, argc, argv);
@@ -2565,8 +3153,13 @@ PRIM(pair_p) { (void)c; (void)argc; return scm_is_pair(argv[0]) ? SCM_TRUE : SCM
 PRIM(null_p) { (void)c; (void)argc; return scm_is_null(argv[0]) ? SCM_TRUE : SCM_FALSE; }
 PRIM(list)   {
     (void)c;
-    VALUE r = SCM_NIL;
-    for (int i = argc - 1; i >= 0; i--) r = scm_cons(c, argv[i], r);
+    /* Park argv copies + accumulator across the per-iteration scm_cons. */
+    SP_PUSH(c, sp, 1 + argc);    /* sp[0]=r, sp[1..]=argv copies */
+    sp[0] = SCM_NIL;
+    for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    for (int i = argc - 1; i >= 0; i--) sp[0] = scm_cons(c, sp[1 + i], sp[0]);
+    VALUE r = sp[0];
+    SP_POP(c, sp);
     return r;
 }
 PRIM(list_p) {
@@ -2593,27 +3186,40 @@ PRIM(length) {
 }
 PRIM(reverse) {
     (void)argc;
-    VALUE v = argv[0], r = SCM_NIL;
-    while (scm_is_pair(v)) { r = scm_cons(c, SCM_PTR(v)->pair.car, r); v = SCM_PTR(v)->pair.cdr; }
-    if (v != SCM_NIL) scm_error(c, "reverse: not a proper list");
+    /* Park v + r across the per-iteration scm_cons (= GC trigger). */
+    SP_PUSH(c, sp, 2);     /* sp[0]=v, sp[1]=r */
+    sp[0] = argv[0];
+    sp[1] = SCM_NIL;
+    while (scm_is_pair(sp[0])) {
+        sp[1] = scm_cons(c, SCM_PTR(sp[0])->pair.car, sp[1]);
+        sp[0] = SCM_PTR(sp[0])->pair.cdr;
+    }
+    if (sp[0] != SCM_NIL) scm_error(c, "reverse: not a proper list");
+    VALUE r = sp[1];
+    SP_POP(c, sp);
     return r;
 }
 PRIM(append) {
     (void)c;
     if (argc == 0) return SCM_NIL;
-    VALUE result = argv[argc - 1];
+    /* sp[0]=result, sp[1]=list (current input), sp[2]=tmp (reversed list)
+     * Each scm_cons inside the loops can trigger GC. */
+    SP_PUSH(c, sp, 3);
+    sp[0] = argv[argc - 1];
     for (int i = argc - 2; i >= 0; i--) {
-        VALUE list = argv[i];
-        VALUE tmp = SCM_NIL;
-        while (scm_is_pair(list)) {
-            tmp = scm_cons(c, SCM_PTR(list)->pair.car, tmp);
-            list = SCM_PTR(list)->pair.cdr;
+        sp[1] = argv[i];
+        sp[2] = SCM_NIL;
+        while (scm_is_pair(sp[1])) {
+            sp[2] = scm_cons(c, SCM_PTR(sp[1])->pair.car, sp[2]);
+            sp[1] = SCM_PTR(sp[1])->pair.cdr;
         }
-        while (scm_is_pair(tmp)) {
-            result = scm_cons(c, SCM_PTR(tmp)->pair.car, result);
-            tmp = SCM_PTR(tmp)->pair.cdr;
+        while (scm_is_pair(sp[2])) {
+            sp[0] = scm_cons(c, SCM_PTR(sp[2])->pair.car, sp[0]);
+            sp[2] = SCM_PTR(sp[2])->pair.cdr;
         }
     }
+    VALUE result = sp[0];
+    SP_POP(c, sp);
     return result;
 }
 PRIM(list_ref) {
@@ -2919,24 +3525,42 @@ PRIM(substring) {
     return scm_make_string(c, SCM_PTR(argv[0])->str.chars + start, end - start);
 }
 PRIM(string_to_list) {
-    (void)c; (void)argc;
-    struct sobj *s = SCM_PTR(argv[0]);
-    VALUE r = SCM_NIL;
-    for (size_t i = s->str.len; i--; ) r = scm_cons(c, scm_make_char(c, (unsigned char)s->str.chars[i]), r);
+    (void)argc;
+    /* sp[0]=source string sobj, sp[1]=accumulator r */
+    SP_PUSH(c, sp, 2);
+    sp[0] = argv[0];
+    sp[1] = SCM_NIL;
+    size_t len = SCM_PTR(sp[0])->str.len;
+    for (size_t i = len; i--; ) {
+        /* Re-read chars from the parked sobj each iteration — its byte
+         * payload may move under moving GC. */
+        unsigned char ch = (unsigned char)SCM_PTR(sp[0])->str.chars[i];
+        VALUE chv = scm_make_char(c, ch);
+        sp[1] = scm_cons(c, chv, sp[1]);
+    }
+    VALUE r = sp[1];
+    SP_POP(c, sp);
     return r;
 }
 PRIM(list_to_string) {
-    VALUE l = argv[0];
-    size_t n = 0;
-    for (VALUE p = l; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) n++;
-    VALUE r = scm_make_string_n(c, n, ' ');
-    char *out = SCM_PTR(r)->str.chars;
-    size_t i = 0;
-    for (VALUE p = l; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) {
-        if (!scm_is_char(SCM_PTR(p)->pair.car)) scm_error(c, "list->string: not a char");
-        out[i++] = (char)SCM_PTR(SCM_PTR(p)->pair.car)->ch;
-    }
     (void)argc;
+    /* sp[0]=source list (l), sp[1]=result string, sp[2]=walking iter
+     * (= live across scm_cons/scm_make alloc, though only one big alloc
+     * here for the result). */
+    SP_PUSH(c, sp, 3);
+    sp[0] = argv[0];
+    sp[1] = SCM_NIL;
+    size_t n = 0;
+    for (sp[2] = sp[0]; scm_is_pair(sp[2]); sp[2] = SCM_PTR(sp[2])->pair.cdr) n++;
+    sp[1] = scm_make_string_n(c, n, ' ');
+    size_t i = 0;
+    for (sp[2] = sp[0]; scm_is_pair(sp[2]); sp[2] = SCM_PTR(sp[2])->pair.cdr) {
+        VALUE ch = SCM_PTR(sp[2])->pair.car;
+        if (!scm_is_char(ch)) scm_error(c, "list->string: not a char");
+        SCM_PTR(sp[1])->str.chars[i++] = (char)SCM_PTR(ch)->ch;
+    }
+    VALUE r = sp[1];
+    SP_POP(c, sp);
     return r;
 }
 PRIM(string_form) {
@@ -3023,21 +3647,37 @@ PRIM(vector_fill) {
     return SCM_UNSPEC;
 }
 PRIM(vector_to_list) {
-    (void)c; (void)argc;
-    struct sobj *v = SCM_PTR(argv[0]);
-    VALUE r = SCM_NIL;
-    for (size_t i = v->vec.len; i--; ) r = scm_cons(c, v->vec.items[i], r);
+    (void)argc;
+    /* sp[0]=vector sobj, sp[1]=accumulator r */
+    SP_PUSH(c, sp, 2);
+    sp[0] = argv[0];
+    sp[1] = SCM_NIL;
+    size_t vlen = SCM_PTR(sp[0])->vec.len;
+    for (size_t i = vlen; i--; ) {
+        /* Reload vector + items each iteration — moving GC may relocate
+         * the vec sobj and the items[] byte payload underneath. */
+        VALUE item = SCM_PTR(sp[0])->vec.items[i];
+        sp[1] = scm_cons(c, item, sp[1]);
+    }
+    VALUE r = sp[1];
+    SP_POP(c, sp);
     return r;
 }
 PRIM(list_to_vector) {
-    (void)c; (void)argc;
-    VALUE l = argv[0];
+    (void)argc;
+    /* sp[0]=list head, sp[1]=result vector, sp[2]=walking iter */
+    SP_PUSH(c, sp, 3);
+    sp[0] = argv[0];
+    sp[1] = SCM_NIL;
     size_t n = 0;
-    for (VALUE p = l; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) n++;
-    VALUE r = scm_make_vector(c, n, SCM_UNSPEC);
+    for (sp[2] = sp[0]; scm_is_pair(sp[2]); sp[2] = SCM_PTR(sp[2])->pair.cdr) n++;
+    sp[1] = scm_make_vector(c, n, SCM_UNSPEC);
     size_t i = 0;
-    for (VALUE p = l; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr)
-        SCM_PTR(r)->vec.items[i++] = SCM_PTR(p)->pair.car;
+    for (sp[2] = sp[0]; scm_is_pair(sp[2]); sp[2] = SCM_PTR(sp[2])->pair.cdr) {
+        SCM_PTR(sp[1])->vec.items[i++] = SCM_PTR(sp[2])->pair.car;
+    }
+    VALUE r = sp[1];
+    SP_POP(c, sp);
     return r;
 }
 
@@ -3077,54 +3717,87 @@ PRIM(error_p)   { (void)argc; scm_error(c, "%s", scm_is_string(argv[0]) ? SCM_PT
 
 PRIM(apply_p) {
     if (argc < 2) scm_error(c, "apply: needs at least 2 args");
-    VALUE fn = argv[0];
+    /* Park fn + the spread list across the size walk + scm_apply (= GC).
+     *   sp[0]      = fn
+     *   sp[1]      = spread list (= argv[argc-1])
+     *   sp[2..]    = total VALUE slots = prefix args + spread-list items
+     *                (collected before the scm_apply call so they're
+     *                rooted as one contiguous argv passed to scm_apply). */
     int prefix = argc - 2;
-    VALUE list = argv[argc - 1];
     int extra = 0;
-    for (VALUE p = list; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) extra++;
+    for (VALUE p = argv[argc - 1]; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) extra++;
     int total = prefix + extra;
-    VALUE *all = (VALUE *)scm_alloc_min(c, sizeof(VALUE) * (total ? total : 1));
-    for (int i = 0; i < prefix; i++) all[i] = argv[1 + i];
-    int i = prefix;
-    for (VALUE p = list; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr, i++) all[i] = SCM_PTR(p)->pair.car;
-    return scm_apply(c, fn, total, all);
+    SP_PUSH(c, sp, 2 + total);
+    sp[0] = argv[0];
+    sp[1] = argv[argc - 1];
+    for (int i = 0; i < prefix; i++) sp[2 + i] = argv[1 + i];
+    {
+        int i = prefix;
+        VALUE p = sp[1];
+        while (scm_is_pair(p)) {
+            sp[2 + i] = SCM_PTR(p)->pair.car;
+            p = SCM_PTR(p)->pair.cdr;
+            i++;
+        }
+    }
+    VALUE r = scm_apply(c, sp[0], total, sp + 2);
+    SP_POP(c, sp);
+    return r;
 }
 
 // (map fn list1 list2 ...) — applies fn elementwise to len of shortest.
 PRIM(map_p) {
     if (argc < 2) scm_error(c, "map: needs fn + list");
-    VALUE fn = argv[0];
     int nlists = argc - 1;
-    VALUE *cursors = (VALUE *)scm_alloc_min(c, sizeof(VALUE) * nlists);
-    for (int i = 0; i < nlists; i++) cursors[i] = argv[i + 1];
-    VALUE result = SCM_NIL, *tail = &result;
+    /* sp layout:
+     *   sp[0]                = fn
+     *   sp[1]                = result head (= forms list)
+     *   sp[2]                = last appended cell
+     *   sp[3 .. 3+nlists-1]  = list cursors
+     *   sp[3+nlists .. ]     = per-call args[]
+     */
+    int args_off = 3 + nlists;
+    SP_PUSH(c, sp, args_off + nlists);
+    sp[0] = argv[0];
+    sp[1] = SCM_NIL;
+    sp[2] = SCM_NIL;
+    for (int i = 0; i < nlists; i++) sp[3 + i] = argv[i + 1];
     for (;;) {
-        for (int i = 0; i < nlists; i++) if (!scm_is_pair(cursors[i])) return result;
-        VALUE *args = (VALUE *)scm_alloc_min(c, sizeof(VALUE) * nlists);
-        for (int i = 0; i < nlists; i++) {
-            args[i] = SCM_PTR(cursors[i])->pair.car;
-            cursors[i] = SCM_PTR(cursors[i])->pair.cdr;
+        for (int i = 0; i < nlists; i++) if (!scm_is_pair(sp[3 + i])) {
+            VALUE r = sp[1];
+            SP_POP(c, sp);
+            return r;
         }
-        VALUE v = scm_apply(c, fn, nlists, args);
-        *tail = scm_cons(c, v, SCM_NIL);
-        tail = &SCM_PTR(*tail)->pair.cdr;
+        for (int i = 0; i < nlists; i++) {
+            sp[args_off + i] = SCM_PTR(sp[3 + i])->pair.car;
+            sp[3 + i] = SCM_PTR(sp[3 + i])->pair.cdr;
+        }
+        VALUE v = scm_apply(c, sp[0], nlists, sp + args_off);
+        VALUE cell = scm_cons(c, v, SCM_NIL);
+        if (sp[1] == SCM_NIL) sp[1] = cell;
+        else SCM_PTR(sp[2])->pair.cdr = cell;
+        sp[2] = cell;
     }
 }
 
 PRIM(for_each_p) {
     if (argc < 2) scm_error(c, "for-each: needs fn + list");
-    VALUE fn = argv[0];
     int nlists = argc - 1;
-    VALUE *cursors = (VALUE *)scm_alloc_min(c, sizeof(VALUE) * nlists);
-    for (int i = 0; i < nlists; i++) cursors[i] = argv[i + 1];
+    /* sp[0] = fn, sp[1..nlists] = cursors, sp[1+nlists..] = per-call args. */
+    int args_off = 1 + nlists;
+    SP_PUSH(c, sp, args_off + nlists);
+    sp[0] = argv[0];
+    for (int i = 0; i < nlists; i++) sp[1 + i] = argv[i + 1];
     for (;;) {
-        for (int i = 0; i < nlists; i++) if (!scm_is_pair(cursors[i])) return SCM_UNSPEC;
-        VALUE *args = (VALUE *)scm_alloc_min(c, sizeof(VALUE) * nlists);
-        for (int i = 0; i < nlists; i++) {
-            args[i] = SCM_PTR(cursors[i])->pair.car;
-            cursors[i] = SCM_PTR(cursors[i])->pair.cdr;
+        for (int i = 0; i < nlists; i++) if (!scm_is_pair(sp[1 + i])) {
+            SP_POP(c, sp);
+            return SCM_UNSPEC;
         }
-        scm_apply(c, fn, nlists, args);
+        for (int i = 0; i < nlists; i++) {
+            sp[args_off + i] = SCM_PTR(sp[1 + i])->pair.car;
+            sp[1 + i] = SCM_PTR(sp[1 + i])->pair.cdr;
+        }
+        scm_apply(c, sp[0], nlists, sp + args_off);
     }
 }
 
@@ -3759,8 +4432,8 @@ extern VALUE PORT_STDIN, PORT_STDOUT, PORT_STDERR;
 
 /* Base of the scratch sp range — sample-side spill region for the
  * realloc helpers below.  Visit the range so the parked old-payload
- * pointer survives a GC trigger nested inside the alloc. */
-extern VALUE g_sp_scratch[];
+ * pointer survives a GC trigger nested inside the alloc.  declared in
+ * context.h (= shared with parse.c). */
 
 /* iter 76: framework は CTX-opaque 化したため、 c->sp に park する realloc
  * helper は sample-side で実装する。 g_sp_scratch[0] に park し、 c->sp を
@@ -3863,6 +4536,32 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
     if (SCM_IS_PTR(PORT_STDERR) && !scm_is_singleton(PORT_STDERR))
         ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &PORT_STDERR);
 
+    /* Cached prim VALUEs used by specialized arith / pred / vec nodes —
+     * these heap-pointer VALUEs are C globals; under a moving GC they
+     * need explicit forwarding (sample-owned roots). */
+    #define VISIT_PRIM(var) do { \
+        if (SCM_IS_PTR(var) && !scm_is_singleton(var)) \
+            ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &(var)); \
+    } while (0)
+    VISIT_PRIM(PRIM_PLUS_VAL);    VISIT_PRIM(PRIM_MINUS_VAL);   VISIT_PRIM(PRIM_MUL_VAL);
+    VISIT_PRIM(PRIM_NUM_LT_VAL);  VISIT_PRIM(PRIM_NUM_LE_VAL);  VISIT_PRIM(PRIM_NUM_GT_VAL);
+    VISIT_PRIM(PRIM_NUM_GE_VAL);  VISIT_PRIM(PRIM_NUM_EQ_VAL);
+    VISIT_PRIM(PRIM_NULL_P_VAL);  VISIT_PRIM(PRIM_PAIR_P_VAL);  VISIT_PRIM(PRIM_CAR_VAL);
+    VISIT_PRIM(PRIM_CDR_VAL);     VISIT_PRIM(PRIM_NOT_VAL);
+    VISIT_PRIM(PRIM_VECTOR_REF_VAL); VISIT_PRIM(PRIM_VECTOR_SET_VAL);
+    VISIT_PRIM(PRIM_CONS_VAL);    VISIT_PRIM(PRIM_EQ_P_VAL);    VISIT_PRIM(PRIM_EQV_P_VAL);
+    #undef VISIT_PRIM
+
+    /* Quote literals embedded in NODE_QUOTE — visit each so the stored
+     * VALUE bits get forwarded under a moving backend. */
+    for (size_t i = 0; i < QUOTE_NODES_LEN; i++) {
+        NODE *n = QUOTE_NODES[i];
+        VALUE v = (VALUE)n->u.node_quote.v;
+        if (SCM_IS_PTR(v) && !scm_is_singleton(v) && v != 0) {
+            ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, (void **)&n->u.node_quote.v);
+        }
+    }
+
     /* Invalidate parent-chain + gref / arith caches so any stored VALUE
      * / sframe* outside the explicit root set is forced to re-resolve
      * through rooted state on next access.  Cheap (uint64 increment). */
@@ -3879,10 +4578,13 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
 /* Scratch slots for c->sp.  ascheme has no per-call VALUE stack, but
  * the sample-provided realloc helpers (aro_gc_realloc_byte_payload /
  * aro_gc_realloc_payload, defined above) park the old payload into
- * sp[0] across an inner alloc so the root scanner keeps it alive.  We
- * hand the GC a tiny scratch buffer rather than NULL.  Visible to
- * aro_scheme_visit_roots above (= forward extern), hence non-static. */
-VALUE g_sp_scratch[16];
+ * sp[0] across an inner alloc so the root scanner keeps it alive.
+ * Many sample-side helpers (parser desugaring, list builders, scm_apply
+ * argv parking) also push 2–6 slots here while iterating across allocs,
+ * and the recursion may nest dozens of frames deep.  Visible to
+ * aro_scheme_visit_roots above (= forward extern), hence non-static.
+ * Size symbol ASCHEME_SP_SCRATCH_SIZE is defined in context.h. */
+VALUE g_sp_scratch[ASCHEME_SP_SCRATCH_SIZE];
 
 static CTX *
 create_context(void)
@@ -4063,20 +4765,26 @@ run_string(CTX *c, const char *src, size_t len, bool print_results)
     // shouldn't abort the rest.  Each iteration installs a fresh setjmp
     // landing pad; on error we print and move on, accumulating an error
     // count for the exit status.
-    VALUE forms;
+    /* Park `forms` (and the iterator `p`) on c->sp so they survive across
+     * compile() / eval_top(), each of which may trigger arbitrarily many
+     * GC cycles under a moving backend. */
+    SP_PUSH(c, sp, 2);     /* sp[0]=forms, sp[1]=iter p */
     if (setjmp(c->err_jmp) != 0) {
         fprintf(stderr, "ascheme: error: %s\n", SCM_ERR_MSG);
         c->err_jmp_active = 0;
+        SP_POP(c, sp);
         return 1;
     }
     c->err_jmp_active = 1;
-    forms = scm_read_all_string(c, src, len);
+    sp[0] = scm_read_all_string(c, src, len);
     int errors = 0;
-    for (VALUE p = forms; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) {
-        VALUE form = SCM_PTR(p)->pair.car;
+    sp[1] = sp[0];
+    while (scm_is_pair(sp[1])) {
+        VALUE form = SCM_PTR(sp[1])->pair.car;
         if (setjmp(c->err_jmp) != 0) {
             fprintf(stderr, "ascheme: error: %s\n", SCM_ERR_MSG);
             errors++;
+            sp[1] = SCM_PTR(sp[1])->pair.cdr;
             continue;
         }
         c->err_jmp_active = 1;
@@ -4086,8 +4794,10 @@ run_string(CTX *c, const char *src, size_t len, bool print_results)
             scm_display(stdout, r, true);
             putchar('\n');
         }
+        sp[1] = SCM_PTR(sp[1])->pair.cdr;
     }
     c->err_jmp_active = 0;
+    SP_POP(c, sp);
     return errors > 0 ? 1 : 0;
 }
 
@@ -4235,8 +4945,15 @@ run_file(CTX *c, const char *path)
     fseek(fp, 0, SEEK_END);
     long sz = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    /* file contents buffer; treat as scratch byte payload. */ char *buf_raw = (char *)aro_gc_alloc_byte(c, sizeof(ASTroObjectHeader) + sz + 1); char *buf = buf_raw + sizeof(ASTroObjectHeader);
-    if (fread(buf, 1, sz, fp) != (size_t)sz) { perror(path); fclose(fp); return 1; }
+    /* Source buffer must outlive every potential GC during parse + run
+     * (= parser stores substrings into OBJ_SYMBOL.sym.name etc.).  GC
+     * heap allocation needs an explicit root which the source-buffer
+     * path doesn't have; libc malloc lives forever and is invisible to
+     * the GC, so it's safe.  Leak on exit is acceptable (= one alloc
+     * per program). */
+    char *buf = (char *)malloc((size_t)sz + 1);
+    if (!buf) { perror("malloc source buffer"); fclose(fp); return 1; }
+    if (fread(buf, 1, sz, fp) != (size_t)sz) { perror(path); free(buf); fclose(fp); return 1; }
     buf[sz] = '\0';
     fclose(fp);
     int r = run_string(c, buf, (size_t)sz, false);

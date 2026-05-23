@@ -103,6 +103,15 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
     // Non-tail leaf-closure call — alloca frame + run trampoline inline.
     // Same shape as scm_apply's closure-leaf path but visible to gcc
     // at the call site, so the SD chain folds through without a PLT hop.
+    //
+    // Disabled under a precise GC backend (BARUBY_GC != NONE): the GC root
+    // visitor traverses c->env and treats any non-NULL frame pointer as a
+    // GC heap address — alloca produces stack addresses that look like
+    // valid sframe payloads, so the visitor either marks random stack
+    // bytes (non-moving GC) or tries to forward them (moving GC), both of
+    // which corrupt the heap.  Fall through to scm_apply_tail_slow which
+    // routes through build_frame_for (heap-allocated, OBJ_FRAME-tagged).
+#if BARUBY_GC == BARUBY_GC_NONE
     if (!is_tail && LIKELY(scm_is_closure(fn))) {
         struct sobj *cl = SCM_PTR(fn);
         if (LIKELY(!cl->closure.has_rest &&
@@ -131,6 +140,7 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             }
         }
     }
+#endif
     return scm_apply_tail_slow(c, fn, argc, argv, is_tail);
 }
 

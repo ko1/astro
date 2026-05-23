@@ -224,46 +224,56 @@ NODE_DEF
 node_call_1(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0)
 {
     (void)n;
-    VALUE f = EVAL_ARG(c, fn);
-    VALUE av[1];
-    av[0] = EVAL_ARG(c, a0);
-    return scm_apply_tail(c, f, 1, av, is_tail);
+    /* Park `f` on c->sp across the arg eval — argc>0 means a0's eval
+     * may trigger GC and a moving backend would relocate f's referent. */
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, fn);            /* f */
+    sp[1] = EVAL_ARG(c, a0);            /* av[0] */
+    VALUE r = scm_apply_tail(c, sp[0], 1, sp + 1, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_call_2(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1)
 {
     (void)n;
-    VALUE f = EVAL_ARG(c, fn);
-    VALUE av[2];
-    av[0] = EVAL_ARG(c, a0);
-    av[1] = EVAL_ARG(c, a1);
-    return scm_apply_tail(c, f, 2, av, is_tail);
+    SP_PUSH(c, sp, 3);                  /* f, av[0], av[1] */
+    sp[0] = EVAL_ARG(c, fn);
+    sp[1] = EVAL_ARG(c, a0);
+    sp[2] = EVAL_ARG(c, a1);
+    VALUE r = scm_apply_tail(c, sp[0], 2, sp + 1, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_call_3(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
 {
     (void)n;
-    VALUE f = EVAL_ARG(c, fn);
-    VALUE av[3];
-    av[0] = EVAL_ARG(c, a0);
-    av[1] = EVAL_ARG(c, a1);
-    av[2] = EVAL_ARG(c, a2);
-    return scm_apply_tail(c, f, 3, av, is_tail);
+    SP_PUSH(c, sp, 4);
+    sp[0] = EVAL_ARG(c, fn);
+    sp[1] = EVAL_ARG(c, a0);
+    sp[2] = EVAL_ARG(c, a1);
+    sp[3] = EVAL_ARG(c, a2);
+    VALUE r = scm_apply_tail(c, sp[0], 3, sp + 1, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_call_4(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
 {
     (void)n;
-    VALUE f = EVAL_ARG(c, fn);
-    VALUE av[4];
-    av[0] = EVAL_ARG(c, a0);
-    av[1] = EVAL_ARG(c, a1);
-    av[2] = EVAL_ARG(c, a2);
-    av[3] = EVAL_ARG(c, a3);
-    return scm_apply_tail(c, f, 4, av, is_tail);
+    SP_PUSH(c, sp, 5);
+    sp[0] = EVAL_ARG(c, fn);
+    sp[1] = EVAL_ARG(c, a0);
+    sp[2] = EVAL_ARG(c, a1);
+    sp[3] = EVAL_ARG(c, a2);
+    sp[4] = EVAL_ARG(c, a3);
+    VALUE r = scm_apply_tail(c, sp[0], 4, sp + 1, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 // Variable arity: arg sub-trees live in a global table (ASCHEME_CALL_ARGS),
@@ -275,13 +285,17 @@ node_call_n(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, uin
 {
     (void)n;
     extern NODE **ASCHEME_CALL_ARGS;
-    VALUE f = EVAL_ARG(c, fn);
-    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    /* Stack-rooted: sp[0]=f, sp[1..1+argc]=av[].  scm_apply_tail accepts a
+     * VALUE* argv, so we hand it sp + 1 directly. */
+    SP_PUSH(c, sp, 1 + (int)argc);
+    sp[0] = EVAL_ARG(c, fn);
     for (uint32_t i = 0; i < argc; i++) {
         NODE *arg = ASCHEME_CALL_ARGS[args_idx + i];
-        av[i] = (*arg->head.dispatcher)(c, arg);
+        sp[1 + i] = (*arg->head.dispatcher)(c, arg);
     }
-    return scm_apply_tail(c, f, (int)argc, av, is_tail);
+    VALUE r = scm_apply_tail(c, sp[0], (int)argc, sp + 1, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 // call/cc — captures an escape continuation (one-shot, downward only).
@@ -289,8 +303,12 @@ NODE_DEF @noinline
 node_callcc(CTX * restrict c, NODE * restrict n, NODE *fn)
 {
     (void)n;
-    VALUE f = EVAL_ARG(c, fn);
-    return scm_callcc(c, f);
+    /* Park f across the scm_callcc call which allocates internally. */
+    SP_PUSH(c, sp, 1);
+    sp[0] = EVAL_ARG(c, fn);
+    VALUE r = scm_callcc(c, sp[0]);
+    SP_POP(c, sp);
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,9 +353,15 @@ NODE_DEF
 node_self_tail_call_1(CTX * restrict c, NODE * restrict n, NODE *a0)
 {
     (void)n;
-    VALUE v0 = EVAL_ARG(c, a0);
-    c->loop_args[0] = v0;
+    /* Park v0 on c->sp across the (none here) extra evals — and to
+     * survive any GC after the assignment to loop_args[].  loop_args[]
+     * is also rooted but the inner-call write hazard means we eval
+     * into temporary sp slots first, then commit atomically. */
+    SP_PUSH(c, sp, 1);
+    sp[0] = EVAL_ARG(c, a0);
+    c->loop_args[0] = sp[0];
     c->loop_continue = 1;
+    SP_POP(c, sp);
     return SCM_UNSPEC;
 }
 
@@ -345,11 +369,16 @@ NODE_DEF
 node_self_tail_call_2(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1)
 {
     (void)n;
-    VALUE v0 = EVAL_ARG(c, a0);
-    VALUE v1 = EVAL_ARG(c, a1);
-    c->loop_args[0] = v0;
-    c->loop_args[1] = v1;
+    /* Evaluate args into sp scratch, then commit to loop_args atomically.
+     * Direct loop_args[i] = EVAL_ARG would let an inner-call write to
+     * loop_args clobber the just-set slot. */
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a0);
+    sp[1] = EVAL_ARG(c, a1);
+    c->loop_args[0] = sp[0];
+    c->loop_args[1] = sp[1];
     c->loop_continue = 1;
+    SP_POP(c, sp);
     return SCM_UNSPEC;
 }
 
@@ -357,13 +386,15 @@ NODE_DEF
 node_self_tail_call_3(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2)
 {
     (void)n;
-    VALUE v0 = EVAL_ARG(c, a0);
-    VALUE v1 = EVAL_ARG(c, a1);
-    VALUE v2 = EVAL_ARG(c, a2);
-    c->loop_args[0] = v0;
-    c->loop_args[1] = v1;
-    c->loop_args[2] = v2;
+    SP_PUSH(c, sp, 3);
+    sp[0] = EVAL_ARG(c, a0);
+    sp[1] = EVAL_ARG(c, a1);
+    sp[2] = EVAL_ARG(c, a2);
+    c->loop_args[0] = sp[0];
+    c->loop_args[1] = sp[1];
+    c->loop_args[2] = sp[2];
     c->loop_continue = 1;
+    SP_POP(c, sp);
     return SCM_UNSPEC;
 }
 
@@ -371,15 +402,17 @@ NODE_DEF
 node_self_tail_call_4(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
 {
     (void)n;
-    VALUE v0 = EVAL_ARG(c, a0);
-    VALUE v1 = EVAL_ARG(c, a1);
-    VALUE v2 = EVAL_ARG(c, a2);
-    VALUE v3 = EVAL_ARG(c, a3);
-    c->loop_args[0] = v0;
-    c->loop_args[1] = v1;
-    c->loop_args[2] = v2;
-    c->loop_args[3] = v3;
+    SP_PUSH(c, sp, 4);
+    sp[0] = EVAL_ARG(c, a0);
+    sp[1] = EVAL_ARG(c, a1);
+    sp[2] = EVAL_ARG(c, a2);
+    sp[3] = EVAL_ARG(c, a3);
+    c->loop_args[0] = sp[0];
+    c->loop_args[1] = sp[1];
+    c->loop_args[2] = sp[2];
+    c->loop_args[3] = sp[3];
     c->loop_continue = 1;
+    SP_POP(c, sp);
     return SCM_UNSPEC;
 }
 
@@ -413,75 +446,90 @@ NODE_DEF
 node_self_tail_call_global_1(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, struct gref_cache *cache@ref)
 {
     (void)n;
-    VALUE v0 = EVAL_ARG(c, a0);
+    /* Eval into sp scratch, commit to loop_args atomically — see
+     * node_self_tail_call_2 for the inner-call clobber rationale. */
+    SP_PUSH(c, sp, 1);
+    sp[0] = EVAL_ARG(c, a0);
     if (LIKELY(cache->serial == c->globals_serial)) {
-        c->loop_args[0] = v0;
+        c->loop_args[0] = sp[0];
         c->loop_continue = 1;
+        SP_POP(c, sp);
         return SCM_UNSPEC;
     }
     cache->value = scm_global_ref(c, name);
     cache->serial = c->globals_serial;
-    return scm_apply_tail(c, cache->value, 1, &v0, 1);
+    VALUE r = scm_apply_tail(c, cache->value, 1, &sp[0], 1);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_self_tail_call_global_2(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, struct gref_cache *cache@ref)
 {
     (void)n;
-    VALUE v0 = EVAL_ARG(c, a0);
-    VALUE v1 = EVAL_ARG(c, a1);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a0);
+    sp[1] = EVAL_ARG(c, a1);
     if (LIKELY(cache->serial == c->globals_serial)) {
-        c->loop_args[0] = v0;
-        c->loop_args[1] = v1;
+        c->loop_args[0] = sp[0];
+        c->loop_args[1] = sp[1];
         c->loop_continue = 1;
+        SP_POP(c, sp);
         return SCM_UNSPEC;
     }
     cache->value = scm_global_ref(c, name);
     cache->serial = c->globals_serial;
-    VALUE av[2] = { v0, v1 };
-    return scm_apply_tail(c, cache->value, 2, av, 1);
+    VALUE r = scm_apply_tail(c, cache->value, 2, &sp[0], 1);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_self_tail_call_global_3(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, NODE *a2, struct gref_cache *cache@ref)
 {
     (void)n;
-    VALUE v0 = EVAL_ARG(c, a0);
-    VALUE v1 = EVAL_ARG(c, a1);
-    VALUE v2 = EVAL_ARG(c, a2);
+    SP_PUSH(c, sp, 3);
+    sp[0] = EVAL_ARG(c, a0);
+    sp[1] = EVAL_ARG(c, a1);
+    sp[2] = EVAL_ARG(c, a2);
     if (LIKELY(cache->serial == c->globals_serial)) {
-        c->loop_args[0] = v0;
-        c->loop_args[1] = v1;
-        c->loop_args[2] = v2;
+        c->loop_args[0] = sp[0];
+        c->loop_args[1] = sp[1];
+        c->loop_args[2] = sp[2];
         c->loop_continue = 1;
+        SP_POP(c, sp);
         return SCM_UNSPEC;
     }
     cache->value = scm_global_ref(c, name);
     cache->serial = c->globals_serial;
-    VALUE av[3] = { v0, v1, v2 };
-    return scm_apply_tail(c, cache->value, 3, av, 1);
+    VALUE r = scm_apply_tail(c, cache->value, 3, &sp[0], 1);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_self_tail_call_global_4(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, NODE *a2, NODE *a3, struct gref_cache *cache@ref)
 {
     (void)n;
-    VALUE v0 = EVAL_ARG(c, a0);
-    VALUE v1 = EVAL_ARG(c, a1);
-    VALUE v2 = EVAL_ARG(c, a2);
-    VALUE v3 = EVAL_ARG(c, a3);
+    SP_PUSH(c, sp, 4);
+    sp[0] = EVAL_ARG(c, a0);
+    sp[1] = EVAL_ARG(c, a1);
+    sp[2] = EVAL_ARG(c, a2);
+    sp[3] = EVAL_ARG(c, a3);
     if (LIKELY(cache->serial == c->globals_serial)) {
-        c->loop_args[0] = v0;
-        c->loop_args[1] = v1;
-        c->loop_args[2] = v2;
-        c->loop_args[3] = v3;
+        c->loop_args[0] = sp[0];
+        c->loop_args[1] = sp[1];
+        c->loop_args[2] = sp[2];
+        c->loop_args[3] = sp[3];
         c->loop_continue = 1;
+        SP_POP(c, sp);
         return SCM_UNSPEC;
     }
     cache->value = scm_global_ref(c, name);
     cache->serial = c->globals_serial;
-    VALUE av[4] = { v0, v1, v2, v3 };
-    return scm_apply_tail(c, cache->value, 4, av, 1);
+    VALUE r = scm_apply_tail(c, cache->value, 4, &sp[0], 1);
+    SP_POP(c, sp);
+    return r;
 }
 
 // ---------------------------------------------------------------------------

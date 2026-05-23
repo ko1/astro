@@ -333,6 +333,32 @@ typedef struct CTX_struct {
     int err_jmp_active;
 } CTX;
 
+// ---------------------------------------------------------------------------
+// Sample-side root-spill stack.  Per-function precise rooting for VALUE
+// temporaries that must survive an inner allocation.  Pattern:
+//
+//   SP_PUSH(c, sp, n)        — reserve `n` slots starting at sp[0..n-1],
+//                              zero-init them so the root scanner doesn't
+//                              see uninit'd ptr bits.  Pushes c->sp by n.
+//   sp[i] = ...              — park / read VALUEs across allocations.
+//   SP_POP(c, sp)            — restore c->sp.
+//
+// The scratch range walked by `aro_scheme_visit_roots` is
+// [g_sp_scratch, c->sp), so any slot inside that range is a precise root.
+// Backend independent — non-moving GCs just mark, moving GCs forward and
+// rewrite the slot.  Singletons / immediates / NULL are filtered by the
+// IS_PTR macro in the visitor.
+extern VALUE g_sp_scratch[];
+#define ASCHEME_SP_SCRATCH_SIZE 4096
+#define SP_PUSH(c, name, n) \
+    VALUE * restrict name = (c)->sp; \
+    do { \
+        assert(name + (n) <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE); \
+        for (int _spi = 0; _spi < (n); _spi++) name[_spi] = 0; \
+        (c)->sp = name + (n); \
+    } while (0)
+#define SP_POP(c, name)    do { (c)->sp = (name); } while (0)
+
 // Always switch env through this macro so env_serial gets bumped (which
 // invalidates the lref level cache).  The frame-reuse path in
 // scm_apply_tail intentionally bypasses this — it overwrites slots in
