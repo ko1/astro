@@ -16,8 +16,8 @@ iter 35 で固定した比較契約 (= 過去の不公平な測定を再発さ�
 - **Build**: `make GC=<backend> ASTRO_DEBUG=0` で全 backend に同じ
   flags (`-O3 -flto=auto -fno-plt -march=native`)。 `ASTRO_DEBUG=0` が
   release shape の default。 dev は `make ASTRO_DEBUG=1` で opt-in。
-- **Mode**: `--plain` を正本とする。 AOT (`-c`) と PG (`-p`) は補助的に
-  載せる程度。
+- **Mode**: `--plain` を正本とする。 AOT (`--aot-compile --run`) と PG
+  (`--pg-compile`) は補助的に載せる程度。
 - **Repeats / policy**: 各 (backend × bench) を **median of N=3 以上**。
   best-of-N はノイズで運の影響を受けるので使わない。
 - **Charging model**: 全 gen backend で `sizeof(GCHeader) + ALIGN8(payload_size)`
@@ -122,9 +122,10 @@ toplevel return value bug (GC 非関連、 別件)。
 
 ### 2.2 AOT mode matrix (iter 72、 median of 3、 15 backend + libgc × 35 bench)
 
-`ruby bench/matrix.rb --mode aot -n 3` の出力。 AOT は `-c` モードで
-parser が `code_store/all.so` に SD (specialized dispatcher) を gcc で
-bake し、 2 回目以降の run が dlopen して bind する仕組み。
+`ruby bench/matrix.rb --mode aot -n 3` の出力。 AOT は
+`--aot-compile --run` モードで parser が `code_store/all.so` に SD
+(specialized dispatcher) を gcc で bake し、 2 回目以降の run が
+dlopen して bind する仕組み。
 
 | Bench | none | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | bump | mark_bump_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen | mark_freelist | libgc |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -165,8 +166,9 @@ bake し、 2 回目以降の run が dlopen して bind する仕組み。
 | tak | 0.18 | 0.17 | 0.18 | 0.18 | 0.17 | 0.17 | 0.17 | 0.17 | 0.17 | 0.17 | 0.17 | **0.17** | 0.17 | 0.17 | 0.17 | 0.61 |
 | tokenize | 0.97 | 0.41 | 0.48 | 0.58 | 0.32 | 0.31 | 0.57 | 0.32 | 0.62 | 0.31 | 0.35 | **0.30** | 0.40 | 0.39 | 0.39 | 0.90 |
 
-libgc は AOT 未対応 (= matrix runner が `-c` 引数を渡しても baruby
-binary は plain 動作する) ので、 libgc 列は plain と同等の値。 列としては
+libgc は AOT 未対応 (= matrix runner が `--aot-compile --run` 引数を
+渡しても baruby binary は plain 動作する) ので、 libgc 列は plain
+と同等の値。 列としては
 保持して plain → AOT がどれだけ伸びるかを `--/<libgc>` で見やすくする
 ために使う。
 

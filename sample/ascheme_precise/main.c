@@ -16,6 +16,7 @@
 #include "node.h"
 #include "parse.h"
 #include "astro_code_store.h"
+#include "astro_build.h"
 
 #ifdef USE_READLINE
 #include <readline/readline.h>
@@ -4624,7 +4625,7 @@ eval_top(CTX *c, NODE *body)
 //      `body->head.dispatch_cnt` on each closure entry.  At exit we walk
 //      AOT_ENTRIES and dump (Horg, count) tuples to code_store/profile.txt.
 //
-//   2. `--use-profile -c run.scm` loads the profile and, during
+//   2. `--use-profile --aot-compile run.scm` loads the profile and, during
 //      `aot_compile_and_load`, skips entries whose recorded count is below
 //      AOT_PROFILE_THRESHOLD.  Cold entries keep their default dispatcher,
 //      so make/gcc only burns time on the hot ones — typically 10× fewer
@@ -4805,7 +4806,7 @@ run_string(CTX *c, const char *src, size_t len, bool print_results)
 // We run the program interpretively (no AOT applied during the run) so
 // `body->head.dispatch_cnt` accumulates true execution counts; on exit we
 // AOT-compile entries above the threshold and persist the resulting
-// code_store/ for the *next* invocation to consume via `-c`.
+// code_store/ for the *next* invocation to consume via `--aot-compile`.
 static int
 run_file_pg_compile(CTX *c, const char *path, bool verbose)
 {
@@ -4869,7 +4870,7 @@ run_file_pg_compile(CTX *c, const char *path, bool verbose)
 
     // Compile hot entries; cache them on disk via astro_cs_build.  The
     // freshly-loaded SDs go unused here (we already finished the run),
-    // but the next `ascheme -c` invocation picks them up from
+    // but the next `ascheme --aot-compile` invocation picks them up from
     // code_store/all.so.
     aot_compile_and_load(c, verbose);
 
@@ -4896,7 +4897,7 @@ run_file_aot(CTX *c, const char *path, bool verbose)
     fclose(fp);
 
     // If a profile from a prior `--pg-compile` exists in the code store,
-    // pick it up automatically.  This makes `-c` after `--pg-compile`
+    // pick it up automatically.  This makes `--aot-compile` after `--pg-compile`
     // behave as a pure cache-load for hot entries — cold entries are
     // skipped (left running on the default dispatcher) instead of being
     // compiled on the spot.
@@ -5011,6 +5012,20 @@ repl(CTX *c)
     return 0;
 }
 
+static void
+usage(void)
+{
+    fprintf(stderr,
+        "usage: ascheme_precise [options] [file.scm | -e <expr> | -]\n"
+        "\n"
+        "ascheme_precise-specific options:\n"
+        "  -e <expr>            evaluate expression and print result\n"
+        "  -                    read program from stdin\n"
+        "      --clear-cs       delete code_store/ before starting\n"
+        "\n");
+    astro_print_build_help(stderr);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -5018,35 +5033,33 @@ main(int argc, char *argv[])
      * inside create_context().  There's no longer a process-global GC init. */
     OPTION.no_compiled_code = true;        // plain interpreter is the default
 
+    // Pre-scan argv for framework-owned build flags (--plain, --aot-compile,
+    // --pg-compile, --run, --build OUT, -q/--quiet, -v/--verbose, -h/--help,
+    // --version).  Order-free within the flag block (before the source file).
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
+
+    if (bcfg.help_requested)    { usage(); return 0; }
+    if (bcfg.version_requested) { printf("ascheme_precise (ASTro %s)\n", ASTRO_VERSION); return 0; }
+
+    // Translate framework flags into ascheme's OPTION.  ascheme follows the
+    // koruby pattern: it must run to discover entries (compile() registers
+    // each top-level form before eval_top), so bake-only is meaningless.
+    // --aot-compile (with or without --run) => always run+bake.
+    if (bcfg.quiet)   OPTION.quiet = true;
+    bool aot        = bcfg.aot_compile;
+    bool pg_compile = bcfg.pg_compile;
+    bool verbose    = bcfg.verbose;
+
+    // Sample-specific flag pass: -e (delayed), --clear-cs.  The framework
+    // already consumed -q/-v/-h/--version/--plain/--aot-compile/--pg-compile.
     int ai = 1;
-    bool aot = false;
-    bool verbose = false;
     bool clear_cs = false;
-    bool pg_compile = false;
     while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
-        if (!strcmp(argv[ai], "-q") || !strcmp(argv[ai], "--quiet")) OPTION.quiet = true;
-        else if (!strcmp(argv[ai], "-c") || !strcmp(argv[ai], "--compile")) aot = true;
-        else if (!strcmp(argv[ai], "-v") || !strcmp(argv[ai], "--verbose")) verbose = true;
-        else if (!strcmp(argv[ai], "--clear-cs")) clear_cs = true;
-        else if (!strcmp(argv[ai], "--pg-compile") || !strcmp(argv[ai], "--pg")) pg_compile = true;
+        if (!strcmp(argv[ai], "--clear-cs")) clear_cs = true;
         else if (!strcmp(argv[ai], "-e")) break;        // delayed
         else if (!strcmp(argv[ai], "--")) { ai++; break; }
-        else if (!strcmp(argv[ai], "-h") || !strcmp(argv[ai], "--help")) {
-            fprintf(stderr,
-                "usage: ascheme [options] [file.scm | -e <expr> | -]\n"
-                "options:\n"
-                "  -q, --quiet      suppress non-error chatter\n"
-                "  -c, --compile    AOT-compile every entry before running (uses code_store/)\n"
-                "  -v, --verbose    print AOT compilation progress\n"
-                "      --clear-cs   delete code_store/ before starting\n"
-                "      --pg-compile interpret first, then AOT-compile hot entries (modeled\n"
-                "                   on abruby's --pg-compile).  Cold entries stay as default\n"
-                "                   dispatchers; the produced code_store/ accelerates the next run.\n"
-                "  -e <expr>        evaluate expression and print result\n"
-                "  -                read program from stdin\n");
-            return 0;
-        }
-        else { fprintf(stderr, "ascheme: unknown option %s\n", argv[ai]); return 2; }
+        else { fprintf(stderr, "ascheme: unknown option %s\n", argv[ai]); usage(); return 2; }
         ai++;
     }
     if (clear_cs) (void)!system("rm -rf code_store");

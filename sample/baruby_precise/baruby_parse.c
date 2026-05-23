@@ -6,6 +6,7 @@
 #include "node.h"
 #include "context.h"
 #include "astro_jit.h"
+#include "astro_build.h"
 
 #define TRANSDUCE(n) transduce(tc, (pm_node_t *)(n), indent+1)
 
@@ -1719,29 +1720,16 @@ transduce(struct transduce_context *tc, pm_node_t *node, int indent) {
     exit(1);
 }
 
-static void
+void
 show_help(void)
 {
-    printf("baruby [options] [script]\n");
-    printf("\n");
-    printf("Default: load any cached SD/PGSD from code_store/ and run.\n");
-    printf("Combine -c and -p to AOT-bake before run + PG-bake after.\n");
-    printf("\n");
-    printf("Run mode:\n");
-    printf("  -i, --plain          interpreter only, ignore code_store\n");
-    printf("  --aot-compile        compile-only (do not run)\n");
-    printf("  -j                   JIT mode (worker process)\n");
-    printf("  -s                   static-lang mode (parse-time call resolution)\n");
-    printf("\n");
-    printf("Bake (orthogonal — combine freely):\n");
-    printf("  -c, --aot            AOT-bake SDs before run\n");
-    printf("  -p, --pg             PG-bake PGSDs after run (uses cc state)\n");
-    printf("  -b                   skip BOTH bakes (timing-only cached run)\n");
-    printf("\n");
-    printf("Other:\n");
-    printf("  --ccs                clear code_store/ before run\n");
-    printf("  -q                   quiet\n");
-    printf("  -h                   show this help\n");
+    fprintf(stderr, "baruby_precise [options] [script] [argv...]\n\n");
+    fprintf(stderr, "baruby_precise-specific options:\n");
+    fprintf(stderr, "  --ccs, --clear-code-store    clear code_store/ before run\n");
+    fprintf(stderr, "  -s                           static-lang mode (parse-time call resolution)\n");
+    fprintf(stderr, "  -b                           skip the bake (timing-only cached run)\n");
+    fprintf(stderr, "  -j                           JIT mode (currently unwired post-fork)\n\n");
+    astro_print_build_help(stderr);
 }
 
 static bool
@@ -1768,13 +1756,12 @@ parse_option(int argc, char *argv[])
             continue;
         }
 
-        // Long options first.
-        if (match_long(arg, "--plain"))             { OPTION.plain = true; continue; }
-        if (match_long(arg, "--aot")
-            || match_long(arg, "--aot-compile-first")) { OPTION.compile_first = true; continue; }
-        if (match_long(arg, "--pg")
-            || match_long(arg, "--pg-compile"))     { OPTION.pg_at_exit = true; continue; }
-        if (match_long(arg, "--aot-compile"))       { OPTION.compile_only = true; continue; }
+        // Framework flags (--plain, --aot-compile, --pg-compile, --run,
+        // --build, -q/--quiet, -v/--verbose, -h/--help, --version) are
+        // consumed before parse_option runs.  Here we only handle
+        // baruby_precise-specific flags.
+
+        // Long options.
         if (match_long(arg, "--ccs")
             || match_long(arg, "--clear-code-store")) { OPTION.clear_store = true; continue; }
 
@@ -1785,21 +1772,16 @@ parse_option(int argc, char *argv[])
             exit(1);
         }
         switch (arg[1]) {
-          case 'h': show_help(); exit(0);
           case 's': OPTION.static_lang   = true; break;
-          case 'i': OPTION.plain         = true; break;
-          case 'c': OPTION.compile_first = true; break;
-          case 'p': OPTION.pg_at_exit    = true; break;
           case 'b': OPTION.skip_bake     = true; break;
-          case 'q': OPTION.quiet         = true; break;
           case 'j':
             // JIT (-j) requires the lstation.rb worker daemon, which we
             // intentionally did not carry over from the naruby fork.
             // The astro_jit.c hooks remain in place for future
             // re-enabling — see docs/todo.md.
             fprintf(stderr,
-                    "baruby: JIT (-j) is unwired post-fork; "
-                    "use --plain / -c / -p instead.\n");
+                    "baruby_precise: JIT (-j) is unwired post-fork; "
+                    "use --plain / --aot-compile / --pg-compile instead.\n");
             exit(1);
           default:
             fprintf(stderr, "unknown option: %s\n", arg);

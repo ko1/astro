@@ -37,7 +37,7 @@ etc.) are in the `ASTRO_BUILD_OPTS` env var, not argv.
 | naruby | ✅ done | Old `-i`/`-c`/`-p`/`--aot`/`--aot-compile-first`/`--pg`/etc. removed.  Sample-only flags kept: `--ccs`/`--clear-code-store`, `-s`, `-b`, `-j`.  See [sample/naruby/main.c](../sample/naruby/main.c) + [sample/naruby/naruby_parse.c](../sample/naruby/naruby_parse.c). |
 | koruby | ✅ done | Old `-c`/`--aot-compile` (alone)/`-q`/`-v` removed.  `--dump` renamed to `--dump-ast`.  Dead `node_specialized.c` / `compiled_koruby` machinery deleted.  See [sample/koruby/main.c](../sample/koruby/main.c). |
 | baruby | ⏳ pending | naruby fork — same flag set as naruby; same mapping should apply. |
-| baruby_precise | ⏳ pending | baruby fork. |
+| baruby_precise | ✅ done | naruby-pattern port; `-i`/`-c`/`-p`/`--aot`/`--aot-compile-first`/`--pg` removed, sample-specific `--ccs`/`-s`/`-b`/`-j` kept.  See [sample/baruby_precise/main.c](../sample/baruby_precise/main.c). |
 | abruby | n/a | CRuby C extension, no standalone CLI. |
 | arjsv | n/a | CRuby C extension. |
 | jstro | ⏳ pending | `--no-compile`, `-c`/`--aot-compile-first`, `--aot-compile` (alone), `-p`/`--pg-compile`, `--dump`, `-q`, `-v`, `-h` — all to remove. |
@@ -46,6 +46,7 @@ etc.) are in the `ASTRO_BUILD_OPTS` env var, not argv.
 | castro | ⏳ pending | `--no-compile`, `-c`/`--compile-all`, `--dump`, `-q`/`--quiet`. |
 | asom | ⏳ pending | `--plain`, `-c`/`--aot-compile-first`, `-p`/`--pg`/`--pg-compile`, `--dump-ast`, `-q`/`--quiet`, `--verbose`. |
 | ascheme | ⏳ pending | `-c`/`--compile`, `--pg-compile`/`--pg`, `-e`, `--clear-cs`, `-v`/`--verbose`, `-h`/`--help`, `-q`/`--quiet`, `--dump-ast` (default = no-compile already). |
+| ascheme_precise | ✅ done | koruby-pattern port (AOT always implies run); `-c`/`--compile`/`--pg`/`-q`/`-v`/`-h` removed, sample-specific `-e`/`-`/`--clear-cs` kept.  See [sample/ascheme_precise/main.c](../sample/ascheme_precise/main.c). |
 | astocaml | ⏳ pending | `-c`/`--compile`, `--no-compile`, `-q`/`--quiet`. |
 | asml | ⏳ pending | `-c`/`--compile`, `--no-compile`, `-e`, `-q`/`--quiet`, `-h`/`--help`. |
 | astr | ⏳ pending | `--plain`/`-i`, `-c`/`--aot`, `--ccs`, `-q`/`--quiet`. |

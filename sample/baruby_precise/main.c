@@ -8,6 +8,7 @@
 #include <sys/mman.h>
 #include "node.h"
 #include "astro_code_store.h"
+#include "astro_build.h"
 #include "astro_jit.h"
 #include "precise_gc/gc.h"
 
@@ -253,7 +254,7 @@ common_build_flags_and_link(void)
 
 // AOT bake: emit SD_<HORG>.c for the program AST and every code_repo
 // body.  No PGSD output here — that's `build_code_store_pgsd`'s job
-// after the run when cc state is available.  Triggered by `-c`.
+// after the run when cc state is available.  Triggered by `--aot-compile`.
 static void
 build_code_store_aot(NODE *ast)
 {
@@ -280,7 +281,7 @@ build_code_store_aot(NODE *ast)
 // from its HORG, so skipping the HOPT==HORG cases would leave
 // undefined-symbol references at dlopen time.
 //
-// Triggered by `-p`.
+// Triggered by `--pg-compile`.
 static void
 build_code_store_pgsd(NODE *ast)
 {
@@ -316,25 +317,56 @@ clear_code_store_dir(void)
 int
 main(int argc, char *argv[])
 {
+    // Pre-scan argv for framework-owned build flags (--build OUT, --run,
+    // --aot-compile, --pg-compile, --plain, -q/--quiet, -v/--verbose,
+    // -h/--help, --version).  They're order-free within the flag block
+    // (= before the source file).  Remaining argv is consumed by
+    // baruby_precise's own parser for sample-specific flags
+    // (--ccs / -s / -b / -j).
+    struct astro_build_config bcfg = ASTRO_BUILD_CONFIG_INIT;
+    if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
+
+    // Framework universal flags signal early.
+    if (bcfg.help_requested) {
+        extern void show_help(void);
+        show_help();
+        return 0;
+    }
+    if (bcfg.version_requested) {
+        printf("baruby_precise (ASTro %s)\n", ASTRO_VERSION);
+        return 0;
+    }
+
+    // Translate framework flags into baruby's internal OPTION.  baruby_precise
+    // uses the naruby pattern: parse-time discovers all entries so bake-only
+    // (= --aot-compile alone, no --run) is meaningful.
+    //   --plain                    → OPTION.plain (no code store)
+    //   --aot-compile alone        → OPTION.compile_only (bake, no run)
+    //   --aot-compile + --run      → OPTION.compile_first (bake then run)
+    //   --pg-compile               → OPTION.pg_at_exit (run + PGSD bake)
+    if (bcfg.plain)                          OPTION.plain         = true;
+    if (bcfg.aot_compile && !bcfg.run)       OPTION.compile_only  = true;
+    if (bcfg.aot_compile && bcfg.run)        OPTION.compile_first = true;
+    if (bcfg.pg_compile)                     OPTION.pg_at_exit    = true;
+    if (bcfg.quiet)                          OPTION.quiet         = true;
+
     // Order:
-    //   1. Parse CLI (so we know about --ccs / --plain / -c / -p).
+    //   1. Parse CLI (so we know about --ccs / sample-specific flags).
     //   2. Optionally wipe code_store (--ccs).
     //   3. INIT (cs_init dlopens any existing all.so) — skipped under --plain.
     //   4. Parse source.
-    //   5. -c: AOT-bake SDs before EVAL so the run uses them.
+    //   5. AOT-bake SDs before EVAL so the run uses them.
     //   6. cs_load each entry (binds dispatcher → SD/PGSD when found).
     //   7. EVAL.
-    //   8. -p: PGSD-bake using cc state from this run.
+    //   8. PGSD-bake using cc state from this run.
     //
-    // -c and -p are orthogonal: either, neither, or both.  The default
-    // (no flags) is "use whatever's in code_store" — `make_code_store`
-    // skipped, cs_load still runs.
     // baruby_precise: precise mark&sweep (gc.c), initialized in create_context.
     CTX *c = create_context(10000, 2000);
     global_c = c;
 
-    // PARSE has to inspect argv to find OPTION flags (--ccs, --plain, …),
-    // but it does not touch code_store — we can clear / cs_init around it.
+    // PARSE has to inspect argv to find sample-specific OPTION flags
+    // (--ccs / -s / -b etc.), but it does not touch code_store — we can
+    // clear / cs_init around it.
     NODE *ast = PARSE(argc, argv);
     /* Move sp past the toplevel locals area now that the parser has
      * reported the exact size.  No more hardcoded "64" cap.

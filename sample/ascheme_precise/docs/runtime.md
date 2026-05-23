@@ -41,7 +41,7 @@ dispatchers:
 | Mode | What `code_store/` contains | Hot-path dispatch |
 |---|---|---|
 | **interp** | empty | `DISPATCH_node_xxx` (function pointer per AST edge) |
-| **AOT** (`-c`) | `SD_<hash>.so` for every entry | `SD_<hash>` (children inlined as static SD calls within the same .so) |
+| **AOT** (`--aot-compile`) | `SD_<hash>.so` for every entry | `SD_<hash>` (children inlined as static SD calls within the same .so) |
 | **PGO** (`--pg-compile`) | `SD_<hash>.so` only for entries above threshold + `profile.txt` | hot entries: `SD_<hash>`; cold: default `DISPATCH_node_xxx` |
 
 `make compare` (and `make compare-big`) tabulates wall-clock for each
@@ -227,7 +227,7 @@ child's own `dispatcher`.  Children dispatchers can later be patched
 to specialized `SD_<hash>` functions without touching the parent's
 code — the link is the `dispatcher` field, not a static call.
 
-## 5. AOT (`-c`) mode
+## 5. AOT (`--aot-compile`) mode
 
 After parsing, `aot_compile_and_load` walks `AOT_ENTRIES` (every
 non-`@noinline` AST node registered during compile):
@@ -246,8 +246,8 @@ non-`@noinline` AST node registered during compile):
 4. **`astro_cs_load(entry, NULL)`** for each entry → `dlsym("SD_<hash>")`
    and patches `entry->head.dispatcher` to the SD function.
 
-Subsequent runs with `-c` find every `.c` already on disk; only the
-re-link and `dlopen` happen.  That's "aot-cached" in the bench.
+Subsequent runs with `--aot-compile` find every `.c` already on disk;
+only the re-link and `dlopen` happen.  That's "aot-cached" in the bench.
 
 ## 6. PGO (`--pg-compile`) mode
 
@@ -261,10 +261,10 @@ invocation:
    execution count per body.
 3. Walk `AOT_ENTRIES`, filter to those above
    `AOT_PROFILE_THRESHOLD` (= 10), and run the same compile / build
-   / load sequence as `-c` — but only on the hot subset.
+   / load sequence as `--aot-compile` — but only on the hot subset.
 4. Persist `(Horg, count)` tuples to `code_store/profile.txt`.
 
-The next invocation with `-c` automatically picks up `profile.txt`
+The next invocation with `--aot-compile` automatically picks up `profile.txt`
 and applies the same threshold filter — i.e. cold entries stay on
 `DISPATCH_node_xxx`, the smaller `all.so` loads faster, and the
 hot path is unchanged.  That's "pg-cached" in the bench.

@@ -28,6 +28,7 @@ node_allocate(size_t size)
 
 #include "astro_node.c"
 #include "astro_code_store.c"
+#include "astro_build.c"
 
 // OPTIMIZE: opportunistic code-store lookup.  If `--no-compile` (default
 // for the interpreter) is set, this is a no-op.

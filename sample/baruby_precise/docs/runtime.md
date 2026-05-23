@@ -443,7 +443,7 @@ stress mode を有効にすると:
 moving GC 特有のバグ (rooting 漏れ / 内部 stale local) が即座に
 表面化する。 開発中の事実上の必須モード。
 
-### AOT mode (`-c`)
+### AOT mode (`--aot-compile --run`)
 
 `code_store/all.so` に SD (specialized dispatcher) を bake しておく。
 2 回目以降の run はそれを dlopen して dispatcher を bind。
@@ -451,13 +451,13 @@ plain mode の 1.6〜6× 速くなる workload もある (sieve / hash_chain /
 list_sort 等)。
 
 ```sh
-CCACHE_DISABLE=1 ./baruby_precise -c bench/sieve.ba.rb
+CCACHE_DISABLE=1 ./baruby_precise --aot-compile --run bench/sieve.ba.rb
 ```
 
 CCACHE_DISABLE=1 は sandbox 環境での ccache 書込み権限問題回避用
 ([feedback_ccache_disable](memory))。
 
-### PG mode (`-p`)
+### PG mode (`--pg-compile`)
 
 PG mode (Profile-Guided) は実行中の callcache の最終 body を吸い
 上げて `node_pg_call_<N>.sp_body` operand に焼き込む。 forward ref が

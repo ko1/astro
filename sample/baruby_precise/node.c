@@ -79,6 +79,10 @@ hash_builtin_func(builtin_func_t *bf)
 
 #include "astro_code_store.c"
 
+// --- Build orchestrator (--build OUT path; framework CLI extract) ---
+
+#include "astro_build.c"
+
 // --- baruby-specific helpers ---
 
 // Invalidate cached hashes (HORG via head.hash_value, HOPT via
@@ -544,7 +548,7 @@ typedef struct {
 } StrBuf;
 
 static void
-sb_append(StrBuf *sb, const char *src, uint32_t n)
+bsb_append(StrBuf *sb, const char *src, uint32_t n)
 {
     if (sb->len + n + 1 > sb->capa) {
         uint32_t nc = sb->capa ? sb->capa * 2 : 32;
@@ -563,47 +567,47 @@ static void
 to_s_inner(CTX *c, StrBuf *sb, VALUE v)
 {
     char tmp[32];
-    if (v == VAL_NIL)   { sb_append(sb, "nil", 3);   return; }
-    if (v == VAL_FALSE) { sb_append(sb, "false", 5); return; }
-    if (v == VAL_TRUE)  { sb_append(sb, "true", 4);  return; }
+    if (v == VAL_NIL)   { bsb_append(sb, "nil", 3);   return; }
+    if (v == VAL_FALSE) { bsb_append(sb, "false", 5); return; }
+    if (v == VAL_TRUE)  { bsb_append(sb, "true", 4);  return; }
     if (IS_INT(v)) {
         int n = snprintf(tmp, sizeof tmp, "%ld", (long)VAL2INT(v));
-        sb_append(sb, tmp, (uint32_t)n);
+        bsb_append(sb, tmp, (uint32_t)n);
         return;
     }
     if (IS_STR(c, v)) {
         const BaString *s = VAL2STR(c, v);
         const char *sb_bytes = bstr_bytes(s);
-        sb_append(sb, "\"", 1);
+        bsb_append(sb, "\"", 1);
         for (uint32_t i = 0; i < s->len; i++) {
             unsigned char ch = (unsigned char)sb_bytes[i];
             char buf[8];
             switch (ch) {
-              case '\n': sb_append(sb, "\\n", 2); break;
-              case '\t': sb_append(sb, "\\t", 2); break;
-              case '\r': sb_append(sb, "\\r", 2); break;
-              case '\\': sb_append(sb, "\\\\", 2); break;
-              case '"':  sb_append(sb, "\\\"", 2); break;
+              case '\n': bsb_append(sb, "\\n", 2); break;
+              case '\t': bsb_append(sb, "\\t", 2); break;
+              case '\r': bsb_append(sb, "\\r", 2); break;
+              case '\\': bsb_append(sb, "\\\\", 2); break;
+              case '"':  bsb_append(sb, "\\\"", 2); break;
               default:
                 if (ch < 0x20 || ch == 0x7f) {
                     int n = snprintf(buf, sizeof buf, "\\x%02X", ch);
-                    sb_append(sb, buf, (uint32_t)n);
+                    bsb_append(sb, buf, (uint32_t)n);
                 } else {
-                    sb_append(sb, &sb_bytes[i], 1);
+                    bsb_append(sb, &sb_bytes[i], 1);
                 }
             }
         }
-        sb_append(sb, "\"", 1);
+        bsb_append(sb, "\"", 1);
         return;
     }
     if (IS_ARY(c, v)) {
         const BaArray *a = VAL2ARY(c, v);
-        sb_append(sb, "[", 1);
+        bsb_append(sb, "[", 1);
         for (uint32_t i = 0; i < a->len; i++) {
-            if (i) sb_append(sb, ", ", 2);
+            if (i) bsb_append(sb, ", ", 2);
             to_s_inner(c, sb, a->items->data[i]);
         }
-        sb_append(sb, "]", 1);
+        bsb_append(sb, "]", 1);
         return;
     }
 }

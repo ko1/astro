@@ -23,8 +23,8 @@ end.parse!(ARGV)
 
 flag = case opts[:mode]
        when "plain" then ["--plain"]
-       when "aot"   then ["-c"]
-       when "pg"    then ["-p"]
+       when "aot"   then ["--aot-compile", "--run"]
+       when "pg"    then ["--pg-compile"]
        else abort "unknown mode #{opts[:mode]}"
        end
 
