@@ -374,13 +374,6 @@ forward_payload_value(ASTroGC *gc, void *p)
     return p;
 }
 
-static VALUE
-forward_value(ASTroGC *gc, VALUE v)
-{
-    if (!AROH_IS_GC_OBJECT(v)) return v;
-    return (VALUE)forward_payload_value(gc, (void *)v);
-}
-
 static void
 forward_edge(void *ctx, void **slot)
 {

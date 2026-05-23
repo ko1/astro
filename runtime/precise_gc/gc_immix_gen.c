@@ -471,13 +471,6 @@ forward_payload_nursery(ASTroGC *gc, void *p)
     return newp;
 }
 
-static VALUE
-fwd_value(ASTroGC *gc, VALUE v)
-{
-    if (!AROH_IS_GC_OBJECT(v)) return v;
-    return (VALUE)forward_payload_nursery(gc, (void *)v);
-}
-
 static void
 fwd_edge_minor(void *ctx, void **slot)
 {

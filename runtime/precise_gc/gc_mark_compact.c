@@ -306,13 +306,6 @@ fwd_payload(void *p)
     return h->gc_fwd;
 }
 
-static VALUE
-fwd_value(VALUE v)
-{
-    if (!AROH_IS_GC_OBJECT(v)) return v;
-    return (VALUE)fwd_payload((void *)v);
-}
-
 /* edge_visit callback for writeback (compaction post-move pointer update).
  * SCAN_EDGES が KIND_OBJ_ARRAY / OBJ_STRING / PAYLOAD_VAL を統一して呼ぶので、
  * slot は raw pointer (= BaArray.items / BaString.bytes) と tagged VALUE

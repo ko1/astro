@@ -337,13 +337,6 @@ forward_payload_value(ASTroGC *gc, void *p)
     return forward_obj(gc, h);
 }
 
-static VALUE
-forward_value(ASTroGC *gc, VALUE v)
-{
-    if (!AROH_IS_GC_OBJECT(v)) return v;
-    return (VALUE)forward_payload_value(gc, (void *)v);
-}
-
 static void
 forward_edge_minor(void *ctx, void **slot)
 {
@@ -468,13 +461,6 @@ fwd_payload_compact(ASTroGC *gc, void *p)
     ASTRO_ASSERT(HDR_MARKED(h));
     ASTRO_ASSERT(h->gc_fwd != NULL);
     return h->gc_fwd;
-}
-
-static VALUE
-fwd_value_compact(ASTroGC *gc, VALUE v)
-{
-    if (!AROH_IS_GC_OBJECT(v)) return v;
-    return (VALUE)fwd_payload_compact(gc, (void *)v);
 }
 
 static void

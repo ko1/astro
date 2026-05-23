@@ -385,13 +385,6 @@ forward_payload_value(ASTroGC *gc, void *p)
     return forward_obj(gc, h);
 }
 
-static VALUE
-forward_value(ASTroGC *gc, VALUE v)
-{
-    if (!AROH_IS_GC_OBJECT(v)) return v;
-    return (VALUE)forward_payload_value(gc, (void *)v);
-}
-
 // edge_visit callback for writeback: slot is either a raw payload pointer
 // (BaArray.items / BaString.bytes) or a tagged VALUE (PAYLOAD_VAL slot).
 // AROH_IS_GC_OBJECT(v) filters non-PTR tagged values; raw payload ptrs always pass.
