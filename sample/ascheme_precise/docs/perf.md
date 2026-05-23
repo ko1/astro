@@ -172,27 +172,50 @@ stress 組合せ。 stress + scramble で **17/17 PASS** が完了基準
 (= mark / copy / mark_compact / bump / immix / mark_freelist / copy_scramble
 の 7 backend で確認済)。
 
-Phase 8 で gen / inc backend の WB 統合が完成すれば残 9 backend も同様に
-PASS する見込み (= migration.md 残作業)。
+Phase 8 で gen / inc backend の WB 統合 (= `aro_gc_wb` 呼び出し化) を完了。
+default + R5RS + stress の matrix:
+
+| backend             | default | r5rs    | stress  |
+|---------------------|:-------:|:-------:|:-------:|
+| none                | 17/17   | 179/179 | 17/17   |
+| mark                | 17/17   | 179/179 | 17/17   |
+| mark_gen            | 17/17   | 179/179 | 8/17 ★  |
+| mark_gen_inc        | 17/17   | 179/179 | 8/17 ★  |
+| copy                | 17/17   | 179/179 | 17/17   |
+| copy_gen            | 17/17   | 179/179 | 17/17   |
+| copy_gen_inc        | 17/17   | 179/179 | 17/17   |
+| mark_compact        | 17/17   | 179/179 | 17/17   |
+| mark_compact_gen    | 17/17   | 179/179 | 17/17   |
+| bump                | 17/17   | 179/179 | 17/17   |
+| mark_bump_gen       | 17/17   | 179/179 | 17/17   |
+| immix               | 17/17   | 179/179 | 17/17   |
+| immix_gen           | 17/17   | 179/179 | 17/17   |
+| mark_bitmap_gen     | 17/17   | 179/179 | 17/17   |
+| mark_card_gen       | 17/17   | 179/179 | 17/17   |
+| mark_freelist       | 17/17   | 179/179 | 17/17   |
+| copy_scramble       | 17/17   | 179/179 | 17/17   |
+
+15/17 backend で default + R5RS + stress 全 PASS。 `★` の mark_gen /
+mark_gen_inc は default + R5RS で完走するが stress mode で 9/17 fail —
+slab_alloc が freelist 上に live slot を返す (= freelist 破壊) 現象。
+WB 単体では治らない、 backend allocator 側のバグ可能性が高い (= 別 task)。
 
 ## 7. 既知 limitation / future work
 
-### 7.1 Generational / incremental backend の WB 統合 (= Phase 8)
+### 7.1 mark_gen / mark_gen_inc stress mode の freelist 破壊
 
-`mark_gen`, `mark_gen_inc`, `copy_gen`, `copy_gen_inc`, `mark_card_gen`,
-`mark_bitmap_gen`, `mark_compact_gen`, `mark_bump_gen`, `immix_gen` の 9
-backend は default 179/179 R5RS PASS だが、 matmul や stress mode で WB
-統合のバグ。 ascheme の `aro_gc_wb` 呼び出し未対応 (= 旧 libgc 由来の直接
-slot write が残る)、 もしくは sframe.parent / closure.env 等の typed-ptr
-field を VALUE 化していないため WB が hook できない。
+`mark_gen` と `mark_gen_inc` は default mode + R5RS では完走するが、
+stress mode (= 全 alloc で GC) で 9/17 test が SEGV (slab_alloc が non-FREE
+slot を返す)。 主要 case と lambda / let を含む test で発生 (case5.scm
+trivial 例で再現)。 dump 上、 freelist 先頭 slot の head に garbage が入って
+いて、 そこから fs->next を読むと invalid address (= SEGV)。
 
-完全 fix path:
-- ascheme の `struct sobj` 内 typed-ptr field を VALUE 化 (= 型を
-  `struct sframe *` → `VALUE` 等)
-- 全 slot write を `aro_gc_wb(c, holder, slot, v)` 経由化
-- sframe / scont 等の non-sobj heap obj も同様
+mark_bitmap_gen / mark_card_gen は同じ世代別 mark&sweep の bitmap 版で
+PASS。 違いは bit storage 場所 (= mark_gen は head.gc_flags 内、 bitmap は
+page bitmap)。 head に書き込む slot write の影響範囲が異なる。
 
-数百箇所 rewrite。 別 task。
+WB 統合は完了 (= 全 heap slot write が `aro_gc_wb` 経由)。 残バグは
+backend 側で、 ascheme の WB 統合タスクの scope 外。
 
 ### 7.2 fib35 overhead 1.98×
 

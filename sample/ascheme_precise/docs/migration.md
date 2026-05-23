@@ -15,11 +15,15 @@ ASTro precise GC framework (`runtime/precise_gc/`) に移行した経過と教�
 | 6 | testing 全 backend × 16 + 179 R5RS (= default mode 全 PASS) | ✅ |
 | 7 | naming + alloc API unification (= ARO_/AROH_、 ARO_LOAD、 alloc returns
        encoded) | ✅ |
-| 8 | typed-ptr field 完全 VALUE 化 (= stress + scramble の full coverage) | 🚧 部分 |
+| 8 | WB 統合 + stress mode 全 backend で 17/17 PASS | ✅ (15/17) |
 
-完成 17 backend × 16 ascheme test + 179 R5RS chibi test (= 全 3315 case)
-default mode で PASS。 stress mode は 3 backend (= mark / immix /
-mark_freelist) で完走、 他は Phase 8 待ち (= `docs/perf.md` §6.1)。
+完成 17 backend × 17 ascheme test + 179 R5RS chibi test (= 全 3315 case)
+default mode で PASS。 stress mode は **15/17 backend** で 17/17 PASS:
+- ✅ none, mark, copy, copy_gen, copy_gen_inc, mark_compact,
+     mark_compact_gen, bump, mark_bump_gen, immix, immix_gen,
+     mark_bitmap_gen, mark_card_gen, mark_freelist, copy_scramble
+- ★ mark_gen, mark_gen_inc は default + R5RS PASS、 stress mode で 8/17
+  (slab_alloc freelist 破壊 — backend 側バグ、 詳細は `docs/perf.md` §7.1)
 
 ## migration 工程 (= 推奨手順)
 

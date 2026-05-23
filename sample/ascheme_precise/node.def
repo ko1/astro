@@ -132,7 +132,11 @@ node_lset(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NOD
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
-    ascheme_env_at(c, depth)->slots[idx] = v;
+    /* The resolved frame is an OBJ_FRAME heap object — could be OLD (=
+     * a captured closure env) while v is freshly young.  WB is required
+     * so the next minor scans this frame's slots[]. */
+    struct sframe *f = ascheme_env_at(c, depth);
+    aro_gc_wb(c, f, &f->slots[idx], v);
     return SCM_UNSPEC;
 }
 
@@ -336,8 +340,11 @@ node_loop(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t nparams)
         VALUE v = EVAL_ARG(c, body);
         if (LIKELY(!c->loop_continue)) return v;
         c->loop_continue = 0;
-        for (uint32_t i = 0; i < nparams; i++)
-            c->env->slots[i] = c->loop_args[i];
+        /* c->env may be OLD (= long-lived loop frame); loop_args slots
+         * are fresh young values from the just-evaluated tail-call. */
+        for (uint32_t i = 0; i < nparams; i++) {
+            aro_gc_wb(c, c->env, &c->env->slots[i], c->loop_args[i]);
+        }
     }
 }
 
@@ -923,8 +930,12 @@ node_vec_set(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, NODE *va
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(scm_is_vector(sp[0]) && SCM_IS_FIXNUM(sp[1]))) {
             size_t i = (size_t)SCM_FIXVAL(sp[1]);
-            if (LIKELY(i < SCM_PTR(sp[0])->vec.len)) {
-                SCM_PTR(sp[0])->vec.items[i] = sp[2];
+            struct sobj *vobj = SCM_PTR(sp[0]);
+            if (LIKELY(i < vobj->vec.len)) {
+                /* items[] backing is the WB holder.  vobj may be OLD (=
+                 * long-lived vector), sp[2] may be a young VALUE. */
+                char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
+                aro_gc_wb(c, items_base, &vobj->vec.items[i], sp[2]);
                 SP_POP(c, sp);
                 return SCM_UNSPEC;
             }

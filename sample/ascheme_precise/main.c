@@ -136,8 +136,10 @@ scm_cons(CTX *c, VALUE a, VALUE d)
     sp[1] = d;
     struct sobj *o = (struct sobj *)aro_gc_alloc_raw(c, pair_size);
     SCM_SET_TYPE(o, OBJ_PAIR);
-    o->pair.car = sp[0];
-    o->pair.cdr = sp[1];
+    /* o is freshly allocated (young) — WB is a no-op fast path but kept
+     * uniform so all heap-slot writes route through aro_gc_wb. */
+    aro_gc_wb(c, o, (VALUE *)&o->pair.car, sp[0]);
+    aro_gc_wb(c, o, (VALUE *)&o->pair.cdr, sp[1]);
     SP_POP(c, sp);
     return SCM_OBJ_VAL(o);
 }
@@ -170,7 +172,9 @@ scm_make_string(CTX *c, const char *s, size_t len)
     c->sp = sp + 1;
     char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + len + 1);
     o = SCM_PTR(sp[0]);   /* reload after potential GC move */
-    o->str.chars = raw + sizeof(AroObjectHeader);
+    /* o may be OLD now if alloc above promoted it.  Use WB so the byte
+     * payload (= young) is remembered via o's dirty bit. */
+    aro_gc_wb(c, o, (VALUE *)&o->str.chars, (VALUE)(raw + sizeof(AroObjectHeader)));
     memcpy(o->str.chars, stage, len);
     o->str.chars[len] = '\0';
     o->str.len = len;
@@ -192,7 +196,7 @@ scm_make_string_n(CTX *c, size_t len, char fill)
     c->sp = sp + 1;
     char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + len + 1);
     o = SCM_PTR(sp[0]);
-    o->str.chars = raw + sizeof(AroObjectHeader);
+    aro_gc_wb(c, o, (VALUE *)&o->str.chars, (VALUE)(raw + sizeof(AroObjectHeader)));
     memset(o->str.chars, fill, len);
     o->str.chars[len] = '\0';
     o->str.len = len;
@@ -228,9 +232,17 @@ scm_make_vector(CTX *c, size_t len, VALUE fill)
     size_t alloc_sz = sizeof(AroObjectHeader) + sizeof(VALUE) * (len ? len : 1);
     char *raw = (char *)aro_gc_alloc_raw(c, alloc_sz);
     o = SCM_PTR(sp[0]);
-    o->vec.items = (VALUE *)(raw + sizeof(AroObjectHeader));
+    /* WB on the items typed-ptr write: o may have been promoted by the
+     * raw alloc above, raw is freshly young.  WB ensures o is remembered. */
+    aro_gc_wb(c, o, (VALUE *)&o->vec.items, (VALUE)(raw + sizeof(AroObjectHeader)));
     o->vec.len = len;
-    for (size_t i = 0; i < len; i++) o->vec.items[i] = sp[1];
+    /* items[] backing payload is itself a heap object (= `raw`).  Holder
+     * for the items slots is `raw` (the payload base).  raw is freshly
+     * young so WB fast-path returns immediately, but we keep the routing
+     * uniform. */
+    for (size_t i = 0; i < len; i++) {
+        aro_gc_wb(c, raw, &o->vec.items[i], sp[1]);
+    }
     SP_POP(c, sp);
     return SCM_OBJ_VAL(o);
 }
@@ -342,9 +354,11 @@ scm_make_mvalues(CTX *c, int count, VALUE *items)
     size_t alloc_sz = sizeof(AroObjectHeader) + sizeof(VALUE) * (count ? count : 1);
     char *raw = (char *)aro_gc_alloc_raw(c, alloc_sz);
     o = SCM_PTR(sp_base[0]);
-    o->mv.items = (VALUE *)(raw + sizeof(AroObjectHeader));
+    aro_gc_wb(c, o, (VALUE *)&o->mv.items, (VALUE)(raw + sizeof(AroObjectHeader)));
     o->mv.len = (size_t)count;
-    for (int i = 0; i < count; i++) o->mv.items[i] = sp_base[1 + i];
+    for (int i = 0; i < count; i++) {
+        aro_gc_wb(c, raw, &o->mv.items[i], sp_base[1 + i]);
+    }
     c->sp = sp_base;
     return SCM_OBJ_VAL(o);
 }
@@ -380,7 +394,11 @@ scm_make_closure(CTX *c, NODE *body, struct sframe *env, int nparams, int has_re
     env = (struct sframe *)sp_base[0];   /* reload after GC */
     c->sp = sp_base;
     o->closure.body = body;
-    o->closure.env = env;
+    /* WB on the env slot — env may have been promoted (OLD) by a prior
+     * minor; o is freshly young so the env→o reverse edge would not need
+     * remembering, but the framework's WB only triggers on holder OLD
+     * (= o here). Fast path returns immediately. */
+    aro_gc_wb(c, o, (VALUE *)&o->closure.env, (VALUE)env);
     o->closure.nparams = nparams;
     o->closure.has_rest = has_rest;
     o->closure.name = NULL;
@@ -441,7 +459,7 @@ scm_new_frame(CTX *c, struct sframe *parent, int nslots)
      * head-at-offset-0 layout with struct sobj, so the framework-stored
      * gc_size / gc_flags survive; we only set the sample type bits. */
     SCM_SET_TYPE((struct sobj *)f, OBJ_FRAME);
-    f->parent = parent;
+    aro_gc_wb(c, f, (VALUE *)&f->parent, (VALUE)parent);
     f->nslots = nslots;
     for (int i = 0; i < nslots; i++) f->slots[i] = SCM_UNSPEC;
     return f;
@@ -497,7 +515,9 @@ scm_intern(CTX *c, const char *name)
     char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + nlen + 1);
     /* Reload o after the alloc — moving GCs may have relocated it. */
     o = SYMBOL_TABLE[reserved_idx];
-    o->sym.name = raw + sizeof(AroObjectHeader);
+    /* WB on the sym.name typed-ptr write — o may be OLD if the byte
+     * payload alloc above promoted it; raw payload is young. */
+    aro_gc_wb(c, o, (VALUE *)&o->sym.name, (VALUE)(raw + sizeof(AroObjectHeader)));
     memcpy(o->sym.name, stage, nlen + 1);
     if (stage != stage_stack) free(stage);
     return SCM_OBJ_VAL(o);
@@ -1097,11 +1117,19 @@ list_append1(CTX *c, VALUE list, VALUE elt)
     sp[3] = SCM_NIL;
     for (sp[4] = sp[0]; scm_is_pair(sp[4]); sp[4] = SCM_PTR(sp[4])->pair.cdr) {
         VALUE cell = scm_cons(c, SCM_PTR(sp[4])->pair.car, SCM_NIL);
-        if (sp[2] == SCM_NIL) sp[2] = cell; else SCM_PTR(sp[3])->pair.cdr = cell;
+        if (sp[2] == SCM_NIL) { sp[2] = cell; }
+        else {
+            struct sobj *last_cell = SCM_PTR(sp[3]);
+            aro_gc_wb(c, last_cell, (VALUE *)&last_cell->pair.cdr, cell);
+        }
         sp[3] = cell;
     }
     VALUE last = scm_cons(c, sp[1], SCM_NIL);
-    if (sp[2] == SCM_NIL) sp[2] = last; else SCM_PTR(sp[3])->pair.cdr = last;
+    if (sp[2] == SCM_NIL) { sp[2] = last; }
+    else {
+        struct sobj *last_cell = SCM_PTR(sp[3]);
+        aro_gc_wb(c, last_cell, (VALUE *)&last_cell->pair.cdr, last);
+    }
     VALUE r = sp[2];
     SP_POP(c, sp);
     return r;
@@ -1436,7 +1464,11 @@ hoist_internal_defines(CTX *c, VALUE body)
         sp[5] = init_cell;
         sp[5] = scm_cons(c, sp[4], sp[5]);
         VALUE pcell = scm_cons(c, sp[5], SCM_NIL);
-        if (sp[1] == SCM_NIL) sp[1] = pcell; else SCM_PTR(sp[2])->pair.cdr = pcell;
+        if (sp[1] == SCM_NIL) { sp[1] = pcell; }
+        else {
+            struct sobj *last_cell = SCM_PTR(sp[2]);
+            aro_gc_wb(c, last_cell, (VALUE *)&last_cell->pair.cdr, pcell);
+        }
         sp[2] = pcell;
         sp[0] = SCM_PTR(sp[0])->pair.cdr;
     }
@@ -1688,13 +1720,19 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
              sp_nl[7] = SCM_PTR(sp_nl[7])->pair.cdr) {
             VALUE bn = car(car(sp_nl[7]));
             VALUE pcell = scm_cons(c, bn, SCM_NIL);
-            if (sp_nl[3] == SCM_NIL) sp_nl[3] = pcell;
-            else SCM_PTR(sp_nl[4])->pair.cdr = pcell;
+            if (sp_nl[3] == SCM_NIL) { sp_nl[3] = pcell; }
+            else {
+                struct sobj *last = SCM_PTR(sp_nl[4]);
+                aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, pcell);
+            }
             sp_nl[4] = pcell;
             VALUE bv = cadr(car(sp_nl[7]));
             VALUE icell = scm_cons(c, bv, SCM_NIL);
-            if (sp_nl[5] == SCM_NIL) sp_nl[5] = icell;
-            else SCM_PTR(sp_nl[6])->pair.cdr = icell;
+            if (sp_nl[5] == SCM_NIL) { sp_nl[5] = icell; }
+            else {
+                struct sobj *last = SCM_PTR(sp_nl[6]);
+                aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, icell);
+            }
             sp_nl[6] = icell;
         }
         /* lambda = (lambda params body...) */
@@ -1738,16 +1776,22 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         VALUE bn = car(car(sp[7]));
         VALUE bv = cadr(car(sp[7]));
         VALUE pcell = scm_cons(c, bn, SCM_NIL);
-        if (sp[3] == SCM_NIL) sp[3] = pcell;
-        else SCM_PTR(sp[4])->pair.cdr = pcell;
+        if (sp[3] == SCM_NIL) { sp[3] = pcell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[4]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, pcell);
+        }
         sp[4] = pcell;
         /* sp[7] still valid (= rooted), but bv (= cadr(car(sp[7]))) was
          * captured before scm_cons; that VALUE could have moved.  Re-read.
          */
         bv = cadr(car(sp[7]));
         VALUE icell = scm_cons(c, bv, SCM_NIL);
-        if (sp[5] == SCM_NIL) sp[5] = icell;
-        else SCM_PTR(sp[6])->pair.cdr = icell;
+        if (sp[5] == SCM_NIL) { sp[5] = icell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[6]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, icell);
+        }
         sp[6] = icell;
     }
     /* Build (lambda params body) → call w/ inits.  Stage via sp[4]. */
@@ -1824,23 +1868,30 @@ compile_letrec(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         sp[8] = scm_cons(c, SCM_UNSPEC, SCM_NIL);
         sp[8] = scm_cons(c, car(car(sp[7])), sp[8]);   /* re-read name */
         VALUE pcell = scm_cons(c, sp[8], SCM_NIL);
-        if (sp[3] == SCM_NIL) sp[3] = pcell;
-        else SCM_PTR(sp[4])->pair.cdr = pcell;
+        if (sp[3] == SCM_NIL) { sp[3] = pcell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[4]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, pcell);
+        }
         sp[4] = pcell;
         /* setform = (set! name init) */
         sp[8] = scm_cons(c, cadr(car(sp[7])), SCM_NIL);   /* (init) */
         sp[8] = scm_cons(c, car(car(sp[7])), sp[8]);      /* (name init) — re-read */
         sp[8] = scm_cons_sym(c, "set!", sp[8]);
         VALUE acell = scm_cons(c, sp[8], SCM_NIL);
-        if (sp[5] == SCM_NIL) sp[5] = acell;
-        else SCM_PTR(sp[6])->pair.cdr = acell;
+        if (sp[5] == SCM_NIL) { sp[5] = acell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[6]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, acell);
+        }
         sp[6] = acell;
     }
     /* inner_body = append(assigns, body) */
     if (sp[5] == SCM_NIL) {
         sp[5] = sp[2];
     } else {
-        SCM_PTR(sp[6])->pair.cdr = sp[2];
+        struct sobj *last = SCM_PTR(sp[6]);
+        aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, sp[2]);
     }
     /* letform = (let pairs inner_body...) */
     sp[8] = scm_cons(c, sp[3], sp[5]);
@@ -1938,8 +1989,11 @@ compile_case(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
             sp[8] = scm_cons(c, sp[8], body_clause);
         }
         VALUE cell = scm_cons(c, sp[8], SCM_NIL);
-        if (sp[5] == SCM_NIL) sp[5] = cell;
-        else SCM_PTR(sp[6])->pair.cdr = cell;
+        if (sp[5] == SCM_NIL) { sp[5] = cell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[6]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, cell);
+        }
         sp[6] = cell;
     }
     /* cnd = (cond cond_clauses...) */
@@ -2070,17 +2124,29 @@ compile_do(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         VALUE spec = car(sp[12]);
         VALUE var = car(spec);
         VALUE vcell = scm_cons(c, var, SCM_NIL);
-        if (sp[6] == SCM_NIL) sp[6] = vcell; else SCM_PTR(sp[7])->pair.cdr = vcell;
+        if (sp[6] == SCM_NIL) { sp[6] = vcell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[7]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, vcell);
+        }
         sp[7] = vcell;
         VALUE init = cadr(car(sp[12]));
         VALUE icell = scm_cons(c, init, SCM_NIL);
-        if (sp[8] == SCM_NIL) sp[8] = icell; else SCM_PTR(sp[9])->pair.cdr = icell;
+        if (sp[8] == SCM_NIL) { sp[8] = icell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[9]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, icell);
+        }
         sp[9] = icell;
         VALUE step;
         if (cdr(cdr(car(sp[12]))) != SCM_NIL) step = caddr(car(sp[12]));
         else step = car(car(sp[12]));   /* default to var */
         VALUE scell = scm_cons(c, step, SCM_NIL);
-        if (sp[10] == SCM_NIL) sp[10] = scell; else SCM_PTR(sp[11])->pair.cdr = scell;
+        if (sp[10] == SCM_NIL) { sp[10] = scell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[11]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, scell);
+        }
         sp[11] = scell;
     }
     sp[13] = gensym_at(c, "do-loop");
@@ -2375,9 +2441,16 @@ build_frame_for(CTX *c, struct sobj *cl, int argc, VALUE *argv)
     /* Now allocate the frame.  cl was kept fresh via sp_base[0]; reload
      * its env via the parked pointer. */
     struct sframe *f = scm_new_frame(c, SCM_PTR(sp_base[0])->closure.env, total);
-    /* No more allocs from here on — slot copies are pure memory writes. */
-    for (int i = 0; i < nparams; i++) f->slots[i] = sp_base[2 + i];
-    if (has_rest) f->slots[nparams] = sp_base[1];
+    /* No more allocs from here on — slot copies are pure memory writes.
+     * f is freshly allocated (young) — WB fast-path returns immediately,
+     * but kept uniform for any future code path that might promote f
+     * before reaching here. */
+    for (int i = 0; i < nparams; i++) {
+        aro_gc_wb(c, f, &f->slots[i], sp_base[2 + i]);
+    }
+    if (has_rest) {
+        aro_gc_wb(c, f, &f->slots[nparams], sp_base[1]);
+    }
     c->sp = sp_base;
     return f;
 }
@@ -2399,7 +2472,9 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         struct sobj *k = SCM_PTR(fn);
         if (!k->cont->active) scm_error(c, "continuation already invoked / expired");
         if (argc != 1) scm_error(c, "continuation expects exactly 1 argument");
-        k->cont->result = argv[0];
+        /* cont was allocated earlier (= possibly OLD by now) and argv[0]
+         * is freshly captured.  WB is mandatory. */
+        aro_gc_wb(c, k->cont, (VALUE *)&k->cont->result, argv[0]);
         longjmp(k->cont->buf, 1);
     }
     if (LIKELY(scm_is_closure(fn))) {
@@ -2510,8 +2585,13 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             int np = cl->closure.nparams;
             bool hr = cl->closure.has_rest;
             if (!hr) {
-                /* Pure-slot path — no alloc, argv stays valid. */
-                for (int i = 0; i < np; i++) c->env->slots[i] = argv[i];
+                /* Pure-slot path — no alloc, argv stays valid.  c->env is
+                 * the live frame, may be OLD; argv[i] values are young or
+                 * existing references.  WB is required so a minor GC after
+                 * tail-call pending sees the new edges. */
+                for (int i = 0; i < np; i++) {
+                    aro_gc_wb(c, c->env, &c->env->slots[i], argv[i]);
+                }
                 c->next_body = cl->closure.body;
                 c->next_env = c->env;
                 c->tail_call_pending = 1;
@@ -2530,9 +2610,12 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             for (int i = argc - 1; i >= np; i--) {
                 sp_base[1] = scm_cons(c, sp_base[2 + i], sp_base[1]);
             }
-            /* No more allocs from here — slot writes are pure memory. */
-            for (int i = 0; i < np; i++) c->env->slots[i] = sp_base[2 + i];
-            c->env->slots[np] = sp_base[1];
+            /* No more allocs from here — slot writes are pure memory.
+             * c->env may be OLD; sp_base values may include young objects. */
+            for (int i = 0; i < np; i++) {
+                aro_gc_wb(c, c->env, &c->env->slots[i], sp_base[2 + i]);
+            }
+            aro_gc_wb(c, c->env, &c->env->slots[np], sp_base[1]);
             c->next_body = SCM_PTR(sp_base[0])->closure.body;
             c->next_env = c->env;
             c->tail_call_pending = 1;
@@ -2587,14 +2670,16 @@ scm_callcc(CTX *c, VALUE fn)
     struct scont *cnt = (struct scont *)aro_gc_alloc_raw(c, sizeof(struct scont));
     /* Reload kobj — it may have moved during the alloc above. */
     kobj = SCM_PTR(sp[0]);
-    kobj->cont = cnt;
+    /* kobj is freshly alloc'd young — WB fast-path returns. */
+    aro_gc_wb(c, kobj, (VALUE *)&kobj->cont, (VALUE)cnt);
     cnt->active = 1;
     cnt->tag = ++c->cont_tag_seq;
-    cnt->result = SCM_UNSPEC;
-    cnt->saved_env = c->env;
+    /* cnt is also freshly young — same fast path. */
+    aro_gc_wb(c, cnt, (VALUE *)&cnt->result, SCM_UNSPEC);
+    aro_gc_wb(c, cnt, (VALUE *)&cnt->saved_env, (VALUE)c->env);
     cnt->saved_tcp = c->tail_call_pending;
-    cnt->k_val = SCM_OBJ_VAL(kobj);
-    cnt->fn_val = sp[1];    /* use parked, post-relocate procedure VALUE */
+    aro_gc_wb(c, cnt, (VALUE *)&cnt->k_val, SCM_OBJ_VAL(kobj));
+    aro_gc_wb(c, cnt, (VALUE *)&cnt->fn_val, sp[1]);    /* use parked, post-relocate procedure VALUE */
     if (setjmp(cnt->buf) != 0) {
         /* longjmp path — reload kobj from sp, then read saved state from
          * the (now possibly moved) scont via the owning kobj. */
@@ -3172,13 +3257,15 @@ PRIM(cdr)    {
 PRIM(set_car) {
     (void)argc;
     if (!scm_is_pair(argv[0])) scm_error(c, "set-car!: not a pair");
-    SCM_PTR(argv[0])->pair.car = argv[1];
+    struct sobj *p = SCM_PTR(argv[0]);
+    aro_gc_wb(c, p, (VALUE *)&p->pair.car, argv[1]);
     return SCM_UNSPEC;
 }
 PRIM(set_cdr) {
     (void)argc;
     if (!scm_is_pair(argv[0])) scm_error(c, "set-cdr!: not a pair");
-    SCM_PTR(argv[0])->pair.cdr = argv[1];
+    struct sobj *p = SCM_PTR(argv[0]);
+    aro_gc_wb(c, p, (VALUE *)&p->pair.cdr, argv[1]);
     return SCM_UNSPEC;
 }
 PRIM(pair_p) { (void)c; (void)argc; return scm_is_pair(argv[0]) ? SCM_TRUE : SCM_FALSE; }
@@ -3648,7 +3735,13 @@ PRIM(make_vector) {
 PRIM(vector_form) {
     (void)c;
     VALUE r = scm_make_vector(c, (size_t)argc, SCM_UNSPEC);
-    for (int i = 0; i < argc; i++) SCM_PTR(r)->vec.items[i] = argv[i];
+    /* items[] backing is the holder; SCM_PTR(r)->vec.items - sizeof(header)
+     * is the payload base.  Compute it once. */
+    struct sobj *vobj = SCM_PTR(r);
+    char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
+    for (int i = 0; i < argc; i++) {
+        aro_gc_wb(c, items_base, &vobj->vec.items[i], argv[i]);
+    }
     return r;
 }
 PRIM(vector_length) {
@@ -3667,15 +3760,20 @@ PRIM(vector_set) {
     (void)argc;
     if (!scm_is_vector(argv[0])) scm_error(c, "vector-set!: not a vector");
     size_t i = (size_t)ARG_FIX(1);
-    if (i >= SCM_PTR(argv[0])->vec.len) scm_error(c, "vector-set!: out of range");
-    SCM_PTR(argv[0])->vec.items[i] = argv[2];
+    struct sobj *vobj = SCM_PTR(argv[0]);
+    if (i >= vobj->vec.len) scm_error(c, "vector-set!: out of range");
+    char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
+    aro_gc_wb(c, items_base, &vobj->vec.items[i], argv[2]);
     return SCM_UNSPEC;
 }
 PRIM(vector_fill) {
     (void)argc;
     if (!scm_is_vector(argv[0])) scm_error(c, "vector-fill!: not a vector");
-    for (size_t i = 0; i < SCM_PTR(argv[0])->vec.len; i++)
-        SCM_PTR(argv[0])->vec.items[i] = argv[1];
+    struct sobj *vobj = SCM_PTR(argv[0]);
+    char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
+    for (size_t i = 0; i < vobj->vec.len; i++) {
+        aro_gc_wb(c, items_base, &vobj->vec.items[i], argv[1]);
+    }
     return SCM_UNSPEC;
 }
 PRIM(vector_to_list) {
@@ -3705,8 +3803,15 @@ PRIM(list_to_vector) {
     for (sp[2] = sp[0]; scm_is_pair(sp[2]); sp[2] = SCM_PTR(sp[2])->pair.cdr) n++;
     sp[1] = scm_make_vector(c, n, SCM_UNSPEC);
     size_t i = 0;
-    for (sp[2] = sp[0]; scm_is_pair(sp[2]); sp[2] = SCM_PTR(sp[2])->pair.cdr) {
-        SCM_PTR(sp[1])->vec.items[i++] = SCM_PTR(sp[2])->pair.car;
+    {
+        struct sobj *vobj = SCM_PTR(sp[1]);
+        char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
+        for (sp[2] = sp[0]; scm_is_pair(sp[2]); sp[2] = SCM_PTR(sp[2])->pair.cdr) {
+            /* No alloc inside the loop — vobj/items_base stay valid. */
+            aro_gc_wb(c, items_base, &vobj->vec.items[i],
+                      SCM_PTR(sp[2])->pair.car);
+            i++;
+        }
     }
     VALUE r = sp[1];
     SP_POP(c, sp);
@@ -3806,8 +3911,11 @@ PRIM(map_p) {
         }
         VALUE v = scm_apply(c, sp[0], nlists, sp + args_off);
         VALUE cell = scm_cons(c, v, SCM_NIL);
-        if (sp[1] == SCM_NIL) sp[1] = cell;
-        else SCM_PTR(sp[2])->pair.cdr = cell;
+        if (sp[1] == SCM_NIL) { sp[1] = cell; }
+        else {
+            struct sobj *last = SCM_PTR(sp[2]);
+            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, cell);
+        }
         sp[2] = cell;
     }
 }
@@ -3865,8 +3973,9 @@ PRIM(make_promise) {
     (void)argc;
     if (!scm_is_proc(argv[0])) scm_error(c, "delay: thunk must be a procedure");
     struct sobj *o = scm_alloc(c, OBJ_PROMISE);
-    o->promise.thunk = argv[0];
-    o->promise.value = SCM_UNSPEC;
+    /* o is freshly young — WB fast-path returns immediately. */
+    aro_gc_wb(c, o, (VALUE *)&o->promise.thunk, argv[0]);
+    aro_gc_wb(c, o, (VALUE *)&o->promise.value, SCM_UNSPEC);
     o->promise.forced = false;
     return SCM_OBJ_VAL(o);
 }
@@ -3883,9 +3992,11 @@ PRIM(force_p) {
     sp[1] = SCM_PTR(sp[0])->promise.thunk;             /* thunk VALUE */
     VALUE result = scm_apply(c, sp[1], 0, NULL);
     struct sobj *po = SCM_PTR(sp[0]);
-    /* Re-check after recursive force could have already memoized us. */
+    /* Re-check after recursive force could have already memoized us.
+     * po may be OLD by now (= long-lived promise); result is fresh/young.
+     * WB is mandatory. */
     if (!po->promise.forced) {
-        po->promise.value = result;
+        aro_gc_wb(c, po, (VALUE *)&po->promise.value, result);
         po->promise.forced = true;
     }
     VALUE r = po->promise.value;
