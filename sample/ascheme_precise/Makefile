@@ -105,6 +105,38 @@ test: ascheme test/r5rs_chibi.scm
 	./ascheme -q test/r5rs_chibi.scm 2>&1 | tail -1; \
 	test $$f -eq 0
 
+# Stress-mode regression: each ascheme test is re-run under
+# BARUBY_GC_STRESS=1 (= GC on every alloc) with the currently selected
+# backend.  Used to exercise the precise rooting in node.def / main.c
+# helpers — bugs that are silent under low GC pressure surface
+# immediately when stress kicks GC into every aro_gc_alloc call.
+#
+# Usage:
+#   make test_stress              — default backend (= GC=mark)
+#   make GC=copy test_stress      — copy collector + stress
+#   make GC=copy_scramble test_stress  — scramble (= audit) backend
+test_stress: ascheme
+	@p=0; f=0; \
+	for t in $(TESTS); do \
+	  exp=$${t%.scm}.expected; \
+	  if [ ! -f $$exp ]; then \
+	    printf "SKIP  %s  (no .expected)\n" "$$t"; continue; \
+	  fi; \
+	  out=$$(BARUBY_GC_STRESS=1 ./ascheme -q "$$t" 2>&1 | grep -v '^\[baruby_gc'); \
+	  want=$$(cat "$$exp"); \
+	  if [ "$$out" = "$$want" ]; then \
+	    p=$$((p+1)); printf "  OK  %s\n" "$$t"; \
+	  else \
+	    f=$$((f+1)); \
+	    printf "FAIL  %s\n" "$$t"; \
+	    diff <(printf "%s" "$$want") <(printf "%s" "$$out") | head -20 | sed 's/^/      /'; \
+	  fi; \
+	done; \
+	echo "---"; \
+	echo "passed=$$p  failed=$$f  total=$$((p+f))"; \
+	echo "---"; \
+	test $$f -eq 0
+
 test/r5rs_chibi.scm: test/r5rs_adapt.rb .chibi/chibi-scheme-0.12/tests/r5rs-tests.scm
 	@ruby test/r5rs_adapt.rb < .chibi/chibi-scheme-0.12/tests/r5rs-tests.scm > $@
 

@@ -506,12 +506,20 @@ scm_is_singleton(VALUE v)
 
 /* Helper: visit one VALUE slot, but skip framework-side dispatch for
  * singletons (they look like ptrs to SCM_IS_PTR but the GC framework
- * doesn't manage them).  Used by both SCAN_EDGES and root visit. */
+ * doesn't manage them).  Used by both SCAN_EDGES and root visit.
+ *
+ * ascheme stores VALUE bits as RAW heap pointers (= aro_gc_alloc_raw +
+ * SCM_OBJ_VAL).  ARO_GC_VISIT_EDGE assumes scrambled storage and XORs
+ * with scramble_R; using it here would corrupt the slot value on
+ * scramble backends AND would SEGV on non-scramble backends that
+ * legitimately pass ctx=NULL into SCAN_EDGES (= mark_compact's
+ * update_pointers).  Route through ARO_GC_VISIT_EDGE_PTR (= raw slot,
+ * forward via fn directly) and filter singletons / immediates here. */
 #define ASCHEME_VISIT_VAL_SLOT(ctx, fn, slot_ptr) do {                       \
     VALUE *_avs = (VALUE *)(slot_ptr);                                       \
     VALUE  _av  = *_avs;                                                     \
-    if (SCM_IS_PTR(_av) && !scm_is_singleton(_av)) {                         \
-        ARO_GC_VISIT_EDGE((ctx), (fn), _avs);                          \
+    if (SCM_IS_PTR(_av) && _av != 0 && !scm_is_singleton(_av)) {             \
+        ARO_GC_VISIT_EDGE_PTR((ctx), (fn), (void **)_avs);                   \
     }                                                                         \
 } while (0)
 

@@ -552,61 +552,90 @@ node_self_tail_call_global_4(CTX * restrict c, NODE * restrict n, const char *na
 
 extern VALUE arith_dispatch(CTX *c, struct arith_cache *cache, const char *opname, VALUE expected, VALUE av, VALUE bv);
 
+// Two-operand arith / cmp nodes evaluate `a` then `b`; either eval may
+// trigger GC and relocate previously-computed VALUEs (= bignum operands
+// are heap-allocated, as are heap-typed sub-expression results).  We
+// park both intermediate VALUEs on c->sp so the precise root scanner
+// updates them across the second eval and the subsequent add2 / cmp2 /
+// arith_dispatch call (which itself may allocate).  Fixnum operands are
+// LSB-tagged immediates so storing them through sp[] is a no-op for the
+// fast path.
 NODE_DEF
 node_arith_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
-            int64_t r;
-            if (LIKELY(!__builtin_add_overflow((int64_t)SCM_FIXVAL(av),
-                                               (int64_t)SCM_FIXVAL(bv), &r) &&
-                        r >= SCM_FIXNUM_MIN && r <= SCM_FIXNUM_MAX))
-                return SCM_FIX(r);
+        if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
+            int64_t v;
+            if (LIKELY(!__builtin_add_overflow((int64_t)SCM_FIXVAL(sp[0]),
+                                               (int64_t)SCM_FIXVAL(sp[1]), &v) &&
+                        v >= SCM_FIXNUM_MIN && v <= SCM_FIXNUM_MAX)) {
+                SP_POP(c, sp);
+                return SCM_FIX(v);
+            }
         }
-        return add2(c, av, bv);
+        r = add2(c, sp[0], sp[1]);
+    } else {
+        r = arith_dispatch(c, cache, "+", PRIM_PLUS_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, "+", PRIM_PLUS_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_arith_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
-            int64_t r;
-            if (LIKELY(!__builtin_sub_overflow((int64_t)SCM_FIXVAL(av),
-                                               (int64_t)SCM_FIXVAL(bv), &r) &&
-                        r >= SCM_FIXNUM_MIN && r <= SCM_FIXNUM_MAX))
-                return SCM_FIX(r);
+        if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
+            int64_t v;
+            if (LIKELY(!__builtin_sub_overflow((int64_t)SCM_FIXVAL(sp[0]),
+                                               (int64_t)SCM_FIXVAL(sp[1]), &v) &&
+                        v >= SCM_FIXNUM_MIN && v <= SCM_FIXNUM_MAX)) {
+                SP_POP(c, sp);
+                return SCM_FIX(v);
+            }
         }
-        return sub2(c, av, bv);
+        r = sub2(c, sp[0], sp[1]);
+    } else {
+        r = arith_dispatch(c, cache, "-", PRIM_MINUS_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, "-", PRIM_MINUS_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_arith_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv))) {
-            int64_t r;
-            if (LIKELY(!__builtin_mul_overflow((int64_t)SCM_FIXVAL(av),
-                                               (int64_t)SCM_FIXVAL(bv), &r) &&
-                        r >= SCM_FIXNUM_MIN && r <= SCM_FIXNUM_MAX))
-                return SCM_FIX(r);
+        if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
+            int64_t v;
+            if (LIKELY(!__builtin_mul_overflow((int64_t)SCM_FIXVAL(sp[0]),
+                                               (int64_t)SCM_FIXVAL(sp[1]), &v) &&
+                        v >= SCM_FIXNUM_MIN && v <= SCM_FIXNUM_MAX)) {
+                SP_POP(c, sp);
+                return SCM_FIX(v);
+            }
         }
-        return mul2(c, av, bv);
+        r = mul2(c, sp[0], sp[1]);
+    } else {
+        r = arith_dispatch(c, cache, "*", PRIM_MUL_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, "*", PRIM_MUL_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 // astrogen scans `NODE_DEF` lines literally — preprocessor macros aren't
@@ -616,70 +645,105 @@ NODE_DEF
 node_arith_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
-            return ((int64_t)SCM_FIXVAL(av) < (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
-        return cmp2(c, av, bv) < 0 ? SCM_TRUE : SCM_FALSE;
+        if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
+            r = ((int64_t)SCM_FIXVAL(sp[0]) < (int64_t)SCM_FIXVAL(sp[1])) ? SCM_TRUE : SCM_FALSE;
+        } else {
+            r = cmp2(c, sp[0], sp[1]) < 0 ? SCM_TRUE : SCM_FALSE;
+        }
+    } else {
+        r = arith_dispatch(c, cache, "<", PRIM_NUM_LT_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, "<", PRIM_NUM_LT_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_arith_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
-            return ((int64_t)SCM_FIXVAL(av) <= (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
-        return cmp2(c, av, bv) <= 0 ? SCM_TRUE : SCM_FALSE;
+        if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
+            r = ((int64_t)SCM_FIXVAL(sp[0]) <= (int64_t)SCM_FIXVAL(sp[1])) ? SCM_TRUE : SCM_FALSE;
+        } else {
+            r = cmp2(c, sp[0], sp[1]) <= 0 ? SCM_TRUE : SCM_FALSE;
+        }
+    } else {
+        r = arith_dispatch(c, cache, "<=", PRIM_NUM_LE_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, "<=", PRIM_NUM_LE_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_arith_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
-            return ((int64_t)SCM_FIXVAL(av) > (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
-        return cmp2(c, av, bv) > 0 ? SCM_TRUE : SCM_FALSE;
+        if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
+            r = ((int64_t)SCM_FIXVAL(sp[0]) > (int64_t)SCM_FIXVAL(sp[1])) ? SCM_TRUE : SCM_FALSE;
+        } else {
+            r = cmp2(c, sp[0], sp[1]) > 0 ? SCM_TRUE : SCM_FALSE;
+        }
+    } else {
+        r = arith_dispatch(c, cache, ">", PRIM_NUM_GT_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, ">", PRIM_NUM_GT_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_arith_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
-            return ((int64_t)SCM_FIXVAL(av) >= (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
-        return cmp2(c, av, bv) >= 0 ? SCM_TRUE : SCM_FALSE;
+        if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
+            r = ((int64_t)SCM_FIXVAL(sp[0]) >= (int64_t)SCM_FIXVAL(sp[1])) ? SCM_TRUE : SCM_FALSE;
+        } else {
+            r = cmp2(c, sp[0], sp[1]) >= 0 ? SCM_TRUE : SCM_FALSE;
+        }
+    } else {
+        r = arith_dispatch(c, cache, ">=", PRIM_NUM_GE_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, ">=", PRIM_NUM_GE_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_arith_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(SCM_IS_FIXNUM(av) & SCM_IS_FIXNUM(bv)))
-            return ((int64_t)SCM_FIXVAL(av) == (int64_t)SCM_FIXVAL(bv)) ? SCM_TRUE : SCM_FALSE;
-        return cmp2(c, av, bv) == 0 ? SCM_TRUE : SCM_FALSE;
+        if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
+            r = ((int64_t)SCM_FIXVAL(sp[0]) == (int64_t)SCM_FIXVAL(sp[1])) ? SCM_TRUE : SCM_FALSE;
+        } else {
+            r = cmp2(c, sp[0], sp[1]) == 0 ? SCM_TRUE : SCM_FALSE;
+        }
+    } else {
+        r = arith_dispatch(c, cache, "=", PRIM_NUM_EQ_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, "=", PRIM_NUM_EQ_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -752,76 +816,125 @@ NODE_DEF
 node_vec_ref(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE vv = EVAL_ARG(c, vec);
-    VALUE iv = EVAL_ARG(c, idx);
+    /* Park `vec` across `idx` eval — vec is always heap-typed (an OBJ_VECTOR
+     * sobj) and the idx eval may allocate (e.g. bignum operand).  Without
+     * rooting, a moving GC would invalidate vv and the subsequent
+     * SCM_PTR(vv)->vec.items access would dereference a stale page. */
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, vec);
+    sp[1] = EVAL_ARG(c, idx);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(scm_is_vector(vv) && SCM_IS_FIXNUM(iv))) {
-            size_t i = (size_t)SCM_FIXVAL(iv);
-            if (LIKELY(i < SCM_PTR(vv)->vec.len))
-                return SCM_PTR(vv)->vec.items[i];
+        if (LIKELY(scm_is_vector(sp[0]) && SCM_IS_FIXNUM(sp[1]))) {
+            size_t i = (size_t)SCM_FIXVAL(sp[1]);
+            if (LIKELY(i < SCM_PTR(sp[0])->vec.len)) {
+                r = SCM_PTR(sp[0])->vec.items[i];
+                SP_POP(c, sp);
+                return r;
+            }
         }
+        SP_POP(c, sp);
         scm_error(c, "vector-ref: type or range error");
     }
-    return arith_dispatch(c, cache, "vector-ref", PRIM_VECTOR_REF_VAL, vv, iv);
+    r = arith_dispatch(c, cache, "vector-ref", PRIM_VECTOR_REF_VAL, sp[0], sp[1]);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_cons_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    /* Park both operands across the second eval AND across scm_cons /
+     * arith_dispatch (= both allocate).  `av` and `bv` are typically
+     * heap-typed in real code (the consing patterns that exercise this
+     * node), so without sp[] rooting their referents go stale under a
+     * moving collector. */
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial))
-        return scm_cons(c, av, bv);
-    return arith_dispatch(c, cache, "cons", PRIM_CONS_VAL, av, bv);
+        r = scm_cons(c, sp[0], sp[1]);
+    else
+        r = arith_dispatch(c, cache, "cons", PRIM_CONS_VAL, sp[0], sp[1]);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_eq_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    /* Park across the second eval — `av` may be a heap object whose
+     * referent shifts during EVAL_ARG(b).  Pointer-identity (sp[0] ==
+     * sp[1]) compares stable post-move bits because both slots are
+     * relocated coherently by the precise root scanner. */
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial))
-        return av == bv ? SCM_TRUE : SCM_FALSE;
-    return arith_dispatch(c, cache, "eq?", PRIM_EQ_P_VAL, av, bv);
+        r = sp[0] == sp[1] ? SCM_TRUE : SCM_FALSE;
+    else
+        r = arith_dispatch(c, cache, "eq?", PRIM_EQ_P_VAL, sp[0], sp[1]);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_eqv_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE av = EVAL_ARG(c, a);
-    VALUE bv = EVAL_ARG(c, b);
+    SP_PUSH(c, sp, 2);
+    sp[0] = EVAL_ARG(c, a);
+    sp[1] = EVAL_ARG(c, b);
+    VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (av == bv) return SCM_TRUE;
-        if (scm_is_double(av) && scm_is_double(bv))
-            return scm_get_double(av) == scm_get_double(bv) ? SCM_TRUE : SCM_FALSE;
-        if (scm_is_char(av) && scm_is_char(bv))
-            return SCM_PTR(av)->ch == SCM_PTR(bv)->ch ? SCM_TRUE : SCM_FALSE;
-        return SCM_FALSE;
+        if (sp[0] == sp[1]) {
+            r = SCM_TRUE;
+        } else if (scm_is_double(sp[0]) && scm_is_double(sp[1])) {
+            r = scm_get_double(sp[0]) == scm_get_double(sp[1]) ? SCM_TRUE : SCM_FALSE;
+        } else if (scm_is_char(sp[0]) && scm_is_char(sp[1])) {
+            r = SCM_PTR(sp[0])->ch == SCM_PTR(sp[1])->ch ? SCM_TRUE : SCM_FALSE;
+        } else {
+            r = SCM_FALSE;
+        }
+    } else {
+        r = arith_dispatch(c, cache, "eqv?", PRIM_EQV_P_VAL, sp[0], sp[1]);
     }
-    return arith_dispatch(c, cache, "eqv?", PRIM_EQV_P_VAL, av, bv);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
 node_vec_set(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, NODE *val, struct arith_cache *cache@ref)
 {
     (void)n;
-    VALUE vv = EVAL_ARG(c, vec);
-    VALUE iv = EVAL_ARG(c, idx);
-    VALUE xv = EVAL_ARG(c, val);
+    /* Park all three operands across the subsequent evals + the
+     * arith_dispatch3 path.  `vv` (vec) MUST survive both `idx` and
+     * `val` evals — any of those may alloc.  `xv` survives across the
+     * SCM_PTR(vv)->vec.items[i] = sp[2] write (no further alloc, so
+     * the parked value reads back fresh post-relocate). */
+    SP_PUSH(c, sp, 3);
+    sp[0] = EVAL_ARG(c, vec);
+    sp[1] = EVAL_ARG(c, idx);
+    sp[2] = EVAL_ARG(c, val);
     if (LIKELY(cache->serial == c->globals_serial)) {
-        if (LIKELY(scm_is_vector(vv) && SCM_IS_FIXNUM(iv))) {
-            size_t i = (size_t)SCM_FIXVAL(iv);
-            if (LIKELY(i < SCM_PTR(vv)->vec.len)) {
-                SCM_PTR(vv)->vec.items[i] = xv;
+        if (LIKELY(scm_is_vector(sp[0]) && SCM_IS_FIXNUM(sp[1]))) {
+            size_t i = (size_t)SCM_FIXVAL(sp[1]);
+            if (LIKELY(i < SCM_PTR(sp[0])->vec.len)) {
+                SCM_PTR(sp[0])->vec.items[i] = sp[2];
+                SP_POP(c, sp);
                 return SCM_UNSPEC;
             }
         }
+        SP_POP(c, sp);
         scm_error(c, "vector-set!: type or range error");
     }
     // 3-arg slow path: build a generic apply
     extern VALUE arith_dispatch3(CTX *c, struct arith_cache *cache, const char *opname, VALUE expected, VALUE a, VALUE b, VALUE d);
-    return arith_dispatch3(c, cache, "vector-set!", PRIM_VECTOR_SET_VAL, vv, iv, xv);
+    VALUE r = arith_dispatch3(c, cache, "vector-set!", PRIM_VECTOR_SET_VAL, sp[0], sp[1], sp[2]);
+    SP_POP(c, sp);
+    return r;
 }

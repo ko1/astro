@@ -145,30 +145,45 @@ scm_cons(CTX *c, VALUE a, VALUE d)
 VALUE
 scm_make_string(CTX *c, const char *s, size_t len)
 {
-    /* Park the str sobj across the byte-payload alloc — that inner alloc
-     * can trigger GC and a moving backend would relocate the sobj. */
+    /* The source `s` is a C-local pointer that a moving GC may leave
+     * dangling: common callers (substring / string-append /
+     * symbol->string / etc.) pass a heap-interior pointer into another
+     * sobj's payload, and the inner allocs below relocate that source.
+     *
+     * Fix: copy `s` into a libc-malloc'd staging buffer up-front (= no
+     * GC concern), then alloc the sobj + byte payload, then memcpy from
+     * the staging buffer into the heap byte payload.  Small strings use
+     * stack alloca to avoid the malloc round-trip on the hot path. */
+    enum { STAGE_STACK = 256 };
+    char stage_stack[STAGE_STACK];
+    char *stage = (len + 1 <= STAGE_STACK) ? stage_stack : (char *)malloc(len + 1);
+    if (!stage) { perror("malloc scm_make_string stage"); abort(); }
+    memcpy(stage, s, len);
+    stage[len] = '\0';
+
+    /* Park the in-flight str sobj across the byte-payload alloc. */
     VALUE *sp = c->sp;
     struct sobj *o = scm_alloc(c, OBJ_STRING);
     o->str.chars = NULL;
     o->str.len = 0;
     sp[0] = SCM_OBJ_VAL(o);
     c->sp = sp + 1;
-    /* aro_gc_alloc_byte returns a payload with AroObjectHeader at offset 0;
-     * the string's character bytes start AFTER that header.  Sample-visible
-     * `str.chars` therefore points past the header. */
     char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + len + 1);
     o = SCM_PTR(sp[0]);   /* reload after potential GC move */
     o->str.chars = raw + sizeof(AroObjectHeader);
-    memcpy(o->str.chars, s, len);
+    memcpy(o->str.chars, stage, len);
     o->str.chars[len] = '\0';
     o->str.len = len;
     c->sp = sp;
+    if (stage != stage_stack) free(stage);
     return SCM_OBJ_VAL(o);
 }
 
 VALUE
 scm_make_string_n(CTX *c, size_t len, char fill)
 {
+    /* No source heap pointer; only the in-flight sobj needs parking
+     * across the byte-payload alloc. */
     VALUE *sp = c->sp;
     struct sobj *o = scm_alloc(c, OBJ_STRING);
     o->str.chars = NULL;
@@ -458,6 +473,17 @@ scm_intern(CTX *c, const char *name)
         SYMBOL_TABLE = (struct sobj **)realloc(SYMBOL_TABLE,
                                                 sizeof(struct sobj *) * SYMBOL_TABLE_CAP);
     }
+    /* `name` may point into a heap-allocated string payload (= caller
+     * does scm_intern(c, SCM_PTR(arg)->str.chars)).  The inner allocs
+     * below (sobj + byte payload) trigger GC and relocate that source.
+     * Copy `name` into a libc-staged buffer up-front; cheap for symbols
+     * (typically <= 32 chars). */
+    size_t nlen = strlen(name);
+    enum { STAGE_STACK = 256 };
+    char stage_stack[STAGE_STACK];
+    char *stage = (nlen + 1 <= STAGE_STACK) ? stage_stack : (char *)malloc(nlen + 1);
+    if (!stage) { perror("malloc scm_intern stage"); abort(); }
+    memcpy(stage, name, nlen + 1);
     /* Park the freshly allocated sym sobj in the symbol table slot BEFORE
      * the byte-payload alloc.  Moving GCs may trigger during that alloc,
      * and SYMBOL_TABLE is a scanned root.  Set sym.name=NULL so SCAN_EDGES
@@ -468,12 +494,12 @@ scm_intern(CTX *c, const char *name)
     size_t reserved_idx = SYMBOL_TABLE_LEN;
     SYMBOL_TABLE[reserved_idx] = o;
     SYMBOL_TABLE_LEN++;
-    size_t nlen = strlen(name);
     char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + nlen + 1);
     /* Reload o after the alloc — moving GCs may have relocated it. */
     o = SYMBOL_TABLE[reserved_idx];
     o->sym.name = raw + sizeof(AroObjectHeader);
-    memcpy(o->sym.name, name, nlen + 1);
+    memcpy(o->sym.name, stage, nlen + 1);
+    if (stage != stage_stack) free(stage);
     return SCM_OBJ_VAL(o);
 }
 
@@ -1791,20 +1817,19 @@ compile_letrec(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
     sp[5] = SCM_NIL;
     sp[6] = SCM_NIL;
     for (sp[7] = sp[1]; scm_is_pair(sp[7]); sp[7] = SCM_PTR(sp[7])->pair.cdr) {
-        VALUE name = car(car(sp[7]));
+        /* `name` is a heap-typed symbol VALUE; never cache it across an
+         * alloc — re-read from the rooted sp[7] / sp[8] chain each time
+         * (= every scm_cons call below may relocate the symbol object). */
         /* undef = (name SCM_UNSPEC) */
-        VALUE inner_undef = scm_cons(c, SCM_UNSPEC, SCM_NIL);
-        sp[8] = inner_undef;
-        sp[8] = scm_cons(c, name, sp[8]);   /* undef */
+        sp[8] = scm_cons(c, SCM_UNSPEC, SCM_NIL);
+        sp[8] = scm_cons(c, car(car(sp[7])), sp[8]);   /* re-read name */
         VALUE pcell = scm_cons(c, sp[8], SCM_NIL);
         if (sp[3] == SCM_NIL) sp[3] = pcell;
         else SCM_PTR(sp[4])->pair.cdr = pcell;
         sp[4] = pcell;
         /* setform = (set! name init) */
-        VALUE init = cadr(car(sp[7]));
-        VALUE init_cons = scm_cons(c, init, SCM_NIL);
-        sp[8] = init_cons;
-        sp[8] = scm_cons(c, car(car(sp[7])), sp[8]);   /* re-read name */
+        sp[8] = scm_cons(c, cadr(car(sp[7])), SCM_NIL);   /* (init) */
+        sp[8] = scm_cons(c, car(car(sp[7])), sp[8]);      /* (name init) — re-read */
         sp[8] = scm_cons_sym(c, "set!", sp[8]);
         VALUE acell = scm_cons(c, sp[8], SCM_NIL);
         if (sp[5] == SCM_NIL) sp[5] = acell;
@@ -2546,13 +2571,19 @@ VALUE
 scm_callcc(CTX *c, VALUE fn)
 {
     if (!scm_is_proc(fn)) scm_error(c, "call/cc: not a procedure");
-    /* Park the in-flight cont sobj in sp[0] across the scont alloc so a
-     * GC triggered there can locate it (kobj is otherwise C-local). */
+    /* Park both `fn` (caller-supplied procedure VALUE) AND the in-flight
+     * cont sobj in sp[] across the two inner allocs so a moving GC can
+     * relocate them.  Without the fn slot the C-local `fn` parameter
+     * goes stale across scm_alloc(OBJ_CONT) + aro_gc_alloc_raw(scont),
+     * and the subsequent scm_apply(c, ..., fn_val, ...) sees stale bits
+     * → "not a procedure". */
     VALUE *sp = c->sp;
+    sp[0] = 0;        /* kobj VALUE — set after scm_alloc */
+    sp[1] = fn;       /* parked procedure VALUE */
+    c->sp = sp + 2;
     struct sobj *kobj = scm_alloc(c, OBJ_CONT);
     kobj->cont = NULL;             /* SCAN_EDGES skips NULL cont slot */
     sp[0] = SCM_OBJ_VAL(kobj);
-    c->sp = sp + 1;
     struct scont *cnt = (struct scont *)aro_gc_alloc_raw(c, sizeof(struct scont));
     /* Reload kobj — it may have moved during the alloc above. */
     kobj = SCM_PTR(sp[0]);
@@ -2563,7 +2594,7 @@ scm_callcc(CTX *c, VALUE fn)
     cnt->saved_env = c->env;
     cnt->saved_tcp = c->tail_call_pending;
     cnt->k_val = SCM_OBJ_VAL(kobj);
-    cnt->fn_val = fn;
+    cnt->fn_val = sp[1];    /* use parked, post-relocate procedure VALUE */
     if (setjmp(cnt->buf) != 0) {
         /* longjmp path — reload kobj from sp, then read saved state from
          * the (now possibly moved) scont via the owning kobj. */
@@ -3842,17 +3873,24 @@ PRIM(make_promise) {
 
 PRIM(force_p) {
     (void)argc;
-    VALUE p = argv[0];
-    if (!scm_is_promise(p)) return p;
-    struct sobj *po = SCM_PTR(p);
-    if (po->promise.forced) return po->promise.value;
-    VALUE result = scm_apply(c, po->promise.thunk, 0, NULL);
-    // Re-check after recursive force could have already memoized us.
+    if (!scm_is_promise(argv[0])) return argv[0];
+    if (SCM_PTR(argv[0])->promise.forced) return SCM_PTR(argv[0])->promise.value;
+    /* Park the promise VALUE + the thunk result across the scm_apply call:
+     * the thunk body allocates freely and a moving GC relocates the
+     * promise sobj.  After scm_apply, reload via the parked slot. */
+    SP_PUSH(c, sp, 2);
+    sp[0] = argv[0];                                  /* promise */
+    sp[1] = SCM_PTR(sp[0])->promise.thunk;             /* thunk VALUE */
+    VALUE result = scm_apply(c, sp[1], 0, NULL);
+    struct sobj *po = SCM_PTR(sp[0]);
+    /* Re-check after recursive force could have already memoized us. */
     if (!po->promise.forced) {
         po->promise.value = result;
         po->promise.forced = true;
     }
-    return po->promise.value;
+    VALUE r = po->promise.value;
+    SP_POP(c, sp);
+    return r;
 }
 
 PRIM(promise_p) { (void)c; (void)argc; return scm_is_promise(argv[0]) ? SCM_TRUE : SCM_FALSE; }
@@ -3998,17 +4036,26 @@ PRIM(values_p) {
 
 PRIM(call_with_values_p) {
     (void)argc;
-    VALUE producer = argv[0];
-    VALUE consumer = argv[1];
-    if (!scm_is_proc(producer)) scm_error(c, "call-with-values: producer not a procedure");
-    if (!scm_is_proc(consumer)) scm_error(c, "call-with-values: consumer not a procedure");
-    VALUE r = scm_apply(c, producer, 0, NULL);
-    if (scm_is_mvalues(r)) {
-        struct sobj *m = SCM_PTR(r);
-        return scm_apply(c, consumer, (int)m->mv.len, m->mv.items);
+    /* Park producer + consumer + r across the inner scm_apply calls so a
+     * moving GC can relocate them.  argv[] is the caller's frame slots
+     * (rooted) but C-local copies + the scm_apply(producer) intermediate
+     * result are not. */
+    if (!scm_is_proc(argv[0])) scm_error(c, "call-with-values: producer not a procedure");
+    if (!scm_is_proc(argv[1])) scm_error(c, "call-with-values: consumer not a procedure");
+    SP_PUSH(c, sp, 2);
+    sp[0] = argv[1];                       /* consumer */
+    sp[1] = scm_apply(c, argv[0], 0, NULL); /* producer result */
+    VALUE r;
+    if (scm_is_mvalues(sp[1])) {
+        struct sobj *m = SCM_PTR(sp[1]);
+        r = scm_apply(c, sp[0], (int)m->mv.len, m->mv.items);
+    } else {
+        /* single-value path: hand the value to scm_apply as argv (it
+         * parks via build_frame_for before any inner alloc). */
+        r = scm_apply(c, sp[0], 1, &sp[1]);
     }
-    VALUE single[1] = { r };
-    return scm_apply(c, consumer, 1, single);
+    SP_POP(c, sp);
+    return r;
 }
 
 // --- Complex numbers --------------------------------------------------------
@@ -4500,7 +4547,12 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
      * offset 0; safe to forward as a typed-ptr) + value (VALUE).  Filter
      * singletons from VALUE-slot visits so the framework doesn't touch
      * their off-heap headers (= bitmap_set on a non-page address would
-     * SEGV). */
+     * SEGV).
+     *
+     * ascheme stores VALUEs as RAW heap pointers, so VALUE slots are
+     * forwarded via ARO_GC_VISIT_EDGE_PTR (raw typed-ptr semantics).
+     * Using ARO_GC_VISIT_EDGE here would XOR-decode with scramble_R and
+     * corrupt the slot on scramble backends. */
     for (size_t i = 0; i < c->globals_size; i++) {
         if (c->globals[i].name_payload) {
             ARO_GC_VISIT_EDGE_PTR(gc, edge_visit,
@@ -4508,7 +4560,7 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
         }
         VALUE v = c->globals[i].value;
         if (v != 0 && SCM_IS_PTR(v) && !scm_is_singleton(v)) {
-            ARO_GC_VISIT_EDGE(gc, edge_visit, &c->globals[i].value);
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->globals[i].value);
         }
     }
 
@@ -4517,7 +4569,7 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
     for (int i = 0; i < ASCHEME_LOOP_MAX_PARAMS; i++) {
         VALUE v = c->loop_args[i];
         if (v != 0 && SCM_IS_PTR(v) && !scm_is_singleton(v)) {
-            ARO_GC_VISIT_EDGE(gc, edge_visit, &c->loop_args[i]);
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->loop_args[i]);
         }
     }
 
@@ -4531,18 +4583,18 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
         }
     }
     if (SCM_IS_PTR(PORT_STDIN)  && !scm_is_singleton(PORT_STDIN))
-        ARO_GC_VISIT_EDGE(gc, edge_visit, &PORT_STDIN);
+        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&PORT_STDIN);
     if (SCM_IS_PTR(PORT_STDOUT) && !scm_is_singleton(PORT_STDOUT))
-        ARO_GC_VISIT_EDGE(gc, edge_visit, &PORT_STDOUT);
+        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&PORT_STDOUT);
     if (SCM_IS_PTR(PORT_STDERR) && !scm_is_singleton(PORT_STDERR))
-        ARO_GC_VISIT_EDGE(gc, edge_visit, &PORT_STDERR);
+        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&PORT_STDERR);
 
     /* Cached prim VALUEs used by specialized arith / pred / vec nodes —
      * these heap-pointer VALUEs are C globals; under a moving GC they
      * need explicit forwarding (sample-owned roots). */
     #define VISIT_PRIM(var) do { \
         if (SCM_IS_PTR(var) && !scm_is_singleton(var)) \
-            ARO_GC_VISIT_EDGE(gc, edge_visit, &(var)); \
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&(var)); \
     } while (0)
     VISIT_PRIM(PRIM_PLUS_VAL);    VISIT_PRIM(PRIM_MINUS_VAL);   VISIT_PRIM(PRIM_MUL_VAL);
     VISIT_PRIM(PRIM_NUM_LT_VAL);  VISIT_PRIM(PRIM_NUM_LE_VAL);  VISIT_PRIM(PRIM_NUM_GT_VAL);
@@ -4559,7 +4611,7 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
         NODE *n = QUOTE_NODES[i];
         VALUE v = (VALUE)n->u.node_quote.v;
         if (SCM_IS_PTR(v) && !scm_is_singleton(v) && v != 0) {
-            ARO_GC_VISIT_EDGE(gc, edge_visit, (void **)&n->u.node_quote.v);
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&n->u.node_quote.v);
         }
     }
 
