@@ -3,7 +3,7 @@
 
 /* gc_types.h — types-only header for precise_gc.  Split out from gc.h
  * so sample headers (e.g. baruby_precise/context.h) can include it to
- * get `ASTroObjectHeader` BEFORE defining `CTX_struct`, without dragging
+ * get `AroObjectHeader` BEFORE defining `CTX_struct`, without dragging
  * in gc.h's CTX-dependent static inlines.
  *
  * Layering:
@@ -49,7 +49,7 @@
  * a debug/audit backend to replace BARUBY_GC_STRESS for catching root /
  * SCAN_EDGES misses with less overhead than full GC-per-alloc. */
 #if BARUBY_GC == BARUBY_GC_COPY_SCRAMBLE
-#  define BARUBY_GC_HAS_SCRAMBLE 1
+#  define ARO_GC_HAS_SCRAMBLE 1
 #endif
 
 /* Backends that need a write barrier (gen / inc variants).  Callers
@@ -64,10 +64,10 @@
     BARUBY_GC == BARUBY_GC_IMMIX_GEN        || \
     BARUBY_GC == BARUBY_GC_MARK_BITMAP_GEN  || \
     BARUBY_GC == BARUBY_GC_MARK_CARD_GEN
-#  define BARUBY_GC_HAS_WB 1
+#  define ARO_GC_HAS_WB 1
 #endif
 
-/* Backends with a dedicated forwarding-pointer field in ASTroObjectHeader.
+/* Backends with a dedicated forwarding-pointer field in AroObjectHeader.
  * Only mark_compact-style (slide compactor) backends require it — phase 3
  * (pointer update) reads sample data AND fwd concurrently, so fwd cannot
  * overlap with sample payload.  Cheney-style backends (copy*, mark_bump_gen,
@@ -75,7 +75,7 @@
  * per object). */
 #if BARUBY_GC == BARUBY_GC_MARK_COMPACT     || \
     BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN
-#  define ASTRO_GC_HAS_FWD 1
+#  define ARO_GC_HAS_FWD 1
 #endif
 
 /* WB fast-path bit mask (= bit-in-head backends).  gc.h's inline
@@ -92,22 +92,22 @@
     BARUBY_GC == BARUBY_GC_MARK_COMPACT_GEN || \
     BARUBY_GC == BARUBY_GC_MARK_BUMP_GEN
    /* head.gc_flags: MARKED=0x0001, OLD=0x0002, DIRTY=0x0004 */
-#  define ASTRO_GC_WB_OLD_MASK   ((uint16_t)0x0002u)
-#  define ASTRO_GC_WB_DIRTY_MASK ((uint16_t)0x0004u)
+#  define ARO_GC_WB_OLD_MASK   ((uint16_t)0x0002u)
+#  define ARO_GC_WB_DIRTY_MASK ((uint16_t)0x0004u)
 #elif BARUBY_GC == BARUBY_GC_COPY_GEN || \
       BARUBY_GC == BARUBY_GC_COPY_GEN_INC
    /* head.gc_flags: OLD=0x0001, DIRTY=0x0002 */
-#  define ASTRO_GC_WB_OLD_MASK   ((uint16_t)0x0001u)
-#  define ASTRO_GC_WB_DIRTY_MASK ((uint16_t)0x0002u)
+#  define ARO_GC_WB_OLD_MASK   ((uint16_t)0x0001u)
+#  define ARO_GC_WB_DIRTY_MASK ((uint16_t)0x0002u)
 #elif BARUBY_GC == BARUBY_GC_IMMIX_GEN
    /* head.gc_flags: epoch low 8 bits, OLD=0x0100, DIRTY=0x0200 */
-#  define ASTRO_GC_WB_OLD_MASK   ((uint16_t)0x0100u)
-#  define ASTRO_GC_WB_DIRTY_MASK ((uint16_t)0x0200u)
+#  define ARO_GC_WB_OLD_MASK   ((uint16_t)0x0100u)
+#  define ARO_GC_WB_DIRTY_MASK ((uint16_t)0x0200u)
 #endif
 
-/* ASTroObjectHeader — every GC-managed object's first member.  Lives at
+/* AroObjectHeader — every GC-managed object's first member.  Lives at
  * payload offset 0 (= NOT a separate prefix before payload).  Sample's
- * structs must place `ASTroObjectHeader head` as the first field; the
+ * structs must place `AroObjectHeader head` as the first field; the
  * framework writes `gc_*` fields, sample owns `flags`.
  *
  * Layout:
@@ -120,14 +120,14 @@
  *   gc_fwd   (64b) — moving GCs only.  NULL = live; non-NULL = forwarded.
  *
  * Size: 8 B (non-moving) / 16 B (moving). */
-typedef struct ASTroObjectHeader {
+typedef struct AroObjectHeader {
     uint16_t flags;
     uint16_t gc_flags;
     uint32_t gc_size;
-#ifdef ASTRO_GC_HAS_FWD
+#ifdef ARO_GC_HAS_FWD
     void    *gc_fwd;
 #endif
-} ASTroObjectHeader;
+} AroObjectHeader;
 
 typedef struct {
     size_t total_bytes;
@@ -146,17 +146,23 @@ typedef struct AroGcCommonState {
     bool            stress;
     int             time_depth;
     struct timespec time_t0;
-#ifdef BARUBY_GC_HAS_SCRAMBLE
-    /* Per-cycle XOR mask used by ARO_OBJ / ARO_VAL.  Low 3 bits must be 0
-     * to preserve 8-byte heap pointer alignment AND the LSB tag of fixnums
-     * (= bit 0).  scramble_R is the CURRENT (sample-visible) R.
-     * scramble_R_old is the PREVIOUS R, set only during a GC cycle so the
-     * VALUE-slot forwarding wrapper can decode incoming edges with the
-     * pre-GC encoding before re-encoding outgoing edges with the new R.
-     * Outside GC, scramble_R_old is unused (= sample never reads it). */
+    /* Per-cycle XOR mask used by ARO_LOAD and ARO_GC_VISIT_EDGE.  Low
+     * 3 bits must be 0 to preserve 8-byte heap pointer alignment AND
+     * the LSB tag of fixnums (= bit 0).  scramble_R is the CURRENT
+     * (sample-visible) R.  scramble_R_old is the PREVIOUS R, set only
+     * during a GC cycle so the slot-forwarding wrapper can decode
+     * incoming edges with the pre-GC encoding before re-encoding
+     * outgoing edges with the new R.  Outside GC, scramble_R_old is
+     * unused.
+     *
+     * Both fields exist for ALL backends.  Non-scramble backends keep
+     * them at 0 permanently — every macro that XORs against them
+     * compiles to identity (the compiler folds `x ^ 0` → `x`).  This
+     * gives non-scramble backends zero overhead while letting the
+     * scramble backend rotate R on each cycle.  See ARO_GC_HAS_SCRAMBLE
+     * for the per-instance flag that controls rotation behavior. */
     uintptr_t       scramble_R;
     uintptr_t       scramble_R_old;
-#endif
     /* Finalizer list — libc-malloc'd dynamic array of payload pointers.
      * Weak references: framework does NOT visit these in SCAN_EDGES /
      * VISIT_ROOTS, so they don't keep objects alive.  After mark/forward
@@ -165,7 +171,7 @@ typedef struct AroGcCommonState {
      *   - For each payload still alive (= live after mark/forward), update
      *     the entry to the new addr (= moving GCs forward the entry).
      *   - For each payload that became unreachable, invoke the sample-
-     *     provided ASTRO_GC_FINALIZE macro (typical use: mpz_clear,
+     *     provided AROH_FINALIZE macro (typical use: mpz_clear,
      *     close FILE *, etc.) and drop the entry.
      *
      * Cost is O(finalizable_count) per GC, not O(heap) — preserves the

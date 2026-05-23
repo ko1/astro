@@ -226,13 +226,18 @@ INIT(void)
 // sp with at least 1 slot of headroom (= sp[0] is writable).
 
 /* baruby_bytes_new — allocate a BaByteData (= byte payload wrapped with
- * ASTroObjectHeader so SCAN_EDGES can dispatch on it).  Caller writes the
+ * AroObjectHeader so SCAN_EDGES can dispatch on it).  Caller writes the
  * actual bytes into the returned `data[]` array.  Skips zero-fill (=
- * aro_gc_alloc_byte path) since caller fills immediately. */
+ * aro_gc_alloc_byte path) since caller fills immediately.
+ *
+ * Returns a RAW typed-ptr (= unscrambled BaByteData *) because callers
+ * stash it in BaString.bytes, which is a raw typed-ptr field (not a
+ * scrambled VALUE slot).  Uses _raw to avoid double-encode through the
+ * public VALUE-returning API. */
 static inline BaByteData *
 baruby_bytes_new(CTX *c, uint32_t capa)
 {
-    BaByteData *bd = (BaByteData *)aro_gc_alloc_byte(c, sizeof(BaByteData) + capa);
+    BaByteData *bd = (BaByteData *)aro_gc_alloc_byte_raw(c, sizeof(BaByteData) + capa);
     bd->head.flags = OBJ_BYTE_DATA;
     return bd;
 }
@@ -244,7 +249,7 @@ baruby_ary_new(CTX *c, uint32_t capa)
     // sp[N] indexing through the rest of this function.
     VALUE *sp = c->sp;
     // First alloc scans up to sp (sp[0] uninit, must not be in range).
-    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaArray)));
+    sp[0] = aro_gc_alloc(c, sizeof(BaArray));
     BaArray *a = VAL2ARY(c, sp[0]);
     a->head.flags = OBJ_ARRAY;
     a->len = 0;
@@ -253,7 +258,9 @@ baruby_ary_new(CTX *c, uint32_t capa)
         // Second alloc: extend scan to include sp[0] (= the new BaArray).
         c->sp = sp + 1;
         size_t items_sz = sizeof(BaArrayItems) + capa * sizeof(VALUE);
-        BaArrayItems *items = (BaArrayItems *)aro_gc_alloc(c, items_sz);
+        /* items is stored in a->items (raw typed-ptr field), not a
+         * scrambled VALUE slot — use _raw to avoid double-encode. */
+        BaArrayItems *items = (BaArrayItems *)aro_gc_alloc_raw(c, items_sz);
         items->head.flags = OBJ_VALUE_ARRAY;
         a = VAL2ARY(c, sp[0]);   // reload after potential GC
         aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)items);
@@ -316,7 +323,7 @@ VALUE
 baruby_str_new(CTX *c, const char *bytes, uint32_t len)
 {
     VALUE *sp = c->sp;
-    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaString)));
+    sp[0] = aro_gc_alloc(c, sizeof(BaString));
     BaString *s = VAL2STR(c, sp[0]);
     s->head.flags = OBJ_STRING;
     s->len = len;
@@ -349,7 +356,7 @@ VALUE
 baruby_str_slice(CTX *c, VALUE *src_ref, uint32_t offset, uint32_t len)
 {
     VALUE *sp = c->sp;
-    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaString)));
+    sp[0] = aro_gc_alloc(c, sizeof(BaString));
     BaString *r = VAL2STR(c, sp[0]);
     r->head.flags = OBJ_STRING;
     r->len = len;
@@ -398,7 +405,7 @@ baruby_value_eq(CTX *c, VALUE a, VALUE b)
     if (IS_INT(a) || IS_INT(b)) return false;
     // Any side that's a non-ptr singleton (true / false / nil) without
     // having matched in the identity check above is a different type.
-    if (!IS_PTR(a) || !IS_PTR(b)) return false;
+    if (!AROH_IS_GC_OBJECT(a) || !AROH_IS_GC_OBJECT(b)) return false;
     // Both heap objects.
     uint32_t ta = OBJ_TYPE(c, a), tb = OBJ_TYPE(c, b);
     if (ta != tb) return false;
@@ -439,7 +446,7 @@ baruby_str_repeat(CTX *c, VALUE *sv_ref, intptr_t n)
     const BaString *s = VAL2STR(c, *sv_ref);
     uint64_t total = (uint64_t)s->len * (uint64_t)n;
     if (total > UINT32_MAX) total = UINT32_MAX;
-    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaString)));
+    sp[0] = aro_gc_alloc(c, sizeof(BaString));
     BaString *r = VAL2STR(c, sp[0]);
     s = VAL2STR(c, *sv_ref);   // reload after alloc
     r->head.flags = OBJ_STRING;
@@ -628,7 +635,7 @@ baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref)
     uint32_t b_len = VAL2STR(c, *bv_ref)->len;
     uint32_t total = a_len + b_len;
 
-    sp[0] = ARO_VAL(c, aro_gc_alloc(c, sizeof(BaString)));
+    sp[0] = aro_gc_alloc(c, sizeof(BaString));
     BaString *r = VAL2STR(c, sp[0]);
     r->head.flags = OBJ_STRING;
     r->len = total;
@@ -721,13 +728,17 @@ baruby_print_value(CTX *c, FILE *fp, VALUE v)
 //   4. memcpy で newp の head が old のものに上書きされるので
 //      aro_gc_reset_payload_header で fresh state に restore。
 //
-// `old` は raw heap pointer (= 通常 typed-ptr)。 scramble backend では
-// root slot に置く値は scrambled なので ARO_VAL/ARO_OBJ で encode/decode。
+// `old` は raw heap pointer (= 通常 typed-ptr)。 scramble backend で root
+// slot に park する際は scrambled VALUE に encode し、 ARO_LOAD で deref
+// 時に decode する。 _raw helper を使うと encode/decode 不要な raw 戻り値
+// が得られるので新規 alloc は _raw 経由でも可だが、 slot park 経由のほうが
+// 一貫している (= 古い raw pointer を slot に書いて GC 後の reload を
+// scramble backend が自動で行う)。
 // ----------------------------------------------------------------------------
 void *
 aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
-    if (!old) return aro_gc_alloc(c, new_size);
+    if (!old) return aro_gc_alloc_raw(c, new_size);
 
     void *in_place = aro_gc_realloc_in_place(c, old, new_size);
     if (in_place) return in_place;
@@ -736,11 +747,13 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
     VALUE *sp_top = c->sp;
-    sp_top[0] = ARO_VAL(c, old);
+    /* Park old in sp[0] as a scrambled VALUE so a moving + scramble
+     * backend GC inside the inner alloc forwards / re-encodes it. */
+    sp_top[0] = (VALUE)((uintptr_t)old ^ ARO_GC_COMMON(c)->scramble_R);
     c->sp = sp_top + 1;
-    void *newp = aro_gc_alloc(c, new_size);
+    void *newp = aro_gc_alloc_raw(c, new_size);
     c->sp = sp_top;
-    if (copy_bytes) memcpy(newp, ARO_OBJ(c, sp_top[0]), copy_bytes);
+    if (copy_bytes) memcpy(newp, ARO_LOAD(c, &sp_top[0]), copy_bytes);
     aro_gc_reset_payload_header(newp, new_size);
     return newp;
 }
@@ -748,7 +761,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 void *
 aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
 {
-    if (!old) return aro_gc_alloc_byte(c, new_size);
+    if (!old) return aro_gc_alloc_byte_raw(c, new_size);
 
     void *in_place = aro_gc_realloc_in_place(c, old, new_size);
     if (in_place) return in_place;
@@ -757,11 +770,11 @@ aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
     VALUE *sp_top = c->sp;
-    sp_top[0] = ARO_VAL(c, old);
+    sp_top[0] = (VALUE)((uintptr_t)old ^ ARO_GC_COMMON(c)->scramble_R);
     c->sp = sp_top + 1;
-    void *newp = aro_gc_alloc_byte(c, new_size);
+    void *newp = aro_gc_alloc_byte_raw(c, new_size);
     c->sp = sp_top;
-    if (copy_bytes) memcpy(newp, ARO_OBJ(c, sp_top[0]), copy_bytes);
+    if (copy_bytes) memcpy(newp, ARO_LOAD(c, &sp_top[0]), copy_bytes);
     aro_gc_reset_payload_header(newp, new_size);
     return newp;
 }

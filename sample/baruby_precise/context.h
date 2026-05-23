@@ -14,7 +14,7 @@
 #  define ASTRO_DEBUG 1
 #endif
 #include "astro_debug.h"
-// Pull ASTroObjectHeader — sample's heap structs embed `head` as first
+// Pull AroObjectHeader — sample's heap structs embed `head` as first
 // field.  gc_types.h is the types-only slice of gc.h (no CTX-dependent
 // static inlines) so it can be included before CTX_struct is defined.
 #include "precise_gc/gc_types.h"
@@ -80,7 +80,7 @@ typedef uint64_t state_serial_t;
 // low bits so they're auto-excluded.  False=0 is excluded explicitly.
 // Strict 8-byte check filters out garbage values that happen to have LSB=0
 // but aren't actual heap pointers (= GC mis-trace bugs).
-#define IS_PTR(v)     ((v) != VAL_FALSE \
+#define AROH_IS_GC_OBJECT(v)     ((v) != VAL_FALSE \
                        && ((uintptr_t)(v) & (uintptr_t)7) == 0)
 
 // Type tag — stored in head.flags low 3 bits.  Distinct OBJ_BYTE_DATA
@@ -98,22 +98,22 @@ enum obj_type {
 
 // Heap object holding a VALUE[] payload.  Allocated separately from the
 // owning BaArray so realloc can grow it without moving the BaArray itself.
-// The ASTroObjectHeader.flags is set to OBJ_VALUE_ARRAY so SCAN_EDGES
+// The AroObjectHeader.flags is set to OBJ_VALUE_ARRAY so SCAN_EDGES
 // scans each data slot.
 typedef struct BaArrayItems {
-    ASTroObjectHeader head;
+    AroObjectHeader head;
     VALUE data[];           // flex array; capa is tracked in the owning BaArray
 } BaArrayItems;
 
 // Heap object holding raw bytes (= BaString.bytes after iter 75 Step C).
 // head.flags = OBJ_BYTE_DATA, SCAN_EDGES is a no-op for these.
 typedef struct BaByteData {
-    ASTroObjectHeader head;
+    AroObjectHeader head;
     char data[];            // flex array; size is in head.gc_size
 } BaByteData;
 
 typedef struct BaArray {
-    ASTroObjectHeader head;
+    AroObjectHeader head;
     uint32_t len;
     uint32_t capa;
     BaArrayItems *items;
@@ -132,7 +132,7 @@ typedef struct BaArray {
 #define BSTR_SSO_MAX   7u    /* 7 chars + NUL fits in the 8-byte union */
 
 typedef struct BaString {
-    ASTroObjectHeader head;
+    AroObjectHeader head;
     uint32_t len;            // byte length (not counting NUL)
     uint32_t capa;           // SSO: sizeof(small).  heap: len + 1.
     union {
@@ -157,14 +157,21 @@ bstr_bytes_mut(BaString * const s)
 
 /* OBJ_TYPE / VAL2ARY / VAL2STR / IS_ARY / IS_STR — all VALUE→object deref
  * macros take CTX so the scramble backend can XOR-decode the VALUE before
- * accessing the header.  For non-scramble backends ARO_OBJ is identity
- * (= compiles to a plain cast).  IS_PTR/IS_INT/IS_FALSY don't need decode
- * (scramble R has low 3 bits = 0, preserving LSB and 8-alignment tags). */
-#define OBJ_TYPE(c, v)   (((ASTroObjectHeader *)ARO_OBJ((c), (v)))->flags & OBJ_TYPE_MASK)
-#define IS_ARY(c, v)     (IS_PTR(v) && OBJ_TYPE((c), (v)) == OBJ_ARRAY)
-#define IS_STR(c, v)     (IS_PTR(v) && OBJ_TYPE((c), (v)) == OBJ_STRING)
-#define VAL2ARY(c, v)    ((BaArray *)ARO_OBJ((c), (v)))
-#define VAL2STR(c, v)    ((BaString *)ARO_OBJ((c), (v)))
+ * accessing the header.  For non-scramble backends scramble_R is 0
+ * (= compiles to a plain cast).  AROH_IS_GC_OBJECT/IS_INT/IS_FALSY don't need decode
+ * (scramble R has low 3 bits = 0, preserving LSB and 8-alignment tags).
+ *
+ * ARO_DECODE(c, v) — value-based decode (= no slot reference).  Prefer
+ * ARO_LOAD(c, &slot) when the VALUE lives in a stable slot, but for
+ * VALUEs already held in a local register (= return values, function
+ * args) ARO_DECODE performs the same decode without a temporary slot. */
+#define ARO_DECODE(c, v) ((void *)((uintptr_t)(v) ^ ARO_GC_COMMON(c)->scramble_R))
+
+#define OBJ_TYPE(c, v)   (((AroObjectHeader *)ARO_DECODE((c), (v)))->flags & OBJ_TYPE_MASK)
+#define IS_ARY(c, v)     (AROH_IS_GC_OBJECT(v) && OBJ_TYPE((c), (v)) == OBJ_ARRAY)
+#define IS_STR(c, v)     (AROH_IS_GC_OBJECT(v) && OBJ_TYPE((c), (v)) == OBJ_STRING)
+#define VAL2ARY(c, v)    ((BaArray *)ARO_DECODE((c), (v)))
+#define VAL2STR(c, v)    ((BaString *)ARO_DECODE((c), (v)))
 
 // RESULT: 2-register return type for non-local exit support (`return`).
 // Same shape as castro / naruby's RESULT — fits in rax:rdx so the
@@ -208,7 +215,7 @@ struct callcache {
 };
 
 /* Builtin functions take CTX as the first argument so they can access
- * the scramble backend's R (= ARO_OBJ/ARO_VAL decode), and otherwise
+ * the scramble backend's R (= ARO_DECODE / ARO_LOAD decode), and otherwise
  * for symmetry.  Non-scramble backends pay no cost (= unused param). */
 struct CTX_struct;
 typedef struct CTX_struct CTX;
@@ -230,7 +237,7 @@ typedef struct builtin_func {
 #endif
 
 /* iter 62: process-scope GC instance への pointer。 sample 全体で唯一の
- * GC instance を CTX 経由でアクセスする (contract: ASTRO_GC_INSTANCE(c)
+ * GC instance を CTX 経由でアクセスする (contract: ARO_GC_INSTANCE(c)
  * = (c)->astro_gc)。 multi-instance 拡張なら CTX 1 つに 1 instance を
  * bind するだけで対応可能。 struct ASTroGC の中身は各 backend (gc_*.c)
  * が定義 — sample 視点では opaque pointer。
@@ -269,7 +276,7 @@ typedef struct CTX_struct {
  * struct を typedef して、 process 起動時 1 つ (or 複数) allocate +
  * `(c)->astro_gc` に bind する。 framework 関数は引数 CTX 経由で
  * ASTroGC を取り出して操作する (= module-static なし)。 */
-#define ASTRO_GC_INSTANCE(c)  ((c)->astro_gc)
+#define ARO_GC_INSTANCE(c)  ((c)->astro_gc)
 
 /* Root visitor: framework CTX-opaque contract。 baruby_precise は roots を
  * c->env .. c->sp の linear range で持つので macro 直書きで inline 展開
@@ -288,7 +295,7 @@ typedef struct CTX_struct {
  *   edge_visit : void (void *ctx, void **slot) callback
  */
 extern VALUE *baruby_gc_sp_high_water;
-#define ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit) do {                       \
+#define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                       \
     VALUE *_aro_sp_top = (c)->sp;                                            \
     /* Zero stale slots above sp_top up to high-water mark (= pop-only       \
      * sample side: 値を残したまま sp を戻す convention のため、 古い        \
@@ -301,7 +308,7 @@ extern VALUE *baruby_gc_sp_high_water;
             *_p = 0;                                                         \
     }                                                                        \
     for (VALUE *_p = (c)->env; _p < _aro_sp_top; _p++) {                     \
-        ASTRO_GC_VISIT_EDGE_VAL((ctx), edge_visit, _p);                      \
+        ARO_GC_VISIT_EDGE((ctx), edge_visit, _p);                      \
     }                                                                        \
 } while (0)
 
@@ -322,13 +329,13 @@ extern VALUE *baruby_gc_sp_high_water;
  *                  なので使わないが、 framework が一律で渡す)
  *   ctx, edge_visit : 各 slot を visit する callback (= 通常 ASTroGC *)
  */
-#define ASTRO_GC_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {  \
-    ASTroObjectHeader *_h = (ASTroObjectHeader *)(payload);                 \
+#define AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {  \
+    AroObjectHeader *_h = (AroObjectHeader *)(payload);                 \
     switch (_h->flags & OBJ_TYPE_MASK) {                                    \
       case OBJ_ARRAY: {                                                     \
           /* `items` is a typed-ptr (= BaArrayItems *) — raw slot. */       \
           BaArray *_a = (BaArray *)(payload);                               \
-          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items);            \
+          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_a->items);            \
           (void)(payload_size);                                              \
           break;                                                             \
       }                                                                      \
@@ -336,7 +343,7 @@ extern VALUE *baruby_gc_sp_high_water;
           /* `bytes` is a typed-ptr (= BaByteData *) — raw slot. */         \
           BaString *_s = (BaString *)(payload);                             \
           if (!BSTR_IS_SSO(_s))                                              \
-              ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->bytes);        \
+              ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_s->bytes);        \
           break;                                                             \
       }                                                                      \
       case OBJ_VALUE_ARRAY: {                                               \
@@ -344,7 +351,7 @@ extern VALUE *baruby_gc_sp_high_water;
           BaArrayItems *_ai = (BaArrayItems *)(payload);                    \
           size_t _n = ((payload_size) - sizeof(BaArrayItems)) / sizeof(VALUE); \
           for (size_t _i = 0; _i < _n; _i++)                                \
-              ASTRO_GC_VISIT_EDGE_VAL((ctx), edge_visit, &_ai->data[_i]);    \
+              ARO_GC_VISIT_EDGE((ctx), edge_visit, &_ai->data[_i]);    \
           break;                                                             \
       }                                                                      \
       case OBJ_BYTE_DATA:                                                   \
@@ -360,26 +367,26 @@ extern VALUE *baruby_gc_sp_high_water;
  * iter 75 Step C: head is at payload offset 0 — backend has already
  * initialized it.  We zero ONLY the post-head region so the head's
  * gc_size / gc_flags / gc_fwd survive. */
-#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes)                              \
-    memset((char *)(payload) + sizeof(ASTroObjectHeader), 0,                     \
-           (size_bytes) - sizeof(ASTroObjectHeader))
+#define AROH_INIT_PAYLOAD(payload, size_bytes)                              \
+    memset((char *)(payload) + sizeof(AroObjectHeader), 0,                     \
+           (size_bytes) - sizeof(AroObjectHeader))
 
 /* Byte payload init: GC never scans these so skip memset.  Caller fills
  * the bytes before any further alloc. */
-#define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
+#define AROH_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
 
 /* No sample-managed external resources (= no GMP, no FILE *).  baruby
  * never calls aro_gc_finalize_register so the macro body is never
  * actually evaluated, but the framework's `#error` guard requires the
  * macro to be defined. */
-#define ASTRO_GC_FINALIZE(payload) ((void)(payload))
+#define AROH_FINALIZE(payload) ((void)(payload))
 
 /* Header layout accessors (framework default).  Each backend's GCHeader
  * has `size` (uint32_t) at the canonical offset; `fwd` is moving-only.  */
-#define ASTRO_GC_HEADER_SIZE(h)         ((h)->size)
-#define ASTRO_GC_HEADER_SET_SIZE(h, s)  ((h)->size = (uint32_t)(s))
-#define ASTRO_GC_HEADER_GET_FWD(h)      ((h)->fwd)
-#define ASTRO_GC_HEADER_SET_FWD(h, p)   ((h)->fwd = (p))
+#define AROH_HEADER_SIZE(h)         ((h)->size)
+#define AROH_HEADER_SET_SIZE(h, s)  ((h)->size = (uint32_t)(s))
+#define AROH_HEADER_GET_FWD(h)      ((h)->fwd)
+#define AROH_HEADER_SET_FWD(h, p)   ((h)->fwd = (p))
 
 // Heap allocators (defined in node.c).  All take `sp` as the last
 // argument: the caller's current scratch top.  Each helper sets

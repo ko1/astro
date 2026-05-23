@@ -15,15 +15,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "context.h"  /* CTX_struct + sample-provided ASTRO_GC_VISIT_ROOTS contract macro (= 必須) */
+#include "context.h"  /* CTX_struct + sample-provided AROH_VISIT_ROOTS contract macro (= 必須) */
 #include "gc.h"
+
+/* Public alloc API — wraps the backend's raw alloc with scramble encode.
+ *
+ * Sample code stores the returned VALUE directly into a GC-visible slot
+ * (= sp[], object field) and decodes via ARO_LOAD before deref.  In
+ * scramble backends the encode flips bits per cycle so any code path
+ * that re-uses a stale raw pointer SEGVs at next deref.  In non-
+ * scramble backends scramble_R is permanently 0, so the XOR folds away
+ * to identity — same machine code as the old `void *`-returning API.
+ *
+ * `aro_gc_alloc` corresponds to the SCAN category (= scan-safe init,
+ * GC's heap walk dispatches via sample's SCAN_EDGES on the payload);
+ * `aro_gc_alloc_byte` corresponds to the BYTE category (= no init, no
+ * scan).  Both are inline-shallow so LTO folds them into the caller. */
+VALUE
+aro_gc_alloc(CTX *c, size_t payload_size)
+{
+    void *raw = aro_gc_alloc_raw(c, payload_size);
+    return (VALUE)((uintptr_t)raw ^ ARO_GC_COMMON(c)->scramble_R);
+}
+
+VALUE
+aro_gc_alloc_byte(CTX *c, size_t payload_size)
+{
+    void *raw = aro_gc_alloc_byte_raw(c, payload_size);
+    return (VALUE)((uintptr_t)raw ^ ARO_GC_COMMON(c)->scramble_R);
+}
 
 /* Default in-place realloc hook — returns NULL so the caller falls
  * through to the alloc + memcpy path.  Backends that track large objs
  * on a malloc-backed list (gc_copy / gc_mark_compact) override this.
  *
  * `c` is opaque here: framework treats CTX as a void *-equivalent.
- * Backends that override read backend state via ASTRO_GC_INSTANCE. */
+ * Backends that override read backend state via ARO_GC_INSTANCE. */
 __attribute__((weak))
 void *
 aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
@@ -44,10 +71,10 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
 void
 aro_gc_reset_payload_header(void *payload, size_t new_size)
 {
-    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    AroObjectHeader *h = (AroObjectHeader *)payload;
     h->gc_size  = (uint32_t)new_size;
     h->gc_flags = 0;
-#ifdef ASTRO_GC_HAS_FWD
+#ifdef ARO_GC_HAS_FWD
     h->gc_fwd = NULL;
 #endif
 }
@@ -59,7 +86,7 @@ aro_gc_reset_payload_header(void *payload, size_t new_size)
 void
 aro_gc_finalize_register(CTX *c, void *payload)
 {
-    AroGcCommonState *const cs = ASTRO_GC_COMMON(c);
+    AroGcCommonState *const cs = ARO_GC_COMMON(c);
     if (cs->finalize_count == cs->finalize_cap) {
         size_t newcap = cs->finalize_cap ? cs->finalize_cap * 2 : 16;
         void **newlist = (void **)realloc(cs->finalize_list,
@@ -77,7 +104,7 @@ aro_gc_finalize_register(CTX *c, void *payload)
 void
 aro_gc_finalize_walk(CTX *c)
 {
-    AroGcCommonState *const cs = ASTRO_GC_COMMON(c);
+    AroGcCommonState *const cs = ARO_GC_COMMON(c);
     size_t write = 0;
     for (size_t i = 0; i < cs->finalize_count; i++) {
         void *const p = cs->finalize_list[i];
@@ -85,7 +112,7 @@ aro_gc_finalize_walk(CTX *c)
         if (new_p) {
             cs->finalize_list[write++] = new_p;
         } else {
-            ASTRO_GC_FINALIZE(p);
+            AROH_FINALIZE(p);
         }
     }
     cs->finalize_count = write;
@@ -94,7 +121,7 @@ aro_gc_finalize_walk(CTX *c)
 void
 aro_gc_finalize_fini(CTX *c)
 {
-    AroGcCommonState *const cs = ASTRO_GC_COMMON(c);
+    AroGcCommonState *const cs = ARO_GC_COMMON(c);
     free(cs->finalize_list);
     cs->finalize_list  = NULL;
     cs->finalize_count = 0;
@@ -111,7 +138,7 @@ aro_gc_finalize_fini(CTX *c)
 void
 aro_gc_account_external(CTX *c, ssize_t delta)
 {
-    AroGcCommonState *const cs = ASTRO_GC_COMMON(c);
+    AroGcCommonState *const cs = ARO_GC_COMMON(c);
     if (delta > 0) {
         cs->external_bytes += (size_t)delta;
     } else {

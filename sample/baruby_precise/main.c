@@ -129,7 +129,7 @@ code_repo_find_by_name(const char *name)
 }
 
 /* iter 76: framework は CTX-opaque 化したため `aro_gc_visit_roots` 関数は
- * 廃止。 root visitor は context.h の ASTRO_GC_VISIT_ROOTS macro に inline
+ * 廃止。 root visitor は context.h の AROH_VISIT_ROOTS macro に inline
  * 展開する形に変更した (= 各 backend の GC entry で直接 macro 呼び出し)。
  * sp_high_water 状態は sample-side で持つ。 */
 VALUE *baruby_gc_sp_high_water;

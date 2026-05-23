@@ -28,10 +28,10 @@
 #include "astro_debug.h"
 #include "gc.h"
 
-/* iter 75 Step C: framework GCHeader 廃止、 ASTroObjectHeader が payload
+/* iter 75 Step C: framework GCHeader 廃止、 AroObjectHeader が payload
  * offset 0 にあり gc_size を保持。 region walk は gc_size から次 slot を
  * 算出するので、 free slot の gc_size には class slot size を入れる
- * (= 旧 design の `slot_size - sizeof(ASTroObjectHeader)` 相当)。 */
+ * (= 旧 design の `slot_size - sizeof(AroObjectHeader)` 相当)。 */
 
 #define HDR_MARKED_BIT   (uint16_t)0x0001u
 #define HDR_FREE_BIT     (uint16_t)0x0002u
@@ -41,7 +41,7 @@
 #define HDR_IS_FREE(h)     (((h)->gc_flags & HDR_FREE_BIT) != 0)
 #define HDR_SET_FREE(h)    ((h)->gc_flags |= HDR_FREE_BIT)
 
-/* Free slot overlay: payload[sizeof(ASTroObjectHeader)..+7] holds the link. */
+/* Free slot overlay: payload[sizeof(AroObjectHeader)..+7] holds the link. */
 typedef struct FreeSlot {
     struct FreeSlot *next;
 } FreeSlot;
@@ -49,7 +49,7 @@ typedef struct FreeSlot {
 static inline FreeSlot *
 free_slot_link(void *payload)
 {
-    return (FreeSlot *)((char *)payload + sizeof(ASTroObjectHeader));
+    return (FreeSlot *)((char *)payload + sizeof(AroObjectHeader));
 }
 
 #define ALIGN8(n) (((n) + 7u) & ~(size_t)7u)
@@ -90,7 +90,7 @@ typedef struct ASTroGC {
     FreeSlot   *freelist[NUM_SIZE_CLASSES];
     LargeObj   *large_head;
     CTX        *ctx;
-    ASTroObjectHeader **gray_buf;
+    AroObjectHeader **gray_buf;
     size_t      gray_cnt;
     size_t      gray_capa;
     size_t      bytes_since_gc;
@@ -139,7 +139,7 @@ aro_gc_init(CTX *c)
 
 static void gc_collect_internal(CTX *c);
 
-static ASTroObjectHeader *
+static AroObjectHeader *
 alloc_large(ASTroGC *gc, size_t payload_size)
 {
     size_t need = sizeof(LargeObj) + ALIGN8(payload_size);
@@ -152,7 +152,7 @@ alloc_large(ASTroGC *gc, size_t payload_size)
     lo->next = gc->large_head;
     lo->map_bytes = map_bytes;
     gc->large_head = lo;
-    ASTroObjectHeader *h = (ASTroObjectHeader *)large_payload(lo);
+    AroObjectHeader *h = (AroObjectHeader *)large_payload(lo);
     h->flags    = 0;
     h->gc_flags = 0;
     h->gc_size  = (uint32_t)payload_size;
@@ -167,12 +167,12 @@ oom_abort(void)
     abort();
 }
 
-/* Freelist holds slot pointers (= ASTroObjectHeader *).  FreeSlot link
- * lives at slot + sizeof(ASTroObjectHeader). */
-static inline ASTroObjectHeader *
+/* Freelist holds slot pointers (= AroObjectHeader *).  FreeSlot link
+ * lives at slot + sizeof(AroObjectHeader). */
+static inline AroObjectHeader *
 alloc_slot(CTX *c, size_t payload_size)
 {
-    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
     size_t slot_total = ALIGN8(payload_size);
     if (__builtin_expect(slot_total > MAX_SLOT_BYTES, 0)) {
         return alloc_large(gc, payload_size);
@@ -184,16 +184,16 @@ alloc_slot(CTX *c, size_t payload_size)
         gc_collect_internal(c);
     }
 
-    ASTroObjectHeader *h;
+    AroObjectHeader *h;
     FreeSlot *fs = gc->freelist[ci];
     if (fs) {
-        h = (ASTroObjectHeader *)fs;
+        h = (AroObjectHeader *)fs;
         gc->freelist[ci] = free_slot_link(h)->next;
     } else {
         if (__builtin_expect(gc->region_top + sb > gc->region_end, 0)) {
             oom_abort();
         }
-        h = (ASTroObjectHeader *)gc->region_top;
+        h = (AroObjectHeader *)gc->region_top;
         gc->region_top += sb;
     }
     h->flags    = 0;
@@ -205,15 +205,15 @@ alloc_slot(CTX *c, size_t payload_size)
 static inline void *
 do_alloc(CTX *c, bool is_byte, size_t payload_size)
 {
-    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    ASTroObjectHeader *h = alloc_slot(c, payload_size);
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
+    AroObjectHeader *h = alloc_slot(c, payload_size);
     void *payload = (void *)h;
     /* iter 48 bug fix: freelist-popped slots contain stale data; zero
      * pointer-typed payloads so scan sees VAL_FALSE until caller fills. */
     if (!is_byte) {
-        ASTRO_GC_INIT_PAYLOAD(payload, ALIGN8(payload_size));
+        AROH_INIT_PAYLOAD(payload, ALIGN8(payload_size));
     } else {
-        ASTRO_GC_INIT_BYTE_PAYLOAD(payload, ALIGN8(payload_size));
+        AROH_INIT_BYTE_PAYLOAD(payload, ALIGN8(payload_size));
     }
     gc->common.stats.total_bytes += payload_size;
     gc->common.stats.heap_bytes  += payload_size;
@@ -222,13 +222,13 @@ do_alloc(CTX *c, bool is_byte, size_t payload_size)
 }
 
 void *
-aro_gc_alloc(CTX *c, size_t payload_size)
+aro_gc_alloc_raw(CTX *c, size_t payload_size)
 {
     return do_alloc(c, false, payload_size);
 }
 
 void *
-aro_gc_alloc_byte(CTX *c, size_t payload_size)
+aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
 {
     return do_alloc(c, true, payload_size);
 }
@@ -240,11 +240,11 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
  * -------------------------------------------------------------------------- */
 
 static void
-gray_push(ASTroGC *gc, ASTroObjectHeader *const h)
+gray_push(ASTroGC *gc, AroObjectHeader *const h)
 {
     if (gc->gray_cnt >= gc->gray_capa) {
         gc->gray_capa = gc->gray_capa ? gc->gray_capa * 2 : 256;
-        gc->gray_buf = (ASTroObjectHeader **)realloc(gc->gray_buf, gc->gray_capa * sizeof(ASTroObjectHeader *));
+        gc->gray_buf = (AroObjectHeader **)realloc(gc->gray_buf, gc->gray_capa * sizeof(AroObjectHeader *));
         if (!gc->gray_buf) abort();
     }
     gc->gray_buf[gc->gray_cnt++] = h;
@@ -253,8 +253,8 @@ gray_push(ASTroGC *gc, ASTroObjectHeader *const h)
 static void
 mark_value(ASTroGC *gc, VALUE v)
 {
-    if (!IS_PTR(v)) return;
-    ASTroObjectHeader *h = (ASTroObjectHeader *)v;
+    if (!AROH_IS_GC_OBJECT(v)) return;
+    AroObjectHeader *h = (AroObjectHeader *)v;
     if (HDR_IS_FREE(h)) return;
     if (HDR_MARKED(h)) return;
     HDR_SET_MARKED(h);
@@ -273,8 +273,8 @@ static void
 process_gray(ASTroGC *gc)
 {
     while (gc->gray_cnt > 0) {
-        ASTroObjectHeader *h = gc->gray_buf[--gc->gray_cnt];
-        ASTRO_GC_SCAN_EDGES((void *)h, h->gc_size, gc, mark_edge);
+        AroObjectHeader *h = gc->gray_buf[--gc->gray_cnt];
+        AROH_SCAN_EDGES((void *)h, h->gc_size, gc, mark_edge);
     }
 }
 
@@ -291,7 +291,7 @@ sweep_region(ASTroGC *gc)
     size_t live_bytes = 0;
     char *p = gc->region_base;
     while (p < gc->region_top) {
-        ASTroObjectHeader *const h = (ASTroObjectHeader *)p;
+        AroObjectHeader *const h = (AroObjectHeader *)p;
         size_t slot_total = ALIGN8((h)->gc_size);
         int ci = size_class_for(slot_total);
         ASTRO_ASSERT(ci >= 0 && "sweep_region: oversized slot in region");
@@ -317,7 +317,7 @@ sweep_region(ASTroGC *gc)
     LargeObj **link = &gc->large_head;
     while (*link) {
         LargeObj *lo = *link;
-        ASTroObjectHeader *h = (ASTroObjectHeader *)large_payload(lo);
+        AroObjectHeader *h = (AroObjectHeader *)large_payload(lo);
         if (HDR_MARKED(h)) {
             HDR_CLR_MARKED(h);
             live_bytes += (h)->gc_size;
@@ -337,11 +337,11 @@ sweep_region(ASTroGC *gc)
 static void
 gc_collect_internal(CTX *c)
 {
-    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
 
     struct timespec tmark = aro_gc_phase_begin();
-    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
+    AROH_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -374,14 +374,14 @@ void *
 aro_gc_finalize_check(CTX *c, void *payload)
 {
     (void)c;
-    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    AroObjectHeader *h = (AroObjectHeader *)payload;
     return HDR_MARKED(h) ? payload : NULL;
 }
 
 void
 aro_gc_fini(CTX *c)
 {
-    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (!gc) return;
     aro_gc_finalize_fini(c);
     if (gc->region_base) munmap(gc->region_base, REGION_BYTES);
@@ -395,7 +395,7 @@ aro_gc_fini(CTX *c)
 size_t
 aro_gc_size_of(void *p)
 {
-    ASTroObjectHeader *h = (ASTroObjectHeader *)p;
+    AroObjectHeader *h = (AroObjectHeader *)p;
     return h->gc_size;
 }
 

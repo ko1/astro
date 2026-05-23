@@ -7,7 +7,7 @@
 #include <string.h>
 
 /* Types-only header — sample's context.h includes this directly to get
- * ASTroObjectHeader BEFORE defining CTX_struct.  See gc_types.h for the
+ * AroObjectHeader BEFORE defining CTX_struct.  See gc_types.h for the
  * layering rationale. */
 #include "gc_types.h"
 
@@ -68,19 +68,19 @@ typedef intptr_t VALUE;
 //  16: mark_freelist
 //  17: copy_scramble       — Cheney copy + per-cycle XOR scramble of VALUE
 //                          storage.  Debug / audit backend: sample uses
-//                          ARO_OBJ to decode VALUE → ptr.  Forgetting decode
+//                          ARO_LOAD to decode VALUE → ptr.  Forgetting decode
 //                          (= raw cast) or missing SCAN_EDGES on a slot
 //                          surfaces as SEGV at next deref.  Pair with
 //                          BARUBY_GC_STRESS=1 for max R rotation frequency.
 //
-// Gen / inc variants define BARUBY_GC_HAS_WB so callers know they must use
+// Gen / inc variants define ARO_GC_HAS_WB so callers know they must use
 // aro_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
-// copy_scramble defines BARUBY_GC_HAS_SCRAMBLE so ARO_OBJ / ARO_VAL macros
-// (gc.h) expand to real XOR ops instead of identity.
+// copy_scramble defines ARO_GC_HAS_SCRAMBLE so the scramble_R field
+// rotates per cycle (vs. staying 0 for non-scramble backends).
 // ---------------------------------------------------------------------------
 
-/* All type definitions (BARUBY_GC_* IDs, ASTRO_GC_HAS_FWD,
- * ASTroObjectHeader, AroGcStats, AroGcCommonState) live in gc_types.h.
+/* All type definitions (BARUBY_GC_* IDs, ARO_GC_HAS_FWD,
+ * AroObjectHeader, AroGcStats, AroGcCommonState) live in gc_types.h.
  * Included above. */
 
 /* Accessors.  `c->astro_gc` is `struct ASTroGC *` (forward decl in
@@ -91,8 +91,8 @@ typedef intptr_t VALUE;
  * `astro_gc` field.  Sample MUST declare CTX_struct with `struct ASTroGC
  * *astro_gc` (= the only field framework reads / writes).  All other
  * sample-internal fields (sp, env, frame chains, etc.) are invisible to
- * the framework — sample bridges them via ASTRO_GC_VISIT_ROOTS macro. */
-#define ASTRO_GC_COMMON(c) ((AroGcCommonState *)((c)->astro_gc))
+ * the framework — sample bridges them via AROH_VISIT_ROOTS macro. */
+#define ARO_GC_COMMON(c) ((AroGcCommonState *)((c)->astro_gc))
 
 /* `aro_gc_backend_name` identifies which backend was compiled in (=
  * compile-time constant per binary).  It is not per-instance state, so
@@ -100,79 +100,77 @@ typedef intptr_t VALUE;
 extern const char *aro_gc_backend_name;
 
 /* ---------------------------------------------------------------------------
- * Scramble macros (= per-cycle XOR mask on heap-pointer storage).
+ * Scramble support (= per-cycle XOR mask on heap-pointer storage).
  *
  * Sample-visible storage of every heap pointer (= VALUE slots in sp[],
  * BaArrayItems.data[], typed-ptr fields like BaArray.items / BaString.bytes)
- * holds `raw_ptr ^ R`.  Sample must use ARO_OBJ to decode at deref, and
- * ARO_VAL to encode raw pointers from aro_gc_alloc before storing.
+ * holds `raw_ptr ^ R`.  Sample reads slots via ARO_LOAD, which does the
+ * fresh-load-and-decode; alloc helpers (aro_gc_alloc / aro_gc_alloc_byte)
+ * return values already encoded with the current R.
  *
- * For non-scramble backends, both macros are identity casts and compile
- * to no-op.  For scramble backends, R is per-instance state on
- * AroGcCommonState.scramble_R.
+ * R is stored on AroGcCommonState for all backends.  Non-scramble backends
+ * leave it at 0 permanently, so the XOR folds away to identity — sample
+ * code is uniform regardless of backend.  Only ARO_GC_HAS_SCRAMBLE backends
+ * rotate R on each GC cycle (= scramble_R_old keeps the previous R so the
+ * VISIT_EDGE wrapper can decode incoming edges with old R and re-encode
+ * outgoing edges with new R).
  *
- * Fixnums / singletons (LSB=1 / low-bit non-zero) must NOT be passed
- * through ARO_OBJ/ARO_VAL — they're not heap pointers.  Use IS_PTR(v)
- * check before decoding.
+ * Fixnums / singletons (LSB=1 / low-bit non-zero) must NOT be XOR-decoded
+ * — they're not heap pointers.  ARO_LOAD assumes the slot holds an
+ * AROH_IS_GC_OBJECT-true value (= caller already filtered).  ARO_GC_VISIT_EDGE
+ * filters internally (skips non-pointer values).
  *
- * Naming convention:
- *   ARO_OBJ(c, v)   — VALUE (encoded) → void *  (decoded for deref)
- *   ARO_VAL(c, raw) — void * (raw) → VALUE      (encoded for storage)
+ *   ARO_LOAD(c, slot_ptr)
+ *     Fresh load + decode from a slot.  `slot_ptr` is `VALUE *` (or any
+ *     pointer to encoded storage).  Returns `void *` (raw heap pointer)
+ *     suitable for cast to the sample's struct type.  PRIMARY decode API
+ *     — replaces the old `ARO_OBJ`.
  * --------------------------------------------------------------------------- */
-#ifdef BARUBY_GC_HAS_SCRAMBLE
-#  define ARO_OBJ(c, v)    ((void *)((uintptr_t)(v)   ^ ASTRO_GC_COMMON(c)->scramble_R))
-#  define ARO_VAL(c, raw)  ((VALUE)((uintptr_t)(raw)  ^ ASTRO_GC_COMMON(c)->scramble_R))
-#else
-#  define ARO_OBJ(c, v)    ((void *)(uintptr_t)(v))
-#  define ARO_VAL(c, raw)  ((VALUE)(uintptr_t)(raw))
-#endif
+
+#define ARO_LOAD(c, slot_ptr)                                                  \
+    ((void *)((uintptr_t)(*(VALUE *)(slot_ptr))                                \
+              ^ ARO_GC_COMMON(c)->scramble_R))
 
 /* ---------------------------------------------------------------------------
- * SCAN_EDGES helpers — sample's SCAN_EDGES invokes these per slot.
+ * SCAN_EDGES helper — sample's SCAN_EDGES invokes this per slot.
  *
- * VISIT_EDGE_PTR : raw typed-ptr slot (e.g., BaArray.items = BaArrayItems*).
- *                  Slot value is the real address; forward writes the new
- *                  real address back to the slot.  All backends — including
- *                  scramble — treat these as raw.
+ * ARO_GC_VISIT_EDGE(ctx, fn, slot_ptr)
+ *   Decodes the slot with scramble_R_old, forwards the underlying real
+ *   address via `fn`, re-encodes with the new scramble_R before writing
+ *   back.  Fixnums / singletons (= low bits non-zero, or v==0) skip
+ *   both decode and forwarding entirely.
  *
- * VISIT_EDGE_VAL : VALUE slot (e.g., BaArrayItems.data[i], sp[i]).
- *                  In non-scramble backends, identical to VISIT_EDGE_PTR
- *                  (= slot holds raw addr OR fixnum / singleton — non-ptr
- *                  values are not visited because the forward function
- *                  checks IS_PTR-like conditions).
- *                  In scramble backend, decodes the slot with scramble_R_old,
- *                  forwards the underlying real address, then re-encodes with
- *                  the new scramble_R before writing back.  Fixnums /
- *                  singletons (= low bits non-zero, or v==0) skip both
- *                  decode and forwarding entirely.
+ *   For non-scramble backends scramble_R and scramble_R_old are both
+ *   permanently 0, so the XORs fold to identity — the macro behaves as
+ *   a plain `fn(ctx, slot)` call (with the non-pointer skip preserved).
  *
- * The CTX passed in (= the SCAN_EDGES `ctx` parameter) is the backend's
- * ASTroGC * — which must start with AroGcCommonState as its first field
- * so we can read scramble_R via direct cast.  This is already a
- * documented invariant of the framework (= ASTRO_GC_COMMON cast).
+ *   `ctx` is the backend's ASTroGC * — which must start with
+ *   AroGcCommonState as its first field so we can read scramble fields
+ *   via direct cast.  This is already a documented invariant of the
+ *   framework (= ARO_GC_COMMON cast).
+ *
+ *   Sister macro ARO_GC_VISIT_EDGE_PTR (below) handles raw typed-ptr
+ *   slots — slot value is the unscrambled C pointer, no XOR applied.
+ *   Samples that store all references as scrambled VALUE use the
+ *   primary ARO_GC_VISIT_EDGE; samples with mixed slot kinds use both.
  * --------------------------------------------------------------------------- */
-#define ASTRO_GC_VISIT_EDGE_PTR(ctx, fn, slot_ptr)                           \
-    ((fn)((ctx), (void **)(slot_ptr)))
+#define ARO_GC_VISIT_EDGE(ctx, fn, slot_ptr) do {                              \
+    VALUE *_aro_vs   = (VALUE *)(slot_ptr);                                    \
+    VALUE  _aro_v    = *_aro_vs;                                               \
+    if (((uintptr_t)_aro_v & 7u) == 0 && _aro_v != 0) {                        \
+        AroGcCommonState *_aro_cs = (AroGcCommonState *)(ctx);                 \
+        void *_aro_raw = (void *)((uintptr_t)_aro_v ^ _aro_cs->scramble_R_old);\
+        (fn)((ctx), &_aro_raw);                                                \
+        *_aro_vs = (VALUE)((uintptr_t)_aro_raw ^ _aro_cs->scramble_R);         \
+    }                                                                          \
+} while (0)
 
-#ifdef BARUBY_GC_HAS_SCRAMBLE
-#  define ASTRO_GC_VISIT_EDGE_VAL(ctx, fn, slot_ptr) do {                    \
-       VALUE *_aro_vs   = (VALUE *)(slot_ptr);                                \
-       VALUE  _aro_v    = *_aro_vs;                                           \
-       /* Skip fixnums / singletons (=0/2/4) — these are NOT heap ptrs and    \
-        * must not be scramble-decoded.  IS_PTR-like check: low 3 bits = 0   \
-        * AND value != 0 (= FALSE).  Scrambled ptrs preserve low 3 bits      \
-        * because R has low 3 bits = 0. */                                   \
-       if (((uintptr_t)_aro_v & 7u) == 0 && _aro_v != 0) {                   \
-           AroGcCommonState *_aro_cs = (AroGcCommonState *)(ctx);            \
-           void *_aro_raw = (void *)((uintptr_t)_aro_v ^ _aro_cs->scramble_R_old); \
-           (fn)((ctx), &_aro_raw);                                            \
-           *_aro_vs = (VALUE)((uintptr_t)_aro_raw ^ _aro_cs->scramble_R);    \
-       }                                                                      \
-   } while (0)
-#else
-#  define ASTRO_GC_VISIT_EDGE_VAL(ctx, fn, slot_ptr)                         \
-       ASTRO_GC_VISIT_EDGE_PTR((ctx), (fn), (slot_ptr))
-#endif
+/* Raw typed-ptr edge: slot holds an unscrambled C pointer (= sample
+ * struct field typed as `T *`, not VALUE).  Used by samples that have
+ * not migrated all typed-ptr fields to encoded VALUE storage.  Skip
+ * the scramble decode entirely (= raw slot). */
+#define ARO_GC_VISIT_EDGE_PTR(ctx, fn, slot_ptr)                               \
+    ((fn)((ctx), (void **)(slot_ptr)))
 
 void  aro_gc_init(CTX *c);
 
@@ -182,7 +180,7 @@ void  aro_gc_init(CTX *c);
  * finalizer).  Positive delta on alloc, negative on free.  The
  * framework adds delta to bytes_since_gc; once threshold is exceeded
  * the next aro_gc_alloc triggers a collect, releasing the external
- * memory through ASTRO_GC_FINALIZE.
+ * memory through AROH_FINALIZE.
  *
  * Without this hook, sample programs that allocate large external
  * resources (e.g., a `(* s 1103515245)` chain producing megabyte-scale
@@ -191,7 +189,7 @@ void  aro_gc_init(CTX *c);
 void  aro_gc_account_external(CTX *c, ssize_t delta);
 
 /* ---------------------------------------------------------------------------
- * Root-visitor contract: ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit)
+ * Root-visitor contract: AROH_VISIT_ROOTS(c, ctx, edge_visit)
  *
  * Sample MUST define this macro in its context.h (or a header that
  * context.h includes) BEFORE any framework backend translation unit
@@ -200,8 +198,8 @@ void  aro_gc_account_external(CTX *c, ssize_t delta);
  * reachable from already-scanned heap objects).
  *
  * For each root slot the macro body invokes:
- *   - ASTRO_GC_VISIT_EDGE_VAL((ctx), edge_visit, slot)  — for VALUE slots
- *   - ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, slot)  — for raw typed-ptr slots
+ *   - ARO_GC_VISIT_EDGE((ctx), edge_visit, slot)  — for VALUE slots
+ *   - ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, slot)  — for raw typed-ptr slots
  *
  * Layout examples:
  *   - baruby_precise: linear range c->env .. c->sp (= VALUE *).
@@ -217,8 +215,8 @@ void  aro_gc_account_external(CTX *c, ssize_t delta);
  * iter 76: framework は CTX-opaque 化。 backend は `c->sp` / `c->env` を
  * 直接 access しない (= sample stack convention に縛られない)。 root scan
  * の loop はすべてこの macro 経由。 */
-#ifndef ASTRO_GC_VISIT_ROOTS
-#  error "Sample must define ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit) " \
+#ifndef AROH_VISIT_ROOTS
+#  error "Sample must define AROH_VISIT_ROOTS(c, ctx, edge_visit) " \
          "in its context.h before any framework gc_*.c is compiled"
 #endif
 
@@ -277,20 +275,34 @@ aro_gc_free_large_chain_malloc(void *head)
  * scan-safe object.  Category = SCAN (= sample's SCAN_EDGES dispatches
  * at scan time, typically via sample's own ObjectHeader.type).
  *
+ * **Return type**: VALUE (= encoded heap reference).  In scramble
+ * backends this is `raw_payload ^ scramble_R`; in non-scramble backends
+ * it equals `(VALUE)raw_payload`.  Sample stores the result directly
+ * into a GC-visible slot (= sp[], object field) and decodes via
+ * ARO_LOAD before deref.  The raw void * is intentionally not exposed
+ * — every slot store/load goes through the scramble path uniformly.
+ *
  * **CONTRACT 1 (zero-init)**: backend zero-inits the payload so a GC
  * scan immediately after alloc sees no stale heap-pointer bits.
  *
  * **CONTRACT 2 (GC-scan bound)**: caller MUST have set `c->sp` to its
  * current spill top before calling.  `c->env..c->sp` defines the root
  * scan range during any inner GC trigger. */
-void *aro_gc_alloc(CTX *c, size_t payload_size);
+/* Backend-provided raw alloc — returns the unencoded payload pointer
+ * (= AroObjectHeader * at offset 0).  Public API `aro_gc_alloc` wraps
+ * this with the scramble encode in gc_common.c.  Backends define
+ * `_raw` only; sample code calls the VALUE-returning public API. */
+void *aro_gc_alloc_raw(CTX *c, size_t payload_size);
+VALUE aro_gc_alloc(CTX *c, size_t payload_size);
 
 /* aro_gc_alloc_byte — allocate `payload_size` raw bytes (no VALUE
  * scanning, no zero-init).  Used for BaString.bytes / other char[]
- * payloads.  Caller fills the bytes after return.  GC's heap walk
- * skips this category, so leftover freelist-link bytes are harmless.
+ * payloads.  Caller fills the bytes after return (decoded via
+ * ARO_LOAD to obtain the writeable `char *`).  GC's heap walk skips
+ * this category, so leftover freelist-link bytes are harmless.
  * Same c->sp contract as aro_gc_alloc. */
-void *aro_gc_alloc_byte(CTX *c, size_t payload_size);
+void *aro_gc_alloc_byte_raw(CTX *c, size_t payload_size);
+VALUE aro_gc_alloc_byte(CTX *c, size_t payload_size);
 
 /* aro_gc_realloc_payload / _byte_payload — grow a payload, copying contents.
  *
@@ -357,7 +369,7 @@ void  aro_gc_collect(CTX *c);
  *        - returns NULL                              → dead  → ASTRO_GC_
  *                                                       FINALIZE invoked +
  *                                                       entry dropped
- *   3. Sample's `ASTRO_GC_FINALIZE(payload)` macro (defined in context.h)
+ *   3. Sample's `AROH_FINALIZE(payload)` macro (defined in context.h)
  *      reads payload's type tag and runs the cleanup (mpz_clear, etc.).
  *      MUST be defined by sample (= compile error otherwise — see below).
  *
@@ -371,29 +383,29 @@ void *aro_gc_finalize_check   (CTX *c, void *payload);
 void  aro_gc_finalize_walk    (CTX *c);
 
 /* Release the finalize_list backing storage.  Called from each backend's
- * aro_gc_fini.  Does NOT invoke ASTRO_GC_FINALIZE on the still-live
+ * aro_gc_fini.  Does NOT invoke AROH_FINALIZE on the still-live
  * entries — the process is exiting and the OS reclaims the inner buffers
  * anyway.  This matches the "fini == clean valgrind, not graceful
  * shutdown" contract of the rest of the framework. */
 void  aro_gc_finalize_fini    (CTX *c);
 
-#ifndef ASTRO_GC_FINALIZE
-#  error "Sample must define ASTRO_GC_FINALIZE(payload) in its context.h. " \
-         "Use `#define ASTRO_GC_FINALIZE(payload) ((void)0)` when no " \
+#ifndef AROH_FINALIZE
+#  error "Sample must define AROH_FINALIZE(payload) in its context.h. " \
+         "Use `#define AROH_FINALIZE(payload) ((void)0)` when no " \
          "sample-managed external resource exists."
 #endif
 
 /* Stat readers — all take CTX so the data is sourced from the per-instance
  * common state (no global variable). */
-static inline size_t aro_gc_total_bytes      (CTX *c) { return ASTRO_GC_COMMON(c)->stats.total_bytes;       }
-static inline size_t aro_gc_heap_bytes       (CTX *c) { return ASTRO_GC_COMMON(c)->stats.heap_bytes;        }
-static inline size_t aro_gc_count            (CTX *c) { return ASTRO_GC_COMMON(c)->stats.gc_count;          }
-static inline size_t aro_gc_minor_count      (CTX *c) { return ASTRO_GC_COMMON(c)->stats.minor_count;       }
-static inline size_t aro_gc_major_count      (CTX *c) { return ASTRO_GC_COMMON(c)->stats.major_count;       }
-static inline double aro_gc_total_seconds    (CTX *c) { return ASTRO_GC_COMMON(c)->stats.total_seconds;     }
-static inline double aro_gc_max_pause_seconds(CTX *c) { return ASTRO_GC_COMMON(c)->stats.max_pause_seconds; }
-static inline double aro_gc_mark_seconds     (CTX *c) { return ASTRO_GC_COMMON(c)->stats.mark_seconds;      }
-static inline double aro_gc_reclaim_seconds  (CTX *c) { return ASTRO_GC_COMMON(c)->stats.reclaim_seconds;   }
+static inline size_t aro_gc_total_bytes      (CTX *c) { return ARO_GC_COMMON(c)->stats.total_bytes;       }
+static inline size_t aro_gc_heap_bytes       (CTX *c) { return ARO_GC_COMMON(c)->stats.heap_bytes;        }
+static inline size_t aro_gc_count            (CTX *c) { return ARO_GC_COMMON(c)->stats.gc_count;          }
+static inline size_t aro_gc_minor_count      (CTX *c) { return ARO_GC_COMMON(c)->stats.minor_count;       }
+static inline size_t aro_gc_major_count      (CTX *c) { return ARO_GC_COMMON(c)->stats.major_count;       }
+static inline double aro_gc_total_seconds    (CTX *c) { return ARO_GC_COMMON(c)->stats.total_seconds;     }
+static inline double aro_gc_max_pause_seconds(CTX *c) { return ARO_GC_COMMON(c)->stats.max_pause_seconds; }
+static inline double aro_gc_mark_seconds     (CTX *c) { return ARO_GC_COMMON(c)->stats.mark_seconds;      }
+static inline double aro_gc_reclaim_seconds  (CTX *c) { return ARO_GC_COMMON(c)->stats.reclaim_seconds;   }
 
 // Helper used inside each backend's collect entry point — accumulates wall
 // time into c->astro_gc_stats.total_seconds.  Re-entrant: if a major calls
@@ -408,7 +420,7 @@ static inline double aro_gc_reclaim_seconds  (CTX *c) { return ASTRO_GC_COMMON(c
 static inline struct timespec
 aro_gc_time_begin(CTX *c)
 {
-    AroGcCommonState *cs = ASTRO_GC_COMMON(c);
+    AroGcCommonState *cs = ARO_GC_COMMON(c);
     struct timespec t = {0, 0};
     if (cs->time_depth++ == 0) {
         clock_gettime(CLOCK_MONOTONIC, &cs->time_t0);
@@ -420,7 +432,7 @@ static inline void
 aro_gc_time_end(CTX *c, struct timespec t0)
 {
     (void)t0;
-    AroGcCommonState *cs = ASTRO_GC_COMMON(c);
+    AroGcCommonState *cs = ARO_GC_COMMON(c);
     if (--cs->time_depth == 0) {
         struct timespec t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -464,7 +476,7 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 //
 // For non-WB backends the whole call collapses to `*slot = v` (= zero cost).
 //
-// For WB backends with the bit-in-head layout (= ASTRO_GC_WB_OLD_MASK
+// For WB backends with the bit-in-head layout (= ARO_GC_WB_OLD_MASK
 // defined in gc_types.h), `aro_gc_wb` inlines the FAST PATH:
 //
 //   1. *slot = v
@@ -480,24 +492,24 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 // aro_gc_wb stays extern.  LTO may still inline it but there's no source-
 // level guarantee.
 
-#ifdef BARUBY_GC_HAS_WB
+#ifdef ARO_GC_HAS_WB
 
-#ifdef ASTRO_GC_WB_OLD_MASK
+#ifdef ARO_GC_WB_OLD_MASK
 /* Bit-in-head backends: inline fast-path check, out-of-line `remember`
  * does the actual work (= set DIRTY + push holder to remset).  Single
  * `remember` is shared by the slot and bulk WB — the action is
  * holder-centric, not slot-centric. */
-void aro_gc_remember(CTX *c, ASTroObjectHeader *h);
+void aro_gc_remember(CTX *c, AroObjectHeader *h);
 
 static inline void
 aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (__builtin_expect(holder == NULL, 1)) return;
-    ASTroObjectHeader *h = (ASTroObjectHeader *)holder;
+    AroObjectHeader *h = (AroObjectHeader *)holder;
     if (__builtin_expect(
-        (h->gc_flags & (ASTRO_GC_WB_OLD_MASK | ASTRO_GC_WB_DIRTY_MASK))
-            != ASTRO_GC_WB_OLD_MASK, 1)) return;
+        (h->gc_flags & (ARO_GC_WB_OLD_MASK | ARO_GC_WB_DIRTY_MASK))
+            != ARO_GC_WB_OLD_MASK, 1)) return;
     aro_gc_remember(c, h);
 }
 
@@ -506,10 +518,10 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (__builtin_expect(holder == NULL, 1)) return;
-    ASTroObjectHeader *h = (ASTroObjectHeader *)holder;
+    AroObjectHeader *h = (AroObjectHeader *)holder;
     if (__builtin_expect(
-        (h->gc_flags & (ASTRO_GC_WB_OLD_MASK | ASTRO_GC_WB_DIRTY_MASK))
-            != ASTRO_GC_WB_OLD_MASK, 1)) return;
+        (h->gc_flags & (ARO_GC_WB_OLD_MASK | ARO_GC_WB_DIRTY_MASK))
+            != ARO_GC_WB_OLD_MASK, 1)) return;
     aro_gc_remember(c, h);
 }
 

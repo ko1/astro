@@ -90,7 +90,7 @@ GC_NUM_mark_freelist    := 16
 GC_NUM_copy_scramble    := 17
 GC_NUM := $(GC_NUM_$(GC))
 # iter 74: precise GC framework は runtime/precise_gc/ 配下に移動。
-# sample 側 (context.h) が ASTRO_GC_SCAN_EDGES macro + AroGcKind 拡張値を
+# sample 側 (context.h) が AROH_SCAN_EDGES macro + AroGcKind 拡張値を
 # 提供して contract が成立する。
 PRECISE_GC_DIR := $(RUNTIME)/precise_gc
 GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c

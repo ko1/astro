@@ -17,14 +17,14 @@
 #include "astro_debug.h"
 #include "gc.h"
 
-/* iter 75 Step C: framework GCHeader 廃止。 ASTroObjectHeader (= sample
+/* iter 75 Step C: framework GCHeader 廃止。 AroObjectHeader (= sample
  * struct head field) が payload offset 0 にあり、 gc_size を保持。 */
 
 #define REGION_BYTES ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virtual, lazy-paged */
 #define ALIGN8(n)    (((n) + 7u) & ~(size_t)7u)
 
 /* ASTroGC: process-scope GC instance (heap alloc'd in aro_gc_init).
- * `common` MUST be first field — contract for ASTRO_GC_COMMON(c) cast. */
+ * `common` MUST be first field — contract for ARO_GC_COMMON(c) cast. */
 typedef struct ASTroGC {
     AroGcCommonState common;
     char *region_base;
@@ -55,14 +55,14 @@ aro_gc_init(CTX *c)
 static inline void *
 bump(CTX *c, size_t payload_size, size_t aligned)
 {
-    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (gc->region_top + aligned > gc->region_end) {
         fprintf(stderr, "baruby_gc=bump: OOM (need %zu, virtual %p..%p)\n",
                 aligned, (void *)gc->region_base, (void *)gc->region_end);
         abort();
     }
     void *payload = gc->region_top;
-    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
+    AroObjectHeader *h = (AroObjectHeader *)payload;
     h->flags    = 0;
     h->gc_flags = 0;
     h->gc_size  = (uint32_t)payload_size;
@@ -71,29 +71,29 @@ bump(CTX *c, size_t payload_size, size_t aligned)
 }
 
 void *
-aro_gc_alloc(CTX *c, size_t payload_size)
+aro_gc_alloc_raw(CTX *c, size_t payload_size)
 {
     size_t aligned = ALIGN8(payload_size);
     void *payload = bump(c, payload_size, aligned);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     /* Zero post-head region so GC scans see no stale heap-pointer bits.
      * gc_bump backend has no GC, but the contract is uniform. */
-    memset((char *)payload + sizeof(ASTroObjectHeader), 0,
-           aligned - sizeof(ASTroObjectHeader));
-    ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
-    ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
+    memset((char *)payload + sizeof(AroObjectHeader), 0,
+           aligned - sizeof(AroObjectHeader));
+    ARO_GC_COMMON(c)->stats.total_bytes += payload_size;
+    ARO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return payload;
 }
 
 void *
-aro_gc_alloc_byte(CTX *c, size_t payload_size)
+aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
 {
     size_t aligned = ALIGN8(payload_size);
     void *payload = bump(c, payload_size, aligned);
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     /* Byte payloads: skip post-head zero-fill (caller writes immediately). */
-    ASTRO_GC_COMMON(c)->stats.total_bytes += payload_size;
-    ASTRO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
+    ARO_GC_COMMON(c)->stats.total_bytes += payload_size;
+    ARO_GC_COMMON(c)->stats.heap_bytes  += payload_size;
     return payload;
 }
 
@@ -115,7 +115,7 @@ aro_gc_finalize_check(CTX *c, void *payload)
 void
 aro_gc_fini(CTX *c)
 {
-    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (!gc) return;
     aro_gc_finalize_fini(c);
     if (gc->region_base && gc->region_base != MAP_FAILED) {
@@ -129,5 +129,5 @@ aro_gc_fini(CTX *c)
 size_t
 aro_gc_size_of(void *p)
 {
-    return ((ASTroObjectHeader *)p)->gc_size;
+    return ((AroObjectHeader *)p)->gc_size;
 }

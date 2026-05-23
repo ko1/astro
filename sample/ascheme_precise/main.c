@@ -37,7 +37,7 @@ struct sobj S_EOF_OBJ    = { .head = { .flags = OBJ_EOF } };
 
 // ---------------------------------------------------------------------------
 // Heap.  Phase 1 of the libgc → ASTro precise GC migration (docs/migration.md):
-// all allocations now go through `aro_gc_alloc(c, sz)` / `aro_gc_alloc_byte(c,
+// all allocations now go through `aro_gc_alloc_raw(c, sz)` / `aro_gc_alloc_byte_raw(c,
 // sz)`.  The default GC backend is `none` (libc malloc, no collection), so
 // behaviour matches the original libgc-with-no-pressure build.  Switching to
 // a precise backend later requires Phase 2 work (sp/env tracking, SCAN_EDGES).
@@ -60,7 +60,7 @@ static CTX *gmp_g_ctx = NULL;
  *
  * Resolution: route GMP through libc malloc.  Buffers are fixed in
  * place and outside the framework's view.  When OBJ_BIGNUM becomes
- * unreachable, the framework's finalizer (ASTRO_GC_FINALIZE in
+ * unreachable, the framework's finalizer (AROH_FINALIZE in
  * context.h) calls mpz_clear which calls gmp_free → free(3).  No
  * leak, no stale pointers, no SCAN_EDGES bookkeeping. */
 /* Account for external (= libc) bytes through the framework so the GC
@@ -94,7 +94,7 @@ gmp_free(void *p, size_t sz)
 struct sobj *
 scm_alloc(CTX *c, int type)
 {
-    struct sobj *o = (struct sobj *)aro_gc_alloc(c, sizeof(struct sobj));
+    struct sobj *o = (struct sobj *)aro_gc_alloc_raw(c, sizeof(struct sobj));
     SCM_SET_TYPE(o, type);
     return o;
 }
@@ -133,7 +133,7 @@ scm_cons(CTX *c, VALUE a, VALUE d)
     SP_PUSH(c, sp, 2);
     sp[0] = a;
     sp[1] = d;
-    struct sobj *o = (struct sobj *)aro_gc_alloc(c, pair_size);
+    struct sobj *o = (struct sobj *)aro_gc_alloc_raw(c, pair_size);
     SCM_SET_TYPE(o, OBJ_PAIR);
     o->pair.car = sp[0];
     o->pair.cdr = sp[1];
@@ -152,12 +152,12 @@ scm_make_string(CTX *c, const char *s, size_t len)
     o->str.len = 0;
     sp[0] = SCM_OBJ_VAL(o);
     c->sp = sp + 1;
-    /* aro_gc_alloc_byte returns a payload with ASTroObjectHeader at offset 0;
+    /* aro_gc_alloc_byte returns a payload with AroObjectHeader at offset 0;
      * the string's character bytes start AFTER that header.  Sample-visible
      * `str.chars` therefore points past the header. */
-    char *raw = (char *)aro_gc_alloc_byte(c, sizeof(ASTroObjectHeader) + len + 1);
+    char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + len + 1);
     o = SCM_PTR(sp[0]);   /* reload after potential GC move */
-    o->str.chars = raw + sizeof(ASTroObjectHeader);
+    o->str.chars = raw + sizeof(AroObjectHeader);
     memcpy(o->str.chars, s, len);
     o->str.chars[len] = '\0';
     o->str.len = len;
@@ -174,9 +174,9 @@ scm_make_string_n(CTX *c, size_t len, char fill)
     o->str.len = 0;
     sp[0] = SCM_OBJ_VAL(o);
     c->sp = sp + 1;
-    char *raw = (char *)aro_gc_alloc_byte(c, sizeof(ASTroObjectHeader) + len + 1);
+    char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + len + 1);
     o = SCM_PTR(sp[0]);
-    o->str.chars = raw + sizeof(ASTroObjectHeader);
+    o->str.chars = raw + sizeof(AroObjectHeader);
     memset(o->str.chars, fill, len);
     o->str.chars[len] = '\0';
     o->str.len = len;
@@ -209,10 +209,10 @@ scm_make_vector(CTX *c, size_t len, VALUE fill)
      * so writes to items[0..N-1] don't clobber gc_size — a mark_compact /
      * mark_compact_gen backend walks the region linearly using gc_size and
      * loops forever on a 0-size object. */
-    size_t alloc_sz = sizeof(ASTroObjectHeader) + sizeof(VALUE) * (len ? len : 1);
-    char *raw = (char *)aro_gc_alloc(c, alloc_sz);
+    size_t alloc_sz = sizeof(AroObjectHeader) + sizeof(VALUE) * (len ? len : 1);
+    char *raw = (char *)aro_gc_alloc_raw(c, alloc_sz);
     o = SCM_PTR(sp[0]);
-    o->vec.items = (VALUE *)(raw + sizeof(ASTroObjectHeader));
+    o->vec.items = (VALUE *)(raw + sizeof(AroObjectHeader));
     o->vec.len = len;
     for (size_t i = 0; i < len; i++) o->vec.items[i] = sp[1];
     SP_POP(c, sp);
@@ -238,7 +238,7 @@ scm_make_bignum_z(CTX *c, mpz_srcptr z)
     mpz_init_set(o->mpz, z);
     /* Register for finalize: the mpz limbs are libc-malloc'd via GMP's
      * allocator and invisible to the GC framework.  Without finalize the
-     * limbs leak when GC reclaims `o`.  See ASTRO_GC_FINALIZE in context.h. */
+     * limbs leak when GC reclaims `o`.  See AROH_FINALIZE in context.h. */
     aro_gc_finalize_register(c, o);
     return SCM_OBJ_VAL(o);
 }
@@ -323,10 +323,10 @@ scm_make_mvalues(CTX *c, int count, VALUE *items)
     o->mv.items = NULL;
     o->mv.len = 0;
     sp_base[0] = SCM_OBJ_VAL(o);
-    size_t alloc_sz = sizeof(ASTroObjectHeader) + sizeof(VALUE) * (count ? count : 1);
-    char *raw = (char *)aro_gc_alloc(c, alloc_sz);
+    size_t alloc_sz = sizeof(AroObjectHeader) + sizeof(VALUE) * (count ? count : 1);
+    char *raw = (char *)aro_gc_alloc_raw(c, alloc_sz);
     o = SCM_PTR(sp_base[0]);
-    o->mv.items = (VALUE *)(raw + sizeof(ASTroObjectHeader));
+    o->mv.items = (VALUE *)(raw + sizeof(AroObjectHeader));
     o->mv.len = (size_t)count;
     for (int i = 0; i < count; i++) o->mv.items[i] = sp_base[1 + i];
     c->sp = sp_base;
@@ -417,7 +417,7 @@ scm_new_frame(CTX *c, struct sframe *parent, int nslots)
     assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
     sp_base[0] = (VALUE)parent;
     c->sp = sp_base + 1;
-    struct sframe *f = (struct sframe *)aro_gc_alloc(c,
+    struct sframe *f = (struct sframe *)aro_gc_alloc_raw(c,
         sizeof(struct sframe) + sizeof(VALUE) * (nslots ? nslots : 1));
     parent = (struct sframe *)sp_base[0];
     c->sp = sp_base;
@@ -468,10 +468,10 @@ scm_intern(CTX *c, const char *name)
     SYMBOL_TABLE[reserved_idx] = o;
     SYMBOL_TABLE_LEN++;
     size_t nlen = strlen(name);
-    char *raw = (char *)aro_gc_alloc_byte(c, sizeof(ASTroObjectHeader) + nlen + 1);
+    char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + nlen + 1);
     /* Reload o after the alloc — moving GCs may have relocated it. */
     o = SYMBOL_TABLE[reserved_idx];
-    o->sym.name = raw + sizeof(ASTroObjectHeader);
+    o->sym.name = raw + sizeof(AroObjectHeader);
     memcpy(o->sym.name, name, nlen + 1);
     return SCM_OBJ_VAL(o);
 }
@@ -620,12 +620,12 @@ scm_global_define(CTX *c, const char *name, VALUE v)
     c->globals[c->globals_size].defined = true;
     c->globals_size++;
     size_t nlen = strlen(name);
-    char *raw = (char *)aro_gc_alloc_byte(c, sizeof(ASTroObjectHeader) + nlen + 1);
+    char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + nlen + 1);
     /* Store the byte-payload BASE (= raw, not raw + header).  Moving GCs
      * forward via the header bits; an interior pointer would break that.
      * Readers go through GENTRY_NAME() to skip past the header. */
     c->globals[c->globals_size - 1].name_payload = raw;
-    memcpy(raw + sizeof(ASTroObjectHeader), name, nlen + 1);
+    memcpy(raw + sizeof(AroObjectHeader), name, nlen + 1);
 }
 
 VALUE
@@ -838,7 +838,7 @@ scm_display(FILE *fp, VALUE v, bool readable)
 // resolve to (depth, idx) lref nodes when bound, falling back to gref.
 // ---------------------------------------------------------------------------
 
-/* lex_scope is allocated via aro_gc_alloc (= must start with ASTroObjectHeader
+/* lex_scope is allocated via aro_gc_alloc (= must start with AroObjectHeader
  * so moving GCs can read size / forwarding bits at offset 0).  flags=0 means
  * SCAN_EDGES dispatches to the default no-op; we treat lex_scope as a
  * scanned root via the host C parser/compiler holding stack-local pointers
@@ -2539,7 +2539,7 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
 // Precise-rooting contract: under a moving GC, C-local pointers (kobj,
 // saved_env, k, fn) become stale across the inner `scm_apply` call.  We
 // therefore stash everything that must survive in the scont body, which
-// IS a scanned root (see OBJ_CONT case in ASTRO_GC_SCAN_EDGES).  After
+// IS a scanned root (see OBJ_CONT case in AROH_SCAN_EDGES).  After
 // each potential GC trigger we reload kobj from its parked sp slot.
 VALUE
 scm_callcc(CTX *c, VALUE fn)
@@ -2552,7 +2552,7 @@ scm_callcc(CTX *c, VALUE fn)
     kobj->cont = NULL;             /* SCAN_EDGES skips NULL cont slot */
     sp[0] = SCM_OBJ_VAL(kobj);
     c->sp = sp + 1;
-    struct scont *cnt = (struct scont *)aro_gc_alloc(c, sizeof(struct scont));
+    struct scont *cnt = (struct scont *)aro_gc_alloc_raw(c, sizeof(struct scont));
     /* Reload kobj — it may have moved during the alloc above. */
     kobj = SCM_PTR(sp[0]);
     kobj->cont = cnt;
@@ -3386,8 +3386,8 @@ PRIM(string_to_number) {
     char *slash = strchr(s, '/');
     if (slash) {
         /* throwaway buffer for splitting "num/den"; not retained past this call. */
-        char *copy = (char *)aro_gc_alloc_byte(c, sizeof(ASTroObjectHeader) + strlen(s) + 1);
-        copy += sizeof(ASTroObjectHeader);
+        char *copy = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + strlen(s) + 1);
+        copy += sizeof(AroObjectHeader);
         memcpy(copy, s, strlen(s) + 1);
         char *sl = strchr(copy, '/');
         *sl = '\0';
@@ -4441,7 +4441,7 @@ extern VALUE PORT_STDIN, PORT_STDOUT, PORT_STDERR;
 void *
 aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 {
-    if (!old) return aro_gc_alloc(c, new_size);
+    if (!old) return aro_gc_alloc_raw(c, new_size);
 
     void *in_place = aro_gc_realloc_in_place(c, old, new_size);
     if (in_place) return in_place;
@@ -4452,7 +4452,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
     VALUE *sp_top = c->sp;
     sp_top[0] = (VALUE)old;
     c->sp = sp_top + 1;
-    void *newp = aro_gc_alloc(c, new_size);
+    void *newp = aro_gc_alloc_raw(c, new_size);
     c->sp = sp_top;
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     aro_gc_reset_payload_header(newp, new_size);
@@ -4462,7 +4462,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
 void *
 aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
 {
-    if (!old) return aro_gc_alloc_byte(c, new_size);
+    if (!old) return aro_gc_alloc_byte_raw(c, new_size);
 
     void *in_place = aro_gc_realloc_in_place(c, old, new_size);
     if (in_place) return in_place;
@@ -4473,7 +4473,7 @@ aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
     VALUE *sp_top = c->sp;
     sp_top[0] = (VALUE)old;
     c->sp = sp_top + 1;
-    void *newp = aro_gc_alloc_byte(c, new_size);
+    void *newp = aro_gc_alloc_byte_raw(c, new_size);
     c->sp = sp_top;
     if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
     aro_gc_reset_payload_header(newp, new_size);
@@ -4484,30 +4484,30 @@ void
 aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
 {
     /* env / next_env: typed-ptr to sframe (= raw heap pointer). */
-    if (c->env)      ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->env);
-    if (c->next_env) ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->next_env);
+    if (c->env)      ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->env);
+    if (c->next_env) ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->next_env);
 
     /* Framework-managed spill range (= aro_gc_realloc_byte_payload etc.
      * stash the old payload here across an inner alloc).  Walks any
      * occupied slot — raw typed-ptr semantics suffice because the only
      * thing parked is a raw void *. */
     for (VALUE *p = g_sp_scratch; p < c->sp; p++) {
-        ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)p);
+        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)p);
     }
 
-    /* Globals: name_payload (= byte-payload BASE, i.e. ASTroObjectHeader at
+    /* Globals: name_payload (= byte-payload BASE, i.e. AroObjectHeader at
      * offset 0; safe to forward as a typed-ptr) + value (VALUE).  Filter
      * singletons from VALUE-slot visits so the framework doesn't touch
      * their off-heap headers (= bitmap_set on a non-page address would
      * SEGV). */
     for (size_t i = 0; i < c->globals_size; i++) {
         if (c->globals[i].name_payload) {
-            ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit,
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit,
                                      (void **)&c->globals[i].name_payload);
         }
         VALUE v = c->globals[i].value;
         if (v != 0 && SCM_IS_PTR(v) && !scm_is_singleton(v)) {
-            ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &c->globals[i].value);
+            ARO_GC_VISIT_EDGE(gc, edge_visit, &c->globals[i].value);
         }
     }
 
@@ -4516,7 +4516,7 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
     for (int i = 0; i < ASCHEME_LOOP_MAX_PARAMS; i++) {
         VALUE v = c->loop_args[i];
         if (v != 0 && SCM_IS_PTR(v) && !scm_is_singleton(v)) {
-            ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &c->loop_args[i]);
+            ARO_GC_VISIT_EDGE(gc, edge_visit, &c->loop_args[i]);
         }
     }
 
@@ -4524,24 +4524,24 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
     if (SYMBOL_TABLE) {
         for (size_t i = 0; i < SYMBOL_TABLE_LEN; i++) {
             if (SYMBOL_TABLE[i]) {
-                ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit,
+                ARO_GC_VISIT_EDGE_PTR(gc, edge_visit,
                                          (void **)&SYMBOL_TABLE[i]);
             }
         }
     }
     if (SCM_IS_PTR(PORT_STDIN)  && !scm_is_singleton(PORT_STDIN))
-        ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &PORT_STDIN);
+        ARO_GC_VISIT_EDGE(gc, edge_visit, &PORT_STDIN);
     if (SCM_IS_PTR(PORT_STDOUT) && !scm_is_singleton(PORT_STDOUT))
-        ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &PORT_STDOUT);
+        ARO_GC_VISIT_EDGE(gc, edge_visit, &PORT_STDOUT);
     if (SCM_IS_PTR(PORT_STDERR) && !scm_is_singleton(PORT_STDERR))
-        ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &PORT_STDERR);
+        ARO_GC_VISIT_EDGE(gc, edge_visit, &PORT_STDERR);
 
     /* Cached prim VALUEs used by specialized arith / pred / vec nodes —
      * these heap-pointer VALUEs are C globals; under a moving GC they
      * need explicit forwarding (sample-owned roots). */
     #define VISIT_PRIM(var) do { \
         if (SCM_IS_PTR(var) && !scm_is_singleton(var)) \
-            ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &(var)); \
+            ARO_GC_VISIT_EDGE(gc, edge_visit, &(var)); \
     } while (0)
     VISIT_PRIM(PRIM_PLUS_VAL);    VISIT_PRIM(PRIM_MINUS_VAL);   VISIT_PRIM(PRIM_MUL_VAL);
     VISIT_PRIM(PRIM_NUM_LT_VAL);  VISIT_PRIM(PRIM_NUM_LE_VAL);  VISIT_PRIM(PRIM_NUM_GT_VAL);
@@ -4558,7 +4558,7 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
         NODE *n = QUOTE_NODES[i];
         VALUE v = (VALUE)n->u.node_quote.v;
         if (SCM_IS_PTR(v) && !scm_is_singleton(v) && v != 0) {
-            ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, (void **)&n->u.node_quote.v);
+            ARO_GC_VISIT_EDGE(gc, edge_visit, (void **)&n->u.node_quote.v);
         }
     }
 
@@ -4744,7 +4744,7 @@ aot_compile_and_load(CTX *c, bool verbose)
     // pointer or the un-patched ones keep dispatching through the slow
     // host DISPATCH_node_* fallback.  Track unique hashes for the verbose
     // report only.
-    node_hash_t *seen = (node_hash_t *)aro_gc_alloc(c, sizeof(node_hash_t) * AOT_ENTRIES_LEN);
+    node_hash_t *seen = (node_hash_t *)aro_gc_alloc_raw(c, sizeof(node_hash_t) * AOT_ENTRIES_LEN);
     size_t seen_n = 0;
     for (size_t i = 0; i < AOT_ENTRIES_LEN; i++) {
         node_hash_t h = HASH(AOT_ENTRIES[i]);
@@ -4814,7 +4814,7 @@ run_file_pg_compile(CTX *c, const char *path, bool verbose)
     fseek(fp, 0, SEEK_END);
     long sz = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    /* file contents buffer; treat as scratch byte payload. */ char *buf_raw = (char *)aro_gc_alloc_byte(c, sizeof(ASTroObjectHeader) + sz + 1); char *buf = buf_raw + sizeof(ASTroObjectHeader);
+    /* file contents buffer; treat as scratch byte payload. */ char *buf_raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + sz + 1); char *buf = buf_raw + sizeof(AroObjectHeader);
     if (fread(buf, 1, sz, fp) != (size_t)sz) { perror(path); fclose(fp); return 1; }
     buf[sz] = '\0';
     fclose(fp);
@@ -4890,7 +4890,7 @@ run_file_aot(CTX *c, const char *path, bool verbose)
     fseek(fp, 0, SEEK_END);
     long sz = ftell(fp);
     fseek(fp, 0, SEEK_SET);
-    /* file contents buffer; treat as scratch byte payload. */ char *buf_raw = (char *)aro_gc_alloc_byte(c, sizeof(ASTroObjectHeader) + sz + 1); char *buf = buf_raw + sizeof(ASTroObjectHeader);
+    /* file contents buffer; treat as scratch byte payload. */ char *buf_raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + sz + 1); char *buf = buf_raw + sizeof(AroObjectHeader);
     if (fread(buf, 1, sz, fp) != (size_t)sz) { perror(path); fclose(fp); return 1; }
     buf[sz] = '\0';
     fclose(fp);

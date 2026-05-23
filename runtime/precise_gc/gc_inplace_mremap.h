@@ -2,7 +2,7 @@
  * LargeObj (gc_mark / gc_mark_freelist / gc_immix and their gen variants).
  *
  * Each LargeObj has layout: { LargeObj *next; size_t map_bytes; [extras]; payload }
- * where the payload starts with `ASTroObjectHeader` at offset 0.  The
+ * where the payload starts with `AroObjectHeader` at offset 0.  The
  * "extras" (e.g., mark/old/dirty bools in mark_bitmap_gen) sit between
  * map_bytes and the payload start, so sizeof(LargeObj) accounts for them.
  *
@@ -21,13 +21,13 @@
  * Invariants (iter 75 Step C):
  *   - LargeObj's first 2 fields are `next` + `map_bytes`
  *   - Payload starts at (char *)lo + sizeof(LargeObj) (= `lo + 1`)
- *   - Payload's first member is `ASTroObjectHeader head` with writable
+ *   - Payload's first member is `AroObjectHeader head` with writable
  *     `gc_size` field of type uint32_t */
 
 void *
 aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
 {
-    ASTroGC *gc = ASTRO_GC_INSTANCE(c);
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (gc->common.stress) return NULL;
     if (ARO_GC_INPLACE_THRESHOLD(new_size)) return NULL;
 
@@ -43,7 +43,7 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     size_t pg = (size_t)(ARO_GC_INPLACE_PAGE_SIZE);
     size_t new_map_bytes = (need + pg - 1) & ~(pg - 1);
     size_t old_map_bytes = lo->map_bytes;
-    ASTroObjectHeader *h = (ASTroObjectHeader *)((char *)lo + sizeof(LargeObj));
+    AroObjectHeader *h = (AroObjectHeader *)((char *)lo + sizeof(LargeObj));
     size_t old_size = h->gc_size;
 
     if (new_map_bytes != old_map_bytes) {
@@ -54,7 +54,7 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
             /* MREMAP_MAYMOVE relocated; patch the linked-list slot. */
             *link = (LargeObj *)res;
             lo = (LargeObj *)res;
-            h  = (ASTroObjectHeader *)((char *)lo + sizeof(LargeObj));
+            h  = (AroObjectHeader *)((char *)lo + sizeof(LargeObj));
         }
         lo->map_bytes = new_map_bytes;
     }

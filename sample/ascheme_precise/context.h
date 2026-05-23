@@ -13,7 +13,7 @@
 #include <gmp.h>
 
 // ASTro precise GC framework.  Migration plan: docs/migration.md
-#include "precise_gc/gc_types.h"   /* ASTroObjectHeader, AroGcCommonState */
+#include "precise_gc/gc_types.h"   /* AroObjectHeader, AroGcCommonState */
 
 // VALUE = tagged Scheme value (SVAL).  Tag bits:
 //   xxxx_xxx1 → fixnum (signed 62-bit, shifted left by 1)
@@ -99,7 +99,7 @@ enum sobj_type {
     OBJ_CONT,
     /* OBJ_FRAME — struct sframe; allocated via aro_gc_alloc.  Used so the
      * framework's SCAN_EDGES dispatch can identify a frame payload and
-     * walk its parent + slots.  sframe layout starts with ASTroObjectHeader
+     * walk its parent + slots.  sframe layout starts with AroObjectHeader
      * at offset 0 (same as struct sobj), so the framework can read head.flags
      * via either cast. */
     OBJ_FRAME,
@@ -118,13 +118,13 @@ typedef VALUE (*scm_prim_fn)(struct CTX_struct *c, int argc, VALUE *argv);
 // inflate every cons cell, vector, and closure to that size.  After this
 // split, sizeof(struct sobj) is ~40 B (dominated by the GMP `mpq_t`).
 struct scont {
-    /* head: ASTroObjectHeader at offset 0 — required by the framework for
+    /* head: AroObjectHeader at offset 0 — required by the framework for
      * any aro_gc_alloc'd payload (size + flags + fwd live in this header).
      * Without it, moving GCs would read random bytes from jmp_buf as a
      * header and corrupt their bookkeeping.  flags low bits stay zero;
      * we don't dispatch on scont via head.flags (the owning sobj OBJ_CONT
      * case walks it directly). */
-    ASTroObjectHeader head;
+    AroObjectHeader head;
     jmp_buf buf;
     VALUE   result;
     /* Saved CTX state captured at call/cc entry.  These fields hold C-local
@@ -141,7 +141,7 @@ struct scont {
     int     tag;
 };
 
-/* struct sobj head field: ASTroObjectHeader at offset 0 (iter 75 contract).
+/* struct sobj head field: AroObjectHeader at offset 0 (iter 75 contract).
  * head.flags low 5 bits hold ascheme's obj_type tag (= ~20 types fit in 5
  * bits).  Higher head.flags bits are sample-reserved for future use.
  * head.gc_flags / gc_size are framework-controlled. */
@@ -150,7 +150,7 @@ struct scont {
 #define SCM_SET_TYPE(o, t)  ((o)->head.flags = (uint16_t)((o)->head.flags & ~SCM_TYPE_MASK) | (uint16_t)(t))
 
 struct sobj {
-    ASTroObjectHeader head;
+    AroObjectHeader head;
     union {
         struct { VALUE car, cdr; } pair;
         struct { char *chars; size_t len; } str;
@@ -182,12 +182,12 @@ struct sobj {
     };
 };
 
-/* struct sframe head: ASTroObjectHeader at offset 0 — same layout contract
+/* struct sframe head: AroObjectHeader at offset 0 — same layout contract
  * as struct sobj.  Type tag = OBJ_FRAME (in head.flags low 5 bits).  This
  * lets SCAN_EDGES dispatch uniformly over `void *payload` regardless of
  * whether the payload is a sobj or sframe. */
 struct sframe {
-    ASTroObjectHeader head;
+    AroObjectHeader head;
     struct sframe *parent;
     int nslots;
     VALUE slots[];
@@ -204,8 +204,8 @@ struct ascheme_option {
 extern struct ascheme_option OPTION;
 
 /* `name_payload` points to the BASE of a heap-allocated byte payload
- * (= aro_gc_alloc_byte result, i.e. the ASTroObjectHeader).  The actual
- * C string starts at name_payload + sizeof(ASTroObjectHeader).  Storing
+ * (= aro_gc_alloc_byte result, i.e. the AroObjectHeader).  The actual
+ * C string starts at name_payload + sizeof(AroObjectHeader).  Storing
  * the base (not an interior pointer past the header) is essential for
  * moving GCs: the forward callback expects a payload-base slot so it
  * can read the header to compute size / lookup forwarding addresses. */
@@ -216,7 +216,7 @@ struct gentry {
 };
 #define GENTRY_NAME(ge) \
     ((const char *)((ge).name_payload \
-                    ? ((ge).name_payload + sizeof(ASTroObjectHeader)) \
+                    ? ((ge).name_payload + sizeof(AroObjectHeader)) \
                     : NULL))
 
 // Inline cache stamped at every node_gref call site.  Stored as `@ref`
@@ -280,7 +280,7 @@ extern VALUE PRIM_CONS_VAL, PRIM_EQ_P_VAL, PRIM_EQV_P_VAL;
 typedef struct CTX_struct {
     // ASTro precise GC framework: process-scope GC instance.  Backend
     // defines `struct ASTroGC` internally (must start with `AroGcCommonState
-    // common` for ASTRO_GC_COMMON() cast to work).  Allocated by
+    // common` for ARO_GC_COMMON() cast to work).  Allocated by
     // aro_gc_init() and freed by aro_gc_fini().
     struct ASTroGC *astro_gc;
 
@@ -347,7 +347,7 @@ typedef struct CTX_struct {
 // [g_sp_scratch, c->sp), so any slot inside that range is a precise root.
 // Backend independent — non-moving GCs just mark, moving GCs forward and
 // rewrite the slot.  Singletons / immediates / NULL are filtered by the
-// IS_PTR macro in the visitor.
+// AROH_IS_GC_OBJECT macro in the visitor.
 extern VALUE g_sp_scratch[];
 #define ASCHEME_SP_SCRATCH_SIZE 4096
 #define SP_PUSH(c, name, n) \
@@ -460,23 +460,23 @@ void scm_display(FILE *fp, VALUE v, bool readable);
 VALUE scm_read(CTX *c, FILE *fp);
 
 // ---------------------------------------------------------------------------
-// Precise-GC integration: SCAN_EDGES + IS_PTR for sample-side filtering.
+// Precise-GC integration: SCAN_EDGES + AROH_IS_GC_OBJECT for sample-side filtering.
 // ---------------------------------------------------------------------------
 
 /* Accessor used by every backend (= ASTroGC *) — points at CTX's astro_gc
  * field set up at aro_gc_init time.  Each backend typedefs `ASTroGC` as
  * its own concrete struct, matching the forward-decl `struct ASTroGC`
  * stored in CTX. */
-#define ASTRO_GC_INSTANCE(c)  ((c)->astro_gc)
+#define ARO_GC_INSTANCE(c)  ((c)->astro_gc)
 
 /* Root visitor contract — sample が framework に提供する。 ascheme は
  * roots が散在する (sframe chain, globals, loop_args, symbol table,
  * stdports, ...) ので macro 1 行に押し込まず、 sample-local function
  * `aro_scheme_visit_roots` (main.c 実装) を呼ぶ形にする。 詳細は
- * runtime/precise_gc/gc.h の ASTRO_GC_VISIT_ROOTS 説明を参照。 */
+ * runtime/precise_gc/gc.h の AROH_VISIT_ROOTS 説明を参照。 */
 void aro_scheme_visit_roots(CTX *c, void *gc,
                             void (*edge_visit)(void *, void **));
-#define ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit) \
+#define AROH_VISIT_ROOTS(c, ctx, edge_visit) \
     aro_scheme_visit_roots((c), (ctx), (edge_visit))
 
 
@@ -495,14 +495,14 @@ scm_is_singleton(VALUE v)
         || v == SCM_OBJ_VAL(&S_EOF_OBJ);
 }
 
-/* IS_PTR — framework-facing predicate.  Called by every backend's
+/* AROH_IS_GC_OBJECT — framework-facing predicate.  Called by every backend's
  * mark_value / forward_value to skip values that aren't GC-managed heap
  * pointers.  In ascheme that means fixnums, inline flonums, AND the
  * five process-static singletons (which look like real pointers but
  * aren't in any GC page).  NULL (= 0) also passes SCM_IS_PTR so we
  * filter it explicitly — uninit'd loop_args slots / sp scratch slots
  * are all zero and must not be visited. */
-#define IS_PTR(v)   ((v) != 0 && SCM_IS_PTR(v) && !scm_is_singleton((VALUE)(v)))
+#define AROH_IS_GC_OBJECT(v)   ((v) != 0 && SCM_IS_PTR(v) && !scm_is_singleton((VALUE)(v)))
 
 /* Helper: visit one VALUE slot, but skip framework-side dispatch for
  * singletons (they look like ptrs to SCM_IS_PTR but the GC framework
@@ -511,7 +511,7 @@ scm_is_singleton(VALUE v)
     VALUE *_avs = (VALUE *)(slot_ptr);                                       \
     VALUE  _av  = *_avs;                                                     \
     if (SCM_IS_PTR(_av) && !scm_is_singleton(_av)) {                         \
-        ASTRO_GC_VISIT_EDGE_VAL((ctx), (fn), _avs);                          \
+        ARO_GC_VISIT_EDGE((ctx), (fn), _avs);                          \
     }                                                                         \
 } while (0)
 
@@ -523,9 +523,9 @@ scm_is_singleton(VALUE v)
 #define ASCHEME_VISIT_INTERIOR_CHAR_SLOT(ctx, fn, slot_ptr) do {              \
     char **__s = (char **)(slot_ptr);                                         \
     if (*__s) {                                                               \
-        char *__base = *__s - sizeof(ASTroObjectHeader);                      \
-        ASTRO_GC_VISIT_EDGE_PTR((ctx), (fn), (void **)&__base);               \
-        *__s = __base + sizeof(ASTroObjectHeader);                            \
+        char *__base = *__s - sizeof(AroObjectHeader);                      \
+        ARO_GC_VISIT_EDGE_PTR((ctx), (fn), (void **)&__base);               \
+        *__s = __base + sizeof(AroObjectHeader);                            \
     }                                                                          \
 } while (0)
 
@@ -533,8 +533,8 @@ scm_is_singleton(VALUE v)
  * payload.  Dispatch on head.flags & SCM_TYPE_MASK and walk inner
  * VALUE / typed-ptr slots.  Scalar-only types (numbers, chars, etc.)
  * fall through to default and have nothing to do. */
-#define ASTRO_GC_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {     \
-    ASTroObjectHeader *_h = (ASTroObjectHeader *)(payload);                  \
+#define AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {     \
+    AroObjectHeader *_h = (AroObjectHeader *)(payload);                  \
     (void)(payload_size);                                                     \
     switch (_h->flags & SCM_TYPE_MASK) {                                      \
       case OBJ_PAIR: {                                                        \
@@ -561,9 +561,9 @@ scm_is_singleton(VALUE v)
            * visit, re-derive interior pointer.  Then walk the data. */     \
           if (_o->vec.items) {                                                \
               char *__base = (char *)_o->vec.items                             \
-                             - sizeof(ASTroObjectHeader);                     \
-              ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__base);   \
-              _o->vec.items = (VALUE *)(__base + sizeof(ASTroObjectHeader));  \
+                             - sizeof(AroObjectHeader);                     \
+              ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__base);   \
+              _o->vec.items = (VALUE *)(__base + sizeof(AroObjectHeader));  \
               for (size_t _i = 0; _i < _o->vec.len; _i++) {                   \
                   ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit,                   \
                                           &_o->vec.items[_i]);                \
@@ -573,7 +573,7 @@ scm_is_singleton(VALUE v)
       }                                                                       \
       case OBJ_CLOSURE: {                                                     \
           struct sobj *_o = (struct sobj *)(payload);                         \
-          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                          \
+          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                          \
                                    (void **)&_o->closure.env);                \
           /* body is a host-side NODE *, not GC-managed. */                  \
           break;                                                              \
@@ -588,9 +588,9 @@ scm_is_singleton(VALUE v)
           struct sobj *_o = (struct sobj *)(payload);                         \
           if (_o->mv.items) {                                                 \
               char *__mb = (char *)_o->mv.items                                \
-                           - sizeof(ASTroObjectHeader);                       \
-              ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__mb);     \
-              _o->mv.items = (VALUE *)(__mb + sizeof(ASTroObjectHeader));     \
+                           - sizeof(AroObjectHeader);                       \
+              ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__mb);     \
+              _o->mv.items = (VALUE *)(__mb + sizeof(AroObjectHeader));     \
               for (size_t _i = 0; _i < _o->mv.len; _i++) {                    \
                   ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit,                   \
                                           &_o->mv.items[_i]);                 \
@@ -603,13 +603,13 @@ scm_is_singleton(VALUE v)
           /* `cont` itself is a separately-allocated heap obj (aro_gc_alloc); \
            * forward the typed-ptr so a moving GC relocates the scont body.  \
            * Then walk the scanned fields inside it. */                      \
-          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&_o->cont);     \
+          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&_o->cont);     \
           if (_o->cont) {                                                     \
               ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->result);   \
               ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->k_val);    \
               ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->fn_val);   \
               if (_o->cont->saved_env) {                                      \
-                  ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                  \
+                  ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                  \
                                            (void **)&_o->cont->saved_env);    \
               }                                                               \
           }                                                                   \
@@ -617,7 +617,7 @@ scm_is_singleton(VALUE v)
       }                                                                       \
       case OBJ_FRAME: {                                                       \
           struct sframe *_f = (struct sframe *)(payload);                     \
-          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                          \
+          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                          \
                                    (void **)&_f->parent);                     \
           for (int _i = 0; _i < _f->nslots; _i++) {                           \
               ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_f->slots[_i]);      \
@@ -629,7 +629,7 @@ scm_is_singleton(VALUE v)
        * VALUE / sframe slots (mpz/mpq bytes / char buffer are byte payloads  \
        * which the framework's BYTE / opaque categories handle separately).   \
        * OBJ_NIL / OBJ_BOOL / OBJ_UNSPEC / OBJ_EOF are singletons that should  \
-       * not reach SCAN_EDGES anyway (IS_PTR filters them at root entry). */  \
+       * not reach SCAN_EDGES anyway (AROH_IS_GC_OBJECT filters them at root entry). */  \
       default: break;                                                          \
     }                                                                          \
 } while (0)
@@ -638,13 +638,13 @@ scm_is_singleton(VALUE v)
  * triggered immediately after alloc sees no stale ptr bits.  We zero
  * everything AFTER the head — head's gc_size/gc_flags were set by the
  * backend's alloc and must survive. */
-#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes)                            \
-    memset((char *)(payload) + sizeof(ASTroObjectHeader), 0,                  \
-           (size_bytes) - sizeof(ASTroObjectHeader))
+#define AROH_INIT_PAYLOAD(payload, size_bytes)                            \
+    memset((char *)(payload) + sizeof(AroObjectHeader), 0,                  \
+           (size_bytes) - sizeof(AroObjectHeader))
 
 /* Byte payload init: GC never scans these, so skip memset.  Caller fills
  * the bytes before any further alloc. */
-#define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
+#define AROH_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
 
 /* Finalize hook — invoked by the framework's aro_gc_finalize_walk on a
  * payload that the backend's aro_gc_finalize_check reported as dead.
@@ -659,8 +659,8 @@ scm_is_singleton(VALUE v)
  * is intentionally not finalized here (its FILE * lifecycle is managed
  * explicitly via port-close); revisit if we add unowned-port semantics. */
 extern size_t aro_finalize_calls;   /* debug counter */
-#define ASTRO_GC_FINALIZE(payload) do {                                       \
-    ASTroObjectHeader *_aro_h = (ASTroObjectHeader *)(payload);               \
+#define AROH_FINALIZE(payload) do {                                       \
+    AroObjectHeader *_aro_h = (AroObjectHeader *)(payload);               \
     struct sobj      *_aro_o = (struct sobj *)(payload);                      \
     aro_finalize_calls++;                                                      \
     switch ((int)(_aro_h->flags & SCM_TYPE_MASK)) {                           \
@@ -671,9 +671,9 @@ extern size_t aro_finalize_calls;   /* debug counter */
 } while (0)
 
 /* Header layout accessors (framework default for non-moving backends). */
-#define ASTRO_GC_HEADER_SIZE(h)         ((h)->gc_size)
-#define ASTRO_GC_HEADER_SET_SIZE(h, s)  ((h)->gc_size = (uint32_t)(s))
-#define ASTRO_GC_HEADER_GET_FWD(h)      ((h)->gc_fwd)
-#define ASTRO_GC_HEADER_SET_FWD(h, p)   ((h)->gc_fwd = (p))
+#define AROH_HEADER_SIZE(h)         ((h)->gc_size)
+#define AROH_HEADER_SET_SIZE(h, s)  ((h)->gc_size = (uint32_t)(s))
+#define AROH_HEADER_GET_FWD(h)      ((h)->gc_fwd)
+#define AROH_HEADER_SET_FWD(h, p)   ((h)->gc_fwd = (p))
 
 #endif
