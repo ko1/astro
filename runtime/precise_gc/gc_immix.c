@@ -130,7 +130,7 @@ typedef struct ASTroGC {
 
 const char *aro_gc_backend_name = "immix";
 
-static void gc_collect_internal(CTX *c, VALUE *sp_top);
+static void gc_collect_internal(CTX *c);
 
 void
 aro_gc_init(CTX *c)
@@ -284,10 +284,10 @@ hole_alloc(ASTroGC *gc, size_t payload_size)
 }
 
 static void * __attribute__((noinline, cold))
-hole_alloc_slow(CTX *c, size_t payload_size, VALUE *sp_top)
+hole_alloc_slow(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(c);
     void *payload = hole_alloc(gc, payload_size);
     if (!payload) {
         fprintf(stderr, "baruby_gc=immix: OOM (need %zu)\n",
@@ -300,10 +300,9 @@ hole_alloc_slow(CTX *c, size_t payload_size, VALUE *sp_top)
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(gc->common.stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
-        gc_collect_internal(c, sp_top);
+        gc_collect_internal(c);
     }
     size_t total = ALIGN8(payload_size);
     void *payload;
@@ -312,7 +311,7 @@ aro_gc_alloc(CTX *c, size_t payload_size)
     } else {
         payload = hole_alloc(gc, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(c, payload_size, sp_top);
+            payload = hole_alloc_slow(c, payload_size);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
@@ -327,10 +326,9 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(gc->common.stress || bytes_since_gc + payload_size > gc_threshold, 0)) {
-        gc_collect_internal(c, sp_top);
+        gc_collect_internal(c);
     }
     size_t total = ALIGN8(payload_size);
     void *payload;
@@ -339,7 +337,7 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     } else {
         payload = hole_alloc(gc, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(c, payload_size, sp_top);
+            payload = hole_alloc_slow(c, payload_size);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
@@ -440,7 +438,7 @@ sweep(ASTroGC *gc)
 }
 
 static void
-gc_collect_internal(CTX *c, VALUE *sp_top)
+gc_collect_internal(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
@@ -449,7 +447,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
         memset(blocks[b].line_marks, 0, LINES_PER_BLOCK);
     }
 
-    aro_gc_visit_roots(c, gc, mark_edge_immix);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge_immix);
     process_gray(gc);
 
     sweep(gc);
@@ -463,15 +461,13 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
         size_t next = live * GC_THRESHOLD_FACTOR;
         gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
     }
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(c);
 }
 
 

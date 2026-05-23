@@ -65,8 +65,12 @@ aro_gc_alloc_byte(CTX *c, size_t payload_size)
     return p;
 }
 
+/* iter 76: sample-side realloc helper uses our in-place hook for the
+ * happy path.  gc_none has no compaction / scan, so libc realloc is
+ * always sufficient (and cheap).  Returning a non-NULL result here
+ * short-circuits the sample's alloc+memcpy fallback. */
 void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
+aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
 {
     void *p = realloc(old, new_size ? new_size : 1);
     if (!p) { fprintf(stderr, "baruby_gc=none: OOM\n"); abort(); }
@@ -75,12 +79,13 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
     return p;
 }
 
-/* gc_none has no GC scan, so byte / scan-safe paths are identical
- * (= libc realloc).  Provided just to satisfy the linker. */
-void *
-aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
+/* sample's realloc helper reads payload size via this accessor.  In the
+ * gc_none path it's never actually called (in_place wins first), but
+ * provided so linking succeeds. */
+size_t
+aro_gc_size_of(void *payload)
 {
-    return aro_gc_realloc_payload(c, old, new_size);
+    return ((ASTroObjectHeader *)payload)->gc_size;
 }
 
 void

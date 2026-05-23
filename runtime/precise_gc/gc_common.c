@@ -1,23 +1,28 @@
 // gc_common.c — shared GC framework helpers used by every backend.
 //
-// Currently the only resident is `aro_gc_realloc_payload`, which 14 of
-// the 16 backends used to implement with the same 12-line body.  The
-// only backend-specific bits are header layout, which we delegate to
-// the per-backend accessor `aro_gc_size_of`
-// declared in gc.h.
+// iter 76: framework は CTX-opaque 化。 旧版にあった
+// `aro_gc_realloc_payload` / `aro_gc_realloc_byte_payload` は sample stack
+// convention (= sample 内部 slot に park) に依存するため sample 側に移動
+// (baruby_precise: node.c, ascheme_precise: main.c)。
 //
-// gc_none and gc_bump-style backends that don't want this default can
-// implement their own aro_gc_realloc_payload (the linker picks the
-// .o-local definition first).  See gc_none.c.
+// 現在ここに残るのは `aro_gc_realloc_in_place` の weak default のみ。
+// 個別 backend (gc_copy / gc_mark_compact / ...) が override する。
+//
+// header 再初期化 (= park-then-alloc 後に new payload の framework-owned
+// 部分を fresh state に戻す) は sample が `aro_gc_reset_payload_header`
+// helper を呼ぶ。
 
 #include <stdio.h>
 #include <string.h>
-#include "context.h"
+#include "context.h"  /* CTX_struct + sample-provided ASTRO_GC_VISIT_ROOTS contract macro (= 必須) */
 #include "gc.h"
 
 /* Default in-place realloc hook — returns NULL so the caller falls
  * through to the alloc + memcpy path.  Backends that track large objs
- * on a malloc-backed list (gc_copy / gc_mark_compact) override this. */
+ * on a malloc-backed list (gc_copy / gc_mark_compact) override this.
+ *
+ * `c` is opaque here: framework treats CTX as a void *-equivalent.
+ * Backends that override read backend state via ASTRO_GC_INSTANCE. */
 __attribute__((weak))
 void *
 aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
@@ -26,77 +31,22 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
     return NULL;
 }
 
-/* aro_gc_realloc_payload — grow a scan-safe (VALUE-bearing) payload.
- * Caller is responsible for choosing between this and
- * aro_gc_realloc_byte_payload based on whether the payload contains
- * heap-pointer slots (= scan-safe) or raw bytes (= byte). framework
- * never inspects the payload's stored kind to decide. */
-void *
-aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
+/* Restore framework-owned head fields after a `aro_gc_alloc` + memcpy
+ * realloc.  The memcpy from the OLD payload overwrites the freshly-init'd
+ * head of NEW (head is at payload offset 0).  Sample calls this from its
+ * realloc helper to set:
+ *   - gc_size to new_size (= the alloc size)
+ *   - gc_flags to 0       (= no inherited mark/old/dirty/free)
+ *   - gc_fwd  to NULL     (= moving GCs: fresh state)
+ * Sample's `flags` field is intentionally preserved (= same logical
+ * object, just bigger). */
+void
+aro_gc_reset_payload_header(void *payload, size_t new_size)
 {
-    VALUE *sp_top = c->sp;
-    if (!old) return aro_gc_alloc(c, new_size);
-
-    /* Try backend in-place growth first.  When this succeeds (large obj
-     * realloc via mremap), we skip the memcpy entirely and the underlying
-     * buffer may stay at the same virtual address even at large sizes. */
-    void *in_place = aro_gc_realloc_in_place(c, old, new_size);
-    if (in_place) return in_place;
-
-    size_t old_size = aro_gc_size_of(old);
-    size_t copy_bytes = old_size < new_size ? old_size : new_size;
-
-    /* Park `old` in sp_top[0] across the alloc so the GC scan covers it.
-     * `old` is a raw heap pointer (= typed-ptr coming from sample); root
-     * slots are VALUE-shaped, so encode via ARO_VAL for the scramble
-     * backend.  For non-scramble backends ARO_VAL is identity. */
-    sp_top[0] = ARO_VAL(c, old);
-    c->sp = sp_top + 1;
-    void *newp = aro_gc_alloc(c, new_size);
-    c->sp = sp_top;
-    if (copy_bytes) memcpy(newp, ARO_OBJ(c, sp_top[0]), copy_bytes);
-    /* iter 75 Step C: head is now at payload offset 0 (= INSIDE payload),
-     * so the memcpy above overwrites newp's freshly-init'd head with
-     * old's head.  Restore the framework-owned fields:
-     *   - gc_size to new_size (= the alloc size)
-     *   - gc_flags to 0 (= fresh state, no inherited mark/old/dirty/free)
-     *   - gc_fwd to NULL (= for moving GCs, fresh state)
-     * Sample's `flags` field is intentionally preserved (= same logical
-     * object, just bigger). */
-    ASTroObjectHeader *h = (ASTroObjectHeader *)newp;
+    ASTroObjectHeader *h = (ASTroObjectHeader *)payload;
     h->gc_size  = (uint32_t)new_size;
     h->gc_flags = 0;
 #ifdef ASTRO_GC_HAS_FWD
     h->gc_fwd = NULL;
 #endif
-    return newp;
-}
-
-/* aro_gc_realloc_byte_payload — grow a byte (no-scan) payload.  Caller
- * fills the new bytes; framework does not zero-init the growth region. */
-void *
-aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
-{
-    VALUE *sp_top = c->sp;
-    if (!old) return aro_gc_alloc_byte(c, new_size);
-
-    void *in_place = aro_gc_realloc_in_place(c, old, new_size);
-    if (in_place) return in_place;
-
-    size_t old_size = aro_gc_size_of(old);
-    size_t copy_bytes = old_size < new_size ? old_size : new_size;
-
-    sp_top[0] = ARO_VAL(c, old);
-    c->sp = sp_top + 1;
-    void *newp = aro_gc_alloc_byte(c, new_size);
-    c->sp = sp_top;
-    if (copy_bytes) memcpy(newp, ARO_OBJ(c, sp_top[0]), copy_bytes);
-    /* Restore framework head fields — see note in aro_gc_realloc_payload. */
-    ASTroObjectHeader *h = (ASTroObjectHeader *)newp;
-    h->gc_size  = (uint32_t)new_size;
-    h->gc_flags = 0;
-#ifdef ASTRO_GC_HAS_FWD
-    h->gc_fwd = NULL;
-#endif
-    return newp;
 }

@@ -90,7 +90,6 @@ typedef struct ASTroGC {
     FreeSlot   *freelist[NUM_SIZE_CLASSES];
     LargeObj   *large_head;
     CTX        *ctx;
-    VALUE      *sp_high_water;
     ASTroObjectHeader **gray_buf;
     size_t      gray_cnt;
     size_t      gray_capa;
@@ -138,7 +137,7 @@ aro_gc_init(CTX *c)
  * Allocation
  * -------------------------------------------------------------------------- */
 
-static void gc_collect_internal(CTX *c, VALUE *sp_top);
+static void gc_collect_internal(CTX *c);
 
 static ASTroObjectHeader *
 alloc_large(ASTroGC *gc, size_t payload_size)
@@ -171,7 +170,7 @@ oom_abort(void)
 /* Freelist holds slot pointers (= ASTroObjectHeader *).  FreeSlot link
  * lives at slot + sizeof(ASTroObjectHeader). */
 static inline ASTroObjectHeader *
-alloc_slot(CTX *c, size_t payload_size, VALUE *sp_top)
+alloc_slot(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t slot_total = ALIGN8(payload_size);
@@ -182,7 +181,7 @@ alloc_slot(CTX *c, size_t payload_size, VALUE *sp_top)
     size_t sb = size_class_bytes[ci];
 
     if (__builtin_expect(gc->common.stress || gc->bytes_since_gc + payload_size > gc->gc_threshold, 0)) {
-        gc_collect_internal(c, sp_top);
+        gc_collect_internal(c);
     }
 
     ASTroObjectHeader *h;
@@ -206,9 +205,8 @@ alloc_slot(CTX *c, size_t payload_size, VALUE *sp_top)
 static inline void *
 do_alloc(CTX *c, bool is_byte, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    ASTroObjectHeader *h = alloc_slot(c, payload_size, sp_top);
+    ASTroObjectHeader *h = alloc_slot(c, payload_size);
     void *payload = (void *)h;
     /* iter 48 bug fix: freelist-popped slots contain stale data; zero
      * pointer-typed payloads so scan sees VAL_FALSE until caller fills. */
@@ -337,19 +335,13 @@ sweep_region(ASTroGC *gc)
  * -------------------------------------------------------------------------- */
 
 static void
-gc_collect_internal(CTX *c, VALUE *sp_top)
+gc_collect_internal(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
 
-    if (gc->sp_high_water == NULL || sp_top > gc->sp_high_water) {
-        gc->sp_high_water = sp_top;
-    } else {
-        for (VALUE *p = sp_top; p < gc->sp_high_water; p++) *p = 0;
-    }
-
     struct timespec tmark = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -364,15 +356,13 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     }
     gc->common.stats.gc_count++;
     gc->common.stats.major_count++;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(c);
 }
 
 void

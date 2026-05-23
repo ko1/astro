@@ -136,7 +136,6 @@ typedef struct ASTroGC {
     size_t old_major_threshold;
     CTX   *ctx;
     bool   in_minor;
-    VALUE *sp_high_water;
     struct ASTroObjectHeader **gray_buf;
     size_t            gray_cnt;
     size_t            gray_capa;
@@ -155,7 +154,6 @@ typedef struct ASTroGC {
 #define old_major_threshold   (gc->old_major_threshold)
 #define gc_ctx                (gc->ctx)
 #define in_minor              (gc->in_minor)
-#define sp_high_water         (gc->sp_high_water)
 #define gray_buf              (gc->gray_buf)
 #define gray_cnt              (gc->gray_cnt)
 #define gray_capa             (gc->gray_capa)
@@ -385,26 +383,25 @@ set_dirty(ASTroGC *gc, const ASTroObjectHeader *h)
  * Allocation public API
  * --------------------------------------------------------------------------- */
 
-static void gc_collect_minor(CTX *c, VALUE *sp_top);
-static void gc_collect_major(CTX *c, VALUE *sp_top);
+static void gc_collect_minor(CTX *c);
+static void gc_collect_major(CTX *c);
 
 static void __attribute__((noinline, cold))
-maybe_collect_slow(CTX *c, VALUE *sp_top)
+maybe_collect_slow(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    gc_collect_minor(c, sp_top);
+    gc_collect_minor(c);
     if (old_alloc_since_major > old_major_threshold) {
-        gc_collect_major(c, sp_top);
+        gc_collect_major(c);
     }
 }
 
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(gc->common.stress || bytes_since_gc + (ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
-        maybe_collect_slow(c, sp_top);
+        maybe_collect_slow(c);
     }
     size_t slot_total = ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
@@ -422,10 +419,9 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(gc->common.stress || bytes_since_gc + (ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
-        maybe_collect_slow(c, sp_top);
+        maybe_collect_slow(c);
     }
     size_t slot_total = ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
@@ -638,19 +634,13 @@ sweep(ASTroGC *gc, bool minor)
 }
 
 static void
-gc_collect_minor(CTX *c, VALUE *sp_top)
+gc_collect_minor(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = true;
 
-    if (sp_high_water == NULL || sp_top > sp_high_water) {
-        sp_high_water = sp_top;
-    } else {
-        for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
-    }
-
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
 
     if (remset_overflow) {
@@ -692,25 +682,18 @@ gc_collect_minor(CTX *c, VALUE *sp_top)
     gc->common.stats.minor_count++;
     bytes_since_gc = 0;
     in_minor = false;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 static void
-gc_collect_major(CTX *c, VALUE *sp_top)
+gc_collect_major(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = false;
     remset_cnt = 0;
 
-    if (sp_high_water == NULL || sp_top > sp_high_water) {
-        sp_high_water = sp_top;
-    } else {
-        for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
-    }
-
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
 
     sweep(gc, /*minor=*/false);
@@ -722,15 +705,13 @@ gc_collect_major(CTX *c, VALUE *sp_top)
     old_alloc_since_major = 0;
     gc->common.stats.gc_count++;
     gc->common.stats.major_count++;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
-    gc_collect_major(c, sp_top);
+    gc_collect_major(c);
 }
 
 

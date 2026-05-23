@@ -3,7 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include "context.h"
+#include "context.h"  /* sample が提供する SCAN_EDGES / VISIT_ROOTS macro 取得用 (= framework は CTX 中身 access 禁止、 macro 経由のみ) */
 #include "astro_debug.h"
 #include "gc.h"
 
@@ -133,7 +133,6 @@ typedef struct ASTroGC {
     char *to_top;
     char *to_base;
     char *from_base_cur;
-    VALUE *sp_high_water;
 
     /* Large-object lists.  `large_head` is the live list, threaded by
      * LargeObj.next.  `large_gray` is the scan queue during collect. */
@@ -246,7 +245,6 @@ large_alloc(CTX *c, size_t payload_size, size_t aligned)
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    ASTRO_ASSERT(c->sp >= c->env);
     size_t aligned = ALIGN8(payload_size);
     void *payload = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
         ? large_alloc(c, payload_size, aligned)
@@ -265,7 +263,6 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    ASTRO_ASSERT(c->sp >= c->env);
     size_t aligned = ALIGN8(payload_size);
     void *payload = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
         ? large_alloc(c, payload_size, aligned)
@@ -406,9 +403,6 @@ static void
 gc_collect_internal(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    /* sp_top is the caller-maintained c->sp; snapshot it for the duration
-     * of this collect (callee shouldn't mutate c->sp until end). */
-    VALUE *sp_top = c->sp;
     struct timespec t0 = aro_gc_time_begin(c);
     char *from_base = gc->active_base;
     char *from_top_pre = gc->active_top;
@@ -427,29 +421,11 @@ gc_collect_internal(CTX *c)
 
     ASTRO_GC_COMMON(c)->stats.heap_bytes = 0;
 
-    /* Zero stale slots above sp_top up to high-water mark. */
-    if (gc->sp_high_water == NULL || sp_top > gc->sp_high_water) {
-        gc->sp_high_water = sp_top;
-    } else {
-        for (VALUE *p = sp_top; p < gc->sp_high_water; p++) *p = 0;
-    }
-
-    if (ASTRO_DEBUG && ASTRO_GC_COMMON(c)->stress) {
-        /* Skip large-obj pointers (outside from-space arena) — they're
-         * tracked via gc->large_head and not subject to this check. */
-        for (VALUE *p = c->env; p < sp_top; p++) {
-            VALUE v = *p;
-            if (!IS_PTR(v)) continue;
-            char *vp = (char *)v;
-            if (vp >= from_base && vp < from_base + gc->region_bytes) continue;
-            /* not in from-space: must be a large obj.  Trust that the
-             * caller hasn't stashed a stale heap pointer here. */
-        }
-    }
-
-    /* (1) Root scan: forward VALUE pointers in the sp[] range in place. */
+    /* (1) Root scan: forward VALUE pointers in sample-owned root slots.
+     * sample's ASTRO_GC_VISIT_ROOTS macro handles any high-water /
+     * dead-slot zeroing it cares about. */
     struct timespec tcheney = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, forward_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, forward_edge);
 
     /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally.
      * SCAN category calls sample's SCAN_EDGES which dispatches via
@@ -524,7 +500,6 @@ gc_collect_internal(CTX *c)
     }
 
     ASTRO_GC_COMMON(c)->stats.gc_count++;
-    /* c->sp already reflects sp_top (= caller-maintained). */
     aro_gc_time_end(c, t0);
 }
 

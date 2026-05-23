@@ -128,18 +128,11 @@ code_repo_find_by_name(const char *name)
     return NULL;
 }
 
-/* Sample-defined root visitor.  baruby_precise keeps all roots in the
- * linear range c->env .. c->sp (= flat VALUE *).  Each slot is a VALUE
- * (= scrambled in scramble backend); use VISIT_EDGE_VAL so the wrapper
- * handles decode/encode where needed. */
-void
-aro_gc_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
-{
-    VALUE *sp_top = c->sp;
-    for (VALUE *p = c->env; p < sp_top; p++) {
-        ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, p);
-    }
-}
+/* iter 76: framework は CTX-opaque 化したため `aro_gc_visit_roots` 関数は
+ * 廃止。 root visitor は context.h の ASTRO_GC_VISIT_ROOTS macro に inline
+ * 展開する形に変更した (= 各 backend の GC entry で直接 macro 呼び出し)。
+ * sp_high_water 状態は sample-side で持つ。 */
+VALUE *baruby_gc_sp_high_water;
 
 void
 code_repo_add(const char *name, NODE *body, bool force_add)

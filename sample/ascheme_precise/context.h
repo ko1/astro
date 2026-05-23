@@ -443,6 +443,16 @@ VALUE scm_read(CTX *c, FILE *fp);
  * stored in CTX. */
 #define ASTRO_GC_INSTANCE(c)  ((c)->astro_gc)
 
+/* Root visitor contract — sample が framework に提供する。 ascheme は
+ * roots が散在する (sframe chain, globals, loop_args, symbol table,
+ * stdports, ...) ので macro 1 行に押し込まず、 sample-local function
+ * `aro_scheme_visit_roots` (main.c 実装) を呼ぶ形にする。 詳細は
+ * runtime/precise_gc/gc.h の ASTRO_GC_VISIT_ROOTS 説明を参照。 */
+void aro_scheme_visit_roots(CTX *c, void *gc,
+                            void (*edge_visit)(void *, void **));
+#define ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit) \
+    aro_scheme_visit_roots((c), (ctx), (edge_visit))
+
 
 /* Statically-allocated singleton sobj's live in the program's data segment,
  * not on the GC heap.  Their addresses are valid `struct sobj *` values but

@@ -75,7 +75,6 @@ typedef struct ASTroGC {
     AroGcCommonState common;   /* MUST be first field */
     char *region_base, *region_top, *region_end;
     CTX  *ctx;
-    VALUE *sp_high_water;
     size_t bytes_since_gc;
     size_t gc_threshold;
     struct ASTroObjectHeader **gray_buf;
@@ -88,7 +87,6 @@ typedef struct ASTroGC {
 #define region_top      (gc->region_top)
 #define region_end      (gc->region_end)
 #define gc_ctx          (gc->ctx)
-#define sp_high_water   (gc->sp_high_water)
 #define bytes_since_gc  (gc->bytes_since_gc)
 #define gc_threshold    (gc->gc_threshold)
 #define gray_buf        (gc->gray_buf)
@@ -122,13 +120,13 @@ aro_gc_init(CTX *c)
 // Allocation
 // ---------------------------------------------------------------------------
 
-static void gc_collect_internal(CTX *c, VALUE *sp_top);
+static void gc_collect_internal(CTX *c);
 
 static void __attribute__((noinline, cold))
-bump_slow(CTX *c, size_t total, VALUE *sp_top)
+bump_slow(CTX *c, size_t total)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(c);
     if (region_top + total > region_end) {
         fprintf(stderr, "baruby_gc=mark_compact: OOM (need %zu)\n", total);
         abort();
@@ -136,14 +134,14 @@ bump_slow(CTX *c, size_t total, VALUE *sp_top)
 }
 
 static inline ASTroObjectHeader *
-bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
+bump(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = aligned;
     if (__builtin_expect(gc->common.stress
                          || bytes_since_gc + payload_size > gc_threshold
                          || region_top + total > region_end, 0)) {
-        bump_slow(c, total, sp_top);
+        bump_slow(c, total);
     }
     ASTroObjectHeader *h = (ASTroObjectHeader *)region_top;
     h->flags    = 0;
@@ -155,12 +153,12 @@ bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
     return h;
 }
 
-static ASTroObjectHeader *large_alloc(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
+static ASTroObjectHeader *large_alloc(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(gc->common.stress
                          || bytes_since_gc + payload_size > gc_threshold, 0)) {
-        gc_collect_internal(c, sp_top);
+        gc_collect_internal(c);
     }
     LargeObj *lo = (LargeObj *)malloc(sizeof(LargeObj) + aligned);
     if (!lo) { fprintf(stderr, "baruby_gc=mark_compact: large OOM (%zu)\n", payload_size); abort(); }
@@ -178,12 +176,11 @@ static ASTroObjectHeader *large_alloc(CTX *c, size_t payload_size, size_t aligne
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
     ASTroObjectHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
-        ? large_alloc(c, payload_size, aligned, sp_top)
-        : bump       (c, payload_size, aligned, sp_top);
+        ? large_alloc(c, payload_size, aligned)
+        : bump       (c, payload_size, aligned);
     void *payload = (void *)h;
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset((char *)payload + sizeof(ASTroObjectHeader), 0,
@@ -196,12 +193,11 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
     ASTroObjectHeader *h = __builtin_expect(payload_size >= LARGE_THRESHOLD, 0)
-        ? large_alloc(c, payload_size, aligned, sp_top)
-        : bump       (c, payload_size, aligned, sp_top);
+        ? large_alloc(c, payload_size, aligned)
+        : bump       (c, payload_size, aligned);
     void *payload = (void *)h;
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     gc->common.stats.total_bytes += payload_size;
@@ -340,20 +336,14 @@ update_pointers(ASTroObjectHeader *h)
 // ---------------------------------------------------------------------------
 
 static void
-gc_collect_internal(CTX *c, VALUE *sp_top)
+gc_collect_internal(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
 
-    if (sp_high_water == NULL || sp_top > sp_high_water) {
-        sp_high_water = sp_top;
-    } else {
-        for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
-    }
-
     // (1) Mark from roots.
     struct timespec tmark = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -406,7 +396,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     }
 
     // (4) Update roots.
-    aro_gc_visit_roots(c, gc, fwd_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, fwd_edge);
 
     // (5) Slide live region objects to their forwarding addresses.
     //     Large objs don't slide — they stay in place.
@@ -470,15 +460,13 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     }
     gc->common.stats.gc_count++;
     gc->common.stats.major_count++;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(c);
 }
 
 void

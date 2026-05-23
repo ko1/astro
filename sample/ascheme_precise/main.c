@@ -384,8 +384,8 @@ scm_new_frame(CTX *c, struct sframe *parent, int nslots)
 // about (tens of thousands of unique symbols at most).
 // ---------------------------------------------------------------------------
 
-/* Symbol table is referenced from aro_gc_visit_roots below; expose it
- * file-wide rather than static so the root visitor can see it. */
+/* Symbol table is referenced from aro_scheme_visit_roots below; expose
+ * it file-wide rather than static so the root visitor can see it. */
 struct sobj **SYMBOL_TABLE = NULL;
 size_t SYMBOL_TABLE_LEN = 0;
 size_t SYMBOL_TABLE_CAP = 0;
@@ -3182,8 +3182,8 @@ port_make(CTX *c, FILE *fp, bool input, bool owned)
     return SCM_OBJ_VAL(o);
 }
 
-/* Stdports kept file-wide (instead of static) so aro_gc_visit_roots can
- * see them.  They are heap-allocated port sobj's; the alias addresses
+/* Stdports kept file-wide (instead of static) so aro_scheme_visit_roots
+ * can see them.  They are heap-allocated port sobj's; the alias addresses
  * are program-static. */
 VALUE PORT_STDIN  = 0;
 VALUE PORT_STDOUT = 0;
@@ -3743,15 +3743,58 @@ extern struct sobj **SYMBOL_TABLE;
 extern size_t SYMBOL_TABLE_LEN;
 extern VALUE PORT_STDIN, PORT_STDOUT, PORT_STDERR;
 
-/* Base of the scratch sp range — the framework treats c->sp[0..] as a
- * spill region.  Sample-side sp usage is limited to whatever the
- * framework parks across inner allocs (typically 1 slot for the
- * realloc helpers).  Visit the range so the parked old-payload
+/* Base of the scratch sp range — sample-side spill region for the
+ * realloc helpers below.  Visit the range so the parked old-payload
  * pointer survives a GC trigger nested inside the alloc. */
 extern VALUE g_sp_scratch[];
 
+/* iter 76: framework は CTX-opaque 化したため、 c->sp に park する realloc
+ * helper は sample-side で実装する。 g_sp_scratch[0] に park し、 c->sp を
+ * 一時的に進めて inner alloc 中 root scan に含める。 */
+void *
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
+{
+    if (!old) return aro_gc_alloc(c, new_size);
+
+    void *in_place = aro_gc_realloc_in_place(c, old, new_size);
+    if (in_place) return in_place;
+
+    size_t old_size = aro_gc_size_of(old);
+    size_t copy_bytes = old_size < new_size ? old_size : new_size;
+
+    VALUE *sp_top = c->sp;
+    sp_top[0] = (VALUE)old;
+    c->sp = sp_top + 1;
+    void *newp = aro_gc_alloc(c, new_size);
+    c->sp = sp_top;
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
+    aro_gc_reset_payload_header(newp, new_size);
+    return newp;
+}
+
+void *
+aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
+{
+    if (!old) return aro_gc_alloc_byte(c, new_size);
+
+    void *in_place = aro_gc_realloc_in_place(c, old, new_size);
+    if (in_place) return in_place;
+
+    size_t old_size = aro_gc_size_of(old);
+    size_t copy_bytes = old_size < new_size ? old_size : new_size;
+
+    VALUE *sp_top = c->sp;
+    sp_top[0] = (VALUE)old;
+    c->sp = sp_top + 1;
+    void *newp = aro_gc_alloc_byte(c, new_size);
+    c->sp = sp_top;
+    if (copy_bytes) memcpy(newp, (void *)sp_top[0], copy_bytes);
+    aro_gc_reset_payload_header(newp, new_size);
+    return newp;
+}
+
 void
-aro_gc_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
+aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
 {
     /* env / next_env: typed-ptr to sframe (= raw heap pointer). */
     if (c->env)      ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->env);
@@ -3820,11 +3863,11 @@ aro_gc_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
 // ---------------------------------------------------------------------------
 
 /* Scratch slots for c->sp.  ascheme has no per-call VALUE stack, but
- * the framework's realloc helpers (aro_gc_realloc_byte_payload /
- * aro_gc_realloc_payload) park the old payload into sp[0] across an
- * inner alloc so the root scanner keeps it alive.  We hand the GC a
- * tiny scratch buffer rather than NULL.  Visible to aro_gc_visit_roots
- * above (= forward extern), hence non-static. */
+ * the sample-provided realloc helpers (aro_gc_realloc_byte_payload /
+ * aro_gc_realloc_payload, defined above) park the old payload into
+ * sp[0] across an inner alloc so the root scanner keeps it alive.  We
+ * hand the GC a tiny scratch buffer rather than NULL.  Visible to
+ * aro_scheme_visit_roots above (= forward extern), hence non-static. */
 VALUE g_sp_scratch[16];
 
 static CTX *

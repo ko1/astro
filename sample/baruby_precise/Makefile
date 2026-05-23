@@ -95,14 +95,12 @@ GC_NUM := $(GC_NUM_$(GC))
 PRECISE_GC_DIR := $(RUNTIME)/precise_gc
 GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c
 
-# gc_common.c hosts the default aro_gc_realloc_payload (header-aware).
-# gc_none has no GCHeader, so it provides its own realloc_payload and
-# we exclude the default to avoid multiple-definition.
-ifeq ($(GC),none)
-GC_COMMON_SRC :=
-else
+# gc_common.c hosts framework helpers shared by all backends:
+#   - aro_gc_realloc_in_place (weak default; backends override)
+#   - aro_gc_reset_payload_header
+# (iter 76: aro_gc_realloc_payload は sample 側に移動)
+# gc_none も含めて全 backend で必要なので unconditional に link。
 GC_COMMON_SRC := $(PRECISE_GC_DIR)/gc_common.c
-endif
 
 ifeq ($(GC_NUM),)
 $(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist copy_scramble)

@@ -85,7 +85,13 @@ typedef intptr_t VALUE;
 
 /* Accessors.  `c->astro_gc` is `struct ASTroGC *` (forward decl in
  * context.h).  Cast to `AroGcCommonState *` is safe iff each backend's
- * ASTroGC has `AroGcCommonState common` as its first field. */
+ * ASTroGC has `AroGcCommonState common` as its first field.
+ *
+ * **CTX contract**: framework treats CTX as opaque except for the
+ * `astro_gc` field.  Sample MUST declare CTX_struct with `struct ASTroGC
+ * *astro_gc` (= the only field framework reads / writes).  All other
+ * sample-internal fields (sp, env, frame chains, etc.) are invisible to
+ * the framework — sample bridges them via ASTRO_GC_VISIT_ROOTS macro. */
 #define ASTRO_GC_COMMON(c) ((AroGcCommonState *)((c)->astro_gc))
 
 /* `aro_gc_backend_name` identifies which backend was compiled in (=
@@ -170,22 +176,37 @@ extern const char *aro_gc_backend_name;
 
 void  aro_gc_init(CTX *c);
 
-/* Sample-provided root visitor.  Called by every backend's GC entry to
- * iterate over all root slots (= VALUE storage NOT reachable from heap
- * objects).  For each slot the implementation invokes:
- *   - ASTRO_GC_VISIT_EDGE_VAL((gc), edge_visit, slot)  — for VALUE slots
- *   - ASTRO_GC_VISIT_EDGE_PTR((gc), edge_visit, slot)  — for raw typed-ptr slots
+/* ---------------------------------------------------------------------------
+ * Root-visitor contract: ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit)
+ *
+ * Sample MUST define this macro in its context.h (or a header that
+ * context.h includes) BEFORE any framework backend translation unit
+ * pulls in gc.h.  Framework backends invoke it from each GC entry point
+ * to iterate over all root slots (= VALUE / pointer storage that is NOT
+ * reachable from already-scanned heap objects).
+ *
+ * For each root slot the macro body invokes:
+ *   - ASTRO_GC_VISIT_EDGE_VAL((ctx), edge_visit, slot)  — for VALUE slots
+ *   - ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, slot)  — for raw typed-ptr slots
  *
  * Layout examples:
- *   - baruby_precise: linear range c->env .. c->sp (= VALUE *)
+ *   - baruby_precise: linear range c->env .. c->sp (= VALUE *).
+ *     Defined inline in context.h = zero function-call overhead.
  *   - ascheme_precise: c->env (= struct sframe *), c->globals[*].value,
  *                      c->next_env (= tail-call pending), etc.
+ *     Body is large; macro forwards to a sample-local function.
  *
  * `edge_visit` is the backend's per-slot callback (= forward_edge /
- * mark_edge / fwd_edge_compact / ...).  `gc` is the backend's ASTroGC*.
- * Both are opaque to the sample. */
-void  aro_gc_visit_roots(CTX *c, void *gc,
-                         void (*edge_visit)(void *, void **));
+ * mark_edge / fwd_edge_compact / ...).  `ctx` is the backend's ASTroGC*.
+ * Both are opaque to the sample.
+ *
+ * iter 76: framework は CTX-opaque 化。 backend は `c->sp` / `c->env` を
+ * 直接 access しない (= sample stack convention に縛られない)。 root scan
+ * の loop はすべてこの macro 経由。 */
+#ifndef ASTRO_GC_VISIT_ROOTS
+#  error "Sample must define ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit) " \
+         "in its context.h before any framework gc_*.c is compiled"
+#endif
 
 /* aro_gc_fini — tear down the per-instance ASTroGC: release backend
  * resources (mmap'd regions, free-lists, mark bitmaps, etc.) and free
@@ -257,21 +278,27 @@ void *aro_gc_alloc(CTX *c, size_t payload_size);
  * Same c->sp contract as aro_gc_alloc. */
 void *aro_gc_alloc_byte(CTX *c, size_t payload_size);
 
-/* aro_gc_realloc_payload — grow a payload, copying contents.  Preserves
- * the kind/scanability of the original payload.  Same c->sp contract;
- * internally bumps c->sp by 1 to park the old payload during the
- * inner alloc (so it stays scanned through any GC).
+/* aro_gc_realloc_payload / _byte_payload — grow a payload, copying contents.
  *
- * Default impl lives in gc_common.c and calls back into the backend
- * via aro_gc_size_of (declared below) for the memcpy length.  Backends
- * with no per-object header (gc_none) override aro_gc_realloc_payload
- * themselves and don't implement the accessor. */
+ * iter 76: framework は CTX-opaque 化したため、 これらは sample 側で実装
+ * する。 park ロジックが sample stack convention (= c->sp slot 経由など)
+ * に依存するため framework に置けない。
+ *
+ * 典型的な sample 実装パターン:
+ *   1. in-place 成長を `aro_gc_realloc_in_place(c, old, new_size)` で試行。
+ *      成功なら memcpy 不要で返す。
+ *   2. old payload size を `aro_gc_size_of(old)` で取得。
+ *   3. old payload を sample の root slot (= sp[0] 等) に park。
+ *   4. `aro_gc_alloc(c, new_size)` (= scan-safe 版) または
+ *      `aro_gc_alloc_byte(c, new_size)` (= byte 版) を呼ぶ。
+ *   5. park slot から old を再 deref して memcpy。
+ *   6. `aro_gc_reset_payload_header(newp, new_size)` で head を fresh state に。 */
 void *aro_gc_realloc_payload(CTX *c, void *p, size_t new_size);
-/* aro_gc_realloc_byte_payload — same shape but for byte payloads (=
- * caller fills the new bytes, framework skips zero-init growth).
- * Pair-wise with aro_gc_alloc_byte.  Caller chooses based on what
- * they alloc'd; framework does not inspect kind. */
 void *aro_gc_realloc_byte_payload(CTX *c, void *p, size_t new_size);
+
+/* Restore framework-owned head fields after a sample realloc helper's
+ * `aro_gc_alloc` + memcpy.  See gc_common.c. */
+void aro_gc_reset_payload_header(void *payload, size_t new_size);
 
 /* Backend-provided header accessor — given a payload pointer (the
  * value returned by aro_gc_alloc / aro_gc_alloc_byte), return the

@@ -40,11 +40,8 @@ $(error Unknown GC backend "$(GC)")
 endif
 
 GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c
-ifeq ($(GC),none)
-GC_COMMON_SRC :=
-else
+# iter 76: gc_common.c は全 backend で必要 (aro_gc_reset_payload_header 等)。
 GC_COMMON_SRC := $(PRECISE_GC_DIR)/gc_common.c
-endif
 
 # Track current GC selection so a `make GC=foo` after `make GC=bar`
 # actually rebuilds.

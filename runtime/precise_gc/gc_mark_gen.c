@@ -298,40 +298,39 @@ free_slot(ASTroGC *gc, ASTroObjectHeader *h)
 // Alloc API
 // ---------------------------------------------------------------------------
 
-static void minor_gc(CTX *c, VALUE *sp_top);
-static void major_gc(CTX *c, VALUE *sp_top);
+static void minor_gc(CTX *c);
+static void major_gc(CTX *c);
 
 // iter 45: cold-split.  Pull the actual collect dispatch out into a
 // noinline cold helper so maybe_collect's hot body shrinks to 1 branch,
 // helping aro_gc_alloc stay inliner-budget friendly for baruby_ary_new /
 // baruby_str_new.
 static void __attribute__((noinline, cold))
-maybe_collect_slow(CTX *c, VALUE *sp_top)
+maybe_collect_slow(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (old_alloc_since_major > old_major_threshold) {
-        major_gc(c, sp_top);
+        major_gc(c);
         old_alloc_since_major = 0;
     } else {
-        minor_gc(c, sp_top);
+        minor_gc(c);
     }
 }
 
 static inline void
-maybe_collect(CTX *c, size_t add, VALUE *sp_top)
+maybe_collect(CTX *c, size_t add)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(gc->common.stress || young_bytes + add > young_threshold, 0)) {
-        maybe_collect_slow(c, sp_top);
+        maybe_collect_slow(c);
     }
 }
 
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    maybe_collect(c, ALIGN8(payload_size), sp_top);
+    maybe_collect(c, ALIGN8(payload_size));
     size_t slot_total = ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
     ASTroObjectHeader *h = (cls >= 0) ? slab_alloc(gc, payload_size, cls)
@@ -349,9 +348,8 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    maybe_collect(c, ALIGN8(payload_size), sp_top);
+    maybe_collect(c, ALIGN8(payload_size));
     size_t slot_total = ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
     ASTroObjectHeader *h = (cls >= 0) ? slab_alloc(gc, payload_size, cls)
@@ -572,14 +570,14 @@ sweep_old_pages(ASTroGC *gc)
 // ---------------------------------------------------------------------------
 
 static void
-minor_gc(CTX *c, VALUE *sp_top)
+minor_gc(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = true;
 
     struct timespec tmark = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
 
     // Process remset: old objects with heap writes since last minor.
@@ -606,12 +604,11 @@ minor_gc(CTX *c, VALUE *sp_top)
     gc->common.stats.gc_count++;
     gc->common.stats.minor_count++;
     in_minor = false;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 static void
-major_gc(CTX *c, VALUE *sp_top)
+major_gc(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
@@ -619,7 +616,7 @@ major_gc(CTX *c, VALUE *sp_top)
     remset_cnt = 0;
 
     struct timespec tmark = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -638,15 +635,13 @@ major_gc(CTX *c, VALUE *sp_top)
 
     gc->common.stats.gc_count++;
     gc->common.stats.major_count++;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
-    major_gc(c, sp_top);
+    major_gc(c);
 }
 
 void

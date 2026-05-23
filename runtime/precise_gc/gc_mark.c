@@ -18,7 +18,7 @@
 // Allocations larger than the largest size class go to a "large objects"
 // linked list (each large obj is its own mmap region; still no malloc).
 //
-// Mark phase: scan VALUE stack roots c->env..sp_top, gray queue traces
+// Mark phase: scan sample roots via ASTRO_GC_VISIT_ROOTS, gray queue traces
 // outgoing refs.  Same as the old linked-list version.
 //
 // Sweep phase: walk all pages, for each slot check `marked` (skip
@@ -233,15 +233,14 @@ large_alloc(ASTroGC *gc, size_t payload_size)
     return payload;
 }
 
-static void gc_collect_internal(CTX *c, VALUE *sp_top);
+static void gc_collect_internal(CTX *c);
 
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (gc->common.stress || gc->bytes_since_gc + payload_size > gc->gc_threshold) {
-        gc_collect_internal(c, sp_top);
+        gc_collect_internal(c);
     }
     size_t aligned = ALIGN8(payload_size);
     int cls = size_class_for(aligned);
@@ -260,10 +259,9 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (gc->common.stress || gc->bytes_since_gc + payload_size > gc->gc_threshold) {
-        gc_collect_internal(c, sp_top);
+        gc_collect_internal(c);
     }
     size_t aligned = ALIGN8(payload_size);
     int cls = size_class_for(aligned);
@@ -377,13 +375,13 @@ sweep(ASTroGC *gc)
 }
 
 static void
-gc_collect_internal(CTX *c, VALUE *sp_top)
+gc_collect_internal(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
 
     struct timespec tmark = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -398,15 +396,13 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
         size_t next = live * GC_THRESHOLD_FACTOR;
         gc->gc_threshold = next < GC_THRESHOLD_MIN ? GC_THRESHOLD_MIN : next;
     }
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
-    gc_collect_internal(c, sp_top);
+    gc_collect_internal(c);
 }
 
 void

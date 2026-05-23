@@ -271,6 +271,40 @@ typedef struct CTX_struct {
  * ASTroGC を取り出して操作する (= module-static なし)。 */
 #define ASTRO_GC_INSTANCE(c)  ((c)->astro_gc)
 
+/* Root visitor: framework CTX-opaque contract。 baruby_precise は roots を
+ * c->env .. c->sp の linear range で持つので macro 直書きで inline 展開
+ * できる (= zero indirect-call overhead)。 framework backend の GC entry
+ * から呼ばれる。
+ *
+ * iter 76: framework から c->sp / c->env への直接 access を全廃。 すべて
+ * sample 側のこの macro 経由にする。 stale slot の zero-clear (= 旧
+ * sp_high_water logic) は sample が必要なら macro 内で行う ── 現状は
+ * backend 側でやっていたが、 framework は sample stack 構造を知らない
+ * 方が clean。
+ *
+ * Args:
+ *   c          : CTX *
+ *   ctx        : opaque backend handle (= ASTroGC *)
+ *   edge_visit : void (void *ctx, void **slot) callback
+ */
+extern VALUE *baruby_gc_sp_high_water;
+#define ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit) do {                       \
+    VALUE *_aro_sp_top = (c)->sp;                                            \
+    /* Zero stale slots above sp_top up to high-water mark (= pop-only       \
+     * sample side: 値を残したまま sp を戻す convention のため、 古い        \
+     * heap ptr が再 alloc 後 stale で GC scan に混入するのを防ぐ)。 */     \
+    if (baruby_gc_sp_high_water == NULL ||                                   \
+        _aro_sp_top > baruby_gc_sp_high_water) {                             \
+        baruby_gc_sp_high_water = _aro_sp_top;                               \
+    } else {                                                                 \
+        for (VALUE *_p = _aro_sp_top; _p < baruby_gc_sp_high_water; _p++)    \
+            *_p = 0;                                                         \
+    }                                                                        \
+    for (VALUE *_p = (c)->env; _p < _aro_sp_top; _p++) {                     \
+        ASTRO_GC_VISIT_EDGE_VAL((ctx), edge_visit, _p);                      \
+    }                                                                        \
+} while (0)
+
 /* Object shape: outgoing reference を slot pointer 列挙。 visit callback は
  * `void (void *ctx, void **slot)`、 同じ macro で mark / forward / update 全
  * phase 共有。 `ctx` は backend が好きに使える explicit closure

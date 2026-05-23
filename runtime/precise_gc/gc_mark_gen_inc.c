@@ -157,9 +157,9 @@ const char *aro_gc_backend_name = "mark_gen_inc";
 // Incremental mark state.  See header comment.
 static const size_t INC_WORK_PER_ALLOC = (size_t)-1;
 
-static void inc_start_major(CTX *c, VALUE *sp_top);
+static void inc_start_major(CTX *c);
 static void inc_step(ASTroGC *gc, size_t budget);
-static void inc_finish_sweep(CTX *c, VALUE *sp_top);
+static void inc_finish_sweep(CTX *c);
 static void gray_push(ASTroGC *gc, ASTroObjectHeader *h);
 static void mark_value(ASTroGC *gc, VALUE v);
 static void scan_outgoing(ASTroGC *gc, ASTroObjectHeader *h);
@@ -289,44 +289,43 @@ free_slot(ASTroGC *gc, ASTroObjectHeader *h)
 // Alloc API + incremental tick
 // ---------------------------------------------------------------------------
 
-static void minor_gc(CTX *c, VALUE *sp_top);
+static void minor_gc(CTX *c);
 
 // iter 45: cold-split — pull threshold-triggered collect out of inline
 // path.  inc_marking step stays inline since it runs every alloc when
 // active.
 static void __attribute__((noinline, cold))
-maybe_collect_slow(CTX *c, VALUE *sp_top)
+maybe_collect_slow(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (!inc_marking && old_alloc_since_major > old_major_threshold) {
-        inc_start_major(c, sp_top);
+        inc_start_major(c);
         old_alloc_since_major = 0;
     } else {
-        minor_gc(c, sp_top);
+        minor_gc(c);
     }
 }
 
 static inline void
-maybe_collect(CTX *c, size_t add, VALUE *sp_top)
+maybe_collect(CTX *c, size_t add)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (inc_marking) {
         inc_step(gc, INC_WORK_PER_ALLOC);
         if (!inc_marking) {
-            inc_finish_sweep(c, sp_top);
+            inc_finish_sweep(c);
         }
     }
     if (__builtin_expect(gc->common.stress || young_bytes + add > young_threshold, 0)) {
-        maybe_collect_slow(c, sp_top);
+        maybe_collect_slow(c);
     }
 }
 
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    maybe_collect(c, ALIGN8(payload_size), sp_top);
+    maybe_collect(c, ALIGN8(payload_size));
     size_t slot_total = ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
     ASTroObjectHeader *h = (cls >= 0) ? slab_alloc(gc, payload_size, cls)
@@ -344,9 +343,8 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    maybe_collect(c, ALIGN8(payload_size), sp_top);
+    maybe_collect(c, ALIGN8(payload_size));
     size_t slot_total = ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
     ASTroObjectHeader *h = (cls >= 0) ? slab_alloc(gc, payload_size, cls)
@@ -579,14 +577,14 @@ sweep_old_pages(ASTroGC *gc)
 // ---------------------------------------------------------------------------
 
 static void
-minor_gc(CTX *c, VALUE *sp_top)
+minor_gc(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = true;
 
     struct timespec tmark = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
 
     if (remset_overflow) {
@@ -610,12 +608,11 @@ minor_gc(CTX *c, VALUE *sp_top)
     gc->common.stats.gc_count++;
     gc->common.stats.minor_count++;
     in_minor = false;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 static void
-inc_start_major(CTX *c, VALUE *sp_top)
+inc_start_major(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
@@ -623,9 +620,8 @@ inc_start_major(CTX *c, VALUE *sp_top)
     inc_marking = true;
     remset_cnt = 0;
     struct timespec tmark = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
@@ -651,17 +647,17 @@ inc_step(ASTroGC *gc, size_t budget)
 }
 
 static void
-inc_finish_sweep(CTX *c, VALUE *sp_top)
+inc_finish_sweep(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     // Re-scan roots before sweeping.  Objects allocated during the
-    // inc_marking window may have been stored into the VALUE stack
+    // inc_marking window may have been stored into sample-side roots
     // by the mutator without going through any write barrier (we
-    // only have heap-to-heap WB, not stack WB).  Without this re-scan
+    // only have heap-to-heap WB, not root WB).  Without this re-scan
     // they would be unmarked-young and freed by sweep_young.
     struct timespec tmark = aro_gc_phase_begin();
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -676,21 +672,19 @@ inc_finish_sweep(CTX *c, VALUE *sp_top)
     old_alloc_since_major = 0;
     gc->common.stats.gc_count++;
     gc->common.stats.major_count++;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     // External full GC: STW major (skip incremental dance).
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = false;
     inc_marking = false;
     remset_cnt = 0;
-    aro_gc_visit_roots(c, gc, mark_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
     sweep_young(gc, /*clear_marked=*/false);
     sweep_old_pages(gc);
@@ -701,7 +695,6 @@ aro_gc_collect(CTX *c)
     old_alloc_since_major = 0;
     gc->common.stats.gc_count++;
     gc->common.stats.major_count++;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 

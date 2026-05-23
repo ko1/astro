@@ -705,3 +705,63 @@ baruby_print_value(CTX *c, FILE *fp, VALUE v)
         fprintf(fp, "<unknown:0x%lx>", (unsigned long)v);
     }
 }
+
+// ----------------------------------------------------------------------------
+// realloc_payload helpers
+//
+// iter 76: framework は CTX-opaque 化したため、 sample stack convention に
+// 依存する realloc helper は sample-side で実装する。 baruby_precise は
+// c->sp に 1 slot 確保して old を park する pattern (= 旧 gc_common.c と
+// 同じ意味論)。
+//
+// 共通 step:
+//   1. NULL old → 単純な alloc を返す。
+//   2. backend が in-place 成長可能か try (aro_gc_realloc_in_place)。
+//   3. 失敗時: old を sp[0] に park → inner alloc → memcpy。
+//   4. memcpy で newp の head が old のものに上書きされるので
+//      aro_gc_reset_payload_header で fresh state に restore。
+//
+// `old` は raw heap pointer (= 通常 typed-ptr)。 scramble backend では
+// root slot に置く値は scrambled なので ARO_VAL/ARO_OBJ で encode/decode。
+// ----------------------------------------------------------------------------
+void *
+aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
+{
+    if (!old) return aro_gc_alloc(c, new_size);
+
+    void *in_place = aro_gc_realloc_in_place(c, old, new_size);
+    if (in_place) return in_place;
+
+    size_t old_size = aro_gc_size_of(old);
+    size_t copy_bytes = old_size < new_size ? old_size : new_size;
+
+    VALUE *sp_top = c->sp;
+    sp_top[0] = ARO_VAL(c, old);
+    c->sp = sp_top + 1;
+    void *newp = aro_gc_alloc(c, new_size);
+    c->sp = sp_top;
+    if (copy_bytes) memcpy(newp, ARO_OBJ(c, sp_top[0]), copy_bytes);
+    aro_gc_reset_payload_header(newp, new_size);
+    return newp;
+}
+
+void *
+aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
+{
+    if (!old) return aro_gc_alloc_byte(c, new_size);
+
+    void *in_place = aro_gc_realloc_in_place(c, old, new_size);
+    if (in_place) return in_place;
+
+    size_t old_size = aro_gc_size_of(old);
+    size_t copy_bytes = old_size < new_size ? old_size : new_size;
+
+    VALUE *sp_top = c->sp;
+    sp_top[0] = ARO_VAL(c, old);
+    c->sp = sp_top + 1;
+    void *newp = aro_gc_alloc_byte(c, new_size);
+    c->sp = sp_top;
+    if (copy_bytes) memcpy(newp, ARO_OBJ(c, sp_top[0]), copy_bytes);
+    aro_gc_reset_payload_header(newp, new_size);
+    return newp;
+}

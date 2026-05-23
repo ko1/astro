@@ -27,7 +27,7 @@
 //     objects live here.  Major GC alternates between them.
 //
 // Minor GC:
-//   1. Scan roots c->env..sp_top — for each young VALUE, forward to tenured.
+//   1. Scan sample roots via ASTRO_GC_VISIT_ROOTS — forward young → tenured.
 //   2. Scan dirty tenured (remset proxy) — for each young VALUE, forward.
 //   3. Cheney scan-loop over freshly-tenured objects, forwarding their refs.
 //   4. Reset nursery_top.
@@ -95,7 +95,6 @@ typedef struct ASTroGC {
     char *tenured_base, *tenured_top, *tenured_end;
     char *tenured_alt_base;   /* "other" tenured region for major Cheney */
     CTX   *ctx;
-    VALUE *sp_high_water;
     struct ASTroObjectHeader **remset_buf;
     size_t     remset_cnt;
     size_t     remset_capa;
@@ -114,7 +113,6 @@ typedef struct ASTroGC {
 #define tenured_end           (gc->tenured_end)
 #define tenured_alt_base      (gc->tenured_alt_base)
 #define gc_ctx                (gc->ctx)
-#define sp_high_water         (gc->sp_high_water)
 #define remset_buf            (gc->remset_buf)
 #define remset_cnt            (gc->remset_cnt)
 #define remset_capa           (gc->remset_capa)
@@ -166,15 +164,15 @@ aro_gc_init(CTX *c)
 // Allocation
 // ---------------------------------------------------------------------------
 
-static void minor_gc(CTX *c, VALUE *sp_top);
-static void major_gc(CTX *c, VALUE *sp_top);
+static void minor_gc(CTX *c);
+static void major_gc(CTX *c);
 
 static ASTroObjectHeader * __attribute__((noinline, cold))
-pretenure_alloc(CTX *c, size_t payload_size, size_t total, VALUE *sp_top)
+pretenure_alloc(CTX *c, size_t payload_size, size_t total)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (tenured_top + total > tenured_end) {
-        major_gc(c, sp_top);
+        major_gc(c);
         if (tenured_top + total > tenured_end) {
             fprintf(stderr, "baruby_gc=copy_gen_inc: OOM tenured (need %zu)\n", total);
             abort();
@@ -189,20 +187,20 @@ pretenure_alloc(CTX *c, size_t payload_size, size_t total, VALUE *sp_top)
 }
 
 static void __attribute__((noinline, cold))
-nursery_collect_slow(CTX *c, size_t total, VALUE *sp_top)
+nursery_collect_slow(CTX *c, size_t total)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t max_promotion = (size_t)(nursery_top - nursery_base);
     if (tenured_top + max_promotion > tenured_end) {
-        major_gc(c, sp_top);
+        major_gc(c);
     } else {
-        minor_gc(c, sp_top);
+        minor_gc(c);
         if (old_alloc_since_major > old_major_threshold) {
-            major_gc(c, sp_top);
+            major_gc(c);
         }
     }
     if (nursery_top + total > nursery_end) {
-        major_gc(c, sp_top);
+        major_gc(c);
         if (nursery_top + total > nursery_end) {
             fprintf(stderr, "baruby_gc=copy_gen_inc: OOM (need %zu)\n", total);
             abort();
@@ -211,17 +209,17 @@ nursery_collect_slow(CTX *c, size_t total, VALUE *sp_top)
 }
 
 static inline ASTroObjectHeader *
-nursery_bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
+nursery_bump(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = aligned;
 
     if (__builtin_expect(total > NURSERY_BYTES / 2, 0)) {
-        return pretenure_alloc(c, payload_size, total, sp_top);
+        return pretenure_alloc(c, payload_size, total);
     }
 
     if (__builtin_expect(gc->common.stress || nursery_top + total > nursery_end, 0)) {
-        nursery_collect_slow(c, total, sp_top);
+        nursery_collect_slow(c, total);
     }
     ASTroObjectHeader *h = (ASTroObjectHeader *)nursery_top;
     h->flags    = 0;
@@ -234,10 +232,9 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned, VALUE *sp_top)
 void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    ASTroObjectHeader *h = nursery_bump(c, payload_size, aligned, sp_top);
+    ASTroObjectHeader *h = nursery_bump(c, payload_size, aligned);
     void *payload = (void *)h;
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     memset((char *)payload + sizeof(ASTroObjectHeader), 0,
@@ -250,10 +247,9 @@ aro_gc_alloc(CTX *c, size_t payload_size)
 void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    VALUE *sp_top = c->sp;
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t aligned = ALIGN8(payload_size);
-    ASTroObjectHeader *h = nursery_bump(c, payload_size, aligned, sp_top);
+    ASTroObjectHeader *h = nursery_bump(c, payload_size, aligned);
     void *payload = (void *)h;
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
     gc->common.stats.total_bytes += payload_size;
@@ -360,7 +356,7 @@ process_object(ASTroGC *gc, ASTroObjectHeader *h)
  * nursery_bump bloats the alloc hot path past the inliner budget,
  * leaving an extra `call` on every fast-path alloc. */
 static void __attribute__((noinline))
-minor_gc(CTX *c, VALUE *sp_top)
+minor_gc(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
@@ -370,13 +366,7 @@ minor_gc(CTX *c, VALUE *sp_top)
     from_base_cur = nursery_base;
     from_end_cur  = nursery_top;
 
-    if (sp_high_water == NULL || sp_top > sp_high_water) {
-        sp_high_water = sp_top;
-    } else {
-        for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
-    }
-
-    aro_gc_visit_roots(c, gc, forward_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, forward_edge);
 
     for (size_t i = 0; i < remset_cnt; i++) {
         ASTroObjectHeader *h = remset_buf[i];
@@ -403,12 +393,11 @@ minor_gc(CTX *c, VALUE *sp_top)
 
     gc->common.stats.gc_count++;
     gc->common.stats.minor_count++;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 static void
-major_gc(CTX *c, VALUE *sp_top)
+major_gc(CTX *c)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
@@ -427,13 +416,7 @@ major_gc(CTX *c, VALUE *sp_top)
     to_base = new_active_base;
     to_top  = new_active_base;
 
-    if (sp_high_water == NULL || sp_top > sp_high_water) {
-        sp_high_water = sp_top;
-    } else {
-        for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
-    }
-
-    aro_gc_visit_roots(c, gc, forward_edge);
+    ASTRO_GC_VISIT_ROOTS(c, gc, forward_edge);
 
     {
         char *scan = to_base;
@@ -459,15 +442,13 @@ major_gc(CTX *c, VALUE *sp_top)
 
     gc->common.stats.gc_count++;
     gc->common.stats.major_count++;
-    c->sp = sp_top;
     aro_gc_time_end(c, t0);
 }
 
 void
 aro_gc_collect(CTX *c)
 {
-    VALUE *sp_top = c->sp;
-    major_gc(c, sp_top);
+    major_gc(c);
 }
 
 void
