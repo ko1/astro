@@ -376,7 +376,7 @@ minor_gc(CTX *c, VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
+    aro_gc_visit_roots(c, gc, forward_edge);
 
     for (size_t i = 0; i < remset_cnt; i++) {
         ASTroObjectHeader *h = remset_buf[i];
@@ -433,7 +433,7 @@ major_gc(CTX *c, VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
+    aro_gc_visit_roots(c, gc, forward_edge);
 
     {
         char *scan = to_base;

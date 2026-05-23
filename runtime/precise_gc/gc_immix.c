@@ -449,7 +449,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
         memset(blocks[b].line_marks, 0, LINES_PER_BLOCK);
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge_immix);
     process_gray(gc);
 
     sweep(gc);

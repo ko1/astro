@@ -579,7 +579,7 @@ minor_gc(CTX *c, VALUE *sp_top)
     in_minor = true;
 
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
 
     // Process remset: old objects with heap writes since last minor.
@@ -619,7 +619,7 @@ major_gc(CTX *c, VALUE *sp_top)
     remset_cnt = 0;
 
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 

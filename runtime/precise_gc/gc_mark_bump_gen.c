@@ -410,7 +410,7 @@ minor_gc(CTX *c, VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
+    aro_gc_visit_roots(c, gc, forward_edge);
 
     if (remset_overflow) {
         remset_heap_walk(gc, remset_visit_minor);
@@ -515,18 +515,7 @@ major_gc(CTX *c, VALUE *sp_top)
     scan_head = scan_tail = 0;
     gray_cnt = 0;
 
-    for (VALUE *p = c->env; p < sp_top; p++) {
-        VALUE v = *p;
-        if (!IS_PTR(v)) continue;
-        ASTroObjectHeader *h = (ASTroObjectHeader *)v;
-        if (in_nursery(gc, (void *)v)) {
-            *p = (VALUE)major_promote(gc, h);
-            scan_push(gc, (ASTroObjectHeader *)*p - 1);
-        } else if (!HDR_MARKED(h)) {
-            HDR_SET_MARKED(h);
-            gray_push(gc, h);
-        }
-    }
+    aro_gc_visit_roots(c, gc, major_edge);
 
     while (gray_cnt > 0 || scan_head < scan_tail) {
         while (gray_cnt > 0) {

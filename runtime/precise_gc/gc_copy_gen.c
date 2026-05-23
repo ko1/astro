@@ -431,7 +431,7 @@ minor_gc(CTX *c, VALUE *sp_top)
     /* Cheney has no separate mark phase: trace and relocate are interleaved. */
     struct timespec tcheney = aro_gc_phase_begin();
     // (1) Roots
-    for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
+    aro_gc_visit_roots(c, gc, forward_edge);
 
     // (2) Dirty tenured (explicit remset).
     if (remset_overflow) {
@@ -498,7 +498,7 @@ major_gc(CTX *c, VALUE *sp_top)
     }
 
     struct timespec tcheney = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
+    aro_gc_visit_roots(c, gc, forward_edge);
 
     {
         char *scan = to_base;

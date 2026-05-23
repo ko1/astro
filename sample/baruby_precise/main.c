@@ -128,6 +128,19 @@ code_repo_find_by_name(const char *name)
     return NULL;
 }
 
+/* Sample-defined root visitor.  baruby_precise keeps all roots in the
+ * linear range c->env .. c->sp (= flat VALUE *).  Each slot is a VALUE
+ * (= scrambled in scramble backend); use VISIT_EDGE_VAL so the wrapper
+ * handles decode/encode where needed. */
+void
+aro_gc_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
+{
+    VALUE *sp_top = c->sp;
+    for (VALUE *p = c->env; p < sp_top; p++) {
+        ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, p);
+    }
+}
+
 void
 code_repo_add(const char *name, NODE *body, bool force_add)
 {

@@ -515,9 +515,7 @@ gc_collect_internal(CTX *c)
      * calls forward_edge with the raw addr, then re-encodes with the
      * new scramble_R before writing back. */
     struct timespec tcheney = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) {
-        ASTRO_GC_VISIT_EDGE_VAL(gc, forward_edge, p);
-    }
+    aro_gc_visit_roots(c, gc, forward_edge);
 
     /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally.
      * SCAN category calls sample's SCAN_EDGES which dispatches via

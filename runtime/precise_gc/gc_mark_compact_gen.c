@@ -376,7 +376,7 @@ minor_gc(CTX *c, VALUE *sp_top)
     }
 
     struct timespec tminor = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
+    aro_gc_visit_roots(c, gc, forward_edge_minor);
 
     if (remset_overflow) {
         remset_heap_walk(gc, remset_visit_minor);
@@ -518,7 +518,7 @@ major_gc(CTX *c, VALUE *sp_top)
     }
 
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value_major(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge_major);
     process_gray_major(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -549,7 +549,7 @@ major_gc(CTX *c, VALUE *sp_top)
         }
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value_compact(gc, *p);
+    aro_gc_visit_roots(c, gc, fwd_edge_compact);
 
     {
         char *p = tenured_base;
@@ -604,7 +604,7 @@ major_gc(CTX *c, VALUE *sp_top)
             for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
         }
 
-        for (VALUE *p = c->env; p < sp_top; p++) *p = forward_value(gc, *p);
+        aro_gc_visit_roots(c, gc, forward_edge_minor);
 
         {
             char *p = tenured_base;

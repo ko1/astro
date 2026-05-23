@@ -349,7 +349,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     }
 
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 

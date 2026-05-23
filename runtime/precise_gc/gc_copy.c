@@ -449,9 +449,7 @@ gc_collect_internal(CTX *c)
 
     /* (1) Root scan: forward VALUE pointers in the sp[] range in place. */
     struct timespec tcheney = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) {
-        forward_edge(gc, (void **)p);
-    }
+    aro_gc_visit_roots(c, gc, forward_edge);
 
     /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally.
      * SCAN category calls sample's SCAN_EDGES which dispatches via

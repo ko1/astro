@@ -504,7 +504,7 @@ minor_gc(CTX *c, VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value(gc, *p);
+    aro_gc_visit_roots(c, gc, fwd_edge_minor);
 
     for (size_t i = 0; i < remset_cnt; i++) {
         ASTroObjectHeader *const h = remset_buf[i];
@@ -616,7 +616,7 @@ major_gc(CTX *c, VALUE *sp_top)
         memset(blocks[b].line_marks, 0, LINES_PER_BLOCK);
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value_major(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge_major);
     process_gray_major(gc);
 
     sweep_major(gc);

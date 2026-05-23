@@ -353,7 +353,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
 
     // (1) Mark from roots.
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -406,7 +406,7 @@ gc_collect_internal(CTX *c, VALUE *sp_top)
     }
 
     // (4) Update roots.
-    for (VALUE *p = c->env; p < sp_top; p++) *p = fwd_value(*p);
+    aro_gc_visit_roots(c, gc, fwd_edge);
 
     // (5) Slide live region objects to their forwarding addresses.
     //     Large objs don't slide — they stay in place.

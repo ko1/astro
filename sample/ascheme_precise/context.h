@@ -97,6 +97,12 @@ enum sobj_type {
     OBJ_PROMISE,        // delay/force memoizing closure
     OBJ_PORT,
     OBJ_CONT,
+    /* OBJ_FRAME — struct sframe; allocated via aro_gc_alloc.  Used so the
+     * framework's SCAN_EDGES dispatch can identify a frame payload and
+     * walk its parent + slots.  sframe layout starts with ASTroObjectHeader
+     * at offset 0 (same as struct sobj), so the framework can read head.flags
+     * via either cast. */
+    OBJ_FRAME,
 };
 
 struct sobj;
@@ -159,7 +165,12 @@ struct sobj {
     };
 };
 
+/* struct sframe head: ASTroObjectHeader at offset 0 — same layout contract
+ * as struct sobj.  Type tag = OBJ_FRAME (in head.flags low 5 bits).  This
+ * lets SCAN_EDGES dispatch uniformly over `void *payload` regardless of
+ * whether the payload is a sobj or sframe. */
 struct sframe {
+    ASTroObjectHeader head;
     struct sframe *parent;
     int nslots;
     VALUE slots[];
@@ -245,6 +256,12 @@ typedef struct CTX_struct {
     // common` for ASTRO_GC_COMMON() cast to work).  Allocated by
     // aro_gc_init() and freed by aro_gc_fini().
     struct ASTroGC *astro_gc;
+
+    // Framework-required spill-stack top.  ascheme uses lexical envs (=
+    // c->env) rather than a flat sp-style VALUE stack, so this field is
+    // never written by the sample, only by the GC's collect/alloc paths
+    // (which read/write c->sp as part of the alloc contract).  Kept NULL.
+    VALUE *sp;
 
     // Current lexical environment chain (closures + call frames).
     struct sframe *env;
@@ -388,5 +405,139 @@ void scm_error(CTX *c, const char *fmt, ...);
 // Print + read.
 void scm_display(FILE *fp, VALUE v, bool readable);
 VALUE scm_read(CTX *c, FILE *fp);
+
+// ---------------------------------------------------------------------------
+// Precise-GC integration: SCAN_EDGES + IS_PTR for sample-side filtering.
+// ---------------------------------------------------------------------------
+
+/* Accessor used by every backend (= ASTroGC *) — points at CTX's astro_gc
+ * field set up at aro_gc_init time.  Each backend typedefs `ASTroGC` as
+ * its own concrete struct, matching the forward-decl `struct ASTroGC`
+ * stored in CTX. */
+#define ASTRO_GC_INSTANCE(c)  ((c)->astro_gc)
+
+
+/* Statically-allocated singleton sobj's live in the program's data segment,
+ * not on the GC heap.  Their addresses are valid `struct sobj *` values but
+ * the GC framework must NOT attempt to mark / set bitmap bits / forward
+ * them (= would write into pages they don't belong to).  We expose the
+ * test as inline so it folds away when v is a known-tagged immediate. */
+static inline bool
+scm_is_singleton(VALUE v)
+{
+    return v == SCM_OBJ_VAL(&S_NIL_OBJ)
+        || v == SCM_OBJ_VAL(&S_TRUE_OBJ)
+        || v == SCM_OBJ_VAL(&S_FALSE_OBJ)
+        || v == SCM_OBJ_VAL(&S_UNSPEC_OBJ)
+        || v == SCM_OBJ_VAL(&S_EOF_OBJ);
+}
+
+/* IS_PTR — framework-facing predicate.  Called by every backend's
+ * mark_value / forward_value to skip values that aren't GC-managed heap
+ * pointers.  In ascheme that means fixnums, inline flonums, AND the
+ * five process-static singletons (which look like real pointers but
+ * aren't in any GC page). */
+#define IS_PTR(v)   (SCM_IS_PTR(v) && !scm_is_singleton((VALUE)(v)))
+
+/* Helper: visit one VALUE slot, but skip framework-side dispatch for
+ * singletons (they look like ptrs to SCM_IS_PTR but the GC framework
+ * doesn't manage them).  Used by both SCAN_EDGES and root visit. */
+#define ASCHEME_VISIT_VAL_SLOT(ctx, fn, slot_ptr) do {                       \
+    VALUE *_avs = (VALUE *)(slot_ptr);                                       \
+    VALUE  _av  = *_avs;                                                     \
+    if (SCM_IS_PTR(_av) && !scm_is_singleton(_av)) {                         \
+        ASTRO_GC_VISIT_EDGE_VAL((ctx), (fn), _avs);                          \
+    }                                                                         \
+} while (0)
+
+/* SCAN_EDGES — invoked by the framework on every live heap object's
+ * payload.  Dispatch on head.flags & SCM_TYPE_MASK and walk inner
+ * VALUE / typed-ptr slots.  Scalar-only types (numbers, chars, etc.)
+ * fall through to default and have nothing to do. */
+#define ASTRO_GC_SCAN_EDGES(payload, payload_size, ctx, edge_visit) do {     \
+    ASTroObjectHeader *_h = (ASTroObjectHeader *)(payload);                  \
+    (void)(payload_size);                                                     \
+    switch (_h->flags & SCM_TYPE_MASK) {                                      \
+      case OBJ_PAIR: {                                                        \
+          struct sobj *_o = (struct sobj *)(payload);                         \
+          ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->pair.car);           \
+          ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->pair.cdr);           \
+          break;                                                              \
+      }                                                                       \
+      case OBJ_VECTOR: {                                                      \
+          struct sobj *_o = (struct sobj *)(payload);                         \
+          /* items[] is a separate aro_gc_alloc payload (raw VALUE array      \
+           * with an ASTroObjectHeader prefix).  Visit the typed-ptr slot     \
+           * so a moving GC forwards the items pointer, then walk the         \
+           * VALUE entries directly from here — items[] itself has no         \
+           * sample type tag, so SCAN_EDGES on it would fall through. */     \
+          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&_o->vec.items);\
+          for (size_t _i = 0; _i < _o->vec.len; _i++) {                       \
+              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->vec.items[_i]);  \
+          }                                                                   \
+          break;                                                              \
+      }                                                                       \
+      case OBJ_CLOSURE: {                                                     \
+          struct sobj *_o = (struct sobj *)(payload);                         \
+          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                          \
+                                   (void **)&_o->closure.env);                \
+          /* body is a host-side NODE *, not GC-managed. */                  \
+          break;                                                              \
+      }                                                                       \
+      case OBJ_PROMISE: {                                                     \
+          struct sobj *_o = (struct sobj *)(payload);                         \
+          ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->promise.thunk);      \
+          ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->promise.value);      \
+          break;                                                              \
+      }                                                                       \
+      case OBJ_MVALUES: {                                                     \
+          struct sobj *_o = (struct sobj *)(payload);                         \
+          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&_o->mv.items); \
+          for (size_t _i = 0; _i < _o->mv.len; _i++) {                        \
+              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->mv.items[_i]);   \
+          }                                                                   \
+          break;                                                              \
+      }                                                                       \
+      case OBJ_CONT: {                                                        \
+          struct sobj *_o = (struct sobj *)(payload);                         \
+          ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->result);       \
+          break;                                                              \
+      }                                                                       \
+      case OBJ_FRAME: {                                                       \
+          struct sframe *_f = (struct sframe *)(payload);                     \
+          ASTRO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                          \
+                                   (void **)&_f->parent);                     \
+          for (int _i = 0; _i < _f->nslots; _i++) {                           \
+              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_f->slots[_i]);      \
+          }                                                                   \
+          break;                                                              \
+      }                                                                       \
+      /* OBJ_STRING / OBJ_SYMBOL / OBJ_CHAR / OBJ_DOUBLE / OBJ_BIGNUM /        \
+       * OBJ_RATIONAL / OBJ_COMPLEX / OBJ_PORT / OBJ_PRIM — no scannable       \
+       * VALUE / sframe slots (mpz/mpq bytes / char buffer are byte payloads  \
+       * which the framework's BYTE / opaque categories handle separately).   \
+       * OBJ_NIL / OBJ_BOOL / OBJ_UNSPEC / OBJ_EOF are singletons that should  \
+       * not reach SCAN_EDGES anyway (IS_PTR filters them at root entry). */  \
+      default: break;                                                          \
+    }                                                                          \
+} while (0)
+
+/* Scan-safe init: aro_gc_alloc zero-fills the payload so a GC scan
+ * triggered immediately after alloc sees no stale ptr bits.  We zero
+ * everything AFTER the head — head's gc_size/gc_flags were set by the
+ * backend's alloc and must survive. */
+#define ASTRO_GC_INIT_PAYLOAD(payload, size_bytes)                            \
+    memset((char *)(payload) + sizeof(ASTroObjectHeader), 0,                  \
+           (size_bytes) - sizeof(ASTroObjectHeader))
+
+/* Byte payload init: GC never scans these, so skip memset.  Caller fills
+ * the bytes before any further alloc. */
+#define ASTRO_GC_INIT_BYTE_PAYLOAD(payload, size_bytes) ((void)0)
+
+/* Header layout accessors (framework default for non-moving backends). */
+#define ASTRO_GC_HEADER_SIZE(h)         ((h)->gc_size)
+#define ASTRO_GC_HEADER_SET_SIZE(h, s)  ((h)->gc_size = (uint32_t)(s))
+#define ASTRO_GC_HEADER_GET_FWD(h)      ((h)->gc_fwd)
+#define ASTRO_GC_HEADER_SET_FWD(h, p)   ((h)->gc_fwd = (p))
 
 #endif

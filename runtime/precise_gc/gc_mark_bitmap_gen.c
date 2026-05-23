@@ -650,7 +650,7 @@ gc_collect_minor(CTX *c, VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
 
     if (remset_overflow) {
@@ -710,7 +710,7 @@ gc_collect_major(CTX *c, VALUE *sp_top)
         for (VALUE *p = sp_top; p < sp_high_water; p++) *p = 0;
     }
 
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
 
     sweep(gc, /*minor=*/false);

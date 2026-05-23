@@ -586,7 +586,7 @@ minor_gc(CTX *c, VALUE *sp_top)
     in_minor = true;
 
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
 
     if (remset_overflow) {
@@ -623,7 +623,7 @@ inc_start_major(CTX *c, VALUE *sp_top)
     inc_marking = true;
     remset_cnt = 0;
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
     c->sp = sp_top;
     aro_gc_time_end(c, t0);
@@ -661,14 +661,7 @@ inc_finish_sweep(CTX *c, VALUE *sp_top)
     // only have heap-to-heap WB, not stack WB).  Without this re-scan
     // they would be unmarked-young and freed by sweep_young.
     struct timespec tmark = aro_gc_phase_begin();
-    for (VALUE *p = c->env; p < sp_top; p++) {
-        VALUE v = *p;
-        if (!IS_PTR(v)) continue;
-        ASTroObjectHeader *h = (ASTroObjectHeader *)v;
-        if (HDR_MARKED(h)) continue;
-        HDR_SET_MARKED(h);
-        gray_push(gc, h);
-    }
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -697,7 +690,7 @@ aro_gc_collect(CTX *c)
     in_minor = false;
     inc_marking = false;
     remset_cnt = 0;
-    for (VALUE *p = c->env; p < sp_top; p++) mark_value(gc, *p);
+    aro_gc_visit_roots(c, gc, mark_edge);
     process_gray(gc);
     sweep_young(gc, /*clear_marked=*/false);
     sweep_old_pages(gc);

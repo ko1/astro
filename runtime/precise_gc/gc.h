@@ -170,6 +170,23 @@ extern const char *aro_gc_backend_name;
 
 void  aro_gc_init(CTX *c);
 
+/* Sample-provided root visitor.  Called by every backend's GC entry to
+ * iterate over all root slots (= VALUE storage NOT reachable from heap
+ * objects).  For each slot the implementation invokes:
+ *   - ASTRO_GC_VISIT_EDGE_VAL((gc), edge_visit, slot)  — for VALUE slots
+ *   - ASTRO_GC_VISIT_EDGE_PTR((gc), edge_visit, slot)  — for raw typed-ptr slots
+ *
+ * Layout examples:
+ *   - baruby_precise: linear range c->env .. c->sp (= VALUE *)
+ *   - ascheme_precise: c->env (= struct sframe *), c->globals[*].value,
+ *                      c->next_env (= tail-call pending), etc.
+ *
+ * `edge_visit` is the backend's per-slot callback (= forward_edge /
+ * mark_edge / fwd_edge_compact / ...).  `gc` is the backend's ASTroGC*.
+ * Both are opaque to the sample. */
+void  aro_gc_visit_roots(CTX *c, void *gc,
+                         void (*edge_visit)(void *, void **));
+
 /* aro_gc_fini — tear down the per-instance ASTroGC: release backend
  * resources (mmap'd regions, free-lists, mark bitmaps, etc.) and free
  * the heap-allocated ASTroGC struct itself.  Sets `c->astro_gc` to

@@ -49,12 +49,37 @@ struct sobj S_EOF_OBJ    = { .head = { .flags = OBJ_EOF } };
 
 static CTX *gmp_g_ctx = NULL;
 
+/* GMP allocator hooks.  GMP passes the user-visible pointer it received
+ * from gmp_alloc; underneath, the real heap allocation has an
+ * ASTroObjectHeader prefix (= the framework records gc_size there).
+ * We expose `payload = raw + sizeof(head)` to GMP and round-trip
+ * back to `raw = payload - sizeof(head)` on realloc / free.
+ *
+ * Why a separate offset rather than just `aro_gc_alloc_byte(c, sz)`:
+ * mark / immix / mark_bitmap_gen / etc. write into the header at GC
+ * time (mark bit, free-list link).  If GMP wrote payload bytes into
+ * the same memory the framework would clobber them.  The header has
+ * to stay live and untouched between GMP's writes. */
 static void *
-gmp_alloc(size_t sz)            { return aro_gc_alloc_byte(gmp_g_ctx, sz); }
+gmp_alloc(size_t sz)
+{
+    char *raw = (char *)aro_gc_alloc_byte(gmp_g_ctx, sizeof(ASTroObjectHeader) + sz);
+    return raw + sizeof(ASTroObjectHeader);
+}
+
 static void *
-gmp_realloc(void *p, size_t old, size_t nw) { (void)old; (void)p; return realloc(p, nw); }
+gmp_realloc(void *p, size_t old, size_t nw)
+{
+    (void)old;
+    if (!p) return gmp_alloc(nw);
+    char *raw = (char *)p - sizeof(ASTroObjectHeader);
+    char *newraw = (char *)aro_gc_realloc_byte_payload(gmp_g_ctx, raw,
+                                                       sizeof(ASTroObjectHeader) + nw);
+    return newraw + sizeof(ASTroObjectHeader);
+}
+
 static void
-gmp_free(void *p, size_t sz)    { (void)p; (void)sz; /* GC sweeps (or leaks under gc_none) */ }
+gmp_free(void *p, size_t sz)    { (void)p; (void)sz; /* GC sweeps */ }
 
 struct sobj *
 scm_alloc(CTX *c, int type)
@@ -289,6 +314,10 @@ scm_new_frame(CTX *c, struct sframe *parent, int nslots)
 {
     struct sframe *f = (struct sframe *)aro_gc_alloc(c,
         sizeof(struct sframe) + sizeof(VALUE) * (nslots ? nslots : 1));
+    /* Tag the frame so SCAN_EDGES can identify it.  sframe shares the
+     * head-at-offset-0 layout with struct sobj, so the framework-stored
+     * gc_size / gc_flags survive; we only set the sample type bits. */
+    SCM_SET_TYPE((struct sobj *)f, OBJ_FRAME);
     f->parent = parent;
     f->nslots = nslots;
     for (int i = 0; i < nslots; i++) f->slots[i] = SCM_UNSPEC;
@@ -300,9 +329,11 @@ scm_new_frame(CTX *c, struct sframe *parent, int nslots)
 // about (tens of thousands of unique symbols at most).
 // ---------------------------------------------------------------------------
 
-static struct sobj **SYMBOL_TABLE = NULL;
-static size_t SYMBOL_TABLE_LEN = 0;
-static size_t SYMBOL_TABLE_CAP = 0;
+/* Symbol table is referenced from aro_gc_visit_roots below; expose it
+ * file-wide rather than static so the root visitor can see it. */
+struct sobj **SYMBOL_TABLE = NULL;
+size_t SYMBOL_TABLE_LEN = 0;
+size_t SYMBOL_TABLE_CAP = 0;
 
 VALUE
 scm_intern(CTX *c, const char *name)
@@ -1702,6 +1733,13 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         // frame, so we can park it on the C stack via `alloca` and
         // avoid the heap alloc entirely.  Lifetime = the rest of this
         // scm_apply call, which is exactly what the body needs.
+        //
+        // Disabled under a precise GC backend (BARUBY_GC != NONE):
+        // the GC root visitor traverses c->env, which would write to
+        // stack memory (= corrupt frame header) or call bitmap_set on
+        // an off-heap address (= SEGV).  Heap-allocated frames are
+        // tagged OBJ_FRAME so SCAN_EDGES dispatches correctly.
+#if BARUBY_GC == BARUBY_GC_NONE
         if (LIKELY(cl->closure.leaf)) {
             int total = cl->closure.nparams + (cl->closure.has_rest ? 1 : 0);
             if (cl->closure.has_rest) {
@@ -1720,7 +1758,9 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
                     rest = scm_cons(c, argv[i], rest);
                 new_env->slots[cl->closure.nparams] = rest;
             }
-        } else {
+        } else
+#endif
+        {
             new_env = build_frame_for(c, cl, argc, argv);
         }
         struct sframe *saved = c->env;
@@ -3019,9 +3059,12 @@ port_make(CTX *c, FILE *fp, bool input, bool owned)
     return SCM_OBJ_VAL(o);
 }
 
-static VALUE PORT_STDIN  = 0;
-static VALUE PORT_STDOUT = 0;
-static VALUE PORT_STDERR = 0;
+/* Stdports kept file-wide (instead of static) so aro_gc_visit_roots can
+ * see them.  They are heap-allocated port sobj's; the alias addresses
+ * are program-static. */
+VALUE PORT_STDIN  = 0;
+VALUE PORT_STDOUT = 0;
+VALUE PORT_STDERR = 0;
 
 PRIM(open_input_file) {
     (void)argc;
@@ -3546,8 +3589,118 @@ arith_dispatch3(CTX *c, struct arith_cache *cache, const char *opname, VALUE exp
 }
 
 // ---------------------------------------------------------------------------
+// Precise GC root visitor.  Called by every backend's collect path to mark
+// (or forward) every VALUE / heap-ptr slot that lives OUTSIDE the GC heap.
+//
+// ascheme keeps roots in a small set of places:
+//   - c->env, c->next_env       — typed-ptr to sframe (struct sframe *)
+//   - c->globals[i].value       — VALUE
+//   - c->globals[i].name        — raw byte payload (= heap-allocated cstr)
+//   - c->loop_args[]            — VALUE temp slots used by self-tail-call
+//   - c->env_chain[]            — sframe parent-chain cache; invalidated
+//                                  via env_serial++ below to keep things
+//                                  simple
+//   - SYMBOL_TABLE[i]           — interned OBJ_SYMBOL sobj
+//   - PORT_STDIN/STDOUT/STDERR  — heap-allocated port sobj's, kept as
+//                                  C globals (not via c->globals)
+//   - PRIM_*_VAL                — aliases for c->globals[].value, so they
+//                                  are kept alive transitively.  We do NOT
+//                                  visit them explicitly here.
+//
+// Cache invalidation: we bump c->globals_serial and c->env_serial each
+// time so all gref / arith / env-chain caches re-resolve through the
+// rooted globals[] and env on next access.  This keeps the cache contents
+// (= VALUEs / sframe* not visible to root visit) from being treated as
+// independent roots.  Under non-moving GC the cached values would in fact
+// remain valid as pointers, but we still want to avoid the framework
+// touching off-heap addresses they sometimes hold.
+// ---------------------------------------------------------------------------
+
+extern struct sobj **SYMBOL_TABLE;
+extern size_t SYMBOL_TABLE_LEN;
+extern VALUE PORT_STDIN, PORT_STDOUT, PORT_STDERR;
+
+/* Base of the scratch sp range — the framework treats c->sp[0..] as a
+ * spill region.  Sample-side sp usage is limited to whatever the
+ * framework parks across inner allocs (typically 1 slot for the
+ * realloc helpers).  Visit the range so the parked old-payload
+ * pointer survives a GC trigger nested inside the alloc. */
+extern VALUE g_sp_scratch[];
+
+void
+aro_gc_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
+{
+    /* env / next_env: typed-ptr to sframe (= raw heap pointer). */
+    if (c->env)      ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->env);
+    if (c->next_env) ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->next_env);
+
+    /* Framework-managed spill range (= aro_gc_realloc_byte_payload etc.
+     * stash the old payload here across an inner alloc).  Walks any
+     * occupied slot — raw typed-ptr semantics suffice because the only
+     * thing parked is a raw void *. */
+    for (VALUE *p = g_sp_scratch; p < c->sp; p++) {
+        ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)p);
+    }
+
+    /* Globals: name (raw byte payload) + value (VALUE).  Filter singletons
+     * from VALUE-slot visits so the framework doesn't touch their off-heap
+     * headers (= bitmap_set on a non-page address would SEGV). */
+    for (size_t i = 0; i < c->globals_size; i++) {
+        if (c->globals[i].name) {
+            ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit,
+                                     (void **)&c->globals[i].name);
+        }
+        VALUE v = c->globals[i].value;
+        if (SCM_IS_PTR(v) && !scm_is_singleton(v)) {
+            ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &c->globals[i].value);
+        }
+    }
+
+    /* Self-tail-call temp args (= live across the call_K → loop body
+     * trampoline, before frame-slot writeback). */
+    for (int i = 0; i < ASCHEME_LOOP_MAX_PARAMS; i++) {
+        VALUE v = c->loop_args[i];
+        if (SCM_IS_PTR(v) && !scm_is_singleton(v)) {
+            ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &c->loop_args[i]);
+        }
+    }
+
+    /* Process-static roots stored as C globals. */
+    if (SYMBOL_TABLE) {
+        for (size_t i = 0; i < SYMBOL_TABLE_LEN; i++) {
+            if (SYMBOL_TABLE[i]) {
+                ASTRO_GC_VISIT_EDGE_PTR(gc, edge_visit,
+                                         (void **)&SYMBOL_TABLE[i]);
+            }
+        }
+    }
+    if (SCM_IS_PTR(PORT_STDIN)  && !scm_is_singleton(PORT_STDIN))
+        ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &PORT_STDIN);
+    if (SCM_IS_PTR(PORT_STDOUT) && !scm_is_singleton(PORT_STDOUT))
+        ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &PORT_STDOUT);
+    if (SCM_IS_PTR(PORT_STDERR) && !scm_is_singleton(PORT_STDERR))
+        ASTRO_GC_VISIT_EDGE_VAL(gc, edge_visit, &PORT_STDERR);
+
+    /* Invalidate parent-chain + gref / arith caches so any stored VALUE
+     * / sframe* outside the explicit root set is forced to re-resolve
+     * through rooted state on next access.  Cheap (uint64 increment). */
+    c->globals_serial++;
+    c->env_serial++;
+    c->env_cache_serial = c->env_serial - 1;  /* force rebuild */
+    c->env_chain_filled = 0;
+}
+
+// ---------------------------------------------------------------------------
 // Driver.
 // ---------------------------------------------------------------------------
+
+/* Scratch slots for c->sp.  ascheme has no per-call VALUE stack, but
+ * the framework's realloc helpers (aro_gc_realloc_byte_payload /
+ * aro_gc_realloc_payload) park the old payload into sp[0] across an
+ * inner alloc so the root scanner keeps it alive.  We hand the GC a
+ * tiny scratch buffer rather than NULL.  Visible to aro_gc_visit_roots
+ * above (= forward extern), hence non-static. */
+VALUE g_sp_scratch[16];
 
 static CTX *
 create_context(void)
@@ -3557,6 +3710,7 @@ create_context(void)
     CTX *c = (CTX *)calloc(1, sizeof(CTX));
     if (!c) { perror("calloc CTX"); abort(); }
     c->env = NULL;
+    c->sp  = g_sp_scratch;   /* framework writes 1 slot, then restores */
     c->globals_serial = 1;   // any cache with serial==0 is uninitialised
     aro_gc_init(c);
     /* GMP allocators must route through aro_gc heap so bignum chunks live
