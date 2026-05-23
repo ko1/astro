@@ -275,23 +275,128 @@ abruby goes a step further by emitting a separate `Hopt`-keyed
 nodes already inline their hot-path constants via `PRIM_*_VAL`, so we
 get most of that benefit without a parallel hash.
 
-## 7. Garbage collection
+## 7. Garbage collection (= precise GC framework)
 
-ascheme uses **Boehm-Demers-Weiser GC** (`libgc`) — conservative,
-non-moving, and easy to integrate.  Every ascheme allocation goes
-through `GC_malloc` / `GC_malloc_atomic`; we never `free`.  This
-includes:
+ascheme_precise uses the **ASTro precise GC framework**
+(`runtime/precise_gc/`) instead of the libgc that the original `ascheme/`
+relies on.  Migration history and the rationale are in
+[`migration.md`](./migration.md); the framework itself is documented in
+[`../../docs/gc_design.md`](../../../docs/gc_design.md).
 
-- `struct sobj` payloads
-- `struct sframe` (closure environments)
-- AST nodes (`node_allocate` in `node.c`)
-- Scheme strings and vectors
-- Globals / symbol table buffers (re-allocated via `GC_realloc`)
-- GMP internals (via `mp_set_memory_functions`)
+### 7.1 Allocation API
 
-Conservative scanning of the C stack lets us hold values in C locals
-across allocations without explicit roots — the same pattern the
-specialized node bodies rely on.
+Every scheme allocation goes through one of two framework calls:
+
+- `aro_gc_alloc(c, sz)` — scan-safe payload (= sample-defined SCAN_EDGES
+  will visit VALUE slots inside).  Returns an **encoded VALUE** (= for
+  scramble backend the bits are XOR-masked; for non-scramble backends
+  the macros collapse to identity).
+- `aro_gc_alloc_byte(c, sz)` — byte-only payload (= no VALUE slots; e.g.
+  `BaByteData`-style raw buffers).  Same encoded return type.
+
+Sample stores the encoded value directly in slots:
+
+```c
+sp[0] = aro_gc_alloc(c, sizeof(struct sobj));   /* encoded */
+struct sobj *o = (struct sobj *)ARO_LOAD(c, &sp[0]);  /* decode for init */
+SCM_SET_TYPE(o, OBJ_PAIR);
+o->pair.car = ...;
+```
+
+`ARO_LOAD(c, slot)` is the **only** way to extract a raw pointer from an
+encoded VALUE.  Forgetting `ARO_LOAD` (= raw cast) and using the encoded
+bits as a pointer surfaces as immediate SEGV under the `copy_scramble`
+audit backend.
+
+### 7.2 Root tracking
+
+ascheme provides its root set to the framework via the sample-defined
+hook `AROH_VISIT_ROOTS(c, ctx, edge_visit)`.  The implementation
+(`aro_scheme_visit_roots` in `main.c`) visits:
+
+- `c->env` (= current `struct sframe *`)
+- `c->next_env` (= tail-call-pending environment)
+- `c->globals[i].value` for all defined globals
+- `c->globals[i].name_payload` (= byte payload of the name string)
+- `c->loop_args[0..N]` (= scm_apply scratch buffer)
+- `SYMBOL_TABLE[0..LEN]` (= interned symbols)
+- `PORT_STDIN` / `PORT_STDOUT` / `PORT_STDERR` (= stdports)
+- `QUOTE_NODES[*]` (= literals captured at compile time)
+- `PRIM_*_VAL` (= specialized-arith fast-path sentinels)
+
+The framework backend calls this hook from its own collect entry; it
+does **not** look at `c->env` or `c->sp` directly (= framework is
+CTX-opaque since iter 76).
+
+### 7.3 Object scanning (= SCAN_EDGES)
+
+`AROH_SCAN_EDGES(payload, sz, ctx, edge_visit)` is sample-defined and
+dispatches on `head.flags & SCM_TYPE_MASK`:
+
+- OBJ_PAIR — visit `pair.car`, `pair.cdr`
+- OBJ_VECTOR / OBJ_MVALUES — visit `items` base + each `items[i]`
+- OBJ_SYMBOL / OBJ_STRING — visit interior char-buffer base (= helper
+  `ASCHEME_VISIT_INTERIOR_CHAR_SLOT`)
+- OBJ_CLOSURE — visit `closure.env`, prim-builtin name buffer
+- OBJ_PROMISE — visit `thunk`, `value`
+- OBJ_CONT — visit `cont` itself (= heap obj) + saved `env` / `result` /
+  `k_val` / `fn_val` inside scont
+- OBJ_FRAME (= sframe) — visit `parent` + each `slots[i]`
+
+### 7.4 Finalizer (= external resource cleanup)
+
+ascheme uses GMP for bignum (`mpz_t`) and rational (`mpq_t`).  GMP holds
+raw pointers (= `_mp_d`) into the buffers it returns from `gmp_alloc`.
+Those buffers are **libc-malloc'd** (= outside the GC heap) so:
+
+- moving GC doesn't relocate them (= `_mp_d` stays valid)
+- non-moving GC doesn't free them when scanning the sobj (= `_mp_d` is
+  invisible to SCAN_EDGES)
+
+When an `OBJ_BIGNUM` / `OBJ_RATIONAL` sobj is collected, the framework
+calls `AROH_FINALIZE(payload)` which dispatches to `mpz_clear` /
+`mpq_clear` — those route through `gmp_free` (= `free()`) to release
+the libc buffer.
+
+Registration happens at allocation:
+
+```c
+VALUE scm_make_bignum_z(CTX *c, mpz_srcptr z) {
+    VALUE v = aro_gc_alloc(c, sizeof(struct sobj));
+    struct sobj *o = (struct sobj *)ARO_LOAD(c, &v);
+    SCM_SET_TYPE(o, OBJ_BIGNUM);
+    mpz_init_set(o->mpz, z);
+    aro_gc_finalize_register(c, o);   /* ← finalize list に登録 */
+    return v;
+}
+```
+
+The finalize list is libc-malloc'd inside `AroGcCommonState` and acts
+as a weak reference table (= the framework does NOT visit it from
+SCAN_EDGES, otherwise everything would stay alive forever).  After each
+collect, `aro_gc_finalize_walk` checks each entry via the backend's
+`aro_gc_finalize_check` — live entries get their pointer updated (= for
+moving GC), dead entries get `AROH_FINALIZE` called and dropped.
+
+GMP memory pressure (= LCG chains generating MB-scale `_mp_d`) is
+reported to the framework via `aro_gc_account_external(c, ±bytes)` so
+the GC threshold check picks it up — otherwise bignum-heavy code would
+allocate GBs of libc memory before the framework noticed and triggered
+a collect.
+
+### 7.5 Backend selection
+
+17 GC backends are available via `make GC=<name>`:
+
+```
+none, bump, mark, mark_gen, mark_gen_inc, mark_freelist, mark_bitmap_gen,
+mark_card_gen, copy, copy_gen, copy_gen_inc, mark_compact, mark_compact_gen,
+mark_bump_gen, immix, immix_gen, copy_scramble
+```
+
+Selection rationale and bench numbers vs libgc are in
+[`perf.md`](./perf.md).  Audit knobs (`BARUBY_GC_STRESS=1`,
+`BARUBY_GC_PURGE=1`) are described there too.
 
 ## 8. Repository layout
 

@@ -1,101 +1,112 @@
-# ascheme → precise rooting migration
+# ascheme → precise GC framework migration ログ
 
-ascheme は元々 Boehm-Demers-Weiser conservative GC (`libgc`) で書かれた
-R5RS Scheme 実装。 sample/ascheme_precise は、 ASTro precise GC framework
-(`runtime/precise_gc/`) への migration を目指す fork。
+`sample/ascheme/` (= libgc / Boehm conservative GC ベース) を fork し、
+ASTro precise GC framework (`runtime/precise_gc/`) に移行した経過と教訓。
 
-migration が完了すれば、 baruby_precise が 17 GC backend を build-time
-切替できるのと同様、 ascheme_precise も `make GC=copy_scramble` 等で
-mark/move 漏れ audit できるようになる。
+## 完了状況
 
-## migration status
+| Phase | 内容 | 状態 |
+|---|---|---|
+| 1 | ASTroObjectHeader 追加 + GC_malloc → aro_gc_alloc 全面置換 | ✅ |
+| 2 | precise root tracking (= framework hook `ARO_GC_VISIT_ROOTS` 経由) | ✅ |
+| 3 | SCAN_EDGES (= sframe heap obj 化 + 各 sobj 型 dispatch) | ✅ |
+| 4 | call/cc + moving GC 対応 (= scont に saved state 移譲) | ✅ |
+| 5 | GMP integration (= libc malloc + finalizer で leak 解消) | ✅ |
+| 6 | testing 全 backend × 16 + 179 R5RS (= default mode 全 PASS) | ✅ |
+| 7 | naming + alloc API unification (= ARO_/AROH_、 ARO_LOAD、 alloc returns
+       encoded) | ✅ |
+| 8 | typed-ptr field 完全 VALUE 化 (= stress + scramble の full coverage) | 🚧 部分 |
 
-**現状: Phase 1-4 完了**。 全 17 GC backend (= non-moving 10 種 + moving 7
-種) で 16/16 ascheme test + 179/179 R5RS chibi test PASS。 binary 名は
-`ascheme_precise`、 `make GC=<backend>` で切替。
+完成 17 backend × 16 ascheme test + 179 R5RS chibi test (= 全 3315 case)
+default mode で PASS。 stress mode は 3 backend (= mark / immix /
+mark_freelist) で完走、 他は Phase 8 待ち (= `docs/perf.md` §6.1)。
 
-Phase 4 の moving backend 対応で発覚した主な fix:
+## migration 工程 (= 推奨手順)
 
-- **scm_global_define の v parking**: v は C-local だったので name buf
-  alloc が GC trigger すると stale 化。 globals[i] slot に value を pre-
-  set してから name alloc。 gentry.name は interior pointer (= payload
-  base + header) だったので、 base を保存する `name_payload` に変更
-  + `GENTRY_NAME()` accessor 経由で読む。
-- **OBJ_SYMBOL / OBJ_STRING の interior char slot**: `sym.name` /
-  `str.chars` は byte payload の `raw + sizeof(header)` を保持する形に
-  なっていて、 moving GC 後に stale 化する。 SCAN_EDGES で base を
-  visit して re-derive する `ASCHEME_VISIT_INTERIOR_CHAR_SLOT`
-  ヘルパを追加。
-- **OBJ_VECTOR / OBJ_MVALUES の items[]**: `aro_gc_alloc(sizeof(VALUE)*N)`
-  で items を確保していたが、 framework header が items[0..1] に被って
-  user write で gc_size が壊れる。 `sizeof(header) + sizeof(VALUE)*N` を
-  alloc して、 items = raw + sizeof(header) に。 SCAN_EDGES も interior
-  pointer ハンドリング。
-- **scm_intern の o parking**: o = scm_alloc → aro_gc_alloc_byte の間で
-  GC が発火すると o が stale。 SYMBOL_TABLE slot に pre-set してから
-  name buf alloc + reload。 `o->sym.name = NULL` で SCAN_EDGES の
-  interior visit を no-op に。
-- **scm_make_string / scm_make_string_n / scm_make_vector /
-  scm_make_mvalues**: 同様に c->sp[0] に sobj を park して inner
-  alloc 後に reload。
-- **scm_callcc の C-local rooting**: `saved_env`, `saved_tcp`, `k`, `fn`
-  を全部 scont の field に移し、 scont 自身 (= aro_gc_alloc 経由) に
-  ASTroObjectHeader 追加。 OBJ_CONT SCAN_EDGES で `_o->cont` typed-ptr
-  forward + scont 内 VALUE/typed-ptr 全部 visit。 setjmp/longjmp 前後で
-  kobj を sp[0] から reload。
-- **lex_scope head 追加**: aro_gc_alloc 経由なのに header 領域が無く、
-  moving GC の region walk で gc_size が parent ポインタと衝突。
-  `ASTroObjectHeader head` を先頭に追加。
-- **scm_alloc_min 導入**: NODE\*\* / char\*\* / VALUE\* といった host
-  pointer array の小サイズ alloc (= 8 B) が `aligned -
-  sizeof(header)` で underflow → 巨大 memset → SEGV。
-  `scm_alloc_min(c, size)` が min サイズを sizeof(header) に丸める。
-- **IS_PTR の v != 0 filter**: ascheme の IS_PTR は singleton filter
-  しかしていなかった。 uninit'd loop_args[i] = 0 が SCM_IS_PTR=true で
-  pass、 forward at 0x0 → SEGV。 v != 0 check を追加。
+ascheme の経験を抽象化した推奨工程は `docs/gc_design.md` §7.7 に成文化。
+要点:
 
-## migration plan (= 多段階)
+1. Phase 1: struct 改修 + alloc API 置換
+2. Phase 2: precise root tracking (= sp[] / sframe / VISIT_ROOTS)
+3. Phase 3: SCAN_EDGES 全 obj 型
+4. Phase 4: 特殊機構 (= call/cc / continuation / etc.)
+5. Phase 5: 外部 resource (= GMP / FILE * / 等) + finalizer
+6. Phase 6: 全 17 backend × default + stress + scramble verify
 
-### Phase 1: 構造改修 (1-2 日)
-1. `struct sobj` の先頭に `ASTroObjectHeader head` を追加 (= layout 変更)
-2. ascheme の `int type` を `head.flags` の低 5 bits に詰める
-3. **GC_malloc → aro_gc_alloc(c, size)** に全 46 site で置換
-4. CTX 経由でない alloc (= module init 時等) は static fallback を用意
+**重要**: Phase 1 から `BARUBY_GC_STRESS=1 GC=copy_scramble` で全 test 回す。
+gentle test だけで gap が隠れて後段で massive debug loop に陥る (= ascheme
+で実際に経験した教訓)。
 
-### Phase 2: precise root tracking (2-3 日)
-5. `struct CTX_struct` に `VALUE *env, *sp` 追加 (= baruby_precise 同様)
-6. 各 NODE evaluator が intermediate VALUE を sp[] に park
-7. `aro_gc_alloc` の `c->sp` contract を守るため全 alloc 経路で sp 設定
-8. `struct sframe` (= lexical env) の scan 経路を定義 (= 親 chain
-   walking + slots[])
+## 主な fix の備忘録
 
-### Phase 3: SCAN_EDGES (1-2 日)
-9. 各 object 型 (cons / vector / string / closure / continuation /
-   promise / port / port-input / port-output / bignum / rational / ...)
-   ごとに SCAN_EDGES dispatch を実装
+### Phase 1-2 (= structure + root)
 
-### Phase 4: call/cc 対応 (~2 日, 最難所)
-10. call/cc は現在 setjmp/longjmp + C stack snapshot を使う
-11. precise rooting と相性悪 → 別実装が必要:
-    - One-shot escaping continuation のみ → sp[] snapshot + longjmp で OK
-    - Full multi-shot → moving GC との整合性で要設計
+- `struct sobj` の先頭に `AroObjectHeader head` を embed (= iter 75 contract)
+- `SCM_TYPE(o)` / `SCM_SET_TYPE(o, t)` macro で head.flags 低 5 bits に
+  type tag を入れる
+- `aro_gc_alloc(c, sz)` で全 alloc 置換、 戻り値は encoded VALUE
+  (= iter 76 で改修)
+- 各 sobj 種別の SCAN_EDGES を `AROH_SCAN_EDGES` macro で実装
+- `struct sframe` も `head` を持つ heap obj 化 (= OBJ_FRAME type tag)
+- `AROH_VISIT_ROOTS` で c->env / c->globals / SYMBOL_TABLE / PORT_STD* /
+  framework spill range を visit
 
-### Phase 5: GMP integration (1 日)
-12. `mp_set_memory_functions` で GMP に渡す allocator を変更
-13. moving GC とは相性悪い (= GMP は外部に raw ptr を保持) → bignum 用に
-    non-moving sub-heap を確保するか、 GMP-side alloc は普通の malloc に
-    戻す (= leak 受容)
+### Phase 3 (= SCAN_EDGES)
 
-### Phase 6: testing (1-2 日)
-14. ascheme 既存の 179 R5RS tests pass まで
-15. backend matrix で動作確認 (= 全 17 backend × bench × test)
+- OBJ_PAIR / OBJ_VECTOR / OBJ_MVALUES / OBJ_CLOSURE / OBJ_PROMISE /
+  OBJ_CONT / OBJ_FRAME 等の case を実装
+- OBJ_VECTOR の items[] は `aro_gc_alloc(sizeof(header) + N*VALUE)` で
+  header と data を確保、 visit 時に base 経由で forward
+- OBJ_SYMBOL / OBJ_STRING の `name` / `chars` は byte payload base への
+  interior pointer。 SCAN_EDGES で base を visit + re-derive する
+  `ASCHEME_VISIT_INTERIOR_CHAR_SLOT` helper を追加
 
-**合計見積**: 1-2 週間 of focused work。
+### Phase 4 (= call/cc + moving GC)
+
+- `struct scont` に `saved_env`, `saved_tcp`, `k_val`, `fn_val` を追加し、
+  scm_callcc の C-local を全て scont field に移す (= GC が scan できる場所)
+- scont 自身も `AroObjectHeader` を持つ heap obj 化、 OBJ_CONT の
+  SCAN_EDGES で内部 ptr を visit
+- 全 PRIM / eval helper の C-local `VALUE arg[N]` を `c->loop_args` 等の
+  root-visitable buffer に park
+- scm_apply の saved-env が EVAL 跨いで stale 化していたバグ修正
+
+### Phase 5 (= GMP integration)
+
+- 初期試行: GMP allocator を `aro_gc_alloc_byte` (= GC heap) に redirect
+  + ASTroObjectHeader offset 付き wrapping → moving GC で mpz の `_mp_d`
+  が stale 化、 mark backend で sweep されると buffer も同時 free され
+  use-after-free
+- 最終解: GMP allocator は **libc malloc** に固定 (= GC heap 外、 不動)。
+  OBJ_BIGNUM / OBJ_RATIONAL alloc 時に `aro_gc_finalize_register(c, o)` で
+  framework finalize list に登録、 sweep 時に `mpz_clear` / `mpq_clear` で
+  libc mem を free
+- `aro_gc_account_external(c, ±bytes)` で GMP メモリ pressure を framework
+  GC threshold に折り込む (= さもないと bignum-heavy code で GC 発火せず leak)
+
+### Phase 7 (= naming + alloc API unification)
+
+- `ASTroObjectHeader` → `AroObjectHeader`、 framework macro は `ARO_GC_*`、
+  sample 提供 hook は `AROH_*` で接頭辞統一
+- `aro_gc_alloc(c, sz)` の戻り値型を `void *` から `VALUE` (= encoded) に
+  変更。 sample 側で `ARO_VAL(c, raw)` の boilerplate が不要に
+- `ARO_LOAD(c, slot)` を decode の primary API に (= slot-based、 GC 文献の
+  load barrier と整合、 将来 read barrier 拡張可)
+
+## 残作業 (= Phase 8 以降)
+
+`sample/ascheme_precise/docs/perf.md` §6.1 参照。 要点:
+
+- ascheme の `struct sobj` 内 typed-ptr field (= `closure.env`, `vec.items`,
+  `str.chars`, `sym.name`, `cont->saved_env`) と `sframe.parent` を VALUE
+  化 (= encoded reference)
+- 全 deref を `ARO_LOAD(c, &slot)` 経由に書換 (= 数百箇所)
+- 完了後: stress + copy_scramble + 全 17 backend で PASS、
+  `docs/perf.md` の ★ matrix が解消、 audit が機能する
 
 ## 参考
 
-- `sample/baruby_precise/` — Ruby サブセットの precise rooting 実装。
-  ascheme_precise の reference となる。
-- `docs/gc_design.md` — precise GC framework の設計仕様。
-- `runtime/precise_gc/gc_copy_scramble.c` — audit backend。 migration
-  途中で alloc 漏れ / decode 漏れの検出に活用予定。
+- `docs/gc_design.md` §7.7 — 本 migration の教訓を抽象化、 推奨工程
+- `sample/ascheme_precise/docs/perf.md` — 17 backend × libgc baseline 実測
+- `sample/baruby_precise/` — precise GC framework の reference sample
+  (= typed-ptr field uniform VALUE 化済、 stress + scramble で 8/8 PASS)

@@ -1,12 +1,17 @@
-# ascheme 言語仕様
+# ascheme_precise 言語仕様
 
-`ascheme` は **R5RS Scheme** のサブセット。R5RS は Scheme の標準 (1998) で、
-数値タワー / 末尾呼出 / 第一級継続 / 多値 / 高階関数 / マクロを含む小ぶりな
-Lisp。ascheme は chibi-scheme の `r5rs-tests.scm` 179 件を 100% パスする
-範囲を実装している。
+`ascheme_precise` は **R5RS Scheme** のサブセット。 R5RS は Scheme の標準
+(1998) で、 数値タワー / 末尾呼出 / 第一級継続 / 多値 / 高階関数 / マクロ
+を含む小ぶりな Lisp。 ascheme_precise は chibi-scheme の `r5rs-tests.scm`
+179 件を 100% パスする範囲を実装している (= default GC mode)。
 
 R5RS 仕様自体は短く読める ([R5RS](https://schemers.org/Documents/Standards/R5RS/))。
 本書では「ascheme で何が動くか」を端的に示す。
+
+注: `sample/ascheme_precise` は `sample/ascheme` (= libgc 版) を fork して
+GC を precise framework に置き換えた版。 言語仕様 / R5RS 互換性は同じ。
+GC まわりの差分は [`runtime.md`](./runtime.md) §7、 perf 評価は
+[`perf.md`](./perf.md) を参照。
 
 ## 値の種類
 

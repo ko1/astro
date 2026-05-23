@@ -1,209 +1,194 @@
-# ascheme — R5RS Scheme on ASTro
+# ascheme_precise — R5RS Scheme on ASTro (precise GC version)
 
-ascheme は ASTro フレームワークの上に構築した **R5RS Scheme インタプリタ**。
-ツリーウォーキングのインタプリタとして実行することも、ASTro の部分評価
-+ C コンパイラ経由でネイティブコードに焼き直して走らせることもできる。
-プロファイル誘導コンパイル (PGO) も `--pg-compile` で利用可能。
+`sample/ascheme/` を fork し、 GC を **libgc (= Boehm conservative GC)** から
+**ASTro precise GC framework** (`runtime/precise_gc/`) へ移行した版。
 
-実装の詳細は [`docs/runtime.md`](./docs/runtime.md) を参照。
-ASTro フレームワーク自体については [`../../docs/idea.md`](../../docs/idea.md)。
+機能 (= R5RS Scheme インタプリタ、 AOT、 PGO) は ascheme と同等。 差分は
+GC まわり:
+
+- **17 個の GC backend を build-time 切替**: `make GC=copy`, `make GC=mark`,
+  `make GC=copy_scramble` 等
+- **precise rooting** — sample が自前で root を管理 (= sframe + sp scratch)
+- **finalizer infra** — OBJ_BIGNUM / OBJ_RATIONAL の GMP buffer を
+  `mpz_clear` で回収
+- **audit knobs** — `BARUBY_GC_STRESS=1` (= 高頻度 GC) と
+  `BARUBY_GC_PURGE=1` (= from-space munmap) で root tracking gap を検出
+
+実装の詳細は [`docs/runtime.md`](./docs/runtime.md)、 移行経過は
+[`docs/migration.md`](./docs/migration.md)、 perf 評価は
+[`docs/perf.md`](./docs/perf.md) を参照。
+
+## ascheme との関係
+
+`sample/ascheme/` は libgc 版で安定実装。 ここ `ascheme_precise/` は precise
+GC framework の testbed として fork。 言語仕様 / R5RS 互換 / AOT pipeline は
+共通。 perf 比較は [`docs/perf.md`](./docs/perf.md) 参照 (= libgc baseline
+あり)。
 
 ## ハイライト
 
 - **完全な R5RS 数値タワー** — fixnum / bignum (GMP) / rational (GMP) /
-  flonum (Ruby 流の inline 符号化付き) / complex。`(+ 1/2 1/3)` は `5/6`、
-  `(expt 2 100)` は exact bignum、`(make-rectangular 3 4)` は `3+4i`。
-- **適切な末尾呼出** — CTX のトランポリン (`tail_call_pending` +
-  `next_body` + `next_env`) で C スタックを伸ばさず無限末尾再帰可能。
-- **継続** — `call/cc` は脱出継続 (one-shot, downward) を `setjmp` /
-  `longjmp` で実装。
-- **多値** — `(values …)` と `(call-with-values producer consumer)`。
-- **約束** — `(delay …)` / `(force …)`。memoize 付き。
-- **ポート** — `open-input-file` / `with-output-to-file` / `read-char` /
-  `peek-char` / `current-input/output-port` 他。`fd` を `dup`/`dup2`
-  で save/restore してスコープ内だけリダイレクト。
+  flonum (Ruby 流 inline 符号化) / complex。 `(+ 1/2 1/3)` は `5/6`、
+  `(expt 2 100)` は exact bignum、 `(make-rectangular 3 4)` は `3+4i`。
+- **末尾呼出最適化 + leaf-closure frame 再利用**
+- **`call/cc`** (= one-shot downward escape continuation、 setjmp/longjmp 実装)
+- **多値、 promise、 port、 quasiquote**
 - **特化ノード** — `(+ a b)` `(< a b)` `(car x)` `(vector-ref v i)`
-  `(null? x)` 等を専用ノードに降ろし、`__builtin_*_overflow` + range
-  check のみのホットパスに。R5RS の `(set! + my+)` 再定義検出付き。
-- **AOT コンパイル** — 全エントリを ASTro の特化器で C 化し、`gcc -O3`
-  でビルドして `dlopen`。`-c` フラグ。
-- **PGO** — `--pg-compile` で 1 起動内に「インタプリタ実行 + ホットエントリ
-  のみ AOT」を行う abruby 流のフロー。次回起動時は `code_store/profile.txt`
-  を自動的に拾って cold エントリを skip。
-- **GC** — Boehm-Demers-Weiser conservative GC (`libgc`)。GMP の内部割当も
-  `mp_set_memory_functions` で `GC_malloc` 経由。
-- **Boehm-スタイル の R5RS 互換** — chibi-scheme の `tests/r5rs-tests.scm`
-  を機械変換した 179 テストを 100% パス。
+  `(null? x)` 等を専用ノードに、 R5RS の `(set! + my+)` 再定義検出付き
+- **AOT** — ASTro 特化器で C 化、 `gcc -O3` で build → `dlopen`
+- **PGO** — `--pg-compile` でホットエントリのみ AOT
+- **17 GC backend** — copy / copy_gen / mark / mark_gen / mark_compact /
+  mark_compact_gen / mark_bump_gen / mark_freelist / mark_bitmap_gen /
+  mark_card_gen / mark_gen_inc / copy_gen_inc / immix / immix_gen / none /
+  bump / copy_scramble
+- **R5RS 互換** — chibi-scheme `tests/r5rs-tests.scm` を機械変換した
+  179 件を 100% パス (= default mode)
 
 ## インストール
 
 ### 前提パッケージ (Ubuntu/Debian)
 
 ```sh
-sudo apt install build-essential ruby libgc-dev libgmp-dev libreadline-dev   # libreadline-dev は任意
+sudo apt install build-essential ruby libgmp-dev libreadline-dev
 ```
 
 - `build-essential` — gcc / make
 - `ruby` (3.x) — ASTroGen の実行
-- `libgc-dev` — Boehm GC (heap allocation の裏)
-- `libgmp-dev` — bignum / rational
-- `libreadline-dev` — REPL の行編集 (auto-detect、なくても build OK)
+- `libgmp-dev` — bignum / rational (= libgc は **不要**、 precise GC が
+  framework で provided)
+- `libreadline-dev` — REPL の行編集 (auto-detect、 なくても build 可)
 
 `make bench` で chibi-scheme / guile と比較するなら `chibi-scheme` /
-`guile` も必要。
+`guile` も。
 
-## 試す
+## ビルドと実行
 
 ```sh
-make            # ascheme バイナリ
-make test       # 16 件の自前テスト + chibi r5rs-tests 179 件
-make bench      # bench/small (interp / aot-first / aot-cached / pg-compile / pg-cached / chibi / guile)
-make bench-big  # bench/big (重め — 数秒〜数十秒)
+make                           # default backend で build (= GC=none、 leak-as-go)
+make GC=copy                   # Cheney semispace
+make GC=mark                   # mark&sweep
+make GC=copy_scramble          # audit backend (= mark/move 漏れ検出)
+make test                      # 16 自前テスト + 179 R5RS chibi tests
 make clean
+```
+
+CLI 規約は [`docs/sample_cli.md`](../../docs/sample_cli.md) 共通仕様に準拠
+(= `--plain` / `--aot-compile` / `--pg-compile` / `--quiet` 等は framework
+管理、 `-e` 等 sample 固有 flag は維持)。 詳細は `--help`:
+
+```sh
+./ascheme_precise --help
 ```
 
 REPL:
 
 ```sh
-$ ./ascheme
+$ ./ascheme_precise
 ascheme> (define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
 ascheme> (fact 50)
 30414093201713378043612608166064768844377641568960512000000000000
-ascheme> (force (delay (begin (display "computed!\n") 42)))
-computed!
-42
 ```
 
-ファイル / 式 / stdin / AOT / PGO 実行:
+## GC backend の選び方
+
+`make GC=<name>` で切替。 主な選択肢:
+
+| backend | 特徴 | 用途 |
+|---|---|---|
+| `none` | 何もしない (= libc malloc、 leak) | bench baseline、 短時間 |
+| `bump` | bump pointer のみ | bench baseline |
+| `mark` | mark&sweep | シンプル、 全 workload PASS |
+| `mark_gen` | gen mark&sweep | 短命 obj が多い workload |
+| `copy` | Cheney semispace | balanced、 GC heavy で高速 |
+| `copy_gen` | gen Cheney | 長期 + 短期 obj 混在 |
+| `mark_compact_gen` | gen + sliding compact | 生存率高い workload |
+| `mark_bump_gen` | nursery bump + tenured mark | mixed lifetime |
+| `mark_freelist` | freelist 管理 | slow-allocator workload |
+| `mark_bitmap_gen` | per-page bitmap | small-payload heavy |
+| `mark_card_gen` | card-marking gen | card-table 実験 |
+| `immix` | block / line mark-region | uniform、 fragmentation-resistant |
+| `immix_gen` | gen immix | 大規模 |
+| `copy_scramble` | per-cycle XOR scramble | **audit / debug** (= mark/move 漏れ検出) |
+
+production 推奨: **`copy_gen`** または **`mark_compact_gen`**。
+GC-light なら **`mark`** / **`mark_freelist`**。 perf 詳細は
+[`docs/perf.md`](./docs/perf.md)。
+
+## audit (= mark/move 漏れ検出)
+
+precise rooting のバグを検出する仕組み 2 つ:
 
 ```sh
-./ascheme test/03_lambda.scm                    # interpret
-./ascheme -e '(+ 1 2 3)'                        # one-liner
-echo '(display (* 2 3))' | ./ascheme -          # stdin
-./ascheme -c test/06_higher_order.scm           # AOT compile + run
-./ascheme --clear-cs --pg-compile bench/big/fib35.scm  # PGO: interp + hot AOT
-./ascheme -c bench/big/fib35.scm                # subsequent run uses code_store/
+# 1. stress = GC trigger 点ごとに必ず GC 発火 (= 高頻度)
+BARUBY_GC_STRESS=1 ./ascheme_precise script.scm
+
+# 2. purge = Cheney 系で from-space を munmap (= stale ptr deref 即 SEGV)
+BARUBY_GC_PURGE=1 ./ascheme_precise script.scm
+
+# 3. scramble = VALUE storage を per-cycle XOR (= forget ARO_LOAD 検出)
+make GC=copy_scramble && ./ascheme_precise script.scm
+
+# 4. 全部組合せ = 最強 audit (= 旧 BARUBY_GC_STRESS 相当)
+BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1 ./ascheme_precise script.scm
 ```
 
-CLI:
+scramble の仕組みは [`../../docs/gc_design.md`](../../docs/gc_design.md)
+§3.3 を参照。
 
-```
--q, --quiet       静かに
--c, --compile     AOT コンパイル経由で実行 (code_store/ を使う)
--v, --verbose     AOT 進捗を stderr へ
-    --clear-cs    code_store/ を空にしてから開始
-    --pg-compile  abruby 流 PGO: インタプリタ実行 + 末尾でホットエントリ AOT
--e <expr>         式を評価して結果表示
--                stdin から読む
-```
+## libgc との性能比較
 
-## ベンチマーク
+[`docs/perf.md`](./docs/perf.md) で 9 workload × libgc baseline + 8 precise
+backend を実測:
 
-`make bench` は ascheme の 5 モード (interp / aot-first / aot-cached /
-pg-compile / pg-cached) と他処理系 2 つ (chibi-scheme 0.12, guile-3.0)
-を一括計測。`bench/compare.sh` が初回実行で chibi-scheme をローカルに
-fetch + build (`./.chibi/`) する。
+- **GC-heavy workload で平均 -15〜-40% 高速化** (= matmul -41%、 fannkuch -27%、
+  deriv -21%、 sieve_big -11%)
+- **整数 workload で fib35 のみ +80% overhead** (= 純再帰の sp[] 更新 cost)
+- **GC-light な numeric workload** (= nbody) でも flonum 内挿 + 良 cache layout
+  で **逆に -25% 速い** ことすらある
 
-例 (Linux x86_64, gcc 13 -O3):
+## 制限 / 非対応
 
-```
-=== bench/small/ ===  ascheme aot-cached    chibi   guile (JIT)
-ack                            0.13 s       0.74    2.49     5.7× / 19×
-fib                            0.25 s       1.40    4.70     5.6× / 19×
-list                           0.18 s       0.87    1.30     4.8× / 7×
-loop                           0.20 s       0.92    3.31     4.6× / 17×
-sieve                          0.44 s       1.48    5.14     3.4× / 12×
-sum                            0.20 s       1.27    5.05     6.4× / 27×
-tak                            0.24 s       1.59    6.39     6.6× / 27×
-```
+ascheme 本家と同様 (= R5RS subset):
+- `dynamic-wind` 未対応 (= `call/cc` は escape のみ)
+- `syntax-rules` 未実装 (= `quasiquote` のみ reader / compiler 展開)
+- 演算子の再定義は正しく動く (= 各特化ノード `arith_cache` の runtime check)
 
-`make bench` でフル比較 (interp / aot-first / aot-cached / pg-compile /
-pg-cached / chibi / guile)。
-
-列の意味:
-
-| 列 | 1 起動分の内訳 |
-|---|---|
-| **interp** | プレーンインタプリタ |
-| **aot-first** | `--clear-cs -c`: 全エントリを SD 化 → `gcc -O3` → `dlopen` → 実行 |
-| **aot-cached** | `-c`: 既存 `code_store/` を再利用 (再リンク + dlopen のみ) |
-| **pg-compile** | `--clear-cs --pg-compile` (abruby 流): インタプリタで実行 + 末尾でホットエントリのみ AOT |
-| **pg-cached** | `-c` 後続起動: `profile.txt` を自動読み込み、コールドエントリは default dispatcher のまま |
-| **chibi / guile** | 比較対象 (chibi 0.12, guile 3.0 with JIT) |
-
-ascheme aot-cached は **全 7 ベンチで chibi を 2.4-6.6× 上回り**、guile JIT
-には 7-27× 速い。
-
-これは [`docs/perf.md`](./docs/perf.md) の §1-§15 として記録された段階的な
-最適化の積み重ね:
-
-1. gref インラインキャッシュ
-2. 特化 arith / pred / vec / cons / eq? ノード (R5RS 再定義検出付き)
-3. Ruby 流 inline flonum (mandel 6× / nbody 1.7×)
-4. 末尾自己呼び出しの frame 再利用 (loop 3.2×, sum 1.9×)
-5. leaf closure の `alloca` frame (fib 2.8×, tak 2.3×)
-6. `jmp_buf` を `sobj` から外出し (sobj 208B → 48B、list 2.4×)
-7. cons 専用サイズ alloc (list 1.5×)
-8. host build を `-O3` に
-9. `scm_apply_tail` hot path を header に inline
-10. グローバルキャッシュを `(serial, value)` ペアに (ack 1.3×)
-11. 非末尾位置の leaf-closure 呼出も inline + `__attribute__((always_inline))`
-    (fib / tak 1.5-1.7×)
-12. **§15: `try_specialize_arith` の早期 args コンパイル削除**
-    (`perf` で発見した AOT 失効バグ。`(display X)` のような特化対象外 1/2/3 引数
-    呼出のとき、捨てられる側のコンパイルが AOT エントリを先に登録してしまい、
-    実行時 NODE の dispatcher が SD に置換されないまま遅い `DISPATCH_node_*`
-    に残っていた。sum 2.7×, sumloop 2.4×)
-
-詳細とトピック別 before/after は [`docs/perf.md`](./docs/perf.md) を参照。
-
-## 制限・非対応
-
-- **`dynamic-wind`** — `call/cc` は脱出のみ。再進入は明示エラー。
-- **`syntax-rules`** — 一切のユーザマクロは未実装。`quasiquote` /
-  `unquote` / `unquote-splicing` はリーダで認識しコンパイラで `cons` /
-  `list` / `append` に展開する。
-- **演算子の再定義** — `(set! + my+)` は正しく動く (各特化ノードの
-  `arith_cache` が runtime で検出してフォールバック)。多値も同様。
-- **ホットコード入替時の対応** — REPL で再定義された関数のキャッシュは
-  `c->globals` の値を直接見るので即時反映。`profile.txt` の場所は
-  `code_store/profile.txt` 固定。
-- **R7RS 互換ではない** — chibi の R7RS テストは多くが `(import …)` を
-  要求するので走らない (`bench/compare.sh` は chibi 起動時に `(scheme
-  base) (scheme write)` を `-m` で読み込ませて回避)。
+precise GC 固有の制限:
+- `mark_gen` / `mark_compact` / `immix_gen` 等は ascheme の typed-ptr field
+  (= `closure.env` 等) が raw のため、 stress mode で root tracking gap 露呈
+  → SEGV / 結果誤。 default mode では問題なし。 完全 fix は別 task
+  (= [`docs/perf.md`](./docs/perf.md) §6.1)
 
 ## ファイル構成
 
 ```
-sample/ascheme/
-├── README.md             この文書 (overview)
-├── docs/runtime.md       実装詳細
+sample/ascheme_precise/
+├── README.md             この文書
+├── docs/
+│   ├── runtime.md        実装詳細 (= 言語 pipeline + precise GC integration)
+│   ├── spec.md           R5RS subset 言語仕様
+│   ├── migration.md      libgc → precise GC framework migration 経過 + 教訓
+│   └── perf.md           17 backend × libgc baseline の実測
+├── context.h             VALUE / sobj / CTX / GC contract macros
+├── node.h                NodeHead / NODE / EVAL macros
+├── node.c                ランタイム配線
 ├── node.def              AST ノード定義 (40 種)
-├── ascheme_gen.rb        ASTroGen 拡張 (`@ref` cache 構造体のハッシュ/dump/specialize)
-├── context.h             VALUE / sobj / CTX / GC + GMP プロトタイプ
-├── node.h                NodeHead / NODE / EVAL マクロ
-├── node.c                ランタイム配線 (allocate, OPTIMIZE, generated 取り込み)
-├── main.c                リーダ・コンパイラ・プリミティブ・3 ドライバ (interp / AOT / PGO)
-├── Makefile              build / test / bench / bench-big
+├── main.c                リーダ・コンパイラ・プリミティブ・ドライバ
+├── parse.c               S-expression reader
+├── ascheme_gen.rb        ASTroGen 拡張
+├── Makefile              build / test / bench
 ├── test/                 16 件の自前テスト + chibi r5rs-tests 機械変換
-├── bench/small/          ~1 秒帯のマイクロベンチ
-├── bench/big/            数秒〜数十秒の重ベンチ
-├── bench/compare.sh      ascheme 5 モード × {chibi, guile} 表
+├── bench/                bench scripts (= ascheme と共有)
 ├── code_store/           AOT 生成物 (gitignore)
-└── .chibi/               compare.sh が拾ってくる chibi-scheme (gitignore)
+└── .built_gc             current GC backend selection marker (gitignore)
 ```
 
-## ノード設計の要点
+## 関連 docs
 
-| カテゴリ | ノード |
-|---|---|
-| 定数 | `node_const_int(64)`, `node_const_double`, `node_const_str/sym/char/bool`, `node_const_nil`, `node_const_unspec`, `node_quote` |
-| 変数 | `node_lref`, `node_lset`, `node_gref` (`gref_cache @ref`), `node_gset`, `node_gdef` |
-| 制御 | `node_if`, `node_seq`, `node_lambda` |
-| 呼出 | `node_call_0`〜`node_call_4`, `node_call_n`, `node_callcc` |
-| 特化算術 | `node_arith_{add,sub,mul,lt,le,gt,ge,eq}` (`arith_cache @ref`) |
-| 特化 pred / vec | `node_pred_{null,pair,car,cdr,not}`, `node_vec_{ref,set}` |
-
-`(set! + my+)` 等の R5RS 再定義に対応するため、各特化ノードの `arith_cache`
-は実行時に `c->globals[index].value == PRIM_*_VAL` を確認してから fast path
-に入る。詳細は [`docs/runtime.md`](./docs/runtime.md) §3 参照。
+- [`../../docs/gc_design.md`](../../docs/gc_design.md) — precise GC framework
+  全体設計、 contract、 migration 教訓 (= ascheme の経験から書かれた §7.7
+  あり)
+- [`../../docs/sample_cli.md`](../../docs/sample_cli.md) — 共通 CLI 規約
+- [`../../docs/idea.md`](../../docs/idea.md) — ASTro framework 設計思想
+- [`../baruby_precise/`](../baruby_precise/) — 同 precise GC framework 上の
+  Ruby サブセット実装 (= precise GC framework の reference sample)
