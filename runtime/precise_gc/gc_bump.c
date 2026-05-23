@@ -49,6 +49,7 @@ aro_gc_init(CTX *c)
         fprintf(stderr, "[baruby_gc=bump] STRESS mode requested but ignored — "
                         "no collector to stress\n");
     }
+    if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
 
 /* Bump payload at region_top.  Writes head at offset 0 of payload. */

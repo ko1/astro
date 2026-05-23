@@ -178,6 +178,7 @@ aro_gc_init(CTX *c)
         young_threshold = 0;
         fprintf(stderr, "[baruby_gc=mark_gen] STRESS\n");
     }
+    if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
 
 // ---------------------------------------------------------------------------

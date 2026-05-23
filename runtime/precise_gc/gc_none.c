@@ -36,6 +36,7 @@ aro_gc_init(CTX *c)
         fprintf(stderr, "[baruby_gc=none] STRESS mode requested but "
                         "ignored — no collector to stress\n");
     }
+    if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
 
 void *

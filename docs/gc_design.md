@@ -505,25 +505,34 @@ GC cycle ごとに `R` を rotate。 GC が見逃した slot は old-R 編成の
 - `ASTRO_GC_VISIT_EDGE_VAL(ctx, fn, slot)` — VALUE slot (= scramble 時に
   `scramble_R_old` で decode → forward → `scramble_R` で re-encode)
 
-##### usage
+##### audit knobs (= 直交する 2 つの env var)
+
+iter 76 で `STRESS` と `PURGE` を分離 (= 旧 `STRESS` = 両方の役を兼ねていた):
+
+| env var | 効果 | cost |
+|---|---|---|
+| `BARUBY_GC_STRESS=1` | GC trigger 点ごとに必ず GC 発火 (= threshold=0)。 from-space は再利用 (= space0/space1 alternation 維持) | 重い (= GC per alloc) |
+| `BARUBY_GC_PURGE=1` | Cheney 系 backend (gc_copy / gc_copy_scramble) で from-space を munmap し to-space を fresh mmap (= stale heap ptr の deref が即 SEGV) | 中 (= per-GC mmap) |
+| 両方 | 高頻度 GC + 確実 SEGV = 最強 audit (= 旧 STRESS と同等) | 最重 |
+| なし | 通常実行、 GC 頻度は heap pressure 次第 | なし |
+
 ```
-$ make GC=copy_scramble                       # 通常 GC + R rotate per cycle
-$ make GC=copy_scramble && BARUBY_GC_STRESS=1 ./baruby_precise script.rb
-                                              # stress mode で R rotate per alloc
-                                              # = max 検出頻度
+$ make GC=copy_scramble                                  # R rotate per GC のみ
+$ BARUBY_GC_PURGE=1 ./baruby_precise script.rb            # 普通頻度 + from-space SEGV
+$ BARUBY_GC_STRESS=1 ./baruby_precise script.rb           # 高頻度 GC、 再利用 (= 軽量 audit)
+$ BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1 ./baruby_precise script.rb  # 最強 (= 旧 STRESS 相当)
 ```
+
+PURGE は `gc_copy` / `gc_copy_scramble` のみ実効 (= from-space を持つ Cheney
+backend のみ)。 他 backend では env を parse して flag は立てるが no-op。
 
 ##### 検出範囲
-- (1) Root / SCAN_EDGES の visit 漏れ → 該当 slot が old-R のまま →
-      sample read で SEGV
-- (2) Sample 側で `(BaArray *)v` 等 raw cast (= ARO_OBJ 忘れ) → scrambled
-      bits をそのまま deref → SEGV
-- (3) Sample 側で raw ptr を VALUE slot に直接 store (= ARO_VAL 忘れ) →
-      次回 GC が decode で garbage → SEGV
-
-stress mode との比較: 検出強度は同等 (= stress は from-space munmap で
-SEGV、 scramble は R rotation で SEGV)。 scramble の独自価値は (2)(3) の
-sample-side 規律違反を encode/decode の対称性で強制すること。
+- (1) Root / AROH_SCAN_EDGES の visit 漏れ → 該当 slot が old-R のまま →
+      sample read で SEGV (= scramble の R rotation 検出機構)
+- (2) Sample 側 raw cast (= `ARO_LOAD` 忘れ) → scrambled bits をそのまま
+      deref → SEGV (= scramble の構造強制)
+- (3) PURGE 併用時: stale ptr が from-space 領域を指せば munmap 範囲 →
+      確実 SEGV (= scramble の probabilistic 検出を deterministic に)
 
 ---
 

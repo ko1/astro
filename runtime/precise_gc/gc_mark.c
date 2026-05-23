@@ -149,6 +149,7 @@ aro_gc_init(CTX *c)
         gc->gc_threshold = 0;
         fprintf(stderr, "[baruby_gc=mark] STRESS mode: collect on every alloc\n");
     }
+    if (getenv("BARUBY_GC_PURGE")) ARO_GC_COMMON(c)->purge = true;
 }
 
 // ---------------------------------------------------------------------------

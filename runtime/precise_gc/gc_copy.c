@@ -161,22 +161,33 @@ aro_gc_init(CTX *c)
     gc->ctx = c;
     gc->gc_threshold = GC_THRESHOLD_MIN;
     c->astro_gc = gc;             /* CTX → ASTroGC を bind */
-    if (getenv("BARUBY_GC_STRESS")) {
-        ARO_GC_COMMON(c)->stress = 1;
+    bool stress = getenv("BARUBY_GC_STRESS") != NULL;
+    bool purge  = getenv("BARUBY_GC_PURGE")  != NULL;
+    ARO_GC_COMMON(c)->stress = stress;
+    ARO_GC_COMMON(c)->purge  = purge;
+    if (stress) gc->gc_threshold = 0;        /* GC every alloc */
+    /* purge needs per-GC mmap/munmap of from-space → use the small 64 MiB
+     * region (large 64 GiB virtual reservation would be slow to map/unmap
+     * every GC).  stress alone reuses spaces (alternation), so 64 GiB OK. */
+    if (purge) {
         gc->region_bytes = STRESS_REGION_BYTES;
         gc->active_base = mmap_region(gc->region_bytes);
         gc->active_top  = gc->active_base;
         gc->active_end  = gc->active_base + gc->region_bytes;
-        fprintf(stderr, "[baruby_gc] STRESS mode: collect on every alloc, "
-                        "old space munmap'd each GC\n");
+        /* space0/space1 unused — purge mmaps fresh per collect */
     } else {
-        gc->region_bytes = REGION_BYTES;
+        gc->region_bytes = stress ? STRESS_REGION_BYTES : REGION_BYTES;
         gc->space0 = mmap_region(gc->region_bytes);
         gc->space1 = mmap_region(gc->region_bytes);
         gc->active_idx  = 0;
         gc->active_base = gc->space0;
         gc->active_top  = gc->space0;
         gc->active_end  = gc->space0 + gc->region_bytes;
+    }
+    if (stress || purge) {
+        fprintf(stderr, "[baruby_gc=copy]%s%s\n",
+                stress ? " STRESS (GC every alloc)" : "",
+                purge  ? " PURGE (munmap from-space)" : "");
     }
 }
 
@@ -407,9 +418,12 @@ gc_collect_internal(CTX *c)
     char *from_base = gc->active_base;
     char *from_top_pre = gc->active_top;
 
-    /* Determine the to-space. */
+    /* Determine the to-space.  purge mode mmaps a fresh region every collect
+     * (and munmaps from-space at the end) — stale pointers into from-space
+     * deref into unmapped memory → guaranteed SEGV.  Non-purge alternates
+     * the space0 / space1 pair. */
     char *next_to_base;
-    if (ARO_GC_COMMON(c)->stress) {
+    if (ARO_GC_COMMON(c)->purge) {
         next_to_base = mmap_region(gc->region_bytes);
     } else {
         next_to_base = (gc->active_idx == 0) ? gc->space1 : gc->space0;
@@ -481,16 +495,18 @@ gc_collect_internal(CTX *c)
     }
     aro_gc_phase_end(tcheney, &ARO_GC_COMMON(c)->stats.reclaim_seconds);
 
-    /* (4) Swap active. */
-    if (!ARO_GC_COMMON(c)->stress) {
+    /* (4) Swap active.  Non-purge alternates space0/space1.  Purge mode
+     * uses freshly-mmap'd region (next_to_base); old gets munmap'd below. */
+    if (!ARO_GC_COMMON(c)->purge) {
         gc->active_idx = 1 - gc->active_idx;
     }
     gc->active_base = next_to_base;
     gc->active_top  = gc->to_top;
     gc->active_end  = next_to_base + gc->region_bytes;
 
-    /* (5) Retire the old active.  Stress mode unmaps it outright. */
-    if (ARO_GC_COMMON(c)->stress) {
+    /* (5) Retire the old active.  Purge unmaps it outright (= stale ptrs
+     * deref into unmapped memory → SEGV).  Non-purge keeps it for reuse. */
+    if (ARO_GC_COMMON(c)->purge) {
         if (munmap(from_base, gc->region_bytes) != 0) {
             perror("gc_collect: munmap retired"); abort();
         }
@@ -498,6 +514,8 @@ gc_collect_internal(CTX *c)
     (void)from_top_pre;
 
     gc->bytes_since_gc = 0;
+    /* stress keeps threshold at 0 → force GC every alloc.  Non-stress
+     * adapts threshold to live set. */
     if (!ARO_GC_COMMON(c)->stress) {
         size_t live = ARO_GC_COMMON(c)->stats.heap_bytes;
         size_t next = live * GC_THRESHOLD_FACTOR;

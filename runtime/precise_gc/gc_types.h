@@ -143,7 +143,18 @@ typedef struct {
 
 typedef struct AroGcCommonState {
     AroGcStats      stats;
+    /* stress: GC trigger point ごとに必ず GC を発火 (= threshold を 0 化、
+     *  reuse from-space, alloc-per-collect cost を testing で露呈)。
+     * purge:  Cheney 系 moving backend で from-space を munmap、 to-space を
+     *  fresh mmap (= stale heap pointer の deref を即 SEGV で検出)。 GC
+     *  trigger 頻度には影響しない。
+     *
+     * 通常組合せ:
+     *   stress         = 高頻度 GC、 ただし from-space 再利用 (= cheap audit)
+     *   purge          = 普通の GC 頻度、 ただし stale ptr は SEGV 確実
+     *   stress + purge = 高頻度 GC + munmap (= 最強 audit、 旧 STRESS 相当) */
     bool            stress;
+    bool            purge;
     int             time_depth;
     struct timespec time_t0;
     /* Per-cycle XOR mask used by ARO_LOAD and ARO_GC_VISIT_EDGE.  Low
