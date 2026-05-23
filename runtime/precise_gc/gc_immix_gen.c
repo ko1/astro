@@ -335,7 +335,12 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned)
         return large_alloc(gc, payload_size);
     }
 
-    if (__builtin_expect(gc->common.stress || nursery_top + total > nursery_end || remset_pressure, 0)) {
+    /* External-memory pressure: fold libc-malloc'd external bytes into
+     * nursery pressure so bignum-heavy workloads trigger minor GC and run
+     * finalizers (= mpz_clear) promptly.  See gc_copy_gen.c for rationale. */
+    if (__builtin_expect(gc->common.stress
+                         || (size_t)(nursery_top - nursery_base) + gc->common.external_bytes + total > NURSERY_BYTES
+                         || remset_pressure, 0)) {
         nursery_collect_slow(c, total);
     }
     ASTroObjectHeader *h = (ASTroObjectHeader *)nursery_top;

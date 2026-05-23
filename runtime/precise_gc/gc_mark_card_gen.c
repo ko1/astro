@@ -394,7 +394,7 @@ void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    if (__builtin_expect(gc->common.stress || bytes_since_gc + (ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
+    if (__builtin_expect(gc->common.stress || bytes_since_gc + gc->common.external_bytes + (ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
         maybe_collect_slow(c);
     }
     size_t slot_total = ALIGN8(payload_size);
@@ -414,7 +414,7 @@ void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    if (__builtin_expect(gc->common.stress || bytes_since_gc + (ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
+    if (__builtin_expect(gc->common.stress || bytes_since_gc + gc->common.external_bytes + (ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
         maybe_collect_slow(c);
     }
     size_t slot_total = ALIGN8(payload_size);

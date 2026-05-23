@@ -172,6 +172,11 @@ typedef struct AroGcCommonState {
      * "GC time is O(live)" property of copying collectors. */
     void          **finalize_list;
     size_t          finalize_count;
+    /* External memory pressure (e.g., GMP libc-malloc'd buffers owned via
+     * a finalizer).  Updated by `aro_gc_account_external`; the framework
+     * forces GC when this crosses a threshold so finalizers run promptly.
+     * Counted in BYTES (not slots). */
+    size_t          external_bytes;
     size_t          finalize_cap;
 } AroGcCommonState;
 

@@ -226,7 +226,14 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned)
         return pretenure_alloc(c, payload_size, total);
     }
 
-    if (__builtin_expect(gc->common.stress || nursery_top + total > nursery_end, 0)) {
+    /* External-memory pressure: treat libc-malloc'd external bytes
+     * (e.g., GMP buffers) as nursery pressure so bignum-heavy workloads
+     * trigger minor GC and run finalizers (= mpz_clear) promptly.  Without
+     * this, framework heap stays tiny while libc heap balloons.  The
+     * (nursery_used + external + total > NURSERY_BYTES) form subsumes the
+     * plain (nursery_top + total > nursery_end) check. */
+    if (__builtin_expect(gc->common.stress
+                         || (size_t)(nursery_top - nursery_base) + gc->common.external_bytes + total > NURSERY_BYTES, 0)) {
         nursery_collect_slow(c, total);
     }
     ASTroObjectHeader *h = (ASTroObjectHeader *)nursery_top;

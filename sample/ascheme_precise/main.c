@@ -49,51 +49,47 @@ struct sobj S_EOF_OBJ    = { .head = { .flags = OBJ_EOF } };
 
 static CTX *gmp_g_ctx = NULL;
 
-/* GMP allocator hooks.  GMP passes the user-visible pointer it received
- * from gmp_alloc; underneath, the real heap allocation has an
- * ASTroObjectHeader prefix (= the framework records gc_size there).
- * We expose `payload = raw + sizeof(head)` to GMP and round-trip
- * back to `raw = payload - sizeof(head)` on realloc / free.
+/* GMP allocator hooks.  GMP holds raw pointers into the buffers it
+ * returns (= mpz->_mp_d), and the framework can't safely track those:
  *
- * Why a separate offset rather than just `aro_gc_alloc_byte(c, sz)`:
- * mark / immix / mark_bitmap_gen / etc. write into the header at GC
- * time (mark bit, free-list link).  If GMP wrote payload bytes into
- * the same memory the framework would clobber them.  The header has
- * to stay live and untouched between GMP's writes.
+ *   - Non-moving GC + GMP buffer on GC heap: OBJ_BIGNUM is reachable
+ *     but the buffer has no SCAN_EDGES edge → sweep frees the buffer →
+ *     next mpz access SEGVs.
+ *   - Moving GC + GMP buffer on GC heap: forwarded buffer addr is not
+ *     known to mpz_t._mp_d → stale pointer.
  *
- * Memory model: GMP-owned buffers (= mpz->_mp_d) live in the GC heap as
- * byte payloads, so the framework's `bytes_since_gc` accounting tracks
- * them and bignum-heavy workloads trigger GC promptly.  The framework
- * collects them en masse when their owning OBJ_BIGNUM sobj becomes
- * unreachable — the finalize hook (ASTRO_GC_FINALIZE in context.h)
- * issues `mpz_clear` which routes back through `gmp_free` as a no-op
- * (= the byte payload was already swept).  Note this works only for
- * non-moving backends OR transient bignums (= bignums that don't
- * survive a moving GC cycle); a long-lived bignum surviving a moving
- * GC would have its `_mp_d` invalidated, since the byte payload has
- * no SCAN_EDGES edge from the owning sobj for the framework to forward.
- * Existing tests stay in the transient regime so this is fine in
- * practice. */
+ * Resolution: route GMP through libc malloc.  Buffers are fixed in
+ * place and outside the framework's view.  When OBJ_BIGNUM becomes
+ * unreachable, the framework's finalizer (ASTRO_GC_FINALIZE in
+ * context.h) calls mpz_clear which calls gmp_free → free(3).  No
+ * leak, no stale pointers, no SCAN_EDGES bookkeeping. */
+/* Account for external (= libc) bytes through the framework so the GC
+ * threshold sees memory pressure from GMP buffers.  Without this hook,
+ * bignum-heavy code (= matmul's LCG seed, expt loops) allocates GB-scale
+ * GMP limbs with zero framework pressure, GC never fires, the finalize
+ * pass never runs, and libc heap blows up. */
 static void *
 gmp_alloc(size_t sz)
 {
-    char *raw = (char *)aro_gc_alloc_byte(gmp_g_ctx, sizeof(ASTroObjectHeader) + sz);
-    return raw + sizeof(ASTroObjectHeader);
+    void *p = malloc(sz);
+    if (gmp_g_ctx) aro_gc_account_external(gmp_g_ctx, (ssize_t)sz);
+    return p;
 }
 
 static void *
 gmp_realloc(void *p, size_t old, size_t nw)
 {
-    (void)old;
-    if (!p) return gmp_alloc(nw);
-    char *raw = (char *)p - sizeof(ASTroObjectHeader);
-    char *newraw = (char *)aro_gc_realloc_byte_payload(gmp_g_ctx, raw,
-                                                       sizeof(ASTroObjectHeader) + nw);
-    return newraw + sizeof(ASTroObjectHeader);
+    void *np = realloc(p, nw);
+    if (gmp_g_ctx) aro_gc_account_external(gmp_g_ctx, (ssize_t)nw - (ssize_t)old);
+    return np;
 }
 
 static void
-gmp_free(void *p, size_t sz)    { (void)p; (void)sz; /* GC sweeps the byte payload */ }
+gmp_free(void *p, size_t sz)
+{
+    if (gmp_g_ctx) aro_gc_account_external(gmp_g_ctx, -(ssize_t)sz);
+    free(p);
+}
 
 struct sobj *
 scm_alloc(CTX *c, int type)
@@ -406,6 +402,7 @@ scm_new_frame(CTX *c, struct sframe *parent, int nslots)
 struct sobj **SYMBOL_TABLE = NULL;
 size_t SYMBOL_TABLE_LEN = 0;
 size_t SYMBOL_TABLE_CAP = 0;
+size_t aro_finalize_calls = 0;
 
 VALUE
 scm_intern(CTX *c, const char *name)
@@ -4349,7 +4346,14 @@ main(int argc, char *argv[])
         buf[n] = '\0';
         return run_string(c, buf, n, false);
     }
-    if (pg_compile) { ASCHEME_PROFILING = true; return run_file_pg_compile(c, argv[ai], verbose); }
-    if (aot) return run_file_aot(c, argv[ai], verbose);
-    return run_file(c, argv[ai]);
+    int _rc;
+    if (pg_compile) { ASCHEME_PROFILING = true; _rc = run_file_pg_compile(c, argv[ai], verbose); }
+    else if (aot) _rc = run_file_aot(c, argv[ai], verbose);
+    else _rc = run_file(c, argv[ai]);
+    if (getenv("ASCHEME_GC_STATS")) {
+        fprintf(stderr, "[gc_stats] finalize_calls=%zu gc_count=%zu total_bytes=%zu heap_bytes=%zu\n",
+                aro_finalize_calls, aro_gc_count(c),
+                aro_gc_total_bytes(c), aro_gc_heap_bytes(c));
+    }
+    return _rc;
 }

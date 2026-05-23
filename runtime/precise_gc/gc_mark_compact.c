@@ -139,7 +139,7 @@ bump(CTX *c, size_t payload_size, size_t aligned)
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     size_t total = aligned;
     if (__builtin_expect(gc->common.stress
-                         || bytes_since_gc + payload_size > gc_threshold
+                         || bytes_since_gc + gc->common.external_bytes + payload_size > gc_threshold
                          || region_top + total > region_end, 0)) {
         bump_slow(c, total);
     }
@@ -157,7 +157,7 @@ static ASTroObjectHeader *large_alloc(CTX *c, size_t payload_size, size_t aligne
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
     if (__builtin_expect(gc->common.stress
-                         || bytes_since_gc + payload_size > gc_threshold, 0)) {
+                         || bytes_since_gc + gc->common.external_bytes + payload_size > gc_threshold, 0)) {
         gc_collect_internal(c);
     }
     LargeObj *lo = (LargeObj *)malloc(sizeof(LargeObj) + aligned);

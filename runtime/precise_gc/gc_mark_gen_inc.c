@@ -316,7 +316,7 @@ maybe_collect(CTX *c, size_t add)
             inc_finish_sweep(c);
         }
     }
-    if (__builtin_expect(gc->common.stress || young_bytes + add > young_threshold, 0)) {
+    if (__builtin_expect(gc->common.stress || young_bytes + gc->common.external_bytes + add > young_threshold, 0)) {
         maybe_collect_slow(c);
     }
 }

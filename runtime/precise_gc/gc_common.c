@@ -100,3 +100,23 @@ aro_gc_finalize_fini(CTX *c)
     cs->finalize_count = 0;
     cs->finalize_cap   = 0;
 }
+
+/* aro_gc_account_external — bookkeep external pressure only.  We do NOT
+ * trigger GC here: this function is typically called from inside foreign
+ * library allocators (= GMP's gmp_alloc) where the host is mid-operation
+ * and holds raw refs to the live set; moving GC at this point invalidates
+ * those refs and the host crashes.  Instead, each backend's `aro_gc_alloc`
+ * threshold check folds `external_bytes` into the comparison so GC fires
+ * at the next sample-side allocation (= a safe point). */
+void
+aro_gc_account_external(CTX *c, ssize_t delta)
+{
+    AroGcCommonState *const cs = ASTRO_GC_COMMON(c);
+    if (delta > 0) {
+        cs->external_bytes += (size_t)delta;
+    } else {
+        size_t down = (size_t)(-delta);
+        cs->external_bytes = (down < cs->external_bytes)
+                             ? cs->external_bytes - down : 0;
+    }
+}

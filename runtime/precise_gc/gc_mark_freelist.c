@@ -180,7 +180,7 @@ alloc_slot(CTX *c, size_t payload_size)
     int ci = size_class_for(slot_total);
     size_t sb = size_class_bytes[ci];
 
-    if (__builtin_expect(gc->common.stress || gc->bytes_since_gc + payload_size > gc->gc_threshold, 0)) {
+    if (__builtin_expect(gc->common.stress || gc->bytes_since_gc + gc->common.external_bytes + payload_size > gc->gc_threshold, 0)) {
         gc_collect_internal(c);
     }
 

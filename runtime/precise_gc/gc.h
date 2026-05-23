@@ -176,6 +176,20 @@ extern const char *aro_gc_backend_name;
 
 void  aro_gc_init(CTX *c);
 
+/* aro_gc_account_external — tell the framework that `delta` bytes of
+ * memory pressure live outside the GC heap (typical use: GMP / FILE *
+ * buffers backed by libc malloc that are owned by GC objects via a
+ * finalizer).  Positive delta on alloc, negative on free.  The
+ * framework adds delta to bytes_since_gc; once threshold is exceeded
+ * the next aro_gc_alloc triggers a collect, releasing the external
+ * memory through ASTRO_GC_FINALIZE.
+ *
+ * Without this hook, sample programs that allocate large external
+ * resources (e.g., a `(* s 1103515245)` chain producing megabyte-scale
+ * GMP limb buffers) see zero GC pressure from the framework's POV and
+ * leak unboundedly until the OS kills them. */
+void  aro_gc_account_external(CTX *c, ssize_t delta);
+
 /* ---------------------------------------------------------------------------
  * Root-visitor contract: ASTRO_GC_VISIT_ROOTS(c, ctx, edge_visit)
  *

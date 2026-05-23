@@ -632,9 +632,11 @@ scm_is_singleton(VALUE v)
  * are tracked by the framework directly and need no finalize.  OBJ_PORT
  * is intentionally not finalized here (its FILE * lifecycle is managed
  * explicitly via port-close); revisit if we add unowned-port semantics. */
+extern size_t aro_finalize_calls;   /* debug counter */
 #define ASTRO_GC_FINALIZE(payload) do {                                       \
     ASTroObjectHeader *_aro_h = (ASTroObjectHeader *)(payload);               \
     struct sobj      *_aro_o = (struct sobj *)(payload);                      \
+    aro_finalize_calls++;                                                      \
     switch ((int)(_aro_h->flags & SCM_TYPE_MASK)) {                           \
       case OBJ_BIGNUM:   mpz_clear(_aro_o->mpz); break;                       \
       case OBJ_RATIONAL: mpq_clear(_aro_o->mpq); break;                       \

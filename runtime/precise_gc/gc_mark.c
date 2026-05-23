@@ -239,7 +239,7 @@ void *
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    if (gc->common.stress || gc->bytes_since_gc + payload_size > gc->gc_threshold) {
+    if (gc->common.stress || gc->bytes_since_gc + gc->common.external_bytes + payload_size > gc->gc_threshold) {
         gc_collect_internal(c);
     }
     size_t aligned = ALIGN8(payload_size);
@@ -260,7 +260,7 @@ void *
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ASTRO_GC_INSTANCE(c);
-    if (gc->common.stress || gc->bytes_since_gc + payload_size > gc->gc_threshold) {
+    if (gc->common.stress || gc->bytes_since_gc + gc->common.external_bytes + payload_size > gc->gc_threshold) {
         gc_collect_internal(c);
     }
     size_t aligned = ALIGN8(payload_size);
