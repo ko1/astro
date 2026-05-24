@@ -137,14 +137,16 @@ scramble の仕組みは [`../../docs/gc_design.md`](../../docs/gc_design.md)
 
 ## libgc との性能比較
 
-[`docs/perf.md`](./docs/perf.md) で 9 workload × libgc baseline + 8 precise
-backend を実測:
+[`docs/perf.md`](./docs/perf.md) で 9 workload × libgc baseline + 全 17
+precise backend を実測:
 
-- **GC-heavy workload で平均 -15〜-40% 高速化** (= matmul -41%、 fannkuch -27%、
-  deriv -21%、 sieve_big -11%)
-- **整数 workload で fib35 のみ +80% overhead** (= 純再帰の sp[] 更新 cost)
+- **GC-heavy workload で -7〜-42% 高速化** (= matmul -42%、 fannkuch -22%、
+  deriv -18%、 sieve_big -7%)
+- **整数 workload で fib35 のみ +110% overhead** (= 純再帰の sp[] 更新 cost)
 - **GC-light な numeric workload** (= nbody) でも flonum 内挿 + 良 cache layout
-  で **逆に -25% 速い** ことすらある
+  で **逆に -23% 速い** (= 0.41s vs libgc 0.53s)
+- 全 9 workload geomean は `copy` / `copy_scramble` / `immix` で libgc と
+  ~tie (= 1.00–1.02×)、 GC-heavy 5 workload に絞ると **0.81–0.87×** で勝つ
 
 ## 制限 / 非対応
 
@@ -153,11 +155,16 @@ ascheme 本家と同様 (= R5RS subset):
 - `syntax-rules` 未実装 (= `quasiquote` のみ reader / compiler 展開)
 - 演算子の再定義は正しく動く (= 各特化ノード `arith_cache` の runtime check)
 
-precise GC 固有の制限:
-- `mark_gen` / `mark_compact` / `immix_gen` 等は ascheme の typed-ptr field
-  (= `closure.env` 等) が raw のため、 stress mode で root tracking gap 露呈
-  → SEGV / 結果誤。 default mode では問題なし。 完全 fix は別 task
-  (= [`docs/perf.md`](./docs/perf.md) §6.1)
+precise GC 固有の状況:
+- **全 17 backend が default + stress mode で test suite (= 17 ascheme + 179
+  R5RS) PASS** (= Phase 8 完了)。 過去は `mark_gen` / `mark_gen_inc` 等で
+  root tracking gap があったが、 typed-ptr field の VALUE 化 + framework
+  freelist encoding bug fix で全 17 PASS
+- `mark_compact` のみ bench workload 3 個 (= nbody / fannkuch / matmul) で
+  SEGV (= sliding-compact phase の edge case bug、 root tracking は OK)
+- `mark_freelist` / `mark_bitmap_gen` / `mark_card_gen` の matmul は 60–100s
+  outlier (= 外部 GMP buffer の external_bytes pressure と GC trigger 頻度の
+  相性、 [`docs/perf.md`](./docs/perf.md) §7.2)
 
 ## ファイル構成
 
