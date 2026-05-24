@@ -138,8 +138,9 @@ scramble の仕組みは [`../../docs/gc_design.md`](../../docs/gc_design.md)
 ## libgc との性能比較
 
 [`docs/perf.md`](./docs/perf.md) で 9 workload × libgc baseline + 全 17
-precise backend を実測:
+precise backend × {plain, aot-cached} を実測:
 
+**plain mode (= 素 AST 解釈)**:
 - **GC-heavy workload で -7〜-42% 高速化** (= matmul -42%、 fannkuch -22%、
   deriv -18%、 sieve_big -7%)
 - **整数 workload で fib35 のみ +110% overhead** (= 純再帰の sp[] 更新 cost)
@@ -147,6 +148,13 @@ precise backend を実測:
   で **逆に -23% 速い** (= 0.41s vs libgc 0.53s)
 - 全 9 workload geomean は `copy` / `copy_scramble` / `immix` で libgc と
   ~tie (= 1.00–1.02×)、 GC-heavy 5 workload に絞ると **0.81–0.87×** で勝つ
+
+**aot-cached mode (= --aot-compile + dlopen)**:
+- **9/9 workload で libgc plain を上回る** (= fib35 のみ 0.76× 残)
+- dispatch heavy (= sumloop / cps_loop) で **3.0–3.5×** faster
+- GC heavy (= sieve_big / nqueens) で **2.0–2.5×** faster
+- GC bound (= matmul) は **1.8×** faster
+- 詳細は [`docs/perf.md`](./docs/perf.md) §10、 再現は `make bench-aot`
 
 ## 制限 / 非対応
 
@@ -160,6 +168,9 @@ precise GC 固有の状況:
   R5RS) PASS** (= Phase 8 完了)。 過去は `mark_gen` / `mark_gen_inc` 等で
   root tracking gap があったが、 typed-ptr field の VALUE 化 + framework
   freelist encoding bug fix で全 17 PASS
+- **全 17 backend で AOT (= --aot-compile + dlopen) も動作**。 mark_compact
+  は plain 同様 SEGV 残、 mark は matmul のみ AOT regression (= 4.6s → 10.2s、
+  GC trigger cadence の影響、 結果は正解)
 - `mark_compact` のみ bench workload 3 個 (= nbody / fannkuch / matmul) で
   SEGV (= sliding-compact phase の edge case bug、 root tracking は OK)
 - `mark_freelist` / `mark_bitmap_gen` / `mark_card_gen` の matmul は 60–100s

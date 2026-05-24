@@ -16,6 +16,7 @@ ASTro precise GC framework (`runtime/precise_gc/`) に移行した経過と教�
 | 7 | naming + alloc API unification (= ARO_/AROH_、 ARO_LOAD、 alloc returns
        encoded) | ✅ |
 | 8 | WB 統合 + stress mode 全 backend で 17/17 PASS | ✅ (17/17) |
+| 9 | AOT 経路 silently broken fix (= 5 bug、 §11) | ✅ |
 
 完成 17 backend × 17 ascheme test + 179 R5RS chibi test (= 全 3315 case)
 default + stress 両 mode で PASS:
@@ -116,9 +117,53 @@ gentle test だけで gap が隠れて後段で massive debug loop に陥る (= 
 - 完了後: stress + copy_scramble + 全 17 backend で PASS、
   `docs/perf.md` の ★ matrix が解消、 audit が機能する
 
+## Phase 9 (= AOT silently broken fix)
+
+`make bench-aot` で 17 backend × 9 workload × {plain, aot-cached} を回した
+過程で **AOT が全 backend で動いていなかった** ことが発覚 (= --aot-compile
+が `make failed` / `dlopen failed: undefined symbol` で all.so を作れず、
+plain dispatch に sneaky fallback、 結果は正答だが速度向上なし)。
+
+5 bug を順次 fix:
+
+1. **`-I` baked-absolute path** (commit `e0867910`) — `-DASCHEME_PRECISE_DIR`
+   / `-DASTRO_RUNTIME_DIR` を Makefile で baked、 main.c の `extra_cflags`
+   経由で cc に渡す。 これ無しでは SD_*.c が `node.h` を見つけられない
+2. **`-DBARUBY_GC=<num>`** (commit `96441e3e`) — SD cflags に GC backend 番号
+   を伝えないと `gc_types.h` が default の `BARUBY_GC_COPY` を選び、
+   AroObjectHeader / WB 経路 layout が host と食い違い、 sweep / alloc が
+   garbage を読む
+3. **`astro_cs_init(src_dir=ABSPATH, version=BARUBY_GC)`** (commit `b3c5f522`)
+   — `astro_cs_init("code_store", ".", 0)` の "." が cwd で展開され、
+   sample/ など別 dir 起動時に SD に `#include "sample/./node.h"` が embed
+   されて build fail。 BARUBY_PRECISE_DIR 同等の baked path に変更、
+   version に BARUBY_GC を渡して backend 切替時 cache 無効化
+4. **`node.h` で `#include "precise_gc/gc.h"`** (commit `d2769de5`) —
+   `aro_gc_wb` の static inline 定義が SD に取り込まれず extern call が
+   emit され、 非 WB backend (= copy / mark / immix) で `dlopen failed:
+   undefined symbol: aro_gc_wb` で load skip。 baruby_precise iter 59 と
+   同じ fix
+5. **`seen` 配列を libc malloc へ** (commit `976cea00`) — run_file_aot の
+   dispatcher patch loop で `seen = aro_gc_alloc_raw(...)` し直後に
+   `seen[0] = hash` で AroObjectHeader を上書き。 mark_freelist の sweep
+   が gc_size = hash 下位 32-bit を読んで `p += garbage` の無限 loop。
+   GC heap pointer を保持しない一時 buffer なので calloc / free が正解
+
+これら無しでは「動いてるように見える silent fallback」 (= 正答だけ出る、
+ただ実行は plain 速度のまま) が発生していて、 stderr の `astro_cs_reload:
+dlopen failed` 等を見落とすと気づけない。 baruby_precise も同種の (3)
+を持っていたので併せて fix (commit `8f5b30ce`)。
+
+完了後の bench (= `make bench-aot`):
+- 15 backend で AOT が plain より速く、 9/9 workload で libgc plain を上回る
+- 残: `mark + matmul` のみ AOT regression (= 4.6 → 10.2s、 GC cadence
+  影響、 結果は正解)、 `mark_compact` は plain と同じ 3 bench SEGV (=
+  既存 sliding-compact bug)
+
 ## 参考
 
 - `docs/gc_design.md` §7.7 — 本 migration の教訓を抽象化、 推奨工程
 - `sample/ascheme_precise/docs/perf.md` — 17 backend × libgc baseline 実測
+  + §10 AOT mode
 - `sample/baruby_precise/` — precise GC framework の reference sample
   (= typed-ptr field uniform VALUE 化済、 stress + scramble で 8/8 PASS)
