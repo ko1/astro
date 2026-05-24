@@ -4920,7 +4920,12 @@ aot_compile_and_load(CTX *c, bool verbose)
     // pointer or the un-patched ones keep dispatching through the slow
     // host DISPATCH_node_* fallback.  Track unique hashes for the verbose
     // report only.
-    node_hash_t *seen = (node_hash_t *)aro_gc_alloc_raw(c, sizeof(node_hash_t) * AOT_ENTRIES_LEN);
+    /* `seen` は hash 重複カウント用の一時 buffer。 GC heap 上に取ると
+     * 先頭 8 byte が AroObjectHeader を上書きして region walk が崩れる
+     * (= mark_freelist の sweep が gc_size=hash 値を読んで size_class_for
+     * が -1 → size_class_bytes[-1] で `p += garbage` 無限 loop)。
+     * heap pointer を保持しないので普通の calloc で十分。 */
+    node_hash_t *seen = (node_hash_t *)calloc(AOT_ENTRIES_LEN, sizeof(node_hash_t));
     size_t seen_n = 0;
     for (size_t i = 0; i < AOT_ENTRIES_LEN; i++) {
         node_hash_t h = HASH(AOT_ENTRIES[i]);
@@ -4929,6 +4934,7 @@ aot_compile_and_load(CTX *c, bool verbose)
         if (!already) { seen[seen_n++] = h; unique++; }
         if (astro_cs_load(AOT_ENTRIES[i], NULL)) loaded++;
     }
+    free(seen);
     if (verbose) fprintf(stderr, "ascheme: loaded %zu / %zu entries (%zu unique SDs)\n",
                          loaded, AOT_ENTRIES_LEN, unique);
     return loaded;
