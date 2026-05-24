@@ -13,6 +13,12 @@ NODE_GENFILES=node_eval.c \
 RUNTIME=../../runtime
 PRECISE_GC_DIR := $(RUNTIME)/precise_gc
 
+# Absolute paths baked into ascheme_precise binary so that the AOT
+# build (= astro_cs_build → cc on generated SD_*.c) can find node.h /
+# precise_gc/gc_types.h regardless of where the binary is invoked from.
+ASCHEME_PRECISE_DIR := $(abspath .)
+RUNTIME_ABSPATH     := $(abspath $(RUNTIME))
+
 # GC backend selector — identical to baruby_precise.  Phase 1 of the
 # migration uses `none` (= libc malloc, no collection, no rooting needed).
 # Later phases will enable mark / copy etc.
@@ -59,6 +65,8 @@ ascheme_precise: main.c parse.c node.c Makefile $(NODE_GENFILES) context.h node.
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall -Wno-unused-function $(READLINE_CFLAGS) \
 	    -rdynamic \
 	    -DBARUBY_GC=$(GC_NUM) \
+	    -DASCHEME_PRECISE_DIR='"$(ASCHEME_PRECISE_DIR)"' \
+	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
 	    -o ascheme_precise main.c parse.c node.c $(GC_COMMON_SRC) $(GC_SRC) \
 	    -ldl -lm -lgmp \
 	    $(READLINE_LDFLAGS)

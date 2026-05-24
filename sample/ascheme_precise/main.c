@@ -4897,7 +4897,14 @@ aot_compile_and_load(CTX *c, bool verbose)
     // read-only / sandboxed FS.  Setting CCACHE_DISABLE turns ccache into a
     // pass-through to the underlying gcc.
     setenv("CCACHE_DISABLE", "1", 1);
-    astro_cs_build(NULL);
+    // SD_*.c は #include "node.h" / "precise_gc/gc_types.h" を引くので、
+    // ascheme_precise の build 時に -DASCHEME_PRECISE_DIR / -DASTRO_RUNTIME_DIR
+    // で baked された絶対 path を -I として cc に渡す。
+    char extra_cflags[1024];
+    snprintf(extra_cflags, sizeof(extra_cflags),
+             " -I" ASCHEME_PRECISE_DIR
+             " -I" ASTRO_RUNTIME_DIR);
+    astro_cs_build(extra_cflags);
     astro_cs_reload();
     OPTION.no_compiled_code = false;        // OPTIMIZE will load via cs_load
     size_t loaded = 0, unique = 0;
