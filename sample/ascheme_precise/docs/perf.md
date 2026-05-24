@@ -247,7 +247,21 @@ canary stress (= 16_alloc_root_stress) は PASS するので root tracking は
 正しく、 sliding-compact phase の特定 edge case bug。 sieve_big / deriv /
 nqueens / cps_loop / sumloop / fib35 は完走 (= §1 matrix の `✗` 列)。
 生成系 (`mark_compact_gen`) は同 workload で動く (= matmul は outlier 値だが
-SEGV せず) ので非生成 compact phase 固有の問題と推定。 future work。
+SEGV せず) ので非生成 compact phase 固有の問題と推定。
+
+調査メモ (= fannkuch reproducer から、 plain mode で発火):
+- crash は update_pointers (= step 3) で起こる。 OBJ_VECTOR の items_base
+  に対する fwd_payload が NULL を返し (= items_base が unmarked)、
+  続く items[i] iterate で隣接領域を deref して SEGV
+- items_base の header dump で flags=4 (OBJ_PAIR) / gc_size=0x20000000 等の
+  bogus 値が見える → mark phase 中に items_base が visit されていない、
+  または直前 obj から overflow している
+- 一部 16-byte 周期で同じ bogus pattern が並ぶ → struct sobj (32B for FWD
+  backend) 単位の corruption pattern
+
+OBJ_VECTOR の SCAN_EDGES は `&__base` (= C local) を visit → mark_value(items_base)
+で MARKED 化するはずだが、 何らかの理由で skip / 上書きされている。
+mark_bump_gen 同様 backend 固有の deep bug、 future work。
 
 ## 8. baruby_precise との比較
 
