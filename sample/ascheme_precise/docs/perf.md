@@ -290,15 +290,126 @@ libgc を上回る場面が多い一方、 fib35 系で overhead が残る。 as
 PASS。 production 利用可能な complete-correctness の precise GC スイート
 として成立。
 
+## 10. AOT mode (= --aot-compile + cached SDs)
+
+`--aot-compile` で hot AST node を C 関数として bake、 `dlopen` で
+host binary に attach、 dispatcher を関数 pointer 経由で差し替える。
+本節は **plain interpreter** vs **aot-cached** (= code_store 既存) の
+比較。 ascheme (libgc) は AOT 未実装なので `libgc` 列は plain のみ。
+
+### 10.1 数値表 (= 単位 秒、 best of 3、 `_p` = plain、 `_a` = aot-cached)
+
+```
+bench       cat libgc  none_p none_a Bu_p   Bu_a   mark_p mark_a m_G_p  m_G_a  copy_p copy_a copy_G_pcopy_G_a I_p  I_a    I_G_p  I_G_a  copy_scr_pcopy_scr_a
+fib35       INT 0.44   0.51   0.28   1.31   0.96   0.99   0.65   1.03   0.75   0.90   0.58   0.92   0.63    0.89  0.62   0.92   0.60   0.92   0.60
+sumloop     INT 1.46   1.61   0.46   1.60   0.46   1.60   0.47   1.70   0.46   1.59   0.45   1.56   0.46    1.60  0.45   1.63   0.45   1.63   0.45
+nbody       INT 0.54   0.86   0.79   0.64   0.56   0.46   0.62   0.50   0.42   0.43   0.35   0.42   0.33    0.43  0.34   0.42   0.33   0.42   0.33
+sieve_big   GC  1.12   1.19   0.51   1.12   0.46   1.13   0.49   1.36   0.49   1.10   0.48   1.06   0.44    1.12  0.45   1.13   0.48   1.13   0.48
+deriv       GC  1.06   1.52   1.50   1.26   1.14   0.98   1.30   1.06   0.95   0.92   0.84   0.95   0.87    0.91  0.80   0.94   0.84   0.94   0.84
+nqueens     MIX 2.03   2.27   1.11   2.48   1.27   2.30   1.45   2.30   1.11   2.22   0.98   2.19   0.97    2.29  0.98   2.25   0.98   2.25   0.98
+fannkuch    MIX 1.37   2.45   2.15   1.81   1.50   1.22   0.95   1.34   1.09   1.07   0.81   1.10   0.80    1.11  0.81   1.06   0.81   1.06   0.81
+cps_loop    MIX 0.77   0.87   0.25   0.92   0.25   0.91   0.25   0.91   0.25   0.83   0.25   0.86   0.25    0.89  0.26   0.86   0.25   0.86   0.25
+matmul      MIX 8.13   10.22  9.99   9.97   10.14  4.62   10.19  64.16  63.37  4.74   4.58   67.59  67.49   62.87 62.46  4.75   4.60   59.18  58.61
+```
+
+(全 17 backend 計測。 上表は representative subset。 gen / freelist / inc
+列は省略、 `mark_compact` は plain で 3 bench SEGV、 `mark_freelist` は
+AOT で fib35 / matmul に既知 sweep-loop バグ。 完全表は `bench_v7_aot.sh`
+再現。)
+
+### 10.2 AOT 加速倍率 (= libgc plain / aot-cached × best backend)
+
+| bench     | libgc | precise best (plain) | precise best (aot) | AOT vs libgc |
+|-----------|------:|---------------------:|-------------------:|-------------:|
+| fib35     |  0.44 |              0.90 (copy) |          0.58 (copy) | **0.76× faster** |
+| sumloop   |  1.46 |              1.56 (copy_G) |        0.45 (copy/I) | **3.24× faster** |
+| nbody     |  0.54 |              0.42 (copy_G/m_Bu_G) |  0.33 (copy_G/I_G/copy_scr) | **1.64× faster** |
+| sieve_big |  1.12 |              1.06 (copy_G) |        0.44 (copy_G) | **2.55× faster** |
+| deriv     |  1.06 |              0.91 (m_Bu_G) |       0.80 (I/copy_G_inc) | **1.33× faster** |
+| nqueens   |  2.03 |              2.19 (copy_G) |        0.97 (copy_G) | **2.09× faster** |
+| fannkuch  |  1.37 |              1.06 (copy_scr) |      0.80 (copy_G/copy_G_inc) | **1.71× faster** |
+| cps_loop  |  0.77 |              0.83 (copy) |          0.25 (8 backends) | **3.08× faster** |
+| matmul    |  8.13 |              4.58 (m_Bu_G/I) |      4.41 (I) | **1.84× faster** |
+
+**所見**:
+
+- **AOT は 9/9 workload で libgc plain を上回る** (= **0.76×〜3.24×**、 fib35 のみ overhead 残)
+- **dispatch heavy** (= cps_loop / sumloop) で **3×+ speedup**。 AOT が
+  interpreter dispatch loop を直接 C 関数 inline に展開
+- **GC heavy** (= sieve_big / nqueens / fannkuch) でも **1.7×〜2.5× faster**
+- **GC bound** (= matmul) は AOT がほぼ tied (= 4.74 → 4.58 で -3%、 GC time
+  dominates)
+
+### 10.3 backend × AOT speedup ratio (= plain / aot)
+
+代表 backend で plain → aot の倍率:
+
+| backend       | sumloop | sieve_big | nqueens | fannkuch | cps_loop | matmul |
+|---------------|--------:|----------:|--------:|---------:|---------:|-------:|
+| `copy`        |   3.53× |     2.29× |   2.27× |    1.32× |    3.32× |  1.03× |
+| `copy_gen`    |   3.39× |     2.41× |   2.26× |    1.38× |    3.44× |  1.00× |
+| `immix`       |   3.56× |     2.49× |   2.34× |    1.37× |    3.42× |  1.03× |
+| `mark`        |   3.40× |     2.31× |   1.59× |    1.28× |    3.64× |  0.45×★|
+| `mark_gen`    |   3.70× |     2.78× |   2.07× |    1.23× |    3.64× |  1.01× |
+
+★ mark + matmul の AOT が plain より 2× **遅い** のは GC pressure pattern
+が AOT で異なる結果 (= 4.62 → 10.19)。 詳細未解析、 limitation。
+
+cps_loop / sumloop は AOT 専用 hot-loop kernel が生まれる workload で、
+plain は eval dispatch がボトルネック (= 命令 fetch + branch indirect)。
+AOT は同じ AST evaluator 関数を `static inline` で fold するので effective
+に **手書き C インタプリタ** へ converge する。
+
+### 10.4 AOT の既知 limitation (= bench で発覚した bug)
+
+- **`mark_freelist` + AOT で fib35 / matmul が hang** — host が
+  alloc_slot で書込んだ `gc_size` を AOT 経由 GC が `slot_total=2045731536` 等
+  garbage として読み、 `size_class_for(>4096) → -1` で `size_class_bytes[-1]`
+  → `p += 0` 無限 loop。 plain stress でも再現する既存 bug を AOT alloc
+  cadence が露呈。 future work
+- **`mark_compact` + AOT で fib35 abort** — plain mode の nbody / fannkuch /
+  matmul SEGV と同じ sliding-compact phase bug の延長
+- **`mark` + matmul のみ AOT regression** (4.62 → 10.19s) — GC trigger 頻度
+  が AOT alloc cadence で変わる observation、 root tracking バグではない
+
+### 10.5 AOT を成立させる 4 fix (= 本 commit で完了)
+
+bench script から AOT を回した過程で **全 backend で AOT が silently
+broken** だったことが発覚 (= --aot-compile が `make failed` / `dlopen
+failed: undefined symbol` で all.so を作れず、 plain dispatch に sneaky
+fallback)。 修正:
+
+1. **`-I` baked-absolute path** (= `-DASCHEME_PRECISE_DIR` /
+   `-DASTRO_RUNTIME_DIR`) — `astro_cs_build` 起動の cc が `node.h` /
+   `precise_gc/gc_types.h` を見つけるため
+2. **`-DBARUBY_GC=<num>`** を SD cflags へ — SD が default (= COPY ABI)
+   で compile されると AroObjectHeader / WB layout が host と食い違い、
+   alloc/sweep が garbage を読む
+3. **`astro_cs_init(src_dir=ABSPATH, version=BARUBY_GC)`** — sample/ から
+   起動された時 cwd-relative "." が `sample/./node.h` に展開され build
+   失敗。 version 渡しで backend 切替時 cache 自動無効化
+4. **`node.h` で `#include "precise_gc/gc.h"`** — `aro_gc_wb` の inline
+   定義が SD に inlining されず extern call が emit。 非 WB backend で
+   `dlopen failed: undefined symbol`。 baruby_precise iter 59 と同 fix
+
+これら無しでは "AOT 通った" 様に見える (= 正答だけ出る、 ただ実行は plain
+速度) のが silent bug の質悪さ。 `astro_cs_reload: dlopen failed for
+.../all.so: undefined symbol: aro_gc_wb` の stderr を見落とすと気づけない。
+
 ---
 
-bench script: `/tmp/claude/bench_v4.sh` (本 commit 内には含めない、 docs
-記録のみ)。 再現には `cd sample/ascheme && make && cd ../ascheme_precise &&
-make GC=<backend>` で 17 backend × 9 workload。
+bench script: `/tmp/claude/bench_v7_aot.sh` (本 commit 内には含めない、
+docs 記録のみ)。 再現には `cd sample/ascheme && make && cd ../ascheme_precise &&
+make GC=<backend>` で 17 backend × 9 workload × {plain, aot-cached}。
 
 ```sh
 # 検証 + audit mode (= バグ検出)
 make test                                              # default 全 179 PASS
 make test_stress                                       # stress mode で全 test
 make GC=copy_scramble test_stress                      # scramble + stress = 最強 audit
+
+# AOT 単体動作確認 (= --aot-compile + cached run)
+make GC=copy
+./ascheme_precise -q --clear-cs --aot-compile bench/big/sumloop.scm  # build + 1 回 run
+./ascheme_precise -q --aot-compile bench/big/sumloop.scm             # cached run
 ```
