@@ -4900,10 +4900,15 @@ aot_compile_and_load(CTX *c, bool verbose)
     // SD_*.c は #include "node.h" / "precise_gc/gc_types.h" を引くので、
     // ascheme_precise の build 時に -DASCHEME_PRECISE_DIR / -DASTRO_RUNTIME_DIR
     // で baked された絶対 path を -I として cc に渡す。
+    // BARUBY_GC も必須: 未定義だと gc_types.h が default の BARUBY_GC_COPY
+    // を選び、 host (= 別 backend) と AroObjectHeader レイアウトが
+    // 食い違って sweep 等が無限 loop / SEGV する。
     char extra_cflags[1024];
     snprintf(extra_cflags, sizeof(extra_cflags),
              " -I" ASCHEME_PRECISE_DIR
-             " -I" ASTRO_RUNTIME_DIR);
+             " -I" ASTRO_RUNTIME_DIR
+             " -DBARUBY_GC=%d",
+             BARUBY_GC);
     astro_cs_build(extra_cflags);
     astro_cs_reload();
     OPTION.no_compiled_code = false;        // OPTIMIZE will load via cs_load
