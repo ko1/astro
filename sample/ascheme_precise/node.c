@@ -61,5 +61,9 @@ code_repo_add(const char *name, NODE *body, bool force)
 void
 INIT(void)
 {
-    astro_cs_init("code_store", ".", 0);
+    // src_dir: 絶対 path で baked。 cwd 依存の "." だと sample/ から
+    // 起動された時に SD_*.c に `#include "sample/./node.h"` が emit されて
+    // build 失敗。 store_dir はそのまま "code_store" (= cwd 配下) でよい。
+    // version: BARUBY_GC を渡して backend 切替時 cache を無効化。
+    astro_cs_init("code_store", ASCHEME_PRECISE_DIR, (uint64_t)BARUBY_GC);
 }
