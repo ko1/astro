@@ -2,6 +2,11 @@
 #define NODE_H 1
 
 #include "context.h"
+/* gc.h は aro_gc_wb 等の static inline 定義を提供。 AOT'd SD_*.c が
+ * node.h 経由で取り込まないと "undefined symbol: aro_gc_wb" で dlopen
+ * 失敗 → 全 SD load skip (= silent AOT fallback to plain dispatch)。
+ * baruby_precise iter 59 と同じ fix。 */
+#include "precise_gc/gc.h"
 
 typedef struct Node NODE;
 typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
