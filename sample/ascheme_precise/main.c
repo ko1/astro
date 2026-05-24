@@ -231,6 +231,11 @@ scm_make_vector(CTX *c, size_t len, VALUE fill)
      * loops forever on a 0-size object. */
     size_t alloc_sz = sizeof(AroObjectHeader) + sizeof(VALUE) * (len ? len : 1);
     char *raw = (char *)aro_gc_alloc_raw(c, alloc_sz);
+    /* Tag the backing buffer so SCAN_EDGES iterates items[] via the
+     * buffer's own header — keeps reader and data co-located across moving
+     * backends (= mark_compact slide-after-update, copying memcpy-on-promote).
+     * See OBJ_VEC_BACKING in context.h. */
+    SCM_SET_TYPE((struct sobj *)raw, OBJ_VEC_BACKING);
     o = SCM_PTR(sp[0]);
     /* WB on the items typed-ptr write: o may have been promoted by the
      * raw alloc above, raw is freshly young.  WB ensures o is remembered. */
@@ -353,6 +358,7 @@ scm_make_mvalues(CTX *c, int count, VALUE *items)
     sp_base[0] = SCM_OBJ_VAL(o);
     size_t alloc_sz = sizeof(AroObjectHeader) + sizeof(VALUE) * (count ? count : 1);
     char *raw = (char *)aro_gc_alloc_raw(c, alloc_sz);
+    SCM_SET_TYPE((struct sobj *)raw, OBJ_VEC_BACKING);
     o = SCM_PTR(sp_base[0]);
     aro_gc_wb(c, o, (VALUE *)&o->mv.items, (VALUE)(raw + sizeof(AroObjectHeader)));
     o->mv.len = (size_t)count;

@@ -103,6 +103,16 @@ enum sobj_type {
      * at offset 0 (same as struct sobj), so the framework can read head.flags
      * via either cast. */
     OBJ_FRAME,
+
+    /* OBJ_VEC_BACKING — backing payload buffer for OBJ_VECTOR / OBJ_MVALUES.
+     * Layout: AroObjectHeader head; VALUE items[N] inline.  N is derived
+     * from head.gc_size at scan time, so this type lets the framework scan
+     * the items array WITHOUT needing the parent vector sobj (= which is
+     * essential for mark_compact: in step 3 the parent's vec.items is
+     * being updated to the post-slide location, but the items DATA stays
+     * at the OLD location until slide step 5; scanning items[i] via the
+     * backing buffer's own header keeps reader and data co-located).  */
+    OBJ_VEC_BACKING,
 };
 
 struct sobj;
@@ -563,19 +573,38 @@ scm_is_singleton(VALUE v)
       }                                                                       \
       case OBJ_VECTOR: {                                                      \
           struct sobj *_o = (struct sobj *)(payload);                         \
-          /* items[] payload base is `items - sizeof(header)`.  Forwarding   \
-           * the interior pointer directly would corrupt moving GCs (which   \
-           * read the header at *slot to compute fwd / size).  Compute base, \
-           * visit, re-derive interior pointer.  Then walk the data. */     \
+          /* items[] payload base is `items - sizeof(header)`.  We ONLY      \
+           * forward the items_base reference here; the items[i] iteration  \
+           * happens inside OBJ_VEC_BACKING's own SCAN_EDGES (= called when  \
+           * the framework visits the items_base object directly).  This    \
+           * decoupling matters for mark_compact: in step 3 (update_pointers)\
+           * the parent's vec.items is updated to the POST-slide location,  \
+           * but slide doesn't happen until step 5 — so the post-slide      \
+           * location has uninitialized memory.  By walking items[i] via    \
+           * the backing buffer's own SCAN_EDGES, reader and data stay      \
+           * co-located: mark_compact reads OLD location (data still there),\
+           * copy backends read NEW (post-memcpy) location.                  */\
           if (_o->vec.items) {                                                \
               char *__base = (char *)_o->vec.items                             \
                              - sizeof(AroObjectHeader);                     \
               ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__base);   \
               _o->vec.items = (VALUE *)(__base + sizeof(AroObjectHeader));  \
-              for (size_t _i = 0; _i < _o->vec.len; _i++) {                   \
-                  ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit,                   \
-                                          &_o->vec.items[_i]);                \
-              }                                                               \
+          }                                                                   \
+          break;                                                              \
+      }                                                                       \
+      case OBJ_VEC_BACKING: {                                                 \
+          /* Backing payload for OBJ_VECTOR / OBJ_MVALUES.  Length derived  \
+           * from gc_size (= sizeof(header) + N * sizeof(VALUE)).            \
+           * Reader is co-located with data, so this works for both         \
+           * mark_compact (data at OLD until slide) and copying backends    \
+           * (data at NEW post-memcpy).                                       */\
+          AroObjectHeader *__bh = (AroObjectHeader *)(payload);               \
+          size_t __n = ((__bh)->gc_size - sizeof(AroObjectHeader))           \
+                       / sizeof(VALUE);                                        \
+          VALUE *__items = (VALUE *)((char *)(payload)                         \
+                                     + sizeof(AroObjectHeader));             \
+          for (size_t _i = 0; _i < __n; _i++) {                               \
+              ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &__items[_i]);        \
           }                                                                   \
           break;                                                              \
       }                                                                       \
@@ -593,16 +622,14 @@ scm_is_singleton(VALUE v)
           break;                                                              \
       }                                                                       \
       case OBJ_MVALUES: {                                                     \
+          /* Same pattern as OBJ_VECTOR: only forward the items_base ref;    \
+           * the items[i] iteration is done by OBJ_VEC_BACKING.               */\
           struct sobj *_o = (struct sobj *)(payload);                         \
           if (_o->mv.items) {                                                 \
               char *__mb = (char *)_o->mv.items                                \
                            - sizeof(AroObjectHeader);                       \
               ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__mb);     \
               _o->mv.items = (VALUE *)(__mb + sizeof(AroObjectHeader));     \
-              for (size_t _i = 0; _i < _o->mv.len; _i++) {                    \
-                  ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit,                   \
-                                          &_o->mv.items[_i]);                 \
-              }                                                               \
           }                                                                   \
           break;                                                              \
       }                                                                       \
