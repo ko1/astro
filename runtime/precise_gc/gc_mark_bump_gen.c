@@ -482,7 +482,14 @@ major_edge(void *ctx, void **slot)
     AroObjectHeader *vh = (AroObjectHeader *)v;
     if (in_nursery(gc, (void *)v)) {
         *slot = (void *)(VALUE)major_promote(gc, vh);
-        scan_push(gc, (AroObjectHeader *)*slot - 1);
+        /* iter 75 contract: header is at payload offset 0, so the
+         * promoted payload pointer (= *slot) IS the new header — no
+         * "- 1" pointer arithmetic needed. The old `- 1` pushed a
+         * pointer 8 bytes before newh into scan_buf, causing
+         * major_process to read garbage gc_size and SCAN_EDGES to
+         * iterate over an undefined range (= deref bogus slots → SEGV
+         * on workloads with enough major promotion, e.g. sieve_big). */
+        scan_push(gc, (AroObjectHeader *)*slot);
     } else if (!HDR_MARKED(vh)) {
         HDR_SET_MARKED(vh);
         gray_push(gc, vh);
