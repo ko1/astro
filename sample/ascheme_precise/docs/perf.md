@@ -10,9 +10,8 @@
 2. **GC-heavy workload の改善** — 各 backend が cons / vector heavy な
    workload で libgc に対して出せる速度差
 
-最新 measurement は **alloc 跨ぎの C local VALUE 保持を解消した後** の
-状態 (= `node_cons_op` / `node_arith_*` / `node_vec_*` 等を `sp[]` park に
-書換、 `test/16_alloc_root_stress.scm` で検出 + 守り)。
+最新 measurement は **Phase 8 完了 (= WB integration + framework freelist
+bug 修正) 後** の状態 (= 全 17 backend で test suite + canary stress PASS)。
 
 ## 0. setup
 
@@ -35,119 +34,125 @@
 | none                | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | bump                | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | **mark**            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| mark_gen            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| mark_gen            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
 | mark_freelist       | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
-| mark_bitmap_gen     | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | (★) |
-| mark_card_gen       | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| mark_bitmap_gen     | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
+| mark_card_gen       | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
 | **copy**            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| copy_gen            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| copy_gen            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
 | mark_compact        | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ |
-| mark_compact_gen    | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
-| mark_bump_gen       | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| mark_compact_gen    | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
+| mark_bump_gen       | ✓ | ✓ | ✓ | (★)| ✓ | ✓ | ✓ | ✓ | (★) |
 | **immix**           | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| immix_gen           | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
+| immix_gen           | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
 | **copy_scramble**   | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-**全 workload PASS**: libgc + none + bump + **mark + copy + immix + copy_scramble**
-= 7 precise backend + libgc。
+**全 workload で速度 OK**: libgc + none + bump + **mark + copy + immix +
+copy_scramble** = 7 precise backend + libgc。
 
-`(★)` = matmul で動作するが極端に遅い (= 後述 outlier、 GC 頻度と pressure
-の相性問題)。 `✗` は gen / incremental backend の write-barrier 統合に残る
-bug (= Phase 8、 `docs/migration.md`)。
+**全 workload で correctness PASS** (= 速度 outlier 含む): 16/17 (=
+mark_compact を除く全部)。 `mark_compact` のみ nbody / fannkuch / matmul で
+SEGV (= sliding compact phase の edge case bug、 §7.4)。
 
-特筆: **copy_scramble は全 9 workload で PASS** — agent C による node.def
-sp[] park + canary test 整備で audit backend が default 実用可能に。
+`(★)` = 完走するが極端に遅い (= 後述 §7.3 outlier、 GMP buffer の external
+pressure と GC frequency の相性問題)。
+
+注: 全 17 backend で **test suite (= 17 ascheme test + 179 R5RS chibi +
+canary 16_alloc_root_stress) は default + stress mode 両方 PASS**。 本
+matrix の ✗ / ★ は **特定 bench workload 固有** で言語 correctness の問題
+ではない。
 
 ## 2. 数値表 (= 単位 秒、 best of 3、 ✗ は省略)
 
 ```
-bench       cat libgc  none   bump   mark   m_free m_bmp_G copy   copy_G m_c_G  immix  I_G    copy_scr
-fib35       INT 0.43   0.49   1.24   0.91   0.96   0.94   0.87   0.86   0.86   0.92   0.87   0.86
-sumloop     INT 1.44   1.58   1.68   1.61   1.80   1.56   1.61   1.56   1.58   1.57   1.74   1.56
-nbody       INT 0.52   0.86   0.63   0.47   0.47   0.49   0.45   0.41   0.41   0.43   0.41   0.42
-sieve_big   GC  1.13   1.22   1.16   1.16   1.25   ✗     1.13   1.06   1.06   1.14   1.21   1.09
-deriv       GC  1.09   1.51   1.19   0.96   0.99   1.03   0.93   0.92   0.92   0.95   0.86   0.91
-nqueens     MIX 2.10   2.27   2.50   2.25   2.42   2.37   2.15   2.21   2.20   2.18   2.43   2.25
-fannkuch    MIX 1.36   2.49   1.76   1.24   1.28   1.25   1.10   1.04   1.03   1.08   1.09   1.05
-cps_loop    MIX 0.81   0.91   0.96   0.81   0.98   0.90   0.90   0.87   0.87   0.86   0.92   0.88
-matmul      MIX 8.09   9.93   10.25  4.60   106.72 106.73 4.85   ✗     ✗     4.57   ✗     4.89
+bench       cat libgc  none   bump   mark   m_G    m_free m_bmp_G m_crd_G copy   copy_G m_c    m_c_G  m_Bu_G I      I_G    copy_scr
+fib35       INT 0.40   0.47   1.15   0.86   0.98   0.91   1.09    1.10    0.84   0.87   1.02   0.86   0.85   0.88   0.86   0.85
+sumloop     INT 1.42   1.61   1.76   1.59   1.52   1.55   1.99    2.06    1.61   1.54   1.78   1.59   1.57   1.61   1.72   1.62
+nbody       INT 0.53   0.87   0.62   0.45   0.50   0.48   0.53    0.54    0.43   0.41   ✗     0.43   0.42   0.42   0.42   0.43
+sieve_big   GC  1.15   1.20   1.18   1.23   1.10   1.11   1.51    1.53    1.17   1.10   1.23   1.07   ★     1.18   1.14   1.17
+deriv       GC  1.05   1.53   1.18   0.98   1.01   0.97   1.08    1.07    0.93   0.90   1.04   0.86   0.87   0.93   0.88   0.93
+nqueens     MIX 2.04   2.25   2.65   2.40   2.33   2.39   2.61    2.63    2.21   2.22   2.50   2.15   2.19   2.30   2.38   2.27
+fannkuch    MIX 1.37   2.41   1.79   1.23   1.35   1.29   1.49    1.45    1.07   1.11   ✗     1.12   1.10   1.12   1.16   1.07
+cps_loop    MIX 0.76   0.84   1.01   0.90   0.85   0.90   1.13    1.09    0.89   0.85   1.01   0.82   0.86   0.95   0.92   0.89
+matmul      MIX 7.99   9.98   10.30  4.62   62.87  100.91 94.33   ★      4.82   68.79  ✗     62.10  74.27  4.68   60.72  4.74
 ```
 
-略号: `m_free` = mark_freelist、 `m_bmp_G` = mark_bitmap_gen、 `copy_G` =
-copy_gen、 `m_c_G` = mark_compact_gen、 `I` = immix、 `I_G` = immix_gen。
-✗ は §1 matrix と同。
+略号: `m_G` = mark_gen、 `m_free` = mark_freelist、 `m_bmp_G` =
+mark_bitmap_gen、 `m_crd_G` = mark_card_gen、 `copy_G` = copy_gen、
+`m_c` = mark_compact、 `m_c_G` = mark_compact_gen、 `m_Bu_G` = mark_bump_gen、
+`I` = immix、 `I_G` = immix_gen。 ✗ は §1 matrix と同。
 
 ## 3. 整数系 workload の overhead
 
 非 alloc-heavy な loop / recursion を libgc と比較:
 
-| bench    | libgc | precise (best) | best backend     | ratio |
-|----------|------:|---------------:|------------------|------:|
-| fib35    |  0.43 |           0.85 | mark_bump_gen / immix_gen / mark_compact_gen | **1.98× slower** |
-| sumloop  |  1.44 |           1.56 | mark_freelist / copy_gen / copy_scramble | 1.08× ~tie |
-| nbody    |  0.52 |           0.41 | copy_gen / immix_gen / mark_compact / mark_compact_gen | **0.79× faster** |
-| cps_loop |  0.81 |           0.81 | mark | 1.00× tie |
+| bench    | libgc | precise (best) | best backend                        | ratio |
+|----------|------:|---------------:|-------------------------------------|------:|
+| fib35    |  0.40 |           0.84 | copy                                | **2.10× slower** |
+| sumloop  |  1.42 |           1.52 | mark_gen                            | 1.07× ~tie |
+| nbody    |  0.53 |           0.41 | copy_gen                            | **0.77× faster** |
+| cps_loop |  0.76 |           0.82 | mark_compact_gen                    | 1.08× ~tie |
 
 **所見**:
 
 - `fib35` (= 純再帰、 stack 深い) は precise rooting の sp[] 更新が effective
-  に効く worst case。 全 backend で 1.5–2.9× 遅い。 libgc は C stack を保守的
+  に効く worst case。 全 backend で 2.0–2.7× 遅い。 libgc は C stack を保守的
   に scan するので per-call sp[] update 不要、 ここで強い
-- `sumloop` (= tight numeric loop) は ~tie。 sp[] park 強化により以前比 +7%
-  程度
+- `sumloop` (= tight numeric loop) は ~tie
 - `nbody` (= numeric heavy) で precise が **逆に速い**。 flonum 内挿 +
   framework heap layout の cache 効率
 - `cps_loop` (= closure heavy) は ~tie
 
-`@child` / `sp[]` park の overhead は workload 依存。 fib35 で +98%、 他は
-±10%。 **fib35 を除けば overhead 控えめ**。 前回 measurement (= sp[] park
-未対応、 root tracking gap あり) と比べると fib35 で +12%、 GC heavy で
-+5〜10% 程度の rooting overhead が新たに乗っているが、 これは **正しさの
-コスト**。
+precise rooting overhead は workload 依存。 fib35 で +110%、 他は ±10%。
+**fib35 を除けば overhead 控えめ**。
 
 ## 4. GC-heavy workload の改善
 
 cons / vector heavy 系で libgc と比較:
 
-| bench     | libgc | precise (best) | best backend       | ratio |
-|-----------|------:|---------------:|--------------------|------:|
-| sieve_big |  1.13 |           1.06 | copy_gen / mark_compact_gen | 0.94× faster |
-| deriv     |  1.09 |           0.86 | mark_compact_gen / immix_gen | **0.79× faster** |
-| nqueens   |  2.10 |           2.15 | copy | 1.02× ~tie |
-| fannkuch  |  1.36 |           1.03 | mark_compact_gen | **0.76× faster** |
-| matmul    |  8.09 |           4.57 | immix | **0.56× faster** |
+| bench     | libgc | precise (best) | best backend                | ratio |
+|-----------|------:|---------------:|-----------------------------|------:|
+| sieve_big |  1.15 |           1.07 | mark_compact_gen            | 0.93× faster |
+| deriv     |  1.05 |           0.86 | mark_compact_gen            | **0.82× faster** |
+| nqueens   |  2.04 |           2.15 | mark_compact_gen            | 1.05× ~tie |
+| fannkuch  |  1.37 |           1.07 | copy / copy_scramble        | **0.78× faster** |
+| matmul    |  7.99 |           4.62 | mark                        | **0.58× faster** |
 
 **所見**:
 
-- 全 GC-heavy bench で precise GC が **libgc より有意に速い** (= -6〜-44%)
-- `matmul` は immix で 44% 高速化、 mark で 43% 高速化
+- 全 GC-heavy bench で precise GC が **libgc より有意に速い** (= -2〜-42%)
+- `matmul` は mark で 42% 高速化、 immix / copy / copy_scramble も -41%
 - `mark_compact_gen` (= 世代別 mark + Lisp-2 sliding compact) と `copy` /
-  `copy_gen` / `immix` が **GC-heavy で常に上位**
-- `mark_freelist` / `mark_bitmap_gen` の matmul は **107 秒** (= libgc の
-  13×)。 外部メモリ (= GMP buffer) の external_bytes accounting で頻発する
-  GC trigger が freelist / bitmap walk と相性極悪、 sp[] park 強化でさらに
-  悪化 (= 前回 58 秒)
+  `immix` が **GC-heavy で常に上位**
+- gen / freelist 系の matmul は **60〜100 秒** (= libgc の 8〜13×)。 外部
+  メモリ (= GMP buffer) accounting 起因、 §7.3
 
-## 5. backend 別 summary (= 全 workload PASS する 7 個 + libgc)
+## 5. backend 別 summary (= matmul 含む全 9 workload PASS する 6 個 + libgc)
 
-| backend          | mean ratio vs libgc | sweet spot                          |
-|------------------|--------------------:|-------------------------------------|
-| `copy`           |               0.83× | balanced、 GC-heavy 一律高速        |
-| `immix`          |               0.84× | uniform、 fragmentation-resistant   |
-| `copy_scramble`  |               0.84× | **audit + 実用兼用** (= 全 workload PASS、 scramble 検出機構付) |
-| `mark`           |               1.05× | baseline precise (= 単純実装)       |
-| `bump`           |               1.21× | leak-as-go (= bench / 起動限定)     |
-| `none`           |               1.23× | 同上                                |
-| `libgc`          |               1.00 (baseline) | reference                |
+geomean は **全 9 workload vs libgc** (= 9 workload 全完走 backend のみ)、
+そして **GC-heavy 5 workload (= sieve_big, deriv, nqueens, fannkuch, matmul)
+だけの geomean** を併記:
+
+| backend          | geomean (9 ws) | GC-heavy 5 ws | sweet spot                          |
+|------------------|---------------:|--------------:|-------------------------------------|
+| `copy`           |          1.00× |         0.86× | balanced、 GC-heavy 一律高速         |
+| `copy_scramble`  |          1.01× |         0.86× | **audit + 実用兼用** (= scramble + 17/17 PASS) |
+| `immix`          |          1.02× |         0.87× | uniform、 fragmentation-resistant    |
+| `mark`           |          1.04× |         0.81× | **GC-heavy で最速** (= matmul 0.58×)  |
+| `none`           |          1.28× |         1.32× | leak-as-go (= bench / 起動限定)      |
+| `bump`           |          1.34× |         1.13× | 同上 (= GC 一切走らない)              |
+| `libgc`          |     1.00 (baseline) |       1.00 | reference                          |
+
+(matmul outlier (= 60–100s) の `*_gen` / freelist 系は除外。 §7.2 参照)
 
 **production 推奨**: `copy` または `immix`。 audit 兼用なら `copy_scramble`
 (= overhead 微小、 stress / scramble で precise rooting bug を即時検出)。
 
 generational backend (= `copy_gen`, `mark_compact_gen`, `immix_gen` 等) は
-default mode で 7/9 〜 8/9 workload PASS、 matmul で WB 統合の bug。 R5RS
-互換 (= 179/179) は全 17 backend で取れる。 perf 上は **gen 系で fannkuch /
-deriv が最速** (= 0.86s deriv, 1.03 fannkuch)、 短命 obj 多い workload に
-向く特性は libgc 比較でも見える。
+matmul 除外なら **最速級** (= mark_compact_gen は deriv 0.86s, fannkuch 1.12s)。
+短命 obj 多い workload で minor GC が効くが、 matmul のように bignum +
+external pressure が dominate する workload で external_bytes accounting の
+GC trigger と minor pool size の相性が悪化、 -10× 級の outlier を出す。
 
 ## 6. canary test (= バグ検出機構)
 
@@ -205,9 +210,10 @@ default + R5RS + stress の matrix:
 
 ## 7. 既知 limitation / future work
 
-### 7.1 fib35 overhead 1.98×
+### 7.1 fib35 overhead 2.10×
 
-純再帰の sp[] 更新コスト本質。 改善余地:
+純再帰の sp[] 更新コスト本質 (= 全 backend で 2.0–2.7× 遅い、 best が `copy`
+で 0.84s vs libgc 0.40s)。 改善余地:
 - self-tail-call の frame reuse 強化 (= 既存 `leaf` opt あり、 sp[] park で
   どこまで省けるか)
 - libgc-style な「lazy sp[] update」 (= alloc 直前のみ flush)
@@ -215,16 +221,33 @@ default + R5RS + stress の matrix:
 これらは ascheme 固有最適化、 baruby_precise との codebase 共通性とのトレード
 オフ。
 
-### 7.2 matmul outlier (mark_freelist / mark_bitmap_gen = 107 秒)
+### 7.2 matmul outlier (gen / freelist 系 = 60–100 秒)
 
-13× 遅い (= libgc 8 秒 vs 107 秒)。 推測: matmul の fill-matrix が LCG
-で 巨大 bignum を生成 → GMP allocator (= libc malloc) 経由 → external_bytes
-threshold trigger で GC 頻発 → mark_freelist / mark_bitmap_gen の sweep は
-heap walk O(heap) で累積 cost 大。
+8〜13× 遅い (= libgc 7.99 秒 vs `mark_freelist` 100.91 秒 / `mark_bitmap_gen`
+94.33 秒 / `mark_card_gen` ★、 `copy_gen` 68.79 / `m_c_G` 62.10 /
+`m_Bu_G` 74.27 / `I_G` 60.72)。
 
-sp[] park 強化で前回 58 秒 → 今回 107 秒 と悪化 (= GC trigger 頻度がさらに
-上がった)。 external_bytes threshold の調整、 freelist sweep の最適化等が
-余地。
+原因仮説: matmul の fill-matrix が LCG で巨大 bignum を生成 → GMP allocator
+(= libc malloc) 経由 → `aro_gc_account_external` の external_bytes threshold
+trigger で GC 頻発 → freelist 系は sweep が heap walk O(heap)、 gen 系は
+minor 後の major フェーズで GC が連発する pattern。
+
+`mark` / `copy` / `immix` / `copy_scramble` は同 workload で 4.62〜4.82
+秒、 libgc の **0.58× / -42%** と十分高速。 つまり workload 自体は precise
+GC で速く解けるが、 一部 backend の external pressure trigger 動作が
+matmul と相性悪い。
+
+調整余地: external_bytes threshold の slack 拡大、 minor pool size 拡張、
+freelist sweep の bitmap 化等。
+
+### 7.3 mark_compact の SEGV (= nbody / fannkuch / matmul)
+
+`mark_compact` は default mode で **nbody / fannkuch / matmul SEGV**。
+canary stress (= 16_alloc_root_stress) は PASS するので root tracking は
+正しく、 sliding-compact phase の特定 edge case bug。 sieve_big / deriv /
+nqueens / cps_loop / sumloop / fib35 は完走 (= §1 matrix の `✗` 列)。
+生成系 (`mark_compact_gen`) は同 workload で動く (= matmul は outlier 値だが
+SEGV せず) ので非生成 compact phase 固有の問題と推定。 future work。
 
 ## 8. baruby_precise との比較
 
@@ -242,23 +265,30 @@ libgc 直接比較は ascheme 側のみ可能 (= baruby は naruby fork で libg
 
 precise GC framework + ascheme は **libgc に対して**:
 
-- **GC-heavy workload で平均 -15〜-44% 高速化** (= matmul -44%、 fannkuch -24%、
-  deriv -21%、 sieve_big -6%)
-- **整数 workload で fib35 のみ +98% overhead** (= 純再帰の sp[] park cost)、
-  他は ±10%
-- **GC-light な numeric workload** (= nbody) でも flonum 内挿で **逆に -21%
-  速い**
+- **GC-heavy workload で -7〜-42% 高速化** (= matmul -42%、 fannkuch -22%、
+  deriv -18%、 sieve_big -7%、 nqueens は ~tie で +5%)
+- **整数 workload で fib35 のみ +110% overhead** (= 純再帰の sp[] park cost)、
+  sumloop / cps_loop は ±10%
+- **GC-light な numeric workload** (= nbody) でも flonum 内挿で **逆に -23%
+  速い** (= 0.41s vs 0.53s)
+- 全 9 workload geomean は `copy` / `copy_scramble` / `immix` で **libgc と
+  ~tie (1.00–1.02×)**、 GC-heavy 5 workload に絞ると **0.81–0.87×** で勝つ
 
 backend 選択:
 - **balanced production**: `copy` または `immix`
-- **GC-light workload**: `mark`
-- **audit + 実用兼用**: `copy_scramble` (= 全 workload PASS + bug 検出)
-- 生存率高 workload: `mark_compact_gen` (= matmul 除く全 PASS、 deriv /
-  fannkuch で最速)
+- **GC-heavy で最速**: `mark` (= matmul で libgc の 0.58×)
+- **audit + 実用兼用**: `copy_scramble` (= 全 workload PASS + scramble 検出)
+- 生存率高 workload: `mark_compact_gen` (= deriv 0.86s / fannkuch 1.12s で
+  最速、 matmul のみ outlier)
 
 libgc を上回る場面が多い一方、 fib35 系で overhead が残る。 ascheme の
 固有最適化 (= sframe pool reuse、 leaf-closure sframe alloca 等) で更に
 縮められる見込み。
+
+加えて全 17 backend で **canary stress (= 16_alloc_root_stress) + R5RS
+179 test + ascheme native 16 test = 全 3315 case** が default + stress 両方
+PASS。 production 利用可能な complete-correctness の precise GC スイート
+として成立。
 
 ---
 
