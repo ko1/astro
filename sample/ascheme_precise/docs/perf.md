@@ -313,9 +313,13 @@ matmul      MIX 8.13   10.22  9.99   9.97   10.14  4.62   10.19  64.16  63.37  4
 ```
 
 (全 17 backend 計測。 上表は representative subset。 gen / freelist / inc
-列は省略、 `mark_compact` は plain で 3 bench SEGV、 `mark_freelist` は
-AOT で fib35 / matmul に既知 sweep-loop バグ。 完全表は `bench_v7_aot.sh`
-再現。)
+列は省略、 `mark_compact` は plain で 3 bench SEGV。 完全表は
+`make bench-aot` で再現可能。
+
+§10.5 commit `976cea00` 後の追加計測: `mark_freelist` も全 9 workload AOT
+PASS (= fib35 0.65、 sumloop 0.48、 nbody 0.39、 sieve_big 0.49、 deriv 0.92、
+nqueens 1.10、 fannkuch 1.00、 cps_loop 0.26、 matmul 4.44)。 mark_freelist
+の matmul は 4.44 で `mark` 0.58× / `immix` 0.55× と並ぶ高速層。)
 
 ### 10.2 AOT 加速倍率 (= libgc plain / aot-cached × best backend)
 
@@ -362,17 +366,19 @@ AOT は同じ AST evaluator 関数を `static inline` で fold するので effe
 
 ### 10.4 AOT の既知 limitation (= bench で発覚した bug)
 
-- **`mark_freelist` + AOT で fib35 / matmul が hang** — host が
-  alloc_slot で書込んだ `gc_size` を AOT 経由 GC が `slot_total=2045731536` 等
-  garbage として読み、 `size_class_for(>4096) → -1` で `size_class_bytes[-1]`
-  → `p += 0` 無限 loop。 plain stress でも再現する既存 bug を AOT alloc
-  cadence が露呈。 future work
+- ~~**`mark_freelist` + AOT で fib35 / matmul が hang**~~ — commit
+  `976cea00` で解決。 真因は AOT 経路で `seen = aro_gc_alloc_raw(c,
+  sizeof(node_hash_t)*N)` の直後に `seen[0] = hash` で AroObjectHeader
+  (= gc_size field) を上書き。 mark_freelist の sweep_region が次 GC で
+  `gc_size = hash 下位 32-bit` を読み、 `size_class_for(>4096) → -1` で
+  `size_class_bytes[-1]` で `p += garbage` 無限 loop。 `seen` を libc
+  calloc に変更して fix。
 - **`mark_compact` + AOT で fib35 abort** — plain mode の nbody / fannkuch /
   matmul SEGV と同じ sliding-compact phase bug の延長
 - **`mark` + matmul のみ AOT regression** (4.62 → 10.19s) — GC trigger 頻度
   が AOT alloc cadence で変わる observation、 root tracking バグではない
 
-### 10.5 AOT を成立させる 4 fix (= 本 commit で完了)
+### 10.5 AOT を成立させる 5 fix (= 本 commit で完了)
 
 bench script から AOT を回した過程で **全 backend で AOT が silently
 broken** だったことが発覚 (= --aot-compile が `make failed` / `dlopen
@@ -391,6 +397,11 @@ fallback)。 修正:
 4. **`node.h` で `#include "precise_gc/gc.h"`** — `aro_gc_wb` の inline
    定義が SD に inlining されず extern call が emit。 非 WB backend で
    `dlopen failed: undefined symbol`。 baruby_precise iter 59 と同 fix
+5. **`seen` 配列を libc malloc へ** — run_file_aot の dispatcher patch
+   loop で `seen = aro_gc_alloc_raw(...)` し直後に `seen[0] = hash` で
+   AroObjectHeader を上書き。 mark_freelist の sweep_region が `gc_size
+   = hash 下位 32-bit` を読んで無限 loop。 GC heap pointer を保持しない
+   一時 buffer なので calloc / free が正解
 
 これら無しでは "AOT 通った" 様に見える (= 正答だけ出る、 ただ実行は plain
 速度) のが silent bug の質悪さ。 `astro_cs_reload: dlopen failed for
