@@ -169,6 +169,12 @@ bench-big: ascheme
 bench-all: ascheme
 	@bash bench/compare.sh all
 
+# bench-aot: 17 backend × 9 workload × {plain, aot-cached} の matrix。
+# ~100 分 (matmul outlier × gen/freelist が dominant)。 結果は stdout に
+# TSV、 perf.md §10 に貼り付ける。
+bench-aot:
+	@bash bench/aot_matrix.sh
+
 # Aliases — kept for older muscle memory.
 compare:     bench
 compare-big: bench-big

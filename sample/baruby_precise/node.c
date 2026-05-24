@@ -214,7 +214,10 @@ INIT(void)
      * be reused after rebuilding under copy_gen, but the GC WB inlining
      * baked into the SDs would mismatch the new gen runtime → silent
      * misbehavior or wrong perf. */
-    astro_cs_init("code_store", ".", (uint64_t)BARUBY_GC);
+    /* src_dir: 絶対 path で baked。 cwd 依存の "." だと sample/ など別 dir
+     * から起動された時 SD_*.c に `#include "<cwd>/./node.h"` が emit されて
+     * make が "No such file" で fail (= silent plain fallback)。 */
+    astro_cs_init("code_store", BARUBY_PRECISE_DIR, (uint64_t)BARUBY_GC);
 }
 
 // --- Heap allocators (precise GC) ---

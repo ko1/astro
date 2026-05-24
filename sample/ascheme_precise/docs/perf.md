@@ -398,9 +398,9 @@ fallback)。 修正:
 
 ---
 
-bench script: `/tmp/claude/bench_v7_aot.sh` (本 commit 内には含めない、
-docs 記録のみ)。 再現には `cd sample/ascheme && make && cd ../ascheme_precise &&
-make GC=<backend>` で 17 backend × 9 workload × {plain, aot-cached}。
+bench script: `sample/ascheme_precise/bench/aot_matrix.sh` (= `make
+bench-aot`)。 17 backend × 9 workload × {plain, aot-cached} を ~100 分で
+回す (= matmul outlier dominant)。 結果は TSV を stdout、 §10.1 に貼り付け。
 
 ```sh
 # 検証 + audit mode (= バグ検出)
