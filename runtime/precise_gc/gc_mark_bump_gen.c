@@ -195,7 +195,9 @@ static void __attribute__((noinline, cold))
 nursery_collect_slow(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    if (old_alloc_since_major > old_major_threshold) {
+    /* external_bytes pressure → major (see gc_mark_gen.c rationale) */
+    if (old_alloc_since_major > old_major_threshold
+        || gc->common.external_bytes > old_major_threshold) {
         major_gc(c);
     } else {
         minor_gc(c);
@@ -219,11 +221,11 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned)
         return old_alloc(gc, payload_size, aligned);
     }
 
-    /* External-memory pressure: fold libc-malloc'd external bytes into
-     * nursery pressure so bignum-heavy workloads trigger minor GC and run
-     * finalizers (= mpz_clear) promptly.  See gc_copy_gen.c for rationale. */
+    /* external_bytes pressure → major via nursery_collect_slow.
+     * See gc_mark_gen.c for matmul livelock rationale. */
     if (__builtin_expect(gc->common.stress
-                         || (size_t)(nursery_top - nursery_base) + gc->common.external_bytes + total > NURSERY_BYTES, 0)) {
+                         || (size_t)(nursery_top - nursery_base) + total > NURSERY_BYTES
+                         || gc->common.external_bytes > old_major_threshold, 0)) {
         nursery_collect_slow(c, total);
     }
     AroObjectHeader *h = (AroObjectHeader *)nursery_top;

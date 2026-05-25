@@ -198,7 +198,14 @@ nursery_collect_slow(CTX *c, size_t total)
     // If tenured can't safely hold the entire nursery (worst-case
     // promotion), do a major first to recover dead tenured space.
     size_t max_promotion = (size_t)(nursery_top - nursery_base);
-    if (tenured_top + max_promotion > tenured_end) {
+    /* external_bytes pressure (e.g., GMP buffers piled up) must drive
+     * major (= only full finalize releases libc-backed memory).  Routing
+     * to minor causes livelock on bignum-heavy workloads (matmul):
+     * every alloc trips threshold, minor promotes still-live bignum to
+     * tenured, external_bytes never drops because dead-by-next-line
+     * bignum can't be finalized until the next major. */
+    if (tenured_top + max_promotion > tenured_end
+        || gc->common.external_bytes > old_major_threshold) {
         major_gc(c);
     } else {
         minor_gc(c);
@@ -227,14 +234,13 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned)
         return pretenure_alloc(c, payload_size, total);
     }
 
-    /* External-memory pressure: treat libc-malloc'd external bytes
-     * (e.g., GMP buffers) as nursery pressure so bignum-heavy workloads
-     * trigger minor GC and run finalizers (= mpz_clear) promptly.  Without
-     * this, framework heap stays tiny while libc heap balloons.  The
-     * (nursery_used + external + total > NURSERY_BYTES) form subsumes the
-     * plain (nursery_top + total > nursery_end) check. */
+    /* External-memory pressure (e.g., GMP buffers) drives major via
+     * nursery_collect_slow, not minor — see comment in nursery_collect_slow
+     * for matmul livelock rationale.  Trigger when either nursery itself
+     * fills OR external pressure exceeds old_major_threshold. */
     if (__builtin_expect(gc->common.stress
-                         || (size_t)(nursery_top - nursery_base) + gc->common.external_bytes + total > NURSERY_BYTES, 0)) {
+                         || (size_t)(nursery_top - nursery_base) + total > NURSERY_BYTES
+                         || gc->common.external_bytes > old_major_threshold, 0)) {
         nursery_collect_slow(c, total);
     }
     AroObjectHeader *h = (AroObjectHeader *)nursery_top;

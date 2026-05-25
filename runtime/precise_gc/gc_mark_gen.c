@@ -312,7 +312,18 @@ static void __attribute__((noinline, cold))
 maybe_collect_slow(CTX *c)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    if (old_alloc_since_major > old_major_threshold) {
+    /* Trigger major when either: (a) tenured grew past major threshold,
+     * or (b) external memory (= GMP buffer 等 libc-malloc'd backing) is
+     * dominant.  external_bytes is checked here (= major trigger) rather
+     * than in the young threshold check below — including it in young
+     * trigger leads to livelock on workloads that allocate many short-lived
+     * bignums (= matmul LCG): every alloc trips young threshold, minor
+     * promotes the still-in-arg live bignum to tenured, and external_bytes
+     * never drops because the dead-by-next-line bignum can't be finalized
+     * until the next major.  Routing external pressure to major instead
+     * gives the minor cycle room to actually reclaim young bignums. */
+    if (old_alloc_since_major > old_major_threshold
+        || gc->common.external_bytes > old_major_threshold) {
         major_gc(c);
         old_alloc_since_major = 0;
     } else {
@@ -324,7 +335,9 @@ static inline void
 maybe_collect(CTX *c, size_t add)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    if (__builtin_expect(gc->common.stress || young_bytes + gc->common.external_bytes + add > young_threshold, 0)) {
+    if (__builtin_expect(gc->common.stress
+                         || young_bytes + add > young_threshold
+                         || gc->common.external_bytes > old_major_threshold, 0)) {
         maybe_collect_slow(c);
     }
 }

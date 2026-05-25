@@ -299,7 +299,12 @@ static void __attribute__((noinline, cold))
 maybe_collect_slow(CTX *c)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    if (!inc_marking && old_alloc_since_major > old_major_threshold) {
+    /* external_bytes drives major (= full finalize releases libc-backed
+     * buffers), not minor — see gc_mark_gen.c for the matmul livelock
+     * rationale. */
+    if (!inc_marking
+        && (old_alloc_since_major > old_major_threshold
+            || gc->common.external_bytes > old_major_threshold)) {
         inc_start_major(c);
         old_alloc_since_major = 0;
     } else {
@@ -317,7 +322,9 @@ maybe_collect(CTX *c, size_t add)
             inc_finish_sweep(c);
         }
     }
-    if (__builtin_expect(gc->common.stress || young_bytes + gc->common.external_bytes + add > young_threshold, 0)) {
+    if (__builtin_expect(gc->common.stress
+                         || young_bytes + add > young_threshold
+                         || gc->common.external_bytes > old_major_threshold, 0)) {
         maybe_collect_slow(c);
     }
 }

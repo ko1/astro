@@ -391,9 +391,14 @@ static void __attribute__((noinline, cold))
 maybe_collect_slow(CTX *c)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    gc_collect_minor(c);
-    if (old_alloc_since_major > old_major_threshold) {
+    /* external_bytes pressure → major directly (see gc_mark_gen.c rationale) */
+    if (gc->common.external_bytes > old_major_threshold) {
         gc_collect_major(c);
+    } else {
+        gc_collect_minor(c);
+        if (old_alloc_since_major > old_major_threshold) {
+            gc_collect_major(c);
+        }
     }
 }
 
@@ -401,7 +406,9 @@ void *
 aro_gc_alloc_raw(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    if (__builtin_expect(gc->common.stress || bytes_since_gc + gc->common.external_bytes + (ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
+    if (__builtin_expect(gc->common.stress
+                         || bytes_since_gc + (ALIGN8(payload_size)) > MINOR_THRESHOLD
+                         || gc->common.external_bytes > old_major_threshold, 0)) {
         maybe_collect_slow(c);
     }
     size_t slot_total = ALIGN8(payload_size);
@@ -421,7 +428,9 @@ void *
 aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    if (__builtin_expect(gc->common.stress || bytes_since_gc + gc->common.external_bytes + (ALIGN8(payload_size)) > MINOR_THRESHOLD, 0)) {
+    if (__builtin_expect(gc->common.stress
+                         || bytes_since_gc + (ALIGN8(payload_size)) > MINOR_THRESHOLD
+                         || gc->common.external_bytes > old_major_threshold, 0)) {
         maybe_collect_slow(c);
     }
     size_t slot_total = ALIGN8(payload_size);
