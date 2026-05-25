@@ -28,7 +28,7 @@ for b in "${GC_BENCHES[@]}";      do CATEGORY[$b]=GC;  done
 for b in "${MIXED_BENCHES[@]}";   do CATEGORY[$b]=MIX; done
 BENCHES=("${INTEGER_BENCHES[@]}" "${GC_BENCHES[@]}" "${MIXED_BENCHES[@]}")
 
-BACKENDS=(none bump mark mark_gen mark_freelist mark_bitmap_gen mark_card_gen copy copy_gen mark_compact mark_compact_gen mark_bump_gen immix immix_gen copy_scramble mark_gen_inc copy_gen_inc)
+BACKENDS=(none bump mark mark_gen mark_gen_inc mark_freelist mark_bitmap_gen mark_card_gen copy copy_gen copy_gen_inc mark_compact mark_compact_gen mark_bump_gen immix immix_gen)
 BENCH_PATH="ascheme/bench/big"
 
 run_validated() {
@@ -73,7 +73,7 @@ for gc in "${BACKENDS[@]}"; do
         # for the code_store dir, so we run from ascheme_precise/ to keep
         # the cache out of sample/. Some backend × bench combos hang in
         # GC sweep (e.g. mark_freelist + fib35) — 60s timeout limits damage.
-        (cd ascheme_precise && rm -rf code_store && CCACHE_DISABLE=1 timeout 60 ./ascheme_precise -q --clear-cs --aot-compile "bench/big/$b.scm" >/dev/null 2>&1)
+        (cd ascheme_precise && rm -rf code_store && CCACHE_DISABLE=1 timeout 180 ./ascheme_precise -q --clear-cs --aot-compile "bench/big/$b.scm" >/dev/null 2>&1)
         if [ -f ascheme_precise/code_store/all.so ]; then
             # Run with --aot-compile (= load cached SDs + run). We want the
             # cache from the cd'd build above, so the run must also start
