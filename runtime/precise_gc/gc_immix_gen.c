@@ -313,14 +313,12 @@ static void __attribute__((noinline, cold))
 nursery_collect_slow(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    /* external_bytes pressure → major directly (see gc_mark_gen.c rationale) */
-    if (gc->common.external_bytes > major_threshold) {
+    /* major XOR minor (see gc_copy_gen.c rationale) */
+    if (old_alloc_since_major > major_threshold
+        || gc->common.external_bytes > major_threshold) {
         major_gc(c);
     } else {
         minor_gc(c);
-    }
-    if (old_alloc_since_major > major_threshold) {
-        major_gc(c);
     }
     if (nursery_top + total > nursery_end) {
         major_gc(c);

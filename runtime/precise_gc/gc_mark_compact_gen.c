@@ -155,15 +155,13 @@ nursery_collect_slow(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     size_t max_promotion = (size_t)(nursery_top - nursery_base);
-    /* external_bytes pressure → major (see gc_mark_gen.c rationale) */
+    /* major XOR minor (see gc_copy_gen.c rationale) */
     if (tenured_top + max_promotion > tenured_end
+        || old_alloc_since_major > old_major_threshold
         || gc->common.external_bytes > old_major_threshold) {
         major_gc(c);
     } else {
         minor_gc(c);
-        if (old_alloc_since_major > old_major_threshold) {
-            major_gc(c);
-        }
     }
     if (nursery_top + total > nursery_end) {
         major_gc(c);

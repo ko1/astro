@@ -195,23 +195,22 @@ static void __attribute__((noinline, cold))
 nursery_collect_slow(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    // If tenured can't safely hold the entire nursery (worst-case
-    // promotion), do a major first to recover dead tenured space.
     size_t max_promotion = (size_t)(nursery_top - nursery_base);
-    /* external_bytes pressure (e.g., GMP buffers piled up) must drive
-     * major (= only full finalize releases libc-backed memory).  Routing
-     * to minor causes livelock on bignum-heavy workloads (matmul):
-     * every alloc trips threshold, minor promotes still-live bignum to
-     * tenured, external_bytes never drops because dead-by-next-line
-     * bignum can't be finalized until the next major. */
+    /* major XOR minor: never minor-then-major chain (= wasteful, minor
+     * promotes then major immediately re-scans the just-promoted set).
+     * Pick major when:
+     * (a) tenured can't safely hold worst-case promotion,
+     * (b) tenured has already grown past major threshold,
+     * (c) external_bytes (= GMP buffer 等) exceeds major threshold
+     *     — only major full-finalize releases libc-backed memory; routing
+     *     to minor caused matmul livelock (= minor promotes still-live
+     *     bignum, external never drops, retrigger). */
     if (tenured_top + max_promotion > tenured_end
+        || old_alloc_since_major > old_major_threshold
         || gc->common.external_bytes > old_major_threshold) {
         major_gc(c);
     } else {
         minor_gc(c);
-        if (old_alloc_since_major > old_major_threshold) {
-            major_gc(c);
-        }
     }
     if (nursery_top + total > nursery_end) {
         major_gc(c);
