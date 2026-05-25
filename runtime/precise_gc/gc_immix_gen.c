@@ -310,7 +310,7 @@ static AroObjectHeader *hole_alloc_header(ASTroGC *gc, size_t payload_size)
 
 // iter 43: cold-path split for inliner-budget friendliness.
 static void __attribute__((noinline, cold))
-nursery_collect_slow(CTX *c, size_t total)
+nursery_collect_cold(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     /* major XOR minor (see gc_copy_gen.c rationale) */
@@ -339,13 +339,13 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned)
         return large_alloc(gc, payload_size);
     }
 
-    /* external_bytes pressure → major via nursery_collect_slow.
+    /* external_bytes pressure → major via nursery_collect_cold.
      * See gc_mark_gen.c for matmul livelock rationale. */
     if (__builtin_expect(gc->common.stress
                          || (size_t)(nursery_top - nursery_base) + total > NURSERY_BYTES
                          || gc->common.external_bytes > major_threshold
                          || remset_pressure, 0)) {
-        nursery_collect_slow(c, total);
+        nursery_collect_cold(c, total);
     }
     AroObjectHeader *h = (AroObjectHeader *)nursery_top;
     h->flags    = 0;

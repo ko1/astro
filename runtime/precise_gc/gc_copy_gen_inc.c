@@ -188,7 +188,7 @@ pretenure_alloc(CTX *c, size_t payload_size, size_t total)
 }
 
 static void __attribute__((noinline, cold))
-nursery_collect_slow(CTX *c, size_t total)
+nursery_collect_cold(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     size_t max_promotion = (size_t)(nursery_top - nursery_base);
@@ -219,12 +219,12 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned)
         return pretenure_alloc(c, payload_size, total);
     }
 
-    /* external_bytes pressure → major via nursery_collect_slow.
+    /* external_bytes pressure → major via nursery_collect_cold.
      * See gc_mark_gen.c for the matmul livelock rationale. */
     if (__builtin_expect(gc->common.stress
                          || (size_t)(nursery_top - nursery_base) + total > NURSERY_BYTES
                          || gc->common.external_bytes > old_major_threshold, 0)) {
-        nursery_collect_slow(c, total);
+        nursery_collect_cold(c, total);
     }
     AroObjectHeader *h = (AroObjectHeader *)nursery_top;
     h->flags    = 0;

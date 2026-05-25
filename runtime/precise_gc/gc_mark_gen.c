@@ -309,7 +309,7 @@ static void major_gc(CTX *c);
 // helping aro_gc_alloc stay inliner-budget friendly for baruby_ary_new /
 // baruby_str_new.
 static void __attribute__((noinline, cold))
-maybe_collect_slow(CTX *c)
+maybe_collect_cold(CTX *c)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     /* Trigger major when either: (a) tenured grew past major threshold,
@@ -338,7 +338,7 @@ maybe_collect(CTX *c, size_t add)
     if (__builtin_expect(gc->common.stress
                          || young_bytes + add > young_threshold
                          || gc->common.external_bytes > old_major_threshold, 0)) {
-        maybe_collect_slow(c);
+        maybe_collect_cold(c);
     }
 }
 

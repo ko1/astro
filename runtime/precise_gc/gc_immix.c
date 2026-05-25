@@ -285,7 +285,7 @@ hole_alloc(ASTroGC *gc, size_t payload_size)
 }
 
 static void * __attribute__((noinline, cold))
-hole_alloc_slow(CTX *c, size_t payload_size)
+hole_alloc_cold(CTX *c, size_t payload_size)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     gc_collect_internal(c);
@@ -312,7 +312,7 @@ aro_gc_alloc_raw(CTX *c, size_t payload_size)
     } else {
         payload = hole_alloc(gc, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(c, payload_size);
+            payload = hole_alloc_cold(c, payload_size);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);
@@ -338,7 +338,7 @@ aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
     } else {
         payload = hole_alloc(gc, payload_size);
         if (__builtin_expect(!payload, 0)) {
-            payload = hole_alloc_slow(c, payload_size);
+            payload = hole_alloc_cold(c, payload_size);
         }
     }
     ASTRO_ASSERT(((uintptr_t)payload & 7u) == 0);

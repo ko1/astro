@@ -296,7 +296,7 @@ static void minor_gc(CTX *c);
 // path.  inc_marking step stays inline since it runs every alloc when
 // active.
 static void __attribute__((noinline, cold))
-maybe_collect_slow(CTX *c)
+maybe_collect_cold(CTX *c)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     /* external_bytes drives major (= full finalize releases libc-backed
@@ -325,7 +325,7 @@ maybe_collect(CTX *c, size_t add)
     if (__builtin_expect(gc->common.stress
                          || young_bytes + add > young_threshold
                          || gc->common.external_bytes > old_major_threshold, 0)) {
-        maybe_collect_slow(c);
+        maybe_collect_cold(c);
     }
 }
 

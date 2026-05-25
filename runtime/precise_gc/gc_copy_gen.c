@@ -192,7 +192,7 @@ pretenure_alloc(CTX *c, size_t payload_size, size_t total)
 }
 
 static void __attribute__((noinline, cold))
-nursery_collect_slow(CTX *c, size_t total)
+nursery_collect_cold(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     size_t max_promotion = (size_t)(nursery_top - nursery_base);
@@ -234,13 +234,13 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned)
     }
 
     /* External-memory pressure (e.g., GMP buffers) drives major via
-     * nursery_collect_slow, not minor — see comment in nursery_collect_slow
+     * nursery_collect_cold, not minor — see comment in nursery_collect_cold
      * for matmul livelock rationale.  Trigger when either nursery itself
      * fills OR external pressure exceeds old_major_threshold. */
     if (__builtin_expect(gc->common.stress
                          || (size_t)(nursery_top - nursery_base) + total > NURSERY_BYTES
                          || gc->common.external_bytes > old_major_threshold, 0)) {
-        nursery_collect_slow(c, total);
+        nursery_collect_cold(c, total);
     }
     AroObjectHeader *h = (AroObjectHeader *)nursery_top;
     h->flags    = 0;

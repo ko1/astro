@@ -80,7 +80,7 @@
 
 /* WB fast-path bit mask (= bit-in-head backends).  gc.h's inline
  * `aro_gc_wb` checks `(gc_flags & MASK) == OLD_ONLY` to decide whether
- * the slow path (= aro_gc_wb_slow) is needed.  Each gen backend that
+ * the slow path (= aro_gc_remember) is needed.  Each gen backend that
  * keeps OLD/DIRTY bits directly in head.gc_flags exposes its layout
  * here so the WB hot path inlines without a function call.
  *

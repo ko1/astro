@@ -124,7 +124,7 @@ aro_gc_init(CTX *c)
 static void gc_collect_internal(CTX *c);
 
 static void __attribute__((noinline, cold))
-bump_slow(CTX *c, size_t total)
+bump_cold(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     gc_collect_internal(c);
@@ -142,7 +142,7 @@ bump(CTX *c, size_t payload_size, size_t aligned)
     if (__builtin_expect(gc->common.stress
                          || bytes_since_gc + gc->common.external_bytes + payload_size > gc_threshold
                          || region_top + total > region_end, 0)) {
-        bump_slow(c, total);
+        bump_cold(c, total);
     }
     AroObjectHeader *h = (AroObjectHeader *)region_top;
     h->flags    = 0;

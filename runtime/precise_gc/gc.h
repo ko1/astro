@@ -482,7 +482,7 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 //   1. *slot = v
 //   2. if (holder == NULL || !(OLD && !DIRTY)) return
 //
-// The COLD path (= set DIRTY + push to remset) is `aro_gc_wb_slow`, an
+// The COLD path (= set DIRTY + push to remset) is `aro_gc_remember`, an
 // out-of-line extern function.  Splitting like this keeps the WB inline-able
 // at every callsite — `arr.push` and similar hot writes get a few inline
 // instructions plus a rarely-taken branch instead of a full function call.

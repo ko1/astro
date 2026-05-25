@@ -388,7 +388,7 @@ static void gc_collect_minor(CTX *c);
 static void gc_collect_major(CTX *c);
 
 static void __attribute__((noinline, cold))
-maybe_collect_slow(CTX *c)
+maybe_collect_cold(CTX *c)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     /* external_bytes pressure → major directly (see gc_mark_gen.c rationale) */
@@ -409,7 +409,7 @@ aro_gc_alloc_raw(CTX *c, size_t payload_size)
     if (__builtin_expect(gc->common.stress
                          || bytes_since_gc + (ALIGN8(payload_size)) > MINOR_THRESHOLD
                          || gc->common.external_bytes > old_major_threshold, 0)) {
-        maybe_collect_slow(c);
+        maybe_collect_cold(c);
     }
     size_t slot_total = ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
@@ -431,7 +431,7 @@ aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
     if (__builtin_expect(gc->common.stress
                          || bytes_since_gc + (ALIGN8(payload_size)) > MINOR_THRESHOLD
                          || gc->common.external_bytes > old_major_threshold, 0)) {
-        maybe_collect_slow(c);
+        maybe_collect_cold(c);
     }
     size_t slot_total = ALIGN8(payload_size);
     int cls = size_class_for(slot_total);
