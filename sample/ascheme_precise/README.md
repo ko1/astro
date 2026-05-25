@@ -168,11 +168,12 @@ precise GC 固有の状況:
   R5RS) PASS** (= Phase 8 完了)。 過去は `mark_gen` / `mark_gen_inc` 等で
   root tracking gap があったが、 typed-ptr field の VALUE 化 + framework
   freelist encoding bug fix で全 17 PASS
-- **全 17 backend で AOT (= --aot-compile + dlopen) も動作**。 mark_compact
-  は plain 同様 SEGV 残、 mark は matmul のみ AOT regression (= 4.6s → 10.2s、
-  GC trigger cadence の影響、 結果は正解)
-- `mark_compact` のみ bench workload 3 個 (= nbody / fannkuch / matmul) で
-  SEGV (= sliding-compact phase の edge case bug、 root tracking は OK)
+- **全 17 backend × 9 bench × {plain, AOT} = 153/153 cell PASS** (= Phase 9
+  完了)。 mark_compact の sliding-compact 由来 SEGV と mark_bump_gen +
+  sieve_big の pointer 演算 bug は両方とも修正済 ([`docs/perf.md`](./docs/perf.md)
+  §7.3、 commit `55b138f6` / `f4ab6f57`)
+- `mark` は matmul AOT のみ regression (= 4.6s → 10.2s、 GC trigger cadence
+  の影響、 結果は正解)
 - `mark_freelist` / `mark_bitmap_gen` / `mark_card_gen` の matmul は 60–100s
   outlier (= 外部 GMP buffer の external_bytes pressure と GC trigger 頻度の
   相性、 [`docs/perf.md`](./docs/perf.md) §7.2)

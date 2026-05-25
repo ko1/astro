@@ -40,9 +40,9 @@ bug 修正) 後** の状態 (= 全 17 backend で test suite + canary stress PAS
 | mark_card_gen       | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗ |
 | **copy**            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | copy_gen            | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
-| mark_compact        | ✓ | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ |
+| mark_compact        | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
 | mark_compact_gen    | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
-| mark_bump_gen       | ✓ | ✓ | ✓ | (★)| ✓ | ✓ | ✓ | ✓ | (★) |
+| mark_bump_gen       | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
 | **immix**           | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | immix_gen           | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | (★) |
 | **copy_scramble**   | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -50,17 +50,18 @@ bug 修正) 後** の状態 (= 全 17 backend で test suite + canary stress PAS
 **全 workload で速度 OK**: libgc + none + bump + **mark + copy + immix +
 copy_scramble** = 7 precise backend + libgc。
 
-**全 workload で correctness PASS** (= 速度 outlier 含む): 16/17 (=
-mark_compact を除く全部)。 `mark_compact` のみ nbody / fannkuch / matmul で
-SEGV (= sliding compact phase の edge case bug、 §7.4)。
+**全 workload で correctness PASS**: 17/17 (= commit `55b138f6` で
+mark_compact の SEGV 解決後)。 mark_card_gen のみ matmul で異常遅延あり
+(= 後述 §7.2 outlier、 ✗ は誤結果ではなく timeout)。
 
-`(★)` = 完走するが極端に遅い (= 後述 §7.3 outlier、 GMP buffer の external
+`(★)` = 完走するが極端に遅い (= 後述 §7.2 outlier、 GMP buffer の external
 pressure と GC frequency の相性問題)。
 
 注: 全 17 backend で **test suite (= 17 ascheme test + 179 R5RS chibi +
 canary 16_alloc_root_stress) は default + stress mode 両方 PASS**。 本
 matrix の ✗ / ★ は **特定 bench workload 固有** で言語 correctness の問題
-ではない。
+ではない。 さらに全 17 × 9 workload × {plain, AOT} = **153/153 cell PASS**
+を達成 (= §10 AOT mode、 commit `55b138f6` 後)。
 
 ## 2. 数値表 (= 単位 秒、 best of 3、 ✗ は省略)
 
@@ -240,28 +241,31 @@ matmul と相性悪い。
 調整余地: external_bytes threshold の slack 拡大、 minor pool size 拡張、
 freelist sweep の bitmap 化等。
 
-### 7.3 mark_compact の SEGV (= nbody / fannkuch / matmul)
+### 7.3 ~~mark_compact の SEGV~~ → 解決 (commit `55b138f6`)
 
-`mark_compact` は default mode で **nbody / fannkuch / matmul SEGV**。
-canary stress (= 16_alloc_root_stress) は PASS するので root tracking は
-正しく、 sliding-compact phase の特定 edge case bug。 sieve_big / deriv /
-nqueens / cps_loop / sumloop / fib35 は完走 (= §1 matrix の `✗` 列)。
-生成系 (`mark_compact_gen`) は同 workload で動く (= matmul は outlier 値だが
-SEGV せず) ので非生成 compact phase 固有の問題と推定。
+過去版で `mark_compact` が **nbody / fannkuch / matmul SEGV** していた問題は
+解決済。 真因は backend 固有ではなく **sample 側 SCAN_EDGES の設計問題**:
 
-調査メモ (= fannkuch reproducer から、 plain mode で発火):
-- crash は update_pointers (= step 3) で起こる。 OBJ_VECTOR の items_base
-  に対する fwd_payload が NULL を返し (= items_base が unmarked)、
-  続く items[i] iterate で隣接領域を deref して SEGV
-- items_base の header dump で flags=4 (OBJ_PAIR) / gc_size=0x20000000 等の
-  bogus 値が見える → mark phase 中に items_base が visit されていない、
-  または直前 obj から overflow している
-- 一部 16-byte 周期で同じ bogus pattern が並ぶ → struct sobj (32B for FWD
-  backend) 単位の corruption pattern
+`OBJ_VECTOR` / `OBJ_MVALUES` の SCAN_EDGES が `_o->vec.items` を post-slide
+位置に update してから items[i] を iterate していた。 mark_compact では:
 
-OBJ_VECTOR の SCAN_EDGES は `&__base` (= C local) を visit → mark_value(items_base)
-で MARKED 化するはずだが、 何らかの理由で skip / 上書きされている。
-mark_bump_gen 同様 backend 固有の deep bug、 future work。
+1. step 3 (update_pointers) で `vec.items` を post-slide 位置に書き換え
+2. step 5 (slide) で実データを post-slide 位置に memmove
+3. step 3 と 5 の間では post-slide 位置は **未初期化メモリ**
+4. items[i] iterate が未初期化メモリを deref → `fwd_payload` で SEGV
+
+copy 系は `major_promote` の memcpy で先に new 位置にデータがあるので問題なし。
+
+**修正**: items_base buffer に専用 type tag `OBJ_VEC_BACKING` を追加、
+SCAN_EDGES を分離:
+- `OBJ_VECTOR` / `OBJ_MVALUES`: items_base 参照だけ forward (= edge_visit に
+  `&__base` を渡す)、 items[i] iterate は行わない
+- `OBJ_VEC_BACKING`: items_base 自身が visited された時に自前 SCAN_EDGES で
+  `N = (gc_size - sizeof(header)) / sizeof(VALUE)` を求めて items[i] を walk
+
+これで **reader と data が常に co-located**: mark_compact は items_base が
+未移動の OLD 位置で、 copy 系は memcpy 済の NEW 位置で iterate。 全 17
+backend × 9 workload × {plain, aot} = 153/153 cell PASS を達成。
 
 ## 8. baruby_precise との比較
 
