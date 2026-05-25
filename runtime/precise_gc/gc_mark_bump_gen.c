@@ -1,40 +1,22 @@
-// gc_mark_bump_gen.c — backend #11: bump-allocated nursery + linked-list
-// mark&sweep tenured.
-//
-// Goal: isolate "nursery alloc strategy" from "tenured strategy" in the
-// design space:
-//   - mark_gen:        malloc nursery + linked-list mark&sweep tenured
-//   - mark_compact_gen: bump   nursery + bump-region mark+compact tenured
-//   - mark_bump_gen:   bump   nursery + linked-list mark&sweep tenured (this)
-//
-// Comparing mark_bump_gen vs mark_gen shows the cost of malloc-per-alloc
-// in the nursery.  Comparing it vs mark_compact_gen shows the cost of
-// mark&sweep tenured (no compaction → fragmentation, cache locality loss)
-// against compacted tenured.
+// gc_mark_bump_gen.c — backend #11: bump-allocated young (2 halves) +
+// bump-allocated mark&sweep tenured, with N-survive promotion.
 //
 // Layout:
-//   - Nursery: one bump region (16 MiB).  Headers are inline.
-//   - Tenured: doubly-linked list of malloc'd { GCHeader, payload } blocks.
+//   - Young: two semi-spaces (YOUNG_BYTES each).  Active half receives new
+//     allocs.  On minor, survivors copy to alt half (age++ < PROMOTE_AGE)
+//     or to tenured (age >= PROMOTE_AGE).
+//   - Tenured: bump-allocated within a single mmap'd region (64 GiB virt).
+//     Survivors are appended; major mark + linear sweep reclaims.
 //
-// Minor GC:
-//   1. Scan sample roots via AROH_VISIT_ROOTS — promote nursery VALUEs.
-//   2. Scan remset (dirty tenured) — promote any nursery refs.
-//   3. Cheney scan-loop over freshly-promoted-into-list — for each, forward
-//      its outgoing refs.
-//   4. Reset nursery_top.
+// Promotion: N-survive (= PROMOTE_AGE-th survival, age in 2 bits of gc_flags).
 //
-// Promotion: bump-alloc a fresh tenured slot, memcpy from nursery.
-// Old nursery slot's `fwd` set to new payload pointer for forwarding.
+// Minor GC: N-survive Cheney young → young-to OR tenured.  Promoted with
+//   young refs gets remset_push (= GC-internal WB).
+// Major GC: force-promote all live young to tenured, then mark + linear sweep.
 //
-// Major GC: mark + region-walk sweep.  Walks tenured region linearly
-// from base to top, reading header-size-prefix to find each object.
-// No linked list — saves 16 B/header and gives cache-friendly sweep.
-// Without compaction the region's bump pointer never resets, so live
-// + dead objects accumulate until 1 GiB OOM (fine for short benches).
-//
-// Write barrier: when writing a heap pointer into an old object, mark it
-// dirty + push to remset.  Minor GC walks the remset (not the full old
-// list) to find young roots from tenured.
+// Write barrier:
+//   - User write of young VALUE into tenured: aro_gc_wb pushes holder to remset.
+//   - GC promote: Cheney scan in minor detects tenured→young, pushes.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,20 +26,47 @@
 #include "astro_debug.h"
 #include "gc.h"
 
-#define NURSERY_BYTES  ((size_t)16u  << 20)    /* 16 MiB (tuning knob, not program limit) */
-#define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES /* 64 GiB virtual, lazy-paged */
+#define YOUNG_BYTES    ((size_t)16u << 20)        /* 16 MiB per young half */
+#define TENURED_BYTES  ARO_GC_REGION_VIRT_BYTES   /* 64 GiB virt */
 #define ALIGN8(n)      (((n) + 7u) & ~(size_t)7u)
 
-/* iter 75 Step C+: fwd overlay (8 B head). */
 _Static_assert(sizeof(AroObjectHeader) == 8, "head must be 8 bytes");
 
+/* gc_flags layout:
+ *   bit 0  : MARKED
+ *   bit 1  : OLD
+ *   bit 2  : DIRTY
+ *   bit 3  : FREE     (unused here, kept for symmetry)
+ *   bit 4  : FORWARDED (= nursery→to copied; for moving GC fwd_overlay)
+ *   bits 5-6: AGE
+ *
+ * WB mask (gc_types.h): MARKED=0x1, OLD=0x2, DIRTY=0x4 → AGE/FORWARDED don't
+ * interfere with OLD+DIRTY check. */
 #define HDR_MARKED_BIT   (uint16_t)0x0001u
 #define HDR_OLD_BIT      (uint16_t)0x0002u
 #define HDR_DIRTY_BIT    (uint16_t)0x0004u
 #define HDR_FREE_BIT     (uint16_t)0x0008u
-#define HDR_FORWARDED    (uint16_t)0x0010u   /* nursery → tenured copied */
+#define HDR_FORWARDED    (uint16_t)0x0010u
+#define HDR_AGE_SHIFT    5
+#define HDR_AGE_MASK     ((uint16_t)0x0060u)
+#define PROMOTE_AGE      3u
 #define HDR_IS_FORWARDED(h)  (((h)->gc_flags & HDR_FORWARDED) != 0)
 #define HDR_SET_FORWARDED(h) ((h)->gc_flags |= HDR_FORWARDED)
+#define HDR_MARKED(h)      (((h)->gc_flags & HDR_MARKED_BIT) != 0)
+#define HDR_SET_MARKED(h)  ((h)->gc_flags |= HDR_MARKED_BIT)
+#define HDR_CLR_MARKED(h)  ((h)->gc_flags &= (uint16_t)~HDR_MARKED_BIT)
+#define HDR_OLD(h)         (((h)->gc_flags & HDR_OLD_BIT) != 0)
+#define HDR_SET_OLD(h)     ((h)->gc_flags |= HDR_OLD_BIT)
+#define HDR_CLR_OLD(h)     ((h)->gc_flags &= (uint16_t)~HDR_OLD_BIT)
+#define HDR_DIRTY(h)       (((h)->gc_flags & HDR_DIRTY_BIT) != 0)
+#define HDR_SET_DIRTY(h)   ((h)->gc_flags |= HDR_DIRTY_BIT)
+#define HDR_CLR_DIRTY(h)   ((h)->gc_flags &= (uint16_t)~HDR_DIRTY_BIT)
+#define HDR_IS_FREE(h)     (((h)->gc_flags & HDR_FREE_BIT) != 0)
+#define HDR_SET_FREE(h)    ((h)->gc_flags |= HDR_FREE_BIT)
+#define HDR_GET_AGE(h)     (uint16_t)(((h)->gc_flags & HDR_AGE_MASK) >> HDR_AGE_SHIFT)
+#define HDR_SET_AGE(h, a)  ((h)->gc_flags = (uint16_t)                         \
+                            (((h)->gc_flags & (uint16_t)~HDR_AGE_MASK)         \
+                             | (((uint16_t)(a) << HDR_AGE_SHIFT) & HDR_AGE_MASK)))
 
 static inline void *
 fwd_overlay_get(AroObjectHeader *h)
@@ -70,50 +79,48 @@ fwd_overlay_set(AroObjectHeader *h, void *new_payload)
 {
     *(void **)((char *)h + sizeof(AroObjectHeader)) = new_payload;
 }
-#define HDR_MARKED(h)      (((h)->gc_flags & HDR_MARKED_BIT) != 0)
-#define HDR_SET_MARKED(h)  ((h)->gc_flags |= HDR_MARKED_BIT)
-#define HDR_CLR_MARKED(h)  ((h)->gc_flags &= (uint16_t)~HDR_MARKED_BIT)
-#define HDR_OLD(h)         (((h)->gc_flags & HDR_OLD_BIT) != 0)
-#define HDR_SET_OLD(h)     ((h)->gc_flags |= HDR_OLD_BIT)
-#define HDR_CLR_OLD(h)     ((h)->gc_flags &= (uint16_t)~HDR_OLD_BIT)
-#define HDR_DIRTY(h)       (((h)->gc_flags & HDR_DIRTY_BIT) != 0)
-#define HDR_SET_DIRTY(h)   ((h)->gc_flags |= HDR_DIRTY_BIT)
-#define HDR_CLR_DIRTY(h)   ((h)->gc_flags &= (uint16_t)~HDR_DIRTY_BIT)
-#define HDR_IS_FREE(h)     (((h)->gc_flags & HDR_FREE_BIT) != 0)
-#define HDR_SET_FREE(h)    ((h)->gc_flags |= HDR_FREE_BIT)
-// NB: no linked list — tenured objects live in a contiguous mmap region,
-// sweep iterates by region walk (header-size-prefix), not by chasing
-// next pointers.  Saves 16 bytes/header and turns sweep into a
-// sequential scan (cache-friendly).
 
 #define MAJOR_THRESHOLD_MIN  (16u * 1024u * 1024u)
 
-// ----------------------------------------------------------------------------
-// ASTroGC: process-scope GC instance.  See docs/gc_design.md §3.
-// ----------------------------------------------------------------------------
 typedef struct ASTroGC {
-    AroGcCommonState common;   /* MUST be first field */
-    char *nursery_base, *nursery_top, *nursery_end;
-    /* Tenured: bump-allocated within a single mmap'd region. */
-    char *tenured_base, *tenured_top, *tenured_end;
+    AroGcCommonState common;
+
+    char *young_active_base;
+    char *young_top;
+    char *young_alt_base;
+
+    char *tenured_base;
+    char *tenured_top;
+    char *tenured_end;
+
     size_t old_bytes;
     size_t old_alloc_since_major;
     size_t old_major_threshold;
     CTX  *ctx;
     bool  in_minor;
-    /* Cheney scan queue for freshly-promoted-during-minor. */
+    bool  force_promote;
+    bool  scan_saw_young;
+
+    /* Minor scratch. */
+    char *young_from_base;
+    char *young_from_end;
+    char *young_to_base;
+    char *young_to_top;
+    char *young_to_end;
+    char *old_tenured_top;
+
     struct AroObjectHeader **scan_buf;
-    size_t            scan_head, scan_tail, scan_capa;
+    size_t scan_head, scan_tail, scan_capa;
     struct AroObjectHeader **gray_buf;
-    size_t            gray_cnt, gray_capa;
+    size_t gray_cnt, gray_capa;
     struct AroObjectHeader **remset_buf;
-    size_t            remset_cnt, remset_capa;
-    bool              remset_overflow;
+    size_t remset_cnt, remset_capa;
+    bool   remset_overflow;
 } ASTroGC;
 
-#define nursery_base          (gc->nursery_base)
-#define nursery_top           (gc->nursery_top)
-#define nursery_end           (gc->nursery_end)
+#define young_active_base     (gc->young_active_base)
+#define young_top             (gc->young_top)
+#define young_alt_base        (gc->young_alt_base)
 #define tenured_base          (gc->tenured_base)
 #define tenured_top           (gc->tenured_top)
 #define tenured_end           (gc->tenured_end)
@@ -122,6 +129,13 @@ typedef struct ASTroGC {
 #define old_major_threshold   (gc->old_major_threshold)
 #define gc_ctx                (gc->ctx)
 #define in_minor              (gc->in_minor)
+#define force_promote         (gc->force_promote)
+#define young_from_base       (gc->young_from_base)
+#define young_from_end        (gc->young_from_end)
+#define young_to_base         (gc->young_to_base)
+#define young_to_top          (gc->young_to_top)
+#define young_to_end          (gc->young_to_end)
+#define old_tenured_top       (gc->old_tenured_top)
 #define scan_buf              (gc->scan_buf)
 #define scan_head             (gc->scan_head)
 #define scan_tail             (gc->scan_tail)
@@ -153,9 +167,9 @@ aro_gc_init(CTX *c)
     c->astro_gc = gc;
     gc_ctx = c;
     old_major_threshold = MAJOR_THRESHOLD_MIN;
-    nursery_base = mmap_region(NURSERY_BYTES);
-    nursery_top  = nursery_base;
-    nursery_end  = nursery_base + NURSERY_BYTES;
+    young_active_base = mmap_region(YOUNG_BYTES);
+    young_alt_base    = mmap_region(YOUNG_BYTES);
+    young_top         = young_active_base;
     tenured_base = mmap_region(TENURED_BYTES);
     tenured_top  = tenured_base;
     tenured_end  = tenured_base + TENURED_BYTES;
@@ -173,7 +187,8 @@ aro_gc_init(CTX *c)
 static void minor_gc(CTX *c);
 static void major_gc(CTX *c);
 
-static AroObjectHeader *old_alloc(ASTroGC *gc, size_t payload_size, size_t aligned)
+static AroObjectHeader *
+old_alloc(ASTroGC *gc, size_t payload_size, size_t aligned)
 {
     size_t total = aligned;
     if (tenured_top + total > tenured_end) {
@@ -195,17 +210,16 @@ static void __attribute__((noinline, cold))
 nursery_collect_cold(CTX *c, size_t total)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    /* external_bytes pressure → major (see gc_mark_gen.c rationale) */
     if (old_alloc_since_major > old_major_threshold
         || gc->common.external_bytes > old_major_threshold) {
         major_gc(c);
     } else {
         minor_gc(c);
     }
-    if (nursery_top + total > nursery_end) {
+    if (young_top + total > young_active_base + YOUNG_BYTES) {
         major_gc(c);
-        if (nursery_top + total > nursery_end) {
-            fprintf(stderr, "baruby_gc=mark_bump_gen: OOM (need %zu)\n", total);
+        if (young_top + total > young_active_base + YOUNG_BYTES) {
+            fprintf(stderr, "baruby_gc=mark_bump_gen: OOM young (need %zu)\n", total);
             abort();
         }
     }
@@ -217,22 +231,20 @@ nursery_bump(CTX *c, size_t payload_size, size_t aligned)
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     size_t total = aligned;
 
-    if (__builtin_expect(payload_size >= NURSERY_BYTES / 2, 0)) {
+    if (__builtin_expect(payload_size >= YOUNG_BYTES / 2, 0)) {
         return old_alloc(gc, payload_size, aligned);
     }
 
-    /* external_bytes pressure → major via nursery_collect_cold.
-     * See gc_mark_gen.c for matmul livelock rationale. */
     if (__builtin_expect(gc->common.stress
-                         || (size_t)(nursery_top - nursery_base) + total > NURSERY_BYTES
+                         || (size_t)(young_top - young_active_base) + total > YOUNG_BYTES
                          || gc->common.external_bytes > old_major_threshold, 0)) {
         nursery_collect_cold(c, total);
     }
-    AroObjectHeader *h = (AroObjectHeader *)nursery_top;
+    AroObjectHeader *h = (AroObjectHeader *)young_top;
     h->flags    = 0;
     h->gc_flags = 0;
     h->gc_size  = (uint32_t)payload_size;
-    nursery_top += total;
+    young_top += total;
     return h;
 }
 
@@ -268,8 +280,6 @@ aro_gc_alloc_byte_raw(CTX *c, size_t payload_size)
 // Write barrier
 // ---------------------------------------------------------------------------
 
-/* iter 36 remset overflow guard — see gc_mark_gen.c for rationale.
- * Storage: ASTroGC.remset_overflow (aliased above). */
 #define MAX_REMSET_ENTRIES (1u << 17)
 
 static void
@@ -286,28 +296,6 @@ remset_push(ASTroGC *gc, AroObjectHeader *h)
     remset_buf[remset_cnt++] = h;
 }
 
-static void process_object(ASTroGC *gc, AroObjectHeader *h);
-static void
-remset_visit_minor(ASTroGC *gc, AroObjectHeader *h)
-{
-    if (HDR_DIRTY(h)) {
-        process_object(gc, h);
-        HDR_CLR_DIRTY(h);
-    }
-}
-
-static void
-remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, AroObjectHeader *))
-{
-    char *scan = tenured_base;
-    while (scan < tenured_top) {
-        AroObjectHeader *h = (AroObjectHeader *)scan;
-        visit(gc, h);
-        scan += ALIGN8(h->gc_size);
-    }
-}
-
-/* WB body — caller verified holder is old + not-yet-dirty. */
 void __attribute__((noinline, cold))
 aro_gc_remember(CTX *c, AroObjectHeader *h)
 {
@@ -317,13 +305,211 @@ aro_gc_remember(CTX *c, AroObjectHeader *h)
 }
 
 // ---------------------------------------------------------------------------
-// Minor GC: promote nursery survivors to tenured (linked list).
+// Cheney copy (minor + major-fold)
 // ---------------------------------------------------------------------------
 
 static inline bool
-in_nursery(ASTroGC *gc, void *p)
+in_young_from(const ASTroGC *const gc, const void *const p)
 {
-    return (char *)p >= nursery_base && (char *)p < nursery_end;
+    return (const char *)p >= young_from_base && (const char *)p < young_from_end;
+}
+
+static inline bool
+in_young_active(const ASTroGC *const gc, const void *const p)
+{
+    return (const char *)p >= young_active_base && (const char *)p < young_top;
+}
+
+static inline bool
+in_young_to(const ASTroGC *const gc, const void *const p)
+{
+    return (const char *)p >= young_to_base && (const char *)p < young_to_top;
+}
+
+/* Forward young-from obj to young-to (age++) or tenured (= promote). */
+static void *
+forward_obj(ASTroGC *gc, AroObjectHeader *oldh)
+{
+    if (HDR_IS_FORWARDED(oldh)) return fwd_overlay_get(oldh);
+    size_t aligned = ALIGN8(oldh->gc_size);
+    AroObjectHeader *newh;
+
+    if (in_minor && !force_promote) {
+        uint16_t age = HDR_GET_AGE(oldh);
+        if (age >= PROMOTE_AGE) {
+            newh = old_alloc(gc, oldh->gc_size, aligned);
+            memcpy(newh, oldh, aligned);
+            newh->gc_flags = HDR_OLD_BIT;
+        } else {
+            ASTRO_ASSERT(young_to_top + aligned <= young_to_end);
+            newh = (AroObjectHeader *)young_to_top;
+            young_to_top += aligned;
+            memcpy(newh, oldh, aligned);
+            newh->gc_flags = 0;
+            HDR_SET_AGE(newh, age + 1);
+        }
+    } else {
+        /* Major-fold-young: force promote. */
+        newh = old_alloc(gc, oldh->gc_size, aligned);
+        memcpy(newh, oldh, aligned);
+        newh->gc_flags = HDR_OLD_BIT | HDR_MARKED_BIT;  /* major needs MARKED */
+    }
+
+    HDR_SET_FORWARDED(oldh);
+    fwd_overlay_set(oldh, newh);
+    return (void *)newh;
+}
+
+static void *
+forward_payload_value(ASTroGC *gc, void *p)
+{
+    if (!p) return NULL;
+    AroObjectHeader *h = (AroObjectHeader *)p;
+    if (in_minor) {
+        if (!in_young_from(gc, p)) return p;
+    } else {
+        if (!in_young_active(gc, p)) return p;
+    }
+    return forward_obj(gc, h);
+}
+
+static void
+forward_edge_minor(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (AROH_IS_GC_OBJECT(v)) {
+        void *new = forward_payload_value(gc, (void *)v);
+        *slot = new;
+        if (in_young_to(gc, new)) gc->scan_saw_young = true;
+    }
+}
+
+static void
+process_object_young(ASTroGC *gc, AroObjectHeader *h)
+{
+    gc->scan_saw_young = false;
+    AROH_SCAN_EDGES((void *)h, h->gc_size, gc, forward_edge_minor);
+}
+
+static void
+process_object_promoted(ASTroGC *gc, AroObjectHeader *h)
+{
+    gc->scan_saw_young = false;
+    AROH_SCAN_EDGES((void *)h, h->gc_size, gc, forward_edge_minor);
+    if (gc->scan_saw_young) {
+        HDR_SET_DIRTY(h);
+        remset_push(gc, h);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// minor_gc
+// ---------------------------------------------------------------------------
+
+static void __attribute__((noinline))
+minor_gc(CTX *c)
+{
+    ASTroGC *gc = ARO_GC_INSTANCE(c);
+    struct timespec t0 = aro_gc_time_begin(c);
+    in_minor = true;
+    force_promote = false;
+
+    young_from_base = young_active_base;
+    young_from_end  = young_top;
+    young_to_base   = young_alt_base;
+    young_to_top    = young_to_base;
+    young_to_end    = young_to_base + YOUNG_BYTES;
+    old_tenured_top = tenured_top;
+
+    AROH_VISIT_ROOTS(c, gc, forward_edge_minor);
+
+    /* Remset compaction (see gc_copy_gen.c). */
+    if (remset_overflow) {
+        remset_cnt = 0;
+        char *scan = tenured_base;
+        while (scan < old_tenured_top) {
+            AroObjectHeader *h = (AroObjectHeader *)scan;
+            if (HDR_DIRTY(h)) {
+                gc->scan_saw_young = false;
+                AROH_SCAN_EDGES((void *)h, h->gc_size, gc, forward_edge_minor);
+                if (gc->scan_saw_young) {
+                    remset_push(gc, h);
+                } else {
+                    HDR_CLR_DIRTY(h);
+                }
+            }
+            scan += ALIGN8(h->gc_size);
+        }
+        remset_overflow = false;
+    } else {
+        size_t orig_cnt = remset_cnt;
+        size_t write = 0;
+        for (size_t i = 0; i < orig_cnt; i++) {
+            AroObjectHeader *h = remset_buf[i];
+            if (!HDR_DIRTY(h)) continue;
+            gc->scan_saw_young = false;
+            AROH_SCAN_EDGES((void *)h, h->gc_size, gc, forward_edge_minor);
+            if (gc->scan_saw_young) {
+                remset_buf[write++] = h;
+            } else {
+                HDR_CLR_DIRTY(h);
+            }
+        }
+        remset_cnt = write;
+    }
+
+    /* Cheney loop over young-to + freshly-promoted tenured. */
+    {
+        char *young_scan = young_to_base;
+        char *tenured_scan = old_tenured_top;
+        for (;;) {
+            bool advanced = false;
+            while (young_scan < young_to_top) {
+                AroObjectHeader *h = (AroObjectHeader *)young_scan;
+                process_object_young(gc, h);
+                young_scan += ALIGN8(h->gc_size);
+                advanced = true;
+            }
+            while (tenured_scan < tenured_top) {
+                AroObjectHeader *h = (AroObjectHeader *)tenured_scan;
+                process_object_promoted(gc, h);
+                tenured_scan += ALIGN8(h->gc_size);
+                advanced = true;
+            }
+            if (!advanced) break;
+        }
+    }
+
+    aro_gc_finalize_walk(c);
+
+    /* Swap young halves. */
+    char *old_active = young_active_base;
+    young_active_base = young_to_base;
+    young_top         = young_to_top;
+    young_alt_base    = old_active;
+
+    in_minor = false;
+
+    gc->common.stats.gc_count++;
+    gc->common.stats.minor_count++;
+    gc->common.stats.heap_bytes = old_bytes;
+    aro_gc_time_end(c, t0);
+}
+
+// ---------------------------------------------------------------------------
+// Major GC: fold young (force promote, set MARKED on new), mark, sweep.
+// ---------------------------------------------------------------------------
+
+static void
+gray_push(ASTroGC *gc, AroObjectHeader *h)
+{
+    if (gray_cnt >= gray_capa) {
+        gray_capa = gray_capa ? gray_capa * 2 : 256;
+        gray_buf = (AroObjectHeader **)realloc(gray_buf, gray_capa * sizeof(AroObjectHeader *));
+        if (!gray_buf) abort();
+    }
+    gray_buf[gray_cnt++] = h;
 }
 
 static void
@@ -337,144 +523,8 @@ scan_push(ASTroGC *gc, AroObjectHeader *h)
     scan_buf[scan_tail++] = h;
 }
 
-static void
-gray_push(ASTroGC *gc, AroObjectHeader *h)
-{
-    if (gray_cnt >= gray_capa) {
-        gray_capa = gray_capa ? gray_capa * 2 : 256;
-        gray_buf = (AroObjectHeader **)realloc(gray_buf, gray_capa * sizeof(AroObjectHeader *));
-        if (!gray_buf) abort();
-    }
-    gray_buf[gray_cnt++] = h;
-}
-
-static void *
-promote(ASTroGC *gc, AroObjectHeader *oldh)
-{
-    if (HDR_IS_FORWARDED(oldh)) return fwd_overlay_get(oldh);
-    size_t aligned = ALIGN8(oldh->gc_size);
-    AroObjectHeader *newh = old_alloc(gc, oldh->gc_size, aligned);
-    memcpy((void *)newh, (void *)oldh, aligned);
-    /* memcpy overwrote newh's head — restore framework fields. */
-    newh->gc_flags = HDR_OLD_BIT;     /* fresh tenured slot, no mark/dirty/fwd */
-    void *new_payload = (void *)newh;
-    HDR_SET_FORWARDED(oldh);
-    fwd_overlay_set(oldh, new_payload);
-    scan_push(gc, newh);
-    return new_payload;
-}
-
-static void *
-forward_payload_value(ASTroGC *gc, void *p)
-{
-    if (!p) return NULL;
-    AroObjectHeader *h = (AroObjectHeader *)p;
-    if (in_minor) {
-        if (!in_nursery(gc, p)) return p;
-        return promote(gc, h);
-    }
-    return p;
-}
-
-static void
-forward_edge(void *ctx, void **slot)
-{
-    ASTroGC *gc = (ASTroGC *)ctx;
-    VALUE v = (VALUE)*slot;
-    if (AROH_IS_GC_OBJECT(v)) *slot = (void *)(VALUE)forward_payload_value(gc, (void *)v);
-}
-
-static void
-process_object(ASTroGC *gc, AroObjectHeader *h)
-{
-    AROH_SCAN_EDGES((void *)h, h->gc_size, gc, forward_edge);
-}
-
-/* Keep cold (see gc_copy_gen.c iter (29)): inlining minor_gc into
- * nursery_bump bloats the alloc hot path past the inliner budget,
- * leaving an extra `call` on every fast-path alloc. */
-static void __attribute__((noinline))
-minor_gc(CTX *c)
-{
-    ASTroGC *gc = ARO_GC_INSTANCE(c);
-    struct timespec t0 = aro_gc_time_begin(c);
-    in_minor = true;
-
-    AROH_VISIT_ROOTS(c, gc, forward_edge);
-
-    if (remset_overflow) {
-        remset_heap_walk(gc, remset_visit_minor);
-        remset_overflow = false;
-    } else {
-        for (size_t i = 0; i < remset_cnt; i++) {
-            AroObjectHeader *h = remset_buf[i];
-            if (HDR_DIRTY(h)) {
-                process_object(gc, h);
-                HDR_CLR_DIRTY(h);
-            }
-        }
-    }
-    remset_cnt = 0;
-
-    while (scan_head < scan_tail) {
-        AroObjectHeader *h = scan_buf[scan_head++];
-        process_object(gc, h);
-    }
-    scan_head = scan_tail = 0;
-
-    /* Finalize pass: live nursery → HDR_FORWARDED, return fwd_overlay;
-     * dead nursery → NULL.  Tenured entries untouched. */
-    aro_gc_finalize_walk(c);
-
-    nursery_top = nursery_base;
-    in_minor = false;
-
-    gc->common.stats.gc_count++;
-    gc->common.stats.minor_count++;
-    gc->common.stats.heap_bytes = old_bytes;
-    aro_gc_time_end(c, t0);
-}
-
-// ---------------------------------------------------------------------------
-// Major GC: Cheney-style "trace + promote + mark" in one pass.
-//
-// During major, both old and nursery contain potentially-live objects.
-// We need to:
-//   - Mark surviving tenured (for sweep to skip them).
-//   - Promote surviving nursery objects to tenured (linked list).
-//   - Replace all nursery pointers in survivors with their new tenured loc.
-//
-// Single Cheney-style pass:
-//   1. For each root: if nursery → promote (sets fwd), push to scan queue.
-//                     If tenured → mark, push to gray queue.
-//   2. Drain gray queue (= mark phase on tenured side).  When scanning a
-//      tenured object's outgoing refs:
-//        - If ref → nursery: promote, replace ref with new tenured ptr,
-//          push to scan queue.
-//        - If ref → tenured unmarked: mark, push to gray queue.
-//   3. Drain scan queue (= promote-then-scan-outgoing on newly-promoted).
-//      Same logic; intermixed with gray drain until both empty.
-//   4. Sweep tenured: free unmarked, clear marked/dirty/fwd.
-//   5. Reset nursery_top.
-//
-// This is O(live) per major instead of the O(live × depth) iterated
-// fixup the naive version did.
-// ---------------------------------------------------------------------------
-
-static void *
-major_promote(ASTroGC *gc, AroObjectHeader *oldh)
-{
-    if (HDR_IS_FORWARDED(oldh)) return fwd_overlay_get(oldh);
-    size_t aligned = ALIGN8(oldh->gc_size);
-    AroObjectHeader *newh = old_alloc(gc, oldh->gc_size, aligned);
-    memcpy((void *)newh, (void *)oldh, aligned);
-    newh->gc_flags = HDR_OLD_BIT | HDR_MARKED_BIT;
-    void *new_payload = (void *)newh;
-    HDR_SET_FORWARDED(oldh);
-    fwd_overlay_set(oldh, new_payload);
-    return new_payload;
-}
-
+/* Major edge: forward (force-promote) young VALUE to tenured + MARK, or
+ * mark in-place if already tenured. */
 static void
 major_edge(void *ctx, void **slot)
 {
@@ -482,16 +532,11 @@ major_edge(void *ctx, void **slot)
     VALUE v = (VALUE)*slot;
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *vh = (AroObjectHeader *)v;
-    if (in_nursery(gc, (void *)v)) {
-        *slot = (void *)(VALUE)major_promote(gc, vh);
-        /* iter 75 contract: header is at payload offset 0, so the
-         * promoted payload pointer (= *slot) IS the new header — no
-         * "- 1" pointer arithmetic needed. The old `- 1` pushed a
-         * pointer 8 bytes before newh into scan_buf, causing
-         * major_process to read garbage gc_size and SCAN_EDGES to
-         * iterate over an undefined range (= deref bogus slots → SEGV
-         * on workloads with enough major promotion, e.g. sieve_big). */
-        scan_push(gc, (AroObjectHeader *)*slot);
+    if (in_young_active(gc, (void *)v)) {
+        /* force_promote=true ensures forward_obj writes HDR_OLD_BIT|MARKED. */
+        AroObjectHeader *newh = (AroObjectHeader *)forward_obj(gc, vh);
+        *slot = newh;
+        scan_push(gc, newh);
     } else if (!HDR_MARKED(vh)) {
         HDR_SET_MARKED(vh);
         gray_push(gc, vh);
@@ -510,10 +555,16 @@ major_gc(CTX *c)
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = false;
+    force_promote = true;
 
     remset_cnt = 0;
+    remset_overflow = false;
     scan_head = scan_tail = 0;
     gray_cnt = 0;
+
+    /* Set up major-fold context (= treat young-active as from-space). */
+    young_from_base = young_active_base;
+    young_from_end  = young_top;
 
     AROH_VISIT_ROOTS(c, gc, major_edge);
 
@@ -529,13 +580,10 @@ major_gc(CTX *c)
     }
     scan_head = scan_tail = 0;
 
-    /* Finalize pass: between mark drain and the linear sweep below.
-     * The sweep clears HDR_MARKED on survivors, so finalize_check must
-     * read MARKED before that.  For promoted-from-nursery entries the
-     * old payload still has HDR_FORWARDED and the overlay points at the
-     * new tenured addr. */
+    /* Finalize pass before sweep clears MARKED bits. */
     aro_gc_finalize_walk(c);
 
+    /* Linear sweep tenured: free unmarked, clear bits on survivors. */
     {
         char *p = tenured_base;
         size_t live = 0;
@@ -545,8 +593,6 @@ major_gc(CTX *c)
             if (HDR_MARKED(h)) {
                 HDR_CLR_MARKED(h);
                 HDR_CLR_DIRTY(h);
-                /* FORWARDED bit is meaningful only on from-objects;
-                 * tenured survivors after major_promote don't have it. */
                 live += h->gc_size;
             }
             p += total;
@@ -554,7 +600,8 @@ major_gc(CTX *c)
         old_bytes = live;
     }
 
-    nursery_top = nursery_base;
+    young_top = young_active_base;
+    force_promote = false;
 
     if (!gc->common.stress) {
         size_t next = old_bytes * 2;
@@ -574,12 +621,6 @@ aro_gc_collect(CTX *c)
     major_gc(c);
 }
 
-/* Liveness for a finalizable entry post mark/promote:
- *   HDR_FORWARDED → live (promoted from nursery), return new addr via overlay.
- *   in_minor && !in_nursery → live (tenured, untouched).
- *   in_minor &&  in_nursery → dead.
- *   in_major: HDR_MARKED on payload → live (tenured survived).
- *   else → dead. */
 void *
 aro_gc_finalize_check(CTX *c, void *payload)
 {
@@ -587,9 +628,8 @@ aro_gc_finalize_check(CTX *c, void *payload)
     AroObjectHeader *h = (AroObjectHeader *)payload;
     if (HDR_IS_FORWARDED(h)) return fwd_overlay_get(h);
     if (in_minor) {
-        return in_nursery(gc, payload) ? NULL : payload;
+        return in_young_from(gc, payload) ? NULL : payload;
     }
-    /* major: tenured-only check (nursery + forwarded handled above). */
     return HDR_MARKED(h) ? payload : NULL;
 }
 
@@ -599,15 +639,15 @@ aro_gc_fini(CTX *c)
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (!gc) return;
     aro_gc_finalize_fini(c);
-    if (nursery_base) munmap(nursery_base, NURSERY_BYTES);
-    if (tenured_base) munmap(tenured_base, TENURED_BYTES);
+    if (young_active_base) munmap(young_active_base, YOUNG_BYTES);
+    if (young_alt_base)    munmap(young_alt_base,    YOUNG_BYTES);
+    if (tenured_base)      munmap(tenured_base,      TENURED_BYTES);
     free(scan_buf);
     free(gray_buf);
     free(remset_buf);
     free(gc);
     c->astro_gc = NULL;
 }
-
 
 size_t
 aro_gc_size_of(void *p)

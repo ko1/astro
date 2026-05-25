@@ -35,6 +35,9 @@
 #define HDR_OLD_BIT      (uint16_t)0x0002u
 #define HDR_DIRTY_BIT    (uint16_t)0x0004u
 #define HDR_FREE_BIT     (uint16_t)0x0008u
+#define HDR_AGE_SHIFT    4
+#define HDR_AGE_MASK     ((uint16_t)0x0030u)
+#define PROMOTE_AGE      3u
 #define HDR_MARKED(h)      (((h)->gc_flags & HDR_MARKED_BIT) != 0)
 #define HDR_SET_MARKED(h)  ((h)->gc_flags |= HDR_MARKED_BIT)
 #define HDR_CLR_MARKED(h)  ((h)->gc_flags &= (uint16_t)~HDR_MARKED_BIT)
@@ -46,6 +49,10 @@
 #define HDR_CLR_DIRTY(h)   ((h)->gc_flags &= (uint16_t)~HDR_DIRTY_BIT)
 #define HDR_IS_FREE(h)     (((h)->gc_flags & HDR_FREE_BIT) != 0)
 #define HDR_SET_FREE(h)    ((h)->gc_flags |= HDR_FREE_BIT)
+#define HDR_GET_AGE(h)     (uint16_t)(((h)->gc_flags & HDR_AGE_MASK) >> HDR_AGE_SHIFT)
+#define HDR_SET_AGE(h, a)  ((h)->gc_flags = (uint16_t)                         \
+                            (((h)->gc_flags & (uint16_t)~HDR_AGE_MASK)         \
+                             | (((uint16_t)(a) << HDR_AGE_SHIFT) & HDR_AGE_MASK)))
 
 typedef struct FreeSlot {
     struct FreeSlot *next;
@@ -115,6 +122,11 @@ typedef struct ASTroGC {
     size_t            remset_cnt;
     size_t            remset_capa;
     bool              remset_overflow;
+    /* N-survive support — see gc_mark_gen.c for design notes. */
+    struct AroObjectHeader **promoted_buf;
+    size_t            promoted_cnt;
+    size_t            promoted_capa;
+    bool              scan_saw_young;
 } ASTroGC;
 
 /* Field aliases — expand to `gc->field`; every helper has `ASTroGC *gc`
@@ -140,6 +152,20 @@ typedef struct ASTroGC {
 #define remset_cnt            (gc->remset_cnt)
 #define remset_capa           (gc->remset_capa)
 #define remset_overflow       (gc->remset_overflow)
+#define promoted_buf          (gc->promoted_buf)
+#define promoted_cnt          (gc->promoted_cnt)
+#define promoted_capa         (gc->promoted_capa)
+
+static inline void
+promoted_push(ASTroGC *gc, AroObjectHeader *h)
+{
+    if (promoted_cnt >= promoted_capa) {
+        promoted_capa = promoted_capa ? promoted_capa * 2 : 256;
+        promoted_buf = (AroObjectHeader **)realloc(promoted_buf, promoted_capa * sizeof(AroObjectHeader *));
+        if (!promoted_buf) abort();
+    }
+    promoted_buf[promoted_cnt++] = h;
+}
 
 static inline void
 young_push(ASTroGC *gc, AroObjectHeader *h)
@@ -388,11 +414,19 @@ remset_push(ASTroGC *gc, AroObjectHeader *h)
 }
 
 static void scan_outgoing(ASTroGC *gc, AroObjectHeader *h);
+
+/* N-survive: remset compaction visitor for heap-walk fallback.  Scans
+ * edges + decides keep/drop based on scan_saw_young. */
 static void
-remset_visit_minor(ASTroGC *gc, AroObjectHeader *h)
+remset_visit_minor_compact(ASTroGC *gc, AroObjectHeader *h)
 {
-    HDR_CLR_DIRTY(h);
+    gc->scan_saw_young = false;
     scan_outgoing(gc, h);
+    if (gc->scan_saw_young) {
+        remset_push(gc, h);
+    } else {
+        HDR_CLR_DIRTY(h);
+    }
 }
 
 static void
@@ -473,8 +507,11 @@ mark_value(ASTroGC *gc, VALUE v)
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
     if (HDR_IS_FREE(h)) return;   /* defensive: stale sp slot to freed obj */
-    if (HDR_MARKED(h)) return;
     if (in_minor && HDR_OLD(h)) return;
+    /* In minor, reaching here means target is young.  Flag the holder's
+     * scan so the caller (remset compaction) can keep DIRTY appropriately. */
+    if (in_minor) gc->scan_saw_young = true;
+    if (HDR_MARKED(h)) return;
     HDR_SET_MARKED(h);
     gray_push(gc, h);
 }
@@ -499,6 +536,19 @@ mark_edge(void *ctx, void **slot)
     mark_value(gc, (VALUE)*slot);
 }
 
+/* Post-sweep check for promoted obj's outgoing refs — flag if any target
+ * is still young (= !OLD). */
+static void
+check_edge_for_young(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (AROH_IS_GC_OBJECT(v)) {
+        const AroObjectHeader *h = (const AroObjectHeader *)v;
+        if (!HDR_OLD(h) && !HDR_IS_FREE(h)) gc->scan_saw_young = true;
+    }
+}
+
 static void
 scan_outgoing(ASTroGC *gc, AroObjectHeader *h)
 {
@@ -520,8 +570,39 @@ process_gray(ASTroGC *gc)
 // Sweep
 // ---------------------------------------------------------------------------
 
+/* Minor sweep with N-survive (= age-based promote).  See gc_mark_gen.c. */
 static void
-sweep_young(ASTroGC *gc, bool clear_marked)
+sweep_young_minor(ASTroGC *gc)
+{
+    young_bytes = 0;
+    size_t write = 0;
+    for (size_t i = 0; i < young_objs_cnt; i++) {
+        AroObjectHeader *h = young_objs[i];
+        if (HDR_MARKED(h)) {
+            HDR_CLR_MARKED(h);
+            uint16_t age = HDR_GET_AGE(h);
+            if (age >= PROMOTE_AGE) {
+                HDR_SET_OLD(h);
+                HDR_SET_AGE(h, 0);
+                old_bytes += h->gc_size;
+                old_alloc_since_major += ALIGN8(h->gc_size);
+                promoted_push(gc, h);
+            } else {
+                HDR_SET_AGE(h, age + 1);
+                young_objs[write++] = h;
+                young_bytes += ALIGN8(h->gc_size);
+            }
+        } else {
+            gc->common.stats.heap_bytes -= h->gc_size;
+            free_slot(gc, h);
+        }
+    }
+    young_objs_cnt = write;
+}
+
+/* Major sweep: promote all marked young regardless of age. */
+static void
+sweep_young_major(ASTroGC *gc, bool clear_marked)
 {
     young_bytes = 0;
     for (size_t i = 0; i < young_objs_cnt; i++) {
@@ -529,8 +610,9 @@ sweep_young(ASTroGC *gc, bool clear_marked)
         if (HDR_MARKED(h)) {
             if (clear_marked) HDR_CLR_MARKED(h);
             HDR_SET_OLD(h);
+            HDR_SET_AGE(h, 0);
             old_bytes += h->gc_size;
-            old_alloc_since_major += ALIGN8(h->gc_size); /* iter 36 fairness: occupancy not payload */
+            old_alloc_since_major += ALIGN8(h->gc_size);
         } else {
             gc->common.stats.heap_bytes -= h->gc_size;
             free_slot(gc, h);
@@ -593,19 +675,28 @@ minor_gc(CTX *c)
 
     struct timespec tmark = aro_gc_phase_begin();
     AROH_VISIT_ROOTS(c, gc, mark_edge);
-    process_gray(gc);
 
+    /* Remset compaction (= N-survive): see gc_mark_gen.c for design notes. */
     if (remset_overflow) {
-        remset_heap_walk(gc, remset_visit_minor);
+        remset_cnt = 0;
+        remset_heap_walk(gc, remset_visit_minor_compact);
         remset_overflow = false;
     } else {
-        for (size_t i = 0; i < remset_cnt; i++) {
+        size_t orig_cnt = remset_cnt;
+        size_t write = 0;
+        for (size_t i = 0; i < orig_cnt; i++) {
             AroObjectHeader *h = remset_buf[i];
-            HDR_CLR_DIRTY(h);
+            if (!HDR_DIRTY(h)) continue;
+            gc->scan_saw_young = false;
             scan_outgoing(gc, h);
+            if (gc->scan_saw_young) {
+                remset_buf[write++] = h;
+            } else {
+                HDR_CLR_DIRTY(h);
+            }
         }
+        remset_cnt = write;
     }
-    remset_cnt = 0;
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -614,7 +705,18 @@ minor_gc(CTX *c)
     aro_gc_finalize_walk(c);
 
     struct timespec tsweep = aro_gc_phase_begin();
-    sweep_young(gc, /*clear_marked=*/true);
+    sweep_young_minor(gc);
+    /* Promoted post-scan: GC-internal WB for N-survive (see gc_copy_gen.c). */
+    for (size_t i = 0; i < promoted_cnt; i++) {
+        AroObjectHeader *h = promoted_buf[i];
+        gc->scan_saw_young = false;
+        AROH_SCAN_EDGES((void *)h, h->gc_size, gc, check_edge_for_young);
+        if (gc->scan_saw_young) {
+            HDR_SET_DIRTY(h);
+            remset_push(gc, h);
+        }
+    }
+    promoted_cnt = 0;
     aro_gc_phase_end(tsweep, &gc->common.stats.reclaim_seconds);
 
     gc->common.stats.gc_count++;
@@ -677,8 +779,9 @@ inc_finish_sweep(CTX *c)
     aro_gc_finalize_walk(c);
 
     struct timespec tsweep = aro_gc_phase_begin();
-    sweep_young(gc, /*clear_marked=*/false);
+    sweep_young_major(gc, /*clear_marked=*/false);
     sweep_old_pages(gc);
+    promoted_cnt = 0;
     aro_gc_phase_end(tsweep, &gc->common.stats.reclaim_seconds);
     if (!gc->common.stress) {
         size_t next = old_bytes * 2;
@@ -703,8 +806,9 @@ aro_gc_collect(CTX *c)
     process_gray(gc);
     /* Finalize pass — STW major. */
     aro_gc_finalize_walk(c);
-    sweep_young(gc, /*clear_marked=*/false);
+    sweep_young_major(gc, /*clear_marked=*/false);
     sweep_old_pages(gc);
+    promoted_cnt = 0;
     if (!gc->common.stress) {
         size_t next = old_bytes * 2;
         old_major_threshold = next < MAJOR_THRESHOLD_MIN ? MAJOR_THRESHOLD_MIN : next;
@@ -753,6 +857,7 @@ aro_gc_fini(CTX *c)
     free(young_objs);
     free(gray_buf);
     free(remset_buf);
+    free(promoted_buf);
     free(gc);
     c->astro_gc = NULL;
 }

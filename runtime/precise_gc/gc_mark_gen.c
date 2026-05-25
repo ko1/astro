@@ -38,12 +38,23 @@
 #include "gc.h"
 
 /* iter 75 Step C: framework GCHeader 廃止。 AroObjectHeader が payload
- * offset 0 にあり、 gc_flags の bit を backend-local で割り当てる。 */
+ * offset 0 にあり、 gc_flags の bit を backend-local で割り当てる。
+ *
+ * gc_flags layout:
+ *   bit 0  : MARKED
+ *   bit 1  : OLD
+ *   bit 2  : DIRTY
+ *   bit 3  : FREE
+ *   bits 4-5: AGE (= 0..3; promote at PROMOTE_AGE)
+ */
 
 #define HDR_MARKED_BIT   (uint16_t)0x0001u
 #define HDR_OLD_BIT      (uint16_t)0x0002u
 #define HDR_DIRTY_BIT    (uint16_t)0x0004u
 #define HDR_FREE_BIT     (uint16_t)0x0008u
+#define HDR_AGE_SHIFT    4
+#define HDR_AGE_MASK     ((uint16_t)0x0030u)
+#define PROMOTE_AGE      3u
 #define HDR_SET_FREE(h)    ((h)->gc_flags |= HDR_FREE_BIT)
 #define HDR_CLR_FREE(h)    ((h)->gc_flags &= (uint16_t)~HDR_FREE_BIT)
 #define HDR_MARKED(h)      (((h)->gc_flags & HDR_MARKED_BIT) != 0)
@@ -56,6 +67,10 @@
 #define HDR_SET_DIRTY(h)   ((h)->gc_flags |= HDR_DIRTY_BIT)
 #define HDR_CLR_DIRTY(h)   ((h)->gc_flags &= (uint16_t)~HDR_DIRTY_BIT)
 #define HDR_IS_FREE(h)     (((h)->gc_flags & HDR_FREE_BIT) != 0)
+#define HDR_GET_AGE(h)     (uint16_t)(((h)->gc_flags & HDR_AGE_MASK) >> HDR_AGE_SHIFT)
+#define HDR_SET_AGE(h, a)  ((h)->gc_flags = (uint16_t)                         \
+                            (((h)->gc_flags & (uint16_t)~HDR_AGE_MASK)         \
+                             | (((uint16_t)(a) << HDR_AGE_SHIFT) & HDR_AGE_MASK)))
 
 typedef struct FreeSlot {
     struct FreeSlot *next;
@@ -125,6 +140,14 @@ typedef struct ASTroGC {
     size_t            remset_cnt;
     size_t            remset_capa;
     bool              remset_overflow;
+    /* N-survive support: promoted-in-this-minor buffer (= for post-sweep
+     * "promote-time WB" scan).  scan_saw_young is set by mark_edge / a
+     * dedicated check edge visitor when a remset / promoted obj's scan
+     * encounters a non-OLD target. */
+    AroObjectHeader **promoted_buf;
+    size_t            promoted_cnt;
+    size_t            promoted_capa;
+    bool              scan_saw_young;
 } ASTroGC;
 
 /* Field aliases — expand to `gc->field` so every helper must have an
@@ -150,6 +173,20 @@ typedef struct ASTroGC {
 #define remset_cnt            (gc->remset_cnt)
 #define remset_capa           (gc->remset_capa)
 #define remset_overflow       (gc->remset_overflow)
+#define promoted_buf          (gc->promoted_buf)
+#define promoted_cnt          (gc->promoted_cnt)
+#define promoted_capa         (gc->promoted_capa)
+
+static inline void
+promoted_push(ASTroGC *gc, AroObjectHeader *h)
+{
+    if (promoted_cnt >= promoted_capa) {
+        promoted_capa = promoted_capa ? promoted_capa * 2 : 256;
+        promoted_buf = (AroObjectHeader **)realloc(promoted_buf, promoted_capa * sizeof(AroObjectHeader *));
+        if (!promoted_buf) abort();
+    }
+    promoted_buf[promoted_cnt++] = h;
+}
 
 static inline void
 young_push(ASTroGC *gc, AroObjectHeader *h)
@@ -409,11 +446,20 @@ remset_push(ASTroGC *gc, AroObjectHeader *h)
 }
 
 static void scan_outgoing(ASTroGC *gc, AroObjectHeader *h);  /* forward decl for visitor */
+
+/* For N-survive minor remset scan: scan edges + decide whether to keep
+ * DIRTY based on whether any target is still young.  Used by the heap-walk
+ * fallback (= remset_overflow path). */
 static void
-remset_visit_minor(ASTroGC *gc, AroObjectHeader *h)
+remset_visit_minor_compact(ASTroGC *gc, AroObjectHeader *h)
 {
-    HDR_CLR_DIRTY(h);
+    gc->scan_saw_young = false;
     scan_outgoing(gc, h);
+    if (gc->scan_saw_young) {
+        remset_push(gc, h);
+    } else {
+        HDR_CLR_DIRTY(h);
+    }
 }
 
 /* Heap-walk fallback: enumerate dirty old objects across all pages + large
@@ -474,10 +520,16 @@ mark_value(ASTroGC *gc, VALUE v)
     AroObjectHeader *h = (AroObjectHeader *)v;
     /* Defensive: never promote a freed slot. */
     if (HDR_IS_FREE(h)) return;
-    if (HDR_MARKED(h)) return;
     // Minor: don't traverse already-old objects via root scan; the
     // remset is responsible for those.  Major: mark everything.
     if (in_minor && HDR_OLD(h)) return;
+    /* In minor, target is young (= !OLD).  Flag the holder's scan so the
+     * caller (remset_visit_minor) can decide whether to keep DIRTY.
+     * Over-approximates: targets with age == PROMOTE_AGE will promote
+     * this minor, but we still flag them.  Self-heals next minor when
+     * the target's OLD bit makes the next flag check return false. */
+    if (in_minor) gc->scan_saw_young = true;
+    if (HDR_MARKED(h)) return;
     HDR_SET_MARKED(h);
     gray_push(gc, h);
 }
@@ -486,6 +538,21 @@ static void
 mark_edge(void *ctx, void **slot)
 {
     mark_value((ASTroGC *)ctx, (VALUE)*slot);
+}
+
+/* Edge visitor for promoted post-scan: detects if any outgoing ref is to
+ * a non-OLD (= still-young) target.  Does NOT mark — by this phase mark
+ * is already done.  Used by promoted_wb_scan to add newly-promoted objs
+ * to remset (= GC-internal WB for N-survive promotion). */
+static void
+check_edge_for_young(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (AROH_IS_GC_OBJECT(v)) {
+        const AroObjectHeader *h = (const AroObjectHeader *)v;
+        if (!HDR_OLD(h) && !HDR_IS_FREE(h)) gc->scan_saw_young = true;
+    }
 }
 
 static void
@@ -507,29 +574,58 @@ process_gray(ASTroGC *gc)
 // Sweep / promote
 // ---------------------------------------------------------------------------
 
-// Walk young list: marked → promote in place; unmarked → free.
-// young_head/young_bytes reset.
-//
-// NB: keep h->marked=true on promoted objects.  In major, sweep_old_pages
-// runs AFTER sweep_young and would otherwise see the just-promoted slot
-// as "old + unmarked" and free it.  The marked bit is cleared during
-// sweep_old_pages instead (which is also when minor's promoted-young
-// would later get cleared on the next minor cycle... actually no, minor
-// doesn't call sweep_old_pages — see clear_marked param).
+// Minor sweep: walk young list with N-survive promotion.
+//   marked && age <  PROMOTE_AGE: age++, stay young (= rebuild list).
+//   marked && age >= PROMOTE_AGE: promote (= set OLD, push to promoted_buf).
+//   unmarked                   : free.
+// Promoted objs go through a post-sweep WB scan (= promoted_post_scan)
+// which checks if any outgoing ref is still young and SETs DIRTY +
+// remset_push if so.
 static void
-sweep_young(ASTroGC *gc, bool clear_marked)
+sweep_young_minor(ASTroGC *gc)
+{
+    young_bytes = 0;
+    size_t write = 0;
+    for (size_t i = 0; i < young_objs_cnt; i++) {
+        AroObjectHeader *h = young_objs[i];
+        if (HDR_MARKED(h)) {
+            HDR_CLR_MARKED(h);
+            uint16_t age = HDR_GET_AGE(h);
+            if (age >= PROMOTE_AGE) {
+                HDR_SET_OLD(h);
+                HDR_SET_AGE(h, 0);
+                old_bytes += h->gc_size;
+                old_alloc_since_major += ALIGN8(h->gc_size);
+                promoted_push(gc, h);
+            } else {
+                HDR_SET_AGE(h, age + 1);
+                young_objs[write++] = h;
+                young_bytes += ALIGN8(h->gc_size);
+            }
+        } else {
+            gc->common.stats.heap_bytes -= h->gc_size;
+            free_slot(gc, h);
+        }
+    }
+    young_objs_cnt = write;
+}
+
+// Major sweep: all marked young → promote (= age reset).  Keep MARKED set
+// on promoted so subsequent sweep_old_pages doesn't see them as
+// unmarked-old and free them.
+static void
+sweep_young_major(ASTroGC *gc)
 {
     young_bytes = 0;
     for (size_t i = 0; i < young_objs_cnt; i++) {
         AroObjectHeader *h = young_objs[i];
         if (HDR_MARKED(h)) {
-            // Promote: stays in place.  In minor, clear marked (no
-            // follow-up scan).  In major, keep marked so the subsequent
-            // sweep_old_pages doesn't free us; it'll clear it then.
-            if (clear_marked) HDR_CLR_MARKED(h);
+            /* Keep MARKED; cleared by sweep_old_pages.  Promote regardless
+             * of age — major already paid the full traversal. */
             HDR_SET_OLD(h);
+            HDR_SET_AGE(h, 0);
             old_bytes += h->gc_size;
-            old_alloc_since_major += ALIGN8(h->gc_size); /* iter 36 fairness: occupancy not payload */
+            old_alloc_since_major += ALIGN8(h->gc_size);
         } else {
             gc->common.stats.heap_bytes -= h->gc_size;
             free_slot(gc, h);
@@ -594,22 +690,37 @@ minor_gc(CTX *c)
 
     struct timespec tmark = aro_gc_phase_begin();
     AROH_VISIT_ROOTS(c, gc, mark_edge);
-    process_gray(gc);
+    /* scan_saw_young pollution from root scan is harmless — we only consume
+     * the flag during remset entry scans (= reset before each entry). */
 
-    // Process remset: old objects with heap writes since last minor.
+    /* Remset compaction: for each entry, scan edges + decide based on
+     * scan_saw_young whether to keep the entry.  N-survive can leave
+     * persistent tenured→young edges (= existing remset entries with young
+     * children that stay young), so we keep entries whose children stayed
+     * young.  scan_outgoing here is the same mark scan (= marks young
+     * children + sets scan_saw_young as a side effect). */
     if (remset_overflow) {
-        // Slow path: heap-walk for dirty olds.  scan_outgoing also clears
-        // dirty inline so we don't double-process.
-        remset_heap_walk(gc, remset_visit_minor);
+        remset_cnt = 0;
+        remset_heap_walk(gc, remset_visit_minor_compact);
         remset_overflow = false;
     } else {
-        for (size_t i = 0; i < remset_cnt; i++) {
+        size_t orig_cnt = remset_cnt;
+        size_t write = 0;
+        for (size_t i = 0; i < orig_cnt; i++) {
             AroObjectHeader *h = remset_buf[i];
-            HDR_CLR_DIRTY(h);
+            if (!HDR_DIRTY(h)) continue;
+            gc->scan_saw_young = false;
             scan_outgoing(gc, h);
+            if (gc->scan_saw_young) {
+                remset_buf[write++] = h;
+            } else {
+                HDR_CLR_DIRTY(h);
+            }
         }
+        remset_cnt = write;
     }
-    remset_cnt = 0;
+    /* Drain gray AFTER all remset entries are scanned (= so scan_saw_young
+     * tracking is per-entry, not polluted by transitive marking). */
     process_gray(gc);
     aro_gc_phase_end(tmark, &gc->common.stats.mark_seconds);
 
@@ -619,7 +730,23 @@ minor_gc(CTX *c)
     aro_gc_finalize_walk(c);
 
     struct timespec tsweep = aro_gc_phase_begin();
-    sweep_young(gc, /*clear_marked=*/true);
+    sweep_young_minor(gc);
+    /* Promoted-this-minor post-scan: each promoted obj may have outgoing
+     * refs to objs that stayed young (= tenured→young edge created by the
+     * GC itself, not by user write).  Standard WB does not fire for these,
+     * so scan the edges now and SET_DIRTY + remset_push for any with such
+     * refs.  This is the N-survive analog of copy_gen's promote-time
+     * remset_push. */
+    for (size_t i = 0; i < promoted_cnt; i++) {
+        AroObjectHeader *h = promoted_buf[i];
+        gc->scan_saw_young = false;
+        AROH_SCAN_EDGES((void *)h, h->gc_size, gc, check_edge_for_young);
+        if (gc->scan_saw_young) {
+            HDR_SET_DIRTY(h);
+            remset_push(gc, h);
+        }
+    }
+    promoted_cnt = 0;
     aro_gc_phase_end(tsweep, &gc->common.stats.reclaim_seconds);
 
     gc->common.stats.gc_count++;
@@ -648,8 +775,11 @@ major_gc(CTX *c)
     // In major, keep marked=true on promoted young objects so the
     // subsequent sweep_old_pages doesn't free them as unmarked-old.
     struct timespec tsweep = aro_gc_phase_begin();
-    sweep_young(gc, /*clear_marked=*/false);
+    sweep_young_major(gc);
     sweep_old_pages(gc);
+    /* Major resets all young to old; promoted_buf is a minor-only artifact,
+     * but discard any stale entry here for safety. */
+    promoted_cnt = 0;
     aro_gc_phase_end(tsweep, &gc->common.stats.reclaim_seconds);
 
     if (!gc->common.stress) {
@@ -706,6 +836,7 @@ aro_gc_fini(CTX *c)
     free(young_objs);
     free(gray_buf);
     free(remset_buf);
+    free(promoted_buf);
     free(gc);
     c->astro_gc = NULL;
 }
