@@ -62,6 +62,29 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 - **AGE bits** — gc_flags 内の 2 bit (= 値域 0..3)。 N-survive で promote 判定に使う
 - **promote-time WB** — minor 中の promote で生じる tenured→young 辺を GC 自身が remset へ push する処理 (= ユーザ WB は user write しか拾えない)
 
+### 1.3 sample と GC backend の対応
+
+`runtime/precise_gc/` を利用しているのは 2 sample。 どちらも `make GC=<name>` で 17 backend を build-time に切替できる (Makefile 内の `GC_NUM_<name>` table で `-DBARUBY_GC=<n>` に渡される)。
+
+| sample | 位置 | 用途 | default `GC` | 対応 backend |
+|--------|------|------|--------------|--------------|
+| `baruby_precise` | `sample/baruby_precise/` | naruby fork + Array/String + precise rooting。 **GC algorithm 比較 testbed** (本 doc の primary 対象) | `copy` | 17 全て |
+| `ascheme_precise` | `sample/ascheme_precise/` | Scheme サブセット (= `ascheme`) の precise rooting 版。 GC kernel 単体測定 + 細粒度 alloc bench に有用 | `none` | 17 全て |
+
+build option mapping (両 sample 同一):
+
+```
+GC=none(1)  mark(2)  mark_gen(3)  mark_gen_inc(4)  copy(5)  copy_gen(6)  copy_gen_inc(7)
+   mark_compact(8)  mark_compact_gen(9)  bump(10)  mark_bump_gen(11)
+   immix(12)  immix_gen(13)  mark_bitmap_gen(14)  mark_card_gen(15)
+   mark_freelist(16)  copy_scramble(17)
+```
+
+備考:
+- 他の sample (`naruby`, `baruby`, `pystro`, `arcel` 等) は libgc / 独自 GC を使っており、 本 doc の対象外。
+- bench matrix (`sample/<sample>/benchmark/`) は 17 × {plain, AOT cached} の組合せで回す。 `bench v11` 形式の table 参照。
+- `BARUBY_GC_STRESS=1` 環境変数で全 alloc 毎に GC を発火させる stress mode。 17 backend 全てで対応 (= `BARUBY_GC_PURGE=1` で zero-fill audit も併用可)。
+
 ## 2. 各アルゴリズム紹介
 
 各 backend は 5 subsection に分けて記述する:
