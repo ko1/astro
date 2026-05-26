@@ -24,9 +24,9 @@ ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、
 | 2.4  | 5   | `copy` | Cheney semi-space copying。 8 B fwd overlay (= no `gc_fwd` field) |
 | 2.5  | 6   | `copy_gen` | Cheney + 2-gen + 4-面 layout (= 2 young halves + 2 tenured halves) + N-survive |
 | 2.6  | 8   | `mark_compact` | Lisp-2 sliding compactor (mark + fwd-addr + update-ptr + slide) |
-| 2.7  | 9   | `mark_compact_gen` | nursery 4-面 + tenured Lisp-2 slide。 N-survive |
+| 2.7  | 9   | `mark_compact_gen` | Cheney semispace nursery + tenured Lisp-2 slide。 N-survive |
 | 2.8  | 12  | `immix` | Immix line/block mark-region。 32 KiB block × 128 B line。 非 moving |
-| 2.9  | 13  | `immix_gen` | 4-面 nursery + Immix tenured。 N-survive |
+| 2.9  | 13  | `immix_gen` | Cheney semispace nursery + Immix tenured。 N-survive |
 | 2.10 | 14  | `mark_bitmap_gen` | `mark_gen` と意味同等、 metadata を per-page bitmap 化 (= 8 B header)。 N-survive |
 | 2.11 | 15  | `mark_card_gen` | `mark_bitmap_gen` + per-page card-dirty flag (= page 単位 remset)。 N-survive |
 | 2.12 | 16  | `mark_freelist` | mark&sweep、 region + size-class freelist。 generational なし |
@@ -37,7 +37,7 @@ ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、
 |-----|-----|------|------|
 | 3.1 | 1   | `none` | 解放しない。 malloc + leak。 GC overhead = 0 の baseline |
 | 3.2 | 10  | `bump` | bump allocator のみ。 解放しない (= `none` strictly faster baseline) |
-| 3.3 | 11  | `mark_bump_gen` | 4-面 nursery + bump tenured + linear sweep。 tenured は monotonic 増加 (= sweep が free しない testbed)。 N-survive |
+| 3.3 | 11  | `mark_bump_gen` | Cheney semispace nursery + bump tenured + linear sweep。 tenured は monotonic 増加 (= sweep が free しない testbed)。 N-survive |
 | 3.4 | 17  | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
 
 8 個の `_gen` backend (mark_gen, mark_gen_inc, copy_gen,
@@ -59,11 +59,15 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 - **mark bit** — mark phase で訪問済の印。 sweep 後に clear (= incremental では epoch 方式で再利用)
 - **sticky mark** — major でも mark bit を残し、 minor では「mark bit が無い young が dead」という判定に使う方式 (= `mark_gen` 系)
 - **Cheney** — semi-space copying GC アルゴリズム。 from-space を to-space に forward しながら scan
+- **semispace** — 同じサイズの heap 領域を 2 つ (= half) 確保し、 片方を alloc 用、 もう片方を GC 中の copy 先として使う構成。 GC ごとに役割を入れ替える (= flip)
+- **active / alt (alternate)** — semispace の 2 半分を区別する呼び名。 active = 今 alloc に使っている半分、 alt = 反対の (= 次回 GC の to-space になる) 半分。 GC 末で `swap(active, alt)` で flip
+- **from-space / to-space** — GC 進行中の semispace の役割。 from-space = GC 開始時点の active (= 中身を読み出して copy 元になる)、 to-space = alt (= copy 先)
+- **4-面 layout** — 世代別 copying GC で「young 用 semispace (= 2 半) + tenured 用 semispace (= 2 半)」 計 4 領域を持つ構成。 minor は young 半 + 半 で flip、 major は tenured 半 + 半 で flip + young は全 promote で空に
 - **Lisp-2 slide** — non-copying sliding compactor。 mark → forward-addr 計算 → 全 pointer 更新 → 一括 memmove
 - **Immix line / block** — Immix の領域単位。 block (= 32 KiB) ごとに line (= 128 B) の mark bit を持ち、 line 単位で hole alloc
 - **FORWARDED bit** — moving GC で 「この obj は new addr に copy 済」 マーク。 詳細位置は backend ごと
 - **fwd overlay** — `HDR_FORWARDED` 設定後、 旧 obj の payload[0..8] に new addr を上書き保存する手法 (= 専用 `gc_fwd` field 不要)
-- **force_promote** — major で young を強制 promote するための flag (= 4-面 backend で major fold-young 時に true)
+- **force_promote** — major で young を強制 promote するための flag (= 世代別 backend で major fold-young 時に true)
 - **scramble** — `copy_scramble` の per-cycle XOR mask。 stale slot を SEGV で検出するための audit 機能
 - **AGE bits** — gc_flags 内の 2 bit (= 値域 0..3)。 N-survive で promote 判定に使う
 - **promote-time WB** — minor 中の promote で生じる tenured→young 辺を GC 自身が remset へ push する処理 (= ユーザ WB は user write しか拾えない)
@@ -361,9 +365,12 @@ data がまだ readable)。
 
 #### 2.5.1 概要
 
-世代別 Cheney + N-survive。 4-面 layout: 2 young halves + 2 tenured halves。
-minor は young-from → young-to + tenured promote を Cheney で並行 scan、
-major は tenured を semispace で半 → 半 copy。
+世代別 Cheney + N-survive。 4-面 layout: young 用 semispace (= 2 半)
++ tenured 用 semispace (= 2 半)。 minor は young の active 半 (= from-space)
+を to-space (= alt 半) に Cheney copy しつつ、 age >= PROMOTE_AGE の obj
+は tenured 側に promote (= tenured も Cheney scan で並行進行)。 major は
+tenured を semispace で 半 → 半 copy (= active → alt) しつつ young は
+全 promote で空にする。
 
 #### 2.5.2 パラメータ
 
@@ -375,8 +382,13 @@ major は tenured を semispace で半 → 半 copy。
 
 #### 2.5.3 データ構造
 
-- young: `young_active_base` / `young_top` / `young_alt_base` (= 半 + 半)
-- tenured: `tenured_base` / `tenured_top` / `tenured_end` / `tenured_alt_base`
+- young semispace (= 2 半 × `YOUNG_BYTES`):
+  - `young_active_base` — 今 alloc に使っている半分の base
+  - `young_top` — active 半内の bump pointer (= 次 alloc 位置)
+  - `young_alt_base` — 反対の半分 (= 次 minor で to-space になる) の base
+- tenured semispace (= 2 半 × `TENURED_BYTES`):
+  - `tenured_base` / `tenured_top` / `tenured_end` — active 半の base / bump / 上限
+  - `tenured_alt_base` — 反対の半分 (= 次 major で to-space になる) の base
 - 8 B header + fwd overlay
 - gc_flags layout: OLD=0x1, DIRTY=0x2, FORWARDED=0x4, AGE=bits 3-4
 - `remset_buf[]`: flat array of `AroObjectHeader *`、 256 → 2× / 上限
@@ -488,8 +500,10 @@ non-marked → NULL。 large obj は `gc_fwd = self` を返す (= 非 moving)。
 
 #### 2.7.1 概要
 
-nursery 4-面 + tenured Lisp-2 slide。 minor は N-survive Cheney、 major は
-young force_promote → tenured を mark + slide compact。
+nursery は Cheney semispace (= 2 半)、 tenured は単一 region で Lisp-2 slide。
+minor は N-survive Cheney、 major は young force_promote → tenured を mark +
+slide compact。 nursery + tenured で計 3 領域 (= 4-面 ではない、 tenured 側に
+alt 半なし)。
 
 #### 2.7.2 パラメータ
 
@@ -509,7 +523,7 @@ young force_promote → tenured を mark + slide compact。
 
 #### 2.7.4 アルゴリズム詳細
 
-minor: 2.5 と同じ流れ (= 4-面 Cheney + remset 圧縮 + promote-time WB)。
+minor: 2.5 と同じ流れ (= nursery 半 + 半 Cheney + remset 圧縮 + promote-time WB)。
 ただし promote 先は単一 tenured (= `tenured_top` を bump)。 minor で
 `tenured_top` を伸ばすだけで slide は走らない。
 
@@ -640,7 +654,7 @@ sweep で BLK_FREE になっても `madvise(DONTNEED)` は未呼出 (= 物理 re
 
 #### 2.9.1 概要
 
-世代別 Immix。 nursery は Cheney 半 + 半 (= 16 MiB × 2)、 tenured は Immix 単独
+世代別 Immix。 nursery は Cheney semispace (= 2 半 × 16 MiB、 §1.2 用語参照)、 tenured は Immix 単独
 arena。 minor で N-survive promote 先は `hole_alloc_header` (= Immix の bump)。
 major は force_promote_all + Immix line-mark sweep。 各 obj の young / tenured
 判定は addr range で O(1) (= `in_arena` / `in_young_active` 等の inline
@@ -657,7 +671,10 @@ helper)。 Immix 自体の背景は §2.8 概要を参照。
 
 #### 2.9.3 データ構造
 
-- nursery: `young_active_base` / `young_top` / `young_alt_base`
+- nursery (= 2 半 × 16 MiB の Cheney semispace):
+  - `young_active_base` — active 半の base (= 今 alloc 中)
+  - `young_top` — active 半内の bump pointer
+  - `young_alt_base` — alt 半の base (= 次 minor の to-space)
 - tenured: 2.8 と同じ Immix (arena + blocks + cur_ptr/end + max_touched_block)
 - gc_flags layout: EPOCH=bits 0-7, OLD=0x100, DIRTY=0x200, FORWARDED=0x400, AGE=bits 11-12
 - Cheney scratch: `young_from_base/end`、 `young_to_base/top/end`
@@ -972,8 +989,8 @@ heap growth/shrink: 64 GiB virtual 予約のため成長なし、 縮小なし�
 
 #### 3.3.1 概要
 
-4-面 nursery + bump tenured + linear sweep。 nursery は Cheney で copy、
-tenured は bump で linear (= 移動なし)。 major sweep は **unmarked tenured
+nursery は Cheney semispace (= 2 半)、 tenured は単一 bump region (= 移動
+なし、 alt 半なし)、 sweep は線形走査。 major sweep は **unmarked tenured
 を free せず**、 mark を clear するのみ。 結果として tenured は monotonic に
 増え、 OOM か 64 GiB virt 上限まで進む。 「bump で promote させて回収しない」
 場合の挙動を観察する testbed であり、 実用 GC ではない (= だから §3 に
