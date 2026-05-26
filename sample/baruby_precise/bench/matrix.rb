@@ -76,16 +76,30 @@ ORACLE_FILE = File.join(BENCH_DIR, "oracle.json")
 ORACLE = File.exist?(ORACLE_FILE) ? JSON.parse(File.read(ORACLE_FILE)) : {}
 
 def build(gc, astro_debug)
-  # Force rebuild: the Makefile's marker-file mechanism (.built_gc) is
-  # supposed to invalidate the binary when GC changes, but a timestamp
-  # race between $(shell echo > .built_gc) and the previous binary's
-  # mtime can leave make saying "Nothing to be done" while the binary
-  # still has the previous backend's stamp.  rm-ing the binary makes
-  # the rebuild unconditional.
+  # Pre-built binary mode (default): expect `baruby_precise.<gc>` to exist
+  # next to baruby_precise, copy it to baruby_precise for this run.  This
+  # requires the user to run a pre-build loop first:
+  #   for gc in <ALL_BACKENDS>; do make GC=$gc && cp baruby_precise baruby_precise.$gc; done
+  # When the pre-built file is absent, fall back to in-line `make` (legacy).
+  #
+  # Why pre-build: under heavy bench load the agent sandbox occasionally lets
+  # `system "make"` return early while gcc continues asynchronously, which
+  # causes a backend mismatch later when the late gcc finally writes its
+  # binary on top of a different backend's freshly-built one (observed
+  # 2026-05-26).  Pre-building outside the bench process eliminates the race.
   bin = File.join(ROOT, "baruby_precise")
+  prebuilt = "#{bin}.#{gc}"
+  if File.exist?(prebuilt) && File.size(prebuilt) > 0
+    File.unlink(bin) rescue nil
+    FileUtils.cp(prebuilt, bin)
+    File.chmod(0755, bin)
+    return true
+  end
+  # Fallback: rebuild via make (legacy behavior).
   File.unlink(bin) rescue nil
-  system("cd #{ROOT} && make GC=#{gc} ASTRO_DEBUG=#{astro_debug}",
-         out: "/tmp/matrix_build_#{gc}.log", err: [:child, :out])
+  ok = system("cd #{ROOT} && make -B GC=#{gc} ASTRO_DEBUG=#{astro_debug}",
+              out: "/tmp/matrix_build_#{gc}.log", err: [:child, :out])
+  ok && File.exist?(bin) && File.size(bin) > 0
 end
 
 def parse_run(out, rss_kb = nil)
@@ -111,7 +125,10 @@ def run_with_time(cmd)
   tmpdir = ENV["TMPDIR"] || "/tmp"
   out_path  = File.join(tmpdir, "matrix_out_#{$$}_#{Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)}")
   time_path = File.join(tmpdir, "matrix_time_#{$$}_#{Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)}")
-  full = ["/usr/bin/time", "-f", "%e %M", "-o", time_path, *cmd]
+  # Per-bench timeout (60s default) so a hanging bench doesn't eat the
+  # whole matrix budget.  Override via env BENCH_TIMEOUT_SEC.
+  to_sec = ENV["BENCH_TIMEOUT_SEC"] || "60"
+  full = ["/usr/bin/time", "-f", "%e %M", "-o", time_path, "timeout", to_sec, *cmd]
   spawn_args = env ? [env, *full] : full
   pid = Process.spawn(*spawn_args, out: out_path, err: [:child, :out])
   Process.waitpid(pid)

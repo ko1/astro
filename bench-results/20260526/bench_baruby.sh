@@ -19,7 +19,7 @@ if [ "${BENCH_SKIP_LIBGC:-0}" = "0" ]; then
             t_min=999; r_max=0; ok=1
             for i in $(seq 1 $REPEATS); do
                 tf=$(mktemp); of=$(mktemp)
-                /usr/bin/time -f "%e %M" -o "$tf" "$LIBGC_BIN" --plain "$SAMPLE/bench/$b.ba.rb" > "$of" 2>&1
+                /usr/bin/time -f "%e %M" -o "$tf" timeout 60 "$LIBGC_BIN" --plain "$SAMPLE/bench/$b.ba.rb" > "$of" 2>&1
                 rc=$?
                 t_line=$(grep -E '^[0-9]+(\.[0-9]+)?[[:space:]]+[0-9]+$' "$tf" | tail -1)
                 rm -f "$tf" "$of"
@@ -62,7 +62,7 @@ for gc in "${BACKENDS[@]}"; do
         t_min=999; r_max=0; ok=1
         for i in $(seq 1 $REPEATS); do
             tf=$(mktemp); of=$(mktemp)
-            /usr/bin/time -f "%e %M" -o "$tf" "$SAMPLE/baruby_precise" --plain "$SAMPLE/bench/$b.ba.rb" > "$of" 2>&1
+            /usr/bin/time -f "%e %M" -o "$tf" timeout 60 "$SAMPLE/baruby_precise" --plain "$SAMPLE/bench/$b.ba.rb" > "$of" 2>&1
             rc=$?
             t_line=$(grep -E '^[0-9]+(\.[0-9]+)?[[:space:]]+[0-9]+$' "$tf" | tail -1)
             rm -f "$tf" "$of"
