@@ -762,3 +762,88 @@ pattern) で OK か確認。
 test × stress) を回し、 1 failure でも止まる。
 
 全体 ~67h = **work day ベース 8.5 日** (= 実 calendar week 1.5-2 週間)。
+
+## 12. 実装状況 (= 2026-05-26 時点)
+
+### 完了済 phase
+
+- **Phase 1** (commit `435ffd57`): node_lref / node_lset に `sp_offset`
+  operand を追加、 parser が depth=0 の場合に `idx - resolved->nslots` を
+  bake。 既存 env-chain walk path は不変。 test 17/17 PASS
+- **Phase 2a** (commit `237d5f2d`): lex_scope に `is_lambda_boundary` /
+  `has_outer_ref` を追加。 `mark_outer_capture_path()` で depth>=1 emit 時
+  に通過した lambda boundary を mark。 compile_lambda で `no_capture`
+  flag (= !has_outer_ref) を計算し、 node_lambda → closure.no_capture へ
+  転送
+- **Phase 2b foundation** (commit `db39603c`): 新 NODE_DEF `node_lref_sp`
+  / `node_lset_sp` を追加 (= 操作 layout は既存と同じ、 dispatcher
+  patching で切替可能)。 lex_scope に `pending_lrefs` を追加し、 emit 時
+  に enclosing lambda の list へ append。 patching は **無効化のまま**
+  (= Phase 2c で安全な前提条件を整えてから enable)
+- **builtin.c 分離** (commit `c5e0a6ba`): main.c (5412 → 3656 行) から
+  primitive / 数値タワー / list / string / vector / higher-order / I/O
+  を builtin.c (= 1786 行) に分離。 install_prims は main.c に残置
+
+### 次の Phase 2c で解決すべき設計課題
+
+**call protocol の sp[] 配置統一**: lref_sp が `sp[idx - nparams]` を
+読むため、 body 起動時の `body_sp` が以下を満たす必要:
+- `body_sp - nparams + idx == arg[idx]` の addr (= 全 closure call path で)
+
+現状 `scm_apply` は `sp_base[0] = saved_env` を push してから body を
+EVAL するため、 body_sp = sp_caller + 1 + argc + 1 となり off-by-one。
+patching を有効化するとこの 1 slot ずれが原因で全 closure call が壊れる
+(= 2026-05-26 試行で test 11/17 FAIL を実証)。
+
+**解決案**: call protocol を以下に統一:
+
+```
+node_call_K の SP_PUSH 範囲:
+  sp_caller[0]   = saved_env (= caller の c->env、 GC root として scan)
+  sp_caller[1]   = fn (= closure VALUE)
+  sp_caller[2..2+argc-1] = args (= arg eval 結果)
+  c->sp = sp_caller + 2 + argc
+  
+scm_apply / scm_apply_tail_slow:
+  - 引数 argv = sp_caller + 2 (= caller が既に置いた sp[])
+  - 引数 saved_env_slot = sp_caller (= caller が既に置いた saved env)
+  - 自身では saved_env push しない
+  - body_sp = c->sp = sp_caller + 2 + argc
+  - body's lref_sp(idx - nparams) = sp[idx - nparams]
+    = sp_caller + 2 + argc + idx - nparams
+    = sp_caller + 2 + idx (= arg[idx] のアドレス) ✓
+```
+
+これにより patching を有効化しても全 closure call で arg 位置が一致。
+
+**Phase 2c の TODO**:
+1. node_call_K の SP_PUSH を `2 + argc` 化、 sp[0]=saved_env、 sp[1]=fn、
+   sp[2..]=args とする
+2. scm_apply / scm_apply_tail_slow 入口で「caller が saved_env を sp[]
+   に置いた」 前提に依存。 内部で再 push しない
+3. scm_callcc / prim_apply 等の「caller の sp[] convention 外」 で closure
+   を invoke する path は、 自前で同じ layout を sp[] に組む helper
+   `apply_with_sp_setup(c, fn, argv, argc)` を経由
+4. compile_lambda で `no_capture` 時の dispatcher patching を有効化
+5. test 17/17 + R5RS 179/179 PASS で gating
+6. fib35 で plain / AOT bench 計測 (= 期待: plain ~-15%、 AOT ~-40%)
+7. commit
+
+### Phase 3+ (= sframe 完全廃止) の前提
+
+Phase 2c が完走したら、 sframe を持つ closure (= has_outer_ref=true) も
+sp[] frame + closure->captured[] box pattern に統合する Phase 3 へ移行。
+
+Phase 2c だけでも fib35 等の `no_capture leaf` 系で libgc 並み perf 達成
+の見込み (= 中間 milestone として価値あり)。 Phase 3 で残りの工程。
+
+### 進捗 commit (= 2026-05-26)
+
+| commit | 内容 |
+|---|---|
+| `435ffd57` | Phase 1 — sp_offset bake |
+| `237d5f2d` | Phase 2a — no_capture flag |
+| `db39603c` | Phase 2b foundation — NODE_DEF + pending tracking |
+| `c5e0a6ba` | builtin.c 分離 |
+
+次セッションは Phase 2c の call protocol 統一から再開。
