@@ -56,7 +56,7 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 - **remset (remembered set)** — tenured→young pointer を持つ tenured obj の集合。 minor mark phase で remset entry を scan することで young 子孫を到達可能にする
 - **SATB (snapshot-at-the-beginning)** — incremental marking で overwrite 直前の旧値を mark する WB 方式
 - **dirty bit** — tenured obj が remset に居る印。 WB で set、 minor の remset scan 後に対象が young child を失えば clear
-- **remset 圧縮** — minor 終了時に remset_buf を 1 pass 走査して、 「もう young child を持たない entry」 を drop し残った entry だけを buf の先頭に詰める処理。 array compaction の意味の 「圧縮」 (= memory compaction とは無関係)。 具体的には ① 各 entry の edges を scan し young 子があれば forward + `scan_saw_young` を立てる、 ② flag が false なら entry を drop + DIRTY clear、 true なら keep。 結果 remset_buf の長さが (元の dirty 集合) → (まだ young を持つ dirty 集合) に縮む
+- **remset 整理** — minor 中に remset_buf を 1 pass 走査して、 「もう young child を持たない entry」 を drop し残った entry を buf の先頭に詰める処理。 具体的には ① 各 entry の edges を scan し young 子があれば forward + `scan_saw_young` を立てる、 ② flag が false なら entry を drop + DIRTY clear、 true なら keep。 結果として remset_buf は 「(元の dirty 集合) → (minor 後もまだ young (= to-space) への参照を持つ tenured obj の集合)」 に shrink する
 - **mark bit** — mark phase で訪問済の印。 sweep 後に clear (= incremental では epoch 方式で再利用)
 - **sticky mark** — major でも mark bit を残し、 minor では「mark bit が無い young が dead」という判定に使う方式 (= `mark_gen` 系)
 - **Cheney** — semi-space copying GC アルゴリズム。 from-space を to-space に forward しながら scan
@@ -410,7 +410,7 @@ minor phases:
    - age < PROMOTE_AGE → young-to に copy + age++
    - age >= PROMOTE_AGE → tenured に copy + OLD set + age=0
    - FORWARDED 既設なら fwd_overlay 返却
-2. **remset 圧縮** (= §1.2 用語参照、 array compaction の意): minor 開始時の
+2. **remset 整理** (= §1.2 用語参照): minor 開始時の
    remset_buf を 1 pass 走査し、 各 entry (= tenured obj) について:
      1. `scan_saw_young = false` に初期化
      2. `AROH_SCAN_EDGES` で entry の全 slot を `forward_edge_minor` 経由 forward
@@ -536,7 +536,7 @@ alt 半なし)。
 
 #### 2.7.4 アルゴリズム詳細
 
-minor: 2.5 と同じ流れ (= nursery Cheney + remset 圧縮 + promote-time WB)。
+minor: 2.5 と同じ流れ (= nursery Cheney + remset 整理 + promote-time WB)。
 ただし promote 先は単一 tenured (= `tenured_top` を bump)。 minor で
 `tenured_top` を伸ばすだけで slide は走らない。
 
@@ -706,7 +706,7 @@ minor phases:
    - age < PROMOTE_AGE → young_to bump-copy + age++
    - age >= PROMOTE_AGE (or force_promote) → `hole_alloc_header` で tenured Immix へ copy + H_OLD set
    - gray_push 新 obj (= 通常 Cheney と異なり明示 gray queue)
-3. **remset 圧縮**: `H_DIRTY` 残存 entry を scan + scan_saw_young 判定 → keep/drop
+3. **remset 整理**: `H_DIRTY` 残存 entry を scan + scan_saw_young 判定 → keep/drop
 4. **gray drain**: 各 gray obj を scan。 obj が `in_arena` (= promoted) かつ
    `scan_saw_young` で `H_DIRTY` 未設定なら set + `remset_push`
 5. `aro_gc_finalize_walk`
@@ -773,10 +773,10 @@ minor phases:
 1. roots → `mark_edge` → `mark_value` (= `get_old(gc, h)` で skip、 young は
    `set_mark` + gray push + `scan_saw_young = true`)
 2. `process_gray` で transitive (= 各 obj の `scan_outgoing`)
-3. **remset 圧縮** (overflow 時: 全 page 走査 + LargeObj 走査、 通常時:
+3. **remset 整理** (overflow 時: 全 page 走査 + LargeObj 走査、 通常時:
    remset_buf 線形走査): scan + scan_saw_young で keep/drop、 false なら
    `bm_clr(pg->dirty_bm, idx)` / `lo->dirty = false`
-4. process_gray 再 drain (= remset 圧縮中に新規 gray が積まれる可能性)
+4. process_gray 再 drain (= remset 整理中に新規 gray が積まれる可能性)
 5. `aro_gc_finalize_walk`
 6. `sweep` (minor=true): 全 page 走査。 marked + age<PROMOTE_AGE → mark clear + age++、
    marked + age>=PROMOTE_AGE → set old_bm + clear mark/dirty + `promoted_push`、
@@ -841,7 +841,7 @@ alloc: 2.10 と同じ slab。
 
 minor phases:
 1. roots → mark → process_gray
-2. **page-level remset 圧縮**: 各 remset entry (= page) を slot 走査 →
+2. **page-level remset 整理**: 各 remset entry (= page) を slot 走査 →
    slot.dirty_bm[i] が 1 の slot を scan、 scan_saw_young なら slot bit keep、
    false なら clear。 page 内 全 slot が clean になれば `card_dirty = 0` + page
    を remset から drop。 LargeObj も同様
@@ -857,7 +857,7 @@ major phases:
 計算量:
 - WB hot path: `(get_old, !card_dirty) ⇒ set dirty_bm + card + push_page`、
   「同 page への 2回目以降の WB は card_dirty=1 で早期 return」
-- minor remset 圧縮: O(page数 × n_slots) (= page 単位の粗化、 bitmap_gen より cache friendly)
+- minor remset 整理: O(page数 × n_slots) (= page 単位の粗化、 bitmap_gen より cache friendly)
 - 他は 2.10 と同じ
 
 heap growth/shrink: 2.10 と同じ。
@@ -1186,7 +1186,7 @@ major の関係は?
 1. **DIRTY bit の意義**: 「この tenured obj は remset_buf に居る」 マーク。
    用途は (a) WB の fast-path で `(OLD && !DIRTY)` を 1 命令で判定 → 既
    DIRTY ならば無視 (= 同 obj への複数 write で remset 重複 push しない)、
-   (b) minor 終了時に remset 圧縮で 「scan_saw_young false なら DIRTY を
+   (b) minor 終了時に remset 整理で 「scan_saw_young false なら DIRTY を
    clear」 して entry drop → 次 minor で再 push 可能になる。 DIRTY と
    remset_buf 在席は invariant (= 片方だけ立つ状態が major 直後の cleanup
    window 以外には起きない)。
@@ -1216,7 +1216,7 @@ dirty_bm は scan 効率化」 の構成。 用途は以下:
 1. WB hot path: `if (get_old && !card_dirty) { set both + remset_push_page }`
    (= 一旦 page を remset に入れたら以後 WB は page-level check のみで早期
    return)。
-2. minor の remset 圧縮: 各 page を slot 単位で walk、 `dirty_bm` slot を
+2. minor の remset 整理: 各 page を slot 単位で walk、 `dirty_bm` slot を
    scan、 page 内に 1 つも young child が残らなければ page 自体を remset
    から drop。
 3. fallback として全 page heap-walk は不要 (= remset_buf cap が page 数なので
