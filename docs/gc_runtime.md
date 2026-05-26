@@ -1015,6 +1015,24 @@ mark&sweep、 単一 region + size-class freelist。 region 内に bump で appe
 sweep で unmarked を class 別 freelist に戻す (= region pointer は戻らない)。
 fragmentation 観察用 testbed。
 
+**fragmentation を加速する構造**: 実装は意図的に fragmentation 対策を一切
+持たない:
+- **no coalescing**: 隣接する free slot を merge して大きな free 領域に
+  する処理が無い (= size-32 × 2 が並んでも size-64 として使えない)
+- **size-class isolation**: `freelist[9]` は class 単位 LIFO chain。
+  size-N freelist の slot は size-N alloc にしか使えず、 他 class へは
+  流用不可
+- **region_top never retreats**: sweep で `region_top` は戻らない。
+  物理 footprint = 歴代 peak alloc 量 で、 live が減っても物理 page は
+  解放されない
+- 結果: alloc pattern が時系列で変化すると、 過去の class の freelist が
+  滞留しつつ region_top が前進し続け、 最終的に 64 GiB virt 上限まで到達。
+  bench v11 でも多くの workload で FAIL するのはこの構造的特性が原因
+
+実用的な mark&sweep (= CRuby など) は class 単位 page / coalescing / 物理
+release などで fragmentation を抑える。 本 backend はそれら全てを外して
+「最悪ケース」 を観察するためのもの。
+
 freelist の構造 (= slot 単位 LIFO chain)、 bump fallback、 non-generational
 である理由、 mark / mark_compact との位置付けは §6 Q4 参照。
 
