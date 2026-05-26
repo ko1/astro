@@ -25,6 +25,14 @@ bench-aot`)。 15 backend × 9 workload × {plain, aot-cached} を回す。
   は実体が `copy_gen` の clone (= inc_step / SATB なし) で「独立 algorithm」 を
   主張できないため撤去 (16 → **15 backend**)
 
+⚠ **sp 引数化 (commit `04af2521`、 2026-05-26)**: §1〜§4 の数値は 2-arg
+dispatcher 時代のもの。 baruby_precise iter 61 と同 pattern で dispatcher
+の 3rd 引数として `sp` を追加した結果、 全 bench で **plain ~-18%、 AOT
+~-22%** の speedup を観測 (= `copy` で fib35 1.13s → 0.91s / matmul 6.42s
+→ 5.16s)。 完全な matrix bench 再測定は別 commit。 §1〜§4 の trend (=
+backend 間相対順位、 GC bound vs CPU bound 区別) は不変、 絶対値が下がる
+方向に shift していると読む。
+
 略号一覧 (= 後続の表で使用):
 
 | 略号 | backend | 略号 | backend |
