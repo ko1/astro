@@ -263,7 +263,7 @@ struct arith_cache {
 
 // The original primitive sobj for each specialized operator.  Set by
 // install_prims; checked by node_arith_* / node_pred_* / node_vec_* on
-// every call to detect user redefinition.
+// every call to detect user redefinition.  Definitions live in builtin.c.
 extern VALUE PRIM_PLUS_VAL, PRIM_MINUS_VAL, PRIM_MUL_VAL;
 extern VALUE PRIM_NUM_LT_VAL, PRIM_NUM_LE_VAL, PRIM_NUM_GT_VAL, PRIM_NUM_GE_VAL, PRIM_NUM_EQ_VAL;
 extern VALUE PRIM_NULL_P_VAL, PRIM_PAIR_P_VAL, PRIM_CAR_VAL, PRIM_CDR_VAL, PRIM_NOT_VAL;
@@ -474,6 +474,32 @@ void scm_error(CTX *c, const char *fmt, ...);
 // Print + read.
 void scm_display(FILE *fp, VALUE v, bool readable);
 VALUE scm_read(CTX *c, FILE *fp);
+
+// ---------------------------------------------------------------------------
+// builtin.c-side exports (= primitive table + standard-port globals).
+// install_prims (= main.c, startup) iterates PRIM_TABLE and wires the three
+// standard ports via port_make.  aro_scheme_visit_roots (= main.c, root
+// visit) walks PORT_STDIN/STDOUT/STDERR so the libc-FILE port sobj's stay
+// alive across GC.
+// ---------------------------------------------------------------------------
+
+// Primitive table — populated in builtin.c, scanned by install_prims (main.c)
+// at startup.  Terminated by a sentinel entry with `name == NULL`.
+struct prim_entry {
+    const char *name;
+    scm_prim_fn fn;
+    int min_argc, max_argc;
+};
+extern struct prim_entry PRIM_TABLE[];
+
+// Wrap a libc FILE* in an OBJ_PORT sobj.  Defined in builtin.c; called by
+// install_prims (= main.c) to set up the three standard ports.
+VALUE port_make(CTX *c, FILE *fp, bool input, bool owned);
+
+// Standard ports — heap-allocated port sobj's, populated by install_prims.
+// Kept as program-globals (not via c->globals) and walked by
+// aro_scheme_visit_roots so a moving GC can relocate them.
+extern VALUE PORT_STDIN, PORT_STDOUT, PORT_STDERR;
 
 // ---------------------------------------------------------------------------
 // Precise-GC integration: SCAN_EDGES + AROH_IS_GC_OBJECT for sample-side filtering.

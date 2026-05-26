@@ -59,13 +59,13 @@ optflags=-O3
 READLINE_CFLAGS := $(shell echo 'int main(){return 0;}' | gcc -x c -lreadline - -o /dev/null 2>/dev/null && echo "-DUSE_READLINE")
 READLINE_LDFLAGS := $(if $(READLINE_CFLAGS),-lreadline)
 
-ascheme_precise: main.c parse.c node.c Makefile $(NODE_GENFILES) context.h node.h parse.h .built_gc
+ascheme_precise: main.c builtin.c parse.c node.c Makefile $(NODE_GENFILES) context.h node.h parse.h .built_gc
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall -Wno-unused-function $(READLINE_CFLAGS) \
 	    -rdynamic \
 	    -DBARUBY_GC=$(GC_NUM) \
 	    -DASCHEME_PRECISE_DIR='"$(ASCHEME_PRECISE_DIR)"' \
 	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
-	    -o ascheme_precise main.c parse.c node.c $(GC_COMMON_SRC) $(GC_SRC) \
+	    -o ascheme_precise main.c builtin.c parse.c node.c $(GC_COMMON_SRC) $(GC_SRC) \
 	    -ldl -lm -lgmp \
 	    $(READLINE_LDFLAGS)
 
