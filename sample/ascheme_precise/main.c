@@ -1664,8 +1664,9 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         // Outer lambda body:
         //   (seq (lset 0 0 inner_lambda)
         //        (call_K (lref 0 0) inits...))
-        NODE *lset = ALLOC_node_lset(0, 0, inner_lambda);
-        NODE *fn_lref = ALLOC_node_lref(0, 0);
+        // Outer scope has 1 slot (= the inner closure binding) → sp_offset = 0 - 1 = -1.
+        NODE *lset = ALLOC_node_lset(0, 0, -1, inner_lambda);
+        NODE *fn_lref = ALLOC_node_lref(0, 0, -1);
 
         NODE *init_nodes[ASCHEME_LOOP_MAX_PARAMS];
         /* Walk bindings via sp slot to keep cursor alive across the inner
@@ -2338,8 +2339,13 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
     if (scm_is_symbol(form)) {
         const char *name = scm_perm_name(SCM_PTR(form)->sym.name);
         uint32_t depth, idx;
-        if (lex_lookup(scope, name, &depth, &idx)) {
-            return ALLOC_node_lref(depth, idx);
+        struct lex_scope *resolved;
+        if (lex_lookup_full(scope, name, &resolved, &depth, &idx)) {
+            // sp_offset: parse-time baked for depth=0 (= var lives in current
+            // frame at sp[idx - locals_cnt]).  For depth>=1, sp_offset is
+            // unused (= env-chain walk path).
+            int32_t sp_offset = (depth == 0) ? ((int32_t)idx - resolved->nslots) : 0;
+            return ALLOC_node_lref(depth, idx, sp_offset);
         }
         return ALLOC_node_gref(name);
     }
@@ -2399,9 +2405,11 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
              * recursive compile() — the symbol byte payload can move. */
             const char *nm = scm_perm_name(SCM_PTR(name)->sym.name);
             uint32_t depth, idx;
-            if (lex_lookup(scope, nm, &depth, &idx)) {
+            struct lex_scope *resolved;
+            if (lex_lookup_full(scope, nm, &resolved, &depth, &idx)) {
                 NODE *val = compile(c, val_form, scope, false);
-                result = ALLOC_node_lset(depth, idx, val);
+                int32_t sp_offset = (depth == 0) ? ((int32_t)idx - resolved->nslots) : 0;
+                result = ALLOC_node_lset(depth, idx, sp_offset, val);
                 goto done;
             }
             NODE *val = compile(c, val_form, scope, false);

@@ -120,17 +120,21 @@ ascheme_env_at(CTX *c, uint32_t depth)
     return e;
 }
 
+// `sp_offset` is parse-time baked: for depth=0, sp_offset = idx - locals_cnt
+// (= access via sp[sp_offset]).  For depth>=1, sp_offset is unused (= 0)
+// and the env-chain walk is used.  Phase 1 keeps both paths side-by-side
+// for verification; later phases (= when frames live on sp[]) use sp_offset.
 NODE_DEF
-node_lref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx)
+node_lref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx, int32_t sp_offset)
 {
-    (void)n;
+    (void)n; (void)sp_offset;
     return ascheme_env_at(c, depth)->slots[idx];
 }
 
 NODE_DEF
-node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx, NODE *val)
+node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx, int32_t sp_offset, NODE *val)
 {
-    (void)n;
+    (void)n; (void)sp_offset;
     VALUE v = EVAL_ARG(c, val);
     /* The resolved frame is an OBJ_FRAME heap object — could be OLD (=
      * a captured closure env) while v is freshly young.  WB is required
