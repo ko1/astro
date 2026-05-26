@@ -76,6 +76,14 @@ ORACLE_FILE = File.join(BENCH_DIR, "oracle.json")
 ORACLE = File.exist?(ORACLE_FILE) ? JSON.parse(File.read(ORACLE_FILE)) : {}
 
 def build(gc, astro_debug)
+  # Force rebuild: the Makefile's marker-file mechanism (.built_gc) is
+  # supposed to invalidate the binary when GC changes, but a timestamp
+  # race between $(shell echo > .built_gc) and the previous binary's
+  # mtime can leave make saying "Nothing to be done" while the binary
+  # still has the previous backend's stamp.  rm-ing the binary makes
+  # the rebuild unconditional.
+  bin = File.join(ROOT, "baruby_precise")
+  File.unlink(bin) rescue nil
   system("cd #{ROOT} && make GC=#{gc} ASTRO_DEBUG=#{astro_debug}",
          out: "/tmp/matrix_build_#{gc}.log", err: [:child, :out])
 end

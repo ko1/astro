@@ -34,6 +34,12 @@ BENCHES=("${INTEGER_BENCHES[@]}" "${GC_BENCHES[@]}" "${MIXED_BENCHES[@]}")
 BACKENDS=(none bump mark mark_gen mark_gen_inc mark_freelist mark_bitmap_gen mark_card_gen copy copy_gen mark_compact mark_compact_gen mark_bump_gen immix immix_gen)
 # 15 backend (= 11 practical + bump/none/mark_bump_gen/mark_freelist の特殊用途 4)。
 # copy_gen_inc / copy_scramble は除外。
+# Override via env: BENCH_BACKENDS="copy mark" bash aot_matrix.sh — useful for chunked runs.
+if [ -n "${BENCH_BACKENDS:-}" ]; then
+    read -ra BACKENDS <<< "$BENCH_BACKENDS"
+fi
+# Override libgc baseline: set BENCH_SKIP_LIBGC=1 to skip (= already measured).
+SKIP_LIBGC="${BENCH_SKIP_LIBGC:-0}"
 BENCH_PATH="ascheme/bench/big"
 
 # Runs the binary 3× with /usr/bin/time -f "%e %M".  Outputs two whitespace-
@@ -95,16 +101,22 @@ run_validated_aot() {
 }
 
 # libgc baseline (plain only — ascheme does not have --aot-compile)
-(cd ascheme && make >/dev/null 2>&1)
 declare -A LIBGC_PLAIN_T LIBGC_PLAIN_R
-for b in "${BENCHES[@]}"; do
-    read -r t r < <(run_validated ascheme/ascheme "$BENCH_PATH/$b.scm" "${EXPECTED[$b]}")
-    LIBGC_PLAIN_T[$b]=$t
-    LIBGC_PLAIN_R[$b]=$r
-done
+if [ "$SKIP_LIBGC" = "0" ]; then
+    (cd ascheme && make >/dev/null 2>&1)
+    for b in "${BENCHES[@]}"; do
+        read -r t r < <(run_validated ascheme/ascheme "$BENCH_PATH/$b.scm" "${EXPECTED[$b]}")
+        LIBGC_PLAIN_T[$b]=$t
+        LIBGC_PLAIN_R[$b]=$r
+    done
+fi
 
 declare -A PRECISE_PLAIN_T PRECISE_PLAIN_R PRECISE_AOT_T PRECISE_AOT_R
 for gc in "${BACKENDS[@]}"; do
+    # Force rebuild: the marker-file mechanism can leave a stale binary if the
+    # binary's mtime is newer than .built_gc's update.  rm-ing makes rebuild
+    # unconditional.
+    rm -f ascheme_precise/ascheme_precise
     if ! (cd ascheme_precise && make GC="$gc" >/dev/null 2>&1); then
         for b in "${BENCHES[@]}"; do
             PRECISE_PLAIN_T[$gc:$b]=BLD; PRECISE_PLAIN_R[$gc:$b]=BLD
