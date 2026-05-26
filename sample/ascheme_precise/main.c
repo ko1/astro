@@ -910,6 +910,15 @@ struct lex_scope {
     struct lex_scope *parent;
     int nslots;
     char **names;   // libc-permanent cstrs (= scm_perm_name)
+    /* is_lambda_boundary: true for scopes pushed by compile_lambda
+     * (= a closure body), false for scopes pushed by compile_let.  Used
+     * to detect when an lref crosses a closure boundary. */
+    bool is_lambda_boundary;
+    /* has_outer_ref: when this scope is a lambda boundary, true means at
+     * least one lref/lset inside the body refers across this boundary
+     * (= the closure captures from an enclosing scope).  Used to mark
+     * the closure "no_capture" when false, enabling sframe-alloc skip. */
+    bool has_outer_ref;
 };
 
 static struct lex_scope *
@@ -921,7 +930,24 @@ push_scope(CTX *c, struct lex_scope *parent, int nslots, char **names)
     s->parent = parent;
     s->nslots = nslots;
     s->names = names;
+    /* default: not a lambda boundary (= compile_let path).  compile_lambda
+     * sets is_lambda_boundary = true after push_scope. */
+    s->is_lambda_boundary = false;
+    s->has_outer_ref = false;
     return s;
+}
+
+/* Walk `depth` scopes upward from `current` and mark each lambda boundary
+ * along the path with has_outer_ref=true.  Called at lref/lset emit time
+ * when depth>=1 — every lambda crossed gains an "outer capture" record. */
+static void
+mark_outer_capture_path(struct lex_scope *current, uint32_t depth)
+{
+    struct lex_scope *s = current;
+    for (uint32_t d = 0; d < depth && s; d++) {
+        if (s->is_lambda_boundary) s->has_outer_ref = true;
+        s = s->parent;
+    }
 }
 
 // Look up `name` in the lex chain.  Returns true and writes (depth,idx)
@@ -1560,6 +1586,7 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
     for (int i = 0; i < nslots; i++) names[i] = (char *)names_buf[i];
 
     struct lex_scope *new_scope = push_scope(c, scope, nslots, names);
+    new_scope->is_lambda_boundary = true;
 
     bool saved = COMPILE_INNER_LAMBDA_SEEN;
     COMPILE_INNER_LAMBDA_SEEN = false;
@@ -1585,8 +1612,10 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
     CURRENT_SELF_CALL = saved_self_call;
 
     aot_add_entry(body_node);
+    uint32_t no_capture = (!new_scope->has_outer_ref) ? 1u : 0u;
     NODE *r = ALLOC_node_lambda((uint32_t)nparams, (uint32_t)has_rest, (uint32_t)nslots,
                                 body_has_inner_lambda ? 0 : 1,
+                                no_capture,
                                 body_node);
     SP_POP(c, sp);
     return r;
@@ -1656,9 +1685,15 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
             : inner_body;
         aot_add_entry(inner_body_final);
 
+        // Named-let inner lambda: body references outer's `name` binding via
+        // lref(0, 0) — wait, actually our compile path makes it depth=0 in
+        // the inner_scope (= the call's frame in named-let).  Conservatively
+        // assume capture (= no_capture=0) for named-let inner lambdas; full
+        // analysis would require tracking inner_scope's outer ref flag.
         NODE *inner_lambda = ALLOC_node_lambda((uint32_t)nparams, 0,
                                                (uint32_t)nparams,
                                                body_has_inner_lambda ? 0 : 1,
+                                               0u, // conservative: assume capture
                                                inner_body_final);
 
         // Outer lambda body:
@@ -1711,6 +1746,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 
         NODE *outer_lambda = ALLOC_node_lambda(1, 0, 1,
                                                /*leaf=*/0, // contains inner lambda
+                                               /*no_capture=*/0u, // wraps inner that captures outer
                                                outer_body);
 
         NODE *unspec = ALLOC_node_const_unspec();
@@ -2343,8 +2379,10 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (lex_lookup_full(scope, name, &resolved, &depth, &idx)) {
             // sp_offset: parse-time baked for depth=0 (= var lives in current
             // frame at sp[idx - locals_cnt]).  For depth>=1, sp_offset is
-            // unused (= env-chain walk path).
+            // unused (= env-chain walk path).  Also track outer ref on
+            // current scope for later "no_capture" analysis.
             int32_t sp_offset = (depth == 0) ? ((int32_t)idx - resolved->nslots) : 0;
+            if (depth >= 1) mark_outer_capture_path(scope, depth);
             return ALLOC_node_lref(depth, idx, sp_offset);
         }
         return ALLOC_node_gref(name);
@@ -2409,6 +2447,7 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
             if (lex_lookup_full(scope, nm, &resolved, &depth, &idx)) {
                 NODE *val = compile(c, val_form, scope, false);
                 int32_t sp_offset = (depth == 0) ? ((int32_t)idx - resolved->nslots) : 0;
+                if (depth >= 1) mark_outer_capture_path(scope, depth);
                 result = ALLOC_node_lset(depth, idx, sp_offset, val);
                 goto done;
             }

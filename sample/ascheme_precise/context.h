@@ -175,6 +175,7 @@ struct sobj {
             int nparams;
             int has_rest;
             bool leaf;        // body has no inner `lambda` — safe to reuse frame on self-tail-call
+            bool no_capture;  // body has no lref/lset crossing this lambda boundary — sframe alloc skippable, locals on sp[]
             const char *name;
         } closure;
         struct {

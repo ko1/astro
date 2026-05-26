@@ -201,14 +201,20 @@ node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *first, 
 }
 
 NODE_DEF @noinline
-node_lambda(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t nparams, uint32_t has_rest, uint32_t nlocals, uint32_t leaf, NODE *body)
+node_lambda(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t nparams, uint32_t has_rest, uint32_t nlocals, uint32_t leaf, uint32_t no_capture, NODE *body)
 {
     (void)n; (void)nlocals;
     // `leaf` is set by the compiler iff the body contains no inner
     // `lambda` form.  scm_apply_tail uses it to enable frame reuse on
     // self-tail-calls without risking a captured-frame corruption.
+    //
+    // `no_capture` is set iff the body has no lref/lset crossing this
+    // lambda's boundary (= self-contained body, locals can live on sp[]
+    // without a heap sframe).  Used by the sp[] fast path to skip sframe
+    // alloc on closure call.
     VALUE cl = scm_make_closure(c, body, c->env, (int)nparams, (int)has_rest);
     SCM_PTR(cl)->closure.leaf = leaf ? true : false;
+    SCM_PTR(cl)->closure.no_capture = no_capture ? true : false;
     return cl;
 }
 
