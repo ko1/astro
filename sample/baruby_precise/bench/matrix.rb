@@ -16,6 +16,10 @@ require 'json'
 
 ROOT = File.expand_path("../..", __FILE__)
 BENCH_DIR = File.expand_path("..", __FILE__)
+# All 16 build-time switchable backends (= 11 practical + 5 special-purpose).
+# `copy_gen_inc` was removed (commit e60fa150) as it was a clone of `copy_gen`.
+# `copy_scramble` is an audit-only backend (gc_copy + slot scrambling between
+# minors to surface stale-pointer bugs); not in the default matrix.
 ALL_BACKENDS = %w(none mark mark_gen mark_gen_inc copy copy_gen
                   mark_compact mark_compact_gen bump mark_bump_gen
                   immix immix_gen mark_bitmap_gen mark_card_gen
@@ -76,11 +80,11 @@ def build(gc, astro_debug)
          out: "/tmp/matrix_build_#{gc}.log", err: [:child, :out])
 end
 
-def parse_run(out)
+def parse_run(out, rss_kb = nil)
   elapsed = out[/__ELAPSED__\s+(\S+)/, 1]&.to_f
   return nil unless elapsed
   result = out[/^Result:\s*([\d.-]+)/, 1]
-  h = { elapsed: elapsed, result: result }
+  h = { elapsed: elapsed, result: result, rss_kb: rss_kb }
   if (line = out[/^__GC_STATS__\s+(.*)$/, 1])
     line.split(/\s+/).each do |kv|
       k, v = kv.split('=', 2)
@@ -88,6 +92,34 @@ def parse_run(out)
     end
   end
   h
+end
+
+# Run `cmd` (Array, optionally with leading env Hash) under /usr/bin/time -f "%e %M"
+# and return [combined_stdout_stderr, rss_kb].  The "%M" reports peak resident
+# set size in KB on Linux (GNU time).  We capture program output via a temp file
+# rather than IO.popen so that stdin isn't tied to time's stderr redirection.
+def run_with_time(cmd)
+  env = cmd.first.is_a?(Hash) ? cmd.shift : nil
+  tmpdir = ENV["TMPDIR"] || "/tmp"
+  out_path  = File.join(tmpdir, "matrix_out_#{$$}_#{Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)}")
+  time_path = File.join(tmpdir, "matrix_time_#{$$}_#{Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)}")
+  full = ["/usr/bin/time", "-f", "%e %M", "-o", time_path, *cmd]
+  spawn_args = env ? [env, *full] : full
+  pid = Process.spawn(*spawn_args, out: out_path, err: [:child, :out])
+  Process.waitpid(pid)
+  out = File.read(out_path) rescue ""
+  time_blob = (File.read(time_path) rescue "")
+  rss_kb = nil
+  # /usr/bin/time may prepend "Command exited with non-zero status N" before
+  # the "%e %M" line.  Match the last "<float> <int>" line.
+  time_blob.each_line do |line|
+    if line.strip =~ /^(\d+(?:\.\d+)?)\s+(\d+)$/
+      rss_kb = $2.to_i
+    end
+  end
+  File.unlink(out_path) rescue nil
+  File.unlink(time_path) rescue nil
+  [out, rss_kb]
 end
 
 def pick(runs, policy)
@@ -124,8 +156,8 @@ if opts[:libgc_bin]
     runs = []
     opts[:repeats].times do
       cmd = [opts[:libgc_bin], *flag, bench_path]
-      out = IO.popen(cmd, err: [:child, :out]) { |io| io.read }
-      h = parse_run(out)
+      out, rss_kb = run_with_time(cmd)
+      h = parse_run(out, rss_kb)
       if h
         if ORACLE[bench] && h[:result] && h[:result] != ORACLE[bench]
           warn "  ⚠ libgc/#{bench}: result mismatch (got #{h[:result]}, oracle #{ORACLE[bench]}) — continuing"
@@ -136,7 +168,8 @@ if opts[:libgc_bin]
     chosen = pick(runs, opts[:choose])
     matrix[bench] ||= {}
     matrix[bench]["libgc"] = chosen
-    printf "  %-20s %-25s %s\n", "libgc", bench, chosen ? "#{chosen[:elapsed]}s" : "FAIL"
+    printf "  %-20s %-25s %s\n", "libgc", bench,
+           chosen ? "#{chosen[:elapsed]}s rss=#{chosen[:rss_kb]}kB" : "FAIL"
   end
 end
 
@@ -172,8 +205,8 @@ opts[:backends].each do |gc|
     opts[:repeats].times do
       env = { "BARUBY_GC_STATS" => "1" }
       cmd = [env, bin, *flag, bench_path]
-      out = IO.popen(cmd, err: [:child, :out]) { |io| io.read }
-      h = parse_run(out)
+      out, rss_kb = run_with_time(cmd)
+      h = parse_run(out, rss_kb)
       if h
         # Verify GC_STATS backend matches what we built
         actual_bk = h[:backend]
@@ -190,20 +223,22 @@ opts[:backends].each do |gc|
     chosen = pick(runs, opts[:choose])
     matrix[bench] ||= {}
     matrix[bench][gc] = chosen
-    printf "  %-20s %-25s %s\n", gc, bench, chosen ? "#{chosen[:elapsed]}s" : "FAIL"
+    printf "  %-20s %-25s %s\n", gc, bench,
+           chosen ? "#{chosen[:elapsed]}s rss=#{chosen[:rss_kb]}kB" : "FAIL"
   end
 end
 
 # ---------- Emit CSV ----------
 csv_path = File.join(opts[:out_dir], "matrix.csv")
 File.open(csv_path, "w") do |f|
-  cols = %w(bench backend elapsed gc_count minor major gc_seconds mark_seconds reclaim_seconds gc_pct max_pause_ms alloc_bytes result)
+  cols = %w(bench backend elapsed rss_kb gc_count minor major gc_seconds mark_seconds reclaim_seconds gc_pct max_pause_ms alloc_bytes result)
   f.puts cols.join(",")
   matrix.each do |bench, by_bk|
     by_bk.each do |bk, r|
       next unless r
       vals = [bench, bk,
               r[:elapsed],
+              r[:rss_kb] || "",
               r[:gc_count] || "",
               r[:minor] || "",
               r[:major] || "",
@@ -240,6 +275,8 @@ File.open(md_path, "w") do |f|
   f.puts "Build: `make GC=<backend> ASTRO_DEBUG=#{opts[:astro_debug]}`, mode `#{opts[:mode]}`."
   f.puts "Generated: #{Time.now.utc.iso8601}"
   f.puts ""
+  f.puts "## Elapsed (seconds, median)"
+  f.puts ""
   f.puts "| Bench | " + column_order.join(" | ") + " |"
   f.puts "|---" + ("|---:" * column_order.size) + "|"
   matrix.keys.sort.each do |bench|
@@ -250,6 +287,23 @@ File.open(md_path, "w") do |f|
       next "—" unless v
       s = sprintf("%.2f", v)
       v == best ? "**#{s}**" : s
+    end
+    f.puts "| #{bench} | #{cells.join(' | ')} |"
+  end
+  f.puts ""
+  f.puts "## Peak RSS (MiB, from /usr/bin/time -M)"
+  f.puts ""
+  f.puts "| Bench | " + column_order.join(" | ") + " |"
+  f.puts "|---" + ("|---:" * column_order.size) + "|"
+  matrix.keys.sort.each do |bench|
+    row_vals = column_order.map { |bk| matrix[bench][bk]&.dig(:rss_kb) }
+    best     = row_vals.compact.min
+    cells = column_order.map do |bk|
+      kb = matrix[bench][bk]&.dig(:rss_kb)
+      next "—" unless kb
+      mib = kb / 1024.0
+      s = sprintf("%.1f", mib)
+      kb == best ? "**#{s}**" : s
     end
     f.puts "| #{bench} | #{cells.join(' | ')} |"
   end
