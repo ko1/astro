@@ -19,10 +19,9 @@ PRECISE_GC_DIR := $(RUNTIME)/precise_gc
 ASCHEME_PRECISE_DIR := $(abspath .)
 RUNTIME_ABSPATH     := $(abspath $(RUNTIME))
 
-# GC backend selector — identical to baruby_precise.  Phase 1 of the
-# migration uses `none` (= libc malloc, no collection, no rooting needed).
-# Later phases will enable mark / copy etc.
-GC ?= none
+# GC backend selector — identical to baruby_precise.  Default is `copy`
+# (Cheney semi-space) to match baruby_precise; switch with `make GC=<name>`.
+GC ?= copy
 GC_NUM_none             := 1
 GC_NUM_mark             := 2
 GC_NUM_mark_gen         := 3
