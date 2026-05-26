@@ -1515,24 +1515,28 @@ hoist_internal_defines(CTX *c, VALUE body)
     sp[2] = SCM_NIL;
     while (scm_is_pair(sp[0]) && scm_is_pair(car(sp[0])) && is_symbol(car(car(sp[0])), "define")) {
         VALUE def = car(sp[0]);
-        VALUE name; VALUE init;
+        /* Park name + init in sp slots BEFORE any scm_cons (which can
+         * GC and move the symbol/payload).  A C-local `name` here goes
+         * stale across the lambda-form construction below — the
+         * subsequent (name init) cons then bakes the dead pointer into
+         * the synthesized letrec's binding pair's car. */
         if (scm_is_pair(cadr(def))) {
-            // (define (f params) body...)
-            name = car(cadr(def));
-            VALUE params = cdr(cadr(def));
-            VALUE bodydefs = cdr(cdr(def));
-            sp[3] = params;
-            sp[4] = bodydefs;
-            sp[5] = scm_cons(c, sp[3], sp[4]);
-            sp[5] = scm_cons_sym(c, "lambda", sp[5]);
-            init = sp[5];
+            // (define (f params) body...) — synthesize lambda form
+            sp[4] = car(cadr(def));               /* name (= symbol VALUE) */
+            sp[3] = cdr(cadr(def));               /* params */
+            /* sp[5] = bodydefs.  re-derive def via sp[0] (def may have
+             * moved across the cons cascade below). */
+            sp[5] = cdr(cdr(car(sp[0])));
+            sp[5] = scm_cons(c, sp[3], sp[5]);    /* (params . body) */
+            sp[5] = scm_cons_sym(c, "lambda", sp[5]); /* (lambda params . body) */
+            sp[3] = sp[5];                        /* init = lambda form */
         } else {
-            name = cadr(def);
-            init = caddr(def);
+            /* re-derive def via sp[0] in case prior iteration GC'd */
+            VALUE d2 = car(sp[0]);
+            sp[4] = cadr(d2);                     /* name */
+            sp[3] = caddr(d2);                    /* init */
         }
         /* pair = (name init) */
-        sp[3] = init;
-        sp[4] = name;
         VALUE init_cell = scm_cons(c, sp[3], SCM_NIL);
         sp[5] = init_cell;
         sp[5] = scm_cons(c, sp[4], sp[5]);
