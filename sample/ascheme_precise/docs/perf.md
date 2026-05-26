@@ -561,7 +561,7 @@ list-heavy interp loop (sieve_big / nqueens) で 2.5×〜3.7× の加速、
 recursion-bound (fib35) で 2.16×、 array/symbolic op (deriv) で 1.19× と
 最も低い。
 
-### 9.3 plain interpreter のみで他 Scheme と比較
+### 9.3 他 Scheme 実装との head-to-head (plain + AOT)
 
 `bench/cross/*.scm` (= fib35 / tarai / ack / sum / sieve / nqueens)
 を 6 つの主流 Scheme 実装で計測 (= chez 9.5.8 / racket 8.10 / gambit
