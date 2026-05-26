@@ -252,8 +252,43 @@ NODE_DEF
 node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t is_tail, NODE *fn)
 {
     (void)n;
-    VALUE f = EVAL_ARG(c, fn);
-    return scm_apply_tail(c, f, 0, NULL, is_tail);
+    SP_PUSH(c, sp, 1);
+    sp[0] = (*fn_dispatcher)(c, fn, sp + (1));
+    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+        struct sobj *cl = SCM_PTR(sp[0]);
+        if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 0 && !cl->closure.has_rest)) {
+            NODE *body = cl->closure.body;
+            VALUE *saved_frame_sp = c->frame_sp;
+            sp[0] = (VALUE)c->env;
+            c->frame_sp = c->sp;
+            VALUE v;
+            for (;;) {
+                v = EVAL(c, body, c->sp);
+                if (!c->tail_call_pending) break;
+                c->tail_call_pending = 0;
+                body = c->next_body;
+                if (c->next_no_capture) {
+                    uint16_t np = c->next_nparams;
+                    VALUE *args_base = sp + 1;
+                    ASTRO_ASSERT(args_base + np <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+                    for (uint16_t i = 0; i < np; i++) args_base[i] = c->next_env->slots[i];
+                    c->sp = args_base + np;
+                    c->frame_sp = c->sp;
+                } else {
+                    if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
+                    c->frame_sp = c->sp;
+                }
+            }
+            c->frame_sp = saved_frame_sp;
+            struct sframe *restore_env = (struct sframe *)sp[0];
+            if (c->env != restore_env) CTX_SET_ENV(c, restore_env);
+            SP_POP(c, sp);
+            return v;
+        }
+    }
+    VALUE r = scm_apply_tail(c, sp[0], 0, NULL, is_tail);
+    SP_POP(c, sp);
+    return r;
 }
 
 NODE_DEF
@@ -274,15 +309,16 @@ node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
      * level per recursive hop.  Tail calls fall through to
      * scm_apply_tail, which the outer fast path's trampoline catches.
      *
-     * Within this fast path we still run an inline trampoline that
-     * observes tail_call_pending — any tail call from the body sets it,
-     * and we must switch body + reset frame_sp on each iteration. */
+     * Within this fast path we run an inline trampoline that observes
+     * tail_call_pending.  We park `c->env` at sp[0] (= overwriting fn,
+     * which body doesn't need) so a moving GC during body forwards it
+     * via the sp[] root scan — a C-local `saved_env` would be stale. */
     if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
         struct sobj *cl = SCM_PTR(sp[0]);
         if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 1 && !cl->closure.has_rest)) {
             NODE *body = cl->closure.body;
             VALUE *saved_frame_sp = c->frame_sp;
-            struct sframe *saved_env = c->env;
+            sp[0] = (VALUE)c->env;       /* park saved env at fn slot */
             c->frame_sp = c->sp;
             VALUE v;
             for (;;) {
@@ -290,20 +326,28 @@ node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
                 if (!c->tail_call_pending) break;
                 c->tail_call_pending = 0;
                 body = c->next_body;
-                if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
                 if (c->next_no_capture) {
+                    /* no_capture next body: env doesn't matter (body uses
+                     * frame_sp[] only); just refresh args + frame_sp on
+                     * sp[].  Skip CTX_SET_ENV so c->env stays at caller's
+                     * env for cheap restore at exit.  Args live in
+                     * c->next_env->slots (the heap frame build_frame_for
+                     * just populated); c->next_env is rooted via
+                     * aro_scheme_visit_roots. */
                     uint16_t np = c->next_nparams;
-                    VALUE *args_base = sp;
+                    VALUE *args_base = sp + 1;
                     ASTRO_ASSERT(args_base + np <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
-                    for (uint16_t i = 0; i < np; i++) args_base[i] = c->env->slots[i];
+                    for (uint16_t i = 0; i < np; i++) args_base[i] = c->next_env->slots[i];
                     c->sp = args_base + np;
                     c->frame_sp = c->sp;
                 } else {
+                    if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
                     c->frame_sp = c->sp;
                 }
             }
             c->frame_sp = saved_frame_sp;
-            if (c->env != saved_env) CTX_SET_ENV(c, saved_env);
+            struct sframe *restore_env = (struct sframe *)sp[0];
+            if (c->env != restore_env) CTX_SET_ENV(c, restore_env);
             SP_POP(c, sp);
             return v;
         }
@@ -321,6 +365,38 @@ node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
     sp[0] = (*fn_dispatcher)(c, fn, sp + (3));
     sp[1] = (*a0_dispatcher)(c, a0, sp + (3));
     sp[2] = (*a1_dispatcher)(c, a1, sp + (3));
+    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+        struct sobj *cl = SCM_PTR(sp[0]);
+        if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 2 && !cl->closure.has_rest)) {
+            NODE *body = cl->closure.body;
+            VALUE *saved_frame_sp = c->frame_sp;
+            sp[0] = (VALUE)c->env;
+            c->frame_sp = c->sp;
+            VALUE v;
+            for (;;) {
+                v = EVAL(c, body, c->sp);
+                if (!c->tail_call_pending) break;
+                c->tail_call_pending = 0;
+                body = c->next_body;
+                if (c->next_no_capture) {
+                    uint16_t np = c->next_nparams;
+                    VALUE *args_base = sp + 1;
+                    ASTRO_ASSERT(args_base + np <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+                    for (uint16_t i = 0; i < np; i++) args_base[i] = c->next_env->slots[i];
+                    c->sp = args_base + np;
+                    c->frame_sp = c->sp;
+                } else {
+                    if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
+                    c->frame_sp = c->sp;
+                }
+            }
+            c->frame_sp = saved_frame_sp;
+            struct sframe *restore_env = (struct sframe *)sp[0];
+            if (c->env != restore_env) CTX_SET_ENV(c, restore_env);
+            SP_POP(c, sp);
+            return v;
+        }
+    }
     VALUE r = scm_apply_tail(c, sp[0], 2, sp + 1, is_tail);
     SP_POP(c, sp);
     return r;
@@ -335,6 +411,38 @@ node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
     sp[1] = (*a0_dispatcher)(c, a0, sp + (4));
     sp[2] = (*a1_dispatcher)(c, a1, sp + (4));
     sp[3] = (*a2_dispatcher)(c, a2, sp + (4));
+    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+        struct sobj *cl = SCM_PTR(sp[0]);
+        if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 3 && !cl->closure.has_rest)) {
+            NODE *body = cl->closure.body;
+            VALUE *saved_frame_sp = c->frame_sp;
+            sp[0] = (VALUE)c->env;
+            c->frame_sp = c->sp;
+            VALUE v;
+            for (;;) {
+                v = EVAL(c, body, c->sp);
+                if (!c->tail_call_pending) break;
+                c->tail_call_pending = 0;
+                body = c->next_body;
+                if (c->next_no_capture) {
+                    uint16_t np = c->next_nparams;
+                    VALUE *args_base = sp + 1;
+                    ASTRO_ASSERT(args_base + np <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+                    for (uint16_t i = 0; i < np; i++) args_base[i] = c->next_env->slots[i];
+                    c->sp = args_base + np;
+                    c->frame_sp = c->sp;
+                } else {
+                    if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
+                    c->frame_sp = c->sp;
+                }
+            }
+            c->frame_sp = saved_frame_sp;
+            struct sframe *restore_env = (struct sframe *)sp[0];
+            if (c->env != restore_env) CTX_SET_ENV(c, restore_env);
+            SP_POP(c, sp);
+            return v;
+        }
+    }
     VALUE r = scm_apply_tail(c, sp[0], 3, sp + 1, is_tail);
     SP_POP(c, sp);
     return r;
@@ -350,6 +458,38 @@ node_call_4(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
     sp[2] = (*a1_dispatcher)(c, a1, sp + (5));
     sp[3] = (*a2_dispatcher)(c, a2, sp + (5));
     sp[4] = (*a3_dispatcher)(c, a3, sp + (5));
+    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+        struct sobj *cl = SCM_PTR(sp[0]);
+        if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 4 && !cl->closure.has_rest)) {
+            NODE *body = cl->closure.body;
+            VALUE *saved_frame_sp = c->frame_sp;
+            sp[0] = (VALUE)c->env;
+            c->frame_sp = c->sp;
+            VALUE v;
+            for (;;) {
+                v = EVAL(c, body, c->sp);
+                if (!c->tail_call_pending) break;
+                c->tail_call_pending = 0;
+                body = c->next_body;
+                if (c->next_no_capture) {
+                    uint16_t np = c->next_nparams;
+                    VALUE *args_base = sp + 1;
+                    ASTRO_ASSERT(args_base + np <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+                    for (uint16_t i = 0; i < np; i++) args_base[i] = c->next_env->slots[i];
+                    c->sp = args_base + np;
+                    c->frame_sp = c->sp;
+                } else {
+                    if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
+                    c->frame_sp = c->sp;
+                }
+            }
+            c->frame_sp = saved_frame_sp;
+            struct sframe *restore_env = (struct sframe *)sp[0];
+            if (c->env != restore_env) CTX_SET_ENV(c, restore_env);
+            SP_POP(c, sp);
+            return v;
+        }
+    }
     VALUE r = scm_apply_tail(c, sp[0], 4, sp + 1, is_tail);
     SP_POP(c, sp);
     return r;
