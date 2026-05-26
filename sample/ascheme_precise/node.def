@@ -122,8 +122,7 @@ ascheme_env_at(CTX *c, uint32_t depth)
 
 // `sp_offset` is parse-time baked: for depth=0, sp_offset = idx - locals_cnt
 // (= access via sp[sp_offset]).  For depth>=1, sp_offset is unused (= 0)
-// and the env-chain walk is used.  Phase 1 keeps both paths side-by-side
-// for verification; later phases (= when frames live on sp[]) use sp_offset.
+// and the env-chain walk is used.
 NODE_DEF
 node_lref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx, int32_t sp_offset)
 {
@@ -141,6 +140,29 @@ node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t dep
      * so the next minor scans this frame's slots[]. */
     struct sframe *f = ascheme_env_at(c, depth);
     aro_gc_wb(c, f, &f->slots[idx], v);
+    return SCM_UNSPEC;
+}
+
+// node_lref_sp / node_lset_sp: sp[] frame variants.  Emitted by compile_lambda
+// when body is no_capture (= no lref/lset crossing this lambda boundary).
+// **Operand layout matches node_lref / node_lset** so the parser can switch
+// between variants by patching only `head.dispatcher` (= same NODE memory).
+// Body is called via node_call_K's fast path which skips sframe alloc and
+// places args on sp[] at sp_offset positions.  lref reads sp[sp_offset]
+// directly, depth / idx ignored.
+NODE_DEF
+node_lref_sp(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx, int32_t sp_offset)
+{
+    (void)n; (void)c; (void)depth; (void)idx;
+    return sp[sp_offset];
+}
+
+NODE_DEF
+node_lset_sp(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx, int32_t sp_offset, NODE *val)
+{
+    (void)n; (void)depth; (void)idx;
+    VALUE v = EVAL_ARG(c, val);
+    sp[sp_offset] = v;
     return SCM_UNSPEC;
 }
 

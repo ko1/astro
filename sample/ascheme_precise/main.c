@@ -919,6 +919,13 @@ struct lex_scope {
      * (= the closure captures from an enclosing scope).  Used to mark
      * the closure "no_capture" when false, enabling sframe-alloc skip. */
     bool has_outer_ref;
+    /* pending_lrefs: emitted lref/lset NODE pointers within this lambda's
+     * body.  Only meaningful on lambda-boundary scopes.  compile_lambda
+     * iterates these after body compile and patches dispatchers to the
+     * _sp variants when !has_outer_ref (= no_capture closure body uses
+     * sp[] frame). */
+    NODE **pending_lrefs;
+    size_t pending_n, pending_cap;
 };
 
 static struct lex_scope *
@@ -948,6 +955,31 @@ mark_outer_capture_path(struct lex_scope *current, uint32_t depth)
         if (s->is_lambda_boundary) s->has_outer_ref = true;
         s = s->parent;
     }
+}
+
+/* Find the nearest enclosing lambda boundary, including `s` itself. */
+static struct lex_scope *
+enclosing_lambda(struct lex_scope *s)
+{
+    for (; s; s = s->parent) if (s->is_lambda_boundary) return s;
+    return NULL;
+}
+
+/* Record an emitted lref/lset NODE in the enclosing lambda's pending list,
+ * so compile_lambda can later patch its dispatcher to the _sp variant if the
+ * lambda turns out to be no_capture. */
+static void
+record_pending_lref(struct lex_scope *current, NODE *n)
+{
+    struct lex_scope *lam = enclosing_lambda(current);
+    if (!lam) return; /* top-level — never a closure body */
+    if (lam->pending_n == lam->pending_cap) {
+        size_t newcap = lam->pending_cap ? lam->pending_cap * 2 : 16;
+        lam->pending_lrefs = (NODE **)realloc(lam->pending_lrefs, newcap * sizeof(NODE *));
+        if (!lam->pending_lrefs) { perror("realloc pending_lrefs"); abort(); }
+        lam->pending_cap = newcap;
+    }
+    lam->pending_lrefs[lam->pending_n++] = n;
 }
 
 // Look up `name` in the lex chain.  Returns true and writes (depth,idx)
@@ -1613,6 +1645,18 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
 
     aot_add_entry(body_node);
     uint32_t no_capture = (!new_scope->has_outer_ref) ? 1u : 0u;
+    /* If body is no_capture (= no lref crosses this lambda), patch every
+     * pending lref/lset NODE inside the body so they use the _sp variants
+     * (= read/write sp[sp_offset] directly, skip env-chain walk).  Patching
+     * only `head.dispatcher` works because node_lref / node_lref_sp share
+     * operand layout (same for lset). */
+    /* Patching to _sp variants is gated on scm_apply_tail also placing args
+     * at sp[sp_offset] positions — wired in the next phase.  For now collect
+     * but don't patch.  (TODO Phase 2c) */
+    (void)no_capture;
+    free(new_scope->pending_lrefs);
+    new_scope->pending_lrefs = NULL;
+    new_scope->pending_n = new_scope->pending_cap = 0;
     NODE *r = ALLOC_node_lambda((uint32_t)nparams, (uint32_t)has_rest, (uint32_t)nslots,
                                 body_has_inner_lambda ? 0 : 1,
                                 no_capture,
@@ -2383,7 +2427,9 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
             // current scope for later "no_capture" analysis.
             int32_t sp_offset = (depth == 0) ? ((int32_t)idx - resolved->nslots) : 0;
             if (depth >= 1) mark_outer_capture_path(scope, depth);
-            return ALLOC_node_lref(depth, idx, sp_offset);
+            NODE *r = ALLOC_node_lref(depth, idx, sp_offset);
+            if (depth == 0) record_pending_lref(scope, r);
+            return r;
         }
         return ALLOC_node_gref(name);
     }
@@ -2449,6 +2495,7 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
                 int32_t sp_offset = (depth == 0) ? ((int32_t)idx - resolved->nslots) : 0;
                 if (depth >= 1) mark_outer_capture_path(scope, depth);
                 result = ALLOC_node_lset(depth, idx, sp_offset, val);
+                if (depth == 0) record_pending_lref(scope, result);
                 goto done;
             }
             NODE *val = compile(c, val_form, scope, false);
