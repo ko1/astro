@@ -120,13 +120,12 @@ CRuby に組み込む C 拡張形式で、 alloc / mark は CRuby (= MRI) の GC
 | `abruby` | Ruby サブセット を CRuby 拡張として組込み |
 | `arjsv` | JSON Schema validator、 `json_schemer` 互換 API |
 
-#### 1.3.5 GC なし (= leak-and-forget) sample (8 個)
+#### 1.3.5 GC 不要 sample (8 個)
 
-short-lived eval / 一度きりの CLI / stack machine など、 process 終了で OS に解放される前提で free しない。
+理由は 2 系統:
 
-`aforth` (= stack machine) / `arcel` (= predicate eval CLI) / `asml` (= ML 評価) / `astrogre` (= regex + grep CLI) / `calc` (= 6-node 電卓) / `castro` (= C eval) / `naruby` (= Ruby サブセット、 JIT 有り) / `wastro` (= Wasm 評価)
-
-備考: `naruby` だけは長時間動作の可能性があるが、 現状 GC 未実装 (= 短時間 bench / JIT 開発が primary 用途)。 将来 GC 化する場合は `baruby_precise` で proven な precise_gc framework に移行する想定。
+- **そもそも heap object allocation を持たない**: `naruby` (= Ruby サブセット、 整数 / 浮動小数 / closure 等を frame 上で扱い、 heap obj を作らない設計)、 `aforth` (= stack machine、 値は stack に積むだけ)、 `calc` (= 6-node 電卓、 整数のみ)
+- **short-lived eval で leak-and-forget**: `arcel` (= predicate eval CLI) / `asml` (= ML 評価) / `astrogre` (= regex + grep CLI) / `castro` (= C eval) / `wastro` (= Wasm 評価)。 process 終了で OS に解放される前提で free しない
 
 ## 2. 各アルゴリズム紹介
 
