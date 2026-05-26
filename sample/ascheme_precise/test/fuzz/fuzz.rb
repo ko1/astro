@@ -818,6 +818,480 @@ def gen_huge_list
 end
 
 # ---------------------------------------------------------------------------
+# Targeted NODE_DEF coverage generators
+# ---------------------------------------------------------------------------
+
+# node_call_n (= ascheme call_K dispatcher for K >= 5).  Forces compile to
+# emit node_call_n with args_idx + argc operands.
+def gen_call_5
+  args = (0...5).map { rnum }
+  <<~SCM
+    (define (f a b c d e) (+ a b c d e))
+    (display (f #{args.join(' ')})) (newline)
+  SCM
+end
+
+def gen_call_8
+  args = (0...8).map { rnum }
+  params = (0...8).map { |i| "p#{i}" }
+  <<~SCM
+    (define (f #{params.join(' ')}) (+ #{params.join(' ')}))
+    (display (f #{args.join(' ')})) (newline)
+  SCM
+end
+
+def gen_call_12
+  args = (0...12).map { rnum }
+  params = (0...12).map { |i| "p#{i}" }
+  <<~SCM
+    (define (f #{params.join(' ')}) (+ #{params.join(' ')}))
+    (display (f #{args.join(' ')})) (newline)
+  SCM
+end
+
+def gen_call_n_tail
+  # Self-tail-call with 5+ args — exercises node_self_tail_call_global_K but K>4 path
+  # actually ascheme has self_tail_call_global only up to K=4, so K>=5 falls
+  # back to node_call_n with is_tail=1.
+  args = (1..6).map { rnum }
+  params = (0...6).map { |i| "p#{i}" }
+  <<~SCM
+    (define (f #{params.join(' ')})
+      (if (= p0 0)
+          (+ #{params[1..-1].join(' ')})
+          (f (- p0 1) #{params[1..-1].join(' ')})))
+    (display (f #{args.join(' ')})) (newline)
+  SCM
+end
+
+# node_pred_null / node_pred_pair / node_pred_not — specialized predicates
+# (= ascheme's compile recognizes (null? x) / (pair? x) / (not x) and emits
+# a dedicated NODE rather than generic gref-call).
+def gen_pred_null_pair
+  <<~SCM
+    (define (count lst)
+      (if (null? lst) 0
+          (if (pair? lst) (+ 1 (count (cdr lst))) 1)))
+    (display (count (quote (a b c d e f)))) (newline)
+    (display (count (quote ()))) (newline)
+    (display (count (quote a))) (newline)
+  SCM
+end
+
+def gen_pred_not_chain
+  <<~SCM
+    (define x #{rand(100)})
+    (display (not (= x 0))) (newline)
+    (display (not (not (= x 0)))) (newline)
+    (display (if (not (null? (quote (a)))) (quote yes) (quote no))) (newline)
+  SCM
+end
+
+# node_pred_car / node_pred_cdr — `(car X)` / `(cdr X)` as specialized
+# inline access on pair.
+def gen_pred_car_cdr
+  <<~SCM
+    (define p (cons 1 (cons 2 (cons 3 (quote ())))))
+    (display (car p)) (newline)
+    (display (car (cdr p))) (newline)
+    (display (car (cdr (cdr p)))) (newline)
+    (display (cdr (cdr (cdr p)))) (newline)
+  SCM
+end
+
+# node_vec_ref / node_vec_set — `(vector-ref V I)` / `(vector-set! V I X)`
+# specialized.
+def gen_vec_ref_set
+  n = rand(8) + 4
+  <<~SCM
+    (define v (make-vector #{n} 0))
+    (define (fill i)
+      (if (= i #{n}) (quote done)
+          (begin (vector-set! v i (* i 3)) (fill (+ i 1)))))
+    (fill 0)
+    (define (sum i acc)
+      (if (= i #{n}) acc (sum (+ i 1) (+ acc (vector-ref v i)))))
+    (display (sum 0 0)) (newline)
+  SCM
+end
+
+# node_cons_op — `(cons a b)` as a specialized node.
+def gen_cons_op
+  n = rand(30) + 5
+  <<~SCM
+    (define (build i acc)
+      (if (= i 0) acc (build (- i 1) (cons i acc))))
+    (define lst (build #{n} (quote ())))
+    (define (sum lst) (if (null? lst) 0 (+ (car lst) (sum (cdr lst)))))
+    (display (sum lst)) (newline)
+  SCM
+end
+
+# node_eq_op / node_eqv_op — specialized equality compares.
+def gen_eq_op
+  v = rand(100)
+  <<~SCM
+    (display (eq? (quote a) (quote a))) (newline)
+    (display (eq? (quote a) (quote b))) (newline)
+    (display (eqv? #{v} #{v})) (newline)
+    (display (eqv? #{v} #{v + 1})) (newline)
+    (display (if (eq? #{v} #{v}) (quote yes) (quote no))) (newline)
+  SCM
+end
+
+# node_self_tail_call_K (= named-let-style, not define-style).  The
+# parser emits node_self_tail_call_K (NOT node_self_tail_call_global_K)
+# for `(let loop ((i 0)) ... (loop ...))` when arity matches.
+def gen_named_let_self_tail_K
+  k = rand(3) + 2  # 2..4 args
+  args = (0...k).map { |i| ["i#{i}", rand(10)] }
+  init = args.map { |a| "(#{a[0]} #{a[1]})" }.join(' ')
+  step = args.map.with_index { |a, i| i == 0 ? "(- #{a[0]} 1)" : a[0] }.join(' ')
+  body_acc = args.map { |a| a[0] }.join(' ')
+  n = rand(20) + 5
+  <<~SCM
+    (display
+      (let loop (#{init})
+        (if (<= i0 0) (+ #{body_acc}) (loop #{step}))))
+    (newline)
+  SCM
+end
+
+# Many-arg structural exercise
+def gen_many_arg_lambda
+  n = rand(5) + 5  # 5..9 args
+  params = (0...n).map { |i| "v#{i}" }
+  args = (0...n).map { rnum }
+  body = params.each_with_index.map { |p, i| "(* #{p} #{i + 1})" }.join(' ')
+  <<~SCM
+    (define (f #{params.join(' ')}) (+ #{body}))
+    (display (f #{args.join(' ')})) (newline)
+  SCM
+end
+
+# Mixed pred + arith + control nested deeply
+def gen_pred_arith_mix
+  n = rand(30) + 5
+  <<~SCM
+    (define (count-positives lst)
+      (cond ((null? lst) 0)
+            ((not (pair? lst)) 0)
+            ((> (car lst) 0) (+ 1 (count-positives (cdr lst))))
+            (else (count-positives (cdr lst)))))
+    (define data (quote (1 -2 3 -4 5 6 -7 8 -9 10)))
+    (display (count-positives data)) (newline)
+  SCM
+end
+
+# ---------------------------------------------------------------------------
+# Multi-shot continuation (#3) — invoke captured cc more than once.
+# ---------------------------------------------------------------------------
+
+def gen_multi_shot_cc
+  # Calls captured continuation twice — chez supports this fully.
+  # ascheme_precise marks one-shot (= active=0 after invoke); second invoke
+  # should raise a clean error, NOT SEGV.
+  <<~SCM
+    (define saved #f)
+    (define result
+      (+ 1 (call/cc (lambda (k) (set! saved k) 10))))
+    (display result) (newline)
+    (if saved
+        (let ((tmp saved))
+          (set! saved #f)
+          (tmp 100))
+        (quote done))
+  SCM
+end
+
+def gen_cc_reinvoke_after_error
+  # Try invoking continuation that's been "consumed".
+  <<~SCM
+    (define stored #f)
+    (define (capture)
+      (call/cc (lambda (k) (set! stored k) (quote captured))))
+    (capture)
+    (display (quote ok)) (newline)
+  SCM
+end
+
+# ---------------------------------------------------------------------------
+# Floating point / numeric edge cases (#4)
+# ---------------------------------------------------------------------------
+
+def gen_float_edges
+  # Avoid IEEE round-trip-precision-sensitive cases (chez = %.17g, precise =
+  # %.15g) — use values whose %.15g and %.17g representations agree so the
+  # oracle comparison stays meaningful.  Float printing precision is a known
+  # divergence, not a precise-rooting bug.
+  <<~SCM
+    (display (+ 1.5 2.5)) (newline)
+    (display (* 2.0 3.0)) (newline)
+    (display (- 10.0 4.5)) (newline)
+    (display (sqrt 16.0)) (newline)
+    (display (/ 1.0 4.0)) (newline)
+  SCM
+end
+
+def gen_float_compare
+  <<~SCM
+    (display (= 1.0 1)) (newline)
+    (display (< 1.5 2)) (newline)
+    (display (< -1.5 0)) (newline)
+    (display (= 0.0 -0.0)) (newline)
+  SCM
+end
+
+def gen_negative_bignum
+  <<~SCM
+    (display (- 0 999999999999999)) (newline)
+    (display (* -999999999 999999999)) (newline)
+    (display (expt 2 50)) (newline)
+    (display (- (expt 2 50))) (newline)
+  SCM
+end
+
+def gen_mixed_numeric
+  # Force ascheme's numeric tower coercion chains.
+  <<~SCM
+    (display (+ 1 1.5)) (newline)        ; fix + flonum → flonum
+    (display (+ 1 1/2)) (newline)        ; fix + rational → rational
+    (display (+ 1.5 1/2)) (newline)      ; flonum + rational → flonum
+    (display (* 999999999999 2)) (newline)  ; fix → bignum
+    (display (/ 1 3)) (newline)          ; → rational
+    (display (* 1/2 2/3)) (newline)      ; rational × rational
+  SCM
+end
+
+# ---------------------------------------------------------------------------
+# Port I/O (#4 cont.)
+# ---------------------------------------------------------------------------
+
+def gen_string_port
+  # `with-output-to-string` not portable, skip; just exercise (write ...)
+  # which has its own formatting path.
+  <<~SCM
+    (write (quote (a b c))) (newline)
+    (write 42) (newline)
+    (write "hello") (newline)
+    (write #t) (newline)
+    (write (cons 1 2)) (newline)
+  SCM
+end
+
+# ---------------------------------------------------------------------------
+# Coverage-targeted generators (= for primitives gcov shows as 0%-hit)
+# ---------------------------------------------------------------------------
+
+# caar / cadr / caddr / cdddr / cdar / cddr / cadddr 系
+def gen_list_accessors
+  <<~SCM
+    (define p (quote ((1 2 3) (4 5 6) (7 8 9))))
+    (display (caar p)) (newline)
+    (display (cadar p)) (newline)
+    (display (cddar p)) (newline)
+    (display (cdar p)) (newline)
+    (display (cadr p)) (newline)
+    (display (caddr p)) (newline)
+    (display (cddr p)) (newline)
+    (display (cadddr (quote (1 2 3 4 5)))) (newline)
+  SCM
+end
+
+# Trig / transcendental — use inexact (float) inputs so chez and precise
+# both return inexact and format-precision agrees.  Exact 0 makes chez
+# preserve exact 0 from sin/cos, which precise inexact-ifies.
+def gen_trig_ops
+  <<~SCM
+    (display (sin 0.5)) (newline)
+    (display (cos 0.5)) (newline)
+    (display (tan 0.5)) (newline)
+    (display (atan 0.5)) (newline)
+    (display (exp 1.0)) (newline)
+    (display (log 2.0)) (newline)
+    (display (floor 3.7)) (newline)
+    (display (ceiling 3.2)) (newline)
+    (display (round 3.5)) (newline)
+    (display (truncate 3.7)) (newline)
+  SCM
+end
+
+# gensym / symbols
+def gen_gensym
+  <<~SCM
+    (define s (gensym))
+    (display (symbol? s)) (newline)
+    (display (eq? s s)) (newline)
+    (display (eq? s (gensym))) (newline)
+  SCM
+end
+
+# exact / inexact conversions
+def gen_exact_inexact
+  <<~SCM
+    (display (exact->inexact 1/2)) (newline)
+    (display (inexact->exact 0.5)) (newline)
+    (display (exact->inexact 3)) (newline)
+    (display (inexact? 1.5)) (newline)
+    (display (exact? 1/2)) (newline)
+    (display (exact? 3)) (newline)
+  SCM
+end
+
+# gcd / lcm
+def gen_gcd_lcm
+  <<~SCM
+    (display (gcd 12 18)) (newline)
+    (display (gcd 36 24 16)) (newline)
+    (display (lcm 4 6)) (newline)
+    (display (lcm 4 6 9)) (newline)
+    (display (gcd)) (newline)
+    (display (lcm)) (newline)
+  SCM
+end
+
+# Character predicates
+def gen_char_predicates
+  <<~SCM
+    (display (char-alphabetic? #\\a)) (newline)
+    (display (char-alphabetic? #\\5)) (newline)
+    (display (char-numeric? #\\5)) (newline)
+    (display (char-whitespace? #\\space)) (newline)
+    (display (char-upper-case? #\\A)) (newline)
+    (display (char-lower-case? #\\a)) (newline)
+    (display (char-upcase #\\a)) (newline)
+    (display (char-downcase #\\Z)) (newline)
+  SCM
+end
+
+# string mutation + comparison
+def gen_string_more
+  <<~SCM
+    (define s (make-string 5 #\\x))
+    (display s) (newline)
+    (string-set! s 0 #\\H)
+    (display s) (newline)
+    (display (string<? "abc" "abd")) (newline)
+    (display (string=? "abc" "abc")) (newline)
+    (display (string-copy "hello")) (newline)
+    (display (string-ref "hello" 1)) (newline)
+  SCM
+end
+
+# list ops: list-ref / list-tail / member / memq / reverse / append / map / for-each
+def gen_list_higher
+  <<~SCM
+    (display (list-ref (quote (a b c d e)) 2)) (newline)
+    (display (list-tail (quote (a b c d e)) 2)) (newline)
+    (display (member 3 (quote (1 2 3 4 5)))) (newline)
+    (display (memq (quote x) (quote (a b x c)))) (newline)
+    (display (reverse (quote (1 2 3 4 5)))) (newline)
+    (display (append (quote (1 2)) (quote (3 4)) (quote (5 6)))) (newline)
+    (display (length (quote (1 2 3 4 5)))) (newline)
+  SCM
+end
+
+# input from string (= sscanf-like) — chez compat
+def gen_string_to_number
+  <<~SCM
+    (display (string->number "42")) (newline)
+    (display (string->number "3.14")) (newline)
+    (display (string->number "1/2")) (newline)
+    (display (string->number "abc")) (newline)
+    (display (number->string 42)) (newline)
+    (display (number->string 1/2)) (newline)
+  SCM
+end
+
+# expt with various exponents — avoid `(expt int -int)` which chez returns
+# as exact rational (1/100) while precise returns inexact (0.01).
+def gen_expt_variants
+  <<~SCM
+    (display (expt 2 10)) (newline)
+    (display (expt 3 5)) (newline)
+    (display (expt 2 0)) (newline)
+    (display (expt 0 5)) (newline)
+    (display (expt 5 1)) (newline)
+  SCM
+end
+
+# Mixed apply with prims of various arities
+def gen_apply_prims
+  <<~SCM
+    (display (apply + (list 1 2 3 4 5))) (newline)
+    (display (apply max (list 3 1 4 1 5 9 2 6))) (newline)
+    (display (apply min (list 3 1 4 1 5 9 2 6))) (newline)
+    (display (apply cons (list 1 2))) (newline)
+    (display (apply list (list 1 2 3 4 5))) (newline)
+  SCM
+end
+
+# do loop with explicit (test-expr result-exprs) yielding
+def gen_do_variant
+  <<~SCM
+    (define v (make-vector 5 0))
+    (do ((i 0 (+ i 1)))
+        ((= i 5))
+      (vector-set! v i (* i i)))
+    (display v) (newline)
+  SCM
+end
+
+# Boolean predicates of various typed values
+def gen_more_predicates
+  <<~SCM
+    (display (integer? 5)) (newline)
+    (display (integer? 5.0)) (newline)
+    (display (integer? 5.5)) (newline)
+    (display (rational? 1/2)) (newline)
+    (display (real? 1.5)) (newline)
+    (display (complex? 5)) (newline)
+    (display (exact-integer? 5)) (newline)
+  SCM
+end
+
+# ---------------------------------------------------------------------------
+# Mutation + crossover (#2)
+# ---------------------------------------------------------------------------
+# These take a seed program (from any other generator) and produce a derived
+# program by simple AST manipulation in the source text.  Cheap (= regex /
+# str.replace level) — not real AST mutation but enough to surface bugs
+# that the deterministic templates miss.
+
+CORPUS = []  # accumulate passing programs as seed material
+
+def mutate_program(prog)
+  case rand(5)
+  when 0  # bump every numeric literal by +/- 1
+    prog.gsub(/(?<![\w-])(-?\d+)(?![\w.])/) { |m| (m.to_i + (rand(3) - 1)).to_s }
+  when 1  # wrap the whole program in (begin ...)
+    "(begin\n#{prog}\n)"
+  when 2  # replace some + with * (preserving syntactic validity)
+    prog.gsub(/\(\+/) { |m| rand < 0.3 ? '(*' : m }
+  when 3  # replace + with - in some sites
+    prog.gsub(/\(\+/) { |m| rand < 0.3 ? '(-' : m }
+  when 4  # wrap display arg with (abs ...) — should still be valid for numerics
+    prog.gsub(/\(display ([^()]+)\)/) { |m| rand < 0.3 ? "(display (abs #{$1}))" : m }
+  else
+    prog
+  end
+end
+
+def gen_mutated_corpus
+  return gen_structural if CORPUS.empty?
+  seed = CORPUS.sample
+  mutate_program(seed)
+end
+
+# Crossover: concatenate two corpus programs (= state carries over).
+def gen_crossover
+  return gen_structural if CORPUS.size < 2
+  a = CORPUS.sample
+  b = CORPUS.sample
+  "#{a}\n#{b}"
+end
+
+# ---------------------------------------------------------------------------
 # Structural random AST generator
 # ---------------------------------------------------------------------------
 # Generates a numeric-valued expression using a small grammar with a depth
@@ -1029,7 +1503,21 @@ TEMPLATES = %i[
   gen_quote_data gen_quasiquote gen_deep_quote
   gen_type_predicates gen_boolean_side_effect
   gen_combo gen_deep_let_nest gen_big_let_shadowing gen_huge_list
+  gen_call_5 gen_call_8 gen_call_12 gen_call_n_tail gen_many_arg_lambda
+  gen_pred_null_pair gen_pred_not_chain gen_pred_car_cdr gen_pred_arith_mix
+  gen_vec_ref_set gen_cons_op gen_eq_op gen_named_let_self_tail_K
+  gen_multi_shot_cc gen_cc_reinvoke_after_error
+  gen_float_edges gen_float_compare gen_negative_bignum gen_mixed_numeric
+  gen_string_port
+  gen_list_accessors gen_gensym gen_exact_inexact
+  gen_gcd_lcm gen_char_predicates gen_string_more gen_list_higher
+  gen_string_to_number gen_expt_variants gen_apply_prims gen_do_variant
+  gen_more_predicates
 ]
+# Note: gen_trig_ops is intentionally not in TEMPLATES.  chez prints %.17g
+# (= 17-digit IEEE round-trip), precise prints %.15g; transcendental
+# results disagree at the 16-17th decimal.  This is a representation
+# difference, not a bug, so excluding it removes false-positive churn.
 
 STRUCTURAL = %i[
   gen_structural
@@ -1039,6 +1527,8 @@ STRUCTURAL = %i[
   gen_structural_set
   gen_structural_nested_call
   gen_structural_higher_order
+  gen_mutated_corpus
+  gen_crossover
 ]
 
 # ---------------------------------------------------------------------------
@@ -1163,6 +1653,11 @@ N.times do |i|
     end
   else
     pass += 1
+    # Keep a bounded corpus of passing programs for mutation/crossover.
+    # Bound to 200 to avoid runaway memory.
+    if CORPUS.size < 200 && rand < 0.3
+      CORPUS << prog
+    end
     if (i + 1) % 25 == 0
       print "."
       $stdout.flush

@@ -56,6 +56,15 @@ endif
 
 optflags=-O3
 
+# Coverage flag.  Set COV=1 to build with gcov instrumentation; that
+# generates .gcno (compile-time) + .gcda (runtime) data files that
+# `gcov main.c` can consume to compute line-by-line coverage.  Useful
+# in conjunction with `make fuzz` to find untested NODE_DEF paths.
+ifeq ($(COV),1)
+optflags := -O0 -fprofile-arcs -ftest-coverage
+COV_LDFLAGS := -lgcov
+endif
+
 READLINE_CFLAGS := $(shell echo 'int main(){return 0;}' | gcc -x c -lreadline - -o /dev/null 2>/dev/null && echo "-DUSE_READLINE")
 READLINE_LDFLAGS := $(if $(READLINE_CFLAGS),-lreadline)
 
@@ -66,8 +75,39 @@ ascheme_precise: main.c builtin.c parse.c node.c Makefile $(NODE_GENFILES) conte
 	    -DASCHEME_PRECISE_DIR='"$(ASCHEME_PRECISE_DIR)"' \
 	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
 	    -o ascheme_precise main.c builtin.c parse.c node.c $(GC_COMMON_SRC) $(GC_SRC) \
-	    -ldl -lm -lgmp \
+	    -ldl -lm -lgmp $(COV_LDFLAGS) \
 	    $(READLINE_LDFLAGS)
+
+# `make coverage` — build with gcov instrumentation, run the test suite +
+# fuzz, then summarize coverage.  Reports per-source line % and lists
+# functions with 0 line hits as candidates for new fuzz generators.
+#
+# Usage:
+#   make coverage           — run test + fuzz N=200, then summarize
+#   COV_FUZZ_N=1000 make coverage
+#                           — bigger fuzz run for tighter coverage
+coverage:
+	@$(MAKE) -B GC=copy COV=1 ascheme_precise >/dev/null
+	@$(MAKE) GC=copy test >/dev/null 2>&1 || true
+	@$(MAKE) GC=copy test_stress >/dev/null 2>&1 || true
+	@N=$${COV_FUZZ_N:-200}; \
+	  ASCHEME_AOT_TRACE= ruby test/fuzz/fuzz.rb $$N >/dev/null 2>&1 || true
+	@echo "=== coverage summary ==="
+	@for src in main builtin node gc_copy; do \
+	  if [ -f ascheme_precise-$$src.gcno ]; then \
+	    gcov -n ascheme_precise-$$src.gcno 2>/dev/null | \
+	      awk -v src="$$src" '/^File/{f=$$0; getline; gsub(/.*:/, "", $$0); print src ":\t" f " " $$0}' | head -1; \
+	  fi; \
+	done
+	@echo ""
+	@echo "=== uncovered functions in main.c (= 0 hits) ==="
+	@gcov -f ascheme_precise-main.gcno 2>/dev/null > /tmp/_gcov_main.txt; \
+	  awk '/^Function/{name=$$2} /Lines executed:0\.00%/{print "  " name}' /tmp/_gcov_main.txt | head -30
+	@echo ""
+	@echo "=== uncovered functions in node_eval.c (= unused NODE_DEFs) ==="
+	@grep -A 1 "EVAL_node_" /tmp/_gcov_main.txt 2>/dev/null | \
+	  awk '/^Function.*EVAL_node_/{name=$$2} /Lines executed:0\.00%/{print "  " name}' | head -20
+	@echo "(re-run: make GC=copy clean && make coverage to refresh)"
 
 # Alias so existing test/ targets still work without changes.
 ascheme: ascheme_precise

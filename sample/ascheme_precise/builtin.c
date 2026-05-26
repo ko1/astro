@@ -826,15 +826,22 @@ PRIM(string_to_number) {
     if (!scm_is_string(argv[0])) scm_error(c, "string->number: not a string");
     int base = 10;
     if (argc >= 2) base = (int)ARG_FIX(1);
+    // Always re-read `s` after any allocation: argv[0] is rooted (build_frame_for
+    // parks it on c->sp), but the C-local char* into the string's byte payload
+    // would dangle across a moving GC.  Same applies to `slash`.
     const char *s = SCM_PTR(argv[0])->str.chars;
     // rational?
-    char *slash = strchr(s, '/');
-    if (slash) {
+    if (strchr(s, '/')) {
         /* throwaway buffer for splitting "num/den"; not retained past this call. */
-        char *copy = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + strlen(s) + 1);
+        size_t slen = strlen(s);
+        char *copy = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + slen + 1);
         copy += sizeof(AroObjectHeader);
-        memcpy(copy, s, strlen(s) + 1);
+        /* Re-read s after the alloc — under a moving GC the previous pointer
+         * is now stale (= the string's chars buffer was relocated). */
+        s = SCM_PTR(argv[0])->str.chars;
+        memcpy(copy, s, slen + 1);
         char *sl = strchr(copy, '/');
+        if (!sl) return SCM_FALSE;
         *sl = '\0';
         mpz_t num, den;
         if (mpz_init_set_str(num, copy, base) == 0) {
@@ -852,6 +859,9 @@ PRIM(string_to_number) {
         VALUE rv = scm_normalize_int(c, z); mpz_clear(z); return rv;
     }
     mpz_clear(z);
+    // Re-read s before strtod — scm_normalize_int (called above before
+    // mpz_clear) may have allocated.
+    s = SCM_PTR(argv[0])->str.chars;
     // double?
     char *end;
     double d = strtod(s, &end);
