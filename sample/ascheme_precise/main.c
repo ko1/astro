@@ -2876,6 +2876,8 @@ scm_callcc(CTX *c, VALUE fn)
     aro_gc_wb(c, cnt, (VALUE *)&cnt->result, SCM_UNSPEC);
     aro_gc_wb(c, cnt, (VALUE *)&cnt->saved_env, (VALUE)c->env);
     cnt->saved_tcp = c->tail_call_pending;
+    cnt->saved_sp = sp;                  /* pre-call/cc sp */
+    cnt->saved_frame_sp = c->frame_sp;   /* pre-call/cc frame_sp */
     aro_gc_wb(c, cnt, (VALUE *)&cnt->k_val, SCM_OBJ_VAL(kobj));
     aro_gc_wb(c, cnt, (VALUE *)&cnt->fn_val, sp[1]);    /* use parked, post-relocate procedure VALUE */
     if (setjmp(cnt->buf) != 0) {
@@ -2885,9 +2887,10 @@ scm_callcc(CTX *c, VALUE fn)
         cnt  = kobj->cont;
         CTX_SET_ENV(c, cnt->saved_env);
         c->tail_call_pending = cnt->saved_tcp;
+        c->sp = cnt->saved_sp;        /* restore sp before reading frame_sp */
+        c->frame_sp = cnt->saved_frame_sp;
         cnt->active = 0;
         VALUE r = cnt->result;
-        c->sp = sp;
         return r;
     }
     /* Reload kobj before scm_apply (paranoid, since cnt fields may have

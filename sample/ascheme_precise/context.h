@@ -147,6 +147,8 @@ struct scont {
     struct sframe *saved_env;
     VALUE   k_val;          /* the continuation VALUE itself */
     VALUE   fn_val;          /* the user-supplied procedure */
+    VALUE  *saved_sp;       /* c->sp at call/cc entry — restored on longjmp */
+    VALUE  *saved_frame_sp; /* c->frame_sp at call/cc entry */
     int     saved_tcp;
     int     active;
     int     tag;
