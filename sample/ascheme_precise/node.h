@@ -135,7 +135,7 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             CTX_SET_ENV(c, new_env);
             if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
             for (;;) {
-                VALUE v = EVAL(c, body);
+                VALUE v = EVAL(c, body, c->sp);
                 if (!c->tail_call_pending) { CTX_SET_ENV(c, saved); return v; }
                 c->tail_call_pending = 0;
                 body = c->next_body;
