@@ -14,9 +14,10 @@ ASTro `runtime/precise_gc/` には 17 個の GC backend が同居しており、
 
 ### 1.1 サポートしている GC アルゴリズム一覧
 
-| # | 名称 | 特長 |
+実用 GC algorithm (§2):
+
+| GC= | 名称 | 特長 |
 |---|------|------|
-| 1 | `none` | 解放しない。 malloc + leak。 GC overhead = 0 の baseline |
 | 2 | `mark` | mark&sweep。 9 size class slab + page。 generational なし |
 | 3 | `mark_gen` | mark&sweep + 2-gen + N-survive (= age 0..3, promote on 4th survival) |
 | 4 | `mark_gen_inc` | `mark_gen` + incremental marking (SATB barrier)。 ただし INC_WORK_PER_ALLOC=SIZE_MAX で事実上 STW |
@@ -25,13 +26,19 @@ ASTro `runtime/precise_gc/` には 17 個の GC backend が同居しており、
 | 7 | `copy_gen_inc` | `copy_gen` placeholder (= 同実装、 incremental は未実装) |
 | 8 | `mark_compact` | Lisp-2 sliding compactor (mark + fwd-addr + update-ptr + slide) |
 | 9 | `mark_compact_gen` | nursery 4-面 + tenured Lisp-2 slide。 N-survive |
-| 10 | `bump` | bump allocator のみ。 解放しない (= `none` strictly faster baseline) |
 | 11 | `mark_bump_gen` | 4-面 nursery + bump tenured + linear sweep。 N-survive |
 | 12 | `immix` | Immix line/block mark-region。 32 KiB block × 128 B line。 非 moving |
 | 13 | `immix_gen` | 4-面 nursery + Immix tenured。 N-survive |
 | 14 | `mark_bitmap_gen` | `mark_gen` と意味同等、 metadata を per-page bitmap 化 (= 8 B header)。 N-survive |
 | 15 | `mark_card_gen` | `mark_bitmap_gen` + per-page card-dirty flag (= page 単位 remset)。 N-survive |
 | 16 | `mark_freelist` | mark&sweep、 region + size-class freelist。 generational なし |
+
+特殊用途 backend (§3):
+
+| GC= | 名称 | 特長 |
+|---|------|------|
+| 1 | `none` | 解放しない。 malloc + leak。 GC overhead = 0 の baseline |
+| 10 | `bump` | bump allocator のみ。 解放しない (= `none` strictly faster baseline) |
 | 17 | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
 
 9 個の `_gen` backend (mark_gen, mark_gen_inc, copy_gen, copy_gen_inc,
@@ -95,78 +102,14 @@ GC=none(1)  mark(2)  mark_gen(3)  mark_gen_inc(4)  copy(5)  copy_gen(6)  copy_ge
 - **2.x.4 アルゴリズム詳細** — phase 毎の input/output + 計算量
 - **2.x.5 finalizer 実装** — register / walk / check の挙動
 
-### 2.1 none
+### 2.1 mark
 
 #### 2.1.1 概要
-
-何もしない baseline。 alloc は `malloc(payload_size)` で取得し、 解放しない。
-GC overhead を排除した上限性能の参照値。 stress / purge / scramble 全て無効。
-
-#### 2.1.2 パラメータ
-
-なし。
-
-#### 2.1.3 データ構造
-
-- heap: libc malloc が管理 (= 自身では何も持たない)
-- remset / gray queue: 不要 (= 無し)
-- finalize_list: `gc_common.c` の共通実装 (`AroGcCommonState.finalize_list`,
-  `finalize_count`, `finalize_cap`)。 初期 cap = 0、 16 → 2× で grow
-
-#### 2.1.4 アルゴリズム詳細
-
-- alloc: `calloc(1, payload_size)`、 head.gc_size 書込。 O(libc malloc)
-- collect: `aro_gc_collect` は no-op。 計算量 0
-- WB: no-op (= `ARO_GC_HAS_WB` 未定義、 plain `*slot = v`)
-
-heap growth/shrink: libc 任せ。 framework は閾値判定すらしない。
-
-#### 2.1.5 finalizer 実装
-
-`aro_gc_finalize_register` は共通実装。 `aro_gc_finalize_check` は 常に
-payload を返す (= 全 entry を alive 扱い)。 collect が no-op なので finalize_walk
-は事実上呼ばれず、 process 終了まで finalizer は走らない。 GMP buffer 等を
-sample 側で使う場合は none では leak する点に注意。
-
-### 2.2 bump
-
-#### 2.2.1 概要
-
-1 つの mmap region に対し pointer を進めるだけ。 `none` よりも alloc が
-速い (= `*top++`)。 解放しない。
-
-#### 2.2.2 パラメータ
-
-- `REGION_BYTES = ARO_GC_REGION_VIRT_BYTES = 64 GiB` 仮想
-
-#### 2.2.3 データ構造
-
-- 1 つの `mmap(NULL, 64 GiB, MAP_NORESERVE)` region: `region_base` /
-  `region_top` / `region_end` を `ASTroGC` 内に持つ。 物理 page は touch 時に
-  commit
-- gray / remset / promoted_buf: 不要
-
-#### 2.2.4 アルゴリズム詳細
-
-- alloc: `region_top += ALIGN8(size)`、 head 書込 + payload zero-fill。 O(1)
-- collect: no-op
-- WB: no-op
-
-heap growth/shrink: 64 GiB virtual 予約のため成長なし、 縮小なし。 region
-を超えると abort。
-
-#### 2.2.5 finalizer 実装
-
-`none` と同じ。 alive-forever。
-
-### 2.3 mark
-
-#### 2.3.1 概要
 
 非世代の mark&sweep。 9 size class (= 32, 64, ..., 4096 B) の slab + page 構造
 + large obj 個別 mmap。
 
-#### 2.3.2 パラメータ
+#### 2.1.2 パラメータ
 
 - `NUM_SIZE_CLASSES = 9`、 `size_class_bytes = {32, 64, ..., 4096}`
 - `PAGE_SIZE = 16 KiB`、 `PAGE_HDR_BYTES = 16`
@@ -174,7 +117,7 @@ heap growth/shrink: 64 GiB virtual 予約のため成長なし、 縮小なし�
   (= 次回閾値は `MAX(MIN, live × 2)`)
 - large 閾値: > 4 KiB は個別 mmap
 
-#### 2.3.3 データ構造
+#### 2.1.3 データ構造
 
 - `page_head[9]`: class 別 page chain (= 単方向 linked list)
 - `freelist[9]`: class 別 free slot chain。 `FreeSlot.next` が
@@ -185,12 +128,12 @@ heap growth/shrink: 64 GiB virtual 予約のため成長なし、 縮小なし�
 - gray queue: `gray_buf[]` (= flat array of `AroObjectHeader *`)。 初期 cap 0、
   256 → 2× で `realloc`。 overflow なし (libc が abort)
 
-#### 2.3.4 アルゴリズム詳細
+#### 2.1.4 アルゴリズム詳細
 
 phases:
 1. **alloc**: size class 決定 (`size_class_for` = clz-based O(1)) → freelist pop → 無ければ `new_page` で mmap し slot を freelist に積む。 large は `large_alloc` で個別 mmap。 `bytes_since_gc` 加算 → 閾値超で `gc_collect_internal`
 2. **mark**: `AROH_VISIT_ROOTS` → `mark_edge` → `mark_value` で MARKED + gray push → `process_gray` で `AROH_SCAN_EDGES` を transitive 適用
-3. **finalize_walk**: 後述 2.3.5
+3. **finalize_walk**: 後述 2.1.5
 4. **sweep**: 全 page を class 別に slot prefix 走査。 unmarked → `HDR_FREE_BIT` set + freelist push、 marked → mark clear。 large list は unmarked を `munmap`
 
 計算量:
@@ -202,30 +145,30 @@ heap growth/shrink: page は閾値超で `new_page` (= mmap)。 sweep で全 unm
 になっても page は munmap しない (= 物理 release は `mark_freelist` と同様未実装)。
 large obj は unmarked で munmap。
 
-#### 2.3.5 finalizer 実装
+#### 2.1.5 finalizer 実装
 
 `aro_gc_finalize_check` は MARKED bit のみ判定 (= 非 moving、 payload 不変)。
 `aro_gc_finalize_walk` を sweep 直前に呼ぶことで、 sweep が slot を freelist
 に戻す前に sample 側 `AROH_FINALIZE` (= mpz_clear 等) が old payload に
 access できる。
 
-### 2.4 mark_gen
+### 2.2 mark_gen
 
-#### 2.4.1 概要
+#### 2.2.1 概要
 
 `mark` + 2-gen + N-survive。 minor は `young_objs[]` array で young を追跡 →
 sweep_young は O(young)。 major は全 page walk + `young_objs` reset。
 
-#### 2.4.2 パラメータ
+#### 2.2.2 パラメータ
 
-- 2.3 と同じ slab/page + `PROMOTE_AGE = 3`
+- 2.1 と同じ slab/page + `PROMOTE_AGE = 3`
 - `young_threshold = 16 MiB` (fixed)
 - `MAJOR_THRESHOLD_MIN = 16 MiB`、 `old_major_threshold = MAX(MIN, old_bytes × 2)`
 - `MAX_REMSET_ENTRIES = 1 << 17` (= 128 K entries = 1 MiB ptr array)
 
-#### 2.4.3 データ構造
+#### 2.2.3 データ構造
 
-- 2.3 の slab/page/large 構造
+- 2.1 の slab/page/large 構造
 - **`young_objs[]`**: flat array of `AroObjectHeader *`、 alloc 時に push、
   sweep_young_minor で in-place compact。 cap 0 → 1024 → 2× で realloc。
   **質問への回答 (mark_gen Q)**: page を全 walk すれば young は識別可能だが、
@@ -241,9 +184,9 @@ sweep_young は O(young)。 major は全 page walk + `young_objs` reset。
 - **`promoted_buf[]`**: 当該 minor で promote した obj の append-only。
   256 → 2× で grow、 各 minor 末で 0 reset
 - `gc_flags` bit layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, FREE=0x8, AGE=bits 4-5
-- finalize_list: 2.3 と共通
+- finalize_list: 2.1 と共通
 
-#### 2.4.4 アルゴリズム詳細
+#### 2.2.4 アルゴリズム詳細
 
 minor phase:
 1. `AROH_VISIT_ROOTS` → `mark_edge` (in_minor=true、 OLD なら早期 return、
@@ -278,7 +221,7 @@ major phase:
 heap growth/shrink: page-on-demand alloc (= freelist 空で new_page)。 page
 の release は未実装 (= 完全に空になっても保持)。 large obj は free 時 munmap。
 
-#### 2.4.5 finalizer 実装
+#### 2.2.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - minor (in_minor=true): OLD ならば conservatively alive、 MARKED ならば alive、
@@ -287,9 +230,9 @@ heap growth/shrink: page-on-demand alloc (= freelist 空で new_page)。 page
 
 非 moving なので payload 不変 (= 戻り値はそのまま入力 payload)。
 
-### 2.5 mark_gen_inc
+### 2.3 mark_gen_inc
 
-#### 2.5.1 概要
+#### 2.3.1 概要
 
 `mark_gen` + incremental major marking。 major mark を allocator から定期的に
 呼ぶ `inc_step` で chunk 化、 SATB barrier で「marking 開始時の reachable
@@ -297,20 +240,20 @@ set」を保つ。 **現状 INC_WORK_PER_ALLOC = SIZE_MAX のため 1 alloc で 
 drain しきる**= 実質 STW。 マルチセグメント pause 計測の structure だけは
 入っている。
 
-#### 2.5.2 パラメータ
+#### 2.3.2 パラメータ
 
-- 2.4 と同じ
+- 2.2 と同じ
 - `INC_WORK_PER_ALLOC = SIZE_MAX` (= 事実上 STW)
 - 真の incremental には VALUE-stack WB が必要 (= 未実装、 todo.md 参照)
 
-#### 2.5.3 データ構造
+#### 2.3.3 データ構造
 
-- 2.4 と同じ
+- 2.2 と同じ
 - 追加: `inc_marking` flag、 SATB 用 `mark_value_satb`
 
-#### 2.5.4 アルゴリズム詳細
+#### 2.3.4 アルゴリズム詳細
 
-minor: 2.4 と同等 (= N-survive remset compaction + sweep_young_minor + promote-time WB)。
+minor: 2.2 と同等 (= N-survive remset compaction + sweep_young_minor + promote-time WB)。
 
 major incremental flow:
 1. `inc_start_major`: roots を mark + `inc_marking = true` set
@@ -328,32 +271,32 @@ WB:
 
 計算量:
 - mark hot path: SATB load + AROH_IS_GC_OBJECT + (mark) — 数命令
-- 残りは 2.4 と同等
+- 残りは 2.2 と同等
 
-heap growth/shrink: 2.4 と同じ。
+heap growth/shrink: 2.2 と同じ。
 
-#### 2.5.5 finalizer 実装
+#### 2.3.5 finalizer 実装
 
-2.4 と同じ。 `finalize_walk` は `minor_gc` / `inc_finish_sweep` /
+2.2 と同じ。 `finalize_walk` は `minor_gc` / `inc_finish_sweep` /
 `aro_gc_collect` から呼ばれ、 `inc_step` 中には呼ばない (= mark 不完全な
 窓では実行しない)。
 
-### 2.6 copy
+### 2.4 copy
 
-#### 2.6.1 概要
+#### 2.4.1 概要
 
 Cheney semi-space copying GC。 2 つの tenured semi-space (= 64 GiB 仮想 ×
 2 面) を切替。 generational なし。 大 obj (= ≥ 4 KiB) は別途 malloc-backed
 非 moving list (= LargeObj) に置く。
 
-#### 2.6.2 パラメータ
+#### 2.4.2 パラメータ
 
 - `REGION_BYTES = 64 GiB` 仮想 × 2 面 (`MAP_NORESERVE` で lazy paged)
 - stress 時は `STRESS_REGION_BYTES = 64 MiB` (= mmap/munmap を毎 GC 行うため)
 - `LARGE_THRESHOLD = 4 KiB`
 - `GC_THRESHOLD_MIN = 16 MiB`、 `GC_THRESHOLD_FACTOR = 2`
 
-#### 2.6.3 データ構造
+#### 2.4.3 データ構造
 
 - `active_base` / `active_top` / `active_end` — 現在 alloc 中の semispace
 - `space0` / `space1` — 2 面の pre-mmap、 `active_idx` で alternation
@@ -367,7 +310,7 @@ stress と purge の区別:
 - purge (= 旧 STRESS 相当): 毎 GC で `mmap_region` 新規 + 旧 region `munmap` (=
   stale slot は SEGV 確実)。 stress と組合せ可能
 
-#### 2.6.4 アルゴリズム詳細
+#### 2.4.4 アルゴリズム詳細
 
 alloc: `gc_bump`。 閾値 / region 超 / stress で `gc_bump_cold` → `gc_collect_internal`。
 large は閾値で `large_alloc`。
@@ -402,7 +345,7 @@ chain を使う。
 heap growth/shrink: 64 GiB virt 予約。 grow 不要、 shrink なし (= madvise
 DONTNEED は未呼出)。 大 obj だけ free で物理解放。
 
-#### 2.6.5 finalizer 実装
+#### 2.4.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - HDR_FORWARDED → fwd_overlay の new addr を返却 (= 小 obj は移動)
@@ -413,15 +356,15 @@ Moving GC のため、 register 時の payload と finalize_walk 時で addr が
 点が非 moving と異なる。 walk は sweep / swap の直前に呼ぶ (= from-space
 data がまだ readable)。
 
-### 2.7 copy_gen
+### 2.5 copy_gen
 
-#### 2.7.1 概要
+#### 2.5.1 概要
 
 世代別 Cheney + N-survive。 4-面 layout: 2 young halves + 2 tenured halves。
 minor は young-from → young-to + tenured promote を Cheney で並行 scan、
 major は tenured を semispace で半 → 半 copy。
 
-#### 2.7.2 パラメータ
+#### 2.5.2 パラメータ
 
 - `YOUNG_BYTES = 16 MiB` × 2
 - `TENURED_BYTES = 64 GiB` × 2 (`MAP_NORESERVE` lazy paged)
@@ -429,7 +372,7 @@ major は tenured を semispace で半 → 半 copy。
 - `MAJOR_THRESHOLD_MIN = 16 MiB`、 `MAJOR_THRESHOLD_FACTOR = 2`
 - `MAX_REMSET_ENTRIES = 1 << 17`
 
-#### 2.7.3 データ構造
+#### 2.5.3 データ構造
 
 - young: `young_active_base` / `young_top` / `young_alt_base` (= 半 + 半)
 - tenured: `tenured_base` / `tenured_top` / `tenured_end` / `tenured_alt_base`
@@ -442,7 +385,7 @@ major は tenured を semispace で半 → 半 copy。
 - `in_minor`、 `scan_saw_young` flags
 - finalize_list: 共通
 
-#### 2.7.4 アルゴリズム詳細
+#### 2.5.4 アルゴリズム詳細
 
 alloc: `nursery_bump` → young_active で bump、 size が `YOUNG_BYTES/2` 超なら
 `pretenure_alloc` で直接 tenured。 young 閾値超 or external_bytes 過大で
@@ -498,11 +441,11 @@ tenured」になるわけではない。 major の頻度を `MAJOR_THRESHOLD_FAC
 - alloc: O(1)
 - minor: O(young live + remset_entries × edges + promoted × edges)
 - major: O(tenured live × 1 + young live × 1)
-- WB hot path: bit-in-head (= 2.4 と同形式)、 cold path `aro_gc_remember`
+- WB hot path: bit-in-head (= 2.2 と同形式)、 cold path `aro_gc_remember`
 
 heap growth/shrink: 64 GiB virtual 予約のため成長/縮小なし。
 
-#### 2.7.5 finalizer 実装
+#### 2.5.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - HDR_FORWARDED → fwd_overlay
@@ -511,14 +454,14 @@ heap growth/shrink: 64 GiB virtual 予約のため成長/縮小なし。
 
 walk は swap 直前 (= from-space data readable) に呼ばれる。
 
-### 2.8 copy_gen_inc
+### 2.6 copy_gen_inc
 
-#### 2.8.1 概要
+#### 2.6.1 概要
 
 `copy_gen` と完全同一の実装。 **真の incremental Cheney は未実装** (= placeholder)。
 本来は SATB + incremental forwarding が想定だが、 実装作業未着手。
 
-#### 2.8.2 状態
+#### 2.6.2 状態
 
 ファイル冒頭の comment に明記: 「⚠ iter 35 honesty fix: this backend was
 originally a clone of copy_gen with no actual incremental logic. After the
@@ -531,25 +474,25 @@ N-survive rewrite ... it remains a clone」。 build 上は別 backend ID
 実装される時の placeholder slot として保持する意義のみ。 ファイル全体を
 削除しても build / sample に影響はない (= bench で同じ数字が 1 個減るのみ)。
 
-#### 2.8.3 データ構造 / 2.8.4 アルゴリズム / 2.8.5 finalizer
+#### 2.6.3 データ構造 / 2.6.4 アルゴリズム / 2.6.5 finalizer
 
-2.7 と同じ。
+2.5 と同じ。
 
-### 2.9 mark_compact
+### 2.7 mark_compact
 
-#### 2.9.1 概要
+#### 2.7.1 概要
 
 Lisp-2 sliding compactor: 単一 region に bump alloc、 collect で
 ① mark → ② forward-addr 計算 → ③ 全 pointer 更新 → ④ run-based memmove で
 一括 slide。 generational なし。
 
-#### 2.9.2 パラメータ
+#### 2.7.2 パラメータ
 
 - `REGION_BYTES = 64 GiB` 仮想 (`MAP_NORESERVE`)
 - `LARGE_THRESHOLD = 4 KiB` (= 別途 malloc-backed list)
 - `GC_THRESHOLD_MIN = 16 MiB`、 `GC_THRESHOLD_FACTOR = 2`
 
-#### 2.9.3 データ構造
+#### 2.7.3 データ構造
 
 - 1 つの region (= `region_base/top/end`)
 - 16 B header (`ARO_GC_HAS_FWD` 定義、 専用 `gc_fwd` field 持ち)
@@ -558,7 +501,7 @@ Lisp-2 sliding compactor: 単一 region に bump alloc、 collect で
 - `gray_buf[]` (= 256 → 2×)
 - finalize_list 共通
 
-#### 2.9.4 アルゴリズム詳細
+#### 2.7.4 アルゴリズム詳細
 
 alloc: bump、 大は LargeObj。 閾値で `gc_collect_internal`。
 
@@ -578,20 +521,20 @@ collect (5 phase):
 heap growth/shrink: virt 予約、 grow/shrink なし。 region_top は slide
 で前進・後退の両方あり (= compaction で縮む)。
 
-#### 2.9.5 finalizer 実装
+#### 2.7.5 finalizer 実装
 
 `aro_gc_finalize_check`: 「mark/fwd-addr 後、 slide 前」の窓で呼ばれる。
 HDR_MARKED + gc_fwd != NULL なら live → `gc_fwd` 返却 (= post-slide addr)。
 non-marked → NULL。 large obj は `gc_fwd = self` を返す (= 非 moving)。
 
-### 2.10 mark_compact_gen
+### 2.8 mark_compact_gen
 
-#### 2.10.1 概要
+#### 2.8.1 概要
 
 nursery 4-面 + tenured Lisp-2 slide。 minor は N-survive Cheney、 major は
 young force_promote → tenured を mark + slide compact。
 
-#### 2.10.2 パラメータ
+#### 2.8.2 パラメータ
 
 - `YOUNG_BYTES = 16 MiB` × 2
 - `TENURED_BYTES = 64 GiB` 単一
@@ -599,17 +542,17 @@ young force_promote → tenured を mark + slide compact。
 - `MAJOR_THRESHOLD_MIN = 16 MiB`、 `MAJOR_THRESHOLD_FACTOR = 2`
 - `MAX_REMSET_ENTRIES = 1 << 17`
 
-#### 2.10.3 データ構造
+#### 2.8.3 データ構造
 
-- 2.7 の young 構造 + 単一 tenured region (= 2.9 と同等)
+- 2.5 の young 構造 + 単一 tenured region (= 2.7 と同等)
 - 16 B header (= `gc_fwd` あり)
 - gc_flags layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, AGE=bits 3-4
-- remset_buf (= 2.7 と同形式)、 gray_buf、 Cheney scratch
+- remset_buf (= 2.5 と同形式)、 gray_buf、 Cheney scratch
 - `force_promote` flag (= major の fold-young 中に true)
 
-#### 2.10.4 アルゴリズム詳細
+#### 2.8.4 アルゴリズム詳細
 
-minor: 2.7 と同じ流れ (= 4-面 Cheney + remset 圧縮 + promote-time WB)。
+minor: 2.5 と同じ流れ (= 4-面 Cheney + remset 圧縮 + promote-time WB)。
 ただし promote 先は単一 tenured (= `tenured_top` を bump)。 minor で
 `tenured_top` を伸ばすだけで slide は走らない。
 
@@ -633,19 +576,19 @@ major phases:
 heap growth/shrink: tenured は major で slide により縮む (= top が後退)。
 基底 region は 64 GiB virt 予約、 madvise なし。
 
-#### 2.10.5 finalizer 実装
+#### 2.8.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - minor: gc_fwd != NULL → fwd 返却 (= forwarded young)、 young_from 内なら NULL、 それ以外 alive
 - major: MARKED → gc_fwd 返却 (= slide 後 addr)、 そうでなければ NULL
 
-### 2.11 mark_bump_gen
+### 2.9 mark_bump_gen
 
-#### 2.11.1 概要
+#### 2.9.1 概要
 
 4-面 nursery + bump tenured + linear sweep。 nursery は Cheney で copy、
 tenured は bump で linear (= 移動なし)。 major sweep は実は free しない (=
-mark を clear するだけ)、 詳細は問題報告 (2.11.6) を参照。
+mark を clear するだけ)、 詳細は問題報告 (2.9.6) を参照。
 
 **質問への回答 (mark_bump_gen Q)**: 旧 doc の「`copy_gen` で promotion した
 tenured を free しない」 は誤読しやすい。 正確には「nursery は Cheney
@@ -653,23 +596,23 @@ tenured を free しない」 は誤読しやすい。 正確には「nursery �
 freelist は持たない」。 「mark_gen + bump tenured」と呼ぶより
 「copy nursery + bump tenured (= 純粋 append)」が正確。
 
-#### 2.11.2 パラメータ
+#### 2.9.2 パラメータ
 
 - `YOUNG_BYTES = 16 MiB` × 2
 - `TENURED_BYTES = 64 GiB` 単一
 - `PROMOTE_AGE = 3`
 - `MAJOR_THRESHOLD_MIN = 16 MiB`
 
-#### 2.11.3 データ構造
+#### 2.9.3 データ構造
 
-- 2.7 の young + 単一 tenured bump region
+- 2.5 の young + 単一 tenured bump region
 - 8 B header + fwd overlay
 - gc_flags layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, FREE=0x8, FORWARDED=0x10, AGE=bits 5-6
 - remset_buf、 scan_buf (= 別 queue、 major で promoted の transitive scan 用)、 gray_buf
 
-#### 2.11.4 アルゴリズム詳細
+#### 2.9.4 アルゴリズム詳細
 
-minor: 2.7 と同じ。 promote 先は tenured bump (= `tenured_top` 前進のみ)。
+minor: 2.5 と同じ。 promote 先は tenured bump (= `tenured_top` 前進のみ)。
 
 major phases:
 1. `force_promote = true` で全 young を tenured に Cheney copy (= forward + MARKED)
@@ -678,7 +621,7 @@ major phases:
 4. **"sweep"**: tenured を線形走査、 marked は MARKED + DIRTY clear、 **unmarked
    は何もしない**(= bump pointer は戻らない、 freelist もない)
 
-**実装の問題 (2.11.6)**: コメントは「Linear sweep tenured: free unmarked」と
+**実装の問題 (2.9.6)**: コメントは「Linear sweep tenured: free unmarked」と
 書いているが、 実装は MARKED clear のみで free していない。 unmarked tenured
 slot は heap に残り続け、 `tenured_top` も戻らない。 「bump tenured で free
 しない」設計の testbed としては意図通りだが、 docstring は実装と乖離している
@@ -693,16 +636,16 @@ slot は heap に残り続け、 `tenured_top` も戻らない。 「bump tenure
 heap growth/shrink: tenured は **monotonic 増加** (= 縮まない)。 OOM までは
 増え続ける設計。 64 GiB virt が実 limit。
 
-#### 2.11.5 finalizer 実装
+#### 2.9.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - HDR_FORWARDED → fwd_overlay
 - minor: young_from 内なら NULL、 それ以外 alive
 - major: MARKED ならば alive、 そうでなければ NULL
 
-### 2.12 immix
+### 2.10 immix
 
-#### 2.12.1 概要
+#### 2.10.1 概要
 
 Immix line/block mark-region (Blackburn-McKinley 2008)。 動機は
 「fragmentation を抑える sliding compactor の CPU cost と、 fragmentation
@@ -738,7 +681,7 @@ alloc は line 単位の hole 内で bump。 v1 は **非 moving** (= evacuation
    は次の hole を使う。 fragmentation の重い workload では memory 効率が
    下がるが、 v1 ではこれ以上は対処しない
 
-#### 2.12.2 パラメータ
+#### 2.10.2 パラメータ
 
 - `LINE_BYTES = 128`
 - `BLOCK_BYTES = 32 KiB`
@@ -747,7 +690,7 @@ alloc は line 単位の hole 内で bump。 v1 は **非 moving** (= evacuation
 - `MEDIUM_MAX = 16 KiB` (= block の半分超は large)
 - `GC_THRESHOLD_MIN = 16 MiB`、 `GC_THRESHOLD_FACTOR = 2`
 
-#### 2.12.3 データ構造
+#### 2.10.3 データ構造
 
 - `arena_base` (= 64 GiB virt MAP_NORESERVE) + `cur_ptr` / `cur_end`
 - `blocks[]` (= 別 mmap、 `BlockMeta { state, line_marks[256] }` × N_BLOCKS、 lazy paged)
@@ -759,7 +702,7 @@ alloc は line 単位の hole 内で bump。 v1 は **非 moving** (= evacuation
 - `gray_buf[]`
 - finalize_list 共通
 
-#### 2.12.4 アルゴリズム詳細
+#### 2.10.4 アルゴリズム詳細
 
 alloc: `aro_gc_alloc_raw`:
 1. 閾値 check → 超で `gc_collect_internal`
@@ -789,15 +732,15 @@ heap growth/shrink: arena は 64 GiB virt 予約。 物理は block touch で増
 sweep で BLK_FREE になっても `madvise(DONTNEED)` は未呼出 (= 物理 release
 されない)。 large obj だけ free 時 munmap。
 
-#### 2.12.5 finalizer 実装
+#### 2.10.5 finalizer 実装
 
 `aro_gc_finalize_check`: `gc_flags == cur_epoch` ならば payload (= alive、 非 moving)、
 それ以外 NULL。 `cur_epoch++` を walk **の後**に行う必要あり (= walk 中は
 完了 epoch を読む)。 実装通り。
 
-### 2.13 immix_gen
+### 2.11 immix_gen
 
-#### 2.13.1 概要
+#### 2.11.1 概要
 
 世代別 Immix。 nursery は Cheney 半 + 半 (= 16 MiB × 2)、 tenured は Immix 単独
 arena。 minor で N-survive promote 先は `hole_alloc_header` (= Immix の bump)。
@@ -815,7 +758,7 @@ major は force_promote_all + Immix line-mark sweep。
 - 各 obj が「young | tenured」の判定は addr range (= `in_arena` /
   `in_young_active` 等の inline helper) で O(1)
 
-#### 2.13.2 パラメータ
+#### 2.11.2 パラメータ
 
 - nursery: `NURSERY_BYTES = 16 MiB` × 2
 - tenured Immix: `LINE_BYTES = 128`, `BLOCK_BYTES = 32 KiB`,
@@ -824,10 +767,10 @@ major は force_promote_all + Immix line-mark sweep。
 - `MAJOR_THRESHOLD_MIN = 16 MiB`、 `MAJOR_THRESHOLD_FACTOR = 2`
 - `MAX_REMSET_ENTRIES = 1 << 17`、 `REMSET_PRESSURE_THRESH = MAX - 1`
 
-#### 2.13.3 データ構造
+#### 2.11.3 データ構造
 
 - nursery: `young_active_base` / `young_top` / `young_alt_base`
-- tenured: 2.12 と同じ Immix (arena + blocks + cur_ptr/end + max_touched_block)
+- tenured: 2.10 と同じ Immix (arena + blocks + cur_ptr/end + max_touched_block)
 - gc_flags layout: EPOCH=bits 0-7, OLD=0x100, DIRTY=0x200, FORWARDED=0x400, AGE=bits 11-12
 - Cheney scratch: `young_from_base/end`、 `young_to_base/top/end`
 - `remset_buf[]` (= AroObjectHeader *、 同じ overflow 戦略だが pressure-based)、
@@ -835,7 +778,7 @@ major は force_promote_all + Immix line-mark sweep。
 - `gray_buf[]`、 `in_minor` / `force_promote` / `scan_saw_young` flags
 - LargeObj mmap-backed list
 
-#### 2.13.4 アルゴリズム詳細
+#### 2.11.4 アルゴリズム詳細
 
 alloc: `nursery_bump` (= young_top bump、 閾値超で `nursery_collect_cold` 経由 minor or major)。 large は直接 `large_alloc`。
 
@@ -868,16 +811,16 @@ major phases:
 
 heap growth/shrink: nursery + arena ともに virt 予約、 grow なし shrink なし。
 
-#### 2.13.5 finalizer 実装
+#### 2.11.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - HDR_FORWARDED → fwd_overlay (= promoted nursery、 大 obj は移動しない)
 - in_minor: young_from 内なら NULL、 それ以外 (= tenured) alive
 - major: HDR_EPOCH == cur_epoch → alive、 そうでなければ NULL
 
-### 2.14 mark_bitmap_gen
+### 2.12 mark_bitmap_gen
 
-#### 2.14.1 概要
+#### 2.12.1 概要
 
 `mark_gen` と意味同等 (= sticky mark + 2-gen + remset + N-survive)、 metadata を
 per-page bitmap 化:
@@ -885,7 +828,7 @@ per-page bitmap 化:
 - page は 16 KiB **aligned** mmap (= over-mmap + trim、 `page_of(obj) = obj & ~16383`)
 - N-survive 化完了 (= 旧 doc の "debug 中" は古い)
 
-#### 2.14.2 パラメータ
+#### 2.12.2 パラメータ
 
 - `NUM_SIZE_CLASSES = 9`、 `PAGE_SIZE = 16 KiB`
 - `MAX_SLOTS_PER_PAGE = 512`、 `BITMAP_BYTES = 64`
@@ -893,7 +836,7 @@ per-page bitmap 化:
 - `MAJOR_THRESHOLD_MIN = 16 MiB`、 `MINOR_THRESHOLD = 16 MiB`
 - `PROMOTE_AGE = 3`、 `MAX_REMSET_ENTRIES = 1 << 17`
 
-#### 2.14.3 データ構造
+#### 2.12.3 データ構造
 
 - `page_head[9]` (= 16 KiB-aligned mmap 直で取得 / over-mmap then trim)
 - `Page` (208 B): `{ next, class_idx, n_slots, _pad, mark_bm[64], old_bm[64], dirty_bm[64] }` + slots
@@ -903,9 +846,9 @@ per-page bitmap 化:
 - `remset_buf[]` (= AroObjectHeader *)、 `remset_overflow`、 `promoted_buf[]`、 `gray_buf[]`
 - `size_class_shift[9]` (= clz 最適化、 3072 だけ shift=0 で div fallback)
 
-#### 2.14.4 アルゴリズム詳細
+#### 2.12.4 アルゴリズム詳細
 
-alloc: 2.3 と同様 slab + bitmap (= alloc 時 `bm_clr(mark_bm, idx)` 等は
+alloc: 2.1 と同様 slab + bitmap (= alloc 時 `bm_clr(mark_bm, idx)` 等は
 不要、 freelist 初期値で 0)。
 
 minor phases:
@@ -941,7 +884,7 @@ major phases:
 heap growth/shrink: page-on-demand。 sweep で全空 page も munmap せず保持
 (= mark / mark_gen と同様)。
 
-#### 2.14.5 finalizer 実装
+#### 2.12.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - minor: `get_old` → alive、 `get_mark` → alive、 どちらでもなければ NULL
@@ -949,9 +892,9 @@ heap growth/shrink: page-on-demand。 sweep で全空 page も munmap せず保�
 
 非 moving、 payload addr 不変。
 
-### 2.15 mark_card_gen
+### 2.13 mark_card_gen
 
-#### 2.15.1 概要
+#### 2.13.1 概要
 
 `mark_bitmap_gen` + per-page `card_dirty` flag + page-level remset。 slot 単位
 の dirty_bm に加え page 全体が「remset に居る」 flag を持つ。
@@ -974,19 +917,19 @@ heap growth/shrink: page-on-demand。 sweep で全空 page も munmap せず保�
 fallback ではなく主目的が異なる (= 大量 WB workload で remset が爆発するのを
 page 粗化で抑える testbed)。
 
-#### 2.15.2 パラメータ
+#### 2.13.2 パラメータ
 
-- 2.14 と同じ + `card_dirty` per page (= 1 byte)
+- 2.12 と同じ + `card_dirty` per page (= 1 byte)
 
-#### 2.15.3 データ構造
+#### 2.13.3 データ構造
 
 - `Page` (208 B): bitmap_gen に `card_dirty` byte を追加した layout
 - `remset_buf[]` (= `Page **` 型、 size_t cnt / capa)
 - 上限なし (= heap page 数で自然境界)
 
-#### 2.15.4 アルゴリズム詳細
+#### 2.13.4 アルゴリズム詳細
 
-alloc: 2.14 と同じ slab。
+alloc: 2.12 と同じ slab。
 
 minor phases:
 1. roots → mark → process_gray
@@ -1007,17 +950,17 @@ major phases:
 - WB hot path: `(get_old, !card_dirty) ⇒ set dirty_bm + card + push_page`、
   「同 page への 2回目以降の WB は card_dirty=1 で早期 return」
 - minor remset 圧縮: O(page数 × n_slots) (= page 単位の粗化、 bitmap_gen より cache friendly)
-- 他は 2.14 と同じ
+- 他は 2.12 と同じ
 
-heap growth/shrink: 2.14 と同じ。
+heap growth/shrink: 2.12 と同じ。
 
-#### 2.15.5 finalizer 実装
+#### 2.13.5 finalizer 実装
 
-2.14 と同じ。
+2.12 と同じ。
 
-### 2.16 mark_freelist
+### 2.14 mark_freelist
 
-#### 2.16.1 概要
+#### 2.14.1 概要
 
 mark&sweep、 単一 region + size-class freelist。 region 内に bump で append、
 sweep で unmarked を class 別 freelist に戻す (= region pointer は戻らない)。
@@ -1037,14 +980,14 @@ fragmentation 観察用 testbed。
   しない。 sweep は region 全体線形走査 → unmarked を **同じ位置に** free
   marker 化して freelist に戻す (= "in-place freelisting")
 
-#### 2.16.2 パラメータ
+#### 2.14.2 パラメータ
 
 - `NUM_SIZE_CLASSES = 9`、 `size_class_bytes = {32..4096}`
 - `MAX_SLOT_BYTES = 4096`
 - `REGION_BYTES = 64 GiB` 仮想
 - `GC_THRESHOLD_MIN = 16 MiB`、 `GC_THRESHOLD_FACTOR = 2`
 
-#### 2.16.3 データ構造
+#### 2.14.3 データ構造
 
 - 単一 region (= `region_base/top/end`、 `MAP_NORESERVE` 64 GiB)
 - `freelist[9]` (= class 別 LIFO free chain)
@@ -1055,7 +998,7 @@ fragmentation 観察用 testbed。
 free slot は `gc_size` を class slot size に書換 (= sweep 線形 walker が次
 slot へ進むため)。 link は payload offset 8 の overlay。
 
-#### 2.16.4 アルゴリズム詳細
+#### 2.14.4 アルゴリズム詳細
 
 alloc: `alloc_slot`:
 1. slot_total > MAX_SLOT_BYTES → `alloc_large`
@@ -1079,31 +1022,104 @@ collect phases:
 heap growth/shrink: region は `region_top` まで増加、 縮まない (= bump pointer は
 sweep でも戻らない)。 64 GiB virt が限界。 large obj は free 時 munmap。
 
-#### 2.16.5 finalizer 実装
+#### 2.14.5 finalizer 実装
 
 `aro_gc_finalize_check`: HDR_MARKED → alive、 NULL otherwise (= 非 moving)。
 
-### 2.17 copy_scramble
+## 3. 特殊用途 backend
 
-#### 2.17.1 概要
+ここで挙げる 3 つは GC algorithm として実用される backend ではなく、 特定
+の目的に特化した参照実装。 `none` と `bump` は GC overhead を排除した上限
+性能の baseline (= §2 各 backend の overhead 計測の対照値)、 `copy_scramble`
+は stale VALUE slot を SEGV で炙り出す audit / debug backend。 bench の参照値
+および runtime の verification にのみ意義があり、 production の GC 選択肢
+としては想定しない。
+
+### 3.1 none
+
+#### 3.1.1 概要
+
+何もしない baseline。 alloc は `malloc(payload_size)` で取得し、 解放しない。
+GC overhead を排除した上限性能の参照値。 stress / purge / scramble 全て無効。
+
+#### 3.1.2 パラメータ
+
+なし。
+
+#### 3.1.3 データ構造
+
+- heap: libc malloc が管理 (= 自身では何も持たない)
+- remset / gray queue: 不要 (= 無し)
+- finalize_list: `gc_common.c` の共通実装 (`AroGcCommonState.finalize_list`,
+  `finalize_count`, `finalize_cap`)。 初期 cap = 0、 16 → 2× で grow
+
+#### 3.1.4 アルゴリズム詳細
+
+- alloc: `calloc(1, payload_size)`、 head.gc_size 書込。 O(libc malloc)
+- collect: `aro_gc_collect` は no-op。 計算量 0
+- WB: no-op (= `ARO_GC_HAS_WB` 未定義、 plain `*slot = v`)
+
+heap growth/shrink: libc 任せ。 framework は閾値判定すらしない。
+
+#### 3.1.5 finalizer 実装
+
+`aro_gc_finalize_register` は共通実装。 `aro_gc_finalize_check` は 常に
+payload を返す (= 全 entry を alive 扱い)。 collect が no-op なので finalize_walk
+は事実上呼ばれず、 process 終了まで finalizer は走らない。 GMP buffer 等を
+sample 側で使う場合は none では leak する点に注意。
+
+### 3.2 bump
+
+#### 3.2.1 概要
+
+1 つの mmap region に対し pointer を進めるだけ。 `none` よりも alloc が
+速い (= `*top++`)。 解放しない。
+
+#### 3.2.2 パラメータ
+
+- `REGION_BYTES = ARO_GC_REGION_VIRT_BYTES = 64 GiB` 仮想
+
+#### 3.2.3 データ構造
+
+- 1 つの `mmap(NULL, 64 GiB, MAP_NORESERVE)` region: `region_base` /
+  `region_top` / `region_end` を `ASTroGC` 内に持つ。 物理 page は touch 時に
+  commit
+- gray / remset / promoted_buf: 不要
+
+#### 3.2.4 アルゴリズム詳細
+
+- alloc: `region_top += ALIGN8(size)`、 head 書込 + payload zero-fill。 O(1)
+- collect: no-op
+- WB: no-op
+
+heap growth/shrink: 64 GiB virtual 予約のため成長なし、 縮小なし。 region
+を超えると abort。
+
+#### 3.2.5 finalizer 実装
+
+`none` と同じ。 alive-forever。
+
+### 3.3 copy_scramble
+
+#### 3.3.1 概要
 
 `copy` + per-cycle XOR mask `R` で VALUE storage を撹乱する audit backend。
 heap pointer slot は `raw ^ R` で保存、 各 GC 後に R を rotate。 stale slot
 (= sample が `ARO_LOAD` decode を忘れた slot、 GC が scan 漏らした edge) は
 次の deref で SEGV 確実。
 
-#### 2.17.2 パラメータ
+#### 3.3.2 パラメータ
 
-- 2.6 (copy) の全パラメータ + `ARO_GC_HAS_SCRAMBLE = 1`
+- 2.4 (copy) の全パラメータ + `ARO_GC_HAS_SCRAMBLE = 1`
 
-#### 2.17.3 データ構造
+#### 3.3.3 データ構造
 
-- 2.6 と同じ + `scramble_R` / `scramble_R_old` を `AroGcCommonState` 上で持つ
+- 2.4 と同じ + `scramble_R` / `scramble_R_old` を `AroGcCommonState` 上で持つ
   (低 3 bit = 0 で 8-align 保持、 fixnum tag 保護)
 
-#### 2.17.4 アルゴリズム詳細
+#### 3.3.4 アルゴリズム詳細
 
-- alloc / collect: 2.6 と同じ
+- alloc / collect: 2.4 と同じ
 - ただし `aro_gc_alloc` の戻り値 VALUE は `raw_payload ^ scramble_R` で encode
 - `ARO_LOAD` (= sample 側 macro) と `ARO_GC_VISIT_EDGE` (= gc.h) で必ず XOR decode/encode
 - 各 collect の入口で `scramble_R_old = scramble_R`、 出口で
@@ -1113,17 +1129,17 @@ heap pointer slot は `raw ^ R` で保存、 各 GC 後に R を rotate。 stale
 非 scramble backend では `scramble_R = scramble_R_old = 0` 永続のため
 XOR が identity に fold (= 性能 cost ゼロ)。
 
-heap growth/shrink: 2.6 と同じ。
+heap growth/shrink: 2.4 と同じ。
 
-#### 2.17.5 finalizer 実装
+#### 3.3.5 finalizer 実装
 
-2.6 と同じ (HDR_FORWARDED → fwd_overlay、 HDR_MARKED → self、 else NULL)。
+2.4 と同じ (HDR_FORWARDED → fwd_overlay、 HDR_MARKED → self、 else NULL)。
 scramble は finalize の戻り値には影響しない (= 戻り値は raw addr、 sample 側で
 再 encode は不要)。
 
-## 3. 共通 framework API
+## 4. 共通 framework API
 
-### 3.1 sample 側必須
+### 4.1 sample 側必須
 
 - `AROH_VISIT_ROOTS(c, ctx, edge_visit)` — root scan macro。 sample 固有の root
   (= eval stack, globals 等) を `edge_visit` で walk
@@ -1132,7 +1148,7 @@ scramble は finalize の戻り値には影響しない (= 戻り値は raw addr
 - `AROH_FINALIZE(payload)` — finalize hook (= mpz_clear 等)、 sample 不要なら no-op
 - `AROH_IS_GC_OBJECT(v)` — VALUE が GC managed heap pointer かの predicate
 
-### 3.2 framework 提供
+### 4.2 framework 提供
 
 - `aro_gc_alloc(c, size)` — scan-safe alloc (= zero-init)
 - `aro_gc_alloc_byte(c, size)` — raw byte alloc (= zero-init なし、 sample が即 fill)
@@ -1144,7 +1160,7 @@ scramble は finalize の戻り値には影響しない (= 戻り値は raw addr
   通知 (= 閾値超で GC 発火)
 - `aro_gc_finalize_register/check/walk/fini`
 
-### 3.3 backend hook
+### 4.3 backend hook
 
 backend は `gc_*.c` で以下を実装:
 - `aro_gc_init(c)`, `aro_gc_fini(c)`
@@ -1159,24 +1175,24 @@ backend は `gc_*.c` で以下を実装:
 
 詳細 layering は `runtime/precise_gc/gc.h` と `gc_types.h` の冒頭 comment を参照。
 
-## 4. 実装上の問題点メモ
+## 5. 実装上の問題点メモ
 
 doc を書く過程で見つけた実装と doc / コメントの乖離。 後で修正する material。
 
-### 4.1 mark_bump_gen major sweep が "free" していない
+### 5.1 mark_bump_gen major sweep が "free" していない
 
 `gc_mark_bump_gen.c:586` の C コメントは「Linear sweep tenured: free unmarked,
 clear bits on survivors」 だが、 実装 (586-601) は MARKED clear + live bytes
 集計だけで unmarked slot を free していない。 「bump tenured、 解放しない」 が
 設計意図ならコメント修正、 freelist 実装するなら別 work item。
 
-### 4.2 copy_gen_inc は placeholder
+### 5.2 copy_gen_inc は placeholder
 
 `gc_copy_gen_inc.c` 冒頭 comment にも明記されているが、 build option として
-残置されているのみで真の incremental は未実装。 doc は明示済 (§2.8) だが、
+残置されているのみで真の incremental は未実装。 doc は明示済 (§2.6) だが、
 今後の cleanup 候補。
 
-### 4.3 immix の gc_flags 使用 bit 数
+### 5.3 immix の gc_flags 使用 bit 数
 
 `gc_immix.c` の `mark_value` は `h->gc_flags == cur_epoch` で「全 16 bit が
 epoch 値そのもの」を仮定して比較する (= `HDR_EPOCH` macro と異なる)。
@@ -1184,7 +1200,7 @@ epoch 値そのもの」を仮定して比較する (= `HDR_EPOCH` macro と異�
 `immix_gen` は `HDR_EPOCH(h) == cur_epoch` (= low 8 bit のみ比較) と書いて
 おり、 こちらが正解形式。 immix を `HDR_EPOCH(h) == cur_epoch` に統一すべき。
 
-### 4.4 mark_gen_inc の "incremental" は事実上 STW
+### 5.4 mark_gen_inc の "incremental" は事実上 STW
 
 `INC_WORK_PER_ALLOC = SIZE_MAX` で 1 step が全 gray を drain する。 構造は
 incremental 用 (start/step/finish)、 pause 測定の segment 分割は機能するが、
