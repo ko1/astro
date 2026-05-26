@@ -251,7 +251,42 @@ non-moving、 C stack を bdwgc が直接 scan。 precise rooting overhead が�
 GC algorithm のみの比較ではない (= conservative vs precise の overhead が
 混入)。
 
-### 4.2 geomean ratio (= 11 実用 precise backend、 vs libgc)
+### 4.2 plain mode: `libgc` plain vs `copy` plain (= 代表 head-to-head)
+
+実用 backend の代表 = `copy` (Cheney semispace、 default GC、 §2.1 で
+geomean 1.27s = 最速 tied)。 同じ plain mode で head-to-head:
+
+| bench | libgc plain | copy plain | copy / libgc |
+|---|---:|---:|---:|
+| fib | 6.34 | 6.15 | **0.97×** |
+| fib_pair | 0.97 | 0.82 | **0.85×** |
+| fannkuch | 0.68 | 0.72 | 1.06× |
+| ackermann | 6.60 | 7.14 | 1.08× |
+| binary_trees | 0.83 | 0.64 | **0.77×** |
+| gc_combined | 0.91 | 0.74 | **0.81×** |
+| hash_chain | 1.48 | 1.12 | **0.76×** |
+| list_alloc | 0.89 | 0.69 | **0.78×** |
+| json_parse | 1.14 | 0.89 | **0.78×** |
+| chain_add | 1.09 | 1.28 | 1.17× |
+| **geomean** | **1.42s** | **1.27s** | **0.89×** |
+
+- **`copy` plain が geomean 0.89× で libgc に勝つ** (= 10 bench 集計、
+  -11% faster)。 baruby は alloc-heavy (= Array / String が頻出) のため
+  GC bound bench で precise の効果が大きい
+- **GC bound bench** (= `binary_trees` / `gc_combined` / `hash_chain` /
+  `list_alloc` / `json_parse`) で `copy` が 0.76–0.81×。 conservative の
+  per-call C stack scan より precise rooting + Cheney copy が速い
+- **CPU bound** (= `fannkuch` / `ackermann` / `chain_add`) は precise の
+  sp[] push/pop overhead で `copy` がわずかに負け (1.06–1.17×)
+- ⚠ caveat (§4.1) を踏まえると「同 言語実装で同 bench、 ただし precise
+  + Cheney は libgc + conservative より総合速い」 が結論
+
+注: 今回 (2026-05-26 bench) は baruby_precise の plain mode のみ取得。
+`--aot-compile` も実装されている (`make GC=<X>` で AOT bake 可能) が、
+matrix.rb 集計時の chunk 制約で plain だけに絞った。 AOT 比較は ascheme
+側 §4.3 を参照。
+
+### 4.3 geomean ratio (= 11 実用 precise backend、 vs libgc)
 
 | backend | elapsed geomean | vs libgc |
 |---|---:|---:|

@@ -268,35 +268,81 @@ ascheme libgc = Boehm conservative GC、 ascheme_precise = sframe chain +
 precise sp[] scan。 比較しているのは「runtime + rooting + collector の
 合計差」 であって、 GC algorithm 純粋差ではない。
 
-### 4.2 plain geomean ratio (= vs libgc plain)
+### 4.2 plain mode: `libgc` plain vs `copy` plain (= 代表 head-to-head)
 
-§1.4 ranking 再掲。 主流 6 backend (`copy_gen` / `immix_gen` / `copy` /
-`mark_gen` / `immix` / `mark_freelist`) が **libgc 比 0.96–1.02×** で並ぶ。
+実用 backend の代表 = `copy` (Cheney semispace、 default GC、 §1 ranking
+geomean 最速 cluster の中央)。 同じ plain mode (= interpreter で AST を
+辿る) で head-to-head:
 
-### 4.3 AOT geomean ratio (= AOT vs libgc plain)
+| bench | cat | libgc plain | copy plain | copy / libgc |
+|---|---|---:|---:|---:|
+| fib35     | INT | 0.57 | 1.13 | 1.98× |
+| sumloop   | INT | 1.97 | 2.09 | 1.06× |
+| nbody     | INT | 0.69 | 0.55 | **0.80×** |
+| sieve_big | GC  | 1.46 | 1.41 | **0.97×** |
+| deriv     | GC  | 1.38 | 1.21 | **0.88×** |
+| nqueens   | MIX | 2.70 | 2.81 | 1.04× |
+| fannkuch  | MIX | 1.77 | 1.37 | **0.77×** |
+| cps_loop  | MIX | 1.07 | 1.12 | 1.05× |
+| matmul    | MIX | 10.00 | 6.42 | **0.64×** |
+| **geomean** | — | **1.61s** | **1.55s** | **0.96×** |
 
-| backend | AOT geomean | vs libgc plain |
+- **`copy` plain が geomean 0.96× で libgc にわずかに勝つ** (= 9 bench
+  集計)。 ただし `fib35` だけは libgc が 1.98× 高速 (= conservative の C
+  stack scan が precise の sp[] push/pop を avoid できる、 純再帰で worst)
+- **GC bound** (= `nbody` / `deriv` / `fannkuch` / `matmul`) で precise
+  が `copy` 圧勝。 特に `matmul` は **0.64×** (= -36% faster)
+- ⚠ caveat (§4.1) を踏まえると、 「同等」 と言える範囲
+
+### 4.3 AOT mode: libgc は AOT 非対応 (= `copy` plain vs `copy` AOT)
+
+ascheme 側 (libgc) は `--aot-compile` を実装していない (= aot_matrix.sh
+line 99 「libgc baseline plain only」)。 同じ「libgc aot vs copy aot」
+head-to-head は **取れない**。 代わりに `copy` 自身の plain vs AOT で
+ASTro AOT の効果を見る:
+
+| bench | cat | copy plain | copy AOT | AOT / plain |
+|---|---|---:|---:|---:|
+| fib35     | INT | 1.13 | 0.76 | **0.67×** |
+| sumloop   | INT | 2.09 | (NOAOT) | — |
+| nbody     | INT | 0.55 | 0.43 | **0.78×** |
+| sieve_big | GC  | 1.41 | 0.58 | **0.41×** |
+| deriv     | GC  | 1.21 | 1.10 | 0.91× |
+| nqueens   | MIX | 2.81 | 1.29 | **0.46×** |
+| fannkuch  | MIX | 1.37 | 1.01 | **0.74×** |
+| cps_loop  | MIX | 1.12 | 0.32 | **0.29×** |
+| matmul    | MIX | 6.42 | 6.25 | 0.97× |
+| **geomean** (n=8) | — | **1.55s** | **0.84s** | **0.54×** |
+
+`copy` 単独で AOT は plain の **0.54×** = 1.85× speedup。 dispatch heavy
+な `cps_loop` で **3.5×**、 `sieve_big` で **2.4×**、 `nqueens` で **2.2×**。
+`matmul` (= GC bound) と `deriv` (= float arith) は plain と差なし。
+
+### 4.4 全 backend AOT を `copy` AOT で並べる
+
+§4.3 で `copy` AOT を 1.00 とした時の他 backend AOT の倍率:
+
+| backend | AOT geomean | vs `copy` AOT |
 |---|---:|---:|
-| `mark_gen`        | **0.81s** | **0.54×** |
-| `copy_gen`        | 0.83s | 0.55× |
-| `immix_gen`       | 0.83s | 0.54× |
-| `copy`            | 0.84s (n=8) | 0.58× |
-| `immix`           | 0.84s | 0.55× |
-| `mark_freelist`   | 0.85s | 0.56× |
-| `mark_compact`    | 0.99s | 0.62× |
-| `mark_gen_inc`    | 1.10s | 0.76× |
-| `mark_bitmap_gen` | 1.16s | 0.77× |
-| `mark_card_gen`   | 1.16s (n=8) | 0.76× |
-| `mark`            | 1.18s (n=8) | 0.83× |
-| `mark_compact_gen`| 1.18s (n=8) | 0.77× |
-| `libgc` plain     | **1.61s** | **1.00 (baseline)** |
+| `mark_gen`        | **0.81s** | **0.96×** |
+| `copy_gen`        | 0.83s | 0.99× |
+| `immix_gen`       | 0.83s | 0.99× |
+| `copy` (baseline) | **0.84s** (n=8) | **1.00** |
+| `immix`           | 0.84s | 1.00× |
+| `mark_freelist`   | 0.85s | 1.01× |
+| `mark_compact`    | 0.99s | 1.18× |
+| `mark_gen_inc`    | 1.10s | 1.31× |
+| `mark_bitmap_gen` | 1.16s | 1.38× |
+| `mark_card_gen`   | 1.16s (n=8) | 1.38× |
+| `mark`            | 1.18s (n=8) | 1.40× |
+| `mark_compact_gen`| 1.18s (n=8) | 1.40× |
 
-- **AOT geomean は 12/12 実用 backend で libgc plain を下回る** (= 0.54–0.83×)
-- トップ 5: **`mark_gen` 0.54×** / `immix_gen` 0.54× / `copy_gen` 0.55× /
-  `immix` 0.55× / `mark_freelist` 0.56×
-- 落ちこぼれ: `mark_card_gen` / `mark_bitmap_gen` / `mark_gen_inc` /
-  `mark_compact_gen` / `mark` が 0.76–0.83×。 matmul 以外で sumloop /
-  cps_loop の speedup が頭打ちで geomean を引き下げる
+- **`copy` 周辺の cluster** (= 5 backend 内 ±5%): `mark_gen` 0.96× /
+  `copy_gen` 0.99× / `immix_gen` 0.99× / `immix` 1.00× / `mark_freelist`
+  1.01×。 「実用最速 5 個」 が同水準
+- **落ちこぼれ**: `mark_card_gen` / `mark_bitmap_gen` / `mark_gen_inc` /
+  `mark_compact_gen` / `mark` が 1.31–1.40×。 sumloop / cps_loop の AOT
+  speedup が頭打ちで geomean を引き下げる
 
 ## 5. ranking + geomean
 
