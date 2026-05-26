@@ -1768,10 +1768,13 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         // node_loop so the patched call's c->loop_continue=1 gets caught
         // and routed back to the body.  Otherwise leave it bare — the
         // wrapper would only add overhead for nothing.
-        /* Named-let inner lambda is forced no_capture=0 below, so the
-         * loop should write loop_args into the heap sframe slots. */
+        /* Named-let inner lambda is forced no_capture=0 below.  leaf is
+         * computed from body_has_inner_lambda: non-leaf means an inner
+         * lambda may capture the loop frame, so node_loop must allocate
+         * a fresh frame per iteration to preserve R5RS binding semantics. */
         NODE *inner_body_final = ctx.used
-            ? ALLOC_node_loop(inner_body, (uint32_t)nparams, /*no_capture=*/0u)
+            ? ALLOC_node_loop(inner_body, (uint32_t)nparams, /*no_capture=*/0u,
+                              body_has_inner_lambda ? 0u : 1u)
             : inner_body;
         aot_add_entry(inner_body_final);
 
@@ -2408,7 +2411,8 @@ compile_define(CTX *c, VALUE form, struct lex_scope *scope)
                 if (ctx.used) {
                     NODE *lambda_body = val->u.node_lambda.body;
                     NODE *wrapped = ALLOC_node_loop(lambda_body, (uint32_t)nparams,
-                                                   val->u.node_lambda.no_capture);
+                                                   val->u.node_lambda.no_capture,
+                                                   val->u.node_lambda.leaf);
                     aot_add_entry(wrapped);
                     val->u.node_lambda.body = wrapped;
                 }

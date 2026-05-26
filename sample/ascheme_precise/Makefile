@@ -146,6 +146,23 @@ test_stress: ascheme
 test/r5rs_chibi.scm: test/r5rs_adapt.rb .chibi/chibi-scheme-0.12/tests/r5rs-tests.scm
 	@ruby test/r5rs_adapt.rb < .chibi/chibi-scheme-0.12/tests/r5rs-tests.scm > $@
 
+# `make fuzz` — random Scheme generator + BARUBY_GC_STRESS=1.  Uses chez
+# (`scheme --script`) as the correctness oracle; precise must match chez's
+# output and never SEGV / time out.  Default backend is the GC currently
+# built (= whatever `.built_gc` says); set GC=copy_scramble before make to
+# enable the maximum-stress moving GC.  N controls iteration count
+# (default 200).  Failing programs are saved to test/fuzz/fails/.
+#
+# Usage:
+#   make fuzz                      — 200 iters on the current GC backend
+#   make GC=copy_scramble fuzz     — 200 iters on the scramble variant
+#   make fuzz N=1000               — 1000 iters
+#   make fuzz N=500 SEED=42        — deterministic via seed
+fuzz: ascheme
+	@N=$${N:-200}; SEED=$${SEED:-}; \
+	  if [ -n "$$SEED" ]; then SEED_ENV="SEED=$$SEED"; else SEED_ENV=; fi; \
+	  ASCHEME_AOT_TRACE= env $$SEED_ENV ruby test/fuzz/fuzz.rb $$N
+
 .chibi/chibi-scheme-0.12/tests/r5rs-tests.scm:
 	@bash bench/compare.sh >/dev/null 2>&1 || true
 

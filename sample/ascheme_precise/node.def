@@ -553,7 +553,7 @@ node_callcc(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *fn)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t nparams, uint32_t no_capture)
+node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t nparams, uint32_t no_capture, uint32_t leaf)
 {
     (void)n;
     /* Bump node_loop's own dispatch counter per iteration so
@@ -573,12 +573,32 @@ node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, 
             for (uint32_t i = 0; i < nparams; i++) {
                 c->frame_sp[(int32_t)i - (int32_t)nparams] = c->loop_args[i];
             }
-        } else {
-            /* c->env may be OLD (= long-lived loop frame); loop_args slots
+        } else if (leaf) {
+            /* leaf body: no inner closure can capture this frame, so in-place
+             * slot overwrite is semantically safe and an alloc-free win.
+             * c->env may be OLD (= long-lived loop frame); loop_args slots
              * are fresh young values from the just-evaluated tail-call. */
             for (uint32_t i = 0; i < nparams; i++) {
                 aro_gc_wb(c, c->env, &c->env->slots[i], c->loop_args[i]);
             }
+        } else {
+            /* Non-leaf body: an inner lambda may have captured the current
+             * frame and stored the closure where it outlives this loop
+             * iteration (e.g., `(vector-set! v i (lambda () i))`).  R5RS
+             * semantics demand a FRESH binding per loop iteration, so we
+             * allocate a new sframe and switch c->env to it.  The captured
+             * closure keeps pointing at the OLD frame (= each iteration's
+             * own copy of i). */
+            VALUE *sp_inner = c->sp;
+            ASTRO_ASSERT(sp_inner + nparams <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+            for (uint32_t i = 0; i < nparams; i++) sp_inner[i] = c->loop_args[i];
+            c->sp = sp_inner + nparams;
+            struct sframe *new_env = scm_new_frame(c, c->env->parent, (int)nparams);
+            for (uint32_t i = 0; i < nparams; i++) {
+                aro_gc_wb(c, new_env, &new_env->slots[i], sp_inner[i]);
+            }
+            c->sp = sp_inner;
+            CTX_SET_ENV(c, new_env);
         }
     }
 }
