@@ -360,12 +360,16 @@ typedef struct CTX_struct {
 // AROH_IS_GC_OBJECT macro in the visitor.
 extern VALUE g_sp_scratch[];
 #define ASCHEME_SP_SCRATCH_SIZE 4096
+// 3-arg dispatcher: `sp` is a function parameter in every NODE_DEF body.
+// SP_PUSH zero-fills [sp..sp+n) and sets c->sp = sp + n so GC root scan
+// covers the slots.  No local declaration — the caller already has `sp`
+// in scope (= dispatcher parameter, or `VALUE *sp = c->sp;` at the entry
+// of non-NODE_DEF functions like scm_apply / scm_callcc).
 #define SP_PUSH(c, name, n) \
-    VALUE * restrict name = (c)->sp; \
     do { \
-        assert(name + (n) <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE); \
-        for (int _spi = 0; _spi < (n); _spi++) name[_spi] = 0; \
-        (c)->sp = name + (n); \
+        assert((name) + (n) <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE); \
+        for (int _spi = 0; _spi < (n); _spi++) (name)[_spi] = 0; \
+        (c)->sp = (name) + (n); \
     } while (0)
 #define SP_POP(c, name)    do { (c)->sp = (name); } while (0)
 

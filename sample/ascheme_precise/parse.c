@@ -84,6 +84,7 @@ read_list(CTX *c, struct reader *r)
     /* Park car / cdr across the recursive read_form / read_list calls (each
      * may trigger arbitrarily many allocations).  C locals would go stale
      * under a moving GC. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);   /* sp[0]=car, sp[1]=cdr */
     sp[0] = read_form(c, r);
     reader_skip_ws(r);
@@ -152,6 +153,7 @@ read_hash(CTX *c, struct reader *r)
          * must keep alive while the vec sobj + items[] are allocated.
          * Park `vec` too while we walk `list` reading car cells (no inner
          * alloc but a defensive root is cheap and survives future edits). */
+        VALUE * restrict sp = c->sp;
         SP_PUSH(c, sp, 2);     /* sp[0]=list, sp[1]=vec */
         sp[0] = read_list(c, r);
         size_t len = 0;
@@ -272,6 +274,7 @@ read_form(CTX *c, struct reader *r)
         /* Park v + (v) across scm_intern + scm_cons allocations.  Evaluate
          * each alloc serially and re-park between, to avoid C-arg-order
          * surprises where scm_intern could trigger GC after sp[1] is read. */
+        VALUE * restrict sp = c->sp;
         SP_PUSH(c, sp, 2);    /* sp[0]=v, sp[1]=tail-cons */
         sp[0] = read_form(c, r);
         sp[1] = scm_cons(c, sp[0], SCM_NIL);
@@ -281,6 +284,7 @@ read_form(CTX *c, struct reader *r)
         return rv;
     }
     case '`': {
+        VALUE * restrict sp = c->sp;
         SP_PUSH(c, sp, 2);
         sp[0] = read_form(c, r);
         sp[1] = scm_cons(c, sp[0], SCM_NIL);
@@ -294,6 +298,7 @@ read_form(CTX *c, struct reader *r)
         const char *which = "unquote";
         if (next == '@') which = "unquote-splicing";
         else reader_ungetc(r, next);
+        VALUE * restrict sp = c->sp;
         SP_PUSH(c, sp, 2);
         sp[0] = read_form(c, r);
         sp[1] = scm_cons(c, sp[0], SCM_NIL);
@@ -324,6 +329,7 @@ scm_read_all_string(CTX *c, const char *src, size_t len)
      * pointer `&pair.cdr` would go stale the instant scm_cons triggers a
      * GC and moves the owning sobj.  Strategy: hold the last cons cell
      * VALUE in sp[1], and update its .cdr via field access. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 3);   /* sp[0]=head (forms),  sp[1]=last cell,  sp[2]=v */
     for (;;) {
         reader_skip_ws(&r);

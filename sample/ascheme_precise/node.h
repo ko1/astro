@@ -9,7 +9,9 @@
 #include "precise_gc/gc.h"
 
 typedef struct Node NODE;
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
+// 3-arg dispatcher: sp threads register-resident through the call chain,
+// `c->sp` is only synced at GC safepoints by alloc helpers in main.c.
+typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *sp);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -56,9 +58,9 @@ struct NodeHead {
 // Inline so specialized dispatchers don't pay a PLT call back into the host
 // binary on every node dispatch — same trick wastro uses.
 static inline VALUE
-EVAL(CTX *c, NODE *n)
+EVAL(CTX *c, NODE *n, VALUE *sp)
 {
-    return (*n->head.dispatcher)(c, n);
+    return (*n->head.dispatcher)(c, n, sp);
 }
 
 // Application primitives provided by main.c.

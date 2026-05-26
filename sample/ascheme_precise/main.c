@@ -131,6 +131,7 @@ scm_cons(CTX *c, VALUE a, VALUE d)
      * `a` / `d` would go stale.  By writing them into sp slots *before*
      * the alloc, the root visitor sees them as live and rewrites the
      * slots in place; we then read the up-to-date bits back. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);
     sp[0] = a;
     sp[1] = d;
@@ -219,6 +220,7 @@ scm_make_vector(CTX *c, size_t len, VALUE fill)
      * allocs.  Both the sobj alloc and the items payload alloc may
      * trigger GC — without parking, a moving backend leaves `o` and the
      * C-local `fill` bits pointing to stale (relocated) heap objects. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);    /* sp[0]=o sobj, sp[1]=fill */
     sp[1] = fill;
     struct sobj *o = scm_alloc(c, OBJ_VECTOR);
@@ -1032,6 +1034,7 @@ expand_quasiquote(CTX *c, VALUE form, int depth)
             scm_is_bignum(form) || scm_is_rational(form))
             return form;
         /* (quote form) */
+        VALUE * restrict sp_q = c->sp;
         SP_PUSH(c, sp_q, 1);
         sp_q[0] = form;
         VALUE tail_cell = scm_cons(c, sp_q[0], SCM_NIL);
@@ -1040,6 +1043,7 @@ expand_quasiquote(CTX *c, VALUE form, int depth)
         return r;
     }
     /* form is a pair.  sp[0]=form, sp[1]=head, sp[2]=tail, sp[3..]=staging. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 6);
     sp[0] = form;
     sp[1] = SCM_PTR(form)->pair.car;
@@ -1116,6 +1120,7 @@ list_append1(CTX *c, VALUE list, VALUE elt)
 {
     /* sp[0]=list, sp[1]=elt, sp[2]=result head, sp[3]=last cell,
      * sp[4]=iter. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 5);
     sp[0] = list;
     sp[1] = elt;
@@ -1150,6 +1155,7 @@ compile_seq(CTX *c, VALUE forms, struct lex_scope *scope, bool is_tail)
         return compile(c, car(forms), scope, is_tail);
     }
     /* Park `forms` across the two recursive compile calls. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 1);
     sp[0] = forms;
     NODE *head = compile(c, car(sp[0]), scope, false);
@@ -1190,6 +1196,7 @@ try_specialize_arith(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope)
     // pointers whose dispatchers stayed on the slow DISPATCH_node_*
     // host fallbacks — defeating AOT for any program that calls a global
     // 1/2/3-arg function whose name isn't in the specialized set.
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);
     sp[0] = fn_form;
     sp[1] = args;
@@ -1305,6 +1312,7 @@ compile_call(CTX *c, VALUE fn_form, VALUE args, struct lex_scope *scope, bool is
      * VALUE here would go stale on a moving backend.  sp[0]=fn_form,
      * sp[1]=args (the head of the arg list), sp[2]=iter `p` (so the for
      * loop's traversal cursor stays live as well). */
+    VALUE * restrict sp_top = c->sp;
     SP_PUSH(c, sp_top, 3);
     sp_top[0] = fn_form;
     sp_top[1] = args;
@@ -1442,6 +1450,7 @@ hoist_internal_defines(CTX *c, VALUE body)
      * sp[1] = bindings head,
      * sp[2] = bindings last cell,
      * sp[3..] = per-iter staging (init/lambda + pair). */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 6);
     sp[0] = body;
     sp[1] = SCM_NIL;
@@ -1495,6 +1504,7 @@ hoist_internal_defines(CTX *c, VALUE body)
 static NODE *
 compile_body(CTX *c, VALUE body, struct lex_scope *scope, bool is_tail)
 {
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 1);
     sp[0] = hoist_internal_defines(c, body);
     NODE *r = compile_seq(c, sp[0], scope, is_tail);
@@ -1524,6 +1534,7 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
 
     /* Park params + body across the scm_alloc_min / push_scope / compile
      * cascade.  Walk params using sp[0]. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);
     sp[0] = params;
     sp[1] = body;
@@ -1608,6 +1619,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 
         /* Park bindings, body, name across the upcoming scm_alloc_min /
          * compile cascade — all of which can trigger GC. */
+        VALUE * restrict sp_nlh = c->sp;
         SP_PUSH(c, sp_nlh, 3);
         sp_nlh[0] = name;
         sp_nlh[1] = bindings;
@@ -1658,6 +1670,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         NODE *init_nodes[ASCHEME_LOOP_MAX_PARAMS];
         /* Walk bindings via sp slot to keep cursor alive across the inner
          * compile() calls. */
+        VALUE * restrict sp_iter = c->sp;
         SP_PUSH(c, sp_iter, 1);
         int ii = 0;
         for (sp_iter[0] = sp_nlh[1]; scm_is_pair(sp_iter[0]); sp_iter[0] = cdr(sp_iter[0]), ii++) {
@@ -1714,6 +1727,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
          *   sp[5]=inits head,  sp[6]=inits last,
          *   sp[7]=iter cursor.
          *   sp[8] = staging slot for intermediate cons chains. */
+        VALUE * restrict sp_nl = c->sp;
         SP_PUSH(c, sp_nl, 9);
         sp_nl[0] = name;
         sp_nl[1] = bindings;
@@ -1770,6 +1784,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
      *   sp[5]=inits  head,   sp[6]=inits  last cell,
      *   sp[7]=iter cursor (b) for safe traversal across cons allocations.
      */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 8);
     sp[0] = form;
     sp[1] = cadr(form);
@@ -1816,6 +1831,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 static NODE *
 compile_letstar(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 5);
     sp[0] = form;
     sp[1] = cadr(form);            /* bindings */
@@ -1858,6 +1874,7 @@ compile_letrec(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
      *   sp[3]=pairs head,  sp[4]=pairs last cell,
      *   sp[5]=assigns head, sp[6]=assigns last,
      *   sp[7]=iter cursor, sp[8]=staging. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 9);
     sp[0] = form;
     sp[1] = cadr(form);
@@ -1913,6 +1930,7 @@ compile_cond(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
     if (cdr(form) == SCM_NIL) return ALLOC_node_const_unspec();
     /* Park form + (first clause, rest of clauses, test, body, staging). */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 6);
     sp[0] = form;
     VALUE clauses = cdr(form);
@@ -1961,6 +1979,7 @@ compile_case(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
     /* sp[0]=form, sp[1]=key, sp[2]=clauses head, sp[3]=k_sym, sp[4]=bindings,
      * sp[5]=cond_clauses head, sp[6]=cond_clauses last, sp[7]=iter cl,
      * sp[8]=staging */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 9);
     sp[0] = form;
     sp[1] = cadr(form);
@@ -2020,6 +2039,7 @@ compile_and(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
     if (cdr(form) == SCM_NIL) return ALLOC_node_const_bool(1);
     if (cdr(cdr(form)) == SCM_NIL) return compile(c, car(cdr(form)), scope, is_tail);
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 3);
     sp[0] = form;
     sp[1] = cdr(form);                       /* args */
@@ -2043,6 +2063,7 @@ compile_or(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
     if (cdr(cdr(form)) == SCM_NIL) return compile(c, car(cdr(form)), scope, is_tail);
     /* sp[0]=form, sp[1]=args, sp[2]=tmp sym, sp[3]=binding, sp[4]=rest,
      * sp[5]=staging iff, sp[6]=letform */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 7);
     sp[0] = form;
     sp[1] = cdr(form);
@@ -2072,6 +2093,7 @@ compile_or(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 static NODE *
 compile_when(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 3);
     sp[0] = form;
     sp[1] = cadr(form);                  /* test */
@@ -2088,6 +2110,7 @@ compile_when(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 static NODE *
 compile_unless(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
 {
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 3);
     sp[0] = form;
     sp[1] = cadr(form);
@@ -2116,6 +2139,7 @@ compile_do(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
      * sp[10]=steps head, sp[11]=steps last,
      * sp[12]=iter cursor, sp[13]=loop_sym,
      * sp[14..]=staging */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 18);
     sp[0] = form;
     sp[1] = cadr(form);
@@ -2244,6 +2268,7 @@ compile_define(CTX *c, VALUE form, struct lex_scope *scope)
 
             if (!has_rest && nparams <= ASCHEME_LOOP_MAX_PARAMS && nparams <= 4) {
                 /* sp[0]=params, sp[1]=body, sp[2]=lambda */
+                VALUE * restrict sp_d = c->sp;
                 SP_PUSH(c, sp_d, 3);
                 sp_d[0] = params;
                 sp_d[1] = body;
@@ -2265,6 +2290,7 @@ compile_define(CTX *c, VALUE form, struct lex_scope *scope)
         }
 
         {
+            VALUE * restrict sp_d = c->sp;
             SP_PUSH(c, sp_d, 3);
             sp_d[0] = params;
             sp_d[1] = body;
@@ -2279,6 +2305,7 @@ compile_define(CTX *c, VALUE form, struct lex_scope *scope)
     VALUE val_form = caddr(form);
     /* Park `name` so we can re-derive name_str via scm_perm_name after the
      * compile() call may have moved the symbol's byte payload. */
+    VALUE * restrict sp_def = c->sp;
     SP_PUSH(c, sp_def, 1);
     sp_def[0] = name;
     NODE *val = compile(c, val_form, scope, false);
@@ -2320,6 +2347,7 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         scm_error(c, "compile: unexpected form");
     }
     /* form is a pair — recursive paths below allocate, so park it on sp. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 1);
     sp[0] = form;
     VALUE head = car(form);   /* head is a VALUE; will reload from sp[0] below if needed */
@@ -2336,6 +2364,7 @@ compile(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
             // (delay E) → (|make-promise| (lambda () E))
             /* Stage cons chain through sp to avoid stale arg bits across
              * the per-cons GC triggers. */
+            VALUE * restrict sp2 = c->sp;
             SP_PUSH(c, sp2, 2);  /* sp2[0]=thunk, sp2[1]=call */
             sp2[0] = scm_cons(c, cadr(sp[0]), SCM_NIL);
             sp2[0] = scm_cons(c, SCM_NIL, sp2[0]);
@@ -2544,7 +2573,7 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         // write per call is measurable (~5%) on tight tail-call loops.
         if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
         for (;;) {
-            VALUE v = EVAL(c, body);
+            VALUE v = EVAL(c, body, c->sp);
             if (!c->tail_call_pending) {
                 CTX_SET_ENV(c, (struct sframe *)sp_base[0]);  /* reload saved */
                 c->sp = sp_base;
@@ -3279,6 +3308,7 @@ PRIM(null_p) { (void)c; (void)argc; return scm_is_null(argv[0]) ? SCM_TRUE : SCM
 PRIM(list)   {
     (void)c;
     /* Park argv copies + accumulator across the per-iteration scm_cons. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 1 + argc);    /* sp[0]=r, sp[1..]=argv copies */
     sp[0] = SCM_NIL;
     for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
@@ -3312,6 +3342,7 @@ PRIM(length) {
 PRIM(reverse) {
     (void)argc;
     /* Park v + r across the per-iteration scm_cons (= GC trigger). */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);     /* sp[0]=v, sp[1]=r */
     sp[0] = argv[0];
     sp[1] = SCM_NIL;
@@ -3329,6 +3360,7 @@ PRIM(append) {
     if (argc == 0) return SCM_NIL;
     /* sp[0]=result, sp[1]=list (current input), sp[2]=tmp (reversed list)
      * Each scm_cons inside the loops can trigger GC. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 3);
     sp[0] = argv[argc - 1];
     for (int i = argc - 2; i >= 0; i--) {
@@ -3652,6 +3684,7 @@ PRIM(substring) {
 PRIM(string_to_list) {
     (void)argc;
     /* sp[0]=source string sobj, sp[1]=accumulator r */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);
     sp[0] = argv[0];
     sp[1] = SCM_NIL;
@@ -3672,6 +3705,7 @@ PRIM(list_to_string) {
     /* sp[0]=source list (l), sp[1]=result string, sp[2]=walking iter
      * (= live across scm_cons/scm_make alloc, though only one big alloc
      * here for the result). */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 3);
     sp[0] = argv[0];
     sp[1] = SCM_NIL;
@@ -3785,6 +3819,7 @@ PRIM(vector_fill) {
 PRIM(vector_to_list) {
     (void)argc;
     /* sp[0]=vector sobj, sp[1]=accumulator r */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);
     sp[0] = argv[0];
     sp[1] = SCM_NIL;
@@ -3802,6 +3837,7 @@ PRIM(vector_to_list) {
 PRIM(list_to_vector) {
     (void)argc;
     /* sp[0]=list head, sp[1]=result vector, sp[2]=walking iter */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 3);
     sp[0] = argv[0];
     sp[1] = SCM_NIL;
@@ -3870,6 +3906,7 @@ PRIM(apply_p) {
     int extra = 0;
     for (VALUE p = argv[argc - 1]; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr) extra++;
     int total = prefix + extra;
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2 + total);
     sp[0] = argv[0];
     sp[1] = argv[argc - 1];
@@ -3900,6 +3937,7 @@ PRIM(map_p) {
      *   sp[3+nlists .. ]     = per-call args[]
      */
     int args_off = 3 + nlists;
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, args_off + nlists);
     sp[0] = argv[0];
     sp[1] = SCM_NIL;
@@ -3931,6 +3969,7 @@ PRIM(for_each_p) {
     int nlists = argc - 1;
     /* sp[0] = fn, sp[1..nlists] = cursors, sp[1+nlists..] = per-call args. */
     int args_off = 1 + nlists;
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, args_off + nlists);
     sp[0] = argv[0];
     for (int i = 0; i < nlists; i++) sp[1 + i] = argv[i + 1];
@@ -3993,6 +4032,7 @@ PRIM(force_p) {
     /* Park the promise VALUE + the thunk result across the scm_apply call:
      * the thunk body allocates freely and a moving GC relocates the
      * promise sobj.  After scm_apply, reload via the parked slot. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);
     sp[0] = argv[0];                                  /* promise */
     sp[1] = SCM_PTR(sp[0])->promise.thunk;             /* thunk VALUE */
@@ -4159,6 +4199,7 @@ PRIM(call_with_values_p) {
      * result are not. */
     if (!scm_is_proc(argv[0])) scm_error(c, "call-with-values: producer not a procedure");
     if (!scm_is_proc(argv[1])) scm_error(c, "call-with-values: consumer not a procedure");
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);
     sp[0] = argv[1];                       /* consumer */
     sp[1] = scm_apply(c, argv[0], 0, NULL); /* producer result */
@@ -4781,7 +4822,7 @@ static VALUE
 eval_top(CTX *c, NODE *body)
 {
     c->tail_call_pending = 0;
-    return EVAL(c, body);
+    return EVAL(c, body, c->sp);
 }
 
 // ---------------------------------------------------------------------------
@@ -4956,6 +4997,7 @@ run_string(CTX *c, const char *src, size_t len, bool print_results)
     /* Park `forms` (and the iterator `p`) on c->sp so they survive across
      * compile() / eval_top(), each of which may trigger arbitrarily many
      * GC cycles under a moving backend. */
+    VALUE * restrict sp = c->sp;
     SP_PUSH(c, sp, 2);     /* sp[0]=forms, sp[1]=iter p */
     if (setjmp(c->err_jmp) != 0) {
         fprintf(stderr, "ascheme: error: %s\n", SCM_ERR_MSG);

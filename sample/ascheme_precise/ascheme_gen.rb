@@ -15,6 +15,18 @@ require 'astrogen'
 #                  (the cache state survives across SD invocations).
 class AschemeNodeDef < ASTroGen::NodeDef
   class Node < ASTroGen::NodeDef::Node
+    # 3-arg dispatcher `(CTX *c, NODE *n, VALUE *sp)` — sp register-resident
+    # across the call chain, c->sp synced only at GC safepoints (= alloc
+    # helpers in main.c).  Mirrors baruby_precise iter 61.  Goal: reduce
+    # per-EVAL `c->sp` load/store for sample where dispatch dominates.
+    def common_param_count
+      3
+    end
+
+    def child_dispatch_args(slot, field)
+      "c, #{field}, sp"
+    end
+
     class Operand < ASTroGen::NodeDef::Node::Operand
       def hash_call(val, kind: :horg)
         return "0" if ref?

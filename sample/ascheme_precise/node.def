@@ -11,63 +11,63 @@
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_const_int(CTX * restrict c, NODE * restrict n, int32_t v)
+node_const_int(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, int32_t v)
 {
     (void)c; (void)n;
     return SCM_FIX(v);
 }
 
 NODE_DEF
-node_const_int64(CTX * restrict c, NODE * restrict n, uint64_t v)
+node_const_int64(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint64_t v)
 {
     (void)c; (void)n;
     return (VALUE)v;
 }
 
 NODE_DEF
-node_const_double(CTX * restrict c, NODE * restrict n, double v)
+node_const_double(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, double v)
 {
     (void)n;
     return scm_make_double(c, v);
 }
 
 NODE_DEF
-node_const_str(CTX * restrict c, NODE * restrict n, const char *s)
+node_const_str(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *s)
 {
     (void)n;
     return scm_make_string(c, s, strlen(s));
 }
 
 NODE_DEF
-node_const_sym(CTX * restrict c, NODE * restrict n, const char *s)
+node_const_sym(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *s)
 {
     (void)c; (void)n;
     return scm_intern(c, s);
 }
 
 NODE_DEF
-node_const_char(CTX * restrict c, NODE * restrict n, uint32_t cp)
+node_const_char(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t cp)
 {
     (void)c; (void)n;
     return scm_make_char(c, cp);
 }
 
 NODE_DEF
-node_const_bool(CTX * restrict c, NODE * restrict n, uint32_t v)
+node_const_bool(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t v)
 {
     (void)c; (void)n;
     return v ? SCM_TRUE : SCM_FALSE;
 }
 
 NODE_DEF
-node_const_nil(CTX * restrict c, NODE * restrict n)
+node_const_nil(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     (void)c; (void)n;
     return SCM_NIL;
 }
 
 NODE_DEF
-node_const_unspec(CTX * restrict c, NODE * restrict n)
+node_const_unspec(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     (void)c; (void)n;
     return SCM_UNSPEC;
@@ -78,7 +78,7 @@ node_const_unspec(CTX * restrict c, NODE * restrict n)
 // hash factors in the address bits, so cross-run hashing isn't stable —
 // fine for the plain interpreter.
 NODE_DEF
-node_quote(CTX * restrict c, NODE * restrict n, uint64_t v)
+node_quote(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint64_t v)
 {
     (void)c; (void)n;
     return (VALUE)v;
@@ -121,14 +121,14 @@ ascheme_env_at(CTX *c, uint32_t depth)
 }
 
 NODE_DEF
-node_lref(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx)
+node_lref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx)
 {
     (void)n;
     return ascheme_env_at(c, depth)->slots[idx];
 }
 
 NODE_DEF
-node_lset(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NODE *val)
+node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
@@ -141,7 +141,7 @@ node_lset(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t idx, NOD
 }
 
 NODE_DEF
-node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
+node_gref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, struct gref_cache *cache@ref)
 {
     (void)n;
     // Hot path: serial matches → cached value is still current.  Two
@@ -155,7 +155,7 @@ node_gref(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cac
 }
 
 NODE_DEF
-node_gset(CTX * restrict c, NODE * restrict n, const char *name, NODE *val)
+node_gset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
@@ -164,7 +164,7 @@ node_gset(CTX * restrict c, NODE * restrict n, const char *name, NODE *val)
 }
 
 NODE_DEF
-node_gdef(CTX * restrict c, NODE * restrict n, const char *name, NODE *val)
+node_gdef(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, NODE *val)
 {
     (void)n;
     VALUE v = EVAL_ARG(c, val);
@@ -177,7 +177,7 @@ node_gdef(CTX * restrict c, NODE * restrict n, const char *name, NODE *val)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *thn, NODE *els)
 {
     (void)n;
     VALUE cv = EVAL_ARG(c, cond);
@@ -189,7 +189,7 @@ node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
 }
 
 NODE_DEF
-node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
+node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *first, NODE *rest)
 {
     (void)n;
     EVAL_ARG(c, first);
@@ -197,7 +197,7 @@ node_seq(CTX * restrict c, NODE * restrict n, NODE *first, NODE *rest)
 }
 
 NODE_DEF @noinline
-node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t has_rest, uint32_t nlocals, uint32_t leaf, NODE *body)
+node_lambda(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t nparams, uint32_t has_rest, uint32_t nlocals, uint32_t leaf, NODE *body)
 {
     (void)n; (void)nlocals;
     // `leaf` is set by the compiler iff the body contains no inner
@@ -217,7 +217,7 @@ node_lambda(CTX * restrict c, NODE * restrict n, uint32_t nparams, uint32_t has_
 // Inlinable: SPECIALIZE bakes the children's dispatchers into direct calls,
 // so the C compiler can fold every EVAL_ARG into the SD body.
 NODE_DEF
-node_call_0(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn)
+node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t is_tail, NODE *fn)
 {
     (void)n;
     VALUE f = EVAL_ARG(c, fn);
@@ -225,56 +225,56 @@ node_call_0(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn)
 }
 
 NODE_DEF
-node_call_1(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0)
+node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t is_tail, NODE *fn, NODE *a0)
 {
     (void)n;
     /* Park `f` on c->sp across the arg eval — argc>0 means a0's eval
      * may trigger GC and a moving backend would relocate f's referent. */
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, fn);            /* f */
-    sp[1] = EVAL_ARG(c, a0);            /* av[0] */
+    sp[0] = (*fn_dispatcher)(c, fn, sp + (2));            /* f */
+    sp[1] = (*a0_dispatcher)(c, a0, sp + (2));            /* av[0] */
     VALUE r = scm_apply_tail(c, sp[0], 1, sp + 1, is_tail);
     SP_POP(c, sp);
     return r;
 }
 
 NODE_DEF
-node_call_2(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1)
+node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1)
 {
     (void)n;
     SP_PUSH(c, sp, 3);                  /* f, av[0], av[1] */
-    sp[0] = EVAL_ARG(c, fn);
-    sp[1] = EVAL_ARG(c, a0);
-    sp[2] = EVAL_ARG(c, a1);
+    sp[0] = (*fn_dispatcher)(c, fn, sp + (3));
+    sp[1] = (*a0_dispatcher)(c, a0, sp + (3));
+    sp[2] = (*a1_dispatcher)(c, a1, sp + (3));
     VALUE r = scm_apply_tail(c, sp[0], 2, sp + 1, is_tail);
     SP_POP(c, sp);
     return r;
 }
 
 NODE_DEF
-node_call_3(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
+node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1, NODE *a2)
 {
     (void)n;
     SP_PUSH(c, sp, 4);
-    sp[0] = EVAL_ARG(c, fn);
-    sp[1] = EVAL_ARG(c, a0);
-    sp[2] = EVAL_ARG(c, a1);
-    sp[3] = EVAL_ARG(c, a2);
+    sp[0] = (*fn_dispatcher)(c, fn, sp + (4));
+    sp[1] = (*a0_dispatcher)(c, a0, sp + (4));
+    sp[2] = (*a1_dispatcher)(c, a1, sp + (4));
+    sp[3] = (*a2_dispatcher)(c, a2, sp + (4));
     VALUE r = scm_apply_tail(c, sp[0], 3, sp + 1, is_tail);
     SP_POP(c, sp);
     return r;
 }
 
 NODE_DEF
-node_call_4(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+node_call_4(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t is_tail, NODE *fn, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
 {
     (void)n;
     SP_PUSH(c, sp, 5);
-    sp[0] = EVAL_ARG(c, fn);
-    sp[1] = EVAL_ARG(c, a0);
-    sp[2] = EVAL_ARG(c, a1);
-    sp[3] = EVAL_ARG(c, a2);
-    sp[4] = EVAL_ARG(c, a3);
+    sp[0] = (*fn_dispatcher)(c, fn, sp + (5));
+    sp[1] = (*a0_dispatcher)(c, a0, sp + (5));
+    sp[2] = (*a1_dispatcher)(c, a1, sp + (5));
+    sp[3] = (*a2_dispatcher)(c, a2, sp + (5));
+    sp[4] = (*a3_dispatcher)(c, a3, sp + (5));
     VALUE r = scm_apply_tail(c, sp[0], 4, sp + 1, is_tail);
     SP_POP(c, sp);
     return r;
@@ -285,17 +285,17 @@ node_call_4(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, NOD
 // arg dispatch goes through `arg->head.dispatcher` (a runtime read of the
 // child node), which the specializer can't bake to a static SD call.
 NODE_DEF @noinline
-node_call_n(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, uint32_t args_idx, uint32_t argc)
+node_call_n(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t is_tail, NODE *fn, uint32_t args_idx, uint32_t argc)
 {
     (void)n;
     extern NODE **ASCHEME_CALL_ARGS;
     /* Stack-rooted: sp[0]=f, sp[1..1+argc]=av[].  scm_apply_tail accepts a
      * VALUE* argv, so we hand it sp + 1 directly. */
     SP_PUSH(c, sp, 1 + (int)argc);
-    sp[0] = EVAL_ARG(c, fn);
+    sp[0] = (*fn_dispatcher)(c, fn, sp + (1 + (int)argc));
     for (uint32_t i = 0; i < argc; i++) {
         NODE *arg = ASCHEME_CALL_ARGS[args_idx + i];
-        sp[1 + i] = (*arg->head.dispatcher)(c, arg);
+        sp[1 + i] = (*arg->head.dispatcher)(c, arg, sp + (1 + (int)argc));
     }
     VALUE r = scm_apply_tail(c, sp[0], (int)argc, sp + 1, is_tail);
     SP_POP(c, sp);
@@ -304,12 +304,12 @@ node_call_n(CTX * restrict c, NODE * restrict n, uint32_t is_tail, NODE *fn, uin
 
 // call/cc — captures an escape continuation (one-shot, downward only).
 NODE_DEF @noinline
-node_callcc(CTX * restrict c, NODE * restrict n, NODE *fn)
+node_callcc(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *fn)
 {
     (void)n;
     /* Park f across the scm_callcc call which allocates internally. */
     SP_PUSH(c, sp, 1);
-    sp[0] = EVAL_ARG(c, fn);
+    sp[0] = (*fn_dispatcher)(c, fn, sp + (1));
     VALUE r = scm_callcc(c, sp[0]);
     SP_POP(c, sp);
     return r;
@@ -333,7 +333,7 @@ node_callcc(CTX * restrict c, NODE * restrict n, NODE *fn)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_loop(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t nparams)
+node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t nparams)
 {
     (void)n;
     for (;;) {
@@ -349,7 +349,7 @@ node_loop(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t nparams)
 }
 
 NODE_DEF
-node_self_tail_call_0(CTX * restrict c, NODE * restrict n)
+node_self_tail_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     (void)n;
     c->loop_continue = 1;
@@ -357,7 +357,7 @@ node_self_tail_call_0(CTX * restrict c, NODE * restrict n)
 }
 
 NODE_DEF
-node_self_tail_call_1(CTX * restrict c, NODE * restrict n, NODE *a0)
+node_self_tail_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a0)
 {
     (void)n;
     /* Park v0 on c->sp across the (none here) extra evals — and to
@@ -365,7 +365,7 @@ node_self_tail_call_1(CTX * restrict c, NODE * restrict n, NODE *a0)
      * is also rooted but the inner-call write hazard means we eval
      * into temporary sp slots first, then commit atomically. */
     SP_PUSH(c, sp, 1);
-    sp[0] = EVAL_ARG(c, a0);
+    sp[0] = (*a0_dispatcher)(c, a0, sp + (1));
     c->loop_args[0] = sp[0];
     c->loop_continue = 1;
     SP_POP(c, sp);
@@ -373,15 +373,15 @@ node_self_tail_call_1(CTX * restrict c, NODE * restrict n, NODE *a0)
 }
 
 NODE_DEF
-node_self_tail_call_2(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1)
+node_self_tail_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a0, NODE *a1)
 {
     (void)n;
     /* Evaluate args into sp scratch, then commit to loop_args atomically.
      * Direct loop_args[i] = EVAL_ARG would let an inner-call write to
      * loop_args clobber the just-set slot. */
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a0);
-    sp[1] = EVAL_ARG(c, a1);
+    sp[0] = (*a0_dispatcher)(c, a0, sp + (2));
+    sp[1] = (*a1_dispatcher)(c, a1, sp + (2));
     c->loop_args[0] = sp[0];
     c->loop_args[1] = sp[1];
     c->loop_continue = 1;
@@ -390,13 +390,13 @@ node_self_tail_call_2(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1)
 }
 
 NODE_DEF
-node_self_tail_call_3(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2)
+node_self_tail_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a0, NODE *a1, NODE *a2)
 {
     (void)n;
     SP_PUSH(c, sp, 3);
-    sp[0] = EVAL_ARG(c, a0);
-    sp[1] = EVAL_ARG(c, a1);
-    sp[2] = EVAL_ARG(c, a2);
+    sp[0] = (*a0_dispatcher)(c, a0, sp + (3));
+    sp[1] = (*a1_dispatcher)(c, a1, sp + (3));
+    sp[2] = (*a2_dispatcher)(c, a2, sp + (3));
     c->loop_args[0] = sp[0];
     c->loop_args[1] = sp[1];
     c->loop_args[2] = sp[2];
@@ -406,14 +406,14 @@ node_self_tail_call_3(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, N
 }
 
 NODE_DEF
-node_self_tail_call_4(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
+node_self_tail_call_4(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a0, NODE *a1, NODE *a2, NODE *a3)
 {
     (void)n;
     SP_PUSH(c, sp, 4);
-    sp[0] = EVAL_ARG(c, a0);
-    sp[1] = EVAL_ARG(c, a1);
-    sp[2] = EVAL_ARG(c, a2);
-    sp[3] = EVAL_ARG(c, a3);
+    sp[0] = (*a0_dispatcher)(c, a0, sp + (4));
+    sp[1] = (*a1_dispatcher)(c, a1, sp + (4));
+    sp[2] = (*a2_dispatcher)(c, a2, sp + (4));
+    sp[3] = (*a3_dispatcher)(c, a3, sp + (4));
     c->loop_args[0] = sp[0];
     c->loop_args[1] = sp[1];
     c->loop_args[2] = sp[2];
@@ -437,7 +437,7 @@ node_self_tail_call_4(CTX * restrict c, NODE * restrict n, NODE *a0, NODE *a1, N
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_self_tail_call_global_0(CTX * restrict c, NODE * restrict n, const char *name, struct gref_cache *cache@ref)
+node_self_tail_call_global_0(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, struct gref_cache *cache@ref)
 {
     (void)n;
     if (LIKELY(cache->serial == c->globals_serial)) {
@@ -450,13 +450,13 @@ node_self_tail_call_global_0(CTX * restrict c, NODE * restrict n, const char *na
 }
 
 NODE_DEF
-node_self_tail_call_global_1(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, struct gref_cache *cache@ref)
+node_self_tail_call_global_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, NODE *a0, struct gref_cache *cache@ref)
 {
     (void)n;
     /* Eval into sp scratch, commit to loop_args atomically — see
      * node_self_tail_call_2 for the inner-call clobber rationale. */
     SP_PUSH(c, sp, 1);
-    sp[0] = EVAL_ARG(c, a0);
+    sp[0] = (*a0_dispatcher)(c, a0, sp + (1));
     if (LIKELY(cache->serial == c->globals_serial)) {
         c->loop_args[0] = sp[0];
         c->loop_continue = 1;
@@ -471,12 +471,12 @@ node_self_tail_call_global_1(CTX * restrict c, NODE * restrict n, const char *na
 }
 
 NODE_DEF
-node_self_tail_call_global_2(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, struct gref_cache *cache@ref)
+node_self_tail_call_global_2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, NODE *a0, NODE *a1, struct gref_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a0);
-    sp[1] = EVAL_ARG(c, a1);
+    sp[0] = (*a0_dispatcher)(c, a0, sp + (2));
+    sp[1] = (*a1_dispatcher)(c, a1, sp + (2));
     if (LIKELY(cache->serial == c->globals_serial)) {
         c->loop_args[0] = sp[0];
         c->loop_args[1] = sp[1];
@@ -492,13 +492,13 @@ node_self_tail_call_global_2(CTX * restrict c, NODE * restrict n, const char *na
 }
 
 NODE_DEF
-node_self_tail_call_global_3(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, NODE *a2, struct gref_cache *cache@ref)
+node_self_tail_call_global_3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, NODE *a0, NODE *a1, NODE *a2, struct gref_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 3);
-    sp[0] = EVAL_ARG(c, a0);
-    sp[1] = EVAL_ARG(c, a1);
-    sp[2] = EVAL_ARG(c, a2);
+    sp[0] = (*a0_dispatcher)(c, a0, sp + (3));
+    sp[1] = (*a1_dispatcher)(c, a1, sp + (3));
+    sp[2] = (*a2_dispatcher)(c, a2, sp + (3));
     if (LIKELY(cache->serial == c->globals_serial)) {
         c->loop_args[0] = sp[0];
         c->loop_args[1] = sp[1];
@@ -515,14 +515,14 @@ node_self_tail_call_global_3(CTX * restrict c, NODE * restrict n, const char *na
 }
 
 NODE_DEF
-node_self_tail_call_global_4(CTX * restrict c, NODE * restrict n, const char *name, NODE *a0, NODE *a1, NODE *a2, NODE *a3, struct gref_cache *cache@ref)
+node_self_tail_call_global_4(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *name, NODE *a0, NODE *a1, NODE *a2, NODE *a3, struct gref_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 4);
-    sp[0] = EVAL_ARG(c, a0);
-    sp[1] = EVAL_ARG(c, a1);
-    sp[2] = EVAL_ARG(c, a2);
-    sp[3] = EVAL_ARG(c, a3);
+    sp[0] = (*a0_dispatcher)(c, a0, sp + (4));
+    sp[1] = (*a1_dispatcher)(c, a1, sp + (4));
+    sp[2] = (*a2_dispatcher)(c, a2, sp + (4));
+    sp[3] = (*a3_dispatcher)(c, a3, sp + (4));
     if (LIKELY(cache->serial == c->globals_serial)) {
         c->loop_args[0] = sp[0];
         c->loop_args[1] = sp[1];
@@ -568,12 +568,12 @@ extern VALUE arith_dispatch(CTX *c, struct arith_cache *cache, const char *opnam
 // LSB-tagged immediates so storing them through sp[] is a no-op for the
 // fast path.
 NODE_DEF
-node_arith_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_arith_add(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
@@ -594,12 +594,12 @@ node_arith_add(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct ari
 }
 
 NODE_DEF
-node_arith_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_arith_sub(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
@@ -620,12 +620,12 @@ node_arith_sub(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct ari
 }
 
 NODE_DEF
-node_arith_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_arith_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
@@ -649,12 +649,12 @@ node_arith_mul(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct ari
 // expanded — so we write the five comparators out longhand.
 
 NODE_DEF
-node_arith_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_arith_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
@@ -670,12 +670,12 @@ node_arith_lt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
 }
 
 NODE_DEF
-node_arith_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_arith_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
@@ -691,12 +691,12 @@ node_arith_le(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
 }
 
 NODE_DEF
-node_arith_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_arith_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
@@ -712,12 +712,12 @@ node_arith_gt(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
 }
 
 NODE_DEF
-node_arith_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_arith_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
@@ -733,12 +733,12 @@ node_arith_ge(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
 }
 
 NODE_DEF
-node_arith_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_arith_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(SCM_IS_FIXNUM(sp[0]) & SCM_IS_FIXNUM(sp[1]))) {
@@ -762,7 +762,7 @@ node_arith_eq(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arit
 extern VALUE arith_dispatch1(CTX *c, struct arith_cache *cache, const char *opname, VALUE expected, VALUE av);
 
 NODE_DEF
-node_pred_null(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+node_pred_null(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, struct arith_cache *cache@ref)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
@@ -772,7 +772,7 @@ node_pred_null(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache 
 }
 
 NODE_DEF
-node_pred_pair(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+node_pred_pair(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, struct arith_cache *cache@ref)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
@@ -782,7 +782,7 @@ node_pred_pair(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache 
 }
 
 NODE_DEF
-node_pred_car(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+node_pred_car(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, struct arith_cache *cache@ref)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
@@ -794,7 +794,7 @@ node_pred_car(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *
 }
 
 NODE_DEF
-node_pred_cdr(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+node_pred_cdr(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, struct arith_cache *cache@ref)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
@@ -806,7 +806,7 @@ node_pred_cdr(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *
 }
 
 NODE_DEF
-node_pred_not(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *cache@ref)
+node_pred_not(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, struct arith_cache *cache@ref)
 {
     (void)n;
     VALUE av = EVAL_ARG(c, a);
@@ -820,7 +820,7 @@ node_pred_not(CTX * restrict c, NODE * restrict n, NODE *a, struct arith_cache *
 // + dispatch to do the bounds check inline.
 
 NODE_DEF
-node_vec_ref(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, struct arith_cache *cache@ref)
+node_vec_ref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *vec, NODE *idx, struct arith_cache *cache@ref)
 {
     (void)n;
     /* Park `vec` across `idx` eval — vec is always heap-typed (an OBJ_VECTOR
@@ -828,8 +828,8 @@ node_vec_ref(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, struct a
      * rooting, a moving GC would invalidate vv and the subsequent
      * SCM_PTR(vv)->vec.items access would dereference a stale page. */
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, vec);
-    sp[1] = EVAL_ARG(c, idx);
+    sp[0] = (*vec_dispatcher)(c, vec, sp + (2));
+    sp[1] = (*idx_dispatcher)(c, idx, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(scm_is_vector(sp[0]) && SCM_IS_FIXNUM(sp[1]))) {
@@ -849,7 +849,7 @@ node_vec_ref(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, struct a
 }
 
 NODE_DEF
-node_cons_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_cons_op(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     /* Park both operands across the second eval AND across scm_cons /
@@ -858,8 +858,8 @@ node_cons_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith
      * node), so without sp[] rooting their referents go stale under a
      * moving collector. */
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial))
         r = scm_cons(c, sp[0], sp[1]);
@@ -870,7 +870,7 @@ node_cons_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith
 }
 
 NODE_DEF
-node_eq_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_eq_op(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     /* Park across the second eval — `av` may be a heap object whose
@@ -878,8 +878,8 @@ node_eq_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_c
      * sp[1]) compares stable post-move bits because both slots are
      * relocated coherently by the precise root scanner. */
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial))
         r = sp[0] == sp[1] ? SCM_TRUE : SCM_FALSE;
@@ -890,12 +890,12 @@ node_eq_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_c
 }
 
 NODE_DEF
-node_eqv_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_cache *cache@ref)
+node_eqv_op(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *a, NODE *b, struct arith_cache *cache@ref)
 {
     (void)n;
     SP_PUSH(c, sp, 2);
-    sp[0] = EVAL_ARG(c, a);
-    sp[1] = EVAL_ARG(c, b);
+    sp[0] = (*a_dispatcher)(c, a, sp + (2));
+    sp[1] = (*b_dispatcher)(c, b, sp + (2));
     VALUE r;
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (sp[0] == sp[1]) {
@@ -915,7 +915,7 @@ node_eqv_op(CTX * restrict c, NODE * restrict n, NODE *a, NODE *b, struct arith_
 }
 
 NODE_DEF
-node_vec_set(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, NODE *val, struct arith_cache *cache@ref)
+node_vec_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *vec, NODE *idx, NODE *val, struct arith_cache *cache@ref)
 {
     (void)n;
     /* Park all three operands across the subsequent evals + the
@@ -924,9 +924,9 @@ node_vec_set(CTX * restrict c, NODE * restrict n, NODE *vec, NODE *idx, NODE *va
      * SCM_PTR(vv)->vec.items[i] = sp[2] write (no further alloc, so
      * the parked value reads back fresh post-relocate). */
     SP_PUSH(c, sp, 3);
-    sp[0] = EVAL_ARG(c, vec);
-    sp[1] = EVAL_ARG(c, idx);
-    sp[2] = EVAL_ARG(c, val);
+    sp[0] = (*vec_dispatcher)(c, vec, sp + (3));
+    sp[1] = (*idx_dispatcher)(c, idx, sp + (3));
+    sp[2] = (*val_dispatcher)(c, val, sp + (3));
     if (LIKELY(cache->serial == c->globals_serial)) {
         if (LIKELY(scm_is_vector(sp[0]) && SCM_IS_FIXNUM(sp[1]))) {
             size_t i = (size_t)SCM_FIXVAL(sp[1]);
