@@ -45,7 +45,6 @@ typedef intptr_t VALUE;
 //   4: mark_gen_inc      — mark&sweep + 2-gen + incremental marking
 //   5: copy              — Cheney semi-space (default)
 //   6: copy_gen          — copying nursery + tenured (semispace tenured)
-//   7: copy_gen_inc      — generational + incremental copy
 //   8: mark_compact      — single-region mark + Lisp-2 sliding compactor
 //   9: mark_compact_gen  — nursery (copy) + tenured (mark + Lisp-2 compact)
 //  10: bump              — bump-only, no GC (strictly faster `none`)

@@ -28,7 +28,6 @@ GC_NUM_mark_gen         := 3
 GC_NUM_mark_gen_inc     := 4
 GC_NUM_copy             := 5
 GC_NUM_copy_gen         := 6
-GC_NUM_copy_gen_inc     := 7
 GC_NUM_mark_compact     := 8
 GC_NUM_mark_compact_gen := 9
 GC_NUM_bump             := 10

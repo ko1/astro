@@ -9,9 +9,6 @@
 #                       [--backends a,b,c] [--benches x,y,z]
 #                       [--out-dir <path>]
 #
-# The default backend list excludes copy_gen_inc (currently a placeholder
-# — see gc_copy_gen_inc.c iter 35 honesty note).
-
 require 'optparse'
 require 'fileutils'
 require 'digest'
@@ -23,7 +20,6 @@ ALL_BACKENDS = %w(none mark mark_gen mark_gen_inc copy copy_gen
                   mark_compact mark_compact_gen bump mark_bump_gen
                   immix immix_gen mark_bitmap_gen mark_card_gen
                   mark_freelist)
-# copy_gen_inc excluded — see gc_copy_gen_inc.c
 
 # Sister sample: libgc (Boehm conservative).  Treated as an additional
 # column when --include-libgc is set (or default if its binary exists).

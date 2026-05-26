@@ -28,7 +28,7 @@ for b in "${GC_BENCHES[@]}";      do CATEGORY[$b]=GC;  done
 for b in "${MIXED_BENCHES[@]}";   do CATEGORY[$b]=MIX; done
 BENCHES=("${INTEGER_BENCHES[@]}" "${GC_BENCHES[@]}" "${MIXED_BENCHES[@]}")
 
-BACKENDS=(none bump mark mark_gen mark_gen_inc mark_freelist mark_bitmap_gen mark_card_gen copy copy_gen copy_gen_inc mark_compact mark_compact_gen mark_bump_gen immix immix_gen)
+BACKENDS=(none bump mark mark_gen mark_gen_inc mark_freelist mark_bitmap_gen mark_card_gen copy copy_gen mark_compact mark_compact_gen mark_bump_gen immix immix_gen)
 BENCH_PATH="ascheme/bench/big"
 
 run_validated() {

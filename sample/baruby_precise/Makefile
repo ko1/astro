@@ -67,9 +67,9 @@ test_all_stress:
 # Override with `make ASTRO_DEBUG=1` for development / bug hunts.
 ASTRO_DEBUG ?= 0
 
-# GC backend selector.  Default `copy` (= Cheney semi-space).  Available:
-#   none, mark, mark_gen, mark_gen_inc, copy, copy_gen, copy_gen_inc
-# Build with: make GC=mark
+# GC backend selector.  Default `copy` (= Cheney semi-space).  See the
+# GC_NUM_<name> table below for the full list of supported backends.
+# Build with: make GC=<name>  (e.g. make GC=mark)
 GC ?= copy
 GC_NUM_none             := 1
 GC_NUM_mark             := 2
@@ -77,7 +77,6 @@ GC_NUM_mark_gen         := 3
 GC_NUM_mark_gen_inc     := 4
 GC_NUM_copy             := 5
 GC_NUM_copy_gen         := 6
-GC_NUM_copy_gen_inc     := 7
 GC_NUM_mark_compact     := 8
 GC_NUM_mark_compact_gen := 9
 GC_NUM_bump             := 10
@@ -103,7 +102,7 @@ GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c
 GC_COMMON_SRC := $(PRECISE_GC_DIR)/gc_common.c
 
 ifeq ($(GC_NUM),)
-$(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist copy_scramble)
+$(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist copy_scramble)
 endif
 
 # Track current GC selection so a `make GC=foo` after `make GC=bar` actually

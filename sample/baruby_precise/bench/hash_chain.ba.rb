@@ -4,7 +4,7 @@
 # History: this bench surfaced a stale-ptr bug in aro_gc_realloc_payload
 # (memcpy-to-buf-before-alloc captured pre-GC ptr values; the alloc's GC
 # moved their targets, leaving stale entries in the new payload).  Fixed
-# in gc_copy_gen.c / gc_copy_gen_inc.c / gc_mark_compact_gen.c by allocating
+# in gc_copy_gen.c / gc_mark_compact_gen.c by allocating
 # first then memcpy'ing from the post-GC (forwarded) old location via
 # oldh->fwd.  Now passes on all 10 backends.
 #

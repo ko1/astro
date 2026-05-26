@@ -38,7 +38,7 @@ OptionParser.new do |o|
 end.parse!
 
 ALL_BACKENDS = %w[
-  none mark mark_gen mark_gen_inc copy copy_gen copy_gen_inc
+  none mark mark_gen mark_gen_inc copy copy_gen
   mark_compact mark_compact_gen bump mark_bump_gen
   immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist
 ]
