@@ -321,8 +321,18 @@ collect (= 常に major、 single generation):
 6. **large sweep**: `HDR_MARKED` clear、 unmarked は `free`
 7. **swap**: active_idx 反転 (purge では from を `munmap`)
 
-scan-loop は to-space 自身を queue として使う Cheney 形式 (= 明示的 gray
-queue 不要)。 アルゴリズムの背景は §6 Q2 参照。
+Cheney scan-loop の背景 (Cheney 1970): 明示的な gray queue を持たず、 to-space
+自体を queue として使うのが核心。 `forward_payload` は ① 未 forward の obj を
+to-space に memcpy + `HDR_FORWARDED` 設定 + fwd_overlay に new addr 書込み +
+new addr を返却、 ② forward 済みなら overlay の new addr を返却、 を担う。
+`forward_edge` は slot を `forward_payload` の戻り値で書換えるだけ。
+`gc_collect_internal` の `scan < to_top` ループは scan cursor を進めながら各
+obj の `AROH_SCAN_EDGES` を `forward_edge` で適用 — 書換中に `forward_payload`
+が更に `to_top` を前進させる可能性があるため、 「scan cursor が to_top に
+追いつく = 閉包に達した」 で自然停止する。 keys は ① obj は最初に touch
+された時に 1 回だけ memcpy される (fwd_overlay で再 forward を抑止)、 ②
+queue cost ゼロ (= to-space 自身が代行)、 の 2 点。 large obj は移動しないので
+別 chain `large_gray` で gray queue を保つ。
 
 計算量:
 - alloc: O(1)
@@ -402,7 +412,7 @@ minor / major の選択は `nursery_collect_cold` で「tenured worst-case
 overflow」「累積 tenured alloc 閾値」「external_bytes 閾値」 の OR で
 判定。 DIRTY bit は「remset_buf 在席」のマーカで invariant 維持に使う。
 設計上の論点 (DIRTY の意義、 minor/major 選択基準、 major と N-survive の
-関係) は §6 Q3 参照。
+関係) は §6 Q2 参照。
 
 計算量:
 - alloc: O(1)
@@ -436,7 +446,7 @@ N-survive rewrite ... it remains a clone」。 build 上は別 backend ID
 (`BARUBY_GC_COPY_GEN_INC = 7`) として残るが、 bench harness は両者を
 同じデータ点として扱う。
 
-削除候補かどうかは §6 Q4 参照。
+削除候補かどうかは §6 Q3 参照。
 
 #### 2.6.3 データ構造 / 2.6.4 アルゴリズム / 2.6.5 finalizer
 
@@ -554,7 +564,7 @@ heap growth/shrink: tenured は major で slide により縮む (= top が後退
 tenured は bump で linear (= 移動なし)。 major sweep は実は free しない (=
 mark を clear するだけ)、 詳細は問題報告 (2.9.6) を参照。 backend の
 位置付け (= 「mark_gen + bump tenured」と「copy nursery + bump tenured」の
-どちらが正確か) は §6 Q5 参照。
+どちらが正確か) は §6 Q4 参照。
 
 #### 2.9.2 パラメータ
 
@@ -612,8 +622,36 @@ Immix line/block mark-region (Blackburn-McKinley 2008)。 mark は line
 evacuation 未実装、 将来 v2 で defragmentation 対策の opportunistic
 evacuation を入れる予定)。
 
-設計動機、 block/line/hole の関係、 conservative line marking、 mark
-epoch、 size 閾値、 v1 が非 moving である理由は §6 Q6 参照。
+**設計動機**: Cheney は live × 1 の copy cost が常に発生、 mark&sweep は
+freelist で fragmentation が積む。 Immix は line 粒度の mark → hole alloc
+で 「marked obj は動かさない / unmarked line だけ reuse」 を行い、 copy
+cost ゼロを保ちつつ fragmentation を line 粒度に抑える。
+
+**block / line / hole**: block (= 32 KiB) = arena 内 alloc 単位、 line (=
+128 B) = block 内の mark 粒度。 hole = block 内の連続 unmarked line 列。
+alloc は cur_ptr が hole 内なら bump、 hole 末端なら `find_hole` で次 hole
+を探す。
+
+**conservative line mark**: obj が line 境界をまたぐとき 「始 line + 末 line +
+間の全 line」 を mark する。 一部しか占有しない trailing line も full mark
+となり未使用 bytes は次回まで再利用されない (= Immix の既知 trade-off、
+単純実装のため許容)。
+
+**mark epoch**: sweep 中に bitmap zero clear せず、 `cur_epoch` counter を
+1..255 で循環 (= 0 reserved = "never marked")。 mark 時 `h->gc_flags ==
+cur_epoch` を「既 mark」 判定に使う。 cycle 末で `cur_epoch++` だけで過去
+mark を全 invalidate。 ただし `gc_flags` 16 bit のうち low 8 bit を epoch
+で占有するため OLD / DIRTY / AGE 等他の bit と混在不可 — 非 generational
+の immix では他 bit を使わないので問題なし。
+
+**size 閾値**: ≤ 128 B = small (= 1 line)、 ≤ 16 KiB = medium (= multi-line
+hole 要)、 > 16 KiB = large (= 個別 mmap、 line 管理外)。 `MEDIUM_MAX =
+BLOCK_BYTES / 2 = 16 KiB`。
+
+**v1 = 非 moving**: line 内で marked obj は addr を保持。 marked line と
+marked line の間に hole が残っても OK で alloc は次の hole を使う。
+fragmentation が重い workload では memory 効率が下がるが v1 はこれ以上
+対処しない (= v2 で opportunistic evacuation 予定)。
 
 #### 2.10.2 パラメータ
 
@@ -678,10 +716,9 @@ sweep で BLK_FREE になっても `madvise(DONTNEED)` は未呼出 (= 物理 re
 
 世代別 Immix。 nursery は Cheney 半 + 半 (= 16 MiB × 2)、 tenured は Immix 単独
 arena。 minor で N-survive promote 先は `hole_alloc_header` (= Immix の bump)。
-major は force_promote_all + Immix line-mark sweep。
-
-minor / major の詳細な流れ (= promote 先の判定、 force_promote の使い方、
-young/tenured の addr-range 判定) は §6 Q7 参照。
+major は force_promote_all + Immix line-mark sweep。 各 obj の young / tenured
+判定は addr range で O(1) (= `in_arena` / `in_young_active` 等の inline
+helper)。 Immix 自体の背景は §2.10 概要を参照。
 
 #### 2.11.2 パラメータ
 
@@ -830,7 +867,7 @@ heap growth/shrink: page-on-demand。 sweep で全空 page も munmap せず保�
 
 remset は **page 単位** に粗化されている。 card_dirty と dirty_bm の役割
 分担 / 「両持ち」 ではなく「page-level remset が main」 である点の設計
-議論は §6 Q8 参照。
+議論は §6 Q5 参照。
 
 #### 2.13.2 パラメータ
 
@@ -882,7 +919,7 @@ sweep で unmarked を class 別 freelist に戻す (= region pointer は戻ら�
 fragmentation 観察用 testbed。
 
 freelist の構造 (= slot 単位 LIFO chain)、 bump fallback、 non-generational
-である理由、 mark / mark_compact との位置付けは §6 Q9 参照。
+である理由、 mark / mark_compact との位置付けは §6 Q6 参照。
 
 #### 2.14.2 パラメータ
 
@@ -1131,23 +1168,7 @@ eden-collection 想定 (= young live は小さい) から大きく外れる。 �
 overhead が「全 heap walk を minor 毎に回避できる」 効果に対して十分に
 小さい、 というのが採用理由。
 
-### Q2. Cheney scan-loop はどう動くか? (§2.4 copy)
-
-**質問**: Lisp 1.5 paper の Cheney algorithm 自体を知らない読者向けの徹底
-解説。
-
-**回答**: Cheney は 「明示的 gray queue 不要」 「to-space 自身を queue
-として使う」 というのが Lisp 1.5 (1960 Cheney 論文) のアイデア。 関数
-`forward_payload` が ① 未 forward なら memcpy + fwd を set + 新 addr 返却、
-② forward 済みなら fwd_overlay の new addr を返却、 を担う。
-`forward_edge` は slot を更新するだけ。 `gc_collect_internal` の
-`scan < gc->to_top` ループが scan cursor を進め、 各 obj について edges
-を `forward_edge` で書換える。 書換中に `forward_payload` がさらに to_top
-を増やす可能性があるため、 ループ条件 (= cursor < to_top) のみで 「閉包
-に達したら自然停止」 する。 明示的な queue は不要。 large obj だけ移動
-しないので別途 `large_gray` chain を使う。
-
-### Q3. copy_gen の SET_DIRTY と major の効果 (§2.5)
+### Q2. copy_gen の SET_DIRTY と major の効果 (§2.5)
 
 **質問**: SET_DIRTY の目的は? major collection は何をする? N-survive と
 major の関係は?
@@ -1177,7 +1198,7 @@ major の関係は?
    major の頻度を `MAJOR_THRESHOLD_FACTOR = 2` で抑えているため、 ほとんど
    の cycle は minor で N-survive 動作する。
 
-### Q4. copy_gen_inc は削除候補か? (§2.6)
+### Q3. copy_gen_inc は削除候補か? (§2.6)
 
 **質問**: 真の incremental は未実装で、 実装は copy_gen の clone のまま。
 削除すべきでは?
@@ -1187,7 +1208,7 @@ major の関係は?
 保持する意義のみ。 ファイル全体を削除しても build / sample に影響はない (=
 bench で同じ数字が 1 個減るのみ)。
 
-### Q5. mark_bump_gen は何の backend か? (§2.9)
+### Q4. mark_bump_gen は何の backend か? (§2.9)
 
 **質問**: 「copy_gen で promotion した tenured を free しない」 という
 見方は正しいか?
@@ -1199,58 +1220,7 @@ bench で同じ数字が 1 個減るのみ)。
 純粋 append)」 が正確。 tenured は monotonic に増える testbed で、 「bump
 で promote させて回収しない」 場合の挙動を観察する意図。
 
-### Q6. Immix の動機と仕組み (§2.10 immix)
-
-**質問**: Immix を知らない読者向けの徹底解説 (= Blackburn-McKinley の動機、
-block/line/hole、 conservative marking、 mark epoch、 size 閾値、 非
-moving の意味)。
-
-**回答**:
-1. **動機**: Cheney は live × 1 の copy cost が常に発生。 mark&sweep は
-   freelist で fragmentation が積む。 Immix は line (= 128 B) 粒度の mark
-   → hole alloc で 「marked obj は動かさない / unmarked line だけ reuse」
-   を行い、 copy cost ゼロを保ちつつ fragmentation を line 粒度に抑える。
-2. **block / line / hole 関係**: block (= 32 KiB) = arena 内の alloc 単位、
-   line (= 128 B) = block 内の mark 粒度。 hole = block 内で連続 unmarked
-   line の run。 alloc は cur_ptr が hole 内なら bump、 hole 末端なら
-   `find_hole` で次 hole を探す。
-3. **conservative line mark**: obj が line 境界をまたぐとき、 「始め line
-   と最後 line + 間の全 line」 を mark する。 一部しか使ってない trailing
-   line も full mark になる (= 未使用 bytes を回収しそびれる)。 これは
-   Immix の既知 trade-off (= 単純実装のため許容)。
-4. **mark epoch**: sweep 中に bitmap zero clear する代わりに `cur_epoch`
-   counter を 1..255 で循環 (= 0 は reserved = "never marked")。 mark 時
-   `h->gc_flags == cur_epoch` を 「既 mark」 判定に使う。 cycle 終わりで
-   `cur_epoch++` するだけで past mark を全 invalidate。 ただし `gc_flags`
-   は 16 bit、 low 8 bit を epoch に使うので OLD / DIRTY / AGE 等他の bit
-   と混在不可。 immix (= 非 gen) では他 bit を使わないので問題なし。
-5. **size 閾値**: ≤ 128 B = small (= 1 line)、 > 128 B かつ ≤ 16 KiB =
-   medium (= multi-line hole 必要)、 > 16 KiB = large (= 個別 mmap、 line
-   管理外)。 `MEDIUM_MAX = BLOCK_BYTES / 2 = 16 KiB`。
-6. **v1 = 非 moving**: line 内で marked obj は動かない (= 元の addr を
-   保持)。 「marked line と marked line の間に hole が出来ても OK」 で
-   alloc は次の hole を使う。 fragmentation の重い workload では memory
-   効率が下がるが、 v1 ではこれ以上は対処しない (= 将来 v2 で opportunistic
-   evacuation 予定)。
-
-### Q7. immix_gen の minor / major 流れ (§2.11)
-
-**質問**: minor は何で copy する? promote 先はどう特定する? major は何を
-する? young/tenured 判定はどう実装?
-
-**回答**:
-- minor は **半 + 半 Cheney**: young_active が from-space、 young_alt が
-  to-space。 promote は tenured の Immix `hole_alloc` に直接 copy。
-- promote 先の特定: forward 直後の new addr が `in_arena(gc, h)` (= Immix
-  arena 範囲内) なら promoted。 `in_young_to` なら age++ で stay young。
-- gray drain で各 obj を scan、 promoted で `scan_saw_young` なら
-  `H_DIRTY` set + `remset_push` (= GC-internal WB)。
-- major は ① `force_promote=true` で `minor_gc` を呼んで全 young を tenured
-  fold → ② block_meta の `line_marks` を 0 fill → ③ 標準 Immix mark + sweep。
-- 各 obj が 「young | tenured」 の判定は addr range (= `in_arena` /
-  `in_young_active` 等の inline helper) で O(1)。
-
-### Q8. mark_card_gen の card と remset の関係 (§2.13)
+### Q5. mark_card_gen の card と remset の関係 (§2.13)
 
 **質問**: card_dirty と remset_buf 両方を持つのはなぜ? どちらが primary か?
 
@@ -1268,7 +1238,7 @@ dirty_bm は scan 効率化」 の構成。 用途は以下:
 bitmap_gen の slot-level remset と排他で、 fallback ではなく主目的が異なる
 (= 大量 WB workload で remset が爆発するのを page 粗化で抑える testbed)。
 
-### Q9. mark_freelist の位置付けは? (§2.14)
+### Q6. mark_freelist の位置付けは? (§2.14)
 
 **質問**: 9 size class freelist の仕組みは? bump fallback は何? なぜ
 generational なし? mark / mark_compact との関係は?
