@@ -377,7 +377,11 @@ typedef struct CTX_struct {
 // rewrite the slot.  Singletons / immediates / NULL are filtered by the
 // AROH_IS_GC_OBJECT macro in the visitor.
 extern VALUE g_sp_scratch[];
-#define ASCHEME_SP_SCRATCH_SIZE 4096
+/* Sized for deep non-tail recursion (= ack 3 9 needs ~10k frames at
+ * ~5 VALUE slots each).  1M VALUE × 8 bytes = 8 MB BSS — small in
+ * absolute terms and bounded.  Past this the program raises a clean
+ * error via ASTRO_ASSERT in SP_PUSH rather than corrupting memory. */
+#define ASCHEME_SP_SCRATCH_SIZE (1024 * 1024)
 // 3-arg dispatcher: `sp` is a function parameter in every NODE_DEF body.
 // SP_PUSH zero-fills [sp..sp+n) and sets c->sp = sp + n so GC root scan
 // covers the slots.  No local declaration — the caller already has `sp`
