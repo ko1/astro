@@ -16,29 +16,29 @@ ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、
 
 実用 GC algorithm (§2):
 
-| §    | GC= | 名称 | 特長 |
-|------|-----|------|------|
-| 2.1  | 2   | `mark` | mark&sweep。 9 size class slab + page。 generational なし |
-| 2.2  | 3   | `mark_gen` | mark&sweep + 2-gen + N-survive (= age 0..3, promote on 4th survival) |
-| 2.3  | 4   | `mark_gen_inc` | `mark_gen` + incremental marking (SATB barrier)。 ただし INC_WORK_PER_ALLOC=SIZE_MAX で事実上 STW |
-| 2.4  | 5   | `copy` | Cheney semi-space copying。 8 B fwd overlay (= no `gc_fwd` field) |
-| 2.5  | 6   | `copy_gen` | Cheney + 2-gen + 4-面 layout (= 2 young halves + 2 tenured halves) + N-survive |
-| 2.6  | 8   | `mark_compact` | Lisp-2 sliding compactor (mark + fwd-addr + update-ptr + slide) |
-| 2.7  | 9   | `mark_compact_gen` | Cheney nursery (= active + alt) + tenured Lisp-2 slide。 N-survive |
-| 2.8  | 12  | `immix` | Immix line/block mark-region。 32 KiB block × 128 B line。 非 moving |
-| 2.9  | 13  | `immix_gen` | Cheney nursery (= active + alt) + Immix tenured。 N-survive |
-| 2.10 | 14  | `mark_bitmap_gen` | `mark_gen` と意味同等、 metadata を per-page bitmap 化 (= 8 B header)。 N-survive |
-| 2.11 | 15  | `mark_card_gen` | `mark_bitmap_gen` + per-page card-dirty flag (= page 単位 remset)。 N-survive |
-| 2.12 | 16  | `mark_freelist` | mark&sweep、 region + size-class freelist。 generational なし |
+| §    | 名称 | 特長 |
+|------|------|------|
+| 2.1  | `mark` | mark&sweep。 9 size class slab + page。 generational なし |
+| 2.2  | `mark_gen` | mark&sweep + 2-gen + N-survive (= age 0..3, promote on 4th survival) |
+| 2.3  | `mark_gen_inc` | `mark_gen` + incremental marking (SATB barrier)。 ただし INC_WORK_PER_ALLOC=SIZE_MAX で事実上 STW |
+| 2.4  | `copy` | Cheney semi-space copying。 8 B fwd overlay (= no `gc_fwd` field) |
+| 2.5  | `copy_gen` | Cheney + 2-gen + 4-面 layout (= 2 young halves + 2 tenured halves) + N-survive |
+| 2.6  | `mark_compact` | Lisp-2 sliding compactor (mark + fwd-addr + update-ptr + slide) |
+| 2.7  | `mark_compact_gen` | Cheney nursery (= active + alt) + tenured Lisp-2 slide。 N-survive |
+| 2.8  | `immix` | Immix line/block mark-region。 32 KiB block × 128 B line。 非 moving |
+| 2.9  | `immix_gen` | Cheney nursery (= active + alt) + Immix tenured。 N-survive |
+| 2.10 | `mark_bitmap_gen` | `mark_gen` と意味同等、 metadata を per-page bitmap 化 (= 8 B header)。 N-survive |
+| 2.11 | `mark_card_gen` | `mark_bitmap_gen` + per-page card-dirty flag (= page 単位 remset)。 N-survive |
+| 2.12 | `mark_freelist` | mark&sweep、 region + size-class freelist。 generational なし |
 
 特殊用途 backend (§3):
 
-| §   | GC= | 名称 | 特長 |
-|-----|-----|------|------|
-| 3.1 | 1   | `none` | 解放しない。 malloc + leak。 GC overhead = 0 の baseline |
-| 3.2 | 10  | `bump` | bump allocator のみ。 解放しない (= `none` strictly faster baseline) |
-| 3.3 | 11  | `mark_bump_gen` | Cheney nursery (= active + alt) + bump tenured + linear sweep。 tenured は monotonic 増加 (= sweep が free しない testbed)。 N-survive |
-| 3.4 | 17  | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
+| §   | 名称 | 特長 |
+|-----|------|------|
+| 3.1 | `none` | 解放しない。 malloc + leak。 GC overhead = 0 の baseline |
+| 3.2 | `bump` | bump allocator のみ。 解放しない (= `none` strictly faster baseline) |
+| 3.3 | `mark_bump_gen` | Cheney nursery (= active + alt) + bump tenured + linear sweep。 tenured は monotonic 増加 (= sweep が free しない testbed)。 N-survive |
+| 3.4 | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
 
 8 個の `_gen` backend (mark_gen, mark_gen_inc, copy_gen,
 mark_compact_gen, mark_bump_gen, immix_gen, mark_bitmap_gen, mark_card_gen) は
