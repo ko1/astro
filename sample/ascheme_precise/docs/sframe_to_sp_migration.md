@@ -784,60 +784,50 @@ test × stress) を回し、 1 failure でも止まる。
   primitive / 数値タワー / list / string / vector / higher-order / I/O
   を builtin.c (= 1786 行) に分離。 install_prims は main.c に残置
 
-### 次の Phase 2c で解決すべき設計課題
+### Phase 2c 完了 (= 2026-05-26)
 
-**call protocol の sp[] 配置統一**: lref_sp が `sp[idx - nparams]` を
-読むため、 body 起動時の `body_sp` が以下を満たす必要:
-- `body_sp - nparams + idx == arg[idx]` の addr (= 全 closure call path で)
+**実装方針**: 当初想定していた「sp[0]=saved_env、 sp[1]=fn、
+sp[2..]=args」 の grand-unified protocol は実装せず、 もっと小さい
+変更で機能を実現:
 
-現状 `scm_apply` は `sp_base[0] = saved_env` を push してから body を
-EVAL するため、 body_sp = sp_caller + 1 + argc + 1 となり off-by-one。
-patching を有効化するとこの 1 slot ずれが原因で全 closure call が壊れる
-(= 2026-05-26 試行で test 11/17 FAIL を実証)。
+1. **CTX に `frame_sp` を追加** — body 入口の sp 位置を pin する
+   field。 body 内で nested SP_PUSH が走っても影響を受けない fixed
+   reference。 lref_sp / lset_sp は `c->frame_sp[sp_offset]` を読む。
+2. **scm_apply の no_capture 分岐** — `cl->closure.no_capture &&
+   !cl->closure.has_rest` のとき、 新 frame の slots から sp[] へ
+   args を copy し直し、 `c->frame_sp = c->sp` を anchor。 sframe alloc
+   は依然 build_frame_for で行う (= moving GC で root として visit
+   可能なため)。
+3. **dispatcher patching 有効化** — compile_lambda で `body_has_inner_lambda`
+   ならば conservative に `has_outer_ref = true` を強制 (= 内部 lambda
+   が caller の frame を capture する可能性をブロック)。 `has_rest` も
+   同様に patching 対象から除外 (rest list は sp layout に乗らない)。
+4. **node_call_K の no_capture fast path** — call_0/_1/_2/_3/_4 で
+   `!is_tail && no_capture && nparams == K && !has_rest` 一致時に
+   scm_apply / build_frame_for を完全 skip し、 sp[K+1] = saved_env で
+   inline trampoline (= tail_call_pending を観測する for(;;) loop) を
+   実行。 saved env は C-local では moving GC で stale 化するため、
+   sp[] root scan 経由で forward される位置に park する。
+5. **node_loop の no_capture variant** — `no_capture` operand を追加し、
+   loop_args を `c->env->slots[]` ではなく `c->frame_sp[i - nparams]` へ
+   write back。 self-tail-call (m-even?/m-odd? 等の cross-closure) も
+   trampoline で frame_sp を update。
+6. **cross-closure tail-call** — scm_apply_tail_slow / inline
+   scm_apply_tail / scm_apply trampoline に `c->next_no_capture` /
+   `c->next_nparams` を伝搬。 trampoline iteration で no_capture next
+   body であれば `c->next_env->slots` から sp[] へ args を mirror。
 
-**解決案**: call protocol を以下に統一:
+**測定**:
 
-```
-node_call_K の SP_PUSH 範囲:
-  sp_caller[0]   = saved_env (= caller の c->env、 GC root として scan)
-  sp_caller[1]   = fn (= closure VALUE)
-  sp_caller[2..2+argc-1] = args (= arg eval 結果)
-  c->sp = sp_caller + 2 + argc
-  
-scm_apply / scm_apply_tail_slow:
-  - 引数 argv = sp_caller + 2 (= caller が既に置いた sp[])
-  - 引数 saved_env_slot = sp_caller (= caller が既に置いた saved env)
-  - 自身では saved_env push しない
-  - body_sp = c->sp = sp_caller + 2 + argc
-  - body's lref_sp(idx - nparams) = sp[idx - nparams]
-    = sp_caller + 2 + argc + idx - nparams
-    = sp_caller + 2 + idx (= arg[idx] のアドレス) ✓
-```
+| workload     | precise (Phase 2c)  | libgc ascheme  |
+|--------------|----------------------|----------------|
+| fib35 plain  | ~0.70s              | ~0.65s         |
+| 17 tests     | 17/17 PASS          | (n/a)          |
+| 17 stress    | 17/17 PASS          | (n/a)          |
+| R5RS chibi   | 179/179 PASS        | (n/a)          |
+| 16 GC backend matrix | 全 backend PASS | (n/a)       |
 
-これにより patching を有効化しても全 closure call で arg 位置が一致。
-
-**Phase 2c の TODO**:
-1. node_call_K の SP_PUSH を `2 + argc` 化、 sp[0]=saved_env、 sp[1]=fn、
-   sp[2..]=args とする
-2. scm_apply / scm_apply_tail_slow 入口で「caller が saved_env を sp[]
-   に置いた」 前提に依存。 内部で再 push しない
-3. scm_callcc / prim_apply 等の「caller の sp[] convention 外」 で closure
-   を invoke する path は、 自前で同じ layout を sp[] に組む helper
-   `apply_with_sp_setup(c, fn, argv, argc)` を経由
-4. compile_lambda で `no_capture` 時の dispatcher patching を有効化
-5. test 17/17 + R5RS 179/179 PASS で gating
-6. fib35 で plain / AOT bench 計測 (= 期待: plain ~-15%、 AOT ~-40%)
-7. commit
-
-### Phase 3+ (= sframe 完全廃止) の前提
-
-Phase 2c が完走したら、 sframe を持つ closure (= has_outer_ref=true) も
-sp[] frame + closure->captured[] box pattern に統合する Phase 3 へ移行。
-
-Phase 2c だけでも fib35 等の `no_capture leaf` 系で libgc 並み perf 達成
-の見込み (= 中間 milestone として価値あり)。 Phase 3 で残りの工程。
-
-### 進捗 commit (= 2026-05-26)
+**進捗 commit (= 2026-05-26)**:
 
 | commit | 内容 |
 |---|---|
@@ -845,5 +835,22 @@ Phase 2c だけでも fib35 等の `no_capture leaf` 系で libgc 並み perf �
 | `237d5f2d` | Phase 2a — no_capture flag |
 | `db39603c` | Phase 2b foundation — NODE_DEF + pending tracking |
 | `c5e0a6ba` | builtin.c 分離 |
+| `09c43d1b` | **Phase 2c core** — frame_sp + dispatcher patching + cross-closure tail |
+| `4e87a79a` | Phase 2c follow-up — call_0/_2/_3/_4 fast path + GC-safe saved env |
+| `e67bfac6` | Phase 2c follow-up — GC=none variant frame_sp setup |
 
-次セッションは Phase 2c の call protocol 統一から再開。
+### Phase 3+ (= sframe 完全廃止) の前提
+
+sframe を持つ closure (= has_outer_ref=true) も sp[] frame +
+closure->captured[] box pattern に統合する Phase 3 へ移行。 これは
+内部 lambda を持つ closure や cross-lambda capture を扱う path。
+工程の例:
+
+- `(lambda (x) (lambda (y) (+ x y)))` 系で outer の x を box にして
+  inner closure の captured[] に格納
+- set! を boxed slot 経由で行う mutation protocol
+- box の lifetime 管理 (= 親 lambda 復帰時に箱の中身を残す)
+
+Phase 2c だけで fib35 / 09_tco / 10_classics 等の `no_capture leaf` 系
+ワークロードで libgc 並み perf を達成済み。 Phase 3 は has_outer_ref
+系で残る ~10% の性能差を詰める追加最適化。
