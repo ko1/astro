@@ -512,3 +512,94 @@ precise GC framework + ascheme は **libgc に対して**:
   `immix` (= 非 gen variant)
 - **audit / debug 兼用**: `copy_scramble` (= overhead 微小、 stress + scramble で
   precise rooting バグを即時検出)
+
+---
+
+## 9. Phase 2c+ migration: sframe → sp[] frame + AOT 再評価 (2026-05-26)
+
+### 9.1 sframe → sp[] frame migration の到達点
+
+`docs/sframe_to_sp_migration.md` に従って migration を実施した結果、
+**no_capture leaf closure (= 内部 lambda を持たず、 outer var への
+depth>=1 lref も無い)** は sframe alloc を完全に skip して sp[]
+frame で実行できるようになった。 capture を持つ closure は依然 sframe
+を使うが、 これは "capture を持つには heap-resident な storage が
+fundamental に必要" な制約なので Phase 7 (= sframe 完全削除) は
+意味的に無効化と判断 (= alloc 1 回/call は不可避)。
+
+**実装した phase** (commit hash 順):
+
+| commit | phase | 内容 |
+|---|---|---|
+| `435ffd57` | 1   | parser に sp_offset operand 追加 |
+| `237d5f2d` | 2a  | closure.no_capture flag |
+| `db39603c` | 2b  | NODE_DEF lref_sp / lset_sp 併設 (patching off) |
+| `09c43d1b` | 2c  | no_capture body の sp[] frame 化 (patching on) |
+| `4e87a79a` | 2c' | call_0/_2/_3/_4 fast path 展開 + GC-safe saved env |
+| `e67bfac6` | 2c'' | GC=none variant の frame_sp setup |
+| `642748ce` | 5   | call/cc で sp / frame_sp save/restore |
+| `9888ec0e` | 9   | AOT auto-load + profiling 漏れ修正 |
+| `010193dc` | 9'  | HASH cache 撤去 + node_loop dispatch_cnt |
+
+### 9.2 AOT 効果 (= big benches、 copy backend)
+
+`bench/big/*.scm` を `--pg-compile` → SD 生成 → 通常 run で AOT 適用。
+plain と AOT cached の elapsed (sec, best of 3):
+
+| bench     | plain | AOT cached | speedup |
+|-----------|-------|------------|---------|
+| fib35     | 0.69  | 0.32       | 2.16×   |
+| sumloop   | 2.37  | 0.65       | 3.65×   |
+| sieve_big | 1.64  | 0.65       | 2.52×   |
+| deriv     | 1.41  | 1.18       | 1.19×   |
+| nqueens   | 3.04  | 1.20       | 2.53×   |
+| fannkuch  | 1.56  | 1.10       | 1.41×   |
+| cps_loop  | 1.28  | 0.34       | 3.75×   |
+
+geomean speedup **2.20×**。 self-tail-call loop (sumloop / cps_loop) と
+list-heavy interp loop (sieve_big / nqueens) で 2.5×〜3.7× の加速、
+recursion-bound (fib35) で 2.16×、 array/symbolic op (deriv) で 1.19× と
+最も低い。
+
+### 9.3 plain interpreter のみで他 Scheme と比較
+
+`bench/cross/*.scm` (= fib35 / tarai / ack / sum / sieve / nqueens)
+を 6 つの主流 Scheme 実装で計測 (= chez 9.5.8 / racket 8.10 / gambit
+4.9.3 / chibi 0.9.1 / guile-3.0.9 / chicken 5)。 best of 3 elapsed sec:
+
+| bench   | prec-AOT | prec-plain | chez  | racket | gambit | chibi | guile-3.0 | chicken |
+|---------|----------|------------|-------|--------|--------|-------|-----------|---------|
+| fib35   | **0.33** | 0.71       | 0.18  | 0.28   | 4.07   | 1.52  | 5.18      | 7.11    |
+| tarai   | **0.14** | 0.33       | 0.12  | 0.21   | 1.56   | 0.76  | 2.82      | 2.70    |
+| ack     | **0.13** | 0.50       | 0.10  | 0.22   | 1.85   | 0.75  | 2.48      | 3.14    |
+| sum     | **0.09** | 0.25       | 0.10  | 0.20   | 1.57   | 0.66  | 2.12      | 2.74    |
+| sieve   | 2.01     | 2.72       | 0.27  | 0.40   | 5.91   | 8.85  | 6.44      | 7.88    |
+| nqueens | **0.20** | 0.26       | 0.09  | 0.20   | 0.47   | 0.95  | 1.21      | 1.17    |
+
+**観察**:
+- **ascheme_precise AOT は chez (native compile) / racket (cs JIT) に
+  次ぐ 3 位**。 sum / ack で chez を上回り、 fib35 / tarai / nqueens は
+  chez の 0.7-1.5× と非常に競争的。
+- sieve は 7× 遅い (= sieve は cons-heavy + capturing lambda が hot で、
+  Phase 2c の no_capture optimization が効きにくいワークロード)。
+- **plain interpreter (= AOT 無し) ですら gambit gsi / guile-3.0 / chicken
+  csi / chibi-scheme を上回る**。 plain interpreter として最速級。
+
+### 9.4 残課題 (= Phase 3-8 を縮小した理由)
+
+original migration plan の Phase 3 (= 全 closure を sp[] 化) と Phase 7
+(= sframe 完全削除) は次の理由で実用的価値が薄いと判明:
+
+- capture を持つ closure は heap-resident な slot storage が必要 (=
+  inner lambda が outer's frame を escape する semantics 上)。 box 方式
+  (= 各 captured slot を 1-VALUE box obj に分離) を採っても per-call
+  box alloc 1 回 ≈ per-call sframe alloc 1 回 で heap traffic は同等
+- 従って sframe を delete しても renaming に等しく perf gain なし
+- fib35 / sumloop / cps_loop 等は既に no_capture path で chez 級の速度
+  に到達済。 sieve のような capture-heavy が遅いのは sframe alloc cost
+  というより interpreter dispatch overhead が dominant
+
+そのため Phase 3 / Phase 7 / Phase 8 は **scope reduction** とし、 sframe
+は capture を持つ closure 専用の per-call storage として残置。 次の
+optimization 候補は dispatch overhead 自体の削減 (= inline cache、 type
+specialization 等)。
