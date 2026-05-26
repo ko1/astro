@@ -611,3 +611,77 @@ original migration plan の Phase 3 (= 全 closure を sp[] 化) と Phase 7
 は capture を持つ closure 専用の per-call storage として残置。 次の
 optimization 候補は dispatch overhead 自体の削減 (= inline cache、 type
 specialization 等)。
+
+### 9.5 AOT asm-level analysis (2026-05-26)
+
+fib35 AOT (= `SD_5686e442f5dbe03a` = fib body inlined) を objdump + perf
+record で解析した結果:
+
+| metric | value |
+|---|---|
+| cycles    | 0.89 G |
+| instructions | 3.6 G |
+| IPC       | **4.04** |
+| branch miss | 0.03% |
+| L1-d miss | negligible |
+
+IPC 4 はバックエンドポート完全飽和に近く、 microarch 的にはほぼ理論
+上限。 一方 chez 9.5.8 は 0.18s で 720 M cycles 程度なので、 **同じ
+microarch で chez は ~30 cycles/call、 prec-AOT は ~50 cycles/call**。
+gap は instruction count に由来 — prec-AOT は per-call 100 inst 程度、
+chez は 20-30 inst 程度と推定。
+
+#### hot path 内訳 (= fib body 1 recursion 分)
+
+1. `gref("fib")` cache check + load (≈ 6 inst)
+2. arith fast path (= `(- n 1)` fixnum sub) (≈ 8 inst)
+3. SP_PUSH zero (`vmovdqu %xmm0, ...`) — GC-safety の slot pre-init (5 inst)
+4. closure shape guard (`cmpb 0x21(%rsi)`, `cmpq 0x18(%rsi)`) (≈ 6 inst)
+5. body dispatcher 呼び出し (= `call *0x30(%rsi)` indirect) (1 inst)
+6. tail_call_pending check + trampoline exit (≈ 5 inst)
+7. frame_sp / env restore (≈ 6 inst)
+
+合計 ~37 inst × 2 calls/recursion + overhead = ~100 inst/recursion で
+計測値と整合。
+
+#### 残る gap の構造的原因
+
+- **indirect call**: `call *body->head.dispatcher` は 2-level の load
+  (closure→body, body→dispatcher) + indirect branch。 chez は直接呼出
+  (= compiler-resolved direct CALL)。
+- **GC-safety の sp[] root scan**: SP_PUSH が毎 call 2-4 slot を zero。
+  caller の arg dispatcher が GC-safe (= node_lref_sp + node_const_*)
+  でも、 NODE_DEF body は callee 側で zero してしまう。
+- **trampoline loop**: cross-closure tail-call を catch する `for(;;)`
+  ループ + tail_call_pending check が毎 call 走る。 fib body は実際は
+  pending を立てないが、 check 自体は構造上残る。
+
+これらは static framework-level の制約。 chez 級にするには per-callsite
+direct-call specialization (= inline cache + body dispatcher pinning) と
+GC-safe-arg ベースの SP_PUSH skipping、 trampoline loop の hoist-out が
+必要で、 framework architecture-level の変更となる。
+
+#### 実装可能な近場最適化 (実験結果)
+
+`node_loop` の非 leaf branch (= 各 iter ごと fresh sframe alloc) を leaf
+branch (= WB-in-place 上書き) に置き換える sieve_big 12% 高速化の上限を
+確認したが、 test/17_vector_closures (= 各 iter の i を closure で capture
+する R5RS spec 準拠 test) で 30→100 に semantics 破壊。 安全に取るには
+escape analysis (= inner lambda の値が outer frame の lifetime を超えて
+escape するか) の実装が必要。 short-term 投資対効果が見合わないので
+todo に保留。
+
+### 9.6 fuzzer 拡張 + bug discovery (2026-05-26)
+
+`test/fuzz/fuzz.rb` (1600+ lines) を comprehensive 化:
+- 106 template + 9 structural generators
+- 4-mode matrix (plain / stress / aot / aot-stress)
+- mutation + crossover via dynamic CORPUS
+- chez 9.5.8 を oracle として comparison
+- `make fuzz` / `fuzz-quick` / `fuzz-all` rule + COV=1 gcov
+
+`#182` (= compile-time stress GC で symbol name pointer corruption) を
+発見・修正済。 60+ seed 15+ run の sustained sweep で false-positive
+1 件 (= `gen_call_n_tail` の loop counter が `rnum` 経由で 2^40 bignum
+を引いて legitimate timeout) を特定・generator 側で fix。 0 genuine bug
+in 24,000+ runs at the post-fix baseline。

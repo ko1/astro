@@ -853,7 +853,9 @@ def gen_call_n_tail
   # Self-tail-call with 5+ args — exercises node_self_tail_call_global_K but K>4 path
   # actually ascheme has self_tail_call_global only up to K=4, so K>=5 falls
   # back to node_call_n with is_tail=1.
-  args = (1..6).map { rnum }
+  # Cap the loop counter (= p0) to a small int so we don't time out on bignum
+  # iterations.
+  args = [rand(200) + 5] + (1..5).map { rnum }
   params = (0...6).map { |i| "p#{i}" }
   <<~SCM
     (define (f #{params.join(' ')})
