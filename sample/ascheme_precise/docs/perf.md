@@ -565,7 +565,15 @@ recursion-bound (fib35) で 2.16×、 array/symbolic op (deriv) で 1.19× と
 
 `bench/cross/*.scm` (= fib35 / tarai / ack / sum / sieve / nqueens)
 を 6 つの主流 Scheme 実装で計測 (= chez 9.5.8 / racket 8.10 / gambit
-4.9.3 / chibi 0.9.1 / guile-3.0.9 / chicken 5)。 best of 3 elapsed sec:
+4.9.3 / chibi 0.9.1 / guile-3.0.9 / chicken 5)。 best of 3 elapsed sec。
+
+**ascheme_precise の GC** は `copy` (= Cheney semi-space、 default
+backend) を使用。 §1〜§5 の matrix で示した通り、 主流 backend
+(`copy` / `copy_gen` / `immix` / `immix_gen`) は ±5% 以内で互角なので、
+この cross-Scheme 比較は backend 選択に対して頑健。 他処理系の GC は
+chez = native incremental generational、 racket = native incremental
+generational、 guile = libgc (BDW conservative)、 gambit = own mark&sweep、
+chicken = Cheney over C stack、 chibi = own mark&sweep。
 
 | bench   | prec-AOT | prec-plain | chez  | racket | gambit | chibi | guile-3.0 | chicken |
 |---------|----------|------------|-------|--------|--------|-------|-----------|---------|
