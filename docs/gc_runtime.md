@@ -25,12 +25,11 @@ ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、
 | 2.5  | 6   | `copy_gen` | Cheney + 2-gen + 4-面 layout (= 2 young halves + 2 tenured halves) + N-survive |
 | 2.6  | 8   | `mark_compact` | Lisp-2 sliding compactor (mark + fwd-addr + update-ptr + slide) |
 | 2.7  | 9   | `mark_compact_gen` | nursery 4-面 + tenured Lisp-2 slide。 N-survive |
-| 2.8  | 11  | `mark_bump_gen` | 4-面 nursery + bump tenured + linear sweep。 N-survive |
-| 2.9  | 12  | `immix` | Immix line/block mark-region。 32 KiB block × 128 B line。 非 moving |
-| 2.10 | 13  | `immix_gen` | 4-面 nursery + Immix tenured。 N-survive |
-| 2.11 | 14  | `mark_bitmap_gen` | `mark_gen` と意味同等、 metadata を per-page bitmap 化 (= 8 B header)。 N-survive |
-| 2.12 | 15  | `mark_card_gen` | `mark_bitmap_gen` + per-page card-dirty flag (= page 単位 remset)。 N-survive |
-| 2.13 | 16  | `mark_freelist` | mark&sweep、 region + size-class freelist。 generational なし |
+| 2.8  | 12  | `immix` | Immix line/block mark-region。 32 KiB block × 128 B line。 非 moving |
+| 2.9  | 13  | `immix_gen` | 4-面 nursery + Immix tenured。 N-survive |
+| 2.10 | 14  | `mark_bitmap_gen` | `mark_gen` と意味同等、 metadata を per-page bitmap 化 (= 8 B header)。 N-survive |
+| 2.11 | 15  | `mark_card_gen` | `mark_bitmap_gen` + per-page card-dirty flag (= page 単位 remset)。 N-survive |
+| 2.12 | 16  | `mark_freelist` | mark&sweep、 region + size-class freelist。 generational なし |
 
 特殊用途 backend (§3):
 
@@ -38,7 +37,8 @@ ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、
 |-----|-----|------|------|
 | 3.1 | 1   | `none` | 解放しない。 malloc + leak。 GC overhead = 0 の baseline |
 | 3.2 | 10  | `bump` | bump allocator のみ。 解放しない (= `none` strictly faster baseline) |
-| 3.3 | 17  | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
+| 3.3 | 11  | `mark_bump_gen` | 4-面 nursery + bump tenured + linear sweep。 tenured は monotonic 増加 (= sweep が free しない testbed)。 N-survive |
+| 3.4 | 17  | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
 
 8 個の `_gen` backend (mark_gen, mark_gen_inc, copy_gen,
 mark_compact_gen, mark_bump_gen, immix_gen, mark_bitmap_gen, mark_card_gen) は
@@ -87,6 +87,7 @@ GC=none(1)  mark(2)  mark_gen(3)  mark_gen_inc(4)  copy(5)  copy_gen(6)
 ```
 
 ID 7 は旧 `copy_gen_inc` の予約 hole (= 撤去済、 将来 backend 追加時の slot)。
+表記の順序は §2 / §3 のカテゴリではなく build ID 順 (= 既存表現を維持。 §2 は実用 12 個 / §3 は特殊用途 4 個。 build ID は不変)。
 
 備考:
 - 他の sample (`naruby`, `baruby`, `pystro`, `arcel` 等) は libgc / 独自 GC を使っており、 本 doc の対象外。
@@ -95,7 +96,7 @@ ID 7 は旧 `copy_gen_inc` の予約 hole (= 撤去済、 将来 backend 追加�
 
 ## 2. 各アルゴリズム紹介
 
-§2 には 13 個の実用 GC algorithm を記載 (= 旧 14 個から `copy_gen_inc` を削除済、 build option ID 7 は将来追加時のために予約 hole)。
+§2 には 12 個の実用 GC algorithm を記載 (= 旧 13 個から `mark_bump_gen` を §3 特殊用途に移動済、 build option ID 7 は将来追加時のために予約 hole)。
 
 各 backend は 5 subsection に分けて記述する:
 
@@ -538,66 +539,9 @@ heap growth/shrink: tenured は major で slide により縮む (= top が後退
 - minor: gc_fwd != NULL → fwd 返却 (= forwarded young)、 young_from 内なら NULL、 それ以外 alive
 - major: MARKED → gc_fwd 返却 (= slide 後 addr)、 そうでなければ NULL
 
-### 2.8 mark_bump_gen
+### 2.8 immix
 
 #### 2.8.1 概要
-
-4-面 nursery + bump tenured + linear sweep。 nursery は Cheney で copy、
-tenured は bump で linear (= 移動なし)。 major sweep は実は free しない (=
-mark を clear するだけ)、 詳細は問題報告 (2.8.6) を参照。 backend の
-位置付け (= 「mark_gen + bump tenured」と「copy nursery + bump tenured」の
-どちらが正確か) は §6 Q3 参照。
-
-#### 2.8.2 パラメータ
-
-- `YOUNG_BYTES = 16 MiB` × 2
-- `TENURED_BYTES = 64 GiB` 単一
-- `PROMOTE_AGE = 3`
-- `MAJOR_THRESHOLD_MIN = 16 MiB`
-
-#### 2.8.3 データ構造
-
-- 2.5 の young + 単一 tenured bump region
-- 8 B header + fwd overlay
-- gc_flags layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, FREE=0x8, FORWARDED=0x10, AGE=bits 5-6
-- remset_buf、 scan_buf (= 別 queue、 major で promoted の transitive scan 用)、 gray_buf
-
-#### 2.8.4 アルゴリズム詳細
-
-minor: 2.5 と同じ。 promote 先は tenured bump (= `tenured_top` 前進のみ)。
-
-major phases:
-1. `force_promote = true` で全 young を tenured に Cheney copy (= forward + MARKED)
-2. mark + transitive scan (`major_process` × gray_buf + scan_buf)
-3. finalize_walk
-4. **"sweep"**: tenured を線形走査、 marked は MARKED + DIRTY clear、 **unmarked
-   は何もしない**(= bump pointer は戻らない、 freelist もない)
-
-**実装の問題 (2.8.6)**: コメントは「Linear sweep tenured: free unmarked」と
-書いているが、 実装は MARKED clear のみで free していない。 unmarked tenured
-slot は heap に残り続け、 `tenured_top` も戻らない。 「bump tenured で free
-しない」設計の testbed としては意図通りだが、 docstring は実装と乖離している
-(= "free unmarked" が嘘)。 今後 doc コメント修正か、 freelist を実装するか
-の二択。
-
-計算量:
-- minor: O(young live + remset)
-- major: O(young live + tenured slots)
-- WB hot path: bit-in-head OLD=0x2, DIRTY=0x4
-
-heap growth/shrink: tenured は **monotonic 増加** (= 縮まない)。 OOM までは
-増え続ける設計。 64 GiB virt が実 limit。
-
-#### 2.8.5 finalizer 実装
-
-`aro_gc_finalize_check`:
-- HDR_FORWARDED → fwd_overlay
-- minor: young_from 内なら NULL、 それ以外 alive
-- major: MARKED ならば alive、 そうでなければ NULL
-
-### 2.9 immix
-
-#### 2.9.1 概要
 
 Immix line/block mark-region (Blackburn-McKinley 2008)。 mark は line
 単位、 alloc は line 単位の hole 内で bump。 v1 は **非 moving** (=
@@ -635,7 +579,7 @@ marked line の間に hole が残っても OK で alloc は次の hole を使う
 fragmentation が重い workload では memory 効率が下がるが v1 はこれ以上
 対処しない (= v2 で opportunistic evacuation 予定)。
 
-#### 2.9.2 パラメータ
+#### 2.8.2 パラメータ
 
 - `LINE_BYTES = 128`
 - `BLOCK_BYTES = 32 KiB`
@@ -644,7 +588,7 @@ fragmentation が重い workload では memory 効率が下がるが v1 はこ�
 - `MEDIUM_MAX = 16 KiB` (= block の半分超は large)
 - `GC_THRESHOLD_MIN = 16 MiB`、 `GC_THRESHOLD_FACTOR = 2`
 
-#### 2.9.3 データ構造
+#### 2.8.3 データ構造
 
 - `arena_base` (= 64 GiB virt MAP_NORESERVE) + `cur_ptr` / `cur_end`
 - `blocks[]` (= 別 mmap、 `BlockMeta { state, line_marks[256] }` × N_BLOCKS、 lazy paged)
@@ -656,7 +600,7 @@ fragmentation が重い workload では memory 効率が下がるが v1 はこ�
 - `gray_buf[]`
 - finalize_list 共通
 
-#### 2.9.4 アルゴリズム詳細
+#### 2.8.4 アルゴリズム詳細
 
 alloc: `aro_gc_alloc_raw`:
 1. 閾値 check → 超で `gc_collect_internal`
@@ -686,23 +630,23 @@ heap growth/shrink: arena は 64 GiB virt 予約。 物理は block touch で増
 sweep で BLK_FREE になっても `madvise(DONTNEED)` は未呼出 (= 物理 release
 されない)。 large obj だけ free 時 munmap。
 
-#### 2.9.5 finalizer 実装
+#### 2.8.5 finalizer 実装
 
 `aro_gc_finalize_check`: `gc_flags == cur_epoch` ならば payload (= alive、 非 moving)、
 それ以外 NULL。 `cur_epoch++` を walk **の後**に行う必要あり (= walk 中は
 完了 epoch を読む)。 実装通り。
 
-### 2.10 immix_gen
+### 2.9 immix_gen
 
-#### 2.10.1 概要
+#### 2.9.1 概要
 
 世代別 Immix。 nursery は Cheney 半 + 半 (= 16 MiB × 2)、 tenured は Immix 単独
 arena。 minor で N-survive promote 先は `hole_alloc_header` (= Immix の bump)。
 major は force_promote_all + Immix line-mark sweep。 各 obj の young / tenured
 判定は addr range で O(1) (= `in_arena` / `in_young_active` 等の inline
-helper)。 Immix 自体の背景は §2.9 概要を参照。
+helper)。 Immix 自体の背景は §2.8 概要を参照。
 
-#### 2.10.2 パラメータ
+#### 2.9.2 パラメータ
 
 - nursery: `NURSERY_BYTES = 16 MiB` × 2
 - tenured Immix: `LINE_BYTES = 128`, `BLOCK_BYTES = 32 KiB`,
@@ -711,10 +655,10 @@ helper)。 Immix 自体の背景は §2.9 概要を参照。
 - `MAJOR_THRESHOLD_MIN = 16 MiB`、 `MAJOR_THRESHOLD_FACTOR = 2`
 - `MAX_REMSET_ENTRIES = 1 << 17`、 `REMSET_PRESSURE_THRESH = MAX - 1`
 
-#### 2.10.3 データ構造
+#### 2.9.3 データ構造
 
 - nursery: `young_active_base` / `young_top` / `young_alt_base`
-- tenured: 2.9 と同じ Immix (arena + blocks + cur_ptr/end + max_touched_block)
+- tenured: 2.8 と同じ Immix (arena + blocks + cur_ptr/end + max_touched_block)
 - gc_flags layout: EPOCH=bits 0-7, OLD=0x100, DIRTY=0x200, FORWARDED=0x400, AGE=bits 11-12
 - Cheney scratch: `young_from_base/end`、 `young_to_base/top/end`
 - `remset_buf[]` (= AroObjectHeader *、 同じ overflow 戦略だが pressure-based)、
@@ -722,7 +666,7 @@ helper)。 Immix 自体の背景は §2.9 概要を参照。
 - `gray_buf[]`、 `in_minor` / `force_promote` / `scan_saw_young` flags
 - LargeObj mmap-backed list
 
-#### 2.10.4 アルゴリズム詳細
+#### 2.9.4 アルゴリズム詳細
 
 alloc: `nursery_bump` (= young_top bump、 閾値超で `nursery_collect_cold` 経由 minor or major)。 large は直接 `large_alloc`。
 
@@ -755,16 +699,16 @@ major phases:
 
 heap growth/shrink: nursery + arena ともに virt 予約、 grow なし shrink なし。
 
-#### 2.10.5 finalizer 実装
+#### 2.9.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - HDR_FORWARDED → fwd_overlay (= promoted nursery、 大 obj は移動しない)
 - in_minor: young_from 内なら NULL、 それ以外 (= tenured) alive
 - major: HDR_EPOCH == cur_epoch → alive、 そうでなければ NULL
 
-### 2.11 mark_bitmap_gen
+### 2.10 mark_bitmap_gen
 
-#### 2.11.1 概要
+#### 2.10.1 概要
 
 `mark_gen` と意味同等 (= sticky mark + 2-gen + remset + N-survive)、 metadata を
 per-page bitmap 化:
@@ -772,7 +716,7 @@ per-page bitmap 化:
 - page は 16 KiB **aligned** mmap (= over-mmap + trim、 `page_of(obj) = obj & ~16383`)
 - N-survive 化完了 (= 旧 doc の "debug 中" は古い)
 
-#### 2.11.2 パラメータ
+#### 2.10.2 パラメータ
 
 - `NUM_SIZE_CLASSES = 9`、 `PAGE_SIZE = 16 KiB`
 - `MAX_SLOTS_PER_PAGE = 512`、 `BITMAP_BYTES = 64`
@@ -780,7 +724,7 @@ per-page bitmap 化:
 - `MAJOR_THRESHOLD_MIN = 16 MiB`、 `MINOR_THRESHOLD = 16 MiB`
 - `PROMOTE_AGE = 3`、 `MAX_REMSET_ENTRIES = 1 << 17`
 
-#### 2.11.3 データ構造
+#### 2.10.3 データ構造
 
 - `page_head[9]` (= 16 KiB-aligned mmap 直で取得 / over-mmap then trim)
 - `Page` (208 B): `{ next, class_idx, n_slots, _pad, mark_bm[64], old_bm[64], dirty_bm[64] }` + slots
@@ -790,7 +734,7 @@ per-page bitmap 化:
 - `remset_buf[]` (= AroObjectHeader *)、 `remset_overflow`、 `promoted_buf[]`、 `gray_buf[]`
 - `size_class_shift[9]` (= clz 最適化、 3072 だけ shift=0 で div fallback)
 
-#### 2.11.4 アルゴリズム詳細
+#### 2.10.4 アルゴリズム詳細
 
 alloc: 2.1 と同様 slab + bitmap (= alloc 時 `bm_clr(mark_bm, idx)` 等は
 不要、 freelist 初期値で 0)。
@@ -828,7 +772,7 @@ major phases:
 heap growth/shrink: page-on-demand。 sweep で全空 page も munmap せず保持
 (= mark / mark_gen と同様)。
 
-#### 2.11.5 finalizer 実装
+#### 2.10.5 finalizer 実装
 
 `aro_gc_finalize_check`:
 - minor: `get_old` → alive、 `get_mark` → alive、 どちらでもなければ NULL
@@ -836,9 +780,9 @@ heap growth/shrink: page-on-demand。 sweep で全空 page も munmap せず保�
 
 非 moving、 payload addr 不変。
 
-### 2.12 mark_card_gen
+### 2.11 mark_card_gen
 
-#### 2.12.1 概要
+#### 2.11.1 概要
 
 `mark_bitmap_gen` + per-page `card_dirty` flag + page-level remset。 slot 単位
 の dirty_bm に加え page 全体が「remset に居る」 flag を持つ。
@@ -849,21 +793,21 @@ heap growth/shrink: page-on-demand。 sweep で全空 page も munmap せず保�
 
 remset は **page 単位** に粗化されている。 card_dirty と dirty_bm の役割
 分担 / 「両持ち」 ではなく「page-level remset が main」 である点の設計
-議論は §6 Q4 参照。
+議論は §6 Q3 参照。
 
-#### 2.12.2 パラメータ
+#### 2.11.2 パラメータ
 
-- 2.11 と同じ + `card_dirty` per page (= 1 byte)
+- 2.10 と同じ + `card_dirty` per page (= 1 byte)
 
-#### 2.12.3 データ構造
+#### 2.11.3 データ構造
 
 - `Page` (208 B): bitmap_gen に `card_dirty` byte を追加した layout
 - `remset_buf[]` (= `Page **` 型、 size_t cnt / capa)
 - 上限なし (= heap page 数で自然境界)
 
-#### 2.12.4 アルゴリズム詳細
+#### 2.11.4 アルゴリズム詳細
 
-alloc: 2.11 と同じ slab。
+alloc: 2.10 と同じ slab。
 
 minor phases:
 1. roots → mark → process_gray
@@ -884,33 +828,33 @@ major phases:
 - WB hot path: `(get_old, !card_dirty) ⇒ set dirty_bm + card + push_page`、
   「同 page への 2回目以降の WB は card_dirty=1 で早期 return」
 - minor remset 圧縮: O(page数 × n_slots) (= page 単位の粗化、 bitmap_gen より cache friendly)
-- 他は 2.11 と同じ
+- 他は 2.10 と同じ
 
-heap growth/shrink: 2.11 と同じ。
+heap growth/shrink: 2.10 と同じ。
 
-#### 2.12.5 finalizer 実装
+#### 2.11.5 finalizer 実装
 
-2.11 と同じ。
+2.10 と同じ。
 
-### 2.13 mark_freelist
+### 2.12 mark_freelist
 
-#### 2.13.1 概要
+#### 2.12.1 概要
 
 mark&sweep、 単一 region + size-class freelist。 region 内に bump で append、
 sweep で unmarked を class 別 freelist に戻す (= region pointer は戻らない)。
 fragmentation 観察用 testbed。
 
 freelist の構造 (= slot 単位 LIFO chain)、 bump fallback、 non-generational
-である理由、 mark / mark_compact との位置付けは §6 Q5 参照。
+である理由、 mark / mark_compact との位置付けは §6 Q4 参照。
 
-#### 2.13.2 パラメータ
+#### 2.12.2 パラメータ
 
 - `NUM_SIZE_CLASSES = 9`、 `size_class_bytes = {32..4096}`
 - `MAX_SLOT_BYTES = 4096`
 - `REGION_BYTES = 64 GiB` 仮想
 - `GC_THRESHOLD_MIN = 16 MiB`、 `GC_THRESHOLD_FACTOR = 2`
 
-#### 2.13.3 データ構造
+#### 2.12.3 データ構造
 
 - 単一 region (= `region_base/top/end`、 `MAP_NORESERVE` 64 GiB)
 - `freelist[9]` (= class 別 LIFO free chain)
@@ -921,7 +865,7 @@ freelist の構造 (= slot 単位 LIFO chain)、 bump fallback、 non-generation
 free slot は `gc_size` を class slot size に書換 (= sweep 線形 walker が次
 slot へ進むため)。 link は payload offset 8 の overlay。
 
-#### 2.13.4 アルゴリズム詳細
+#### 2.12.4 アルゴリズム詳細
 
 alloc: `alloc_slot`:
 1. slot_total > MAX_SLOT_BYTES → `alloc_large`
@@ -945,15 +889,17 @@ collect phases:
 heap growth/shrink: region は `region_top` まで増加、 縮まない (= bump pointer は
 sweep でも戻らない)。 64 GiB virt が限界。 large obj は free 時 munmap。
 
-#### 2.13.5 finalizer 実装
+#### 2.12.5 finalizer 実装
 
 `aro_gc_finalize_check`: HDR_MARKED → alive、 NULL otherwise (= 非 moving)。
 
 ## 3. 特殊用途 backend
 
-ここで挙げる 3 つは GC algorithm として実用される backend ではなく、 特定
+ここで挙げる 4 つは GC algorithm として実用される backend ではなく、 特定
 の目的に特化した参照実装。 `none` と `bump` は GC overhead を排除した上限
-性能の baseline (= §2 各 backend の overhead 計測の対照値)、 `copy_scramble`
+性能の baseline (= §2 各 backend の overhead 計測の対照値)、 `mark_bump_gen`
+は bump promote した tenured を回収しない場合の挙動を測定する testbed (=
+major sweep が unmarked tenured を free せず monotonic 増加)、 `copy_scramble`
 は stale VALUE slot を SEGV で炙り出す audit / debug backend。 bench の参照値
 および runtime の verification にのみ意義があり、 production の GC 選択肢
 としては想定しない。
@@ -1022,25 +968,80 @@ heap growth/shrink: 64 GiB virtual 予約のため成長なし、 縮小なし�
 
 `none` と同じ。 alive-forever。
 
-### 3.3 copy_scramble
+### 3.3 mark_bump_gen
 
 #### 3.3.1 概要
+
+4-面 nursery + bump tenured + linear sweep。 nursery は Cheney で copy、
+tenured は bump で linear (= 移動なし)。 major sweep は **unmarked tenured
+を free せず**、 mark を clear するのみ。 結果として tenured は monotonic に
+増え、 OOM か 64 GiB virt 上限まで進む。 「bump で promote させて回収しない」
+場合の挙動を観察する testbed であり、 実用 GC ではない (= だから §3 に
+所属する)。 「copy_gen で promote した tenured を free しない」 という見方は
+誤読しやすく、 正確には 「nursery は Cheney (= copy)、 tenured は bump で
+append のみ、 sweep は mark bit を見るだけで freelist は持たない」。
+「mark_gen + bump tenured」 と呼ぶよりは 「copy nursery + bump tenured (=
+純粋 append)」 が正確。 C コメントとの乖離は §5.1 を参照。
+
+#### 3.3.2 パラメータ
+
+- `YOUNG_BYTES = 16 MiB` × 2
+- `TENURED_BYTES = 64 GiB` 単一
+- `PROMOTE_AGE = 3`
+- `MAJOR_THRESHOLD_MIN = 16 MiB`
+
+#### 3.3.3 データ構造
+
+- 2.5 の young + 単一 tenured bump region
+- 8 B header + fwd overlay
+- gc_flags layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, FREE=0x8, FORWARDED=0x10, AGE=bits 5-6
+- remset_buf、 scan_buf (= 別 queue、 major で promoted の transitive scan 用)、 gray_buf
+
+#### 3.3.4 アルゴリズム詳細
+
+minor: 2.5 と同じ。 promote 先は tenured bump (= `tenured_top` 前進のみ)。
+
+major phases:
+1. `force_promote = true` で全 young を tenured に Cheney copy (= forward + MARKED)
+2. mark + transitive scan (`major_process` × gray_buf + scan_buf)
+3. finalize_walk
+4. **"sweep"**: tenured を線形走査、 marked は MARKED + DIRTY clear、 **unmarked
+   は何もしない**(= bump pointer は戻らない、 freelist もない)
+
+計算量:
+- minor: O(young live + remset)
+- major: O(young live + tenured slots)
+- WB hot path: bit-in-head OLD=0x2, DIRTY=0x4
+
+heap growth/shrink: tenured は **monotonic 増加** (= 縮まない)。 OOM までは
+増え続ける設計。 64 GiB virt が実 limit。
+
+#### 3.3.5 finalizer 実装
+
+`aro_gc_finalize_check`:
+- HDR_FORWARDED → fwd_overlay
+- minor: young_from 内なら NULL、 それ以外 alive
+- major: MARKED ならば alive、 そうでなければ NULL
+
+### 3.4 copy_scramble
+
+#### 3.4.1 概要
 
 `copy` + per-cycle XOR mask `R` で VALUE storage を撹乱する audit backend。
 heap pointer slot は `raw ^ R` で保存、 各 GC 後に R を rotate。 stale slot
 (= sample が `ARO_LOAD` decode を忘れた slot、 GC が scan 漏らした edge) は
 次の deref で SEGV 確実。
 
-#### 3.3.2 パラメータ
+#### 3.4.2 パラメータ
 
 - 2.4 (copy) の全パラメータ + `ARO_GC_HAS_SCRAMBLE = 1`
 
-#### 3.3.3 データ構造
+#### 3.4.3 データ構造
 
 - 2.4 と同じ + `scramble_R` / `scramble_R_old` を `AroGcCommonState` 上で持つ
   (低 3 bit = 0 で 8-align 保持、 fixnum tag 保護)
 
-#### 3.3.4 アルゴリズム詳細
+#### 3.4.4 アルゴリズム詳細
 
 - alloc / collect: 2.4 と同じ
 - ただし `aro_gc_alloc` の戻り値 VALUE は `raw_payload ^ scramble_R` で encode
@@ -1054,7 +1055,7 @@ XOR が identity に fold (= 性能 cost ゼロ)。
 
 heap growth/shrink: 2.4 と同じ。
 
-#### 3.3.5 finalizer 実装
+#### 3.4.5 finalizer 実装
 
 2.4 と同じ (HDR_FORWARDED → fwd_overlay、 HDR_MARKED → self、 else NULL)。
 scramble は finalize の戻り値には影響しない (= 戻り値は raw addr、 sample 側で
@@ -1102,12 +1103,14 @@ backend は `gc_*.c` で以下を実装:
 
 doc を書く過程で見つけた実装と doc / コメントの乖離。 後で修正する material。
 
-### 5.1 mark_bump_gen major sweep が "free" していない
+### 5.1 mark_bump_gen の C コメントが実装と乖離
 
-`gc_mark_bump_gen.c:586` の C コメントは「Linear sweep tenured: free unmarked,
-clear bits on survivors」 だが、 実装 (586-601) は MARKED clear + live bytes
-集計だけで unmarked slot を free していない。 「bump tenured、 解放しない」 が
-設計意図ならコメント修正、 freelist 実装するなら別 work item。
+`mark_bump_gen` は §3.3 (特殊用途) で「sweep が free しない testbed」 として
+位置付け済 (= 設計意図通り)。 ただし `gc_mark_bump_gen.c:586` の C コメントは
+「Linear sweep tenured: free unmarked, clear bits on survivors」 と書いており、
+実装 (MARKED clear + live bytes 集計のみ) と乖離している。 testbed の意図を
+誤読させない為に C コメントを修正するのが material (= "free unmarked" の
+記述を削る or "no-op for unmarked (testbed)" に書換)。
 
 ### 5.2 immix の gc_flags 使用 bit 数
 
@@ -1174,19 +1177,7 @@ major の関係は?
    major の頻度を `MAJOR_THRESHOLD_FACTOR = 2` で抑えているため、 ほとんど
    の cycle は minor で N-survive 動作する。
 
-### Q3. mark_bump_gen は何の backend か? (§2.8)
-
-**質問**: 「copy_gen で promotion した tenured を free しない」 という
-見方は正しいか?
-
-**回答**: 旧 doc の 「`copy_gen` で promotion した tenured を free しない」
-は誤読しやすい。 正確には 「nursery は Cheney (= copy)、 tenured は bump
-で append のみ、 sweep は mark bit を見るだけで freelist は持たない」。
-「mark_gen + bump tenured」 と呼ぶより 「copy nursery + bump tenured (=
-純粋 append)」 が正確。 tenured は monotonic に増える testbed で、 「bump
-で promote させて回収しない」 場合の挙動を観察する意図。
-
-### Q4. mark_card_gen の card と remset の関係 (§2.12)
+### Q3. mark_card_gen の card と remset の関係 (§2.11)
 
 **質問**: card_dirty と remset_buf 両方を持つのはなぜ? どちらが primary か?
 
@@ -1204,7 +1195,7 @@ dirty_bm は scan 効率化」 の構成。 用途は以下:
 bitmap_gen の slot-level remset と排他で、 fallback ではなく主目的が異なる
 (= 大量 WB workload で remset が爆発するのを page 粗化で抑える testbed)。
 
-### Q5. mark_freelist の位置付けは? (§2.13)
+### Q4. mark_freelist の位置付けは? (§2.12)
 
 **質問**: 9 size class freelist の仕組みは? bump fallback は何? なぜ
 generational なし? mark / mark_compact との関係は?
