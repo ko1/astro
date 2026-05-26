@@ -45,7 +45,7 @@ etc.) are in the `ASTRO_BUILD_OPTS` env var, not argv.
 | pystro | ⏳ pending | `--no-compile`, `-c`, `--aot-compile`, `-q`, `-h`, `--help`. |
 | castro | ⏳ pending | `--no-compile`, `-c`/`--compile-all`, `--dump`, `-q`/`--quiet`. |
 | asom | ⏳ pending | `--plain`, `-c`/`--aot-compile-first`, `-p`/`--pg`/`--pg-compile`, `--dump-ast`, `-q`/`--quiet`, `--verbose`. |
-| ascheme | ⏳ pending | `-c`/`--compile`, `--pg-compile`/`--pg`, `-e`, `--clear-cs`, `-v`/`--verbose`, `-h`/`--help`, `-q`/`--quiet`, `--dump-ast` (default = no-compile already). |
+| ascheme | ✅ done | koruby-pattern port (AOT always implies run); `-c`/`--compile`/`--pg`/`-q`/`-v`/`-h` removed, sample-specific `-e`/`-`/`--clear-cs` kept.  See [sample/ascheme/main.c](../sample/ascheme/main.c). |
 | ascheme_precise | ✅ done | koruby-pattern port (AOT always implies run); `-c`/`--compile`/`--pg`/`-q`/`-v`/`-h` removed, sample-specific `-e`/`-`/`--clear-cs` kept.  See [sample/ascheme_precise/main.c](../sample/ascheme_precise/main.c). |
 | astocaml | ⏳ pending | `-c`/`--compile`, `--no-compile`, `-q`/`--quiet`. |
 | asml | ⏳ pending | `-c`/`--compile`, `--no-compile`, `-e`, `-q`/`--quiet`, `-h`/`--help`. |

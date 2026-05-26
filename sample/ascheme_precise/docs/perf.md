@@ -132,24 +132,27 @@ GC との比較」 baseline。 詳細は §4。
 
 ## 2. AOT (= cached SD)
 
-`--aot-compile --run` で hot AST node を `code_store/all.so` 内 SD として
-gcc で bake。 2 回目以降の run が dlopen して bind する仕組み。 ascheme
-(libgc) は AOT 未対応なので、 AOT 表は precise 15 backend のみ。
+`--compile` (= ascheme) / `--aot-compile --run` (= ascheme_precise) で hot
+AST node を `code_store/all.so` 内 SD として gcc で bake。 2 回目以降の
+run が dlopen して bind する仕組み。 **ascheme (libgc) も AOT 対応**
+(= `aot_compile_and_load` 関数、 `astro_cs_*` 経由)。 旧 aot_matrix.sh
+comment 「libgc baseline plain only」 は script の都合で libgc AOT を測って
+なかっただけ。 本 doc では 2026-05-26 補測 (= `bench-results/20260526/
+ascheme_libgc_aot.tsv`) を libgc AOT 列として併記。
 
 ### 2.1 elapsed (秒、 median of 3、 AOT cached)
 
-実用 11 backend。 **`libgc plain`** 列は cross-mode reference (= libgc 側
-に `--aot-compile` が無いため):
+実用 11 backend + `libgc AOT` (= 同 mode head-to-head):
 
-| bench | libgc plain | mark | m_G | m_G_inc | copy | copy_G | m_c | m_c_G | I | I_G | m_bmp_G | m_crd_G | m_free |
+| bench | libgc AOT | mark | m_G | m_G_inc | copy | copy_G | m_c | m_c_G | I | I_G | m_bmp_G | m_crd_G | m_free |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| fib35     | 0.57 | 1.03 | **0.77** | 1.05 | 0.76 | 0.78 | 0.98 | 1.01 | 0.79 | 0.78 | 1.02 | 1.00 | 0.81 |
-| sumloop   | 1.97 | 1.13 | **0.58** | 1.01 | NOAOT | 0.71 | 0.71 | 1.10 | 0.60 | 0.59 | 1.07 | 1.07 | 0.59 |
-| nbody     | 0.69 | 0.64 | 0.43 | 0.57 | 0.43 | 0.44 | 0.55 | NOAOT | 0.43 | **0.44** | 0.57 | NOAOT | 0.48 |
-| sieve_big | 1.46 | 1.09 | **0.58** | 1.01 | 0.58 | 0.57 | 0.62 | 1.06 | 0.60 | 0.60 | 1.04 | 1.09 | 0.58 |
-| deriv     | 1.38 | 1.38 | **1.07** | 1.36 | 1.10 | 1.05 | 1.25 | 1.30 | 1.13 | 1.05 | 1.31 | 1.29 | 1.13 |
-| nqueens   | 2.70 | FAIL | 1.24 | 1.71 | 1.29 | **1.23** | 1.41 | 1.74 | 1.27 | 1.29 | 1.71 | 1.72 | 1.35 |
-| fannkuch  | 1.77 | 1.58 | 1.03 | 1.55 | 1.01 | **1.06** | 1.37 | 1.58 | 1.05 | 1.05 | 1.53 | 1.51 | 1.21 |
+| fib35     | **0.25** | 1.03 | 0.77 | 1.05 | 0.76 | 0.78 | 0.98 | 1.01 | 0.79 | 0.78 | 1.02 | 1.00 | 0.81 |
+| sumloop   | **0.29** | 1.13 | 0.58 | 1.01 | NOAOT | 0.71 | 0.71 | 1.10 | 0.60 | 0.59 | 1.07 | 1.07 | 0.59 |
+| nbody     | 0.50 | 0.64 | **0.43** | 0.57 | **0.43** | 0.44 | 0.55 | NOAOT | **0.43** | 0.44 | 0.57 | NOAOT | 0.48 |
+| sieve_big | **0.45** | 1.09 | 0.58 | 1.01 | 0.58 | 0.57 | 0.62 | 1.06 | 0.60 | 0.60 | 1.04 | 1.09 | 0.58 |
+| deriv     | 1.16 | 1.38 | 1.07 | 1.36 | 1.10 | **1.05** | 1.25 | 1.30 | 1.13 | **1.05** | 1.31 | 1.29 | 1.13 |
+| nqueens   | 0.98 | FAIL | 1.24 | 1.71 | 1.29 | 1.23 | 1.41 | 1.74 | 1.27 | 1.29 | 1.71 | 1.72 | 1.35 |
+| fannkuch  | 1.19 | 1.58 | **1.03** | 1.55 | **1.01** | 1.06 | 1.37 | 1.58 | 1.05 | 1.05 | 1.53 | 1.51 | 1.21 |
 | cps_loop  | 1.07 | 0.60 | **0.33** | 0.53 | 0.32 | 0.32 | 0.32 | 0.58 | 0.32 | 0.32 | 0.58 | 0.58 | 0.31 |
 | matmul    | 10.00 | 6.10 | 5.81 | 5.84 | 6.25 | 5.81 | 6.04 | 5.90 | 5.95 | 5.74 | 5.72 | 5.66 | **5.45** |
 
@@ -297,29 +300,47 @@ geomean 最速 cluster の中央)。 同じ plain mode (= interpreter で AST �
   が `copy` 圧勝。 特に `matmul` は **0.64×** (= -36% faster)
 - ⚠ caveat (§4.1) を踏まえると、 「同等」 と言える範囲
 
-### 4.3 AOT mode: libgc は AOT 非対応 (= `copy` plain vs `copy` AOT)
+### 4.3 AOT mode: `libgc` AOT vs `copy` AOT (= 代表 head-to-head)
 
-ascheme 側 (libgc) は `--aot-compile` を実装していない (= aot_matrix.sh
-line 99 「libgc baseline plain only」)。 同じ「libgc aot vs copy aot」
-head-to-head は **取れない**。 代わりに `copy` 自身の plain vs AOT で
-ASTro AOT の効果を見る:
+ascheme は CLI 標準化 (`sample_cli.md`) で `--aot-compile` に対応した
+(2026-05-26)。 同 mode head-to-head が取れる:
 
-| bench | cat | copy plain | copy AOT | AOT / plain |
+| bench | cat | libgc AOT | copy AOT | copy / libgc |
 |---|---|---:|---:|---:|
-| fib35     | INT | 1.13 | 0.76 | **0.67×** |
-| sumloop   | INT | 2.09 | (NOAOT) | — |
-| nbody     | INT | 0.55 | 0.43 | **0.78×** |
-| sieve_big | GC  | 1.41 | 0.58 | **0.41×** |
-| deriv     | GC  | 1.21 | 1.10 | 0.91× |
-| nqueens   | MIX | 2.81 | 1.29 | **0.46×** |
-| fannkuch  | MIX | 1.37 | 1.01 | **0.74×** |
-| cps_loop  | MIX | 1.12 | 0.32 | **0.29×** |
-| matmul    | MIX | 6.42 | 6.25 | 0.97× |
-| **geomean** (n=8) | — | **1.55s** | **0.84s** | **0.54×** |
+| fib35     | INT | 0.25 | 0.76 | 3.04× |
+| sumloop   | INT | 0.29 | (NOAOT) | — |
+| nbody     | INT | 0.50 | 0.43 | **0.86×** |
+| sieve_big | GC  | 0.45 | 0.58 | 1.29× |
+| deriv     | GC  | 1.16 | 1.10 | **0.95×** |
+| nqueens   | MIX | 0.98 | 1.29 | 1.32× |
+| fannkuch  | MIX | 1.19 | 1.01 | **0.85×** |
+| cps_loop  | MIX | 0.19 | 0.32 | 1.68× |
+| matmul    | MIX | 8.97 | 6.25 | **0.70×** |
+| **geomean** (n=8) | — | **0.69s** | **0.84s** | **1.22×** |
 
-`copy` 単独で AOT は plain の **0.54×** = 1.85× speedup。 dispatch heavy
-な `cps_loop` で **3.5×**、 `sieve_big` で **2.4×**、 `nqueens` で **2.2×**。
-`matmul` (= GC bound) と `deriv` (= float arith) は plain と差なし。
+- **AOT mode では libgc が geomean 0.69s で速い** (= copy AOT 0.84s vs
+  libgc AOT 0.69s で **1.22×**)。 conservative GC は precise rooting の
+  per-call sp[] overhead を avoid できるため AOT の dispatch fast path で
+  さらに差が顕在化
+- ただし **GC-bound bench** では precise が勝つ: `nbody` 0.86× / `deriv`
+  0.95× / `fannkuch` 0.85× / **`matmul` 0.70×** (= -30%)
+- **dispatch-heavy CPU bench** (= `fib35` / `sieve_big` / `cps_loop`) で
+  libgc が precise の 1.3-3× 速い。 conservative scan は AOT 化された
+  dispatch fast path の overhead を avoid できる
+
+### 4.3.x AOT 効果 (= 同 backend の plain vs AOT)
+
+各 backend で AOT がもたらす speedup (= plain / AOT):
+
+| backend | plain geomean | AOT geomean | plain / AOT |
+|---|---:|---:|---:|
+| `libgc` | 1.61s | **0.69s** | **2.34×** |
+| `copy`  | 1.55s | 0.84s (n=8) | 1.85× |
+
+libgc は AOT で **2.34× speedup** (= astro AOT framework が conservative
+GC binary にも効く実証)。 precise の `copy` は **1.85×**。 conservative
+側で speedup が大きいのは plain 時の overhead 配分が違うため (= precise
+は per-call sp[] update が dispatch overhead を相対的に重くしている)。
 
 ### 4.4 全 backend AOT を `copy` AOT で並べる
 

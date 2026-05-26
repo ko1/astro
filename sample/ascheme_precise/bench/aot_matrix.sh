@@ -1,12 +1,12 @@
 #!/bin/bash
 # bench v8: plain + aot-cached × 15 precise backend (+ libgc plain baseline)
 # 注:
-#   - libgc ascheme は --aot-compile 未対応 (plain のみ)
+#   - libgc ascheme も --aot-compile 対応 (2026-05-26 以降、 sample_cli.md 経由)
 #   - copy_gen_inc は backend として削除 (commit e60fa150)、 列から除外
 #   - copy_scramble は audit 専用 backend、 matrix からは除外
 #   - /usr/bin/time -f "%e %M" で wallclock 秒 + peak RSS (KB) を同時取得
 # Usage: ./aot_matrix.sh [> result.txt]  (= 100 分前後で完走)
-set -uo pipefail
+set -o pipefail
 # Run from sample/ regardless of how it was invoked.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../.."
@@ -100,14 +100,40 @@ run_validated_aot() {
     echo "$med $maxr"
 }
 
-# libgc baseline (plain only — ascheme does not have --aot-compile)
-declare -A LIBGC_PLAIN_T LIBGC_PLAIN_R
+# libgc baseline: ascheme supports both plain and AOT (= --aot-compile)
+declare -A LIBGC_PLAIN_T LIBGC_PLAIN_R LIBGC_AOT_T LIBGC_AOT_R
 if [ "$SKIP_LIBGC" = "0" ]; then
     (cd ascheme && make >/dev/null 2>&1)
     for b in "${BENCHES[@]}"; do
+        # plain
         read -r t r < <(run_validated ascheme/ascheme "$BENCH_PATH/$b.scm" "${EXPECTED[$b]}")
         LIBGC_PLAIN_T[$b]=$t
         LIBGC_PLAIN_R[$b]=$r
+        # AOT bake (cwd matters: code_store is relative to invocation dir)
+        (cd ascheme && rm -rf code_store && CCACHE_DISABLE=1 timeout 180 ./ascheme -q --aot-compile "bench/big/$b.scm" >/dev/null 2>&1)
+        if [ -f ascheme/code_store/all.so ]; then
+            # Run cached AOT 3x — bench from ascheme/ so code_store/all.so binds
+            elapsed=() rss=()
+            for i in 1 2 3; do
+                outfile=$(mktemp); timefile=$(mktemp)
+                (cd ascheme && /usr/bin/time -f "%e %M" -o "$timefile" timeout 180 ./ascheme -q --aot-compile "bench/big/$b.scm") > "$outfile" 2>&1
+                rc=$?
+                first_line=$(head -1 "$outfile" 2>/dev/null)
+                t_line=$(grep -E '^[0-9]+(\.[0-9]+)?[[:space:]]+[0-9]+$' "$timefile" 2>/dev/null | tail -1)
+                t=${t_line%% *}; m=${t_line##* }
+                rm -f "$outfile" "$timefile"
+                if [ "$rc" -ne 0 ] || [ "$first_line" != "${EXPECTED[$b]}" ]; then
+                    LIBGC_AOT_T[$b]=FAIL; LIBGC_AOT_R[$b]=FAIL; elapsed=(); break
+                fi
+                elapsed+=("$t"); rss+=("$m")
+            done
+            if [ "${#elapsed[@]}" -eq 3 ]; then
+                LIBGC_AOT_T[$b]=$(printf "%s\n" "${elapsed[@]}" | sort -g | sed -n '2p')
+                LIBGC_AOT_R[$b]=$(printf "%s\n" "${rss[@]}" | sort -n | tail -1)
+            fi
+        else
+            LIBGC_AOT_T[$b]=NOAOT; LIBGC_AOT_R[$b]=NOAOT
+        fi
     done
 fi
 

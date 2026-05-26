@@ -10,6 +10,7 @@
 // defined before including this header.
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // Initialize code store and load all.so from store_dir (if it exists).
 // src_dir: directory containing node.h, node_eval.c etc. (used for #include in generated .c)

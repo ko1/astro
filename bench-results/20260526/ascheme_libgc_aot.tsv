@@ -1,0 +1,11 @@
+# ascheme libgc AOT (= --compile cached run, 3 trial median elapsed / max RSS_kb)
+bench	elapsed_sec	rss_kb
+fib35	0.25	4352
+sumloop	0.29	4224
+nbody	0.50	75520
+sieve_big	0.45	168960
+deriv	1.16	75392
+nqueens	0.98	75392
+fannkuch	1.19	75392
+cps_loop	0.19	4224
+matmul	8.97	73728

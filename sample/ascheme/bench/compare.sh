@@ -97,12 +97,12 @@ for s in "${SETS[@]}"; do
         # the spawned `make` sub-shell honours it even if invoked some
         # other way) — without it, ccache caches .o per (cmd, mtime,
         # source hash) and a "cold" rebuild is anything but cold.
-        t_aot_first=$(CCACHE_DISABLE=1 time_run "$ASCHEME" --clear-cs -q -c "$b")
+        t_aot_first=$(CCACHE_DISABLE=1 time_run "$ASCHEME" --clear-cs -q --aot-compile "$b")
 
         # Warm AOT: code_store/ from `aot-first` above is reused; astro_cs
         # finds the .o files up to date and skips the rebuild.  This is
         # what subsequent invocations of an AOT-compiled program see.
-        t_aot_cached=$(time_run "$ASCHEME" -q -c "$b")
+        t_aot_cached=$(time_run "$ASCHEME" -q --aot-compile "$b")
 
         # PGO compile (`--pg-compile`, abruby-style): single invocation,
         # interpret + post-execution AOT compile of hot entries only.
