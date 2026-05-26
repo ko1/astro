@@ -1644,16 +1644,41 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
     CURRENT_SELF_CALL = saved_self_call;
 
     aot_add_entry(body_node);
+    /* Conservative: a body containing an inner lambda might create a
+     * closure that captures THIS frame.  If we skip sframe alloc (= fast
+     * path), inner_closure.env would point to the caller's frame instead
+     * of ours, so inner's lref(d>=1) reads wrong slot.  Force has_outer_ref
+     * to disable fast path whenever inner lambdas are present. */
+    if (body_has_inner_lambda) new_scope->has_outer_ref = true;
+    /* has_rest closures pack the trailing arguments into a list at
+     * params[nparams].  The fast-path frame_sp layout doesn't accommodate
+     * that, so disable patching for has_rest. */
+    if (has_rest) new_scope->has_outer_ref = true;
     uint32_t no_capture = (!new_scope->has_outer_ref) ? 1u : 0u;
-    /* If body is no_capture (= no lref crosses this lambda), patch every
-     * pending lref/lset NODE inside the body so they use the _sp variants
-     * (= read/write sp[sp_offset] directly, skip env-chain walk).  Patching
-     * only `head.dispatcher` works because node_lref / node_lref_sp share
-     * operand layout (same for lset). */
-    /* Patching to _sp variants is gated on scm_apply_tail also placing args
-     * at sp[sp_offset] positions — wired in the next phase.  For now collect
-     * but don't patch.  (TODO Phase 2c) */
-    (void)no_capture;
+    /* If body is no_capture, patch every pending lref/lset NODE to its
+     * _sp variant (= reads sp[sp_offset] directly).  Patching only
+     * `head.kind` + `head.dispatcher` works because the two variants
+     * share operand layout (depth, idx, sp_offset).  Body invoked via
+     * node_call_K's no_capture fast path with body_sp = c->sp = past args
+     * → sp[idx - nparams] = arg[idx]. */
+    if (no_capture) {
+        extern const struct NodeKind kind_node_lref_sp;
+        extern const struct NodeKind kind_node_lset_sp;
+        extern const struct NodeKind kind_node_lref;
+        extern const struct NodeKind kind_node_lset;
+        for (size_t i = 0; i < new_scope->pending_n; i++) {
+            NODE *nd = new_scope->pending_lrefs[i];
+            if (nd->head.kind == &kind_node_lref) {
+                nd->head.dispatcher = kind_node_lref_sp.default_dispatcher;
+                nd->head.dispatcher_name = kind_node_lref_sp.default_dispatcher_name;
+                nd->head.kind = &kind_node_lref_sp;
+            } else if (nd->head.kind == &kind_node_lset) {
+                nd->head.dispatcher = kind_node_lset_sp.default_dispatcher;
+                nd->head.dispatcher_name = kind_node_lset_sp.default_dispatcher_name;
+                nd->head.kind = &kind_node_lset_sp;
+            }
+        }
+    }
     free(new_scope->pending_lrefs);
     new_scope->pending_lrefs = NULL;
     new_scope->pending_n = new_scope->pending_cap = 0;
@@ -1724,8 +1749,10 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         // node_loop so the patched call's c->loop_continue=1 gets caught
         // and routed back to the body.  Otherwise leave it bare — the
         // wrapper would only add overhead for nothing.
+        /* Named-let inner lambda is forced no_capture=0 below, so the
+         * loop should write loop_args into the heap sframe slots. */
         NODE *inner_body_final = ctx.used
-            ? ALLOC_node_loop(inner_body, (uint32_t)nparams)
+            ? ALLOC_node_loop(inner_body, (uint32_t)nparams, /*no_capture=*/0u)
             : inner_body;
         aot_add_entry(inner_body_final);
 
@@ -2361,7 +2388,8 @@ compile_define(CTX *c, VALUE form, struct lex_scope *scope)
                 SELF_CALL_FOR_NEXT_LAMBDA = NULL;
                 if (ctx.used) {
                     NODE *lambda_body = val->u.node_lambda.body;
-                    NODE *wrapped = ALLOC_node_loop(lambda_body, (uint32_t)nparams);
+                    NODE *wrapped = ALLOC_node_loop(lambda_body, (uint32_t)nparams,
+                                                   val->u.node_lambda.no_capture);
                     aot_add_entry(wrapped);
                     val->u.node_lambda.body = wrapped;
                 }
@@ -2660,6 +2688,25 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         c->sp = sp_base + 1;
         NODE *body = cl->closure.body;
         CTX_SET_ENV(c, new_env);
+        /* For no_capture closures, body uses lref_sp (= c->frame_sp[sp_offset]).
+         * Set c->frame_sp to a position where frame_sp[idx - nparams] = arg[idx].
+         * Place args at sp_base + 1 .. sp_base + nparams (= already at sp_base[0]+1
+         * if from node_call_K, otherwise copy).  frame_sp = sp_base + 1 + nparams. */
+        VALUE *saved_frame_sp = c->frame_sp;
+        if (cl->closure.no_capture && !cl->closure.has_rest) {
+            int nparams = cl->closure.nparams;
+            VALUE *args_base = sp_base + 1;
+            /* Read from new_env->slots (= the heap frame build_frame_for
+             * just populated) rather than argv — argv may be an interior
+             * pointer into a heap object (e.g., mvalues.items from
+             * call-with-values) that moved during build_frame_for's
+             * alloc.  new_env is a live root via the GC visitor's
+             * traversal of `c->env` set just above, so its slots stay
+             * valid after subsequent allocations. */
+            for (int i = 0; i < nparams; i++) args_base[i] = new_env->slots[i];
+            c->sp = args_base + nparams;
+            c->frame_sp = c->sp;
+        }
         // Trampoline: re-enter while tail_call_pending is set.  Bumps
         // the body's dispatch counter — used by `--pg-compile` to decide
         // which entries are worth AOT-compiling on the next run.  The
@@ -2671,6 +2718,7 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             if (!c->tail_call_pending) {
                 CTX_SET_ENV(c, (struct sframe *)sp_base[0]);  /* reload saved */
                 c->sp = sp_base;
+                c->frame_sp = saved_frame_sp;
                 return v;
             }
             c->tail_call_pending = 0;
@@ -2680,6 +2728,18 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
             // warm across tight tail-call loops.  Real env switches go
             // through the bump.
             if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
+            /* No_capture next body: refresh sp-based args + frame_sp from
+             * the new env's slots.  Without this, patched lref_sp/lset_sp
+             * in the new body would read a stale frame_sp (m-even/m-odd
+             * style cross-closure tail calls). */
+            if (c->next_no_capture) {
+                uint16_t np = c->next_nparams;
+                VALUE *args_base = sp_base + 1;
+                ASTRO_ASSERT(args_base + np <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+                for (uint16_t i = 0; i < np; i++) args_base[i] = c->env->slots[i];
+                c->sp = args_base + np;
+                c->frame_sp = c->sp;
+            }
             if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
         }
     }
@@ -2723,6 +2783,8 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
                 }
                 c->next_body = cl->closure.body;
                 c->next_env = c->env;
+                c->next_no_capture = cl->closure.no_capture ? 1u : 0u;
+                c->next_nparams = (uint16_t)np;
                 c->tail_call_pending = 1;
                 return SCM_UNSPEC;
             }
@@ -2747,6 +2809,10 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             aro_gc_wb(c, c->env, &c->env->slots[np], sp_base[1]);
             c->next_body = SCM_PTR(sp_base[0])->closure.body;
             c->next_env = c->env;
+            /* has_rest closures are never no_capture (compile_lambda forces
+             * has_outer_ref=true), but be explicit anyway. */
+            c->next_no_capture = 0u;
+            c->next_nparams = (uint16_t)np;
             c->tail_call_pending = 1;
             c->sp = sp_base;
             return SCM_UNSPEC;
@@ -2759,8 +2825,11 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
         sp_base[0] = fn;
         c->sp = sp_base + 1;
         struct sframe *new_env = build_frame_for(c, cl, argc, argv);
-        c->next_body = SCM_PTR(sp_base[0])->closure.body;
+        struct sobj *cl_reloaded = SCM_PTR(sp_base[0]);
+        c->next_body = cl_reloaded->closure.body;
         c->next_env = new_env;
+        c->next_no_capture = (cl_reloaded->closure.no_capture && !cl_reloaded->closure.has_rest) ? 1u : 0u;
+        c->next_nparams = (uint16_t)cl_reloaded->closure.nparams;
         c->tail_call_pending = 1;
         c->sp = sp_base;
         return SCM_UNSPEC;

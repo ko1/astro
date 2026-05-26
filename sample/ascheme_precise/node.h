@@ -103,6 +103,12 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             for (int i = 0; i < cl->closure.nparams; i++) c->env->slots[i] = argv[i];
             c->next_body = cl->closure.body;
             c->next_env = c->env;
+            /* Signal frame_sp refresh to the trampoline when the next body
+             * is no_capture (= uses lref_sp).  argv already lives in
+             * c->env->slots (just copied above), so the trampoline can
+             * mirror them onto sp[]. */
+            c->next_no_capture = cl->closure.no_capture ? 1u : 0u;
+            c->next_nparams = (uint16_t)cl->closure.nparams;
             c->tail_call_pending = 1;
             return 0;     // bogus; trampoline ignores
         }

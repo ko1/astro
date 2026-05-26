@@ -302,6 +302,22 @@ typedef struct CTX_struct {
     // (which read/write c->sp as part of the alloc contract).  Kept NULL.
     VALUE *sp;
 
+    /* frame_sp: per-call body's sp position at entry (= where lref_sp's
+     * sp_offset is relative to).  Set by node_call_K fast path before
+     * EVAL(body), restored after.  lref_sp body reads c->frame_sp[sp_offset]
+     * — fixed across nested SP_PUSH within the body (= which advance the
+     * dispatcher's `sp` param). */
+    VALUE *frame_sp;
+
+    /* Tail-call signaling: scm_apply_tail_slow / scm_apply_tail (node.h) set
+     * `next_no_capture` and `next_nparams` whenever they set
+     * `tail_call_pending`.  scm_apply's trampoline reads them on each
+     * iteration to copy args from the new env to sp[] and update frame_sp,
+     * so the new body's patched lref_sp / lset_sp operate against a stable
+     * sp position even across cross-closure tail calls (m-even?/m-odd?). */
+    uint8_t next_no_capture;
+    uint16_t next_nparams;
+
     // Current lexical environment chain (closures + call frames).
     struct sframe *env;
 

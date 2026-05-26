@@ -144,17 +144,17 @@ node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t dep
 }
 
 // node_lref_sp / node_lset_sp: sp[] frame variants.  Emitted by compile_lambda
-// when body is no_capture (= no lref/lset crossing this lambda boundary).
-// **Operand layout matches node_lref / node_lset** so the parser can switch
-// between variants by patching only `head.dispatcher` (= same NODE memory).
-// Body is called via node_call_K's fast path which skips sframe alloc and
-// places args on sp[] at sp_offset positions.  lref reads sp[sp_offset]
-// directly, depth / idx ignored.
+// (= via dispatcher patching) when body is no_capture.  Body's lref reads
+// **c->frame_sp[sp_offset]** — NOT the dispatcher's `sp` param, because
+// nested SP_PUSH within the body advances `sp` past the body's own slots.
+// c->frame_sp is pinned at body entry by node_call_K's fast path.
+// Operand layout matches node_lref / node_lset so the parser can swap by
+// patching head.dispatcher / head.kind only.
 NODE_DEF
 node_lref_sp(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t depth, uint32_t idx, int32_t sp_offset)
 {
-    (void)n; (void)c; (void)depth; (void)idx;
-    return sp[sp_offset];
+    (void)n; (void)sp; (void)depth; (void)idx;
+    return c->frame_sp[sp_offset];
 }
 
 NODE_DEF
@@ -162,7 +162,7 @@ node_lset_sp(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t 
 {
     (void)n; (void)depth; (void)idx;
     VALUE v = EVAL_ARG(c, val);
-    sp[sp_offset] = v;
+    c->frame_sp[sp_offset] = v;
     return SCM_UNSPEC;
 }
 
@@ -265,6 +265,49 @@ node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
     SP_PUSH(c, sp, 2);
     sp[0] = (*fn_dispatcher)(c, fn, sp + (2));            /* f */
     sp[1] = (*a0_dispatcher)(c, a0, sp + (2));            /* av[0] */
+    /* no_capture fast path: skip sframe alloc.  body_sp = c->sp = sp + 2
+     * = past (fn, arg0); body's lref_sp(-1) reads sp + 1 = arg0.
+     *
+     * Restricted to is_tail==0 (= non-tail) so that mutual tail recursion
+     * (e.g., m-even?/m-odd?) propagates tail_call_pending upward to a
+     * single enclosing trampoline instead of growing the C stack one
+     * level per recursive hop.  Tail calls fall through to
+     * scm_apply_tail, which the outer fast path's trampoline catches.
+     *
+     * Within this fast path we still run an inline trampoline that
+     * observes tail_call_pending — any tail call from the body sets it,
+     * and we must switch body + reset frame_sp on each iteration. */
+    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+        struct sobj *cl = SCM_PTR(sp[0]);
+        if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 1 && !cl->closure.has_rest)) {
+            NODE *body = cl->closure.body;
+            VALUE *saved_frame_sp = c->frame_sp;
+            struct sframe *saved_env = c->env;
+            c->frame_sp = c->sp;
+            VALUE v;
+            for (;;) {
+                v = EVAL(c, body, c->sp);
+                if (!c->tail_call_pending) break;
+                c->tail_call_pending = 0;
+                body = c->next_body;
+                if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
+                if (c->next_no_capture) {
+                    uint16_t np = c->next_nparams;
+                    VALUE *args_base = sp;
+                    ASTRO_ASSERT(args_base + np <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+                    for (uint16_t i = 0; i < np; i++) args_base[i] = c->env->slots[i];
+                    c->sp = args_base + np;
+                    c->frame_sp = c->sp;
+                } else {
+                    c->frame_sp = c->sp;
+                }
+            }
+            c->frame_sp = saved_frame_sp;
+            if (c->env != saved_env) CTX_SET_ENV(c, saved_env);
+            SP_POP(c, sp);
+            return v;
+        }
+    }
     VALUE r = scm_apply_tail(c, sp[0], 1, sp + 1, is_tail);
     SP_POP(c, sp);
     return r;
@@ -365,17 +408,26 @@ node_callcc(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *fn)
 // ---------------------------------------------------------------------------
 
 NODE_DEF
-node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t nparams)
+node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t nparams, uint32_t no_capture)
 {
     (void)n;
     for (;;) {
         VALUE v = EVAL_ARG(c, body);
         if (LIKELY(!c->loop_continue)) return v;
         c->loop_continue = 0;
-        /* c->env may be OLD (= long-lived loop frame); loop_args slots
-         * are fresh young values from the just-evaluated tail-call. */
-        for (uint32_t i = 0; i < nparams; i++) {
-            aro_gc_wb(c, c->env, &c->env->slots[i], c->loop_args[i]);
+        if (no_capture) {
+            /* no_capture body reads via c->frame_sp[idx - nparams].  Mirror
+             * loop_args into that window.  No WB needed — sp[] entries
+             * aren't heap objects; GC scans c->sp directly. */
+            for (uint32_t i = 0; i < nparams; i++) {
+                c->frame_sp[(int32_t)i - (int32_t)nparams] = c->loop_args[i];
+            }
+        } else {
+            /* c->env may be OLD (= long-lived loop frame); loop_args slots
+             * are fresh young values from the just-evaluated tail-call. */
+            for (uint32_t i = 0; i < nparams; i++) {
+                aro_gc_wb(c, c->env, &c->env->slots[i], c->loop_args[i]);
+            }
         }
     }
 }
