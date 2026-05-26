@@ -146,22 +146,47 @@ test_stress: ascheme
 test/r5rs_chibi.scm: test/r5rs_adapt.rb .chibi/chibi-scheme-0.12/tests/r5rs-tests.scm
 	@ruby test/r5rs_adapt.rb < .chibi/chibi-scheme-0.12/tests/r5rs-tests.scm > $@
 
-# `make fuzz` — random Scheme generator + BARUBY_GC_STRESS=1.  Uses chez
-# (`scheme --script`) as the correctness oracle; precise must match chez's
-# output and never SEGV / time out.  Default backend is the GC currently
-# built (= whatever `.built_gc` says); set GC=copy_scramble before make to
-# enable the maximum-stress moving GC.  N controls iteration count
-# (default 200).  Failing programs are saved to test/fuzz/fails/.
+# `make fuzz` — comprehensive random Scheme fuzzer for precise-rooting +
+# semantic bugs.  Generates programs from ~50 templates + a structural AST
+# generator, runs each under a configurable matrix of precise modes (plain
+# / stress / aot / aot-stress), compares output to chez (oracle), and dumps
+# any failures to test/fuzz/fails/.
+#
+# Env knobs (all optional):
+#   GC=<backend>      — pick GC backend (default: whatever's built)
+#   N=<int>           — iteration count (default 200)
+#   SEED=<int>        — deterministic seed
+#   MODES=plain,stress,aot,aot-stress
+#                     — which precise modes to compare per program
+#   STRUCTURAL_RATIO  — 0..1 fraction of programs from structural generator
+#                       (default 0.4)
+#   MAX_FAILS=<int>   — stop early after N failures (default 10)
 #
 # Usage:
-#   make fuzz                      — 200 iters on the current GC backend
-#   make GC=copy_scramble fuzz     — 200 iters on the scramble variant
-#   make fuzz N=1000               — 1000 iters
-#   make fuzz N=500 SEED=42        — deterministic via seed
+#   make fuzz                                         — quick 200-iter run
+#   make GC=copy_scramble fuzz N=500                 — heavy stress on
+#                                                       scramble backend
+#   make fuzz MODES=plain,stress,aot,aot-stress      — all modes
+#   make fuzz N=2000 STRUCTURAL_RATIO=0.6 SEED=42    — deep structural run
 fuzz: ascheme
-	@N=$${N:-200}; SEED=$${SEED:-}; \
-	  if [ -n "$$SEED" ]; then SEED_ENV="SEED=$$SEED"; else SEED_ENV=; fi; \
-	  ASCHEME_AOT_TRACE= env $$SEED_ENV ruby test/fuzz/fuzz.rb $$N
+	@N=$${N:-200}; \
+	  EXTRA=""; \
+	  [ -n "$$SEED" ] && EXTRA="$$EXTRA SEED=$$SEED"; \
+	  [ -n "$$MODES" ] && EXTRA="$$EXTRA MODES=$$MODES"; \
+	  [ -n "$$STRUCTURAL_RATIO" ] && EXTRA="$$EXTRA STRUCTURAL_RATIO=$$STRUCTURAL_RATIO"; \
+	  [ -n "$$MAX_FAILS" ] && EXTRA="$$EXTRA MAX_FAILS=$$MAX_FAILS"; \
+	  ASCHEME_AOT_TRACE= env $$EXTRA ruby test/fuzz/fuzz.rb $$N
+
+# `make fuzz-quick` — 50 iter smoke test, exits non-zero on any failure.
+# Suitable for pre-commit hooks.
+fuzz-quick: ascheme
+	@ASCHEME_AOT_TRACE= ruby test/fuzz/fuzz.rb 50
+
+# `make fuzz-all` — 1000 iter × 4 modes.  ~10 min on a workstation.  Best
+# run before bigger commits.
+fuzz-all: ascheme
+	@ASCHEME_AOT_TRACE= MODES=plain,stress,aot,aot-stress STRUCTURAL_RATIO=0.5 \
+	    ruby test/fuzz/fuzz.rb 1000
 
 .chibi/chibi-scheme-0.12/tests/r5rs-tests.scm:
 	@bash bench/compare.sh >/dev/null 2>&1 || true
