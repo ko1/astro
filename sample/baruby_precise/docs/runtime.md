@@ -2,8 +2,12 @@
 
 このドキュメントは **baruby_precise の中身がどう動いているか** を、
 これから ASTro / GC まわりを読みに行く人 (= 学部生レベル想定) に
-向けて解説する。 GC 周りの「16 backend を順番に読みたい」 場合は
-[gc_runtime.md](gc_runtime.md) のほうがやさしい。
+向けて解説する。
+
+GC backend の algorithm / 用語 / 16 backend 比較は root の
+[`../../../docs/gc_runtime.md`](../../../docs/gc_runtime.md) に集約。
+baruby_precise 固有の root 表現 / VALUE encoding / GCHeader sample layout /
+WB API は [gc_runtime.md](gc_runtime.md) (sample 固有部分のみの簡素版)。
 
 - 言語仕様 → [spec.md](spec.md)
 - 残タスク → [todo.md](todo.md)
@@ -26,7 +30,8 @@ precise rooting と moving GC をやるには「実行中の VALUE が今どこ�
 helper の作法が conservative 版とはガラッと変わる。 §6 以降がその話。
 
 build-time の `GC=<name>` で **16 種類の GC algorithm** を切替可能。
-algorithm の違いは [gc_runtime.md](gc_runtime.md) を参照。
+algorithm の違いは root の
+[`../../../docs/gc_runtime.md`](../../../docs/gc_runtime.md) §2-§3 を参照。
 
 ## 1. 全体パイプライン
 
@@ -269,8 +274,11 @@ NODE * として渡すが、 dispatcher が pre-eval して body には VALUE
 
 ## 7. precise GC との連携
 
-詳細は [gc_runtime.md](gc_runtime.md)。 ここでは「コードを書く側に
-影響する部分」 だけ。
+backend algorithm 解説は root の
+[`../../../docs/gc_runtime.md`](../../../docs/gc_runtime.md)、
+baruby_precise の root layout / GCHeader / VALUE encoding は
+[gc_runtime.md](gc_runtime.md) (sample 固有部分のみ)。 ここでは
+「コードを書く側に影響する部分」 だけ。
 
 ### Alloc API (iter 62 で framework abstraction)
 
@@ -407,7 +415,8 @@ make GC=immix_gen      # Immix 世代別
 # ... 計 16 種
 ```
 
-16 backend の algorithm 比較は [gc_runtime.md](gc_runtime.md)、
+16 backend の algorithm 比較は root の
+[`../../../docs/gc_runtime.md`](../../../docs/gc_runtime.md)、
 ベンチ結果は [perf.md](perf.md) を参照。
 
 backend を変えるときは:

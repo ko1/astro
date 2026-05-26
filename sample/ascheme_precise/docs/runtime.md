@@ -281,7 +281,14 @@ ascheme_precise uses the **ASTro precise GC framework**
 (`runtime/precise_gc/`) instead of the libgc that the original `ascheme/`
 relies on.  Migration history and the rationale are in
 [`migration.md`](./migration.md); the framework itself is documented in
-[`../../docs/gc_design.md`](../../../docs/gc_design.md).
+[`../../../docs/gc_design.md`](../../../docs/gc_design.md).
+
+The 17 GC backends (algorithm details, terminology, allocation strategy,
+write barrier / remset design, finalizer semantics) are documented once
+in the root [`../../../docs/gc_runtime.md`](../../../docs/gc_runtime.md).
+The sections below describe only the **ascheme_precise-specific** wiring
+(= allocation API usage, root tracking hook, SCAN_EDGES dispatch, GMP
+finalizer integration).
 
 ### 7.1 Allocation API
 
@@ -386,13 +393,9 @@ a collect.
 
 ### 7.5 Backend selection
 
-17 GC backends are available via `make GC=<name>`:
-
-```
-none, bump, mark, mark_gen, mark_gen_inc, mark_freelist, mark_bitmap_gen,
-mark_card_gen, copy, copy_gen, copy_gen_inc, mark_compact, mark_compact_gen,
-mark_bump_gen, immix, immix_gen, copy_scramble
-```
+17 GC backends are available via `make GC=<name>` — the full list,
+algorithm summary, and per-backend trade-offs are in the root
+[`../../../docs/gc_runtime.md`](../../../docs/gc_runtime.md) §1 / §2 / §3.
 
 Selection rationale and bench numbers vs libgc are in
 [`perf.md`](./perf.md).  Audit knobs (`BARUBY_GC_STRESS=1`,
