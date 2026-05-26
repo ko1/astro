@@ -82,18 +82,6 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 | `baruby_precise` | `sample/baruby_precise/` | naruby fork + Array/String + precise rooting。 **GC algorithm 比較 testbed** (本 doc の primary 対象) | `copy` | 16 全て |
 | `ascheme_precise` | `sample/ascheme_precise/` | Scheme サブセット (= `ascheme`) の precise rooting 版。 GC kernel 単体測定 + 細粒度 alloc bench に有用 | `copy` | 16 全て |
 
-build option mapping (両 sample 同一):
-
-```
-GC=none(1)  mark(2)  mark_gen(3)  mark_gen_inc(4)  copy(5)  copy_gen(6)
-   mark_compact(8)  mark_compact_gen(9)  bump(10)  mark_bump_gen(11)
-   immix(12)  immix_gen(13)  mark_bitmap_gen(14)  mark_card_gen(15)
-   mark_freelist(16)  copy_scramble(17)
-```
-
-ID 7 は旧 `copy_gen_inc` の予約 hole (= 撤去済、 将来 backend 追加時の slot)。
-表記の順序は §2 / §3 のカテゴリではなく build ID 順 (= 既存表現を維持。 §2 は実用 12 個 / §3 は特殊用途 4 個。 build ID は不変)。
-
 備考:
 - 他の sample (`naruby`, `baruby`, `pystro`, `arcel` 等) は libgc / 独自 GC を使っており、 本 doc の対象外。
 - bench matrix (`sample/<sample>/benchmark/`) は 16 × {plain, AOT cached} の組合せで回す。 `bench v11` 形式の table 参照。
