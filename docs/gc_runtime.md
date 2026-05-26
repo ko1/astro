@@ -56,6 +56,7 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 - **remset (remembered set)** — tenured→young pointer を持つ tenured obj の集合。 minor mark phase で remset entry を scan することで young 子孫を到達可能にする
 - **SATB (snapshot-at-the-beginning)** — incremental marking で overwrite 直前の旧値を mark する WB 方式
 - **dirty bit** — tenured obj が remset に居る印。 WB で set、 minor の remset scan 後に対象が young child を失えば clear
+- **remset 圧縮** — minor 終了時に remset_buf を 1 pass 走査して、 「もう young child を持たない entry」 を drop し残った entry だけを buf の先頭に詰める処理。 array compaction の意味の 「圧縮」 (= memory compaction とは無関係)。 具体的には ① 各 entry の edges を scan し young 子があれば forward + `scan_saw_young` を立てる、 ② flag が false なら entry を drop + DIRTY clear、 true なら keep。 結果 remset_buf の長さが (元の dirty 集合) → (まだ young を持つ dirty 集合) に縮む
 - **mark bit** — mark phase で訪問済の印。 sweep 後に clear (= incremental では epoch 方式で再利用)
 - **sticky mark** — major でも mark bit を残し、 minor では「mark bit が無い young が dead」という判定に使う方式 (= `mark_gen` 系)
 - **Cheney** — semi-space copying GC アルゴリズム。 from-space を to-space に forward しながら scan
@@ -409,7 +410,19 @@ minor phases:
    - age < PROMOTE_AGE → young-to に copy + age++
    - age >= PROMOTE_AGE → tenured に copy + OLD set + age=0
    - FORWARDED 既設なら fwd_overlay 返却
-2. **remset 圧縮**: 各 entry を `AROH_SCAN_EDGES` で forward + `scan_saw_young` 観察 → keep/drop。 overflow 時は `tenured_base..old_tenured_top` を slot prefix で heap-walk
+2. **remset 圧縮** (= §1.2 用語参照、 array compaction の意): minor 開始時の
+   remset_buf を 1 pass 走査し、 各 entry (= tenured obj) について:
+     1. `scan_saw_young = false` に初期化
+     2. `AROH_SCAN_EDGES` で entry の全 slot を `forward_edge_minor` 経由 forward
+        (= 子が young なら to-space に copy + slot を new addr に更新)
+     3. forward 中に「forward 後の new addr も依然 young 領域に居る」 子があれば
+        `scan_saw_young = true`
+     4. true なら entry を buf の write cursor に keep (= 依然 dirty)、 false なら
+        drop + `HDR_CLR_DIRTY` (= もう young child を持たないので remset から除外)
+   結果として remset_buf は古い dirty entry を含む長さから、 今 minor 終了時点で
+   実際に young child を持つ entry のみに縮む。 remset overflow (= 過去に WB が
+   buf を溢れさせた) の場合、 個別 entry の場所が分からないので `tenured_base..
+   old_tenured_top` を slot prefix で heap-walk して同等の filter を実行
 3. **Cheney scan-loop**: `young_scan` cursor と `tenured_scan` cursor の 2 つ。
    各 round で young_to_top と tenured_top が動かなくなるまで loop。
    `process_object_promoted` (= tenured 側) は scan 後に `scan_saw_young` を
