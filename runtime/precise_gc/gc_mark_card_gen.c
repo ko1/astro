@@ -36,8 +36,15 @@
 _Static_assert(sizeof(AroObjectHeader) == 8, "non-moving GC: head must be 8 B");
 
 #define HDR_FREE_BIT     (uint16_t)0x0001u
+#define HDR_AGE_SHIFT    1
+#define HDR_AGE_MASK     ((uint16_t)0x0006u)
+#define PROMOTE_AGE      3u
 #define HDR_IS_FREE(h)     (((h)->gc_flags & HDR_FREE_BIT) != 0)
 #define HDR_SET_FREE(h)    ((h)->gc_flags |= HDR_FREE_BIT)
+#define HDR_GET_AGE(h)     (uint16_t)(((h)->gc_flags & HDR_AGE_MASK) >> HDR_AGE_SHIFT)
+#define HDR_SET_AGE(h, a)  ((h)->gc_flags = (uint16_t)                         \
+                            (((h)->gc_flags & (uint16_t)~HDR_AGE_MASK)         \
+                             | (((uint16_t)(a) << HDR_AGE_SHIFT) & HDR_AGE_MASK)))
 
 typedef struct FreeSlot {
     struct FreeSlot *next;
@@ -139,6 +146,10 @@ typedef struct ASTroGC {
     Page            **remset_buf;
     size_t            remset_cnt;
     size_t            remset_capa;
+    bool              scan_saw_young;
+    struct AroObjectHeader **promoted_buf;
+    size_t            promoted_cnt;
+    size_t            promoted_capa;
 } ASTroGC;
 
 #define page_head             (gc->page_head)
@@ -156,6 +167,20 @@ typedef struct ASTroGC {
 #define remset_buf            (gc->remset_buf)
 #define remset_cnt            (gc->remset_cnt)
 #define remset_capa           (gc->remset_capa)
+#define promoted_buf          (gc->promoted_buf)
+#define promoted_cnt          (gc->promoted_cnt)
+#define promoted_capa         (gc->promoted_capa)
+
+static void
+promoted_push(ASTroGC *gc, AroObjectHeader *h)
+{
+    if (promoted_cnt >= promoted_capa) {
+        promoted_capa = promoted_capa ? promoted_capa * 2 : 256;
+        promoted_buf = (AroObjectHeader **)realloc(promoted_buf, promoted_capa * sizeof(AroObjectHeader *));
+        if (!promoted_buf) abort();
+    }
+    promoted_buf[promoted_cnt++] = h;
+}
 
 const char *aro_gc_backend_name = "mark_card_gen";
 
@@ -514,8 +539,9 @@ mark_value(ASTroGC *gc, VALUE v)
     if (!AROH_IS_GC_OBJECT(v)) return;
     AroObjectHeader *h = (AroObjectHeader *)v;
     if (HDR_IS_FREE(h)) return;
-    if (get_mark(gc, h)) return;
     if (in_minor && get_old(gc, h)) return;
+    if (in_minor) gc->scan_saw_young = true;
+    if (get_mark(gc, h)) return;
     set_mark(gc, h);
     gray_push(gc, h);
 }
@@ -524,6 +550,18 @@ static void
 mark_edge(void *ctx, void **slot)
 {
     mark_value((ASTroGC *)ctx, (VALUE)*slot);
+}
+
+static void
+check_edge_for_young(void *ctx, void **slot)
+{
+    ASTroGC *gc = (ASTroGC *)ctx;
+    VALUE v = (VALUE)*slot;
+    if (AROH_IS_GC_OBJECT(v)) {
+        const AroObjectHeader *h = (const AroObjectHeader *)v;
+        if (HDR_IS_FREE(h)) return;
+        if (!get_old(gc, h)) gc->scan_saw_young = true;
+    }
 }
 
 static void
@@ -565,11 +603,20 @@ sweep_page(ASTroGC *gc, Page *pg, bool minor)
             if (old) continue;
             if (HDR_IS_FREE(h)) continue;
             if (marked) {
-                bm_set(pg->old_bm, i);
-                bm_clr(pg->mark_bm, i);
-                bm_clr(pg->dirty_bm, i);
-                old_bytes += h->gc_size;
-                old_alloc_since_major += ALIGN8(h->gc_size);
+                uint16_t age = HDR_GET_AGE(h);
+                if (age >= PROMOTE_AGE) {
+                    bm_set(pg->old_bm, i);
+                    bm_clr(pg->mark_bm, i);
+                    bm_clr(pg->dirty_bm, i);
+                    HDR_SET_AGE(h, 0);
+                    old_bytes += h->gc_size;
+                    old_alloc_since_major += ALIGN8(h->gc_size);
+                    promoted_push(gc, h);
+                } else {
+                    bm_clr(pg->mark_bm, i);
+                    HDR_SET_AGE(h, age + 1);
+                }
+                continue;
             } else {
                 gc->common.stats.heap_bytes -= h->gc_size;
                 freed_bytes += h->gc_size;
@@ -581,6 +628,12 @@ sweep_page(ASTroGC *gc, Page *pg, bool minor)
             if (HDR_IS_FREE(h)) continue;
             if (marked) {
                 bm_clr(pg->mark_bm, i);
+                if (!old) {
+                    bm_set(pg->old_bm, i);
+                    HDR_SET_AGE(h, 0);
+                    old_bytes += h->gc_size;
+                    old_alloc_since_major += ALIGN8(h->gc_size);
+                }
             } else {
                 gc->common.stats.heap_bytes -= h->gc_size;
                 if (bm_get(pg->old_bm, i)) {
@@ -612,11 +665,19 @@ sweep(ASTroGC *gc, bool minor)
         if (minor) {
             if (lo->old) { link = &lo->next; continue; }
             if (lo->mark) {
-                lo->old = true;
-                lo->mark = false;
-                lo->dirty = false;
-                old_bytes += h->gc_size;
-                old_alloc_since_major += ALIGN8(h->gc_size);
+                uint16_t age = HDR_GET_AGE(h);
+                if (age >= PROMOTE_AGE) {
+                    lo->old = true;
+                    lo->mark = false;
+                    lo->dirty = false;
+                    HDR_SET_AGE(h, 0);
+                    old_bytes += h->gc_size;
+                    old_alloc_since_major += ALIGN8(h->gc_size);
+                    promoted_push(gc, h);
+                } else {
+                    lo->mark = false;
+                    HDR_SET_AGE(h, age + 1);
+                }
                 link = &lo->next;
             } else {
                 *link = lo->next;
@@ -626,6 +687,12 @@ sweep(ASTroGC *gc, bool minor)
         } else {
             if (lo->mark) {
                 lo->mark = false;
+                if (!lo->old) {
+                    lo->old = true;
+                    HDR_SET_AGE(h, 0);
+                    old_bytes += h->gc_size;
+                    old_alloc_since_major += ALIGN8(h->gc_size);
+                }
                 link = &lo->next;
             } else {
                 *link = lo->next;
@@ -651,31 +718,72 @@ gc_collect_minor(CTX *c)
     AROH_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
 
-    for (size_t i = 0; i < remset_cnt; i++) {
-        Page *pg = remset_buf[i];
-        pg->card_dirty = 0;
-        size_t sb = size_class_bytes[pg->class_idx];
-        size_t n = pg->n_slots;
-        char *slot = (char *)pg + SLOTS_REGION_OFFSET;
-        for (size_t j = 0; j < n; j++, slot += sb) {
-            if (!bm_get(pg->dirty_bm, j)) continue;
-            bm_clr(pg->dirty_bm, j);
-            scan_outgoing(gc, (AroObjectHeader *)slot);
+    /* N-survive remset compaction: page-level remset.  For each page in
+     * remset, walk its dirty slots; scan each, keep dirty bit (= and the
+     * page) only if scan_saw_young.  Drop slot's dirty bit otherwise.
+     * Drop the page from remset if no slot remained dirty. */
+    {
+        size_t orig_cnt = remset_cnt;
+        size_t write = 0;
+        for (size_t i = 0; i < orig_cnt; i++) {
+            Page *pg = remset_buf[i];
+            size_t sb = size_class_bytes[pg->class_idx];
+            size_t n = pg->n_slots;
+            char *slot = (char *)pg + SLOTS_REGION_OFFSET;
+            bool any_dirty = false;
+            for (size_t j = 0; j < n; j++, slot += sb) {
+                if (!bm_get(pg->dirty_bm, j)) continue;
+                gc->scan_saw_young = false;
+                scan_outgoing(gc, (AroObjectHeader *)slot);
+                if (gc->scan_saw_young) {
+                    any_dirty = true;  /* keep slot's dirty bit */
+                } else {
+                    bm_clr(pg->dirty_bm, j);
+                }
+            }
+            if (any_dirty) {
+                remset_buf[write++] = pg;
+            } else {
+                pg->card_dirty = 0;
+            }
         }
+        remset_cnt = write;
     }
     for (LargeObj *lo = large_head; lo; lo = lo->next) {
         if (lo->dirty) {
-            lo->dirty = false;
+            gc->scan_saw_young = false;
             scan_outgoing(gc, (AroObjectHeader *)large_payload(lo));
+            if (!gc->scan_saw_young) lo->dirty = false;
         }
     }
-    remset_cnt = 0;
     process_gray(gc);
 
     /* Finalize pass — see gc_mark_bitmap_gen.c. */
     aro_gc_finalize_walk(c);
 
     sweep(gc, /*minor=*/true);
+
+    /* Promote-time WB: each newly-promoted obj may have outgoing refs to
+     * still-young objs.  Set dirty + add page to remset if so. */
+    for (size_t i = 0; i < promoted_cnt; i++) {
+        AroObjectHeader *h = promoted_buf[i];
+        gc->scan_saw_young = false;
+        AROH_SCAN_EDGES((void *)h, h->gc_size, gc, check_edge_for_young);
+        if (gc->scan_saw_young) {
+            Page *pg; size_t idx;
+            if (locate(h, &pg, &idx)) {
+                bm_set(pg->dirty_bm, idx);
+                if (!pg->card_dirty) {
+                    pg->card_dirty = 1;
+                    remset_push_page(gc, pg);
+                }
+            } else {
+                LargeObj *lo = find_large(gc, h);
+                if (lo) lo->dirty = true;
+            }
+        }
+    }
+    promoted_cnt = 0;
 
     gc->common.stats.gc_count++;
     gc->common.stats.minor_count++;
@@ -691,6 +799,16 @@ gc_collect_major(CTX *c)
     struct timespec t0 = aro_gc_time_begin(c);
     in_minor = false;
     remset_cnt = 0;
+    /* N-survive WB invariant: dirty bit set ⇒ in remset.  After
+     * remset_cnt = 0, all dirty bits + card_dirty MUST be cleared.
+     * See gc_mark_bitmap_gen.c for the same bug + fix. */
+    for (int sc = 0; sc < NUM_SIZE_CLASSES; sc++) {
+        for (Page *pg = page_head[sc]; pg; pg = pg->next) {
+            pg->card_dirty = 0;
+            memset(pg->dirty_bm, 0, BITMAP_BYTES);
+        }
+    }
+    for (LargeObj *lo = large_head; lo; lo = lo->next) lo->dirty = false;
 
     AROH_VISIT_ROOTS(c, gc, mark_edge);
     process_gray(gc);
@@ -699,6 +817,7 @@ gc_collect_major(CTX *c)
     aro_gc_finalize_walk(c);
 
     sweep(gc, /*minor=*/false);
+    promoted_cnt = 0;
 
     if (!gc->common.stress) {
         size_t next = old_bytes * MAJOR_THRESHOLD_FACTOR;
@@ -748,6 +867,7 @@ aro_gc_fini(CTX *c)
     aro_gc_free_large_chain_mmap(large_head);
     free(gray_buf);
     free(remset_buf);
+    free(promoted_buf);
     free(gc);
     c->astro_gc = NULL;
 }
