@@ -3703,6 +3703,14 @@ main(int argc, char *argv[])
     }
     if (clear_cs) (void)!system("rm -rf code_store");
     INIT();
+    /* Enable OPTIMIZE → astro_cs_load on plain runs.  astro_cs_load
+     * silently returns false if no SD was cached for the node's hash,
+     * so this is a no-op when code_store/all.so doesn't exist.  When
+     * `--aot-compile` previously baked SDs, plain runs now pick them
+     * up automatically. */
+    if (!bcfg.plain) {
+        OPTION.no_compiled_code = false;
+    }
     CTX *c = create_context();
     if (ai >= argc) return repl(c);
     if (!strcmp(argv[ai], "-e")) {

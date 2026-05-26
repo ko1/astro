@@ -254,7 +254,7 @@ node_call_0(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
     (void)n;
     SP_PUSH(c, sp, 1);
     sp[0] = (*fn_dispatcher)(c, fn, sp + (1));
-    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+    if (!is_tail && !UNLIKELY(ASCHEME_PROFILING) && LIKELY(scm_is_closure(sp[0]))) {
         struct sobj *cl = SCM_PTR(sp[0]);
         if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 0 && !cl->closure.has_rest)) {
             NODE *body = cl->closure.body;
@@ -313,7 +313,7 @@ node_call_1(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
      * tail_call_pending.  We park `c->env` at sp[0] (= overwriting fn,
      * which body doesn't need) so a moving GC during body forwards it
      * via the sp[] root scan — a C-local `saved_env` would be stale. */
-    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+    if (!is_tail && !UNLIKELY(ASCHEME_PROFILING) && LIKELY(scm_is_closure(sp[0]))) {
         struct sobj *cl = SCM_PTR(sp[0]);
         if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 1 && !cl->closure.has_rest)) {
             NODE *body = cl->closure.body;
@@ -365,7 +365,7 @@ node_call_2(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
     sp[0] = (*fn_dispatcher)(c, fn, sp + (3));
     sp[1] = (*a0_dispatcher)(c, a0, sp + (3));
     sp[2] = (*a1_dispatcher)(c, a1, sp + (3));
-    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+    if (!is_tail && !UNLIKELY(ASCHEME_PROFILING) && LIKELY(scm_is_closure(sp[0]))) {
         struct sobj *cl = SCM_PTR(sp[0]);
         if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 2 && !cl->closure.has_rest)) {
             NODE *body = cl->closure.body;
@@ -411,7 +411,7 @@ node_call_3(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
     sp[1] = (*a0_dispatcher)(c, a0, sp + (4));
     sp[2] = (*a1_dispatcher)(c, a1, sp + (4));
     sp[3] = (*a2_dispatcher)(c, a2, sp + (4));
-    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+    if (!is_tail && !UNLIKELY(ASCHEME_PROFILING) && LIKELY(scm_is_closure(sp[0]))) {
         struct sobj *cl = SCM_PTR(sp[0]);
         if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 3 && !cl->closure.has_rest)) {
             NODE *body = cl->closure.body;
@@ -458,7 +458,7 @@ node_call_4(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t i
     sp[2] = (*a1_dispatcher)(c, a1, sp + (5));
     sp[3] = (*a2_dispatcher)(c, a2, sp + (5));
     sp[4] = (*a3_dispatcher)(c, a3, sp + (5));
-    if (!is_tail && LIKELY(scm_is_closure(sp[0]))) {
+    if (!is_tail && !UNLIKELY(ASCHEME_PROFILING) && LIKELY(scm_is_closure(sp[0]))) {
         struct sobj *cl = SCM_PTR(sp[0]);
         if (LIKELY(cl->closure.no_capture && cl->closure.nparams == 4 && !cl->closure.has_rest)) {
             NODE *body = cl->closure.body;
