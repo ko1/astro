@@ -75,17 +75,58 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 
 ### 1.3 sample と GC backend の対応
 
-`runtime/precise_gc/` を利用しているのは 2 sample。 どちらも `make GC=<name>` で 16 backend を build-time に切替できる (Makefile 内の `GC_NUM_<name>` table で `-DBARUBY_GC=<n>` に渡される)。
+ASTro 全 sample (= 24 個) の GC 方式を分類:
 
-| sample | 位置 | 用途 | default `GC` | 対応 backend |
-|--------|------|------|--------------|--------------|
-| `baruby_precise` | `sample/baruby_precise/` | naruby fork + Array/String + precise rooting。 **GC algorithm 比較 testbed** (本 doc の primary 対象) | `copy` | 16 全て |
-| `ascheme_precise` | `sample/ascheme_precise/` | Scheme サブセット (= `ascheme`) の precise rooting 版。 GC kernel 単体測定 + 細粒度 alloc bench に有用 | `copy` | 16 全て |
+#### 1.3.1 precise_gc を使う sample (= 本 doc の対象、 2 個)
+
+`runtime/precise_gc/` を `make GC=<name>` で build-time 切替する。 16 backend 全てに対応。
+
+| sample | 位置 | 用途 | default `GC` |
+|--------|------|------|--------------|
+| `baruby_precise` | `sample/baruby_precise/` | naruby fork + Array/String + precise rooting。 **GC algorithm 比較 testbed** (本 doc の primary 対象) | `copy` |
+| `ascheme_precise` | `sample/ascheme_precise/` | Scheme サブセット (= `ascheme`) の precise rooting 版。 GC kernel 単体測定 + 細粒度 alloc bench に有用 | `copy` |
 
 備考:
-- 他の sample (`naruby`, `baruby`, `pystro`, `arcel` 等) は libgc / 独自 GC を使っており、 本 doc の対象外。
-- bench matrix (`sample/<sample>/benchmark/`) は 16 × {plain, AOT cached} の組合せで回す。 `bench v11` 形式の table 参照。
-- `BARUBY_GC_STRESS=1` 環境変数で全 alloc 毎に GC を発火させる stress mode。 16 backend 全てで対応 (= `BARUBY_GC_PURGE=1` で zero-fill audit も併用可)。
+- bench matrix (`sample/<sample>/benchmark/`) は 16 × {plain, AOT cached} の組合せで回す
+- `BARUBY_GC_STRESS=1` で全 alloc 毎に GC 発火 stress mode、 `BARUBY_GC_PURGE=1` で zero-fill audit
+- 本 doc は §2 / §3 でこの 16 backend を解説
+
+#### 1.3.2 libgc (= Boehm-Demers-Weiser conservative GC) を使う sample (10 個)
+
+リンク時に `-lgc` で `libgc` を呼び出し、 `GC_MALLOC` で alloc。 mark phase は stack を保守的に scan するため precise rooting 不要。
+
+`arawk` / `ascheme` / `asom` / `astocaml` / `astr` / `baruby` / `koruby` / `nuq` / `pascalast` / `pystro`
+
+備考:
+- `baruby` は `baruby_precise` の libgc 比較対象 (= bench v11 で `libgc` 列として並列)
+- conservative ゆえに「pointer に見える int」 を保守的に alive 扱いする overhead がある
+- 本 doc では扱わない (= 別 GC framework)
+
+#### 1.3.3 独自 GC を持つ sample (2 個)
+
+| sample | GC 実装 |
+|--------|---------|
+| `jstro` | hidden class IC + runtime GC (= `sample/jstro/js_runtime.c`) |
+| `luastro` | Lua 流の mark-sweep (= `sample/luastro/lua_gc.c`) |
+
+precise_gc framework と独立。 言語仕様に依存した GC pattern (= JS の hidden class、 Lua の userdata finalizer) のため共通化が難しく独自実装。
+
+#### 1.3.4 CRuby GC を継承する sample (= CRuby C 拡張、 2 個)
+
+CRuby に組み込む C 拡張形式で、 alloc / mark は CRuby (= MRI) の GC に委ねる。
+
+| sample | 形態 |
+|--------|------|
+| `abruby` | Ruby サブセット を CRuby 拡張として組込み |
+| `arjsv` | JSON Schema validator、 `json_schemer` 互換 API |
+
+#### 1.3.5 GC なし (= leak-and-forget) sample (8 個)
+
+short-lived eval / 一度きりの CLI / stack machine など、 process 終了で OS に解放される前提で free しない。
+
+`aforth` (= stack machine) / `arcel` (= predicate eval CLI) / `asml` (= ML 評価) / `astrogre` (= regex + grep CLI) / `calc` (= 6-node 電卓) / `castro` (= C eval) / `naruby` (= Ruby サブセット、 JIT 有り) / `wastro` (= Wasm 評価)
+
+備考: `naruby` だけは長時間動作の可能性があるが、 現状 GC 未実装 (= 短時間 bench / JIT 開発が primary 用途)。 将来 GC 化する場合は `baruby_precise` で proven な precise_gc framework に移行する想定。
 
 ## 2. 各アルゴリズム紹介
 
