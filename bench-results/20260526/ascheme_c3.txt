@@ -1,0 +1,26 @@
+# bench v8 — plain + aot-cached × 15 precise backend (libgc plain only)
+# columns suffix: _p = plain, _a = aot-cached
+
+## elapsed (seconds, median of 3)
+bench        cat  libgc   copy_G_pcopy_G_am_c_p   m_c_a   
+fib35        INT          1.19    0.78    1.37    0.98    
+sumloop      INT          2.05    0.71    2.14    0.71    
+nbody        INT          0.55    0.44    0.66    0.55    
+sieve_big    GC           1.35    0.57    1.55    0.62    
+deriv        GC           1.15    1.05    1.33    1.25    
+nqueens      MIX          2.84    1.23    3.11    1.41    
+fannkuch     MIX          1.52    1.06    1.93    1.37    
+cps_loop     MIX          0.99    0.32    1.18    0.32    
+matmul       MIX          6.20    5.81    6.32    6.04    
+
+## peak RSS (MiB, max of 3 /usr/bin/time -M)
+bench        cat  libgc   copy_G_pcopy_G_am_c_p   m_c_a   
+fib35        INT          35.8    35.6    19.8    19.6    
+sumloop      INT          3.6     31.6    3.6     31.0    
+nbody        INT          35.9    36.1    19.9    20.0    
+sieve_big    GC           112.1   112.1   226.9   227.0   
+deriv        GC           35.6    35.5    19.8    27.9    
+nqueens      MIX          35.8    35.6    19.6    19.8    
+fannkuch     MIX          35.6    35.9    19.5    19.6    
+cps_loop     MIX          3.6     3.9     3.8     3.8     
+matmul       MIX          29.5    29.4    29.1    29.1    

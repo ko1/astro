@@ -1,0 +1,11 @@
+## mark_bitmap_gen
+mark_bitmap_gen	fib	7.03	2432
+mark_bitmap_gen	fib_pair	0.99	24448
+mark_bitmap_gen	fannkuch	0.82	31744
+mark_bitmap_gen	ackermann	7.18	8448
+mark_bitmap_gen	binary_trees	0.63	264448
+mark_bitmap_gen	gc_combined	1.29	784000
+mark_bitmap_gen	hash_chain	1.41	14080
+mark_bitmap_gen	list_alloc	1.25	783616
+mark_bitmap_gen	json_parse	1.79	966912
+mark_bitmap_gen	chain_add	1.25	2432

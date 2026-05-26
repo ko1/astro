@@ -1,0 +1,44 @@
+## libgc baseline
+libgc	fib	6.34	3712
+libgc	fib_pair	0.97	4352
+libgc	fannkuch	0.68	4992
+libgc	ackermann	6.60	10496
+libgc	binary_trees	0.83	288000
+libgc	gc_combined	0.91	5760
+libgc	hash_chain	1.48	18048
+libgc	list_alloc	0.89	4352
+libgc	json_parse	1.14	4992
+libgc	chain_add	1.09	3584
+## none
+none	fib	6.79	2432
+none	fib_pair	1.50	837888
+none	fannkuch	0.76	57856
+none	ackermann	7.27	8320
+none	binary_trees	0.65	264576
+none	gc_combined	1.29	784000
+none	hash_chain	1.28	14080
+none	list_alloc	1.27	783616
+none	json_parse	1.81	966784
+none	chain_add	1.20	2432
+## mark
+mark	fib	6.77	2560
+mark	fib_pair	0.88	24192
+mark	fannkuch	0.73	31616
+mark	ackermann	7.24	8448
+mark	binary_trees	0.81	264960
+mark	gc_combined	0.82	27520
+mark	hash_chain	1.15	20736
+mark	list_alloc	0.76	27008
+mark	json_parse	0.95	24448
+mark	chain_add	1.16	2432
+## mark_gen
+mark_gen	fib	6.91	2560
+mark_gen	fib_pair	1.00	29824
+mark_gen	fannkuch	0.75	33792
+mark_gen	ackermann	7.10	8576
+mark_gen	binary_trees	0.71	264576
+mark_gen	gc_combined	1.29	784000
+mark_gen	hash_chain	1.34	14080
+mark_gen	list_alloc	1.28	783616
+mark_gen	json_parse	1.73	967040
+mark_gen	chain_add	1.26	2432

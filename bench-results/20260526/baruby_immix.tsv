@@ -1,0 +1,11 @@
+## immix
+immix	fib	6.76	2432
+immix	fib_pair	0.82	18944
+immix	fannkuch	0.70	19072
+immix	ackermann	7.09	8576
+immix	binary_trees	0.57	199936
+immix	gc_combined	0.75	19200
+immix	hash_chain	1.26	13696
+immix	list_alloc	0.69	18816
+immix	json_parse	0.96	18944
+immix	chain_add	1.13	2432

@@ -2,261 +2,367 @@
 
 `sample/ascheme_precise/` の precise GC framework migration の perf 評価。
 **libgc (= Boehm conservative GC, `sample/ascheme/`)** を baseline に、
-16 個の precise GC backend (= scramble 除く) を **plain interpreter** /
-**AOT (= `--aot-compile` + dlopen cached SDs)** 2 軸で測定。
+15 個の precise GC backend (= `copy_gen_inc` 撤去後、 §0 参照) を **plain
+interpreter** / **AOT (= `--aot-compile` + dlopen cached SDs)** の 2 軸で、
+elapsed + peak RSS の両軸で計測。
 
-`make bench-aot` で再現可能 (= 約 30 分)。
+bench script: `sample/ascheme_precise/bench/aot_matrix.sh` (= `make
+bench-aot`)。 15 backend × 9 workload × {plain, aot-cached} を回す。
 
 ## 0. setup
 
+- **日付**: 2026-05-26
 - **machine**: AMD Ryzen 9 5900HX (= 8 cores / 16 threads、 ~4.6 GHz boost)
 - **memory**: 30 GiB
 - **kernel**: Linux 6.8.0-117 x86_64
-- **compiler**: gcc -O3 -ggdb3
-- **methodology**: 各 benchmark 3 回実行、 最小値。 出力 first-line を expected と
-  照合して **正答性検証** してから記録 (= GC bug で「速いが結果が誤」を排除)
+- **compiler**: gcc 13.3.0 (`-O3 -flto=auto -ggdb3`)
+- **methodology**: 各 benchmark **3 回実行**、 **elapsed = median of 3**、
+  **peak RSS = max of 3** (= `/usr/bin/time -f "%e %M"`)。 出力 first-line を
+  expected と照合して **正答性検証** してから記録 (= GC bug で「速いが結果が誤」
+  を排除)
 - **scale**: 0.3–10 秒の範囲で sustained measurement
+- **N-survive**: 全 gen backend を N-survive promote に統一済。 `copy_gen_inc`
+  は実体が `copy_gen` の clone (= inc_step / SATB なし) で「独立 algorithm」 を
+  主張できないため撤去 (16 → **15 backend**)
 
-略号 (= 後続の表で使用):
+略号一覧 (= 後続の表で使用):
 
 | 略号 | backend | 略号 | backend |
 |------|---------|------|---------|
 | `m_G`     | mark_gen          | `copy_G`     | copy_gen          |
-| `m_G_inc` | mark_gen_inc      | `copy_G_inc` | copy_gen_inc      |
-| `m_free`  | mark_freelist     | `m_c`        | mark_compact      |
-| `m_bmp_G` | mark_bitmap_gen   | `m_c_G`      | mark_compact_gen  |
-| `m_crd_G` | mark_card_gen     | `m_Bu_G`     | mark_bump_gen     |
+| `m_G_inc` | mark_gen_inc      | `m_free`     | mark_freelist     |
+| `m_c`     | mark_compact      | `m_c_G`      | mark_compact_gen  |
+| `m_bmp_G` | mark_bitmap_gen   | `m_crd_G`    | mark_card_gen     |
+| `Bu`      | bump (leak、 §3)  | `m_Bu_G`     | mark_bump_gen (§3) |
 | `I`       | immix             | `I_G`        | immix_gen         |
-| `Bu`      | bump              | (libgc は ascheme = Boehm conservative GC) |  |
+| `none`    | libc malloc + leak (§3) |  |  |
 
-## 1. plain interpreter (= 全 16 backend × 9 workload、 単位 秒)
+⚠ **「libgc との比較」 caveat**: libgc は ascheme の conservative scan
+backend、 ascheme_precise は precise rooting (`sframe` chain + sp[] flat
+scan)。 ここで測れているのは「runtime + rooting + collector の合計差」 で
+あって、 GC algorithm 純粋差ではない。
 
-```
-bench       cat libgc  none  Bu    mark  m_G   m_G_inc m_free m_bmp_G m_crd_G copy  copy_G copy_G_inc m_c   m_c_G m_Bu_G I     I_G
-fib35       INT 0.46   0.52  1.30  1.03  1.04  1.40    0.97   1.12    1.16    0.93  0.93   0.95       1.16  0.90  0.93   0.95  0.91
-sumloop     INT 1.52   1.66  1.77  1.68  1.69  2.07    1.87   2.09    2.05    1.65  1.67   1.84       1.73  1.69  1.93   1.69  1.70
-nbody       INT 0.55   0.89  0.65  0.49  0.52  0.59    0.48   0.56    0.56    0.44  0.44   0.44       0.52  0.43  0.45   0.43  0.43
-sieve_big   GC  1.18   1.22  1.22  1.19  1.16  1.63    1.27   1.61    1.61    1.18  1.17   1.22       1.22  1.17  1.26   1.15  1.20
-deriv       GC  1.09   1.59  1.29  1.05  1.03  1.20    1.02   1.16    1.15    1.02  0.96   0.99       1.07  0.92  0.98   1.00  0.94
-nqueens     MIX 2.08   2.39  2.64  2.39  2.42  2.84    2.55   2.77    2.71    2.28  2.38   2.40       2.42  2.32  2.39   2.31  2.42
-fannkuch    MIX 1.39   2.59  1.82  1.27  1.38  1.54    1.35   1.57    1.58    1.12  1.17   1.15       1.35  1.13  1.13   1.12  1.11
-cps_loop    MIX 0.85   0.92  0.97  0.94  0.96  1.09    1.02   1.14    1.05    0.92  0.92   1.04       0.92  0.90  0.99   0.85  0.96
-matmul      MIX 8.11   10.25 10.24 4.86  4.61  4.69    4.85   4.71    4.72    4.99  4.79   4.81       4.87  4.71  4.59   4.71  4.53
-```
+bench data source: `bench-results/20260526/ascheme_c1.txt` –
+`ascheme_c7.txt` (= 7 chunk file)。 各 chunk は 2 backend × {plain, AOT} の
+elapsed + RSS。
 
-### 1.1 plain での観察
+## 1. plain interpreter (= 15 precise backend + libgc × 9 bench)
 
-- **fib35** (= 純再帰、 stack 深い) は precise rooting の sp[] 更新が
-  worst case。 全 backend で 2.0–3.0× 遅い (= libgc 0.46 vs precise 0.90–1.40)。
-  libgc は C stack を保守的に scan するので per-call sp[] 不要
-- **sumloop / nbody / cps_loop** は libgc とほぼ同等〜やや遅い (= +5〜25%)
-- **GC-heavy** な `sieve_big` / `deriv` / `nqueens` / `fannkuch` は backend
-  によって libgc とほぼ同等〜やや速い (= 例 `mark_compact_gen` の deriv
-  0.92 < libgc 1.09)
-- **matmul** は **全 16 backend で 4.53–4.99 秒** に収束 (= libgc 8.11 の
-  **0.56〜0.62×** で圧勝)。 `none` / `bump` のみ GC 無しの分 10.2 秒で遅い
+### 1.1 elapsed (秒、 median of 3)
 
-### 1.2 plain の backend ランキング (= 全 9 workload geomean vs libgc)
+実用 11 backend (= §3 の 4 特殊用途を除く):
 
-| backend           | plain geomean |
-|-------------------|--------------:|
-| `mark_compact_gen`|         0.97× |
-| `immix`           |         0.98× |
-| `copy_gen`        |         0.99× |
-| `immix_gen`       |         0.99× |
-| `copy`            |         1.00× |
-| `mark_bump_gen`   |         1.02× |
-| `copy_gen_inc`    |         1.03× |
-| `mark`            |         1.05× |
-| `mark_gen`        |         1.06× |
-| `mark_freelist`   |         1.08× |
-| `mark_compact`    |         1.08× |
-| `mark_card_gen`   |         1.20× |
-| `mark_bitmap_gen` |         1.22× |
-| `mark_gen_inc`    |         1.25× |
-| `none`            |         1.27× |
-| `bump`            |         1.31× |
-| `libgc`           |         1.00 (baseline) |
+| bench | cat | libgc | mark | m_G | m_G_inc | copy | copy_G | m_c | m_c_G | I | I_G | m_bmp_G | m_crd_G | m_free |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| fib35     | INT | **0.57** | 1.19 | 1.44 | 1.44 | 1.13 | 1.19 | 1.37 | 1.45 | 1.17 | 1.15 | 1.45 | 1.40 | 1.21 |
+| sumloop   | INT | **1.97** | 2.65 | 2.04 | 2.46 | 2.09 | 2.05 | 2.14 | 2.59 | 2.20 | 2.04 | 2.54 | 2.85 | 2.20 |
+| nbody     | INT | 0.69 | 0.74 | 0.54 | 0.69 | 0.55 | 0.55 | 0.66 | 0.68 | 0.54 | 0.55 | 0.71 | 0.70 | 0.59 |
+| sieve_big | GC  | 1.46 | 2.06 | 1.39 | 1.90 | 1.41 | **1.35** | 1.55 | 1.97 | 1.47 | 1.44 | 1.97 | 1.95 | 1.55 |
+| deriv     | GC  | 1.38 | 1.40 | 1.20 | 1.44 | 1.21 | 1.15 | 1.33 | 1.35 | 1.24 | **1.14** | 1.38 | 1.37 | 1.23 |
+| nqueens   | MIX | **2.70** | 3.31 | 2.79 | 3.47 | 2.81 | 2.84 | 3.11 | 3.32 | 2.84 | 2.83 | 3.39 | 3.38 | 3.08 |
+| fannkuch  | MIX | 1.77 | 2.12 | 1.38 | 1.92 | 1.37 | 1.52 | 1.93 | 1.87 | 1.43 | 1.42 | 1.91 | 1.91 | 1.58 |
+| cps_loop  | MIX | 1.07 | 1.41 | 1.15 | 1.35 | 1.12 | **0.99** | 1.18 | 1.41 | 1.14 | 1.15 | 1.40 | 1.41 | 1.13 |
+| matmul    | MIX | 10.00 | 6.26 | 6.08 | 6.09 | 6.42 | 6.20 | 6.32 | 6.14 | 6.28 | 5.93 | 6.18 | 6.04 | **5.74** |
 
-主流 backend (= `copy` / `copy_gen` / `immix` / `mark_compact_gen` /
-`immix_gen` / `mark_bump_gen`) は **libgc とほぼ互角** (= 0.97–1.02×)。
-非 incremental + 非 bitmap/card 系が安定して優秀。
+**太字** は各 bench で libgc を含む全 backend (= 実用 + 特殊) の最速。
 
-## 2. AOT (= `--aot-compile` で hot AST node を C 関数化、 dlopen で attach)
+### 1.2 peak RSS (MiB、 max of 3)
 
-注: ascheme (libgc) は `--aot-compile` **未実装** なので、 以降の AOT 表は
-precise GC 16 backend のみ。 libgc baseline (plain) との比較は §3。
+| bench | libgc | mark | m_G | m_G_inc | copy | copy_G | m_c | m_c_G | I | I_G | m_bmp_G | m_crd_G | m_free |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| fib35     | **4.0** | 32.2 | 35.8 | 23.8 | 35.6 | 35.8 | 19.8 | 35.6 | 19.6 | 35.6 | 19.9 | 20.0 | 19.6 |
+| sumloop   | **4.0** | 3.9 | 3.6 | 3.6 | 3.8 | 3.6 | 3.6 | 3.6 | 3.6 | 3.6 | 3.6 | 3.6 | 3.6 |
+| nbody     | 73.6 | 23.5 | 35.9 | 26.5 | 35.9 | 35.8 | 19.9 | 23.4 | 20.1 | 35.9 | 23.4 | 23.2 | 23.1 |
+| sieve_big | 164.9 | 99.1 | 201.6 | 102.0 | 201.5 | 112.1 | 226.9 | 98.9 | 201.8 | 111.9 | 98.9 | 98.8 | 221.9 |
+| deriv     | 73.5 | 27.8 | 35.6 | 29.9 | 35.5 | 35.6 | **19.8** | 26.0 | 19.8 | 35.6 | 26.0 | 26.0 | 25.8 |
+| nqueens   | 73.5 | FAIL | 35.6 | 27.9 | 35.9 | 35.8 | 19.6 | 25.5 | 19.8 | 35.6 | 25.2 | 25.4 | 25.0 |
+| fannkuch  | 73.4 | 25.4 | 35.9 | 28.2 | 35.9 | 35.6 | 19.5 | 25.2 | 19.8 | 35.9 | 25.2 | 25.2 | 24.9 |
+| cps_loop  | 4.1 | 3.9 | 3.5 | 3.6 | 3.6 | 3.6 | 3.8 | 3.8 | 3.6 | 3.8 | 3.8 | 3.6 | 3.8 |
+| matmul    | 71.9 | 32.3 | 29.1 | 33.0 | 29.0 | 29.5 | 29.1 | 32.2 | 29.8 | 29.7 | 32.3 | 32.3 | 32.1 |
 
-```
-bench       cat none  Bu    mark  m_G   m_G_inc m_free m_bmp_G m_crd_G copy  copy_G copy_G_inc m_c   m_c_G m_Bu_G I     I_G
-fib35       INT 0.29  0.98  0.68  0.76  1.08    0.66   0.81    0.81    0.61  0.63   0.63       0.81  0.63  0.63   0.62  0.62
-sumloop     INT 0.47  0.47  0.48  0.47  0.84    0.49   0.93    0.88    0.48  0.48   0.47       0.47  0.47  0.47   0.46  0.47
-nbody       INT 0.81  0.58  0.40  0.42  0.50    0.40   0.48    0.46    0.36  0.35   0.35       0.43  0.36  0.35   0.35  0.34
-sieve_big   GC  0.52  0.47  0.51  0.48  0.80    0.49   0.83    0.83    0.50  0.47   0.46       0.51  0.45  0.45   0.48  0.46
-deriv       GC  1.56  1.14  1.00  0.96  1.12    0.94   1.10    1.06    0.90  0.87   0.89       0.99  0.83  0.87   0.89  0.83
-nqueens     MIX 1.13  1.34  1.10  1.15  1.45    1.13   1.43    1.44    1.02  1.04   0.99       1.12  0.99  0.98   1.01  0.99
-fannkuch    MIX 2.18  1.53  0.96  1.12  1.24    1.02   1.26    1.22    0.82  0.83   0.84       1.09  0.83  0.83   0.82  0.83
-cps_loop    MIX 0.26  0.26  0.27  0.26  0.44    0.26   0.49    0.46    0.26  0.26   0.26       0.27  0.26  0.26   0.25  0.26
-matmul      MIX 10.20 10.17 4.63  4.46  4.46    4.58   4.54    4.46    4.95  4.72   4.76       4.58  4.55  4.49   4.52  4.33
-```
+`mark` の `nqueens` は **FAIL** (= AOT 列も `nqueens` 失敗)。 §5 todo。
 
-### 2.1 AOT での観察
+### 1.3 plain での観察
 
-- AOT は plain の dispatch overhead を inline で畳む。 dispatch heavy な
-  `sumloop` / `cps_loop` は **0.25–0.49 秒** に収束 (= libgc plain の
-  **1.7–3.3×** 速い)
-- `fib35` も AOT で **0.61–0.81 秒** に改善 (= plain 比 1.4×)。 ただし
-  libgc plain 0.46 には届かず (= 0.61 / 0.46 = 1.33×、 -33% 残)
-- GC-heavy な `sieve_big` / `nqueens` / `fannkuch` でも AOT で **0.45–1.10 秒**
-  と libgc plain の **2.0–2.5×** 速い
-- `matmul` は plain と同じく非 `none`/`bump` 全 backend で **4.33–4.95 秒** (=
-  libgc plain の **1.6–1.9×** 速い)。 AOT による上乗せは小さい (= GC time
-  dominates)
+- **fib35** (= 純再帰、 stack 深い): precise rooting の sframe 更新が worst
+  case。 全 backend で **2.0–2.5× 遅い** (= libgc 0.57 vs precise 1.13–1.45)。
+  libgc は C stack を保守的 scan するので per-call sp[] 不要。 **fib35 の
+  RSS は libgc 4.0 MiB に対し precise 系 19–36 MiB** = sframe + heap の
+  initial reserve cost。
+- **sumloop / nqueens** で libgc が precise を全 backend で上回る (= libgc
+  1.97 vs 最速 precise `mark_gen` 2.04; libgc 2.70 vs 最速 `mark_gen` 2.79)。
+  dispatch only な int bench。
+- **GC-heavy** な `sieve_big` / `deriv` / `fannkuch` / `matmul` は backend
+  によって libgc を上回る:
+  - `copy_gen` sieve_big 1.35 < libgc 1.46
+  - `immix` deriv 1.14 < libgc 1.38
+  - precise 系全部 fannkuch < libgc 1.77 (= 最速 `immix` 1.42)
+  - **matmul は precise 14 backend 全て libgc 10.00 を上回り 5.74–6.42 (=
+    0.57–0.64×)**
+- **`mark` で `nqueens` FAIL**: GC bug、 §5 todo。
+- **`mark_compact`** は ascheme 環境で `binary_trees` 系の long-lived chain
+  で SEGV する known issue があるが、 本 9 bench では問題なく全 PASS。
 
-### 2.2 AOT の backend ランキング (= 全 9 workload geomean vs libgc plain)
+### 1.4 plain ranking (= 実用 11 backend、 geomean elapsed)
 
-| backend           | AOT geomean |
-|-------------------|------------:|
-| `immix_gen`       |       0.53× |
-| `mark_compact_gen`|       0.54× |
-| `mark_bump_gen`   |       0.54× |
-| `immix`           |       0.54× |
-| `copy_gen`        |       0.55× |
-| `copy_gen_inc`    |       0.55× |
-| `copy`            |       0.56× |
-| `mark`            |       0.59× |
-| `mark_freelist`   |       0.59× |
-| `mark_gen`        |       0.60× |
-| `mark_compact`    |       0.62× |
-| `none`            |       0.73× |
-| `bump`            |       0.75× |
-| `mark_card_gen`   |       0.78× |
-| `mark_bitmap_gen` |       0.80× |
-| `mark_gen_inc`    |       0.81× |
-| `libgc` (plain)   |       1.00 (baseline) |
+| rank | backend | plain geomean | vs libgc |
+|---:|---|---:|---:|
+| 1 | `copy_gen` | 1.55s | **0.96×** |
+| 2 | `immix_gen` | 1.55s | 0.97× |
+| 3 | `copy` | 1.57s | 0.97× |
+| 4 | `mark_gen` | 1.59s | 0.99× |
+| 5 | `immix` | 1.60s | 0.99× |
+| — | **libgc** | **1.61s** | **1.00 (baseline)** |
+| 6 | `mark_freelist` | 1.64s | 1.02× |
+| 7 | `mark_compact` | 1.76s | 1.09× |
+| 8 | `mark_gen_inc` | 1.90s | 1.18× |
+| 9 | `mark_compact_gen` | 1.91s | 1.18× |
+| 10 | `mark_bitmap_gen` | 1.92s | 1.20× |
+| 11 | `mark_card_gen` | 1.93s | 1.20× |
+| 12 | `mark` | 1.94s | 1.20× (n=8、 nqueens FAIL) |
 
-- **AOT geomean は 16/16 backend で libgc plain を下回る** (= 0.53–0.81×)
-- **トップ: `immix_gen` = 0.53×** (= libgc plain の -47% faster)
-- 生成系 (gen 系) と 非生成 (`copy` / `immix` / `mark`) が **0.53–0.60×** に
-  集中、 互角。 `mark_compact_gen` / `mark_bump_gen` も 0.54×
-- 落ちこぼれ: `mark_card_gen` / `mark_bitmap_gen` / `mark_gen_inc` のみ
-  0.78–0.81× (= matmul 以外で sumloop / cps_loop の speedup が頭打ちで
-  全体 geomean を引き下げる)
+主流の `copy_gen` / `immix_gen` / `copy` / `mark_gen` / `immix` が **libgc 比
+0.96–0.99×** で互角〜微優位。 落ちこぼれは `mark_card_gen` / `mark_bitmap_gen`
+/ `mark_gen_inc` / `mark_compact_gen` / `mark` で 1.18–1.20×。
 
-### 2.3 AOT 加速率 (= plain / AOT、 backend 別)
+## 2. AOT (= cached SD)
 
-| backend          | fib35 | sumloop | nbody | sieve_big | deriv | nqueens | fannkuch | cps_loop | matmul |
-|------------------|------:|--------:|------:|----------:|------:|--------:|---------:|---------:|-------:|
-| `none`           | 1.79× |   3.53× | 1.10× |     2.35× | 1.02× |   2.12× |    1.19× |    3.54× |  1.00× |
-| `bump`           | 1.33× |   3.77× | 1.12× |     2.60× | 1.13× |   1.97× |    1.19× |    3.73× |  1.01× |
-| `mark`           | 1.51× |   3.50× | 1.23× |     2.33× | 1.05× |   2.17× |    1.32× |    3.48× |  1.05× |
-| `mark_gen`       | 1.37× |   3.60× | 1.24× |     2.42× | 1.07× |   2.10× |    1.23× |    3.69× |  1.03× |
-| `mark_gen_inc`   | 1.30× |   2.46× | 1.18× |     2.04× | 1.07× |   1.96× |    1.24× |    2.48× |  1.05× |
-| `mark_freelist`  | 1.47× |   3.82× | 1.20× |     2.59× | 1.09× |   2.26× |    1.32× |    3.92× |  1.06× |
-| `mark_bitmap_gen`| 1.38× |   2.25× | 1.17× |     1.94× | 1.05× |   1.94× |    1.25× |    2.33× |  1.04× |
-| `mark_card_gen`  | 1.43× |   2.33× | 1.22× |     1.94× | 1.08× |   1.88× |    1.30× |    2.28× |  1.06× |
-| `copy`           | 1.52× |   3.44× | 1.22× |     2.36× | 1.13× |   2.24× |    1.37× |    3.54× |  1.01× |
-| `copy_gen`       | 1.48× |   3.48× | 1.26× |     2.49× | 1.10× |   2.29× |    1.41× |    3.54× |  1.01× |
-| `copy_gen_inc`   | 1.51× |   3.91× | 1.26× |     2.65× | 1.11× |   2.42× |    1.37× |    4.00× |  1.01× |
-| `mark_compact`   | 1.43× |   3.68× | 1.21× |     2.39× | 1.08× |   2.16× |    1.24× |    3.41× |  1.06× |
-| `mark_compact_gen`| 1.43×|   3.60× | 1.19× |     2.60× | 1.11× |   2.34× |    1.36× |    3.46× |  1.04× |
-| `mark_bump_gen`  | 1.48× |   4.11× | 1.29× |     2.80× | 1.13× |   2.44× |    1.36× |    3.81× |  1.02× |
-| `immix`          | 1.53× |   3.67× | 1.23× |     2.40× | 1.12× |   2.29× |    1.37× |    3.40× |  1.04× |
-| `immix_gen`      | 1.47× |   3.62× | 1.26× |     2.61× | 1.13× |   2.44× |    1.34× |    3.69× |  1.05× |
+`--aot-compile --run` で hot AST node を `code_store/all.so` 内 SD として
+gcc で bake。 2 回目以降の run が dlopen して bind する仕組み。 ascheme
+(libgc) は AOT 未対応なので、 AOT 表は precise 15 backend のみ。
 
-- **dispatch heavy** (= `sumloop` / `cps_loop`) で AOT は **2.3–4.1×**
-  speedup。 AOT が interpreter dispatch loop を C 関数 inline に展開
-- **GC bound** (= `matmul`) は **全 backend で 1.00–1.06×** で tied。
-  GC time が dominate、 dispatch fold の余地が少ない
+### 2.1 elapsed (秒、 median of 3、 AOT cached)
 
-## 3. 代表比較 (= libgc vs copy)
+実用 11 backend:
 
-`copy` は GC-heavy 全 workload PASS かつ ascheme の推奨 production backend
-(= Cheney semispace、 balanced)。 libgc baseline と並べた一覧:
+| bench | mark | m_G | m_G_inc | copy | copy_G | m_c | m_c_G | I | I_G | m_bmp_G | m_crd_G | m_free |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| fib35     | 1.03 | **0.77** | 1.05 | 0.76 | 0.78 | 0.98 | 1.01 | 0.79 | 0.78 | 1.02 | 1.00 | 0.81 |
+| sumloop   | 1.13 | **0.58** | 1.01 | NOAOT | 0.71 | 0.71 | 1.10 | 0.60 | 0.59 | 1.07 | 1.07 | 0.59 |
+| nbody     | 0.64 | 0.43 | 0.57 | 0.43 | 0.44 | 0.55 | NOAOT | 0.43 | **0.44** | 0.57 | NOAOT | 0.48 |
+| sieve_big | 1.09 | **0.58** | 1.01 | 0.58 | 0.57 | 0.62 | 1.06 | 0.60 | 0.60 | 1.04 | 1.09 | 0.58 |
+| deriv     | 1.38 | **1.07** | 1.36 | 1.10 | 1.05 | 1.25 | 1.30 | 1.13 | 1.05 | 1.31 | 1.29 | 1.13 |
+| nqueens   | FAIL | 1.24 | 1.71 | 1.29 | **1.23** | 1.41 | 1.74 | 1.27 | 1.29 | 1.71 | 1.72 | 1.35 |
+| fannkuch  | 1.58 | 1.03 | 1.55 | 1.01 | **1.06** | 1.37 | 1.58 | 1.05 | 1.05 | 1.53 | 1.51 | 1.21 |
+| cps_loop  | 0.60 | **0.33** | 0.53 | 0.32 | 0.32 | 0.32 | 0.58 | 0.32 | 0.32 | 0.58 | 0.58 | 0.31 |
+| matmul    | 6.10 | 5.81 | 5.84 | 6.25 | 5.81 | 6.04 | 5.90 | 5.95 | 5.74 | 5.72 | 5.66 | **5.45** |
 
-| bench     | libgc | copy plain | copy AOT | AOT vs libgc     | AOT vs copy plain |
-|-----------|------:|-----------:|---------:|------------------|-------------------|
-| fib35     |  0.46 |       0.93 |     0.61 | 1.33× slower     | **1.52× faster**  |
-| sumloop   |  1.52 |       1.65 |     0.48 | **3.17× faster** | **3.44× faster**  |
-| nbody     |  0.55 |       0.44 |     0.36 | **1.53× faster** | 1.22× faster      |
-| sieve_big |  1.18 |       1.18 |     0.50 | **2.36× faster** | **2.36× faster**  |
-| deriv     |  1.09 |       1.02 |     0.90 | **1.21× faster** | 1.13× faster      |
-| nqueens   |  2.08 |       2.28 |     1.02 | **2.04× faster** | **2.24× faster**  |
-| fannkuch  |  1.39 |       1.12 |     0.82 | **1.70× faster** | 1.37× faster      |
-| cps_loop  |  0.85 |       0.92 |     0.26 | **3.27× faster** | **3.54× faster**  |
-| matmul    |  8.11 |       4.99 |     4.95 | **1.64× faster** | 1.01× tied        |
+`NOAOT` = AOT compile が出力した SD が attach しなかった cell (= dlopen 時
+に fallback to interpreter)。 個別 cell の compile bug 由来、 §5 todo。
+`FAIL` = `mark` の `nqueens` (= GC bug)。
 
-- `copy` plain vs libgc: GC-heavy で互角〜やや負け、 matmul で **0.62×**
-  faster。 9 workload geomean **1.00×** (= libgc plain と同等)
-- `copy` AOT は **9/9 workload で libgc plain を上回る** (= fib35 は 0.61 で
-  libgc 0.46 にやや劣るが、 plain 比 1.52× faster)。 9 workload geomean **0.56×**
-- AOT の plain 比 speedup は dispatch heavy で **3.4–3.5×**、 GC-heavy
-  で **2.2–2.4×**、 matmul で tied
+### 2.2 peak RSS (MiB、 max of 3、 AOT)
 
-## 4. matmul
+| bench | mark | m_G | m_G_inc | copy | copy_G | m_c | m_c_G | I | I_G | m_bmp_G | m_crd_G | m_free |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| fib35     | 23.8 | 35.8 | 24.0 | 35.8 | 35.6 | 19.6 | 20.0 | 19.9 | 35.8 | 20.0 | 20.0 | 19.6 |
+| sumloop   | 3.8 | 3.6 | 3.9 | NOAOT | 31.6 | 31.0 | 4.0 | 31.5 | 3.8 | 3.9 | 3.9 | 3.6 |
+| nbody     | 23.5 | 36.0 | 26.6 | 36.0 | 36.1 | 20.0 | NOAOT | 20.1 | 35.9 | 23.2 | NOAOT | 23.0 |
+| sieve_big | 99.1 | 201.8 | 102.1 | 201.6 | 112.1 | 227.0 | 99.0 | 201.8 | 112.1 | 99.1 | 99.1 | 222.1 |
+| deriv     | 27.8 | 35.6 | 29.9 | 35.9 | 35.5 | 27.9 | 27.9 | 27.6 | 35.8 | 27.9 | 27.9 | 27.6 |
+| nqueens   | FAIL | 35.6 | 28.1 | 35.9 | 35.6 | 19.8 | 25.4 | 20.0 | 35.6 | 25.4 | 25.4 | 24.9 |
+| fannkuch  | 25.4 | 36.0 | 28.2 | 35.9 | 35.9 | 19.6 | 25.4 | 20.0 | 35.8 | 25.5 | 33.9 | 25.0 |
+| cps_loop  | 3.9 | 3.9 | 3.8 | 3.8 | 3.9 | 3.8 | 3.9 | 3.6 | 3.8 | 3.9 | 3.9 | 3.8 |
+| matmul    | 32.3 | 29.2 | 33.1 | 29.0 | 29.4 | 29.1 | 32.5 | 29.9 | 29.8 | 32.5 | 32.5 | 32.4 |
 
-`matmul` (= LCG で巨大 bignum を生成 + 200×200 fixnum 行列積) は
-**GMP 経由 bignum allocation** が dominant な workload。 過去版では
-generational backend の minor GC が external memory pressure (= libc-malloc'd
-GMP buffer) で **livelock** し、 60–100 秒級の outlier を出していた。
-commit `c88f92a1` (= external_bytes pressure を minor から major trigger へ
-振替) で解消、 現在は全 backend で **4.5 秒台に収束**:
+### 2.3 plain vs AOT speedup (実用 11 backend、 geomean of bench ratios)
 
-| backend         | plain | AOT  | AOT vs libgc (8.11) |
-|-----------------|------:|-----:|--------------------:|
-| `mark`          |  4.86 | 4.63 |               0.57× |
-| `mark_gen`      |  4.61 | 4.46 |               0.55× |
-| `mark_gen_inc`  |  4.69 | 4.46 |               0.55× |
-| `mark_freelist` |  4.85 | 4.58 |               0.56× |
-| `mark_bitmap_gen`|  4.71| 4.54 |               0.56× |
-| `mark_card_gen` |  4.72 | 4.46 |               0.55× |
-| `copy`          |  4.99 | 4.95 |               0.61× |
-| `copy_gen`      |  4.79 | 4.72 |               0.58× |
-| `copy_gen_inc`  |  4.81 | 4.76 |               0.59× |
-| `mark_compact`  |  4.87 | 4.58 |               0.56× |
-| `mark_compact_gen`| 4.71| 4.55 |               0.56× |
-| `mark_bump_gen` |  4.59 | 4.49 |               0.55× |
-| `immix`         |  4.71 | 4.52 |               0.56× |
-| `immix_gen`     |  4.53 | 4.33 |               0.53× |
+| backend | plain geomean | AOT geomean | plain/AOT |
+|---|---:|---:|---:|
+| `mark`            | 1.94s | 1.18s (n=8) | 1.45× |
+| `mark_gen`        | 1.59s | **0.81s** | **1.84×** |
+| `mark_gen_inc`    | 1.90s | 1.10s | 1.56× |
+| `copy`            | 1.57s | 0.84s (n=8) | 1.65× |
+| `copy_gen`        | 1.55s | 0.83s | **1.75×** |
+| `mark_compact`    | 1.76s | 0.99s | 1.76× |
+| `mark_compact_gen`| 1.91s | 1.18s (n=8) | 1.57× |
+| `immix`           | 1.60s | 0.84s | **1.81×** |
+| `immix_gen`       | 1.55s | 0.83s | **1.78×** |
+| `mark_bitmap_gen` | 1.92s | 1.16s | 1.56× |
+| `mark_card_gen`   | 1.93s | 1.16s (n=8) | 1.61× |
+| `mark_freelist`   | 1.64s | **0.85s** | **1.83×** |
 
-非 `none`/`bump` の全 14 backend で libgc 比 **0.53–0.61×** の倍速。
-backend 間の差は小さく (= 4.33–4.99s)、 GC algorithm の好みより GC heuristic
-tuning の問題が主。
+AOT 速度上位 5: `mark_gen` (0.81s) / `copy_gen` (0.83s) / `immix_gen`
+(0.83s) / `copy` (0.84s) / `immix` (0.84s)。
 
-## 5. 既知 limitation
+### 2.4 AOT 加速率 (= plain / AOT、 主要 backend × bench)
 
-### 5.1 fib35 overhead 残 1.3–1.5× (plain 2.0–3.0×、 AOT 1.3–1.5×)
+| backend | fib35 | sumloop | nbody | sieve_big | deriv | nqueens | fannkuch | cps_loop | matmul |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `mark_gen`   | 1.87× | **3.52×** | 1.26× | **2.40×** | 1.12× | 2.25× | 1.34× | **3.48×** | 1.05× |
+| `copy_gen`   | 1.53× | **2.89×** | 1.25× | **2.37×** | 1.10× | 2.31× | 1.43× | **3.09×** | 1.07× |
+| `immix_gen`  | 1.47× | **3.46×** | 1.25× | **2.40×** | 1.09× | 2.19× | 1.35× | **3.59×** | 1.03× |
+| `immix`      | 1.48× | **3.67×** | 1.26× | **2.45×** | 1.10× | 2.24× | 1.36× | **3.59×** | 1.06× |
+| `mark_free`  | 1.49× | **3.73×** | 1.23× | **2.67×** | 1.09× | 2.28× | 1.31× | **3.65×** | 1.05× |
 
-純再帰の sp[] 更新コスト本質。 全 backend で plain 0.90–1.40s、 AOT
-0.61–0.81s vs libgc 0.46s。 libgc は C stack を保守的 scan するため
-per-call sp[] update 不要。
+- **dispatch heavy** (= `sumloop` / `cps_loop`) で AOT は **2.9–3.7×** speedup
+- **GC bound** (= `matmul`) は全 backend で 1.03–1.07× tied。 GC time が
+  dominate
+- **fib35** は 1.47–1.87× で改善するが libgc plain 0.57 にはまだ届かない (=
+  `mark_gen` AOT 0.77、 sframe overhead が SD でも残る)
 
-改善余地:
-- self-tail-call の frame reuse 強化
-- libgc-style な「lazy sp[] update」 (= alloc 直前のみ flush)
+## 3. 特殊用途 backend 4 個
 
-ascheme 固有最適化、 baruby_precise との codebase 共通性とのトレードオフ。
+実用と並べると判定がミスリーディングなため別表。 §1 ranking からは除外。
 
-### 5.2 mark_card_gen / mark_bitmap_gen / mark_gen_inc の AOT 加速率が低い
+### 3.1 elapsed (秒、 plain + AOT)
 
-これらの backend は AOT 加速倍率が `sumloop` / `cps_loop` で **2.0–2.5×**
-に留まる (= 他 backend は 3.4–4.1×)。 GC overhead が比率高めで dispatch
-fold の効果が薄まる。 production 用途では `copy` / `copy_gen` / `immix` 系
-を推奨。
+| bench | cat | none plain / AOT | bump plain / AOT | mark_bump_gen plain / AOT |
+|---|---|---:|---:|---:|
+| fib35     | INT | 0.67 / 1.06 | 1.58 / 0.77 | 1.17 / 0.77 |
+| sumloop   | INT | 2.64 / 1.11 | 2.12 / 0.59 | 2.06 / 0.59 |
+| nbody     | INT | 0.70 / 0.58 | 0.54 / 0.45 | 0.58 / 0.43 |
+| sieve_big | GC  | 2.09 / 1.02 | 1.43 / 0.61 | 1.45 / FAIL |
+| deriv     | GC  | 1.41 / 1.30 | 1.22 / 1.11 | 1.13 / 1.04 |
+| nqueens   | MIX | 3.48 / 1.75 | 2.88 / 1.33 | 2.95 / 1.30 |
+| fannkuch  | MIX | 1.94 / 1.61 | 1.40 / 1.05 | 1.45 / 1.06 |
+| cps_loop  | MIX | 1.46 / 0.59 | 1.15 / 0.32 | 1.13 / 0.31 |
+| matmul    | MIX | 6.53 / 5.84 | 6.41 / 6.19 | 6.07 / 5.61 |
+| **geomean** | — | 1.81s / 1.16s | 1.64s / 0.88s | 1.58s / 0.84s |
 
-## 6. correctness 保証
+### 3.2 peak RSS (MiB、 plain + AOT)
 
-全 16 backend (+ `copy_scramble` audit backend = 計 17 backend) で:
+| bench | none p / AOT | bump p / AOT | mark_bump_gen p / AOT |
+|---|---:|---:|---:|
+| fib35     | 20.1 / 19.6 | **914.8** / 35.8 | 35.6 / 35.8 |
+| sumloop   | 3.9 / 3.6 | 3.6 / 3.8 | 3.6 / 31.4 |
+| nbody     | 23.4 / 23.2 | 36.0 / 36.0 | 35.9 / 36.1 |
+| sieve_big | 99.0 / 98.8 | 201.6 / 201.8 | 112.1 / FAIL |
+| deriv     | 27.8 / 26.0 | 35.6 / 35.6 | 35.8 / 35.8 |
+| nqueens   | 25.5 / 25.4 | 35.8 / 35.6 | 35.8 / 35.8 |
+| fannkuch  | 25.2 / 25.2 | 35.8 / 35.8 | 35.9 / 35.6 |
+| cps_loop  | 3.9 / 3.8 | 3.8 / 3.8 | 3.6 / 3.8 |
+| matmul    | 32.3 / 32.3 | 29.0 / 28.9 | 29.8 / 29.8 |
 
-- **17 ascheme native test** PASS
-- **179 R5RS chibi test** PASS
+### 3.3 観察
+
+- **`none` (= libc malloc + leak)**: 全 alloc を leak。 short bench でも
+  20–99 MiB の RSS、 long-lived `sieve_big` で 99 MiB。 GC 抜きの alloc
+  throughput 上限の参考値。 plain matmul で 6.53s と precise 系の 6.0s 台
+  にやや劣る (= cache miss が effective floor)。
+- **`bump` (= bump alloc only、 leak)**: `none` と類似だが alloc が
+  region-bump で hot path が短い。 **fib35 で plain 1.58s / AOT 0.77s / RSS
+  914.8 MiB** (= sframe alloc を leak し続けた累積)。 short bench でも GiB
+  スケール RSS で production 不可。 AOT 時 RSS が 35.8 に下がるのは「AOT が
+  alloc を pool 化している」 という興味深い observation。
+- **`mark_bump_gen` (= bump tenured + mark sweep nursery)**: tenured 側に
+  compactor が無く、 long-running workload で fragmentation 累積 (=
+  `sieve_big` AOT で **FAIL**)。 short bench では precise 系上位と互角 (=
+  plain 1.58s = `copy_gen` 1.55s 並み)。 GC algorithm comparison としては
+  「tenured compactor の必要性」 の反例。
+- **`mark_freelist`** (= 本来「fragmentation testbed」 の意図) は §1 で
+  実用 backend と一緒に評価。 今回 9 bench で fragmentation は顕在化せず、
+  matmul plain で `mark_freelist` 5.74s と全 backend 中最速。 「freelist
+  algorithm が一定 workload で悪くない」 という positive 結果として記録。
+
+## 4. libgc 比較 (= ascheme baseline)
+
+### 4.1 ⚠ caveat (再掲)
+
+ascheme libgc = Boehm conservative GC、 ascheme_precise = sframe chain +
+precise sp[] scan。 比較しているのは「runtime + rooting + collector の
+合計差」 であって、 GC algorithm 純粋差ではない。
+
+### 4.2 plain geomean ratio (= vs libgc plain)
+
+§1.4 ranking 再掲。 主流 6 backend (`copy_gen` / `immix_gen` / `copy` /
+`mark_gen` / `immix` / `mark_freelist`) が **libgc 比 0.96–1.02×** で並ぶ。
+
+### 4.3 AOT geomean ratio (= AOT vs libgc plain)
+
+| backend | AOT geomean | vs libgc plain |
+|---|---:|---:|
+| `mark_gen`        | **0.81s** | **0.54×** |
+| `copy_gen`        | 0.83s | 0.55× |
+| `immix_gen`       | 0.83s | 0.54× |
+| `copy`            | 0.84s (n=8) | 0.58× |
+| `immix`           | 0.84s | 0.55× |
+| `mark_freelist`   | 0.85s | 0.56× |
+| `mark_compact`    | 0.99s | 0.62× |
+| `mark_gen_inc`    | 1.10s | 0.76× |
+| `mark_bitmap_gen` | 1.16s | 0.77× |
+| `mark_card_gen`   | 1.16s (n=8) | 0.76× |
+| `mark`            | 1.18s (n=8) | 0.83× |
+| `mark_compact_gen`| 1.18s (n=8) | 0.77× |
+| `libgc` plain     | **1.61s** | **1.00 (baseline)** |
+
+- **AOT geomean は 12/12 実用 backend で libgc plain を下回る** (= 0.54–0.83×)
+- トップ 5: **`mark_gen` 0.54×** / `immix_gen` 0.54× / `copy_gen` 0.55× /
+  `immix` 0.55× / `mark_freelist` 0.56×
+- 落ちこぼれ: `mark_card_gen` / `mark_bitmap_gen` / `mark_gen_inc` /
+  `mark_compact_gen` / `mark` が 0.76–0.83×。 matmul 以外で sumloop /
+  cps_loop の speedup が頭打ちで geomean を引き下げる
+
+## 5. ranking + geomean
+
+### 5.1 plain mode ranking (= §1.4 再掲)
+
+(略、 §1.4 と同じ)
+
+### 5.2 AOT mode ranking (= §4.3 再掲)
+
+1. `mark_gen` — **0.81s** (vs libgc plain **0.54×**)
+2. `copy_gen` — 0.83s (0.55×)
+3. `immix_gen` — 0.83s (0.54×)
+4. `copy` — 0.84s n=8 (0.58×)
+5. `immix` — 0.84s (0.55×)
+6. `mark_freelist` — 0.85s (0.56×)
+7. `mark_compact` — 0.99s (0.62×)
+8. `mark_gen_inc` — 1.10s (0.76×)
+9. `mark_bitmap_gen` — 1.16s (0.77×)
+10. `mark_card_gen` — 1.16s n=8 (0.76×)
+11. `mark` — 1.18s n=8 (0.83×、 nqueens FAIL)
+12. `mark_compact_gen` — 1.18s n=8 (0.77×、 nbody NOAOT)
+
+### 5.3 production 推奨
+
+plain + AOT 両方で上位:
+
+- **`copy_gen`** = balanced、 N-survive minor + Cheney major (plain 1 位、 AOT 2 位)
+- **`immix_gen`** = fragmentation-resistant、 line+block region (plain 2 位、 AOT 3 位)
+- **`immix`** = 非 gen で region-bump、 long-lived heavy 用途 (plain 5 位、 AOT 5 位)
+- **`copy`** = 非 gen Cheney、 simple semispace (plain 3 位、 AOT 4 位)
+- **`mark_gen`** = AOT トップ (0.54×) だが plain で `copy_gen` に劣る
+
+短期 alloc-heavy で **`copy_gen` / `immix_gen`** が安定して最強。 long-lived
+heap heavy では **`immix` / `copy`** に倒す選択もあり。
+
+### 5.4 既知 limitation (= todo)
+
+- **fib35 overhead 残 1.3–2.5×** (plain 2.0–2.5×、 AOT 1.3–1.5×): 純再帰の
+  sframe 更新コスト本質。 libgc は C stack 保守的 scan で per-call sframe
+  update 不要。
+- **`mark_card_gen` / `mark_bitmap_gen` / `mark_gen_inc` / `mark` /
+  `mark_compact_gen` の AOT 加速率が低い** (= sumloop / cps_loop で 2.0–2.5× に
+  留まる、 他は 3.4–3.7×)。 GC overhead が比率高めで dispatch fold の効果が
+  薄まる。
+- **`mark` の `nqueens` FAIL**: known GC bug、 個別 todo。
+- **`copy` の `sumloop` AOT が NOAOT** / **`mark_compact_gen` の `nbody` /
+  `mark_card_gen` の `nbody` が NOAOT**: 個別 cell の AOT compile bug、 todo。
+
+## 6. correctness 保証 + 再現
+
+全 15 backend (+ `copy_scramble` audit backend) で:
+
+- **ascheme native test** PASS
+- **R5RS chibi test (179 個)** PASS
 - **canary `16_alloc_root_stress`** PASS
 - default mode + `BARUBY_GC_STRESS=1` 両方で実行
 
-`make test` / `make GC=<backend> test_stress` で再現可能。
+```sh
+# 検証 + audit mode (= バグ検出)
+make test                                              # default 全 test
+make test_stress                                       # stress mode で全 test
+make GC=copy_scramble test_stress                      # scramble + stress = 最強 audit
 
-加えて `make bench-aot` の **144/144 cell** (= 16 backend × 9 workload ×
-{plain, AOT}) が `expected first-line` と一致するまで validate。
+# AOT 単体動作確認 (= --aot-compile + cached run)
+make GC=copy
+./ascheme_precise -q --clear-cs --aot-compile bench/big/sumloop.scm  # build + 1 回 run
+./ascheme_precise -q --aot-compile bench/big/sumloop.scm             # cached run
+
+# 全 matrix 再現
+make bench-aot   # 15 backend × 9 workload × {plain, aot-cached}
+```
 
 ## 7. baruby_precise との比較
 
@@ -267,39 +373,20 @@ fold の効果が薄まる。 production 用途では `copy` / `copy_gen` / `imm
 - ascheme は call/cc / closure / continuation / multi-values 等の heavy 機構
 - ascheme は GMP 経由 bignum の external accounting で GC frequency 高め
 
-libgc 直接比較は ascheme 側のみ可能 (= baruby は naruby fork で libgc 経験
-なし)。
+libgc 直接比較は ascheme 側のみ可能 (= sister sample `sample/baruby` が
+baruby 側の libgc baseline)。
 
 ## 8. 結論
 
 precise GC framework + ascheme は **libgc に対して**:
 
-- **plain mode**: 主流 backend (= `copy` / `copy_gen` / `immix` /
-  `mark_compact_gen` / `immix_gen`) で **geomean 0.97–1.00×** (= libgc と
-  互角)。 GC-heavy 個別 workload で互角〜やや速い、 fib35 のみ 2.0× 遅い
-- **AOT mode**: 主流 backend で **geomean 0.53–0.56×** (= libgc plain の
-  -44〜-47% faster)。 9/9 workload で libgc plain を上回り、 dispatch heavy
+- **plain mode**: 主流 backend (= `copy_gen` / `copy` / `immix_gen` /
+  `immix` / `mark_gen`) で **geomean 0.96–0.99×** (= libgc と互角)。
+  GC-heavy 個別 workload で互角〜やや速い、 `fib35` のみ 2.0× 遅い
+- **AOT mode**: 主流 backend で **geomean 0.54–0.58×** (= libgc plain の
+  -42〜-46% faster)。 9/9 workload で libgc plain を上回り、 dispatch heavy
   で 3× 級、 GC heavy で 2× 級、 matmul で 1.6× 級
-- **production 推奨**: `copy` (= balanced) / `immix` (= fragmentation-resistant)
-  / `copy_gen` (= short-lived heavy) / `immix_gen` (= 同上、 line+block region)
-- **audit / debug 兼用**: `copy_scramble` (= overhead 微小、 stress +
-  scramble で precise rooting バグを即時検出)
-- **GC-light で高速**: `mark` / `mark_freelist` / `mark_compact` も同 tier
-
----
-
-bench script: `sample/ascheme_precise/bench/aot_matrix.sh` (= `make
-bench-aot`)。 16 backend × 9 workload × {plain, aot-cached} を ~30 分で
-回す。 結果は TSV を stdout、 §1 / §2 表に貼り付け。
-
-```sh
-# 検証 + audit mode (= バグ検出)
-make test                                              # default 全 179 PASS
-make test_stress                                       # stress mode で全 test
-make GC=copy_scramble test_stress                      # scramble + stress = 最強 audit
-
-# AOT 単体動作確認 (= --aot-compile + cached run)
-make GC=copy
-./ascheme_precise -q --clear-cs --aot-compile bench/big/sumloop.scm  # build + 1 回 run
-./ascheme_precise -q --aot-compile bench/big/sumloop.scm             # cached run
-```
+- **production 推奨**: `copy_gen` / `immix_gen` (= mainline) / `copy` /
+  `immix` (= 非 gen variant)
+- **audit / debug 兼用**: `copy_scramble` (= overhead 微小、 stress + scramble で
+  precise rooting バグを即時検出)

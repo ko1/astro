@@ -1,0 +1,31 @@
+=== Build GC=mark (ASTRO_DEBUG=0) OK
+  mark                 fib                       7.373136s rss=2304kB
+  mark                 fib_pair                  0.968179s rss=24320kB
+  mark                 fannkuch                  0.789083s rss=31616kB
+  mark                 ackermann                 7.62045s rss=8064kB
+  mark                 binary_trees              0.743574s rss=264960kB
+  mark                 gc_combined               0.897492s rss=27520kB
+  mark                 hash_chain                1.211839s rss=20864kB
+  mark                 list_alloc                0.814911s rss=26880kB
+  mark                 json_parse                0.983522s rss=24448kB
+  mark                 chain_add                 1.355549s rss=2304kB
+=== Build GC=mark_gen (ASTRO_DEBUG=0) OK
+  mark_gen             fib                       7.186563s rss=2432kB
+  mark_gen             fib_pair                  1.057813s rss=29824kB
+  mark_gen             fannkuch                  0.775046s rss=33664kB
+  mark_gen             ackermann                 7.533707s rss=8448kB
+  mark_gen             binary_trees              1.296762s rss=276096kB
+  mark_gen             gc_combined               FAIL
+  mark_gen             hash_chain                FAIL
+  mark_gen             list_alloc                FAIL
+  mark_gen             json_parse                FAIL
+  mark_gen             chain_add                 FAIL
+=== Build GC=mark_gen_inc (ASTRO_DEBUG=0)   ⚠ build attempt 1 failed (ok=true, bin exists=false); retrying
+  ⚠ build attempt 2 failed (ok=true, bin exists=false); retrying
+FAILED
+=== Build GC=copy (ASTRO_DEBUG=0)   ⚠ build attempt 1 failed (ok=true, bin exists=false); retrying
+  ⚠ build attempt 2 failed (ok=true, bin exists=false); retrying
+FAILED
+wrote bench-results/20260526/baruby_c1/matrix.csv
+wrote bench-results/20260526/baruby_c1/matrix.json
+wrote bench-results/20260526/baruby_c1/matrix.md

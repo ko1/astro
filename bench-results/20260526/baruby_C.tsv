@@ -1,0 +1,22 @@
+## mark_compact
+mark_compact	fib	6.83	2432
+mark_compact	fib_pair	0.98	18688
+mark_compact	fannkuch	0.72	18816
+mark_compact	ackermann	7.03	8576
+mark_compact	binary_trees	FAIL	FAIL
+mark_compact	gc_combined	0.87	19328
+mark_compact	hash_chain	1.28	16000
+mark_compact	list_alloc	0.82	18688
+mark_compact	json_parse	FAIL	FAIL
+mark_compact	chain_add	1.20	2432
+## mark_compact_gen
+mark_compact_gen	fib	6.80	2432
+mark_compact_gen	fib_pair	0.87	35072
+mark_compact_gen	fannkuch	0.71	35072
+mark_compact_gen	ackermann	7.09	8576
+mark_compact_gen	binary_trees	1.96	280832
+mark_compact_gen	gc_combined	0.80	35712
+mark_compact_gen	hash_chain	1.33	16000
+mark_compact_gen	list_alloc	0.74	35072
+mark_compact_gen	json_parse	0.99	35328
+mark_compact_gen	chain_add	1.38	2432

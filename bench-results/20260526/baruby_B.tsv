@@ -1,0 +1,21 @@
+## mark_gen_inc
+mark_gen_inc	fib	6.22	2432
+mark_gen_inc	fib_pair	0.98	29952
+mark_gen_inc	fannkuch	0.72	33792
+mark_gen_inc	ackermann	6.50	8320
+mark_gen_inc	binary_trees	1.20	276096
+mark_gen_inc	gc_combined	0.87	31892
+mark_gen_inc	hash_chain	1.07	23424
+mark_gen_inc	list_alloc	0.83	31232
+mark_gen_inc	json_parse	1.06	29952
+mark_gen_inc	chain_add	1.22	2432
+## copy
+copy	fib	6.16	2432
+copy	fib_pair	0.75	35200
+copy	fannkuch	0.67	34944
+copy	ackermann	6.54	8192
+copy	binary_trees	0.60	346368
+copy	gc_combined	0.66	35840
+copy	hash_chain	1.04	13568
+copy	list_alloc	0.62	35072
+copy	json_parse	0.78	35328

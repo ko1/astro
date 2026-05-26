@@ -1,0 +1,22 @@
+## copy
+copy	fib	6.15	2560
+copy	fib_pair	0.82	35200
+copy	fannkuch	0.72	35072
+copy	ackermann	7.14	8448
+copy	binary_trees	0.64	346368
+copy	gc_combined	0.74	35712
+copy	hash_chain	1.12	13568
+copy	list_alloc	0.69	35200
+copy	json_parse	0.89	35328
+copy	chain_add	1.28	2432
+## copy_gen
+copy_gen	fib	6.80	2432
+copy_gen	fib_pair	0.78	34944
+copy_gen	fannkuch	0.71	35200
+copy_gen	ackermann	7.06	8320
+copy_gen	binary_trees	1.11	411904
+copy_gen	gc_combined	0.71	35584
+copy_gen	hash_chain	1.08	13568
+copy_gen	list_alloc	0.66	35200
+copy_gen	json_parse	0.90	35328
+copy_gen	chain_add	1.23	2432

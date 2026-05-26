@@ -1,0 +1,22 @@
+## bump
+bump	fib	6.88	2432
+bump	fib_pair	1.10	628992
+bump	fannkuch	0.73	87936
+bump	ackermann	7.10	8448
+bump	binary_trees	0.63	264576
+bump	gc_combined	1.28	784000
+bump	hash_chain	1.47	14080
+bump	list_alloc	1.28	783616
+bump	json_parse	1.81	966784
+bump	chain_add	1.26	2432
+## mark_bump_gen
+mark_bump_gen	fib	6.81	2432
+mark_bump_gen	fib_pair	0.88	24192
+mark_bump_gen	fannkuch	0.71	31744
+mark_bump_gen	ackermann	7.21	8448
+mark_bump_gen	binary_trees	0.79	264960
+mark_bump_gen	gc_combined	0.82	27520
+mark_bump_gen	hash_chain	1.15	20864
+mark_bump_gen	list_alloc	0.78	27008
+mark_bump_gen	json_parse	0.92	24448
+mark_bump_gen	chain_add	1.14	2432

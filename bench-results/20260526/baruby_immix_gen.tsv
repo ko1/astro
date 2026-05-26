@@ -1,0 +1,11 @@
+## immix_gen
+immix_gen	fib	6.82	2432
+immix_gen	fib_pair	0.79	35200
+immix_gen	fannkuch	0.74	35200
+immix_gen	ackermann	7.74	8320
+immix_gen	binary_trees	1.17	233216
+immix_gen	gc_combined	0.72	36096
+immix_gen	hash_chain	1.12	13696
+immix_gen	list_alloc	0.67	35200
+immix_gen	json_parse	0.92	35200
+immix_gen	chain_add	1.26	2432

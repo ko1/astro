@@ -1,0 +1,11 @@
+## mark_freelist
+mark_freelist	fib	6.09	2432
+mark_freelist	fib_pair	0.75	24192
+mark_freelist	fannkuch	0.65	31232
+mark_freelist	ackermann	6.33	8448
+mark_freelist	binary_trees	0.72	264448
+mark_freelist	gc_combined	0.69	27392
+mark_freelist	hash_chain	1.19	19840
+mark_freelist	list_alloc	0.68	27008
+mark_freelist	json_parse	0.87	24320
+mark_freelist	chain_add	1.04	2432
