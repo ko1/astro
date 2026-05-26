@@ -120,7 +120,7 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 - `freelist[9]`: class 別 free slot chain。 `FreeSlot.next` が
   payload offset 8 (= head 直後) に overlay
 - `Page` header (16 B): `{Page *next, class_idx, _pad}`、 続いて slots
-- `LargeObj` linked list: `{LargeObj *next, map_bytes}` + payload (= 個別 mmap)
+- `LargeObj` linked list: `{LargeObj *next, map_bytes}` + payload (= 個別 mmap)。 sweep 時は head から全走査 → unmarked は `munmap` で chain から外す、 marked は mark clear。 cost O(num_large)
 - `gc_flags` bit: MARKED=0x1, FREE=0x2
 - gray queue: `gray_buf[]` (= flat array of `AroObjectHeader *`)。 初期 cap 0、
   256 → 2× で `realloc`。 overflow なし (libc が abort)
