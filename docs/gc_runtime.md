@@ -116,14 +116,24 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 
 #### 2.1.3 データ構造
 
+**Heap layout** (= alloc 領域全体の構造):
 - `page_head[9]`: class 別 page chain (= 単方向 linked list)
-- `freelist[9]`: class 別 free slot chain。 `FreeSlot.next` が
-  payload offset 8 (= head 直後) に overlay
 - `Page` header (16 B): `{Page *next, class_idx, _pad}`、 続いて slots
 - `LargeObj` linked list: `{LargeObj *next, map_bytes}` + payload (= 個別 mmap)。 sweep 時は head から全走査 → unmarked は `munmap` で chain から外す、 marked は mark clear。 cost O(num_large)
+
+**Object layout** (= 個別 obj の構造):
+- 8 B `AroObjectHeader`
 - `gc_flags` bit: MARKED=0x1, FREE=0x2
-- gray queue: `gray_buf[]` (= flat array of `AroObjectHeader *`)。 初期 cap 0、
+
+**Allocator state** (= freelist / bump pointer 等の alloc state):
+- `freelist[9]`: class 別 free slot chain。 `FreeSlot.next` が
+  payload offset 8 (= head 直後) に overlay
+
+**GC 中の auxiliary 構造** (= gray queue 等):
+- `gray_buf[]` (= flat array of `AroObjectHeader *`)。 初期 cap 0、
   256 → 2× で `realloc`。 overflow なし (libc が abort)
+
+**共通**: finalize_list (= gc_common.c 管理)
 
 #### 2.1.4 アルゴリズム詳細
 
@@ -165,7 +175,17 @@ sweep_young は O(young)。 major は全 page walk + `young_objs` reset。
 
 #### 2.2.3 データ構造
 
-- 2.1 の slab/page/large 構造
+**Heap layout**:
+- 2.1 の slab/page/large 構造 (= `page_head[9]` + `Page` 16 B header + `LargeObj` linked list)
+
+**Object layout**:
+- 8 B `AroObjectHeader`
+- `gc_flags` bit layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, FREE=0x8, AGE=bits 4-5
+
+**Allocator state**:
+- `freelist[9]`: class 別 free slot chain (= 2.1 と同形式)
+
+**GC 中の auxiliary 構造**:
 - **`young_objs[]`**: flat array of `AroObjectHeader *`、 alloc 時に push、
   sweep_young_minor で in-place compact。 cap 0 → 1024 → 2× で realloc。
   これにより `sweep_young_minor` は O(young live) で済む (= 全 page walk
@@ -176,8 +196,8 @@ sweep_young は O(young)。 major は全 page walk + `young_objs` reset。
   以後 push は no-op → minor で全 page heap-walk fallback (`remset_heap_walk`)
 - **`promoted_buf[]`**: 当該 minor で promote した obj の append-only。
   256 → 2× で grow、 各 minor 末で 0 reset
-- `gc_flags` bit layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, FREE=0x8, AGE=bits 4-5
-- finalize_list: 2.1 と共通
+
+**共通**: finalize_list
 
 #### 2.2.4 アルゴリズム詳細
 
@@ -241,8 +261,17 @@ drain しきる**= 実質 STW。 マルチセグメント pause 計測の struct
 
 #### 2.3.3 データ構造
 
-- 2.2 と同じ
+**Heap layout**: 2.2 と同じ (= slab/page/large)
+
+**Object layout**: 2.2 と同じ (= 8 B header + gc_flags MARKED/OLD/DIRTY/FREE/AGE)
+
+**Allocator state**: 2.2 と同じ (= `freelist[9]`)
+
+**GC 中の auxiliary 構造**:
+- 2.2 と同じ (= `young_objs[]`, `gray_buf[]`, `remset_buf[]`, `promoted_buf[]`)
 - 追加: `inc_marking` flag、 SATB 用 `mark_value_satb`
+
+**共通**: finalize_list
 
 #### 2.3.4 アルゴリズム詳細
 
@@ -291,12 +320,22 @@ Cheney semi-space copying GC。 2 つの tenured semi-space (= 64 GiB 仮想 ×
 
 #### 2.4.3 データ構造
 
-- `active_base` / `active_top` / `active_end` — 現在 alloc 中の semispace
+**Heap layout**:
 - `space0` / `space1` — 2 面の pre-mmap、 `active_idx` で alternation
-- 8 B header + 8 B fwd overlay (= forward 時に旧 payload[0..8] に new addr 上書き)
-  - `HDR_FORWARDED = 0x1`、 large 用 `HDR_MARKED = 0x2`
 - `LargeObj` linked list (= malloc-backed): `{LargeObj *next, LargeObj *next_gray}` + payload
-- Cheney scratch: `to_top` / `to_base` / `from_base_cur`、 `large_gray` chain
+
+**Object layout**:
+- 8 B header + 8 B fwd overlay (= forward 時に旧 payload[0..8] に new addr 上書き)
+- `gc_flags` bit: `HDR_FORWARDED = 0x1`、 large 用 `HDR_MARKED = 0x2`
+
+**Allocator state**:
+- `active_base` / `active_top` / `active_end` — 現在 alloc 中の semispace の base / bump / 上限
+
+**GC 中の auxiliary 構造**:
+- Cheney scratch: `to_top` / `to_base` / `from_base_cur` (= 専用 gray queue なし、 to-space 自体が queue)
+- `large_gray` chain (= 非 moving large の gray queue)
+
+**共通**: finalize_list
 
 stress と purge の区別:
 - stress (= GC every alloc): space alternation で再利用、 GC 頻度は最大
@@ -371,21 +410,30 @@ age >= PROMOTE_AGE の obj は tenured 側に promote (= tenured も Cheney scan
 
 #### 2.5.3 データ構造
 
+**Heap layout**:
 - young 用 Cheney (= active + alt の 2 つの semispace、 各 `YOUNG_BYTES`):
   - `young_active_base` — active semispace の base
-  - `young_top` — active semispace 内の bump pointer (= 次 alloc 位置)
   - `young_alt_base` — alt semispace の base (= 次 minor の to-space になる)
 - tenured 用 Cheney (= active + alt の 2 つの semispace、 各 `TENURED_BYTES`):
-  - `tenured_base` / `tenured_top` / `tenured_end` — active semispace の base / bump / 上限
+  - `tenured_base` / `tenured_end` — active semispace の base / 上限
   - `tenured_alt_base` — alt semispace の base (= 次 major の to-space になる)
+
+**Object layout**:
 - 8 B header + fwd overlay
-- gc_flags layout: OLD=0x1, DIRTY=0x2, FORWARDED=0x4, AGE=bits 3-4
+- `gc_flags` layout: OLD=0x1, DIRTY=0x2, FORWARDED=0x4, AGE=bits 3-4
+
+**Allocator state**:
+- `young_top` — active young semispace 内の bump pointer (= 次 alloc 位置)
+- `tenured_top` — active tenured semispace 内の bump pointer
+
+**GC 中の auxiliary 構造**:
 - `remset_buf[]`: flat array of `AroObjectHeader *`、 256 → 2× / 上限
   `MAX_REMSET_ENTRIES`、 `remset_overflow` で heap-walk fallback
 - Cheney scratch: `young_from_base/end`、 `young_to_base/top/end`、 `old_tenured_top`、
   `to_base/top`、 `from_base_cur/end_cur`
 - `in_minor`、 `scan_saw_young` flags
-- finalize_list: 共通
+
+**共通**: finalize_list
 
 #### 2.5.4 アルゴリズム詳細
 
@@ -464,12 +512,22 @@ Lisp-2 sliding compactor: 単一 region に bump alloc、 collect で
 
 #### 2.6.3 データ構造
 
-- 1 つの region (= `region_base/top/end`)
+**Heap layout**:
+- 1 つの region (= `region_base` / `region_end`)
+- LargeObj malloc-backed list (= 非 moving)
+
+**Object layout**:
 - 16 B header (`ARO_GC_HAS_FWD` 定義、 専用 `gc_fwd` field 持ち)
 - mark bit は `gc_flags` の bit 0 (`HDR_MARKED_BIT`)
-- LargeObj malloc-backed list (= 非 moving)
+
+**Allocator state**:
+- `region_top` — region 内の bump pointer (= slide で前進・後退の両方あり)
+
+**GC 中の auxiliary 構造**:
 - `gray_buf[]` (= 256 → 2×)
-- finalize_list 共通
+- slide 用 scratch (= forward-addr 計算は `gc_fwd` field、 専用 buf なし)
+
+**共通**: finalize_list
 
 #### 2.6.4 アルゴリズム詳細
 
@@ -516,11 +574,25 @@ alt 半なし)。
 
 #### 2.7.3 データ構造
 
-- 2.5 の young 構造 + 単一 tenured region (= 2.6 と同等)
+**Heap layout**:
+- 2.5 の young 構造 (= active + alt の 2 つの semispace × `YOUNG_BYTES`)
+- 単一 tenured region (= 2.6 と同等、 `tenured_base` / `tenured_end`)
+
+**Object layout**:
 - 16 B header (= `gc_fwd` あり)
-- gc_flags layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, AGE=bits 3-4
-- remset_buf (= 2.5 と同形式)、 gray_buf、 Cheney scratch
+- `gc_flags` layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, AGE=bits 3-4
+
+**Allocator state**:
+- `young_top` — active young semispace の bump pointer
+- `tenured_top` — tenured region の bump pointer (= major slide で前進・後退)
+
+**GC 中の auxiliary 構造**:
+- `remset_buf` (= 2.5 と同形式)
+- `gray_buf`
+- Cheney scratch (= 2.5 と同種)
 - `force_promote` flag (= major の fold-young 中に true)
+
+**共通**: finalize_list
 
 #### 2.7.4 アルゴリズム詳細
 
@@ -605,15 +677,26 @@ fragmentation が重い workload では memory 効率が下がるが v1 はこ�
 
 #### 2.8.3 データ構造
 
-- `arena_base` (= 64 GiB virt MAP_NORESERVE) + `cur_ptr` / `cur_end`
+**Heap layout**:
+- `arena_base` (= 64 GiB virt MAP_NORESERVE)
 - `blocks[]` (= 別 mmap、 `BlockMeta { state, line_marks[256] }` × N_BLOCKS、 lazy paged)
 - block state: `BLK_FREE` / `BLK_RECYCLABLE` / `BLK_USED`
-- `cur_epoch` (= 1..255、 wrap で 1)
 - `max_touched_block` (= 既 touch 上限。 sweep は 0..max_touched_block 範囲のみ)
-- `block_cursor` / `line_cursor` (= alloc の探索位置)
 - LargeObj linked list (= mmap-backed、 > MEDIUM_MAX 用)
+
+**Object layout**:
+- 8 B header
+- `gc_flags` low 8 bit を epoch 値で使用 (= mark phase との比較に使う)
+- `cur_epoch` (= 1..255、 wrap で 1) は global state だが obj 側の matching 値はここ
+
+**Allocator state**:
+- `cur_ptr` / `cur_end` — 現在 hole 内の bump pointer / 末端
+- `block_cursor` / `line_cursor` — alloc の探索位置
+
+**GC 中の auxiliary 構造**:
 - `gray_buf[]`
-- finalize_list 共通
+
+**共通**: finalize_list
 
 #### 2.8.4 アルゴリズム詳細
 
@@ -672,17 +755,28 @@ helper)。 Immix 自体の背景は §2.8 概要を参照。
 
 #### 2.9.3 データ構造
 
+**Heap layout**:
 - nursery (= active + alt の 2 つの semispace × 16 MiB、 Cheney):
   - `young_active_base` — active semispace の base (= 今 alloc 中)
-  - `young_top` — active semispace 内の bump pointer
   - `young_alt_base` — alt semispace の base (= 次 minor の to-space)
-- tenured: 2.8 と同じ Immix (arena + blocks + cur_ptr/end + max_touched_block)
-- gc_flags layout: EPOCH=bits 0-7, OLD=0x100, DIRTY=0x200, FORWARDED=0x400, AGE=bits 11-12
+- tenured: 2.8 と同じ Immix (= arena + blocks + max_touched_block)
+- LargeObj mmap-backed list
+
+**Object layout**:
+- 8 B header
+- `gc_flags` layout: EPOCH=bits 0-7, OLD=0x100, DIRTY=0x200, FORWARDED=0x400, AGE=bits 11-12
+
+**Allocator state**:
+- `young_top` — active nursery semispace の bump pointer
+- `cur_ptr` / `cur_end` — tenured Immix の hole 内 bump pointer / 末端
+
+**GC 中の auxiliary 構造**:
 - Cheney scratch: `young_from_base/end`、 `young_to_base/top/end`
 - `remset_buf[]` (= AroObjectHeader *、 同じ overflow 戦略だが pressure-based)、
   `remset_pressure` flag
 - `gray_buf[]`、 `in_minor` / `force_promote` / `scan_saw_young` flags
-- LargeObj mmap-backed list
+
+**共通**: finalize_list
 
 #### 2.9.4 アルゴリズム詳細
 
@@ -744,13 +838,26 @@ per-page bitmap 化:
 
 #### 2.10.3 データ構造
 
+**Heap layout**:
 - `page_head[9]` (= 16 KiB-aligned mmap 直で取得 / over-mmap then trim)
 - `Page` (208 B): `{ next, class_idx, n_slots, _pad, mark_bm[64], old_bm[64], dirty_bm[64] }` + slots
-- 8 B `AroObjectHeader`: head の `gc_flags` 内に FREE bit + AGE bits 1-2 のみ
-- `freelist[9]`
+  (= 3 bitmap (mark/old/dirty) は page header に内蔵、 per-slot metadata の物理位置)
 - LargeObj: side-struct で `mark/old/dirty` を bool 持ち
-- `remset_buf[]` (= AroObjectHeader *)、 `remset_overflow`、 `promoted_buf[]`、 `gray_buf[]`
+
+**Object layout**:
+- 8 B `AroObjectHeader`: head の `gc_flags` 内に FREE bit + AGE bits 1-2 のみ
+- mark/old/dirty bit は page bitmap 側 (= obj 本体に bit を持たない)
+
+**Allocator state**:
+- `freelist[9]`
 - `size_class_shift[9]` (= clz 最適化、 3072 だけ shift=0 で div fallback)
+
+**GC 中の auxiliary 構造**:
+- `remset_buf[]` (= AroObjectHeader *)、 `remset_overflow`
+- `promoted_buf[]`
+- `gray_buf[]`
+
+**共通**: finalize_list
 
 #### 2.10.4 アルゴリズム詳細
 
@@ -819,9 +926,21 @@ remset は **page 単位** に粗化されている。 card_dirty と dirty_bm �
 
 #### 2.11.3 データ構造
 
-- `Page` (208 B): bitmap_gen に `card_dirty` byte を追加した layout
+**Heap layout**:
+- `page_head[9]` (= 2.10 と同じ 16 KiB-aligned)
+- `Page` (208 B): bitmap_gen に `card_dirty` byte を追加した layout (= per-slot `dirty_bm` + per-page `card_dirty` の両方を内蔵)
+- LargeObj: side-struct + `card_dirty` bool
+
+**Object layout**: 2.10 と同じ (= 8 B header + FREE/AGE のみ head 内)
+
+**Allocator state**: 2.10 と同じ (= `freelist[9]`)
+
+**GC 中の auxiliary 構造**:
 - `remset_buf[]` (= `Page **` 型、 size_t cnt / capa)
 - 上限なし (= heap page 数で自然境界)
+- `gray_buf[]`、 `promoted_buf[]`
+
+**共通**: finalize_list
 
 #### 2.11.4 アルゴリズム詳細
 
@@ -874,14 +993,24 @@ freelist の構造 (= slot 単位 LIFO chain)、 bump fallback、 non-generation
 
 #### 2.12.3 データ構造
 
-- 単一 region (= `region_base/top/end`、 `MAP_NORESERVE` 64 GiB)
-- `freelist[9]` (= class 別 LIFO free chain)
+**Heap layout**:
+- 単一 region (= `region_base` / `region_end`、 `MAP_NORESERVE` 64 GiB)
 - LargeObj mmap-backed list (= > 4 KiB)
-- `gray_buf[]`、 finalize_list 共通
-- gc_flags bit: MARKED=0x1, FREE=0x2
 
-free slot は `gc_size` を class slot size に書換 (= sweep 線形 walker が次
-slot へ進むため)。 link は payload offset 8 の overlay。
+**Object layout**:
+- 8 B header
+- `gc_flags` bit: MARKED=0x1, FREE=0x2
+- free slot は `gc_size` を class slot size に書換 (= sweep 線形 walker が次
+  slot へ進むため)。 link は payload offset 8 の overlay
+
+**Allocator state**:
+- `freelist[9]` (= class 別 LIFO free chain)
+- `region_top` — region 内の bump pointer (= freelist 空時の fallback、 sweep でも戻らない)
+
+**GC 中の auxiliary 構造**:
+- `gray_buf[]`
+
+**共通**: finalize_list
 
 #### 2.12.4 アルゴリズム詳細
 
@@ -935,9 +1064,11 @@ GC overhead を排除した上限性能の参照値。 stress / purge / scramble
 
 #### 3.1.3 データ構造
 
+malloc + leak のため GC 用 metadata なし。
+
 - heap: libc malloc が管理 (= 自身では何も持たない)
 - remset / gray queue: 不要 (= 無し)
-- finalize_list: `gc_common.c` の共通実装 (`AroGcCommonState.finalize_list`,
+- **共通**: finalize_list は `gc_common.c` の共通実装 (`AroGcCommonState.finalize_list`,
   `finalize_count`, `finalize_cap`)。 初期 cap = 0、 16 → 2× で grow
 
 #### 3.1.4 アルゴリズム詳細
@@ -968,10 +1099,13 @@ sample 側で使う場合は none では leak する点に注意。
 
 #### 3.2.3 データ構造
 
+mmap 1 region + `region_top` のみ。
+
 - 1 つの `mmap(NULL, 64 GiB, MAP_NORESERVE)` region: `region_base` /
   `region_top` / `region_end` を `ASTroGC` 内に持つ。 物理 page は touch 時に
   commit
 - gray / remset / promoted_buf: 不要
+- **共通**: finalize_list (= gc_common.c、 ただし collect が no-op のため事実上 walk されない)
 
 #### 3.2.4 アルゴリズム詳細
 
@@ -1010,10 +1144,26 @@ append のみ、 sweep は mark bit を見るだけで freelist は持たない�
 
 #### 3.3.3 データ構造
 
-- 2.5 の young + 単一 tenured bump region
+**Heap layout**:
+- 2.5 の young (= active + alt の 2 つの semispace × `YOUNG_BYTES`)
+- 単一 tenured bump region (= `tenured_base` / `tenured_end`、 alt なし)
+
+**Object layout**:
 - 8 B header + fwd overlay
-- gc_flags layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, FREE=0x8, FORWARDED=0x10, AGE=bits 5-6
-- remset_buf、 scan_buf (= 別 queue、 major で promoted の transitive scan 用)、 gray_buf
+- `gc_flags` layout: MARKED=0x1, OLD=0x2, DIRTY=0x4, FREE=0x8, FORWARDED=0x10, AGE=bits 5-6
+
+**Allocator state**:
+- `young_top` — active young semispace の bump pointer
+- `tenured_top` — tenured bump region の pointer (= monotonic 増加、 sweep でも戻らない)
+
+**GC 中の auxiliary 構造**:
+- `remset_buf`
+- `scan_buf` (= 別 queue、 major で promoted の transitive scan 用)
+- `gray_buf`
+- Cheney scratch (= 2.5 と同種)
+- `force_promote` flag
+
+**共通**: finalize_list
 
 #### 3.3.4 アルゴリズム詳細
 
@@ -1056,8 +1206,18 @@ heap pointer slot は `raw ^ R` で保存、 各 GC 後に R を rotate。 stale
 
 #### 3.4.3 データ構造
 
-- 2.4 と同じ + `scramble_R` / `scramble_R_old` を `AroGcCommonState` 上で持つ
+**Heap layout**: 2.4 と同じ (= 2 semispace + LargeObj list)
+
+**Object layout**: 2.4 と同じ (= 8 B header + fwd overlay、 `HDR_FORWARDED` / `HDR_MARKED`)
+
+**Allocator state**: 2.4 と同じ (= `active_base` / `active_top` / `active_end`)
+
+**GC 中の auxiliary 構造**:
+- 2.4 の Cheney scratch + large_gray
+- `scramble_R` / `scramble_R_old` を `AroGcCommonState` 上で持つ
   (低 3 bit = 0 で 8-align 保持、 fixnum tag 保護)
+
+**共通**: finalize_list
 
 #### 3.4.4 アルゴリズム詳細
 
