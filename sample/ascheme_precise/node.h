@@ -137,18 +137,33 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             new_env->nslots = total;
             for (int i = 0; i < total; i++) new_env->slots[i] = argv[i];
             struct sframe *saved = c->env;
+            VALUE *saved_frame_sp = c->frame_sp;
             NODE *body = cl->closure.body;
             CTX_SET_ENV(c, new_env);
+            /* For no_capture body, lref_sp reads c->frame_sp[sp_offset].
+             * Anchor frame_sp at new_env->slots + nparams so the offsets
+             * (= idx - nparams) land on the right slots.  Safe on GC=none
+             * since alloca-stack memory doesn't move. */
+            if (cl->closure.no_capture) {
+                c->frame_sp = new_env->slots + total;
+            }
             if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
             for (;;) {
                 VALUE v = EVAL(c, body, c->sp);
-                if (!c->tail_call_pending) { CTX_SET_ENV(c, saved); return v; }
+                if (!c->tail_call_pending) {
+                    CTX_SET_ENV(c, saved);
+                    c->frame_sp = saved_frame_sp;
+                    return v;
+                }
                 c->tail_call_pending = 0;
                 body = c->next_body;
                 // Frame-reuse leaves next_env == current env; skip the
                 // bump so the lref level cache stays warm across tight
                 // tail-call loops.
                 if (c->next_env != c->env) CTX_SET_ENV(c, c->next_env);
+                if (c->next_no_capture) {
+                    c->frame_sp = c->env->slots + c->next_nparams;
+                }
                 if (UNLIKELY(ASCHEME_PROFILING)) body->head.dispatch_cnt++;
             }
         }
