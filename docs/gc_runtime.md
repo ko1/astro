@@ -148,9 +148,16 @@ phases:
 - collect: mark O(live edges)、 sweep O(heap slots)。 トータル O(heap)
 - WB hot path: 0 (= no WB)
 
+**GC 発火閾値の決め方** (= adaptive heuristic "live × 2"):
+- 初期値 `gc_threshold = GC_THRESHOLD_MIN = 16 MiB`
+- alloc 時に `bytes_since_gc + external_bytes + payload > gc_threshold` で GC 発火
+- collect 末に `live_bytes` を計測し、 `gc_threshold = max(GC_THRESHOLD_MIN, live_bytes * GC_THRESHOLD_FACTOR)` で次回閾値を更新 (= FACTOR=2)
+- 結果として heap は使用量に追従して伸縮 (= live が増えれば threshold も増、 減れば 16 MiB floor まで落ちる)。 固定値ではなく動的
+
 heap growth/shrink: page は閾値超で `new_page` (= mmap)。 sweep で全 unmarked
 になっても page は munmap しない (= 物理 release は `mark_freelist` と同様未実装)。
-large obj は unmarked で munmap。
+large obj は unmarked で munmap。 後続 backend で「2.1 と同じ閾値式」 と書く
+場合は本式を指す。
 
 #### 2.1.5 finalizer 実装
 
@@ -187,9 +194,11 @@ sweep_young は O(young)。 major は全 page walk + `young_objs` reset。
 
 **GC 中の auxiliary 構造**:
 - **`young_objs[]`**: flat array of `AroObjectHeader *`、 alloc 時に push、
-  sweep_young_minor で in-place compact。 cap 0 → 1024 → 2× で realloc。
-  これにより `sweep_young_minor` は O(young live) で済む (= 全 page walk
-  を回避)。 設計判断の議論は §6 Q1 参照。
+  sweep_young_minor で 1 pass scan + 不要 entry を drop して残りを array
+  先頭に詰める処理 (= remset 整理 と同形式の array 操作。 memory compaction
+  ではない)。 cap 0 → 1024 → 2× で realloc。 これにより `sweep_young_minor`
+  は O(young live) で済む (= 全 page walk を回避)。 設計判断の議論は §6
+  Q1 参照。
 - **`gray_buf[]`**: mark 用の grey queue、 同じ grow 戦略
 - **`remset_buf[]`**: tenured DIRTY 用 flat array。 256 → 2× で grow、
   上限 `MAX_REMSET_ENTRIES`。 上限超で `remset_overflow = true` を立て
@@ -230,6 +239,11 @@ major phase:
 - major: O(heap slots + live edges)
 - WB hot path: bit-in-head `(gc_flags & (OLD|DIRTY)) != OLD` 1 cmp + 1 jcc、
   cold path は `aro_gc_remember` (= SET_DIRTY + remset_push) 関数 call
+
+**GC 発火閾値の決め方** (= 世代別 backend 共通パターン):
+- **young**: `young_threshold` は **固定 16 MiB** (= 動的に伸ばさない、 nursery は worst-case 必ず 1 回 promote されるための上限として固定)
+- **major**: `old_major_threshold` は 2.1 と同じ live × 2 heuristic (= 初期 `MAJOR_THRESHOLD_MIN = 16 MiB`、 major 終了時 `max(MIN, tenured_live * 2)` で更新)
+- minor / major の選択: alloc 時 ① `old_alloc_since_major > old_major_threshold` または `external_bytes > old_major_threshold` → major、 ② young 側超過 → minor。 後続 gen backend で「同じ」 と書く場合は本式を指す
 
 heap growth/shrink: page-on-demand alloc (= freelist 空で new_page)。 page
 の release は未実装 (= 完全に空になっても保持)。 large obj は free 時 munmap。
@@ -375,6 +389,10 @@ queue cost ゼロ (= to-space 自身が代行)、 の 2 点。 large obj は移�
 - collect: O(live × 1) (= copy + scan、 dead は触らない)
 - WB: 0 (= 非 generational)
 
+**GC 発火閾値**: 2.1 と同じ live × 2 heuristic (= 初期 16 MiB MIN、 active
+semispace で `gc_bump` が threshold 超 or region 末で発火)。 ただし virtual
+予約が 64 GiB なので heap 自体は閾値で grow させない (= virt 上限のみ)。
+
 heap growth/shrink: 64 GiB virt 予約。 grow 不要、 shrink なし (= madvise
 DONTNEED は未呼出)。 大 obj だけ free で物理解放。
 
@@ -485,6 +503,9 @@ overflow」「累積 tenured alloc 閾値」「external_bytes 閾値」 の OR �
 - major: O(tenured live × 1 + young live × 1)
 - WB hot path: bit-in-head (= 2.2 と同形式)、 cold path `aro_gc_remember`
 
+**GC 発火閾値**: 2.2 と同じ世代別 pattern (= young 側 `YOUNG_BYTES = 16 MiB`
+固定、 tenured 側 `old_major_threshold` は live × 2 heuristic)。
+
 heap growth/shrink: 64 GiB virtual 予約のため成長/縮小なし。
 
 #### 2.5.5 finalizer 実装
@@ -545,6 +566,8 @@ collect (5 phase):
 - collect: O(heap × 4 phase) = O(heap)。 mark / fwd-addr / update-ptr / slide
   それぞれ 1 sweep
 - WB: 0 (= 非 generational)
+
+**GC 発火閾値**: 2.1 と同じ live × 2 heuristic。
 
 heap growth/shrink: virt 予約、 grow/shrink なし。 region_top は slide
 で前進・後退の両方あり (= compaction で縮む)。
@@ -616,6 +639,9 @@ major phases:
 - major: O(young live + tenured × 4 phase)
 - WB hot path: bit-in-head `(MARKED|OLD|DIRTY)` のうち OLD=0x2, DIRTY=0x4 mask
   (gc_types.h で定義)
+
+**GC 発火閾値**: 2.2 と同じ世代別 pattern (= young 固定 16 MiB、 tenured
+側は live × 2 heuristic)。
 
 heap growth/shrink: tenured は major で slide により縮む (= top が後退)。
 基底 region は 64 GiB virt 予約、 madvise なし。
@@ -724,6 +750,8 @@ collect phases:
 - collect: O(live edges + max_touched_block × LINES_PER_BLOCK)
 - WB: 0 (= 非 generational)
 
+**GC 発火閾値**: 2.1 と同じ live × 2 heuristic。
+
 heap growth/shrink: arena は 64 GiB virt 予約。 物理は block touch で増、
 sweep で BLK_FREE になっても `madvise(DONTNEED)` は未呼出 (= 物理 release
 されない)。 large obj だけ free 時 munmap。
@@ -809,6 +837,9 @@ major phases:
 - major: O(young live (= force fold) + live edges + max_touched_block × LINES_PER_BLOCK)
 - WB hot path: bit-in-head OLD=0x100, DIRTY=0x200
 
+**GC 発火閾値**: 2.2 と同じ世代別 pattern (= young 固定 16 MiB、 tenured
+側は live × 2 heuristic)。
+
 heap growth/shrink: nursery + arena ともに virt 予約、 grow なし shrink なし。
 
 #### 2.9.5 finalizer 実装
@@ -893,6 +924,9 @@ major phases:
 - major: O(全 page 走査 = O(heap_slots))
 - WB: full out-of-line (= `aro_gc_wb` extern、 bitmap lookup を 1 関数で
   実行。 `ARO_GC_WB_OLD_MASK` 未定義のため inline fast path 無し)
+
+**GC 発火閾値**: 2.2 と同じ世代別 pattern (= young 固定 16 MiB、 tenured
+側は live × 2 heuristic)。
 
 heap growth/shrink: page-on-demand。 sweep で全空 page も munmap せず保持
 (= mark / mark_gen と同様)。
@@ -1032,6 +1066,8 @@ collect phases:
 - alloc: O(1) amortized
 - collect: O(region slots + live edges)
 - WB: 0
+
+**GC 発火閾値**: 2.1 と同じ live × 2 heuristic。
 
 heap growth/shrink: region は `region_top` まで増加、 縮まない (= bump pointer は
 sweep でも戻らない)。 64 GiB virt が限界。 large obj は free 時 munmap。
@@ -1180,6 +1216,11 @@ major phases:
 - minor: O(young live + remset)
 - major: O(young live + tenured slots)
 - WB hot path: bit-in-head OLD=0x2, DIRTY=0x4
+
+**GC 発火閾値**: 2.2 と同じ世代別 pattern (= young 固定 16 MiB、 tenured
+側は live × 2 heuristic)。 ただし sweep が free しない設計のため tenured
+live は実質「累積 promote 量」 = 単調増加、 閾値も同じく単調増加して
+最終的に 64 GiB virt に到達。
 
 heap growth/shrink: tenured は **monotonic 増加** (= 縮まない)。 OOM までは
 増え続ける設計。 64 GiB virt が実 limit。
