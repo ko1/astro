@@ -8,6 +8,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+#include "astro_debug.h"
 #include <setjmp.h>
 #include <alloca.h>
 #include <gmp.h>
@@ -367,7 +368,7 @@ extern VALUE g_sp_scratch[];
 // of non-NODE_DEF functions like scm_apply / scm_callcc).
 #define SP_PUSH(c, name, n) \
     do { \
-        assert((name) + (n) <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE); \
+        ASTRO_ASSERT((name) + (n) <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE); \
         for (int _spi = 0; _spi < (n); _spi++) (name)[_spi] = 0; \
         (c)->sp = (name) + (n); \
     } while (0)

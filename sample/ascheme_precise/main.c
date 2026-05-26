@@ -348,7 +348,7 @@ scm_make_mvalues(CTX *c, int count, VALUE *items)
      * root visitor can rewrite stale heap pointers across the two inner
      * allocs (the o sobj + the items payload). */
     VALUE *sp_base = c->sp;
-    assert(sp_base + 1 + count <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    ASTRO_ASSERT(sp_base + 1 + count <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
     /* sp_base[0] = o sobj, sp_base[1 .. 1+count-1] = parked items copies */
     sp_base[0] = 0;
     for (int i = 0; i < count; i++) sp_base[1 + i] = items[i];
@@ -395,7 +395,7 @@ scm_make_closure(CTX *c, NODE *body, struct sframe *env, int nparams, int has_re
      * relocate the sframe and the C-local pointer would go stale.
      * body is libc-malloc'd (host-side NODE), unaffected. */
     VALUE *sp_base = c->sp;
-    assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    ASTRO_ASSERT(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
     sp_base[0] = (VALUE)env;
     c->sp = sp_base + 1;
     struct sobj *o = scm_alloc(c, OBJ_CLOSURE);
@@ -456,7 +456,7 @@ scm_new_frame(CTX *c, struct sframe *parent, int nslots)
     /* Park `parent` across aro_gc_alloc — a moving GC triggered inside
      * may relocate the parent sframe, leaving the C-local ptr stale. */
     VALUE *sp_base = c->sp;
-    assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    ASTRO_ASSERT(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
     sp_base[0] = (VALUE)parent;
     c->sp = sp_base + 1;
     struct sframe *f = (struct sframe *)aro_gc_alloc_raw(c,
@@ -628,7 +628,7 @@ static inline VALUE
 scm_cons_sym(CTX *c, const char *name, VALUE d)
 {
     VALUE *sp_base = c->sp;
-    assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    ASTRO_ASSERT(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
     sp_base[0] = d;
     c->sp = sp_base + 1;
     VALUE sym = scm_intern(c, name);
@@ -2461,7 +2461,7 @@ build_frame_for(CTX *c, struct sobj *cl, int argc, VALUE *argv)
      * `f` (which can also move during the cons loop) only needs to live
      * across the trivial slot-copy loop, where no allocs happen. */
     VALUE *sp_base = c->sp;
-    assert(sp_base + 2 + argc <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+    ASTRO_ASSERT(sp_base + 2 + argc <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
     sp_base[0] = SCM_OBJ_VAL(cl);
     sp_base[1] = SCM_NIL;
     for (int i = 0; i < argc; i++) sp_base[2 + i] = argv[i];
@@ -2550,7 +2550,7 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         {
             /* Build heap frame.  For moving GC this is the only path. */
             VALUE *sp_inner = c->sp;
-            assert(sp_inner + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+            ASTRO_ASSERT(sp_inner + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
             sp_inner[0] = fn;
             c->sp = sp_inner + 1;
             new_env = build_frame_for(c, cl, argc, argv);
@@ -2561,7 +2561,7 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
          * triggered inside the EVAL(body) trampoline below — `saved` is
          * a C local sframe* and a moving GC would relocate it. */
         VALUE *sp_base = c->sp;
-        assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+        ASTRO_ASSERT(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
         sp_base[0] = (VALUE)c->env;      /* saved env */
         c->sp = sp_base + 1;
         NODE *body = cl->closure.body;
@@ -2637,7 +2637,7 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
              * then copy parked fixed args + rest into slots — both writes
              * happen after the last alloc. */
             VALUE *sp_base = c->sp;
-            assert(sp_base + 2 + argc <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+            ASTRO_ASSERT(sp_base + 2 + argc <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
             sp_base[0] = fn;             /* root the closure VALUE */
             sp_base[1] = SCM_NIL;        /* rest list  */
             for (int i = 0; i < argc; i++) sp_base[2 + i] = argv[i];
@@ -2661,7 +2661,7 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
         /* Generic build_frame_for — already precise (parks cl + argv). */
         /* Save body via fn-park so we read it after the alloc. */
         VALUE *sp_base = c->sp;
-        assert(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
+        ASTRO_ASSERT(sp_base + 1 <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE);
         sp_base[0] = fn;
         c->sp = sp_base + 1;
         struct sframe *new_env = build_frame_for(c, cl, argc, argv);
