@@ -29,7 +29,6 @@ ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、
 | 2.9  | `immix_gen` | Cheney nursery (= active + alt) + Immix tenured。 N-survive |
 | 2.10 | `mark_bitmap_gen` | `mark_gen` と意味同等、 metadata を per-page bitmap 化 (= 8 B header)。 N-survive |
 | 2.11 | `mark_card_gen` | `mark_bitmap_gen` + per-page card-dirty flag (= page 単位 remset)。 N-survive |
-| 2.12 | `mark_freelist` | mark&sweep、 region + size-class freelist。 generational なし |
 
 特殊用途 backend (§3):
 
@@ -38,7 +37,8 @@ ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、
 | 3.1 | `none` | 解放しない。 malloc + leak。 GC overhead = 0 の baseline |
 | 3.2 | `bump` | bump allocator のみ。 解放しない (= `none` strictly faster baseline) |
 | 3.3 | `mark_bump_gen` | Cheney nursery (= active + alt) + bump tenured + linear sweep。 tenured は monotonic 増加 (= sweep が free しない testbed)。 N-survive |
-| 3.4 | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
+| 3.4 | `mark_freelist` | mark&sweep、 region + size-class freelist。 fragmentation 対策なし (= no coalescing / size-class isolation / region_top never retreats) の fragmentation testbed |
+| 3.5 | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
 
 8 個の `_gen` backend (mark_gen, mark_gen_inc, copy_gen,
 mark_compact_gen, mark_bump_gen, immix_gen, mark_bitmap_gen, mark_card_gen) は
@@ -89,7 +89,7 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 
 ## 2. 各アルゴリズム紹介
 
-§2 には 12 個の実用 GC algorithm を記載 (= 旧 13 個から `mark_bump_gen` を §3 特殊用途に移動済、 build option ID 7 は将来追加時のために予約 hole)。
+§2 には 11 個の実用 GC algorithm を記載 (= 旧 13 個から `mark_bump_gen` と `mark_freelist` を §3 特殊用途に移動済、 build option ID 7 は将来追加時のために予約 hole)。
 
 各 backend は 5 subsection に分けて記述する:
 
@@ -1007,103 +1007,18 @@ heap growth/shrink: 2.10 と同じ。
 
 2.10 と同じ。
 
-### 2.12 mark_freelist
-
-#### 2.12.1 概要
-
-mark&sweep、 単一 region + size-class freelist。 region 内に bump で append、
-sweep で unmarked を class 別 freelist に戻す (= region pointer は戻らない)。
-fragmentation 観察用 testbed。
-
-**fragmentation を加速する構造**: 実装は意図的に fragmentation 対策を一切
-持たない:
-- **no coalescing**: 隣接する free slot を merge して大きな free 領域に
-  する処理が無い (= size-32 × 2 が並んでも size-64 として使えない)
-- **size-class isolation**: `freelist[9]` は class 単位 LIFO chain。
-  size-N freelist の slot は size-N alloc にしか使えず、 他 class へは
-  流用不可
-- **region_top never retreats**: sweep で `region_top` は戻らない。
-  物理 footprint = 歴代 peak alloc 量 で、 live が減っても物理 page は
-  解放されない
-- 結果: alloc pattern が時系列で変化すると、 過去の class の freelist が
-  滞留しつつ region_top が前進し続け、 最終的に 64 GiB virt 上限まで到達。
-  bench v11 でも多くの workload で FAIL するのはこの構造的特性が原因
-
-実用的な mark&sweep (= CRuby など) は class 単位 page / coalescing / 物理
-release などで fragmentation を抑える。 本 backend はそれら全てを外して
-「最悪ケース」 を観察するためのもの。
-
-freelist の構造 (= slot 単位 LIFO chain)、 bump fallback、 non-generational
-である理由、 mark / mark_compact との位置付けは §6 Q4 参照。
-
-#### 2.12.2 パラメータ
-
-- `NUM_SIZE_CLASSES = 9`、 `size_class_bytes = {32..4096}`
-- `MAX_SLOT_BYTES = 4096`
-- `REGION_BYTES = 64 GiB` 仮想
-- `GC_THRESHOLD_MIN = 16 MiB`、 `GC_THRESHOLD_FACTOR = 2`
-
-#### 2.12.3 データ構造
-
-**Heap layout**:
-- 単一 region (= `region_base` / `region_end`、 `MAP_NORESERVE` 64 GiB)
-- LargeObj mmap-backed list (= > 4 KiB)
-
-**Object layout**:
-- 8 B header
-- `gc_flags` bit: MARKED=0x1, FREE=0x2
-- free slot は `gc_size` を class slot size に書換 (= sweep 線形 walker が次
-  slot へ進むため)。 link は payload offset 8 の overlay
-
-**Allocator state**:
-- `freelist[9]` (= class 別 LIFO free chain)
-- `region_top` — region 内の bump pointer (= freelist 空時の fallback、 sweep でも戻らない)
-
-**GC 中の auxiliary 構造**:
-- `gray_buf[]`
-
-**共通**: finalize_list
-
-#### 2.12.4 アルゴリズム詳細
-
-alloc: `alloc_slot`:
-1. slot_total > MAX_SLOT_BYTES → `alloc_large`
-2. class freelist pop or `region_top` から bump (= 新 slot)
-3. head 書込 + AROH_INIT_PAYLOAD (= 値部 zero fill、 free slot に残った
-   stale pointer-like data を消す)
-
-collect phases:
-1. mark roots + process_gray
-2. finalize_walk
-3. **sweep_region** (= 線形 walk):
-   - HDR_IS_FREE: 既存 free を新 freelist に re-thread (= cycle 跨ぎで chain reset)
-   - MARKED: clear、 live_bytes 集計
-   - 未 marked: `HDR_SET_FREE`、 gc_size = sb (= class size に正規化)、 freelist push
-
-計算量:
-- alloc: O(1) amortized
-- collect: O(region slots + live edges)
-- WB: 0
-
-**GC 発火閾値**: 2.1 と同じ live × 2 heuristic。
-
-heap growth/shrink: region は `region_top` まで増加、 縮まない (= bump pointer は
-sweep でも戻らない)。 64 GiB virt が限界。 large obj は free 時 munmap。
-
-#### 2.12.5 finalizer 実装
-
-`aro_gc_finalize_check`: HDR_MARKED → alive、 NULL otherwise (= 非 moving)。
-
 ## 3. 特殊用途 backend
 
-ここで挙げる 4 つは GC algorithm として実用される backend ではなく、 特定
+ここで挙げる 5 つは GC algorithm として実用される backend ではなく、 特定
 の目的に特化した参照実装。 `none` と `bump` は GC overhead を排除した上限
 性能の baseline (= §2 各 backend の overhead 計測の対照値)、 `mark_bump_gen`
 は bump promote した tenured を回収しない場合の挙動を測定する testbed (=
-major sweep が unmarked tenured を free せず monotonic 増加)、 `copy_scramble`
-は stale VALUE slot を SEGV で炙り出す audit / debug backend。 bench の参照値
-および runtime の verification にのみ意義があり、 production の GC 選択肢
-としては想定しない。
+major sweep が unmarked tenured を free せず monotonic 増加)、 `mark_freelist`
+は freelist + 無 coalescing で fragmentation を観察する testbed (= region_top
+never retreats / size-class isolation で最悪 fragmentation を顕在化)、
+`copy_scramble` は stale VALUE slot を SEGV で炙り出す audit / debug
+backend。 bench の参照値および runtime の verification にのみ意義があり、
+production の GC 選択肢としては想定しない。
 
 ### 3.1 none
 
@@ -1250,20 +1165,114 @@ heap growth/shrink: tenured は **monotonic 増加** (= 縮まない)。 OOM ま
 - minor: young_from 内なら NULL、 それ以外 alive
 - major: MARKED ならば alive、 そうでなければ NULL
 
-### 3.4 copy_scramble
+### 3.4 mark_freelist
 
 #### 3.4.1 概要
+
+mark&sweep、 単一 region + size-class freelist。 region 内に bump で append、
+sweep で unmarked を class 別 freelist に戻す (= region pointer は戻らない)。
+fragmentation 観察用 testbed。
+
+**fragmentation を加速する構造**: 実装は意図的に fragmentation 対策を一切
+持たない:
+- **no coalescing**: 隣接する free slot を merge して大きな free 領域に
+  する処理が無い (= size-32 × 2 が並んでも size-64 として使えない)
+- **size-class isolation**: `freelist[9]` は class 単位 LIFO chain。
+  size-N freelist の slot は size-N alloc にしか使えず、 他 class へは
+  流用不可
+- **region_top never retreats**: sweep で `region_top` は戻らない。
+  物理 footprint = 歴代 peak alloc 量 で、 live が減っても物理 page は
+  解放されない
+- 結果: alloc pattern が時系列で変化すると、 過去の class の freelist が
+  滞留しつつ region_top が前進し続け、 最終的に 64 GiB virt 上限まで到達。
+  bench v11 でも多くの workload で FAIL するのはこの構造的特性が原因
+
+実用的な mark&sweep (= CRuby など) は class 単位 page / coalescing / 物理
+release などで fragmentation を抑える。 本 backend はそれら全てを外して
+「最悪ケース」 を観察するためのもの。 mark_bump_gen (= §3.3) と並ぶ
+testbed 系列で、 mark_bump_gen が 「promote tenured を回収しない場合」 を、
+mark_freelist が 「freelist に coalescing も class 流用も無い場合」 を
+それぞれ観察対象とする。
+
+**位置付け** (compact / non-compact との関係): compact (= mark_compact、
+§2.6) と非 compact (= mark、 §2.1) の中間。 mark_compact のように slide は
+せず、 mark のように page 単位の reuse はしない。 sweep は region 全体
+線形走査 → unmarked を **同じ位置に** free marker 化して freelist に戻す
+(= "in-place freelisting")。 generational なし (= 「fragmentation testbed」
+として shape は最小限。 generational 化は別 backend `mark_gen` 等で網羅済)。
+
+#### 3.4.2 パラメータ
+
+- `NUM_SIZE_CLASSES = 9`、 `size_class_bytes = {32..4096}`
+- `MAX_SLOT_BYTES = 4096`
+- `REGION_BYTES = 64 GiB` 仮想
+- `GC_THRESHOLD_MIN = 16 MiB`、 `GC_THRESHOLD_FACTOR = 2`
+
+#### 3.4.3 データ構造
+
+**Heap layout**:
+- 単一 region (= `region_base` / `region_end`、 `MAP_NORESERVE` 64 GiB)
+- LargeObj mmap-backed list (= > 4 KiB)
+
+**Object layout**:
+- 8 B header
+- `gc_flags` bit: MARKED=0x1, FREE=0x2
+- free slot は `gc_size` を class slot size に書換 (= sweep 線形 walker が次
+  slot へ進むため)。 link は payload offset 8 の overlay
+
+**Allocator state**:
+- `freelist[9]` (= class 別 LIFO free chain)
+- `region_top` — region 内の bump pointer (= freelist 空時の fallback、 sweep でも戻らない)
+
+**GC 中の auxiliary 構造**:
+- `gray_buf[]`
+
+**共通**: finalize_list
+
+#### 3.4.4 アルゴリズム詳細
+
+alloc: `alloc_slot`:
+1. slot_total > MAX_SLOT_BYTES → `alloc_large`
+2. class freelist pop or `region_top` から bump (= 新 slot)
+3. head 書込 + AROH_INIT_PAYLOAD (= 値部 zero fill、 free slot に残った
+   stale pointer-like data を消す)
+
+collect phases:
+1. mark roots + process_gray
+2. finalize_walk
+3. **sweep_region** (= 線形 walk):
+   - HDR_IS_FREE: 既存 free を新 freelist に re-thread (= cycle 跨ぎで chain reset)
+   - MARKED: clear、 live_bytes 集計
+   - 未 marked: `HDR_SET_FREE`、 gc_size = sb (= class size に正規化)、 freelist push
+
+計算量:
+- alloc: O(1) amortized
+- collect: O(region slots + live edges)
+- WB: 0
+
+**GC 発火閾値**: 2.1 と同じ live × 2 heuristic。
+
+heap growth/shrink: region は `region_top` まで増加、 縮まない (= bump pointer は
+sweep でも戻らない)。 64 GiB virt が限界。 large obj は free 時 munmap。
+
+#### 3.4.5 finalizer 実装
+
+`aro_gc_finalize_check`: HDR_MARKED → alive、 NULL otherwise (= 非 moving)。
+
+### 3.5 copy_scramble
+
+#### 3.5.1 概要
 
 `copy` + per-cycle XOR mask `R` で VALUE storage を撹乱する audit backend。
 heap pointer slot は `raw ^ R` で保存、 各 GC 後に R を rotate。 stale slot
 (= sample が `ARO_LOAD` decode を忘れた slot、 GC が scan 漏らした edge) は
 次の deref で SEGV 確実。
 
-#### 3.4.2 パラメータ
+#### 3.5.2 パラメータ
 
 - 2.4 (copy) の全パラメータ + `ARO_GC_HAS_SCRAMBLE = 1`
 
-#### 3.4.3 データ構造
+#### 3.5.3 データ構造
 
 **Heap layout**: 2.4 と同じ (= 2 semispace + LargeObj list)
 
@@ -1278,7 +1287,7 @@ heap pointer slot は `raw ^ R` で保存、 各 GC 後に R を rotate。 stale
 
 **共通**: finalize_list
 
-#### 3.4.4 アルゴリズム詳細
+#### 3.5.4 アルゴリズム詳細
 
 - alloc / collect: 2.4 と同じ
 - ただし `aro_gc_alloc` の戻り値 VALUE は `raw_payload ^ scramble_R` で encode
@@ -1292,7 +1301,7 @@ XOR が identity に fold (= 性能 cost ゼロ)。
 
 heap growth/shrink: 2.4 と同じ。
 
-#### 3.4.5 finalizer 実装
+#### 3.5.5 finalizer 実装
 
 2.4 と同じ (HDR_FORWARDED → fwd_overlay、 HDR_MARKED → self、 else NULL)。
 scramble は finalize の戻り値には影響しない (= 戻り値は raw addr、 sample 側で
@@ -1432,21 +1441,3 @@ dirty_bm は scan 効率化」 の構成。 用途は以下:
 bitmap_gen の slot-level remset と排他で、 fallback ではなく主目的が異なる
 (= 大量 WB workload で remset が爆発するのを page 粗化で抑える testbed)。
 
-### Q4. mark_freelist の位置付けは? (§2.12)
-
-**質問**: 9 size class freelist の仕組みは? bump fallback は何? なぜ
-generational なし? mark / mark_compact との関係は?
-
-**回答**:
-- **9 size class freelist**: mark_gen / mark の page-based freelist と
-  異なり、 単一 region 上で slot 単位の freelist を持つ。 sweep は region
-  を線形走査 (= page 構造なし)。
-- **bump fallback**: freelist 空のとき `region_top` から bump で新規取得
-  (= class size 分前進)。 fragmentation は 「freelist の有効 entry が伸びても
-  region_top は戻らない」 ことで顕在化。
-- **non-generational**: 「fragmentation testbed」 として shape は最小限。
-  generational 化は別 backend (`mark_gen`) で網羅済み。
-- **位置付け**: compact (= mark_compact) と非 compact (= mark) の中間。
-  mark_compact のように slide はせず、 mark のように page 単位の reuse は
-  しない。 sweep は region 全体線形走査 → unmarked を **同じ位置に** free
-  marker 化して freelist に戻す (= "in-place freelisting")。
