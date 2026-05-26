@@ -86,6 +86,12 @@ bench は 10 種に絞った (= GC 評価向けに alloc pattern と寿命を sp
 「実用」 = 通常 workload で発火 / sweep / promote が機能している backend。
 特殊 4 個 (= `none`, `bump`, `mark_bump_gen`, `mark_freelist`) は §3 で扱う。
 
+**表中の `libgc` 列**: 姉妹サンプル `sample/baruby` の binary (= 同じ baruby
+言語実装を Boehm-Demers-Weiser conservative libgc にリンクしたもの) で
+同じ bench を測った数値。 precise GC backend との「conservative GC との
+速度比較」 baseline として並べる (= 詳しい比較は §4)。 caveat は §1 末尾
+参照。
+
 ### 2.1 elapsed (秒、 median of 3)
 
 | bench | libgc | mark | mark_gen | mark_gen_inc | copy | copy_gen | mark_compact | mark_compact_gen | immix | immix_gen | mark_bitmap_gen | mark_card_gen |

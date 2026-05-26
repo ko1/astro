@@ -48,6 +48,11 @@ elapsed + RSS。
 
 ## 1. plain interpreter (= 15 precise backend + libgc × 9 bench)
 
+**表中の `libgc` 列**: 姉妹サンプル `sample/ascheme` の binary (= 同じ
+Scheme サブセット を Boehm-Demers-Weiser conservative libgc にリンクした
+もの) で同じ bench を測った数値。 precise GC backend との「conservative
+GC との比較」 baseline。 詳細は §4。
+
 ### 1.1 elapsed (秒、 median of 3)
 
 実用 11 backend (= §3 の 4 特殊用途を除く):
