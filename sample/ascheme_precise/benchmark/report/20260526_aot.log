@@ -1,0 +1,28 @@
+# bench v8 — plain + aot-cached × 15 precise backend (libgc plain only)
+# columns suffix: _p = plain, _a = aot-cached
+
+## elapsed (seconds, median of 3)
+bench        cat  libgc   none_p  none_a  Bu_p    Bu_a    mark_p  mark_a  m_G_p   m_G_a   m_G_inc_pm_G_inc_am_free_pm_free_am_bmp_G_pm_bmp_G_am_crd_G_pm_crd_G_acopy_p  copy_a  copy_G_pcopy_G_am_c_p   m_c_a   m_c_G_p m_c_G_a m_Bu_G_pm_Bu_G_aI_p     I_a     I_G_p   I_G_a   
+fib35        INT  0.46    0.60    0.34    1.50    1.15    1.43    1.06    1.35    0.76    1.42    0.78    1.16    0.99    1.41    FAIL    1.41    1.03    1.12    0.76    1.14    0.78    1.36    0.77    FAIL    NOAOT   1.16    0.78    1.42    1.02    1.16    0.77    
+sumloop      INT  1.53    1.98    0.55    2.03    0.54    2.46    1.02    2.04    0.88    2.06    0.60    2.17    0.59    FAIL    NOAOT   2.56    1.09    2.12    0.58    2.12    0.59    2.19    0.59    FAIL    NOAOT   2.12    0.59    2.53    1.08    2.61    1.08    
+nbody        INT  0.61    0.52    0.42    0.76    0.66    0.70    0.58    0.53    0.44    0.54    0.45    0.66    0.55    FAIL    NOAOT   0.69    0.58    0.57    0.44    0.55    0.43    0.55    0.43    FAIL    NOAOT   0.55    0.44    0.69    0.57    0.69    0.58    
+sieve_big    GC   1.33    1.35    0.58    FAIL    NOAOT   1.93    1.01    1.41    0.59    1.46    0.58    1.50    0.61    FAIL    NOAOT   1.95    1.01    1.43    0.59    1.51    0.55    1.45    0.59    FAIL    NOAOT   1.46    0.61    1.97    1.04    2.02    1.00    
+deriv        GC   1.27    1.15    1.04    FAIL    NOAOT   1.43    1.35    1.24    1.11    1.14    1.05    1.37    FAIL    FAIL    NOAOT   1.39    1.28    1.23    1.10    1.13    1.05    1.26    1.11    FAIL    NOAOT   1.14    1.05    1.39    1.31    1.41    1.28    
+nqueens      MIX  2.45    2.67    1.23    FAIL    NOAOT   3.51    1.70    2.85    1.26    2.86    1.24    3.02    1.42    FAIL    NOAOT   3.33    1.72    2.84    1.28    2.84    1.25    2.85    1.30    FAIL    NOAOT   2.85    1.22    3.41    1.72    3.30    1.69    
+fannkuch     MIX  1.64    1.33    1.01    FAIL    NOAOT   1.93    1.55    1.38    1.00    1.42    1.10    1.76    1.54    FAIL    NOAOT   1.93    1.51    1.39    1.03    1.46    1.05    1.42    1.03    FAIL    NOAOT   1.42    1.05    1.92    1.55    1.88    1.53    
+cps_loop     MIX  0.99    1.13    0.32    FAIL    NOAOT   1.33    0.54    1.15    0.31    1.11    0.32    1.16    0.34    FAIL    NOAOT   1.43    0.58    1.13    0.31    1.16    0.33    1.13    0.33    FAIL    NOAOT   1.19    0.32    1.42    0.58    1.40    0.56    
+matmul       MIX  9.52    6.23    5.92    FAIL    NOAOT   6.09    5.83    6.48    6.23    6.18    5.82    6.28    6.09    FAIL    NOAOT   6.15    5.86    6.44    6.18    5.91    5.61    6.28    5.98    FAIL    NOAOT   6.08    5.71    6.21    5.74    6.08    5.85    
+
+## peak RSS (MiB, max of 3 /usr/bin/time -M)
+bench        cat  libgc   none_p  none_a  Bu_p    Bu_a    mark_p  mark_a  m_G_p   m_G_a   m_G_inc_pm_G_inc_am_free_pm_free_am_bmp_G_pm_bmp_G_am_crd_G_pm_crd_G_acopy_p  copy_a  copy_G_pcopy_G_am_c_p   m_c_a   m_c_G_p m_c_G_a m_Bu_G_pm_Bu_G_aI_p     I_a     I_G_p   I_G_a   
+fib35        INT  4.0     3.6     35.8    914.9   914.9   23.8    23.8    35.6    35.6    23.8    35.6    19.6    19.8    19.9    FAIL    20.0    20.0    35.6    35.8    35.6    35.8    19.5    31.9    FAIL    NOAOT   35.6    35.8    19.8    20.0    35.6    35.8    
+sumloop      INT  4.2     3.6     3.8     3.6     3.8     3.6     3.8     3.6     41.1    3.8     3.8     3.6     3.8     FAIL    NOAOT   3.8     3.9     3.6     3.8     3.8     3.8     3.6     3.8     FAIL    NOAOT   3.8     3.8     3.6     3.9     3.8     3.9     
+nbody        INT  73.4    35.9    40.9    485.1   484.8   26.5    26.5    35.9    36.0    36.0    36.1    20.0    20.0    FAIL    NOAOT   23.2    23.5    35.9    36.0    36.0    36.0    20.0    20.2    FAIL    NOAOT   36.0    36.0    23.4    23.4    23.4    41.1    
+sieve_big    GC   164.9   201.8   201.8   FAIL    NOAOT   102.2   102.1   201.6   201.6   112.1   112.2   226.9   227.1   FAIL    NOAOT   98.9    98.9    201.6   201.6   111.9   112.0   201.9   201.8   FAIL    NOAOT   111.9   112.0   98.8    98.9    98.9    99.1    
+deriv        GC   73.2    35.8    35.8    FAIL    NOAOT   30.0    30.0    35.8    35.9    35.5    35.6    19.6    FAIL    FAIL    NOAOT   26.1    27.8    35.8    35.9    35.6    35.6    19.9    27.9    FAIL    NOAOT   35.6    35.9    26.0    27.5    26.1    27.9    
+nqueens      MIX  73.5    35.6    35.8    FAIL    NOAOT   28.0    28.1    35.8    35.8    35.8    35.8    19.6    19.8    FAIL    NOAOT   25.4    25.5    35.8    35.6    35.6    35.8    20.0    20.0    FAIL    NOAOT   35.6    35.6    25.2    25.4    25.4    25.5    
+fannkuch     MIX  73.5    35.8    35.6    FAIL    NOAOT   28.0    28.4    35.8    35.9    35.6    35.8    19.9    33.6    FAIL    NOAOT   25.2    25.4    35.8    35.9    35.6    35.8    19.9    20.0    FAIL    NOAOT   35.8    35.6    25.0    25.4    25.2    25.4    
+cps_loop     MIX  4.1     3.8     3.8     FAIL    NOAOT   3.9     3.9     3.6     3.8     3.8     3.8     3.8     3.9     FAIL    NOAOT   3.8     3.9     3.8     3.8     3.6     3.9     3.8     3.8     FAIL    NOAOT   3.8     3.8     3.8     3.9     3.6     3.9     
+matmul       MIX  71.9    29.0    29.2    FAIL    NOAOT   32.8    33.1    29.2    29.2    29.4    29.5    29.3    29.2    FAIL    NOAOT   32.3    32.5    28.9    29.0    29.7    29.7    29.8    29.8    FAIL    NOAOT   29.7    29.7    32.2    32.3    32.2    32.2    
+EXIT=0
+Tue May 26 06:27:26 UTC 2026
