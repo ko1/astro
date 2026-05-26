@@ -34,21 +34,15 @@ new_page / free_slot を mark_freelist 同様の "freelist holds slot pointers"
 convention に揃えて修正。 mark_freelist で動いている convention に合わせる
 だけの局所 fix で、 他 15 backend は影響なし。
 
-## migration 工程 (= 推奨手順)
+## migration 工程
 
-ascheme の経験を抽象化した推奨工程は `docs/gc_design.md` §7.7 に成文化。
-要点:
+ascheme の経験を抽象化した推奨工程 (Phase 1〜6 の構造、 落とし穴、 検証戦略) は
+[`docs/gc_design.md`](../../../docs/gc_design.md) §7.7 に成文化済。 本書ではその
+中で ascheme 固有の **実体験** に基づく要点だけ残す。
 
-1. Phase 1: struct 改修 + alloc API 置換
-2. Phase 2: precise root tracking (= sp[] / sframe / VISIT_ROOTS)
-3. Phase 3: SCAN_EDGES 全 obj 型
-4. Phase 4: 特殊機構 (= call/cc / continuation / etc.)
-5. Phase 5: 外部 resource (= GMP / FILE * / 等) + finalizer
-6. Phase 6: 全 17 backend × default + stress + scramble verify
-
-**重要**: Phase 1 から `BARUBY_GC_STRESS=1 GC=copy_scramble` で全 test 回す。
-gentle test だけで gap が隠れて後段で massive debug loop に陥る (= ascheme
-で実際に経験した教訓)。
+**Phase 1 から `BARUBY_GC_STRESS=1 GC=copy_scramble` で全 test を回す** こと
+(= root §7.7 検証戦略)。 ascheme migration では gentle test (= default mode) に
+頼って gap を見逃し、 Phase 5 以降で massive な debug loop に陥った。
 
 ## 主な fix の備忘録
 
