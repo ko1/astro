@@ -116,16 +116,22 @@ HASH(NODE *n)
     if (n == NULL) {
         return 0;
     }
-    else if (n->head.flags.has_hash_value) {
-        return n->head.hash_value;
+    /* Hash caching disabled: dispatcher patching can mutate a node's
+     * `kind` after the hash was computed (e.g., ascheme_precise's
+     * lref → lref_sp post-no_capture-analysis), and a cached pre-patch
+     * hash would propagate up to ancestor caches that we can't reliably
+     * invalidate (parent pointer covers one path but a node may be
+     * reached via multiple unrelated parents).  Recomputing per HASH
+     * call is O(node count) per call; with HASH being called only a
+     * handful of times per program (at cs_compile / dispatch_name
+     * generation), the total cost is amortized.  Drop the flag/cache
+     * mechanism entirely; if a future profiler shows HASH dominating,
+     * reintroduce caching with explicit invalidation hooks plumbed
+     * through every kind-mutation site. */
+    if (n->head.kind->hash_func) {
+        return (*n->head.kind->hash_func)(n);
     }
-    else if (n->head.kind->hash_func) {
-        n->head.flags.has_hash_value = true;
-        return n->head.hash_value = (*n->head.kind->hash_func)(n);
-    }
-    else {
-        return 0;
-    }
+    return 0;
 }
 
 void

@@ -1668,15 +1668,30 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
         extern const struct NodeKind kind_node_lset;
         for (size_t i = 0; i < new_scope->pending_n; i++) {
             NODE *nd = new_scope->pending_lrefs[i];
+            bool patched = false;
             if (nd->head.kind == &kind_node_lref) {
                 nd->head.dispatcher = kind_node_lref_sp.default_dispatcher;
                 nd->head.dispatcher_name = kind_node_lref_sp.default_dispatcher_name;
                 nd->head.kind = &kind_node_lref_sp;
+                patched = true;
             } else if (nd->head.kind == &kind_node_lset) {
                 nd->head.dispatcher = kind_node_lset_sp.default_dispatcher;
                 nd->head.dispatcher_name = kind_node_lset_sp.default_dispatcher_name;
                 nd->head.kind = &kind_node_lset_sp;
+                patched = true;
             }
+            if (patched) {
+                /* Patching changed kind: re-run OPTIMIZE so astro_cs_load
+                 * looks up the SD by the post-patch hash.  HASH itself
+                 * doesn't cache (see runtime/astro_node.c), so it always
+                 * reflects the current kind. */
+                OPTIMIZE(nd);
+            }
+        }
+        /* Re-OPTIMIZE the lambda body so later runs bind the right SD
+         * for it (its hash now derives from patched children). */
+        if (body_node) {
+            OPTIMIZE(body_node);
         }
     }
     free(new_scope->pending_lrefs);

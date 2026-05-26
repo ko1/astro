@@ -556,7 +556,13 @@ NODE_DEF
 node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t nparams, uint32_t no_capture)
 {
     (void)n;
+    /* Bump node_loop's own dispatch counter per iteration so
+     * --pg-compile profiles self-tail-call loops correctly.  scm_apply
+     * only bumps the counter once at closure entry; without this the
+     * entry would count 1 (= entry) for a million-iter `let loop`, sit
+     * below the AOT threshold, and never get SD-compiled. */
     for (;;) {
+        if (UNLIKELY(ASCHEME_PROFILING)) n->head.dispatch_cnt++;
         VALUE v = EVAL_ARG(c, body);
         if (LIKELY(!c->loop_continue)) return v;
         c->loop_continue = 0;
