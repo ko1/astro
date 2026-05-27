@@ -270,9 +270,11 @@ baruby_ary_new(CTX *c, uint32_t capa)
         BaArrayItems *items = (BaArrayItems *)aro_gc_alloc_raw(c, items_sz);
         items->head.flags = OBJ_VALUE_ARRAY;
         a = VAL2ARY(c, sp[0]);   // reload after potential GC
-        aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)items);
+        ARO_STORE(c, a, &a->items, (VALUE)items);
     } else {
-        a->items = NULL;
+        /* Zero-init contract guarantees a->items == NULL already; route
+         * the symmetric store through ARO_STORE so audit (= const) accepts. */
+        ARO_STORE(c, a, &a->items, (VALUE)NULL);
     }
     return sp[0];
 }
@@ -282,7 +284,7 @@ baruby_ary_new_from(CTX *c, const VALUE *items, uint32_t n)
 {
     VALUE v = baruby_ary_new(c, n ? n : 1);
     BaArray *a = VAL2ARY(c, v);
-    aro_gc_wb_bulk(c, a->items, a->items->data, items, n);
+    ARO_STORE_BULK(c, a->items, a->items->data, items, n);
     a->len = n;
     return v;
 }
@@ -316,9 +318,9 @@ baruby_ary_push_grow(CTX *c, VALUE *av_ref, VALUE *x_ref)
     }
     // Reload both a and x after potential GC move.
     a = VAL2ARY(c, *av_ref);
-    aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)new_items);
+    ARO_STORE(c, a, &a->items, (VALUE)new_items);
     a->capa = new_capa;
-    aro_gc_wb(c, a->items, &a->items->data[a->len], *x_ref);
+    ARO_STORE(c, a->items, &a->items->data[a->len], *x_ref);
     a->len++;
 }
 
@@ -345,7 +347,7 @@ baruby_str_new(CTX *c, const char *bytes, uint32_t len)
     c->sp = sp + 1;
     BaByteData *new_bytes = baruby_bytes_new(c, s->capa);
     s = VAL2STR(c, sp[0]);   // reload — second alloc may have moved
-    aro_gc_wb(c, s, (VALUE *)&s->bytes, (VALUE)new_bytes);
+    ARO_STORE(c, s, &s->bytes, (VALUE)new_bytes);
     memcpy(s->bytes->data, bytes, len);
     s->bytes->data[len] = '\0';
     return sp[0];
@@ -379,7 +381,7 @@ baruby_str_slice(CTX *c, VALUE *src_ref, uint32_t offset, uint32_t len)
     c->sp = sp + 1;
     BaByteData *new_bytes = baruby_bytes_new(c, r->capa);
     r = VAL2STR(c, sp[0]);                     // reload after alloc
-    aro_gc_wb(c, r, (VALUE *)&r->bytes, (VALUE)new_bytes);
+    ARO_STORE(c, r, &r->bytes, (VALUE)new_bytes);
     const BaString *src = VAL2STR(c, *src_ref);   // post-GC source
     memcpy(r->bytes->data, bstr_bytes(src) + offset, len);
     r->bytes->data[len] = '\0';
@@ -396,8 +398,8 @@ baruby_ary_plus(CTX *c, VALUE *av_ref, VALUE *bv_ref)
     BaArray *r = VAL2ARY(c, rv);
     a = VAL2ARY(c, *av_ref);   // reload after alloc — may have moved
     b = VAL2ARY(c, *bv_ref);
-    aro_gc_wb_bulk(c, r->items, r->items->data,          a->items->data, a->len);
-    aro_gc_wb_bulk(c, r->items, r->items->data + a->len, b->items->data, b->len);
+    ARO_STORE_BULK(c, r->items, r->items->data,          a->items->data, a->len);
+    ARO_STORE_BULK(c, r->items, r->items->data + a->len, b->items->data, b->len);
     r->len = total;
     return rv;
 }
@@ -471,7 +473,7 @@ baruby_str_repeat(CTX *c, VALUE *sv_ref, intptr_t n)
     c->sp = sp + 1;
     BaByteData *new_bytes = baruby_bytes_new(c, r->capa);
     r = VAL2STR(c, sp[0]);
-    aro_gc_wb(c, r, (VALUE *)&r->bytes, (VALUE)new_bytes);
+    ARO_STORE(c, r, &r->bytes, (VALUE)new_bytes);
     s = VAL2STR(c, *sv_ref);
     for (intptr_t i = 0; i < n; i++) {
         memcpy(r->bytes->data + (uint32_t)i * s->len, bstr_bytes(s), s->len);
@@ -491,7 +493,7 @@ baruby_ary_repeat(CTX *c, VALUE *av_ref, intptr_t n)
     BaArray *r = VAL2ARY(c, rv);
     a = VAL2ARY(c, *av_ref);   // reload after alloc
     for (intptr_t i = 0; i < n; i++) {
-        aro_gc_wb_bulk(c, r->items, r->items->data + (uint32_t)i * a->len,
+        ARO_STORE_BULK(c, r->items, r->items->data + (uint32_t)i * a->len,
                           a->items->data, a->len);
     }
     r->len = (uint32_t)total;
@@ -524,7 +526,7 @@ baruby_str_append(CTX *c, VALUE *dst_ref, VALUE *src_ref)
         s = VAL2STR(c, *src_ref);
         d->head.flags = OBJ_STRING;  /* drop SSO bit */
         memcpy(new_bytes, small_buf, d_len);
-        aro_gc_wb(c, d, (VALUE *)&d->bytes, (VALUE)new_bytes);
+        ARO_STORE(c, d, &d->bytes, (VALUE)new_bytes);
         d->capa = nc;
     }
     else if (need > d->capa) {
@@ -533,7 +535,7 @@ baruby_str_append(CTX *c, VALUE *dst_ref, VALUE *src_ref)
         BaByteData *new_bytes = (BaByteData *)aro_gc_realloc_byte_payload(c, d->bytes, sizeof(BaByteData) + nc);
         d = VAL2STR(c, *dst_ref);   // reload after realloc
         s = VAL2STR(c, *src_ref);
-        aro_gc_wb(c, d, (VALUE *)&d->bytes, (VALUE)new_bytes);
+        ARO_STORE(c, d, &d->bytes, (VALUE)new_bytes);
         d->capa = nc;
     }
     if (s->len) memcpy(d->bytes->data + d->len, bstr_bytes(s), s->len);
@@ -662,7 +664,7 @@ baruby_str_concat(CTX *c, VALUE *av_ref, VALUE *bv_ref)
     c->sp = sp + 1;
     BaByteData *new_bytes = baruby_bytes_new(c, r->capa);
     r = VAL2STR(c, sp[0]);
-    aro_gc_wb(c, r, (VALUE *)&r->bytes, (VALUE)new_bytes);
+    ARO_STORE(c, r, &r->bytes, (VALUE)new_bytes);
 
     const BaString *a = VAL2STR(c, *av_ref);
     const BaString *b = VAL2STR(c, *bv_ref);
@@ -756,7 +758,7 @@ aro_gc_realloc_payload(CTX *c, void *old, size_t new_size)
     VALUE *sp_top = c->sp;
     /* Park old in sp[0] as a scrambled VALUE so a moving + scramble
      * backend GC inside the inner alloc forwards / re-encodes it. */
-    sp_top[0] = (VALUE)((uintptr_t)old ^ ARO_GC_COMMON(c)->scramble_R);
+    sp_top[0] = (VALUE)(uintptr_t)old;
     c->sp = sp_top + 1;
     void *newp = aro_gc_alloc_raw(c, new_size);
     c->sp = sp_top;
@@ -777,7 +779,7 @@ aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size)
     size_t copy_bytes = old_size < new_size ? old_size : new_size;
 
     VALUE *sp_top = c->sp;
-    sp_top[0] = (VALUE)((uintptr_t)old ^ ARO_GC_COMMON(c)->scramble_R);
+    sp_top[0] = (VALUE)(uintptr_t)old;
     c->sp = sp_top + 1;
     void *newp = aro_gc_alloc_byte_raw(c, new_size);
     c->sp = sp_top;

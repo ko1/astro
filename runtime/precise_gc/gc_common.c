@@ -18,14 +18,11 @@
 #include "context.h"  /* CTX_struct + sample-provided AROH_VISIT_ROOTS contract macro (= 必須) */
 #include "gc.h"
 
-/* Public alloc API — wraps the backend's raw alloc with scramble encode.
+/* Public alloc API — thin wrapper around the backend's raw alloc.
  *
- * Sample code stores the returned VALUE directly into a GC-visible slot
- * (= sp[], object field) and decodes via ARO_LOAD before deref.  In
- * scramble backends the encode flips bits per cycle so any code path
- * that re-uses a stale raw pointer SEGVs at next deref.  In non-
- * scramble backends scramble_R is permanently 0, so the XOR folds away
- * to identity — same machine code as the old `void *`-returning API.
+ * Sample stores the returned VALUE directly into a GC-visible slot
+ * (= sp[], object field).  The return is the raw heap payload pointer
+ * cast to VALUE; sample uses ARO_LOAD / direct cast to access.
  *
  * `aro_gc_alloc` corresponds to the SCAN category (= scan-safe init,
  * GC's heap walk dispatches via sample's SCAN_EDGES on the payload);
@@ -34,15 +31,15 @@
 VALUE
 aro_gc_alloc(CTX *c, size_t payload_size)
 {
-    void *raw = aro_gc_alloc_raw(c, payload_size);
-    return (VALUE)((uintptr_t)raw ^ ARO_GC_COMMON(c)->scramble_R);
+    (void)c;
+    return (VALUE)(uintptr_t)aro_gc_alloc_raw(c, payload_size);
 }
 
 VALUE
 aro_gc_alloc_byte(CTX *c, size_t payload_size)
 {
-    void *raw = aro_gc_alloc_byte_raw(c, payload_size);
-    return (VALUE)((uintptr_t)raw ^ ARO_GC_COMMON(c)->scramble_R);
+    (void)c;
+    return (VALUE)(uintptr_t)aro_gc_alloc_byte_raw(c, payload_size);
 }
 
 /* Default in-place realloc hook — returns NULL so the caller falls

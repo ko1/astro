@@ -65,17 +65,11 @@ typedef intptr_t VALUE;
 //                          fits class-32 perfectly = 2× density vs mark_gen.
 //  15: mark_card_gen
 //  16: mark_freelist
-//  17: copy_scramble       — Cheney copy + per-cycle XOR scramble of VALUE
-//                          storage.  Debug / audit backend: sample uses
-//                          ARO_LOAD to decode VALUE → ptr.  Forgetting decode
-//                          (= raw cast) or missing SCAN_EDGES on a slot
-//                          surfaces as SEGV at next deref.  Pair with
-//                          BARUBY_GC_STRESS=1 for max R rotation frequency.
+//  (17 was copy_scramble, removed when round-robin PURGE in gc_copy
+//   subsumed it — see gc_types.h ID 17 comment.)
 //
 // Gen / inc variants define ARO_GC_HAS_WB so callers know they must use
-// aro_gc_wb() instead of plain `*slot = v` for heap-pointer writes.
-// copy_scramble defines ARO_GC_HAS_SCRAMBLE so the scramble_R field
-// rotates per cycle (vs. staying 0 for non-scramble backends).
+// aro_gc_store() instead of plain `*slot = v` for heap-pointer writes.
 // ---------------------------------------------------------------------------
 
 /* All type definitions (BARUBY_GC_* IDs, ARO_GC_HAS_FWD,
@@ -99,68 +93,46 @@ typedef intptr_t VALUE;
 extern const char *aro_gc_backend_name;
 
 /* ---------------------------------------------------------------------------
- * Scramble support (= per-cycle XOR mask on heap-pointer storage).
+ * ARO_LOAD — slot-based read barrier hook.
  *
- * Sample-visible storage of every heap pointer (= VALUE slots in sp[],
- * BaArrayItems.data[], typed-ptr fields like BaArray.items / BaString.bytes)
- * holds `raw_ptr ^ R`.  Sample reads slots via ARO_LOAD, which does the
- * fresh-load-and-decode; alloc helpers (aro_gc_alloc / aro_gc_alloc_byte)
- * return values already encoded with the current R.
+ * Reads a VALUE / typed-ptr slot and returns the raw heap pointer.
+ * Currently a plain dereference (= identity), but kept as a dedicated
+ * macro so future GC algorithms (= concurrent Brooks-style forwarding,
+ * colored pointer remap, handle-table lookup) can inject their barrier
+ * here without touching call sites.
  *
- * R is stored on AroGcCommonState for all backends.  Non-scramble backends
- * leave it at 0 permanently, so the XOR folds away to identity — sample
- * code is uniform regardless of backend.  Only ARO_GC_HAS_SCRAMBLE backends
- * rotate R on each GC cycle (= scramble_R_old keeps the previous R so the
- * VISIT_EDGE wrapper can decode incoming edges with old R and re-encode
- * outgoing edges with new R).
- *
- * Fixnums / singletons (LSB=1 / low-bit non-zero) must NOT be XOR-decoded
- * — they're not heap pointers.  ARO_LOAD assumes the slot holds an
- * AROH_IS_GC_OBJECT-true value (= caller already filtered).  ARO_GC_VISIT_EDGE
- * filters internally (skips non-pointer values).
- *
- *   ARO_LOAD(c, slot_ptr)
- *     Fresh load + decode from a slot.  `slot_ptr` is `VALUE *` (or any
- *     pointer to encoded storage).  Returns `void *` (raw heap pointer)
- *     suitable for cast to the sample's struct type.  PRIMARY decode API
- *     — replaces the old `ARO_OBJ`.
+ * Sample callers cast the returned `void *` to the sample's struct
+ * type.  `ctx` is currently unused but retained in the signature for
+ * the future barrier hook (= same reason `VAL2ARY(c, v)` takes CTX
+ * even though it folds to a plain cast today).
  * --------------------------------------------------------------------------- */
 
-#define ARO_LOAD(c, slot_ptr)                                                  \
-    ((void *)((uintptr_t)(*(VALUE *)(slot_ptr))                                \
-              ^ ARO_GC_COMMON(c)->scramble_R))
+#define ARO_LOAD(c, slot_ptr) \
+    ((void)(c), (void *)(uintptr_t)(*(VALUE *)(uintptr_t)(slot_ptr)))
 
 /* ---------------------------------------------------------------------------
  * SCAN_EDGES helper — sample's SCAN_EDGES invokes this per slot.
  *
  * ARO_GC_VISIT_EDGE(ctx, fn, slot_ptr)
- *   Decodes the slot with scramble_R_old, forwards the underlying real
- *   address via `fn`, re-encodes with the new scramble_R before writing
- *   back.  Fixnums / singletons (= low bits non-zero, or v==0) skip
- *   both decode and forwarding entirely.
- *
- *   For non-scramble backends scramble_R and scramble_R_old are both
- *   permanently 0, so the XORs fold to identity — the macro behaves as
- *   a plain `fn(ctx, slot)` call (with the non-pointer skip preserved).
- *
- *   `ctx` is the backend's ASTroGC * — which must start with
- *   AroGcCommonState as its first field so we can read scramble fields
- *   via direct cast.  This is already a documented invariant of the
- *   framework (= ARO_GC_COMMON cast).
+ *   Reads the slot, calls `fn` to forward the raw pointer (= write the
+ *   new address back to a local `_aro_raw`), writes the new value back
+ *   to the slot.  Fixnums / singletons (= low bits non-zero, or v==0)
+ *   skip forwarding entirely.
  *
  *   Sister macro ARO_GC_VISIT_EDGE_PTR (below) handles raw typed-ptr
- *   slots — slot value is the unscrambled C pointer, no XOR applied.
- *   Samples that store all references as scrambled VALUE use the
- *   primary ARO_GC_VISIT_EDGE; samples with mixed slot kinds use both.
+ *   slots — same logic, no IS_PTR filter (= caller guaranteed the slot
+ *   holds a typed pointer).
  * --------------------------------------------------------------------------- */
+/* `(uintptr_t)` intermediate strips ARO_GC_EDGE's const without
+ * triggering -Wcast-qual (which is enabled in audit builds to plug the
+ * memcpy / void* implicit-conversion holes). */
 #define ARO_GC_VISIT_EDGE(ctx, fn, slot_ptr) do {                              \
-    VALUE *_aro_vs   = (VALUE *)(slot_ptr);                                    \
+    VALUE *_aro_vs   = (VALUE *)(uintptr_t)(slot_ptr);                         \
     VALUE  _aro_v    = *_aro_vs;                                               \
     if (((uintptr_t)_aro_v & 7u) == 0 && _aro_v != 0) {                        \
-        AroGcCommonState *_aro_cs = (AroGcCommonState *)(ctx);                 \
-        void *_aro_raw = (void *)((uintptr_t)_aro_v ^ _aro_cs->scramble_R_old);\
+        void *_aro_raw = (void *)(uintptr_t)_aro_v;                            \
         (fn)((ctx), &_aro_raw);                                                \
-        *_aro_vs = (VALUE)((uintptr_t)_aro_raw ^ _aro_cs->scramble_R);         \
+        *_aro_vs = (VALUE)(uintptr_t)_aro_raw;                                 \
     }                                                                          \
 } while (0)
 
@@ -169,7 +141,7 @@ extern const char *aro_gc_backend_name;
  * not migrated all typed-ptr fields to encoded VALUE storage.  Skip
  * the scramble decode entirely (= raw slot). */
 #define ARO_GC_VISIT_EDGE_PTR(ctx, fn, slot_ptr)                               \
-    ((fn)((ctx), (void **)(slot_ptr)))
+    ((fn)((ctx), (void **)(uintptr_t)(slot_ptr)))
 
 void  aro_gc_init(CTX *c);
 
@@ -274,12 +246,9 @@ aro_gc_free_large_chain_malloc(void *head)
  * scan-safe object.  Category = SCAN (= sample's SCAN_EDGES dispatches
  * at scan time, typically via sample's own ObjectHeader.type).
  *
- * **Return type**: VALUE (= encoded heap reference).  In scramble
- * backends this is `raw_payload ^ scramble_R`; in non-scramble backends
- * it equals `(VALUE)raw_payload`.  Sample stores the result directly
- * into a GC-visible slot (= sp[], object field) and decodes via
- * ARO_LOAD before deref.  The raw void * is intentionally not exposed
- * — every slot store/load goes through the scramble path uniformly.
+ * **Return type**: VALUE = raw payload pointer cast to integer.  Sample
+ * stores the result directly into a GC-visible slot (= sp[], object
+ * field) and accesses via ARO_LOAD or plain cast.
  *
  * **CONTRACT 1 (zero-init)**: backend zero-inits the payload so a GC
  * scan immediately after alloc sees no stale heap-pointer bits.
@@ -287,10 +256,9 @@ aro_gc_free_large_chain_malloc(void *head)
  * **CONTRACT 2 (GC-scan bound)**: caller MUST have set `c->sp` to its
  * current spill top before calling.  `c->env..c->sp` defines the root
  * scan range during any inner GC trigger. */
-/* Backend-provided raw alloc — returns the unencoded payload pointer
- * (= AroObjectHeader * at offset 0).  Public API `aro_gc_alloc` wraps
- * this with the scramble encode in gc_common.c.  Backends define
- * `_raw` only; sample code calls the VALUE-returning public API. */
+/* Backend-provided raw alloc — returns the payload pointer
+ * (= AroObjectHeader * at offset 0).  Public API `aro_gc_alloc` casts
+ * to VALUE in gc_common.c. */
 void *aro_gc_alloc_raw(CTX *c, size_t payload_size);
 VALUE aro_gc_alloc(CTX *c, size_t payload_size);
 
@@ -476,7 +444,7 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 // For non-WB backends the whole call collapses to `*slot = v` (= zero cost).
 //
 // For WB backends with the bit-in-head layout (= ARO_GC_WB_OLD_MASK
-// defined in gc_types.h), `aro_gc_wb` inlines the FAST PATH:
+// defined in gc_types.h), `aro_gc_store` inlines the FAST PATH:
 //
 //   1. *slot = v
 //   2. if (holder == NULL || !(OLD && !DIRTY)) return
@@ -488,7 +456,7 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 //
 // For WB backends without bit-in-head layout (mark_bitmap_gen / mark_card_gen
 // use per-page bitmaps; mark_gen_inc has an extra SATB barrier), the whole
-// aro_gc_wb stays extern.  LTO may still inline it but there's no source-
+// aro_gc_store stays extern.  LTO may still inline it but there's no source-
 // level guarantee.
 
 #ifdef ARO_GC_HAS_WB
@@ -501,7 +469,7 @@ aro_gc_phase_end(struct timespec t0, double *phase_field)
 void aro_gc_remember(CTX *c, AroObjectHeader *h);
 
 static inline void
-aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (__builtin_expect(holder == NULL, 1)) return;
@@ -513,7 +481,7 @@ aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 }
 
 static inline void
-aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (__builtin_expect(holder == NULL, 1)) return;
@@ -526,22 +494,22 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 
 #else  /* bitmap_gen / card_gen / mark_gen_inc: WB fully out-of-line */
 
-void aro_gc_wb     (CTX *c, void *holder, VALUE *slot, VALUE v);
-void aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
+void aro_gc_store     (CTX *c, void *holder, VALUE *slot, VALUE v);
+void aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
 
 #endif
 
 #else  /* non-WB backends: WB collapses to a plain store. */
 
 static inline void
-aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     (void)c; (void)holder;
     *slot = v;
 }
 
 static inline void
-aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     (void)c; (void)holder;
     if (n) memcpy(dst, src, n * sizeof(VALUE));
@@ -549,3 +517,37 @@ aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 #endif
 
 #endif
+
+/* ---------------------------------------------------------------------------
+ * ARO_STORE / ARO_STORE_BULK — sample-facing store API, paired with ARO_LOAD.
+ *
+ * Forms the read/write pair sample code should use uniformly for heap-pointer
+ * accesses:
+ *   value  = (T *)ARO_LOAD(c, &slot);                         // read
+ *   ARO_STORE(c, holder, &slot, (VALUE)value);                // write
+ *
+ * Underlying inline / extern implementation is `aro_gc_store` (= ex
+ * `aro_gc_wb`).  For non-WB backends both fold to a plain store.
+ * ------------------------------------------------------------------------- */
+/* (uintptr_t) cast strips the `const` introduced by ARO_GC_EDGE in audit
+ * builds.  Sample code that bypasses ARO_STORE (e.g. `a->items = x`)
+ * cannot perform this cast at the assignment site, so the const enforces
+ * routing through this macro.  Release builds have no const, the cast is
+ * a no-op. */
+#define ARO_STORE(c, holder, slot, v) \
+    aro_gc_store((c), (holder), (VALUE *)(uintptr_t)(slot), (v))
+#define ARO_STORE_BULK(c, holder, dst, src, n) \
+    aro_gc_store_bulk((c), (holder), (VALUE *)(uintptr_t)(dst), (src), (n))
+
+/* ARO_GC_RAW_STORE — direct write to an ARO_GC_EDGE-qualified slot that
+ * bypasses BOTH the write barrier AND the audit const qualifier.  Use
+ * ONLY for framework-internal writes that are exempt from WB:
+ *   1) stack-allocated (alloca / on-stack) struct init — holder is not
+ *      a GC object so reading head.gc_flags is undefined;
+ *   2) SCAN_EDGES forwarding writeback — GC is running, mutator paused,
+ *      remset doesn't apply.
+ * Mutator writes that update an already-live heap object MUST use
+ * ARO_STORE instead.  The macro preserves the slot's value type via
+ * __typeof__ so it works for VALUE / typed-ptr / char * slots alike. */
+#define ARO_GC_RAW_STORE(slot, val) \
+    (*(__typeof__(*(slot)) *)(uintptr_t)(slot) = (val))

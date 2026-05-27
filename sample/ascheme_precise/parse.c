@@ -165,7 +165,7 @@ read_hash(CTX *c, struct reader *r)
             char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
             size_t i = 0;
             for (VALUE p = sp[0]; scm_is_pair(p); p = SCM_PTR(p)->pair.cdr, i++) {
-                aro_gc_wb(c, items_base, &vobj->vec.items[i],
+                ARO_STORE(c, items_base, &vobj->vec.items[i],
                           SCM_PTR(p)->pair.car);
             }
         }
@@ -343,7 +343,7 @@ scm_read_all_string(CTX *c, const char *src, size_t len)
             sp[0] = cell;
         } else {
             struct sobj *last = SCM_PTR(sp[1]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, cell);
+            ARO_STORE(c, last, &last->pair.cdr, cell);
         }
         sp[1] = cell;
     }

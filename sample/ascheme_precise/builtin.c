@@ -581,14 +581,14 @@ PRIM(set_car) {
     (void)argc;
     if (!scm_is_pair(argv[0])) scm_error(c, "set-car!: not a pair");
     struct sobj *p = SCM_PTR(argv[0]);
-    aro_gc_wb(c, p, (VALUE *)&p->pair.car, argv[1]);
+    ARO_STORE(c, p, &p->pair.car, argv[1]);
     return SCM_UNSPEC;
 }
 PRIM(set_cdr) {
     (void)argc;
     if (!scm_is_pair(argv[0])) scm_error(c, "set-cdr!: not a pair");
     struct sobj *p = SCM_PTR(argv[0]);
-    aro_gc_wb(c, p, (VALUE *)&p->pair.cdr, argv[1]);
+    ARO_STORE(c, p, &p->pair.cdr, argv[1]);
     return SCM_UNSPEC;
 }
 PRIM(pair_p) { (void)c; (void)argc; return scm_is_pair(argv[0]) ? SCM_TRUE : SCM_FALSE; }
@@ -1078,7 +1078,7 @@ PRIM(vector_form) {
     struct sobj *vobj = SCM_PTR(r);
     char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
     for (int i = 0; i < argc; i++) {
-        aro_gc_wb(c, items_base, &vobj->vec.items[i], argv[i]);
+        ARO_STORE(c, items_base, &vobj->vec.items[i], argv[i]);
     }
     return r;
 }
@@ -1101,7 +1101,7 @@ PRIM(vector_set) {
     struct sobj *vobj = SCM_PTR(argv[0]);
     if (i >= vobj->vec.len) scm_error(c, "vector-set!: out of range");
     char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
-    aro_gc_wb(c, items_base, &vobj->vec.items[i], argv[2]);
+    ARO_STORE(c, items_base, &vobj->vec.items[i], argv[2]);
     return SCM_UNSPEC;
 }
 PRIM(vector_fill) {
@@ -1110,7 +1110,7 @@ PRIM(vector_fill) {
     struct sobj *vobj = SCM_PTR(argv[0]);
     char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
     for (size_t i = 0; i < vobj->vec.len; i++) {
-        aro_gc_wb(c, items_base, &vobj->vec.items[i], argv[1]);
+        ARO_STORE(c, items_base, &vobj->vec.items[i], argv[1]);
     }
     return SCM_UNSPEC;
 }
@@ -1148,7 +1148,7 @@ PRIM(list_to_vector) {
         char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
         for (sp[2] = sp[0]; scm_is_pair(sp[2]); sp[2] = SCM_PTR(sp[2])->pair.cdr) {
             /* No alloc inside the loop — vobj/items_base stay valid. */
-            aro_gc_wb(c, items_base, &vobj->vec.items[i],
+            ARO_STORE(c, items_base, &vobj->vec.items[i],
                       SCM_PTR(sp[2])->pair.car);
             i++;
         }
@@ -1256,7 +1256,7 @@ PRIM(map_p) {
         if (sp[1] == SCM_NIL) { sp[1] = cell; }
         else {
             struct sobj *last = SCM_PTR(sp[2]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, cell);
+            ARO_STORE(c, last, &last->pair.cdr, cell);
         }
         sp[2] = cell;
     }
@@ -1317,8 +1317,8 @@ PRIM(make_promise) {
     if (!scm_is_proc(argv[0])) scm_error(c, "delay: thunk must be a procedure");
     struct sobj *o = scm_alloc(c, OBJ_PROMISE);
     /* o is freshly young — WB fast-path returns immediately. */
-    aro_gc_wb(c, o, (VALUE *)&o->promise.thunk, argv[0]);
-    aro_gc_wb(c, o, (VALUE *)&o->promise.value, SCM_UNSPEC);
+    ARO_STORE(c, o, &o->promise.thunk, argv[0]);
+    ARO_STORE(c, o, &o->promise.value, SCM_UNSPEC);
     o->promise.forced = false;
     return SCM_OBJ_VAL(o);
 }
@@ -1340,7 +1340,7 @@ PRIM(force_p) {
      * po may be OLD by now (= long-lived promise); result is fresh/young.
      * WB is mandatory. */
     if (!po->promise.forced) {
-        aro_gc_wb(c, po, (VALUE *)&po->promise.value, result);
+        ARO_STORE(c, po, &po->promise.value, result);
         po->promise.forced = true;
     }
     VALUE r = po->promise.value;

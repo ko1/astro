@@ -1,5 +1,15 @@
 # WB 漏れ検出 mechanism 設計メモ
 
+> **Status (2026-05): 実装完了 (= Phase 2a)。**
+> 本メモは元の設計提案。 実装後の整理は `docs/gc_design.md §3.3 Layer 1`
+> および memory `[[project_aro_gc_edge_audit]]` 参照。 主な実装 deviation:
+> - `ARO_OBJ_STORE` → `ARO_STORE` に統合 (= ARO_LOAD と対称、 slot-based access)
+> - `ARO_WB_FIELD` → `ARO_GC_EDGE` に rename
+> - `ARO_GC_WB_AUDIT=1` build flag が `const` を有効化、 同時に
+>   `-Werror=discarded-qualifiers` + `-Werror=cast-qual` を加えて memcpy bypass も塞ぐ (= 元提案にない補強)
+> - Phase 3 (2026-05) で `copy_scramble` backend は廃止、 runtime audit
+>   は 64 GiB round-robin PURGE (= `gc_copy.c`) に subsume
+
 ## 動機
 
 世代別 GC では tenured→young の reference は write barrier (= WB) を経由
@@ -7,11 +17,13 @@
 で young 子が「参照されてない」 と誤判定されて回収され、 後で dangling
 pointer SEGV や微妙な値破壊として顕在化する。
 
-現状の検出手段:
+(以下、 当時の設計検討メモ。 実装は §3.3 Layer 1 参照)
 
-- **`copy_scramble` backend** (= `runtime/precise_gc/gc_copy_scramble.c`):
-  per-cycle XOR mask `R` で VALUE slot を撹乱、 stale slot を deref した
-  時に SEGV で検出。 確率的・実行時 cost あり
+旧 audit 検出手段 (当時):
+
+- **`copy_scramble` backend** (= `runtime/precise_gc/gc_copy_scramble.c`、
+  Phase 3 で廃止): per-cycle XOR mask `R` で VALUE slot を撹乱、 stale
+  slot を deref した時に SEGV で検出。 確率的・実行時 cost あり
 - **STRESS mode** (`BARUBY_GC_STRESS=1`): 全 alloc で GC を発火、 短命
   obj が早期に dead 化して dangling を顕在化。 確率的・遅い
 
@@ -73,7 +85,7 @@ error: assignment of read-only member 'items'
 /* obj->field = val with WB.  In audit build, casts away const. */
 #define ARO_OBJ_STORE(c, holder, field, val) do {                    \
     AROH_VALUE_TYPEOF((holder)->field) _v = (val);                   \
-    aro_gc_wb((c), (holder), (VALUE *)(uintptr_t)&(holder)->field,   \
+    aro_gc_store((c), (holder), (VALUE *)(uintptr_t)&(holder)->field,   \
               (VALUE)_v);                                            \
     *(AROH_VALUE_TYPEOF((holder)->field) *)(uintptr_t)&(holder)->field = _v; \
 } while (0)
@@ -81,7 +93,7 @@ error: assignment of read-only member 'items'
 /* Array element store. */
 #define ARO_OBJ_ARRAY_STORE(c, items, idx, val) do {                 \
     VALUE _v = (val);                                                \
-    aro_gc_wb((c), (items), (VALUE *)(uintptr_t)&(items)->data[idx], _v); \
+    aro_gc_store((c), (items), (VALUE *)(uintptr_t)&(items)->data[idx], _v); \
     *(VALUE *)(uintptr_t)&(items)->data[idx] = _v;                   \
 } while (0)
 ```
@@ -134,11 +146,11 @@ class instance vars / ivars が将来加わるなら同様に const 化。
 ### 6. backend hook の整合性
 
 WB-less backend (= `none`, `bump`, `copy`, `mark`, `copy_scramble`,
-`mark_freelist`, `mark_compact`, `immix`、 8 個) では `aro_gc_wb` は
-no-op で定義済 (`#define aro_gc_wb(c, h, s, v) ((void)(s), (void)(v))`
+`mark_freelist`, `mark_compact`, `immix`、 8 個) では `aro_gc_store` は
+no-op で定義済 (`#define aro_gc_store(c, h, s, v) ((void)(s), (void)(v))`
 等)。 audit ビルドでも cast の経路を通って正しく書き込まれる。
 
-世代別 backend (= 8 個) では `aro_gc_wb` の fast path / cold path で
+世代別 backend (= 8 個) では `aro_gc_store` の fast path / cold path で
 remset push。 const cast は WB 後に書込み。
 
 ## 段階的 rollout

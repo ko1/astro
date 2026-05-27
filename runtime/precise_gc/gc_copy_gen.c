@@ -32,7 +32,7 @@
 //   3. Swap tenured halves.  Reset young (= active stays, top = base).
 //
 // Write barrier:
-//   - User: aro_gc_wb pushes holder to remset on first young → tenured
+//   - User: aro_gc_store pushes holder to remset on first young → tenured
 //     write (= same as before).
 //   - GC: Cheney scan in minor step 3 above pushes newly-promoted objs
 //     with young refs.
@@ -341,7 +341,7 @@ remset_push(ASTroGC *gc, AroObjectHeader *h)
 }
 
 /* WB body — caller verified holder is old + not-yet-dirty (see gc.h
- * aro_gc_wb).  User-driven path; GC-internal promote uses its own
+ * aro_gc_store).  User-driven path; GC-internal promote uses its own
  * remset_push directly in process_object_minor below. */
 void __attribute__((noinline, cold))
 aro_gc_remember(CTX *c, AroObjectHeader *h)

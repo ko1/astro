@@ -29,8 +29,8 @@ ASTro の precise GC は **MMTk 流の VMBinding 抽象** を C macro で実現�
                   ▼
 ┌──────────────────────────────────────────────┐
 │ framework (= runtime/precise_gc/)            │
-│  - GC algorithm (17 backend: copy / mark /   │
-│    immix / immix_gen / copy_scramble / ...)  │
+│  - GC algorithm (16 backend: copy / mark /   │
+│    immix / immix_gen / mark_compact / ...)   │
 │  - mmap / region 管理                        │
 │  - allocator API (aro_gc_alloc(c, size))     │
 │  - ASTroObjectHeader 共通型 (gc_types.h)     │
@@ -394,10 +394,10 @@ void *aro_gc_realloc_payload(CTX *c, void *old, size_t new_size);
 /* resize (byte: 増分 init 省略) */
 void *aro_gc_realloc_byte_payload(CTX *c, void *old, size_t new_size);
 
-/* write barrier — caller writes via aro_gc_wb / aro_gc_wb_bulk for any
+/* write barrier — caller writes via aro_gc_store / aro_gc_store_bulk for any
  * heap-pointer assignment.  Implementation depends on backend (see §3.2). */
-void  aro_gc_wb     (CTX *c, void *holder, VALUE *slot, VALUE v);
-void  aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
+void  aro_gc_store     (CTX *c, void *holder, VALUE *slot, VALUE v);
+void  aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
 
 /* size accessor (sample / framework 共通) */
 size_t aro_gc_size_of(void *payload);
@@ -415,13 +415,13 @@ void  aro_gc_fini(CTX *c);
 
 ### 3.1 Write barrier の inline pattern
 
-`aro_gc_wb` は **3 つの実装パターン**を取る:
+`aro_gc_store` は **3 つの実装パターン**を取る:
 
 | パターン | 該当 backend | 形 |
 |---|---|---|
 | **collapse to store** | non-WB (none, bump, mark, copy, mark_compact, mark_freelist, immix) | `static inline { *slot = v; }` (= cost 0) |
 | **inline fast-path + cold remember** | bit-in-head gen (mark_gen / copy_gen / copy_gen_inc / mark_compact_gen / mark_bump_gen / immix_gen) | `static inline { *slot=v; if (!(old && !dirty)) return; aro_gc_remember(c, h); }` |
-| **fully extern** | bitmap-based / SATB (mark_bitmap_gen / mark_card_gen / mark_gen_inc) | `extern void aro_gc_wb(...)` (LTO 任せの inline) |
+| **fully extern** | bitmap-based / SATB (mark_bitmap_gen / mark_card_gen / mark_gen_inc) | `extern void aro_gc_store(...)` (LTO 任せの inline) |
 
 bit-in-head 系の fast path は `gc_types.h` の `ASTRO_GC_WB_OLD_MASK` /
 `ASTRO_GC_WB_DIRTY_MASK` を使って:
@@ -429,7 +429,7 @@ bit-in-head 系の fast path は `gc_types.h` の `ASTRO_GC_WB_OLD_MASK` /
 ```c
 /* gc.h — inline fast path: */
 static inline void
-aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (__builtin_expect(holder == NULL, 1)) return;
@@ -481,58 +481,102 @@ typedef struct ASTroGC {
 multi-instance シナリオは「異なる ASTroGC を別 CTX に bind する」 だけで
 成立。
 
-### 3.3 copy_scramble — XOR scramble audit backend
+### 3.3 audit 機構 (= 設計の正しさ検証)
 
-`copy_scramble` は mark/move 漏れの検出を目的とした debug backend。 構造は
-plain copy (= Cheney semispace) と同一だが、 sample-visible な VALUE
-storage を per-GC-cycle の乱数 `R` で XOR scramble する:
+ASTro precise GC は **「mark/move 漏れ / WB 漏れ / root 登録漏れ」 が確定
+SEGV で表面化する」** という audit 体制を 2 層で提供:
+
+#### Layer 1: compile-time `ARO_GC_WB_AUDIT` (= STORE 漏れの const 強制)
+
+heap-pointer 保持 field を **`ARO_GC_EDGE` qualifier** で marker:
+
+```c
+typedef struct BaArray {
+    AroObjectHeader head;
+    uint32_t len, capa;
+    BaArrayItems *ARO_GC_EDGE items;     // ← qualifier 付
+} BaArray;
+typedef struct BaArrayItems {
+    AroObjectHeader head;
+    VALUE ARO_GC_EDGE data[];            // ← flex array にも適用
+} BaArrayItems;
+```
+
+`make ARO_GC_WB_AUDIT=1` build で `ARO_GC_EDGE` が `const` に展開、 同時に
+`-Werror=discarded-qualifiers` + `-Werror=cast-qual` で memcpy 経由
+bypass も塞ぐ。 これで 3 種の WB 漏れパターンが **compile error**:
+
+| 違反 | 検出 flag |
+|---|---|
+| `a->items = x;` (= 直接代入) | `error: assignment of read-only member 'items'` |
+| `memcpy(&a->items, ...)` (= 暗黙 const drop) | `-Werror=discarded-qualifiers` |
+| `memcpy((void *)&a->items, ...)` (= 明示 cast) | `-Werror=cast-qual` |
+
+approved bypass は `ARO_STORE` macro 内 `(VALUE *)(uintptr_t)(slot)` の
+**uintptr_t 中継 cast** のみ。 sample が直接 cast したり `(void *)`
+経由したりすると Werror で reject される。
+
+release build (= audit flag なし) では `ARO_GC_EDGE` が空展開、 const なし
+で plain field と同じ optimizer 扱い (= CSE 安全)。
+
+#### Layer 2: runtime `BARUBY_GC_PURGE=1` (= 64 GiB round-robin mprotect)
+
+`gc_copy` backend は PURGE mode で **stale pointer 確定 SEGV** 機構を提供:
 
 ```
-encoded_value = real_ptr ^ R     /* GC が slot に書く */
-real_ptr      = encoded_value ^ R /* sample が ARO_OBJ() で復号 */
+init で mmap(64 GiB, PROT_NONE, MAP_NORESERVE) 一括 reserve。
+各 GC で:
+  1. 次 plane (= 64 MiB) を mprotect READ|WRITE → 新 to-space
+  2. Cheney scan: 現 active から forward
+  3. 旧 from-space を mprotect PROT_NONE + madvise DONTNEED
+  4. 64 GiB 使い切ったら wrap (= 1024 plane round-robin)
 ```
 
-GC cycle ごとに `R` を rotate。 GC が見逃した slot は old-R 編成のまま残
-り、 次回 sample 読み込み時に new-R で復号 → garbage addr → SEGV。
+64 GB / 64 MiB = **1024 plane 巡回**、 virtual addr の reuse まで lag が
+あるので「stale ptr が register に残ったまま wrap」 はまず発生しない。
+per-GC cost = mprotect 2 回 + madvise 2 回 (= 旧 per-GC mmap/munmap PURGE
+より軽量、 syscall 4 本のみ)。 物理 RSS = active plane 分のみ (= 旧 PURGE
+と同等)。
 
-##### macro (gc.h)
-- `ARO_OBJ(c, v)` = `(v ^ R)` — VALUE → ptr 復号 (sample-side deref)
-- `ARO_VAL(c, raw)` = `(raw ^ R)` — raw ptr → VALUE 符号化 (sample-side store)
-- 非 scramble backend では identity (= no-op)
+##### 検出範囲 (= 旧 scramble + R rotation の superset)
 
-##### root scan + edge visit
-- `ASTRO_GC_VISIT_EDGE_PTR(ctx, fn, slot)` — raw typed-ptr slot (= 不変)
-- `ASTRO_GC_VISIT_EDGE_VAL(ctx, fn, slot)` — VALUE slot (= scramble 時に
-  `scramble_R_old` で decode → forward → `scramble_R` で re-encode)
+| bug class | catch のタイミング |
+|---|---|
+| AROH_SCAN_EDGES の slot visit 漏れ | **次 GC の scan 時点** (= 旧 from-space が PROT_NONE、 forward attempt の source read で SEGV) |
+| heap obj field の stale ptr | 同上 (= 次 GC scan が踏む) |
+| decoded raw ptr in C local across GC | sample use 時の deref で SEGV (= 旧 from-space PROT_NONE 領域を指す) |
+| root 登録漏れ (= AROH_VISIT_ROOTS incompleteness) | sample 経由 deref で SEGV (= scan からは不可視、 別途 audit 推奨) |
+| WB 漏れ (= STORE 漏れ) | Layer 1 (= compile-time const) で catch |
 
-##### audit knobs (= 直交する 2 つの env var)
+mark/move 漏れの **「たまたま動く」 確率排除** (= 1024 plane lag) と
+**「次 GC で必ず踏む」 確定性** が同時に得られる、 deterministic な
+runtime audit。
 
-iter 76 で `STRESS` と `PURGE` を分離 (= 旧 `STRESS` = 両方の役を兼ねていた):
+##### audit knobs
 
 | env var | 効果 | cost |
 |---|---|---|
-| `BARUBY_GC_STRESS=1` | GC trigger 点ごとに必ず GC 発火 (= threshold=0)。 from-space は再利用 (= space0/space1 alternation 維持) | 重い (= GC per alloc) |
-| `BARUBY_GC_PURGE=1` | Cheney 系 backend (gc_copy / gc_copy_scramble) で from-space を munmap し to-space を fresh mmap (= stale heap ptr の deref が即 SEGV) | 中 (= per-GC mmap) |
-| 両方 | 高頻度 GC + 確実 SEGV = 最強 audit (= 旧 STRESS と同等) | 最重 |
-| なし | 通常実行、 GC 頻度は heap pressure 次第 | なし |
+| `BARUBY_GC_STRESS=1` | GC trigger 点ごとに必ず GC 発火 (= threshold=0) | 重い (= GC per alloc) |
+| `BARUBY_GC_PURGE=1` | gc_copy で 64 GiB round-robin mprotect、 stale ptr SEGV 確定化 | 軽い (= mprotect/madvise per GC) |
+| 両方 | 高頻度 GC + 確実 SEGV = 最強 audit | 中 (= STRESS + 軽い PURGE) |
 
 ```
-$ make GC=copy_scramble                                  # R rotate per GC のみ
-$ BARUBY_GC_PURGE=1 ./baruby_precise script.rb            # 普通頻度 + from-space SEGV
-$ BARUBY_GC_STRESS=1 ./baruby_precise script.rb           # 高頻度 GC、 再利用 (= 軽量 audit)
-$ BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1 ./baruby_precise script.rb  # 最強 (= 旧 STRESS 相当)
+$ make ARO_GC_WB_AUDIT=1 GC=copy            # compile-time STORE 漏れ catch
+$ BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1 ./baruby_precise script.rb  # 最強 audit
 ```
 
-PURGE は `gc_copy` / `gc_copy_scramble` のみ実効 (= from-space を持つ Cheney
-backend のみ)。 他 backend では env を parse して flag は立てるが no-op。
+PURGE は `gc_copy` のみ実効 (= from-space を持つ Cheney backend)。 他
+backend では env parse のみで no-op (= 将来 generational Cheney 系に展開
+可能)。
 
-##### 検出範囲
-- (1) Root / AROH_SCAN_EDGES の visit 漏れ → 該当 slot が old-R のまま →
-      sample read で SEGV (= scramble の R rotation 検出機構)
-- (2) Sample 側 raw cast (= `ARO_LOAD` 忘れ) → scrambled bits をそのまま
-      deref → SEGV (= scramble の構造強制)
-- (3) PURGE 併用時: stale ptr が from-space 領域を指せば munmap 範囲 →
-      確実 SEGV (= scramble の probabilistic 検出を deterministic に)
+##### 歴史
+
+旧 `copy_scramble` backend (= per-cycle XOR + R rotation で軽量 audit) は
+2026-05 Phase 3 で廃止、 round-robin PURGE に subsume された。 scramble
+の R rotation は確率的検出だったのに対し、 round-robin PURGE は確定的に
+SEGV させる + 検出範囲が広い (= visit 漏れを次 GC scan 時点で catch する)。
+ARO_TOUCH / ARO_ENCODE 等の TOUCH-style API も同 Phase で削除、 sample
+API は `ARO_LOAD` / `ARO_STORE` の 2 軸に集約。
 
 ---
 
@@ -634,11 +678,13 @@ mark, mark_gen, mark_gen_inc,
 mark_compact, mark_compact_gen,
 mark_bump_gen, bump,
 immix, immix_gen,
-mark_bitmap_gen, mark_card_gen, mark_freelist, none,
-copy_scramble  /* audit backend (= XOR scramble), §3.3 */
+mark_bitmap_gen, mark_card_gen, mark_freelist, none
 ```
 
-35 bench × 16 backend のマトリクス検証で動作確認 (`bench/matrix.rb`)。
+audit run は `make GC=copy ARO_GC_WB_AUDIT=1` + `BARUBY_GC_PURGE=1
+BARUBY_GC_STRESS=1` で実施 (= 旧 copy_scramble backend は Phase 3 で削除)。
+
+35 bench × 15 backend のマトリクス検証で動作確認 (`bench/matrix.rb`)。
 詳細 perf は [sample/baruby_precise/docs/perf.md](../sample/baruby_precise/docs/perf.md)。
 
 ### 5.2 sample object 型
@@ -773,6 +819,30 @@ gc_types.h を新設し、 sample の context.h が directly include。
 系 5 backend で fwd ptr を payload[8..15] overlay 配置に変更。 14 / 16
 backend で ASTroObjectHeader = **8 B**。
 
+### ✅ Phase 2a (2026-05): compile-time STORE 漏れ audit
+
+`ARO_GC_EDGE` qualifier 導入 (= `ARO_GC_WB_AUDIT=1` build で `const`
+展開)。 `-Werror=discarded-qualifiers` + `-Werror=cast-qual` 併用で
+memcpy bypass も含む 3 種の WB 漏れパターンを compile error 化。 詳細は
+§3.3 Layer 1 + `docs/wb_audit.md`。 framework の `(uintptr_t)` 中継 cast
+で `ARO_STORE` 等の approved bypass のみ通過、 sample の事故 bypass は
+全部 reject。
+
+### ✅ Phase 3 (2026-05): scramble 廃止 + round-robin PURGE
+
+- `copy_scramble` backend 廃止、 ID 17 は再利用しない (= 既存 baked code
+  store 互換性保持)
+- scramble feature (= XOR + R rotation) 全削除、 `AroGcCommonState` から
+  `scramble_R` / `scramble_R_old` field 削除、 `ARO_TOUCH` / `ARO_ENCODE`
+  macro 削除、 sample API 簡素化 (= `VAL2ARY` 等が直接 cast に)
+- `gc_copy` の PURGE mode を **64 GiB virtual round-robin** に refactor
+  (= init 一括 reserve、 各 GC で次 plane mprotect R/W + 旧 from-space
+  mprotect PROT_NONE + madvise DONTNEED)
+- per-GC cost は旧 PURGE (= mmap/munmap) より軽量、 catch 力は確定的
+  (= stale ptr deref が確実 SEGV、 visit_edge 漏れは次 GC scan 時点で
+  SEGV)
+- 16 → 15 backend、 net -550 行
+
 ### Step 4 (未着手): 他 sample で採用
 
 `koruby` / `pystro` / `abruby` 等で `runtime/precise_gc/` を使ってみる。
@@ -867,38 +937,40 @@ precise GC では:
 - (2) → cons cell 自身を sp[k] に park、 update は cell の field access 経由
 - (3) → libc malloc (= GC heap 外) で確保
 
-### 検証戦略: stress + copy_scramble を Phase 1 から必須に
+### 検証戦略: stress + purge を Phase 1 から必須に
 
 migration の各 phase で **「test 全 PASS」だけ**を成功判定にすると **gentle
 testing** で gap が露呈せず、 後で massive な debug loop が必要になる
 (= ascheme_precise でこれを経験)。
 
-**Phase 1 から `BARUBY_GC_STRESS=1 GC=copy_scramble` で全 test を回す** こと:
-- `stress` = GC trigger point ごとに必ず GC 発火 (= gap 露呈確率 max)
-- `copy_scramble` = VALUE storage を XOR scramble、 stale ptr deref で即 SEGV
-- 組合せ = root tracking gap を **即座に SEGV** で検出
+**Phase 1 から `make ARO_GC_WB_AUDIT=1 GC=copy` build + `BARUBY_GC_STRESS=1
+BARUBY_GC_PURGE=1` で全 test を回す** こと:
+- `ARO_GC_WB_AUDIT=1` build = STORE 漏れ compile-time catch (= Phase 2a、 §3.3 Layer 1)
+- `STRESS=1` = GC trigger point ごとに必ず GC 発火 (= gap 露呈確率 max)
+- `PURGE=1` = gc_copy で 64 GiB round-robin、 stale ptr 確定 SEGV (= §3.3 Layer 2)
+- 組合せ = WB / root tracking / visit_edge gap を **即座に SEGV / compile error** で検出
 
-普通の test (= GC 低頻度) では「動いてる」 状態のまま gap が隠れる。
+普通の test (= audit なし) では「動いてる」 状態のまま gap が隠れる。
 
 ### 推奨 migration 工程
 
 ```
 Phase 1. ASTroObjectHeader 追加 + GC_malloc → aro_gc_alloc
-         → stress + copy_scramble で 1 test PASS まで
+         → audit + stress + purge で 1 test PASS まで
 
 Phase 2. precise root tracking (sp[] / sframe / VISIT_ROOTS)
-         → stress + copy_scramble で全 test PASS
+         → audit + stress + purge で全 test PASS
 
 Phase 3. SCAN_EDGES (各 obj 型)
-         → stress + copy_scramble で全 test PASS
+         → audit + stress + purge で全 test PASS
 
 Phase 4. 特殊機構 (call/cc / continuation / etc.)
-         → stress + copy_scramble で全 test PASS
+         → audit + stress + purge で全 test PASS
 
 Phase 5. 外部 resource (GMP / FILE * / etc.)
          → finalizer hook + aro_gc_account_external、 stress で leak 検証
 
-Phase 6. 全 17 backend で stress + 通常 mode 両方 PASS
+Phase 6. 全 16 backend で stress + 通常 mode 両方 PASS
 ```
 
 各 phase で stress + scramble PASS を必須にする。 これを破ると後段で

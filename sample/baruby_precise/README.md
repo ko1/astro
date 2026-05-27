@@ -54,7 +54,7 @@ For details:
 | 共通引数 | `(c, n, fp)` | `(c, n, sp)` (iter 61 で fp を bake) |
 | Heap alloc | `GC_MALLOC` macro | `aro_gc_alloc(c, kind, size)` |
 | 共通 instance | global `g_GC` | heap-allocated `c->astro_gc` (iter 62) |
-| Write barrier | 無し (libgc 不要) | gen 系 backend で `aro_gc_wb(c, holder, slot, v)` |
+| Write barrier | 無し (libgc 不要) | gen 系 backend で `ARO_STORE(c, holder, slot, v)` |
 | Clean shutdown | — | `aro_gc_fini(c)` で全 backend が release |
 
 ⚠ **以前の README には「最速 backend vs libgc で geomean -22%」 と書いて

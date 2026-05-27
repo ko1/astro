@@ -609,7 +609,7 @@ l0_main(void *arg)
                         const char *src = SPECIALIZED_SRC(r->node);
                         src_send_rc = l0_send_compile_fd(aj->l1_fd, r->hash, src);
                         LOG("l0_send_compile_fd sent - src:%s", src);
-                        free((void *)src);
+                        free((void *)(uintptr_t)src);
                     }
                     break;
                   default:

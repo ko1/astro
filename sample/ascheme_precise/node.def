@@ -139,7 +139,7 @@ node_lset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t dep
      * a captured closure env) while v is freshly young.  WB is required
      * so the next minor scans this frame's slots[]. */
     struct sframe *f = ascheme_env_at(c, depth);
-    aro_gc_wb(c, f, &f->slots[idx], v);
+    ARO_STORE(c, f, &f->slots[idx], v);
     return SCM_UNSPEC;
 }
 
@@ -579,7 +579,7 @@ node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, 
              * c->env may be OLD (= long-lived loop frame); loop_args slots
              * are fresh young values from the just-evaluated tail-call. */
             for (uint32_t i = 0; i < nparams; i++) {
-                aro_gc_wb(c, c->env, &c->env->slots[i], c->loop_args[i]);
+                ARO_STORE(c, c->env, &c->env->slots[i], c->loop_args[i]);
             }
         } else {
             /* Non-leaf body: an inner lambda may have captured the current
@@ -595,7 +595,7 @@ node_loop(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, 
             c->sp = sp_inner + nparams;
             struct sframe *new_env = scm_new_frame(c, c->env->parent, (int)nparams);
             for (uint32_t i = 0; i < nparams; i++) {
-                aro_gc_wb(c, new_env, &new_env->slots[i], sp_inner[i]);
+                ARO_STORE(c, new_env, &new_env->slots[i], sp_inner[i]);
             }
             c->sp = sp_inner;
             CTX_SET_ENV(c, new_env);
@@ -1190,7 +1190,7 @@ node_vec_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *vec
                 /* items[] backing is the WB holder.  vobj may be OLD (=
                  * long-lived vector), sp[2] may be a young VALUE. */
                 char *items_base = (char *)vobj->vec.items - sizeof(AroObjectHeader);
-                aro_gc_wb(c, items_base, &vobj->vec.items[i], sp[2]);
+                ARO_STORE(c, items_base, &vobj->vec.items[i], sp[2]);
                 SP_POP(c, sp);
                 return SCM_UNSPEC;
             }

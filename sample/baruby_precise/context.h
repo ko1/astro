@@ -102,7 +102,7 @@ enum obj_type {
 // scans each data slot.
 typedef struct BaArrayItems {
     AroObjectHeader head;
-    VALUE data[];           // flex array; capa is tracked in the owning BaArray
+    VALUE ARO_GC_EDGE data[];   // flex array; capa is tracked in the owning BaArray
 } BaArrayItems;
 
 // Heap object holding raw bytes (= BaString.bytes after iter 75 Step C).
@@ -116,7 +116,7 @@ typedef struct BaArray {
     AroObjectHeader head;
     uint32_t len;
     uint32_t capa;
-    BaArrayItems *items;
+    BaArrayItems *ARO_GC_EDGE items;
 } BaArray;
 
 // iter 53: SSO (small-string optimization).  Strings with `len <=
@@ -136,8 +136,8 @@ typedef struct BaString {
     uint32_t len;            // byte length (not counting NUL)
     uint32_t capa;           // SSO: sizeof(small).  heap: len + 1.
     union {
-        BaByteData *bytes;   // heap: pointer to NUL-terminated payload (separate alloc)
-        char        small[8];// SSO: inline chars, NUL at small[len]
+        BaByteData *ARO_GC_EDGE bytes;   // heap: pointer to NUL-terminated payload (separate alloc)
+        char        small[8];            // SSO: inline chars, NUL at small[len]
     };
 } BaString;
 
@@ -155,23 +155,16 @@ bstr_bytes_mut(BaString * const s)
 }
 #define BSTR_BYTES(s)  bstr_bytes(s)
 
-/* OBJ_TYPE / VAL2ARY / VAL2STR / IS_ARY / IS_STR — all VALUE→object deref
- * macros take CTX so the scramble backend can XOR-decode the VALUE before
- * accessing the header.  For non-scramble backends scramble_R is 0
- * (= compiles to a plain cast).  AROH_IS_GC_OBJECT/IS_INT/IS_FALSY don't need decode
- * (scramble R has low 3 bits = 0, preserving LSB and 8-alignment tags).
- *
- * ARO_DECODE(c, v) — value-based decode (= no slot reference).  Prefer
- * ARO_LOAD(c, &slot) when the VALUE lives in a stable slot, but for
- * VALUEs already held in a local register (= return values, function
- * args) ARO_DECODE performs the same decode without a temporary slot. */
-#define ARO_DECODE(c, v) ((void *)((uintptr_t)(v) ^ ARO_GC_COMMON(c)->scramble_R))
-
-#define OBJ_TYPE(c, v)   (((AroObjectHeader *)ARO_DECODE((c), (v)))->flags & OBJ_TYPE_MASK)
+/* OBJ_TYPE / VAL2ARY / VAL2STR / IS_ARY / IS_STR — VALUE→object deref
+ * macros.  Take CTX so a future read-barrier hook (= forwarding follow /
+ * color check / handle-table lookup) can be injected uniformly without
+ * touching call sites.  Plain pointer cast under the current
+ * round-robin PURGE backend (= no encoding). */
+#define OBJ_TYPE(c, v)   ((void)(c), ((AroObjectHeader *)(uintptr_t)(v))->flags & OBJ_TYPE_MASK)
 #define IS_ARY(c, v)     (AROH_IS_GC_OBJECT(v) && OBJ_TYPE((c), (v)) == OBJ_ARRAY)
 #define IS_STR(c, v)     (AROH_IS_GC_OBJECT(v) && OBJ_TYPE((c), (v)) == OBJ_STRING)
-#define VAL2ARY(c, v)    ((BaArray *)ARO_DECODE((c), (v)))
-#define VAL2STR(c, v)    ((BaString *)ARO_DECODE((c), (v)))
+#define VAL2ARY(c, v)    ((void)(c), (BaArray *)(uintptr_t)(v))
+#define VAL2STR(c, v)    ((void)(c), (BaString *)(uintptr_t)(v))
 
 // RESULT: 2-register return type for non-local exit support (`return`).
 // Same shape as castro / naruby's RESULT — fits in rax:rdx so the
@@ -215,8 +208,9 @@ struct callcache {
 };
 
 /* Builtin functions take CTX as the first argument so they can access
- * the scramble backend's R (= ARO_DECODE / ARO_LOAD decode), and otherwise
- * for symmetry.  Non-scramble backends pay no cost (= unused param). */
+ * the framework state (allocator, root scan, future read-barrier hooks)
+ * uniformly, and otherwise for symmetry.  Currently the CTX argument
+ * is unused by many builtins (= optimizer drops it). */
 struct CTX_struct;
 typedef struct CTX_struct CTX;
 typedef VALUE (*builtin_func_ptr)(CTX *);
@@ -396,7 +390,7 @@ VALUE baruby_ary_new_from(CTX *c, const VALUE *items, uint32_t n);
 // Both av_ref and x_ref are pointers to caller's sp slots; we re-read
 // through them after any internal alloc so post-move addresses are
 // picked up.  fast-path (= no realloc) is inlined in node.h (after
-// gc.h is visible so aro_gc_wb is in scope); the realloc grow path
+// gc.h is visible so ARO_STORE is in scope); the realloc grow path
 // stays in node.c.  See iter 73 sieve perf note.
 void  baruby_ary_push_grow(CTX *c, VALUE *av_ref, VALUE *x_ref);
 // av/bv are pointers to caller sp slots; reloaded after alloc.

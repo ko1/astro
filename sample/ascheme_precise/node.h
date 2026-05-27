@@ -2,8 +2,8 @@
 #define NODE_H 1
 
 #include "context.h"
-/* gc.h は aro_gc_wb 等の static inline 定義を提供。 AOT'd SD_*.c が
- * node.h 経由で取り込まないと "undefined symbol: aro_gc_wb" で dlopen
+/* gc.h は ARO_STORE 等の static inline 定義を提供。 AOT'd SD_*.c が
+ * node.h 経由で取り込まないと "undefined symbol: ARO_STORE" で dlopen
  * 失敗 → 全 SD load skip (= silent AOT fallback to plain dispatch)。
  * baruby_precise iter 59 と同じ fix。 */
 #include "precise_gc/gc.h"
@@ -100,7 +100,7 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
                     c->env->parent == cl->closure.env &&
                     c->env->nslots == total &&
                     argc == cl->closure.nparams)) {
-            for (int i = 0; i < cl->closure.nparams; i++) c->env->slots[i] = argv[i];
+            ARO_STORE_BULK(c, c->env, c->env->slots, argv, (size_t)cl->closure.nparams);
             c->next_body = cl->closure.body;
             c->next_env = c->env;
             /* Signal frame_sp refresh to the trampoline when the next body
@@ -124,7 +124,10 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
     // bytes (non-moving GC) or tries to forward them (moving GC), both of
     // which corrupt the heap.  Fall through to scm_apply_tail_slow which
     // routes through build_frame_for (heap-allocated, OBJ_FRAME-tagged).
-#if BARUBY_GC == BARUBY_GC_NONE
+    /* alloca path requires writing through ARO_GC_EDGE-qualified slots
+     * without a real GC heap context; the audit build can't model that,
+     * so we route through the slow path under -DARO_GC_WB_AUDIT. */
+#if BARUBY_GC == BARUBY_GC_NONE && !defined(ARO_GC_WB_AUDIT)
     if (!is_tail && LIKELY(scm_is_closure(fn))) {
         struct sobj *cl = SCM_PTR(fn);
         if (LIKELY(!cl->closure.has_rest &&
@@ -133,9 +136,11 @@ scm_apply_tail(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             int total = cl->closure.nparams;
             struct sframe *new_env = (struct sframe *)alloca(
                 sizeof(struct sframe) + sizeof(VALUE) * (total ? total : 1));
-            new_env->parent = cl->closure.env;
+            /* alloca'd frame under GC=NONE — ARO_GC_HAS_WB is undefined so
+             * ARO_STORE folds to a plain store (= holder ignored). */
+            ARO_STORE(c, new_env, &new_env->parent, (VALUE)cl->closure.env);
             new_env->nslots = total;
-            for (int i = 0; i < total; i++) new_env->slots[i] = argv[i];
+            for (int i = 0; i < total; i++) ARO_STORE(c, new_env, &new_env->slots[i], argv[i]);
             struct sframe *saved = c->env;
             VALUE *saved_frame_sp = c->frame_sp;
             NODE *body = cl->closure.body;

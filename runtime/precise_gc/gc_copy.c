@@ -54,6 +54,21 @@ fwd_overlay_set(AroObjectHeader *h, void *new_payload)
  * a 64 GiB region would accumulate TiBs of virtual address space, so
  * stress mode uses a much smaller region. */
 #define STRESS_REGION_BYTES  ((size_t)64u << 20)  /* 64 MiB */
+
+/* PURGE mode: round-robin through a 64 GiB virtual arena, allocating
+ * one PURGE_PLANE_BYTES plane per GC cycle.  After each collect the
+ * just-retired plane is `mprotect PROT_NONE` + `madvise DONTNEED` so
+ * stale pointers into from-space SEGV deterministically (= replaces
+ * the old per-GC mmap/munmap PURGE which had to reuse the same virtual
+ * address immediately).  64 GiB / 64 MiB = 1024 planes in rotation
+ * before any virtual address gets reused.
+ *
+ * Trade-off vs old PURGE: marginally higher RSS during steady state
+ * (= 1 active plane physical-committed, others MADV_DONTNEED'd zero-
+ * faulted on touch), but per-GC cost is mprotect+madvise (= O(plane)
+ * bookkeeping, no kernel VMA tree manipulation). */
+#define PURGE_PLANE_BYTES    STRESS_REGION_BYTES
+#define PURGE_ARENA_BYTES    ARO_GC_REGION_VIRT_BYTES
 #define ALIGN8(n)     (((n) + 7u) & ~(size_t)7u)
 
 /* Adaptive GC trigger.  Match the mark / immix policy: trigger at
@@ -109,15 +124,22 @@ typedef struct ASTroGC {
     /* Common header — must be first field.  See gc.h AroGcCommonState. */
     AroGcCommonState common;
 
-    /* Active semispace (where allocations go).  In stress mode each GC
-     * mmaps a fresh to-space; in non-stress mode we alternate the
-     * `space0` / `space1` pair. */
+    /* Active semispace (where allocations go).  Non-PURGE mode
+     * alternates the `space0` / `space1` pair; PURGE mode bumps through
+     * planes in the 64 GiB `purge_arena_*` reservation. */
     char *active_base;
     char *active_top;
     char *active_end;
     char *space0;
     char *space1;
     int   active_idx;
+
+    /* PURGE mode: 64 GiB virtual arena reserved at init (MAP_NORESERVE
+     * PROT_NONE).  Each GC mprotect-enables the next plane and
+     * mprotect-disables the just-retired one — virtual address reuse
+     * lag = arena/plane planes (= 1024 by default). */
+    char *purge_arena_base;
+    char *purge_arena_end;
 
     /* Adaptive trigger state */
     size_t bytes_since_gc;
@@ -166,15 +188,25 @@ aro_gc_init(CTX *c)
     ARO_GC_COMMON(c)->stress = stress;
     ARO_GC_COMMON(c)->purge  = purge;
     if (stress) gc->gc_threshold = 0;        /* GC every alloc */
-    /* purge needs per-GC mmap/munmap of from-space → use the small 64 MiB
-     * region (large 64 GiB virtual reservation would be slow to map/unmap
-     * every GC).  stress alone reuses spaces (alternation), so 64 GiB OK. */
+    /* PURGE: reserve a 64 GiB MAP_NORESERVE / PROT_NONE arena once, then
+     * mprotect-enable a fresh plane each GC and PROT_NONE the retired
+     * one.  Stale ptr deref deterministically SEGVs until 1024 planes
+     * worth of GC have passed (= virtual address reuse lag). */
     if (purge) {
-        gc->region_bytes = STRESS_REGION_BYTES;
-        gc->active_base = mmap_region(gc->region_bytes);
-        gc->active_top  = gc->active_base;
-        gc->active_end  = gc->active_base + gc->region_bytes;
-        /* space0/space1 unused — purge mmaps fresh per collect */
+        char *arena = (char *)mmap(NULL, PURGE_ARENA_BYTES, PROT_NONE,
+                                   MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,
+                                   -1, 0);
+        if (arena == MAP_FAILED) { perror("mmap PURGE arena"); abort(); }
+        gc->purge_arena_base = arena;
+        gc->purge_arena_end  = arena + PURGE_ARENA_BYTES;
+        gc->region_bytes = PURGE_PLANE_BYTES;
+        if (mprotect(arena, PURGE_PLANE_BYTES, PROT_READ|PROT_WRITE) != 0) {
+            perror("mprotect PURGE initial plane"); abort();
+        }
+        gc->active_base = arena;
+        gc->active_top  = arena;
+        gc->active_end  = arena + PURGE_PLANE_BYTES;
+        /* space0/space1 unused under PURGE. */
     } else {
         gc->region_bytes = stress ? STRESS_REGION_BYTES : REGION_BYTES;
         gc->space0 = mmap_region(gc->region_bytes);
@@ -187,7 +219,7 @@ aro_gc_init(CTX *c)
     if (stress || purge) {
         fprintf(stderr, "[baruby_gc=copy]%s%s\n",
                 stress ? " STRESS (GC every alloc)" : "",
-                purge  ? " PURGE (munmap from-space)" : "");
+                purge  ? " PURGE (round-robin mprotect)" : "");
     }
 }
 
@@ -418,13 +450,30 @@ gc_collect_internal(CTX *c)
     char *from_base = gc->active_base;
     char *from_top_pre = gc->active_top;
 
-    /* Determine the to-space.  purge mode mmaps a fresh region every collect
-     * (and munmaps from-space at the end) — stale pointers into from-space
-     * deref into unmapped memory → guaranteed SEGV.  Non-purge alternates
+    /* Determine the to-space.  PURGE mode advances to the next plane in
+     * the 64 GiB round-robin arena and mprotect-enables it (= stale
+     * pointers into the just-retired plane SEGV); non-purge alternates
      * the space0 / space1 pair. */
     char *next_to_base;
     if (ARO_GC_COMMON(c)->purge) {
-        next_to_base = mmap_region(gc->region_bytes);
+        next_to_base = gc->active_base + PURGE_PLANE_BYTES;
+        if (next_to_base + PURGE_PLANE_BYTES > gc->purge_arena_end) {
+            /* Wrap to the start of the 64 GiB arena.  By the time we
+             * wrap, 1024 GC cycles have passed; any sample-held stale
+             * pointer is long gone from registers / data. */
+            next_to_base = gc->purge_arena_base;
+        }
+        if (mprotect(next_to_base, PURGE_PLANE_BYTES,
+                     PROT_READ|PROT_WRITE) != 0) {
+            perror("mprotect PURGE new plane"); abort();
+        }
+        /* Ensure zero pages on access (= MADV_DONTNEED resets the
+         * mapping; next access fault gives fresh zero pages, mirroring
+         * MAP_ANONYMOUS semantics).  Necessary on wrap-around where the
+         * plane previously had physical pages from earlier use. */
+        if (madvise(next_to_base, PURGE_PLANE_BYTES, MADV_DONTNEED) != 0) {
+            perror("madvise PURGE new plane"); abort();
+        }
     } else {
         next_to_base = (gc->active_idx == 0) ? gc->space1 : gc->space0;
     }
@@ -504,11 +553,15 @@ gc_collect_internal(CTX *c)
     gc->active_top  = gc->to_top;
     gc->active_end  = next_to_base + gc->region_bytes;
 
-    /* (5) Retire the old active.  Purge unmaps it outright (= stale ptrs
-     * deref into unmapped memory → SEGV).  Non-purge keeps it for reuse. */
+    /* (5) Retire the old active.  PURGE mprotects PROT_NONE +
+     * MADV_DONTNEED (= stale ptrs deref SEGV, physical released);
+     * non-purge keeps the space for the next alternation cycle. */
     if (ARO_GC_COMMON(c)->purge) {
-        if (munmap(from_base, gc->region_bytes) != 0) {
-            perror("gc_collect: munmap retired"); abort();
+        if (mprotect(from_base, PURGE_PLANE_BYTES, PROT_NONE) != 0) {
+            perror("gc_collect: mprotect retire"); abort();
+        }
+        if (madvise(from_base, PURGE_PLANE_BYTES, MADV_DONTNEED) != 0) {
+            perror("gc_collect: madvise retire"); abort();
         }
     }
     (void)from_top_pre;
@@ -556,8 +609,13 @@ aro_gc_fini(CTX *c)
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (!gc) return;
     aro_gc_finalize_fini(c);
-    if (ARO_GC_COMMON(c)->stress) {
-        /* stress mode: only the current active region is mapped. */
+    if (ARO_GC_COMMON(c)->purge) {
+        /* PURGE mode: one 64 GiB arena reservation. */
+        if (gc->purge_arena_base) {
+            munmap(gc->purge_arena_base, PURGE_ARENA_BYTES);
+        }
+    } else if (ARO_GC_COMMON(c)->stress) {
+        /* Stress (non-purge) mode: only the current active region is mapped. */
         if (gc->active_base) munmap(gc->active_base, gc->region_bytes);
     } else {
         if (gc->space0) munmap(gc->space0, gc->region_bytes);

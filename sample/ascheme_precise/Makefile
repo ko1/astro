@@ -37,7 +37,7 @@ GC_NUM_immix_gen        := 13
 GC_NUM_mark_bitmap_gen  := 14
 GC_NUM_mark_card_gen    := 15
 GC_NUM_mark_freelist    := 16
-GC_NUM_copy_scramble    := 17
+
 GC_NUM := $(GC_NUM_$(GC))
 ifeq ($(GC_NUM),)
 $(error Unknown GC backend "$(GC)")
@@ -48,10 +48,12 @@ GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c
 GC_COMMON_SRC := $(PRECISE_GC_DIR)/gc_common.c
 
 # Track current GC selection so a `make GC=foo` after `make GC=bar`
-# actually rebuilds.
+# actually rebuilds.  Marker includes "-audit" suffix when ARO_GC_WB_AUDIT=1
+# so toggling the audit flag forces a rebuild.
+GC_VARIANT := $(GC)$(if $(ARO_GC_WB_AUDIT),-audit)
 GC_MARKER := $(shell test -f .built_gc && cat .built_gc 2>/dev/null)
-ifneq ($(GC_MARKER),$(GC))
-$(shell echo "$(GC)" > .built_gc)
+ifneq ($(GC_MARKER),$(GC_VARIANT))
+$(shell echo "$(GC_VARIANT)" > .built_gc)
 endif
 
 optflags=-O3
@@ -72,6 +74,7 @@ ascheme_precise: main.c builtin.c parse.c node.c Makefile $(NODE_GENFILES) conte
 	gcc -I. -I$(RUNTIME) $(optflags) -ggdb3 -Wall -Wno-unused-function $(READLINE_CFLAGS) \
 	    -rdynamic \
 	    -DBARUBY_GC=$(GC_NUM) \
+	    $(if $(ARO_GC_WB_AUDIT),-DARO_GC_WB_AUDIT -Werror=discarded-qualifiers -Werror=cast-qual) \
 	    -DASCHEME_PRECISE_DIR='"$(ASCHEME_PRECISE_DIR)"' \
 	    -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
 	    -o ascheme_precise main.c builtin.c parse.c node.c $(GC_COMMON_SRC) $(GC_SRC) \

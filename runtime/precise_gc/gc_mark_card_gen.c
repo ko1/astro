@@ -499,7 +499,7 @@ mark_dirty(ASTroGC *gc, AroObjectHeader *hh)
 }
 
 void
-aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     *slot = v;
     if (holder == NULL) return;
@@ -509,7 +509,7 @@ aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 }
 
 void
-aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     if (n) memcpy(dst, src, n * sizeof(VALUE));
     if (holder == NULL) return;

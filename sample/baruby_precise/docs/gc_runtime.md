@@ -100,12 +100,12 @@ class 32 に BaArray (24 B + 8 B header = 32 B) がぴったり収まる効果�
 ### 1.4 Write barrier API
 
 ```c
-void aro_gc_wb     (CTX *c, void *holder, VALUE *slot, VALUE v);
-void aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
+void ARO_STORE     (CTX *c, void *holder, VALUE *slot, VALUE v);
+void ARO_STORE_BULK(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n);
 ```
 
 世代別 / incremental backend では、 **ヒープから別ヒープへのポインタ書込**
-は必ず `aro_gc_wb` を経由する。 非 gen backend では `aro_gc_wb` は
+は必ず `ARO_STORE` を経由する。 非 gen backend では `ARO_STORE` は
 `*slot = v` に inline 化 (zero cost)。
 
 backend ごとの WB 実装と remset 設計は root §2 各 backend の「アルゴリズム

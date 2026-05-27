@@ -9,11 +9,11 @@
 #include <string.h>
 
 #include "context.h"
-// gc.h defines aro_gc_wb (write barrier) used by EVAL_node_call_aset
+// gc.h defines ARO_STORE (write barrier) used by EVAL_node_call_aset
 // inside node_eval.c.  Non-gen backends provide it as a `static inline`
 // stub; gen backends export it as an extern.  Either way, SD .c that
 // includes node_eval.c needs the declaration / inline-body in scope —
-// otherwise gcc emits a call to the implicit `extern aro_gc_wb` and
+// otherwise gcc emits a call to the implicit `extern ARO_STORE` and
 // dlopen of all.so fails with an undefined symbol on non-WB GC backends
 // (e.g. GC=copy) for any program that touches array write (a[i] = v).
 #include "precise_gc/gc.h"
@@ -24,13 +24,13 @@
 // list.push) don't pay the function prologue cost.  Profile showed
 // 23% of CPU in sieve copy-AOT was the function prologue for a
 // 5-instruction fast-path body.  Place here (not context.h) because
-// aro_gc_wb is declared in gc.h above and must be in scope.
+// ARO_STORE is declared in gc.h above and must be in scope.
 static inline void
 baruby_ary_push(CTX *c, VALUE *av_ref, VALUE *x_ref)
 {
     BaArray *a = VAL2ARY(c, *av_ref);
     if (__builtin_expect(a->len < a->capa, 1)) {
-        aro_gc_wb(c, a->items, &a->items->data[a->len], *x_ref);
+        ARO_STORE(c, a->items, &a->items->data[a->len], *x_ref);
         a->len++;
         return;
     }

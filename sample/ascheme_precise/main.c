@@ -138,9 +138,9 @@ scm_cons(CTX *c, VALUE a, VALUE d)
     struct sobj *o = (struct sobj *)aro_gc_alloc_raw(c, pair_size);
     SCM_SET_TYPE(o, OBJ_PAIR);
     /* o is freshly allocated (young) — WB is a no-op fast path but kept
-     * uniform so all heap-slot writes route through aro_gc_wb. */
-    aro_gc_wb(c, o, (VALUE *)&o->pair.car, sp[0]);
-    aro_gc_wb(c, o, (VALUE *)&o->pair.cdr, sp[1]);
+     * uniform so all heap-slot writes route through ARO_STORE. */
+    ARO_STORE(c, o, &o->pair.car, sp[0]);
+    ARO_STORE(c, o, &o->pair.cdr, sp[1]);
     SP_POP(c, sp);
     return SCM_OBJ_VAL(o);
 }
@@ -167,7 +167,9 @@ scm_make_string(CTX *c, const char *s, size_t len)
     /* Park the in-flight str sobj across the byte-payload alloc. */
     VALUE *sp = c->sp;
     struct sobj *o = scm_alloc(c, OBJ_STRING);
-    o->str.chars = NULL;
+    /* str.chars/len are zero-init by scm_alloc — explicit clearing via
+     * ARO_STORE for audit (= chars is ARO_GC_EDGE-qualified). */
+    ARO_STORE(c, o, &o->str.chars, (VALUE)NULL);
     o->str.len = 0;
     sp[0] = SCM_OBJ_VAL(o);
     c->sp = sp + 1;
@@ -175,7 +177,7 @@ scm_make_string(CTX *c, const char *s, size_t len)
     o = SCM_PTR(sp[0]);   /* reload after potential GC move */
     /* o may be OLD now if alloc above promoted it.  Use WB so the byte
      * payload (= young) is remembered via o's dirty bit. */
-    aro_gc_wb(c, o, (VALUE *)&o->str.chars, (VALUE)(raw + sizeof(AroObjectHeader)));
+    ARO_STORE(c, o, &o->str.chars, (VALUE)(raw + sizeof(AroObjectHeader)));
     memcpy(o->str.chars, stage, len);
     o->str.chars[len] = '\0';
     o->str.len = len;
@@ -191,13 +193,13 @@ scm_make_string_n(CTX *c, size_t len, char fill)
      * across the byte-payload alloc. */
     VALUE *sp = c->sp;
     struct sobj *o = scm_alloc(c, OBJ_STRING);
-    o->str.chars = NULL;
+    ARO_STORE(c, o, &o->str.chars, (VALUE)NULL);
     o->str.len = 0;
     sp[0] = SCM_OBJ_VAL(o);
     c->sp = sp + 1;
     char *raw = (char *)aro_gc_alloc_byte_raw(c, sizeof(AroObjectHeader) + len + 1);
     o = SCM_PTR(sp[0]);
-    aro_gc_wb(c, o, (VALUE *)&o->str.chars, (VALUE)(raw + sizeof(AroObjectHeader)));
+    ARO_STORE(c, o, &o->str.chars, (VALUE)(raw + sizeof(AroObjectHeader)));
     memset(o->str.chars, fill, len);
     o->str.chars[len] = '\0';
     o->str.len = len;
@@ -224,7 +226,7 @@ scm_make_vector(CTX *c, size_t len, VALUE fill)
     SP_PUSH(c, sp, 2);    /* sp[0]=o sobj, sp[1]=fill */
     sp[1] = fill;
     struct sobj *o = scm_alloc(c, OBJ_VECTOR);
-    o->vec.items = NULL;
+    ARO_STORE(c, o, &o->vec.items, (VALUE)NULL);
     o->vec.len = 0;
     sp[0] = SCM_OBJ_VAL(o);
     /* Allocate `header + N * VALUE`; the items pointer skips past the header
@@ -241,14 +243,14 @@ scm_make_vector(CTX *c, size_t len, VALUE fill)
     o = SCM_PTR(sp[0]);
     /* WB on the items typed-ptr write: o may have been promoted by the
      * raw alloc above, raw is freshly young.  WB ensures o is remembered. */
-    aro_gc_wb(c, o, (VALUE *)&o->vec.items, (VALUE)(raw + sizeof(AroObjectHeader)));
+    ARO_STORE(c, o, &o->vec.items, (VALUE)(raw + sizeof(AroObjectHeader)));
     o->vec.len = len;
     /* items[] backing payload is itself a heap object (= `raw`).  Holder
      * for the items slots is `raw` (the payload base).  raw is freshly
      * young so WB fast-path returns immediately, but we keep the routing
      * uniform. */
     for (size_t i = 0; i < len; i++) {
-        aro_gc_wb(c, raw, &o->vec.items[i], sp[1]);
+        ARO_STORE(c, raw, &o->vec.items[i], sp[1]);
     }
     SP_POP(c, sp);
     return SCM_OBJ_VAL(o);
@@ -355,17 +357,17 @@ scm_make_mvalues(CTX *c, int count, VALUE *items)
     c->sp = sp_base + 1 + count;
 
     struct sobj *o = scm_alloc(c, OBJ_MVALUES);
-    o->mv.items = NULL;
+    ARO_STORE(c, o, &o->mv.items, (VALUE)NULL);
     o->mv.len = 0;
     sp_base[0] = SCM_OBJ_VAL(o);
     size_t alloc_sz = sizeof(AroObjectHeader) + sizeof(VALUE) * (count ? count : 1);
     char *raw = (char *)aro_gc_alloc_raw(c, alloc_sz);
     SCM_SET_TYPE((struct sobj *)raw, OBJ_VEC_BACKING);
     o = SCM_PTR(sp_base[0]);
-    aro_gc_wb(c, o, (VALUE *)&o->mv.items, (VALUE)(raw + sizeof(AroObjectHeader)));
+    ARO_STORE(c, o, &o->mv.items, (VALUE)(raw + sizeof(AroObjectHeader)));
     o->mv.len = (size_t)count;
     for (int i = 0; i < count; i++) {
-        aro_gc_wb(c, raw, &o->mv.items[i], sp_base[1 + i]);
+        ARO_STORE(c, raw, &o->mv.items[i], sp_base[1 + i]);
     }
     c->sp = sp_base;
     return SCM_OBJ_VAL(o);
@@ -406,7 +408,7 @@ scm_make_closure(CTX *c, NODE *body, struct sframe *env, int nparams, int has_re
      * minor; o is freshly young so the env→o reverse edge would not need
      * remembering, but the framework's WB only triggers on holder OLD
      * (= o here). Fast path returns immediately. */
-    aro_gc_wb(c, o, (VALUE *)&o->closure.env, (VALUE)env);
+    ARO_STORE(c, o, &o->closure.env, (VALUE)env);
     o->closure.nparams = nparams;
     o->closure.has_rest = has_rest;
     o->closure.name = NULL;
@@ -467,9 +469,14 @@ scm_new_frame(CTX *c, struct sframe *parent, int nslots)
      * head-at-offset-0 layout with struct sobj, so the framework-stored
      * gc_size / gc_flags survive; we only set the sample type bits. */
     SCM_SET_TYPE((struct sobj *)f, OBJ_FRAME);
-    aro_gc_wb(c, f, (VALUE *)&f->parent, (VALUE)parent);
+    ARO_STORE(c, f, &f->parent, (VALUE)parent);
     f->nslots = nslots;
-    for (int i = 0; i < nslots; i++) f->slots[i] = SCM_UNSPEC;
+    /* Initialize slots to SCM_UNSPEC.  Frame is freshly young so WB
+     * fast-path returns; the per-iter cost is negligible for typical
+     * lambda arities. */
+    for (int i = 0; i < nslots; i++) {
+        ARO_STORE(c, f, &f->slots[i], SCM_UNSPEC);
+    }
     return f;
 }
 
@@ -516,7 +523,7 @@ scm_intern(CTX *c, const char *name)
      * on this partially-init'd sobj is a no-op (interior char-slot visit
      * skips NULL). */
     struct sobj *o = scm_alloc(c, OBJ_SYMBOL);
-    o->sym.name = NULL;
+    ARO_STORE(c, o, &o->sym.name, (VALUE)NULL);
     size_t reserved_idx = SYMBOL_TABLE_LEN;
     SYMBOL_TABLE[reserved_idx] = o;
     SYMBOL_TABLE_LEN++;
@@ -525,7 +532,7 @@ scm_intern(CTX *c, const char *name)
     o = SYMBOL_TABLE[reserved_idx];
     /* WB on the sym.name typed-ptr write — o may be OLD if the byte
      * payload alloc above promoted it; raw payload is young. */
-    aro_gc_wb(c, o, (VALUE *)&o->sym.name, (VALUE)(raw + sizeof(AroObjectHeader)));
+    ARO_STORE(c, o, &o->sym.name, (VALUE)(raw + sizeof(AroObjectHeader)));
     memcpy(o->sym.name, stage, nlen + 1);
     if (stage != stage_stack) free(stage);
     return SCM_OBJ_VAL(o);
@@ -1189,7 +1196,7 @@ list_append1(CTX *c, VALUE list, VALUE elt)
         if (sp[2] == SCM_NIL) { sp[2] = cell; }
         else {
             struct sobj *last_cell = SCM_PTR(sp[3]);
-            aro_gc_wb(c, last_cell, (VALUE *)&last_cell->pair.cdr, cell);
+            ARO_STORE(c, last_cell, &last_cell->pair.cdr, cell);
         }
         sp[3] = cell;
     }
@@ -1197,7 +1204,7 @@ list_append1(CTX *c, VALUE list, VALUE elt)
     if (sp[2] == SCM_NIL) { sp[2] = last; }
     else {
         struct sobj *last_cell = SCM_PTR(sp[3]);
-        aro_gc_wb(c, last_cell, (VALUE *)&last_cell->pair.cdr, last);
+        ARO_STORE(c, last_cell, &last_cell->pair.cdr, last);
     }
     VALUE r = sp[2];
     SP_POP(c, sp);
@@ -1544,7 +1551,7 @@ hoist_internal_defines(CTX *c, VALUE body)
         if (sp[1] == SCM_NIL) { sp[1] = pcell; }
         else {
             struct sobj *last_cell = SCM_PTR(sp[2]);
-            aro_gc_wb(c, last_cell, (VALUE *)&last_cell->pair.cdr, pcell);
+            ARO_STORE(c, last_cell, &last_cell->pair.cdr, pcell);
         }
         sp[2] = pcell;
         sp[0] = SCM_PTR(sp[0])->pair.cdr;
@@ -1619,7 +1626,7 @@ compile_lambda(CTX *c, VALUE params, VALUE body, struct lex_scope *scope)
         }
     }
     char **names = (char **)scm_alloc_min(c, sizeof(char *) * (nslots ? nslots : 1));
-    for (int i = 0; i < nslots; i++) names[i] = (char *)names_buf[i];
+    for (int i = 0; i < nslots; i++) names[i] = (char *)(uintptr_t)names_buf[i];
 
     struct lex_scope *new_scope = push_scope(c, scope, nslots, names);
     new_scope->is_lambda_boundary = true;
@@ -1743,12 +1750,12 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         sp_nlh[2] = body;
         // Outer scope: just the loop binding.
         char **outer_names = (char **)scm_alloc_min(c, sizeof(char *));
-        outer_names[0] = (char *)scm_perm_name(SCM_PTR(sp_nlh[0])->sym.name);
+        outer_names[0] = (char *)(uintptr_t)scm_perm_name(SCM_PTR(sp_nlh[0])->sym.name);
         struct lex_scope *outer_scope = push_scope(c, scope, 1, outer_names);
 
         // Inner scope: the loop's params, with parent = outer scope.
         char **inner_names = (char **)scm_alloc_min(c, sizeof(char *) * (nparams ? nparams : 1));
-        for (int i = 0; i < nparams; i++) inner_names[i] = (char *)param_names[i];
+        for (int i = 0; i < nparams; i++) inner_names[i] = (char *)(uintptr_t)param_names[i];
         struct lex_scope *inner_scope = push_scope(c, outer_scope, nparams, inner_names);
 
         // Compile inner body with self-call recognition active.
@@ -1873,7 +1880,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
             if (sp_nl[3] == SCM_NIL) { sp_nl[3] = pcell; }
             else {
                 struct sobj *last = SCM_PTR(sp_nl[4]);
-                aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, pcell);
+                ARO_STORE(c, last, &last->pair.cdr, pcell);
             }
             sp_nl[4] = pcell;
             VALUE bv = cadr(car(sp_nl[7]));
@@ -1881,7 +1888,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
             if (sp_nl[5] == SCM_NIL) { sp_nl[5] = icell; }
             else {
                 struct sobj *last = SCM_PTR(sp_nl[6]);
-                aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, icell);
+                ARO_STORE(c, last, &last->pair.cdr, icell);
             }
             sp_nl[6] = icell;
         }
@@ -1930,7 +1937,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (sp[3] == SCM_NIL) { sp[3] = pcell; }
         else {
             struct sobj *last = SCM_PTR(sp[4]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, pcell);
+            ARO_STORE(c, last, &last->pair.cdr, pcell);
         }
         sp[4] = pcell;
         /* sp[7] still valid (= rooted), but bv (= cadr(car(sp[7]))) was
@@ -1941,7 +1948,7 @@ compile_let(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (sp[5] == SCM_NIL) { sp[5] = icell; }
         else {
             struct sobj *last = SCM_PTR(sp[6]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, icell);
+            ARO_STORE(c, last, &last->pair.cdr, icell);
         }
         sp[6] = icell;
     }
@@ -2024,7 +2031,7 @@ compile_letrec(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (sp[3] == SCM_NIL) { sp[3] = pcell; }
         else {
             struct sobj *last = SCM_PTR(sp[4]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, pcell);
+            ARO_STORE(c, last, &last->pair.cdr, pcell);
         }
         sp[4] = pcell;
         /* setform = (set! name init) */
@@ -2035,7 +2042,7 @@ compile_letrec(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (sp[5] == SCM_NIL) { sp[5] = acell; }
         else {
             struct sobj *last = SCM_PTR(sp[6]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, acell);
+            ARO_STORE(c, last, &last->pair.cdr, acell);
         }
         sp[6] = acell;
     }
@@ -2044,7 +2051,7 @@ compile_letrec(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         sp[5] = sp[2];
     } else {
         struct sobj *last = SCM_PTR(sp[6]);
-        aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, sp[2]);
+        ARO_STORE(c, last, &last->pair.cdr, sp[2]);
     }
     /* letform = (let pairs inner_body...) */
     sp[8] = scm_cons(c, sp[3], sp[5]);
@@ -2147,7 +2154,7 @@ compile_case(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (sp[5] == SCM_NIL) { sp[5] = cell; }
         else {
             struct sobj *last = SCM_PTR(sp[6]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, cell);
+            ARO_STORE(c, last, &last->pair.cdr, cell);
         }
         sp[6] = cell;
     }
@@ -2287,7 +2294,7 @@ compile_do(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (sp[6] == SCM_NIL) { sp[6] = vcell; }
         else {
             struct sobj *last = SCM_PTR(sp[7]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, vcell);
+            ARO_STORE(c, last, &last->pair.cdr, vcell);
         }
         sp[7] = vcell;
         VALUE init = cadr(car(sp[12]));
@@ -2295,7 +2302,7 @@ compile_do(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (sp[8] == SCM_NIL) { sp[8] = icell; }
         else {
             struct sobj *last = SCM_PTR(sp[9]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, icell);
+            ARO_STORE(c, last, &last->pair.cdr, icell);
         }
         sp[9] = icell;
         VALUE step;
@@ -2305,7 +2312,7 @@ compile_do(CTX *c, VALUE form, struct lex_scope *scope, bool is_tail)
         if (sp[10] == SCM_NIL) { sp[10] = scell; }
         else {
             struct sobj *last = SCM_PTR(sp[11]);
-            aro_gc_wb(c, last, (VALUE *)&last->pair.cdr, scell);
+            ARO_STORE(c, last, &last->pair.cdr, scell);
         }
         sp[11] = scell;
     }
@@ -2626,10 +2633,10 @@ build_frame_for(CTX *c, struct sobj *cl, int argc, VALUE *argv)
      * but kept uniform for any future code path that might promote f
      * before reaching here. */
     for (int i = 0; i < nparams; i++) {
-        aro_gc_wb(c, f, &f->slots[i], sp_base[2 + i]);
+        ARO_STORE(c, f, &f->slots[i], sp_base[2 + i]);
     }
     if (has_rest) {
-        aro_gc_wb(c, f, &f->slots[nparams], sp_base[1]);
+        ARO_STORE(c, f, &f->slots[nparams], sp_base[1]);
     }
     c->sp = sp_base;
     return f;
@@ -2654,7 +2661,7 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         if (argc != 1) scm_error(c, "continuation expects exactly 1 argument");
         /* cont was allocated earlier (= possibly OLD by now) and argv[0]
          * is freshly captured.  WB is mandatory. */
-        aro_gc_wb(c, k->cont, (VALUE *)&k->cont->result, argv[0]);
+        ARO_STORE(c, k->cont, &k->cont->result, argv[0]);
         longjmp(k->cont->buf, 1);
     }
     if (LIKELY(scm_is_closure(fn))) {
@@ -2671,7 +2678,7 @@ scm_apply(CTX *c, VALUE fn, int argc, VALUE *argv)
         // stack memory (= corrupt frame header) or call bitmap_set on
         // an off-heap address (= SEGV).  Heap-allocated frames are
         // tagged OBJ_FRAME so SCAN_EDGES dispatches correctly.
-#if BARUBY_GC == BARUBY_GC_NONE
+#if BARUBY_GC == BARUBY_GC_NONE && !defined(ARO_GC_WB_AUDIT)
         if (LIKELY(cl->closure.leaf)) {
             int total = cl->closure.nparams + (cl->closure.has_rest ? 1 : 0);
             if (cl->closure.has_rest) {
@@ -2802,7 +2809,7 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
                  * existing references.  WB is required so a minor GC after
                  * tail-call pending sees the new edges. */
                 for (int i = 0; i < np; i++) {
-                    aro_gc_wb(c, c->env, &c->env->slots[i], argv[i]);
+                    ARO_STORE(c, c->env, &c->env->slots[i], argv[i]);
                 }
                 c->next_body = cl->closure.body;
                 c->next_env = c->env;
@@ -2827,9 +2834,9 @@ scm_apply_tail_slow(CTX *c, VALUE fn, int argc, VALUE *argv, uint32_t is_tail)
             /* No more allocs from here — slot writes are pure memory.
              * c->env may be OLD; sp_base values may include young objects. */
             for (int i = 0; i < np; i++) {
-                aro_gc_wb(c, c->env, &c->env->slots[i], sp_base[2 + i]);
+                ARO_STORE(c, c->env, &c->env->slots[i], sp_base[2 + i]);
             }
-            aro_gc_wb(c, c->env, &c->env->slots[np], sp_base[1]);
+            ARO_STORE(c, c->env, &c->env->slots[np], sp_base[1]);
             c->next_body = SCM_PTR(sp_base[0])->closure.body;
             c->next_env = c->env;
             /* has_rest closures are never no_capture (compile_lambda forces
@@ -2886,23 +2893,24 @@ scm_callcc(CTX *c, VALUE fn)
     sp[1] = fn;       /* parked procedure VALUE */
     c->sp = sp + 2;
     struct sobj *kobj = scm_alloc(c, OBJ_CONT);
-    kobj->cont = NULL;             /* SCAN_EDGES skips NULL cont slot */
+    /* SCAN_EDGES skips NULL cont slot; route via ARO_STORE for audit. */
+    ARO_STORE(c, kobj, &kobj->cont, (VALUE)NULL);
     sp[0] = SCM_OBJ_VAL(kobj);
     struct scont *cnt = (struct scont *)aro_gc_alloc_raw(c, sizeof(struct scont));
     /* Reload kobj — it may have moved during the alloc above. */
     kobj = SCM_PTR(sp[0]);
     /* kobj is freshly alloc'd young — WB fast-path returns. */
-    aro_gc_wb(c, kobj, (VALUE *)&kobj->cont, (VALUE)cnt);
+    ARO_STORE(c, kobj, &kobj->cont, (VALUE)cnt);
     cnt->active = 1;
     cnt->tag = ++c->cont_tag_seq;
     /* cnt is also freshly young — same fast path. */
-    aro_gc_wb(c, cnt, (VALUE *)&cnt->result, SCM_UNSPEC);
-    aro_gc_wb(c, cnt, (VALUE *)&cnt->saved_env, (VALUE)c->env);
+    ARO_STORE(c, cnt, &cnt->result, SCM_UNSPEC);
+    ARO_STORE(c, cnt, &cnt->saved_env, (VALUE)c->env);
     cnt->saved_tcp = c->tail_call_pending;
     cnt->saved_sp = sp;                  /* pre-call/cc sp */
     cnt->saved_frame_sp = c->frame_sp;   /* pre-call/cc frame_sp */
-    aro_gc_wb(c, cnt, (VALUE *)&cnt->k_val, SCM_OBJ_VAL(kobj));
-    aro_gc_wb(c, cnt, (VALUE *)&cnt->fn_val, sp[1]);    /* use parked, post-relocate procedure VALUE */
+    ARO_STORE(c, cnt, &cnt->k_val, SCM_OBJ_VAL(kobj));
+    ARO_STORE(c, cnt, &cnt->fn_val, sp[1]);    /* use parked, post-relocate procedure VALUE */
     if (setjmp(cnt->buf) != 0) {
         /* longjmp path — reload kobj from sp, then read saved state from
          * the (now possibly moved) scont via the owning kobj. */
@@ -3123,15 +3131,15 @@ void
 aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
 {
     /* env / next_env: typed-ptr to sframe (= raw heap pointer). */
-    if (c->env)      ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->env);
-    if (c->next_env) ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->next_env);
+    if (c->env)      ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &c->env);
+    if (c->next_env) ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &c->next_env);
 
     /* Framework-managed spill range (= aro_gc_realloc_byte_payload etc.
      * stash the old payload here across an inner alloc).  Walks any
      * occupied slot — raw typed-ptr semantics suffice because the only
      * thing parked is a raw void *. */
     for (VALUE *p = g_sp_scratch; p < c->sp; p++) {
-        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)p);
+        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, p);
     }
 
     /* Globals: name_payload (= byte-payload BASE, i.e. AroObjectHeader at
@@ -3141,9 +3149,8 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
      * SEGV).
      *
      * ascheme stores VALUEs as RAW heap pointers, so VALUE slots are
-     * forwarded via ARO_GC_VISIT_EDGE_PTR (raw typed-ptr semantics).
-     * Using ARO_GC_VISIT_EDGE here would XOR-decode with scramble_R and
-     * corrupt the slot on scramble backends. */
+     * forwarded via ARO_GC_VISIT_EDGE_PTR (= raw typed-ptr semantics,
+     * no encoding involved). */
     for (size_t i = 0; i < c->globals_size; i++) {
         if (c->globals[i].name_payload) {
             ARO_GC_VISIT_EDGE_PTR(gc, edge_visit,
@@ -3151,7 +3158,7 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
         }
         VALUE v = c->globals[i].value;
         if (v != 0 && SCM_IS_PTR(v) && !scm_is_singleton(v)) {
-            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->globals[i].value);
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &c->globals[i].value);
         }
     }
 
@@ -3160,7 +3167,7 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
     for (int i = 0; i < ASCHEME_LOOP_MAX_PARAMS; i++) {
         VALUE v = c->loop_args[i];
         if (v != 0 && SCM_IS_PTR(v) && !scm_is_singleton(v)) {
-            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&c->loop_args[i]);
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &c->loop_args[i]);
         }
     }
 
@@ -3174,18 +3181,18 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
         }
     }
     if (SCM_IS_PTR(PORT_STDIN)  && !scm_is_singleton(PORT_STDIN))
-        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&PORT_STDIN);
+        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &PORT_STDIN);
     if (SCM_IS_PTR(PORT_STDOUT) && !scm_is_singleton(PORT_STDOUT))
-        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&PORT_STDOUT);
+        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &PORT_STDOUT);
     if (SCM_IS_PTR(PORT_STDERR) && !scm_is_singleton(PORT_STDERR))
-        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&PORT_STDERR);
+        ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &PORT_STDERR);
 
     /* Cached prim VALUEs used by specialized arith / pred / vec nodes —
      * these heap-pointer VALUEs are C globals; under a moving GC they
      * need explicit forwarding (sample-owned roots). */
     #define VISIT_PRIM(var) do { \
         if (SCM_IS_PTR(var) && !scm_is_singleton(var)) \
-            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&(var)); \
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &(var)); \
     } while (0)
     VISIT_PRIM(PRIM_PLUS_VAL);    VISIT_PRIM(PRIM_MINUS_VAL);   VISIT_PRIM(PRIM_MUL_VAL);
     VISIT_PRIM(PRIM_NUM_LT_VAL);  VISIT_PRIM(PRIM_NUM_LE_VAL);  VISIT_PRIM(PRIM_NUM_GT_VAL);
@@ -3202,7 +3209,7 @@ aro_scheme_visit_roots(CTX *c, void *gc, void (*edge_visit)(void *, void **))
         NODE *n = QUOTE_NODES[i];
         VALUE v = (VALUE)n->u.node_quote.v;
         if (SCM_IS_PTR(v) && !scm_is_singleton(v) && v != 0) {
-            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, (void **)&n->u.node_quote.v);
+            ARO_GC_VISIT_EDGE_PTR(gc, edge_visit, &n->u.node_quote.v);
         }
     }
 

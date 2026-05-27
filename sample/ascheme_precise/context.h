@@ -137,16 +137,16 @@ struct scont {
      * case walks it directly). */
     AroObjectHeader head;
     jmp_buf buf;
-    VALUE   result;
+    VALUE   ARO_GC_EDGE result;
     /* Saved CTX state captured at call/cc entry.  These fields hold C-local
      * temporaries that would otherwise be invisible to the precise root
      * scanner across the `scm_apply(c, fn, ...)` call below — moving GCs
      * would leave the local copies stale.  Stashed in the scont (which
      * IS a scanned root via the OBJ_CONT SCAN_EDGES case) so they survive
      * arbitrary inner GC activity. */
-    struct sframe *saved_env;
-    VALUE   k_val;          /* the continuation VALUE itself */
-    VALUE   fn_val;          /* the user-supplied procedure */
+    struct sframe *ARO_GC_EDGE saved_env;
+    VALUE   ARO_GC_EDGE k_val;          /* the continuation VALUE itself */
+    VALUE   ARO_GC_EDGE fn_val;         /* the user-supplied procedure */
     VALUE  *saved_sp;       /* c->sp at call/cc entry — restored on longjmp */
     VALUE  *saved_frame_sp; /* c->frame_sp at call/cc entry */
     int     saved_tcp;
@@ -165,15 +165,15 @@ struct scont {
 struct sobj {
     AroObjectHeader head;
     union {
-        struct { VALUE car, cdr; } pair;
-        struct { char *chars; size_t len; } str;
-        struct { char *name; } sym;
+        struct { VALUE ARO_GC_EDGE car, cdr; } pair;
+        struct { char *ARO_GC_EDGE chars; size_t len; } str;
+        struct { char *ARO_GC_EDGE name; } sym;
         uint32_t ch;
         bool b;
-        struct { VALUE *items; size_t len; } vec;
+        struct { VALUE *ARO_GC_EDGE items; size_t len; } vec;
         struct {
-            struct Node *body;
-            struct sframe *env;
+            struct Node *body;          // host-side AST, not GC-managed
+            struct sframe *ARO_GC_EDGE env;
             int nparams;
             int has_rest;
             bool leaf;        // body has no inner `lambda` — safe to reuse frame on self-tail-call
@@ -189,10 +189,10 @@ struct sobj {
         mpz_t mpz;
         mpq_t mpq;
         struct { double re, im; } cpx;
-        struct { VALUE *items; size_t len; } mv;
-        struct { VALUE thunk; VALUE value; bool forced; } promise;
+        struct { VALUE *ARO_GC_EDGE items; size_t len; } mv;
+        struct { VALUE ARO_GC_EDGE thunk, value; bool forced; } promise;
         struct { FILE *fp; bool input; bool closed; bool owned; } port;
-        struct scont *cont;
+        struct scont *ARO_GC_EDGE cont;
     };
 };
 
@@ -202,9 +202,9 @@ struct sobj {
  * whether the payload is a sobj or sframe. */
 struct sframe {
     AroObjectHeader head;
-    struct sframe *parent;
+    struct sframe *ARO_GC_EDGE parent;
     int nslots;
-    VALUE slots[];
+    VALUE ARO_GC_EDGE slots[];
 };
 
 struct ascheme_option {
@@ -573,17 +573,13 @@ scm_is_singleton(VALUE v)
  * doesn't manage them).  Used by both SCAN_EDGES and root visit.
  *
  * ascheme stores VALUE bits as RAW heap pointers (= aro_gc_alloc_raw +
- * SCM_OBJ_VAL).  ARO_GC_VISIT_EDGE assumes scrambled storage and XORs
- * with scramble_R; using it here would corrupt the slot value on
- * scramble backends AND would SEGV on non-scramble backends that
- * legitimately pass ctx=NULL into SCAN_EDGES (= mark_compact's
- * update_pointers).  Route through ARO_GC_VISIT_EDGE_PTR (= raw slot,
+ * SCM_OBJ_VAL).  Route through ARO_GC_VISIT_EDGE_PTR (= raw slot,
  * forward via fn directly) and filter singletons / immediates here. */
 #define ASCHEME_VISIT_VAL_SLOT(ctx, fn, slot_ptr) do {                       \
-    VALUE *_avs = (VALUE *)(slot_ptr);                                       \
+    VALUE *_avs = (VALUE *)(uintptr_t)(slot_ptr);                            \
     VALUE  _av  = *_avs;                                                     \
     if (SCM_IS_PTR(_av) && _av != 0 && !scm_is_singleton(_av)) {             \
-        ARO_GC_VISIT_EDGE_PTR((ctx), (fn), (void **)_avs);                   \
+        ARO_GC_VISIT_EDGE_PTR((ctx), (fn), _avs);                   \
     }                                                                         \
 } while (0)
 
@@ -591,12 +587,13 @@ scm_is_singleton(VALUE v)
  * past the byte payload base).  Moving GCs forward a typed-ptr by reading
  * its header at offset 0; an interior pointer would corrupt the dispatch.
  * Workaround: compute the base, visit it (= framework forwards if needed),
- * then re-derive the interior pointer. */
+ * then re-derive the interior pointer.  `__s` strips ARO_GC_EDGE's const
+ * via `(uintptr_t)` so the writeback below stays valid in audit builds. */
 #define ASCHEME_VISIT_INTERIOR_CHAR_SLOT(ctx, fn, slot_ptr) do {              \
-    char **__s = (char **)(slot_ptr);                                         \
+    char **__s = (char **)(uintptr_t)(slot_ptr);                              \
     if (*__s) {                                                               \
         char *__base = *__s - sizeof(AroObjectHeader);                      \
-        ARO_GC_VISIT_EDGE_PTR((ctx), (fn), (void **)&__base);               \
+        ARO_GC_VISIT_EDGE_PTR((ctx), (fn), &__base);               \
         *__s = __base + sizeof(AroObjectHeader);                            \
     }                                                                          \
 } while (0)
@@ -641,8 +638,12 @@ scm_is_singleton(VALUE v)
           if (_o->vec.items) {                                                \
               char *__base = (char *)_o->vec.items                             \
                              - sizeof(AroObjectHeader);                     \
-              ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__base);   \
-              _o->vec.items = (VALUE *)(__base + sizeof(AroObjectHeader));  \
+              ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &__base);   \
+              /* Forwarding writeback (= GC-internal fixup, not a mutator    \
+               * update — WB intentionally skipped; cast strips ARO_GC_EDGE  \
+               * const in audit builds). */                                  \
+              *(VALUE **)(uintptr_t)&_o->vec.items =                          \
+                  (VALUE *)(__base + sizeof(AroObjectHeader));               \
           }                                                                   \
           break;                                                              \
       }                                                                       \
@@ -664,8 +665,7 @@ scm_is_singleton(VALUE v)
       }                                                                       \
       case OBJ_CLOSURE: {                                                     \
           struct sobj *_o = (struct sobj *)(payload);                         \
-          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                          \
-                                   (void **)&_o->closure.env);                \
+          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_o->closure.env);         \
           /* body is a host-side NODE *, not GC-managed. */                  \
           break;                                                              \
       }                                                                       \
@@ -682,8 +682,11 @@ scm_is_singleton(VALUE v)
           if (_o->mv.items) {                                                 \
               char *__mb = (char *)_o->mv.items                                \
                            - sizeof(AroObjectHeader);                       \
-              ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&__mb);     \
-              _o->mv.items = (VALUE *)(__mb + sizeof(AroObjectHeader));     \
+              ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &__mb);     \
+              /* Forwarding writeback — GC-internal fixup; cast strips     \
+               * ARO_GC_EDGE in audit builds. */                            \
+              *(VALUE **)(uintptr_t)&_o->mv.items =                          \
+                  (VALUE *)(__mb + sizeof(AroObjectHeader));                \
           }                                                                   \
           break;                                                              \
       }                                                                       \
@@ -692,22 +695,20 @@ scm_is_singleton(VALUE v)
           /* `cont` itself is a separately-allocated heap obj (aro_gc_alloc); \
            * forward the typed-ptr so a moving GC relocates the scont body.  \
            * Then walk the scanned fields inside it. */                      \
-          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, (void **)&_o->cont);     \
+          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_o->cont);     \
           if (_o->cont) {                                                     \
               ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->result);   \
               ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->k_val);    \
               ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_o->cont->fn_val);   \
               if (_o->cont->saved_env) {                                      \
-                  ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                  \
-                                           (void **)&_o->cont->saved_env);    \
+                  ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_o->cont->saved_env); \
               }                                                               \
           }                                                                   \
           break;                                                              \
       }                                                                       \
       case OBJ_FRAME: {                                                       \
           struct sframe *_f = (struct sframe *)(payload);                     \
-          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit,                          \
-                                   (void **)&_f->parent);                     \
+          ARO_GC_VISIT_EDGE_PTR((ctx), edge_visit, &_f->parent);              \
           for (int _i = 0; _i < _f->nslots; _i++) {                           \
               ASCHEME_VISIT_VAL_SLOT((ctx), edge_visit, &_f->slots[_i]);      \
           }                                                                   \

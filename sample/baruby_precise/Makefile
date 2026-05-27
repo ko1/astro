@@ -86,7 +86,7 @@ GC_NUM_immix_gen        := 13
 GC_NUM_mark_bitmap_gen  := 14
 GC_NUM_mark_card_gen    := 15
 GC_NUM_mark_freelist    := 16
-GC_NUM_copy_scramble    := 17
+
 GC_NUM := $(GC_NUM_$(GC))
 # iter 74: precise GC framework は runtime/precise_gc/ 配下に移動。
 # sample 側 (context.h) が AROH_SCAN_EDGES macro + AroGcKind 拡張値を
@@ -102,16 +102,19 @@ GC_SRC := $(PRECISE_GC_DIR)/gc_$(GC).c
 GC_COMMON_SRC := $(PRECISE_GC_DIR)/gc_common.c
 
 ifeq ($(GC_NUM),)
-$(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist copy_scramble)
+$(error Unknown GC backend "$(GC)" — pick one of: none mark mark_gen mark_gen_inc copy copy_gen mark_compact mark_compact_gen bump mark_bump_gen immix immix_gen mark_bitmap_gen mark_card_gen mark_freelist)
 endif
 
 # Track current GC selection so a `make GC=foo` after `make GC=bar` actually
 # rebuilds, even when no .c has been touched.  Without this the binary
 # silently kept the previous backend.  The marker file's content is the GC
-# name; we rewrite it (touching mtime) whenever it differs from $(GC).
+# name (+ "-audit" suffix when ARO_GC_WB_AUDIT=1); we rewrite it (touching
+# mtime) whenever it differs from the current selection so toggling the
+# audit flag also forces a rebuild.
+GC_VARIANT := $(GC)$(if $(ARO_GC_WB_AUDIT),-audit)
 GC_MARKER := $(shell test -f .built_gc && cat .built_gc 2>/dev/null)
-ifneq ($(GC_MARKER),$(GC))
-$(shell echo "$(GC)" > .built_gc)
+ifneq ($(GC_MARKER),$(GC_VARIANT))
+$(shell echo "$(GC_VARIANT)" > .built_gc)
 endif
 
 # Absolute paths embedded into the binary so AOT-bake compilations
@@ -129,6 +132,7 @@ baruby_precise: .built_gc *.c Makefile $(NODE_GENFILES) astro_jit.c node.c node_
             -DASTRO_RUNTIME_DIR='"$(RUNTIME_ABSPATH)"' \
             -DASTRO_PRISM_INC_DIR='"$(PRISM_INC_ABSPATH)"' \
             $(if $(ASTRO_DEBUG),-DASTRO_DEBUG=$(ASTRO_DEBUG)) \
+            $(if $(ARO_GC_WB_AUDIT),-DARO_GC_WB_AUDIT -Werror=discarded-qualifiers -Werror=cast-qual) \
             -L ./prism/build -Wl,-rpath=$(CURDIR)/prism/build \
             -o baruby_precise main.c node.c node_slowpath.c baruby_parse.c astro_jit.c $(GC_COMMON_SRC) $(GC_SRC) -lprism -ldl
 

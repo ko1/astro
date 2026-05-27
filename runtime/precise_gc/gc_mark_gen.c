@@ -485,7 +485,7 @@ remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, AroObjectHeader *))
     }
 }
 
-/* aro_gc_remember — WB body.  Caller (gc.h `aro_gc_wb` inline fast path)
+/* aro_gc_remember — WB body.  Caller (gc.h `aro_gc_store` inline fast path)
  * already verified holder is non-NULL, old, and not yet dirty.  Mark the
  * holder DIRTY and push to remset so the next minor GC scans its
  * outgoing edges for young → old references.  Cold + noinline keeps the

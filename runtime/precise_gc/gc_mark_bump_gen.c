@@ -15,7 +15,7 @@
 // Major GC: force-promote all live young to tenured, then mark + linear sweep.
 //
 // Write barrier:
-//   - User write of young VALUE into tenured: aro_gc_wb pushes holder to remset.
+//   - User write of young VALUE into tenured: aro_gc_store pushes holder to remset.
 //   - GC promote: Cheney scan in minor detects tenured→young, pushes.
 
 #include <stdio.h>

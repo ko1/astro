@@ -15,7 +15,7 @@
 //   + Lisp-2 slide compact tenured.  Same algorithm as gc_mark_compact.c.
 //
 // Write barrier:
-//   - User write of young VALUE into tenured: aro_gc_wb pushes holder to remset.
+//   - User write of young VALUE into tenured: aro_gc_store pushes holder to remset.
 //   - GC promote: Cheney scan in minor detects tenured→young edges, pushes.
 
 #include <stdio.h>

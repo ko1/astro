@@ -253,22 +253,22 @@ astro_build_config_dispose(struct astro_build_config *cfg)
 {
     // Free heap-allocated strings (cc / sanitize from env parse) and
     // the heap arrays for cflags / ldflags.
-    free((void *)cfg->cc);
+    free((void *)(uintptr_t)cfg->cc);
     cfg->cc = NULL;
-    free((void *)cfg->sanitize);
+    free((void *)(uintptr_t)cfg->sanitize);
     cfg->sanitize = NULL;
     if (cfg->extra_cflags) {
         for (const char *const *p = cfg->extra_cflags; *p; p++) {
-            free((void *)*p);
+            free((void *)(uintptr_t)*p);
         }
-        free((void *)cfg->extra_cflags);
+        free((void *)(uintptr_t)cfg->extra_cflags);
         cfg->extra_cflags = NULL;
     }
     if (cfg->extra_ldflags) {
         for (const char *const *p = cfg->extra_ldflags; *p; p++) {
-            free((void *)*p);
+            free((void *)(uintptr_t)*p);
         }
-        free((void *)cfg->extra_ldflags);
+        free((void *)(uintptr_t)cfg->extra_ldflags);
         cfg->extra_ldflags = NULL;
     }
 }
@@ -500,7 +500,7 @@ astro_build_executable(const struct astro_build_config *cfg)
             fprintf(stderr, "astro_build: strip failed (exit %d)\n", sret);
         }
         free(strip_cmd);
-        if (strip_prog != (const char *)"strip") free((void *)strip_prog);
+        if (strip_prog != (const char *)"strip") free((void *)(uintptr_t)strip_prog);
     }
 
     return ret;
@@ -594,7 +594,7 @@ astro_build_aot_executable(struct Node *root,
         unlink(embed_path);
     }
     cfg->extra_sources_abs = prev_extras;
-    for (uint32_t i = 0; i < n_sd; i++) free((void *)sd_paths[i]);
+    for (uint32_t i = 0; i < n_sd; i++) free((void *)(uintptr_t)sd_paths[i]);
     free(sd_paths);
     free(extras);
     return rc;

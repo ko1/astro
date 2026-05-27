@@ -359,11 +359,11 @@ caller が更新した `c->sp` を読む契約に統一済 (iter 63)。
 
 ### Write barrier
 
-世代別 GC のため `aro_gc_wb(c, holder, slot, v)` で old→young 参照を
+世代別 GC のため `ARO_STORE(c, holder, slot, v)` で old→young 参照を
 remembered set に push する:
 
 ```c
-aro_gc_wb(c, a, (VALUE *)&a->items, (VALUE)items);
+ARO_STORE(c, a, (VALUE *)&a->items, (VALUE)items);
 ```
 
 non-gen backend (`none` / `mark` / `copy` / ...) では no-op (= 単に

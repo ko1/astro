@@ -451,7 +451,7 @@ remset_heap_walk(ASTroGC *gc, void (*visit)(ASTroGC *, AroObjectHeader *))
 }
 
 void
-aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
+aro_gc_store(CTX *c, void *holder, VALUE *slot, VALUE v)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (inc_marking) {
@@ -468,7 +468,7 @@ aro_gc_wb(CTX *c, void *holder, VALUE *slot, VALUE v)
 }
 
 void
-aro_gc_wb_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
+aro_gc_store_bulk(CTX *c, void *holder, VALUE *dst, const VALUE *src, size_t n)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
     if (inc_marking) {

@@ -10,7 +10,7 @@
  *   gc_types.h     — types (this file).  No CTX-dependent code.
  *   context.h      — defines CTX_struct, includes gc_types.h at top.
  *   gc.h           — wraps gc_types.h + adds CTX-dependent extern / static
- *                    inline declarations (= stats readers, aro_gc_wb fall-
+ *                    inline declarations (= stats readers, aro_gc_store fall-
  *                    backs, etc.).  Sample .c files include gc.h.
  *   gc_*.c (backends) — include context.h (= CTX complete), then gc.h. */
 
@@ -36,24 +36,18 @@
 #define BARUBY_GC_MARK_BITMAP_GEN  14
 #define BARUBY_GC_MARK_CARD_GEN    15
 #define BARUBY_GC_MARK_FREELIST    16
-#define BARUBY_GC_COPY_SCRAMBLE    17
+/* BARUBY_GC_COPY_SCRAMBLE (= ID 17) was removed when scramble was
+ * superseded by the 64 GiB round-robin PURGE in gc_copy (= mprotect
+ * PROT_NONE on retired planes catches stale ptrs deterministically with
+ * cheaper per-GC cost than per-cycle XOR + R rotation).  Skip the ID
+ * rather than reuse it so existing baked code stores stay valid. */
 
 #ifndef BARUBY_GC
 #  define BARUBY_GC BARUBY_GC_COPY
 #endif
 
-/* Backends that scramble heap-pointer storage (= per-cycle XOR mask R).
- * Sample-visible storage of any heap pointer holds `raw_ptr ^ R`; sample
- * decodes via ARO_OBJ macro at deref.  R rotates each GC, so stale slots
- * (= GC mark/move 漏れ) decode to garbage and SEGV at next deref.  This is
- * a debug/audit backend to replace BARUBY_GC_STRESS for catching root /
- * SCAN_EDGES misses with less overhead than full GC-per-alloc. */
-#if BARUBY_GC == BARUBY_GC_COPY_SCRAMBLE
-#  define ARO_GC_HAS_SCRAMBLE 1
-#endif
-
 /* Backends that need a write barrier (gen / inc variants).  Callers
- * always go through aro_gc_wb / _bulk for heap-pointer writes — for
+ * always go through aro_gc_store / _bulk for heap-pointer writes — for
  * non-WB backends it compiles to a plain `*slot = v`, free of cost. */
 #if BARUBY_GC == BARUBY_GC_MARK_GEN         || \
     BARUBY_GC == BARUBY_GC_MARK_GEN_INC     || \
@@ -79,13 +73,13 @@
 #endif
 
 /* WB fast-path bit mask (= bit-in-head backends).  gc.h's inline
- * `aro_gc_wb` checks `(gc_flags & MASK) == OLD_ONLY` to decide whether
+ * `aro_gc_store` checks `(gc_flags & MASK) == OLD_ONLY` to decide whether
  * the slow path (= aro_gc_remember) is needed.  Each gen backend that
  * keeps OLD/DIRTY bits directly in head.gc_flags exposes its layout
  * here so the WB hot path inlines without a function call.
  *
  * Backends without this define (mark_bitmap_gen, mark_card_gen,
- * mark_gen_inc) keep the entire aro_gc_wb as an extern function (=
+ * mark_gen_inc) keep the entire aro_gc_store as an extern function (=
  * page-bitmap lookup or SATB barrier doesn't fold cleanly into a single
  * bit test). */
 #if BARUBY_GC == BARUBY_GC_MARK_GEN         || \
@@ -103,6 +97,36 @@
    /* head.gc_flags: epoch low 8 bits, OLD=0x0100, DIRTY=0x0200 */
 #  define ARO_GC_WB_OLD_MASK   ((uint16_t)0x0100u)
 #  define ARO_GC_WB_DIRTY_MASK ((uint16_t)0x0200u)
+#endif
+
+/* ARO_GC_EDGE — qualifier for fields that hold a heap pointer scanned by
+ * SCAN_EDGES (= outgoing graph edges).  Sample marks such fields and
+ * sample-owned VALUE flex arrays with this qualifier:
+ *
+ *     typedef struct BaArray {
+ *         AroObjectHeader  head;
+ *         uint32_t         len, capa;
+ *         BaArrayItems    *ARO_GC_EDGE items;   // GC edge field
+ *     } BaArray;
+ *     typedef struct BaArrayItems {
+ *         AroObjectHeader head;
+ *         VALUE ARO_GC_EDGE data[];             // each slot is a GC edge
+ *     } BaArrayItems;
+ *
+ * Placement is POST-type (= `T *ARO_GC_EDGE field`, not `ARO_GC_EDGE T *field`)
+ * so it qualifies the SLOT, not the pointee.  Otherwise const would prevent
+ * mutation of the referenced object rather than enforce write-barrier usage.
+ *
+ * Audit build (`-DARO_GC_WB_AUDIT`) expands to `const`, turning direct
+ * assignment (`a->items = x;`) into a compile error.  ARO_STORE /
+ * ARO_STORE_BULK cast the const away inside gc.h so the WB-managed path
+ * remains writable.  Release build expands to nothing — no const, so the
+ * optimizer is free to model writes through ARO_STORE without risking CSE
+ * across opaque WB calls. */
+#ifdef ARO_GC_WB_AUDIT
+#  define ARO_GC_EDGE const
+#else
+#  define ARO_GC_EDGE
 #endif
 
 /* AroObjectHeader — every GC-managed object's first member.  Lives at
@@ -157,23 +181,6 @@ typedef struct AroGcCommonState {
     bool            purge;
     int             time_depth;
     struct timespec time_t0;
-    /* Per-cycle XOR mask used by ARO_LOAD and ARO_GC_VISIT_EDGE.  Low
-     * 3 bits must be 0 to preserve 8-byte heap pointer alignment AND
-     * the LSB tag of fixnums (= bit 0).  scramble_R is the CURRENT
-     * (sample-visible) R.  scramble_R_old is the PREVIOUS R, set only
-     * during a GC cycle so the slot-forwarding wrapper can decode
-     * incoming edges with the pre-GC encoding before re-encoding
-     * outgoing edges with the new R.  Outside GC, scramble_R_old is
-     * unused.
-     *
-     * Both fields exist for ALL backends.  Non-scramble backends keep
-     * them at 0 permanently — every macro that XORs against them
-     * compiles to identity (the compiler folds `x ^ 0` → `x`).  This
-     * gives non-scramble backends zero overhead while letting the
-     * scramble backend rotate R on each cycle.  See ARO_GC_HAS_SCRAMBLE
-     * for the per-instance flag that controls rotation behavior. */
-    uintptr_t       scramble_R;
-    uintptr_t       scramble_R_old;
     /* Finalizer list — libc-malloc'd dynamic array of payload pointers.
      * Weak references: framework does NOT visit these in SCAN_EDGES /
      * VISIT_ROOTS, so they don't keep objects alive.  After mark/forward

@@ -2,7 +2,7 @@
 
 ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、 build 時に
 `-DBARUBY_GC=<n>` で切替する (build option ID 1..17 のうち ID 7 は予約 hole)。 すべて同じ framework API (= `aro_gc_alloc`,
-`aro_gc_wb`, `aro_gc_collect`, `AROH_VISIT_ROOTS`, `AROH_SCAN_EDGES`,
+`aro_gc_store`, `aro_gc_collect`, `AROH_VISIT_ROOTS`, `AROH_SCAN_EDGES`,
 `aro_gc_finalize_*`) を実装し、 sample 側は backend 切替に透明。
 
 このドキュメントは各 backend の動作を 1 か所にまとめた reference。 性能比較は
@@ -38,7 +38,7 @@ ASTro `runtime/precise_gc/` には 16 個の GC backend が同居しており、
 | 3.2 | `bump` | bump allocator のみ。 解放しない (= `none` strictly faster baseline) |
 | 3.3 | `mark_bump_gen` | Cheney nursery (= active + alt) + bump tenured + linear sweep。 tenured は monotonic 増加 (= sweep が free しない testbed)。 N-survive |
 | 3.4 | `mark_freelist` | mark&sweep、 region + size-class freelist。 fragmentation 対策なし (= no coalescing / size-class isolation / region_top never retreats) の fragmentation testbed |
-| 3.5 | `copy_scramble` | `copy` + per-cycle XOR mask R で VALUE storage を撹乱。 audit / debug backend |
+| -   | (旧 `copy_scramble` は Phase 3 で廃止、 `gc_copy` + `BARUBY_GC_PURGE=1` の 64 GiB round-robin に subsume。 §3.3 参照) | - |
 
 8 個の `_gen` backend (mark_gen, mark_gen_inc, copy_gen,
 mark_compact_gen, mark_bump_gen, immix_gen, mark_bitmap_gen, mark_card_gen) は
@@ -52,7 +52,7 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 - **promote** — young → tenured への昇格。 N-survive (= N 回生き残ると promote) に統一
 - **N-survive** — `age` bits を header に持ち、 marked young の age を minor 毎に inc。 age >= `PROMOTE_AGE` (= 3) で promote
 - **minor GC / major GC** — minor は young のみ、 major は heap 全体を対象とする GC
-- **WB (write barrier)** — heap-pointer 書込で remset に holder を追加する hook。 `aro_gc_wb(c, holder, slot, val)`
+- **WB (write barrier)** — heap-pointer 書込で remset に holder を追加する hook。 `aro_gc_store(c, holder, slot, val)`
 - **remset (remembered set)** — tenured→young pointer を持つ tenured obj の集合。 minor mark phase で remset entry を scan することで young 子孫を到達可能にする
 - **SATB (snapshot-at-the-beginning)** — incremental marking で overwrite 直前の旧値を mark する WB 方式
 - **dirty bit** — tenured obj が remset に居る印。 WB で set、 minor の remset scan 後に対象が young child を失えば clear
@@ -69,7 +69,7 @@ commit a8914250 で完了)。 first-survival promote の variant は現存しな
 - **FORWARDED bit** — moving GC で 「この obj は new addr に copy 済」 マーク。 詳細位置は backend ごと
 - **fwd overlay** — `HDR_FORWARDED` 設定後、 旧 obj の payload[0..8] に new addr を上書き保存する手法 (= 専用 `gc_fwd` field 不要)
 - **force_promote** — major で young を強制 promote するための flag (= 世代別 backend で major fold-young 時に true)
-- **scramble** — `copy_scramble` の per-cycle XOR mask。 stale slot を SEGV で検出するための audit 機能
+- **PURGE round-robin** — `gc_copy` の audit mode。 64 GiB virtual 領域から各 GC で 64 MiB plane を mprotect R/W で切出し、 旧 from-space を mprotect PROT_NONE + madvise DONTNEED。 stale ptr deref が確定 SEGV、 visit_edge 漏れは次 GC scan 時の forward read で SEGV。 旧 `scramble` (= per-cycle XOR + R rotation、 Phase 3 で廃止) の上位互換
 - **AGE bits** — gc_flags 内の 2 bit (= 値域 0..3)。 N-survive で promote 判定に使う
 - **promote-time WB** — minor 中の promote で生じる tenured→young 辺を GC 自身が remset へ push する処理 (= ユーザ WB は user write しか拾えない)
 
@@ -343,7 +343,7 @@ WB:
 - SATB: `inc_marking` 中は overwrite 直前の旧値を `mark_value_satb` で mark
   (= 強制 gray push、 in_minor filter なし)
 - 通常の remset push (= OLD && !DIRTY なら SET + push)
-- WB は full out-of-line (= `ARO_GC_WB_OLD_MASK` 未定義、 `aro_gc_wb` は extern)
+- WB は full out-of-line (= `ARO_GC_WB_OLD_MASK` 未定義、 `aro_gc_store` は extern)
 
 計算量:
 - mark hot path: SATB load + AROH_IS_GC_OBJECT + (mark) — 数命令
@@ -962,7 +962,7 @@ major phases:
 - alloc: O(1) amortized (= slab freelist)
 - minor: O(young live + remset_entries × edges + promoted × edges)
 - major: O(全 page 走査 = O(heap_slots))
-- WB: full out-of-line (= `aro_gc_wb` extern、 bitmap lookup を 1 関数で
+- WB: full out-of-line (= `aro_gc_store` extern、 bitmap lookup を 1 関数で
   実行。 `ARO_GC_WB_OLD_MASK` 未定義のため inline fast path 無し)
 
 **GC 発火閾値**: 2.2 と同じ世代別 pattern (= young 固定 16 MiB、 tenured
@@ -1055,17 +1055,19 @@ heap growth/shrink: 2.10 と同じ。
 は bump promote した tenured を回収しない場合の挙動を測定する testbed (=
 major sweep が unmarked tenured を free せず monotonic 増加)、 `mark_freelist`
 は freelist + 無 coalescing で fragmentation を観察する testbed (= region_top
-never retreats / size-class isolation で最悪 fragmentation を顕在化)、
-`copy_scramble` は stale VALUE slot を SEGV で炙り出す audit / debug
-backend。 bench の参照値および runtime の verification にのみ意義があり、
-production の GC 選択肢としては想定しない。
+never retreats / size-class isolation で最悪 fragmentation を顕在化)。
+bench の参照値および runtime の verification にのみ意義があり、 production
+の GC 選択肢としては想定しない。
+
+(旧 `copy_scramble` audit backend は Phase 3 で廃止、 audit は `gc_copy` の
+`BARUBY_GC_PURGE=1` (= 64 GiB round-robin mprotect) で代替。)
 
 ### 3.1 none
 
 #### 3.1.1 概要
 
 何もしない baseline。 alloc は `malloc(payload_size)` で取得し、 解放しない。
-GC overhead を排除した上限性能の参照値。 stress / purge / scramble 全て無効。
+GC overhead を排除した上限性能の参照値。 stress / purge 全て無効。
 
 #### 3.1.2 パラメータ
 
@@ -1299,53 +1301,27 @@ sweep でも戻らない)。 64 GiB virt が限界。 large obj は free 時 mun
 
 `aro_gc_finalize_check`: HDR_MARKED → alive、 NULL otherwise (= 非 moving)。
 
-### 3.5 copy_scramble
+### 3.5 (旧 copy_scramble — Phase 3 で廃止)
 
-#### 3.5.1 概要
+`copy_scramble` backend (= `gc_copy_scramble.c`) は per-cycle XOR mask
+`R` で VALUE storage を撹乱する audit backend だったが、 2026-05 Phase 3
+で **削除**:
+- per-cycle XOR + R rotation は probabilistic な stale catch しか提供しない
+- per-GC mmap/munmap の旧 PURGE が重かったので scramble で代用していた
+- `gc_copy` の PURGE mode を **64 GiB virtual の round-robin mprotect** に
+  refactor した結果、 per-GC cost が軽くなり (= mprotect/madvise 4 syscall)、
+  catch 力でも上回る (= 確定 SEGV、 visit_edge 漏れを次 GC で踏む)
 
-`copy` + per-cycle XOR mask `R` で VALUE storage を撹乱する audit backend。
-heap pointer slot は `raw ^ R` で保存、 各 GC 後に R を rotate。 stale slot
-(= sample が `ARO_LOAD` decode を忘れた slot、 GC が scan 漏らした edge) は
-次の deref で SEGV 確実。
+現在の audit 用構成:
 
-#### 3.5.2 パラメータ
+```
+make ARO_GC_WB_AUDIT=1 GC=copy        # compile-time STORE 漏れ catch
+BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1  # 高頻度 GC + 64 GiB round-robin mprotect
+./baruby_precise script.rb
+```
 
-- 2.4 (copy) の全パラメータ + `ARO_GC_HAS_SCRAMBLE = 1`
-
-#### 3.5.3 データ構造
-
-**Heap layout**: 2.4 と同じ (= 2 semispace + LargeObj list)
-
-**Object layout**: 2.4 と同じ (= 8 B header + fwd overlay、 `HDR_FORWARDED` / `HDR_MARKED`)
-
-**Allocator state**: 2.4 と同じ (= `active_base` / `active_top` / `active_end`)
-
-**GC 中の auxiliary 構造**:
-- 2.4 の Cheney scratch + large_gray
-- `scramble_R` / `scramble_R_old` を `AroGcCommonState` 上で持つ
-  (低 3 bit = 0 で 8-align 保持、 fixnum tag 保護)
-
-**共通**: finalize_list
-
-#### 3.5.4 アルゴリズム詳細
-
-- alloc / collect: 2.4 と同じ
-- ただし `aro_gc_alloc` の戻り値 VALUE は `raw_payload ^ scramble_R` で encode
-- `ARO_LOAD` (= sample 側 macro) と `ARO_GC_VISIT_EDGE` (= gc.h) で必ず XOR decode/encode
-- 各 collect の入口で `scramble_R_old = scramble_R`、 出口で
-  `scramble_R = scramble_pick_R()` (= /dev/urandom + low 3 bit clear)
-- 推奨: `BARUBY_GC_STRESS=1` と組合せて全 alloc で R rotate (= audit 強化)
-
-非 scramble backend では `scramble_R = scramble_R_old = 0` 永続のため
-XOR が identity に fold (= 性能 cost ゼロ)。
-
-heap growth/shrink: 2.4 と同じ。
-
-#### 3.5.5 finalizer 実装
-
-2.4 と同じ (HDR_FORWARDED → fwd_overlay、 HDR_MARKED → self、 else NULL)。
-scramble は finalize の戻り値には影響しない (= 戻り値は raw addr、 sample 側で
-再 encode は不要)。
+詳細は `docs/gc_design.md §3.3` 参照。 backend ID 17 (= 旧 copy_scramble)
+は再利用しない (= 既存 baked code store 互換性のため永久欠番)。
 
 ## 4. 共通 framework API
 
@@ -1363,8 +1339,8 @@ scramble は finalize の戻り値には影響しない (= 戻り値は raw addr
 - `aro_gc_alloc(c, size)` — scan-safe alloc (= zero-init)
 - `aro_gc_alloc_byte(c, size)` — raw byte alloc (= zero-init なし、 sample が即 fill)
 - `aro_gc_realloc_payload(c, p, new)` — sample 側で実装 (= sp slot park パターン)
-- `aro_gc_wb(c, holder, slot, val)` — write barrier
-- `aro_gc_wb_bulk(c, holder, dst, src, n)` — bulk WB
+- `aro_gc_store(c, holder, slot, val)` — write barrier
+- `aro_gc_store_bulk(c, holder, dst, src, n)` — bulk WB
 - `aro_gc_collect(c)` — 強制 collect (= 通常 major)
 - `aro_gc_account_external(c, delta)` — GMP buffer 等 external 量を framework に
   通知 (= 閾値超で GC 発火)
@@ -1378,7 +1354,7 @@ backend は `gc_*.c` で以下を実装:
 - `aro_gc_collect(c)` (= 強制 major)
 - `aro_gc_size_of(payload)`
 - `aro_gc_finalize_check(c, payload)`
-- WB: `ARO_GC_HAS_WB` 定義時に `aro_gc_wb` (out-of-line) or `aro_gc_remember`
+- WB: `ARO_GC_HAS_WB` 定義時に `aro_gc_store` (out-of-line) or `aro_gc_remember`
   (inline fast path + cold extern)。 `ARO_GC_WB_OLD_MASK` 定義時は gc.h の
   inline fast-path が使われる (= mark_gen / copy_gen / mark_compact_gen /
   mark_bump_gen / immix_gen 等)
