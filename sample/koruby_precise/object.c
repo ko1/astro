@@ -4043,14 +4043,32 @@ static void init_well_known_ids(void) {
 
 void korb_init_builtins(void); /* defined in builtins.c */
 
+/* Bootstrap CTX — created by korb_runtime_init BEFORE the class
+ * hierarchy is built, so all subsequent korb_gc_alloc calls (= class
+ * structs, methods, constants) go to the precise GC heap from the
+ * very first allocation.  koruby_setup_ctx later extends this CTX
+ * with the value stack and other per-run state. */
+static CTX koruby_bootstrap_ctx;
+
 void korb_runtime_init(void) {
-    /* Phase 1: aro_gc_init runs in main() after CTX is constructed.
-     * korb_vm itself is libc-malloc'd (= not on the GC heap). */
     init_well_known_ids();
 
+    /* Allocate korb_vm BEFORE GC init so korb_vm->current_ctx is the
+     * field we need to wire up the GC instance into.  korb_vm itself
+     * stays on libc (= not a GC obj). */
     korb_vm = korb_xmalloc(sizeof(*korb_vm));
     memset(korb_vm, 0, sizeof(*korb_vm));
     korb_vm->method_serial = 1; korb_g_method_serial = 1;
+
+    /* Initialize the precise GC instance on the bootstrap CTX BEFORE
+     * any heap object allocation.  korb_gc_alloc reads
+     * korb_vm->current_ctx → c->astro_gc, so this ordering ensures
+     * even the BasicObject / Object / Class triple are GC-heap
+     * residents (= AROH_VISIT_ROOTS can mark them, AROH_SCAN_EDGES
+     * can walk them). */
+    memset(&koruby_bootstrap_ctx, 0, sizeof(koruby_bootstrap_ctx));
+    korb_vm->current_ctx = &koruby_bootstrap_ctx;
+    aro_gc_init(&koruby_bootstrap_ctx);
 
     /* bootstrap classes — CRuby: BasicObject ← Object ← Module ← Class.
      * Each class's own metaclass is Class itself. */

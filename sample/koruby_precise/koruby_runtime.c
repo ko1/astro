@@ -250,8 +250,10 @@ koruby_scan_edges(void *payload, size_t payload_size, void *ctx,
 CTX *
 koruby_setup_ctx(const char *current_file)
 {
-    CTX *c = korb_xcalloc(1, sizeof(CTX));
-    korb_vm->current_ctx = c;
+    /* Reuse the bootstrap CTX that korb_runtime_init initialized — it
+     * already has c->astro_gc bound and is wired in via korb_vm->current_ctx.
+     * We just attach the per-run state (= value stack + frame state). */
+    CTX *c = korb_vm->current_ctx;
     /* The value stack is heap allocated (libc malloc, NOT GC heap) so
      * the framework can scan it via AROH_VISIT_ROOTS without colliding
      * with GC heap object iteration.  16M slots. */
@@ -262,11 +264,6 @@ koruby_setup_ctx(const char *current_file)
     c->fp = c->stack_base;
     c->sp = c->fp;
     c->env = c->stack_base;  /* root scan lower bound */
-    /* Initialize the precise GC instance now that CTX is set up.
-     * aro_gc_init binds c->astro_gc; subsequent aro_gc_alloc calls
-     * read from / write to c->astro_gc + use AROH_VISIT_ROOTS for
-     * root scan.  Must come BEFORE any aro_gc_alloc on this CTX. */
-    aro_gc_init(c);
     c->self = korb_vm->main_obj;
     c->current_class = korb_vm->object_class;
     static struct korb_cref top_cref;
