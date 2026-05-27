@@ -52,6 +52,11 @@ visit_method_table(void *ctx, koruby_edge_fn fn,
                    struct korb_method_table *mt)
 {
     if (!mt || !mt->buckets) return;
+    /* Sanity: bucket_cnt is initialized to 16 and doubles on resize; a
+     * sensible upper bound for koruby's hot tables.  Out-of-range here
+     * indicates a stale class struct (= 8-byte head misinterpreted as
+     * class) being scanned — bail rather than dereference garbage. */
+    if (mt->bucket_cnt == 0 || mt->bucket_cnt > (1u << 20)) return;
     for (uint32_t i = 0; i < mt->bucket_cnt; i++) {
         for (struct korb_method_table_entry *e = mt->buckets[i]; e; e = e->next) {
             struct korb_method *m = e->method;
