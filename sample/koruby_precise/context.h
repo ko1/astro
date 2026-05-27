@@ -379,14 +379,24 @@ struct korb_frame {
  * Qfalse/Qnil/Qtrue/Qundef. */
 #define AROH_IS_GC_OBJECT(v) (!SPECIAL_CONST_P(v))
 
-/* AROH_VISIT_ROOTS — Phase 1 stub.  Phase 2 walks c->stack_base..c->sp,
- * c->current_frame chain, korb_vm globals, and method-cache entries. */
-#define AROH_VISIT_ROOTS(c, ctx, edge_visit) ((void)(c), (void)(ctx), (void)(edge_visit))
+/* AROH_VISIT_ROOTS — implemented out-of-line in koruby_runtime.c.
+ * Walks c->stack_base..c->sp, c->state_value, c->self, c->current_class,
+ * c->cref chain, c->current_frame chain, korb_vm class pointers,
+ * korb_vm globals, korb_vm main_obj, etc. */
+extern void koruby_visit_roots(CTX *c, void *ctx,
+                               void (*edge_visit)(void *, void **));
+#define AROH_VISIT_ROOTS(c, ctx, edge_visit) \
+    koruby_visit_roots((c), (ctx), (void (*)(void *, void **))(edge_visit))
 
-/* AROH_SCAN_EDGES — Phase 1 stub.  Phase 3 dispatches on
- * head.flags & T_MASK and walks each heap type's outgoing edges. */
+/* AROH_SCAN_EDGES — implemented out-of-line in koruby_runtime.c.
+ * Dispatches on head.flags & T_MASK and walks each heap type's
+ * outgoing edges (= klass + type-specific fields). */
+extern void koruby_scan_edges(void *payload, size_t payload_size,
+                              void *ctx,
+                              void (*edge_visit)(void *, void **));
 #define AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit) \
-    ((void)(payload), (void)(payload_size), (void)(ctx), (void)(edge_visit))
+    koruby_scan_edges((payload), (payload_size), (ctx), \
+                      (void (*)(void *, void **))(edge_visit))
 
 /* AROH_INIT_PAYLOAD — zero-fill post-head region after alloc.  koruby's
  * heap objects work fine with this default (= same as ascheme_precise). */

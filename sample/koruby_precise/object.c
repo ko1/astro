@@ -40,6 +40,24 @@ void *korb_xrealloc(void *p, size_t newsize) {
 }
 void  korb_xfree(void *p) { free(p); }
 
+/* GC-managed heap object alloc.  Returns a precise-GC payload (= starts
+ * with AroObjectHeader head).  Used by korb_object_new / korb_str_new /
+ * korb_ary_new / etc. so heap objs live on the precise GC heap and can
+ * be reclaimed / forwarded by the chosen backend.
+ *
+ * Caller must set head.flags type tag (= T_OBJECT / T_STRING / ...)
+ * immediately after the return so SCAN_EDGES can dispatch correctly. */
+void *korb_gc_alloc(size_t sz) {
+    if (!korb_vm || !korb_vm->current_ctx) {
+        /* Pre-CTX bootstrap path: framework not initialized yet, fall
+         * back to libc.  These early allocations are typically class
+         * structs created during korb_runtime_init before the first
+         * CTX exists. */
+        return korb_xmalloc(sz);
+    }
+    return (void *)aro_gc_alloc(korb_vm->current_ctx, sz);
+}
+
 /* ---- ID interning ---- */
 
 struct id_pool_entry {
@@ -183,7 +201,7 @@ struct korb_method *method_table_get(const struct korb_method_table *mt, ID name
 }
 
 struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_type instance_type) {
-    struct korb_class *k = korb_xmalloc(sizeof(*k));
+    struct korb_class *k = korb_gc_alloc(sizeof(*k));
     k->basic.head.flags = T_CLASS;
     k->basic.klass = korb_vm ? (VALUE)korb_vm->class_class : 0;
     /* CRuby model: a subclass's metaclass has the parent's metaclass
@@ -193,7 +211,7 @@ struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_t
      * propagate down the inheritance chain. */
     if (super && super->basic.klass &&
         (struct korb_class *)super->basic.klass != korb_vm->class_class) {
-        struct korb_class *child_meta = korb_xmalloc(sizeof(*child_meta));
+        struct korb_class *child_meta = korb_gc_alloc(sizeof(*child_meta));
         memset(child_meta, 0, sizeof(*child_meta));
         child_meta->basic.head.flags = T_CLASS | FL_SINGLETON;
         child_meta->basic.klass = korb_vm ? (VALUE)korb_vm->class_class : 0;
@@ -571,7 +589,7 @@ void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
  * — would require keeping the live fp pointer; not worth it for
  * define_method.)  */
 void korb_class_add_method_proc(struct korb_class *klass, ID name, struct korb_proc *p) {
-    struct korb_proc *snap = korb_xmalloc(sizeof(*snap));
+    struct korb_proc *snap = korb_gc_alloc(sizeof(*snap));
     *snap = *p;
     if (p->env_size > 0 && p->env) {
         snap->env = korb_xmalloc(p->env_size * sizeof(VALUE));
@@ -1254,7 +1272,7 @@ VALUE korb_object_new(struct korb_class *klass) {
      * Mark such an "uninitialized class" by leaving super=NULL; the
      * .new path below uses that to raise TypeError before dispatching.*/
     if (it == T_CLASS || it == T_MODULE) {
-        struct korb_class *k = korb_xmalloc(sizeof(*k));
+        struct korb_class *k = korb_gc_alloc(sizeof(*k));
         memset(k, 0, sizeof(*k));
         k->basic.head.flags = it;
         k->basic.klass = (VALUE)klass;
@@ -1262,7 +1280,7 @@ VALUE korb_object_new(struct korb_class *klass) {
         k->instance_type = T_OBJECT;
         return (VALUE)k;
     }
-    struct korb_object *o = korb_xmalloc(sizeof(*o));
+    struct korb_object *o = korb_gc_alloc(sizeof(*o));
     o->basic.head.flags = it;
     o->basic.klass = (VALUE)klass;
     /* Preallocate ivar slots based on the class's known ivar shape, so
@@ -1463,7 +1481,7 @@ void korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cac
 
 /* ---- string ---- */
 VALUE korb_str_new(const char *p, long len) {
-    struct korb_string *s = korb_xmalloc(sizeof(*s));
+    struct korb_string *s = korb_gc_alloc(sizeof(*s));
     s->basic.head.flags = T_STRING;
     s->basic.klass = korb_vm ? (VALUE)korb_vm->string_class : 0;
     s->ptr = korb_xmalloc_atomic(len + 1);
@@ -1507,7 +1525,7 @@ long korb_str_len(VALUE s) { return ((struct korb_string *)s)->len; }
 
 /* ---- array ---- */
 VALUE korb_ary_new_capa(long capa) {
-    struct korb_array *a = korb_xmalloc(sizeof(*a));
+    struct korb_array *a = korb_gc_alloc(sizeof(*a));
     a->basic.head.flags = T_ARRAY;
     a->basic.klass = korb_vm ? (VALUE)korb_vm->array_class : 0;
     a->len = 0;
@@ -1661,7 +1679,7 @@ bool korb_eql(VALUE a, VALUE b) {
 }
 
 VALUE korb_hash_new(void) {
-    struct korb_hash *h = korb_xmalloc(sizeof(*h));
+    struct korb_hash *h = korb_gc_alloc(sizeof(*h));
     h->basic.head.flags = T_HASH;
     h->basic.klass = korb_vm ? (VALUE)korb_vm->hash_class : 0;
     h->bucket_cnt = 8;
@@ -1742,7 +1760,7 @@ long korb_hash_size(VALUE hv) { return ((struct korb_hash *)hv)->size; }
 
 /* ---- range ---- */
 VALUE korb_range_new(VALUE b, VALUE e, bool excl) {
-    struct korb_range *r = korb_xmalloc(sizeof(*r));
+    struct korb_range *r = korb_gc_alloc(sizeof(*r));
     r->basic.head.flags = T_RANGE;
     r->basic.klass = korb_vm ? (VALUE)korb_vm->range_class : 0;
     r->begin = b;
@@ -1756,7 +1774,7 @@ VALUE korb_range_new(VALUE b, VALUE e, bool excl) {
  * heap-allocate fallback used when the double doesn't fit FLONUM
  * (NaN/Inf/0/denorm/very large/very small). */
 VALUE korb_float_new_heap(double d) {
-    struct korb_float *f = korb_xmalloc(sizeof(*f));
+    struct korb_float *f = korb_gc_alloc(sizeof(*f));
     f->basic.head.flags = T_FLOAT;
     f->basic.klass = korb_vm ? (VALUE)korb_vm->float_class : 0;
     f->value = d;
@@ -1795,7 +1813,7 @@ static void korb_bignum_register_finalizer(struct korb_bignum *b) {
 }
 
 VALUE korb_bignum_new_str(const char *str, int base) {
-    struct korb_bignum *b = korb_xmalloc(sizeof(*b));
+    struct korb_bignum *b = korb_gc_alloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
@@ -1815,7 +1833,7 @@ VALUE korb_bignum_new_str(const char *str, int base) {
 
 VALUE korb_bignum_new_long(long v) {
     if (FIXABLE(v)) return INT2FIX(v);
-    struct korb_bignum *b = korb_xmalloc(sizeof(*b));
+    struct korb_bignum *b = korb_gc_alloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
@@ -1840,7 +1858,7 @@ VALUE korb_dbl2int(double v) {
     if (v >= -9.223372036854775e18 && v <= 9.223372036854775e18) {
         return korb_bignum_new_long((long)v);
     }
-    struct korb_bignum *b = korb_xmalloc(sizeof(*b));
+    struct korb_bignum *b = korb_gc_alloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
@@ -1860,7 +1878,7 @@ static VALUE from_mpz(mpz_t z) {
         long v = mpz_get_si(z);
         if (FIXABLE(v)) { mpz_clear(z); return INT2FIX(v); }
     }
-    struct korb_bignum *b = korb_xmalloc(sizeof(*b));
+    struct korb_bignum *b = korb_gc_alloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
     mpz_t *bz = korb_xmalloc(sizeof(mpz_t));
@@ -2028,7 +2046,7 @@ void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
 
 VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
                   uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda) {
-    struct korb_proc *p = korb_xmalloc(sizeof(*p));
+    struct korb_proc *p = korb_gc_alloc(sizeof(*p));
     p->basic.head.flags = T_PROC;
     p->basic.klass = korb_vm ? (VALUE)korb_vm->proc_class : 0;
     p->body = body;

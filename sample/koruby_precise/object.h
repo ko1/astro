@@ -383,6 +383,10 @@ void *korb_xmalloc_atomic(size_t size); /* no-pointer mem (e.g., string char buf
 void *korb_xcalloc(size_t n, size_t sz);
 void *korb_xrealloc(void *p, size_t newsize);
 void  korb_xfree(void *p);
+/* GC-managed heap object alloc (= precise_gc framework).  Caller must
+ * set head.flags type tag immediately after the return so SCAN_EDGES
+ * can dispatch.  See object.c for details. */
+void *korb_gc_alloc(size_t sz);
 
 /* ID */
 ID korb_intern(const char *str);

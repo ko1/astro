@@ -287,7 +287,7 @@ static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
     else return Qnil;
     /* Build a Method object: a small heap struct with receiver + name. */
-    struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
+    struct korb_method_obj *m = korb_gc_alloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
     m->basic.klass = korb_vm->method_class
                        ? (VALUE)korb_vm->method_class
@@ -394,7 +394,7 @@ static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
                    korb_id_name(name), korb_id_name(((struct korb_class *)self)->name));
         return Qnil;
     }
-    struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
+    struct korb_method_obj *m = korb_gc_alloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
     m->basic.klass = (VALUE)korb_vm->method_class;
     m->receiver = self;   /* class as "receiver" — unbound */
@@ -408,7 +408,7 @@ static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
  * whose receiver is the class instead of an instance). */
 static VALUE method_unbind(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_method_obj *src = (struct korb_method_obj *)self;
-    struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
+    struct korb_method_obj *m = korb_gc_alloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
     m->basic.klass = (VALUE)korb_vm->method_class;
     /* Drop the bound receiver — bind() will set it. */
@@ -423,7 +423,7 @@ static VALUE method_unbind(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE method_bind(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
     struct korb_method_obj *src = (struct korb_method_obj *)self;
-    struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
+    struct korb_method_obj *m = korb_gc_alloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
     m->basic.klass = (VALUE)korb_vm->method_class;
     m->receiver = argv[0];
@@ -938,7 +938,7 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
     } else if (t == T_PROC) {
         /* Shallow copy: alloc a fresh struct, copy fields. */
         struct korb_proc *src = (struct korb_proc *)self;
-        struct korb_proc *np = korb_xmalloc(sizeof(*np));
+        struct korb_proc *np = korb_gc_alloc(sizeof(*np));
         *np = *src;
         np->basic.head.flags &= ~FL_FROZEN;  /* dup drops freeze; clone restores below */
         r = (VALUE)np;
