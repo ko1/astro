@@ -548,18 +548,26 @@ plain と AOT cached の elapsed (sec, best of 3):
 
 | bench     | plain | AOT cached | speedup |
 |-----------|-------|------------|---------|
-| fib35     | 0.69  | 0.32       | 2.16×   |
+| fib35     | 0.69  | 0.31       | 2.22×   |
 | sumloop   | 2.37  | 0.65       | 3.65×   |
-| sieve_big | 1.64  | 0.65       | 2.52×   |
-| deriv     | 1.41  | 1.18       | 1.19×   |
-| nqueens   | 3.04  | 1.20       | 2.53×   |
-| fannkuch  | 1.56  | 1.10       | 1.41×   |
-| cps_loop  | 1.28  | 0.34       | 3.75×   |
+| sieve_big | 1.97  | 0.92       | 2.14×   |
+| deriv     | 1.41  | 1.19       | 1.18×   |
+| nqueens   | 3.04  | 1.22       | 2.49×   |
+| fannkuch  | 1.56  | 1.13       | 1.38×   |
+| cps_loop  | 1.28  | 0.37       | 3.46×   |
 
-geomean speedup **2.20×**。 self-tail-call loop (sumloop / cps_loop) と
-list-heavy interp loop (sieve_big / nqueens) で 2.5×〜3.7× の加速、
-recursion-bound (fib35) で 2.16×、 array/symbolic op (deriv) で 1.19× と
-最も低い。
+**注**: sieve_big の plain 1.64 → 1.97 / AOT 0.65 → 0.92 は commit `1cf5e0f1`
+(= node_loop の per-iter fresh frame 修正、 R5RS の per-iter binding 準拠)
+による正しさ修正後の値。 旧 in-place mutation は test/17_vector_closures の
+"each iter の i を closure が capture" semantics を壊していた。 inner lambda
+が outer frame を escape する hot loop (= sieve_big) は sframe alloc コストを
+そのまま負担。 §9.5 で議論。
+
+geomean speedup **2.16×**。 self-tail-call loop (sumloop / cps_loop) で
+3.5×〜3.7× の加速、 list-heavy interp loop (sieve_big / nqueens) と
+recursion-bound (fib35) で 2.1×〜2.5×、 array/symbolic op (deriv) で 1.18×
+と最も低い。 sieve_big は correctness 修正 (= per-iter fresh frame) 後に
+sframe alloc cost を負担しているため speedup が他より低い。
 
 ### 9.3 他 Scheme 実装との head-to-head (plain + AOT)
 
