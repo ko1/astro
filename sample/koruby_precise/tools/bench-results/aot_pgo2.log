@@ -1,0 +1,8 @@
+==== AOT-PGO bench 2026-05-03T05:24:30+00:00 RUNS=10 FRAMES=300 PGO_FRAMES=120 ====
+rule: -fno-lto on all.so link; -fprofile-{generate,use}= on AOT compile
+APGO2_g15_baseline                                 size=2709336 best=112.13829236237844 median=110.38924854506332 mean=110.632 gcda=722 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native
+APGO2_g16_baseline                                 size=2949632 best=112.73500737964407 median=110.68877332114401 mean=110.534 gcda=722 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O3 a=-O2\ -march=native
+APGO2_g13_baseline                                 size=2668808 best=107.27416324800922 median=105.86802335912395 mean=105.985 gcda=722 k_cc=/usr/bin/gcc-13 a_cc=/usr/bin/gcc-13 k=-O3 a=-O2\ -march=native
+APGO2_g15_O3                                       size=2762280 best=111.21772633959607 median=110.14778034480821 mean=110.195 gcda=722 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O3\ -march=native
+APGO2_g16_O3                                       size=3010432 best=113.08440466102226 median=112.0590853340444 mean=112.063 gcda=722 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O3 a=-O3\ -march=native
+APGO2_g15_no_native                                size=2717528 best=111.26842957963443 median=110.55449788254026 mean=110.559 gcda=722 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2

@@ -33,7 +33,14 @@
 // Forward decls (defined in context.h)
 struct CTX_struct;
 typedef struct CTX_struct CTX;
+/* VALUE forward decl — sample's context.h is the canonical source.
+ * Default to `intptr_t` for samples that don't override, but skip when
+ * sample's context.h has already typedef'd VALUE (= guards against
+ * `conflicting types` when sample uses `uintptr_t` / `int64_t` / etc.,
+ * which differ from `intptr_t` at the type-system level). */
+#ifndef ARO_GC_VALUE_TYPEDEFED
 typedef intptr_t VALUE;
+#endif
 
 // ---------------------------------------------------------------------------
 // Pluggable GC backend interface.

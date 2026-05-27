@@ -1,0 +1,2847 @@
+// -*- mode: c -*-
+// koruby AST nodes.
+// EVAL_ARG returns VALUE; if c->state != KORB_NORMAL after a child eval the
+// current frame must propagate by returning Qnil immediately.
+
+#define EA(c, n) ({                                       \
+    VALUE _v = EVAL_ARG(c, n);                            \
+    if (UNLIKELY((c)->state != KORB_NORMAL)) return Qnil;   \
+    _v;                                                   \
+})
+#define CHECK_STATE(c) do { if (UNLIKELY((c)->state != KORB_NORMAL)) return Qnil; } while (0)
+
+// ---------------- literals ----------------
+
+NODE_DEF
+node_num(CTX * restrict c, NODE * restrict n, int32_t v)
+{
+    return INT2FIX(v);
+}
+
+NODE_DEF
+node_int_lit(CTX * restrict c, NODE * restrict n, intptr_t v)
+{
+    /* literal that fits in a fixnum */
+    return (VALUE)((uintptr_t)v << 1) | FIXNUM_FLAG;
+}
+
+NODE_DEF
+node_bignum_lit(CTX * restrict c, NODE * restrict n, const char *str)
+{
+    return korb_bignum_new_str(str, 10);
+}
+
+NODE_DEF
+node_float_lit(CTX * restrict c, NODE * restrict n, double v)
+{
+    return korb_float_new(v);
+}
+
+NODE_DEF
+node_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32_t len)
+{
+    return korb_str_new(str, len);
+}
+
+NODE_DEF
+node_frozen_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32_t len)
+{
+    VALUE s = korb_str_new(str, len);
+    if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_FROZEN;
+    return s;
+}
+
+NODE_DEF
+node_chilled_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32_t len)
+{
+    VALUE s = korb_str_new(str, len);
+    if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_CHILLED;
+    return s;
+}
+
+NODE_DEF
+node_sym_lit(CTX * restrict c, NODE * restrict n, ID id)
+{
+    return korb_id2sym(id);
+}
+
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n)
+{
+    return Qtrue;
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n)
+{
+    return Qfalse;
+}
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n)
+{
+    return Qnil;
+}
+
+NODE_DEF
+node_self(CTX * restrict c, NODE * restrict n)
+{
+    return c->self;
+}
+
+// ---------------- variables ----------------
+
+NODE_DEF
+node_lvar_get(CTX * restrict c, NODE * restrict n, uint32_t index)
+{
+    return c->fp[index];
+}
+
+NODE_DEF
+node_lvar_set(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    c->fp[index] = v;
+    return v;
+}
+
+NODE_DEF
+node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *cache@ref)
+{
+    return korb_ivar_get_ic(c->self, name, cache);
+}
+
+NODE_DEF
+node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs, struct ivar_cache *cache@ref)
+{
+    VALUE v = EA(c, rhs);
+    korb_ivar_set_ic(c->self, name, v, cache);
+    return v;
+}
+
+NODE_DEF
+node_gvar_get(CTX * restrict c, NODE * restrict n, ID name)
+{
+    /* $@ — `current exception`.backtrace, or nil if no current exc. */
+    if (name == korb_intern("$@")) {
+        VALUE exc = korb_gvar_get(korb_intern("$!"));
+        if (NIL_P(exc) || SPECIAL_CONST_P(exc)) return Qnil;
+        VALUE bt = korb_funcall(c, exc, korb_intern("backtrace"), 0, NULL);
+        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; bt = Qnil; }
+        return bt;
+    }
+    return korb_gvar_get(name);
+}
+
+NODE_DEF
+node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    /* Validation for special globals. */
+    const char *nm = korb_id_name(name);
+    if (nm && nm[0] == '$' && nm[1]) {
+        bool string_only = false;
+        bool read_only = false;
+        if (!nm[2]) {
+            char c2 = nm[1];
+            if (c2 == '/' || c2 == '\\' || c2 == ',' || c2 == ';') string_only = true;
+            if (c2 == ':' || c2 == '"' || c2 == '!' || c2 == '?' ||
+                c2 == '<') read_only = true;
+        } else if (nm[1] == '-' && nm[2] == '0' && !nm[3]) {
+            string_only = true;
+        } else if (nm[1] == '-' && (nm[2] == 'a' || nm[2] == 'l' ||
+                                     nm[2] == 'p' || nm[2] == 'i' ||
+                                     nm[2] == 'F') && !nm[3]) {
+            read_only = true;
+        } else if (strcmp(nm, "$LOAD_PATH") == 0 ||
+                   strcmp(nm, "$LOADED_FEATURES") == 0 ||
+                   strcmp(nm, "$FILENAME") == 0) {
+            read_only = true;
+        }
+        if (read_only) {
+            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            korb_raise(c, (struct korb_class *)eN,
+                       "%s is a read-only variable", nm);
+            return Qnil;
+        }
+        if (string_only && !NIL_P(v) &&
+            (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "value of %s must be String", nm);
+            return Qnil;
+        }
+        /* $stdout / $stderr / $stdin must respond to #write (or #read for stdin). */
+        if (strcmp(nm, "$stdout") == 0 || strcmp(nm, "$stderr") == 0) {
+            VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("write")) });
+            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+            if (!RTEST(rt)) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                struct korb_class *klass = korb_class_of_class(v);
+                korb_raise(c, (struct korb_class *)eT,
+                           "%s must have write method, %s given",
+                           nm,
+                           klass && klass->name ? korb_id_name(klass->name) : "?");
+                return Qnil;
+            }
+        }
+        /* $. should call #to_int.  Returned value must be Integer; if
+         * #to_int gives non-Integer, raise TypeError. */
+        if (strcmp(nm, "$.") == 0) {
+            if (SPECIAL_CONST_P(v) ? !FIXNUM_P(v) : BUILTIN_TYPE(v) != T_BIGNUM) {
+                VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+                if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+                if (RTEST(rt)) {
+                    v = korb_funcall(c, v, korb_intern("to_int"), 0, NULL);
+                    if (c->state != KORB_NORMAL) return Qnil;
+                    bool is_int = SPECIAL_CONST_P(v) ? FIXNUM_P(v)
+                                                     : BUILTIN_TYPE(v) == T_BIGNUM;
+                    if (!is_int) {
+                        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                        korb_raise(c, (struct korb_class *)eT,
+                                   "can't convert to Integer (#to_int returned non-Integer)");
+                        return Qnil;
+                    }
+                } else {
+                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    korb_raise(c, (struct korb_class *)eT,
+                               "no implicit conversion to Integer");
+                    return Qnil;
+                }
+            }
+        }
+        /* $/ <-> $-0 sync: assigning to one updates the other. */
+        if (!nm[2] && nm[1] == '/') {
+            korb_gvar_set(korb_intern("$-0"), v);
+        } else if (nm[1] == '-' && nm[2] == '0' && !nm[3]) {
+            korb_gvar_set(korb_intern("$/"), v);
+        }
+        /* $VERBOSE: nil/false/true (truthy → true).  $-v / $-w aliases. */
+        if (strcmp(nm, "$VERBOSE") == 0 || strcmp(nm, "$-v") == 0 ||
+            strcmp(nm, "$-w") == 0 || strcmp(nm, "$-W") == 0) {
+            VALUE canon = NIL_P(v) ? Qnil : (RTEST(v) ? Qtrue : Qfalse);
+            korb_gvar_set(korb_intern("$VERBOSE"), canon);
+            korb_gvar_set(korb_intern("$-v"),      canon);
+            korb_gvar_set(korb_intern("$-w"),      canon);
+            korb_gvar_set(korb_intern("$-W"),      canon);
+            return canon;
+        }
+        /* $DEBUG / $-d aliases. */
+        if (strcmp(nm, "$DEBUG") == 0 || strcmp(nm, "$-d") == 0) {
+            VALUE canon = RTEST(v) ? Qtrue : Qfalse;
+            korb_gvar_set(korb_intern("$DEBUG"), canon);
+            korb_gvar_set(korb_intern("$-d"),    canon);
+            return canon;
+        }
+        /* $@ — sets backtrace on the current exception ($!).  Raises
+         * ArgumentError "$! not set" if no exception is in flight. */
+        if (strcmp(nm, "$@") == 0) {
+            VALUE exc = korb_gvar_get(korb_intern("$!"));
+            if (NIL_P(exc) || SPECIAL_CONST_P(exc)) {
+                VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                korb_raise(c, (struct korb_class *)eA, "$! not set");
+                return Qnil;
+            }
+            korb_funcall(c, exc, korb_intern("set_backtrace"), 1, &v);
+            return v;
+        }
+        /* $0 / $PROGRAM_NAME aliases — must coerce to String. */
+        if (strcmp(nm, "$0") == 0 || strcmp(nm, "$PROGRAM_NAME") == 0) {
+            if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "$0 must be a String");
+                return Qnil;
+            }
+            korb_gvar_set(korb_intern("$0"), v);
+            korb_gvar_set(korb_intern("$PROGRAM_NAME"), v);
+            return v;
+        }
+    }
+    korb_gvar_set(name, v);
+    return v;
+}
+
+NODE_DEF
+node_gvar_defined_p(CTX * restrict c, NODE * restrict n, ID name)
+{
+    return KORB_BOOL(korb_gvar_defined(name));
+}
+
+/* defined?(A::B) helper — like node_const_path_get but returns Qfalse
+ * instead of dispatching const_missing or raising NameError on miss.
+ * defined? must not invoke const_missing (CRuby semantics). */
+NODE_DEF
+node_const_path_defined(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
+{
+    extern bool korb_const_is_private(const struct korb_class *, ID);
+    VALUE p = EA(c, parent);
+    if (BUILTIN_TYPE(p) != T_CLASS && BUILTIN_TYPE(p) != T_MODULE) return Qfalse;
+    if (korb_const_is_private((struct korb_class *)p, name)) {
+        bool in_scope = false;
+        for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+            /* Skip the implicit top-level Object entry (prev=NULL,
+             * klass=Object) — it represents "default file scope", not
+             * being inside `class Object`.  Object's private constants
+             * are inaccessible from there per CRuby. */
+            if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+            if ((VALUE)cr->klass == p) { in_scope = true; break; }
+        }
+        if (!in_scope) return Qfalse;
+    }
+    VALUE v = korb_const_get_inherited_stop_at_object((struct korb_class *)p, name);
+    return UNDEF_P(v) ? Qfalse : Qtrue;
+}
+
+/* defined? for bare CONST — walks lexical scope (cref) and superclass
+ * chain.  Mirrors korb_const_lookup but returns Qfalse instead of
+ * raising NameError on miss.  Respects private_constant: matches what
+ * the actual `CONST` read would resolve.  Inside lexical scope, private
+ * constants are visible to defined?; outside, they're hidden. */
+/* defined?(super) — true iff a super-method exists for the running
+ * method (block-aware: inside a block, target the block's defining
+ * method, mirroring node_super_forward).  Same lookup as super, but
+ * never raises and never invokes. */
+NODE_DEF
+node_super_defined_p(CTX * restrict c, NODE * restrict n)
+{
+    if (!c->current_frame || !c->current_frame->method) return Qfalse;
+    extern struct korb_proc *running_block;
+    struct korb_method *m = (running_block && running_block->defining_method)
+                              ? running_block->defining_method
+                              : c->current_frame->method;
+    if (!m || !m->defining_class) return Qfalse;
+    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    extern struct korb_method *korb_class_find_super_method_n(
+        const struct korb_class *, const struct korb_class *, ID,
+        uint16_t, uint16_t *);
+    uint16_t skip = c->current_frame->method == m ? c->current_frame->super_skip_n : 0;
+    uint16_t out;
+    struct korb_method *sm = korb_class_find_super_method_n(recv_klass,
+        m->defining_class, m->name, skip, &out);
+    return sm ? Qtrue : Qfalse;
+}
+
+NODE_DEF
+node_const_defined_lex(CTX * restrict c, NODE * restrict n, ID name)
+{
+    extern bool korb_const_is_private(const struct korb_class *, ID);
+    for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+        if (korb_const_has(cr->klass, name)) return Qtrue;
+        for (int32_t i = (int32_t)cr->klass->includes_cnt - 1; i >= 0; i--) {
+            if (korb_const_has(cr->klass->includes[i], name)) return Qtrue;
+        }
+    }
+    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    if (k && k->super) {
+        VALUE v = korb_const_get_inherited(k->super, name);
+        if (!UNDEF_P(v)) {
+            if (korb_const_is_private(k->super, name)) return Qfalse;
+            return Qtrue;
+        }
+    }
+    VALUE v = korb_const_get_inherited(korb_vm->object_class, name);
+    if (!UNDEF_P(v)) {
+        if (korb_const_is_private(korb_vm->object_class, name)) return Qfalse;
+        return Qtrue;
+    }
+    return Qfalse;
+}
+
+NODE_DEF
+node_last_line_get(CTX * restrict c, NODE * restrict n)
+{
+    return korb_last_line_get(c);
+}
+
+NODE_DEF
+node_last_line_set(CTX * restrict c, NODE * restrict n, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    korb_last_line_set(c, v);
+    return v;
+}
+
+NODE_DEF
+node_last_match_get(CTX * restrict c, NODE * restrict n)
+{
+    return korb_last_match_get(c);
+}
+
+NODE_DEF
+node_last_match_set(CTX * restrict c, NODE * restrict n, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    korb_last_match_set(c, v);
+    return v;
+}
+
+NODE_DEF
+node_cvar_get(CTX * restrict c, NODE * restrict n, ID name)
+{
+    /* Class variable: walk the cref's class up its superclass chain
+     * looking for @@name; missing → NameError. */
+    extern VALUE korb_cvar_get(CTX *c, ID name);
+    return korb_cvar_get(c, name);
+}
+
+NODE_DEF
+node_cvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    extern void korb_cvar_set(CTX *c, ID name, VALUE val);
+    korb_cvar_set(c, name, v);
+    return v;
+}
+
+NODE_DEF
+node_const_get(CTX * restrict c, NODE * restrict n, ID name)
+{
+    return korb_const_lookup(c, name);
+}
+
+NODE_DEF
+node_const_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
+{
+    VALUE v = EA(c, rhs);
+    struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
+    korb_const_set(host, name, v);
+    return v;
+}
+
+NODE_DEF
+node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
+{
+    VALUE p = EA(c, parent);
+    if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
+        /* private_constant enforcement: explicit `Mod::FOO` from
+         * outside Mod's lexical scope is a NameError — but if Mod
+         * defines const_missing, dispatch to that first (CRuby gives
+         * the metaprogramming hook precedence over visibility error). */
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private((struct korb_class *)p, name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+                if ((VALUE)cr->klass == p) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                struct korb_class *p_meta = korb_singleton_class_of((struct korb_class *)p);
+                if (p_meta && korb_class_find_method(p_meta, korb_intern("const_missing"))) {
+                    VALUE sym = korb_id2sym(name);
+                    return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
+                }
+                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
+                return Qnil;
+            }
+        }
+        /* Walk super chain AND includes — but stop short of Object's
+         * own namespace.  CRuby's `Sub::CONST` lookup does NOT find
+         * top-level constants visible only via Object inheritance. */
+        VALUE v = korb_const_get_inherited_stop_at_object((struct korb_class *)p, name);
+        if (!UNDEF_P(v)) return v;
+        /* const_missing hook: if the class defines a (singleton) method
+         * named const_missing, dispatch to it with the missing name as
+         * a Symbol — CRuby's protocol for autoload / lazy const lookup. */
+        struct korb_class *p_class = (struct korb_class *)p;
+        struct korb_class *meta = korb_singleton_class_of(p_class);
+        if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
+            VALUE sym = korb_id2sym(name);
+            return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
+        }
+        /* Build the error message via mod.name (or .inspect for an
+         * anonymous module).  CRuby allows user code to override these
+         * to customize error output. */
+        VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE name_v = korb_funcall(c, p, korb_intern("name"), 0, NULL);
+        if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; name_v = Qnil; }
+        VALUE prefix;
+        if (NIL_P(name_v) || (BUILTIN_TYPE(name_v) == T_STRING &&
+                              ((struct korb_string *)name_v)->len == 0)) {
+            prefix = korb_funcall(c, p, korb_intern("inspect"), 0, NULL);
+            if (c->state != KORB_NORMAL) {
+                c->state = KORB_NORMAL; c->state_value = Qnil;
+                prefix = korb_str_new_cstr("<anonymous>");
+            }
+        } else {
+            prefix = name_v;
+        }
+        const char *prefix_str = (BUILTIN_TYPE(prefix) == T_STRING)
+                                   ? ((struct korb_string *)prefix)->ptr : "?";
+        korb_raise(c, (struct korb_class *)eName,
+                   "uninitialized constant %s::%s",
+                   prefix_str, korb_id_name(name));
+        return Qnil;
+    }
+    korb_raise_type_error(c, "%s is not a class/module",
+                          NIL_P(p) ? "nil" : korb_id_name(korb_class_of_class(p)->name));
+    return Qnil;
+}
+
+// ---------------- syntax / control ----------------
+
+NODE_DEF
+node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
+{
+    VALUE *prev_fp = c->fp;
+    c->fp += envsize;
+    if (UNLIKELY(c->fp + envsize >= c->stack_end)) {
+        c->fp = prev_fp;
+        korb_raise(c, NULL, "stack overflow");
+        return Qnil;
+    }
+    if (c->fp + envsize > c->sp) c->sp = c->fp + envsize;
+    /* zero working area so GC sees Qnil instead of garbage */
+    for (uint32_t i = 0; i < envsize; i++) c->fp[i] = Qnil;
+    VALUE v = EVAL_ARG(c, body);
+    c->fp = prev_fp;
+    return v;
+}
+
+NODE_DEF
+node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
+{
+    EA(c, head);
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
+{
+    VALUE v = EA(c, cond);
+    if (RTEST(v)) {
+        return EVAL_ARG(c, then_node);
+    }
+    else {
+        return EVAL_ARG(c, else_node);
+    }
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    while (1) {
+        VALUE v = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        if (!RTEST(v)) break;
+    redo_while:
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
+                /* break with no target frame is a local while-break. */
+                VALUE bv = c->state_value;
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                return bv;
+            }
+            else if (c->state == KORB_NEXT) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                continue;
+            }
+            else if (c->state == KORB_REDO) {
+                /* redo: re-eval body without re-checking condition. */
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                goto redo_while;
+            }
+            return Qnil;
+        }
+    }
+    return Qnil;
+}
+
+NODE_DEF
+node_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    while (1) {
+        VALUE v = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        if (RTEST(v)) break;
+    redo_until:
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
+                VALUE bv = c->state_value;
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                return bv;
+            }
+            else if (c->state == KORB_NEXT) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                continue;
+            }
+            else if (c->state == KORB_REDO) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                goto redo_until;
+            }
+            return Qnil;
+        }
+    }
+    return Qnil;
+}
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = EA(c, value);
+    extern struct korb_proc *running_block;
+    /* Stale-frame check: if we're inside a non-lambda block whose
+     * lexically-enclosing method has already returned, raise
+     * LocalJumpError instead of a non-local return.  Two checks are
+     * combined for robustness:
+     *   1. Walk the live frame chain — if the target_frame pointer
+     *      isn't on it, the method has popped already.
+     *   2. Even if a (reused) frame at the same address shows up,
+     *      its frame_id won't match the snapshot taken at block
+     *      creation. */
+    if (running_block && !running_block->is_lambda &&
+        running_block->return_target_frame) {
+        struct korb_frame *target = (struct korb_frame *)running_block->return_target_frame;
+        bool target_alive = false;
+        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            if (f == target) {
+                target_alive = (f->frame_id == running_block->enclosing_frame_id);
+                break;
+            }
+        }
+        if (!target_alive) {
+            VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
+            korb_raise(c, (struct korb_class *)eL, "unexpected return");
+            return Qnil;
+        }
+    }
+    c->state = KORB_RETURN;
+    c->state_value = v;
+    /* If we're running inside a non-lambda block / proc, this is a
+     * non-local return targeting the lexically-enclosing method's
+     * frame.  `running_block` is set by korb_yield/proc_call.  Plain
+     * method body return / lambda body return → state_target_frame
+     * stays NULL (consume at any matching boundary). */
+    c->state_target_frame = NULL;
+    if (running_block && !running_block->is_lambda &&
+        running_block->return_target_frame) {
+        c->state_target_frame = running_block->return_target_frame;
+    }
+    return v;
+}
+
+NODE_DEF
+node_break(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = EA(c, value);
+    c->state = KORB_BREAK;
+    c->state_value = v;
+    return v;
+}
+
+NODE_DEF
+node_next(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    VALUE v = EA(c, value);
+    c->state = KORB_NEXT;
+    c->state_value = v;
+    return v;
+}
+
+NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    VALUE v = EA(c, expr);
+    return RTEST(v) ? Qfalse : Qtrue;
+}
+
+NODE_DEF
+node_and(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EA(c, lhs);
+    if (!RTEST(l)) return l;
+    return EVAL_ARG(c, rhs);
+}
+
+NODE_DEF
+node_or(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EA(c, lhs);
+    if (RTEST(l)) return l;
+    return EVAL_ARG(c, rhs);
+}
+
+// ---------------- containers ----------------
+
+NODE_DEF
+node_ary_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    /* args are pre-evaluated and stored at fp[arg_index..arg_index+argc-1] */
+    VALUE ary = korb_ary_new_capa(argc);
+    for (uint32_t i = 0; i < argc; i++) {
+        korb_ary_push(ary, c->fp[arg_index + i]);
+    }
+    return ary;
+}
+
+NODE_DEF
+node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    /* argc is # of pairs * 2; flat key,value,key,value,... */
+    VALUE h = korb_hash_new();
+    for (uint32_t i = 0; i + 1 < argc; i += 2) {
+        VALUE k = c->fp[arg_index + i];
+        /* CRuby: hash-literal mutable String keys are deduplicated
+         * (frozen copy in the hash, original mutable string left
+         * alone). */
+        if (!SPECIAL_CONST_P(k) && BUILTIN_TYPE(k) == T_STRING &&
+            !(RBASIC(k)->head.flags & FL_FROZEN)) {
+            VALUE k2 = korb_str_new(((struct korb_string *)k)->ptr,
+                                    ((struct korb_string *)k)->len);
+            RBASIC(k2)->head.flags |= FL_FROZEN;
+            k = k2;
+        }
+        korb_hash_aset(h, k, c->fp[arg_index + i + 1]);
+    }
+    return h;
+}
+
+NODE_DEF
+node_range_new(CTX * restrict c, NODE * restrict n, NODE *begin, NODE *end, uint32_t exclude_end)
+{
+    VALUE b = EA(c, begin);
+    VALUE e = EA(c, end);
+    return korb_range_new(b, e, exclude_end != 0);
+}
+
+NODE_DEF
+node_str_concat(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    VALUE r = korb_str_new("", 0);
+    for (uint32_t i = 0; i < argc; i++) {
+        VALUE part = c->fp[arg_index + i];
+        if (BUILTIN_TYPE(part) != T_STRING) {
+            part = korb_to_s_dispatch(c, part);
+        }
+        r = korb_str_concat(r, part);
+    }
+    return r;
+}
+
+// ---------------- method definition / call ----------------
+
+NODE_DEF @noinline
+node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+{
+    /* Method goes on the innermost lexical class/module — same as Ruby's
+     * `def foo` semantics inside a class body. */
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    korb_class_add_method_ast_full_cref(target, name, body, params_cnt, params_cnt, -1, locals_cnt, c->cref);
+    return korb_id2sym(name);
+}
+
+NODE_DEF @noinline
+node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, NODE *body)
+{
+    /* When parse.c routed `class X` (no super clause) here, super_expr is
+     * still set (to a const_get(:Object)).  For mismatch checks we need
+     * to know whether the user wrote `< Y` explicitly.  The trick: the
+     * is_explicit flag rides on a distinct node kind — `class X` uses
+     * node_class_def_implicit_super (defined below).  Here we always
+     * treat super_expr as user-specified. */
+    struct korb_class *super = korb_vm->object_class;
+    if (super_expr) {
+        VALUE sv = EA(c, super_expr);
+        if (BUILTIN_TYPE(sv) != T_CLASS) {
+            korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                  korb_id_name(korb_class_of_class(sv)->name));
+            return Qnil;
+        }
+        /* Cannot inherit from a singleton class. */
+        if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
+            korb_raise_type_error(c, "can't make subclass of singleton class");
+            return Qnil;
+        }
+        super = (struct korb_class *)sv;
+    }
+    struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
+    struct korb_class *klass;
+    VALUE existing = korb_const_get(host, name);
+    if (!UNDEF_P(existing) && (BUILTIN_TYPE(existing) == T_CLASS ||
+                                BUILTIN_TYPE(existing) == T_MODULE)) {
+        klass = (struct korb_class *)existing;
+        if (BUILTIN_TYPE(existing) == T_MODULE) {
+            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            return Qnil;
+        }
+        if (super_expr && klass->super != super) {
+            korb_raise_type_error(c, "superclass mismatch for class %s",
+                                  korb_id_name(name));
+            return Qnil;
+        }
+    }
+    else if (!UNDEF_P(existing)) {
+        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        return Qnil;
+    }
+    else {
+        klass = korb_class_new(name, super, T_OBJECT);
+        /* Mark anon so korb_const_set composes "Parent::name" path. */
+        klass->name = 0;
+        korb_const_set(host, name, (VALUE)klass);
+        /* Fire the `inherited` hook on `super` (defined as a class
+         * method on the parent).  CRuby calls this when a new
+         * subclass is created — only on the fresh-class branch. */
+        struct korb_class *super_meta = korb_class_of_class((VALUE)super);
+        if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
+            VALUE child_v = (VALUE)klass;
+            korb_funcall(c, (VALUE)super, korb_intern("inherited"), 1, &child_v);
+            if (c->state == KORB_RAISE) return Qnil;
+        }
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = klass;
+    c->self = (VALUE)klass;
+    c->cref = &new_cref;
+    VALUE *fp_lo = c->fp;
+    VALUE *fp_hi = c->sp;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    /* Snapshot any Proc constant captured into the class body whose env
+     * still points into the dying class-body fp range.  Required for
+     * `class C; m = :x; READER = -> { m }; end` patterns. */
+    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+    return r;
+}
+
+/* `class X` with no `< Super` clause — reopen if exists (any super is
+ * fine), otherwise create with Object as super.  Differs from
+ * node_class_def in that a reopen with mismatched non-Object super is
+ * NOT an error here. */
+NODE_DEF @noinline
+node_class_reopen(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
+{
+    struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
+    struct korb_class *klass;
+    VALUE existing = korb_const_get(host, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        klass = (struct korb_class *)existing;
+    }
+    else if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
+        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        return Qnil;
+    }
+    else if (!UNDEF_P(existing)) {
+        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        return Qnil;
+    }
+    else {
+        klass = korb_class_new(name, korb_vm->object_class, T_OBJECT);
+        klass->name = 0;
+        korb_const_set(host, name, (VALUE)klass);
+        struct korb_class *super_meta = korb_class_of_class((VALUE)korb_vm->object_class);
+        if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
+            VALUE child_v = (VALUE)klass;
+            korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
+            if (c->state == KORB_RAISE) return Qnil;
+        }
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = klass;
+    c->self = (VALUE)klass;
+    c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+    return r;
+}
+
+NODE_DEF @noinline
+node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
+{
+    struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
+    struct korb_class *mod;
+    VALUE existing = korb_const_get(host, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
+        mod = (struct korb_class *)existing;
+    }
+    else if (!UNDEF_P(existing)) {
+        /* Constant already exists but isn't a Module: TypeError. */
+        korb_raise_type_error(c, "%s is not a module",
+                              korb_id_name(name));
+        return Qnil;
+    }
+    else {
+        mod = korb_module_new(name);
+        mod->name = 0;
+        korb_const_set(host, name, (VALUE)mod);
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = mod, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = mod;
+    c->self = (VALUE)mod;
+    c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)mod, fp_lo, fp_hi + 1024);
+    return r;
+}
+
+/* dispatch helpers (declared in node.h via include) */
+
+NODE_DEF
+node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
+{
+    /* implicit-self call — _cached version inlines the IC + prologue
+     * dispatch directly into the SD body, so a hot self-call (e.g.
+     * `render_pixel` from the per-frame loop) avoids a function-pointer
+     * jump per call. */
+    return korb_dispatch_call_cached(c, n, c->self, name, argc, arg_index, NULL, mc);
+}
+
+NODE_DEF
+node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
+{
+    VALUE r = EA(c, recv);
+    return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, NULL, mc);
+}
+
+/* Case/when's `===` dispatch: bypass visibility because CRuby calls
+ * the matcher's `===` even when private (the matcher's intent is to
+ * be called by case/when).  Argument is staged at arg_index. */
+NODE_DEF
+node_case_eqq_call(CTX * restrict c, NODE * restrict n, NODE *recv, uint32_t arg_index)
+{
+    VALUE r = EA(c, recv);
+    VALUE arg = c->fp[arg_index];
+    return korb_funcall(c, r, korb_intern("==="), 1, &arg);
+}
+
+NODE_DEF
+node_method_call_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
+{
+    VALUE r = EA(c, recv);
+    /* blk node is node_block_literal which when EVAL'd produces a Proc */
+    VALUE block = blk ? EA(c, blk) : Qnil;
+    return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+}
+
+NODE_DEF
+node_func_call_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
+{
+    VALUE block = blk ? EA(c, blk) : Qnil;
+    return korb_dispatch_call_cached(c, n, c->self, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+}
+
+NODE_DEF @noinline
+node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
+{
+    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
+    if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
+    /* Capture enclosing-method's fp for non-local return targeting. */
+    /* Capture the lexically-enclosing method's frame for non-local
+     * `return` targeting.  When this block_literal is itself inside
+     * another block's body (running_block != NULL), inherit that
+     * outer block's target — they share the same lexical method.
+     * Only when no block is running do we capture the current frame. */
+    ((struct korb_proc *)p)->return_target_frame =
+        running_block ? running_block->return_target_frame : c->current_frame;
+    ((struct korb_proc *)p)->enclosing_frame_id =
+        running_block ? running_block->enclosing_frame_id
+                      : (c->current_frame ? c->current_frame->frame_id : 0);
+    /* Lexical method capture: the method active when this block is
+     * created.  super inside the block uses this method's
+     * defining_class.  When this block_literal is itself inside another
+     * block, inherit the outer's defining_method. */
+    ((struct korb_proc *)p)->defining_method =
+        running_block ? running_block->defining_method
+                      : (c->current_frame ? c->current_frame->method : NULL);
+    ((struct korb_proc *)p)->lexical_parent_block = running_block;
+    return p;
+}
+
+/* Variant with an explicit *rest slot.  rest_slot is the absolute slot
+ * the proc binds *rest into; -1 means "no rest". */
+NODE_DEF @noinline
+node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, uint32_t creates_proc)
+{
+    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
+    ((struct korb_proc *)p)->rest_slot = rest_slot;
+    if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
+    ((struct korb_proc *)p)->return_target_frame =
+        running_block ? running_block->return_target_frame : c->current_frame;
+    ((struct korb_proc *)p)->enclosing_frame_id =
+        running_block ? running_block->enclosing_frame_id
+                      : (c->current_frame ? c->current_frame->frame_id : 0);
+    ((struct korb_proc *)p)->defining_method =
+        running_block ? running_block->defining_method
+                      : (c->current_frame ? c->current_frame->method : NULL);
+    ((struct korb_proc *)p)->lexical_parent_block = running_block;
+    return p;
+}
+
+/* Block literal with both *rest_slot AND kwh_save_slot.  Used when the
+ * block declares keyword params; proc_call uses kwh_save_slot to peel
+ * the trailing Hash argument. */
+NODE_DEF @noinline
+node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot, uint32_t creates_proc)
+{
+    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
+    ((struct korb_proc *)p)->rest_slot = rest_slot;
+    ((struct korb_proc *)p)->kwh_save_slot = kwh_save_slot;
+    if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
+    ((struct korb_proc *)p)->return_target_frame =
+        running_block ? running_block->return_target_frame : c->current_frame;
+    ((struct korb_proc *)p)->enclosing_frame_id =
+        running_block ? running_block->enclosing_frame_id
+                      : (c->current_frame ? c->current_frame->frame_id : 0);
+    ((struct korb_proc *)p)->defining_method =
+        running_block ? running_block->defining_method
+                      : (c->current_frame ? c->current_frame->method : NULL);
+    ((struct korb_proc *)p)->lexical_parent_block = running_block;
+    return p;
+}
+
+/* Set a Proc's opt_cnt — used by parse.c to plumb the count of
+ * optional positional params for blocks/lambdas built with default-
+ * value parameters.  Wraps the block_literal node in a sequence so
+ * proc_call can fill missing optional slots with Qundef and trigger
+ * the body's default-init prologue. */
+NODE_DEF @noinline
+node_proc_set_opt_cnt(CTX * restrict c, NODE * restrict n, NODE *blk_node, uint32_t opt_cnt)
+{
+    VALUE p = EVAL_ARG(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
+        ((struct korb_proc *)p)->opt_cnt = opt_cnt;
+    }
+    return p;
+}
+
+/* Set a Proc's `&blk` slot — proc_call binds the caller's block (or nil)
+ * into this slot before evaluating the body. */
+NODE_DEF @noinline
+node_proc_set_block_slot(CTX * restrict c, NODE * restrict n, NODE *blk_node, int32_t block_slot)
+{
+    VALUE p = EVAL_ARG(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
+        ((struct korb_proc *)p)->block_slot = block_slot;
+    }
+    return p;
+}
+
+/* Set a Proc's post_cnt — required params after *rest. */
+NODE_DEF @noinline
+node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, NODE *blk_node, uint32_t post_cnt)
+{
+    VALUE p = EVAL_ARG(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
+        ((struct korb_proc *)p)->post_cnt = post_cnt;
+    }
+    return p;
+}
+
+/* Mark a Proc as having `|a, |` style implicit-rest (trailing comma).
+ * Lambda arity check uses this to enforce strict arity even though
+ * rest_slot is non-negative (we still allocate a discardable slot to
+ * absorb extras for proc-style autosplat / yield). */
+NODE_DEF @noinline
+node_proc_set_implicit_rest(CTX * restrict c, NODE * restrict n, NODE *blk_node)
+{
+    VALUE p = EVAL_ARG(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
+        ((struct korb_proc *)p)->implicit_rest = true;
+    }
+    return p;
+}
+
+/* Flip a freshly-created Proc into a lambda.  Used by `-> { ... }` so
+ * the literal becomes a lambda without dispatching Kernel#lambda
+ * (which a class inheriting from BasicObject can't reach). */
+NODE_DEF @noinline
+node_proc_make_lambda(CTX * restrict c, NODE * restrict n, NODE *blk_node)
+{
+    VALUE p = EVAL_ARG(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
+        ((struct korb_proc *)p)->is_lambda = true;
+    }
+    return p;
+}
+
+/* Mark a Hash with FL_KWARGS so dispatch peels it as kwargs at the
+ * call site.  Used by `m(k: v)` / `m(**h)` lowering. */
+NODE_DEF
+node_hash_mark_kwargs(CTX * restrict c, NODE * restrict n, NODE *hash_expr)
+{
+    VALUE h = EVAL_ARG(c, hash_expr);
+    if (!SPECIAL_CONST_P(h) && BUILTIN_TYPE(h) == T_HASH) {
+        ((struct RBasic *)h)->head.flags |= FL_KWARGS;
+    }
+    return h;
+}
+
+NODE_DEF
+node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    return korb_yield(c, argc, &c->fp[arg_index]);
+}
+
+/* `yield *arr` (or `yield a, *b, c`) — args were materialized into a
+ * single Array at slot `arr_slot`; call yield with the array's elements
+ * as a variadic argv. */
+NODE_DEF
+node_yield_splat(CTX * restrict c, NODE * restrict n, uint32_t arr_slot)
+{
+    VALUE arr = c->fp[arr_slot];
+    if (SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) {
+        return korb_yield(c, 0, NULL);
+    }
+    struct korb_array *a = (struct korb_array *)arr;
+    return korb_yield(c, (uint32_t)a->len, a->ptr);
+}
+
+// ---------------- arithmetic (generic + fixnum fast path) ----------------
+// Each EVAL_node_<binop> records `n` into c->last_cfunc_callsite at the
+// point where it falls into a slow / raise path.  korb_raise reads that
+// for backtrace line numbers; without it, raises from arithmetic land
+// with line=0 and the backtrace shows the caller's call site instead of
+// the failing op.  Fast paths skip the store entirely.
+
+NODE_DEF
+node_plus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+        long a = FIX2LONG(l), b = FIX2LONG(r), s;
+        if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
+        return korb_int_plus(l, r);
+    }
+    /* Float fast path: skip dispatch_binop when both ops can be coerced
+     * to double cheaply (FLONUM or FIXNUM). */
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
+        return korb_float_new(korb_flonum_to_double(l) + korb_flonum_to_double(r));
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_plus_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_minus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+        long a = FIX2LONG(l), b = FIX2LONG(r), s;
+        if (LIKELY(!__builtin_sub_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
+        return korb_int_minus(l, r);
+    }
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
+        return korb_float_new(korb_flonum_to_double(l) - korb_flonum_to_double(r));
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_minus_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+        long a = FIX2LONG(l), b = FIX2LONG(r), s;
+        if (LIKELY(!__builtin_mul_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
+        return korb_int_mul(l, r);
+    }
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
+        return korb_float_new(korb_flonum_to_double(l) * korb_flonum_to_double(r));
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_mul_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+        long a = FIX2LONG(l), b = FIX2LONG(r);
+        if (UNLIKELY(b == 0)) {
+            c->last_cfunc_callsite = n;
+            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            return Qnil;
+        }
+        long q = a / b;
+        if ((a % b) != 0 && ((a ^ b) < 0)) q--;
+        if (FIXABLE(q)) return INT2FIX(q);
+        return korb_int_div(l, r);
+    }
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
+        return korb_float_new(korb_flonum_to_double(l) / korb_flonum_to_double(r));
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_div_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_mod(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+        long a = FIX2LONG(l), b = FIX2LONG(r);
+        if (UNLIKELY(b == 0)) {
+            c->last_cfunc_callsite = n;
+            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            return Qnil;
+        }
+        long m = a % b;
+        if (m != 0 && ((a ^ b) < 0)) m += b;
+        return INT2FIX(m);
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_mod_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_uminus(CTX * restrict c, NODE * restrict n, NODE *operand, uint32_t arg_index)
+{
+    VALUE v = EA(c, operand);
+    if (LIKELY(FIXNUM_P(v) && !korb_g_basic_op_redefined)) {
+        long a = FIX2LONG(v), s;
+        if (!__builtin_sub_overflow(0L, a, &s) && FIXABLE(s)) return INT2FIX(s);
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_uminus_slow(c, v);
+}
+
+// ---------------- bit ops ----------------
+
+NODE_DEF
+node_bit_and(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return l & r;
+    c->last_cfunc_callsite = n;
+    return korb_node_band_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_bit_or(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return l | r;
+    c->last_cfunc_callsite = n;
+    return korb_node_bor_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_bit_xor(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return (l ^ r) | FIXNUM_FLAG;
+    c->last_cfunc_callsite = n;
+    return korb_node_bxor_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_lshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+        long a = FIX2LONG(l), b = FIX2LONG(r);
+        if (b >= 0 && b < 62) {
+            long s = a << b;
+            if ((s >> b) == a && FIXABLE(s)) return INT2FIX(s);
+        }
+        return korb_int_lshift(l, r);
+    }
+    /* Array#<< — push and return self.  Hot in optcarrot's
+     * render_pixel (`@output_pixels << ...` runs once per pixel). */
+    if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY && !korb_g_array_op_redefined)) {
+        CHECK_FROZEN_RET(c, l, Qnil);
+        korb_ary_push(l, r);
+        return l;
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_lshift_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_rshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+        long a = FIX2LONG(l), b = FIX2LONG(r);
+        if (b >= 0 && b < 62) return INT2FIX(a >> b);
+        return korb_int_rshift(l, r);
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_rshift_slow(c, l, r, arg_index);
+}
+
+// ---------------- comparisons ----------------
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l < (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r));
+    c->last_cfunc_callsite = n;
+    return korb_node_lt_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l <= (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r));
+    c->last_cfunc_callsite = n;
+    return korb_node_le_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l > (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r));
+    c->last_cfunc_callsite = n;
+    return korb_node_gt_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l >= (intptr_t)r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r));
+    c->last_cfunc_callsite = n;
+    return korb_node_ge_slow(c, l, r, arg_index);
+}
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (UNLIKELY(korb_g_basic_op_redefined)) {
+        c->fp[arg_index+1] = r;
+        return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
+    }
+    /* Pure FIXNUM / FLONUM compare: identity = numeric equality.
+     * (Note: FLONUM excludes NaN — never encodable, so always heap.) */
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l == r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l == r);
+    /* When L is a non-numeric special const (nil, true, false, Symbol),
+     * its `==` is identity — short-circuit.  But if L is heap and R is
+     * special-const, L's class may have a custom `==` (e.g.
+     * `MyExpectation == nil` should dispatch the user method) — fall
+     * through to the general dispatch. */
+    if (SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) {
+        return KORB_BOOL(l == r);
+    }
+    /* General case: dispatch user-defined `==`.  For built-in types
+     * (T_STRING, T_ARRAY, T_HASH, ...) this finds the methods we
+     * registered in builtins.c; for user classes that include
+     * Comparable or override ==, it picks up their definition.  Pass
+     * the raw return value through — CRuby allows `==` to return
+     * non-boolean (`(obj == x).should == 1`). */
+    c->fp[arg_index+1] = r;
+    return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
+}
+
+NODE_DEF
+node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (UNLIKELY(korb_g_basic_op_redefined)) {
+        c->fp[arg_index+1] = r;
+        VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
+        return KORB_BOOL(!RTEST(eq));
+    }
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l != r);
+    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l != r);
+    if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
+        (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
+        return KORB_BOOL(l != r);
+    }
+    c->fp[arg_index+1] = r;
+    VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->fp[arg_index+1]);
+    return KORB_BOOL(!RTEST(eq));
+}
+
+// ---------------- subscript [] / []= ----------------
+
+NODE_DEF
+node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
+{
+    VALUE r = EA(c, recv);
+    VALUE i = EA(c, idx);
+    if (LIKELY(!korb_g_basic_op_redefined)) {
+        /* Integer#[bit] — hot in optcarrot's PPU LUT precompute and
+         * pixel-extract paths (`byte[bit]`, `i[15-j]`).  Without this
+         * the call goes through korb_node_aref_slow → cfunc dispatch
+         * → builtins/integer.c:int_aref, which dominated the profile. */
+        if (FIXNUM_P(r) && FIXNUM_P(i)) {
+            long b = FIX2LONG(i);
+            if (b < 0 || b >= 63) return INT2FIX(0);
+            return INT2FIX((FIX2LONG(r) >> b) & 1);
+        }
+        if (LIKELY(!SPECIAL_CONST_P(r))) {
+            if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) return korb_ary_aref(r, FIX2LONG(i));
+            /* Hash fast path is only safe when there's no default_proc —
+             * korb_hash_aref returns default_value on miss but can't call
+             * a Ruby-side block.  Fall through to cfunc dispatch when a
+             * default_proc is registered. */
+            if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc)) {
+                return korb_hash_aref(r, i);
+            }
+            /* String#[i] for a single Fixnum index — return a 1-byte
+             * string at i (negative wraps from end), nil if out of range.
+             * Mirrors builtins/string.c:str_aref's argc==1 FIXNUM branch. */
+            if (BUILTIN_TYPE(r) == T_STRING && FIXNUM_P(i)) {
+                struct korb_string *s = (struct korb_string *)r;
+                long pos = FIX2LONG(i);
+                if (pos < 0) pos += s->len;
+                if (pos < 0 || pos >= s->len) return Qnil;
+                return korb_str_new(s->ptr + pos, 1);
+            }
+        }
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_aref_slow(c, r, i, arg_index);
+}
+
+NODE_DEF
+node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val, uint32_t arg_index)
+{
+    VALUE r = EA(c, recv);
+    VALUE i = EA(c, idx);
+    VALUE v = EA(c, val);
+    if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
+        if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
+            CHECK_FROZEN_RET(c, r, Qnil);
+            long ii = FIX2LONG(i);
+            struct korb_array *aa = (struct korb_array *)r;
+            if (ii < 0 && ii + aa->len < 0) {
+                VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+                korb_raise(c, (struct korb_class *)eIE,
+                           "index %ld too small for array; minimum: -%ld",
+                           ii, aa->len);
+                return v;
+            }
+            if (ii >= (long)(LONG_MAX / sizeof(VALUE))) {
+                VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+                korb_raise(c, (struct korb_class *)eIE, "index %ld too big", ii);
+                return v;
+            }
+            korb_ary_aset(r, ii, v); return v;
+        }
+        if (BUILTIN_TYPE(r) == T_HASH) {
+            CHECK_FROZEN_RET(c, r, Qnil);
+            korb_hash_aset(r, i, v); return v;
+        }
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_aset_slow(c, r, i, v, arg_index);
+}
+
+/* `obj[*args] = v` — splat-key form.  splat must be a node_splat_to_ary
+ * (so EA returns Array).  Spread its elements into c->fp slots, append
+ * v, dispatch []=, return v.  Reserves up to 16 slots at parse time;
+ * runtime falls back to xmalloc if more keys. */
+NODE_DEF @noinline
+node_aset_splat(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *splat, NODE *val, uint32_t arg_index)
+{
+    VALUE r = EA(c, recv);
+    VALUE arr = EA(c, splat);
+    VALUE v = EA(c, val);
+    long n_keys = 0;
+    VALUE *argv;
+    VALUE inline_argv[17];
+    VALUE *heap_argv = NULL;
+    if (BUILTIN_TYPE(arr) == T_ARRAY) {
+        struct korb_array *aa = (struct korb_array *)arr;
+        n_keys = aa->len;
+        if (n_keys + 1 <= 17) {
+            for (long i = 0; i < n_keys; i++) inline_argv[i] = aa->ptr[i];
+            inline_argv[n_keys] = v;
+            argv = inline_argv;
+        } else {
+            heap_argv = korb_xmalloc(sizeof(VALUE) * (size_t)(n_keys + 1));
+            for (long i = 0; i < n_keys; i++) heap_argv[i] = aa->ptr[i];
+            heap_argv[n_keys] = v;
+            argv = heap_argv;
+        }
+    } else {
+        inline_argv[0] = v;
+        argv = inline_argv;
+    }
+    c->last_cfunc_callsite = n;
+    korb_dispatch_binop(c, r, id_op_aset, (int)(n_keys + 1), argv);
+    if (heap_argv) korb_xfree(heap_argv);
+    return v;
+}
+
+// ---------------- exception ----------------
+
+NODE_DEF @noinline
+node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, uint32_t exception_lvar_index)
+{
+retry:;
+    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    VALUE v = EVAL_ARG(c, body);
+    if (c->state == KORB_RAISE && rescue_body) {
+        VALUE exc = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->fp[exception_lvar_index] = exc;
+        /* $! reflects the current exception throughout the rescue body. */
+        korb_gvar_set(korb_intern("$!"), exc);
+        v = EVAL_ARG(c, rescue_body);
+        /* If a NEW exception was raised inside the rescue body, link
+         * the original (currently-rescued) exception in as #cause —
+         * Exception#cause returns it.  Skip when re-raising the same
+         * one (`raise` with no args). */
+        if (c->state == KORB_RAISE && c->state_value &&
+            !SPECIAL_CONST_P(c->state_value) && c->state_value != exc) {
+            VALUE cur_cause = korb_ivar_get(c->state_value, korb_intern("@cause"));
+            if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
+                korb_ivar_set(c->state_value, korb_intern("@cause"), exc);
+            }
+        }
+        /* `retry` inside the rescue body sets state=KORB_RETRY; clear
+         * and jump back to re-evaluate the begin body. */
+        if (c->state == KORB_RETRY) {
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            korb_gvar_set(korb_intern("$!"), prev_bang);
+            goto retry;
+        }
+        /* If rescue body re-raised (or raised a new exception), $! is
+         * the new exception — leave it as-is.  Only restore prev_bang
+         * when rescue completed normally. */
+        if (c->state != KORB_RAISE) {
+            korb_gvar_set(korb_intern("$!"), prev_bang);
+        }
+    }
+    return v;
+}
+
+NODE_DEF
+node_retry(CTX * restrict c, NODE * restrict n)
+{
+    c->state = KORB_RETRY;
+    c->state_value = Qnil;
+    return Qnil;
+}
+
+/* `begin body; rescue ...; else else_body; end` — else runs iff body
+ * completed without raising and no rescue was triggered.  Same retry
+ * semantics as node_rescue. */
+NODE_DEF
+node_rescue_else(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, NODE *else_body, uint32_t exception_lvar_index)
+{
+retry_re:;
+    bool rescued = false;
+    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    VALUE v = EVAL_ARG(c, body);
+    if (c->state == KORB_RAISE && rescue_body) {
+        rescued = true;
+        VALUE exc = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->fp[exception_lvar_index] = exc;
+        korb_gvar_set(korb_intern("$!"), exc);
+        v = EVAL_ARG(c, rescue_body);
+        if (c->state == KORB_RAISE && c->state_value &&
+            !SPECIAL_CONST_P(c->state_value) && c->state_value != exc) {
+            VALUE cur_cause = korb_ivar_get(c->state_value, korb_intern("@cause"));
+            if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
+                korb_ivar_set(c->state_value, korb_intern("@cause"), exc);
+            }
+        }
+        if (c->state == KORB_RETRY) {
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            korb_gvar_set(korb_intern("$!"), prev_bang);
+            goto retry_re;
+        }
+        if (c->state != KORB_RAISE) {
+            korb_gvar_set(korb_intern("$!"), prev_bang);
+        }
+    }
+    /* No rescue was triggered → else body replaces the result. */
+    if (!rescued && c->state == KORB_NORMAL && else_body) {
+        v = EVAL_ARG(c, else_body);
+    }
+    return v;
+}
+
+NODE_DEF
+node_redo(CTX * restrict c, NODE * restrict n)
+{
+    c->state = KORB_REDO;
+    c->state_value = Qnil;
+    return Qnil;
+}
+
+NODE_DEF
+node_raise(CTX * restrict c, NODE * restrict n, NODE *exc_expr)
+{
+    VALUE e;
+    if (exc_expr) {
+        e = EA(c, exc_expr);
+        if (BUILTIN_TYPE(e) == T_STRING) {
+            e = korb_exc_new(NULL, korb_str_cstr(e));
+        }
+    }
+    else {
+        e = korb_exc_new(NULL, "unhandled exception");
+    }
+    korb_exc_set_backtrace(c, e, n ? n->head.line : 0);
+    /* Exception#cause: when we're already inside a rescue body, $! holds
+     * the currently-rescued exception.  Link it as #cause on the new
+     * one (skip when re-raising the same exception). */
+    if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
+        VALUE current = korb_gvar_get(korb_intern("$!"));
+        if (!NIL_P(current) && current != e) {
+            VALUE existing = korb_ivar_get(e, korb_intern("@cause"));
+            if (UNDEF_P(existing) || NIL_P(existing)) {
+                korb_ivar_set(e, korb_intern("@cause"), current);
+            }
+        }
+    }
+    c->state = KORB_RAISE;
+    c->state_value = e;
+    return Qnil;
+}
+
+// ---------------- multi-assign helpers ----------------
+
+/* Multi-assign RHS coercion: CRuby uses to_ary (NOT to_a) for the
+ * single-RHS-value case `a, b = obj`.  obj.to_ary must return Array
+ * (else TypeError); if obj doesn't respond to to_ary, the RHS is
+ * wrapped in [obj]. */
+NODE_DEF
+node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    VALUE v = EA(c, expr);
+    if (BUILTIN_TYPE(v) == T_ARRAY) return v;
+    if (NIL_P(v)) {
+        VALUE a = korb_ary_new_capa(1);
+        korb_ary_push(a, v);
+        return a;
+    }
+    /* respond_to?(:to_ary)? */
+    VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+    if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+    if (RTEST(rt)) {
+        VALUE r = korb_funcall(c, v, korb_intern("to_ary"), 0, NULL);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (NIL_P(r)) {
+            /* CRuby: to_ary returning nil wraps in [v]. */
+            VALUE a = korb_ary_new_capa(1);
+            korb_ary_push(a, v);
+            return a;
+        }
+        if (BUILTIN_TYPE(r) != T_ARRAY) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to Array (#to_ary gave non-Array)");
+            return Qnil;
+        }
+        return r;
+    }
+    /* No to_ary: wrap. */
+    VALUE a = korb_ary_new_capa(1);
+    korb_ary_push(a, v);
+    return a;
+}
+
+NODE_DEF
+node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
+{
+    VALUE v = EA(c, expr);
+    /* CRuby splat: nil → [] (no elements). */
+    if (NIL_P(v)) return korb_ary_new();
+    if (BUILTIN_TYPE(v) == T_ARRAY) return v;
+    if (BUILTIN_TYPE(v) == T_RANGE) {
+        /* convert Range to Array for splat */
+        struct korb_range *r = (struct korb_range *)v;
+        if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
+            long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
+            if (r->exclude_end) e--;
+            if (e < b) return korb_ary_new();
+            VALUE a = korb_ary_new_capa(e - b + 1);
+            for (long i = b; i <= e; i++) korb_ary_push(a, INT2FIX(i));
+            return a;
+        }
+    }
+    /* CRuby: if value responds to to_a, call it.  to_a must return Array.
+     * For BasicObject (which has no #respond_to?) and similar minimal
+     * classes, fall back to a direct method-table lookup so a singleton
+     * `def obj.to_a` is still detected. */
+    {
+        bool has_to_a = false;
+        if (!SPECIAL_CONST_P(v)) {
+            struct korb_class *vk = (struct korb_class *)((struct RBasic *)v)->klass;
+            has_to_a = vk && korb_class_find_method(vk, korb_intern("to_a")) != NULL;
+        }
+        VALUE rt = Qfalse;
+        if (!has_to_a) {
+            rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                              (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
+        }
+        if (has_to_a || RTEST(rt)) {
+            VALUE r = korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
+            if (c->state != KORB_NORMAL) return Qnil;
+            if (BUILTIN_TYPE(r) == T_ARRAY) return r;
+            /* CRuby: if to_a returns nil, treat the value as a single
+             * element array.  Other non-Array results are TypeError. */
+            if (NIL_P(r)) {
+                VALUE a = korb_ary_new_capa(1);
+                korb_ary_push(a, v);
+                return a;
+            }
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to Array (returned non-Array)");
+            return Qnil;
+        }
+    }
+    VALUE a = korb_ary_new_capa(1);
+    korb_ary_push(a, v);
+    return a;
+}
+
+NODE_DEF
+node_ary_aget(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t idx)
+{
+    VALUE a = EA(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
+    return korb_ary_aref(a, idx);
+}
+
+/* For multi-assign splat: ary[ary.len - neg_offset]; nil if out of range. */
+NODE_DEF
+node_ary_aget_neg(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t neg_offset)
+{
+    VALUE a = EA(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
+    long len = korb_ary_len(a);
+    long idx = len - (long)neg_offset;
+    if (idx < 0) return Qnil;
+    return korb_ary_aref(a, idx);
+}
+
+/* For multi-assign trailing target with rest: rights[i] = ary[max(lefts + i,
+ * len - rights + i)]; nil if past end.  Matches CRuby semantics where
+ * rights fill from the left (after lefts) when there aren't enough
+ * elements to satisfy lefts + rights.  Without this, `*a, b, c = [1]`
+ * would assign c=1, b=nil — CRuby gives b=1, c=nil. */
+NODE_DEF
+node_ary_aget_right(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t lefts, uint32_t rights, uint32_t i)
+{
+    VALUE a = EA(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
+    long len = korb_ary_len(a);
+    long left_based = (long)lefts + (long)i;
+    long right_based = len - (long)rights + (long)i;
+    long idx = left_based > right_based ? left_based : right_based;
+    if (idx < 0 || idx >= len) return Qnil;
+    return korb_ary_aref(a, idx);
+}
+
+/* For multi-assign middle splat: ary[leading .. (len - trailing - 1)] as a new Array. */
+NODE_DEF
+node_ary_slice_middle(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t leading, uint32_t trailing)
+{
+    VALUE a = EA(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return korb_ary_new();
+    long len = korb_ary_len(a);
+    long start = (long)leading;
+    long end_excl = len - (long)trailing;
+    if (start > len) start = len;
+    if (end_excl > len) end_excl = len;
+    if (end_excl < start) end_excl = start;
+    long n_take = end_excl - start;
+    VALUE r = korb_ary_new_capa(n_take);
+    for (long i = 0; i < n_take; i++) korb_ary_push(r, korb_ary_aref(a, start + i));
+    return r;
+}
+
+NODE_DEF
+node_str_to_sym(CTX * restrict c, NODE * restrict n, NODE *str_node)
+{
+    VALUE s = EA(c, str_node);
+    if (BUILTIN_TYPE(s) != T_STRING) return Qnil;
+    return korb_str_to_sym(s);
+}
+
+NODE_DEF
+node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
+{
+    /* When `super` runs inside a block body, the lexically-enclosing
+     * method drives the super lookup — not whichever method called
+     * `yield` to invoke the block.  running_block->defining_method
+     * was captured at proc creation time. */
+    extern struct korb_proc *running_block;
+    struct korb_method *m = (running_block && running_block->defining_method)
+                              ? running_block->defining_method
+                              : (c->current_frame ? c->current_frame->method : NULL);
+    if (!m) {
+        korb_raise(c, NULL, "super called outside of method");
+        return Qnil;
+    }
+    uint16_t super_skip_n = (c->current_frame && c->current_frame->method == m)
+                              ? c->current_frame->super_skip_n : 0;
+    /* Walk the receiver's class MRO past the current method's defining
+     * class — handles `super` from a prepended module's method.  Pass
+     * the calling frame's super_skip_n so that when a module is both
+     * prepended and included on the same class, super lands past the
+     * right occurrence. */
+    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    extern struct korb_method *korb_class_find_super_method_n(
+        const struct korb_class *, const struct korb_class *, ID,
+        uint16_t, uint16_t *);
+    uint16_t new_skip_n = 0;
+    struct korb_method *sm = m->defining_class
+        ? korb_class_find_super_method_n(recv_klass, m->defining_class, m->name,
+                                          super_skip_n, &new_skip_n)
+        : NULL;
+    if (!sm) {
+        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", korb_id_name(m->name));
+        return Qnil;
+    }
+    if (sm->type == KORB_METHOD_CFUNC) {
+        return sm->u.cfunc.func(c, c->self, argc, &c->fp[arg_index]);
+    }
+    if (sm->type == KORB_METHOD_PROC) {
+        /* Super to a define_method'd proc — dispatch via proc_call so
+         * its env / closure is preserved. */
+        extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
+        return proc_call(c, (VALUE)sm->u.proc.proc, (int)argc, &c->fp[arg_index]);
+    }
+    VALUE *prev_fp = c->fp;
+    VALUE *new_fp = prev_fp + arg_index;
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt > c->sp) c->sp = new_fp + sm->u.ast.locals_cnt;
+    for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
+    c->fp = new_fp;
+    /* Push a frame so a nested `super` inside sm sees sm as its method
+     * (otherwise current_frame still points to the calling method and
+     * super recurses into the same target — stack overflow). */
+    struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = sm;
+    frame.self = c->self;
+    frame.block = current_block;
+    frame.caller_node = n;
+    frame.fp = new_fp;
+    frame.locals_cnt = sm->u.ast.locals_cnt;
+    frame.super_skip_n = new_skip_n;
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
+    extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
+    c->current_frame = &frame;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
+    VALUE r = EVAL(c, sm->u.ast.body);
+    c->current_frame = frame.prev;
+    running_block = prev_running;
+    c->fp = prev_fp;
+    if (c->state == KORB_RETURN &&
+        (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->state_target_frame = NULL;
+    }
+    return r;
+}
+
+/* Variant of node_super that accepts an explicit block expression
+ * (`super(args, &blk)`).  blk_expr evaluates to a Proc (or nil meaning
+ * no block); the chosen block is what the super method's `yield` /
+ * `block_given?` sees.  The runtime semantics otherwise match
+ * node_super. */
+NODE_DEF @noinline
+node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index, NODE *blk_expr)
+{
+    extern struct korb_proc *running_block;
+    struct korb_method *m = (running_block && running_block->defining_method)
+                              ? running_block->defining_method
+                              : (c->current_frame ? c->current_frame->method : NULL);
+    if (!m) {
+        korb_raise(c, NULL, "super called outside of method");
+        return Qnil;
+    }
+    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    extern struct korb_method *korb_class_find_super_method_n(
+        const struct korb_class *, const struct korb_class *, ID,
+        uint16_t, uint16_t *);
+    uint16_t new_skip_n = 0;
+    struct korb_method *sm = m->defining_class
+        ? korb_class_find_super_method_n(recv_klass, m->defining_class, m->name,
+                                          c->current_frame->super_skip_n, &new_skip_n)
+        : NULL;
+    if (!sm) {
+        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", korb_id_name(m->name));
+        return Qnil;
+    }
+    /* Evaluate the explicit block.  nil → no block. */
+    VALUE blk_v = blk_expr ? EA(c, blk_expr) : Qnil;
+    struct korb_proc *blk_proc = (!NIL_P(blk_v) && !SPECIAL_CONST_P(blk_v) &&
+                                   BUILTIN_TYPE(blk_v) == T_PROC)
+                                  ? (struct korb_proc *)blk_v : NULL;
+    if (sm->type == KORB_METHOD_CFUNC) {
+        struct korb_proc *prev_block = current_block;
+        current_block = blk_proc;
+        VALUE r = sm->u.cfunc.func(c, c->self, argc, &c->fp[arg_index]);
+        current_block = prev_block;
+        return r;
+    }
+    VALUE *prev_fp = c->fp;
+    VALUE *new_fp = prev_fp + arg_index;
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt > c->sp) c->sp = new_fp + sm->u.ast.locals_cnt;
+    for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
+    c->fp = new_fp;
+    struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = sm;
+    frame.self = c->self;
+    frame.block = blk_proc;  /* explicit block overrides caller's */
+    frame.caller_node = n;
+    frame.fp = new_fp;
+    frame.locals_cnt = sm->u.ast.locals_cnt;
+    frame.super_skip_n = new_skip_n;
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
+    extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
+    extern uint64_t korb_g_next_frame_id;
+    frame.frame_id = ++korb_g_next_frame_id;
+    c->current_frame = &frame;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
+    struct korb_proc *prev_current_block = current_block;
+    current_block = blk_proc;
+    /* Bind the &block parameter (if any) to the explicit block — the
+     * normal prologue would do this but we skipped it. */
+    if (sm->u.ast.block_slot >= 0) {
+        new_fp[sm->u.ast.block_slot] = blk_proc ? (VALUE)blk_proc : Qnil;
+    }
+    VALUE r = EVAL(c, sm->u.ast.body);
+    current_block = prev_current_block;
+    c->current_frame = frame.prev;
+    running_block = prev_running;
+    c->fp = prev_fp;
+    if (c->state == KORB_RETURN &&
+        (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->state_target_frame = NULL;
+    }
+    return r;
+}
+
+/* `super { block }` (forwarding form): evaluate the block, swap
+ * current_block, then route through DISPATCH_node_super_forward
+ * (a lightweight wrapper around EVAL_node_super_forward that has
+ * external linkage so we can call it across the TU boundary).
+ * The dispatcher reads from `n` so we synthesize a node-shaped
+ * argument by reusing our own node — node_super_forward doesn't
+ * read any specific fields, only `c->current_frame`. */
+NODE_DEF @noinline
+node_super_forward_block(CTX * restrict c, NODE * restrict n, NODE *blk_expr)
+{
+    extern struct korb_proc *current_block;
+    VALUE blk_v = blk_expr ? EA(c, blk_expr) : Qnil;
+    struct korb_proc *blk_proc = (!NIL_P(blk_v) && !SPECIAL_CONST_P(blk_v) &&
+                                   BUILTIN_TYPE(blk_v) == T_PROC)
+                                  ? (struct korb_proc *)blk_v : NULL;
+    /* Allocate a synthetic node_super_forward and dispatch into it so
+     * we don't have to copy 100 lines of forward logic.  We do this
+     * via the public ALLOC_node_super_forward entry. */
+    extern struct Node *ALLOC_node_super_forward(void);
+    struct Node *fwd = ALLOC_node_super_forward();
+    struct korb_proc *prev = current_block;
+    current_block = blk_proc;
+    VALUE r = ((korb_dispatcher_t)fwd->head.dispatcher)(c, fwd);
+    current_block = prev;
+    return r;
+}
+
+NODE_DEF
+node_super_forward(CTX * restrict c, NODE * restrict n)
+{
+    if (!c->current_frame || !c->current_frame->method) {
+        korb_raise(c, NULL, "super called outside of method");
+        return Qnil;
+    }
+    /* Inside a block body, `super` targets the block's lexical method
+     * (captured at proc creation), not the dynamic frame's method. */
+    extern struct korb_proc *running_block;
+    struct korb_method *m = (running_block && running_block->defining_method)
+                              ? running_block->defining_method
+                              : c->current_frame->method;
+    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    extern struct korb_method *korb_class_find_super_method_n(
+        const struct korb_class *, const struct korb_class *, ID,
+        uint16_t, uint16_t *);
+    uint16_t fwd_new_skip_n = 0;
+    struct korb_method *sm = m->defining_class
+        ? korb_class_find_super_method_n(recv_klass, m->defining_class, m->name,
+                                          c->current_frame->super_skip_n, &fwd_new_skip_n)
+        : NULL;
+    if (!sm) {
+        /* CRuby: when super misses (no ancestor method, or blocked by
+         * undef), dispatch method_missing on the receiver if it has
+         * a user-defined one — receiving the original method's name
+         * as the first arg. */
+        struct korb_method *mm = korb_class_find_method(recv_klass, korb_intern("method_missing"));
+        if (mm && mm->defining_class != korb_vm->object_class) {
+            VALUE name_sym = korb_id2sym(m->name);
+            return korb_funcall(c, c->self, korb_intern("method_missing"), 1, &name_sym);
+        }
+        VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+        korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?");
+        return Qnil;
+    }
+    /* Forward all positionals: required + optional + (splatted *rest if
+     * any) + post + (kwh hash if both this method and the super accept
+     * kwargs).  The slot layout is:
+     *   [req] [opt] [*rest] [post]   (kwh elsewhere)
+     * Where rest_slot, when present, sits at required+optional. */
+    VALUE forward_buf[64];
+    int argc = 0;
+    if (m->type == KORB_METHOD_AST) {
+        uint32_t req = m->u.ast.required_params_cnt;
+        uint32_t post = m->u.ast.post_params_cnt;
+        int rs = m->u.ast.rest_slot;
+        /* opt count = total - req - post - (1 if rest else 0).  Don't
+         * subtract kwh — kwh_save_slot is outside total_params_cnt. */
+        long total = (long)m->u.ast.total_params_cnt;
+        long opt = total - (long)req - (long)post - (rs >= 0 ? 1 : 0);
+        if (opt < 0) opt = 0;
+        for (uint32_t i = 0; i < req && argc < 64; i++) {
+            forward_buf[argc++] = c->fp[i];
+        }
+        for (long i = 0; i < opt && argc < 64; i++) {
+            forward_buf[argc++] = c->fp[req + i];
+        }
+        if (rs >= 0) {
+            VALUE rest = c->fp[rs];
+            if (!SPECIAL_CONST_P(rest) && BUILTIN_TYPE(rest) == T_ARRAY) {
+                struct korb_array *a = (struct korb_array *)rest;
+                for (long i = 0; i < a->len && argc < 64; i++) {
+                    forward_buf[argc++] = a->ptr[i];
+                }
+            } else if (!NIL_P(rest)) {
+                /* Reassigned rest with a non-Array scalar — CRuby wraps
+                 * the value into a single-element array for forwarding. */
+                if (argc < 64) forward_buf[argc++] = rest;
+            }
+        }
+        /* Post params live at the very end of the params region. */
+        for (uint32_t i = 0; i < post && argc < 64; i++) {
+            forward_buf[argc++] = c->fp[total - post + i];
+        }
+        /* If this method captured kwargs and super accepts them, append
+         * the kwh hash as the last positional — the super's prologue
+         * will peel it back off. */
+        if (m->u.ast.kwh_save_slot >= 0 &&
+            sm->type == KORB_METHOD_AST && sm->u.ast.kwh_save_slot >= 0 &&
+            argc < 64) {
+            forward_buf[argc++] = c->fp[m->u.ast.kwh_save_slot];
+        }
+    }
+    if (sm->type == KORB_METHOD_CFUNC) return sm->u.cfunc.func(c, c->self, argc, forward_buf);
+    VALUE *prev_fp = c->fp;
+    VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
+    /* Peel kwh from forward_buf's tail if the super accepts kwargs. */
+    VALUE peeled_kwh = Qundef;
+    if (sm->u.ast.kwh_save_slot >= 0) {
+        if (argc > 0 && !SPECIAL_CONST_P(forward_buf[argc - 1]) &&
+            BUILTIN_TYPE(forward_buf[argc - 1]) == T_HASH) {
+            peeled_kwh = forward_buf[argc - 1];
+            argc--;
+        } else {
+            peeled_kwh = korb_hash_new();
+        }
+    }
+    for (int i = 0; i < argc; i++) new_fp[i] = forward_buf[i];
+    for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
+    /* If the super method itself has *rest, gather extras and shift
+     * post args to their proper slots (right after rest_slot). */
+    if (sm->u.ast.rest_slot >= 0) {
+        long fixed_pre  = (long)sm->u.ast.required_params_cnt;
+        long fixed_post = (long)sm->u.ast.post_params_cnt;
+        long total      = (long)sm->u.ast.total_params_cnt;
+        long opt        = total - fixed_pre - fixed_post - 1;
+        if (opt < 0) opt = 0;
+        long after_required = (long)argc - fixed_pre - fixed_post;
+        if (after_required < 0) after_required = 0;
+        long opt_filled = after_required < opt ? after_required : opt;
+        long extra = after_required - opt_filled;
+        if (extra < 0) extra = 0;
+        /* Post sits at the tail of forward_buf — snapshot before any
+         * slot reshuffling. */
+        VALUE post_buf[16];
+        VALUE *post_ptr = post_buf;
+        VALUE *post_heap = NULL;
+        if (fixed_post > 16) {
+            post_heap = korb_xmalloc(sizeof(VALUE) * fixed_post);
+            post_ptr = post_heap;
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            post_ptr[i] = forward_buf[argc - fixed_post + i];
+        }
+        VALUE rest_arr = korb_ary_new_capa(extra);
+        for (long i = 0; i < extra; i++) {
+            korb_ary_push(rest_arr, forward_buf[fixed_pre + opt_filled + i]);
+        }
+        new_fp[sm->u.ast.rest_slot] = rest_arr;
+        /* Clear unfilled opt slots so the body's default_init runs. */
+        for (long i = opt_filled; i < opt; i++) {
+            new_fp[fixed_pre + i] = Qundef;
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            new_fp[sm->u.ast.rest_slot + 1 + i] = post_ptr[i];
+        }
+        if (post_heap) korb_xfree(post_heap);
+    } else if (sm->u.ast.post_params_cnt > 0) {
+        /* No rest in super, but post params present.  After the straight
+         * copy, post args sit at [argc-post..argc); the body expects
+         * them at [total-post..total). */
+        long fixed_pre  = (long)sm->u.ast.required_params_cnt;
+        long fixed_post = (long)sm->u.ast.post_params_cnt;
+        long total = (long)sm->u.ast.total_params_cnt;
+        long opt = total - fixed_pre - fixed_post;
+        long after_required = (long)argc - fixed_pre - fixed_post;
+        if (after_required < 0) after_required = 0;
+        long opt_filled = after_required < opt ? after_required : opt;
+        VALUE post_buf[16];
+        VALUE *post_ptr = post_buf;
+        VALUE *post_heap = NULL;
+        if (fixed_post > 16) {
+            post_heap = korb_xmalloc(sizeof(VALUE) * fixed_post);
+            post_ptr = post_heap;
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            post_ptr[i] = forward_buf[fixed_pre + opt_filled + i];
+        }
+        for (long i = 0; i < fixed_post; i++) {
+            new_fp[total - fixed_post + i] = post_ptr[i];
+        }
+        if (post_heap) korb_xfree(post_heap);
+    }
+    if (sm->u.ast.kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
+        new_fp[sm->u.ast.kwh_save_slot] = peeled_kwh;
+    }
+    /* Bind the &block parameter on sm to current_block (= the caller's
+     * block we're forwarding through super).  Without this, sm's body
+     * sees its &block lvar as nil even though current_block is set. */
+    if (sm->u.ast.block_slot >= 0) {
+        new_fp[sm->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
+    }
+    c->fp = new_fp;
+    if (c->fp + sm->u.ast.locals_cnt > c->sp) c->sp = c->fp + sm->u.ast.locals_cnt;
+    /* Push frame so nested super inside sm sees sm's defining_class. */
+    struct korb_frame frame;
+    frame.prev = c->current_frame;
+    frame.method = sm;
+    frame.self = c->self;
+    frame.block = current_block;
+    frame.caller_node = n;
+    frame.fp = new_fp;
+    frame.locals_cnt = sm->u.ast.locals_cnt;
+    frame.super_skip_n = fwd_new_skip_n;
+    frame.last_line = Qnil;
+    frame.last_match = Qnil;
+    extern struct korb_proc *running_block;
+    frame.caller_running_block = running_block;
+    c->current_frame = &frame;
+    struct korb_proc *prev_running = running_block;
+    running_block = NULL;
+    VALUE r = EVAL(c, sm->u.ast.body);
+    c->current_frame = frame.prev;
+    running_block = prev_running;
+    c->fp = prev_fp;
+    if (c->state == KORB_RETURN &&
+        (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
+        r = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        c->state_target_frame = NULL;
+    }
+    return r;
+}
+
+NODE_DEF
+node_ensure(CTX * restrict c, NODE * restrict n, NODE *body, NODE *ensure_body)
+{
+    int saved_state = KORB_NORMAL;
+    VALUE saved_value = Qnil;
+    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    VALUE r = EVAL_ARG(c, body);
+    if (c->state != KORB_NORMAL) {
+        saved_state = c->state;
+        saved_value = c->state_value;
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        /* $! reflects in-flight exception during ensure body. */
+        if (saved_state == KORB_RAISE) {
+            korb_gvar_set(korb_intern("$!"), saved_value);
+        }
+    }
+    EVAL_ARG(c, ensure_body);
+    if (c->state == KORB_NORMAL && saved_state != KORB_NORMAL) {
+        c->state = saved_state;
+        c->state_value = saved_value;
+    }
+    /* Restore $! after ensure body if the body completed (didn't replace
+     * the in-flight exception with a new one). */
+    if (c->state != KORB_RAISE) {
+        korb_gvar_set(korb_intern("$!"), prev_bang);
+    }
+    return r;
+}
+
+NODE_DEF @noinline
+node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
+{
+    /* def self.foo — install on c->self's singleton class. */
+    struct korb_class *target;
+    if (BUILTIN_TYPE(c->self) == T_CLASS || BUILTIN_TYPE(c->self) == T_MODULE) {
+        if (korb_obj_frozen_p(c->self)) {
+            VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+            korb_raise(c, (struct korb_class *)eF,
+                       "can't modify frozen %s",
+                       ((struct korb_class *)c->self)->name
+                         ? korb_id_name(((struct korb_class *)c->self)->name) : "Class");
+            return Qnil;
+        }
+        target = korb_singleton_class_of((struct korb_class *)c->self);
+    } else if (!SPECIAL_CONST_P(c->self) && BUILTIN_TYPE(c->self) == T_OBJECT) {
+        /* Top-level `def self.foo`: target the receiver's singleton
+         * class.  CRuby installs on main's singleton at top level. */
+        if (korb_obj_frozen_p(c->self)) {
+            VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+            korb_raise(c, (struct korb_class *)eF, "can't modify frozen object");
+            return Qnil;
+        }
+        extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+        struct korb_class *meta = korb_singleton_class_of_value(c->self);
+        target = meta ? meta : korb_class_of_class(c->self);
+    } else {
+        korb_raise(c, NULL, "def self.* outside of class/module");
+        return Qnil;
+    }
+    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
+    ID *names = korb_body_local_names(body);
+    if (names) korb_class_set_method_local_names(target, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
+    }
+    return korb_id2sym(name);
+}
+
+/* `def self.foo(a, *r, b, c)` — like node_singleton_def but additionally
+ * records post_params_cnt so the prologue routes args correctly. */
+NODE_DEF @noinline
+node_singleton_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+{
+    struct korb_class *target;
+    if (BUILTIN_TYPE(c->self) == T_CLASS || BUILTIN_TYPE(c->self) == T_MODULE) {
+        target = korb_singleton_class_of((struct korb_class *)c->self);
+    } else if (!SPECIAL_CONST_P(c->self) && BUILTIN_TYPE(c->self) == T_OBJECT) {
+        extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+        struct korb_class *meta = korb_singleton_class_of_value(c->self);
+        target = meta ? meta : korb_class_of_class(c->self);
+    } else {
+        korb_raise(c, NULL, "def self.* outside of class/module");
+        return Qnil;
+    }
+    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
+    if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
+    ID *names = korb_body_local_names(body);
+    if (names) korb_class_set_method_local_names(target, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
+    }
+    return korb_id2sym(name);
+}
+
+NODE_DEF @noinline
+node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
+{
+    /* def obj.foo — install on the value of `recv_expr`'s singleton
+     * class.  For T_OBJECT we lazily allocate one; for T_CLASS /
+     * T_MODULE we use the metaclass via korb_singleton_class_of. */
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    VALUE recv = EA(c, recv_expr);
+    if (!SPECIAL_CONST_P(recv) && korb_obj_frozen_p(recv)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        const char *kind = "object";
+        if (BUILTIN_TYPE(recv) == T_CLASS) kind = "Class";
+        else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
+        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
+        return Qnil;
+    }
+    struct korb_class *meta = korb_singleton_class_of_value(recv);
+    if (!meta) {
+        korb_raise(c, NULL, "cannot define singleton method on this value");
+        return Qnil;
+    }
+    korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
+    ID *names = korb_body_local_names(body);
+    if (names) korb_class_set_method_local_names(meta, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(meta, name, phs);
+    }
+    return korb_id2sym(name);
+}
+
+/* `def obj.foo(a, *r, b, c)` — variant with post_params_cnt. */
+NODE_DEF @noinline
+node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+{
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    VALUE recv = EA(c, recv_expr);
+    if (!SPECIAL_CONST_P(recv) && korb_obj_frozen_p(recv)) {
+        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        const char *kind = "object";
+        if (BUILTIN_TYPE(recv) == T_CLASS) kind = "Class";
+        else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
+        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
+        return Qnil;
+    }
+    struct korb_class *meta = korb_singleton_class_of_value(recv);
+    if (!meta) {
+        korb_raise(c, NULL, "cannot define singleton method on this value");
+        return Qnil;
+    }
+    korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
+    if (post_cnt > 0)    korb_class_set_method_post_params_cnt(meta, name, post_cnt);
+    ID *names = korb_body_local_names(body);
+    if (names) korb_class_set_method_local_names(meta, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(meta, name, phs);
+    }
+    return korb_id2sym(name);
+}
+
+NODE_DEF @noinline
+node_singleton_class_body(CTX * restrict c, NODE * restrict n, NODE *recv_expr, NODE *body)
+{
+    /* `class << obj; body; end` — evaluate body with self set to obj's
+     * singleton class so `def name` lands there. */
+    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    VALUE recv = EA(c, recv_expr);
+    struct korb_class *meta = korb_singleton_class_of_value(recv);
+    if (!meta) {
+        /* Numeric, Symbol etc. — CRuby raises TypeError "no class to make
+         * a singleton class for ..." */
+        korb_raise_type_error(c, "no class to make singleton class for %s",
+                              korb_id_name(korb_class_of_class(recv)->name));
+        return Qnil;
+    }
+    VALUE prev_self = c->self;
+    struct korb_class *prev_class = c->current_class;
+    struct korb_cref *prev_cref = c->cref;
+    struct korb_cref new_cref = { .klass = meta, .prev = c->cref };
+    c->self = (VALUE)meta;
+    c->current_class = meta;
+    c->cref = &new_cref;
+    VALUE r = EVAL_ARG(c, body);
+    c->self = prev_self;
+    c->current_class = prev_class;
+    c->cref = prev_cref;
+    return r;
+}
+
+NODE_DEF
+node_default_init(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *default_expr)
+{
+    /* If c->fp[slot] is Qundef (= caller did not supply this optional arg),
+     * evaluate the default and store it.  Pre-init the slot to Qnil so a
+     * circular self-reference (`|a=a|`) sees nil instead of Qundef leaking
+     * into user code (CRuby 3.4+ semantics). */
+    if (c->fp[slot] == Qundef) {
+        c->fp[slot] = Qnil;
+        VALUE v = EVAL_ARG(c, default_expr);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        c->fp[slot] = v;
+    }
+    return Qnil;
+}
+
+NODE_DEF @noinline
+node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
+{
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    /* CRuby: top-level `def` (the implicit "main" lexical scope) installs
+     * the method as private on Object by default.  Top-level here means:
+     * cref is just [Object] AND NOT inside a method body.  But the user
+     * may have called `public` / `private` / `module_function` to change
+     * the local visibility — those modify Object's default_visibility,
+     * so we honor that: only force private when default_visibility is
+     * still the initial PUBLIC and we're top-level.
+     *
+     * This relies on a distinction we don't currently track between
+     * "PUBLIC by default" and "PUBLIC because user said public".  As a
+     * compromise, we use a per-frame "top_level_explicit_public" flag
+     * threaded via Object's default_visibility being set ABOVE PUBLIC
+     * (we encode "explicit PUBLIC at top-level" by toggling). */
+    /* Special methods that are private regardless of where defined. */
+    bool always_private =
+        (name == korb_intern("initialize") ||
+         name == korb_intern("initialize_copy") ||
+         name == korb_intern("initialize_dup") ||
+         name == korb_intern("initialize_clone") ||
+         name == korb_intern("respond_to_missing?"));
+    bool top_level = (c->cref && c->cref->klass == korb_vm->object_class &&
+                      c->cref->prev == NULL && target == korb_vm->object_class &&
+                      c->current_frame == NULL);
+    /* g_top_level_default_private toggles when `private`/`public` is
+     * called at top-level.  Initial state: true (private by default). */
+    extern bool g_top_level_default_private;
+    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (always_private || (top_level && g_top_level_default_private)) {
+        struct korb_method *m = korb_class_find_method(target, name);
+        if (m) m->visibility = KORB_VIS_PRIVATE;
+    }
+    if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
+    /* If parse.c stashed a slot→name table for this body, attach it so
+     * Kernel#binding can iterate the live frame to emit lvars. */
+    ID *names = korb_body_local_names(body);
+    if (names) korb_class_set_method_local_names(target, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
+    }
+    /* If user redefined something on a basic class, EVAL_node_* fast
+     * paths must stop short-circuiting through C-side arithmetic. */
+    korb_check_basic_op_redef(target, name);
+    /* Fire `method_added` (a class method on `target`) so userland
+     * can react to method definitions.  Skip silently when the class
+     * doesn't define the hook. */
+    {
+        struct korb_class *meta = korb_class_of_class((VALUE)target);
+        if (meta && korb_class_find_method(meta, korb_intern("method_added"))) {
+            VALUE name_sym = korb_id2sym(name);
+            korb_funcall(c, (VALUE)target, korb_intern("method_added"), 1, &name_sym);
+        }
+    }
+    return korb_id2sym(name);
+}
+
+/* Like node_def_full but with post_params_cnt for `def f(a, *r, b, c)`. */
+NODE_DEF @noinline
+node_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+{
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
+    if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
+    if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
+    ID *names = korb_body_local_names(body);
+    if (names) korb_class_set_method_local_names(target, name, names);
+    {
+        int *phs = korb_body_param_holder_slots(body);
+        if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
+    }
+    korb_check_basic_op_redef(target, name);
+    return korb_id2sym(name);
+}
+
+/* Set the kwh_save_slot on the most-recently-registered method `name`
+ * on the current cref/class.  Emitted right after node_def_full when
+ * the def declares keyword params. */
+NODE_DEF @noinline
+node_set_kwh_save_slot(CTX * restrict c, NODE * restrict n, ID name, int32_t slot)
+{
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    korb_class_set_method_kwh_save_slot(target, name, (int)slot);
+    return Qnil;
+}
+
+/* `alias new_name old_name` — keyword form, lexical scope.  Goes
+ * directly to korb_class_alias_method on the cref's class so a
+ * redefinition of Module#alias_method has no effect (`alias` is a
+ * keyword, not a method call). */
+NODE_DEF @noinline
+node_alias_method(CTX * restrict c, NODE * restrict n, NODE *new_name, NODE *old_name)
+{
+    VALUE new_v = EA(c, new_name);
+    VALUE old_v = EA(c, old_name);
+    if (!SYMBOL_P(new_v) || !SYMBOL_P(old_v)) {
+        korb_raise(c, NULL, "alias requires symbol names");
+        return Qnil;
+    }
+    ID new_id = korb_sym2id(new_v);
+    ID old_id = korb_sym2id(old_v);
+    struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
+    struct korb_method *m = korb_class_find_method(target, old_id);
+    if (!m) {
+        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        korb_raise(c, (struct korb_class *)eN,
+                   "undefined method '%s' for %s",
+                   korb_id_name(old_id),
+                   target->name ? korb_id_name(target->name) : "?");
+        return Qnil;
+    }
+    korb_class_alias_method(target, new_id, m);
+    return korb_id2sym(new_id);
+}
+
+NODE_DEF
+node_ary_concat(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
+{
+    VALUE l = EA(c, lhs);
+    VALUE r = EA(c, rhs);
+    if (BUILTIN_TYPE(l) != T_ARRAY) return l;
+    if (BUILTIN_TYPE(r) != T_ARRAY) return l;
+    struct korb_array *la = (struct korb_array *)l;
+    struct korb_array *ra = (struct korb_array *)r;
+    VALUE out = korb_ary_new_capa(la->len + ra->len);
+    for (long i = 0; i < la->len; i++) korb_ary_push(out, la->ptr[i]);
+    for (long i = 0; i < ra->len; i++) korb_ary_push(out, ra->ptr[i]);
+    return out;
+}
+
+NODE_DEF
+node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, uint32_t is_method, struct method_cache *mc)
+{
+    VALUE recv_val = is_method ? EA(c, recv) : c->self;
+    VALUE args_array = EA(c, args_node);
+    long n_args = 0;
+    if (BUILTIN_TYPE(args_array) == T_ARRAY) {
+        struct korb_array *aa = (struct korb_array *)args_array;
+        n_args = aa->len;
+        for (long i = 0; i < n_args; i++) {
+            c->fp[arg_index + i] = aa->ptr[i];
+        }
+    }
+    VALUE block_v = blk ? EA(c, blk) : Qnil;
+    struct korb_proc *block = (BUILTIN_TYPE(block_v) == T_PROC) ? (struct korb_proc *)block_v : NULL;
+    return korb_dispatch_call(c, n, recv_val, name, (uint32_t)n_args, arg_index, block, mc);
+}
+
+NODE_DEF @noinline
+node_class_def_in_strict(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *super_expr, NODE *body, uint32_t enforce_super_match)
+{
+    VALUE parent_v = EA(c, parent_expr);
+    if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
+        korb_raise_type_error(c, "%s is not a class/module",
+                              korb_id_name(korb_class_of_class(parent_v)->name));
+        return Qnil;
+    }
+    struct korb_class *parent = (struct korb_class *)parent_v;
+    /* private_constant guard: reopening `Outer::Priv` from outside Outer's
+     * lexical scope when Priv is private raises NameError. */
+    {
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private(parent, name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+                if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+                if (cr->klass == parent) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           parent->name ? korb_id_name(parent->name) : "?",
+                           korb_id_name(name));
+                return Qnil;
+            }
+        }
+    }
+    struct korb_class *super = korb_vm->object_class;
+    if (super_expr) {
+        VALUE sv = EA(c, super_expr);
+        if (BUILTIN_TYPE(sv) == T_CLASS) {
+            if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
+                korb_raise_type_error(c, "can't make subclass of singleton class");
+                return Qnil;
+            }
+            super = (struct korb_class *)sv;
+        } else if (enforce_super_match) {
+            korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                  korb_id_name(korb_class_of_class(sv)->name));
+            return Qnil;
+        }
+    }
+    struct korb_class *klass;
+    VALUE existing = korb_const_get(parent, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        klass = (struct korb_class *)existing;
+        if (enforce_super_match && klass->super != super) {
+            korb_raise_type_error(c, "superclass mismatch for class %s",
+                                  korb_id_name(name));
+            return Qnil;
+        }
+    } else if (!UNDEF_P(existing) && enforce_super_match) {
+        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        return Qnil;
+    } else {
+        klass = korb_class_new(name, super, T_OBJECT);
+        klass->name = 0;
+        korb_const_set(parent, name, (VALUE)klass);
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = klass;
+    c->self = (VALUE)klass;
+    c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+    return r;
+}
+
+NODE_DEF @noinline
+node_class_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *super_expr, NODE *body)
+{
+    /* Non-strict variant: same shape as _strict with enforce_super_match
+     * = 0.  Inlined here to avoid the per-arg dispatcher plumbing the
+     * generated EVAL wrappers expect. */
+    VALUE parent_v = EA(c, parent_expr);
+    if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
+        korb_raise_type_error(c, "%s is not a class/module",
+                              korb_id_name(korb_class_of_class(parent_v)->name));
+        return Qnil;
+    }
+    struct korb_class *parent = (struct korb_class *)parent_v;
+    {
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private(parent, name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+                if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+                if (cr->klass == parent) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           parent->name ? korb_id_name(parent->name) : "?",
+                           korb_id_name(name));
+                return Qnil;
+            }
+        }
+    }
+    struct korb_class *super = korb_vm->object_class;
+    if (super_expr) {
+        VALUE sv = EA(c, super_expr);
+        if (BUILTIN_TYPE(sv) == T_CLASS) super = (struct korb_class *)sv;
+    }
+    struct korb_class *klass;
+    VALUE existing = korb_const_get(parent, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        klass = (struct korb_class *)existing;
+    } else {
+        klass = korb_class_new(name, super, T_OBJECT);
+        klass->name = 0;
+        korb_const_set(parent, name, (VALUE)klass);
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = klass;
+    c->self = (VALUE)klass;
+    c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+    return r;
+}
+
+NODE_DEF @noinline
+node_module_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *body)
+{
+    VALUE parent_v = EA(c, parent_expr);
+    if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
+        korb_raise_type_error(c, "%s is not a class/module",
+                              korb_id_name(korb_class_of_class(parent_v)->name));
+        return Qnil;
+    }
+    struct korb_class *parent = (struct korb_class *)parent_v;
+    {
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private(parent, name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+                if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+                if (cr->klass == parent) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           parent->name ? korb_id_name(parent->name) : "?",
+                           korb_id_name(name));
+                return Qnil;
+            }
+        }
+    }
+    struct korb_class *mod;
+    VALUE existing = korb_const_get(parent, name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
+        mod = (struct korb_class *)existing;
+    } else if (!UNDEF_P(existing)) {
+        korb_raise_type_error(c, "%s is not a module",
+                              korb_id_name(name));
+        return Qnil;
+    } else {
+        mod = korb_module_new(name);
+        mod->name = 0;
+        korb_const_set(parent, name, (VALUE)mod);
+    }
+    struct korb_class *prev_class = c->current_class;
+    VALUE prev_self = c->self;
+    struct korb_cref new_cref = { .klass = mod, .prev = c->cref };
+    struct korb_cref *prev_cref = c->cref;
+    c->current_class = mod;
+    c->self = (VALUE)mod;
+    c->cref = &new_cref;
+    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
+    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    c->current_class = prev_class;
+    c->self = prev_self;
+    c->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame((VALUE)mod, fp_lo, fp_hi + 1024);
+    return r;
+}
+
+NODE_DEF
+node_do_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    /* begin; body; end while cond */
+    do {
+    redo_do_while:
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
+                VALUE bv = c->state_value;
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                return bv;
+            }
+            else if (c->state == KORB_NEXT) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                /* go back to cond check */
+            }
+            else if (c->state == KORB_REDO) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                goto redo_do_while;
+            }
+            else return Qnil;
+        }
+        VALUE v = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        if (!RTEST(v)) break;
+    } while (1);
+    return Qnil;
+}
+
+NODE_DEF
+node_do_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    do {
+    redo_do_until:
+        EVAL_ARG(c, body);
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
+                VALUE bv = c->state_value;
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                return bv;
+            }
+            else if (c->state == KORB_NEXT) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+            }
+            else if (c->state == KORB_REDO) {
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                goto redo_do_until;
+            }
+            else return Qnil;
+        }
+        VALUE v = EVAL_ARG(c, cond);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        if (RTEST(v)) break;
+    } while (1);
+    return Qnil;
+}

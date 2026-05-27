@@ -1,0 +1,6 @@
+==== PGO bench 2026-05-03T05:07:29+00:00 RUNS=10 FRAMES=300 ====
+PGO_g15_baseline                                   size=3575872 best=107.61765726039629 median=106.70590661175697 mean=106.734 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O2 a=-O2\ -march=native
+PGO_g15_O3                                         size=3575872 best=107.00202593567545 median=106.51158200655077 mean=106.124 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native
+PGO_g16_baseline                                   size=3686520 best=106.78177328737564 median=105.60579250338441 mean=105.386 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O2 a=-O2\ -march=native
+PGO_g13_baseline                                   size=3391552 best=102.87044314011264 median=102.1519349326252 mean=102.036 k_cc=/usr/bin/gcc-13 a_cc=/usr/bin/gcc-13 k=-O2 a=-O2\ -march=native
+PGO_g15_aot_O3                                     size=4166216 best=102.3640022221261 median=101.37803045308155 mean=100.980 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O2 a=-O3\ -march=native

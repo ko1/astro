@@ -1,0 +1,4 @@
+==== bench-matrix run 2026-05-03T13:02:02+00:00 RUNS=10 FRAMES=300 ====
+rule: no -flto in a_flags; LDFLAGS=-fno-lto for all.so
+PGB_g15_baseline                                   size=3904792 best=110.54986847661453 median=109.58889559344175 mean=109.476 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native
+PGB_g16_baseline                                   size=4011344 best=109.16241906296362 median=107.60200386353426 mean=107.446 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O3 a=-O2\ -march=native

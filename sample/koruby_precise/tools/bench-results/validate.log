@@ -1,0 +1,16 @@
+==== bench-matrix run 2026-05-03T04:42:57+00:00 RUNS=10 FRAMES=300 ====
+rule: no -flto in a_flags; LDFLAGS=-fno-lto for all.so
+V_g15_baseline                                     size=3575872 best=106.3157723037542 median=105.61082128926645 mean=105.707 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native
+V_g15_fnotreevectorize                             size=3567680 best=106.26925556407244 median=105.0235383800754 mean=105.329 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native\ -fno-tree-vectorize
+V_g15_WlO3                                         size=3575872 best=106.23967696208103 median=105.16989498355387 mean=105.285 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native\ -Wl\,-O3
+V_g15_fuse_gold                                    size=3575872 best=105.39074231577601 median=104.79235464943713 mean=104.755 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native\ -fuse-ld=gold
+V_g15_paramMaxInline300                            size=3575872 best=105.00229289756284 median=104.52012978745002 mean=104.209 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native\ --param=max-inline-insns-auto=300
+V_g15_gc_sections                                  size=3575872 best=105.49226612190523 median=104.37158769537729 mean=104.554 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native\ -Wl\,--gc-sections
+V_g15_fipacpclone                                  size=3575872 best=106.04175740854632 median=105.14363602576739 mean=105.129 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native\ -fipa-cp-clone
+V_g15_fnostackprotector                            size=3575872 best=105.91742905558718 median=104.81920261684522 mean=104.553 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O3 a=-O2\ -march=native\ -fno-stack-protector
+V_g16_baseline                                     size=3686520 best=105.6405615456242 median=104.31076399864831 mean=104.453 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O3 a=-O2\ -march=native
+V_g16_fnotreevectorize                             size=3674232 best=105.17148648964803 median=103.64945349011832 mean=103.504 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O3 a=-O2\ -march=native\ -fno-tree-vectorize
+V_g16_paramMaxInline300                            size=3686520 best=104.84993019660394 median=104.27029854755298 mean=104.019 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O3 a=-O2\ -march=native\ --param=max-inline-insns-auto=300
+V_g15_kO2                                          size=3575872 best=105.18041226362197 median=103.72576132005572 mean=103.755 k_cc=/usr/bin/gcc-15 a_cc=/usr/bin/gcc-15 k=-O2 a=-O2\ -march=native
+V_g16_kO2                                          size=3686520 best=104.76084253884494 median=104.10572023526866 mean=103.663 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O2 a=-O2\ -march=native
+V_g16_kO2_fnotreevectorize                         size=3674232 best=104.94973503616418 median=103.41526023439137 mean=103.766 k_cc=/usr/bin/gcc-16 a_cc=/usr/bin/gcc-16 k=-O2 a=-O2\ -march=native\ -fno-tree-vectorize

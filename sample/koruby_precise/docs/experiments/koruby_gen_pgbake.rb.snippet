@@ -1,0 +1,226 @@
+require 'astrogen'
+
+class KoRubyNodeDef < ASTroGen::NodeDef
+  class Node < ASTroGen::NodeDef::Node
+    # PG-baked call sites: at SPECIALIZE time we read `mc` (populated by the
+    # just-finished run) and, when the prologue is one of the bakable
+    # ast_simple_N variants, emit a guarded direct call into the callee
+    # body's SD via prologue_ast_simple_static_inl (already in prologues.h).
+    # Falls back to the original EVAL_node_<name>(...) on guard miss or
+    # when mc was never filled.
+    PG_CALL_NODES = {
+      'node_func_call'         => { has_recv: false, has_block: false },
+      'node_method_call'       => { has_recv: true,  has_block: false },
+      'node_func_call_block'   => { has_recv: false, has_block: true  },
+      'node_method_call_block' => { has_recv: true,  has_block: true  },
+    }.freeze
+
+    def build_specializer
+      info = PG_CALL_NODES[@name]
+      return super unless info
+      build_pg_call_specializer(info)
+    end
+
+    # The C body returned here is itself C source code that, when compiled,
+    # emits SD_*.c content.  Layered Ruby-string-into-C-fprintf-into-C-source
+    # is messy; we keep it simple by composing as raw heredocs (no further
+    # nesting) and using sprintf for the inner C fprintf calls.
+    def build_pg_call_specializer(info)
+      name       = @name
+      mc_f       = "n->u.#{name}.mc"
+      argc_f     = "n->u.#{name}.argc"
+      argi_f     = "n->u.#{name}.arg_index"
+      name_f     = "n->u.#{name}.name"
+      recv_f     = info[:has_recv] ? "n->u.#{name}.recv" : nil
+      blk_f      = info[:has_block] ? "n->u.#{name}.blk" : nil
+
+      # === Pieces that vary by recv / block presence ===
+      # Specialize children (recv, blk) before this node so their SDs exist.
+      child_specialize = []
+      child_specialize << "    SPECIALIZE(fp, #{recv_f});" if recv_f
+      child_specialize << "    SPECIALIZE(fp, #{blk_f});"  if blk_f
+
+      # Forward decls for child dispatchers (same TU).
+      child_decls = []
+      child_decls << <<~C if recv_f
+            if (#{recv_f}) { fprintf(fp, "static inline VALUE %s(CTX * restrict c, NODE * restrict n);\\n", #{recv_f}->head.dispatcher_name); }
+      C
+      child_decls << <<~C if blk_f
+            if (#{blk_f}) { fprintf(fp, "static inline VALUE %s(CTX * restrict c, NODE * restrict n);\\n", #{blk_f}->head.dispatcher_name); }
+      C
+
+      # ---- PG-baked SD body emission (C code that prints C code) ----
+      # In the PG-baked SD we evaluate recv (if any) once and stash to
+      # recv_v, evaluate block (if any) once, then guard mc and call the
+      # static prologue with the body dispatcher baked in.
+
+      # recv evaluation in the emitted SD body
+      recv_eval = if recv_f
+        <<~C
+                fprintf(fp, "    NODE *recv = #{recv_f};\\n");
+                fprintf(fp, "    VALUE recv_v = (*recv->head.dispatcher)(c, recv);\\n");
+                fprintf(fp, "    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;\\n");
+        C
+      else
+        '            fprintf(fp, "    VALUE recv_v = c->self;\n");'
+      end
+
+      # block evaluation in the emitted SD body
+      block_eval = if blk_f
+        <<~C
+                if (#{blk_f}) {
+                    fprintf(fp, "    NODE *blk = #{blk_f};\\n");
+                    fprintf(fp, "    VALUE blkv = (*blk->head.dispatcher)(c, blk);\\n");
+                    fprintf(fp, "    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;\\n");
+                    fprintf(fp, "    struct korb_proc *block = (blkv == Qnil) ? NULL : (struct korb_proc *)blkv;\\n");
+                } else {
+                    fprintf(fp, "    struct korb_proc *block = NULL;\\n");
+                }
+        C
+      else
+        '            fprintf(fp, "    struct korb_proc *block = NULL;\n");'
+      end
+
+      # Fallback EVAL call args in the emitted SD (after `EVAL_<name>(c, n,`)
+      fallback_eval_call = if recv_f && blk_f
+        <<~C
+                fprintf(fp, "    return EVAL_#{name}(c, n, #{recv_f}, %s, #{name_f}, %u, %u, #{blk_f}, #{blk_f} ? %s : NULL, #{mc_f});\\n",
+                        DISPATCHER_NAME(#{recv_f}),
+                        #{argc_f}, #{argi_f},
+                        #{blk_f} ? DISPATCHER_NAME(#{blk_f}) : "NULL");
+        C
+      elsif recv_f
+        <<~C
+                fprintf(fp, "    return EVAL_#{name}(c, n, #{recv_f}, %s, #{name_f}, %u, %u, #{mc_f});\\n",
+                        DISPATCHER_NAME(#{recv_f}),
+                        #{argc_f}, #{argi_f});
+        C
+      elsif blk_f
+        <<~C
+                fprintf(fp, "    return EVAL_#{name}(c, n, #{name_f}, %u, %u, #{blk_f}, #{blk_f} ? %s : NULL, #{mc_f});\\n",
+                        #{argc_f}, #{argi_f},
+                        #{blk_f} ? DISPATCHER_NAME(#{blk_f}) : "NULL");
+        C
+      else
+        <<~C
+                fprintf(fp, "    return EVAL_#{name}(c, n, #{name_f}, %u, %u, #{mc_f});\\n",
+                        #{argc_f}, #{argi_f});
+        C
+      end
+
+      # Original (non-PG) SD body — same as the auto-generated path.
+      orig_eval_call = fallback_eval_call
+
+      <<~C
+      static void
+      SPECIALIZE_#{name}(FILE *fp, NODE *n, bool is_public)
+      {
+      #{child_specialize.join("\n")}
+          const char *dispatcher_name = alloc_dispatcher_name(n);
+          n->head.dispatcher_name = dispatcher_name;
+
+          fprintf(fp, "// ");
+          DUMP(fp, n, true);
+          fprintf(fp, "\\n");
+
+      #{child_decls.join.chomp}
+
+          /* PG-bake: read live mc populated by the just-finished run. */
+          struct method_cache *mc = #{mc_f};
+          int simple_n = -1;
+          if (mc && mc->serial == korb_g_method_serial && mc->body && mc->dispatcher) {
+              if      (mc->prologue == prologue_ast_simple_0) simple_n = 0;
+              else if (mc->prologue == prologue_ast_simple_1) simple_n = 1;
+              else if (mc->prologue == prologue_ast_simple_2) simple_n = 2;
+              else if (mc->prologue == prologue_ast_simple_3) simple_n = 3;
+          }
+
+          if (simple_n >= 0) {
+              /* Direct-call across TU eliminates the mc->dispatcher
+               * indirect load + indirect call.  body lives in its own TU
+               * as a public symbol (compiled via astro_cs_compile on each
+               * code_repo entry).  We tried recursive SPECIALIZE here to
+               * pull the body into THIS TU as static inline so gcc can
+               * actually inline (true speculative inline), but the size
+               * bloat (3.9MB→7.9MB on optcarrot) hurt icache enough to
+               * regress -10 fps even with AOT-PGO trim.  Direct call wins. */
+              fprintf(fp, "extern VALUE %s(CTX *, NODE *);\\n", mc->body->head.dispatcher_name);
+
+              if (!is_public) fprintf(fp, "static inline ");
+              fprintf(fp, "__attribute__((no_stack_protector)) VALUE\\n");
+              fprintf(fp, "%s(CTX * restrict c, NODE * restrict n)\\n", dispatcher_name);
+              fprintf(fp, "{\\n");
+      #{recv_eval.chomp}
+      #{block_eval.chomp}
+              fprintf(fp, "    struct method_cache *mc = #{mc_f};\\n");
+              fprintf(fp, "    if (LIKELY(mc->serial == korb_g_method_serial && mc->dispatcher == %s)) {\\n",
+                      mc->body->head.dispatcher_name);
+              fprintf(fp, "        return prologue_ast_simple_static_inl(c, n, recv_v, %u, %u, block, mc, %d, %s);\\n",
+                      #{argc_f}, #{argi_f}, simple_n, mc->body->head.dispatcher_name);
+              fprintf(fp, "    }\\n");
+      #{fallback_eval_call.chomp}
+              fprintf(fp, "}\\n\\n");
+          } else {
+              if (!is_public) fprintf(fp, "static inline ");
+              fprintf(fp, "__attribute__((no_stack_protector)) VALUE\\n");
+              fprintf(fp, "%s(CTX * restrict c, NODE * restrict n)\\n", dispatcher_name);
+              fprintf(fp, "{\\n");
+      #{orig_eval_call.chomp}
+              fprintf(fp, "}\\n\\n");
+          }
+      }
+      C
+    end
+
+    class Operand < ASTroGen::NodeDef::Node::Operand
+      def hash_call(val, kind: :horg)
+        return "0" if ref?
+        case @type
+        when 'ID'
+          "hash_cstr(korb_id_name(#{val}))"
+        when 'intptr_t'
+          "hash_uint64((uint64_t)#{val})"
+        when 'struct method_cache *', 'struct call_cache *', 'struct ivar_cache *', 'struct korb_proc *', 'struct korb_class *'
+          "0"
+        else
+          super
+        end
+      end
+
+      def build_dumper(name)
+        return nil if ref?
+        return nil if storageless?
+        case @type
+        when 'ID'
+          "        fprintf(fp, \"%s\", korb_id_name(n->u.#{name}.#{self.name}));"
+        when 'intptr_t'
+          "        fprintf(fp, \"%ld\", (long)n->u.#{name}.#{self.name});"
+        when 'struct method_cache *', 'struct call_cache *'
+          "        fprintf(fp, \"<cache>\");"
+        else
+          super
+        end
+      end
+
+      def build_specializer(name)
+        if ref?
+          arg = "    fprintf(fp, \"        &n->u.#{name}.#{self.name}\");"
+          return nil, arg
+        end
+        case @type
+        when 'ID'
+          arg = "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
+          return nil, arg
+        when 'intptr_t'
+          arg = "    fprintf(fp, \"        (intptr_t)%ld\", (long)n->u.#{name}.#{self.name});"
+          return nil, arg
+        when 'struct method_cache *', 'struct call_cache *', 'struct ivar_cache *', 'struct korb_proc *', 'struct korb_class *'
+          arg = "    fprintf(fp, \"        n->u.#{name}.#{self.name}\");"
+          return nil, arg
+        else
+          super
+        end
+      end
+    end
+  end
+end

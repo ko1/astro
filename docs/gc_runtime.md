@@ -1323,43 +1323,14 @@ BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1  # 高頻度 GC + 64 GiB round-robin mprote
 詳細は `docs/gc_design.md §3.3` 参照。 backend ID 17 (= 旧 copy_scramble)
 は再利用しない (= 既存 baked code store 互換性のため永久欠番)。
 
-## 4. 共通 framework API
+## 4. (削除済) 共通 framework API
 
-### 4.1 sample 側必須
+このセクションは Phase 2c / Phase 3 (= 2026-05) の API 整理で stale 化。
+正規の API documentation は以下を参照:
 
-- `AROH_VISIT_ROOTS(c, ctx, edge_visit)` — root scan macro。 sample 固有の root
-  (= eval stack, globals 等) を `edge_visit` で walk
-- `AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit)` — obj の outgoing
-  edges を walk。 sample が type tag で dispatch
-- `AROH_FINALIZE(payload)` — finalize hook (= mpz_clear 等)、 sample 不要なら no-op
-- `AROH_IS_GC_OBJECT(v)` — VALUE が GC managed heap pointer かの predicate
-
-### 4.2 framework 提供
-
-- `aro_gc_alloc(c, size)` — scan-safe alloc (= zero-init)
-- `aro_gc_alloc_byte(c, size)` — raw byte alloc (= zero-init なし、 sample が即 fill)
-- `aro_gc_realloc_payload(c, p, new)` — sample 側で実装 (= sp slot park パターン)
-- `aro_gc_store(c, holder, slot, val)` — write barrier
-- `aro_gc_store_bulk(c, holder, dst, src, n)` — bulk WB
-- `aro_gc_collect(c)` — 強制 collect (= 通常 major)
-- `aro_gc_account_external(c, delta)` — GMP buffer 等 external 量を framework に
-  通知 (= 閾値超で GC 発火)
-- `aro_gc_finalize_register/check/walk/fini`
-
-### 4.3 backend hook
-
-backend は `gc_*.c` で以下を実装:
-- `aro_gc_init(c)`, `aro_gc_fini(c)`
-- `aro_gc_alloc_raw(c, size)` / `aro_gc_alloc_byte_raw(c, size)` (= encode は framework が wrap)
-- `aro_gc_collect(c)` (= 強制 major)
-- `aro_gc_size_of(payload)`
-- `aro_gc_finalize_check(c, payload)`
-- WB: `ARO_GC_HAS_WB` 定義時に `aro_gc_store` (out-of-line) or `aro_gc_remember`
-  (inline fast path + cold extern)。 `ARO_GC_WB_OLD_MASK` 定義時は gc.h の
-  inline fast-path が使われる (= mark_gen / copy_gen / mark_compact_gen /
-  mark_bump_gen / immix_gen 等)
-
-詳細 layering は `runtime/precise_gc/gc.h` と `gc_types.h` の冒頭 comment を参照。
+- 設計と contract: `docs/gc_design.md §2 (sample 提供) / §3 (framework 提供)`
+- 実装の中身 (= macros / inline fns): `runtime/precise_gc/gc.h` 冒頭 comment
+- 新 sample の migration 手順: `docs/precise_gc_quickstart.md`
 
 ## 5. 実装上の問題点メモ
 
