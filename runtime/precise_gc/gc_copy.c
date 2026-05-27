@@ -419,6 +419,15 @@ forward_payload(ASTroGC *gc, void *old_payload)
      * overwriting first sample field — from-space is discarded after
      * collect, so destruction is harmless). */
     size_t aligned = ALIGN8(oldh->gc_size);
+    /* Sanity: if old is in to-space already (= someone double-forwarded
+     * a slot that was already rewritten), abort with diagnostic. */
+    if ((char *)old_payload >= gc->to_base &&
+        (char *)old_payload < gc->to_base + gc->region_bytes) {
+        fprintf(stderr, "GC BUG forward to-space old=%p to_base=%p to_top=%p flags=0x%x size=%u\n",
+                old_payload, (void*)gc->to_base, (void*)gc->to_top,
+                oldh->flags, oldh->gc_size);
+        abort();
+    }
     void *new_payload = gc->to_top;
     memcpy(new_payload, old_payload, aligned);
     /* memcpy copied oldh's gc_flags (without FORWARDED yet) — fine. */

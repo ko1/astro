@@ -1,5 +1,9 @@
 /* Shared runtime helpers for koruby — used by both the REPL main and
- * the standalone exe driver emitted by `--generate-executable`. */
+ * the standalone exe driver emitted by `--generate-executable`.
+ *
+ * Also houses the AROH_VISIT_ROOTS / AROH_SCAN_EDGES out-of-line
+ * implementations (declared in context.h, dispatched here so the heavy
+ * switch on heap-obj type and the chain walks live in one place). */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,26 +16,239 @@
 
 extern struct koruby_option OPTION;
 
+/* ---------------------------------------------------------------------------
+ * Precise GC root scan + per-type edge walk.
+ *
+ * koruby_visit_roots: walks every root slot the GC must see — the linear
+ * c->stack_base..c->sp value-stack range, CTX-held VALUEs, the cref and
+ * current_frame chains, and the korb_vm globals.  Sample-side helpers
+ * place live VALUEs into ARO_ROOT_SCOPE-managed slots (or sp[] directly)
+ * so they appear in the value-stack range.
+ *
+ * koruby_scan_edges: dispatches on `head.flags & T_MASK` and visits the
+ * outgoing edges of one heap object.  basic.klass is visited HERE (not
+ * in the per-type helper) — a class/module obj's basic.klass would be
+ * double-forwarded if visit_class_edges also visited it, leading to a
+ * runaway memcpy phantom into to_top under Cheney.
+ * --------------------------------------------------------------------------- */
+
+static inline void
+visit_value_slot(void *ctx, koruby_edge_fn fn, VALUE *slot)
+{
+    VALUE v = *slot;
+    if (v == 0 || SPECIAL_CONST_P(v)) return;
+    fn(ctx, (void **)slot);
+}
+
+static inline void
+visit_ptr_slot(void *ctx, koruby_edge_fn fn, void **slot)
+{
+    if (*slot == NULL) return;
+    fn(ctx, slot);
+}
+
+static void
+visit_method_table(void *ctx, koruby_edge_fn fn,
+                   struct korb_method_table *mt)
+{
+    if (!mt || !mt->buckets) return;
+    for (uint32_t i = 0; i < mt->bucket_cnt; i++) {
+        for (struct korb_method_table_entry *e = mt->buckets[i]; e; e = e->next) {
+            struct korb_method *m = e->method;
+            if (!m) continue;
+            visit_ptr_slot(ctx, fn, (void **)&m->defining_class);
+            for (struct korb_cref *cr = m->def_cref; cr; cr = cr->prev) {
+                visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+            }
+            if (m->type == KORB_METHOD_PROC) {
+                visit_ptr_slot(ctx, fn, (void **)&m->u.proc.proc);
+            }
+        }
+    }
+}
+
+static void
+visit_const_chain(void *ctx, koruby_edge_fn fn, struct korb_const_entry *head)
+{
+    for (struct korb_const_entry *e = head; e; e = e->next) {
+        visit_value_slot(ctx, fn, &e->value);
+    }
+}
+
+/* NOTE: deliberately does NOT visit k->basic.klass — koruby_scan_edges
+ * handles that BEFORE dispatching here.  Visiting it twice would re-pass
+ * the (already to-space-rewritten) slot value into forward, which under
+ * Cheney memcpy's a phantom obj into to_top → scan loop runaway. */
+static void
+visit_class_edges(void *ctx, koruby_edge_fn fn, struct korb_class *k)
+{
+    if (!k) return;
+    visit_ptr_slot(ctx, fn, (void **)&k->super);
+    for (uint32_t i = 0; i < k->includes_cnt; i++) {
+        visit_ptr_slot(ctx, fn, (void **)&k->includes[i]);
+    }
+    for (uint32_t i = 0; i < k->prepends_cnt; i++) {
+        visit_ptr_slot(ctx, fn, (void **)&k->prepends[i]);
+    }
+    visit_method_table(ctx, fn, &k->methods);
+    visit_const_chain(ctx, fn, k->constants);
+    for (uint32_t i = 0; i < k->class_ivar_cnt; i++) {
+        visit_value_slot(ctx, fn, &k->class_ivars[i].value);
+    }
+    for (uint32_t i = 0; i < k->cvar_cnt; i++) {
+        visit_value_slot(ctx, fn, &k->cvars[i].value);
+    }
+    visit_ptr_slot(ctx, fn, (void **)&k->anon_parent);
+}
+
+void
+koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
+{
+    /* (a) Value stack — c->stack_base..c->sp linear range.  Skipped when
+     * stack_base is NULL (= bootstrap before stack alloc); the early
+     * bootstrap relies on korb_vm globals being NULL too so no real
+     * roots are missed. */
+    if (c->stack_base && c->sp) {
+        for (VALUE *p = c->stack_base; p < c->sp; p++) {
+            visit_value_slot(ctx, fn, p);
+        }
+    }
+    /* (b) CTX-held VALUEs. */
+    visit_value_slot(ctx, fn, &c->self);
+    visit_value_slot(ctx, fn, &c->state_value);
+    visit_ptr_slot(ctx, fn, (void **)&c->current_class);
+    /* (c) cref chain. */
+    for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+        visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+    }
+    /* (d) current_frame chain. */
+    for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+        visit_value_slot(ctx, fn, &f->self);
+        visit_value_slot(ctx, fn, &f->last_line);
+        visit_value_slot(ctx, fn, &f->last_match);
+        visit_ptr_slot(ctx, fn, (void **)&f->block);
+    }
+    /* (e) korb_vm globals — all class / module pointers + main_obj +
+     * globals method-table.  korb_vm itself lives in libc memory; only
+     * the heap pointers it holds need visiting. */
+    if (korb_vm) {
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->object_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->class_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->module_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->integer_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->float_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->string_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->array_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->hash_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->symbol_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->true_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->false_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->nil_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->proc_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->range_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->kernel_module);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->comparable_module);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->enumerable_module);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->numeric_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->fiber_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->method_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->binding_class);
+        visit_ptr_slot(ctx, fn, (void **)&korb_vm->main_obj_class);
+        visit_value_slot(ctx, fn, &korb_vm->main_obj);
+        visit_method_table(ctx, fn, &korb_vm->globals);
+    }
+}
+
+void
+koruby_scan_edges(void *payload, size_t payload_size,
+                  void *ctx, koruby_edge_fn fn)
+{
+    (void)payload_size;
+    struct RBasic *b = (struct RBasic *)payload;
+    /* klass field — common to every heap obj.  Visited ONCE here so
+     * sub-dispatch (visit_class_edges etc.) MUST NOT visit it again. */
+    visit_ptr_slot(ctx, fn, (void **)&b->klass);
+    int t = (b->head.flags & T_MASK);
+    switch (t) {
+      case T_OBJECT: {
+          struct korb_object *o = (struct korb_object *)payload;
+          for (uint32_t i = 0; i < o->ivar_cnt; i++) {
+              visit_value_slot(ctx, fn, &o->ivars[i]);
+          }
+          break;
+      }
+      case T_STRING:
+          /* string.ptr is libc-malloc'd byte buffer, not a GC heap obj. */
+          break;
+      case T_ARRAY: {
+          struct korb_array *a = (struct korb_array *)payload;
+          /* a->ptr is libc-malloc'd VALUE[]; walk its contents directly. */
+          for (long i = 0; i < a->len; i++) {
+              visit_value_slot(ctx, fn, &a->ptr[i]);
+          }
+          break;
+      }
+      case T_HASH: {
+          struct korb_hash *h = (struct korb_hash *)payload;
+          /* Insertion-order chain visits each entry once.  Entries are
+           * libc-malloc'd; their VALUEs are heap refs. */
+          for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+              visit_value_slot(ctx, fn, &e->key);
+              visit_value_slot(ctx, fn, &e->value);
+          }
+          visit_value_slot(ctx, fn, &h->default_value);
+          visit_value_slot(ctx, fn, &h->default_proc);
+          break;
+      }
+      case T_RANGE: {
+          struct korb_range *r = (struct korb_range *)payload;
+          visit_value_slot(ctx, fn, &r->begin);
+          visit_value_slot(ctx, fn, &r->end);
+          break;
+      }
+      case T_FLOAT:
+      case T_BIGNUM:
+          /* Numeric scalars — no heap-pointer edges.  Bignum's mpz_t is
+           * libc-malloc'd via GMP, freed by Phase 5 finalizer. */
+          break;
+      case T_CLASS:
+      case T_MODULE:
+          visit_class_edges(ctx, fn, (struct korb_class *)payload);
+          break;
+      case T_PROC: {
+          struct korb_proc *p = (struct korb_proc *)payload;
+          /* env is a libc-malloc'd VALUE[] of captured locals. */
+          if (p->env) {
+              for (uint32_t i = 0; i < p->env_size; i++) {
+                  visit_value_slot(ctx, fn, &p->env[i]);
+              }
+          }
+          visit_value_slot(ctx, fn, &p->self);
+          visit_ptr_slot(ctx, fn, (void **)&p->enclosing_block);
+          for (struct korb_cref *cr = p->cref; cr; cr = cr->prev) {
+              visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+          }
+          visit_ptr_slot(ctx, fn, (void **)&p->lexical_parent_block);
+          break;
+      }
+      case T_DATA:
+      case T_SYMBOL:
+      case T_NODE:
+      case T_NONE:
+      default:
+          /* No outgoing edges, or sample handles separately. */
+          break;
+    }
+}
+
 CTX *
 koruby_setup_ctx(const char *current_file)
 {
-    CTX *c = korb_xcalloc(1, sizeof(CTX));
-    korb_vm->current_ctx = c;
-    /* The value stack is heap allocated (libc malloc, NOT GC heap) so
-     * the framework can scan it via AROH_VISIT_ROOTS without colliding
-     * with GC heap object iteration.  16M slots. */
-    size_t stack_size = 16 * 1024 * 1024;
-    c->stack_base = korb_xmalloc(stack_size * sizeof(VALUE));
-    for (size_t i = 0; i < stack_size; i++) c->stack_base[i] = Qnil;
-    c->stack_end  = c->stack_base + stack_size;
-    c->fp = c->stack_base;
-    c->sp = c->fp;
-    c->env = c->stack_base;  /* root scan lower bound */
-    /* Initialize the precise GC instance now that CTX is set up.
-     * aro_gc_init binds c->astro_gc; subsequent aro_gc_alloc calls
-     * read from / write to c->astro_gc + use AROH_VISIT_ROOTS for
-     * root scan.  Must come BEFORE any aro_gc_alloc on this CTX. */
-    aro_gc_init(c);
+    /* Reuse the bootstrap CTX that korb_runtime_init initialized — it
+     * already has c->astro_gc bound, c->stack_base mmap'd, c->sp = base.
+     * koruby_setup_ctx just attaches the per-run roots (self / cref /
+     * current_file / state). */
+    CTX *c = korb_vm->current_ctx;
     c->self = korb_vm->main_obj;
     c->current_class = korb_vm->object_class;
     static struct korb_cref top_cref;

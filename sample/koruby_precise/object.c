@@ -183,51 +183,52 @@ struct korb_method *method_table_get(const struct korb_method_table *mt, ID name
 }
 
 struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_type instance_type) {
-    struct korb_class *k = korb_xmalloc(sizeof(*k));
-    k->basic.head.flags = T_CLASS;
-    k->basic.klass = korb_vm ? (VALUE)korb_vm->class_class : 0;
-    /* CRuby model: a subclass's metaclass has the parent's metaclass
-     * as its superclass.  That's how `def self.X` on Parent becomes
-     * callable as Child.X.  Without this, every class shares the
-     * shared `class_class` metaclass and singleton methods don't
-     * propagate down the inheritance chain. */
-    if (super && super->basic.klass &&
-        (struct korb_class *)super->basic.klass != korb_vm->class_class) {
-        struct korb_class *child_meta = korb_xmalloc(sizeof(*child_meta));
-        memset(child_meta, 0, sizeof(*child_meta));
-        child_meta->basic.head.flags = T_CLASS | FL_SINGLETON;
-        child_meta->basic.klass = korb_vm ? (VALUE)korb_vm->class_class : 0;
-        child_meta->name = name;
-        child_meta->super = (struct korb_class *)super->basic.klass;
-        child_meta->instance_type = T_CLASS;
-        method_table_init(&child_meta->methods);
-        child_meta->default_visibility = KORB_VIS_PUBLIC;
-        k->basic.klass = (VALUE)child_meta;
-    }
-    k->name = name;
-    k->super = super;
-    k->instance_type = instance_type;
-    method_table_init(&k->methods);
-    k->constants = NULL;
-    k->ivar_names = NULL;
-    k->ivar_count = 0;
-    k->ivar_capa = 0;
-    k->includes = NULL;
-    k->includes_cnt = 0;
-    k->includes_capa = 0;
-    k->prepends = NULL;
-    k->prepends_cnt = 0;
-    k->prepends_capa = 0;
-    k->default_visibility = KORB_VIS_PUBLIC;
-    k->class_ivars = NULL;
-    k->class_ivar_cnt = 0;
-    k->class_ivar_capa = 0;
-    k->cvars = NULL;
-    k->cvar_cnt = 0;
-    k->cvar_capa = 0;
-    k->anon_parent = NULL;
-    k->anon_name_in_parent = 0;
-    return k;
+    /* Precise GC: allocate on GC heap via aro_gc_alloc.  super needs
+     * protection across the inner child_meta alloc (= may trigger GC
+     * which can relocate super under moving GC).  k itself needs
+     * protection across child_meta alloc.  Pattern: park live VALUEs
+     * in ARO_ROOT slots, reload C-local pointers after each alloc. */
+    CTX *c = korb_vm->current_ctx;
+    struct korb_class *k_ret;
+    ARO_ROOT_SCOPE_START(c, r, 3) {
+        /* r[0]=super, r[1]=k, r[2]=child_meta (if created) */
+        r[0] = (VALUE)super;
+        r[1] = aro_gc_alloc(c, sizeof(struct korb_class));
+        super = (struct korb_class *)r[0];                /* reload */
+        struct korb_class *k = (struct korb_class *)r[1];
+        /* AROH_INIT_PAYLOAD already zero-filled post-head; fields just
+         * need their non-zero values set. */
+        k->basic.head.flags = T_CLASS;
+        k->basic.klass = korb_vm->class_class;
+        /* CRuby model: a subclass's metaclass has the parent's metaclass
+         * as its superclass.  Without this, singleton methods don't
+         * propagate down the inheritance chain. */
+        if (super && super->basic.klass &&
+            (struct korb_class *)super->basic.klass != korb_vm->class_class) {
+            r[2] = aro_gc_alloc(c, sizeof(struct korb_class));
+            super = (struct korb_class *)r[0];            /* reload */
+            k     = (struct korb_class *)r[1];            /* reload */
+            struct korb_class *child_meta = (struct korb_class *)r[2];
+            child_meta->basic.head.flags = T_CLASS | FL_SINGLETON;
+            child_meta->basic.klass = korb_vm->class_class;
+            child_meta->name = name;
+            child_meta->super = (struct korb_class *)super->basic.klass;
+            child_meta->instance_type = T_CLASS;
+            method_table_init(&child_meta->methods);
+            child_meta->default_visibility = KORB_VIS_PUBLIC;
+            k->basic.klass = (VALUE)child_meta;
+        }
+        k->name = name;
+        k->super = super;
+        k->instance_type = instance_type;
+        method_table_init(&k->methods);
+        k->default_visibility = KORB_VIS_PUBLIC;
+        /* constants / ivar_* / includes_* / prepends_* / class_ivars /
+         * cvars / anon_parent / anon_name_in_parent all already zero
+         * via AROH_INIT_PAYLOAD. */
+        k_ret = k;
+    } ARO_ROOT_SCOPE_END(c, r);
+    return k_ret;
 }
 
 /* Class variables: walk the cref's class up the super chain to find
@@ -1247,40 +1248,52 @@ void korb_last_match_set(CTX *c, VALUE v) {
 
 /* ---- objects (with class-shape ivars) ---- */
 VALUE korb_object_new(struct korb_class *klass) {
-    int it = klass->instance_type ? klass->instance_type : T_OBJECT;
-    /* Class.allocate / Module.allocate must produce a struct big enough
-     * to hold a class — otherwise field accesses (super, methods,
-     * basic.flags) on the result later read past the malloc'd region.
-     * Mark such an "uninitialized class" by leaving super=NULL; the
-     * .new path below uses that to raise TypeError before dispatching.*/
-    if (it == T_CLASS || it == T_MODULE) {
-        struct korb_class *k = korb_xmalloc(sizeof(*k));
-        memset(k, 0, sizeof(*k));
-        k->basic.head.flags = it;
-        k->basic.klass = (VALUE)klass;
-        k->name = korb_intern("(uninitialized)");
-        k->instance_type = T_OBJECT;
-        return (VALUE)k;
-    }
-    struct korb_object *o = korb_xmalloc(sizeof(*o));
-    o->basic.head.flags = it;
-    o->basic.klass = (VALUE)klass;
-    /* Preallocate ivar slots based on the class's known ivar shape, so
-     * the inline ivar_set_ic fast path hits on the first write to each
-     * @ivar (otherwise every fresh object pays korb_ivar_set_ic_slow
-     * twice through initialize, which showed up as 6% on bm_object). */
-    uint32_t n = klass->ivar_count;
-    if (n) {
-        o->ivar_cnt = n;
-        o->ivar_capa = n;
-        o->ivars = korb_xmalloc(n * sizeof(VALUE));
-        for (uint32_t i = 0; i < n; i++) o->ivars[i] = Qnil;
-    } else {
-        o->ivar_cnt = 0;
-        o->ivar_capa = 0;
-        o->ivars = NULL;
-    }
-    return (VALUE)o;
+    /* Protect klass across the inner aro_gc_alloc — moving GC otherwise
+     * leaves the C local pointing into K-2's to-space, which is the same
+     * physical plane as K's to-space under 2-space alternation. */
+    CTX *c = korb_vm->current_ctx;
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, r, 2) {
+        r[0] = (VALUE)klass;
+        int it = klass->instance_type ? klass->instance_type : T_OBJECT;
+        if (it == T_CLASS || it == T_MODULE) {
+            /* Class.allocate / Module.allocate must produce a struct big
+             * enough to hold a class — otherwise field accesses (super,
+             * methods, basic.flags) on the result later read past the
+             * alloc'd region.  Mark such an "uninitialized class" by
+             * leaving super=NULL; the .new path raises TypeError before
+             * dispatching. */
+            r[1] = aro_gc_alloc(c, sizeof(struct korb_class));
+            klass = (struct korb_class *)r[0];           /* reload */
+            struct korb_class *k = (struct korb_class *)r[1];
+            k->basic.head.flags = it;
+            k->basic.klass = klass;
+            k->name = korb_intern("(uninitialized)");
+            k->instance_type = T_OBJECT;
+            ret = r[1];
+        } else {
+            r[1] = aro_gc_alloc(c, sizeof(struct korb_object));
+            klass = (struct korb_class *)r[0];           /* reload */
+            struct korb_object *o = (struct korb_object *)r[1];
+            o->basic.head.flags = it;
+            o->basic.klass = klass;
+            /* Preallocate ivar slots based on the class's known ivar shape,
+             * so the inline ivar_set_ic fast path hits on the first write
+             * to each @ivar.  (klass->ivar_count read AFTER reload — moving
+             * GC could've relocated klass.) */
+            uint32_t n = klass->ivar_count;
+            if (n) {
+                o->ivar_cnt = n;
+                o->ivar_capa = n;
+                o->ivars = korb_xmalloc(n * sizeof(VALUE));
+                for (uint32_t i = 0; i < n; i++) o->ivars[i] = Qnil;
+                /* o may have moved by korb_xmalloc — no, libc malloc
+                 * doesn't fire GC.  Safe to write o->* directly here. */
+            }
+            ret = r[1];
+        }
+    } ARO_ROOT_SCOPE_END(c, r);
+    return ret;
 }
 
 static int ivar_slot(struct korb_class *k, ID name) {
@@ -1463,15 +1476,21 @@ void korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cac
 
 /* ---- string ---- */
 VALUE korb_str_new(const char *p, long len) {
-    struct korb_string *s = korb_xmalloc(sizeof(*s));
+    /* No protect needed for p — it's a const char * source (libc / static)
+     * not a GC heap obj. */
+    CTX *c = korb_vm->current_ctx;
+    VALUE v = aro_gc_alloc(c, sizeof(struct korb_string));
+    struct korb_string *s = (struct korb_string *)v;
     s->basic.head.flags = T_STRING;
-    s->basic.klass = korb_vm ? (VALUE)korb_vm->string_class : 0;
+    s->basic.klass = korb_vm->string_class;  /* may be NULL during bootstrap */
+    /* korb_xmalloc_atomic is libc (no GC fire) — safe to assign result to
+     * s->ptr without rooting s. */
     s->ptr = korb_xmalloc_atomic(len + 1);
     if (p && len > 0) memcpy(s->ptr, p, len);
     s->ptr[len] = 0;
     s->len = len;
     s->capa = len;
-    return (VALUE)s;
+    return v;
 }
 
 VALUE korb_str_new_cstr(const char *cstr) { return korb_str_new(cstr, (long)strlen(cstr)); }
@@ -4025,69 +4044,114 @@ static void init_well_known_ids(void) {
 
 void korb_init_builtins(void); /* defined in builtins.c */
 
+/* Bootstrap CTX — created at korb_runtime_init's top BEFORE any heap obj
+ * is allocated.  Holds the value stack used as both eval stack and precise
+ * root spill stack, and is bound to the precise GC instance via aro_gc_init.
+ *
+ * koruby_setup_ctx (called from main after korb_runtime_init returns)
+ * reuses this same CTX — it just attaches self / cref / current_file. */
+struct CTX_struct koruby_bootstrap_ctx;
+
 void korb_runtime_init(void) {
-    /* Phase 1: aro_gc_init runs in main() after CTX is constructed.
-     * korb_vm itself is libc-malloc'd (= not on the GC heap). */
     init_well_known_ids();
 
+    /* korb_vm itself is libc-malloc'd (= not on the GC heap).  It owns
+     * the root pointers (object_class etc.) that AROH_VISIT_ROOTS visits. */
     korb_vm = korb_xmalloc(sizeof(*korb_vm));
     memset(korb_vm, 0, sizeof(*korb_vm));
     korb_vm->method_serial = 1; korb_g_method_serial = 1;
 
+    /* Bootstrap CTX setup — MUST come before the first aro_gc_alloc.
+     * Value stack is libc-malloc'd (= 16 M slots × 8 B = 128 MB); both
+     * eval and ARO_ROOT_SCOPE_* use it.  c->sp = stack_base means an empty
+     * root set initially — the bootstrap allocations below place their
+     * temporary roots via ARO_ROOT_SCOPE_START as they need them. */
+    CTX *c = &koruby_bootstrap_ctx;
+    memset(c, 0, sizeof(*c));
+    size_t stack_size = 16 * 1024 * 1024;
+    c->stack_base = korb_xmalloc(stack_size * sizeof(VALUE));
+    for (size_t i = 0; i < stack_size; i++) c->stack_base[i] = Qnil;
+    c->stack_end  = c->stack_base + stack_size;
+    c->fp = c->stack_base;
+    c->sp = c->stack_base;
+    c->env = c->stack_base;
+    c->state = KORB_NORMAL;
+    korb_vm->current_ctx = c;
+    aro_gc_init(c);   /* binds c->astro_gc; precise-GC ready after this. */
+
     /* bootstrap classes — CRuby: BasicObject ← Object ← Module ← Class.
-     * Each class's own metaclass is Class itself. */
-    struct korb_class *cBasic  = korb_class_new(korb_intern("BasicObject"), NULL,    T_OBJECT);
-    struct korb_class *cObject = korb_class_new(korb_intern("Object"),      cBasic,  T_OBJECT);
-    struct korb_class *cModule = korb_class_new(korb_intern("Module"),      cObject, T_MODULE);
-    struct korb_class *cClass  = korb_class_new(korb_intern("Class"),       cModule, T_CLASS);
-    cBasic->basic.klass  = (VALUE)cClass;
-    cObject->basic.klass = (VALUE)cClass;
-    cClass->basic.klass  = (VALUE)cClass;
-    cModule->basic.klass = (VALUE)cClass;
+     * Each class's own metaclass is Class itself.
+     *
+     * All 4 are GC-heap allocated.  Moving GC can relocate them between
+     * the inner allocs and the basic.klass / korb_vm assignments, so park
+     * them in an ARO_ROOT_SCOPE buffer that visit_roots scans (= c->sp
+     * range).  cBasic survives outside the scope via korb_vm->object_class
+     * ->super (= reachable from the class_class root chain). */
+    ARO_ROOT_SCOPE_START(c, boot, 4) {
+        boot[0] = (VALUE)korb_class_new(korb_intern("BasicObject"), NULL, T_OBJECT);
+        boot[1] = (VALUE)korb_class_new(korb_intern("Object"),
+                                         (struct korb_class *)boot[0],  T_OBJECT);
+        boot[2] = (VALUE)korb_class_new(korb_intern("Module"),
+                                         (struct korb_class *)boot[1], T_MODULE);
+        boot[3] = (VALUE)korb_class_new(korb_intern("Class"),
+                                         (struct korb_class *)boot[2], T_CLASS);
+        ((struct korb_class *)boot[0])->basic.klass = (struct korb_class *)boot[3];
+        ((struct korb_class *)boot[1])->basic.klass = (struct korb_class *)boot[3];
+        ((struct korb_class *)boot[2])->basic.klass = (struct korb_class *)boot[3];
+        ((struct korb_class *)boot[3])->basic.klass = (struct korb_class *)boot[3];
 
-    korb_vm->object_class = cObject;
-    korb_vm->class_class  = cClass;
-    korb_vm->module_class = cModule;
+        korb_vm->object_class = (struct korb_class *)boot[1];
+        korb_vm->class_class  = (struct korb_class *)boot[3];
+        korb_vm->module_class = (struct korb_class *)boot[2];
+    } ARO_ROOT_SCOPE_END(c, boot);
 
-    korb_vm->numeric_class = korb_class_new(korb_intern("Numeric"), cObject, T_OBJECT);
+    /* From here on, every newly-alloc'd class is immediately stashed into
+     * a korb_vm field (= rooted via visit_roots' korb_vm scan), so no
+     * additional ARO_ROOT_SCOPE is needed for these intermediate slots.
+     * Reading korb_vm->object_class etc. returns the current addr because
+     * visit_roots updates those slots on each move. */
+    korb_vm->numeric_class = korb_class_new(korb_intern("Numeric"), korb_vm->object_class, T_OBJECT);
     korb_vm->integer_class = korb_class_new(korb_intern("Integer"), korb_vm->numeric_class, T_BIGNUM);
     korb_vm->float_class   = korb_class_new(korb_intern("Float"),   korb_vm->numeric_class, T_FLOAT);
-    korb_vm->string_class  = korb_class_new(korb_intern("String"),  cObject, T_STRING);
-    korb_vm->array_class   = korb_class_new(korb_intern("Array"),   cObject, T_ARRAY);
-    korb_vm->hash_class    = korb_class_new(korb_intern("Hash"),    cObject, T_HASH);
-    korb_vm->symbol_class  = korb_class_new(korb_intern("Symbol"),  cObject, T_SYMBOL);
-    korb_vm->true_class    = korb_class_new(korb_intern("TrueClass"),  cObject, T_NONE);
-    korb_vm->false_class   = korb_class_new(korb_intern("FalseClass"), cObject, T_NONE);
-    korb_vm->nil_class     = korb_class_new(korb_intern("NilClass"),   cObject, T_NONE);
-    korb_vm->proc_class    = korb_class_new(korb_intern("Proc"),       cObject, T_PROC);
-    korb_vm->range_class   = korb_class_new(korb_intern("Range"),      cObject, T_RANGE);
+    korb_vm->string_class  = korb_class_new(korb_intern("String"),  korb_vm->object_class, T_STRING);
+    korb_vm->array_class   = korb_class_new(korb_intern("Array"),   korb_vm->object_class, T_ARRAY);
+    korb_vm->hash_class    = korb_class_new(korb_intern("Hash"),    korb_vm->object_class, T_HASH);
+    korb_vm->symbol_class  = korb_class_new(korb_intern("Symbol"),  korb_vm->object_class, T_SYMBOL);
+    korb_vm->true_class    = korb_class_new(korb_intern("TrueClass"),  korb_vm->object_class, T_NONE);
+    korb_vm->false_class   = korb_class_new(korb_intern("FalseClass"), korb_vm->object_class, T_NONE);
+    korb_vm->nil_class     = korb_class_new(korb_intern("NilClass"),   korb_vm->object_class, T_NONE);
+    korb_vm->proc_class    = korb_class_new(korb_intern("Proc"),       korb_vm->object_class, T_PROC);
+    korb_vm->range_class   = korb_class_new(korb_intern("Range"),      korb_vm->object_class, T_RANGE);
     korb_vm->kernel_module = korb_module_new(korb_intern("Kernel"));
-    /* ObjectSpace — stub module for the API surface.  Real
-     * each_object enumeration would need a weak-ref registry on top
-     * of Boehm GC (which doesn't expose object iteration); for now
-     * each_object yields nothing and count_objects returns a small
-     * Hash with :TOTAL = 0 so callers don't crash. */
+    /* ObjectSpace — stub module for the API surface.  cOS lives across
+     * the cOSMeta alloc, so park both in an ARO_ROOT_SCOPE; once
+     * cOS->basic.klass is set + the const_set installed cOS into
+     * cObject->constants, both are reachable via the constants chain. */
     {
-        struct korb_class *cOS = korb_module_new(korb_intern("ObjectSpace"));
-        korb_const_set(cObject, cOS->name, (VALUE)cOS);
-        struct korb_class *cOSMeta = korb_class_new(korb_intern("ObjectSpaceMeta"),
-                                                     cClass, T_CLASS);
-        VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE objspace_garbage_collect(CTX *c, VALUE self, int argc, VALUE *argv);
-        korb_class_add_method_cfunc(cOSMeta, korb_intern("each_object"),     objspace_each_object,     -1);
-        korb_class_add_method_cfunc(cOSMeta, korb_intern("count_objects"),   objspace_count_objects,   -1);
-        korb_class_add_method_cfunc(cOSMeta, korb_intern("garbage_collect"), objspace_garbage_collect,  0);
-        cOS->basic.klass = (VALUE)cOSMeta;
+        ARO_ROOT_SCOPE_START(c, os, 2) {
+            os[0] = (VALUE)korb_module_new(korb_intern("ObjectSpace"));
+            korb_const_set(korb_vm->object_class, ((struct korb_class *)os[0])->name, os[0]);
+            os[1] = (VALUE)korb_class_new(korb_intern("ObjectSpaceMeta"),
+                                           korb_vm->class_class, T_CLASS);
+            VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv);
+            VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv);
+            VALUE objspace_garbage_collect(CTX *c, VALUE self, int argc, VALUE *argv);
+            korb_class_add_method_cfunc((struct korb_class *)os[1], korb_intern("each_object"),     objspace_each_object,     -1);
+            korb_class_add_method_cfunc((struct korb_class *)os[1], korb_intern("count_objects"),   objspace_count_objects,   -1);
+            korb_class_add_method_cfunc((struct korb_class *)os[1], korb_intern("garbage_collect"), objspace_garbage_collect,  0);
+            ((struct korb_class *)os[0])->basic.klass = (struct korb_class *)os[1];
+        } ARO_ROOT_SCOPE_END(c, os);
     }
     korb_vm->comparable_module = korb_module_new(korb_intern("Comparable"));
     korb_vm->enumerable_module = korb_module_new(korb_intern("Enumerable"));
 
     /* CRuby's hierarchy has Object include Kernel — that's how every
      * object gets `puts` / `nil?` / `is_a?` etc.  Hook the include here
-     * so `Object.ancestors` reports `[Object, Kernel, BasicObject]`. */
+     * so `Object.ancestors` reports `[Object, Kernel, BasicObject]`.
+     * No alloc fires GC inside this block (korb_xmalloc is libc), so it's
+     * safe to read korb_vm->object_class once. */
     {
-        struct korb_class *o = cObject;
+        struct korb_class *o = korb_vm->object_class;
         if (o->includes_capa == 0) {
             o->includes_capa = 4;
             o->includes = korb_xmalloc(o->includes_capa * sizeof(*o->includes));
@@ -4095,30 +4159,37 @@ void korb_runtime_init(void) {
         o->includes[o->includes_cnt++] = korb_vm->kernel_module;
     }
 
-    /* register top-level constants */
-    korb_const_set(cObject, cBasic->name,                 (VALUE)cBasic);
-    korb_const_set(cObject, korb_vm->kernel_module->name, (VALUE)korb_vm->kernel_module);
-    korb_const_set(cObject, korb_vm->object_class->name,  (VALUE)cObject);
-    korb_const_set(cObject, korb_vm->class_class->name,   (VALUE)cClass);
-    korb_const_set(cObject, korb_vm->module_class->name,  (VALUE)cModule);
-    korb_const_set(cObject, korb_vm->integer_class->name, (VALUE)korb_vm->integer_class);
-    korb_const_set(cObject, korb_vm->float_class->name,   (VALUE)korb_vm->float_class);
-    korb_const_set(cObject, korb_vm->string_class->name,  (VALUE)korb_vm->string_class);
-    korb_const_set(cObject, korb_vm->array_class->name,   (VALUE)korb_vm->array_class);
-    korb_const_set(cObject, korb_vm->hash_class->name,    (VALUE)korb_vm->hash_class);
-    korb_const_set(cObject, korb_vm->symbol_class->name,  (VALUE)korb_vm->symbol_class);
-    korb_const_set(cObject, korb_vm->numeric_class->name, (VALUE)korb_vm->numeric_class);
-    korb_const_set(cObject, korb_vm->range_class->name,   (VALUE)korb_vm->range_class);
-    korb_const_set(cObject, korb_vm->proc_class->name,    (VALUE)korb_vm->proc_class);
-    korb_const_set(cObject, korb_vm->true_class->name,    (VALUE)korb_vm->true_class);
-    korb_const_set(cObject, korb_vm->false_class->name,   (VALUE)korb_vm->false_class);
-    korb_const_set(cObject, korb_vm->nil_class->name,     (VALUE)korb_vm->nil_class);
+    /* Register top-level constants.  korb_const_set does NOT fire GC
+     * (= libc-backed const_entry chain), so reading korb_vm->* once into
+     * a local for the sequence is safe. */
+    {
+        struct korb_class *cObject = korb_vm->object_class;
+        struct korb_class *cBasic  = cObject->super;  /* reachable via super chain */
+        korb_const_set(cObject, cBasic->name,                 (VALUE)cBasic);
+        korb_const_set(cObject, korb_vm->kernel_module->name, (VALUE)korb_vm->kernel_module);
+        korb_const_set(cObject, cObject->name,                (VALUE)cObject);
+        korb_const_set(cObject, korb_vm->class_class->name,   (VALUE)korb_vm->class_class);
+        korb_const_set(cObject, korb_vm->module_class->name,  (VALUE)korb_vm->module_class);
+        korb_const_set(cObject, korb_vm->integer_class->name, (VALUE)korb_vm->integer_class);
+        korb_const_set(cObject, korb_vm->float_class->name,   (VALUE)korb_vm->float_class);
+        korb_const_set(cObject, korb_vm->string_class->name,  (VALUE)korb_vm->string_class);
+        korb_const_set(cObject, korb_vm->array_class->name,   (VALUE)korb_vm->array_class);
+        korb_const_set(cObject, korb_vm->hash_class->name,    (VALUE)korb_vm->hash_class);
+        korb_const_set(cObject, korb_vm->symbol_class->name,  (VALUE)korb_vm->symbol_class);
+        korb_const_set(cObject, korb_vm->numeric_class->name, (VALUE)korb_vm->numeric_class);
+        korb_const_set(cObject, korb_vm->range_class->name,   (VALUE)korb_vm->range_class);
+        korb_const_set(cObject, korb_vm->proc_class->name,    (VALUE)korb_vm->proc_class);
+        korb_const_set(cObject, korb_vm->true_class->name,    (VALUE)korb_vm->true_class);
+        korb_const_set(cObject, korb_vm->false_class->name,   (VALUE)korb_vm->false_class);
+        korb_const_set(cObject, korb_vm->nil_class->name,     (VALUE)korb_vm->nil_class);
+    }
 
-    /* main object */
-    korb_vm->main_obj_class = korb_class_new(korb_intern("Main"), cObject, T_OBJECT);
+    /* main object — both main_obj_class and main_obj go into korb_vm
+     * (= rooted by visit_roots), so 2 allocs in sequence are safe. */
+    korb_vm->main_obj_class = korb_class_new(korb_intern("Main"), korb_vm->object_class, T_OBJECT);
     korb_vm->main_obj = korb_object_new(korb_vm->main_obj_class);
 
-    /* Exception class hierarchy.  Real CRuby tree:
+    /* Exception class hierarchy.  CRuby's tree:
      *   Exception
      *     StandardError
      *       RuntimeError, ArgumentError, TypeError, NameError,
@@ -4129,142 +4200,139 @@ void korb_runtime_init(void) {
      *       SystemCallError, Errno
      *     ScriptError
      *       LoadError, SyntaxError
-     * `rescue StandardError` only matches StandardError descendants —
-     * the parent/child relationships need to reflect that. */
-    struct korb_class *cException = korb_class_new(korb_intern("Exception"), cObject, T_OBJECT);
-    korb_const_set(cObject, korb_intern("Exception"), (VALUE)cException);
-    struct korb_class *cStandardError = korb_class_new(korb_intern("StandardError"), cException, T_OBJECT);
-    korb_const_set(cObject, korb_intern("StandardError"), (VALUE)cStandardError);
-    struct korb_class *cScriptError = korb_class_new(korb_intern("ScriptError"), cException, T_OBJECT);
-    korb_const_set(cObject, korb_intern("ScriptError"), (VALUE)cScriptError);
-    struct korb_class *cRuntimeError = korb_class_new(korb_intern("RuntimeError"), cStandardError, T_OBJECT);
-    korb_const_set(cObject, korb_intern("RuntimeError"), (VALUE)cRuntimeError);
-    struct korb_class *cIndexError = korb_class_new(korb_intern("IndexError"), cStandardError, T_OBJECT);
-    korb_const_set(cObject, korb_intern("IndexError"), (VALUE)cIndexError);
-    struct korb_class *cNameError = korb_class_new(korb_intern("NameError"), cStandardError, T_OBJECT);
-    korb_const_set(cObject, korb_intern("NameError"), (VALUE)cNameError);
-    struct korb_class *cRangeError = korb_class_new(korb_intern("RangeError"), cStandardError, T_OBJECT);
-    korb_const_set(cObject, korb_intern("RangeError"), (VALUE)cRangeError);
-    /* Direct StandardError children. */
-    static const char *std_subs[] = {
-        "ArgumentError", "TypeError",
-        "ZeroDivisionError", "IOError", "Errno",
-        "NotImplementedError", "StopIteration", "LocalJumpError",
-        "SystemCallError",
-        NULL,
-    };
-    for (int i = 0; std_subs[i]; i++) {
-        struct korb_class *k = korb_class_new(korb_intern(std_subs[i]), cStandardError, T_OBJECT);
-        korb_const_set(cObject, korb_intern(std_subs[i]), (VALUE)k);
-    }
-    /* UncaughtThrowError < ArgumentError (CRuby). */
+     *
+     * Every class is const_set into cObject immediately, making it a
+     * persistent root (visit_roots walks korb_vm->object_class →
+     * visit_class_edges → visit_const_chain → visit each entry->value).
+     * Subsequent allocs reference parent classes by NAME via korb_const_get
+     * — the value returned is the current addr (= updated by GC on each
+     * cycle), so no C-local staleness. */
+#define KRB_EXC(name, super_name)                                              \
+    korb_const_set(korb_vm->object_class, korb_intern(name),                   \
+                   (VALUE)korb_class_new(                                       \
+                       korb_intern(name),                                       \
+                       (struct korb_class *)korb_const_get(                     \
+                           korb_vm->object_class, korb_intern(super_name)),     \
+                       T_OBJECT))
     {
-        struct korb_class *cArg = (struct korb_class *)korb_const_get(cObject, korb_intern("ArgumentError"));
-        struct korb_class *k = korb_class_new(korb_intern("UncaughtThrowError"), cArg, T_OBJECT);
-        korb_const_set(cObject, korb_intern("UncaughtThrowError"), (VALUE)k);
-    }
-    /* Children of more-specific classes. */
-    {
-        struct korb_class *k = korb_class_new(korb_intern("NoMethodError"), cNameError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("NoMethodError"), (VALUE)k);
-        k = korb_class_new(korb_intern("KeyError"), cIndexError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("KeyError"), (VALUE)k);
-        k = korb_class_new(korb_intern("FloatDomainError"), cRangeError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("FloatDomainError"), (VALUE)k);
-        k = korb_class_new(korb_intern("FrozenError"), cRuntimeError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("FrozenError"), (VALUE)k);
+        /* First: Exception itself, super = Object (= korb_vm->object_class). */
+        korb_const_set(korb_vm->object_class, korb_intern("Exception"),
+                       (VALUE)korb_class_new(korb_intern("Exception"),
+                                              korb_vm->object_class, T_OBJECT));
+        KRB_EXC("StandardError",      "Exception");
+        KRB_EXC("ScriptError",        "Exception");
+        KRB_EXC("RuntimeError",       "StandardError");
+        KRB_EXC("IndexError",         "StandardError");
+        KRB_EXC("NameError",          "StandardError");
+        KRB_EXC("RangeError",         "StandardError");
+        /* Direct StandardError children. */
+        static const char *std_subs[] = {
+            "ArgumentError", "TypeError",
+            "ZeroDivisionError", "IOError", "Errno",
+            "NotImplementedError", "StopIteration", "LocalJumpError",
+            "SystemCallError",
+            NULL,
+        };
+        for (int i = 0; std_subs[i]; i++) {
+            KRB_EXC(std_subs[i], "StandardError");
+        }
+        /* UncaughtThrowError < ArgumentError (CRuby). */
+        KRB_EXC("UncaughtThrowError", "ArgumentError");
+        /* Children of more-specific classes. */
+        KRB_EXC("NoMethodError",      "NameError");
+        KRB_EXC("KeyError",           "IndexError");
+        KRB_EXC("FloatDomainError",   "RangeError");
+        KRB_EXC("FrozenError",        "RuntimeError");
         /* NoMatchingPatternError < StandardError (CRuby) — pattern matching
          * raises it when no clause matches and no else is present. */
-        k = korb_class_new(korb_intern("NoMatchingPatternError"), cStandardError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("NoMatchingPatternError"), (VALUE)k);
-        struct korb_class *cNMPE = k;
-        /* NoMatchingPatternKeyError < NoMatchingPatternError. */
-        k = korb_class_new(korb_intern("NoMatchingPatternKeyError"), cNMPE, T_OBJECT);
-        korb_const_set(cObject, korb_intern("NoMatchingPatternKeyError"), (VALUE)k);
+        KRB_EXC("NoMatchingPatternError",     "StandardError");
+        KRB_EXC("NoMatchingPatternKeyError",  "NoMatchingPatternError");
         /* SystemExit < Exception (NOT StandardError so it's not caught by
          * a bare `rescue`).  status / success? are exposed via ivars set
          * by Kernel#exit. */
-        k = korb_class_new(korb_intern("SystemExit"), cException, T_OBJECT);
-        korb_const_set(cObject, korb_intern("SystemExit"), (VALUE)k);
+        KRB_EXC("SystemExit",     "Exception");
         /* Exception subclasses NOT under StandardError — also bypassed
          * by bare `rescue`.  Stub presence so `rescue NoMemoryError` etc.
          * doesn't NameError. */
-        k = korb_class_new(korb_intern("NoMemoryError"), cException, T_OBJECT);
-        korb_const_set(cObject, korb_intern("NoMemoryError"), (VALUE)k);
-        k = korb_class_new(korb_intern("SystemStackError"), cException, T_OBJECT);
-        korb_const_set(cObject, korb_intern("SystemStackError"), (VALUE)k);
-        struct korb_class *cSig = korb_class_new(korb_intern("SignalException"),
-                                                  cException, T_OBJECT);
-        korb_const_set(cObject, korb_intern("SignalException"), (VALUE)cSig);
-        k = korb_class_new(korb_intern("Interrupt"), cSig, T_OBJECT);
-        korb_const_set(cObject, korb_intern("Interrupt"), (VALUE)k);
-        k = korb_class_new(korb_intern("SecurityError"), cException, T_OBJECT);
-        korb_const_set(cObject, korb_intern("SecurityError"), (VALUE)k);
-        k = korb_class_new(korb_intern("EncodingError"), cStandardError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("EncodingError"), (VALUE)k);
-        k = korb_class_new(korb_intern("RegexpError"), cStandardError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("RegexpError"), (VALUE)k);
-        k = korb_class_new(korb_intern("FiberError"), cStandardError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("FiberError"), (VALUE)k);
+        KRB_EXC("NoMemoryError",     "Exception");
+        KRB_EXC("SystemStackError",  "Exception");
+        KRB_EXC("SignalException",   "Exception");
+        KRB_EXC("Interrupt",         "SignalException");
+        KRB_EXC("SecurityError",     "Exception");
+        KRB_EXC("EncodingError",     "StandardError");
+        KRB_EXC("RegexpError",       "StandardError");
+        KRB_EXC("FiberError",        "StandardError");
+        /* ScriptError children. */
+        KRB_EXC("LoadError",   "ScriptError");
+        KRB_EXC("SyntaxError", "ScriptError");
     }
-    /* ScriptError children. */
-    {
-        struct korb_class *k = korb_class_new(korb_intern("LoadError"), cScriptError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("LoadError"), (VALUE)k);
-        k = korb_class_new(korb_intern("SyntaxError"), cScriptError, T_OBJECT);
-        korb_const_set(cObject, korb_intern("SyntaxError"), (VALUE)k);
-    }
+#undef KRB_EXC
 
     /* Register Comparable / Enumerable / Numeric so user code can
      * `include Comparable` etc.  Comparable's instance methods are
      * installed in builtins.c. */
-    korb_const_set(cObject, korb_intern("Comparable"), (VALUE)korb_vm->comparable_module);
-    korb_const_set(cObject, korb_intern("Enumerable"), (VALUE)korb_vm->enumerable_module);
+    korb_const_set(korb_vm->object_class, korb_intern("Comparable"), (VALUE)korb_vm->comparable_module);
+    korb_const_set(korb_vm->object_class, korb_intern("Enumerable"), (VALUE)korb_vm->enumerable_module);
 
     /* Encoding scaffold MUST be created before korb_init_builtins so the
-     * String#encoding etc. defs in builtins.c find Encoding. */
+     * String#encoding etc. defs in builtins.c find Encoding.  cEnc + utf8
+     * both live across allocation-fires-GC calls, so park them in an
+     * ARO_ROOT_SCOPE slot. */
     {
-        struct korb_class *cEnc = korb_class_new(korb_intern("Encoding"), cObject, T_OBJECT);
-        korb_const_set(cObject, korb_intern("Encoding"), (VALUE)cEnc);
-        VALUE utf8 = korb_object_new(cEnc);
-        korb_ivar_set(utf8, korb_intern("@name"), korb_str_new_cstr("UTF-8"));
-        korb_const_set(cEnc, korb_intern("UTF_8"),       utf8);
-        korb_const_set(cEnc, korb_intern("ASCII_8BIT"),  utf8);
-        korb_const_set(cEnc, korb_intern("BINARY"),      utf8);
-        korb_const_set(cEnc, korb_intern("US_ASCII"),    utf8);
-        korb_const_set(cEnc, korb_intern("ASCII"),       utf8);
-        korb_const_set(cEnc, korb_intern("EUC_JP"),      utf8);
-        korb_const_set(cEnc, korb_intern("EUC_TW"),      utf8);
-        korb_const_set(cEnc, korb_intern("SHIFT_JIS"),   utf8);
-        korb_const_set(cEnc, korb_intern("Shift_JIS"),   utf8);
-        korb_const_set(cEnc, korb_intern("Windows_31J"), utf8);
-        korb_const_set(cEnc, korb_intern("UTF_16"),      utf8);
-        korb_const_set(cEnc, korb_intern("UTF_16BE"),    utf8);
-        korb_const_set(cEnc, korb_intern("UTF_16LE"),    utf8);
-        korb_const_set(cEnc, korb_intern("UTF_32"),      utf8);
-        korb_const_set(cEnc, korb_intern("UTF_32BE"),    utf8);
-        korb_const_set(cEnc, korb_intern("UTF_32LE"),    utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_1"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_2"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_3"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_4"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_5"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_6"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_7"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_8"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_9"),  utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_10"), utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_11"), utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_13"), utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_14"), utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_15"), utf8);
-        korb_const_set(cEnc, korb_intern("ISO_8859_16"), utf8);
-        korb_const_set(cEnc, korb_intern("Windows_1252"), utf8);
-        korb_const_set(cEnc, korb_intern("Windows_1251"), utf8);
-        korb_const_set(cEnc, korb_intern("CP932"),       utf8);
-        korb_const_set(cEnc, korb_intern("KOI8_R"),      utf8);
-        korb_const_set(cEnc, korb_intern("Big5"),        utf8);
-        korb_const_set(cEnc, korb_intern("GB18030"),     utf8);
+        ARO_ROOT_SCOPE_START(c, enc, 2) {
+            enc[0] = (VALUE)korb_class_new(korb_intern("Encoding"), korb_vm->object_class, T_OBJECT);
+            korb_const_set(korb_vm->object_class, korb_intern("Encoding"), enc[0]);
+            enc[1] = korb_object_new((struct korb_class *)enc[0]);
+            /* str_new fires GC — pre-evaluate into a local before calling
+             * ivar_set so the 1st arg (enc[1]) is read after the inner
+             * GC has already updated the slot. */
+            {
+                VALUE name_str = korb_str_new_cstr("UTF-8");
+                korb_ivar_set(enc[1], korb_intern("@name"), name_str);
+            }
+            /* Each const_set is libc-only (no GC fire); enc[1] stays valid
+             * through the sequence, and enc[0] (cEnc) is updated by
+             * visit_roots if any of these alloc paths grow the const chain. */
+            struct korb_class *cEnc = (struct korb_class *)enc[0];
+            VALUE utf8 = enc[1];
+            korb_const_set(cEnc, korb_intern("UTF_8"),       utf8);
+            korb_const_set(cEnc, korb_intern("ASCII_8BIT"),  utf8);
+            korb_const_set(cEnc, korb_intern("BINARY"),      utf8);
+            korb_const_set(cEnc, korb_intern("US_ASCII"),    utf8);
+            korb_const_set(cEnc, korb_intern("ASCII"),       utf8);
+            korb_const_set(cEnc, korb_intern("EUC_JP"),      utf8);
+            korb_const_set(cEnc, korb_intern("EUC_TW"),      utf8);
+            korb_const_set(cEnc, korb_intern("SHIFT_JIS"),   utf8);
+            korb_const_set(cEnc, korb_intern("Shift_JIS"),   utf8);
+            korb_const_set(cEnc, korb_intern("Windows_31J"), utf8);
+            korb_const_set(cEnc, korb_intern("UTF_16"),      utf8);
+            korb_const_set(cEnc, korb_intern("UTF_16BE"),    utf8);
+            korb_const_set(cEnc, korb_intern("UTF_16LE"),    utf8);
+            korb_const_set(cEnc, korb_intern("UTF_32"),      utf8);
+            korb_const_set(cEnc, korb_intern("UTF_32BE"),    utf8);
+            korb_const_set(cEnc, korb_intern("UTF_32LE"),    utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_1"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_2"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_3"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_4"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_5"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_6"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_7"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_8"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_9"),  utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_10"), utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_11"), utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_13"), utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_14"), utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_15"), utf8);
+            korb_const_set(cEnc, korb_intern("ISO_8859_16"), utf8);
+            korb_const_set(cEnc, korb_intern("Windows_1252"), utf8);
+            korb_const_set(cEnc, korb_intern("Windows_1251"), utf8);
+            korb_const_set(cEnc, korb_intern("CP932"),       utf8);
+            korb_const_set(cEnc, korb_intern("KOI8_R"),      utf8);
+            korb_const_set(cEnc, korb_intern("Big5"),        utf8);
+            korb_const_set(cEnc, korb_intern("GB18030"),     utf8);
+        } ARO_ROOT_SCOPE_END(c, enc);
     }
     korb_init_builtins();
     /* $: / $LOAD_PATH: array initialized with at least one path so
@@ -4289,15 +4357,17 @@ void korb_runtime_init(void) {
         korb_gvar_set(korb_intern("$DEBUG"), Qfalse);
         korb_gvar_set(korb_intern("$-d"), Qfalse);
     }
-    /* Common predefined constants to satisfy code that probes for them. */
-    {
-        korb_const_set(cObject, korb_intern("RUBY_VERSION"),       korb_str_new_cstr("3.4.0"));
-        korb_const_set(cObject, korb_intern("RUBY_RELEASE_DATE"),  korb_str_new_cstr("2024-01-01"));
-        korb_const_set(cObject, korb_intern("RUBY_PLATFORM"),      korb_str_new_cstr("koruby"));
-        korb_const_set(cObject, korb_intern("RUBY_ENGINE"),        korb_str_new_cstr("koruby"));
-        korb_const_set(cObject, korb_intern("RUBY_PATCHLEVEL"),    INT2FIX(0));
-        korb_const_set(cObject, korb_intern("TOPLEVEL_BINDING"),   Qnil);
-    }
+    /* Common predefined constants to satisfy code that probes for them.
+     * Each korb_str_new_cstr is an alloc that fires GC, but the call
+     * sequence here has no inter-call C local — every result is consumed
+     * by korb_const_set as the 3rd argument with korb_vm->object_class
+     * re-read fresh on each call (= no staleness window). */
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_VERSION"),       korb_str_new_cstr("3.4.0"));
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_RELEASE_DATE"),  korb_str_new_cstr("2024-01-01"));
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_PLATFORM"),      korb_str_new_cstr("koruby"));
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_ENGINE"),        korb_str_new_cstr("koruby"));
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_PATCHLEVEL"),    INT2FIX(0));
+    korb_const_set(korb_vm->object_class, korb_intern("TOPLEVEL_BINDING"),   Qnil);
 }
 
 /* ---- file load / eval ---- */

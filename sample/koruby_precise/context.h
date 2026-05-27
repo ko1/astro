@@ -379,14 +379,31 @@ struct korb_frame {
  * Qfalse/Qnil/Qtrue/Qundef. */
 #define AROH_IS_GC_OBJECT(v) (!SPECIAL_CONST_P(v))
 
-/* AROH_VISIT_ROOTS — Phase 1 stub.  Phase 2 walks c->stack_base..c->sp,
- * c->current_frame chain, korb_vm globals, and method-cache entries. */
-#define AROH_VISIT_ROOTS(c, ctx, edge_visit) ((void)(c), (void)(ctx), (void)(edge_visit))
+/* Root-stack contract for ARO_ROOT_SCOPE_* in runtime/precise_gc/gc.h.
+ * koruby_precise uses c->stack_base..c->sp as the single VALUE stack
+ * (= eval stack + precise root spill stack).  AROH_VISIT_ROOTS walks
+ * the same range plus CTX-held VALUEs / cref chain / current_frame
+ * chain / korb_vm globals. */
+#define AROH_ROOT_STACK_TOP(c)        ((c)->sp)
+#define AROH_ROOT_STACK_SET_TOP(c, p) ((c)->sp = (p))
+#define AROH_ROOT_STACK_LIMIT(c)      ((c)->stack_end)
 
-/* AROH_SCAN_EDGES — Phase 1 stub.  Phase 3 dispatches on
- * head.flags & T_MASK and walks each heap type's outgoing edges. */
+/* Phase 2-3: root visitor + per-type edge dispatch.  Both forwarded to
+ * out-of-line functions in koruby_runtime.c so the heavy switch and chain
+ * walks live in one place (= keeps every framework backend's translation
+ * unit small).  Sample owns the bodies via the function definitions; this
+ * header only declares the dispatch surface. */
+typedef void (*koruby_edge_fn)(void *ctx, void **slot);
+void koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn);
+void koruby_scan_edges(void *payload, size_t payload_size,
+                       void *ctx, koruby_edge_fn fn);
+
+#define AROH_VISIT_ROOTS(c, ctx, edge_visit) \
+    koruby_visit_roots((c), (ctx), (koruby_edge_fn)(edge_visit))
+
 #define AROH_SCAN_EDGES(payload, payload_size, ctx, edge_visit) \
-    ((void)(payload), (void)(payload_size), (void)(ctx), (void)(edge_visit))
+    koruby_scan_edges((payload), (payload_size), (ctx), \
+                      (koruby_edge_fn)(edge_visit))
 
 /* AROH_INIT_PAYLOAD — zero-fill post-head region after alloc.  koruby's
  * heap objects work fine with this default (= same as ascheme_precise). */
