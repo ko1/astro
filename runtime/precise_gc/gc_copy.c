@@ -448,6 +448,13 @@ forward_edge(void *ctx, void **slot)
     ASTroGC *gc = (ASTroGC *)ctx;
     VALUE v = (VALUE)*slot;
     if (!AROH_IS_GC_OBJECT(v)) return;
+    /* Idempotent skip: if the value is already a to-space address (= some
+     * earlier visit in THIS cycle already rewrote the slot), don't re-
+     * forward.  Without this, an obj reachable from two distinct walk
+     * paths (= method aliasing puts the same korb_method into multiple
+     * class tables in koruby) gets memcpy'd a second time at to_top,
+     * producing a phantom obj and runaway scan. */
+    if ((char *)v >= gc->to_base && (char *)v < gc->to_top) return;
     *slot = (void *)(VALUE)forward_payload(gc, (void *)v);
 }
 

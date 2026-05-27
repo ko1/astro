@@ -56,6 +56,15 @@ visit_method_table(void *ctx, koruby_edge_fn fn,
         for (struct korb_method_table_entry *e = mt->buckets[i]; e; e = e->next) {
             struct korb_method *m = e->method;
             if (!m) continue;
+            /* korb_module_include flattens module methods into klass's
+             * table by storing the same `m` pointer in both tables
+             * (entry->include_depth > 0 marks the imported copy).  Per-method
+             * heap edges (= defining_class, def_cref, u.proc.proc) must be
+             * visited exactly once per GC cycle — otherwise the second visit
+             * passes the already-rewritten to-space addr to forward, which
+             * memcpy's a phantom obj into to_top → runaway scan.  Restrict
+             * the walk to depth-0 entries (= the owning class). */
+            if (e->include_depth != 0) continue;
             visit_ptr_slot(ctx, fn, (void **)&m->defining_class);
             for (struct korb_cref *cr = m->def_cref; cr; cr = cr->prev) {
                 visit_ptr_slot(ctx, fn, (void **)&cr->klass);

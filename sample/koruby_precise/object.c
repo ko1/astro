@@ -607,23 +607,47 @@ struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
     /* If klass->basic.klass is the shared metaclass, create a per-instance
      * singleton class so per-class methods can be installed.  CRuby
      * semantics: meta(C).super = meta(C.super), so a method defined on
-     * super's singleton class is visible to C as a class method. */
-    struct korb_class *current_meta = (struct korb_class *)klass->basic.klass;
-    if (current_meta == korb_vm->class_class || current_meta == korb_vm->module_class) {
-        struct korb_class *super_meta;
-        if (klass->super) {
-            super_meta = korb_singleton_class_of(klass->super);
+     * super's singleton class is visible to C as a class method.
+     *
+     * Recursive + nested alloc — klass / current_meta / meta all live
+     * across GC fires from the recursive call and korb_class_new.  Park
+     * them in ARO_ROOT_SCOPE slots and reload C-local pointers after
+     * each potential GC trigger. */
+    CTX *c = korb_vm->current_ctx;
+    struct korb_class *result;
+    ARO_ROOT_SCOPE_START(c, r, 3) {
+        r[0] = (VALUE)klass;
+        struct korb_class *current_meta = (struct korb_class *)klass->basic.klass;
+        if (current_meta == korb_vm->class_class || current_meta == korb_vm->module_class) {
+            r[1] = (VALUE)current_meta;
+            struct korb_class *super_meta;
+            if (klass->super) {
+                /* recursive korb_singleton_class_of may fire GC; r[0]/r[1]
+                 * survive via visit_roots. */
+                super_meta = korb_singleton_class_of(klass->super);
+                klass        = (struct korb_class *)r[0];
+                current_meta = (struct korb_class *)r[1];
+            } else {
+                super_meta = current_meta;
+            }
+            r[2] = (VALUE)super_meta;
+            /* korb_class_new fires GC — read klass->name after the inner
+             * alloc returns, but klass needs to be reloaded first. */
+            ID nm = klass->name;
+            VALUE meta_v = (VALUE)korb_class_new(nm, super_meta, T_CLASS);
+            klass        = (struct korb_class *)r[0];
+            current_meta = (struct korb_class *)r[1];
+            struct korb_class *meta = (struct korb_class *)meta_v;
+            meta->basic.head.flags = T_CLASS | FL_SINGLETON;
+            /* meta itself's class is the original metaclass (Class). */
+            meta->basic.klass = current_meta;
+            klass->basic.klass = meta;
+            result = meta;
         } else {
-            super_meta = current_meta;
+            result = current_meta;
         }
-        struct korb_class *meta = korb_class_new(klass->name, super_meta, T_CLASS);
-        meta->basic.head.flags = T_CLASS | FL_SINGLETON;
-        /* meta itself's class is the original metaclass (Class). */
-        meta->basic.klass = (VALUE)current_meta;
-        klass->basic.klass = (VALUE)meta;
-        return meta;
-    }
-    return current_meta;
+    } ARO_ROOT_SCOPE_END(c, r);
+    return result;
 }
 
 /* Singleton class for an arbitrary value.  Same idea as
