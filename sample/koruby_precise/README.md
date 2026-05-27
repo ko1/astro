@@ -1,12 +1,39 @@
-# koruby — *kind of Ruby*
+# koruby_precise — koruby + precise GC framework
 
-ASTro framework を用いた **CRuby とは独立した** Ruby 処理系。
-naruby (整数のみ Ruby サブセット) と abruby (CRuby C extension) を踏まえ、**スタンドアロンで動く全機能 Ruby 処理系** を目指して実装中。
+`sample/koruby` を ASTro precise GC framework (= `runtime/precise_gc/`) に
+fork した版。 koruby が libgc (= Boehm conservative GC) で動いていたのを、
+15 種類の precise GC backend を切替て試せる testbed に変える migration。
+
+## migration status (2026-05)
+
+- ✅ **Phase 1**: 字面 fork + AroObjectHeader 統合 + libgc API stub 化 + build pass
+- ✅ **Phase 2**: AROH_VISIT_ROOTS 実装 (= value stack + korb_vm 全 class pointers
+     + globals method_table + main_obj + current_frame + cref chain)
+- ✅ **Phase 3**: AROH_SCAN_EDGES per heap obj type (= T_OBJECT/STRING/ARRAY/HASH/
+     RANGE/CLASS/MODULE/PROC/FLOAT/BIGNUM の switch)
+- ✅ **bootstrap CTX 整理**: aro_gc_init を class 作成前に繰り上げ、 全 heap obj が GC heap 上
+- ⏳ **Phase 4** (= future): fiber stack precise tracking (= GC_add_roots 代替)、
+     binding / call cache の visit
+- ⏳ **Phase 5** (= future): GMP bignum finalizer (= aro_gc_finalize_register +
+     AROH_FINALIZE)
+- ⏳ **Phase 6** (= future): sp[] spill discipline を node_eval.c の hot path
+     全箇所に適用 (= 移動 GC + STRESS audit 通過のため、 数 session 規模)
+
+## 動作確認 (現状)
+
+| 条件 | 結果 |
+|---|---|
+| GC=copy (default) で fib.ko.rb | ✅ 9227465 (= fib(35) を 30ms 程度で計算) |
+| 15 backend × no-STRESS × fib.ko.rb | ✅ 全 15/15 pass |
+| GC=copy × no-STRESS × test/test_*.rb (25 tests) | ✅ 25/25 pass |
+| 非移動 backend × STRESS=1 × fib.ko.rb | ✅ mark/mark_gen/mark_gen_inc/immix/bump pass |
+| 移動 backend × STRESS=1 | ❌ crash (= sp[] spill 未実装) |
+| 全 backend × STRESS=1 × test suite | ❌ many fail (= 同上、 deep precise rooting 要対応) |
 
 ## 概要
 
-- **VALUE 表現は CRuby x86_64 互換。** `Qfalse=0`, `Qnil=8`, `Qtrue=0x14`, FIXNUM=低位ビット 1, FLONUM=低位 2 ビット 0b10, SYMBOL=低位 8 ビット 0x0c, ヒープオブジェクトは `RBasic { flags, klass }` ヘッダで開始。これにより CRuby のソースコードを将来流用しやすくしている (例: `array.c` の Array 実装を持ってくれば `RARRAY_LEN`/`RARRAY_PTR` 系マクロが意味を持つ)。
-- **GC: Boehm GC (libgc).** Conservative GC のためルート登録不要。マーク関数を書く必要がない代わりに、long-running ワークロードで pause が naruby の `malloc`-and-leak より遅くなる場合あり。
+- **VALUE 表現は CRuby x86_64 互換。** `Qfalse=0`, `Qnil=8`, `Qtrue=0x14`, FIXNUM=低位ビット 1, FLONUM=低位 2 ビット 0b10, SYMBOL=低位 8 ビット 0x0c, ヒープオブジェクトは `RBasic { AroObjectHeader head, struct korb_class *klass }` ヘッダで開始。
+- **GC: ASTro precise GC framework.** `make GC=<backend>` で 15 種類から選択 (= copy / mark / mark_gen / copy_gen / mark_compact / mark_compact_gen / mark_bump_gen / immix / immix_gen / mark_bitmap_gen / mark_card_gen / mark_freelist / mark_gen_inc / bump / none)。 詳細は `docs/precise_gc_quickstart.md`、 `docs/gc_design.md` 参照。 デフォルト copy (= Cheney semispace)。 audit run は `make ARO_GC_WB_AUDIT=1` + `BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1`。
 - **Bignum: GMP (libgmp).** Fixnum オーバフロー時に透過的に `mpz_t` 経由のヒープ Bignum へ昇格。
 - **パーサ: Prism.** CRuby と同じ `prism` を使用 (`prism/` は naruby の build へ symlink)。
 - **AST: ASTro.** `node.def` で各ノードの evaluator を C で書き、`koruby_gen.rb` (ASTroGen サブクラス) が `ID` / `intptr_t` / `struct method_cache *` などの koruby 固有型を扱うハッシュ・特化サポートを追加。

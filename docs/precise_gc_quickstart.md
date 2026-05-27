@@ -357,8 +357,31 @@ done
 - **ascheme_precise**: 9 phase migration、 ~10 heap type + call/cc + GMP + class
   + closure env。 詳細は `sample/ascheme_precise/docs/migration.md`
 - **koruby_precise**: ~15 heap type + fiber + GMP + class hierarchy + method
-  table + method cache。 Phase 1 (= 字面移行 + build pass) は実施済、 Phase 2-6
+  table + method cache。 Phase 1-3 (= 字面移行 + VISIT_ROOTS + SCAN_EDGES) 実施済、
+  15 backend × no-STRESS × 25 test pass。 Phase 4-6 (= fiber / GMP / STRESS audit)
   が future work
+
+### koruby_precise から得た追加教訓
+
+1. **Bootstrap CTX の早期作成が必須**: class 階層 (BasicObject / Object / Class) を
+   作るタイミングで current_ctx が NULL だと、 libc fallback で alloc されて
+   GC heap 外に置かれる。 後で AROH_VISIT_ROOTS が libc-malloc'd 領域を GC heap
+   obj として forward しようとして corruption。 修正は `aro_gc_init` を
+   `korb_runtime_init` 冒頭 (= class 作成前) に繰り上げる
+2. **Freshly-alloc'd obj は次 GC 前に root 化が必要**: STRESS=1 下では毎 alloc で
+   GC 発火、 `T *o = aro_gc_alloc(c, sz);` の直後の GC で o は root に無いので
+   即 sweep される。 sp[] に spill してから初期化する必要あり (= 移動 GC では
+   さらに重要)
+3. **AROH_VISIT_ROOTS / AROH_SCAN_EDGES の out-of-line 化**: 多 heap type を持つ
+   sample では macro inline 展開すると framework 全 backend TU が肥大化。
+   `koruby_visit_roots()` / `koruby_scan_edges()` を sample 側 .c に書いて
+   macro で dispatch する pattern (= koruby_runtime.c で実証)
+4. **aux struct (= libc-managed) からの edge walk**: korb_method / korb_const_entry /
+   korb_method_table_entry 等の libc malloc auxiliary struct も heap obj から
+   reachable。 SCAN_EDGES の中で linked list を辿って中の VALUE を visit する
+   必要あり (= koruby_runtime.c の visit_method_table / visit_const_chain 等)
+5. **VALUE typedef のばらつき**: sample が `uintptr_t` / `intptr_t` / `int64_t` を
+   使い分け。 gc.h forward decl との衝突回避は `ARO_GC_VALUE_TYPEDEFED` macro guard
 
 ## audit run 体制 (= 完成後の routine)
 
