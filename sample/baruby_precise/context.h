@@ -289,6 +289,17 @@ typedef struct CTX_struct {
  *   edge_visit : void (void *ctx, void **slot) callback
  */
 extern VALUE *baruby_gc_sp_high_water;
+/* Root-stack contract for ARO_ROOT_SCOPE_* in runtime/precise_gc/gc.h.
+ * baruby_precise uses a single linear VALUE stack `c->env..c->sp` (= 8 GiB
+ * mmap'd in main.c) where the same range serves as eval stack AND precise
+ * root spill stack.  `baruby_gc_sp_limit` is set once at startup to
+ * `c->env + stack_bytes/sizeof(VALUE)`; ASTRO_ASSERT in SCOPE_START uses
+ * it to catch reservation overflow (= debug-only). */
+extern VALUE *baruby_gc_sp_limit;
+#define AROH_ROOT_STACK_TOP(c)        ((c)->sp)
+#define AROH_ROOT_STACK_SET_TOP(c, p) ((c)->sp = (p))
+#define AROH_ROOT_STACK_LIMIT(c)      (baruby_gc_sp_limit)
+
 #define AROH_VISIT_ROOTS(c, ctx, edge_visit) do {                       \
     VALUE *_aro_sp_top = (c)->sp;                                            \
     /* Zero stale slots above sp_top up to high-water mark (= pop-only       \

@@ -84,32 +84,32 @@ read_list(CTX *c, struct reader *r)
     /* Park car / cdr across the recursive read_form / read_list calls (each
      * may trigger arbitrarily many allocations).  C locals would go stale
      * under a moving GC. */
-    VALUE * restrict sp = c->sp;
-    SP_PUSH(c, sp, 2);   /* sp[0]=car, sp[1]=cdr */
-    sp[0] = read_form(c, r);
-    reader_skip_ws(r);
-    ch = reader_getc(r);
-    if (ch == '.') {
-        int next = reader_getc(r);
-        if (is_delim(next)) {
+    VALUE rv;
+    ARO_ROOT_SCOPE_START(c, sp, 2) {   /* sp[0]=car, sp[1]=cdr */
+        sp[0] = read_form(c, r);
+        reader_skip_ws(r);
+        ch = reader_getc(r);
+        if (ch == '.') {
+            int next = reader_getc(r);
+            if (is_delim(next)) {
+                reader_ungetc(r, next);
+                sp[1] = read_form(c, r);
+                reader_skip_ws(r);
+                int close = reader_getc(r);
+                if (close != ')') scm_error(c, "expected ')' after dotted tail");
+                rv = scm_cons(c, sp[0], sp[1]);
+                ARO_ROOT_SCOPE_CANCEL(c, sp);
+                return rv;
+            }
+            // not a dotted-tail '.', push back both characters and treat as identifier
             reader_ungetc(r, next);
-            sp[1] = read_form(c, r);
-            reader_skip_ws(r);
-            int close = reader_getc(r);
-            if (close != ')') scm_error(c, "expected ')' after dotted tail");
-            VALUE rv = scm_cons(c, sp[0], sp[1]);
-            SP_POP(c, sp);
-            return rv;
+            reader_ungetc(r, '.');
+        } else {
+            reader_ungetc(r, ch);
         }
-        // not a dotted-tail '.', push back both characters and treat as identifier
-        reader_ungetc(r, next);
-        reader_ungetc(r, '.');
-    } else {
-        reader_ungetc(r, ch);
-    }
-    sp[1] = read_list(c, r);
-    VALUE rv = scm_cons(c, sp[0], sp[1]);
-    SP_POP(c, sp);
+        sp[1] = read_list(c, r);
+        rv = scm_cons(c, sp[0], sp[1]);
+    } ARO_ROOT_SCOPE_END(c, sp);
     return rv;
 }
 

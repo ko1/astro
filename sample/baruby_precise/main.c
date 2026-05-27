@@ -135,6 +135,11 @@ code_repo_find_by_name(const char *name)
  * sp_high_water 状態は sample-side で持つ。 */
 VALUE *baruby_gc_sp_high_water;
 
+/* Upper bound of c->env..c->sp range, used by ARO_ROOT_SCOPE_START's
+ * debug bounds check (= ASTRO_ASSERT only).  Set in ctx_new after the
+ * 8 GiB stack mmap returns. */
+VALUE *baruby_gc_sp_limit;
+
 void
 code_repo_add(const char *name, NODE *body, bool force_add)
 {
@@ -210,6 +215,7 @@ create_context(int frames, int funcs)
     c->env = (VALUE *)mmap(NULL, stack_bytes, PROT_READ|PROT_WRITE,
                            MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (c->env == MAP_FAILED) { perror("mmap value stack"); abort(); }
+    baruby_gc_sp_limit = c->env + (stack_bytes / sizeof(VALUE));
     // sp will be moved past toplevel locals after PARSE; see main().
     c->sp = c->env;
     c->func_set = malloc(sizeof(struct function_entry) * funcs);

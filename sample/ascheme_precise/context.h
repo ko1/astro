@@ -389,6 +389,12 @@ extern VALUE g_sp_scratch[];
 // covers the slots.  No local declaration — the caller already has `sp`
 // in scope (= dispatcher parameter, or `VALUE *sp = c->sp;` at the entry
 // of non-NODE_DEF functions like scm_apply / scm_callcc).
+//
+// SP_PUSH / SP_POP are the legacy form, kept for the existing dispatcher
+// body that takes `sp` as a parameter.  New helpers should use
+// ARO_ROOT_SCOPE_START / ARO_ROOT_SCOPE_END / ARO_ROOT from
+// runtime/precise_gc/gc.h via the AROH_ROOT_STACK_* contract macros below.
+// Semantics are identical: zero-fill + set top.
 #define SP_PUSH(c, name, n) \
     do { \
         ASTRO_ASSERT((name) + (n) <= g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE); \
@@ -396,6 +402,13 @@ extern VALUE g_sp_scratch[];
         (c)->sp = (name) + (n); \
     } while (0)
 #define SP_POP(c, name)    do { (c)->sp = (name); } while (0)
+
+/* Root-stack contract for ARO_ROOT_SCOPE_* in runtime/precise_gc/gc.h.
+ * ascheme uses g_sp_scratch (a BSS-allocated VALUE array) for precise root
+ * spill; AROH_VISIT_ROOTS scans [g_sp_scratch, c->sp). */
+#define AROH_ROOT_STACK_TOP(c)        ((c)->sp)
+#define AROH_ROOT_STACK_SET_TOP(c, p) ((c)->sp = (p))
+#define AROH_ROOT_STACK_LIMIT(c)      (g_sp_scratch + ASCHEME_SP_SCRATCH_SIZE)
 
 // Always switch env through this macro so env_serial gets bumped (which
 // invalidates the lref level cache).  The frame-reuse path in

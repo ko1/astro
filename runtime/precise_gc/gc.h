@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "astro_debug.h"  /* ASTRO_ASSERT — used by ARO_ROOT_SCOPE bounds checks */
+
 /* Types-only header — sample's context.h includes this directly to get
  * AroObjectHeader BEFORE defining CTX_struct.  See gc_types.h for the
  * layering rationale. */
@@ -149,6 +151,111 @@ extern const char *aro_gc_backend_name;
  * the scramble decode entirely (= raw slot). */
 #define ARO_GC_VISIT_EDGE_PTR(ctx, fn, slot_ptr)                               \
     ((fn)((ctx), (void **)(uintptr_t)(slot_ptr)))
+
+/* ---------------------------------------------------------------------------
+ * ARO_ROOT_SCOPE — lexical precise-root scope.
+ *
+ * Reserves N VALUE slots on the sample-owned root stack.  Slots are
+ * zero-filled before the root-stack top is advanced, so an alloc-triggered
+ * GC inside the scope sees only valid heap pointers (or 0) in the new range.
+ * Callers store live VALUEs into the slots via ARO_ROOT(r, i) before any
+ * inner allocation, and RELOAD any C-local pointer from the slot AFTER each
+ * allocation-capable call (= moving GC can rewrite the slot).
+ *
+ * Sample contract — sample's context.h MUST provide:
+ *   AROH_ROOT_STACK_TOP(c)        — VALUE *  current root-stack top
+ *   AROH_ROOT_STACK_SET_TOP(c, p) — set the top (= alloc / release)
+ *   AROH_ROOT_STACK_LIMIT(c)      — VALUE *  one-past-end (debug bound)
+ *
+ *   AROH_VISIT_ROOTS MUST scan the same root stack so GC sees the slots
+ *   reserved here.  (Typically `for (p = base; p < AROH_ROOT_STACK_TOP(c); p++)`.)
+ *
+ * Usage:
+ *   ARO_ROOT_SCOPE_START(c, r, 2) {
+ *       ARO_ROOT(r, 0) = aro_gc_alloc(c, sizeof(BaArray));
+ *       ARO_ROOT(r, 1) = (VALUE)aro_gc_alloc(c, items_sz);
+ *
+ *       BaArray *a = VAL2ARY(c, ARO_ROOT(r, 0));   // reload after each alloc
+ *       a->items = (BaArrayItems *)ARO_ROOT(r, 1);
+ *       ret = ARO_ROOT(r, 0);
+ *   } ARO_ROOT_SCOPE_END(c, r);
+ *   return ret;
+ *
+ * Rules (NOT enforced by C — sample-side discipline):
+ *   - No return / break / continue / goto / longjmp across the scope.
+ *     Store the return value in an outer local and return after
+ *     ARO_ROOT_SCOPE_END.
+ *   - For sample exception unwinds (= raise / longjmp), sample frame
+ *     teardown MUST restore the root-stack top to the frame's saved
+ *     value — otherwise dead slots stay live forever and the scratch
+ *     grows monotonically.
+ *   - Nested scopes are allowed.  Use a different `name` to avoid
+ *     shadowing the inner cap constant (compiler warns under -Wshadow).
+ *
+ * Cost: zero-fill N slots, one store to advance root-stack top, one to
+ * restore.  In release builds ARO_ROOT(r, i) folds to r[i] (= ASTRO_ASSERT
+ * is no-op).
+ * --------------------------------------------------------------------------- */
+
+#define ARO_CAT2(a, b) a##b
+#define ARO_CAT(a, b)  ARO_CAT2(a, b)
+
+/* Pure-macro implementation: bodies reference sample-side AROH_ROOT_STACK_*
+ * macros, so they are only expanded at the call site — samples that never
+ * use ARO_ROOT_SCOPE_* don't need to provide the AROH_* macros at all.
+ *
+ * Zero-fill ([base, base+n)) is unconditional and runs BEFORE the root-stack
+ * top is advanced.  Otherwise visit_roots can walk uninit'd slots between
+ * SCOPE_START and the first store (= residue from a prior frame at the same
+ * address — moving GC happily forwards that into to-space and crashes
+ * later). */
+#define ARO_ROOT_SCOPE_START(c, name, n)                                       \
+    do {                                                                        \
+        VALUE *name = AROH_ROOT_STACK_TOP(c);                                   \
+        const size_t ARO_CAT(_aro_root_cap_, name) = (size_t)(n);               \
+        (void)ARO_CAT(_aro_root_cap_, name);                                    \
+        ASTRO_ASSERT((name) + ARO_CAT(_aro_root_cap_, name)                     \
+                     <= AROH_ROOT_STACK_LIMIT(c));                              \
+        for (size_t _aro_root_i = 0;                                            \
+             _aro_root_i < ARO_CAT(_aro_root_cap_, name);                       \
+             _aro_root_i++) (name)[_aro_root_i] = 0;                            \
+        AROH_ROOT_STACK_SET_TOP((c),                                            \
+                                (name) + ARO_CAT(_aro_root_cap_, name));
+
+#define ARO_ROOT_SCOPE_END(c, name)                                            \
+        AROH_ROOT_STACK_SET_TOP((c), (name));                                   \
+    } while (0)
+
+/* Early-exit helper.  Restores the root-stack top to the scope's saved
+ * `name` value (= just like SCOPE_END's restore) but does NOT close the
+ * outer do/while block — so the caller can `return` / `goto` out of the
+ * scope without leaving dead slots in the root-scan range.
+ *
+ * Usage:
+ *   ARO_ROOT_SCOPE_START(c, r, 2) {
+ *       ARO_ROOT(r, 0) = aro_gc_alloc(c, sz);
+ *       if (early_condition) {
+ *           VALUE ret = ARO_ROOT(r, 0);
+ *           ARO_ROOT_SCOPE_CANCEL(c, r);
+ *           return ret;                   // safe: sp restored
+ *       }
+ *       ...
+ *   } ARO_ROOT_SCOPE_END(c, r);
+ *
+ * After CANCEL the slots ARO_ROOT(r, i) are no longer protected — the
+ * caller MUST exit the scope (return / longjmp) without further allocations
+ * in the current scope.  Pairing CANCEL with SCOPE_END is allowed (= the
+ * second SET_TOP is a no-op store), so cleanup paths that fall through to
+ * the END are fine. */
+#define ARO_ROOT_SCOPE_CANCEL(c, name)                                         \
+    AROH_ROOT_STACK_SET_TOP((c), (name))
+
+/* Slot access.  Release builds (= ASTRO_DEBUG=0) fold to `(name)[i]` because
+ * ASTRO_ASSERT compiles to (void)0; the cap binding is `(void)ARO_CAT(...)`d
+ * in SCOPE_START so it's just a stack-local const that the optimizer drops. */
+#define ARO_ROOT(name, i)                                                      \
+    ((name)[(ASTRO_ASSERT((size_t)(i) < ARO_CAT(_aro_root_cap_, name)),         \
+             (size_t)(i))])
 
 void  aro_gc_init(CTX *c);
 

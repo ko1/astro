@@ -252,31 +252,29 @@ baruby_bytes_new(CTX *c, uint32_t capa)
 VALUE
 baruby_ary_new(CTX *c, uint32_t capa)
 {
-    // Caller has set c->sp to the scratch top.  Snapshot it for stable
-    // sp[N] indexing through the rest of this function.
-    VALUE *sp = c->sp;
-    // First alloc scans up to sp (sp[0] uninit, must not be in range).
-    sp[0] = aro_gc_alloc(c, sizeof(BaArray));
-    BaArray *a = VAL2ARY(c, sp[0]);
-    a->head.flags = OBJ_ARRAY;
-    a->len = 0;
-    a->capa = capa;
-    if (capa) {
-        // Second alloc: extend scan to include sp[0] (= the new BaArray).
-        c->sp = sp + 1;
-        size_t items_sz = sizeof(BaArrayItems) + capa * sizeof(VALUE);
-        /* items is stored in a->items (raw typed-ptr field), not a
-         * scrambled VALUE slot — use _raw to avoid double-encode. */
-        BaArrayItems *items = (BaArrayItems *)aro_gc_alloc_raw(c, items_sz);
-        items->head.flags = OBJ_VALUE_ARRAY;
-        a = VAL2ARY(c, sp[0]);   // reload after potential GC
-        ARO_STORE(c, a, &a->items, (VALUE)items);
-    } else {
-        /* Zero-init contract guarantees a->items == NULL already; route
-         * the symmetric store through ARO_STORE so audit (= const) accepts. */
-        ARO_STORE(c, a, &a->items, (VALUE)NULL);
-    }
-    return sp[0];
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, r, 1) {
+        ARO_ROOT(r, 0) = aro_gc_alloc(c, sizeof(BaArray));
+        BaArray *a = VAL2ARY(c, ARO_ROOT(r, 0));
+        a->head.flags = OBJ_ARRAY;
+        a->len = 0;
+        a->capa = capa;
+        if (capa) {
+            size_t items_sz = sizeof(BaArrayItems) + capa * sizeof(VALUE);
+            /* items is stored in a->items (raw typed-ptr field), not a
+             * scrambled VALUE slot — use _raw to avoid double-encode. */
+            BaArrayItems *items = (BaArrayItems *)aro_gc_alloc_raw(c, items_sz);
+            items->head.flags = OBJ_VALUE_ARRAY;
+            a = VAL2ARY(c, ARO_ROOT(r, 0));   // reload after potential GC
+            ARO_STORE(c, a, &a->items, (VALUE)items);
+        } else {
+            /* Zero-init contract guarantees a->items == NULL already; route
+             * the symmetric store through ARO_STORE so audit (= const) accepts. */
+            ARO_STORE(c, a, &a->items, (VALUE)NULL);
+        }
+        ret = ARO_ROOT(r, 0);
+    } ARO_ROOT_SCOPE_END(c, r);
+    return ret;
 }
 
 VALUE
