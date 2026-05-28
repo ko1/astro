@@ -180,6 +180,18 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         visit_value_slot(ctx, fn, &korb_vm->main_obj);
         visit_method_table(ctx, fn, &korb_vm->globals);
     }
+    /* All class pointers in heap have just been forwarded.  Cached
+     * method_cache->klass fields (= scattered across all call-site
+     * NODEs, NOT walked here) now hold stale addresses.  Bumping
+     * method_serial invalidates them; the next dispatch site refills
+     * with the current klass.  Without this, the next `Foo.method`
+     * call dispatches via an stale class pointer → SEGV in
+     * method_table_get when method_serial check passes but klass moved. */
+    if (korb_vm) {
+        korb_vm->method_serial++;
+        extern state_serial_t korb_g_method_serial;
+        korb_g_method_serial = korb_vm->method_serial;
+    }
 }
 
 void
