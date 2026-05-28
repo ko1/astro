@@ -4074,13 +4074,20 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     }
     struct korb_cref *prev_cref2 = c->current_frame->cref;
     if (m->def_cref) c->current_frame->cref = m->def_cref;
-    /* push frame for super() / cref  */
+    /* push frame for super() / cref.  Inherit cref / current_class /
+     * current_file from outer so body-side lookups via c->current_frame->*
+     * see the lexical view defined by m->def_cref (= just installed on
+     * the outer frame above).  Without inheritance, frame2.cref defaults
+     * to NULL and const_lookup walks zero cref → reads garbage / NULL. */
     struct korb_frame frame2 = {
         .prev = c->current_frame,
         .caller_node = NULL,
         .method = m,
         .self = recv,
         .fp = c->current_frame->fp,
+        .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
         .locals_cnt = m->u.ast.locals_cnt,
         .super_skip_n = 0,
         .last_line = Qnil,
