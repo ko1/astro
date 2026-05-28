@@ -225,20 +225,67 @@ static VALUE flt_eql(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE flt_round(CTX *c, VALUE self, int argc, VALUE *argv) {
     double v = korb_num2dbl(self);
-    /* No-arg / arg==0 → round to integer, return Integer. */
-    if (argc < 1 || (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0)) {
+    long n = 0;
+    /* Drop trailing FL_KWARGS hash — caller may pass `half: :up` etc. */
+    int posargc = argc;
+    if (posargc > 0 && !SPECIAL_CONST_P(argv[posargc - 1]) &&
+        BUILTIN_TYPE(argv[posargc - 1]) == T_HASH &&
+        (RBASIC(argv[posargc - 1])->head.flags & FL_KWARGS)) {
+        posargc--;
+    }
+    if (posargc >= 1) {
+        VALUE nv = argv[0];
+        if (!FIXNUM_P(nv)) {
+            if (!SPECIAL_CONST_P(nv)) {
+                VALUE rt = korb_funcall(c, nv, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+                if (c->state == KORB_RAISE) return Qnil;
+                if (RTEST(rt)) {
+                    nv = korb_funcall(c, nv, korb_intern("to_int"), 0, NULL);
+                    if (c->state == KORB_RAISE) return Qnil;
+                }
+            }
+            if (!FIXNUM_P(nv)) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion into Integer");
+                return Qnil;
+            }
+        }
+        n = FIX2LONG(nv);
+    }
+    /* NaN / Infinity:
+     *  - no precision (or n <= 0) → FloatDomainError / RangeError (NaN
+     *    gets RangeError for the negative-precision case in CRuby).
+     *  - positive precision → return self unchanged (CRuby rounds NaN to
+     *    NaN, Infinity to Infinity). */
+    if (isnan(v) || isinf(v)) {
+        if (n > 0) return korb_float_new(c, c->sp, v);
+        if (isnan(v)) {
+            VALUE eR = (n < 0)
+                ? korb_const_get(korb_vm->object_class, korb_intern("RangeError"))
+                : korb_const_get(korb_vm->object_class, korb_intern("FloatDomainError"));
+            korb_raise(c, (struct korb_class *)eR, "NaN");
+            return Qnil;
+        }
+        VALUE eD = korb_const_get(korb_vm->object_class, korb_intern("FloatDomainError"));
+        korb_raise(c, (struct korb_class *)eD, "Infinity");
+        return Qnil;
+    }
+    if (posargc < 1 || n == 0) {
+        /* No arg / arg==0 → round to integer, return Integer. */
         return korb_dbl2int(round(v));
     }
-    if (!FIXNUM_P(argv[0])) return korb_dbl2int(round(v));
-    long n = FIX2LONG(argv[0]);
     if (n > 0) {
-        /* Round to n decimals, return Float. */
+        /* Round to n decimals, return Float.  Big n may saturate. */
+        if (n > 308) return korb_float_new(c, c->sp, v);
         double scale = pow(10.0, (double)n);
         return korb_float_new(c, c->sp, round(v * scale) / scale);
     }
-    /* Negative precision → round to nearest 10^|n|, return Float. */
+    /* Negative precision → round to nearest 10^|n|, return Integer. */
+    if (-n > 308) return INT2FIX(0);
     double scale = pow(10.0, (double)(-n));
-    return korb_float_new(c, c->sp, round(v / scale) * scale);
+    return korb_dbl2int(round(v / scale) * scale);
 }
 static VALUE flt_truncate(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* truncate toward zero — same as to_i for Float. */
