@@ -1460,9 +1460,22 @@ NODE_DEF
 node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
+    if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
+        VALUE r = EA(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l < (intptr_t)r);
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r));
+        c->last_cfunc_callsite = n;
+        return korb_node_lt_slow(c, l, r, arg_index);
+    }
+    /* Pin l across rhs GC fire — see node_plus. */
+    struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
+        .last_line = l, .last_match = Qnil };
+    c->current_frame = &fr;
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l < (intptr_t)r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r));
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     c->last_cfunc_callsite = n;
     return korb_node_lt_slow(c, l, r, arg_index);
 }
@@ -1471,9 +1484,21 @@ NODE_DEF
 node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
+    if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
+        VALUE r = EA(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l <= (intptr_t)r);
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r));
+        c->last_cfunc_callsite = n;
+        return korb_node_le_slow(c, l, r, arg_index);
+    }
+    struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
+        .last_line = l, .last_match = Qnil };
+    c->current_frame = &fr;
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l <= (intptr_t)r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r));
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     c->last_cfunc_callsite = n;
     return korb_node_le_slow(c, l, r, arg_index);
 }
@@ -1482,9 +1507,21 @@ NODE_DEF
 node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
+    if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
+        VALUE r = EA(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l > (intptr_t)r);
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r));
+        c->last_cfunc_callsite = n;
+        return korb_node_gt_slow(c, l, r, arg_index);
+    }
+    struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
+        .last_line = l, .last_match = Qnil };
+    c->current_frame = &fr;
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l > (intptr_t)r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r));
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     c->last_cfunc_callsite = n;
     return korb_node_gt_slow(c, l, r, arg_index);
 }
@@ -1493,9 +1530,21 @@ NODE_DEF
 node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
+    if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
+        VALUE r = EA(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l >= (intptr_t)r);
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r));
+        c->last_cfunc_callsite = n;
+        return korb_node_ge_slow(c, l, r, arg_index);
+    }
+    struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
+        .fp = c->current_frame->fp, .cref = c->current_frame->cref,
+        .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
+        .last_line = l, .last_match = Qnil };
+    c->current_frame = &fr;
     VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l >= (intptr_t)r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r));
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     c->last_cfunc_callsite = n;
     return korb_node_ge_slow(c, l, r, arg_index);
 }
@@ -1504,29 +1553,39 @@ NODE_DEF
 node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
-    if (UNLIKELY(korb_g_basic_op_redefined)) {
+    /* FIXNUM/FLONUM/SPECIAL fast-path: no GC concern, l never moves. */
+    if (LIKELY(FIXNUM_P(l) || FLONUM_P(l) || SPECIAL_CONST_P(l))) {
+        VALUE r = EA(c, rhs);
+        if (UNLIKELY(korb_g_basic_op_redefined)) {
+            c->current_frame->fp[arg_index+1] = r;
+            return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
+        }
+        if (FIXNUM_P(l) && FIXNUM_P(r)) return KORB_BOOL(l == r);
+        if (FLONUM_P(l) && FLONUM_P(r)) return KORB_BOOL(l == r);
+        if (SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) {
+            return KORB_BOOL(l == r);
+        }
         c->current_frame->fp[arg_index+1] = r;
         return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
     }
-    /* Pure FIXNUM / FLONUM compare: identity = numeric equality.
-     * (Note: FLONUM excludes NaN — never encodable, so always heap.) */
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l == r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l == r);
-    /* When L is a non-numeric special const (nil, true, false, Symbol),
-     * its `==` is identity — short-circuit.  But if L is heap and R is
-     * special-const, L's class may have a custom `==` (e.g.
-     * `MyExpectation == nil` should dispatch the user method) — fall
-     * through to the general dispatch. */
-    if (SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) {
-        return KORB_BOOL(l == r);
-    }
-    /* General case: dispatch user-defined `==`.  For built-in types
-     * (T_STRING, T_ARRAY, T_HASH, ...) this finds the methods we
-     * registered in builtins.c; for user classes that include
-     * Comparable or override ==, it picks up their definition.  Pass
-     * the raw return value through — CRuby allows `==` to return
-     * non-boolean (`(obj == x).should == 1`). */
+    /* l is a heap obj — pin via synthetic frame's last_line slot
+     * (same pattern as node_plus / node_lshift) so rhs eval's GC
+     * doesn't leave a moved-out C-local.  fr.self inherits caller's
+     * self to avoid hijacking @ivar lookups inside rhs. */
+    struct korb_frame fr = {
+        .prev      = c->current_frame,
+        .self      = c->current_frame->self,
+        .fp        = c->current_frame->fp,
+        .cref      = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = l,
+        .last_match= Qnil,
+    };
+    c->current_frame = &fr;
+    VALUE r = EA(c, rhs);
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     c->current_frame->fp[arg_index+1] = r;
     return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
 }
@@ -1535,18 +1594,39 @@ NODE_DEF
 node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
-    if (UNLIKELY(korb_g_basic_op_redefined)) {
+    if (LIKELY(FIXNUM_P(l) || FLONUM_P(l) || SPECIAL_CONST_P(l))) {
+        VALUE r = EA(c, rhs);
+        if (UNLIKELY(korb_g_basic_op_redefined)) {
+            c->current_frame->fp[arg_index+1] = r;
+            VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
+            return KORB_BOOL(!RTEST(eq));
+        }
+        if (FIXNUM_P(l) && FIXNUM_P(r)) return KORB_BOOL(l != r);
+        if (FLONUM_P(l) && FLONUM_P(r)) return KORB_BOOL(l != r);
+        if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
+            (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
+            return KORB_BOOL(l != r);
+        }
         c->current_frame->fp[arg_index+1] = r;
         VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
         return KORB_BOOL(!RTEST(eq));
     }
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r))) return KORB_BOOL(l != r);
-    if (LIKELY(FLONUM_P(l) && FLONUM_P(r))) return KORB_BOOL(l != r);
-    if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
-        (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
-        return KORB_BOOL(l != r);
-    }
+    /* l is a heap obj — pin via synthetic frame's last_line.  See
+     * node_plus / node_lshift / node_eq. */
+    struct korb_frame fr = {
+        .prev      = c->current_frame,
+        .self      = c->current_frame->self,
+        .fp        = c->current_frame->fp,
+        .cref      = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = l,
+        .last_match= Qnil,
+    };
+    c->current_frame = &fr;
+    VALUE r = EA(c, rhs);
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     c->current_frame->fp[arg_index+1] = r;
     VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
     return KORB_BOOL(!RTEST(eq));
