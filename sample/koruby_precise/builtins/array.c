@@ -686,23 +686,39 @@ static VALUE ary_one_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_min(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
-    VALUE m = a->ptr[0];
-    for (long i = 1; i < a->len; i++) {
-        VALUE cmp = korb_funcall(c, m, korb_intern("<=>"), 1, &a->ptr[i]);
-        if (FIXNUM_P(cmp) && FIX2LONG(cmp) > 0) m = a->ptr[i];
-    }
-    return m;
+    /* Pin the running-min `m` and the per-iteration probe value across
+     * korb_funcall's GC fires.  Without this, C-local `m` goes stale
+     * when GC moves the receiver under STRESS, so the next korb_funcall
+     * passes a moved-out address and method dispatch SEGVs in klass
+     * deref. */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = a->ptr[0];   /* running min */
+        for (long i = 1; i < a->len; i++) {
+            rs[1] = a->ptr[i];
+            VALUE cmp = korb_funcall(c, rs[0], korb_intern("<=>"), 1, &rs[1]);
+            if (FIXNUM_P(cmp) && FIX2LONG(cmp) > 0) rs[0] = rs[1];
+        }
+        ret = rs[0];
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 static VALUE ary_max(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
-    VALUE m = a->ptr[0];
-    for (long i = 1; i < a->len; i++) {
-        VALUE cmp = korb_funcall(c, m, korb_intern("<=>"), 1, &a->ptr[i]);
-        if (FIXNUM_P(cmp) && FIX2LONG(cmp) < 0) m = a->ptr[i];
-    }
-    return m;
+    /* Pin running-max + per-iter probe across korb_funcall — see ary_min. */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = a->ptr[0];
+        for (long i = 1; i < a->len; i++) {
+            rs[1] = a->ptr[i];
+            VALUE cmp = korb_funcall(c, rs[0], korb_intern("<=>"), 1, &rs[1]);
+            if (FIXNUM_P(cmp) && FIX2LONG(cmp) < 0) rs[0] = rs[1];
+        }
+        ret = rs[0];
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 static VALUE ary_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
