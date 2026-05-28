@@ -1034,10 +1034,14 @@ node_case_eqq_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 NODE_DEF
 node_method_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
 {
-    VALUE r = EA(c, recv);
-    /* blk node is node_block_literal which when EVAL'd produces a Proc */
-    VALUE block = blk ? EA(c, blk) : Qnil;
-    return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+    /* Pin r + block across EA(blk) (= allocates a Proc, fires GC). */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = EA(c, recv);
+        rs[1] = blk ? EA(c, blk) : Qnil;
+        ret = korb_dispatch_call_cached(c, n, rs[0], name, argc, arg_index, rs[1] == Qnil ? NULL : (struct korb_proc *)rs[1], mc);
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 NODE_DEF
