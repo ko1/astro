@@ -2227,7 +2227,17 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         fp = blk->env;
     }
     VALUE *prev_fp = c->current_frame->fp;
-    VALUE prev_self = c->current_frame->self;
+    /* Pin prev_self in the GC root stack: a plain C local goes stale
+     * across the block body's EVAL (= many GCs under STRESS).  The
+     * restore at the bottom of korb_yield writes prev_self back to
+     * frame.self; if stale, visit_roots in the next dispatch walks
+     * the dead pointer and SEGVs (klass=0x2000000001 garbage).
+     * Reproducer: test_block_underflow_args after test_break_from_each
+     * under BARUBY_GC_STRESS=1. */
+    VALUE *yield_self_root = AROH_ROOT_STACK_TOP(c);
+    yield_self_root[0] = c->current_frame->self;
+    AROH_ROOT_STACK_SET_TOP(c, yield_self_root + 1);
+#define prev_self (yield_self_root[0])
     /* Auto-destructure: block with N params yielded a single Array of size M
      * → assign array elements to params (Ruby block calling convention).
      * Skip when the block has a *rest — destructuring would steal the rest's
@@ -2272,7 +2282,10 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
             if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
             if (RTEST(rt)) {
                 VALUE coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
-                if (c->state != KORB_NORMAL) return Qnil;
+                if (c->state != KORB_NORMAL) {
+                    AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
+                    return Qnil;
+                }
                 if (NIL_P(coerced)) {
                     /* to_ary explicitly returned nil — treat the same
                      * as not responding to to_ary: pass the original
@@ -2281,6 +2294,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
                     korb_raise(c, (struct korb_class *)eT,
                                "can't convert to Array (#to_ary gave non-Array)");
+                    AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
                     return Qnil;
                 } else {
                     arr = coerced;
@@ -2410,6 +2424,10 @@ redo_block:
     c->current_frame->cref = prev_cref;
     current_block = prev_block;
     running_block = prev_running;
+    /* Pop the yield_self_root slot.  Must happen AFTER the restore
+     * above (prev_self read from the root slot). */
+    AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
+#undef prev_self
     /* `next` inside a block: yield returns the next value, state cleared.
      * `break` should NOT be cleared here — it propagates to the yielding
      * method, where dispatch_call catches it as that method's return. */
