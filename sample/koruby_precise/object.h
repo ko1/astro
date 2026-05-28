@@ -421,21 +421,32 @@ korb_class_of_class(VALUE v) {
     if (LIKELY(!SPECIAL_CONST_P(v))) {
         struct RBasic *b = (struct RBasic *)v;
         if (korb_vm) {
-            switch ((int)(b->head.flags & T_MASK)) {
-                case T_ARRAY:  return korb_vm->array_class;
-                case T_STRING: return korb_vm->string_class;
-                case T_HASH:   return korb_vm->hash_class;
+            int t = (int)(b->head.flags & T_MASK);
+            /* For container types, basic.klass may be a user subclass
+             * (e.g. `class MyHash < Hash; end` then MyHash.new sets
+             * basic.klass = MyHash).  Honor it when it's set to anything
+             * other than the canonical class.  Otherwise redirect to the
+             * vm-tracked canonical class so libc-obj stale-klass issues
+             * don't bite us. */
+            switch (t) {
+                case T_ARRAY: {
+                    struct korb_class *k = (struct korb_class *)b->klass;
+                    return (k && k != korb_vm->array_class) ? k : korb_vm->array_class;
+                }
+                case T_STRING: {
+                    struct korb_class *k = (struct korb_class *)b->klass;
+                    return (k && k != korb_vm->string_class) ? k : korb_vm->string_class;
+                }
+                case T_HASH: {
+                    struct korb_class *k = (struct korb_class *)b->klass;
+                    return (k && k != korb_vm->hash_class) ? k : korb_vm->hash_class;
+                }
                 case T_RANGE:  return korb_vm->range_class;
                 case T_PROC:   return korb_vm->proc_class;
                 case T_FLOAT:  return korb_vm->float_class;
                 case T_BIGNUM: return korb_vm->integer_class;
                 /* T_OBJECT / T_CLASS / T_MODULE fall through to
-                 * basic.klass read.  Classes / modules are arena and
-                 * their basic.klass is auto-tracked.  T_OBJECT
-                 * (user-class instance) holds a user-defined class
-                 * pointer which is arena but the libc-alloc'd object
-                 * itself has the stale-klass-field issue — left as a
-                 * separate work item. */
+                 * basic.klass read. */
             }
         }
         return (struct korb_class *)b->klass;

@@ -559,6 +559,11 @@ static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE h = korb_hash_new(c, c->sp);
     struct korb_hash *hh = (struct korb_hash *)h;
+    /* Honor subclass: rewrite klass when called as MyHash.new (where self
+     * is the subclass).  CRuby semantics. */
+    if (self != (VALUE)korb_vm->hash_class) {
+        hh->basic.klass = self;
+    }
     if (c->current_block) {
         hh->default_proc = (VALUE)c->current_block;
     } else if (eff_argc >= 1) {
