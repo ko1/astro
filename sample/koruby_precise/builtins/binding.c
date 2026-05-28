@@ -125,6 +125,8 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.head.flags = T_DATA;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->binding_class : 0;
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&b->basic);
     /* Binding's self should be the caller's lexical self (the one who
      * SYNTACTICALLY called `binding`), not the cfunc receiver.  When
      * called via `obj.send(:binding)`, the receiver is `obj` but the
@@ -767,6 +769,8 @@ static VALUE binding_dup_clone_impl(CTX *c, VALUE self, bool preserve_frozen, in
     struct korb_binding *dst = korb_xcalloc(1, sizeof(*dst));
     dst->basic.head.flags = T_DATA;
     dst->basic.klass = src->basic.klass;
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&dst->basic);
     /* Frozen handling: clone preserves source's frozen flag (with optional
      * `freeze: true/false` kwarg override); dup always produces unfrozen. */
     int freeze_arg = -1;
@@ -828,6 +832,8 @@ static VALUE proc_binding_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.head.flags = T_DATA;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->binding_class : 0;
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&b->basic);
     b->self = p->self;
     b->cref = p->cref;
     b->extra_vars = Qnil;

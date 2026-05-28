@@ -345,6 +345,21 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
           case T_STRING:
               /* Leaf: only klass to update (already done). */
               break;
+          case T_DATA: {
+              /* T_DATA covers Method / Binding / Fiber etc.  Different
+               * concrete structs, but the first two fields (RBasic +
+               * one VALUE) are common to Method (= receiver) and the
+               * Method-derived objs.  Visiting just basic.klass + an
+               * optional first VALUE field covers the common case
+               * without dereferencing past the known layout.  Other
+               * T_DATA types' interior heap refs are not covered here
+               * (would require type tag dispatch beyond head.flags). */
+              struct korb_method_obj *m = (struct korb_method_obj *)b;
+              if (b->klass == (VALUE)korb_vm->method_class) {
+                  visit_value_slot(ctx, fn, &m->receiver);
+              }
+              break;
+          }
           default:
               break;
         }

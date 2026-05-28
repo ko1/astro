@@ -294,6 +294,8 @@ static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
                        : (VALUE)korb_vm->object_class;
     m->receiver = self;
     m->name = name;
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&m->basic);
     return (VALUE)m;
 }
 
@@ -401,6 +403,8 @@ static VALUE module_instance_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->name = name;
     m->captured_method = km;
     m->captured_owner = (struct korb_class *)self;
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&m->basic);
     return (VALUE)m;
 }
 
@@ -416,6 +420,8 @@ static VALUE method_unbind(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->name = src->name;
     m->captured_method = src->captured_method;
     m->captured_owner = src->captured_owner;
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&m->basic);
     return (VALUE)m;
 }
 
@@ -430,6 +436,8 @@ static VALUE method_bind(CTX *c, VALUE self, int argc, VALUE *argv) {
     m->name = src->name;
     m->captured_method = src->captured_method;
     m->captured_owner = src->captured_owner;
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&m->basic);
     return (VALUE)m;
 }
 
@@ -477,6 +485,8 @@ static VALUE method_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
     p->rest_slot = rest;
     p->self = self;            /* the Method object */
     p->is_lambda = true;       /* methods have strict arity, like lambdas */
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&p->basic);
     return (VALUE)p;
 }
 

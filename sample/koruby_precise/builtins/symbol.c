@@ -15,6 +15,8 @@ static VALUE sym_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
     p->param_base = 0;
     p->self = self;            /* the symbol itself */
     p->is_lambda = false;
+    extern void koruby_register_libc_obj(struct RBasic *);
+    koruby_register_libc_obj(&p->basic);
     return (VALUE)p;
 }
 

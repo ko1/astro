@@ -4988,6 +4988,7 @@ VALUE korb_fiber_new(struct korb_proc *block) {
     fib->basic.klass = korb_vm->fiber_class
                          ? (VALUE)korb_vm->fiber_class
                          : (VALUE)korb_vm->object_class;
+    koruby_register_libc_obj(&fib->basic);
     fib->block = block;
     fib->stack_size = 4 * 1024 * 1024;  /* 4 MB — PPU pixel pipeline can be deep */
     fib->stack = korb_xmalloc(fib->stack_size);
