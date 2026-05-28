@@ -82,33 +82,34 @@
 ### STRESS mode 結果
 
 NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走らせた
-結果。 段階的に修正を入れて **14/24 file 完全 pass** まで持ち込んだ。
+結果。 段階的に修正を入れて **17/24 file 完全 pass** まで持ち込んだ
+(前回 14 から +3)。
 
 | test                      | STRESS |
 |---------------------------|--------|
 | test_alias                | 9      |
 | test_alias_redef          | 3      |
-| test_array                | SEGV   |
+| test_array                | 1/72   |
 | test_basic_op_redef       | 4      |
 | test_block                | SEGV   |
 | test_block_arg            | 8      |
 | test_class                | 18     |
 | test_comparable           | SEGV   |
 | test_control              | 34     |
-| test_cpu_corner           | 1/29   |
+| test_cpu_corner           | 29     |
 | test_eq                   | 58     |
 | test_eq_redef             | 7      |
 | test_exception            | SEGV   |
 | test_fiber                | SEGV   |
 | test_float_round          | 27     |
 | test_flonum               | 80     |
-| test_hash                 | 5/52   |
+| test_hash                 | 52     |
 | test_integer              | 105    |
 | test_misc                 | 1/26   |
 | test_object_alloc         | 19     |
 | test_range                | 27     |
 | test_string               | 13/47  |
-| test_to_s_dispatch        | SEGV   |
+| test_to_s_dispatch        | 5      |
 | test_yield                | 15     |
 
 行った修正:
@@ -124,22 +125,36 @@ NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走ら
 - **korb_inspect_inner T_ARRAY / T_HASH を ARO_ROOT_SCOPE 化**
   (object.c): result 文字列 / element 文字列が korb_str_concat
   越しに stale 化していた (= `[20, 30]` が `]]` になる現象)。
+- **libc obj registry (koruby_register_libc_obj)** (koruby_runtime.c
+  + object.c): 全 libc 容器 (korb_array / korb_hash / korb_range /
+  korb_float / korb_bignum / korb_proc) の constructor で
+  koruby_register_libc_obj を呼んで singly-linked list に登録。
+  visit_roots 末尾の (f) phase で list を walk し、 各 obj の内部
+  heap-pointer fields (basic.klass, array elements, hash entries,
+  proc env / self / cref) を visit_value_slot / visit_ptr_slot で
+  forward。 これにより hash key/value, array elements, proc env 等
+  に格納された arena ref が GC 越しに正しく追跡されるようになり、
+  test_cpu_corner / test_hash / test_to_s_dispatch が新たに full pass。
 
 残課題:
-- T_OBJECT (user-class instance) の basic.klass redirect は実装不能
-  (どの user class かを type だけからは分からない)。 全 libc obj を
-  registry 登録するパターンが必要。
-- builtin iterator (ary_max_by / hash_each / sort 系) が C-local の
+- **test_exception / test_block / test_comparable / test_fiber の SEGV**:
+  argv[0]->basic.klass が T_OBJECT を指している現象が再現。 m =
+  argv[0]->basic.klass を見ると basic.flags=1 (T_OBJECT)、 expect
+  T_CLASS。 つまり class field が他の T_OBJECT を指している stale
+  状態。 arena T_OBJECT は scan_edges で basic.klass を visit するので
+  本来 forward されるはずだが、 何らかの path で stale 化している。
+  完全 trace が必要。 (libc registry を on/off しても同じ症状なので
+  registry 関連ではない pre-existing バグ)
+- **test_string の BAD SLOT**: string concat / split path で C-local
+  heap ptr が stale。
+- **builtin iterator** (ary_max_by / hash_each / sort 系) が C-local
   heap pointer (= sort 比較の current max element 等) を korb_funcall
   に渡す箇所で stale 化。
-- libc hash の entry chain (key / value VALUE) が visit されないため、
-  hash 内に格納された heap obj (string key 等) が forward されない。
-- inspect 系以外の builtin (e.g. str concat in non-pinned context) が
-  C-local 越しに stale 化。
+- **T_DATA obj (Method / Binding / Fiber)** が registry 未登録 (= 容器
+  系のみ追加した)。 basic.klass の追跡が漏れる可能性。
 
-完全な解決には libc-allocated heap obj 用の registry を導入し、 
-visit_roots で walk して内部 field (basic.klass、 hash entries、
-proc env 等) を update する必要あり。 別 session 規模。
+これらは個別調査必要。 registry を T_DATA まで拡張する、 builtin
+iterator を ARO_ROOT_SCOPE で pin する、 が次の方針。
 
 ### STRESS+PURGE は別途 (残課題)
 
