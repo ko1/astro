@@ -533,23 +533,26 @@ koruby_run_ast(CTX *c, NODE *ast)
     VALUE r = EVAL(c, ast, c->current_frame->fp);
     (void)r;
     if (c->state == KORB_THROW) {
-        VALUE eUTE = korb_const_get(korb_vm->object_class,
+        /* Pin eUTE / tag / tag_s — korb_inspect / korb_exc_new fire GC. */
+        ARO_ROOT_SCOPE_START(c, urs, 3) {
+            urs[0] = korb_const_get(korb_vm->object_class,
                                     korb_intern("UncaughtThrowError"));
-        VALUE tag = Qnil;
-        if (!SPECIAL_CONST_P(c->state_value) &&
-            BUILTIN_TYPE(c->state_value) == T_ARRAY) {
-            struct korb_array *pair = (struct korb_array *)c->state_value;
-            if (pair->len >= 1) tag = pair->ptr[0];
-        }
-        VALUE tag_s = korb_inspect(tag);
-        char buf[256];
-        snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(tag_s));
-        c->state = KORB_RAISE;
-        if (eUTE && !SPECIAL_CONST_P(eUTE) && BUILTIN_TYPE(eUTE) == T_CLASS) {
-            c->state_value = korb_exc_new((struct korb_class *)eUTE, buf);
-        } else {
-            c->state_value = korb_exc_new(NULL, buf);
-        }
+            urs[1] = Qnil;  /* tag */
+            if (!SPECIAL_CONST_P(c->state_value) &&
+                BUILTIN_TYPE(c->state_value) == T_ARRAY) {
+                struct korb_array *pair = (struct korb_array *)c->state_value;
+                if (pair->len >= 1) urs[1] = pair->ptr[0];
+            }
+            urs[2] = korb_inspect(urs[1]);  /* tag_s */
+            char buf[256];
+            snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[2]));
+            c->state = KORB_RAISE;
+            if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
+                c->state_value = korb_exc_new((struct korb_class *)urs[0], buf);
+            } else {
+                c->state_value = korb_exc_new(NULL, buf);
+            }
+        } ARO_ROOT_SCOPE_END(c, urs);
     }
     if (c->state == KORB_RAISE) {
         VALUE exc = c->state_value;
