@@ -1343,6 +1343,25 @@ VALUE korb_object_new(CTX *c, VALUE *sp, struct korb_class *klass) {
             k->name = korb_intern("(uninitialized)");
             k->instance_type = T_OBJECT;
             ret = r[1];
+        } else if (it == T_HASH) {
+            /* Hash.allocate must produce a fully-formed struct korb_hash
+             * (with bucket array) so subsequent #[]= doesn't div-by-zero
+             * on bucket_cnt.  Forward to korb_hash_new and re-tag the
+             * resulting libc-allocated obj's klass to self. */
+            VALUE hv = korb_hash_new(c, c->sp);
+            klass = (struct korb_class *)r[0];           /* reload */
+            ((struct korb_hash *)hv)->basic.klass = klass;
+            ret = hv;
+        } else if (it == T_ARRAY) {
+            VALUE av = korb_ary_new(c, c->sp);
+            klass = (struct korb_class *)r[0];
+            ((struct korb_array *)av)->basic.klass = klass;
+            ret = av;
+        } else if (it == T_STRING) {
+            VALUE sv = korb_str_new(c, c->sp, "", 0);
+            klass = (struct korb_class *)r[0];
+            ((struct korb_string *)sv)->basic.klass = klass;
+            ret = sv;
         } else {
             r[1] = aro_gc_alloc(c, sizeof(struct korb_object));
             klass = (struct korb_class *)r[0];           /* reload */
