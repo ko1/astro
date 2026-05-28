@@ -14,7 +14,8 @@ static VALUE sym_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
     p->params_cnt = 1;
     p->param_base = 0;
     p->self = self;            /* the symbol itself */
-    p->is_lambda = false;
+    /* CRuby: Symbol#to_proc returns a lambda-style proc since 3.0. */
+    p->is_lambda = true;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&p->basic);
     return (VALUE)p;
