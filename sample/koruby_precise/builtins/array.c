@@ -480,18 +480,25 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
 
 static void ary_sort_in_place(CTX *c, struct korb_array *ra, bool has_block) {
     long n = ra->len;
-    for (long i = 1; i < n; i++) {
-        VALUE v = ra->ptr[i];
-        long j = i - 1;
-        while (j >= 0) {
-            long cmp = ary_sort_compare(c, ra->ptr[j], v, has_block);
-            if (c->state != KORB_NORMAL) return;
-            if (cmp <= 0) break;
-            ra->ptr[j+1] = ra->ptr[j];
-            j--;
+    /* Pin the "probe" value v across korb_yield/funcall GC fires.  The
+     * array storage (ra->ptr[]) is libc-tracked so its entries auto-
+     * forward, but the C-local `v` would go stale after GC moves the
+     * referent.  Stage on the value stack so visit_roots picks it up. */
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
+        for (long i = 1; i < n; i++) {
+            rs[0] = ra->ptr[i];
+            long j = i - 1;
+            while (j >= 0) {
+                long cmp = ary_sort_compare(c, ra->ptr[j], rs[0], has_block);
+                if (c->state != KORB_NORMAL) goto done;
+                if (cmp <= 0) break;
+                ra->ptr[j+1] = ra->ptr[j];
+                j--;
+            }
+            ra->ptr[j+1] = rs[0];
         }
-        ra->ptr[j+1] = v;
-    }
+done:   ;
+    } ARO_ROOT_SCOPE_END(c, rs);
 }
 
 static VALUE ary_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
