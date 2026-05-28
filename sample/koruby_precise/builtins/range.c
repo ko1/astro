@@ -105,6 +105,91 @@ static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 
+/* Compare two values using <=>.  Returns 0 if equal, negative if a<b,
+ * positive if a>b.  Returns LONG_MAX if comparison failed (nil <=>). */
+static long rng_cmp(CTX *c, VALUE a, VALUE b) {
+    if (FIXNUM_P(a) && FIXNUM_P(b)) {
+        return (long)((intptr_t)a - (intptr_t)b);
+    }
+    VALUE r = korb_funcall(c, a, korb_intern("<=>"), 1, &b);
+    if (c->state != KORB_NORMAL || !FIXNUM_P(r)) return LONG_MAX;
+    return FIX2LONG(r);
+}
+
+static VALUE rng_min(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_range *r = (struct korb_range *)self;
+    if (korb_block_given(c)) {
+        /* Block form: delegate to Enumerable#min by walking via each. */
+        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        if (c->state != KORB_NORMAL) return Qnil;
+        return korb_funcall(c, arr, korb_intern("min"), argc, argv);
+    }
+    if (argc >= 1) {
+        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        if (c->state != KORB_NORMAL) return Qnil;
+        return korb_funcall(c, arr, korb_intern("min"), argc, argv);
+    }
+    /* No block, no arg: min == begin (or nil if begin > end). */
+    if (NIL_P(r->begin)) {
+        VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+        korb_raise(c, (struct korb_class *)eR, "cannot get the minimum of beginless range");
+        return Qnil;
+    }
+    if (NIL_P(r->end)) return r->begin;
+    long cmp = rng_cmp(c, r->begin, r->end);
+    if (cmp == LONG_MAX) return Qnil;
+    if (cmp > 0) return Qnil;
+    if (cmp == 0 && r->exclude_end) return Qnil;
+    return r->begin;
+}
+
+static VALUE rng_max(CTX *c, VALUE self, int argc, VALUE *argv) {
+    struct korb_range *r = (struct korb_range *)self;
+    if (korb_block_given(c)) {
+        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        if (c->state != KORB_NORMAL) return Qnil;
+        return korb_funcall(c, arr, korb_intern("max"), argc, argv);
+    }
+    if (argc >= 1) {
+        VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
+        if (c->state != KORB_NORMAL) return Qnil;
+        return korb_funcall(c, arr, korb_intern("max"), argc, argv);
+    }
+    if (NIL_P(r->end)) {
+        VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+        korb_raise(c, (struct korb_class *)eR, "cannot get the maximum of endless range");
+        return Qnil;
+    }
+    if (NIL_P(r->begin)) {
+        /* Beginless range with exclusive end: TypeError unless end is
+         * Integer (CRuby's rule). */
+        if (r->exclude_end) {
+            if (FIXNUM_P(r->end) || (!SPECIAL_CONST_P(r->end) && BUILTIN_TYPE(r->end) == T_BIGNUM)) {
+                /* Integer: max == end - 1 */
+                VALUE one = INT2FIX(1);
+                return korb_funcall(c, r->end, korb_intern("-"), 1, &one);
+            }
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
+            return Qnil;
+        }
+        return r->end;
+    }
+    long cmp = rng_cmp(c, r->begin, r->end);
+    if (cmp == LONG_MAX) return Qnil;
+    if (cmp > 0) return Qnil;
+    if (cmp == 0 && r->exclude_end) return Qnil;
+    if (!r->exclude_end) return r->end;
+    /* Exclusive: max == end - 1 only for Integer end.  Else TypeError. */
+    if (FIXNUM_P(r->end) || (!SPECIAL_CONST_P(r->end) && BUILTIN_TYPE(r->end) == T_BIGNUM)) {
+        VALUE one = INT2FIX(1);
+        return korb_funcall(c, r->end, korb_intern("-"), 1, &one);
+    }
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
+    return Qnil;
+}
+
 static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
     if (argc < 1) {
