@@ -2365,7 +2365,8 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     running_block = blk;
     VALUE r;
 redo_block:
-    r = EVAL(c, blk->body, fp);
+    /* sp = fp + env_size: see korb_yield fast-path comment. */
+    r = EVAL(c, blk->body, fp + blk->env_size);
     /* `redo` inside the block: re-evaluate the block body with the
      * same args (params keep their current bindings). */
     if (c->state == KORB_REDO) {
@@ -4878,7 +4879,7 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         current_block = NULL;
         struct korb_cref *prev_cref = c->current_frame->cref;
         if (blk->cref) c->current_frame->cref = blk->cref;
-        VALUE result = blk->body ? EVAL(c, blk->body, fib->frame) : Qnil;
+        VALUE result = blk->body ? EVAL(c, blk->body, fib->frame + blk->env_size) : Qnil;
         c->current_frame->cref = prev_cref;
         c->current_frame->self = prev_self;
         current_block = prev_block;

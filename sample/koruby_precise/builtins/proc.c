@@ -313,7 +313,10 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (p->cref) c->current_frame->cref = p->cref;
     VALUE r;
 redo_proc:
-    r = EVAL(c, p->body, c->current_frame->fp);
+    /* sp = fp + env_size: see korb_yield fast-path comment.  The bake
+     * walker baked lvar offsets inside the proc body relative to
+     * env_size, so the dispatcher needs sp at that height. */
+    r = EVAL(c, p->body, c->current_frame->fp + p->env_size);
     /* `redo` inside a proc/lambda body — re-evaluate the body with
      * the same param bindings (CRuby semantics).  Without this, redo
      * leaks up and silently exits. */

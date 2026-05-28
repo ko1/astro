@@ -676,10 +676,15 @@ static VALUE kernel_is_a_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_block_given(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Inspect the closest enclosing AST method frame's block.  cfuncs
-     * (like this one) don't push a frame, so current_frame already
-     * points to the caller's AST frame. */
-    if (c->current_frame) return KORB_BOOL(c->current_frame->block != NULL);
+    /* Inspect the closest enclosing AST method frame's block.  cfunc
+     * frames (including this one's) DO push a frame now, so walk past
+     * any cfunc frames to reach the real method.  We detect a cfunc
+     * frame by `locals_cnt == 0` (set by prologue_cfunc_inl). */
+    for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+        if (f->locals_cnt != 0 || (f->method && f->method->type != KORB_METHOD_CFUNC)) {
+            return KORB_BOOL(f->block != NULL);
+        }
+    }
     return KORB_BOOL(korb_block_given());
 }
 
