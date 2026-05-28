@@ -323,6 +323,34 @@ stale-ptr 検出) 下で test 走行:
     regression なし。 test_eq_redef は prologue_ast_general の
     frame.cref/current_class/current_file inherit 漏れを直して通った。
 
+### 残 test_basic_op_redef STRESS の root cause = Phase 3 未完
+
+`korb_ary_new_capa` (= 配列) と `korb_hash_new` (= ハッシュ) は libc
+xmalloc で確保 (= GC arena 外)。 visit_roots phase (a) が value stack の
+slot を走査して forward_edge を呼ぶ際、 slot 値が libc 配列を指している
+と forward_payload は arena obj として扱い:
+- aligned = ALIGN8(gc_size=0) = 0 (= memset で 0 のまま)
+- memcpy 0 bytes (= no-op だが to_top は事実上 進まない)
+- HDR_SET_FORWARDED → libc 配列の gc_flags に bit 立て
+- fwd_overlay_set で payload+8 (= klass field!) に to_top を書き込み
+- *slot = to_top (= libc 配列の今後の参照先が壊れた arena 領域に向く)
+
+結果、 配列 lvar の値が "to_top に置かれた直近の arena obj" (= 多くの
+場合 main_obj) に化ける。 `a.class = Main` の理由。
+
+Phase 3 (= 全 koruby obj を aro_gc_alloc に migrate) もしくは framework
+側の forward_payload に "outside from-space and not registered as large
+→ immortal as-is" path を入れることで根治。 後者は他 sample (baruby_
+precise 等) は arena only で問題ないため framework 改変は影響なし。
+
+### 残 test_alias_redef NORMAL の logical fail
+
+`class Module; def alias_method; $called = true; end; end` の後の
+`class D; alias_method :greet, :hello; end` が monkey-patch を呼ばずに
+C 側 korb_class_alias_method に直行している疑い (= koruby が `alias`
+keyword と `Module#alias_method` method call を区別しきれていない)。
+GC 関連ではない。 別 session の課題。
+
 このセッションの主要 fix (commit 686f01f0 〜 13edbcb7):
 
 - **visit_roots phase (c+d) 統合**: frame 毎に cref chain を walk。
