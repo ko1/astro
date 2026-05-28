@@ -1030,6 +1030,16 @@ end
 
 class Symbol
   include Comparable
+
+  def casecmp(other)
+    return nil unless other.is_a?(Symbol)
+    to_s.casecmp(other.to_s)
+  end unless method_defined?(:casecmp)
+
+  def casecmp?(other)
+    return nil unless other.is_a?(Symbol)
+    to_s.casecmp?(other.to_s)
+  end unless method_defined?(:"casecmp?")
 end
 
 # Numeric predicates handled C-side (in builtins.c) to avoid flipping
