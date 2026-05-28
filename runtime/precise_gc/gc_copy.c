@@ -556,6 +556,15 @@ gc_collect_internal(CTX *c)
     while (scan < gc->to_top) {
         AroObjectHeader *h = (AroObjectHeader *)scan;
         g_scan_owner = h;
+        /* Sanity: gc_size should be a reasonable sample object size (= a few
+         * dozen to a few hundred bytes for typical structs).  If it's
+         * gigantic, scan would advance to garbage memory next iteration —
+         * abort with diagnostics so the upstream corruption is visible. */
+        if (UNLIKELY(h->gc_size == 0 || h->gc_size > (1u << 20))) {
+            fprintf(stderr, "GC BUG: corrupt gc_size=%u at scan=%p (to_base=%p) flags=0x%x — stopping scan\n",
+                    h->gc_size, (void*)scan, (void*)gc->to_base, h->flags);
+            break;
+        }
         AROH_SCAN_EDGES(h, h->gc_size, gc, forward_edge);
         ARO_GC_COMMON(c)->stats.heap_bytes += h->gc_size;
         scan += ALIGN8(h->gc_size);
