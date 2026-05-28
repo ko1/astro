@@ -4451,7 +4451,19 @@ void korb_runtime_init(void) {
             korb_const_set(cEnc, korb_intern("GB18030"),     utf8);
         } ARO_ROOT_SCOPE_END(c, enc);
     }
-    korb_init_builtins();
+    /* Temporarily disable STRESS during builtins init — many class
+     * helpers in builtins.c hold class pointers as C locals across
+     * alloc-can-GC sites (cProcess across korb_class_new for cStatus,
+     * etc.), going stale under per-alloc GC.  Audit each site (=
+     * convert to ARO_ROOT_SCOPE or korb_vm-> field) is the proper fix
+     * but spans ~30 init blocks; gate stress here so user-program GC
+     * stress still catches real bugs at runtime. */
+    {
+        bool prev_stress = ARO_GC_COMMON(c)->stress;
+        ARO_GC_COMMON(c)->stress = false;
+        korb_init_builtins();
+        ARO_GC_COMMON(c)->stress = prev_stress;
+    }
     /* $: / $LOAD_PATH: array initialized with at least one path so
      * tests probing length > 0 pass.  CRuby populates this from
      * sysconfdir/sitelibdir/etc; we don't have those here, so use a
