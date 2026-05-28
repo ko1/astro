@@ -51,6 +51,10 @@ VALUE _new_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 #define DEF(klass, name, fn, argc) \
     korb_class_add_method_cfunc((klass), korb_intern(name), (fn), (argc))
+/* DEF_R — register a method using the new sp-based RESULT-returning ABI.
+ * Phase 2-4 transition; will become the default once the sweep finishes. */
+#define DEF_R(klass, name, fn, argc) \
+    korb_class_add_method_cfunc_r((klass), korb_intern(name), (fn), (argc))
 #define DEF_PRIV(klass, name, fn, argc) do {                              \
     korb_class_add_method_cfunc((klass), korb_intern(name), (fn), (argc)); \
     struct korb_method *_m = korb_class_find_method((klass), korb_intern(name)); \
@@ -349,7 +353,7 @@ void korb_init_builtins(void) {
     DEF(korb_vm->array_class, "join", ary_join, -1);
     DEF(korb_vm->array_class, "inspect", ary_inspect, 0);
     DEF(korb_vm->array_class, "to_s", ary_inspect, 0);
-    DEF(korb_vm->array_class, "==", ary_eq, 1);
+    DEF_R(korb_vm->array_class, "==", ary_eq, 1);   /* Phase 3 PoC: new sp/RESULT ABI */
     DEF(korb_vm->array_class, "dup", ary_dup, 0);
     DEF(korb_vm->array_class, "to_h", ary_to_h, 0);
 

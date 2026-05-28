@@ -4248,7 +4248,27 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
             .last_match = Qnil,
         };
         c->current_frame = &fr;
-        VALUE r = m->u.cfunc.func(c, recv, argc, argv);
+        VALUE r;
+        if (UNLIKELY(m->u.cfunc.func_r != NULL)) {
+            /* New sp-based RESULT ABI bridge: stage self + args on c->sp
+             * and call func_r.  Convert RESULT back to legacy VALUE +
+             * c->state for upstream callers (Phase 2 transition). */
+            VALUE *sp = c->sp;
+            sp[0] = recv;
+            for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+            c->sp = sp + 1 + argc;
+            RESULT _rr = m->u.cfunc.func_r(c, argc, sp + 1 + argc);
+            c->sp = sp;
+            if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+                c->state = _rr.state;
+                c->state_value = _rr.value;
+                r = Qnil;
+            } else {
+                r = _rr.value;
+            }
+        } else {
+            r = m->u.cfunc.func(c, recv, argc, argv);
+        }
         c->current_frame = fr.prev;
         return r;
     }

@@ -256,25 +256,17 @@ static VALUE ary_last(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_ary_aref(self, len - 1);
 }
 static VALUE ary_each(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* No block → return self (the Array IS its own enumerator
-     * stand-in — supports `.each.to_a`, `.each.map { ... }`, etc.). */
     if (!korb_block_given()) return self;
-    /* Re-read self from c->current_frame->self each iteration —
-     * prologue_cfunc set frame.self = recv at frame push, and
-     * visit_roots auto-forwards frame.self each GC cycle.  The
-     * C-local `self` parameter goes stale across korb_yield's GC
-     * fires under STRESS+PURGE. */
-    long len = korb_ary_len(c->current_frame->self);
+    long len = korb_ary_len(self);
     for (long i = 0; i < len; i++) {
-        VALUE v = korb_ary_aref(c->current_frame->self, i);
+        VALUE v = korb_ary_aref(self, i);
         korb_yield(c, 1, &v);
         if (c->state != KORB_NORMAL) return Qnil;
     }
-    return c->current_frame->self;
+    return self;
 }
 static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
     long len = korb_ary_len(self);
-    /* No block → Array of [elem, index] pairs (Enumerator stand-in). */
     if (!korb_block_given()) {
         VALUE r = korb_ary_new_capa(len);
         for (long i = 0; i < len; i++) {
@@ -285,51 +277,36 @@ static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         return r;
     }
-    /* Re-read self from c->current_frame->self each iteration so yield's
-     * GC fires don't stale the C-local. */
     for (long i = 0; i < len; i++) {
-        VALUE args[2] = { korb_ary_aref(c->current_frame->self, i), INT2FIX(i) };
+        VALUE args[2] = { korb_ary_aref(self, i), INT2FIX(i) };
         korb_yield(c, 2, args);
         if (c->state != KORB_NORMAL) return Qnil;
     }
-    return c->current_frame->self;
+    return self;
 }
 static VALUE ary_map(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* No block → return self (caller will likely chain another op). */
     if (!korb_block_given()) return self;
     long len = korb_ary_len(self);
-    /* Pin result via c->sp (= ARO_ROOT_SCOPE) and re-read self per-iter
-     * from frame.self to survive yield's GC. */
-    VALUE ret;
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
-        rs[0] = korb_ary_new_capa(len);
-        for (long i = 0; i < len; i++) {
-            VALUE v = korb_ary_aref(c->current_frame->self, i);
-            VALUE m = korb_yield(c, 1, &v);
-            if (c->state != KORB_NORMAL) { ret = Qnil; goto amap_done; }
-            korb_ary_push(rs[0], m);
-        }
-        ret = rs[0];
-      amap_done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+    VALUE r = korb_ary_new_capa(len);
+    for (long i = 0; i < len; i++) {
+        VALUE v = korb_ary_aref(self, i);
+        VALUE m = korb_yield(c, 1, &v);
+        if (c->state != KORB_NORMAL) return Qnil;
+        korb_ary_push(r, m);
+    }
+    return r;
 }
 static VALUE ary_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!korb_block_given()) return self;
     long len = korb_ary_len(self);
-    VALUE ret;
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
-        rs[0] = korb_ary_new();
-        for (long i = 0; i < len; i++) {
-            VALUE v = korb_ary_aref(c->current_frame->self, i);
-            VALUE m = korb_yield(c, 1, &v);
-            if (c->state != KORB_NORMAL) { ret = Qnil; goto asel_done; }
-            if (RTEST(m)) korb_ary_push(rs[0], v);
-        }
-        ret = rs[0];
-      asel_done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+    VALUE r = korb_ary_new();
+    for (long i = 0; i < len; i++) {
+        VALUE v = korb_ary_aref(self, i);
+        VALUE m = korb_yield(c, 1, &v);
+        if (c->state != KORB_NORMAL) return Qnil;
+        if (RTEST(m)) korb_ary_push(r, v);
+    }
+    return r;
 }
 static VALUE ary_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* CRuby's reduce / inject overloads:
@@ -425,24 +402,39 @@ static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     return h;
 }
-static VALUE ary_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return Qfalse;
-    /* Pin self + argv[0] across korb_eq's potential GC fires (== may
-     * dispatch user code that allocates). */
-    VALUE ret = Qtrue;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = self;
-        rs[1] = argv[0];
-        long la = korb_ary_len(rs[0]), lb = korb_ary_len(rs[1]);
-        if (la != lb) { ret = Qfalse; goto done; }
-        for (long i = 0; i < la; i++) {
-            if (!korb_eq(korb_ary_aref(rs[0], i), korb_ary_aref(rs[1], i))) {
-                ret = Qfalse; goto done;
-            }
+/* New sp-based RESULT-returning ABI (Phase 3 PoC).
+ *
+ * Convention:
+ *   sp[-2] = self (the array on the LHS)
+ *   sp[-1] = other (the RHS arg)
+ *   sp[0..] = scratch (unused here)
+ *
+ * Both slots are in c->sp range so visit_roots auto-forwards them across
+ * any GC fired by inner korb_eq dispatches.  No ARO_ROOT_SCOPE_START
+ * boilerplate needed. */
+static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
+    if (BUILTIN_TYPE(sp[-1]) != T_ARRAY) return RESULT_OK(Qfalse);
+    long la = korb_ary_len(sp[-2]);
+    long lb = korb_ary_len(sp[-1]);
+    if (la != lb) return RESULT_OK(Qfalse);
+    for (long i = 0; i < la; i++) {
+        /* Re-read sp[-2]/sp[-1] each iter — they're slot-tracked, so even
+         * if korb_eq's inner dispatch fires GC and moves the arrays, the
+         * next iteration's korb_ary_aref reads the forwarded address. */
+        if (!korb_eq(korb_ary_aref(sp[-2], i), korb_ary_aref(sp[-1], i))) {
+            return RESULT_OK(Qfalse);
         }
-    done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+        /* korb_eq still uses the legacy c->state side-channel (Phase 7
+         * will migrate it to RESULT).  Bridge: convert c->state back into
+         * RESULT here so propagation works uniformly. */
+        if (UNLIKELY(c->state != KORB_NORMAL)) {
+            RESULT r = { c->state_value, (uint8_t)c->state };
+            c->state = KORB_NORMAL;
+            c->state_value = Qnil;
+            return r;
+        }
+    }
+    return RESULT_OK(Qtrue);
 }
 static VALUE ary_lshift(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
