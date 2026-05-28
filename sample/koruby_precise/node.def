@@ -469,7 +469,7 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
          * anonymous module).  Pin eName / name_v / prefix across the
          * korb_funcall sites — each fires GC under STRESS+PURGE and a
          * stale eName C-local would crash inside korb_raise →
-         * korb_exc_new → korb_object_new(stale_class). */
+         * korb_exc_new → korb_object_new(c, c->sp, stale_class). */
         ARO_ROOT_SCOPE_START(c, ers, 3) {
             ers[0] = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
             ers[1] = korb_funcall(c, p, korb_intern("name"), 0, NULL);
@@ -769,7 +769,7 @@ node_str_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32
             if (BUILTIN_TYPE(rs[1]) != T_STRING) {
                 rs[1] = korb_to_s_dispatch(c, rs[1]);
             }
-            rs[0] = korb_str_concat(rs[0], rs[1]);
+            rs[0] = korb_str_concat(c, c->sp, rs[0], rs[1]);
         }
         ret = rs[0];
     } ARO_ROOT_SCOPE_END(c, rs);

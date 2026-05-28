@@ -501,7 +501,7 @@ bool  korb_const_has_inherited(struct korb_class *klass, ID name);
 bool korb_const_has(struct korb_class *klass, ID name);
 
 /* objects */
-VALUE korb_object_new(struct korb_class *klass);
+VALUE korb_object_new(CTX *c, VALUE *sp, struct korb_class *klass);
 VALUE korb_ivar_get(VALUE obj, ID name);
 void  korb_ivar_set(VALUE obj, ID name, VALUE value);
 bool  korb_ivar_defined(VALUE obj, ID name);
@@ -559,8 +559,8 @@ korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
 /* string */
 VALUE korb_str_new(CTX *c, VALUE *sp, const char *p, long len);
 VALUE korb_str_new_cstr(CTX *c, VALUE *sp, const char *cstr);
-VALUE korb_str_dup(VALUE s);
-VALUE korb_str_concat(VALUE a, VALUE b);
+VALUE korb_str_dup(CTX *c, VALUE *sp, VALUE s);
+VALUE korb_str_concat(CTX *c, VALUE *sp, VALUE a, VALUE b);
 VALUE korb_str_inspect(VALUE s);
 const char *korb_str_cstr(VALUE s); /* terminates */
 long  korb_str_len(VALUE s);

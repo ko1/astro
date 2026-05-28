@@ -1192,13 +1192,13 @@ void korb_init_builtins(void) {
         io[0] = (VALUE)korb_class_new(korb_intern("IO"), korb_vm->object_class, T_OBJECT);
         korb_const_set(korb_vm->object_class, korb_intern("IO"), io[0]);
         /* dummy STDOUT/STDERR */
-        io[1] = korb_object_new((struct korb_class *)io[0]);
-        io[2] = korb_object_new((struct korb_class *)io[0]);
+        io[1] = korb_object_new(c, c->sp, (struct korb_class *)io[0]);
+        io[2] = korb_object_new(c, c->sp, (struct korb_class *)io[0]);
         g_stderr_obj = io[2];
         korb_const_set(korb_vm->object_class, korb_intern("STDOUT"), io[1]);
         korb_const_set(korb_vm->object_class, korb_intern("STDERR"), io[2]);
         /* STDIN — backed by the real stdin FILE*, so STDIN.gets / .read work. */
-        io[3] = korb_object_new((struct korb_class *)io[0]);
+        io[3] = korb_object_new(c, c->sp, (struct korb_class *)io[0]);
         korb_ivar_set(io[3], korb_intern("@__fp__"),
                       INT2FIX((long)(uintptr_t)stdin));
         korb_const_set(korb_vm->object_class, korb_intern("STDIN"), io[3]);

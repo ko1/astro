@@ -160,19 +160,19 @@ static VALUE exc_full_message(CTX *c, VALUE self, int argc, VALUE *argv) {
         msg = korb_str_new_cstr(c, c->sp, "");
     }
     VALUE r = korb_str_new_cstr(c, c->sp, "");
-    korb_str_concat(r, msg);
+    korb_str_concat(c, c->sp, r, msg);
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_OBJECT) {
         struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
         if (k && k->name) {
             const char *kn = korb_id_name(k->name);
             if (kn && kn[0] != 0) {
-                korb_str_concat(r, korb_str_new_cstr(c, c->sp, " ("));
-                korb_str_concat(r, korb_str_new_cstr(c, c->sp, kn));
-                korb_str_concat(r, korb_str_new_cstr(c, c->sp, ")"));
+                korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, " ("));
+                korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, kn));
+                korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, ")"));
             }
         }
     }
-    korb_str_concat(r, korb_str_new_cstr(c, c->sp, "\n"));
+    korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, "\n"));
     return r;
 }
 /* Exception#detailed_message — returns "message (Class)" by default,
@@ -183,10 +183,10 @@ static VALUE exc_detailed_message(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
     if (strcmp(kn, "RuntimeError") == 0) return msg;
-    VALUE r = korb_str_dup(msg);
-    korb_str_concat(r, korb_str_new_cstr(c, c->sp, " ("));
-    korb_str_concat(r, korb_str_new_cstr(c, c->sp, kn));
-    korb_str_concat(r, korb_str_new_cstr(c, c->sp, ")"));
+    VALUE r = korb_str_dup(c, c->sp, msg);
+    korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, " ("));
+    korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, kn));
+    korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, ")"));
     return r;
 }
 
@@ -197,7 +197,7 @@ static VALUE exc_exception(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Build a new instance of self's class with msg = argv[0]. */
     if (SPECIAL_CONST_P(self)) return self;
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
-    VALUE n = korb_object_new(k);
+    VALUE n = korb_object_new(c, c->sp, k);
     VALUE msg = argv[0];
     if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING) {
         VALUE s = korb_funcall(c, msg, korb_intern("to_s"), 0, NULL);

@@ -84,8 +84,8 @@ static VALUE str_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
                 ARO_ROOT_SCOPE_CANCEL(c, rs); return Qnil;
             }
         }
-        VALUE r = korb_str_dup(rs[0]);
-        result = korb_str_concat(r, rs[1]);
+        VALUE r = korb_str_dup(c, c->sp, rs[0]);
+        result = korb_str_concat(c, c->sp, r, rs[1]);
     } ARO_ROOT_SCOPE_END(c, rs);
     return result;
 }
@@ -165,7 +165,7 @@ static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
         if (cp <= 0x7f) {
             char ch = (char)cp;
             rs[2] = korb_str_new(c, c->sp, &ch, 1);
-            korb_str_concat(rs[0], rs[2]);
+            korb_str_concat(c, c->sp, rs[0], rs[2]);
             ok = true; goto done;
         }
         /* Multi-byte: encode as UTF-8. */
@@ -193,14 +193,14 @@ static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
             return false;
         }
         rs[2] = korb_str_new(c, c->sp, buf, len);
-        korb_str_concat(rs[0], rs[2]);
+        korb_str_concat(c, c->sp, rs[0], rs[2]);
         ok = true; goto done;
     }
     if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
         /* Try to_s as a fallback. */
         rs[2] = korb_funcall(c, rs[1], korb_intern("to_s"), 0, NULL);
         if (!SPECIAL_CONST_P(rs[2]) && BUILTIN_TYPE(rs[2]) == T_STRING) {
-            korb_str_concat(rs[0], rs[2]);
+            korb_str_concat(c, c->sp, rs[0], rs[2]);
             ok = true; goto done;
         }
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
@@ -214,10 +214,10 @@ static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
     if (rs[1] == rs[0]) {
         struct korb_string *src = (struct korb_string *)rs[1];
         rs[2] = korb_str_new(c, c->sp, src->ptr, src->len);
-        korb_str_concat(rs[0], rs[2]);
+        korb_str_concat(c, c->sp, rs[0], rs[2]);
         ok = true; goto done;
     }
-    korb_str_concat(rs[0], rs[1]);
+    korb_str_concat(c, c->sp, rs[0], rs[1]);
     ok = true;
 done: ;
     } ARO_ROOT_SCOPE_END(c, rs);
@@ -628,9 +628,9 @@ static VALUE str_append_as_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (FIXNUM_P(argv[i])) {
             char ch = (char)(FIX2LONG(argv[i]) & 0xff);
             VALUE tmp = korb_str_new(c, c->sp, &ch, 1);
-            korb_str_concat(self, tmp);
+            korb_str_concat(c, c->sp, self, tmp);
         } else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING) {
-            korb_str_concat(self, argv[i]);
+            korb_str_concat(c, c->sp, self, argv[i]);
         }
     }
     return self;
@@ -1072,13 +1072,13 @@ static VALUE str_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (n <= 0) return korb_str_new(c, c->sp, "", 0);
     /* Park self + result across korb_str_new's GC.  Without protect,
      * self (C param) goes stale after the first alloc, and
-     * korb_str_concat(r, stale_self) reads garbage->len → buffer
+     * korb_str_concat(c, c->sp, r, stale_self) reads garbage->len → buffer
      * overflow → corrupts adjacent obj's header. */
     VALUE result;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = self;
         rs[1] = korb_str_new(c, c->sp, "", 0);
-        for (long i = 0; i < n; i++) korb_str_concat(rs[1], rs[0]);
+        for (long i = 0; i < n; i++) korb_str_concat(c, c->sp, rs[1], rs[0]);
         result = rs[1];
     } ARO_ROOT_SCOPE_END(c, rs);
     return result;
@@ -1153,7 +1153,7 @@ static int str_find_pat(VALUE pattern, struct korb_string *s, long from,
 }
 
 static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_str_dup(self);
+    if (argc < 1) return korb_str_dup(c, c->sp, self);
     
     VALUE ret = Qnil;
     /* Pin self, pat (argv[0]), repl (argv[1]), out, scratch m
@@ -1168,24 +1168,24 @@ static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
         long start = 0, i = 0;
         long ms, ml;
         while (str_find_pat(rs[1], s, i, &ms, &ml)) {
-            korb_str_concat(rs[3], korb_str_new(c, c->sp, s->ptr + start, ms - start));
+            korb_str_concat(c, c->sp, rs[3], korb_str_new(c, c->sp, s->ptr + start, ms - start));
             s = (struct korb_string *)rs[0];
             if (argc >= 2 && BUILTIN_TYPE(rs[2]) == T_STRING) {
                 struct korb_string *r = (struct korb_string *)rs[2];
-                korb_str_concat(rs[3], korb_str_new(c, c->sp, r->ptr, r->len));
+                korb_str_concat(c, c->sp, rs[3], korb_str_new(c, c->sp, r->ptr, r->len));
                 s = (struct korb_string *)rs[0];
             } else if (c->current_block) {
                 rs[4] = korb_str_new(c, c->sp, s->ptr + ms, ml);
                 rs[4] = korb_yield(c, 1, &rs[4]);
                 if (c->state == KORB_RAISE) { ret = Qnil; goto gsub_done; }
-                if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(rs[3], rs[4]);
-                else korb_str_concat(rs[3], korb_to_s(rs[4]));
+                if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(c, c->sp, rs[3], rs[4]);
+                else korb_str_concat(c, c->sp, rs[3], korb_to_s(rs[4]));
                 s = (struct korb_string *)rs[0];
             }
             i = ms + (ml > 0 ? ml : 1);
             start = i;
         }
-        korb_str_concat(rs[3], korb_str_new(c, c->sp, s->ptr + start, s->len - start));
+        korb_str_concat(c, c->sp, rs[3], korb_str_new(c, c->sp, s->ptr + start, s->len - start));
         ret = rs[3];
     gsub_done: ;
     } ARO_ROOT_SCOPE_END(c, rs);
@@ -1193,7 +1193,7 @@ static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_str_dup(self);
+    if (argc < 1) return korb_str_dup(c, c->sp, self);
     
     VALUE ret = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 5) {
@@ -1204,22 +1204,22 @@ static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
         rs[4] = Qnil;  /* m / r scratch */
         struct korb_string *s = (struct korb_string *)rs[0];
         long ms, ml;
-        if (!str_find_pat(rs[1], s, 0, &ms, &ml)) { ret = korb_str_dup(rs[0]); goto sub_done; }
+        if (!str_find_pat(rs[1], s, 0, &ms, &ml)) { ret = korb_str_dup(c, c->sp, rs[0]); goto sub_done; }
         rs[3] = korb_str_new(c, c->sp, s->ptr, ms);
         s = (struct korb_string *)rs[0];
         if (argc >= 2 && BUILTIN_TYPE(rs[2]) == T_STRING) {
             struct korb_string *r = (struct korb_string *)rs[2];
-            korb_str_concat(rs[3], korb_str_new(c, c->sp, r->ptr, r->len));
+            korb_str_concat(c, c->sp, rs[3], korb_str_new(c, c->sp, r->ptr, r->len));
             s = (struct korb_string *)rs[0];
         } else if (c->current_block) {
             rs[4] = korb_str_new(c, c->sp, s->ptr + ms, ml);
             rs[4] = korb_yield(c, 1, &rs[4]);
             if (c->state == KORB_RAISE) { ret = Qnil; goto sub_done; }
-            if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(rs[3], rs[4]);
-            else korb_str_concat(rs[3], korb_to_s(rs[4]));
+            if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(c, c->sp, rs[3], rs[4]);
+            else korb_str_concat(c, c->sp, rs[3], korb_to_s(rs[4]));
             s = (struct korb_string *)rs[0];
         }
-        korb_str_concat(rs[3], korb_str_new(c, c->sp, s->ptr + ms + ml, s->len - ms - ml));
+        korb_str_concat(c, c->sp, rs[3], korb_str_new(c, c->sp, s->ptr + ms + ml, s->len - ms - ml));
         ret = rs[3];
     sub_done: ;
     } ARO_ROOT_SCOPE_END(c, rs);
@@ -1302,7 +1302,7 @@ static long str_tr_expand(const char *spec, long len, char *out, long out_cap) {
  * collapse.  tr_s squeezes; tr doesn't. */
 static VALUE str_tr_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool squeeze) {
     if (argc < 2 || BUILTIN_TYPE(argv[0]) != T_STRING || BUILTIN_TYPE(argv[1]) != T_STRING)
-        return korb_str_dup(self);
+        return korb_str_dup(c, c->sp, self);
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *from_in = (struct korb_string *)argv[0];
     struct korb_string *to_in   = (struct korb_string *)argv[1];
@@ -1394,7 +1394,7 @@ static VALUE kernel_format(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *fmt = (struct korb_string *)rs[0];
     for (long i = 0; i < fmt->len; i++) {
         if (fmt->ptr[i] != '%') {
-            korb_str_concat(rs[1], korb_str_new(c, c->sp, fmt->ptr + i, 1));
+            korb_str_concat(c, c->sp, rs[1], korb_str_new(c, c->sp, fmt->ptr + i, 1));
             fmt = (struct korb_string *)rs[0];  /* reload */
             continue;
         }
@@ -1518,7 +1518,7 @@ static VALUE kernel_format(CTX *c, VALUE self, int argc, VALUE *argv) {
             default:
                 snprintf(buf, sizeof(buf), "%%%c", conv);
         }
-        korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, buf));
+        korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, buf));
         fmt = (struct korb_string *)rs[0];  /* reload after potential GC */
     }
     ret = rs[1];
@@ -1886,13 +1886,13 @@ static VALUE str_percent(CTX *c, VALUE self, int argc, VALUE *argv) {
                         VALUE v = korb_hash_aref((VALUE)h, key);
                         if (UNDEF_P(v)) v = Qnil;
                         VALUE vs = korb_to_s(v);
-                        korb_str_concat(out, vs);
+                        korb_str_concat(c, c->sp, out, vs);
                         i = j + 1;
                         continue;
                     }
                 }
             }
-            korb_str_concat(out, korb_str_new(c, c->sp, fmt->ptr + i, 1));
+            korb_str_concat(c, c->sp, out, korb_str_new(c, c->sp, fmt->ptr + i, 1));
             i++;
         }
         return out;

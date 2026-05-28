@@ -275,7 +275,7 @@ VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv) {
                    "can't create instance of singleton class");
         return Qnil;
     }
-    return korb_object_new((struct korb_class *)self);
+    return korb_object_new(c, c->sp, (struct korb_class *)self);
 }
 
 VALUE mod_class_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -862,7 +862,7 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
         if (!preserve_frozen && k && k->name == korb_intern("(singleton)")) {
             while (k && k->name == korb_intern("(singleton)")) k = k->super;
         }
-        r = korb_object_new(k);
+        r = korb_object_new(c, c->sp, k);
         struct korb_object *no = (struct korb_object *)r;
         for (uint32_t i = 0; i < o->ivar_cnt && i < no->ivar_capa; i++) {
             no->ivars[i] = o->ivars[i];

@@ -778,7 +778,7 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE obj;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = (VALUE)klass;
-        rs[1] = korb_object_new((struct korb_class *)rs[0]);
+        rs[1] = korb_object_new(c, c->sp, (struct korb_class *)rs[0]);
         struct korb_method *m = korb_class_find_method((struct korb_class *)rs[0], id_initialize);
         VALUE *fp_lo = c->current_frame->fp;
         VALUE *fp_hi = c->sp;

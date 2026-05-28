@@ -726,7 +726,7 @@ static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* `catch` invocations may use either an explicit tag (`catch(:t) {}`)
      * or no tag (`catch {}` — the block param is the implicit tag).
      * For the no-tag form we synthesize a fresh Object as the tag. */
-    VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(korb_vm->object_class);
+    VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(c, c->sp, korb_vm->object_class);
     VALUE block_arg[1] = { tag };
     VALUE r = korb_yield(c, 1, block_arg);
     /* state == THROW: tag/value live on c->state_value as a 2-element ary. */

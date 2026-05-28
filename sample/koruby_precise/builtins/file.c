@@ -37,8 +37,8 @@ static FILE *korb_io_fp(VALUE io) {
     return (FILE *)(uintptr_t)FIX2LONG(v);
 }
 
-static VALUE korb_io_new(struct korb_class *klass, FILE *fp) {
-    VALUE io = (VALUE)korb_object_new(klass);
+static VALUE korb_io_new(CTX *c, struct korb_class *klass, FILE *fp) {
+    VALUE io = (VALUE)korb_object_new(c, c->sp, klass);
     korb_ivar_set(io, korb_io_fp_id_(), INT2FIX((long)(uintptr_t)fp));
     return io;
 }
@@ -188,8 +188,8 @@ VALUE io_class_pipe(CTX *c, VALUE self, int argc, VALUE *argv) {
      * because line-buffered fputs holds back the single-char write. */
     setvbuf(w, NULL, _IONBF, 0);
     setvbuf(r, NULL, _IONBF, 0);
-    VALUE rio = korb_io_new((struct korb_class *)self, r);
-    VALUE wio = korb_io_new((struct korb_class *)self, w);
+    VALUE rio = korb_io_new(c, (struct korb_class *)self, r);
+    VALUE wio = korb_io_new(c, (struct korb_class *)self, w);
     VALUE arr = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(arr, rio);
     korb_ary_push(arr, wio);
@@ -245,7 +245,7 @@ VALUE io_class_popen(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_raise(c, NULL, "popen failed: %s", strerror(errno));
         return Qnil;
     }
-    VALUE io = korb_io_new((struct korb_class *)self, fp);
+    VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
     if (!korb_block_given(c)) return io;
     VALUE r = korb_yield(c, 1, &io);
     pclose(fp);
@@ -407,7 +407,7 @@ static VALUE file_open(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     /* `self` here is the File class object — use it as the IO's class. */
-    VALUE io = korb_io_new((struct korb_class *)self, fp);
+    VALUE io = korb_io_new(c, (struct korb_class *)self, fp);
     if (!korb_block_given(c)) return io;
     VALUE r = korb_yield(c, 1, &io);
     /* Always close on block exit, even on raise. */
@@ -444,9 +444,9 @@ static VALUE file_join(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (BUILTIN_TYPE(rs[1]) != T_STRING) rs[1] = korb_to_s(rs[1]);
             if (i > 0) {
                 rs[2] = korb_str_new_cstr(c, c->sp, "/");
-                korb_str_concat(rs[0], rs[2]);
+                korb_str_concat(c, c->sp, rs[0], rs[2]);
             }
-            korb_str_concat(rs[0], rs[1]);
+            korb_str_concat(c, c->sp, rs[0], rs[1]);
         }
         ret = rs[0];
     } ARO_ROOT_SCOPE_END(c, rs);
@@ -795,11 +795,11 @@ static char **build_exec_argv(CTX *c, VALUE *strs, int n, bool *use_shell) {
 }
 
 /* Process::Status — minimal struct exposed via $? after system() etc. */
-static VALUE make_process_status(int wstatus, pid_t pid) {
+static VALUE make_process_status(CTX *c, int wstatus, pid_t pid) {
     VALUE cStatus = korb_const_get(korb_vm->object_class, korb_intern("Process"));
     VALUE cs = korb_const_get((struct korb_class *)cStatus, korb_intern("Status"));
     if (UNDEF_P(cs) || NIL_P(cs)) cs = (VALUE)korb_vm->object_class;
-    VALUE obj = korb_object_new((struct korb_class *)cs);
+    VALUE obj = korb_object_new(c, c->sp, (struct korb_class *)cs);
     korb_ivar_set(obj, korb_intern("@pid"), INT2FIX((long)pid));
     int exit_status = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1;
     korb_ivar_set(obj, korb_intern("@exitstatus"), INT2FIX((long)exit_status));
@@ -832,7 +832,7 @@ static VALUE kernel_system(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     int wstatus = 0;
     waitpid(pid, &wstatus, 0);
-    VALUE st = make_process_status(wstatus, pid);
+    VALUE st = make_process_status(c, wstatus, pid);
     korb_gvar_set(korb_intern("$?"), st);
     if (WIFEXITED(wstatus)) {
         return WEXITSTATUS(wstatus) == 0 ? Qtrue : Qfalse;
@@ -863,12 +863,12 @@ static VALUE kernel_xstring(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_str_new_cstr(c, c->sp, "");
     ssize_t n;
     while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-        korb_str_concat(r, korb_str_new(c, c->sp, buf, n));
+        korb_str_concat(c, c->sp, r, korb_str_new(c, c->sp, buf, n));
     }
     close(pipefd[0]);
     int wstatus = 0;
     waitpid(pid, &wstatus, 0);
-    korb_gvar_set(korb_intern("$?"), make_process_status(wstatus, pid));
+    korb_gvar_set(korb_intern("$?"), make_process_status(c, wstatus, pid));
     return r;
 }
 
@@ -931,7 +931,7 @@ static VALUE process_wait(CTX *c, VALUE self, int argc, VALUE *argv) {
     int wstatus = 0;
     pid_t got = waitpid(want, &wstatus, flags);
     if (got <= 0) return Qnil;
-    korb_gvar_set(korb_intern("$?"), make_process_status(wstatus, got));
+    korb_gvar_set(korb_intern("$?"), make_process_status(c, wstatus, got));
     return INT2FIX((long)got);
 }
 
