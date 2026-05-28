@@ -444,12 +444,12 @@ korb_class_of_class(VALUE v) {
 }
 struct korb_class *korb_class_new(CTX *c, VALUE *sp, ID name, struct korb_class *super, enum korb_type instance_type);
 struct korb_class *korb_module_new(CTX *c, VALUE *sp, ID name);
-void korb_class_add_method_ast(struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt);
-void korb_class_add_method_ast_full(struct korb_class *klass, ID name, struct Node *body,
+void korb_class_add_method_ast(CTX *c, struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt);
+void korb_class_add_method_ast_full(CTX *c, struct korb_class *klass, ID name, struct Node *body,
                                     uint32_t required_params, uint32_t total_params,
                                     int rest_slot, uint32_t locals_cnt);
 void korb_class_set_method_param_holder_slots(struct korb_class *klass, ID name, int *slots);
-void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, struct Node *body,
+void korb_class_add_method_ast_full_cref(CTX *c, struct korb_class *klass, ID name, struct Node *body,
                                           uint32_t required_params, uint32_t total_params,
                                           int rest_slot, uint32_t locals_cnt,
                                           struct korb_cref *def_cref);
@@ -528,13 +528,13 @@ korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
 /* Fast inline ivar setter — same monomorphic cache pattern.  Cache miss
  * (different klass / unset slot / first write past current capa) goes
  * through the slow path which handles growth + slot assignment. */
-extern void korb_raise_frozen_modification(VALUE obj);
+extern void korb_raise_frozen_modification(CTX *c, VALUE obj);
 static inline __attribute__((always_inline)) void
-korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
+korb_ivar_set_ic(CTX *c, VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
     if (UNLIKELY(SPECIAL_CONST_P(obj))) {
         /* true / false / nil / Integer / Float / Symbol can't have
          * ivars — CRuby raises FrozenError on attempts. */
-        korb_raise_frozen_modification(obj);
+        korb_raise_frozen_modification(c, obj);
         return;
     }
     if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) {
@@ -542,7 +542,7 @@ korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
         return;
     }
     if (UNLIKELY(((struct RBasic *)obj)->head.flags & FL_FROZEN)) {
-        korb_raise_frozen_modification(obj);
+        korb_raise_frozen_modification(c, obj);
         return;
     }
     struct korb_object *o = (struct korb_object *)obj;
@@ -672,7 +672,7 @@ VALUE korb_to_s_dispatch(CTX *c, VALUE v);
 void  korb_p(CTX *c, VALUE v); /* writes to stdout with newline */
 
 /* errors / exceptions */
-VALUE korb_exc_new(struct korb_class *klass, const char *msg);
+VALUE korb_exc_new(CTX *c, struct korb_class *klass, const char *msg);
 void  korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
 void  korb_raise_type_error(CTX *c, const char *fmt, ...);
 void  korb_raise_argument_error(CTX *c, const char *fmt, ...);

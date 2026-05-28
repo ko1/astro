@@ -127,7 +127,7 @@ NODE_DEF
 node_ivar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs, struct ivar_cache *cache@ref)
 {
     VALUE v = EA(c, rhs);
-    korb_ivar_set_ic(c->current_frame->self, name, v, cache);
+    korb_ivar_set_ic(c, c->current_frame->self, name, v, cache);
     return v;
 }
 
@@ -784,7 +784,7 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE
     /* Method goes on the innermost lexical class/module — same as Ruby's
      * `def foo` semantics inside a class body. */
     struct korb_class *target = korb_host_class(c);
-    korb_class_add_method_ast_full_cref(target, name, body, params_cnt, params_cnt, -1, locals_cnt, c->current_frame->cref);
+    korb_class_add_method_ast_full_cref(c, target, name, body, params_cnt, params_cnt, -1, locals_cnt, c->current_frame->cref);
     return korb_id2sym(name);
 }
 
@@ -1919,11 +1919,11 @@ node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_e
     if (exc_expr) {
         e = EA(c, exc_expr);
         if (BUILTIN_TYPE(e) == T_STRING) {
-            e = korb_exc_new(NULL, korb_str_cstr(e));
+            e = korb_exc_new(c, NULL, korb_str_cstr(e));
         }
     }
     else {
-        e = korb_exc_new(NULL, "unhandled exception");
+        e = korb_exc_new(c, NULL, "unhandled exception");
     }
     korb_exc_set_backtrace(c, e, n ? n->head.line : 0);
     /* Exception#cause: when we're already inside a rescue body, $! holds
@@ -2591,7 +2591,7 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
         korb_raise(c, NULL, "def self.* outside of class/module");
         return Qnil;
     }
-    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
+    korb_class_add_method_ast_full_cref(c, target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     ID *names = korb_body_local_names(body);
     if (names) korb_class_set_method_local_names(target, name, names);
@@ -2618,7 +2618,7 @@ node_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
         korb_raise(c, NULL, "def self.* outside of class/module");
         return Qnil;
     }
-    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
+    korb_class_add_method_ast_full_cref(c, target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
     ID *names = korb_body_local_names(body);
@@ -2655,7 +2655,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
             korb_raise(c, NULL, "cannot define singleton method on this value");
             ret = Qnil;
         } else {
-            korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
+            korb_class_add_method_ast_full_cref(c, meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
             if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
             ID *names = korb_body_local_names(body);
             if (names) korb_class_set_method_local_names(meta, name, names);
@@ -2687,7 +2687,7 @@ node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restric
         korb_raise(c, NULL, "cannot define singleton method on this value");
         return Qnil;
     }
-    korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
+    korb_class_add_method_ast_full_cref(c, meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
     if (post_cnt > 0)    korb_class_set_method_post_params_cnt(meta, name, post_cnt);
     ID *names = korb_body_local_names(body);
@@ -2774,7 +2774,7 @@ node_def_full(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
     /* g_top_level_default_private toggles when `private`/`public` is
      * called at top-level.  Initial state: true (private by default). */
     extern bool g_top_level_default_private;
-    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
+    korb_class_add_method_ast_full_cref(c, target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (always_private || (top_level && g_top_level_default_private)) {
         struct korb_method *m = korb_class_find_method(target, name);
         if (m) m->visibility = KORB_VIS_PRIVATE;
@@ -2809,7 +2809,7 @@ NODE_DEF @noinline
 node_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
 {
     struct korb_class *target = korb_host_class(c);
-    korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
+    korb_class_add_method_ast_full_cref(c, target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
     ID *names = korb_body_local_names(body);

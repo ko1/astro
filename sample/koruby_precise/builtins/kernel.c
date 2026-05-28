@@ -442,7 +442,7 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
             msg = korb_str_cstr(argv[1]);
         }
         ARO_ROOT_SCOPE_START(c, rs, 1) {
-            rs[0] = korb_exc_new((struct korb_class *)argv[0], msg);
+            rs[0] = korb_exc_new(c, (struct korb_class *)argv[0], msg);
             int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
             korb_exc_set_backtrace(c, rs[0], line);
             VALUE cur = korb_gvar_get(korb_intern("$!"));
@@ -854,7 +854,7 @@ static VALUE kernel_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
         (BUILTIN_TYPE(eSE) == T_CLASS || BUILTIN_TYPE(eSE) == T_MODULE)) {
         exc_class = (struct korb_class *)eSE;
     }
-    VALUE e = korb_exc_new(exc_class, "exit");
+    VALUE e = korb_exc_new(c, exc_class, "exit");
     if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
         korb_ivar_set(e, korb_intern("@status"), INT2FIX(code));
         korb_ivar_set(e, korb_intern("@success"), KORB_BOOL(success));
@@ -877,7 +877,7 @@ static VALUE kernel_abort(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_class *exc_class = (eSE && !SPECIAL_CONST_P(eSE) &&
                                     (BUILTIN_TYPE(eSE) == T_CLASS || BUILTIN_TYPE(eSE) == T_MODULE))
                                        ? (struct korb_class *)eSE : NULL;
-    VALUE e = korb_exc_new(exc_class, "abort");
+    VALUE e = korb_exc_new(c, exc_class, "abort");
     if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
         korb_ivar_set(e, korb_intern("@status"), INT2FIX(1));
         korb_ivar_set(e, korb_intern("@success"), Qfalse);

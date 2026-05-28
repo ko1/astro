@@ -355,14 +355,14 @@ struct korb_class *korb_module_new(CTX *c, VALUE *sp, ID name) {
     return k;
 }
 
-void korb_class_add_method_ast(struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt) {
-    korb_class_add_method_ast_full(klass, name, body, params_cnt, params_cnt, -1, locals_cnt);
+void korb_class_add_method_ast(CTX *c, struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt) {
+    korb_class_add_method_ast_full(c, klass, name, body, params_cnt, params_cnt, -1, locals_cnt);
 }
 
-void korb_class_add_method_ast_full(struct korb_class *klass, ID name, struct Node *body,
+void korb_class_add_method_ast_full(CTX *c, struct korb_class *klass, ID name, struct Node *body,
                                     uint32_t required_params, uint32_t total_params,
                                     int rest_slot, uint32_t locals_cnt) {
-    korb_class_add_method_ast_full_cref(klass, name, body, required_params,
+    korb_class_add_method_ast_full_cref(c, klass, name, body, required_params,
                                          total_params, rest_slot, locals_cnt, NULL);
 }
 
@@ -426,18 +426,18 @@ static bool korb_method_body_is_simple_frame(struct Node *body) {
     return ok;
 }
 
-void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, struct Node *body,
+void korb_class_add_method_ast_full_cref(CTX *c, struct korb_class *klass, ID name, struct Node *body,
                                           uint32_t required_params, uint32_t total_params,
                                           int rest_slot, uint32_t locals_cnt,
                                           struct korb_cref *def_cref) {
     if (klass && korb_obj_frozen_p((VALUE)klass)) {
         VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
         if (eF && !SPECIAL_CONST_P(eF) && BUILTIN_TYPE(eF) == T_CLASS) {
-            korb_raise(korb_vm->current_ctx, (struct korb_class *)eF,
+            korb_raise(c, (struct korb_class *)eF,
                        "can't modify frozen %s",
                        klass->name ? korb_id_name(klass->name) : "Class");
         } else {
-            korb_raise(korb_vm->current_ctx, NULL, "can't modify frozen Class");
+            korb_raise(c, NULL, "can't modify frozen Class");
         }
         return;
     }
@@ -2629,7 +2629,7 @@ void korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line) {
     } ARO_ROOT_SCOPE_END(c, r);
 }
 
-VALUE korb_exc_new(struct korb_class *klass, const char *msg) {
+VALUE korb_exc_new(CTX *c, struct korb_class *klass, const char *msg) {
     if (!klass) {
         VALUE eRuntime = korb_const_get(korb_vm->object_class,
                                         korb_intern("RuntimeError"));
@@ -2643,7 +2643,6 @@ VALUE korb_exc_new(struct korb_class *klass, const char *msg) {
     /* Park the exception obj across korb_str_new_cstr's alloc-can-GC
      * — otherwise the C local `obj` goes stale (= obj moves under GC
      * compaction) and korb_ivar_set writes @message into a phantom. */
-    CTX *c = korb_vm->current_ctx;
     VALUE result;
     ARO_ROOT_SCOPE_START(c, r, 1) {
         r[0] = korb_object_new(c, c->sp, klass);
@@ -2696,8 +2695,7 @@ void korb_raise_index_error(CTX *c, const char *fmt, ...) {
 /* Hot-path frozen-write rejector (called from inlined ivar setter when
  * the receiver is frozen).  Raises FrozenError "can't modify frozen X".
  * Uses the global VM context. */
-void korb_raise_frozen_modification(VALUE obj) {
-    CTX *c = korb_vm ? korb_vm->current_ctx : NULL;
+void korb_raise_frozen_modification(CTX *c, VALUE obj) {
     if (!c) return;
     VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
     const char *cn = "Object";
@@ -2730,7 +2728,7 @@ void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
      * what made bootstrap.rb's RuntimeError surface as "" under STRESS. */
     ARO_ROOT_SCOPE_START(c, r, 2) {
         r[0] = (VALUE)klass;
-        r[1] = korb_exc_new((struct korb_class *)r[0], buf);
+        r[1] = korb_exc_new(c, (struct korb_class *)r[0], buf);
         int line = (c->last_cfunc_callsite
                     ? c->last_cfunc_callsite->head.line : 0);
         korb_exc_set_backtrace(c, r[1], line);
@@ -2926,7 +2924,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         }
         if (!needs_quote) {
             VALUE ret = Qnil;
-            CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+            CTX *c2 = c;
             if (c2) {
                 ARO_ROOT_SCOPE_START(c2, rs, 2) {
                     rs[0] = korb_str_new_cstr(c, c->sp, ":");
@@ -2947,7 +2945,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
          * intermediate strings in ARO_ROOT_SCOPE to keep them alive. */
         {
             VALUE ret = Qnil;
-            CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+            CTX *c2 = c;
             if (c2) {
                 ARO_ROOT_SCOPE_START(c2, rs, 2) {
                     rs[0] = korb_str_new(c, c->sp, name, (long)nlen);
@@ -2974,7 +2972,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
          * C-local `r` and `s` go stale, producing mangled "" output
          * even for plain strings (= `"hello".inspect → ""`). */
         VALUE iret = Qnil;
-        CTX *c3 = korb_vm ? korb_vm->current_ctx : NULL;
+        CTX *c3 = c;
         if (c3) {
             ARO_ROOT_SCOPE_START(c3, rs, 2) {
                 rs[0] = v;  /* pin self so s->ptr / s->len stay valid */
@@ -3071,7 +3069,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
          * goes stale and produces mangled output (e.g. `[20, 30]` →
          * `]]`) under BARUBY_GC_STRESS=1. */
         VALUE ret = Qnil;
-        CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+        CTX *c2 = c;
         if (c2) {
             struct korb_array *a = (struct korb_array *)v;
             ARO_ROOT_SCOPE_START(c2, rs, 3) {
@@ -3100,7 +3098,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
     }
     if (t == T_HASH) {
         VALUE ret = Qnil;
-        CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+        CTX *c2 = c;
         if (c2) {
             ARO_ROOT_SCOPE_START(c2, rs, 4) {
                 rs[0] = v;
@@ -3163,11 +3161,10 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         /* If the class defines its own #inspect, delegate (so nested
          * Rational / Complex / user-class inside Array/Hash render
          * via their inspect rather than the default `#<Cls:0x...>`). */
-        if (k && korb_vm && korb_vm->current_ctx) {
+        if (k && c) {
             struct korb_method *m = korb_class_find_method(k, korb_intern("inspect"));
             if (m && m->type == KORB_METHOD_AST) {
-                VALUE r = korb_funcall(korb_vm->current_ctx, v,
-                                       korb_intern("inspect"), 0, NULL);
+                VALUE r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL);
                 if (BUILTIN_TYPE(r) == T_STRING) return r;
             }
         }
@@ -3176,7 +3173,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
             /* Exception-shaped: "#<ClassName: message>".  Park r and
              * msg in ARO_ROOT_SCOPE — each subsequent korb_str_new_cstr
              * can fire GC, invalidating prior C-local heap ptrs. */
-            CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+            CTX *c2 = c;
             const char *cls_name = k && k->name ? korb_id_name(k->name) : "Object";
             if (c2) {
                 VALUE ret = Qnil;

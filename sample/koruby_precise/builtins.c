@@ -1186,8 +1186,7 @@ void korb_init_builtins(CTX *c) {
      * korb_const_set then writes the stale (= now in some abandoned space)
      * addr into cObject->constants["STDOUT"], and future GCs walking that
      * const slot dereference an obj that no longer lives there → SEGV. */
-    CTX *_c_io = korb_vm->current_ctx;
-    ARO_ROOT_SCOPE_START(_c_io, io, 4) {
+    ARO_ROOT_SCOPE_START(c, io, 4) {
         io[0] = (VALUE)korb_class_new(c, c->sp, korb_intern("IO"), korb_vm->object_class, T_OBJECT);
         korb_const_set(korb_vm->object_class, korb_intern("IO"), io[0]);
         /* dummy STDOUT/STDERR */
@@ -1201,7 +1200,7 @@ void korb_init_builtins(CTX *c) {
         korb_ivar_set(io[3], korb_intern("@__fp__"),
                       INT2FIX((long)(uintptr_t)stdin));
         korb_const_set(korb_vm->object_class, korb_intern("STDIN"), io[3]);
-    } ARO_ROOT_SCOPE_END(_c_io, io);
+    } ARO_ROOT_SCOPE_END(c, io);
     /* Outside the scope — fetch from the const entries (= rooted via
      * cObject->constants).  Methods are added below; korb_class_add_method_cfunc
      * is libc-only so the C local stays valid for the chain. */

@@ -90,7 +90,7 @@ static VALUE module_attr_reader(CTX *c, VALUE self, int argc, VALUE *argv) {
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
         ID iv_id = korb_intern(iv);
         NODE *body = ALLOC_node_ivar_get(iv_id);
-        korb_class_add_method_ast(klass, name, body, 0, 0);
+        korb_class_add_method_ast(c, klass, name, body, 0, 0);
         korb_ary_push(result, korb_id2sym(name));
     }
     return result;
@@ -116,7 +116,7 @@ static VALUE module_attr_writer(CTX *c, VALUE self, int argc, VALUE *argv) {
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
         ID iv_id = korb_intern(iv);
         NODE *body = ALLOC_node_ivar_set(iv_id, ALLOC_node_lvar_get(0));
-        korb_class_add_method_ast(klass, setter_id, body, 1, 1);
+        korb_class_add_method_ast(c, klass, setter_id, body, 1, 1);
         korb_ary_push(result, korb_id2sym(setter_id));
     }
     return result;

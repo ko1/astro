@@ -50,7 +50,7 @@ static void binding_append_name(struct korb_binding *b, ID name_id) {
 /* Coerce name to ID — accepts Symbol or String, or any object whose
  * #to_str returns a String (CRuby semantics).  Uses CTX from korb_vm
  * for the to_str dispatch. */
-static ID binding_arg_to_id(VALUE arg, bool *ok) {
+static ID binding_arg_to_id(CTX *c, VALUE arg, bool *ok) {
     *ok = true;
     if (SYMBOL_P(arg)) return korb_sym2id(arg);
     if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) {
@@ -60,8 +60,7 @@ static ID binding_arg_to_id(VALUE arg, bool *ok) {
     /* Try #to_str on anything else — Mock / DelegateString / etc.
      * routes here.  Use respond_to? to filter so non-stringy objects
      * fall through to error rather than NoMethodError. */
-    if (!SPECIAL_CONST_P(arg) && korb_vm && korb_vm->current_ctx) {
-        CTX *c = korb_vm->current_ctx;
+    if (!SPECIAL_CONST_P(arg) && c) {
         VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
         if (c->state == KORB_RAISE) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
@@ -387,7 +386,7 @@ static VALUE binding_local_variable_get(CTX *c, VALUE self, int argc, VALUE *arg
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
     struct korb_binding *b = (struct korb_binding *)self;
     bool ok = false;
-    ID name_id = binding_arg_to_id(argv[0], &ok);
+    ID name_id = binding_arg_to_id(c, argv[0], &ok);
     if (!ok) {
         korb_raise(c, NULL, "binding: name must be Symbol or String");
         return Qnil;
@@ -437,7 +436,7 @@ static VALUE binding_local_variable_set(CTX *c, VALUE self, int argc, VALUE *arg
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
     struct korb_binding *b = (struct korb_binding *)self;
     bool ok = false;
-    ID name_id = binding_arg_to_id(argv[0], &ok);
+    ID name_id = binding_arg_to_id(c, argv[0], &ok);
     if (!ok) {
         korb_raise(c, NULL, "binding: name must be Symbol or String");
         return Qnil;
@@ -488,7 +487,7 @@ static VALUE binding_local_variable_defined_p(CTX *c, VALUE self, int argc, VALU
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qfalse;
     struct korb_binding *b = (struct korb_binding *)self;
     bool ok = false;
-    ID name_id = binding_arg_to_id(argv[0], &ok);
+    ID name_id = binding_arg_to_id(c, argv[0], &ok);
     if (!ok) return Qfalse;
     return KORB_BOOL(binding_find_slot(b, name_id) >= 0);
 }
