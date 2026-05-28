@@ -2301,10 +2301,17 @@ class Array
   end unless method_defined?(:difference)
 
   def rindex(target = nil, &blk)
+    if !blk && target.nil?
+      return enum_for(:rindex)
+    end
     if blk
+      # CRuby: re-evaluate `size` each iteration so shrinkage during the
+      # block stops iteration once we've gone past the (new) end.
       i = size - 1
       while i >= 0
         return i if blk.call(self[i])
+        # Clamp i to (new) size - 1 if the block shrunk the array below.
+        i = size - 1 if i > size - 1
         i -= 1
       end
       nil
