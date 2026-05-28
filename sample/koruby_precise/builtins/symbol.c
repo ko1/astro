@@ -25,12 +25,13 @@ static VALUE sym_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* (float ext folded into builtins/float.c) */
 
 /* ---------- Symbol ---------- */
-static VALUE sym_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* CRuby 3.4+: Symbol#to_s returns a "chilled" String — frozen by
-     * virtue of being interned but transparently mutable on demand. */
-    VALUE s = korb_str_new_cstr(korb_id_name(korb_sym2id(self)));
+static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
+    /* sp[-1] = self.  CRuby 3.4+: Symbol#to_s returns a "chilled" String — frozen
+     * by virtue of being interned but transparently mutable on demand. */
+    c->sp = sp;
+    VALUE s = korb_str_new_cstr(korb_id_name(korb_sym2id(sp[-1])));
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_CHILLED;
-    return s;
+    return RESULT_OK(s);
 }
 static VALUE sym_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
     return KORB_BOOL(self == argv[0]);

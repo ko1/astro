@@ -413,6 +413,7 @@ static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
  * any GC fired by inner korb_eq dispatches.  No ARO_ROOT_SCOPE_START
  * boilerplate needed. */
 static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;  /* alloc 前 sync: korb_eq -> method dispatch が GC を起こしうる */
     if (BUILTIN_TYPE(sp[-1]) != T_ARRAY) return RESULT_OK(Qfalse);
     long la = korb_ary_len(sp[-2]);
     long lb = korb_ary_len(sp[-1]);

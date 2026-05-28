@@ -811,16 +811,16 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
         if (p == prologue_ast_simple_3) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 3);
         if (p == prologue_cfunc) {
             /* New sp-based RESULT ABI: when mc->cfunc_r is set, stage
-             * self + args on c->sp and call prologue_cfunc_r_inl.  Convert
-             * the returned RESULT to the legacy VALUE + c->state path so
-             * upstream callers don't need to change yet (Phase 2 bridge). */
+             * self + args at the top of the value stack and call
+             * prologue_cfunc_r_inl.  c->sp is NOT touched here — the cfunc
+             * itself syncs `c->sp = sp` just before any alloc (see runtime.md
+             * §12.3).  Convert the returned RESULT to the legacy VALUE +
+             * c->state path so upstream callers don't need to change yet. */
             if (UNLIKELY(mc->cfunc_r != NULL)) {
                 VALUE *sp = c->sp;
                 sp[0] = recv;
                 for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
-                c->sp = sp + 1 + argc;
                 RESULT _rr = prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);
-                c->sp = sp;
                 if (UNLIKELY(_rr.state != KORB_NORMAL)) {
                     c->state = _rr.state;
                     c->state_value = _rr.value;

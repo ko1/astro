@@ -3434,7 +3434,25 @@ void korb_check_basic_op_redef(struct korb_class *target, ID name) {
  * compared against these names and inlined directly when it matches. */
 VALUE prologue_cfunc(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                      uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
-{ return prologue_cfunc_inl(c, cs, recv, argc, ai, bl, mc); }
+{
+    /* When mc has a new-ABI cfunc_r set, bridge: stage self+args at the top
+     * of the value stack and call prologue_cfunc_r_inl.  c->sp is NOT touched
+     * here — the cfunc itself syncs `c->sp = sp` just before any alloc
+     * (runtime.md §12.3).  Convert returned RESULT back to legacy path. */
+    if (UNLIKELY(mc->cfunc_r != NULL)) {
+        VALUE *sp = c->sp;
+        sp[0] = recv;
+        for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[ai + i];
+        RESULT _rr = prologue_cfunc_r_inl(c, cs, (int)argc, sp + 1 + argc, bl, mc);
+        if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+            c->state = _rr.state;
+            c->state_value = _rr.value;
+            return Qnil;
+        }
+        return _rr.value;
+    }
+    return prologue_cfunc_inl(c, cs, recv, argc, ai, bl, mc);
+}
 
 VALUE prologue_ast_simple_0(CTX *c, struct Node *cs, VALUE recv, uint32_t argc,
                             uint32_t ai, struct korb_proc *bl, struct method_cache *mc)
@@ -4250,15 +4268,14 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         c->current_frame = &fr;
         VALUE r;
         if (UNLIKELY(m->u.cfunc.func_r != NULL)) {
-            /* New sp-based RESULT ABI bridge: stage self + args on c->sp
-             * and call func_r.  Convert RESULT back to legacy VALUE +
-             * c->state for upstream callers (Phase 2 transition). */
+            /* New sp-based RESULT ABI bridge: stage self + args at the top of
+             * the value stack and call func_r.  c->sp is NOT bumped here —
+             * the cfunc syncs `c->sp = sp` at alloc points (runtime.md §12.3).
+             * Convert returned RESULT back to legacy VALUE + c->state. */
             VALUE *sp = c->sp;
             sp[0] = recv;
             for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
-            c->sp = sp + 1 + argc;
             RESULT _rr = m->u.cfunc.func_r(c, argc, sp + 1 + argc);
-            c->sp = sp;
             if (UNLIKELY(_rr.state != KORB_NORMAL)) {
                 c->state = _rr.state;
                 c->state_value = _rr.value;

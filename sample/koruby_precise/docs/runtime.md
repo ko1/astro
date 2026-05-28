@@ -566,28 +566,66 @@ VALUE v = UNWRAP(some_helper(c, sp));   /* state は自動 propagate */
 x86_64 ABI で RESULT (16 bytes) は rax+rdx の 2 register 返しなので
 オーバーヘッド極小。
 
-### 12.3 c->sp の同期
+### 12.3 c->sp の同期 — 「alloc 前に sync する」の原則
 
-caller (= EVAL_node body や cfunc) は alloc を起こしうる helper を呼ぶ
-**直前** に `c->sp = sp` で sync する。 これで visit_roots phase (a)
-が staged value を scan 範囲に含める。
+#### 基本ルール
+
+alloc を起こす関数 (= 内部で GC trigger ありうる) は、 自身の中で
+`c->sp = sp` を行う。 **caller (bridge / EVAL_node body / parent) は
+c->sp に触らなくてよい**。
+
+理由:
+- caller が pre-bump しても、 callee が更に深く alloc すると整合性
+  維持の責任が caller↔callee で曖昧になる
+- 「alloc 直前にやる」 と統一すれば、 sweep の規約は一点に集約される
+- helper が `(c, sp)` を受け取れば、 sync が静的に強制できる
+
+#### 実装パターン
+
+**新-ABI cfunc** (Phase 4 — 移行中):
 
 ```c
-EVAL_node_add(c, n, sp, lv, rv) {
-    if (FIXNUM_P(lv) && FIXNUM_P(rv)) {
-        return RESULT_OK(INT2FIX(FIX2LONG(lv) + FIX2LONG(rv)));  /* fast path = sync 不要 */
-    }
-    if (BUILTIN_TYPE(lv) == T_STRING) {
-        c->sp = sp;                                   /* ← alloc 前 sync */
-        return RESULT_OK(UNWRAP(korb_str_concat_r(c, &sp[-2], &sp[-1])));
-    }
-    ...
+static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;                              /* ← alloc 前 sync */
+    VALUE s = korb_str_new_cstr(korb_id_name(korb_sym2id(sp[-1])));
+    return RESULT_OK(s);
 }
 ```
 
-helper 側でも alloc を fire する直前に `c->sp = sp + N` を行う (自身の
-scratch slot 確保も含む)。 sweep の規約はシンプル: **「alloc する
-直前に c->sp を sync する」**。
+**alloc helper** (Phase 7 — 計画):
+
+helper 自身が `(CTX *c, VALUE *sp, ...)` を受け取り、 入り口で sync:
+
+```c
+VALUE korb_str_new_cstr(CTX *c, VALUE *sp, const char *str) {
+    c->sp = sp;                              /* helper 側で sync — caller 不要 */
+    return korb_str_alloc(strlen(str), str);
+}
+```
+
+これが普及すると cfunc 側の `c->sp = sp;` も冗長になる:
+
+```c
+static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
+    return RESULT_OK(korb_str_new_cstr(c, sp, korb_id_name(korb_sym2id(sp[-1]))));
+}
+```
+
+#### dispatcher bridge
+
+旧 EVAL_node から新-ABI cfunc を呼ぶ bridge (`prologue_cfunc` 内) は、
+**c->sp を bump しない**。 cfunc が自分で sync する前提:
+
+```c
+VALUE *sp = c->sp;
+sp[0] = recv;
+for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[ai + i];
+/* c->sp は触らない — cfunc が alloc 前に sync する */
+RESULT _rr = prologue_cfunc_r_inl(c, callsite, argc, sp + 1 + argc, ...);
+```
+
+ただし sp[0..argc] への書込みは parent c->sp の **上** の slot に対する
+書込みなので、 bridge 内では GC は起こさない (immediate copy のみ)。
 
 ### 12.4 dispatcher chain
 
@@ -637,12 +675,15 @@ cfunc 側で:
 | 1 | RESULT 型 / macro / typedef を foundation 追加 | 完了 (commit 03a5449f) |
 | 2 | prologue_cfunc_r_inl + bridge | 完了 (commit 4352f5f5) |
 | 3 | PoC: ary_eq を新 ABI で書き換え | 完了 (commit d1ae64a4) |
-| 4 | 全 ~680 cfunc を新 signature に sweep | 部分完了 (math + boolean = 36 cfunc) |
+| 4 | 全 ~680 cfunc を新 signature に sweep | 部分完了 (math + boolean + sym_to_s + ary_eq = 38 cfunc) |
 | 5 | node.def の call 系 node を sp staging に | 未着手 |
 | 6 | AST method prologue を sp 経由 args に | 未着手 |
-| 7 | C API helper (korb_eq / korb_str_concat 等) を slot pointer 規約に | 未着手 |
+| 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 未着手 |
 | 8 | c->state 経路撤廃、 RESULT 化 | 未着手 |
 | 9 | 動作確認 + 回帰 fix | 未着手 |
+
+Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
+責任を引き受ける)。 移行期は cfunc 側で sync しておけば安全。
 
 ### 12.7 互換性 bridge
 
