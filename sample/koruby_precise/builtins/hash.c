@@ -424,6 +424,7 @@ static VALUE hash_map(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE hash_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     const struct korb_hash *h = (const struct korb_hash *)self;
     VALUE r = korb_hash_new(c, c->sp);
+    ((struct korb_hash *)r)->compare_by_identity = h->compare_by_identity;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
         VALUE m = korb_yield(c, 2, args);
@@ -811,6 +812,9 @@ static VALUE hash_fetch_values(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE hash_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_hash_new(c, c->sp);
+    struct korb_hash *rh = (struct korb_hash *)r;
+    /* Retain compare_by_identity (CRuby semantics). */
+    rh->compare_by_identity = h->compare_by_identity;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = {e->key, e->value};
         VALUE drop = korb_yield(c, 2, args);

@@ -1628,7 +1628,7 @@ class Hash
     h = {}
     each_pair { |k, v| h[k] = v unless blk.call(k, v) }
     h
-  end
+  end unless method_defined?(:reject)
 
   def select(&blk)
     h = {}
