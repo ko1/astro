@@ -1188,14 +1188,35 @@ NODE_DEF
 node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
-        long a = FIX2LONG(l), b = FIX2LONG(r), s;
-        if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
-        return korb_int_plus(l, r);
+    /* Fixnum fast path: l is immediate (= value-type, no GC risk),
+     * so we can eval rhs without protecting l. */
+    if (LIKELY(FIXNUM_P(l))) {
+        VALUE r = EA(c, rhs);
+        if (LIKELY(FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+            long a = FIX2LONG(l), b = FIX2LONG(r), s;
+            if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
+            return korb_int_plus(l, r);
+        }
+        c->last_cfunc_callsite = n;
+        return korb_node_plus_slow(c, l, r, arg_index);
     }
-    /* Float fast path: skip dispatch_binop when both ops can be coerced
-     * to double cheaply (FLONUM or FIXNUM). */
+    /* l is a heap object (string / array / float / etc.).  Park it in a
+     * synthetic frame so visit_roots scans &fr.self across rhs's GC
+     * fires (= via the frame chain, NOT via sp[] which would conflict
+     * with sub-call arg staging that may overlap our scope's stack
+     * area).  After EA(c, rhs), re-load l from fr.self to pick up the
+     * forwarded address. */
+    struct korb_frame fr = {
+        .prev      = c->current_frame,
+        .self      = l,
+        .fp        = c->current_frame->fp,
+        .last_line = Qnil,
+        .last_match= Qnil,
+    };
+    c->current_frame = &fr;
+    VALUE r = EA(c, rhs);
+    c->current_frame = fr.prev;
+    l = fr.self;
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
         return korb_float_new(korb_flonum_to_double(l) + korb_flonum_to_double(r));
     }
