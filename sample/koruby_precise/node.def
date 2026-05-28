@@ -892,14 +892,14 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
      * current valid address is seen even after korb_class_new / GC.
      * `klass` is held in rs[1] across korb_class_new + korb_const_set +
      * korb_funcall, all of which can fire GC and move it. */
-    VALUE r;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = c->current_frame->self;                                   /* prev_self */
-        /* Look up existing constant from host (= re-read each time). */
+    VALUE r = Qnil;
+    /* rs[0] = klass, held across korb_class_new + korb_funcall (= GC
+     * sites) and body eval.  C-local prev_class would go stale. */
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
         #define HOST_K (c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class)
         VALUE existing = korb_const_get(HOST_K, name);
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
-            rs[1] = existing;
+            rs[0] = existing;
         }
         else if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
             korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
@@ -914,11 +914,11 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
         else {
             struct korb_class *k = korb_class_new(name, korb_vm->object_class, T_OBJECT);
             k->name = 0;
-            rs[1] = (VALUE)k;
-            korb_const_set(HOST_K, name, rs[1]);
+            rs[0] = (VALUE)k;
+            korb_const_set(HOST_K, name, rs[0]);
             struct korb_class *super_meta = korb_class_of_class((VALUE)korb_vm->object_class);
             if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
-                VALUE child_v = rs[1];  /* fresh */
+                VALUE child_v = rs[0];
                 korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
                 if (c->state == KORB_RAISE) {
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
@@ -927,18 +927,27 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
             }
         }
         #undef HOST_K
-        struct korb_class *prev_class = c->current_frame->current_class;
-        struct korb_cref new_cref = { .klass = (struct korb_class *)rs[1], .prev = c->current_frame->cref };
-        struct korb_cref *prev_cref = c->current_frame->cref;
-        c->current_frame->current_class = (struct korb_class *)rs[1];
-        c->current_frame->self = rs[1];
-        c->current_frame->cref = &new_cref;
-        VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp;
+        /* Push a synthetic frame so frame.self / current_class / cref
+         * live in the frame chain (= visit_roots auto-updates).  No
+         * C-local prev_class stale issue. */
+        struct korb_class *klass = (struct korb_class *)rs[0];
+        struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
+        struct korb_frame fr = {
+            .prev = c->current_frame,
+            .self = (VALUE)klass,
+            .fp = c->current_frame->fp,
+            .current_class = klass,
+            .cref = &new_cref,
+            .current_file = c->current_frame->current_file,
+            .last_line = Qnil,
+            .last_match = Qnil,
+        };
+        c->current_frame = &fr;
+        VALUE *fp_lo = fr.fp;
+        VALUE *fp_hi = c->sp;
         r = body ? EVAL_ARG(c, body) : Qnil;
-        c->current_frame->current_class = prev_class;
-        c->current_frame->self = rs[0];
-        c->current_frame->cref = prev_cref;
-        korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
+        c->current_frame = fr.prev;
+        korb_proc_snapshot_env_if_in_frame(rs[0], fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
     return r;
 }
@@ -946,13 +955,14 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
 NODE_DEF @noinline
 node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body)
 {
-    VALUE r;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = c->current_frame->self;  /* prev_self */
+    VALUE r = Qnil;
+    /* rs[0] = result module (= klass), held across korb_module_new
+     * (= GC) and the body eval.  C-local prev_class would go stale. */
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
         #define HOST_K (c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class)
         VALUE existing = korb_const_get(HOST_K, name);
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
-            rs[1] = existing;
+            rs[0] = existing;
         }
         else if (!UNDEF_P(existing)) {
             korb_raise_type_error(c, "%s is not a module", korb_id_name(name));
@@ -962,22 +972,31 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
         else {
             struct korb_class *m = korb_module_new(name);
             m->name = 0;
-            rs[1] = (VALUE)m;
-            korb_const_set(HOST_K, name, rs[1]);
+            rs[0] = (VALUE)m;
+            korb_const_set(HOST_K, name, rs[0]);
         }
         #undef HOST_K
-        struct korb_class *prev_class = c->current_frame->current_class;
-        struct korb_cref new_cref = { .klass = (struct korb_class *)rs[1], .prev = c->current_frame->cref };
-        struct korb_cref *prev_cref = c->current_frame->cref;
-        c->current_frame->current_class = (struct korb_class *)rs[1];
-        c->current_frame->self = rs[1];
-        c->current_frame->cref = &new_cref;
-        VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp;
+        /* Push a synthetic frame for the module body so frame.self /
+         * current_class / cref live in the frame chain (visit_roots
+         * walks them auto).  No C-local prev_class stale issue. */
+        struct korb_class *klass = (struct korb_class *)rs[0];
+        struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
+        struct korb_frame fr = {
+            .prev = c->current_frame,
+            .self = (VALUE)klass,
+            .fp = c->current_frame->fp,
+            .current_class = klass,
+            .cref = &new_cref,
+            .current_file = c->current_frame->current_file,
+            .last_line = Qnil,
+            .last_match = Qnil,
+        };
+        c->current_frame = &fr;
+        VALUE *fp_lo = fr.fp;
+        VALUE *fp_hi = c->sp;
         r = body ? EVAL_ARG(c, body) : Qnil;
-        c->current_frame->current_class = prev_class;
-        c->current_frame->self = rs[0];
-        c->current_frame->cref = prev_cref;
-        korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
+        c->current_frame = fr.prev;
+        korb_proc_snapshot_env_if_in_frame(rs[0], fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
     return r;
 }
