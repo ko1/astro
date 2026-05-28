@@ -441,7 +441,7 @@ static VALUE file_join(CTX *c, VALUE self, int argc, VALUE *argv) {
         rs[0] = korb_str_new(c, c->sp, "", 0);  /* r */
         for (int i = 0; i < argc; i++) {
             rs[1] = argv[i];
-            if (BUILTIN_TYPE(rs[1]) != T_STRING) rs[1] = korb_to_s(rs[1]);
+            if (BUILTIN_TYPE(rs[1]) != T_STRING) rs[1] = korb_to_s(c, c->sp, rs[1]);
             if (i > 0) {
                 rs[2] = korb_str_new_cstr(c, c->sp, "/");
                 korb_str_concat(c, c->sp, rs[0], rs[2]);
@@ -912,7 +912,7 @@ static VALUE process_fork(CTX *c, VALUE self, int argc, VALUE *argv) {
             korb_yield(c, 0, NULL);
         }
         if (c->state == KORB_RAISE) {
-            VALUE s = korb_inspect(c->state_value);
+            VALUE s = korb_inspect(c, c->sp, c->state_value);
             fprintf(stderr, "fork child: %s\n", korb_str_cstr(s));
             _exit(1);
         }

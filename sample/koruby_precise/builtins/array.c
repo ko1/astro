@@ -366,7 +366,7 @@ static VALUE ary_join(CTX *c, VALUE self, int argc, VALUE *argv) {
         for (long i = 0; i < len; i++) {
             if (i > 0 && BUILTIN_TYPE(rs[1]) == T_STRING) korb_str_concat(c, c->sp, rs[2], rs[1]);
             rs[3] = korb_ary_aref(rs[0], i);
-            if (BUILTIN_TYPE(rs[3]) != T_STRING) rs[3] = korb_to_s(rs[3]);
+            if (BUILTIN_TYPE(rs[3]) != T_STRING) rs[3] = korb_to_s(c, c->sp, rs[3]);
             korb_str_concat(c, c->sp, rs[2], rs[3]);
         }
         ret = rs[2];
@@ -374,7 +374,7 @@ static VALUE ary_join(CTX *c, VALUE self, int argc, VALUE *argv) {
     return ret;
 }
 static VALUE ary_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_inspect(self);
+    return korb_inspect(c, c->sp, self);
 }
 
 /* Array#to_h — convert [[k,v], [k,v], ...] (or yield-pair-from-block)
@@ -1576,7 +1576,7 @@ static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
             for (long i = 0; i < a->len; i++) {
                 if (i > 0) korb_str_concat(c, c->sp, rs[0], rs[1]);
                 rs[2] = a->ptr[i];
-                if (BUILTIN_TYPE(rs[2]) != T_STRING) rs[2] = korb_to_s(rs[2]);
+                if (BUILTIN_TYPE(rs[2]) != T_STRING) rs[2] = korb_to_s(c, c->sp, rs[2]);
                 korb_str_concat(c, c->sp, rs[0], rs[2]);
             }
             ret = rs[0];

@@ -3222,7 +3222,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
     return korb_str_new_cstr(c, c->sp, "#<?>");
 }
 
-VALUE korb_inspect(VALUE v) { return korb_inspect_inner(v, 0); }
+VALUE korb_inspect(CTX *c, VALUE *sp, VALUE v) { c->sp = sp; return korb_inspect_inner(v, 0); }
 
 /* CTX-aware inspect — dispatches a user-defined inspect if the
  * receiver's class has one (e.g., Rational defines `def inspect;
@@ -3230,7 +3230,7 @@ VALUE korb_inspect(VALUE v) { return korb_inspect_inner(v, 0); }
  * so user objects render via their own inspect rather than the
  * default `#<Class:0x...>` form. */
 VALUE korb_inspect_dispatch(CTX *c, VALUE v) {
-    if (!c) return korb_inspect(v);
+    if (!c) return korb_inspect(c, c->sp, v);
     if (!SPECIAL_CONST_P(v)) {
         struct korb_class *klass = korb_class_of_class(v);
         struct korb_method *m = korb_class_find_method(klass, korb_intern("inspect"));
@@ -3242,7 +3242,7 @@ VALUE korb_inspect_dispatch(CTX *c, VALUE v) {
             if (BUILTIN_TYPE(r) == T_STRING) return r;
         }
     }
-    return korb_inspect(v);
+    return korb_inspect(c, c->sp, v);
 }
 
 /* CTX-aware to_s — dispatches a user-defined to_s if the receiver's
@@ -3262,11 +3262,11 @@ VALUE korb_to_s_dispatch(CTX *c, VALUE v) {
             if (BUILTIN_TYPE(r) == T_STRING) return r;
         }
     }
-    return korb_to_s(v);
+    return korb_to_s(c, c->sp, v);
 }
 
-VALUE korb_to_s(VALUE v) {
-    CTX *c = korb_vm->current_ctx;
+VALUE korb_to_s(CTX *c, VALUE *sp, VALUE v) {
+    c->sp = sp;
     if (BUILTIN_TYPE(v) == T_STRING) return v;
     if (FIXNUM_P(v)) {
         char b[32]; snprintf(b, 32, "%ld", FIX2LONG(v));
@@ -3279,11 +3279,12 @@ VALUE korb_to_s(VALUE v) {
         VALUE msg = korb_ivar_get(v, korb_intern("@message"));
         if (msg && !SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) == T_STRING) return msg;
     }
-    return korb_inspect(v);
+    return korb_inspect(c, c->sp, v);
 }
 
 void korb_p(VALUE v) {
-    VALUE s = korb_inspect(v);
+    CTX *c = korb_vm->current_ctx;
+    VALUE s = korb_inspect(c, c->sp, v);
     fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, stdout);
     fputc('\n', stdout);
 }

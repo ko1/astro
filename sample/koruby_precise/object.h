@@ -664,9 +664,9 @@ bool  korb_int_eq(VALUE a, VALUE b);
 bool  korb_eq(VALUE a, VALUE b);
 bool  korb_eql(VALUE a, VALUE b);
 uint64_t korb_hash_value(VALUE v);
-VALUE korb_inspect(VALUE v);
+VALUE korb_inspect(CTX *c, VALUE *sp, VALUE v);
 VALUE korb_inspect_dispatch(CTX *c, VALUE v);
-VALUE korb_to_s(VALUE v);
+VALUE korb_to_s(CTX *c, VALUE *sp, VALUE v);
 VALUE korb_to_s_dispatch(CTX *c, VALUE v);
 void  korb_p(VALUE v); /* writes to stdout with newline */
 

@@ -284,7 +284,7 @@ compare_strings:;
  * <=> couldn't reach a result. */
 static void str_cmp_raise(CTX *c, VALUE other) {
     VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-    VALUE oi = korb_inspect(other);
+    VALUE oi = korb_inspect(c, c->sp, other);
     const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                             ? korb_str_cstr(oi)
                             : korb_id_name(korb_class_of_class(other)->name);
@@ -724,7 +724,7 @@ static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Normalize rhs to a String. */
     VALUE val = argv[argc - 1];
     if (SPECIAL_CONST_P(val) || BUILTIN_TYPE(val) != T_STRING) {
-        VALUE coerced = korb_to_s(val);
+        VALUE coerced = korb_to_s(c, c->sp, val);
         if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) return val;
         val = coerced;
     }
@@ -1179,7 +1179,7 @@ static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
                 rs[4] = korb_yield(c, 1, &rs[4]);
                 if (c->state == KORB_RAISE) { ret = Qnil; goto gsub_done; }
                 if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(c, c->sp, rs[3], rs[4]);
-                else korb_str_concat(c, c->sp, rs[3], korb_to_s(rs[4]));
+                else korb_str_concat(c, c->sp, rs[3], korb_to_s(c, c->sp, rs[4]));
                 s = (struct korb_string *)rs[0];
             }
             i = ms + (ml > 0 ? ml : 1);
@@ -1216,7 +1216,7 @@ static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
             rs[4] = korb_yield(c, 1, &rs[4]);
             if (c->state == KORB_RAISE) { ret = Qnil; goto sub_done; }
             if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(c, c->sp, rs[3], rs[4]);
-            else korb_str_concat(c, c->sp, rs[3], korb_to_s(rs[4]));
+            else korb_str_concat(c, c->sp, rs[3], korb_to_s(c, c->sp, rs[4]));
             s = (struct korb_string *)rs[0];
         }
         korb_str_concat(c, c->sp, rs[3], korb_str_new(c, c->sp, s->ptr + ms + ml, s->len - ms - ml));
@@ -1510,7 +1510,7 @@ static VALUE kernel_format(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
             case 's': {
                 VALUE v = ai < argc ? argv[ai] : korb_str_new(c, c->sp, "", 0);
-                if (BUILTIN_TYPE(v) != T_STRING) v = korb_to_s(v);
+                if (BUILTIN_TYPE(v) != T_STRING) v = korb_to_s(c, c->sp, v);
                 snprintf(buf, sizeof(buf), spec, ((struct korb_string *)v)->ptr);
                 ai++;
                 break;
@@ -1885,7 +1885,7 @@ static VALUE str_percent(CTX *c, VALUE self, int argc, VALUE *argv) {
                         VALUE key = korb_id2sym(korb_intern(keybuf));
                         VALUE v = korb_hash_aref((VALUE)h, key);
                         if (UNDEF_P(v)) v = Qnil;
-                        VALUE vs = korb_to_s(v);
+                        VALUE vs = korb_to_s(c, c->sp, v);
                         korb_str_concat(c, c->sp, out, vs);
                         i = j + 1;
                         continue;

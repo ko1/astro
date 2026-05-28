@@ -442,7 +442,7 @@ redo_proc:
                 if (pair->len >= 1) urs[1] = pair->ptr[0];
                 if (pair->len >= 2) urs[2] = pair->ptr[1];
             }
-            urs[3] = korb_inspect(urs[1]);  /* tag_s */
+            urs[3] = korb_inspect(c, c->sp, urs[1]);  /* tag_s */
             char buf[256];
             snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[3]));
             if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {

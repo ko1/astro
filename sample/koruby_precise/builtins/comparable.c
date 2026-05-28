@@ -16,7 +16,7 @@ static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
         /* CRuby's "comparison of X with Y failed" uses the class name on
          * the LHS but inspect-style for non-builtin RHS values
          * (`"comparison of String with 7 failed"`). */
-        VALUE oi = korb_inspect(other);
+        VALUE oi = korb_inspect(c, c->sp, other);
         const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                                 ? korb_str_cstr(oi)
                                 : korb_id_name(korb_class_of_class(other)->name);

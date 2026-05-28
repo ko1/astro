@@ -31,7 +31,7 @@ void korb_run_at_exit_hooks(CTX *c) {
         c->state = KORB_NORMAL;
         korb_funcall(c, (VALUE)p, korb_intern("call"), 0, NULL);
         if (c->state == KORB_RAISE) {
-            VALUE s = korb_inspect(c->state_value);
+            VALUE s = korb_inspect(c, c->sp, c->state_value);
             fprintf(stderr, "at_exit hook raised: %s\n", korb_str_cstr(s));
             c->state = KORB_NORMAL;
         }
@@ -511,12 +511,12 @@ static VALUE kernel_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Default Kernel#inspect for objects that don't override it.
      * Avoid calling korb_inspect_dispatch here — that would loop
      * straight back to this cfunc.  korb_inspect skips user dispatch. */
-    return korb_inspect(self);
+    return korb_inspect(c, c->sp, self);
 }
 
 static VALUE kernel_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (self == korb_vm->main_obj) return korb_str_new_cstr(c, c->sp, "main");
-    return korb_to_s(self);
+    return korb_to_s(c, c->sp, self);
 }
 
 static VALUE kernel_class(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1007,7 +1007,7 @@ static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_string(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return korb_str_new(c, c->sp, "", 0);
-    return korb_to_s(argv[0]);
+    return korb_to_s(c, c->sp, argv[0]);
 }
 
 static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {

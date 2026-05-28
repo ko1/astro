@@ -322,7 +322,7 @@ static VALUE int_chr(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Integer#to_s(base).  For non-decimal bases Ruby renders negatives
      * as "-<digits>", not as the unsigned twos-complement word. */
-    if (!FIXNUM_P(self)) return korb_to_s(self);
+    if (!FIXNUM_P(self)) return korb_to_s(c, c->sp, self);
     long v = FIX2LONG(self);
     int base = argc >= 1 && FIXNUM_P(argv[0]) ? (int)FIX2LONG(argv[0]) : 10;
     char buf[80];

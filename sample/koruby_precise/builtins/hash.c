@@ -255,7 +255,7 @@ static VALUE hash_kwargs_validate(CTX *c, VALUE self, int argc, VALUE *argv) {
     char buf[1024];
     int off = snprintf(buf, sizeof(buf), "unknown keyword%s:", cnt == 1 ? "" : "s");
     for (uint32_t i = 0; i < cnt && off < (int)sizeof(buf) - 4; i++) {
-        VALUE v = korb_inspect(unknown[i]);
+        VALUE v = korb_inspect(c, c->sp, unknown[i]);
         const char *vs = (BUILTIN_TYPE(v) == T_STRING)
                            ? ((struct korb_string *)v)->ptr : "?";
         off += snprintf(buf + off, sizeof(buf) - off, "%s %s", i == 0 ? "" : ",", vs);
@@ -340,7 +340,7 @@ static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc >= 2) return argv[1];
     VALUE eKey = korb_const_get(korb_vm->object_class, korb_intern("KeyError"));
     if (UNDEF_P(eKey) || !eKey) eKey = (VALUE)NULL;
-    VALUE ks = korb_inspect(argv[0]);
+    VALUE ks = korb_inspect(c, c->sp, argv[0]);
     korb_raise(c, (struct korb_class *)eKey, "key not found: %s", korb_str_cstr(ks));
     return Qnil;
 }
