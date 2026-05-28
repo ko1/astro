@@ -83,7 +83,10 @@
 
 NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走らせた
 結果。 段階的に修正を入れて **20/24 file 完全 pass** まで持ち込んだ
-(前回 14 から +6)。
+(前回 14 から +6)。 また STRESS+PURGE では別の組み合わせで
+**18/24 file pass** を確認 (test_block は STRESS で SEGV だが PURGE で
+OK、 逆に test_eq は STRESS で OK だが PURGE で SEGV 等、 mode 間で
+異なる stale ref 経路が表面化する)。
 
 | test                      | STRESS |
 |---------------------------|--------|
