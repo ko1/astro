@@ -1144,49 +1144,76 @@ static int str_find_pat(VALUE pattern, struct korb_string *s, long from,
 
 static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return korb_str_dup(self);
-    struct korb_string *s = (struct korb_string *)self;
     extern struct korb_proc *current_block;
-    VALUE out = korb_str_new("", 0);
-    long start = 0, i = 0;
-    long ms, ml;
-    while (str_find_pat(argv[0], s, i, &ms, &ml)) {
-        korb_str_concat(out, korb_str_new(s->ptr + start, ms - start));
-        if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
-            struct korb_string *r = (struct korb_string *)argv[1];
-            korb_str_concat(out, korb_str_new(r->ptr, r->len));
-        } else if (current_block) {
-            VALUE m = korb_str_new(s->ptr + ms, ml);
-            VALUE r = korb_yield(c, 1, &m);
-            if (c->state == KORB_RAISE) return Qnil;
-            if (BUILTIN_TYPE(r) == T_STRING) korb_str_concat(out, r);
-            else korb_str_concat(out, korb_to_s(r));
+    VALUE ret = Qnil;
+    /* Pin self, pat (argv[0]), repl (argv[1]), out, scratch m
+     * across str_concat / str_new / korb_yield GC fires. */
+    ARO_ROOT_SCOPE_START(c, rs, 5) {
+        rs[0] = self;
+        rs[1] = argv[0];
+        rs[2] = (argc >= 2) ? argv[1] : Qnil;
+        rs[3] = korb_str_new("", 0);  /* out */
+        rs[4] = Qnil;                 /* m / r scratch */
+        struct korb_string *s = (struct korb_string *)rs[0];
+        long start = 0, i = 0;
+        long ms, ml;
+        while (str_find_pat(rs[1], s, i, &ms, &ml)) {
+            korb_str_concat(rs[3], korb_str_new(s->ptr + start, ms - start));
+            s = (struct korb_string *)rs[0];
+            if (argc >= 2 && BUILTIN_TYPE(rs[2]) == T_STRING) {
+                struct korb_string *r = (struct korb_string *)rs[2];
+                korb_str_concat(rs[3], korb_str_new(r->ptr, r->len));
+                s = (struct korb_string *)rs[0];
+            } else if (current_block) {
+                rs[4] = korb_str_new(s->ptr + ms, ml);
+                rs[4] = korb_yield(c, 1, &rs[4]);
+                if (c->state == KORB_RAISE) { ret = Qnil; goto gsub_done; }
+                if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(rs[3], rs[4]);
+                else korb_str_concat(rs[3], korb_to_s(rs[4]));
+                s = (struct korb_string *)rs[0];
+            }
+            i = ms + (ml > 0 ? ml : 1);
+            start = i;
         }
-        i = ms + (ml > 0 ? ml : 1);
-        start = i;
-    }
-    korb_str_concat(out, korb_str_new(s->ptr + start, s->len - start));
-    return out;
+        korb_str_concat(rs[3], korb_str_new(s->ptr + start, s->len - start));
+        ret = rs[3];
+    gsub_done: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return korb_str_dup(self);
-    struct korb_string *s = (struct korb_string *)self;
     extern struct korb_proc *current_block;
-    long ms, ml;
-    if (!str_find_pat(argv[0], s, 0, &ms, &ml)) return korb_str_dup(self);
-    VALUE out = korb_str_new(s->ptr, ms);
-    if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
-        struct korb_string *r = (struct korb_string *)argv[1];
-        korb_str_concat(out, korb_str_new(r->ptr, r->len));
-    } else if (current_block) {
-        VALUE m = korb_str_new(s->ptr + ms, ml);
-        VALUE r = korb_yield(c, 1, &m);
-        if (c->state == KORB_RAISE) return Qnil;
-        if (BUILTIN_TYPE(r) == T_STRING) korb_str_concat(out, r);
-        else korb_str_concat(out, korb_to_s(r));
-    }
-    korb_str_concat(out, korb_str_new(s->ptr + ms + ml, s->len - ms - ml));
-    return out;
+    VALUE ret = Qnil;
+    ARO_ROOT_SCOPE_START(c, rs, 5) {
+        rs[0] = self;
+        rs[1] = argv[0];
+        rs[2] = (argc >= 2) ? argv[1] : Qnil;
+        rs[3] = Qnil;  /* out */
+        rs[4] = Qnil;  /* m / r scratch */
+        struct korb_string *s = (struct korb_string *)rs[0];
+        long ms, ml;
+        if (!str_find_pat(rs[1], s, 0, &ms, &ml)) { ret = korb_str_dup(rs[0]); goto sub_done; }
+        rs[3] = korb_str_new(s->ptr, ms);
+        s = (struct korb_string *)rs[0];
+        if (argc >= 2 && BUILTIN_TYPE(rs[2]) == T_STRING) {
+            struct korb_string *r = (struct korb_string *)rs[2];
+            korb_str_concat(rs[3], korb_str_new(r->ptr, r->len));
+            s = (struct korb_string *)rs[0];
+        } else if (current_block) {
+            rs[4] = korb_str_new(s->ptr + ms, ml);
+            rs[4] = korb_yield(c, 1, &rs[4]);
+            if (c->state == KORB_RAISE) { ret = Qnil; goto sub_done; }
+            if (BUILTIN_TYPE(rs[4]) == T_STRING) korb_str_concat(rs[3], rs[4]);
+            else korb_str_concat(rs[3], korb_to_s(rs[4]));
+            s = (struct korb_string *)rs[0];
+        }
+        korb_str_concat(rs[3], korb_str_new(s->ptr + ms + ml, s->len - ms - ml));
+        ret = rs[3];
+    sub_done: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 /* gsub! / sub!: in-place mutating variants.  Return self (or nil if
