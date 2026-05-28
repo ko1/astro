@@ -595,16 +595,60 @@ static VALUE ary_sort_by(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_zip(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
-    VALUE r = korb_ary_new_capa(c, c->sp, a->len);
+    /* Normalize each non-Array arg to an Array via #to_ary, or fall back
+     * to #to_a, and store the result here.  Anything else stays as is
+     * and contributes nil for every position. */
+    VALUE *cooked = argc > 0 ? korb_xmalloc(sizeof(VALUE) * argc) : NULL;
+    for (int j = 0; j < argc; j++) {
+        VALUE v = argv[j];
+        if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) {
+            cooked[j] = v;
+            continue;
+        }
+        /* Try to_ary, then to_a. */
+        VALUE rt_ary = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt_ary)) {
+            VALUE r2 = korb_funcall(c, v, korb_intern("to_ary"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!SPECIAL_CONST_P(r2) && BUILTIN_TYPE(r2) == T_ARRAY) {
+                cooked[j] = r2;
+                continue;
+            }
+        }
+        VALUE rt_a = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                  (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt_a)) {
+            VALUE r2 = korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!SPECIAL_CONST_P(r2) && BUILTIN_TYPE(r2) == T_ARRAY) {
+                cooked[j] = r2;
+                continue;
+            }
+        }
+        cooked[j] = Qnil;  /* fallback: nil tuple element */
+    }
+
+    bool has_block = korb_block_given(c);
+    VALUE r = has_block ? Qnil : korb_ary_new_capa(c, c->sp, a->len);
     for (long i = 0; i < a->len; i++) {
         VALUE tup = korb_ary_new_capa(c, c->sp, 1 + argc);
         korb_ary_push(tup, a->ptr[i]);
         for (int j = 0; j < argc; j++) {
-            if (BUILTIN_TYPE(argv[j]) == T_ARRAY) {
-                korb_ary_push(tup, korb_ary_aref(argv[j], i));
-            } else korb_ary_push(tup, Qnil);
+            if (NIL_P(cooked[j])) {
+                korb_ary_push(tup, Qnil);
+            } else {
+                korb_ary_push(tup, korb_ary_aref(cooked[j], i));
+            }
         }
-        korb_ary_push(r, tup);
+        if (has_block) {
+            korb_yield(c, 1, &tup);
+            if (c->state != KORB_NORMAL) return Qnil;
+        } else {
+            korb_ary_push(r, tup);
+        }
     }
     return r;
 }
