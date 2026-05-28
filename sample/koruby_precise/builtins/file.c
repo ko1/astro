@@ -517,10 +517,29 @@ static VALUE file_chmod(CTX *c, VALUE self, int argc, VALUE *argv) {
 #include <limits.h>
 static VALUE file_realpath(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
+    /* CRuby: File.realpath(path, [base_dir]) — when path is relative
+     * and base_dir is given, resolve path relative to base_dir before
+     * calling realpath.  Without this 2-arg support, ~/ruby spec
+     * helper's `File.realpath("fixtures/code", root)` raises with
+     * "realpath failed: No such file or directory". */
+    const char *path = korb_str_cstr(argv[0]);
+    char abs_buf[PATH_MAX];
+    const char *resolved_in = path;
+    if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING && path[0] != '/') {
+        const char *base = korb_str_cstr(argv[1]);
+        size_t bl = strlen(base);
+        size_t pl = strlen(path);
+        if (bl + 1 + pl + 1 < sizeof(abs_buf)) {
+            memcpy(abs_buf, base, bl);
+            abs_buf[bl] = '/';
+            memcpy(abs_buf + bl + 1, path, pl + 1);
+            resolved_in = abs_buf;
+        }
+    }
     char buf[PATH_MAX];
-    if (!realpath(korb_str_cstr(argv[0]), buf)) {
+    if (!realpath(resolved_in, buf)) {
         korb_raise(c, NULL, "realpath failed: %s -- %s",
-                   strerror(errno), korb_str_cstr(argv[0]));
+                   strerror(errno), resolved_in);
         return Qnil;
     }
     return korb_str_new_cstr(buf);
