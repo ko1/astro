@@ -235,6 +235,27 @@ ARO_ROOT_SCOPE_START を引き続き使用。
   到達していないか、 そもそも visit が走っていない可能性。 詳細 trace
   要。
 
+### 2026-05-29 追加: fresh_env を value stack 化 (commit 8a0a68f3)
+
+if_spec.rb 等の SEGV 解析で発見した重要な root cause:
+
+`korb_yield_slow` で `creates_proc=true` block の fresh_env が
+korb_xmalloc (libc) で確保されていた。これにより:
+
+- fp = libc heap addr (低 0x5555... sbrk 領域)
+- sp = fp + env_size = libc addr
+- c->sp = sp + N (pin) = libc addr
+- visit_roots phase (a) は `c->stack_base..c->sp` を walk するが、
+  c->stack_base は 128 MB malloc (高 0x7fff... mmap 領域)、 c->sp が
+  libc になると range walk が空 loop となり pin slot が scan されない
+  → 全 stale 化
+
+修正: fresh_env を c->sp 起点 (= value stack 上、 16M slots) で確保し、
+exit 時に c->sp restore。 captured proc は snapshot_env_maybe で libc
+に snapshot 化するため closure semantics は維持。
+
+効果: rubyspec STRESS+PURGE 14/67 → 15/67 PASS、 SEGV 50→46。
+
 ## 旧現状 (2026-05-10, eleventh pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
