@@ -4452,11 +4452,25 @@ VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
     return korb_dispatch_binop(c, recv, mid, argc, argv);
 }
 
+/* RESULT-returning variant of korb_funcall.  Internally dispatches via
+ * the legacy path, then converts c->state into RESULT.state for in-band
+ * propagation.  Use in new-ABI cfuncs / helpers (where UNWRAP applies). */
+RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
+    VALUE r = korb_dispatch_binop(c, recv, mid, argc, argv);
+    if (UNLIKELY(c->state != KORB_NORMAL)) {
+        RESULT res = (RESULT){ c->state_value, (uint8_t)c->state };
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        return res;
+    }
+    return RESULT_OK(r);
+}
+
 /* Same as korb_funcall, but the called method sees `block` as its
  * implicit block (yield / block_given?).  Used by Class#new to
  * forward `Foo.new { ... }`'s block into Foo#initialize. */
 VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
-    
+
     struct korb_proc *prev = c->current_block;
     if (NIL_P(block) || SPECIAL_CONST_P(block) || BUILTIN_TYPE(block) != T_PROC) {
         c->current_block = NULL;
@@ -4466,6 +4480,17 @@ VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv,
     VALUE r = korb_dispatch_binop(c, recv, mid, argc, argv);
     c->current_block = prev;
     return r;
+}
+
+RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
+    VALUE r = korb_funcall_with_block(c, recv, mid, argc, argv, block);
+    if (UNLIKELY(c->state != KORB_NORMAL)) {
+        RESULT res = (RESULT){ c->state_value, (uint8_t)c->state };
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        return res;
+    }
+    return RESULT_OK(r);
 }
 
 /* ---- runtime init ---- */

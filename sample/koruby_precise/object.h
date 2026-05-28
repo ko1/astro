@@ -873,6 +873,13 @@ VALUE korb_node_aset_slow  (CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_inde
  * and the param/argc-mismatch slow case. */
 VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv);
 
+/* RESULT-returning bridges around korb_funcall / korb_funcall_with_block /
+ * korb_yield.  Each performs the legacy dispatch, then converts c->state
+ * into RESULT.state for in-band propagation.  Use in new-ABI cfuncs /
+ * helpers (where UNWRAP propagates the state). */
+RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
+RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
+
 
 
 /* The block/proc/lambda whose body is currently executing.  Updated by
@@ -944,6 +951,19 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         return r;
     }
     return korb_yield_slow(c, blk, argc, argv);
+}
+
+/* RESULT-returning wrapper around korb_yield. */
+static inline __attribute__((always_inline)) RESULT
+korb_yield_r(CTX *c, uint32_t argc, VALUE *argv) {
+    VALUE r = korb_yield(c, argc, argv);
+    if (UNLIKELY(c->state != KORB_NORMAL)) {
+        RESULT res = (RESULT){ c->state_value, (uint8_t)c->state };
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        return res;
+    }
+    return RESULT_OK(r);
 }
 
 bool korb_block_given(CTX *c);

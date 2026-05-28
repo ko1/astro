@@ -422,18 +422,9 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
         /* Re-read sp[-2]/sp[-1] each iter — they're slot-tracked, so even
          * if korb_eq's inner dispatch fires GC and moves the arrays, the
          * next iteration's korb_ary_aref reads the forwarded address. */
-        if (!korb_eq(c, korb_ary_aref(sp[-2], i), korb_ary_aref(sp[-1], i))) {
-            return RESULT_OK(Qfalse);
-        }
-        /* korb_eq still uses the legacy c->state side-channel (Phase 7
-         * will migrate it to RESULT).  Bridge: convert c->state back into
-         * RESULT here so propagation works uniformly. */
-        if (UNLIKELY(c->state != KORB_NORMAL)) {
-            RESULT r = { c->state_value, (uint8_t)c->state };
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
-            return r;
-        }
+        bool eq = korb_eq(c, korb_ary_aref(sp[-2], i), korb_ary_aref(sp[-1], i));
+        PROPAGATE_STATE(c);
+        if (!eq) return RESULT_OK(Qfalse);
     }
     return RESULT_OK(Qtrue);
 }
