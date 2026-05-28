@@ -528,7 +528,7 @@ korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
 /* Fast inline ivar setter — same monomorphic cache pattern.  Cache miss
  * (different klass / unset slot / first write past current capa) goes
  * through the slow path which handles growth + slot assignment. */
-extern void korb_raise_frozen_modification(CTX *c, VALUE obj);
+extern RESULT korb_raise_frozen_modification(CTX *c, VALUE obj);
 static inline __attribute__((always_inline)) void
 korb_ivar_set_ic(CTX *c, VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
     if (UNLIKELY(SPECIAL_CONST_P(obj))) {

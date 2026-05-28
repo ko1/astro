@@ -2695,8 +2695,8 @@ void korb_raise_index_error(CTX *c, const char *fmt, ...) {
 /* Hot-path frozen-write rejector (called from inlined ivar setter when
  * the receiver is frozen).  Raises FrozenError "can't modify frozen X".
  * Uses the global VM context. */
-void korb_raise_frozen_modification(CTX *c, VALUE obj) {
-    if (!c) return;
+RESULT korb_raise_frozen_modification(CTX *c, VALUE obj) {
+    if (!c) return RESULT_OK(Qnil);
     VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
     const char *cn = "Object";
     if (obj == Qtrue) cn = "TrueClass";
@@ -2709,8 +2709,8 @@ void korb_raise_frozen_modification(CTX *c, VALUE obj) {
         struct korb_class *k = korb_class_of_class(obj);
         if (k && k->name) cn = korb_id_name(k->name);
     }
-    korb_raise(c, (struct korb_class *)eF,
-               "can't modify frozen %s", cn);
+    return korb_raise(c, (struct korb_class *)eF,
+                      "can't modify frozen %s", cn);
 }
 
 RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
