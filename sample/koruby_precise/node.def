@@ -1710,7 +1710,11 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
             }
             if (LIKELY(!SPECIAL_CONST_P(r))) {
                 if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) { ret = korb_ary_aref(r, FIX2LONG(i)); goto aref_done; }
-                if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc)) {
+                if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc) &&
+                    korb_class_of_class(r) == korb_vm->hash_class) {
+                    /* Subclasses might override #default — skip the fast
+                     * path so hash_aref's slow path can dispatch the
+                     * subclass method on miss. */
                     ret = korb_hash_aref(c, r, i);
                     goto aref_done;
                 }

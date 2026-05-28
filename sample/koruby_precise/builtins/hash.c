@@ -2,29 +2,31 @@
 
 /* ---------- Hash ---------- */
 static VALUE hash_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Fast path: bucket lookup.  On miss, fall back to default_proc
-     * (calling it with (self, key)) before returning default_value. */
+    /* Fast path: bucket lookup.  On miss, dispatch through #default so
+     * subclass overrides (`class X < Hash; def default(k); ...; end`)
+     * participate in the lookup. */
     struct korb_hash *h = (struct korb_hash *)self;
     if (h->size > 0) {
-        VALUE r = korb_hash_aref(c, self, argv[0]);
-        if (!UNDEF_P(r)) {
-            /* korb_hash_aref returns default_value on miss; distinguish
-             * by re-checking presence. */
-            uint64_t hh = h->compare_by_identity ? (uint64_t)argv[0] : korb_hash_value(c, argv[0]);
-            uint32_t b = (uint32_t)(hh % h->bucket_cnt);
-            for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {
-                if (e->hash == hh &&
-                    (h->compare_by_identity ? e->key == argv[0] : korb_eql(c, e->key, argv[0])))
-                    return e->value;
-            }
+        uint64_t hh = h->compare_by_identity ? (uint64_t)argv[0] : korb_hash_value(c, argv[0]);
+        uint32_t b = (uint32_t)(hh % h->bucket_cnt);
+        for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {
+            if (e->hash == hh &&
+                (h->compare_by_identity ? e->key == argv[0] : korb_eql(c, e->key, argv[0])))
+                return e->value;
         }
     }
     /* Miss path. */
-    if (!NIL_P(h->default_proc)) {
-        VALUE args[2] = {self, argv[0]};
-        return korb_funcall(c, h->default_proc, korb_intern("call"), 2, args);
+    /* For the canonical Hash class skip the funcall round-trip. */
+    struct korb_class *kls = korb_class_of_class(self);
+    if (kls == korb_vm->hash_class) {
+        if (!NIL_P(h->default_proc)) {
+            VALUE args[2] = {self, argv[0]};
+            return korb_funcall(c, h->default_proc, korb_intern("call"), 2, args);
+        }
+        return h->default_value;
     }
-    return h->default_value;
+    /* Subclass: defer to #default so overrides apply. */
+    return korb_funcall(c, self, korb_intern("default"), 1, &argv[0]);
 }
 static VALUE hash_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
