@@ -438,17 +438,70 @@ static VALUE int_ceil(CTX *c, VALUE self, int argc, VALUE *argv) {
  * a different method from Integer#/ (the `/` operator above), which
  * already exists; div is registered separately as the named method. */
 static VALUE int_method_div(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || !FIXNUM_P(self) || !FIXNUM_P(argv[0])) return Qnil;
-    long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
-    if (b == 0) {
-        VALUE eDiv = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-        korb_raise(c, (struct korb_class *)eDiv, "divided by 0");
+    if (argc < 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "wrong number of arguments");
         return Qnil;
     }
-    long q = a / b;
-    long r = a % b;
-    if ((r != 0) && ((r < 0) != (b < 0))) q--;
-    return INT2FIX(q);
+    VALUE other = argv[0];
+    /* Float argument: (self.to_f / other).floor — CRuby raises
+     * ZeroDivisionError on 0.0. */
+    if (FLONUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_FLOAT)) {
+        double a = korb_num2dbl(self);
+        double b = korb_num2dbl(other);
+        if (b == 0.0) {
+            VALUE eDiv = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eDiv, "divided by 0");
+            return Qnil;
+        }
+        double q = floor(a / b);
+        if (q >= (double)FIXNUM_MIN && q <= (double)FIXNUM_MAX) return INT2FIX((long)q);
+        /* Build a Bignum from the float. */
+        return korb_funcall(c, korb_float_new(c, c->sp, q), korb_intern("to_i"), 0, NULL);
+    }
+    /* Fixnum / Fixnum fast path. */
+    if (FIXNUM_P(self) && FIXNUM_P(other)) {
+        long a = FIX2LONG(self), b = FIX2LONG(other);
+        if (b == 0) {
+            VALUE eDiv = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eDiv, "divided by 0");
+            return Qnil;
+        }
+        long q = a / b;
+        long r = a % b;
+        if ((r != 0) && ((r < 0) != (b < 0))) q--;
+        return INT2FIX(q);
+    }
+    /* Bignum path: use korb_int_div which already handles sign + GMP. */
+    if ((FIXNUM_P(self) || (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM)) &&
+        (FIXNUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM))) {
+        if ((FIXNUM_P(other) && FIX2LONG(other) == 0) ||
+            (!FIXNUM_P(other) && BUILTIN_TYPE(other) == T_BIGNUM &&
+             mpz_sgn((mpz_ptr)((struct korb_bignum *)other)->mpz) == 0)) {
+            VALUE eDiv = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eDiv, "divided by 0");
+            return Qnil;
+        }
+        return korb_int_div(self, other);
+    }
+    /* Try #coerce on other (CRuby's Numeric coerce protocol). */
+    if (!SPECIAL_CONST_P(other)) {
+        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt)) {
+            VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
+                ((struct korb_array *)pair)->len == 2) {
+                struct korb_array *p = (struct korb_array *)pair;
+                return korb_funcall(c, p->ptr[0], korb_intern("div"), 1, &p->ptr[1]);
+            }
+        }
+    }
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eT, "expected Numeric");
+    return Qnil;
 }
 
 static VALUE int_fdiv(CTX *c, VALUE self, int argc, VALUE *argv) {
