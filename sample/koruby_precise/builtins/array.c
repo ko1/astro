@@ -1519,16 +1519,28 @@ static VALUE ary_find(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_min_by(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
-    VALUE m = a->ptr[0];
-    VALUE mk = korb_yield(c, 1, &m);
-    if (c->state != KORB_NORMAL) return Qnil;
-    for (long i = 1; i < a->len; i++) {
-        VALUE k = korb_yield(c, 1, &a->ptr[i]);
-        if (c->state != KORB_NORMAL) return Qnil;
-        VALUE cmp = korb_funcall(c, mk, korb_intern("<=>"), 1, &k);
-        if (FIXNUM_P(cmp) && FIX2LONG(cmp) > 0) { m = a->ptr[i]; mk = k; }
-    }
-    return m;
+    /* Pin running-min m + its key mk + per-iter probe value v + key k
+     * across korb_yield / funcall GC fires. */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 4) {
+        rs[0] = a->ptr[0];                                /* m: running min */
+        rs[1] = korb_yield(c, 1, &rs[0]);                 /* mk: m's key */
+        if (c->state != KORB_NORMAL) { ret = Qnil; goto done_min_by; }
+        for (long i = 1; i < a->len; i++) {
+            rs[2] = a->ptr[i];                            /* v: probe */
+            rs[3] = korb_yield(c, 1, &rs[2]);             /* k: v's key */
+            if (c->state != KORB_NORMAL) { ret = Qnil; goto done_min_by; }
+            VALUE cmp = korb_funcall(c, rs[1], korb_intern("<=>"), 1, &rs[3]);
+            if (c->state != KORB_NORMAL) { ret = Qnil; goto done_min_by; }
+            long sign = 0;
+            if (FIXNUM_P(cmp)) sign = FIX2LONG(cmp);
+            else if (!SPECIAL_CONST_P(cmp) && BUILTIN_TYPE(cmp) == T_BIGNUM) sign = korb_int_cmp(cmp, INT2FIX(0));
+            if (sign > 0) { rs[0] = rs[2]; rs[1] = rs[3]; }
+        }
+        ret = rs[0];
+done_min_by: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1577,16 +1589,27 @@ static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_max_by(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
-    VALUE m = a->ptr[0];
-    VALUE mk = korb_yield(c, 1, &m);
-    if (c->state != KORB_NORMAL) return Qnil;
-    for (long i = 1; i < a->len; i++) {
-        VALUE k = korb_yield(c, 1, &a->ptr[i]);
-        if (c->state != KORB_NORMAL) return Qnil;
-        VALUE cmp = korb_funcall(c, mk, korb_intern("<=>"), 1, &k);
-        if (FIXNUM_P(cmp) && FIX2LONG(cmp) < 0) { m = a->ptr[i]; mk = k; }
-    }
-    return m;
+    /* Pin running-max + key + per-iter probe + key — see ary_min_by. */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 4) {
+        rs[0] = a->ptr[0];
+        rs[1] = korb_yield(c, 1, &rs[0]);
+        if (c->state != KORB_NORMAL) { ret = Qnil; goto done_max_by; }
+        for (long i = 1; i < a->len; i++) {
+            rs[2] = a->ptr[i];
+            rs[3] = korb_yield(c, 1, &rs[2]);
+            if (c->state != KORB_NORMAL) { ret = Qnil; goto done_max_by; }
+            VALUE cmp = korb_funcall(c, rs[1], korb_intern("<=>"), 1, &rs[3]);
+            if (c->state != KORB_NORMAL) { ret = Qnil; goto done_max_by; }
+            long sign = 0;
+            if (FIXNUM_P(cmp)) sign = FIX2LONG(cmp);
+            else if (!SPECIAL_CONST_P(cmp) && BUILTIN_TYPE(cmp) == T_BIGNUM) sign = korb_int_cmp(cmp, INT2FIX(0));
+            if (sign < 0) { rs[0] = rs[2]; rs[1] = rs[3]; }
+        }
+        ret = rs[0];
+done_max_by: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 static VALUE ary_slice_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
