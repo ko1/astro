@@ -1217,6 +1217,9 @@ node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, N
         .prev      = c->current_frame,
         .self      = l,
         .fp        = c->current_frame->fp,
+        .cref      = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
         .last_line = Qnil,
         .last_match= Qnil,
     };
@@ -1965,6 +1968,9 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     frame.block = current_block;
     frame.caller_node = n;
     frame.fp = new_fp;
+    frame.cref = c->current_frame->cref;
+    frame.current_class = c->current_frame->current_class;
+    frame.current_file = c->current_frame->current_file;
     frame.locals_cnt = sm->u.ast.locals_cnt;
     frame.super_skip_n = new_skip_n;
     frame.last_line = Qnil;
@@ -2046,6 +2052,9 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     frame.block = blk_proc;  /* explicit block overrides caller's */
     frame.caller_node = n;
     frame.fp = new_fp;
+    frame.cref = c->current_frame->cref;
+    frame.current_class = c->current_frame->current_class;
+    frame.current_file = c->current_frame->current_file;
     frame.locals_cnt = sm->u.ast.locals_cnt;
     frame.super_skip_n = new_skip_n;
     frame.last_line = Qnil;
@@ -2293,6 +2302,9 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     frame.block = current_block;
     frame.caller_node = n;
     frame.fp = new_fp;
+    frame.cref = c->current_frame->cref;
+    frame.current_class = c->current_frame->current_class;
+    frame.current_file = c->current_frame->current_file;
     frame.locals_cnt = sm->u.ast.locals_cnt;
     frame.super_skip_n = fwd_new_skip_n;
     frame.last_line = Qnil;
