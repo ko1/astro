@@ -1905,7 +1905,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + arg_index;
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
-    if (new_fp + sm->u.ast.locals_cnt > c->sp) c->sp = new_fp + sm->u.ast.locals_cnt;
+    { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; if (_ns > c->sp) { for (VALUE *p = c->sp; p < _ns; p++) *p = Qnil; c->sp = _ns; } }
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->fp = new_fp;
     /* Push a frame so a nested `super` inside sm sees sm as its method
@@ -1989,7 +1989,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + arg_index;
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
-    if (new_fp + sm->u.ast.locals_cnt > c->sp) c->sp = new_fp + sm->u.ast.locals_cnt;
+    { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; if (_ns > c->sp) { for (VALUE *p = c->sp; p < _ns; p++) *p = Qnil; c->sp = _ns; } }
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->fp = new_fp;
     struct korb_frame frame;
@@ -2237,7 +2237,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
         new_fp[sm->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
     }
     c->fp = new_fp;
-    if (c->fp + sm->u.ast.locals_cnt > c->sp) c->sp = c->fp + sm->u.ast.locals_cnt;
+    { VALUE *_ns = c->fp + sm->u.ast.locals_cnt; if (_ns > c->sp) { for (VALUE *p = c->sp; p < _ns; p++) *p = Qnil; c->sp = _ns; } }
     /* Push frame so nested super inside sm sees sm's defining_class. */
     struct korb_frame frame;
     frame.prev = c->current_frame;

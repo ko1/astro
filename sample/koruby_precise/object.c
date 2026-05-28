@@ -2516,7 +2516,13 @@ void korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line) {
     ID id = korb_intern("@__backtrace__");
     VALUE existing = korb_ivar_get(exc, id);
     if (!UNDEF_P(existing) && !NIL_P(existing)) return;
-    korb_ivar_set(exc, id, korb_build_backtrace(c, raise_line));
+    /* korb_build_backtrace allocates (= can move exc).  Park exc so the
+     * subsequent korb_ivar_set sees the forwarded address. */
+    ARO_ROOT_SCOPE_START(c, r, 2) {
+        r[0] = exc;
+        r[1] = korb_build_backtrace(c, raise_line);
+        korb_ivar_set(r[0], id, r[1]);
+    } ARO_ROOT_SCOPE_END(c, r);
 }
 
 VALUE korb_exc_new(struct korb_class *klass, const char *msg) {
@@ -2530,11 +2536,20 @@ VALUE korb_exc_new(struct korb_class *klass, const char *msg) {
             klass = korb_vm->object_class;
         }
     }
-    VALUE obj = korb_object_new(klass);
-    if (msg) {
-        korb_ivar_set(obj, korb_intern("@message"), korb_str_new_cstr(msg));
-    }
-    return obj;
+    /* Park the exception obj across korb_str_new_cstr's alloc-can-GC
+     * — otherwise the C local `obj` goes stale (= obj moves under GC
+     * compaction) and korb_ivar_set writes @message into a phantom. */
+    CTX *c = korb_vm->current_ctx;
+    VALUE result;
+    ARO_ROOT_SCOPE_START(c, r, 1) {
+        r[0] = korb_object_new(klass);
+        if (msg) {
+            VALUE m = korb_str_new_cstr(msg);
+            korb_ivar_set(r[0], korb_intern("@message"), m);
+        }
+        result = r[0];
+    } ARO_ROOT_SCOPE_END(c, r);
+    return result;
 }
 
 /* Convenience helpers — pick the right exception subclass instead of
@@ -2618,27 +2633,36 @@ void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
         /* Exception#cause: when this raise happens inside a rescue body,
          * $! holds the currently-rescued exception — link it.  Skip if
          * the exception already has a cause, skip self, and skip when
-         * linking would create a cycle. */
+         * linking would create a cycle.
+         *
+         * Use r[1] / r[0] directly throughout (= GC-protected) rather
+         * than caching to C locals.  Each korb_ivar_get/set can fire
+         * GC; a C-local cached exc/current goes stale and the next
+         * korb_ivar_set writes into a phantom obj's @cause. */
         VALUE current = korb_gvar_get(korb_intern("$!"));
-        VALUE e = r[1];  /* reload after backtrace alloc */
-        if (!NIL_P(current) && current != e &&
-            !SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
-            VALUE existing = korb_ivar_get(e, korb_intern("@cause"));
-            if (UNDEF_P(existing) || NIL_P(existing)) {
-                /* Cycle check: walk current's cause chain — if we
-                 * encounter e already, linking would close the loop. */
-                VALUE walk = current;
-                int hops = 0;
-                bool would_cycle = false;
-                while (!NIL_P(walk) && hops++ < 32) {
-                    if (walk == e) { would_cycle = true; break; }
-                    if (SPECIAL_CONST_P(walk) || BUILTIN_TYPE(walk) != T_OBJECT) break;
-                    walk = korb_ivar_get(walk, korb_intern("@cause"));
-                    if (UNDEF_P(walk)) break;
+        /* Park current too — subsequent korb_ivar_get walks might GC. */
+        ARO_ROOT_SCOPE_START(c, rc, 1) {
+            rc[0] = current;
+            if (!NIL_P(rc[0]) && rc[0] != r[1] &&
+                !SPECIAL_CONST_P(r[1]) && BUILTIN_TYPE(r[1]) == T_OBJECT) {
+                VALUE existing = korb_ivar_get(r[1], korb_intern("@cause"));
+                if (UNDEF_P(existing) || NIL_P(existing)) {
+                    /* Cycle check: walk rc[0]'s cause chain. */
+                    ARO_ROOT_SCOPE_START(c, rw, 1) {
+                        rw[0] = rc[0];
+                        int hops = 0;
+                        bool would_cycle = false;
+                        while (!NIL_P(rw[0]) && hops++ < 32) {
+                            if (rw[0] == r[1]) { would_cycle = true; break; }
+                            if (SPECIAL_CONST_P(rw[0]) || BUILTIN_TYPE(rw[0]) != T_OBJECT) break;
+                            rw[0] = korb_ivar_get(rw[0], korb_intern("@cause"));
+                            if (UNDEF_P(rw[0])) break;
+                        }
+                        if (!would_cycle) korb_ivar_set(r[1], korb_intern("@cause"), rc[0]);
+                    } ARO_ROOT_SCOPE_END(c, rw);
                 }
-                if (!would_cycle) korb_ivar_set(e, korb_intern("@cause"), current);
             }
-        }
+        } ARO_ROOT_SCOPE_END(c, rc);
         c->state = KORB_RAISE;
         c->state_value = r[1];
     } ARO_ROOT_SCOPE_END(c, r);

@@ -455,6 +455,26 @@ forward_edge(void *ctx, void **slot)
      * class tables in koruby) gets memcpy'd a second time at to_top,
      * producing a phantom obj and runaway scan. */
     if ((char *)v >= gc->to_base && (char *)v < gc->to_top) return;
+    /* Diag: if v lies in current to-space arena past to_top, it's a
+     * stale ptr from a prior cycle's allocation in this same plane.
+     * forward_payload will hit either FORWARDED (= return fwd target)
+     * or ABORT (= ptr to dead position).  Print slot location for the
+     * ABORT case so we know which obj's interior held the stale ref. */
+    if ((char *)v >= gc->to_base &&
+        (char *)v < gc->to_base + gc->region_bytes) {
+        AroObjectHeader *oldh = (AroObjectHeader *)v;
+        if (!(oldh->gc_flags & HDR_FORWARDED)) {
+            extern struct CTX_struct koruby_bootstrap_ctx;
+            CTX *cc = &koruby_bootstrap_ctx;
+            const char *kind = "?";
+            if ((char*)slot >= (char*)cc->stack_base &&
+                (char*)slot < (char*)cc->stack_end) kind = "STACK";
+            ptrdiff_t off = (char*)slot - (char*)cc->stack_base;
+            fprintf(stderr, "BAD SLOT abort-imminent: slot=%p *slot=%p to_top=%p kind=%s stack_off=%td c->sp=%p c->fp=%p stack_base=%p\n",
+                    slot, (void*)v, (void*)gc->to_top, kind, off / (ptrdiff_t)sizeof(VALUE),
+                    (void*)cc->sp, (void*)cc->fp, (void*)cc->stack_base);
+        }
+    }
     *slot = (void *)(VALUE)forward_payload(gc, (void *)v);
 }
 
