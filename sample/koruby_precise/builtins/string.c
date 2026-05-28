@@ -230,7 +230,7 @@ static VALUE str_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(((struct korb_string *)self)->len);
 }
 static VALUE str_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_STRING && korb_eql(self, argv[0]));
+    return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_STRING && korb_eql(c, self, argv[0]));
 }
 
 /* Reentrancy guard for the inverted-<=> path: if other.<=>(self) re-enters
@@ -1085,7 +1085,7 @@ static VALUE str_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE str_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return INT2FIX((long)(korb_hash_value(self) >> 1));
+    return INT2FIX((long)(korb_hash_value(c, self) >> 1));
 }
 
 static VALUE str_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1109,7 +1109,7 @@ static VALUE str_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE str_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* String === other ⇒ same as == */
-    return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_STRING && korb_eql(self, argv[0]));
+    return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_STRING && korb_eql(c, self, argv[0]));
 }
 
 static VALUE str_match_op(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1883,7 +1883,7 @@ static VALUE str_percent(CTX *c, VALUE self, int argc, VALUE *argv) {
                         memcpy(keybuf, fmt->ptr + i + 2, klen);
                         keybuf[klen] = 0;
                         VALUE key = korb_id2sym(korb_intern(keybuf));
-                        VALUE v = korb_hash_aref((VALUE)h, key);
+                        VALUE v = korb_hash_aref(c, (VALUE)h, key);
                         if (UNDEF_P(v)) v = Qnil;
                         VALUE vs = korb_to_s(c, c->sp, v);
                         korb_str_concat(c, c->sp, out, vs);

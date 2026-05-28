@@ -496,7 +496,7 @@ static VALUE struct_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
         long bl = strlen(base);
         char *iv = korb_xmalloc_atomic(bl + 2);
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
-        korb_hash_aset(h, members->ptr[i], korb_ivar_get(self, korb_intern(iv)));
+        korb_hash_aset(c, h, members->ptr[i], korb_ivar_get(self, korb_intern(iv)));
     }
     return h;
 }

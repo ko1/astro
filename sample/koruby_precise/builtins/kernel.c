@@ -374,7 +374,7 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
         BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
         VALUE last = argv[argc - 1];
         VALUE k_cause = korb_id2sym(korb_intern("cause"));
-        VALUE v = korb_hash_aref(last, k_cause);
+        VALUE v = korb_hash_aref(c, last, k_cause);
         if (!UNDEF_P(v)) {
             kw_cause = v;
             argc--;
@@ -546,11 +546,11 @@ static VALUE kernel_class(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(korb_eq(self, argv[0]));
+    return KORB_BOOL(korb_eq(c, self, argv[0]));
 }
 
 static VALUE kernel_neq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(!korb_eq(self, argv[0]));
+    return KORB_BOOL(!korb_eq(c, self, argv[0]));
 }
 
 /* Object#!~: inverted =~.  Default implementation returns !(self =~ arg).
@@ -733,7 +733,7 @@ static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (c->state == KORB_THROW && !SPECIAL_CONST_P(c->state_value) &&
         BUILTIN_TYPE(c->state_value) == T_ARRAY) {
         struct korb_array *pair = (struct korb_array *)c->state_value;
-        if (pair->len == 2 && korb_eq(pair->ptr[0], tag)) {
+        if (pair->len == 2 && korb_eq(c, pair->ptr[0], tag)) {
             VALUE v = pair->ptr[1];
             c->state = KORB_NORMAL;
             c->state_value = Qnil;
@@ -752,7 +752,7 @@ static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (is_ute) {
             VALUE thrown_tag = korb_ivar_get(c->state_value, korb_intern("@__throw_tag__"));
-            if (!UNDEF_P(thrown_tag) && korb_eq(thrown_tag, tag)) {
+            if (!UNDEF_P(thrown_tag) && korb_eq(c, thrown_tag, tag)) {
                 VALUE v = korb_ivar_get(c->state_value, korb_intern("@__throw_value__"));
                 if (UNDEF_P(v)) v = Qnil;
                 c->state = KORB_NORMAL;
@@ -963,7 +963,7 @@ static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
      * raising on failed conversion. */
     bool exception_ok = true;
     if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_HASH) {
-        VALUE excv = korb_hash_aref(argv[1], korb_id2sym(korb_intern("exception")));
+        VALUE excv = korb_hash_aref(c, argv[1], korb_id2sym(korb_intern("exception")));
         if (excv == Qfalse) exception_ok = false;
     }
     if (NIL_P(argv[0])) {
@@ -1222,7 +1222,7 @@ static VALUE kernel_capture_lvars(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE name_sym = korb_id2sym(names[i]);
         VALUE val = f->fp[i];
         if (UNDEF_P(val)) val = Qnil;
-        korb_hash_aset(h, name_sym, val);
+        korb_hash_aset(c, h, name_sym, val);
     }
     return h;
 }
@@ -1492,12 +1492,12 @@ VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv) {
      * GC framework's heap_bytes stat / 64. */
     size_t heap_bytes = ARO_GC_COMMON(c)->stats.heap_bytes;
     VALUE h = korb_hash_new(c, c->sp);
-    korb_hash_aset(h, korb_id2sym(korb_intern("TOTAL")),
+    korb_hash_aset(c, h, korb_id2sym(korb_intern("TOTAL")),
                    INT2FIX((long)(heap_bytes / 64)));
-    korb_hash_aset(h, korb_id2sym(korb_intern("FREE")), INT2FIX(0));
+    korb_hash_aset(c, h, korb_id2sym(korb_intern("FREE")), INT2FIX(0));
     /* Optionally accept a result-hash arg to merge into. */
     if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_HASH) {
-        korb_hash_aset(argv[0], korb_id2sym(korb_intern("TOTAL")),
+        korb_hash_aset(c, argv[0], korb_id2sym(korb_intern("TOTAL")),
                        INT2FIX((long)(heap_bytes / 64)));
         return argv[0];
     }

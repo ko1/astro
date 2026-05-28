@@ -313,6 +313,6 @@ static VALUE flt_abs(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE flt_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(korb_eq(self, argv[0]));
+    return KORB_BOOL(korb_eq(c, self, argv[0]));
 }
 

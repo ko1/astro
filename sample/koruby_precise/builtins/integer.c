@@ -354,7 +354,7 @@ static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qfalse;
     if (FIXNUM_P(self) && FIXNUM_P(argv[0])) return KORB_BOOL(self == argv[0]);
-    return KORB_BOOL(korb_eq(self, argv[0]));
+    return KORB_BOOL(korb_eq(c, self, argv[0]));
 }
 
 static VALUE int_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -521,7 +521,7 @@ static VALUE int_eql(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!FIXNUM_P(self) && !FIXNUM_P(other) &&
         !SPECIAL_CONST_P(self) && !SPECIAL_CONST_P(other) &&
         BUILTIN_TYPE(self) == T_BIGNUM && BUILTIN_TYPE(other) == T_BIGNUM)
-        return KORB_BOOL(korb_eq(self, other));
+        return KORB_BOOL(korb_eq(c, self, other));
     return Qfalse;
 }
 

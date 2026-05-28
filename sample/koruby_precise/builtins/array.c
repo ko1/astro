@@ -398,7 +398,7 @@ static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
             return Qnil;
         }
         struct korb_array *p = (struct korb_array *)pair;
-        korb_hash_aset(h, p->ptr[0], p->ptr[1]);
+        korb_hash_aset(c, h, p->ptr[0], p->ptr[1]);
     }
     return h;
 }
@@ -422,7 +422,7 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
         /* Re-read sp[-2]/sp[-1] each iter — they're slot-tracked, so even
          * if korb_eq's inner dispatch fires GC and moves the arrays, the
          * next iteration's korb_ary_aref reads the forwarded address. */
-        if (!korb_eq(korb_ary_aref(sp[-2], i), korb_ary_aref(sp[-1], i))) {
+        if (!korb_eq(c, korb_ary_aref(sp[-2], i), korb_ary_aref(sp[-1], i))) {
             return RESULT_OK(Qfalse);
         }
         /* korb_eq still uses the legacy c->state side-channel (Phase 7
@@ -651,7 +651,7 @@ static VALUE ary_uniq(CTX *c, VALUE self, int argc, VALUE *argv) {
         bool dup = false;
         struct korb_array *ra = (struct korb_array *)r;
         for (long j = 0; j < ra->len; j++) {
-            if (korb_eq(ra->ptr[j], a->ptr[i])) { dup = true; break; }
+            if (korb_eq(c, ra->ptr[j], a->ptr[i])) { dup = true; break; }
         }
         if (!dup) korb_ary_push(r, a->ptr[i]);
     }
@@ -821,7 +821,7 @@ static VALUE ary_step(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE ary_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_ARRAY && korb_eq(self, argv[0]));
+    return KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_ARRAY && korb_eq(c, self, argv[0]));
 }
 
 /* Helpers shared between pack and unpack. */
@@ -1185,7 +1185,7 @@ static VALUE ary_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_ary_new(c, c->sp);
     for (long i = 0; i < a->len; i++) {
         bool found = false;
-        for (long j = 0; j < b->len; j++) if (korb_eq(a->ptr[i], b->ptr[j])) { found = true; break; }
+        for (long j = 0; j < b->len; j++) if (korb_eq(c, a->ptr[i], b->ptr[j])) { found = true; break; }
         if (!found) korb_ary_push(r, a->ptr[i]);
     }
     return r;
@@ -1203,7 +1203,7 @@ static VALUE ary_index(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     if (argc < 1) return Qnil;
-    for (long i = 0; i < a->len; i++) if (korb_eq(a->ptr[i], argv[0])) return INT2FIX(i);
+    for (long i = 0; i < a->len; i++) if (korb_eq(c, a->ptr[i], argv[0])) return INT2FIX(i);
     return Qnil;
 }
 
@@ -1407,7 +1407,7 @@ static VALUE ary_count(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (argc == 0) return INT2FIX(a->len);
     long n = 0;
-    for (long i = 0; i < a->len; i++) if (korb_eq(a->ptr[i], argv[0])) n++;
+    for (long i = 0; i < a->len; i++) if (korb_eq(c, a->ptr[i], argv[0])) n++;
     return INT2FIX(n);
 }
 

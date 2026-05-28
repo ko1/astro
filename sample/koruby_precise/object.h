@@ -591,7 +591,7 @@ korb_ary_len(VALUE av) {
 
 /* hash */
 VALUE korb_hash_new(CTX *c, VALUE *sp);
-VALUE korb_hash_aref_slow(VALUE h, VALUE key);
+VALUE korb_hash_aref_slow(CTX *c, VALUE h, VALUE key);
 
 /* korb_hash_aref: inlined fast path for FIXNUM / SYMBOL keys (the
  * common case in optcarrot's @sp_map[@hclk]).  Strings and
@@ -599,16 +599,16 @@ VALUE korb_hash_aref_slow(VALUE h, VALUE key);
  * bucket_cnt is always a power of 2 (init=8, resize doubles), so
  * `& (bucket_cnt-1)` replaces modulo. */
 static inline __attribute__((always_inline)) VALUE
-korb_hash_aref(VALUE hv, VALUE key) {
+korb_hash_aref(CTX *c, VALUE hv, VALUE key) {
     struct korb_hash *h = (struct korb_hash *)hv;
-    if (UNLIKELY(h->compare_by_identity)) return korb_hash_aref_slow(hv, key);
+    if (UNLIKELY(h->compare_by_identity)) return korb_hash_aref_slow(c, hv, key);
     uint64_t hh;
     if (LIKELY(FIXNUM_P(key))) {
         hh = (uint64_t)key * 11400714819323198485ULL;
     } else if (SYMBOL_P(key)) {
         hh = (uint64_t)key * 2654435761ULL;
     } else {
-        return korb_hash_aref_slow(hv, key);
+        return korb_hash_aref_slow(c, hv, key);
     }
     uint32_t b = (uint32_t)hh & (h->bucket_cnt - 1);
     for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {
@@ -616,7 +616,7 @@ korb_hash_aref(VALUE hv, VALUE key) {
     }
     return h->default_value;
 }
-VALUE korb_hash_aset(VALUE h, VALUE key, VALUE val);
+VALUE korb_hash_aset(CTX *c, VALUE h, VALUE key, VALUE val);
 long  korb_hash_size(VALUE h);
 
 /* symbol */
@@ -662,9 +662,9 @@ int   korb_int_cmp(VALUE a, VALUE b);
 bool  korb_int_eq(VALUE a, VALUE b);
 
 /* equality / inspect */
-bool  korb_eq(VALUE a, VALUE b);
-bool  korb_eql(VALUE a, VALUE b);
-uint64_t korb_hash_value(VALUE v);
+bool  korb_eq(CTX *c, VALUE a, VALUE b);
+bool  korb_eql(CTX *c, VALUE a, VALUE b);
+uint64_t korb_hash_value(CTX *c, VALUE v);
 VALUE korb_inspect(CTX *c, VALUE *sp, VALUE v);
 VALUE korb_inspect_dispatch(CTX *c, VALUE v);
 VALUE korb_to_s(CTX *c, VALUE *sp, VALUE v);

@@ -1551,7 +1551,7 @@ void korb_init_builtins(CTX *c) {
             if (!eq) continue;
             VALUE key = korb_str_new(c, c->sp, *p, (size_t)(eq - *p));
             VALUE val = korb_str_new_cstr(c, c->sp, eq + 1);
-            korb_hash_aset(env, key, val);
+            korb_hash_aset(c, env, key, val);
         }
         korb_const_set(korb_vm->object_class, korb_intern("ENV"), env);
     }

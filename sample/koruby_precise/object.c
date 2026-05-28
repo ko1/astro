@@ -1687,7 +1687,7 @@ static bool korb_hash_recurse_seen(VALUE v) {
     }
     return false;
 }
-uint64_t korb_hash_value(VALUE v) {
+uint64_t korb_hash_value(CTX *c, VALUE v) {
     if (FIXNUM_P(v)) return (uint64_t)v * 11400714819323198485ULL;
     if (SYMBOL_P(v)) return (uint64_t)v * 2654435761ULL;
     if (NIL_P(v)) return 0;
@@ -1708,7 +1708,7 @@ uint64_t korb_hash_value(VALUE v) {
             korb_hash_recurse_stk[korb_hash_recurse_top++] = v;
         }
         for (long i = 0; i < a->len; i++) {
-            uint64_t eh = korb_hash_value(a->ptr[i]);
+            uint64_t eh = korb_hash_value(c, a->ptr[i]);
             h ^= eh;
             h *= 0x100000001b3ULL;
         }
@@ -1717,25 +1717,24 @@ uint64_t korb_hash_value(VALUE v) {
         }
         return h;
     }
-    /* Custom class with user-defined #hash — call it through current
-     * CTX (single-threaded global).  Falls back to identity if no
-     * CTX is available (boot phase) or if the user method's result
-     * isn't a Fixnum. */
-    if (BUILTIN_TYPE(v) == T_OBJECT && korb_vm && korb_vm->current_ctx) {
+    /* Custom class with user-defined #hash — call it through the caller's
+     * CTX.  Falls back to identity if the user method's result isn't
+     * a Fixnum. */
+    if (c && BUILTIN_TYPE(v) == T_OBJECT) {
         struct korb_class *k = korb_class_of_class(v);
         struct korb_method *m = korb_class_find_method(k, korb_intern("hash"));
         /* Skip Object#hash (our default identity-based version) — it
          * lives on the Object class.  Otherwise we'd recurse forever. */
         if (m && m->defining_class != korb_vm->object_class &&
             m->defining_class != korb_vm->kernel_module) {
-            VALUE r = korb_funcall(korb_vm->current_ctx, v, korb_intern("hash"), 0, NULL);
+            VALUE r = korb_funcall(c, v, korb_intern("hash"), 0, NULL);
             if (FIXNUM_P(r)) return (uint64_t)FIX2LONG(r) * 11400714819323198485ULL;
         }
     }
     return (uint64_t)v;
 }
 
-bool korb_eql(VALUE a, VALUE b) {
+bool korb_eql(CTX *c, VALUE a, VALUE b) {
     if (a == b) return true;
     if (SPECIAL_CONST_P(a) || SPECIAL_CONST_P(b)) return false;
     if (BUILTIN_TYPE(a) == T_STRING && BUILTIN_TYPE(b) == T_STRING) {
@@ -1743,27 +1742,24 @@ bool korb_eql(VALUE a, VALUE b) {
         struct korb_string *y = (struct korb_string *)b;
         return x->len == y->len && memcmp(x->ptr, y->ptr, x->len) == 0;
     }
-    /* Arrays compared by content (eql? element-wise via ==).  Match
-     * Hash's equality semantics so an Array key looks the same on
-     * lookup as on insert. */
     if (BUILTIN_TYPE(a) == T_ARRAY && BUILTIN_TYPE(b) == T_ARRAY) {
         struct korb_array *x = (struct korb_array *)a;
         struct korb_array *y = (struct korb_array *)b;
         if (x->len != y->len) return false;
         for (long i = 0; i < x->len; i++) {
-            if (!korb_eql(x->ptr[i], y->ptr[i])) return false;
+            if (!korb_eql(c, x->ptr[i], y->ptr[i])) return false;
         }
         return true;
     }
-    /* Custom class with user-defined eql? — invoke it through
-     * current CTX, falling back to identity if not overridden. */
-    if (BUILTIN_TYPE(a) == T_OBJECT && korb_vm && korb_vm->current_ctx) {
+    /* Custom class with user-defined eql? — invoke it through the
+     * caller's CTX, falling back to identity if not overridden. */
+    if (c && BUILTIN_TYPE(a) == T_OBJECT) {
         struct korb_class *k = korb_class_of_class(a);
         struct korb_method *m = korb_class_find_method(k, korb_intern("eql?"));
         if (m && m->defining_class != korb_vm->object_class &&
             m->defining_class != korb_vm->kernel_module) {
             VALUE arg = b;
-            VALUE r = korb_funcall(korb_vm->current_ctx, a, korb_intern("eql?"), 1, &arg);
+            VALUE r = korb_funcall(c, a, korb_intern("eql?"), 1, &arg);
             return RTEST(r);
         }
     }
@@ -1786,12 +1782,12 @@ VALUE korb_hash_new(CTX *c, VALUE *sp) {
     return (VALUE)h;
 }
 
-static inline uint64_t korb_hash_key(const struct korb_hash *h, VALUE key) {
-    return h->compare_by_identity ? (uint64_t)key : korb_hash_value(key);
+static inline uint64_t korb_hash_key(CTX *c, const struct korb_hash *h, VALUE key) {
+    return h->compare_by_identity ? (uint64_t)key : korb_hash_value(c, key);
 }
 
-static inline bool korb_hash_keys_match(const struct korb_hash *h, VALUE a, VALUE b) {
-    return h->compare_by_identity ? (a == b) : korb_eql(a, b);
+static inline bool korb_hash_keys_match(CTX *c, const struct korb_hash *h, VALUE a, VALUE b) {
+    return h->compare_by_identity ? (a == b) : korb_eql(c, a, b);
 }
 
 static void korb_hash_resize(struct korb_hash *h, uint32_t nc) {
@@ -1806,13 +1802,13 @@ static void korb_hash_resize(struct korb_hash *h, uint32_t nc) {
     h->bucket_cnt = nc;
 }
 
-VALUE korb_hash_aset(VALUE hv, VALUE key, VALUE val) {
+VALUE korb_hash_aset(CTX *c, VALUE hv, VALUE key, VALUE val) {
     struct korb_hash *h = (struct korb_hash *)hv;
-    uint64_t hh = korb_hash_key(h, key);
+    uint64_t hh = korb_hash_key(c, h, key);
     uint32_t b = (uint32_t)(hh % h->bucket_cnt);
     /* search existing within this bucket only — proper chained hash */
     for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {
-        if (e->hash == hh && korb_hash_keys_match(h, e->key, key)) {
+        if (e->hash == hh && korb_hash_keys_match(c, h, e->key, key)) {
             e->value = val;
             return val;
         }
@@ -1837,12 +1833,12 @@ VALUE korb_hash_aset(VALUE hv, VALUE key, VALUE val) {
 
 /* The inline fast path lives in object.h.  This handles all the
  * cases the inline can't (T_STRING keys, compare_by_identity tables). */
-VALUE korb_hash_aref_slow(VALUE hv, VALUE key) {
+VALUE korb_hash_aref_slow(CTX *c, VALUE hv, VALUE key) {
     struct korb_hash *h = (struct korb_hash *)hv;
-    uint64_t hh = korb_hash_key(h, key);
+    uint64_t hh = korb_hash_key(c, h, key);
     uint32_t b = (uint32_t)(hh % h->bucket_cnt);
     for (struct korb_hash_entry *e = h->buckets[b]; e; e = e->bucket_next) {
-        if (e->hash == hh && korb_hash_keys_match(h, e->key, key))
+        if (e->hash == hh && korb_hash_keys_match(c, h, e->key, key))
             return e->value;
     }
     /* Miss: return default_value.  default_proc is handled by Hash#[]
@@ -3281,7 +3277,7 @@ void korb_p(CTX *c, VALUE v) {
     fputc('\n', stdout);
 }
 
-bool korb_eq(VALUE a, VALUE b) {
+bool korb_eq(CTX *c, VALUE a, VALUE b) {
     /* Identity is normally enough — *except* for NaN (which is never
      * equal to anything, including itself).  Heap T_FLOAT might be NaN,
      * so fall through to numeric compare for that case. */
@@ -3314,7 +3310,7 @@ bool korb_eq(VALUE a, VALUE b) {
     if (SYMBOL_P(a) || SYMBOL_P(b)) return a == b;
     enum korb_type ta = BUILTIN_TYPE(a), tb = BUILTIN_TYPE(b);
     if (ta == T_STRING && tb == T_STRING) {
-        return korb_eql(a, b);
+        return korb_eql(c, a, b);
     }
     if (ta == T_BIGNUM && tb == T_BIGNUM) return korb_int_eq(a, b);
     if (KORB_IS_FLOAT(a) && KORB_IS_FLOAT(b)) return korb_num2dbl(a) == korb_num2dbl(b);
@@ -3323,7 +3319,7 @@ bool korb_eq(VALUE a, VALUE b) {
         struct korb_array *bx = (struct korb_array *)b;
         if (ax->len != bx->len) return false;
         for (long i = 0; i < ax->len; i++) {
-            if (!korb_eq(ax->ptr[i], bx->ptr[i])) return false;
+            if (!korb_eq(c, ax->ptr[i], bx->ptr[i])) return false;
         }
         return true;
     }
@@ -3332,8 +3328,8 @@ bool korb_eq(VALUE a, VALUE b) {
         struct korb_hash *bh = (struct korb_hash *)b;
         if (ah->size != bh->size) return false;
         for (struct korb_hash_entry *e = ah->first; e; e = e->next) {
-            VALUE bv = korb_hash_aref(b, e->key);
-            if (!korb_eq(e->value, bv)) return false;
+            VALUE bv = korb_hash_aref(c, b, e->key);
+            if (!korb_eq(c, e->value, bv)) return false;
         }
         return true;
     }
@@ -3341,7 +3337,7 @@ bool korb_eq(VALUE a, VALUE b) {
         struct korb_range *ar = (struct korb_range *)a;
         struct korb_range *br = (struct korb_range *)b;
         return ar->exclude_end == br->exclude_end &&
-               korb_eq(ar->begin, br->begin) && korb_eq(ar->end, br->end);
+               korb_eq(c, ar->begin, br->begin) && korb_eq(c, ar->end, br->end);
     }
     return false;
 }

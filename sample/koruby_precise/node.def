@@ -742,7 +742,7 @@ node_hash_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t
             RBASIC(k2)->head.flags |= FL_FROZEN;
             k = k2;
         }
-        korb_hash_aset(h, k, c->current_frame->fp[arg_index + i + 1]);
+        korb_hash_aset(c, h, k, c->current_frame->fp[arg_index + i + 1]);
     }
     return h;
 }
@@ -1711,7 +1711,7 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
             if (LIKELY(!SPECIAL_CONST_P(r))) {
                 if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) { ret = korb_ary_aref(r, FIX2LONG(i)); goto aref_done; }
                 if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc)) {
-                    ret = korb_hash_aref(r, i);
+                    ret = korb_hash_aref(c, r, i);
                     goto aref_done;
                 }
                 if (BUILTIN_TYPE(r) == T_STRING && FIXNUM_P(i)) {
@@ -1765,7 +1765,7 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
         }
         if (BUILTIN_TYPE(r) == T_HASH) {
             CHECK_FROZEN_RET(c, r, Qnil);
-            korb_hash_aset(r, i, v); return v;
+            korb_hash_aset(c, r, i, v); return v;
         }
     }
     c->last_cfunc_callsite = n;

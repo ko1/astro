@@ -1037,14 +1037,14 @@ static VALUE signal_list(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE h = korb_hash_new(c, c->sp);
     /* CRuby includes "EXIT" with value 0 — pseudo-signal used by at_exit
      * dispatch.  Always present even when the OS doesn't define it. */
-    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "EXIT"), INT2FIX(0));
-    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "INT"), INT2FIX(SIGINT));
-    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "TERM"), INT2FIX(SIGTERM));
-    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "USR1"), INT2FIX(SIGUSR1));
-    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "USR2"), INT2FIX(SIGUSR2));
-    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "HUP"), INT2FIX(SIGHUP));
-    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "QUIT"), INT2FIX(SIGQUIT));
-    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "KILL"), INT2FIX(SIGKILL));
+    korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "EXIT"), INT2FIX(0));
+    korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "INT"), INT2FIX(SIGINT));
+    korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "TERM"), INT2FIX(SIGTERM));
+    korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "USR1"), INT2FIX(SIGUSR1));
+    korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "USR2"), INT2FIX(SIGUSR2));
+    korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "HUP"), INT2FIX(SIGHUP));
+    korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "QUIT"), INT2FIX(SIGQUIT));
+    korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "KILL"), INT2FIX(SIGKILL));
     return h;
 }
 

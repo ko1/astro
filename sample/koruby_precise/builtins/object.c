@@ -832,7 +832,7 @@ static VALUE obj_clone(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE fk = korb_id2sym(korb_intern("freeze"));
         struct korb_hash *h = (struct korb_hash *)argv[0];
         for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-            if (korb_eql(e->key, fk)) {
+            if (korb_eql(c, e->key, fk)) {
                 if (e->value == Qfalse) freeze_arg = 0;
                 else if (e->value == Qtrue) freeze_arg = 1;
                 break;
@@ -883,7 +883,7 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
         rh->default_value = h->default_value;
         rh->default_proc = h->default_proc;
         for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-            korb_hash_aset(r, e->key, e->value);
+            korb_hash_aset(c, r, e->key, e->value);
         }
     } else if (t == T_CLASS || t == T_MODULE) {
         /* Module/Class#dup: shallow copy into a new anonymous

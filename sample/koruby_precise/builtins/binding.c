@@ -101,7 +101,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
             b->extra_vars = korb_hash_new(c, c->sp);
             struct korb_hash *sh = (struct korb_hash *)src->extra_vars;
             for (struct korb_hash_entry *e = sh->first; e; e = e->next) {
-                korb_hash_aset(b->extra_vars, e->key, e->value);
+                korb_hash_aset(c, b->extra_vars, e->key, e->value);
             }
         }
         for (uint32_t i = 0; i < src->names_cnt; i++) {
@@ -245,7 +245,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
                     val = c->current_frame->fp[i];
                     if (UNDEF_P(val)) val = Qnil;
                 }
-                korb_hash_aset(b->extra_vars, korb_id2sym(eval_names[i]), val);
+                korb_hash_aset(c, b->extra_vars, korb_id2sym(eval_names[i]), val);
             }
         }
     }
@@ -298,7 +298,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
                     b->outer_names_cnt++;
                     VALUE val = src_fp ? src_fp[parent->param_base + i] : Qnil;
                     if (UNDEF_P(val)) val = Qnil;
-                    korb_hash_aset(b->outer_vars,
+                    korb_hash_aset(c, b->outer_vars,
                                    korb_id2sym(parent_names[i]), val);
                 }
             }
@@ -326,7 +326,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
                     binding_append_name(b, outer_names[i]);
                     b->outer_names_cnt++;
                     if (outer_fp) {
-                        korb_hash_aset(b->outer_vars,
+                        korb_hash_aset(c, b->outer_vars,
                                        korb_id2sym(outer_names[i]),
                                        outer_fp[i]);
                     }
@@ -477,7 +477,7 @@ static VALUE binding_local_variable_set(CTX *c, VALUE self, int argc, VALUE *arg
     }
     /* New name: store in extras Hash to avoid clobbering caller temps. */
     if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp);
-    korb_hash_aset(b->extra_vars, korb_id2sym(name_id), argv[1]);
+    korb_hash_aset(c, b->extra_vars, korb_id2sym(name_id), argv[1]);
     binding_append_name(b, name_id);
     return argv[1];
 }
@@ -710,7 +710,7 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
         for (uint32_t i = orig_names_cnt; i < b->names_cnt; i++) {
             VALUE v = b->fp[b->base + i];
             if (UNDEF_P(v)) v = Qnil;
-            korb_hash_aset(b->extra_vars, korb_id2sym(b->names[i]), v);
+            korb_hash_aset(c, b->extra_vars, korb_id2sym(b->names[i]), v);
         }
     }
     return r;
@@ -779,7 +779,7 @@ static VALUE binding_dup_clone_impl(CTX *c, VALUE self, bool preserve_frozen, in
         VALUE fk = korb_id2sym(korb_intern("freeze"));
         struct korb_hash *h = (struct korb_hash *)argv[0];
         for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-            if (korb_eql(e->key, fk)) {
+            if (korb_eql(c, e->key, fk)) {
                 if (e->value == Qfalse) freeze_arg = 0;
                 else if (e->value == Qtrue) freeze_arg = 1;
                 break;
@@ -810,7 +810,7 @@ static VALUE binding_dup_clone_impl(CTX *c, VALUE self, bool preserve_frozen, in
         dst->extra_vars = korb_hash_new(c, c->sp);
         struct korb_hash *sh = (struct korb_hash *)src->extra_vars;
         for (struct korb_hash_entry *e = sh->first; e; e = e->next) {
-            korb_hash_aset(dst->extra_vars, e->key, e->value);
+            korb_hash_aset(c, dst->extra_vars, e->key, e->value);
         }
     } else {
         dst->extra_vars = Qnil;
