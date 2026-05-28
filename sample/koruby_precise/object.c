@@ -4593,6 +4593,7 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
     if (!ast) return Qnil;
     VALUE *prev_fp = c->fp;
     VALUE prev_self = c->self;
+    VALUE *prev_sp = c->sp;
     struct korb_class *prev_class = c->current_class;
     struct korb_cref *prev_cref = c->cref;
     const char *prev_file = c->current_file;
@@ -4606,6 +4607,7 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
     OPTIMIZE(ast);
     VALUE r = EVAL(c, ast);
     c->fp = prev_fp;
+    c->sp = prev_sp;
     c->self = prev_self;
     c->current_class = prev_class;
     c->cref = prev_cref;

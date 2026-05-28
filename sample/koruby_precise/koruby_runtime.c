@@ -125,11 +125,7 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
      * pattern hides a sp-up-without-zero-fill bug as a slow-leak SEGV
      * rather than catching it at the violating site. */
     if (c->stack_base && c->sp) {
-        fprintf(stderr, "visit_roots sp range [%p..%p) = %zd slots\n",
-                (void*)c->stack_base, (void*)c->sp, c->sp - c->stack_base);
-        int i = 0;
-        for (VALUE *p = c->stack_base; p < c->sp; p++, i++) {
-            fprintf(stderr, "  slot[%d]=%p\n", i, (void*)*p);
+        for (VALUE *p = c->stack_base; p < c->sp; p++) {
             visit_value_slot(ctx, fn, p);
         }
     }
