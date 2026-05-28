@@ -694,11 +694,29 @@ static VALUE str_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
         struct korb_range *r = (struct korb_range *)argv[0];
         if (!FIXNUM_P(r->begin) && !NIL_P(r->begin)) return Qnil;
         if (!FIXNUM_P(r->end) && !NIL_P(r->end)) return Qnil;
+        /* Count codepoints once so negative indices and exclude_end can
+         * be normalized.  Otherwise `s[1...-1]` would compute the range
+         * with raw negative numbers and miss the actual substring. */
+        long total_cp = 0;
+        {
+            long bb = 0;
+            while (bb < s->len) {
+                unsigned char c0 = (unsigned char)s->ptr[bb];
+                int n = ((c0 & 0x80) == 0x00) ? 1 :
+                        ((c0 & 0xE0) == 0xC0) ? 2 :
+                        ((c0 & 0xF0) == 0xE0) ? 3 :
+                        ((c0 & 0xF8) == 0xF0) ? 4 : 1;
+                bb += n; total_cp++;
+            }
+        }
         long b = NIL_P(r->begin) ? 0 : FIX2LONG(r->begin);
-        long e = NIL_P(r->end) ? -1 : FIX2LONG(r->end);
+        long e = NIL_P(r->end) ? total_cp - 1 : FIX2LONG(r->end);
+        if (b < 0) b += total_cp;
+        if (e < 0) e += total_cp;
         if (r->exclude_end && !NIL_P(r->end)) e -= 1;
         long count = e - b + 1;
         if (count < 0) count = 0;
+        if (b < 0 || b > total_cp) return Qnil;
         long bstart, blen;
         int rc = str_char_range_to_bytes(s->ptr, s->len, b, count, &bstart, &blen);
         if (rc != 0) return Qnil;
