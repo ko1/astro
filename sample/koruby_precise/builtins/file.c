@@ -432,13 +432,24 @@ static VALUE file_write(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE file_join(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE r = korb_str_new("", 0);
-    for (int i = 0; i < argc; i++) {
-        VALUE s = BUILTIN_TYPE(argv[i]) == T_STRING ? argv[i] : korb_to_s(argv[i]);
-        if (i > 0) korb_str_concat(r, korb_str_new_cstr("/"));
-        korb_str_concat(r, s);
-    }
-    return r;
+    /* Pin r (result) and per-iter s/sep against the cascade of
+     * korb_str_new / korb_to_s / korb_str_concat allocations that
+     * each fire GC under STRESS. */
+    VALUE ret = Qnil;
+    ARO_ROOT_SCOPE_START(c, rs, 3) {
+        rs[0] = korb_str_new("", 0);  /* r */
+        for (int i = 0; i < argc; i++) {
+            rs[1] = argv[i];
+            if (BUILTIN_TYPE(rs[1]) != T_STRING) rs[1] = korb_to_s(rs[1]);
+            if (i > 0) {
+                rs[2] = korb_str_new_cstr("/");
+                korb_str_concat(rs[0], rs[2]);
+            }
+            korb_str_concat(rs[0], rs[1]);
+        }
+        ret = rs[0];
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 static VALUE file_exist_p(CTX *c, VALUE self, int argc, VALUE *argv) {
