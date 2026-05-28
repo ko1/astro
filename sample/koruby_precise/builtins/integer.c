@@ -113,6 +113,19 @@ static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_int_div(self, argv[0]);
 }
 static VALUE int_mod(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (KORB_IS_FLOAT(argv[0])) {
+        double rhs = korb_num2dbl(argv[0]);
+        if (rhs == 0.0) {
+            VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)_eZ, "divided by 0");
+            return Qnil;
+        }
+        double lhs = korb_num2dbl(self);
+        double r = fmod(lhs, rhs);
+        /* Ruby semantics: result has the sign of the divisor. */
+        if (r != 0.0 && ((r < 0.0) != (rhs < 0.0))) r += rhs;
+        return korb_float_new(c, c->sp, r);
+    }
     COERCE_OR_RAISE(c, argv[0], "%");
     if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
         { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); korb_raise(c, (struct korb_class *)_eZ, "divided by 0"); }

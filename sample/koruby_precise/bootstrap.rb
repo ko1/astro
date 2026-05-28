@@ -735,6 +735,11 @@ class Integer
 
   def pow(exp, mod = nil)
     if mod
+      unless exp.is_a?(Integer) && mod.is_a?(Integer)
+        raise TypeError, "2nd argument not allowed unless all arguments are integers"
+      end
+      raise TypeError, "Integer#pow() 1st argument cannot be negative when 2nd argument specified" if exp < 0
+      raise ZeroDivisionError, "divided by 0" if mod == 0
       r = 1
       b = self % mod
       e = exp
@@ -1876,22 +1881,43 @@ class String
     to_sym
   end
 
+  # Build a padding string of exactly `n` bytes by cycling `pad`.
+  def __pad_to(pad, n)
+    raise ArgumentError, "zero width padding" if pad.empty?
+    return "" if n <= 0
+    full, rem = n.divmod(pad.size)
+    pad * full + pad[0, rem]
+  end
+
   def ljust(n, pad = " ")
+    n = n.to_int if !n.is_a?(Integer) && n.respond_to?(:to_int)
+    pad = pad.to_str if !pad.is_a?(String) && pad.respond_to?(:to_str)
+    raise TypeError, "no implicit conversion into Integer" unless n.is_a?(Integer)
+    raise TypeError, "no implicit conversion into String" unless pad.is_a?(String)
     return self if size >= n
-    self + pad * (n - size)
+    self + __pad_to(pad, n - size)
   end
 
   def rjust(n, pad = " ")
+    n = n.to_int if !n.is_a?(Integer) && n.respond_to?(:to_int)
+    pad = pad.to_str if !pad.is_a?(String) && pad.respond_to?(:to_str)
+    raise TypeError, "no implicit conversion into Integer" unless n.is_a?(Integer)
+    raise TypeError, "no implicit conversion into String" unless pad.is_a?(String)
     return self if size >= n
-    pad * (n - size) + self
+    __pad_to(pad, n - size) + self
   end
 
   def center(n, pad = " ")
+    n = n.to_int if !n.is_a?(Integer) && n.respond_to?(:to_int)
+    pad = pad.to_str if !pad.is_a?(String) && pad.respond_to?(:to_str)
+    raise TypeError, "no implicit conversion into Integer" unless n.is_a?(Integer)
+    raise TypeError, "no implicit conversion into String" unless pad.is_a?(String)
+    raise ArgumentError, "zero width padding" if pad.empty?
     return self if size >= n
     total = n - size
     left = total / 2
     right = total - left
-    pad * left + self + pad * right
+    __pad_to(pad, left) + self + __pad_to(pad, right)
   end
 
   def squeeze(chars = nil)
