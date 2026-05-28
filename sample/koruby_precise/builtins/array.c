@@ -1062,13 +1062,38 @@ static VALUE ary_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     VALUE acc = argc > 0 ? argv[0] : INT2FIX(0);
     bool has_block = korb_block_given(c);
+    /* CRuby applies Kahan compensated summation when the running sum
+     * becomes a Float.  Maintain a side compensation value. */
+    bool kahan_active = false;
+    double kahan_sum = 0.0, kahan_c = 0.0;
+    if (FLONUM_P(acc) || (!SPECIAL_CONST_P(acc) && BUILTIN_TYPE(acc) == T_FLOAT)) {
+        kahan_active = true;
+        kahan_sum = korb_num2dbl(acc);
+    }
     for (long i = 0; i < a->len; i++) {
         VALUE elt = a->ptr[i];
-        /* Block form: yield each element through the block and use the
-         * result.  Init value is NOT block-mapped. */
         if (has_block) {
             elt = korb_yield(c, 1, &elt);
             if (c->state != KORB_NORMAL) return Qnil;
+        }
+        bool elt_float = FLONUM_P(elt) ||
+            (!SPECIAL_CONST_P(elt) && BUILTIN_TYPE(elt) == T_FLOAT);
+        if (kahan_active) {
+            double v = elt_float ? korb_num2dbl(elt) :
+                       (FIXNUM_P(elt) ? (double)FIX2LONG(elt) : korb_num2dbl(elt));
+            /* Kahan: y = v - c; t = sum + y; c = (t - sum) - y; sum = t */
+            double y = v - kahan_c;
+            double t = kahan_sum + y;
+            kahan_c = (t - kahan_sum) - y;
+            kahan_sum = t;
+            continue;
+        }
+        if (elt_float) {
+            kahan_active = true;
+            kahan_sum = (FIXNUM_P(acc) ? (double)FIX2LONG(acc) : korb_num2dbl(acc))
+                        + korb_num2dbl(elt);
+            kahan_c = 0.0;
+            continue;
         }
         if (FIXNUM_P(acc) && FIXNUM_P(elt)) {
             long s;
@@ -1079,6 +1104,7 @@ static VALUE ary_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
             acc = korb_funcall(c, acc, korb_intern("+"), 1, &elt);
         }
     }
+    if (kahan_active) return korb_float_new(c, c->sp, kahan_sum);
     return acc;
 }
 
