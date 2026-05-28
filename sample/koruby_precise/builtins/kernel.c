@@ -767,7 +767,20 @@ static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) 
         return Qnil;
     }
     const char *name = korb_str_cstr(argv[0]);
-    char *resolved = korb_resolve_relative(c->current_frame->current_file, name);
+    /* The cfunc dispatch pushed a frame for this function — its
+     * current_file is NULL (struct literal default).  Walk the chain
+     * to find a non-NULL current_file (skip cfunc/synthetic frames).
+     * Fall back to sentinel_frame.current_file for the top_frame.prev=NULL
+     * paths created by korb_eval_string (load'd file frames have no
+     * caller chain to sentinel). */
+    const char *cf = NULL;
+    for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+        if (f->current_file) { cf = f->current_file; break; }
+    }
+    if (!cf && c->sentinel_frame.current_file) {
+        cf = c->sentinel_frame.current_file;
+    }
+    char *resolved = korb_resolve_relative(cf, name);
     if (!resolved) {
         korb_raise(c, NULL, "cannot load such file -- %s", name);
         return Qnil;
