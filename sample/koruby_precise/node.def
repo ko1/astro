@@ -1680,15 +1680,15 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 NODE_DEF
 node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, uint32_t arg_index)
 {
-    /* Reserve 1 slot at sp[0] to pin r across EA(idx) (= GC under
-     * STRESS+PURGE).  Zero-fill before bumping c->sp so visit_roots
-     * doesn't see stale heap-ptr leftover in the slot. */
-    sp[0] = 0;
-    c->sp = sp + 1;
+    /* Reserve 2 slots: sp[0] = r, sp[1] = i.  Pin both through the
+     * entire body (including BUILTIN_TYPE / korb_ary_aref / korb_hash_aref
+     * which may fire GC).  Restore c->sp only at function exit. */
+    sp[0] = 0; sp[1] = 0;
+    c->sp = sp + 2;
     sp[0] = EA(c, recv);
-    VALUE i = EA(c, idx);
+    sp[1] = EA(c, idx);
     VALUE r = sp[0];
-    c->sp = sp;
+    VALUE i = sp[1];
     if (LIKELY(!korb_g_basic_op_redefined)) {
         /* Integer#[bit] — hot in optcarrot's PPU LUT precompute and
          * pixel-extract paths (`byte[bit]`, `i[15-j]`).  Without this
@@ -1696,17 +1696,20 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
          * → builtins/integer.c:int_aref, which dominated the profile. */
         if (FIXNUM_P(r) && FIXNUM_P(i)) {
             long b = FIX2LONG(i);
+            c->sp = sp;
             if (b < 0 || b >= 63) return INT2FIX(0);
             return INT2FIX((FIX2LONG(r) >> b) & 1);
         }
         if (LIKELY(!SPECIAL_CONST_P(r))) {
-            if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) return korb_ary_aref(r, FIX2LONG(i));
+            if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) { VALUE v = korb_ary_aref(r, FIX2LONG(i)); c->sp = sp; return v; }
             /* Hash fast path is only safe when there's no default_proc —
              * korb_hash_aref returns default_value on miss but can't call
              * a Ruby-side block.  Fall through to cfunc dispatch when a
              * default_proc is registered. */
             if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc)) {
-                return korb_hash_aref(r, i);
+                VALUE v = korb_hash_aref(r, i);
+                c->sp = sp;
+                return v;
             }
             /* String#[i] for a single Fixnum index — return a 1-byte
              * string at i (negative wraps from end), nil if out of range.
@@ -1715,13 +1718,17 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
                 struct korb_string *s = (struct korb_string *)r;
                 long pos = FIX2LONG(i);
                 if (pos < 0) pos += s->len;
-                if (pos < 0 || pos >= s->len) return Qnil;
-                return korb_str_new(s->ptr + pos, 1);
+                if (pos < 0 || pos >= s->len) { c->sp = sp; return Qnil; }
+                VALUE v = korb_str_new(s->ptr + pos, 1);
+                c->sp = sp;
+                return v;
             }
         }
     }
     c->last_cfunc_callsite = n;
-    return korb_node_aref_slow(c, r, i, arg_index);
+    VALUE v = korb_node_aref_slow(c, r, i, arg_index);
+    c->sp = sp;
+    return v;
 }
 
 NODE_DEF
