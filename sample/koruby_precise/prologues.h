@@ -44,14 +44,6 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
         .block = block,
         .caller_node = callsite,
         .fp = c->current_frame->fp,
-        /* Inherit cref / current_class / current_file from caller so
-         * cfunc-side helpers (e.g. Kernel#__dir__, Kernel#require_relative,
-         * Kernel#caller) see the caller's lexical context directly at
-         * hop=0 instead of needing a frame-chain walk to find a
-         * non-NULL value.  Same pattern AST prologues already use. */
-        .cref = c->current_frame->cref,
-        .current_class = c->current_frame->current_class,
-        .current_file = c->current_frame->current_file,
         .locals_cnt = 0,
         .super_skip_n = 0,
         .last_line = Qnil,
