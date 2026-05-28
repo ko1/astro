@@ -416,11 +416,15 @@ korb_class_of_class(VALUE v) {
                 case T_HASH:   return korb_vm->hash_class;
                 case T_RANGE:  return korb_vm->range_class;
                 case T_PROC:   return korb_vm->proc_class;
-                /* T_BIGNUM / T_FLOAT / T_OBJECT / T_CLASS / T_MODULE
-                 * fall through to basic.klass read.  For Float we read
-                 * korb_vm->float_class — Float is libc-alloc'd too.
-                 * Bignum same path.  Classes / modules are arena and
-                 * their basic.klass is auto-tracked. */
+                case T_FLOAT:  return korb_vm->float_class;
+                case T_BIGNUM: return korb_vm->integer_class;
+                /* T_OBJECT / T_CLASS / T_MODULE fall through to
+                 * basic.klass read.  Classes / modules are arena and
+                 * their basic.klass is auto-tracked.  T_OBJECT
+                 * (user-class instance) holds a user-defined class
+                 * pointer which is arena but the libc-alloc'd object
+                 * itself has the stale-klass-field issue — left as a
+                 * separate work item. */
             }
         }
         return (struct korb_class *)b->klass;
