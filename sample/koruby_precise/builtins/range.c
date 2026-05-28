@@ -74,16 +74,55 @@ static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
-    if (argc < 1) return r->begin;
-    if (!FIXNUM_P(argv[0])) return Qnil;
-    /* Non-numeric (`('a'..'e').first(2)`): delegate to to_a then take. */
+    if (argc < 1) {
+        if (NIL_P(r->begin)) {
+            VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+            korb_raise(c, (struct korb_class *)eR, "cannot get the first element of beginless range");
+            return Qnil;
+        }
+        return r->begin;
+    }
+    /* Beginless range with argument: always RangeError. */
+    if (NIL_P(r->begin)) {
+        VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+        korb_raise(c, (struct korb_class *)eR, "cannot get the first element of beginless range");
+        return Qnil;
+    }
+    /* Coerce non-Fixnum count via #to_int, raise TypeError if invalid. */
+    VALUE nv = argv[0];
+    if (NIL_P(nv)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT, "no implicit conversion from nil to integer");
+        return Qnil;
+    }
+    if (!FIXNUM_P(nv)) {
+        /* Float: CRuby truncates to integer. */
+        if (FLONUM_P(nv) || (!SPECIAL_CONST_P(nv) && BUILTIN_TYPE(nv) == T_FLOAT)) {
+            double d = korb_num2dbl(nv);
+            nv = INT2FIX((long)d);
+        } else if (!SPECIAL_CONST_P(nv)) {
+            VALUE rt = korb_funcall(c, nv, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                nv = korb_funcall(c, nv, korb_intern("to_int"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            }
+        }
+        if (!FIXNUM_P(nv)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion into Integer");
+            return Qnil;
+        }
+    }
+    /* Non-numeric begin (`('a'..'e').first(2)`): delegate to to_a then take. */
     if (!FIXNUM_P(r->begin)) {
         VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
         if (c->state != KORB_NORMAL || BUILTIN_TYPE(arr) != T_ARRAY) return Qnil;
-        VALUE n = argv[0];
-        return korb_funcall(c, arr, korb_intern("first"), 1, &n);
+        return korb_funcall(c, arr, korb_intern("first"), 1, &nv);
     }
-    long n = FIX2LONG(argv[0]);
+    long n = FIX2LONG(nv);
     if (n < 0) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eArg, "negative array size");
@@ -117,10 +156,46 @@ static VALUE rng_last(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) {
         /* Plain end on an inclusive range; on an exclusive range CRuby
          * still returns the stored end (not end-1).  Match that. */
+        if (NIL_P(r->end)) {
+            VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+            korb_raise(c, (struct korb_class *)eR, "cannot get the last element of endless range");
+            return Qnil;
+        }
         return r->end;
     }
-    if (!FIXNUM_P(argv[0]) || !FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
-    long n = FIX2LONG(argv[0]);
+    /* Endless range with argument: RangeError. */
+    if (NIL_P(r->end)) {
+        VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+        korb_raise(c, (struct korb_class *)eR, "cannot get the last element of endless range");
+        return Qnil;
+    }
+    VALUE nv = argv[0];
+    if (NIL_P(nv)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT, "no implicit conversion from nil to integer");
+        return Qnil;
+    }
+    if (!FIXNUM_P(nv)) {
+        if (FLONUM_P(nv) || (!SPECIAL_CONST_P(nv) && BUILTIN_TYPE(nv) == T_FLOAT)) {
+            nv = INT2FIX((long)korb_num2dbl(nv));
+        } else if (!SPECIAL_CONST_P(nv)) {
+            VALUE rt = korb_funcall(c, nv, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                nv = korb_funcall(c, nv, korb_intern("to_int"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+            }
+        }
+        if (!FIXNUM_P(nv)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion into Integer");
+            return Qnil;
+        }
+    }
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
+    long n = FIX2LONG(nv);
     if (n < 0) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eArg, "negative array size");
