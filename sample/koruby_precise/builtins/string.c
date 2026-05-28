@@ -2335,6 +2335,16 @@ static VALUE str_coerce_arg(CTX *c, VALUE arg) {
     return Qundef;
 }
 
+/* Returns true if a UTF-8 prefix/suffix match would split a multi-byte
+ * codepoint.  For prefix removal, byte at `boundary` (= prefix len) must
+ * NOT be a UTF-8 continuation byte.  For suffix, byte at `boundary - 1`
+ * must terminate cleanly — equivalent here since we check the byte right
+ * after the prefix end. */
+static bool str_at_char_boundary(const char *p, long boundary, long total_len) {
+    if (boundary >= total_len) return true;
+    return ((unsigned char)p[boundary] & 0xC0) != 0x80;
+}
+
 static VALUE str_delete_prefix(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return korb_str_new(c, c->sp, ((struct korb_string *)self)->ptr,
                                        ((struct korb_string *)self)->len);
@@ -2342,7 +2352,8 @@ static VALUE str_delete_prefix(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (UNDEF_P(arg)) return Qnil;
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
-    if (p->len <= s->len && memcmp(s->ptr, p->ptr, p->len) == 0)
+    if (p->len <= s->len && memcmp(s->ptr, p->ptr, p->len) == 0 &&
+        str_at_char_boundary(s->ptr, p->len, s->len))
         return korb_str_new(c, c->sp, s->ptr + p->len, s->len - p->len);
     return korb_str_new(c, c->sp, s->ptr, s->len);
 }
@@ -2354,8 +2365,10 @@ static VALUE str_delete_suffix(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (UNDEF_P(arg)) return Qnil;
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
-    if (p->len <= s->len && memcmp(s->ptr + s->len - p->len, p->ptr, p->len) == 0)
-        return korb_str_new(c, c->sp, s->ptr, s->len - p->len);
+    long cut = s->len - p->len;
+    if (p->len <= s->len && memcmp(s->ptr + cut, p->ptr, p->len) == 0 &&
+        str_at_char_boundary(s->ptr, cut, s->len))
+        return korb_str_new(c, c->sp, s->ptr, cut);
     return korb_str_new(c, c->sp, s->ptr, s->len);
 }
 
@@ -2368,7 +2381,8 @@ static VALUE str_delete_prefix_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     if (p->len == 0 || p->len > s->len ||
-        memcmp(s->ptr, p->ptr, p->len) != 0) return Qnil;
+        memcmp(s->ptr, p->ptr, p->len) != 0 ||
+        !str_at_char_boundary(s->ptr, p->len, s->len)) return Qnil;
     long new_len = s->len - p->len;
     char *np = korb_xmalloc_atomic(new_len + 1);
     memcpy(np, s->ptr + p->len, new_len);
@@ -2386,8 +2400,10 @@ static VALUE str_delete_suffix_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (UNDEF_P(arg)) return Qnil;
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
+    long cut = s->len - p->len;
     if (p->len == 0 || p->len > s->len ||
-        memcmp(s->ptr + s->len - p->len, p->ptr, p->len) != 0) return Qnil;
+        memcmp(s->ptr + cut, p->ptr, p->len) != 0 ||
+        !str_at_char_boundary(s->ptr, cut, s->len)) return Qnil;
     s->len -= p->len;
     if (s->capa > s->len) s->ptr[s->len] = 0;
     return self;
