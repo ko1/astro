@@ -337,10 +337,35 @@ slot を走査して forward_edge を呼ぶ際、 slot 値が libc 配列を指�
 結果、 配列 lvar の値が "to_top に置かれた直近の arena obj" (= 多くの
 場合 main_obj) に化ける。 `a.class = Main` の理由。
 
-Phase 3 (= 全 koruby obj を aro_gc_alloc に migrate) もしくは framework
-側の forward_payload に "outside from-space and not registered as large
-→ immortal as-is" path を入れることで根治。 後者は他 sample (baruby_
-precise 等) は arena only で問題ないため framework 改変は影響なし。
+#### Phase 3 試行で見つかった "shadow ref" 問題
+
+`korb_ary_new_capa` だけ arena に migrate して試したら NORMAL は 24/24
+維持されたが、 STRESS で全 24 件 SIGABRT (= forward_payload が "GC BUG
+forward to-space" abort)。 原因は **mixed allocation の shadow reference**:
+
+- 配列を arena に移行 → scan_edges T_ARRAY が a->ptr[i] (= libc buffer
+  の中身) を visit して contains の arena ref を forward
+- しかし libc 側 container (= ハッシュ entry chain, 一部 method
+  table) が arena obj への参照を持っている → これらは visit_roots
+  にも scan_edges にも触られない (= GC から「見えない」shadow ref)
+- 結果: shadow ref しか持たない arena obj は collect 対象になり死ぬ
+- 次の cycle で他の経路 (= migrated 配列の ptr buffer 等) から
+  死んだ obj への参照を visit すると "to-space past to_top, not
+  forwarded" abort
+
+根治には **全 koruby container を一斉に arena 化** が必要 (= partial
+migration では shadow ref が新たに発生する)。 対象:
+- korb_array (struct + ptr buffer)
+- korb_hash (struct + entries)
+- korb_range (struct)
+- korb_float (struct)
+- korb_bignum (struct + mpz_t)
+- korb_proc (struct)
+- その他 libc 構造体
+
+各 type について scan_edges per_type の visitor を追加し、 内部の
+arena 参照 (klass field, content slots) を全て visit_ptr_slot で
+forward する必要あり。 大規模 refactor、 1 commit 単位では収まらない。
 
 ### 解消した test_alias_redef NORMAL の logical fail
 
