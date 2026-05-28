@@ -403,12 +403,19 @@ static VALUE str_split(CTX *c, VALUE self, int argc, VALUE *argv) {
 static long str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
     long n = s->len;
+    VALUE arg;
     if (argc < 1) {
-        if (n >= 2 && s->ptr[n-2] == '\r' && s->ptr[n-1] == '\n') return n - 2;
-        if (n >= 1 && (s->ptr[n-1] == '\n' || s->ptr[n-1] == '\r')) return n - 1;
-        return n;
+        /* CRuby: no arg → use $/ as the separator (defaults to "\n"). */
+        VALUE rs = korb_gvar_get(korb_intern("$/"));
+        if (NIL_P(rs) || SPECIAL_CONST_P(rs) || BUILTIN_TYPE(rs) != T_STRING) {
+            if (n >= 2 && s->ptr[n-2] == '\r' && s->ptr[n-1] == '\n') return n - 2;
+            if (n >= 1 && (s->ptr[n-1] == '\n' || s->ptr[n-1] == '\r')) return n - 1;
+            return n;
+        }
+        arg = rs;
+        goto have_str;
     }
-    VALUE arg = argv[0];
+    arg = argv[0];
     if (NIL_P(arg)) return n;
     if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
         VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
@@ -960,7 +967,19 @@ static VALUE str_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_reverse(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
     char *r = korb_xmalloc_atomic(s->len + 1);
-    for (long i = 0; i < s->len; i++) r[i] = s->ptr[s->len - 1 - i];
+    /* Reverse by UTF-8 codepoint, not raw byte: walk forward to find
+     * each char's byte run, then write it to the appropriate trailing
+     * slot.  Continuation bytes have the top two bits 10. */
+    long dst = s->len;
+    long i = 0;
+    while (i < s->len) {
+        long j = i + 1;
+        while (j < s->len && (((unsigned char)s->ptr[j] & 0xC0) == 0x80)) j++;
+        long n = j - i;
+        dst -= n;
+        memcpy(r + dst, s->ptr + i, n);
+        i = j;
+    }
     r[s->len] = 0;
     return korb_str_new(c, c->sp, r, s->len);
 }
@@ -1060,7 +1079,16 @@ static VALUE str_reverse_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_string *s = (struct korb_string *)self;
     char *buf = korb_xmalloc_atomic(s->len + 1);
-    for (long i = 0; i < s->len; i++) buf[i] = s->ptr[s->len - 1 - i];
+    long dst = s->len;
+    long i = 0;
+    while (i < s->len) {
+        long j = i + 1;
+        while (j < s->len && (((unsigned char)s->ptr[j] & 0xC0) == 0x80)) j++;
+        long n = j - i;
+        dst -= n;
+        memcpy(buf + dst, s->ptr + i, n);
+        i = j;
+    }
     buf[s->len] = 0;
     s->ptr = buf;
     return self;
@@ -1592,18 +1620,30 @@ static VALUE str_rjust(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 /* String#chop / chop! */
+/* Walk back from the end of a UTF-8 string by one codepoint.  Returns
+ * the byte offset where the last codepoint starts.  Continuation
+ * bytes are (top two bits == 10). */
+static long str_prev_char_offset(const char *p, long len) {
+    if (len == 0) return 0;
+    long i = len - 1;
+    while (i > 0 && ((unsigned char)p[i] & 0xC0) == 0x80) i--;
+    return i;
+}
+
 static VALUE str_chop(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
     if (s->len == 0) return korb_str_new(c, c->sp, "", 0);
-    long n = s->len - 1;
-    if (n > 0 && s->ptr[n] == '\n' && s->ptr[n-1] == '\r') n--;
+    long n = str_prev_char_offset(s->ptr, s->len);
+    /* CRLF treated as one character. */
+    if (n > 0 && s->ptr[n] == '\n' && s->ptr[n - 1] == '\r') n--;
     return korb_str_new(c, c->sp, s->ptr, n);
 }
 static VALUE str_chop_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
+    CHECK_FROZEN_RET(c, self, Qnil);
     if (s->len == 0) return Qnil;
-    long n = s->len - 1;
-    if (n > 0 && s->ptr[n] == '\n' && s->ptr[n-1] == '\r') n--;
+    long n = str_prev_char_offset(s->ptr, s->len);
+    if (n > 0 && s->ptr[n] == '\n' && s->ptr[n - 1] == '\r') n--;
     s->len = n;
     s->ptr[n] = 0;
     return self;
@@ -2106,6 +2146,61 @@ static VALUE str_prepend(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* ---------- String#insert(pos, str) ----------
  * Mutates self.  pos can be negative (counts from end + 1, so -1
  * inserts before the last char as in CRuby).  Returns self. */
+/* Convert a character index (positive or negative) into a byte
+ * offset for a UTF-8 string.  Returns -1 if out of range (caller
+ * should raise IndexError). */
+static long str_char_to_byte_index(const char *p, long byte_len, long char_idx) {
+    if (char_idx >= 0) {
+        long b = 0;
+        long i = 0;
+        while (b < byte_len && i < char_idx) {
+            int n = 1;
+            unsigned char c0 = (unsigned char)p[b];
+            if      ((c0 & 0x80) == 0x00) n = 1;
+            else if ((c0 & 0xE0) == 0xC0) n = 2;
+            else if ((c0 & 0xF0) == 0xE0) n = 3;
+            else if ((c0 & 0xF8) == 0xF0) n = 4;
+            if (b + n > byte_len) return -1;
+            b += n;
+            i++;
+        }
+        if (i < char_idx) return -1;
+        return b;
+    } else {
+        /* Count from end: walk forward, recording each codepoint start,
+         * then index from the back. */
+        long count = 0;
+        long b = 0;
+        while (b < byte_len) {
+            int n = 1;
+            unsigned char c0 = (unsigned char)p[b];
+            if      ((c0 & 0x80) == 0x00) n = 1;
+            else if ((c0 & 0xE0) == 0xC0) n = 2;
+            else if ((c0 & 0xF0) == 0xE0) n = 3;
+            else if ((c0 & 0xF8) == 0xF0) n = 4;
+            b += n;
+            count++;
+        }
+        long want = count + char_idx + 1; /* insert-style: -1 means "before end" */
+        if (want < 0) return -1;
+        if (want == count) return byte_len;
+        /* Walk again to find the want'th char start. */
+        long i = 0;
+        b = 0;
+        while (b < byte_len && i < want) {
+            int n = 1;
+            unsigned char c0 = (unsigned char)p[b];
+            if      ((c0 & 0x80) == 0x00) n = 1;
+            else if ((c0 & 0xE0) == 0xC0) n = 2;
+            else if ((c0 & 0xF0) == 0xE0) n = 3;
+            else if ((c0 & 0xF8) == 0xF0) n = 4;
+            b += n;
+            i++;
+        }
+        return b;
+    }
+}
+
 static VALUE str_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     if (argc < 2) return self;
@@ -2124,10 +2219,8 @@ static VALUE str_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)other;
     long orig_pos = pos;
-    if (pos < 0) pos = s->len + pos + 1;
-    /* CRuby raises IndexError when the (possibly negative-adjusted)
-     * index is out of range. */
-    if (pos < 0 || pos > s->len) {
+    long bpos = str_char_to_byte_index(s->ptr, s->len, pos);
+    if (bpos < 0) {
         VALUE eI = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
         korb_raise(c, (struct korb_class *)eI,
                    "index %ld out of string", orig_pos);
@@ -2135,9 +2228,9 @@ static VALUE str_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     long total = s->len + p->len;
     char *np = korb_xmalloc_atomic(total + 1);
-    memcpy(np, s->ptr, pos);
-    memcpy(np + pos, p->ptr, p->len);
-    memcpy(np + pos + p->len, s->ptr + pos, s->len - pos);
+    memcpy(np, s->ptr, bpos);
+    memcpy(np + bpos, p->ptr, p->len);
+    memcpy(np + bpos + p->len, s->ptr + bpos, s->len - bpos);
     np[total] = 0;
     s->ptr = np;
     s->len = total;
