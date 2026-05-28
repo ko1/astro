@@ -82,10 +82,18 @@
 ### STRESS mode 結果
 
 NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走らせた
-結果。 段階的に修正を入れて **23/24 file 完全 pass** まで持ち込んだ
-(初期 14 から +9)。 また STRESS+PURGE では **21/24 file pass**。
-mode 間で異なる stale ref 経路が表面化する (test_block は STRESS の
-みで SEGV、 逆に test_exception は STRESS で OK だが PURGE で SEGV)。
+結果。 段階的に修正を入れて **24/24 file 完全 pass** (STRESS / STRESS+PURGE
+両方とも全 OK)。 初期 14 から +10。 mode 間で異なる stale ref 経路が
+表面化する pattern (test_block は STRESS のみで SEGV、 逆に test_exception
+は STRESS で OK だが PURGE で SEGV) を最後の 2 つの修正で潰した:
+
+- `koruby_visit_roots` に **gvars table を追加** (= `$!` を auto-forward
+  しないと raise inside rescue で cause-link walk が SEGV; commit
+  e3dfea32) — test_exception STRESS+PURGE。
+- **korb_yield の prev_self を GC root stack で pin** (commit 76aa7419)
+  — block body の EVAL を straddle する prev_self C-local が STRESS GC
+  越しに stale 化し、 block exit の frame.self 復元で死アドレスを
+  書き込む問題。 test_block STRESS。
 
 | test                      | STRESS  | STRESS+PURGE |
 |---------------------------|---------|--------------|
@@ -93,25 +101,25 @@ mode 間で異なる stale ref 経路が表面化する (test_block は STRESS �
 | test_alias_redef          | 3       | 3            |
 | test_array                | 72      | 72           |
 | test_basic_op_redef       | 4       | 4            |
-| test_block                | SEGV    | 33           |
+| test_block                | 33      | 33           |
 | test_block_arg            | 8       | 8            |
 | test_class                | 18      | 18           |
-| test_comparable           | 21      | SEGV         |
+| test_comparable           | 21      | 21           |
 | test_control              | 34      | 34           |
 | test_cpu_corner           | 29      | 29           |
 | test_eq                   | 58      | 58           |
 | test_eq_redef             | 7       | 7            |
-| test_exception            | 10      | SEGV         |
+| test_exception            | 10      | 10           |
 | test_fiber                | 26      | 26           |
 | test_float_round          | 27      | 27           |
 | test_flonum               | 80      | 80           |
-| test_hash                 | 52      | SEGV         |
+| test_hash                 | 52      | 52           |
 | test_integer              | 105     | 105          |
 | test_misc                 | 26      | 26           |
 | test_object_alloc         | 19      | 19           |
 | test_range                | 27      | 27           |
 | test_string               | 49      | 49           |
-| test_to_s_dispatch        | 5       | SEGV         |
+| test_to_s_dispatch        | 5       | 5            |
 | test_yield                | 15      | 15           |
 
 行った修正:
@@ -151,27 +159,26 @@ mode 間で異なる stale ref 経路が表面化する (test_block は STRESS �
 新規 full pass: test_cpu_corner / test_hash / test_to_s_dispatch /
 test_misc / test_fiber / test_array / test_string。
 
-残課題:
-- **test_exception / test_block / test_comparable / test_fiber の SEGV**:
-  argv[0]->basic.klass が T_OBJECT を指している現象が再現。 m =
-  argv[0]->basic.klass を見ると basic.flags=1 (T_OBJECT)、 expect
-  T_CLASS。 つまり class field が他の T_OBJECT を指している stale
-  状態。 arena T_OBJECT は scan_edges で basic.klass を visit するので
-  本来 forward されるはずだが、 何らかの path で stale 化している。
-  完全 trace が必要。 (libc registry を on/off しても同じ症状なので
-  registry 関連ではない pre-existing バグ)
-- **test_string の BAD SLOT**: string concat / split path で C-local
-  heap ptr が stale。
-- **builtin iterator** (ary_max_by / hash_each / sort 系) が C-local
-  heap pointer (= sort 比較の current max element 等) を korb_funcall
-  に渡す箇所で stale 化。
-- **T_DATA obj (Method / Binding / Fiber)** が registry 未登録 (= 容器
-  系のみ追加した)。 basic.klass の追跡が漏れる可能性。
+残課題 (2026-05-28 完了):
+- **test_exception PURGE SEGV**: gvars.vals が visit_roots に欠落
+  していたため $! (= 直前 raise した exc) が stale 化、 nested raise の
+  cause-link walk で SEGV。 koruby_runtime.c phase (d'') で gvars を
+  walk するよう追加 (commit e3dfea32)。
+- **test_block STRESS SEGV**: korb_yield の prev_self C-local が
+  block body の EVAL を straddle して stale 化、 block exit 時の
+  frame.self 復元で死アドレスを書き込んでしまう。 prev_self を
+  AROH_ROOT_STACK_TOP / SET_TOP で root stack に park (commit 76aa7419)。
 
-これらは個別調査必要。 registry を T_DATA まで拡張する、 builtin
-iterator を ARO_ROOT_SCOPE で pin する、 が次の方針。
+### rubyspec で残る同型バグ
 
-### STRESS+PURGE は別途 (残課題)
+rubyspec を STRESS+PURGE で走らせると `EVAL_node_class_reopen` で
+SEGV。 class_reopen 自体は ARO_ROOT_SCOPE 済だが、 内部の
+korb_const_get → method lookup chain で別の stale ref が起きている
+可能性。 個別 trace 待ち。
+
+`file_join` (File.join) も result string + per-iter element が
+stale 化していたため ARO_ROOT_SCOPE 化 (commit 201ef954)。 rubyspec
+の File.join 経由 SEGV を改善。
 
 ## 旧現状 (2026-05-10, eleventh pass)
 
