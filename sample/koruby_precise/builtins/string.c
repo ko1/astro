@@ -613,9 +613,9 @@ static VALUE str_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (!exp_digit) { blen = save_blen; p = save_p; }
     }
-    if (!saw_digit) return korb_float_new(0.0);
+    if (!saw_digit) return korb_float_new(c, c->sp, 0.0);
     buf[blen] = '\0';
-    return korb_float_new(strtod(buf, NULL));
+    return korb_float_new(c, c->sp, strtod(buf, NULL));
 }
 
 /* String#byteslice — byte-indexed slice.  koruby is byte-only so this

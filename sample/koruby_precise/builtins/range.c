@@ -181,7 +181,7 @@ static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
         bool has_block = korb_block_given(c);
         VALUE out = has_block ? Qnil : korb_ary_new();
         for (double v = b; r->exclude_end ? (v < e) : (v <= e + 1e-12); v += step) {
-            VALUE fv = korb_float_new(v);
+            VALUE fv = korb_float_new(c, c->sp, v);
             if (has_block) {
                 korb_yield(c, 1, &fv);
                 if (c->state != KORB_NORMAL) return Qnil;
@@ -377,7 +377,7 @@ static VALUE rng_count(CTX *c, VALUE self, int argc, VALUE *argv) {
      * infinity is the conventional carrier for "infinite". */
     if (argc == 0 && !korb_block_given(c) &&
         (NIL_P(r->begin) || NIL_P(r->end))) {
-        return korb_float_new(1.0/0.0);
+        return korb_float_new(c, c->sp, 1.0/0.0);
     }
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return INT2FIX(0);
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);

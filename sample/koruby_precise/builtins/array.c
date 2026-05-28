@@ -1108,7 +1108,7 @@ static VALUE str_unpack(CTX *c, VALUE self, int argc, VALUE *argv) {
                 double v;
                 memcpy(&v, src + src_idx, 8);
                 src_idx += 8;
-                korb_ary_push(r, korb_float_new(v));
+                korb_ary_push(r, korb_float_new(c, c->sp, v));
             }
             break;
           }
@@ -1118,7 +1118,7 @@ static VALUE str_unpack(CTX *c, VALUE self, int argc, VALUE *argv) {
                 float v;
                 memcpy(&v, src + src_idx, 4);
                 src_idx += 4;
-                korb_ary_push(r, korb_float_new((double)v));
+                korb_ary_push(r, korb_float_new(c, c->sp, (double)v));
             }
             break;
           }

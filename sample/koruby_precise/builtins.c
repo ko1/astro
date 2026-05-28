@@ -62,6 +62,8 @@ VALUE _new_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
 } while (0)
 
 void korb_init_builtins(void) {
+    CTX *c = korb_vm->current_ctx;
+    (void)c;  /* used by sp-passing alloc helpers below */
     /* BasicObject methods — must come first since CRuby's BasicObject
      * has its own __id__, __send__, ==, !=, !, equal?, instance_eval,
      * instance_exec.  Without these on cBasic itself, `Class.new(BasicObject)`
@@ -272,11 +274,11 @@ void korb_init_builtins(void) {
         DEF(cFltMeta, "allocate", _allocator_disallowed, -1);
         DEF(cFltMeta, "new",      _new_disallowed,       -1);
     }
-    korb_const_set(korb_vm->float_class, korb_intern("INFINITY"), korb_float_new(1.0/0.0));
-    korb_const_set(korb_vm->float_class, korb_intern("NAN"),      korb_float_new(0.0/0.0));
-    korb_const_set(korb_vm->float_class, korb_intern("MAX"),      korb_float_new(1.7976931348623157e+308));
-    korb_const_set(korb_vm->float_class, korb_intern("MIN"),      korb_float_new(2.2250738585072014e-308));
-    korb_const_set(korb_vm->float_class, korb_intern("EPSILON"),  korb_float_new(2.220446049250313e-16));
+    korb_const_set(korb_vm->float_class, korb_intern("INFINITY"), korb_float_new(c, c->sp, 1.0/0.0));
+    korb_const_set(korb_vm->float_class, korb_intern("NAN"),      korb_float_new(c, c->sp, 0.0/0.0));
+    korb_const_set(korb_vm->float_class, korb_intern("MAX"),      korb_float_new(c, c->sp, 1.7976931348623157e+308));
+    korb_const_set(korb_vm->float_class, korb_intern("MIN"),      korb_float_new(c, c->sp, 2.2250738585072014e-308));
+    korb_const_set(korb_vm->float_class, korb_intern("EPSILON"),  korb_float_new(c, c->sp, 2.220446049250313e-16));
     DEF(korb_vm->float_class, "+", flt_plus, 1);
     DEF(korb_vm->float_class, "-", flt_minus, 1);
     DEF(korb_vm->float_class, "*", flt_mul, 1);
@@ -1464,8 +1466,8 @@ void korb_init_builtins(void) {
         korb_const_set(cMath, korb_intern("DomainError"), (VALUE)cMathDomainError);
         struct korb_class *cMathMeta = korb_class_new(korb_intern("MathMeta"),
                                                       korb_vm->module_class, T_MODULE);
-        korb_const_set(cMath, korb_intern("PI"), korb_float_new(3.141592653589793));
-        korb_const_set(cMath, korb_intern("E"),  korb_float_new(2.718281828459045));
+        korb_const_set(cMath, korb_intern("PI"), korb_float_new(c, c->sp, 3.141592653589793));
+        korb_const_set(cMath, korb_intern("E"),  korb_float_new(c, c->sp, 2.718281828459045));
         /* Math.fn(...) calls — install on the metaclass so the lookup
          * for `Math.sqrt(2)` (recv = Math) finds them. */
         DEF_R(cMathMeta, "sqrt",  math_sqrt,  1);

@@ -74,18 +74,18 @@ static VALUE kernel_rand(CTX *c, VALUE self, int argc, VALUE *argv) {
      * rand(F)        → Float in [0, F)
      * rand(a..b)     → Integer in [a, b]  (or [a, b) for exclusive) */
     if (argc < 1) {
-        return korb_float_new((double)rand() / ((double)RAND_MAX + 1.0));
+        return korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0));
     }
     VALUE a = argv[0];
     if (FIXNUM_P(a)) {
         long n = FIX2LONG(a);
-        if (n <= 0) return korb_float_new((double)rand() / ((double)RAND_MAX + 1.0));
+        if (n <= 0) return korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0));
         return INT2FIX((long)(rand() % n));
     }
     if (KORB_IS_FLOAT(a)) {
         double d = korb_num2dbl(a);
-        if (d <= 0) return korb_float_new((double)rand() / ((double)RAND_MAX + 1.0));
-        return korb_float_new(((double)rand() / ((double)RAND_MAX + 1.0)) * d);
+        if (d <= 0) return korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0));
+        return korb_float_new(c, c->sp, ((double)rand() / ((double)RAND_MAX + 1.0)) * d);
     }
     if (!SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)a;
@@ -97,7 +97,7 @@ static VALUE kernel_rand(CTX *c, VALUE self, int argc, VALUE *argv) {
             return INT2FIX(lo + (rand() % span));
         }
     }
-    return korb_float_new((double)rand() / ((double)RAND_MAX + 1.0));
+    return korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0));
 }
 
 /* ---------- Kernel ---------- */
@@ -973,9 +973,9 @@ static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     if (KORB_IS_FLOAT(argv[0])) return argv[0];
-    if (FIXNUM_P(argv[0])) return korb_float_new((double)FIX2LONG(argv[0]));
+    if (FIXNUM_P(argv[0])) return korb_float_new(c, c->sp, (double)FIX2LONG(argv[0]));
     if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
-        return korb_float_new(korb_num2dbl(argv[0]));
+        return korb_float_new(c, c->sp, korb_num2dbl(argv[0]));
     }
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         const char *s = korb_str_cstr(argv[0]);
@@ -995,7 +995,7 @@ static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
                        "invalid value for Float(): %s", s);
             return Qnil;
         }
-        return korb_float_new(d);
+        return korb_float_new(c, c->sp, d);
     }
     if (!exception_ok) return Qnil;
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));

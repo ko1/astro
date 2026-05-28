@@ -1866,7 +1866,10 @@ VALUE korb_range_new(VALUE b, VALUE e, bool excl) {
 /* The FLONUM-encode fast path lives inline in object.h.  This is the
  * heap-allocate fallback used when the double doesn't fit FLONUM
  * (NaN/Inf/0/denorm/very large/very small). */
-VALUE korb_float_new_heap(double d) {
+VALUE korb_float_new_heap(CTX *c, VALUE *sp, double d) {
+    /* korb_xmalloc / register_libc_obj are libc — no GC fire here.  c/sp
+     * are accepted for API uniformity (see runtime.md §12.3). */
+    (void)c; (void)sp;
     struct korb_float *f = korb_xmalloc(sizeof(*f));
     f->basic.head.flags = T_FLOAT;
     f->basic.klass = korb_vm ? (VALUE)korb_vm->float_class : 0;

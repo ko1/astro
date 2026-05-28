@@ -34,7 +34,7 @@ node_bignum_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const 
 NODE_DEF
 node_float_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, double v)
 {
-    return korb_float_new(v);
+    return korb_float_new(c, c->sp, v);
 }
 
 NODE_DEF
@@ -1293,7 +1293,7 @@ node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, N
     c->current_frame = fr.prev;
     l = fr.last_line;
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-        return korb_float_new(korb_flonum_to_double(l) + korb_flonum_to_double(r));
+        return korb_float_new(c, c->sp, korb_flonum_to_double(l) + korb_flonum_to_double(r));
     }
     c->last_cfunc_callsite = n;
     return korb_node_plus_slow(c, l, r, arg_index);
@@ -1311,7 +1311,7 @@ node_minus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, 
             return korb_int_minus(l, r);
         }
         if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-            return korb_float_new(korb_flonum_to_double(l) - korb_flonum_to_double(r));
+            return korb_float_new(c, c->sp, korb_flonum_to_double(l) - korb_flonum_to_double(r));
         }
         c->last_cfunc_callsite = n;
         return korb_node_minus_slow(c, l, r, arg_index);
@@ -1340,7 +1340,7 @@ node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
             return korb_int_mul(l, r);
         }
         if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-            return korb_float_new(korb_flonum_to_double(l) * korb_flonum_to_double(r));
+            return korb_float_new(c, c->sp, korb_flonum_to_double(l) * korb_flonum_to_double(r));
         }
         c->last_cfunc_callsite = n;
         return korb_node_mul_slow(c, l, r, arg_index);
@@ -1376,7 +1376,7 @@ node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
         return korb_int_div(l, r);
     }
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-        return korb_float_new(korb_flonum_to_double(l) / korb_flonum_to_double(r));
+        return korb_float_new(c, c->sp, korb_flonum_to_double(l) / korb_flonum_to_double(r));
     }
     c->last_cfunc_callsite = n;
     return korb_node_div_slow(c, l, r, arg_index);

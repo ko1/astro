@@ -1070,7 +1070,7 @@ VALUE proc_clock_gettime_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     double t = ts.tv_sec + ts.tv_nsec / 1e9;
-    return korb_float_new(t);
+    return korb_float_new(c, c->sp, t);
 }
 
 VALUE time_now_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1078,7 +1078,7 @@ VALUE time_now_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     double t = ts.tv_sec + ts.tv_nsec / 1e9;
-    return korb_float_new(t);
+    return korb_float_new(c, c->sp, t);
 }
 
 

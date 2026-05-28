@@ -624,16 +624,15 @@ ID    korb_sym2id(VALUE sym);
 VALUE korb_str_to_sym(VALUE str);
 
 /* float / bignum */
-/* korb_float_new: try FLONUM-encode (fast inline), heap-allocate via
- * out-of-line slow path otherwise.  Inlined so that mandelbrot-style
- * Float-heavy hot loops don't pay a cross-.so call per arithmetic
- * intermediate. */
-VALUE korb_float_new_heap(double d);
+/* korb_float_new: try FLONUM-encode (fast inline; no alloc, so the c/sp
+ * args are unused on the fast path).  Heap-allocate via out-of-line slow
+ * path otherwise — sync c->sp = sp there. */
+VALUE korb_float_new_heap(CTX *c, VALUE *sp, double d);
 static inline __attribute__((always_inline)) VALUE
-korb_float_new(double d) {
+korb_float_new(CTX *c, VALUE *sp, double d) {
     VALUE flo = korb_double_to_flonum(d);
     if (LIKELY(flo)) return flo;
-    return korb_float_new_heap(d);
+    return korb_float_new_heap(c, sp, d);
 }
 
 /* korb_num2dbl: same.  Most calls hit FLONUM/FIXNUM paths and bail out

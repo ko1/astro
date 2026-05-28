@@ -63,7 +63,7 @@ static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
 
 static VALUE int_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new(korb_num2dbl(self) + korb_num2dbl(argv[0]));
+        return korb_float_new(c, c->sp, korb_num2dbl(self) + korb_num2dbl(argv[0]));
     }
     if (int_op_other_kind(argv[0])) {
         /* + is commutative — delegate to Rational#+/Complex#+. */
@@ -74,7 +74,7 @@ static VALUE int_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new(korb_num2dbl(self) - korb_num2dbl(argv[0]));
+        return korb_float_new(c, c->sp, korb_num2dbl(self) - korb_num2dbl(argv[0]));
     }
     if (int_op_other_kind(argv[0])) {
         VALUE r = int_to_rational_obj(c, self);
@@ -89,7 +89,7 @@ static VALUE int_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
          * korb_num2dbl which handles both via the slow path.  Without
          * this Bignum * Float would interpret the heap pointer as a
          * Fixnum and return garbage. */
-        return korb_float_new(korb_num2dbl(self) * korb_num2dbl(argv[0]));
+        return korb_float_new(c, c->sp, korb_num2dbl(self) * korb_num2dbl(argv[0]));
     }
     if (int_op_other_kind(argv[0])) {
         return korb_funcall(c, argv[0], korb_intern("*"), 1, &self);
@@ -99,7 +99,7 @@ static VALUE int_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new(korb_num2dbl(self) / korb_num2dbl(argv[0]));
+        return korb_float_new(c, c->sp, korb_num2dbl(self) / korb_num2dbl(argv[0]));
     }
     if (int_op_other_kind(argv[0])) {
         VALUE r = int_to_rational_obj(c, self);
@@ -243,11 +243,11 @@ static VALUE int_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_to_i(CTX *c, VALUE self, int argc, VALUE *argv) { return self; }
 static VALUE int_to_f(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (FIXNUM_P(self)) return korb_float_new(korb_num2dbl(self));
+    if (FIXNUM_P(self)) return korb_float_new(c, c->sp, korb_num2dbl(self));
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
-        return korb_float_new(mpz_get_d((mpz_ptr)((struct korb_bignum *)self)->mpz));
+        return korb_float_new(c, c->sp, mpz_get_d((mpz_ptr)((struct korb_bignum *)self)->mpz));
     }
-    return korb_float_new(0.0);
+    return korb_float_new(c, c->sp, 0.0);
 }
 static VALUE int_even_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (FIXNUM_P(self)) return KORB_BOOL((FIX2LONG(self) & 1) == 0);
@@ -449,7 +449,7 @@ static VALUE int_fdiv(CTX *c, VALUE self, int argc, VALUE *argv) {
     } else {
         return Qnil;
     }
-    return korb_float_new(a / b);
+    return korb_float_new(c, c->sp, a / b);
 }
 
 /* Integer#size — width in bytes of the machine word.  Matches CRuby's
@@ -492,7 +492,7 @@ static VALUE int_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (KORB_IS_FLOAT(other)) {
         korb_ary_push(pair, other);
-        korb_ary_push(pair, korb_float_new(korb_num2dbl(self)));
+        korb_ary_push(pair, korb_float_new(c, c->sp, korb_num2dbl(self)));
         return pair;
     }
     VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
@@ -722,7 +722,7 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Float exponent: promote to Float arithmetic.  `2 ** 0.5` should
      * be 1.414, not 2 — CRuby returns a Float. */
     if (KORB_IS_FLOAT(argv[0])) {
-        return korb_float_new(pow(korb_num2dbl(self), korb_num2dbl(argv[0])));
+        return korb_float_new(c, c->sp, pow(korb_num2dbl(self), korb_num2dbl(argv[0])));
     }
     if (!FIXNUM_P(argv[0])) return self;
     long base = FIX2LONG(self), exp = FIX2LONG(argv[0]);
@@ -741,7 +741,7 @@ static VALUE int_pow(CTX *c, VALUE self, int argc, VALUE *argv) {
          * return 0r — the test tolerance (assert_in_delta(0.0, …)) is
          * satisfied and we avoid SIGSEGV via stack overflow. */
         if (exp == LONG_MIN || (-exp) > FIXNUM_MAX) {
-            return korb_float_new(0.0);
+            return korb_float_new(c, c->sp, 0.0);
         }
         VALUE pos_exp = INT2FIX(-exp);
         VALUE pos_args[1] = { pos_exp };
