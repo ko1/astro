@@ -118,25 +118,21 @@ visit_class_edges(void *ctx, koruby_edge_fn fn, struct korb_class *k)
 void
 koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
 {
-    extern int g_in_root_scan;
     /* (a) Value stack — c->stack_base..c->sp linear range.  Contract is
      * that every sp-advancing site zero-fills the new slots before any
      * alloc that can fire GC (= ARO_ROOT_SCOPE_START's invariant).  We
      * do NOT keep a high-water mark and lazy-clear popped slots — that
      * pattern hides a sp-up-without-zero-fill bug as a slow-leak SEGV
      * rather than catching it at the violating site. */
-    g_in_root_scan = 1;
     if (c->stack_base && c->sp) {
         for (VALUE *p = c->stack_base; p < c->sp; p++) {
             visit_value_slot(ctx, fn, p);
         }
     }
-    g_in_root_scan = 2;
     /* (b) CTX-held VALUEs. */
     visit_value_slot(ctx, fn, &c->current_frame->self);
     visit_value_slot(ctx, fn, &c->state_value);
     visit_ptr_slot(ctx, fn, (void **)&c->current_frame->current_class);
-    g_in_root_scan = 5;
     /* (c+d) current_frame chain — visit all per-frame heap refs INCLUDING
      * each frame's cref chain.  Method dispatch sets frame.cref =
      * mc->def_cref (a SEPARATE chain captured at def time) which does
@@ -181,7 +177,6 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         struct korb_cref *cr = &c->top_cref;
         visit_ptr_slot(ctx, fn, (void **)&cr->klass);
     }
-    g_in_root_scan = 6;
     /* (e) korb_vm globals — all class / module pointers + main_obj +
      * globals method-table.  korb_vm itself lives in libc memory; only
      * the heap pointers it holds need visiting. */
