@@ -2242,7 +2242,14 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
      * worth of slots is overkill but cheap. */
     enum { FRESH_ENV_SLACK = 512 };
     if (fresh_env_path) {
-        fp = (VALUE *)korb_xmalloc((blk->env_size + FRESH_ENV_SLACK) * sizeof(VALUE));
+        /* Allocate fresh env on the value stack (= c->sp) so it stays
+         * within visit_roots phase (a) range.  Previously this was
+         * korb_xmalloc'd in libc, but that put fp / sp / c->sp outside
+         * the value stack and broke GC scan range walking.  Captured
+         * procs are still snapshot'd to libc by korb_proc_snapshot_env_*
+         * at frame pop / proc return sites, so closure semantics survive. */
+        fp = c->sp;
+        c->sp = fp + blk->env_size + FRESH_ENV_SLACK;
         /* Copy ALL of env: outer slots so depth-walks/reads see their
          * current values; block-local slots are about to be overwritten
          * by params/destructure anyway. */
@@ -2443,6 +2450,15 @@ redo_block:
      * during this iteration. */
     if (fresh_env_path) {
         for (uint32_t i = 0; i < blk->param_base; i++) outer_env_ptr[i] = fp[i];
+        /* Snapshot any returned proc whose env points into our
+         * about-to-be-popped fresh_env (= on value stack now).
+         * Without this, the proc dangles when c->sp rolls back. */
+        korb_proc_snapshot_env_maybe(r, fp, fp + blk->env_size + FRESH_ENV_SLACK);
+        if (c->state == KORB_RETURN || c->state == KORB_BREAK) {
+            korb_proc_snapshot_env_maybe(c->state_value, fp, fp + blk->env_size + FRESH_ENV_SLACK);
+        }
+        /* Restore c->sp — fresh_env was allocated on the value stack. */
+        c->sp = fp;
     }
     c->current_frame->fp = prev_fp;
     c->current_frame->self = prev_self;
