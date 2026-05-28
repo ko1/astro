@@ -4114,6 +4114,12 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     running_block = prev_running2;
     c->current_frame = frame2.prev;
     c->current_frame->fp = prev_fp;
+    /* Zero-fill the popped slot range so a sibling/later frame push
+     * doesn't re-expose stale heap ptrs left over from this frame's
+     * locals.  Without this, visit_roots scans those addresses once
+     * the next sp-grow brings them back below c->sp and treats stale
+     * (moved long ago) ptrs as live → wild forwarding under STRESS. */
+    for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
     c->current_frame->self = prev_self;
     c->current_frame->cref = prev_cref2;
