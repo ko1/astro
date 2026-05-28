@@ -1860,15 +1860,51 @@ done_min_by: ;
 
 static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Array#* — n: repeat, str: join.  argc == 0 → ArgumentError (CRuby). */
-    if (argc < 1) {
+    if (argc != 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eA,
-                   "wrong number of arguments (given 0, expected 1)");
+                   "wrong number of arguments (given %d, expected 1)", argc);
         return Qnil;
     }
     struct korb_array *a = (struct korb_array *)self;
-    if (FIXNUM_P(argv[0])) {
-        long n = FIX2LONG(argv[0]);
+    /* nil argument → TypeError (CRuby). */
+    if (NIL_P(argv[0])) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT, "no implicit conversion from nil to integer");
+        return Qnil;
+    }
+    /* CRuby semantics: try #to_str first (treat as join sep).  Only if
+     * the argument doesn't respond to :to_str do we fall back to #to_int. */
+    VALUE arg = argv[0];
+    if (!FIXNUM_P(arg) && BUILTIN_TYPE(arg) != T_STRING) {
+        VALUE rt_str = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt_str)) {
+            VALUE s = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) {
+                arg = s;
+            }
+        } else {
+            VALUE rt_int = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt_int)) {
+                VALUE iv = korb_funcall(c, arg, korb_intern("to_int"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+                if (FIXNUM_P(iv)) arg = iv;
+            } else {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion of %s into Integer",
+                           korb_id_name(korb_class_of_class(arg)->name));
+                return Qnil;
+            }
+        }
+    }
+    if (FIXNUM_P(arg)) {
+        long n = FIX2LONG(arg);
         if (n < 0) {
             VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
             korb_raise(c, (struct korb_class *)eA, "negative argument");
@@ -1886,13 +1922,13 @@ static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
             for (long j = 0; j < a->len; j++) korb_ary_push(r, a->ptr[j]);
         return r;
     }
-    if (BUILTIN_TYPE(argv[0]) == T_STRING) {
+    if (BUILTIN_TYPE(arg) == T_STRING) {
         /* join with sep — pin result + sep + per-iter element across
          * each korb_to_s / korb_str_concat GC fire. */
         VALUE ret = Qnil;
         ARO_ROOT_SCOPE_START(c, rs, 3) {
             rs[0] = korb_str_new(c, c->sp, "", 0);  /* result */
-            rs[1] = argv[0];              /* separator (pin) */
+            rs[1] = arg;              /* separator (pin) */
             for (long i = 0; i < a->len; i++) {
                 if (i > 0) korb_str_concat(c, c->sp, rs[0], rs[1]);
                 rs[2] = a->ptr[i];
