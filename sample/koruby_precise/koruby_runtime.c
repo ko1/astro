@@ -183,12 +183,32 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
      * moves the proc but the globals stay at the old address; the
      * next korb_yield reads a stale proc pointer and SEGVs in
      * blk->self / blk->env access.  Discovered by running
-     * `[1, 2].each { |t| puts t }` under BARUBY_GC_STRESS=1. */
+     * `[1, 2].each { |t| puts t }` under BARUBY_GC_STRESS=1.
+     *
+     * Procs are libc-allocated (= NOT GC-arena), so forward_payload
+     * returns them as-is and scan_edges never runs on their fields.
+     * We must manually walk each live proc's self / enclosing_block
+     * so they auto-update when the underlying heap obj moves.  The
+     * set of reachable procs = running_block + each frame's block. */
     {
         extern struct korb_proc *current_block;
         extern struct korb_proc *running_block;
         visit_ptr_slot(ctx, fn, (void **)&current_block);
         visit_ptr_slot(ctx, fn, (void **)&running_block);
+        if (running_block) {
+            visit_value_slot(ctx, fn, &running_block->self);
+            visit_ptr_slot(ctx, fn, (void **)&running_block->enclosing_block);
+        }
+        if (current_block) {
+            visit_value_slot(ctx, fn, &current_block->self);
+            visit_ptr_slot(ctx, fn, (void **)&current_block->enclosing_block);
+        }
+        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            if (f->block) {
+                visit_value_slot(ctx, fn, &f->block->self);
+                visit_ptr_slot(ctx, fn, (void **)&f->block->enclosing_block);
+            }
+        }
     }
     /* (e) korb_vm globals — all class / module pointers + main_obj +
      * globals method-table.  korb_vm itself lives in libc memory; only
