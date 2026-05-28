@@ -82,8 +82,8 @@
 ### STRESS mode 結果
 
 NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走らせた
-結果。 段階的に修正を入れて **17/24 file 完全 pass** まで持ち込んだ
-(前回 14 から +3)。
+結果。 段階的に修正を入れて **19/24 file 完全 pass** まで持ち込んだ
+(前回 14 から +5)。
 
 | test                      | STRESS |
 |---------------------------|--------|
@@ -100,12 +100,12 @@ NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走ら
 | test_eq                   | 58     |
 | test_eq_redef             | 7      |
 | test_exception            | SEGV   |
-| test_fiber                | SEGV   |
+| test_fiber                | 26     |
 | test_float_round          | 27     |
 | test_flonum               | 80     |
 | test_hash                 | 52     |
 | test_integer              | 105    |
-| test_misc                 | 1/26   |
+| test_misc                 | 26     |
 | test_object_alloc         | 19     |
 | test_range                | 27     |
 | test_string               | 13/47  |
