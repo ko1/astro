@@ -327,7 +327,7 @@ struct korb_binding {
 
 /* Run at method epilogue: snapshot fp slots into each registered
  * binding so they hold final values rather than the moment-of-take
- * snapshot.  Called from prologue_ast_*_inl just before c->fp is
+ * snapshot.  Called from prologue_ast_*_inl just before c->current_frame->fp is
  * restored to the previous frame. */
 void korb_binding_snapshot_frame(struct korb_frame *f);
 
@@ -822,15 +822,15 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     if (LIKELY(argc == 1 && blk->params_cnt == 1 && blk->post_cnt == 0 &&
                blk->rest_slot < 0 && blk->kwh_save_slot < 0)) {
         VALUE arg = argv[0];  /* snapshot before fp swap */
-        VALUE *prev_fp = c->fp;
+        VALUE *prev_fp = c->current_frame->fp;
         VALUE prev_self = c->current_frame->self;
-        struct korb_cref *prev_cref = c->cref;
+        struct korb_cref *prev_cref = c->current_frame->cref;
         struct korb_proc *prev_block = current_block;
         VALUE *bfp = blk->env;
         bfp[blk->param_base] = arg;
         c->current_frame->self = blk->self;
-        c->fp = bfp;
-        if (blk->cref) c->cref = blk->cref;
+        c->current_frame->fp = bfp;
+        if (blk->cref) c->current_frame->cref = blk->cref;
         /* Lexical block target: yield inside this block goes to the
          * enclosing method's block, not back to this block itself. */
         current_block = blk->enclosing_block;
@@ -843,9 +843,9 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
             c->state = KORB_NORMAL; c->state_value = Qnil;
             goto redo_yield;
         }
-        c->fp = prev_fp;
+        c->current_frame->fp = prev_fp;
         c->current_frame->self = prev_self;
-        c->cref = prev_cref;
+        c->current_frame->cref = prev_cref;
         current_block = prev_block;
         running_block = prev_running;
         if (UNLIKELY(c->state == KORB_NEXT)) {

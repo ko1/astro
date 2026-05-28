@@ -5784,7 +5784,7 @@ koruby_parse_with_scope_line(const char *src, size_t len, const char *filename,
      * top.  Body picks fp[]/sp[] based on the sign at dispatch time.
      * Skipped in eval_mode — eval'd code shares the caller's frame and
      * the caller's scope_size isn't visible here, so leave lvars as
-     * indexed and let the body fall through to c->fp[index]. */
+     * indexed and let the body fall through to c->current_frame->fp[index]. */
     if (r && !eval_mode && !getenv("KORUBY_DISABLE_BAKE")) {
         extern void koruby_bake_sp_offsets(NODE *root);
         koruby_bake_sp_offsets(r);

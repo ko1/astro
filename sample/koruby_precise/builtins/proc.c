@@ -108,7 +108,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
             return Qnil;
         }
     }
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE prev_self = c->current_frame->self;
     /* Use the proc's own captured env directly so writes to closure
@@ -295,8 +295,8 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         extern struct korb_proc *current_block;
         new_fp[p->block_slot] = current_block ? (VALUE)current_block : Qnil;
     }
-    c->fp = new_fp;
-    if (c->fp + p->env_size > c->sp) c->sp = c->fp + p->env_size;
+    c->current_frame->fp = new_fp;
+    if (c->current_frame->fp + p->env_size > c->sp) c->sp = c->current_frame->fp + p->env_size;
     c->current_frame->self = p->self;
     /* yield inside the proc body targets the enclosing method's block
      * captured at proc creation time. */
@@ -309,11 +309,11 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Restore the lexical class nesting captured at block-creation time
      * so constant lookups and `def` inside the body resolve in the
      * defining class scope, not the caller's. */
-    struct korb_cref *prev_cref = c->cref;
-    if (p->cref) c->cref = p->cref;
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    if (p->cref) c->current_frame->cref = p->cref;
     VALUE r;
 redo_proc:
-    r = EVAL(c, p->body, c->fp);
+    r = EVAL(c, p->body, c->current_frame->fp);
     /* `redo` inside a proc/lambda body — re-evaluate the body with
      * the same param bindings (CRuby semantics).  Without this, redo
      * leaks up and silently exits. */
@@ -321,7 +321,7 @@ redo_proc:
         c->state = KORB_NORMAL; c->state_value = Qnil;
         goto redo_proc;
     }
-    c->cref = prev_cref;
+    c->current_frame->cref = prev_cref;
     current_block = prev_block;
     running_block = prev_running;
     /* Snapshot any returned proc whose env points into our about-to-be-
@@ -341,7 +341,7 @@ redo_proc:
     /* Always restore fp/sp.  Without restoring sp on the no-clone
      * path, repeated proc.call from a hot loop creeps c->sp upward
      * (each call's slots stay committed) until stack overflow. */
-    c->fp = prev_fp;
+    c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     c->current_frame->self = prev_self;
     /* Lambda: `return` inside the body targets the lambda itself, so we

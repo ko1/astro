@@ -44,9 +44,9 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
             return Qnil;
         }
     }
-    /* argv+1 is &c->fp[arg_index+1] — points into the caller's frame.
+    /* argv+1 is &c->current_frame->fp[arg_index+1] — points into the caller's frame.
      * Translate to arg_index for the prologue path. */
-    if (LIKELY(argv >= c->fp && argv < c->stack_end)) {
+    if (LIKELY(argv >= c->current_frame->fp && argv < c->stack_end)) {
         struct korb_class *klass = korb_class_of_class(self);
         uint32_t slot = (uint32_t)(((uintptr_t)klass ^ (uintptr_t)name * 0x9E3779B97F4A7C15ULL) % KORB_SEND_CACHE_SIZE);
         struct korb_send_cache_entry *e = &korb_send_cache[slot];
@@ -58,7 +58,7 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
             e->name = name;
             e->serial = korb_g_method_serial;
         }
-        uint32_t arg_index = (uint32_t)((argv + 1) - c->fp);
+        uint32_t arg_index = (uint32_t)((argv + 1) - c->current_frame->fp);
         return e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc);
     }
     return korb_funcall(c, self, name, argc - 1, argv + 1);
@@ -168,15 +168,15 @@ VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Walk the receiver's class chain via the existing helper.  We
      * reuse korb_cvar_get which uses cref/current_class — set those
      * temporarily so the lookup roots at `self`. */
-    struct korb_class *prev_class = c->current_class;
-    struct korb_cref *prev_cref = c->cref;
+    struct korb_class *prev_class = c->current_frame->current_class;
+    struct korb_cref *prev_cref = c->current_frame->cref;
     struct korb_cref tmp_cref = { .klass = (struct korb_class *)self, .prev = NULL };
-    c->cref = &tmp_cref;
-    c->current_class = (struct korb_class *)self;
+    c->current_frame->cref = &tmp_cref;
+    c->current_frame->current_class = (struct korb_class *)self;
     extern VALUE korb_cvar_get(CTX *c, ID name);
     VALUE v = korb_cvar_get(c, name);
-    c->cref = prev_cref;
-    c->current_class = prev_class;
+    c->current_frame->cref = prev_cref;
+    c->current_frame->current_class = prev_class;
     return v;
 }
 
@@ -193,14 +193,14 @@ VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
     if (!name) return Qnil;
     extern void korb_cvar_set(CTX *c, ID name, VALUE val);
-    struct korb_class *prev_class = c->current_class;
-    struct korb_cref *prev_cref = c->cref;
+    struct korb_class *prev_class = c->current_frame->current_class;
+    struct korb_cref *prev_cref = c->current_frame->cref;
     struct korb_cref tmp_cref = { .klass = (struct korb_class *)self, .prev = NULL };
-    c->cref = &tmp_cref;
-    c->current_class = (struct korb_class *)self;
+    c->current_frame->cref = &tmp_cref;
+    c->current_frame->current_class = (struct korb_class *)self;
     korb_cvar_set(c, name, argv[1]);
-    c->cref = prev_cref;
-    c->current_class = prev_class;
+    c->current_frame->cref = prev_cref;
+    c->current_frame->current_class = prev_class;
     return argv[1];
 }
 

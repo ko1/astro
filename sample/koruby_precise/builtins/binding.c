@@ -154,7 +154,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
      * inner block first, then merge in any names from the enclosing
      * method that aren't already present so binding can see both. */
     ID *names = NULL;
-    VALUE *fp = c->fp;
+    VALUE *fp = c->current_frame->fp;
     uint32_t base = 0;
     if (running_block && running_block->body) {
         names = korb_body_local_names(running_block->body);
@@ -172,7 +172,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         names = korb_body_local_names(korb_g_program_body);
         base = 0;
     }
-    /* Crefs along c->cref are typically stack-allocated (class body /
+    /* Crefs along c->current_frame->cref are typically stack-allocated (class body /
      * module body / class << self push `struct korb_cref new_cref;` on
      * the C stack and link it).  When this binding outlives the stack
      * frame that pushed those crefs, the saved pointer dangles and
@@ -180,7 +180,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
      * uninitialized memory → SEGV.  Deep-copy onto the heap. */
     {
         struct korb_cref **dst = &b->cref;
-        for (struct korb_cref *src = c->cref; src; src = src->prev) {
+        for (struct korb_cref *src = c->current_frame->cref; src; src = src->prev) {
             struct korb_cref *cp = korb_xmalloc(sizeof(*cp));
             cp->klass = src->klass;
             cp->prev  = NULL;
@@ -200,8 +200,8 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         b->source_file = c->last_cfunc_callsite->head.source_file;
         b->source_line = c->last_cfunc_callsite->head.line;
     }
-    if (!b->source_file && c->current_file) {
-        b->source_file = c->current_file;
+    if (!b->source_file && c->current_frame->current_file) {
+        b->source_file = c->current_frame->current_file;
     }
 
     /* Copy primary names (innermost scope). */
@@ -228,12 +228,12 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
                  * and its program-level lvars live in fp; copy them in
                  * if fp is wide enough. */
                 VALUE val = Qnil;
-                if (c->fp) {
+                if (c->current_frame->fp) {
                     /* eval body uses caller's fp at offset (scope_locals_n
                      * + ...).  The eval body's local_names index gives us
                      * the slot directly (since eval mode skips node_scope
                      * fp shift, names are at fp[i]). */
-                    val = c->fp[i];
+                    val = c->current_frame->fp[i];
                     if (UNDEF_P(val)) val = Qnil;
                 }
                 korb_hash_aset(b->extra_vars, korb_id2sym(eval_names[i]), val);
@@ -282,7 +282,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         while (parent && parent->body) {
             ID *parent_names = korb_body_local_names(parent->body);
             if (parent_names) {
-                VALUE *src_fp = c->fp ? c->fp : parent->env;
+                VALUE *src_fp = c->current_frame->fp ? c->current_frame->fp : parent->env;
                 for (size_t i = 0; parent_names[i] != 0; i++) {
                     if (binding_find_slot(b, parent_names[i]) >= 0) continue;
                     binding_append_name(b, parent_names[i]);
@@ -651,26 +651,26 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
 
     /* Switch to the binding's fp / self / cref for the duration of
      * the eval body.  At return, restore. */
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE prev_self = c->current_frame->self;
-    struct korb_cref *prev_cref = c->cref;
-    const char *prev_file = c->current_file;
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    const char *prev_file = c->current_frame->current_file;
     void *prev_eval_binding = c->current_eval_binding;
-    if (b->fp) c->fp = b->fp + b->base;
+    if (b->fp) c->current_frame->fp = b->fp + b->base;
     c->current_frame->self = b->self;
-    if (b->cref) c->cref = b->cref;
-    c->current_file = filename;
+    if (b->cref) c->current_frame->cref = b->cref;
+    c->current_frame->current_file = filename;
     c->current_eval_binding = (void *)b;
 
     extern struct Node *OPTIMIZE(struct Node *n);
     OPTIMIZE(ast);
-    VALUE r = EVAL(c, ast, c->fp);
+    VALUE r = EVAL(c, ast, c->current_frame->fp);
 
     c->current_eval_binding = prev_eval_binding;
-    c->current_file = prev_file;
-    c->cref = prev_cref;
+    c->current_frame->current_file = prev_file;
+    c->current_frame->cref = prev_cref;
     c->current_frame->self = prev_self;
-    c->fp = prev_fp;
+    c->current_frame->fp = prev_fp;
 
     /* Write-through eval body's slot updates to the live frame, but
      * only for slots the eval body actually MODIFIED (heap value
@@ -721,7 +721,7 @@ static VALUE binding_source_location(CTX *c, VALUE self, int argc, VALUE *argv) 
 }
 
 /* Snapshot the frame's locals into each registered binding's heap.
- * Called from prologue_ast_*_inl just before c->fp is restored. */
+ * Called from prologue_ast_*_inl just before c->current_frame->fp is restored. */
 void korb_binding_snapshot_frame(struct korb_frame *f) {
     struct korb_binding *b = (struct korb_binding *)f->bindings_head;
     while (b) {

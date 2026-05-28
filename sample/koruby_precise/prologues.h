@@ -30,7 +30,7 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
                    uint32_t argc, uint32_t arg_index,
                    struct korb_proc *block, struct method_cache *mc)
 {
-    VALUE *argv = &c->fp[arg_index];
+    VALUE *argv = &c->current_frame->fp[arg_index];
     struct korb_proc *prev_block = current_block;
     current_block = block;
     /* Push a minimal frame so the outer self lives in frame.prev->self
@@ -43,7 +43,7 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
         .method = mc->method,
         .block = block,
         .caller_node = callsite,
-        .fp = c->fp,
+        .fp = c->current_frame->fp,
         .locals_cnt = 0,
         .super_skip_n = 0,
         .last_line = Qnil,
@@ -87,7 +87,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * mc->kwh_save_slot < 0 always for "simple" methods, so we only
      * need to check the trailing-arg flag. */
     if (UNLIKELY(argc > 0)) {
-        VALUE last = c->fp[arg_index + argc - 1];
+        VALUE last = c->current_frame->fp[arg_index + argc - 1];
         if (!SPECIAL_CONST_P(last) && BUILTIN_TYPE(last) == T_HASH &&
             (RBASIC(last)->head.flags & FL_KWARGS) &&
             ((struct korb_hash *)last)->size == 0) {
@@ -103,12 +103,12 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
                    argc, total);
         return Qnil;
     }
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE prev_self = c->current_frame->self;
 
     VALUE *new_fp = prev_fp + arg_index;
-    c->fp = new_fp;
+    c->current_frame->fp = new_fp;
     /* Grow c->sp + zero-fill the newly-exposed slots so stale heap
      * pointers left over in those addresses (from prior frames popped
      * at this location) don't get treated as live roots by the next
@@ -163,13 +163,13 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     running_block = NULL;
     /* cref must reflect the method's definition site so cref-dependent
      * operations (Kernel#binding, class-variable access, `class C`
-     * keyword) see the lexical class.  Most calls have c->cref ==
+     * keyword) see the lexical class.  Most calls have c->current_frame->cref ==
      * mc->def_cref already (top-level fib, ack, etc.) so guard the
      * swap to skip 4 memory ops per call on the hot path. */
-    bool cref_swapped = (mc->def_cref != NULL && c->cref != mc->def_cref);
+    bool cref_swapped = (mc->def_cref != NULL && c->current_frame->cref != mc->def_cref);
     if (UNLIKELY(cref_swapped)) {
-        prev_cref = c->cref;
-        c->cref = mc->def_cref;
+        prev_cref = c->current_frame->cref;
+        c->current_frame->cref = mc->def_cref;
     }
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
@@ -188,7 +188,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     c->current_frame = frame.prev;
     running_block = prev_running;
-    if (UNLIKELY(cref_swapped)) c->cref = prev_cref;
+    if (UNLIKELY(cref_swapped)) c->current_frame->cref = prev_cref;
     if (UNLIKELY(!simple)) {
         current_block = prev_block;
     }
@@ -205,7 +205,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(frame.bindings_head != NULL)) {
         korb_binding_snapshot_frame(&frame);
     }
-    c->fp = prev_fp;
+    c->current_frame->fp = prev_fp;
     /* Always restore sp.  Without this, every method call leaves sp
      * higher than before — long-running loops with many calls hit
      * stack_end and false-overflow.  Cheap (one store per call).
@@ -264,12 +264,12 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
                    argc, total);
         return Qnil;
     }
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE prev_self = c->current_frame->self;
 
     VALUE *new_fp = prev_fp + arg_index;
-    c->fp = new_fp;
+    c->current_frame->fp = new_fp;
     /* Grow c->sp + zero-fill the newly-exposed slots so stale heap
      * pointers left over in those addresses (from prior frames popped
      * at this location) don't get treated as live roots by the next
@@ -319,13 +319,13 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     running_block = NULL;
     /* cref must reflect the method's definition site so cref-dependent
      * operations (Kernel#binding, class-variable access, `class C`
-     * keyword) see the lexical class.  Most calls have c->cref ==
+     * keyword) see the lexical class.  Most calls have c->current_frame->cref ==
      * mc->def_cref already (top-level fib, ack, etc.) so guard the
      * swap to skip 4 memory ops per call on the hot path. */
-    bool cref_swapped = (mc->def_cref != NULL && c->cref != mc->def_cref);
+    bool cref_swapped = (mc->def_cref != NULL && c->current_frame->cref != mc->def_cref);
     if (UNLIKELY(cref_swapped)) {
-        prev_cref = c->cref;
-        c->cref = mc->def_cref;
+        prev_cref = c->current_frame->cref;
+        c->current_frame->cref = mc->def_cref;
     }
     if (UNLIKELY(!simple)) {
         prev_block = current_block;
@@ -344,7 +344,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     c->current_frame = frame.prev;
     running_block = prev_running;
-    if (UNLIKELY(cref_swapped)) c->cref = prev_cref;
+    if (UNLIKELY(cref_swapped)) c->current_frame->cref = prev_cref;
     if (UNLIKELY(!simple)) {
         current_block = prev_block;
     }
@@ -355,7 +355,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(frame.bindings_head != NULL)) {
         korb_binding_snapshot_frame(&frame);
     }
-    c->fp = prev_fp;
+    c->current_frame->fp = prev_fp;
     /* Zero-fill popped slots so a sibling call's sp-grow doesn't re-expose
      * stale heap pointers from this frame's locals. */
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;

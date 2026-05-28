@@ -135,10 +135,10 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
     /* (b) CTX-held VALUEs. */
     visit_value_slot(ctx, fn, &c->current_frame->self);
     visit_value_slot(ctx, fn, &c->state_value);
-    visit_ptr_slot(ctx, fn, (void **)&c->current_class);
+    visit_ptr_slot(ctx, fn, (void **)&c->current_frame->current_class);
     g_in_root_scan = 3;
     /* (c) cref chain. */
-    for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+    for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
         visit_ptr_slot(ctx, fn, (void **)&cr->klass);
     }
     g_in_root_scan = 4;
@@ -273,12 +273,12 @@ koruby_setup_ctx(const char *current_file)
      * current_file / state). */
     CTX *c = korb_vm->current_ctx;
     c->current_frame->self = korb_vm->main_obj;
-    c->current_class = korb_vm->object_class;
+    c->current_frame->current_class = korb_vm->object_class;
     static struct korb_cref top_cref;
     top_cref.klass = korb_vm->object_class;
     top_cref.prev = NULL;
-    c->cref = &top_cref;
-    c->current_file = current_file;
+    c->current_frame->cref = &top_cref;
+    c->current_frame->current_file = current_file;
     c->state = KORB_NORMAL;
     c->method_serial = korb_vm->method_serial;
     return c;
@@ -305,7 +305,7 @@ koruby_eval_bootstrap(CTX *c)
 int
 koruby_run_ast(CTX *c, NODE *ast)
 {
-    VALUE r = EVAL(c, ast, c->fp);
+    VALUE r = EVAL(c, ast, c->current_frame->fp);
     (void)r;
     if (c->state == KORB_THROW) {
         VALUE eUTE = korb_const_get(korb_vm->object_class,

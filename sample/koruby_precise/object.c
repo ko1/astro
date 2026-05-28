@@ -255,14 +255,14 @@ static struct korb_class *cvar_owner_walk_(struct korb_class *k, ID name) {
 }
 
 VALUE korb_cvar_get(CTX *c, ID name) {
-    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->current_frame->self);
     /* Top-level read of @@cvar — RuntimeError per CRuby. */
     /* Top-level access (no enclosing class/module body) — RuntimeError.
      * Toplevel's cref->prev is NULL and the resolved class is Object's
      * meta or main. */
-    if (c->cref && !c->cref->prev &&
+    if (c->current_frame->cref && !c->current_frame->cref->prev &&
         (k == korb_vm->object_class || k == korb_vm->main_obj_class)) {
         korb_raise(c, NULL, "class variable access from toplevel");
         return Qnil;
@@ -299,14 +299,14 @@ VALUE korb_cvar_get(CTX *c, ID name) {
 }
 
 void korb_cvar_set(CTX *c, ID name, VALUE val) {
-    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->current_frame->self);
     if (!k) return;
     /* CRuby: `@@cvar = x` at top level (no enclosing class/module) is a
      * RuntimeError.  Detect "top level" as cref == NULL and current self
      * is the singleton main object. */
-    if (c->cref && !c->cref->prev &&
+    if (c->current_frame->cref && !c->current_frame->cref->prev &&
         (k == korb_vm->object_class || k == korb_vm->main_obj_class)) {
         korb_raise(c, NULL, "class variable access from toplevel");
         return;
@@ -327,7 +327,7 @@ void korb_cvar_set(CTX *c, ID name, VALUE val) {
 }
 
 bool korb_cvar_defined(CTX *c, ID name) {
-    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->current_frame->self);
     return k && cvar_owner_(k, name) != NULL;
@@ -409,7 +409,7 @@ static bool korb_method_body_is_simple_frame(struct Node *body) {
         strstr(buf, "(node_cvar_set ")          == NULL &&
         strstr(buf, "(node_raise ")             == NULL &&
         strstr(buf, "block_given?")             == NULL &&
-        /* `def`/`undef`/`alias`/`class`/`module` reach for `c->cref` to
+        /* `def`/`undef`/`alias`/`class`/`module` reach for `c->current_frame->cref` to
          * pick the target class, so they need the cref restore step. */
         strstr(buf, "(node_def_full ")          == NULL &&
         strstr(buf, "(node_def_self ")          == NULL &&
@@ -1182,7 +1182,7 @@ VALUE korb_const_lookup(CTX *c, ID name) {
      * the inheritance walk below.  An EXPLICITLY opened `class Object`
      * pushes its own cref entry whose prev is non-NULL, so that one
      * still participates. */
-    for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
+    for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
         if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
         VALUE v = korb_const_get(cr->klass, name);
         if (!UNDEF_P(v)) return v;
@@ -1192,7 +1192,7 @@ VALUE korb_const_lookup(CTX *c, ID name) {
         }
     }
     /* Inheritance chain of innermost class — walks includes too. */
-    struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
+    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
     if (k && k->super) {
         VALUE v = korb_const_get_inherited(k->super, name);
         if (!UNDEF_P(v)) return v;
@@ -2201,7 +2201,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     } else {
         fp = blk->env;
     }
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE prev_self = c->current_frame->self;
     /* Auto-destructure: block with N params yielded a single Array of size M
      * → assign array elements to params (Ruby block calling convention).
@@ -2353,10 +2353,10 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     /* Install the block's lexical cref so const lookup inside the block
      * uses the lexical scope at block-creation time, not the dynamic
      * caller's. */
-    struct korb_cref *prev_cref = c->cref;
-    if (blk->cref) c->cref = blk->cref;
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    if (blk->cref) c->current_frame->cref = blk->cref;
     /* Switch fp so block body's lvar_get/set hit the captured frame's slots. */
-    c->fp = fp;
+    c->current_frame->fp = fp;
     /* Lexical block target: yield inside block body refers to the
      * enclosing method's block, not back to this block. */
     struct korb_proc *prev_block = current_block;
@@ -2379,9 +2379,9 @@ redo_block:
     if (fresh_env_path) {
         for (uint32_t i = 0; i < blk->param_base; i++) outer_env_ptr[i] = fp[i];
     }
-    c->fp = prev_fp;
+    c->current_frame->fp = prev_fp;
     c->current_frame->self = prev_self;
-    c->cref = prev_cref;
+    c->current_frame->cref = prev_cref;
     current_block = prev_block;
     running_block = prev_running;
     /* `next` inside a block: yield returns the next value, state cleared.
@@ -2430,7 +2430,7 @@ VALUE korb_class_of(VALUE v) { return (VALUE)korb_class_of_class(v); }
  * use each frame's caller_node->head.line. */
 VALUE korb_build_backtrace(CTX *c, int raise_line) {
     VALUE arr = korb_ary_new();
-    const char *default_file = c->current_file ? c->current_file : "(unknown)";
+    const char *default_file = c->current_frame->current_file ? c->current_frame->current_file : "(unknown)";
     char buf[512];
     char nbuf[256];
     struct korb_frame *f = c->current_frame;
@@ -3217,45 +3217,45 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
                                   uint32_t argc, uint32_t arg_index,
                                   struct korb_proc *block, struct method_cache *mc)
 {
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE prev_self = c->current_frame->self;
     struct korb_proc *prev_block = current_block;
-    struct korb_cref *prev_cref = c->cref;
+    struct korb_cref *prev_cref = c->current_frame->cref;
     current_block = block;
 
-    c->fp = prev_fp + arg_index;
-    if (UNLIKELY(c->fp + mc->locals_cnt >= c->stack_end)) {
-        c->fp = prev_fp;
+    c->current_frame->fp = prev_fp + arg_index;
+    if (UNLIKELY(c->current_frame->fp + mc->locals_cnt >= c->stack_end)) {
+        c->current_frame->fp = prev_fp;
         korb_raise(c, NULL, "stack overflow");
         current_block = prev_block;
         return Qnil;
     }
     /* Zero-fill the new frame's locals (= slots beyond argc) to Qnil so
      * an alloc inside the prologue / body doesn't see stale heap pointers
-     * in not-yet-written slots.  Args [c->fp, c->fp + argc) are caller-
-     * provided and stay; locals [c->fp + argc, c->fp + locals_cnt) need
+     * in not-yet-written slots.  Args [c->current_frame->fp, c->current_frame->fp + argc) are caller-
+     * provided and stay; locals [c->current_frame->fp + argc, c->current_frame->fp + locals_cnt) need
      * clearing — visit_roots walks c->stack_base..c->sp and would otherwise
      * pick up popped-frame leftovers at this address range.
      *
-     * Note: sp might already be at-or-beyond c->fp + locals_cnt due to a
+     * Note: sp might already be at-or-beyond c->current_frame->fp + locals_cnt due to a
      * prior deeper call; in that case the extend branch is a no-op but
      * the zero-fill below still runs (= covers the "sp already high but
      * locals slot dirty" case). */
-    if (c->fp + mc->locals_cnt > c->sp) {
-        /* Zero-fill any gap below c->fp + the freshly-exposed range
-         * past c->sp.  Args at [c->fp, c->fp+argc) were already
-         * written by caller; the local range [c->fp+argc, c->fp+locals_cnt)
-         * is zero-filled in the loop below.  Any gap before c->fp
-         * (if c->sp < c->fp) is leftover dead slots from prior frames
+    if (c->current_frame->fp + mc->locals_cnt > c->sp) {
+        /* Zero-fill any gap below c->current_frame->fp + the freshly-exposed range
+         * past c->sp.  Args at [c->current_frame->fp, c->current_frame->fp+argc) were already
+         * written by caller; the local range [c->current_frame->fp+argc, c->current_frame->fp+locals_cnt)
+         * is zero-filled in the loop below.  Any gap before c->current_frame->fp
+         * (if c->sp < c->current_frame->fp) is leftover dead slots from prior frames
          * at the same addresses — stale heap ptrs here get treated as
          * live roots by visit_roots, causing GC BUG forward to-space. */
-        for (VALUE *p = c->sp; p < c->fp; p++) *p = Qnil;
-        c->sp = c->fp + mc->locals_cnt;
+        for (VALUE *p = c->sp; p < c->current_frame->fp; p++) *p = Qnil;
+        c->sp = c->current_frame->fp + mc->locals_cnt;
     }
-    for (VALUE *p = c->fp + argc; p < c->fp + mc->locals_cnt; p++) {
+    for (VALUE *p = c->current_frame->fp + argc; p < c->current_frame->fp + mc->locals_cnt; p++) {
         *p = Qnil;
     }
-    if (mc->def_cref) c->cref = mc->def_cref;
+    if (mc->def_cref) c->current_frame->cref = mc->def_cref;
 
     /* Kwargs hash peel: when the method declares keyword params and the
      * caller's last positional is a kwargs-tagged Hash (FL_KWARGS — set
@@ -3263,10 +3263,10 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * positional Hash (`m(h)`) is NOT peeled (Ruby 3 separation). */
     VALUE peeled_kwh = Qundef;
     if (mc->kwh_save_slot >= 0) {
-        if (argc > 0 && !SPECIAL_CONST_P(c->fp[argc - 1]) &&
-            BUILTIN_TYPE(c->fp[argc - 1]) == T_HASH &&
-            (RBASIC(c->fp[argc - 1])->head.flags & FL_KWARGS)) {
-            peeled_kwh = c->fp[argc - 1];
+        if (argc > 0 && !SPECIAL_CONST_P(c->current_frame->fp[argc - 1]) &&
+            BUILTIN_TYPE(c->current_frame->fp[argc - 1]) == T_HASH &&
+            (RBASIC(c->current_frame->fp[argc - 1])->head.flags & FL_KWARGS)) {
+            peeled_kwh = c->current_frame->fp[argc - 1];
             argc--;
         } else {
             peeled_kwh = korb_hash_new();
@@ -3278,10 +3278,10 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * we always silently drop here, matching Ruby 2 lenient behavior).
      * This also handles `m(**empty)` → no positional hash. */
     if (mc->kwh_save_slot < 0 && argc > 0 &&
-        !SPECIAL_CONST_P(c->fp[argc - 1]) &&
-        BUILTIN_TYPE(c->fp[argc - 1]) == T_HASH &&
-        (RBASIC(c->fp[argc - 1])->head.flags & FL_KWARGS)) {
-        struct korb_hash *h = (struct korb_hash *)c->fp[argc - 1];
+        !SPECIAL_CONST_P(c->current_frame->fp[argc - 1]) &&
+        BUILTIN_TYPE(c->current_frame->fp[argc - 1]) == T_HASH &&
+        (RBASIC(c->current_frame->fp[argc - 1])->head.flags & FL_KWARGS)) {
+        struct korb_hash *h = (struct korb_hash *)c->current_frame->fp[argc - 1];
         if (h->size == 0) {
             argc--;
         }
@@ -3292,8 +3292,8 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         korb_raise(c, (struct korb_class *)eArg,
                    "wrong number of arguments (given %u, expected %u)",
                    argc, mc->total_params_cnt);
-        c->fp = prev_fp;
-        c->cref = prev_cref;
+        c->current_frame->fp = prev_fp;
+        c->current_frame->cref = prev_cref;
         current_block = prev_block;
         return Qnil;
     }
@@ -3320,8 +3320,8 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
                            argc, min_argc);
             }
             (void)variadic;
-            c->fp = prev_fp;
-            c->cref = prev_cref;
+            c->current_frame->fp = prev_fp;
+            c->current_frame->cref = prev_cref;
             current_block = prev_block;
             return Qnil;
         }
@@ -3344,13 +3344,13 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         VALUE *post_buf = post_save;
         if (fixed_post > 16) post_buf = korb_xmalloc(sizeof(VALUE) * fixed_post);
         for (long i = 0; i < fixed_post; i++) {
-            post_buf[i] = c->fp[fixed_pre + opt_filled + extra + i];
+            post_buf[i] = c->current_frame->fp[fixed_pre + opt_filled + extra + i];
         }
         VALUE rest = korb_ary_new_capa(extra);
         for (long i = 0; i < extra; i++) {
-            korb_ary_push(rest, c->fp[fixed_pre + opt_filled + i]);
+            korb_ary_push(rest, c->current_frame->fp[fixed_pre + opt_filled + i]);
         }
-        c->fp[mc->rest_slot] = rest;
+        c->current_frame->fp[mc->rest_slot] = rest;
         /* Posts land at fp[total - post_cnt + i] in the param-position
          * layout — this is fp[rest_slot+1+i] iff rest_slot is at
          * required+opt position (named rest), but for *anonymous* rest
@@ -3359,7 +3359,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
          * (which reads fp[i] for each position i) sees the right values. */
         long post_base = (long)mc->total_params_cnt - fixed_post;
         for (long i = 0; i < fixed_post; i++) {
-            c->fp[post_base + i] = post_buf[i];
+            c->current_frame->fp[post_base + i] = post_buf[i];
         }
     } else if (mc->post_params_cnt > 0) {
         /* No rest, but post params present.  argv layout in caller:
@@ -3376,10 +3376,10 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         VALUE *post_buf = post_save;
         if (fixed_post > 16) post_buf = korb_xmalloc(sizeof(VALUE) * fixed_post);
         for (long i = 0; i < fixed_post; i++) {
-            post_buf[i] = c->fp[fixed_pre + opt_filled + i];
+            post_buf[i] = c->current_frame->fp[fixed_pre + opt_filled + i];
         }
         for (long i = 0; i < fixed_post; i++) {
-            c->fp[fixed_pre + optional_cnt + i] = post_buf[i];
+            c->current_frame->fp[fixed_pre + optional_cnt + i] = post_buf[i];
         }
     }
 
@@ -3411,12 +3411,12 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     for (uint32_t i = opt_start; i < mc->total_params_cnt; i++) {
         if ((int)i == mc->rest_slot) continue;
         if (mc->post_params_cnt && i >= post_lo && i < post_hi) continue;
-        c->fp[i] = Qundef;
+        c->current_frame->fp[i] = Qundef;
     }
     for (uint32_t i = mc->total_params_cnt; i < mc->locals_cnt; i++) {
         if ((int)i == mc->rest_slot) continue;
         if ((int)i == mc->block_slot) continue;
-        c->fp[i] = Qnil;
+        c->current_frame->fp[i] = Qnil;
     }
     /* Param shuffle: when the method's params include a multi_target
      * (e.g. `def m(a, (b, c), d=1)`), the natural identity mapping
@@ -3434,12 +3434,12 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
             dest_used = korb_xmalloc(mc->total_params_cnt * sizeof(bool));
             for (uint32_t i = 0; i < mc->total_params_cnt; i++) dest_used[i] = false;
         }
-        for (uint32_t i = 0; i < mc->total_params_cnt; i++) snap[i] = c->fp[i];
+        for (uint32_t i = 0; i < mc->total_params_cnt; i++) snap[i] = c->current_frame->fp[i];
         /* First pass: write each param's value to its dest slot. */
         for (uint32_t i = 0; i < mc->total_params_cnt; i++) {
             int dest = mc->param_holder_slots[i];
             if (dest >= 0 && (uint32_t)dest != i) {
-                c->fp[dest] = snap[i];
+                c->current_frame->fp[dest] = snap[i];
             }
             /* Mark which slots in [0..total) are still actually used as
              * a param holder (= destination for some position). */
@@ -3456,7 +3456,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
          * one of the param positions).  Reset those to Qnil so the
          * lvar reads nil instead of the leftover caller arg. */
         for (uint32_t i = 0; i < mc->total_params_cnt; i++) {
-            if (!dest_used[i]) c->fp[i] = Qnil;
+            if (!dest_used[i]) c->current_frame->fp[i] = Qnil;
         }
         if (snap != snap_buf) korb_xfree(snap);
         if (dest_used != dest_used_buf) korb_xfree(dest_used);
@@ -3465,7 +3465,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * slot.  block can be NULL (no block given), in which case the
      * local reads as nil. */
     if (mc->block_slot >= 0) {
-        c->fp[mc->block_slot] = block ? (VALUE)block : Qnil;
+        c->current_frame->fp[mc->block_slot] = block ? (VALUE)block : Qnil;
     }
     /* Stash the peeled kwargs hash where the body prelude can read it.
      * If no kwargs were passed (peeled_kwh == UNDEF), fill the slot
@@ -3475,7 +3475,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * dispatches to an AST method with optional keywords without
      * forwarding the hash arg. */
     if (mc->kwh_save_slot >= 0) {
-        c->fp[mc->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
+        c->current_frame->fp[mc->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
     }
     c->current_frame->self = recv;
 
@@ -3491,7 +3491,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.self = recv;
     frame.block = block;
     frame.caller_node = callsite;
-    frame.fp = c->fp;
+    frame.fp = c->current_frame->fp;
     frame.locals_cnt = mc->locals_cnt;
     frame.super_skip_n = 0;
     extern uint64_t korb_g_next_frame_id;
@@ -3506,18 +3506,18 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * caller's block, so a `return` inside it should be method-local. */
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
-    VALUE *frame_lo = c->fp;
-    VALUE *frame_hi = c->fp + mc->locals_cnt;
-    VALUE r = mc->dispatcher(c, mc->body, c->fp + mc->locals_cnt);
+    VALUE *frame_lo = c->current_frame->fp;
+    VALUE *frame_hi = c->current_frame->fp + mc->locals_cnt;
+    VALUE r = mc->dispatcher(c, mc->body, c->current_frame->fp + mc->locals_cnt);
     c->current_frame = frame.prev;
     running_block = prev_running;
     korb_proc_snapshot_env_maybe(r, frame_lo, frame_hi);
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         korb_proc_snapshot_env_maybe(c->state_value, frame_lo, frame_hi);
     }
-    c->fp = prev_fp;
+    c->current_frame->fp = prev_fp;
     c->current_frame->self = prev_self;
-    c->cref = prev_cref;
+    c->current_frame->cref = prev_cref;
     current_block = prev_block;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
@@ -3637,7 +3637,7 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     struct korb_proc *p = mc->method->u.proc.proc;
     if (!p) return Qnil;
     /* args live at fp[arg_index..arg_index+argc-1]; pass that view. */
-    VALUE *argv = &c->fp[arg_index];
+    VALUE *argv = &c->current_frame->fp[arg_index];
     VALUE prev_self = c->current_frame->self;
     c->current_frame->self = recv;
     /* Temporarily rebind the proc's `self` to the dispatch receiver:
@@ -3718,7 +3718,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             struct korb_method *mm = korb_class_find_method(klass, korb_intern("method_missing"));
             if (mm) {
                 /* Shift args right by one; insert :name in front. */
-                VALUE *fp = c->fp;
+                VALUE *fp = c->current_frame->fp;
                 if (fp + arg_index + argc + 1 < c->stack_end) {
                     for (int i = (int)argc - 1; i >= 0; i--) {
                         fp[arg_index + 1 + i] = fp[arg_index + i];
@@ -3802,9 +3802,9 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
  * out shrinks all.so by ~10% and cuts AOT compile time. */
 
 #define COLD_BINOP_DEFAULT(OP_ID) do {            \
-    c->fp[arg_index+1] = r;                       \
+    c->current_frame->fp[arg_index+1] = r;                       \
     return korb_dispatch_binop(c, l, OP_ID, 1,    \
-                               &c->fp[arg_index+1]); \
+                               &c->current_frame->fp[arg_index+1]); \
 } while (0)
 
 __attribute__((noinline,cold)) VALUE
@@ -3887,11 +3887,11 @@ __attribute__((noinline,cold)) VALUE
 korb_node_aref_slow(CTX *c, VALUE r, VALUE i, uint32_t arg_index) {
     if (UNLIKELY(SPECIAL_CONST_P(r))) {
         if (NIL_P(r)) return Qnil;
-        c->fp[arg_index+1] = i;
-        return korb_dispatch_binop(c, r, id_op_aref, 1, &c->fp[arg_index+1]);
+        c->current_frame->fp[arg_index+1] = i;
+        return korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]);
     }
-    c->fp[arg_index+1] = i;
-    return korb_dispatch_binop(c, r, id_op_aref, 1, &c->fp[arg_index+1]);
+    c->current_frame->fp[arg_index+1] = i;
+    return korb_dispatch_binop(c, r, id_op_aref, 1, &c->current_frame->fp[arg_index+1]);
 }
 
 __attribute__((noinline,cold)) VALUE
@@ -3899,7 +3899,7 @@ korb_node_aset_slow(CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_index) {
     if (UNLIKELY(SPECIAL_CONST_P(r))) {
         if (NIL_P(r)) return v;
     }
-    VALUE *args = &c->fp[arg_index+1];
+    VALUE *args = &c->current_frame->fp[arg_index+1];
     args[0] = i; args[1] = v;
     korb_dispatch_binop(c, r, id_op_aset, 2, args);
     return v;
@@ -3988,7 +3988,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
                    argc, m->u.ast.total_params_cnt, korb_id_name(name));
         return Qnil;
     }
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE prev_self = c->current_frame->self;
     /* push frame after all current locals; we don't know exactly the boundary,
@@ -4034,32 +4034,32 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     }
     /* (Locals beyond total_params already initialized to Qnil by the
      * zero-fill above; nothing else needed here.) */
-    c->fp = new_fp;
+    c->current_frame->fp = new_fp;
     c->current_frame->self = recv;
     /* &blk binding: when the method declares `&name`, copy the current
      * block into that slot so funcall_with_block delivers it to the
      * body.  Without this, `Foo.new { ... }`'s block doesn't reach
      * `def initialize(&blk)`. */
     if (m->u.ast.block_slot >= 0 && m->u.ast.block_slot < (int)m->u.ast.locals_cnt) {
-        c->fp[m->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
+        c->current_frame->fp[m->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
     }
     /* kwh_save_slot: if the callee has kwargs but we (cfunc-side
      * korb_funcall) didn't supply any, default to {} so the prologue's
      * `kwh.has_key?(:foo)` lookup doesn't blow up.  When peeled_kwh_ad
      * was filled in by the FL_KWARGS peel above, use that. */
     if (m->u.ast.kwh_save_slot >= 0 && m->u.ast.kwh_save_slot < (int)m->u.ast.locals_cnt) {
-        c->fp[m->u.ast.kwh_save_slot] = UNDEF_P(peeled_kwh_ad)
+        c->current_frame->fp[m->u.ast.kwh_save_slot] = UNDEF_P(peeled_kwh_ad)
             ? korb_hash_new() : peeled_kwh_ad;
     }
-    struct korb_cref *prev_cref2 = c->cref;
-    if (m->def_cref) c->cref = m->def_cref;
+    struct korb_cref *prev_cref2 = c->current_frame->cref;
+    if (m->def_cref) c->current_frame->cref = m->def_cref;
     /* push frame for super() / cref  */
     struct korb_frame frame2 = {
         .prev = c->current_frame,
         .caller_node = NULL,
         .method = m,
         .self = recv,
-        .fp = c->fp,
+        .fp = c->current_frame->fp,
         .locals_cnt = m->u.ast.locals_cnt,
         .super_skip_n = 0,
         .last_line = Qnil,
@@ -4074,13 +4074,13 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * outer block's enclosing method's name). */
     struct korb_proc *prev_running2 = running_block;
     running_block = NULL;
-    VALUE r = EVAL(c, m->u.ast.body, c->fp + m->u.ast.locals_cnt);
+    VALUE r = EVAL(c, m->u.ast.body, c->current_frame->fp + m->u.ast.locals_cnt);
     running_block = prev_running2;
     c->current_frame = frame2.prev;
-    c->fp = prev_fp;
+    c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     c->current_frame->self = prev_self;
-    c->cref = prev_cref2;
+    c->current_frame->cref = prev_cref2;
     if (c->state == KORB_RETURN) {
         r = c->state_value;
         c->state = KORB_NORMAL;
@@ -4174,13 +4174,13 @@ void korb_runtime_init(void) {
     c->stack_base = korb_xmalloc(stack_size * sizeof(VALUE));
     for (size_t i = 0; i < stack_size; i++) c->stack_base[i] = Qnil;
     c->stack_end  = c->stack_base + stack_size;
-    c->fp = c->stack_base;
     c->sp = c->stack_base;
     c->env = c->stack_base;
     c->state = KORB_NORMAL;
-    /* Sentinel top-level frame — self gets set to main_obj later.  For
-     * now (during bootstrap class creation) self is Qnil — bootstrap
-     * code shouldn't dereference self. */
+    /* Sentinel top-level frame — fp/self get updated as bootstrap
+     * proceeds.  current_frame MUST be set before any field access via
+     * c->current_frame->* (e.g. korb_xmalloc internally might do nothing
+     * with frame but defensive code can). */
     koruby_top_sentinel_frame = (struct korb_frame){
         .self       = Qnil,
         .fp         = c->stack_base,
@@ -4583,11 +4583,11 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     if (!ast) return Qnil;
 
     /* Save / push fresh top-level state for the loaded file */
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
-    struct korb_class *prev_class = c->current_class;
-    struct korb_cref *prev_cref = c->cref;
-    const char *prev_file = c->current_file;
+    struct korb_class *prev_class = c->current_frame->current_class;
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    const char *prev_file = c->current_frame->current_file;
     struct korb_frame *prev_frame = c->current_frame;
     extern struct korb_proc *running_block;
     struct korb_proc *prev_running_block = running_block;
@@ -4599,12 +4599,12 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
      * the calling context either, so a stray `return` from within a
      * block in the loaded file raises LocalJumpError instead of
      * accidentally targeting the caller's block frame. */
-    c->fp = c->sp + 1;
-    c->current_class = korb_vm->object_class;
+    c->current_frame->fp = c->sp + 1;
+    c->current_frame->current_class = korb_vm->object_class;
     struct korb_frame top_frame = (struct korb_frame){
         .prev       = NULL,  /* clean caller context for the loaded file */
         .self       = korb_vm->main_obj,
-        .fp         = c->fp,
+        .fp         = c->current_frame->fp,
         .last_line  = Qnil,
         .last_match = Qnil,
     };
@@ -4613,11 +4613,11 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
 
     /* Reset cref to [Object] for top-level execution */
     struct korb_cref top_cref = { .klass = korb_vm->object_class, .prev = NULL };
-    c->cref = &top_cref;
-    c->current_file = filename;
+    c->current_frame->cref = &top_cref;
+    c->current_frame->current_file = filename;
 
     OPTIMIZE(ast);
-    VALUE r = EVAL(c, ast, c->fp);
+    VALUE r = EVAL(c, ast, c->current_frame->fp);
 
     /* Top-level `return` in a load'd file just stops *this* file —
      * not an error and not a propagating return.  CRuby allows this
@@ -4629,11 +4629,11 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
         c->state_target_frame = NULL;
     }
 
-    c->fp = prev_fp;
+    c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
-    c->current_class = prev_class;
-    c->cref = prev_cref;
-    c->current_file = prev_file;
+    c->current_frame->current_class = prev_class;
+    c->current_frame->cref = prev_cref;
+    c->current_frame->current_file = prev_file;
     c->current_frame = prev_frame;
     running_block = prev_running_block;
     return r;
@@ -4645,27 +4645,27 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
                                 const char *filename, VALUE recv) {
     NODE *ast = koruby_parse(src, len, filename ? filename : "(eval)");
     if (!ast) return Qnil;
-    VALUE *prev_fp = c->fp;
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE prev_self = c->current_frame->self;
     VALUE *prev_sp = c->sp;
-    struct korb_class *prev_class = c->current_class;
-    struct korb_cref *prev_cref = c->cref;
-    const char *prev_file = c->current_file;
-    c->fp = c->sp + 1;
+    struct korb_class *prev_class = c->current_frame->current_class;
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    const char *prev_file = c->current_frame->current_file;
+    c->current_frame->fp = c->sp + 1;
     c->current_frame->self = recv;
     struct korb_class *recv_klass = korb_class_of_class(recv);
-    c->current_class = recv_klass;
+    c->current_frame->current_class = recv_klass;
     struct korb_cref top_cref = { .klass = recv_klass, .prev = NULL };
-    c->cref = &top_cref;
-    c->current_file = filename;
+    c->current_frame->cref = &top_cref;
+    c->current_frame->current_file = filename;
     OPTIMIZE(ast);
-    VALUE r = EVAL(c, ast, c->fp);
-    c->fp = prev_fp;
+    VALUE r = EVAL(c, ast, c->current_frame->fp);
+    c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     c->current_frame->self = prev_self;
-    c->current_class = prev_class;
-    c->cref = prev_cref;
-    c->current_file = prev_file;
+    c->current_frame->current_class = prev_class;
+    c->current_frame->cref = prev_cref;
+    c->current_frame->current_file = prev_file;
     return r;
 }
 
@@ -4754,10 +4754,10 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         c->current_frame->self = blk->self;
         struct korb_proc *prev_block = current_block;
         current_block = NULL;
-        struct korb_cref *prev_cref = c->cref;
-        if (blk->cref) c->cref = blk->cref;
+        struct korb_cref *prev_cref = c->current_frame->cref;
+        if (blk->cref) c->current_frame->cref = blk->cref;
         VALUE result = blk->body ? EVAL(c, blk->body, fib->frame) : Qnil;
-        c->cref = prev_cref;
+        c->current_frame->cref = prev_cref;
         c->current_frame->self = prev_self;
         current_block = prev_block;
         fib->result = result;
@@ -4807,7 +4807,7 @@ VALUE korb_fiber_new(struct korb_proc *block) {
             fib->frame[i] = block->env[i];
         }
     }
-    /* Initial fiber c->fp/sp: fp at frame base, sp just past block's
+    /* Initial fiber c->current_frame->fp/sp: fp at frame base, sp just past block's
      * env (so method calls inside the block don't overlap its locals). */
     fib->fiber_fp = fib->frame;
     fib->fiber_sp = fib->frame + env_size;
@@ -4850,27 +4850,27 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
         makecontext(&fib->ctx, (void (*)(void))korb_fiber_entry, 2, hi, lo);
     }
 
-    /* Save resumer's c->fp/sp/stack_base/stack_end into the fiber, swap
+    /* Save resumer's c->current_frame->fp/sp/stack_base/stack_end into the fiber, swap
      * in the fiber's saved fp/sp + heap-frame extents, then swapcontext.
      * Yield will reverse this. */
     struct korb_fiber *prev = current_fiber;
     current_fiber = fib;
-    fib->resumer_fp = c->fp;
+    fib->resumer_fp = c->current_frame->fp;
     fib->resumer_sp = c->sp;
     fib->resumer_stack_base = c->stack_base;
     fib->resumer_stack_end = c->stack_end;
-    fib->resumer_cref = c->cref;
-    fib->resumer_current_class = c->current_class;
+    fib->resumer_cref = c->current_frame->cref;
+    fib->resumer_current_class = c->current_frame->current_class;
     fib->resumer_current_frame = c->current_frame;
     /* $! and $@ are fiber-local — stash resumer's, swap in fiber's. */
     fib->resumer_bang = korb_gvar_get(korb_intern("$!"));
     korb_gvar_set(korb_intern("$!"), fib->fiber_bang);
-    c->fp = fib->fiber_fp;
+    c->current_frame->fp = fib->fiber_fp;
     c->sp = fib->fiber_sp;
     c->stack_base = fib->frame;
     c->stack_end = fib->frame + fib->frame_size;
-    if (fib->fiber_cref) c->cref = fib->fiber_cref;
-    if (fib->fiber_current_class) c->current_class = fib->fiber_current_class;
+    if (fib->fiber_cref) c->current_frame->cref = fib->fiber_cref;
+    if (fib->fiber_current_class) c->current_frame->current_class = fib->fiber_current_class;
     if (fib->fiber_current_frame) c->current_frame = fib->fiber_current_frame;
     fib->state = KF_RUNNING;
 
@@ -4895,12 +4895,12 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
 
     /* Returned from yield/end — restore resumer's fp/sp from where the
      * yield path stashed them. */
-    c->fp = fib->resumer_fp;
+    c->current_frame->fp = fib->resumer_fp;
     c->sp = fib->resumer_sp;
     c->stack_base = fib->resumer_stack_base;
     c->stack_end = fib->resumer_stack_end;
-    c->cref = fib->resumer_cref;
-    c->current_class = fib->resumer_current_class;
+    c->current_frame->cref = fib->resumer_cref;
+    c->current_frame->current_class = fib->resumer_current_class;
     c->current_frame = fib->resumer_current_frame;
     /* Restore resumer's $!: if yield ran, it already did this; if the
      * fiber finished without yielding (KF_DEAD), we still need to. */
@@ -4921,22 +4921,22 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     }
     fib->result = argc > 0 ? argv[0] : Qnil;
     fib->state = KF_SUSPENDED;
-    /* Save fiber's c->fp/sp so the next resume can pick up where we
+    /* Save fiber's c->current_frame->fp/sp so the next resume can pick up where we
      * yielded; restore the resumer's fp/sp/stack so it sees its own
      * value-stack. */
-    fib->fiber_fp = c->fp;
+    fib->fiber_fp = c->current_frame->fp;
     fib->fiber_sp = c->sp;
-    fib->fiber_cref = c->cref;
-    fib->fiber_current_class = c->current_class;
+    fib->fiber_cref = c->current_frame->cref;
+    fib->fiber_current_class = c->current_frame->current_class;
     fib->fiber_current_frame = c->current_frame;
     fib->fiber_bang = korb_gvar_get(korb_intern("$!"));
     korb_gvar_set(korb_intern("$!"), fib->resumer_bang);
-    c->fp = fib->resumer_fp;
+    c->current_frame->fp = fib->resumer_fp;
     c->sp = fib->resumer_sp;
     c->stack_base = fib->resumer_stack_base;
     c->stack_end = fib->resumer_stack_end;
-    c->cref = fib->resumer_cref;
-    c->current_class = fib->resumer_current_class;
+    c->current_frame->cref = fib->resumer_cref;
+    c->current_frame->current_class = fib->resumer_current_class;
     c->current_frame = fib->resumer_current_frame;
 
     /* Mirror of resume's GC_disable: re-enable on yield back, disable
@@ -4949,16 +4949,16 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
      * method calls inside the fiber check against the right bounds. */
     c->stack_base = fib->frame;
     c->stack_end = fib->frame + fib->frame_size;
-    if (fib->fiber_cref) c->cref = fib->fiber_cref;
-    if (fib->fiber_current_class) c->current_class = fib->fiber_current_class;
+    if (fib->fiber_cref) c->current_frame->cref = fib->fiber_cref;
+    if (fib->fiber_current_class) c->current_frame->current_class = fib->fiber_current_class;
     if (fib->fiber_current_frame) c->current_frame = fib->fiber_current_frame;
     /* Re-establish fiber's $!: yield saved resumer's, swapped to nil; resume
      * restored fiber's already.  No-op here. */
     /* Resumed: restore the fiber's fp/sp (resume already did this from
      * its side, but in a chain of resume->yield->resume the inner ctx
-     * comes back here and the resumer's wrapper has overwritten c->fp
+     * comes back here and the resumer's wrapper has overwritten c->current_frame->fp
      * to its own; resume sets fp again before swapcontext, so by the
-     * time we land here, c->fp is fib->fiber_fp). */
+     * time we land here, c->current_frame->fp is fib->fiber_fp). */
     if (fib->argc > 0) return fib->args[0];
     return Qnil;
 }

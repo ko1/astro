@@ -753,12 +753,12 @@ static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_dir(CTX *c, VALUE self, int argc, VALUE *argv) {
-    const char *cur = c->current_file ? c->current_file : ".";
+    const char *cur = c->current_frame->current_file ? c->current_frame->current_file : ".";
     return korb_str_new_cstr(korb_dirname(cur));
 }
 
 static VALUE kernel_file(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_str_new_cstr(c->current_file ? c->current_file : "(eval)");
+    return korb_str_new_cstr(c->current_frame->current_file ? c->current_frame->current_file : "(eval)");
 }
 
 static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -767,7 +767,7 @@ static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) 
         return Qnil;
     }
     const char *name = korb_str_cstr(argv[0]);
-    char *resolved = korb_resolve_relative(c->current_file, name);
+    char *resolved = korb_resolve_relative(c->current_frame->current_file, name);
     if (!resolved) {
         korb_raise(c, NULL, "cannot load such file -- %s", name);
         return Qnil;
@@ -1015,7 +1015,7 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
      * is 1, so out-of-the-box `caller` skips the immediate frame and
      * matches CRuby. */
     VALUE arr = korb_ary_new();
-    const char *default_file = c->current_file ? c->current_file : "(unknown)";
+    const char *default_file = c->current_frame->current_file ? c->current_frame->current_file : "(unknown)";
     struct korb_frame *f = c->current_frame;
     /* Index-0 entry's line is where IN that frame's body `caller` was
      * called.  kernel_caller is a cfunc; its callsite is recorded in
@@ -1253,7 +1253,7 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      * cfunc dispatch via last_cfunc_callsite). */
     char eval_filename_buf[1024];
     {
-        const char *cf = c->current_file ? c->current_file : "(unknown)";
+        const char *cf = c->current_frame->current_file ? c->current_frame->current_file : "(unknown)";
         int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
         snprintf(eval_filename_buf, sizeof(eval_filename_buf),
                  "(eval at %s:%d)", cf, line);
@@ -1337,8 +1337,8 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     if (!ast) return Qnil;
-    const char *prev_file = c->current_file;
-    c->current_file = filename;
+    const char *prev_file = c->current_frame->current_file;
+    c->current_frame->current_file = filename;
     struct Node *prev_eval_body = c->current_eval_program_body;
     c->current_eval_program_body = ast;
     extern void OPTIMIZE_decl(void);
@@ -1351,17 +1351,17 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      *      see the lambda's lexical scope, not the method that .called it.
      *   2. Otherwise, the calling method's def_cref (works when
      *      prologue_ast_simple_inl skipped the cref restore step).
-     *   3. Fall back to whatever c->cref currently is.
+     *   3. Fall back to whatever c->current_frame->cref currently is.
      */
-    struct korb_cref *prev_cref = c->cref;
+    struct korb_cref *prev_cref = c->current_frame->cref;
     extern struct korb_proc *running_block;
     if (running_block && running_block->cref) {
-        c->cref = running_block->cref;
+        c->current_frame->cref = running_block->cref;
     } else if (c->current_frame && c->current_frame->method &&
                c->current_frame->method->def_cref) {
-        c->cref = c->current_frame->method->def_cref;
+        c->current_frame->cref = c->current_frame->method->def_cref;
     }
-    /* Adjust c->fp so eval body's slot 0 corresponds to scope_locals[0]
+    /* Adjust c->current_frame->fp so eval body's slot 0 corresponds to scope_locals[0]
      * (caller's first lvar).  For a block context, the block's actual
      * lvars start at fp[param_base], not fp[0] — without this shift,
      * eval body reads the wrong slots when called inside a block whose
@@ -1370,15 +1370,15 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      * Only shift on the OUTER-most eval entry: nested eval inherits
      * the already-shifted fp, so shifting again would double-skip
      * past the lvar slots. */
-    VALUE *prev_fp = c->fp;
-    if (!prev_eval_body && running_block && running_block->param_base > 0 && c->fp) {
-        c->fp = c->fp + running_block->param_base;
+    VALUE *prev_fp = c->current_frame->fp;
+    if (!prev_eval_body && running_block && running_block->param_base > 0 && c->current_frame->fp) {
+        c->current_frame->fp = c->current_frame->fp + running_block->param_base;
     }
-    VALUE r = EVAL(c, ast, c->fp);
-    c->fp = prev_fp;
-    c->cref = prev_cref;
+    VALUE r = EVAL(c, ast, c->current_frame->fp);
+    c->current_frame->fp = prev_fp;
+    c->current_frame->cref = prev_cref;
     c->current_eval_program_body = prev_eval_body;
-    c->current_file = prev_file;
+    c->current_frame->current_file = prev_file;
     return r;
 }
 /* Default Object#initialize — accepts any args and returns self.

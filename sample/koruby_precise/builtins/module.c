@@ -492,21 +492,21 @@ static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
         struct korb_class *klass = (struct korb_class *)self;
         NODE *ast = koruby_parse(s->ptr, (size_t)s->len, "(eval)");
         if (!ast) return Qnil;
-        VALUE *prev_fp = c->fp;
+        VALUE *prev_fp = c->current_frame->fp;
         VALUE prev_self = c->current_frame->self;
-        struct korb_class *prev_class = c->current_class;
-        struct korb_cref *prev_cref = c->cref;
-        c->fp = c->sp + 1;
+        struct korb_class *prev_class = c->current_frame->current_class;
+        struct korb_cref *prev_cref = c->current_frame->cref;
+        c->current_frame->fp = c->sp + 1;
         c->current_frame->self = self;
-        c->current_class = klass;
+        c->current_frame->current_class = klass;
         struct korb_cref top = { .klass = klass, .prev = NULL };
-        c->cref = &top;
+        c->current_frame->cref = &top;
         OPTIMIZE(ast);
-        VALUE r = EVAL(c, ast, c->fp);
-        c->fp = prev_fp;
+        VALUE r = EVAL(c, ast, c->current_frame->fp);
+        c->current_frame->fp = prev_fp;
         c->current_frame->self = prev_self;
-        c->current_class = prev_class;
-        c->cref = prev_cref;
+        c->current_frame->current_class = prev_class;
+        c->current_frame->cref = prev_cref;
         return r;
     }
     if (!current_block) return self;
@@ -528,9 +528,9 @@ static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     struct korb_class *klass = (struct korb_class *)self;
     VALUE prev_self = c->current_frame->self;
-    struct korb_class *prev_class = c->current_class;
-    struct korb_cref *prev_cref = c->cref;
-    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_class *prev_class = c->current_frame->current_class;
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
     VALUE prev_blk_self = blk->self;
     /* class_eval semantics: temporarily install klass at the head of the
      * block's lexical cref chain so `def` and constant lookup inside the
@@ -540,16 +540,16 @@ static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_cref blk_new_cref = { .klass = klass, .prev = blk->cref };
     blk->cref = &blk_new_cref;
     c->current_frame->self = self;
-    c->current_class = klass;
-    c->cref = &new_cref;
+    c->current_frame->current_class = klass;
+    c->current_frame->cref = &new_cref;
     blk->self = self;
     VALUE av0[1] = { self };
     VALUE r = korb_yield(c, 1, av0);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     c->current_frame->self = prev_self;
-    c->current_class = prev_class;
-    c->cref = prev_cref;
+    c->current_frame->current_class = prev_class;
+    c->current_frame->cref = prev_cref;
     if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }
     return r;
 }
@@ -575,23 +575,23 @@ static VALUE module_class_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     struct korb_class *klass = (struct korb_class *)self;
     VALUE prev_self = c->current_frame->self;
-    struct korb_class *prev_class = c->current_class;
-    struct korb_cref *prev_cref = c->cref;
-    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
+    struct korb_class *prev_class = c->current_frame->current_class;
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
     VALUE prev_blk_self = blk->self;
     struct korb_cref *prev_blk_cref = blk->cref;
     struct korb_cref blk_new_cref = { .klass = klass, .prev = blk->cref };
     blk->cref = &blk_new_cref;
     c->current_frame->self = self;
-    c->current_class = klass;
-    c->cref = &new_cref;
+    c->current_frame->current_class = klass;
+    c->current_frame->cref = &new_cref;
     blk->self = self;
     VALUE r = korb_yield(c, (uint32_t)argc, argv);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     c->current_frame->self = prev_self;
-    c->current_class = prev_class;
-    c->cref = prev_cref;
+    c->current_frame->current_class = prev_class;
+    c->current_frame->cref = prev_cref;
     if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }
     return r;
 }
@@ -746,24 +746,24 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         extern struct korb_proc *current_block;
         if (current_block) {
             VALUE prev_self = c->current_frame->self;
-            struct korb_class *prev_class = c->current_class;
-            struct korb_cref *prev_cref = c->cref;
-            struct korb_cref new_cref = { .klass = nk, .prev = c->cref };
+            struct korb_class *prev_class = c->current_frame->current_class;
+            struct korb_cref *prev_cref = c->current_frame->cref;
+            struct korb_cref new_cref = { .klass = nk, .prev = c->current_frame->cref };
             VALUE prev_blk_self = current_block->self;
             struct korb_cref *prev_blk_cref = current_block->cref;
             struct korb_cref blk_new_cref = { .klass = nk, .prev = current_block->cref };
             current_block->cref = &blk_new_cref;
             c->current_frame->self = (VALUE)nk;
-            c->current_class = nk;
-            c->cref = &new_cref;
+            c->current_frame->current_class = nk;
+            c->current_frame->cref = &new_cref;
             current_block->self = (VALUE)nk;   /* class_eval semantics */
             VALUE av0[1] = { (VALUE)nk };
             korb_yield(c, 1, av0);
             current_block->cref = prev_blk_cref;
             current_block->self = prev_blk_self;
             c->current_frame->self = prev_self;
-            c->current_class = prev_class;
-            c->cref = prev_cref;
+            c->current_frame->current_class = prev_class;
+            c->current_frame->cref = prev_cref;
             if (c->state == KORB_BREAK) {
                 c->state = KORB_NORMAL; c->state_value = Qnil;
             }
@@ -779,7 +779,7 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Capture the soon-to-be-popped frame's range BEFORE invoking
      * initialize, so we can detach any Procs that initialize stuffs
      * into obj's ivars whose env points into that frame. */
-    VALUE *fp_lo = c->fp;
+    VALUE *fp_lo = c->current_frame->fp;
     VALUE *fp_hi = c->sp;
     if (m) {
         VALUE blk = current_block ? (VALUE)current_block : Qnil;
@@ -1090,11 +1090,11 @@ static VALUE module_public_constant(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 /* Module.nesting — array of the lexically enclosing class/module
- * stack, innermost first.  Just walks c->cref which already mirrors
+ * stack, innermost first.  Just walks c->current_frame->cref which already mirrors
  * the source's `module M; class C; ...; end; end` nesting. */
 static VALUE module_class_nesting(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE arr = korb_ary_new();
-    for (struct korb_cref *cur = c->cref; cur; cur = cur->prev) {
+    for (struct korb_cref *cur = c->current_frame->cref; cur; cur = cur->prev) {
         if (cur->klass && cur->klass != korb_vm->object_class) {
             korb_ary_push(arr, (VALUE)cur->klass);
         }
@@ -1110,16 +1110,16 @@ static VALUE module_new_class_func(CTX *c, VALUE self, int argc, VALUE *argv) {
     extern struct korb_proc *current_block;
     if (current_block) {
         VALUE prev_self = c->current_frame->self;
-        struct korb_class *prev_class = c->current_class;
-        struct korb_cref *prev_cref = c->cref;
-        struct korb_cref new_cref = { .klass = m, .prev = c->cref };
+        struct korb_class *prev_class = c->current_frame->current_class;
+        struct korb_cref *prev_cref = c->current_frame->cref;
+        struct korb_cref new_cref = { .klass = m, .prev = c->current_frame->cref };
         VALUE prev_blk_self = current_block->self;
         struct korb_cref *prev_blk_cref = current_block->cref;
         struct korb_cref blk_new_cref = { .klass = m, .prev = current_block->cref };
         current_block->cref = &blk_new_cref;
         c->current_frame->self = (VALUE)m;
-        c->current_class = m;
-        c->cref = &new_cref;
+        c->current_frame->current_class = m;
+        c->current_frame->cref = &new_cref;
         /* `def self.X` inside the block needs the block's self to BE
          * the module, not the outer caller — same fix as Class.new. */
         current_block->self = (VALUE)m;
@@ -1128,8 +1128,8 @@ static VALUE module_new_class_func(CTX *c, VALUE self, int argc, VALUE *argv) {
         current_block->cref = prev_blk_cref;
         current_block->self = prev_blk_self;
         c->current_frame->self = prev_self;
-        c->current_class = prev_class;
-        c->cref = prev_cref;
+        c->current_frame->current_class = prev_class;
+        c->current_frame->cref = prev_cref;
         if (c->state == KORB_BREAK) {
             c->state = KORB_NORMAL; c->state_value = Qnil;
         }

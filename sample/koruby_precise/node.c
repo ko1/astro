@@ -123,7 +123,7 @@ void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
  * `index` fields: convert from positive frame index to negative
  * `sp_offset` (= index - scope_size).  The lvar body then dispatches
  * on the sign — negative → `sp[sp_offset]` (= sp-relative, GC-safe),
- * non-negative → fallback `c->fp[index]` (= old behavior, used when
+ * non-negative → fallback `c->current_frame->fp[index]` (= old behavior, used when
  * scope_size is unknown).
  *
  * Scope-introducing nodes (def/block/scope) reset scope_size to their

@@ -245,17 +245,14 @@ typedef struct CTX_struct {
 
     VALUE *stack_base;
     VALUE *stack_end;
-    VALUE *fp;            /* current frame: locals and arg slots */
     VALUE *sp;            /* high-water mark for GC scanning */
     VALUE *env;           /* root scan lower bound — set at init (= stack_base) */
-    /* `self` lives in `current_frame->self`.  Authoritative source so
-     * GC root scan (= frame chain) updates it automatically — no
-     * C-local save/restore needed; just push/pop a frame at each
-     * scope boundary that changes self (class/module body, prologue,
-     * instance_eval, etc.). */
-    struct korb_class *current_class; /* def-target class (for top-level: Object) */
-    struct korb_cref *cref;           /* lexical const scope */
-    const char *current_file;       /* for backtrace + require_relative */
+    /* `self`, `fp`, `cref`, `current_class`, `current_file` all live in
+     * `current_frame->*` — the frame chain is the authoritative source
+     * for scope-bound state.  GC root scan (visit_roots phase d) walks
+     * the chain and updates heap pointers automatically; save/restore
+     * across body GC is just a frame push/pop, no C-local intermediates
+     * needed. */
 
     state_serial_t method_serial;
 
@@ -306,6 +303,12 @@ struct korb_frame {
     struct korb_method *method;
     VALUE self;
     VALUE *fp;
+    /* Scope-bound state — these used to live in CTX but now live here
+     * so save/restore = frame push/pop.  visit_roots walks the frame
+     * chain and updates heap pointers automatically. */
+    struct korb_cref *cref;            /* lexical const scope */
+    struct korb_class *current_class;  /* def-target class */
+    const char *current_file;          /* for backtrace + require_relative */
     uint32_t locals_cnt;
     struct korb_proc *block;   /* block passed to this method (NULL if none) */
     /* $_ (last_line) and $~ (last_match) are method-scoped pseudo-globals.
