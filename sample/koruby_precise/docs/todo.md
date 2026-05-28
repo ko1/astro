@@ -235,6 +235,23 @@ ARO_ROOT_SCOPE_START を引き続き使用。
   到達していないか、 そもそも visit が走っていない可能性。 詳細 trace
   要。
 
+### 2026-05-29 追加: korb_host_class() helper と class def の pin (multiple commits)
+
+- `korb_host_class(c)` helper を object.h に追加 (commit 07dcb17f)。
+  `c->current_frame->cref ? cref->klass : current_class` パターンを
+  全て置換、 cref chain を walk しながら NULL klass を skip。
+- `node_class_def_in` (commit 44123967) / `node_class_def_in_strict`
+  (commit 8c854955) を ARO_ROOT_SCOPE 化 — parent / super / klass を
+  3-slot pin。
+- `node_const_path_get` の eName / name_v / prefix を pin
+  (commit 5a01892e)。
+- `node_method_call` の r を pin (commit 59c15c5b)。
+- `proc_call` (commit 54222f06) / `koruby_run_ast` (commit a79eaf69) の
+  THROW handler で eUTE / tag / val / tag_s を pin。
+- `visit_roots` の frame chain walk に depth cap 4096 (commit b9247c37)。
+
+rubyspec STRESS+PURGE 15/67 → 17/67 PASS, SEGV 46 → 41。
+
 ### 2026-05-29 追加: fresh_env を value stack 化 (commit 8a0a68f3)
 
 if_spec.rb 等の SEGV 解析で発見した重要な root cause:
