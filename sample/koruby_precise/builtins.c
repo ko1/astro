@@ -1276,25 +1276,25 @@ void korb_init_builtins(void) {
     DEF(korb_vm->symbol_class, "swapcase",   sym_swapcase,   0);
 
     /* Boolean / Nil */
-    DEF(korb_vm->true_class, "to_s", true_to_s, 0);
-    DEF(korb_vm->false_class, "to_s", false_to_s, 0);
-    DEF(korb_vm->nil_class, "to_s", nil_to_s, 0);
-    DEF(korb_vm->nil_class, "inspect", nil_inspect, 0);
+    DEF_R(korb_vm->true_class, "to_s", true_to_s, 0);
+    DEF_R(korb_vm->false_class, "to_s", false_to_s, 0);
+    DEF_R(korb_vm->nil_class, "to_s", nil_to_s, 0);
+    DEF_R(korb_vm->nil_class, "inspect", nil_inspect, 0);
     /* Boolean &/|/^ — Kernel-style coercion to truthy. */
-    DEF(korb_vm->true_class,  "&", true_and,  1);
-    DEF(korb_vm->true_class,  "|", true_or,   1);
-    DEF(korb_vm->true_class,  "^", true_xor,  1);
-    DEF(korb_vm->false_class, "&", false_and, 1);
-    DEF(korb_vm->false_class, "|", false_or,  1);
-    DEF(korb_vm->false_class, "^", false_xor, 1);
-    DEF(korb_vm->nil_class,   "&", nil_and,   1);
-    DEF(korb_vm->nil_class,   "|", nil_or,    1);
-    DEF(korb_vm->nil_class,   "^", nil_xor,   1);
-    DEF(korb_vm->nil_class,   "to_a", nil_to_a, 0);
-    DEF(korb_vm->nil_class,   "to_h", nil_to_h, 0);
-    DEF(korb_vm->nil_class,   "to_f", nil_to_f, 0);
-    DEF(korb_vm->nil_class,   "to_i", nil_to_i, 0);
-    DEF(korb_vm->nil_class,   "nil?", nil_nil_p, 0);
+    DEF_R(korb_vm->true_class,  "&", true_and,  1);
+    DEF_R(korb_vm->true_class,  "|", true_or,   1);
+    DEF_R(korb_vm->true_class,  "^", true_xor,  1);
+    DEF_R(korb_vm->false_class, "&", false_and, 1);
+    DEF_R(korb_vm->false_class, "|", false_or,  1);
+    DEF_R(korb_vm->false_class, "^", false_xor, 1);
+    DEF_R(korb_vm->nil_class,   "&", nil_and,   1);
+    DEF_R(korb_vm->nil_class,   "|", nil_or,    1);
+    DEF_R(korb_vm->nil_class,   "^", nil_xor,   1);
+    DEF_R(korb_vm->nil_class,   "to_a", nil_to_a, 0);
+    DEF_R(korb_vm->nil_class,   "to_h", nil_to_h, 0);
+    DEF_R(korb_vm->nil_class,   "to_f", nil_to_f, 0);
+    DEF_R(korb_vm->nil_class,   "to_i", nil_to_i, 0);
+    DEF_R(korb_vm->nil_class,   "nil?", nil_nil_p, 0);
 
     /* Proc */
     DEF(korb_vm->proc_class, "call", proc_call, -1);
@@ -1468,24 +1468,24 @@ void korb_init_builtins(void) {
         korb_const_set(cMath, korb_intern("E"),  korb_float_new(2.718281828459045));
         /* Math.fn(...) calls — install on the metaclass so the lookup
          * for `Math.sqrt(2)` (recv = Math) finds them. */
-        DEF(cMathMeta, "sqrt",  math_sqrt,  1);
-        DEF(cMathMeta, "sin",   math_sin,   1);
-        DEF(cMathMeta, "cos",   math_cos,   1);
-        DEF(cMathMeta, "tan",   math_tan,   1);
-        DEF(cMathMeta, "asin",  math_asin,  1);
-        DEF(cMathMeta, "acos",  math_acos,  1);
-        DEF(cMathMeta, "atan",  math_atan,  1);
-        DEF(cMathMeta, "atan2", math_atan2, 2);
-        DEF(cMathMeta, "sinh",  math_sinh,  1);
-        DEF(cMathMeta, "cosh",  math_cosh,  1);
-        DEF(cMathMeta, "tanh",  math_tanh,  1);
-        DEF(cMathMeta, "exp",   math_exp,   1);
-        DEF(cMathMeta, "log",   math_log,  -1);
-        DEF(cMathMeta, "log2",  math_log2,  1);
-        DEF(cMathMeta, "log10", math_log10, 1);
-        DEF(cMathMeta, "cbrt",  math_cbrt,  1);
-        DEF(cMathMeta, "hypot", math_hypot, 2);
-        DEF(cMathMeta, "pow",   math_pow,   2);
+        DEF_R(cMathMeta, "sqrt",  math_sqrt,  1);
+        DEF_R(cMathMeta, "sin",   math_sin,   1);
+        DEF_R(cMathMeta, "cos",   math_cos,   1);
+        DEF_R(cMathMeta, "tan",   math_tan,   1);
+        DEF_R(cMathMeta, "asin",  math_asin,  1);
+        DEF_R(cMathMeta, "acos",  math_acos,  1);
+        DEF_R(cMathMeta, "atan",  math_atan,  1);
+        DEF_R(cMathMeta, "atan2", math_atan2, 2);
+        DEF_R(cMathMeta, "sinh",  math_sinh,  1);
+        DEF_R(cMathMeta, "cosh",  math_cosh,  1);
+        DEF_R(cMathMeta, "tanh",  math_tanh,  1);
+        DEF_R(cMathMeta, "exp",   math_exp,   1);
+        DEF_R(cMathMeta, "log",   math_log,  -1);
+        DEF_R(cMathMeta, "log2",  math_log2,  1);
+        DEF_R(cMathMeta, "log10", math_log10, 1);
+        DEF_R(cMathMeta, "cbrt",  math_cbrt,  1);
+        DEF_R(cMathMeta, "hypot", math_hypot, 2);
+        DEF_R(cMathMeta, "pow",   math_pow,   2);
         cMath->basic.klass = (VALUE)cMathMeta;
     }
 
