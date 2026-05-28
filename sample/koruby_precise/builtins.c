@@ -61,8 +61,7 @@ VALUE _new_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (_m) _m->visibility = KORB_VIS_PRIVATE;                            \
 } while (0)
 
-void korb_init_builtins(void) {
-    CTX *c = korb_vm->current_ctx;
+void korb_init_builtins(CTX *c) {
     (void)c;  /* used by sp-passing alloc helpers below */
     /* BasicObject methods — must come first since CRuby's BasicObject
      * has its own __id__, __send__, ==, !=, !, equal?, instance_eval,
@@ -1545,7 +1544,6 @@ void korb_init_builtins(void) {
     korb_const_set(korb_vm->object_class, korb_intern("ARGV"), korb_ary_new(c, c->sp));
     /* ENV: populate from real environment (read-only snapshot). */
     {
-        CTX *c = korb_vm->current_ctx;
         extern char **environ;
         VALUE env = korb_hash_new(c, c->sp);
         for (char **p = environ; *p; p++) {

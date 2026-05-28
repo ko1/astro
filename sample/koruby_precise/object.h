@@ -386,7 +386,7 @@ extern struct korb_vm *korb_vm;
 
 /* ---------- API ---------- */
 
-void korb_runtime_init(void);
+CTX *korb_runtime_init(void);
 
 /* memory */
 void *korb_xmalloc(size_t size);
@@ -668,7 +668,7 @@ VALUE korb_inspect(CTX *c, VALUE *sp, VALUE v);
 VALUE korb_inspect_dispatch(CTX *c, VALUE v);
 VALUE korb_to_s(CTX *c, VALUE *sp, VALUE v);
 VALUE korb_to_s_dispatch(CTX *c, VALUE v);
-void  korb_p(VALUE v); /* writes to stdout with newline */
+void  korb_p(CTX *c, VALUE v); /* writes to stdout with newline */
 
 /* errors / exceptions */
 VALUE korb_exc_new(struct korb_class *klass, const char *msg);
@@ -974,7 +974,7 @@ VALUE korb_proc_new_with_cref(CTX *c, struct Node *body, VALUE *fp, uint32_t env
  * #include "prologues.h" block) so the inlined prologues can use them. */
 
 /* Builtins init */
-void korb_init_builtins(void);
+void korb_init_builtins(CTX *c);
 
 /* Fiber */
 struct korb_fiber;

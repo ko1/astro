@@ -132,7 +132,7 @@ int main(int argc, char *argv[])
     if (astro_build_extract_flags(&argc, argv, &bcfg) != 0) return 1;
 
     INIT();
-    korb_runtime_init();
+    CTX *c = korb_runtime_init();
 
     /* Initialize the code store: dlopen code_store/all.so if it exists.
      * The src_dir is the directory of node.h / node_eval.c — used by the
@@ -206,7 +206,6 @@ int main(int argc, char *argv[])
         }
     }
     /* Build ARGV from args after the script path */
-    CTX *c = korb_vm->current_ctx;
     VALUE argv_array = korb_ary_new(c, c->sp);
     for (int i = script_arg_start; i < argc; i++) {
         korb_ary_push(argv_array, korb_str_new_cstr(c, c->sp, argv[i]));

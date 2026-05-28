@@ -333,8 +333,7 @@ bool korb_cvar_defined(CTX *c, ID name) {
     return k && cvar_owner_(k, name) != NULL;
 }
 
-VALUE korb_cvar_names(struct korb_class *k) {
-    CTX *c = korb_vm->current_ctx;
+VALUE korb_cvar_names(CTX *c, struct korb_class *k) {
     VALUE arr = korb_ary_new(c, c->sp);
     /* Collect from k and its supers, dedup by name. */
     for (struct korb_class *cur = k; cur; cur = cur->super) {
@@ -2782,8 +2781,7 @@ void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
 }
 
 /* ---- inspect / to_s ---- */
-static void str_appendf(VALUE s, const char *fmt, ...) {
-    CTX *c = korb_vm->current_ctx;
+static void str_appendf(CTX *c, VALUE s, const char *fmt, ...) {
     char buf[256];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -2792,7 +2790,7 @@ static void str_appendf(VALUE s, const char *fmt, ...) {
     korb_str_concat(c, c->sp, s, part);
 }
 
-static VALUE korb_inspect_inner(VALUE v, int depth);
+static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth);
 
 /* Shortest round-tripping decimal for a double (matches CRuby's
  * `3.14.to_s == "3.14"` while staying unambiguous).  Strategy:
@@ -2843,8 +2841,7 @@ void korb_double_to_str(double d, char *out, size_t out_cap) {
     }
 }
 
-static VALUE korb_inspect_inner(VALUE v, int depth) {
-    CTX *c = korb_vm->current_ctx;
+static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
     if (depth > 32) return korb_str_new_cstr(c, c->sp, "...");
     if (FIXNUM_P(v)) {
         char b[32]; snprintf(b, 32, "%ld", FIX2LONG(v));
@@ -2962,7 +2959,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
             if (c2) {
                 ARO_ROOT_SCOPE_START(c2, rs, 2) {
                     rs[0] = korb_str_new(c, c->sp, name, (long)nlen);
-                    rs[0] = korb_inspect_inner(rs[0], depth + 1);
+                    rs[0] = korb_inspect_inner(c, rs[0], depth + 1);
                     rs[1] = korb_str_new_cstr(c, c->sp, ":");
                     korb_str_concat(c, c->sp, rs[1], rs[0]);
                     ret = rs[1];
@@ -2971,7 +2968,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
             }
         }
         VALUE name_str = korb_str_new(c, c->sp, name, (long)nlen);
-        VALUE inspected = korb_inspect_inner(name_str, depth + 1);
+        VALUE inspected = korb_inspect_inner(c, name_str, depth + 1);
         VALUE r = korb_str_new_cstr(c, c->sp, ":");
         korb_str_concat(c, c->sp, r, inspected);
         return r;
@@ -3090,7 +3087,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
                 rs[1] = korb_str_new_cstr(c, c->sp, "[");
                 for (long i = 0; i < ((struct korb_array *)rs[0])->len; i++) {
                     if (i) rs[1] = korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, ", "));
-                    rs[2] = korb_inspect_inner(((struct korb_array *)rs[0])->ptr[i], depth+1);
+                    rs[2] = korb_inspect_inner(c, ((struct korb_array *)rs[0])->ptr[i], depth+1);
                     rs[1] = korb_str_concat(c, c->sp, rs[1], rs[2]);
                 }
                 rs[1] = korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, "]"));
@@ -3104,7 +3101,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         VALUE r = korb_str_new_cstr(c, c->sp, "[");
         for (long i = 0; i < a->len; i++) {
             if (i) korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, ", "));
-            korb_str_concat(c, c->sp, r, korb_inspect_inner(a->ptr[i], depth+1));
+            korb_str_concat(c, c->sp, r, korb_inspect_inner(c, a->ptr[i], depth+1));
         }
         korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, "]"));
         return r;
@@ -3120,10 +3117,10 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
                 for (struct korb_hash_entry *e = ((struct korb_hash *)rs[0])->first; e; e = e->next) {
                     if (!first) rs[1] = korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, ", "));
                     first = false;
-                    rs[2] = korb_inspect_inner(e->key, depth+1);
+                    rs[2] = korb_inspect_inner(c, e->key, depth+1);
                     rs[1] = korb_str_concat(c, c->sp, rs[1], rs[2]);
                     rs[1] = korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, "=>"));
-                    rs[3] = korb_inspect_inner(e->value, depth+1);
+                    rs[3] = korb_inspect_inner(c, e->value, depth+1);
                     rs[1] = korb_str_concat(c, c->sp, rs[1], rs[3]);
                 }
                 rs[1] = korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, "}"));
@@ -3137,9 +3134,9 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         for (struct korb_hash_entry *e = h->first; e; e = e->next) {
             if (!first) korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, ", "));
             first = false;
-            korb_str_concat(c, c->sp, r, korb_inspect_inner(e->key, depth+1));
+            korb_str_concat(c, c->sp, r, korb_inspect_inner(c, e->key, depth+1));
             korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, "=>"));
-            korb_str_concat(c, c->sp, r, korb_inspect_inner(e->value, depth+1));
+            korb_str_concat(c, c->sp, r, korb_inspect_inner(c, e->value, depth+1));
         }
         korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, "}"));
         return r;
@@ -3149,10 +3146,10 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         bool both_nil = NIL_P(r->begin) && NIL_P(r->end);
         VALUE s = (NIL_P(r->begin) && !both_nil)
                       ? korb_str_new_cstr(c, c->sp, "")
-                      : korb_inspect_inner(r->begin, depth+1);
+                      : korb_inspect_inner(c, r->begin, depth+1);
         korb_str_concat(c, c->sp, s, korb_str_new_cstr(c, c->sp, r->exclude_end ? "..." : ".."));
         if (!NIL_P(r->end) || both_nil)
-            korb_str_concat(c, c->sp, s, korb_inspect_inner(r->end, depth+1));
+            korb_str_concat(c, c->sp, s, korb_inspect_inner(c, r->end, depth+1));
         return s;
     }
     if (t == T_FLOAT) {
@@ -3222,7 +3219,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
     return korb_str_new_cstr(c, c->sp, "#<?>");
 }
 
-VALUE korb_inspect(CTX *c, VALUE *sp, VALUE v) { c->sp = sp; return korb_inspect_inner(v, 0); }
+VALUE korb_inspect(CTX *c, VALUE *sp, VALUE v) { c->sp = sp; return korb_inspect_inner(c, v, 0); }
 
 /* CTX-aware inspect — dispatches a user-defined inspect if the
  * receiver's class has one (e.g., Rational defines `def inspect;
@@ -3282,8 +3279,7 @@ VALUE korb_to_s(CTX *c, VALUE *sp, VALUE v) {
     return korb_inspect(c, c->sp, v);
 }
 
-void korb_p(VALUE v) {
-    CTX *c = korb_vm->current_ctx;
+void korb_p(CTX *c, VALUE v) {
     VALUE s = korb_inspect(c, c->sp, v);
     fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, stdout);
     fputc('\n', stdout);
@@ -4512,7 +4508,7 @@ static void init_well_known_ids(void) {
     id_op_xor   = korb_intern("^");
 }
 
-void korb_init_builtins(void); /* defined in builtins.c */
+void korb_init_builtins(CTX *c); /* defined in builtins.c */
 
 /* Bootstrap CTX — created at korb_runtime_init's top BEFORE any heap obj
  * is allocated.  Holds the value stack used as both eval stack and precise
@@ -4526,7 +4522,7 @@ struct CTX_struct koruby_bootstrap_ctx;
  * through `c->current_frame->self`; without a sentinel, top-level code
  * would NULL-deref.  Initialized post-main_obj-creation below. */
 
-void korb_runtime_init(void) {
+CTX *korb_runtime_init(void) {
     init_well_known_ids();
 
     /* korb_vm itself is libc-malloc'd (= not on the GC heap).  It owns
@@ -4843,7 +4839,7 @@ void korb_runtime_init(void) {
     {
         bool prev_stress = ARO_GC_COMMON(c)->stress;
         ARO_GC_COMMON(c)->stress = false;
-        korb_init_builtins();
+        korb_init_builtins(c);
         ARO_GC_COMMON(c)->stress = prev_stress;
     }
     /* $: / $LOAD_PATH: array initialized with at least one path so
@@ -4879,6 +4875,7 @@ void korb_runtime_init(void) {
     korb_const_set(korb_vm->object_class, korb_intern("RUBY_ENGINE"),        korb_str_new_cstr(c, c->sp, "koruby"));
     korb_const_set(korb_vm->object_class, korb_intern("RUBY_PATCHLEVEL"),    INT2FIX(0));
     korb_const_set(korb_vm->object_class, korb_intern("TOPLEVEL_BINDING"),   Qnil);
+    return c;
 }
 
 /* ---- file load / eval ---- */

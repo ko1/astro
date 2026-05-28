@@ -159,7 +159,7 @@ static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
     }
     return korb_intern_n(p, n);
 }
-extern VALUE korb_cvar_names(struct korb_class *k);
+extern VALUE korb_cvar_names(CTX *c, struct korb_class *k);
 VALUE mod_class_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) {
         korb_raise(c, NULL, "class_variable_get: receiver must be Class/Module");
@@ -280,7 +280,7 @@ VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 VALUE mod_class_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return korb_ary_new(c, c->sp);
-    return korb_cvar_names((struct korb_class *)self);
+    return korb_cvar_names(c, (struct korb_class *)self);
 }
 
 static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -529,8 +529,7 @@ static VALUE method_receiver(CTX *c, VALUE self, int argc, VALUE *argv) {
  * (only the locals_cnt and kind counts), so we emit single-element
  * arrays [:req] / [:opt] / etc.  CRuby accepts that form for
  * anonymous parameters. */
-static VALUE method_params_for_method(struct korb_method *km) {
-    CTX *c = korb_vm->current_ctx;
+static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
     VALUE r = korb_ary_new(c, c->sp);
     if (!km) return r;
     if (km->type == KORB_METHOD_CFUNC) {
@@ -604,7 +603,7 @@ static VALUE method_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     } else {
         k = korb_class_of_class(m->receiver);
     }
-    return method_params_for_method(korb_class_find_method(k, m->name));
+    return method_params_for_method(c, korb_class_find_method(k, m->name));
 }
 
 /* Method#source_location — [file, line] of the method's body node,

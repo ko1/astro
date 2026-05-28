@@ -289,8 +289,7 @@ static VALUE module_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) 
 /* Helper: collect methods of `vis` visibility from the receiver's class
  * chain.  vis = -1 means "all public + protected" (default for #methods).
  * vis = KORB_VIS_PUBLIC / PRIVATE / PROTECTED selects exactly that set. */
-static VALUE methods_with_visibility(VALUE self, int vis, bool include_inherited) {
-    CTX *c = korb_vm->current_ctx;
+static VALUE methods_with_visibility(CTX *c, VALUE self, int vis, bool include_inherited) {
     struct korb_class *k = korb_class_of_class(self);
     VALUE r = korb_ary_new(c, c->sp);
     while (k) {
@@ -318,19 +317,19 @@ static VALUE methods_with_visibility(VALUE self, int vis, bool include_inherited
 }
 static VALUE obj_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    return methods_with_visibility(self, -1, include_inherited);
+    return methods_with_visibility(c, self, -1, include_inherited);
 }
 static VALUE obj_public_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    return methods_with_visibility(self, KORB_VIS_PUBLIC, include_inherited);
+    return methods_with_visibility(c, self, KORB_VIS_PUBLIC, include_inherited);
 }
 static VALUE obj_private_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    return methods_with_visibility(self, KORB_VIS_PRIVATE, include_inherited);
+    return methods_with_visibility(c, self, KORB_VIS_PRIVATE, include_inherited);
 }
 static VALUE obj_protected_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
-    return methods_with_visibility(self, KORB_VIS_PROTECTED, include_inherited);
+    return methods_with_visibility(c, self, KORB_VIS_PROTECTED, include_inherited);
 }
 
 /* Object#singleton_methods — methods defined directly on this object's

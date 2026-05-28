@@ -34,7 +34,7 @@ int
 main(int argc, char *argv[])
 {
     INIT();
-    korb_runtime_init();
+    CTX *c = korb_runtime_init();
 
     /* ARGV / $0 / $PROGRAM_NAME. */
     {

@@ -211,8 +211,7 @@ static void korb_select_fill_set(VALUE arr, fd_set *set, int *maxfd) {
     }
 }
 
-static VALUE korb_select_collect_ready(VALUE arr, fd_set *set) {
-    CTX *c = korb_vm->current_ctx;
+static VALUE korb_select_collect_ready(CTX *c, VALUE arr, fd_set *set) {
     VALUE out = korb_ary_new(c, c->sp);
     if (NIL_P(arr) || SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) return out;
     struct korb_array *a = (struct korb_array *)arr;
@@ -382,9 +381,9 @@ VALUE io_class_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (n == 0) return Qnil;
     VALUE ret = korb_ary_new_capa(c, c->sp, 3);
-    korb_ary_push(ret, korb_select_collect_ready(rs, &rset));
-    korb_ary_push(ret, korb_select_collect_ready(ws, &wset));
-    korb_ary_push(ret, korb_select_collect_ready(es, &eset));
+    korb_ary_push(ret, korb_select_collect_ready(c, rs, &rset));
+    korb_ary_push(ret, korb_select_collect_ready(c, ws, &wset));
+    korb_ary_push(ret, korb_select_collect_ready(c, es, &eset));
     return ret;
 }
 
