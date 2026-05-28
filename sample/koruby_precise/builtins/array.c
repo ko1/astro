@@ -1753,20 +1753,75 @@ static VALUE ary_fill(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     bool has_block = korb_block_given(c);
     /* With a block, signature is fill { |i| ... } / fill(start) / fill(start, len).
-     * Without a block, fill(val[, start[, length]]). */
+     * Without a block, fill(val[, start[, length]]) or fill(val, range). */
     long start = 0, len = a->len;
     int idx_arg_base = has_block ? 0 : 1;
     if (!has_block && argc < 1) return self;
-    if (argc >= idx_arg_base + 1 && FIXNUM_P(argv[idx_arg_base])) {
+
+    /* Range form: fill[, range] / fill(val, range) (no block: idx_arg_base=1;
+     * with block: idx_arg_base=0). */
+    if (argc >= idx_arg_base + 1 && !SPECIAL_CONST_P(argv[idx_arg_base]) &&
+        BUILTIN_TYPE(argv[idx_arg_base]) == T_RANGE) {
+        struct korb_range *r = (struct korb_range *)argv[idx_arg_base];
+        long b = NIL_P(r->begin) ? 0 :
+                 (FIXNUM_P(r->begin) ? FIX2LONG(r->begin) : 0);
+        long e;
+        if (NIL_P(r->end)) {
+            e = a->len - 1;  /* endless range = until current end */
+        } else if (FIXNUM_P(r->end)) {
+            e = FIX2LONG(r->end);
+            if (r->exclude_end) e -= 1;
+        } else {
+            return self;
+        }
+        long orig_b = b;
+        if (b < 0) b += a->len;
+        if (e < 0) e += a->len;
+        if (b < 0) {
+            /* CRuby raises RangeError when the range starts before the
+             * array's first index. */
+            VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+            korb_raise(c, (struct korb_class *)eR,
+                       "%ld out of range", orig_b);
+            return Qnil;
+        }
+        if (e >= a->len) {
+            /* Grow array to accommodate. */
+            if (e > (1L << 30)) {
+                VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+                korb_raise(c, (struct korb_class *)eR, "range too large");
+                return Qnil;
+            }
+            while (a->len <= e) korb_ary_push(self, Qnil);
+        }
+        start = b;
+        len = e - b + 1;
+    } else if (argc >= idx_arg_base + 1 && FIXNUM_P(argv[idx_arg_base])) {
         start = FIX2LONG(argv[idx_arg_base]);
         if (start < 0) start += a->len;
         if (start < 0) start = 0;
-    }
-    if (argc >= idx_arg_base + 2 && FIXNUM_P(argv[idx_arg_base + 1])) {
-        len = FIX2LONG(argv[idx_arg_base + 1]);
-        if (len < 0) return self;
-    } else if (argc >= idx_arg_base + 1) {
-        len = a->len - start;
+        if (argc >= idx_arg_base + 2 && FIXNUM_P(argv[idx_arg_base + 1])) {
+            len = FIX2LONG(argv[idx_arg_base + 1]);
+            if (len < 0) return self;
+        } else if (argc >= idx_arg_base + 2 && !NIL_P(argv[idx_arg_base + 1]) &&
+                   !FIXNUM_P(argv[idx_arg_base + 1])) {
+            /* Non-Fixnum, non-nil length: e.g. Bignum → RangeError. */
+            VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+            korb_raise(c, (struct korb_class *)eR, "length out of range");
+            return Qnil;
+        } else {
+            len = a->len - start;
+        }
+        /* (start, len) form may also grow the array (CRuby does). */
+        if (start + len > a->len) {
+            /* Cap growth to avoid OOM when given absurd lengths. */
+            if (len > (1L << 30)) {
+                VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
+                korb_raise(c, (struct korb_class *)eR, "length too large");
+                return Qnil;
+            }
+            while (a->len < start + len) korb_ary_push(self, Qnil);
+        }
     }
     if (start >= a->len) return self;
     long end = start + len;
