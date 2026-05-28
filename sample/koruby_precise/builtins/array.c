@@ -1447,26 +1447,37 @@ static VALUE ary_take(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_fill(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
-    if (argc < 1) return self;
     struct korb_array *a = (struct korb_array *)self;
-    /* fill(val[, start[, length]]) — fill specific slice with val.
-     * Negative start counts from the end; out-of-range length is clamped. */
+    bool has_block = korb_block_given(c);
+    /* With a block, signature is fill { |i| ... } / fill(start) / fill(start, len).
+     * Without a block, fill(val[, start[, length]]). */
     long start = 0, len = a->len;
-    if (argc >= 2 && FIXNUM_P(argv[1])) {
-        start = FIX2LONG(argv[1]);
+    int idx_arg_base = has_block ? 0 : 1;
+    if (!has_block && argc < 1) return self;
+    if (argc >= idx_arg_base + 1 && FIXNUM_P(argv[idx_arg_base])) {
+        start = FIX2LONG(argv[idx_arg_base]);
         if (start < 0) start += a->len;
         if (start < 0) start = 0;
     }
-    if (argc >= 3 && FIXNUM_P(argv[2])) {
-        len = FIX2LONG(argv[2]);
+    if (argc >= idx_arg_base + 2 && FIXNUM_P(argv[idx_arg_base + 1])) {
+        len = FIX2LONG(argv[idx_arg_base + 1]);
         if (len < 0) return self;
-    } else if (argc >= 2) {
+    } else if (argc >= idx_arg_base + 1) {
         len = a->len - start;
     }
     if (start >= a->len) return self;
     long end = start + len;
     if (end > a->len) end = a->len;
-    for (long i = start; i < end; i++) a->ptr[i] = argv[0];
+    if (has_block) {
+        for (long i = start; i < end; i++) {
+            VALUE iv = INT2FIX(i);
+            VALUE r = korb_yield(c, 1, &iv);
+            if (c->state != KORB_NORMAL) return Qnil;
+            a->ptr[i] = r;
+        }
+    } else {
+        for (long i = start; i < end; i++) a->ptr[i] = argv[0];
+    }
     return self;
 }
 
