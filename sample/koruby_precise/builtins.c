@@ -96,7 +96,7 @@ void korb_init_builtins(CTX *c) {
      * where allocs further down the init would move the singleton class
      * but the local cKerMeta would still hold the pre-GC address. */
     if (korb_vm->kernel_module) {
-        (void)korb_singleton_class_of(korb_vm->kernel_module);
+        (void)korb_singleton_class_of(c, korb_vm->kernel_module);
     }
 #define cKerMeta ((korb_vm->kernel_module                                      \
                    ? (struct korb_class *)korb_vm->kernel_module->basic.klass  \
@@ -269,7 +269,7 @@ void korb_init_builtins(CTX *c) {
      * `_new_disallowed` are defined above. */
     /* Float */
     {
-        struct korb_class *cFltMeta = korb_singleton_class_of(korb_vm->float_class);
+        struct korb_class *cFltMeta = korb_singleton_class_of(c, korb_vm->float_class);
         DEF(cFltMeta, "allocate", _allocator_disallowed, -1);
         DEF(cFltMeta, "new",      _new_disallowed,       -1);
     }
@@ -368,7 +368,7 @@ void korb_init_builtins(CTX *c) {
     /* Range */
     {
         /* Class method Range.new — register on Range's metaclass. */
-        struct korb_class *cRngMeta = korb_singleton_class_of(korb_vm->range_class);
+        struct korb_class *cRngMeta = korb_singleton_class_of(c, korb_vm->range_class);
         korb_class_add_method_cfunc(cRngMeta, korb_intern("new"), rng_class_new, -1);
     }
     DEF(korb_vm->range_class, "each", rng_each, 0);
@@ -1151,7 +1151,7 @@ void korb_init_builtins(CTX *c) {
         /* Signal — module with class methods. */
         struct korb_class *cSignal = korb_module_new(c, c->sp, korb_intern("Signal"));
         korb_const_set(korb_vm->object_class, korb_intern("Signal"), (VALUE)cSignal);
-        struct korb_class *cSignalMeta = korb_singleton_class_of(cSignal);
+        struct korb_class *cSignalMeta = korb_singleton_class_of(c, cSignal);
         korb_class_add_method_cfunc(cSignalMeta, korb_intern("trap"), signal_trap, -1);
         korb_class_add_method_cfunc(cSignalMeta, korb_intern("list"), signal_list, 0);
         /* Kernel#system / `cmd` / exec at top-level (Object). */
@@ -1230,7 +1230,7 @@ void korb_init_builtins(CTX *c) {
         extern VALUE io_class_select(CTX *c, VALUE self, int argc, VALUE *argv);
         extern VALUE io_class_popen(CTX *c, VALUE self, int argc, VALUE *argv);
         extern VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv);
-        struct korb_class *cIOMeta = korb_singleton_class_of(cIO);
+        struct korb_class *cIOMeta = korb_singleton_class_of(c, cIO);
         korb_class_add_method_cfunc(cIOMeta, korb_intern("pipe"),
                                      io_class_pipe, -1);
         korb_class_add_method_cfunc(cIOMeta, korb_intern("select"),
@@ -1251,7 +1251,7 @@ void korb_init_builtins(CTX *c) {
 
     /* Symbol */
     {
-        struct korb_class *cSymMeta = korb_singleton_class_of(korb_vm->symbol_class);
+        struct korb_class *cSymMeta = korb_singleton_class_of(c, korb_vm->symbol_class);
         DEF(cSymMeta, "allocate", _allocator_disallowed, -1);
         DEF(cSymMeta, "new",      _new_disallowed,       -1);
     }
@@ -1562,7 +1562,7 @@ void korb_init_builtins(CTX *c) {
     {
         struct korb_class *cObj2 = korb_vm->object_class;
         struct korb_class *cKerMeta2 = korb_vm->kernel_module
-            ? korb_singleton_class_of(korb_vm->kernel_module) : NULL;
+            ? korb_singleton_class_of(c, korb_vm->kernel_module) : NULL;
         const char *names[] = {
             "abort", "exec", "system", "exit", "exit!",
             "load", "gets", "puts", "p", "pp",

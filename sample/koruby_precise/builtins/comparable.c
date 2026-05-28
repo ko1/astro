@@ -551,7 +551,7 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     module_attr_accessor(c, (VALUE)klass, argc, argv);
     /* class-level .members */
     {
-        struct korb_class *meta = korb_singleton_class_of(klass);
+        struct korb_class *meta = korb_singleton_class_of(c, klass);
         korb_class_add_method_cfunc(meta, korb_intern("members"),
                                      struct_class_members, 0);
     }

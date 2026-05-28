@@ -251,8 +251,8 @@ VALUE obj_singleton_class(CTX *c, VALUE self, int argc, VALUE *argv) {
                    korb_id_name(korb_class_of_class(self)->name));
         return Qnil;
     }
-    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
-    struct korb_class *meta = korb_singleton_class_of_value(self);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
+    struct korb_class *meta = korb_singleton_class_of_value(c, self);
     if (!meta) {
         korb_raise(c, NULL, "no singleton class for %s",
                    korb_id_name(korb_class_of_class(self)->name));
@@ -333,8 +333,8 @@ static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
     blk->self = self;
     /* instance_eval semantics: defs land on the receiver's singleton class.
      * Push that class at the head of the block's lexical cref chain. */
-    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
-    struct korb_class *sing = korb_singleton_class_of_value(self);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
+    struct korb_class *sing = korb_singleton_class_of_value(c, self);
     struct korb_cref *prev_blk_cref = blk->cref;
     struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
     if (sing) blk->cref = &blk_new_cref;
@@ -371,8 +371,8 @@ static VALUE obj_instance_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE prev_blk_self = blk->self;
     blk->self = self;
-    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
-    struct korb_class *sing = korb_singleton_class_of_value(self);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
+    struct korb_class *sing = korb_singleton_class_of_value(c, self);
     struct korb_cref *prev_blk_cref = blk->cref;
     struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
     if (sing) blk->cref = &blk_new_cref;
@@ -940,7 +940,7 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
          * methods would also affect src — copy methods instead. */
         if (preserve_frozen && src->basic.klass) {
             struct korb_class *src_meta = (struct korb_class *)src->basic.klass;
-            struct korb_class *nk_meta = korb_singleton_class_of((VALUE)nk);
+            struct korb_class *nk_meta = korb_singleton_class_of(c, (VALUE)nk);
             for (uint32_t b = 0; b < src_meta->methods.bucket_cnt; b++) {
                 for (struct korb_method_table_entry *e = src_meta->methods.buckets[b]; e; e = e->next) {
                     if (e->method) korb_class_alias_method(nk_meta, e->name, e->method);

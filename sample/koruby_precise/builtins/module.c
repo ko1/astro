@@ -240,8 +240,8 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
  * on the receiver's singleton class instead of `self`'s class. */
 static VALUE obj_define_singleton_method(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
-    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
-    struct korb_class *meta = korb_singleton_class_of_value(self);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
+    struct korb_class *meta = korb_singleton_class_of_value(c, self);
     if (!meta) return Qnil;
     /* Reuse module_define_method with self overridden to the meta class. */
     return module_define_method(c, (VALUE)meta, argc, argv);
@@ -340,7 +340,7 @@ static VALUE obj_singleton_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_class *k = NULL;
     if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
         /* For a class, singleton_methods returns the metaclass methods. */
-        struct korb_class *meta = korb_singleton_class_of((struct korb_class *)self);
+        struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)self);
         k = meta;
     } else if (BUILTIN_TYPE(self) == T_OBJECT) {
         struct korb_object *o = (struct korb_object *)self;
@@ -856,7 +856,7 @@ static VALUE class_ancestors(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE obj_extend(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* extend M on an object: include M into the object's singleton class. */
     if (SPECIAL_CONST_P(self)) return self;
-    extern struct korb_class *korb_singleton_class_of_value(VALUE v);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
     /* Fallback if helper isn't there: rewire basic.klass to a fresh
      * subclass of the current class and include the module into it. */
     if (BUILTIN_TYPE(self) == T_OBJECT) {
@@ -887,7 +887,7 @@ static VALUE obj_extend(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     } else if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
         /* extending a class extends its metaclass — include into singleton */
-        struct korb_class *meta = korb_singleton_class_of((struct korb_class *)self);
+        struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)self);
         for (int i = 0; i < argc; i++) {
             if (!SPECIAL_CONST_P(argv[i]) &&
                 (BUILTIN_TYPE(argv[i]) == T_MODULE || BUILTIN_TYPE(argv[i]) == T_CLASS)) {
@@ -998,8 +998,8 @@ static VALUE module_remove_class_variable(CTX *c, VALUE self, int argc, VALUE *a
 static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
                                   enum korb_visibility v) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
-    extern struct korb_class *korb_singleton_class_of(struct korb_class *);
-    struct korb_class *meta = korb_singleton_class_of((struct korb_class *)self);
+    extern struct korb_class *korb_singleton_class_of(CTX *c, struct korb_class *);
+    struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)self);
     /* Single-Array form: `private_class_method([:foo, :bar])` (Ruby 3.x). */
     if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)argv[0];

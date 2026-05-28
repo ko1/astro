@@ -620,7 +620,7 @@ void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
 
-struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
+struct korb_class *korb_singleton_class_of(CTX *c, struct korb_class *klass) {
     /* If klass->basic.klass is the shared metaclass, create a per-instance
      * singleton class so per-class methods can be installed.  CRuby
      * semantics: meta(C).super = meta(C.super), so a method defined on
@@ -630,7 +630,6 @@ struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
      * across GC fires from the recursive call and korb_class_new.  Park
      * them in ARO_ROOT_SCOPE slots and reload C-local pointers after
      * each potential GC trigger. */
-    CTX *c = korb_vm->current_ctx;
     struct korb_class *result;
     ARO_ROOT_SCOPE_START(c, r, 3) {
         r[0] = (VALUE)klass;
@@ -641,7 +640,7 @@ struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
             if (klass->super) {
                 /* recursive korb_singleton_class_of may fire GC; r[0]/r[1]
                  * survive via visit_roots. */
-                super_meta = korb_singleton_class_of(klass->super);
+                super_meta = korb_singleton_class_of(c, klass->super);
                 klass        = (struct korb_class *)r[0];
                 current_meta = (struct korb_class *)r[1];
             } else {
@@ -671,7 +670,7 @@ struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
  * `korb_singleton_class_of` but works on T_OBJECT instances too —
  * lazily allocates a fresh class whose super = current class, then
  * rewires basic.klass.  Returns NULL for immediate values. */
-struct korb_class *korb_singleton_class_of_value(VALUE v) {
+struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v) {
     /* true/false/nil all share their respective immutable classes
      * (CRuby semantics: class << true is the same as TrueClass). */
     if (v == Qtrue) return korb_vm->true_class;
@@ -681,15 +680,12 @@ struct korb_class *korb_singleton_class_of_value(VALUE v) {
     /* Pin v across korb_singleton_class_of / korb_class_new / korb_intern
      * — all allocate, firing GC under STRESS+PURGE.  Plain C-local v
      * would go stale and the post-call BUILTIN_TYPE / frozen check
-     * SEGVs on the moved obj's now-PROT_NONE address.  Symptom:
-     * `def obj.foo; end` inside an rspec it-block under STRESS+PURGE
-     * SEGVs in korb_singleton_class_of_value at line 666. */
-    CTX *c = korb_vm->current_ctx;
+     * SEGVs on the moved obj's now-PROT_NONE address. */
     struct korb_class *result = NULL;
     ARO_ROOT_SCOPE_START(c, rs, 1) {
         rs[0] = v;
         if (BUILTIN_TYPE(rs[0]) == T_CLASS || BUILTIN_TYPE(rs[0]) == T_MODULE) {
-            struct korb_class *meta = korb_singleton_class_of((struct korb_class *)rs[0]);
+            struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)rs[0]);
             if (meta && korb_obj_frozen_p(rs[0]) && !korb_obj_frozen_p((VALUE)meta)) {
                 ((struct RBasic *)meta)->head.flags |= FL_FROZEN;
             }
@@ -1247,7 +1243,7 @@ VALUE korb_const_lookup(CTX *c, ID name) {
      * code like `ClassA.constx → CS_CONSTX` can intercept the miss
      * even when the lookup walks past ClassA. */
     if (k) {
-        struct korb_class *meta = korb_singleton_class_of(k);
+        struct korb_class *meta = korb_singleton_class_of(c, k);
         if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
             VALUE sym = korb_id2sym(name);
             return korb_funcall(c, (VALUE)k, korb_intern("const_missing"), 1, &sym);
