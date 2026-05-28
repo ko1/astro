@@ -756,7 +756,7 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->array_class, "take_while",     ary_take_while, 0);
     DEF(korb_vm->array_class, "drop_while",     ary_drop_while, 0);
     DEF(korb_vm->array_class, "shuffle",        ary_shuffle,    0);
-    DEF(korb_vm->array_class, "bsearch",        ary_bsearch,    0);
+    DEF(korb_vm->array_class, "bsearch",        ary_bsearch,    -1);
     DEF(korb_vm->array_class, "one?",           ary_one_p,     -1);
     /* String additions */
     DEF(korb_vm->string_class, "hex",           str_hex,           0);

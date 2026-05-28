@@ -3259,6 +3259,10 @@ static VALUE ary_minmax_by(CTX *c, VALUE self, int argc, VALUE *argv) {
  * sorted and the block result transitions from false to true exactly
  * once; returns the first true element, nil if all are false. */
 static VALUE ary_bsearch(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!korb_block_given(c)) {
+        VALUE arg = korb_id2sym(korb_intern("bsearch"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
+    }
     struct korb_array *a = (struct korb_array *)self;
     long lo = 0, hi = a->len;
     VALUE found = Qnil;
@@ -3266,11 +3270,30 @@ static VALUE ary_bsearch(CTX *c, VALUE self, int argc, VALUE *argv) {
         long mid = lo + (hi - lo) / 2;
         VALUE r = korb_yield(c, 1, &a->ptr[mid]);
         if (c->state != KORB_NORMAL) return Qnil;
-        if (RTEST(r)) {
-            found = a->ptr[mid];
-            hi = mid;
+        if (TRUE_P(r) || FALSE_P(r) || NIL_P(r)) {
+            /* Find-minimum mode: return the first element for which the
+             * block returned a truthy value. */
+            if (RTEST(r)) { found = a->ptr[mid]; hi = mid; }
+            else lo = mid + 1;
+        } else if (FIXNUM_P(r) || (!SPECIAL_CONST_P(r) &&
+                                    (BUILTIN_TYPE(r) == T_BIGNUM ||
+                                     BUILTIN_TYPE(r) == T_FLOAT)) ||
+                   FLONUM_P(r)) {
+            /* Find-any mode: 0 = match; negative = answer is right of mid;
+             * positive = answer is left of mid. */
+            double d;
+            if (FIXNUM_P(r)) d = (double)FIX2LONG(r);
+            else d = korb_num2dbl(r);
+            if (d == 0.0) return a->ptr[mid];
+            if (d < 0.0) lo = mid + 1;
+            else hi = mid;
         } else {
-            lo = mid + 1;
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "wrong argument type %s (must be numeric, true, false or nil)",
+                       SPECIAL_CONST_P(r) ? "(special)"
+                           : korb_id_name(korb_class_of_class(r)->name));
+            return Qnil;
         }
     }
     return found;
