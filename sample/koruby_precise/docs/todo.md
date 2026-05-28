@@ -3,6 +3,49 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## rubyspec 取れ高改善 (2026-05-28 後半)
+
+baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
+本セッションで PASS=252 (+14) / CRASH=7 (-4) まで改善。
+
+主な修正 (順):
+- `String#lines` に sep / `chomp:` 引数 (bootstrap.rb の override 削除 +
+  C str_lines を引数 parse 込みで再実装) — lines_spec 0 → 3 pass
+- `Integer#%` で Float RHS の SEGV — int_mod に Float fast path 追加。
+  これで integer/{pow,gcd,gcdlcm,lcm}_spec が crash 脱出 (合計 +75 pass)。
+- `Integer#pow` (bootstrap.rb) で exp/mod の type 検証 + ZeroDivision。
+- `String#ljust/rjust/center` の pad cycle が CRuby と非互換 (`pad * (n-size)`
+  だと長すぎる) → `__pad_to(pad, n)` helper を導入。 ljust/rjust 14 → 33、
+  center 16 → 49 pass。
+- `String#squeeze` を charset (range, negate, multi-set 交差) 対応に再実装、
+  squeeze! に frozen 判定追加 — squeeze_spec 6 → 44 pass。
+- `String#reverse/#chop/#insert` を UTF-8 codepoint 境界対応。
+- `String#chomp` no-arg で `$/` 参照を追加。
+- `Array#join` で sep の `to_str` coerce + empty array short-circuit。
+- `Array#flatten` に depth の `to_int` coerce + 要素 `to_ary` 連携、
+  `Array#flatten!` を専用 entry として実装。 flatten_spec 27 → 50 pass。
+- `Array#each` でループ毎に array len を再評価 (block 内の push/shift 反映)、
+  no-block で Enumerator を返す。 each_spec 4 → 10 pass。
+- `Hash#to_h` で subclass からの fresh Hash 生成 + default/default_proc/
+  compare_by_identity 引継ぎ。 to_h_spec 17 → 20 pass。
+- `Array#sort_by!` を no-block enumerator / break-aware に。 sort_by 10 → 13。
+- `Array#reject!` を delete_if と分離 (no-change → nil)、 両者に no-block
+  enumerator 経路を追加。 reject_spec 25 → 38、 delete_if 6 → 8 pass。
+- `Hash#transform_keys!` の break 動作 (処理済 transformed + 未処理 untouched)、
+  `Hash#transform_values` の compare_by_identity 引継ぎ。
+- `Array#min/#max` のブロック引数順を (probe, running) に修正 (sort と逆)、
+  min 28 → 38、 max 33 → 35 pass。
+
+残 7 CRASH の sweep:
+  array/{combination,comparison,permutation,repeated_combination,
+        repeated_permutation,uniq}_spec、 string/each_byte_spec。
+- comparison は recursive_array 比較で stack overflow。
+- combination 系は深い再帰 + 要素数で OOM。
+- uniq は要素数で OOM。
+- each_byte は Enumerator + Fiber 経路で SEGV。
+
+
+
 ## 残 global / korb_vm->current_ctx fallback 撤去 — **完了 (2026-05-28 thirteenth pass)**
 
 「グローバルつくらんといて」 規約 (memory: feedback_no_globals_strict) に
