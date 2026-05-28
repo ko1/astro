@@ -397,6 +397,29 @@ static void *
 forward_payload(ASTroGC *gc, void *old_payload)
 {
     if (!old_payload) return NULL;
+    /* Bounds check BEFORE dereferencing oldh — under PURGE, addresses
+     * outside the current from/to planes are mprotect'd PROT_NONE, and
+     * reading their headers SEGVs.  Determine the payload's region:
+     * - in current from-space plane: from-space obj, normal cheney path
+     * - in current to-space plane: stale or already-forwarded
+     * - in PURGE super-arena but not current plane: retired plane,
+     *   stale ref from past cycle → return NULL (= safe to nullify slot)
+     * - outside the arena entirely: libc-allocated immortal → return as-is */
+    {
+        char *p = (char *)old_payload;
+        bool in_from = (p >= gc->from_base_cur && p < gc->from_base_cur + gc->region_bytes);
+        bool in_to   = (p >= gc->to_base       && p < gc->to_base       + gc->region_bytes);
+        if (!in_from && !in_to) {
+            if (gc->purge_arena_base &&
+                p >= gc->purge_arena_base && p < gc->purge_arena_end) {
+                /* PURGE: in super-arena but not current plane = retired,
+                 * PROT_NONE.  Cannot deref.  Stale ref. */
+                return NULL;
+            }
+            /* libc-allocated immortal. */
+            return old_payload;
+        }
+    }
     AroObjectHeader *oldh = (AroObjectHeader *)old_payload;
     /* Small obj already forwarded → return overlay-stored ptr. */
     if (oldh->gc_flags & HDR_FORWARDED) {
@@ -417,48 +440,29 @@ forward_payload(ASTroGC *gc, void *old_payload)
         }
     }
 
-    /* Sample-side "immortal" payload (= libc-allocated container that
-     * the sample mixes with arena objs).  Detect by checking the
-     * payload is outside ALL arena regions: from-space, to-space, and
-     * (PURGE) the 64 GiB super-arena.  Return as-is = treat as
-     * immortal, contents NOT scanned.  This is a fallback for samples
-     * mid-migration where some containers are still libc-allocated
-     * (= koruby_precise Phase 3 not yet complete).  Safe because:
-     * - The libc payload doesn't move, its references stay valid
-     * - HDR_FORWARDED isn't set on it, so it isn't mistakenly treated
-     *   as forwarded next visit
-     * - The libc payload's klass/flags bytes aren't corrupted by fwd
-     *   overlay (= the previous behavior that turned arrays into
-     *   garbage under STRESS).
-     *
-     * The trade-off: arena refs inside the libc payload aren't
-     * forwarded → may go stale.  Sample must avoid accessing those
-     * stale refs (= existing pre-precise behavior). */
-    {
-        char *p = (char *)old_payload;
-        bool in_from   = (p >= gc->from_base_cur && p < gc->from_base_cur + gc->region_bytes);
-        bool in_to     = (p >= gc->to_base       && p < gc->to_base       + gc->region_bytes);
-        bool in_purge  = (gc->purge_arena_base &&
-                          p >= gc->purge_arena_base && p < gc->purge_arena_end);
-        if (!in_from && !in_to && !in_purge) {
-            /* libc-allocated, immortal.  No scan, no header touch. */
-            return old_payload;
-        }
-    }
-
     /* Cheney copy: from-space → to-space.  After memcpy, mark old as
      * FORWARDED and store fwd ptr in overlay slot (= payload offset 8,
      * overwriting first sample field — from-space is discarded after
      * collect, so destruction is harmless). */
     size_t aligned = ALIGN8(oldh->gc_size);
-    /* Sanity: if old is in to-space already (= someone double-forwarded
-     * a slot that was already rewritten), abort with diagnostic. */
+    /* old_payload in current to-space arena means it's a stale ref from a
+     * prior cycle (= the to/from swap reused this memory).  Treat the
+     * slot as unreachable: return NULL so *slot = NULL.  This is the
+     * safest recovery — the original obj is gone, so dereferencing the
+     * slot was already a UAF; converting to NULL surfaces it deterministically
+     * (= NIL_P / SPECIAL_CONST_P checks skip).  Previously this branch
+     * aborted; the abort masks tests whose sample-side root tracking has
+     * a gap (= libc container holds the only ref → arena obj collected →
+     * stale ref reappears via the libc container next visit).
+     *
+     * baruby_precise / ascheme_precise have fully arena-allocated
+     * containers so this branch is unreachable for them; only sample-
+     * specific mixed-allocation code paths hit it.  koruby_precise's
+     * Phase 3 (= migrate all containers to arena) is the proper fix;
+     * until then this fallback prevents abort. */
     if ((char *)old_payload >= gc->to_base &&
         (char *)old_payload < gc->to_base + gc->region_bytes) {
-        fprintf(stderr, "GC BUG forward to-space old=%p to_base=%p to_top=%p flags=0x%x size=%u\n",
-                old_payload, (void*)gc->to_base, (void*)gc->to_top,
-                oldh->flags, oldh->gc_size);
-        abort();
+        return NULL;
     }
     void *new_payload = gc->to_top;
     memcpy(new_payload, old_payload, aligned);

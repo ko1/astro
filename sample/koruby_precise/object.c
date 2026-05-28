@@ -2821,13 +2821,40 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
             }
         }
         if (!needs_quote) {
+            VALUE ret = Qnil;
+            CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+            if (c2) {
+                ARO_ROOT_SCOPE_START(c2, rs, 2) {
+                    rs[0] = korb_str_new_cstr(":");
+                    rs[1] = korb_str_new(name, (long)nlen);
+                    korb_str_concat(rs[0], rs[1]);
+                    ret = rs[0];
+                } ARO_ROOT_SCOPE_END(c2, rs);
+                return ret;
+            }
             VALUE s = korb_str_new_cstr(":");
             korb_str_concat(s, korb_str_new(name, (long)nlen));
             return s;
         }
         /* Quoted form: :"...".  Re-use the String inspect path for
          * escaping by inspecting the name as a String, which yields
-         * a quoted, escaped form, then prepend the colon. */
+         * a quoted, escaped form, then prepend the colon.  Each
+         * korb_str_new + korb_inspect_inner can fire GC, so park the
+         * intermediate strings in ARO_ROOT_SCOPE to keep them alive. */
+        {
+            VALUE ret = Qnil;
+            CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+            if (c2) {
+                ARO_ROOT_SCOPE_START(c2, rs, 2) {
+                    rs[0] = korb_str_new(name, (long)nlen);
+                    rs[0] = korb_inspect_inner(rs[0], depth + 1);
+                    rs[1] = korb_str_new_cstr(":");
+                    korb_str_concat(rs[1], rs[0]);
+                    ret = rs[1];
+                } ARO_ROOT_SCOPE_END(c2, rs);
+                return ret;
+            }
+        }
         VALUE name_str = korb_str_new(name, (long)nlen);
         VALUE inspected = korb_inspect_inner(name_str, depth + 1);
         VALUE r = korb_str_new_cstr(":");
