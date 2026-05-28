@@ -399,12 +399,22 @@ static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE ary_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return Qfalse;
-    long la = korb_ary_len(self), lb = korb_ary_len(argv[0]);
-    if (la != lb) return Qfalse;
-    for (long i = 0; i < la; i++) {
-        if (!korb_eq(korb_ary_aref(self, i), korb_ary_aref(argv[0], i))) return Qfalse;
-    }
-    return Qtrue;
+    /* Pin self + argv[0] across korb_eq's potential GC fires (== may
+     * dispatch user code that allocates). */
+    VALUE ret = Qtrue;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = self;
+        rs[1] = argv[0];
+        long la = korb_ary_len(rs[0]), lb = korb_ary_len(rs[1]);
+        if (la != lb) { ret = Qfalse; goto done; }
+        for (long i = 0; i < la; i++) {
+            if (!korb_eq(korb_ary_aref(rs[0], i), korb_ary_aref(rs[1], i))) {
+                ret = Qfalse; goto done;
+            }
+        }
+    done: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 static VALUE ary_lshift(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
