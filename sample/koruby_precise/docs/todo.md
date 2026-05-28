@@ -390,25 +390,25 @@ prologue_ast_simple_inl / prologue_ast_full_inl_K は最初から shift
 
 | backend           | STRESS 24件中 | 備考                                 |
 |-------------------|--------------|--------------------------------------|
+| **copy** (default)| **24/24**    | + STRESS+PURGE も 24/24 全 OK!       |
 | mark              | **24/24**    | 非 moving。 PASS                     |
 | mark_freelist     | **24/24**    | 非 moving。 PASS                     |
 | immix             | **24/24**    | 非 moving + line/block。 PASS         |
 | bump              | **24/24**    | 非 moving + bump alloc。 PASS         |
 | none              | **24/24**    | no-op GC。 PASS                      |
-| copy              | 23/24        | test_basic_op_redef = libc array     |
-| mark_compact      | 23/24        | 同上                                 |
-| mark_bitmap_gen   | 19/24        | _gen 系 write barrier 関連 ?         |
-| mark_card_gen     | 19/24        | 同上                                 |
-| copy_gen          | 17/24        | _gen 系 + moving                     |
-| mark_bump_gen     | 3/24         | _gen 系                              |
+| mark_compact      | 23/24        | test_basic_op_redef のみ              |
+| mark_card_gen     | 20/24        | _gen 系                              |
+| mark_bitmap_gen   | 19/24        | _gen 系                              |
+| mark_bump_gen     | 5/24         | _gen 系                              |
+| copy_gen          | 3/24         | _gen + moving。 session で regress (17→3)、 framework forward_payload 改修と sample-side ARO_ROOT_SCOPE 追加で wb 整合性悪化。 |
 | mark_gen          | 0/24         | _gen 系                              |
 | mark_compact_gen  | 0/24         | _gen 系                              |
 | immix_gen         | 0/24         | _gen 系                              |
 | mark_gen_inc      | 0/24         | _gen 系 incremental                  |
 
-非 moving + 非 generational は 24/24 全 pass、 copy/mark_compact は
-libc array Phase 3 だけ残。 generational 系は framework 側の write
-barrier 不整合の可能性大、 別 session で深堀。
+非 moving + 非 generational は 24/24 全 pass、 copy は **STRESS+PURGE
+含む 全モード 24/24 全 OK**。 _gen 系 backend は framework 側
+write barrier 不整合があり、 別 session で深堀必要。
 
 このセッションの主要 fix (commit 686f01f0 〜 13edbcb7):
 
