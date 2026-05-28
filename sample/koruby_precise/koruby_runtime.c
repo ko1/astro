@@ -343,17 +343,6 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
           }
           case T_PROC: {
               struct korb_proc *p = (struct korb_proc *)b;
-              /* p->env walking SKIPPED.  For in-scope procs, env points
-               * into the value stack which is already covered by
-               * visit_roots phase (a).  For escaped procs (env
-               * heap-snapshotted by korb_proc_snapshot_env_maybe), the
-               * heap region is libc-malloc'd and visit_roots may not
-               * reach it — but walking it here on a dead/recycled
-               * proc corrupts memory.  Trade-off: leak some escaped
-               * proc closure refs (= they may become stale) rather
-               * than corrupt active state.  Symptom we avoid: under
-               * STRESS, test_block / test_fiber random SEGV with
-               * basic.klass = FIXNUM 2^32. */
               visit_value_slot(ctx, fn, &p->self);
               visit_ptr_slot(ctx, fn, (void **)&p->enclosing_block);
               visit_ptr_slot(ctx, fn, (void **)&p->lexical_parent_block);
@@ -363,6 +352,25 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
               int chain_depth = 0;
               for (struct korb_cref *cr = p->cref; cr && chain_depth < 64; cr = cr->prev, chain_depth++) {
                   visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+              }
+              /* p->env walking — only for ESCAPED procs (env is
+               * libc-malloc'd by korb_proc_snapshot_env_*).  Skip when
+               * env points into the value stack — those are walked by
+               * phase (a) when c->sp covers them, or are leftover for a
+               * popped frame (= unreachable; values can be stale but
+               * walking them would re-introduce dead arena refs).  The
+               * libc snapshot env is fixed-size (env_size) and not
+               * freed, so walking is safe.  Under STRESS+PURGE this
+               * prevents stale closure-captured class refs from
+               * becoming PROT_NONE addresses that SEGV when the body
+               * is re-invoked (heredoc_spec.rb, proc_spec.rb etc.). */
+              if (p->env && p->env_size > 0 &&
+                  (c->stack_base == NULL ||
+                   (VALUE *)p->env < c->stack_base ||
+                   (VALUE *)p->env >= c->stack_end)) {
+                  for (uint32_t j = 0; j < p->env_size; j++) {
+                      visit_value_slot(ctx, fn, &p->env[j]);
+                  }
               }
               break;
           }

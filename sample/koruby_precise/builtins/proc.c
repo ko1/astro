@@ -340,8 +340,13 @@ redo_proc:
     current_block = prev_block;
     running_block = prev_running;
     /* Snapshot any returned proc whose env points into our about-to-be-
-     * popped frame. */
-    korb_proc_snapshot_env_maybe(r, new_fp, new_fp + p->env_size);
+     * popped frame.  Skip when state == RAISE / THROW / RETRY / REDO —
+     * r is then a stale C-local (no caller will use it) and dereffing
+     * it (BUILTIN_TYPE deref) SEGVs under STRESS+PURGE if it points
+     * into a now-PROT_NONE plane. */
+    if (c->state == KORB_NORMAL || c->state == KORB_NEXT) {
+        korb_proc_snapshot_env_maybe(r, new_fp, new_fp + p->env_size);
+    }
     if (c->state == KORB_RETURN || c->state == KORB_BREAK) {
         korb_proc_snapshot_env_maybe(c->state_value, new_fp, new_fp + p->env_size);
     }

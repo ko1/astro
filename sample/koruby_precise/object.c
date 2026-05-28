@@ -3727,7 +3727,12 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     VALUE r = mc->dispatcher(c, mc->body, c->current_frame->fp + mc->locals_cnt);
     c->current_frame = frame.prev;
     running_block = prev_running;
-    korb_proc_snapshot_env_maybe(r, frame_lo, frame_hi);
+    /* Same guard as proc_call: when an unhandled raise/throw escapes
+     * the body, r is a stale C-local with no consumer; dereffing it
+     * to inspect its type SEGVs under STRESS+PURGE. */
+    if (c->state == KORB_NORMAL || c->state == KORB_NEXT) {
+        korb_proc_snapshot_env_maybe(r, frame_lo, frame_hi);
+    }
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         korb_proc_snapshot_env_maybe(c->state_value, frame_lo, frame_hi);
     }
