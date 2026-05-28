@@ -2304,7 +2304,15 @@ class Array
   def delete_if(&blk); reject!(&blk) || self; end unless method_defined?(:delete_if)
 
   def sort_by!(&blk)
-    replace(sort_by(&blk))
+    return enum_for(:sort_by!) unless blk
+    raise FrozenError, "can't modify frozen Array: #{inspect}" if frozen?
+    result = sort_by(&blk)
+    # CRuby: when the block uses `break`, the break value short-circuits
+    # the result and the array is left unchanged.  Detect by checking the
+    # type of the return value — sort_by always returns an Array unless
+    # a non-local exit happened.
+    return result unless result.is_a?(Array)
+    replace(result)
   end unless method_defined?(:sort_by!)
 
   def to_h(&blk)
