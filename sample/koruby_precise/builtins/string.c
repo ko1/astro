@@ -724,45 +724,112 @@ static VALUE str_byteslice(CTX *c, VALUE self, int argc, VALUE *argv) {
  *   s[regex, group] = "..." → not impl
  *   s[match_str] = "..." → replace first occurrence
  * Returns the rhs value (not self) per CRuby. */
+/* Convert (char_idx, char_count) to (byte_start, byte_len) for a UTF-8
+ * string.  Returns 0 on success, -1 on out-of-range (start out of bounds),
+ * -2 on negative count.  start may be == codepoint count (append-style). */
+static int str_char_range_to_bytes(const char *p, long byte_len,
+                                   long char_start, long char_count,
+                                   long *out_start, long *out_len) {
+    /* Walk forward, recording each codepoint start. */
+    long count = 0;
+    long b = 0;
+    /* First pass: count codepoints + remember byte offsets up to max needed. */
+    long total_cp = 0;
+    {
+        long bb = 0;
+        while (bb < byte_len) {
+            unsigned char c0 = (unsigned char)p[bb];
+            int n = ((c0 & 0x80) == 0x00) ? 1 :
+                    ((c0 & 0xE0) == 0xC0) ? 2 :
+                    ((c0 & 0xF0) == 0xE0) ? 3 :
+                    ((c0 & 0xF8) == 0xF0) ? 4 : 1;
+            bb += n;
+            total_cp++;
+        }
+    }
+    if (char_start < 0) char_start += total_cp;
+    if (char_start < 0 || char_start > total_cp) return -1;
+    if (char_count < 0) return -2;
+    /* Walk to char_start */
+    while (b < byte_len && count < char_start) {
+        unsigned char c0 = (unsigned char)p[b];
+        int n = ((c0 & 0x80) == 0x00) ? 1 :
+                ((c0 & 0xE0) == 0xC0) ? 2 :
+                ((c0 & 0xF0) == 0xE0) ? 3 :
+                ((c0 & 0xF8) == 0xF0) ? 4 : 1;
+        b += n;
+        count++;
+    }
+    *out_start = b;
+    /* Walk to char_start + char_count */
+    long b2 = b;
+    long count2 = 0;
+    while (b2 < byte_len && count2 < char_count) {
+        unsigned char c0 = (unsigned char)p[b2];
+        int n = ((c0 & 0x80) == 0x00) ? 1 :
+                ((c0 & 0xE0) == 0xC0) ? 2 :
+                ((c0 & 0xF0) == 0xE0) ? 3 :
+                ((c0 & 0xF8) == 0xF0) ? 4 : 1;
+        b2 += n;
+        count2++;
+    }
+    *out_len = b2 - b;
+    return 0;
+}
+
 static VALUE str_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     if (argc < 2) return Qnil;
     struct korb_string *s = (struct korb_string *)self;
-    /* Normalize rhs to a String. */
+    /* Normalize rhs to a String.  CRuby uses #to_str and raises TypeError
+     * if the result isn't a String. */
     VALUE val = argv[argc - 1];
     if (SPECIAL_CONST_P(val) || BUILTIN_TYPE(val) != T_STRING) {
-        VALUE coerced = korb_to_s(c, c->sp, val);
-        if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) return val;
+        VALUE rt = korb_funcall(c, val, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (!RTEST(rt)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into String",
+                       SPECIAL_CONST_P(val) ? "(special)"
+                           : korb_id_name(korb_class_of_class(val)->name));
+            return Qnil;
+        }
+        VALUE coerced = korb_funcall(c, val, korb_intern("to_str"), 0, NULL);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to String (to_str returned non-String)");
+            return Qnil;
+        }
         val = coerced;
     }
     struct korb_string *vs = (struct korb_string *)val;
     long start = 0, len = 0;
     if (argc == 2 && FIXNUM_P(argv[0])) {
-        start = FIX2LONG(argv[0]);
-        len = 1;
-        if (start < 0) start += s->len;
-        if (start < 0 || start >= s->len) {
+        long char_idx = FIX2LONG(argv[0]);
+        int rc = str_char_range_to_bytes(s->ptr, s->len, char_idx, 1, &start, &len);
+        if (rc == -1 || (rc == 0 && len == 0 && char_idx != 0 && char_idx != -1)) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", FIX2LONG(argv[0]));
+            korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", char_idx);
             return val;
         }
-        /* If replacing with "", `s[i] = ""` deletes one char.  If
-         * replacing with a multi-char string, insert; len=1 covers it. */
     } else if (argc == 3 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
-        start = FIX2LONG(argv[0]);
-        len = FIX2LONG(argv[1]);
-        if (start < 0) start += s->len;
-        if (start < 0 || start > s->len) {
+        long char_idx = FIX2LONG(argv[0]);
+        long char_cnt = FIX2LONG(argv[1]);
+        int rc = str_char_range_to_bytes(s->ptr, s->len, char_idx, char_cnt, &start, &len);
+        if (rc == -1) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", FIX2LONG(argv[0]));
+            korb_raise(c, (struct korb_class *)eIE, "index %ld out of string", char_idx);
             return val;
         }
-        if (len < 0) {
+        if (rc == -2) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE, "negative length %ld", len);
+            korb_raise(c, (struct korb_class *)eIE, "negative length %ld", char_cnt);
             return val;
         }
-        if (start + len > s->len) len = s->len - start;
     } else if (argc == 2 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)argv[0];
         long b = NIL_P(r->begin) ? 0 : (FIXNUM_P(r->begin) ? FIX2LONG(r->begin) : 0);
