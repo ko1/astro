@@ -3496,6 +3496,14 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.fp = c->current_frame->fp;
     frame.locals_cnt = mc->locals_cnt;
     frame.super_skip_n = 0;
+    /* Inherit cref / current_class / current_file from outer (= the
+     * caller frame, whose cref was just set to mc->def_cref above at
+     * line 3260).  Without these initializers the struct.cref field
+     * holds uninitialized stack garbage; visit_roots phase (c+d)
+     * iterating frame.cref would chase wild pointers and SEGV. */
+    frame.cref = c->current_frame->cref;
+    frame.current_class = c->current_frame->current_class;
+    frame.current_file = c->current_frame->current_file;
     extern uint64_t korb_g_next_frame_id;
     frame.frame_id = ++korb_g_next_frame_id;
     frame.bindings_head = NULL;
