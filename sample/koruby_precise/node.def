@@ -488,17 +488,33 @@ NODE_DEF
 node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
 {
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     c->fp += envsize;
     if (UNLIKELY(c->fp + envsize >= c->stack_end)) {
         c->fp = prev_fp;
         korb_raise(c, NULL, "stack overflow");
         return Qnil;
     }
-    if (c->fp + envsize > c->sp) c->sp = c->fp + envsize;
-    /* zero working area so GC sees Qnil instead of garbage */
+    /* Extend sp to cover the scope's locals AND zero-fill the freshly
+     * exposed slots (= the working area).  Doing the zero-fill in the
+     * extend-region also clears any stale heap ptrs left over from
+     * previously-popped frames at the same addresses — a later
+     * visit_roots walking c->stack_base..c->sp would otherwise treat them
+     * as live roots and either double-forward (= memcpy phantom) or
+     * dereference an obj that no longer lives at that address. */
+    {
+        VALUE *new_sp = c->fp + envsize;
+        for (VALUE *p = c->sp; p < new_sp; p++) *p = Qnil;
+        if (new_sp > c->sp) c->sp = new_sp;
+    }
     for (uint32_t i = 0; i < envsize; i++) c->fp[i] = Qnil;
     VALUE v = EVAL_ARG(c, body);
+    /* Restore sp too — otherwise the now-dead scope's slots stay in the
+     * GC root-scan range and a later collect treats their values (=
+     * possibly stale heap ptrs written during this scope's body) as live
+     * roots, double-forwarding or memcpy'ing them. */
     c->fp = prev_fp;
+    c->sp = prev_sp;
     return v;
 }
 
@@ -1866,6 +1882,7 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
         return proc_call(c, (VALUE)sm->u.proc.proc, (int)argc, &c->fp[arg_index]);
     }
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + arg_index;
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
     if (new_fp + sm->u.ast.locals_cnt > c->sp) c->sp = new_fp + sm->u.ast.locals_cnt;
@@ -1894,6 +1911,7 @@ node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_inde
     c->current_frame = frame.prev;
     running_block = prev_running;
     c->fp = prev_fp;
+    c->sp = prev_sp;
     if (c->state == KORB_RETURN &&
         (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
         r = c->state_value;
@@ -1948,6 +1966,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t ar
         return r;
     }
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + arg_index;
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
     if (new_fp + sm->u.ast.locals_cnt > c->sp) c->sp = new_fp + sm->u.ast.locals_cnt;
@@ -1983,6 +2002,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t ar
     c->current_frame = frame.prev;
     running_block = prev_running;
     c->fp = prev_fp;
+    c->sp = prev_sp;
     if (c->state == KORB_RETURN &&
         (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
         r = c->state_value;
@@ -2107,6 +2127,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
     }
     if (sm->type == KORB_METHOD_CFUNC) return sm->u.cfunc.func(c, c->self, argc, forward_buf);
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);
     if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
     /* Peel kwh from forward_buf's tail if the super accepts kwargs. */
@@ -2218,6 +2239,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n)
     c->current_frame = frame.prev;
     running_block = prev_running;
     c->fp = prev_fp;
+    c->sp = prev_sp;
     if (c->state == KORB_RETURN &&
         (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
         r = c->state_value;

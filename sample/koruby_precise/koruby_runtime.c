@@ -118,12 +118,18 @@ visit_class_edges(void *ctx, koruby_edge_fn fn, struct korb_class *k)
 void
 koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
 {
-    /* (a) Value stack — c->stack_base..c->sp linear range.  Skipped when
-     * stack_base is NULL (= bootstrap before stack alloc); the early
-     * bootstrap relies on korb_vm globals being NULL too so no real
-     * roots are missed. */
+    /* (a) Value stack — c->stack_base..c->sp linear range.  Contract is
+     * that every sp-advancing site zero-fills the new slots before any
+     * alloc that can fire GC (= ARO_ROOT_SCOPE_START's invariant).  We
+     * do NOT keep a high-water mark and lazy-clear popped slots — that
+     * pattern hides a sp-up-without-zero-fill bug as a slow-leak SEGV
+     * rather than catching it at the violating site. */
     if (c->stack_base && c->sp) {
-        for (VALUE *p = c->stack_base; p < c->sp; p++) {
+        fprintf(stderr, "visit_roots sp range [%p..%p) = %zd slots\n",
+                (void*)c->stack_base, (void*)c->sp, c->sp - c->stack_base);
+        int i = 0;
+        for (VALUE *p = c->stack_base; p < c->sp; p++, i++) {
+            fprintf(stderr, "  slot[%d]=%p\n", i, (void*)*p);
             visit_value_slot(ctx, fn, p);
         }
     }

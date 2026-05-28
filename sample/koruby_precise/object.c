@@ -2601,35 +2601,47 @@ void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    VALUE e = korb_exc_new(klass, buf);
-    int line = (c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0);
-    korb_exc_set_backtrace(c, e, line);
-    /* Exception#cause: when this raise happens inside a rescue body,
-     * $! holds the currently-rescued exception — link it.  Skip if the
-     * exception already has a cause (don't overwrite an explicit one),
-     * skip self, and skip when linking would create a cycle (re-raising
-     * an already-cause-of-current is the canonical cycle case). */
-    VALUE current = korb_gvar_get(korb_intern("$!"));
-    if (!NIL_P(current) && current != e &&
-        !SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
-        VALUE existing = korb_ivar_get(e, korb_intern("@cause"));
-        if (UNDEF_P(existing) || NIL_P(existing)) {
-            /* Cycle check: walk current's cause chain — if we encounter e
-             * already, linking would close the loop. */
-            VALUE walk = current;
-            int hops = 0;
-            bool would_cycle = false;
-            while (!NIL_P(walk) && hops++ < 32) {
-                if (walk == e) { would_cycle = true; break; }
-                if (SPECIAL_CONST_P(walk) || BUILTIN_TYPE(walk) != T_OBJECT) break;
-                walk = korb_ivar_get(walk, korb_intern("@cause"));
-                if (UNDEF_P(walk)) break;
+    /* Park klass + the new Exception obj across korb_exc_set_backtrace
+     * (= allocates a backtrace Array, triggers GC) and the cause-link
+     * walk (= multiple korb_ivar_get / korb_ivar_set, the set path can
+     * grow the ivar array via libc which is GC-safe but other paths
+     * might fire if an ivar setter cfunc is registered).  Without this,
+     * the C local `e` goes stale across the backtrace alloc and the
+     * final `c->state_value = e` stores a moved-out address — which is
+     * what made bootstrap.rb's RuntimeError surface as "" under STRESS. */
+    ARO_ROOT_SCOPE_START(c, r, 2) {
+        r[0] = (VALUE)klass;
+        r[1] = korb_exc_new((struct korb_class *)r[0], buf);
+        int line = (c->last_cfunc_callsite
+                    ? c->last_cfunc_callsite->head.line : 0);
+        korb_exc_set_backtrace(c, r[1], line);
+        /* Exception#cause: when this raise happens inside a rescue body,
+         * $! holds the currently-rescued exception — link it.  Skip if
+         * the exception already has a cause, skip self, and skip when
+         * linking would create a cycle. */
+        VALUE current = korb_gvar_get(korb_intern("$!"));
+        VALUE e = r[1];  /* reload after backtrace alloc */
+        if (!NIL_P(current) && current != e &&
+            !SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
+            VALUE existing = korb_ivar_get(e, korb_intern("@cause"));
+            if (UNDEF_P(existing) || NIL_P(existing)) {
+                /* Cycle check: walk current's cause chain — if we
+                 * encounter e already, linking would close the loop. */
+                VALUE walk = current;
+                int hops = 0;
+                bool would_cycle = false;
+                while (!NIL_P(walk) && hops++ < 32) {
+                    if (walk == e) { would_cycle = true; break; }
+                    if (SPECIAL_CONST_P(walk) || BUILTIN_TYPE(walk) != T_OBJECT) break;
+                    walk = korb_ivar_get(walk, korb_intern("@cause"));
+                    if (UNDEF_P(walk)) break;
+                }
+                if (!would_cycle) korb_ivar_set(e, korb_intern("@cause"), current);
             }
-            if (!would_cycle) korb_ivar_set(e, korb_intern("@cause"), current);
         }
-    }
-    c->state = KORB_RAISE;
-    c->state_value = e;
+        c->state = KORB_RAISE;
+        c->state_value = r[1];
+    } ARO_ROOT_SCOPE_END(c, r);
 }
 
 /* ---- inspect / to_s ---- */
@@ -3194,7 +3206,23 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         current_block = prev_block;
         return Qnil;
     }
-    if (c->fp + mc->locals_cnt > c->sp) c->sp = c->fp + mc->locals_cnt;
+    /* Zero-fill the new frame's locals (= slots beyond argc) to Qnil so
+     * an alloc inside the prologue / body doesn't see stale heap pointers
+     * in not-yet-written slots.  Args [c->fp, c->fp + argc) are caller-
+     * provided and stay; locals [c->fp + argc, c->fp + locals_cnt) need
+     * clearing — visit_roots walks c->stack_base..c->sp and would otherwise
+     * pick up popped-frame leftovers at this address range.
+     *
+     * Note: sp might already be at-or-beyond c->fp + locals_cnt due to a
+     * prior deeper call; in that case the extend branch is a no-op but
+     * the zero-fill below still runs (= covers the "sp already high but
+     * locals slot dirty" case). */
+    if (c->fp + mc->locals_cnt > c->sp) {
+        c->sp = c->fp + mc->locals_cnt;
+    }
+    for (VALUE *p = c->fp + argc; p < c->fp + mc->locals_cnt; p++) {
+        *p = Qnil;
+    }
     if (mc->def_cref) c->cref = mc->def_cref;
 
     /* Kwargs hash peel: when the method declares keyword params and the
@@ -3939,6 +3967,21 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         korb_raise(c, NULL, "stack overflow");
         return Qnil;
     }
+    /* CRITICAL ordering — extend sp + zero-fill BEFORE any alloc and before
+     * copying args.  Reasoning:
+     *  - new_fp..new_fp+locals_cnt is the new frame's slot range.
+     *  - Until we move c->sp up to include this range, visit_roots does
+     *    NOT scan it.  Any heap pointer we write there (= the copied args)
+     *    is invisible to GC.
+     *  - rest_slot collection below calls korb_ary_new_capa, which fires
+     *    GC.  Without prior extension, the copied args become stale (=
+     *    point to from-space addrs that the current GC moved). */
+    {
+        VALUE *new_sp = new_fp + m->u.ast.locals_cnt;
+        for (VALUE *p = c->sp; p < new_sp; p++) *p = Qnil;
+        c->sp = new_sp;
+    }
+    /* Now safe to copy args + alloc rest array. */
     for (int i = 0; i < argc; i++) new_fp[i] = argv[i];
     /* rest_slot collection */
     if (m->u.ast.rest_slot >= 0) {
@@ -3957,12 +4000,9 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         if ((int)i == m->u.ast.rest_slot) continue;
         new_fp[i] = Qundef;
     }
-    for (uint32_t i = m->u.ast.total_params_cnt; i < m->u.ast.locals_cnt; i++) {
-        if ((int)i == m->u.ast.rest_slot) continue;
-        new_fp[i] = Qnil;
-    }
+    /* (Locals beyond total_params already initialized to Qnil by the
+     * zero-fill above; nothing else needed here.) */
     c->fp = new_fp;
-    if (c->fp + m->u.ast.locals_cnt > c->sp) c->sp = c->fp + m->u.ast.locals_cnt;
     c->self = recv;
     /* &blk binding: when the method declares `&name`, copy the current
      * block into that slot so funcall_with_block delivers it to the
@@ -4491,6 +4531,7 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
 
     /* Save / push fresh top-level state for the loaded file */
     VALUE *prev_fp = c->fp;
+    VALUE *prev_sp = c->sp;
     VALUE prev_self = c->self;
     struct korb_class *prev_class = c->current_class;
     struct korb_cref *prev_cref = c->cref;
@@ -4499,7 +4540,11 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     extern struct korb_proc *running_block;
     struct korb_proc *prev_running_block = running_block;
 
-    /* Top-level frame for the new file: stack just past current sp */
+    /* Top-level frame for the new file: stack just past current sp.
+     * Note: sp will be extended by EVAL_node_scope (= the script's outer
+     * node_scope dispatcher) which knows envsize.  We just save prev_sp
+     * here so it's restored on exit (= dead top-level locals don't stay
+     * in the root-scan range). */
     c->fp = c->sp + 1;
     c->self = korb_vm->main_obj;
     c->current_class = korb_vm->object_class;
@@ -4530,6 +4575,7 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     }
 
     c->fp = prev_fp;
+    c->sp = prev_sp;
     c->self = prev_self;
     c->current_class = prev_class;
     c->cref = prev_cref;
