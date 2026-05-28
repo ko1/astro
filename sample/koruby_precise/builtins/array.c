@@ -856,16 +856,18 @@ static VALUE ary_min(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
     bool has_block = korb_block_given(c);
-    /* Pin running-min + per-iter probe across korb_funcall — see ary_sort_compare
-     * for sign-extract semantics (Fixnum/Bignum/Float). */
+    /* CRuby min/max block convention: block.call(probe, running) — if it
+     * returns < 0 the probe is smaller than the running min (so swap).
+     * This is the opposite of sort's convention, which is also why the
+     * cmp variable here is interpreted with the probe as the LHS. */
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = a->ptr[0];
         for (long i = 1; i < a->len; i++) {
             rs[1] = a->ptr[i];
-            long cmp = ary_sort_compare(c, rs[0], rs[1], has_block);
+            long cmp = ary_sort_compare(c, rs[1], rs[0], has_block);
             if (c->state != KORB_NORMAL) break;
-            if (cmp > 0) rs[0] = rs[1];
+            if (cmp < 0) rs[0] = rs[1];
         }
         ret = rs[0];
     } ARO_ROOT_SCOPE_END(c, rs);
@@ -876,15 +878,16 @@ static VALUE ary_max(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
     bool has_block = korb_block_given(c);
-    /* Pin running-max + per-iter probe across korb_funcall — see ary_min. */
+    /* Same convention as ary_min — block.call(probe, running).  If it
+     * returns > 0 the probe is greater than running max, so swap. */
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = a->ptr[0];
         for (long i = 1; i < a->len; i++) {
             rs[1] = a->ptr[i];
-            long cmp = ary_sort_compare(c, rs[0], rs[1], has_block);
+            long cmp = ary_sort_compare(c, rs[1], rs[0], has_block);
             if (c->state != KORB_NORMAL) break;
-            if (cmp < 0) rs[0] = rs[1];
+            if (cmp > 0) rs[0] = rs[1];
         }
         ret = rs[0];
     } ARO_ROOT_SCOPE_END(c, rs);
