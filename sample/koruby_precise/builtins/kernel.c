@@ -1030,7 +1030,8 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
      * is 1, so out-of-the-box `caller` skips the immediate frame and
      * matches CRuby. */
     VALUE arr = korb_ary_new();
-    const char *default_file = c->current_frame->current_file ? c->current_frame->current_file : "(unknown)";
+    const char *cf0 = caller_current_file(c);
+    const char *default_file = cf0 ? cf0 : "(unknown)";
     struct korb_frame *f = c->current_frame;
     /* Index-0 entry's line is where IN that frame's body `caller` was
      * called.  kernel_caller is a cfunc; its callsite is recorded in
@@ -1268,7 +1269,8 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      * cfunc dispatch via last_cfunc_callsite). */
     char eval_filename_buf[1024];
     {
-        const char *cf = c->current_frame->current_file ? c->current_frame->current_file : "(unknown)";
+        const char *cf_ = caller_current_file(c);
+        const char *cf = cf_ ? cf_ : "(unknown)";
         int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
         snprintf(eval_filename_buf, sizeof(eval_filename_buf),
                  "(eval at %s:%d)", cf, line);
