@@ -420,8 +420,15 @@ class Hash
     end
     raise FrozenError, "can't modify frozen Hash: #{inspect}" if frozen?
     repl = args[0]
+    # Snapshot original keys + values up front; iterate over the
+    # snapshot so the user's block can `break` mid-way without losing
+    # any entries that haven't been processed yet.
+    original = []
+    each_pair { |k, v| original << [k, v] }
     new_h = {}
-    each_pair { |k, v|
+    broke = true
+    processed = 0
+    original.each do |k, v|
       nk = if repl && repl.key?(k)
              repl[k]
            elsif blk
@@ -430,7 +437,14 @@ class Hash
              k
            end
       new_h[nk] = v
-    }
+      processed += 1
+    end
+    broke = (processed < original.size)
+    # When break interrupted us, keep the original entries for the
+    # remaining (unprocessed) keys.  CRuby retains them as-is.
+    if broke
+      original[processed..-1].each { |k, v| new_h[k] = v unless new_h.key?(k) }
+    end
     clear
     new_h.each_pair { |k, v| self[k] = v }
     self
@@ -1551,6 +1565,7 @@ class Hash
   def transform_values(&blk)
     return enum_for(:transform_values) unless blk
     h = {}
+    h.compare_by_identity if compare_by_identity?
     each_pair { |k, v| h[k] = blk.call(v) }
     h
   end
