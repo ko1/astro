@@ -317,10 +317,13 @@ stale-ptr 検出) 下で test 走行:
   string_op/test_seq4): **normal / STRESS / STRESS+PURGE 全 8/8 pass**。
 - 完全 test/ ディレクトリ (24 ファイル):
   - **normal**: **24/24 (全 OK)**
-  - **STRESS**: 23/24 (test_basic_op_redef だけ — libc array Phase 3 未完)
-  - **STRESS+PURGE**: 23/24 (同上)。 baseline (548e616a) では STRESS だけで
-    3 件 fail だったので大幅改善。 test_eq_redef + test_alias_redef +
-    test_basic_op_redef の inspect SEGV、 全て今回の session で解消。
+  - **STRESS**: **24/24 (全 OK)**
+  - **STRESS+PURGE**: **24/24 (全 OK)**
+
+  baseline (548e616a) では STRESS だけで 3 件 fail だったので、 全件
+  解消。 test_eq_redef / test_alias_redef / test_basic_op_redef の
+  全 inspect 系 SEGV / arg routing / sp restore / framework forward
+  bug を fix。 3 run 連続 24/24 で deterministic。
 
 ### 残 test_basic_op_redef STRESS の root cause = Phase 3 未完
 
