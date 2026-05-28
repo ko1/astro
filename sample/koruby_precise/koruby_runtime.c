@@ -156,13 +156,21 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
      * Visiting the same slot twice when chains share suffixes / a
      * frame is double-counted is safe because forwarding is idempotent
      * (header forwarding bit + already-forwarded check in the backend). */
-    for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+    /* Walk frame chain with a hard depth cap to defend against a
+     * corrupted .prev (= dangling stack frame whose prev was overwritten
+     * after the frame was popped, or an uninitialized .prev slot).
+     * Normal Ruby code rarely exceeds depth 500; capping at 4096 is
+     * generous and turns runaway frame-walk crashes into a quiet
+     * truncation under STRESS+PURGE. */
+    int frame_depth = 0;
+    for (struct korb_frame *f = c->current_frame; f && frame_depth < 4096; f = f->prev, frame_depth++) {
         visit_value_slot(ctx, fn, &f->self);
         visit_value_slot(ctx, fn, &f->last_line);
         visit_value_slot(ctx, fn, &f->last_match);
         visit_ptr_slot(ctx, fn, (void **)&f->block);
         visit_ptr_slot(ctx, fn, (void **)&f->current_class);
-        for (struct korb_cref *cr = f->cref; cr; cr = cr->prev) {
+        int cref_depth = 0;
+        for (struct korb_cref *cr = f->cref; cr && cref_depth < 64; cr = cr->prev, cref_depth++) {
             visit_ptr_slot(ctx, fn, (void **)&cr->klass);
         }
     }
