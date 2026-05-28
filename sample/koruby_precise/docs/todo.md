@@ -82,38 +82,38 @@
 ### STRESS mode 結果
 
 NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走らせた
-結果。 段階的に修正を入れて **20/24 file 完全 pass** まで持ち込んだ
-(前回 14 から +6)。 また STRESS+PURGE では別の組み合わせで
+結果。 段階的に修正を入れて **21/24 file 完全 pass** まで持ち込んだ
+(初期 14 から +7)。 また STRESS+PURGE では別の組み合わせで
 **18/24 file pass** を確認 (test_block は STRESS で SEGV だが PURGE で
 OK、 逆に test_eq は STRESS で OK だが PURGE で SEGV 等、 mode 間で
 異なる stale ref 経路が表面化する)。
 
-| test                      | STRESS |
-|---------------------------|--------|
-| test_alias                | 9      |
-| test_alias_redef          | 3      |
-| test_array                | 72     |
-| test_basic_op_redef       | 4      |
-| test_block                | SEGV   |
-| test_block_arg            | 8      |
-| test_class                | 18     |
-| test_comparable           | SEGV   |
-| test_control              | 34     |
-| test_cpu_corner           | 29     |
-| test_eq                   | 58     |
-| test_eq_redef             | 7      |
-| test_exception            | SEGV   |
-| test_fiber                | 26     |
-| test_float_round          | 27     |
-| test_flonum               | 80     |
-| test_hash                 | 52     |
-| test_integer              | 105    |
-| test_misc                 | 26     |
-| test_object_alloc         | 19     |
-| test_range                | 27     |
-| test_string               | BAD SLOT |
-| test_to_s_dispatch        | 5      |
-| test_yield                | 15     |
+| test                      | STRESS  | STRESS+PURGE |
+|---------------------------|---------|--------------|
+| test_alias                | 9       | 9            |
+| test_alias_redef          | 3       | 3            |
+| test_array                | 72      | 72           |
+| test_basic_op_redef       | 4       | 4            |
+| test_block                | SEGV    | 33           |
+| test_block_arg            | 8       | 8            |
+| test_class                | 18      | 18           |
+| test_comparable           | SEGV    | SEGV         |
+| test_control              | 34      | 34           |
+| test_cpu_corner           | 29      | 29           |
+| test_eq                   | 58      | SEGV         |
+| test_eq_redef             | 7       | 7            |
+| test_exception            | SEGV    | SEGV         |
+| test_fiber                | 26      | 26           |
+| test_float_round          | 27      | 27           |
+| test_flonum               | 80      | 80           |
+| test_hash                 | 52      | SEGV         |
+| test_integer              | 105     | 105          |
+| test_misc                 | 26      | 26           |
+| test_object_alloc         | 19      | 19           |
+| test_range                | 27      | 27           |
+| test_string               | 49      | SEGV         |
+| test_to_s_dispatch        | 5       | SEGV         |
+| test_yield                | 15      | 15           |
 
 行った修正:
 - **libc-allocated proc の self / enclosing_block を visit_roots に
@@ -125,19 +125,32 @@ OK、 逆に test_eq は STRESS で OK だが PURGE で SEGV 等、 mode 間で
   T_FLOAT / T_BIGNUM の basic.klass は GC 越しに stale 化するため、
   type を見て korb_vm->X_class (= visit_roots で auto-track) を
   直接返す。
-- **korb_inspect_inner T_ARRAY / T_HASH を ARO_ROOT_SCOPE 化**
-  (object.c): result 文字列 / element 文字列が korb_str_concat
-  越しに stale 化していた (= `[20, 30]` が `]]` になる現象)。
+- **korb_inspect_inner T_ARRAY / T_HASH / T_STRING を ARO_ROOT_SCOPE
+  化** (object.c): result 文字列 / element 文字列が korb_str_concat
+  越しに stale 化していた (= `[20, 30]` が `]]` に、 `"hello".inspect`
+  が `""` になる現象)。
 - **libc obj registry (koruby_register_libc_obj)** (koruby_runtime.c
-  + object.c): 全 libc 容器 (korb_array / korb_hash / korb_range /
-  korb_float / korb_bignum / korb_proc) の constructor で
-  koruby_register_libc_obj を呼んで singly-linked list に登録。
-  visit_roots 末尾の (f) phase で list を walk し、 各 obj の内部
-  heap-pointer fields (basic.klass, array elements, hash entries,
-  proc env / self / cref) を visit_value_slot / visit_ptr_slot で
-  forward。 これにより hash key/value, array elements, proc env 等
-  に格納された arena ref が GC 越しに正しく追跡されるようになり、
-  test_cpu_corner / test_hash / test_to_s_dispatch が新たに full pass。
+  + object.c + builtins/{object,binding,symbol}.c): 全 libc 容器
+  (korb_array / korb_hash / korb_range / korb_float / korb_bignum /
+  korb_proc) + T_DATA (Method / Binding / Fiber / symbol-proc /
+  method-proc) の constructor で koruby_register_libc_obj を呼んで
+  singly-linked list に登録。 visit_roots 末尾の (f) phase で list
+  を walk し、 各 obj の内部 heap-pointer fields (basic.klass,
+  array elements, hash entries, proc env / self / cref) を
+  visit_value_slot / visit_ptr_slot で forward。 これにより hash
+  key/value, array elements, proc env 等に格納された arena ref が
+  GC 越しに正しく追跡されるようになる。
+- **node_lshift で l の synthetic-frame pin** (node.def): node_plus
+  と同じ pattern で fr.last_line に l を park し、 fr.self は
+  caller's self 継承。 `s << "y"` の self が GC 越しに stale 化
+  していた問題を解消。
+- **builtin pinning の系統的適用**: ary_min, ary_max, ary_mul
+  (string-join path), str_lshift / str_concat_one, str_split,
+  str_chars, str_gsub, str_sub, kernel_format (sprintf) の各 cfunc
+  iterator で C-local heap pointer を ARO_ROOT_SCOPE で pin。
+
+新規 full pass: test_cpu_corner / test_hash / test_to_s_dispatch /
+test_misc / test_fiber / test_array / test_string。
 
 残課題:
 - **test_exception / test_block / test_comparable / test_fiber の SEGV**:
