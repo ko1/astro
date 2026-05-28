@@ -316,12 +316,11 @@ stale-ptr 検出) 下で test 走行:
 - 8-test 基本 battery (min1/def1/class1/fib10/method_chain/justmul/
   string_op/test_seq4): **normal / STRESS / STRESS+PURGE 全 8/8 pass**。
 - 完全 test/ ディレクトリ (24 ファイル):
-  - **normal**: 23/24 (test_alias_redef 失敗 = baseline 548e616a でも fail、
-    pre-existing flake、 assertion fail 1/3)
-  - **STRESS+PURGE**: 22/24 (test_alias_redef / test_basic_op_redef)。
-    baseline (548e616a) では STRESS だけで 3 件全部 fail だったので
-    regression なし。 test_eq_redef は prologue_ast_general の
-    frame.cref/current_class/current_file inherit 漏れを直して通った。
+  - **normal**: **24/24 (全 OK)**
+  - **STRESS**: 23/24 (test_basic_op_redef だけ — libc array Phase 3 未完)
+  - **STRESS+PURGE**: 23/24 (同上)。 baseline (548e616a) では STRESS だけで
+    3 件 fail だったので大幅改善。 test_eq_redef + test_alias_redef +
+    test_basic_op_redef の inspect SEGV、 全て今回の session で解消。
 
 ### 残 test_basic_op_redef STRESS の root cause = Phase 3 未完
 
@@ -343,13 +342,14 @@ Phase 3 (= 全 koruby obj を aro_gc_alloc に migrate) もしくは framework
 → immortal as-is" path を入れることで根治。 後者は他 sample (baruby_
 precise 等) は arena only で問題ないため framework 改変は影響なし。
 
-### 残 test_alias_redef NORMAL の logical fail
+### 解消した test_alias_redef NORMAL の logical fail
 
-`class Module; def alias_method; $called = true; end; end` の後の
-`class D; alias_method :greet, :hello; end` が monkey-patch を呼ばずに
-C 側 korb_class_alias_method に直行している疑い (= koruby が `alias`
-keyword と `Module#alias_method` method call を区別しきれていない)。
-GC 関連ではない。 別 session の課題。
+調査の結果、 `assert_equal` (= optional msg=nil 持ち method) の
+prologue_ast_general に `c->current_frame->fp += arg_index;` の
+shift が抜けていた pre-existing バグだった。 body が caller の
+lvar slot から params を読んでいた。 commit d907a658 で fix。
+prologue_ast_simple_inl / prologue_ast_full_inl_K は最初から shift
+していて、 general だけ漏れていた。
 
 このセッションの主要 fix (commit 686f01f0 〜 13edbcb7):
 
