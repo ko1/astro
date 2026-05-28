@@ -4873,15 +4873,45 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         for (uint32_t i = 0; i < blk->params_cnt && i < (uint32_t)fib->argc; i++) {
             fib->frame[blk->param_base + i] = fib->args[i];
         }
-        VALUE prev_self = c->current_frame->self;
-        c->current_frame->self = blk->self;
+        /* Push a stable fiber-root frame on the fiber's own C stack.
+         * All inner cfunc / method frames will chain to this via .prev.
+         * The resumer's cfunc frame (cfr_R) on the RESUMER's stack is
+         * NOT a valid anchor because cfr_R's memory is overwritten as
+         * soon as the first f.resume returns; using it as a chain
+         * parent makes the second resume's cfunc-pop write garbage to
+         * c->current_frame.  Anchoring on the fiber's own stack keeps
+         * the chain stable across all resume/yield cycles for this
+         * fiber. */
+        struct korb_frame fiber_root = {
+            .prev = c->current_frame,  /* resumer's stack — only seen during this fiber's full lifetime walk; intermediates anchor to &fiber_root, not to .prev */
+            .self = blk->self,
+            .method = NULL,
+            .fp = fib->fiber_fp,
+            .cref = blk->cref ? blk->cref : c->current_frame->cref,
+            .current_class = c->current_frame->current_class,
+            .current_file = c->current_frame->current_file,
+            .locals_cnt = 0,
+            .block = NULL,
+            .last_line = Qnil,
+            .last_match = Qnil,
+            .caller_node = NULL,
+            .caller_running_block = NULL,
+            .super_skip_n = 0,
+            .frame_id = 0,
+            .bindings_head = NULL,
+        };
+        c->current_frame = &fiber_root;
         struct korb_proc *prev_block = current_block;
         current_block = NULL;
-        struct korb_cref *prev_cref = c->current_frame->cref;
-        if (blk->cref) c->current_frame->cref = blk->cref;
         VALUE result = blk->body ? EVAL(c, blk->body, fib->frame + blk->env_size) : Qnil;
-        c->current_frame->cref = prev_cref;
-        c->current_frame->self = prev_self;
+        /* NOTE: do NOT restore c->current_frame to its pre-fiber-entry
+         * value here.  That value (= the FIRST resume's cfr_R, on the
+         * resumer's stack) became stale as soon as the first f.resume
+         * returned.  Subsequent resumes overwrite that stack region.
+         * Leaving c->current_frame at &fiber_root (or wherever the
+         * body's final pop landed it) is fine because the resumer's
+         * POST-SWAP path explicitly sets c->current_frame =
+         * fib->resumer_current_frame (= the CURRENT resume's cfr_R). */
         current_block = prev_block;
         fib->result = result;
     }
