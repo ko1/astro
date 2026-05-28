@@ -103,6 +103,10 @@ struct korb_method {
         } ast;
         struct {
             VALUE (*func)(CTX *c, VALUE self, int argc, VALUE *argv);
+            /* New sp-based RESULT-returning cfunc — set when registered via
+             * korb_class_add_method_cfunc_r.  When non-NULL, dispatch uses
+             * prologue_cfunc_r_inl instead.  Phase 2-4 transition. */
+            korb_cfunc_r_t func_r;
             int argc; /* -1 for varargs */
         } cfunc;
         struct {
@@ -460,6 +464,10 @@ korb_host_class(CTX * restrict c) {
     return korb_vm->object_class;
 }
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name, VALUE (*func)(CTX *, VALUE, int, VALUE *), int argc);
+/* Register a method whose body uses the new sp-based RESULT-returning
+ * cfunc signature `(CTX *c, int argc, VALUE *sp) → RESULT`.  Dispatch
+ * picks prologue_cfunc_r_inl when mc->cfunc_r is non-NULL. */
+void korb_class_add_method_cfunc_r(struct korb_class *klass, ID name, korb_cfunc_r_t func_r, int argc);
 void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slot);
 void korb_class_set_method_local_names(struct korb_class *klass, ID name, ID *names);
 void korb_register_body_local_names(struct Node *body, ID *names);
@@ -801,7 +809,27 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
         if (p == prologue_ast_simple_1) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 1);
         if (p == prologue_ast_simple_2) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 2);
         if (p == prologue_ast_simple_3) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 3);
-        if (p == prologue_cfunc)        return prologue_cfunc_inl     (c, callsite, recv, argc, arg_index, block, mc);
+        if (p == prologue_cfunc) {
+            /* New sp-based RESULT ABI: when mc->cfunc_r is set, stage
+             * self + args on c->sp and call prologue_cfunc_r_inl.  Convert
+             * the returned RESULT to the legacy VALUE + c->state path so
+             * upstream callers don't need to change yet (Phase 2 bridge). */
+            if (UNLIKELY(mc->cfunc_r != NULL)) {
+                VALUE *sp = c->sp;
+                sp[0] = recv;
+                for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
+                c->sp = sp + 1 + argc;
+                RESULT _rr = prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);
+                c->sp = sp;
+                if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+                    c->state = _rr.state;
+                    c->state_value = _rr.value;
+                    return Qnil;
+                }
+                return _rr.value;
+            }
+            return prologue_cfunc_inl(c, callsite, recv, argc, arg_index, block, mc);
+        }
         return p(c, callsite, recv, argc, arg_index, block, mc);
     }
     return korb_dispatch_call(c, callsite, recv, name, argc, arg_index, block, mc);

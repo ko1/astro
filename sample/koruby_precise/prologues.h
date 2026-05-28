@@ -24,7 +24,61 @@ extern struct korb_proc *current_block;
  * env if it points into the about-to-be-popped frame. */
 void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi);
 
-/* CFUNC: just call the C function, then handle break-from-block. */
+/* CFUNC (NEW sp-based RESULT-returning prologue).
+ *
+ * Caller has already staged self and args on the value stack:
+ *   sp[-argc-1] = self  (= recv)
+ *   sp[-argc..-1] = args
+ *   c->sp == sp  (= post-staging top)
+ *
+ * The cfunc body receives the same sp and returns RESULT.  State
+ * propagation is in-band (no c->state side-channel).  Frame is pushed
+ * with frame.self = recv so visit_roots tracks it through the chain.
+ *
+ * Used when mc->cfunc_r is non-NULL.  Phase 2 transitional; eventually
+ * the only cfunc path. */
+static inline __attribute__((always_inline)) RESULT
+prologue_cfunc_r_inl(CTX *c, struct Node *callsite,
+                     int argc, VALUE *sp,
+                     struct korb_proc *block, struct method_cache *mc)
+{
+    VALUE recv = sp[-argc - 1];
+    struct korb_proc *prev_block = current_block;
+    current_block = block;
+    struct korb_frame cfr = {
+        .prev = c->current_frame,
+        .self = recv,
+        .method = mc->method,
+        .block = block,
+        .caller_node = callsite,
+        .fp = c->current_frame->fp,
+        .locals_cnt = 0,
+        .super_skip_n = 0,
+        .last_line = Qnil,
+        .last_match = Qnil,
+        .caller_running_block = NULL,
+        .frame_id = 0,
+        .bindings_head = NULL,
+    };
+    c->current_frame = &cfr;
+    struct Node *prev_cs = c->last_cfunc_callsite;
+    c->last_cfunc_callsite = callsite;
+    RESULT r = mc->cfunc_r(c, argc, sp);
+    c->last_cfunc_callsite = prev_cs;
+    c->current_frame = cfr.prev;
+    current_block = prev_block;
+    /* break-from-block: convert KORB_BREAK back to NORMAL with the carried value.
+     * State carried in r.state for new ABI; we also clear c->state in case
+     * a legacy helper inside the cfunc wrote it. */
+    if (UNLIKELY(block && r.state == KORB_BREAK)) {
+        r = RESULT_OK(r.value);
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+    }
+    return r;
+}
+
+/* CFUNC (LEGACY): just call the C function, then handle break-from-block. */
 static inline __attribute__((always_inline)) VALUE
 prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
                    uint32_t argc, uint32_t arg_index,

@@ -178,18 +178,101 @@ extern struct koruby_option OPTION;
 /* serial for method cache */
 typedef uint64_t state_serial_t;
 
-/* method cache (inline cache).  Holds the resolved body AST + its dispatcher
- * pointer so the dispatch hot path can do a direct call without going through
- * method->ast.body->head.dispatcher (one indirect call instead of two). */
+/* =====================================================================
+ * Control-flow state codes (KORB_NORMAL .. KORB_THROW).
+ *
+ * Used by both the legacy c->state side-channel and the new RESULT-typed
+ * return-propagation path.  When state != KORB_NORMAL, callers must
+ * propagate without using the value.
+ * ===================================================================== */
+#define KORB_NORMAL 0
+#define KORB_RAISE  1
+#define KORB_RETURN 2
+#define KORB_BREAK  3
+#define KORB_NEXT   4
+#define KORB_RETRY  5
+#define KORB_REDO   6
+#define KORB_THROW  7
+
+/* =====================================================================
+ * RESULT type — sp-based / Lua-style ABI for cfunc and C API helpers.
+ *
+ * Convention summary (Phase 2+):
+ *   cfunc:           RESULT cf(CTX *c, int argc, VALUE *sp)
+ *                    sp[-argc-1] = self, sp[-argc..-1] = args, sp[0..] = scratch
+ *   C API helper:    RESULT h (CTX *c, VALUE *sp)  with sp[-N..-1] = args
+ *   EVAL_node body:  RESULT EVAL_node_X(CTX *c, NODE *n, VALUE *sp, ...)
+ *                    same sp meaning (parent's staging top)
+ *
+ * RESULT carries value + state byte so raise/break/next/return/throw/redo
+ * propagate via early return rather than via c->state side-channel.  Sized
+ * to fit in two registers (rax/rdx) on x86_64.  Modeled after
+ * baruby_precise / castro / abruby; same idea as Lua's stack-based C API.
+ * ===================================================================== */
+typedef struct {
+    VALUE   value;
+    uint8_t state;
+} RESULT;
+
+#define RESULT_OK(v)        ((RESULT){(v), KORB_NORMAL})
+#define RESULT_RAISE_R(v)   ((RESULT){(v), KORB_RAISE})
+#define RESULT_RETURN_R(v)  ((RESULT){(v), KORB_RETURN})
+#define RESULT_BREAK_R(v)   ((RESULT){(v), KORB_BREAK})
+#define RESULT_NEXT_R(v)    ((RESULT){(v), KORB_NEXT})
+#define RESULT_THROW_R(v)   ((RESULT){(v), KORB_THROW})
+#define RESULT_REDO_R(v)    ((RESULT){(v), KORB_REDO})
+#define RESULT_RETRY_R(v)   ((RESULT){(v), KORB_RETRY})
+
+/* UNWRAP — extract VALUE from RESULT, propagate non-NORMAL via early
+ * return.  Caller's function must return RESULT.  Uses GNU statement
+ * expression. */
+#define UNWRAP(call) ({                                   \
+    RESULT _r = (call);                                   \
+    if (__builtin_expect(_r.state != KORB_NORMAL, 0))     \
+        return _r;                                        \
+    _r.value;                                             \
+})
+
+/* CHECK — same as UNWRAP but discards the value (for side-effect calls). */
+#define CHECK(call) ({                                    \
+    RESULT _r = (call);                                   \
+    if (__builtin_expect(_r.state != KORB_NORMAL, 0))     \
+        return _r;                                        \
+    (void)_r;                                             \
+})
+
+/* Sync c->sp to sp before calling a function that may fire GC.  All
+ * staged values on or below sp will then be in visit_roots scan range. */
+#define KORB_SYNC_SP(c, sp_)  ((c)->sp = (sp_))
+
+/* =====================================================================
+ * Dispatcher / prologue / cfunc function-pointer typedefs.
+ *
+ * Two parallel ABIs exist during the Phase 2-4 migration:
+ *   - Legacy: `VALUE (*)(...)` based, state side-channel via c->state.
+ *   - New:    `RESULT (*)(...)` based, sp-staging, in-band state.
+ *
+ * Method-cache slots for both are kept (`cfunc` + `cfunc_r`); the
+ * dispatcher picks the available one.  After the sweep, the legacy
+ * fields will be removed.
+ * ===================================================================== */
 struct CTX_struct;
-typedef VALUE (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n, VALUE *sp);
-/* Per-callsite specialized prologue.  At method_cache_fill time we pick
- * one of: ast_simple (no rest, no opt), ast_general (rest/opt), cfunc.
- * Then dispatch is a single indirect call with no in-function branching. */
 struct method_cache;
+
+/* Legacy EVAL_node dispatcher: returns VALUE, propagates state via c->state. */
+typedef VALUE (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n, VALUE *sp);
+
+/* Legacy prologue: chosen at method_cache fill time
+ * (ast_simple / ast_general / cfunc). */
 typedef VALUE (*korb_prologue_t)(struct CTX_struct *c, struct Node *callsite,
                                  VALUE recv, uint32_t argc, uint32_t arg_index,
                                  struct korb_proc *block, struct method_cache *mc);
+
+/* New cfunc signature (sp-based, RESULT-returning, Lua-style). */
+typedef RESULT (*korb_cfunc_r_t)(struct CTX_struct *c, int argc, VALUE *sp);
+
+/* New EVAL_node dispatcher signature (RESULT-returning). */
+typedef RESULT (*korb_dispatcher_r_t)(struct CTX_struct *c, struct Node *n, VALUE *sp);
 
 struct method_cache {
     state_serial_t serial;
@@ -208,6 +291,10 @@ struct method_cache {
     uint8_t  type;                 /* 0=AST, 1=CFUNC */
     bool     is_simple_frame;      /* method body has no yield/super/block_given/_block — slim prologue */
     VALUE (*cfunc)(struct CTX_struct *, VALUE, int, VALUE *);
+    /* New sp-based RESULT-returning cfunc.  When non-NULL, prologue_cfunc_r_inl
+     * is used instead of the old `cfunc` path.  Phase 2-4 transition field;
+     * eventually replaces `cfunc`. */
+    korb_cfunc_r_t cfunc_r;
     struct korb_cref *def_cref;    /* lexical cref captured at def-time */
     /* param_position → fp slot.  NULL = identity (the common case).
      * Mirrors korb_method->u.ast.param_holder_slots; cached so the
@@ -347,75 +434,6 @@ typedef struct CTX_struct {
      * record the line of the call into a backtrace. */
     struct Node *last_cfunc_callsite;
 } CTX;
-
-#define KORB_NORMAL 0
-#define KORB_RAISE  1
-#define KORB_RETURN 2
-#define KORB_BREAK  3
-#define KORB_NEXT   4
-#define KORB_RETRY  5
-#define KORB_REDO   6
-#define KORB_THROW  7
-
-/* ---- RESULT type (Lua-style stack convention, sp-based ABI) ----
- *
- * Used in conjunction with the sp-based cfunc / helper convention:
- *   - cfunc signature: RESULT cf(CTX *c, int argc, VALUE *sp)
- *   - sp[-argc-1] = self, sp[-argc..-1] = args, sp[0..] = scratch
- *   - helpers (C API): RESULT h(CTX *c, VALUE *sp) with sp[-N..-1] = args
- *
- * RESULT carries both a value and a state byte so that raise / break /
- * next / return / throw / redo propagate up through nested calls without
- * needing per-call `if (c->state != KORB_NORMAL) return Qnil;` boilerplate.
- *
- * The caller writes:
- *     VALUE v = UNWRAP(some_helper(c, sp));
- * UNWRAP extracts the value on NORMAL and early-returns the propagating
- * RESULT otherwise.  Modeled after baruby_precise / castro / abruby. */
-typedef struct {
-    VALUE value;
-    uint8_t state;
-} RESULT;
-
-#define RESULT_OK(v)        ((RESULT){(v), KORB_NORMAL})
-#define RESULT_RAISE_R(v)   ((RESULT){(v), KORB_RAISE})
-#define RESULT_RETURN_R(v)  ((RESULT){(v), KORB_RETURN})
-#define RESULT_BREAK_R(v)   ((RESULT){(v), KORB_BREAK})
-#define RESULT_NEXT_R(v)    ((RESULT){(v), KORB_NEXT})
-#define RESULT_THROW_R(v)   ((RESULT){(v), KORB_THROW})
-#define RESULT_REDO_R(v)    ((RESULT){(v), KORB_REDO})
-#define RESULT_RETRY_R(v)   ((RESULT){(v), KORB_RETRY})
-
-/* UNWRAP — extract VALUE from RESULT, propagate non-NORMAL via early
- * return.  Caller's function must return RESULT.  Uses GNU statement
- * expression. */
-#define UNWRAP(call) ({                                   \
-    RESULT _r = (call);                                   \
-    if (__builtin_expect(_r.state != KORB_NORMAL, 0))     \
-        return _r;                                        \
-    _r.value;                                             \
-})
-
-/* CHECK — same as UNWRAP but discards the value (for side-effect calls). */
-#define CHECK(call) ({                                    \
-    RESULT _r = (call);                                   \
-    if (__builtin_expect(_r.state != KORB_NORMAL, 0))     \
-        return _r;                                        \
-    (void)_r;                                             \
-})
-
-/* Sync c->sp to sp before calling a function that may fire GC.  All
- * staged values on or below sp will be in visit_roots scan range. */
-#define KORB_SYNC_SP(c, sp_)  ((c)->sp = (sp_))
-
-/* New cfunc signature (sp-based, RESULT-returning).  Coexists with old
- * `VALUE (*)(CTX*, VALUE, int, VALUE*)` during the Phase 4 sweep. */
-struct CTX_struct;
-struct Node;
-typedef RESULT (*korb_cfunc_r_t)(struct CTX_struct *c, int argc, VALUE *sp);
-
-/* New dispatcher signature (RESULT-returning EVAL_node body). */
-typedef RESULT (*korb_dispatcher_r_t)(struct CTX_struct *c, struct Node *n, VALUE *sp);
 
 /* push/pop frame helpers via macro */
 #define KORB_PUSH_FRAME(c, mtd, fp_, locals_, caller) \

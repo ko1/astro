@@ -556,6 +556,23 @@ void korb_class_add_method_cfunc(struct korb_class *klass, ID name,
     m->is_simple_frame = false;
     m->visibility = KORB_VIS_PUBLIC;
     m->u.cfunc.func = func;
+    m->u.cfunc.func_r = NULL;
+    m->u.cfunc.argc = argc;
+    method_table_set(&klass->methods, name, m);
+    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+}
+
+/* Register a method using the new sp-based RESULT-returning cfunc signature. */
+void korb_class_add_method_cfunc_r(struct korb_class *klass, ID name,
+                                    korb_cfunc_r_t func_r, int argc) {
+    struct korb_method *m = korb_xmalloc(sizeof(*m));
+    m->type = KORB_METHOD_CFUNC;
+    m->name = name;
+    m->defining_class = klass;
+    m->is_simple_frame = false;
+    m->visibility = KORB_VIS_PUBLIC;
+    m->u.cfunc.func = NULL;
+    m->u.cfunc.func_r = func_r;
     m->u.cfunc.argc = argc;
     method_table_set(&klass->methods, name, m);
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
@@ -3867,6 +3884,7 @@ korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct
         mc->kwh_save_slot = -1;
         mc->type = 1;
         mc->cfunc = m->u.cfunc.func;
+        mc->cfunc_r = m->u.cfunc.func_r;  /* new sp-based ABI; NULL if legacy */
         mc->def_cref = NULL;
         mc->param_holder_slots = NULL;
         mc->prologue = prologue_cfunc;
