@@ -658,26 +658,84 @@ static VALUE int_bit_length(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_ary_new(c, c->sp);
-    /* Float divisor: NaN raises FloatDomainError; Infinity etc. routed
-     * via float arithmetic (CRuby semantics). */
-    if (FLONUM_P(argv[0]) || (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_FLOAT)) {
-        double bd = korb_num2dbl(argv[0]);
+    if (argc < 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "wrong number of arguments");
+        return Qnil;
+    }
+    VALUE other = argv[0];
+    /* Float divisor: floor((a/b), 0) → (q.to_i, q*b + ...) — a/b yields
+     * Float; q.to_i is the floor as Integer.  NaN raises FloatDomainError. */
+    if (FLONUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_FLOAT)) {
+        double bd = korb_num2dbl(other);
         if (isnan(bd)) {
             VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FloatDomainError"));
             korb_raise(c, (struct korb_class *)eF, "NaN");
             return Qnil;
         }
+        if (bd == 0.0) {
+            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            return Qnil;
+        }
+        double ad = korb_num2dbl(self);
+        double q = floor(ad / bd);
+        double m = ad - q * bd;
+        VALUE r = korb_ary_new_capa(c, c->sp, 2);
+        korb_ary_push(r, korb_float_new(c, c->sp, q));
+        korb_ary_push(r, korb_float_new(c, c->sp, m));
+        return r;
     }
-    if (!FIXNUM_P(self) || !FIXNUM_P(argv[0])) return korb_ary_new(c, c->sp);
-    long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
-    if (b == 0) { { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); korb_raise(c, (struct korb_class *)_eZ, "divided by 0"); } return Qnil; }
-    long q = a / b, m = a % b;
-    if ((a ^ b) < 0 && m != 0) { q--; m += b; }
-    VALUE r = korb_ary_new_capa(c, c->sp, 2);
-    korb_ary_push(r, INT2FIX(q));
-    korb_ary_push(r, INT2FIX(m));
-    return r;
+    /* Fixnum / Fixnum fast path. */
+    if (FIXNUM_P(self) && FIXNUM_P(other)) {
+        long a = FIX2LONG(self), b = FIX2LONG(other);
+        if (b == 0) {
+            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            return Qnil;
+        }
+        long q = a / b, m = a % b;
+        if ((a ^ b) < 0 && m != 0) { q--; m += b; }
+        VALUE r = korb_ary_new_capa(c, c->sp, 2);
+        korb_ary_push(r, INT2FIX(q));
+        korb_ary_push(r, INT2FIX(m));
+        return r;
+    }
+    /* Bignum path: q = a / b (floor), m = a - q * b. */
+    if ((FIXNUM_P(self) || (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM)) &&
+        (FIXNUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM))) {
+        if ((FIXNUM_P(other) && FIX2LONG(other) == 0) ||
+            (!FIXNUM_P(other) && BUILTIN_TYPE(other) == T_BIGNUM &&
+             mpz_sgn((mpz_ptr)((struct korb_bignum *)other)->mpz) == 0)) {
+            VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
+            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            return Qnil;
+        }
+        VALUE q = korb_int_div(self, other);
+        VALUE m = korb_int_mod(self, other);
+        VALUE r = korb_ary_new_capa(c, c->sp, 2);
+        korb_ary_push(r, q);
+        korb_ary_push(r, m);
+        return r;
+    }
+    /* Non-numeric: try coerce protocol. */
+    if (!SPECIAL_CONST_P(other)) {
+        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt)) {
+            VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
+                ((struct korb_array *)pair)->len == 2) {
+                struct korb_array *p = (struct korb_array *)pair;
+                return korb_funcall(c, p->ptr[0], korb_intern("divmod"), 1, &p->ptr[1]);
+            }
+        }
+    }
+    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+    korb_raise(c, (struct korb_class *)eT, "expected Numeric");
+    return Qnil;
 }
 
 VALUE int_invert(CTX *c, VALUE self, int argc, VALUE *argv) {
