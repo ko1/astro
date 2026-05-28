@@ -893,9 +893,9 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
         struct korb_class *src = (struct korb_class *)self;
         struct korb_class *nk;
         if (t == T_CLASS) {
-            nk = korb_class_new(0, src->super, src->instance_type);
+            nk = korb_class_new(c, c->sp, 0, src->super, src->instance_type);
         } else {
-            nk = korb_module_new(0);
+            nk = korb_module_new(c, c->sp, 0);
         }
         /* Copy methods (shallow — share method body / ast nodes). */
         for (uint32_t b = 0; b < src->methods.bucket_cnt; b++) {

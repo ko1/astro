@@ -528,7 +528,7 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
         argc--;
     }
-    struct korb_class *klass = korb_class_new(korb_intern("Struct"), korb_vm->object_class, T_OBJECT);
+    struct korb_class *klass = korb_class_new(c, c->sp, korb_intern("Struct"), korb_vm->object_class, T_OBJECT);
     /* save members */
     VALUE members = korb_ary_new_from_values(c, c->sp, argc, argv);
     korb_const_set(klass, korb_intern("__members__"), members);

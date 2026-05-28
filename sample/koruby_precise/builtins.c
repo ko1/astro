@@ -807,7 +807,7 @@ void korb_init_builtins(void) {
          * and Array.new(n) { ... } actually build an array of the right
          * size — Class#new's generic path uses korb_object_new which
          * doesn't size a T_ARRAY correctly. */
-        struct korb_class *cAryMeta = korb_class_new(korb_intern("ArrayMeta"),
+        struct korb_class *cAryMeta = korb_class_new(c, c->sp, korb_intern("ArrayMeta"),
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cAryMeta, korb_intern("new"), ary_class_new, -1);
         /* Array[] — class method that returns an Array literal of args. */
@@ -908,7 +908,7 @@ void korb_init_builtins(void) {
     {
         /* Override Class.new on Hash's metaclass so Hash.new(default) and
          * Hash.new { ... } actually create a real hash with the default. */
-        struct korb_class *cHshMeta = korb_class_new(korb_intern("HashMeta"),
+        struct korb_class *cHshMeta = korb_class_new(c, c->sp, korb_intern("HashMeta"),
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cHshMeta, korb_intern("new"), hash_class_new, -1);
         korb_class_add_method_cfunc(cHshMeta, korb_intern("[]"),  hash_class_aref, -1);
@@ -956,7 +956,7 @@ void korb_init_builtins(void) {
     /* String.new(s = "") — initialize from optional string. */
     {
         VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv);
-        struct korb_class *cStrMeta = korb_class_new(korb_intern("StringMeta"),
+        struct korb_class *cStrMeta = korb_class_new(c, c->sp, korb_intern("StringMeta"),
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cStrMeta, korb_intern("new"), str_class_new, -1);
         korb_vm->string_class->basic.klass = (VALUE)cStrMeta;
@@ -1036,7 +1036,7 @@ void korb_init_builtins(void) {
 
     /* Struct.new */
     /* Create Struct class object */
-    struct korb_class *cStruct = korb_class_new(korb_intern("Struct"), korb_vm->object_class, T_OBJECT);
+    struct korb_class *cStruct = korb_class_new(c, c->sp, korb_intern("Struct"), korb_vm->object_class, T_OBJECT);
     korb_const_set(korb_vm->object_class, korb_intern("Struct"), (VALUE)cStruct);
     /* Struct.new is a class-level cfunc — install on Class so any class can call .new */
     /* But only Struct itself should have this constructor.  We add it on the class itself's
@@ -1068,7 +1068,7 @@ void korb_init_builtins(void) {
      * own metaclass.  We create a special ko_class for Struct's metaclass with .new
      * pointing to struct_class_new. */
     {
-        struct korb_class *cStructMeta = korb_class_new(korb_intern("StructMeta"), korb_vm->class_class, T_CLASS);
+        struct korb_class *cStructMeta = korb_class_new(c, c->sp, korb_intern("StructMeta"), korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cStructMeta, korb_intern("new"), struct_class_new, -1);
         cStruct->basic.klass = (VALUE)cStructMeta;
     }
@@ -1076,9 +1076,9 @@ void korb_init_builtins(void) {
     /* Data.define — like Struct but immutable.  We implement as a thin
      * shim over struct_class_new and freeze the instance after init. */
     {
-        struct korb_class *cData = korb_class_new(korb_intern("Data"), korb_vm->object_class, T_OBJECT);
+        struct korb_class *cData = korb_class_new(c, c->sp, korb_intern("Data"), korb_vm->object_class, T_OBJECT);
         korb_const_set(korb_vm->object_class, korb_intern("Data"), (VALUE)cData);
-        struct korb_class *cDataMeta = korb_class_new(korb_intern("DataMeta"),
+        struct korb_class *cDataMeta = korb_class_new(c, c->sp, korb_intern("DataMeta"),
                                                        korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cDataMeta, korb_intern("define"),
                                      struct_class_new, -1);
@@ -1086,10 +1086,10 @@ void korb_init_builtins(void) {
     }
 
     /* File class */
-    struct korb_class *cFile = korb_class_new(korb_intern("File"), korb_vm->object_class, T_OBJECT);
+    struct korb_class *cFile = korb_class_new(c, c->sp, korb_intern("File"), korb_vm->object_class, T_OBJECT);
     korb_const_set(korb_vm->object_class, korb_intern("File"), (VALUE)cFile);
     {
-        struct korb_class *cFileMeta = korb_class_new(korb_intern("FileMeta"), korb_vm->class_class, T_CLASS);
+        struct korb_class *cFileMeta = korb_class_new(c, c->sp, korb_intern("FileMeta"), korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("read"), file_read, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("join"), file_join, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("exist?"), file_exist_p, -1);
@@ -1113,9 +1113,9 @@ void korb_init_builtins(void) {
     }
     /* Dir / Process classes — stubs so common Ruby idioms don't NPE. */
     {
-        struct korb_class *cDir = korb_class_new(korb_intern("Dir"), korb_vm->object_class, T_OBJECT);
+        struct korb_class *cDir = korb_class_new(c, c->sp, korb_intern("Dir"), korb_vm->object_class, T_OBJECT);
         korb_const_set(korb_vm->object_class, korb_intern("Dir"), (VALUE)cDir);
-        struct korb_class *cDirMeta = korb_class_new(korb_intern("DirMeta"), korb_vm->class_class, T_CLASS);
+        struct korb_class *cDirMeta = korb_class_new(c, c->sp, korb_intern("DirMeta"), korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("pwd"),     dir_pwd,     0);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("getwd"),   dir_pwd,     0);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("entries"), dir_entries, 1);
@@ -1129,9 +1129,9 @@ void korb_init_builtins(void) {
         cDir->basic.klass = (VALUE)cDirMeta;
     }
     {
-        struct korb_class *cProcess = korb_class_new(korb_intern("Process"), korb_vm->object_class, T_OBJECT);
+        struct korb_class *cProcess = korb_class_new(c, c->sp, korb_intern("Process"), korb_vm->object_class, T_OBJECT);
         korb_const_set(korb_vm->object_class, korb_intern("Process"), (VALUE)cProcess);
-        struct korb_class *cProcessMeta = korb_class_new(korb_intern("ProcessMeta"), korb_vm->class_class, T_CLASS);
+        struct korb_class *cProcessMeta = korb_class_new(c, c->sp, korb_intern("ProcessMeta"), korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cProcessMeta, korb_intern("pid"), process_pid, 0);
         korb_class_add_method_cfunc(cProcessMeta, korb_intern("clock_gettime"), proc_clock_gettime_stub, -1);
         korb_class_add_method_cfunc(cProcessMeta, korb_intern("spawn"), process_spawn, -1);
@@ -1141,7 +1141,7 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cProcessMeta, korb_intern("kill"), process_kill, -1);
         cProcess->basic.klass = (VALUE)cProcessMeta;
         /* Process::Status — minimal class with attribute readers. */
-        struct korb_class *cStatus = korb_class_new(korb_intern("Status"), korb_vm->object_class, T_OBJECT);
+        struct korb_class *cStatus = korb_class_new(c, c->sp, korb_intern("Status"), korb_vm->object_class, T_OBJECT);
         korb_const_set(cProcess, korb_intern("Status"), (VALUE)cStatus);
         korb_class_add_method_cfunc(cStatus, korb_intern("exitstatus"), pstatus_exitstatus, 0);
         korb_class_add_method_cfunc(cStatus, korb_intern("pid"), pstatus_pid, 0);
@@ -1150,7 +1150,7 @@ void korb_init_builtins(void) {
         korb_class_add_method_cfunc(cStatus, korb_intern("termsig"), pstatus_termsig, 0);
         korb_class_add_method_cfunc(cStatus, korb_intern("to_i"), pstatus_to_i, 0);
         /* Signal — module with class methods. */
-        struct korb_class *cSignal = korb_module_new(korb_intern("Signal"));
+        struct korb_class *cSignal = korb_module_new(c, c->sp, korb_intern("Signal"));
         korb_const_set(korb_vm->object_class, korb_intern("Signal"), (VALUE)cSignal);
         struct korb_class *cSignalMeta = korb_singleton_class_of(cSignal);
         korb_class_add_method_cfunc(cSignalMeta, korb_intern("trap"), signal_trap, -1);
@@ -1189,7 +1189,7 @@ void korb_init_builtins(void) {
      * const slot dereference an obj that no longer lives there → SEGV. */
     CTX *_c_io = korb_vm->current_ctx;
     ARO_ROOT_SCOPE_START(_c_io, io, 4) {
-        io[0] = (VALUE)korb_class_new(korb_intern("IO"), korb_vm->object_class, T_OBJECT);
+        io[0] = (VALUE)korb_class_new(c, c->sp, korb_intern("IO"), korb_vm->object_class, T_OBJECT);
         korb_const_set(korb_vm->object_class, korb_intern("IO"), io[0]);
         /* dummy STDOUT/STDERR */
         io[1] = korb_object_new(c, c->sp, (struct korb_class *)io[0]);
@@ -1316,7 +1316,7 @@ void korb_init_builtins(void) {
     DEF(korb_vm->proc_class, "==", proc_eq, 1);
     DEF(korb_vm->proc_class, "eql?", proc_eq, 1);
     {
-        struct korb_class *cProcMeta = korb_class_new(korb_intern("ProcMeta"),
+        struct korb_class *cProcMeta = korb_class_new(c, c->sp, korb_intern("ProcMeta"),
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cProcMeta, korb_intern("new"), proc_class_new, -1);
         /* Proc.allocate raises TypeError (CRuby) — no proc allocation
@@ -1340,10 +1340,10 @@ void korb_init_builtins(void) {
 
     /* Time stub class (Process is set up earlier with proper meta). */
 
-    struct korb_class *cTime = korb_class_new(korb_intern("Time"), korb_vm->object_class, T_OBJECT);
+    struct korb_class *cTime = korb_class_new(c, c->sp, korb_intern("Time"), korb_vm->object_class, T_OBJECT);
     korb_const_set(korb_vm->object_class, korb_intern("Time"), (VALUE)cTime);
     {
-        struct korb_class *cTimeMeta = korb_class_new(korb_intern("TimeMeta"),
+        struct korb_class *cTimeMeta = korb_class_new(c, c->sp, korb_intern("TimeMeta"),
                                                        korb_vm->class_class, T_CLASS);
         extern VALUE time_now_stub(CTX *c, VALUE self, int argc, VALUE *argv);
         korb_class_add_method_cfunc(cTimeMeta, korb_intern("now"), time_now_stub, 0);
@@ -1351,13 +1351,13 @@ void korb_init_builtins(void) {
     }
 
     /* Fiber */
-    struct korb_class *cFiber = korb_class_new(korb_intern("Fiber"), korb_vm->object_class, T_DATA);
+    struct korb_class *cFiber = korb_class_new(c, c->sp, korb_intern("Fiber"), korb_vm->object_class, T_DATA);
     korb_const_set(korb_vm->object_class, korb_intern("Fiber"), (VALUE)cFiber);
     korb_vm->fiber_class = cFiber;
     {
         /* Fiber.new {|x| ...} */
         extern VALUE korb_fiber_new_cfunc(CTX *c, VALUE self, int argc, VALUE *argv);
-        struct korb_class *cFiberMeta = korb_class_new(korb_intern("FiberMeta"),
+        struct korb_class *cFiberMeta = korb_class_new(c, c->sp, korb_intern("FiberMeta"),
                                                         korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cFiberMeta, korb_intern("new"), korb_fiber_new_cfunc, 0);
         /* Fiber.yield */
@@ -1374,7 +1374,7 @@ void korb_init_builtins(void) {
      * because korb_binding has its own storage layout (fp pointer +
      * names + cref) that doesn't fit T_OBJECT's ivar table. */
     {
-        struct korb_class *cBinding = korb_class_new(korb_intern("Binding"), korb_vm->object_class, T_DATA);
+        struct korb_class *cBinding = korb_class_new(c, c->sp, korb_intern("Binding"), korb_vm->object_class, T_DATA);
         korb_const_set(korb_vm->object_class, korb_intern("Binding"), (VALUE)cBinding);
         korb_class_add_method_cfunc(cBinding, korb_intern("local_variable_get"),    binding_local_variable_get,       1);
         korb_class_add_method_cfunc(cBinding, korb_intern("local_variable_set"),    binding_local_variable_set,       2);
@@ -1415,7 +1415,7 @@ void korb_init_builtins(void) {
 
     /* Method class — instances are returned by Object#method */
     {
-        struct korb_class *cMethod = korb_class_new(korb_intern("Method"), korb_vm->object_class, T_DATA);
+        struct korb_class *cMethod = korb_class_new(c, c->sp, korb_intern("Method"), korb_vm->object_class, T_DATA);
         korb_const_set(korb_vm->object_class, korb_intern("Method"), (VALUE)cMethod);
         korb_class_add_method_cfunc(cMethod, korb_intern("call"),     method_call,     -1);
         korb_class_add_method_cfunc(cMethod, korb_intern("[]"),       method_call,     -1);
@@ -1455,16 +1455,16 @@ void korb_init_builtins(void) {
 
     /* Math module — populated with libm-backed functions and constants. */
     {
-        struct korb_class *cMath = korb_module_new(korb_intern("Math"));
+        struct korb_class *cMath = korb_module_new(c, c->sp, korb_intern("Math"));
         korb_const_set(korb_vm->object_class, korb_intern("Math"), (VALUE)cMath);
         /* Math::DomainError < StandardError — raised by Math.sqrt(-1) etc. */
         VALUE eStd = korb_const_get(korb_vm->object_class, korb_intern("StandardError"));
-        struct korb_class *cMathDomainError = korb_class_new(korb_intern("DomainError"),
+        struct korb_class *cMathDomainError = korb_class_new(c, c->sp, korb_intern("DomainError"),
             (eStd && !SPECIAL_CONST_P(eStd) && BUILTIN_TYPE(eStd) == T_CLASS)
                 ? (struct korb_class *)eStd : NULL,
             T_OBJECT);
         korb_const_set(cMath, korb_intern("DomainError"), (VALUE)cMathDomainError);
-        struct korb_class *cMathMeta = korb_class_new(korb_intern("MathMeta"),
+        struct korb_class *cMathMeta = korb_class_new(c, c->sp, korb_intern("MathMeta"),
                                                       korb_vm->module_class, T_MODULE);
         korb_const_set(cMath, korb_intern("PI"), korb_float_new(c, c->sp, 3.141592653589793));
         korb_const_set(cMath, korb_intern("E"),  korb_float_new(c, c->sp, 2.718281828459045));
@@ -1493,7 +1493,7 @@ void korb_init_builtins(void) {
 
     /* Module.new — install on the Module class's singleton so `Module.new {…}` works. */
     {
-        struct korb_class *cModMeta = korb_class_new(korb_intern("ModuleMeta"),
+        struct korb_class *cModMeta = korb_class_new(c, c->sp, korb_intern("ModuleMeta"),
                                                      korb_vm->class_class, T_CLASS);
         DEF(cModMeta, "new", module_new_class_func, -1);
         /* Module.nesting — same metaclass. */

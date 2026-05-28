@@ -442,8 +442,8 @@ korb_class_of_class(VALUE v) {
     }
     return korb_class_of_class_slow(v);
 }
-struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_type instance_type);
-struct korb_class *korb_module_new(ID name);
+struct korb_class *korb_class_new(CTX *c, VALUE *sp, ID name, struct korb_class *super, enum korb_type instance_type);
+struct korb_class *korb_module_new(CTX *c, VALUE *sp, ID name);
 void korb_class_add_method_ast(struct korb_class *klass, ID name, struct Node *body, uint32_t params_cnt, uint32_t locals_cnt);
 void korb_class_add_method_ast_full(struct korb_class *klass, ID name, struct Node *body,
                                     uint32_t required_params, uint32_t total_params,

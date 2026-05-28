@@ -840,7 +840,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
             return Qnil;
         }
         else {
-            struct korb_class *k = korb_class_new(name, (struct korb_class *)rs[0], T_OBJECT);
+            struct korb_class *k = korb_class_new(c, c->sp, name, (struct korb_class *)rs[0], T_OBJECT);
             k->name = 0;
             rs[1] = (VALUE)k;
             korb_const_set(HOST_K, name, rs[1]);
@@ -915,7 +915,7 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
             return Qnil;
         }
         else {
-            struct korb_class *k = korb_class_new(name, korb_vm->object_class, T_OBJECT);
+            struct korb_class *k = korb_class_new(c, c->sp, name, korb_vm->object_class, T_OBJECT);
             k->name = 0;
             rs[0] = (VALUE)k;
             korb_const_set(HOST_K, name, rs[0]);
@@ -973,7 +973,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
             return Qnil;
         }
         else {
-            struct korb_class *m = korb_module_new(name);
+            struct korb_class *m = korb_module_new(c, c->sp, name);
             m->name = 0;
             rs[0] = (VALUE)m;
             korb_const_set(HOST_K, name, rs[0]);
@@ -2969,7 +2969,7 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
             ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         } else {
-            rs[2] = (VALUE)korb_class_new(name, (struct korb_class *)rs[1], T_OBJECT);
+            rs[2] = (VALUE)korb_class_new(c, c->sp, name, (struct korb_class *)rs[1], T_OBJECT);
             ((struct korb_class *)rs[2])->name = 0;
             korb_const_set((struct korb_class *)rs[0], name, rs[2]);
         }
@@ -3039,7 +3039,7 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
             rs[2] = existing;
         } else {
-            rs[2] = (VALUE)korb_class_new(name, (struct korb_class *)rs[1], T_OBJECT);
+            rs[2] = (VALUE)korb_class_new(c, c->sp, name, (struct korb_class *)rs[1], T_OBJECT);
             ((struct korb_class *)rs[2])->name = 0;
             korb_const_set((struct korb_class *)rs[0], name, rs[2]);
         }
@@ -3105,7 +3105,7 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
         c->sp = sp;
         return Qnil;
     } else {
-        sp[1] = (VALUE)korb_module_new(name);
+        sp[1] = (VALUE)korb_module_new(c, c->sp, name);
         ((struct korb_class *)sp[1])->name = 0;
         korb_const_set((struct korb_class *)sp[0], name, sp[1]);
     }

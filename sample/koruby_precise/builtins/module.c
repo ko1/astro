@@ -733,7 +733,7 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
                 return Qnil;
             }
         }
-        struct korb_class *nk = korb_class_new(korb_intern("(anon)"),
+        struct korb_class *nk = korb_class_new(c, c->sp, korb_intern("(anon)"),
                                                super, super->instance_type);
         /* Fire `inherited` on the parent — same as `class C < P; end`. */
         {
@@ -867,7 +867,7 @@ static VALUE obj_extend(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (cur && cur->name == korb_intern("(singleton)")) {
             meta = cur;
         } else {
-            meta = korb_class_new(korb_intern("(singleton)"), cur, cur ? cur->instance_type : T_OBJECT);
+            meta = korb_class_new(c, c->sp, korb_intern("(singleton)"), cur, cur ? cur->instance_type : T_OBJECT);
             /* Copy ivar shape so @ivars set before extend remain
              * accessible: korb_ivar_get / korb_ivar_set look up slots
              * by name on the object's class, which is now meta. */
@@ -1112,7 +1112,7 @@ static VALUE module_new_class_func(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Module.new — create an anonymous module.  If a block is given,
      * evaluate it with self = the new module (lets `include`/method defs
      * land on the new module). */
-    struct korb_class *m = korb_module_new(korb_intern("(anon)"));
+    struct korb_class *m = korb_module_new(c, c->sp, korb_intern("(anon)"));
     
     if (c->current_block) {
         VALUE prev_self = c->current_frame->self;

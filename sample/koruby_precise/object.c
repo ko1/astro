@@ -182,13 +182,13 @@ struct korb_method *method_table_get(const struct korb_method_table *mt, ID name
     return NULL;
 }
 
-struct korb_class *korb_class_new(ID name, struct korb_class *super, enum korb_type instance_type) {
+struct korb_class *korb_class_new(CTX *c, VALUE *sp, ID name, struct korb_class *super, enum korb_type instance_type) {
     /* Precise GC: allocate on GC heap via aro_gc_alloc.  super needs
      * protection across the inner child_meta alloc (= may trigger GC
      * which can relocate super under moving GC).  k itself needs
      * protection across child_meta alloc.  Pattern: park live VALUEs
      * in ARO_ROOT slots, reload C-local pointers after each alloc. */
-    CTX *c = korb_vm->current_ctx;
+    c->sp = sp;
     struct korb_class *k_ret;
     ARO_ROOT_SCOPE_START(c, r, 3) {
         /* r[0]=super, r[1]=k, r[2]=child_meta (if created) */
@@ -349,8 +349,8 @@ VALUE korb_cvar_names(struct korb_class *k) {
     return arr;
 }
 
-struct korb_class *korb_module_new(ID name) {
-    struct korb_class *k = korb_class_new(name, NULL, T_NONE);
+struct korb_class *korb_module_new(CTX *c, VALUE *sp, ID name) {
+    struct korb_class *k = korb_class_new(c, sp, name, NULL, T_NONE);
     k->basic.head.flags = T_MODULE;
     k->basic.klass = korb_vm ? (VALUE)korb_vm->module_class : 0;
     return k;
@@ -652,7 +652,7 @@ struct korb_class *korb_singleton_class_of(struct korb_class *klass) {
             /* korb_class_new fires GC — read klass->name after the inner
              * alloc returns, but klass needs to be reloaded first. */
             ID nm = klass->name;
-            VALUE meta_v = (VALUE)korb_class_new(nm, super_meta, T_CLASS);
+            VALUE meta_v = (VALUE)korb_class_new(c, c->sp, nm, super_meta, T_CLASS);
             klass        = (struct korb_class *)r[0];
             current_meta = (struct korb_class *)r[1];
             struct korb_class *meta = (struct korb_class *)meta_v;
@@ -705,7 +705,7 @@ struct korb_class *korb_singleton_class_of_value(VALUE v) {
                 }
                 result = cur;
             } else {
-                struct korb_class *meta = korb_class_new(korb_intern("(singleton)"),
+                struct korb_class *meta = korb_class_new(c, c->sp, korb_intern("(singleton)"),
                                                          cur, cur ? cur->instance_type : T_OBJECT);
                 meta->basic.head.flags |= FL_SINGLETON;
                 if (korb_obj_frozen_p(rs[0])) {
@@ -4572,12 +4572,12 @@ void korb_runtime_init(void) {
      * range).  cBasic survives outside the scope via korb_vm->object_class
      * ->super (= reachable from the class_class root chain). */
     ARO_ROOT_SCOPE_START(c, boot, 4) {
-        boot[0] = (VALUE)korb_class_new(korb_intern("BasicObject"), NULL, T_OBJECT);
-        boot[1] = (VALUE)korb_class_new(korb_intern("Object"),
+        boot[0] = (VALUE)korb_class_new(c, c->sp, korb_intern("BasicObject"), NULL, T_OBJECT);
+        boot[1] = (VALUE)korb_class_new(c, c->sp, korb_intern("Object"),
                                          (struct korb_class *)boot[0],  T_OBJECT);
-        boot[2] = (VALUE)korb_class_new(korb_intern("Module"),
+        boot[2] = (VALUE)korb_class_new(c, c->sp, korb_intern("Module"),
                                          (struct korb_class *)boot[1], T_MODULE);
-        boot[3] = (VALUE)korb_class_new(korb_intern("Class"),
+        boot[3] = (VALUE)korb_class_new(c, c->sp, korb_intern("Class"),
                                          (struct korb_class *)boot[2], T_CLASS);
         ((struct korb_class *)boot[0])->basic.klass = (struct korb_class *)boot[3];
         ((struct korb_class *)boot[1])->basic.klass = (struct korb_class *)boot[3];
@@ -4594,28 +4594,28 @@ void korb_runtime_init(void) {
      * additional ARO_ROOT_SCOPE is needed for these intermediate slots.
      * Reading korb_vm->object_class etc. returns the current addr because
      * visit_roots updates those slots on each move. */
-    korb_vm->numeric_class = korb_class_new(korb_intern("Numeric"), korb_vm->object_class, T_OBJECT);
-    korb_vm->integer_class = korb_class_new(korb_intern("Integer"), korb_vm->numeric_class, T_BIGNUM);
-    korb_vm->float_class   = korb_class_new(korb_intern("Float"),   korb_vm->numeric_class, T_FLOAT);
-    korb_vm->string_class  = korb_class_new(korb_intern("String"),  korb_vm->object_class, T_STRING);
-    korb_vm->array_class   = korb_class_new(korb_intern("Array"),   korb_vm->object_class, T_ARRAY);
-    korb_vm->hash_class    = korb_class_new(korb_intern("Hash"),    korb_vm->object_class, T_HASH);
-    korb_vm->symbol_class  = korb_class_new(korb_intern("Symbol"),  korb_vm->object_class, T_SYMBOL);
-    korb_vm->true_class    = korb_class_new(korb_intern("TrueClass"),  korb_vm->object_class, T_NONE);
-    korb_vm->false_class   = korb_class_new(korb_intern("FalseClass"), korb_vm->object_class, T_NONE);
-    korb_vm->nil_class     = korb_class_new(korb_intern("NilClass"),   korb_vm->object_class, T_NONE);
-    korb_vm->proc_class    = korb_class_new(korb_intern("Proc"),       korb_vm->object_class, T_PROC);
-    korb_vm->range_class   = korb_class_new(korb_intern("Range"),      korb_vm->object_class, T_RANGE);
-    korb_vm->kernel_module = korb_module_new(korb_intern("Kernel"));
+    korb_vm->numeric_class = korb_class_new(c, c->sp, korb_intern("Numeric"), korb_vm->object_class, T_OBJECT);
+    korb_vm->integer_class = korb_class_new(c, c->sp, korb_intern("Integer"), korb_vm->numeric_class, T_BIGNUM);
+    korb_vm->float_class   = korb_class_new(c, c->sp, korb_intern("Float"),   korb_vm->numeric_class, T_FLOAT);
+    korb_vm->string_class  = korb_class_new(c, c->sp, korb_intern("String"),  korb_vm->object_class, T_STRING);
+    korb_vm->array_class   = korb_class_new(c, c->sp, korb_intern("Array"),   korb_vm->object_class, T_ARRAY);
+    korb_vm->hash_class    = korb_class_new(c, c->sp, korb_intern("Hash"),    korb_vm->object_class, T_HASH);
+    korb_vm->symbol_class  = korb_class_new(c, c->sp, korb_intern("Symbol"),  korb_vm->object_class, T_SYMBOL);
+    korb_vm->true_class    = korb_class_new(c, c->sp, korb_intern("TrueClass"),  korb_vm->object_class, T_NONE);
+    korb_vm->false_class   = korb_class_new(c, c->sp, korb_intern("FalseClass"), korb_vm->object_class, T_NONE);
+    korb_vm->nil_class     = korb_class_new(c, c->sp, korb_intern("NilClass"),   korb_vm->object_class, T_NONE);
+    korb_vm->proc_class    = korb_class_new(c, c->sp, korb_intern("Proc"),       korb_vm->object_class, T_PROC);
+    korb_vm->range_class   = korb_class_new(c, c->sp, korb_intern("Range"),      korb_vm->object_class, T_RANGE);
+    korb_vm->kernel_module = korb_module_new(c, c->sp, korb_intern("Kernel"));
     /* ObjectSpace — stub module for the API surface.  cOS lives across
      * the cOSMeta alloc, so park both in an ARO_ROOT_SCOPE; once
      * cOS->basic.klass is set + the const_set installed cOS into
      * cObject->constants, both are reachable via the constants chain. */
     {
         ARO_ROOT_SCOPE_START(c, os, 2) {
-            os[0] = (VALUE)korb_module_new(korb_intern("ObjectSpace"));
+            os[0] = (VALUE)korb_module_new(c, c->sp, korb_intern("ObjectSpace"));
             korb_const_set(korb_vm->object_class, ((struct korb_class *)os[0])->name, os[0]);
-            os[1] = (VALUE)korb_class_new(korb_intern("ObjectSpaceMeta"),
+            os[1] = (VALUE)korb_class_new(c, c->sp, korb_intern("ObjectSpaceMeta"),
                                            korb_vm->class_class, T_CLASS);
             VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv);
             VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv);
@@ -4626,8 +4626,8 @@ void korb_runtime_init(void) {
             ((struct korb_class *)os[0])->basic.klass = (struct korb_class *)os[1];
         } ARO_ROOT_SCOPE_END(c, os);
     }
-    korb_vm->comparable_module = korb_module_new(korb_intern("Comparable"));
-    korb_vm->enumerable_module = korb_module_new(korb_intern("Enumerable"));
+    korb_vm->comparable_module = korb_module_new(c, c->sp, korb_intern("Comparable"));
+    korb_vm->enumerable_module = korb_module_new(c, c->sp, korb_intern("Enumerable"));
 
     /* Cache frozen singletons for true.to_s / false.to_s / nil.to_s.
      * Created here (after string_class exists so RBASIC->klass is set
@@ -4680,7 +4680,7 @@ void korb_runtime_init(void) {
 
     /* main object — both main_obj_class and main_obj go into korb_vm
      * (= rooted by visit_roots), so 2 allocs in sequence are safe. */
-    korb_vm->main_obj_class = korb_class_new(korb_intern("Main"), korb_vm->object_class, T_OBJECT);
+    korb_vm->main_obj_class = korb_class_new(c, c->sp, korb_intern("Main"), korb_vm->object_class, T_OBJECT);
     korb_vm->main_obj = korb_object_new(c, c->sp, korb_vm->main_obj_class);
 
     /* main_obj is now alive — update the sentinel frame's self so
@@ -4707,7 +4707,7 @@ void korb_runtime_init(void) {
      * cycle), so no C-local staleness. */
 #define KRB_EXC(name, super_name)                                              \
     korb_const_set(korb_vm->object_class, korb_intern(name),                   \
-                   (VALUE)korb_class_new(                                       \
+                   (VALUE)korb_class_new(c, c->sp,                                        \
                        korb_intern(name),                                       \
                        (struct korb_class *)korb_const_get(                     \
                            korb_vm->object_class, korb_intern(super_name)),     \
@@ -4715,7 +4715,7 @@ void korb_runtime_init(void) {
     {
         /* First: Exception itself, super = Object (= korb_vm->object_class). */
         korb_const_set(korb_vm->object_class, korb_intern("Exception"),
-                       (VALUE)korb_class_new(korb_intern("Exception"),
+                       (VALUE)korb_class_new(c, c->sp, korb_intern("Exception"),
                                               korb_vm->object_class, T_OBJECT));
         KRB_EXC("StandardError",      "Exception");
         KRB_EXC("ScriptError",        "Exception");
@@ -4778,7 +4778,7 @@ void korb_runtime_init(void) {
      * ARO_ROOT_SCOPE slot. */
     {
         ARO_ROOT_SCOPE_START(c, enc, 2) {
-            enc[0] = (VALUE)korb_class_new(korb_intern("Encoding"), korb_vm->object_class, T_OBJECT);
+            enc[0] = (VALUE)korb_class_new(c, c->sp, korb_intern("Encoding"), korb_vm->object_class, T_OBJECT);
             korb_const_set(korb_vm->object_class, korb_intern("Encoding"), enc[0]);
             enc[1] = korb_object_new(c, c->sp, (struct korb_class *)enc[0]);
             /* str_new fires GC — pre-evaluate into a local before calling
