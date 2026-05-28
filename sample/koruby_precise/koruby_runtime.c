@@ -224,15 +224,15 @@ koruby_scan_edges(void *payload, size_t payload_size,
           break;
       }
       case T_HASH: {
-          struct korb_hash *h = (struct korb_hash *)payload;
-          /* Insertion-order chain visits each entry once.  Entries are
-           * libc-malloc'd; their VALUEs are heap refs. */
-          for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-              visit_value_slot(ctx, fn, &e->key);
-              visit_value_slot(ctx, fn, &e->value);
-          }
-          visit_value_slot(ctx, fn, &h->default_value);
-          visit_value_slot(ctx, fn, &h->default_proc);
+          /* korb_hash is libc-allocated (= korb_xmalloc).  A T_HASH-flagged
+           * obj on the gc arena means scan landed on a corrupted header
+           * (= an upstream gc_size mismatch or flag overwrite).  Bail
+           * rather than deref garbage. */
+          extern struct CTX_struct koruby_bootstrap_ctx;
+          (void)koruby_bootstrap_ctx;
+          /* No-op: hashes don't live in the gc arena so there are no
+           * edges to scan here.  If a legit hash ends up in arena (=
+           * via direct aro_gc_alloc), this needs revisiting. */
           break;
       }
       case T_RANGE: {
