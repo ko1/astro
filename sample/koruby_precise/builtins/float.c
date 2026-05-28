@@ -335,7 +335,53 @@ static VALUE flt_ge(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE flt_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
     double a = korb_num2dbl(self);
-    double b = korb_num2dbl(argv[0]);
+    VALUE other = argv[0];
+    /* Determine if `other` is one of the directly-comparable numeric
+     * kinds; if not, fall back to the coerce protocol. */
+    bool numeric_kind = FIXNUM_P(other) || FLONUM_P(other) ||
+        (!SPECIAL_CONST_P(other) &&
+         (BUILTIN_TYPE(other) == T_FLOAT || BUILTIN_TYPE(other) == T_BIGNUM));
+    if (!numeric_kind) {
+        if (SPECIAL_CONST_P(other)) return Qnil;
+        /* Special: when self is ±Infinity and `other` responds to
+         * #infinite?, use the sign comparison instead of the coerce path. */
+        if (isinf(a)) {
+            VALUE rtinf = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                       (VALUE[]){ korb_id2sym(korb_intern("infinite?")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rtinf)) {
+                VALUE ov = korb_funcall(c, other, korb_intern("infinite?"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+                long osign;
+                if (NIL_P(ov)) osign = 0;
+                else if (FIXNUM_P(ov)) osign = FIX2LONG(ov);
+                else osign = 0;
+                long asign = a > 0 ? 1 : -1;
+                if (asign == osign) return INT2FIX(0);
+                return INT2FIX(asign > osign ? 1 : -1);
+            }
+        }
+        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (!RTEST(rt)) return Qnil;
+        VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY ||
+            ((struct korb_array *)pair)->len != 2) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT, "coerce must return [x, y]");
+            return Qnil;
+        }
+        struct korb_array *p = (struct korb_array *)pair;
+        return korb_funcall(c, p->ptr[0], korb_intern("<=>"), 1, &p->ptr[1]);
+    }
+    /* Self == ±Infinity, other == finite Integer/Bignum: ±Infinity wins. */
+    if (isinf(a) && (FIXNUM_P(other) ||
+                     (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM))) {
+        return INT2FIX(a > 0 ? 1 : -1);
+    }
+    double b = korb_num2dbl(other);
     /* NaN compared to anything (including itself) is undefined — Ruby
      * returns nil to signal incomparable. */
     if (isnan(a) || isnan(b)) return Qnil;
