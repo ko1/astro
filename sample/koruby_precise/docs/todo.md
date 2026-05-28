@@ -79,22 +79,63 @@
 
 **24/24 ファイル 全 OK、 計 ~735 assertion 全 pass**。
 
-### STRESS / STRESS+PURGE は別途 (残課題)
+### STRESS mode 結果
 
-STRESS の下で実際の test を走らせると、 ary_each など各 builtin
-iterator の C-local heap pointer (例 `self`, `v`) が korb_yield/GC
-越しに stale 化する根本問題が表面化する:
+NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走らせた
+結果。 段階的に修正を入れて 12/24 file 完全 pass まで持ち込んだ。
 
-  - 再現最小: `[1, 2].each { |t| puts t }` (2 要素以上で SEGV)
-  - SEGV ポイント: 2 回目 iteration の puts dispatch 内
-    `method_table_get` で stale class deref
-  - 直接の原因: ary_each の `VALUE v = korb_ary_aref(self, i)` 後に
-    yield → GC → v / self が stale。 また korb_yield 内の C-local
-    `prev_self` も同じパターン
+| test                      | STRESS |
+|---------------------------|--------|
+| test_alias                | 9      |
+| test_alias_redef          | 3      |
+| test_array                | SEGV   |
+| test_basic_op_redef       | 4      |
+| test_block                | SEGV   |
+| test_block_arg            | 8      |
+| test_class                | 18     |
+| test_comparable           | SEGV   |
+| test_control              | 34     |
+| test_cpu_corner           | 1/29   |
+| test_eq                   | 58     |
+| test_eq_redef             | 7      |
+| test_exception            | SEGV   |
+| test_fiber                | SEGV   |
+| test_float_round          | 27     |
+| test_flonum               | SEGV   |
+| test_hash                 | 5/52   |
+| test_integer              | 2/102  |
+| test_misc                 | 1/26   |
+| test_object_alloc         | 19     |
+| test_range                | 27     |
+| test_string               | 13/47  |
+| test_to_s_dispatch        | SEGV   |
+| test_yield                | 15     |
 
-全 cfunc iterator の self / 一時変数を ARO_ROOT_SCOPE などで pin する
-必要あり。 サンプル横断で baruby/ascheme の precise root pinning
-パターンを参考に整理する作業 (= 別 session 規模)。
+行った修正:
+- **libc-allocated proc の self / enclosing_block を visit_roots に
+  追加** (koruby_runtime.c): scan_edges は arena obj のみ呼ばれる
+  ため libc proc の field は forward されない。 running_block /
+  current_block / 全 frame.block を walk して内部を再帰 visit。
+- **korb_class_of_class を type-based redirect に**
+  (object.h): T_ARRAY / T_STRING / T_HASH / T_RANGE / T_PROC の
+  basic.klass は GC 越しに stale 化するため、 type を見て
+  korb_vm->X_class (= visit_roots で auto-track) を直接返す。
+- **korb_inspect_inner T_ARRAY / T_HASH を ARO_ROOT_SCOPE 化**
+  (object.c): result 文字列 / element 文字列が korb_str_concat
+  越しに stale 化していた (= `[20, 30]` が `]]` になる現象)。
+
+残課題 (= さらなる libc-class staleness):
+- T_BIGNUM / T_FLOAT / user-class T_OBJECT の basic.klass は
+  redirect 対象外なので、 これらを receiver にする method dispatch
+  は STRESS で stale class deref する可能性あり
+- ary_max_by / ary_sort 等の builtin iterator が C-local heap ptr
+  を sort comparison の receiver に渡す箇所
+- inspect 系以外の builtin (e.g. str concat in non-pinned context)
+
+完全な解決には全 libc-allocated heap obj を一つの registry に登録し
+visit_roots で walk するか、 全 container を arena 化する必要あり。
+
+### STRESS+PURGE は別途 (残課題)
 
 ## 旧現状 (2026-05-10, eleventh pass)
 
