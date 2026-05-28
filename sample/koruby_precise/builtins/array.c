@@ -357,16 +357,25 @@ static VALUE ary_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     return acc;
 }
 static VALUE ary_join(CTX *c, VALUE self, int argc, VALUE *argv) {
-    long len = korb_ary_len(self);
-    VALUE sep = argc > 0 ? argv[0] : korb_str_new_cstr("");
-    VALUE r = korb_str_new("", 0);
-    for (long i = 0; i < len; i++) {
-        if (i > 0 && BUILTIN_TYPE(sep) == T_STRING) korb_str_concat(r, sep);
-        VALUE v = korb_ary_aref(self, i);
-        if (BUILTIN_TYPE(v) != T_STRING) v = korb_to_s(v);
-        korb_str_concat(r, v);
-    }
-    return r;
+    /* Pin self / sep / result / per-iter element across korb_to_s /
+     * korb_str_new / korb_str_concat GC fires (PURGE catches the
+     * stale-pointer faster than STRESS alone). */
+    VALUE ret = Qnil;
+    ARO_ROOT_SCOPE_START(c, rs, 4) {
+        rs[0] = self;
+        rs[1] = argc > 0 ? argv[0] : korb_str_new_cstr("");
+        rs[2] = korb_str_new("", 0);  /* result */
+        rs[3] = Qnil;                  /* per-iter element */
+        long len = korb_ary_len(rs[0]);
+        for (long i = 0; i < len; i++) {
+            if (i > 0 && BUILTIN_TYPE(rs[1]) == T_STRING) korb_str_concat(rs[2], rs[1]);
+            rs[3] = korb_ary_aref(rs[0], i);
+            if (BUILTIN_TYPE(rs[3]) != T_STRING) rs[3] = korb_to_s(rs[3]);
+            korb_str_concat(rs[2], rs[3]);
+        }
+        ret = rs[2];
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 static VALUE ary_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_inspect(self);
