@@ -102,8 +102,21 @@ static VALUE str_lshift(CTX *c, VALUE self, int argc, VALUE *argv) {
                    "wrong number of arguments (given %d, expected 1)", argc);
         return Qnil;
     }
-    if (!str_concat_one(c, self, argv[0])) return Qnil;
-    return self;
+    /* Pin self across str_concat_one's potential GC fires (korb_str_new
+     * etc. inside concat_one fires GC if korb_funcall is taken).
+     * Without pinning, the C-param `self` goes stale after the first
+     * forwarding cycle and the modification lands on the OLD obj,
+     * leaving the caller's variable (= the TO-space copy) unchanged
+     * (= `s << "y"; s << "z"` leaves s as "x" instead of "xyz"). */
+    VALUE ret = Qnil;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = self;
+        rs[1] = argv[0];
+        if (str_concat_one(c, rs[0], rs[1])) {
+            ret = rs[0];
+        }
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 static VALUE str_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
@@ -128,23 +141,32 @@ static VALUE str_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
+    /* Pin self / arg / tmp across korb_str_new + korb_str_concat —
+     * korb_string is arena-allocated and moves under STRESS; without
+     * pinning, `s << "y"` writes to a moved-out address (= no-op
+     * from the caller's perspective). */
+    bool ok = false;
+    ARO_ROOT_SCOPE_START(c, rs, 3) {
+        rs[0] = self;
+        rs[1] = arg;
+        rs[2] = Qnil;  /* scratch for tmp */
     /* `str << int` appends the codepoint as bytes (CRuby semantics).
      * koruby is byte-only; reject negatives and out-of-byte values
      * with RangeError to mirror CRuby for the simple ASCII range, but
      * fall through to a single-byte append when 0..255. */
-    if (FIXNUM_P(arg)) {
-        long cp = FIX2LONG(arg);
+    if (FIXNUM_P(rs[1])) {
+        long cp = FIX2LONG(rs[1]);
         if (cp < 0) {
             VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
             korb_raise(c, (struct korb_class *)eR,
                        "%ld out of char range", cp);
-            return false;
+            ok = false; goto done;
         }
         if (cp <= 0x7f) {
             char ch = (char)cp;
-            VALUE tmp = korb_str_new(&ch, 1);
-            korb_str_concat(self, tmp);
-            return true;
+            rs[2] = korb_str_new(&ch, 1);
+            korb_str_concat(rs[0], rs[2]);
+            ok = true; goto done;
         }
         /* Multi-byte: encode as UTF-8. */
         char buf[6];
@@ -170,33 +192,36 @@ static bool str_concat_one(CTX *c, VALUE self, VALUE arg) {
                        "%ld out of char range", cp);
             return false;
         }
-        VALUE tmp = korb_str_new(buf, len);
-        korb_str_concat(self, tmp);
-        return true;
+        rs[2] = korb_str_new(buf, len);
+        korb_str_concat(rs[0], rs[2]);
+        ok = true; goto done;
     }
-    if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
+    if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
         /* Try to_s as a fallback. */
-        VALUE s = korb_funcall(c, arg, korb_intern("to_s"), 0, NULL);
-        if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) {
-            korb_str_concat(self, s);
-            return true;
+        rs[2] = korb_funcall(c, rs[1], korb_intern("to_s"), 0, NULL);
+        if (!SPECIAL_CONST_P(rs[2]) && BUILTIN_TYPE(rs[2]) == T_STRING) {
+            korb_str_concat(rs[0], rs[2]);
+            ok = true; goto done;
         }
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
         korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion to String");
-        return false;
+        ok = false; goto done;
     }
     /* Snapshot the arg's bytes if it might alias self (e.g. `b.concat(b, b)`
      * mutates b mid-call; without a snapshot, the second iteration sees
      * the already-grown buffer and we end up doubling instead of tripling). */
-    if (arg == self) {
-        struct korb_string *src = (struct korb_string *)arg;
-        VALUE snap = korb_str_new(src->ptr, src->len);
-        korb_str_concat(self, snap);
-        return true;
+    if (rs[1] == rs[0]) {
+        struct korb_string *src = (struct korb_string *)rs[1];
+        rs[2] = korb_str_new(src->ptr, src->len);
+        korb_str_concat(rs[0], rs[2]);
+        ok = true; goto done;
     }
-    korb_str_concat(self, arg);
-    return true;
+    korb_str_concat(rs[0], rs[1]);
+    ok = true;
+done: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ok;
 }
 static VALUE str_bytesize(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(((struct korb_string *)self)->len);

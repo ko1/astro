@@ -1398,15 +1398,37 @@ NODE_DEF
 node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
-        long a = FIX2LONG(l), b = FIX2LONG(r);
-        if (b >= 0 && b < 62) {
-            long s = a << b;
-            if ((s >> b) == a && FIXABLE(s)) return INT2FIX(s);
+    if (LIKELY(FIXNUM_P(l))) {
+        VALUE r = EA(c, rhs);
+        if (LIKELY(FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
+            long a = FIX2LONG(l), b = FIX2LONG(r);
+            if (b >= 0 && b < 62) {
+                long s = a << b;
+                if ((s >> b) == a && FIXABLE(s)) return INT2FIX(s);
+            }
+            return korb_int_lshift(l, r);
         }
-        return korb_int_lshift(l, r);
+        c->last_cfunc_callsite = n;
+        return korb_node_lshift_slow(c, l, r, arg_index);
     }
+    /* l is a heap obj — pin via synthetic-frame's last_line slot
+     * (see node_plus for the same pattern + rationale) so rhs eval's
+     * GC doesn't leave a moved-out C-local.  fr.self must inherit
+     * caller's self to avoid hijacking @ivar lookups inside rhs. */
+    struct korb_frame fr = {
+        .prev      = c->current_frame,
+        .self      = c->current_frame->self,
+        .fp        = c->current_frame->fp,
+        .cref      = c->current_frame->cref,
+        .current_class = c->current_frame->current_class,
+        .current_file = c->current_frame->current_file,
+        .last_line = l,
+        .last_match= Qnil,
+    };
+    c->current_frame = &fr;
+    VALUE r = EA(c, rhs);
+    c->current_frame = fr.prev;
+    l = fr.last_line;
     /* Array#<< — push and return self.  Hot in optcarrot's
      * render_pixel (`@output_pixels << ...` runs once per pixel). */
     if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY && !korb_g_array_op_redefined)) {
