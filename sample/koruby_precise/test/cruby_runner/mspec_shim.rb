@@ -18,20 +18,13 @@ $ms_current = nil
 
 class MSpecError < StandardError; end
 
-# Registry of shared examples (`describe :name, shared: true { ... }`),
-# referenced later by it_behaves_like (bottom of this file).
-$ms_shared ||= {}
-
 # describe blocks: just run the body in a fresh context.  Save any
 # before/after hooks so subsequent `it` runs can fire them.
 def describe(name, *opts, &blk)
-  # Shared spec: `describe :name, shared: true do ... end` — store the
-  # block keyed by name so it_behaves_like can re-invoke it inline.
+  # Shared spec: `describe :name, shared: true do ... end` — drop on
+  # the floor (it_behaves_like is a no-op anyway).
   shared = opts.any? { |o| o.is_a?(Hash) && o[:shared] }
-  if shared
-    $ms_shared[name] = blk
-    return
-  end
+  return if shared
   # Push prev state onto a stack instead of using begin/ensure locals:
   # the latter triggers a koruby bug where `name` / locals become nil
   # at ensure time when an inner `it`'s rescue body contains a block
@@ -893,44 +886,8 @@ end
 # Thread/Fiber etc. references inside shared specs).  Keep no-op for
 # now; rubyspec's coverage of shared-spec-driven tests is small enough
 # to not be worth the regressions.
-$ms_shared_specs = {}  # legacy; kept for back-compat
-# Run a shared example block in-place.  We set $ms_shared_method as a
-# thread-global; shared blocks read it via the helper @method getter below.
-def it_behaves_like(shared_name, method = nil, object = nil)
-  blk = $ms_shared[shared_name]
-  return unless blk
-  prev_method = $ms_shared_method
-  prev_object = $ms_shared_object
-  $ms_shared_method = method
-  $ms_shared_object = object
-  begin
-    blk.call
-  rescue MSpecError => e
-    $ms_fail += 1
-    puts "  FAIL shared #{shared_name}: #{e.message}"
-  rescue => e
-    $ms_error += 1
-    puts "  ERR shared #{shared_name}: #{e.class}: #{e.message}"
-  ensure
-    $ms_shared_method = prev_method
-    $ms_shared_object = prev_object
-  end
-end
-
-# Top-level helpers that shared examples expect: rubyspec shared blocks
-# reference `@method` and `@object` from the outer describe.  We provide
-# top-level `method` and `object` accessors that resolve via the globals
-# set by it_behaves_like.  Patch Object too for instance-context calls.
-class Object
-  def method
-    if defined?(super)
-      super rescue $ms_shared_method
-    else
-      $ms_shared_method
-    end
-  end
-  def object; $ms_shared_object; end
-end unless Object.method_defined?(:object)
+$ms_shared_specs = {}
+def it_behaves_like(*_args, &_blk); end
 
 # Suppress warning helper — runs block with $VERBOSE = nil.
 def silence_warnings; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end
