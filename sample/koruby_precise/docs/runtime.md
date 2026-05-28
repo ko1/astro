@@ -694,7 +694,7 @@ cfunc 側で:
 | 4 | 全 ~680 cfunc を新 signature に sweep | 部分完了 (math + boolean + sym_to_s + ary_eq = 38 cfunc) |
 | 5 | node.def の call 系 node を sp staging に | 未着手 |
 | 6 | AST method prologue を sp 経由 args に | 未着手 |
-| 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 未着手 |
+| 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 部分完了: korb_str_new / korb_str_new_cstr / korb_float_new / korb_float_new_heap / korb_ary_new / korb_ary_new_capa / korb_ary_new_from_values / korb_hash_new / korb_proc_new / korb_proc_new_with_cref。 残: korb_str_dup, korb_funcall, korb_eq 等 |
 | 8 | c->state 経路撤廃、 RESULT 化 | 未着手 |
 | 9 | 動作確認 + 回帰 fix | 未着手 |
 
