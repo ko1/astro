@@ -826,6 +826,10 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
         klass = korb_class_new(name, super, T_OBJECT);
         /* Mark anon so korb_const_set composes "Parent::name" path. */
         klass->name = 0;
+        /* Re-read host (= cref->klass or current_class) — korb_class_new
+         * fired GC so the cached `host` is stale.  cref->klass and
+         * current_class are root-scanned so always current. */
+        host = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
         korb_const_set(host, name, (VALUE)klass);
         /* Fire the `inherited` hook on `super` (defined as a class
          * method on the parent).  CRuby calls this when a new
@@ -837,22 +841,25 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
             if (c->state == KORB_RAISE) return Qnil;
         }
     }
-    struct korb_class *prev_class = c->current_frame->current_class;
-    VALUE prev_self = c->current_frame->self;
+    /* Push a synthetic frame for the class body so frame.self / current_class /
+     * cref live in frame chain (= visit_roots phase d auto-updates them).
+     * No C-local prev_self/prev_class stale issue.  After body, pop. */
     struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
-    struct korb_cref *prev_cref = c->current_frame->cref;
-    c->current_frame->current_class = klass;
-    c->current_frame->self = (VALUE)klass;
-    c->current_frame->cref = &new_cref;
-    VALUE *fp_lo = c->current_frame->fp;
+    struct korb_frame fr = {
+        .prev = c->current_frame,
+        .self = (VALUE)klass,
+        .fp = c->current_frame->fp,
+        .current_class = klass,
+        .cref = &new_cref,
+        .current_file = c->current_frame->current_file,
+        .last_line = Qnil,
+        .last_match = Qnil,
+    };
+    c->current_frame = &fr;
+    VALUE *fp_lo = fr.fp;
     VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
-    c->current_frame->current_class = prev_class;
-    c->current_frame->self = prev_self;
-    c->current_frame->cref = prev_cref;
-    /* Snapshot any Proc constant captured into the class body whose env
-     * still points into the dying class-body fp range.  Required for
-     * `class C; m = :x; READER = -> { m }; end` patterns. */
+    c->current_frame = fr.prev;
     korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     return r;
 }

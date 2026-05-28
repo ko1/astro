@@ -143,12 +143,18 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
     }
     g_in_root_scan = 4;
     g_in_root_scan = 5;
-    /* (d) current_frame chain. */
+    /* (d) current_frame chain — visit all per-frame heap refs.
+     * current_class is per-frame (= phase (b) only covers head frame's
+     * current_class so chain frames need scan too).  Note: cref chain
+     * is walked once globally via phase (c) using c->current_frame->cref;
+     * since each pushed frame's cref usually extends that same chain
+     * (prev pointer), the head's cref covers all reachable cref structs. */
     for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
         visit_value_slot(ctx, fn, &f->self);
         visit_value_slot(ctx, fn, &f->last_line);
         visit_value_slot(ctx, fn, &f->last_match);
         visit_ptr_slot(ctx, fn, (void **)&f->block);
+        visit_ptr_slot(ctx, fn, (void **)&f->current_class);
     }
     g_in_root_scan = 6;
     /* (e) korb_vm globals — all class / module pointers + main_obj +

@@ -770,21 +770,26 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         return (VALUE)nk;
     }
-    VALUE obj = korb_object_new(klass);
-    /* call initialize if defined.  Forward the caller's block so
-     * `Foo.new { ... }` is the same as defining `def initialize(&blk)`
-     * on Foo and getting blk. */
-    struct korb_method *m = korb_class_find_method(klass, id_initialize);
+    /* Park klass + obj across alloc-can-GC: korb_object_new can move
+     * klass, and find_method then derefs stale klass → SEGV under PURGE
+     * (or garbage under STRESS).  Use ARO_ROOT_SCOPE so both survive. */
     extern struct korb_proc *current_block;
-    /* Capture the soon-to-be-popped frame's range BEFORE invoking
-     * initialize, so we can detach any Procs that initialize stuffs
-     * into obj's ivars whose env points into that frame. */
+    VALUE obj;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = (VALUE)klass;
+        rs[1] = korb_object_new((struct korb_class *)rs[0]);
+        struct korb_method *m = korb_class_find_method((struct korb_class *)rs[0], id_initialize);
+        VALUE *fp_lo = c->current_frame->fp;
+        VALUE *fp_hi = c->sp;
+        if (m) {
+            VALUE blk = current_block ? (VALUE)current_block : Qnil;
+            korb_funcall_with_block(c, rs[1], id_initialize, argc, argv, blk);
+        }
+        obj = rs[1];
+        (void)fp_lo; (void)fp_hi;
+    } ARO_ROOT_SCOPE_END(c, rs);
     VALUE *fp_lo = c->current_frame->fp;
     VALUE *fp_hi = c->sp;
-    if (m) {
-        VALUE blk = current_block ? (VALUE)current_block : Qnil;
-        korb_funcall_with_block(c, obj, id_initialize, argc, argv, blk);
-    }
     /* Snapshot any Proc-typed ivar of obj whose env still points at
      * initialize's freshly-popped frame.  Inline gate: most classes
      * never store procs in ivars, so the CALL is itself the cost we
