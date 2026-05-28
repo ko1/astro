@@ -1595,8 +1595,13 @@ done_min_by: ;
 }
 
 static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Array#* — n: repeat, str: join */
-    if (argc < 1) return self;
+    /* Array#* — n: repeat, str: join.  argc == 0 → ArgumentError (CRuby). */
+    if (argc < 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given 0, expected 1)");
+        return Qnil;
+    }
     struct korb_array *a = (struct korb_array *)self;
     if (FIXNUM_P(argv[0])) {
         long n = FIX2LONG(argv[0]);
