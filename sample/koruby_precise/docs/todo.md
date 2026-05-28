@@ -28,6 +28,39 @@
 残 1 件: `koruby_setup_ctx` (= bootstrap_ctx を返す boundary entry point) のみ。
 これは 「初期化フロー」 のため許容。
 
+## c->state 撤去 (Phase 8) — 段階移行 plan
+
+「c->state 消してね」 規約。 試行で result_type を一括 RESULT 化すると
+node.def + node.h の `EVAL_ARG` / `dispatcher_t` / prologues.h / 多数の
+`VALUE x = EVAL(...)` callers の 15 系統の error が連鎖し、 1 commit で
+build green に到達できないことが判明。
+
+代わりに 「段階移行」 方式を採る:
+
+1. **dispatcher_t / EVAL を RESULT 化 + EVAL_LEGACY 提供**: 既存 callers
+   は EVAL_LEGACY (pump RESULT → c->state) を使う thin wrapper を用意。
+   - dispatcher 直叩き callers (prologues.h, object.c の builder, builtins
+     経由の korb_yield 内部 inline) も同様に pump 経由に。
+2. **node 単位で result_type=RESULT に opt-in**: NODE_DEF の per-node flag
+   で result type を選べるよう koruby_gen.rb を拡張。 1 node ずつ移行し
+   ながら build green を維持。 EVAL_ARG 結果も per-node RESULT or VALUE。
+3. **node.def 内の `return X;` を機械変換**: Python script で
+   `return RESULT_OK(X);` に置換。 `if (cond) return Y;` も対応。
+4. **korb_raise / korb_funcall / korb_yield も RESULT 化**: 既に
+   `korb_funcall_r` / `korb_yield_r` ブリッジは追加済 (commit fa03bd2a)。
+5. **c->state を読む箇所を順次撤去**: legacy cfunc 群を Phase 4 sweep で
+   新-ABI 化していくときに同時に置換。
+6. **最終的に CTX から `state` / `state_value` field を削除**。
+
+途中の試行で以下まで進めた (revert 済):
+- koruby_gen.rb override で全 node の dispatcher signature を RESULT に
+- node.def の `return X;` (270 箇所) を `return RESULT_OK(X);` に
+- EA / CHECK_STATE マクロを UNWRAP ベースに書き換え
+- 残 ~10 site (prologues.h dispatcher 直叩き、 node_eval.c の三項 EVAL_ARG、
+  object.c / builtins の `VALUE x = EVAL(...)` callers) で build error
+
+これらは next session に持ち越し。
+
 ## 現状 (2026-05-28, twelfth pass)
 
 直近の発見: 自前 test/ の "OK Xxxx (0)" 24/24 表示は **TESTS.each
