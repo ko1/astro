@@ -214,6 +214,22 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
             }
         }
     }
+    /* (d'') gvars table — `$!` stores the currently-rescued exception
+     * (arena-allocated korb_object).  Without visiting, GC moves the exc
+     * but gvars.vals[$!_idx] stays at the old slot; the next `raise`
+     * inside a rescue body reads stale $! and SEGVs in the cause-link
+     * cycle walk.  Reproducer:
+     *   begin; raise "inner"; rescue; raise "outer"; end
+     * under STRESS+PURGE. */
+    {
+        extern uint32_t koruby_gvars_size(void);
+        extern VALUE *koruby_gvars_vals(void);
+        VALUE *gv = koruby_gvars_vals();
+        uint32_t gn = koruby_gvars_size();
+        for (uint32_t i = 0; i < gn; i++) {
+            visit_value_slot(ctx, fn, &gv[i]);
+        }
+    }
     /* (e) korb_vm globals — all class / module pointers + main_obj +
      * globals method-table.  korb_vm itself lives in libc memory; only
      * the heap pointers it holds need visiting. */
@@ -341,7 +357,11 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
               visit_value_slot(ctx, fn, &p->self);
               visit_ptr_slot(ctx, fn, (void **)&p->enclosing_block);
               visit_ptr_slot(ctx, fn, (void **)&p->lexical_parent_block);
-              for (struct korb_cref *cr = p->cref; cr; cr = cr->prev) {
+              /* Cap chain depth at 64 — sanity bound to detect
+               * corruption / loops in cref chains.  Normal Ruby code
+               * has cref nesting depth ~10 max. */
+              int chain_depth = 0;
+              for (struct korb_cref *cr = p->cref; cr && chain_depth < 64; cr = cr->prev, chain_depth++) {
                   visit_ptr_slot(ctx, fn, (void **)&cr->klass);
               }
               break;

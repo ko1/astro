@@ -1227,6 +1227,16 @@ static struct {
     uint32_t size, capa;
 } gvars;
 
+/* Expose gvars to koruby_runtime.c's koruby_visit_roots.  $! holds the
+ * currently-rescued exception (arena-allocated korb_object).  Without
+ * walking gvars.vals, GC moves the exception but $! stays at the old
+ * to-space slot; the next `raise` inside a rescue body reads stale $!
+ * and SEGVs in the cause-link walk.  Reproducer:
+ *     begin; raise "inner"; rescue; raise "outer"; end
+ * under STRESS+PURGE. */
+uint32_t koruby_gvars_size(void) { return gvars.size; }
+VALUE *koruby_gvars_vals(void) { return gvars.vals; }
+
 VALUE korb_gvar_get(ID name) {
     for (uint32_t i = 0; i < gvars.size; i++) if (gvars.keys[i] == name) return gvars.vals[i];
     return Qnil;
