@@ -392,11 +392,38 @@ const char *korb_id_name(ID id);
 /* class system */
 VALUE korb_class_of(VALUE v);
 struct korb_class *korb_class_of_class_slow(VALUE v); /* immediate fallbacks */
-/* Hot path: heap T_OBJECT load.  Called per method dispatch. */
+/* Hot path: heap T_OBJECT load.  Called per method dispatch.
+ *
+ * For libc-allocated heap objects (T_ARRAY / T_STRING / T_HASH /
+ * T_RANGE / T_BIGNUM / T_FLOAT / T_PROC), basic.klass holds an
+ * arena class pointer that is NOT auto-updated when GC moves the
+ * class (= libc objs are not in any visit_roots / scan_edges chain).
+ * For these, the canonical class lives on korb_vm and is GC-tracked,
+ * so we redirect by type rather than read the stale field.
+ *
+ * For T_OBJECT, basic.klass is the user-defined class which is
+ * arena-allocated.  We fall back to reading it directly; user-class
+ * instances under STRESS are a separate, harder problem (= the
+ * libc-obj klass-update gap remains for them). */
 static inline __attribute__((always_inline)) struct korb_class *
 korb_class_of_class(VALUE v) {
     if (LIKELY(!SPECIAL_CONST_P(v))) {
-        return (struct korb_class *)((struct RBasic *)v)->klass;
+        struct RBasic *b = (struct RBasic *)v;
+        if (korb_vm) {
+            switch ((int)(b->head.flags & T_MASK)) {
+                case T_ARRAY:  return korb_vm->array_class;
+                case T_STRING: return korb_vm->string_class;
+                case T_HASH:   return korb_vm->hash_class;
+                case T_RANGE:  return korb_vm->range_class;
+                case T_PROC:   return korb_vm->proc_class;
+                /* T_BIGNUM / T_FLOAT / T_OBJECT / T_CLASS / T_MODULE
+                 * fall through to basic.klass read.  For Float we read
+                 * korb_vm->float_class — Float is libc-alloc'd too.
+                 * Bignum same path.  Classes / modules are arena and
+                 * their basic.klass is auto-tracked. */
+            }
+        }
+        return (struct korb_class *)b->klass;
     }
     return korb_class_of_class_slow(v);
 }
