@@ -1458,7 +1458,7 @@ VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache) {
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     int s = ivar_slot(k, name);
-    if (s >= 0) { cache->klass = k; cache->slot = s; }
+    if (s >= 0) { cache->klass = k; cache->slot = s; cache->gen = korb_g_gc_gen; }
     if (s < 0 || (uint32_t)s >= o->ivar_cnt) return Qnil;
     return o->ivars[s];
 }
@@ -1519,12 +1519,13 @@ void korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cac
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     int s;
-    if (cache->klass == k && cache->slot >= 0) {
+    if (cache->gen == korb_g_gc_gen && cache->klass == k && cache->slot >= 0) {
         s = cache->slot;
     } else {
         s = ivar_slot_assign(k, name);
         cache->klass = k;
         cache->slot = s;
+        cache->gen = korb_g_gc_gen;
     }
     if ((uint32_t)s >= o->ivar_capa) {
         uint32_t nc = o->ivar_capa == 0 ? 4 : o->ivar_capa * 2;
@@ -3337,6 +3338,7 @@ bool korb_eq(VALUE a, VALUE b) {
  * bumps the master serial.  Allows the inline cache check in object.h to
  * read this directly without seeing struct korb_vm's full definition. */
 state_serial_t korb_g_method_serial = 0;
+uint64_t korb_g_gc_gen = 0;
 uint64_t korb_g_next_frame_id = 0;
 
 /* Set to true once user code redefines a method on Integer / Float /

@@ -515,7 +515,8 @@ korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
     if (UNLIKELY(SPECIAL_CONST_P(obj))) return Qnil;
     if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) return korb_ivar_get_ic_slow(obj, name, cache);
     struct korb_object *o = (struct korb_object *)obj;
-    if (LIKELY(cache->klass == (struct korb_class *)o->basic.klass && cache->slot >= 0)) {
+    if (LIKELY(cache->gen == korb_g_gc_gen &&
+               cache->klass == (struct korb_class *)o->basic.klass && cache->slot >= 0)) {
         uint32_t s = (uint32_t)cache->slot;
         if (LIKELY(s < o->ivar_cnt)) return o->ivars[s];
         return Qnil;
@@ -544,7 +545,8 @@ korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
         return;
     }
     struct korb_object *o = (struct korb_object *)obj;
-    if (LIKELY(cache->klass == (struct korb_class *)o->basic.klass && cache->slot >= 0)) {
+    if (LIKELY(cache->gen == korb_g_gc_gen &&
+               cache->klass == (struct korb_class *)o->basic.klass && cache->slot >= 0)) {
         uint32_t s = (uint32_t)cache->slot;
         if (LIKELY(s < o->ivar_cnt)) {
             o->ivars[s] = val;

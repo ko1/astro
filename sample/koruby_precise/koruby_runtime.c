@@ -122,6 +122,13 @@ static void koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, v
 void
 koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
 {
+    /* Bump GC generation so inline ivar_cache entries (which key on
+     * korb_class * pointer) become invalid this cycle.  Without this,
+     * a moving GC can place class B at the address class A had — a
+     * stale ivar_cache entry would claim B has A's slot for the same
+     * AST-node access, leading to a wrong-slot read on B's instance. */
+    extern uint64_t korb_g_gc_gen;
+    korb_g_gc_gen++;
     /* (a) Value stack — c->stack_base..c->sp linear range.  Contract is
      * that every sp-advancing site zero-fills the new slots before any
      * alloc that can fire GC (= ARO_ROOT_SCOPE_START's invariant).  We

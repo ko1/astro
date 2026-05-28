@@ -311,11 +311,20 @@ struct call_cache {
 };
 
 /* inline ivar cache: each ivar AST node carries one of these.  The cache
- * is monomorphic on the receiver's class — same class ⇒ same slot. */
+ * is monomorphic on the receiver's class — same class ⇒ same slot.
+ *
+ * `gen` records the GC generation at fill-time.  Under moving GC, two
+ * different classes can sequentially occupy the same address (= old A
+ * moves away, then B is placed there), so pointer equality alone can
+ * mis-match.  visit_roots bumps `korb_g_gc_gen` each cycle; mismatch
+ * forces a fresh ivar_slot() lookup via the slow path. */
 struct ivar_cache {
     struct korb_class *klass;
     int32_t slot;             /* -1 if name not present in klass */
+    uint64_t gen;
 };
+
+extern uint64_t korb_g_gc_gen;
 
 /* lexical constant scope: chain of currently-nested classes/modules */
 struct korb_cref {
