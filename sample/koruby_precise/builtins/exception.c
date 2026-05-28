@@ -57,7 +57,7 @@ static VALUE exc_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE exc_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE bt = korb_ivar_get(self, korb_intern("@__backtrace__"));
     if (!UNDEF_P(bt) && !NIL_P(bt)) return bt;
-    return korb_ary_new();
+    return korb_ary_new(c, c->sp);
 }
 
 /* Exception#set_backtrace(arg) — accepts nil, a String, or an Array of
@@ -73,7 +73,7 @@ static VALUE exc_set_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (NIL_P(arg)) {
         bt = Qnil;
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) {
-        bt = korb_ary_new_capa(1);
+        bt = korb_ary_new_capa(c, c->sp, 1);
         korb_ary_push(bt, arg);
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)arg;

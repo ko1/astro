@@ -40,7 +40,7 @@ static VALUE hash_each(CTX *c, VALUE self, int argc, VALUE *argv) {
      * give the 1-param block only the key. */
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         korb_yield(c, 1, &pair);
@@ -77,14 +77,14 @@ static VALUE hash_compare_by_identity_p(CTX *c, VALUE self, int argc, VALUE *arg
 
 static VALUE hash_keys(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) korb_ary_push(r, e->key);
     return r;
 }
 
 static VALUE hash_values(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) korb_ary_push(r, e->value);
     return r;
 }
@@ -123,7 +123,7 @@ static VALUE hash_merge(CTX *c, VALUE self, int argc, VALUE *argv) {
      * and its return value becomes the merged value. */
     struct korb_hash *src = (struct korb_hash *)self;
     bool has_block = korb_block_given(c);
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     struct korb_hash *rh = (struct korb_hash *)r;
     /* Preserve compare_by_identity / default_value / default_proc
      * across dup/merge (CRuby semantics). */
@@ -206,7 +206,7 @@ static VALUE hash_merge_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE hash_invert(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         korb_hash_aset(r, e->value, e->key);
     }
@@ -215,9 +215,9 @@ static VALUE hash_invert(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE hash_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         korb_ary_push(r, pair);
@@ -292,7 +292,7 @@ static VALUE hash_required_kwargs_check(CTX *c, VALUE self, int argc, VALUE *arg
     const struct korb_hash *h = (const struct korb_hash *)self;
     const struct korb_array *keys = (const struct korb_array *)argv[0];
     /* Collect missing keys preserving declared order. */
-    VALUE missing = korb_ary_new();
+    VALUE missing = korb_ary_new(c, c->sp);
     for (long i = 0; i < (long)keys->len; i++) {
         VALUE key = keys->ptr[i];
         uint64_t hh = korb_hash_value(key);
@@ -411,7 +411,7 @@ static VALUE hash_empty_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE hash_map(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
         VALUE m = korb_yield(c, 2, args);
@@ -423,7 +423,7 @@ static VALUE hash_map(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE hash_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     const struct korb_hash *h = (const struct korb_hash *)self;
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
         VALUE m = korb_yield(c, 2, args);
@@ -438,18 +438,18 @@ static VALUE hash_select(CTX *c, VALUE self, int argc, VALUE *argv) {
  * behavior on Hash). */
 static VALUE hash_partition(CTX *c, VALUE self, int argc, VALUE *argv) {
     const struct korb_hash *h = (const struct korb_hash *)self;
-    VALUE yes = korb_ary_new();
-    VALUE no = korb_ary_new();
+    VALUE yes = korb_ary_new(c, c->sp);
+    VALUE no = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
         VALUE m = korb_yield(c, 2, args);
         if (c->state != KORB_NORMAL) return Qnil;
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         korb_ary_push(RTEST(m) ? yes : no, pair);
     }
-    VALUE pair = korb_ary_new_capa(2);
+    VALUE pair = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(pair, yes);
     korb_ary_push(pair, no);
     return pair;
@@ -460,9 +460,9 @@ static VALUE hash_partition(CTX *c, VALUE self, int argc, VALUE *argv) {
  * each pair → 1.  CRuby behaves the same way. */
 static VALUE hash_tally(CTX *c, VALUE self, int argc, VALUE *argv) {
     const struct korb_hash *h = (const struct korb_hash *)self;
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         korb_hash_aset(r, pair, INT2FIX(1));
@@ -482,14 +482,14 @@ static inline void hash_apply_self_class(VALUE r, VALUE self) {
 }
 static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc == 0) {
-        VALUE r = korb_hash_new();
+        VALUE r = korb_hash_new(c, c->sp);
         hash_apply_self_class(r, self);
         return r;
     }
     if (argc == 1) {
         VALUE arg = argv[0];
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_HASH) {
-            VALUE r = korb_hash_new();
+            VALUE r = korb_hash_new(c, c->sp);
             hash_apply_self_class(r, self);
             struct korb_hash *src = (struct korb_hash *)arg;
             for (struct korb_hash_entry *e = src->first; e; e = e->next) {
@@ -499,7 +499,7 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
             /* Hash[ [[k,v], [k,v]] ] form. */
-            VALUE r = korb_hash_new();
+            VALUE r = korb_hash_new(c, c->sp);
             hash_apply_self_class(r, self);
             struct korb_array *a = (struct korb_array *)arg;
             for (long i = 0; i < a->len; i++) {
@@ -513,7 +513,7 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     /* Hash[k,v,k,v,...] flat form. */
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     hash_apply_self_class(r, self);
     for (int i = 0; i + 1 < argc; i += 2) {
         korb_hash_aset(r, argv[i], argv[i+1]);
@@ -557,7 +557,7 @@ static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
                    "wrong number of arguments (given 1, expected 0)");
         return Qnil;
     }
-    VALUE h = korb_hash_new();
+    VALUE h = korb_hash_new(c, c->sp);
     struct korb_hash *hh = (struct korb_hash *)h;
     if (c->current_block) {
         hh->default_proc = (VALUE)c->current_block;
@@ -657,7 +657,7 @@ static VALUE hash_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
     /* Snapshot keys so we can iterate without mutation issues. */
-    VALUE keys = korb_ary_new();
+    VALUE keys = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         korb_ary_push(keys, e->key);
     }
@@ -681,7 +681,7 @@ static VALUE hash_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE hash_reject_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE keys = korb_ary_new();
+    VALUE keys = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         korb_ary_push(keys, e->key);
     }
@@ -706,7 +706,7 @@ static VALUE hash_reject_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE hash_keep_if(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE keys = korb_ary_new();
+    VALUE keys = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         korb_ary_push(keys, e->key);
     }
@@ -728,7 +728,7 @@ static VALUE hash_keep_if(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Hash#compact — return a copy with nil values removed. */
 static VALUE hash_compact(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     struct korb_hash *rh = (struct korb_hash *)r;
     /* Preserve default value/proc and compare_by_identity (CRuby
      * semantics: compact returns a new Hash with same settings). */
@@ -747,7 +747,7 @@ static VALUE hash_compact(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE hash_compact_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE keys = korb_ary_new();
+    VALUE keys = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         if (NIL_P(e->value)) korb_ary_push(keys, e->key);
     }
@@ -762,7 +762,7 @@ static VALUE hash_compact_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Hash#values_at(*keys) — array of corresponding values. */
 static VALUE hash_values_at(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (int i = 0; i < argc; i++) korb_ary_push(r, korb_hash_aref(self, argv[i]));
     return r;
 }
@@ -770,7 +770,7 @@ static VALUE hash_values_at(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Hash#fetch_values(*keys) — array of values; raises if any key missing. */
 static VALUE hash_fetch_values(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (int i = 0; i < argc; i++) {
         VALUE k = argv[i];
         bool found = false;
@@ -805,7 +805,7 @@ static VALUE hash_fetch_values(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Hash#reject — non-destructive. */
 static VALUE hash_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = {e->key, e->value};
         VALUE drop = korb_yield(c, 2, args);
@@ -866,7 +866,7 @@ static VALUE hash_shift(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE v = h->first->value;
     VALUE ad[1] = {k};
     hash_delete(c, self, 1, ad);
-    VALUE pair = korb_ary_new_capa(2);
+    VALUE pair = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(pair, k);
     korb_ary_push(pair, v);
     return pair;
@@ -875,7 +875,7 @@ static VALUE hash_shift(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Hash#slice(*keys) — sub-hash with only the given keys (those that exist). */
 static VALUE hash_slice(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     for (int i = 0; i < argc; i++) {
         VALUE k = argv[i];
         uint64_t hh = h->compare_by_identity ? (uint64_t)k : korb_hash_value(k);
@@ -894,7 +894,7 @@ static VALUE hash_slice(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Hash#except(*keys) — copy without the given keys. */
 static VALUE hash_except(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         bool skip = false;
         for (int i = 0; i < argc; i++) {
@@ -928,7 +928,7 @@ static VALUE hash_min_or_max_by(CTX *c, VALUE self, int argc, VALUE *argv, int m
     VALUE best_key = Qnil;
     bool first = true;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE bk = korb_yield(c, 1, &pair);
@@ -961,9 +961,9 @@ static VALUE hash_max_by(CTX *c, VALUE self, int argc, VALUE *argv) {
  * forwards the block to Array#sort so the user comparator participates. */
 static VALUE hash_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         korb_ary_push(r, pair);
@@ -992,7 +992,7 @@ static VALUE hash_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE acc = argc > 0 ? argv[0] : Qnil;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE args[2] = { acc, pair };
@@ -1042,9 +1042,9 @@ static VALUE hash_has_value_p(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Bins [k, v] pairs under whatever the block returns. */
 static VALUE hash_group_by(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_hash_new();
+    VALUE r = korb_hash_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE args[2] = { e->key, e->value };
@@ -1052,7 +1052,7 @@ static VALUE hash_group_by(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (c->state != KORB_NORMAL) return Qnil;
         VALUE bucket = korb_hash_aref(r, key);
         if (UNDEF_P(bucket) || NIL_P(bucket)) {
-            bucket = korb_ary_new();
+            bucket = korb_ary_new(c, c->sp);
             korb_hash_aset(r, key, bucket);
         }
         korb_ary_push(bucket, pair);
@@ -1066,10 +1066,10 @@ static VALUE hash_group_by(CTX *c, VALUE self, int argc, VALUE *argv) {
  * is fine. */
 static VALUE hash_sort_by(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE pairs = korb_ary_new();
-    VALUE keys  = korb_ary_new();
+    VALUE pairs = korb_ary_new(c, c->sp);
+    VALUE keys  = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE args[2] = { e->key, e->value };
@@ -1096,7 +1096,7 @@ static VALUE hash_sort_by(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* ---------- Hash#filter_map ---------- */
 static VALUE hash_filter_map(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
         VALUE m = korb_yield(c, 2, args);
@@ -1120,7 +1120,7 @@ static VALUE hash_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
             addend = korb_yield(c, 2, args);
             if (c->state != KORB_NORMAL) return Qnil;
         } else {
-            addend = korb_ary_new_capa(2);
+            addend = korb_ary_new_capa(c, c->sp, 2);
             korb_ary_push(addend, e->key);
             korb_ary_push(addend, e->value);
         }
@@ -1137,7 +1137,7 @@ static VALUE hash_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE memo = argv[0];
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE args[2] = { pair, memo };
@@ -1149,13 +1149,13 @@ static VALUE hash_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Hash#take(n) ---------- */
 static VALUE hash_take(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || !FIXNUM_P(argv[0])) return korb_ary_new();
+    if (argc < 1 || !FIXNUM_P(argv[0])) return korb_ary_new(c, c->sp);
     long n = FIX2LONG(argv[0]);
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE out = korb_ary_new();
+    VALUE out = korb_ary_new(c, c->sp);
     long taken = 0;
     for (struct korb_hash_entry *e = h->first; e && taken < n; e = e->next, taken++) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         korb_ary_push(out, pair);
@@ -1167,7 +1167,7 @@ static VALUE hash_take(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Yields (k, v); flattens one level into the result. */
 static VALUE hash_flat_map(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
         VALUE m = korb_yield(c, 2, args);

@@ -207,7 +207,7 @@ int main(int argc, char *argv[])
     }
     /* Build ARGV from args after the script path */
     CTX *c = korb_vm->current_ctx;
-    VALUE argv_array = korb_ary_new();
+    VALUE argv_array = korb_ary_new(c, c->sp);
     for (int i = script_arg_start; i < argc; i++) {
         korb_ary_push(argv_array, korb_str_new_cstr(c, c->sp, argv[i]));
     }

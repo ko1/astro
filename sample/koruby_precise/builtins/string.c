@@ -341,7 +341,7 @@ static VALUE str_split(CTX *c, VALUE self, int argc, VALUE *argv) {
         (void)rs_cap;
         rs[0] = self;
         rs[1] = (argc >= 1) ? argv[0] : Qnil;
-        rs[2] = korb_ary_new();           /* result */
+        rs[2] = korb_ary_new(c, c->sp);           /* result */
         /* rs[3] holds the per-iter piece across korb_ary_push / yield */
         #define EMIT(v) do { \
             rs[3] = (v); \
@@ -839,7 +839,7 @@ static VALUE str_chars(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE ret = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = self;
-        rs[1] = korb_ary_new_capa(((struct korb_string *)rs[0])->len);
+        rs[1] = korb_ary_new_capa(c, c->sp, ((struct korb_string *)rs[0])->len);
         struct korb_string *s = (struct korb_string *)rs[0];
         for (long i = 0; i < s->len; i++) {
             korb_ary_push(rs[1], korb_str_new(c, c->sp, s->ptr + i, 1));
@@ -862,7 +862,7 @@ static VALUE str_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         return c->current_frame->self;
     }
-    VALUE r = korb_ary_new_capa(((struct korb_string *)c->current_frame->self)->len);
+    VALUE r = korb_ary_new_capa(c, c->sp, ((struct korb_string *)c->current_frame->self)->len);
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
         korb_ary_push(r, INT2FIX((unsigned char)s->ptr[i]));
@@ -877,7 +877,7 @@ static VALUE str_each_char(CTX *c, VALUE self, int argc, VALUE *argv) {
      * inside the loop instead of the C-local self parameter, which
      * goes stale across allocations under STRESS+PURGE. */
     if (!korb_block_given(c)) {
-        VALUE r = korb_ary_new();
+        VALUE r = korb_ary_new(c, c->sp);
         for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
             struct korb_string *s = (struct korb_string *)c->current_frame->self;
             korb_ary_push(r, korb_str_new(c, c->sp, s->ptr + i, 1));
@@ -1265,9 +1265,9 @@ static VALUE str_sub_bang(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
  * Treats pattern as a literal string when given a String, mirroring
  * koruby's gsub/sub behavior (no regex without astrorge). */
 static VALUE str_scan(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(self) != T_STRING) return korb_ary_new();
+    if (argc < 1 || BUILTIN_TYPE(self) != T_STRING) return korb_ary_new(c, c->sp);
     const struct korb_string *s = (const struct korb_string *)self;
-    VALUE out = korb_ary_new();
+    VALUE out = korb_ary_new(c, c->sp);
     long ms, ml, i = 0;
     while (str_find_pat(argv[0], (struct korb_string *)s, i, &ms, &ml)) {
         korb_ary_push(out, korb_str_new(c, c->sp, s->ptr + ms, ml));
@@ -1704,7 +1704,7 @@ static VALUE str_capitalize(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* String#lines — split on \n, keep newlines. */
 static VALUE str_lines(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     long start = 0;
     for (long i = 0; i < s->len; i++) {
         if (s->ptr[i] == '\n') {
@@ -1720,7 +1720,7 @@ static VALUE str_partition(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *sep = (struct korb_string *)argv[0];
-    VALUE r = korb_ary_new_capa(3);
+    VALUE r = korb_ary_new_capa(c, c->sp, 3);
     if (sep->len == 0 || sep->len > s->len) {
         korb_ary_push(r, korb_str_new(c, c->sp, s->ptr, s->len));
         korb_ary_push(r, korb_str_new(c, c->sp, "", 0));
@@ -1745,7 +1745,7 @@ static VALUE str_rpartition(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return self;
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *sep = (struct korb_string *)argv[0];
-    VALUE r = korb_ary_new_capa(3);
+    VALUE r = korb_ary_new_capa(c, c->sp, 3);
     if (sep->len == 0 || sep->len > s->len) {
         korb_ary_push(r, korb_str_new(c, c->sp, "", 0));
         korb_ary_push(r, korb_str_new(c, c->sp, "", 0));
@@ -2183,7 +2183,7 @@ static VALUE str_delete_suffix_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
     const struct korb_string *s = (const struct korb_string *)self;
     bool has_block = korb_block_given(c);
-    VALUE collected = has_block ? Qnil : korb_ary_new();
+    VALUE collected = has_block ? Qnil : korb_ary_new(c, c->sp);
     long start = 0;
     for (long i = 0; i < s->len; i++) {
         if (s->ptr[i] == '\n') {

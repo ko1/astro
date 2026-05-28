@@ -279,7 +279,7 @@ VALUE class_allocate(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 VALUE mod_class_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return korb_ary_new();
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return korb_ary_new(c, c->sp);
     return korb_cvar_names((struct korb_class *)self);
 }
 
@@ -530,17 +530,18 @@ static VALUE method_receiver(CTX *c, VALUE self, int argc, VALUE *argv) {
  * arrays [:req] / [:opt] / etc.  CRuby accepts that form for
  * anonymous parameters. */
 static VALUE method_params_for_method(struct korb_method *km) {
-    VALUE r = korb_ary_new();
+    CTX *c = korb_vm->current_ctx;
+    VALUE r = korb_ary_new(c, c->sp);
     if (!km) return r;
     if (km->type == KORB_METHOD_CFUNC) {
         int n = km->u.cfunc.argc;
         if (n < 0) {
-            VALUE pair = korb_ary_new_capa(1);
+            VALUE pair = korb_ary_new_capa(c, c->sp, 1);
             korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
             korb_ary_push(r, pair);
         } else {
             for (int i = 0; i < n; i++) {
-                VALUE pair = korb_ary_new_capa(1);
+                VALUE pair = korb_ary_new_capa(c, c->sp, 1);
                 korb_ary_push(pair, korb_id2sym(korb_intern("req")));
                 korb_ary_push(r, pair);
             }
@@ -570,7 +571,7 @@ static VALUE method_params_for_method(struct korb_method *km) {
          * those, so always include a name when one exists. */
         #define PUSH_PARAM(kind_str, slot)                                  \
             do {                                                              \
-                VALUE _pair = korb_ary_new_capa(2);                            \
+                VALUE _pair = korb_ary_new_capa(c, c->sp, 2);                            \
                 korb_ary_push(_pair, korb_id2sym(korb_intern((kind_str))));   \
                 if (names && (slot) >= 0 && (slot) < locals_cnt &&            \
                     names[(slot)] != 0) {                                     \
@@ -620,7 +621,7 @@ static VALUE method_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_method *km = korb_class_find_method(k, m->name);
     if (!km || km->type != KORB_METHOD_AST || !km->u.ast.body) return Qnil;
     struct Node *body = km->u.ast.body;
-    VALUE r = korb_ary_new_capa(2);
+    VALUE r = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(r, body->head.source_file ? korb_str_new_cstr(c, c->sp, body->head.source_file) : Qnil);
     korb_ary_push(r, INT2FIX(body->head.line));
     return r;
@@ -631,7 +632,7 @@ VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_PROC) return Qnil;
     struct korb_proc *p = (struct korb_proc *)self;
     if (!p->body) return Qnil;
-    VALUE r = korb_ary_new_capa(2);
+    VALUE r = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(r, p->body->head.source_file ? korb_str_new_cstr(c, c->sp, p->body->head.source_file) : Qnil);
     korb_ary_push(r, INT2FIX(p->body->head.line));
     return r;
@@ -643,14 +644,14 @@ VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
  *   "".method(:gsub).to_proc.parameters
  * report [[:rest]] from the cfunc rather than [].  */
 VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_PROC) return korb_ary_new();
+    if (BUILTIN_TYPE(self) != T_PROC) return korb_ary_new(c, c->sp);
     struct korb_proc *p = (struct korb_proc *)self;
     if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)korb_vm->method_class) {
         return korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL);
     }
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     ID *names = p->body ? korb_body_local_names(p->body) : NULL;
     /* names[] is indexed from prism's locals.ids[] (lvar 0 = first local).
      * Proc params live at fp[param_base + i] = fp[slot_base + i]; the name
@@ -660,7 +661,7 @@ VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
      * param_base. */
     uint32_t req_cnt = (p->params_cnt > p->opt_cnt) ? p->params_cnt - p->opt_cnt : 0;
     for (uint32_t i = 0; i < p->params_cnt; i++) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         const char *kind;
         if (i < req_cnt) {
             kind = p->is_lambda ? "req" : "opt";
@@ -678,7 +679,7 @@ VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_ary_push(r, pair);
     }
     if (p->rest_slot >= 0 && !p->implicit_rest) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
         bool added_name = false;
         if (names) {
@@ -700,7 +701,7 @@ VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     /* Post params (after rest). */
     for (uint32_t i = 0; i < p->post_cnt; i++) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, korb_id2sym(korb_intern("req")));
         long abs = (long)p->param_base + (long)p->params_cnt + (p->rest_slot >= 0 ? 1 : 0) + (long)i;
         long li = abs - (long)p->param_base;
@@ -714,7 +715,7 @@ VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_ary_push(r, pair);
     }
     if (p->kwh_save_slot >= 0) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, korb_id2sym(korb_intern("keyrest")));
         bool added_name = false;
         if (names) {
@@ -735,7 +736,7 @@ VALUE proc_parameters(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     /* Block parameter `&blk`: param appears at the end of the list. */
     if (p->block_slot >= 0) {
-        VALUE pair = korb_ary_new_capa(2);
+        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, korb_id2sym(korb_intern("block")));
         bool added_name = false;
         if (names) {
@@ -869,12 +870,12 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
         if (no->ivar_cnt < o->ivar_cnt) no->ivar_cnt = o->ivar_cnt;
     } else if (t == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)self;
-        r = korb_ary_new_capa(a->len);
+        r = korb_ary_new_capa(c, c->sp, a->len);
         for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
     } else if (t == T_STRING) {
         r = korb_str_new(c, c->sp, korb_str_cstr(self), korb_str_len(self));
     } else if (t == T_HASH) {
-        r = korb_hash_new();
+        r = korb_hash_new(c, c->sp);
         struct korb_hash *h = (struct korb_hash *)self;
         struct korb_hash *rh = (struct korb_hash *)r;
         /* Preserve compare_by_identity / default_value / default_proc
@@ -985,7 +986,7 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
     return r;
 }
 static VALUE obj_instance_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE arr = korb_ary_new();
+    VALUE arr = korb_ary_new(c, c->sp);
     if (SPECIAL_CONST_P(self)) return arr;
     /* Class / Module: their own ivars (e.g. `class C; @x = 1; end` →
      * C.instance_variables == [:@x]).  Stored on the class itself in

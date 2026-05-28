@@ -101,7 +101,7 @@ static VALUE io_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
     FILE *fp = korb_io_fp(self);
     if (!fp) return self;
     bool has_block = korb_block_given(c);
-    VALUE collected = has_block ? Qnil : korb_ary_new();
+    VALUE collected = has_block ? Qnil : korb_ary_new(c, c->sp);
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
@@ -190,7 +190,7 @@ VALUE io_class_pipe(CTX *c, VALUE self, int argc, VALUE *argv) {
     setvbuf(r, NULL, _IONBF, 0);
     VALUE rio = korb_io_new((struct korb_class *)self, r);
     VALUE wio = korb_io_new((struct korb_class *)self, w);
-    VALUE arr = korb_ary_new_capa(2);
+    VALUE arr = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(arr, rio);
     korb_ary_push(arr, wio);
     return arr;
@@ -212,7 +212,8 @@ static void korb_select_fill_set(VALUE arr, fd_set *set, int *maxfd) {
 }
 
 static VALUE korb_select_collect_ready(VALUE arr, fd_set *set) {
-    VALUE out = korb_ary_new();
+    CTX *c = korb_vm->current_ctx;
+    VALUE out = korb_ary_new(c, c->sp);
     if (NIL_P(arr) || SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) return out;
     struct korb_array *a = (struct korb_array *)arr;
     for (long i = 0; i < a->len; i++) {
@@ -380,7 +381,7 @@ VALUE io_class_select(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     if (n == 0) return Qnil;
-    VALUE ret = korb_ary_new_capa(3);
+    VALUE ret = korb_ary_new_capa(c, c->sp, 3);
     korb_ary_push(ret, korb_select_collect_ready(rs, &rset));
     korb_ary_push(ret, korb_select_collect_ready(ws, &wset));
     korb_ary_push(ret, korb_select_collect_ready(es, &eset));
@@ -631,14 +632,14 @@ static VALUE dir_pwd(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE dir_entries(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_ary_new();
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_ary_new(c, c->sp);
     const char *path = korb_str_cstr(argv[0]);
     DIR *d = opendir(path);
     if (!d) {
         korb_raise(c, NULL, "no such directory -- %s", path);
         return Qnil;
     }
-    VALUE out = korb_ary_new();
+    VALUE out = korb_ary_new(c, c->sp);
     struct dirent *de;
     while ((de = readdir(d))) {
         korb_ary_push(out, korb_str_new_cstr(c, c->sp, de->d_name));
@@ -717,9 +718,9 @@ static void korb_glob_walk(CTX *c, const char *dir, const char *pat, VALUE out, 
 }
 
 static VALUE dir_glob(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_ary_new();
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_ary_new(c, c->sp);
     const char *pat = korb_str_cstr(argv[0]);
-    VALUE out = korb_ary_new();
+    VALUE out = korb_ary_new(c, c->sp);
     /* Detect double-star + slash + rest recursive form. */
     if (strncmp(pat, "**/", 3) == 0) {
         korb_glob_walk(c, ".", pat + 3, out, true);
@@ -1034,7 +1035,7 @@ static VALUE signal_trap(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE signal_list(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE h = korb_hash_new();
+    VALUE h = korb_hash_new(c, c->sp);
     /* CRuby includes "EXIT" with value 0 — pseudo-signal used by at_exit
      * dispatch.  Always present even when the OS doesn't define it. */
     korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "EXIT"), INT2FIX(0));

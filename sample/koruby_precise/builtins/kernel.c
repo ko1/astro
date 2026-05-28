@@ -287,14 +287,14 @@ VALUE kernel_to_block_arg(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Lenient: `m(**nil)` is allowed and treated as no kwargs. */
 VALUE kernel_kwsplat_to_hash_lenient(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || NIL_P(argv[0])) return korb_hash_new();
+    if (argc < 1 || NIL_P(argv[0])) return korb_hash_new(c, c->sp);
     return kwsplat_convert(c, argv[0]);
 }
 
 VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Ruby 3.4+: `{**nil}` evaluates to {}.  Earlier versions raised
      * TypeError; we follow current CRuby (≥ 3.4). */
-    if (argc < 1 || NIL_P(argv[0])) return korb_hash_new();
+    if (argc < 1 || NIL_P(argv[0])) return korb_hash_new(c, c->sp);
     return kwsplat_convert(c, argv[0]);
 }
 
@@ -307,7 +307,7 @@ static VALUE kernel_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (argc == 0) return Qnil;
     if (argc == 1) return argv[0];
-    return korb_ary_new_from_values(argc, argv);
+    return korb_ary_new_from_values(c, c->sp, argc, argv);
 }
 
 /* Pick the FILE * for IO-method writes.  When the receiver carries
@@ -714,7 +714,7 @@ static VALUE kernel_throw(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE tag = argv[0];
     VALUE val = argc >= 2 ? argv[1] : Qnil;
-    VALUE pair = korb_ary_new_capa(2);
+    VALUE pair = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(pair, tag);
     korb_ary_push(pair, val);
     c->state = KORB_THROW;
@@ -1011,9 +1011,9 @@ static VALUE kernel_string(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_ary_new();
+    if (argc < 1) return korb_ary_new(c, c->sp);
     VALUE v = argv[0];
-    if (NIL_P(v)) return korb_ary_new();
+    if (NIL_P(v)) return korb_ary_new(c, c->sp);
     if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return v;
     /* Range / Hash / anything responding to to_a: delegate.  Only
      * wrap in a 1-element Array when the value doesn't.  CRuby uses
@@ -1022,7 +1022,7 @@ static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!SPECIAL_CONST_P(v) && (BUILTIN_TYPE(v) == T_RANGE || BUILTIN_TYPE(v) == T_HASH)) {
         return korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
     }
-    VALUE r = korb_ary_new_capa(1);
+    VALUE r = korb_ary_new_capa(c, c->sp, 1);
     korb_ary_push(r, v);
     return r;
 }
@@ -1041,7 +1041,7 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
      * frame at index 0; slice it per start/length args.  Default start
      * is 1, so out-of-the-box `caller` skips the immediate frame and
      * matches CRuby. */
-    VALUE arr = korb_ary_new();
+    VALUE arr = korb_ary_new(c, c->sp);
     const char *cf0 = caller_current_file(c);
     const char *default_file = cf0 ? cf0 : "(unknown)";
     struct korb_frame *f = c->current_frame;
@@ -1124,7 +1124,7 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
     long end_exclusive = (len < 0) ? total : start + len;
     if (end_exclusive > total) end_exclusive = total;
     if (end_exclusive < start) end_exclusive = start;
-    VALUE out = korb_ary_new_capa(end_exclusive - start);
+    VALUE out = korb_ary_new_capa(c, c->sp, end_exclusive - start);
     for (long i = start; i < end_exclusive; i++) {
         korb_ary_push(out, korb_ary_aref(arr, i));
     }
@@ -1163,7 +1163,7 @@ static VALUE kernel_method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
  * from inside an `it` block (current_frame->method.name == :it),
  * return [] to avoid leaking mspec_shim internals. */
 static VALUE kernel_local_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE arr = korb_ary_new();
+    VALUE arr = korb_ary_new(c, c->sp);
     /* Inside Binding#eval body — report the binding's view, not the
      * caller frame's. */
     if (c->current_eval_binding) {
@@ -1205,7 +1205,7 @@ static VALUE kernel_local_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_capture_lvars(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE h = korb_hash_new();
+    VALUE h = korb_hash_new(c, c->sp);
     /* Skip past the AST method that's hosting this cfunc call (typically
      * Kernel#binding from bootstrap) to get to the user's frame. */
     struct korb_frame *f = c->current_frame ? c->current_frame->prev : NULL;
@@ -1482,7 +1482,7 @@ static VALUE kernel_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Yields nothing.  Returns 0 (the count of yielded objects). */
-    if (!korb_block_given(c)) return korb_ary_new();
+    if (!korb_block_given(c)) return korb_ary_new(c, c->sp);
     return INT2FIX(0);
 }
 
@@ -1491,7 +1491,7 @@ VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv) {
      * don't track per-type counts so just provide :TOTAL from the
      * GC framework's heap_bytes stat / 64. */
     size_t heap_bytes = ARO_GC_COMMON(c)->stats.heap_bytes;
-    VALUE h = korb_hash_new();
+    VALUE h = korb_hash_new(c, c->sp);
     korb_hash_aset(h, korb_id2sym(korb_intern("TOTAL")),
                    INT2FIX((long)(heap_bytes / 64)));
     korb_hash_aset(h, korb_id2sym(korb_intern("FREE")), INT2FIX(0));

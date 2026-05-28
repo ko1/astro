@@ -322,7 +322,7 @@ static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
         }
         return argv[0];
     }
-    VALUE r = korb_ary_new_capa(argc);
+    VALUE r = korb_ary_new_capa(c, c->sp, argc);
     for (int i = 0; i < argc; i++) {
         if (SYMBOL_P(argv[i])) korb_ary_push(r, argv[i]);
         else if (!SPECIAL_CONST_P(argv[i]) && BUILTIN_TYPE(argv[i]) == T_STRING) {
@@ -388,9 +388,9 @@ static VALUE struct_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE struct_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return korb_ary_new();
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return korb_ary_new(c, c->sp);
     struct korb_array *members = (struct korb_array *)members_v;
-    VALUE r = korb_ary_new_capa(members->len);
+    VALUE r = korb_ary_new_capa(c, c->sp, members->len);
     for (long i = 0; i < members->len; i++) {
         ID name = SYMBOL_P(members->ptr[i]) ? korb_sym2id(members->ptr[i]) :
                   korb_intern(korb_str_cstr(members->ptr[i]));
@@ -486,9 +486,9 @@ static VALUE struct_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE struct_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
     VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
-    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return korb_hash_new();
+    if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return korb_hash_new(c, c->sp);
     struct korb_array *members = (struct korb_array *)members_v;
-    VALUE h = korb_hash_new();
+    VALUE h = korb_hash_new(c, c->sp);
     for (long i = 0; i < members->len; i++) {
         ID name = SYMBOL_P(members->ptr[i]) ? korb_sym2id(members->ptr[i]) :
                   korb_intern(korb_str_cstr(members->ptr[i]));
@@ -511,9 +511,9 @@ static VALUE struct_size(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Struct.members at the class level — return the members array. */
 static VALUE struct_class_members(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_CLASS) return korb_ary_new();
+    if (BUILTIN_TYPE(self) != T_CLASS) return korb_ary_new(c, c->sp);
     VALUE members_v = korb_const_get((struct korb_class *)self, korb_intern("__members__"));
-    if (UNDEF_P(members_v)) return korb_ary_new();
+    if (UNDEF_P(members_v)) return korb_ary_new(c, c->sp);
     return members_v;
 }
 
@@ -530,7 +530,7 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     struct korb_class *klass = korb_class_new(korb_intern("Struct"), korb_vm->object_class, T_OBJECT);
     /* save members */
-    VALUE members = korb_ary_new_from_values(argc, argv);
+    VALUE members = korb_ary_new_from_values(c, c->sp, argc, argv);
     korb_const_set(klass, korb_intern("__members__"), members);
     /* Install Struct's standard instance methods FIRST, then let
      * attr_accessor overwrite any collisions (e.g. Data.define(:length)

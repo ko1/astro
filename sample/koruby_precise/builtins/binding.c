@@ -98,7 +98,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     b->outer_vars = Qnil;
     b->outer_names_cnt = 0;
         if (!NIL_P(src->extra_vars) && BUILTIN_TYPE(src->extra_vars) == T_HASH) {
-            b->extra_vars = korb_hash_new();
+            b->extra_vars = korb_hash_new(c, c->sp);
             struct korb_hash *sh = (struct korb_hash *)src->extra_vars;
             for (struct korb_hash_entry *e = sh->first; e; e = e->next) {
                 korb_hash_aset(b->extra_vars, e->key, e->value);
@@ -227,7 +227,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     if (c->current_eval_program_body) {
         ID *eval_names = korb_body_local_names(c->current_eval_program_body);
         if (eval_names) {
-            if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new();
+            if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp);
             for (size_t i = 0; eval_names[i] != 0; i++) {
                 if (binding_find_slot(b, eval_names[i]) >= 0) continue;
                 binding_append_name(b, eval_names[i]);
@@ -286,7 +286,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
      * outer_names_cnt so binding_local_variables shows them at the END
      * of the list (innermost-first ordering — CRuby compat). */
     if (c->running_block) {
-        if (NIL_P(b->outer_vars)) b->outer_vars = korb_hash_new();
+        if (NIL_P(b->outer_vars)) b->outer_vars = korb_hash_new(c, c->sp);
         struct korb_proc *parent = c->running_block->lexical_parent_block;
         while (parent && parent->body) {
             ID *parent_names = korb_body_local_names(parent->body);
@@ -476,7 +476,7 @@ static VALUE binding_local_variable_set(CTX *c, VALUE self, int argc, VALUE *arg
         return argv[1];
     }
     /* New name: store in extras Hash to avoid clobbering caller temps. */
-    if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new();
+    if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp);
     korb_hash_aset(b->extra_vars, korb_id2sym(name_id), argv[1]);
     binding_append_name(b, name_id);
     return argv[1];
@@ -502,7 +502,7 @@ static VALUE binding_local_variable_defined_p(CTX *c, VALUE self, int argc, VALU
  * Underscore-prefix names (`_`, `__foo`) are filtered (CRuby compat).
  */
 static VALUE binding_local_variables_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE arr = korb_ary_new();
+    VALUE arr = korb_ary_new(c, c->sp);
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return arr;
     struct korb_binding *b = (struct korb_binding *)self;
     VALUE extras = b->extra_vars;
@@ -706,7 +706,7 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
      * truth — caller's temp slots can be reused, so we have to
      * snapshot whatever the eval body wrote. */
     if (b->fp) {
-        if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new();
+        if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp);
         for (uint32_t i = orig_names_cnt; i < b->names_cnt; i++) {
             VALUE v = b->fp[b->base + i];
             if (UNDEF_P(v)) v = Qnil;
@@ -721,7 +721,7 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
 static VALUE binding_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
     struct korb_binding *b = (struct korb_binding *)self;
-    VALUE arr = korb_ary_new();
+    VALUE arr = korb_ary_new(c, c->sp);
     const char *file = b->source_file ? b->source_file : "(eval)";
     int line = b->source_line ? b->source_line : 0;
     korb_ary_push(arr, korb_str_new_cstr(c, c->sp, file));
@@ -807,7 +807,7 @@ static VALUE binding_dup_clone_impl(CTX *c, VALUE self, bool preserve_frozen, in
     }
     /* Extras — deep copy each entry. */
     if (!NIL_P(src->extra_vars) && BUILTIN_TYPE(src->extra_vars) == T_HASH) {
-        dst->extra_vars = korb_hash_new();
+        dst->extra_vars = korb_hash_new(c, c->sp);
         struct korb_hash *sh = (struct korb_hash *)src->extra_vars;
         for (struct korb_hash_entry *e = sh->first; e; e = e->next) {
             korb_hash_aset(dst->extra_vars, e->key, e->value);

@@ -293,7 +293,7 @@ static VALUE int_times(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!korb_block_given(c)) {
         /* No-block: return Array stand-in [0, 1, ..., n-1] for chains
          * like `5.times.to_a` / `5.times.map { ... }`. */
-        VALUE a = korb_ary_new_capa(n > 0 ? n : 0);
+        VALUE a = korb_ary_new_capa(c, c->sp, n > 0 ? n : 0);
         for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(i));
         return a;
     }
@@ -484,7 +484,7 @@ static VALUE int_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     VALUE other = argv[0];
-    VALUE pair = korb_ary_new_capa(2);
+    VALUE pair = korb_ary_new_capa(c, c->sp, 2);
     if (FIXNUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM)) {
         korb_ary_push(pair, other);
         korb_ary_push(pair, self);
@@ -577,7 +577,7 @@ static VALUE int_bit_length(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_ary_new();
+    if (argc < 1) return korb_ary_new(c, c->sp);
     /* Float divisor: NaN raises FloatDomainError; Infinity etc. routed
      * via float arithmetic (CRuby semantics). */
     if (FLONUM_P(argv[0]) || (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_FLOAT)) {
@@ -588,12 +588,12 @@ static VALUE int_divmod(CTX *c, VALUE self, int argc, VALUE *argv) {
             return Qnil;
         }
     }
-    if (!FIXNUM_P(self) || !FIXNUM_P(argv[0])) return korb_ary_new();
+    if (!FIXNUM_P(self) || !FIXNUM_P(argv[0])) return korb_ary_new(c, c->sp);
     long a = FIX2LONG(self), b = FIX2LONG(argv[0]);
     if (b == 0) { { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); korb_raise(c, (struct korb_class *)_eZ, "divided by 0"); } return Qnil; }
     long q = a / b, m = a % b;
     if ((a ^ b) < 0 && m != 0) { q--; m += b; }
-    VALUE r = korb_ary_new_capa(2);
+    VALUE r = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(r, INT2FIX(q));
     korb_ary_push(r, INT2FIX(m));
     return r;
@@ -612,7 +612,7 @@ static VALUE int_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (step == 0) return self;
     /* If no block given, return Array of values (Enumerator approximation) */
     if (!korb_block_given(c)) {
-        VALUE r = korb_ary_new();
+        VALUE r = korb_ary_new(c, c->sp);
         if (step > 0) for (long i = start; i <= stop; i += step) korb_ary_push(r, INT2FIX(i));
         else for (long i = start; i >= stop; i += step) korb_ary_push(r, INT2FIX(i));
         return r;
@@ -678,11 +678,11 @@ static VALUE int_upto(CTX *c, VALUE self, int argc, VALUE *argv) {
     long start = FIX2LONG(self);
     if (abort) {
         /* Bignum/NaN stop — empty loop. */
-        if (!korb_block_given(c)) return korb_ary_new();
+        if (!korb_block_given(c)) return korb_ary_new(c, c->sp);
         return self;
     }
     if (!korb_block_given(c)) {
-        VALUE a = korb_ary_new();
+        VALUE a = korb_ary_new(c, c->sp);
         for (long i = start; i <= stop; i++) korb_ary_push(a, INT2FIX(i));
         return a;
     }
@@ -701,11 +701,11 @@ static VALUE int_downto(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (abort && c->state == KORB_RAISE) return Qnil;
     long start = FIX2LONG(self);
     if (abort) {
-        if (!korb_block_given(c)) return korb_ary_new();
+        if (!korb_block_given(c)) return korb_ary_new(c, c->sp);
         return self;
     }
     if (!korb_block_given(c)) {
-        VALUE a = korb_ary_new();
+        VALUE a = korb_ary_new(c, c->sp);
         for (long i = start; i >= stop; i--) korb_ary_push(a, INT2FIX(i));
         return a;
     }

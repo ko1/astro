@@ -38,7 +38,7 @@ main(int argc, char *argv[])
 
     /* ARGV / $0 / $PROGRAM_NAME. */
     {
-        VALUE argv_array = korb_ary_new();
+        VALUE argv_array = korb_ary_new(c, c->sp);
         for (int i = 1; i < argc; i++) {
             korb_ary_push(argv_array, korb_str_new_cstr(c, c->sp, argv[i]));
         }

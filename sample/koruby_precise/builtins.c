@@ -412,7 +412,7 @@ void korb_init_builtins(void) {
                     VALUE w = module_attr_writer(c, self, 1, argv);
                     if (c->state == KORB_RAISE) return Qnil;
                     /* CRuby returns [reader_sym, writer_sym] in this form. */
-                    VALUE arr = korb_ary_new_capa(2);
+                    VALUE arr = korb_ary_new_capa(c, c->sp, 2);
                     if (BUILTIN_TYPE(r) == T_ARRAY && ((struct korb_array *)r)->len > 0) {
                         korb_ary_push(arr, ((struct korb_array *)r)->ptr[0]);
                     }
@@ -1542,12 +1542,12 @@ void korb_init_builtins(void) {
     }
 
     /* Make sure ARGV is at least an empty array; main.c will override */
-    korb_const_set(korb_vm->object_class, korb_intern("ARGV"), korb_ary_new());
+    korb_const_set(korb_vm->object_class, korb_intern("ARGV"), korb_ary_new(c, c->sp));
     /* ENV: populate from real environment (read-only snapshot). */
     {
         CTX *c = korb_vm->current_ctx;
         extern char **environ;
-        VALUE env = korb_hash_new();
+        VALUE env = korb_hash_new(c, c->sp);
         for (char **p = environ; *p; p++) {
             const char *eq = strchr(*p, '=');
             if (!eq) continue;

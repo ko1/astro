@@ -718,7 +718,7 @@ NODE_DEF
 node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
 {
     /* args are pre-evaluated and stored at fp[arg_index..arg_index+argc-1] */
-    VALUE ary = korb_ary_new_capa(argc);
+    VALUE ary = korb_ary_new_capa(c, c->sp, argc);
     for (uint32_t i = 0; i < argc; i++) {
         korb_ary_push(ary, c->current_frame->fp[arg_index + i]);
     }
@@ -729,7 +729,7 @@ NODE_DEF
 node_hash_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
 {
     /* argc is # of pairs * 2; flat key,value,key,value,... */
-    VALUE h = korb_hash_new();
+    VALUE h = korb_hash_new(c, c->sp);
     for (uint32_t i = 0; i + 1 < argc; i += 2) {
         VALUE k = c->current_frame->fp[arg_index + i];
         /* CRuby: hash-literal mutable String keys are deduplicated
@@ -1955,7 +1955,7 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
     VALUE v = EA(c, expr);
     if (BUILTIN_TYPE(v) == T_ARRAY) return v;
     if (NIL_P(v)) {
-        VALUE a = korb_ary_new_capa(1);
+        VALUE a = korb_ary_new_capa(c, c->sp, 1);
         korb_ary_push(a, v);
         return a;
     }
@@ -1968,7 +1968,7 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
         if (c->state != KORB_NORMAL) return Qnil;
         if (NIL_P(r)) {
             /* CRuby: to_ary returning nil wraps in [v]. */
-            VALUE a = korb_ary_new_capa(1);
+            VALUE a = korb_ary_new_capa(c, c->sp, 1);
             korb_ary_push(a, v);
             return a;
         }
@@ -1981,7 +1981,7 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
         return r;
     }
     /* No to_ary: wrap. */
-    VALUE a = korb_ary_new_capa(1);
+    VALUE a = korb_ary_new_capa(c, c->sp, 1);
     korb_ary_push(a, v);
     return a;
 }
@@ -1991,7 +1991,7 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
 {
     VALUE v = EA(c, expr);
     /* CRuby splat: nil → [] (no elements). */
-    if (NIL_P(v)) return korb_ary_new();
+    if (NIL_P(v)) return korb_ary_new(c, c->sp);
     if (BUILTIN_TYPE(v) == T_ARRAY) return v;
     if (BUILTIN_TYPE(v) == T_RANGE) {
         /* convert Range to Array for splat */
@@ -1999,8 +1999,8 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
             long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
             if (r->exclude_end) e--;
-            if (e < b) return korb_ary_new();
-            VALUE a = korb_ary_new_capa(e - b + 1);
+            if (e < b) return korb_ary_new(c, c->sp);
+            VALUE a = korb_ary_new_capa(c, c->sp, e - b + 1);
             for (long i = b; i <= e; i++) korb_ary_push(a, INT2FIX(i));
             return a;
         }
@@ -2028,7 +2028,7 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
             /* CRuby: if to_a returns nil, treat the value as a single
              * element array.  Other non-Array results are TypeError. */
             if (NIL_P(r)) {
-                VALUE a = korb_ary_new_capa(1);
+                VALUE a = korb_ary_new_capa(c, c->sp, 1);
                 korb_ary_push(a, v);
                 return a;
             }
@@ -2038,7 +2038,7 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
             return Qnil;
         }
     }
-    VALUE a = korb_ary_new_capa(1);
+    VALUE a = korb_ary_new_capa(c, c->sp, 1);
     korb_ary_push(a, v);
     return a;
 }
@@ -2086,7 +2086,7 @@ NODE_DEF
 node_ary_slice_middle(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t leading, uint32_t trailing)
 {
     VALUE a = EA(c, ary_node);
-    if (BUILTIN_TYPE(a) != T_ARRAY) return korb_ary_new();
+    if (BUILTIN_TYPE(a) != T_ARRAY) return korb_ary_new(c, c->sp);
     long len = korb_ary_len(a);
     long start = (long)leading;
     long end_excl = len - (long)trailing;
@@ -2094,7 +2094,7 @@ node_ary_slice_middle(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
     if (end_excl > len) end_excl = len;
     if (end_excl < start) end_excl = start;
     long n_take = end_excl - start;
-    VALUE r = korb_ary_new_capa(n_take);
+    VALUE r = korb_ary_new_capa(c, c->sp, n_take);
     for (long i = 0; i < n_take; i++) korb_ary_push(r, korb_ary_aref(a, start + i));
     return r;
 }
@@ -2416,7 +2416,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
             peeled_kwh = forward_buf[argc - 1];
             argc--;
         } else {
-            peeled_kwh = korb_hash_new();
+            peeled_kwh = korb_hash_new(c, c->sp);
         }
     }
     for (int i = 0; i < argc; i++) new_fp[i] = forward_buf[i];
@@ -2446,7 +2446,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
         for (long i = 0; i < fixed_post; i++) {
             post_ptr[i] = forward_buf[argc - fixed_post + i];
         }
-        VALUE rest_arr = korb_ary_new_capa(extra);
+        VALUE rest_arr = korb_ary_new_capa(c, c->sp, extra);
         for (long i = 0; i < extra; i++) {
             korb_ary_push(rest_arr, forward_buf[fixed_pre + opt_filled + i]);
         }
@@ -2871,7 +2871,7 @@ node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
     if (BUILTIN_TYPE(r) != T_ARRAY) return l;
     struct korb_array *la = (struct korb_array *)l;
     struct korb_array *ra = (struct korb_array *)r;
-    VALUE out = korb_ary_new_capa(la->len + ra->len);
+    VALUE out = korb_ary_new_capa(c, c->sp, la->len + ra->len);
     for (long i = 0; i < la->len; i++) korb_ary_push(out, la->ptr[i]);
     for (long i = 0; i < ra->len; i++) korb_ary_push(out, ra->ptr[i]);
     return out;

@@ -566,9 +566,9 @@ const char *korb_str_cstr(VALUE s); /* terminates */
 long  korb_str_len(VALUE s);
 
 /* array */
-VALUE korb_ary_new_capa(long capa);
-VALUE korb_ary_new(void);
-VALUE korb_ary_new_from_values(long n, const VALUE *vals);
+VALUE korb_ary_new_capa(CTX *c, VALUE *sp, long capa);
+VALUE korb_ary_new(CTX *c, VALUE *sp);
+VALUE korb_ary_new_from_values(CTX *c, VALUE *sp, long n, const VALUE *vals);
 void  korb_ary_push(VALUE ary, VALUE v);
 VALUE korb_ary_pop(VALUE ary);
 void  korb_ary_aset(VALUE ary, long i, VALUE v);
@@ -589,7 +589,7 @@ korb_ary_len(VALUE av) {
 }
 
 /* hash */
-VALUE korb_hash_new(void);
+VALUE korb_hash_new(CTX *c, VALUE *sp);
 VALUE korb_hash_aref_slow(VALUE h, VALUE key);
 
 /* korb_hash_aref: inlined fast path for FIXNUM / SYMBOL keys (the

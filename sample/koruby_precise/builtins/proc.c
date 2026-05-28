@@ -183,7 +183,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
             peeled_kwh = argv[argc - 1];
             argc--;
         } else {
-            peeled_kwh = korb_hash_new();
+            peeled_kwh = korb_hash_new(c, c->sp);
         }
     }
     /* If last positional is a kwargs-tagged empty Hash and callee has
@@ -280,7 +280,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (middle > p->opt_cnt) middle -= p->opt_cnt; else middle = 0;
         /* 4) *rest: gather whatever is left in "middle" (after opt). */
         if (p->rest_slot >= 0) {
-            VALUE rest = korb_ary_new();
+            VALUE rest = korb_ary_new(c, c->sp);
             for (uint32_t i = 0; i < middle; i++) korb_ary_push(rest, argv[arg_cur++]);
             new_fp[p->rest_slot] = rest;
         }

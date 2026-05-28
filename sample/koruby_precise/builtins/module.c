@@ -80,7 +80,7 @@ static VALUE module_attr_reader(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!attr_check_frozen(c, self)) return Qnil;
     struct korb_class *klass = (struct korb_class *)self;
-    VALUE result = korb_ary_new();
+    VALUE result = korb_ary_new(c, c->sp);
     for (int i = 0; i < argc; i++) {
         ID name;
         if (!attr_resolve_name(c, argv[i], &name, "attr_reader")) return Qnil;
@@ -103,7 +103,7 @@ static VALUE module_attr_writer(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!attr_check_frozen(c, self)) return Qnil;
     struct korb_class *klass = (struct korb_class *)self;
-    VALUE result = korb_ary_new();
+    VALUE result = korb_ary_new(c, c->sp);
     for (int i = 0; i < argc; i++) {
         ID name;
         if (!attr_resolve_name(c, argv[i], &name, "attr_writer")) return Qnil;
@@ -128,7 +128,7 @@ static VALUE module_attr_accessor(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r2 = module_attr_writer(c, self, argc, argv);
     if (c->state != KORB_NORMAL) return Qnil;
     /* Interleave readers and writers like CRuby: [a, a=, b, b=]. */
-    VALUE result = korb_ary_new();
+    VALUE result = korb_ary_new(c, c->sp);
     if (BUILTIN_TYPE(r1) == T_ARRAY && BUILTIN_TYPE(r2) == T_ARRAY) {
         struct korb_array *a1 = (struct korb_array *)r1;
         struct korb_array *a2 = (struct korb_array *)r2;
@@ -265,11 +265,11 @@ static VALUE class_superclass(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Module#instance_methods([include_inherited=true]) — sym list. */
 static VALUE module_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
-        return korb_ary_new();
+        return korb_ary_new(c, c->sp);
     }
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
     struct korb_class *root = (struct korb_class *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     /* Walk from root through includes / super if requested. */
     struct korb_class *k = root;
     while (k) {
@@ -290,8 +290,9 @@ static VALUE module_instance_methods(CTX *c, VALUE self, int argc, VALUE *argv) 
  * chain.  vis = -1 means "all public + protected" (default for #methods).
  * vis = KORB_VIS_PUBLIC / PRIVATE / PROTECTED selects exactly that set. */
 static VALUE methods_with_visibility(VALUE self, int vis, bool include_inherited) {
+    CTX *c = korb_vm->current_ctx;
     struct korb_class *k = korb_class_of_class(self);
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     while (k) {
         for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
             for (struct korb_method_table_entry *e = k->methods.buckets[b]; e; e = e->next) {
@@ -335,7 +336,7 @@ static VALUE obj_protected_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Object#singleton_methods — methods defined directly on this object's
  * singleton class (not inherited from regular class). */
 static VALUE obj_singleton_methods(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     if (SPECIAL_CONST_P(self)) return r;
     struct korb_class *k = NULL;
     if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
@@ -436,10 +437,10 @@ static VALUE module_protected_method_defined_p(CTX *c, VALUE self, int argc, VAL
  * super for inherited. */
 static VALUE module_methods_by_vis(CTX *c, VALUE self, int argc, VALUE *argv,
                                      enum korb_visibility vis) {
-    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return korb_ary_new();
+    if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return korb_ary_new(c, c->sp);
     bool include_inherited = (argc < 1) || RTEST(argv[0]);
     struct korb_class *k = (struct korb_class *)self;
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     bool first = true;
     while (k) {
         for (uint32_t b = 0; b < k->methods.bucket_cnt; b++) {
@@ -470,9 +471,9 @@ static VALUE module_protected_instance_methods(CTX *c, VALUE self, int argc, VAL
 /* Module#constants — sym list of declared constants. */
 static VALUE module_constants(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
-        return korb_ary_new();
+        return korb_ary_new(c, c->sp);
     }
-    VALUE r = korb_ary_new();
+    VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_const_entry *e = ((struct korb_class *)self)->constants; e; e = e->next) {
         korb_ary_push(r, korb_id2sym(e->name));
     }
@@ -838,7 +839,7 @@ static void ancestors_push_module(VALUE arr, struct korb_class *m) {
 }
 
 static VALUE class_ancestors(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE arr = korb_ary_new();
+    VALUE arr = korb_ary_new(c, c->sp);
     if (SPECIAL_CONST_P(self)) return arr;
     struct korb_class *k = (struct korb_class *)self;
     while (k) {
@@ -1098,7 +1099,7 @@ static VALUE module_public_constant(CTX *c, VALUE self, int argc, VALUE *argv) {
  * stack, innermost first.  Just walks c->current_frame->cref which already mirrors
  * the source's `module M; class C; ...; end; end` nesting. */
 static VALUE module_class_nesting(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE arr = korb_ary_new();
+    VALUE arr = korb_ary_new(c, c->sp);
     for (struct korb_cref *cur = c->current_frame->cref; cur; cur = cur->prev) {
         if (cur->klass && cur->klass != korb_vm->object_class) {
             korb_ary_push(arr, (VALUE)cur->klass);

@@ -334,7 +334,8 @@ bool korb_cvar_defined(CTX *c, ID name) {
 }
 
 VALUE korb_cvar_names(struct korb_class *k) {
-    VALUE arr = korb_ary_new();
+    CTX *c = korb_vm->current_ctx;
+    VALUE arr = korb_ary_new(c, c->sp);
     /* Collect from k and its supers, dedup by name. */
     for (struct korb_class *cur = k; cur; cur = cur->super) {
         for (uint32_t i = 0; i < cur->cvar_cnt; i++) {
@@ -1614,7 +1615,11 @@ long korb_str_len(VALUE s) { return ((struct korb_string *)s)->len; }
 extern void koruby_register_libc_obj(struct RBasic *obj);
 
 /* ---- array ---- */
-VALUE korb_ary_new_capa(long capa) {
+/* korb_ary_new* take (c, sp) for API uniformity (runtime.md §12.3).
+ * Body is libc-malloc so doesn't fire GC itself; the args are unused
+ * but kept consistent with str/float helpers. */
+VALUE korb_ary_new_capa(CTX *c, VALUE *sp, long capa) {
+    (void)c; (void)sp;
     struct korb_array *a = korb_xmalloc(sizeof(*a));
     a->basic.head.flags = T_ARRAY;
     a->basic.klass = korb_vm ? (VALUE)korb_vm->array_class : 0;
@@ -1625,10 +1630,10 @@ VALUE korb_ary_new_capa(long capa) {
     for (long i = 0; i < a->capa; i++) a->ptr[i] = Qnil;
     return (VALUE)a;
 }
-VALUE korb_ary_new(void) { return korb_ary_new_capa(0); }
+VALUE korb_ary_new(CTX *c, VALUE *sp) { return korb_ary_new_capa(c, sp, 0); }
 
-VALUE korb_ary_new_from_values(long n, const VALUE *vals) {
-    VALUE a = korb_ary_new_capa(n);
+VALUE korb_ary_new_from_values(CTX *c, VALUE *sp, long n, const VALUE *vals) {
+    VALUE a = korb_ary_new_capa(c, sp, n);
     for (long i = 0; i < n; i++) korb_ary_push(a, vals[i]);
     return a;
 }
@@ -1769,7 +1774,8 @@ bool korb_eql(VALUE a, VALUE b) {
     return false;
 }
 
-VALUE korb_hash_new(void) {
+VALUE korb_hash_new(CTX *c, VALUE *sp) {
+    (void)c; (void)sp;
     struct korb_hash *h = korb_xmalloc(sizeof(*h));
     h->basic.head.flags = T_HASH;
     h->basic.klass = korb_vm ? (VALUE)korb_vm->hash_class : 0;
@@ -2384,7 +2390,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
             if (blk->rest_slot >= 0) {
                 uint32_t rest_room = (arr_len > taken_left + post_cnt)
                                        ? arr_len - taken_left - post_cnt : 0;
-                VALUE rest = korb_ary_new_capa((long)rest_room);
+                VALUE rest = korb_ary_new_capa(c, c->sp, (long)rest_room);
                 for (uint32_t i = 0; i < rest_room; i++) {
                     korb_ary_push(rest, a->ptr[taken_left + i]);
                 }
@@ -2427,9 +2433,9 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         if (blk->rest_slot >= 0) {
             uint32_t start = blk->params_cnt;
             if (argc <= start) {
-                fp[blk->rest_slot] = korb_ary_new();
+                fp[blk->rest_slot] = korb_ary_new(c, c->sp);
             } else {
-                VALUE rest = korb_ary_new_capa((long)(argc - start));
+                VALUE rest = korb_ary_new_capa(c, c->sp, (long)(argc - start));
                 for (uint32_t i = start; i < argc; i++) korb_ary_push(rest, args_buf[i]);
                 fp[blk->rest_slot] = rest;
             }
@@ -2439,7 +2445,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     if (blk->block_slot >= 0) fp[blk->block_slot] = Qnil;
     /* `**kwargs` parameter: use peeled_kwh from above, or default to {}. */
     if (blk->kwh_save_slot >= 0) {
-        fp[blk->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
+        fp[blk->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new(c, c->sp) : peeled_kwh;
     }
     c->current_frame->self = blk->self;
     /* Install the block's lexical cref so const lookup inside the block
@@ -2535,7 +2541,7 @@ VALUE korb_class_of(VALUE v) { return (VALUE)korb_class_of_class(v); }
  * non-zero, falling back to caller_node's line.  Subsequent entries
  * use each frame's caller_node->head.line. */
 VALUE korb_build_backtrace(CTX *c, int raise_line) {
-    VALUE arr = korb_ary_new();
+    VALUE arr = korb_ary_new(c, c->sp);
     const char *default_file = c->current_frame->current_file ? c->current_frame->current_file : "(unknown)";
     char buf[512];
     char nbuf[256];
@@ -3553,7 +3559,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
             peeled_kwh = c->current_frame->fp[argc - 1];
             argc--;
         } else {
-            peeled_kwh = korb_hash_new();
+            peeled_kwh = korb_hash_new(c, c->sp);
         }
     }
     /* If the last positional is a kwargs-tagged Hash but the callee
@@ -3630,7 +3636,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         for (long i = 0; i < fixed_post; i++) {
             post_buf[i] = c->current_frame->fp[fixed_pre + opt_filled + extra + i];
         }
-        VALUE rest = korb_ary_new_capa(extra);
+        VALUE rest = korb_ary_new_capa(c, c->sp, extra);
         for (long i = 0; i < extra; i++) {
             korb_ary_push(rest, c->current_frame->fp[fixed_pre + opt_filled + i]);
         }
@@ -3759,7 +3765,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * dispatches to an AST method with optional keywords without
      * forwarding the hash arg. */
     if (mc->kwh_save_slot >= 0) {
-        c->current_frame->fp[mc->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
+        c->current_frame->fp[mc->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new(c, c->sp) : peeled_kwh;
     }
     /* No outer-self mutation — new_frame.self below = recv */
 
@@ -4133,7 +4139,7 @@ korb_node_plus_slow(CTX *c, VALUE l, VALUE r, uint32_t arg_index) {
     }
     if (BUILTIN_TYPE(l) == T_ARRAY && BUILTIN_TYPE(r) == T_ARRAY &&
         ((struct RBasic *)l)->klass == (VALUE)korb_vm->array_class) {
-        VALUE a = korb_ary_new_capa(korb_ary_len(l) + korb_ary_len(r));
+        VALUE a = korb_ary_new_capa(c, c->sp, korb_ary_len(l) + korb_ary_len(r));
         for (long i = 0, n2 = korb_ary_len(l); i < n2; i++) korb_ary_push(a, korb_ary_aref(l, i));
         for (long i = 0, n2 = korb_ary_len(r); i < n2; i++) korb_ary_push(a, korb_ary_aref(r, i));
         return a;
@@ -4372,7 +4378,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     if (m->u.ast.rest_slot >= 0) {
         long extra = (long)argc - (long)(m->u.ast.total_params_cnt - 1);
         if (extra < 0) extra = 0;
-        VALUE rest = korb_ary_new_capa(extra);
+        VALUE rest = korb_ary_new_capa(c, c->sp, extra);
         for (long i = 0; i < extra; i++) {
             korb_ary_push(rest, new_fp[m->u.ast.total_params_cnt - 1 + i]);
         }
@@ -4402,7 +4408,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * was filled in by the FL_KWARGS peel above, use that. */
     if (m->u.ast.kwh_save_slot >= 0 && m->u.ast.kwh_save_slot < (int)m->u.ast.locals_cnt) {
         c->current_frame->fp[m->u.ast.kwh_save_slot] = UNDEF_P(peeled_kwh_ad)
-            ? korb_hash_new() : peeled_kwh_ad;
+            ? korb_hash_new(c, c->sp) : peeled_kwh_ad;
     }
     struct korb_cref *prev_cref2 = c->current_frame->cref;
     if (m->def_cref) c->current_frame->cref = m->def_cref;
@@ -4843,12 +4849,12 @@ void korb_runtime_init(void) {
      * sysconfdir/sitelibdir/etc; we don't have those here, so use a
      * placeholder that doesn't include "." (per spec). */
     {
-        VALUE lp = korb_ary_new();
+        VALUE lp = korb_ary_new(c, c->sp);
         korb_ary_push(lp, korb_str_new_cstr(c, c->sp, "/usr/local/lib/ruby/site_ruby"));
         korb_gvar_set(korb_intern("$:"), lp);
         korb_gvar_set(korb_intern("$LOAD_PATH"), lp);
         korb_gvar_set(korb_intern("$-I"), lp);
-        korb_gvar_set(korb_intern("$\""), korb_ary_new());
+        korb_gvar_set(korb_intern("$\""), korb_ary_new(c, c->sp));
         korb_gvar_set(korb_intern("$LOADED_FEATURES"), korb_gvar_get(korb_intern("$\"")));
     }
     /* $VERBOSE / $DEBUG / aliases — false by default (no -v/-d). */

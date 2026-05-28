@@ -72,7 +72,7 @@ static VALUE flt_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     double limit = korb_num2dbl(argv[0]);
     double step  = (argc >= 2) ? korb_num2dbl(argv[1]) : 1.0;
     bool has_block = korb_block_given(c);
-    VALUE out = has_block ? Qnil : korb_ary_new();
+    VALUE out = has_block ? Qnil : korb_ary_new(c, c->sp);
     if (step == 0.0) return self;
     if (step > 0.0) {
         for (double v = start; v <= limit + 1e-12; v += step) {
@@ -156,7 +156,7 @@ static VALUE flt_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     VALUE other = argv[0];
-    VALUE pair = korb_ary_new_capa(2);
+    VALUE pair = korb_ary_new_capa(c, c->sp, 2);
     if (FIXNUM_P(other)) {
         korb_ary_push(pair, korb_float_new(c, c->sp, (double)FIX2LONG(other)));
         korb_ary_push(pair, self);

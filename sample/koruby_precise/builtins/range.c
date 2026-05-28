@@ -108,7 +108,7 @@ static VALUE rng_first(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     if (n > avail) n = avail;
-    VALUE a = korb_ary_new_capa(n);
+    VALUE a = korb_ary_new_capa(c, c->sp, n);
     for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(b + i));
     return a;
 }
@@ -131,7 +131,7 @@ static VALUE rng_last(CTX *c, VALUE self, int argc, VALUE *argv) {
     long avail = e - b + 1; if (avail < 0) avail = 0;
     if (n > avail) n = avail;
     long start = e - n + 1;
-    VALUE a = korb_ary_new_capa(n);
+    VALUE a = korb_ary_new_capa(c, c->sp, n);
     for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(start + i));
     return a;
 }
@@ -141,12 +141,12 @@ static VALUE rng_to_a(CTX *c, VALUE self, int argc, VALUE *argv) {
         long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
         if (r->exclude_end) e--;
         long n = e - b + 1; if (n < 0) n = 0;
-        VALUE a = korb_ary_new_capa(n);
+        VALUE a = korb_ary_new_capa(c, c->sp, n);
         for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(b + i));
         return a;
     }
     /* Non-numeric: walk via #succ. */
-    VALUE a = korb_ary_new();
+    VALUE a = korb_ary_new(c, c->sp);
     if (NIL_P(r->begin) || NIL_P(r->end)) return a;
     VALUE cur = r->begin;
     while (true) {
@@ -179,7 +179,7 @@ static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
         double b = korb_num2dbl(r->begin);
         double e = korb_num2dbl(r->end);
         bool has_block = korb_block_given(c);
-        VALUE out = has_block ? Qnil : korb_ary_new();
+        VALUE out = has_block ? Qnil : korb_ary_new(c, c->sp);
         for (double v = b; r->exclude_end ? (v < e) : (v <= e + 1e-12); v += step) {
             VALUE fv = korb_float_new(c, c->sp, v);
             if (has_block) {
@@ -196,7 +196,7 @@ static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
     if (!korb_block_given(c)) {
-        VALUE a = korb_ary_new();
+        VALUE a = korb_ary_new(c, c->sp);
         for (long i = b; i <= e; i += step) korb_ary_push(a, INT2FIX(i));
         return a;
     }
@@ -314,10 +314,10 @@ static VALUE rng_map(CTX *c, VALUE self, int argc, VALUE *argv) {
         return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     }
     struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return korb_ary_new();
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return korb_ary_new(c, c->sp);
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    VALUE out = korb_ary_new();
+    VALUE out = korb_ary_new(c, c->sp);
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
         VALUE m = korb_yield(c, 1, &v);
@@ -329,10 +329,10 @@ static VALUE rng_map(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE rng_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return korb_ary_new();
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return korb_ary_new(c, c->sp);
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    VALUE out = korb_ary_new();
+    VALUE out = korb_ary_new(c, c->sp);
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
         VALUE m = korb_yield(c, 1, &v);
