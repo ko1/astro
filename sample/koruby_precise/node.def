@@ -1715,12 +1715,24 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
                     goto aref_done;
                 }
                 if (BUILTIN_TYPE(r) == T_STRING && FIXNUM_P(i)) {
+                    /* Fast path only safe for ASCII strings; for any
+                     * non-ASCII byte the UTF-8 codepoint walk is needed
+                     * (handled by str_aref via the slow path).  Detect
+                     * by checking whether any byte has the high bit set —
+                     * cheap for typical short strings. */
                     struct korb_string *s = (struct korb_string *)r;
-                    long pos = FIX2LONG(i);
-                    if (pos < 0) pos += s->len;
-                    if (pos < 0 || pos >= s->len) { ret = Qnil; goto aref_done; }
-                    ret = korb_str_new(c, c->sp, s->ptr + pos, 1);
-                    goto aref_done;
+                    bool all_ascii = true;
+                    for (long k = 0; k < s->len; k++) {
+                        if ((unsigned char)s->ptr[k] >= 0x80) { all_ascii = false; break; }
+                    }
+                    if (all_ascii) {
+                        long pos = FIX2LONG(i);
+                        if (pos < 0) pos += s->len;
+                        if (pos < 0 || pos >= s->len) { ret = Qnil; goto aref_done; }
+                        ret = korb_str_new(c, c->sp, s->ptr + pos, 1);
+                        goto aref_done;
+                    }
+                    /* else: fall through to slow path */
                 }
             }
         }

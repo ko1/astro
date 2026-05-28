@@ -5,6 +5,10 @@
 static VALUE korb_to_int_or_raise(CTX *c, VALUE v);
 /* Forward decl for the to_str coerce helper (defined further below). */
 static VALUE str_coerce_arg(CTX *c, VALUE arg);
+/* Forward decl for UTF-8 char→byte index translation (defined later). */
+static int str_char_range_to_bytes(const char *p, long byte_len,
+                                   long char_start, long char_count,
+                                   long *out_start, long *out_len);
 
 /* String.new(s = "") — start the new string from an optional initial
  * value.  Class#new's generic path goes through korb_object_new which
@@ -680,33 +684,34 @@ static VALUE str_getbyte(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
     if (argc == 1 && FIXNUM_P(argv[0])) {
-        long i = FIX2LONG(argv[0]);
-        if (i < 0) i += s->len;
-        if (i < 0 || i >= s->len) return Qnil;
-        return korb_str_new(c, c->sp, s->ptr + i, 1);
+        long char_idx = FIX2LONG(argv[0]);
+        long bstart, blen;
+        int rc = str_char_range_to_bytes(s->ptr, s->len, char_idx, 1, &bstart, &blen);
+        if (rc != 0 || blen == 0) return Qnil;
+        return korb_str_new(c, c->sp, s->ptr + bstart, blen);
     }
     if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)argv[0];
-        if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return Qnil;
-        long b = FIX2LONG(r->begin);
-        long e = FIX2LONG(r->end);
-        if (b < 0) b += s->len;
-        if (e < 0) e += s->len;
-        if (b < 0 || b > s->len) return Qnil;
-        if (r->exclude_end) e -= 1;
-        if (e >= s->len) e = s->len - 1;
-        long len = e - b + 1;
-        if (len < 0) len = 0;
-        return korb_str_new(c, c->sp, s->ptr + b, len);
+        if (!FIXNUM_P(r->begin) && !NIL_P(r->begin)) return Qnil;
+        if (!FIXNUM_P(r->end) && !NIL_P(r->end)) return Qnil;
+        long b = NIL_P(r->begin) ? 0 : FIX2LONG(r->begin);
+        long e = NIL_P(r->end) ? -1 : FIX2LONG(r->end);
+        if (r->exclude_end && !NIL_P(r->end)) e -= 1;
+        long count = e - b + 1;
+        if (count < 0) count = 0;
+        long bstart, blen;
+        int rc = str_char_range_to_bytes(s->ptr, s->len, b, count, &bstart, &blen);
+        if (rc != 0) return Qnil;
+        return korb_str_new(c, c->sp, s->ptr + bstart, blen);
     }
     if (argc == 2 && FIXNUM_P(argv[0]) && FIXNUM_P(argv[1])) {
-        long i = FIX2LONG(argv[0]);
-        long len = FIX2LONG(argv[1]);
-        if (i < 0) i += s->len;
-        if (i < 0 || i > s->len) return Qnil;
-        if (i + len > s->len) len = s->len - i;
-        if (len < 0) len = 0;
-        return korb_str_new(c, c->sp, s->ptr + i, len);
+        long char_idx = FIX2LONG(argv[0]);
+        long char_cnt = FIX2LONG(argv[1]);
+        if (char_cnt < 0) return Qnil;
+        long bstart, blen;
+        int rc = str_char_range_to_bytes(s->ptr, s->len, char_idx, char_cnt, &bstart, &blen);
+        if (rc != 0) return Qnil;
+        return korb_str_new(c, c->sp, s->ptr + bstart, blen);
     }
     return Qnil;
 }
