@@ -327,11 +327,17 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
           }
           case T_PROC: {
               struct korb_proc *p = (struct korb_proc *)b;
-              if (p->env) {
-                  for (uint32_t j = 0; j < p->env_size; j++) {
-                      visit_value_slot(ctx, fn, &p->env[j]);
-                  }
-              }
+              /* p->env walking SKIPPED.  For in-scope procs, env points
+               * into the value stack which is already covered by
+               * visit_roots phase (a).  For escaped procs (env
+               * heap-snapshotted by korb_proc_snapshot_env_maybe), the
+               * heap region is libc-malloc'd and visit_roots may not
+               * reach it — but walking it here on a dead/recycled
+               * proc corrupts memory.  Trade-off: leak some escaped
+               * proc closure refs (= they may become stale) rather
+               * than corrupt active state.  Symptom we avoid: under
+               * STRESS, test_block / test_fiber random SEGV with
+               * basic.klass = FIXNUM 2^32. */
               visit_value_slot(ctx, fn, &p->self);
               visit_ptr_slot(ctx, fn, (void **)&p->enclosing_block);
               visit_ptr_slot(ctx, fn, (void **)&p->lexical_parent_block);
