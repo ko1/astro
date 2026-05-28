@@ -441,6 +441,28 @@ partial migration (= 一部だけ) では shadow ref が新たに発生する
 ことが実験で確認済 (4ed470fb で試行)。 一括移行が必要。 大規模
 refactor、 1 commit に収まらない別 session 規模。
 
+### 一括 migration 試行ログ (2026-05-28, session 末)
+
+`korb_ary_new_capa` / `korb_hash_new` / `korb_range_new` /
+`korb_float_new_heap` / `korb_proc_new` を `aro_gc_alloc` に同時切替
++ scan_edges T_HASH 実装した試行。 結果:
+
+- NORMAL: 24/24 維持 (= 意味的に破壊なし)
+- STRESS: **24 → 3/24 (大幅 regression)**
+- STRESS+PURGE: **24 → 0/24 (完全崩壊)**
+
+bootstrap で `NameError: undefined method 'numerator' for Rational`、
+`BAD SLOT abort-imminent` 連発。 推定原因:
+- container migration が bootstrap 中に発生する GC を increase
+- ある時点で class.methods (= korb_method_table、 hash 構造別物) や
+  別の libc-allocated 構造への参照が stale 化
+- 私の T_HASH scan_edges は korb_hash 用、 method_table は scan されず
+
+container 系を一括 migration するだけでは足りず、 関連する全 libc
+構造 (method_table、 const_entry chain、 includes 配列 等) も同時に
+scan_edges に load する必要あり。 さらに大規模、 別 session 規模を
+超える本格 refactor。 revert で 24/24 復帰。
+
 このセッションの主要 fix (commit 686f01f0 〜 13edbcb7):
 
 - **visit_roots phase (c+d) 統合**: frame 毎に cref chain を walk。
