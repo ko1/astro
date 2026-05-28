@@ -3,26 +3,30 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 残 global / korb_vm->current_ctx fallback 撤去 (2026-05-28 thirteenth pass)
+## 残 global / korb_vm->current_ctx fallback 撤去 — **完了 (2026-05-28 thirteenth pass)**
 
 「グローバルつくらんといて」 規約 (memory: feedback_no_globals_strict) に
-従い、 段階的に CTX を関数引数経由で渡す方向に移行中。 残:
+従い、 段階的に CTX を関数引数経由で渡す方向に移行 → **完了**:
 
-- `korb_hash_value(v)`: T_OBJECT で user-defined `#hash` を呼ぶ経路で
-  `korb_vm->current_ctx` 経由の funcall を fire。 callers ~38 箇所
-  (object.c / builtins/hash.c / builtins/array.c / etc.) に CTX *c を
-  propagate する必要。 `korb_hash_aset / korb_hash_aref_slow` の
-  signature 変更も伴う大改修。
-- `korb_eq(a, b)`: 同じく T_OBJECT で `eql?` を funcall 経由で呼ぶ経路。
-- `korb_raise_frozen_modification(obj)`: 内部で `korb_vm->current_ctx`
-  に対して `korb_raise` を行う。
-- `builtins/binding.c` 内 binding 生成、 `builtins.c` の IO クラス初期化:
-  CTX 引数を持たない private helper の中で fallback している。
-- `koruby_setup_ctx(current_file)`: bootstrap_ctx を返す boundary 関数。
-  global 越しに取るのは「初期化フロー」 のため許容。
+- `current_block` / `running_block` global → CTX field 化 (commit 8e388503)
+- `korb_str_new` / `korb_str_new_cstr` に (CTX, sp) (commit 0010d621)
+- `korb_float_new` / `korb_float_new_heap` に (CTX, sp) (commit 03435e7a)
+- `korb_ary_new` / `_capa` / `_from_values` / `korb_hash_new` に (CTX, sp) (commit f2297121)
+- `korb_str_dup` / `korb_str_concat` / `korb_object_new` に (CTX, sp) (commit 9e8905b4)
+- `korb_class_new` / `korb_module_new` に (CTX, sp) (commit 68994185)
+- `korb_to_s` / `korb_inspect` に (CTX, sp) (commit 007fe5af)
+- `korb_cvar_names` / `method_params_for_method` / `methods_with_visibility` /
+  `korb_select_collect_ready` / `str_appendf` / `korb_inspect_inner` / `korb_p` /
+  `korb_runtime_init` / `korb_init_builtins` に CTX 引数化 (commit 3c00037f)
+- `korb_singleton_class_of` / `korb_singleton_class_of_value` に CTX 引数化 (commit 53a99fe4)
+- `korb_hash_value` / `korb_eq` / `korb_eql` / `korb_hash_aref*` / `korb_hash_aset`
+  に CTX 引数化 (commit 10abd165)
+- `korb_raise_frozen_modification` / `korb_ivar_set_ic` / `korb_class_add_method_ast*` /
+  `korb_exc_new` / `binding_arg_to_id` / 残 object.c の `c2/c3` 内部 fallback
+  に CTX 引数化 (commit 1dc64f59)
 
-これらは「触ると touch しに行く caller chain が広いので 1 個ずつ別 commit」
-にする。 一度に直すと merge コンフリクト + 動作確認の grain が大きくなる。
+残 1 件: `koruby_setup_ctx` (= bootstrap_ctx を返す boundary entry point) のみ。
+これは 「初期化フロー」 のため許容。
 
 ## 現状 (2026-05-28, twelfth pass)
 
