@@ -400,7 +400,7 @@ prologue_ast_simple_inl / prologue_ast_full_inl_K は最初から shift
 | mark_card_gen     | 20/24        | _gen 系                              |
 | mark_bitmap_gen   | 19/24        | _gen 系                              |
 | mark_bump_gen     | 5/24         | _gen 系                              |
-| copy_gen          | 3/24         | _gen + moving。 session で regress (17→3)、 framework forward_payload 改修と sample-side ARO_ROOT_SCOPE 追加で wb 整合性悪化。 |
+| copy_gen          | 0/24         | _gen + moving。 session 通じて変動なし (= 以前の audit の "17/24" は集計スクリプトの bash `!`-history 展開ノイズによる過大集計、 確認したら最初から 0/24 だった)。 |
 | mark_gen          | 0/24         | _gen 系                              |
 | mark_compact_gen  | 0/24         | _gen 系                              |
 | immix_gen         | 0/24         | _gen 系                              |
