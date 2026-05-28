@@ -1183,6 +1183,14 @@ VALUE korb_const_lookup(CTX *c, ID name) {
      * pushes its own cref entry whose prev is non-NULL, so that one
      * still participates. */
     for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
+        /* Defensive: cref->klass can be NULL when GC's forward_payload
+         * NULLified a slot that held a stale prior-cycle ref (gc_copy.c
+         * line 463 branch).  Skip such entries; the inheritance walk
+         * below + Object namespace catch the const if it exists.  Real
+         * fix would be tracking down what cref chain isn't being walked
+         * each cycle (visit_libc_obj registry vs frame chain vs
+         * method def_cref). */
+        if (cr->klass == NULL) continue;
         if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
         VALUE v = korb_const_get(cr->klass, name);
         if (!UNDEF_P(v)) return v;
