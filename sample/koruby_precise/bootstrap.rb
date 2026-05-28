@@ -986,10 +986,17 @@ class String
     return self.dup unless blk
     s = self.dup
     target = to.to_s
+    # CRuby semantics: if `to` is shorter than `self` (in bytes), don't
+    # iterate at all — successor would overshoot.
+    return self if target.length < s.length
     while s <= target
       break if exclusive && s == target
       yield s
       s = s.succ
+      # Defensive: succ may produce a string that exceeds target length,
+      # at which point the lexical <= check would keep iterating forever
+      # for cases like "Z".upto("AA").  Break when length grows past target.
+      break if s.length > target.length
     end
     self
   end unless method_defined?(:upto)
