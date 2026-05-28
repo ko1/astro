@@ -525,7 +525,7 @@ koruby_eval_bootstrap(CTX *c)
                                 koruby_bootstrap_len, "<bootstrap>");
     (void)br;
     if (c->state == KORB_RAISE) {
-        VALUE s = korb_inspect(c->state_value);
+        VALUE s = korb_inspect(c, c->sp, c->state_value);
         fprintf(stderr, "bootstrap failure: %s\n", korb_str_cstr(s));
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
@@ -550,7 +550,7 @@ koruby_run_ast(CTX *c, NODE *ast)
                 struct korb_array *pair = (struct korb_array *)c->state_value;
                 if (pair->len >= 1) urs[1] = pair->ptr[0];
             }
-            urs[2] = korb_inspect(urs[1]);  /* tag_s */
+            urs[2] = korb_inspect(c, c->sp, urs[1]);  /* tag_s */
             char buf[256];
             snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[2]));
             c->state = KORB_RAISE;
@@ -583,7 +583,7 @@ koruby_run_ast(CTX *c, NODE *ast)
                 return code;
             }
         }
-        VALUE s = korb_inspect(c->state_value);
+        VALUE s = korb_inspect(c, c->sp, c->state_value);
         fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
         extern void korb_run_at_exit_hooks(CTX *c);
         korb_run_at_exit_hooks(c);

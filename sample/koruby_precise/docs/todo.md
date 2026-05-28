@@ -3,6 +3,27 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## 残 global / korb_vm->current_ctx fallback 撤去 (2026-05-28 thirteenth pass)
+
+「グローバルつくらんといて」 規約 (memory: feedback_no_globals_strict) に
+従い、 段階的に CTX を関数引数経由で渡す方向に移行中。 残:
+
+- `korb_hash_value(v)`: T_OBJECT で user-defined `#hash` を呼ぶ経路で
+  `korb_vm->current_ctx` 経由の funcall を fire。 callers ~38 箇所
+  (object.c / builtins/hash.c / builtins/array.c / etc.) に CTX *c を
+  propagate する必要。 `korb_hash_aset / korb_hash_aref_slow` の
+  signature 変更も伴う大改修。
+- `korb_eq(a, b)`: 同じく T_OBJECT で `eql?` を funcall 経由で呼ぶ経路。
+- `korb_raise_frozen_modification(obj)`: 内部で `korb_vm->current_ctx`
+  に対して `korb_raise` を行う。
+- `builtins/binding.c` 内 binding 生成、 `builtins.c` の IO クラス初期化:
+  CTX 引数を持たない private helper の中で fallback している。
+- `koruby_setup_ctx(current_file)`: bootstrap_ctx を返す boundary 関数。
+  global 越しに取るのは「初期化フロー」 のため許容。
+
+これらは「触ると touch しに行く caller chain が広いので 1 個ずつ別 commit」
+にする。 一度に直すと merge コンフリクト + 動作確認の grain が大きくなる。
+
 ## 現状 (2026-05-28, twelfth pass)
 
 直近の発見: 自前 test/ の "OK Xxxx (0)" 24/24 表示は **TESTS.each
