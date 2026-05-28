@@ -115,6 +115,10 @@ visit_class_edges(void *ctx, koruby_edge_fn fn, struct korb_class *k)
     visit_ptr_slot(ctx, fn, (void **)&k->anon_parent);
 }
 
+/* Forward decls — defined after koruby_visit_roots. */
+void koruby_register_libc_obj(struct RBasic *obj);
+static void koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, koruby_edge_fn fn);
+
 void
 koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
 {
@@ -239,6 +243,12 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         visit_value_slot(ctx, fn, &korb_vm->main_obj);
         visit_method_table(ctx, fn, &korb_vm->globals);
     }
+    /* (f) Walk the libc-obj registry to update interior heap-ref
+     * fields.  See koruby_visit_libc_obj_internals_via_registry for
+     * the rationale (forward_payload returns libc objs as-is, so
+     * scan_edges never runs on them and their interior arena
+     * references stay stale across GC cycles). */
+    koruby_visit_libc_obj_internals_via_registry(c, ctx, fn);
     /* All class pointers in heap have just been forwarded.  Cached
      * method_cache->klass fields (= scattered across all call-site
      * NODEs, NOT walked here) now hold stale addresses.  Bumping
@@ -250,6 +260,94 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         korb_vm->method_serial++;
         extern state_serial_t korb_g_method_serial;
         korb_g_method_serial = korb_vm->method_serial;
+    }
+}
+
+/* Libc-allocated heap objs (korb_array / korb_hash / korb_proc /
+ * korb_range / korb_float / korb_bignum) hold interior heap-pointer
+ * fields that the GC framework does NOT auto-update: forward_payload
+ * returns libc-region addrs as-is and koruby_scan_edges is never
+ * called on them.  We maintain a global doubly-linked list of all
+ * allocated libc objs (registered at construction time).  In
+ * visit_roots phase (f), walk the list and visit each obj's interior
+ * heap-pointer fields so they auto-forward when GC moves the
+ * referent (e.g. when array elements reference a moving class /
+ * arena obj).  The list never shrinks during a run — libc objs
+ * are not reclaimed.  Memory leak is bounded by test scale. */
+struct koruby_libc_obj_entry {
+    struct RBasic *obj;
+    struct koruby_libc_obj_entry *next;
+};
+
+static struct koruby_libc_obj_entry *koruby_g_libc_obj_list = NULL;
+
+void koruby_register_libc_obj(struct RBasic *obj) {
+    struct koruby_libc_obj_entry *e =
+        (struct koruby_libc_obj_entry *)malloc(sizeof(*e));
+    if (!e) return;  /* OOM — leak the obj from the registry, harmless */
+    e->obj = obj;
+    e->next = koruby_g_libc_obj_list;
+    koruby_g_libc_obj_list = e;
+}
+
+static void
+koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, koruby_edge_fn fn) {
+    for (struct koruby_libc_obj_entry *e = koruby_g_libc_obj_list; e; e = e->next) {
+        struct RBasic *b = e->obj;
+        if (!b) continue;
+        /* basic.klass for libc objs is stale-prone — visit it
+         * unconditionally so it auto-forwards when the class moves. */
+        visit_ptr_slot(ctx, fn, (void **)&b->klass);
+        int t = (int)(b->head.flags & T_MASK);
+        switch (t) {
+          case T_ARRAY: {
+              struct korb_array *a = (struct korb_array *)b;
+              if (a->ptr && a->len > 0) {
+                  for (long j = 0; j < a->len; j++) {
+                      visit_value_slot(ctx, fn, &a->ptr[j]);
+                  }
+              }
+              break;
+          }
+          case T_HASH: {
+              struct korb_hash *h = (struct korb_hash *)b;
+              for (struct korb_hash_entry *he = h->first; he; he = he->next) {
+                  visit_value_slot(ctx, fn, &he->key);
+                  visit_value_slot(ctx, fn, &he->value);
+              }
+              visit_value_slot(ctx, fn, &h->default_value);
+              visit_value_slot(ctx, fn, &h->default_proc);
+              break;
+          }
+          case T_RANGE: {
+              struct korb_range *r = (struct korb_range *)b;
+              visit_value_slot(ctx, fn, &r->begin);
+              visit_value_slot(ctx, fn, &r->end);
+              break;
+          }
+          case T_PROC: {
+              struct korb_proc *p = (struct korb_proc *)b;
+              if (p->env) {
+                  for (uint32_t j = 0; j < p->env_size; j++) {
+                      visit_value_slot(ctx, fn, &p->env[j]);
+                  }
+              }
+              visit_value_slot(ctx, fn, &p->self);
+              visit_ptr_slot(ctx, fn, (void **)&p->enclosing_block);
+              visit_ptr_slot(ctx, fn, (void **)&p->lexical_parent_block);
+              for (struct korb_cref *cr = p->cref; cr; cr = cr->prev) {
+                  visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+              }
+              break;
+          }
+          case T_FLOAT:
+          case T_BIGNUM:
+          case T_STRING:
+              /* Leaf: only klass to update (already done). */
+              break;
+          default:
+              break;
+        }
     }
 }
 

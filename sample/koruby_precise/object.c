@@ -1548,11 +1548,18 @@ const char *korb_str_cstr(VALUE s) {
 
 long korb_str_len(VALUE s) { return ((struct korb_string *)s)->len; }
 
+/* Registration of libc-allocated heap objs with koruby's GC root
+ * walker so its interior heap-pointer fields (basic.klass, array
+ * elements, hash entries, proc env, etc.) get auto-updated when the
+ * referent moves.  Defined in koruby_runtime.c. */
+extern void koruby_register_libc_obj(struct RBasic *obj);
+
 /* ---- array ---- */
 VALUE korb_ary_new_capa(long capa) {
     struct korb_array *a = korb_xmalloc(sizeof(*a));
     a->basic.head.flags = T_ARRAY;
     a->basic.klass = korb_vm ? (VALUE)korb_vm->array_class : 0;
+    koruby_register_libc_obj(&a->basic);
     a->len = 0;
     a->capa = capa < 4 ? 4 : capa;
     a->ptr = korb_xmalloc(a->capa * sizeof(VALUE));
@@ -1714,6 +1721,7 @@ VALUE korb_hash_new(void) {
     h->default_value = Qnil;
     h->default_proc  = Qnil;
     h->compare_by_identity = false;
+    koruby_register_libc_obj(&h->basic);
     return (VALUE)h;
 }
 
@@ -1791,6 +1799,7 @@ VALUE korb_range_new(VALUE b, VALUE e, bool excl) {
     r->begin = b;
     r->end = e;
     r->exclude_end = excl;
+    koruby_register_libc_obj(&r->basic);
     return (VALUE)r;
 }
 
@@ -1803,6 +1812,7 @@ VALUE korb_float_new_heap(double d) {
     f->basic.head.flags = T_FLOAT;
     f->basic.klass = korb_vm ? (VALUE)korb_vm->float_class : 0;
     f->value = d;
+    koruby_register_libc_obj(&f->basic);
     return (VALUE)f;
 }
 
@@ -1852,6 +1862,7 @@ VALUE korb_bignum_new_str(const char *str, int base) {
             return INT2FIX(v);
         }
     }
+    koruby_register_libc_obj(&b->basic);
     korb_bignum_register_finalizer(b);
     return (VALUE)b;
 }
@@ -1864,6 +1875,7 @@ VALUE korb_bignum_new_long(long v) {
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
     mpz_init_set_si(*z, v);
     b->mpz = z;
+    koruby_register_libc_obj(&b->basic);
     korb_bignum_register_finalizer(b);
     return (VALUE)b;
 }
@@ -1889,6 +1901,7 @@ VALUE korb_dbl2int(double v) {
     mpz_t *z = korb_xmalloc(sizeof(mpz_t));
     mpz_init_set_d(*z, v);
     b->mpz = z;
+    koruby_register_libc_obj(&b->basic);
     korb_bignum_register_finalizer(b);
     return (VALUE)b;
 }
@@ -1910,6 +1923,7 @@ static VALUE from_mpz(mpz_t z) {
     mpz_init_set(*bz, z);
     mpz_clear(z);
     b->mpz = bz;
+    koruby_register_libc_obj(&b->basic);
     korb_bignum_register_finalizer(b);
     return (VALUE)b;
 }
@@ -2095,6 +2109,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
      * (node_proc_set_def_method) once it has the active CTX. */
     p->defining_method = NULL;
     p->lexical_parent_block = NULL;
+    koruby_register_libc_obj(&p->basic);
     return (VALUE)p;
 }
 
