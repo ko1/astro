@@ -169,16 +169,35 @@ test_misc / test_fiber / test_array / test_string。
   frame.self 復元で死アドレスを書き込んでしまう。 prev_self を
   AROH_ROOT_STACK_TOP / SET_TOP で root stack に park (commit 76aa7419)。
 
-### rubyspec で残る同型バグ
+### rubyspec STRESS+PURGE 改善 (2026-05-29)
 
-rubyspec を STRESS+PURGE で走らせると `EVAL_node_class_reopen` で
-SEGV。 class_reopen 自体は ARO_ROOT_SCOPE 済だが、 内部の
-korb_const_get → method lookup chain で別の stale ref が起きている
-可能性。 個別 trace 待ち。
+rubyspec の language sweep を STRESS+PURGE で計測した結果:
 
-`file_join` (File.join) も result string + per-iter element が
-stale 化していたため ARO_ROOT_SCOPE 化 (commit 201ef954)。 rubyspec
-の File.join 経由 SEGV を改善。
+- 初期 6 PASS / 61 SEGV (前 session 終了時)
+- 14 PASS / 50 SEGV (current)
+
+追加修正 (commit 順):
+
+- `proc_call` の prev_self を AROH_ROOT_STACK で pin (commit 5cb2938c)
+- `korb_const_lookup` で cref->klass=NULL を defensive skip
+  (commit 85dfcd0c) — GC forward_payload の stale-to-space 分岐で
+  cref->klass が NULL 化された場合の保険。
+- libc registry walker で T_PROC の `env` を walk (escape proc 用),
+  proc_call / prologue_ast_general で raise/throw 時の r snapshot を skip
+  (commit 827e0151)。
+- `node_apply_call` の recv / args / block を 3-slot pin (commit cd60b4b0)。
+- `node_method_call_block` の r / block を 2-slot pin (commit c516da2c)。
+- `node_aref` / `node_aset` / `node_obj_singleton_def` を pin (commit 323b1f85)。
+- `korb_singleton_class_of_value` を ARO_ROOT_SCOPE 化、 o 再 load
+  (commit 323b1f85)。
+
+### BARUBY_GC_STRESS=N 間隔指定 (2026-05-29)
+
+`BARUBY_GC_STRESS=100 BARUBY_GC_PURGE=1` のように N alloc 毎の GC を
+指定可能に (commit 763880ed)。 default の N=1 (= 全 alloc) では
+重い workload (rubyspec / benchmark) が timeout するため、 100 や
+1000 などで間隔を緩和して使う。 BARUBY_GC_STRESS=100 + PURGE で
+benchmark 26/27 完走 (従来 timeout で 24/27)。
 
 ## 旧現状 (2026-05-10, eleventh pass)
 
