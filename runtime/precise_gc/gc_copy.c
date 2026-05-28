@@ -183,11 +183,26 @@ aro_gc_init(CTX *c)
     gc->ctx = c;
     gc->gc_threshold = GC_THRESHOLD_MIN;
     c->astro_gc = gc;             /* CTX → ASTroGC を bind */
-    bool stress = getenv("BARUBY_GC_STRESS") != NULL;
+    const char *stress_env = getenv("BARUBY_GC_STRESS");
+    bool stress = stress_env != NULL;
     bool purge  = getenv("BARUBY_GC_PURGE")  != NULL;
     ARO_GC_COMMON(c)->stress = stress;
     ARO_GC_COMMON(c)->purge  = purge;
-    if (stress) gc->gc_threshold = 0;        /* GC every alloc */
+    if (stress) {
+        gc->gc_threshold = 0;                /* GC every alloc by default */
+        /* BARUBY_GC_STRESS=N (N > 1) → GC every N allocs.  N=1 or any
+         * non-numeric value keeps the every-alloc behavior.  Lets large
+         * workloads finish under STRESS+PURGE without timing out while
+         * still surfacing stale-ptr bugs. */
+        uint64_t interval = 1;
+        if (stress_env && *stress_env) {
+            char *endp = NULL;
+            uint64_t n = strtoull(stress_env, &endp, 10);
+            if (endp && *endp == '\0' && n >= 1) interval = n;
+        }
+        ARO_GC_COMMON(c)->stress_interval = interval;
+        ARO_GC_COMMON(c)->stress_count = 0;
+    }
     /* PURGE: reserve a 64 GiB MAP_NORESERVE / PROT_NONE arena once, then
      * mprotect-enable a fresh plane each GC and PROT_NONE the retired
      * one.  Stale ptr deref deterministically SEGVs until 1024 planes
@@ -217,8 +232,14 @@ aro_gc_init(CTX *c)
         gc->active_end  = gc->space0 + gc->region_bytes;
     }
     if (stress || purge) {
+        char stress_buf[64] = "";
+        if (stress) {
+            uint64_t iv = ARO_GC_COMMON(c)->stress_interval;
+            if (iv <= 1) snprintf(stress_buf, sizeof(stress_buf), " STRESS (GC every alloc)");
+            else snprintf(stress_buf, sizeof(stress_buf), " STRESS (GC every %llu allocs)", (unsigned long long)iv);
+        }
         fprintf(stderr, "[baruby_gc=copy]%s%s\n",
-                stress ? " STRESS (GC every alloc)" : "",
+                stress_buf,
                 purge  ? " PURGE (round-robin mprotect)" : "");
     }
 }
@@ -243,11 +264,24 @@ gc_bump_cold(CTX *c, size_t total)
 
 /* Bump in semispace.  Returns payload pointer (= AroObjectHeader at
  * offset 0).  Caller (sample) sets head.flags after return. */
+static inline bool
+stress_fire_now(CTX *c)
+{
+    if (!ARO_GC_COMMON(c)->stress) return false;
+    uint64_t iv = ARO_GC_COMMON(c)->stress_interval;
+    if (iv <= 1) return true;
+    if (++ARO_GC_COMMON(c)->stress_count >= iv) {
+        ARO_GC_COMMON(c)->stress_count = 0;
+        return true;
+    }
+    return false;
+}
+
 static inline void *
 gc_bump(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    if (__builtin_expect(ARO_GC_COMMON(c)->stress
+    if (__builtin_expect(stress_fire_now(c)
                          || gc->bytes_since_gc + gc->common.external_bytes + payload_size > gc->gc_threshold
                          || (gc->active_top + aligned) > gc->active_end, 0)) {
         gc_bump_cold(c, aligned);
@@ -267,7 +301,7 @@ static void *
 large_alloc(CTX *c, size_t payload_size, size_t aligned)
 {
     ASTroGC *gc = ARO_GC_INSTANCE(c);
-    if (__builtin_expect(ARO_GC_COMMON(c)->stress
+    if (__builtin_expect(stress_fire_now(c)
                          || gc->bytes_since_gc + gc->common.external_bytes + payload_size > gc->gc_threshold, 0)) {
         gc_collect_internal(c);
     }
