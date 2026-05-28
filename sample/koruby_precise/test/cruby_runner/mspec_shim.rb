@@ -18,13 +18,21 @@ $ms_current = nil
 
 class MSpecError < StandardError; end
 
+# Registry of shared examples; `describe :foo, shared: true do ... end`
+# stores the block here; `it_behaves_like :foo, method, *args` re-invokes
+# the block with @method (and additional positional args) set.
+$ms_shared = {}
+
 # describe blocks: just run the body in a fresh context.  Save any
 # before/after hooks so subsequent `it` runs can fire them.
 def describe(name, *opts, &blk)
-  # Shared spec: `describe :name, shared: true do ... end` — drop on
-  # the floor (it_behaves_like is a no-op anyway).
+  # Shared spec: `describe :name, shared: true do ... end` — store the
+  # block for later use by it_behaves_like.
   shared = opts.any? { |o| o.is_a?(Hash) && o[:shared] }
-  return if shared
+  if shared
+    $ms_shared[name] = blk
+    return
+  end
   # Push prev state onto a stack instead of using begin/ensure locals:
   # the latter triggers a koruby bug where `name` / locals become nil
   # at ensure time when an inner `it`'s rescue body contains a block
@@ -881,13 +889,47 @@ def rm_r(*paths)
   paths.flatten.each { |p| File.delete(p) rescue nil }
 end
 
-# Shared spec inclusion — opening a Pandora's box by actually running
-# shared spec blocks adds a lot of failure modes (cross-file fixtures,
-# Thread/Fiber etc. references inside shared specs).  Keep no-op for
-# now; rubyspec's coverage of shared-spec-driven tests is small enough
-# to not be worth the regressions.
-$ms_shared_specs = {}
-def it_behaves_like(*_args, &_blk); end
+# Shared spec inclusion — `describe :foo, shared: true { ... }` stores
+# its block in $ms_shared; `it_behaves_like :foo, method, *args` re-runs
+# that block with @method (and additional positional args) configured
+# on the current describe context.  Many rubyspec describes delegate
+# entirely to shared blocks (e.g. hash/each_spec dispatches to
+# :hash_each shared block via it_behaves_like).
+$ms_shared_specs = {}  # legacy; kept for back-compat
+def it_behaves_like(shared_name, method = nil, *extra_args, &_blk)
+  blk = $ms_shared[shared_name]
+  return unless blk
+  # Set @method (and other shared instance vars) on the running test
+  # context.  rubyspec's shared blocks read @method / @object / etc.
+  # from the outer describe.  We approximate by populating a thread-
+  # global hash that `before :each` hooks below the it_behaves_like
+  # can pick up.
+  prev_method = $ms_shared_method
+  prev_args   = $ms_shared_extra_args
+  $ms_shared_method = method
+  $ms_shared_extra_args = extra_args
+  # Push a synthetic before :each hook that copies $ms_shared_method /
+  # extra_args into @method / @extra on the running it block.  Hooks
+  # run in the same scope as `it` blocks (instance_eval on a fresh
+  # Object), so @method etc. become accessible inside the it body.
+  push = lambda do
+    instance_eval { @method = $ms_shared_method }
+    if $ms_shared_extra_args && !$ms_shared_extra_args.empty?
+      instance_eval { @method_args = $ms_shared_extra_args }
+    end
+  end
+  ($ms_before_each ||= []) << push
+  begin
+    blk.call
+  rescue => e
+    $ms_error += 1
+    puts "  ERR shared #{shared_name}: #{e.class}: #{e.message}"
+  ensure
+    $ms_before_each.pop
+    $ms_shared_method = prev_method
+    $ms_shared_extra_args = prev_args
+  end
+end
 
 # Suppress warning helper — runs block with $VERBOSE = nil.
 def silence_warnings; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end
