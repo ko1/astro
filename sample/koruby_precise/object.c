@@ -3218,6 +3218,14 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * the zero-fill below still runs (= covers the "sp already high but
      * locals slot dirty" case). */
     if (c->fp + mc->locals_cnt > c->sp) {
+        /* Zero-fill any gap below c->fp + the freshly-exposed range
+         * past c->sp.  Args at [c->fp, c->fp+argc) were already
+         * written by caller; the local range [c->fp+argc, c->fp+locals_cnt)
+         * is zero-filled in the loop below.  Any gap before c->fp
+         * (if c->sp < c->fp) is leftover dead slots from prior frames
+         * at the same addresses — stale heap ptrs here get treated as
+         * live roots by visit_roots, causing GC BUG forward to-space. */
+        for (VALUE *p = c->sp; p < c->fp; p++) *p = Qnil;
         c->sp = c->fp + mc->locals_cnt;
     }
     for (VALUE *p = c->fp + argc; p < c->fp + mc->locals_cnt; p++) {

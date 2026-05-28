@@ -89,7 +89,17 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     VALUE *new_fp = prev_fp + arg_index;
     c->fp = new_fp;
-    if (new_fp + mc->locals_cnt > c->sp) c->sp = new_fp + mc->locals_cnt;
+    /* Grow c->sp + zero-fill the newly-exposed slots so stale heap
+     * pointers left over in those addresses (from prior frames popped
+     * at this location) don't get treated as live roots by the next
+     * visit_roots. */
+    {
+        VALUE *new_sp = new_fp + mc->locals_cnt;
+        if (new_sp > c->sp) {
+            for (VALUE *p = c->sp; p < new_sp; p++) *p = Qnil;
+            c->sp = new_sp;
+        }
+    }
 
     /* Heavy state save/restore only when method body actually uses it. */
     bool simple = mc->is_simple_frame;
@@ -240,7 +250,17 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     VALUE *new_fp = prev_fp + arg_index;
     c->fp = new_fp;
-    if (new_fp + mc->locals_cnt > c->sp) c->sp = new_fp + mc->locals_cnt;
+    /* Grow c->sp + zero-fill the newly-exposed slots so stale heap
+     * pointers left over in those addresses (from prior frames popped
+     * at this location) don't get treated as live roots by the next
+     * visit_roots. */
+    {
+        VALUE *new_sp = new_fp + mc->locals_cnt;
+        if (new_sp > c->sp) {
+            for (VALUE *p = c->sp; p < new_sp; p++) *p = Qnil;
+            c->sp = new_sp;
+        }
+    }
 
     bool simple = mc->is_simple_frame;
     struct korb_proc *prev_block = NULL;
