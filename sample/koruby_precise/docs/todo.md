@@ -82,7 +82,7 @@
 ### STRESS mode 結果
 
 NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走らせた
-結果。 段階的に修正を入れて 12/24 file 完全 pass まで持ち込んだ。
+結果。 段階的に修正を入れて **14/24 file 完全 pass** まで持ち込んだ。
 
 | test                      | STRESS |
 |---------------------------|--------|
@@ -101,9 +101,9 @@ NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走ら
 | test_exception            | SEGV   |
 | test_fiber                | SEGV   |
 | test_float_round          | 27     |
-| test_flonum               | SEGV   |
+| test_flonum               | 80     |
 | test_hash                 | 5/52   |
-| test_integer              | 2/102  |
+| test_integer              | 105    |
 | test_misc                 | 1/26   |
 | test_object_alloc         | 19     |
 | test_range                | 27     |
@@ -117,23 +117,29 @@ NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走ら
   ため libc proc の field は forward されない。 running_block /
   current_block / 全 frame.block を walk して内部を再帰 visit。
 - **korb_class_of_class を type-based redirect に**
-  (object.h): T_ARRAY / T_STRING / T_HASH / T_RANGE / T_PROC の
-  basic.klass は GC 越しに stale 化するため、 type を見て
-  korb_vm->X_class (= visit_roots で auto-track) を直接返す。
+  (object.h): T_ARRAY / T_STRING / T_HASH / T_RANGE / T_PROC /
+  T_FLOAT / T_BIGNUM の basic.klass は GC 越しに stale 化するため、
+  type を見て korb_vm->X_class (= visit_roots で auto-track) を
+  直接返す。
 - **korb_inspect_inner T_ARRAY / T_HASH を ARO_ROOT_SCOPE 化**
   (object.c): result 文字列 / element 文字列が korb_str_concat
   越しに stale 化していた (= `[20, 30]` が `]]` になる現象)。
 
-残課題 (= さらなる libc-class staleness):
-- T_BIGNUM / T_FLOAT / user-class T_OBJECT の basic.klass は
-  redirect 対象外なので、 これらを receiver にする method dispatch
-  は STRESS で stale class deref する可能性あり
-- ary_max_by / ary_sort 等の builtin iterator が C-local heap ptr
-  を sort comparison の receiver に渡す箇所
-- inspect 系以外の builtin (e.g. str concat in non-pinned context)
+残課題:
+- T_OBJECT (user-class instance) の basic.klass redirect は実装不能
+  (どの user class かを type だけからは分からない)。 全 libc obj を
+  registry 登録するパターンが必要。
+- builtin iterator (ary_max_by / hash_each / sort 系) が C-local の
+  heap pointer (= sort 比較の current max element 等) を korb_funcall
+  に渡す箇所で stale 化。
+- libc hash の entry chain (key / value VALUE) が visit されないため、
+  hash 内に格納された heap obj (string key 等) が forward されない。
+- inspect 系以外の builtin (e.g. str concat in non-pinned context) が
+  C-local 越しに stale 化。
 
-完全な解決には全 libc-allocated heap obj を一つの registry に登録し
-visit_roots で walk するか、 全 container を arena 化する必要あり。
+完全な解決には libc-allocated heap obj 用の registry を導入し、 
+visit_roots で walk して内部 field (basic.klass、 hash entries、
+proc env 等) を update する必要あり。 別 session 規模。
 
 ### STRESS+PURGE は別途 (残課題)
 
