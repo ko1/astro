@@ -1616,7 +1616,22 @@ class Hash
       }
       h
     else
-      self
+      # CRuby: subclass instances return a fresh Hash; identical-class
+      # returns self.  When converting, preserve default / default_proc /
+      # compare_by_identity flag.
+      if instance_of?(Hash)
+        self
+      else
+        h = {}
+        h.compare_by_identity if compare_by_identity?
+        each_pair { |k, v| h[k] = v }
+        if default_proc
+          h.default_proc = default_proc
+        elsif !default.nil?
+          h.default = default
+        end
+        h
+      end
     end
   end
 
