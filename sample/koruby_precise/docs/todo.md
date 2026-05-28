@@ -6,7 +6,51 @@
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
-本セッションで PASS=252 (+14) / CRASH=7 (-4) まで改善。
+直近 sweep: `PASS=258 / FAIL=153 / CRASH=7`。 第 2 セッション分の追加:
+
+- Array#slice / #slice! を全面書き直し (Range / (idx, len) / Range の to_int
+  coerce / element-wise return)。 27 → 95 pass。
+- Array#bsearch に find-any (Numeric ブロック) mode と Enumerator 経路。
+  10 → 20 pass。
+- Array#equal_value (==) に identity check + element-wise user dispatch
+  + non-Array rhs の to_ary 経由 == 委譲。 5 → 8 pass。
+- mspec_shim MSpecMock#respond_to? を should_receive(:respond_to?) と
+  singleton_methods に追従。
+- Array#[]= の (start, len) self-alias 安全化 + 不正引数 + to_ary coerce
+  + Bignum length → RangeError。 element_set 54 → 320 pass。
+- Array#* で to_str → to_int の coerce 順序 / nil → TypeError / 多引数で
+  ArgumentError。 multiply 18 → 24 pass。
+- String#[] (slice) を UTF-8 codepoint index で書き直し。 chr 9 → 11、
+  element_reference 10/10 pass。
+- String#delete_prefix / #delete_suffix を codepoint 境界尊重。 prefix
+  21 → 22、 suffix 21 → 22 pass。
+- String#[]= で UTF-8 codepoint index と to_str coerce、 raise TypeError。
+- Array#fill に Range form + grow + Bignum RangeError + argc 範囲 check。
+  62 → 130 pass。
+- Array#to_h に argc check + to_ary coerce + sized error。 7 → 14 pass。
+- Array#values_at の Range で nil-fill + RangeError。 11 → 14 pass。
+- Array#sort! / Array#sort_by! の frozen check & break-aware。
+- Array#zip に to_ary/to_a coerce + block 経路。 7 → 10 pass。
+- Array#each / Array#rindex で iteration 中の size 変化を再評価。
+- Hash#to_h で subclass → fresh Hash + default/default_proc/CBI 引継ぎ。
+  17 → 20 pass。
+- Hash#[] で subclass の #default override を honor (canonical 以外で
+  funcall 経由)。 element_reference 28 → 29 pass。
+- Hash.[] (class method) で to_hash/to_ary coerce + argc 検証 + 要素検証。
+  20 → 30 pass。
+- Hash#transform_keys! の break で「処理済 transformed + 未処理 untouched」 
+  + Hash#transform_values で CBI 引継ぎ。
+- Symbol#casecmp / #casecmp? を追加 (String 経由)。 0 → 41 pass。
+- Integer#to_s で全 base 2..36 + Bignum 経路 (mpz_get_str)。 12 → 25。
+- Integer#div / #divmod で Bignum / Float / coerce protocol 対応。
+  div 13 → 60、 divmod 6 → 29 pass。
+- Float#round で negative-precision Integer 化、 NaN/Inf 例外、 kwarg drop。
+  62 → 83 pass。
+- Float#divmod に NaN / Infinity / ZeroDivisionError 検査。 9 → 14 pass。
+- Float#<=> に coerce protocol + Infinity vs finite Integer + obj.infinite?
+  経路。 26 → 39 pass。
+
+
 
 主な修正 (順):
 - `String#lines` に sep / `chomp:` 引数 (bootstrap.rb の override 削除 +
