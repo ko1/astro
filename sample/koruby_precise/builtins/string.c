@@ -1701,18 +1701,69 @@ static VALUE str_capitalize(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_str_new(c, c->sp, buf, s->len);
 }
 
-/* String#lines — split on \n, keep newlines. */
+/* String#lines(sep = "\n", chomp: false) — split on separator. */
 static VALUE str_lines(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_string *s = (struct korb_string *)self;
+    const char *sep = "\n";
+    long sep_len = 1;
+    bool chomp = false;
+    int posargc = argc;
+
+    if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
+        BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
+        (RBASIC(argv[argc - 1])->head.flags & FL_KWARGS)) {
+        struct korb_hash *kw = (struct korb_hash *)argv[argc - 1];
+        VALUE chomp_key = korb_id2sym(korb_intern("chomp"));
+        for (struct korb_hash_entry *e = kw->first; e; e = e->next) {
+            if (korb_eql(c, e->key, chomp_key)) {
+                chomp = RTEST(e->value);
+                break;
+            }
+        }
+        posargc--;
+    }
+    if (posargc > 0 && !SPECIAL_CONST_P(argv[0]) &&
+        BUILTIN_TYPE(argv[0]) == T_STRING) {
+        struct korb_string *septv = (struct korb_string *)argv[0];
+        sep = septv->ptr;
+        sep_len = septv->len;
+    }
+
     VALUE r = korb_ary_new(c, c->sp);
+    if (sep_len == 0) {
+        korb_ary_push(r, korb_str_new(c, c->sp, s->ptr, s->len));
+        return r;
+    }
+
     long start = 0;
-    for (long i = 0; i < s->len; i++) {
-        if (s->ptr[i] == '\n') {
-            korb_ary_push(r, korb_str_new(c, c->sp, s->ptr + start, i - start + 1));
-            start = i + 1;
+    for (long i = 0; i + sep_len <= s->len; ) {
+        if (memcmp(s->ptr + i, sep, sep_len) == 0) {
+            long end = i + sep_len;
+            long take_len;
+            if (chomp) {
+                take_len = i - start;
+                if (sep[sep_len - 1] == '\n' &&
+                    take_len > 0 && s->ptr[start + take_len - 1] == '\r') {
+                    take_len--;
+                }
+            } else {
+                take_len = end - start;
+            }
+            korb_ary_push(r, korb_str_new(c, c->sp, s->ptr + start, take_len));
+            start = end;
+            i = end;
+        } else {
+            i++;
         }
     }
-    if (start < s->len) korb_ary_push(r, korb_str_new(c, c->sp, s->ptr + start, s->len - start));
+    if (start < s->len) {
+        long take_len = s->len - start;
+        if (chomp && sep[sep_len - 1] == '\n' &&
+            take_len > 0 && s->ptr[start + take_len - 1] == '\r') {
+            take_len--;
+        }
+        korb_ary_push(r, korb_str_new(c, c->sp, s->ptr + start, take_len));
+    }
     return r;
 }
 

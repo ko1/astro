@@ -1872,20 +1872,6 @@ end
 
 # --- String extensions ---
 class String
-  def lines(sep = "\n")
-    out = []
-    cur = ""
-    each_char { |ch|
-      cur << ch
-      if ch == sep
-        out << cur
-        cur = ""
-      end
-    }
-    out << cur unless cur.empty?
-    out
-  end
-
   def intern
     to_sym
   end
