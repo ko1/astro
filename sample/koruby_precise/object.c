@@ -3217,13 +3217,15 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
                                   uint32_t argc, uint32_t arg_index,
                                   struct korb_proc *block, struct method_cache *mc)
 {
+    /* Don't C-local save outer self — outer.self lives in the frame
+     * chain (visit_roots phase d).  After popping our frame the outer
+     * self is automatically fresh.  Writing a stale C-local back to
+     * outer->self overwrites the fresh value with a dead pointer.
+     * The pushed new_frame.self = recv covers the body's `self`. */
     VALUE *prev_fp = c->current_frame->fp;
-    VALUE prev_self = c->current_frame->self;
     struct korb_proc *prev_block = current_block;
     struct korb_cref *prev_cref = c->current_frame->cref;
     current_block = block;
-
-    c->current_frame->fp = prev_fp + arg_index;
     if (UNLIKELY(c->current_frame->fp + mc->locals_cnt >= c->stack_end)) {
         c->current_frame->fp = prev_fp;
         korb_raise(c, NULL, "stack overflow");
@@ -3477,7 +3479,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (mc->kwh_save_slot >= 0) {
         c->current_frame->fp[mc->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
     }
-    c->current_frame->self = recv;
+    /* No outer-self mutation — new_frame.self below = recv */
 
     /* Frame: .prev, .method (for super), .self / .caller_node (for
      * backtrace), .block (for block_given?), and .fp / .locals_cnt
@@ -3516,7 +3518,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         korb_proc_snapshot_env_maybe(c->state_value, frame_lo, frame_hi);
     }
     c->current_frame->fp = prev_fp;
-    c->current_frame->self = prev_self;
+    /* outer->self auto-fresh via frame chain — no C-local restore */
     c->current_frame->cref = prev_cref;
     current_block = prev_block;
 
