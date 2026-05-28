@@ -2879,7 +2879,62 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
     }
     enum korb_type t = BUILTIN_TYPE(v);
     if (t == T_STRING) {
-        /* Escape control chars so inspect output is re-evalable. */
+        /* Escape control chars so inspect output is re-evalable.  Pin
+         * the accumulating result string + self (= v) across each
+         * korb_str_new / korb_str_new_cstr / korb_str_concat call,
+         * all of which fire GC under STRESS.  Without pinning, the
+         * C-local `r` and `s` go stale, producing mangled "" output
+         * even for plain strings (= `"hello".inspect → ""`). */
+        VALUE iret = Qnil;
+        CTX *c3 = korb_vm ? korb_vm->current_ctx : NULL;
+        if (c3) {
+            ARO_ROOT_SCOPE_START(c3, rs, 2) {
+                rs[0] = v;  /* pin self so s->ptr / s->len stay valid */
+                rs[1] = korb_str_new_cstr("\"");
+                struct korb_string *ss = (struct korb_string *)rs[0];
+                long start = 0;
+                for (long i = 0; i < ss->len; i++) {
+                    unsigned char ch = (unsigned char)ss->ptr[i];
+                    const char *esc = NULL;
+                    char buf[8];
+                    switch (ch) {
+                        case '\\': esc = "\\\\"; break;
+                        case '"':  esc = "\\\""; break;
+                        case '\n': esc = "\\n";  break;
+                        case '\t': esc = "\\t";  break;
+                        case '\r': esc = "\\r";  break;
+                        case '\a': esc = "\\a";  break;
+                        case '\b': esc = "\\b";  break;
+                        case '\f': esc = "\\f";  break;
+                        case '\v': esc = "\\v";  break;
+                        case '\x1b': esc = "\\e"; break;
+                        case '#':
+                            if (i + 1 < ss->len) {
+                                unsigned char nx = (unsigned char)ss->ptr[i + 1];
+                                if (nx == '{' || nx == '$' || nx == '@') esc = "\\#";
+                            }
+                            break;
+                        default:
+                            if (ch < 0x20 || ch == 0x7f) {
+                                snprintf(buf, sizeof(buf), "\\x%02X", ch);
+                                esc = buf;
+                            }
+                            break;
+                    }
+                    if (esc) {
+                        if (i > start) rs[1] = korb_str_concat(rs[1], korb_str_new(((struct korb_string *)rs[0])->ptr + start, i - start));
+                        rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(esc));
+                        start = i + 1;
+                        ss = (struct korb_string *)rs[0];  /* reload after potential GC */
+                    }
+                }
+                if (start < ss->len) rs[1] = korb_str_concat(rs[1], korb_str_new(((struct korb_string *)rs[0])->ptr + start, ((struct korb_string *)rs[0])->len - start));
+                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr("\""));
+                iret = rs[1];
+            } ARO_ROOT_SCOPE_END(c3, rs);
+            return iret;
+        }
+        /* Cold fallback when CTX is unavailable. */
         struct korb_string *s = (struct korb_string *)v;
         VALUE r = korb_str_new_cstr("\"");
         long start = 0;
@@ -2899,8 +2954,6 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
                 case '\v': esc = "\\v";  break;
                 case '\x1b': esc = "\\e"; break;
                 case '#':
-                    /* CRuby escapes `#` only when followed by an
-                     * interpolation-trigger character: `{`, `$`, `@`. */
                     if (i + 1 < s->len) {
                         unsigned char nx = (unsigned char)s->ptr[i + 1];
                         if (nx == '{' || nx == '$' || nx == '@') esc = "\\#";
