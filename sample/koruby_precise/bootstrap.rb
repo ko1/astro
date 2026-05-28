@@ -1634,8 +1634,8 @@ class Hash
     h = {}
     each_pair { |k, v| h[k] = v if blk.call(k, v) }
     h
-  end
-  alias filter select
+  end unless method_defined?(:select)
+  alias filter select unless method_defined?(:filter)
 
   def any?(&blk)
     return size > 0 unless blk
