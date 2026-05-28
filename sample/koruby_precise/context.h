@@ -245,19 +245,6 @@ typedef struct {
  * staged values on or below sp will then be in visit_roots scan range. */
 #define KORB_SYNC_SP(c, sp_)  ((c)->sp = (sp_))
 
-/* PROPAGATE_STATE — after a legacy call that may have set c->state,
- * convert non-NORMAL state into a RESULT and return it.  Used by new-ABI
- * cfuncs that still call legacy helpers (korb_eq / korb_funcall / etc.).
- * Eventually all helpers gain _r variants and this bridge goes away. */
-#define PROPAGATE_STATE(c) do {                                  \
-    if (UNLIKELY((c)->state != KORB_NORMAL)) {                   \
-        RESULT _r = { (c)->state_value, (uint8_t)(c)->state };   \
-        (c)->state = KORB_NORMAL;                                \
-        (c)->state_value = Qnil;                                 \
-        return _r;                                               \
-    }                                                            \
-} while (0)
-
 /* =====================================================================
  * Dispatcher / prologue / cfunc function-pointer typedefs.
  *
