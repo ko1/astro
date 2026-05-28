@@ -189,7 +189,6 @@ aro_gc_init(CTX *c)
     ARO_GC_COMMON(c)->stress = stress;
     ARO_GC_COMMON(c)->purge  = purge;
     if (stress) {
-        gc->gc_threshold = 0;                /* GC every alloc by default */
         /* BARUBY_GC_STRESS=N (N > 1) → GC every N allocs.  N=1 or any
          * non-numeric value keeps the every-alloc behavior.  Lets large
          * workloads finish under STRESS+PURGE without timing out while
@@ -202,6 +201,14 @@ aro_gc_init(CTX *c)
         }
         ARO_GC_COMMON(c)->stress_interval = interval;
         ARO_GC_COMMON(c)->stress_count = 0;
+        /* gc_threshold = 0 only when stress_interval == 1 (every alloc).
+         * For larger intervals, use the normal adaptive threshold so the
+         * heap doesn't fill up between forced GCs.  Without this, every
+         * alloc triggers GC via the threshold check even when stress_fire_now
+         * returns false — defeating the interval. */
+        if (interval <= 1) {
+            gc->gc_threshold = 0;
+        }
     }
     /* PURGE: reserve a 64 GiB MAP_NORESERVE / PROT_NONE arena once, then
      * mprotect-enable a fresh plane each GC and PROT_NONE the retired

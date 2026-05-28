@@ -3883,7 +3883,16 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     if (!p) return Qnil;
     /* args live at fp[arg_index..arg_index+argc-1]; pass that view. */
     VALUE *argv = &c->current_frame->fp[arg_index];
-    VALUE prev_self = c->current_frame->self;
+    /* Pin prev_self + prev_p_self in the GC root stack — both straddle
+     * proc_call (= many GCs under STRESS+PURGE) and plain C locals would
+     * go stale, restoring a pre-GC address back into frame.self / p->self.
+     * The p->self stale write is particularly nasty: the next libc
+     * registry walk forwards the stale ref to NULL (PROT_NONE plane),
+     * leaving p->self = NULL.  Subsequent proc invocations then SEGV. */
+    VALUE *ppm_roots = AROH_ROOT_STACK_TOP(c);
+    ppm_roots[0] = c->current_frame->self;  /* prev_self */
+    ppm_roots[1] = p->self;                  /* prev_p_self */
+    AROH_ROOT_STACK_SET_TOP(c, ppm_roots + 2);
     c->current_frame->self = recv;
     /* Temporarily rebind the proc's `self` to the dispatch receiver:
      * define_method'd procs run with self = the call receiver, not the
@@ -3894,14 +3903,14 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
      * inside the proc body acts as a method-local return (CRuby's
      * define_method-via-proc semantics: the proc behaves like a
      * lambda for return / break purposes). */
-    VALUE prev_p_self = p->self;
     bool prev_is_lambda = p->is_lambda;
     p->self = recv;
     p->is_lambda = true;
     VALUE r = proc_call(c, (VALUE)p, (int)argc, argv);
-    p->self = prev_p_self;
+    p->self = ppm_roots[1];
     p->is_lambda = prev_is_lambda;
-    c->current_frame->self = prev_self;
+    c->current_frame->self = ppm_roots[0];
+    AROH_ROOT_STACK_SET_TOP(c, ppm_roots);
     return r;
 }
 
