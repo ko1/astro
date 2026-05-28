@@ -1665,8 +1665,14 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 NODE_DEF
 node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, uint32_t arg_index)
 {
-    VALUE r = EA(c, recv);
+    /* Pin r across EA(idx) (= can fire GC under STRESS+PURGE; stale
+     * C local r would SEGV in the BUILTIN_TYPE check below). */
+    VALUE *aref_root = AROH_ROOT_STACK_TOP(c);
+    aref_root[0] = EA(c, recv);
+    AROH_ROOT_STACK_SET_TOP(c, aref_root + 1);
     VALUE i = EA(c, idx);
+    VALUE r = aref_root[0];
+    AROH_ROOT_STACK_SET_TOP(c, aref_root);
     if (LIKELY(!korb_g_basic_op_redefined)) {
         /* Integer#[bit] — hot in optcarrot's PPU LUT precompute and
          * pixel-extract paths (`byte[bit]`, `i[15-j]`).  Without this
@@ -1705,9 +1711,16 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
 NODE_DEF
 node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, NODE *val, uint32_t arg_index)
 {
-    VALUE r = EA(c, recv);
-    VALUE i = EA(c, idx);
+    /* Pin r + i across EA(val) (each EA can fire GC under STRESS+PURGE). */
+    VALUE *aset_root = AROH_ROOT_STACK_TOP(c);
+    aset_root[0] = EA(c, recv);
+    AROH_ROOT_STACK_SET_TOP(c, aset_root + 1);
+    aset_root[1] = EA(c, idx);
+    AROH_ROOT_STACK_SET_TOP(c, aset_root + 2);
     VALUE v = EA(c, val);
+    VALUE r = aset_root[0];
+    VALUE i = aset_root[1];
+    AROH_ROOT_STACK_SET_TOP(c, aset_root);
     if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
         if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
             CHECK_FROZEN_RET(c, r, Qnil);
@@ -2599,31 +2612,37 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 {
     /* def obj.foo — install on the value of `recv_expr`'s singleton
      * class.  For T_OBJECT we lazily allocate one; for T_CLASS /
-     * T_MODULE we use the metaclass via korb_singleton_class_of. */
+     * T_MODULE we use the metaclass via korb_singleton_class_of.
+     * Pin recv across korb_const_get / korb_intern / korb_raise /
+     * korb_singleton_class_of_value — all of which can fire GC. */
     extern struct korb_class *korb_singleton_class_of_value(VALUE v);
-    VALUE recv = EA(c, recv_expr);
-    if (!SPECIAL_CONST_P(recv) && korb_obj_frozen_p(recv)) {
-        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-        const char *kind = "object";
-        if (BUILTIN_TYPE(recv) == T_CLASS) kind = "Class";
-        else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
-        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
-        return Qnil;
-    }
-    struct korb_class *meta = korb_singleton_class_of_value(recv);
-    if (!meta) {
-        korb_raise(c, NULL, "cannot define singleton method on this value");
-        return Qnil;
-    }
-    korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
-    if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
-    ID *names = korb_body_local_names(body);
-    if (names) korb_class_set_method_local_names(meta, name, names);
-    {
-        int *phs = korb_body_param_holder_slots(body);
-        if (phs) korb_class_set_method_param_holder_slots(meta, name, phs);
-    }
-    return korb_id2sym(name);
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
+        rs[0] = EA(c, recv_expr);
+        if (!SPECIAL_CONST_P(rs[0]) && korb_obj_frozen_p(rs[0])) {
+            VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+            const char *kind = "object";
+            if (BUILTIN_TYPE(rs[0]) == T_CLASS) kind = "Class";
+            else if (BUILTIN_TYPE(rs[0]) == T_MODULE) kind = "Module";
+            korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
+            ret = Qnil;
+        } else {
+            struct korb_class *meta = korb_singleton_class_of_value(rs[0]);
+            if (!meta) {
+                korb_raise(c, NULL, "cannot define singleton method on this value");
+                ret = Qnil;
+            } else {
+                korb_class_add_method_ast_full_cref(meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
+                if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
+                ID *names = korb_body_local_names(body);
+                if (names) korb_class_set_method_local_names(meta, name, names);
+                int *phs = korb_body_param_holder_slots(body);
+                if (phs) korb_class_set_method_param_holder_slots(meta, name, phs);
+                ret = korb_id2sym(name);
+            }
+        }
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 /* `def obj.foo(a, *r, b, c)` — variant with post_params_cnt. */

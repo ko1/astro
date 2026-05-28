@@ -661,30 +661,47 @@ struct korb_class *korb_singleton_class_of_value(VALUE v) {
     if (v == Qfalse) return korb_vm->false_class;
     if (v == Qnil) return korb_vm->nil_class;
     if (SPECIAL_CONST_P(v)) return NULL;
-    if (BUILTIN_TYPE(v) == T_CLASS || BUILTIN_TYPE(v) == T_MODULE) {
-        struct korb_class *meta = korb_singleton_class_of((struct korb_class *)v);
-        if (meta && korb_obj_frozen_p(v) && !korb_obj_frozen_p((VALUE)meta)) {
-            ((struct RBasic *)meta)->head.flags |= FL_FROZEN;
+    /* Pin v across korb_singleton_class_of / korb_class_new / korb_intern
+     * — all allocate, firing GC under STRESS+PURGE.  Plain C-local v
+     * would go stale and the post-call BUILTIN_TYPE / frozen check
+     * SEGVs on the moved obj's now-PROT_NONE address.  Symptom:
+     * `def obj.foo; end` inside an rspec it-block under STRESS+PURGE
+     * SEGVs in korb_singleton_class_of_value at line 666. */
+    CTX *c = korb_vm->current_ctx;
+    struct korb_class *result = NULL;
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
+        rs[0] = v;
+        if (BUILTIN_TYPE(rs[0]) == T_CLASS || BUILTIN_TYPE(rs[0]) == T_MODULE) {
+            struct korb_class *meta = korb_singleton_class_of((struct korb_class *)rs[0]);
+            if (meta && korb_obj_frozen_p(rs[0]) && !korb_obj_frozen_p((VALUE)meta)) {
+                ((struct RBasic *)meta)->head.flags |= FL_FROZEN;
+            }
+            result = meta;
+        } else {
+            /* Generic heap object: rewire klass to a private subclass. */
+            struct korb_object *o = (struct korb_object *)rs[0];
+            struct korb_class *cur = (struct korb_class *)o->basic.klass;
+            if (cur && cur->name == korb_intern("(singleton)")) {
+                if (korb_obj_frozen_p(rs[0]) && !korb_obj_frozen_p((VALUE)cur)) {
+                    ((struct RBasic *)cur)->head.flags |= FL_FROZEN;
+                }
+                result = cur;
+            } else {
+                struct korb_class *meta = korb_class_new(korb_intern("(singleton)"),
+                                                         cur, cur ? cur->instance_type : T_OBJECT);
+                meta->basic.head.flags |= FL_SINGLETON;
+                if (korb_obj_frozen_p(rs[0])) {
+                    meta->basic.head.flags |= FL_FROZEN;
+                }
+                /* Reload o — moving GC could have relocated it
+                 * during korb_class_new / korb_intern above. */
+                o = (struct korb_object *)rs[0];
+                o->basic.klass = (VALUE)meta;
+                result = meta;
+            }
         }
-        return meta;
-    }
-    /* Generic heap object: rewire klass to a private subclass. */
-    struct korb_object *o = (struct korb_object *)v;
-    struct korb_class *cur = (struct korb_class *)o->basic.klass;
-    if (cur && cur->name == korb_intern("(singleton)")) {
-        if (korb_obj_frozen_p(v) && !korb_obj_frozen_p((VALUE)cur)) {
-            ((struct RBasic *)cur)->head.flags |= FL_FROZEN;
-        }
-        return cur;
-    }
-    struct korb_class *meta = korb_class_new(korb_intern("(singleton)"),
-                                             cur, cur ? cur->instance_type : T_OBJECT);
-    meta->basic.head.flags |= FL_SINGLETON;
-    if (korb_obj_frozen_p(v)) {
-        meta->basic.head.flags |= FL_FROZEN;
-    }
-    o->basic.klass = (VALUE)meta;
-    return meta;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return result;
 }
 
 void korb_module_include(struct korb_class *klass, struct korb_class *mod) {
