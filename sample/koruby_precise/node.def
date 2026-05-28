@@ -864,51 +864,59 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
 NODE_DEF @noinline
 node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body)
 {
-    struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
-    struct korb_class *klass;
-    VALUE existing = korb_const_get(host, name);
-    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
-        klass = (struct korb_class *)existing;
-    }
-    else if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
-        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-        return Qnil;
-    }
-    else if (!UNDEF_P(existing)) {
-        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-        return Qnil;
-    }
-    else {
-        klass = korb_class_new(name, korb_vm->object_class, T_OBJECT);
-        klass->name = 0;
-        korb_const_set(host, name, (VALUE)klass);
-        struct korb_class *super_meta = korb_class_of_class((VALUE)korb_vm->object_class);
-        if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
-            VALUE child_v = (VALUE)klass;
-            korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
-            if (c->state == KORB_RAISE) return Qnil;
-        }
-    }
-    /* prev_self lives in sp[] (= GC root-scanned) so the outer self
-     * pointer is updated by visit_roots if it moves under body's GC
-     * cycles.  A plain C local goes stale and `c->self = prev_self`
-     * would write a dead address — surfacing later as "GC BUG forward
-     * to-space" when the next cycle re-scans c->self. */
-    struct korb_class *prev_class = c->current_class;
-    struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
-    struct korb_cref *prev_cref = c->cref;
+    /* `host` / `klass` are gc-heap addresses (= korb_class_new allocates
+     * on the gc arena now).  Don't cache `host`: each use re-reads
+     * `c->cref->klass` (= covered by visit_roots phase (c)) so the
+     * current valid address is seen even after korb_class_new / GC.
+     * `klass` is held in rs[1] across korb_class_new + korb_const_set +
+     * korb_funcall, all of which can fire GC and move it. */
     VALUE r;
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
-        rs[0] = c->self;
-        c->current_class = klass;
-        c->self = (VALUE)klass;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = c->self;                                   /* prev_self */
+        /* Look up existing constant from host (= re-read each time). */
+        #define HOST_K (c->cref ? c->cref->klass : c->current_class)
+        VALUE existing = korb_const_get(HOST_K, name);
+        if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+            rs[1] = existing;
+        }
+        else if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
+            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            ARO_ROOT_SCOPE_CANCEL(c, rs);
+            return Qnil;
+        }
+        else if (!UNDEF_P(existing)) {
+            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            ARO_ROOT_SCOPE_CANCEL(c, rs);
+            return Qnil;
+        }
+        else {
+            struct korb_class *k = korb_class_new(name, korb_vm->object_class, T_OBJECT);
+            k->name = 0;
+            rs[1] = (VALUE)k;
+            korb_const_set(HOST_K, name, rs[1]);
+            struct korb_class *super_meta = korb_class_of_class((VALUE)korb_vm->object_class);
+            if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
+                VALUE child_v = rs[1];  /* fresh */
+                korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
+                if (c->state == KORB_RAISE) {
+                    ARO_ROOT_SCOPE_CANCEL(c, rs);
+                    return Qnil;
+                }
+            }
+        }
+        #undef HOST_K
+        struct korb_class *prev_class = c->current_class;
+        struct korb_cref new_cref = { .klass = (struct korb_class *)rs[1], .prev = c->cref };
+        struct korb_cref *prev_cref = c->cref;
+        c->current_class = (struct korb_class *)rs[1];
+        c->self = rs[1];
         c->cref = &new_cref;
         VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
         r = body ? EVAL_ARG(c, body) : Qnil;
         c->current_class = prev_class;
         c->self = rs[0];
         c->cref = prev_cref;
-        korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+        korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
     return r;
 }
@@ -916,36 +924,39 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
 NODE_DEF @noinline
 node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body)
 {
-    struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
-    struct korb_class *mod;
-    VALUE existing = korb_const_get(host, name);
-    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
-        mod = (struct korb_class *)existing;
-    }
-    else if (!UNDEF_P(existing)) {
-        /* Constant already exists but isn't a Module: TypeError. */
-        korb_raise_type_error(c, "%s is not a module",
-                              korb_id_name(name));
-        return Qnil;
-    }
-    else {
-        mod = korb_module_new(name);
-        mod->name = 0;
-        korb_const_set(host, name, (VALUE)mod);
-    }
-    struct korb_class *prev_class = c->current_class;
-    VALUE prev_self = c->self;
-    struct korb_cref new_cref = { .klass = mod, .prev = c->cref };
-    struct korb_cref *prev_cref = c->cref;
-    c->current_class = mod;
-    c->self = (VALUE)mod;
-    c->cref = &new_cref;
-    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
-    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
-    c->current_class = prev_class;
-    c->self = prev_self;
-    c->cref = prev_cref;
-    korb_proc_snapshot_env_if_in_frame((VALUE)mod, fp_lo, fp_hi + 1024);
+    VALUE r;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = c->self;  /* prev_self */
+        #define HOST_K (c->cref ? c->cref->klass : c->current_class)
+        VALUE existing = korb_const_get(HOST_K, name);
+        if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
+            rs[1] = existing;
+        }
+        else if (!UNDEF_P(existing)) {
+            korb_raise_type_error(c, "%s is not a module", korb_id_name(name));
+            ARO_ROOT_SCOPE_CANCEL(c, rs);
+            return Qnil;
+        }
+        else {
+            struct korb_class *m = korb_module_new(name);
+            m->name = 0;
+            rs[1] = (VALUE)m;
+            korb_const_set(HOST_K, name, rs[1]);
+        }
+        #undef HOST_K
+        struct korb_class *prev_class = c->current_class;
+        struct korb_cref new_cref = { .klass = (struct korb_class *)rs[1], .prev = c->cref };
+        struct korb_cref *prev_cref = c->cref;
+        c->current_class = (struct korb_class *)rs[1];
+        c->self = rs[1];
+        c->cref = &new_cref;
+        VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
+        r = body ? EVAL_ARG(c, body) : Qnil;
+        c->current_class = prev_class;
+        c->self = rs[0];
+        c->cref = prev_cref;
+        korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
+    } ARO_ROOT_SCOPE_END(c, rs);
     return r;
 }
 
