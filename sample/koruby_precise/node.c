@@ -104,6 +104,12 @@ void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
     if (n->head.parent) clear_hash(n->head.parent);
 }
 
+/* UNWRAP: koruby uses plain VALUE returns (no RESULT wrapper as in
+ * baruby).  The @child mechanism in DISPATCH wraps each child eval in
+ * `UNWRAP(...)`; for koruby we just check c->state and propagate any
+ * non-NORMAL by returning Qnil from the enclosing dispatcher. */
+#define UNWRAP(v) ({ VALUE _uv = (v); if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil; _uv; })
+
 /* include generated files */
 #include "node_eval.c"
 #include "node_dispatch.c"
