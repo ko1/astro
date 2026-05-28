@@ -468,6 +468,19 @@ migration 時に block env capture の semantics が壊れた可能性。
 benchmark/bm_times / bm_each / bm_inject / bm_nbody がこの問題で
 NORMAL から fail。 別 session の課題。
 
+**深掘り途中メモ:**
+
+AST は top-level と method body で identical (envsize=39、 block 構造 同じ
+`1 4 7 0`)。 proc_call の self_recursion path (= prev_fp == new_fp)
+にて fresh_env = c->sp に clone する。 method body 内では正しく x = 10
+が読まれるが、 top-level では block.fp[0] が nil を返す。
+
+method 内では method frame.fp が固定、 top-level では sentinel.fp が
+node_scope で advance される。 後者の c->sp が body 内では fp + envsize
+だが、 .each cfunc 経由で proc_call に入った時の c->sp が異なる可能性。
+fresh_env の位置と copy 内容の関係を実 trace する必要あり。 1 commit
+ずつの調査範囲を超える別 session 案件。
+
 ### 一括 migration 試行ログ (2026-05-28, session 末)
 
 `korb_ary_new_capa` / `korb_hash_new` / `korb_range_new` /
