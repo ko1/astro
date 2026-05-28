@@ -417,6 +417,35 @@ forward_payload(ASTroGC *gc, void *old_payload)
         }
     }
 
+    /* Sample-side "immortal" payload (= libc-allocated container that
+     * the sample mixes with arena objs).  Detect by checking the
+     * payload is outside ALL arena regions: from-space, to-space, and
+     * (PURGE) the 64 GiB super-arena.  Return as-is = treat as
+     * immortal, contents NOT scanned.  This is a fallback for samples
+     * mid-migration where some containers are still libc-allocated
+     * (= koruby_precise Phase 3 not yet complete).  Safe because:
+     * - The libc payload doesn't move, its references stay valid
+     * - HDR_FORWARDED isn't set on it, so it isn't mistakenly treated
+     *   as forwarded next visit
+     * - The libc payload's klass/flags bytes aren't corrupted by fwd
+     *   overlay (= the previous behavior that turned arrays into
+     *   garbage under STRESS).
+     *
+     * The trade-off: arena refs inside the libc payload aren't
+     * forwarded → may go stale.  Sample must avoid accessing those
+     * stale refs (= existing pre-precise behavior). */
+    {
+        char *p = (char *)old_payload;
+        bool in_from   = (p >= gc->from_base_cur && p < gc->from_base_cur + gc->region_bytes);
+        bool in_to     = (p >= gc->to_base       && p < gc->to_base       + gc->region_bytes);
+        bool in_purge  = (gc->purge_arena_base &&
+                          p >= gc->purge_arena_base && p < gc->purge_arena_end);
+        if (!in_from && !in_to && !in_purge) {
+            /* libc-allocated, immortal.  No scan, no header touch. */
+            return old_payload;
+        }
+    }
+
     /* Cheney copy: from-space → to-space.  After memcpy, mark old as
      * FORWARDED and store fwd ptr in overlay slot (= payload offset 8,
      * overwriting first sample field — from-space is discarded after

@@ -3241,6 +3241,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * outer->self overwrites the fresh value with a dead pointer.
      * The pushed new_frame.self = recv covers the body's `self`. */
     VALUE *prev_fp = c->current_frame->fp;
+    VALUE *prev_sp = c->sp;
     struct korb_proc *prev_block = current_block;
     struct korb_cref *prev_cref = c->current_frame->cref;
     current_block = block;
@@ -3557,6 +3558,13 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     /* outer->self auto-fresh via frame chain — no C-local restore */
     c->current_frame->cref = prev_cref;
     current_block = prev_block;
+    /* Restore sp + zero-fill the popped range so a sibling/later push
+     * doesn't re-expose this frame's stale heap ptrs (= same invariant
+     * as prologue_ast_simple_inl line 377).  Without this, sp grows
+     * unboundedly across calls through general, and visit_roots scans
+     * stale slots → "BAD SLOT" abort under STRESS. */
+    for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
+    c->sp = prev_sp;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         bool consume_return = (c->state == KORB_RETURN &&
@@ -4710,6 +4718,13 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     }
 
     c->current_frame->fp = prev_fp;
+    /* Zero-fill popped range so a later sp-grow doesn't re-expose
+     * stale heap ptrs left by this eval scope (= bootstrap or required
+     * file).  Without this, the first STRESS GC after a sp-grow past
+     * prev_sp scans stale arena ptrs from the eval body and aborts in
+     * forward_payload "GC BUG forward to-space" (= the obj at the
+     * stale addr was in a prior cycle's to-space, not current). */
+    for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
     c->current_frame->current_class = prev_class;
     c->current_frame->cref = prev_cref;
