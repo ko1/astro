@@ -3244,6 +3244,16 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     struct korb_proc *prev_block = current_block;
     struct korb_cref *prev_cref = c->current_frame->cref;
     current_block = block;
+    /* Shift fp to the args base.  Caller staged argv at outer_fp[arg_index..
+     * arg_index+argc); body expects to read params from fp[0..argc) and
+     * locals from fp[argc..locals_cnt).  Same convention as
+     * prologue_ast_simple_inl / prologue_ast_full_inl_K.  Without this
+     * shift, the body reads its first param from outer_fp[0] (= caller's
+     * first lvar) instead of the staged arg — pre-existing bug that
+     * showed up in test_alias_redef as "expected/actual got the wrong
+     * value from the caller's locals" (assert_equal's `e` parameter was
+     * c.greet's `c` lvar, not the literal 42 caller passed). */
+    c->current_frame->fp += arg_index;
     if (UNLIKELY(c->current_frame->fp + mc->locals_cnt >= c->stack_end)) {
         c->current_frame->fp = prev_fp;
         korb_raise(c, NULL, "stack overflow");
