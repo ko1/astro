@@ -724,7 +724,7 @@ static VALUE binding_source_location(CTX *c, VALUE self, int argc, VALUE *argv) 
     VALUE arr = korb_ary_new();
     const char *file = b->source_file ? b->source_file : "(eval)";
     int line = b->source_line ? b->source_line : 0;
-    korb_ary_push(arr, korb_str_new_cstr(file));
+    korb_ary_push(arr, korb_str_new_cstr(c, c->sp, file));
     korb_ary_push(arr, INT2FIX(line));
     return arr;
 }

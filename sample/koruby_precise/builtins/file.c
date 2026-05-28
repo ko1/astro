@@ -17,7 +17,7 @@ static VALUE file_read(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (got < 0) got = 0;
     buf[got] = 0;
     fclose(fp);
-    return korb_str_new(buf, got);
+    return korb_str_new(c, c->sp, buf, got);
 }
 
 /* Simple FILE* wrapper.  We keep the raw FILE* on a fresh T_OBJECT
@@ -62,7 +62,7 @@ static VALUE io_read(CTX *c, VALUE self, int argc, VALUE *argv) {
         long got = (long)fread(buf, 1, n, fp);
         if (got <= 0) return Qnil;
         buf[got] = 0;
-        return korb_str_new(buf, got);
+        return korb_str_new(c, c->sp, buf, got);
     }
     long cap = 4096, len = 0;
     char *buf = korb_xmalloc_atomic(cap);
@@ -77,7 +77,7 @@ static VALUE io_read(CTX *c, VALUE self, int argc, VALUE *argv) {
             buf = nb;
         }
     }
-    return korb_str_new(buf, len);
+    return korb_str_new(c, c->sp, buf, len);
 }
 
 static VALUE io_gets(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -91,7 +91,7 @@ static VALUE io_gets(CTX *c, VALUE self, int argc, VALUE *argv) {
     size_t cap = 0;
     ssize_t n = getline(&line, &cap, fp);
     if (n <= 0) { free(line); korb_last_line_set(c, Qnil); return Qnil; }
-    VALUE r = korb_str_new(line, n);
+    VALUE r = korb_str_new(c, c->sp, line, n);
     free(line);
     korb_last_line_set(c, r);
     return r;
@@ -106,7 +106,7 @@ static VALUE io_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
     size_t cap = 0;
     ssize_t n;
     while ((n = getline(&line, &cap, fp)) > 0) {
-        VALUE l = korb_str_new(line, n);
+        VALUE l = korb_str_new(c, c->sp, line, n);
         korb_last_line_set(c, l);
         if (has_block) {
             korb_yield(c, 1, &l);
@@ -437,12 +437,12 @@ static VALUE file_join(CTX *c, VALUE self, int argc, VALUE *argv) {
      * each fire GC under STRESS. */
     VALUE ret = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 3) {
-        rs[0] = korb_str_new("", 0);  /* r */
+        rs[0] = korb_str_new(c, c->sp, "", 0);  /* r */
         for (int i = 0; i < argc; i++) {
             rs[1] = argv[i];
             if (BUILTIN_TYPE(rs[1]) != T_STRING) rs[1] = korb_to_s(rs[1]);
             if (i > 0) {
-                rs[2] = korb_str_new_cstr("/");
+                rs[2] = korb_str_new_cstr(c, c->sp, "/");
                 korb_str_concat(rs[0], rs[2]);
             }
             korb_str_concat(rs[0], rs[1]);
@@ -553,30 +553,30 @@ static VALUE file_realpath(CTX *c, VALUE self, int argc, VALUE *argv) {
                    strerror(errno), resolved_in);
         return Qnil;
     }
-    return korb_str_new_cstr(buf);
+    return korb_str_new_cstr(c, c->sp, buf);
 }
 
 static VALUE file_dirname(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(".", 1);
-    return korb_str_new_cstr(korb_dirname(korb_str_cstr(argv[0])));
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, ".", 1);
+    return korb_str_new_cstr(c, c->sp, korb_dirname(korb_str_cstr(argv[0])));
 }
 
 static VALUE file_basename(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new("", 0);
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, "", 0);
     const char *s = korb_str_cstr(argv[0]);
     const char *slash = strrchr(s, '/');
-    return korb_str_new_cstr(slash ? slash + 1 : s);
+    return korb_str_new_cstr(c, c->sp, slash ? slash + 1 : s);
 }
 
 static VALUE file_extname(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new("", 0);
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, "", 0);
     const char *s = korb_str_cstr(argv[0]);
     const char *dot = strrchr(s, '.');
-    if (!dot || dot == s) return korb_str_new("", 0);
+    if (!dot || dot == s) return korb_str_new(c, c->sp, "", 0);
     /* Don't include if dot is in dirname only */
     const char *slash = strrchr(s, '/');
-    if (slash && dot < slash) return korb_str_new("", 0);
-    return korb_str_new_cstr(dot);
+    if (slash && dot < slash) return korb_str_new(c, c->sp, "", 0);
+    return korb_str_new_cstr(c, c->sp, dot);
 }
 
 static VALUE file_binread(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -585,12 +585,12 @@ static VALUE file_binread(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE file_expand_path(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new("", 0);
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, "", 0);
     /* simplistic: if absolute, return as-is; else prepend dir */
     const char *s = korb_str_cstr(argv[0]);
     if (s[0] == '/') return argv[0];
     if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
-        return korb_str_new_cstr(korb_join_path(korb_str_cstr(argv[1]), s));
+        return korb_str_new_cstr(c, c->sp, korb_join_path(korb_str_cstr(argv[1]), s));
     }
     return argv[0];
 }
@@ -626,8 +626,8 @@ static VALUE dir_rmdir(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE dir_pwd(CTX *c, VALUE self, int argc, VALUE *argv) {
     char buf[4096];
-    if (!getcwd(buf, sizeof(buf))) return korb_str_new_cstr(".");
-    return korb_str_new_cstr(buf);
+    if (!getcwd(buf, sizeof(buf))) return korb_str_new_cstr(c, c->sp, ".");
+    return korb_str_new_cstr(c, c->sp, buf);
 }
 
 static VALUE dir_entries(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -641,7 +641,7 @@ static VALUE dir_entries(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE out = korb_ary_new();
     struct dirent *de;
     while ((de = readdir(d))) {
-        korb_ary_push(out, korb_str_new_cstr(de->d_name));
+        korb_ary_push(out, korb_str_new_cstr(c, c->sp, de->d_name));
     }
     closedir(d);
     return out;
@@ -695,7 +695,7 @@ static bool korb_glob_simple_match(const char *pat, const char *name) {
     return !*pat && !*name;
 }
 
-static void korb_glob_walk(const char *dir, const char *pat, VALUE out, bool recursive) {
+static void korb_glob_walk(CTX *c, const char *dir, const char *pat, VALUE out, bool recursive) {
     DIR *d = opendir(dir);
     if (!d) return;
     struct dirent *de;
@@ -704,12 +704,12 @@ static void korb_glob_walk(const char *dir, const char *pat, VALUE out, bool rec
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
         if (korb_glob_simple_match(pat, de->d_name)) {
-            korb_ary_push(out, korb_str_new_cstr(path));
+            korb_ary_push(out, korb_str_new_cstr(c, c->sp, path));
         }
         if (recursive) {
             struct stat st;
             if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-                korb_glob_walk(path, pat, out, true);
+                korb_glob_walk(c, path, pat, out, true);
             }
         }
     }
@@ -722,19 +722,19 @@ static VALUE dir_glob(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE out = korb_ary_new();
     /* Detect double-star + slash + rest recursive form. */
     if (strncmp(pat, "**/", 3) == 0) {
-        korb_glob_walk(".", pat + 3, out, true);
+        korb_glob_walk(c, ".", pat + 3, out, true);
         return out;
     }
     /* Otherwise look in `.` if no /; else split last component. */
     const char *slash = strrchr(pat, '/');
     if (!slash) {
-        korb_glob_walk(".", pat, out, false);
+        korb_glob_walk(c, ".", pat, out, false);
     } else {
         char dir[4096];
         long dl = slash - pat;
         if (dl >= (long)sizeof(dir)) dl = sizeof(dir) - 1;
         memcpy(dir, pat, dl); dir[dl] = 0;
-        korb_glob_walk(dir, slash + 1, out, false);
+        korb_glob_walk(c, dir, slash + 1, out, false);
     }
     return out;
 }
@@ -842,13 +842,13 @@ static VALUE kernel_system(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Kernel#`cmd` (backtick) — run command, return stdout as a String. */
 static VALUE kernel_xstring(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING)
-        return korb_str_new_cstr("");
+        return korb_str_new_cstr(c, c->sp, "");
     int pipefd[2];
-    if (pipe(pipefd) < 0) return korb_str_new_cstr("");
+    if (pipe(pipefd) < 0) return korb_str_new_cstr(c, c->sp, "");
     pid_t pid = fork();
     if (pid < 0) {
         close(pipefd[0]); close(pipefd[1]);
-        return korb_str_new_cstr("");
+        return korb_str_new_cstr(c, c->sp, "");
     }
     if (pid == 0) {
         dup2(pipefd[1], 1);
@@ -859,10 +859,10 @@ static VALUE kernel_xstring(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     close(pipefd[1]);
     char buf[4096];
-    VALUE r = korb_str_new_cstr("");
+    VALUE r = korb_str_new_cstr(c, c->sp, "");
     ssize_t n;
     while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-        korb_str_concat(r, korb_str_new(buf, n));
+        korb_str_concat(r, korb_str_new(c, c->sp, buf, n));
     }
     close(pipefd[0]);
     int wstatus = 0;
@@ -1037,14 +1037,14 @@ static VALUE signal_list(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE h = korb_hash_new();
     /* CRuby includes "EXIT" with value 0 — pseudo-signal used by at_exit
      * dispatch.  Always present even when the OS doesn't define it. */
-    korb_hash_aset(h, korb_str_new_cstr("EXIT"), INT2FIX(0));
-    korb_hash_aset(h, korb_str_new_cstr("INT"), INT2FIX(SIGINT));
-    korb_hash_aset(h, korb_str_new_cstr("TERM"), INT2FIX(SIGTERM));
-    korb_hash_aset(h, korb_str_new_cstr("USR1"), INT2FIX(SIGUSR1));
-    korb_hash_aset(h, korb_str_new_cstr("USR2"), INT2FIX(SIGUSR2));
-    korb_hash_aset(h, korb_str_new_cstr("HUP"), INT2FIX(SIGHUP));
-    korb_hash_aset(h, korb_str_new_cstr("QUIT"), INT2FIX(SIGQUIT));
-    korb_hash_aset(h, korb_str_new_cstr("KILL"), INT2FIX(SIGKILL));
+    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "EXIT"), INT2FIX(0));
+    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "INT"), INT2FIX(SIGINT));
+    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "TERM"), INT2FIX(SIGTERM));
+    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "USR1"), INT2FIX(SIGUSR1));
+    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "USR2"), INT2FIX(SIGUSR2));
+    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "HUP"), INT2FIX(SIGHUP));
+    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "QUIT"), INT2FIX(SIGQUIT));
+    korb_hash_aset(h, korb_str_new_cstr(c, c->sp, "KILL"), INT2FIX(SIGKILL));
     return h;
 }
 

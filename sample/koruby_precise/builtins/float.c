@@ -129,8 +129,8 @@ static VALUE flt_negative_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE flt_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
     double d = korb_num2dbl(self);
     /* Ruby uses fixed names for special values, not C's "inf" / "nan". */
-    if (isnan(d)) return korb_str_new_cstr("NaN");
-    if (isinf(d)) return korb_str_new_cstr(d < 0 ? "-Infinity" : "Infinity");
+    if (isnan(d)) return korb_str_new_cstr(c, c->sp, "NaN");
+    if (isinf(d)) return korb_str_new_cstr(c, c->sp, d < 0 ? "-Infinity" : "Infinity");
     char b[64];
     korb_float_to_shortest(d, b, sizeof(b));
     /* Ruby's Float#to_s appends ".0" for whole-number Floats so the
@@ -143,7 +143,7 @@ static VALUE flt_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
         size_t l = strlen(b);
         if (l + 2 < sizeof(b)) { b[l] = '.'; b[l+1] = '0'; b[l+2] = 0; }
     }
-    return korb_str_new_cstr(b);
+    return korb_str_new_cstr(c, c->sp, b);
 }
 
 

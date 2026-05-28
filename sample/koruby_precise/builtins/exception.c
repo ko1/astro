@@ -22,9 +22,9 @@ static VALUE exc_to_s_internal(CTX *c, VALUE self) {
              * name, not "(singleton)". */
             while (k && (k->basic.head.flags & FL_SINGLETON)) k = k->super;
             const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
-            return korb_str_new_cstr(kn);
+            return korb_str_new_cstr(c, c->sp, kn);
         }
-        return korb_str_new_cstr("");
+        return korb_str_new_cstr(c, c->sp, "");
     }
     /* CRuby calls #to_s on @message if it isn't a String. */
     if (SPECIAL_CONST_P(msg) || BUILTIN_TYPE(msg) != T_STRING) {
@@ -36,7 +36,7 @@ static VALUE exc_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
     return exc_to_s_internal(c, self);
 }
 static VALUE exc_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self)) return korb_str_new_cstr("#<Exception>");
+    if (SPECIAL_CONST_P(self)) return korb_str_new_cstr(c, c->sp, "#<Exception>");
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
     while (k && (k->basic.head.flags & FL_SINGLETON)) k = k->super;
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
@@ -49,10 +49,10 @@ static VALUE exc_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (c->state == KORB_RAISE) return Qnil;
     const char *ms = (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING)
                        ? korb_str_cstr(s) : "";
-    if (ms[0] == '\0') return korb_str_new_cstr(kn);
+    if (ms[0] == '\0') return korb_str_new_cstr(c, c->sp, kn);
     char *buf = korb_xmalloc_atomic(strlen(kn) + strlen(ms) + 8);
     sprintf(buf, "#<%s: %s>", kn, ms);
-    return korb_str_new_cstr(buf);
+    return korb_str_new_cstr(c, c->sp, buf);
 }
 static VALUE exc_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE bt = korb_ivar_get(self, korb_intern("@__backtrace__"));
@@ -157,22 +157,22 @@ static VALUE exc_cause(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE exc_full_message(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE msg = exc_message(c, self, 0, NULL);
     if (SPECIAL_CONST_P(msg) || BUILTIN_TYPE(msg) != T_STRING) {
-        msg = korb_str_new_cstr("");
+        msg = korb_str_new_cstr(c, c->sp, "");
     }
-    VALUE r = korb_str_new_cstr("");
+    VALUE r = korb_str_new_cstr(c, c->sp, "");
     korb_str_concat(r, msg);
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_OBJECT) {
         struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
         if (k && k->name) {
             const char *kn = korb_id_name(k->name);
             if (kn && kn[0] != 0) {
-                korb_str_concat(r, korb_str_new_cstr(" ("));
-                korb_str_concat(r, korb_str_new_cstr(kn));
-                korb_str_concat(r, korb_str_new_cstr(")"));
+                korb_str_concat(r, korb_str_new_cstr(c, c->sp, " ("));
+                korb_str_concat(r, korb_str_new_cstr(c, c->sp, kn));
+                korb_str_concat(r, korb_str_new_cstr(c, c->sp, ")"));
             }
         }
     }
-    korb_str_concat(r, korb_str_new_cstr("\n"));
+    korb_str_concat(r, korb_str_new_cstr(c, c->sp, "\n"));
     return r;
 }
 /* Exception#detailed_message — returns "message (Class)" by default,
@@ -184,9 +184,9 @@ static VALUE exc_detailed_message(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
     if (strcmp(kn, "RuntimeError") == 0) return msg;
     VALUE r = korb_str_dup(msg);
-    korb_str_concat(r, korb_str_new_cstr(" ("));
-    korb_str_concat(r, korb_str_new_cstr(kn));
-    korb_str_concat(r, korb_str_new_cstr(")"));
+    korb_str_concat(r, korb_str_new_cstr(c, c->sp, " ("));
+    korb_str_concat(r, korb_str_new_cstr(c, c->sp, kn));
+    korb_str_concat(r, korb_str_new_cstr(c, c->sp, ")"));
     return r;
 }
 

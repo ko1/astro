@@ -1543,13 +1543,14 @@ void korb_init_builtins(void) {
     korb_const_set(korb_vm->object_class, korb_intern("ARGV"), korb_ary_new());
     /* ENV: populate from real environment (read-only snapshot). */
     {
+        CTX *c = korb_vm->current_ctx;
         extern char **environ;
         VALUE env = korb_hash_new();
         for (char **p = environ; *p; p++) {
             const char *eq = strchr(*p, '=');
             if (!eq) continue;
-            VALUE key = korb_str_new(*p, (size_t)(eq - *p));
-            VALUE val = korb_str_new_cstr(eq + 1);
+            VALUE key = korb_str_new(c, c->sp, *p, (size_t)(eq - *p));
+            VALUE val = korb_str_new_cstr(c, c->sp, eq + 1);
             korb_hash_aset(env, key, val);
         }
         korb_const_set(korb_vm->object_class, korb_intern("ENV"), env);

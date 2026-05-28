@@ -557,8 +557,8 @@ korb_ivar_set_ic(VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
 }
 
 /* string */
-VALUE korb_str_new(const char *p, long len);
-VALUE korb_str_new_cstr(const char *cstr);
+VALUE korb_str_new(CTX *c, VALUE *sp, const char *p, long len);
+VALUE korb_str_new_cstr(CTX *c, VALUE *sp, const char *cstr);
 VALUE korb_str_dup(VALUE s);
 VALUE korb_str_concat(VALUE a, VALUE b);
 VALUE korb_str_inspect(VALUE s);

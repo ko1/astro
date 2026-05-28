@@ -359,8 +359,8 @@ static VALUE ary_join(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE ret = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 4) {
         rs[0] = self;
-        rs[1] = argc > 0 ? argv[0] : korb_str_new_cstr("");
-        rs[2] = korb_str_new("", 0);  /* result */
+        rs[1] = argc > 0 ? argv[0] : korb_str_new_cstr(c, c->sp, "");
+        rs[2] = korb_str_new(c, c->sp, "", 0);  /* result */
         rs[3] = Qnil;                  /* per-iter element */
         long len = korb_ary_len(rs[0]);
         for (long i = 0; i < len; i++) {
@@ -854,7 +854,7 @@ static void korb_pack_int_bytes(char *buf, long pos, long val, int nbytes, int b
 }
 
 static VALUE ary_pack(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new("", 0);
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, "", 0);
     const char *fmt = korb_str_cstr(argv[0]);
     long fmt_len = (long)strlen(fmt);
     struct korb_array *a = (struct korb_array *)self;
@@ -918,7 +918,7 @@ static VALUE ary_pack(CTX *c, VALUE self, int argc, VALUE *argv) {
             break;
           }
           case 'a': case 'A': case 'Z': {
-            VALUE sv = (src_idx < a->len) ? a->ptr[src_idx++] : korb_str_new("", 0);
+            VALUE sv = (src_idx < a->len) ? a->ptr[src_idx++] : korb_str_new(c, c->sp, "", 0);
             const char *s = NULL; long slen = 0;
             if (!SPECIAL_CONST_P(sv) && BUILTIN_TYPE(sv) == T_STRING) {
                 s = ((struct korb_string *)sv)->ptr;
@@ -935,7 +935,7 @@ static VALUE ary_pack(CTX *c, VALUE self, int argc, VALUE *argv) {
             break;
           }
           case 'H': case 'h': {
-            VALUE sv = (src_idx < a->len) ? a->ptr[src_idx++] : korb_str_new("", 0);
+            VALUE sv = (src_idx < a->len) ? a->ptr[src_idx++] : korb_str_new(c, c->sp, "", 0);
             const char *s = NULL; long slen = 0;
             if (!SPECIAL_CONST_P(sv) && BUILTIN_TYPE(sv) == T_STRING) {
                 s = ((struct korb_string *)sv)->ptr;
@@ -984,7 +984,7 @@ static VALUE ary_pack(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     #undef PACK_RESERVE
-    return korb_str_new(buf, plen);
+    return korb_str_new(c, c->sp, buf, plen);
 }
 
 static VALUE str_unpack(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1072,7 +1072,7 @@ static VALUE str_unpack(CTX *c, VALUE self, int argc, VALUE *argv) {
                 /* still consume the null if present */
                 if (z < n) n = z + 1;
             }
-            korb_ary_push(r, korb_str_new((const char *)(src + src_idx), real));
+            korb_ary_push(r, korb_str_new(c, c->sp, (const char *)(src + src_idx), real));
             src_idx += n;
             break;
           }
@@ -1095,7 +1095,7 @@ static VALUE str_unpack(CTX *c, VALUE self, int argc, VALUE *argv) {
                 }
             }
             out[o] = 0;
-            korb_ary_push(r, korb_str_new(out, o));
+            korb_ary_push(r, korb_str_new(c, c->sp, out, o));
             src_idx += bytes_needed;
             break;
           }
@@ -1571,7 +1571,7 @@ static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
          * each korb_to_s / korb_str_concat GC fire. */
         VALUE ret = Qnil;
         ARO_ROOT_SCOPE_START(c, rs, 3) {
-            rs[0] = korb_str_new("", 0);  /* result */
+            rs[0] = korb_str_new(c, c->sp, "", 0);  /* result */
             rs[1] = argv[0];              /* separator (pin) */
             for (long i = 0; i < a->len; i++) {
                 if (i > 0) korb_str_concat(rs[0], rs[1]);

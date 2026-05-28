@@ -28,8 +28,7 @@ static VALUE sym_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
 static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
     /* sp[-1] = self.  CRuby 3.4+: Symbol#to_s returns a "chilled" String — frozen
      * by virtue of being interned but transparently mutable on demand. */
-    c->sp = sp;
-    VALUE s = korb_str_new_cstr(korb_id_name(korb_sym2id(sp[-1])));
+    VALUE s = korb_str_new_cstr(c, sp, korb_id_name(korb_sym2id(sp[-1])));
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_CHILLED;
     return RESULT_OK(s);
 }
@@ -46,7 +45,7 @@ static VALUE sym_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 /* Symbol#succ — name's #succ wrapped back into a Symbol. */
 static VALUE sym_succ(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE s = korb_str_new_cstr(korb_id_name(korb_sym2id(self)));
+    VALUE s = korb_str_new_cstr(c, c->sp, korb_id_name(korb_sym2id(self)));
     VALUE next_str = korb_funcall(c, s, korb_intern("succ"), 0, NULL);
     if (BUILTIN_TYPE(next_str) != T_STRING) return self;
     struct korb_string *ns = (struct korb_string *)next_str;

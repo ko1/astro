@@ -1552,10 +1552,13 @@ void korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cac
 }
 
 /* ---- string ---- */
-VALUE korb_str_new(const char *p, long len) {
-    /* No protect needed for p — it's a const char * source (libc / static)
-     * not a GC heap obj. */
-    CTX *c = korb_vm->current_ctx;
+/* korb_str_new / korb_str_new_cstr take (CTX *c, VALUE *sp, ...) to make
+ * the alloc-time c->sp sync explicit at the helper level (runtime.md §12).
+ * Caller's sp is the staging top; helper syncs c->sp = sp before alloc so
+ * GC walks the caller's live values.  Legacy callers without a local sp
+ * pass `c->sp` (= equivalent to today's "caller has already synced"). */
+VALUE korb_str_new(CTX *c, VALUE *sp, const char *p, long len) {
+    c->sp = sp;
     VALUE v = aro_gc_alloc(c, sizeof(struct korb_string));
     struct korb_string *s = (struct korb_string *)v;
     s->basic.head.flags = T_STRING;
@@ -1570,10 +1573,13 @@ VALUE korb_str_new(const char *p, long len) {
     return v;
 }
 
-VALUE korb_str_new_cstr(const char *cstr) { return korb_str_new(cstr, (long)strlen(cstr)); }
+VALUE korb_str_new_cstr(CTX *c, VALUE *sp, const char *cstr) {
+    return korb_str_new(c, sp, cstr, (long)strlen(cstr));
+}
 
 VALUE korb_str_dup(VALUE s) {
-    return korb_str_new(((struct korb_string *)s)->ptr, ((struct korb_string *)s)->len);
+    CTX *c = korb_vm->current_ctx;
+    return korb_str_new(c, c->sp, ((struct korb_string *)s)->ptr, ((struct korb_string *)s)->len);
 }
 
 VALUE korb_str_concat(VALUE a, VALUE b) {
@@ -2547,7 +2553,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
         }
         snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
-        korb_ary_push(arr, korb_str_new_cstr(buf));
+        korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
     }
     /* Cap the walk depth and validate each frame before dereferencing.
      * The frame chain can dangle: f->prev sometimes points to a stack
@@ -2568,7 +2574,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
             file = f->method->u.ast.body->head.source_file;
         }
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", file, line, name);
-        korb_ary_push(arr, korb_str_new_cstr(buf));
+        korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
         /* Next iteration's line = where IN the parent's body this call
          * was made.  That's recorded on f->caller_node. */
         line = f->caller_node ? f->caller_node->head.line : 0;
@@ -2595,7 +2601,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
                 }
                 snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
                 snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
-                korb_ary_push(arr, korb_str_new_cstr(buf));
+                korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
             }
         }
         f = f->prev;
@@ -2604,7 +2610,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
      * outermost-method's caller_node pointed at (i.e. the toplevel
      * call site), or raise_line when raising directly from main. */
     snprintf(buf, sizeof(buf), "%s:%d:in '<main>'", default_file, line);
-    korb_ary_push(arr, korb_str_new_cstr(buf));
+    korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
     return arr;
 }
 
@@ -2641,7 +2647,7 @@ VALUE korb_exc_new(struct korb_class *klass, const char *msg) {
     ARO_ROOT_SCOPE_START(c, r, 1) {
         r[0] = korb_object_new(klass);
         if (msg) {
-            VALUE m = korb_str_new_cstr(msg);
+            VALUE m = korb_str_new_cstr(c, c->sp, msg);
             korb_ivar_set(r[0], korb_intern("@message"), m);
         }
         result = r[0];
@@ -2767,11 +2773,12 @@ void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
 
 /* ---- inspect / to_s ---- */
 static void str_appendf(VALUE s, const char *fmt, ...) {
+    CTX *c = korb_vm->current_ctx;
     char buf[256];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    VALUE part = korb_str_new_cstr(buf);
+    VALUE part = korb_str_new_cstr(c, c->sp, buf);
     korb_str_concat(s, part);
 }
 
@@ -2827,18 +2834,19 @@ void korb_double_to_str(double d, char *out, size_t out_cap) {
 }
 
 static VALUE korb_inspect_inner(VALUE v, int depth) {
-    if (depth > 32) return korb_str_new_cstr("...");
+    CTX *c = korb_vm->current_ctx;
+    if (depth > 32) return korb_str_new_cstr(c, c->sp, "...");
     if (FIXNUM_P(v)) {
         char b[32]; snprintf(b, 32, "%ld", FIX2LONG(v));
-        return korb_str_new_cstr(b);
+        return korb_str_new_cstr(c, c->sp, b);
     }
     if (FLONUM_P(v)) {
         char b[64]; korb_double_to_str(korb_flonum_to_double(v), b, sizeof(b));
-        return korb_str_new_cstr(b);
+        return korb_str_new_cstr(c, c->sp, b);
     }
-    if (NIL_P(v)) return korb_str_new_cstr("nil");
-    if (TRUE_P(v)) return korb_str_new_cstr("true");
-    if (FALSE_P(v)) return korb_str_new_cstr("false");
+    if (NIL_P(v)) return korb_str_new_cstr(c, c->sp, "nil");
+    if (TRUE_P(v)) return korb_str_new_cstr(c, c->sp, "true");
+    if (FALSE_P(v)) return korb_str_new_cstr(c, c->sp, "false");
     if (SYMBOL_P(v)) {
         const char *name = korb_id_name(korb_sym2id(v));
         size_t nlen = strlen(name);
@@ -2922,15 +2930,15 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
             CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
             if (c2) {
                 ARO_ROOT_SCOPE_START(c2, rs, 2) {
-                    rs[0] = korb_str_new_cstr(":");
-                    rs[1] = korb_str_new(name, (long)nlen);
+                    rs[0] = korb_str_new_cstr(c, c->sp, ":");
+                    rs[1] = korb_str_new(c, c->sp, name, (long)nlen);
                     korb_str_concat(rs[0], rs[1]);
                     ret = rs[0];
                 } ARO_ROOT_SCOPE_END(c2, rs);
                 return ret;
             }
-            VALUE s = korb_str_new_cstr(":");
-            korb_str_concat(s, korb_str_new(name, (long)nlen));
+            VALUE s = korb_str_new_cstr(c, c->sp, ":");
+            korb_str_concat(s, korb_str_new(c, c->sp, name, (long)nlen));
             return s;
         }
         /* Quoted form: :"...".  Re-use the String inspect path for
@@ -2943,18 +2951,18 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
             CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
             if (c2) {
                 ARO_ROOT_SCOPE_START(c2, rs, 2) {
-                    rs[0] = korb_str_new(name, (long)nlen);
+                    rs[0] = korb_str_new(c, c->sp, name, (long)nlen);
                     rs[0] = korb_inspect_inner(rs[0], depth + 1);
-                    rs[1] = korb_str_new_cstr(":");
+                    rs[1] = korb_str_new_cstr(c, c->sp, ":");
                     korb_str_concat(rs[1], rs[0]);
                     ret = rs[1];
                 } ARO_ROOT_SCOPE_END(c2, rs);
                 return ret;
             }
         }
-        VALUE name_str = korb_str_new(name, (long)nlen);
+        VALUE name_str = korb_str_new(c, c->sp, name, (long)nlen);
         VALUE inspected = korb_inspect_inner(name_str, depth + 1);
-        VALUE r = korb_str_new_cstr(":");
+        VALUE r = korb_str_new_cstr(c, c->sp, ":");
         korb_str_concat(r, inspected);
         return r;
     }
@@ -2971,7 +2979,7 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         if (c3) {
             ARO_ROOT_SCOPE_START(c3, rs, 2) {
                 rs[0] = v;  /* pin self so s->ptr / s->len stay valid */
-                rs[1] = korb_str_new_cstr("\"");
+                rs[1] = korb_str_new_cstr(c, c->sp, "\"");
                 struct korb_string *ss = (struct korb_string *)rs[0];
                 long start = 0;
                 for (long i = 0; i < ss->len; i++) {
@@ -3003,21 +3011,21 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
                             break;
                     }
                     if (esc) {
-                        if (i > start) rs[1] = korb_str_concat(rs[1], korb_str_new(((struct korb_string *)rs[0])->ptr + start, i - start));
-                        rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(esc));
+                        if (i > start) rs[1] = korb_str_concat(rs[1], korb_str_new(c, c->sp, ((struct korb_string *)rs[0])->ptr + start, i - start));
+                        rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, esc));
                         start = i + 1;
                         ss = (struct korb_string *)rs[0];  /* reload after potential GC */
                     }
                 }
-                if (start < ss->len) rs[1] = korb_str_concat(rs[1], korb_str_new(((struct korb_string *)rs[0])->ptr + start, ((struct korb_string *)rs[0])->len - start));
-                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr("\""));
+                if (start < ss->len) rs[1] = korb_str_concat(rs[1], korb_str_new(c, c->sp, ((struct korb_string *)rs[0])->ptr + start, ((struct korb_string *)rs[0])->len - start));
+                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, "\""));
                 iret = rs[1];
             } ARO_ROOT_SCOPE_END(c3, rs);
             return iret;
         }
         /* Cold fallback when CTX is unavailable. */
         struct korb_string *s = (struct korb_string *)v;
-        VALUE r = korb_str_new_cstr("\"");
+        VALUE r = korb_str_new_cstr(c, c->sp, "\"");
         long start = 0;
         for (long i = 0; i < s->len; i++) {
             unsigned char ch = (unsigned char)s->ptr[i];
@@ -3048,13 +3056,13 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
                     break;
             }
             if (esc) {
-                if (i > start) korb_str_concat(r, korb_str_new(s->ptr + start, i - start));
-                korb_str_concat(r, korb_str_new_cstr(esc));
+                if (i > start) korb_str_concat(r, korb_str_new(c, c->sp, s->ptr + start, i - start));
+                korb_str_concat(r, korb_str_new_cstr(c, c->sp, esc));
                 start = i + 1;
             }
         }
-        if (start < s->len) korb_str_concat(r, korb_str_new(s->ptr + start, s->len - start));
-        korb_str_concat(r, korb_str_new_cstr("\""));
+        if (start < s->len) korb_str_concat(r, korb_str_new(c, c->sp, s->ptr + start, s->len - start));
+        korb_str_concat(r, korb_str_new_cstr(c, c->sp, "\""));
         return r;
     }
     if (t == T_ARRAY) {
@@ -3069,13 +3077,13 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
             struct korb_array *a = (struct korb_array *)v;
             ARO_ROOT_SCOPE_START(c2, rs, 3) {
                 rs[0] = v;   /* pin self so a->len / a->ptr stay valid */
-                rs[1] = korb_str_new_cstr("[");
+                rs[1] = korb_str_new_cstr(c, c->sp, "[");
                 for (long i = 0; i < ((struct korb_array *)rs[0])->len; i++) {
-                    if (i) rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(", "));
+                    if (i) rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, ", "));
                     rs[2] = korb_inspect_inner(((struct korb_array *)rs[0])->ptr[i], depth+1);
                     rs[1] = korb_str_concat(rs[1], rs[2]);
                 }
-                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr("]"));
+                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, "]"));
                 ret = rs[1];
             } ARO_ROOT_SCOPE_END(c2, rs);
             return ret;
@@ -3083,12 +3091,12 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         /* Cold fallback when CTX is unavailable (shouldn't happen under
          * normal program execution). */
         struct korb_array *a = (struct korb_array *)v;
-        VALUE r = korb_str_new_cstr("[");
+        VALUE r = korb_str_new_cstr(c, c->sp, "[");
         for (long i = 0; i < a->len; i++) {
-            if (i) korb_str_concat(r, korb_str_new_cstr(", "));
+            if (i) korb_str_concat(r, korb_str_new_cstr(c, c->sp, ", "));
             korb_str_concat(r, korb_inspect_inner(a->ptr[i], depth+1));
         }
-        korb_str_concat(r, korb_str_new_cstr("]"));
+        korb_str_concat(r, korb_str_new_cstr(c, c->sp, "]"));
         return r;
     }
     if (t == T_HASH) {
@@ -3097,59 +3105,59 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         if (c2) {
             ARO_ROOT_SCOPE_START(c2, rs, 4) {
                 rs[0] = v;
-                rs[1] = korb_str_new_cstr("{");
+                rs[1] = korb_str_new_cstr(c, c->sp, "{");
                 bool first = true;
                 for (struct korb_hash_entry *e = ((struct korb_hash *)rs[0])->first; e; e = e->next) {
-                    if (!first) rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(", "));
+                    if (!first) rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, ", "));
                     first = false;
                     rs[2] = korb_inspect_inner(e->key, depth+1);
                     rs[1] = korb_str_concat(rs[1], rs[2]);
-                    rs[1] = korb_str_concat(rs[1], korb_str_new_cstr("=>"));
+                    rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, "=>"));
                     rs[3] = korb_inspect_inner(e->value, depth+1);
                     rs[1] = korb_str_concat(rs[1], rs[3]);
                 }
-                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr("}"));
+                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, "}"));
                 ret = rs[1];
             } ARO_ROOT_SCOPE_END(c2, rs);
             return ret;
         }
         struct korb_hash *h = (struct korb_hash *)v;
-        VALUE r = korb_str_new_cstr("{");
+        VALUE r = korb_str_new_cstr(c, c->sp, "{");
         bool first = true;
         for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-            if (!first) korb_str_concat(r, korb_str_new_cstr(", "));
+            if (!first) korb_str_concat(r, korb_str_new_cstr(c, c->sp, ", "));
             first = false;
             korb_str_concat(r, korb_inspect_inner(e->key, depth+1));
-            korb_str_concat(r, korb_str_new_cstr("=>"));
+            korb_str_concat(r, korb_str_new_cstr(c, c->sp, "=>"));
             korb_str_concat(r, korb_inspect_inner(e->value, depth+1));
         }
-        korb_str_concat(r, korb_str_new_cstr("}"));
+        korb_str_concat(r, korb_str_new_cstr(c, c->sp, "}"));
         return r;
     }
     if (t == T_RANGE) {
         struct korb_range *r = (struct korb_range *)v;
         bool both_nil = NIL_P(r->begin) && NIL_P(r->end);
         VALUE s = (NIL_P(r->begin) && !both_nil)
-                      ? korb_str_new_cstr("")
+                      ? korb_str_new_cstr(c, c->sp, "")
                       : korb_inspect_inner(r->begin, depth+1);
-        korb_str_concat(s, korb_str_new_cstr(r->exclude_end ? "..." : ".."));
+        korb_str_concat(s, korb_str_new_cstr(c, c->sp, r->exclude_end ? "..." : ".."));
         if (!NIL_P(r->end) || both_nil)
             korb_str_concat(s, korb_inspect_inner(r->end, depth+1));
         return s;
     }
     if (t == T_FLOAT) {
         char b[64]; korb_double_to_str(((struct korb_float *)v)->value, b, sizeof(b));
-        return korb_str_new_cstr(b);
+        return korb_str_new_cstr(c, c->sp, b);
     }
     if (t == T_BIGNUM) {
         struct korb_bignum *bn = (struct korb_bignum *)v;
         char *s = mpz_get_str(NULL, 10, (mpz_ptr)bn->mpz);
-        VALUE r = korb_str_new_cstr(s);
+        VALUE r = korb_str_new_cstr(c, c->sp, s);
         free(s);
         return r;
     }
     if (t == T_CLASS || t == T_MODULE) {
-        return korb_str_new_cstr(korb_id_name(((struct korb_class *)v)->name));
+        return korb_str_new_cstr(c, c->sp, korb_id_name(((struct korb_class *)v)->name));
     }
     if (t == T_OBJECT) {
         struct korb_class *k = (struct korb_class *)((struct korb_object *)v)->basic.klass;
@@ -3175,33 +3183,33 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
                 VALUE ret = Qnil;
                 ARO_ROOT_SCOPE_START(c2, rs, 2) {
                     rs[0] = msg;
-                    rs[1] = korb_str_new_cstr("#<");
-                    korb_str_concat(rs[1], korb_str_new_cstr(cls_name));
-                    korb_str_concat(rs[1], korb_str_new_cstr(": "));
+                    rs[1] = korb_str_new_cstr(c, c->sp, "#<");
+                    korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, cls_name));
+                    korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, ": "));
                     korb_str_concat(rs[1], rs[0]);
-                    korb_str_concat(rs[1], korb_str_new_cstr(">"));
+                    korb_str_concat(rs[1], korb_str_new_cstr(c, c->sp, ">"));
                     ret = rs[1];
                 } ARO_ROOT_SCOPE_END(c2, rs);
                 return ret;
             }
             /* Fallback: no CTX (= early bootstrap), best-effort C-local. */
-            VALUE r = korb_str_new_cstr("#<");
-            korb_str_concat(r, korb_str_new_cstr(cls_name));
-            korb_str_concat(r, korb_str_new_cstr(": "));
+            VALUE r = korb_str_new_cstr(c, c->sp, "#<");
+            korb_str_concat(r, korb_str_new_cstr(c, c->sp, cls_name));
+            korb_str_concat(r, korb_str_new_cstr(c, c->sp, ": "));
             korb_str_concat(r, msg);
-            korb_str_concat(r, korb_str_new_cstr(">"));
+            korb_str_concat(r, korb_str_new_cstr(c, c->sp, ">"));
             return r;
         }
         char b[64];
         snprintf(b, 64, "#<%s:%p>", k && k->name ? korb_id_name(k->name) : "Object", (void *)v);
-        return korb_str_new_cstr(b);
+        return korb_str_new_cstr(c, c->sp, b);
     }
     if (t == T_DATA) {
-        return korb_str_new_cstr("#<data>");
+        return korb_str_new_cstr(c, c->sp, "#<data>");
     }
-    if (t == T_PROC) return korb_str_new_cstr("#<Proc>");
-    if (t == T_SYMBOL) return korb_str_new_cstr(":?");
-    return korb_str_new_cstr("#<?>");
+    if (t == T_PROC) return korb_str_new_cstr(c, c->sp, "#<Proc>");
+    if (t == T_SYMBOL) return korb_str_new_cstr(c, c->sp, ":?");
+    return korb_str_new_cstr(c, c->sp, "#<?>");
 }
 
 VALUE korb_inspect(VALUE v) { return korb_inspect_inner(v, 0); }
@@ -3248,13 +3256,14 @@ VALUE korb_to_s_dispatch(CTX *c, VALUE v) {
 }
 
 VALUE korb_to_s(VALUE v) {
+    CTX *c = korb_vm->current_ctx;
     if (BUILTIN_TYPE(v) == T_STRING) return v;
     if (FIXNUM_P(v)) {
         char b[32]; snprintf(b, 32, "%ld", FIX2LONG(v));
-        return korb_str_new_cstr(b);
+        return korb_str_new_cstr(c, c->sp, b);
     }
-    if (NIL_P(v)) return korb_str_new_cstr("");
-    if (SYMBOL_P(v)) return korb_str_new_cstr(korb_id_name(korb_sym2id(v)));
+    if (NIL_P(v)) return korb_str_new_cstr(c, c->sp, "");
+    if (SYMBOL_P(v)) return korb_str_new_cstr(c, c->sp, korb_id_name(korb_sym2id(v)));
     if (BUILTIN_TYPE(v) == T_OBJECT) {
         /* Exception-like: prefer @message ivar if it's a String. */
         VALUE msg = korb_ivar_get(v, korb_intern("@message"));
@@ -4613,9 +4622,9 @@ void korb_runtime_init(void) {
     /* Cache frozen singletons for true.to_s / false.to_s / nil.to_s.
      * Created here (after string_class exists so RBASIC->klass is set
      * correctly) and stashed on korb_vm so visit_roots walks them. */
-    korb_vm->frozen_true_str  = korb_str_new_cstr("true");
-    korb_vm->frozen_false_str = korb_str_new_cstr("false");
-    korb_vm->frozen_nil_str   = korb_str_new_cstr("");
+    korb_vm->frozen_true_str  = korb_str_new_cstr(c, c->sp, "true");
+    korb_vm->frozen_false_str = korb_str_new_cstr(c, c->sp, "false");
+    korb_vm->frozen_nil_str   = korb_str_new_cstr(c, c->sp, "");
     RBASIC(korb_vm->frozen_true_str)->head.flags  |= FL_FROZEN;
     RBASIC(korb_vm->frozen_false_str)->head.flags |= FL_FROZEN;
     RBASIC(korb_vm->frozen_nil_str)->head.flags   |= FL_FROZEN;
@@ -4766,7 +4775,7 @@ void korb_runtime_init(void) {
              * ivar_set so the 1st arg (enc[1]) is read after the inner
              * GC has already updated the slot. */
             {
-                VALUE name_str = korb_str_new_cstr("UTF-8");
+                VALUE name_str = korb_str_new_cstr(c, c->sp, "UTF-8");
                 korb_ivar_set(enc[1], korb_intern("@name"), name_str);
             }
             /* Each const_set is libc-only (no GC fire); enc[1] stays valid
@@ -4832,7 +4841,7 @@ void korb_runtime_init(void) {
      * placeholder that doesn't include "." (per spec). */
     {
         VALUE lp = korb_ary_new();
-        korb_ary_push(lp, korb_str_new_cstr("/usr/local/lib/ruby/site_ruby"));
+        korb_ary_push(lp, korb_str_new_cstr(c, c->sp, "/usr/local/lib/ruby/site_ruby"));
         korb_gvar_set(korb_intern("$:"), lp);
         korb_gvar_set(korb_intern("$LOAD_PATH"), lp);
         korb_gvar_set(korb_intern("$-I"), lp);
@@ -4853,10 +4862,10 @@ void korb_runtime_init(void) {
      * sequence here has no inter-call C local — every result is consumed
      * by korb_const_set as the 3rd argument with korb_vm->object_class
      * re-read fresh on each call (= no staleness window). */
-    korb_const_set(korb_vm->object_class, korb_intern("RUBY_VERSION"),       korb_str_new_cstr("3.4.0"));
-    korb_const_set(korb_vm->object_class, korb_intern("RUBY_RELEASE_DATE"),  korb_str_new_cstr("2024-01-01"));
-    korb_const_set(korb_vm->object_class, korb_intern("RUBY_PLATFORM"),      korb_str_new_cstr("koruby"));
-    korb_const_set(korb_vm->object_class, korb_intern("RUBY_ENGINE"),        korb_str_new_cstr("koruby"));
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_VERSION"),       korb_str_new_cstr(c, c->sp, "3.4.0"));
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_RELEASE_DATE"),  korb_str_new_cstr(c, c->sp, "2024-01-01"));
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_PLATFORM"),      korb_str_new_cstr(c, c->sp, "koruby"));
+    korb_const_set(korb_vm->object_class, korb_intern("RUBY_ENGINE"),        korb_str_new_cstr(c, c->sp, "koruby"));
     korb_const_set(korb_vm->object_class, korb_intern("RUBY_PATCHLEVEL"),    INT2FIX(0));
     korb_const_set(korb_vm->object_class, korb_intern("TOPLEVEL_BINDING"),   Qnil);
 }

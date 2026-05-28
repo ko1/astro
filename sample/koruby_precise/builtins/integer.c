@@ -316,7 +316,7 @@ static VALUE int_pred(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_chr(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!FIXNUM_P(self)) return Qnil;
     char ch = (char)(FIX2LONG(self) & 0xff);
-    return korb_str_new(&ch, 1);
+    return korb_str_new(c, c->sp, &ch, 1);
 }
 
 static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -328,7 +328,7 @@ static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
     char buf[80];
     if (base == 10) {
         snprintf(buf, sizeof(buf), "%ld", v);
-        return korb_str_new_cstr(buf);
+        return korb_str_new_cstr(c, c->sp, buf);
     }
     bool neg = v < 0;
     unsigned long uv = neg ? (unsigned long)(-v) : (unsigned long)v;
@@ -343,12 +343,12 @@ static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (neg) {
             char out[82]; out[0] = '-';
             memcpy(out+1, tmp, tl+1);
-            return korb_str_new_cstr(out);
+            return korb_str_new_cstr(c, c->sp, out);
         }
-        return korb_str_new_cstr(tmp);
+        return korb_str_new_cstr(c, c->sp, tmp);
     }
     else snprintf(buf, sizeof(buf), "%ld", v);
-    return korb_str_new_cstr(buf);
+    return korb_str_new_cstr(c, c->sp, buf);
 }
 
 static VALUE int_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {

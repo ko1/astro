@@ -814,7 +814,7 @@ static VALUE class_name(CTX *c, VALUE self, int argc, VALUE *argv) {
      * registered name string. */
     struct korb_class *k = (struct korb_class *)self;
     if (!k->name || k->name == korb_intern("(anon)")) return Qnil;
-    return korb_str_new_cstr(korb_id_name(k->name));
+    return korb_str_new_cstr(c, c->sp, korb_id_name(k->name));
 }
 
 /* (Array#hash folded into builtins/array.c) */

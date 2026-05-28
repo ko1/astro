@@ -40,10 +40,10 @@ main(int argc, char *argv[])
     {
         VALUE argv_array = korb_ary_new();
         for (int i = 1; i < argc; i++) {
-            korb_ary_push(argv_array, korb_str_new_cstr(argv[i]));
+            korb_ary_push(argv_array, korb_str_new_cstr(c, c->sp, argv[i]));
         }
         korb_const_set(korb_vm->object_class, korb_intern("ARGV"), argv_array);
-        VALUE pn = korb_str_new_cstr(argv[0]);
+        VALUE pn = korb_str_new_cstr(c, c->sp, argv[0]);
         korb_gvar_set(korb_intern("$0"), pn);
         korb_gvar_set(korb_intern("$PROGRAM_NAME"), pn);
     }

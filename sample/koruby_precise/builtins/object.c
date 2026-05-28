@@ -621,7 +621,7 @@ static VALUE method_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!km || km->type != KORB_METHOD_AST || !km->u.ast.body) return Qnil;
     struct Node *body = km->u.ast.body;
     VALUE r = korb_ary_new_capa(2);
-    korb_ary_push(r, body->head.source_file ? korb_str_new_cstr(body->head.source_file) : Qnil);
+    korb_ary_push(r, body->head.source_file ? korb_str_new_cstr(c, c->sp, body->head.source_file) : Qnil);
     korb_ary_push(r, INT2FIX(body->head.line));
     return r;
 }
@@ -632,7 +632,7 @@ VALUE proc_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_proc *p = (struct korb_proc *)self;
     if (!p->body) return Qnil;
     VALUE r = korb_ary_new_capa(2);
-    korb_ary_push(r, p->body->head.source_file ? korb_str_new_cstr(p->body->head.source_file) : Qnil);
+    korb_ary_push(r, p->body->head.source_file ? korb_str_new_cstr(c, c->sp, p->body->head.source_file) : Qnil);
     korb_ary_push(r, INT2FIX(p->body->head.line));
     return r;
 }
@@ -872,7 +872,7 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
         r = korb_ary_new_capa(a->len);
         for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
     } else if (t == T_STRING) {
-        r = korb_str_new(korb_str_cstr(self), korb_str_len(self));
+        r = korb_str_new(c, c->sp, korb_str_cstr(self), korb_str_len(self));
     } else if (t == T_HASH) {
         r = korb_hash_new();
         struct korb_hash *h = (struct korb_hash *)self;

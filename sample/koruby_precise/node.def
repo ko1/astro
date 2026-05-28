@@ -40,13 +40,13 @@ node_float_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, double 
 NODE_DEF
 node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str, uint32_t len)
 {
-    return korb_str_new(str, len);
+    return korb_str_new(c, c->sp, str, len);
 }
 
 NODE_DEF
 node_frozen_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str, uint32_t len)
 {
-    VALUE s = korb_str_new(str, len);
+    VALUE s = korb_str_new(c, c->sp, str, len);
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_FROZEN;
     return s;
 }
@@ -54,7 +54,7 @@ node_frozen_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, co
 NODE_DEF
 node_chilled_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str, uint32_t len)
 {
-    VALUE s = korb_str_new(str, len);
+    VALUE s = korb_str_new(c, c->sp, str, len);
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_CHILLED;
     return s;
 }
@@ -479,7 +479,7 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
                 ers[2] = korb_funcall(c, p, korb_intern("inspect"), 0, NULL);
                 if (c->state != KORB_NORMAL) {
                     c->state = KORB_NORMAL; c->state_value = Qnil;
-                    ers[2] = korb_str_new_cstr("<anonymous>");
+                    ers[2] = korb_str_new_cstr(c, c->sp, "<anonymous>");
                 }
             } else {
                 ers[2] = ers[1];
@@ -737,7 +737,7 @@ node_hash_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t
          * alone). */
         if (!SPECIAL_CONST_P(k) && BUILTIN_TYPE(k) == T_STRING &&
             !(RBASIC(k)->head.flags & FL_FROZEN)) {
-            VALUE k2 = korb_str_new(((struct korb_string *)k)->ptr,
+            VALUE k2 = korb_str_new(c, c->sp, ((struct korb_string *)k)->ptr,
                                     ((struct korb_string *)k)->len);
             RBASIC(k2)->head.flags |= FL_FROZEN;
             k = k2;
@@ -763,7 +763,7 @@ node_str_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32
      * realloc, no GC).  C-locals would go stale. */
     VALUE ret = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = korb_str_new("", 0);
+        rs[0] = korb_str_new(c, c->sp, "", 0);
         for (uint32_t i = 0; i < argc; i++) {
             rs[1] = c->current_frame->fp[arg_index + i];
             if (BUILTIN_TYPE(rs[1]) != T_STRING) {
@@ -1719,7 +1719,7 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
                     long pos = FIX2LONG(i);
                     if (pos < 0) pos += s->len;
                     if (pos < 0 || pos >= s->len) { ret = Qnil; goto aref_done; }
-                    ret = korb_str_new(s->ptr + pos, 1);
+                    ret = korb_str_new(c, c->sp, s->ptr + pos, 1);
                     goto aref_done;
                 }
             }

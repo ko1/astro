@@ -507,7 +507,7 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE kernel_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* main object: CRuby's main_object inspects/to_s as "main". */
-    if (self == korb_vm->main_obj) return korb_str_new_cstr("main");
+    if (self == korb_vm->main_obj) return korb_str_new_cstr(c, c->sp, "main");
     /* Default Kernel#inspect for objects that don't override it.
      * Avoid calling korb_inspect_dispatch here — that would loop
      * straight back to this cfunc.  korb_inspect skips user dispatch. */
@@ -515,7 +515,7 @@ static VALUE kernel_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (self == korb_vm->main_obj) return korb_str_new_cstr("main");
+    if (self == korb_vm->main_obj) return korb_str_new_cstr(c, c->sp, "main");
     return korb_to_s(self);
 }
 
@@ -776,12 +776,12 @@ static const char *caller_current_file(CTX *c) {
 
 static VALUE kernel_dir(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *cf = caller_current_file(c);
-    return korb_str_new_cstr(korb_dirname(cf ? cf : "."));
+    return korb_str_new_cstr(c, c->sp, korb_dirname(cf ? cf : "."));
 }
 
 static VALUE kernel_file(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char *cf = caller_current_file(c);
-    return korb_str_new_cstr(cf ? cf : "(eval)");
+    return korb_str_new_cstr(c, c->sp, cf ? cf : "(eval)");
 }
 
 static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1006,7 +1006,7 @@ static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_string(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_str_new("", 0);
+    if (argc < 1) return korb_str_new(c, c->sp, "", 0);
     return korb_to_s(argv[0]);
 }
 
@@ -1062,7 +1062,7 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
-        korb_ary_push(arr, korb_str_new_cstr(buf));
+        korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
     }
     while (f) {
         /* Inserted block-in-<enclosing> for THIS frame's caller block,
@@ -1075,7 +1075,7 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
             file = f->method->u.ast.body->head.source_file;
         }
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", file, next_line, name);
-        korb_ary_push(arr, korb_str_new_cstr(buf));
+        korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
         next_line = f->caller_node ? f->caller_node->head.line : 0;
         if (f->caller_running_block) {
             struct korb_proc *cb = (struct korb_proc *)f->caller_running_block;
@@ -1091,13 +1091,13 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
             snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
             snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
-            korb_ary_push(arr, korb_str_new_cstr(buf));
+            korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
         }
         f = f->prev;
     }
     /* Append a <main> entry so the chain always ends in main. */
     snprintf(buf, sizeof(buf), "%s:%d:in '<main>'", default_file, next_line);
-    korb_ary_push(arr, korb_str_new_cstr(buf));
+    korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
 
     /* Slice per CRuby: caller(start=1, length=nil) or caller(range). */
     long total = ((struct korb_array *)arr)->len;
@@ -1271,7 +1271,7 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
         /* Forward [string, file, line] to binding's eval implementation. */
         VALUE forward[3];
         forward[0] = argv[0];
-        forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr("(eval)");
+        forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr(c, c->sp, "(eval)");
         forward[2] = (argc >= 4) ? argv[3] : INT2FIX(1);
         return binding_eval_via(c, b, forward, 3);
     }
