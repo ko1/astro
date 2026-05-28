@@ -695,7 +695,7 @@ cfunc 側で:
 | 5 | node.def の call 系 node を sp staging に | 未着手 |
 | 6 | AST method prologue を sp 経由 args に | 未着手 |
 | 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 部分完了: korb_str_new / korb_str_new_cstr / korb_float_new / korb_float_new_heap / korb_ary_new / korb_ary_new_capa / korb_ary_new_from_values / korb_hash_new / korb_proc_new / korb_proc_new_with_cref。 残: korb_str_dup, korb_funcall, korb_eq 等 |
-| 8 | c->state 経路撤廃、 RESULT 化 | 段階移行中: korb_funcall_r / korb_yield_r ブリッジ済、 korb_raise / korb_raise_frozen_modification を RESULT 化済 (commit ce83986c / e4ae4ee4)。 残りは NODE_DEF 全体 RESULT 化 (試行で error 連鎖判明、 段階方式に移行) |
+| 8 | c->state 経路撤廃、 RESULT 化 | 段階移行中: korb_funcall_r / korb_yield_r ブリッジ済、 korb_raise / korb_raise_frozen_modification / korb_cvar_set / korb_raise_type_error / argument_error / range_error / index_error を RESULT 化済。 残りは NODE_DEF 全体 RESULT 化 (試行で error 連鎖判明、 段階方式に移行)、 korb_class_add_method_ast* 系、 多数の void void cfunc/helper の漸進変換 |
 | 9 | 動作確認 + 回帰 fix | 未着手 |
 
 Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
