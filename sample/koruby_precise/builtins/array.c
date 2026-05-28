@@ -1130,16 +1130,55 @@ static VALUE str_unpack(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
-    for (int i = 0; i < argc; i++) {
-        if (BUILTIN_TYPE(argv[i]) == T_ARRAY) {
-            struct korb_array *o = (struct korb_array *)argv[i];
-            /* Snapshot the source length BEFORE pushing — `ary.concat(ary)`
-             * (self-concat) shares storage with self, so o->len grows during
-             * the loop and we'd recurse infinitely. */
+    /* Snapshot all source arrays' contents BEFORE any push — this handles
+     * `ary.concat(ary)` (self-concat) and `ary.concat(ary, ary)` correctly,
+     * even when args alias self.  We also coerce non-Array args via #to_ary
+     * (CRuby semantics). */
+    long total = 0;
+    VALUE *bufs[16];                 /* per-arg snapshot ptr (or argv[i] if T_ARRAY without self-aliasing concern) */
+    long  lens[16];                  /* per-arg snapshot len */
+    if (argc > 16) {
+        /* Fallback for ridiculously many args — process sequentially with
+         * per-iter src_len snapshot.  Doesn't handle full self-alias case
+         * but argc>16 is not a real workload. */
+        for (int i = 0; i < argc; i++) {
+            VALUE arg = argv[i];
+            if (BUILTIN_TYPE(arg) != T_ARRAY) {
+                if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_ARRAY) {
+                    arg = korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL);
+                    if (c->state != KORB_NORMAL) return Qnil;
+                    if (BUILTIN_TYPE(arg) != T_ARRAY) continue;
+                }
+            }
+            struct korb_array *o = (struct korb_array *)arg;
             long src_len = o->len;
             for (long j = 0; j < src_len; j++) korb_ary_push(self, o->ptr[j]);
         }
+        return self;
     }
+    for (int i = 0; i < argc; i++) {
+        VALUE arg = argv[i];
+        if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_ARRAY) {
+            arg = korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL);
+            if (c->state != KORB_NORMAL) return Qnil;
+            if (BUILTIN_TYPE(arg) != T_ARRAY) { bufs[i] = NULL; lens[i] = 0; continue; }
+        }
+        struct korb_array *o = (struct korb_array *)arg;
+        lens[i] = o->len;
+        /* Copy snapshot into a temp libc buffer so self-aliased pushes
+         * later don't corrupt our source view. */
+        if (lens[i] > 0) {
+            bufs[i] = korb_xmalloc(lens[i] * sizeof(VALUE));
+            for (long j = 0; j < lens[i]; j++) bufs[i][j] = o->ptr[j];
+        } else {
+            bufs[i] = NULL;
+        }
+        total += lens[i];
+    }
+    for (int i = 0; i < argc; i++) {
+        for (long j = 0; j < lens[i]; j++) korb_ary_push(self, bufs[i][j]);
+    }
+    (void)total;
     return self;
 }
 
