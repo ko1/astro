@@ -889,19 +889,27 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
             if (c->state == KORB_RAISE) return Qnil;
         }
     }
+    /* prev_self lives in sp[] (= GC root-scanned) so the outer self
+     * pointer is updated by visit_roots if it moves under body's GC
+     * cycles.  A plain C local goes stale and `c->self = prev_self`
+     * would write a dead address — surfacing later as "GC BUG forward
+     * to-space" when the next cycle re-scans c->self. */
     struct korb_class *prev_class = c->current_class;
-    VALUE prev_self = c->self;
     struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
     struct korb_cref *prev_cref = c->cref;
-    c->current_class = klass;
-    c->self = (VALUE)klass;
-    c->cref = &new_cref;
-    VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
-    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
-    c->current_class = prev_class;
-    c->self = prev_self;
-    c->cref = prev_cref;
-    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+    VALUE r;
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
+        rs[0] = c->self;
+        c->current_class = klass;
+        c->self = (VALUE)klass;
+        c->cref = &new_cref;
+        VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
+        r = body ? EVAL_ARG(c, body) : Qnil;
+        c->current_class = prev_class;
+        c->self = rs[0];
+        c->cref = prev_cref;
+        korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+    } ARO_ROOT_SCOPE_END(c, rs);
     return r;
 }
 

@@ -390,6 +390,9 @@ aro_gc_realloc_in_place(CTX *c, void *old, size_t new_size)
  *   (3) Large obj (outside from-space arena), not yet marked → mark by
  *       setting fwd=self-payload, enqueue on large_gray for content scan,
  *       return same payload (non-moving). */
+void *g_scan_owner = NULL;
+int g_in_root_scan = 0;
+
 static void *
 forward_payload(ASTroGC *gc, void *old_payload)
 {
@@ -465,14 +468,29 @@ forward_edge(void *ctx, void **slot)
         AroObjectHeader *oldh = (AroObjectHeader *)v;
         if (!(oldh->gc_flags & HDR_FORWARDED)) {
             extern struct CTX_struct koruby_bootstrap_ctx;
+            extern void *g_scan_owner;
             CTX *cc = &koruby_bootstrap_ctx;
             const char *kind = "?";
             if ((char*)slot >= (char*)cc->stack_base &&
                 (char*)slot < (char*)cc->stack_end) kind = "STACK";
             ptrdiff_t off = (char*)slot - (char*)cc->stack_base;
-            fprintf(stderr, "BAD SLOT abort-imminent: slot=%p *slot=%p to_top=%p kind=%s stack_off=%td c->sp=%p c->fp=%p stack_base=%p\n",
+            unsigned owner_flags = 0;
+            if (g_scan_owner) {
+                AroObjectHeader *oh = (AroObjectHeader *)g_scan_owner;
+                owner_flags = oh->flags;
+            }
+            extern int g_in_root_scan;
+            extern void *korb_vm;
+            void *current_ctx_ptr = NULL;
+            if (korb_vm) {
+                /* korb_vm is `struct korb_vm *` — current_ctx field offset known
+                 * via the layout; safer: just print korb_vm pointer too. */
+                current_ctx_ptr = *(void **)((char *)korb_vm + 8 * 0); /* placeholder */
+            }
+            fprintf(stderr, "BAD SLOT abort-imminent: slot=%p *slot=%p to_top=%p kind=%s stack_off=%td bootstrap_ctx=%p in_root=%d\n",
                     slot, (void*)v, (void*)gc->to_top, kind, off / (ptrdiff_t)sizeof(VALUE),
-                    (void*)cc->sp, (void*)cc->fp, (void*)cc->stack_base);
+                    (void*)cc, g_in_root_scan);
+            (void)current_ctx_ptr;
         }
     }
     *slot = (void *)(VALUE)forward_payload(gc, (void *)v);
@@ -524,19 +542,25 @@ gc_collect_internal(CTX *c)
      * sample's AROH_VISIT_ROOTS macro handles any high-water /
      * dead-slot zeroing it cares about. */
     struct timespec tcheney = aro_gc_phase_begin();
+    extern int g_in_root_scan;
+    g_in_root_scan = 1;
     AROH_VISIT_ROOTS(c, gc, forward_edge);
+    g_in_root_scan = 0;
 
     /* (2a) Cheney scan-loop in to-space.  Hot loop, run unconditionally.
      * SCAN category calls sample's SCAN_EDGES which dispatches via
      * ObjectHeader.type (OBJ_ARRAY / OBJ_STRING / OBJ_VALUE_ARRAY).
      * BYTE / FREE skip.  forward_edge uses AROH_IS_GC_OBJECT to filter values. */
     char *scan = gc->to_base;
+    extern void *g_scan_owner;
     while (scan < gc->to_top) {
         AroObjectHeader *h = (AroObjectHeader *)scan;
+        g_scan_owner = h;
         AROH_SCAN_EDGES(h, h->gc_size, gc, forward_edge);
         ARO_GC_COMMON(c)->stats.heap_bytes += h->gc_size;
         scan += ALIGN8(h->gc_size);
     }
+    g_scan_owner = NULL;
 
     /* (2b) Large-gray drain (only if large objs exist).  Each large gray
      * scan can produce new to-space objs (which need cheney drain) or
