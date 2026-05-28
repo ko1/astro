@@ -103,12 +103,14 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
                    argc, total);
         return Qnil;
     }
-    VALUE *prev_fp = c->current_frame->fp;
+    /* Save outer fp only for new_fp computation; no C-local save of
+     * self — outer frame's self is preserved via the frame chain
+     * (visit_roots walks &outer_frame->self).  Writing back a C-local
+     * "prev_self" after body would overwrite the freshly-updated outer
+     * frame.self with a stale pointer that GC has long since moved. */
     VALUE *prev_sp = c->sp;
-    VALUE prev_self = c->current_frame->self;
-
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE *new_fp = prev_fp + arg_index;
-    c->current_frame->fp = new_fp;
     /* Grow c->sp + zero-fill the newly-exposed slots so stale heap
      * pointers left over in those addresses (from prior frames popped
      * at this location) don't get treated as live roots by the next
@@ -205,7 +207,6 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(frame.bindings_head != NULL)) {
         korb_binding_snapshot_frame(&frame);
     }
-    c->current_frame->fp = prev_fp;
     /* Always restore sp.  Without this, every method call leaves sp
      * higher than before — long-running loops with many calls hit
      * stack_end and false-overflow.  Cheap (one store per call).
@@ -218,7 +219,6 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * grows back, and forwards a long-since-moved obj). */
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
-    c->current_frame->self = prev_self;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         bool consume_return = (c->state == KORB_RETURN &&
@@ -264,12 +264,14 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
                    argc, total);
         return Qnil;
     }
-    VALUE *prev_fp = c->current_frame->fp;
+    /* Save outer fp only for new_fp computation; no C-local save of
+     * self — outer frame's self is preserved via the frame chain
+     * (visit_roots walks &outer_frame->self).  Writing back a C-local
+     * "prev_self" after body would overwrite the freshly-updated outer
+     * frame.self with a stale pointer that GC has long since moved. */
     VALUE *prev_sp = c->sp;
-    VALUE prev_self = c->current_frame->self;
-
+    VALUE *prev_fp = c->current_frame->fp;
     VALUE *new_fp = prev_fp + arg_index;
-    c->current_frame->fp = new_fp;
     /* Grow c->sp + zero-fill the newly-exposed slots so stale heap
      * pointers left over in those addresses (from prior frames popped
      * at this location) don't get treated as live roots by the next
@@ -355,12 +357,10 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(frame.bindings_head != NULL)) {
         korb_binding_snapshot_frame(&frame);
     }
-    c->current_frame->fp = prev_fp;
     /* Zero-fill popped slots so a sibling call's sp-grow doesn't re-expose
      * stale heap pointers from this frame's locals. */
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
-    c->current_frame->self = prev_self;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         bool consume_return = (c->state == KORB_RETURN &&
