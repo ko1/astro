@@ -1783,7 +1783,22 @@ static VALUE ary_fill(CTX *c, VALUE self, int argc, VALUE *argv) {
      * Without a block, fill(val[, start[, length]]) or fill(val, range). */
     long start = 0, len = a->len;
     int idx_arg_base = has_block ? 0 : 1;
-    if (!has_block && argc < 1) return self;
+    if (!has_block && argc < 1) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given 0, expected 1..3)");
+        return Qnil;
+    }
+    /* Maximum argc: with block 0..2 (start, length); without block 1..3
+     * (val, start, length).  More than that → ArgumentError. */
+    int max_argc = has_block ? 2 : 3;
+    if (argc > max_argc) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected %d..%d)",
+                   argc, has_block ? 0 : 1, max_argc);
+        return Qnil;
+    }
 
     /* Range form: fill[, range] / fill(val, range) (no block: idx_arg_base=1;
      * with block: idx_arg_base=0). */
