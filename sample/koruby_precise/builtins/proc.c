@@ -313,7 +313,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (p->cref) c->cref = p->cref;
     VALUE r;
 redo_proc:
-    r = EVAL(c, p->body);
+    r = EVAL(c, p->body, c->fp);
     /* `redo` inside a proc/lambda body — re-evaluate the body with
      * the same param bindings (CRuby semantics).  Without this, redo
      * leaks up and silently exits. */

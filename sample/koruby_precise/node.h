@@ -4,7 +4,7 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n);
+typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *sp);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -64,9 +64,9 @@ struct NodeHead {
 #include "object.h"
 
 static inline VALUE
-EVAL(CTX *c, NODE *n)
+EVAL(CTX *c, NODE *n, VALUE *sp)
 {
-    return (*n->head.dispatcher)(c, n);
+    return (*n->head.dispatcher)(c, n, sp);
 }
 
 /* helper: rewrite a child slot in a parent's union, used for type-spec rewrites */

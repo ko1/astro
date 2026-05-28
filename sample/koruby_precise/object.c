@@ -2365,7 +2365,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     running_block = blk;
     VALUE r;
 redo_block:
-    r = EVAL(c, blk->body);
+    r = EVAL(c, blk->body, fp);
     /* `redo` inside the block: re-evaluate the block body with the
      * same args (params keep their current bindings). */
     if (c->state == KORB_REDO) {
@@ -3476,7 +3476,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     running_block = NULL;
     VALUE *frame_lo = c->fp;
     VALUE *frame_hi = c->fp + mc->locals_cnt;
-    VALUE r = mc->dispatcher(c, mc->body);
+    VALUE r = mc->dispatcher(c, mc->body, c->fp);
     c->current_frame = frame.prev;
     running_block = prev_running;
     korb_proc_snapshot_env_maybe(r, frame_lo, frame_hi);
@@ -4042,7 +4042,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * outer block's enclosing method's name). */
     struct korb_proc *prev_running2 = running_block;
     running_block = NULL;
-    VALUE r = EVAL(c, m->u.ast.body);
+    VALUE r = EVAL(c, m->u.ast.body, c->fp);
     running_block = prev_running2;
     c->current_frame = frame2.prev;
     c->fp = prev_fp;
@@ -4562,7 +4562,7 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     c->current_file = filename;
 
     OPTIMIZE(ast);
-    VALUE r = EVAL(c, ast);
+    VALUE r = EVAL(c, ast, c->fp);
 
     /* Top-level `return` in a load'd file just stops *this* file —
      * not an error and not a propagating return.  CRuby allows this
@@ -4605,7 +4605,7 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
     c->cref = &top_cref;
     c->current_file = filename;
     OPTIMIZE(ast);
-    VALUE r = EVAL(c, ast);
+    VALUE r = EVAL(c, ast, c->fp);
     c->fp = prev_fp;
     c->sp = prev_sp;
     c->self = prev_self;
@@ -4702,7 +4702,7 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         current_block = NULL;
         struct korb_cref *prev_cref = c->cref;
         if (blk->cref) c->cref = blk->cref;
-        VALUE result = blk->body ? EVAL(c, blk->body) : Qnil;
+        VALUE result = blk->body ? EVAL(c, blk->body, fib->frame) : Qnil;
         c->cref = prev_cref;
         c->self = prev_self;
         current_block = prev_block;

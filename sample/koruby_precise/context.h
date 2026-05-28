@@ -182,7 +182,7 @@ typedef uint64_t state_serial_t;
  * pointer so the dispatch hot path can do a direct call without going through
  * method->ast.body->head.dispatcher (one indirect call instead of two). */
 struct CTX_struct;
-typedef VALUE (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n);
+typedef VALUE (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n, VALUE *sp);
 /* Per-callsite specialized prologue.  At method_cache_fill time we pick
  * one of: ast_simple (no rest, no opt), ast_general (rest/opt), cfunc.
  * Then dispatch is a single indirect call with no in-function branching. */

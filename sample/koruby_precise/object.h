@@ -838,7 +838,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         running_block = blk;
         VALUE r;
     redo_yield:
-        r = blk->body->head.dispatcher(c, blk->body);
+        r = blk->body->head.dispatcher(c, blk->body, bfp);
         if (UNLIKELY(c->state == KORB_REDO)) {
             c->state = KORB_NORMAL; c->state_value = Qnil;
             goto redo_yield;

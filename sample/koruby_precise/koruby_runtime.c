@@ -298,7 +298,7 @@ koruby_eval_bootstrap(CTX *c)
 int
 koruby_run_ast(CTX *c, NODE *ast)
 {
-    VALUE r = EVAL(c, ast);
+    VALUE r = EVAL(c, ast, c->fp);
     (void)r;
     if (c->state == KORB_THROW) {
         VALUE eUTE = korb_const_get(korb_vm->object_class,

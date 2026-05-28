@@ -2,6 +2,23 @@ require 'astrogen'
 
 class KoRubyNodeDef < ASTroGen::NodeDef
   class Node < ASTroGen::NodeDef::Node
+    # 4-arg dispatcher: `(CTX *c, NODE *n, VALUE *sp)`.  sp は parse-time
+    # baked sp_offset (= node_lvar_get/set 等の `index` から walker が計算)
+    # を介して frame-local slot 直接アクセスに使う。 c->fp は段階移行中で
+    # まだ残る (= closure / binding / frame chain 経由参照は frame->fp を
+    # 引く既存 path)。 GC root scan は c->sp を高水位として使うため、
+    # alloc-can-GC な helper を呼ぶ前に c->sp = sp (or sp+N) で flush
+    # する規律になる。
+    def common_param_count
+      3
+    end
+
+    # NODE * 子 dispatcher 呼出に sp を thread (framework default は
+    # "c, field" のみ; ここでは "c, field, sp" まで渡す)。
+    def child_dispatch_args(slot, field)
+      "c, #{field}, sp"
+    end
+
     # PG-baked call sites: at SPECIALIZE time we read `mc` (populated by the
     # just-finished run) and, when the prologue is one of the bakable
     # ast_simple_N variants, emit a guarded direct call into the callee
@@ -58,7 +75,7 @@ class KoRubyNodeDef < ASTroGen::NodeDef
       recv_eval = if recv_f
         <<~C
                 fprintf(fp, "    NODE *recv = #{recv_f};\\n");
-                fprintf(fp, "    VALUE recv_v = (*recv->head.dispatcher)(c, recv);\\n");
+                fprintf(fp, "    VALUE recv_v = (*recv->head.dispatcher)(c, recv, sp);\\n");
                 fprintf(fp, "    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;\\n");
         C
       else
@@ -70,7 +87,7 @@ class KoRubyNodeDef < ASTroGen::NodeDef
         <<~C
                 if (#{blk_f}) {
                     fprintf(fp, "    NODE *blk = #{blk_f};\\n");
-                    fprintf(fp, "    VALUE blkv = (*blk->head.dispatcher)(c, blk);\\n");
+                    fprintf(fp, "    VALUE blkv = (*blk->head.dispatcher)(c, blk, sp);\\n");
                     fprintf(fp, "    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;\\n");
                     fprintf(fp, "    struct korb_proc *block = (blkv == Qnil) ? NULL : (struct korb_proc *)blkv;\\n");
                 } else {

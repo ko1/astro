@@ -502,7 +502,7 @@ static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
         struct korb_cref top = { .klass = klass, .prev = NULL };
         c->cref = &top;
         OPTIMIZE(ast);
-        VALUE r = EVAL(c, ast);
+        VALUE r = EVAL(c, ast, c->fp);
         c->fp = prev_fp;
         c->self = prev_self;
         c->current_class = prev_class;
