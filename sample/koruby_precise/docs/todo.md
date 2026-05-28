@@ -441,6 +441,33 @@ partial migration (= 一部だけ) では shadow ref が新たに発生する
 ことが実験で確認済 (4ed470fb で試行)。 一括移行が必要。 大規模
 refactor、 1 commit に収まらない別 session 規模。
 
+### Top-level closure pre-existing 不具合
+
+```ruby
+x = 10
+[1,2,3].each { |i| x += i }
+puts x   # 期待: 16、 実際: NoMethodError "undefined method '+' for nil"
+```
+
+method body 内では正しく動作 (test_block.rb の test_block_capture 等):
+
+```ruby
+def f
+  s = 0
+  [1,2,3].each { |x| s += x }
+  s
+end
+puts f   # 6 (= 正)
+```
+
+baseline (548e616a) でも同じ症状で再現、 GC 関連ではない pre-existing
+koruby_precise の top-level closure 不具合。 sibling `sample/koruby`
+では top-level でも正しく動作。 koruby_precise の CTX → frame
+migration 時に block env capture の semantics が壊れた可能性。
+
+benchmark/bm_times / bm_each / bm_inject / bm_nbody がこの問題で
+NORMAL から fail。 別 session の課題。
+
 ### 一括 migration 試行ログ (2026-05-28, session 末)
 
 `korb_ary_new_capa` / `korb_hash_new` / `korb_range_new` /
