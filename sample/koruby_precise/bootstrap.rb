@@ -2255,13 +2255,33 @@ class Array
   end unless method_defined?(:-)
 
   def values_at(*indices)
-    indices.flat_map { |i|
+    result = []
+    indices.each { |i|
       if i.is_a?(Range)
-        self[i] || []
+        first = i.first
+        last  = i.last
+        excl  = i.exclude_end?
+        # CRuby: negative-only ranges (both endpoints negative and out
+        # of bounds) raise RangeError.
+        if first.is_a?(Integer) && first < 0 && first + size < 0
+          raise RangeError, "#{i} out of range"
+        end
+        b = first.is_a?(Integer) ? first : 0
+        e = last.is_a?(Integer)  ? last  : (size - 1)
+        b += size if b < 0
+        e += size if e < 0
+        e -= 1 if excl
+        # Fill: for j in b..e, push self[j] if in range, nil otherwise.
+        j = b
+        while j <= e
+          result << (j >= 0 && j < size ? self[j] : nil)
+          j += 1
+        end
       else
-        [self[i]]
+        result << self[i]
       end
     }
+    result
   end unless method_defined?(:values_at)
 
   def union(*others)
