@@ -840,6 +840,7 @@ class String
   # strip! / lstrip! / rstrip! are implemented in C (str_strip_bang etc.)
   # — the C versions raise FrozenError unconditionally on frozen self.
   def squeeze!(*a)
+    raise FrozenError, "can't modify frozen String: #{inspect}" if frozen?
     r = squeeze(*a)
     r == self ? nil : (replace(r); self)
   end
@@ -1920,11 +1921,50 @@ class String
     __pad_to(pad, left) + self + __pad_to(pad, right)
   end
 
-  def squeeze(chars = nil)
+  # Build a list of [Hash{char=>true}, negate?] tuples, one per charset
+  # arg.  Each char in self is in the intersection iff it's in every set.
+  def __charset(*sets)
+    return nil if sets.empty?
+    parsed = []
+    sets.each do |s|
+      if !s.is_a?(String) && s.respond_to?(:to_str)
+        s = s.to_str
+      end
+      raise TypeError, "no implicit conversion of #{s.class} into String" unless s.is_a?(String)
+      negate = s.start_with?("^") && s.size > 1
+      body = negate ? s[1..-1] : s
+      h = {}
+      i = 0
+      n = body.size
+      while i < n
+        c = body[i]
+        if i + 2 < n && body[i + 1] == "-"
+          a = c.ord
+          b = body[i + 2].ord
+          raise ArgumentError, "invalid range \"#{c}-#{body[i + 2]}\" in string transliteration" if a > b
+          (a..b).each { |cp| h[cp.chr] = true }
+          i += 3
+        else
+          h[c] = true
+          i += 1
+        end
+      end
+      parsed << [h, negate]
+    end
+    parsed
+  end
+
+  def __charset_match?(parsed, ch)
+    return true if parsed.nil?
+    parsed.all? { |(h, neg)| neg ? !h.include?(ch) : h.include?(ch) }
+  end
+
+  def squeeze(*chars)
+    parsed = __charset(*chars)
     out = ""
     prev = nil
     each_char { |ch|
-      if ch != prev || (chars && !chars.include?(ch))
+      if ch != prev || !__charset_match?(parsed, ch)
         out << ch
       end
       prev = ch
