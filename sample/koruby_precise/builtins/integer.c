@@ -437,6 +437,21 @@ static VALUE int_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(v - r);
 }
 
+/* Integer#truncate(ndigits=0) — truncate toward zero, not -inf.  For
+ * positive ndigits returns self; for n < 0 chops off |n| trailing
+ * decimal digits while preserving the sign. */
+static VALUE int_truncate(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || !FIXNUM_P(self)) return self;
+    long n = FIXNUM_P(argv[0]) ? FIX2LONG(argv[0]) : 0;
+    if (n >= 0) return self;
+    long v = FIX2LONG(self);
+    long scale = 1;
+    for (long i = 0; i < -n; i++) scale *= 10;
+    /* Truncate toward zero: `(v / scale) * scale` already does this in C
+     * because integer division truncates toward 0. */
+    return INT2FIX((v / scale) * scale);
+}
+
 /* Integer#round(ndigits=0) — for n >= 0 returns self (matching CRuby).
  * For n < 0, rounds to the nearest 10^|n|.  Half rounds away from zero
  * (Ruby's default).  `154.round(-1) == 150`. */

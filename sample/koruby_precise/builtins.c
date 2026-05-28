@@ -568,7 +568,7 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->integer_class, "round",    int_round, -1);
     DEF(korb_vm->integer_class, "floor",    int_floor, -1);
     DEF(korb_vm->integer_class, "ceil",     int_ceil,  -1);
-    DEF(korb_vm->integer_class, "truncate", int_floor, -1);
+    DEF(korb_vm->integer_class, "truncate", int_truncate, -1);
     DEF(korb_vm->integer_class, "abs",   int_abs, 0);
     DEF(korb_vm->integer_class, "[]",    int_aref, -1);
     DEF(korb_vm->integer_class, "bit_length", int_bit_length, 0);
