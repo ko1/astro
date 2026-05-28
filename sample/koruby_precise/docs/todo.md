@@ -307,3 +307,57 @@ CRuby は block 内 raise の backtrace を `:in 'block in foo'` (or `:in 'block
 - 2026-05-06: eval-with-binding (caller の lvars 参照、+99 pass)
 - 2026-05-05: mock support (should_receive)、 LocalJumpError 検出
 - 2026-05-04: describe→context→describe のローカル破壊修正
+
+## §H precise GC (2026-05-28)
+
+`BARUBY_GC_STRESS=1 BARUBY_GC_PURGE=1` (= per-alloc GC + mprotect ベース
+stale-ptr 検出) 下で test 走行:
+
+- 8-test 基本 battery (min1/def1/class1/fib10/method_chain/justmul/
+  string_op/test_seq4): **normal / STRESS / STRESS+PURGE 全 8/8 pass**。
+- 完全 test/ ディレクトリ (24 ファイル):
+  - **normal**: 23/24 (test_alias_redef 失敗 = baseline 548e616a でも fail、
+    pre-existing flake)
+  - **STRESS+PURGE**: 21/24 (3 件 pre-existing flake: test_alias_redef /
+    test_basic_op_redef / test_eq_redef)。 baseline (548e616a) では STRESS
+    だけで 3 件全部 fail だったので regression なし。
+
+このセッションの主要 fix (commit 686f01f0 〜 13edbcb7):
+
+- **visit_roots phase (c+d) 統合**: frame 毎に cref chain を walk。
+  method dispatch で frame.cref = mc->def_cref (= cref_dup の SEPARATE
+  chain) になるため、 head 一本だけ走査では outer frame の cref->klass
+  が stale 化。 PURGE で class body 内 const_set が SEGV した直接原因。
+- **c->sentinel_frame + c->top_cref を visit_roots で unconditional に walk**:
+  korb_eval_string が top_frame.prev=NULL で push するため、 sentinel は
+  head chain から外れる。 sentinel.self (= main_obj) が bootstrap 中の
+  GC で stale 化し、 user script 側の最初の puts 1 が dispatch SEGV。
+- **node_class_def / node_class_reopen / node_module_def を synthetic
+  frame push に統一**: 旧 impl は outer frame.current_class / cref を
+  その場で書き換え、 C-local prev_class を across-body-GC で保持。
+  GC 後に書き戻すと stale arena ptr が outer に書かれ、 次の GC で
+  BAD SLOT。 synthetic 構造体 (.cref/current_class/self を inherit)
+  を c->current_frame として push する形に統一。
+- **korb_dispatch_to_method AST path で frame2 が cref/current_class/
+  current_file を inherit**: frame2 の struct literal がそれらを
+  初期化せず NULL のまま → body 側 const_lookup が NULL 経由で
+  garbage を返して SEGV。
+- **node_str_concat を ARO_ROOT_SCOPE で保護**: `korb_to_s_dispatch` が
+  GC を発火するため C-local の累積 r と part が across-GC stale。
+- **globals 撤去**: `koruby_top_cref` / `koruby_top_sentinel_frame` を
+  file-scope static から CTX フィールドに移行。 multi-interpreter
+  共存可能に。 struct korb_frame の定義を struct CTX_struct の前に
+  移動して by-value embed を可能化。
+
+### 残 pre-existing flakes (baseline からの持ち越し)
+
+- **test_alias_redef** (normal も STRESS+PURGE も fail): const_lookup
+  内で c->current_frame が stale stack 領域を指す。 cref->prev =
+  korb_dispatch_to_method 内の saved RIP。 どこかの dispatch path が
+  c->current_frame を local frame に push して unwind 漏れしている疑い。
+- **test_basic_op_redef** / **test_eq_redef** (normal pass、STRESS / STRESS+PURGE で fail):
+  GC root scan が visit_ptr_slot に libc code address (= `_int_malloc+N`)
+  を渡して SEGV。 cref chain の prev が garbage stack 領域を指し、
+  そこから wild ptr へ chain される。 method aliasing が同じ
+  `struct korb_method *` を複数 entry に登録するため、 def_cref chain
+  に corrupted node が混入する可能性。
