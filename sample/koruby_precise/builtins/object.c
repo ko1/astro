@@ -11,6 +11,7 @@
 #define KORB_SEND_CACHE_SIZE 512
 struct korb_send_cache_entry {
     state_serial_t serial;
+    uint64_t       gen;            /* GC gen — see ivar_cache rationale */
     struct korb_class *klass;
     ID name;
     struct method_cache mc;
@@ -50,13 +51,15 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
         struct korb_class *klass = korb_class_of_class(self);
         uint32_t slot = (uint32_t)(((uintptr_t)klass ^ (uintptr_t)name * 0x9E3779B97F4A7C15ULL) % KORB_SEND_CACHE_SIZE);
         struct korb_send_cache_entry *e = &korb_send_cache[slot];
-        if (UNLIKELY(e->serial != korb_g_method_serial || e->klass != klass || e->name != name)) {
+        if (UNLIKELY(e->serial != korb_g_method_serial || e->gen != korb_g_gc_gen ||
+                     e->klass != klass || e->name != name)) {
             struct korb_method *m = korb_class_find_method(klass, name);
             if (!m) return korb_funcall(c, self, name, argc - 1, argv + 1);
             korb_method_cache_fill(&e->mc, klass, m);
             e->klass = klass;
             e->name = name;
             e->serial = korb_g_method_serial;
+            e->gen = korb_g_gc_gen;
         }
         uint32_t arg_index = (uint32_t)((argv + 1) - c->current_frame->fp);
         return e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc);

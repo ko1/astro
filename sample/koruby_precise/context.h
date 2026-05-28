@@ -276,6 +276,7 @@ typedef RESULT (*korb_dispatcher_r_t)(struct CTX_struct *c, struct Node *n, VALU
 
 struct method_cache {
     state_serial_t serial;
+    uint64_t       gen;           /* GC generation when filled — see ivar_cache */
     struct korb_class *klass;
     struct korb_method *method;
     struct Node *body;             /* cached body NODE for AST methods */

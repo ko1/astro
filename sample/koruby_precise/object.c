@@ -3831,6 +3831,7 @@ void
 korb_method_cache_fill(struct method_cache *mc, struct korb_class *klass, struct korb_method *m)
 {
     mc->serial = korb_vm->method_serial;
+    mc->gen = korb_g_gc_gen;
     mc->klass = klass;
     mc->method = m;
     mc->is_simple_frame = m->is_simple_frame;
@@ -4000,7 +4001,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
 {
     struct korb_class *klass = korb_class_of_class(recv);
 
-    if (UNLIKELY(!mc || mc->serial != korb_vm->method_serial || mc->klass != klass)) {
+    if (UNLIKELY(!mc || mc->serial != korb_vm->method_serial || mc->gen != korb_g_gc_gen || mc->klass != klass)) {
         struct korb_method *m = NULL;
         if (BUILTIN_TYPE(recv) == T_MODULE) {
             /* Module function lookup: when recv is the module itself,

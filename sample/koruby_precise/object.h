@@ -795,7 +795,7 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
                           struct method_cache *mc)
 {
     struct korb_class *klass = korb_class_of_class(recv);
-    if (LIKELY(mc && mc->serial == korb_g_method_serial && mc->klass == klass)) {
+    if (LIKELY(mc && mc->serial == korb_g_method_serial && mc->gen == korb_g_gc_gen && mc->klass == klass)) {
         /* Visibility check: private methods need an implicit-self call
          * (recv == c->current_frame->self).  Protected methods need the caller's class
          * to include the target's class in its hierarchy. */
