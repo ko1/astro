@@ -741,7 +741,7 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->array_class, "reverse!",  ary_reverse_bang, 0);
     DEF(korb_vm->array_class, "rotate!",   ary_rotate_bang, -1);
     DEF(korb_vm->array_class, "rotate",    ary_rotate, -1);
-    DEF(korb_vm->array_class, "flatten!",  ary_flatten, -1);
+    DEF(korb_vm->array_class, "flatten!",  ary_flatten_bang, -1);
     DEF(korb_vm->array_class, "freeze",    kernel_freeze, 0);
     DEF(korb_vm->array_class, "frozen?",   kernel_frozen_p, 0);
     {

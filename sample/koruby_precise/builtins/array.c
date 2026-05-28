@@ -353,13 +353,51 @@ static VALUE ary_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     return acc;
 }
 static VALUE ary_join(CTX *c, VALUE self, int argc, VALUE *argv) {
+    /* CRuby short-circuit: empty array returns "" without touching sep. */
+    if (korb_ary_len(self) == 0) return korb_str_new(c, c->sp, "", 0);
+    /* Resolve the separator:
+     *  - no arg or explicit nil: use $, (CRuby default), else "".
+     *  - String: use as is.
+     *  - other: call #to_str (TypeError on failure / non-String result).
+     */
+    VALUE sep;
+    if (argc < 1 || NIL_P(argv[0])) {
+        VALUE g = korb_gvar_get(korb_intern("$,"));
+        if (!SPECIAL_CONST_P(g) && BUILTIN_TYPE(g) == T_STRING) {
+            sep = g;
+        } else {
+            sep = korb_str_new_cstr(c, c->sp, "");
+        }
+    } else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
+        sep = argv[0];
+    } else {
+        VALUE rt = korb_funcall(c, argv[0], korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (!RTEST(rt)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into String",
+                       SPECIAL_CONST_P(argv[0]) ? "(special)"
+                           : korb_id_name(korb_class_of_class(argv[0])->name));
+            return Qnil;
+        }
+        sep = korb_funcall(c, argv[0], korb_intern("to_str"), 0, NULL);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (SPECIAL_CONST_P(sep) || BUILTIN_TYPE(sep) != T_STRING) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to String (to_str returned non-String)");
+            return Qnil;
+        }
+    }
     /* Pin self / sep / result / per-iter element across korb_to_s /
      * korb_str_new / korb_str_concat GC fires (PURGE catches the
      * stale-pointer faster than STRESS alone). */
     VALUE ret = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 4) {
         rs[0] = self;
-        rs[1] = argc > 0 ? argv[0] : korb_str_new_cstr(c, c->sp, "");
+        rs[1] = sep;
         rs[2] = korb_str_new(c, c->sp, "", 0);  /* result */
         rs[3] = Qnil;                  /* per-iter element */
         long len = korb_ary_len(rs[0]);
@@ -581,9 +619,34 @@ static int ary_flatten_into(CTX *c, VALUE r, VALUE src, long depth,
                             struct ary_flatten_stack *stack) {
     struct korb_array *a = (struct korb_array *)src;
     for (long i = 0; i < a->len; i++) {
-        if (depth != 0 && !SPECIAL_CONST_P(a->ptr[i]) &&
-            BUILTIN_TYPE(a->ptr[i]) == T_ARRAY) {
-            if (ary_flatten_stack_contains(stack, a->ptr[i])) {
+        VALUE el = a->ptr[i];
+        VALUE coerced = el;
+        bool is_ary = !SPECIAL_CONST_P(el) && BUILTIN_TYPE(el) == T_ARRAY;
+        if (depth != 0 && !is_ary) {
+            /* Try #to_ary if the element responds to it (CRuby flattens
+             * via #to_ary, not method_missing).  Skip on Array — it
+             * already IS an array. */
+            VALUE rt = korb_funcall(c, el, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (c->state == KORB_RAISE) return -1;
+            if (RTEST(rt)) {
+                VALUE ar = korb_funcall(c, el, korb_intern("to_ary"), 0, NULL);
+                if (c->state == KORB_RAISE) return -1;
+                if (NIL_P(ar)) {
+                    /* nil result: leave element as is. */
+                } else if (SPECIAL_CONST_P(ar) || BUILTIN_TYPE(ar) != T_ARRAY) {
+                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    korb_raise(c, (struct korb_class *)eT,
+                               "can't convert to Array (to_ary returned non-Array)");
+                    return -1;
+                } else {
+                    coerced = ar;
+                    is_ary = true;
+                }
+            }
+        }
+        if (depth != 0 && is_ary) {
+            if (ary_flatten_stack_contains(stack, coerced)) {
                 VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
                 korb_raise(c, (struct korb_class *)eA, "tried to flatten recursive array");
                 return -1;
@@ -594,12 +657,12 @@ static int ary_flatten_into(CTX *c, VALUE r, VALUE src, long depth,
                 for (long k = 0; k < stack->len; k++) nb[k] = stack->items[k];
                 stack->items = nb; stack->capa = nc;
             }
-            stack->items[stack->len++] = a->ptr[i];
-            int rc = ary_flatten_into(c, r, a->ptr[i], depth - 1, stack);
+            stack->items[stack->len++] = coerced;
+            int rc = ary_flatten_into(c, r, coerced, depth - 1, stack);
             stack->len--;
             if (rc != 0) return rc;
         } else {
-            korb_ary_push(r, a->ptr[i]);
+            korb_ary_push(r, el);
         }
     }
     return 0;
@@ -607,7 +670,19 @@ static int ary_flatten_into(CTX *c, VALUE r, VALUE src, long depth,
 
 static VALUE ary_flatten(CTX *c, VALUE self, int argc, VALUE *argv) {
     long depth = -1;
-    if (argc >= 1 && FIXNUM_P(argv[0])) depth = FIX2LONG(argv[0]);
+    if (argc >= 1 && !NIL_P(argv[0])) {
+        VALUE d = argv[0];
+        if (!FIXNUM_P(d)) {
+            d = korb_to_int_or_raise(c, d);
+            if (c->state == KORB_RAISE) return Qnil;
+        }
+        if (!FIXNUM_P(d)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT, "no implicit conversion into Integer");
+            return Qnil;
+        }
+        depth = FIX2LONG(d);
+    }
     VALUE r = korb_ary_new(c, c->sp);
     struct ary_flatten_stack stack = { NULL, 0, 0 };
     /* Push self so the immediate `a << a` cycle is caught. */
@@ -615,6 +690,50 @@ static VALUE ary_flatten(CTX *c, VALUE self, int argc, VALUE *argv) {
     stack.items = init; stack.len = 1; stack.capa = 1;
     ary_flatten_into(c, r, self, depth, &stack);
     return r;
+}
+
+/* Array#flatten! — destructive: replace self with the flattened result.
+ * Returns self if flattening changed anything, nil otherwise.  Raises
+ * FrozenError unconditionally on a frozen receiver before doing any
+ * argument coercion (CRuby semantic for the bang). */
+static VALUE ary_flatten_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
+    long depth = -1;
+    if (argc >= 1 && !NIL_P(argv[0])) {
+        VALUE d = argv[0];
+        if (!FIXNUM_P(d)) {
+            d = korb_to_int_or_raise(c, d);
+            if (c->state == KORB_RAISE) return Qnil;
+        }
+        if (!FIXNUM_P(d)) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT, "no implicit conversion into Integer");
+            return Qnil;
+        }
+        depth = FIX2LONG(d);
+    }
+    /* Compute the flattened result in a fresh array, then check whether
+     * it differs from self.  Replace self's storage on change. */
+    VALUE r = korb_ary_new(c, c->sp);
+    struct ary_flatten_stack stack = { NULL, 0, 0 };
+    VALUE init[1] = { self };
+    stack.items = init; stack.len = 1; stack.capa = 1;
+    ary_flatten_into(c, r, self, depth, &stack);
+    if (c->state == KORB_RAISE) return Qnil;
+    struct korb_array *me = (struct korb_array *)self;
+    struct korb_array *fr = (struct korb_array *)r;
+    bool changed = (me->len != fr->len);
+    if (!changed) {
+        for (long i = 0; i < me->len; i++) {
+            if (me->ptr[i] != fr->ptr[i]) { changed = true; break; }
+        }
+    }
+    if (!changed) return Qnil;
+    /* Adopt the new buffer. */
+    me->ptr = fr->ptr;
+    me->len = fr->len;
+    me->capa = fr->capa;
+    return self;
 }
 
 static VALUE ary_compact(CTX *c, VALUE self, int argc, VALUE *argv) {
