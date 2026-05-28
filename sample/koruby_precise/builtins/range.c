@@ -39,33 +39,66 @@ static VALUE rng_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* No block → return Array stand-in (Enumerator placeholder).  An
-     * Array is "Enumerable enough" for the common chains like
-     * `(1..3).each.map { ... }` and `.each.to_a`. */
+    /* No block → Array stand-in (TODO: Enumerator once Fiber path is
+     * GC-safe).  Array is close enough for most chain forms. */
     if (!korb_block_given(c)) {
         return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     }
     struct korb_range *r = (struct korb_range *)self;
-    if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
-        long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
-        long stop_excl = r->exclude_end ? e : e + 1;
-        for (long i = b; i < stop_excl; i++) {
-            VALUE v = INT2FIX(i);
-            korb_yield(c, 1, &v);
-            if (c->state != KORB_NORMAL) return Qnil;
+    /* Beginless range: TypeError (can't iterate starting from -Inf). */
+    if (NIL_P(r->begin)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "can't iterate from beginless range");
+        return Qnil;
+    }
+    /* Integer begin (incl Bignum): step by 1 until past end. */
+    if (FIXNUM_P(r->begin) && (NIL_P(r->end) || FIXNUM_P(r->end))) {
+        long b = FIX2LONG(r->begin);
+        if (NIL_P(r->end)) {
+            /* Endless: yield forever (CRuby raises after LONG_MAX but
+             * effectively infinite — user must `break`). */
+            for (long i = b; ; i++) {
+                VALUE v = INT2FIX(i);
+                korb_yield(c, 1, &v);
+                if (c->state != KORB_NORMAL) return Qnil;
+            }
+        } else {
+            long e = FIX2LONG(r->end);
+            long stop_excl = r->exclude_end ? e : e + 1;
+            for (long i = b; i < stop_excl; i++) {
+                VALUE v = INT2FIX(i);
+                korb_yield(c, 1, &v);
+                if (c->state != KORB_NORMAL) return Qnil;
+            }
         }
         return self;
     }
-    /* Non-numeric ranges: walk via #succ until > end. */
-    if (NIL_P(r->begin) || NIL_P(r->end)) return self;
+    /* Non-numeric ranges: walk via #succ until > end.  Begin must respond
+     * to #succ; otherwise TypeError. */
+    VALUE rt = korb_funcall(c, r->begin, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("succ")) });
+    if (c->state == KORB_RAISE) return Qnil;
+    if (!RTEST(rt)) {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT, "can't iterate from %s",
+                   SPECIAL_CONST_P(r->begin) ? "(special)"
+                       : korb_id_name(korb_class_of_class(r->begin)->name));
+        return Qnil;
+    }
     VALUE cur = r->begin;
     while (true) {
-        VALUE cmp = korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end);
-        if (!FIXNUM_P(cmp)) break;
-        long cv = FIX2LONG(cmp);
-        if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
-        korb_yield(c, 1, &cur);
-        if (c->state != KORB_NORMAL) return Qnil;
+        if (NIL_P(r->end)) {
+            korb_yield(c, 1, &cur);
+            if (c->state != KORB_NORMAL) return Qnil;
+        } else {
+            VALUE cmp = korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end);
+            if (!FIXNUM_P(cmp)) break;
+            long cv = FIX2LONG(cmp);
+            if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
+            korb_yield(c, 1, &cur);
+            if (c->state != KORB_NORMAL) return Qnil;
+        }
         cur = korb_funcall(c, cur, korb_intern("succ"), 0, NULL);
         if (c->state != KORB_NORMAL) return Qnil;
     }
