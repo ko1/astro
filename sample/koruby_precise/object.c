@@ -2713,7 +2713,7 @@ void korb_raise_frozen_modification(CTX *c, VALUE obj) {
                "can't modify frozen %s", cn);
 }
 
-void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
+RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
     char buf[512];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -2768,6 +2768,10 @@ void korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
         c->state = KORB_RAISE;
         c->state_value = r[1];
     } ARO_ROOT_SCOPE_END(c, r);
+    /* Return RESULT for new-ABI callers (`return korb_raise(...)`).
+     * Legacy callers discard the result via `korb_raise(...);` and
+     * propagate via the c->state side-channel as before. */
+    return (RESULT){ c->state_value, KORB_RAISE };
 }
 
 /* ---- inspect / to_s ---- */

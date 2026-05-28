@@ -673,7 +673,7 @@ void  korb_p(CTX *c, VALUE v); /* writes to stdout with newline */
 
 /* errors / exceptions */
 VALUE korb_exc_new(CTX *c, struct korb_class *klass, const char *msg);
-void  korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
+RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
 void  korb_raise_type_error(CTX *c, const char *fmt, ...);
 void  korb_raise_argument_error(CTX *c, const char *fmt, ...);
 void  korb_raise_range_error(CTX *c, const char *fmt, ...);
