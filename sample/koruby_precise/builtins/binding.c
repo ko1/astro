@@ -652,12 +652,12 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     /* Switch to the binding's fp / self / cref for the duration of
      * the eval body.  At return, restore. */
     VALUE *prev_fp = c->fp;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     struct korb_cref *prev_cref = c->cref;
     const char *prev_file = c->current_file;
     void *prev_eval_binding = c->current_eval_binding;
     if (b->fp) c->fp = b->fp + b->base;
-    c->self = b->self;
+    c->current_frame->self = b->self;
     if (b->cref) c->cref = b->cref;
     c->current_file = filename;
     c->current_eval_binding = (void *)b;
@@ -669,7 +669,7 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     c->current_eval_binding = prev_eval_binding;
     c->current_file = prev_file;
     c->cref = prev_cref;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->fp = prev_fp;
 
     /* Write-through eval body's slot updates to the live frame, but

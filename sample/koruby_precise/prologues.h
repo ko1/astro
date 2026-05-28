@@ -53,13 +53,13 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
         .bindings_head = NULL,
     };
     c->current_frame = &cfr;
-    c->self = recv;
+    c->current_frame->self = recv;
     struct Node *prev_cs = c->last_cfunc_callsite;
     c->last_cfunc_callsite = callsite;
     VALUE r = mc->cfunc(c, recv, argc, argv);
     c->last_cfunc_callsite = prev_cs;
     c->current_frame = cfr.prev;
-    c->self = cfr.prev ? cfr.prev->self : korb_vm->main_obj;
+    c->current_frame->self = cfr.prev ? cfr.prev->self : korb_vm->main_obj;
     current_block = prev_block;
     if (UNLIKELY(block && c->state == KORB_BREAK)) {
         r = c->state_value;
@@ -105,7 +105,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     }
     VALUE *prev_fp = c->fp;
     VALUE *prev_sp = c->sp;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
 
     VALUE *new_fp = prev_fp + arg_index;
     c->fp = new_fp;
@@ -179,7 +179,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
         new_fp[i] = Qnil;
     }
-    c->self = recv;
+    c->current_frame->self = recv;
 
     /* baruby convention: body's `sp` parameter = frame TOP (= fp +
      * locals_cnt).  Body's local `i` is accessed as `sp[i - locals_cnt]`
@@ -218,7 +218,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * grows back, and forwards a long-since-moved obj). */
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         bool consume_return = (c->state == KORB_RETURN &&
@@ -266,7 +266,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     }
     VALUE *prev_fp = c->fp;
     VALUE *prev_sp = c->sp;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
 
     VALUE *new_fp = prev_fp + arg_index;
     c->fp = new_fp;
@@ -335,7 +335,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
         new_fp[i] = Qnil;
     }
-    c->self = recv;
+    c->current_frame->self = recv;
 
     /* Direct call: linker resolves static_disp to a concrete SD_*
      * symbol; gcc emits a direct call instead of going through
@@ -360,7 +360,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * stale heap pointers from this frame's locals. */
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
 
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {
         bool consume_return = (c->state == KORB_RETURN &&

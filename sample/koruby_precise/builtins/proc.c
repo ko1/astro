@@ -110,7 +110,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE *prev_fp = c->fp;
     VALUE *prev_sp = c->sp;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     /* Use the proc's own captured env directly so writes to closure
      * variables (`r = ...` inside the block) reach the outer scope.
      * korb_proc_snapshot_env_if_in_frame already detaches env to heap
@@ -297,7 +297,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     c->fp = new_fp;
     if (c->fp + p->env_size > c->sp) c->sp = c->fp + p->env_size;
-    c->self = p->self;
+    c->current_frame->self = p->self;
     /* yield inside the proc body targets the enclosing method's block
      * captured at proc creation time. */
     extern struct korb_proc *current_block;
@@ -343,7 +343,7 @@ redo_proc:
      * (each call's slots stay committed) until stack overflow. */
     c->fp = prev_fp;
     c->sp = prev_sp;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     /* Lambda: `return` inside the body targets the lambda itself, so we
      * consume it here and the caller sees the value as the call's result.
      * Plain Proc: `return` is non-local — let it propagate up to the

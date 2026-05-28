@@ -86,7 +86,7 @@ node_nil(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 NODE_DEF
 node_self(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return c->self;
+    return c->current_frame->self;
 }
 
 // ---------------- variables ----------------
@@ -120,14 +120,14 @@ node_lvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t
 NODE_DEF
 node_ivar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, struct ivar_cache *cache@ref)
 {
-    return korb_ivar_get_ic(c->self, name, cache);
+    return korb_ivar_get_ic(c->current_frame->self, name, cache);
 }
 
 NODE_DEF
 node_ivar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs, struct ivar_cache *cache@ref)
 {
     VALUE v = EA(c, rhs);
-    korb_ivar_set_ic(c->self, name, v, cache);
+    korb_ivar_set_ic(c->current_frame->self, name, v, cache);
     return v;
 }
 
@@ -325,7 +325,7 @@ node_super_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
                               ? running_block->defining_method
                               : c->current_frame->method;
     if (!m || !m->defining_class) return Qfalse;
-    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
     extern struct korb_method *korb_class_find_super_method_n(
         const struct korb_class *, const struct korb_class *, ID,
         uint16_t, uint16_t *);
@@ -838,17 +838,17 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
         }
     }
     struct korb_class *prev_class = c->current_class;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
     struct korb_cref *prev_cref = c->cref;
     c->current_class = klass;
-    c->self = (VALUE)klass;
+    c->current_frame->self = (VALUE)klass;
     c->cref = &new_cref;
     VALUE *fp_lo = c->fp;
     VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->cref = prev_cref;
     /* Snapshot any Proc constant captured into the class body whose env
      * still points into the dying class-body fp range.  Required for
@@ -872,7 +872,7 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
      * korb_funcall, all of which can fire GC and move it. */
     VALUE r;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = c->self;                                   /* prev_self */
+        rs[0] = c->current_frame->self;                                   /* prev_self */
         /* Look up existing constant from host (= re-read each time). */
         #define HOST_K (c->cref ? c->cref->klass : c->current_class)
         VALUE existing = korb_const_get(HOST_K, name);
@@ -909,12 +909,12 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
         struct korb_cref new_cref = { .klass = (struct korb_class *)rs[1], .prev = c->cref };
         struct korb_cref *prev_cref = c->cref;
         c->current_class = (struct korb_class *)rs[1];
-        c->self = rs[1];
+        c->current_frame->self = rs[1];
         c->cref = &new_cref;
         VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
         r = body ? EVAL_ARG(c, body) : Qnil;
         c->current_class = prev_class;
-        c->self = rs[0];
+        c->current_frame->self = rs[0];
         c->cref = prev_cref;
         korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
@@ -926,7 +926,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
 {
     VALUE r;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = c->self;  /* prev_self */
+        rs[0] = c->current_frame->self;  /* prev_self */
         #define HOST_K (c->cref ? c->cref->klass : c->current_class)
         VALUE existing = korb_const_get(HOST_K, name);
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
@@ -948,12 +948,12 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
         struct korb_cref new_cref = { .klass = (struct korb_class *)rs[1], .prev = c->cref };
         struct korb_cref *prev_cref = c->cref;
         c->current_class = (struct korb_class *)rs[1];
-        c->self = rs[1];
+        c->current_frame->self = rs[1];
         c->cref = &new_cref;
         VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
         r = body ? EVAL_ARG(c, body) : Qnil;
         c->current_class = prev_class;
-        c->self = rs[0];
+        c->current_frame->self = rs[0];
         c->cref = prev_cref;
         korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
@@ -969,7 +969,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
      * dispatch directly into the SD body, so a hot self-call (e.g.
      * `render_pixel` from the per-frame loop) avoids a function-pointer
      * jump per call. */
-    return korb_dispatch_call_cached(c, n, c->self, name, argc, arg_index, NULL, mc);
+    return korb_dispatch_call_cached(c, n, c->current_frame->self, name, argc, arg_index, NULL, mc);
 }
 
 NODE_DEF
@@ -1003,13 +1003,13 @@ NODE_DEF
 node_func_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
 {
     VALUE block = blk ? EA(c, blk) : Qnil;
-    return korb_dispatch_call_cached(c, n, c->self, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+    return korb_dispatch_call_cached(c, n, c->current_frame->self, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
 }
 
 NODE_DEF @noinline
 node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
+    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->cref);
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     /* Capture enclosing-method's fp for non-local return targeting. */
     /* Capture the lexically-enclosing method's frame for non-local
@@ -1038,7 +1038,7 @@ node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 NODE_DEF @noinline
 node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
+    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     ((struct korb_proc *)p)->return_target_frame =
@@ -1059,7 +1059,7 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
 NODE_DEF @noinline
 node_block_literal_kw(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
+    VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     ((struct korb_proc *)p)->kwh_save_slot = kwh_save_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
@@ -1896,7 +1896,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
      * the calling frame's super_skip_n so that when a module is both
      * prepended and included on the same class, super lands past the
      * right occurrence. */
-    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
     extern struct korb_method *korb_class_find_super_method_n(
         const struct korb_class *, const struct korb_class *, ID,
         uint16_t, uint16_t *);
@@ -1912,7 +1912,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
         return Qnil;
     }
     if (sm->type == KORB_METHOD_CFUNC) {
-        return sm->u.cfunc.func(c, c->self, argc, &c->fp[arg_index]);
+        return sm->u.cfunc.func(c, c->current_frame->self, argc, &c->fp[arg_index]);
     }
     if (sm->type == KORB_METHOD_PROC) {
         /* Super to a define_method'd proc — dispatch via proc_call so
@@ -1933,7 +1933,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = sm;
-    frame.self = c->self;
+    frame.self = c->current_frame->self;
     frame.block = current_block;
     frame.caller_node = n;
     frame.fp = new_fp;
@@ -1977,7 +1977,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
         korb_raise(c, NULL, "super called outside of method");
         return Qnil;
     }
-    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
     extern struct korb_method *korb_class_find_super_method_n(
         const struct korb_class *, const struct korb_class *, ID,
         uint16_t, uint16_t *);
@@ -2000,7 +2000,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     if (sm->type == KORB_METHOD_CFUNC) {
         struct korb_proc *prev_block = current_block;
         current_block = blk_proc;
-        VALUE r = sm->u.cfunc.func(c, c->self, argc, &c->fp[arg_index]);
+        VALUE r = sm->u.cfunc.func(c, c->current_frame->self, argc, &c->fp[arg_index]);
         current_block = prev_block;
         return r;
     }
@@ -2014,7 +2014,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = sm;
-    frame.self = c->self;
+    frame.self = c->current_frame->self;
     frame.block = blk_proc;  /* explicit block overrides caller's */
     frame.caller_node = n;
     frame.fp = new_fp;
@@ -2092,7 +2092,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     struct korb_method *m = (running_block && running_block->defining_method)
                               ? running_block->defining_method
                               : c->current_frame->method;
-    struct korb_class *recv_klass = korb_class_of_class(c->self);
+    struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
     extern struct korb_method *korb_class_find_super_method_n(
         const struct korb_class *, const struct korb_class *, ID,
         uint16_t, uint16_t *);
@@ -2109,7 +2109,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
         struct korb_method *mm = korb_class_find_method(recv_klass, korb_intern("method_missing"));
         if (mm && mm->defining_class != korb_vm->object_class) {
             VALUE name_sym = korb_id2sym(m->name);
-            return korb_funcall(c, c->self, korb_intern("method_missing"), 1, &name_sym);
+            return korb_funcall(c, c->current_frame->self, korb_intern("method_missing"), 1, &name_sym);
         }
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
         korb_raise(c, (struct korb_class *)eNoMethod,
@@ -2164,7 +2164,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
             forward_buf[argc++] = c->fp[m->u.ast.kwh_save_slot];
         }
     }
-    if (sm->type == KORB_METHOD_CFUNC) return sm->u.cfunc.func(c, c->self, argc, forward_buf);
+    if (sm->type == KORB_METHOD_CFUNC) return sm->u.cfunc.func(c, c->current_frame->self, argc, forward_buf);
     VALUE *prev_fp = c->fp;
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);
@@ -2261,7 +2261,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = sm;
-    frame.self = c->self;
+    frame.self = c->current_frame->self;
     frame.block = current_block;
     frame.caller_node = n;
     frame.fp = new_fp;
@@ -2322,29 +2322,29 @@ node_ensure(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
 NODE_DEF @noinline
 node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
 {
-    /* def self.foo — install on c->self's singleton class. */
+    /* def self.foo — install on c->current_frame->self's singleton class. */
     struct korb_class *target;
-    if (BUILTIN_TYPE(c->self) == T_CLASS || BUILTIN_TYPE(c->self) == T_MODULE) {
-        if (korb_obj_frozen_p(c->self)) {
+    if (BUILTIN_TYPE(c->current_frame->self) == T_CLASS || BUILTIN_TYPE(c->current_frame->self) == T_MODULE) {
+        if (korb_obj_frozen_p(c->current_frame->self)) {
             VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
             korb_raise(c, (struct korb_class *)eF,
                        "can't modify frozen %s",
-                       ((struct korb_class *)c->self)->name
-                         ? korb_id_name(((struct korb_class *)c->self)->name) : "Class");
+                       ((struct korb_class *)c->current_frame->self)->name
+                         ? korb_id_name(((struct korb_class *)c->current_frame->self)->name) : "Class");
             return Qnil;
         }
-        target = korb_singleton_class_of((struct korb_class *)c->self);
-    } else if (!SPECIAL_CONST_P(c->self) && BUILTIN_TYPE(c->self) == T_OBJECT) {
+        target = korb_singleton_class_of((struct korb_class *)c->current_frame->self);
+    } else if (!SPECIAL_CONST_P(c->current_frame->self) && BUILTIN_TYPE(c->current_frame->self) == T_OBJECT) {
         /* Top-level `def self.foo`: target the receiver's singleton
          * class.  CRuby installs on main's singleton at top level. */
-        if (korb_obj_frozen_p(c->self)) {
+        if (korb_obj_frozen_p(c->current_frame->self)) {
             VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
             korb_raise(c, (struct korb_class *)eF, "can't modify frozen object");
             return Qnil;
         }
         extern struct korb_class *korb_singleton_class_of_value(VALUE v);
-        struct korb_class *meta = korb_singleton_class_of_value(c->self);
-        target = meta ? meta : korb_class_of_class(c->self);
+        struct korb_class *meta = korb_singleton_class_of_value(c->current_frame->self);
+        target = meta ? meta : korb_class_of_class(c->current_frame->self);
     } else {
         korb_raise(c, NULL, "def self.* outside of class/module");
         return Qnil;
@@ -2366,12 +2366,12 @@ NODE_DEF @noinline
 node_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
 {
     struct korb_class *target;
-    if (BUILTIN_TYPE(c->self) == T_CLASS || BUILTIN_TYPE(c->self) == T_MODULE) {
-        target = korb_singleton_class_of((struct korb_class *)c->self);
-    } else if (!SPECIAL_CONST_P(c->self) && BUILTIN_TYPE(c->self) == T_OBJECT) {
+    if (BUILTIN_TYPE(c->current_frame->self) == T_CLASS || BUILTIN_TYPE(c->current_frame->self) == T_MODULE) {
+        target = korb_singleton_class_of((struct korb_class *)c->current_frame->self);
+    } else if (!SPECIAL_CONST_P(c->current_frame->self) && BUILTIN_TYPE(c->current_frame->self) == T_OBJECT) {
         extern struct korb_class *korb_singleton_class_of_value(VALUE v);
-        struct korb_class *meta = korb_singleton_class_of_value(c->self);
-        target = meta ? meta : korb_class_of_class(c->self);
+        struct korb_class *meta = korb_singleton_class_of_value(c->current_frame->self);
+        target = meta ? meta : korb_class_of_class(c->current_frame->self);
     } else {
         korb_raise(c, NULL, "def self.* outside of class/module");
         return Qnil;
@@ -2466,15 +2466,15 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict 
                               korb_id_name(korb_class_of_class(recv)->name));
         return Qnil;
     }
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     struct korb_class *prev_class = c->current_class;
     struct korb_cref *prev_cref = c->cref;
     struct korb_cref new_cref = { .klass = meta, .prev = c->cref };
-    c->self = (VALUE)meta;
+    c->current_frame->self = (VALUE)meta;
     c->current_class = meta;
     c->cref = &new_cref;
     VALUE r = EVAL_ARG(c, body);
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->current_class = prev_class;
     c->cref = prev_cref;
     return r;
@@ -2632,7 +2632,7 @@ node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 NODE_DEF
 node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, uint32_t is_method, struct method_cache *mc)
 {
-    VALUE recv_val = is_method ? EA(c, recv) : c->self;
+    VALUE recv_val = is_method ? EA(c, recv) : c->current_frame->self;
     VALUE args_array = EA(c, args_node);
     long n_args = 0;
     if (BUILTIN_TYPE(args_array) == T_ARRAY) {
@@ -2710,16 +2710,16 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
         korb_const_set(parent, name, (VALUE)klass);
     }
     struct korb_class *prev_class = c->current_class;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
     struct korb_cref *prev_cref = c->cref;
     c->current_class = klass;
-    c->self = (VALUE)klass;
+    c->current_frame->self = (VALUE)klass;
     c->cref = &new_cref;
     VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->cref = prev_cref;
     korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     return r;
@@ -2771,16 +2771,16 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         korb_const_set(parent, name, (VALUE)klass);
     }
     struct korb_class *prev_class = c->current_class;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
     struct korb_cref *prev_cref = c->cref;
     c->current_class = klass;
-    c->self = (VALUE)klass;
+    c->current_frame->self = (VALUE)klass;
     c->cref = &new_cref;
     VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->cref = prev_cref;
     korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     return r;
@@ -2828,16 +2828,16 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
         korb_const_set(parent, name, (VALUE)mod);
     }
     struct korb_class *prev_class = c->current_class;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     struct korb_cref new_cref = { .klass = mod, .prev = c->cref };
     struct korb_cref *prev_cref = c->cref;
     c->current_class = mod;
-    c->self = (VALUE)mod;
+    c->current_frame->self = (VALUE)mod;
     c->cref = &new_cref;
     VALUE *fp_lo = c->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_class = prev_class;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->cref = prev_cref;
     korb_proc_snapshot_env_if_in_frame((VALUE)mod, fp_lo, fp_hi + 1024);
     return r;

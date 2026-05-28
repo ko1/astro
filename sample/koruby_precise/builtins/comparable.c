@@ -565,14 +565,14 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
      * every method on TM). */
     extern struct korb_proc *current_block;
     if (current_block) {
-        VALUE prev_self = c->self;
+        VALUE prev_self = c->current_frame->self;
         struct korb_class *prev_class = c->current_class;
         struct korb_cref *prev_cref = c->cref;
         struct korb_cref new_cref = { .klass = klass, .prev = c->cref };
         struct korb_cref blk_cref = { .klass = klass, .prev = current_block->cref };
         struct korb_cref *prev_blk_cref = current_block->cref;
         VALUE prev_blk_self = current_block->self;
-        c->self = (VALUE)klass;
+        c->current_frame->self = (VALUE)klass;
         c->current_class = klass;
         c->cref = &new_cref;
         current_block->self = (VALUE)klass;
@@ -581,7 +581,7 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_yield(c, 1, av0);
         current_block->self = prev_blk_self;
         current_block->cref = prev_blk_cref;
-        c->self = prev_self;
+        c->current_frame->self = prev_self;
         c->current_class = prev_class;
         c->cref = prev_cref;
         if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }

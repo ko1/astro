@@ -257,7 +257,7 @@ static struct korb_class *cvar_owner_walk_(struct korb_class *k, ID name) {
 VALUE korb_cvar_get(CTX *c, ID name) {
     struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
-    if (!k) k = korb_class_of_class(c->self);
+    if (!k) k = korb_class_of_class(c->current_frame->self);
     /* Top-level read of @@cvar — RuntimeError per CRuby. */
     /* Top-level access (no enclosing class/module body) — RuntimeError.
      * Toplevel's cref->prev is NULL and the resolved class is Object's
@@ -301,7 +301,7 @@ VALUE korb_cvar_get(CTX *c, ID name) {
 void korb_cvar_set(CTX *c, ID name, VALUE val) {
     struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
-    if (!k) k = korb_class_of_class(c->self);
+    if (!k) k = korb_class_of_class(c->current_frame->self);
     if (!k) return;
     /* CRuby: `@@cvar = x` at top level (no enclosing class/module) is a
      * RuntimeError.  Detect "top level" as cref == NULL and current self
@@ -329,7 +329,7 @@ void korb_cvar_set(CTX *c, ID name, VALUE val) {
 bool korb_cvar_defined(CTX *c, ID name) {
     struct korb_class *k = c->cref ? c->cref->klass : c->current_class;
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
-    if (!k) k = korb_class_of_class(c->self);
+    if (!k) k = korb_class_of_class(c->current_frame->self);
     return k && cvar_owner_(k, name) != NULL;
 }
 
@@ -808,7 +808,7 @@ struct korb_method *korb_class_find_method(const struct korb_class *klass, ID na
 }
 
 /* Find the next method in receiver's class MRO after `defining_class`.
- * Used for `super`: receiver_klass = class of `c->self`,
+ * Used for `super`: receiver_klass = class of `c->current_frame->self`,
  * defining_class = current method's defining_class.
  *
  * MRO order at each class level:
@@ -2202,7 +2202,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
         fp = blk->env;
     }
     VALUE *prev_fp = c->fp;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     /* Auto-destructure: block with N params yielded a single Array of size M
      * → assign array elements to params (Ruby block calling convention).
      * Skip when the block has a *rest — destructuring would steal the rest's
@@ -2349,7 +2349,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     if (blk->kwh_save_slot >= 0) {
         fp[blk->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
     }
-    c->self = blk->self;
+    c->current_frame->self = blk->self;
     /* Install the block's lexical cref so const lookup inside the block
      * uses the lexical scope at block-creation time, not the dynamic
      * caller's. */
@@ -2380,7 +2380,7 @@ redo_block:
         for (uint32_t i = 0; i < blk->param_base; i++) outer_env_ptr[i] = fp[i];
     }
     c->fp = prev_fp;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->cref = prev_cref;
     current_block = prev_block;
     running_block = prev_running;
@@ -3218,7 +3218,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
                                   struct korb_proc *block, struct method_cache *mc)
 {
     VALUE *prev_fp = c->fp;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     struct korb_proc *prev_block = current_block;
     struct korb_cref *prev_cref = c->cref;
     current_block = block;
@@ -3477,7 +3477,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (mc->kwh_save_slot >= 0) {
         c->fp[mc->kwh_save_slot] = UNDEF_P(peeled_kwh) ? korb_hash_new() : peeled_kwh;
     }
-    c->self = recv;
+    c->current_frame->self = recv;
 
     /* Frame: .prev, .method (for super), .self / .caller_node (for
      * backtrace), .block (for block_given?), and .fp / .locals_cnt
@@ -3516,7 +3516,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
         korb_proc_snapshot_env_maybe(c->state_value, frame_lo, frame_hi);
     }
     c->fp = prev_fp;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->cref = prev_cref;
     current_block = prev_block;
 
@@ -3638,8 +3638,8 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     if (!p) return Qnil;
     /* args live at fp[arg_index..arg_index+argc-1]; pass that view. */
     VALUE *argv = &c->fp[arg_index];
-    VALUE prev_self = c->self;
-    c->self = recv;
+    VALUE prev_self = c->current_frame->self;
+    c->current_frame->self = recv;
     /* Temporarily rebind the proc's `self` to the dispatch receiver:
      * define_method'd procs run with self = the call receiver, not the
      * class body's self captured at proc creation.  We restore after
@@ -3656,7 +3656,7 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     VALUE r = proc_call(c, (VALUE)p, (int)argc, argv);
     p->self = prev_p_self;
     p->is_lambda = prev_is_lambda;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     return r;
 }
 
@@ -3744,7 +3744,7 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
                 if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
                       (ch >= '0' && ch <= '9') || ch == '_')) { bareword = false; break; }
             }
-            if (recv == c->self && bareword) {
+            if (recv == c->current_frame->self && bareword) {
                 korb_raise(c, (struct korb_class *)eNo,
                            "undefined local variable or method '%s' for %s",
                            nm, korb_id_name(klass->name));
@@ -3764,11 +3764,11 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
             /* No mc — slow one-shot path.  Synthesize a temp cache and dispatch. */
             struct method_cache tmp = {0};
             korb_method_cache_fill(&tmp, klass, m);
-            if (m->visibility == KORB_VIS_PRIVATE && recv != c->self) {
+            if (m->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
                 return korb_dispatch_visibility_raise(c, m, name, klass, recv);
             }
             if (m->visibility == KORB_VIS_PROTECTED) {
-                struct korb_class *caller_klass = korb_class_of_class(c->self);
+                struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
                 bool ok = false;
                 for (struct korb_class *k = caller_klass; k; k = k->super) {
                     if (k == m->defining_class) { ok = true; break; }
@@ -3781,11 +3781,11 @@ VALUE korb_dispatch_call(CTX *c, struct Node *callsite, VALUE recv, ID name,
     /* Visibility check on the freshly-filled mc (cache miss path) and
      * for cache hits — same logic as the inline fast path. */
     if (UNLIKELY(mc->method && mc->method->visibility != KORB_VIS_PUBLIC)) {
-        if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->self) {
+        if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
             return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
         }
         if (mc->method->visibility == KORB_VIS_PROTECTED) {
-            struct korb_class *caller_klass = korb_class_of_class(c->self);
+            struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
             bool ok = false;
             for (struct korb_class *k = caller_klass; k; k = k->super) {
                 if (k == mc->method->defining_class) { ok = true; break; }
@@ -3946,10 +3946,10 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
                                struct korb_class *defining_class,
                                VALUE recv, ID name, int argc, VALUE *argv) {
     if (m->type == KORB_METHOD_CFUNC) {
-        VALUE prev_self = c->self;
-        c->self = recv;
+        VALUE prev_self = c->current_frame->self;
+        c->current_frame->self = recv;
         VALUE r = m->u.cfunc.func(c, recv, argc, argv);
-        c->self = prev_self;
+        c->current_frame->self = prev_self;
         return r;
     }
     /* Proc-method (define_method'd): invoke the captured Proc with
@@ -3959,10 +3959,10 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         struct korb_proc *p = m->u.proc.proc;
         if (!p) return Qnil;
         extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE prev_self = c->self;
-        c->self = recv;
+        VALUE prev_self = c->current_frame->self;
+        c->current_frame->self = recv;
         VALUE r = proc_call(c, (VALUE)p, argc, argv);
-        c->self = prev_self;
+        c->current_frame->self = prev_self;
         return r;
     }
     /* AST: same as korb_dispatch_call but argv is ad-hoc */
@@ -3990,7 +3990,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     }
     VALUE *prev_fp = c->fp;
     VALUE *prev_sp = c->sp;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     /* push frame after all current locals; we don't know exactly the boundary,
      * so use sp as upper bound.  Restore sp at end so repeated send-style
      * dispatches don't leak high-water mark. */
@@ -4035,7 +4035,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     /* (Locals beyond total_params already initialized to Qnil by the
      * zero-fill above; nothing else needed here.) */
     c->fp = new_fp;
-    c->self = recv;
+    c->current_frame->self = recv;
     /* &blk binding: when the method declares `&name`, copy the current
      * block into that slot so funcall_with_block delivers it to the
      * body.  Without this, `Foo.new { ... }`'s block doesn't reach
@@ -4079,7 +4079,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     c->current_frame = frame2.prev;
     c->fp = prev_fp;
     c->sp = prev_sp;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->cref = prev_cref2;
     if (c->state == KORB_RETURN) {
         r = c->state_value;
@@ -4147,6 +4147,12 @@ void korb_init_builtins(void); /* defined in builtins.c */
  * koruby_setup_ctx (called from main after korb_runtime_init returns)
  * reuses this same CTX — it just attaches self / cref / current_file. */
 struct CTX_struct koruby_bootstrap_ctx;
+/* Top-level sentinel frame so c->current_frame is NEVER NULL during
+ * execution.  All `self` reads go through `c->current_frame->self` now
+ * (= c->self field has been removed from CTX); without a sentinel,
+ * top-level code would NULL-deref.  Initialized post-main_obj-creation
+ * in korb_runtime_init. */
+struct korb_frame koruby_top_sentinel_frame;
 
 void korb_runtime_init(void) {
     init_well_known_ids();
@@ -4172,6 +4178,17 @@ void korb_runtime_init(void) {
     c->sp = c->stack_base;
     c->env = c->stack_base;
     c->state = KORB_NORMAL;
+    /* Sentinel top-level frame — self gets set to main_obj later.  For
+     * now (during bootstrap class creation) self is Qnil — bootstrap
+     * code shouldn't dereference self. */
+    koruby_top_sentinel_frame = (struct korb_frame){
+        .self       = Qnil,
+        .fp         = c->stack_base,
+        .last_line  = Qnil,
+        .last_match = Qnil,
+        /* rest default-zero (prev=NULL, method=NULL, block=NULL, ...) */
+    };
+    c->current_frame = &koruby_top_sentinel_frame;
     korb_vm->current_ctx = c;
     aro_gc_init(c);   /* binds c->astro_gc; precise-GC ready after this. */
 
@@ -4284,6 +4301,10 @@ void korb_runtime_init(void) {
      * (= rooted by visit_roots), so 2 allocs in sequence are safe. */
     korb_vm->main_obj_class = korb_class_new(korb_intern("Main"), korb_vm->object_class, T_OBJECT);
     korb_vm->main_obj = korb_object_new(korb_vm->main_obj_class);
+
+    /* main_obj is now alive — update the sentinel frame's self so
+     * top-level code sees main_obj as self. */
+    koruby_top_sentinel_frame.self = korb_vm->main_obj;
 
     /* Exception class hierarchy.  CRuby's tree:
      *   Exception
@@ -4564,7 +4585,6 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     /* Save / push fresh top-level state for the loaded file */
     VALUE *prev_fp = c->fp;
     VALUE *prev_sp = c->sp;
-    VALUE prev_self = c->self;
     struct korb_class *prev_class = c->current_class;
     struct korb_cref *prev_cref = c->cref;
     const char *prev_file = c->current_file;
@@ -4572,20 +4592,23 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     extern struct korb_proc *running_block;
     struct korb_proc *prev_running_block = running_block;
 
-    /* Top-level frame for the new file: stack just past current sp.
-     * Note: sp will be extended by EVAL_node_scope (= the script's outer
-     * node_scope dispatcher) which knows envsize.  We just save prev_sp
-     * here so it's restored on exit (= dead top-level locals don't stay
-     * in the root-scan range). */
+    /* Top-level frame for the new file.  Push a fresh frame with
+     * self=main_obj — visit_roots walks the frame chain so the heap
+     * pointer stays fresh across body GCs.  Loaded file's top-level
+     * def's are not inside a method body — and not inside a block of
+     * the calling context either, so a stray `return` from within a
+     * block in the loaded file raises LocalJumpError instead of
+     * accidentally targeting the caller's block frame. */
     c->fp = c->sp + 1;
-    c->self = korb_vm->main_obj;
     c->current_class = korb_vm->object_class;
-    /* Loaded file's top-level def's are not inside a method body — and
-     * not inside a block of the calling context either, so a stray
-     * `return` from within a block in the loaded file raises
-     * LocalJumpError instead of accidentally targeting the caller's
-     * block frame. */
-    c->current_frame = NULL;
+    struct korb_frame top_frame = (struct korb_frame){
+        .prev       = NULL,  /* clean caller context for the loaded file */
+        .self       = korb_vm->main_obj,
+        .fp         = c->fp,
+        .last_line  = Qnil,
+        .last_match = Qnil,
+    };
+    c->current_frame = &top_frame;
     running_block = NULL;
 
     /* Reset cref to [Object] for top-level execution */
@@ -4608,7 +4631,6 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
 
     c->fp = prev_fp;
     c->sp = prev_sp;
-    c->self = prev_self;
     c->current_class = prev_class;
     c->cref = prev_cref;
     c->current_file = prev_file;
@@ -4624,13 +4646,13 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
     NODE *ast = koruby_parse(src, len, filename ? filename : "(eval)");
     if (!ast) return Qnil;
     VALUE *prev_fp = c->fp;
-    VALUE prev_self = c->self;
+    VALUE prev_self = c->current_frame->self;
     VALUE *prev_sp = c->sp;
     struct korb_class *prev_class = c->current_class;
     struct korb_cref *prev_cref = c->cref;
     const char *prev_file = c->current_file;
     c->fp = c->sp + 1;
-    c->self = recv;
+    c->current_frame->self = recv;
     struct korb_class *recv_klass = korb_class_of_class(recv);
     c->current_class = recv_klass;
     struct korb_cref top_cref = { .klass = recv_klass, .prev = NULL };
@@ -4640,7 +4662,7 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
     VALUE r = EVAL(c, ast, c->fp);
     c->fp = prev_fp;
     c->sp = prev_sp;
-    c->self = prev_self;
+    c->current_frame->self = prev_self;
     c->current_class = prev_class;
     c->cref = prev_cref;
     c->current_file = prev_file;
@@ -4728,15 +4750,15 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         for (uint32_t i = 0; i < blk->params_cnt && i < (uint32_t)fib->argc; i++) {
             fib->frame[blk->param_base + i] = fib->args[i];
         }
-        VALUE prev_self = c->self;
-        c->self = blk->self;
+        VALUE prev_self = c->current_frame->self;
+        c->current_frame->self = blk->self;
         struct korb_proc *prev_block = current_block;
         current_block = NULL;
         struct korb_cref *prev_cref = c->cref;
         if (blk->cref) c->cref = blk->cref;
         VALUE result = blk->body ? EVAL(c, blk->body, fib->frame) : Qnil;
         c->cref = prev_cref;
-        c->self = prev_self;
+        c->current_frame->self = prev_self;
         current_block = prev_block;
         fib->result = result;
     }

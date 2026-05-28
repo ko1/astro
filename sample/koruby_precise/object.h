@@ -733,14 +733,14 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
     struct korb_class *klass = korb_class_of_class(recv);
     if (LIKELY(mc && mc->serial == korb_g_method_serial && mc->klass == klass)) {
         /* Visibility check: private methods need an implicit-self call
-         * (recv == c->self).  Protected methods need the caller's class
+         * (recv == c->current_frame->self).  Protected methods need the caller's class
          * to include the target's class in its hierarchy. */
         if (UNLIKELY(mc->method && mc->method->visibility != KORB_VIS_PUBLIC)) {
-            if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->self) {
+            if (mc->method->visibility == KORB_VIS_PRIVATE && recv != c->current_frame->self) {
                 return korb_dispatch_visibility_raise(c, mc->method, name, klass, recv);
             }
             if (mc->method->visibility == KORB_VIS_PROTECTED) {
-                struct korb_class *caller_klass = korb_class_of_class(c->self);
+                struct korb_class *caller_klass = korb_class_of_class(c->current_frame->self);
                 struct korb_class *target = mc->method->defining_class;
                 bool ok = false;
                 for (struct korb_class *k = caller_klass; k; k = k->super) {
@@ -823,12 +823,12 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
                blk->rest_slot < 0 && blk->kwh_save_slot < 0)) {
         VALUE arg = argv[0];  /* snapshot before fp swap */
         VALUE *prev_fp = c->fp;
-        VALUE prev_self = c->self;
+        VALUE prev_self = c->current_frame->self;
         struct korb_cref *prev_cref = c->cref;
         struct korb_proc *prev_block = current_block;
         VALUE *bfp = blk->env;
         bfp[blk->param_base] = arg;
-        c->self = blk->self;
+        c->current_frame->self = blk->self;
         c->fp = bfp;
         if (blk->cref) c->cref = blk->cref;
         /* Lexical block target: yield inside this block goes to the
@@ -844,7 +844,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
             goto redo_yield;
         }
         c->fp = prev_fp;
-        c->self = prev_self;
+        c->current_frame->self = prev_self;
         c->cref = prev_cref;
         current_block = prev_block;
         running_block = prev_running;

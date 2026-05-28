@@ -248,7 +248,11 @@ typedef struct CTX_struct {
     VALUE *fp;            /* current frame: locals and arg slots */
     VALUE *sp;            /* high-water mark for GC scanning */
     VALUE *env;           /* root scan lower bound — set at init (= stack_base) */
-    VALUE self;
+    /* `self` lives in `current_frame->self`.  Authoritative source so
+     * GC root scan (= frame chain) updates it automatically — no
+     * C-local save/restore needed; just push/pop a frame at each
+     * scope boundary that changes self (class/module body, prologue,
+     * instance_eval, etc.). */
     struct korb_class *current_class; /* def-target class (for top-level: Object) */
     struct korb_cref *cref;           /* lexical const scope */
     const char *current_file;       /* for backtrace + require_relative */
