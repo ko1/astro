@@ -3046,57 +3046,65 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
 NODE_DEF @noinline
 node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent_expr, ID name, NODE *body)
 {
-    VALUE parent_v = EA(c, parent_expr);
-    if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
+    /* Pin parent_v at sp[0] (= survives korb_const_get / korb_module_new /
+     * korb_const_set under STRESS+PURGE).  mod also pinned at sp[1] so
+     * subsequent allocs (= synthetic frame, body EVAL) keep it fresh. */
+    sp[0] = 0; sp[1] = 0;
+    c->sp = sp + 2;
+    sp[0] = EA(c, parent_expr);
+    if (BUILTIN_TYPE(sp[0]) != T_CLASS && BUILTIN_TYPE(sp[0]) != T_MODULE) {
         korb_raise_type_error(c, "%s is not a class/module",
-                              korb_id_name(korb_class_of_class(parent_v)->name));
+                              korb_id_name(korb_class_of_class(sp[0])->name));
+        c->sp = sp;
         return Qnil;
     }
-    struct korb_class *parent = (struct korb_class *)parent_v;
     {
         extern bool korb_const_is_private(const struct korb_class *, ID);
-        if (korb_const_is_private(parent, name)) {
+        if (korb_const_is_private((struct korb_class *)sp[0], name)) {
             bool in_scope = false;
             for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
                 if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
-                if (cr->klass == parent) { in_scope = true; break; }
+                if (cr->klass == (struct korb_class *)sp[0]) { in_scope = true; break; }
             }
             if (!in_scope) {
                 VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                struct korb_class *p = (struct korb_class *)sp[0];
                 korb_raise(c, (struct korb_class *)eName,
                            "private constant %s::%s referenced",
-                           parent->name ? korb_id_name(parent->name) : "?",
+                           p->name ? korb_id_name(p->name) : "?",
                            korb_id_name(name));
+                c->sp = sp;
                 return Qnil;
             }
         }
     }
-    struct korb_class *mod;
-    VALUE existing = korb_const_get(parent, name);
+    VALUE existing = korb_const_get((struct korb_class *)sp[0], name);
     if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
-        mod = (struct korb_class *)existing;
+        sp[1] = existing;
     } else if (!UNDEF_P(existing)) {
         korb_raise_type_error(c, "%s is not a module",
                               korb_id_name(name));
+        c->sp = sp;
         return Qnil;
     } else {
-        mod = korb_module_new(name);
-        mod->name = 0;
-        korb_const_set(parent, name, (VALUE)mod);
+        sp[1] = (VALUE)korb_module_new(name);
+        ((struct korb_class *)sp[1])->name = 0;
+        korb_const_set((struct korb_class *)sp[0], name, sp[1]);
     }
     struct korb_class *prev_class = c->current_frame->current_class;
     VALUE prev_self = c->current_frame->self;
-    struct korb_cref new_cref = { .klass = mod, .prev = c->current_frame->cref };
+    struct korb_cref new_cref = { .klass = (struct korb_class *)sp[1], .prev = c->current_frame->cref };
     struct korb_cref *prev_cref = c->current_frame->cref;
-    c->current_frame->current_class = mod;
-    c->current_frame->self = (VALUE)mod;
+    c->current_frame->current_class = (struct korb_class *)sp[1];
+    c->current_frame->self = sp[1];
     c->current_frame->cref = &new_cref;
     VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp;
     VALUE r = body ? EVAL_ARG(c, body) : Qnil;
     c->current_frame->current_class = prev_class;
     c->current_frame->self = prev_self;
     c->current_frame->cref = prev_cref;
-    korb_proc_snapshot_env_if_in_frame((VALUE)mod, fp_lo, fp_hi + 1024);
+    korb_proc_snapshot_env_if_in_frame(sp[1], fp_lo, fp_hi + 1024);
+    c->sp = sp;
     return r;
 }
 
