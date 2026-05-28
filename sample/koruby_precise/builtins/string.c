@@ -303,44 +303,67 @@ static VALUE str_to_sym(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_format_self(CTX *c, VALUE self, int argc, VALUE *argv);
 
 static VALUE str_split(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_string *s = (struct korb_string *)self;
-    VALUE r = korb_ary_new();
+    /* Pin self + sep (= argv[0]) + result array + per-iteration piece
+     * across korb_str_new / korb_ary_new / korb_ary_push / korb_yield
+     * GC fires.  Without this, under STRESS the C-local `s` goes
+     * stale (s is arena T_STRING) and s->len / s->ptr return moved-
+     * out address fields, producing negative lengths that abort
+     * korb_xmalloc with SIGABRT. */
     bool has_block = korb_block_given();
-    /* When a block is given, yield each piece and return self.  CRuby's
-     * String#split{|x|} returns the receiver unchanged. */
-    #define EMIT(v) do { \
-        if (has_block) { VALUE _v_ = (v); korb_yield(c, 1, &_v_); } \
-        else korb_ary_push(r, (v)); \
-    } while (0)
-    if (argc == 0 || NIL_P(argv[0])) {
-        /* split on whitespace */
-        long i = 0;
-        while (i < s->len) {
-            while (i < s->len && (s->ptr[i] == ' ' || s->ptr[i] == '\t' || s->ptr[i] == '\n')) i++;
-            if (i >= s->len) break;
-            long start = i;
-            while (i < s->len && s->ptr[i] != ' ' && s->ptr[i] != '\t' && s->ptr[i] != '\n') i++;
-            EMIT(korb_str_new(s->ptr + start, i - start));
+    VALUE ret = Qnil;
+    int rs_cap = 4;
+    ARO_ROOT_SCOPE_START(c, rs, 4) {
+        (void)rs_cap;
+        rs[0] = self;
+        rs[1] = (argc >= 1) ? argv[0] : Qnil;
+        rs[2] = korb_ary_new();           /* result */
+        /* rs[3] holds the per-iter piece across korb_ary_push / yield */
+        #define EMIT(v) do { \
+            rs[3] = (v); \
+            if (has_block) korb_yield(c, 1, &rs[3]); \
+            else korb_ary_push(rs[2], rs[3]); \
+        } while (0)
+        struct korb_string *s = (struct korb_string *)rs[0];
+        if (argc == 0 || NIL_P(rs[1])) {
+            long i = 0;
+            while (i < s->len) {
+                while (i < s->len && (s->ptr[i] == ' ' || s->ptr[i] == '\t' || s->ptr[i] == '\n')) i++;
+                if (i >= s->len) break;
+                long start = i;
+                while (i < s->len && s->ptr[i] != ' ' && s->ptr[i] != '\t' && s->ptr[i] != '\n') i++;
+                EMIT(korb_str_new(s->ptr + start, i - start));
+                s = (struct korb_string *)rs[0];  /* reload */
+            }
+            ret = has_block ? rs[0] : rs[2];
+        } else if (BUILTIN_TYPE(rs[1]) != T_STRING) {
+            ret = has_block ? rs[0] : rs[2];
+        } else {
+            struct korb_string *sep = (struct korb_string *)rs[1];
+            if (sep->len == 0) {
+                for (long i = 0; i < s->len; i++) {
+                    EMIT(korb_str_new(s->ptr + i, 1));
+                    s = (struct korb_string *)rs[0];  /* reload */
+                    sep = (struct korb_string *)rs[1];
+                }
+                ret = has_block ? rs[0] : rs[2];
+            } else {
+                long start = 0;
+                for (long i = 0; i + sep->len <= s->len; ) {
+                    if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
+                        EMIT(korb_str_new(s->ptr + start, i - start));
+                        s = (struct korb_string *)rs[0];  /* reload */
+                        sep = (struct korb_string *)rs[1];
+                        i += sep->len;
+                        start = i;
+                    } else i++;
+                }
+                EMIT(korb_str_new(s->ptr + start, s->len - start));
+                ret = has_block ? rs[0] : rs[2];
+            }
         }
-        return has_block ? self : r;
-    }
-    if (BUILTIN_TYPE(argv[0]) != T_STRING) return has_block ? self : r;
-    struct korb_string *sep = (struct korb_string *)argv[0];
-    if (sep->len == 0) {
-        for (long i = 0; i < s->len; i++) EMIT(korb_str_new(s->ptr + i, 1));
-        return has_block ? self : r;
-    }
-    long start = 0;
-    for (long i = 0; i + sep->len <= s->len; ) {
-        if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
-            EMIT(korb_str_new(s->ptr + start, i - start));
-            i += sep->len;
-            start = i;
-        } else i++;
-    }
-    EMIT(korb_str_new(s->ptr + start, s->len - start));
-    #undef EMIT
-    return has_block ? self : r;
+        #undef EMIT
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 /* Compute the chomp length given an optional argument.
