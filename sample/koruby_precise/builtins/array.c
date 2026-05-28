@@ -464,8 +464,18 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
     } else {
         r = korb_funcall(c, x, korb_intern("<=>"), 1, &y);
     }
-    if (!FIXNUM_P(r)) return 0;
-    return FIX2LONG(r);
+    /* CRuby: sort block return is used by sign — Fixnum sign extracted
+     * directly; Bignum compared against 0 via korb_int_cmp; Float by
+     * sign; nil → caller raises ArgumentError (we treat as equal for now). */
+    if (FIXNUM_P(r)) return FIX2LONG(r);
+    if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_BIGNUM) {
+        return korb_int_cmp(r, INT2FIX(0));
+    }
+    if (KORB_IS_FLOAT(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT)) {
+        double d = korb_num2dbl(r);
+        return d < 0 ? -1 : d > 0 ? 1 : 0;
+    }
+    return 0;
 }
 
 static void ary_sort_in_place(CTX *c, struct korb_array *ra, bool has_block) {
@@ -717,18 +727,17 @@ static VALUE ary_one_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_min(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
-    /* Pin the running-min `m` and the per-iteration probe value across
-     * korb_funcall's GC fires.  Without this, C-local `m` goes stale
-     * when GC moves the receiver under STRESS, so the next korb_funcall
-     * passes a moved-out address and method dispatch SEGVs in klass
-     * deref. */
+    bool has_block = korb_block_given();
+    /* Pin running-min + per-iter probe across korb_funcall — see ary_sort_compare
+     * for sign-extract semantics (Fixnum/Bignum/Float). */
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = a->ptr[0];   /* running min */
+        rs[0] = a->ptr[0];
         for (long i = 1; i < a->len; i++) {
             rs[1] = a->ptr[i];
-            VALUE cmp = korb_funcall(c, rs[0], korb_intern("<=>"), 1, &rs[1]);
-            if (FIXNUM_P(cmp) && FIX2LONG(cmp) > 0) rs[0] = rs[1];
+            long cmp = ary_sort_compare(c, rs[0], rs[1], has_block);
+            if (c->state != KORB_NORMAL) break;
+            if (cmp > 0) rs[0] = rs[1];
         }
         ret = rs[0];
     } ARO_ROOT_SCOPE_END(c, rs);
@@ -738,14 +747,16 @@ static VALUE ary_min(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_max(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
+    bool has_block = korb_block_given();
     /* Pin running-max + per-iter probe across korb_funcall — see ary_min. */
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = a->ptr[0];
         for (long i = 1; i < a->len; i++) {
             rs[1] = a->ptr[i];
-            VALUE cmp = korb_funcall(c, rs[0], korb_intern("<=>"), 1, &rs[1]);
-            if (FIXNUM_P(cmp) && FIX2LONG(cmp) < 0) rs[0] = rs[1];
+            long cmp = ary_sort_compare(c, rs[0], rs[1], has_block);
+            if (c->state != KORB_NORMAL) break;
+            if (cmp < 0) rs[0] = rs[1];
         }
         ret = rs[0];
     } ARO_ROOT_SCOPE_END(c, rs);
