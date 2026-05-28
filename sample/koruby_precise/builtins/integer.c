@@ -230,17 +230,56 @@ static VALUE int_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE int_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return Qnil;
-    if (FIXNUM_P(self) && FIXNUM_P(argv[0])) {
-        return INT2FIX((intptr_t)self < (intptr_t)argv[0] ? -1 : (intptr_t)self > (intptr_t)argv[0] ? 1 : 0);
+    VALUE other = argv[0];
+    if (FIXNUM_P(self) && FIXNUM_P(other)) {
+        return INT2FIX((intptr_t)self < (intptr_t)other ? -1 : (intptr_t)self > (intptr_t)other ? 1 : 0);
     }
     if ((FIXNUM_P(self) || BUILTIN_TYPE(self) == T_BIGNUM) &&
-        (FIXNUM_P(argv[0]) || BUILTIN_TYPE(argv[0]) == T_BIGNUM)) {
-        return INT2FIX(korb_int_cmp(self, argv[0]));
+        (FIXNUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM))) {
+        return INT2FIX(korb_int_cmp(self, other));
     }
-    if (FLONUM_P(argv[0]) || KORB_IS_FLOAT(argv[0])) {
-        double a = korb_num2dbl(self);
-        double b = korb_num2dbl(argv[0]);
-        return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
+    if (FLONUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_FLOAT)) {
+        double b = korb_num2dbl(other);
+        if (isnan(b)) return Qnil;
+        /* Integer vs ±Infinity: compare via sign instead of double conv. */
+        if (isinf(b)) return INT2FIX(b > 0 ? -1 : 1);
+        /* Convert self to a double precisely or with sign-preserving
+         * fallback.  Bignum > 2^53 may overflow double; compare against
+         * trunc(b) instead so we don't lose precision. */
+        if (FIXNUM_P(self)) {
+            double a = (double)FIX2LONG(self);
+            return INT2FIX(a < b ? -1 : a > b ? 1 : 0);
+        }
+        /* Bignum: compare self against floor(b) as Integer.  If b has a
+         * fractional part, use the integer comparison then refine sign. */
+        double bint = trunc(b);
+        if (bint != b) {
+            /* a is Integer, b is Float with fractional part — compare
+             * a to bint; equal → sign of -fractional. */
+            VALUE bint_v = korb_dbl2int(bint);
+            int cmp = korb_int_cmp(self, bint_v);
+            if (cmp != 0) return INT2FIX(cmp);
+            /* a == bint exactly: result is opposite sign of fractional. */
+            double frac = b - bint;
+            return INT2FIX(frac < 0 ? 1 : -1);
+        }
+        VALUE bint_v = korb_dbl2int(b);
+        return INT2FIX(korb_int_cmp(self, bint_v));
+    }
+    /* Non-numeric: coerce protocol. */
+    if (!SPECIAL_CONST_P(other)) {
+        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt)) {
+            VALUE pair = korb_funcall(c, other, korb_intern("coerce"), 1, &self);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
+                ((struct korb_array *)pair)->len == 2) {
+                struct korb_array *p = (struct korb_array *)pair;
+                return korb_funcall(c, p->ptr[0], korb_intern("<=>"), 1, &p->ptr[1]);
+            }
+        }
     }
     return Qnil;
 }
