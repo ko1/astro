@@ -783,6 +783,10 @@ class Float
     nil
   end
   def divmod(other)
+    raise FloatDomainError, "NaN" if nan?
+    raise FloatDomainError, "NaN" if other.is_a?(Float) && other.nan?
+    raise FloatDomainError, "Infinity" if infinite?
+    raise ZeroDivisionError, "divided by 0" if other == 0
     q = (self / other).floor
     [q, self - q * other]
   end
