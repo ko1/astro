@@ -235,6 +235,56 @@ ARO_ROOT_SCOPE_START を引き続き使用。
   到達していないか、 そもそも visit が走っていない可能性。 詳細 trace
   要。
 
+### 2026-05-29 追加: sp-based / RESULT 返り値 ABI への大規模 refactor 着手
+
+C-local stale 問題と c->state 側流の散漫な伝播を根本解決するため、
+Lua 風の stack-based ABI に全面移行する設計を decision。 baruby_precise
+/ castro / abruby と同じ規約。
+
+#### 新 ABI 規約
+
+| function 種類 | signature | sp の意味 |
+|---|---|---|
+| cfunc | `RESULT cf(CTX *c, int argc, VALUE *sp)` | sp[-argc-1]=self, sp[-argc..-1]=args, sp[0..]=scratch |
+| EVAL_node body | `RESULT EVAL_node_X(CTX *c, NODE *n, VALUE *sp, ...)` | parent の staging top |
+| C API helper | `RESULT h(CTX *c, VALUE *sp)` (fixed arity) / `RESULT h(CTX *c, int argc, VALUE *sp)` (varargs) | sp[-N..-1]=args |
+| 即値 helper | 値で受けてよし (alloc しないもの) | -- |
+
+「sp = この scope の staging top。 過去の値は sp[-N]、 自分の scratch
+は sp[0..]」 で全関数統一。 caller は `c->sp = sp + N` で alloc 直前
+sync。 例外/break/return は RESULT.state で in-band 伝播 (UNWRAP macro)。
+
+#### 進捗 (Phase 別)
+
+- **Phase 1 完了** (commit 03a5449f): RESULT 型と UNWRAP / CHECK /
+  RESULT_OK 等のマクロを context.h に追加。 korb_cfunc_r_t / 
+  korb_dispatcher_r_t typedef。
+- **Phase 2 完了** (commit 4352f5f5): context.h 整理、 prologue_cfunc_r_inl
+  追加。 method_cache に cfunc_r field 追加。 korb_dispatch_call_cached
+  と korb_dispatch_to_method に bridge を入れて、 cfunc_r != NULL のとき
+  新 ABI 経路に流す。 RESULT は c->state + VALUE 返り値に変換 (Phase 8
+  まで暫定)。
+- **Phase 3 完了** (commit d1ae64a4): PoC として ary_eq を新 ABI で
+  書き換え、 動作確認。 self-tests 24/24 / rubyspec 17/67 維持。
+- **Phase 4 進行中** (commit 3efbcb94): math.c (18 cfunc) + boolean.c
+  (18 cfunc) を sweep。 全 cfunc ~680 個のうち ~37 個完了。 残り ~640
+  (大物: kernel.c 45, module.c 45, file.c 49, integer.c 52, hash.c 63,
+  array.c 97, string.c 102)。
+
+#### 残作業
+
+- **Phase 4 残**: 残 ~640 cfunc の sweep。 builtins/*.c を 1 ファイル
+  ずつ。 symbol.c で test_string が silent fail する原因調査 要。
+- **Phase 5**: node.def の call 系 node (node_method_call /
+  node_func_call / node_method_call_block / node_apply_call) を
+  sp staging 規約に。 fp[arg_index] 経由を撤廃。
+- **Phase 6**: prologue_ast_general / prologue_ast_simple_inl 系を
+  sp 経由 args 受け取りに。
+- **Phase 7**: C API helper (korb_eq / korb_str_concat / korb_funcall 等)
+  を slot pointer 規約に。
+- **Phase 8**: c->state 経路撤廃、 RESULT 化。
+- **Phase 9**: 動作確認 + 回帰 fix。
+
 ### 2026-05-29 追加: korb_host_class() helper と class def の pin (multiple commits)
 
 - `korb_host_class(c)` helper を object.h に追加 (commit 07dcb17f)。
