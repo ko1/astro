@@ -2779,8 +2779,40 @@ static VALUE ary_cycle(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     long n = -1;  /* -1 means infinite */
     if (argc >= 1 && !NIL_P(argv[0])) {
-        if (FIXNUM_P(argv[0])) n = FIX2LONG(argv[0]);
-        else if (BUILTIN_TYPE(argv[0]) == T_BIGNUM) n = LONG_MAX;
+        VALUE nv = argv[0];
+        if (FIXNUM_P(nv)) {
+            n = FIX2LONG(nv);
+        } else if (FLONUM_P(nv) || (!SPECIAL_CONST_P(nv) && BUILTIN_TYPE(nv) == T_FLOAT)) {
+            n = (long)korb_num2dbl(nv);
+        } else if (!SPECIAL_CONST_P(nv) && BUILTIN_TYPE(nv) == T_BIGNUM) {
+            n = LONG_MAX;
+        } else if (!SPECIAL_CONST_P(nv)) {
+            VALUE rt = korb_funcall(c, nv, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                VALUE iv = korb_funcall(c, nv, korb_intern("to_int"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+                if (FIXNUM_P(iv)) n = FIX2LONG(iv);
+                else {
+                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    korb_raise(c, (struct korb_class *)eT,
+                               "no implicit conversion into Integer");
+                    return Qnil;
+                }
+            } else {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion of %s into Integer",
+                           korb_id_name(korb_class_of_class(nv)->name));
+                return Qnil;
+            }
+        } else {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion into Integer");
+            return Qnil;
+        }
         if (n <= 0) return Qnil;
     }
     if (a->len == 0) return Qnil;

@@ -898,6 +898,7 @@ end
 # to not be worth the regressions.
 $ms_shared_specs = {}
 def it_behaves_like(*_args, &_blk); end
+def it_should_behave_like(*_args, &_blk); end
 
 # Suppress warning helper — runs block with $VERBOSE = nil.
 def silence_warnings; old = $VERBOSE; $VERBOSE = nil; yield; ensure $VERBOSE = old; end
