@@ -1344,11 +1344,23 @@ static VALUE str_tr_s_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* sprintf — limited; supports %d %s %x %o %X %b %f %g %% %c, with width/0pad */
 static VALUE kernel_format(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new("", 0);
-    struct korb_string *fmt = (struct korb_string *)argv[0];
+    /* Pin fmt (= argv[0]) and out across korb_str_new / korb_str_concat
+     * GC fires.  Without this, under STRESS the C-local `fmt` goes
+     * stale on every alloc inside the loop and fmt->ptr / fmt->len
+     * read moved-out fields, producing wrong format output or false
+     * return values from sprintf. */
+    VALUE ret = Qnil;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = argv[0];  /* fmt */
+        rs[1] = korb_str_new("", 0);  /* out */
     int ai = 1;
-    VALUE out = korb_str_new("", 0);
+    struct korb_string *fmt = (struct korb_string *)rs[0];
     for (long i = 0; i < fmt->len; i++) {
-        if (fmt->ptr[i] != '%') { korb_str_concat(out, korb_str_new(fmt->ptr + i, 1)); continue; }
+        if (fmt->ptr[i] != '%') {
+            korb_str_concat(rs[1], korb_str_new(fmt->ptr + i, 1));
+            fmt = (struct korb_string *)rs[0];  /* reload */
+            continue;
+        }
         i++;
         char spec[64]; int sl = 0;
         spec[sl++] = '%';
@@ -1469,9 +1481,12 @@ static VALUE kernel_format(CTX *c, VALUE self, int argc, VALUE *argv) {
             default:
                 snprintf(buf, sizeof(buf), "%%%c", conv);
         }
-        korb_str_concat(out, korb_str_new_cstr(buf));
+        korb_str_concat(rs[1], korb_str_new_cstr(buf));
+        fmt = (struct korb_string *)rs[0];  /* reload after potential GC */
     }
-    return out;
+    ret = rs[1];
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 /* printf — format then write to stdout */
