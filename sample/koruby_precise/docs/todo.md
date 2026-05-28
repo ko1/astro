@@ -482,13 +482,21 @@ AST は top-level と method body で identical (envsize=39、 block 構造 同�
 offset 規約が異なるか、 もしくは現状の dispatcher 呼び出しが間違って
 いる可能性。
 
-`sp = bfp + env_size` を試したら top-level closure は通った (x が正しく
-読めて = 16) が、 test/ が 24 → 3 に大幅 regression。 method body 経由
-の block code は現状の `sp = bfp` 規約で coincidentally 動いている。
+**試行と再現結果 (2 回目):**
+- `sp = bfp + env_size` に変更 → top-level closure 通る (x = 16)
+- ただし NORMAL test/ が 24 → 13/24 に regression
+  (test_array / test_block / test_block_arg / test_class / test_cpu_corner
+  / test_fiber / test_hash / test_misc / test_object_alloc / test_range /
+  test_yield)
+- "EXCEPT test_reduce: NoMethodError: undefined method '+' for :test_reduce"
+  のように、 一見無関係な箇所が壊れる → block 外の lvar 読み書きまで
+  影響する深い path 修正が必要
 
-抜本対処には bake walker と yield 経路の規約整合 (= 全部 frame top
-基準にするか、 block だけ bfp 基準にして bake 側も追従するか) が
-必要。 1 commit で収まらない大きな改修、 別 session の課題。
+**結論:** bake walker と yield 経路の規約整合 (= 全部 frame top 基準に
+するか、 block だけ bfp 基準にして bake 側も追従するか) は単純な
+1-liner では実現不可。 bake walker (parse.c) の offset 計算と全 yield
+経路の dispatcher 呼び出しを同時に改修する必要あり、 multi-commit な
+大改修。 別 session の課題。
 
 ### 一括 migration 試行ログ (2026-05-28, session 末)
 
