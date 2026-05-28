@@ -177,6 +177,19 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         struct korb_cref *cr = &c->top_cref;
         visit_ptr_slot(ctx, fn, (void **)&cr->klass);
     }
+    /* (d') current_block / running_block — file-scope globals holding
+     * the active block proc (for yield) and the currently-executing
+     * block (for break/next targeting).  Without visiting these, GC
+     * moves the proc but the globals stay at the old address; the
+     * next korb_yield reads a stale proc pointer and SEGVs in
+     * blk->self / blk->env access.  Discovered by running
+     * `[1, 2].each { |t| puts t }` under BARUBY_GC_STRESS=1. */
+    {
+        extern struct korb_proc *current_block;
+        extern struct korb_proc *running_block;
+        visit_ptr_slot(ctx, fn, (void **)&current_block);
+        visit_ptr_slot(ctx, fn, (void **)&running_block);
+    }
     /* (e) korb_vm globals — all class / module pointers + main_obj +
      * globals method-table.  korb_vm itself lives in libc memory; only
      * the heap pointers it holds need visiting. */
