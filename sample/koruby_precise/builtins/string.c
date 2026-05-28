@@ -56,29 +56,38 @@ VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- String ---------- */
 static VALUE str_plus(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE other = argv[0];
-    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
-        /* Try to_str — TypeError if the object doesn't convert. */
-        if (!SPECIAL_CONST_P(other)) {
-            VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-            if (c->state == KORB_RAISE) return Qnil;
-            if (RTEST(rt)) {
-                other = korb_funcall(c, other, korb_intern("to_str"), 0, NULL);
-                if (c->state == KORB_RAISE) return Qnil;
+    /* Park self + other across korb_str_dup's alloc-can-GC.  Without
+     * protection, the C-local `other` (= argv[0] snapshot or to_str
+     * result) goes stale and korb_str_concat reads garbage->len which
+     * overflows the freshly-malloc'd buffer into adjacent libc/gc obj
+     * memory, corrupting a hash header that later crashes scan_edges. */
+    VALUE result;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = self;
+        rs[1] = argv[0];
+        if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
+            if (!SPECIAL_CONST_P(rs[1])) {
+                VALUE rt = korb_funcall(c, rs[1], korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+                if (c->state == KORB_RAISE) { ARO_ROOT_SCOPE_CANCEL(c, rs); return Qnil; }
+                if (RTEST(rt)) {
+                    rs[1] = korb_funcall(c, rs[1], korb_intern("to_str"), 0, NULL);
+                    if (c->state == KORB_RAISE) { ARO_ROOT_SCOPE_CANCEL(c, rs); return Qnil; }
+                }
+            }
+            if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion of %s into String",
+                           SPECIAL_CONST_P(argv[0]) ? "(special)"
+                               : korb_id_name(korb_class_of_class(argv[0])->name));
+                ARO_ROOT_SCOPE_CANCEL(c, rs); return Qnil;
             }
         }
-        if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
-                       "no implicit conversion of %s into String",
-                       SPECIAL_CONST_P(argv[0]) ? "(special)"
-                           : korb_id_name(korb_class_of_class(argv[0])->name));
-            return Qnil;
-        }
-    }
-    VALUE r = korb_str_dup(self);
-    return korb_str_concat(r, other);
+        VALUE r = korb_str_dup(rs[0]);
+        result = korb_str_concat(r, rs[1]);
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return result;
 }
 /* Append a single arg to self.  Returns Qfalse on raise (caller stops). */
 static bool str_concat_one(CTX *c, VALUE self, VALUE arg);
