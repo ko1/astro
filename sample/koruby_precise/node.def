@@ -1050,8 +1050,20 @@ node_method_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 NODE_DEF
 node_func_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
 {
-    VALUE block = blk ? EA(c, blk) : Qnil;
-    return korb_dispatch_call_cached(c, n, c->current_frame->self, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+    /* Reserve 2 slots: sp[0] = recv (= self snapshot), sp[1] = block.
+     * Reading c->current_frame->self at the dispatch call site picks
+     * up a stale value when GC moved main_obj and the frame.self slot
+     * wasn't walked (root_scan timing window).  Pinning it in sp here
+     * keeps it current even if frame.self lags. */
+    sp[0] = 0; sp[1] = 0;
+    c->sp = sp + 2;
+    sp[0] = c->current_frame->self;
+    sp[1] = blk ? EA(c, blk) : Qnil;
+    VALUE recv = sp[0];
+    VALUE block = sp[1];
+    VALUE ret = korb_dispatch_call_cached(c, n, recv, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
+    c->sp = sp;
+    return ret;
 }
 
 NODE_DEF @noinline
