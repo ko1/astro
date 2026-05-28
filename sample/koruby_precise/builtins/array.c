@@ -1506,15 +1506,21 @@ static VALUE ary_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
         return r;
     }
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
-        /* join with sep */
-        VALUE r = korb_str_new("", 0);
-        for (long i = 0; i < a->len; i++) {
-            if (i > 0) korb_str_concat(r, argv[0]);
-            VALUE s = a->ptr[i];
-            if (BUILTIN_TYPE(s) != T_STRING) s = korb_to_s(s);
-            korb_str_concat(r, s);
-        }
-        return r;
+        /* join with sep — pin result + sep + per-iter element across
+         * each korb_to_s / korb_str_concat GC fire. */
+        VALUE ret = Qnil;
+        ARO_ROOT_SCOPE_START(c, rs, 3) {
+            rs[0] = korb_str_new("", 0);  /* result */
+            rs[1] = argv[0];              /* separator (pin) */
+            for (long i = 0; i < a->len; i++) {
+                if (i > 0) korb_str_concat(rs[0], rs[1]);
+                rs[2] = a->ptr[i];
+                if (BUILTIN_TYPE(rs[2]) != T_STRING) rs[2] = korb_to_s(rs[2]);
+                korb_str_concat(rs[0], rs[2]);
+            }
+            ret = rs[0];
+        } ARO_ROOT_SCOPE_END(c, rs);
+        return ret;
     }
     return self;
 }
