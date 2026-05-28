@@ -82,11 +82,10 @@
 ### STRESS mode 結果
 
 NORMAL の後で BARUBY_GC_STRESS=1 を入れて自前 test/ を全 24 件走らせた
-結果。 段階的に修正を入れて **22/24 file 完全 pass** まで持ち込んだ
-(初期 14 から +8)。 また STRESS+PURGE では別の組み合わせで
-**18/24 file pass** を確認 (test_block は STRESS で SEGV だが PURGE で
-OK、 逆に test_eq は STRESS で OK だが PURGE で SEGV 等、 mode 間で
-異なる stale ref 経路が表面化する)。
+結果。 段階的に修正を入れて **23/24 file 完全 pass** まで持ち込んだ
+(初期 14 から +9)。 また STRESS+PURGE では **21/24 file pass**。
+mode 間で異なる stale ref 経路が表面化する (test_block は STRESS の
+みで SEGV、 逆に test_exception は STRESS で OK だが PURGE で SEGV)。
 
 | test                      | STRESS  | STRESS+PURGE |
 |---------------------------|---------|--------------|
@@ -100,9 +99,9 @@ OK、 逆に test_eq は STRESS で OK だが PURGE で SEGV 等、 mode 間で
 | test_comparable           | 21      | SEGV         |
 | test_control              | 34      | 34           |
 | test_cpu_corner           | 29      | 29           |
-| test_eq                   | 58      | SEGV         |
+| test_eq                   | 58      | 58           |
 | test_eq_redef             | 7       | 7            |
-| test_exception            | SEGV    | SEGV         |
+| test_exception            | 10      | SEGV         |
 | test_fiber                | 26      | 26           |
 | test_float_round          | 27      | 27           |
 | test_flonum               | 80      | 80           |
@@ -111,7 +110,7 @@ OK、 逆に test_eq は STRESS で OK だが PURGE で SEGV 等、 mode 間で
 | test_misc                 | 26      | 26           |
 | test_object_alloc         | 19      | 19           |
 | test_range                | 27      | 27           |
-| test_string               | 49      | SEGV         |
+| test_string               | 49      | 49           |
 | test_to_s_dispatch        | 5       | SEGV         |
 | test_yield                | 15      | 15           |
 
