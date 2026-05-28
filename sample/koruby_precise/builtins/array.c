@@ -2050,23 +2050,165 @@ done_max_by: ;
     return ret;
 }
 
-static VALUE ary_slice_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
-    CHECK_FROZEN_RET(c, self, Qnil);
-    /* Array#slice!(start, len) — remove and return that range */
-    if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
-    long start = FIX2LONG(argv[0]);
-    struct korb_array *a = (struct korb_array *)self;
-    if (start < 0) start += a->len;
-    long len = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : 1;
-    if (start < 0 || start >= a->len) return Qnil;
-    if (start + len > a->len) len = a->len - start;
-    if (len < 0) len = 0;
+/* Try #to_int on argv; return Qundef if it doesn't respond. */
+static VALUE ary_try_to_int(CTX *c, VALUE v) {
+    if (FIXNUM_P(v)) return v;
+    if (SPECIAL_CONST_P(v)) return Qundef;
+    VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                            (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+    if (c->state == KORB_RAISE) return Qnil;
+    if (!RTEST(rt)) return Qundef;
+    VALUE iv = korb_funcall(c, v, korb_intern("to_int"), 0, NULL);
+    if (c->state == KORB_RAISE) return Qnil;
+    if (!FIXNUM_P(iv)) return Qundef;
+    return iv;
+}
+
+/* Common helper: remove a[start, len] in place and return the removed
+ * elements as a new Array.  Caller has already validated that
+ * 0 <= start <= a->len and len >= 0 and start + len <= a->len. */
+static VALUE ary_remove_range(CTX *c, struct korb_array *a, long start, long len) {
     VALUE r = korb_ary_new_capa(c, c->sp, len);
     for (long i = 0; i < len; i++) korb_ary_push(r, a->ptr[start + i]);
-    /* shift remaining */
     for (long i = start; i + len < a->len; i++) a->ptr[i] = a->ptr[i + len];
     a->len -= len;
     return r;
+}
+
+static VALUE ary_slice_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
+    if (argc < 1 || argc > 2) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1..2)", argc);
+        return Qnil;
+    }
+    struct korb_array *a = (struct korb_array *)self;
+    /* (start, len) form: returns Array (possibly empty), or nil if start
+     * out of range. */
+    if (argc == 2) {
+        VALUE iv0 = ary_try_to_int(c, argv[0]);
+        VALUE iv1 = ary_try_to_int(c, argv[1]);
+        if (UNDEF_P(iv0) || UNDEF_P(iv1) || c->state == KORB_RAISE) {
+            if (c->state != KORB_RAISE) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion into Integer");
+            }
+            return Qnil;
+        }
+        long start = FIX2LONG(iv0);
+        long len = FIX2LONG(iv1);
+        if (start < 0) start += a->len;
+        if (start < 0 || start > a->len) return Qnil;
+        if (len < 0) return Qnil;
+        if (start + len > a->len) len = a->len - start;
+        return ary_remove_range(c, a, start, len);
+    }
+    /* Range form. */
+    if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
+        struct korb_range *r = (struct korb_range *)argv[0];
+        long b, e;
+        if (NIL_P(r->begin)) b = 0;
+        else if (FIXNUM_P(r->begin)) b = FIX2LONG(r->begin);
+        else return Qnil;
+        if (NIL_P(r->end)) e = a->len - 1;
+        else if (FIXNUM_P(r->end)) {
+            e = FIX2LONG(r->end);
+            if (e < 0) e += a->len;
+            if (r->exclude_end) e -= 1;
+        } else return Qnil;
+        if (b < 0) b += a->len;
+        if (b < 0 || b > a->len) return Qnil;
+        long len = e - b + 1;
+        if (len < 0) len = 0;
+        if (b + len > a->len) len = a->len - b;
+        return ary_remove_range(c, a, b, len);
+    }
+    /* (idx) form: returns single element (or nil). */
+    VALUE iv = ary_try_to_int(c, argv[0]);
+    if (UNDEF_P(iv) || c->state == KORB_RAISE) {
+        if (c->state != KORB_RAISE) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion into Integer");
+        }
+        return Qnil;
+    }
+    long start = FIX2LONG(iv);
+    if (start < 0) start += a->len;
+    if (start < 0 || start >= a->len) return Qnil;
+    VALUE elt = a->ptr[start];
+    for (long i = start; i + 1 < a->len; i++) a->ptr[i] = a->ptr[i + 1];
+    a->len -= 1;
+    return elt;
+}
+
+/* Array#slice — non-destructive: same dispatch but no mutation.  This
+ * shares the logic with element_reference. */
+static VALUE ary_slice(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc < 1 || argc > 2) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1..2)", argc);
+        return Qnil;
+    }
+    struct korb_array *a = (struct korb_array *)self;
+    if (argc == 2) {
+        VALUE iv0 = ary_try_to_int(c, argv[0]);
+        VALUE iv1 = ary_try_to_int(c, argv[1]);
+        if (UNDEF_P(iv0) || UNDEF_P(iv1) || c->state == KORB_RAISE) {
+            if (c->state != KORB_RAISE) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion into Integer");
+            }
+            return Qnil;
+        }
+        long start = FIX2LONG(iv0);
+        long len = FIX2LONG(iv1);
+        if (start < 0) start += a->len;
+        if (start < 0 || start > a->len) return Qnil;
+        if (len < 0) return Qnil;
+        if (start + len > a->len) len = a->len - start;
+        VALUE r = korb_ary_new_capa(c, c->sp, len);
+        for (long i = 0; i < len; i++) korb_ary_push(r, a->ptr[start + i]);
+        return r;
+    }
+    if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
+        struct korb_range *r = (struct korb_range *)argv[0];
+        long b, e;
+        if (NIL_P(r->begin)) b = 0;
+        else if (FIXNUM_P(r->begin)) b = FIX2LONG(r->begin);
+        else return Qnil;
+        if (NIL_P(r->end)) e = a->len - 1;
+        else if (FIXNUM_P(r->end)) {
+            e = FIX2LONG(r->end);
+            if (e < 0) e += a->len;
+            if (r->exclude_end) e -= 1;
+        } else return Qnil;
+        if (b < 0) b += a->len;
+        if (b < 0 || b > a->len) return Qnil;
+        long len = e - b + 1;
+        if (len < 0) len = 0;
+        if (b + len > a->len) len = a->len - b;
+        VALUE r2 = korb_ary_new_capa(c, c->sp, len);
+        for (long i = 0; i < len; i++) korb_ary_push(r2, a->ptr[b + i]);
+        return r2;
+    }
+    VALUE iv = ary_try_to_int(c, argv[0]);
+    if (UNDEF_P(iv) || c->state == KORB_RAISE) {
+        if (c->state != KORB_RAISE) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion into Integer");
+        }
+        return Qnil;
+    }
+    long start = FIX2LONG(iv);
+    if (start < 0) start += a->len;
+    if (start < 0 || start >= a->len) return Qnil;
+    return a->ptr[start];
 }
 
 static VALUE ary_each_with_object(CTX *c, VALUE self, int argc, VALUE *argv) {

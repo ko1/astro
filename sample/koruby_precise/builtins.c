@@ -749,7 +749,7 @@ void korb_init_builtins(CTX *c) {
         DEF(korb_vm->array_class, "hash",      ary_hash_content, 0);
     }
     DEF(korb_vm->array_class, "slice!",    ary_slice_bang, -1);
-    DEF(korb_vm->array_class, "slice",     ary_slice_bang, -1); /* not quite right but ok */
+    DEF(korb_vm->array_class, "slice",     ary_slice,      -1);
     DEF(korb_vm->array_class, "flat_map",       ary_flat_map, 0);
     DEF(korb_vm->array_class, "collect_concat", ary_flat_map, 0);
     DEF(korb_vm->array_class, "dig",            ary_dig,      -1);
