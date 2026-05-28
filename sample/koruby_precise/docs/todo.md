@@ -199,6 +199,42 @@ rubyspec の language sweep を STRESS+PURGE で計測した結果:
 1000 などで間隔を緩和して使う。 BARUBY_GC_STRESS=100 + PURGE で
 benchmark 26/27 完走 (従来 timeout で 24/27)。
 
+### node.def の sp slot pattern 統一 (2026-05-29)
+
+ARO_ROOT_SCOPE_START を node.def 内で多用していたが、 baruby_precise
+の @child / DISPATCH 自動 spill モデルに合わせて、 scope-entry での
+1 回の sp shift + sp[N] 参照 + scope-exit restore パターンに refactor
+(commit 1a66508c)。
+
+```c
+sp[0..N-1] = 0;     /* zero-fill */
+c->sp = sp + N;     /* extend visit range — 1 回だけ */
+sp[0] = EA(c, ...); /* GC 中 sp[0] auto-forward */
+...
+c->sp = sp;         /* restore */
+```
+
+object.c / builtins/ の C-level pinning (sp arg を持たない関数) では
+ARO_ROOT_SCOPE_START を引き続き使用。
+
+### 残課題 (要 framework 改造)
+
+- **koruby_gen.rb に `@child` decorator 対応**: astrogen framework は
+  既に `@child` を Operand level で実装済 (Node 側で build_specializer
+  が auto-generate)。 koruby_gen.rb は PG_CALL_NODES 用 custom
+  specializer があり、 @child 互換にするには両方の specializer に
+  child spill コードを emit する必要。 baruby_precise のように
+  framework に任せると node.def 側が `VALUE recv@child` と書くだけで
+  `sp += N; sp[-N] = dispatch(child, sp); ...` が auto-generate される。
+
+- **proc.self / frame.self が STRESS+PURGE で stale 化する根本原因**:
+  libc registry walker は `visit_value_slot(ctx, fn, &p->self)` を毎
+  cycle 呼んでいるはずだが、 magic_comment_spec.rb / array_spec.rb 等で
+  proc.self が retired plane の addr (PROT_NONE 領域) を保持し続けて
+  SEGV。 forward_payload が NULL を返すはずの分岐 (gc_copy.c L417) に
+  到達していないか、 そもそも visit が走っていない可能性。 詳細 trace
+  要。
+
 ## 旧現状 (2026-05-10, eleventh pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
