@@ -788,7 +788,7 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->array_class, "delete_at",   ary_delete_at,   1);
     DEF(korb_vm->array_class, "delete_if",   ary_delete_if,   0);
     DEF(korb_vm->array_class, "reject",      ary_reject,      0);
-    DEF(korb_vm->array_class, "reject!",     ary_delete_if,   0);
+    DEF(korb_vm->array_class, "reject!",     ary_reject_bang, 0);
     DEF(korb_vm->array_class, "insert",      ary_insert,     -1);
     DEF(korb_vm->array_class, "replace",     ary_replace,     1);
     DEF(korb_vm->array_class, "each_index",  ary_each_index,  0);

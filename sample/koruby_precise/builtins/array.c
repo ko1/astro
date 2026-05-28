@@ -2040,6 +2040,10 @@ static VALUE ary_delete_at(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Array#delete_if { |x| ... } — remove where block returns truthy. */
 static VALUE ary_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!korb_block_given(c)) {
+        VALUE arg = korb_id2sym(korb_intern("delete_if"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
+    }
     CHECK_FROZEN_RET(c, self, Qnil);
     struct korb_array *a = (struct korb_array *)self;
     long w = 0;
@@ -2051,6 +2055,32 @@ static VALUE ary_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
             a->ptr[w++] = elt;
         }
     }
+    a->len = w;
+    return self;
+}
+
+/* Array#reject! — like delete_if, but returns nil when nothing was
+ * removed (CRuby semantic for the bang).  No block → Enumerator. */
+static VALUE ary_reject_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (!korb_block_given(c)) {
+        VALUE arg = korb_id2sym(korb_intern("reject!"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
+    }
+    CHECK_FROZEN_RET(c, self, Qnil);
+    struct korb_array *a = (struct korb_array *)self;
+    long w = 0;
+    bool changed = false;
+    for (long r = 0; r < a->len; r++) {
+        VALUE elt = a->ptr[r];
+        VALUE drop = korb_yield(c, 1, &elt);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (NIL_P(drop) || drop == Qfalse) {
+            a->ptr[w++] = elt;
+        } else {
+            changed = true;
+        }
+    }
+    if (!changed) return Qnil;
     a->len = w;
     return self;
 }
