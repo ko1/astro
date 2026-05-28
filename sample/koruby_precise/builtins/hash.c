@@ -489,6 +489,31 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (argc == 1) {
         VALUE arg = argv[0];
+        /* Try #to_hash first (CRuby checks before #to_ary). */
+        if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) != T_HASH &&
+            BUILTIN_TYPE(arg) != T_ARRAY) {
+            VALUE rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                VALUE coerced = korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+                if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_HASH) {
+                    arg = coerced;
+                }
+            } else {
+                VALUE rt2 = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                         (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+                if (c->state == KORB_RAISE) return Qnil;
+                if (RTEST(rt2)) {
+                    VALUE coerced = korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL);
+                    if (c->state == KORB_RAISE) return Qnil;
+                    if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
+                        arg = coerced;
+                    }
+                }
+            }
+        }
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_HASH) {
             VALUE r = korb_hash_new(c, c->sp);
             hash_apply_self_class(r, self);
@@ -505,15 +530,37 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
             struct korb_array *a = (struct korb_array *)arg;
             for (long i = 0; i < a->len; i++) {
                 VALUE pair = a->ptr[i];
-                if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY) {
-                    struct korb_array *p = (struct korb_array *)pair;
-                    if (p->len == 2) korb_hash_aset(c, r, p->ptr[0], p->ptr[1]);
+                if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
+                    VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                    struct korb_class *klass = korb_class_of_class(pair);
+                    const char *cls = klass ? korb_id_name(klass->name) : "(unknown)";
+                    korb_raise(c, (struct korb_class *)eA,
+                               "wrong element type %s at %ld (expected array)",
+                               cls, i);
+                    return Qnil;
+                }
+                struct korb_array *p = (struct korb_array *)pair;
+                if (p->len == 1) {
+                    korb_hash_aset(c, r, p->ptr[0], Qnil);
+                } else if (p->len == 2) {
+                    korb_hash_aset(c, r, p->ptr[0], p->ptr[1]);
+                } else {
+                    VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                    korb_raise(c, (struct korb_class *)eA,
+                               "invalid number of elements (%ld for 1..2)", p->len);
+                    return Qnil;
                 }
             }
             return r;
         }
     }
-    /* Hash[k,v,k,v,...] flat form. */
+    /* Hash[k,v,k,v,...] flat form.  argc must be even. */
+    if (argc % 2 != 0) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "odd number of arguments for Hash");
+        return Qnil;
+    }
     VALUE r = korb_hash_new(c, c->sp);
     hash_apply_self_class(r, self);
     for (int i = 0; i + 1 < argc; i += 2) {
