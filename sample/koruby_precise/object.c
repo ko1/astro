@@ -3948,23 +3948,42 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
                                struct korb_class *defining_class,
                                VALUE recv, ID name, int argc, VALUE *argv) {
     if (m->type == KORB_METHOD_CFUNC) {
-        VALUE prev_self = c->current_frame->self;
-        c->current_frame->self = recv;
+        /* Push a synthetic frame so the body sees self=recv via the
+         * frame chain, AND outer self is preserved automatically
+         * (= no stale C-local restore corrupts it on exit). */
+        struct korb_frame fr = {
+            .prev = c->current_frame,
+            .self = recv,
+            .fp   = c->current_frame->fp,
+            .current_class = c->current_frame->current_class,
+            .cref = c->current_frame->cref,
+            .current_file = c->current_frame->current_file,
+            .last_line  = Qnil,
+            .last_match = Qnil,
+        };
+        c->current_frame = &fr;
         VALUE r = m->u.cfunc.func(c, recv, argc, argv);
-        c->current_frame->self = prev_self;
+        c->current_frame = fr.prev;
         return r;
     }
-    /* Proc-method (define_method'd): invoke the captured Proc with
-     * argv (which lives on C stack here, not in fp slots).  proc_call
-     * handles its own slot setup. */
+    /* Proc-method (define_method'd): same frame-push pattern. */
     if (m->type == KORB_METHOD_PROC) {
         struct korb_proc *p = m->u.proc.proc;
         if (!p) return Qnil;
         extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE prev_self = c->current_frame->self;
-        c->current_frame->self = recv;
+        struct korb_frame fr = {
+            .prev = c->current_frame,
+            .self = recv,
+            .fp   = c->current_frame->fp,
+            .current_class = c->current_frame->current_class,
+            .cref = c->current_frame->cref,
+            .current_file = c->current_frame->current_file,
+            .last_line  = Qnil,
+            .last_match = Qnil,
+        };
+        c->current_frame = &fr;
         VALUE r = proc_call(c, (VALUE)p, argc, argv);
-        c->current_frame->self = prev_self;
+        c->current_frame = fr.prev;
         return r;
     }
     /* AST: same as korb_dispatch_call but argv is ad-hoc */
