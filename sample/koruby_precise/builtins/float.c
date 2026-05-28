@@ -71,7 +71,7 @@ static VALUE flt_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     double start = korb_num2dbl(self);
     double limit = korb_num2dbl(argv[0]);
     double step  = (argc >= 2) ? korb_num2dbl(argv[1]) : 1.0;
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     VALUE out = has_block ? Qnil : korb_ary_new();
     if (step == 0.0) return self;
     if (step > 0.0) {

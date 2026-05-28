@@ -15,7 +15,7 @@
  * fp space runs out.
  */
 
-extern struct korb_proc *running_block;
+
 extern struct Node *korb_g_program_body;
 extern ID *korb_body_local_names(struct Node *body);
 extern NODE *koruby_parse_with_scope_line(const char *src, size_t len, const char *filename,
@@ -131,13 +131,13 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
      * SYNTACTICALLY called `binding`), not the cfunc receiver.  When
      * called via `obj.send(:binding)`, the receiver is `obj` but the
      * caller's self may be something else.  Priority:
-     *   1. running_block.self — closest lexical scope; for
+     *   1. c->running_block.self — closest lexical scope; for
      *      Class.new { ... } the block's self is the new class (not
      *      the method's caller).
      *   2. current_frame->self — calling AST method's self.
      *   3. main_obj — top-level fallback. */
-    if (running_block) {
-        b->self = running_block->self;
+    if (c->running_block) {
+        b->self = c->running_block->self;
     } else if (c->current_frame && c->current_frame->method) {
         b->self = c->current_frame->self;
     } else if (korb_vm) {
@@ -158,9 +158,9 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     ID *names = NULL;
     VALUE *fp = c->current_frame->fp;
     uint32_t base = 0;
-    if (running_block && running_block->body) {
-        names = korb_body_local_names(running_block->body);
-        base = running_block->param_base;
+    if (c->running_block && c->running_block->body) {
+        names = korb_body_local_names(c->running_block->body);
+        base = c->running_block->param_base;
     }
     bool inside_method = false;
     if (!names && c->current_frame && c->current_frame->method &&
@@ -285,9 +285,9 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
      * Outer-block lvars are stored in b->outer_vars and counted via
      * outer_names_cnt so binding_local_variables shows them at the END
      * of the list (innermost-first ordering — CRuby compat). */
-    if (running_block) {
+    if (c->running_block) {
         if (NIL_P(b->outer_vars)) b->outer_vars = korb_hash_new();
-        struct korb_proc *parent = running_block->lexical_parent_block;
+        struct korb_proc *parent = c->running_block->lexical_parent_block;
         while (parent && parent->body) {
             ID *parent_names = korb_body_local_names(parent->body);
             if (parent_names) {
@@ -312,9 +312,9 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
          * per-proc creation_program_body, so we skip top-level outer
          * walk and miss those lvars in the binding.  Acceptable
          * trade-off vs leaking the runner's lvars into specs. */
-        if (running_block->defining_method &&
-            running_block->defining_method->type == KORB_METHOD_AST) {
-            struct korb_method *dm = (struct korb_method *)running_block->defining_method;
+        if (c->running_block->defining_method &&
+            c->running_block->defining_method->type == KORB_METHOD_AST) {
+            struct korb_method *dm = (struct korb_method *)c->running_block->defining_method;
             ID *outer_names = dm->u.ast.local_names;
             if (outer_names) {
                 VALUE *outer_fp = NULL;

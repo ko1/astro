@@ -383,7 +383,7 @@ struct korb_cref *korb_cref_dup(struct korb_cref *src) {
 /* Walk the body's textual dump (oneline) and decide whether the method
  * needs the heavy frame setup: yield, super, block_given?, const access,
  * or any block-passing call.  Method bodies without these can run with
- * a slim prologue (no current_block / cref / current_frame churn).  We
+ * a slim prologue (no c->current_block / cref / current_frame churn).  We
  * scan the dump string instead of writing a generic AST walker — the
  * scan happens once per method definition. */
 static bool korb_method_body_is_simple_frame(struct Node *body) {
@@ -2135,7 +2135,7 @@ void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
     }
 }
 
-VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
+VALUE korb_proc_new(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size,
                   uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda) {
     struct korb_proc *p = korb_xmalloc(sizeof(*p));
     p->basic.head.flags = T_PROC;
@@ -2150,7 +2150,7 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     p->kwh_save_slot = -1;
     p->block_slot = -1;
     p->post_cnt = 0;
-    p->enclosing_block = current_block;  /* capture enclosing-method's block */
+    p->enclosing_block = c->current_block;  /* capture enclosing-method's block */
     p->self = self;
     p->is_lambda = is_lambda;
     p->implicit_rest = false;
@@ -2165,27 +2165,21 @@ VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size,
     return (VALUE)p;
 }
 
-VALUE korb_proc_new_with_cref(struct Node *body, VALUE *fp, uint32_t env_size,
+VALUE korb_proc_new_with_cref(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size,
                               uint32_t params_cnt, uint32_t param_base, VALUE self,
                               bool is_lambda, struct korb_cref *cref) {
-    VALUE pv = korb_proc_new(body, fp, env_size, params_cnt, param_base, self, is_lambda);
+    VALUE pv = korb_proc_new(c, body, fp, env_size, params_cnt, param_base, self, is_lambda);
     ((struct korb_proc *)pv)->cref = korb_cref_dup(cref);
     return pv;
 }
 
-/* Block currently active for yield (set by dispatch_call). */
-struct korb_proc *current_block = NULL;
-
-/* Block / proc / lambda currently executing — distinct from current_block
- * (which is the block PASSED to the current method).  See object.h. */
-struct korb_proc *running_block = NULL;
 /* Top-level program body — set by parse.c when transducing the
  * outermost PM_PROGRAM_NODE.  Used by kernel_eval to find the script's
  * own lvar names when eval is called with no enclosing method / block
  * frame. */
 struct Node *korb_g_program_body = NULL;
 
-bool korb_block_given(void) { return current_block != NULL; }
+bool korb_block_given(CTX *c) { return c->current_block != NULL; }
 
 /* The single-arg/single-param fast path is inlined in object.h
  * (korb_yield).  This handles every other shape — auto-destructure,
@@ -2447,10 +2441,10 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     c->current_frame->fp = fp;
     /* Lexical block target: yield inside block body refers to the
      * enclosing method's block, not back to this block. */
-    struct korb_proc *prev_block = current_block;
-    current_block = blk->enclosing_block;
-    struct korb_proc *prev_running = running_block;
-    running_block = blk;
+    struct korb_proc *prev_block = c->current_block;
+    c->current_block = blk->enclosing_block;
+    struct korb_proc *prev_running = c->running_block;
+    c->running_block = blk;
     VALUE r;
 redo_block:
     /* sp = fp + env_size: see korb_yield fast-path comment. */
@@ -2480,8 +2474,8 @@ redo_block:
     c->current_frame->fp = prev_fp;
     c->current_frame->self = prev_self;
     c->current_frame->cref = prev_cref;
-    current_block = prev_block;
-    running_block = prev_running;
+    c->current_block = prev_block;
+    c->running_block = prev_running;
     /* Pop the yield_self_root slot.  Must happen AFTER the restore
      * above (prev_self read from the root slot). */
     AROH_ROOT_STACK_SET_TOP(c, yield_self_root);
@@ -2541,14 +2535,14 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
     /* If we're currently inside a block / proc / lambda body, prepend a
      * "block in <enclosing>" entry — yield/proc.call don't push their
      * own frame in koruby but CRuby's backtrace shows them. */
-    if (running_block) {
+    if (c->running_block) {
         const char *enc_name = (f && f->method && f->method->name)
                                   ? korb_id_name(f->method->name) : "<main>";
         /* The block's body lives in the lexically-enclosing file; that's
          * what CRuby reports for "block in <method>" entries. */
         const char *enc_file = default_file;
-        if (running_block->body && running_block->body->head.source_file) {
-            enc_file = running_block->body->head.source_file;
+        if (c->running_block->body && c->running_block->body->head.source_file) {
+            enc_file = c->running_block->body->head.source_file;
         }
         snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, line, nbuf);
@@ -2578,7 +2572,7 @@ VALUE korb_build_backtrace(CTX *c, int raise_line) {
          * was made.  That's recorded on f->caller_node. */
         line = f->caller_node ? f->caller_node->head.line : 0;
         /* If THIS frame was called from inside a block (frame.caller_
-         * running_block), insert the block entry between this frame
+         * c->running_block), insert the block entry between this frame
          * and its caller — that block's body is what called us. */
         if (f->caller_running_block) {
             struct korb_proc *cb = (struct korb_proc *)f->caller_running_block;
@@ -3487,9 +3481,9 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
      * The pushed new_frame.self = recv covers the body's `self`. */
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
-    struct korb_proc *prev_block = current_block;
+    struct korb_proc *prev_block = c->current_block;
     struct korb_cref *prev_cref = c->current_frame->cref;
-    current_block = block;
+    c->current_block = block;
     /* Shift fp to the args base.  Caller staged argv at outer_fp[arg_index..
      * arg_index+argc); body expects to read params from fp[0..argc) and
      * locals from fp[argc..locals_cnt).  Same convention as
@@ -3503,7 +3497,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     if (UNLIKELY(c->current_frame->fp + mc->locals_cnt >= c->stack_end)) {
         c->current_frame->fp = prev_fp;
         korb_raise(c, NULL, "stack overflow");
-        current_block = prev_block;
+        c->current_block = prev_block;
         return Qnil;
     }
     /* Zero-fill the new frame's locals (= slots beyond argc) to Qnil so
@@ -3570,7 +3564,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
                    argc, mc->total_params_cnt);
         c->current_frame->fp = prev_fp;
         c->current_frame->cref = prev_cref;
-        current_block = prev_block;
+        c->current_block = prev_block;
         return Qnil;
     }
     /* Too few — argc must satisfy required + post (rest absorbs the
@@ -3598,7 +3592,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
             (void)variadic;
             c->current_frame->fp = prev_fp;
             c->current_frame->cref = prev_cref;
-            current_block = prev_block;
+            c->current_block = prev_block;
             return Qnil;
         }
     }
@@ -3783,18 +3777,18 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     frame.bindings_head = NULL;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
-    extern struct korb_proc *running_block;
-    frame.caller_running_block = running_block;
+    
+    frame.caller_running_block = c->running_block;
     c->current_frame = &frame;
-    /* Reset running_block: a method body is no longer "inside" the
+    /* Reset c->running_block: a method body is no longer "inside" the
      * caller's block, so a `return` inside it should be method-local. */
-    struct korb_proc *prev_running = running_block;
-    running_block = NULL;
+    struct korb_proc *prev_running = c->running_block;
+    c->running_block = NULL;
     VALUE *frame_lo = c->current_frame->fp;
     VALUE *frame_hi = c->current_frame->fp + mc->locals_cnt;
     VALUE r = mc->dispatcher(c, mc->body, c->current_frame->fp + mc->locals_cnt);
     c->current_frame = frame.prev;
-    running_block = prev_running;
+    c->running_block = prev_running;
     /* Same guard as proc_call: when an unhandled raise/throw escapes
      * the body, r is a stale C-local with no consumer; dereffing it
      * to inspect its type SEGVs under STRESS+PURGE. */
@@ -3807,7 +3801,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     c->current_frame->fp = prev_fp;
     /* outer->self auto-fresh via frame chain — no C-local restore */
     c->current_frame->cref = prev_cref;
-    current_block = prev_block;
+    c->current_block = prev_block;
     /* Restore sp + zero-fill the popped range so a sibling/later push
      * doesn't re-expose this frame's stale heap ptrs (= same invariant
      * as prologue_ast_simple_inl line 377).  Without this, sp grows
@@ -4385,7 +4379,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * body.  Without this, `Foo.new { ... }`'s block doesn't reach
      * `def initialize(&blk)`. */
     if (m->u.ast.block_slot >= 0 && m->u.ast.block_slot < (int)m->u.ast.locals_cnt) {
-        c->current_frame->fp[m->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
+        c->current_frame->fp[m->u.ast.block_slot] = c->current_block ? (VALUE)c->current_block : Qnil;
     }
     /* kwh_save_slot: if the callee has kwargs but we (cfunc-side
      * korb_funcall) didn't supply any, default to {} so the prologue's
@@ -4415,18 +4409,18 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
         .super_skip_n = 0,
         .last_line = Qnil,
         .last_match = Qnil,
-        .caller_running_block = running_block,
+        .caller_running_block = c->running_block,
     };
     c->current_frame = &frame2;
-    /* Reset running_block: this is a fresh method body, not lexically
+    /* Reset c->running_block: this is a fresh method body, not lexically
      * inside the caller's block.  Without this, `super` inside the
      * callee resolves via the caller block's defining_method (e.g.
      * `Class#new` → user `initialize` → `super` ends up looking up the
      * outer block's enclosing method's name). */
-    struct korb_proc *prev_running2 = running_block;
-    running_block = NULL;
+    struct korb_proc *prev_running2 = c->running_block;
+    c->running_block = NULL;
     VALUE r = EVAL(c, m->u.ast.body, c->current_frame->fp + m->u.ast.locals_cnt);
-    running_block = prev_running2;
+    c->running_block = prev_running2;
     c->current_frame = frame2.prev;
     c->current_frame->fp = prev_fp;
     /* Zero-fill the popped slot range so a sibling/later frame push
@@ -4454,15 +4448,15 @@ VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
  * implicit block (yield / block_given?).  Used by Class#new to
  * forward `Foo.new { ... }`'s block into Foo#initialize. */
 VALUE korb_funcall_with_block(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block) {
-    extern struct korb_proc *current_block;
-    struct korb_proc *prev = current_block;
+    
+    struct korb_proc *prev = c->current_block;
     if (NIL_P(block) || SPECIAL_CONST_P(block) || BUILTIN_TYPE(block) != T_PROC) {
-        current_block = NULL;
+        c->current_block = NULL;
     } else {
-        current_block = (struct korb_proc *)block;
+        c->current_block = (struct korb_proc *)block;
     }
     VALUE r = korb_dispatch_binop(c, recv, mid, argc, argv);
-    current_block = prev;
+    c->current_block = prev;
     return r;
 }
 
@@ -4966,8 +4960,8 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     struct korb_cref *prev_cref = c->current_frame->cref;
     const char *prev_file = c->current_frame->current_file;
     struct korb_frame *prev_frame = c->current_frame;
-    extern struct korb_proc *running_block;
-    struct korb_proc *prev_running_block = running_block;
+    
+    struct korb_proc *prev_running_block = c->running_block;
 
     /* Top-level frame for the new file.  Push a fresh frame with
      * self=main_obj — visit_roots walks the frame chain so the heap
@@ -4986,7 +4980,7 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
         .last_match = Qnil,
     };
     c->current_frame = &top_frame;
-    running_block = NULL;
+    c->running_block = NULL;
 
     /* Reset cref to [Object] for top-level execution */
     struct korb_cref top_cref = { .klass = korb_vm->object_class, .prev = NULL };
@@ -5019,7 +5013,7 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     c->current_frame->cref = prev_cref;
     c->current_frame->current_file = prev_file;
     c->current_frame = prev_frame;
-    running_block = prev_running_block;
+    c->running_block = prev_running_block;
     return r;
 }
 
@@ -5162,8 +5156,8 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
             .bindings_head = NULL,
         };
         c->current_frame = &fiber_root;
-        struct korb_proc *prev_block = current_block;
-        current_block = NULL;
+        struct korb_proc *prev_block = c->current_block;
+        c->current_block = NULL;
         VALUE result = blk->body ? EVAL(c, blk->body, fib->frame + blk->env_size) : Qnil;
         /* NOTE: do NOT restore c->current_frame to its pre-fiber-entry
          * value here.  That value (= the FIRST resume's cfr_R, on the
@@ -5173,7 +5167,7 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
          * body's final pop landed it) is fine because the resumer's
          * POST-SWAP path explicitly sets c->current_frame =
          * fib->resumer_current_frame (= the CURRENT resume's cfr_R). */
-        current_block = prev_block;
+        c->current_block = prev_block;
         fib->result = result;
     }
     fib->state = KF_DEAD;
@@ -5379,12 +5373,12 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
 }
 
 VALUE korb_fiber_new_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Block is the current_block when Fiber.new is called */
-    if (!current_block) {
+    /* Block is the c->current_block when Fiber.new is called */
+    if (!c->current_block) {
         korb_raise(c, NULL, "Fiber.new requires a block");
         return Qnil;
     }
-    return korb_fiber_new(current_block);
+    return korb_fiber_new(c->current_block);
 }
 VALUE korb_fiber_yield_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_fiber_yield(c, argc, argv);

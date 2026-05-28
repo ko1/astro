@@ -334,7 +334,7 @@ static VALUE str_split(CTX *c, VALUE self, int argc, VALUE *argv) {
      * stale (s is arena T_STRING) and s->len / s->ptr return moved-
      * out address fields, producing negative lengths that abort
      * korb_xmalloc with SIGABRT. */
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     VALUE ret = Qnil;
     int rs_cap = 4;
     ARO_ROOT_SCOPE_START(c, rs, 4) {
@@ -853,7 +853,7 @@ static VALUE str_chars(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE str_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Use c->current_frame->self (auto-tracked) instead of C-local
      * self parameter. */
-    if (korb_block_given()) {
+    if (korb_block_given(c)) {
         for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
             struct korb_string *s = (struct korb_string *)c->current_frame->self;
             VALUE b = INT2FIX((unsigned char)s->ptr[i]);
@@ -876,7 +876,7 @@ static VALUE str_each_char(CTX *c, VALUE self, int argc, VALUE *argv) {
      * c->current_frame->self (auto-tracked by visit_roots frame walk)
      * inside the loop instead of the C-local self parameter, which
      * goes stale across allocations under STRESS+PURGE. */
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         VALUE r = korb_ary_new();
         for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
             struct korb_string *s = (struct korb_string *)c->current_frame->self;
@@ -1154,7 +1154,7 @@ static int str_find_pat(VALUE pattern, struct korb_string *s, long from,
 
 static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return korb_str_dup(self);
-    extern struct korb_proc *current_block;
+    
     VALUE ret = Qnil;
     /* Pin self, pat (argv[0]), repl (argv[1]), out, scratch m
      * across str_concat / str_new / korb_yield GC fires. */
@@ -1174,7 +1174,7 @@ static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
                 struct korb_string *r = (struct korb_string *)rs[2];
                 korb_str_concat(rs[3], korb_str_new(r->ptr, r->len));
                 s = (struct korb_string *)rs[0];
-            } else if (current_block) {
+            } else if (c->current_block) {
                 rs[4] = korb_str_new(s->ptr + ms, ml);
                 rs[4] = korb_yield(c, 1, &rs[4]);
                 if (c->state == KORB_RAISE) { ret = Qnil; goto gsub_done; }
@@ -1194,7 +1194,7 @@ static VALUE str_gsub(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1) return korb_str_dup(self);
-    extern struct korb_proc *current_block;
+    
     VALUE ret = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 5) {
         rs[0] = self;
@@ -1211,7 +1211,7 @@ static VALUE str_sub(CTX *c, VALUE self, int argc, VALUE *argv) {
             struct korb_string *r = (struct korb_string *)rs[2];
             korb_str_concat(rs[3], korb_str_new(r->ptr, r->len));
             s = (struct korb_string *)rs[0];
-        } else if (current_block) {
+        } else if (c->current_block) {
             rs[4] = korb_str_new(s->ptr + ms, ml);
             rs[4] = korb_yield(c, 1, &rs[4]);
             if (c->state == KORB_RAISE) { ret = Qnil; goto sub_done; }
@@ -1797,7 +1797,7 @@ static VALUE str_succ(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* String#each_byte — yields each byte as Integer. */
 static VALUE str_each_byte(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         /* No block: return Enumerator (CRuby semantics).  Call to_enum
          * with the source method captured so #size works and chained
          * each(&blk) re-dispatches with the user's block. */
@@ -2182,7 +2182,7 @@ static VALUE str_delete_suffix_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
  * string yielding each line including its trailing '\n'; returns self. */
 static VALUE str_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
     const struct korb_string *s = (const struct korb_string *)self;
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     VALUE collected = has_block ? Qnil : korb_ary_new();
     long start = 0;
     for (long i = 0; i < s->len; i++) {

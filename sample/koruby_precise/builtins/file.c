@@ -100,7 +100,7 @@ static VALUE io_gets(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE io_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
     FILE *fp = korb_io_fp(self);
     if (!fp) return self;
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     VALUE collected = has_block ? Qnil : korb_ary_new();
     char *line = NULL;
     size_t cap = 0;
@@ -245,7 +245,7 @@ VALUE io_class_popen(CTX *c, VALUE self, int argc, VALUE *argv) {
         return Qnil;
     }
     VALUE io = korb_io_new((struct korb_class *)self, fp);
-    if (!korb_block_given()) return io;
+    if (!korb_block_given(c)) return io;
     VALUE r = korb_yield(c, 1, &io);
     pclose(fp);
     korb_ivar_set(io, korb_io_fp_id_(), Qnil);
@@ -407,7 +407,7 @@ static VALUE file_open(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     /* `self` here is the File class object — use it as the IO's class. */
     VALUE io = korb_io_new((struct korb_class *)self, fp);
-    if (!korb_block_given()) return io;
+    if (!korb_block_given(c)) return io;
     VALUE r = korb_yield(c, 1, &io);
     /* Always close on block exit, even on raise. */
     fclose(fp);
@@ -650,7 +650,7 @@ static VALUE dir_entries(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE dir_chdir(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
     const char *path = korb_str_cstr(argv[0]);
-    if (korb_block_given()) {
+    if (korb_block_given(c)) {
         char prev[4096];
         if (!getcwd(prev, sizeof(prev))) return Qnil;
         if (chdir(path) != 0) {
@@ -907,7 +907,7 @@ static VALUE process_fork(CTX *c, VALUE self, int argc, VALUE *argv) {
     pid_t pid = fork();
     if (pid < 0) return Qnil;
     if (pid == 0) {
-        if (korb_block_given()) {
+        if (korb_block_given(c)) {
             korb_yield(c, 0, NULL);
         }
         if (c->state == KORB_RAISE) {
@@ -1015,7 +1015,7 @@ static VALUE signal_trap(CTX *c, VALUE self, int argc, VALUE *argv) {
      * install a real signal handler — stub so user code can register
      * without errors. */
     VALUE handler = (argc >= 2) ? argv[1]
-                  : (korb_block_given() ? Qnil : Qnil);
+                  : (korb_block_given(c) ? Qnil : Qnil);
     /* Look up previous handler so we can return it. */
     VALUE prev = Qnil;
     for (int i = 0; i < g_signal_handlers_cnt; i++) {

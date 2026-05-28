@@ -192,7 +192,7 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
         name = korb_intern_n(((struct korb_string *)argv[0])->ptr,
                              ((struct korb_string *)argv[0])->len);
     else return Qnil;
-    extern struct korb_proc *current_block;
+    
     struct korb_proc *p;
     /* UnboundMethod / Method whose receiver is a class — install the
      * underlying method directly into self by alias.  This preserves
@@ -226,8 +226,8 @@ static VALUE module_define_method(CTX *c, VALUE self, int argc, VALUE *argv) {
         p = (struct korb_proc *)pr;
     } else if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) && BUILTIN_TYPE(argv[1]) == T_PROC) {
         p = (struct korb_proc *)argv[1];
-    } else if (current_block) {
-        p = current_block;
+    } else if (c->current_block) {
+        p = c->current_block;
     } else {
         return Qnil;
     }
@@ -483,7 +483,7 @@ static VALUE module_constants(CTX *c, VALUE self, int argc, VALUE *argv) {
  * the source string or block with self = the module. */
 static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
-    extern struct korb_proc *current_block;
+    
     /* String-form: eval source in the module's context. */
     if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) &&
         BUILTIN_TYPE(argv[0]) == T_STRING) {
@@ -509,8 +509,8 @@ static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
         c->current_frame->cref = prev_cref;
         return r;
     }
-    if (!current_block) return self;
-    struct korb_proc *blk = current_block;
+    if (!c->current_block) return self;
+    struct korb_proc *blk = c->current_block;
     /* Symbol-proc / Method-proc shim handling: dispatch as
      * `self.send(name)` rather than yielding into a NULL body.  Same
      * idea as obj_instance_eval. */
@@ -558,9 +558,9 @@ static VALUE module_class_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
  * passes args to the block.  module_exec is just an alias. */
 static VALUE module_class_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return self;
-    extern struct korb_proc *current_block;
-    if (!current_block) return self;
-    struct korb_proc *blk = current_block;
+    
+    if (!c->current_block) return self;
+    struct korb_proc *blk = c->current_block;
     if (blk->body == NULL) {
         if (SYMBOL_P(blk->self)) {
             return korb_funcall(c, self, korb_sym2id(blk->self), (uint32_t)argc, argv);
@@ -743,24 +743,24 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
                 if (c->state == KORB_RAISE) return Qnil;
             }
         }
-        extern struct korb_proc *current_block;
-        if (current_block) {
+        
+        if (c->current_block) {
             VALUE prev_self = c->current_frame->self;
             struct korb_class *prev_class = c->current_frame->current_class;
             struct korb_cref *prev_cref = c->current_frame->cref;
             struct korb_cref new_cref = { .klass = nk, .prev = c->current_frame->cref };
-            VALUE prev_blk_self = current_block->self;
-            struct korb_cref *prev_blk_cref = current_block->cref;
-            struct korb_cref blk_new_cref = { .klass = nk, .prev = current_block->cref };
-            current_block->cref = &blk_new_cref;
+            VALUE prev_blk_self = c->current_block->self;
+            struct korb_cref *prev_blk_cref = c->current_block->cref;
+            struct korb_cref blk_new_cref = { .klass = nk, .prev = c->current_block->cref };
+            c->current_block->cref = &blk_new_cref;
             c->current_frame->self = (VALUE)nk;
             c->current_frame->current_class = nk;
             c->current_frame->cref = &new_cref;
-            current_block->self = (VALUE)nk;   /* class_eval semantics */
+            c->current_block->self = (VALUE)nk;   /* class_eval semantics */
             VALUE av0[1] = { (VALUE)nk };
             korb_yield(c, 1, av0);
-            current_block->cref = prev_blk_cref;
-            current_block->self = prev_blk_self;
+            c->current_block->cref = prev_blk_cref;
+            c->current_block->self = prev_blk_self;
             c->current_frame->self = prev_self;
             c->current_frame->current_class = prev_class;
             c->current_frame->cref = prev_cref;
@@ -773,7 +773,7 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Park klass + obj across alloc-can-GC: korb_object_new can move
      * klass, and find_method then derefs stale klass → SEGV under PURGE
      * (or garbage under STRESS).  Use ARO_ROOT_SCOPE so both survive. */
-    extern struct korb_proc *current_block;
+    
     VALUE obj;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = (VALUE)klass;
@@ -782,7 +782,7 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE *fp_lo = c->current_frame->fp;
         VALUE *fp_hi = c->sp;
         if (m) {
-            VALUE blk = current_block ? (VALUE)current_block : Qnil;
+            VALUE blk = c->current_block ? (VALUE)c->current_block : Qnil;
             korb_funcall_with_block(c, rs[1], id_initialize, argc, argv, blk);
         }
         obj = rs[1];
@@ -796,14 +796,14 @@ static VALUE class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
      * want to skip — `korb_proc_snapshot_env_maybe` is an inline that
      * checks FL_HAS_PROC_IVARS on obj's class first. */
     korb_proc_snapshot_env_maybe(obj, fp_lo, fp_hi + 1024);
-    /* Also detach the caller's user block (current_block), in case it
+    /* Also detach the caller's user block (c->current_block), in case it
      * was stored into an ivar of obj or used via @blk = blk from
      * &blk parameter — that block's env points at the *outer* frame. */
-    if (current_block && current_block->env) {
-        if (current_block->env >= fp_lo && current_block->env < fp_hi) {
-            VALUE *snap = korb_xmalloc(current_block->env_size * sizeof(VALUE));
-            for (uint32_t i = 0; i < current_block->env_size; i++) snap[i] = current_block->env[i];
-            current_block->env = snap;
+    if (c->current_block && c->current_block->env) {
+        if (c->current_block->env >= fp_lo && c->current_block->env < fp_hi) {
+            VALUE *snap = korb_xmalloc(c->current_block->env_size * sizeof(VALUE));
+            for (uint32_t i = 0; i < c->current_block->env_size; i++) snap[i] = c->current_block->env[i];
+            c->current_block->env = snap;
         }
     }
     return obj;
@@ -1112,26 +1112,26 @@ static VALUE module_new_class_func(CTX *c, VALUE self, int argc, VALUE *argv) {
      * evaluate it with self = the new module (lets `include`/method defs
      * land on the new module). */
     struct korb_class *m = korb_module_new(korb_intern("(anon)"));
-    extern struct korb_proc *current_block;
-    if (current_block) {
+    
+    if (c->current_block) {
         VALUE prev_self = c->current_frame->self;
         struct korb_class *prev_class = c->current_frame->current_class;
         struct korb_cref *prev_cref = c->current_frame->cref;
         struct korb_cref new_cref = { .klass = m, .prev = c->current_frame->cref };
-        VALUE prev_blk_self = current_block->self;
-        struct korb_cref *prev_blk_cref = current_block->cref;
-        struct korb_cref blk_new_cref = { .klass = m, .prev = current_block->cref };
-        current_block->cref = &blk_new_cref;
+        VALUE prev_blk_self = c->current_block->self;
+        struct korb_cref *prev_blk_cref = c->current_block->cref;
+        struct korb_cref blk_new_cref = { .klass = m, .prev = c->current_block->cref };
+        c->current_block->cref = &blk_new_cref;
         c->current_frame->self = (VALUE)m;
         c->current_frame->current_class = m;
         c->current_frame->cref = &new_cref;
         /* `def self.X` inside the block needs the block's self to BE
          * the module, not the outer caller — same fix as Class.new. */
-        current_block->self = (VALUE)m;
+        c->current_block->self = (VALUE)m;
         VALUE argv0[1] = { (VALUE)m };
         korb_yield(c, 1, argv0);
-        current_block->cref = prev_blk_cref;
-        current_block->self = prev_blk_self;
+        c->current_block->cref = prev_blk_cref;
+        c->current_block->self = prev_blk_self;
         c->current_frame->self = prev_self;
         c->current_frame->current_class = prev_class;
         c->current_frame->cref = prev_cref;

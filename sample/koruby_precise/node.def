@@ -320,9 +320,9 @@ NODE_DEF
 node_super_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (!c->current_frame || !c->current_frame->method) return Qfalse;
-    extern struct korb_proc *running_block;
-    struct korb_method *m = (running_block && running_block->defining_method)
-                              ? running_block->defining_method
+    
+    struct korb_method *m = (c->running_block && c->running_block->defining_method)
+                              ? c->running_block->defining_method
                               : c->current_frame->method;
     if (!m || !m->defining_class) return Qfalse;
     struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
@@ -630,7 +630,7 @@ NODE_DEF
 node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
 {
     VALUE v = EA(c, value);
-    extern struct korb_proc *running_block;
+    
     /* Stale-frame check: if we're inside a non-lambda block whose
      * lexically-enclosing method has already returned, raise
      * LocalJumpError instead of a non-local return.  Two checks are
@@ -640,13 +640,13 @@ node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *valu
      *   2. Even if a (reused) frame at the same address shows up,
      *      its frame_id won't match the snapshot taken at block
      *      creation. */
-    if (running_block && !running_block->is_lambda &&
-        running_block->return_target_frame) {
-        struct korb_frame *target = (struct korb_frame *)running_block->return_target_frame;
+    if (c->running_block && !c->running_block->is_lambda &&
+        c->running_block->return_target_frame) {
+        struct korb_frame *target = (struct korb_frame *)c->running_block->return_target_frame;
         bool target_alive = false;
         for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
             if (f == target) {
-                target_alive = (f->frame_id == running_block->enclosing_frame_id);
+                target_alive = (f->frame_id == c->running_block->enclosing_frame_id);
                 break;
             }
         }
@@ -660,13 +660,13 @@ node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *valu
     c->state_value = v;
     /* If we're running inside a non-lambda block / proc, this is a
      * non-local return targeting the lexically-enclosing method's
-     * frame.  `running_block` is set by korb_yield/proc_call.  Plain
+     * frame.  `c->running_block` is set by korb_yield/proc_call.  Plain
      * method body return / lambda body return → state_target_frame
      * stays NULL (consume at any matching boundary). */
     c->state_target_frame = NULL;
-    if (running_block && !running_block->is_lambda &&
-        running_block->return_target_frame) {
-        c->state_target_frame = running_block->return_target_frame;
+    if (c->running_block && !c->running_block->is_lambda &&
+        c->running_block->return_target_frame) {
+        c->state_target_frame = c->running_block->return_target_frame;
     }
     return v;
 }
@@ -1079,27 +1079,27 @@ node_func_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, I
 NODE_DEF @noinline
 node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
+    VALUE p = korb_proc_new_with_cref(c, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     /* Capture enclosing-method's fp for non-local return targeting. */
     /* Capture the lexically-enclosing method's frame for non-local
      * `return` targeting.  When this block_literal is itself inside
-     * another block's body (running_block != NULL), inherit that
+     * another block's body (c->running_block != NULL), inherit that
      * outer block's target — they share the same lexical method.
      * Only when no block is running do we capture the current frame. */
     ((struct korb_proc *)p)->return_target_frame =
-        running_block ? running_block->return_target_frame : c->current_frame;
+        c->running_block ? c->running_block->return_target_frame : c->current_frame;
     ((struct korb_proc *)p)->enclosing_frame_id =
-        running_block ? running_block->enclosing_frame_id
+        c->running_block ? c->running_block->enclosing_frame_id
                       : (c->current_frame ? c->current_frame->frame_id : 0);
     /* Lexical method capture: the method active when this block is
      * created.  super inside the block uses this method's
      * defining_class.  When this block_literal is itself inside another
      * block, inherit the outer's defining_method. */
     ((struct korb_proc *)p)->defining_method =
-        running_block ? running_block->defining_method
+        c->running_block ? c->running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
-    ((struct korb_proc *)p)->lexical_parent_block = running_block;
+    ((struct korb_proc *)p)->lexical_parent_block = c->running_block;
     return p;
 }
 
@@ -1108,18 +1108,18 @@ node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 NODE_DEF @noinline
 node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
+    VALUE p = korb_proc_new_with_cref(c, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     ((struct korb_proc *)p)->return_target_frame =
-        running_block ? running_block->return_target_frame : c->current_frame;
+        c->running_block ? c->running_block->return_target_frame : c->current_frame;
     ((struct korb_proc *)p)->enclosing_frame_id =
-        running_block ? running_block->enclosing_frame_id
+        c->running_block ? c->running_block->enclosing_frame_id
                       : (c->current_frame ? c->current_frame->frame_id : 0);
     ((struct korb_proc *)p)->defining_method =
-        running_block ? running_block->defining_method
+        c->running_block ? c->running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
-    ((struct korb_proc *)p)->lexical_parent_block = running_block;
+    ((struct korb_proc *)p)->lexical_parent_block = c->running_block;
     return p;
 }
 
@@ -1129,19 +1129,19 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
 NODE_DEF @noinline
 node_block_literal_kw(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
+    VALUE p = korb_proc_new_with_cref(c, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     ((struct korb_proc *)p)->kwh_save_slot = kwh_save_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     ((struct korb_proc *)p)->return_target_frame =
-        running_block ? running_block->return_target_frame : c->current_frame;
+        c->running_block ? c->running_block->return_target_frame : c->current_frame;
     ((struct korb_proc *)p)->enclosing_frame_id =
-        running_block ? running_block->enclosing_frame_id
+        c->running_block ? c->running_block->enclosing_frame_id
                       : (c->current_frame ? c->current_frame->frame_id : 0);
     ((struct korb_proc *)p)->defining_method =
-        running_block ? running_block->defining_method
+        c->running_block ? c->running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
-    ((struct korb_proc *)p)->lexical_parent_block = running_block;
+    ((struct korb_proc *)p)->lexical_parent_block = c->running_block;
     return p;
 }
 
@@ -2112,11 +2112,11 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
 {
     /* When `super` runs inside a block body, the lexically-enclosing
      * method drives the super lookup — not whichever method called
-     * `yield` to invoke the block.  running_block->defining_method
+     * `yield` to invoke the block.  c->running_block->defining_method
      * was captured at proc creation time. */
-    extern struct korb_proc *running_block;
-    struct korb_method *m = (running_block && running_block->defining_method)
-                              ? running_block->defining_method
+    
+    struct korb_method *m = (c->running_block && c->running_block->defining_method)
+                              ? c->running_block->defining_method
                               : (c->current_frame ? c->current_frame->method : NULL);
     if (!m) {
         korb_raise(c, NULL, "super called outside of method");
@@ -2167,7 +2167,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     frame.prev = c->current_frame;
     frame.method = sm;
     frame.self = c->current_frame->self;
-    frame.block = current_block;
+    frame.block = c->current_block;
     frame.caller_node = n;
     frame.fp = new_fp;
     frame.cref = c->current_frame->cref;
@@ -2177,14 +2177,14 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     frame.super_skip_n = new_skip_n;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
-    extern struct korb_proc *running_block;
-    frame.caller_running_block = running_block;
+    
+    frame.caller_running_block = c->running_block;
     c->current_frame = &frame;
-    struct korb_proc *prev_running = running_block;
-    running_block = NULL;
+    struct korb_proc *prev_running = c->running_block;
+    c->running_block = NULL;
     VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
     c->current_frame = frame.prev;
-    running_block = prev_running;
+    c->running_block = prev_running;
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     if (c->state == KORB_RETURN &&
@@ -2205,9 +2205,9 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
 NODE_DEF @noinline
 node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index, NODE *blk_expr)
 {
-    extern struct korb_proc *running_block;
-    struct korb_method *m = (running_block && running_block->defining_method)
-                              ? running_block->defining_method
+    
+    struct korb_method *m = (c->running_block && c->running_block->defining_method)
+                              ? c->running_block->defining_method
                               : (c->current_frame ? c->current_frame->method : NULL);
     if (!m) {
         korb_raise(c, NULL, "super called outside of method");
@@ -2234,10 +2234,10 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
                                    BUILTIN_TYPE(blk_v) == T_PROC)
                                   ? (struct korb_proc *)blk_v : NULL;
     if (sm->type == KORB_METHOD_CFUNC) {
-        struct korb_proc *prev_block = current_block;
-        current_block = blk_proc;
+        struct korb_proc *prev_block = c->current_block;
+        c->current_block = blk_proc;
         VALUE r = sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
-        current_block = prev_block;
+        c->current_block = prev_block;
         return r;
     }
     VALUE *prev_fp = c->current_frame->fp;
@@ -2261,24 +2261,24 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     frame.super_skip_n = new_skip_n;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
-    extern struct korb_proc *running_block;
-    frame.caller_running_block = running_block;
+    
+    frame.caller_running_block = c->running_block;
     extern uint64_t korb_g_next_frame_id;
     frame.frame_id = ++korb_g_next_frame_id;
     c->current_frame = &frame;
-    struct korb_proc *prev_running = running_block;
-    running_block = NULL;
-    struct korb_proc *prev_current_block = current_block;
-    current_block = blk_proc;
+    struct korb_proc *prev_running = c->running_block;
+    c->running_block = NULL;
+    struct korb_proc *prev_current_block = c->current_block;
+    c->current_block = blk_proc;
     /* Bind the &block parameter (if any) to the explicit block — the
      * normal prologue would do this but we skipped it. */
     if (sm->u.ast.block_slot >= 0) {
         new_fp[sm->u.ast.block_slot] = blk_proc ? (VALUE)blk_proc : Qnil;
     }
     VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
-    current_block = prev_current_block;
+    c->current_block = prev_current_block;
     c->current_frame = frame.prev;
-    running_block = prev_running;
+    c->running_block = prev_running;
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     if (c->state == KORB_RETURN &&
@@ -2292,7 +2292,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
 }
 
 /* `super { block }` (forwarding form): evaluate the block, swap
- * current_block, then route through DISPATCH_node_super_forward
+ * c->current_block, then route through DISPATCH_node_super_forward
  * (a lightweight wrapper around EVAL_node_super_forward that has
  * external linkage so we can call it across the TU boundary).
  * The dispatcher reads from `n` so we synthesize a node-shaped
@@ -2301,7 +2301,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
 NODE_DEF @noinline
 node_super_forward_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_expr)
 {
-    extern struct korb_proc *current_block;
+    
     VALUE blk_v = blk_expr ? EA(c, blk_expr) : Qnil;
     struct korb_proc *blk_proc = (!NIL_P(blk_v) && !SPECIAL_CONST_P(blk_v) &&
                                    BUILTIN_TYPE(blk_v) == T_PROC)
@@ -2311,10 +2311,10 @@ node_super_forward_block(CTX * restrict c, NODE * restrict n, VALUE * restrict s
      * via the public ALLOC_node_super_forward entry. */
     extern struct Node *ALLOC_node_super_forward(void);
     struct Node *fwd = ALLOC_node_super_forward();
-    struct korb_proc *prev = current_block;
-    current_block = blk_proc;
+    struct korb_proc *prev = c->current_block;
+    c->current_block = blk_proc;
     VALUE r = ((korb_dispatcher_t)fwd->head.dispatcher)(c, fwd, sp);
-    current_block = prev;
+    c->current_block = prev;
     return r;
 }
 
@@ -2327,9 +2327,9 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     }
     /* Inside a block body, `super` targets the block's lexical method
      * (captured at proc creation), not the dynamic frame's method. */
-    extern struct korb_proc *running_block;
-    struct korb_method *m = (running_block && running_block->defining_method)
-                              ? running_block->defining_method
+    
+    struct korb_method *m = (c->running_block && c->running_block->defining_method)
+                              ? c->running_block->defining_method
                               : c->current_frame->method;
     struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
     extern struct korb_method *korb_class_find_super_method_n(
@@ -2488,11 +2488,11 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     if (sm->u.ast.kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
         new_fp[sm->u.ast.kwh_save_slot] = peeled_kwh;
     }
-    /* Bind the &block parameter on sm to current_block (= the caller's
+    /* Bind the &block parameter on sm to c->current_block (= the caller's
      * block we're forwarding through super).  Without this, sm's body
-     * sees its &block lvar as nil even though current_block is set. */
+     * sees its &block lvar as nil even though c->current_block is set. */
     if (sm->u.ast.block_slot >= 0) {
-        new_fp[sm->u.ast.block_slot] = current_block ? (VALUE)current_block : Qnil;
+        new_fp[sm->u.ast.block_slot] = c->current_block ? (VALUE)c->current_block : Qnil;
     }
     c->current_frame->fp = new_fp;
     { VALUE *_ns = c->current_frame->fp + sm->u.ast.locals_cnt; if (_ns > c->sp) { for (VALUE *p = c->sp; p < _ns; p++) *p = Qnil; c->sp = _ns; } }
@@ -2501,7 +2501,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     frame.prev = c->current_frame;
     frame.method = sm;
     frame.self = c->current_frame->self;
-    frame.block = current_block;
+    frame.block = c->current_block;
     frame.caller_node = n;
     frame.fp = new_fp;
     frame.cref = c->current_frame->cref;
@@ -2511,14 +2511,14 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     frame.super_skip_n = fwd_new_skip_n;
     frame.last_line = Qnil;
     frame.last_match = Qnil;
-    extern struct korb_proc *running_block;
-    frame.caller_running_block = running_block;
+    
+    frame.caller_running_block = c->running_block;
     c->current_frame = &frame;
-    struct korb_proc *prev_running = running_block;
-    running_block = NULL;
+    struct korb_proc *prev_running = c->running_block;
+    c->running_block = NULL;
     VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
     c->current_frame = frame.prev;
-    running_block = prev_running;
+    c->running_block = prev_running;
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     if (c->state == KORB_RETURN &&

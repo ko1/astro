@@ -31,8 +31,8 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
     else return Qnil;
     /* Forward the block that was passed to send itself: `obj.send(:foo) { ... }`
      * should run with the block visible to foo's `yield`. */
-    extern struct korb_proc *current_block;
-    struct korb_proc *blk = current_block;
+    
+    struct korb_proc *blk = c->current_block;
     if (enforce_public) {
         struct korb_class *klass = korb_class_of_class(self);
         struct korb_method *m = korb_class_find_method(klass, name);
@@ -304,13 +304,13 @@ static VALUE obj_method(CTX *c, VALUE self, int argc, VALUE *argv) {
 extern VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
                                        const char *filename, VALUE recv);
 static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
+    
     if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
         struct korb_string *s = (struct korb_string *)argv[0];
         return korb_eval_string_in_self(c, s->ptr, (size_t)s->len, "(instance_eval)", self);
     }
-    if (!current_block) return Qnil;
-    struct korb_proc *blk = current_block;
+    if (!c->current_block) return Qnil;
+    struct korb_proc *blk = c->current_block;
     /* Symbol-proc / Method-proc shim handling — see obj_instance_exec
      * for the reasoning.  Without this, `obj.instance_eval(&:to_s)`
      * crashes inside korb_yield with a NULL body. */
@@ -345,9 +345,9 @@ static VALUE obj_instance_eval(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Object#instance_exec(*args) { |args| ... } — like instance_eval but
  * passes args to the block. */
 static VALUE obj_instance_exec(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
-    if (!current_block) return Qnil;
-    struct korb_proc *blk = current_block;
+    
+    if (!c->current_block) return Qnil;
+    struct korb_proc *blk = c->current_block;
     /* &m where m is a Method or Symbol creates a "shim" proc whose body
      * is NULL and whose self points at the underlying Method/Symbol.
      * Re-binding the self to the instance_exec receiver would lose that
@@ -797,16 +797,16 @@ static VALUE obj_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* ---------- Object#tap / #then / #itself ---------- */
 VALUE obj_tap(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
-    if (current_block) {
+    
+    if (c->current_block) {
         VALUE av[1] = { self };
         korb_yield(c, 1, av);
     }
     return self;
 }
 VALUE obj_then(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
-    if (current_block) {
+    
+    if (c->current_block) {
         VALUE av[1] = { self };
         return korb_yield(c, 1, av);
     }

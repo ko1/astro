@@ -122,7 +122,7 @@ static VALUE hash_merge(CTX *c, VALUE self, int argc, VALUE *argv) {
      * conflict it's invoked as `block.call(key, old_val, new_val)`
      * and its return value becomes the merged value. */
     struct korb_hash *src = (struct korb_hash *)self;
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     VALUE r = korb_hash_new();
     struct korb_hash *rh = (struct korb_hash *)r;
     /* Preserve compare_by_identity / default_value / default_proc
@@ -332,7 +332,7 @@ static VALUE hash_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (e->hash == hh && korb_eql(e->key, argv[0])) return e->value;
     }
     /* Not found: priority is block > default arg > KeyError. */
-    if (korb_block_given()) {
+    if (korb_block_given(c)) {
         VALUE r = korb_yield(c, 1, &argv[0]);
         if (c->state != KORB_NORMAL) return Qnil;
         return r;
@@ -366,7 +366,7 @@ static VALUE hash_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     if (!target) {
         /* Not found: if a block was given, yield key and return its result. */
-        if (korb_block_given()) {
+        if (korb_block_given(c)) {
             VALUE r = korb_yield(c, 1, &key);
             if (c->state != KORB_NORMAL) return Qnil;
             return r;
@@ -522,7 +522,7 @@ static VALUE hash_class_aref(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
+    
     /* Ruby 3.2+: Hash.new accepts a `capacity:` keyword (and rejects
      * unknown keywords).  Peel off a trailing FL_KWARGS hash before the
      * arity check so `Hash.new(capacity: 100)` doesn't look like a
@@ -551,7 +551,7 @@ static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
                    "wrong number of arguments (given %d, expected 0..1)", eff_argc);
         return Qnil;
     }
-    if (current_block && eff_argc >= 1) {
+    if (c->current_block && eff_argc >= 1) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given 1, expected 0)");
@@ -559,8 +559,8 @@ static VALUE hash_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE h = korb_hash_new();
     struct korb_hash *hh = (struct korb_hash *)h;
-    if (current_block) {
-        hh->default_proc = (VALUE)current_block;
+    if (c->current_block) {
+        hh->default_proc = (VALUE)c->current_block;
     } else if (eff_argc >= 1) {
         hh->default_value = argv[0];
     }
@@ -786,7 +786,7 @@ static VALUE hash_fetch_values(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (!found) {
             /* Block fallback: yield key for the missing entry, push the
              * block's result.  Otherwise raise KeyError. */
-            if (korb_block_given()) {
+            if (korb_block_given(c)) {
                 VALUE blk_r = korb_yield(c, 1, &k);
                 if (c->state == KORB_RAISE) return Qnil;
                 korb_ary_push(r, blk_r);
@@ -908,8 +908,8 @@ static VALUE hash_except(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Hash#count — h.size if no block, else count where block returns truthy. */
 static VALUE hash_count(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_hash *h = (struct korb_hash *)self;
-    extern struct korb_proc *current_block;
-    if (!current_block) return INT2FIX((long)h->size);
+    
+    if (!c->current_block) return INT2FIX((long)h->size);
     long n = 0;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = {e->key, e->value};
@@ -968,9 +968,9 @@ static VALUE hash_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_ary_push(pair, e->value);
         korb_ary_push(r, pair);
     }
-    if (korb_block_given()) {
+    if (korb_block_given(c)) {
         return korb_funcall_with_block(c, r, korb_intern("sort"), 0, NULL,
-                                        (VALUE)current_block);
+                                        (VALUE)c->current_block);
     }
     return korb_funcall(c, r, korb_intern("sort"), 0, NULL);
 }
@@ -1115,7 +1115,7 @@ static VALUE hash_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE acc = argc >= 1 ? argv[0] : INT2FIX(0);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE addend;
-        if (korb_block_given()) {
+        if (korb_block_given(c)) {
             VALUE args[2] = { e->key, e->value };
             addend = korb_yield(c, 2, args);
             if (c->state != KORB_NORMAL) return Qnil;

@@ -16,9 +16,8 @@
 #include "object.h"
 #include "node.h"
 
-/* current_block is a thread-local in object.c — declared here so the
- * inline prologues can read/write it directly. */
-extern struct korb_proc *current_block;
+/* c->current_block is the active block-for-yield (held on CTX so future
+ * Fiber/Thread support gets a per-ctx field for free). */
 
 /* Forward declared from object.c — heap-snapshots a returned Proc's
  * env if it points into the about-to-be-popped frame. */
@@ -43,8 +42,8 @@ prologue_cfunc_r_inl(CTX *c, struct Node *callsite,
                      struct korb_proc *block, struct method_cache *mc)
 {
     VALUE recv = sp[-argc - 1];
-    struct korb_proc *prev_block = current_block;
-    current_block = block;
+    struct korb_proc *prev_block = c->current_block;
+    c->current_block = block;
     struct korb_frame cfr = {
         .prev = c->current_frame,
         .self = recv,
@@ -66,7 +65,7 @@ prologue_cfunc_r_inl(CTX *c, struct Node *callsite,
     RESULT r = mc->cfunc_r(c, argc, sp);
     c->last_cfunc_callsite = prev_cs;
     c->current_frame = cfr.prev;
-    current_block = prev_block;
+    c->current_block = prev_block;
     /* break-from-block: convert KORB_BREAK back to NORMAL with the carried value.
      * State carried in r.state for new ABI; we also clear c->state in case
      * a legacy helper inside the cfunc wrote it. */
@@ -85,8 +84,8 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
                    struct korb_proc *block, struct method_cache *mc)
 {
     VALUE *argv = &c->current_frame->fp[arg_index];
-    struct korb_proc *prev_block = current_block;
-    current_block = block;
+    struct korb_proc *prev_block = c->current_block;
+    c->current_block = block;
     /* Push a minimal frame so the outer self lives in frame.prev->self
      * across the cfunc's GC firings (= which can move outer self under
      * moving GC).  C-local `prev_self` would go stale.  visit_roots
@@ -114,7 +113,7 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
     c->last_cfunc_callsite = prev_cs;
     c->current_frame = cfr.prev;
     c->current_frame->self = cfr.prev ? cfr.prev->self : korb_vm->main_obj;
-    current_block = prev_block;
+    c->current_block = prev_block;
     if (UNLIKELY(block && c->state == KORB_BREAK)) {
         r = c->state_value;
         c->state = KORB_NORMAL;
@@ -126,7 +125,7 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
 /* AST-method prologue, parameterized by PARAMS_KNOWN at compile time so
  * each argc-specialized variant unrolls the locals-fill loop.  The
  * SIMPLE_FRAME flag (set on methods whose body has no super / yield /
- * block_given? / const access / blocked call) lets us skip current_block
+ * block_given? / const access / blocked call) lets us skip c->current_block
  * save/restore, cref save/restore, and frame chain setup — about 10
  * stores per call on tight recursive paths (fib / ack / tak / incr). */
 static inline __attribute__((always_inline)) VALUE
@@ -188,7 +187,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * class lookup). */
     struct korb_cref *prev_cref = c->current_frame->cref;
     /* Always push a minimal frame for backtrace.  Heavy state save
-     * (block/cref/current_block) only when the body actually uses it.
+     * (block/cref/c->current_block) only when the body actually uses it.
      * fp + locals_cnt are recorded too so Kernel#binding /
      * __capture_lvars__ can read the active method's slots. */
     struct korb_frame frame;
@@ -219,15 +218,14 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.last_match = Qnil;
     /* Capture the block whose body is calling us, so backtrace can
      * synthesize a "block in <enclosing>" entry above this frame. */
-    extern struct korb_proc *running_block;
-    frame.caller_running_block = running_block;
+    frame.caller_running_block = c->running_block;
     c->current_frame = &frame;
     /* Entering a method body — no block is "running" at this point.
      * If we don't reset, a `return` inside a method called from within
      * a block would be interpreted as non-local (target_fp = block's
      * enclosing). */
-    struct korb_proc *prev_running = running_block;
-    running_block = NULL;
+    struct korb_proc *prev_running = c->running_block;
+    c->running_block = NULL;
     /* cref must reflect the method's definition site so cref-dependent
      * operations (Kernel#binding, class-variable access, `class C`
      * keyword) see the lexical class.  Most calls have c->current_frame->cref ==
@@ -239,8 +237,8 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
         c->current_frame->cref = mc->def_cref;
     }
     if (UNLIKELY(!simple)) {
-        prev_block = current_block;
-        current_block = block;
+        prev_block = c->current_block;
+        c->current_block = block;
     }
 
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
@@ -254,10 +252,10 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     VALUE r = mc->dispatcher(c, mc->body, new_fp + mc->locals_cnt);
 
     c->current_frame = frame.prev;
-    running_block = prev_running;
+    c->running_block = prev_running;
     if (UNLIKELY(cref_swapped)) c->current_frame->cref = prev_cref;
     if (UNLIKELY(!simple)) {
-        current_block = prev_block;
+        c->current_block = prev_block;
     }
     /* If we're returning a Proc whose env points into the about-to-be-
      * popped frame, heap-snapshot it so the next stack push doesn't
@@ -379,15 +377,14 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.last_match = Qnil;
     /* Capture the block whose body is calling us, so backtrace can
      * synthesize a "block in <enclosing>" entry above this frame. */
-    extern struct korb_proc *running_block;
-    frame.caller_running_block = running_block;
+    frame.caller_running_block = c->running_block;
     c->current_frame = &frame;
     /* Entering a method body — no block is "running" at this point.
      * If we don't reset, a `return` inside a method called from within
      * a block would be interpreted as non-local (target_fp = block's
      * enclosing). */
-    struct korb_proc *prev_running = running_block;
-    running_block = NULL;
+    struct korb_proc *prev_running = c->running_block;
+    c->running_block = NULL;
     /* cref must reflect the method's definition site so cref-dependent
      * operations (Kernel#binding, class-variable access, `class C`
      * keyword) see the lexical class.  Most calls have c->current_frame->cref ==
@@ -399,8 +396,8 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
         c->current_frame->cref = mc->def_cref;
     }
     if (UNLIKELY(!simple)) {
-        prev_block = current_block;
-        current_block = block;
+        prev_block = c->current_block;
+        c->current_block = block;
     }
 
     for (uint32_t i = total; i < mc->locals_cnt; i++) {
@@ -414,10 +411,10 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     VALUE r = static_disp(c, mc->body, new_fp + mc->locals_cnt);
 
     c->current_frame = frame.prev;
-    running_block = prev_running;
+    c->running_block = prev_running;
     if (UNLIKELY(cref_swapped)) c->current_frame->cref = prev_cref;
     if (UNLIKELY(!simple)) {
-        current_block = prev_block;
+        c->current_block = prev_block;
     }
     korb_proc_snapshot_env_maybe(r, new_fp, new_fp + mc->locals_cnt);
     if (UNLIKELY(c->state == KORB_RETURN || c->state == KORB_BREAK)) {

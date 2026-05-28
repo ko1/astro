@@ -563,24 +563,24 @@ static VALUE struct_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
      * end` would leak `foo` onto TM (and worse — `def method_missing`
      * inside the block would replace TM's method_missing, breaking
      * every method on TM). */
-    extern struct korb_proc *current_block;
-    if (current_block) {
+    
+    if (c->current_block) {
         VALUE prev_self = c->current_frame->self;
         struct korb_class *prev_class = c->current_frame->current_class;
         struct korb_cref *prev_cref = c->current_frame->cref;
         struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
-        struct korb_cref blk_cref = { .klass = klass, .prev = current_block->cref };
-        struct korb_cref *prev_blk_cref = current_block->cref;
-        VALUE prev_blk_self = current_block->self;
+        struct korb_cref blk_cref = { .klass = klass, .prev = c->current_block->cref };
+        struct korb_cref *prev_blk_cref = c->current_block->cref;
+        VALUE prev_blk_self = c->current_block->self;
         c->current_frame->self = (VALUE)klass;
         c->current_frame->current_class = klass;
         c->current_frame->cref = &new_cref;
-        current_block->self = (VALUE)klass;
-        current_block->cref = &blk_cref;
+        c->current_block->self = (VALUE)klass;
+        c->current_block->cref = &blk_cref;
         VALUE av0[1] = { (VALUE)klass };
         korb_yield(c, 1, av0);
-        current_block->self = prev_blk_self;
-        current_block->cref = prev_blk_cref;
+        c->current_block->self = prev_blk_self;
+        c->current_block->cref = prev_blk_cref;
         c->current_frame->self = prev_self;
         c->current_frame->current_class = prev_class;
         c->current_frame->cref = prev_cref;

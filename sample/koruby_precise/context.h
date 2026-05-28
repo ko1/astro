@@ -433,6 +433,19 @@ typedef struct CTX_struct {
      * before calling the cfunc, so cfunc bodies (e.g. kernel_raise) can
      * record the line of the call into a backtrace. */
     struct Node *last_cfunc_callsite;
+
+    /* Block currently in scope for yield.  Distinct from
+     * current_frame->block (which is the block PASSED to the current
+     * method): when a proc body executes, current_block is swapped to
+     * the proc's enclosing block so that `yield` inside the proc fires
+     * the right block.  Saved/restored by dispatcher + proc_call. */
+    struct korb_proc *current_block;
+
+    /* The block/proc/lambda whose body is currently being executed —
+     * distinct from current_block (= block to be yielded to).  Used by
+     * super (to know the lexical method of the block being run) and by
+     * backtrace.  Saved/restored at proc_call / yield boundaries. */
+    struct korb_proc *running_block;
 } CTX;
 
 /* push/pop frame helpers via macro */

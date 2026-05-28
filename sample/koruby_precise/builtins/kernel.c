@@ -7,8 +7,8 @@ static struct {
 } g_at_exit = {0};
 
 static VALUE kernel_at_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         korb_raise(c, NULL, "called without a block");
         return Qnil;
     }
@@ -17,8 +17,8 @@ static VALUE kernel_at_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
         g_at_exit.procs = korb_xrealloc(g_at_exit.procs, nc * sizeof(*g_at_exit.procs));
         g_at_exit.capa = nc;
     }
-    g_at_exit.procs[g_at_exit.cnt++] = current_block;
-    return (VALUE)current_block;
+    g_at_exit.procs[g_at_exit.cnt++] = c->current_block;
+    return (VALUE)c->current_block;
 }
 
 void korb_run_at_exit_hooks(CTX *c) {
@@ -692,7 +692,7 @@ static VALUE kernel_block_given(CTX *c, VALUE self, int argc, VALUE *argv) {
             return KORB_BOOL(f->block != NULL);
         }
     }
-    return KORB_BOOL(korb_block_given());
+    return KORB_BOOL(korb_block_given(c));
 }
 
 /* ---------- catch / throw ----------
@@ -1053,12 +1053,12 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
     char nbuf[256];
     /* Inside a block / proc / lambda body — prepend a "block in
      * <enclosing>" entry so caller(0) sees the block as a frame. */
-    if (running_block) {
+    if (c->running_block) {
         const char *enc_name = (f && f->method && f->method->name)
                                   ? korb_id_name(f->method->name) : "<main>";
         const char *enc_file = default_file;
-        if (running_block->body && running_block->body->head.source_file) {
-            enc_file = running_block->body->head.source_file;
+        if (c->running_block->body && c->running_block->body->head.source_file) {
+            enc_file = c->running_block->body->head.source_file;
         }
         snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
@@ -1304,7 +1304,7 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     const char **scope_locals = NULL;
     size_t scope_locals_n = 0;
     /* Order of preference for locating caller's lvars:
-     *   1. running_block — eval inside a block sees the block's own
+     *   1. c->running_block — eval inside a block sees the block's own
      *      locals (which include any params).  Block locals shadow
      *      enclosing method locals; we use the block's table so eval'd
      *      `a` in `[1].each { |a| eval('a') }` resolves to the block's
@@ -1313,7 +1313,7 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      *      body (cfunc prologue doesn't push a frame, so current_frame
      *      is the caller's AST method).
      */
-    extern struct korb_proc *running_block;
+    
     extern struct Node *korb_g_program_body;
     extern ID *korb_body_local_names(struct Node *body);
     ID *names = NULL;
@@ -1323,8 +1323,8 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (c->current_eval_program_body) {
         names = korb_body_local_names(c->current_eval_program_body);
     }
-    if (!names && running_block && running_block->body) {
-        names = korb_body_local_names(running_block->body);
+    if (!names && c->running_block && c->running_block->body) {
+        names = korb_body_local_names(c->running_block->body);
     }
     if (!names && c->current_frame && c->current_frame->method &&
         c->current_frame->method->type == KORB_METHOD_AST) {
@@ -1375,7 +1375,7 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     OPTIMIZE(ast);
     /* Recover the lexical cref of the caller's *innermost active scope*.
      * Order of preference:
-     *   1. If a block is currently running (running_block), use that
+     *   1. If a block is currently running (c->running_block), use that
      *      block's captured cref — eval inside `-> { eval "..." }` should
      *      see the lambda's lexical scope, not the method that .called it.
      *   2. Otherwise, the calling method's def_cref (works when
@@ -1383,9 +1383,9 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      *   3. Fall back to whatever c->current_frame->cref currently is.
      */
     struct korb_cref *prev_cref = c->current_frame->cref;
-    extern struct korb_proc *running_block;
-    if (running_block && running_block->cref) {
-        c->current_frame->cref = running_block->cref;
+    
+    if (c->running_block && c->running_block->cref) {
+        c->current_frame->cref = c->running_block->cref;
     } else if (c->current_frame && c->current_frame->method &&
                c->current_frame->method->def_cref) {
         c->current_frame->cref = c->current_frame->method->def_cref;
@@ -1400,8 +1400,8 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
      * the already-shifted fp, so shifting again would double-skip
      * past the lvar slots. */
     VALUE *prev_fp = c->current_frame->fp;
-    if (!prev_eval_body && running_block && running_block->param_base > 0 && c->current_frame->fp) {
-        c->current_frame->fp = c->current_frame->fp + running_block->param_base;
+    if (!prev_eval_body && c->running_block && c->running_block->param_base > 0 && c->current_frame->fp) {
+        c->current_frame->fp = c->current_frame->fp + c->running_block->param_base;
     }
     VALUE r = EVAL(c, ast, c->current_frame->fp);
     c->current_frame->fp = prev_fp;
@@ -1419,8 +1419,8 @@ static VALUE kernel_initialize_default(CTX *c, VALUE self, int argc, VALUE *argv
 
 static VALUE kernel_loop(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* loop { ... } — call block forever, swallow StopIteration. */
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         korb_raise(c, NULL, "no block given (loop)");
         return Qnil;
     }
@@ -1447,26 +1447,26 @@ static VALUE kernel_loop(CTX *c, VALUE self, int argc, VALUE *argv) {
     return Qnil;
 }
 static VALUE kernel_lambda(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eA,
                    "tried to create Proc object without a block");
         return Qnil;
     }
     /* Mark as lambda so Proc#call's `return` becomes local. */
-    current_block->is_lambda = true;
-    return (VALUE)current_block;
+    c->current_block->is_lambda = true;
+    return (VALUE)c->current_block;
 }
 static VALUE kernel_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
         korb_raise(c, (struct korb_class *)eA,
                    "tried to create Proc object without a block");
         return Qnil;
     }
-    return (VALUE)current_block;
+    return (VALUE)c->current_block;
 }
 
 
@@ -1482,7 +1482,7 @@ static VALUE kernel_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Yields nothing.  Returns 0 (the count of yielded objects). */
-    if (!korb_block_given()) return korb_ary_new();
+    if (!korb_block_given(c)) return korb_ary_new();
     return INT2FIX(0);
 }
 

@@ -251,7 +251,7 @@ struct korb_proc {
      * proc creation time; super inside the block reads this instead
      * of c->current_frame->method. */
     struct korb_method *defining_method;
-    /* The block lexically enclosing this one — i.e. running_block at
+    /* The block lexically enclosing this one — i.e. c->running_block at
      * the moment this proc was created.  Used by Binding (and any
      * lvar-walk in the future) to traverse the lexical chain.  NULL
      * when this block was created outside any block. */
@@ -871,14 +871,14 @@ VALUE korb_node_aset_slow  (CTX *c, VALUE r, VALUE i, VALUE v, uint32_t arg_inde
  * and the param/argc-mismatch slow case. */
 VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv);
 
-extern struct korb_proc *current_block;
+
 
 /* The block/proc/lambda whose body is currently executing.  Updated by
  * korb_yield (set to blk) and proc_call (set to p), restored on return.
  * Used by node_return to determine whether `return` is non-local
- * (running_block != NULL && !is_lambda → target enclosing method) or
+ * (c->running_block != NULL && !is_lambda → target enclosing method) or
  * local (lambda or method body). */
-extern struct korb_proc *running_block;
+
 
 /* Fast path: hot in `ary.each { |x| ... }` style code (Array#each,
  * Hash#each, etc.) — argc and params_cnt are usually 1, no
@@ -887,7 +887,7 @@ extern struct korb_proc *running_block;
  * call disappears. */
 static inline __attribute__((always_inline)) VALUE
 korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
-    struct korb_proc *blk = current_block;
+    struct korb_proc *blk = c->current_block;
     if (UNLIKELY(!blk)) {
         VALUE eLJE = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
         korb_raise(c, (struct korb_class *)eLJE, "no block given (yield)");
@@ -907,7 +907,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         VALUE *prev_fp = c->current_frame->fp;
         VALUE prev_self = c->current_frame->self;
         struct korb_cref *prev_cref = c->current_frame->cref;
-        struct korb_proc *prev_block = current_block;
+        struct korb_proc *prev_block = c->current_block;
         VALUE *bfp = blk->env;
         bfp[blk->param_base] = arg;
         c->current_frame->self = blk->self;
@@ -915,9 +915,9 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         if (blk->cref) c->current_frame->cref = blk->cref;
         /* Lexical block target: yield inside this block goes to the
          * enclosing method's block, not back to this block itself. */
-        current_block = blk->enclosing_block;
-        struct korb_proc *prev_running = running_block;
-        running_block = blk;
+        c->current_block = blk->enclosing_block;
+        struct korb_proc *prev_running = c->running_block;
+        c->running_block = blk;
         VALUE r;
     redo_yield:
         /* sp = bfp + env_size matches the bake walker's sp_offset
@@ -932,8 +932,8 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         c->current_frame->fp = prev_fp;
         c->current_frame->self = prev_self;
         c->current_frame->cref = prev_cref;
-        current_block = prev_block;
-        running_block = prev_running;
+        c->current_block = prev_block;
+        c->running_block = prev_running;
         if (UNLIKELY(c->state == KORB_NEXT)) {
             VALUE nv = c->state_value;
             c->state = KORB_NORMAL; c->state_value = Qnil;
@@ -944,7 +944,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     return korb_yield_slow(c, blk, argc, argv);
 }
 
-bool korb_block_given(void);
+bool korb_block_given(CTX *c);
 
 /* gvar */
 VALUE korb_gvar_get(ID name);
@@ -966,8 +966,8 @@ VALUE korb_const_lookup(CTX *c, ID name);
 VALUE korb_range_new(VALUE begin, VALUE end, bool exclude_end);
 
 /* proc */
-VALUE korb_proc_new(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
-VALUE korb_proc_new_with_cref(struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda, struct korb_cref *cref);
+VALUE korb_proc_new(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
+VALUE korb_proc_new_with_cref(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda, struct korb_cref *cref);
 /* korb_proc_snapshot_env_if_in_frame and the inline gate
  * `korb_proc_snapshot_env_maybe` are declared above (before the
  * #include "prologues.h" block) so the inlined prologues can use them. */

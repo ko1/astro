@@ -290,7 +290,7 @@ static VALUE int_times(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* call block self times */
     if (!FIXNUM_P(self)) return Qnil;
     long n = FIX2LONG(self);
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         /* No-block: return Array stand-in [0, 1, ..., n-1] for chains
          * like `5.times.to_a` / `5.times.map { ... }`. */
         VALUE a = korb_ary_new_capa(n > 0 ? n : 0);
@@ -611,7 +611,7 @@ static VALUE int_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     long step = (argc >= 2 && FIXNUM_P(argv[1])) ? FIX2LONG(argv[1]) : 1;
     if (step == 0) return self;
     /* If no block given, return Array of values (Enumerator approximation) */
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         VALUE r = korb_ary_new();
         if (step > 0) for (long i = start; i <= stop; i += step) korb_ary_push(r, INT2FIX(i));
         else for (long i = start; i >= stop; i += step) korb_ary_push(r, INT2FIX(i));
@@ -678,10 +678,10 @@ static VALUE int_upto(CTX *c, VALUE self, int argc, VALUE *argv) {
     long start = FIX2LONG(self);
     if (abort) {
         /* Bignum/NaN stop — empty loop. */
-        if (!korb_block_given()) return korb_ary_new();
+        if (!korb_block_given(c)) return korb_ary_new();
         return self;
     }
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         VALUE a = korb_ary_new();
         for (long i = start; i <= stop; i++) korb_ary_push(a, INT2FIX(i));
         return a;
@@ -701,10 +701,10 @@ static VALUE int_downto(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (abort && c->state == KORB_RAISE) return Qnil;
     long start = FIX2LONG(self);
     if (abort) {
-        if (!korb_block_given()) return korb_ary_new();
+        if (!korb_block_given(c)) return korb_ary_new();
         return self;
     }
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         VALUE a = korb_ary_new();
         for (long i = start; i >= stop; i--) korb_ary_push(a, INT2FIX(i));
         return a;

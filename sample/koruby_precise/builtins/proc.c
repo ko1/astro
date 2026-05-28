@@ -33,12 +33,12 @@ static VALUE proc_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Proc.new — captures the current block as a Proc. */
 static VALUE proc_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         korb_raise(c, NULL, "tried to create Proc object without a block");
         return Qnil;
     }
-    return (VALUE)current_block;
+    return (VALUE)c->current_block;
 }
 
 VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -301,23 +301,23 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (p->kwh_save_slot >= 0 && !UNDEF_P(peeled_kwh)) {
         new_fp[p->kwh_save_slot] = peeled_kwh;
     }
-    /* Bind &blk parameter — the caller's current_block (or nil) goes
+    /* Bind &blk parameter — the caller's c->current_block (or nil) goes
      * into the slot the proc declared `&blk` on. */
     if (p->block_slot >= 0) {
-        extern struct korb_proc *current_block;
-        new_fp[p->block_slot] = current_block ? (VALUE)current_block : Qnil;
+        
+        new_fp[p->block_slot] = c->current_block ? (VALUE)c->current_block : Qnil;
     }
     c->current_frame->fp = new_fp;
     if (c->current_frame->fp + p->env_size > c->sp) c->sp = c->current_frame->fp + p->env_size;
     c->current_frame->self = p->self;
     /* yield inside the proc body targets the enclosing method's block
      * captured at proc creation time. */
-    extern struct korb_proc *current_block;
-    extern struct korb_proc *running_block;
-    struct korb_proc *prev_block = current_block;
-    current_block = p->enclosing_block;
-    struct korb_proc *prev_running = running_block;
-    running_block = p;
+    
+    
+    struct korb_proc *prev_block = c->current_block;
+    c->current_block = p->enclosing_block;
+    struct korb_proc *prev_running = c->running_block;
+    c->running_block = p;
     /* Restore the lexical class nesting captured at block-creation time
      * so constant lookups and `def` inside the body resolve in the
      * defining class scope, not the caller's. */
@@ -337,8 +337,8 @@ redo_proc:
         goto redo_proc;
     }
     c->current_frame->cref = prev_cref;
-    current_block = prev_block;
-    running_block = prev_running;
+    c->current_block = prev_block;
+    c->running_block = prev_running;
     /* Snapshot any returned proc whose env points into our about-to-be-
      * popped frame.  Skip when state == RAISE / THROW / RETRY / REDO —
      * r is then a stale C-local (no caller will use it) and dereffing

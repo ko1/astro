@@ -5237,7 +5237,7 @@ T_inner(struct transduce_context *tc, pm_node_t *node)
               }
           }
           /* Explicit `&block`: lower to node_super_block which sets
-           * frame.block / current_block to the evaluated proc. */
+           * frame.block / c->current_block to the evaluated proc. */
           if (n->block && PM_NODE_TYPE_P(n->block, PM_BLOCK_ARGUMENT_NODE)) {
               pm_block_argument_node_t *ba = (pm_block_argument_node_t *)n->block;
               NODE *blk_expr;

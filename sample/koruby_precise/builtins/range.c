@@ -42,7 +42,7 @@ static VALUE rng_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* No block → return Array stand-in (Enumerator placeholder).  An
      * Array is "Enumerable enough" for the common chains like
      * `(1..3).each.map { ... }` and `.each.to_a`. */
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     }
     struct korb_range *r = (struct korb_range *)self;
@@ -178,7 +178,7 @@ static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (step == 0.0) return self;
         double b = korb_num2dbl(r->begin);
         double e = korb_num2dbl(r->end);
-        bool has_block = korb_block_given();
+        bool has_block = korb_block_given(c);
         VALUE out = has_block ? Qnil : korb_ary_new();
         for (double v = b; r->exclude_end ? (v < e) : (v <= e + 1e-12); v += step) {
             VALUE fv = korb_float_new(v);
@@ -195,7 +195,7 @@ static VALUE rng_step(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (step == 0) return self;
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         VALUE a = korb_ary_new();
         for (long i = b; i <= e; i += step) korb_ary_push(a, INT2FIX(i));
         return a;
@@ -310,7 +310,7 @@ static VALUE rng_include(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE rng_map(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     }
     struct korb_range *r = (struct korb_range *)self;
@@ -375,7 +375,7 @@ static VALUE rng_count(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Beginless or endless ranges have infinite element count when no
      * argument or block is given to filter (CRuby semantics).  Float
      * infinity is the conventional carrier for "infinite". */
-    if (argc == 0 && !korb_block_given() &&
+    if (argc == 0 && !korb_block_given(c) &&
         (NIL_P(r->begin) || NIL_P(r->end))) {
         return korb_float_new(1.0/0.0);
     }
@@ -395,7 +395,7 @@ static VALUE rng_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Symbol-arg form: reduce(:+) or reduce(init, :+). */
     ID op = 0;
     int sym_idx = -1;
-    if (argc >= 1 && SYMBOL_P(argv[argc - 1]) && !korb_block_given()) {
+    if (argc >= 1 && SYMBOL_P(argv[argc - 1]) && !korb_block_given(c)) {
         op = korb_sym2id(argv[argc - 1]);
         sym_idx = argc - 1;
     }

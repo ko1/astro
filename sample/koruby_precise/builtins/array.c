@@ -256,7 +256,7 @@ static VALUE ary_last(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_ary_aref(self, len - 1);
 }
 static VALUE ary_each(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!korb_block_given()) return self;
+    if (!korb_block_given(c)) return self;
     long len = korb_ary_len(self);
     for (long i = 0; i < len; i++) {
         VALUE v = korb_ary_aref(self, i);
@@ -267,7 +267,7 @@ static VALUE ary_each(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
     long len = korb_ary_len(self);
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         VALUE r = korb_ary_new_capa(len);
         for (long i = 0; i < len; i++) {
             VALUE pair = korb_ary_new_capa(2);
@@ -285,7 +285,7 @@ static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
     return self;
 }
 static VALUE ary_map(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!korb_block_given()) return self;
+    if (!korb_block_given(c)) return self;
     long len = korb_ary_len(self);
     VALUE r = korb_ary_new_capa(len);
     for (long i = 0; i < len; i++) {
@@ -297,7 +297,7 @@ static VALUE ary_map(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 static VALUE ary_select(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!korb_block_given()) return self;
+    if (!korb_block_given(c)) return self;
     long len = korb_ary_len(self);
     VALUE r = korb_ary_new();
     for (long i = 0; i < len; i++) {
@@ -319,7 +319,7 @@ static VALUE ary_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Detect "last positional arg is a Symbol" → reduce-by-method form. */
     ID op = 0;
     int sym_idx = -1;
-    if (argc >= 1 && SYMBOL_P(argv[argc - 1]) && !korb_block_given()) {
+    if (argc >= 1 && SYMBOL_P(argv[argc - 1]) && !korb_block_given(c)) {
         op = korb_sym2id(argv[argc - 1]);
         sym_idx = argc - 1;
     }
@@ -384,7 +384,7 @@ static VALUE ary_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
     const struct korb_array *a = (const struct korb_array *)self;
     VALUE h = korb_hash_new();
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     for (long i = 0; i < a->len; i++) {
         VALUE pair = a->ptr[i];
         if (has_block) {
@@ -499,7 +499,7 @@ static VALUE ary_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
     long n = a->len;
     VALUE r = korb_ary_new_capa(n);
     for (long i = 0; i < n; i++) korb_ary_push(r, a->ptr[i]);
-    ary_sort_in_place(c, (struct korb_array *)r, korb_block_given());
+    ary_sort_in_place(c, (struct korb_array *)r, korb_block_given(c));
     return r;
 }
 
@@ -507,7 +507,7 @@ static VALUE ary_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
  * registration aliases sort! to ary_sort which would build a copy and
  * return it; for the bang form we need to sort the receiver directly. */
 static VALUE ary_sort_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
-    ary_sort_in_place(c, (struct korb_array *)self, korb_block_given());
+    ary_sort_in_place(c, (struct korb_array *)self, korb_block_given(c));
     return self;
 }
 
@@ -673,7 +673,7 @@ static VALUE ary_include(CTX *c, VALUE self, int argc, VALUE *argv) {
  * If both pattern and block are given, CRuby uses the block (and warns).
  * Returns Qtrue/Qfalse. */
 static int ary_predicate_match(CTX *c, VALUE elem, int argc, VALUE *argv) {
-    if (korb_block_given()) {
+    if (korb_block_given(c)) {
         VALUE r = korb_yield(c, 1, &elem);
         return RTEST(r);
     }
@@ -727,7 +727,7 @@ static VALUE ary_one_p(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_min(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     /* Pin running-min + per-iter probe across korb_funcall — see ary_sort_compare
      * for sign-extract semantics (Fixnum/Bignum/Float). */
     VALUE ret;
@@ -747,7 +747,7 @@ static VALUE ary_min(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_max(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     if (a->len == 0) return Qnil;
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     /* Pin running-max + per-iter probe across korb_funcall — see ary_min. */
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
@@ -766,7 +766,7 @@ static VALUE ary_max(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_sum(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     VALUE acc = argc > 0 ? argv[0] : INT2FIX(0);
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     for (long i = 0; i < a->len; i++) {
         VALUE elt = a->ptr[i];
         /* Block form: yield each element through the block and use the
@@ -792,7 +792,7 @@ static VALUE ary_each_slice(CTX *c, VALUE self, int argc, VALUE *argv) {
     long n = FIX2LONG(argv[0]);
     if (n <= 0) return Qnil;
     struct korb_array *a = (struct korb_array *)self;
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     VALUE collected = has_block ? Qnil : korb_ary_new();
     for (long i = 0; i < a->len; i += n) {
         long end = i + n; if (end > a->len) end = a->len;
@@ -1186,8 +1186,8 @@ static VALUE ary_minus(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_index(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
-    extern struct korb_proc *current_block;
-    if (argc < 1 && current_block) {
+    
+    if (argc < 1 && c->current_block) {
         for (long i = 0; i < a->len; i++) {
             VALUE r = korb_yield(c, 1, &a->ptr[i]);
             if (c->state == KORB_RAISE) return Qnil;
@@ -1388,8 +1388,8 @@ static VALUE ary_transpose(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE ary_count(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
-    extern struct korb_proc *current_block;
-    if (argc == 0 && current_block) {
+    
+    if (argc == 0 && c->current_block) {
         long n = 0;
         for (long i = 0; i < a->len; i++) {
             VALUE r = korb_yield(c, 1, &a->ptr[i]);
@@ -1708,7 +1708,7 @@ static VALUE ary_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     long norm = i < 0 ? i + a->len : i;
     if (norm >= 0 && norm < a->len) return a->ptr[norm];
-    if (korb_block_given()) {
+    if (korb_block_given(c)) {
         VALUE arg[1] = { argv[0] };
         return korb_yield(c, 1, arg);
     }
@@ -1725,7 +1725,7 @@ static VALUE ary_fetch(CTX *c, VALUE self, int argc, VALUE *argv) {
  * first missing index. */
 static VALUE ary_fetch_values(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE r = korb_ary_new();
-    bool block_p = korb_block_given();
+    bool block_p = korb_block_given(c);
     struct korb_array *a = (struct korb_array *)self;
     for (int k = 0; k < argc; k++) {
         VALUE iv = korb_to_int_or_raise(c, argv[k]);
@@ -1769,7 +1769,7 @@ static VALUE ary_delete(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (matches == 0) {
         /* No modification — block fallback (CRuby returns block's value
          * if a block is given, else nil).  Don't raise FrozenError. */
-        if (korb_block_given()) {
+        if (korb_block_given(c)) {
             VALUE blk_args[1] = { argv[0] };
             return korb_yield(c, 1, blk_args);
         }
@@ -1850,7 +1850,7 @@ static VALUE ary_delete_if(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Array (Enumerator stand-in). */
 static VALUE ary_reverse_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
-    if (!korb_block_given()) {
+    if (!korb_block_given(c)) {
         VALUE r = korb_ary_new_capa(a->len);
         for (long i = a->len - 1; i >= 0; i--) korb_ary_push(r, a->ptr[i]);
         return r;
@@ -1865,7 +1865,7 @@ static VALUE ary_reverse_each(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_reject(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Non-mutating — reject! is the in-place form (registered as
      * delete_if, which does mutate and is FROZEN-checked). */
-    if (!korb_block_given()) return self;
+    if (!korb_block_given(c)) return self;
     struct korb_array *a = (struct korb_array *)self;
     VALUE r = korb_ary_new();
     for (long i = 0; i < a->len; i++) {
@@ -1997,11 +1997,11 @@ static VALUE ary_combination(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
     long r = FIX2LONG(argv[0]);
     struct korb_array *a = (struct korb_array *)self;
-    extern struct korb_proc *current_block;
+    
     /* No block: return an Enumerator (CRuby semantics).  Override
      * @__size to the binomial coefficient C(n, r) so #size reports
      * the actual combination count (or 0 when r < 0 or r > n). */
-    if (!current_block) {
+    if (!c->current_block) {
         VALUE method_sym = korb_id2sym(korb_intern("combination"));
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
@@ -2053,10 +2053,10 @@ static void ary_perm(CTX *c, struct korb_array *a, long r,
 static VALUE ary_permutation(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
     long r = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : a->len;
-    extern struct korb_proc *current_block;
+    
     /* No block: return Enumerator with size = n! / (n-r)! when 0<=r<=n,
      * else 0.  CRuby semantics. */
-    if (!current_block) {
+    if (!c->current_block) {
         VALUE method_sym = korb_id2sym(korb_intern("permutation"));
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
@@ -2086,8 +2086,8 @@ static VALUE ary_permutation(CTX *c, VALUE self, int argc, VALUE *argv) {
  * each{} inside loop{} and break doesn't propagate out reliably). */
 static VALUE ary_cycle(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_array *a = (struct korb_array *)self;
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         VALUE method_sym = korb_id2sym(korb_intern("cycle"));
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
@@ -2137,8 +2137,8 @@ static VALUE ary_repeated_combination(CTX *c, VALUE self, int argc, VALUE *argv)
     if (argc < 1 || !FIXNUM_P(argv[0])) return self;
     long r = FIX2LONG(argv[0]);
     struct korb_array *a = (struct korb_array *)self;
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         VALUE method_sym = korb_id2sym(korb_intern("repeated_combination"));
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
@@ -2181,8 +2181,8 @@ static VALUE ary_repeated_permutation(CTX *c, VALUE self, int argc, VALUE *argv)
     if (argc < 1 || !FIXNUM_P(argv[0])) return self;
     long r = FIX2LONG(argv[0]);
     struct korb_array *a = (struct korb_array *)self;
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         VALUE method_sym = korb_id2sym(korb_intern("repeated_permutation"));
         VALUE *call_argv = korb_xmalloc(sizeof(VALUE) * (argc + 1));
         call_argv[0] = method_sym;
@@ -2213,8 +2213,8 @@ static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Total size sanity: if no block given, materializing > 1e8 rows
      * is hopeless.  Compute product of sizes with overflow detection
      * and raise RangeError early (CRuby does the same). */
-    extern struct korb_proc *current_block;
-    if (!current_block) {
+    
+    if (!c->current_block) {
         long total = 1;
         for (long i = 0; i < n; i++) {
             if (arrays[i]->len == 0) { total = 0; break; }
@@ -2226,7 +2226,7 @@ static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
     }
-    VALUE result = current_block ? Qnil : korb_ary_new();
+    VALUE result = c->current_block ? Qnil : korb_ary_new();
     long *idx = korb_xcalloc(n, sizeof(long));
     while (true) {
         VALUE row = korb_ary_new_capa(n);
@@ -2236,7 +2236,7 @@ static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
             korb_ary_push(row, arrays[i]->ptr[idx[i]]);
         }
         if (empty) break;
-        if (current_block) {
+        if (c->current_block) {
             korb_yield(c, 1, &row);
             if (c->state != KORB_NORMAL) return self;
         } else {
@@ -2251,7 +2251,7 @@ static VALUE ary_product(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (j < 0) break;
     }
-    return current_block ? self : result;
+    return c->current_block ? self : result;
 }
 
 /* Array.new(size = 0, default = nil) — create an array of `size` slots
@@ -2292,8 +2292,8 @@ static VALUE ary_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
         (struct korb_class *)self != korb_vm->array_class) {
         ((struct korb_array *)arr)->basic.klass = self;
     }
-    extern struct korb_proc *current_block;
-    if (current_block) {
+    
+    if (c->current_block) {
         for (long i = 0; i < size; i++) {
             VALUE iv = INT2FIX(i);
             VALUE v = korb_yield(c, 1, &iv);
@@ -2568,7 +2568,7 @@ static VALUE ary_each_cons(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc < 1 || !FIXNUM_P(argv[0])) return Qnil;
     long n = FIX2LONG(argv[0]);
     struct korb_array *a = (struct korb_array *)self;
-    bool has_block = korb_block_given();
+    bool has_block = korb_block_given(c);
     VALUE out = has_block ? Qnil : korb_ary_new();
     if (n <= 0 || n > a->len) return has_block ? Qnil : out;
     for (long i = 0; i + n <= a->len; i++) {
