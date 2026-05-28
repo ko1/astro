@@ -422,6 +422,22 @@ struct korb_object {
 
 ただし shape evolution に対応していないので、同じクラスの異なるインスタンス間で ivar 配列のレイアウトは固定 — つまり `Foo` クラスのある instance に `@x` だけ、別 instance に `@y` だけ書くと、後者の instance の `@y` は slot 1 になる (前者は slot 0 の @x のみ)。slot 衝突しないので OK だがメモリ効率は劣る。
 
+### 7.1 ivar_cache / method_cache の GC generation tag
+
+inline ivar_cache および method_cache は `(klass *, slot)` の組を AST node
+ごとに保持する。 moving GC 下で 「クラス A が address X から移動 →
+別クラス B が X に配置」 が起きうるため、 ポインタ同一性だけだと
+cache hit が誤判定して別 class の slot/method を返してしまう。
+
+対策として `cache.gen` (= `korb_g_gc_gen` snapshot) を比較し、 GC が一度
+でも fire した後の cache は強制 miss にする。 `korb_g_gc_gen` は
+`koruby_visit_roots` 冒頭で bump する。
+
+これがないと、 親クラスを共有する 2 サブクラスが順次 instance を作って
+ivar を読み書きするとき、 STRESS 下で @ivar 値が消える (= nil 化) 症状が
+起きる。 同じパターンは send_cache (= builtins/object.c の global table)
+にもあるので、 そちらも gen check を追加してある。
+
 ## 8. 文字列 / 配列 / ハッシュ
 
 ```c
