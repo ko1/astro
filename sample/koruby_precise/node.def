@@ -2900,78 +2900,87 @@ node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 NODE_DEF @noinline
 node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent_expr, ID name, NODE *super_expr, NODE *body, uint32_t enforce_super_match)
 {
-    VALUE parent_v = EA(c, parent_expr);
-    if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
-        korb_raise_type_error(c, "%s is not a class/module",
-                              korb_id_name(korb_class_of_class(parent_v)->name));
-        return Qnil;
-    }
-    struct korb_class *parent = (struct korb_class *)parent_v;
-    /* private_constant guard: reopening `Outer::Priv` from outside Outer's
-     * lexical scope when Priv is private raises NameError. */
-    {
-        extern bool korb_const_is_private(const struct korb_class *, ID);
-        if (korb_const_is_private(parent, name)) {
-            bool in_scope = false;
-            for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-                if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
-                if (cr->klass == parent) { in_scope = true; break; }
+    /* Pin parent_v / super / klass across korb_const_get / korb_class_new /
+     * korb_const_set — same root-cause as node_class_def_in. */
+    VALUE r = Qnil;
+    ARO_ROOT_SCOPE_START(c, rs, 3) {
+        rs[0] = EA(c, parent_expr);  /* parent_v */
+        if (BUILTIN_TYPE(rs[0]) != T_CLASS && BUILTIN_TYPE(rs[0]) != T_MODULE) {
+            korb_raise_type_error(c, "%s is not a class/module",
+                                  korb_id_name(korb_class_of_class(rs[0])->name));
+            ARO_ROOT_SCOPE_CANCEL(c, rs);
+            return Qnil;
+        }
+        {
+            extern bool korb_const_is_private(const struct korb_class *, ID);
+            if (korb_const_is_private((struct korb_class *)rs[0], name)) {
+                bool in_scope = false;
+                for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
+                    if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
+                    if (cr->klass == (struct korb_class *)rs[0]) { in_scope = true; break; }
+                }
+                if (!in_scope) {
+                    VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                    struct korb_class *parent = (struct korb_class *)rs[0];
+                    korb_raise(c, (struct korb_class *)eName,
+                               "private constant %s::%s referenced",
+                               parent->name ? korb_id_name(parent->name) : "?",
+                               korb_id_name(name));
+                    ARO_ROOT_SCOPE_CANCEL(c, rs);
+                    return Qnil;
+                }
             }
-            if (!in_scope) {
-                VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-                korb_raise(c, (struct korb_class *)eName,
-                           "private constant %s::%s referenced",
-                           parent->name ? korb_id_name(parent->name) : "?",
-                           korb_id_name(name));
+        }
+        rs[1] = (VALUE)korb_vm->object_class;  /* super */
+        if (super_expr) {
+            VALUE sv = EA(c, super_expr);
+            if (BUILTIN_TYPE(sv) == T_CLASS) {
+                if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
+                    korb_raise_type_error(c, "can't make subclass of singleton class");
+                    ARO_ROOT_SCOPE_CANCEL(c, rs);
+                    return Qnil;
+                }
+                rs[1] = sv;
+            } else if (enforce_super_match) {
+                korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                      korb_id_name(korb_class_of_class(sv)->name));
+                ARO_ROOT_SCOPE_CANCEL(c, rs);
                 return Qnil;
             }
         }
-    }
-    struct korb_class *super = korb_vm->object_class;
-    if (super_expr) {
-        VALUE sv = EA(c, super_expr);
-        if (BUILTIN_TYPE(sv) == T_CLASS) {
-            if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
-                korb_raise_type_error(c, "can't make subclass of singleton class");
+        VALUE existing = korb_const_get((struct korb_class *)rs[0], name);
+        if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+            rs[2] = existing;
+            if (enforce_super_match && ((struct korb_class *)rs[2])->super != (struct korb_class *)rs[1]) {
+                korb_raise_type_error(c, "superclass mismatch for class %s",
+                                      korb_id_name(name));
+                ARO_ROOT_SCOPE_CANCEL(c, rs);
                 return Qnil;
             }
-            super = (struct korb_class *)sv;
-        } else if (enforce_super_match) {
-            korb_raise_type_error(c, "superclass must be a Class (%s given)",
-                                  korb_id_name(korb_class_of_class(sv)->name));
+        } else if (!UNDEF_P(existing) && enforce_super_match) {
+            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
+        } else {
+            rs[2] = (VALUE)korb_class_new(name, (struct korb_class *)rs[1], T_OBJECT);
+            ((struct korb_class *)rs[2])->name = 0;
+            korb_const_set((struct korb_class *)rs[0], name, rs[2]);
         }
-    }
-    struct korb_class *klass;
-    VALUE existing = korb_const_get(parent, name);
-    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
-        klass = (struct korb_class *)existing;
-        if (enforce_super_match && klass->super != super) {
-            korb_raise_type_error(c, "superclass mismatch for class %s",
-                                  korb_id_name(name));
-            return Qnil;
-        }
-    } else if (!UNDEF_P(existing) && enforce_super_match) {
-        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-        return Qnil;
-    } else {
-        klass = korb_class_new(name, super, T_OBJECT);
-        klass->name = 0;
-        korb_const_set(parent, name, (VALUE)klass);
-    }
-    struct korb_class *prev_class = c->current_frame->current_class;
-    VALUE prev_self = c->current_frame->self;
-    struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
-    struct korb_cref *prev_cref = c->current_frame->cref;
-    c->current_frame->current_class = klass;
-    c->current_frame->self = (VALUE)klass;
-    c->current_frame->cref = &new_cref;
-    VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp;
-    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
-    c->current_frame->current_class = prev_class;
-    c->current_frame->self = prev_self;
-    c->current_frame->cref = prev_cref;
-    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+        struct korb_class *klass = (struct korb_class *)rs[2];
+        struct korb_class *prev_class = c->current_frame->current_class;
+        VALUE prev_self = c->current_frame->self;
+        struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
+        struct korb_cref *prev_cref = c->current_frame->cref;
+        c->current_frame->current_class = klass;
+        c->current_frame->self = (VALUE)klass;
+        c->current_frame->cref = &new_cref;
+        VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp;
+        r = body ? EVAL_ARG(c, body) : Qnil;
+        c->current_frame->current_class = prev_class;
+        c->current_frame->self = prev_self;
+        c->current_frame->cref = prev_cref;
+        korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+    } ARO_ROOT_SCOPE_END(c, rs);
     return r;
 }
 
