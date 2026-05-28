@@ -256,9 +256,14 @@ static VALUE ary_last(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_ary_aref(self, len - 1);
 }
 static VALUE ary_each(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!korb_block_given(c)) return self;
-    long len = korb_ary_len(self);
-    for (long i = 0; i < len; i++) {
+    if (!korb_block_given(c)) {
+        VALUE arg = korb_id2sym(korb_intern("each"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
+    }
+    /* CRuby semantics: re-read the length each iteration so the block
+     * can grow / shrink the array.  Out-of-range index after a shrink
+     * stops iteration normally. */
+    for (long i = 0; i < korb_ary_len(self); i++) {
         VALUE v = korb_ary_aref(self, i);
         korb_yield(c, 1, &v);
         if (c->state != KORB_NORMAL) return Qnil;
