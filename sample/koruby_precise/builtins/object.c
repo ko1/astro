@@ -195,7 +195,7 @@ VALUE mod_class_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
     if (!name) return Qnil;
-    extern void korb_cvar_set(CTX *c, ID name, VALUE val);
+    extern RESULT korb_cvar_set(CTX *c, ID name, VALUE val);
     struct korb_class *prev_class = c->current_frame->current_class;
     struct korb_cref *prev_cref = c->current_frame->cref;
     struct korb_cref tmp_cref = { .klass = (struct korb_class *)self, .prev = NULL };

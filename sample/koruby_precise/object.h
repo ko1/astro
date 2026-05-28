@@ -674,10 +674,10 @@ void  korb_p(CTX *c, VALUE v); /* writes to stdout with newline */
 /* errors / exceptions */
 VALUE korb_exc_new(CTX *c, struct korb_class *klass, const char *msg);
 RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
-void  korb_raise_type_error(CTX *c, const char *fmt, ...);
-void  korb_raise_argument_error(CTX *c, const char *fmt, ...);
-void  korb_raise_range_error(CTX *c, const char *fmt, ...);
-void  korb_raise_index_error(CTX *c, const char *fmt, ...);
+RESULT korb_raise_type_error(CTX *c, const char *fmt, ...);
+RESULT korb_raise_argument_error(CTX *c, const char *fmt, ...);
+RESULT korb_raise_range_error(CTX *c, const char *fmt, ...);
+RESULT korb_raise_index_error(CTX *c, const char *fmt, ...);
 VALUE korb_build_backtrace(CTX *c, int raise_line);
 void  korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line);
 

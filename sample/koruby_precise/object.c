@@ -298,23 +298,22 @@ VALUE korb_cvar_get(CTX *c, ID name) {
     return Qnil;
 }
 
-void korb_cvar_set(CTX *c, ID name, VALUE val) {
+RESULT korb_cvar_set(CTX *c, ID name, VALUE val) {
     struct korb_class *k = korb_host_class(c);
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->current_frame->self);
-    if (!k) return;
+    if (!k) return RESULT_OK(Qnil);
     /* CRuby: `@@cvar = x` at top level (no enclosing class/module) is a
      * RuntimeError.  Detect "top level" as cref == NULL and current self
      * is the singleton main object. */
     if (c->current_frame->cref && !c->current_frame->cref->prev &&
         (k == korb_vm->object_class || k == korb_vm->main_obj_class)) {
-        korb_raise(c, NULL, "class variable access from toplevel");
-        return;
+        return korb_raise(c, NULL, "class variable access from toplevel");
     }
     struct korb_class *target = cvar_owner_(k, name);
     if (!target) target = k;
     for (uint32_t i = 0; i < target->cvar_cnt; i++) {
-        if (target->cvars[i].name == name) { target->cvars[i].value = val; return; }
+        if (target->cvars[i].name == name) { target->cvars[i].value = val; return RESULT_OK(val); }
     }
     if (target->cvar_cnt >= target->cvar_capa) {
         uint32_t nc = target->cvar_capa ? target->cvar_capa * 2 : 4;
@@ -324,6 +323,7 @@ void korb_cvar_set(CTX *c, ID name, VALUE val) {
     target->cvars[target->cvar_cnt].name = name;
     target->cvars[target->cvar_cnt].value = val;
     target->cvar_cnt++;
+    return RESULT_OK(val);
 }
 
 bool korb_cvar_defined(CTX *c, ID name) {
@@ -2659,37 +2659,37 @@ VALUE korb_exc_new(CTX *c, struct korb_class *klass, const char *msg) {
  * the default RuntimeError.  Many CRuby tests pattern-match on the
  * specific subclass (`assert_raise(TypeError) { ... }`), so getting
  * this right unblocks a lot of off-the-shelf tests. */
-void korb_raise_type_error(CTX *c, const char *fmt, ...) {
+RESULT korb_raise_type_error(CTX *c, const char *fmt, ...) {
     char buf[512];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     VALUE eTy = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    korb_raise(c, (struct korb_class *)eTy, "%s", buf);
+    return korb_raise(c, (struct korb_class *)eTy, "%s", buf);
 }
-void korb_raise_argument_error(CTX *c, const char *fmt, ...) {
+RESULT korb_raise_argument_error(CTX *c, const char *fmt, ...) {
     char buf[512];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-    korb_raise(c, (struct korb_class *)eArg, "%s", buf);
+    return korb_raise(c, (struct korb_class *)eArg, "%s", buf);
 }
-void korb_raise_range_error(CTX *c, const char *fmt, ...) {
+RESULT korb_raise_range_error(CTX *c, const char *fmt, ...) {
     char buf[512];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     VALUE eR = korb_const_get(korb_vm->object_class, korb_intern("RangeError"));
-    korb_raise(c, (struct korb_class *)eR, "%s", buf);
+    return korb_raise(c, (struct korb_class *)eR, "%s", buf);
 }
-void korb_raise_index_error(CTX *c, const char *fmt, ...) {
+RESULT korb_raise_index_error(CTX *c, const char *fmt, ...) {
     char buf[512];
     va_list ap; va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     VALUE eI = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-    korb_raise(c, (struct korb_class *)eI, "%s", buf);
+    return korb_raise(c, (struct korb_class *)eI, "%s", buf);
 }
 
 /* Hot-path frozen-write rejector (called from inlined ivar setter when
