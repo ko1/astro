@@ -433,26 +433,29 @@ redo_proc:
          * so reaching here means the throw is uncaught at this level.
          * Keep the tag on the exception's @tag ivar so re-thrown
          * conversions can carry it through outer rescue handlers. */
-        VALUE eUTE = korb_const_get(korb_vm->object_class, korb_intern("UncaughtThrowError"));
-        VALUE tag = Qnil, val = Qnil;
-        if (!SPECIAL_CONST_P(c->state_value) && BUILTIN_TYPE(c->state_value) == T_ARRAY) {
-            struct korb_array *pair = (struct korb_array *)c->state_value;
-            if (pair->len >= 1) tag = pair->ptr[0];
-            if (pair->len >= 2) val = pair->ptr[1];
-        }
-        VALUE tag_s = korb_inspect(tag);
-        char buf[256];
-        snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(tag_s));
-        if (eUTE && !SPECIAL_CONST_P(eUTE) && BUILTIN_TYPE(eUTE) == T_CLASS) {
-            korb_raise(c, (struct korb_class *)eUTE, "%s", buf);
-        } else {
-            korb_raise(c, NULL, "%s", buf);
-        }
-        /* Stash tag/value on the exception for catch to re-extract. */
-        if (c->state == KORB_RAISE && !SPECIAL_CONST_P(c->state_value)) {
-            korb_ivar_set(c->state_value, korb_intern("@__throw_tag__"), tag);
-            korb_ivar_set(c->state_value, korb_intern("@__throw_value__"), val);
-        }
+        ARO_ROOT_SCOPE_START(c, urs, 4) {
+            urs[0] = korb_const_get(korb_vm->object_class, korb_intern("UncaughtThrowError"));
+            urs[1] = Qnil; /* tag */
+            urs[2] = Qnil; /* val */
+            if (!SPECIAL_CONST_P(c->state_value) && BUILTIN_TYPE(c->state_value) == T_ARRAY) {
+                struct korb_array *pair = (struct korb_array *)c->state_value;
+                if (pair->len >= 1) urs[1] = pair->ptr[0];
+                if (pair->len >= 2) urs[2] = pair->ptr[1];
+            }
+            urs[3] = korb_inspect(urs[1]);  /* tag_s */
+            char buf[256];
+            snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[3]));
+            if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
+                korb_raise(c, (struct korb_class *)urs[0], "%s", buf);
+            } else {
+                korb_raise(c, NULL, "%s", buf);
+            }
+            /* Stash tag/value on the exception for catch to re-extract. */
+            if (c->state == KORB_RAISE && !SPECIAL_CONST_P(c->state_value)) {
+                korb_ivar_set(c->state_value, korb_intern("@__throw_tag__"), urs[1]);
+                korb_ivar_set(c->state_value, korb_intern("@__throw_value__"), urs[2]);
+            }
+        } ARO_ROOT_SCOPE_END(c, urs);
     } else if (c->state == KORB_RETRY) {
         /* `retry` outside a rescue is a SyntaxError in CRuby (parse
          * time) or LocalJumpError at runtime if it escapes scope.
