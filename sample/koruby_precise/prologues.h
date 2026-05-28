@@ -126,7 +126,13 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     /* Heavy state save/restore only when method body actually uses it. */
     bool simple = mc->is_simple_frame;
     struct korb_proc *prev_block = NULL;
-    struct korb_cref *prev_cref = NULL;
+    /* Capture outer cref BEFORE pushing the frame — the original code
+     * captured it AFTER push by reading c->current_frame->cref (= the
+     * new frame's UNINIT cref field on C stack), which then later
+     * wrote that uninit-garbage value back to outer.cref on exit (=
+     * silently broke the outer cref chain → PURGE-mode SEGV on next
+     * class lookup). */
+    struct korb_cref *prev_cref = c->current_frame->cref;
     /* Always push a minimal frame for backtrace.  Heavy state save
      * (block/cref/current_block) only when the body actually uses it.
      * fp + locals_cnt are recorded too so Kernel#binding /
@@ -138,6 +144,11 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.block = block;
     frame.caller_node = callsite;
     frame.fp = new_fp;
+    /* Inherit cref/current_class/current_file so visit_roots phase (c)
+     * walking c->current_frame->cref reaches the outer chain. */
+    frame.cref = prev_cref;
+    frame.current_class = c->current_frame->current_class;
+    frame.current_file = c->current_frame->current_file;
     frame.locals_cnt = mc->locals_cnt;
     /* Normal call: method's defining_class is hit for the first time.
      * super-from-here should walk past the FIRST occurrence. */
@@ -170,7 +181,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * swap to skip 4 memory ops per call on the hot path. */
     bool cref_swapped = (mc->def_cref != NULL && c->current_frame->cref != mc->def_cref);
     if (UNLIKELY(cref_swapped)) {
-        prev_cref = c->current_frame->cref;
+        /* prev_cref already captured BEFORE push — just swap. */
         c->current_frame->cref = mc->def_cref;
     }
     if (UNLIKELY(!simple)) {
@@ -286,7 +297,8 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     bool simple = mc->is_simple_frame;
     struct korb_proc *prev_block = NULL;
-    struct korb_cref *prev_cref = NULL;
+    /* Capture outer cref BEFORE push (same fix as simple_inl). */
+    struct korb_cref *prev_cref = c->current_frame->cref;
     struct korb_frame frame;
     frame.prev = c->current_frame;
     frame.method = mc->method;
@@ -294,6 +306,9 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     frame.block = block;
     frame.caller_node = callsite;
     frame.fp = new_fp;
+    frame.cref = prev_cref;
+    frame.current_class = c->current_frame->current_class;
+    frame.current_file = c->current_frame->current_file;
     frame.locals_cnt = mc->locals_cnt;
     /* Normal call: method's defining_class is hit for the first time.
      * super-from-here should walk past the FIRST occurrence. */
@@ -326,7 +341,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * swap to skip 4 memory ops per call on the hot path. */
     bool cref_swapped = (mc->def_cref != NULL && c->current_frame->cref != mc->def_cref);
     if (UNLIKELY(cref_swapped)) {
-        prev_cref = c->current_frame->cref;
+        /* prev_cref already captured BEFORE push — just swap. */
         c->current_frame->cref = mc->def_cref;
     }
     if (UNLIKELY(!simple)) {
