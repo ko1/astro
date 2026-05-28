@@ -444,6 +444,28 @@ static VALUE rng_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 static VALUE rng_size(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_range *r = (struct korb_range *)self;
+    bool b_numeric = FIXNUM_P(r->begin) ||
+        (!SPECIAL_CONST_P(r->begin) &&
+         (BUILTIN_TYPE(r->begin) == T_BIGNUM ||
+          BUILTIN_TYPE(r->begin) == T_FLOAT)) ||
+        FLONUM_P(r->begin);
+    bool e_numeric = FIXNUM_P(r->end) ||
+        (!SPECIAL_CONST_P(r->end) &&
+         (BUILTIN_TYPE(r->end) == T_BIGNUM ||
+          BUILTIN_TYPE(r->end) == T_FLOAT)) ||
+        FLONUM_P(r->end);
+    /* Endless range with numeric begin → Float::INFINITY. */
+    if (NIL_P(r->end)) {
+        if (NIL_P(r->begin)) return Qnil;
+        if (!b_numeric) return Qnil;
+        VALUE finf = korb_const_get(korb_vm->float_class, korb_intern("INFINITY"));
+        return UNDEF_P(finf) ? Qnil : finf;
+    }
+    if (NIL_P(r->begin)) {
+        if (!e_numeric) return Qnil;
+        VALUE finf = korb_const_get(korb_vm->float_class, korb_intern("INFINITY"));
+        return UNDEF_P(finf) ? Qnil : finf;
+    }
     if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
         long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
         long sz = e - b + 1; if (r->exclude_end) sz--;
@@ -451,16 +473,17 @@ static VALUE rng_size(CTX *c, VALUE self, int argc, VALUE *argv) {
         return INT2FIX(sz);
     }
     /* Float::INFINITY end → infinite (CRuby returns Float::INFINITY). */
-    if (FIXNUM_P(r->begin) && KORB_IS_FLOAT(r->end)) {
+    if (FIXNUM_P(r->begin) && (KORB_IS_FLOAT(r->end) || FLONUM_P(r->end))) {
         double e = korb_num2dbl(r->end);
-        if (e > 1e18) {
+        if (e > 1e18 || isinf(e)) {
             VALUE finf = korb_const_get(korb_vm->float_class, korb_intern("INFINITY"));
             return UNDEF_P(finf) ? Qnil : finf;
         }
     }
-    /* Non-numeric (e.g. String range): delegate to to_a.  Use CRuby's
-     * convention of returning nil for non-numeric — but we offer Array#size
-     * via to_a as a friendly extension. */
+    /* Non-numeric (e.g. String range): CRuby returns nil for non-Numeric
+     * ranges' size. */
+    if (!b_numeric || !e_numeric) return Qnil;
+    /* Numeric mixed: delegate to to_a length. */
     VALUE arr = korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     if (c->state == KORB_NORMAL && BUILTIN_TYPE(arr) == T_ARRAY) {
         return INT2FIX(((struct korb_array *)arr)->len);
