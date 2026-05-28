@@ -441,19 +441,73 @@ static VALUE int_floor(CTX *c, VALUE self, int argc, VALUE *argv) {
  * For n < 0, rounds to the nearest 10^|n|.  Half rounds away from zero
  * (Ruby's default).  `154.round(-1) == 150`. */
 static VALUE int_round(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!FIXNUM_P(self) || argc < 1) return self;
+    /* Parse trailing FL_KWARGS Hash for half: option. */
+    enum { HALF_UP, HALF_DOWN, HALF_EVEN } half_mode = HALF_UP;
+    int posargc = argc;
+    if (posargc > 0 && !SPECIAL_CONST_P(argv[posargc - 1]) &&
+        BUILTIN_TYPE(argv[posargc - 1]) == T_HASH &&
+        (RBASIC(argv[posargc - 1])->head.flags & FL_KWARGS)) {
+        struct korb_hash *kw = (struct korb_hash *)argv[posargc - 1];
+        VALUE half_key = korb_id2sym(korb_intern("half"));
+        for (struct korb_hash_entry *e = kw->first; e; e = e->next) {
+            if (korb_eql(c, e->key, half_key)) {
+                VALUE val = e->value;
+                if (NIL_P(val)) {
+                    half_mode = HALF_UP;
+                } else if (SYMBOL_P(val)) {
+                    ID id = korb_sym2id(val);
+                    if (id == korb_intern("up") || id == korb_intern("default")) half_mode = HALF_UP;
+                    else if (id == korb_intern("down")) half_mode = HALF_DOWN;
+                    else if (id == korb_intern("even") || id == korb_intern("banker")) half_mode = HALF_EVEN;
+                    else {
+                        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                        korb_raise(c, (struct korb_class *)eA,
+                                   "invalid rounding mode: %s", korb_id_name(id));
+                        return Qnil;
+                    }
+                } else {
+                    VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                    korb_raise(c, (struct korb_class *)eA, "invalid rounding mode");
+                    return Qnil;
+                }
+                break;
+            }
+        }
+        posargc--;
+    }
+    if (!FIXNUM_P(self) || posargc < 1) return self;
     if (!FIXNUM_P(argv[0])) return self;
     long n = FIX2LONG(argv[0]);
     if (n >= 0) return self;
     long v = FIX2LONG(self);
     long scale = 1;
     for (long i = 0; i < -n; i++) scale *= 10;
-    long half = scale / 2;
-    if (v >= 0) {
-        return INT2FIX(((v + half) / scale) * scale);
+    /* Compute rounded value based on half_mode. */
+    long sign = v < 0 ? -1 : 1;
+    long absv = v < 0 ? -v : v;
+    long base = (absv / scale) * scale;  /* floor toward 0 */
+    long rem = absv - base;
+    long twice = rem * 2;
+    long rounded;
+    if (twice > scale) {
+        rounded = base + scale;
+    } else if (twice < scale) {
+        rounded = base;
     } else {
-        return INT2FIX(-(((-v + half) / scale) * scale));
+        /* Exact half. */
+        switch (half_mode) {
+            case HALF_UP:   rounded = base + scale; break;
+            case HALF_DOWN: rounded = base; break;
+            case HALF_EVEN: {
+                /* Round to even multiple of scale. */
+                long top = base / scale;
+                rounded = (top & 1) ? base + scale : base;
+                break;
+            }
+            default: rounded = base + scale; break;
+        }
     }
+    return INT2FIX(sign * rounded);
 }
 
 /* Integer#ceil(ndigits=0) — for n >= 0 returns self.  For n < 0 rounds
