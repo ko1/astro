@@ -549,6 +549,37 @@ class Numeric
     self.equal?(other) ? 0 : nil
   end unless method_defined?(:<=>)
 
+  # Numeric#coerce — default protocol.  Returns [other, self] when both
+  # are of the same class, otherwise [Float(other), self.to_f].  Raises
+  # TypeError when other is not coercible to Float.
+  def coerce(other)
+    if self.class == other.class
+      return [other, self]
+    end
+    # CRuby tries Float(other) which handles String parsing too.
+    # For non-coercible types it raises TypeError.
+    case other
+    when nil, true, false, Symbol
+      raise TypeError, "can't coerce #{other.class} to Float"
+    when Numeric
+      return [other.to_f, self.to_f]
+    when String
+      # Float(String) raises ArgumentError on bad parse.  Mimic that.
+      begin
+        [Float(other), self.to_f]
+      rescue
+        raise ArgumentError, "invalid value for Float(): #{other.inspect}"
+      end
+    else
+      unless other.respond_to?(:to_f)
+        raise TypeError, "can't coerce #{other.class} to Float"
+      end
+      f = other.to_f
+      raise TypeError, "can't convert to Float" unless f.is_a?(Float)
+      [f, self.to_f]
+    end
+  end unless method_defined?(:coerce)
+
   # Numeric#dup / #clone — return self.  Numeric instances are
   # immutable in CRuby, and dup/clone are no-ops; copy-on-write style
   # subclasses also expect identity.  clone(freeze:) honors the keyword.
