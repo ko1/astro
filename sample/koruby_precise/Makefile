@@ -2,6 +2,7 @@ all: koruby_precise
 
 NODE_GENFILES = node_eval.c node_dispatch.c node_dump.c node_specialize.c \
                 node_replace.c node_alloc.c node_hash.c node_emit_ast.c \
+                node_walk.c \
                 node_head.h
 
 KORUBY_SRC_DIR := $(abspath .)

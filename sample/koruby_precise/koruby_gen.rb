@@ -1,7 +1,43 @@
 require 'astrogen'
 
 class KoRubyNodeDef < ASTroGen::NodeDef
+  # AST walker — per-NODE_DEF emits WALK_<name>(NODE *n, walker_fn fn,
+  # void *ctx) that invokes fn on each non-NULL child NODE * operand.
+  # Used by parse-end walker that bakes sp_offset on lvar_get/set.
+  register_gen_task :walk,
+    func_typedef: "typedef void (*node_walker_func_t)(struct Node *n, void (*fn)(struct Node *, void *), void *ctx);",
+    func_prefix: "WALK_",
+    kind_field: "node_walker_func_t walker"
+
+  def build_walk
+    <<~C__
+    // This file is auto-generated from #{@file}.
+    // walker functions — visit each non-NULL NODE * child of a node.
+    #{@nodes.map{|name, n| n.build_walk}.join("\n")}
+    C__
+  end
+
   class Node < ASTroGen::NodeDef::Node
+    # Emit WALK_<name>(NODE *n, walker_fn fn, void *ctx) — visits each
+    # non-NULL NODE * child operand.  NULL for nodes with no children.
+    def build_walk
+      node_ops = @operands.select(&:node?)
+      if node_ops.empty?
+        return "#define WALK_#{@name} NULL\n"
+      end
+      visits = node_ops.map do |op|
+        "    if (n->u.#{@name}.#{op.name}) fn(n->u.#{@name}.#{op.name}, ctx);"
+      end
+      <<~C
+      static void
+      WALK_#{@name}(NODE *n, void (*fn)(NODE *, void *), void *ctx)
+      {
+      #{visits.join("\n")}
+      }
+      C
+    end
+
+
     # 4-arg dispatcher: `(CTX *c, NODE *n, VALUE *sp)`.  sp は parse-time
     # baked sp_offset (= node_lvar_get/set 等の `index` から walker が計算)
     # を介して frame-local slot 直接アクセスに使う。 c->fp は段階移行中で

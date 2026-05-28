@@ -107,10 +107,135 @@ void korb_swap_dispatcher(NODE *n, const struct NodeKind *new_kind) {
 #include "node_hash.c"
 #include "node_specialize.c"
 #include "node_replace.c"
+#include "node_walk.c"
 #if defined(__has_include) && __has_include("node_emit_ast.c")
 #include "node_emit_ast.c"
 #endif
 #include "node_alloc.c"
+
+/* ---------------- sp_offset baking walker ----------------
+ *
+ * After parse, traverse the AST and patch node_lvar_get / node_lvar_set
+ * `index` fields: convert from positive frame index to negative
+ * `sp_offset` (= index - scope_size).  The lvar body then dispatches
+ * on the sign — negative → `sp[sp_offset]` (= sp-relative, GC-safe),
+ * non-negative → fallback `c->fp[index]` (= old behavior, used when
+ * scope_size is unknown).
+ *
+ * Scope-introducing nodes (def/block/scope) reset scope_size to their
+ * own locals_cnt/env_size before recursing into `body`.  Other children
+ * (e.g. node_def_full has none besides body; node_obj_singleton_def has
+ * recv_expr which uses the outer scope) are walked with the outer
+ * scope_size — handled per-kind below.
+ *
+ * Top-level (= no enclosing method) starts with scope_size = 0; the
+ * outermost `node_scope` wrapper bumps it to the program's envsize. */
+struct bake_ctx { int32_t scope_size; };
+
+static void bake_visit(NODE *n, void *ctx_);
+
+static void
+bake_patch_lvar(NODE *n, int32_t scope_size)
+{
+    int32_t *idx_field;
+    if (n->head.kind == &kind_node_lvar_get) {
+        idx_field = (int32_t *)&n->u.node_lvar_get.index;
+    } else if (n->head.kind == &kind_node_lvar_set) {
+        idx_field = (int32_t *)&n->u.node_lvar_set.index;
+    } else {
+        return;
+    }
+    int32_t idx = *idx_field;
+    if (idx < 0) return; /* already patched */
+    int32_t off = idx - scope_size;
+    if (off >= 0) return; /* idx >= scope_size: outer-scope ref, keep as fp[] */
+    *idx_field = off;
+}
+
+static inline void
+bake_recurse_body(NODE *body, int32_t new_scope_size)
+{
+    if (!body) return;
+    struct bake_ctx ctx = { .scope_size = new_scope_size };
+    bake_visit(body, &ctx);
+}
+
+static void
+bake_visit(NODE *n, void *ctx_)
+{
+    if (!n) return;
+    struct bake_ctx *ctx = (struct bake_ctx *)ctx_;
+    const struct NodeKind *k = n->head.kind;
+
+    /* lvar nodes: patch index → sp_offset. */
+    if (k == &kind_node_lvar_get) {
+        bake_patch_lvar(n, ctx->scope_size);
+        return;
+    }
+    if (k == &kind_node_lvar_set) {
+        bake_patch_lvar(n, ctx->scope_size);
+        if (n->u.node_lvar_set.rhs) bake_visit(n->u.node_lvar_set.rhs, ctx);
+        return;
+    }
+
+    /* Scope boundary: switch scope_size, recurse into `body` only. */
+    if (k == &kind_node_scope) {
+        bake_recurse_body(n->u.node_scope.body, (int32_t)n->u.node_scope.envsize);
+        return;
+    }
+    if (k == &kind_node_def) {
+        bake_recurse_body(n->u.node_def.body, (int32_t)n->u.node_def.locals_cnt);
+        return;
+    }
+    if (k == &kind_node_def_full) {
+        bake_recurse_body(n->u.node_def_full.body, (int32_t)n->u.node_def_full.locals_cnt);
+        return;
+    }
+    if (k == &kind_node_def_post) {
+        bake_recurse_body(n->u.node_def_post.body, (int32_t)n->u.node_def_post.locals_cnt);
+        return;
+    }
+    if (k == &kind_node_singleton_def) {
+        bake_recurse_body(n->u.node_singleton_def.body, (int32_t)n->u.node_singleton_def.locals_cnt);
+        return;
+    }
+    if (k == &kind_node_singleton_def_post) {
+        bake_recurse_body(n->u.node_singleton_def_post.body, (int32_t)n->u.node_singleton_def_post.locals_cnt);
+        return;
+    }
+    if (k == &kind_node_obj_singleton_def) {
+        bake_visit(n->u.node_obj_singleton_def.recv_expr, ctx);
+        bake_recurse_body(n->u.node_obj_singleton_def.body, (int32_t)n->u.node_obj_singleton_def.locals_cnt);
+        return;
+    }
+    if (k == &kind_node_obj_singleton_def_post) {
+        bake_visit(n->u.node_obj_singleton_def_post.recv_expr, ctx);
+        bake_recurse_body(n->u.node_obj_singleton_def_post.body, (int32_t)n->u.node_obj_singleton_def_post.locals_cnt);
+        return;
+    }
+    if (k == &kind_node_block_literal) {
+        bake_recurse_body(n->u.node_block_literal.body, (int32_t)n->u.node_block_literal.env_size);
+        return;
+    }
+    if (k == &kind_node_block_literal_rest) {
+        bake_recurse_body(n->u.node_block_literal_rest.body, (int32_t)n->u.node_block_literal_rest.env_size);
+        return;
+    }
+    if (k == &kind_node_block_literal_kw) {
+        bake_recurse_body(n->u.node_block_literal_kw.body, (int32_t)n->u.node_block_literal_kw.env_size);
+        return;
+    }
+
+    /* Default: walk all children with current scope_size. */
+    if (k->walker) k->walker(n, bake_visit, ctx);
+}
+
+void
+koruby_bake_sp_offsets(NODE *root)
+{
+    struct bake_ctx ctx = { .scope_size = 0 };
+    bake_visit(root, &ctx);
+}
 
 /* Pulled in last — uses HASH/HORG/HOPT and the static helpers from
  * astro_node.c above. */

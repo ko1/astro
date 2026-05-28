@@ -13,38 +13,38 @@
 // ---------------- literals ----------------
 
 NODE_DEF
-node_num(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, int32_t v)
+node_num(CTX * restrict c, NODE * restrict n, int32_t v)
 {
     return INT2FIX(v);
 }
 
 NODE_DEF
-node_int_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, intptr_t v)
+node_int_lit(CTX * restrict c, NODE * restrict n, intptr_t v)
 {
     /* literal that fits in a fixnum */
     return (VALUE)((uintptr_t)v << 1) | FIXNUM_FLAG;
 }
 
 NODE_DEF
-node_bignum_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str)
+node_bignum_lit(CTX * restrict c, NODE * restrict n, const char *str)
 {
     return korb_bignum_new_str(str, 10);
 }
 
 NODE_DEF
-node_float_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, double v)
+node_float_lit(CTX * restrict c, NODE * restrict n, double v)
 {
     return korb_float_new(v);
 }
 
 NODE_DEF
-node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str, uint32_t len)
+node_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32_t len)
 {
     return korb_str_new(str, len);
 }
 
 NODE_DEF
-node_frozen_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str, uint32_t len)
+node_frozen_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32_t len)
 {
     VALUE s = korb_str_new(str, len);
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_FROZEN;
@@ -52,7 +52,7 @@ node_frozen_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, co
 }
 
 NODE_DEF
-node_chilled_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str, uint32_t len)
+node_chilled_str_lit(CTX * restrict c, NODE * restrict n, const char *str, uint32_t len)
 {
     VALUE s = korb_str_new(str, len);
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_CHILLED;
@@ -60,71 +60,59 @@ node_chilled_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, c
 }
 
 NODE_DEF
-node_sym_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID id)
+node_sym_lit(CTX * restrict c, NODE * restrict n, ID id)
 {
     return korb_id2sym(id);
 }
 
 NODE_DEF
-node_true(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_true(CTX * restrict c, NODE * restrict n)
 {
     return Qtrue;
 }
 
 NODE_DEF
-node_false(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_false(CTX * restrict c, NODE * restrict n)
 {
     return Qfalse;
 }
 
 NODE_DEF
-node_nil(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_nil(CTX * restrict c, NODE * restrict n)
 {
     return Qnil;
 }
 
 NODE_DEF
-node_self(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_self(CTX * restrict c, NODE * restrict n)
 {
     return c->self;
 }
 
 // ---------------- variables ----------------
 
-/* `index` is dual-purpose, patched by koruby_bake_sp_offsets (node.c):
- *   - negative (int32_t) → sp-relative offset (= original_idx - scope_size).
- *     `sp` points to frame TOP (= fp + scope_size), so `sp[off]` reads
- *     the original frame slot.  Baked at parse-end for lvars resolved
- *     inside their owning method/block scope.
- *   - non-negative → original frame index; fall back to `c->fp[index]`.
- *     Used when bake pass can't resolve (eval'd code, outer-scope refs
- *     inside blocks where the baked sp_offset would be positive). */
 NODE_DEF
-node_lvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t index)
+node_lvar_get(CTX * restrict c, NODE * restrict n, uint32_t index)
 {
-    int32_t off = (int32_t)index;
-    if (off < 0) return sp[off];
     return c->fp[index];
 }
 
 NODE_DEF
-node_lvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t index, NODE *rhs)
+node_lvar_set(CTX * restrict c, NODE * restrict n, uint32_t index, NODE *rhs)
 {
     VALUE v = EA(c, rhs);
-    int32_t off = (int32_t)index;
-    if (off < 0) sp[off] = v;
-    else c->fp[index] = v;
+    c->fp[index] = v;
     return v;
 }
 
 NODE_DEF
-node_ivar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, struct ivar_cache *cache@ref)
+node_ivar_get(CTX * restrict c, NODE * restrict n, ID name, struct ivar_cache *cache@ref)
 {
     return korb_ivar_get_ic(c->self, name, cache);
 }
 
 NODE_DEF
-node_ivar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs, struct ivar_cache *cache@ref)
+node_ivar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs, struct ivar_cache *cache@ref)
 {
     VALUE v = EA(c, rhs);
     korb_ivar_set_ic(c->self, name, v, cache);
@@ -132,7 +120,7 @@ node_ivar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
 }
 
 NODE_DEF
-node_gvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
+node_gvar_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     /* $@ — `current exception`.backtrace, or nil if no current exc. */
     if (name == korb_intern("$@")) {
@@ -146,7 +134,7 @@ node_gvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
 }
 
 NODE_DEF
-node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs)
+node_gvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
 {
     VALUE v = EA(c, rhs);
     /* Validation for special globals. */
@@ -277,7 +265,7 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
 }
 
 NODE_DEF
-node_gvar_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
+node_gvar_defined_p(CTX * restrict c, NODE * restrict n, ID name)
 {
     return KORB_BOOL(korb_gvar_defined(name));
 }
@@ -286,7 +274,7 @@ node_gvar_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID
  * instead of dispatching const_missing or raising NameError on miss.
  * defined? must not invoke const_missing (CRuby semantics). */
 NODE_DEF
-node_const_path_defined(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent, ID name)
+node_const_path_defined(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
 {
     extern bool korb_const_is_private(const struct korb_class *, ID);
     VALUE p = EA(c, parent);
@@ -317,7 +305,7 @@ node_const_path_defined(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
  * method, mirroring node_super_forward).  Same lookup as super, but
  * never raises and never invokes. */
 NODE_DEF
-node_super_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_super_defined_p(CTX * restrict c, NODE * restrict n)
 {
     if (!c->current_frame || !c->current_frame->method) return Qfalse;
     extern struct korb_proc *running_block;
@@ -337,7 +325,7 @@ node_super_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 }
 
 NODE_DEF
-node_const_defined_lex(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
+node_const_defined_lex(CTX * restrict c, NODE * restrict n, ID name)
 {
     extern bool korb_const_is_private(const struct korb_class *, ID);
     for (struct korb_cref *cr = c->cref; cr; cr = cr->prev) {
@@ -363,13 +351,13 @@ node_const_defined_lex(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 }
 
 NODE_DEF
-node_last_line_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_last_line_get(CTX * restrict c, NODE * restrict n)
 {
     return korb_last_line_get(c);
 }
 
 NODE_DEF
-node_last_line_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *rhs)
+node_last_line_set(CTX * restrict c, NODE * restrict n, NODE *rhs)
 {
     VALUE v = EA(c, rhs);
     korb_last_line_set(c, v);
@@ -377,13 +365,13 @@ node_last_line_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 }
 
 NODE_DEF
-node_last_match_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_last_match_get(CTX * restrict c, NODE * restrict n)
 {
     return korb_last_match_get(c);
 }
 
 NODE_DEF
-node_last_match_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *rhs)
+node_last_match_set(CTX * restrict c, NODE * restrict n, NODE *rhs)
 {
     VALUE v = EA(c, rhs);
     korb_last_match_set(c, v);
@@ -391,7 +379,7 @@ node_last_match_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
 }
 
 NODE_DEF
-node_cvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
+node_cvar_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     /* Class variable: walk the cref's class up its superclass chain
      * looking for @@name; missing → NameError. */
@@ -400,7 +388,7 @@ node_cvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
 }
 
 NODE_DEF
-node_cvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs)
+node_cvar_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
 {
     VALUE v = EA(c, rhs);
     extern void korb_cvar_set(CTX *c, ID name, VALUE val);
@@ -409,13 +397,13 @@ node_cvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
 }
 
 NODE_DEF
-node_const_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
+node_const_get(CTX * restrict c, NODE * restrict n, ID name)
 {
     return korb_const_lookup(c, name);
 }
 
 NODE_DEF
-node_const_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs)
+node_const_set(CTX * restrict c, NODE * restrict n, ID name, NODE *rhs)
 {
     VALUE v = EA(c, rhs);
     struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
@@ -424,7 +412,7 @@ node_const_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
 }
 
 NODE_DEF
-node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent, ID name)
+node_const_path_get(CTX * restrict c, NODE * restrict n, NODE *parent, ID name)
 {
     VALUE p = EA(c, parent);
     if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
@@ -497,7 +485,7 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
 // ---------------- syntax / control ----------------
 
 NODE_DEF
-node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t envsize, NODE *body)
+node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
 {
     VALUE *prev_fp = c->fp;
     VALUE *prev_sp = c->sp;
@@ -520,11 +508,7 @@ node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t en
         if (new_sp > c->sp) c->sp = new_sp;
     }
     for (uint32_t i = 0; i < envsize; i++) c->fp[i] = Qnil;
-    /* sp-relative: body's `sp` parameter must point to this scope's
-     * frame top (= shifted fp + envsize), since bake walker computed
-     * the lvar sp_offsets relative to envsize.  EVAL_ARG would pass
-     * the enclosing scope's sp, which is wrong. */
-    VALUE v = EVAL(c, body, c->fp + envsize);
+    VALUE v = EVAL_ARG(c, body);
     /* Restore sp too — otherwise the now-dead scope's slots stay in the
      * GC root-scan range and a later collect treats their values (=
      * possibly stale heap ptrs written during this scope's body) as live
@@ -539,14 +523,14 @@ node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t en
 }
 
 NODE_DEF
-node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *head, NODE *tail)
+node_seq(CTX * restrict c, NODE * restrict n, NODE *head, NODE *tail)
 {
     EA(c, head);
     return EVAL_ARG(c, tail);
 }
 
 NODE_DEF
-node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *then_node, NODE *else_node)
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *then_node, NODE *else_node)
 {
     VALUE v = EA(c, cond);
     if (RTEST(v)) {
@@ -558,7 +542,7 @@ node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NO
 }
 
 NODE_DEF
-node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *body)
+node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
     while (1) {
         VALUE v = EVAL_ARG(c, cond);
@@ -592,7 +576,7 @@ node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond,
 }
 
 NODE_DEF
-node_until(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *body)
+node_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
     while (1) {
         VALUE v = EVAL_ARG(c, cond);
@@ -624,7 +608,7 @@ node_until(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond,
 }
 
 NODE_DEF
-node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
+node_return(CTX * restrict c, NODE * restrict n, NODE *value)
 {
     VALUE v = EA(c, value);
     extern struct korb_proc *running_block;
@@ -669,7 +653,7 @@ node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *valu
 }
 
 NODE_DEF
-node_break(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
+node_break(CTX * restrict c, NODE * restrict n, NODE *value)
 {
     VALUE v = EA(c, value);
     c->state = KORB_BREAK;
@@ -678,7 +662,7 @@ node_break(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value
 }
 
 NODE_DEF
-node_next(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
+node_next(CTX * restrict c, NODE * restrict n, NODE *value)
 {
     VALUE v = EA(c, value);
     c->state = KORB_NEXT;
@@ -687,14 +671,14 @@ node_next(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
 }
 
 NODE_DEF
-node_not(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *expr)
+node_not(CTX * restrict c, NODE * restrict n, NODE *expr)
 {
     VALUE v = EA(c, expr);
     return RTEST(v) ? Qfalse : Qtrue;
 }
 
 NODE_DEF
-node_and(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_and(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
 {
     VALUE l = EA(c, lhs);
     if (!RTEST(l)) return l;
@@ -702,7 +686,7 @@ node_and(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 }
 
 NODE_DEF
-node_or(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_or(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
 {
     VALUE l = EA(c, lhs);
     if (RTEST(l)) return l;
@@ -712,7 +696,7 @@ node_or(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
 // ---------------- containers ----------------
 
 NODE_DEF
-node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
+node_ary_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
     /* args are pre-evaluated and stored at fp[arg_index..arg_index+argc-1] */
     VALUE ary = korb_ary_new_capa(argc);
@@ -723,7 +707,7 @@ node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t 
 }
 
 NODE_DEF
-node_hash_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
+node_hash_new(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
     /* argc is # of pairs * 2; flat key,value,key,value,... */
     VALUE h = korb_hash_new();
@@ -745,7 +729,7 @@ node_hash_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t
 }
 
 NODE_DEF
-node_range_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *begin, NODE *end, uint32_t exclude_end)
+node_range_new(CTX * restrict c, NODE * restrict n, NODE *begin, NODE *end, uint32_t exclude_end)
 {
     VALUE b = EA(c, begin);
     VALUE e = EA(c, end);
@@ -753,7 +737,7 @@ node_range_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *b
 }
 
 NODE_DEF
-node_str_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
+node_str_concat(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
     VALUE r = korb_str_new("", 0);
     for (uint32_t i = 0; i < argc; i++) {
@@ -769,7 +753,7 @@ node_str_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32
 // ---------------- method definition / call ----------------
 
 NODE_DEF @noinline
-node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
+node_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t params_cnt, uint32_t locals_cnt)
 {
     /* Method goes on the innermost lexical class/module — same as Ruby's
      * `def foo` semantics inside a class body. */
@@ -779,7 +763,7 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE
 }
 
 NODE_DEF @noinline
-node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *super_expr, NODE *body)
+node_class_def(CTX * restrict c, NODE * restrict n, ID name, NODE *super_expr, NODE *body)
 {
     /* When parse.c routed `class X` (no super clause) here, super_expr is
      * still set (to a const_get(:Object)).  For mismatch checks we need
@@ -862,7 +846,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
  * node_class_def in that a reopen with mismatched non-Object super is
  * NOT an error here. */
 NODE_DEF @noinline
-node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body)
+node_class_reopen(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
 {
     struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
     struct korb_class *klass;
@@ -906,7 +890,7 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
 }
 
 NODE_DEF @noinline
-node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body)
+node_module_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body)
 {
     struct korb_class *host = c->cref ? c->cref->klass : c->current_class;
     struct korb_class *mod;
@@ -944,7 +928,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
 /* dispatch helpers (declared in node.h via include) */
 
 NODE_DEF
-node_func_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
+node_func_call(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
 {
     /* implicit-self call — _cached version inlines the IC + prologue
      * dispatch directly into the SD body, so a hot self-call (e.g.
@@ -954,7 +938,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
 }
 
 NODE_DEF
-node_method_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
+node_method_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, struct method_cache *mc)
 {
     VALUE r = EA(c, recv);
     return korb_dispatch_call_cached(c, n, r, name, argc, arg_index, NULL, mc);
@@ -964,7 +948,7 @@ node_method_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE 
  * the matcher's `===` even when private (the matcher's intent is to
  * be called by case/when).  Argument is staged at arg_index. */
 NODE_DEF
-node_case_eqq_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, uint32_t arg_index)
+node_case_eqq_call(CTX * restrict c, NODE * restrict n, NODE *recv, uint32_t arg_index)
 {
     VALUE r = EA(c, recv);
     VALUE arg = c->fp[arg_index];
@@ -972,7 +956,7 @@ node_case_eqq_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 }
 
 NODE_DEF
-node_method_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
+node_method_call_block(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
 {
     VALUE r = EA(c, recv);
     /* blk node is node_block_literal which when EVAL'd produces a Proc */
@@ -981,14 +965,14 @@ node_method_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 }
 
 NODE_DEF
-node_func_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
+node_func_call_block(CTX * restrict c, NODE * restrict n, ID name, uint32_t argc, uint32_t arg_index, NODE *blk, struct method_cache *mc)
 {
     VALUE block = blk ? EA(c, blk) : Qnil;
     return korb_dispatch_call_cached(c, n, c->self, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
 }
 
 NODE_DEF @noinline
-node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
+node_block_literal(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
 {
     VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
@@ -1017,7 +1001,7 @@ node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 /* Variant with an explicit *rest slot.  rest_slot is the absolute slot
  * the proc binds *rest into; -1 means "no rest". */
 NODE_DEF @noinline
-node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, uint32_t creates_proc)
+node_block_literal_rest(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, uint32_t creates_proc)
 {
     VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
@@ -1038,7 +1022,7 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
  * block declares keyword params; proc_call uses kwh_save_slot to peel
  * the trailing Hash argument. */
 NODE_DEF @noinline
-node_block_literal_kw(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot, uint32_t creates_proc)
+node_block_literal_kw(CTX * restrict c, NODE * restrict n, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot, uint32_t creates_proc)
 {
     VALUE p = korb_proc_new_with_cref(body, c->fp, env_size, params_cnt, param_base, c->self, false, c->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
@@ -1062,7 +1046,7 @@ node_block_literal_kw(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
  * proc_call can fill missing optional slots with Qundef and trigger
  * the body's default-init prologue. */
 NODE_DEF @noinline
-node_proc_set_opt_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, uint32_t opt_cnt)
+node_proc_set_opt_cnt(CTX * restrict c, NODE * restrict n, NODE *blk_node, uint32_t opt_cnt)
 {
     VALUE p = EVAL_ARG(c, blk_node);
     if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
@@ -1075,7 +1059,7 @@ node_proc_set_opt_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
 /* Set a Proc's `&blk` slot — proc_call binds the caller's block (or nil)
  * into this slot before evaluating the body. */
 NODE_DEF @noinline
-node_proc_set_block_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, int32_t block_slot)
+node_proc_set_block_slot(CTX * restrict c, NODE * restrict n, NODE *blk_node, int32_t block_slot)
 {
     VALUE p = EVAL_ARG(c, blk_node);
     if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
@@ -1087,7 +1071,7 @@ node_proc_set_block_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict s
 
 /* Set a Proc's post_cnt — required params after *rest. */
 NODE_DEF @noinline
-node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, uint32_t post_cnt)
+node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, NODE *blk_node, uint32_t post_cnt)
 {
     VALUE p = EVAL_ARG(c, blk_node);
     if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
@@ -1102,7 +1086,7 @@ node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
  * rest_slot is non-negative (we still allocate a discardable slot to
  * absorb extras for proc-style autosplat / yield). */
 NODE_DEF @noinline
-node_proc_set_implicit_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node)
+node_proc_set_implicit_rest(CTX * restrict c, NODE * restrict n, NODE *blk_node)
 {
     VALUE p = EVAL_ARG(c, blk_node);
     if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
@@ -1116,7 +1100,7 @@ node_proc_set_implicit_rest(CTX * restrict c, NODE * restrict n, VALUE * restric
  * the literal becomes a lambda without dispatching Kernel#lambda
  * (which a class inheriting from BasicObject can't reach). */
 NODE_DEF @noinline
-node_proc_make_lambda(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node)
+node_proc_make_lambda(CTX * restrict c, NODE * restrict n, NODE *blk_node)
 {
     VALUE p = EVAL_ARG(c, blk_node);
     if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
@@ -1129,7 +1113,7 @@ node_proc_make_lambda(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
 /* Mark a Hash with FL_KWARGS so dispatch peels it as kwargs at the
  * call site.  Used by `m(k: v)` / `m(**h)` lowering. */
 NODE_DEF
-node_hash_mark_kwargs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *hash_expr)
+node_hash_mark_kwargs(CTX * restrict c, NODE * restrict n, NODE *hash_expr)
 {
     VALUE h = EVAL_ARG(c, hash_expr);
     if (!SPECIAL_CONST_P(h) && BUILTIN_TYPE(h) == T_HASH) {
@@ -1139,7 +1123,7 @@ node_hash_mark_kwargs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
 }
 
 NODE_DEF
-node_yield(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
+node_yield(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
     return korb_yield(c, argc, &c->fp[arg_index]);
 }
@@ -1148,7 +1132,7 @@ node_yield(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
  * single Array at slot `arr_slot`; call yield with the array's elements
  * as a variadic argv. */
 NODE_DEF
-node_yield_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t arr_slot)
+node_yield_splat(CTX * restrict c, NODE * restrict n, uint32_t arr_slot)
 {
     VALUE arr = c->fp[arr_slot];
     if (SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) {
@@ -1166,7 +1150,7 @@ node_yield_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
 // the failing op.  Fast paths skip the store entirely.
 
 NODE_DEF
-node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_plus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1185,7 +1169,7 @@ node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, N
 }
 
 NODE_DEF
-node_minus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_minus(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1202,7 +1186,7 @@ node_minus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, 
 }
 
 NODE_DEF
-node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_mul(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1219,7 +1203,7 @@ node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 }
 
 NODE_DEF
-node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_div(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1244,7 +1228,7 @@ node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 }
 
 NODE_DEF
-node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_mod(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1265,7 +1249,7 @@ node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 }
 
 NODE_DEF
-node_uminus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *operand, uint32_t arg_index)
+node_uminus(CTX * restrict c, NODE * restrict n, NODE *operand, uint32_t arg_index)
 {
     VALUE v = EA(c, operand);
     if (LIKELY(FIXNUM_P(v) && !korb_g_basic_op_redefined)) {
@@ -1279,7 +1263,7 @@ node_uminus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *oper
 // ---------------- bit ops ----------------
 
 NODE_DEF
-node_bit_and(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_bit_and(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1289,7 +1273,7 @@ node_bit_and(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs
 }
 
 NODE_DEF
-node_bit_or(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_bit_or(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1299,7 +1283,7 @@ node_bit_or(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
 }
 
 NODE_DEF
-node_bit_xor(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_bit_xor(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1309,7 +1293,7 @@ node_bit_xor(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs
 }
 
 NODE_DEF
-node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_lshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1333,7 +1317,7 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
 }
 
 NODE_DEF
-node_rshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_rshift(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1349,7 +1333,7 @@ node_rshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
 // ---------------- comparisons ----------------
 
 NODE_DEF
-node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_lt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1360,7 +1344,7 @@ node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
 }
 
 NODE_DEF
-node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_le(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1371,7 +1355,7 @@ node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
 }
 
 NODE_DEF
-node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_gt(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1382,7 +1366,7 @@ node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
 }
 
 NODE_DEF
-node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_ge(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1393,7 +1377,7 @@ node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
 }
 
 NODE_DEF
-node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_eq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1424,7 +1408,7 @@ node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
 }
 
 NODE_DEF
-node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
+node_neq(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -1447,7 +1431,7 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 // ---------------- subscript [] / []= ----------------
 
 NODE_DEF
-node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, uint32_t arg_index)
+node_aref(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, uint32_t arg_index)
 {
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
@@ -1487,7 +1471,7 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
 }
 
 NODE_DEF
-node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, NODE *val, uint32_t arg_index)
+node_aset(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *idx, NODE *val, uint32_t arg_index)
 {
     VALUE r = EA(c, recv);
     VALUE i = EA(c, idx);
@@ -1525,7 +1509,7 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
  * v, dispatch []=, return v.  Reserves up to 16 slots at parse time;
  * runtime falls back to xmalloc if more keys. */
 NODE_DEF @noinline
-node_aset_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *splat, NODE *val, uint32_t arg_index)
+node_aset_splat(CTX * restrict c, NODE * restrict n, NODE *recv, NODE *splat, NODE *val, uint32_t arg_index)
 {
     VALUE r = EA(c, recv);
     VALUE arr = EA(c, splat);
@@ -1560,7 +1544,7 @@ node_aset_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 // ---------------- exception ----------------
 
 NODE_DEF @noinline
-node_rescue(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, NODE *rescue_body, uint32_t exception_lvar_index)
+node_rescue(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, uint32_t exception_lvar_index)
 {
 retry:;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
@@ -1603,7 +1587,7 @@ retry:;
 }
 
 NODE_DEF
-node_retry(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_retry(CTX * restrict c, NODE * restrict n)
 {
     c->state = KORB_RETRY;
     c->state_value = Qnil;
@@ -1614,7 +1598,7 @@ node_retry(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
  * completed without raising and no rescue was triggered.  Same retry
  * semantics as node_rescue. */
 NODE_DEF
-node_rescue_else(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, NODE *rescue_body, NODE *else_body, uint32_t exception_lvar_index)
+node_rescue_else(CTX * restrict c, NODE * restrict n, NODE *body, NODE *rescue_body, NODE *else_body, uint32_t exception_lvar_index)
 {
 retry_re:;
     bool rescued = false;
@@ -1653,7 +1637,7 @@ retry_re:;
 }
 
 NODE_DEF
-node_redo(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_redo(CTX * restrict c, NODE * restrict n)
 {
     c->state = KORB_REDO;
     c->state_value = Qnil;
@@ -1661,7 +1645,7 @@ node_redo(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 }
 
 NODE_DEF
-node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_expr)
+node_raise(CTX * restrict c, NODE * restrict n, NODE *exc_expr)
 {
     VALUE e;
     if (exc_expr) {
@@ -1698,7 +1682,7 @@ node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_e
  * (else TypeError); if obj doesn't respond to to_ary, the RHS is
  * wrapped in [obj]. */
 NODE_DEF
-node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *expr)
+node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, NODE *expr)
 {
     VALUE v = EA(c, expr);
     if (BUILTIN_TYPE(v) == T_ARRAY) return v;
@@ -1735,7 +1719,7 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
 }
 
 NODE_DEF
-node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *expr)
+node_splat_to_ary(CTX * restrict c, NODE * restrict n, NODE *expr)
 {
     VALUE v = EA(c, expr);
     /* CRuby splat: nil → [] (no elements). */
@@ -1792,7 +1776,7 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
 }
 
 NODE_DEF
-node_ary_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t idx)
+node_ary_aget(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t idx)
 {
     VALUE a = EA(c, ary_node);
     if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
@@ -1801,7 +1785,7 @@ node_ary_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ar
 
 /* For multi-assign splat: ary[ary.len - neg_offset]; nil if out of range. */
 NODE_DEF
-node_ary_aget_neg(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t neg_offset)
+node_ary_aget_neg(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t neg_offset)
 {
     VALUE a = EA(c, ary_node);
     if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
@@ -1817,7 +1801,7 @@ node_ary_aget_neg(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
  * elements to satisfy lefts + rights.  Without this, `*a, b, c = [1]`
  * would assign c=1, b=nil — CRuby gives b=1, c=nil. */
 NODE_DEF
-node_ary_aget_right(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t lefts, uint32_t rights, uint32_t i)
+node_ary_aget_right(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t lefts, uint32_t rights, uint32_t i)
 {
     VALUE a = EA(c, ary_node);
     if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
@@ -1831,7 +1815,7 @@ node_ary_aget_right(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
 
 /* For multi-assign middle splat: ary[leading .. (len - trailing - 1)] as a new Array. */
 NODE_DEF
-node_ary_slice_middle(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t leading, uint32_t trailing)
+node_ary_slice_middle(CTX * restrict c, NODE * restrict n, NODE *ary_node, uint32_t leading, uint32_t trailing)
 {
     VALUE a = EA(c, ary_node);
     if (BUILTIN_TYPE(a) != T_ARRAY) return korb_ary_new();
@@ -1848,7 +1832,7 @@ node_ary_slice_middle(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
 }
 
 NODE_DEF
-node_str_to_sym(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *str_node)
+node_str_to_sym(CTX * restrict c, NODE * restrict n, NODE *str_node)
 {
     VALUE s = EA(c, str_node);
     if (BUILTIN_TYPE(s) != T_STRING) return Qnil;
@@ -1856,7 +1840,7 @@ node_str_to_sym(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 }
 
 NODE_DEF
-node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
+node_super(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index)
 {
     /* When `super` runs inside a block body, the lexically-enclosing
      * method drives the super lookup — not whichever method called
@@ -1927,7 +1911,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     c->current_frame = &frame;
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
-    VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    VALUE r = EVAL(c, sm->u.ast.body);
     c->current_frame = frame.prev;
     running_block = prev_running;
     c->fp = prev_fp;
@@ -1948,7 +1932,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
  * `block_given?` sees.  The runtime semantics otherwise match
  * node_super. */
 NODE_DEF @noinline
-node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index, NODE *blk_expr)
+node_super_block(CTX * restrict c, NODE * restrict n, uint32_t argc, uint32_t arg_index, NODE *blk_expr)
 {
     extern struct korb_proc *running_block;
     struct korb_method *m = (running_block && running_block->defining_method)
@@ -2017,7 +2001,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     if (sm->u.ast.block_slot >= 0) {
         new_fp[sm->u.ast.block_slot] = blk_proc ? (VALUE)blk_proc : Qnil;
     }
-    VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    VALUE r = EVAL(c, sm->u.ast.body);
     current_block = prev_current_block;
     c->current_frame = frame.prev;
     running_block = prev_running;
@@ -2041,7 +2025,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
  * argument by reusing our own node — node_super_forward doesn't
  * read any specific fields, only `c->current_frame`. */
 NODE_DEF @noinline
-node_super_forward_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_expr)
+node_super_forward_block(CTX * restrict c, NODE * restrict n, NODE *blk_expr)
 {
     extern struct korb_proc *current_block;
     VALUE blk_v = blk_expr ? EA(c, blk_expr) : Qnil;
@@ -2055,13 +2039,13 @@ node_super_forward_block(CTX * restrict c, NODE * restrict n, VALUE * restrict s
     struct Node *fwd = ALLOC_node_super_forward();
     struct korb_proc *prev = current_block;
     current_block = blk_proc;
-    VALUE r = ((korb_dispatcher_t)fwd->head.dispatcher)(c, fwd, sp);
+    VALUE r = ((korb_dispatcher_t)fwd->head.dispatcher)(c, fwd);
     current_block = prev;
     return r;
 }
 
 NODE_DEF
-node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
+node_super_forward(CTX * restrict c, NODE * restrict n)
 {
     if (!c->current_frame || !c->current_frame->method) {
         korb_raise(c, NULL, "super called outside of method");
@@ -2255,7 +2239,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     c->current_frame = &frame;
     struct korb_proc *prev_running = running_block;
     running_block = NULL;
-    VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    VALUE r = EVAL(c, sm->u.ast.body);
     c->current_frame = frame.prev;
     running_block = prev_running;
     c->fp = prev_fp;
@@ -2271,7 +2255,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 }
 
 NODE_DEF
-node_ensure(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, NODE *ensure_body)
+node_ensure(CTX * restrict c, NODE * restrict n, NODE *body, NODE *ensure_body)
 {
     int saved_state = KORB_NORMAL;
     VALUE saved_value = Qnil;
@@ -2301,7 +2285,7 @@ node_ensure(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
 }
 
 NODE_DEF @noinline
-node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
+node_singleton_def(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
 {
     /* def self.foo — install on c->self's singleton class. */
     struct korb_class *target;
@@ -2344,7 +2328,7 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
 /* `def self.foo(a, *r, b, c)` — like node_singleton_def but additionally
  * records post_params_cnt so the prologue routes args correctly. */
 NODE_DEF @noinline
-node_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+node_singleton_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
 {
     struct korb_class *target;
     if (BUILTIN_TYPE(c->self) == T_CLASS || BUILTIN_TYPE(c->self) == T_MODULE) {
@@ -2370,7 +2354,7 @@ node_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
 }
 
 NODE_DEF @noinline
-node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
+node_obj_singleton_def(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
 {
     /* def obj.foo — install on the value of `recv_expr`'s singleton
      * class.  For T_OBJECT we lazily allocate one; for T_CLASS /
@@ -2403,7 +2387,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 
 /* `def obj.foo(a, *r, b, c)` — variant with post_params_cnt. */
 NODE_DEF @noinline
-node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
 {
     extern struct korb_class *korb_singleton_class_of_value(VALUE v);
     VALUE recv = EA(c, recv_expr);
@@ -2433,7 +2417,7 @@ node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restric
 }
 
 NODE_DEF @noinline
-node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv_expr, NODE *body)
+node_singleton_class_body(CTX * restrict c, NODE * restrict n, NODE *recv_expr, NODE *body)
 {
     /* `class << obj; body; end` — evaluate body with self set to obj's
      * singleton class so `def name` lands there. */
@@ -2462,7 +2446,7 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict 
 }
 
 NODE_DEF
-node_default_init(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t slot, NODE *default_expr)
+node_default_init(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *default_expr)
 {
     /* If c->fp[slot] is Qundef (= caller did not supply this optional arg),
      * evaluate the default and store it.  Pre-init the slot to Qnil so a
@@ -2478,7 +2462,7 @@ node_default_init(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint
 }
 
 NODE_DEF @noinline
-node_def_full(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
+node_def_full(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
 {
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
     /* CRuby: top-level `def` (the implicit "main" lexical scope) installs
@@ -2539,7 +2523,7 @@ node_def_full(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
 
 /* Like node_def_full but with post_params_cnt for `def f(a, *r, b, c)`. */
 NODE_DEF @noinline
-node_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
+node_def_post(CTX * restrict c, NODE * restrict n, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
 {
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
     korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->cref);
@@ -2559,7 +2543,7 @@ node_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
  * on the current cref/class.  Emitted right after node_def_full when
  * the def declares keyword params. */
 NODE_DEF @noinline
-node_set_kwh_save_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, int32_t slot)
+node_set_kwh_save_slot(CTX * restrict c, NODE * restrict n, ID name, int32_t slot)
 {
     struct korb_class *target = c->cref ? c->cref->klass : c->current_class;
     korb_class_set_method_kwh_save_slot(target, name, (int)slot);
@@ -2571,7 +2555,7 @@ node_set_kwh_save_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
  * redefinition of Module#alias_method has no effect (`alias` is a
  * keyword, not a method call). */
 NODE_DEF @noinline
-node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *new_name, NODE *old_name)
+node_alias_method(CTX * restrict c, NODE * restrict n, NODE *new_name, NODE *old_name)
 {
     VALUE new_v = EA(c, new_name);
     VALUE old_v = EA(c, old_name);
@@ -2596,7 +2580,7 @@ node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
 }
 
 NODE_DEF
-node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs)
+node_ary_concat(CTX * restrict c, NODE * restrict n, NODE *lhs, NODE *rhs)
 {
     VALUE l = EA(c, lhs);
     VALUE r = EA(c, rhs);
@@ -2611,7 +2595,7 @@ node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 }
 
 NODE_DEF
-node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, uint32_t is_method, struct method_cache *mc)
+node_apply_call(CTX * restrict c, NODE * restrict n, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, uint32_t is_method, struct method_cache *mc)
 {
     VALUE recv_val = is_method ? EA(c, recv) : c->self;
     VALUE args_array = EA(c, args_node);
@@ -2629,7 +2613,7 @@ node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 }
 
 NODE_DEF @noinline
-node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent_expr, ID name, NODE *super_expr, NODE *body, uint32_t enforce_super_match)
+node_class_def_in_strict(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *super_expr, NODE *body, uint32_t enforce_super_match)
 {
     VALUE parent_v = EA(c, parent_expr);
     if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
@@ -2707,7 +2691,7 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
 }
 
 NODE_DEF @noinline
-node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent_expr, ID name, NODE *super_expr, NODE *body)
+node_class_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *super_expr, NODE *body)
 {
     /* Non-strict variant: same shape as _strict with enforce_super_match
      * = 0.  Inlined here to avoid the per-arg dispatcher plumbing the
@@ -2768,7 +2752,7 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
 }
 
 NODE_DEF @noinline
-node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent_expr, ID name, NODE *body)
+node_module_def_in(CTX * restrict c, NODE * restrict n, NODE *parent_expr, ID name, NODE *body)
 {
     VALUE parent_v = EA(c, parent_expr);
     if (BUILTIN_TYPE(parent_v) != T_CLASS && BUILTIN_TYPE(parent_v) != T_MODULE) {
@@ -2825,7 +2809,7 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 }
 
 NODE_DEF
-node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *body)
+node_do_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
     /* begin; body; end while cond */
     do {
@@ -2858,7 +2842,7 @@ node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
 }
 
 NODE_DEF
-node_do_until(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *body)
+node_do_until(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
 {
     do {
     redo_do_until:

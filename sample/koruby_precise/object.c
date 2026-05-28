@@ -3476,7 +3476,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     running_block = NULL;
     VALUE *frame_lo = c->fp;
     VALUE *frame_hi = c->fp + mc->locals_cnt;
-    VALUE r = mc->dispatcher(c, mc->body, c->fp);
+    VALUE r = mc->dispatcher(c, mc->body, c->fp + mc->locals_cnt);
     c->current_frame = frame.prev;
     running_block = prev_running;
     korb_proc_snapshot_env_maybe(r, frame_lo, frame_hi);
@@ -4042,7 +4042,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * outer block's enclosing method's name). */
     struct korb_proc *prev_running2 = running_block;
     running_block = NULL;
-    VALUE r = EVAL(c, m->u.ast.body, c->fp);
+    VALUE r = EVAL(c, m->u.ast.body, c->fp + m->u.ast.locals_cnt);
     running_block = prev_running2;
     c->current_frame = frame2.prev;
     c->fp = prev_fp;

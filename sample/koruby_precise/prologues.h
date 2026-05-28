@@ -151,7 +151,10 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     }
     c->self = recv;
 
-    VALUE r = mc->dispatcher(c, mc->body, new_fp);
+    /* baruby convention: body's `sp` parameter = frame TOP (= fp +
+     * locals_cnt).  Body's local `i` is accessed as `sp[i - locals_cnt]`
+     * (= negative offset, baked by walker). */
+    VALUE r = mc->dispatcher(c, mc->body, new_fp + mc->locals_cnt);
 
     c->current_frame = frame.prev;
     running_block = prev_running;
@@ -297,7 +300,7 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     /* Direct call: linker resolves static_disp to a concrete SD_*
      * symbol; gcc emits a direct call instead of going through
      * mc->dispatcher (one indirect load + indirect call removed). */
-    VALUE r = static_disp(c, mc->body, new_fp);
+    VALUE r = static_disp(c, mc->body, new_fp + mc->locals_cnt);
 
     c->current_frame = frame.prev;
     running_block = prev_running;
