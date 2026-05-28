@@ -851,59 +851,46 @@ static VALUE str_chars(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE str_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Pin self across korb_yield's GC fires.  Same as str_each_char. */
-    VALUE ret;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = self;
-        if (korb_block_given()) {
-            for (long i = 0; i < ((struct korb_string *)rs[0])->len; i++) {
-                struct korb_string *s = (struct korb_string *)rs[0];
-                VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-                korb_yield(c, 1, &b);
-                if (c->state == KORB_RAISE) { ret = Qnil; goto sb_done; }
-            }
-            ret = rs[0];
-        } else {
-            rs[1] = korb_ary_new_capa(((struct korb_string *)rs[0])->len);
-            for (long i = 0; i < ((struct korb_string *)rs[0])->len; i++) {
-                struct korb_string *s = (struct korb_string *)rs[0];
-                korb_ary_push(rs[1], INT2FIX((unsigned char)s->ptr[i]));
-            }
-            ret = rs[1];
+    /* Use c->current_frame->self (auto-tracked) instead of C-local
+     * self parameter. */
+    if (korb_block_given()) {
+        for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
+            struct korb_string *s = (struct korb_string *)c->current_frame->self;
+            VALUE b = INT2FIX((unsigned char)s->ptr[i]);
+            korb_yield(c, 1, &b);
+            if (c->state == KORB_RAISE) return Qnil;
         }
-      sb_done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+        return c->current_frame->self;
+    }
+    VALUE r = korb_ary_new_capa(((struct korb_string *)c->current_frame->self)->len);
+    for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
+        struct korb_string *s = (struct korb_string *)c->current_frame->self;
+        korb_ary_push(r, INT2FIX((unsigned char)s->ptr[i]));
+    }
+    return r;
 }
 
 static VALUE str_each_char(CTX *c, VALUE self, int argc, VALUE *argv) {
-    /* Pin self (= the String) across korb_yield's GC fires (block body
-     * may allocate freely).  Without this, s C-local goes stale and
-     * `i < s->len` derefs PROT_NONE under STRESS+PURGE. */
-    VALUE ret;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = self;
-        /* Block-less form: koruby has no Enumerator, so return an Array of
-         * single-char strings (matches what `.to_a` would yield). */
-        if (!korb_block_given()) {
-            rs[1] = korb_ary_new();
-            for (long i = 0; i < ((struct korb_string *)rs[0])->len; i++) {
-                struct korb_string *s = (struct korb_string *)rs[0];
-                korb_ary_push(rs[1], korb_str_new(s->ptr + i, 1));
-            }
-            ret = rs[1];
-        } else {
-            for (long i = 0; i < ((struct korb_string *)rs[0])->len; i++) {
-                struct korb_string *s = (struct korb_string *)rs[0];
-                VALUE ch = korb_str_new(s->ptr + i, 1);
-                korb_yield(c, 1, &ch);
-                if (c->state != KORB_NORMAL) { ret = Qnil; goto sec_done; }
-            }
-            ret = rs[0];
-          sec_done: ;
+    /* Block-less form: koruby has no Enumerator, so return an Array of
+     * single-char strings (matches what `.to_a` would yield).  Use
+     * c->current_frame->self (auto-tracked by visit_roots frame walk)
+     * inside the loop instead of the C-local self parameter, which
+     * goes stale across allocations under STRESS+PURGE. */
+    if (!korb_block_given()) {
+        VALUE r = korb_ary_new();
+        for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
+            struct korb_string *s = (struct korb_string *)c->current_frame->self;
+            korb_ary_push(r, korb_str_new(s->ptr + i, 1));
         }
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+        return r;
+    }
+    for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
+        struct korb_string *s = (struct korb_string *)c->current_frame->self;
+        VALUE ch = korb_str_new(s->ptr + i, 1);
+        korb_yield(c, 1, &ch);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return c->current_frame->self;
 }
 
 static VALUE str_start_with(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1817,20 +1804,14 @@ static VALUE str_each_byte(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE arg = korb_id2sym(korb_intern("each_byte"));
         return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
     }
-    /* Pin self across korb_yield's GC fires. */
-    VALUE ret;
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
-        rs[0] = self;
-        for (long i = 0; i < ((struct korb_string *)rs[0])->len; i++) {
-            struct korb_string *s = (struct korb_string *)rs[0];
-            VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-            korb_yield(c, 1, &b);
-            if (c->state == KORB_RAISE) { ret = Qnil; goto seb_done; }
-        }
-        ret = rs[0];
-      seb_done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+    /* Read self from c->current_frame->self (auto-tracked). */
+    for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
+        struct korb_string *s = (struct korb_string *)c->current_frame->self;
+        VALUE b = INT2FIX((unsigned char)s->ptr[i]);
+        korb_yield(c, 1, &b);
+        if (c->state == KORB_RAISE) return Qnil;
+    }
+    return c->current_frame->self;
 }
 
 /* String#ord */

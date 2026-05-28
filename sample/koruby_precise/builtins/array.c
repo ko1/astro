@@ -259,13 +259,18 @@ static VALUE ary_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* No block → return self (the Array IS its own enumerator
      * stand-in — supports `.each.to_a`, `.each.map { ... }`, etc.). */
     if (!korb_block_given()) return self;
-    long len = korb_ary_len(self);
+    /* Re-read self from c->current_frame->self each iteration —
+     * prologue_cfunc set frame.self = recv at frame push, and
+     * visit_roots auto-forwards frame.self each GC cycle.  The
+     * C-local `self` parameter goes stale across korb_yield's GC
+     * fires under STRESS+PURGE. */
+    long len = korb_ary_len(c->current_frame->self);
     for (long i = 0; i < len; i++) {
-        VALUE v = korb_ary_aref(self, i);
+        VALUE v = korb_ary_aref(c->current_frame->self, i);
         korb_yield(c, 1, &v);
         if (c->state != KORB_NORMAL) return Qnil;
     }
-    return self;
+    return c->current_frame->self;
 }
 static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
     long len = korb_ary_len(self);
