@@ -2834,19 +2834,26 @@ node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 NODE_DEF
 node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, ID name, NODE *args_node, uint32_t arg_index, NODE *blk, uint32_t is_method, struct method_cache *mc)
 {
-    VALUE recv_val = is_method ? EA(c, recv) : c->current_frame->self;
-    VALUE args_array = EA(c, args_node);
-    long n_args = 0;
-    if (BUILTIN_TYPE(args_array) == T_ARRAY) {
-        struct korb_array *aa = (struct korb_array *)args_array;
-        n_args = aa->len;
-        for (long i = 0; i < n_args; i++) {
-            c->current_frame->fp[arg_index + i] = aa->ptr[i];
+    /* Pin recv_val + args_array + block_v across the cascade of EAs
+     * (each can fire many GCs under STRESS+PURGE).  Plain C local
+     * would go stale and korb_dispatch_call receives a dead recv. */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 3) {
+        rs[0] = is_method ? EA(c, recv) : c->current_frame->self;
+        rs[1] = EA(c, args_node);
+        long n_args = 0;
+        if (BUILTIN_TYPE(rs[1]) == T_ARRAY) {
+            struct korb_array *aa = (struct korb_array *)rs[1];
+            n_args = aa->len;
+            for (long i = 0; i < n_args; i++) {
+                c->current_frame->fp[arg_index + i] = aa->ptr[i];
+            }
         }
-    }
-    VALUE block_v = blk ? EA(c, blk) : Qnil;
-    struct korb_proc *block = (BUILTIN_TYPE(block_v) == T_PROC) ? (struct korb_proc *)block_v : NULL;
-    return korb_dispatch_call(c, n, recv_val, name, (uint32_t)n_args, arg_index, block, mc);
+        rs[2] = blk ? EA(c, blk) : Qnil;
+        struct korb_proc *block = (BUILTIN_TYPE(rs[2]) == T_PROC) ? (struct korb_proc *)rs[2] : NULL;
+        ret = korb_dispatch_call(c, n, rs[0], name, (uint32_t)n_args, arg_index, block, mc);
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 NODE_DEF @noinline
