@@ -410,6 +410,37 @@ prologue_ast_simple_inl / prologue_ast_full_inl_K は最初から shift
 含む 全モード 24/24 全 OK**。 _gen 系 backend は framework 側
 write barrier 不整合があり、 別 session で深堀必要。
 
+## §I benchmark / rubyspec sweep (2026-05-28)
+
+### benchmark/bm_*.rb (27 ファイル)
+
+| mode | pass | fail | SEGV | 備考 |
+|---|---|---|---|---|
+| NORMAL | 22 | 5 | 0 | pre-existing 仕様未実装 |
+| STRESS | 19 | 8 | 0 | timeout + libc shadow ref |
+| STRESS+PURGE | 19 | 8 | 1 | nbody が mprotect で死亡 |
+
+nbody の PURGE SEGV: `korb_class_find_method` で klass deref → libc-
+allocated array の `klass` field が arena class の stale addr を持って
+おり、 mprotect 経由で SIGSEGV。 libc-arena shadow ref の典型例。
+
+### rubyspec (~/ruby/src/master/spec/ruby/core/) sweep
+
+NORMAL mode で mspec_shim 経由実行: 多くの spec で test setup 中の
+`empty?` for nil 等の pre-existing koruby 仕様未実装エラー。 STRESS+
+PURGE 下では SEGV (= 同じ libc-arena shadow ref パターン)。
+
+### 根本対処 (= Phase 3 完了相当)
+
+container を全 arena 化:
+- korb_array (struct + ptr buffer)
+- korb_hash (struct + buckets/entries)
+- korb_range / korb_proc / korb_float / korb_bignum 等
+
+partial migration (= 一部だけ) では shadow ref が新たに発生する
+ことが実験で確認済 (4ed470fb で試行)。 一括移行が必要。 大規模
+refactor、 1 commit に収まらない別 session 規模。
+
 このセッションの主要 fix (commit 686f01f0 〜 13edbcb7):
 
 - **visit_roots phase (c+d) 統合**: frame 毎に cref chain を walk。
