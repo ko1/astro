@@ -469,6 +469,12 @@ static VALUE ary_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
  * Array) supplies the pair for each element — mirrors CRuby's
  * `[1,2,3].to_h { |i| [i, i*i] }` form. */
 static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
+    if (argc > 0) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 0)", argc);
+        return Qnil;
+    }
     const struct korb_array *a = (const struct korb_array *)self;
     VALUE h = korb_hash_new(c, c->sp);
     bool has_block = korb_block_given(c);
@@ -478,13 +484,34 @@ static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
             pair = korb_yield(c, 1, &a->ptr[i]);
             if (c->state != KORB_NORMAL) return Qnil;
         }
-        if (BUILTIN_TYPE(pair) != T_ARRAY || ((struct korb_array *)pair)->len != 2) {
-            VALUE eType = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eType,
-                       "wrong element type (expected 2-element Array)");
-            return Qnil;
+        /* CRuby: try to_ary for non-Array elements (but not to_a). */
+        if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
+            if (!SPECIAL_CONST_P(pair)) {
+                VALUE rt = korb_funcall(c, pair, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+                if (c->state == KORB_RAISE) return Qnil;
+                if (RTEST(rt)) {
+                    pair = korb_funcall(c, pair, korb_intern("to_ary"), 0, NULL);
+                    if (c->state == KORB_RAISE) return Qnil;
+                }
+            }
+            if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
+                VALUE eType = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eType,
+                           "wrong element type %s at %ld (expected array)",
+                           SPECIAL_CONST_P(pair) ? "(special)"
+                               : korb_id_name(korb_class_of_class(pair)->name),
+                           i);
+                return Qnil;
+            }
         }
         struct korb_array *p = (struct korb_array *)pair;
+        if (p->len != 2) {
+            VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            korb_raise(c, (struct korb_class *)eA,
+                       "wrong array length at %ld (expected 2, was %ld)", i, p->len);
+            return Qnil;
+        }
         korb_hash_aset(c, h, p->ptr[0], p->ptr[1]);
     }
     return h;
