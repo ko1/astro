@@ -346,7 +346,7 @@ node_const_defined_lex(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
             if (korb_const_has(cr->klass->includes[i], name)) return Qtrue;
         }
     }
-    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *k = korb_host_class(c);
     if (k && k->super) {
         VALUE v = korb_const_get_inherited(k->super, name);
         if (!UNDEF_P(v)) {
@@ -418,7 +418,7 @@ NODE_DEF
 node_const_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs)
 {
     VALUE v = EA(c, rhs);
-    struct korb_class *host = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *host = korb_host_class(c);
     korb_const_set(host, name, v);
     return v;
 }
@@ -780,7 +780,7 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE
 {
     /* Method goes on the innermost lexical class/module — same as Ruby's
      * `def foo` semantics inside a class body. */
-    struct korb_class *target = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *target = korb_host_class(c);
     korb_class_add_method_ast_full_cref(target, name, body, params_cnt, params_cnt, -1, locals_cnt, c->current_frame->cref);
     return korb_id2sym(name);
 }
@@ -814,7 +814,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
             }
             rs[0] = sv;
         }
-        #define HOST_K (c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class)
+        #define HOST_K (korb_host_class(c))
         VALUE existing = korb_const_get(HOST_K, name);
         if (!UNDEF_P(existing) && (BUILTIN_TYPE(existing) == T_CLASS ||
                                     BUILTIN_TYPE(existing) == T_MODULE)) {
@@ -896,7 +896,7 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
     /* rs[0] = klass, held across korb_class_new + korb_funcall (= GC
      * sites) and body eval.  C-local prev_class would go stale. */
     ARO_ROOT_SCOPE_START(c, rs, 1) {
-        #define HOST_K (c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class)
+        #define HOST_K (korb_host_class(c))
         VALUE existing = korb_const_get(HOST_K, name);
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
             rs[0] = existing;
@@ -959,7 +959,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
     /* rs[0] = result module (= klass), held across korb_module_new
      * (= GC) and the body eval.  C-local prev_class would go stale. */
     ARO_ROOT_SCOPE_START(c, rs, 1) {
-        #define HOST_K (c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class)
+        #define HOST_K (korb_host_class(c))
         VALUE existing = korb_const_get(HOST_K, name);
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
             rs[0] = existing;
@@ -2737,7 +2737,7 @@ node_default_init(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint
 NODE_DEF @noinline
 node_def_full(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt)
 {
-    struct korb_class *target = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *target = korb_host_class(c);
     /* CRuby: top-level `def` (the implicit "main" lexical scope) installs
      * the method as private on Object by default.  Top-level here means:
      * cref is just [Object] AND NOT inside a method body.  But the user
@@ -2798,7 +2798,7 @@ node_def_full(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
 NODE_DEF @noinline
 node_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
 {
-    struct korb_class *target = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *target = korb_host_class(c);
     korb_class_add_method_ast_full_cref(target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
     if (post_cnt > 0)    korb_class_set_method_post_params_cnt(target, name, post_cnt);
@@ -2818,7 +2818,7 @@ node_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
 NODE_DEF @noinline
 node_set_kwh_save_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, int32_t slot)
 {
-    struct korb_class *target = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *target = korb_host_class(c);
     korb_class_set_method_kwh_save_slot(target, name, (int)slot);
     return Qnil;
 }
@@ -2838,7 +2838,7 @@ node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
     }
     ID new_id = korb_sym2id(new_v);
     ID old_id = korb_sym2id(old_v);
-    struct korb_class *target = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *target = korb_host_class(c);
     struct korb_method *m = korb_class_find_method(target, old_id);
     if (!m) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));

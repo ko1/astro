@@ -255,7 +255,7 @@ static struct korb_class *cvar_owner_walk_(struct korb_class *k, ID name) {
 }
 
 VALUE korb_cvar_get(CTX *c, ID name) {
-    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *k = korb_host_class(c);
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->current_frame->self);
     /* Top-level read of @@cvar — RuntimeError per CRuby. */
@@ -299,7 +299,7 @@ VALUE korb_cvar_get(CTX *c, ID name) {
 }
 
 void korb_cvar_set(CTX *c, ID name, VALUE val) {
-    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *k = korb_host_class(c);
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->current_frame->self);
     if (!k) return;
@@ -327,7 +327,7 @@ void korb_cvar_set(CTX *c, ID name, VALUE val) {
 }
 
 bool korb_cvar_defined(CTX *c, ID name) {
-    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *k = korb_host_class(c);
     if (!k && c->current_frame) k = korb_class_of_class(c->current_frame->self);
     if (!k) k = korb_class_of_class(c->current_frame->self);
     return k && cvar_owner_(k, name) != NULL;
@@ -1217,7 +1217,7 @@ VALUE korb_const_lookup(CTX *c, ID name) {
         }
     }
     /* Inheritance chain of innermost class — walks includes too. */
-    struct korb_class *k = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
+    struct korb_class *k = korb_host_class(c);
     if (k && k->super) {
         VALUE v = korb_const_get_inherited(k->super, name);
         if (!UNDEF_P(v)) return v;

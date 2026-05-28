@@ -443,6 +443,22 @@ void korb_class_add_method_ast_full_cref(struct korb_class *klass, ID name, stru
                                           int rest_slot, uint32_t locals_cnt,
                                           struct korb_cref *def_cref);
 struct korb_cref *korb_cref_dup(struct korb_cref *src);
+
+/* Resolve the "host class" for a top-level lookup / def / const set.
+ * Walks the cref chain skipping NULL klass entries (= forwarded to NULL
+ * by GC's stale-to-space branch in PURGE mode), then falls back to
+ * frame.current_class and finally Object.  Guaranteed non-NULL.
+ *
+ * Without this helper, callers like `cref ? cref->klass : current_class`
+ * SEGV when forward_payload NULL'd the top cref's klass field. */
+static inline __attribute__((always_inline)) struct korb_class *
+korb_host_class(CTX * restrict c) {
+    for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
+        if (cr->klass) return cr->klass;
+    }
+    if (c->current_frame->current_class) return c->current_frame->current_class;
+    return korb_vm->object_class;
+}
 void korb_class_add_method_cfunc(struct korb_class *klass, ID name, VALUE (*func)(CTX *, VALUE, int, VALUE *), int argc);
 void korb_class_set_method_block_slot(struct korb_class *klass, ID name, int slot);
 void korb_class_set_method_local_names(struct korb_class *klass, ID name, ID *names);
