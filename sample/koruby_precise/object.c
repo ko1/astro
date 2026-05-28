@@ -2944,9 +2944,27 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         }
         VALUE msg = korb_ivar_get(v, korb_intern("@message"));
         if (msg && !UNDEF_P(msg) && !SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) == T_STRING) {
-            /* Exception-shaped: "#<ClassName: message>" */
+            /* Exception-shaped: "#<ClassName: message>".  Park r and
+             * msg in ARO_ROOT_SCOPE — each subsequent korb_str_new_cstr
+             * can fire GC, invalidating prior C-local heap ptrs. */
+            CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+            const char *cls_name = k && k->name ? korb_id_name(k->name) : "Object";
+            if (c2) {
+                VALUE ret = Qnil;
+                ARO_ROOT_SCOPE_START(c2, rs, 2) {
+                    rs[0] = msg;
+                    rs[1] = korb_str_new_cstr("#<");
+                    korb_str_concat(rs[1], korb_str_new_cstr(cls_name));
+                    korb_str_concat(rs[1], korb_str_new_cstr(": "));
+                    korb_str_concat(rs[1], rs[0]);
+                    korb_str_concat(rs[1], korb_str_new_cstr(">"));
+                    ret = rs[1];
+                } ARO_ROOT_SCOPE_END(c2, rs);
+                return ret;
+            }
+            /* Fallback: no CTX (= early bootstrap), best-effort C-local. */
             VALUE r = korb_str_new_cstr("#<");
-            korb_str_concat(r, korb_str_new_cstr(k && k->name ? korb_id_name(k->name) : "Object"));
+            korb_str_concat(r, korb_str_new_cstr(cls_name));
             korb_str_concat(r, korb_str_new_cstr(": "));
             korb_str_concat(r, msg);
             korb_str_concat(r, korb_str_new_cstr(">"));
