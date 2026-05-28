@@ -2138,10 +2138,10 @@ class Array
   # of the element.  Find-minimum mode (block returns true/false) and
   # find-any mode (returns -/0/+ Integer) supported.
   def bsearch_index(&blk)
-    return enum_for(:bsearch_index) unless blk
+    return enum_for(:bsearch_index) { nil } unless blk
     return nil if empty?
     sample = blk.call(self[0])
-    if sample == true || sample == false
+    if sample == true || sample == false || sample.nil?
       satisfied = nil
       l, h = 0, size - 1
       while l <= h
@@ -2154,7 +2154,7 @@ class Array
         end
       end
       satisfied
-    elsif sample.is_a?(Integer)
+    elsif sample.is_a?(Numeric)
       return 0 if sample == 0
       l, h = 1, size - 1
       while l <= h
