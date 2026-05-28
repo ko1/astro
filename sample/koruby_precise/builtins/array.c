@@ -1133,7 +1133,11 @@ static VALUE ary_concat(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (int i = 0; i < argc; i++) {
         if (BUILTIN_TYPE(argv[i]) == T_ARRAY) {
             struct korb_array *o = (struct korb_array *)argv[i];
-            for (long j = 0; j < o->len; j++) korb_ary_push(self, o->ptr[j]);
+            /* Snapshot the source length BEFORE pushing — `ary.concat(ary)`
+             * (self-concat) shares storage with self, so o->len grows during
+             * the loop and we'd recurse infinitely. */
+            long src_len = o->len;
+            for (long j = 0; j < src_len; j++) korb_ary_push(self, o->ptr[j]);
         }
     }
     return self;
@@ -1941,6 +1945,8 @@ static VALUE ary_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE ary_replace(CTX *c, VALUE self, int argc, VALUE *argv) {
     CHECK_FROZEN_RET(c, self, Qnil);
     if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return self;
+    /* Self-replace is a no-op (CRuby semantics). */
+    if (self == argv[0]) return self;
     struct korb_array *a = (struct korb_array *)self;
     struct korb_array *b = (struct korb_array *)argv[0];
     a->len = 0;
