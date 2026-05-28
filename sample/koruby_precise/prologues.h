@@ -33,13 +33,33 @@ prologue_cfunc_inl(CTX *c, struct Node *callsite, VALUE recv,
     VALUE *argv = &c->fp[arg_index];
     struct korb_proc *prev_block = current_block;
     current_block = block;
-    VALUE prev_self = c->self;
+    /* Push a minimal frame so the outer self lives in frame.prev->self
+     * across the cfunc's GC firings (= which can move outer self under
+     * moving GC).  C-local `prev_self` would go stale.  visit_roots
+     * scans frame.prev->self via the frame chain. */
+    struct korb_frame cfr = {
+        .prev = c->current_frame,
+        .self = recv,
+        .method = mc->method,
+        .block = block,
+        .caller_node = callsite,
+        .fp = c->fp,
+        .locals_cnt = 0,
+        .super_skip_n = 0,
+        .last_line = Qnil,
+        .last_match = Qnil,
+        .caller_running_block = NULL,
+        .frame_id = 0,
+        .bindings_head = NULL,
+    };
+    c->current_frame = &cfr;
     c->self = recv;
     struct Node *prev_cs = c->last_cfunc_callsite;
     c->last_cfunc_callsite = callsite;
     VALUE r = mc->cfunc(c, recv, argc, argv);
     c->last_cfunc_callsite = prev_cs;
-    c->self = prev_self;
+    c->current_frame = cfr.prev;
+    c->self = cfr.prev ? cfr.prev->self : korb_vm->main_obj;
     current_block = prev_block;
     if (UNLIKELY(block && c->state == KORB_BREAK)) {
         r = c->state_value;
