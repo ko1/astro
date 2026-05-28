@@ -475,11 +475,20 @@ AST は top-level と method body で identical (envsize=39、 block 構造 同�
 にて fresh_env = c->sp に clone する。 method body 内では正しく x = 10
 が読まれるが、 top-level では block.fp[0] が nil を返す。
 
-method 内では method frame.fp が固定、 top-level では sentinel.fp が
-node_scope で advance される。 後者の c->sp が body 内では fp + envsize
-だが、 .each cfunc 経由で proc_call に入った時の c->sp が異なる可能性。
-fresh_env の位置と copy 内容の関係を実 trace する必要あり。 1 commit
-ずつの調査範囲を超える別 session 案件。
+**root cause 推定:** `korb_yield` fast path (object.h:841) と
+`korb_yield_slow` (object.c:2374) は body dispatcher に `sp = bfp`
+を渡している (= blk->env と同じ addr)。 一般 method body は
+`sp = fp + locals_cnt` を渡すので、 block body の bake walker
+offset 規約が異なるか、 もしくは現状の dispatcher 呼び出しが間違って
+いる可能性。
+
+`sp = bfp + env_size` を試したら top-level closure は通った (x が正しく
+読めて = 16) が、 test/ が 24 → 3 に大幅 regression。 method body 経由
+の block code は現状の `sp = bfp` 規約で coincidentally 動いている。
+
+抜本対処には bake walker と yield 経路の規約整合 (= 全部 frame top
+基準にするか、 block だけ bfp 基準にして bake 側も追従するか) が
+必要。 1 commit で収まらない大きな改修、 別 session の課題。
 
 ### 一括 migration 試行ログ (2026-05-28, session 末)
 
