@@ -554,6 +554,7 @@ static VALUE ary_sort(CTX *c, VALUE self, int argc, VALUE *argv) {
  * registration aliases sort! to ary_sort which would build a copy and
  * return it; for the bang form we need to sort the receiver directly. */
 static VALUE ary_sort_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
     ary_sort_in_place(c, (struct korb_array *)self, korb_block_given(c));
     return self;
 }
