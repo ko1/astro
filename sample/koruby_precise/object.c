@@ -2909,6 +2909,30 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         return r;
     }
     if (t == T_ARRAY) {
+        /* Pin the accumulating result string + each formatted element
+         * across korb_inspect_inner / korb_str_new_cstr / korb_str_concat
+         * — all of which can fire GC.  Without this, the C-local `r`
+         * goes stale and produces mangled output (e.g. `[20, 30]` →
+         * `]]`) under BARUBY_GC_STRESS=1. */
+        VALUE ret = Qnil;
+        CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+        if (c2) {
+            struct korb_array *a = (struct korb_array *)v;
+            ARO_ROOT_SCOPE_START(c2, rs, 3) {
+                rs[0] = v;   /* pin self so a->len / a->ptr stay valid */
+                rs[1] = korb_str_new_cstr("[");
+                for (long i = 0; i < ((struct korb_array *)rs[0])->len; i++) {
+                    if (i) rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(", "));
+                    rs[2] = korb_inspect_inner(((struct korb_array *)rs[0])->ptr[i], depth+1);
+                    rs[1] = korb_str_concat(rs[1], rs[2]);
+                }
+                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr("]"));
+                ret = rs[1];
+            } ARO_ROOT_SCOPE_END(c2, rs);
+            return ret;
+        }
+        /* Cold fallback when CTX is unavailable (shouldn't happen under
+         * normal program execution). */
         struct korb_array *a = (struct korb_array *)v;
         VALUE r = korb_str_new_cstr("[");
         for (long i = 0; i < a->len; i++) {
@@ -2919,6 +2943,27 @@ static VALUE korb_inspect_inner(VALUE v, int depth) {
         return r;
     }
     if (t == T_HASH) {
+        VALUE ret = Qnil;
+        CTX *c2 = korb_vm ? korb_vm->current_ctx : NULL;
+        if (c2) {
+            ARO_ROOT_SCOPE_START(c2, rs, 4) {
+                rs[0] = v;
+                rs[1] = korb_str_new_cstr("{");
+                bool first = true;
+                for (struct korb_hash_entry *e = ((struct korb_hash *)rs[0])->first; e; e = e->next) {
+                    if (!first) rs[1] = korb_str_concat(rs[1], korb_str_new_cstr(", "));
+                    first = false;
+                    rs[2] = korb_inspect_inner(e->key, depth+1);
+                    rs[1] = korb_str_concat(rs[1], rs[2]);
+                    rs[1] = korb_str_concat(rs[1], korb_str_new_cstr("=>"));
+                    rs[3] = korb_inspect_inner(e->value, depth+1);
+                    rs[1] = korb_str_concat(rs[1], rs[3]);
+                }
+                rs[1] = korb_str_concat(rs[1], korb_str_new_cstr("}"));
+                ret = rs[1];
+            } ARO_ROOT_SCOPE_END(c2, rs);
+            return ret;
+        }
         struct korb_hash *h = (struct korb_hash *)v;
         VALUE r = korb_str_new_cstr("{");
         bool first = true;

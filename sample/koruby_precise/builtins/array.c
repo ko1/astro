@@ -259,28 +259,13 @@ static VALUE ary_each(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* No block → return self (the Array IS its own enumerator
      * stand-in — supports `.each.to_a`, `.each.map { ... }`, etc.). */
     if (!korb_block_given()) return self;
-    /* Pin self and the per-iteration value across korb_yield's GC fires
-     * — without this, the C-local heap pointers go stale after GC and
-     * the next korb_ary_aref / korb_yield reads garbage.  Reproduced
-     * deterministically by `[1, 2].each { |t| puts t }` under
-     * BARUBY_GC_STRESS=1: second iteration SEGV in method_table_get
-     * because the block proc / self had moved. */
-    VALUE ret;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = self;
-        long len = korb_ary_len(rs[0]);
-        for (long i = 0; i < len; i++) {
-            rs[1] = korb_ary_aref(rs[0], i);
-            korb_yield(c, 1, &rs[1]);
-            if (c->state != KORB_NORMAL) {
-                ret = Qnil;
-                goto each_done;
-            }
-        }
-        ret = rs[0];
-    each_done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+    long len = korb_ary_len(self);
+    for (long i = 0; i < len; i++) {
+        VALUE v = korb_ary_aref(self, i);
+        korb_yield(c, 1, &v);
+        if (c->state != KORB_NORMAL) return Qnil;
+    }
+    return self;
 }
 static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
     long len = korb_ary_len(self);
