@@ -497,3 +497,160 @@ fib(35)         (top-level)
 - state 復帰チェック (`if state == RETURN`)
 
 これらが naruby に比べて多く、現状 YJIT より遅い理由。詳細は [perf.md](./perf.md)。
+
+## 12. sp-based / RESULT ABI (新規約、 移行中)
+
+C-local stale 問題 (precise GC 越し) と `c->state` 経路の散漫さを根本
+解決するため、 全関数を **Lua 風の sp-based ABI** + **RESULT 返り値**
+に統一する設計を採用 (Phase 1-9 の移行進行中)。
+
+### 12.1 規約
+
+すべての関数 (cfunc / EVAL_node body / C API helper) は **sp の引数** を
+取り、 sp 周辺の slot で値をやりとりする。 過去の値は sp[-N..-1]、
+自分の scratch は sp[0..]。
+
+| function 種類 | signature | sp の意味 |
+|---|---|---|
+| cfunc | `RESULT cf(CTX *c, int argc, VALUE *sp)` | sp[-argc-1]=self, sp[-argc..-1]=args, sp[0..]=scratch |
+| EVAL_node body | `RESULT EVAL_node_X(CTX *c, NODE *n, VALUE *sp, ...)` | parent の staging top |
+| C API helper (固定 arity) | `RESULT h(CTX *c, VALUE *sp)` | sp[-N..-1]=args |
+| C API helper (variadic) | `RESULT h(CTX *c, int argc, VALUE *sp)` | sp[-argc..-1]=args |
+| 即値 helper (alloc しない) | 値で受けてよし | -- |
+
+#### 例 (新 cfunc の ary_eq)
+
+```c
+static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
+    /* sp[-2] = self (LHS Array), sp[-1] = other (RHS) */
+    if (BUILTIN_TYPE(sp[-1]) != T_ARRAY) return RESULT_OK(Qfalse);
+    long la = korb_ary_len(sp[-2]);
+    if (la != korb_ary_len(sp[-1])) return RESULT_OK(Qfalse);
+    for (long i = 0; i < la; i++) {
+        /* sp[-2]/sp[-1] は GC 越しに auto-forward */
+        if (!korb_eq(korb_ary_aref(sp[-2], i), korb_ary_aref(sp[-1], i))) {
+            return RESULT_OK(Qfalse);
+        }
+    }
+    return RESULT_OK(Qtrue);
+}
+```
+
+### 12.2 RESULT 型
+
+```c
+typedef struct {
+    VALUE   value;
+    uint8_t state;
+} RESULT;
+
+#define RESULT_OK(v)        ((RESULT){(v), KORB_NORMAL})
+#define RESULT_RAISE_R(v)   ((RESULT){(v), KORB_RAISE})
+/* ... RESULT_BREAK_R / RESULT_RETURN_R / RESULT_NEXT_R / ... */
+
+#define UNWRAP(call) ({ \
+    RESULT _r = (call); \
+    if (UNLIKELY(_r.state != KORB_NORMAL)) return _r; \
+    _r.value; \
+})
+
+#define CHECK(call) ({ /* same as UNWRAP, discards value */ })
+```
+
+呼び出し側は:
+```c
+VALUE v = UNWRAP(some_helper(c, sp));   /* state は自動 propagate */
+```
+
+`c->state` 経路は撤廃され、 状態は in-band で関数の戻り値に乗る。
+x86_64 ABI で RESULT (16 bytes) は rax+rdx の 2 register 返しなので
+オーバーヘッド極小。
+
+### 12.3 c->sp の同期
+
+caller (= EVAL_node body や cfunc) は alloc を起こしうる helper を呼ぶ
+**直前** に `c->sp = sp` で sync する。 これで visit_roots phase (a)
+が staged value を scan 範囲に含める。
+
+```c
+EVAL_node_add(c, n, sp, lv, rv) {
+    if (FIXNUM_P(lv) && FIXNUM_P(rv)) {
+        return RESULT_OK(INT2FIX(FIX2LONG(lv) + FIX2LONG(rv)));  /* fast path = sync 不要 */
+    }
+    if (BUILTIN_TYPE(lv) == T_STRING) {
+        c->sp = sp;                                   /* ← alloc 前 sync */
+        return RESULT_OK(UNWRAP(korb_str_concat_r(c, &sp[-2], &sp[-1])));
+    }
+    ...
+}
+```
+
+helper 側でも alloc を fire する直前に `c->sp = sp + N` を行う (自身の
+scratch slot 確保も含む)。 sweep の規約はシンプル: **「alloc する
+直前に c->sp を sync する」**。
+
+### 12.4 dispatcher chain
+
+```
+EVAL_node_method_call
+  → korb_dispatch_call_cached
+    → prologue_cfunc_r_inl  (新 ABI)
+      → mc->cfunc_r (c, argc, sp + argc + 1)
+```
+
+caller (= EVAL_node) が sp slot に self + args を spill 済の状態で
+dispatcher を呼ぶ:
+
+```c
+sp[0] = recv;        /* self */
+sp[1] = arg0;
+sp[2] = arg1;
+...
+sp[argc] = argN-1;
+c->sp = sp + argc + 1;
+return korb_dispatch_call_cached_r(c, n, argc, sp + argc + 1, ...);
+```
+
+cfunc 側で:
+- self は `sp[-argc-1]` (= 上の例の sp[0])
+- args は `sp[-argc..-1]` (= sp[1..argc])
+- scratch は `sp[0..]` (= sp[argc+1..])
+
+### 12.5 Lua C API との対比
+
+我々の規約は Lua の `lua_State *L` を介した stack API と本質的に同型:
+
+| 概念 | Lua | koruby |
+|---|---|---|
+| stack 上の値 | L 内 (state-encapsulated) | c->sp 起点 (直接ポインタ) |
+| arg 取得 | `lua_tonumber(L, i)` | `sp[-argc + i]` |
+| 引数個数 | `lua_gettop(L)` | `argc` 直接渡し |
+| scratch | `lua_push*` で stack に積む | `sp[0..]` に書く |
+| 返値 | stack に push、 個数 return | RESULT 1 個 |
+| GC 追跡 | stack 全域 | c->stack_base .. c->sp |
+| 例外伝搬 | `lua_pcall` + setjmp | RESULT.state + UNWRAP |
+
+### 12.6 移行 phase
+
+| Phase | 内容 | 状態 |
+|---|---|---|
+| 1 | RESULT 型 / macro / typedef を foundation 追加 | 完了 (commit 03a5449f) |
+| 2 | prologue_cfunc_r_inl + bridge | 完了 (commit 4352f5f5) |
+| 3 | PoC: ary_eq を新 ABI で書き換え | 完了 (commit d1ae64a4) |
+| 4 | 全 ~680 cfunc を新 signature に sweep | 部分完了 (math + boolean = 36 cfunc) |
+| 5 | node.def の call 系 node を sp staging に | 未着手 |
+| 6 | AST method prologue を sp 経由 args に | 未着手 |
+| 7 | C API helper (korb_eq / korb_str_concat 等) を slot pointer 規約に | 未着手 |
+| 8 | c->state 経路撤廃、 RESULT 化 | 未着手 |
+| 9 | 動作確認 + 回帰 fix | 未着手 |
+
+### 12.7 互換性 bridge
+
+Phase 2-4 の移行期間中、 新 `cfunc_r` と旧 `cfunc` は両立する:
+- `korb_method.u.cfunc.func_r` が non-NULL → 新 ABI
+- `korb_method.u.cfunc.func` (旧 field) のみ → 旧 ABI
+- `korb_dispatch_call_cached` と `korb_dispatch_to_method` 両方に bridge:
+  新 ABI cfunc は dispatch 時に sp に self/args を stage して呼び、
+  返り RESULT を c->state + VALUE に変換して upstream に返す。
+
+すべて新 ABI に sweep 完了したら、 legacy field と bridge を撤廃する。
