@@ -851,19 +851,29 @@ static VALUE str_chars(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE str_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_string *s = (struct korb_string *)self;
-    /* Block form: yield each byte to the block, return self. */
-    if (korb_block_given()) {
-        for (long i = 0; i < s->len; i++) {
-            VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-            korb_yield(c, 1, &b);
-            if (c->state == KORB_RAISE) return Qnil;
+    /* Pin self across korb_yield's GC fires.  Same as str_each_char. */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = self;
+        if (korb_block_given()) {
+            for (long i = 0; i < ((struct korb_string *)rs[0])->len; i++) {
+                struct korb_string *s = (struct korb_string *)rs[0];
+                VALUE b = INT2FIX((unsigned char)s->ptr[i]);
+                korb_yield(c, 1, &b);
+                if (c->state == KORB_RAISE) { ret = Qnil; goto sb_done; }
+            }
+            ret = rs[0];
+        } else {
+            rs[1] = korb_ary_new_capa(((struct korb_string *)rs[0])->len);
+            for (long i = 0; i < ((struct korb_string *)rs[0])->len; i++) {
+                struct korb_string *s = (struct korb_string *)rs[0];
+                korb_ary_push(rs[1], INT2FIX((unsigned char)s->ptr[i]));
+            }
+            ret = rs[1];
         }
-        return self;
-    }
-    VALUE r = korb_ary_new_capa(s->len);
-    for (long i = 0; i < s->len; i++) korb_ary_push(r, INT2FIX((unsigned char)s->ptr[i]));
-    return r;
+      sb_done: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 static VALUE str_each_char(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -1800,7 +1810,6 @@ static VALUE str_succ(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* String#each_byte — yields each byte as Integer. */
 static VALUE str_each_byte(CTX *c, VALUE self, int argc, VALUE *argv) {
-    const struct korb_string *s = (const struct korb_string *)self;
     if (!korb_block_given()) {
         /* No block: return Enumerator (CRuby semantics).  Call to_enum
          * with the source method captured so #size works and chained
@@ -1808,12 +1817,20 @@ static VALUE str_each_byte(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE arg = korb_id2sym(korb_intern("each_byte"));
         return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
     }
-    for (long i = 0; i < s->len; i++) {
-        VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-        korb_yield(c, 1, &b);
-        if (c->state == KORB_RAISE) return Qnil;
-    }
-    return self;
+    /* Pin self across korb_yield's GC fires. */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
+        rs[0] = self;
+        for (long i = 0; i < ((struct korb_string *)rs[0])->len; i++) {
+            struct korb_string *s = (struct korb_string *)rs[0];
+            VALUE b = INT2FIX((unsigned char)s->ptr[i]);
+            korb_yield(c, 1, &b);
+            if (c->state == KORB_RAISE) { ret = Qnil; goto seb_done; }
+        }
+        ret = rs[0];
+      seb_done: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 /* String#ord */
