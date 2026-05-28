@@ -994,11 +994,18 @@ static VALUE str_mul(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!FIXNUM_P(argv[0])) return self;
     long n = FIX2LONG(argv[0]);
     if (n <= 0) return korb_str_new("", 0);
-    struct korb_string *s = (struct korb_string *)self;
-    VALUE r = korb_str_new("", 0);
-    for (long i = 0; i < n; i++) korb_str_concat(r, self);
-    (void)s;
-    return r;
+    /* Park self + result across korb_str_new's GC.  Without protect,
+     * self (C param) goes stale after the first alloc, and
+     * korb_str_concat(r, stale_self) reads garbage->len → buffer
+     * overflow → corrupts adjacent obj's header. */
+    VALUE result;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = self;
+        rs[1] = korb_str_new("", 0);
+        for (long i = 0; i < n; i++) korb_str_concat(rs[1], rs[0]);
+        result = rs[1];
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return result;
 }
 
 static VALUE str_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
