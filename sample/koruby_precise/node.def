@@ -755,15 +755,22 @@ node_range_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *b
 NODE_DEF
 node_str_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
 {
-    VALUE r = korb_str_new("", 0);
-    for (uint32_t i = 0; i < argc; i++) {
-        VALUE part = c->current_frame->fp[arg_index + i];
-        if (BUILTIN_TYPE(part) != T_STRING) {
-            part = korb_to_s_dispatch(c, part);
+    /* rs[0] = result string, rs[1] = current part — both survive across
+     * korb_to_s_dispatch (= can fire GC) and korb_str_concat (= libc
+     * realloc, no GC).  C-locals would go stale. */
+    VALUE ret = Qnil;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = korb_str_new("", 0);
+        for (uint32_t i = 0; i < argc; i++) {
+            rs[1] = c->current_frame->fp[arg_index + i];
+            if (BUILTIN_TYPE(rs[1]) != T_STRING) {
+                rs[1] = korb_to_s_dispatch(c, rs[1]);
+            }
+            rs[0] = korb_str_concat(rs[0], rs[1]);
         }
-        r = korb_str_concat(r, part);
-    }
-    return r;
+        ret = rs[0];
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 // ---------------- method definition / call ----------------
