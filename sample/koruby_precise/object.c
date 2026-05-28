@@ -4168,12 +4168,10 @@ void korb_init_builtins(void); /* defined in builtins.c */
  * koruby_setup_ctx (called from main after korb_runtime_init returns)
  * reuses this same CTX — it just attaches self / cref / current_file. */
 struct CTX_struct koruby_bootstrap_ctx;
-/* Top-level sentinel frame so c->current_frame is NEVER NULL during
- * execution.  All `self` reads go through `c->current_frame->self` now
- * (= c->self field has been removed from CTX); without a sentinel,
- * top-level code would NULL-deref.  Initialized post-main_obj-creation
- * in korb_runtime_init. */
-struct korb_frame koruby_top_sentinel_frame;
+/* Top-level sentinel frame lives in CTX (c->sentinel_frame) — no
+ * global so multiple interpreters can coexist.  All `self` reads go
+ * through `c->current_frame->self`; without a sentinel, top-level code
+ * would NULL-deref.  Initialized post-main_obj-creation below. */
 
 void korb_runtime_init(void) {
     init_well_known_ids();
@@ -4202,14 +4200,14 @@ void korb_runtime_init(void) {
      * proceeds.  current_frame MUST be set before any field access via
      * c->current_frame->* (e.g. korb_xmalloc internally might do nothing
      * with frame but defensive code can). */
-    koruby_top_sentinel_frame = (struct korb_frame){
+    c->sentinel_frame = (struct korb_frame){
         .self       = Qnil,
         .fp         = c->stack_base,
         .last_line  = Qnil,
         .last_match = Qnil,
         /* rest default-zero (prev=NULL, method=NULL, block=NULL, ...) */
     };
-    c->current_frame = &koruby_top_sentinel_frame;
+    c->current_frame = &c->sentinel_frame;
     korb_vm->current_ctx = c;
     aro_gc_init(c);   /* binds c->astro_gc; precise-GC ready after this. */
 
@@ -4325,7 +4323,7 @@ void korb_runtime_init(void) {
 
     /* main_obj is now alive — update the sentinel frame's self so
      * top-level code sees main_obj as self. */
-    koruby_top_sentinel_frame.self = korb_vm->main_obj;
+    c->sentinel_frame.self = korb_vm->main_obj;
 
     /* Exception class hierarchy.  CRuby's tree:
      *   Exception

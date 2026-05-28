@@ -236,67 +236,9 @@ struct korb_cref {
     struct korb_cref *prev;
 };
 
-/* execution context */
-typedef struct CTX_struct {
-    /* precise GC instance — see runtime/precise_gc/gc.h.  The framework
-     * accesses this field via ARO_GC_INSTANCE / ARO_GC_COMMON; sample
-     * must declare it as the first field by contract. */
-    struct ASTroGC *astro_gc;
-
-    VALUE *stack_base;
-    VALUE *stack_end;
-    VALUE *sp;            /* high-water mark for GC scanning */
-    VALUE *env;           /* root scan lower bound — set at init (= stack_base) */
-    /* `self`, `fp`, `cref`, `current_class`, `current_file` all live in
-     * `current_frame->*` — the frame chain is the authoritative source
-     * for scope-bound state.  GC root scan (visit_roots phase d) walks
-     * the chain and updates heap pointers automatically; save/restore
-     * across body GC is just a frame push/pop, no C-local intermediates
-     * needed. */
-
-    state_serial_t method_serial;
-
-    /* unified exceptional control state.  When state != KORB_NORMAL, all
-     * EVAL_ARG sites bail out and propagate.  state_value carries the
-     * payload (exception object / return value / break value). */
-    int   state;
-    VALUE state_value;
-    /* For KORB_RETURN: target frame pointer.  When non-NULL, the return
-     * is non-local (block/proc → enclosing method); each method dispatch
-     * checks `state_target_frame == &my_frame` and only consumes when
-     * matched.  NULL for plain method-local return (lambda body, def
-     * body). */
-    void *state_target_frame;
-
-    /* for call site & frame info */
-    struct korb_frame *current_frame;
-
-    /* When non-NULL, the currently-executing code is a Binding#eval body
-     * — Kernel#local_variables / __method__ / etc. consult this to
-     * report the binding's view rather than the caller frame's. */
-    void *current_eval_binding;
-    /* When non-NULL, the currently-executing code is an eval body (with
-     * or without binding).  Holds the parsed program node so `binding`
-     * inside the eval body can pick up eval-introduced lvars.  Distinct
-     * from current_eval_binding, which is only set for Binding#eval. */
-    struct Node *current_eval_program_body;
-
-    /* Most-recent callsite of a cfunc dispatch — set by prologue_cfunc_inl
-     * before calling the cfunc, so cfunc bodies (e.g. kernel_raise) can
-     * record the line of the call into a backtrace. */
-    struct Node *last_cfunc_callsite;
-} CTX;
-
-#define KORB_NORMAL 0
-#define KORB_RAISE  1
-#define KORB_RETURN 2
-#define KORB_BREAK  3
-#define KORB_NEXT   4
-#define KORB_RETRY  5
-#define KORB_REDO   6
-#define KORB_THROW  7
-
-/* current_frame chain (for backtrace + GC root) */
+/* current_frame chain (for backtrace + GC root).  Defined BEFORE
+ * struct CTX_struct so CTX can embed a sentinel_frame by value (= no
+ * per-CTX global). */
 struct korb_frame {
     struct korb_frame *prev;
     struct Node *caller_node;  /* for backtrace */
@@ -348,6 +290,72 @@ struct korb_frame {
      * that sees b's final value (CRuby heap-promote semantics). */
     void *bindings_head;
 };
+
+/* execution context */
+typedef struct CTX_struct {
+    /* precise GC instance — see runtime/precise_gc/gc.h.  The framework
+     * accesses this field via ARO_GC_INSTANCE / ARO_GC_COMMON; sample
+     * must declare it as the first field by contract. */
+    struct ASTroGC *astro_gc;
+
+    VALUE *stack_base;
+    VALUE *stack_end;
+    VALUE *sp;            /* high-water mark for GC scanning */
+    VALUE *env;           /* root scan lower bound — set at init (= stack_base) */
+    /* `self`, `fp`, `cref`, `current_class`, `current_file` all live in
+     * `current_frame->*` — the frame chain is the authoritative source
+     * for scope-bound state.  GC root scan (visit_roots phase d) walks
+     * the chain and updates heap pointers automatically; save/restore
+     * across body GC is just a frame push/pop, no C-local intermediates
+     * needed. */
+    /* Per-CTX sentinel frame + top cref (= no globals, so multiple
+     * interpreters can coexist).  visit_roots walks these directly so
+     * top_cref.klass stays fresh even when a method's frame.cref is
+     * mc->def_cref (= SEPARATE chain via korb_cref_dup). */
+    struct korb_frame sentinel_frame;
+    struct korb_cref  top_cref;
+
+    state_serial_t method_serial;
+
+    /* unified exceptional control state.  When state != KORB_NORMAL, all
+     * EVAL_ARG sites bail out and propagate.  state_value carries the
+     * payload (exception object / return value / break value). */
+    int   state;
+    VALUE state_value;
+    /* For KORB_RETURN: target frame pointer.  When non-NULL, the return
+     * is non-local (block/proc → enclosing method); each method dispatch
+     * checks `state_target_frame == &my_frame` and only consumes when
+     * matched.  NULL for plain method-local return (lambda body, def
+     * body). */
+    void *state_target_frame;
+
+    /* for call site & frame info */
+    struct korb_frame *current_frame;
+
+    /* When non-NULL, the currently-executing code is a Binding#eval body
+     * — Kernel#local_variables / __method__ / etc. consult this to
+     * report the binding's view rather than the caller frame's. */
+    void *current_eval_binding;
+    /* When non-NULL, the currently-executing code is an eval body (with
+     * or without binding).  Holds the parsed program node so `binding`
+     * inside the eval body can pick up eval-introduced lvars.  Distinct
+     * from current_eval_binding, which is only set for Binding#eval. */
+    struct Node *current_eval_program_body;
+
+    /* Most-recent callsite of a cfunc dispatch — set by prologue_cfunc_inl
+     * before calling the cfunc, so cfunc bodies (e.g. kernel_raise) can
+     * record the line of the call into a backtrace. */
+    struct Node *last_cfunc_callsite;
+} CTX;
+
+#define KORB_NORMAL 0
+#define KORB_RAISE  1
+#define KORB_RETURN 2
+#define KORB_BREAK  3
+#define KORB_NEXT   4
+#define KORB_RETRY  5
+#define KORB_REDO   6
+#define KORB_THROW  7
 
 /* push/pop frame helpers via macro */
 #define KORB_PUSH_FRAME(c, mtd, fp_, locals_, caller) \

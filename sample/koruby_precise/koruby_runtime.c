@@ -137,7 +137,7 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
     visit_value_slot(ctx, fn, &c->state_value);
     visit_ptr_slot(ctx, fn, (void **)&c->current_frame->current_class);
     g_in_root_scan = 3;
-    /* (c) cref chain. */
+    /* (c) cref chain — walks c->current_frame->cref. */
     for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
         visit_ptr_slot(ctx, fn, (void **)&cr->klass);
     }
@@ -282,6 +282,14 @@ koruby_scan_edges(void *payload, size_t payload_size,
     }
 }
 
+/* Top-level cref lives in CTX (c->top_cref) so visit_roots can ALWAYS
+ * walk it regardless of which frame is current.  Method dispatch's
+ * mc->def_cref is a SEPARATE chain (= korb_cref_dup creates a copy at
+ * def time) that doesn't reach this top_cref, so walking only
+ * c->current_frame->cref misses it when the head frame's cref is
+ * def_cref → stale top_cref.klass under PURGE.  Per-CTX (no file-scope
+ * global) so multiple interpreters can coexist. */
+
 CTX *
 koruby_setup_ctx(const char *current_file)
 {
@@ -292,10 +300,9 @@ koruby_setup_ctx(const char *current_file)
     CTX *c = korb_vm->current_ctx;
     c->current_frame->self = korb_vm->main_obj;
     c->current_frame->current_class = korb_vm->object_class;
-    static struct korb_cref top_cref;
-    top_cref.klass = korb_vm->object_class;
-    top_cref.prev = NULL;
-    c->current_frame->cref = &top_cref;
+    c->top_cref.klass = korb_vm->object_class;
+    c->top_cref.prev = NULL;
+    c->current_frame->cref = &c->top_cref;
     c->current_frame->current_file = current_file;
     c->state = KORB_NORMAL;
     c->method_serial = korb_vm->method_serial;
