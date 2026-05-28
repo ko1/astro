@@ -809,6 +809,11 @@ void korb_init_builtins(CTX *c) {
         struct korb_class *cAryMeta = korb_class_new(c, c->sp, korb_intern("ArrayMeta"),
                                                       korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cAryMeta, korb_intern("new"), ary_class_new, -1);
+        /* Array#initialize — populate (or replace contents of) an already
+         * allocated Array.  Subclasses can override this. */
+        extern VALUE ary_initialize(CTX *c, VALUE self, int argc, VALUE *argv);
+        korb_class_add_method_cfunc(korb_vm->array_class, korb_intern("initialize"),
+                                    ary_initialize, -1);
         /* Array[] — class method that returns an Array literal of args. */
         VALUE ary_class_brackets(CTX *c, VALUE self, int argc, VALUE *argv);
         korb_class_add_method_cfunc(cAryMeta, korb_intern("[]"), ary_class_brackets, -1);

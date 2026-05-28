@@ -2928,6 +2928,105 @@ VALUE ary_class_brackets(CTX *c, VALUE self, int argc, VALUE *argv) {
     return r;
 }
 
+/* Array#initialize — populate an already-allocated Array in place.  Called
+ * via `Array.allocate.send(:initialize, ...)` or as part of `Array.new`
+ * after the allocation step (CRuby semantic).  Returns self. */
+static VALUE ary_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
+    CHECK_FROZEN_RET(c, self, Qnil);
+    if (argc > 2) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 0..2)", argc);
+        return Qnil;
+    }
+    struct korb_array *a = (struct korb_array *)self;
+    /* Reset to empty (CRuby's #initialize replaces the contents). */
+    a->len = 0;
+    if (argc == 0) return self;
+    /* Single Array-arg form: replace with a copy of the other array.
+     * Skip the to_ary coerce when arg is a String (CRuby's behavior). */
+    VALUE first = argv[0];
+    if (argc == 1 && !SPECIAL_CONST_P(first) && BUILTIN_TYPE(first) == T_ARRAY) {
+        struct korb_array *src = (struct korb_array *)first;
+        for (long i = 0; i < src->len; i++) korb_ary_push(self, src->ptr[i]);
+        return self;
+    }
+    /* Try to_ary coerce when the first arg isn't already an integer-like. */
+    if (argc == 1 && !SPECIAL_CONST_P(first) && BUILTIN_TYPE(first) != T_BIGNUM) {
+        if (!FIXNUM_P(first)) {
+            VALUE rt = korb_funcall(c, first, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                VALUE coerced = korb_funcall(c, first, korb_intern("to_ary"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+                if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
+                    struct korb_array *src = (struct korb_array *)coerced;
+                    for (long i = 0; i < src->len; i++) korb_ary_push(self, src->ptr[i]);
+                    return self;
+                }
+            }
+        }
+    }
+    /* size/default form: coerce size via #to_int when needed. */
+    long size = 0;
+    if (FIXNUM_P(first)) {
+        size = FIX2LONG(first);
+    } else if (!SPECIAL_CONST_P(first)) {
+        VALUE iv = korb_funcall(c, first, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(iv)) {
+            VALUE n = korb_funcall(c, first, korb_intern("to_int"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!FIXNUM_P(n)) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion of (special) into Integer");
+                return Qnil;
+            }
+            size = FIX2LONG(n);
+        } else {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into Integer",
+                       korb_id_name(korb_class_of_class(first)->name));
+            return Qnil;
+        }
+    } else {
+        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        korb_raise(c, (struct korb_class *)eT,
+                   "no implicit conversion into Integer");
+        return Qnil;
+    }
+    if (size < 0) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "negative array size");
+        return Qnil;
+    }
+    if (size > (1L << 30)) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "array size too big");
+        return Qnil;
+    }
+    if (argc == 2 && c->current_block) {
+        /* CRuby: when both default and block are given, the block wins
+         * and a warning is emitted.  Use the block. */
+    }
+    if (c->current_block) {
+        for (long i = 0; i < size; i++) {
+            VALUE iv = INT2FIX(i);
+            VALUE v = korb_yield(c, 1, &iv);
+            if (c->state != KORB_NORMAL) return self;
+            korb_ary_push(self, v);
+        }
+    } else {
+        VALUE def = argc >= 2 ? argv[1] : Qnil;
+        for (long i = 0; i < size; i++) korb_ary_push(self, def);
+    }
+    return self;
+}
+
 static VALUE ary_class_new(CTX *c, VALUE self, int argc, VALUE *argv) {
     long size = 0;
     VALUE def = Qnil;
