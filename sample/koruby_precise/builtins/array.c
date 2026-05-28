@@ -285,37 +285,51 @@ static VALUE ary_each_with_index(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         return r;
     }
+    /* Re-read self from c->current_frame->self each iteration so yield's
+     * GC fires don't stale the C-local. */
     for (long i = 0; i < len; i++) {
-        VALUE args[2] = { korb_ary_aref(self, i), INT2FIX(i) };
+        VALUE args[2] = { korb_ary_aref(c->current_frame->self, i), INT2FIX(i) };
         korb_yield(c, 2, args);
         if (c->state != KORB_NORMAL) return Qnil;
     }
-    return self;
+    return c->current_frame->self;
 }
 static VALUE ary_map(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* No block → return self (caller will likely chain another op). */
     if (!korb_block_given()) return self;
     long len = korb_ary_len(self);
-    VALUE r = korb_ary_new_capa(len);
-    for (long i = 0; i < len; i++) {
-        VALUE v = korb_ary_aref(self, i);
-        VALUE m = korb_yield(c, 1, &v);
-        if (c->state != KORB_NORMAL) return Qnil;
-        korb_ary_push(r, m);
-    }
-    return r;
+    /* Pin result via c->sp (= ARO_ROOT_SCOPE) and re-read self per-iter
+     * from frame.self to survive yield's GC. */
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
+        rs[0] = korb_ary_new_capa(len);
+        for (long i = 0; i < len; i++) {
+            VALUE v = korb_ary_aref(c->current_frame->self, i);
+            VALUE m = korb_yield(c, 1, &v);
+            if (c->state != KORB_NORMAL) { ret = Qnil; goto amap_done; }
+            korb_ary_push(rs[0], m);
+        }
+        ret = rs[0];
+      amap_done: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 static VALUE ary_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!korb_block_given()) return self;
     long len = korb_ary_len(self);
-    VALUE r = korb_ary_new();
-    for (long i = 0; i < len; i++) {
-        VALUE v = korb_ary_aref(self, i);
-        VALUE m = korb_yield(c, 1, &v);
-        if (c->state != KORB_NORMAL) return Qnil;
-        if (RTEST(m)) korb_ary_push(r, v);
-    }
-    return r;
+    VALUE ret;
+    ARO_ROOT_SCOPE_START(c, rs, 1) {
+        rs[0] = korb_ary_new();
+        for (long i = 0; i < len; i++) {
+            VALUE v = korb_ary_aref(c->current_frame->self, i);
+            VALUE m = korb_yield(c, 1, &v);
+            if (c->state != KORB_NORMAL) { ret = Qnil; goto asel_done; }
+            if (RTEST(m)) korb_ary_push(rs[0], v);
+        }
+        ret = rs[0];
+      asel_done: ;
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 static VALUE ary_reduce(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* CRuby's reduce / inject overloads:
