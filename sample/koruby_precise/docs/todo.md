@@ -351,6 +351,21 @@ lvar slot から params を読んでいた。 commit d907a658 で fix。
 prologue_ast_simple_inl / prologue_ast_full_inl_K は最初から shift
 していて、 general だけ漏れていた。
 
+### Phase 6 audit: 全 15 backend BUILD + min1 動作
+
+`extern int g_in_root_scan;` を visit_roots phase 区切りログ用に
+置いていたが、 これは gc_copy.c の診断専用 globals。 他 14 backend
+で link 失敗していた。 撤去 (commit 75c9c9c5)。
+
+確認: copy / copy_gen / mark / mark_gen / mark_gen_inc / mark_compact
+/ mark_compact_gen / mark_freelist / mark_bump_gen / mark_bitmap_gen
+/ mark_card_gen / immix / immix_gen / bump / none の **15 backend
+全 BUILD OK + min1/fib10/class1/string_op/test_seq4 の 5-test
+sub-battery で run 5/5**。 mark / mark_gen は NORMAL 24/24 (= 全 test
+ファイル pass) も確認。 STRESS+PURGE は copy 系のみ意味があり、
+非 moving backend では Qnil で塗りつぶしの問題 (= libc obj への
+stale ref) が薄まる可能性、 別 session で sweep 検証。
+
 このセッションの主要 fix (commit 686f01f0 〜 13edbcb7):
 
 - **visit_roots phase (c+d) 統合**: frame 毎に cref chain を walk。
