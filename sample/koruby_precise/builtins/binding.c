@@ -200,8 +200,15 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         b->source_file = c->last_cfunc_callsite->head.source_file;
         b->source_line = c->last_cfunc_callsite->head.line;
     }
-    if (!b->source_file && c->current_frame->current_file) {
-        b->source_file = c->current_frame->current_file;
+    if (!b->source_file) {
+        /* Walk frame chain to find non-NULL current_file — cfunc frames
+         * are pushed with current_file=NULL (struct literal default),
+         * so c->current_frame->current_file alone is unreliable when
+         * Binding#new is invoked through a cfunc dispatch. */
+        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            if (f->current_file) { b->source_file = f->current_file; break; }
+        }
+        if (!b->source_file) b->source_file = c->sentinel_frame.current_file;
     }
 
     /* Copy primary names (innermost scope). */
