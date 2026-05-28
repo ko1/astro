@@ -175,7 +175,15 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
     c->fp = prev_fp;
     /* Always restore sp.  Without this, every method call leaves sp
      * higher than before — long-running loops with many calls hit
-     * stack_end and false-overflow.  Cheap (one store per call). */
+     * stack_end and false-overflow.  Cheap (one store per call).
+     *
+     * Zero-fill the popped slots [prev_sp, c->sp) before lowering sp.
+     * Subsequent sp-up by a sibling/later call will re-expose those
+     * addresses; without the zero-clear the new frame would inherit
+     * this method's stale heap pointers (= a frame's last write to a
+     * local survives the pop, visit_roots picks it up later when sp
+     * grows back, and forwards a long-since-moved obj). */
+    for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
     c->self = prev_self;
 
@@ -305,6 +313,9 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
         korb_binding_snapshot_frame(&frame);
     }
     c->fp = prev_fp;
+    /* Zero-fill popped slots so a sibling call's sp-grow doesn't re-expose
+     * stale heap pointers from this frame's locals. */
+    for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
     c->self = prev_self;
 

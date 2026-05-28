@@ -512,8 +512,12 @@ node_scope(CTX * restrict c, NODE * restrict n, uint32_t envsize, NODE *body)
     /* Restore sp too — otherwise the now-dead scope's slots stay in the
      * GC root-scan range and a later collect treats their values (=
      * possibly stale heap ptrs written during this scope's body) as live
-     * roots, double-forwarding or memcpy'ing them. */
+     * roots, double-forwarding or memcpy'ing them.
+     *
+     * Also zero-fill the popped range so a sibling call's later sp-grow
+     * doesn't re-expose this scope's stale local values. */
     c->fp = prev_fp;
+    for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
     return v;
 }
