@@ -3,7 +3,100 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
-## 現状 (2026-05-10, eleventh pass)
+## 現状 (2026-05-28, twelfth pass)
+
+直近の発見: 自前 test/ の "OK Xxxx (0)" 24/24 表示は **TESTS.each
+{|t| run_test(t) } という最頻出パターンが top-level の block 経由で
+動かず**、 各 test メソッドが 1 回も実行されないまま `$fail == 0` で
+"OK ..." を出していた phantom pass だった。
+
+修正項目:
+
+1. **block / proc / fiber body の sp = fp + env_size 規約整備**
+   (object.h / object.c / builtins/proc.c):
+   bake walker は block 内 lvar を envsize 相対の sp_offset に baking
+   する一方、 korb_yield fast/slow path・proc_call・fiber entry が
+   sp=fp を渡していたため、 `puts "hi"` のような最も単純な literal
+   までもが nil に化けて出力が空行になっていた。 method body と同じく
+   `sp = fp + env_size` を渡すよう統一。
+
+2. **node_plus の synthetic frame で self を hijack していた**
+   (node.def): GC 越しに `l` を生存させる目的で `fr.self = l` を設定
+   していたが、 これが rhs 評価中の ivar 参照 (例 `"X" + " (#{@y})"`)
+   を l に向けて @y を常に nil 化していた。 `fr.self = caller's self`
+   に戻し、 l は `fr.last_line` に park する形へ。
+
+3. **block_given? が cfunc frame の block を見ていた**
+   (builtins/kernel.c): prologue_cfunc_inl は frame push するように
+   変わっていたが kernel_block_given は古い前提 ("cfunc は push しない")
+   のままで block_given? が常に false。 frame chain を walk して直近
+   の AST method frame を見るよう修正。
+
+4. **Fiber 二回目以降の resume で stale な cfunc frame chain**
+   (object.c): korb_fiber_entry が frame push せず、 inner cfunc frame
+   が resumer の cfunc frame (= 一度 return すると stale) を .prev anchor
+   としていたため 2 回目以降の resume で SEGV。 fiber 自身の C stack に
+   stable な fiber_root frame を push して inner はそこに chain する形に
+   改修。 prev_top の巻き戻しも撤去 (= resume の POST-SWAP が
+   resumer_current_frame で c->current_frame を上書きするため不要)。
+
+5. **current_block / running_block が visit_roots に欠落**
+   (koruby_runtime.c): ary_each などの builtin iterator が
+   `korb_yield(c, 1, &v) → current_block` 経路で proc を deref するが、
+   current_block は file-scope global で GC が edge を update して
+   いなかった。 STRESS の下で proc が forward された途端、 次の yield
+   で blk->self / blk->env が unmapped 領域を deref → SEGV。
+   visit_roots の (d') section に追加。
+
+### NORMAL mode 結果 (本セッション)
+
+| test                       | pass |
+|----------------------------|------|
+| test_alias                 | 9    |
+| test_alias_redef           | 3    |
+| test_array                 | 72   |
+| test_basic_op_redef        | 4    |
+| test_block                 | 33   |
+| test_block_arg             | 8    |
+| test_class                 | 18   |
+| test_comparable            | 21   |
+| test_control               | 34   |
+| test_cpu_corner            | 29   |
+| test_eq                    | 58   |
+| test_eq_redef              | 7    |
+| test_exception             | 10   |
+| test_fiber                 | 26   |
+| test_float_round           | 27   |
+| test_flonum                | 80   |
+| test_hash                  | 52   |
+| test_integer               | 105  |
+| test_misc                  | 26   |
+| test_object_alloc          | 19   |
+| test_range                 | 27   |
+| test_string                | 49   |
+| test_to_s_dispatch         | 5    |
+| test_yield                 | 15   |
+
+**24/24 ファイル 全 OK、 計 ~735 assertion 全 pass**。
+
+### STRESS / STRESS+PURGE は別途 (残課題)
+
+STRESS の下で実際の test を走らせると、 ary_each など各 builtin
+iterator の C-local heap pointer (例 `self`, `v`) が korb_yield/GC
+越しに stale 化する根本問題が表面化する:
+
+  - 再現最小: `[1, 2].each { |t| puts t }` (2 要素以上で SEGV)
+  - SEGV ポイント: 2 回目 iteration の puts dispatch 内
+    `method_table_get` で stale class deref
+  - 直接の原因: ary_each の `VALUE v = korb_ary_aref(self, i)` 後に
+    yield → GC → v / self が stale。 また korb_yield 内の C-local
+    `prev_self` も同じパターン
+
+全 cfunc iterator の self / 一時変数を ARO_ROOT_SCOPE などで pin する
+必要あり。 サンプル横断で baruby/ascheme の precise root pinning
+パターンを参考に整理する作業 (= 別 session 規模)。
+
+## 旧現状 (2026-05-10, eleventh pass)
 
 - **自前 test/ruby/**: **24/24 全 OK** (737 件)。
 - **CRuby `test/ruby/` (全 135 ファイル)**: **89 / 135 has_pass (66%)、
