@@ -787,80 +787,88 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
      * is_explicit flag rides on a distinct node kind — `class X` uses
      * node_class_def_implicit_super (defined below).  Here we always
      * treat super_expr as user-specified. */
-    struct korb_class *super = korb_vm->object_class;
-    if (super_expr) {
-        VALUE sv = EA(c, super_expr);
-        if (BUILTIN_TYPE(sv) != T_CLASS) {
-            korb_raise_type_error(c, "superclass must be a Class (%s given)",
-                                  korb_id_name(korb_class_of_class(sv)->name));
-            return Qnil;
+    VALUE r = Qnil;
+    /* rs[0] = super, rs[1] = klass — both held across alloc-can-GC sites
+     * (korb_class_new, korb_funcall).  Pure C-locals would go stale. */
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = (VALUE)korb_vm->object_class;
+        if (super_expr) {
+            VALUE sv = EA(c, super_expr);
+            if (BUILTIN_TYPE(sv) != T_CLASS) {
+                korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                      korb_id_name(korb_class_of_class(sv)->name));
+                ARO_ROOT_SCOPE_CANCEL(c, rs);
+                return Qnil;
+            }
+            if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
+                korb_raise_type_error(c, "can't make subclass of singleton class");
+                ARO_ROOT_SCOPE_CANCEL(c, rs);
+                return Qnil;
+            }
+            rs[0] = sv;
         }
-        /* Cannot inherit from a singleton class. */
-        if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
-            korb_raise_type_error(c, "can't make subclass of singleton class");
-            return Qnil;
+        #define HOST_K (c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class)
+        VALUE existing = korb_const_get(HOST_K, name);
+        if (!UNDEF_P(existing) && (BUILTIN_TYPE(existing) == T_CLASS ||
+                                    BUILTIN_TYPE(existing) == T_MODULE)) {
+            rs[1] = existing;
+            if (BUILTIN_TYPE(existing) == T_MODULE) {
+                korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+                ARO_ROOT_SCOPE_CANCEL(c, rs);
+                return Qnil;
+            }
+            if (super_expr && ((struct korb_class *)rs[1])->super != (struct korb_class *)rs[0]) {
+                korb_raise_type_error(c, "superclass mismatch for class %s",
+                                      korb_id_name(name));
+                ARO_ROOT_SCOPE_CANCEL(c, rs);
+                return Qnil;
+            }
         }
-        super = (struct korb_class *)sv;
-    }
-    struct korb_class *host = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
-    struct korb_class *klass;
-    VALUE existing = korb_const_get(host, name);
-    if (!UNDEF_P(existing) && (BUILTIN_TYPE(existing) == T_CLASS ||
-                                BUILTIN_TYPE(existing) == T_MODULE)) {
-        klass = (struct korb_class *)existing;
-        if (BUILTIN_TYPE(existing) == T_MODULE) {
+        else if (!UNDEF_P(existing)) {
             korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         }
-        if (super_expr && klass->super != super) {
-            korb_raise_type_error(c, "superclass mismatch for class %s",
-                                  korb_id_name(name));
-            return Qnil;
+        else {
+            struct korb_class *k = korb_class_new(name, (struct korb_class *)rs[0], T_OBJECT);
+            k->name = 0;
+            rs[1] = (VALUE)k;
+            korb_const_set(HOST_K, name, rs[1]);
+            /* Fire the `inherited` hook on `super`.  korb_funcall fires
+             * GC; rs[0]/rs[1] stay live via the root scope, but any
+             * C-local snapshots of class pointers would go stale. */
+            struct korb_class *super_meta = korb_class_of_class(rs[0]);
+            if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
+                VALUE child_v = rs[1];
+                korb_funcall(c, rs[0], korb_intern("inherited"), 1, &child_v);
+                if (c->state == KORB_RAISE) {
+                    ARO_ROOT_SCOPE_CANCEL(c, rs);
+                    return Qnil;
+                }
+            }
         }
-    }
-    else if (!UNDEF_P(existing)) {
-        korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-        return Qnil;
-    }
-    else {
-        klass = korb_class_new(name, super, T_OBJECT);
-        /* Mark anon so korb_const_set composes "Parent::name" path. */
-        klass->name = 0;
-        /* Re-read host (= cref->klass or current_class) — korb_class_new
-         * fired GC so the cached `host` is stale.  cref->klass and
-         * current_class are root-scanned so always current. */
-        host = c->current_frame->cref ? c->current_frame->cref->klass : c->current_frame->current_class;
-        korb_const_set(host, name, (VALUE)klass);
-        /* Fire the `inherited` hook on `super` (defined as a class
-         * method on the parent).  CRuby calls this when a new
-         * subclass is created — only on the fresh-class branch. */
-        struct korb_class *super_meta = korb_class_of_class((VALUE)super);
-        if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
-            VALUE child_v = (VALUE)klass;
-            korb_funcall(c, (VALUE)super, korb_intern("inherited"), 1, &child_v);
-            if (c->state == KORB_RAISE) return Qnil;
-        }
-    }
-    /* Push a synthetic frame for the class body so frame.self / current_class /
-     * cref live in frame chain (= visit_roots phase d auto-updates them).
-     * No C-local prev_self/prev_class stale issue.  After body, pop. */
-    struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
-    struct korb_frame fr = {
-        .prev = c->current_frame,
-        .self = (VALUE)klass,
-        .fp = c->current_frame->fp,
-        .current_class = klass,
-        .cref = &new_cref,
-        .current_file = c->current_frame->current_file,
-        .last_line = Qnil,
-        .last_match = Qnil,
-    };
-    c->current_frame = &fr;
-    VALUE *fp_lo = fr.fp;
-    VALUE *fp_hi = c->sp;
-    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
-    c->current_frame = fr.prev;
-    korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+        #undef HOST_K
+        /* Push a synthetic frame so frame.self / current_class / cref
+         * live in the frame chain (= visit_roots auto-updates them). */
+        struct korb_class *klass = (struct korb_class *)rs[1];
+        struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
+        struct korb_frame fr = {
+            .prev = c->current_frame,
+            .self = (VALUE)klass,
+            .fp = c->current_frame->fp,
+            .current_class = klass,
+            .cref = &new_cref,
+            .current_file = c->current_frame->current_file,
+            .last_line = Qnil,
+            .last_match = Qnil,
+        };
+        c->current_frame = &fr;
+        VALUE *fp_lo = fr.fp;
+        VALUE *fp_hi = c->sp;
+        r = body ? EVAL_ARG(c, body) : Qnil;
+        c->current_frame = fr.prev;
+        korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
+    } ARO_ROOT_SCOPE_END(c, rs);
     return r;
 }
 

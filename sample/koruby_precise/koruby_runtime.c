@@ -136,25 +136,50 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
     visit_value_slot(ctx, fn, &c->current_frame->self);
     visit_value_slot(ctx, fn, &c->state_value);
     visit_ptr_slot(ctx, fn, (void **)&c->current_frame->current_class);
-    g_in_root_scan = 3;
-    /* (c) cref chain — walks c->current_frame->cref. */
-    for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-        visit_ptr_slot(ctx, fn, (void **)&cr->klass);
-    }
-    g_in_root_scan = 4;
     g_in_root_scan = 5;
-    /* (d) current_frame chain — visit all per-frame heap refs.
-     * current_class is per-frame (= phase (b) only covers head frame's
-     * current_class so chain frames need scan too).  Note: cref chain
-     * is walked once globally via phase (c) using c->current_frame->cref;
-     * since each pushed frame's cref usually extends that same chain
-     * (prev pointer), the head's cref covers all reachable cref structs. */
+    /* (c+d) current_frame chain — visit all per-frame heap refs INCLUDING
+     * each frame's cref chain.  Method dispatch sets frame.cref =
+     * mc->def_cref (a SEPARATE chain captured at def time) which does
+     * NOT extend the caller's cref chain — so walking only the head
+     * frame's cref leaves outer frames' cref->klass stale.  PURGE
+     * (mprotect) immediately catches the resulting SEGV when control
+     * returns to that outer frame (e.g. const_set inside a class body
+     * whose body called a method).
+     *
+     * Also visit c->sentinel_frame unconditionally: korb_eval_string
+     * pushes a top_frame with prev=NULL (so a stray top-level `return`
+     * inside a load'd file doesn't target the caller's block frame),
+     * which disconnects the sentinel from the head chain.  Without
+     * explicit walking, sentinel.self (= main_obj) goes stale across
+     * bootstrap GCs and the next dispatch on it SEGVs.
+     *
+     * Visiting the same slot twice when chains share suffixes / a
+     * frame is double-counted is safe because forwarding is idempotent
+     * (header forwarding bit + already-forwarded check in the backend). */
     for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
         visit_value_slot(ctx, fn, &f->self);
         visit_value_slot(ctx, fn, &f->last_line);
         visit_value_slot(ctx, fn, &f->last_match);
         visit_ptr_slot(ctx, fn, (void **)&f->block);
         visit_ptr_slot(ctx, fn, (void **)&f->current_class);
+        for (struct korb_cref *cr = f->cref; cr; cr = cr->prev) {
+            visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+        }
+    }
+    {
+        struct korb_frame *f = &c->sentinel_frame;
+        visit_value_slot(ctx, fn, &f->self);
+        visit_value_slot(ctx, fn, &f->last_line);
+        visit_value_slot(ctx, fn, &f->last_match);
+        visit_ptr_slot(ctx, fn, (void **)&f->block);
+        visit_ptr_slot(ctx, fn, (void **)&f->current_class);
+        for (struct korb_cref *cr = f->cref; cr; cr = cr->prev) {
+            visit_ptr_slot(ctx, fn, (void **)&cr->klass);
+        }
+    }
+    {
+        struct korb_cref *cr = &c->top_cref;
+        visit_ptr_slot(ctx, fn, (void **)&cr->klass);
     }
     g_in_root_scan = 6;
     /* (e) korb_vm globals — all class / module pointers + main_obj +
