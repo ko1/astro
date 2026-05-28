@@ -4613,6 +4613,16 @@ void korb_runtime_init(void) {
     korb_vm->comparable_module = korb_module_new(korb_intern("Comparable"));
     korb_vm->enumerable_module = korb_module_new(korb_intern("Enumerable"));
 
+    /* Cache frozen singletons for true.to_s / false.to_s / nil.to_s.
+     * Created here (after string_class exists so RBASIC->klass is set
+     * correctly) and stashed on korb_vm so visit_roots walks them. */
+    korb_vm->frozen_true_str  = korb_str_new_cstr("true");
+    korb_vm->frozen_false_str = korb_str_new_cstr("false");
+    korb_vm->frozen_nil_str   = korb_str_new_cstr("");
+    RBASIC(korb_vm->frozen_true_str)->head.flags  |= FL_FROZEN;
+    RBASIC(korb_vm->frozen_false_str)->head.flags |= FL_FROZEN;
+    RBASIC(korb_vm->frozen_nil_str)->head.flags   |= FL_FROZEN;
+
     /* CRuby's hierarchy has Object include Kernel — that's how every
      * object gets `puts` / `nil?` / `is_a?` etc.  Hook the include here
      * so `Object.ancestors` reports `[Object, Kernel, BasicObject]`.

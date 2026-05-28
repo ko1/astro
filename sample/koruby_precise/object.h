@@ -369,6 +369,13 @@ struct korb_vm {
     struct korb_class *main_obj_class; /* the singleton-of-main-obj */
     VALUE main_obj;
 
+    /* Cached frozen singleton strings — CRuby semantics for true.to_s /
+     * false.to_s / nil.to_s require identity-equal return value, so we
+     * stash one frozen instance each on the vm and hand it out. */
+    VALUE frozen_true_str;
+    VALUE frozen_false_str;
+    VALUE frozen_nil_str;
+
     /* The currently-executing CTX (set by main).  Used by
      * korb_hash_value to invoke user-defined #hash on custom-class
      * keys.  Single-threaded, so a single global is fine. */
