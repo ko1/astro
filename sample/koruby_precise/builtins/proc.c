@@ -110,7 +110,14 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
-    VALUE prev_self = c->current_frame->self;
+    /* Pin prev_self in the GC root stack — body EVAL straddles many
+     * GCs under STRESS; a plain C local goes stale and the restore
+     * writes a pre-GC addr back into frame.self.  Same root cause
+     * as korb_yield. */
+    VALUE *pc_self_root = AROH_ROOT_STACK_TOP(c);
+    pc_self_root[0] = c->current_frame->self;
+    AROH_ROOT_STACK_SET_TOP(c, pc_self_root + 1);
+#define prev_self (pc_self_root[0])
     /* Use the proc's own captured env directly so writes to closure
      * variables (`r = ...` inside the block) reach the outer scope.
      * korb_proc_snapshot_env_if_in_frame already detaches env to heap
@@ -127,6 +134,7 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE *fresh_env = NULL;     /* non-null when we cloned */
     if (UNLIKELY(!new_fp)) {
         korb_raise(c, NULL, "proc with no env");
+        AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
         return Qnil;
     }
     /* Slot collision guard: when prev_fp is inside the env's range
@@ -204,11 +212,15 @@ VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
             if (RTEST(rt)) {
                 VALUE coerced = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
-                if (c->state != KORB_NORMAL) return Qnil;
+                if (c->state != KORB_NORMAL) {
+                    AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+                    return Qnil;
+                }
                 if (BUILTIN_TYPE(coerced) != T_ARRAY) {
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
                     korb_raise(c, (struct korb_class *)eT,
                                "can't convert to Array (#to_ary gave non-Array)");
+                    AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
                     return Qnil;
                 }
                 arr = coerced;
@@ -447,6 +459,8 @@ redo_proc:
             korb_raise(c, NULL, "Invalid retry");
         }
     }
+    AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+#undef prev_self
     return r;
 }
 
