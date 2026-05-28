@@ -357,6 +357,66 @@ typedef struct CTX_struct {
 #define KORB_REDO   6
 #define KORB_THROW  7
 
+/* ---- RESULT type (Lua-style stack convention, sp-based ABI) ----
+ *
+ * Used in conjunction with the sp-based cfunc / helper convention:
+ *   - cfunc signature: RESULT cf(CTX *c, int argc, VALUE *sp)
+ *   - sp[-argc-1] = self, sp[-argc..-1] = args, sp[0..] = scratch
+ *   - helpers (C API): RESULT h(CTX *c, VALUE *sp) with sp[-N..-1] = args
+ *
+ * RESULT carries both a value and a state byte so that raise / break /
+ * next / return / throw / redo propagate up through nested calls without
+ * needing per-call `if (c->state != KORB_NORMAL) return Qnil;` boilerplate.
+ *
+ * The caller writes:
+ *     VALUE v = UNWRAP(some_helper(c, sp));
+ * UNWRAP extracts the value on NORMAL and early-returns the propagating
+ * RESULT otherwise.  Modeled after baruby_precise / castro / abruby. */
+typedef struct {
+    VALUE value;
+    uint8_t state;
+} RESULT;
+
+#define RESULT_OK(v)        ((RESULT){(v), KORB_NORMAL})
+#define RESULT_RAISE_R(v)   ((RESULT){(v), KORB_RAISE})
+#define RESULT_RETURN_R(v)  ((RESULT){(v), KORB_RETURN})
+#define RESULT_BREAK_R(v)   ((RESULT){(v), KORB_BREAK})
+#define RESULT_NEXT_R(v)    ((RESULT){(v), KORB_NEXT})
+#define RESULT_THROW_R(v)   ((RESULT){(v), KORB_THROW})
+#define RESULT_REDO_R(v)    ((RESULT){(v), KORB_REDO})
+#define RESULT_RETRY_R(v)   ((RESULT){(v), KORB_RETRY})
+
+/* UNWRAP — extract VALUE from RESULT, propagate non-NORMAL via early
+ * return.  Caller's function must return RESULT.  Uses GNU statement
+ * expression. */
+#define UNWRAP(call) ({                                   \
+    RESULT _r = (call);                                   \
+    if (__builtin_expect(_r.state != KORB_NORMAL, 0))     \
+        return _r;                                        \
+    _r.value;                                             \
+})
+
+/* CHECK — same as UNWRAP but discards the value (for side-effect calls). */
+#define CHECK(call) ({                                    \
+    RESULT _r = (call);                                   \
+    if (__builtin_expect(_r.state != KORB_NORMAL, 0))     \
+        return _r;                                        \
+    (void)_r;                                             \
+})
+
+/* Sync c->sp to sp before calling a function that may fire GC.  All
+ * staged values on or below sp will be in visit_roots scan range. */
+#define KORB_SYNC_SP(c, sp_)  ((c)->sp = (sp_))
+
+/* New cfunc signature (sp-based, RESULT-returning).  Coexists with old
+ * `VALUE (*)(CTX*, VALUE, int, VALUE*)` during the Phase 4 sweep. */
+struct CTX_struct;
+struct Node;
+typedef RESULT (*korb_cfunc_r_t)(struct CTX_struct *c, int argc, VALUE *sp);
+
+/* New dispatcher signature (RESULT-returning EVAL_node body). */
+typedef RESULT (*korb_dispatcher_r_t)(struct CTX_struct *c, struct Node *n, VALUE *sp);
+
 /* push/pop frame helpers via macro */
 #define KORB_PUSH_FRAME(c, mtd, fp_, locals_, caller) \
     struct korb_frame _frame_ = {                     \
