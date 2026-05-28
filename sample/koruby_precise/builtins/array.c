@@ -162,33 +162,77 @@ static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         struct korb_array *a = (struct korb_array *)self;
         long start = FIX2LONG(argv[0]);
         long len = FIX2LONG(argv[1]);
+        if (len < 0) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE, "negative length (%ld)", len);
+            return Qnil;
+        }
+        long orig_start = start;
         if (start < 0) start += a->len;
-        if (start < 0 || len < 0) return argv[2];
+        if (start < 0) {
+            VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
+            korb_raise(c, (struct korb_class *)eIE,
+                       "index %ld too small for array; minimum: -%ld",
+                       orig_start, a->len);
+            return Qnil;
+        }
         if (!korb_ary_check_index(c, start)) return argv[2];
         VALUE val = argv[2];
-        if (BUILTIN_TYPE(val) == T_ARRAY) {
-            struct korb_array *src = (struct korb_array *)val;
-            /* Resize if needed */
-            long new_len = start + src->len;
-            if (new_len > a->len) {
-                /* extend with nil first */
-                while (a->len < new_len) korb_ary_push(self, Qnil);
-            }
-            /* If replacing fewer elements than provided, shift */
-            if ((long)src->len != len) {
-                long diff = (long)src->len - len;
-                /* extend / shrink */
-                long old = a->len;
-                if (diff > 0) {
-                    for (long i = 0; i < diff; i++) korb_ary_push(self, Qnil);
-                    for (long i = old - 1; i >= start + len; i--) a->ptr[i + diff] = a->ptr[i];
-                } else if (diff < 0) {
-                    for (long i = start + len; i < old; i++) a->ptr[i + diff] = a->ptr[i];
-                    a->len += diff;
+        /* If rhs is not an Array but responds to #to_ary, coerce it.
+         * Subclasses of Array keep their identity (CRuby skips the
+         * conversion for subclasses). */
+        if (!SPECIAL_CONST_P(val) && BUILTIN_TYPE(val) != T_ARRAY) {
+            VALUE rt = korb_funcall(c, val, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (RTEST(rt)) {
+                VALUE coerced = korb_funcall(c, val, korb_intern("to_ary"), 0, NULL);
+                if (c->state == KORB_RAISE) return Qnil;
+                if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
+                    val = coerced;
                 }
             }
-            for (long i = 0; i < (long)src->len; i++) {
-                if (start + i < a->len) a->ptr[start + i] = src->ptr[i];
+        }
+        if (BUILTIN_TYPE(val) == T_ARRAY) {
+            struct korb_array *src = (struct korb_array *)val;
+            /* Snapshot src into a fresh buffer when src aliases self,
+             * otherwise the shift below will scribble over the values
+             * we're about to copy.  CRuby's `b[1, 0] = b` test pins this. */
+            long src_len = src->len;
+            VALUE *src_buf;
+            bool snapped = false;
+            if (val == self) {
+                src_buf = src_len > 0 ? korb_xmalloc(sizeof(VALUE) * src_len) : NULL;
+                for (long i = 0; i < src_len; i++) src_buf[i] = src->ptr[i];
+                snapped = true;
+            } else {
+                src_buf = src->ptr;
+            }
+            /* CRuby a[start, len] = src_array:
+             *  - If start > a->len, pad with nil up to start.
+             *  - Replace elements at [start, start+len) with src_array.
+             *  - Resize via shift if src_array.len != len.
+             */
+            if (start > a->len) {
+                while (a->len < start) korb_ary_push(self, Qnil);
+            }
+            long avail_len = a->len - start;
+            if (len > avail_len) len = avail_len;
+            long diff = src_len - len;
+            long old = a->len;
+            if (diff > 0) {
+                for (long i = 0; i < diff; i++) korb_ary_push(self, Qnil);
+                for (long i = old - 1; i >= start + len; i--) a->ptr[i + diff] = a->ptr[i];
+                /* If src aliases self, we'd have written into snapped buf
+                 * before push; if not snapped, ptr could now point at the
+                 * old buffer (xrealloc may have moved a->ptr).  Re-read. */
+                if (!snapped) src_buf = src->ptr;
+            } else if (diff < 0) {
+                for (long i = start + len; i < old; i++) a->ptr[i + diff] = a->ptr[i];
+                a->len += diff;
+            }
+            for (long i = 0; i < src_len; i++) {
+                a->ptr[start + i] = src_buf[i];
             }
         } else {
             /* `a[start, len] = val` — when val is NOT an Array, CRuby

@@ -705,6 +705,10 @@ class MSpecMock
     rt = @recv[:respond_to?]
     return rt.__return_value ? true : false if rt
     return true if @recv.key?(name)
+    # Singleton methods added with `def obj.x(...)` syntax also count
+    # (singleton_methods returns them).  Otherwise method_missing would
+    # answer for them but respond_to? would lie.
+    return true if singleton_methods.include?(name)
     # If respond_to_missing? is stubbed, defer to its configured return.
     e = @recv[:respond_to_missing?]
     return e.__return_value ? true : false if e
