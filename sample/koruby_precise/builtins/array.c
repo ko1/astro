@@ -457,7 +457,31 @@ static VALUE ary_to_h(CTX *c, VALUE self, int argc, VALUE *argv) {
  * boilerplate needed. */
 static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;  /* alloc 前 sync: korb_eq -> method dispatch が GC を起こしうる */
-    if (BUILTIN_TYPE(sp[-1]) != T_ARRAY) return RESULT_OK(Qfalse);
+    if (BUILTIN_TYPE(sp[-1]) != T_ARRAY) {
+        /* CRuby: rhs not an Array → try rhs.==(self) if it responds_to?
+         * :to_ary (Array-like mock objects).  Otherwise false. */
+        if (!SPECIAL_CONST_P(sp[-1])) {
+            VALUE rt = korb_funcall(c, sp[-1], korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (c->state == KORB_RAISE) {
+                RESULT rr = { c->state_value, (uint8_t)c->state };
+                c->state = KORB_NORMAL;
+                c->state_value = Qnil;
+                return rr;
+            }
+            if (RTEST(rt)) {
+                VALUE r = korb_funcall(c, sp[-1], korb_intern("=="), 1, &sp[-2]);
+                if (c->state == KORB_RAISE) {
+                    RESULT rr = { c->state_value, (uint8_t)c->state };
+                    c->state = KORB_NORMAL;
+                    c->state_value = Qnil;
+                    return rr;
+                }
+                return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
+            }
+        }
+        return RESULT_OK(Qfalse);
+    }
     long la = korb_ary_len(sp[-2]);
     long lb = korb_ary_len(sp[-1]);
     if (la != lb) return RESULT_OK(Qfalse);
@@ -465,15 +489,39 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
         /* Re-read sp[-2]/sp[-1] each iter — they're slot-tracked, so even
          * if korb_eq's inner dispatch fires GC and moves the arrays, the
          * next iteration's korb_ary_aref reads the forwarded address. */
-        if (!korb_eq(c, korb_ary_aref(sp[-2], i), korb_ary_aref(sp[-1], i))) {
-            return RESULT_OK(Qfalse);
-        }
+        VALUE a = korb_ary_aref(sp[-2], i);
+        VALUE b = korb_ary_aref(sp[-1], i);
+        /* CRuby: Array#== checks identity first (so [NaN] == [NaN] is
+         * true via NaN.equal?(NaN)). */
+        if (a == b) continue;
+        bool eq = korb_eq(c, a, b);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
             RESULT r = { c->state_value, (uint8_t)c->state };
             c->state = KORB_NORMAL;
             c->state_value = Qnil;
             return r;
         }
+        /* Element-level user-dispatch fallback for mock-style ==: only
+         * when a is a user-defined object (not built-in numeric / string
+         * / collection).  Skip if both are Arrays (handled by korb_eq's
+         * recursion already, which CRuby does too).  Avoid recursing into
+         * non-trivial Array<->non-Array element pairs here to keep the
+         * cost predictable. */
+        if (!eq && !FIXNUM_P(a) && !FLONUM_P(a) && !SPECIAL_CONST_P(a)) {
+            enum korb_type ta = BUILTIN_TYPE(a);
+            if (ta != T_STRING && ta != T_ARRAY && ta != T_HASH &&
+                ta != T_RANGE && ta != T_BIGNUM && ta != T_FLOAT) {
+                VALUE r = korb_funcall(c, a, korb_intern("=="), 1, &b);
+                if (c->state == KORB_RAISE) {
+                    RESULT rr = { c->state_value, (uint8_t)c->state };
+                    c->state = KORB_NORMAL;
+                    c->state_value = Qnil;
+                    return rr;
+                }
+                eq = RTEST(r);
+            }
+        }
+        if (!eq) return RESULT_OK(Qfalse);
     }
     return RESULT_OK(Qtrue);
 }

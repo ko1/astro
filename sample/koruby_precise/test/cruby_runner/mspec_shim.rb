@@ -698,6 +698,12 @@ class MSpecMock
     end
   end
   def respond_to?(name, _priv = false)
+    # If respond_to? itself was stubbed (.should_receive(:respond_to?)),
+    # honor its configured return value rather than the mock's own
+    # @recv lookup.  CRuby specs frequently use this pattern to make
+    # mocks selectively claim to respond to a particular method.
+    rt = @recv[:respond_to?]
+    return rt.__return_value ? true : false if rt
     return true if @recv.key?(name)
     # If respond_to_missing? is stubbed, defer to its configured return.
     e = @recv[:respond_to_missing?]
