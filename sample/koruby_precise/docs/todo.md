@@ -317,10 +317,11 @@ stale-ptr 検出) 下で test 走行:
   string_op/test_seq4): **normal / STRESS / STRESS+PURGE 全 8/8 pass**。
 - 完全 test/ ディレクトリ (24 ファイル):
   - **normal**: 23/24 (test_alias_redef 失敗 = baseline 548e616a でも fail、
-    pre-existing flake)
-  - **STRESS+PURGE**: 21/24 (3 件 pre-existing flake: test_alias_redef /
-    test_basic_op_redef / test_eq_redef)。 baseline (548e616a) では STRESS
-    だけで 3 件全部 fail だったので regression なし。
+    pre-existing flake、 assertion fail 1/3)
+  - **STRESS+PURGE**: 22/24 (test_alias_redef / test_basic_op_redef)。
+    baseline (548e616a) では STRESS だけで 3 件全部 fail だったので
+    regression なし。 test_eq_redef は prologue_ast_general の
+    frame.cref/current_class/current_file inherit 漏れを直して通った。
 
 このセッションの主要 fix (commit 686f01f0 〜 13edbcb7):
 
