@@ -1258,8 +1258,8 @@ void korb_init_builtins(void) {
         VALUE obj_itself(CTX *c, VALUE self, int argc, VALUE *argv);
         DEF(korb_vm->symbol_class, "to_sym",  obj_itself, 0);
     }
-    DEF(korb_vm->symbol_class, "to_s", sym_to_s, 0);
-    DEF(korb_vm->symbol_class, "id2name", sym_to_s, 0);
+    DEF_R(korb_vm->symbol_class, "to_s", sym_to_s, 0);
+    DEF_R(korb_vm->symbol_class, "id2name", sym_to_s, 0);
     DEF(korb_vm->symbol_class, "==", sym_eq, 1);
     DEF(korb_vm->symbol_class, "to_proc", sym_to_proc, 0);
     DEF(korb_vm->symbol_class, "===", sym_eq, 1);
