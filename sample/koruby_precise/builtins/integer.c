@@ -335,9 +335,24 @@ static VALUE int_chr(CTX *c, VALUE self, int argc, VALUE *argv) {
 static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
     /* Integer#to_s(base).  For non-decimal bases Ruby renders negatives
      * as "-<digits>", not as the unsigned twos-complement word. */
-    if (!FIXNUM_P(self)) return korb_to_s(c, c->sp, self);
-    long v = FIX2LONG(self);
     int base = argc >= 1 && FIXNUM_P(argv[0]) ? (int)FIX2LONG(argv[0]) : 10;
+    if (base < 2 || base > 36) {
+        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        korb_raise(c, (struct korb_class *)eA, "invalid radix %d", base);
+        return Qnil;
+    }
+    if (!FIXNUM_P(self)) {
+        /* Bignum: use mpz_get_str which natively supports bases 2..62. */
+        if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+            mpz_ptr z = (mpz_ptr)((struct korb_bignum *)self)->mpz;
+            char *s = mpz_get_str(NULL, base, z);
+            VALUE r = korb_str_new_cstr(c, c->sp, s);
+            free(s);
+            return r;
+        }
+        return korb_to_s(c, c->sp, self);
+    }
+    long v = FIX2LONG(self);
     char buf[80];
     if (base == 10) {
         snprintf(buf, sizeof(buf), "%ld", v);
@@ -345,23 +360,23 @@ static VALUE int_format(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     bool neg = v < 0;
     unsigned long uv = neg ? (unsigned long)(-v) : (unsigned long)v;
-    if (base == 16) snprintf(buf, sizeof(buf), neg ? "-%lx" : "%lx", uv);
-    else if (base == 8) snprintf(buf, sizeof(buf), neg ? "-%lo" : "%lo", uv);
-    else if (base == 2) {
-        char tmp[80]; int tl = 0;
-        if (uv == 0) tmp[tl++] = '0';
-        while (uv) { tmp[tl++] = '0' + (uv & 1); uv >>= 1; }
-        for (int i = 0; i < tl/2; i++) { char t = tmp[i]; tmp[i] = tmp[tl-1-i]; tmp[tl-1-i] = t; }
-        tmp[tl] = 0;
-        if (neg) {
-            char out[82]; out[0] = '-';
-            memcpy(out+1, tmp, tl+1);
-            return korb_str_new_cstr(c, c->sp, out);
-        }
-        return korb_str_new_cstr(c, c->sp, tmp);
+    /* Generic base 2..36 conversion: build digits right-to-left. */
+    char tmp[80]; int tl = 0;
+    if (uv == 0) tmp[tl++] = '0';
+    while (uv) {
+        unsigned long r = uv % (unsigned long)base;
+        tmp[tl++] = (char)(r < 10 ? '0' + r : 'a' + (r - 10));
+        uv /= (unsigned long)base;
     }
-    else snprintf(buf, sizeof(buf), "%ld", v);
-    return korb_str_new_cstr(c, c->sp, buf);
+    /* Reverse digits in place. */
+    for (int i = 0; i < tl/2; i++) { char t = tmp[i]; tmp[i] = tmp[tl-1-i]; tmp[tl-1-i] = t; }
+    tmp[tl] = 0;
+    if (neg) {
+        char out[82]; out[0] = '-';
+        memcpy(out+1, tmp, tl+1);
+        return korb_str_new_cstr(c, c->sp, out);
+    }
+    return korb_str_new_cstr(c, c->sp, tmp);
 }
 
 static VALUE int_eqq(CTX *c, VALUE self, int argc, VALUE *argv) {
