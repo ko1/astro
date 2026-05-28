@@ -835,10 +835,19 @@ static VALUE str_rindex(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE str_chars(CTX *c, VALUE self, int argc, VALUE *argv) {
-    struct korb_string *s = (struct korb_string *)self;
-    VALUE r = korb_ary_new_capa(s->len);
-    for (long i = 0; i < s->len; i++) korb_ary_push(r, korb_str_new(s->ptr + i, 1));
-    return r;
+    /* Pin self + result across korb_str_new / korb_ary_push GC fires. */
+    VALUE ret = Qnil;
+    ARO_ROOT_SCOPE_START(c, rs, 2) {
+        rs[0] = self;
+        rs[1] = korb_ary_new_capa(((struct korb_string *)rs[0])->len);
+        struct korb_string *s = (struct korb_string *)rs[0];
+        for (long i = 0; i < s->len; i++) {
+            korb_ary_push(rs[1], korb_str_new(s->ptr + i, 1));
+            s = (struct korb_string *)rs[0];  /* reload */
+        }
+        ret = rs[1];
+    } ARO_ROOT_SCOPE_END(c, rs);
+    return ret;
 }
 
 static VALUE str_bytes(CTX *c, VALUE self, int argc, VALUE *argv) {
