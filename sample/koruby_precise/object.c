@@ -4012,7 +4012,7 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
                            struct korb_proc *block, struct method_cache *mc)
 {
     (void)callsite; (void)block;
-    extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
+    extern RESULT proc_call(CTX *c, int argc, VALUE *sp);
     if (!mc || !mc->method || mc->method->type != KORB_METHOD_PROC) return Qnil;
     struct korb_proc *p = mc->method->u.proc.proc;
     if (!p) return Qnil;
@@ -4041,7 +4041,19 @@ VALUE prologue_proc_method(CTX *c, struct Node *callsite, VALUE recv,
     bool prev_is_lambda = p->is_lambda;
     p->self = recv;
     p->is_lambda = true;
-    VALUE r = proc_call(c, (VALUE)p, (int)argc, argv);
+    /* Stage [p, argv...] on sp for the new ABI and call. */
+    VALUE *sp = c->sp;
+    sp[0] = (VALUE)p;
+    for (uint32_t i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    RESULT _rr = proc_call(c, (int)argc, sp + 1 + argc);
+    VALUE r;
+    if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+        c->state = _rr.state;
+        c->state_value = _rr.value;
+        r = Qnil;
+    } else {
+        r = _rr.value;
+    }
     p->self = ppm_roots[1];
     p->is_lambda = prev_is_lambda;
     c->current_frame->self = ppm_roots[0];
@@ -4381,7 +4393,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     if (m->type == KORB_METHOD_PROC) {
         struct korb_proc *p = m->u.proc.proc;
         if (!p) return Qnil;
-        extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern RESULT proc_call(CTX *c, int argc, VALUE *sp);
         struct korb_frame fr = {
             .prev = c->current_frame,
             .self = recv,
@@ -4393,7 +4405,19 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
             .last_match = Qnil,
         };
         c->current_frame = &fr;
-        VALUE r = proc_call(c, (VALUE)p, argc, argv);
+        /* Stage [p, argv...] on sp for the new ABI. */
+        VALUE *sp = c->sp;
+        sp[0] = (VALUE)p;
+        for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+        RESULT _rr = proc_call(c, argc, sp + 1 + argc);
+        VALUE r;
+        if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+            c->state = _rr.state;
+            c->state_value = _rr.value;
+            r = Qnil;
+        } else {
+            r = _rr.value;
+        }
         c->current_frame = fr.prev;
         return r;
     }

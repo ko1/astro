@@ -1300,10 +1300,16 @@ static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
         struct korb_binding *b = (struct korb_binding *)c->current_eval_binding;
         if (b->method_name) return RESULT_OK(korb_id2sym(b->method_name));
     }
-    /* cfunc prologue (prologue_cfunc_inl) doesn't push a frame, so
-     * c->current_frame is the *enclosing* AST method's frame — exactly
-     * what __method__ should report. */
+    /* prologue_cfunc_r_inl pushes a frame for the cfunc itself, so
+     * c->current_frame->method is __method__ — we want the enclosing
+     * AST method's frame, which is one level up.  Walk past any
+     * cfunc frames (KORB_METHOD_CFUNC) to find the enclosing AST
+     * method.  Legacy prologue_cfunc_inl doesn't push, so the cfunc
+     * frame may not be there at all — handle both. */
     struct korb_frame *f = c->current_frame;
+    while (f && f->method && f->method->type == KORB_METHOD_CFUNC) {
+        f = f->prev;
+    }
     if (!f || !f->method) return RESULT_OK(Qnil);
     return RESULT_OK(korb_id2sym(f->method->name));
 }

@@ -2178,8 +2178,17 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     if (sm->type == KORB_METHOD_PROC) {
         /* Super to a define_method'd proc — dispatch via proc_call so
          * its env / closure is preserved. */
-        extern VALUE proc_call(CTX *c, VALUE self, int argc, VALUE *argv);
-        return proc_call(c, (VALUE)sm->u.proc.proc, (int)argc, &c->current_frame->fp[arg_index]);
+        extern RESULT proc_call(CTX *c, int argc, VALUE *sp);
+        VALUE *sp = c->sp;
+        sp[0] = (VALUE)sm->u.proc.proc;
+        for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
+        RESULT _rr = proc_call(c, (int)argc, sp + 1 + argc);
+        if (UNLIKELY(_rr.state != KORB_NORMAL)) {
+            c->state = _rr.state;
+            c->state_value = _rr.value;
+            return Qnil;
+        }
+        return _rr.value;
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
