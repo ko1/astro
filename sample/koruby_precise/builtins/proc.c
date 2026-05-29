@@ -347,17 +347,29 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
     struct korb_cref *prev_cref = c->current_frame->cref;
     if (p->cref) c->current_frame->cref = p->cref;
     VALUE r;
+    RESULT _br;
 redo_proc:
     /* sp = fp + env_size: see korb_yield fast-path comment.  The bake
      * walker baked lvar offsets inside the proc body relative to
-     * env_size, so the dispatcher needs sp at that height. */
-    r = EVAL_LIFT(c, p->body, c->current_frame->fp + p->env_size);
+     * env_size, so the dispatcher needs sp at that height.  RESULT-native
+     * dispatch — redo is now decided from _br.state without touching
+     * c->state. */
+    _br = EVAL(c, p->body, c->current_frame->fp + p->env_size);
     /* `redo` inside a proc/lambda body — re-evaluate the body with
      * the same param bindings (CRuby semantics).  Without this, redo
      * leaks up and silently exits. */
-    if (c->state == KORB_REDO) {
-        c->state = KORB_NORMAL; c->state_value = Qnil;
+    if (_br.state == KORB_REDO) {
         goto redo_proc;
+    }
+    /* Bridge: lift non-NORMAL into c->state for the legacy code below
+     * which still drives the break / return / lambda-vs-proc semantics
+     * via c->state.  Converting the rest of this function is a follow-up. */
+    if (_br.state != KORB_NORMAL) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+        r = Qnil;
+    } else {
+        r = _br.value;
     }
     c->current_frame->cref = prev_cref;
     c->current_block = prev_block;
