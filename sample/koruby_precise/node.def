@@ -935,32 +935,32 @@ NODE_DEF @noinline
 node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *body)
 {
     VALUE r = Qnil;
-    /* rs[0] = result module (= klass), held across korb_module_new
-     * (= GC) and the body eval.  C-local prev_class would go stale. */
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
+    /* sp[0] = result module (= klass), held across korb_module_new
+     * (= GC) and the body eval via c->sp range. */
+    sp[0] = 0;
+    c->sp = sp + 1;
+    {
         #define HOST_K (korb_host_class(c))
         VALUE existing = korb_const_get(HOST_K, name);
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
-            rs[0] = existing;
+            sp[0] = existing;
         }
         else if (!UNDEF_P(existing)) {
             RESULT _e = korb_raise_type_error(c, "%s is not a module", korb_id_name(name));
-
-            ARO_ROOT_SCOPE_CANCEL(c, rs);
-
+            c->sp = sp;
             return _e;
         }
         else {
-            struct korb_class *m = korb_module_new(c, c->sp, name);
+            struct korb_class *m = korb_module_new(c, sp, name);
             m->name = 0;
-            rs[0] = (VALUE)m;
-            korb_const_set(HOST_K, name, rs[0]);
+            sp[0] = (VALUE)m;
+            korb_const_set(HOST_K, name, sp[0]);
         }
         #undef HOST_K
         /* Push a synthetic frame for the module body so frame.self /
          * current_class / cref live in the frame chain (visit_roots
          * walks them auto).  No C-local prev_class stale issue. */
-        struct korb_class *klass = (struct korb_class *)rs[0];
+        struct korb_class *klass = (struct korb_class *)sp[0];
         struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
         struct korb_frame fr = {
             .prev = c->current_frame,
@@ -977,8 +977,9 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
         VALUE *fp_hi = c->sp;
         r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame = fr.prev;
-        korb_proc_snapshot_env_if_in_frame(rs[0], fp_lo, fp_hi + 1024);
-    } ARO_ROOT_SCOPE_END(c, rs);
+        korb_proc_snapshot_env_if_in_frame(sp[0], fp_lo, fp_hi + 1024);
+    }
+    c->sp = sp;
     return RESULT_OK(r);
 }
 
