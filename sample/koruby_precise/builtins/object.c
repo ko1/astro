@@ -295,6 +295,11 @@ RESULT class_allocate(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (argc != 0) {
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+        return korb_raise(c, (struct korb_class *)eA,
+                          "wrong number of arguments (given %d, expected 0)", argc);
+    }
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_CLASS) {
         return korb_raise(c, NULL, "Class#allocate called on non-Class");
     }
