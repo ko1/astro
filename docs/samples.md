@@ -3,8 +3,8 @@
 ASTro リポジトリ配下の `sample/*` を **言語特性** と **そこから導かれる
 node.def 構成** を中心に横断分析した文書。各サンプル個別の詳細は
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-を参照。本書は「26 サンプル並べて何が分かるか」を整理する
-(汎用言語 22 + DSL 4 種: 正規表現の `astrogre`、JSON フィルタの `nuq`、
+を参照。本書は「27 サンプル並べて何が分かるか」を整理する
+(汎用言語 23 + DSL 4 種: 正規表現の `astrogre`、JSON フィルタの `nuq`、
 JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 (`baruby` / `baruby_precise` / `arawk`) は本書他セクションで GC・テキスト
 処理側の観点で追記しているが、§3 の node.def 構成パターン軸では
@@ -42,6 +42,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 | `luastro` | Lua 5.4 | 命令型, 動的 | 動 | int + float | metatable / coroutine (ucontext) / weak table / `__gc` |
 | `pystro` | Python 3 サブセット | OO, 動的 | 動 | int + GMP bignum + float | class / try-except / for-in / f-string / lambda |
 | `jstro` | JavaScript (ES2023+) | OO, 動的 | 動 | small integer (SMI) + inline flonum | **V8 風 hidden class + inline cache (IC)**, Map/Set/Symbol/Proxy/Promise(sync) |
+| `anlox` | Lox (Crafting Interpreters) | OO, 動的 | 動 | boxed double + str/closure/class/instance | パース時 resolver で local を `(depth,slot)` 解決 / 単一継承クラス + this/super + bound method / `// expect:` 自己完結テスト。**An\* シリーズ** (ASTro Nutshell) |
 | `castro` | C サブセット | 命令型, 静的 | 静 | int64 / double / pointer | tree-sitter-c で型解決 → 1 slot=8byte レイアウト |
 | `anpy` | ChocoPy (静的型 Python 3.6) | OO, 静的 | 静 | tagged immediate int + None/bool + heap | **静的型検査器**（適合/代入互換/join + §5.2 規則）、単一継承クラス + 動的ディスパッチ、`global`/`nonlocal` クロージャ、`python3` と差分テスト。**別実装向け実装リファレンス + `ANPY=` で差し込める実装非依存ハーネス**同梱 |
 | `wastro` | WebAssembly 1.0+ | スタックマシン, 静的 | 静 | i32/i64/f32/f64 | WAT/WASM 両対応 / spec-test ハーネス |
@@ -53,7 +54,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 パラダイム軸での広がり:
 - **教育用最小 / 電卓**: `calc` / `abc`
 - **命令型 (古典)**: `pascalast` / `castro`
-- **動的言語のメインストリーム**: `naruby` / `baruby` / `baruby_precise` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro`
+- **動的言語のメインストリーム**: `naruby` / `baruby` / `baruby_precise` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro` / `anlox`
 - **関数型**: `ascheme` / `astocaml` / `asml` / `ancaml`
 - **OO 純化**: `asom`
 - **データ解析 / テキスト処理**: `astr` / `arawk`
@@ -98,6 +99,7 @@ ASTro が想定外でも嵌まる例になっている。
 | `calc`           |   6 |    36 |
 | `naruby`         |  32 |   479 |
 | `ancaml`         |  38 |   495 |
+| `anlox`          |  38 |   377 |
 | `abc`            |  40 |   361 |
 | `anpy`           |  41 |   361 |
 | `astr`           |  46 |   578 |
@@ -476,6 +478,7 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 | `aforth` | `int64_t` (data stack cell) | なし | 自前 tokenizer | DO-loop frame stack 並列, vars[] エリア |
 | `luastro` | tagged `LuaValue` (uint64_t) | 自前 mark-sweep GC | 自前 lexer + 再帰下降 + Pratt 式パーサ | metatable, **ucontext coroutine**, weak table, `__gc` |
 | `jstro` | tagged `JsValue` (uint64_t) | 自前 mark-sweep GC + safepoint | 自前 lexer + parser | **hidden class IC, shape transition, closure box** |
+| `anlox` | tagged (nil/bool 小定数 + boxed double + str/closure/class/instance) | libgc | 自前 lexer + 再帰下降 + Pratt | パース時 resolver で local を `(depth,slot)` 解決, global は名前テーブル, this/super を local 化, bound method |
 | `castro` | union `{i, d, p}` | leak | tree-sitter-c (Ruby 側で IR 構築) | 1 slot = 8 byte の slot メモリモデル, goto-dispatch |
 | `anpy` | tagged: 即値 int + None/bool 小定数 + heap (str/list/obj/closure/class) | Boehm libgc | 自前インデント lexer + 再帰下降 | **静的型検査器** (適合/代入互換/join + §5.2 規則)、字句環境フレーム + cell 共有で `global`/`nonlocal` クロージャ、属性スロット平坦化 + メソッド表で動的ディスパッチ |
 | `pascalast` | `int64_t` | libgc | 自前 lexer + parser | display 配列 (nested proc), variant record |
@@ -740,6 +743,7 @@ toolchain 系は `ASTRO_BUILD_OPTS` 環境変数に分離。なお framework 共
 | `naruby` | gcc -O0..-O3 (同等 C) + CRuby/YJIT | 15 | **gcc -O3 と ≤1.1× が 5/15** (gcd, compose, collatz, early_return, prime_count)。fib/ackermann/tak のみ 4–13× 差 |
 | `astocaml` | OCaml 4.14 (toplevel/bytecode/native) | 5 | **toplevel 5/5 勝**、**bytecode 3/5 勝**、native (ocamlopt) は 3.5–20× 先 |
 | `ancaml` | OCaml 4.14 (bytecode `ocaml` / native `ocamlopt`) | 3 (fib/ffib/ack) | leaf-frame alloca + TCO で **interp 比 fib 3.1× / ack 1.7×**。**AOT fib は bytecode 超え** (0.151 vs 0.398s)、float-fib・ack は bytecode 負け (float boxing / 呼出境界が残る)。native (ocamlopt) は 1–2 桁先 |
+| `anlox` | (system Lox 無し、自 interp との比較。`ANLOX_REF` で本家 jlox/clox 差分可) | 2 (fib/loop) | interp→AOT は **~1.0–1.1× (横ばい)**。Lox は全数値が boxed double + global を名前ハッシュ参照のため、AOT が畳む dispatch の取り分が小さい (unboxed 数値 / global IC が次の一手) |
 | `castro` | gcc -O0/-O1/-O3 (同 source) | 11 | **-O0 を 3 本上回り**、crc32 で **-O1 と 1.11× タイ**。-O3 への残ギャップ 3–5× |
 | `wastro` | native gcc -O2 / wasmtime (Cranelift JIT) | 3 | native に 3–6× 負け、wasmtime とはループでタイ・call で負け |
 | `jstro` | node v18 (V8 TurboFan) | 13 | **try/catch 45×、cold-start 53×、Redux 系 2.25×、large sieve 2.45×** で勝ち。fib/mandel/nbody は 3–14× 負け |

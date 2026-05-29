@@ -1,0 +1,22 @@
+class Point {
+  init(x, y) { this.x = x; this.y = y; }
+  sum() { return this.x + this.y; }
+}
+var p = Point(3, 4);
+print p.sum();    // expect: 7
+p.x = 10;
+print p.sum();    // expect: 14
+print p;          // expect: Point instance
+print Point;      // expect: Point
+
+class Greeter {
+  greet() { return "Hello, " + this.name; }
+}
+var g = Greeter();
+g.name = "Lox";
+var m = g.greet;   // bound method captures `this`
+print m();         // expect: Hello, Lox
+
+// init returns the instance even with an explicit early `return;`
+class Widget { init() { this.ok = true; return; } }
+print Widget().ok;   // expect: true
