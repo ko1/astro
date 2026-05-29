@@ -684,6 +684,34 @@ static VALUE int_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_ary_push(pair, korb_float_new(c, c->sp, korb_num2dbl(self)));
         return pair;
     }
+    /* String: parse via Float() — if it parses cleanly, return [parsed,
+     * self.to_f].  Otherwise ArgumentError. */
+    if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_STRING) {
+        VALUE klass = korb_const_get(korb_vm->object_class, korb_intern("Kernel"));
+        if (UNDEF_P(klass)) klass = korb_const_get(korb_vm->object_class, korb_intern("Float"));
+        VALUE f = korb_funcall(c, klass, korb_intern("Float"), 1, &other);
+        if (c->state == KORB_RAISE) return Qnil;
+        if (FLONUM_P(f) || (!SPECIAL_CONST_P(f) && BUILTIN_TYPE(f) == T_FLOAT)) {
+            korb_ary_push(pair, f);
+            korb_ary_push(pair, korb_float_new(c, c->sp, korb_num2dbl(self)));
+            return pair;
+        }
+    }
+    /* Object with #to_f: coerce via to_f to Float pair. */
+    if (!SPECIAL_CONST_P(other)) {
+        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_f")) });
+        if (c->state == KORB_RAISE) return Qnil;
+        if (RTEST(rt)) {
+            VALUE f = korb_funcall(c, other, korb_intern("to_f"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (FLONUM_P(f) || (!SPECIAL_CONST_P(f) && BUILTIN_TYPE(f) == T_FLOAT)) {
+                korb_ary_push(pair, f);
+                korb_ary_push(pair, korb_float_new(c, c->sp, korb_num2dbl(self)));
+                return pair;
+            }
+        }
+    }
     VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
     korb_raise(c, (struct korb_class *)eTyp, "%s can't be coerced into Integer",
              korb_id_name(korb_class_of_class(other)->name));
