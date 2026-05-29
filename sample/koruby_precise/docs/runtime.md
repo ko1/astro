@@ -329,11 +329,15 @@ node_ensure(CTX *c, NODE *n, VALUE *sp, NODE *body, NODE *ensure_body)
 
 baruby_precise / castro / abruby も同じ `RESULT { VALUE, state }` を採用。
 
-### 5.6 c->state 廃止計画 (Phase 8d-final)
+### 5.6 c->state 廃止 (Phase 8d-final) — 完了
 
 **目標**: `CTX::state` / `CTX::state_value` フィールドを完全削除し、 例外/
 break/return/throw 等の非 NORMAL 制御フローを **すべて RESULT (2 reg) で
 伝搬**。 baruby_precise / castro と同じ ABI に揃える。
+
+**ステータス**: **2026-05-29 R5 まで完了**。 `c->state` / `c->state_value`
+field を CTX 構造体から削除。 残った c->state 文字列参照 (15 件) は
+すべてコメント (旧アーキ解説)。
 
 #### 実装進捗 (2026-05-29 時点)
 
@@ -361,12 +365,20 @@ break/return/throw 等の非 NORMAL 制御フローを **すべて RESULT (2 reg
   propagation を _br RESULT 直参照に変更、 ObjectSpace ABI mismatch を
   修正。 koruby_run_ast の THROW→RAISE / SystemExit / unhandled exception
   経路を RESULT-driven に。
-- [ ] **R5p** 残 c->state ~39 件: legacy cfunc fallback bridge (node.def
-  3 ヶ所、 object.c 1 ヶ所)、 node_specialize.c の specialized binop fast
-  path、 korb_hash_value / korb_eql / korb_inspect の inline lift (返り値が
-  非-VALUE のため out-param 化が必要)、 main.c の top-level exit。
-- [ ] **R5q** `c->state` / `c->state_value` field の delete +
-  SINK_RESULT / LIFT_C_STATE macro 削除
+- [x] **R5p** 残 c->state setter / lift 全件解消: korb_raise を pure
+  RESULT 化、 prologue_cfunc_inl 削除、 builtins/array.c の swallow
+  pattern を `_tr.state` 直参照に、 builtins/proc.c proc_call 全面
+  RESULT-native 化 (break/return/throw/retry を `_br.state` で分岐)、
+  kernel_raise/throw/catch/exit/abort を pure RESULT 化、
+  korb_inspect_dispatch / to_s_dispatch / hash_value / eql の SINK
+  撤去 (silent swallow に変更)、 korb_eval_string /
+  korb_eval_string_in_self / korb_require_file / korb_load_file の RESULT 化、
+  korb_fiber_resume / korb_fiber_yield の RESULT 化 + swapcontext 跨ぎは
+  `struct korb_fiber.result_state / result_exc` 経由。
+- [x] **R5q** `c->state` / `c->state_value` field 削除完了。 LIFT_C_STATE /
+  SINK_RESULT / LIFT_C_STATE_OR_OK / CHECK_FROZEN_RET macro 全削除。
+  legacy void cfunc bridge `prologue_cfunc_inl` 削除、 ABI は cfunc_r
+  単一に統一。
 
 `CTX::state_target_frame` は state 値ではなく "非ローカル return がどの
 method frame を unwind するか" の target ポインタなので RESULT には載らず、
