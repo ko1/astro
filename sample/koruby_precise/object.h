@@ -955,15 +955,15 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         c->current_block = blk->enclosing_block;
         struct korb_proc *prev_running = c->running_block;
         c->running_block = blk;
-        VALUE r;
+        RESULT _br;
     redo_yield:
         /* sp = bfp + env_size matches the bake walker's sp_offset
          * convention for the block body (lvar_set/lvar_get inside the
          * block are baked relative to env_size, just as method-body
-         * dispatches pass fp + locals_cnt). */
-        r = EVAL_LIFT(c, blk->body, bfp + blk->env_size);
-        if (UNLIKELY(c->state == KORB_REDO)) {
-            c->state = KORB_NORMAL; c->state_value = Qnil;
+         * dispatches pass fp + locals_cnt).  RESULT-native — body
+         * state propagates via _br.state, no c->state inside. */
+        _br = EVAL(c, blk->body, bfp + blk->env_size);
+        if (UNLIKELY(_br.state == KORB_REDO)) {
             goto redo_yield;
         }
         c->current_frame->fp = prev_fp;
@@ -971,12 +971,16 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
         c->current_frame->cref = prev_cref;
         c->current_block = prev_block;
         c->running_block = prev_running;
-        if (UNLIKELY(c->state == KORB_NEXT)) {
-            VALUE nv = c->state_value;
-            c->state = KORB_NORMAL; c->state_value = Qnil;
-            return nv;
+        if (UNLIKELY(_br.state == KORB_NEXT)) {
+            return _br.value;
         }
-        return r;
+        if (UNLIKELY(_br.state != KORB_NORMAL)) {
+            /* Bridge to legacy c->state for callers that still inspect it. */
+            c->state = _br.state;
+            c->state_value = _br.value;
+            return Qnil;
+        }
+        return _br.value;
     }
     return korb_yield_slow(c, blk, argc, argv);
 }

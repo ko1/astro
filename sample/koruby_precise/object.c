@@ -2543,14 +2543,15 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     c->current_block = blk->enclosing_block;
     struct korb_proc *prev_running = c->running_block;
     c->running_block = blk;
-    VALUE r;
+    RESULT _br;
 redo_block:
-    /* sp = fp + env_size: see korb_yield fast-path comment. */
-    r = EVAL_LIFT(c, blk->body, fp + blk->env_size);
+    /* sp = fp + env_size: see korb_yield fast-path comment.  RESULT-native
+     * dispatch — body state propagates via _br.state, no c->state side-
+     * channel inside this block. */
+    _br = EVAL(c, blk->body, fp + blk->env_size);
     /* `redo` inside the block: re-evaluate the block body with the
      * same args (params keep their current bindings). */
-    if (c->state == KORB_REDO) {
-        c->state = KORB_NORMAL; c->state_value = Qnil;
+    if (_br.state == KORB_REDO) {
         goto redo_block;
     }
     /* Copy outer-slot writes back to the shared env so updates like
@@ -2562,9 +2563,9 @@ redo_block:
         /* Snapshot any returned proc whose env points into our
          * about-to-be-popped fresh_env (= on value stack now).
          * Without this, the proc dangles when c->sp rolls back. */
-        korb_proc_snapshot_env_maybe(r, fp, fp + blk->env_size + FRESH_ENV_SLACK);
-        if (c->state == KORB_RETURN || c->state == KORB_BREAK) {
-            korb_proc_snapshot_env_maybe(c->state_value, fp, fp + blk->env_size + FRESH_ENV_SLACK);
+        korb_proc_snapshot_env_maybe(_br.value, fp, fp + blk->env_size + FRESH_ENV_SLACK);
+        if (_br.state == KORB_RETURN || _br.state == KORB_BREAK) {
+            korb_proc_snapshot_env_maybe(_br.value, fp, fp + blk->env_size + FRESH_ENV_SLACK);
         }
         /* Restore c->sp — fresh_env was allocated on the value stack. */
         c->sp = fp;
@@ -2581,18 +2582,28 @@ redo_block:
     /* `next` inside a block: yield returns the next value, state cleared.
      * `break` should NOT be cleared here — it propagates to the yielding
      * method, where dispatch_call catches it as that method's return. */
-    if (c->state == KORB_NEXT) {
-        VALUE nv = c->state_value;
-        c->state = KORB_NORMAL; c->state_value = Qnil;
-        return nv;
+    if (_br.state == KORB_NEXT) {
+        return _br.value;
     }
     /* `break` from inside the block: target the yielding method's frame
-     * so loops within that method's body don't consume the break (e.g.
-     * `def m; while x; yield; end; <stmt>; end` should skip <stmt>). */
-    if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
-        c->state_target_frame = c->current_frame;
+     * so loops within that method's body don't consume the break.  Use
+     * the c->state side-channel for the legacy-caller (this function
+     * still returns VALUE; converting it to RESULT-returning is the next
+     * step). */
+    if (_br.state == KORB_BREAK) {
+        c->state = KORB_BREAK;
+        c->state_value = _br.value;
+        if (c->state_target_frame == NULL) {
+            c->state_target_frame = c->current_frame;
+        }
+        return Qnil;
     }
-    return r;
+    if (_br.state != KORB_NORMAL) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+        return Qnil;
+    }
+    return _br.value;
 }
 
 /* ---- class lookup ---- */
