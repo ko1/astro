@@ -1413,6 +1413,7 @@ void korb_init_builtins(CTX *c) {
         DEF_R(KORB_VM(c)->symbol_class, "to_sym",  obj_itself, 0);
     }
     DEF_R(KORB_VM(c)->symbol_class, "to_s", sym_to_s, 0);
+    DEF_R(KORB_VM(c)->symbol_class, "name", sym_to_s, 0);
     DEF_R(KORB_VM(c)->symbol_class, "id2name", sym_to_s, 0);
     DEF_R(KORB_VM(c)->symbol_class, "==", sym_eq, 1);
     DEF_R(KORB_VM(c)->symbol_class, "to_proc", sym_to_proc, 0);
@@ -1421,6 +1422,18 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->symbol_class, "<=>",     sym_cmp,        1);
     DEF_R(KORB_VM(c)->symbol_class, "succ",    sym_succ,       0);
     DEF_R(KORB_VM(c)->symbol_class, "next",    sym_succ,       0);
+    /* Symbol#[] / Symbol#slice — delegate to to_s.[] */
+    {
+        RESULT _sym_aref(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            VALUE s = UNWRAP(korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
+            return korb_funcall(c, s, korb_intern("[]"), argc, argv);
+        }
+        DEF_R(KORB_VM(c)->symbol_class, "[]",    _sym_aref, -1);
+        DEF_R(KORB_VM(c)->symbol_class, "slice", _sym_aref, -1);
+    }
     DEF_R(KORB_VM(c)->symbol_class, "size",    sym_length,     0);
     DEF_R(KORB_VM(c)->symbol_class, "length",  sym_length,     0);
     DEF_R(KORB_VM(c)->symbol_class, "empty?",  sym_empty_p,    0);
