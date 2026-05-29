@@ -1169,6 +1169,7 @@ void korb_init_builtins(CTX *c) {
             }), -1);
     }
     DEF_R(KORB_VM(c)->hash_class, "===",        hash_eqq,        1);
+    DEF_R(KORB_VM(c)->hash_class, "==",         hash_eq,         1);
     DEF_R(KORB_VM(c)->hash_class, "dup",        hash_dup,        0);
     DEF_R(KORB_VM(c)->hash_class, "clone",      hash_clone,      0);
     DEF_R(KORB_VM(c)->hash_class, "empty?",     hash_empty_p,    0);

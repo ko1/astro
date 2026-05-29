@@ -523,6 +523,50 @@ static RESULT hash_eqq(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_HASH));
 }
 
+/* Hash#== — content comparison, using == on values and eql? on keys. */
+static RESULT hash_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp_top = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_HASH) {
+        return RESULT_OK(Qfalse);
+    }
+    struct korb_hash *a = (struct korb_hash *)self;
+    struct korb_hash *b = (struct korb_hash *)argv[0];
+    if (a == b) return RESULT_OK(Qtrue);
+    if (a->size != b->size) return RESULT_OK(Qfalse);
+    /* Recursion guard for self-referential hashes. */
+    static __thread VALUE eq_stk_a[64];
+    static __thread VALUE eq_stk_b[64];
+    static __thread int eq_top = 0;
+    for (int j = 0; j < eq_top; j++) {
+        if (eq_stk_a[j] == self && eq_stk_b[j] == argv[0]) return RESULT_OK(Qtrue);
+    }
+    if (eq_top < 64) { eq_stk_a[eq_top] = self; eq_stk_b[eq_top] = argv[0]; eq_top++; }
+    bool result = true;
+    for (struct korb_hash_entry *e = a->first; e; e = e->next) {
+        VALUE bv = korb_hash_aref(c, argv[0], e->key);
+        /* If bv == default_value, ambiguous — check key existence. */
+        if (bv == ((struct korb_hash *)argv[0])->default_value) {
+            bool found = false;
+            for (struct korb_hash_entry *be = b->first; be; be = be->next) {
+                if (be->key == e->key || korb_eql(c, be->key, e->key)) {
+                    found = true; bv = be->value; break;
+                }
+            }
+            if (!found) { result = false; break; }
+        }
+        if (e->value == bv) continue;
+        /* Dispatch e->value.==(bv) for user-defined equality. */
+        RESULT er = korb_funcall_r(c, e->value, korb_intern("=="), 1, &bv);
+        if (er.state != KORB_NORMAL) { if (eq_top > 0) eq_top--; return er; }
+        if (!RTEST(er.value)) { result = false; break; }
+    }
+    if (eq_top > 0) eq_top--;
+    return RESULT_OK(result ? Qtrue : Qfalse);
+}
+
 static RESULT hash_dup(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
     VALUE self = sp[-argc - 1];
