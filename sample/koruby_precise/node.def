@@ -2970,10 +2970,13 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
         c->current_frame->cref = &new_cref;
         VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
         r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+        /* Read forwarded klass from frame->self BEFORE restoring it —
+         * visit_roots tracks current_frame->self through body's GCs. */
+        VALUE klass_tracked = c->current_frame->self;
         c->current_frame->current_class = prev_class;
         c->current_frame->self = prev_self;
         c->current_frame->cref = prev_cref;
-        korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+        korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
     return RESULT_OK(r);
 }
@@ -3042,10 +3045,12 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         c->current_frame->cref = &new_cref;
         VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
         r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+        /* Read forwarded klass from frame->self BEFORE restoring it. */
+        VALUE klass_tracked = c->current_frame->self;
         c->current_frame->current_class = prev_class;
         c->current_frame->self = prev_self;
         c->current_frame->cref = prev_cref;
-        korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
+        korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
     return RESULT_OK(r);
 }
@@ -3107,10 +3112,12 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
     c->current_frame->cref = &new_cref;
     VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
     VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+    /* Read forwarded value from frame->self BEFORE restoring it. */
+    VALUE singleton_tracked = c->current_frame->self;
     c->current_frame->current_class = prev_class;
     c->current_frame->self = prev_self;
     c->current_frame->cref = prev_cref;
-    korb_proc_snapshot_env_if_in_frame(sp[1], fp_lo, fp_hi + 1024);
+    korb_proc_snapshot_env_if_in_frame(singleton_tracked, fp_lo, fp_hi + 1024);
     c->sp_top = sp;
     return RESULT_OK(r);
 }
