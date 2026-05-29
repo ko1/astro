@@ -600,20 +600,16 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
             BUILTIN_TYPE(arg) != T_ARRAY) {
             VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
                 VALUE coerced = UNWRAP(korb_funcall(c, arg, korb_intern("to_hash"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_HASH) {
                     arg = coerced;
                 }
             } else {
                 VALUE rt2 = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
                                          (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 if (RTEST(rt2)) {
                     VALUE coerced = UNWRAP(korb_funcall(c, arg, korb_intern("to_ary"), 0, NULL));
-                    if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                     if (!SPECIAL_CONST_P(coerced) && BUILTIN_TYPE(coerced) == T_ARRAY) {
                         arg = coerced;
                     }
@@ -805,10 +801,8 @@ static RESULT hash_default_proc_set(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(blk)) {
             VALUE rt = UNWRAP(korb_funcall(c, blk, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_proc")) }));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
                 blk = UNWRAP(korb_funcall(c, blk, korb_intern("to_proc"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
         if (SPECIAL_CONST_P(blk) || BUILTIN_TYPE(blk) != T_PROC) {
@@ -1063,10 +1057,8 @@ static RESULT hash_replace(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(other)) {
             VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_hash")) }));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
                 other = UNWRAP(korb_funcall(c, other, korb_intern("to_hash"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_HASH) {
@@ -1419,7 +1411,6 @@ static RESULT hash_sum(CTX *c, int argc, VALUE *sp) {
             korb_ary_push(addend, e->value);
         }
         acc = UNWRAP(korb_funcall(c, acc, korb_intern("+"), 1, &addend));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(acc);
 }

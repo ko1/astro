@@ -305,10 +305,8 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
             if (!SPECIAL_CONST_P(nv)) {
                 VALUE rt = UNWRAP(korb_funcall(c, nv, korb_intern("respond_to?"), 1,
                                         (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 if (RTEST(rt)) {
                     nv = UNWRAP(korb_funcall(c, nv, korb_intern("to_int"), 0, NULL));
-                    if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 }
             }
             if (!FIXNUM_P(nv)) {
@@ -439,10 +437,8 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
         if (isinf(a)) {
             VALUE rtinf = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                        (VALUE[]){ korb_id2sym(korb_intern("infinite?")) }));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rtinf)) {
                 VALUE ov = UNWRAP(korb_funcall(c, other, korb_intern("infinite?"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
                 long osign;
                 if (NIL_P(ov)) osign = 0;
                 else if (FIXNUM_P(ov)) osign = FIX2LONG(ov);
@@ -454,10 +450,8 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
         }
         VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (!RTEST(rt)) return RESULT_OK(Qnil);
         VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY ||
             ((struct korb_array *)pair)->len != 2) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));

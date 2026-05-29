@@ -84,7 +84,6 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
      * to #succ; otherwise TypeError. */
     VALUE rt = UNWRAP(korb_funcall(c, r->begin, korb_intern("respond_to?"), 1,
                             (VALUE[]){ korb_id2sym(korb_intern("succ")) }));
-    if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
     if (!RTEST(rt)) {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT, "can't iterate from %s",
@@ -103,7 +102,6 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
             CHECK(korb_yield(c, 1, &cur));
         }
         cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(self);
 }
@@ -128,12 +126,10 @@ static RESULT rng_min(CTX *c, int argc, VALUE *sp) {
     if (korb_block_given(c)) {
         /* Block form: delegate to Enumerable#min by walking via each. */
         VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         return korb_funcall(c, arr, korb_intern("min"), argc, argv);
     }
     if (argc >= 1) {
         VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         return korb_funcall(c, arr, korb_intern("min"), argc, argv);
     }
     /* No block, no arg: min == begin (or nil if begin > end). */
@@ -157,12 +153,10 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
     struct korb_range *r = (struct korb_range *)self;
     if (korb_block_given(c)) {
         VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         return korb_funcall(c, arr, korb_intern("max"), argc, argv);
     }
     if (argc >= 1) {
         VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         return korb_funcall(c, arr, korb_intern("max"), argc, argv);
     }
     if (NIL_P(r->end)) {
@@ -247,10 +241,8 @@ static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
         } else if (!SPECIAL_CONST_P(nv)) {
             VALUE rt = UNWRAP(korb_funcall(c, nv, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
                 nv = UNWRAP(korb_funcall(c, nv, korb_intern("to_int"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
         if (!FIXNUM_P(nv)) {
@@ -324,10 +316,8 @@ static RESULT rng_last(CTX *c, int argc, VALUE *sp) {
         } else if (!SPECIAL_CONST_P(nv)) {
             VALUE rt = UNWRAP(korb_funcall(c, nv, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (RTEST(rt)) {
                 nv = UNWRAP(korb_funcall(c, nv, korb_intern("to_int"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
         if (!FIXNUM_P(nv)) {
@@ -376,7 +366,6 @@ static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
         if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
         korb_ary_push(a, cur);
         cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     }
     return RESULT_OK(a);
 }
@@ -439,7 +428,6 @@ static RESULT rng_zip(CTX *c, int argc, VALUE *sp) {
 
     /* Materialize self via to_a then delegate to Array#zip. */
     VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
-    if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     return korb_funcall(c, arr, korb_intern("zip"), argc, argv);
 }
 
@@ -471,7 +459,6 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
         VALUE pair[2] = { cur, INT2FIX(idx) };
         CHECK(korb_yield(c, 2, pair));
         cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         idx++;
     }
     return RESULT_OK(self);
@@ -692,7 +679,6 @@ static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
         for (long i = start; i <= e; i++) {
             VALUE other = INT2FIX(i);
             acc = UNWRAP(korb_funcall(c, acc, op, 1, &other));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         }
         return RESULT_OK(acc);
     }

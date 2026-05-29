@@ -329,10 +329,8 @@ static RESULT int_cmp(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(other)) {
         VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
             VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
                 ((struct korb_array *)pair)->len == 2) {
                 struct korb_array *p = (struct korb_array *)pair;
@@ -732,10 +730,8 @@ static RESULT int_method_div(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(other)) {
         VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
             VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
                 ((struct korb_array *)pair)->len == 2) {
                 struct korb_array *p = (struct korb_array *)pair;
@@ -889,7 +885,6 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
         VALUE klass = korb_const_get(KORB_VM(c)->object_class, korb_intern("Kernel"));
         if (UNDEF_P(klass)) klass = korb_const_get(KORB_VM(c)->object_class, korb_intern("Float"));
         VALUE f = UNWRAP(korb_funcall(c, klass, korb_intern("Float"), 1, &other));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (FLONUM_P(f) || (!SPECIAL_CONST_P(f) && BUILTIN_TYPE(f) == T_FLOAT)) {
             korb_ary_push(pair, f);
             korb_ary_push(pair, korb_float_new(c, c->sp, korb_num2dbl(self)));
@@ -900,10 +895,8 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(other)) {
         VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_f")) }));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
             VALUE f = UNWRAP(korb_funcall(c, other, korb_intern("to_f"), 0, NULL));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (FLONUM_P(f) || (!SPECIAL_CONST_P(f) && BUILTIN_TYPE(f) == T_FLOAT)) {
                 korb_ary_push(pair, f);
                 korb_ary_push(pair, korb_float_new(c, c->sp, korb_num2dbl(self)));
@@ -1193,10 +1186,8 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(other)) {
         VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("coerce")) }));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (RTEST(rt)) {
             VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             if (!SPECIAL_CONST_P(pair) && BUILTIN_TYPE(pair) == T_ARRAY &&
                 ((struct korb_array *)pair)->len == 2) {
                 struct korb_array *p = (struct korb_array *)pair;
