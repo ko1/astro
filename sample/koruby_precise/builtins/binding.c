@@ -673,7 +673,15 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
 
     extern struct Node *OPTIMIZE(struct Node *n);
     OPTIMIZE(ast);
-    VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
+    RESULT _br = EVAL(c, ast, c->current_frame->fp);
+    VALUE r;
+    if (UNLIKELY(_br.state != KORB_NORMAL)) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+        r = Qnil;
+    } else {
+        r = _br.value;
+    }
 
     c->current_eval_binding = prev_eval_binding;
     c->current_frame->current_file = prev_file;

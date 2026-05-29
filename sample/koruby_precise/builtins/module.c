@@ -592,12 +592,12 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
         struct korb_cref top = { .klass = klass, .prev = NULL };
         c->current_frame->cref = &top;
         OPTIMIZE(ast);
-        VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
+        RESULT _br = EVAL(c, ast, c->current_frame->fp);
         c->current_frame->fp = prev_fp;
         c->current_frame->self = prev_self;
         c->current_frame->current_class = prev_class;
         c->current_frame->cref = prev_cref;
-        return RESULT_OK(r);
+        return _br;
     }
     if (!c->current_block) return RESULT_OK(self);
     struct korb_proc *blk = c->current_block;

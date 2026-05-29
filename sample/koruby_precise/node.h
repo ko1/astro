@@ -72,24 +72,6 @@ EVAL(CTX *c, NODE *n, VALUE *sp)
     return (*n->head.dispatcher)(c, n, sp);
 }
 
-/* EVAL_LIFT — legacy bridge wrapper for callers that still operate in
- * the c->state side-channel world (kernel/binding/module eval, top-
- * level koruby_run_ast, korb_yield_slow's shared-fp path, proc_call).
- * Lifts a non-NORMAL RESULT back into c->state and returns Qnil so the
- * surrounding legacy code can keep checking `c->state != NORMAL`.
- * Goes away once those callers go RESULT-native. */
-static inline VALUE
-EVAL_LIFT(CTX *c, NODE *n, VALUE *sp)
-{
-    RESULT r = (*n->head.dispatcher)(c, n, sp);
-    if (UNLIKELY(r.state != KORB_NORMAL)) {
-        c->state = r.state;
-        c->state_value = r.value;
-        return Qnil;
-    }
-    return r.value;
-}
-
 /* helper: rewrite a child slot in a parent's union, used for type-spec rewrites */
 void node_replace(NODE *parent, NODE *old, NODE *new_node);
 

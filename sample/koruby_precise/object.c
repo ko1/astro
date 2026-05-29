@@ -5180,16 +5180,22 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     c->current_frame->current_file = filename;
 
     OPTIMIZE(ast);
-    VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
-
+    RESULT _br = EVAL(c, ast, c->current_frame->fp);
+    VALUE r;
     /* Top-level `return` in a load'd file just stops *this* file —
      * not an error and not a propagating return.  CRuby allows this
      * (load returns true, requiring the file proceeds normally). */
-    if (c->state == KORB_RETURN) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+    if (_br.state == KORB_RETURN) {
         c->state_target_frame = NULL;
+        r = _br.value;
+    } else if (_br.state != KORB_NORMAL) {
+        /* Bridge to legacy c->state for uses that still inspect it
+         * (koruby_run_ast prints the unhandled exception etc.). */
+        c->state = _br.state;
+        c->state_value = _br.value;
+        r = Qnil;
+    } else {
+        r = _br.value;
     }
 
     c->current_frame->fp = prev_fp;
@@ -5229,7 +5235,15 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
     c->current_frame->cref = &top_cref;
     c->current_frame->current_file = filename;
     OPTIMIZE(ast);
-    VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
+    RESULT _br = EVAL(c, ast, c->current_frame->fp);
+    VALUE r;
+    if (UNLIKELY(_br.state != KORB_NORMAL)) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+        r = Qnil;
+    } else {
+        r = _br.value;
+    }
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     c->current_frame->self = prev_self;
@@ -5350,7 +5364,19 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         c->current_frame = &fiber_root;
         struct korb_proc *prev_block = c->current_block;
         c->current_block = NULL;
-        VALUE result = blk->body ? EVAL_LIFT(c, blk->body, fib->frame + blk->env_size) : Qnil;
+        VALUE result;
+        if (blk->body) {
+            RESULT _br = EVAL(c, blk->body, fib->frame + blk->env_size);
+            if (UNLIKELY(_br.state != KORB_NORMAL)) {
+                c->state = _br.state;
+                c->state_value = _br.value;
+                result = Qnil;
+            } else {
+                result = _br.value;
+            }
+        } else {
+            result = Qnil;
+        }
         /* NOTE: do NOT restore c->current_frame to its pre-fiber-entry
          * value here.  That value (= the FIRST resume's cfr_R, on the
          * resumer's stack) became stale as soon as the first f.resume

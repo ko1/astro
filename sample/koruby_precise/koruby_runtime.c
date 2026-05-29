@@ -542,8 +542,12 @@ koruby_eval_bootstrap(CTX *c)
 int
 koruby_run_ast(CTX *c, NODE *ast)
 {
-    VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
-    (void)r;
+    RESULT _br = EVAL(c, ast, c->current_frame->fp);
+    if (UNLIKELY(_br.state != KORB_NORMAL)) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+    }
+    (void)_br;
     if (c->state == KORB_THROW) {
         /* Pin eUTE / tag / tag_s — korb_inspect / korb_exc_new fire GC. */
         ARO_ROOT_SCOPE_START(c, urs, 3) {
