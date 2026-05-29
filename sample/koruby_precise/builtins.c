@@ -1100,18 +1100,18 @@ void korb_init_builtins(CTX *c) {
         korb_class_add_method_cfunc(cFileMeta, korb_intern("exists?"), file_exist_p, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("directory?"), file_directory_p, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("file?"),     file_file_p,     -1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("size"),      file_size,       -1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("unlink"),    file_unlink,     -1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("delete"),    file_unlink,     -1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("rename"),    file_rename,     -1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("chmod"),     file_chmod,      -1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("realpath"),  file_realpath,   -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("size"),      file_size,       -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("unlink"),    file_unlink,     -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("delete"),    file_unlink,     -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("rename"),    file_rename,     -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("chmod"),     file_chmod,      -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("realpath"),  file_realpath,   -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("dirname"), file_dirname, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("basename"), file_basename, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("expand_path"), file_expand_path, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("extname"), file_extname, 1);
         korb_class_add_method_cfunc_r(cFileMeta, korb_intern("binread"), file_binread, 1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("open"), file_open, -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("open"), file_open, -1);
         korb_class_add_method_cfunc_r(cFileMeta, korb_intern("write"), file_write, -1);
         cFile->basic.klass = (VALUE)cFileMeta;
     }
@@ -1122,14 +1122,14 @@ void korb_init_builtins(CTX *c) {
         struct korb_class *cDirMeta = korb_class_new(c, c->sp, korb_intern("DirMeta"), korb_vm->class_class, T_CLASS);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("pwd"),     dir_pwd,     0);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("getwd"),   dir_pwd,     0);
-        korb_class_add_method_cfunc(cDirMeta, korb_intern("entries"), dir_entries, 1);
-        korb_class_add_method_cfunc(cDirMeta, korb_intern("chdir"),   dir_chdir,  -1);
+        korb_class_add_method_cfunc_r(cDirMeta, korb_intern("entries"), dir_entries, 1);
+        korb_class_add_method_cfunc_r(cDirMeta, korb_intern("chdir"),   dir_chdir,  -1);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("glob"),    dir_glob,    1);
         korb_class_add_method_cfunc(cDirMeta, korb_intern("[]"),      dir_glob,    1);
-        korb_class_add_method_cfunc(cDirMeta, korb_intern("mkdir"),   dir_mkdir,  -1);
-        korb_class_add_method_cfunc(cDirMeta, korb_intern("rmdir"),   dir_rmdir,  -1);
-        korb_class_add_method_cfunc(cDirMeta, korb_intern("delete"),  dir_rmdir,  -1);
-        korb_class_add_method_cfunc(cDirMeta, korb_intern("unlink"),  dir_rmdir,  -1);
+        korb_class_add_method_cfunc_r(cDirMeta, korb_intern("mkdir"),   dir_mkdir,  -1);
+        korb_class_add_method_cfunc_r(cDirMeta, korb_intern("rmdir"),   dir_rmdir,  -1);
+        korb_class_add_method_cfunc_r(cDirMeta, korb_intern("delete"),  dir_rmdir,  -1);
+        korb_class_add_method_cfunc_r(cDirMeta, korb_intern("unlink"),  dir_rmdir,  -1);
         cDir->basic.klass = (VALUE)cDirMeta;
     }
     {
@@ -1160,9 +1160,9 @@ void korb_init_builtins(CTX *c) {
         korb_class_add_method_cfunc(cSignalMeta, korb_intern("trap"), signal_trap, -1);
         korb_class_add_method_cfunc(cSignalMeta, korb_intern("list"), signal_list, 0);
         /* Kernel#system / `cmd` / exec at top-level (Object). */
-        DEF(korb_vm->object_class, "system", kernel_system, -1);
+        DEF_R(korb_vm->object_class, "system", kernel_system, -1);
         DEF(korb_vm->object_class, "`",      kernel_xstring, 1);
-        DEF(korb_vm->object_class, "exec",   kernel_exec, -1);
+        DEF_R(korb_vm->object_class, "exec",   kernel_exec, -1);
         DEF(korb_vm->object_class, "fork",   process_fork, 0);
         DEF(korb_vm->object_class, "spawn",  process_spawn, -1);
         DEF(korb_vm->object_class, "trap",   signal_trap, -1);
@@ -1230,18 +1230,18 @@ void korb_init_builtins(CTX *c) {
     /* IO.pipe / IO.select / IO.popen / IO.copy_stream — class methods on
      * IO's singleton. */
     {
-        extern VALUE io_class_pipe(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern RESULT io_class_pipe(CTX *c, int argc, VALUE *sp);
         extern RESULT io_class_select(CTX *c, int argc, VALUE *sp);
-        extern VALUE io_class_popen(CTX *c, VALUE self, int argc, VALUE *argv);
-        extern VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern RESULT io_class_popen(CTX *c, int argc, VALUE *sp);
+        extern RESULT io_class_copy_stream(CTX *c, int argc, VALUE *sp);
         struct korb_class *cIOMeta = korb_singleton_class_of(c, cIO);
-        korb_class_add_method_cfunc(cIOMeta, korb_intern("pipe"),
+        korb_class_add_method_cfunc_r(cIOMeta, korb_intern("pipe"),
                                      io_class_pipe, -1);
         korb_class_add_method_cfunc_r(cIOMeta, korb_intern("select"),
                                      io_class_select, -1);
-        korb_class_add_method_cfunc(cIOMeta, korb_intern("popen"),
+        korb_class_add_method_cfunc_r(cIOMeta, korb_intern("popen"),
                                      io_class_popen, -1);
-        korb_class_add_method_cfunc(cIOMeta, korb_intern("copy_stream"),
+        korb_class_add_method_cfunc_r(cIOMeta, korb_intern("copy_stream"),
                                      io_class_copy_stream, -1);
     }
     korb_class_add_method_cfunc(cIO, korb_intern("tty?"),    io_tty_p,   0);
