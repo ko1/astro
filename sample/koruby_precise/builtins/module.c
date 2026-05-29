@@ -888,21 +888,19 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
      * klass, and find_method then derefs stale klass → SEGV under PURGE
      * (or garbage under STRESS).  Use ARO_ROOT_SCOPE so both survive. */
     
-    VALUE obj;
+    /* Park klass + new object in sp[0..1] across korb_object_new and the
+     * korb_funcall_with_block (= can fire GC many times). */
+    sp[0] = (VALUE)klass;
+    sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[1] = korb_object_new(c, sp + 2, (struct korb_class *)sp[0]);
+    struct korb_method *m = korb_class_find_method((struct korb_class *)sp[0], id_initialize);
     RESULT init_r = RESULT_OK(Qnil);
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = (VALUE)klass;
-        rs[1] = korb_object_new(c, c->sp_top, (struct korb_class *)rs[0]);
-        struct korb_method *m = korb_class_find_method((struct korb_class *)rs[0], id_initialize);
-        VALUE *fp_lo = c->current_frame->fp;
-        VALUE *fp_hi = c->sp_top;
-        if (m) {
-            VALUE blk = c->current_block ? (VALUE)c->current_block : Qnil;
-            init_r = korb_funcall_with_block(c, rs[1], id_initialize, argc, argv, blk);
-        }
-        obj = rs[1];
-        (void)fp_lo; (void)fp_hi;
-    } ARO_ROOT_SCOPE_END(c, rs);
+    if (m) {
+        VALUE blk = c->current_block ? (VALUE)c->current_block : Qnil;
+        init_r = korb_funcall_with_block(c, sp[1], id_initialize, argc, argv, blk);
+    }
+    VALUE obj = sp[1];
     /* `break N` from the block passed to .new escapes .new with value N
      * (CRuby semantics).  Raises / returns also need to propagate. */
     if (init_r.state == KORB_BREAK) return RESULT_OK(init_r.value);
