@@ -1530,26 +1530,38 @@ module Enumerable
     h
   end
 
-  def min_by(&blk)
-    best = nil; best_key = nil; seen = false
-    each { |x|
-      k = blk.call(x)
-      if !seen || (k <=> best_key) < 0
-        best = x; best_key = k; seen = true
-      end
-    }
-    best
+  def min_by(n = nil, &blk)
+    if n
+      pairs = []
+      each { |x| pairs << [blk.call(x), x] }
+      pairs.sort_by { |p| p[0] }.first(n).map { |p| p[1] }
+    else
+      best = nil; best_key = nil; seen = false
+      each { |x|
+        k = blk.call(x)
+        if !seen || (k <=> best_key) < 0
+          best = x; best_key = k; seen = true
+        end
+      }
+      best
+    end
   end
 
-  def max_by(&blk)
-    best = nil; best_key = nil; seen = false
-    each { |x|
-      k = blk.call(x)
-      if !seen || (k <=> best_key) > 0
-        best = x; best_key = k; seen = true
-      end
-    }
-    best
+  def max_by(n = nil, &blk)
+    if n
+      pairs = []
+      each { |x| pairs << [blk.call(x), x] }
+      pairs.sort_by { |p| p[0] }.last(n).reverse.map { |p| p[1] }
+    else
+      best = nil; best_key = nil; seen = false
+      each { |x|
+        k = blk.call(x)
+        if !seen || (k <=> best_key) > 0
+          best = x; best_key = k; seen = true
+        end
+      }
+      best
+    end
   end
 
   def sum(init = 0, &blk)
