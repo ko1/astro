@@ -3182,9 +3182,18 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         return r;
     }
     if (t == T_HASH) {
+        /* Recursion guard for self-referential hash. */
+        static __thread VALUE hash_inspect_stk[64];
+        static __thread int hash_inspect_top = 0;
+        for (int j = 0; j < hash_inspect_top; j++) {
+            if (hash_inspect_stk[j] == v) {
+                return korb_str_new_cstr(c, c->sp, "{...}");
+            }
+        }
         VALUE ret = Qnil;
         CTX *c2 = c;
         if (c2) {
+            if (hash_inspect_top < 64) hash_inspect_stk[hash_inspect_top++] = v;
             ARO_ROOT_SCOPE_START(c2, rs, 4) {
                 rs[0] = v;
                 rs[1] = korb_str_new_cstr(c, c->sp, "{");
@@ -3201,6 +3210,9 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
                 rs[1] = korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, "}"));
                 ret = rs[1];
             } ARO_ROOT_SCOPE_END(c2, rs);
+            if (hash_inspect_top > 0 && hash_inspect_stk[hash_inspect_top - 1] == v) {
+                hash_inspect_top--;
+            }
             return ret;
         }
         struct korb_hash *h = (struct korb_hash *)v;
