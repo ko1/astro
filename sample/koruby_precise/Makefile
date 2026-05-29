@@ -60,7 +60,7 @@ ifneq ($(GC_MARKER),$(GC_VARIANT))
 $(shell echo "$(GC_VARIANT)" > .built_gc)
 endif
 
-CFLAGS = -I$(PRISM_DIR)/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable $(GMP_CFLAGS) \
+CFLAGS = -I$(PRISM_DIR)/include -I. -I$(RUNTIME) $(optflags) -flto=auto -ggdb3 -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-unused-but-set-variable -Werror=unused-result $(GMP_CFLAGS) \
          -DBARUBY_GC=$(GC_NUM) \
          $(if $(ARO_GC_WB_AUDIT),-DARO_GC_WB_AUDIT -Werror=discarded-qualifiers -Werror=cast-qual) \
          -DKORUBY_SRC_DIR_DEFAULT='"$(KORUBY_SRC_DIR)"' \
