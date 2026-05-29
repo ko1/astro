@@ -1379,8 +1379,8 @@ void korb_init_builtins(CTX *c) {
     {
         struct korb_class *cBinding = korb_class_new(c, c->sp, korb_intern("Binding"), korb_vm->object_class, T_DATA);
         korb_const_set(korb_vm->object_class, korb_intern("Binding"), (VALUE)cBinding);
-        korb_class_add_method_cfunc(cBinding, korb_intern("local_variable_get"),    binding_local_variable_get,       1);
-        korb_class_add_method_cfunc(cBinding, korb_intern("local_variable_set"),    binding_local_variable_set,       2);
+        korb_class_add_method_cfunc_r(cBinding, korb_intern("local_variable_get"),    binding_local_variable_get,       1);
+        korb_class_add_method_cfunc_r(cBinding, korb_intern("local_variable_set"),    binding_local_variable_set,       2);
         korb_class_add_method_cfunc(cBinding, korb_intern("local_variable_defined?"), binding_local_variable_defined_p, 1);
         korb_class_add_method_cfunc(cBinding, korb_intern("local_variables"),       binding_local_variables_cfunc,    0);
         korb_class_add_method_cfunc(cBinding, korb_intern("receiver"),              binding_receiver,                 0);
@@ -1515,7 +1515,7 @@ void korb_init_builtins(CTX *c) {
             DEF(cExc, "to_s",      exc_to_s,      0);
             DEF(cExc, "inspect",   exc_inspect,   0);
             DEF(cExc, "backtrace", exc_backtrace, 0);
-            DEF(cExc, "set_backtrace", exc_set_backtrace, 1);
+            DEF_R(cExc, "set_backtrace", exc_set_backtrace, 1);
             DEF(cExc, "backtrace_locations", exc_backtrace_locations, 0);
             DEF(cExc, "cause",     exc_cause,     0);
             DEF(cExc, "full_message", exc_full_message, -1);
@@ -1526,7 +1526,7 @@ void korb_init_builtins(CTX *c) {
         if (eNme && !SPECIAL_CONST_P(eNme) &&
             (BUILTIN_TYPE(eNme) == T_CLASS || BUILTIN_TYPE(eNme) == T_MODULE)) {
             struct korb_class *cNme = (struct korb_class *)eNme;
-            DEF(cNme, "receiver", nme_receiver, 0);
+            DEF_R(cNme, "receiver", nme_receiver, 0);
             DEF(cNme, "name",     nme_name,     0);
         }
         VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));

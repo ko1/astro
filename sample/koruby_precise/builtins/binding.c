@@ -381,25 +381,25 @@ static VALUE binding_read_name(struct korb_binding *b, ID name_id) {
 }
 
 /* Binding#local_variable_get(name) */
-static VALUE binding_local_variable_get(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
+static RESULT binding_local_variable_get(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    if (argc < 1) return RESULT_OK(Qnil);
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
     struct korb_binding *b = (struct korb_binding *)self;
     bool ok = false;
-    ID name_id = binding_arg_to_id(c, argv[0], &ok);
+    ID name_id = binding_arg_to_id(c, sp[-argc], &ok);
     if (!ok) {
-        DROP_RESULT(korb_raise(c, NULL, "binding: name must be Symbol or String"));
-        return Qnil;
+        return korb_raise(c, NULL, "binding: name must be Symbol or String");
     }
     VALUE v = binding_read_name(b, name_id);
     if (UNDEF_P(v)) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+        return korb_raise(c, (struct korb_class *)eN,
                    "local variable '%s' is not defined for binding",
-                   korb_id_name(name_id)));
-        return Qnil;
+                   korb_id_name(name_id));
     }
-    return v;
+    return RESULT_OK(v);
 }
 
 /* Validate a name as a legal local-variable identifier.
@@ -431,22 +431,23 @@ static bool binding_valid_lvar_name(ID name_id) {
  * names.  Slots beyond the caller's frame area land in the extras
  * Hash to avoid corrupting the caller's temp slots.
  */
-static VALUE binding_local_variable_set(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2) return Qnil;
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
+static RESULT binding_local_variable_set(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    if (argc < 2) return RESULT_OK(Qnil);
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
     struct korb_binding *b = (struct korb_binding *)self;
+    VALUE *argv = sp - argc;
     bool ok = false;
     ID name_id = binding_arg_to_id(c, argv[0], &ok);
     if (!ok) {
-        DROP_RESULT(korb_raise(c, NULL, "binding: name must be Symbol or String"));
-        return Qnil;
+        return korb_raise(c, NULL, "binding: name must be Symbol or String");
     }
     if (!binding_valid_lvar_name(name_id)) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+        return korb_raise(c, (struct korb_class *)eN,
                    "wrong local variable name '%s' for binding",
-                   korb_id_name(name_id)));
-        return Qnil;
+                   korb_id_name(name_id));
     }
     int idx = binding_find_slot(b, name_id);
     if (idx >= 0) {
@@ -472,13 +473,13 @@ static VALUE binding_local_variable_set(CTX *c, VALUE self, int argc, VALUE *arg
                 if (e->key == sym) { e->value = argv[1]; break; }
             }
         }
-        return argv[1];
+        return RESULT_OK(argv[1]);
     }
     /* New name: store in extras Hash to avoid clobbering caller temps. */
     if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp);
     korb_hash_aset(c, b->extra_vars, korb_id2sym(name_id), argv[1]);
     binding_append_name(b, name_id);
-    return argv[1];
+    return RESULT_OK(argv[1]);
 }
 
 /* Binding#local_variable_defined?(name) */

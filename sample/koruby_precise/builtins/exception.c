@@ -62,37 +62,33 @@ static VALUE exc_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Exception#set_backtrace(arg) — accepts nil, a String, or an Array of
  * Strings.  Anything else is TypeError. */
-static VALUE exc_set_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT exc_set_backtrace(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
     if (argc < 1) {
-        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "wrong number of arguments (given 0, expected 1)"));
-        return Qnil;
+        return korb_raise_argument_error(c, "wrong number of arguments (given 0, expected 1)");
     }
-    VALUE arg = argv[0];
+    VALUE arg = sp[-1];
     VALUE bt;
     if (NIL_P(arg)) {
         bt = Qnil;
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) {
-        bt = korb_ary_new_capa(c, c->sp, 1);
+        bt = korb_ary_new_capa(c, sp, 1);
         korb_ary_push(bt, arg);
     } else if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)arg;
         for (long i = 0; i < a->len; i++) {
             VALUE e = a->ptr[i];
             if (SPECIAL_CONST_P(e) || BUILTIN_TYPE(e) != T_STRING) {
-                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "backtrace must be Array of String"));
-                return Qnil;
+                return korb_raise_type_error(c, "backtrace must be Array of String");
             }
         }
         bt = arg;
     } else {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "backtrace must be Array of String"));
-        return Qnil;
+        return korb_raise_type_error(c, "backtrace must be Array of String");
     }
     korb_ivar_set(self, korb_intern("@__backtrace__"), bt);
-    return arg;
+    return RESULT_OK(arg);
 }
 
 /* Exception#backtrace_locations — koruby doesn't track Thread::Backtrace::
@@ -209,14 +205,14 @@ static VALUE exc_exception(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* NoMethodError#receiver — the object the missing method was called on.
  * Set by korb_dispatch_call / korb_dispatch_visibility_raise. */
-static VALUE nme_receiver(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT nme_receiver(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
     VALUE v = korb_ivar_get(self, korb_intern("@receiver"));
     if (UNDEF_P(v)) {
-        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "no receiver is available"));
-        return Qnil;
+        return korb_raise_argument_error(c, "no receiver is available");
     }
-    return v;
+    return RESULT_OK(v);
 }
 static VALUE nme_name(CTX *c, VALUE self, int argc, VALUE *argv) {
     VALUE v = korb_ivar_get(self, korb_intern("@name"));
