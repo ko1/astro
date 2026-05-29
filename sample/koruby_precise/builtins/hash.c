@@ -61,8 +61,7 @@ static RESULT hash_each(CTX *c, int argc, VALUE *sp) {
         VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
-        SINK_RESULT(c, korb_yield(c, 1, &pair));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 1, &pair));
     }
     return RESULT_OK(self);
 }
@@ -130,8 +129,7 @@ static RESULT hash_each_value(CTX *c, int argc, VALUE *sp) {
 
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        SINK_RESULT(c, korb_yield(c, 1, &e->value));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 1, &e->value));
     }
     return RESULT_OK(self);
 }
@@ -143,8 +141,7 @@ static RESULT hash_each_key(CTX *c, int argc, VALUE *sp) {
 
     struct korb_hash *h = (struct korb_hash *)self;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
-        SINK_RESULT(c, korb_yield(c, 1, &e->key));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 1, &e->key));
     }
     return RESULT_OK(self);
 }
@@ -230,8 +227,7 @@ static RESULT hash_merge(CTX *c, int argc, VALUE *sp) {
             }
             if (has_block && already) {
                 VALUE args[3] = { e->key, existing, e->value };
-                VALUE merged = SINK_RESULT(c, korb_yield(c, 3, args));
-                if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+                VALUE merged = UNWRAP(korb_yield(c, 3, args));
                 korb_hash_aset(c, r, e->key, merged);
             } else {
                 korb_hash_aset(c, r, e->key, e->value);
@@ -407,8 +403,7 @@ static RESULT hash_fetch(CTX *c, int argc, VALUE *sp) {
     }
     /* Not found: priority is block > default arg > KeyError. */
     if (korb_block_given(c)) {
-        VALUE r = SINK_RESULT(c, korb_yield(c, 1, &argv[0]));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE r = UNWRAP(korb_yield(c, 1, &argv[0]));
         return RESULT_OK(r);
     }
     if (argc >= 2) return RESULT_OK(argv[1]);
@@ -444,8 +439,7 @@ static RESULT hash_delete(CTX *c, int argc, VALUE *sp) {
     if (!target) {
         /* Not found: if a block was given, yield key and return its result. */
         if (korb_block_given(c)) {
-            VALUE r = SINK_RESULT(c, korb_yield(c, 1, &key));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            VALUE r = UNWRAP(korb_yield(c, 1, &key));
             return RESULT_OK(r);
         }
         return RESULT_OK(Qnil);
@@ -513,8 +507,7 @@ static RESULT hash_map(CTX *c, int argc, VALUE *sp) {
     VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        VALUE m = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 2, args));
         korb_ary_push(r, m);
     }
     return RESULT_OK(r);
@@ -530,8 +523,7 @@ static RESULT hash_select(CTX *c, int argc, VALUE *sp) {
     ((struct korb_hash *)r)->compare_by_identity = h->compare_by_identity;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        VALUE m = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 2, args));
         if (RTEST(m)) korb_hash_aset(c, r, e->key, e->value);
     }
     return RESULT_OK(r);
@@ -550,8 +542,7 @@ static RESULT hash_partition(CTX *c, int argc, VALUE *sp) {
     VALUE no = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        VALUE m = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 2, args));
         VALUE pair = korb_ary_new_capa(c, c->sp, 2);
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
@@ -877,8 +868,7 @@ static RESULT hash_delete_if(CTX *c, int argc, VALUE *sp) {
         VALUE k = ka->ptr[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        VALUE drop = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        VALUE drop = UNWRAP(korb_yield(c, 2, args));
         if (RTEST(drop)) {
                         c->sp[0] = self;
             c->sp[1] = k;
@@ -907,8 +897,7 @@ static RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp) {
         VALUE k = ka->ptr[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        VALUE drop = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        VALUE drop = UNWRAP(korb_yield(c, 2, args));
         if (RTEST(drop)) {
                         c->sp[0] = self;
             c->sp[1] = k;
@@ -936,8 +925,7 @@ static RESULT hash_keep_if(CTX *c, int argc, VALUE *sp) {
         VALUE k = ka->ptr[i];
         VALUE v = korb_hash_aref(c, self, k);
         VALUE args[2] = {k, v};
-        VALUE keep = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        VALUE keep = UNWRAP(korb_yield(c, 2, args));
         if (!RTEST(keep)) {
                         c->sp[0] = self;
             c->sp[1] = k;
@@ -1026,8 +1014,7 @@ static RESULT hash_fetch_values(CTX *c, int argc, VALUE *sp) {
             /* Block fallback: yield key for the missing entry, push the
              * block's result.  Otherwise raise KeyError. */
             if (korb_block_given(c)) {
-                VALUE blk_r = SINK_RESULT(c, korb_yield(c, 1, &k));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+                VALUE blk_r = UNWRAP(korb_yield(c, 1, &k));
                 korb_ary_push(r, blk_r);
                 continue;
             }
@@ -1053,8 +1040,7 @@ static RESULT hash_reject(CTX *c, int argc, VALUE *sp) {
     rh->compare_by_identity = h->compare_by_identity;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = {e->key, e->value};
-        VALUE drop = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        VALUE drop = UNWRAP(korb_yield(c, 2, args));
         if (!RTEST(drop)) korb_hash_aset(c, r, e->key, e->value);
     }
     return RESULT_OK(r);
@@ -1186,8 +1172,7 @@ static RESULT hash_count(CTX *c, int argc, VALUE *sp) {
     long n = 0;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = {e->key, e->value};
-        VALUE r = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        VALUE r = UNWRAP(korb_yield(c, 2, args));
         if (RTEST(r)) n++;
     }
     return RESULT_OK(INT2FIX(n));
@@ -1288,8 +1273,7 @@ static RESULT hash_reduce(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE args[2] = { acc, pair };
-        acc = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        acc = UNWRAP(korb_yield(c, 2, args));
     }
     return RESULT_OK(acc);
 }
@@ -1350,8 +1334,7 @@ static RESULT hash_group_by(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE args[2] = { e->key, e->value };
-        VALUE key = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE key = UNWRAP(korb_yield(c, 2, args));
         VALUE bucket = korb_hash_aref(c, r, key);
         if (UNDEF_P(bucket) || NIL_P(bucket)) {
             bucket = korb_ary_new(c, c->sp);
@@ -1379,8 +1362,7 @@ static RESULT hash_sort_by(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE args[2] = { e->key, e->value };
-        VALUE k = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE k = UNWRAP(korb_yield(c, 2, args));
         korb_ary_push(pairs, pair);
         korb_ary_push(keys, k);
     }
@@ -1409,8 +1391,7 @@ static RESULT hash_filter_map(CTX *c, int argc, VALUE *sp) {
     VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        VALUE m = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 2, args));
         if (RTEST(m)) korb_ary_push(r, m);
     }
     return RESULT_OK(r);
@@ -1431,8 +1412,7 @@ static RESULT hash_sum(CTX *c, int argc, VALUE *sp) {
         VALUE addend;
         if (korb_block_given(c)) {
             VALUE args[2] = { e->key, e->value };
-            addend = SINK_RESULT(c, korb_yield(c, 2, args));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            addend = UNWRAP(korb_yield(c, 2, args));
         } else {
             addend = korb_ary_new_capa(c, c->sp, 2);
             korb_ary_push(addend, e->key);
@@ -1459,8 +1439,7 @@ static RESULT hash_each_with_object(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(pair, e->key);
         korb_ary_push(pair, e->value);
         VALUE args[2] = { pair, memo };
-        SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 2, args));
     }
     return RESULT_OK(memo);
 }
@@ -1496,8 +1475,7 @@ static RESULT hash_flat_map(CTX *c, int argc, VALUE *sp) {
     VALUE r = korb_ary_new(c, c->sp);
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         VALUE args[2] = { e->key, e->value };
-        VALUE m = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 2, args));
         if (!SPECIAL_CONST_P(m) && BUILTIN_TYPE(m) == T_ARRAY) {
             struct korb_array *ma = (struct korb_array *)m;
             for (long i = 0; i < ma->len; i++) korb_ary_push(r, ma->ptr[i]);

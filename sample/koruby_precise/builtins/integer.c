@@ -1240,14 +1240,12 @@ static RESULT int_step(CTX *c, int argc, VALUE *sp) {
     if (step > 0) {
         for (long i = start; i <= stop; i += step) {
             VALUE v = INT2FIX(i);
-            SINK_RESULT(c, korb_yield(c, 1, &v));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            CHECK(korb_yield(c, 1, &v));
         }
     } else {
         for (long i = start; i >= stop; i += step) {
             VALUE v = INT2FIX(i);
-            SINK_RESULT(c, korb_yield(c, 1, &v));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            CHECK(korb_yield(c, 1, &v));
         }
     }
     return RESULT_OK(self);

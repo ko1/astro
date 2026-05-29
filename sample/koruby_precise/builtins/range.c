@@ -68,16 +68,14 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
              * effectively infinite — user must `break`). */
             for (long i = b; ; i++) {
                 VALUE v = INT2FIX(i);
-                SINK_RESULT(c, korb_yield(c, 1, &v));
-                if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+                CHECK(korb_yield(c, 1, &v));
             }
         } else {
             long e = FIX2LONG(r->end);
             long stop_excl = r->exclude_end ? e : e + 1;
             for (long i = b; i < stop_excl; i++) {
                 VALUE v = INT2FIX(i);
-                SINK_RESULT(c, korb_yield(c, 1, &v));
-                if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+                CHECK(korb_yield(c, 1, &v));
             }
         }
         return RESULT_OK(self);
@@ -96,15 +94,13 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
     VALUE cur = r->begin;
     while (true) {
         if (NIL_P(r->end)) {
-            SINK_RESULT(c, korb_yield(c, 1, &cur));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            CHECK(korb_yield(c, 1, &cur));
         } else {
             VALUE cmp = UNWRAP(korb_funcall(c, cur, korb_intern("<=>"), 1, &r->end));
             if (!FIXNUM_P(cmp)) break;
             long cv = FIX2LONG(cmp);
             if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
-            SINK_RESULT(c, korb_yield(c, 1, &cur));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            CHECK(korb_yield(c, 1, &cur));
         }
         cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
@@ -411,8 +407,7 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
         for (double v = b; r->exclude_end ? (v < e) : (v <= e + 1e-12); v += step) {
             VALUE fv = korb_float_new(c, c->sp, v);
             if (has_block) {
-                SINK_RESULT(c, korb_yield(c, 1, &fv));
-                if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+                CHECK(korb_yield(c, 1, &fv));
             } else {
                 korb_ary_push(out, fv);
             }
@@ -430,8 +425,7 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = b; i <= e; i += step) {
         VALUE v = INT2FIX(i);
-        SINK_RESULT(c, korb_yield(c, 1, &v));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 1, &v));
     }
     return RESULT_OK(self);
 }
@@ -462,8 +456,7 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
         if (r->exclude_end) e--;
         for (long i = b; i <= e; i++, idx++) {
             VALUE pair[2] = { INT2FIX(i), INT2FIX(idx) };
-            SINK_RESULT(c, korb_yield(c, 2, pair));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            CHECK(korb_yield(c, 2, pair));
         }
         return RESULT_OK(self);
     }
@@ -476,8 +469,7 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
         long cv = FIX2LONG(cmp);
         if (r->exclude_end ? (cv >= 0) : (cv > 0)) break;
         VALUE pair[2] = { cur, INT2FIX(idx) };
-        SINK_RESULT(c, korb_yield(c, 2, pair));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 2, pair));
         cur = UNWRAP(korb_funcall(c, cur, korb_intern("succ"), 0, NULL));
         if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         idx++;
@@ -591,8 +583,7 @@ static RESULT rng_map(CTX *c, int argc, VALUE *sp) {
     VALUE out = korb_ary_new(c, c->sp);
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &v));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 1, &v));
         korb_ary_push(out, m);
     }
     return RESULT_OK(out);
@@ -610,8 +601,7 @@ static RESULT rng_select(CTX *c, int argc, VALUE *sp) {
     VALUE out = korb_ary_new(c, c->sp);
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &v));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 1, &v));
         if (RTEST(m)) korb_ary_push(out, v);
     }
     return RESULT_OK(out);
@@ -628,8 +618,7 @@ static RESULT rng_all_p(CTX *c, int argc, VALUE *sp) {
     if (r->exclude_end) e--;
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &v));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 1, &v));
         if (!RTEST(m)) return RESULT_OK(Qfalse);
     }
     return RESULT_OK(Qtrue);
@@ -646,8 +635,7 @@ static RESULT rng_any_p(CTX *c, int argc, VALUE *sp) {
     if (r->exclude_end) e--;
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
-        VALUE m = SINK_RESULT(c, korb_yield(c, 1, &v));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        VALUE m = UNWRAP(korb_yield(c, 1, &v));
         if (RTEST(m)) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -711,8 +699,7 @@ static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
     acc = argc > 0 ? argv[0] : INT2FIX(b++);
     for (long i = b; i <= e; i++) {
         VALUE args[2] = { acc, INT2FIX(i) };
-        acc = SINK_RESULT(c, korb_yield(c, 2, args));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        acc = UNWRAP(korb_yield(c, 2, args));
     }
     return RESULT_OK(acc);
 }

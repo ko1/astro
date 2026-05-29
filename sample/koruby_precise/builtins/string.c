@@ -1145,8 +1145,7 @@ static RESULT str_each_char(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
         VALUE ch = korb_str_new(c, c->sp, s->ptr + i, 1);
-        SINK_RESULT(c, korb_yield(c, 1, &ch));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 1, &ch));
     }
     return RESULT_OK(c->current_frame->self);
 }
@@ -2841,8 +2840,7 @@ static RESULT str_each_line(CTX *c, int argc, VALUE *sp) {
         if (s->ptr[i] == '\n') {
             VALUE line = korb_str_new(c, c->sp, s->ptr + start, i - start + 1);
             if (has_block) {
-                SINK_RESULT(c, korb_yield(c, 1, &line));
-                if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+                CHECK(korb_yield(c, 1, &line));
             } else {
                 korb_ary_push(collected, line);
             }
@@ -2852,8 +2850,7 @@ static RESULT str_each_line(CTX *c, int argc, VALUE *sp) {
     if (start < s->len) {
         VALUE line = korb_str_new(c, c->sp, s->ptr + start, s->len - start);
         if (has_block) {
-            SINK_RESULT(c, korb_yield(c, 1, &line));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            CHECK(korb_yield(c, 1, &line));
         } else {
             korb_ary_push(collected, line);
         }
