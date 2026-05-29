@@ -38,7 +38,27 @@ static RESULT hash_aset(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    return RESULT_OK(korb_hash_aset(c, self, argv[0], argv[1]));
+    VALUE key = argv[0];
+    /* CRuby semantics: dup + freeze unfrozen String keys to prevent
+     * later mutation from corrupting the hash table.  If the same
+     * (string-equal) key already lives in the hash, reuse it. */
+    if (!SPECIAL_CONST_P(key) && BUILTIN_TYPE(key) == T_STRING &&
+        !korb_obj_frozen_p(key) && !((struct korb_hash *)self)->compare_by_identity) {
+        /* Look up an existing equal key. */
+        struct korb_hash *h = (struct korb_hash *)self;
+        bool found = false;
+        for (struct korb_hash_entry *e = h->first; e; e = e->next) {
+            if (e->key == key || korb_eql(c, e->key, key)) {
+                key = e->key; found = true; break;
+            }
+        }
+        if (!found) {
+            VALUE dup_key = korb_str_dup(c, c->sp_top, key);
+            ((struct RBasic *)dup_key)->head.flags |= FL_FROZEN;
+            key = dup_key;
+        }
+    }
+    return RESULT_OK(korb_hash_aset(c, self, key, argv[1]));
 }
 static RESULT hash_size(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
