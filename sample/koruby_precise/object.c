@@ -4576,7 +4576,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * outer block's enclosing method's name). */
     struct korb_proc *prev_running2 = c->running_block;
     c->running_block = NULL;
-    VALUE r = EVAL_LIFT(c, m->u.ast.body, c->current_frame->fp + m->u.ast.locals_cnt);
+    RESULT _br = EVAL(c, m->u.ast.body, c->current_frame->fp + m->u.ast.locals_cnt);
     c->running_block = prev_running2;
     c->current_frame = frame2.prev;
     c->current_frame->fp = prev_fp;
@@ -4589,12 +4589,19 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
     c->sp = prev_sp;
     c->current_frame->self = prev_self;
     c->current_frame->cref = prev_cref2;
-    if (c->state == KORB_RETURN) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+    /* Consume KORB_RETURN at the method boundary. */
+    if (_br.state == KORB_RETURN) {
+        return _br.value;
     }
-    return r;
+    /* Bridge: lift non-NORMAL state back to c->state for the legacy
+     * VALUE-returning caller path (korb_dispatch_to_method itself is
+     * still VALUE-returning; full RESULT-ization is a follow-up). */
+    if (_br.state != KORB_NORMAL) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+        return Qnil;
+    }
+    return _br.value;
 }
 
 VALUE korb_funcall(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv) {
