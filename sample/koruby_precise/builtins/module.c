@@ -256,8 +256,8 @@ static RESULT obj_define_singleton_method(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(Qnil);
-    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-    struct korb_class *meta = korb_singleton_class_of_value(c, self);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
+    struct korb_class *meta = korb_singleton_class_of_value(c, sp, self);
     if (!meta) return RESULT_OK(Qnil);
     /* Reuse module_define_method with self overridden to the meta class. */
     sp[-argc - 1] = (VALUE)meta;
@@ -987,7 +987,7 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
 
     /* extend M on an object: include M into the object's singleton class. */
     if (SPECIAL_CONST_P(self)) return RESULT_OK(self);
-    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
     /* Fallback if helper isn't there: rewire basic.klass to a fresh
      * subclass of the current class and include the module into it. */
     if (BUILTIN_TYPE(self) == T_OBJECT) {

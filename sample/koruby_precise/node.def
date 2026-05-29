@@ -1919,7 +1919,7 @@ node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_e
     else {
         e = korb_exc_new(c, c->sp_top, NULL, "unhandled exception");
     }
-    korb_exc_set_backtrace(c, e, n ? n->head.line : 0);
+    korb_exc_set_backtrace(c, sp, e, n ? n->head.line : 0);
     /* Exception#cause: when we're already inside a rescue body, $! holds
      * the currently-rescued exception.  Link it as #cause on the new
      * one (skip when re-raising the same exception). */
@@ -2573,8 +2573,8 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
             VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
             return korb_raise(c, (struct korb_class *)eF, "can't modify frozen object");
         }
-        extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-        struct korb_class *meta = korb_singleton_class_of_value(c, c->current_frame->self);
+        extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
+        struct korb_class *meta = korb_singleton_class_of_value(c, sp, c->current_frame->self);
         target = meta ? meta : korb_class_of_class(c->current_frame->self);
     } else {
         return korb_raise(c, NULL, "def self.* outside of class/module");
@@ -2599,8 +2599,8 @@ node_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
     if (BUILTIN_TYPE(c->current_frame->self) == T_CLASS || BUILTIN_TYPE(c->current_frame->self) == T_MODULE) {
         target = korb_singleton_class_of(c, (struct korb_class *)c->current_frame->self);
     } else if (!SPECIAL_CONST_P(c->current_frame->self) && BUILTIN_TYPE(c->current_frame->self) == T_OBJECT) {
-        extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-        struct korb_class *meta = korb_singleton_class_of_value(c, c->current_frame->self);
+        extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
+        struct korb_class *meta = korb_singleton_class_of_value(c, sp, c->current_frame->self);
         target = meta ? meta : korb_class_of_class(c->current_frame->self);
     } else {
         return korb_raise(c, NULL, "def self.* outside of class/module");
@@ -2625,7 +2625,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
      * T_MODULE we use the metaclass via korb_singleton_class_of.
      * Pin recv at sp[0] across korb_const_get / korb_intern /
      * korb_raise / korb_singleton_class_of_value — all GC sites. */
-    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
     sp[0] = EVAL_ARG_UNWRAP(c, recv_expr);
     c->sp_top = sp + 1;
     if (!SPECIAL_CONST_P(sp[0]) && korb_obj_frozen_p(sp[0])) {
@@ -2637,7 +2637,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
         c->sp_top = sp;
         return _e;
     }
-    struct korb_class *meta = korb_singleton_class_of_value(c, sp[0]);
+    struct korb_class *meta = korb_singleton_class_of_value(c, sp, sp[0]);
     if (!meta) {
         RESULT _e = korb_raise(c, NULL, "cannot define singleton method on this value");
         c->sp_top = sp;
@@ -2657,7 +2657,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 NODE_DEF @noinline
 node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
 {
-    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
     VALUE recv = EVAL_ARG_UNWRAP(c, recv_expr);
     if (!SPECIAL_CONST_P(recv) && korb_obj_frozen_p(recv)) {
         VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
@@ -2666,7 +2666,7 @@ node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restric
         else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
         return korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
     }
-    struct korb_class *meta = korb_singleton_class_of_value(c, recv);
+    struct korb_class *meta = korb_singleton_class_of_value(c, sp, recv);
     if (!meta) {
         return korb_raise(c, NULL, "cannot define singleton method on this value");
     }
@@ -2687,9 +2687,9 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict 
 {
     /* `class << obj; body; end` — evaluate body with self set to obj's
      * singleton class so `def name` lands there. */
-    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
     VALUE recv = EVAL_ARG_UNWRAP(c, recv_expr);
-    struct korb_class *meta = korb_singleton_class_of_value(c, recv);
+    struct korb_class *meta = korb_singleton_class_of_value(c, sp, recv);
     if (!meta) {
         /* Numeric, Symbol etc. — CRuby raises TypeError "no class to make
          * a singleton class for ..." */

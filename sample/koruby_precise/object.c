@@ -647,7 +647,7 @@ struct korb_class *korb_singleton_class_of(CTX *c, struct korb_class *klass) {
  * `korb_singleton_class_of` but works on T_OBJECT instances too —
  * lazily allocates a fresh class whose super = current class, then
  * rewires basic.klass.  Returns NULL for immediate values. */
-struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v) {
+struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v) {
     /* true/false/nil all share their respective immutable classes
      * (CRuby semantics: class << true is the same as TrueClass). */
     if (v == Qtrue) return KORB_VM(c)->true_class;
@@ -658,40 +658,36 @@ struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v) {
      * — all allocate, firing GC under STRESS+PURGE.  Plain C-local v
      * would go stale and the post-call BUILTIN_TYPE / frozen check
      * SEGVs on the moved obj's now-PROT_NONE address. */
-    struct korb_class *result = NULL;
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
-        rs[0] = v;
-        if (BUILTIN_TYPE(rs[0]) == T_CLASS || BUILTIN_TYPE(rs[0]) == T_MODULE) {
-            struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)rs[0]);
-            if (meta && korb_obj_frozen_p(rs[0]) && !korb_obj_frozen_p((VALUE)meta)) {
-                ((struct RBasic *)meta)->head.flags |= FL_FROZEN;
-            }
-            result = meta;
-        } else {
-            /* Generic heap object: rewire klass to a private subclass. */
-            struct korb_object *o = (struct korb_object *)rs[0];
-            struct korb_class *cur = (struct korb_class *)o->basic.klass;
-            if (cur && cur->name == korb_intern("(singleton)")) {
-                if (korb_obj_frozen_p(rs[0]) && !korb_obj_frozen_p((VALUE)cur)) {
-                    ((struct RBasic *)cur)->head.flags |= FL_FROZEN;
-                }
-                result = cur;
-            } else {
-                struct korb_class *meta = korb_class_new(c, c->sp_top, korb_intern("(singleton)"),
-                                                         cur, cur ? cur->instance_type : T_OBJECT);
-                meta->basic.head.flags |= FL_SINGLETON;
-                if (korb_obj_frozen_p(rs[0])) {
-                    meta->basic.head.flags |= FL_FROZEN;
-                }
-                /* Reload o — moving GC could have relocated it
-                 * during korb_class_new / korb_intern above. */
-                o = (struct korb_object *)rs[0];
-                o->basic.klass = (VALUE)meta;
-                result = meta;
-            }
+    /* Park v in sp[0] across allocations.  Reload via sp[0] after each
+     * potential GC site. */
+    sp[0] = v;
+    c->sp_top = sp + 1;
+    if (BUILTIN_TYPE(sp[0]) == T_CLASS || BUILTIN_TYPE(sp[0]) == T_MODULE) {
+        struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)sp[0]);
+        if (meta && korb_obj_frozen_p(sp[0]) && !korb_obj_frozen_p((VALUE)meta)) {
+            ((struct RBasic *)meta)->head.flags |= FL_FROZEN;
         }
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return result;
+        return meta;
+    }
+    /* Generic heap object: rewire klass to a private subclass. */
+    struct korb_object *o = (struct korb_object *)sp[0];
+    struct korb_class *cur = (struct korb_class *)o->basic.klass;
+    if (cur && cur->name == korb_intern("(singleton)")) {
+        if (korb_obj_frozen_p(sp[0]) && !korb_obj_frozen_p((VALUE)cur)) {
+            ((struct RBasic *)cur)->head.flags |= FL_FROZEN;
+        }
+        return cur;
+    }
+    struct korb_class *meta = korb_class_new(c, sp + 1, korb_intern("(singleton)"),
+                                             cur, cur ? cur->instance_type : T_OBJECT);
+    meta->basic.head.flags |= FL_SINGLETON;
+    if (korb_obj_frozen_p(sp[0])) {
+        meta->basic.head.flags |= FL_FROZEN;
+    }
+    /* Reload o via sp[0] — moving GC could have relocated it. */
+    o = (struct korb_object *)sp[0];
+    o->basic.klass = (VALUE)meta;
+    return meta;
 }
 
 void korb_module_include(struct korb_class *klass, struct korb_class *mod) {

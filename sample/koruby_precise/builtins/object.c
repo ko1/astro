@@ -349,8 +349,8 @@ RESULT obj_singleton_class(CTX *c, int argc, VALUE *sp) {
                    "can't define singleton on %s",
                    korb_id_name(korb_class_of_class(self)->name));
     }
-    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-    struct korb_class *meta = korb_singleton_class_of_value(c, self);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
+    struct korb_class *meta = korb_singleton_class_of_value(c, sp, self);
     if (!meta) {
         return korb_raise(c, NULL, "no singleton class for %s",
                    korb_id_name(korb_class_of_class(self)->name));
@@ -460,8 +460,8 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
     blk->self = self;
     /* instance_eval semantics: defs land on the receiver's singleton class.
      * Push that class at the head of the block's lexical cref chain. */
-    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-    struct korb_class *sing = korb_singleton_class_of_value(c, self);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
+    struct korb_class *sing = korb_singleton_class_of_value(c, sp, self);
     struct korb_cref *prev_blk_cref = blk->cref;
     struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
     if (sing) blk->cref = &blk_new_cref;
@@ -502,8 +502,8 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
     }
     VALUE prev_blk_self = blk->self;
     blk->self = self;
-    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-    struct korb_class *sing = korb_singleton_class_of_value(c, self);
+    extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
+    struct korb_class *sing = korb_singleton_class_of_value(c, sp, self);
     struct korb_cref *prev_blk_cref = blk->cref;
     struct korb_cref blk_new_cref = { .klass = sing, .prev = blk->cref };
     if (sing) blk->cref = &blk_new_cref;
