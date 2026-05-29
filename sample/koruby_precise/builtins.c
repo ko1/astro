@@ -1456,6 +1456,8 @@ void korb_init_builtins(CTX *c) {
     /* Proc */
     DEF_R(KORB_VM(c)->proc_class, "call", proc_call, -1);
     DEF_R(KORB_VM(c)->proc_class, "[]", proc_call, -1);
+    DEF_R(KORB_VM(c)->proc_class, "yield", proc_call, -1);
+    DEF_R(KORB_VM(c)->proc_class, "()", proc_call, -1);
     /* Proc#=== — same as #call.  Used by case/when with a proc value
      * pattern (`case x; when ->(...) { ... }`) and by pattern matching
      * (`case x; in ->(...) { ... }`). */
