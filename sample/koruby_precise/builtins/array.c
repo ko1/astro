@@ -3437,37 +3437,26 @@ static RESULT ary_class_new(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    long size = 0;
-    VALUE def = Qnil;
-    if (argc >= 1 && FIXNUM_P(argv[0])) size = FIX2LONG(argv[0]);
-    if (argc >= 2) def = argv[1];
-    /* Single-array-arg form: Array.new([1,2,3]) — copy. */
-    if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
-        struct korb_array *src = (struct korb_array *)argv[0];
-        VALUE r = korb_ary_new_capa(c, c->sp, src->len);
-        for (long i = 0; i < src->len; i++) korb_ary_push(r, src->ptr[i]);
-        return RESULT_OK(r);
-    }
-    if (size < 0) size = 0;
-    VALUE arr = korb_ary_new_capa(c, c->sp, size);
-    /* For subclass calls (`class A < Array; end; A.new`) reroute the
-     * allocation's basic.klass to `self` so the result inspects /
-     * dispatches as the subclass. */
-    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS &&
-        (struct korb_class *)self != KORB_VM(c)->array_class) {
+    /* Allocate an empty array of self's class.  Subclass support: when
+     * `class A < Array; def initialize(a, b); self << a << b; end; end`,
+     * we must dispatch `A#initialize` (which may differ from
+     * Array#initialize), not the size/default short-cut.  Falling back
+     * through korb_funcall_r ensures Ruby method-resolution applies. */
+    VALUE arr = korb_ary_new(c, c->sp);
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS) {
         ((struct korb_array *)arr)->basic.klass = self;
     }
-    
-    if (c->current_block) {
-        for (long i = 0; i < size; i++) {
-            VALUE iv = INT2FIX(i);
-            VALUE v = korb_yield(c, 1, &iv);
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
-            korb_ary_push(arr, v);
-        }
-    } else {
-        for (long i = 0; i < size; i++) korb_ary_push(arr, def);
-    }
+    /* Stage [arr, argv...] on sp.  CRITICAL: bump c->sp past the staging
+     * before dispatching; korb_dispatch_to_method's AST path uses c->sp
+     * as the new-frame base, and zero-fills [c->sp .. new_sp), so any
+     * args we leave at c->sp[1..argc] would be clobbered before being
+     * copied. */
+    VALUE *staging = sp;
+    staging[0] = arr;
+    for (int i = 0; i < argc; i++) staging[1 + i] = argv[i];
+    c->sp = staging + 1 + argc;
+    UNWRAP(korb_funcall_r(c, arr, korb_intern("initialize"), argc, staging + 1));
+    c->sp = sp;
     return RESULT_OK(arr);
 }
 

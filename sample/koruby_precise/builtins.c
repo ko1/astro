@@ -823,7 +823,7 @@ void korb_init_builtins(CTX *c) {
         /* Array#initialize — populate (or replace contents of) an already
          * allocated Array.  Subclasses can override this. */
         extern RESULT ary_initialize(CTX *c, int argc, VALUE *sp);
-        korb_class_add_method_cfunc(KORB_VM(c)->array_class, korb_intern("initialize"),
+        korb_class_add_method_cfunc_r(KORB_VM(c)->array_class, korb_intern("initialize"),
                                     ary_initialize, -1);
         /* Array[] — class method that returns an Array literal of args. */
         RESULT ary_class_brackets(CTX *c, int argc, VALUE *sp);
