@@ -1400,7 +1400,7 @@ static RESULT kernel_capture_lvars(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(h);
 }
 extern VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
-extern VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *args, int argc);
+extern RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *args, int argc);
 static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
@@ -1419,7 +1419,6 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
             if (klass_v && korb_class_find_method((struct korb_class *)klass_v,
                                                   korb_intern("to_str"))) {
                 coerced = UNWRAP(korb_funcall(c, argv[0], korb_intern("to_str"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
         if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) {
@@ -1448,7 +1447,7 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
         forward[0] = argv[0];
         forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr(c, c->sp, "(eval)");
         forward[2] = (argc >= 4) ? argv[3] : INT2FIX(1);
-        return RESULT_OK(binding_eval_via(c, b, forward, 3));
+        return binding_eval_via(c, b, forward, 3);
     }
     struct korb_string *s = (struct korb_string *)argv[0];
     /* CRuby 3.4+: __FILE__ inside `eval(str)` is "(eval at <caller>:<line>)".

@@ -4843,4 +4843,46 @@ class Set
     true
   end
   def superset?(other); other.subset?(self); end
+
+  # Set#select! / #reject! / #filter! / #keep_if / #delete_if — destructive
+  # filters.  Returns self if any change, nil if no change (CRuby semantics
+  # for ! variants; keep_if / delete_if always return self).
+  def select!(&blk)
+    return enum_for(:select!) unless blk
+    changed = false
+    @h.keys.each { |e|
+      unless blk.call(e)
+        @h.delete(e)
+        changed = true
+      end
+    }
+    changed ? self : nil
+  end
+  alias filter! select!
+
+  def reject!(&blk)
+    return enum_for(:reject!) unless blk
+    changed = false
+    @h.keys.each { |e|
+      if blk.call(e)
+        @h.delete(e)
+        changed = true
+      end
+    }
+    changed ? self : nil
+  end
+
+  def keep_if(&blk)
+    return enum_for(:keep_if) unless blk
+    @h.keys.each { |e| @h.delete(e) unless blk.call(e) }
+    self
+  end
+
+  def delete_if(&blk)
+    return enum_for(:delete_if) unless blk
+    @h.keys.each { |e| @h.delete(e) if blk.call(e) }
+    self
+  end
+
+  def clear; @h.clear; self; end
 end

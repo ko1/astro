@@ -4,7 +4,7 @@
  * builtins/string.c.  Needed for to_int coerce in #getbyte etc. */
 static RESULT korb_to_int_or_raise(CTX *c, VALUE v);
 /* Forward decl for the to_str coerce helper (defined further below). */
-static VALUE str_coerce_arg(CTX *c, VALUE arg);
+static RESULT str_coerce_arg(CTX *c, VALUE arg);
 /* Forward decl for UTF-8 char→byte index translation (defined later). */
 static int str_char_range_to_bytes(const char *p, long byte_len,
                                    long char_start, long char_count,
@@ -102,21 +102,22 @@ static RESULT str_plus(CTX *c, int argc, VALUE *sp) {
         rs[1] = argv[0];
         if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
             if (!SPECIAL_CONST_P(rs[1])) {
-                VALUE rt = UNWRAP(korb_funcall(c, rs[1], korb_intern("respond_to?"), 1,
-                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-                if (c->state == KORB_RAISE) { ARO_ROOT_SCOPE_CANCEL(c, rs); return RESULT_OK(Qnil); }
-                if (RTEST(rt)) {
-                    rs[1] = UNWRAP(korb_funcall(c, rs[1], korb_intern("to_str"), 0, NULL));
-                    if (c->state == KORB_RAISE) { ARO_ROOT_SCOPE_CANCEL(c, rs); return RESULT_OK(Qnil); }
+                RESULT _rt = korb_funcall(c, rs[1], korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
+                if (_rt.state != KORB_NORMAL) { ARO_ROOT_SCOPE_CANCEL(c, rs); return _rt; }
+                if (RTEST(_rt.value)) {
+                    RESULT _ts = korb_funcall(c, rs[1], korb_intern("to_str"), 0, NULL);
+                    if (_ts.state != KORB_NORMAL) { ARO_ROOT_SCOPE_CANCEL(c, rs); return _ts; }
+                    rs[1] = _ts.value;
                 }
             }
             if (SPECIAL_CONST_P(rs[1]) || BUILTIN_TYPE(rs[1]) != T_STRING) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                return korb_raise(c, (struct korb_class *)eT,
+                RESULT _e = korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion of %s into String",
                            SPECIAL_CONST_P(argv[0]) ? "(special)"
                                : korb_id_name(korb_class_of_class(argv[0])->name));
-                ARO_ROOT_SCOPE_CANCEL(c, rs); return RESULT_OK(Qnil);
+                ARO_ROOT_SCOPE_CANCEL(c, rs); return _e;
             }
         }
         VALUE r = korb_str_dup(c, c->sp, rs[0]);
@@ -313,9 +314,10 @@ static RESULT str_cmp(CTX *c, int argc, VALUE *sp) {
                               (VALUE[]){ korb_id2sym(korb_intern("<=>")) }));
             if (RTEST(rt)) {
                 str_cmp_inverse_depth++;
-                VALUE r = UNWRAP(korb_funcall(c, other, korb_intern("<=>"), 1, &self));
+                RESULT _cr = korb_funcall(c, other, korb_intern("<=>"), 1, &self);
                 str_cmp_inverse_depth--;
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+                if (_cr.state != KORB_NORMAL) return RESULT_OK(Qnil);
+                VALUE r = _cr.value;
                 if (FIXNUM_P(r)) {
                     long v = FIX2LONG(r);
                     return RESULT_OK(INT2FIX(v < 0 ? 1 : v > 0 ? -1 : 0));
@@ -337,14 +339,14 @@ compare_strings:;
 
 /* Raise CRuby's "comparison of String with X failed" ArgumentError when
  * <=> couldn't reach a result. */
-static void str_cmp_raise(CTX *c, VALUE other) {
+static RESULT str_cmp_raise(CTX *c, VALUE other) {
     VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
     VALUE oi = korb_inspect(c, c->sp, other);
     const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                             ? korb_str_cstr(oi)
                             : korb_id_name(korb_class_of_class(other)->name);
-    DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
-               "comparison of String with %s failed", o_str));
+    return korb_raise(c, (struct korb_class *)eArg,
+               "comparison of String with %s failed", o_str);
 }
 static RESULT str_lt(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -352,7 +354,7 @@ static RESULT str_lt(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     VALUE r = UNWRAP(str_cmp(c, argc, sp));
-    if (NIL_P(r)) { str_cmp_raise(c, argv[0]); return RESULT_OK(Qnil); }
+    if (NIL_P(r)) return str_cmp_raise(c, argv[0]);
     return RESULT_OK(KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) < 0));
 }
 static RESULT str_le(CTX *c, int argc, VALUE *sp) {
@@ -361,7 +363,7 @@ static RESULT str_le(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     VALUE r = UNWRAP(str_cmp(c, argc, sp));
-    if (NIL_P(r)) { str_cmp_raise(c, argv[0]); return RESULT_OK(Qnil); }
+    if (NIL_P(r)) return str_cmp_raise(c, argv[0]);
     return RESULT_OK(KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) <= 0));
 }
 static RESULT str_gt(CTX *c, int argc, VALUE *sp) {
@@ -370,7 +372,7 @@ static RESULT str_gt(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     VALUE r = UNWRAP(str_cmp(c, argc, sp));
-    if (NIL_P(r)) { str_cmp_raise(c, argv[0]); return RESULT_OK(Qnil); }
+    if (NIL_P(r)) return str_cmp_raise(c, argv[0]);
     return RESULT_OK(KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) > 0));
 }
 static RESULT str_ge(CTX *c, int argc, VALUE *sp) {
@@ -379,7 +381,7 @@ static RESULT str_ge(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     VALUE r = UNWRAP(str_cmp(c, argc, sp));
-    if (NIL_P(r)) { str_cmp_raise(c, argv[0]); return RESULT_OK(Qnil); }
+    if (NIL_P(r)) return str_cmp_raise(c, argv[0]);
     return RESULT_OK(KORB_BOOL(FIXNUM_P(r) && FIX2LONG(r) >= 0));
 }
 static RESULT str_to_s(CTX *c, int argc, VALUE *sp) {
@@ -488,52 +490,48 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
  *   * "": strip all trailing "\r\n" / "\n" pairs/runs but NOT a final "\r".
  *   * String suffix: strip exactly that suffix once if present (using
  *     to_str coerce; TypeError if to_str doesn't return a String). */
-static long str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT str_chomp_compute(CTX *c, VALUE self, int argc, VALUE *argv, long *out_n) {
     struct korb_string *s = (struct korb_string *)self;
     long n = s->len;
+    *out_n = n;
     VALUE arg;
     if (argc < 1) {
         /* CRuby: no arg → use $/ as the separator (defaults to "\n"). */
         VALUE rs = korb_gvar_get(korb_intern("$/"));
         if (NIL_P(rs) || SPECIAL_CONST_P(rs) || BUILTIN_TYPE(rs) != T_STRING) {
-            if (n >= 2 && s->ptr[n-2] == '\r' && s->ptr[n-1] == '\n') return n - 2;
-            if (n >= 1 && (s->ptr[n-1] == '\n' || s->ptr[n-1] == '\r')) return n - 1;
-            return n;
+            if (n >= 2 && s->ptr[n-2] == '\r' && s->ptr[n-1] == '\n') { *out_n = n - 2; return RESULT_OK(Qnil); }
+            if (n >= 1 && (s->ptr[n-1] == '\n' || s->ptr[n-1] == '\r')) { *out_n = n - 1; return RESULT_OK(Qnil); }
+            return RESULT_OK(Qnil);
         }
         arg = rs;
         goto have_str;
     }
     arg = argv[0];
-    if (NIL_P(arg)) return n;
+    if (NIL_P(arg)) return RESULT_OK(Qnil);
     if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
-        RESULT _rt_rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-        if (_rt_rt.state == KORB_RAISE) return n;
-        VALUE rt = _rt_rt.value;
+        VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (RTEST(rt)) {
-            RESULT _rt_r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
-            if (_rt_r.state == KORB_RAISE) return n;
-            VALUE r = _rt_r.value;
+            VALUE r = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
             if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) {
                 arg = r;
                 goto have_str;
             }
         }
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+        return korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into String",
                    SPECIAL_CONST_P(arg) ? "(special)"
-                       : korb_id_name(korb_class_of_class(arg)->name)));
-        return n;
+                       : korb_id_name(korb_class_of_class(arg)->name));
     }
 have_str:;
     struct korb_string *p = (struct korb_string *)arg;
     /* Special: chomp("\n") behaves like the no-argument form — strip any
      * trailing "\r\n", "\n", or "\r". */
     if (p->len == 1 && p->ptr[0] == '\n') {
-        if (n >= 2 && s->ptr[n-2] == '\r' && s->ptr[n-1] == '\n') return n - 2;
-        if (n >= 1 && (s->ptr[n-1] == '\n' || s->ptr[n-1] == '\r')) return n - 1;
-        return n;
+        if (n >= 2 && s->ptr[n-2] == '\r' && s->ptr[n-1] == '\n') { *out_n = n - 2; return RESULT_OK(Qnil); }
+        if (n >= 1 && (s->ptr[n-1] == '\n' || s->ptr[n-1] == '\r')) { *out_n = n - 1; return RESULT_OK(Qnil); }
+        return RESULT_OK(Qnil);
     }
     if (p->len == 0) {
         /* Empty arg: paragraph mode — strip trailing newline runs (with
@@ -544,12 +542,13 @@ have_str:;
             m--;
             if (m > 0 && s->ptr[m-1] == '\r') m--;
         }
-        return m;
+        *out_n = m;
+        return RESULT_OK(Qnil);
     }
     if (p->len <= n && memcmp(s->ptr + n - p->len, p->ptr, p->len) == 0) {
-        return n - p->len;
+        *out_n = n - p->len;
     }
-    return n;
+    return RESULT_OK(Qnil);
 }
 
 static RESULT str_chomp(CTX *c, int argc, VALUE *sp) {
@@ -557,8 +556,8 @@ static RESULT str_chomp(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    long n = str_chomp_compute(c, self, argc, argv);
-    if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+    long n = 0;
+    CHECK(str_chomp_compute(c, self, argc, argv, &n));
     return RESULT_OK(korb_str_new(c, c->sp, ((struct korb_string *)self)->ptr, n));
 }
 
@@ -569,8 +568,8 @@ static RESULT str_chomp_bang(CTX *c, int argc, VALUE *sp) {
 
     CHECK_FROZEN_R(c, self);
     struct korb_string *s = (struct korb_string *)self;
-    long n = str_chomp_compute(c, self, argc, argv);
-    if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+    long n = 0;
+    CHECK(str_chomp_compute(c, self, argc, argv, &n));
     if (n == s->len) return RESULT_OK(Qnil);
     s->len = n;
     if (s->capa > s->len) s->ptr[s->len] = 0;
@@ -1062,8 +1061,7 @@ static RESULT str_rindex(CTX *c, int argc, VALUE *sp) {
      * convertible (Integer, etc.).  Note: rindex does NOT call #to_int. */
     VALUE arg = argv[0];
     if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_STRING) {
-        arg = str_coerce_arg(c, arg);
-        if (UNDEF_P(arg) ) return RESULT_OK(Qnil);
+        arg = UNWRAP(str_coerce_arg(c, arg));
     }
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *needle = (struct korb_string *)arg;
@@ -1186,10 +1184,8 @@ static RESULT str_include(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(other)) {
             VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             if (RTEST(rt)) {
                 other = UNWRAP(korb_funcall(c, other, korb_intern("to_str"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             }
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
@@ -2782,9 +2778,10 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
         pos = FIX2LONG(iv);
     }
     /* Coerce other to a String via #to_str (TypeError on failure). */
-    VALUE other = (SPECIAL_CONST_P(argv[1]) || BUILTIN_TYPE(argv[1]) != T_STRING)
-        ? str_coerce_arg(c, argv[1]) : argv[1];
-    if (UNDEF_P(other) ) return RESULT_OK(Qnil);
+    VALUE other = argv[1];
+    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
+        other = UNWRAP(str_coerce_arg(c, other));
+    }
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)other;
     long orig_pos = pos;
@@ -2811,26 +2808,21 @@ static RESULT str_insert(CTX *c, int argc, VALUE *sp) {
  * of self if the prefix/suffix doesn't match. */
 
 /* Coerce arg to a String via #to_str; on failure raises TypeError. */
-static VALUE str_coerce_arg(CTX *c, VALUE arg) {
-    if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) return arg;
+static RESULT str_coerce_arg(CTX *c, VALUE arg) {
+    if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_STRING) return RESULT_OK(arg);
     if (!SPECIAL_CONST_P(arg)) {
-        RESULT _rt_rt = korb_funcall(c, arg, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-        if (_rt_rt.state == KORB_RAISE) return Qundef;
-        VALUE rt = _rt_rt.value;
+        VALUE rt = UNWRAP(korb_funcall(c, arg, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (RTEST(rt)) {
-            RESULT _rt_r = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
-            if (_rt_r.state == KORB_RAISE) return Qundef;
-            VALUE r = _rt_r.value;
-            if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) return r;
+            VALUE r = UNWRAP(korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
+            if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_STRING) return RESULT_OK(r);
         }
     }
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+    return korb_raise(c, (struct korb_class *)eT,
                "no implicit conversion of %s into String",
                SPECIAL_CONST_P(arg) ? "(special)"
-                   : korb_id_name(korb_class_of_class(arg)->name)));
-    return Qundef;
+                   : korb_id_name(korb_class_of_class(arg)->name));
 }
 
 /* Returns true if a UTF-8 prefix/suffix match would split a multi-byte
@@ -2850,8 +2842,7 @@ static RESULT str_delete_prefix(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(korb_str_new(c, c->sp, ((struct korb_string *)self)->ptr,
                                        ((struct korb_string *)self)->len));
-    VALUE arg = str_coerce_arg(c, argv[0]);
-    if (UNDEF_P(arg)) return RESULT_OK(Qnil);
+    VALUE arg = UNWRAP(str_coerce_arg(c, argv[0]));
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     if (p->len <= s->len && memcmp(s->ptr, p->ptr, p->len) == 0 &&
@@ -2867,8 +2858,7 @@ static RESULT str_delete_suffix(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 1) return RESULT_OK(korb_str_new(c, c->sp, ((struct korb_string *)self)->ptr,
                                        ((struct korb_string *)self)->len));
-    VALUE arg = str_coerce_arg(c, argv[0]);
-    if (UNDEF_P(arg)) return RESULT_OK(Qnil);
+    VALUE arg = UNWRAP(str_coerce_arg(c, argv[0]));
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     long cut = s->len - p->len;
@@ -2886,8 +2876,7 @@ static RESULT str_delete_prefix_bang(CTX *c, int argc, VALUE *sp) {
 
     CHECK_FROZEN_R(c, self);
     if (argc < 1) return RESULT_OK(Qnil);
-    VALUE arg = str_coerce_arg(c, argv[0]);
-    if (UNDEF_P(arg)) return RESULT_OK(Qnil);
+    VALUE arg = UNWRAP(str_coerce_arg(c, argv[0]));
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     if (p->len == 0 || p->len > s->len ||
@@ -2910,8 +2899,7 @@ static RESULT str_delete_suffix_bang(CTX *c, int argc, VALUE *sp) {
 
     CHECK_FROZEN_R(c, self);
     if (argc < 1) return RESULT_OK(Qnil);
-    VALUE arg = str_coerce_arg(c, argv[0]);
-    if (UNDEF_P(arg)) return RESULT_OK(Qnil);
+    VALUE arg = UNWRAP(str_coerce_arg(c, argv[0]));
     struct korb_string *s = (struct korb_string *)self;
     struct korb_string *p = (struct korb_string *)arg;
     long cut = s->len - p->len;

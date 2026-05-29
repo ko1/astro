@@ -137,19 +137,17 @@ static ID korb_name_to_id_(VALUE v) {
 /* Validate a class-variable name: must start with `@@` followed by at
  * least one identifier character.  Returns the ID on success, or
  * raises NameError / TypeError and returns 0. */
-static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
+/* On NORMAL, returns the interned ID in *out_id.  On raise/non-NORMAL,
+ * returns the RESULT (with state set); *out_id is left untouched. */
+static RESULT korb_cvar_name_to_id_or_raise(CTX *c, VALUE v, ID *out_id) {
     /* Coerce non-Symbol/String name via #to_str (CRuby semantics). */
     if (!SYMBOL_P(v) &&
         (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) &&
         !SPECIAL_CONST_P(v)) {
-        RESULT _rt_rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-        if (_rt_rt.state == KORB_RAISE) return 0;
-        VALUE rt = _rt_rt.value;
+        VALUE rt = UNWRAP(korb_funcall(c, v, korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
         if (RTEST(rt)) {
-            RESULT _rt_v = korb_funcall(c, v, korb_intern("to_str"), 0, NULL);
-            if (_rt_v.state == KORB_RAISE) return 0;
-            v = _rt_v.value;
+            v = UNWRAP(korb_funcall(c, v, korb_intern("to_str"), 0, NULL));
         }
     }
     const char *p; long n;
@@ -161,19 +159,18 @@ static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
         n = ((struct korb_string *)v)->len;
     } else {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+        return korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string",
-                   "(arg)"));
-        return 0;
+                   "(arg)");
     }
     if (n < 3 || p[0] != '@' || p[1] != '@') {
         VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+        return korb_raise(c, (struct korb_class *)eN,
                    "`%.*s' is not allowed as a class variable name",
-                   (int)n, p));
-        return 0;
+                   (int)n, p);
     }
-    return korb_intern_n(p, n);
+    *out_id = korb_intern_n(p, n);
+    return RESULT_OK(Qnil);
 }
 extern VALUE korb_cvar_names(CTX *c, struct korb_class *k);
 RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
@@ -185,8 +182,8 @@ RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "class_variable_get: receiver must be Class/Module");
     }
     if (argc < 1) return RESULT_OK(Qnil);
-    ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
-    if (!name) return RESULT_OK(Qnil);
+    ID name = 0;
+    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));
     /* Walk the receiver's class chain via the existing helper.  We
      * reuse korb_cvar_get which uses cref/current_class — set those
      * temporarily so the lookup roots at `self`. */
@@ -215,8 +212,8 @@ RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
                    korb_id_name(korb_class_of_class(self)->name));
     }
-    ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
-    if (!name) return RESULT_OK(Qnil);
+    ID name = 0;
+    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));
     extern RESULT korb_cvar_set(CTX *c, ID name, VALUE val);
     struct korb_class *prev_class = c->current_frame->current_class;
     struct korb_cref *prev_cref = c->current_frame->cref;
@@ -235,8 +232,8 @@ RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1) return RESULT_OK(Qfalse);
-    ID name = korb_cvar_name_to_id_or_raise(c, argv[0]);
-    if (!name) return RESULT_OK(Qfalse);
+    ID name = 0;
+    CHECK(korb_cvar_name_to_id_or_raise(c, argv[0], &name));
     if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(Qfalse);
     /* Walk super chain + transitive includes (CRuby semantics). */
     struct korb_class *root = (struct korb_class *)self;
@@ -943,9 +940,9 @@ RESULT obj_itself(CTX *c, int argc, VALUE *sp) {
 
 
 /* ---------- Object#dup / clone / instance_variables ---------- */
-static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen);
+static RESULT obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen);
 
-static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg);
+static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg);
 static RESULT obj_clone(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
@@ -967,20 +964,20 @@ static RESULT obj_clone(CTX *c, int argc, VALUE *sp) {
             }
         }
     }
-    return RESULT_OK(obj_dup_impl_freeze(c, self, true, freeze_arg));
+    return obj_dup_impl_freeze(c, self, true, freeze_arg);
 }
 static RESULT obj_dup(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(obj_dup_impl_freeze(c, self, false, -1));
+    return obj_dup_impl_freeze(c, self, false, -1);
 }
-static VALUE obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
+static RESULT obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen) {
     return obj_dup_impl_freeze(c, self, preserve_frozen, -1);
 }
-static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg) {
-    if (SPECIAL_CONST_P(self)) return self;
+static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg) {
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(self);
     enum korb_type t = BUILTIN_TYPE(self);
     VALUE r = self;
     if (t == T_OBJECT) {
@@ -1110,11 +1107,10 @@ static VALUE obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int f
                                    : korb_intern("initialize_copy");
         if (k && korb_class_find_method(k, hook)) {
             VALUE args[1] = { self };
-            korb_funcall(c, r, hook, 1, args);
-            if (c->state == KORB_RAISE) return Qnil;
+            CHECK(korb_funcall(c, r, hook, 1, args));
         }
     }
-    return r;
+    return RESULT_OK(r);
 }
 static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;

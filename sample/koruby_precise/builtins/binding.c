@@ -576,11 +576,10 @@ static RESULT binding_local_variables_cfunc(CTX *c, int argc, VALUE *sp) {
 
 /* Binding#eval implementation factored out so Kernel#eval can call
  * it directly when given a Binding as the second arg. */
-VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
-    if (argc < 1) return Qnil;
+RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
+    if (argc < 1) return RESULT_OK(Qnil);
     if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING) {
-        DROP_RESULT(korb_raise(c, NULL, "binding.eval: argument must be a String"));
-        return Qnil;
+        return korb_raise(c, NULL, "binding.eval: argument must be a String");
     }
     struct korb_string *s = (struct korb_string *)argv[0];
     const char *filename = "(eval)";
@@ -643,10 +642,9 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
                                               line_offset, &err_msg);
     if (err_msg) {
         VALUE eSE = korb_const_get(KORB_VM(c)->object_class, korb_intern("SyntaxError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eSE, "%s", err_msg));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eSE, "%s", err_msg);
     }
-    if (!ast) return Qnil;
+    if (!ast) return RESULT_OK(Qnil);
 
     /* Pull the parsed program's full local-name list and merge any new
      * names into the binding's table.  This lets `bind.eval('x = 1')`
@@ -692,14 +690,6 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
     extern struct Node *OPTIMIZE(struct Node *n);
     OPTIMIZE(ast);
     RESULT _br = EVAL(c, ast, c->current_frame->fp);
-    VALUE r;
-    if (UNLIKELY(_br.state != KORB_NORMAL)) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-        r = Qnil;
-    } else {
-        r = _br.value;
-    }
 
     c->current_eval_binding = prev_eval_binding;
     c->current_frame->current_file = prev_file;
@@ -739,7 +729,7 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
             korb_hash_aset(c, b->extra_vars, korb_id2sym(b->names[i]), v);
         }
     }
-    return r;
+    return _br;
 }
 
 /* Binding#source_location — [file, line] of where the binding was
@@ -790,7 +780,7 @@ static RESULT binding_eval_cfunc(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
-    return RESULT_OK(binding_eval_via(c, (struct korb_binding *)self, argv, argc));
+    return binding_eval_via(c, (struct korb_binding *)self, argv, argc);
 }
 
 /* Binding#dup / Binding#clone — deep-copy the names list and extras

@@ -261,7 +261,7 @@ static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
     /* Non-numeric begin (`('a'..'e').first(2)`): delegate to to_a then take. */
     if (!FIXNUM_P(r->begin)) {
         VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
-        if (c->state != KORB_NORMAL || BUILTIN_TYPE(arr) != T_ARRAY) return RESULT_OK(Qnil);
+        if (BUILTIN_TYPE(arr) != T_ARRAY) return RESULT_OK(Qnil);
         return korb_funcall(c, arr, korb_intern("first"), 1, &nv);
     }
     long n = FIX2LONG(nv);
@@ -518,7 +518,7 @@ static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
     if (!b_numeric || !e_numeric) return RESULT_OK(Qnil);
     /* Numeric mixed: delegate to to_a length. */
     VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
-    if (c->state == KORB_NORMAL && BUILTIN_TYPE(arr) == T_ARRAY) {
+    if (BUILTIN_TYPE(arr) == T_ARRAY) {
         return RESULT_OK(INT2FIX(((struct korb_array *)arr)->len));
     }
     return RESULT_OK(Qnil);
