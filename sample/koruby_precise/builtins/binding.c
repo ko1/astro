@@ -87,7 +87,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         struct korb_binding *src = (struct korb_binding *)c->current_eval_binding;
         struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
         b->basic.head.flags = T_DATA;
-        b->basic.klass = korb_vm ? (VALUE)korb_vm->binding_class : 0;
+        b->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->binding_class : 0;
         b->self = src->self;
         b->cref = src->cref;
         b->method_name = src->method_name;
@@ -123,7 +123,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     }
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.head.flags = T_DATA;
-    b->basic.klass = korb_vm ? (VALUE)korb_vm->binding_class : 0;
+    b->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->binding_class : 0;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&b->basic);
     /* Binding's self should be the caller's lexical self (the one who
@@ -140,7 +140,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     } else if (c->current_frame && c->current_frame->method) {
         b->self = c->current_frame->self;
     } else if (korb_vm) {
-        b->self = korb_vm->main_obj;
+        b->self = KORB_VM(c)->main_obj;
     } else {
         b->self = recv;
     }
@@ -394,7 +394,7 @@ static RESULT binding_local_variable_get(CTX *c, int argc, VALUE *sp) {
     }
     VALUE v = binding_read_name(b, name_id);
     if (UNDEF_P(v)) {
-        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         return korb_raise(c, (struct korb_class *)eN,
                    "local variable '%s' is not defined for binding",
                    korb_id_name(name_id));
@@ -444,7 +444,7 @@ static RESULT binding_local_variable_set(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "binding: name must be Symbol or String");
     }
     if (!binding_valid_lvar_name(name_id)) {
-        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         return korb_raise(c, (struct korb_class *)eN,
                    "wrong local variable name '%s' for binding",
                    korb_id_name(name_id));
@@ -624,7 +624,7 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
                                               scope_locals, scope_locals_n,
                                               line_offset, &err_msg);
     if (err_msg) {
-        VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
+        VALUE eSE = korb_const_get(KORB_VM(c)->object_class, korb_intern("SyntaxError"));
         DROP_RESULT(korb_raise(c, (struct korb_class *)eSE, "%s", err_msg));
         return Qnil;
     }
@@ -831,7 +831,7 @@ static VALUE proc_binding_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_proc *p = (struct korb_proc *)self;
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.head.flags = T_DATA;
-    b->basic.klass = korb_vm ? (VALUE)korb_vm->binding_class : 0;
+    b->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->binding_class : 0;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&b->basic);
     b->self = p->self;

@@ -43,7 +43,7 @@ static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
         name = korb_intern_n(((struct korb_string *)v)->ptr,
                              ((struct korb_string *)v)->len);
     } else {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string",
                    SPECIAL_CONST_P(arg) ? "(special)"
@@ -53,7 +53,7 @@ static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
     const char *base = korb_id_name(name);
     if (!base || (!((base[0] >= 'a' && base[0] <= 'z') ||
                     (base[0] >= 'A' && base[0] <= 'Z') || base[0] == '_'))) {
-        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                    "invalid attribute name '%s'", base ? base : ""));
         return false;
@@ -67,7 +67,7 @@ static bool attr_resolve_name(CTX *c, VALUE arg, ID *out_id, const char *meth) {
  * false (and raises FrozenError) on failure. */
 static bool attr_check_frozen(CTX *c, VALUE self) {
     if (korb_obj_frozen_p(self)) {
-        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
         struct korb_class *k = (struct korb_class *)self;
         const char *cn = (k->name != 0) ? korb_id_name(k->name) : "(anon)";
         DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
@@ -165,8 +165,8 @@ static RESULT module_include(CTX *c, int argc, VALUE *sp) {
      * makes M's constants reachable as toplevel constants. */
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) {
         if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_OBJECT &&
-            self == korb_vm->main_obj) {
-            self = (VALUE)korb_vm->object_class;
+            self == KORB_VM(c)->main_obj) {
+            self = (VALUE)KORB_VM(c)->object_class;
         } else {
             return RESULT_OK(self);
         }
@@ -190,7 +190,7 @@ static RESULT module_include(CTX *c, int argc, VALUE *sp) {
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         }
     }
-    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+    if (korb_vm) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
     return RESULT_OK(self);
 }
 
@@ -221,7 +221,7 @@ static RESULT module_define_method(CTX *c, int argc, VALUE *sp) {
      * class itself (wrong receiver). */
     if (argc >= 2 && !SPECIAL_CONST_P(argv[1]) &&
         BUILTIN_TYPE(argv[1]) == T_DATA &&
-        ((struct RBasic *)argv[1])->klass == (VALUE)korb_vm->method_class) {
+        ((struct RBasic *)argv[1])->klass == (VALUE)KORB_VM(c)->method_class) {
         struct korb_method_obj *m = (struct korb_method_obj *)argv[1];
         if (!SPECIAL_CONST_P(m->receiver) &&
             (BUILTIN_TYPE(m->receiver) == T_CLASS || BUILTIN_TYPE(m->receiver) == T_MODULE)) {
@@ -285,7 +285,7 @@ static RESULT class_superclass(CTX *c, int argc, VALUE *sp) {
     /* Uninitialized class (`Class.allocate`) has no super yet — CRuby
      * raises TypeError on #superclass.  Detect via our sentinel name. */
     if (k->super == NULL && k->name == korb_intern("(uninitialized)")) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "uninitialized class");
     }
@@ -610,7 +610,7 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
-            ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
+            ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
             return RESULT_OK(korb_funcall(c, self, mo->name, 0, NULL));
         }
@@ -661,7 +661,7 @@ static RESULT module_class_exec(CTX *c, int argc, VALUE *sp) {
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
-            ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
+            ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
             return RESULT_OK(korb_funcall(c, self, mo->name, (uint32_t)argc, argv));
         }
@@ -700,7 +700,7 @@ static RESULT module_lt(CTX *c, int argc, VALUE *sp) {
     if (argc < 1) return RESULT_OK(Qnil);
     if (SPECIAL_CONST_P(argv[0]) ||
         (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "compared with non class/module");
     }
@@ -743,7 +743,7 @@ static RESULT module_gt(CTX *c, int argc, VALUE *sp) {
     if (argc < 1) return RESULT_OK(Qnil);
     if (SPECIAL_CONST_P(argv[0]) ||
         (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "compared with non class/module");
     }
@@ -810,7 +810,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
     struct korb_class *klass = (struct korb_class *)self;
     /* Singleton classes can't be instantiated — CRuby raises TypeError. */
     if (klass->basic.head.flags & FL_SINGLETON) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "can't create instance of singleton class");
     }
@@ -819,17 +819,17 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
      * .allocate or .initialize on a half-built class crashes deep in
      * method lookup.  CRuby raises TypeError here. */
     if (klass->name == korb_intern("(uninitialized)") && klass->super == NULL) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "can't create instance of uninitialized class");
     }
     /* Class.new(superclass = Object) — create an anonymous subclass. */
-    if (klass == korb_vm->class_class) {
-        struct korb_class *super = korb_vm->object_class;
+    if (klass == KORB_VM(c)->class_class) {
+        struct korb_class *super = KORB_VM(c)->object_class;
         if (argc >= 1) {
             /* Reject non-Class superclass with TypeError. */
             if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_CLASS) {
-                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "superclass must be an instance of Class (given an instance of %s)",
                            korb_id_name(korb_class_of_class(argv[0])->name));
@@ -838,7 +838,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
             /* Reject metaclass (FL_SINGLETON) — CRuby raises TypeError
              * "can't make subclass of singleton class". */
             if (super->basic.head.flags & FL_SINGLETON) {
-                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "can't make subclass of singleton class");
             }
@@ -848,7 +848,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
              * broken chain. */
             if (super->super == NULL &&
                 super->name == korb_intern("(uninitialized)")) {
-                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "can't inherit uninitialized class");
             }
@@ -1076,7 +1076,7 @@ static RESULT module_prepend(CTX *c, int argc, VALUE *sp) {
             if (!korb_const_has(klass, ce->name)) korb_const_set(klass, ce->name, ce->value);
         }
     }
-    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+    if (korb_vm) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
     return RESULT_OK(self);
 }
 /* Module#remove_const(:NAME) — remove a constant from the module.
@@ -1098,7 +1098,7 @@ static RESULT module_remove_const(CTX *c, int argc, VALUE *sp) {
     extern bool korb_const_remove(struct korb_class *k, ID name, VALUE *out);
     VALUE prev = Qnil;
     if (!korb_const_remove(k, name, &prev)) {
-        VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         return korb_raise(c, (struct korb_class *)eName,
                    "constant %s::%s not defined",
                    korb_id_name(k->name), korb_id_name(name));
@@ -1129,7 +1129,7 @@ static RESULT module_remove_class_variable(CTX *c, int argc, VALUE *sp) {
             return RESULT_OK(prev);
         }
     }
-    VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+    VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
     return korb_raise(c, (struct korb_class *)eName,
                "class variable %s not defined for %s",
                korb_id_name(name), korb_id_name(k->name));
@@ -1168,7 +1168,7 @@ static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
             name = korb_intern_n(((struct korb_string *)arg)->ptr,
                                  ((struct korb_string *)arg)->len);
         if (!name) {
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                        "%s is not a symbol nor a string",
                        SPECIAL_CONST_P(argv[i]) ? "(special)"
@@ -1177,7 +1177,7 @@ static VALUE class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
         }
         struct korb_method *m = meta ? korb_class_find_method(meta, name) : NULL;
         if (!m) {
-            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
             const char *cn = (((struct korb_class *)self)->name)
                               ? korb_id_name(((struct korb_class *)self)->name) : "(anon)";
             DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
@@ -1224,7 +1224,7 @@ static RESULT module_private_constant(CTX *c, int argc, VALUE *sp) {
             if (e->name == name) { e->is_private = true; found = true; break; }
         }
         if (!found) {
-            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
             return korb_raise(c, (struct korb_class *)eN,
                        "constant %s::%s not defined",
                        k->name ? korb_id_name(k->name) : "?", korb_id_name(name));
@@ -1262,7 +1262,7 @@ static RESULT module_class_nesting(CTX *c, int argc, VALUE *sp) {
 
     VALUE arr = korb_ary_new(c, c->sp);
     for (struct korb_cref *cur = c->current_frame->cref; cur; cur = cur->prev) {
-        if (cur->klass && cur->klass != korb_vm->object_class) {
+        if (cur->klass && cur->klass != KORB_VM(c)->object_class) {
             korb_ary_push(arr, (VALUE)cur->klass);
         }
     }

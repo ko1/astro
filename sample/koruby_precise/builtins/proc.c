@@ -80,7 +80,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
      * `m.receiver.send(m.name, *args)`. */
     if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
         BUILTIN_TYPE(p->self) == T_DATA &&
-        ((struct RBasic *)p->self)->klass == (VALUE)korb_vm->method_class) {
+        ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         struct korb_method_obj *m = (struct korb_method_obj *)p->self;
         return RESULT_OK(korb_funcall(c, m->receiver, m->name, argc, argv));
     }
@@ -101,7 +101,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
                              ? p->params_cnt - p->opt_cnt + p->post_cnt
                              : p->post_cnt;
         if ((uint32_t)eff_argc < required || (uint32_t)eff_argc > total_pos) {
-            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg,
                      "wrong number of arguments (given %d, expected %u)",
                      eff_argc, total_pos);
@@ -118,7 +118,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
                              ? p->params_cnt - p->opt_cnt + p->post_cnt
                              : p->post_cnt;
         if ((uint32_t)eff_argc < required) {
-            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg,
                      "wrong number of arguments (given %d, expected %u+)",
                      eff_argc, required);
@@ -233,7 +233,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
                     return RESULT_OK(Qnil);
                 }
                 if (BUILTIN_TYPE(coerced) != T_ARRAY) {
-                    VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                    VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                     return korb_raise(c, (struct korb_class *)eT,
                                "can't convert to Array (#to_ary gave non-Array)");
                     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
@@ -415,7 +415,7 @@ redo_proc:
                 c->state_target_frame = owner;
                 r = c->state_value;
             } else {
-                VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
+                VALUE eL = korb_const_get(KORB_VM(c)->object_class, korb_intern("LocalJumpError"));
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
                 c->state_target_frame = NULL;
@@ -450,7 +450,7 @@ redo_proc:
          * Keep the tag on the exception's @tag ivar so re-thrown
          * conversions can carry it through outer rescue handlers. */
         ARO_ROOT_SCOPE_START(c, urs, 4) {
-            urs[0] = korb_const_get(korb_vm->object_class, korb_intern("UncaughtThrowError"));
+            urs[0] = korb_const_get(KORB_VM(c)->object_class, korb_intern("UncaughtThrowError"));
             urs[1] = Qnil; /* tag */
             urs[2] = Qnil; /* val */
             if (!SPECIAL_CONST_P(c->state_value) && BUILTIN_TYPE(c->state_value) == T_ARRAY) {
@@ -476,7 +476,7 @@ redo_proc:
         /* `retry` outside a rescue is a SyntaxError in CRuby (parse
          * time) or LocalJumpError at runtime if it escapes scope.
          * Convert to a SyntaxError-like raise so `rescue` can catch. */
-        VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
+        VALUE eSE = korb_const_get(KORB_VM(c)->object_class, korb_intern("SyntaxError"));
         if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
             return korb_raise(c, (struct korb_class *)eSE, "Invalid retry");
         } else {

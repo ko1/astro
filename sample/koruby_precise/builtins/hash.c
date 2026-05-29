@@ -22,7 +22,7 @@ static RESULT hash_aref(CTX *c, int argc, VALUE *sp) {
     /* Miss path. */
     /* For the canonical Hash class skip the funcall round-trip. */
     struct korb_class *kls = korb_class_of_class(self);
-    if (kls == korb_vm->hash_class) {
+    if (kls == KORB_VM(c)->hash_class) {
         if (!NIL_P(h->default_proc)) {
             VALUE args[2] = {self, argv[0]};
             return RESULT_OK(korb_funcall(c, h->default_proc, korb_intern("call"), 2, args));
@@ -181,7 +181,7 @@ static RESULT hash_merge(CTX *c, int argc, VALUE *sp) {
     rh->default_value = src->default_value;
     rh->default_proc = src->default_proc;
     /* Honor subclass: result has self's class (CRuby semantics). */
-    if (((struct RBasic *)self)->klass != (VALUE)korb_vm->hash_class) {
+    if (((struct RBasic *)self)->klass != (VALUE)KORB_VM(c)->hash_class) {
         ((struct RBasic *)r)->klass = ((struct RBasic *)self)->klass;
     }
     for (struct korb_hash_entry *e = src->first; e; e = e->next) {
@@ -198,7 +198,7 @@ static RESULT hash_merge(CTX *c, int argc, VALUE *sp) {
                 if (c->state == KORB_RAISE) {
                     /* swallow NoMethodError; propagate other errors */
                     VALUE bang = c->state_value;
-                    VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+                    VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
                     if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
                         BUILTIN_TYPE(eNo) == T_CLASS) {
                         struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
@@ -326,7 +326,7 @@ static RESULT hash_kwargs_validate(CTX *c, int argc, VALUE *sp) {
                            ? ((struct korb_string *)v)->ptr : "?";
         off += snprintf(buf + off, sizeof(buf) - off, "%s %s", i == 0 ? "" : ",", vs);
     }
-    VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
     return korb_raise(c, (struct korb_class *)eArg, "%s", buf);
 }
 
@@ -345,7 +345,7 @@ static RESULT hash_required_kwarg(CTX *c, int argc, VALUE *sp) {
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         if (e->hash == hh && korb_eql(c, e->key, argv[0])) return RESULT_OK(e->value);
     }
-    VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
     const char *kn = SYMBOL_P(argv[0]) ? korb_id_name(korb_sym2id(argv[0])) : "?";
     return korb_raise(c, (struct korb_class *)eArg, "missing keyword: :%s", kn);
 }
@@ -386,7 +386,7 @@ static RESULT hash_required_kwargs_check(CTX *c, int argc, VALUE *sp) {
         off += snprintf(buf + off, sizeof(buf) - off, "%s:%s",
                         i == 0 ? "" : ", ", kn);
     }
-    VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
     return korb_raise(c, (struct korb_class *)eArg, "%s", buf);
 }
 
@@ -396,7 +396,7 @@ static RESULT hash_fetch(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1 || argc > 2) {
-        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given %d, expected 1..2)", argc);
     }
@@ -412,7 +412,7 @@ static RESULT hash_fetch(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(r);
     }
     if (argc >= 2) return RESULT_OK(argv[1]);
-    VALUE eKey = korb_const_get(korb_vm->object_class, korb_intern("KeyError"));
+    VALUE eKey = korb_const_get(KORB_VM(c)->object_class, korb_intern("KeyError"));
     if (UNDEF_P(eKey) || !eKey) eKey = (VALUE)NULL;
     VALUE ks = korb_inspect(c, c->sp, argv[0]);
     return korb_raise(c, (struct korb_class *)eKey, "key not found: %s", korb_str_cstr(ks));
@@ -586,9 +586,9 @@ static RESULT hash_tally(CTX *c, int argc, VALUE *sp) {
 /* Hash[pairs] / Hash[k1,v1,k2,v2,...] / Hash[other_hash] — convert to Hash. */
 /* Apply receiver-class to a freshly-created hash.  When self is a
  * Hash subclass, the result should be an instance of that subclass. */
-static inline void hash_apply_self_class(VALUE r, VALUE self) {
+static inline void hash_apply_self_class(CTX *c, VALUE r, VALUE self) {
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS &&
-        self != (VALUE)korb_vm->hash_class) {
+        self != (VALUE)KORB_VM(c)->hash_class) {
         ((struct RBasic *)r)->klass = self;
     }
 }
@@ -599,7 +599,7 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
 
     if (argc == 0) {
         VALUE r = korb_hash_new(c, c->sp);
-        hash_apply_self_class(r, self);
+        hash_apply_self_class(c, r, self);
         return RESULT_OK(r);
     }
     if (argc == 1) {
@@ -631,7 +631,7 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
         }
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_HASH) {
             VALUE r = korb_hash_new(c, c->sp);
-            hash_apply_self_class(r, self);
+            hash_apply_self_class(c, r, self);
             struct korb_hash *src = (struct korb_hash *)arg;
             for (struct korb_hash_entry *e = src->first; e; e = e->next) {
                 korb_hash_aset(c, r, e->key, e->value);
@@ -641,12 +641,12 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_ARRAY) {
             /* Hash[ [[k,v], [k,v]] ] form. */
             VALUE r = korb_hash_new(c, c->sp);
-            hash_apply_self_class(r, self);
+            hash_apply_self_class(c, r, self);
             struct korb_array *a = (struct korb_array *)arg;
             for (long i = 0; i < a->len; i++) {
                 VALUE pair = a->ptr[i];
                 if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
-                    VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                    VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
                     struct korb_class *klass = korb_class_of_class(pair);
                     const char *cls = klass ? korb_id_name(klass->name) : "(unknown)";
                     return korb_raise(c, (struct korb_class *)eA,
@@ -659,7 +659,7 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
                 } else if (p->len == 2) {
                     korb_hash_aset(c, r, p->ptr[0], p->ptr[1]);
                 } else {
-                    VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                    VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
                     return korb_raise(c, (struct korb_class *)eA,
                                "invalid number of elements (%ld for 1..2)", p->len);
                 }
@@ -669,12 +669,12 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
     }
     /* Hash[k,v,k,v,...] flat form.  argc must be even. */
     if (argc % 2 != 0) {
-        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         return korb_raise(c, (struct korb_class *)eA,
                    "odd number of arguments for Hash");
     }
     VALUE r = korb_hash_new(c, c->sp);
-    hash_apply_self_class(r, self);
+    hash_apply_self_class(c, r, self);
     for (int i = 0; i + 1 < argc; i += 2) {
         korb_hash_aset(c, r, argv[i], argv[i+1]);
     }
@@ -699,7 +699,7 @@ static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
         VALUE cap_key = korb_id2sym(korb_intern("capacity"));
         for (struct korb_hash_entry *e = kw->first; e; e = e->next) {
             if (!korb_eql(c, e->key, cap_key)) {
-                VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+                VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
                 const char *kn = SYMBOL_P(e->key) ? korb_id_name(korb_sym2id(e->key)) : "?";
                 return korb_raise(c, (struct korb_class *)eA,
                            "unknown keyword: :%s", kn);
@@ -709,12 +709,12 @@ static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
         eff_argc = argc - 1;
     }
     if (eff_argc > 1) {
-        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given %d, expected 0..1)", eff_argc);
     }
     if (c->current_block && eff_argc >= 1) {
-        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given 1, expected 0)");
     }
@@ -722,7 +722,7 @@ static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
     struct korb_hash *hh = (struct korb_hash *)h;
     /* Honor subclass: rewrite klass when called as MyHash.new (where self
      * is the subclass).  CRuby semantics. */
-    if (self != (VALUE)korb_vm->hash_class) {
+    if (self != (VALUE)KORB_VM(c)->hash_class) {
         hh->basic.klass = self;
     }
     if (c->current_block) {
@@ -798,7 +798,7 @@ static RESULT hash_default_proc_set(CTX *c, int argc, VALUE *sp) {
             }
         }
         if (SPECIAL_CONST_P(blk) || BUILTIN_TYPE(blk) != T_PROC) {
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
                        "wrong default_proc type %s (expected Proc)",
                        korb_id_name(korb_class_of_class(argv[0])->name));
@@ -810,7 +810,7 @@ static RESULT hash_default_proc_set(CTX *c, int argc, VALUE *sp) {
     if (p->is_lambda) {
         long ar = (long)p->params_cnt - (long)p->opt_cnt + (long)p->post_cnt;
         if (ar != 2) {
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
                        "default_proc takes two arguments (2 for %ld)", ar);
         }
@@ -1008,7 +1008,7 @@ static RESULT hash_fetch_values(CTX *c, int argc, VALUE *sp) {
                 korb_ary_push(r, blk_r);
                 continue;
             }
-            VALUE eK = korb_const_get(korb_vm->object_class, korb_intern("KeyError"));
+            VALUE eK = korb_const_get(KORB_VM(c)->object_class, korb_intern("KeyError"));
             return korb_raise(c, eK ? (struct korb_class *)eK : NULL,
                        "key not found");
         }
@@ -1061,7 +1061,7 @@ static RESULT hash_replace(CTX *c, int argc, VALUE *sp) {
             }
         }
         if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_HASH) {
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT,
                        "no implicit conversion of %s into Hash",
                        SPECIAL_CONST_P(argv[0]) ? "(special)"
@@ -1240,7 +1240,7 @@ static RESULT hash_deconstruct_keys(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc != 1) {
-        VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given %d, expected 1)", argc);
     }
@@ -1274,7 +1274,7 @@ static RESULT hash_dig(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1) {
-        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         return korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments to dig (0 for 1+)");
     }
     VALUE first = korb_hash_aref(c, self, argv[0]);
@@ -1285,7 +1285,7 @@ static RESULT hash_dig(CTX *c, int argc, VALUE *sp) {
     VALUE next_klass = (VALUE)korb_class_of_class(first);
     if (!next_klass || !korb_class_find_method((struct korb_class *)next_klass,
                                                  korb_intern("dig"))) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "%s does not have #dig method",
                    korb_id_name(korb_class_of_class(first)->name));

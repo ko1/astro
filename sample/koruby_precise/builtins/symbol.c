@@ -7,7 +7,7 @@ static VALUE sym_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
      * and dispatch as `arg.send(sym, *rest)`. */
     struct korb_proc *p = korb_xcalloc(1, sizeof(*p));
     p->basic.head.flags = T_PROC;
-    p->basic.klass = (VALUE)korb_vm->proc_class;
+    p->basic.klass = (VALUE)KORB_VM(c)->proc_class;
     p->body = NULL;
     p->env = NULL;
     p->env_size = 0;

@@ -6,9 +6,9 @@
 /* ---------- Boolean ---------- */
 /* CRuby semantics: true.to_s / false.to_s / nil.to_s return the same
  * frozen string each call.  Cached on korb_vm; no allocation. */
-static RESULT true_to_s(CTX *c, int argc, VALUE *sp)  { (void)sp; return RESULT_OK(korb_vm->frozen_true_str); }
-static RESULT false_to_s(CTX *c, int argc, VALUE *sp) { (void)sp; return RESULT_OK(korb_vm->frozen_false_str); }
-static RESULT nil_to_s(CTX *c, int argc, VALUE *sp)   { (void)sp; return RESULT_OK(korb_vm->frozen_nil_str); }
+static RESULT true_to_s(CTX *c, int argc, VALUE *sp)  { (void)sp; return RESULT_OK(KORB_VM(c)->frozen_true_str); }
+static RESULT false_to_s(CTX *c, int argc, VALUE *sp) { (void)sp; return RESULT_OK(KORB_VM(c)->frozen_false_str); }
+static RESULT nil_to_s(CTX *c, int argc, VALUE *sp)   { (void)sp; return RESULT_OK(KORB_VM(c)->frozen_nil_str); }
 static RESULT nil_inspect(CTX *c, int argc, VALUE *sp) { return RESULT_OK(korb_str_new_cstr(c, sp, "nil")); }
 
 /* Boolean and / or / xor (Kernel#&|^ on true/false/nil). */

@@ -38,7 +38,7 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
         struct korb_class *klass = korb_class_of_class(self);
         struct korb_method *m = korb_class_find_method(klass, name);
         if (m && m->visibility != KORB_VIS_PUBLIC) {
-            VALUE eNo = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
+            VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
             DROP_RESULT(korb_raise(c, (struct korb_class *)eNo,
                      "private method '%s' called for %s",
                      korb_id_name(name), korb_id_name(klass->name)));
@@ -110,7 +110,7 @@ static RESULT obj_instance_variable_set(CTX *c, int argc, VALUE *sp) {
      * ivars; CRuby raises FrozenError ("can't modify frozen X").  Match
      * that semantic via a RuntimeError-class FrozenError. */
     if (SPECIAL_CONST_P(self) || FIXNUM_P(self) || FLONUM_P(self) || SYMBOL_P(self)) {
-        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
         const char *cn = "(special)";
         if (self == Qtrue) cn = "true";
         else if (self == Qfalse) cn = "false";
@@ -159,14 +159,14 @@ static ID korb_cvar_name_to_id_or_raise(CTX *c, VALUE v) {
         p = ((struct korb_string *)v)->ptr;
         n = ((struct korb_string *)v)->len;
     } else {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string",
                    "(arg)"));
         return 0;
     }
     if (n < 3 || p[0] != '@' || p[1] != '@') {
-        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                    "`%.*s' is not allowed as a class variable name",
                    (int)n, p));
@@ -210,7 +210,7 @@ RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
     if (argc < 2) return RESULT_OK(Qnil);
     /* Frozen check before any side effects (CRuby semantics). */
     if (korb_obj_frozen_p(self)) {
-        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
         return korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
                    korb_id_name(korb_class_of_class(self)->name));
     }
@@ -274,7 +274,7 @@ RESULT obj_singleton_class(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK((VALUE)korb_class_of_class(self));
     }
     if (SPECIAL_CONST_P(self) && (FIXNUM_P(self) || SYMBOL_P(self) || KORB_IS_FLOAT(self))) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "can't define singleton on %s",
                    korb_id_name(korb_class_of_class(self)->name));
@@ -300,7 +300,7 @@ RESULT class_allocate(CTX *c, int argc, VALUE *sp) {
     }
     /* Singleton classes can't be instantiated. */
     if (((struct korb_class *)self)->basic.head.flags & FL_SINGLETON) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "can't create instance of singleton class");
     }
@@ -329,9 +329,9 @@ static RESULT obj_method(CTX *c, int argc, VALUE *sp) {
     /* Build a Method object: a small heap struct with receiver + name. */
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
-    m->basic.klass = korb_vm->method_class
-                       ? (VALUE)korb_vm->method_class
-                       : (VALUE)korb_vm->object_class;
+    m->basic.klass = KORB_VM(c)->method_class
+                       ? (VALUE)KORB_VM(c)->method_class
+                       : (VALUE)KORB_VM(c)->object_class;
     m->receiver = self;
     m->name = name;
     extern void koruby_register_libc_obj(struct RBasic *);
@@ -364,7 +364,7 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
-            ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
+            ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
             return RESULT_OK(korb_funcall(c, self, mo->name, 0, NULL));
         }
@@ -408,7 +408,7 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
         }
         if (!SPECIAL_CONST_P(blk->self) &&
             BUILTIN_TYPE(blk->self) == T_DATA &&
-            ((struct RBasic *)blk->self)->klass == (VALUE)korb_vm->method_class) {
+            ((struct RBasic *)blk->self)->klass == (VALUE)KORB_VM(c)->method_class) {
             struct korb_method_obj *mo = (struct korb_method_obj *)blk->self;
             return RESULT_OK(korb_funcall(c, self, mo->name, (uint32_t)argc, argv));
         }
@@ -449,7 +449,7 @@ static RESULT module_instance_method(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
-    m->basic.klass = (VALUE)korb_vm->method_class;
+    m->basic.klass = (VALUE)KORB_VM(c)->method_class;
     m->receiver = self;   /* class as "receiver" — unbound */
     m->name = name;
     m->captured_method = km;
@@ -469,7 +469,7 @@ static RESULT method_unbind(CTX *c, int argc, VALUE *sp) {
     struct korb_method_obj *src = (struct korb_method_obj *)self;
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
-    m->basic.klass = (VALUE)korb_vm->method_class;
+    m->basic.klass = (VALUE)KORB_VM(c)->method_class;
     /* Drop the bound receiver — bind() will set it. */
     m->receiver = (VALUE)korb_class_of_class(src->receiver);
     m->name = src->name;
@@ -490,7 +490,7 @@ static RESULT method_bind(CTX *c, int argc, VALUE *sp) {
     struct korb_method_obj *src = (struct korb_method_obj *)self;
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
-    m->basic.klass = (VALUE)korb_vm->method_class;
+    m->basic.klass = (VALUE)KORB_VM(c)->method_class;
     m->receiver = argv[0];
     m->name = src->name;
     m->captured_method = src->captured_method;
@@ -543,7 +543,7 @@ static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
     }
     struct korb_proc *p = korb_xcalloc(1, sizeof(*p));
     p->basic.head.flags = T_PROC;
-    p->basic.klass = (VALUE)korb_vm->proc_class;
+    p->basic.klass = (VALUE)KORB_VM(c)->proc_class;
     p->body = NULL;
     p->env = NULL;
     p->env_size = 0;
@@ -739,7 +739,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
     struct korb_proc *p = (struct korb_proc *)self;
     if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
         BUILTIN_TYPE(p->self) == T_DATA &&
-        ((struct RBasic *)p->self)->klass == (VALUE)korb_vm->method_class) {
+        ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         return RESULT_OK(korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL));
     }
     VALUE r = korb_ary_new(c, c->sp);
@@ -879,7 +879,7 @@ static RESULT obj_instance_of_p(CTX *c, int argc, VALUE *sp) {
     /* CRuby: argument must be a Class or Module; otherwise TypeError. */
     if (SPECIAL_CONST_P(argv[0]) ||
         (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE)) {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "class or module required");
     }
@@ -1165,7 +1165,7 @@ static RESULT obj_ivar_defined_p(CTX *c, int argc, VALUE *sp) {
     } else {
         /* CRuby: arg must be Symbol/String or respond to #to_str.
          * Otherwise TypeError. */
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         const char *cn = SPECIAL_CONST_P(argv[0]) ? "(special)"
                               : korb_id_name(korb_class_of_class(argv[0])->name);
         return korb_raise(c, (struct korb_class *)eT,

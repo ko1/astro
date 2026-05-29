@@ -397,7 +397,7 @@ static RESULT file_open(CTX *c, int argc, VALUE *sp) {
     }
     FILE *fp = fopen(path, mode);
     if (!fp) {
-        VALUE eErrno = korb_const_get(korb_vm->object_class, korb_intern("Errno"));
+        VALUE eErrno = korb_const_get(KORB_VM(c)->object_class, korb_intern("Errno"));
         if (UNDEF_P(eErrno) || !eErrno) eErrno = (VALUE)NULL;
         return korb_raise(c, NULL, "Errno::ENOENT: no such file -- %s", path);
     }
@@ -798,9 +798,9 @@ static char **build_exec_argv(CTX *c, VALUE *strs, int n, bool *use_shell) {
 
 /* Process::Status — minimal struct exposed via $? after system() etc. */
 static VALUE make_process_status(CTX *c, int wstatus, pid_t pid) {
-    VALUE cStatus = korb_const_get(korb_vm->object_class, korb_intern("Process"));
+    VALUE cStatus = korb_const_get(KORB_VM(c)->object_class, korb_intern("Process"));
     VALUE cs = korb_const_get((struct korb_class *)cStatus, korb_intern("Status"));
-    if (UNDEF_P(cs) || NIL_P(cs)) cs = (VALUE)korb_vm->object_class;
+    if (UNDEF_P(cs) || NIL_P(cs)) cs = (VALUE)KORB_VM(c)->object_class;
     VALUE obj = korb_object_new(c, c->sp, (struct korb_class *)cs);
     korb_ivar_set(obj, korb_intern("@pid"), INT2FIX((long)pid));
     int exit_status = WIFEXITED(wstatus) ? WEXITSTATUS(wstatus) : -1;
@@ -884,7 +884,7 @@ static RESULT kernel_exec(CTX *c, int argc, VALUE *sp) {
     if (!xargv) return RESULT_OK(Qnil);
     execvp(xargv[0], xargv);
     /* Reach here only if exec failed. */
-    VALUE eErrno = korb_const_get(korb_vm->object_class, korb_intern("Errno"));
+    VALUE eErrno = korb_const_get(KORB_VM(c)->object_class, korb_intern("Errno"));
     if (!UNDEF_P(eErrno) && !NIL_P(eErrno)) {
         return korb_raise(c, NULL, "exec failed: %s", xargv[0]);
     }

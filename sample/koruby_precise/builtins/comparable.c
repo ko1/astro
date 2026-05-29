@@ -12,7 +12,7 @@
 static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
     VALUE r = korb_funcall(c, self, korb_intern("<=>"), 1, &other);
     if (NIL_P(r)) {
-        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+        VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         /* CRuby's "comparison of X with Y failed" uses the class name on
          * the LHS but inspect-style for non-builtin RHS values
          * (`"comparison of String with 7 failed"`). */
@@ -127,7 +127,7 @@ static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
         struct korb_range *r = (struct korb_range *)argv[0];
         if (r->exclude_end) {
             /* `clamp(a...b)` is rejected (no clean cap on b's value). */
-            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg,
                        "cannot clamp with an exclusive range");
         }
@@ -152,7 +152,7 @@ static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
             bad = korb_num2dbl(r) > 0;
         else bad = false;
         if (bad) {
-            VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+            VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg,
                        "min argument must be smaller than max argument");
         }
@@ -182,7 +182,7 @@ static VALUE module_undef_or_remove_method_impl(CTX *c, VALUE self, int argc, VA
                                      : korb_intern(korb_str_cstr(argv[i]));
         struct korb_method *m = korb_class_find_method(klass, name);
         if (!m) {
-            VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+            VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
             DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                        "undefined method '%s' for class '%s'",
                        korb_id_name(name),
@@ -202,7 +202,7 @@ static VALUE module_undef_or_remove_method_impl(CTX *c, VALUE self, int argc, VA
             korb_method_table_set(&klass->methods, name, um);
         }
     }
-    if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
+    if (korb_vm) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
     return self;
 }
 
@@ -247,11 +247,11 @@ static RESULT module_alias_method(CTX *c, int argc, VALUE *sp) {
     /* Module receiver: also check Object since included methods are
      * accessible via lookup on Module bodies
      * (e.g. `module Kernel; alias_method :a, :method_on_object; end`). */
-    if (!m && BUILTIN_TYPE(self) == T_MODULE && korb_vm->object_class) {
-        m = korb_class_find_method(korb_vm->object_class, old_name);
+    if (!m && BUILTIN_TYPE(self) == T_MODULE && KORB_VM(c)->object_class) {
+        m = korb_class_find_method(KORB_VM(c)->object_class, old_name);
     }
     if (!m) {
-        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         return korb_raise(c, (struct korb_class *)eN,
                    "undefined method '%s' for %s",
                    korb_id_name(old_name),
@@ -289,8 +289,8 @@ static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *
              * common ancestor and Module.new bodies can refer to Object
              * methods).  Fall back to Object so `private :Object_method`
              * on `Module.new` works. */
-            if (!m_inherited && BUILTIN_TYPE(self) == T_MODULE && korb_vm->object_class) {
-                m_inherited = korb_class_find_method(korb_vm->object_class, name);
+            if (!m_inherited && BUILTIN_TYPE(self) == T_MODULE && KORB_VM(c)->object_class) {
+                m_inherited = korb_class_find_method(KORB_VM(c)->object_class, name);
             }
             if (m_inherited) {
                 struct korb_method *cp = korb_xmalloc(sizeof(*cp));
@@ -306,7 +306,7 @@ static void module_set_visibility_for_args(CTX *c, VALUE self, int argc, VALUE *
                  * isn't a real method). */
                 bool is_singleton = (((struct RBasic *)k)->head.flags & FL_SINGLETON);
                 if (is_singleton) continue;
-                VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+                VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
                 const char *cn = (k->name != 0) ? korb_id_name(k->name) : "(anon)";
                 DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                            "undefined method '%s' for %s '%s'",
@@ -335,7 +335,7 @@ static VALUE module_set_visibility(CTX *c, VALUE self, int argc, VALUE *argv,
         }
         /* Also track top-level private/public state for `def` at the
          * implicit main-object scope.  self is the main object here. */
-        if (self == korb_vm->main_obj) {
+        if (self == KORB_VM(c)->main_obj) {
             g_top_level_default_private = (v == KORB_VIS_PRIVATE);
         }
         return Qnil;
@@ -628,7 +628,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
         argc--;
     }
-    struct korb_class *klass = korb_class_new(c, c->sp, korb_intern("Struct"), korb_vm->object_class, T_OBJECT);
+    struct korb_class *klass = korb_class_new(c, c->sp, korb_intern("Struct"), KORB_VM(c)->object_class, T_OBJECT);
     /* save members */
     VALUE members = korb_ary_new_from_values(c, c->sp, argc, argv);
     korb_const_set(klass, korb_intern("__members__"), members);
@@ -722,12 +722,12 @@ static RESULT module_const_get(CTX *c, int argc, VALUE *sp) {
                 goto have_name;
             }
         }
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into String",
                    korb_id_name(korb_class_of_class(arg)->name));
     } else {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of (special) into String");
     }
@@ -739,7 +739,7 @@ have_name:;
         ? korb_const_get_inherited((struct korb_class *)self, name)
         : korb_const_get((struct korb_class *)self, name);
     if (UNDEF_P(v)) {
-        VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         return korb_raise(c, (struct korb_class *)eName,
                    "uninitialized constant %s::%s",
                    korb_id_name(((struct korb_class *)self)->name),
@@ -757,7 +757,7 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
     if (argc < 2) return RESULT_OK(Qnil);
     /* Frozen check before any side effects (CRuby semantics). */
     if (korb_obj_frozen_p(self)) {
-        VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
+        VALUE eF = korb_const_get(KORB_VM(c)->object_class, korb_intern("FrozenError"));
         return korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s",
                    korb_id_name(korb_class_of_class(self)->name));
     }
@@ -784,7 +784,7 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
         struct korb_string *str = (struct korb_string *)name_arg;
         namep = str->ptr; namelen = str->len;
     } else {
-        VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         VALUE inspv = korb_funcall(c, argv[0], korb_intern("inspect"), 0, NULL);
         const char *insp = (!SPECIAL_CONST_P(inspv) && BUILTIN_TYPE(inspv) == T_STRING)
                               ? ((struct korb_string *)inspv)->ptr : "?";
@@ -802,7 +802,7 @@ static RESULT module_const_set(CTX *c, int argc, VALUE *sp) {
         }
     }
     if (!valid) {
-        VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
+        VALUE eN = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
         return korb_raise(c, (struct korb_class *)eN,
                    "wrong constant name %.*s", namelen, namep);
     }

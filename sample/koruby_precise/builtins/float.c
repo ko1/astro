@@ -28,7 +28,7 @@ static VALUE flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
             VALUE _co = flt_coerce_dispatch((c), self, (v),                  \
                                             korb_intern((op_name)));         \
             if (!UNDEF_P(_co)) return RESULT_OK(_co);                         \
-            VALUE _eTy = korb_const_get(korb_vm->object_class,              \
+            VALUE _eTy = korb_const_get(KORB_VM(c)->object_class,              \
                                         korb_intern("TypeError"));            \
             return korb_raise((c), (struct korb_class *)_eTy,                 \
                        "%s can't be coerced into Float",                       \
@@ -314,7 +314,7 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
                 }
             }
             if (!FIXNUM_P(nv)) {
-                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                 return korb_raise(c, (struct korb_class *)eT,
                            "no implicit conversion into Integer");
             }
@@ -330,11 +330,11 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
         if (n > 0) return RESULT_OK(korb_float_new(c, c->sp, v));
         if (isnan(v)) {
             VALUE eR = (n < 0)
-                ? korb_const_get(korb_vm->object_class, korb_intern("RangeError"))
-                : korb_const_get(korb_vm->object_class, korb_intern("FloatDomainError"));
+                ? korb_const_get(KORB_VM(c)->object_class, korb_intern("RangeError"))
+                : korb_const_get(KORB_VM(c)->object_class, korb_intern("FloatDomainError"));
             return korb_raise(c, (struct korb_class *)eR, "NaN");
         }
-        VALUE eD = korb_const_get(korb_vm->object_class, korb_intern("FloatDomainError"));
+        VALUE eD = korb_const_get(KORB_VM(c)->object_class, korb_intern("FloatDomainError"));
         return korb_raise(c, (struct korb_class *)eD, "Infinity");
     }
     if (posargc < 1 || n == 0) {
@@ -380,10 +380,10 @@ static bool flt_check_numeric(CTX *c, VALUE other) {
     if (!SPECIAL_CONST_P(other)) {
         struct korb_class *k = korb_class_of_class(other);
         for (; k; k = k->super) {
-            if (k == korb_vm->numeric_class) return true;
+            if (k == KORB_VM(c)->numeric_class) return true;
         }
     }
-    VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
+    VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
     DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
                "comparison of Float with %s failed",
                SPECIAL_CONST_P(other) ? "non-Numeric" :
@@ -462,7 +462,7 @@ static RESULT flt_cmp(CTX *c, int argc, VALUE *sp) {
         if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY ||
             ((struct korb_array *)pair)->len != 2) {
-            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
             return korb_raise(c, (struct korb_class *)eT, "coerce must return [x, y]");
         }
         struct korb_array *p = (struct korb_array *)pair;
