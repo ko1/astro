@@ -272,6 +272,7 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->integer_class, "+@", int_uplus,  0);
     DEF_R(KORB_VM(c)->integer_class, "to_s", int_to_s, -1);
     DEF_R(KORB_VM(c)->integer_class, "to_i", int_to_i, 0);
+    DEF_R(KORB_VM(c)->integer_class, "to_int", int_to_i, 0);
     DEF_R(KORB_VM(c)->integer_class, "to_f", int_to_f, 0);
     DEF_R(KORB_VM(c)->integer_class, "zero?", int_zero_p, 0);
     DEF_R(KORB_VM(c)->integer_class, "even?", int_even_p, 0);
@@ -1463,6 +1464,28 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->nil_class,   "to_f", nil_to_f, 0);
     DEF_R(KORB_VM(c)->nil_class,   "to_i", nil_to_i, 0);
     DEF_R(KORB_VM(c)->nil_class,   "nil?", nil_nil_p, 0);
+
+    /* Forbid `.allocate` / `.new` on NilClass/TrueClass/FalseClass/
+     * Integer/Numeric — their instances are immediates or abstract. */
+    {
+        struct korb_class *cNilMeta = korb_singleton_class_of(c, KORB_VM(c)->nil_class);
+        DEF_R(cNilMeta, "allocate", _allocator_disallowed, -1);
+        DEF_R(cNilMeta, "new",      _new_disallowed,       -1);
+        struct korb_class *cTrueMeta = korb_singleton_class_of(c, KORB_VM(c)->true_class);
+        DEF_R(cTrueMeta, "allocate", _allocator_disallowed, -1);
+        DEF_R(cTrueMeta, "new",      _new_disallowed,       -1);
+        struct korb_class *cFalseMeta = korb_singleton_class_of(c, KORB_VM(c)->false_class);
+        DEF_R(cFalseMeta, "allocate", _allocator_disallowed, -1);
+        DEF_R(cFalseMeta, "new",      _new_disallowed,       -1);
+        struct korb_class *cIntMeta = korb_singleton_class_of(c, KORB_VM(c)->integer_class);
+        DEF_R(cIntMeta, "allocate", _allocator_disallowed, -1);
+        DEF_R(cIntMeta, "new",      _new_disallowed,       -1);
+        if (KORB_VM(c)->numeric_class) {
+            struct korb_class *cNumMeta = korb_singleton_class_of(c, KORB_VM(c)->numeric_class);
+            DEF_R(cNumMeta, "allocate", _allocator_disallowed, -1);
+            DEF_R(cNumMeta, "new",      _new_disallowed,       -1);
+        }
+    }
 
     /* Proc */
     DEF_R(KORB_VM(c)->proc_class, "call", proc_call, -1);

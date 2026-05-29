@@ -4868,6 +4868,34 @@ class Object
 end
 
 module Kernel
+end
+
+# NilClass extras — to_c / to_r / rationalize.
+class NilClass
+  def to_c
+    Complex(0, 0)
+  end unless method_defined?(:to_c)
+  def to_r
+    Rational(0, 1)
+  end unless method_defined?(:to_r)
+  def rationalize(*_)
+    Rational(0, 1)
+  end unless method_defined?(:rationalize)
+end
+
+# TrueClass / FalseClass simple conversions.
+class TrueClass
+  def &(o); o ? true : false; end unless method_defined?(:&)
+  def |(o); true; end unless method_defined?(:|)
+  def ^(o); o ? false : true; end unless method_defined?(:^)
+end
+class FalseClass
+  def &(o); false; end unless method_defined?(:&)
+  def |(o); o ? true : false; end unless method_defined?(:|)
+  def ^(o); o ? true : false; end unless method_defined?(:^)
+end
+
+module Kernel
   # Kernel#Hash(arg) — convert arg to Hash via to_hash, or {} for nil.
   def Hash(arg)
     return {} if arg.nil? || arg == []
