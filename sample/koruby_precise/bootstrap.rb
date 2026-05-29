@@ -51,7 +51,8 @@ module Enumerable
   # `break` semantics work; `return` from inside a block does not yet
   # propagate to the enclosing method (no non-local return support), so
   # use sentinel + break for early-exit helpers.
-  def find(&blk)
+  def find(ifnone = nil, &blk)
+    return enum_for(:find, ifnone) unless blk
     found = nil
     found_flag = false
     each { |x|
@@ -61,6 +62,7 @@ module Enumerable
         break
       end
     }
+    return ifnone.call if !found_flag && ifnone
     found
   end
 
@@ -298,32 +300,30 @@ module Enumerable
   # Enumerable#each_slice / each_cons — Array overrides these as cfunc;
   # this picks up the missing Range / Hash / String case.
   def each_slice(n, &blk)
-    out = blk ? nil : []
+    return enum_for(:each_slice, n) unless blk
+    raise ArgumentError, "invalid slice size" if !n.is_a?(Integer) || n <= 0
     buf = []
     each { |x|
       buf << x
       if buf.size == n
-        if blk then blk.call(buf) else out << buf end
+        blk.call(buf)
         buf = []
       end
     }
-    if !buf.empty?
-      if blk then blk.call(buf) else out << buf end
-    end
-    blk ? self : out
+    blk.call(buf) if !buf.empty?
+    self
   end
 
   def each_cons(n, &blk)
-    out = blk ? nil : []
+    return enum_for(:each_cons, n) unless blk
+    raise ArgumentError, "invalid cons size" if !n.is_a?(Integer) || n <= 0
     buf = []
     each { |x|
       buf << x
       buf.shift if buf.size > n
-      if buf.size == n
-        if blk then blk.call(buf.dup) else out << buf.dup end
-      end
+      blk.call(buf.dup) if buf.size == n
     }
-    blk ? self : out
+    self
   end
 
   # Enumerable#minmax — Array overrides; this is a fallback for Range etc.
