@@ -691,12 +691,17 @@ cfunc 側で:
 | 1 | RESULT 型 / macro / typedef を foundation 追加 | 完了 (commit 03a5449f) |
 | 2 | prologue_cfunc_r_inl + bridge | 完了 (commit 4352f5f5) |
 | 3 | PoC: ary_eq を新 ABI で書き換え | 完了 (commit d1ae64a4) |
-| 4 | 全 ~680 cfunc を新 signature に sweep | 部分完了 (math + boolean + sym_to_s + ary_eq = 38 cfunc) |
+| 4 | 全 ~680 cfunc を新 signature に sweep | 完了 (Phase 8b で全 builtins/*.c sweep 済) |
 | 5 | node.def の call 系 node を sp staging に | 未着手 |
 | 6 | AST method prologue を sp 経由 args に | 未着手 |
-| 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 部分完了: korb_str_new / korb_str_new_cstr / korb_float_new / korb_float_new_heap / korb_ary_new / korb_ary_new_capa / korb_ary_new_from_values / korb_hash_new / korb_proc_new / korb_proc_new_with_cref。 残: korb_str_dup, korb_funcall, korb_eq 等 |
-| 8 | c->state 経路撤廃、 RESULT 化 | 段階移行中: korb_funcall_r / korb_yield_r ブリッジ済、 korb_raise / korb_raise_frozen_modification / korb_cvar_set / korb_raise_type_error / argument_error / range_error / index_error を RESULT 化済。 残りは NODE_DEF 全体 RESULT 化 (試行で error 連鎖判明、 段階方式に移行)、 korb_class_add_method_ast* 系、 多数の void void cfunc/helper の漸進変換 |
-| 9 | 動作確認 + 回帰 fix | 未着手 |
+| 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 部分完了 |
+| 8a | 移行 macro 整備 + warn_unused_result + DROP_RESULT wrapping | 完了 (469 ヶ所 wrap、 build green) |
+| 8b | builtins cfunc を全て新 ABI に migrate | 完了 (DROP_RESULT 469 → ~110、 残は AST 内部 / void helper / 意図的 dispatch discharge) |
+| 8c | korb_vm global を KORB_VM(c) macro 経由に切替 | 進行中 (891 → 30 ref、 残は CTX を取らない low-level helper) |
+| 8d | node.def AST nodes を RESULT 化 (EVAL macro 変更) | 未着手 |
+| 8e | super_forward / super で cfunc_r 経路に対応 | 完了 (commit 832011d6) |
+| 8f | AST dispatcher で argv snapshot して zero-fill clobber 回避 | 完了 (commit 832011d6) |
+| 9 | 動作確認 + 回帰 fix | 進行中: rubyspec PASS=1615 (150 spec)、 全 10 test suite が default/STRESS/STRESS+PURGE 全 mode PASS |
 
 Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
 責任を引き受ける)。 移行期は cfunc 側で sync しておけば安全。
