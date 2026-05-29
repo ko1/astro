@@ -118,6 +118,43 @@ User 指摘: 「sp として staging + 1 を渡してるんだから、別に c-
 成果: broad rubyspec sweep (150 spec) PASS=1383 → 1615 (+232)、 CRASH=0
 維持、 全 test suite regression なし、 STRESS+PURGE も完走。
 
+### 追加 fix (2026-05-29 第 5 セッション)
+
+- Hash#slice / #except: compare_by_identity flag を保持 (CRuby 仕様)
+- Integer#gcd / #lcm / #gcdlcm: 非 Integer 引数で TypeError 投出
+- Integer#~ for Bignum: 真の two's-complement で実装 (mpz_com 使用)。
+  allbits?/anybits?/nobits?/complement_spec 等を ~bignum_value で
+  通すように。
+- ary_sort_compare: <=> が nil で ArgumentError 投出 (CRuby 仕様)
+- Range#begin / Range#end: rng_first / rng_last の alias から分離して
+  nil-safe (beginless/endless で raise しない)
+- Range.new: #<=> が raise したら propagate (rescue しない)
+- Integer#pow(neg, mod): RangeError 投出 (bootstrap.rb)
+- Array.new / Hash.new / String.new: subclass の initialize を dispatch
+  (allocate-then-call initialize pattern)。 大量の subclass test を
+  fix。 c->sp bump + sp[0] re-read で AST dispatcher の zero-fill
+  clobber 回避。
+- {ary,hash,str}_class_new で self を alloc 前 capture せず、 alloc 後に
+  sp[-argc-1] から re-read。 T_CLASS は arena allocated なので
+  STRESS+PURGE で移動して stale 化する。
+- T_STRING / T_ARRAY / T_HASH / T_RANGE / ... での @ivar 対応:
+  korb_vm->generic_ivars という side table (Hash of obj-ptr → ivar Hash) を
+  追加。 visit_roots で tracking。
+- AST dispatcher で argv snapshot: caller が sp 上に staging した argv が
+  zero-fill で clobber される問題を VLA snapshot で防ぐ。 cfunc_r 経路
+  にも同じ snapshot 適用。
+- super (3 site in node.def): cfunc_r 経路に対応 (ary_initialize 等が
+  cfunc_r 登録のため legacy 経路で func==NULL → SEGV していた)。
+- prologue_proc_method / super で proc_call の ABI 不整合修正
+  (Phase 8b で proc_call は RESULT 化済だが caller がそのまま legacy
+  呼び出ししていた)。 __method__ spec の crash も同時 fix。
+- kernel_method_name: cfunc_r prologue が frame を push するため
+  current_frame->method は __method__ 自体になる → KORB_METHOD_CFUNC
+  frame を skip して enclosing を返す。
+
+成果: broad rubyspec sweep PASS=1615 → 1634 (+19)、 CRASH=0 維持、 全
+10 test suite が default / STRESS / STRESS+PURGE 全 mode で PASS。
+
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
