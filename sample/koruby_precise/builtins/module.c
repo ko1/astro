@@ -888,11 +888,11 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
      * klass, and find_method then derefs stale klass → SEGV under PURGE
      * (or garbage under STRESS).  Use ARO_ROOT_SCOPE so both survive. */
     
-    /* Park klass + new object in sp[0..1] across korb_object_new and the
-     * korb_funcall_with_block (= can fire GC many times). */
+    /* Park klass + new object in sp[0..1].  korb_object_new sets
+     * c->sp_top = sp+2 internally before its GC trigger; subsequent
+     * korb_funcall_with_block inherits that root-scan boundary. */
     sp[0] = (VALUE)klass;
     sp[1] = 0;
-    c->sp_top = sp + 2;
     sp[1] = korb_object_new(c, sp + 2, (struct korb_class *)sp[0]);
     struct korb_method *m = korb_class_find_method((struct korb_class *)sp[0], id_initialize);
     RESULT init_r = RESULT_OK(Qnil);

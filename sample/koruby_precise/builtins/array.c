@@ -2316,24 +2316,22 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(r);
     }
     if (BUILTIN_TYPE(arg) == T_STRING) {
-        /* join with sep — pin result + sep + per-iter element across
-         * each korb_to_s / korb_str_concat GC fire.  CRITICAL: pin sep
-         * BEFORE any alloc — `arg` is a C-local that goes stale once
-         * korb_str_new fires GC, so rs[1] must be set first. */
-        VALUE ret = Qnil;
-        ARO_ROOT_SCOPE_START(c, rs, 3) {
-            rs[1] = arg;              /* separator (pin) — first! */
-            rs[0] = korb_str_new(c, c->sp_top, "", 0);  /* result */
-            /* rs[1] is now the (possibly moved) separator */
-            for (long i = 0; i < a->len; i++) {
-                if (i > 0) korb_str_concat(c, c->sp_top, rs[0], rs[1]);
-                rs[2] = a->ptr[i];
-                if (BUILTIN_TYPE(rs[2]) != T_STRING) rs[2] = korb_to_s(c, c->sp_top, rs[2]);
-                korb_str_concat(c, c->sp_top, rs[0], rs[2]);
-            }
-            ret = rs[0];
-        } ARO_ROOT_SCOPE_END(c, rs);
-        return RESULT_OK(ret);
+        /* Park sep / result / per-iter element in sp[0..2] across
+         * each korb_to_s / korb_str_concat GC fire.  Pin sep BEFORE
+         * any alloc — `arg` is a C-local that goes stale once
+         * korb_str_new fires GC. */
+        sp[1] = arg;                 /* separator (pin) — first! */
+        sp[0] = 0;
+        sp[2] = 0;
+        c->sp_top = sp + 3;
+        sp[0] = korb_str_new(c, sp + 3, "", 0);
+        for (long i = 0; i < a->len; i++) {
+            if (i > 0) korb_str_concat(c, sp + 3, sp[0], sp[1]);
+            sp[2] = a->ptr[i];
+            if (BUILTIN_TYPE(sp[2]) != T_STRING) sp[2] = korb_to_s(c, sp + 3, sp[2]);
+            korb_str_concat(c, sp + 3, sp[0], sp[2]);
+        }
+        return RESULT_OK(sp[0]);
     }
     return RESULT_OK(self);
 }
