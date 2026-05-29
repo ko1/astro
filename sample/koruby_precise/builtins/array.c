@@ -656,7 +656,8 @@ static RESULT ary_dup(CTX *c, int argc, VALUE *sp) {
 /* ---------- Array methods (extended) ---------- */
 
 /* Compare two values using either the supplied block or default `<=>`,
- * returning a negative/zero/positive long like a C sort comparator. */
+ * returning a negative/zero/positive long like a C sort comparator.
+ * On incomparable (`<=>` returns nil) raises ArgumentError. */
 static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
     VALUE r;
     if (has_block) {
@@ -667,9 +668,10 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
     } else {
         r = korb_funcall(c, x, korb_intern("<=>"), 1, &y);
     }
+    if (c->state != KORB_NORMAL) return 0;
     /* CRuby: sort block return is used by sign — Fixnum sign extracted
      * directly; Bignum compared against 0 via korb_int_cmp; Float by
-     * sign; nil → caller raises ArgumentError (we treat as equal for now). */
+     * sign; nil → raise ArgumentError (CRuby semantics). */
     if (FIXNUM_P(r)) return FIX2LONG(r);
     if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_BIGNUM) {
         return korb_int_cmp(r, INT2FIX(0));
@@ -677,6 +679,13 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
     if (KORB_IS_FLOAT(r) || (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT)) {
         double d = korb_num2dbl(r);
         return d < 0 ? -1 : d > 0 ? 1 : 0;
+    }
+    if (NIL_P(r)) {
+        VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+                   "comparison of %s with %s failed",
+                   korb_id_name(korb_class_of_class(x)->name),
+                   korb_id_name(korb_class_of_class(y)->name)));
     }
     return 0;
 }
