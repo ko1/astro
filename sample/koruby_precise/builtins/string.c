@@ -2100,7 +2100,11 @@ static RESULT str_count_chars(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(INT2FIX(0));
+    if (argc < 1) {
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+        return korb_raise(c, (struct korb_class *)eA, "wrong number of arguments (given 0, expected 1+)");
+    }
+    if (BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(INT2FIX(0));
     unsigned char bits[256];
     struct korb_string *cs = (struct korb_string *)argv[0];
     str_charclass_build(cs->ptr, cs->len, bits);
@@ -2115,7 +2119,11 @@ static RESULT str_delete_chars(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(self);
+    if (argc < 1) {
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+        return korb_raise(c, (struct korb_class *)eA, "wrong number of arguments (given 0, expected 1+)");
+    }
+    if (BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(self);
     unsigned char bits[256];
     struct korb_string *cs = (struct korb_string *)argv[0];
     str_charclass_build(cs->ptr, cs->len, bits);

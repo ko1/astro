@@ -406,6 +406,7 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->array_class, "[]", ary_aref, -1);
     DEF_R(KORB_VM(c)->array_class, "[]=", ary_aset, -1);
     DEF_R(KORB_VM(c)->array_class, "push", ary_push, -1);
+    DEF_R(KORB_VM(c)->array_class, "append", ary_push, -1);
     DEF_R(KORB_VM(c)->array_class, "<<", ary_lshift, 1);
     DEF_R(KORB_VM(c)->array_class, "pop", ary_pop, -1);
     DEF_R(KORB_VM(c)->array_class, "first", ary_first_n, -1);
