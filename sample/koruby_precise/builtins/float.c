@@ -505,7 +505,8 @@ static RESULT flt_abs(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     double v = korb_num2dbl(self);
-    return RESULT_OK(korb_float_new(c, c->sp, v < 0 ? -v : v));
+    /* fabs handles -0.0 → +0.0 correctly (sign bit cleared). */
+    return RESULT_OK(korb_float_new(c, c->sp, fabs(v)));
 }
 
 static RESULT flt_eqq(CTX *c, int argc, VALUE *sp) {
