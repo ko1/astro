@@ -1,0 +1,20 @@
+fun makeCounter() {
+  var n = 0;
+  fun count() { n = n + 1; return n; }
+  return count;
+}
+var c = makeCounter();
+print c();   // expect: 1
+print c();   // expect: 2
+var d = makeCounter();
+print d();   // expect: 1
+print c();   // expect: 3
+
+fun fib(n) { if (n < 2) return n; return fib(n - 1) + fib(n - 2); }
+print fib(15);   // expect: 610
+
+// closures capture variables, not values
+var fns = nil;
+fun make(x) { fun get() { return x; } return get; }
+print make(10)();   // expect: 10
+print make(20)();   // expect: 20

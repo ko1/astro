@@ -1,0 +1,20 @@
+class A { method() { print "A.method"; } }
+class B < A { }                 // inherits method from A
+class C < B { method() { super.method(); print "C.method"; } }
+
+B().method();   // expect: A.method
+C().method();   // expect: A.method
+                // expect: C.method
+
+class Base {
+  init(x) { this.x = x; }
+  describe() { return "Base " + this.x; }
+}
+class Derived < Base {
+  init(x, y) { super.init(x); this.y = y; }
+  describe() { return super.describe() + " / Derived " + this.y; }
+}
+var d = Derived("p", "q");
+print d.describe();   // expect: Base p / Derived q
+print d.x;            // expect: p
+print d.y;            // expect: q

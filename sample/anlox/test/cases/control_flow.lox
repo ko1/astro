@@ -1,0 +1,17 @@
+if (true) print "a"; else print "b";    // expect: a
+if (false) print "a"; else print "b";   // expect: b
+
+var i = 0;
+while (i < 3) { print i; i = i + 1; }    // expect: 0
+                                         // expect: 1
+                                         // expect: 2
+
+for (var j = 0; j < 3; j = j + 1) print j * j;   // expect: 0
+                                                 // expect: 1
+                                                 // expect: 4
+
+print true and false;     // expect: false
+print true or false;      // expect: true
+print nil or "default";   // expect: default
+print 1 and 2;            // expect: 2
+print false and 1;        // expect: false

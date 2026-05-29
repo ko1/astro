@@ -1,0 +1,377 @@
+// -*- mode: c -*-
+//
+// anlox — Lox AST node evaluators (Crafting Interpreters, jlox-style).
+//
+// Dynamic language: nil / bool / number(double) / string / closure / class /
+// instance.  Locals are resolved to (depth, slot) frame coordinates by the
+// resolver (parse.c); globals are late-bound by name.  `return` unwinds via
+// c->returning + c->retval, checked by node_stmts / node_block / loops and
+// caught at the call boundary (lox_call).  Children use EVAL_ARG so the
+// specializer folds the dispatch chain; function bodies and variable-arity
+// children are reached through a runtime dispatcher read (own SD entries).
+//
+// This file covers the core language (through closures); class/property/
+// this/super nodes are added on top (see node.def class section).
+
+// ---- literals --------------------------------------------------------
+
+NODE_DEF
+node_nil(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return LOX_NIL;
+}
+
+NODE_DEF
+node_true(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return LOX_TRUE;
+}
+
+NODE_DEF
+node_false(CTX * restrict c, NODE * restrict n)
+{
+    (void)c; (void)n;
+    return LOX_FALSE;
+}
+
+NODE_DEF
+node_number(CTX * restrict c, NODE * restrict n, double v)
+{
+    (void)c; (void)n;
+    return lox_number(v);
+}
+
+NODE_DEF
+node_string(CTX * restrict c, NODE * restrict n, const char *s)
+{
+    (void)c; (void)n;
+    return lox_string(s, (int)strlen(s));
+}
+
+// ---- variables -------------------------------------------------------
+
+NODE_DEF
+node_local(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t slot)
+{
+    (void)n;
+    struct lox_frame *f = c->env;
+    for (uint32_t i = 0; i < depth; i++) f = f->parent;
+    return f->slots[slot];
+}
+
+NODE_DEF
+node_global(CTX * restrict c, NODE * restrict n, const char *name)
+{
+    (void)n;
+    return lox_global_get(c, name);
+}
+
+NODE_DEF
+node_assign_local(CTX * restrict c, NODE * restrict n, uint32_t depth, uint32_t slot, NODE *value)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);
+    struct lox_frame *f = c->env;
+    for (uint32_t i = 0; i < depth; i++) f = f->parent;
+    f->slots[slot] = v;
+    return v;
+}
+
+NODE_DEF
+node_assign_global(CTX * restrict c, NODE * restrict n, const char *name, NODE *value)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, value);
+    lox_global_set(c, name, v);
+    return v;
+}
+
+NODE_DEF
+node_define_local(CTX * restrict c, NODE * restrict n, uint32_t slot, NODE *init)
+{
+    (void)n;
+    c->env->slots[slot] = EVAL_ARG(c, init);
+    return LOX_NIL;
+}
+
+NODE_DEF
+node_define_global(CTX * restrict c, NODE * restrict n, const char *name, NODE *init)
+{
+    (void)n;
+    lox_global_define(c, name, EVAL_ARG(c, init));
+    return LOX_NIL;
+}
+
+// ---- arithmetic / logic ----------------------------------------------
+
+// `+` is overloaded: number addition or string concatenation.
+NODE_DEF
+node_add(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l);
+    VALUE b = EVAL_ARG(c, r);
+    return lox_add(c, a, b);
+}
+
+NODE_DEF
+node_sub(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    double x = lox_as_num(c, a, "Operands must be numbers.");
+    double y = lox_as_num(c, b, "Operands must be numbers.");
+    return lox_number(x - y);
+}
+
+NODE_DEF
+node_mul(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    double x = lox_as_num(c, a, "Operands must be numbers.");
+    double y = lox_as_num(c, b, "Operands must be numbers.");
+    return lox_number(x * y);
+}
+
+NODE_DEF
+node_div(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    double x = lox_as_num(c, a, "Operands must be numbers.");
+    double y = lox_as_num(c, b, "Operands must be numbers.");
+    return lox_number(x / y);
+}
+
+NODE_DEF
+node_neg(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    return lox_number(-lox_as_num(c, EVAL_ARG(c, e), "Operand must be a number."));
+}
+
+NODE_DEF
+node_not(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    return LOX_BOOL(!lox_truthy(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_lt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    double x = lox_as_num(c, a, "Operands must be numbers."), y = lox_as_num(c, b, "Operands must be numbers.");
+    return LOX_BOOL(x < y);
+}
+
+NODE_DEF
+node_le(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    double x = lox_as_num(c, a, "Operands must be numbers."), y = lox_as_num(c, b, "Operands must be numbers.");
+    return LOX_BOOL(x <= y);
+}
+
+NODE_DEF
+node_gt(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    double x = lox_as_num(c, a, "Operands must be numbers."), y = lox_as_num(c, b, "Operands must be numbers.");
+    return LOX_BOOL(x > y);
+}
+
+NODE_DEF
+node_ge(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    double x = lox_as_num(c, a, "Operands must be numbers."), y = lox_as_num(c, b, "Operands must be numbers.");
+    return LOX_BOOL(x >= y);
+}
+
+NODE_DEF
+node_eq(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return LOX_BOOL(lox_equals(a, b));
+}
+
+NODE_DEF
+node_neq(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return LOX_BOOL(!lox_equals(a, b));
+}
+
+// `and` / `or` short-circuit and return an operand (not a bool), per Lox.
+NODE_DEF
+node_and(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l);
+    if (!lox_truthy(a)) return a;
+    return EVAL_ARG(c, r);
+}
+
+NODE_DEF
+node_or(CTX * restrict c, NODE * restrict n, NODE *l, NODE *r)
+{
+    (void)n;
+    VALUE a = EVAL_ARG(c, l);
+    if (lox_truthy(a)) return a;
+    return EVAL_ARG(c, r);
+}
+
+// ---- statements & control flow ---------------------------------------
+
+NODE_DEF
+node_print(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    lox_print(stdout, v);
+    putchar('\n');
+    return LOX_NIL;
+}
+
+NODE_DEF
+node_exprstmt(CTX * restrict c, NODE * restrict n, NODE *e)
+{
+    (void)n;
+    EVAL_ARG(c, e);
+    return LOX_NIL;
+}
+
+NODE_DEF
+node_if(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *thn, NODE *els)
+{
+    (void)n;
+    if (lox_truthy(EVAL_ARG(c, cond))) return EVAL_ARG(c, thn);
+    return EVAL_ARG(c, els);
+}
+
+NODE_DEF
+node_while(CTX * restrict c, NODE * restrict n, NODE *cond, NODE *body)
+{
+    (void)n;
+    while (lox_truthy(EVAL_ARG(c, cond))) {
+        EVAL_ARG(c, body);
+        if (c->returning) break;
+    }
+    return LOX_NIL;
+}
+
+// Statement sequence with no new scope.  Used for the program root and for
+// function bodies (lox_call already pushed the function frame).
+NODE_DEF @noinline
+node_stmts(CTX * restrict c, NODE * restrict n, uint32_t stmts_idx, uint32_t cnt)
+{
+    (void)n;
+    for (uint32_t i = 0; i < cnt; i++) {
+        NODE *s = LOX_BLOCK_STMTS[stmts_idx + i];
+        (*s->head.dispatcher)(c, s);
+        if (c->returning) break;
+    }
+    return LOX_NIL;
+}
+
+// A `{ ... }` block: a fresh scope with `nslots` locals.
+NODE_DEF @noinline
+node_block(CTX * restrict c, NODE * restrict n, uint32_t nslots, uint32_t stmts_idx, uint32_t cnt)
+{
+    (void)n;
+    struct lox_frame *f = lox_new_frame(c->env, (int)nslots);
+    struct lox_frame *saved = c->env;
+    c->env = f;
+    for (uint32_t i = 0; i < cnt; i++) {
+        NODE *s = LOX_BLOCK_STMTS[stmts_idx + i];
+        (*s->head.dispatcher)(c, s);
+        if (c->returning) break;
+    }
+    c->env = saved;
+    return LOX_NIL;
+}
+
+// ---- functions -------------------------------------------------------
+
+// Build a closure capturing the current env.  The fundef (params/body/arity)
+// lives in the LOX_FUNDEFS side-table; its body is its own SD entry.
+NODE_DEF @noinline
+node_closure(CTX * restrict c, NODE * restrict n, uint32_t fundef_idx)
+{
+    (void)n;
+    return lox_closure(LOX_FUNDEFS[fundef_idx], c->env);
+}
+
+NODE_DEF @noinline
+node_call(CTX * restrict c, NODE * restrict n, NODE *callee, uint32_t args_idx, uint32_t argc)
+{
+    (void)n;
+    VALUE f = EVAL_ARG(c, callee);
+    VALUE *av = (VALUE *)alloca(sizeof(VALUE) * (argc ? argc : 1));
+    for (uint32_t i = 0; i < argc; i++) {
+        NODE *a = LOX_CALL_ARGS[args_idx + i];
+        av[i] = (*a->head.dispatcher)(c, a);
+    }
+    return lox_call(c, f, (int)argc, av);
+}
+
+NODE_DEF
+node_return(CTX * restrict c, NODE * restrict n, NODE *value)
+{
+    (void)n;
+    c->retval = EVAL_ARG(c, value);
+    c->returning = true;
+    return c->retval;
+}
+
+// ---- classes ---------------------------------------------------------
+
+// Property read `obj.name` (field, else bound method up the superclass chain).
+NODE_DEF
+node_get(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name)
+{
+    (void)n;
+    return lox_get_property(c, EVAL_ARG(c, obj), name);
+}
+
+// Property write `obj.name = value` (creates/updates an instance field).
+NODE_DEF
+node_set(CTX * restrict c, NODE * restrict n, NODE *obj, const char *name, NODE *value)
+{
+    (void)n;
+    VALUE o = EVAL_ARG(c, obj);
+    VALUE v = EVAL_ARG(c, value);
+    lox_set_property(c, o, name, v);
+    return v;
+}
+
+// Build a class value.  `superclass` is node_nil when there is none; methods
+// are fundef indices in the LOX_CLASS_METHODS side-table.  When there is a
+// superclass, a one-slot `super` frame is pushed so method closures capture
+// it (mirroring the resolver's `super` scope).
+NODE_DEF @noinline
+node_classexpr(CTX * restrict c, NODE * restrict n, const char *name, NODE *superclass, uint32_t methods_idx, uint32_t cnt)
+{
+    (void)n;
+    return lox_make_class(c, name, EVAL_ARG(c, superclass), methods_idx, cnt);
+}
+
+// `super.method` — look the method up starting in the superclass, bound to
+// the current `this`.  `super_depth` is the frame distance to the `super`
+// slot; `this` lives one frame closer (super_depth - 1).
+NODE_DEF
+node_super_get(CTX * restrict c, NODE * restrict n, uint32_t super_depth, const char *method)
+{
+    (void)n;
+    return lox_super_get(c, super_depth, method);
+}

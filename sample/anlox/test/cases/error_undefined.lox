@@ -1,0 +1,1 @@
+print x;   // expect runtime error: Undefined variable 'x'.

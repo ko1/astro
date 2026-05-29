@@ -1,0 +1,1 @@
+print 1 + "a";   // expect runtime error: Operands must be two numbers or two strings.
