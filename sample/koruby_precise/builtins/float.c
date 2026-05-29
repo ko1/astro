@@ -30,9 +30,9 @@ static VALUE flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
             if (!UNDEF_P(_co)) return _co;                                    \
             VALUE _eTy = korb_const_get(korb_vm->object_class,              \
                                         korb_intern("TypeError"));            \
-            korb_raise((c), (struct korb_class *)_eTy,                        \
+            DROP_RESULT(korb_raise((c), (struct korb_class *)_eTy,            \
                        "%s can't be coerced into Float",                       \
-                       korb_id_name(korb_class_of_class((v))->name));          \
+                       korb_id_name(korb_class_of_class((v))->name)));         \
             return Qnil;                                                       \
         }                                                                      \
     } while (0)

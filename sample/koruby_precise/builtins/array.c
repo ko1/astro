@@ -128,9 +128,9 @@ static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         struct korb_array *a = (struct korb_array *)self;
         if (i < 0 && i + a->len < 0) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eIE,
                        "index %ld too small for array; minimum: -%ld",
-                       i, a->len);
+                       i, a->len));
             return Qnil;
         }
         if (!korb_ary_check_index(c, i)) return Qnil;
@@ -171,9 +171,9 @@ static VALUE ary_aset(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (start < 0) start += a->len;
         if (start < 0) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eIE,
                        "index %ld too small for array; minimum: -%ld",
-                       orig_start, a->len);
+                       orig_start, a->len));
             return Qnil;
         }
         if (!korb_ary_check_index(c, start)) return argv[2];
@@ -2603,8 +2603,8 @@ static VALUE ary_insert(CTX *c, VALUE self, int argc, VALUE *argv) {
         long real = i + a->len + 1;
         if (real < 0) {
             VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-            korb_raise(c, (struct korb_class *)eIE,
-                       "index %ld too small for array; minimum: -%ld", i, a->len + 1);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eIE,
+                       "index %ld too small for array; minimum: -%ld", i, a->len + 1));
             return Qnil;
         }
         i = real;

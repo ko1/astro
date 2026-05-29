@@ -151,9 +151,9 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * exactly match.  Too-few raises ArgumentError just like too-many. */
     if (UNLIKELY(argc != total)) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eArg,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                    "wrong number of arguments (given %u, expected %u)",
-                   argc, total);
+                   argc, total));
         return Qnil;
     }
     /* Save outer fp only for new_fp computation; no C-local save of
@@ -322,9 +322,9 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * exactly match.  Too-few raises ArgumentError just like too-many. */
     if (UNLIKELY(argc != total)) {
         VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        korb_raise(c, (struct korb_class *)eArg,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
                    "wrong number of arguments (given %u, expected %u)",
-                   argc, total);
+                   argc, total));
         return Qnil;
     }
     /* Save outer fp only for new_fp computation; no C-local save of

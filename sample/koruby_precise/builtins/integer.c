@@ -53,9 +53,9 @@ static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
                 if (!UNDEF_P(_coerced)) return _coerced;                   \
                 VALUE _eTy = korb_const_get(korb_vm->object_class,         \
                                             korb_intern("TypeError"));     \
-                korb_raise((c), (struct korb_class *)_eTy,                 \
+                DROP_RESULT(korb_raise((c), (struct korb_class *)_eTy,     \
                            "%s can't be coerced into Integer",             \
-                           korb_id_name(korb_class_of_class((v))->name));  \
+                           korb_id_name(korb_class_of_class((v))->name))); \
                 return Qnil;                                               \
             }                                                              \
         }                                                                  \
@@ -107,7 +107,7 @@ static VALUE int_div(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     COERCE_OR_RAISE(c, argv[0], "/");
     if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
-        { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); korb_raise(c, (struct korb_class *)_eZ, "divided by 0"); }
+        { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); DROP_RESULT(korb_raise(c, (struct korb_class *)_eZ, "divided by 0")); }
         return Qnil;
     }
     return korb_int_div(self, argv[0]);
@@ -128,7 +128,7 @@ static VALUE int_mod(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     COERCE_OR_RAISE(c, argv[0], "%");
     if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
-        { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); korb_raise(c, (struct korb_class *)_eZ, "divided by 0"); }
+        { VALUE _eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError")); DROP_RESULT(korb_raise(c, (struct korb_class *)_eZ, "divided by 0")); }
         return Qnil;
     }
     return korb_int_mod(self, argv[0]);
@@ -150,15 +150,15 @@ static VALUE int_rshift(CTX *c, VALUE self, int argc, VALUE *argv) {
          * directly without going through the coerce protocol. */ \
         if (FLONUM_P(rhs) || (!SPECIAL_CONST_P(rhs) && BUILTIN_TYPE(rhs) == T_FLOAT)) { \
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError")); \
-            korb_raise((c), (struct korb_class *)eT, \
-                       "no implicit conversion of Float into Integer"); \
+            DROP_RESULT(korb_raise((c), (struct korb_class *)eT, \
+                       "no implicit conversion of Float into Integer")); \
             return Qnil; \
         } \
         VALUE _coerced = int_coerce_dispatch((c), self, (rhs), korb_intern((op_name))); \
         if (!UNDEF_P(_coerced)) return _coerced; \
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError")); \
-        korb_raise((c), (struct korb_class *)eT, \
-                   "no implicit conversion to Integer"); \
+        DROP_RESULT(korb_raise((c), (struct korb_class *)eT, \
+                   "no implicit conversion to Integer")); \
         return Qnil; \
     } \
 } while (0)
@@ -186,10 +186,10 @@ static VALUE int_xor(CTX *c, VALUE self, int argc, VALUE *argv) {
         VALUE _coerced = int_coerce_dispatch((c), self, (rhs), korb_intern((op_name))); \
         if (!UNDEF_P(_coerced)) return _coerced; \
         VALUE _eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError")); \
-        korb_raise((c), (struct korb_class *)_eA, \
+        DROP_RESULT(korb_raise((c), (struct korb_class *)_eA, \
                    "comparison of Integer with %s failed", \
                    SPECIAL_CONST_P(rhs) ? "non-Numeric" : \
-                       korb_id_name(korb_class_of_class(rhs)->name)); \
+                       korb_id_name(korb_class_of_class(rhs)->name))); \
         return Qnil; \
     } \
 } while (0)

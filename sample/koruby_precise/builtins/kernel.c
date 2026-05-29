@@ -888,7 +888,7 @@ static VALUE kernel_abort(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) { korb_raise(c, NULL, "Integer() needs argument"); return Qnil; }
+    if (argc < 1) { DROP_RESULT(korb_raise(c, NULL, "Integer() needs argument")); return Qnil; }
     if (FIXNUM_P(argv[0])) return argv[0];
     if (BUILTIN_TYPE(argv[0]) == T_BIGNUM) return argv[0];
     if (KORB_IS_FLOAT(argv[0])) {

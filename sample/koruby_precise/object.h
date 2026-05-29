@@ -545,7 +545,7 @@ korb_ivar_set_ic(CTX *c, VALUE obj, ID name, VALUE val, struct ivar_cache *cache
     if (UNLIKELY(SPECIAL_CONST_P(obj))) {
         /* true / false / nil / Integer / Float / Symbol can't have
          * ivars — CRuby raises FrozenError on attempts. */
-        korb_raise_frozen_modification(c, obj);
+        DROP_RESULT(korb_raise_frozen_modification(c, obj));
         return;
     }
     if (UNLIKELY(BUILTIN_TYPE(obj) != T_OBJECT)) {
@@ -553,7 +553,7 @@ korb_ivar_set_ic(CTX *c, VALUE obj, ID name, VALUE val, struct ivar_cache *cache
         return;
     }
     if (UNLIKELY(((struct RBasic *)obj)->head.flags & FL_FROZEN)) {
-        korb_raise_frozen_modification(c, obj);
+        DROP_RESULT(korb_raise_frozen_modification(c, obj));
         return;
     }
     struct korb_object *o = (struct korb_object *)obj;
@@ -911,7 +911,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
     struct korb_proc *blk = c->current_block;
     if (UNLIKELY(!blk)) {
         VALUE eLJE = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
-        korb_raise(c, (struct korb_class *)eLJE, "no block given (yield)");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eLJE, "no block given (yield)"));
         return Qnil;
     }
     /* Symbol-proc shim — fall to slow path. */
@@ -1045,7 +1045,7 @@ static inline bool korb_obj_frozen_p(VALUE v) {
 #define CHECK_FROZEN_RET(c, self, ret) do { \
     if (UNLIKELY(korb_obj_frozen_p(self))) { \
         VALUE _eFrozen = korb_const_get(korb_vm->object_class, korb_intern("FrozenError")); \
-        korb_raise((c), (struct korb_class *)_eFrozen, "can't modify frozen object"); \
+        DROP_RESULT(korb_raise((c), (struct korb_class *)_eFrozen, "can't modify frozen object")); \
         return (ret); \
     } \
 } while (0)
