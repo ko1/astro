@@ -25,23 +25,17 @@ static RESULT kernel_at_exit(CTX *c, int argc, VALUE *sp) {
 }
 
 void korb_run_at_exit_hooks(CTX *c) {
-    /* LIFO order — last-registered runs first. */
+    /* LIFO order — last-registered runs first.  Each hook's raise is
+     * printed to stderr and swallowed (CRuby semantic: an at_exit raise
+     * doesn't propagate but it also doesn't suppress the exit). */
     for (int i = (int)g_at_exit.cnt - 1; i >= 0; i--) {
         struct korb_proc *p = g_at_exit.procs[i];
         if (!p) continue;
-        VALUE prev_state = c->state;
-        VALUE prev_value = c->state_value;
-        c->state = KORB_NORMAL;
-        korb_funcall(c, (VALUE)p, korb_intern("call"), 0, NULL);
-        if (c->state == KORB_RAISE) {
-            VALUE s = korb_inspect(c, c->sp, c->state_value);
+        RESULT _r = korb_funcall(c, (VALUE)p, korb_intern("call"), 0, NULL);
+        if (_r.state == KORB_RAISE) {
+            VALUE s = korb_inspect(c, c->sp, _r.value);
             fprintf(stderr, "at_exit hook raised: %s\n", korb_str_cstr(s));
-            c->state = KORB_NORMAL;
         }
-        /* Restore the original raise so the process exits with the
-         * right status. */
-        c->state = prev_state;
-        c->state_value = prev_value;
     }
     g_at_exit.cnt = 0;
 }
@@ -192,17 +186,14 @@ RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
         VALUE rt = UNWRAP(korb_funcall(c, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
             list = UNWRAP(korb_funcall(c, list, korb_intern("to_a"), 0, NULL));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return RESULT_OK(Qfalse);
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
         VALUE r = UNWRAP(korb_funcall(c, a->ptr[i], korb_intern("==="), 1, &x));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(r)) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -220,10 +211,8 @@ RESULT kernel_case_splat_any(CTX *c, int argc, VALUE *sp) {
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
         VALUE rt = UNWRAP(korb_funcall(c, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
             list = UNWRAP(korb_funcall(c, list, korb_intern("to_a"), 0, NULL));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return RESULT_OK(Qfalse);
     }
@@ -270,15 +259,12 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(list) &&
             (BUILTIN_TYPE(list) == T_CLASS || BUILTIN_TYPE(list) == T_MODULE)) {
             VALUE r = UNWRAP(korb_funcall(c, list, korb_intern("==="), 1, &exc));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
             return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
         }
         VALUE rt = UNWRAP(korb_funcall(c, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) }));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
             list = UNWRAP(korb_funcall(c, list, korb_intern("to_a"), 0, NULL));
-            if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
             VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -295,7 +281,6 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
                        "class or module required for rescue clause");
         }
         VALUE r = UNWRAP(korb_funcall(c, el, korb_intern("==="), 1, &exc));
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(r)) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -312,7 +297,6 @@ RESULT kernel_to_block_arg(CTX *c, int argc, VALUE *sp) {
     VALUE v = argv[0];
     if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_PROC) return RESULT_OK(v);
     VALUE r = UNWRAP(korb_funcall(c, v, korb_intern("to_proc"), 0, NULL));
-    if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     return RESULT_OK(r);
 }
 
@@ -448,22 +432,21 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given %d, expected 0..3)", argc);
     }
+    VALUE exc_val = Qnil;
     if (argc == 0) {
         /* Bare `raise` re-raises $! if set; only fall back to a fresh
          * RuntimeError when there's no current exception. */
         VALUE bang = korb_gvar_get(korb_intern("$!"));
         if (!NIL_P(bang)) {
-            c->state = KORB_RAISE;
-            c->state_value = bang;
-            return RESULT_OK(Qnil);
+            exc_val = bang;
+        } else {
+            return korb_raise(c, NULL, "unhandled exception");
         }
-        return korb_raise(c, NULL, "unhandled exception");
     } else if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_STRING) {
         return korb_raise(c, NULL, "%s", korb_str_cstr(argv[0]));
     } else if (argc == 1 && !SPECIAL_CONST_P(argv[0]) &&
                BUILTIN_TYPE(argv[0]) == T_OBJECT) {
-        /* `raise(obj)` — obj must be an Exception (or implement
-         * #exception).  Otherwise CRuby raises TypeError. */
+        /* `raise(obj)` — obj must be an Exception. */
         VALUE eExc = korb_const_get(KORB_VM(c)->object_class, korb_intern("Exception"));
         struct korb_class *exc_cls = (eExc && !SPECIAL_CONST_P(eExc) &&
                                        (BUILTIN_TYPE(eExc) == T_CLASS || BUILTIN_TYPE(eExc) == T_MODULE))
@@ -480,15 +463,10 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
         }
         int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
         korb_exc_set_backtrace(c, argv[0], line);
-        c->state = KORB_RAISE;
-        c->state_value = argv[0];
+        exc_val = argv[0];
     } else if (argc >= 1 && BUILTIN_TYPE(argv[0]) == T_CLASS) {
         /* raise Klass, msg — pin e (exception obj) across
-         * korb_exc_set_backtrace / korb_ivar_get / korb_ivar_set GC
-         * fires.  Without this the C-local goes stale after
-         * set_backtrace alloc and subsequent ivar writes hit a phantom
-         * obj (= SEGV on next deref of the exc's klass during rescue
-         * matching). */
+         * korb_exc_set_backtrace / korb_ivar_get / korb_ivar_set GC fires. */
         const char *msg = "(unspecified)";
         if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
             msg = korb_str_cstr(argv[1]);
@@ -514,46 +492,22 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
                     if (!would_cycle) korb_ivar_set(rs[0], korb_intern("@cause"), cur);
                 }
             }
-            c->state = KORB_RAISE;
-            c->state_value = rs[0];
+            exc_val = rs[0];
         } ARO_ROOT_SCOPE_END(c, rs);
     } else {
         /* Anything else (nil, Integer, etc.) — CRuby raises TypeError. */
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
         return korb_raise(c, (struct korb_class *)eT,
                    "exception class/object expected");
-        /* unreachable */
-        VALUE e = argv[0];
-        VALUE cur = korb_gvar_get(korb_intern("$!"));
-        if (!NIL_P(cur) && cur != e &&
-            !SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
-            VALUE existing = korb_ivar_get(e, korb_intern("@cause"));
-            if (UNDEF_P(existing) || NIL_P(existing)) {
-                /* Cycle guard — see korb_raise. */
-                VALUE walk = cur;
-                int hops = 0;
-                bool would_cycle = false;
-                while (!NIL_P(walk) && hops++ < 32) {
-                    if (walk == e) { would_cycle = true; break; }
-                    if (SPECIAL_CONST_P(walk) || BUILTIN_TYPE(walk) != T_OBJECT) break;
-                    walk = korb_ivar_get(walk, korb_intern("@cause"));
-                    if (UNDEF_P(walk)) break;
-                }
-                if (!would_cycle) korb_ivar_set(e, korb_intern("@cause"), cur);
-            }
-        }
-        c->state = KORB_RAISE;
-        c->state_value = e;
     }
     /* Apply explicit `cause:` kwarg.  Override any auto-linked cause. */
-    if (!UNDEF_P(kw_cause) && c->state == KORB_RAISE) {
-        VALUE e = c->state_value;
-        if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
-            korb_ivar_set(e, korb_intern("@cause"),
+    if (!UNDEF_P(kw_cause)) {
+        if (!SPECIAL_CONST_P(exc_val) && BUILTIN_TYPE(exc_val) == T_OBJECT) {
+            korb_ivar_set(exc_val, korb_intern("@cause"),
                           NIL_P(kw_cause) ? Qnil : kw_cause);
         }
     }
-    return RESULT_OK(Qnil);
+    return (RESULT){ exc_val, KORB_RAISE };
 }
 
 static RESULT kernel_inspect(CTX *c, int argc, VALUE *sp) {
@@ -632,7 +586,6 @@ static RESULT kernel_not_match(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     VALUE m = UNWRAP(korb_funcall(c, self, korb_intern("=~"), 1, argv));
-    if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
     return RESULT_OK(RTEST(m) ? Qfalse : Qtrue);
 }
 
@@ -724,10 +677,8 @@ static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(name_arg)) {
             VALUE rt = UNWRAP(korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             if (RTEST(rt)) {
                 name_arg = UNWRAP(korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL));
-                if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             }
         }
     }
@@ -806,8 +757,8 @@ static RESULT kernel_block_given(CTX *c, int argc, VALUE *sp) {
  * inside, unwinding stops here and `val` becomes the return value.
  * Mismatched tag → propagates further up.
  *
- * Implementation: throw sets c->state = KORB_THROW and parks
- * [tag, val] in c->state_value as a 2-element Array.  catch yields,
+ * Implementation: throw returns a RESULT with state=KORB_THROW
+ * carrying [tag, val] as a 2-element Array.  catch yields,
  * then if state==THROW with a matching tag clears state and returns
  * val; otherwise re-propagates.  No setjmp/longjmp — the existing
  * EVAL_ARG / korb_yield bail-on-non-NORMAL machinery does the work. */
@@ -826,9 +777,7 @@ static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
     VALUE pair = korb_ary_new_capa(c, c->sp, 2);
     korb_ary_push(pair, tag);
     korb_ary_push(pair, val);
-    c->state = KORB_THROW;
-    c->state_value = pair;
-    return RESULT_OK(Qnil);
+    return (RESULT){ pair, KORB_THROW };
 }
 
 static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
@@ -841,40 +790,35 @@ static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
      * For the no-tag form we synthesize a fresh Object as the tag. */
     VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(c, c->sp, KORB_VM(c)->object_class);
     VALUE block_arg[1] = { tag };
-    VALUE r = UNWRAP(korb_yield(c, 1, block_arg));
-    /* state == THROW: tag/value live on c->state_value as a 2-element ary. */
-    if (c->state == KORB_THROW && !SPECIAL_CONST_P(c->state_value) &&
-        BUILTIN_TYPE(c->state_value) == T_ARRAY) {
-        struct korb_array *pair = (struct korb_array *)c->state_value;
+    RESULT _br = korb_yield(c, 1, block_arg);
+    /* state == THROW: tag/value live on _br.value as a 2-element ary. */
+    if (_br.state == KORB_THROW && !SPECIAL_CONST_P(_br.value) &&
+        BUILTIN_TYPE(_br.value) == T_ARRAY) {
+        struct korb_array *pair = (struct korb_array *)_br.value;
         if (pair->len == 2 && korb_eq(c, pair->ptr[0], tag)) {
-            VALUE v = pair->ptr[1];
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
-            return RESULT_OK(v);
+            return RESULT_OK(pair->ptr[1]);
         }
     }
     /* state == RAISE with UncaughtThrowError: proc_call already converted
      * a throw escaping a lambda body to a raise.  Look for our @__throw_tag__
      * ivar and re-handle it as a throw if the tag matches. */
-    if (c->state == KORB_RAISE && !SPECIAL_CONST_P(c->state_value)) {
+    if (_br.state == KORB_RAISE && !SPECIAL_CONST_P(_br.value)) {
         VALUE eUTE = korb_const_get(KORB_VM(c)->object_class, korb_intern("UncaughtThrowError"));
-        struct korb_class *exc_cls = (struct korb_class *)((struct RBasic *)c->state_value)->klass;
+        struct korb_class *exc_cls = (struct korb_class *)((struct RBasic *)_br.value)->klass;
         bool is_ute = false;
         for (struct korb_class *kk = exc_cls; kk; kk = kk->super) {
             if ((VALUE)kk == eUTE) { is_ute = true; break; }
         }
         if (is_ute) {
-            VALUE thrown_tag = korb_ivar_get(c->state_value, korb_intern("@__throw_tag__"));
+            VALUE thrown_tag = korb_ivar_get(_br.value, korb_intern("@__throw_tag__"));
             if (!UNDEF_P(thrown_tag) && korb_eq(c, thrown_tag, tag)) {
-                VALUE v = korb_ivar_get(c->state_value, korb_intern("@__throw_value__"));
+                VALUE v = korb_ivar_get(_br.value, korb_intern("@__throw_value__"));
                 if (UNDEF_P(v)) v = Qnil;
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
                 return RESULT_OK(v);
             }
         }
     }
-    return RESULT_OK(r);
+    return _br;
 }
 
 /* Walk frame chain to find a non-NULL current_file.  cfunc frames are
@@ -993,9 +937,7 @@ static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
         korb_ivar_set(e, korb_intern("@status"), INT2FIX(code));
         korb_ivar_set(e, korb_intern("@success"), KORB_BOOL(success));
     }
-    c->state = KORB_RAISE;
-    c->state_value = e;
-    return RESULT_OK(Qnil);
+    return (RESULT){ e, KORB_RAISE };
 }
 static RESULT kernel_exit_bang(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -1024,9 +966,7 @@ static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
         korb_ivar_set(e, korb_intern("@status"), INT2FIX(1));
         korb_ivar_set(e, korb_intern("@success"), Qfalse);
     }
-    c->state = KORB_RAISE;
-    c->state_value = e;
-    return RESULT_OK(Qnil);
+    return (RESULT){ e, KORB_RAISE };
 }
 
 static RESULT kernel_integer(CTX *c, int argc, VALUE *sp) {

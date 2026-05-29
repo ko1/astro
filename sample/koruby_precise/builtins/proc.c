@@ -232,21 +232,23 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(arg0) && BUILTIN_TYPE(arg0) == T_ARRAY) {
             arr = arg0;
         } else if (!SPECIAL_CONST_P(arg0)) {
-            VALUE rt = UNWRAP(korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
-                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
-            if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
-            if (RTEST(rt)) {
-                VALUE coerced = UNWRAP(korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL));
-                if (c->state != KORB_NORMAL) {
+            /* respond_to? swallow: any raise leaves arr as Qnil
+             * (treated as "no destructure"). */
+            RESULT _rt = korb_funcall(c, arg0, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_ary")) });
+            if (_rt.state == KORB_NORMAL && RTEST(_rt.value)) {
+                /* to_ary swallow: raise → return Qnil (matches prior behavior). */
+                RESULT _ta = korb_funcall(c, arg0, korb_intern("to_ary"), 0, NULL);
+                if (_ta.state != KORB_NORMAL) {
                     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
                     return RESULT_OK(Qnil);
                 }
+                VALUE coerced = _ta.value;
                 if (BUILTIN_TYPE(coerced) != T_ARRAY) {
                     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+                    AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
                     return korb_raise(c, (struct korb_class *)eT,
                                "can't convert to Array (#to_ary gave non-Array)");
-                    AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
-                    return RESULT_OK(Qnil);
                 }
                 arr = coerced;
             }
@@ -348,7 +350,6 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
      * defining class scope, not the caller's. */
     struct korb_cref *prev_cref = c->current_frame->cref;
     if (p->cref) c->current_frame->cref = p->cref;
-    VALUE r;
     RESULT _br;
 redo_proc:
     /* sp = fp + env_size: see korb_yield fast-path comment.  The bake
@@ -363,29 +364,17 @@ redo_proc:
     if (_br.state == KORB_REDO) {
         goto redo_proc;
     }
-    /* Bridge: lift non-NORMAL into c->state for the legacy code below
-     * which still drives the break / return / lambda-vs-proc semantics
-     * via c->state.  Converting the rest of this function is a follow-up. */
-    if (_br.state != KORB_NORMAL) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-        r = Qnil;
-    } else {
-        r = _br.value;
-    }
     c->current_frame->cref = prev_cref;
     c->current_block = prev_block;
     c->running_block = prev_running;
     /* Snapshot any returned proc whose env points into our about-to-be-
      * popped frame.  Skip when state == RAISE / THROW / RETRY / REDO —
-     * r is then a stale C-local (no caller will use it) and dereffing
+     * the value is a stale C-local (no caller will use it) and dereffing
      * it (BUILTIN_TYPE deref) SEGVs under STRESS+PURGE if it points
      * into a now-PROT_NONE plane. */
-    if (c->state == KORB_NORMAL || c->state == KORB_NEXT) {
-        korb_proc_snapshot_env_maybe(r, new_fp, new_fp + p->env_size);
-    }
-    if (c->state == KORB_RETURN || c->state == KORB_BREAK) {
-        korb_proc_snapshot_env_maybe(c->state_value, new_fp, new_fp + p->env_size);
+    if (_br.state == KORB_NORMAL || _br.state == KORB_NEXT ||
+        _br.state == KORB_RETURN || _br.state == KORB_BREAK) {
+        korb_proc_snapshot_env_maybe(_br.value, new_fp, new_fp + p->env_size);
     }
     /* If we used a cloned env, write back the closure-captured slots
      * (everything below the block's own param_base) so outer-scope
@@ -406,106 +395,87 @@ redo_proc:
      * Plain Proc: `return` is non-local — let it propagate up to the
      * lexically-enclosing method, where it'll be consumed at that
      * method's prologue. */
-    if (c->state == KORB_BREAK) {
+    if (_br.state == KORB_BREAK) {
         if (p->is_lambda && c->state_target_frame == NULL) {
             /* break inside a lambda's own body (no concrete target) —
-             * consume as the lambda's return value.  When break carries
-             * a concrete target_frame (set by an inner non-lambda proc
-             * that found an &block-owner), let it propagate past us. */
-            r = c->state_value;
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
+             * consume as the lambda's return value. */
+            VALUE v = _br.value;
             c->state_target_frame = NULL;
-        } else if (p->is_lambda) {
-            /* lambda but break has a target above us — propagate. */
-            r = c->state_value;
-        } else {
-            /* Non-lambda proc.call: distinguish "yield-style call from
-             * within owning method" from "external .call".  Walk the
-             * live frame chain looking for a method whose &block == p
-             * — if found, this is a yield-style call (mid(&b) doing
-             * b.call) and `break` escapes that method; set target_frame
-             * so its prologue consumes the BREAK.  Otherwise the proc
-             * was .called as a plain Proc with no owning method —
-             * raise LocalJumpError. */
-            struct korb_frame *owner = NULL;
-            for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
-                if (f->block == p) { owner = f; break; }
-            }
-            if (owner) {
-                c->state_target_frame = owner;
-                r = c->state_value;
-            } else {
-                VALUE eL = korb_const_get(KORB_VM(c)->object_class, korb_intern("LocalJumpError"));
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                c->state_target_frame = NULL;
-                return korb_raise(c, (struct korb_class *)eL, "break from proc-closure");
-                r = Qnil;
-            }
+            AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+            return RESULT_OK(v);
         }
-    } else if (c->state == KORB_RETURN && p->is_lambda &&
-               c->state_target_frame == NULL) {
-        /* Lambda swallows `return` only when the target is unset
-         * (= the return originated from inside the lambda's own body).
-         * A non-local return triggered by an inner non-lambda proc
-         * whose enclosing method sits OUTSIDE this lambda has a
-         * concrete target_frame and must propagate past us
-         * (jruby/jruby#3143; ThroughDefineMethod return spec). */
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+        if (p->is_lambda) {
+            /* lambda but break has a target above us — propagate. */
+            AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+            return _br;
+        }
+        /* Non-lambda proc.call: distinguish "yield-style call from
+         * within owning method" from "external .call".  Walk the
+         * live frame chain looking for a method whose &block == p
+         * — if found, this is a yield-style call (mid(&b) doing
+         * b.call) and `break` escapes that method; set target_frame
+         * so its prologue consumes the BREAK.  Otherwise the proc
+         * was .called as a plain Proc with no owning method —
+         * raise LocalJumpError. */
+        struct korb_frame *owner = NULL;
+        for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
+            if (f->block == p) { owner = f; break; }
+        }
+        if (owner) {
+            c->state_target_frame = owner;
+            AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+            return _br;
+        }
+        VALUE eL = korb_const_get(KORB_VM(c)->object_class, korb_intern("LocalJumpError"));
         c->state_target_frame = NULL;
-    } else if (c->state == KORB_NEXT) {
-        /* `next` inside a proc/lambda body: consume it as the proc's
-         * return value (CRuby: lambda { next 42 }.call == 42, and
-         * proc { next 42 }.call also == 42).  Otherwise it leaks up
-         * to the enclosing method and silently exits. */
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-    } else if (c->state == KORB_THROW) {
-        /* Throw escaping a proc/lambda — convert to UncaughtThrowError
-         * raise.  catch() already cleared the state if its tag matched,
-         * so reaching here means the throw is uncaught at this level.
-         * Keep the tag on the exception's @tag ivar so re-thrown
-         * conversions can carry it through outer rescue handlers. */
-        ARO_ROOT_SCOPE_START(c, urs, 4) {
-            urs[0] = korb_const_get(KORB_VM(c)->object_class, korb_intern("UncaughtThrowError"));
-            urs[1] = Qnil; /* tag */
-            urs[2] = Qnil; /* val */
-            if (!SPECIAL_CONST_P(c->state_value) && BUILTIN_TYPE(c->state_value) == T_ARRAY) {
-                struct korb_array *pair = (struct korb_array *)c->state_value;
-                if (pair->len >= 1) urs[1] = pair->ptr[0];
-                if (pair->len >= 2) urs[2] = pair->ptr[1];
-            }
-            urs[3] = korb_inspect(c, c->sp, urs[1]);  /* tag_s */
-            char buf[256];
-            snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[3]));
-            if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
-                return korb_raise(c, (struct korb_class *)urs[0], "%s", buf);
-            } else {
-                return korb_raise(c, NULL, "%s", buf);
-            }
-            /* Stash tag/value on the exception for catch to re-extract. */
-            if (c->state == KORB_RAISE && !SPECIAL_CONST_P(c->state_value)) {
-                korb_ivar_set(c->state_value, korb_intern("@__throw_tag__"), urs[1]);
-                korb_ivar_set(c->state_value, korb_intern("@__throw_value__"), urs[2]);
-            }
-        } ARO_ROOT_SCOPE_END(c, urs);
-    } else if (c->state == KORB_RETRY) {
-        /* `retry` outside a rescue is a SyntaxError in CRuby (parse
-         * time) or LocalJumpError at runtime if it escapes scope.
-         * Convert to a SyntaxError-like raise so `rescue` can catch. */
+        AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+        return korb_raise(c, (struct korb_class *)eL, "break from proc-closure");
+    }
+    if (_br.state == KORB_RETURN && p->is_lambda &&
+        c->state_target_frame == NULL) {
+        /* Lambda swallows `return` only when the target is unset
+         * (= the return originated from inside the lambda's own body). */
+        VALUE v = _br.value;
+        c->state_target_frame = NULL;
+        AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+        return RESULT_OK(v);
+    }
+    if (_br.state == KORB_NEXT) {
+        /* `next` inside a proc/lambda body: consume as the proc's return. */
+        VALUE v = _br.value;
+        AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+        return RESULT_OK(v);
+    }
+    if (_br.state == KORB_THROW) {
+        /* Throw escaping a proc/lambda — convert to UncaughtThrowError raise. */
+        VALUE throw_val = _br.value;
+        VALUE eUTE = korb_const_get(KORB_VM(c)->object_class, korb_intern("UncaughtThrowError"));
+        VALUE tag = Qnil;
+        if (!SPECIAL_CONST_P(throw_val) && BUILTIN_TYPE(throw_val) == T_ARRAY) {
+            struct korb_array *pair = (struct korb_array *)throw_val;
+            if (pair->len >= 1) tag = pair->ptr[0];
+        }
+        VALUE tag_s = korb_inspect(c, c->sp, tag);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(tag_s));
+        AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
+        if (eUTE && !SPECIAL_CONST_P(eUTE) && BUILTIN_TYPE(eUTE) == T_CLASS) {
+            return korb_raise(c, (struct korb_class *)eUTE, "%s", buf);
+        }
+        return korb_raise(c, NULL, "%s", buf);
+    }
+    if (_br.state == KORB_RETRY) {
+        /* `retry` outside a rescue → SyntaxError-like raise. */
         VALUE eSE = korb_const_get(KORB_VM(c)->object_class, korb_intern("SyntaxError"));
+        AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
         if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
             return korb_raise(c, (struct korb_class *)eSE, "Invalid retry");
-        } else {
-            return korb_raise(c, NULL, "Invalid retry");
         }
+        return korb_raise(c, NULL, "Invalid retry");
     }
     AROH_ROOT_STACK_SET_TOP(c, pc_self_root);
 #undef prev_self
-    return RESULT_OK(r);
+    /* RAISE / RETURN-not-consumed-by-lambda etc. → propagate _br. */
+    return _br;
 }
 
