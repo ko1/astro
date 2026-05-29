@@ -37,7 +37,7 @@ import sys
 import os
 
 HDR_RE = re.compile(
-    r'^static VALUE (\w+)\(CTX \*c, VALUE self, int argc, VALUE \*argv\) \{',
+    r'^(?:static )?VALUE (\w+)\(CTX \*c, VALUE self, int argc, VALUE \*argv\) \{',
     re.MULTILINE,
 )
 
@@ -267,8 +267,11 @@ def migrate_file(path, targets):
             notes.append(f'{name}: skipped ({e})')
             continue
         body = text[brace_open: brace_close]
+        # Preserve linkage (static vs external)
+        orig_decl = text[m.start():m.end() - 1]
+        is_static = orig_decl.startswith('static ')
         # New signature
-        new_sig = f'static RESULT {name}(CTX *c, int argc, VALUE *sp)'
+        new_sig = ('static ' if is_static else '') + f'RESULT {name}(CTX *c, int argc, VALUE *sp)'
         # Insert prologue inside the opening brace
         # Replace body[0] '{' with '{\n    c->sp = sp;\n    VALUE self = sp[-argc - 1];\n    VALUE *argv = sp - argc;\n'
         prologue = ('{\n'

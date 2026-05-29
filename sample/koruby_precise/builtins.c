@@ -60,6 +60,11 @@ VALUE _new_disallowed(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_method *_m = korb_class_find_method((klass), korb_intern(name)); \
     if (_m) _m->visibility = KORB_VIS_PRIVATE;                            \
 } while (0)
+#define DEF_R_PRIV(klass, name, fn, argc) do {                            \
+    korb_class_add_method_cfunc_r((klass), korb_intern(name), (fn), (argc)); \
+    struct korb_method *_m = korb_class_find_method((klass), korb_intern(name)); \
+    if (_m) _m->visibility = KORB_VIS_PRIVATE;                            \
+} while (0)
 
 void korb_init_builtins(CTX *c) {
     (void)c;  /* used by sp-passing alloc helpers below */
@@ -297,14 +302,14 @@ void korb_init_builtins(CTX *c) {
     /* String */
     /* String#encoding stub — return Encoding::UTF_8.  */
     {
-        VALUE _str_encoding(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE _str_force_encoding(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE _str_b(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->string_class, "encoding",       _str_encoding, 0);
-        DEF(korb_vm->string_class, "force_encoding", _str_force_encoding, -1);
-        DEF(korb_vm->string_class, "encode",         _str_force_encoding, -1);
-        DEF(korb_vm->string_class, "encode!",        _str_force_encoding, -1);
-        DEF(korb_vm->string_class, "b",              _str_b, 0);
+        RESULT _str_encoding(CTX *c, int argc, VALUE *sp);
+        RESULT _str_force_encoding(CTX *c, int argc, VALUE *sp);
+        RESULT _str_b(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->string_class, "encoding",       _str_encoding, 0);
+        DEF_R(korb_vm->string_class, "force_encoding", _str_force_encoding, -1);
+        DEF_R(korb_vm->string_class, "encode",         _str_force_encoding, -1);
+        DEF_R(korb_vm->string_class, "encode!",        _str_force_encoding, -1);
+        DEF_R(korb_vm->string_class, "b",              _str_b, 0);
     }
     /* Encoding#name / #to_s. */
     {
@@ -312,26 +317,26 @@ void korb_init_builtins(CTX *c) {
         if (!UNDEF_P(cEnc_v) && !SPECIAL_CONST_P(cEnc_v) &&
             BUILTIN_TYPE(cEnc_v) == T_CLASS) {
             struct korb_class *cEnc = (struct korb_class *)cEnc_v;
-            VALUE _enc_name(CTX *c, VALUE self, int argc, VALUE *argv);
-            DEF(cEnc, "name",    _enc_name, 0);
-            DEF(cEnc, "to_s",    _enc_name, 0);
-            DEF(cEnc, "inspect", _enc_name, 0);
+            RESULT _enc_name(CTX *c, int argc, VALUE *sp);
+            DEF_R(cEnc, "name",    _enc_name, 0);
+            DEF_R(cEnc, "to_s",    _enc_name, 0);
+            DEF_R(cEnc, "inspect", _enc_name, 0);
         }
     }
-    DEF(korb_vm->string_class, "+", str_plus, 1);
-    DEF(korb_vm->string_class, "<<", str_lshift, -1);
-    DEF(korb_vm->string_class, "concat", str_concat, 1);
-    DEF(korb_vm->string_class, "size", str_size, 0);
-    DEF(korb_vm->string_class, "length", str_size, 0);
-    DEF(korb_vm->string_class, "==", str_eq, 1);
-    DEF(korb_vm->string_class, "<=>", str_cmp, 1);
-    DEF(korb_vm->string_class, "<",   str_lt, 1);
-    DEF(korb_vm->string_class, "<=",  str_le, 1);
-    DEF(korb_vm->string_class, ">",   str_gt, 1);
-    DEF(korb_vm->string_class, ">=",  str_ge, 1);
-    DEF(korb_vm->string_class, "to_s", str_to_s, 0);
-    DEF(korb_vm->string_class, "to_sym", str_to_sym, 0);
-    DEF(korb_vm->string_class, "__chilled?", str_chilled_p, 0);
+    DEF_R(korb_vm->string_class, "+", str_plus, 1);
+    DEF_R(korb_vm->string_class, "<<", str_lshift, -1);
+    DEF_R(korb_vm->string_class, "concat", str_concat, 1);
+    DEF_R(korb_vm->string_class, "size", str_size, 0);
+    DEF_R(korb_vm->string_class, "length", str_size, 0);
+    DEF_R(korb_vm->string_class, "==", str_eq, 1);
+    DEF_R(korb_vm->string_class, "<=>", str_cmp, 1);
+    DEF_R(korb_vm->string_class, "<",   str_lt, 1);
+    DEF_R(korb_vm->string_class, "<=",  str_le, 1);
+    DEF_R(korb_vm->string_class, ">",   str_gt, 1);
+    DEF_R(korb_vm->string_class, ">=",  str_ge, 1);
+    DEF_R(korb_vm->string_class, "to_s", str_to_s, 0);
+    DEF_R(korb_vm->string_class, "to_sym", str_to_sym, 0);
+    DEF_R(korb_vm->string_class, "__chilled?", str_chilled_p, 0);
 
     /* Array */
     DEF(korb_vm->array_class, "size", ary_size, 0);
@@ -546,19 +551,19 @@ void korb_init_builtins(CTX *c) {
         DEF(korb_vm->object_class, "yield_self", obj_then,   0);
         DEF(korb_vm->object_class, "itself",     obj_itself, 0);
     }
-    DEF_PRIV(korb_vm->object_class, "format",            kernel_format,            -1);
-    DEF_PRIV(korb_vm->object_class, "sprintf",           kernel_format,            -1);
+    DEF_R_PRIV(korb_vm->object_class, "format",            kernel_format,            -1);
+    DEF_R_PRIV(korb_vm->object_class, "sprintf",           kernel_format,            -1);
     if (korb_vm->kernel_module) {
-        DEF_PRIV(korb_vm->kernel_module, "format",  kernel_format, -1);
-        DEF_PRIV(korb_vm->kernel_module, "sprintf", kernel_format, -1);
+        DEF_R_PRIV(korb_vm->kernel_module, "format",  kernel_format, -1);
+        DEF_R_PRIV(korb_vm->kernel_module, "sprintf", kernel_format, -1);
     }
     /* Also expose as public methods on Kernel.singleton_class so the
      * `Kernel.format(...)` form works. */
     if (cKerMeta) {
-        DEF(cKerMeta, "format",  kernel_format, -1);
-        DEF(cKerMeta, "sprintf", kernel_format, -1);
+        DEF_R(cKerMeta, "format",  kernel_format, -1);
+        DEF_R(cKerMeta, "sprintf", kernel_format, -1);
     }
-    DEF(korb_vm->object_class, "printf",                kernel_printf,            -1);
+    DEF_R(korb_vm->object_class, "printf",                kernel_printf,            -1);
 
     /* extra Integer */
     DEF(korb_vm->integer_class, "chr",   int_chr, 0);
@@ -616,79 +621,79 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->float_class, "truncate", flt_truncate, 0);
 
     /* extra String */
-    DEF(korb_vm->string_class, "split",       str_split,       -1);
-    DEF(korb_vm->string_class, "chomp",       str_chomp,       -1);
-    DEF(korb_vm->string_class, "chomp!",      str_chomp_bang,  -1);
-    DEF(korb_vm->string_class, "strip",       str_strip,        0);
-    DEF(korb_vm->string_class, "strip!",      str_strip_bang,   0);
-    DEF(korb_vm->string_class, "lstrip",      str_lstrip,       0);
-    DEF(korb_vm->string_class, "lstrip!",     str_lstrip_bang,  0);
-    DEF(korb_vm->string_class, "rstrip",      str_rstrip,       0);
-    DEF(korb_vm->string_class, "rstrip!",     str_rstrip_bang,  0);
-    DEF(korb_vm->string_class, "to_i",        str_to_i,        -1);
-    DEF(korb_vm->string_class, "to_f",        str_to_f,         0);
-    DEF(korb_vm->string_class, "[]",          str_aref,        -1);
-    DEF(korb_vm->string_class, "[]=",         str_aset,        -1);
-    DEF(korb_vm->string_class, "index",       str_index,       -1);
-    DEF(korb_vm->string_class, "rindex",      str_rindex,      -1);
-    DEF(korb_vm->string_class, "chars",       str_chars,        0);
-    DEF(korb_vm->string_class, "bytes",       str_bytes,        0);
-    DEF(korb_vm->string_class, "each_char",   str_each_char,    0);
-    DEF(korb_vm->string_class, "each_line",   str_each_line,    0);
-    DEF(korb_vm->string_class, "start_with?", str_start_with,  -1);
-    DEF(korb_vm->string_class, "end_with?",   str_end_with,    -1);
-    DEF(korb_vm->string_class, "include?",    str_include,     -1);
-    DEF(korb_vm->string_class, "replace",     str_replace,      1);
-    DEF(korb_vm->string_class, "reverse",     str_reverse,      0);
-    DEF(korb_vm->string_class, "reverse!",    str_reverse_bang, 0);
-    DEF(korb_vm->string_class, "upcase",      str_upcase,       0);
-    DEF(korb_vm->string_class, "upcase!",     str_upcase_bang,  0);
-    DEF(korb_vm->string_class, "downcase",    str_downcase,     0);
-    DEF(korb_vm->string_class, "downcase!",   str_downcase_bang, 0);
-    DEF(korb_vm->string_class, "empty?",      str_empty_p,      0);
-    DEF(korb_vm->string_class, "*",           str_mul,          1);
-    DEF(korb_vm->string_class, "hash",        str_hash,         0);
-    DEF(korb_vm->string_class, "===",         str_eqq,          1);
-    DEF(korb_vm->string_class, "gsub",        str_gsub,        -1);
+    DEF_R(korb_vm->string_class, "split",       str_split,       -1);
+    DEF_R(korb_vm->string_class, "chomp",       str_chomp,       -1);
+    DEF_R(korb_vm->string_class, "chomp!",      str_chomp_bang,  -1);
+    DEF_R(korb_vm->string_class, "strip",       str_strip,        0);
+    DEF_R(korb_vm->string_class, "strip!",      str_strip_bang,   0);
+    DEF_R(korb_vm->string_class, "lstrip",      str_lstrip,       0);
+    DEF_R(korb_vm->string_class, "lstrip!",     str_lstrip_bang,  0);
+    DEF_R(korb_vm->string_class, "rstrip",      str_rstrip,       0);
+    DEF_R(korb_vm->string_class, "rstrip!",     str_rstrip_bang,  0);
+    DEF_R(korb_vm->string_class, "to_i",        str_to_i,        -1);
+    DEF_R(korb_vm->string_class, "to_f",        str_to_f,         0);
+    DEF_R(korb_vm->string_class, "[]",          str_aref,        -1);
+    DEF_R(korb_vm->string_class, "[]=",         str_aset,        -1);
+    DEF_R(korb_vm->string_class, "index",       str_index,       -1);
+    DEF_R(korb_vm->string_class, "rindex",      str_rindex,      -1);
+    DEF_R(korb_vm->string_class, "chars",       str_chars,        0);
+    DEF_R(korb_vm->string_class, "bytes",       str_bytes,        0);
+    DEF_R(korb_vm->string_class, "each_char",   str_each_char,    0);
+    DEF_R(korb_vm->string_class, "each_line",   str_each_line,    0);
+    DEF_R(korb_vm->string_class, "start_with?", str_start_with,  -1);
+    DEF_R(korb_vm->string_class, "end_with?",   str_end_with,    -1);
+    DEF_R(korb_vm->string_class, "include?",    str_include,     -1);
+    DEF_R(korb_vm->string_class, "replace",     str_replace,      1);
+    DEF_R(korb_vm->string_class, "reverse",     str_reverse,      0);
+    DEF_R(korb_vm->string_class, "reverse!",    str_reverse_bang, 0);
+    DEF_R(korb_vm->string_class, "upcase",      str_upcase,       0);
+    DEF_R(korb_vm->string_class, "upcase!",     str_upcase_bang,  0);
+    DEF_R(korb_vm->string_class, "downcase",    str_downcase,     0);
+    DEF_R(korb_vm->string_class, "downcase!",   str_downcase_bang, 0);
+    DEF_R(korb_vm->string_class, "empty?",      str_empty_p,      0);
+    DEF_R(korb_vm->string_class, "*",           str_mul,          1);
+    DEF_R(korb_vm->string_class, "hash",        str_hash,         0);
+    DEF_R(korb_vm->string_class, "===",         str_eqq,          1);
+    DEF_R(korb_vm->string_class, "gsub",        str_gsub,        -1);
     DEF(korb_vm->string_class, "gsub!",       str_gsub_bang,   -1);
-    DEF(korb_vm->string_class, "sub",         str_sub,         -1);
+    DEF_R(korb_vm->string_class, "sub",         str_sub,         -1);
     DEF(korb_vm->string_class, "sub!",        str_sub_bang,    -1);
-    DEF(korb_vm->string_class, "tr",          str_tr,          -1);
-    DEF(korb_vm->string_class, "tr!",         str_tr_bang,     -1);
-    DEF(korb_vm->string_class, "tr_s",        str_tr_s,        -1);
-    DEF(korb_vm->string_class, "tr_s!",       str_tr_s_bang,   -1);
-    DEF(korb_vm->string_class, "%",           str_percent,     -1);
-    DEF(korb_vm->string_class, "bytesize",    str_bytesize,     0);
+    DEF_R(korb_vm->string_class, "tr",          str_tr,          -1);
+    DEF_R(korb_vm->string_class, "tr!",         str_tr_bang,     -1);
+    DEF_R(korb_vm->string_class, "tr_s",        str_tr_s,        -1);
+    DEF_R(korb_vm->string_class, "tr_s!",       str_tr_s_bang,   -1);
+    DEF_R(korb_vm->string_class, "%",           str_percent,     -1);
+    DEF_R(korb_vm->string_class, "bytesize",    str_bytesize,     0);
     DEF(korb_vm->string_class, "inspect",     kernel_inspect,   0);
     DEF(korb_vm->string_class, "dup",         obj_dup,          0);
-    DEF(korb_vm->string_class, "=~",          str_match_op, 1);
-    DEF(korb_vm->string_class, "match?",      str_match_p, -1);
-    DEF(korb_vm->string_class, "match",       str_match, -1);
+    DEF_R(korb_vm->string_class, "=~",          str_match_op, 1);
+    DEF_R(korb_vm->string_class, "match?",      str_match_p, -1);
+    DEF_R(korb_vm->string_class, "match",       str_match, -1);
     DEF(korb_vm->string_class, "scan",        str_scan, 1);
-    DEF(korb_vm->string_class, "sum",         str_sum, -1);
+    DEF_R(korb_vm->string_class, "sum",         str_sum, -1);
     DEF(korb_vm->string_class, "unpack",      str_unpack, -1);
-    DEF(korb_vm->string_class, "center",      str_center, -1);
-    DEF(korb_vm->string_class, "ljust",       str_ljust,  -1);
-    DEF(korb_vm->string_class, "rjust",       str_rjust,  -1);
-    DEF(korb_vm->string_class, "chop",        str_chop,    0);
-    DEF(korb_vm->string_class, "chop!",       str_chop_bang, 0);
-    DEF(korb_vm->string_class, "count",       str_count_chars, -1);
-    DEF(korb_vm->string_class, "delete",      str_delete_chars, -1);
-    DEF(korb_vm->string_class, "squeeze",     str_squeeze, -1);
-    DEF(korb_vm->string_class, "swapcase",     str_swapcase,        0);
-    DEF(korb_vm->string_class, "swapcase!",    str_swapcase_bang,   0);
-    DEF(korb_vm->string_class, "capitalize",   str_capitalize,      0);
-    DEF(korb_vm->string_class, "capitalize!",  str_capitalize_bang, 0);
-    DEF(korb_vm->string_class, "lines",       str_lines,   -1);
-    DEF(korb_vm->string_class, "partition",   str_partition, 1);
-    DEF(korb_vm->string_class, "rpartition",  str_rpartition, 1);
-    DEF(korb_vm->string_class, "succ",        str_succ,    0);
-    DEF(korb_vm->string_class, "next",        str_succ,    0);
-    DEF(korb_vm->string_class, "each_byte",   str_each_byte, 0);
-    DEF(korb_vm->string_class, "ord",         str_ord,     0);
-    DEF(korb_vm->string_class, "eql?",        str_eql,     1);
-    DEF(korb_vm->string_class, "clone",       str_clone,   0);
-    DEF(korb_vm->string_class, "intern",      str_to_sym,  0);
+    DEF_R(korb_vm->string_class, "center",      str_center, -1);
+    DEF_R(korb_vm->string_class, "ljust",       str_ljust,  -1);
+    DEF_R(korb_vm->string_class, "rjust",       str_rjust,  -1);
+    DEF_R(korb_vm->string_class, "chop",        str_chop,    0);
+    DEF_R(korb_vm->string_class, "chop!",       str_chop_bang, 0);
+    DEF_R(korb_vm->string_class, "count",       str_count_chars, -1);
+    DEF_R(korb_vm->string_class, "delete",      str_delete_chars, -1);
+    DEF_R(korb_vm->string_class, "squeeze",     str_squeeze, -1);
+    DEF_R(korb_vm->string_class, "swapcase",     str_swapcase,        0);
+    DEF_R(korb_vm->string_class, "swapcase!",    str_swapcase_bang,   0);
+    DEF_R(korb_vm->string_class, "capitalize",   str_capitalize,      0);
+    DEF_R(korb_vm->string_class, "capitalize!",  str_capitalize_bang, 0);
+    DEF_R(korb_vm->string_class, "lines",       str_lines,   -1);
+    DEF_R(korb_vm->string_class, "partition",   str_partition, 1);
+    DEF_R(korb_vm->string_class, "rpartition",  str_rpartition, 1);
+    DEF_R(korb_vm->string_class, "succ",        str_succ,    0);
+    DEF_R(korb_vm->string_class, "next",        str_succ,    0);
+    DEF_R(korb_vm->string_class, "each_byte",   str_each_byte, 0);
+    DEF_R(korb_vm->string_class, "ord",         str_ord,     0);
+    DEF_R(korb_vm->string_class, "eql?",        str_eql,     1);
+    DEF_R(korb_vm->string_class, "clone",       str_clone,   0);
+    DEF_R(korb_vm->string_class, "intern",      str_to_sym,  0);
 
     /* extra Array */
     DEF(korb_vm->array_class, "sort",       ary_sort,       -1);
@@ -759,18 +764,18 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->array_class, "bsearch",        ary_bsearch,    -1);
     DEF(korb_vm->array_class, "one?",           ary_one_p,     -1);
     /* String additions */
-    DEF(korb_vm->string_class, "hex",           str_hex,           0);
-    DEF(korb_vm->string_class, "oct",           str_oct,           0);
-    DEF(korb_vm->string_class, "prepend",       str_prepend,      -1);
-    DEF(korb_vm->string_class, "insert",        str_insert,        2);
-    DEF(korb_vm->string_class, "delete_prefix",  str_delete_prefix,  1);
-    DEF(korb_vm->string_class, "delete_prefix!", str_delete_prefix_bang, 1);
-    DEF(korb_vm->string_class, "delete_suffix",  str_delete_suffix,  1);
-    DEF(korb_vm->string_class, "delete_suffix!", str_delete_suffix_bang, 1);
-    DEF(korb_vm->string_class, "byteslice",     str_byteslice,    -1);
-    DEF(korb_vm->string_class, "append_as_bytes", str_append_as_bytes, -1);
-    DEF(korb_vm->string_class, "setbyte",       str_setbyte,       2);
-    DEF(korb_vm->string_class, "getbyte",       str_getbyte,       1);
+    DEF_R(korb_vm->string_class, "hex",           str_hex,           0);
+    DEF_R(korb_vm->string_class, "oct",           str_oct,           0);
+    DEF_R(korb_vm->string_class, "prepend",       str_prepend,      -1);
+    DEF_R(korb_vm->string_class, "insert",        str_insert,        2);
+    DEF_R(korb_vm->string_class, "delete_prefix",  str_delete_prefix,  1);
+    DEF_R(korb_vm->string_class, "delete_prefix!", str_delete_prefix_bang, 1);
+    DEF_R(korb_vm->string_class, "delete_suffix",  str_delete_suffix,  1);
+    DEF_R(korb_vm->string_class, "delete_suffix!", str_delete_suffix_bang, 1);
+    DEF_R(korb_vm->string_class, "byteslice",     str_byteslice,    -1);
+    DEF_R(korb_vm->string_class, "append_as_bytes", str_append_as_bytes, -1);
+    DEF_R(korb_vm->string_class, "setbyte",       str_setbyte,       2);
+    DEF_R(korb_vm->string_class, "getbyte",       str_getbyte,       1);
     /* Numeric eql? — type-strict */
     DEF(korb_vm->integer_class, "eql?",          int_eql,           1);
     DEF(korb_vm->float_class, "eql?",          flt_eql,           1);
@@ -959,10 +964,10 @@ void korb_init_builtins(CTX *c) {
     }
     /* String.new(s = "") — initialize from optional string. */
     {
-        VALUE str_class_new(CTX *c, VALUE self, int argc, VALUE *argv);
+        RESULT str_class_new(CTX *c, int argc, VALUE *sp);
         struct korb_class *cStrMeta = korb_class_new(c, c->sp, korb_intern("StringMeta"),
                                                       korb_vm->class_class, T_CLASS);
-        korb_class_add_method_cfunc(cStrMeta, korb_intern("new"), str_class_new, -1);
+        korb_class_add_method_cfunc_r(cStrMeta, korb_intern("new"), str_class_new, -1);
         korb_vm->string_class->basic.klass = (VALUE)cStrMeta;
         /* String.try_convert(obj) — obj.to_str if responding and returns
          * String, else nil.  Raises TypeError if #to_str returns non-String. */
