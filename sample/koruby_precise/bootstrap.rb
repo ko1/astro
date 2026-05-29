@@ -4750,6 +4750,15 @@ module Kernel
     raise TypeError, "can't convert #{arg.class} into Hash"
   end unless private_method_defined?(:Hash)
   private :Hash
+  # Also expose as Kernel.Hash (module_function semantics) so
+  # `Kernel.Hash(arg)` works.  CRuby treats these conversion methods
+  # as module_function — private instance + public singleton.
+  def self.Hash(arg)
+    return {} if arg.nil? || arg == []
+    return arg if arg.is_a?(Hash)
+    return arg.to_hash if arg.respond_to?(:to_hash)
+    raise TypeError, "can't convert #{arg.class} into Hash"
+  end unless respond_to?(:Hash)
 end
 
 # ---------- Set (minimal Hash-backed) ----------
