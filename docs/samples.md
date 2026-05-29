@@ -3,8 +3,8 @@
 ASTro リポジトリ配下の `sample/*` を **言語特性** と **そこから導かれる
 node.def 構成** を中心に横断分析した文書。各サンプル個別の詳細は
 `sample/<lang>/README.md` および `sample/<lang>/docs/{done,todo,perf,runtime}.md`
-を参照。本書は「23 サンプル並べて何が分かるか」を整理する
-(汎用言語 19 + DSL 4 種: 正規表現の `astrogre`、JSON フィルタの `nuq`、
+を参照。本書は「24 サンプル並べて何が分かるか」を整理する
+(汎用言語 20 + DSL 4 種: 正規表現の `astrogre`、JSON フィルタの `nuq`、
 JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 (`baruby` / `baruby_precise` / `arawk`) は本書他セクションで GC・テキスト
 処理側の観点で追記しているが、§3 の node.def 構成パターン軸では
@@ -24,6 +24,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 | sample | 元言語 | パラダイム | 静/動 | 数値 | 備考 |
 |---|---|---|---|---|---|
 | `calc` | (独自) | 算術式のみ | — | int32 | end-to-end 最小デモ (6 ノード) |
+| `abc` | POSIX/GNU bc | 電卓, 動的 | — | **任意精度十進** (GMP 仮数 + scale) | 変数 / 配列 / 関数 (動的スコープ) / `if`-`while`-`for` / `ibase`-`obase` / **LSB-tag fixnum** + libgc、`bc` と差分テスト 5,500+ |
 | `pascalast` | Pascal | 命令型, 静的 | 静 | int+real+set | record / 1D・2D 配列 / file I/O / try/except / OOP |
 | `naruby` | Ruby サブセット | 命令型, 動的 | 動 (整数のみ) | int64 | **論文評価用** — 1 バイナリで 4 モード切替 |
 | `baruby` | Ruby サブセット | 命令型, 動的 | 動 | int64 + Array + String | naruby fork + libgc、 **統一 GC framework testbed の最初の対象** (LSB-tagged VALUE / parse-time method desugar) |
@@ -48,7 +49,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 | `arcel` | (CEL / Common Expression Language) | DSL — predicate | — | tagged-union 16B | **standalone**、cel-go/cel-cpp の dropin 代替、conformance 808/808、AOT で cel-cpp の geomean 14× / 最大 42× |
 
 パラダイム軸での広がり:
-- **教育用最小**: `calc`
+- **教育用最小 / 電卓**: `calc` / `abc`
 - **命令型 (古典)**: `pascalast` / `castro`
 - **動的言語のメインストリーム**: `naruby` / `baruby` / `baruby_precise` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro`
 - **関数型**: `ascheme` / `astocaml` / `asml`
@@ -73,7 +74,7 @@ moving + 14-way GC switch、 という pair-of-testbeds 構造。
 直交する軸として **型システム** で切ると:
 - **静的型** (parser-time に型確定): `pascalast` / `castro` / `astocaml` / `asml` / `wastro`
 - **動的型**: 動的言語勢 8 つ (`naruby` / `baruby` / `baruby_precise` / `abruby` / `koruby` / `luastro` / `pystro` / `jstro`) + Scheme + Smalltalk + R + awk + Forth (cell 単位 untyped)
-- **型なし / DSL**: `calc` / `astrogre` / `nuq` / `arjsv` / `arcel`
+- **型なし / DSL**: `calc` / `abc` / `astrogre` / `nuq` / `arjsv` / `arcel`
 
 静的型 4 つはそれぞれ違う方向 — Pascal (古典手続き型 + variant record),
 C (低レベル ABI + ポインタ), OCaml (Hindley-Milner + variant + class),
@@ -94,6 +95,7 @@ ASTro が想定外でも嵌まる例になっている。
 |---|---:|---:|
 | `calc`           |   6 |    36 |
 | `naruby`         |  32 |   479 |
+| `abc`            |  40 |   361 |
 | `astr`           |  46 |   578 |
 | `arjsv`          |  47 |   971 |
 | `baruby`         |  52 |   751 |
@@ -165,7 +167,10 @@ node.def 数値だけ保守する。)
 
 `calc` / `naruby` / `aforth` (Forth は cell 単位 64-bit 整数で型なし) /
 `astr` (整数は fixnum タグ + libc に流す) のように、値が **実質 1 種類**
-の言語ではノードも 1 つで終わる。最も素朴。
+の言語ではノードも 1 つで終わる。最も素朴。`abc` も `node_add(l, r)` は
+1 個で、値が任意精度十進 1 種類なのは同じ — fixnum 即値 / GMP ヒープの
+二段は **ノードではなく `bc_add` ヘルパ内**で分岐するので、node.def 上は
+単型のまま (cf. §4 の値表現)。
 
 #### (b) 静的型 — 型ごとに別ノード
 
@@ -447,6 +452,7 @@ promote** する。AST 解釈なのにスタックマシン JIT 風の速度が�
 | sample | 値表現 | GC | パーサ | 特殊機構 |
 |---|---|---|---|---|
 | `calc` | `int64_t` | なし | 自前再帰下降パーサ | — |
+| `abc` | **任意精度十進** (GMP `mpz_t` 仮数 + scale)、LSB-tag fixnum 即値 (scale 0 / 62bit) で GMP・GC 回避 | Boehm libgc (GMP limb も GC atomic に差し替え) | 自前 tokenizer + 再帰下降 | `scale` 伝播規則、`ibase`/`obase` 基数変換 (>16 は空白桁グループ)、bc 互換 68 桁行折り返し、動的スコープ関数 (退避/復元) |
 | `naruby` | `int64_t` | leak | Prism (CRuby パーサ) | **L0/L1/L2 JIT デーモン** |
 | `baruby` | LSB-tagged `int64` (1-bit fixnum tag) | Boehm libgc (conservative) | Prism (`./prism → ../naruby/prism`) | parse-time method desugar (OO machinery なし)、 `binary_trees` / `list_alloc` / `string_concat` / `gc_combined` / `substr_churn` / `fib_pair` の **6 つの違う GC lifecycle bench** を装備 |
 | `baruby_precise` | LSB-tagged `int64` (1-bit fixnum tag) | **16 種類の GC を build-time switch** (`make GC=<name>`) — `none` / `mark` / `mark_gen` / `mark_gen_inc` / `copy` (default) / `copy_gen` / `copy_gen_inc` / `mark_compact` / `mark_compact_gen` / `bump` / `mark_bump_gen` / `mark_freelist` / `immix` / `immix_gen` / `mark_bitmap_gen` / `mark_card_gen`。 backend 実装は `runtime/precise_gc/` に framework 化済 (iter 74)、 sample 側は context.h で `ASTRO_GC_SCAN_EDGES` macro + AroGcKind 拡張値を提供する contract | Prism (baruby と共有) | **precise rooting (`sp[]` spill)** + WB + 必要なら moving (Cheney / Immix-gen / Compact)、 backend × bench の matrix runner (`bench/matrix.rb`)、 `mark_seconds` / `reclaim_seconds` / pause histogram の per-collector 計装 |
@@ -508,6 +514,7 @@ ASTro は plain interpreter / AOT / Profile-Guided / JIT の 4 モードを
 | sample | interp | AOT (`-c`) | PG | JIT |
 |---|:-:|:-:|:-:|:-:|
 | `calc`           | ✓ | ✓ |   |   |
+| `abc`            | ✓ | ✓ |   |   |
 | `naruby`         | ✓ | ✓ | ✓ | ✓ |
 | `baruby`         | ✓ | ✓ | ✓ |   |
 | `baruby_precise` | ✓ | △ |   |   |
@@ -558,6 +565,7 @@ PG パスを引き継いだが、 fork 直後で JIT (`-j`) は未配線
 | sample | code store 無効 | AOT bake → run | AOT bake → exit | PG bake | code store クリア | AST dump | quiet |
 |---|---|---|---|---|---|---|---|
 | `calc`           | `--no-compile` | (default) | — | — | — | — | `-q` |
+| `abc`            | `--plain` | `--aot-compile --run` | `--aot-compile` / `--build OUT` | (`--pg-compile`) | (`make clean`) | `--disasm` | `-q` |
 | `naruby`         | `-i` / `--plain` | `-c` / `--aot` / `--aot-compile-first` | `--aot-compile` | `-p` / `--pg` | `--ccs` | — | `-q` |
 | `baruby`         | `-i` / `--plain` | `-c` / `--aot` / `--aot-compile-first` | `--aot-compile` | `-p` / `--pg` / `--pg-compile` | `--ccs` / `--clear-code-store` | — | `-q` |
 | `baruby_precise` | `-i` / `--plain` | `-c` / `--aot` (iter 36 で修復) | — | `-p` / `--pg` | `--ccs` | — | `-q` |
@@ -649,9 +657,10 @@ PG パスを引き継いだが、 fork 直後で JIT (`-j`) は未配線
 
 ファイル/コードの渡し方も微妙にバラバラ:
 
-- **`-e <code>` で文字列実行**: `abruby` / `ascheme` / `koruby` / `luastro` / `pystro` (REPL/one-liner で重宝)、`arcel` (各サブコマンドの引数として)、 `arawk` (awk one-liner)
-- **stdin から読む** (`-`): `ascheme` のみ
-- **REPL モード**: `calc` (引数無しで起動)、`ascheme` (script 無しで起動)、`arcel repl` (1 行 1 JSON envelope を stdin から)
+- **`-e <code>` で文字列実行**: `abruby` / `ascheme` / `koruby` / `luastro` / `pystro` (REPL/one-liner で重宝)、`arcel` (各サブコマンドの引数として)、 `arawk` (awk one-liner)、`abc` (`-e EXPR`)
+- **stdin から読む**: `ascheme` (`-`)、`abc` (非 tty の stdin を丸ごと実行)
+- **複数ファイルを順に実行** (共有 state): `abc` (`abc f1 f2 ...`、本物の bc 流儀)
+- **REPL モード**: `calc` (引数無しで起動)、`ascheme` (script 無しで起動)、`arcel repl` (1 行 1 JSON envelope を stdin から)、`abc` (tty stdin。 ブレース均衡まで行を蓄積)
 - **クラス名 / モジュール名指定** (file path ではない): `asom` (`asom <ClassName>`)、`wastro` (`wastro module.wat <export> [args...]`)
 - **サブコマンド形式**: `arcel {eval|bench|repl} -e EXPR ...` (cel-go / cel-cpp と同形式 — harness が binary 入替で切り替えられる)
 - **`--` 末尾 sentinel**: `ascheme` / `luastro` / `pystro` (option 終端、以降は script ARGV)
@@ -680,6 +689,16 @@ CLI に出ないが環境変数で挙動を変えるもの:
 フラグだけ載せる形に揃えると、`abruby --plain` と `naruby --plain`
 で意味が一致したり、`-c` の意味揺れが消えたりして、サンプル間の
 学習コストが下がる。
+
+この標準化は `runtime/astro_build.{c,h}` (`astro_build_extract_flags` +
+`astro_print_build_help`) として実装済で、**`calc` / `naruby` / `koruby` /
+`abc` が移行済**。中でも `abc` は per-sample alias を一切持たず
+(`--plain` / `--aot-compile` / `--pg-compile` / `--run` / `--build OUT` /
+`-q` / `-v` / `-h` / `--version` を全て framework に委ね、固有フラグは
+`-e` / `-l` / `-w` / `--disasm` のみ)、統一 CLI の参照実装になっている。
+toolchain 系は `ASTRO_BUILD_OPTS` 環境変数に分離。なお framework 共通則
+として **引数の無い単独 `-v` はバージョン表示して終了** する
+(usage.md「Bare `-v` rule」)。
 
 ---
 
@@ -712,6 +731,7 @@ CLI に出ないが環境変数で挙動を変えるもの:
 | `wastro` | native gcc -O2 / wasmtime (Cranelift JIT) | 3 | native に 3–6× 負け、wasmtime とはループでタイ・call で負け |
 | `jstro` | node v18 (V8 TurboFan) | 13 | **try/catch 45×、cold-start 53×、Redux 系 2.25×、large sieve 2.45×** で勝ち。fib/mandel/nbody は 3–14× 負け |
 | `astrogre` | ripgrep / GNU grep / Onigmo | 17 | **vs Onigmo 8/8 勝** (3–15×)、**vs grep 6/8 勝** (最大 10×)、ripgrep には 3/8 + 1 タイ (識別子系で 10× 負け) |
+| `abc` | GNU bc 1.07.1 | 8 | **interp で全 8 本 bc 超え (geomean ~6×)** — 多倍長が効く `factorial` **42×** / `sqrt_loop` **25×** (GMP `mpz_mul`/`mpz_sqrt`)、整数ループは LSB-tag fixnum で 2–5×。`bc` との出力一致を確認しつつ計測。AOT 列は **~1.0× (横ばい)**: 算術が `bc_add` 等 out-of-line helper のまま SD に inline されず、dispatch 除去の取り分が小さい (helper の statement-expr 化が次の一手) |
 | `pascalast` | (外部 Pascal なし、自 interp との比較のみ) | 4 | interp → AOT で 2× (recursive) 〜 25× (tight loop) |
 | `baruby` | (自 interp baseline、 perf 最適化は未着手) | 6 GC lifecycle bench | plain → AOT (`-c`) で `gc_combined` 2.74× / `list_alloc` 2.02× / `fib_pair` 2.00× / `substr_churn` 1.78× / `binary_trees` 1.34× / `string_concat` 1.01× (ホットパスが allocator 内に消えると AOT 利得が薄れる) |
 | `baruby_precise` | 14 自前 GC backend × 19 bench の matrix (+ libgc column = baruby) | 19 × 15 | サンプルとしての「対戦相手」 ではなく、 GC algorithm 比較 testbed。 場面別の傾向: nursery + write-barrier 系 (`copy_gen` / `mark_gen` / `mark_bitmap_gen` / `mark_card_gen`) は短命 alloc が多い bench (`list_alloc` / `string_concat` / `fib_pair`) で non-gen 系を 1.5-3× 上回り、 long-lived heap が支配的な bench (`binary_trees`) ではほぼ並ぶ。 libgc は `substr_churn` のような large long-lived + small short-lived の組合せで強い (conservative scan が薄い heap で blame しないため) |

@@ -12,8 +12,8 @@ ASTro (AST-based Reusable Optimization Framework) は、AST を辿るインタ�
 - `runtime/` — 全サンプル共通の C ランタイム
   - `astro_node.c` — `#include` 形式の共通ヘルパ (`HASH`, `DUMP`, ハッシュ関数群、`alloc_dispatcher_name`)
   - `astro_code_store.{h,c}` — AOT/PG コードストア API (`astro_cs_init` / `astro_cs_compile` / `astro_cs_build` / `astro_cs_load` / `astro_cs_reload`)
-- `sample/` — 各種言語実装サンプル (全 23 個)
-  - 教育用: `calc` (6 ノード電卓)
+- `sample/` — 各種言語実装サンプル (全 24 個)
+  - 教育用: `calc` (6 ノード電卓), `abc` (POSIX/GNU `bc` 互換 任意精度電卓, GMP 仮数+scale / libgc, `bc` との差分テスト 5,500+)
   - Ruby 系 (5): `naruby` (Ruby サブセット, JIT 対応), `baruby` (naruby fork + Array/String + libgc, **統一 GC testbed**), `baruby_precise` (baruby fork、precise rooting + **14 種類の自前 GC を build-time switch** できる GC algorithm 比較 testbed), `abruby` (Ruby サブセット, CRuby C 拡張), `koruby` (Ruby+, optcarrot 動かすことを目標)
   - その他動的言語 (3): `luastro` (Lua サブセット), `pystro` (Python 3 サブセット, GMP bignum + class + try/except), `jstro` (JavaScript, hidden class IC)
   - 関数型 / OO (4): `ascheme` (Scheme), `astocaml` (OCaml サブセット), `asml` (Standard ML サブセット, **HM 型推論完備** + 型駆動の dispatcher 特殊化), `asom` (SOM)

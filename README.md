@@ -45,11 +45,11 @@ docs/                   Design notes and papers
 
 ASTro samples span a wide range of language families to exercise the framework against very different value representations, control-flow shapes, and runtime services. All share a uniform layout (`node.def`, `Makefile`, optional ASTroGen extension, per-sample `docs/`). Each sample's own README has the full language scope, build / run, benchmarks, and design notes; [`docs/samples.md`](./docs/samples.md) is the cross-sample analysis. The entries below are one-liners with the most distinctive flagship result.
 
-**At a glance — 23 samples by paradigm:**
+**At a glance — 24 samples by paradigm:**
 
 | Group | Count | Samples |
 |---|---:|---|
-| Tutorial | 1 | `calc` |
+| Tutorial / calculators | 2 | `calc`, `abc` |
 | Ruby family | 5 | `naruby`, `baruby`, `baruby_precise`, `abruby`, `koruby` |
 | Other dynamic scripting | 3 | `luastro`, `jstro`, `pystro` |
 | Functional / OO academic | 4 | `ascheme`, `astocaml`, `asml`, `asom` |
@@ -58,8 +58,10 @@ ASTro samples span a wide range of language families to exercise the framework a
 | Data processing | 2 | `astr`, `arawk` |
 | Non-source / DSL | 5 | `wastro`, `astrogre`, `nuq`, `arjsv`, `arcel` |
 
-**Tutorial.**
+**Tutorial / calculators.**
 - [`calc`](./sample/calc/) — **toy 6-node calculator REPL** (`num` + `+`/`-`/`*`/`/`/`%`), the smallest end-to-end ASTroGen example.
+- [`abc`](./sample/abc/) — **POSIX/GNU `bc`-compatible arbitrary-precision calculator** (40 nodes): GMP-mantissa + `scale` fixed-point, variables / arrays / user functions (dynamic scope) / `if`-`while`-`for` / `ibase`-`obase` bases, with **LSB-tagged fixnum immediates** so scale-0 small integers skip GMP/GC; Boehm GC throughout.
+  Verified by **5,500+ differential tests vs system `bc`** (curated + fixtures + seeded fuzzing); **faster than `bc` on every benchmark (geomean ~6×)** — factorial **42×** / sqrt **25×** via GMP, integer loops 2–5×.
 
 **Ruby family.**
 - [`naruby`](./sample/naruby/) — ***not a Ruby***: tiny integer-only Ruby subset (32 nodes).

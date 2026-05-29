@@ -502,6 +502,14 @@ The framework also owns and parses (no aliases, canonical only):
 | `-h` / `--help` | `bcfg.help_requested` | signal: sample prints its own help and exits |
 | `--version` | `bcfg.version_requested` | signal: sample prints version and exits |
 
+**Bare `-v` rule:** `astro_build_extract_flags` treats a lone `-v` /
+`--verbose` — given with *no other arguments* (no files, no sample
+flags, no `--build`) — as a version request: it sets
+`bcfg.version_requested` so `prog -v` prints the version and exits.
+Combined with real work (`prog -v foo`, `prog -v -e ...`) it keeps its
+"verbose" meaning.  This is framework-wide, so every sample behaves the
+same.
+
 Sample-specific knobs may add their own short aliases (e.g. naruby
 `-j` for JIT) but **the framework flags above have no aliases.**  This
 guarantees `--quiet` etc. mean exactly the same thing everywhere.

@@ -1,0 +1,15 @@
+/* Arbitrary precision stress: large factorial, its digit length,
+   and a high-precision reciprocal. */
+define fact(n) {
+    auto r, i
+    r = 1
+    for (i = 2; i <= n; i++) r *= i
+    return(r)
+}
+fact(100)
+length(fact(100))
+scale = 50
+1 / 7
+scale = 0
+fact(30) % 1000000007
+2 ^ 100 % 97

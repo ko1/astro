@@ -1,0 +1,361 @@
+// -*- mode: c -*-
+//
+// abc AST node definitions.  Each NODE_DEF body is the evaluator for one
+// node kind; ASTroGen turns these into the interpreter, the structural
+// hash, the dumper and the partial-evaluation specializer.
+//
+// The runtime value type is `VALUE` == `bcnum *` (an arbitrary-precision
+// decimal).  Non-local control flow (return / break / continue) is
+// carried out of band via c->flow; sequence nodes and loops check it and
+// unwind.  Child nodes are evaluated through EVAL_ARG so the specializer
+// can fold the dispatch chain into one basic block.
+//
+// NOTE: operand evaluation order matters in bc (left-to-right, side
+// effects via ++/--/=), so every binary node spells out its EVAL_ARG
+// calls into sequenced locals instead of relying on C argument order.
+
+// ---- leaves / sentinels ---------------------------------------------
+
+NODE_DEF
+node_nil(CTX *c, NODE *n)
+{
+    // Empty statement / list terminator / absent branch.  Evaluates to 0.
+    (void)n;
+    return bc_alloc();
+}
+
+NODE_DEF
+node_num(CTX *c, NODE *n, const char *lit)
+{
+    // Literals are interpreted in the *current* input base (ibase may
+    // change at runtime), so we convert on every evaluation.
+    (void)n;
+    return bc_parse_literal(lit, c->ibase);
+}
+
+// ---- variables & arrays ---------------------------------------------
+
+NODE_DEF
+node_var(CTX *c, NODE *n, const char *name)
+{
+    (void)n;
+    return bc_var_get(c, name);
+}
+
+NODE_DEF
+node_assign(CTX *c, NODE *n, const char *name, NODE *rhs)
+{
+    VALUE v = EVAL_ARG(c, rhs);
+    return bc_var_set(c, name, v);
+}
+
+NODE_DEF
+node_aref(CTX *c, NODE *n, const char *name, NODE *idx)
+{
+    long i = bc_to_long(EVAL_ARG(c, idx));
+    return bc_arr_get(c, name, i);
+}
+
+NODE_DEF
+node_aset(CTX *c, NODE *n, const char *name, NODE *idx, NODE *rhs)
+{
+    long i = bc_to_long(EVAL_ARG(c, idx));
+    VALUE v = EVAL_ARG(c, rhs);
+    return bc_arr_set(c, name, i, v);
+}
+
+// flags bit0 = pre (vs post), bit1 = decrement (vs increment)
+NODE_DEF
+node_incdec(CTX *c, NODE *n, const char *name, int32_t flags)
+{
+    (void)n;
+    VALUE old = bc_var_get(c, name);
+    VALUE nv = bc_add(old, bc_from_long((flags & 2) ? -1 : 1));
+    bc_var_set(c, name, nv);
+    return (flags & 1) ? nv : old;
+}
+
+NODE_DEF
+node_aincdec(CTX *c, NODE *n, const char *name, NODE *idx, int32_t flags)
+{
+    long i = bc_to_long(EVAL_ARG(c, idx));
+    VALUE old = bc_arr_get(c, name, i);
+    VALUE nv = bc_add(old, bc_from_long((flags & 2) ? -1 : 1));
+    bc_arr_set(c, name, i, nv);
+    return (flags & 1) ? nv : old;
+}
+
+// ---- arithmetic ------------------------------------------------------
+
+NODE_DEF
+node_uminus(CTX *c, NODE *n, NODE *e)
+{
+    return bc_neg(EVAL_ARG(c, e));
+}
+
+NODE_DEF
+node_add(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_add(a, b);
+}
+
+NODE_DEF
+node_sub(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_sub(a, b);
+}
+
+NODE_DEF
+node_mul(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_mul(a, b, c->scale);
+}
+
+NODE_DEF
+node_div(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_div(c, a, b, c->scale);
+}
+
+NODE_DEF
+node_mod(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_mod(c, a, b, c->scale);
+}
+
+NODE_DEF
+node_pow(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_pow(c, a, b, c->scale);
+}
+
+// ---- comparison (yield the bc number 0 or 1) ------------------------
+
+NODE_DEF
+node_lt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_from_long(bc_cmp(a, b) < 0);
+}
+
+NODE_DEF
+node_le(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_from_long(bc_cmp(a, b) <= 0);
+}
+
+NODE_DEF
+node_gt(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_from_long(bc_cmp(a, b) > 0);
+}
+
+NODE_DEF
+node_ge(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_from_long(bc_cmp(a, b) >= 0);
+}
+
+NODE_DEF
+node_eq(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_from_long(bc_cmp(a, b) == 0);
+}
+
+NODE_DEF
+node_ne(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    VALUE a = EVAL_ARG(c, l), b = EVAL_ARG(c, r);
+    return bc_from_long(bc_cmp(a, b) != 0);
+}
+
+// ---- logical (short-circuit) ----------------------------------------
+
+NODE_DEF
+node_lnot(CTX *c, NODE *n, NODE *e)
+{
+    return bc_from_long(bc_truthy(EVAL_ARG(c, e)) ? 0 : 1);
+}
+
+NODE_DEF
+node_land(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    if (!bc_truthy(EVAL_ARG(c, l))) return bc_from_long(0);
+    return bc_from_long(bc_truthy(EVAL_ARG(c, r)) ? 1 : 0);
+}
+
+NODE_DEF
+node_lor(CTX *c, NODE *n, NODE *l, NODE *r)
+{
+    if (bc_truthy(EVAL_ARG(c, l))) return bc_from_long(1);
+    return bc_from_long(bc_truthy(EVAL_ARG(c, r)) ? 1 : 0);
+}
+
+// ---- builtins --------------------------------------------------------
+
+NODE_DEF
+node_sqrt(CTX *c, NODE *n, NODE *e)
+{
+    return bc_sqrt(c, EVAL_ARG(c, e), c->scale);
+}
+
+NODE_DEF
+node_length(CTX *c, NODE *n, NODE *e)
+{
+    return bc_from_long(bc_length(EVAL_ARG(c, e)));
+}
+
+NODE_DEF
+node_scale_of(CTX *c, NODE *n, NODE *e)
+{
+    return bc_from_long(bc_scale(EVAL_ARG(c, e)));
+}
+
+// ---- function call ---------------------------------------------------
+
+NODE_DEF
+node_call(CTX *c, NODE *n, const char *name, NODE *args)
+{
+    (void)n;
+    return bc_call(c, name, args);
+}
+
+// node_arg is a cons cell of the argument list; walked by bc_call.
+// Evaluating it directly evaluates its expression (used when bc_call
+// dispatches through it).
+NODE_DEF
+node_arg(CTX *c, NODE *n, NODE *expr, NODE *next)
+{
+    (void)n; (void)next;
+    return EVAL_ARG(c, expr);
+}
+
+// ---- statements ------------------------------------------------------
+
+NODE_DEF
+node_seq(CTX *c, NODE *n, NODE *head, NODE *tail)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, head);
+    if (c->flow != FLOW_NORMAL) return v;
+    return EVAL_ARG(c, tail);
+}
+
+NODE_DEF
+node_autoprint(CTX *c, NODE *n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    if (c->flow != FLOW_NORMAL) return v;
+    bc_print(stdout, v, c->obase, &c->out_col);
+    bc_out_char(stdout, '\n', &c->out_col);
+    c->last = v;
+    return v;
+}
+
+NODE_DEF
+node_str(CTX *c, NODE *n, const char *s)
+{
+    (void)n;
+    bc_out_str(stdout, s, &c->out_col);
+    return bc_alloc();
+}
+
+// One item of a `print` list.  is_str selects between the string literal
+// `s` and the expression `expr`; `next` chains to the rest (nil-terminated).
+NODE_DEF
+node_print_item(CTX *c, NODE *n, int32_t is_str, const char *s, NODE *expr, NODE *next)
+{
+    (void)n;
+    if (is_str) {
+        bc_print_string(stdout, s, &c->out_col);
+    }
+    else {
+        VALUE v = EVAL_ARG(c, expr);
+        if (c->flow != FLOW_NORMAL) return v;
+        bc_print(stdout, v, c->obase, &c->out_col);
+        c->last = v;
+    }
+    return EVAL_ARG(c, next);
+}
+
+NODE_DEF
+node_if(CTX *c, NODE *n, NODE *cond, NODE *then, NODE *els)
+{
+    (void)n;
+    if (bc_truthy(EVAL_ARG(c, cond))) return EVAL_ARG(c, then);
+    return EVAL_ARG(c, els);
+}
+
+NODE_DEF
+node_while(CTX *c, NODE *n, NODE *cond, NODE *body)
+{
+    (void)n;
+    while (bc_truthy(EVAL_ARG(c, cond))) {
+        EVAL_ARG(c, body);
+        if (c->flow == FLOW_BREAK)    { c->flow = FLOW_NORMAL; break; }
+        if (c->flow == FLOW_CONTINUE) { c->flow = FLOW_NORMAL; continue; }
+        if (c->flow == FLOW_RETURN)   break;
+    }
+    return bc_alloc();
+}
+
+NODE_DEF
+node_for(CTX *c, NODE *n, NODE *init, NODE *cond, NODE *step, NODE *body)
+{
+    (void)n;
+    EVAL_ARG(c, init);
+    if (c->flow != FLOW_NORMAL) return bc_alloc();
+    while (bc_truthy(EVAL_ARG(c, cond))) {
+        EVAL_ARG(c, body);
+        if (c->flow == FLOW_BREAK)    { c->flow = FLOW_NORMAL; break; }
+        if (c->flow == FLOW_RETURN)   break;
+        if (c->flow == FLOW_CONTINUE)   c->flow = FLOW_NORMAL;
+        EVAL_ARG(c, step);
+        if (c->flow != FLOW_NORMAL) break;
+    }
+    return bc_alloc();
+}
+
+NODE_DEF
+node_return(CTX *c, NODE *n, NODE *e)
+{
+    (void)n;
+    VALUE v = EVAL_ARG(c, e);
+    c->retval = v;
+    c->flow = FLOW_RETURN;
+    return v;
+}
+
+NODE_DEF
+node_break(CTX *c, NODE *n)
+{
+    (void)n;
+    c->flow = FLOW_BREAK;
+    return bc_alloc();
+}
+
+NODE_DEF
+node_continue(CTX *c, NODE *n)
+{
+    (void)n;
+    c->flow = FLOW_CONTINUE;
+    return bc_alloc();
+}
+
+NODE_DEF
+node_halt(CTX *c, NODE *n)
+{
+    (void)c; (void)n;
+    exit(0);
+}

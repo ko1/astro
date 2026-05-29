@@ -230,6 +230,16 @@ astro_build_extract_flags(int *argc_io, char **argv,
     argv[wi] = NULL;
     *argc_io = wi;
 
+    // Common rule: a *bare* `-v` / `--verbose` — given with no other
+    // arguments at all (no files, no sample flags, no build output) — is
+    // treated as a version request, so `prog -v` prints the version and
+    // exits.  Combined with real work (`prog -v foo`, `prog -v -e ...`),
+    // `-v` keeps its "verbose" meaning.
+    if (cfg->verbose && wi == 1 && !cfg->out_exe &&
+        !cfg->help_requested && !cfg->version_requested) {
+        cfg->version_requested = true;
+    }
+
     // Contradiction checks (only relevant if any build-related flag was set).
     if (cfg->plain && cfg->aot_compile) {
         fprintf(stderr, "astro: --plain and --aot-compile are mutually exclusive\n");
@@ -611,7 +621,7 @@ astro_print_build_help(FILE *fp)
         "  --run            execute the program\n"
         "  --build OUT      produce a standalone executable at OUT\n"
         "  -q, --quiet      suppress informational output\n"
-        "  -v, --verbose    verbose output\n"
+        "  -v, --verbose    verbose output (alone, prints version and exits)\n"
         "  -h, --help       show help\n"
         "      --version    show version\n"
         "\n"
