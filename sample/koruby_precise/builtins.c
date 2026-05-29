@@ -233,6 +233,14 @@ void korb_init_builtins(CTX *c) {
         DEF_R_PRIV(KORB_VM(c)->kernel_module, "Float",   kernel_float,    1);
         DEF_R_PRIV(KORB_VM(c)->kernel_module, "String",  kernel_string,   1);
         DEF_R_PRIV(KORB_VM(c)->kernel_module, "Array",   kernel_array,    1);
+        /* module_function semantics: also accessible as public Kernel.X via
+         * the singleton class.  CRuby uses module_function for these. */
+        if (cKerMeta) {
+            DEF_R(cKerMeta, "Integer", kernel_integer, -1);
+            DEF_R(cKerMeta, "Float",   kernel_float,    1);
+            DEF_R(cKerMeta, "String",  kernel_string,   1);
+            DEF_R(cKerMeta, "Array",   kernel_array,    1);
+        }
     }
 
     /* Integer */
