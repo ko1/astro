@@ -201,6 +201,60 @@ STRESS+PURGE で 0 crash。
 Total +33 PASS from Enumerable fixes。 broad sweep 上では fluctuation あり
 だが 150-spec sample で stable 1634。 specific enumerable spec で confirm 済。
 
+### 第 8 セッション: yield-args bug root cause fix + Phase 8d 大規模 RESULT 化 (2026-05-29)
+
+**Bug fix 1**: yield-args 破壊 (commit ed8dc4db)
+
+`def my_fi(&blk); obj.each { blk.call }; end` パターンで yielding method
+(each) が yielder の caller (my_fi) より深い frame で動くと、 share-env
+path で yield する時 block body の `c->sp = sp + N` が active method
+frame slots を上書きしていた。
+
+Fix: `korb_yield_slow` で `prev_fp > blk->env` (method overlaps env) を
+検出したら `fresh_env_path` を強制 ON。 `korb_yield` fast path も同条件で
+slow path に fall。 [[project_koruby_precise_yield_args_corruption]] を
+"FIXED" 化。 効果: 副次的に `Proc#curry[1][2][3] = 6` の基本ケースが動く
+ようになった (curry_spec 0 CRASH → 34 PASS / 14 FAIL/ERR)。
+
+**Bug fix 2**: Enumerable predicates が `blk.call(*xs)` に戻せた
+
+bug fix の結果 yield-args corruption が消えたため、 `any?/all?/none?/
+one?/find_index` を `blk.call(*xs)` に書き換え (multi-yield の正しい
+gather/dispatch 復活)。 any_spec.rb 65 → 70、 all_spec.rb 56 → 61 PASS。
+
+**Enumerable 改善**:
+- Hash#any?, Hash#all? の override 削除 (Enumerable へ委譲)。 pattern
+  arg / gather-as-pair 対応。
+- Array#any?/all?/none?/one? cfunc に argc > 1 の ArgumentError check 追加。
+- Array#intersect? を実装。 intersect_spec.rb 0 → 10 PASS。
+
+**Phase 8d 大規模 RESULT 化** (user 強い要望: 「c->state 消してってば 全部 RESULT」)
+
+- `koruby_gen.rb`: `Node.result_type = "RESULT"` を override。 全 dispatcher
+  / EVAL が RESULT 返り値で gen される。
+- `node.def`: 全 120 NODE_DEF を mechanical rewrite (tools/migrate_nodes_to_result.py)。
+  - `return X` → `return RESULT_OK(X)`
+  - `DROP_RESULT(korb_raise(...)); return Qnil` → `return korb_raise(...)`
+  - `EA(c, n)` → `EVAL_ARG_UNWRAP(c, n)` (user 指摘で改名、 UNWRAP(EVAL_ARG(c, n)) 展開)
+  - while/until/rescue/rescue_else/ensure を RESULT-native loop に
+  - break/next/retry/redo/raise/return 終端 node は `(RESULT){v, state}` を返す
+- `node.h`: `EVAL` が RESULT 返り値の canonical (旧 EVAL は `EVAL_LIFT` に rename、
+  legacy c->state bridge 用)。 user 指摘で `EVAL_R` を最終 `EVAL` 名に。
+- `prologues.h` / `object.c`: `mc->dispatcher(c, mc->body, sp)` 直叩きを
+  `EVAL(c, mc->body, sp)` に (user 指摘「dispatcher 直接呼出しはやめてね」)。
+- `context.h`: `LIFT_C_STATE` + `LIFT_C_STATE_OR_OK` macro 追加 (legacy
+  helper を呼ぶ場所での c->state → RESULT bridge)。 全 helper を _r 化
+  するまでの過渡期 macro。
+- 全 10 test suite が default / STRESS / STRESS+PURGE で PASS 維持。
+
+残り Phase 8d 作業:
+- `EVAL_LIFT` 撤去 (= 残り legacy caller [koruby_run_ast / proc_call /
+  korb_yield_slow shared-fp / Fiber start / Kernel#eval / Module#class_eval
+  / Binding#eval] を RESULT-native 化)。
+- `korb_dispatch_call` / `korb_funcall` / `korb_yield` / 各種 `korb_node_X_slow`
+  helper を RESULT 化 (今は LIFT_C_STATE 経由)。
+- `builtins/` 全 cfunc を cfunc_r ABI に統一 (現在 ~100 ヶ所未移行)。
+
 ### 第 7 セッション: Enumerable 追加 + pre-existing yield bug 発見
 
 - Enumerable#take(n) / #drop(n) を実装 (Integer 強制 + to_int coerce)。
