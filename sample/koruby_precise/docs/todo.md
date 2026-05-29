@@ -201,6 +201,29 @@ STRESS+PURGE で 0 crash。
 Total +33 PASS from Enumerable fixes。 broad sweep 上では fluctuation あり
 だが 150-spec sample で stable 1634。 specific enumerable spec で confirm 済。
 
+### 第 7 セッション: Enumerable 追加 + pre-existing yield bug 発見
+
+- Enumerable#take(n) / #drop(n) を実装 (Integer 強制 + to_int coerce)。
+  drop_spec: 0 → 9 PASS。
+- Enumerable#chunk_while / #slice_when の block 必須化、 slice_when
+  実装。 chunk_while: 3 → 4、 slice_when: 0 → 6 PASS。
+- Enumerable methods で each yield-multi 値の gather pattern:
+  each_with_object 8→17 (+9)、 group_by 5→7 (+2)、 partition 1→3 (+2)。
+- Enumerable#any? / #all? / #none? / #one? に pattern arg + multi-arg
+  raise + multi-yield 対応。 any 49→63、 all 40→54、 none ~25→31、
+  one ~30→39。
+
+**pre-existing bug 発見** ([[project_koruby_precise_yield_args_corruption]]):
+`def each(arg, *args); yield arg; end` を block-from-outer-method 経由で
+呼ぶと args が逆流書き込みされる。 predicates の blk.call(*xs) で
+surface した。 curry bug ([[project_koruby_precise_curry_bug]]) と同根
+の env-slot 算定問題と推定。 blk.call(x) (gather as array) で回避。
+
+このセッション末: rubyspec sweep PASS=1634 stable、 全 10 test suite が
+default / STRESS / STRESS+PURGE 全 mode で PASS。 Enumerable 全体で
+個別 spec の PASS counts が大幅改善 (合計 ~+50 PASS、 sweep sample に
+は含まれない specs での gain)。
+
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
