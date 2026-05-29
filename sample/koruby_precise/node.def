@@ -1021,7 +1021,7 @@ node_method_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
     VALUE block = sp[1];
     VALUE ret = korb_dispatch_call_cached(c, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
     c->sp = sp;
-    return RESULT_OK(ret);
+    return LIFT_C_STATE_OR_OK(c, ret);
 }
 
 NODE_DEF
@@ -1040,7 +1040,7 @@ node_func_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, I
     VALUE block = sp[1];
     VALUE ret = korb_dispatch_call_cached(c, n, recv, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
     c->sp = sp;
-    return RESULT_OK(ret);
+    return LIFT_C_STATE_OR_OK(c, ret);
 }
 
 NODE_DEF @noinline
@@ -2902,7 +2902,7 @@ node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
     struct korb_proc *block = (BUILTIN_TYPE(sp[2]) == T_PROC) ? (struct korb_proc *)sp[2] : NULL;
     VALUE ret = korb_dispatch_call(c, n, r, name, (uint32_t)n_args, arg_index, block, mc);
     c->sp = sp;
-    return RESULT_OK(ret);
+    return LIFT_C_STATE_OR_OK(c, ret);
 }
 
 NODE_DEF @noinline
