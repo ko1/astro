@@ -1266,7 +1266,12 @@ static RESULT int_upto(CTX *c, int argc, VALUE *sp) {
     if (!FIXNUM_P(self) || argc < 1) return RESULT_OK(self);
     bool abort = false;
     long stop = int_upto_downto_stop(c, argv[0], true, &abort);
-    if (abort && c->state == KORB_RAISE) return RESULT_OK(Qnil);
+    if (abort && c->state == KORB_RAISE) {
+        RESULT r = (RESULT){ c->state_value, KORB_RAISE };
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        return r;
+    }
     long start = FIX2LONG(self);
     if (abort) {
         /* Bignum/NaN stop — empty loop. */
@@ -1280,8 +1285,7 @@ static RESULT int_upto(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = start; i <= stop; i++) {
         VALUE v = INT2FIX(i);
-        korb_yield(c, 1, &v);
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield_r(c, 1, &v));
     }
     return RESULT_OK(self);
 }
@@ -1294,7 +1298,13 @@ static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
     if (!FIXNUM_P(self) || argc < 1) return RESULT_OK(self);
     bool abort = false;
     long stop = int_upto_downto_stop(c, argv[0], false, &abort);
-    if (abort && c->state == KORB_RAISE) return RESULT_OK(Qnil);
+    if (abort && c->state == KORB_RAISE) {
+        /* int_upto_downto_stop set c->state on the raise — lift to RESULT. */
+        RESULT r = (RESULT){ c->state_value, KORB_RAISE };
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        return r;
+    }
     long start = FIX2LONG(self);
     if (abort) {
         if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp));
@@ -1307,8 +1317,7 @@ static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = start; i >= stop; i--) {
         VALUE v = INT2FIX(i);
-        korb_yield(c, 1, &v);
-        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+        CHECK(korb_yield_r(c, 1, &v));
     }
     return RESULT_OK(self);
 }
