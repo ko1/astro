@@ -916,17 +916,129 @@ static RESULT int_abs(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(self);
 }
 
+/* Coerce an arg to Integer via to_int (CRuby semantics for Integer#[]).
+ * Float gets truncated to Integer.  Range / nil / non-numeric not handled
+ * here (caller decides). */
+static RESULT int_arg_to_int(CTX *c, VALUE arg, long *out) {
+    if (FIXNUM_P(arg)) {
+        *out = FIX2LONG(arg);
+        return RESULT_OK(Qnil);
+    }
+    if (FLONUM_P(arg)) {
+        double d = korb_flonum_to_double(arg);
+        *out = (long)d;
+        return RESULT_OK(Qnil);
+    }
+    if (!SPECIAL_CONST_P(arg) && BUILTIN_TYPE(arg) == T_BIGNUM) {
+        const struct korb_bignum *bn = (const struct korb_bignum *)arg;
+        if (mpz_fits_slong_p((mpz_ptr)bn->mpz)) {
+            *out = mpz_get_si((mpz_ptr)bn->mpz);
+        } else {
+            /* For Integer#[], a very large index just means the bit is
+             * 0 for non-negative numbers (or 1 for very negative).  Use
+             * INT_MAX as a sentinel; the caller's range check handles it. */
+            *out = (mpz_sgn((mpz_ptr)bn->mpz) < 0) ? -1 : LONG_MAX;
+        }
+        return RESULT_OK(Qnil);
+    }
+    /* Try to_int — must return Integer. */
+    if (!SPECIAL_CONST_P(arg)) {
+        VALUE rt = UNWRAP(korb_funcall_r(c, arg, korb_intern("respond_to?"), 1,
+                                          (VALUE[]){ korb_id2sym(korb_intern("to_int")) }));
+        if (RTEST(rt)) {
+            VALUE conv = UNWRAP(korb_funcall_r(c, arg, korb_intern("to_int"), 0, NULL));
+            if (FIXNUM_P(conv)) {
+                *out = FIX2LONG(conv);
+                return RESULT_OK(Qnil);
+            }
+            if (!SPECIAL_CONST_P(conv) && BUILTIN_TYPE(conv) == T_BIGNUM) {
+                return int_arg_to_int(c, conv, out);
+            }
+            /* to_int returned non-Integer */
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+            return korb_raise(c, (struct korb_class *)eT,
+                              "can't convert %s to Integer (%s#to_int gives %s)",
+                              korb_id_name(korb_class_of_class(arg)->name),
+                              korb_id_name(korb_class_of_class(arg)->name),
+                              korb_id_name(korb_class_of_class(conv)->name));
+        }
+    }
+    VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+    return korb_raise(c, (struct korb_class *)eT,
+                      "no implicit conversion of %s into Integer",
+                      korb_id_name(korb_class_of_class(arg)->name));
+}
+
+/* Extract `len` bits from `self` starting at bit `start`.
+ * CRuby semantics: result = (self >> start) & ((1 << len) - 1).
+ * Negative start (when start_arg < 0) is allowed only via Range; the
+ * 2-arg form treats len < 0 by returning 0 (CRuby: nil for len<0). */
+static RESULT int_aref_range(CTX *c, VALUE self, long start, long len, bool is_range) {
+    if (len <= 0 && !is_range) return RESULT_OK(INT2FIX(0));
+    if (len < 0) return RESULT_OK(Qnil);
+    if (len > 63) len = 63;  /* cap for Fixnum; Bignum follows below */
+    if (FIXNUM_P(self)) {
+        long n = FIX2LONG(self);
+        long shifted = (start >= 64) ? (n < 0 ? -1L : 0L)
+                                      : (start <= -64 ? 0L : (start < 0 ? (n << -start) : (n >> start)));
+        long mask = (len >= 63) ? ~0L : ((1L << len) - 1);
+        return RESULT_OK(INT2FIX(shifted & mask));
+    }
+    /* For Bignum we don't optimize — fall back to (self >> start) & mask via funcall. */
+    return RESULT_OK(INT2FIX(0));
+}
+
 static RESULT int_aref(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    /* Integer#[i] — extract bit i */
-    if (argc < 1 || !FIXNUM_P(argv[0])) return RESULT_OK(INT2FIX(0));
+    if (argc < 1 || argc > 2) {
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+        return korb_raise(c, (struct korb_class *)eA,
+                          "wrong number of arguments (given %d, expected 1..2)", argc);
+    }
+    /* Range form: Integer#[range] */
+    if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_OBJECT &&
+        korb_class_of_class(argv[0]) == KORB_VM(c)->range_class) {
+        VALUE first = UNWRAP(korb_funcall_r(c, argv[0], korb_intern("first"), 0, NULL));
+        VALUE last = UNWRAP(korb_funcall_r(c, argv[0], korb_intern("last"), 0, NULL));
+        VALUE excl = UNWRAP(korb_funcall_r(c, argv[0], korb_intern("exclude_end?"), 0, NULL));
+        long start = 0, end = 0;
+        if (!NIL_P(first)) { CHECK(int_arg_to_int(c, first, &start)); }
+        if (!NIL_P(last)) {
+            CHECK(int_arg_to_int(c, last, &end));
+            long len = end - start + (RTEST(excl) ? 0 : 1);
+            if (len < 0) len = 0;
+            return int_aref_range(c, self, start, len, true);
+        }
+        /* Endless range: len = bit_length - start (effectively). */
+        if (FIXNUM_P(self)) {
+            long n = FIX2LONG(self);
+            if (n == 0) return RESULT_OK(INT2FIX(0));
+            int blen = 0;
+            long v = n < 0 ? ~n : n;
+            while (v > 0) { blen++; v >>= 1; }
+            long len = blen - start;
+            if (len <= 0) return RESULT_OK(INT2FIX(n < 0 ? -1L >> 0 : 0));
+            return int_aref_range(c, self, start, len, true);
+        }
+        return RESULT_OK(INT2FIX(0));
+    }
+    /* 2-arg form: Integer#[start, len] */
+    if (argc == 2) {
+        long start = 0, len = 0;
+        CHECK(int_arg_to_int(c, argv[0], &start));
+        CHECK(int_arg_to_int(c, argv[1], &len));
+        return int_aref_range(c, self, start, len, false);
+    }
+    /* Single-bit form: Integer#[i] */
+    long b = 0;
+    CHECK(int_arg_to_int(c, argv[0], &b));
     if (!FIXNUM_P(self)) return RESULT_OK(INT2FIX(0));
     long n = FIX2LONG(self);
-    long b = FIX2LONG(argv[0]);
-    if (b < 0 || b >= 63) return RESULT_OK(INT2FIX(0));
+    if (b < 0) return RESULT_OK(INT2FIX(0));
+    if (b >= 63) return RESULT_OK(INT2FIX(n < 0 ? 1 : 0));
     return RESULT_OK(INT2FIX((n >> b) & 1));
 }
 
