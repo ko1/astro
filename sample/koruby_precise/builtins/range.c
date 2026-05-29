@@ -189,13 +189,20 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
     if (cmp > 0) return RESULT_OK(Qnil);
     if (cmp == 0 && r->exclude_end) return RESULT_OK(Qnil);
     if (!r->exclude_end) return RESULT_OK(r->end);
-    /* Exclusive: max == end - 1 only for Integer end.  Else TypeError. */
+    /* Exclusive: max == end - 1 for Integer end. */
     if (FIXNUM_P(r->end) || (!SPECIAL_CONST_P(r->end) && BUILTIN_TYPE(r->end) == T_BIGNUM)) {
         VALUE one = INT2FIX(1);
         return korb_funcall(c, r->end, korb_intern("-"), 1, &one);
     }
-    VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-    return korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
+    /* Float exclusive end: CRuby raises TypeError. */
+    if (FLONUM_P(r->end) || (!SPECIAL_CONST_P(r->end) && BUILTIN_TYPE(r->end) == T_FLOAT)) {
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+        return korb_raise(c, (struct korb_class *)eT, "cannot exclude non Integer end value");
+    }
+    /* Non-numeric end (String etc.): fall back to to_a.max which uses
+     * succ-based iteration. */
+    VALUE arr = UNWRAP(korb_funcall(c, self, korb_intern("to_a"), 0, NULL));
+    return korb_funcall(c, arr, korb_intern("max"), 0, NULL);
 }
 
 /* Range#begin — returns the begin field directly (nil for beginless).

@@ -2232,18 +2232,6 @@ class Range
     false
   end
 
-  def min
-    first
-  end
-
-  def max
-    if exclude_end?
-      last - 1
-    else
-      last
-    end
-  end
-
   def sum(init = 0)
     s = init
     each { |x| s = s + x }
