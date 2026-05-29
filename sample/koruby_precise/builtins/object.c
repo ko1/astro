@@ -82,16 +82,75 @@ static RESULT obj_public_send(CTX *c, int argc, VALUE *sp) {
     return obj_send_impl(c, self, argc, argv, true);
 }
 
+/* Validate an instance-variable-name argument per CRuby's
+ * Kernel#instance_variable_{get,set} contract: accept Symbol or
+ * String, coerce other via #to_str (TypeError otherwise), then
+ * require the string to start with '@' and have at least one
+ * follow-on character (NameError otherwise).
+ * Returns the interned ID on success, otherwise leaves *err set
+ * to the raise RESULT and returns 0. */
+static ID coerce_ivar_name(CTX *c, VALUE v, RESULT *err) {
+    const char *cstr; long clen;
+    if (SYMBOL_P(v)) {
+        const char *s = korb_id_name(korb_sym2id(v));
+        cstr = s; clen = (long)strlen(s);
+    } else if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_STRING) {
+        cstr = ((struct korb_string *)v)->ptr;
+        clen = ((struct korb_string *)v)->len;
+    } else {
+        /* Try #to_str via respond_to? (also picks up singleton methods,
+         * needed by mspec mocks). */
+        if (!SPECIAL_CONST_P(v)) {
+            VALUE to_str_sym = korb_id2sym(korb_intern("to_str"));
+            RESULT rr = korb_funcall_r(c, v, korb_intern("respond_to?"), 1, &to_str_sym);
+            if (rr.state == KORB_NORMAL && RTEST(rr.value)) {
+                RESULT tr = korb_funcall_r(c, v, korb_intern("to_str"), 0, NULL);
+                if (tr.state != KORB_NORMAL) { *err = tr; return 0; }
+                if (SPECIAL_CONST_P(tr.value) || BUILTIN_TYPE(tr.value) != T_STRING) {
+                    *err = korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                       "can't convert to String (to_str gave non-String)");
+                    return 0;
+                }
+                cstr = ((struct korb_string *)tr.value)->ptr;
+                clen = ((struct korb_string *)tr.value)->len;
+                goto check_name;
+            }
+        }
+        *err = korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                          "%s is not a symbol nor a string",
+                          SPECIAL_CONST_P(v) ? "(special)" : korb_id_name(korb_class_of_class(v)->name));
+        return 0;
+    }
+check_name:;
+    if (clen < 2 || cstr[0] != '@') {
+        *err = korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError")),
+                          "`%.*s' is not allowed as an instance variable name",
+                          (int)clen, cstr);
+        return 0;
+    }
+    /* First char after @ must be valid identifier start. */
+    char c1 = cstr[1];
+    if (!((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_' || (unsigned char)c1 >= 0x80)) {
+        *err = korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError")),
+                          "`%.*s' is not allowed as an instance variable name",
+                          (int)clen, cstr);
+        return 0;
+    }
+    return korb_intern_n(cstr, clen);
+}
+
 static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1) return RESULT_OK(Qnil);
-    ID name;
-    if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
-    else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    else return RESULT_OK(Qnil);
+    if (argc < 1) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
+                          "wrong number of arguments (given 0, expected 1)");
+    }
+    RESULT err = RESULT_OK(Qnil);
+    ID name = coerce_ivar_name(c, argv[0], &err);
+    if (name == 0) return err;
     return RESULT_OK(korb_ivar_get(self, name));
 }
 
@@ -100,11 +159,13 @@ static RESULT obj_instance_variable_set(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 2) return RESULT_OK(Qnil);
-    ID name;
-    if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
-    else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    else return RESULT_OK(Qnil);
+    if (argc < 2) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
+                          "wrong number of arguments (given %d, expected 2)", argc);
+    }
+    RESULT err = RESULT_OK(Qnil);
+    ID name = coerce_ivar_name(c, argv[0], &err);
+    if (name == 0) return err;
     /* Immediate values (true/false/nil/Integer/Symbol/Float) can't have
      * ivars; CRuby raises FrozenError ("can't modify frozen X").  Match
      * that semantic via a RuntimeError-class FrozenError. */
@@ -120,6 +181,8 @@ static RESULT obj_instance_variable_set(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eF,
                    "can't modify frozen %s", cn);
     }
+    /* T_OBJECT etc.: honor FL_FREEZE. */
+    CHECK_FROZEN_R(c, self);
     korb_ivar_set(self, name, argv[1]);
     return RESULT_OK(argv[1]);
 }
