@@ -190,7 +190,7 @@ static RESULT module_include(CTX *c, int argc, VALUE *sp) {
             if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
         }
     }
-    if (korb_vm) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
+    if (KORB_VM(c)) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
     return RESULT_OK(self);
 }
 
@@ -1076,7 +1076,7 @@ static RESULT module_prepend(CTX *c, int argc, VALUE *sp) {
             if (!korb_const_has(klass, ce->name)) korb_const_set(klass, ce->name, ce->value);
         }
     }
-    if (korb_vm) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
+    if (KORB_VM(c)) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
     return RESULT_OK(self);
 }
 /* Module#remove_const(:NAME) — remove a constant from the module.

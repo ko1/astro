@@ -87,7 +87,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         struct korb_binding *src = (struct korb_binding *)c->current_eval_binding;
         struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
         b->basic.head.flags = T_DATA;
-        b->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->binding_class : 0;
+        b->basic.klass = KORB_VM(c) ? (VALUE)KORB_VM(c)->binding_class : 0;
         b->self = src->self;
         b->cref = src->cref;
         b->method_name = src->method_name;
@@ -123,7 +123,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     }
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.head.flags = T_DATA;
-    b->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->binding_class : 0;
+    b->basic.klass = KORB_VM(c) ? (VALUE)KORB_VM(c)->binding_class : 0;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&b->basic);
     /* Binding's self should be the caller's lexical self (the one who
@@ -139,7 +139,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
         b->self = c->running_block->self;
     } else if (c->current_frame && c->current_frame->method) {
         b->self = c->current_frame->self;
-    } else if (korb_vm) {
+    } else if (KORB_VM(c)) {
         b->self = KORB_VM(c)->main_obj;
     } else {
         b->self = recv;
@@ -831,7 +831,7 @@ static VALUE proc_binding_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     struct korb_proc *p = (struct korb_proc *)self;
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.head.flags = T_DATA;
-    b->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->binding_class : 0;
+    b->basic.klass = KORB_VM(c) ? (VALUE)KORB_VM(c)->binding_class : 0;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&b->basic);
     b->self = p->self;

@@ -202,7 +202,7 @@ static VALUE module_undef_or_remove_method_impl(CTX *c, VALUE self, int argc, VA
             korb_method_table_set(&klass->methods, name, um);
         }
     }
-    if (korb_vm) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
+    if (KORB_VM(c)) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
     return self;
 }
 
