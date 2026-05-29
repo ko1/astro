@@ -798,9 +798,9 @@ cfunc 側で:
 | 2 | prologue_cfunc_r_inl + bridge | 完了 (commit 4352f5f5) |
 | 3 | PoC: ary_eq を新 ABI で書き換え | 完了 (commit d1ae64a4) |
 | 4 | 全 ~680 cfunc を新 signature に sweep | 完了 (Phase 8b で全 builtins/*.c sweep 済) |
-| 5 | node.def の call 系 node を sp staging に | 未着手 |
-| 6 | AST method prologue を sp 経由 args に | 未着手 |
-| 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 部分完了 |
+| 5 | node.def の call 系 node を sp staging に | 完了 (commit 61f8103e, 041db4d4) |
+| 6 | AST method prologue を sp 経由 args に | 完了 (実質 sp staging — caller の fp[arg_index..] が callee の new_fp[0..] に zero-copy 受け渡し) |
+| 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 完了 (commit da232e4f で残 alloc helper 全て sp 引数化) |
 | 8a | 移行 macro 整備 + warn_unused_result + DROP_RESULT wrapping | 完了 (469 ヶ所 wrap、 build green) |
 | 8b | builtins cfunc を全て新 ABI に migrate | 完了 (DROP_RESULT 469 → ~110、 残は AST 内部 / void helper / 意図的 dispatch discharge) |
 | 8c | korb_vm global を KORB_VM(c) macro 経由に切替 | 進行中 (891 → 30 ref、 残は CTX を取らない low-level helper) |
