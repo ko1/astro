@@ -753,98 +753,73 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
      * is_explicit flag rides on a distinct node kind — `class X` uses
      * node_class_def_implicit_super (defined below).  Here we always
      * treat super_expr as user-specified. */
-    VALUE r = Qnil;
-    /* rs[0] = super, rs[1] = klass — both held across alloc-can-GC sites
-     * (korb_class_new, korb_funcall).  Pure C-locals would go stale. */
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = (VALUE)KORB_VM(c)->object_class;
-        if (super_expr) {
-            VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
-            if (BUILTIN_TYPE(sv) != T_CLASS) {
-                RESULT _e = korb_raise_type_error(c, "superclass must be a Class (%s given)",
-                                      korb_id_name(korb_class_of_class(sv)->name));
-                ARO_ROOT_SCOPE_CANCEL(c, rs);
-                return _e;
-            }
-            if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
-                RESULT _e = korb_raise_type_error(c, "can't make subclass of singleton class");
-
-                ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-                return _e;
-            }
-            rs[0] = sv;
+    /* Park super (sp[0]) / klass (sp[1]) across alloc-can-GC sites. */
+    sp[0] = (VALUE)KORB_VM(c)->object_class;
+    sp[1] = Qnil;
+    if (super_expr) {
+        VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
+        if (BUILTIN_TYPE(sv) != T_CLASS) {
+            return korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                  korb_id_name(korb_class_of_class(sv)->name));
         }
-        #define HOST_K (korb_host_class(c))
-        VALUE existing = korb_const_get(HOST_K, name);
-        if (!UNDEF_P(existing) && (BUILTIN_TYPE(existing) == T_CLASS ||
-                                    BUILTIN_TYPE(existing) == T_MODULE)) {
-            rs[1] = existing;
-            if (BUILTIN_TYPE(existing) == T_MODULE) {
-                RESULT _e = korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-
-                ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-                return _e;
-            }
-            if (super_expr && ((struct korb_class *)rs[1])->super != (struct korb_class *)rs[0]) {
-                RESULT _e = korb_raise_type_error(c, "superclass mismatch for class %s",
-                                      korb_id_name(name));
-
-                ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-                return _e;
-            }
+        if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
+            return korb_raise_type_error(c, "can't make subclass of singleton class");
         }
-        else if (!UNDEF_P(existing)) {
-            RESULT _e = korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-
-            ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-            return _e;
+        sp[0] = sv;
+    }
+    #define HOST_K (korb_host_class(c))
+    VALUE existing = korb_const_get(HOST_K, name);
+    if (!UNDEF_P(existing) && (BUILTIN_TYPE(existing) == T_CLASS ||
+                                BUILTIN_TYPE(existing) == T_MODULE)) {
+        sp[1] = existing;
+        if (BUILTIN_TYPE(existing) == T_MODULE) {
+            return korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
         }
-        else {
-            struct korb_class *k = korb_class_new(c, c->sp_top, name, (struct korb_class *)rs[0], T_OBJECT);
-            k->name = 0;
-            rs[1] = (VALUE)k;
-            korb_const_set(HOST_K, name, rs[1]);
-            /* Fire the `inherited` hook on `super`.  korb_funcall fires
-             * GC; rs[0]/rs[1] stay live via the root scope, but any
-             * C-local snapshots of class pointers would go stale. */
-            struct korb_class *super_meta = korb_class_of_class(rs[0]);
-            if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
-                VALUE child_v = rs[1];
-                RESULT _ih = korb_funcall(c, rs[0], korb_intern("inherited"), 1, &child_v);
-                if (_ih.state != KORB_NORMAL) {
-                    ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return _ih;
-                }
-            }
+        if (super_expr && ((struct korb_class *)sp[1])->super != (struct korb_class *)sp[0]) {
+            return korb_raise_type_error(c, "superclass mismatch for class %s",
+                                  korb_id_name(name));
         }
-        #undef HOST_K
-        /* Push a synthetic frame so frame.self / current_class / cref
-         * live in the frame chain (= visit_roots auto-updates them). */
-        struct korb_class *klass = (struct korb_class *)rs[1];
-        struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
-        struct korb_frame fr = {
-            .prev = c->current_frame,
-            .self = (VALUE)klass,
-            .fp = c->current_frame->fp,
-            .current_class = klass,
-            .cref = &new_cref,
-            .current_file = c->current_frame->current_file,
-            .last_line = Qnil,
-            .last_match = Qnil,
-        };
-        c->current_frame = &fr;
-        VALUE *fp_lo = fr.fp;
-        VALUE *fp_hi = c->sp_top;
-        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
-        c->current_frame = fr.prev;
-        /* Use fr.self (frame-chain tracked) not rs[1] — body eval may have
-         * pulled c->sp_top below the ARO scope's bumped value. */
-        korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
-    } ARO_ROOT_SCOPE_END(c, rs);
+    }
+    else if (!UNDEF_P(existing)) {
+        return korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+    }
+    else {
+        struct korb_class *k = korb_class_new(c, sp + 2, name, (struct korb_class *)sp[0], T_OBJECT);
+        k->name = 0;
+        sp[1] = (VALUE)k;
+        korb_const_set(HOST_K, name, sp[1]);
+        /* Fire the `inherited` hook on `super`.  korb_funcall fires
+         * GC; sp[0]/sp[1] stay live via the staging slots. */
+        struct korb_class *super_meta = korb_class_of_class(sp[0]);
+        if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
+            VALUE child_v = sp[1];
+            RESULT _ih = korb_funcall(c, sp[0], korb_intern("inherited"), 1, &child_v);
+            if (_ih.state != KORB_NORMAL) return _ih;
+        }
+    }
+    #undef HOST_K
+    /* Push a synthetic frame so frame.self / current_class / cref
+     * live in the frame chain (= visit_roots auto-updates them). */
+    struct korb_class *klass = (struct korb_class *)sp[1];
+    struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
+    struct korb_frame fr = {
+        .prev = c->current_frame,
+        .self = (VALUE)klass,
+        .fp = c->current_frame->fp,
+        .current_class = klass,
+        .cref = &new_cref,
+        .current_file = c->current_frame->current_file,
+        .last_line = Qnil,
+        .last_match = Qnil,
+    };
+    c->current_frame = &fr;
+    VALUE *fp_lo = fr.fp;
+    VALUE *fp_hi = c->sp_top;
+    VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+    c->current_frame = fr.prev;
+    /* Use fr.self (frame-chain tracked) — body eval may have pulled
+     * c->sp_top below the staging slots. */
+    korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
     return RESULT_OK(r);
 }
 
@@ -1649,61 +1624,52 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
 NODE_DEF
 node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, uint32_t arg_index)
 {
-    /* Pin r + i via ARO_ROOT_SCOPE (= uses c->sp_top as slot base, always on
-     * the value stack).  Don't use sp[N] directly: when running inside an
-     * escaped proc's body, the sp parameter points into the proc's
-     * libc-allocated env, while c->sp_top stays on the value stack.  Setting
-     * c->sp_top = sp + N would give visit_roots an invalid linear range. */
-    VALUE ret;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = EVAL_ARG_UNWRAP(c, recv);
-        rs[1] = EVAL_ARG_UNWRAP(c, idx);
-        VALUE r = rs[0];
-        VALUE i = rs[1];
-        if (LIKELY(!korb_g_basic_op_redefined)) {
-            if (FIXNUM_P(r) && FIXNUM_P(i)) {
-                long b = FIX2LONG(i);
-                if (b < 0 || b >= 63) { ret = INT2FIX(0); goto aref_done; }
-                ret = INT2FIX((FIX2LONG(r) >> b) & 1);
-                goto aref_done;
+    /* Pin r (sp[0]) + i (sp[1]) so they survive GC fires in inner
+     * korb_str_new / korb_node_aref_slow. */
+    sp[0] = 0; sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[0] = EVAL_ARG_UNWRAP(c, recv);
+    sp[1] = EVAL_ARG_UNWRAP(c, idx);
+    VALUE r = sp[0];
+    VALUE i = sp[1];
+    if (LIKELY(!korb_g_basic_op_redefined)) {
+        if (FIXNUM_P(r) && FIXNUM_P(i)) {
+            long b = FIX2LONG(i);
+            if (b < 0 || b >= 63) return RESULT_OK(INT2FIX(0));
+            return RESULT_OK(INT2FIX((FIX2LONG(r) >> b) & 1));
+        }
+        if (LIKELY(!SPECIAL_CONST_P(r))) {
+            if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) return RESULT_OK(korb_ary_aref(r, FIX2LONG(i)));
+            if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc) &&
+                korb_class_of_class(r) == KORB_VM(c)->hash_class) {
+                /* Subclasses might override #default — skip the fast
+                 * path so hash_aref's slow path can dispatch the
+                 * subclass method on miss. */
+                return RESULT_OK(korb_hash_aref(c, r, i));
             }
-            if (LIKELY(!SPECIAL_CONST_P(r))) {
-                if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) { ret = korb_ary_aref(r, FIX2LONG(i)); goto aref_done; }
-                if (BUILTIN_TYPE(r) == T_HASH && NIL_P(((struct korb_hash *)r)->default_proc) &&
-                    korb_class_of_class(r) == KORB_VM(c)->hash_class) {
-                    /* Subclasses might override #default — skip the fast
-                     * path so hash_aref's slow path can dispatch the
-                     * subclass method on miss. */
-                    ret = korb_hash_aref(c, r, i);
-                    goto aref_done;
+            if (BUILTIN_TYPE(r) == T_STRING && FIXNUM_P(i)) {
+                /* Fast path only safe for ASCII strings; for any
+                 * non-ASCII byte the UTF-8 codepoint walk is needed
+                 * (handled by str_aref via the slow path).  Detect
+                 * by checking whether any byte has the high bit set —
+                 * cheap for typical short strings. */
+                struct korb_string *s = (struct korb_string *)r;
+                bool all_ascii = true;
+                for (long k = 0; k < s->len; k++) {
+                    if ((unsigned char)s->ptr[k] >= 0x80) { all_ascii = false; break; }
                 }
-                if (BUILTIN_TYPE(r) == T_STRING && FIXNUM_P(i)) {
-                    /* Fast path only safe for ASCII strings; for any
-                     * non-ASCII byte the UTF-8 codepoint walk is needed
-                     * (handled by str_aref via the slow path).  Detect
-                     * by checking whether any byte has the high bit set —
-                     * cheap for typical short strings. */
-                    struct korb_string *s = (struct korb_string *)r;
-                    bool all_ascii = true;
-                    for (long k = 0; k < s->len; k++) {
-                        if ((unsigned char)s->ptr[k] >= 0x80) { all_ascii = false; break; }
-                    }
-                    if (all_ascii) {
-                        long pos = FIX2LONG(i);
-                        if (pos < 0) pos += s->len;
-                        if (pos < 0 || pos >= s->len) { ret = Qnil; goto aref_done; }
-                        ret = korb_str_new(c, c->sp_top, s->ptr + pos, 1);
-                        goto aref_done;
-                    }
-                    /* else: fall through to slow path */
+                if (all_ascii) {
+                    long pos = FIX2LONG(i);
+                    if (pos < 0) pos += s->len;
+                    if (pos < 0 || pos >= s->len) return RESULT_OK(Qnil);
+                    return RESULT_OK(korb_str_new(c, sp + 2, s->ptr + pos, 1));
                 }
+                /* else: fall through to slow path */
             }
         }
-        c->last_cfunc_callsite = n;
-        ret = UNWRAP(korb_node_aref_slow(c, r, i, arg_index));
-      aref_done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(ret);
+    }
+    c->last_cfunc_callsite = n;
+    return korb_node_aref_slow(c, r, i, arg_index);
 }
 
 NODE_DEF
@@ -2866,98 +2832,89 @@ node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
 NODE_DEF @noinline
 node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent_expr, ID name, NODE *super_expr, NODE *body, uint32_t enforce_super_match)
 {
-    /* Pin parent_v / super / klass across korb_const_get / korb_class_new /
-     * korb_const_set — same root-cause as node_class_def_in. */
-    VALUE r = Qnil;
-    ARO_ROOT_SCOPE_START(c, rs, 3) {
-        rs[0] = EVAL_ARG_UNWRAP(c, parent_expr);  /* parent_v */
-        if (BUILTIN_TYPE(rs[0]) != T_CLASS && BUILTIN_TYPE(rs[0]) != T_MODULE) {
-            RESULT _e = korb_raise_type_error(c, "%s is not a class/module",
-                                  korb_id_name(korb_class_of_class(rs[0])->name));
-            ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return _e;
-        }
-        {
-            extern bool korb_const_is_private(const struct korb_class *, ID);
-            if (korb_const_is_private((struct korb_class *)rs[0], name)) {
-                bool in_scope = false;
-                for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-                    if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
-                    if (cr->klass == (struct korb_class *)rs[0]) { in_scope = true; break; }
-                }
-                if (!in_scope) {
-                    VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
-                    struct korb_class *parent = (struct korb_class *)rs[0];
-                    RESULT _e = korb_raise(c, (struct korb_class *)eName,
-                               "private constant %s::%s referenced",
-                               parent->name ? korb_id_name(parent->name) : "?",
-                               korb_id_name(name));
-
-                    ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-                    return _e;
-                }
+    /* Pin parent_v (sp[0]) / super (sp[1]) / klass (sp[2]) across
+     * korb_const_get / korb_class_new / korb_const_set. */
+    sp[0] = 0; sp[1] = 0; sp[2] = 0;
+    c->sp_top = sp + 3;
+    sp[0] = EVAL_ARG_UNWRAP(c, parent_expr);
+    if (BUILTIN_TYPE(sp[0]) != T_CLASS && BUILTIN_TYPE(sp[0]) != T_MODULE) {
+        RESULT _e = korb_raise_type_error(c, "%s is not a class/module",
+                              korb_id_name(korb_class_of_class(sp[0])->name));
+        c->sp_top = sp;
+        return _e;
+    }
+    {
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private((struct korb_class *)sp[0], name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
+                if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
+                if (cr->klass == (struct korb_class *)sp[0]) { in_scope = true; break; }
             }
-        }
-        rs[1] = (VALUE)KORB_VM(c)->object_class;  /* super */
-        if (super_expr) {
-            VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
-            if (BUILTIN_TYPE(sv) == T_CLASS) {
-                if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
-                    RESULT _e = korb_raise_type_error(c, "can't make subclass of singleton class");
-
-                    ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-                    return _e;
-                }
-                rs[1] = sv;
-            } else if (enforce_super_match) {
-                RESULT _e = korb_raise_type_error(c, "superclass must be a Class (%s given)",
-                                      korb_id_name(korb_class_of_class(sv)->name));
-                ARO_ROOT_SCOPE_CANCEL(c, rs);
+            if (!in_scope) {
+                VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
+                struct korb_class *parent = (struct korb_class *)sp[0];
+                RESULT _e = korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           parent->name ? korb_id_name(parent->name) : "?",
+                           korb_id_name(name));
+                c->sp_top = sp;
                 return _e;
             }
         }
-        VALUE existing = korb_const_get((struct korb_class *)rs[0], name);
-        if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
-            rs[2] = existing;
-            if (enforce_super_match && ((struct korb_class *)rs[2])->super != (struct korb_class *)rs[1]) {
-                RESULT _e = korb_raise_type_error(c, "superclass mismatch for class %s",
-                                      korb_id_name(name));
-
-                ARO_ROOT_SCOPE_CANCEL(c, rs);
-
+    }
+    sp[1] = (VALUE)KORB_VM(c)->object_class;
+    if (super_expr) {
+        VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
+        if (BUILTIN_TYPE(sv) == T_CLASS) {
+            if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
+                RESULT _e = korb_raise_type_error(c, "can't make subclass of singleton class");
+                c->sp_top = sp;
                 return _e;
             }
-        } else if (!UNDEF_P(existing) && enforce_super_match) {
-            RESULT _e = korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-
-            ARO_ROOT_SCOPE_CANCEL(c, rs);
-
+            sp[1] = sv;
+        } else if (enforce_super_match) {
+            RESULT _e = korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                  korb_id_name(korb_class_of_class(sv)->name));
+            c->sp_top = sp;
             return _e;
-        } else {
-            rs[2] = (VALUE)korb_class_new(c, c->sp_top, name, (struct korb_class *)rs[1], T_OBJECT);
-            ((struct korb_class *)rs[2])->name = 0;
-            korb_const_set((struct korb_class *)rs[0], name, rs[2]);
         }
-        struct korb_class *klass = (struct korb_class *)rs[2];
-        struct korb_class *prev_class = c->current_frame->current_class;
-        VALUE prev_self = c->current_frame->self;
-        struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
-        struct korb_cref *prev_cref = c->current_frame->cref;
-        c->current_frame->current_class = klass;
-        c->current_frame->self = (VALUE)klass;
-        c->current_frame->cref = &new_cref;
-        VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
-        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
-        /* Read forwarded klass from frame->self BEFORE restoring it —
-         * visit_roots tracks current_frame->self through body's GCs. */
-        VALUE klass_tracked = c->current_frame->self;
-        c->current_frame->current_class = prev_class;
-        c->current_frame->self = prev_self;
-        c->current_frame->cref = prev_cref;
-        korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
-    } ARO_ROOT_SCOPE_END(c, rs);
+    }
+    VALUE existing = korb_const_get((struct korb_class *)sp[0], name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        sp[2] = existing;
+        if (enforce_super_match && ((struct korb_class *)sp[2])->super != (struct korb_class *)sp[1]) {
+            RESULT _e = korb_raise_type_error(c, "superclass mismatch for class %s",
+                                  korb_id_name(name));
+            c->sp_top = sp;
+            return _e;
+        }
+    } else if (!UNDEF_P(existing) && enforce_super_match) {
+        RESULT _e = korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+        c->sp_top = sp;
+        return _e;
+    } else {
+        sp[2] = (VALUE)korb_class_new(c, sp + 3, name, (struct korb_class *)sp[1], T_OBJECT);
+        ((struct korb_class *)sp[2])->name = 0;
+        korb_const_set((struct korb_class *)sp[0], name, sp[2]);
+    }
+    struct korb_class *klass = (struct korb_class *)sp[2];
+    struct korb_class *prev_class = c->current_frame->current_class;
+    VALUE prev_self = c->current_frame->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    c->current_frame->current_class = klass;
+    c->current_frame->self = (VALUE)klass;
+    c->current_frame->cref = &new_cref;
+    VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
+    VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+    /* Read forwarded klass from frame->self BEFORE restoring it —
+     * visit_roots tracks current_frame->self through body's GCs. */
+    VALUE klass_tracked = c->current_frame->self;
+    c->current_frame->current_class = prev_class;
+    c->current_frame->self = prev_self;
+    c->current_frame->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
     return RESULT_OK(r);
 }
 
@@ -2971,67 +2928,65 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
      * Pin parent_v / super / klass across korb_const_get / korb_class_new /
      * korb_const_set — each fires GC under STRESS+PURGE and a stale C-local
      * would crash inside korb_const_set(stale_klass, ...). */
-    VALUE r = Qnil;
-    ARO_ROOT_SCOPE_START(c, rs, 3) {
-        rs[0] = EVAL_ARG_UNWRAP(c, parent_expr);  /* parent_v */
-        if (BUILTIN_TYPE(rs[0]) != T_CLASS && BUILTIN_TYPE(rs[0]) != T_MODULE) {
-            RESULT _e = korb_raise_type_error(c, "%s is not a class/module",
-                                  korb_id_name(korb_class_of_class(rs[0])->name));
-            ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return _e;
-        }
-        {
-            extern bool korb_const_is_private(const struct korb_class *, ID);
-            if (korb_const_is_private((struct korb_class *)rs[0], name)) {
-                bool in_scope = false;
-                for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-                    if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
-                    if (cr->klass == (struct korb_class *)rs[0]) { in_scope = true; break; }
-                }
-                if (!in_scope) {
-                    VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
-                    struct korb_class *parent = (struct korb_class *)rs[0];
-                    RESULT _e = korb_raise(c, (struct korb_class *)eName,
-                               "private constant %s::%s referenced",
-                               parent->name ? korb_id_name(parent->name) : "?",
-                               korb_id_name(name));
-
-                    ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-                    return _e;
-                }
+    /* Pin parent_v (sp[0]) / super (sp[1]) / klass (sp[2]). */
+    sp[0] = 0; sp[1] = 0; sp[2] = 0;
+    c->sp_top = sp + 3;
+    sp[0] = EVAL_ARG_UNWRAP(c, parent_expr);
+    if (BUILTIN_TYPE(sp[0]) != T_CLASS && BUILTIN_TYPE(sp[0]) != T_MODULE) {
+        RESULT _e = korb_raise_type_error(c, "%s is not a class/module",
+                              korb_id_name(korb_class_of_class(sp[0])->name));
+        c->sp_top = sp;
+        return _e;
+    }
+    {
+        extern bool korb_const_is_private(const struct korb_class *, ID);
+        if (korb_const_is_private((struct korb_class *)sp[0], name)) {
+            bool in_scope = false;
+            for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
+                if (cr->klass == KORB_VM(c)->object_class && cr->prev == NULL) continue;
+                if (cr->klass == (struct korb_class *)sp[0]) { in_scope = true; break; }
+            }
+            if (!in_scope) {
+                VALUE eName = korb_const_get(KORB_VM(c)->object_class, korb_intern("NameError"));
+                struct korb_class *parent = (struct korb_class *)sp[0];
+                RESULT _e = korb_raise(c, (struct korb_class *)eName,
+                           "private constant %s::%s referenced",
+                           parent->name ? korb_id_name(parent->name) : "?",
+                           korb_id_name(name));
+                c->sp_top = sp;
+                return _e;
             }
         }
-        rs[1] = (VALUE)KORB_VM(c)->object_class;  /* super */
-        if (super_expr) {
-            VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
-            if (BUILTIN_TYPE(sv) == T_CLASS) rs[1] = sv;
-        }
-        VALUE existing = korb_const_get((struct korb_class *)rs[0], name);
-        if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
-            rs[2] = existing;
-        } else {
-            rs[2] = (VALUE)korb_class_new(c, c->sp_top, name, (struct korb_class *)rs[1], T_OBJECT);
-            ((struct korb_class *)rs[2])->name = 0;
-            korb_const_set((struct korb_class *)rs[0], name, rs[2]);
-        }
-        struct korb_class *klass = (struct korb_class *)rs[2];
-        struct korb_class *prev_class = c->current_frame->current_class;
-        VALUE prev_self = c->current_frame->self;
-        struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
-        struct korb_cref *prev_cref = c->current_frame->cref;
-        c->current_frame->current_class = klass;
-        c->current_frame->self = (VALUE)klass;
-        c->current_frame->cref = &new_cref;
-        VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
-        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
-        /* Read forwarded klass from frame->self BEFORE restoring it. */
-        VALUE klass_tracked = c->current_frame->self;
-        c->current_frame->current_class = prev_class;
-        c->current_frame->self = prev_self;
-        c->current_frame->cref = prev_cref;
-        korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
-    } ARO_ROOT_SCOPE_END(c, rs);
+    }
+    sp[1] = (VALUE)KORB_VM(c)->object_class;
+    if (super_expr) {
+        VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
+        if (BUILTIN_TYPE(sv) == T_CLASS) sp[1] = sv;
+    }
+    VALUE existing = korb_const_get((struct korb_class *)sp[0], name);
+    if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
+        sp[2] = existing;
+    } else {
+        sp[2] = (VALUE)korb_class_new(c, sp + 3, name, (struct korb_class *)sp[1], T_OBJECT);
+        ((struct korb_class *)sp[2])->name = 0;
+        korb_const_set((struct korb_class *)sp[0], name, sp[2]);
+    }
+    struct korb_class *klass = (struct korb_class *)sp[2];
+    struct korb_class *prev_class = c->current_frame->current_class;
+    VALUE prev_self = c->current_frame->self;
+    struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
+    struct korb_cref *prev_cref = c->current_frame->cref;
+    c->current_frame->current_class = klass;
+    c->current_frame->self = (VALUE)klass;
+    c->current_frame->cref = &new_cref;
+    VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp_top;
+    VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
+    /* Read forwarded klass from frame->self BEFORE restoring it. */
+    VALUE klass_tracked = c->current_frame->self;
+    c->current_frame->current_class = prev_class;
+    c->current_frame->self = prev_self;
+    c->current_frame->cref = prev_cref;
+    korb_proc_snapshot_env_if_in_frame(klass_tracked, fp_lo, fp_hi + 1024);
     return RESULT_OK(r);
 }
 
