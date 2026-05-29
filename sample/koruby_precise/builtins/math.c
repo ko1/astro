@@ -33,4 +33,13 @@ static RESULT math_log(CTX *c, int argc, VALUE *sp) {
 static RESULT math_pow(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_float_new(c, sp, pow(num_d(sp[-2]), num_d(sp[-1]))));
 }
+/* Math.frexp(x) — returns [significand, exponent] s.t. x == sig * 2**exp. */
+static RESULT math_frexp(CTX *c, int argc, VALUE *sp) {
+    int exp;
+    double sig = frexp(num_d(sp[-1]), &exp);
+    VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+    korb_ary_push(pair, korb_float_new(c, c->sp, sig));
+    korb_ary_push(pair, INT2FIX((long)exp));
+    return RESULT_OK(pair);
+}
 

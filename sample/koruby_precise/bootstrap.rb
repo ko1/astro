@@ -656,6 +656,22 @@ class Numeric
     self.equal?(other) ? 0 : nil
   end unless method_defined?(:<=>)
 
+  # Numeric#nonzero? — returns self if non-zero, nil if zero.
+  def nonzero?
+    self.zero? ? nil : self
+  end unless method_defined?(:nonzero?)
+
+  # Numeric#divmod — default via Comparable's `/` and `%`.  Subclasses
+  # (Integer/Float) override with proper implementations.
+  def divmod(other)
+    [(self / other).floor, self - (self / other).floor * other]
+  end unless method_defined?(:divmod)
+
+  # Numeric#zero? — default checks `self == 0`.  Subclasses can override.
+  def zero?
+    self == 0
+  end unless method_defined?(:zero?)
+
   # Numeric#coerce — default protocol.  Returns [other, self] when both
   # are of the same class, otherwise [Float(other), self.to_f].  Raises
   # TypeError when other is not coercible to Float.

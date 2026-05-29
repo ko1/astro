@@ -1572,6 +1572,13 @@ void korb_init_builtins(CTX *c) {
     {
         struct korb_class *cMethod = korb_class_new(c, c->sp, korb_intern("Method"), KORB_VM(c)->object_class, T_DATA);
         korb_const_set(KORB_VM(c)->object_class, korb_intern("Method"), (VALUE)cMethod);
+        /* UnboundMethod — alias of Method for now (koruby treats them
+         * interchangeably).  CRuby specs check for the class name. */
+        struct korb_class *cUnboundMethod = korb_class_new(c, c->sp,
+            korb_intern("UnboundMethod"), KORB_VM(c)->object_class, T_DATA);
+        korb_const_set(KORB_VM(c)->object_class, korb_intern("UnboundMethod"),
+                        (VALUE)cUnboundMethod);
+        (void)cUnboundMethod;
         korb_class_add_method_cfunc_r(cMethod, korb_intern("call"),     method_call,     -1);
         korb_class_add_method_cfunc_r(cMethod, korb_intern("[]"),       method_call,     -1);
         korb_class_add_method_cfunc_r(cMethod, korb_intern("to_proc"),  method_to_proc,   0);
@@ -1650,6 +1657,7 @@ void korb_init_builtins(CTX *c) {
         DEF_R(cMathMeta, "erfc",  math_erfc,  1);
         DEF_R(cMathMeta, "gamma", math_gamma, 1);
         DEF_R(cMathMeta, "ldexp", math_ldexp, 2);
+        DEF_R(cMathMeta, "frexp", math_frexp, 1);
         /* Math.lgamma returns [value, sign].  We just return the value
          * for now (sign tracking would require lgamma_r). */
         DEF_R(cMathMeta, "lgamma", math_lgamma_, 1);
