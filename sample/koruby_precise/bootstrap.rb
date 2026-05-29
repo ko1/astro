@@ -14,9 +14,19 @@ module Enumerable
     arr
   end
 
-  def count
+  def count(*args, &blk)
+    if args.size > 1
+      raise ArgumentError, "wrong number of arguments (given #{args.size}, expected 0..1)"
+    end
     n = 0
-    each { _1; n += 1 }
+    if !args.empty?
+      target = args[0]
+      each { |x| n += 1 if x == target }
+    elsif blk
+      each { |x| n += 1 if blk.call(x) }
+    else
+      each { _1; n += 1 }
+    end
     n
   end
 
@@ -67,26 +77,41 @@ module Enumerable
     acc
   end
 
-  def min
-    best = nil
-    seen = false
-    each { |x|
-      if !seen || (x <=> best) < 0
-        best = x; seen = true
-      end
-    }
-    best
+  def min(n = nil, &blk)
+    if n
+      # Return n smallest elements (sorted ascending).
+      arr = to_a
+      arr = blk ? arr.sort(&blk) : arr.sort
+      arr.first(n)
+    else
+      best = nil
+      seen = false
+      each { |x|
+        cmp = blk ? blk.call(x, best) : (x <=> best)
+        if !seen || (cmp && cmp < 0)
+          best = x; seen = true
+        end
+      }
+      best
+    end
   end
 
-  def max
-    best = nil
-    seen = false
-    each { |x|
-      if !seen || (x <=> best) > 0
-        best = x; seen = true
-      end
-    }
-    best
+  def max(n = nil, &blk)
+    if n
+      arr = to_a
+      arr = blk ? arr.sort(&blk) : arr.sort
+      arr.last(n).reverse
+    else
+      best = nil
+      seen = false
+      each { |x|
+        cmp = blk ? blk.call(x, best) : (x <=> best)
+        if !seen || (cmp && cmp > 0)
+          best = x; seen = true
+        end
+      }
+      best
+    end
   end
 
   def include?(target)
