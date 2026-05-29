@@ -1112,6 +1112,9 @@ static RESULT hash_slice(CTX *c, int argc, VALUE *sp) {
 
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_hash_new(c, c->sp);
+    struct korb_hash *rh = (struct korb_hash *)r;
+    /* CRuby: slice retains the compare_by_identity flag. */
+    rh->compare_by_identity = h->compare_by_identity;
     for (int i = 0; i < argc; i++) {
         VALUE k = argv[i];
         uint64_t hh = h->compare_by_identity ? (uint64_t)k : korb_hash_value(c, k);
@@ -1135,6 +1138,9 @@ static RESULT hash_except(CTX *c, int argc, VALUE *sp) {
 
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_hash_new(c, c->sp);
+    struct korb_hash *rh = (struct korb_hash *)r;
+    /* CRuby: except retains the compare_by_identity flag. */
+    rh->compare_by_identity = h->compare_by_identity;
     for (struct korb_hash_entry *e = h->first; e; e = e->next) {
         bool skip = false;
         for (int i = 0; i < argc; i++) {
