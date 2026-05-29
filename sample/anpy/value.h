@@ -19,6 +19,12 @@ VALUE anpy_index(CTX *c, VALUE seq, VALUE idx);    // str[i] / list[i]
 void  anpy_index_set(CTX *c, VALUE seq, VALUE idx, VALUE val);  // list[i] = v
 VALUE anpy_len(CTX *c, VALUE v);
 bool  anpy_eq(CTX *c, VALUE a, VALUE b);           // == for int/bool/str
+
+// for-loop iteration over str/list (kept tiny so node_for can drive the loop
+// itself with EVAL_ARG(body) — see node.def).  ChocoPy lists are fixed-length,
+// so the length is computed once.
+long  anpy_seq_len(CTX *c, VALUE v);               // str/list length; errors otherwise
+VALUE anpy_seq_get(VALUE v, long i);               // element i (str -> length-1 str)
 int32_t anpy_strcmp_eq(VALUE a, VALUE b);
 
 void  anpy_print(CTX *c, VALUE v);                 // print() builtin

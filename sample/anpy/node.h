@@ -121,7 +121,6 @@ VALUE anpy_getattr(CTX *c, VALUE obj, const char *name);
 void  anpy_setattr(CTX *c, VALUE obj, const char *name, VALUE v);
 VALUE anpy_do_call(CTX *c, const char *name, NODE *args);
 VALUE anpy_do_method(CTX *c, VALUE recv, const char *name, NODE *args);
-VALUE anpy_do_for(CTX *c, const char *name, VALUE iter, NODE *body);
 void  anpy_massign(CTX *c, NODE *targets, VALUE v);
 
 // --- context construction --------------------------------------------

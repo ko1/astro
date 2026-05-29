@@ -88,6 +88,22 @@ anpy_len(CTX *c, VALUE v)
     return INT2VAL(0);
 }
 
+long
+anpy_seq_len(CTX *c, VALUE v)
+{
+    if (is_str(v))  return ((anpy_str *)v)->len;
+    if (is_list(v)) return ((anpy_list *)v)->len;
+    anpy_runtime_error(c, "Operation on None");   // for-loop over a non-sequence
+    return 0;
+}
+
+VALUE
+anpy_seq_get(VALUE v, long i)
+{
+    if (is_str(v)) return (VALUE)anpy_str_new(((anpy_str *)v)->data + i, 1);
+    return ((anpy_list *)v)->elems[i];
+}
+
 // --- equality (== / != for int, bool, str) ---------------------------
 
 int32_t

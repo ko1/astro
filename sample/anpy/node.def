@@ -325,12 +325,22 @@ node_while(CTX *c, NODE *n, NODE *cond, NODE *body)
     return ANPY_NONE;
 }
 
+// for id in <list|str>: <body>   (ChocoPy lists are fixed-length, so the
+// length is taken once.)  The body is driven here with EVAL_ARG so the
+// specializer folds it into this node's SD — just like node_while.
 NODE_DEF
 node_for(CTX *c, NODE *n, const char *name, NODE *iter, NODE *body)
 {
     (void)n;
     VALUE it = EVAL_ARG(c, iter);
-    return anpy_do_for(c, name, it, body);
+    anpy_cell *cell = env_lookup(c->env, name);
+    long len = anpy_seq_len(c, it);
+    for (long i = 0; i < len; i++) {
+        if (cell) cell->v = anpy_seq_get(it, i);
+        EVAL_ARG(c, body);
+        if (c->returning) break;
+    }
+    return ANPY_NONE;
 }
 
 NODE_DEF

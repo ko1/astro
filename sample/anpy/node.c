@@ -336,34 +336,6 @@ anpy_do_method(CTX *c, VALUE recv, const char *name, NODE *args)
     return anpy_invoke(c, m, c->global, a, n + 1);
 }
 
-// --- for loops --------------------------------------------------------
-
-VALUE
-anpy_do_for(CTX *c, const char *name, VALUE iter, NODE *body)
-{
-    anpy_cell *cell = env_lookup(c->env, name);
-    if (is_str(iter)) {
-        anpy_str *s = (anpy_str *)iter;
-        for (int32_t i = 0; i < s->len; i++) {
-            if (cell) cell->v = (VALUE)anpy_str_new(s->data + i, 1);
-            EVAL(c, body);
-            if (c->returning) break;
-        }
-    }
-    else if (is_list(iter)) {
-        anpy_list *l = (anpy_list *)iter;
-        for (int32_t i = 0; i < l->len; i++) {
-            if (cell) cell->v = l->elems[i];
-            EVAL(c, body);
-            if (c->returning) break;
-        }
-    }
-    else {
-        anpy_runtime_error(c, "Operation on None");
-    }
-    return ANPY_NONE;
-}
-
 // --- multiple assignment ---------------------------------------------
 
 extern const struct NodeKind kind_node_tgt;
