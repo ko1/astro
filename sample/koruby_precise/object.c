@@ -2107,6 +2107,16 @@ VALUE korb_int_rshift(VALUE a, VALUE b) {
 VALUE korb_int_and(VALUE a, VALUE b) { BIGOP(mpz_and); }
 VALUE korb_int_or(VALUE a, VALUE b) { BIGOP(mpz_ior); }
 VALUE korb_int_xor(VALUE a, VALUE b) { BIGOP(mpz_xor); }
+
+/* Integer#~ for Bignum: two's-complement bitwise NOT. */
+VALUE korb_int_not(VALUE a) {
+    mpz_t la, r;
+    mpz_init(r);
+    to_mpz(a, la);
+    mpz_com(r, la);  /* ~la = -la - 1 */
+    mpz_clear(la);
+    return from_mpz(r);
+}
 int korb_int_cmp(VALUE a, VALUE b) {
     if (FIXNUM_P(a) && FIXNUM_P(b)) {
         long la = FIX2LONG(a), lb = FIX2LONG(b);

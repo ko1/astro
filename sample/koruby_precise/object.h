@@ -676,6 +676,7 @@ VALUE korb_int_rshift(VALUE a, VALUE b);
 VALUE korb_int_and(VALUE a, VALUE b);
 VALUE korb_int_or(VALUE a, VALUE b);
 VALUE korb_int_xor(VALUE a, VALUE b);
+VALUE korb_int_not(VALUE a);
 int   korb_int_cmp(VALUE a, VALUE b);
 bool  korb_int_eq(VALUE a, VALUE b);
 

@@ -1046,6 +1046,9 @@ RESULT int_invert(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (FIXNUM_P(self)) return RESULT_OK(INT2FIX(~FIX2LONG(self)));
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        return RESULT_OK(korb_int_not(self));
+    }
     return RESULT_OK(self);
 }
 
