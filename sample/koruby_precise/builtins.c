@@ -355,6 +355,14 @@ void korb_init_builtins(CTX *c) {
             DEF_R(KORB_VM(c)->string_class, "valid_encoding?",      _valid_encoding_p,      0);
             DEF_R(KORB_VM(c)->string_class, "unicode_normalized?",  _unicode_normalized_p, -1);
             DEF_R(KORB_VM(c)->string_class, "ascii_only?",          _ascii_only_p,          0);
+            /* scrub / scrub!: no encoding-error tracking, so just return self. */
+            RESULT _str_scrub(CTX *c, int argc, VALUE *sp) {
+                c->sp = sp;
+                VALUE self = sp[-argc - 1];
+                return RESULT_OK(self);
+            }
+            DEF_R(KORB_VM(c)->string_class, "scrub", _str_scrub, -1);
+            DEF_R(KORB_VM(c)->string_class, "scrub!", _str_scrub, -1);
         }
     }
     /* Encoding#name / #to_s. */
@@ -399,6 +407,7 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->string_class, ">",   str_gt, 1);
     DEF_R(KORB_VM(c)->string_class, ">=",  str_ge, 1);
     DEF_R(KORB_VM(c)->string_class, "to_s", str_to_s, 0);
+    DEF_R(KORB_VM(c)->string_class, "to_str", str_to_s, 0);
     DEF_R(KORB_VM(c)->string_class, "to_sym", str_to_sym, 0);
     DEF_R(KORB_VM(c)->string_class, "__chilled?", str_chilled_p, 0);
 
