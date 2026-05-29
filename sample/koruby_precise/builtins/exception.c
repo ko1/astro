@@ -8,7 +8,7 @@
  * to_s isn't otherwise overridden it falls back to @message via
  * exc_to_s.  This is the CRuby-2.7+ behavior (`message` was equivalent
  * to `to_s`). */
-static VALUE exc_to_s_internal(CTX *c, VALUE self);
+static RESULT exc_to_s_internal(CTX *c, VALUE self);
 static RESULT exc_message(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
@@ -16,7 +16,7 @@ static RESULT exc_message(CTX *c, int argc, VALUE *sp) {
 
     return korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
 }
-static VALUE exc_to_s_internal(CTX *c, VALUE self) {
+static RESULT exc_to_s_internal(CTX *c, VALUE self) {
     VALUE msg = korb_ivar_get(self, korb_intern("@message"));
     if (UNDEF_P(msg) || NIL_P(msg)) {
         if (!SPECIAL_CONST_P(self)) {
@@ -26,22 +26,22 @@ static VALUE exc_to_s_internal(CTX *c, VALUE self) {
              * name, not "(singleton)". */
             while (k && (k->basic.head.flags & FL_SINGLETON)) k = k->super;
             const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
-            return korb_str_new_cstr(c, c->sp, kn);
+            return RESULT_OK(korb_str_new_cstr(c, c->sp, kn));
         }
-        return korb_str_new_cstr(c, c->sp, "");
+        return RESULT_OK(korb_str_new_cstr(c, c->sp, ""));
     }
     /* CRuby calls #to_s on @message if it isn't a String. */
     if (SPECIAL_CONST_P(msg) || BUILTIN_TYPE(msg) != T_STRING) {
-        return SINK_RESULT(c, korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
+        return korb_funcall(c, msg, korb_intern("to_s"), 0, NULL);
     }
-    return msg;
+    return RESULT_OK(msg);
 }
 static RESULT exc_to_s(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(exc_to_s_internal(c, self));
+    return exc_to_s_internal(c, self);
 }
 static RESULT exc_inspect(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -144,7 +144,7 @@ static RESULT exc_initialize(CTX *c, int argc, VALUE *sp) {
     if (eff_argc >= 1) {
         VALUE msg = argv[0];
         if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING && !NIL_P(msg)) {
-            VALUE s = SINK_RESULT(c, korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
+            VALUE s = UNWRAP(korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
             if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
         }
         if (!NIL_P(msg) || eff_argc >= 1) {
@@ -237,7 +237,7 @@ static RESULT exc_exception(CTX *c, int argc, VALUE *sp) {
     VALUE n = korb_object_new(c, c->sp, k);
     VALUE msg = argv[0];
     if (!SPECIAL_CONST_P(msg) && BUILTIN_TYPE(msg) != T_STRING) {
-        VALUE s = SINK_RESULT(c, korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
+        VALUE s = UNWRAP(korb_funcall(c, msg, korb_intern("to_s"), 0, NULL));
         if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
     }
     korb_ivar_set(n, korb_intern("@message"), msg);

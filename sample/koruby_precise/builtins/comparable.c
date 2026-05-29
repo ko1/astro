@@ -9,8 +9,10 @@
  * Float / Bignum / any other Numeric is reduced to its sign so that
  * comparators like Comparable#> work for non-canonical <=> returns
  * (e.g. user code that returns 0.1 to mean "greater"). */
-static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
-    VALUE r = SINK_RESULT(c, korb_funcall(c, self, korb_intern("<=>"), 1, &other));
+static long korb_cmp_call(CTX *c, VALUE self, VALUE other, RESULT *err) {
+    RESULT _r = korb_funcall(c, self, korb_intern("<=>"), 1, &other);
+    if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
+    VALUE r = _r.value;
     if (NIL_P(r)) {
         VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
         /* CRuby's "comparison of X with Y failed" uses the class name on
@@ -20,8 +22,8 @@ static long korb_cmp_call(CTX *c, VALUE self, VALUE other) {
         const char *o_str = (!SPECIAL_CONST_P(oi) && BUILTIN_TYPE(oi) == T_STRING)
                                 ? korb_str_cstr(oi)
                                 : korb_id_name(korb_class_of_class(other)->name);
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "comparison of %s with %s failed",
-                   korb_id_name(korb_class_of_class(self)->name), o_str));
+        *err = korb_raise(c, (struct korb_class *)eArg, "comparison of %s with %s failed",
+                   korb_id_name(korb_class_of_class(self)->name), o_str);
         return 0;
     }
     if (FIXNUM_P(r)) {
@@ -46,28 +48,40 @@ static RESULT cmp_lt(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(KORB_BOOL(korb_cmp_call(c, self, argv[0]) < 0));
+    RESULT _err = RESULT_OK(Qnil);
+    long cv = korb_cmp_call(c, self, argv[0], &_err);
+    if (_err.state != KORB_NORMAL) return _err;
+    return RESULT_OK(KORB_BOOL(cv < 0));
 }
 static RESULT cmp_le(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(KORB_BOOL(korb_cmp_call(c, self, argv[0]) <= 0));
+    RESULT _err = RESULT_OK(Qnil);
+    long cv = korb_cmp_call(c, self, argv[0], &_err);
+    if (_err.state != KORB_NORMAL) return _err;
+    return RESULT_OK(KORB_BOOL(cv <= 0));
 }
 static RESULT cmp_gt(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(KORB_BOOL(korb_cmp_call(c, self, argv[0]) > 0));
+    RESULT _err = RESULT_OK(Qnil);
+    long cv = korb_cmp_call(c, self, argv[0], &_err);
+    if (_err.state != KORB_NORMAL) return _err;
+    return RESULT_OK(KORB_BOOL(cv > 0));
 }
 static RESULT cmp_ge(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(KORB_BOOL(korb_cmp_call(c, self, argv[0]) >= 0));
+    RESULT _err = RESULT_OK(Qnil);
+    long cv = korb_cmp_call(c, self, argv[0], &_err);
+    if (_err.state != KORB_NORMAL) return _err;
+    return RESULT_OK(KORB_BOOL(cv >= 0));
 }
 static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -109,8 +123,11 @@ static RESULT cmp_between(CTX *c, int argc, VALUE *sp) {
     if (argc < 2) {
         return korb_raise_argument_error(c, "wrong number of arguments (given %d, expected 2)", argc);
     }
-    long lo = korb_cmp_call(c, self, argv[0]);
-    long hi = korb_cmp_call(c, self, argv[1]);
+    RESULT _err = RESULT_OK(Qnil);
+    long lo = korb_cmp_call(c, self, argv[0], &_err);
+    if (_err.state != KORB_NORMAL) return _err;
+    long hi = korb_cmp_call(c, self, argv[1], &_err);
+    if (_err.state != KORB_NORMAL) return _err;
     return RESULT_OK(KORB_BOOL(lo >= 0 && hi <= 0));
 }
 static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
@@ -157,8 +174,17 @@ static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
                        "min argument must be smaller than max argument");
         }
     }
-    if (!NIL_P(lo) && korb_cmp_call(c, self, lo) < 0) return RESULT_OK(lo);
-    if (!NIL_P(hi) && korb_cmp_call(c, self, hi) > 0) return RESULT_OK(hi);
+    RESULT _err2 = RESULT_OK(Qnil);
+    if (!NIL_P(lo)) {
+        long cv = korb_cmp_call(c, self, lo, &_err2);
+        if (_err2.state != KORB_NORMAL) return _err2;
+        if (cv < 0) return RESULT_OK(lo);
+    }
+    if (!NIL_P(hi)) {
+        long cv = korb_cmp_call(c, self, hi, &_err2);
+        if (_err2.state != KORB_NORMAL) return _err2;
+        if (cv > 0) return RESULT_OK(hi);
+    }
     return RESULT_OK(self);
 }
 
@@ -683,13 +709,14 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         c->current_block->self = (VALUE)klass;
         c->current_block->cref = &blk_cref;
         VALUE av0[1] = { (VALUE)klass };
-        SINK_RESULT(c, korb_yield(c, 1, av0));
+        RESULT _yr = korb_yield(c, 1, av0);
         c->current_block->self = prev_blk_self;
         c->current_block->cref = prev_blk_cref;
         c->current_frame->self = prev_self;
         c->current_frame->current_class = prev_class;
         c->current_frame->cref = prev_cref;
-        if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }
+        /* BREAK from class body is silently consumed; other states propagate. */
+        if (_yr.state != KORB_NORMAL && _yr.state != KORB_BREAK) return _yr;
     }
     return RESULT_OK((VALUE)klass);
 }
