@@ -849,7 +849,9 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
         VALUE *fp_hi = c->sp_top;
         r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame = fr.prev;
-        korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
+        /* Use fr.self (frame-chain tracked) not rs[1] — body eval may have
+         * pulled c->sp_top below the ARO scope's bumped value. */
+        korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
     return RESULT_OK(r);
 }
@@ -926,7 +928,9 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
         VALUE *fp_hi = c->sp_top;
         r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame = fr.prev;
-        korb_proc_snapshot_env_if_in_frame(rs[0], fp_lo, fp_hi + 1024);
+        /* Use fr.self (frame-chain tracked) not rs[0] — same reason as
+         * the @< clause variant above. */
+        korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
     return RESULT_OK(r);
 }
@@ -979,7 +983,12 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
         VALUE *fp_hi = c->sp_top;
         r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame = fr.prev;
-        korb_proc_snapshot_env_if_in_frame(sp[0], fp_lo, fp_hi + 1024);
+        /* Read klass from fr.self (= frame-chain-tracked) instead of
+         * sp[0]: the body eval may have pulled c->sp_top below sp[0],
+         * exposing it to GC moves it can't forward.  fr.self stays
+         * fresh because visit_roots walks the frame chain while &fr
+         * is current_frame. */
+        korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
     }
     return RESULT_OK(r);
 }
