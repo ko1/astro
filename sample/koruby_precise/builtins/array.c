@@ -2895,6 +2895,10 @@ static RESULT ary_each_index(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("each_index"));
+        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
         VALUE iv = INT2FIX(i);
