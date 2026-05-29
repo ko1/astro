@@ -66,6 +66,14 @@ prologue_cfunc_r_inl(CTX *c, struct Node *callsite,
     c->last_cfunc_callsite = prev_cs;
     c->current_frame = cfr.prev;
     c->current_block = prev_block;
+    /* Safety net: if the cfunc_r body called a legacy VALUE-returning
+     * helper (korb_funcall / korb_yield) that set c->state but the body
+     * forgot to convert, lift the legacy state into RESULT.state here. */
+    if (UNLIKELY(r.state == KORB_NORMAL && c->state != KORB_NORMAL)) {
+        r = (RESULT){ c->state_value, (uint8_t)c->state };
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+    }
     /* break-from-block: convert KORB_BREAK back to NORMAL with the carried value.
      * State carried in r.state for new ABI; we also clear c->state in case
      * a legacy helper inside the cfunc wrote it. */

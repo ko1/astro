@@ -369,19 +369,19 @@ void korb_init_builtins(CTX *c) {
     {
         /* Class method Range.new — register on Range's metaclass. */
         struct korb_class *cRngMeta = korb_singleton_class_of(c, korb_vm->range_class);
-        korb_class_add_method_cfunc(cRngMeta, korb_intern("new"), rng_class_new, -1);
+        korb_class_add_method_cfunc_r(cRngMeta, korb_intern("new"), rng_class_new, -1);
     }
-    DEF(korb_vm->range_class, "each", rng_each, 0);
-    DEF(korb_vm->range_class, "first", rng_first, -1);
-    DEF(korb_vm->range_class, "last",  rng_last,  -1);
-    DEF(korb_vm->range_class, "begin", rng_first, -1);
-    DEF(korb_vm->range_class, "min",   rng_min,   -1);
-    DEF(korb_vm->range_class, "end",   rng_last,  -1);
-    DEF(korb_vm->range_class, "max",   rng_max,   -1);
-    DEF(korb_vm->range_class, "to_a", rng_to_a, 0);
+    DEF_R(korb_vm->range_class, "each", rng_each, 0);
+    DEF_R(korb_vm->range_class, "first", rng_first, -1);
+    DEF_R(korb_vm->range_class, "last",  rng_last,  -1);
+    DEF_R(korb_vm->range_class, "begin", rng_first, -1);
+    DEF_R(korb_vm->range_class, "min",   rng_min,   -1);
+    DEF_R(korb_vm->range_class, "end",   rng_last,  -1);
+    DEF_R(korb_vm->range_class, "max",   rng_max,   -1);
+    DEF_R(korb_vm->range_class, "to_a", rng_to_a, 0);
     {
-        VALUE rng_hash(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->range_class, "hash", rng_hash, 0);
+        RESULT rng_hash(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->range_class, "hash", rng_hash, 0);
     }
 
     /* Class */
@@ -505,7 +505,7 @@ void korb_init_builtins(CTX *c) {
         if ((m = korb_class_find_method(kmod, korb_intern("eval"))))   m->visibility = KORB_VIS_PRIVATE;
     }
     /* Range#exclude_end? */
-    DEF(korb_vm->range_class, "exclude_end?",       rng_exclude_end_p,         0);
+    DEF_R(korb_vm->range_class, "exclude_end?",       rng_exclude_end_p,         0);
     /* Class ancestors / Module#prepend */
     DEF(korb_vm->module_class, "ancestors",          class_ancestors,           0);
     DEF(korb_vm->module_class, "prepend",            module_prepend,           -1);
@@ -1019,22 +1019,22 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->hash_class, "inject",     hash_reduce,    -1);
 
     /* extra Range */
-    DEF(korb_vm->range_class, "step",     rng_step,    -1);
-    DEF(korb_vm->range_class, "zip",      rng_zip,     -1);
-    DEF(korb_vm->range_class, "each_with_index", rng_each_with_index, 0);
-    DEF(korb_vm->range_class, "size",     rng_size,     0);
-    DEF(korb_vm->range_class, "length",   rng_size,     0);
-    DEF(korb_vm->range_class, "include?", rng_include, -1);
-    DEF(korb_vm->range_class, "===",      rng_include, -1);
-    DEF(korb_vm->range_class, "map",      rng_map,      0);
-    DEF(korb_vm->range_class, "collect",  rng_map,      0);
-    DEF(korb_vm->range_class, "select",   rng_select,   0);
-    DEF(korb_vm->range_class, "filter",   rng_select,   0);
-    DEF(korb_vm->range_class, "reduce",   rng_reduce,  -1);
-    DEF(korb_vm->range_class, "inject",   rng_reduce,  -1);
-    DEF(korb_vm->range_class, "all?",     rng_all_p,    0);
-    DEF(korb_vm->range_class, "any?",     rng_any_p,    0);
-    DEF(korb_vm->range_class, "count",    rng_count,    0);
+    DEF_R(korb_vm->range_class, "step",     rng_step,    -1);
+    DEF_R(korb_vm->range_class, "zip",      rng_zip,     -1);
+    DEF_R(korb_vm->range_class, "each_with_index", rng_each_with_index, 0);
+    DEF_R(korb_vm->range_class, "size",     rng_size,     0);
+    DEF_R(korb_vm->range_class, "length",   rng_size,     0);
+    DEF_R(korb_vm->range_class, "include?", rng_include, -1);
+    DEF_R(korb_vm->range_class, "===",      rng_include, -1);
+    DEF_R(korb_vm->range_class, "map",      rng_map,      0);
+    DEF_R(korb_vm->range_class, "collect",  rng_map,      0);
+    DEF_R(korb_vm->range_class, "select",   rng_select,   0);
+    DEF_R(korb_vm->range_class, "filter",   rng_select,   0);
+    DEF_R(korb_vm->range_class, "reduce",   rng_reduce,  -1);
+    DEF_R(korb_vm->range_class, "inject",   rng_reduce,  -1);
+    DEF_R(korb_vm->range_class, "all?",     rng_all_p,    0);
+    DEF_R(korb_vm->range_class, "any?",     rng_any_p,    0);
+    DEF_R(korb_vm->range_class, "count",    rng_count,    0);
 
     /* extra Symbol additions later (korb_vm->symbol_class defined further down) */
 
