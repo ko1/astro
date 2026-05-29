@@ -1121,7 +1121,6 @@ NODE_DEF @noinline
 node_proc_set_opt_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, uint32_t opt_cnt)
 {
     VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->opt_cnt = opt_cnt;
     }
@@ -1134,7 +1133,6 @@ NODE_DEF @noinline
 node_proc_set_block_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, int32_t block_slot)
 {
     VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->block_slot = block_slot;
     }
@@ -1146,7 +1144,6 @@ NODE_DEF @noinline
 node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, uint32_t post_cnt)
 {
     VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->post_cnt = post_cnt;
     }
@@ -1161,7 +1158,6 @@ NODE_DEF @noinline
 node_proc_set_implicit_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node)
 {
     VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->implicit_rest = true;
     }
@@ -1175,7 +1171,6 @@ NODE_DEF @noinline
 node_proc_make_lambda(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node)
 {
     VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->is_lambda = true;
     }
@@ -2747,7 +2742,6 @@ node_default_init(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint
     if (c->current_frame->fp[slot] == Qundef) {
         c->current_frame->fp[slot] = Qnil;
         VALUE v = EVAL_ARG_UNWRAP(c, default_expr);
-        if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
         c->current_frame->fp[slot] = v;
     }
     return RESULT_OK(Qnil);
@@ -3160,7 +3154,6 @@ node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
             else return RESULT_OK(Qnil);
         }
         VALUE v = EVAL_ARG_UNWRAP(c, cond);
-        if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
         if (!RTEST(v)) break;
     } while (1);
     return RESULT_OK(Qnil);
@@ -3191,7 +3184,6 @@ node_do_until(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
             else return RESULT_OK(Qnil);
         }
         VALUE v = EVAL_ARG_UNWRAP(c, cond);
-        if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
         if (RTEST(v)) break;
     } while (1);
     return RESULT_OK(Qnil);
