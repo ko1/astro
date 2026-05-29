@@ -325,6 +325,32 @@ void korb_init_builtins(CTX *c) {
         DEF_R(KORB_VM(c)->string_class, "encode",         _str_force_encoding, -1);
         DEF_R(KORB_VM(c)->string_class, "encode!",        _str_force_encoding, -1);
         DEF_R(KORB_VM(c)->string_class, "b",              _str_b, 0);
+        /* valid_encoding? / ascii_only? / unicode_normalized? — koruby is
+         * UTF-8 only and we don't track invalid byte sequences, so always
+         * return true for valid_encoding?.  ascii_only? checks bytes. */
+        {
+            RESULT _valid_encoding_p(CTX *c, int argc, VALUE *sp) {
+                c->sp = sp;
+                return RESULT_OK(Qtrue);
+            }
+            RESULT _unicode_normalized_p(CTX *c, int argc, VALUE *sp) {
+                c->sp = sp;
+                return RESULT_OK(Qtrue);
+            }
+            RESULT _ascii_only_p(CTX *c, int argc, VALUE *sp) {
+                c->sp = sp;
+                VALUE self = sp[-argc - 1];
+                if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(Qfalse);
+                struct korb_string *s = (struct korb_string *)self;
+                for (long i = 0; i < s->len; i++) {
+                    if ((unsigned char)s->ptr[i] >= 0x80) return RESULT_OK(Qfalse);
+                }
+                return RESULT_OK(Qtrue);
+            }
+            DEF_R(KORB_VM(c)->string_class, "valid_encoding?",      _valid_encoding_p,      0);
+            DEF_R(KORB_VM(c)->string_class, "unicode_normalized?",  _unicode_normalized_p, -1);
+            DEF_R(KORB_VM(c)->string_class, "ascii_only?",          _ascii_only_p,          0);
+        }
     }
     /* Encoding#name / #to_s. */
     {
@@ -333,9 +359,27 @@ void korb_init_builtins(CTX *c) {
             BUILTIN_TYPE(cEnc_v) == T_CLASS) {
             struct korb_class *cEnc = (struct korb_class *)cEnc_v;
             RESULT _enc_name(CTX *c, int argc, VALUE *sp);
+            RESULT _enc_default_external(CTX *c, int argc, VALUE *sp);
+            RESULT _enc_default_internal(CTX *c, int argc, VALUE *sp);
+            RESULT _enc_find(CTX *c, int argc, VALUE *sp);
             DEF_R(cEnc, "name",    _enc_name, 0);
             DEF_R(cEnc, "to_s",    _enc_name, 0);
             DEF_R(cEnc, "inspect", _enc_name, 0);
+            /* Class methods */
+            struct korb_class *cEncMeta = (struct korb_class *)cEnc->basic.klass;
+            if (cEncMeta) {
+                DEF_R(cEncMeta, "default_external",  _enc_default_external, 0);
+                DEF_R(cEncMeta, "default_internal",  _enc_default_internal, 0);
+                DEF_R(cEncMeta, "find",              _enc_find, 1);
+                /* Setters are no-ops (koruby uses UTF-8 internally). */
+                RESULT _enc_setter_noop(CTX *c, int argc, VALUE *sp) {
+                    c->sp = sp;
+                    VALUE *argv = sp - argc;
+                    return RESULT_OK(argc > 0 ? argv[0] : Qnil);
+                }
+                DEF_R(cEncMeta, "default_external=", _enc_setter_noop, 1);
+                DEF_R(cEncMeta, "default_internal=", _enc_setter_noop, 1);
+            }
         }
     }
     DEF_R(KORB_VM(c)->string_class, "+", str_plus, 1);
@@ -695,6 +739,24 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->string_class, "scan",        str_scan, 1);
     DEF_R(KORB_VM(c)->string_class, "sum",         str_sum, -1);
     DEF_R(KORB_VM(c)->string_class, "unpack",      str_unpack, -1);
+    /* String#unpack1 — first element of #unpack.  Delegates by calling
+     * unpack and returning element 0 (or nil if empty). */
+    {
+        RESULT _str_unpack1(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            /* Stage self + args at sp for str_unpack. */
+            sp[0] = self;
+            for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+            VALUE r = UNWRAP(str_unpack(c, argc, sp + 1 + argc));
+            if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_ARRAY) return RESULT_OK(Qnil);
+            struct korb_array *a = (struct korb_array *)r;
+            if (a->len == 0) return RESULT_OK(Qnil);
+            return RESULT_OK(a->ptr[0]);
+        }
+        DEF_R(KORB_VM(c)->string_class, "unpack1",  _str_unpack1, -1);
+    }
     DEF_R(KORB_VM(c)->string_class, "center",      str_center, -1);
     DEF_R(KORB_VM(c)->string_class, "ljust",       str_ljust,  -1);
     DEF_R(KORB_VM(c)->string_class, "rjust",       str_rjust,  -1);
