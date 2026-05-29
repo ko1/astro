@@ -1827,20 +1827,70 @@ static VALUE ary_fill(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
 
     /* Range form: fill[, range] / fill(val, range) (no block: idx_arg_base=1;
-     * with block: idx_arg_base=0). */
+     * with block: idx_arg_base=0).  Also: if no idx args at all, len is
+     * computed below and idx defaults to 0. */
+    if (argc == idx_arg_base + 3) {
+        /* spec: fill(val, range, len) — never valid; raise TypeError. */
+        if (!SPECIAL_CONST_P(argv[idx_arg_base]) &&
+            BUILTIN_TYPE(argv[idx_arg_base]) == T_RANGE) {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of Range into Integer");
+            return Qnil;
+        }
+    }
     if (argc >= idx_arg_base + 1 && !SPECIAL_CONST_P(argv[idx_arg_base]) &&
         BUILTIN_TYPE(argv[idx_arg_base]) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)argv[idx_arg_base];
-        long b = NIL_P(r->begin) ? 0 :
-                 (FIXNUM_P(r->begin) ? FIX2LONG(r->begin) : 0);
-        long e;
+        long b, e;
+        /* Coerce begin via to_int. */
+        if (NIL_P(r->begin)) {
+            b = 0;
+        } else if (FIXNUM_P(r->begin)) {
+            b = FIX2LONG(r->begin);
+        } else if (!SPECIAL_CONST_P(r->begin)) {
+            VALUE rt = korb_funcall(c, r->begin, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!RTEST(rt)) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion into Integer");
+                return Qnil;
+            }
+            VALUE iv = korb_funcall(c, r->begin, korb_intern("to_int"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!FIXNUM_P(iv)) return Qnil;
+            b = FIX2LONG(iv);
+        } else {
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT, "no implicit conversion into Integer");
+            return Qnil;
+        }
         if (NIL_P(r->end)) {
-            e = a->len - 1;  /* endless range = until current end */
+            e = a->len - 1;
         } else if (FIXNUM_P(r->end)) {
             e = FIX2LONG(r->end);
             if (r->exclude_end) e -= 1;
+        } else if (!SPECIAL_CONST_P(r->end)) {
+            VALUE rt = korb_funcall(c, r->end, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_int")) });
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!RTEST(rt)) {
+                VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+                korb_raise(c, (struct korb_class *)eT,
+                           "no implicit conversion into Integer");
+                return Qnil;
+            }
+            VALUE iv = korb_funcall(c, r->end, korb_intern("to_int"), 0, NULL);
+            if (c->state == KORB_RAISE) return Qnil;
+            if (!FIXNUM_P(iv)) return Qnil;
+            e = FIX2LONG(iv);
+            if (r->exclude_end) e -= 1;
         } else {
-            return self;
+            VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
+            korb_raise(c, (struct korb_class *)eT, "no implicit conversion into Integer");
+            return Qnil;
         }
         long orig_b = b;
         if (b < 0) b += a->len;
