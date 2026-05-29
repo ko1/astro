@@ -1106,8 +1106,7 @@ static RESULT str_bytes(CTX *c, int argc, VALUE *sp) {
         for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
             struct korb_string *s = (struct korb_string *)c->current_frame->self;
             VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-            SINK_RESULT(c, korb_yield(c, 1, &b));
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+            CHECK(korb_yield(c, 1, &b));
         }
         return RESULT_OK(c->current_frame->self);
     }
@@ -2335,8 +2334,7 @@ static RESULT str_each_byte(CTX *c, int argc, VALUE *sp) {
     for (long i = 0; i < ((struct korb_string *)c->current_frame->self)->len; i++) {
         struct korb_string *s = (struct korb_string *)c->current_frame->self;
         VALUE b = INT2FIX((unsigned char)s->ptr[i]);
-        SINK_RESULT(c, korb_yield(c, 1, &b));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 1, &b));
     }
     return RESULT_OK(c->current_frame->self);
 }

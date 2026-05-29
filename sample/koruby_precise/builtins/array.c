@@ -2896,8 +2896,7 @@ static RESULT ary_each_index(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     for (long i = 0; i < a->len; i++) {
         VALUE iv = INT2FIX(i);
-        SINK_RESULT(c, korb_yield(c, 1, &iv));
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+        CHECK(korb_yield(c, 1, &iv));
     }
     return RESULT_OK(self);
 }
