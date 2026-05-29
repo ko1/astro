@@ -929,6 +929,12 @@ static RESULT int_abs(CTX *c, int argc, VALUE *sp) {
 
     if (FIXNUM_P(self)) {
         long v = FIX2LONG(self);
+        /* |LONG_MIN| overflows long; |MIN_FIXNUM| overflows Fixnum range.
+         * Promote to Bignum so the result is correct.  CRuby does the
+         * same — Integer#abs of FIXNUM_MIN returns a Bignum. */
+        if (v == LONG_MIN || (v < 0 && !FIXABLE(-v))) {
+            return RESULT_OK(korb_int_minus(INT2FIX(0), self));
+        }
         return RESULT_OK(INT2FIX(v < 0 ? -v : v));
     }
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
