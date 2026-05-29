@@ -13,6 +13,8 @@ ChocoPy の仕様上「妥当な ChocoPy プログラムは妥当な Python 3.6 
 [`../../docs/usage.md`](../../docs/usage.md)。仕様は `chocopy.org` の Language Reference。
 
 - 言語仕様（実装した範囲）: [docs/spec.md](docs/spec.md)
+- **別実装向けの完全な実装リファレンス**: [docs/chocopy_impl_spec.md](docs/chocopy_impl_spec.md)
+- **任意の実装のテスト方法**（差分テストの契約・`ANPY=...` で差し込み）: [docs/testing.md](docs/testing.md)
 - 実装済み / 制限: [docs/done.md](docs/done.md) / [docs/todo.md](docs/todo.md)
 - 値表現・スコープ・GC: [docs/runtime.md](docs/runtime.md)
 - 性能: [docs/perf.md](docs/perf.md)

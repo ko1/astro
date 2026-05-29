@@ -98,7 +98,7 @@ ASTro samples span a wide range of language families to exercise the framework a
 - [`castro`](./sample/castro/) — **C** subset (101 nodes) with tree-sitter-c front-end, 8-byte slot VALUE, structs / function pointers / `printf`, `gcc -E` preprocessing.
   AOT beats `gcc -O0` on tight loops; `crc32` ties `gcc -O1`.
 - [`anpy`](./sample/anpy/) — **[ChocoPy](https://chocopy.org/)** (statically-typed Python 3.6 subset, 41 nodes): indentation lexer, a **static type checker** (conformance / assignment-compat / join + §5.2 rules), single-inheritance classes with dynamic dispatch, nested functions with `global`/`nonlocal` closures, lists/strings; tagged-immediate ints + Boehm GC.
-  Verified by **differential testing vs `python3`** (valid ChocoPy == valid Python 3.6) plus runtime-error and type-error-rejection cases.  Beats CPython 3.12 on loop-heavy code (loop/collatz/list 0.4–0.5×), trails on call-heavy code (per-call env-frame cost); geomean 1.26×.
+  Verified by **differential testing vs `python3`** (valid ChocoPy == valid Python 3.6) plus runtime-error and type-error-rejection cases.  Beats CPython 3.12 on loop-heavy code (loop/collatz/list 0.4–0.5×), trails on call-heavy code (per-call env-frame cost); geomean 1.26×.  Ships a **self-contained implementation reference** ([`docs/chocopy_impl_spec.md`](./sample/anpy/docs/chocopy_impl_spec.md)) and an **implementation-agnostic harness** (`ANPY=/path/to/impl ruby test/run_tests.rb`) so a from-scratch ChocoPy in any language can be checked against the same suite.
 
 **Stack-based.**
 - [`aforth`](./sample/aforth/) — **Forth** subset (68 nodes) where every word is an AST NODE (no traditional threaded code); calls indirect through a `word_id` → `NODE *` table.

@@ -899,6 +899,8 @@ ruby -r astrogen -e 'ASTroGen.start ARGV' -- [options]
 ### Examples
 
 - `sample/calc/` — Minimal calculator (6 nodes).  Good starting point for understanding the runtime + ASTroGen flow without language-design noise.
+- `sample/abc/` — POSIX/GNU `bc`-compatible arbitrary-precision calculator (GMP mantissa + scale, libgc).  The natural step after `calc`: a real value model (incl. an LSB-tagged fixnum fast path) and a differential test harness against the system `bc`.
+- `sample/anpy/` — [ChocoPy](https://chocopy.org/) (statically-typed Python 3.6 subset).  Demonstrates a separate **static type checker** pass (conformance / assignment-compat / join) over the AST, an indentation lexer, single-inheritance classes with dynamic dispatch, and `global`/`nonlocal` closures.  Ships a self-contained reimplementation reference (`docs/chocopy_impl_spec.md`) and an implementation-agnostic differential harness vs `python3` (`docs/testing.md`) — see those when you want to reimplement ChocoPy by another method and check it against the same suite.
 - `sample/naruby/` — Ruby subset with functions, variables, operators, JIT support.  Standalone C program; the canonical "real language" example.
 - `sample/abruby/` — Ruby subset as a CRuby C extension.  Classes, methods, blocks, GC integration, builtins.  Demonstrates `register_gen_task` for custom mark function generation and `@ref` operands for inline caches.
 - `sample/koruby/`, `sample/luastro/`, `sample/jstro/`, `sample/pystro/`, `sample/ascheme/`, `sample/astocaml/`, `sample/asom/`, `sample/pascalast/`, `sample/castro/`, `sample/aforth/`, `sample/astr/`, `sample/wastro/` — additional language fronts using the same framework. See [`samples.md`](./samples.md) for a cross-sample analysis.

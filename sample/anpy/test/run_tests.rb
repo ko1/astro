@@ -13,9 +13,19 @@
 
 require 'open3'
 
-ANPY = File.expand_path('../anpy', __dir__)
+# The implementation under test.  Defaults to the AnPy binary built here,
+# but any ChocoPy implementation can be tested by pointing ANPY at it:
+#
+#   ANPY=/path/to/your/chocopy ruby test/run_tests.rb
+#
+# Contract the binary must satisfy (see docs/testing.md):
+#   - reads a ChocoPy program from stdin, runs it, writes to stdout
+#   - on a static (type/scope) error: exits non-zero and prints NOTHING to
+#     stdout (the program is rejected, not executed)
+#   - on a runtime error: prints output produced so far, then aborts
+ANPY = ENV['ANPY'] || File.expand_path('../anpy', __dir__)
 PY   = ENV['PYTHON'] || 'python3'
-abort "anpy not built (run make)" unless File.executable?(ANPY)
+abort "implementation not found: #{ANPY} (run make, or set ANPY=...)" unless File.executable?(ANPY) || ANPY.include?('/')
 
 $pass = 0; $fail = 0; $failures = []
 
@@ -31,13 +41,14 @@ def diff(label, prog)
   else $fail += 1; $failures << [label, prog, a, b] end
 end
 
-# anpy must reject (type error); python3 must accept (proving it is a
-# *static* error, not a runtime/semantic one).
+# The implementation must REJECT this program statically: exit non-zero
+# and produce NO stdout (it must not execute).  Each program prints if it
+# were run, so a non-checking implementation would emit output and fail.
 def reject(label, prog)
-  a_out, a_err, a_st = Open3.capture3(ANPY, stdin_data: prog)
-  ok = !a_st.success? && (a_out + a_err).include?('type error')
+  a_out, _a_err, a_st = Open3.capture3(ANPY, stdin_data: prog)
+  ok = !a_st.success? && a_out.empty?
   if ok then $pass += 1
-  else $fail += 1; $failures << ["reject:#{label}", prog, a_out + a_err, '(should be type error)'] end
+  else $fail += 1; $failures << ["reject:#{label}", prog, "exit=#{a_st.exitstatus} out=#{a_out.inspect}", '(want: non-zero exit, empty stdout)'] end
 end
 
 # ---------------------------------------------------------------------
@@ -86,13 +97,13 @@ RUNTIME = {
 RUNTIME.each { |n, p| diff("rt:#{n}", p) }
 
 # Programs that must be rejected by the static type checker.
-reject('assign_mismatch', "x:int = 0\nx = \"s\"")
-reject('arith_bool',      "x:int = 0\nx = 1 + True")
-reject('cond_not_bool',   "if 1 + 2:\n    pass")
+reject('assign_mismatch', "x:int = 0\nx = \"s\"\nprint(x)")
+reject('arith_bool',      "x:int = 0\nx = 1 + True\nprint(x)")
+reject('cond_not_bool',   "if 1 + 2:\n    print(1)")
 reject('cmp_str',         "print(\"a\" < \"b\")")
 reject('call_arity',      "def f(a:int, b:int) -> int:\n    return a + b\nprint(f(1))")
 reject('call_argtype',    "def f(a:int) -> int:\n    return a\nprint(f(True))")
-reject('ret_mismatch',    "def f() -> int:\n    return \"x\"")
+reject('ret_mismatch',    "def f() -> int:\n    return \"x\"\nprint(f())")
 reject('bad_attr',        "class C(object):\n    x:int = 0\nc:C = None\nc = C()\nprint(c.y)")
 reject('index_nonint',    "xs:[int] = None\nxs = [1]\nprint(xs[\"a\"])")
 reject('subclass_int',    "class C(int):\n    pass")

@@ -42,7 +42,7 @@ JSON Schema の `arjsv`、CEL の `arcel`)。サンプルのうち 3 つ
 | `pystro` | Python 3 サブセット | OO, 動的 | 動 | int + GMP bignum + float | class / try-except / for-in / f-string / lambda |
 | `jstro` | JavaScript (ES2023+) | OO, 動的 | 動 | small integer (SMI) + inline flonum | **V8 風 hidden class + inline cache (IC)**, Map/Set/Symbol/Proxy/Promise(sync) |
 | `castro` | C サブセット | 命令型, 静的 | 静 | int64 / double / pointer | tree-sitter-c で型解決 → 1 slot=8byte レイアウト |
-| `anpy` | ChocoPy (静的型 Python 3.6) | OO, 静的 | 静 | tagged immediate int + None/bool + heap | **静的型検査器**（適合/代入互換/join + §5.2 規則）、単一継承クラス + 動的ディスパッチ、`global`/`nonlocal` クロージャ、`python3` と差分テスト |
+| `anpy` | ChocoPy (静的型 Python 3.6) | OO, 静的 | 静 | tagged immediate int + None/bool + heap | **静的型検査器**（適合/代入互換/join + §5.2 規則）、単一継承クラス + 動的ディスパッチ、`global`/`nonlocal` クロージャ、`python3` と差分テスト。**別実装向け実装リファレンス + `ANPY=` で差し込める実装非依存ハーネス**同梱 |
 | `wastro` | WebAssembly 1.0+ | スタックマシン, 静的 | 静 | i32/i64/f32/f64 | WAT/WASM 両対応 / spec-test ハーネス |
 | `astrogre` | (Onigmo 互換 regex) | DSL — 正規表現 | — | — | **マッチエンジン自体が AST**、`are` grep CLI 付属 |
 | `nuq` | (jq 1.7 互換) | DSL — JSON フィルタ | — | tagged fixnum + `nuq_obj` | pipe / comma fan-out / `try-catch` / `reduce` / `foreach` / module / call-by-name / 70+ builtin、jq 1.7 公式 524/526 |
