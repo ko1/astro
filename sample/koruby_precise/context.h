@@ -278,6 +278,25 @@ typedef struct {
     _lv;                                                  \
 })
 
+/* SINK_RESULT — reverse bridge: a RESULT-returning helper called from
+ * within a legacy VALUE-returning function.  Pushes non-NORMAL state into
+ * c->state and yields Qnil; on NORMAL yields the value.  Use as:
+ *   VALUE r = SINK_RESULT(c, korb_some_call_r(...));
+ * Used in step-by-step migration of R1 (dispatch helpers) when an inner
+ * helper has been RESULT-ized but its caller is still VALUE-returning. */
+#define SINK_RESULT(c, call) ({                              \
+    RESULT _sr = (call);                                     \
+    VALUE _sv;                                               \
+    if (__builtin_expect(_sr.state != KORB_NORMAL, 0)) {     \
+        (c)->state = _sr.state;                              \
+        (c)->state_value = _sr.value;                        \
+        _sv = Qnil;                                          \
+    } else {                                                 \
+        _sv = _sr.value;                                     \
+    }                                                        \
+    _sv;                                                     \
+})
+
 /* Same as LIFT_C_STATE but synthesizes the RESULT (no early return).
  * Use at the very end of a node body when c->sp restore (or other
  * cleanup) must happen after a legacy call but before the lift. */
