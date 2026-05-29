@@ -1629,6 +1629,7 @@ module Enumerable
   end
 
   def chunk_while(&blk)
+    raise ArgumentError, "tried to create Proc object without a block" unless blk
     out = []
     cur = []
     prev = nil
