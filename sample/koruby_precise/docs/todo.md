@@ -6,7 +6,32 @@
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
-直近 sweep: `PASS=258 / FAIL=153 / CRASH=7`。 第 2 セッション分の追加:
+直近 sweep: `PASS=263 / FAIL=148 / CRASH=7`。 第 3 セッション分の追加:
+
+- Integer#<=> に coerce protocol + Bignum-vs-Float 精度保存 + NaN/Inf 対応。
+  33 → 42 pass。
+- Array#initialize を実装 (旧 ary_class_new とは別 entry)。
+  array/initialize_spec 6 → 30 pass。
+- Range#first / #last に to_int coerce, Float truncate, beginless/endless
+  例外。 first 6 → 11、 last 7 → 12 pass。
+- Range#each に beginless TypeError / endless / non-succ 対応。 8 → 15。
+- Range#min / #max を専用実装 (rng_first/last からの誤エイリアス解消)。
+  min 8 → 9、 max 9 → 10 pass。
+- Range#size で endless / beginless / non-Numeric の挙動を CRuby に合わせ。
+  4 → 8 pass。
+- Array#sum に Kahan compensated summation。 25 → 26 pass。
+- Integer#round に half: kwarg (:up / :down / :even) と ArgumentError。
+  8 → 21 pass。
+- Integer#truncate を専用実装。 3 → 6 pass。
+- Array#cycle で count の Float / to_int / TypeError 対応。 11 → 18 pass。
+- mspec_shim に `it_should_behave_like` 別名追加。
+- Numeric#coerce のデフォルト実装。 0 → 10 pass。
+- Integer#coerce で String / #to_f respondable も Float pair 化。 17 → 24。
+
+## rubyspec 取れ高改善 (2026-05-28 後半 + 第 2 セッション分)
+
+baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
+第 2 セッション末で `PASS=258 / FAIL=153 / CRASH=7`。 第 2 セッション分:
 
 - Array#slice / #slice! を全面書き直し (Range / (idx, len) / Range の to_int
   coerce / element-wise return)。 27 → 95 pass。
