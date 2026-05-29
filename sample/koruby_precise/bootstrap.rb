@@ -148,8 +148,8 @@ module Enumerable
     result
   end
 
-  def sort
-    to_a.sort
+  def sort(&blk)
+    blk ? to_a.sort(&blk) : to_a.sort
   end
 
   alias collect map
