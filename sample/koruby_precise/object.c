@@ -1291,71 +1291,53 @@ void korb_last_match_set(CTX *c, VALUE v) {
 
 /* ---- objects (with class-shape ivars) ---- */
 VALUE korb_object_new(CTX *c, VALUE *sp, struct korb_class *klass) {
-    /* Protect klass across the inner aro_gc_alloc — moving GC otherwise
-     * leaves the C local pointing into K-2's to-space, which is the same
-     * physical plane as K's to-space under 2-space alternation. */
-    c->sp_top = sp;
-    VALUE ret;
-    ARO_ROOT_SCOPE_START(c, r, 2) {
-        r[0] = (VALUE)klass;
-        int it = klass->instance_type ? klass->instance_type : T_OBJECT;
-        if (it == T_CLASS || it == T_MODULE) {
-            /* Class.allocate / Module.allocate must produce a struct big
-             * enough to hold a class — otherwise field accesses (super,
-             * methods, basic.flags) on the result later read past the
-             * alloc'd region.  Mark such an "uninitialized class" by
-             * leaving super=NULL; the .new path raises TypeError before
-             * dispatching. */
-            r[1] = aro_gc_alloc(c, sizeof(struct korb_class));
-            klass = (struct korb_class *)r[0];           /* reload */
-            struct korb_class *k = (struct korb_class *)r[1];
-            k->basic.head.flags = it;
-            k->basic.klass = klass;
-            k->name = korb_intern("(uninitialized)");
-            k->instance_type = T_OBJECT;
-            ret = r[1];
-        } else if (it == T_HASH) {
-            /* Hash.allocate must produce a fully-formed struct korb_hash
-             * (with bucket array) so subsequent #[]= doesn't div-by-zero
-             * on bucket_cnt.  Forward to korb_hash_new and re-tag the
-             * resulting libc-allocated obj's klass to self. */
-            VALUE hv = korb_hash_new(c, c->sp_top);
-            klass = (struct korb_class *)r[0];           /* reload */
-            ((struct korb_hash *)hv)->basic.klass = klass;
-            ret = hv;
-        } else if (it == T_ARRAY) {
-            VALUE av = korb_ary_new(c, c->sp_top);
-            klass = (struct korb_class *)r[0];
-            ((struct korb_array *)av)->basic.klass = klass;
-            ret = av;
-        } else if (it == T_STRING) {
-            VALUE sv = korb_str_new(c, c->sp_top, "", 0);
-            klass = (struct korb_class *)r[0];
-            ((struct korb_string *)sv)->basic.klass = klass;
-            ret = sv;
-        } else {
-            r[1] = aro_gc_alloc(c, sizeof(struct korb_object));
-            klass = (struct korb_class *)r[0];           /* reload */
-            struct korb_object *o = (struct korb_object *)r[1];
-            o->basic.head.flags = it;
-            o->basic.klass = klass;
-            /* Preallocate ivar slots based on the class's known ivar shape,
-             * so the inline ivar_set_ic fast path hits on the first write
-             * to each @ivar.  (klass->ivar_count read AFTER reload — moving
-             * GC could've relocated klass.) */
-            uint32_t n = klass->ivar_count;
-            if (n) {
-                o->ivar_cnt = n;
-                o->ivar_capa = n;
-                o->ivars = korb_xmalloc(n * sizeof(VALUE));
-                for (uint32_t i = 0; i < n; i++) o->ivars[i] = Qnil;
-                /* o may have moved by korb_xmalloc — no, libc malloc
-                 * doesn't fire GC.  Safe to write o->* directly here. */
-            }
-            ret = r[1];
-        }
-    } ARO_ROOT_SCOPE_END(c, r);
-    return ret;
+    /* Park klass in sp[0] + new object in sp[1] across allocations.
+     * Reload from sp[0] after each potential GC site to follow moves. */
+    sp[0] = (VALUE)klass;
+    sp[1] = 0;
+    c->sp_top = sp + 2;          /* publish slots before alloc */
+    int it = klass->instance_type ? klass->instance_type : T_OBJECT;
+    if (it == T_CLASS || it == T_MODULE) {
+        sp[1] = aro_gc_alloc(c, sizeof(struct korb_class));
+        klass = (struct korb_class *)sp[0];
+        struct korb_class *k = (struct korb_class *)sp[1];
+        k->basic.head.flags = it;
+        k->basic.klass = klass;
+        k->name = korb_intern("(uninitialized)");
+        k->instance_type = T_OBJECT;
+        return sp[1];
+    }
+    if (it == T_HASH) {
+        VALUE hv = korb_hash_new(c, sp + 2);
+        klass = (struct korb_class *)sp[0];
+        ((struct korb_hash *)hv)->basic.klass = klass;
+        return hv;
+    }
+    if (it == T_ARRAY) {
+        VALUE av = korb_ary_new(c, sp + 2);
+        klass = (struct korb_class *)sp[0];
+        ((struct korb_array *)av)->basic.klass = klass;
+        return av;
+    }
+    if (it == T_STRING) {
+        VALUE sv = korb_str_new(c, sp + 2, "", 0);
+        klass = (struct korb_class *)sp[0];
+        ((struct korb_string *)sv)->basic.klass = klass;
+        return sv;
+    }
+    sp[1] = aro_gc_alloc(c, sizeof(struct korb_object));
+    klass = (struct korb_class *)sp[0];
+    struct korb_object *o = (struct korb_object *)sp[1];
+    o->basic.head.flags = it;
+    o->basic.klass = klass;
+    uint32_t n = klass->ivar_count;
+    if (n) {
+        o->ivar_cnt = n;
+        o->ivar_capa = n;
+        o->ivars = korb_xmalloc(n * sizeof(VALUE));
+        for (uint32_t i = 0; i < n; i++) o->ivars[i] = Qnil;
+    }
+    return sp[1];
 }
 
 static int ivar_slot(struct korb_class *k, ID name) {
