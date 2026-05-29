@@ -3,6 +3,40 @@
 [done.md](./done.md) は実装済み機能の一覧。 ここは **未実装 / 不完全 /
 既知バグ** の作業リスト。
 
+## Phase 8 進捗 — RESULT 化 & per-CTX 機械化 (2026-05-29)
+
+user 指摘: 「ctx->state 消せた？」「VALUE を返す関数を RESULT にする / 呼び側
+も直す」「korb_vm はグローバル変数で残ってる」「一気にやりましょう」。
+
+実施 (2026-05-29):
+1. `CTX` に `struct korb_vm *mch` を追加 (per-CTX 機械参照、 abruby `c->abm`
+   convention)。 commit a2a13522。 これは「korb_vm global を削除する道筋」。
+2. `RESULT_FN __attribute__((warn_unused_result))` を導入し、 全 RESULT-returning
+   関数 (korb_raise / korb_raise_X / korb_funcall_r / korb_yield_r) に適用。
+   commit 33788e6a。 RESULT を捨ててる場所を全部 build 時に検出可能に。
+3. `DROP_RESULT(call)` macro 追加 (RESULT を明示的に discharge する。
+   `(void)` だけだと warn_unused_result が silence しない)。 commit 97a5c618。
+4. mass migration (Python script): 323 ヶ所の bare `korb_raise(...);` を
+   `DROP_RESULT(korb_raise(...));` で wrap。 commit e3ddb39b。
+5. macro / inline header 内の 89 ヶ所も DROP_RESULT 化。 commit 7f90f3d2。
+6. node.def の 57 ヶ所も DROP_RESULT 化 → node_eval.c 再生成。 commit 45232595。
+
+結果:
+- build warning 469 → 0 (全 warn_unused_result 警告消化)。
+- build green、 spec pass count 不変 (263 PASS / 7 CRASH)。
+- DROP_RESULT カウントが「残 migration 対象数」 の指標になる。
+
+残作業 (Phase 8 続き):
+- `-Werror=unused-result` を有効化 → regression 防止 hard error 化。
+- DROP_RESULT を 1 ヶ所ずつ消す = function を VALUE → RESULT に migrate、
+  caller も UNWRAP / return propagation に置換。
+- 最終的に `CTX::state` / `state_value` を field から削除。
+- `korb_vm->X` 参照を `c->mch->X` に順次置換、 最終的に global `korb_vm`
+  を削除して「1 CTX = 1 interpreter」 を可能に。
+- `struct korb_vm` 自体の type rename (→ `struct korb_machine`)。
+
+memory note: feedback_result_and_vm_priorities (user 要望保存)。
+
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
