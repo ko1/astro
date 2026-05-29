@@ -302,6 +302,9 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->float_class, "-", flt_minus, 1);
     DEF_R(KORB_VM(c)->float_class, "*", flt_mul, 1);
     DEF_R(KORB_VM(c)->float_class, "/", flt_div, 1);
+    /* Float#fdiv / quo — both behave like /. */
+    DEF_R(KORB_VM(c)->float_class, "fdiv", flt_div, 1);
+    DEF_R(KORB_VM(c)->float_class, "quo",  flt_div, 1);
     DEF_R(KORB_VM(c)->float_class, "to_s", flt_to_s, 0);
     extern RESULT flt_to_i(CTX *c, int argc, VALUE *sp);
     DEF_R(KORB_VM(c)->float_class, "to_i",   flt_to_i, 0);
@@ -655,6 +658,9 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->integer_class, "downto", int_downto, 1);
     DEF_R(KORB_VM(c)->integer_class, "div",   int_method_div, 1);
     DEF_R(KORB_VM(c)->integer_class, "fdiv",       int_fdiv,       1);
+    /* Integer#quo — same as fdiv (returns Float).  Rational#quo would
+     * return Rational, but koruby doesn't have Rational implementation. */
+    DEF_R(KORB_VM(c)->integer_class, "quo",        int_fdiv,       1);
     DEF_R(KORB_VM(c)->integer_class, "remainder",  int_remainder,  1);
     DEF_R(KORB_VM(c)->integer_class, "modulo",     int_mod,        1);
     {
@@ -1612,6 +1618,16 @@ void korb_init_builtins(CTX *c) {
         DEF_R(cMathMeta, "cbrt",  math_cbrt,  1);
         DEF_R(cMathMeta, "hypot", math_hypot, 2);
         DEF_R(cMathMeta, "pow",   math_pow,   2);
+        DEF_R(cMathMeta, "asinh", math_asinh, 1);
+        DEF_R(cMathMeta, "acosh", math_acosh, 1);
+        DEF_R(cMathMeta, "atanh", math_atanh, 1);
+        DEF_R(cMathMeta, "erf",   math_erf,   1);
+        DEF_R(cMathMeta, "erfc",  math_erfc,  1);
+        DEF_R(cMathMeta, "gamma", math_gamma, 1);
+        DEF_R(cMathMeta, "ldexp", math_ldexp, 2);
+        /* Math.lgamma returns [value, sign].  We just return the value
+         * for now (sign tracking would require lgamma_r). */
+        DEF_R(cMathMeta, "lgamma", math_lgamma_, 1);
         cMath->basic.klass = (VALUE)cMathMeta;
     }
 

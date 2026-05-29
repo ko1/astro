@@ -22,8 +22,10 @@ static double num_d(VALUE v) {
 MATH1(sqrt, sqrt) MATH1(sin, sin) MATH1(cos, cos) MATH1(tan, tan)
 MATH1(asin, asin) MATH1(acos, acos) MATH1(atan, atan)
 MATH1(sinh, sinh) MATH1(cosh, cosh) MATH1(tanh, tanh)
+MATH1(asinh, asinh) MATH1(acosh, acosh) MATH1(atanh, atanh)
 MATH1(exp, exp) MATH1(log2, log2) MATH1(log10, log10) MATH1(cbrt, cbrt)
-MATH2(atan2, atan2) MATH2(hypot, hypot)
+MATH1(erf, erf) MATH1(erfc, erfc) MATH1(lgamma_, lgamma) MATH1(gamma, tgamma)
+MATH2(atan2, atan2) MATH2(hypot, hypot) MATH2(ldexp, ldexp)
 static RESULT math_log(CTX *c, int argc, VALUE *sp) {
     if (argc == 2) return RESULT_OK(korb_float_new(c, sp, log(num_d(sp[-2])) / log(num_d(sp[-1]))));
     return RESULT_OK(korb_float_new(c, sp, log(num_d(sp[-1]))));
