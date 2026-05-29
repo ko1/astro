@@ -318,6 +318,22 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->float_class, "zero?",     flt_zero_p,     0);
     DEF_R(KORB_VM(c)->float_class, "positive?", flt_positive_p, 0);
     DEF_R(KORB_VM(c)->float_class, "negative?", flt_negative_p, 0);
+    /* Float#next_float / prev_float — IEEE 754 successor / predecessor. */
+    {
+        #include <math.h>
+        RESULT _flt_next(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            return RESULT_OK(korb_float_new(c, c->sp, nextafter(korb_num2dbl(self), 1.0/0.0)));
+        }
+        RESULT _flt_prev(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            return RESULT_OK(korb_float_new(c, c->sp, nextafter(korb_num2dbl(self), -1.0/0.0)));
+        }
+        DEF_R(KORB_VM(c)->float_class, "next_float", _flt_next, 0);
+        DEF_R(KORB_VM(c)->float_class, "prev_float", _flt_prev, 0);
+    }
 
     /* String */
     /* String#encoding stub — return Encoding::UTF_8.  */
@@ -1718,9 +1734,23 @@ void korb_init_builtins(CTX *c) {
         DEF_R(cMathMeta, "gamma", math_gamma, 1);
         DEF_R(cMathMeta, "ldexp", math_ldexp, 2);
         DEF_R(cMathMeta, "frexp", math_frexp, 1);
-        /* Math.lgamma returns [value, sign].  We just return the value
-         * for now (sign tracking would require lgamma_r). */
-        DEF_R(cMathMeta, "lgamma", math_lgamma_, 1);
+        /* Math.lgamma returns [value, sign] using lgamma_r for sign. */
+        {
+            #include <math.h>
+            RESULT _math_lgamma_pair(CTX *c, int argc, VALUE *sp) {
+                c->sp = sp;
+                int sign;
+                double d;
+                if (FIXNUM_P(sp[-1])) d = (double)FIX2LONG(sp[-1]);
+                else d = korb_num2dbl(sp[-1]);
+                double v = lgamma_r(d, &sign);
+                VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+                korb_ary_push(pair, korb_float_new(c, c->sp, v));
+                korb_ary_push(pair, INT2FIX((long)sign));
+                return RESULT_OK(pair);
+            }
+            DEF_R(cMathMeta, "lgamma", _math_lgamma_pair, 1);
+        }
         cMath->basic.klass = (VALUE)cMathMeta;
     }
 
