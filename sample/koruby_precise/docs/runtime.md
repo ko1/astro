@@ -329,11 +329,35 @@ node_ensure(CTX *c, NODE *n, VALUE *sp, NODE *body, NODE *ensure_body)
 
 baruby_precise / castro / abruby も同じ `RESULT { VALUE, state }` を採用。
 
-### 5.6 c->state 廃止計画 (Phase 8d-final, 設計)
+### 5.6 c->state 廃止計画 (Phase 8d-final)
 
 **目標**: `CTX::state` / `CTX::state_value` フィールドを完全削除し、 例外/
 break/return/throw 等の非 NORMAL 制御フローを **すべて RESULT (2 reg) で
 伝搬**。 baruby_precise / castro と同じ ABI に揃える。
+
+#### 実装進捗 (2026-05-29 時点)
+
+- [x] **R1** dispatch chain (korb_dispatch_call / korb_funcall /
+  korb_funcall_with_block / korb_dispatch_binop / korb_dispatch_to_method /
+  korb_dispatch_visibility_raise / prologue_*) を RESULT 化
+- [x] **R2** korb_yield / korb_yield_slow を RESULT 化、 ~120 site の
+  caller を UNWRAP/CHECK/SINK_RESULT に migrate
+- [x] **R3** korb_node_X_slow (binop / aref / aset 等 17 種) を RESULT 化
+- [x] **R4a** named legacy cfunc 67 件を cfunc_r ABI に変換
+  (exception/binding/file/symbol/string + builtins.c の `_*_disallowed`)
+- [x] **R4b** nested GCC `({...})` 形式 cfunc 25 件 + restrict 型 4 件を
+  cfunc_r に変換、 builtins.c の copy-method ループは
+  `m->u.cfunc.func_r` か `func` か実行時 dispatch に
+- [x] **R5a** SINK_RESULT propagation pattern 68 件を UNWRAP/CHECK に置換
+  (`VAR = SINK_RESULT(c, ...); if (c->state ...) return Qnil;` の単純な
+  propagation 形は機械置換可能)
+- [ ] **R5b** swallow 系 SINK_RESULT (~70 件): respond_to? 失敗時に
+  false 扱いといった意図的な error swallow パターン。 これは UNWRAP では
+  伝播してしまうので、 `RESULT _r = ...; VALUE x = (_r.state == NORMAL) ?
+  _r.value : DEFAULT;` 形に手書き変換が必要
+- [ ] **R5c** node_eval.c / koruby_runtime.c の c->state bridge (~50 件)
+- [ ] **R5d** `c->state` / `c->state_value` field の delete +
+  SINK_RESULT / LIFT_C_STATE macro 削除
 
 `CTX::state_target_frame` は state 値ではなく "非ローカル return がどの
 method frame を unwind するか" の target ポインタなので RESULT には載らず、
