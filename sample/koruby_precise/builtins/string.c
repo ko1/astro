@@ -1152,8 +1152,25 @@ static RESULT str_start_with(CTX *c, int argc, VALUE *sp) {
 
     struct korb_string *s = (struct korb_string *)self;
     for (int i = 0; i < argc; i++) {
-        if (BUILTIN_TYPE(argv[i]) != T_STRING) continue;
-        struct korb_string *p = (struct korb_string *)argv[i];
+        VALUE p_v = argv[i];
+        if (SPECIAL_CONST_P(p_v) || BUILTIN_TYPE(p_v) != T_STRING) {
+            if (!SPECIAL_CONST_P(p_v)) {
+                VALUE rt = UNWRAP(korb_funcall(c, p_v, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+                if (RTEST(rt)) {
+                    RESULT tr = korb_funcall_r(c, p_v, korb_intern("to_str"), 0, NULL);
+                    if (tr.state != KORB_NORMAL) return tr;
+                    p_v = tr.value;
+                }
+            }
+            if (SPECIAL_CONST_P(p_v) || BUILTIN_TYPE(p_v) != T_STRING) {
+                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                  "no implicit conversion of %s into String",
+                                  SPECIAL_CONST_P(argv[i]) ? "(special)" :
+                                  korb_id_name(korb_class_of_class(argv[i])->name));
+            }
+        }
+        struct korb_string *p = (struct korb_string *)p_v;
         if (p->len <= s->len && memcmp(s->ptr, p->ptr, p->len) == 0) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
@@ -1166,8 +1183,26 @@ static RESULT str_end_with(CTX *c, int argc, VALUE *sp) {
 
     struct korb_string *s = (struct korb_string *)self;
     for (int i = 0; i < argc; i++) {
-        if (BUILTIN_TYPE(argv[i]) != T_STRING) continue;
-        struct korb_string *p = (struct korb_string *)argv[i];
+        VALUE p_v = argv[i];
+        /* Coerce via to_str — TypeError if not convertible. */
+        if (SPECIAL_CONST_P(p_v) || BUILTIN_TYPE(p_v) != T_STRING) {
+            if (!SPECIAL_CONST_P(p_v)) {
+                VALUE rt = UNWRAP(korb_funcall(c, p_v, korb_intern("respond_to?"), 1,
+                                        (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+                if (RTEST(rt)) {
+                    RESULT tr = korb_funcall_r(c, p_v, korb_intern("to_str"), 0, NULL);
+                    if (tr.state != KORB_NORMAL) return tr;
+                    p_v = tr.value;
+                }
+            }
+            if (SPECIAL_CONST_P(p_v) || BUILTIN_TYPE(p_v) != T_STRING) {
+                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                  "no implicit conversion of %s into String",
+                                  SPECIAL_CONST_P(argv[i]) ? "(special)" :
+                                  korb_id_name(korb_class_of_class(argv[i])->name));
+            }
+        }
+        struct korb_string *p = (struct korb_string *)p_v;
         if (p->len <= s->len && memcmp(s->ptr + s->len - p->len, p->ptr, p->len) == 0) return RESULT_OK(Qtrue);
     }
     return RESULT_OK(Qfalse);
