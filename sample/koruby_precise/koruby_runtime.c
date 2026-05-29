@@ -22,8 +22,8 @@ extern struct koruby_option OPTION;
  * koruby_visit_roots: walks every root slot the GC must see — the linear
  * c->stack_base..c->sp_top value-stack range, CTX-held VALUEs, the cref and
  * current_frame chains, and the korb_vm globals.  Sample-side helpers
- * place live VALUEs into ARO_ROOT_SCOPE-managed slots (or sp[] directly)
- * so they appear in the value-stack range.
+ * place live VALUEs into sp[] staging slots so they appear in the
+ * value-stack range.
  *
  * koruby_scan_edges: dispatches on `head.flags & T_MASK` and visits the
  * outgoing edges of one heap object.  basic.klass is visited HERE (not
@@ -131,10 +131,9 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
     korb_g_gc_gen++;
     /* (a) Value stack — c->stack_base..c->sp_top linear range.  Contract is
      * that every sp-advancing site zero-fills the new slots before any
-     * alloc that can fire GC (= ARO_ROOT_SCOPE_START's invariant).  We
-     * do NOT keep a high-water mark and lazy-clear popped slots — that
-     * pattern hides a sp-up-without-zero-fill bug as a slow-leak SEGV
-     * rather than catching it at the violating site. */
+     * alloc that can fire GC.  We do NOT keep a high-water mark and
+     * lazy-clear popped slots — that pattern hides a sp-up-without-zero-fill
+     * bug as a slow-leak SEGV rather than catching it at the violating site. */
     if (c->stack_base && c->sp_top) {
         for (VALUE *p = c->stack_base; p < c->sp_top; p++) {
             visit_value_slot(ctx, fn, p);
@@ -542,26 +541,29 @@ koruby_run_ast(CTX *c, NODE *ast)
 {
     RESULT _br = EVAL(c, ast, c->current_frame->fp);
     if (_br.state == KORB_THROW) {
-        /* Pin eUTE / tag / tag_s — korb_inspect / korb_exc_new fire GC. */
-        ARO_ROOT_SCOPE_START(c, urs, 3) {
-            urs[0] = korb_const_get(korb_vm->object_class,
-                                    korb_intern("UncaughtThrowError"));
-            urs[1] = Qnil;  /* tag */
-            if (!SPECIAL_CONST_P(_br.value) &&
-                BUILTIN_TYPE(_br.value) == T_ARRAY) {
-                struct korb_array *pair = (struct korb_array *)_br.value;
-                if (pair->len >= 1) urs[1] = pair->ptr[0];
-            }
-            urs[2] = korb_inspect(c, c->sp_top, urs[1]);  /* tag_s */
-            char buf[256];
-            snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[2]));
-            _br.state = KORB_RAISE;
-            if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
-                _br.value = korb_exc_new(c, c->sp_top, (struct korb_class *)urs[0], buf);
-            } else {
-                _br.value = korb_exc_new(c, c->sp_top, NULL, buf);
-            }
-        } ARO_ROOT_SCOPE_END(c, urs);
+        /* Pin eUTE (sp[0]) / tag (sp[1]) / tag_s (sp[2]) — korb_inspect /
+         * korb_exc_new fire GC. */
+        VALUE *sp = c->sp_top;
+        sp[0] = korb_const_get(KORB_VM(c)->object_class,
+                                korb_intern("UncaughtThrowError"));
+        sp[1] = Qnil;
+        sp[2] = Qnil;
+        c->sp_top = sp + 3;
+        if (!SPECIAL_CONST_P(_br.value) &&
+            BUILTIN_TYPE(_br.value) == T_ARRAY) {
+            struct korb_array *pair = (struct korb_array *)_br.value;
+            if (pair->len >= 1) sp[1] = pair->ptr[0];
+        }
+        sp[2] = korb_inspect(c, sp + 3, sp[1]);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(sp[2]));
+        _br.state = KORB_RAISE;
+        if (sp[0] && !SPECIAL_CONST_P(sp[0]) && BUILTIN_TYPE(sp[0]) == T_CLASS) {
+            _br.value = korb_exc_new(c, sp + 3, (struct korb_class *)sp[0], buf);
+        } else {
+            _br.value = korb_exc_new(c, sp + 3, NULL, buf);
+        }
+        c->sp_top = sp;
     }
     if (_br.state == KORB_RAISE) {
         VALUE exc = _br.value;

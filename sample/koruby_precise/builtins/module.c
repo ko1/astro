@@ -884,12 +884,8 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
         }
         return RESULT_OK((VALUE)nk);
     }
-    /* Park klass + obj across alloc-can-GC: korb_object_new can move
-     * klass, and find_method then derefs stale klass → SEGV under PURGE
-     * (or garbage under STRESS).  Use ARO_ROOT_SCOPE so both survive. */
-    
-    /* Park klass + new object in sp[0..1].  korb_object_new sets
-     * c->sp_top = sp+2 internally before its GC trigger; subsequent
+    /* Park klass (sp[0]) + new object (sp[1]) across alloc-can-GC.
+     * korb_object_new sets c->sp_top = sp+2 internally; subsequent
      * korb_funcall_with_block inherits that root-scan boundary. */
     sp[0] = (VALUE)klass;
     sp[1] = 0;

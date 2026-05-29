@@ -4507,10 +4507,10 @@ CTX *korb_runtime_init(void) {
     korb_vm->generic_ivars = Qnil;  /* lazy alloc on first non-T_OBJECT ivar set */
 
     /* Bootstrap CTX setup — MUST come before the first aro_gc_alloc.
-     * Value stack is libc-malloc'd (= 16 M slots × 8 B = 128 MB); both
-     * eval and ARO_ROOT_SCOPE_* use it.  c->sp_top = stack_base means an empty
+     * Value stack is libc-malloc'd (= 16 M slots × 8 B = 128 MB); used
+     * by eval + sp-staging.  c->sp_top = stack_base means an empty
      * root set initially — the bootstrap allocations below place their
-     * temporary roots via ARO_ROOT_SCOPE_START as they need them. */
+     * temporary roots in sp[0..N] slots as they need them. */
     CTX *c = &koruby_bootstrap_ctx;
     memset(c, 0, sizeof(*c));
     size_t stack_size = 16 * 1024 * 1024;
@@ -4567,7 +4567,7 @@ CTX *korb_runtime_init(void) {
 
     /* From here on, every newly-alloc'd class is immediately stashed into
      * a korb_vm field (= rooted via visit_roots' korb_vm scan), so no
-     * additional ARO_ROOT_SCOPE is needed for these intermediate slots.
+     * additional sp staging is needed for these intermediate slots.
      * Reading KORB_VM(c)->object_class etc. returns the current addr because
      * visit_roots updates those slots on each move. */
     KORB_VM(c)->numeric_class = korb_class_new(c, c->sp_top, korb_intern("Numeric"), KORB_VM(c)->object_class, T_OBJECT);
@@ -4813,7 +4813,7 @@ CTX *korb_runtime_init(void) {
      * helpers in builtins.c hold class pointers as C locals across
      * alloc-can-GC sites (cProcess across korb_class_new for cStatus,
      * etc.), going stale under per-alloc GC.  Audit each site (=
-     * convert to ARO_ROOT_SCOPE or KORB_VM(c)-> field) is the proper fix
+     * convert to sp staging or KORB_VM(c)-> field) is the proper fix
      * but spans ~30 init blocks; gate stress here so user-program GC
      * stress still catches real bugs at runtime. */
     {

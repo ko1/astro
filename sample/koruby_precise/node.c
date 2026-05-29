@@ -6,9 +6,7 @@
 #include "context.h"
 #include "object.h"
 #include "node.h"
-/* node_eval.c bodies may use ARO_ROOT_SCOPE_* (= for stale C-local
- * protection in @noinline node bodies that EVAL_ARG into user code).
- * Pull gc.h before node_eval.c is included below. */
+/* Precise GC headers — sp staging slot helpers + visit_roots wiring. */
 #include "precise_gc/gc.h"
 
 /* Hash helpers + HASH / DUMP / hash_node / alloc_dispatcher_name come

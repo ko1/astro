@@ -1350,27 +1350,31 @@ void korb_init_builtins(CTX *c) {
     korb_class_add_method_cfunc_r(cFile, korb_intern("eof?"),      io_eof_p,     0);
 
     /* IO / STDOUT / $stdout — these 3 instance objects + their backing class
-     * all live across nested alloc-fires-GC calls, so park them in an
-     * ARO_ROOT_SCOPE.  Without this, the 2nd korb_object_new moves the 1st
-     * stdout_obj but the C local stays stale — the subsequent
-     * korb_const_set then writes the stale (= now in some abandoned space)
-     * addr into cObject->constants["STDOUT"], and future GCs walking that
-     * const slot dereference an obj that no longer lives there → SEGV. */
-    ARO_ROOT_SCOPE_START(c, io, 4) {
-        io[0] = (VALUE)korb_class_new(c, c->sp_top, korb_intern("IO"), KORB_VM(c)->object_class, T_OBJECT);
-        korb_const_set(KORB_VM(c)->object_class, korb_intern("IO"), io[0]);
+     * all live across nested alloc-fires-GC calls, so pin them in sp[0..3].
+     * Without this, the 2nd korb_object_new moves the 1st stdout_obj but
+     * the C local stays stale — the subsequent korb_const_set then writes
+     * the stale (= now in some abandoned space) addr into
+     * cObject->constants["STDOUT"], and future GCs walking that const slot
+     * dereference an obj that no longer lives there → SEGV. */
+    {
+        VALUE *sp = c->sp_top;
+        sp[0] = 0; sp[1] = 0; sp[2] = 0; sp[3] = 0;
+        c->sp_top = sp + 4;
+        sp[0] = (VALUE)korb_class_new(c, sp + 4, korb_intern("IO"), KORB_VM(c)->object_class, T_OBJECT);
+        korb_const_set(KORB_VM(c)->object_class, korb_intern("IO"), sp[0]);
         /* dummy STDOUT/STDERR */
-        io[1] = korb_object_new(c, c->sp_top, (struct korb_class *)io[0]);
-        io[2] = korb_object_new(c, c->sp_top, (struct korb_class *)io[0]);
-        g_stderr_obj = io[2];
-        korb_const_set(KORB_VM(c)->object_class, korb_intern("STDOUT"), io[1]);
-        korb_const_set(KORB_VM(c)->object_class, korb_intern("STDERR"), io[2]);
+        sp[1] = korb_object_new(c, sp + 4, (struct korb_class *)sp[0]);
+        sp[2] = korb_object_new(c, sp + 4, (struct korb_class *)sp[0]);
+        g_stderr_obj = sp[2];
+        korb_const_set(KORB_VM(c)->object_class, korb_intern("STDOUT"), sp[1]);
+        korb_const_set(KORB_VM(c)->object_class, korb_intern("STDERR"), sp[2]);
         /* STDIN — backed by the real stdin FILE*, so STDIN.gets / .read work. */
-        io[3] = korb_object_new(c, c->sp_top, (struct korb_class *)io[0]);
-        korb_ivar_set(io[3], korb_intern("@__fp__"),
+        sp[3] = korb_object_new(c, sp + 4, (struct korb_class *)sp[0]);
+        korb_ivar_set(sp[3], korb_intern("@__fp__"),
                       INT2FIX((long)(uintptr_t)stdin));
-        korb_const_set(KORB_VM(c)->object_class, korb_intern("STDIN"), io[3]);
-    } ARO_ROOT_SCOPE_END(c, io);
+        korb_const_set(KORB_VM(c)->object_class, korb_intern("STDIN"), sp[3]);
+        c->sp_top = sp;
+    }
     /* Outside the scope — fetch from the const entries (= rooted via
      * cObject->constants).  Methods are added below; korb_class_add_method_cfunc
      * is libc-only so the C local stays valid for the chain. */

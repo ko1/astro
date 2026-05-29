@@ -43,7 +43,7 @@ void korb_run_at_exit_hooks(CTX *c) {
 /* ---------- Kernel#rand / srand ---------- */
 #include <stdlib.h>
 #include <time.h>
-#include "precise_gc/gc.h"  /* ARO_ROOT_SCOPE_* macros */
+#include "precise_gc/gc.h"  /* sp staging slot helpers */
 
 static RESULT kernel_srand(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;

@@ -590,8 +590,7 @@ static RESULT ary_to_h(CTX *c, int argc, VALUE *sp) {
  *   sp[0..] = scratch (unused here)
  *
  * Both slots are in c->sp_top range so visit_roots auto-forwards them across
- * any GC fired by inner korb_eq dispatches.  No ARO_ROOT_SCOPE_START
- * boilerplate needed. */
+ * any GC fired by inner korb_eq dispatches. */
 static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;  /* alloc 前 sync: korb_eq -> method dispatch が GC を起こしうる */
     if (BUILTIN_TYPE(sp[-1]) != T_ARRAY) {
