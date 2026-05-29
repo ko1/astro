@@ -961,7 +961,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
          * convention for the block body (lvar_set/lvar_get inside the
          * block are baked relative to env_size, just as method-body
          * dispatches pass fp + locals_cnt). */
-        r = EVAL(c, blk->body, bfp + blk->env_size);
+        r = EVAL_LIFT(c, blk->body, bfp + blk->env_size);
         if (UNLIKELY(c->state == KORB_REDO)) {
             c->state = KORB_NORMAL; c->state_value = Qnil;
             goto redo_yield;

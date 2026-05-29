@@ -259,7 +259,7 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * (= negative offset, baked by walker).  Use EVAL_R so the dispatch
      * goes through the standard NODE function-pointer path (= same as
      * what `EVAL` would do, just RESULT-native). */
-    RESULT _br = EVAL_R(c, mc->body, new_fp + mc->locals_cnt);
+    RESULT _br = EVAL(c, mc->body, new_fp + mc->locals_cnt);
     VALUE r;
     /* Lift RESULT.state into c->state for the surrounding legacy path
      * (snapshot / dispatch_to_method's RETURN consumption etc. still

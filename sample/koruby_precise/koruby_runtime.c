@@ -542,7 +542,7 @@ koruby_eval_bootstrap(CTX *c)
 int
 koruby_run_ast(CTX *c, NODE *ast)
 {
-    VALUE r = EVAL(c, ast, c->current_frame->fp);
+    VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
     (void)r;
     if (c->state == KORB_THROW) {
         /* Pin eUTE / tag / tag_s — korb_inspect / korb_exc_new fire GC. */

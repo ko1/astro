@@ -514,7 +514,7 @@ node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t en
      * frame top (= shifted fp + envsize), since bake walker computed
      * the lvar sp_offsets relative to envsize.  EVAL_ARG would pass
      * the enclosing scope's sp, which is wrong. */
-    RESULT _sr = EVAL_R(c, body, c->current_frame->fp + envsize);
+    RESULT _sr = EVAL(c, body, c->current_frame->fp + envsize);
     /* Restore sp too — otherwise the now-dead scope's slots stay in the
      * GC root-scan range and a later collect treats their values (=
      * possibly stale heap ptrs written during this scope's body) as live
@@ -2184,7 +2184,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     c->current_frame = &frame;
     struct korb_proc *prev_running = c->running_block;
     c->running_block = NULL;
-    RESULT _bres = EVAL_R(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    RESULT _bres = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
     c->current_frame = frame.prev;
     c->running_block = prev_running;
     c->current_frame->fp = prev_fp;
@@ -2288,7 +2288,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     if (sm->u.ast.block_slot >= 0) {
         new_fp[sm->u.ast.block_slot] = blk_proc ? (VALUE)blk_proc : Qnil;
     }
-    RESULT _bres = EVAL_R(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    RESULT _bres = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
     c->current_block = prev_current_block;
     c->current_frame = frame.prev;
     c->running_block = prev_running;
@@ -2540,7 +2540,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     c->current_frame = &frame;
     struct korb_proc *prev_running = c->running_block;
     c->running_block = NULL;
-    RESULT _bres = EVAL_R(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    RESULT _bres = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
     c->current_frame = frame.prev;
     c->running_block = prev_running;
     c->current_frame->fp = prev_fp;

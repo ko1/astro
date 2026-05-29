@@ -63,13 +63,23 @@ struct NodeHead {
 #include <limits.h>
 #include "object.h"
 
-/* EVAL — dispatchers now return RESULT (Phase 8d).  This wrapper
- * extracts the VALUE and lifts non-NORMAL state back into c->state for
- * the legacy callers (cfuncs, koruby_run_ast, the test harnesses).
- * Body uses inside node.def should keep using RESULT directly via EA /
- * UNWRAP — only legacy boundaries need this lift. */
-static inline VALUE
+/* EVAL — dispatchers return RESULT (Phase 8d).  The canonical RESULT-
+ * native dispatcher entry; callers must unwrap with UNWRAP / CHECK or
+ * inspect .state directly. */
+static inline RESULT
 EVAL(CTX *c, NODE *n, VALUE *sp)
+{
+    return (*n->head.dispatcher)(c, n, sp);
+}
+
+/* EVAL_LIFT — legacy bridge wrapper for callers that still operate in
+ * the c->state side-channel world (kernel/binding/module eval, top-
+ * level koruby_run_ast, korb_yield_slow's shared-fp path, proc_call).
+ * Lifts a non-NORMAL RESULT back into c->state and returns Qnil so the
+ * surrounding legacy code can keep checking `c->state != NORMAL`.
+ * Goes away once those callers go RESULT-native. */
+static inline VALUE
+EVAL_LIFT(CTX *c, NODE *n, VALUE *sp)
 {
     RESULT r = (*n->head.dispatcher)(c, n, sp);
     if (UNLIKELY(r.state != KORB_NORMAL)) {
@@ -78,12 +88,6 @@ EVAL(CTX *c, NODE *n, VALUE *sp)
         return Qnil;
     }
     return r.value;
-}
-
-static inline RESULT
-EVAL_R(CTX *c, NODE *n, VALUE *sp)
-{
-    return (*n->head.dispatcher)(c, n, sp);
 }
 
 /* helper: rewrite a child slot in a parent's union, used for type-spec rewrites */

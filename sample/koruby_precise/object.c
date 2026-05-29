@@ -2546,7 +2546,7 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
     VALUE r;
 redo_block:
     /* sp = fp + env_size: see korb_yield fast-path comment. */
-    r = EVAL(c, blk->body, fp + blk->env_size);
+    r = EVAL_LIFT(c, blk->body, fp + blk->env_size);
     /* `redo` inside the block: re-evaluate the block body with the
      * same args (params keep their current bindings). */
     if (c->state == KORB_REDO) {
@@ -3887,7 +3887,7 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     c->running_block = NULL;
     VALUE *frame_lo = c->current_frame->fp;
     VALUE *frame_hi = c->current_frame->fp + mc->locals_cnt;
-    RESULT _br = EVAL_R(c, mc->body, c->current_frame->fp + mc->locals_cnt);
+    RESULT _br = EVAL(c, mc->body, c->current_frame->fp + mc->locals_cnt);
     VALUE r;
     if (UNLIKELY(_br.state != KORB_NORMAL)) {
         c->state = _br.state;
@@ -4565,7 +4565,7 @@ VALUE korb_dispatch_to_method(CTX *c, struct korb_method *m,
      * outer block's enclosing method's name). */
     struct korb_proc *prev_running2 = c->running_block;
     c->running_block = NULL;
-    VALUE r = EVAL(c, m->u.ast.body, c->current_frame->fp + m->u.ast.locals_cnt);
+    VALUE r = EVAL_LIFT(c, m->u.ast.body, c->current_frame->fp + m->u.ast.locals_cnt);
     c->running_block = prev_running2;
     c->current_frame = frame2.prev;
     c->current_frame->fp = prev_fp;
@@ -5162,7 +5162,7 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     c->current_frame->current_file = filename;
 
     OPTIMIZE(ast);
-    VALUE r = EVAL(c, ast, c->current_frame->fp);
+    VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
 
     /* Top-level `return` in a load'd file just stops *this* file —
      * not an error and not a propagating return.  CRuby allows this
@@ -5211,7 +5211,7 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
     c->current_frame->cref = &top_cref;
     c->current_frame->current_file = filename;
     OPTIMIZE(ast);
-    VALUE r = EVAL(c, ast, c->current_frame->fp);
+    VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     c->current_frame->self = prev_self;
@@ -5332,7 +5332,7 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
         c->current_frame = &fiber_root;
         struct korb_proc *prev_block = c->current_block;
         c->current_block = NULL;
-        VALUE result = blk->body ? EVAL(c, blk->body, fib->frame + blk->env_size) : Qnil;
+        VALUE result = blk->body ? EVAL_LIFT(c, blk->body, fib->frame + blk->env_size) : Qnil;
         /* NOTE: do NOT restore c->current_frame to its pre-fiber-entry
          * value here.  That value (= the FIRST resume's cfr_R, on the
          * resumer's stack) became stale as soon as the first f.resume

@@ -1581,7 +1581,7 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
     if (!prev_eval_body && c->running_block && c->running_block->param_base > 0 && c->current_frame->fp) {
         c->current_frame->fp = c->current_frame->fp + c->running_block->param_base;
     }
-    VALUE r = EVAL(c, ast, c->current_frame->fp);
+    VALUE r = EVAL_LIFT(c, ast, c->current_frame->fp);
     c->current_frame->fp = prev_fp;
     c->current_frame->cref = prev_cref;
     c->current_eval_program_body = prev_eval_body;
