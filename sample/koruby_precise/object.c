@@ -183,52 +183,41 @@ struct korb_method *method_table_get(const struct korb_method_table *mt, ID name
 }
 
 struct korb_class *korb_class_new(CTX *c, VALUE *sp, ID name, struct korb_class *super, enum korb_type instance_type) {
-    /* Precise GC: allocate on GC heap via aro_gc_alloc.  super needs
-     * protection across the inner child_meta alloc (= may trigger GC
-     * which can relocate super under moving GC).  k itself needs
-     * protection across child_meta alloc.  Pattern: park live VALUEs
-     * in ARO_ROOT slots, reload C-local pointers after each alloc. */
+    /* Park super / k / child_meta in sp[0..2] so allocations don't lose
+     * them.  Under moving GC aro_gc_alloc may relocate super; the slots
+     * must live below c->sp during the alloc so visit_roots picks them
+     * up and the post-alloc reloads see forwarded addresses. */
+    sp[0] = (VALUE)super;
+    sp[1] = 0;
+    sp[2] = 0;
+    c->sp = sp + 3;
+    sp[1] = aro_gc_alloc(c, sizeof(struct korb_class));
+    super = (struct korb_class *)sp[0];
+    struct korb_class *k = (struct korb_class *)sp[1];
+    k->basic.head.flags = T_CLASS;
+    k->basic.klass = KORB_VM(c)->class_class;
+    if (super && super->basic.klass &&
+        (struct korb_class *)super->basic.klass != KORB_VM(c)->class_class) {
+        sp[2] = aro_gc_alloc(c, sizeof(struct korb_class));
+        super = (struct korb_class *)sp[0];
+        k     = (struct korb_class *)sp[1];
+        struct korb_class *child_meta = (struct korb_class *)sp[2];
+        child_meta->basic.head.flags = T_CLASS | FL_SINGLETON;
+        child_meta->basic.klass = KORB_VM(c)->class_class;
+        child_meta->name = name;
+        child_meta->super = (struct korb_class *)super->basic.klass;
+        child_meta->instance_type = T_CLASS;
+        method_table_init(&child_meta->methods);
+        child_meta->default_visibility = KORB_VIS_PUBLIC;
+        k->basic.klass = (VALUE)child_meta;
+    }
+    k->name = name;
+    k->super = super;
+    k->instance_type = instance_type;
+    method_table_init(&k->methods);
+    k->default_visibility = KORB_VIS_PUBLIC;
     c->sp = sp;
-    struct korb_class *k_ret;
-    ARO_ROOT_SCOPE_START(c, r, 3) {
-        /* r[0]=super, r[1]=k, r[2]=child_meta (if created) */
-        r[0] = (VALUE)super;
-        r[1] = aro_gc_alloc(c, sizeof(struct korb_class));
-        super = (struct korb_class *)r[0];                /* reload */
-        struct korb_class *k = (struct korb_class *)r[1];
-        /* AROH_INIT_PAYLOAD already zero-filled post-head; fields just
-         * need their non-zero values set. */
-        k->basic.head.flags = T_CLASS;
-        k->basic.klass = KORB_VM(c)->class_class;
-        /* CRuby model: a subclass's metaclass has the parent's metaclass
-         * as its superclass.  Without this, singleton methods don't
-         * propagate down the inheritance chain. */
-        if (super && super->basic.klass &&
-            (struct korb_class *)super->basic.klass != KORB_VM(c)->class_class) {
-            r[2] = aro_gc_alloc(c, sizeof(struct korb_class));
-            super = (struct korb_class *)r[0];            /* reload */
-            k     = (struct korb_class *)r[1];            /* reload */
-            struct korb_class *child_meta = (struct korb_class *)r[2];
-            child_meta->basic.head.flags = T_CLASS | FL_SINGLETON;
-            child_meta->basic.klass = KORB_VM(c)->class_class;
-            child_meta->name = name;
-            child_meta->super = (struct korb_class *)super->basic.klass;
-            child_meta->instance_type = T_CLASS;
-            method_table_init(&child_meta->methods);
-            child_meta->default_visibility = KORB_VIS_PUBLIC;
-            k->basic.klass = (VALUE)child_meta;
-        }
-        k->name = name;
-        k->super = super;
-        k->instance_type = instance_type;
-        method_table_init(&k->methods);
-        k->default_visibility = KORB_VIS_PUBLIC;
-        /* constants / ivar_* / includes_* / prepends_* / class_ivars /
-         * cvars / anon_parent / anon_name_in_parent all already zero
-         * via AROH_INIT_PAYLOAD. */
-        k_ret = k;
-    } ARO_ROOT_SCOPE_END(c, r);
-    return k_ret;
+    return k;
 }
 
 /* Class variables: walk the cref's class up the super chain to find
