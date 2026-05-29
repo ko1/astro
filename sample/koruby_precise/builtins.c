@@ -536,23 +536,25 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->module_class, "ancestors",          class_ancestors,           0);
     DEF_R(KORB_VM(c)->module_class, "prepend",            module_prepend,           -1);
     {
-        VALUE module_include_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-            if (argc < 1) return Qfalse;
-            if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return Qfalse;
+        RESULT module_include_p(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            if (argc < 1) return RESULT_OK(Qfalse);
+            if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(Qfalse);
             if (SPECIAL_CONST_P(argv[0]) ||
                 (BUILTIN_TYPE(argv[0]) != T_MODULE && BUILTIN_TYPE(argv[0]) != T_CLASS)) {
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                return korb_raise(c, (struct korb_class *)eT,
                            "wrong argument type %s (expected Module)",
                            SPECIAL_CONST_P(argv[0]) ? "?" :
-                               korb_id_name(korb_class_of_class(argv[0])->name)));
-                return Qnil;
+                               korb_id_name(korb_class_of_class(argv[0])->name));
             }
             extern bool korb_module_has_ancestor(struct korb_class *, struct korb_class *);
-            return KORB_BOOL(korb_module_has_ancestor((struct korb_class *)self,
-                                                      (struct korb_class *)argv[0]));
+            return RESULT_OK(KORB_BOOL(korb_module_has_ancestor((struct korb_class *)self,
+                                                                 (struct korb_class *)argv[0])));
         }
-        DEF(KORB_VM(c)->module_class, "include?",       module_include_p,         1);
+        DEF_R(KORB_VM(c)->module_class, "include?",     module_include_p,         1);
     }
     DEF_R(KORB_VM(c)->object_class, "extend",             obj_extend,               -1);
     DEF_R(KORB_VM(c)->object_class, "send",                  obj_send,                 -1);
@@ -676,9 +678,9 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->string_class, "hash",        str_hash,         0);
     DEF_R(KORB_VM(c)->string_class, "===",         str_eqq,          1);
     DEF_R(KORB_VM(c)->string_class, "gsub",        str_gsub,        -1);
-    DEF(KORB_VM(c)->string_class, "gsub!",       str_gsub_bang,   -1);
+    DEF_R(KORB_VM(c)->string_class, "gsub!",       str_gsub_bang,   -1);
     DEF_R(KORB_VM(c)->string_class, "sub",         str_sub,         -1);
-    DEF(KORB_VM(c)->string_class, "sub!",        str_sub_bang,    -1);
+    DEF_R(KORB_VM(c)->string_class, "sub!",        str_sub_bang,    -1);
     DEF_R(KORB_VM(c)->string_class, "tr",          str_tr,          -1);
     DEF_R(KORB_VM(c)->string_class, "tr!",         str_tr_bang,     -1);
     DEF_R(KORB_VM(c)->string_class, "tr_s",        str_tr_s,        -1);
@@ -690,7 +692,7 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->string_class, "=~",          str_match_op, 1);
     DEF_R(KORB_VM(c)->string_class, "match?",      str_match_p, -1);
     DEF_R(KORB_VM(c)->string_class, "match",       str_match, -1);
-    DEF(KORB_VM(c)->string_class, "scan",        str_scan, 1);
+    DEF_R(KORB_VM(c)->string_class, "scan",        str_scan, 1);
     DEF_R(KORB_VM(c)->string_class, "sum",         str_sum, -1);
     DEF_R(KORB_VM(c)->string_class, "unpack",      str_unpack, -1);
     DEF_R(KORB_VM(c)->string_class, "center",      str_center, -1);
@@ -845,31 +847,34 @@ void korb_init_builtins(CTX *c) {
         KORB_VM(c)->array_class->basic.klass = (VALUE)cAryMeta;
         /* Array.try_convert(obj) — obj.to_ary if obj responds and returns
          * Array, else nil.  Raises TypeError if #to_ary returns non-Array. */
-        korb_class_add_method_cfunc(cAryMeta, korb_intern("try_convert"),
+        korb_class_add_method_cfunc_r(cAryMeta, korb_intern("try_convert"),
             ({
-                VALUE _try(CTX *c, VALUE self, int argc, VALUE *argv) {
-                    if (argc < 1) return Qnil;
+                RESULT _try(CTX *c, int argc, VALUE *sp) {
+                    c->sp = sp;
+                    VALUE *argv = sp - argc;
+                    if (argc < 1) return RESULT_OK(Qnil);
                     VALUE o = argv[0];
-                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_ARRAY) return o;
+                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_ARRAY) return RESULT_OK(o);
                     VALUE klass_v = (VALUE)korb_class_of_class(o);
                     if (!klass_v || !korb_class_find_method((struct korb_class *)klass_v,
                                                              korb_intern("to_ary"))) {
-                        return Qnil;
+                        return RESULT_OK(Qnil);
                     }
-                    VALUE r = SINK_RESULT(c, korb_funcall(c, o, korb_intern("to_ary"), 0, NULL));
-                    if (c->state == KORB_RAISE) return Qnil;
-                    if (NIL_P(r)) return Qnil;
+                    RESULT _rr = korb_funcall(c, o, korb_intern("to_ary"), 0, NULL);
+                    if (_rr.state == KORB_RAISE) return RESULT_OK(Qnil);
+                    if (_rr.state != KORB_NORMAL) return _rr;
+                    VALUE r = _rr.value;
+                    if (NIL_P(r)) return RESULT_OK(Qnil);
                     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_ARRAY) {
                         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
                         const char *src_n = korb_id_name(korb_class_of_class(o)->name);
                         const char *got_n = SPECIAL_CONST_P(r) ? "(special)"
                                                                 : korb_id_name(korb_class_of_class(r)->name);
-                        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                        return korb_raise(c, (struct korb_class *)eT,
                                    "can't convert %s to Array (%s#to_ary gives %s)",
-                                   src_n, src_n, got_n));
-                        return Qnil;
+                                   src_n, src_n, got_n);
                     }
-                    return r;
+                    return RESULT_OK(r);
                 }
                 _try;
             }), -1);
@@ -947,40 +952,40 @@ void korb_init_builtins(CTX *c) {
         KORB_VM(c)->hash_class->basic.klass = (VALUE)cHshMeta;
         /* Hash.try_convert(obj) — obj.to_hash if responding and returns
          * Hash, else nil.  Raises TypeError if #to_hash returns non-Hash. */
-        korb_class_add_method_cfunc(cHshMeta, korb_intern("try_convert"),
+        korb_class_add_method_cfunc_r(cHshMeta, korb_intern("try_convert"),
             ({
-                VALUE _try(CTX *c, VALUE self, int argc, VALUE *argv) {
-                    if (argc < 1) return Qnil;
+                RESULT _try(CTX *c, int argc, VALUE *sp) {
+                    c->sp = sp;
+                    VALUE *argv = sp - argc;
+                    if (argc < 1) return RESULT_OK(Qnil);
                     VALUE o = argv[0];
-                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_HASH) return o;
-                    if (SPECIAL_CONST_P(o)) return Qnil;
-                    VALUE r = SINK_RESULT(c, korb_funcall(c, o, korb_intern("to_hash"), 0, NULL));
-                    if (c->state == KORB_RAISE) {
-                        VALUE bang = c->state_value;
+                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_HASH) return RESULT_OK(o);
+                    if (SPECIAL_CONST_P(o)) return RESULT_OK(Qnil);
+                    RESULT _rr = korb_funcall(c, o, korb_intern("to_hash"), 0, NULL);
+                    if (_rr.state == KORB_RAISE) {
+                        VALUE bang = _rr.value;
                         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
                         if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
                             BUILTIN_TYPE(eNo) == T_CLASS) {
                             struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
                             for (struct korb_class *kk = bk; kk; kk = kk->super) {
-                                if (kk == (struct korb_class *)eNo) {
-                                    c->state = KORB_NORMAL; c->state_value = Qnil;
-                                    return Qnil;
-                                }
+                                if (kk == (struct korb_class *)eNo) return RESULT_OK(Qnil);
                             }
                         }
-                        return Qnil;
+                        return _rr;
                     }
-                    if (NIL_P(r)) return Qnil;
+                    if (_rr.state != KORB_NORMAL) return _rr;
+                    VALUE r = _rr.value;
+                    if (NIL_P(r)) return RESULT_OK(Qnil);
                     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_HASH) {
                         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                        return korb_raise(c, (struct korb_class *)eT,
                                    "can't convert %s to Hash (%s#to_hash gives %s)",
                                    korb_id_name(korb_class_of_class(o)->name),
                                    korb_id_name(korb_class_of_class(o)->name),
-                                   korb_id_name(korb_class_of_class(r)->name)));
-                        return Qnil;
+                                   korb_id_name(korb_class_of_class(r)->name));
                     }
-                    return r;
+                    return RESULT_OK(r);
                 }
                 _try;
             }), -1);
@@ -998,40 +1003,40 @@ void korb_init_builtins(CTX *c) {
         KORB_VM(c)->string_class->basic.klass = (VALUE)cStrMeta;
         /* String.try_convert(obj) — obj.to_str if responding and returns
          * String, else nil.  Raises TypeError if #to_str returns non-String. */
-        korb_class_add_method_cfunc(cStrMeta, korb_intern("try_convert"),
+        korb_class_add_method_cfunc_r(cStrMeta, korb_intern("try_convert"),
             ({
-                VALUE _try(CTX *c, VALUE self, int argc, VALUE *argv) {
-                    if (argc < 1) return Qnil;
+                RESULT _try(CTX *c, int argc, VALUE *sp) {
+                    c->sp = sp;
+                    VALUE *argv = sp - argc;
+                    if (argc < 1) return RESULT_OK(Qnil);
                     VALUE o = argv[0];
-                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_STRING) return o;
-                    if (SPECIAL_CONST_P(o)) return Qnil;
-                    VALUE r = SINK_RESULT(c, korb_funcall(c, o, korb_intern("to_str"), 0, NULL));
-                    if (c->state == KORB_RAISE) {
-                        VALUE bang = c->state_value;
+                    if (!SPECIAL_CONST_P(o) && BUILTIN_TYPE(o) == T_STRING) return RESULT_OK(o);
+                    if (SPECIAL_CONST_P(o)) return RESULT_OK(Qnil);
+                    RESULT _rr = korb_funcall(c, o, korb_intern("to_str"), 0, NULL);
+                    if (_rr.state == KORB_RAISE) {
+                        VALUE bang = _rr.value;
                         VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
                         if (!SPECIAL_CONST_P(bang) && !SPECIAL_CONST_P(eNo) &&
                             BUILTIN_TYPE(eNo) == T_CLASS) {
                             struct korb_class *bk = (struct korb_class *)((struct RBasic *)bang)->klass;
                             for (struct korb_class *kk = bk; kk; kk = kk->super) {
-                                if (kk == (struct korb_class *)eNo) {
-                                    c->state = KORB_NORMAL; c->state_value = Qnil;
-                                    return Qnil;
-                                }
+                                if (kk == (struct korb_class *)eNo) return RESULT_OK(Qnil);
                             }
                         }
-                        return Qnil;
+                        return _rr;
                     }
-                    if (NIL_P(r)) return Qnil;
+                    if (_rr.state != KORB_NORMAL) return _rr;
+                    VALUE r = _rr.value;
+                    if (NIL_P(r)) return RESULT_OK(Qnil);
                     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_STRING) {
                         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                        return korb_raise(c, (struct korb_class *)eT,
                                    "can't convert %s to String (%s#to_str gives %s)",
                                    korb_id_name(korb_class_of_class(o)->name),
                                    korb_id_name(korb_class_of_class(o)->name),
-                                   korb_id_name(korb_class_of_class(r)->name)));
-                        return Qnil;
+                                   korb_id_name(korb_class_of_class(r)->name));
                     }
-                    return r;
+                    return RESULT_OK(r);
                 }
                 _try;
             }), -1);
@@ -1116,8 +1121,8 @@ void korb_init_builtins(CTX *c) {
         korb_const_set(KORB_VM(c)->object_class, korb_intern("Data"), (VALUE)cData);
         struct korb_class *cDataMeta = korb_class_new(c, c->sp, korb_intern("DataMeta"),
                                                        KORB_VM(c)->class_class, T_CLASS);
-        korb_class_add_method_cfunc(cDataMeta, korb_intern("define"),
-                                     struct_class_new, -1);
+        korb_class_add_method_cfunc_r(cDataMeta, korb_intern("define"),
+                                       struct_class_new, -1);
         cData->basic.klass = (VALUE)cDataMeta;
     }
 
@@ -1357,14 +1362,14 @@ void korb_init_builtins(CTX *c) {
         /* Proc.allocate raises TypeError (CRuby) — no proc allocation
          * without a block. */
         {
-            VALUE _proc_alloc_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
+            RESULT _proc_alloc_raise(CTX *c, int argc, VALUE *sp) {
+                c->sp = sp;
                 VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                           "allocator undefined for Proc"));
-                return Qnil;
+                return korb_raise(c, (struct korb_class *)eT,
+                           "allocator undefined for Proc");
             }
-            korb_class_add_method_cfunc(cProcMeta, korb_intern("allocate"),
-                                        _proc_alloc_raise, 0);
+            korb_class_add_method_cfunc_r(cProcMeta, korb_intern("allocate"),
+                                          _proc_alloc_raise, 0);
         }
         KORB_VM(c)->proc_class->basic.klass = (VALUE)cProcMeta;
     }
@@ -1391,18 +1396,18 @@ void korb_init_builtins(CTX *c) {
     KORB_VM(c)->fiber_class = cFiber;
     {
         /* Fiber.new {|x| ...} */
-        extern VALUE korb_fiber_new_cfunc(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern RESULT korb_fiber_new_cfunc(CTX *c, int argc, VALUE *sp);
         struct korb_class *cFiberMeta = korb_class_new(c, c->sp, korb_intern("FiberMeta"),
                                                         KORB_VM(c)->class_class, T_CLASS);
-        korb_class_add_method_cfunc(cFiberMeta, korb_intern("new"), korb_fiber_new_cfunc, 0);
+        korb_class_add_method_cfunc_r(cFiberMeta, korb_intern("new"), korb_fiber_new_cfunc, 0);
         /* Fiber.yield */
-        extern VALUE korb_fiber_yield_cfunc(CTX *c, VALUE self, int argc, VALUE *argv);
-        korb_class_add_method_cfunc(cFiberMeta, korb_intern("yield"), korb_fiber_yield_cfunc, -1);
+        extern RESULT korb_fiber_yield_cfunc(CTX *c, int argc, VALUE *sp);
+        korb_class_add_method_cfunc_r(cFiberMeta, korb_intern("yield"), korb_fiber_yield_cfunc, -1);
         cFiber->basic.klass = (VALUE)cFiberMeta;
     }
     {
-        extern VALUE korb_fiber_resume_cfunc(CTX *c, VALUE self, int argc, VALUE *argv);
-        korb_class_add_method_cfunc(cFiber, korb_intern("resume"), korb_fiber_resume_cfunc, -1);
+        extern RESULT korb_fiber_resume_cfunc(CTX *c, int argc, VALUE *sp);
+        korb_class_add_method_cfunc_r(cFiber, korb_intern("resume"), korb_fiber_resume_cfunc, -1);
     }
 
     /* Binding class — instances are returned by Kernel#binding.  T_DATA
@@ -1442,8 +1447,8 @@ void korb_init_builtins(CTX *c) {
      * the method present on Kernel.  Add but mark private so the
      * T_MODULE dispatch above falls through. */
     if (KORB_VM(c)->kernel_module) {
-        korb_class_add_method_cfunc(KORB_VM(c)->kernel_module, korb_intern("binding"),
-                                     kernel_binding_cfunc, 0);
+        korb_class_add_method_cfunc_r(KORB_VM(c)->kernel_module, korb_intern("binding"),
+                                       kernel_binding_cfunc, 0);
         struct korb_method *km = korb_class_find_method(KORB_VM(c)->kernel_module, korb_intern("binding"));
         if (km) km->visibility = KORB_VIS_PRIVATE;
     }
@@ -1615,18 +1620,30 @@ void korb_init_builtins(CTX *c) {
             if (m) {
                 if (cKerMeta2 && !korb_class_find_method(cKerMeta2, nm) &&
                     m->type == KORB_METHOD_CFUNC) {
-                    korb_class_add_method_cfunc(cKerMeta2, nm,
-                                                 m->u.cfunc.func,
-                                                 m->u.cfunc.argc);
+                    if (m->u.cfunc.func_r) {
+                        korb_class_add_method_cfunc_r(cKerMeta2, nm,
+                                                       m->u.cfunc.func_r,
+                                                       m->u.cfunc.argc);
+                    } else {
+                        korb_class_add_method_cfunc(cKerMeta2, nm,
+                                                     m->u.cfunc.func,
+                                                     m->u.cfunc.argc);
+                    }
                 }
                 /* Copy as PRIVATE to Kernel module so the spec's
                  * Kernel.private_method_defined?(:exec) returns true. */
                 if (KORB_VM(c)->kernel_module &&
                     !korb_class_find_method(KORB_VM(c)->kernel_module, nm) &&
                     m->type == KORB_METHOD_CFUNC) {
-                    korb_class_add_method_cfunc(KORB_VM(c)->kernel_module, nm,
-                                                 m->u.cfunc.func,
-                                                 m->u.cfunc.argc);
+                    if (m->u.cfunc.func_r) {
+                        korb_class_add_method_cfunc_r(KORB_VM(c)->kernel_module, nm,
+                                                       m->u.cfunc.func_r,
+                                                       m->u.cfunc.argc);
+                    } else {
+                        korb_class_add_method_cfunc(KORB_VM(c)->kernel_module, nm,
+                                                     m->u.cfunc.func,
+                                                     m->u.cfunc.argc);
+                    }
                     struct korb_method *m2 = korb_class_find_method(KORB_VM(c)->kernel_module, nm);
                     if (m2) m2->visibility = KORB_VIS_PRIVATE;
                 }

@@ -5509,19 +5509,22 @@ VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
     return Qnil;
 }
 
-VALUE korb_fiber_new_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT korb_fiber_new_cfunc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
     /* Block is the c->current_block when Fiber.new is called */
-    if (!c->current_block) {
-        DROP_RESULT(korb_raise(c, NULL, "Fiber.new requires a block"));
-        return Qnil;
-    }
-    return korb_fiber_new(c->current_block);
+    if (!c->current_block) return korb_raise(c, NULL, "Fiber.new requires a block");
+    return RESULT_OK(korb_fiber_new(c->current_block));
 }
-VALUE korb_fiber_yield_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_fiber_yield(c, argc, argv);
+RESULT korb_fiber_yield_cfunc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE *argv = sp - argc;
+    return RESULT_OK(korb_fiber_yield(c, argc, argv));
 }
-VALUE korb_fiber_resume_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_fiber_resume(c, self, argc, argv);
+RESULT korb_fiber_resume_cfunc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+    return RESULT_OK(korb_fiber_resume(c, self, argc, argv));
 }
 
 VALUE korb_require_file(CTX *c, const char *path) {

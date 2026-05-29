@@ -1595,58 +1595,63 @@ static RESULT str_sub(CTX *c, int argc, VALUE *sp) {
 /* gsub! / sub!: in-place mutating variants.  Return self (or nil if
  * no match).  We re-use the gsub/sub implementations to compute the
  * new content and copy it back into self's buffer. */
-static VALUE str_gsub_bang(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
-    CHECK_FROZEN_RET(c, self, Qnil);
+static RESULT str_gsub_bang(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(Qnil);
+    CHECK_FROZEN_R(c, self);
     struct korb_string *s = (struct korb_string *)self;
     long ms, ml;
-    if (argc < 1 || !str_find_pat(argv[0], s, 0, &ms, &ml)) return Qnil;
+    if (argc < 1 || !str_find_pat(argv[0], s, 0, &ms, &ml)) return RESULT_OK(Qnil);
     /* stage [self, argv...] onto sp and call new-ABI str_gsub */
     c->sp[0] = self;
     for (int i = 0; i < argc; i++) c->sp[1 + i] = argv[i];
-    RESULT _g = str_gsub(c, argc, c->sp + 1 + argc);
-    if (_g.state != KORB_NORMAL) {
-        c->state = _g.state; c->state_value = _g.value;
-        return Qnil;
-    }
-    VALUE replaced = _g.value;
-    if (BUILTIN_TYPE(replaced) != T_STRING) return Qnil;
+    VALUE replaced = UNWRAP(str_gsub(c, argc, c->sp + 1 + argc));
+    if (BUILTIN_TYPE(replaced) != T_STRING) return RESULT_OK(Qnil);
     const struct korb_string *r = (const struct korb_string *)replaced;
     char *buf = korb_xmalloc_atomic(r->len + 1);
     memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
     s->ptr = buf;
     s->len = r->len;
-    return self;
+    return RESULT_OK(self);
 }
 
-static VALUE str_sub_bang(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(self) != T_STRING) return Qnil;
-    CHECK_FROZEN_RET(c, self, Qnil);
+static RESULT str_sub_bang(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(Qnil);
+    CHECK_FROZEN_R(c, self);
     struct korb_string *s = (struct korb_string *)self;
     long ms, ml;
-    if (argc < 1 || !str_find_pat(argv[0], s, 0, &ms, &ml)) return Qnil;
+    if (argc < 1 || !str_find_pat(argv[0], s, 0, &ms, &ml)) return RESULT_OK(Qnil);
     c->sp[0] = self;
     for (int i = 0; i < argc; i++) c->sp[1 + i] = argv[i];
-    RESULT _s = str_sub(c, argc, c->sp + 1 + argc);
-    if (_s.state != KORB_NORMAL) {
-        c->state = _s.state; c->state_value = _s.value;
-        return Qnil;
-    }
-    VALUE replaced = _s.value;
-    if (BUILTIN_TYPE(replaced) != T_STRING) return Qnil;
+    VALUE replaced = UNWRAP(str_sub(c, argc, c->sp + 1 + argc));
+    if (BUILTIN_TYPE(replaced) != T_STRING) return RESULT_OK(Qnil);
     const struct korb_string *r = (const struct korb_string *)replaced;
     char *buf = korb_xmalloc_atomic(r->len + 1);
     memcpy(buf, r->ptr, r->len); buf[r->len] = 0;
     s->ptr = buf;
     s->len = r->len;
-    return self;
+    return RESULT_OK(self);
 }
 
 /* String#scan(pattern) — return Array of all non-overlapping matches.
  * Treats pattern as a literal string when given a String, mirroring
  * koruby's gsub/sub behavior (no regex without astrorge). */
-static VALUE str_scan(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(self) != T_STRING) return korb_ary_new(c, c->sp);
+static RESULT str_scan(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(self) != T_STRING) return RESULT_OK(korb_ary_new(c, c->sp));
     const struct korb_string *s = (const struct korb_string *)self;
     VALUE out = korb_ary_new(c, c->sp);
     long ms, ml, i = 0;
@@ -1654,7 +1659,7 @@ static VALUE str_scan(CTX * restrict c, VALUE self, int argc, VALUE *argv) {
         korb_ary_push(out, korb_str_new(c, c->sp, s->ptr + ms, ml));
         i = ms + (ml > 0 ? ml : 1);
     }
-    return out;
+    return RESULT_OK(out);
 }
 
 /* Expand a tr-spec ("a-zA-Z") into a 256-byte character table where
