@@ -557,9 +557,9 @@ koruby_run_ast(CTX *c, NODE *ast)
             snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[2]));
             _br.state = KORB_RAISE;
             if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
-                _br.value = korb_exc_new(c, (struct korb_class *)urs[0], buf);
+                _br.value = korb_exc_new(c, c->sp, (struct korb_class *)urs[0], buf);
             } else {
-                _br.value = korb_exc_new(c, NULL, buf);
+                _br.value = korb_exc_new(c, c->sp, NULL, buf);
             }
         } ARO_ROOT_SCOPE_END(c, urs);
     }

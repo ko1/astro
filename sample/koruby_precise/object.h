@@ -662,9 +662,9 @@ korb_num2dbl(VALUE v) {
     if (LIKELY(FIXNUM_P(v))) return (double)FIX2LONG(v);
     return korb_num2dbl_slow(v);
 }
-VALUE korb_bignum_new_str(const char *str, int base);
-VALUE korb_bignum_new_long(long v);
-VALUE korb_dbl2int(double v);
+VALUE korb_bignum_new_str(CTX *c, VALUE *sp, const char *str, int base);
+VALUE korb_bignum_new_long(CTX *c, VALUE *sp, long v);
+VALUE korb_dbl2int(CTX *c, VALUE *sp, double v);
 VALUE korb_int_plus(VALUE a, VALUE b);
 VALUE korb_int_minus(VALUE a, VALUE b);
 VALUE korb_int_mul(VALUE a, VALUE b);
@@ -690,7 +690,7 @@ VALUE korb_to_s_dispatch(CTX *c, VALUE v);
 void  korb_p(CTX *c, VALUE v); /* writes to stdout with newline */
 
 /* errors / exceptions */
-VALUE korb_exc_new(CTX *c, struct korb_class *klass, const char *msg);
+VALUE korb_exc_new(CTX *c, VALUE *sp, struct korb_class *klass, const char *msg);
 RESULT_FN RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
 RESULT_FN RESULT korb_raise_type_error(CTX *c, const char *fmt, ...);
 RESULT_FN RESULT korb_raise_argument_error(CTX *c, const char *fmt, ...);
@@ -990,11 +990,11 @@ void  korb_last_match_set(CTX *c, VALUE v);
 RESULT korb_const_lookup(CTX *c, ID name);
 
 /* range */
-VALUE korb_range_new(VALUE begin, VALUE end, bool exclude_end);
+VALUE korb_range_new(CTX *c, VALUE *sp, VALUE begin, VALUE end, bool exclude_end);
 
 /* proc */
-VALUE korb_proc_new(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
-VALUE korb_proc_new_with_cref(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda, struct korb_cref *cref);
+VALUE korb_proc_new(CTX *c, VALUE *sp, struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda);
+VALUE korb_proc_new_with_cref(CTX *c, VALUE *sp, struct Node *body, VALUE *fp, uint32_t env_size, uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda, struct korb_cref *cref);
 /* korb_proc_snapshot_env_if_in_frame and the inline gate
  * `korb_proc_snapshot_env_maybe` are declared above (before the
  * #include "prologues.h" block) so the inlined prologues can use them. */
@@ -1004,7 +1004,7 @@ void korb_init_builtins(CTX *c);
 
 /* Fiber */
 struct korb_fiber;
-VALUE korb_fiber_new(struct korb_proc *block);
+VALUE korb_fiber_new(CTX *c, VALUE *sp, struct korb_proc *block);
 RESULT korb_fiber_resume(CTX *c, VALUE fib, int argc, VALUE *argv);
 RESULT korb_fiber_yield(CTX *c, int argc, VALUE *argv);
 

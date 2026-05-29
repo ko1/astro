@@ -240,7 +240,7 @@ static RESULT flt_floor(CTX *c, int argc, VALUE *sp) {
 
     double v = korb_num2dbl(self);
     long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 0;
-    if (n == 0) return RESULT_OK(korb_dbl2int(floor(v)));
+    if (n == 0) return RESULT_OK(korb_dbl2int(c, c->sp, floor(v)));
     /* Float#floor(n) returns Float for n > 0, Integer for n < 0. */
     if (n > 0) {
         double m = pow(10.0, (double)n);
@@ -250,7 +250,7 @@ static RESULT flt_floor(CTX *c, int argc, VALUE *sp) {
      * scale-divide-floor-multiply (instead of v * pow(10, n) which
      * underflows to 0 for very negative n and triggered a SIGFPE). */
     double scale = pow(10.0, (double)(-n));
-    return RESULT_OK(korb_dbl2int(floor(v / scale) * scale));
+    return RESULT_OK(korb_dbl2int(c, c->sp, floor(v / scale) * scale));
 }
 static RESULT flt_ceil(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -259,13 +259,13 @@ static RESULT flt_ceil(CTX *c, int argc, VALUE *sp) {
 
     double v = korb_num2dbl(self);
     long n = (argc >= 1 && FIXNUM_P(argv[0])) ? FIX2LONG(argv[0]) : 0;
-    if (n == 0) return RESULT_OK(korb_dbl2int(ceil(v)));
+    if (n == 0) return RESULT_OK(korb_dbl2int(c, c->sp, ceil(v)));
     if (n > 0) {
         double m = pow(10.0, (double)n);
         return RESULT_OK(korb_float_new(c, c->sp, ceil(v * m) / m));
     }
     double scale = pow(10.0, (double)(-n));
-    return RESULT_OK(korb_dbl2int(ceil(v / scale) * scale));
+    return RESULT_OK(korb_dbl2int(c, c->sp, ceil(v / scale) * scale));
 }
 /* Float#eql? — type-strict.  `1.0.eql?(1) == false` in CRuby; the
  * default Object#eql? falls through to ==, which coerces, so we need
@@ -334,7 +334,7 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
     }
     if (posargc < 1 || n == 0) {
         /* No arg / arg==0 → round to integer, return Integer. */
-        return RESULT_OK(korb_dbl2int(round(v)));
+        return RESULT_OK(korb_dbl2int(c, c->sp, round(v)));
     }
     if (n > 0) {
         /* Round to n decimals, return Float.  Big n may saturate. */
@@ -345,7 +345,7 @@ static RESULT flt_round(CTX *c, int argc, VALUE *sp) {
     /* Negative precision → round to nearest 10^|n|, return Integer. */
     if (-n > 308) return RESULT_OK(INT2FIX(0));
     double scale = pow(10.0, (double)(-n));
-    return RESULT_OK(korb_dbl2int(round(v / scale) * scale));
+    return RESULT_OK(korb_dbl2int(c, c->sp, round(v / scale) * scale));
 }
 static RESULT flt_truncate(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -354,7 +354,7 @@ static RESULT flt_truncate(CTX *c, int argc, VALUE *sp) {
 
     /* truncate toward zero — same as to_i for Float. */
     double v = korb_num2dbl(self);
-    return RESULT_OK(korb_dbl2int(v >= 0 ? floor(v) : ceil(v)));
+    return RESULT_OK(korb_dbl2int(c, c->sp, v >= 0 ? floor(v) : ceil(v)));
 }
 
 static RESULT flt_pow(CTX *c, int argc, VALUE *sp) {
@@ -476,7 +476,7 @@ RESULT flt_to_i(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     double v = korb_num2dbl(self);
-    return RESULT_OK(korb_dbl2int(v >= 0 ? floor(v) : ceil(v)));
+    return RESULT_OK(korb_dbl2int(c, c->sp, v >= 0 ? floor(v) : ceil(v)));
 }
 static RESULT flt_to_f(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;

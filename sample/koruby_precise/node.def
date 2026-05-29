@@ -25,7 +25,7 @@ node_int_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, intptr_t 
 NODE_DEF
 node_bignum_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str)
 {
-    return RESULT_OK(korb_bignum_new_str(str, 10));
+    return RESULT_OK(korb_bignum_new_str(c, c->sp, str, 10));
 }
 
 NODE_DEF
@@ -716,7 +716,7 @@ node_range_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *b
 {
     VALUE b = EVAL_ARG_UNWRAP(c, begin);
     VALUE e = EVAL_ARG_UNWRAP(c, end);
-    return RESULT_OK(korb_range_new(b, e, exclude_end != 0));
+    return RESULT_OK(korb_range_new(c, c->sp, b, e, exclude_end != 0));
 }
 
 NODE_DEF
@@ -1057,7 +1057,7 @@ node_func_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, I
 NODE_DEF @noinline
 node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(c, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
+    VALUE p = korb_proc_new_with_cref(c, c->sp, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     /* Capture enclosing-method's fp for non-local return targeting. */
     /* Capture the lexically-enclosing method's frame for non-local
@@ -1086,7 +1086,7 @@ node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
 NODE_DEF @noinline
 node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(c, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
+    VALUE p = korb_proc_new_with_cref(c, c->sp, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
     ((struct korb_proc *)p)->return_target_frame =
@@ -1107,7 +1107,7 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
 NODE_DEF @noinline
 node_block_literal_kw(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, uint32_t params_cnt, uint32_t param_base, uint32_t env_size, int32_t rest_slot, int32_t kwh_save_slot, uint32_t creates_proc)
 {
-    VALUE p = korb_proc_new_with_cref(c, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
+    VALUE p = korb_proc_new_with_cref(c, c->sp, body, c->current_frame->fp, env_size, params_cnt, param_base, c->current_frame->self, false, c->current_frame->cref);
     ((struct korb_proc *)p)->rest_slot = rest_slot;
     ((struct korb_proc *)p)->kwh_save_slot = kwh_save_slot;
     if (creates_proc) ((struct korb_proc *)p)->creates_proc = true;
@@ -1905,11 +1905,11 @@ node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_e
     if (exc_expr) {
         e = EVAL_ARG_UNWRAP(c, exc_expr);
         if (BUILTIN_TYPE(e) == T_STRING) {
-            e = korb_exc_new(c, NULL, korb_str_cstr(e));
+            e = korb_exc_new(c, c->sp, NULL, korb_str_cstr(e));
         }
     }
     else {
-        e = korb_exc_new(c, NULL, "unhandled exception");
+        e = korb_exc_new(c, c->sp, NULL, "unhandled exception");
     }
     korb_exc_set_backtrace(c, e, n ? n->head.line : 0);
     /* Exception#cause: when we're already inside a rescue body, $! holds

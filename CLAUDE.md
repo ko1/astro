@@ -16,7 +16,7 @@ ASTro (AST-based Reusable Optimization Framework) は、AST を辿るインタ�
   - 教育用: `calc` (6 ノード電卓), `abc` (POSIX/GNU `bc` 互換 任意精度電卓, GMP 仮数+scale / libgc, `bc` との差分テスト 5,500+)
   - Ruby 系 (5): `naruby` (Ruby サブセット, JIT 対応), `baruby` (naruby fork + Array/String + libgc, **統一 GC testbed**), `baruby_precise` (baruby fork、precise rooting + **14 種類の自前 GC を build-time switch** できる GC algorithm 比較 testbed), `abruby` (Ruby サブセット, CRuby C 拡張), `koruby` (Ruby+, optcarrot 動かすことを目標)
   - その他動的言語 (3): `luastro` (Lua サブセット), `pystro` (Python 3 サブセット, GMP bignum + class + try/except), `jstro` (JavaScript, hidden class IC)
-  - 関数型 / OO (5): `ascheme` (Scheme), `astocaml` (OCaml サブセット), `asml` (Standard ML サブセット, **HM 型推論完備** + 型駆動の dispatcher 特殊化), `anml` ([MinCaml](https://esumii.github.io/min-caml/) = 単相 ML サブセット: 単相 HM 型推論 + de Bruijn フレーム, `ocaml` との差分テスト), `asom` (SOM)
+  - 関数型 / OO (5): `ascheme` (Scheme), `astocaml` (OCaml サブセット), `asml` (Standard ML サブセット, **HM 型推論完備** + 型駆動の dispatcher 特殊化), `ancaml` ([MinCaml](https://esumii.github.io/min-caml/) = 単相 ML サブセット: 単相 HM 型推論 + de Bruijn フレーム + TCO, `ocaml` との差分テスト。An\* = "ASTro Nutshell" 題材言語シリーズ), `asom` (SOM)
   - 静的型 (3): `pascalast` (Pascal サブセット), `castro` (C サブセット), `anpy` (ChocoPy = 静的型付き Python 3.6 サブセット: 型検査器 + 単一継承クラス + クロージャ, libgc, `python3` との差分テスト)
   - スタックマシン (1): `aforth` (Forth サブセット、 全 word が AST NODE)
   - データ処理 (2): `astr` (R サブセット, libgc + tagged VALUE + numeric/string/list), `arawk` (POSIX awk サブセット, regex 除く、 gawk 0.93× geomean、 astrogre との AST interpreter 統合実験 (Phase 2) を予定)

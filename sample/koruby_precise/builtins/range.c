@@ -1,7 +1,7 @@
 /* Range — moved from builtins.c. */
 
 /* ---------- Range ---------- */
-extern VALUE korb_range_new(VALUE b, VALUE e, bool excl);
+extern VALUE korb_range_new(CTX *c, VALUE *sp, VALUE b, VALUE e, bool excl);
 
 static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -25,7 +25,7 @@ static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, (struct korb_class *)eArg, "bad value for range");
         }
     }
-    return RESULT_OK(korb_range_new(argv[0], argv[1], excl));
+    return RESULT_OK(korb_range_new(c, c->sp, argv[0], argv[1], excl));
 }
 
 /* Range#hash — same begin / end / exclude_end? must hash equal. */

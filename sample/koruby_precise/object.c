@@ -1901,7 +1901,10 @@ VALUE korb_hash_aref_slow(CTX *c, VALUE hv, VALUE key) {
 long korb_hash_size(VALUE hv) { return ((struct korb_hash *)hv)->size; }
 
 /* ---- range ---- */
-VALUE korb_range_new(VALUE b, VALUE e, bool excl) {
+VALUE korb_range_new(CTX *c, VALUE *sp, VALUE b, VALUE e, bool excl) {
+    /* sp not used by libc malloc, but accepted for API uniformity per
+     * runtime.md §12.3 — visit_roots scans c->sp range. */
+    (void)c; (void)sp;
     struct korb_range *r = korb_xmalloc(sizeof(*r));
     r->basic.head.flags = T_RANGE;
     r->basic.klass = korb_vm ? (VALUE)korb_vm->range_class : 0;
@@ -1959,7 +1962,8 @@ static void korb_bignum_register_finalizer(struct korb_bignum *b) {
     (void)korb_bignum_finalizer;
 }
 
-VALUE korb_bignum_new_str(const char *str, int base) {
+VALUE korb_bignum_new_str(CTX *c, VALUE *sp, const char *str, int base) {
+    (void)c; (void)sp;
     struct korb_bignum *b = korb_xmalloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
     b->basic.klass = korb_vm ? (VALUE)korb_vm->integer_class : 0;
@@ -1979,7 +1983,8 @@ VALUE korb_bignum_new_str(const char *str, int base) {
     return (VALUE)b;
 }
 
-VALUE korb_bignum_new_long(long v) {
+VALUE korb_bignum_new_long(CTX *c, VALUE *sp, long v) {
+    (void)c; (void)sp;
     if (FIXABLE(v)) return INT2FIX(v);
     struct korb_bignum *b = korb_xmalloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
@@ -1997,7 +2002,7 @@ VALUE korb_bignum_new_long(long v) {
  * for Float#ceil / floor / truncate / to_i / round on values whose
  * integer part exceeds LONG_MAX (where `(long)v` is UB and SIGFPE on
  * x86). */
-VALUE korb_dbl2int(double v) {
+VALUE korb_dbl2int(CTX *c, VALUE *sp, double v) {
     /* NaN / +-Inf: callers should have caught these, but if they
      * didn't (CRuby would raise FloatDomainError), avoid the UB cast
      * and return 0 silently — better than SIGFPE on x86. */
@@ -2005,7 +2010,7 @@ VALUE korb_dbl2int(double v) {
     /* LONG_MIN/MAX as exact doubles; the comparison is safe because
      * (double)LONG_MAX rounds up to 2^63, not down. */
     if (v >= -9.223372036854775e18 && v <= 9.223372036854775e18) {
-        return korb_bignum_new_long((long)v);
+        return korb_bignum_new_long(c, c->sp, (long)v);
     }
     struct korb_bignum *b = korb_xmalloc(sizeof(*b));
     b->basic.head.flags = T_BIGNUM;
@@ -2205,8 +2210,9 @@ void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi) {
     }
 }
 
-VALUE korb_proc_new(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size,
+VALUE korb_proc_new(CTX *c, VALUE *sp, struct Node *body, VALUE *fp, uint32_t env_size,
                   uint32_t params_cnt, uint32_t param_base, VALUE self, bool is_lambda) {
+    (void)sp;
     struct korb_proc *p = korb_xmalloc(sizeof(*p));
     p->basic.head.flags = T_PROC;
     p->basic.klass = korb_vm ? (VALUE)KORB_VM(c)->proc_class : 0;
@@ -2235,10 +2241,10 @@ VALUE korb_proc_new(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size,
     return (VALUE)p;
 }
 
-VALUE korb_proc_new_with_cref(CTX *c, struct Node *body, VALUE *fp, uint32_t env_size,
+VALUE korb_proc_new_with_cref(CTX *c, VALUE *sp, struct Node *body, VALUE *fp, uint32_t env_size,
                               uint32_t params_cnt, uint32_t param_base, VALUE self,
                               bool is_lambda, struct korb_cref *cref) {
-    VALUE pv = korb_proc_new(c, body, fp, env_size, params_cnt, param_base, self, is_lambda);
+    VALUE pv = korb_proc_new(c, sp, body, fp, env_size, params_cnt, param_base, self, is_lambda);
     ((struct korb_proc *)pv)->cref = korb_cref_dup(cref);
     return pv;
 }
@@ -2699,7 +2705,8 @@ void korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line) {
     } ARO_ROOT_SCOPE_END(c, r);
 }
 
-VALUE korb_exc_new(CTX *c, struct korb_class *klass, const char *msg) {
+VALUE korb_exc_new(CTX *c, VALUE *sp, struct korb_class *klass, const char *msg) {
+    (void)sp;
     if (!klass) {
         VALUE eRuntime = korb_const_get(KORB_VM(c)->object_class,
                                         korb_intern("RuntimeError"));
@@ -2799,7 +2806,7 @@ RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
     VALUE exc_out = Qnil;
     ARO_ROOT_SCOPE_START(c, r, 2) {
         r[0] = (VALUE)klass;
-        r[1] = korb_exc_new(c, (struct korb_class *)r[0], buf);
+        r[1] = korb_exc_new(c, c->sp, (struct korb_class *)r[0], buf);
         int line = (c->last_cfunc_callsite
                     ? c->last_cfunc_callsite->head.line : 0);
         korb_exc_set_backtrace(c, r[1], line);
@@ -5321,7 +5328,8 @@ static void korb_fiber_entry(unsigned int hi, unsigned int lo) {
     swapcontext(&fib->ctx, &fib->prev_ctx);
 }
 
-VALUE korb_fiber_new(struct korb_proc *block) {
+VALUE korb_fiber_new(CTX *c, VALUE *sp, struct korb_proc *block) {
+    (void)c; (void)sp;
     struct korb_fiber *fib = korb_xmalloc(sizeof(*fib));
     fib->basic.head.flags = T_DATA;
     fib->basic.klass = korb_vm->fiber_class
@@ -5523,10 +5531,11 @@ RESULT korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
 }
 
 RESULT korb_fiber_new_cfunc(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
-    /* Block is the c->current_block when Fiber.new is called */
+    /* sp is passed directly to korb_fiber_new — c->sp sync happens
+     * inside the alloc helper (which currently is a no-op since
+     * korb_xmalloc doesn't fire moving-GC). */
     if (!c->current_block) return korb_raise(c, NULL, "Fiber.new requires a block");
-    return RESULT_OK(korb_fiber_new(c->current_block));
+    return RESULT_OK(korb_fiber_new(c, sp, c->current_block));
 }
 RESULT korb_fiber_yield_cfunc(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;

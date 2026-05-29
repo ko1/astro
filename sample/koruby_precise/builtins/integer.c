@@ -316,14 +316,14 @@ static RESULT int_cmp(CTX *c, int argc, VALUE *sp) {
         if (bint != b) {
             /* a is Integer, b is Float with fractional part — compare
              * a to bint; equal → sign of -fractional. */
-            VALUE bint_v = korb_dbl2int(bint);
+            VALUE bint_v = korb_dbl2int(c, c->sp, bint);
             int cmp = korb_int_cmp(self, bint_v);
             if (cmp != 0) return RESULT_OK(INT2FIX(cmp));
             /* a == bint exactly: result is opposite sign of fractional. */
             double frac = b - bint;
             return RESULT_OK(INT2FIX(frac < 0 ? 1 : -1));
         }
-        VALUE bint_v = korb_dbl2int(b);
+        VALUE bint_v = korb_dbl2int(c, c->sp, b);
         return RESULT_OK(INT2FIX(korb_int_cmp(self, bint_v)));
     }
     /* Non-numeric: coerce protocol. */
@@ -1409,8 +1409,8 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
             if (__builtin_mul_overflow(r, b, &s)) {
                 /* Promote to Bignum: finish the rest of the calculation
                  * via korb_int_mul which handles arbitrary precision. */
-                VALUE big_r = korb_bignum_new_long(r);
-                VALUE big_b = korb_bignum_new_long(b);
+                VALUE big_r = korb_bignum_new_long(c, c->sp, r);
+                VALUE big_b = korb_bignum_new_long(c, c->sp, b);
                 big_r = korb_int_mul(big_r, big_b);
                 e >>= 1;
                 while (e > 0) {
@@ -1432,8 +1432,8 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
             /* Same: promote and finish.  Use bignum_new_long so r and b
              * promote correctly even when they're already past FIXNUM
              * range (2^62 ≤ r ≤ 2^63-1 fits in long but not Fixnum). */
-            VALUE big_r = korb_bignum_new_long(r);
-            VALUE big_b = korb_bignum_new_long(b);
+            VALUE big_r = korb_bignum_new_long(c, c->sp, r);
+            VALUE big_b = korb_bignum_new_long(c, c->sp, b);
             e >>= 1;
             while (e > 0) {
                 big_b = korb_int_mul(big_b, big_b);
@@ -1454,6 +1454,6 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
      * in signed long but not the 63-bit FIXNUM payload).  Promote to
      * Bignum when needed so the encoded VALUE doesn't sign-flip. */
     if (FIXABLE(r)) return RESULT_OK(INT2FIX(r));
-    return RESULT_OK(korb_bignum_new_long(r));
+    return RESULT_OK(korb_bignum_new_long(c, c->sp, r));
 }
 
