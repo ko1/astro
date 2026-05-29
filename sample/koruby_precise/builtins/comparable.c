@@ -142,8 +142,10 @@ static RESULT cmp_clamp(CTX *c, int argc, VALUE *sp) {
     VALUE lo, hi;
     if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)argv[0];
-        if (r->exclude_end) {
-            /* `clamp(a...b)` is rejected (no clean cap on b's value). */
+        /* `clamp(a...b)` is rejected — except when end is nil (endless
+         * range), where exclusion is meaningless.  CRuby accepts endless
+         * exclusive ranges for clamp. */
+        if (r->exclude_end && !NIL_P(r->end)) {
             VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
             return korb_raise(c, (struct korb_class *)eArg,
                        "cannot clamp with an exclusive range");
@@ -668,6 +670,19 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     korb_class_add_method_cfunc_r(klass, korb_intern("[]"),         struct_aref,        1);
     korb_class_add_method_cfunc_r(klass, korb_intern("[]="),        struct_aset,       -1);
     korb_class_add_method_cfunc_r(klass, korb_intern("each"),       struct_each,        0);
+    /* Struct#values_at: delegate to to_a.values_at(*indices). */
+    {
+        RESULT _struct_values_at(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            /* Stage self at c->sp[0] and call struct_to_a with sp+1. */
+            c->sp[0] = self;
+            VALUE arr = UNWRAP(struct_to_a(c, 0, c->sp + 1));
+            return korb_funcall(c, arr, korb_intern("values_at"), argc, argv);
+        }
+        korb_class_add_method_cfunc_r(klass, korb_intern("values_at"), _struct_values_at, -1);
+    }
     korb_class_add_method_cfunc_r(klass, korb_intern("==" ),        struct_eq,          1);
     korb_class_add_method_cfunc_r(klass, korb_intern("to_h"),       struct_to_h,        0);
     korb_class_add_method_cfunc_r(klass, korb_intern("size"),       struct_size,        0);

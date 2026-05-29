@@ -1407,6 +1407,30 @@ void korb_init_builtins(CTX *c) {
     DEF_R(KORB_VM(c)->symbol_class, "downcase",   sym_downcase,   0);
     DEF_R(KORB_VM(c)->symbol_class, "capitalize", sym_capitalize, 0);
     DEF_R(KORB_VM(c)->symbol_class, "swapcase",   sym_swapcase,   0);
+    /* Symbol#start_with? / end_with? / encoding — delegate to to_s. */
+    {
+        RESULT _sym_starts(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            VALUE s = korb_str_new_cstr(c, c->sp, korb_id_name(korb_sym2id(self)));
+            return korb_funcall(c, s, korb_intern("start_with?"), argc, argv);
+        }
+        RESULT _sym_ends(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            VALUE s = korb_str_new_cstr(c, c->sp, korb_id_name(korb_sym2id(self)));
+            return korb_funcall(c, s, korb_intern("end_with?"), argc, argv);
+        }
+        RESULT _sym_encoding(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            return RESULT_OK(korb_const_get(KORB_VM(c)->object_class, korb_intern("Encoding")));
+        }
+        DEF_R(KORB_VM(c)->symbol_class, "start_with?", _sym_starts,   -1);
+        DEF_R(KORB_VM(c)->symbol_class, "end_with?",   _sym_ends,     -1);
+        DEF_R(KORB_VM(c)->symbol_class, "encoding",    _sym_encoding,  0);
+    }
 
     /* Boolean / Nil */
     DEF_R(KORB_VM(c)->true_class, "to_s", true_to_s, 0);
