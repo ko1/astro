@@ -2951,7 +2951,6 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         if (!needs_quote) {
             VALUE *sp = c->sp_top;
             sp[0] = 0; sp[1] = 0;
-            c->sp_top = sp + 2;
             sp[0] = korb_str_new_cstr(c, sp + 2, ":");
             sp[1] = korb_str_new(c, sp + 2, name, (long)nlen);
             korb_str_concat(c, sp + 2, sp[0], sp[1]);
@@ -2965,7 +2964,6 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         {
             VALUE *sp = c->sp_top;
             sp[0] = 0; sp[1] = 0;
-            c->sp_top = sp + 2;
             sp[0] = korb_str_new(c, sp + 2, name, (long)nlen);
             sp[0] = korb_inspect_inner(c, sp[0], depth + 1);
             sp[1] = korb_str_new_cstr(c, sp + 2, ":");
