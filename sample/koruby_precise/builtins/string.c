@@ -143,10 +143,10 @@ static RESULT str_lshift(CTX *c, int argc, VALUE *sp) {
      * forwarding cycle and the modification lands on the OLD obj,
      * leaving the caller's variable (= the TO-space copy) unchanged
      * (= `s << "y"; s << "z"` leaves s as "x" instead of "xyz"). */
-    /* Park self + other in sp[0..1] across str_concat_one's potential GC. */
+    /* Park self + other in sp[0..1]; str_concat_one publishes
+     * c->sp_top = sp+3 internally before its GC trigger. */
     sp[0] = self;
     sp[1] = argv[0];
-    c->sp_top = sp + 2;
     RESULT _r = str_concat_one(c, sp + 2, sp[0], sp[1]);
     if (_r.state != KORB_NORMAL) return _r;
     return RESULT_OK(sp[0]);

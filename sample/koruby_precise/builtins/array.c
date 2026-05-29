@@ -507,24 +507,21 @@ static RESULT ary_join(CTX *c, int argc, VALUE *sp) {
                        "can't convert to String (to_str returned non-String)");
         }
     }
-    /* Pin self / sep / result / per-iter element across korb_to_s /
-     * korb_str_new / korb_str_concat GC fires.  We park them in sp[0..3]
-     * and advance c->sp_top so subsequent allocs see those slots as roots. */
+    /* Pin self / sep / result / per-iter element in sp[0..3].
+     * Inner alloc helpers publish c->sp_top = sp+4 themselves. */
     sp[0] = self;
     sp[1] = sep;
+    sp[2] = 0;
     sp[3] = Qnil;
-    c->sp_top = sp + 4;
-    sp[2] = korb_str_new(c, c->sp_top, "", 0);  /* result, allocated after c->sp_top bump */
+    sp[2] = korb_str_new(c, sp + 4, "", 0);
     long len = korb_ary_len(sp[0]);
     for (long i = 0; i < len; i++) {
-        if (i > 0 && BUILTIN_TYPE(sp[1]) == T_STRING) korb_str_concat(c, c->sp_top, sp[2], sp[1]);
+        if (i > 0 && BUILTIN_TYPE(sp[1]) == T_STRING) korb_str_concat(c, sp + 4, sp[2], sp[1]);
         sp[3] = korb_ary_aref(sp[0], i);
-        if (BUILTIN_TYPE(sp[3]) != T_STRING) sp[3] = korb_to_s(c, c->sp_top, sp[3]);
-        korb_str_concat(c, c->sp_top, sp[2], sp[3]);
+        if (BUILTIN_TYPE(sp[3]) != T_STRING) sp[3] = korb_to_s(c, sp + 4, sp[3]);
+        korb_str_concat(c, sp + 4, sp[2], sp[3]);
     }
-    VALUE ret = sp[2];
-    c->sp_top = sp;
-    return RESULT_OK(ret);
+    return RESULT_OK(sp[2]);
 }
 static RESULT ary_inspect(CTX *c, int argc, VALUE *sp) {
     c->sp_top = sp;
@@ -2322,7 +2319,6 @@ static RESULT ary_mul(CTX *c, int argc, VALUE *sp) {
         sp[1] = arg;                 /* separator (pin) — first! */
         sp[0] = 0;
         sp[2] = 0;
-        c->sp_top = sp + 3;
         sp[0] = korb_str_new(c, sp + 3, "", 0);
         for (long i = 0; i < a->len; i++) {
             if (i > 0) korb_str_concat(c, sp + 3, sp[0], sp[1]);
