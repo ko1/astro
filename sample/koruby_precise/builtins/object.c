@@ -24,25 +24,24 @@ extern struct korb_method *korb_class_find_method(const struct korb_class *klass
 /* Shared implementation for send / __send__ / public_send.
  * `enforce_public` ⇒ refuse to call private/protected methods (the
  * public_send semantics).  send / __send__ ignore visibility. */
-static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enforce_public) {
-    if (argc < 1) return Qnil;
+static RESULT obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enforce_public) {
+    if (argc < 1) return RESULT_OK(Qnil);
     ID name;
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
-    else return Qnil;
+    else return RESULT_OK(Qnil);
     /* Forward the block that was passed to send itself: `obj.send(:foo) { ... }`
      * should run with the block visible to foo's `yield`. */
-    
+
     struct korb_proc *blk = c->current_block;
     if (enforce_public) {
         struct korb_class *klass = korb_class_of_class(self);
         struct korb_method *m = korb_class_find_method(klass, name);
         if (m && m->visibility != KORB_VIS_PUBLIC) {
             VALUE eNo = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eNo,
+            return korb_raise(c, (struct korb_class *)eNo,
                      "private method '%s' called for %s",
-                     korb_id_name(name), korb_id_name(klass->name)));
-            return Qnil;
+                     korb_id_name(name), korb_id_name(klass->name));
         }
     }
     /* argv+1 is &c->current_frame->fp[arg_index+1] — points into the caller's frame.
@@ -54,7 +53,7 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
         if (UNLIKELY(e->serial != korb_g_method_serial || e->gen != korb_g_gc_gen ||
                      e->klass != klass || e->name != name)) {
             struct korb_method *m = korb_class_find_method(klass, name);
-            if (!m) return SINK_RESULT(c, korb_funcall(c, self, name, argc - 1, argv + 1));
+            if (!m) return korb_funcall(c, self, name, argc - 1, argv + 1);
             korb_method_cache_fill(&e->mc, klass, m);
             e->klass = klass;
             e->name = name;
@@ -62,9 +61,9 @@ static VALUE obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfor
             e->gen = korb_g_gc_gen;
         }
         uint32_t arg_index = (uint32_t)((argv + 1) - c->current_frame->fp);
-        return SINK_RESULT(c, e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc));
+        return e->mc.prologue(c, NULL, self, (uint32_t)(argc - 1), arg_index, blk, &e->mc);
     }
-    return SINK_RESULT(c, korb_funcall(c, self, name, argc - 1, argv + 1));
+    return korb_funcall(c, self, name, argc - 1, argv + 1);
 }
 
 static RESULT obj_send(CTX *c, int argc, VALUE *sp) {
@@ -72,7 +71,7 @@ static RESULT obj_send(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(obj_send_impl(c, self, argc, argv, false));
+    return obj_send_impl(c, self, argc, argv, false);
 }
 
 static RESULT obj_public_send(CTX *c, int argc, VALUE *sp) {
@@ -80,7 +79,7 @@ static RESULT obj_public_send(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(obj_send_impl(c, self, argc, argv, true));
+    return obj_send_impl(c, self, argc, argv, true);
 }
 
 static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {

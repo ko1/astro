@@ -16,31 +16,31 @@ static int int_op_other_kind(VALUE v) {
 }
 
 /* Build a Rational(self, 1) by calling Rational.new(self, 1). */
-static VALUE int_to_rational_obj(CTX *c, VALUE self) {
+static RESULT int_to_rational_obj(CTX *c, VALUE self) {
     VALUE klass = korb_const_get(KORB_VM(c)->object_class, korb_intern("Rational"));
     VALUE one = INT2FIX(1);
     VALUE args[2] = {self, one};
-    return SINK_RESULT(c, korb_funcall(c, klass, korb_intern("new"), 2, args));
+    return korb_funcall(c, klass, korb_intern("new"), 2, args);
 }
 
 /* CRuby's Numeric#coerce protocol: when an arithmetic op gets a non-
  * builtin numeric on the RHS, ask the RHS via #coerce(self) for a
  * pair [coerced_self, coerced_other], then send the op to the pair.
- * Returns Qundef when the RHS doesn't respond to :coerce so the
- * caller can fall through to TypeError. */
-static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
+ * On NORMAL: value is the coerced op result (or Qundef if no #coerce).
+ * Raises propagate via RESULT.state. */
+static RESULT int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     /* Use respond_to? so mock objects (method_missing) are also seen. */
     RESULT _rt_rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
                             (VALUE[]){ korb_id2sym(korb_intern("coerce")) });
-    if (_rt_rt.state == KORB_RAISE) return Qnil;
+    if (_rt_rt.state == KORB_RAISE) return RESULT_OK(Qundef);
+    if (_rt_rt.state != KORB_NORMAL) return _rt_rt;
     VALUE rt = _rt_rt.value;
-    if (!RTEST(rt)) return Qundef;
-    VALUE pair = SINK_RESULT(c, korb_funcall(c, other, korb_intern("coerce"), 1, &self));
-    if (c->state != KORB_NORMAL) return Qnil;
-    if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return Qundef;
+    if (!RTEST(rt)) return RESULT_OK(Qundef);
+    VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
+    if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return RESULT_OK(Qundef);
     struct korb_array *p = (struct korb_array *)pair;
-    if (p->len != 2) return Qundef;
-    return SINK_RESULT(c, korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]));
+    if (p->len != 2) return RESULT_OK(Qundef);
+    return korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]);
 }
 
 #define COERCE_OR_RAISE(c, v, op_name)                                  \
@@ -50,7 +50,7 @@ static VALUE int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
                 /* fall through — caller handles */                        \
             } else {                                                       \
                 /* Try the coerce protocol before giving up. */            \
-                VALUE _coerced = int_coerce_dispatch((c), self, (v), korb_intern((op_name))); \
+                VALUE _coerced = UNWRAP(int_coerce_dispatch((c), self, (v), korb_intern((op_name)))); \
                 if (!UNDEF_P(_coerced)) return RESULT_OK(_coerced);        \
                 VALUE _eTy = korb_const_get(KORB_VM(c)->object_class,         \
                                             korb_intern("TypeError"));     \
@@ -85,7 +85,7 @@ static RESULT int_minus(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(korb_float_new(c, c->sp, korb_num2dbl(self) - korb_num2dbl(argv[0])));
     }
     if (int_op_other_kind(argv[0])) {
-        VALUE r = int_to_rational_obj(c, self);
+        VALUE r = UNWRAP(int_to_rational_obj(c, self));
         return korb_funcall(c, r, korb_intern("-"), 1, &argv[0]);
     }
     COERCE_OR_RAISE(c, argv[0], "-");
@@ -118,7 +118,7 @@ static RESULT int_div(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(korb_float_new(c, c->sp, korb_num2dbl(self) / korb_num2dbl(argv[0])));
     }
     if (int_op_other_kind(argv[0])) {
-        VALUE r = int_to_rational_obj(c, self);
+        VALUE r = UNWRAP(int_to_rational_obj(c, self));
         return korb_funcall(c, r, korb_intern("/"), 1, &argv[0]);
     }
     COERCE_OR_RAISE(c, argv[0], "/");
@@ -180,7 +180,7 @@ static RESULT int_rshift(CTX *c, int argc, VALUE *sp) {
             return korb_raise((c), (struct korb_class *)eT, \
                        "no implicit conversion of Float into Integer"); \
         } \
-        VALUE _coerced = int_coerce_dispatch((c), self, (rhs), korb_intern((op_name))); \
+        VALUE _coerced = UNWRAP(int_coerce_dispatch((c), self, (rhs), korb_intern((op_name)))); \
         if (!UNDEF_P(_coerced)) return RESULT_OK(_coerced); \
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")); \
         return korb_raise((c), (struct korb_class *)eT, \
@@ -220,7 +220,7 @@ static RESULT int_xor(CTX *c, int argc, VALUE *sp) {
 #define INT_CMP_GUARD(c, rhs, op_name) do { \
     if (!FIXNUM_P(rhs) && !FLONUM_P(rhs) && \
         (SPECIAL_CONST_P(rhs) || (BUILTIN_TYPE(rhs) != T_BIGNUM && BUILTIN_TYPE(rhs) != T_FLOAT))) { \
-        VALUE _coerced = int_coerce_dispatch((c), self, (rhs), korb_intern((op_name))); \
+        VALUE _coerced = UNWRAP(int_coerce_dispatch((c), self, (rhs), korb_intern((op_name)))); \
         if (!UNDEF_P(_coerced)) return RESULT_OK(_coerced); \
         VALUE _eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")); \
         return korb_raise((c), (struct korb_class *)_eA, \

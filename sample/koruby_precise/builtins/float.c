@@ -8,25 +8,24 @@ static bool flt_op_native(VALUE v) {
     return t == T_FLOAT || t == T_BIGNUM;
 }
 
-/* Run the coerce protocol on `other` for Float `self`.  Returns
- * Qundef if `other` doesn't respond to :coerce or returns an invalid
- * pair, otherwise returns op(self', other') after coerce. */
-static VALUE flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
+/* Run the coerce protocol on `other` for Float `self`.  On NORMAL,
+ * value is the coerced op result (or Qundef when no #coerce or invalid
+ * pair). */
+static RESULT flt_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     struct korb_class *ok = korb_class_of_class(other);
-    if (!korb_class_find_method(ok, korb_intern("coerce"))) return Qundef;
-    VALUE pair = SINK_RESULT(c, korb_funcall(c, other, korb_intern("coerce"), 1, &self));
-    if (c->state != KORB_NORMAL) return Qnil;
-    if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return Qundef;
+    if (!korb_class_find_method(ok, korb_intern("coerce"))) return RESULT_OK(Qundef);
+    VALUE pair = UNWRAP(korb_funcall(c, other, korb_intern("coerce"), 1, &self));
+    if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) return RESULT_OK(Qundef);
     struct korb_array *p = (struct korb_array *)pair;
-    if (p->len != 2) return Qundef;
-    return SINK_RESULT(c, korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]));
+    if (p->len != 2) return RESULT_OK(Qundef);
+    return korb_funcall(c, p->ptr[0], op, 1, &p->ptr[1]);
 }
 
 #define FLT_BINOP_COERCE_OR_RAISE(c, v, op_name)                          \
     do {                                                                   \
         if (!flt_op_native((v))) {                                          \
-            VALUE _co = flt_coerce_dispatch((c), self, (v),                  \
-                                            korb_intern((op_name)));         \
+            VALUE _co = UNWRAP(flt_coerce_dispatch((c), self, (v),           \
+                                            korb_intern((op_name))));        \
             if (!UNDEF_P(_co)) return RESULT_OK(_co);                         \
             VALUE _eTy = korb_const_get(KORB_VM(c)->object_class,              \
                                         korb_intern("TypeError"));            \
