@@ -92,6 +92,32 @@ C-local capture し、 scope 内で `rs[0] = korb_str_new()` の alloc 後に
 block_arg/integer/control) が default / STRESS / STRESS+PURGE 全 mode で PASS。
 これで koruby_precise の test suite は GC モード全制覇。
 
+### AST dispatcher の argv-clobber 修正 + Array.new subclass initialize (2026-05-29)
+
+User 指摘: 「sp として staging + 1 を渡してるんだから、別に c->sp を設定し
+ないでいいんじゃないの？ alloc 前に設定するのは callee の仕事」
+
+問題:
+1. korb_dispatch_to_method の AST 経路は new_fp = c->sp + 1 から zero-fill
+   するが、 caller が argv を sp 上に staging したケースで argv が clobber
+   される。
+2. node_super_forward 系 (3 site) が `sm->u.cfunc.func` を直接呼び、 cfunc_r
+   登録 (ary_initialize 等) では func==NULL で SEGV。
+3. `Array.new(...)` が subclass の initialize を call せず、 size/default
+   short-cut で結果を返していた。 spec: array/to_a_spec subclass テスト fail。
+
+修正 (commit 832011d6, dcf28a8c):
+- AST 経路で argv を VLA に snapshot してから zero-fill (callee 責任の API
+  に統一)。
+- cfunc_r 経路にも同じ snapshot を入れて argv-overlap を防御。
+- node_super_forward / node_super (3 site) で func_r 経路を追加。
+- ary_class_new: allocate-then-dispatch-initialize に refactor。 ary_initialize
+  registration を _r 化 (Phase 8b で body は _r 化済だったが register が
+  legacy のまま残っていた未解決 integrity 不整合)。
+
+成果: broad rubyspec sweep (150 spec) PASS=1383 → 1615 (+232)、 CRASH=0
+維持、 全 test suite regression なし、 STRESS+PURGE も完走。
+
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
