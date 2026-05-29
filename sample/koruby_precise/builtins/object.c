@@ -329,6 +329,15 @@ static RESULT obj_method(CTX *c, int argc, VALUE *sp) {
     if (SYMBOL_P(argv[0])) name = korb_sym2id(argv[0]);
     else if (BUILTIN_TYPE(argv[0]) == T_STRING) name = korb_intern_n(((struct korb_string *)argv[0])->ptr, ((struct korb_string *)argv[0])->len);
     else return RESULT_OK(Qnil);
+    /* Look up the method NOW so a later redefinition of `name` doesn't
+     * redirect our Method#call dispatch to the new body — CRuby's
+     * Object#method captures the unbound method record at lookup time. */
+    struct korb_class *recv_klass = SPECIAL_CONST_P(self)
+                                      ? korb_class_of_class(self)
+                                      : (struct korb_class *)((struct RBasic *)self)->klass;
+    struct korb_method *captured = recv_klass
+                                     ? korb_class_find_method(recv_klass, name)
+                                     : NULL;
     /* Build a Method object: a small heap struct with receiver + name. */
     struct korb_method_obj *m = korb_xmalloc(sizeof(*m));
     m->basic.head.flags = T_DATA;
@@ -337,6 +346,8 @@ static RESULT obj_method(CTX *c, int argc, VALUE *sp) {
                        : (VALUE)KORB_VM(c)->object_class;
     m->receiver = self;
     m->name = name;
+    m->captured_method = captured;
+    m->captured_owner = captured ? captured->defining_class : NULL;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&m->basic);
     return RESULT_OK((VALUE)m);
