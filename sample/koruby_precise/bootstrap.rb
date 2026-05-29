@@ -2791,6 +2791,36 @@ end
 
 # Range — give it a few enumerable basics it can delegate via to_a.
 class Range
+  # Range#overlap?(other) — true iff self and other share any elements.
+  # other must be a Range; CRuby raises TypeError otherwise.
+  def overlap?(other)
+    raise TypeError, "wrong argument type #{other.class} (expected Range)" unless other.is_a?(Range)
+    # Empty ranges never overlap.
+    return false if (self.begin.respond_to?(:<=>) && self.end.respond_to?(:<=>) &&
+                     !self.begin.nil? && !self.end.nil? &&
+                     (self.begin <=> self.end) == 1) ||
+                    (other.begin.respond_to?(:<=>) && other.end.respond_to?(:<=>) &&
+                     !other.begin.nil? && !other.end.nil? &&
+                     (other.begin <=> other.end) == 1)
+    s_b, s_e = self.begin,  self.end
+    o_b, o_e = other.begin, other.end
+    # If self ends before other begins → no overlap.
+    if !s_e.nil? && !o_b.nil?
+      c = (s_e <=> o_b)
+      return false if c.nil?
+      if c < 0 then return false end
+      if c == 0 && self.exclude_end? then return false end
+    end
+    # If other ends before self begins → no overlap.
+    if !o_e.nil? && !s_b.nil?
+      c = (o_e <=> s_b)
+      return false if c.nil?
+      if c < 0 then return false end
+      if c == 0 && other.exclude_end? then return false end
+    end
+    true
+  end unless method_defined?(:overlap?)
+
   # Range#eql? — endpoints compared with eql? (type-strict), so
   # 0..1 and 0..1.0 are not eql?.  exclude_end must also match.
   def eql?(other)
