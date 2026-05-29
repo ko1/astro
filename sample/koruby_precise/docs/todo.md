@@ -77,6 +77,21 @@ global `korb_vm` を直接参照する 891 ヶ所中、 CTX *c がスコープ�
 multi-interpreter 化への第一歩。 引き続き c->mch を経由した参照に統一して
 いけば global 撤廃が現実的に。
 
+### STRESS+PURGE crash fix — ary_mul (2026-05-29)
+
+`[1, 2] * ","` が STRESS+PURGE で SEGV する pre-existing bug を修正 (commit
+3697798d)。 ary_mul の join path で `arg = argv[0]` を ARO_ROOT_SCOPE 前で
+C-local capture し、 scope 内で `rs[0] = korb_str_new()` の alloc 後に
+`rs[1] = arg` していたため、 arg の指す string heap obj が GC 移動された
+後の stale pointer が rs[1] に格納されていた。 PURGE で次 iter 時に SEGV。
+
+修正: `rs[1] = arg` を `rs[0] = korb_str_new()` の前に。 同パターンを 12 builtins
++ node.def + object.c で grep → 該当なし。 ary_mul 固有。
+
+成果: 全 10 test suite (string/hash/range/exception/array/class/block/
+block_arg/integer/control) が default / STRESS / STRESS+PURGE 全 mode で PASS。
+これで koruby_precise の test suite は GC モード全制覇。
+
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
