@@ -1735,7 +1735,7 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     struct korb_array *a = (struct korb_array *)self;
-    
+
     if (argc < 1 && c->current_block) {
         for (long i = 0; i < a->len; i++) {
             VALUE r = UNWRAP(korb_yield(c, 1, &a->ptr[i]));
@@ -1743,8 +1743,20 @@ static RESULT ary_index(CTX *c, int argc, VALUE *sp) {
         }
         return RESULT_OK(Qnil);
     }
-    if (argc < 1) return RESULT_OK(Qnil);
-    for (long i = 0; i < a->len; i++) if (korb_eq(c, a->ptr[i], argv[0])) return RESULT_OK(INT2FIX(i));
+    if (argc < 1) {
+        /* No block, no arg: return Enumerator. */
+        VALUE method_sym = korb_id2sym(korb_intern("index"));
+        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
+    /* When both arg and block given, CRuby warns and ignores block. */
+    for (long i = 0; i < a->len; i++) {
+        if (a->ptr[i] == argv[0]) return RESULT_OK(INT2FIX(i));
+        /* Use user-defined #== via dispatch (CRuby: arr.index(obj) uses
+         * obj == elem? actually it's elem == obj — calls element's #==). */
+        RESULT er = korb_funcall_r(c, a->ptr[i], korb_intern("=="), 1, &argv[0]);
+        if (er.state != KORB_NORMAL) return er;
+        if (RTEST(er.value)) return RESULT_OK(INT2FIX(i));
+    }
     return RESULT_OK(Qnil);
 }
 
