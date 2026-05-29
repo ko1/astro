@@ -935,8 +935,11 @@ def it_behaves_like(name, method_sym = nil, object = nil)
   return unless blk
   prev_m = self.instance_variable_get(:@method) rescue nil
   prev_o = self.instance_variable_get(:@object) rescue nil
-  self.instance_variable_set(:@method, method_sym) rescue nil
-  self.instance_variable_set(:@object, object) rescue nil
+  # If the caller didn't pass a method_sym (nested it_should_behave_like
+  # often omits it), keep the parent's @method so the shared spec can
+  # still call `@obj.send(@method)`.
+  self.instance_variable_set(:@method, method_sym) rescue nil if method_sym
+  self.instance_variable_set(:@object, object) rescue nil if object
   begin
     blk.call
   rescue => e
