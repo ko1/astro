@@ -27,13 +27,37 @@ user 指摘: 「ctx->state 消せた？」「VALUE を返す関数を RESULT に
 - DROP_RESULT カウントが「残 migration 対象数」 の指標になる。
 
 残作業 (Phase 8 続き):
-- `-Werror=unused-result` を有効化 → regression 防止 hard error 化。
+- `-Werror=unused-result` を有効化 → regression 防止 hard error 化。 commit
+  済 (Makefile)。
 - DROP_RESULT を 1 ヶ所ずつ消す = function を VALUE → RESULT に migrate、
   caller も UNWRAP / return propagation に置換。
 - 最終的に `CTX::state` / `state_value` を field から削除。
 - `korb_vm->X` 参照を `c->mch->X` に順次置換、 最終的に global `korb_vm`
   を削除して「1 CTX = 1 interpreter」 を可能に。
 - `struct korb_vm` 自体の type rename (→ `struct korb_machine`)。
+
+### Phase 8b — builtins cfunc 完全 RESULT 化 (2026-05-29)
+
+tools/migrate_cfunc.py で機械的に cfunc を新 ABI 化:
+- file.c: 30 → 0 (commit 115aaff4)
+- exception.c + binding.c 部分: 7 sites (commit 7682707b)
+- range.c: 18 → 0 (commit ad5d3a4b)
+- hash.c: 18 → 0 (commit e3e5ef24)
+- string.c: 22 → 6 (commit d01ce7af)  ※残 6 は VALUE helper 内
+- proc/comparable/module/object/float: 63 → 13 (commit d6ffe422)
+- integer/kernel/array: 134 → 8 (commit 424d94ae)
+
+prologue_cfunc_r_inl に c->state lift safety net 追加: cfunc_r 内から
+legacy VALUE-returning helper (korb_funcall, korb_yield 等) を呼んだとき
+state が失われるのを防ぐ。
+
+CHECK_FROZEN_R(c, self) macro 追加: RESULT 版 CHECK_FROZEN_RET。
+
+合計: 469 → ~125 DROP_RESULT (object.c 29 + node.def 57 + builtins/* 残)。
+残りはほぼ AST 内部 / legacy helper 内で、cfunc 層の migration は完了。
+
+regression: test_string/hash/range/exception/array/class/block/integer/
+control 全 PASS。
 
 memory note: feedback_result_and_vm_priorities (user 要望保存)。
 
