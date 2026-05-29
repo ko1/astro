@@ -597,6 +597,11 @@ class Range
 
   def reverse_each(&blk)
     return enum_for(:reverse_each) unless blk
+    # Endless / beginless ranges: CRuby raises TypeError.  Without this
+    # guard, to_a below loops forever (OOM crash).
+    if self.end.nil?
+      raise TypeError, "can't iterate from NilClass"
+    end
     arr = to_a
     arr.reverse_each(&blk)
     self

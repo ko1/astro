@@ -5521,7 +5521,17 @@ RESULT korb_fiber_resume_cfunc(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
-    return RESULT_OK(korb_fiber_resume(c, self, argc, argv));
+    VALUE v = korb_fiber_resume(c, self, argc, argv);
+    /* Bridge: if the fiber body raised, korb_fiber_resume's body set
+     * c->state in the fiber.  Lift to RESULT so cfunc_r dispatch sees
+     * the raise. */
+    if (UNLIKELY(c->state != KORB_NORMAL)) {
+        RESULT _r = (RESULT){ c->state_value, c->state };
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        return _r;
+    }
+    return RESULT_OK(v);
 }
 
 VALUE korb_require_file(CTX *c, const char *path) {
