@@ -3134,15 +3134,25 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         return r;
     }
     if (t == T_ARRAY) {
+        /* Recursion guard: when inspecting a self-referential array,
+         * render the recursive leg as "[...]" instead of infinite-looping. */
+        static __thread VALUE inspect_recurse_stk[64];
+        static __thread int inspect_recurse_top = 0;
+        for (int j = 0; j < inspect_recurse_top; j++) {
+            if (inspect_recurse_stk[j] == v) {
+                return korb_str_new_cstr(c, c->sp, "[...]");
+            }
+        }
         /* Pin the accumulating result string + each formatted element
          * across korb_inspect_inner / korb_str_new_cstr / korb_str_concat
-         * — all of which can fire GC.  Without this, the C-local `r`
-         * goes stale and produces mangled output (e.g. `[20, 30]` →
-         * `]]`) under BARUBY_GC_STRESS=1. */
+         * — all of which can fire GC. */
         VALUE ret = Qnil;
         CTX *c2 = c;
         if (c2) {
             struct korb_array *a = (struct korb_array *)v;
+            if (inspect_recurse_top < 64) {
+                inspect_recurse_stk[inspect_recurse_top++] = v;
+            }
             ARO_ROOT_SCOPE_START(c2, rs, 3) {
                 rs[0] = v;   /* pin self so a->len / a->ptr stay valid */
                 rs[1] = korb_str_new_cstr(c, c->sp, "[");
@@ -3154,6 +3164,10 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
                 rs[1] = korb_str_concat(c, c->sp, rs[1], korb_str_new_cstr(c, c->sp, "]"));
                 ret = rs[1];
             } ARO_ROOT_SCOPE_END(c2, rs);
+            if (inspect_recurse_top > 0 &&
+                inspect_recurse_stk[inspect_recurse_top - 1] == v) {
+                inspect_recurse_top--;
+            }
             return ret;
         }
         /* Cold fallback when CTX is unavailable (shouldn't happen under
@@ -3386,20 +3400,41 @@ bool korb_eq(CTX *c, VALUE a, VALUE b) {
         struct korb_array *ax = (struct korb_array *)a;
         struct korb_array *bx = (struct korb_array *)b;
         if (ax->len != bx->len) return false;
-        for (long i = 0; i < ax->len; i++) {
-            if (!korb_eq(c, ax->ptr[i], bx->ptr[i])) return false;
+        /* Recursion guard: on re-entry with the same (a, b), assume equal
+         * (CRuby semantics — recursive arrays compare equal at the loop). */
+        static __thread VALUE eq_stk_a[64];
+        static __thread VALUE eq_stk_b[64];
+        static __thread int eq_top = 0;
+        for (int j = 0; j < eq_top; j++) {
+            if (eq_stk_a[j] == a && eq_stk_b[j] == b) return true;
         }
-        return true;
+        if (eq_top < 64) { eq_stk_a[eq_top] = a; eq_stk_b[eq_top] = b; eq_top++; }
+        bool result = true;
+        for (long i = 0; i < ax->len; i++) {
+            if (!korb_eq(c, ax->ptr[i], bx->ptr[i])) { result = false; break; }
+        }
+        if (eq_top > 0) eq_top--;
+        return result;
     }
     if (ta == T_HASH && tb == T_HASH) {
         struct korb_hash *ah = (struct korb_hash *)a;
         struct korb_hash *bh = (struct korb_hash *)b;
         if (ah->size != bh->size) return false;
+        /* Recursion guard for hashes too. */
+        static __thread VALUE heq_stk_a[64];
+        static __thread VALUE heq_stk_b[64];
+        static __thread int heq_top = 0;
+        for (int j = 0; j < heq_top; j++) {
+            if (heq_stk_a[j] == a && heq_stk_b[j] == b) return true;
+        }
+        if (heq_top < 64) { heq_stk_a[heq_top] = a; heq_stk_b[heq_top] = b; heq_top++; }
+        bool result = true;
         for (struct korb_hash_entry *e = ah->first; e; e = e->next) {
             VALUE bv = korb_hash_aref(c, b, e->key);
-            if (!korb_eq(c, e->value, bv)) return false;
+            if (!korb_eq(c, e->value, bv)) { result = false; break; }
         }
-        return true;
+        if (heq_top > 0) heq_top--;
+        return result;
     }
     if (ta == T_RANGE && tb == T_RANGE) {
         struct korb_range *ar = (struct korb_range *)a;

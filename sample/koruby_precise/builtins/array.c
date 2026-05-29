@@ -584,6 +584,19 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
     long la = korb_ary_len(sp[-2]);
     long lb = korb_ary_len(sp[-1]);
     if (la != lb) return RESULT_OK(Qfalse);
+    /* Recursion guard for self-referential arrays. */
+    static __thread VALUE eq_stk_a[64];
+    static __thread VALUE eq_stk_b[64];
+    static __thread int eq_top = 0;
+    for (int j = 0; j < eq_top; j++) {
+        if (eq_stk_a[j] == sp[-2] && eq_stk_b[j] == sp[-1]) return RESULT_OK(Qtrue);
+    }
+    if (eq_top < 64) {
+        eq_stk_a[eq_top] = sp[-2];
+        eq_stk_b[eq_top] = sp[-1];
+        eq_top++;
+    }
+    RESULT result = RESULT_OK(Qtrue);
     for (long i = 0; i < la; i++) {
         /* Re-read sp[-2]/sp[-1] each iter — they're slot-tracked, so even
          * if korb_eq's inner dispatch fires GC and moves the arrays, the
@@ -601,13 +614,16 @@ static RESULT ary_eq(CTX *c, int argc, VALUE *sp) {
             enum korb_type ta = BUILTIN_TYPE(a);
             if (ta != T_STRING && ta != T_ARRAY && ta != T_HASH &&
                 ta != T_RANGE && ta != T_BIGNUM && ta != T_FLOAT) {
-                VALUE r = UNWRAP(korb_funcall_r(c, a, korb_intern("=="), 1, &b));
-                eq = RTEST(r);
+                RESULT _er = korb_funcall_r(c, a, korb_intern("=="), 1, &b);
+                if (_er.state != KORB_NORMAL) { result = _er; goto done_eq; }
+                eq = RTEST(_er.value);
             }
         }
-        if (!eq) return RESULT_OK(Qfalse);
+        if (!eq) { result = RESULT_OK(Qfalse); goto done_eq; }
     }
-    return RESULT_OK(Qtrue);
+done_eq:
+    if (eq_top > 0) eq_top--;
+    return result;
 }
 static RESULT ary_lshift(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -2905,6 +2921,9 @@ static RESULT ary_clone(CTX *c, int argc, VALUE *sp) {
 }
 
 /* Array#eql? — for our impl, same as ==. */
+static __thread VALUE ary_eql_stk_a[64];
+static __thread VALUE ary_eql_stk_b[64];
+static __thread int ary_eql_top = 0;
 static RESULT ary_eql(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
@@ -2916,29 +2935,75 @@ static RESULT ary_eql(CTX *c, int argc, VALUE *sp) {
     struct korb_array *a = (struct korb_array *)self;
     struct korb_array *b = (struct korb_array *)argv[0];
     if (a->len != b->len) return RESULT_OK(Qfalse);
-    for (long i = 0; i < a->len; i++) {
-        VALUE r = UNWRAP(korb_funcall(c, a->ptr[i], korb_intern("eql?"), 1, &b->ptr[i]));
-        if (!RTEST(r)) return RESULT_OK(Qfalse);
+    /* Recursion guard: on re-entry with the same (self, other), assume equal. */
+    for (int j = 0; j < ary_eql_top; j++) {
+        if (ary_eql_stk_a[j] == self && ary_eql_stk_b[j] == argv[0]) {
+            return RESULT_OK(Qtrue);
+        }
     }
-    return RESULT_OK(Qtrue);
+    if (ary_eql_top < 64) {
+        ary_eql_stk_a[ary_eql_top] = self;
+        ary_eql_stk_b[ary_eql_top] = argv[0];
+        ary_eql_top++;
+    }
+    RESULT result = RESULT_OK(Qtrue);
+    for (long i = 0; i < a->len; i++) {
+        RESULT _er = korb_funcall(c, a->ptr[i], korb_intern("eql?"), 1, &b->ptr[i]);
+        if (_er.state != KORB_NORMAL) { result = _er; goto done; }
+        if (!RTEST(_er.value)) { result = RESULT_OK(Qfalse); goto done; }
+    }
+done:
+    if (ary_eql_top > 0) ary_eql_top--;
+    return result;
 }
 
-/* Array#<=> — lexical comparison. */
+/* Array#<=> — lexical comparison.  Recursive arrays: on re-entry with
+ * the same (self, other) pair, return 0 (CRuby's rb_exec_recursive_paired
+ * behavior) so the outer loop continues without infinite recursion. */
+static __thread VALUE ary_cmp_stk_a[64];
+static __thread VALUE ary_cmp_stk_b[64];
+static __thread int ary_cmp_top = 0;
 static RESULT ary_cmp(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (BUILTIN_TYPE(argv[0]) != T_ARRAY) return RESULT_OK(Qnil);
+    /* CRuby: Array#<=> tries #to_ary on non-Array argument. */
+    if (BUILTIN_TYPE(argv[0]) != T_ARRAY) {
+        if (SPECIAL_CONST_P(argv[0])) return RESULT_OK(Qnil);
+        VALUE rt = UNWRAP(korb_funcall(c, argv[0], korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_ary")) }));
+        if (!RTEST(rt)) return RESULT_OK(Qnil);
+        VALUE coerced = UNWRAP(korb_funcall(c, argv[0], korb_intern("to_ary"), 0, NULL));
+        if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_ARRAY) return RESULT_OK(Qnil);
+        argv[0] = coerced;
+    }
+    /* Recursion guard: re-entering on same (self, other) returns 0. */
+    for (int j = 0; j < ary_cmp_top; j++) {
+        if (ary_cmp_stk_a[j] == self && ary_cmp_stk_b[j] == argv[0]) {
+            return RESULT_OK(INT2FIX(0));
+        }
+    }
     struct korb_array *a = (struct korb_array *)self;
     struct korb_array *b = (struct korb_array *)argv[0];
     long n = a->len < b->len ? a->len : b->len;
-    for (long i = 0; i < n; i++) {
-        VALUE r = UNWRAP(korb_funcall(c, a->ptr[i], korb_intern("<=>"), 1, &b->ptr[i]));
-        if (!FIXNUM_P(r) || FIX2LONG(r) != 0) return RESULT_OK(r);
+    if (ary_cmp_top < 64) {
+        ary_cmp_stk_a[ary_cmp_top] = self;
+        ary_cmp_stk_b[ary_cmp_top] = argv[0];
+        ary_cmp_top++;
     }
-    if (a->len == b->len) return RESULT_OK(INT2FIX(0));
-    return RESULT_OK(INT2FIX(a->len < b->len ? -1 : 1));
+    RESULT result;
+    for (long i = 0; i < n; i++) {
+        RESULT _er = korb_funcall(c, a->ptr[i], korb_intern("<=>"), 1, &b->ptr[i]);
+        if (_er.state != KORB_NORMAL) { result = _er; goto done; }
+        VALUE r = _er.value;
+        if (!FIXNUM_P(r) || FIX2LONG(r) != 0) { result = RESULT_OK(r); goto done; }
+    }
+    if (a->len == b->len) { result = RESULT_OK(INT2FIX(0)); goto done; }
+    result = RESULT_OK(INT2FIX(a->len < b->len ? -1 : 1));
+done:
+    if (ary_cmp_top > 0) ary_cmp_top--;
+    return result;
 }
 
 /* Helpers / impl for combination + permutation.  Returns RESULT to
