@@ -526,16 +526,11 @@ koruby_eval_bootstrap(CTX *c)
 {
     extern const char koruby_bootstrap_src[];
     extern const size_t koruby_bootstrap_len;
-    /* korb_eval_string currently still bridges via c->state at its
-     * boundary — see object.c korb_run_eval comment.  Read it back. */
-    VALUE br = korb_eval_string(c, koruby_bootstrap_src,
-                                koruby_bootstrap_len, "<bootstrap>");
-    (void)br;
-    if (c->state == KORB_RAISE) {
-        VALUE s = korb_inspect(c, c->sp, c->state_value);
+    RESULT _r = korb_eval_string(c, koruby_bootstrap_src,
+                                  koruby_bootstrap_len, "<bootstrap>");
+    if (_r.state == KORB_RAISE) {
+        VALUE s = korb_inspect(c, c->sp, _r.value);
         fprintf(stderr, "bootstrap failure: %s\n", korb_str_cstr(s));
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
     }
 }
 
@@ -589,7 +584,7 @@ koruby_run_ast(CTX *c, NODE *ast)
                 return code;
             }
         }
-        VALUE s = korb_inspect(c, c->sp, c->state_value);
+        VALUE s = korb_inspect(c, c->sp, _br.value);
         fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
         extern void korb_run_at_exit_hooks(CTX *c);
         korb_run_at_exit_hooks(c);

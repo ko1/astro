@@ -1791,8 +1791,11 @@ uint64_t korb_hash_value(CTX *c, VALUE v) {
          * lives on the Object class.  Otherwise we'd recurse forever. */
         if (m && m->defining_class != KORB_VM(c)->object_class &&
             m->defining_class != KORB_VM(c)->kernel_module) {
-            VALUE r; { RESULT _r_r = korb_funcall(c, v, korb_intern("hash"), 0, NULL); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
-            if (FIXNUM_P(r)) return (uint64_t)FIX2LONG(r) * 11400714819323198485ULL;
+            /* User #hash raise → fall back to identity; we can't
+             * propagate a RESULT from this hot uint64_t-returning helper. */
+            RESULT _r_r = korb_funcall(c, v, korb_intern("hash"), 0, NULL);
+            if (_r_r.state == KORB_NORMAL && FIXNUM_P(_r_r.value))
+                return (uint64_t)FIX2LONG(_r_r.value) * 11400714819323198485ULL;
         }
     }
     return (uint64_t)v;
@@ -1823,8 +1826,8 @@ bool korb_eql(CTX *c, VALUE a, VALUE b) {
         if (m && m->defining_class != KORB_VM(c)->object_class &&
             m->defining_class != KORB_VM(c)->kernel_module) {
             VALUE arg = b;
-            VALUE r; { RESULT _r_r = korb_funcall(c, a, korb_intern("eql?"), 1, &arg); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
-            return RTEST(r);
+            RESULT _r_r = korb_funcall(c, a, korb_intern("eql?"), 1, &arg);
+            return _r_r.state == KORB_NORMAL && RTEST(_r_r.value);
         }
     }
     return false;
@@ -2806,8 +2809,9 @@ RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
      * grow the ivar array via libc which is GC-safe but other paths
      * might fire if an ivar setter cfunc is registered).  Without this,
      * the C local `e` goes stale across the backtrace alloc and the
-     * final `c->state_value = e` stores a moved-out address — which is
-     * what made bootstrap.rb's RuntimeError surface as "" under STRESS. */
+     * final return value stores a moved-out address — which is what
+     * made bootstrap.rb's RuntimeError surface as "" under STRESS. */
+    VALUE exc_out = Qnil;
     ARO_ROOT_SCOPE_START(c, r, 2) {
         r[0] = (VALUE)klass;
         r[1] = korb_exc_new(c, (struct korb_class *)r[0], buf);
@@ -2847,13 +2851,9 @@ RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
                 }
             }
         } ARO_ROOT_SCOPE_END(c, rc);
-        c->state = KORB_RAISE;
-        c->state_value = r[1];
+        exc_out = r[1];
     } ARO_ROOT_SCOPE_END(c, r);
-    /* Return RESULT for new-ABI callers (`return korb_raise(...)`).
-     * Legacy callers discard the result via `korb_raise(...);` and
-     * propagate via the c->state side-channel as before. */
-    return (RESULT){ c->state_value, KORB_RAISE };
+    return (RESULT){ exc_out, KORB_RAISE };
 }
 
 /* ---- inspect / to_s ---- */
@@ -3250,7 +3250,7 @@ static VALUE korb_inspect_inner(CTX *c, VALUE v, int depth) {
         if (k && c) {
             struct korb_method *m = korb_class_find_method(k, korb_intern("inspect"));
             if (m && m->type == KORB_METHOD_AST) {
-                VALUE r; { RESULT _r_r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
+                RESULT _r_r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
                 if (BUILTIN_TYPE(r) == T_STRING) return r;
             }
         }
@@ -3310,7 +3310,7 @@ VALUE korb_inspect_dispatch(CTX *c, VALUE v) {
          * loop back here); only redirect when the user actually
          * overrode it as an AST method. */
         if (m && m->type == KORB_METHOD_AST) {
-            VALUE r; { RESULT _r_r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
+            RESULT _r_r = korb_funcall(c, v, korb_intern("inspect"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
             if (BUILTIN_TYPE(r) == T_STRING) return r;
         }
     }
@@ -3327,7 +3327,7 @@ VALUE korb_to_s_dispatch(CTX *c, VALUE v) {
         struct korb_class *klass = korb_class_of_class(v);
         struct korb_method *m = korb_class_find_method(klass, korb_intern("to_s"));
         if (m && m->type == KORB_METHOD_AST) {
-            VALUE r; { RESULT _r_r = korb_funcall(c, v, korb_intern("to_s"), 0, NULL); if (UNLIKELY(_r_r.state != KORB_NORMAL)) { c->state = _r_r.state; c->state_value = _r_r.value; r = Qnil; } else { r = _r_r.value; } }
+            RESULT _r_r = korb_funcall(c, v, korb_intern("to_s"), 0, NULL); VALUE r = _r_r.state == KORB_NORMAL ? _r_r.value : Qnil;
             /* If user's to_s returned something other than a String,
              * fall through to the default rendering rather than
              * crash inside korb_str_concat. */
@@ -4358,15 +4358,10 @@ RESULT korb_dispatch_to_method(CTX *c, struct korb_method *m,
             for (int i = 0; i < argc; i++) sp[1 + i] = saved_argv[i];
             _rr = m->u.cfunc.func_r(c, argc, sp + 1 + argc);
         } else {
-            /* Legacy cfunc: VALUE return + c->state side-channel; lift. */
-            VALUE r = m->u.cfunc.func(c, recv, argc, argv);
-            if (UNLIKELY(c->state != KORB_NORMAL)) {
-                _rr = (RESULT){ c->state_value, c->state };
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-            } else {
-                _rr = RESULT_OK(r);
-            }
+            /* All cfunc methods now use func_r; m->u.cfunc.func is
+             * dead.  Reaching here means a method was registered
+             * without func_r, which we no longer do. */
+            __builtin_unreachable();
         }
         c->current_frame = fr.prev;
         return _rr;
@@ -5046,20 +5041,18 @@ static char *read_file(const char *path, size_t *out_len) {
     return buf;
 }
 
-VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename) {
+RESULT korb_eval_string(CTX *c, const char *src, size_t len, const char *filename) {
     char *err_msg = NULL;
     extern NODE *koruby_parse_full(const char *src, size_t len, const char *filename, char **err_msg);
     NODE *ast = koruby_parse_full(src, len, filename ? filename : "(eval)", &err_msg);
     if (err_msg) {
         VALUE eSE = korb_const_get(KORB_VM(c)->object_class, korb_intern("SyntaxError"));
         if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eSE, "%s", err_msg));
-        } else {
-            DROP_RESULT(korb_raise(c, NULL, "syntax error: %s", err_msg));
+            return korb_raise(c, (struct korb_class *)eSE, "%s", err_msg);
         }
-        return Qnil;
+        return korb_raise(c, NULL, "syntax error: %s", err_msg);
     }
-    if (!ast) return Qnil;
+    if (!ast) return RESULT_OK(Qnil);
 
     /* Save / push fresh top-level state for the loaded file */
     VALUE *prev_fp = c->current_frame->fp;
@@ -5097,21 +5090,12 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
 
     OPTIMIZE(ast);
     RESULT _br = EVAL(c, ast, c->current_frame->fp);
-    VALUE r;
     /* Top-level `return` in a load'd file just stops *this* file —
      * not an error and not a propagating return.  CRuby allows this
      * (load returns true, requiring the file proceeds normally). */
     if (_br.state == KORB_RETURN) {
         c->state_target_frame = NULL;
-        r = _br.value;
-    } else if (_br.state != KORB_NORMAL) {
-        /* Bridge to legacy c->state for uses that still inspect it
-         * (koruby_run_ast prints the unhandled exception etc.). */
-        c->state = _br.state;
-        c->state_value = _br.value;
-        r = Qnil;
-    } else {
-        r = _br.value;
+        _br = RESULT_OK(_br.value);
     }
 
     c->current_frame->fp = prev_fp;
@@ -5128,15 +5112,15 @@ VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename
     c->current_frame->current_file = prev_file;
     c->current_frame = prev_frame;
     c->running_block = prev_running_block;
-    return r;
+    return _br;
 }
 
 /* Like korb_eval_string but uses the caller's `self` and the receiver's
  * class for cref — used by Object#instance_eval(string). */
-VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
+RESULT korb_eval_string_in_self(CTX *c, const char *src, size_t len,
                                 const char *filename, VALUE recv) {
     NODE *ast = koruby_parse(src, len, filename ? filename : "(eval)");
-    if (!ast) return Qnil;
+    if (!ast) return RESULT_OK(Qnil);
     VALUE *prev_fp = c->current_frame->fp;
     VALUE prev_self = c->current_frame->self;
     VALUE *prev_sp = c->sp;
@@ -5152,21 +5136,13 @@ VALUE korb_eval_string_in_self(CTX *c, const char *src, size_t len,
     c->current_frame->current_file = filename;
     OPTIMIZE(ast);
     RESULT _br = EVAL(c, ast, c->current_frame->fp);
-    VALUE r;
-    if (UNLIKELY(_br.state != KORB_NORMAL)) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-        r = Qnil;
-    } else {
-        r = _br.value;
-    }
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
     c->current_frame->self = prev_self;
     c->current_frame->current_class = prev_class;
     c->current_frame->cref = prev_cref;
     c->current_frame->current_file = prev_file;
-    return r;
+    return _br;
 }
 
 /* loaded file tracker (for require) */
@@ -5368,15 +5344,13 @@ VALUE korb_fiber_new(struct korb_proc *block) {
     return (VALUE)fib;
 }
 
-VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
+RESULT korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     struct korb_fiber *fib = (struct korb_fiber *)fibv;
     if (fib->state == KF_DEAD) {
-        DROP_RESULT(korb_raise(c, NULL, "dead fiber called"));
-        return Qnil;
+        return korb_raise(c, NULL, "dead fiber called");
     }
     if (fib->state == KF_RUNNING) {
-        DROP_RESULT(korb_raise(c, NULL, "double resume"));
-        return Qnil;
+        return korb_raise(c, NULL, "double resume");
     }
     fib->args = argv;
     fib->argc = argc;
@@ -5453,7 +5427,14 @@ VALUE korb_fiber_resume(CTX *c, VALUE fibv, int argc, VALUE *argv) {
     }
     current_fiber = prev;
     if (fib->state != KF_DEAD) fib->state = KF_SUSPENDED;
-    return fib->result;
+    /* Body-raise bridges via c->state (set by korb_fiber_entry); lift here. */
+    if (UNLIKELY(c->state != KORB_NORMAL)) {
+        RESULT _r = (RESULT){ c->state_value, c->state };
+        c->state = KORB_NORMAL;
+        c->state_value = Qnil;
+        return _r;
+    }
+    return RESULT_OK(fib->result);
 }
 
 VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv) {
@@ -5521,42 +5502,30 @@ RESULT korb_fiber_resume_cfunc(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
-    VALUE v = korb_fiber_resume(c, self, argc, argv);
-    /* Bridge: if the fiber body raised, korb_fiber_resume's body set
-     * c->state in the fiber.  Lift to RESULT so cfunc_r dispatch sees
-     * the raise. */
-    if (UNLIKELY(c->state != KORB_NORMAL)) {
-        RESULT _r = (RESULT){ c->state_value, c->state };
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
-        return _r;
-    }
-    return RESULT_OK(v);
+    return korb_fiber_resume(c, self, argc, argv);
 }
 
-VALUE korb_require_file(CTX *c, const char *path) {
-    if (already_loaded(path)) return Qfalse;
+RESULT korb_require_file(CTX *c, const char *path) {
+    if (already_loaded(path)) return RESULT_OK(Qfalse);
     size_t len;
     char *src = read_file(path, &len);
     if (!src) {
-        DROP_RESULT(korb_raise(c, NULL, "no such file: %s", path));
-        return Qnil;
+        return korb_raise(c, NULL, "no such file: %s", path);
     }
     mark_loaded(path);
-    korb_eval_string(c, src, len, path);
-    return Qtrue;
+    CHECK(korb_eval_string(c, src, len, path));
+    return RESULT_OK(Qtrue);
 }
 
-VALUE korb_load_file(CTX *c, const char *path) {
+RESULT korb_load_file(CTX *c, const char *path) {
     /* `load` runs the file unconditionally — does NOT consult the
      * already_loaded set, and does NOT mark it loaded.  Only `require`
      * dedupes (via korb_require_file). */
     size_t len;
     char *src = read_file(path, &len);
     if (!src) {
-        DROP_RESULT(korb_raise(c, NULL, "no such file: %s", path));
-        return Qnil;
+        return korb_raise(c, NULL, "no such file: %s", path);
     }
-    korb_eval_string(c, src, len, path);
-    return Qtrue;
+    CHECK(korb_eval_string(c, src, len, path));
+    return RESULT_OK(Qtrue);
 }

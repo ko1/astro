@@ -188,8 +188,7 @@ static RESULT module_include(CTX *c, int argc, VALUE *sp) {
         struct korb_class *meta = korb_class_of_class(argv[i]);
         if (meta && korb_class_find_method(meta, korb_intern("included"))) {
             VALUE klass_v = self;
-            korb_funcall(c, argv[i], korb_intern("included"), 1, &klass_v);
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+            CHECK(korb_funcall(c, argv[i], korb_intern("included"), 1, &klass_v));
         }
     }
     if (KORB_VM(c)) { KORB_VM(c)->method_serial++; korb_g_method_serial = KORB_VM(c)->method_serial; }
@@ -636,14 +635,15 @@ static RESULT module_class_eval(CTX *c, int argc, VALUE *sp) {
     c->current_frame->cref = &new_cref;
     blk->self = self;
     VALUE av0[1] = { self };
-    VALUE r = UNWRAP(korb_yield(c, 1, av0));
+    RESULT _br = korb_yield(c, 1, av0);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     c->current_frame->self = prev_self;
     c->current_frame->current_class = prev_class;
     c->current_frame->cref = prev_cref;
-    if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }
-    return RESULT_OK(r);
+    /* class_eval consumes a `break` as nil; other non-NORMAL propagates. */
+    if (_br.state == KORB_BREAK) return RESULT_OK(Qnil);
+    return _br;
 }
 
 /* Module#class_exec(*args) { |*args| ... } — like class_eval but
@@ -682,14 +682,15 @@ static RESULT module_class_exec(CTX *c, int argc, VALUE *sp) {
     c->current_frame->current_class = klass;
     c->current_frame->cref = &new_cref;
     blk->self = self;
-    VALUE r = UNWRAP(korb_yield(c, (uint32_t)argc, argv));
+    RESULT _br = korb_yield(c, (uint32_t)argc, argv);
     blk->cref = prev_blk_cref;
     blk->self = prev_blk_self;
     c->current_frame->self = prev_self;
     c->current_frame->current_class = prev_class;
     c->current_frame->cref = prev_cref;
-    if (c->state == KORB_BREAK) { c->state = KORB_NORMAL; c->state_value = Qnil; }
-    return RESULT_OK(r);
+    /* class_exec consumes a `break` as nil; other non-NORMAL propagates. */
+    if (_br.state == KORB_BREAK) return RESULT_OK(Qnil);
+    return _br;
 }
 
 /* Module#< — true if self is a subclass/submodule of other. */
@@ -862,8 +863,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
             struct korb_class *super_meta = korb_class_of_class((VALUE)super);
             if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
                 VALUE child_v = (VALUE)nk;
-                korb_funcall(c, (VALUE)super, korb_intern("inherited"), 1, &child_v);
-                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+                CHECK(korb_funcall(c, (VALUE)super, korb_intern("inherited"), 1, &child_v));
             }
         }
         
@@ -1039,8 +1039,7 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
         struct korb_class *meta = korb_class_of_class(argv[i]);
         if (meta && korb_class_find_method(meta, korb_intern("extended"))) {
             VALUE obj_v = self;
-            korb_funcall(c, argv[i], korb_intern("extended"), 1, &obj_v);
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
+            CHECK(korb_funcall(c, argv[i], korb_intern("extended"), 1, &obj_v));
         }
     }
     return RESULT_OK(self);

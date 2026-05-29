@@ -172,12 +172,13 @@ void korb_init_builtins(CTX *c) {
      * has this as a private instance method on Kernel; user classes
      * override it to participate in respond_to? lookup. */
     {
-        VALUE _rtm_default(CTX *c, VALUE self, int argc, VALUE *argv) {
-            return Qfalse;
+        RESULT _rtm_default(CTX *c, int argc, VALUE *sp) {
+            (void)c; (void)argc; (void)sp;
+            return RESULT_OK(Qfalse);
         }
-        DEF_PRIV(KORB_VM(c)->object_class, "respond_to_missing?", _rtm_default, 2);
+        DEF_R_PRIV(KORB_VM(c)->object_class, "respond_to_missing?", _rtm_default, 2);
         if (KORB_VM(c)->kernel_module) {
-            DEF_PRIV(KORB_VM(c)->kernel_module, "respond_to_missing?", _rtm_default, 2);
+            DEF_R_PRIV(KORB_VM(c)->kernel_module, "respond_to_missing?", _rtm_default, 2);
         }
     }
     /* Kernel module copies for `Kernel.{public,private}_instance_methods`

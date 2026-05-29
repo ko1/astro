@@ -1009,12 +1009,12 @@ void korb_init_builtins(CTX *c);
 /* Fiber */
 struct korb_fiber;
 VALUE korb_fiber_new(struct korb_proc *block);
-VALUE korb_fiber_resume(CTX *c, VALUE fib, int argc, VALUE *argv);
+RESULT korb_fiber_resume(CTX *c, VALUE fib, int argc, VALUE *argv);
 VALUE korb_fiber_yield(CTX *c, int argc, VALUE *argv);
 
 /* file load (parse + eval) */
-VALUE korb_load_file(CTX *c, const char *path);
-VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
+RESULT korb_load_file(CTX *c, const char *path);
+RESULT korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
 
 /* path resolution for require_relative */
 char *korb_dirname(const char *path);

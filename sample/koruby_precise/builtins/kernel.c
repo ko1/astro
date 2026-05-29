@@ -922,8 +922,8 @@ static RESULT kernel_require_relative(CTX *c, int argc, VALUE *sp) {
     if (!resolved) {
         return korb_raise(c, NULL, "cannot load such file -- %s", name);
     }
-    extern VALUE korb_require_file(CTX *c, const char *path);
-    return RESULT_OK(korb_require_file(c, resolved));
+    extern RESULT korb_require_file(CTX *c, const char *path);
+    return korb_require_file(c, resolved);
 }
 
 static RESULT kernel_require(CTX *c, int argc, VALUE *sp) {
@@ -935,15 +935,15 @@ static RESULT kernel_require(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, NULL, "require: expected 1 String");
     }
     const char *name = korb_str_cstr(argv[0]);
-    extern VALUE korb_require_file(CTX *c, const char *path);
+    extern RESULT korb_require_file(CTX *c, const char *path);
     /* Bare path: try as is, then as .rb in cwd */
-    if (korb_file_exists(name)) return RESULT_OK(korb_require_file(c, name));
+    if (korb_file_exists(name)) return korb_require_file(c, name);
     long nl = strlen(name);
     bool has_rb = nl >= 3 && strcmp(name + nl - 3, ".rb") == 0;
     if (!has_rb) {
         char *with = korb_xmalloc_atomic(nl + 4);
         sprintf(with, "%s.rb", name);
-        if (korb_file_exists(with)) return RESULT_OK(korb_require_file(c, with));
+        if (korb_file_exists(with)) return korb_require_file(c, with);
     }
     /* Stub: pretend stdlib gems aren't available, return false */
     if (strcmp(name, "stackprof") == 0) return RESULT_OK(Qfalse);
@@ -960,7 +960,7 @@ static RESULT kernel_load(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(Qnil);
-    return RESULT_OK(korb_load_file(c, korb_str_cstr(argv[0])));
+    return korb_load_file(c, korb_str_cstr(argv[0]));
 }
 
 static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
@@ -1399,7 +1399,7 @@ static RESULT kernel_capture_lvars(CTX *c, int argc, VALUE *sp) {
     }
     return RESULT_OK(h);
 }
-extern VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
+extern RESULT korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
 extern RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *args, int argc);
 static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
