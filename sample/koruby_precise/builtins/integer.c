@@ -152,19 +152,44 @@ static RESULT int_mod(CTX *c, int argc, VALUE *sp) {
     }
     return RESULT_OK(korb_int_mod(self, argv[0]));
 }
+/* Coerce v via #to_int; raise TypeError if not Integer-convertible. */
+static RESULT int_shift_coerce(CTX *c, VALUE v, VALUE *out) {
+    if (FIXNUM_P(v) || (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_BIGNUM)) {
+        *out = v;
+        return RESULT_OK(Qnil);
+    }
+    if (SPECIAL_CONST_P(v)) {
+        return korb_raise_type_error(c, "no implicit conversion of %s into Integer",
+                                      NIL_P(v) ? "nil" : (v == Qtrue ? "true" : "false"));
+    }
+    struct korb_class *k = korb_class_of_class(v);
+    if (!k || !korb_class_find_method(k, korb_intern("to_int"))) {
+        return korb_raise_type_error(c, "no implicit conversion of %s into Integer",
+                                      korb_id_name(k->name));
+    }
+    VALUE iv = UNWRAP(korb_funcall(c, v, korb_intern("to_int"), 0, NULL));
+    if (!FIXNUM_P(iv) && (SPECIAL_CONST_P(iv) || BUILTIN_TYPE(iv) != T_BIGNUM)) {
+        return korb_raise_type_error(c, "can't convert %s to Integer (#to_int returned non-Integer)",
+                                      korb_id_name(k->name));
+    }
+    *out = iv;
+    return RESULT_OK(Qnil);
+}
 static RESULT int_lshift(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
-
-    return RESULT_OK(korb_int_lshift(self, argv[0]));
+    VALUE shift;
+    CHECK(int_shift_coerce(c, argv[0], &shift));
+    return RESULT_OK(korb_int_lshift(self, shift));
 }
 static RESULT int_rshift(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
-
-    return RESULT_OK(korb_int_rshift(self, argv[0]));
+    VALUE shift;
+    CHECK(int_shift_coerce(c, argv[0], &shift));
+    return RESULT_OK(korb_int_rshift(self, shift));
 }
 /* Bitwise &/|/^ accept any integer-like RHS; for non-integers fall back
  * to the coerce protocol so user numerics work (CRuby semantics).
@@ -1048,8 +1073,7 @@ static RESULT int_aref(CTX *c, int argc, VALUE *sp) {
                           "wrong number of arguments (given %d, expected 1..2)", argc);
     }
     /* Range form: Integer#[range] */
-    if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_OBJECT &&
-        korb_class_of_class(argv[0]) == KORB_VM(c)->range_class) {
+    if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_RANGE) {
         VALUE first = UNWRAP(korb_funcall_r(c, argv[0], korb_intern("first"), 0, NULL));
         VALUE last = UNWRAP(korb_funcall_r(c, argv[0], korb_intern("last"), 0, NULL));
         VALUE excl = UNWRAP(korb_funcall_r(c, argv[0], korb_intern("exclude_end?"), 0, NULL));
