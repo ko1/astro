@@ -4972,7 +4972,10 @@ class NilClass
   def to_r
     Rational(0, 1)
   end unless method_defined?(:to_r)
-  def rationalize(*_)
+  def rationalize(*args)
+    if args.length > 1
+      raise ArgumentError, "wrong number of arguments (given #{args.length}, expected 0..1)"
+    end
     Rational(0, 1)
   end unless method_defined?(:rationalize)
 end
