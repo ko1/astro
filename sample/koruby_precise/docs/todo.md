@@ -188,6 +188,19 @@ env_size まで cover するように fp_hi を拡張する。
 default / STRESS / STRESS+PURGE 全 mode で PASS、 27 benchmark が
 STRESS+PURGE で 0 crash。
 
+### Enumerable 系の改善 (2026-05-29 第 6 セッション、 終盤)
+
+- Enumerable#sort: 1 個目の `def sort` が block を受け取らず無視していた
+  bug を fix。 sort_spec: 5 → 9 PASS。
+- Enumerable#count(arg) / #count { ... } をサポート。 count_spec: 3 → 8 PASS。
+- Enumerable#min(n) / #max(n) / #min_by(n) / #max_by(n) (arity n) を
+  サポート。 min/max_by/min_by: +21 PASS。
+- block 引数の受け取り方を CRuby 仕様 (block(probe, running) で sign 確認)
+  に統一。
+
+Total +33 PASS from Enumerable fixes。 broad sweep 上では fluctuation あり
+だが 150-spec sample で stable 1634。 specific enumerable spec で confirm 済。
+
 ## rubyspec 取れ高改善 (2026-05-28 後半)
 
 baseline (commit 66ab6dda 時): broad sweep `PASS=238 / FAIL=178 / CRASH=11`。
