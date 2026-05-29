@@ -471,29 +471,28 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
         if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
             msg = korb_str_cstr(argv[1]);
         }
-        ARO_ROOT_SCOPE_START(c, rs, 1) {
-            rs[0] = korb_exc_new(c, c->sp_top, (struct korb_class *)argv[0], msg);
-            int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
-            korb_exc_set_backtrace(c, sp, rs[0], line);
-            VALUE cur = korb_gvar_get(korb_intern("$!"));
-            if (!NIL_P(cur) && cur != rs[0] &&
-                !SPECIAL_CONST_P(rs[0]) && BUILTIN_TYPE(rs[0]) == T_OBJECT) {
-                VALUE existing = korb_ivar_get(rs[0], korb_intern("@cause"));
-                if (UNDEF_P(existing) || NIL_P(existing)) {
-                    VALUE walk = cur;
-                    int hops = 0;
-                    bool would_cycle = false;
-                    while (!NIL_P(walk) && hops++ < 32) {
-                        if (walk == rs[0]) { would_cycle = true; break; }
-                        if (SPECIAL_CONST_P(walk) || BUILTIN_TYPE(walk) != T_OBJECT) break;
-                        walk = korb_ivar_get(walk, korb_intern("@cause"));
-                        if (UNDEF_P(walk)) break;
-                    }
-                    if (!would_cycle) korb_ivar_set(rs[0], korb_intern("@cause"), cur);
+        /* Park exc in sp[0] across korb_exc_set_backtrace / korb_ivar_get/set. */
+        sp[0] = korb_exc_new(c, sp + 1, (struct korb_class *)argv[0], msg);
+        int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
+        korb_exc_set_backtrace(c, sp + 1, sp[0], line);
+        VALUE cur = korb_gvar_get(korb_intern("$!"));
+        if (!NIL_P(cur) && cur != sp[0] &&
+            !SPECIAL_CONST_P(sp[0]) && BUILTIN_TYPE(sp[0]) == T_OBJECT) {
+            VALUE existing = korb_ivar_get(sp[0], korb_intern("@cause"));
+            if (UNDEF_P(existing) || NIL_P(existing)) {
+                VALUE walk = cur;
+                int hops = 0;
+                bool would_cycle = false;
+                while (!NIL_P(walk) && hops++ < 32) {
+                    if (walk == sp[0]) { would_cycle = true; break; }
+                    if (SPECIAL_CONST_P(walk) || BUILTIN_TYPE(walk) != T_OBJECT) break;
+                    walk = korb_ivar_get(walk, korb_intern("@cause"));
+                    if (UNDEF_P(walk)) break;
                 }
+                if (!would_cycle) korb_ivar_set(sp[0], korb_intern("@cause"), cur);
             }
-            exc_val = rs[0];
-        } ARO_ROOT_SCOPE_END(c, rs);
+        }
+        exc_val = sp[0];
     } else {
         /* Anything else (nil, Integer, etc.) — CRuby raises TypeError. */
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
