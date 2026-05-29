@@ -582,11 +582,31 @@ static RESULT struct_eq(CTX *c, int argc, VALUE *sp) {
 
     if (SPECIAL_CONST_P(argv[0])) return RESULT_OK(Qfalse);
     if (((struct RBasic *)self)->klass != ((struct RBasic *)argv[0])->klass) return RESULT_OK(Qfalse);
+    /* Recursion guard for self-referential Structs (CRuby: returns true). */
+    static __thread VALUE struct_eq_stk_a[64];
+    static __thread VALUE struct_eq_stk_b[64];
+    static __thread int struct_eq_top = 0;
+    for (int j = 0; j < struct_eq_top; j++) {
+        if (struct_eq_stk_a[j] == self && struct_eq_stk_b[j] == argv[0]) return RESULT_OK(Qtrue);
+    }
+    if (struct_eq_top < 64) {
+        struct_eq_stk_a[struct_eq_top] = self;
+        struct_eq_stk_b[struct_eq_top] = argv[0];
+        struct_eq_top++;
+    }
+    /* sp[0] receiver for first to_a; sp[1] holds its result (a) so it survives
+     * GC during the second to_a; sp[2] receiver for second to_a. */
     sp[0] = self;
-    VALUE a = UNWRAP(struct_to_a(c, 0, sp + 1));
-    sp[1] = argv[0];
-    VALUE b = UNWRAP(struct_to_a(c, 0, sp + 2));
-    return korb_funcall_r(c, a, korb_intern("=="), 1, &b);
+    RESULT ra = struct_to_a(c, 0, sp + 1);
+    if (ra.state != KORB_NORMAL) { if (struct_eq_top > 0) struct_eq_top--; return ra; }
+    sp[1] = ra.value;
+    sp[2] = argv[0];
+    RESULT rb = struct_to_a(c, 0, sp + 3);
+    if (rb.state != KORB_NORMAL) { if (struct_eq_top > 0) struct_eq_top--; return rb; }
+    sp[2] = rb.value; /* re-use sp[2] to hold b for funcall arg */
+    RESULT res = korb_funcall_r(c, sp[1], korb_intern("=="), 1, &sp[2]);
+    if (struct_eq_top > 0) struct_eq_top--;
+    return res;
 }
 
 /* Struct#to_h */
@@ -761,6 +781,63 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         korb_class_add_method_cfunc_r(klass, korb_intern("deconstruct_keys"), _struct_deconstruct_keys, 1);
     }
     korb_class_add_method_cfunc_r(klass, korb_intern("==" ),        struct_eq,          1);
+    /* Struct#eql? — same struct class + all members eql?. */
+    {
+        RESULT _struct_eql(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            if (SPECIAL_CONST_P(argv[0])) return RESULT_OK(Qfalse);
+            if (((struct RBasic *)self)->klass != ((struct RBasic *)argv[0])->klass) return RESULT_OK(Qfalse);
+            static __thread VALUE eql_stk_a[64];
+            static __thread VALUE eql_stk_b[64];
+            static __thread int eql_top = 0;
+            for (int j = 0; j < eql_top; j++) {
+                if (eql_stk_a[j] == self && eql_stk_b[j] == argv[0]) return RESULT_OK(Qtrue);
+            }
+            if (eql_top < 64) { eql_stk_a[eql_top] = self; eql_stk_b[eql_top] = argv[0]; eql_top++; }
+            sp[0] = self;
+            RESULT ra = struct_to_a(c, 0, sp + 1);
+            if (ra.state != KORB_NORMAL) { if (eql_top > 0) eql_top--; return ra; }
+            sp[1] = ra.value;
+            sp[2] = argv[0];
+            RESULT rb = struct_to_a(c, 0, sp + 3);
+            if (rb.state != KORB_NORMAL) { if (eql_top > 0) eql_top--; return rb; }
+            sp[2] = rb.value;
+            RESULT res = korb_funcall_r(c, sp[1], korb_intern("eql?"), 1, &sp[2]);
+            if (eql_top > 0) eql_top--;
+            return res;
+        }
+        korb_class_add_method_cfunc_r(klass, korb_intern("eql?"), _struct_eql, 1);
+    }
+    /* Struct#hash — XOR of element hashes + class hash. */
+    {
+        RESULT _struct_hash(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            static __thread VALUE hash_stk[64];
+            static __thread int hash_top = 0;
+            for (int j = 0; j < hash_top; j++) {
+                if (hash_stk[j] == self) return RESULT_OK(INT2FIX(0));
+            }
+            if (hash_top < 64) { hash_stk[hash_top] = self; hash_top++; }
+            sp[0] = self;
+            RESULT ra = struct_to_a(c, 0, sp + 1);
+            if (ra.state != KORB_NORMAL) { if (hash_top > 0) hash_top--; return ra; }
+            VALUE arr = ra.value;
+            long h = (long)((struct RBasic *)self)->klass;
+            struct korb_array *a = (struct korb_array *)arr;
+            for (long i = 0; i < a->len; i++) {
+                RESULT rh = korb_funcall_r(c, a->ptr[i], korb_intern("hash"), 0, NULL);
+                if (rh.state != KORB_NORMAL) { if (hash_top > 0) hash_top--; return rh; }
+                long eh = FIXNUM_P(rh.value) ? FIX2LONG(rh.value) : 0;
+                h = (h * 31) ^ eh;
+            }
+            if (hash_top > 0) hash_top--;
+            return RESULT_OK(INT2FIX(h & 0x3fffffffffffffffLL));
+        }
+        korb_class_add_method_cfunc_r(klass, korb_intern("hash"), _struct_hash, 0);
+    }
     korb_class_add_method_cfunc_r(klass, korb_intern("to_h"),       struct_to_h,        0);
     korb_class_add_method_cfunc_r(klass, korb_intern("size"),       struct_size,        0);
     korb_class_add_method_cfunc_r(klass, korb_intern("length"),     struct_size,        0);
