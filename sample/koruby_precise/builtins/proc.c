@@ -51,7 +51,9 @@ static RESULT proc_class_new(CTX *c, int argc, VALUE *sp) {
 
     
     if (!c->current_block) {
-        return korb_raise(c, NULL, "tried to create Proc object without a block");
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+        return korb_raise(c, (struct korb_class *)eA,
+                          "tried to create Proc object without a block");
     }
     return RESULT_OK((VALUE)c->current_block);
 }
