@@ -6,11 +6,14 @@ static struct {
     uint32_t cnt, capa;
 } g_at_exit = {0};
 
-static VALUE kernel_at_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_at_exit(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     
     if (!c->current_block) {
-        DROP_RESULT(korb_raise(c, NULL, "called without a block"));
-        return Qnil;
+        return korb_raise(c, NULL, "called without a block");
     }
     if (g_at_exit.cnt >= g_at_exit.capa) {
         uint32_t nc = g_at_exit.capa ? g_at_exit.capa * 2 : 4;
@@ -18,7 +21,7 @@ static VALUE kernel_at_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
         g_at_exit.capa = nc;
     }
     g_at_exit.procs[g_at_exit.cnt++] = c->current_block;
-    return (VALUE)c->current_block;
+    return RESULT_OK((VALUE)c->current_block);
 }
 
 void korb_run_at_exit_hooks(CTX *c) {
@@ -48,7 +51,11 @@ void korb_run_at_exit_hooks(CTX *c) {
 #include <time.h>
 #include "precise_gc/gc.h"  /* ARO_ROOT_SCOPE_* macros */
 
-static VALUE kernel_srand(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_srand(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     unsigned int seed;
     if (argc >= 1 && FIXNUM_P(argv[0])) {
         seed = (unsigned int)FIX2LONG(argv[0]);
@@ -56,7 +63,7 @@ static VALUE kernel_srand(CTX *c, VALUE self, int argc, VALUE *argv) {
         seed = (unsigned int)(time(NULL) ^ (long)self);
     }
     srand(seed);
-    return INT2FIX((long)seed);
+    return RESULT_OK(INT2FIX((long)seed));
 }
 
 static bool g_srand_initialized = false;
@@ -67,25 +74,29 @@ static void korb_srand_lazy(void) {
     }
 }
 
-static VALUE kernel_rand(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_rand(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     korb_srand_lazy();
     /* rand           → Float in [0, 1)
      * rand(N)        → Integer in [0, N) for Integer N
      * rand(F)        → Float in [0, F)
      * rand(a..b)     → Integer in [a, b]  (or [a, b) for exclusive) */
     if (argc < 1) {
-        return korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0));
+        return RESULT_OK(korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0)));
     }
     VALUE a = argv[0];
     if (FIXNUM_P(a)) {
         long n = FIX2LONG(a);
-        if (n <= 0) return korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0));
-        return INT2FIX((long)(rand() % n));
+        if (n <= 0) return RESULT_OK(korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0)));
+        return RESULT_OK(INT2FIX((long)(rand() % n)));
     }
     if (KORB_IS_FLOAT(a)) {
         double d = korb_num2dbl(a);
-        if (d <= 0) return korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0));
-        return korb_float_new(c, c->sp, ((double)rand() / ((double)RAND_MAX + 1.0)) * d);
+        if (d <= 0) return RESULT_OK(korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0)));
+        return RESULT_OK(korb_float_new(c, c->sp, ((double)rand() / ((double)RAND_MAX + 1.0)) * d));
     }
     if (!SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)a;
@@ -93,11 +104,11 @@ static VALUE kernel_rand(CTX *c, VALUE self, int argc, VALUE *argv) {
             long lo = FIX2LONG(r->begin), hi = FIX2LONG(r->end);
             if (!r->exclude_end) hi++;
             long span = hi - lo;
-            if (span <= 0) return INT2FIX(lo);
-            return INT2FIX(lo + (rand() % span));
+            if (span <= 0) return RESULT_OK(INT2FIX(lo));
+            return RESULT_OK(INT2FIX(lo + (rand() % span)));
         }
     }
-    return korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0));
+    return RESULT_OK(korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0)));
 }
 
 /* ---------- Kernel ---------- */
@@ -145,71 +156,85 @@ static VALUE kwsplat_convert(CTX *c, VALUE v) {
 
 /* `case x; in [...]` array pattern coerce step: if obj.deconstruct
  * returns non-Array, raise TypeError ("deconstruct must return Array"). */
-VALUE kernel_pattern_decon_check(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+RESULT kernel_pattern_decon_check(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     VALUE v = argv[0];
-    if (NIL_P(v)) return Qnil;  /* propagate (failed-coerce) */
-    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return v;
+    if (NIL_P(v)) return RESULT_OK(Qnil);  /* propagate (failed-coerce) */
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return RESULT_OK(v);
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "deconstruct must return Array"));
-    return Qnil;
+    return korb_raise(c, (struct korb_class *)eT, "deconstruct must return Array");
 }
 /* Same shape for deconstruct_keys: must return Hash else TypeError. */
-VALUE kernel_pattern_decon_keys_check(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+RESULT kernel_pattern_decon_keys_check(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     VALUE v = argv[0];
-    if (NIL_P(v)) return Qnil;
-    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_HASH) return v;
+    if (NIL_P(v)) return RESULT_OK(Qnil);
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_HASH) return RESULT_OK(v);
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "deconstruct_keys must return Hash"));
-    return Qnil;
+    return korb_raise(c, (struct korb_class *)eT, "deconstruct_keys must return Hash");
 }
 
 /* `case x; when *arr` lowering: iterate arr at runtime and return true
  * iff any element ===s x.  Mirrors rescue *list. */
-VALUE kernel_case_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2) return Qfalse;
+RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 2) return RESULT_OK(Qfalse);
     VALUE list = argv[0];
     VALUE x    = argv[1];
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
         VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
-        if (c->state != KORB_NORMAL) return Qfalse;
+        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
             list = korb_funcall(c, list, korb_intern("to_a"), 0, NULL);
-            if (c->state != KORB_NORMAL) return Qfalse;
+            if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
-        if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return Qfalse;
+        if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return RESULT_OK(Qfalse);
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
         VALUE r = korb_funcall(c, a->ptr[i], korb_intern("==="), 1, &x);
-        if (c->state != KORB_NORMAL) return Qfalse;
-        if (RTEST(r)) return Qtrue;
+        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
+        if (RTEST(r)) return RESULT_OK(Qtrue);
     }
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
 /* `case; when *arr; ... end` (no target) — return true iff any element
  * of arr is truthy (`when *[false, true]` → true). */
-VALUE kernel_case_splat_any(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qfalse;
+RESULT kernel_case_splat_any(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qfalse);
     VALUE list = argv[0];
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
         VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
-        if (c->state != KORB_NORMAL) return Qfalse;
+        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
             list = korb_funcall(c, list, korb_intern("to_a"), 0, NULL);
-            if (c->state != KORB_NORMAL) return Qfalse;
+            if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
-        if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return Qfalse;
+        if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) return RESULT_OK(Qfalse);
     }
     struct korb_array *a = (struct korb_array *)list;
     for (long i = 0; i < a->len; i++) {
-        if (RTEST(a->ptr[i])) return Qtrue;
+        if (RTEST(a->ptr[i])) return RESULT_OK(Qtrue);
     }
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
 /* `rescue *list => e` lowering: list may be Array (or anything with
@@ -218,21 +243,28 @@ VALUE kernel_case_splat_any(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Validate that a rescue clause value is a Module/Class — CRuby's
  * `rescue 42` raises TypeError "class or module required for rescue
  * clause".  Returns the value unchanged on success. */
-VALUE kernel_rescue_class_check(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+RESULT kernel_rescue_class_check(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     VALUE v = argv[0];
     if (!SPECIAL_CONST_P(v) &&
         (BUILTIN_TYPE(v) == T_CLASS || BUILTIN_TYPE(v) == T_MODULE)) {
-        return v;
+        return RESULT_OK(v);
     }
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-               "class or module required for rescue clause"));
-    return Qnil;
+    return korb_raise(c, (struct korb_class *)eT,
+               "class or module required for rescue clause");
 }
 
-VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2) return Qfalse;
+RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 2) return RESULT_OK(Qfalse);
     VALUE list = argv[0];
     VALUE exc  = argv[1];
     if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
@@ -241,20 +273,19 @@ VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (!SPECIAL_CONST_P(list) &&
             (BUILTIN_TYPE(list) == T_CLASS || BUILTIN_TYPE(list) == T_MODULE)) {
             VALUE r = korb_funcall(c, list, korb_intern("==="), 1, &exc);
-            if (c->state != KORB_NORMAL) return Qfalse;
-            return RTEST(r) ? Qtrue : Qfalse;
+            if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
+            return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
         }
         VALUE rt = korb_funcall(c, list, korb_intern("respond_to?"), 1,
                                 (VALUE[]){ korb_id2sym(korb_intern("to_a")) });
-        if (c->state != KORB_NORMAL) return Qfalse;
+        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         if (RTEST(rt)) {
             list = korb_funcall(c, list, korb_intern("to_a"), 0, NULL);
-            if (c->state != KORB_NORMAL) return Qfalse;
+            if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
         }
         if (SPECIAL_CONST_P(list) || BUILTIN_TYPE(list) != T_ARRAY) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "can't convert to Array (returned non-Array)"));
-            return Qfalse;
+            return korb_raise(c, (struct korb_class *)eT, "can't convert to Array (returned non-Array)");
         }
     }
     struct korb_array *a = (struct korb_array *)list;
@@ -263,51 +294,66 @@ VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (SPECIAL_CONST_P(el) ||
             (BUILTIN_TYPE(el) != T_CLASS && BUILTIN_TYPE(el) != T_MODULE)) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                       "class or module required for rescue clause"));
-            return Qfalse;
+            return korb_raise(c, (struct korb_class *)eT,
+                       "class or module required for rescue clause");
         }
         VALUE r = korb_funcall(c, el, korb_intern("==="), 1, &exc);
-        if (c->state != KORB_NORMAL) return Qfalse;
-        if (RTEST(r)) return Qtrue;
+        if (c->state != KORB_NORMAL) return RESULT_OK(Qfalse);
+        if (RTEST(r)) return RESULT_OK(Qtrue);
     }
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
 /* `&expr` block-pass: nil → no block (Qnil); else expr.to_proc.
  * CRuby allows `m(&nil)` to mean "no block". */
-VALUE kernel_to_block_arg(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || NIL_P(argv[0])) return Qnil;
+RESULT kernel_to_block_arg(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(Qnil);
     VALUE v = argv[0];
-    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_PROC) return v;
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_PROC) return RESULT_OK(v);
     VALUE r = korb_funcall(c, v, korb_intern("to_proc"), 0, NULL);
-    if (c->state != KORB_NORMAL) return Qnil;
-    return r;
+    if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+    return RESULT_OK(r);
 }
 
 /* Lenient: `m(**nil)` is allowed and treated as no kwargs. */
-VALUE kernel_kwsplat_to_hash_lenient(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || NIL_P(argv[0])) return korb_hash_new(c, c->sp);
-    return kwsplat_convert(c, argv[0]);
+RESULT kernel_kwsplat_to_hash_lenient(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp));
+    return RESULT_OK(kwsplat_convert(c, argv[0]));
 }
 
-VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT kernel_kwsplat_to_hash(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Ruby 3.4+: `{**nil}` evaluates to {}.  Earlier versions raised
      * TypeError; we follow current CRuby (≥ 3.4). */
-    if (argc < 1 || NIL_P(argv[0])) return korb_hash_new(c, c->sp);
-    return kwsplat_convert(c, argv[0]);
+    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp));
+    return RESULT_OK(kwsplat_convert(c, argv[0]));
 }
 
-static VALUE kernel_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     for (int i = 0; i < argc; i++) {
         VALUE s = korb_inspect_dispatch(c, argv[i]);
         struct korb_string *str = (struct korb_string *)s;
         fwrite(str->ptr, 1, str->len, stdout);
         fputc('\n', stdout);
     }
-    if (argc == 0) return Qnil;
-    if (argc == 1) return argv[0];
-    return korb_ary_new_from_values(c, c->sp, argc, argv);
+    if (argc == 0) return RESULT_OK(Qnil);
+    if (argc == 1) return RESULT_OK(argv[0]);
+    return RESULT_OK(korb_ary_new_from_values(c, c->sp, argc, argv));
 }
 
 /* Pick the FILE * for IO-method writes.  When the receiver carries
@@ -323,9 +369,13 @@ static FILE *io_stream(VALUE self) {
     return (g_stderr_obj && self == g_stderr_obj) ? stderr : stdout;
 }
 
-static VALUE kernel_puts(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_puts(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     FILE *out = io_stream(self);
-    if (argc == 0) { fputc('\n', out); return Qnil; }
+    if (argc == 0) { fputc('\n', out); return RESULT_OK(Qnil); }
     for (int i = 0; i < argc; i++) {
         VALUE v = argv[i];
         if (BUILTIN_TYPE(v) == T_ARRAY) {
@@ -342,10 +392,14 @@ static VALUE kernel_puts(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (str->len == 0 || str->ptr[str->len-1] != '\n') fputc('\n', out);
         }
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE kernel_print(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_print(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     FILE *out = io_stream(self);
     /* CRuby: `print` with no args prints $_. */
     if (argc == 0) {
@@ -355,16 +409,20 @@ static VALUE kernel_print(CTX *c, VALUE self, int argc, VALUE *argv) {
             fwrite(((struct korb_string *)s)->ptr, 1,
                    ((struct korb_string *)s)->len, out);
         }
-        return Qnil;
+        return RESULT_OK(Qnil);
     }
     for (int i = 0; i < argc; i++) {
         VALUE s = korb_to_s_dispatch(c, argv[i]);
         fwrite(((struct korb_string *)s)->ptr, 1, ((struct korb_string *)s)->len, out);
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Peel a trailing keyword-arg Hash with `cause:` (and friends) before
      * the positional dispatch.  `raise cause: x` lowers to
      * `raise({cause: x})` at parse time; we want it treated as
@@ -384,16 +442,14 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
         /* `raise cause: x` with no positional args — CRuby raises
          * ArgumentError "only cause is given with no arguments". */
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
-                   "only cause is given with no arguments"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eA,
+                   "only cause is given with no arguments");
     }
     /* CRuby: raise accepts 0..3 positional args.  >3 → ArgumentError. */
     if (argc > 3) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
-                   "wrong number of arguments (given %d, expected 0..3)", argc));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 0..3)", argc);
     }
     if (argc == 0) {
         /* Bare `raise` re-raises $! if set; only fall back to a fresh
@@ -402,11 +458,11 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (!NIL_P(bang)) {
             c->state = KORB_RAISE;
             c->state_value = bang;
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
-        DROP_RESULT(korb_raise(c, NULL, "unhandled exception"));
+        return korb_raise(c, NULL, "unhandled exception");
     } else if (argc == 1 && BUILTIN_TYPE(argv[0]) == T_STRING) {
-        DROP_RESULT(korb_raise(c, NULL, "%s", korb_str_cstr(argv[0])));
+        return korb_raise(c, NULL, "%s", korb_str_cstr(argv[0]));
     } else if (argc == 1 && !SPECIAL_CONST_P(argv[0]) &&
                BUILTIN_TYPE(argv[0]) == T_OBJECT) {
         /* `raise(obj)` — obj must be an Exception (or implement
@@ -422,9 +478,8 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         if (!is_exc) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                       "exception class/object expected"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eT,
+                       "exception class/object expected");
         }
         int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
         korb_exc_set_backtrace(c, argv[0], line);
@@ -468,9 +523,8 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
     } else {
         /* Anything else (nil, Integer, etc.) — CRuby raises TypeError. */
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                   "exception class/object expected"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eT,
+                   "exception class/object expected");
         /* unreachable */
         VALUE e = argv[0];
         VALUE cur = korb_gvar_get(korb_intern("$!"));
@@ -502,24 +556,36 @@ static VALUE kernel_raise(CTX *c, VALUE self, int argc, VALUE *argv) {
                           NIL_P(kw_cause) ? Qnil : kw_cause);
         }
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE kernel_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_inspect(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* main object: CRuby's main_object inspects/to_s as "main". */
-    if (self == korb_vm->main_obj) return korb_str_new_cstr(c, c->sp, "main");
+    if (self == korb_vm->main_obj) return RESULT_OK(korb_str_new_cstr(c, c->sp, "main"));
     /* Default Kernel#inspect for objects that don't override it.
      * Avoid calling korb_inspect_dispatch here — that would loop
      * straight back to this cfunc.  korb_inspect skips user dispatch. */
-    return korb_inspect(c, c->sp, self);
+    return RESULT_OK(korb_inspect(c, c->sp, self));
 }
 
-static VALUE kernel_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (self == korb_vm->main_obj) return korb_str_new_cstr(c, c->sp, "main");
-    return korb_to_s(c, c->sp, self);
+static RESULT kernel_to_s(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (self == korb_vm->main_obj) return RESULT_OK(korb_str_new_cstr(c, c->sp, "main"));
+    return RESULT_OK(korb_to_s(c, c->sp, self));
 }
 
-static VALUE kernel_class(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_class(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Skip past any FL_SINGLETON metaclasses up the chain — `obj.class`
      * reports the user-facing class (Class for any class object, the
      * ordinary instance class for ordinary objects), not the lazy
@@ -542,34 +608,58 @@ static VALUE kernel_class(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (is_singleton && kk->super) { k = (VALUE)kk->super; continue; }
         break;
     }
-    return k;
+    return RESULT_OK(k);
 }
 
-static VALUE kernel_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(korb_eq(c, self, argv[0]));
+static RESULT kernel_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(korb_eq(c, self, argv[0])));
 }
 
-static VALUE kernel_neq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(!korb_eq(c, self, argv[0]));
+static RESULT kernel_neq(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(!korb_eq(c, self, argv[0])));
 }
 
 /* Object#!~: inverted =~.  Default implementation returns !(self =~ arg).
  * `defined?(x !~ y)` returns "method" because every Object responds to !~. */
-static VALUE kernel_not_match(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_not_match(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE m = korb_funcall(c, self, korb_intern("=~"), 1, argv);
-    if (c->state != KORB_NORMAL) return Qnil;
-    return RTEST(m) ? Qfalse : Qtrue;
+    if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+    return RESULT_OK(RTEST(m) ? Qfalse : Qtrue);
 }
 
-static VALUE kernel_not(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return RTEST(self) ? Qfalse : Qtrue;
+static RESULT kernel_not(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(RTEST(self) ? Qfalse : Qtrue);
 }
 
-static VALUE kernel_nil_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(NIL_P(self));
+static RESULT kernel_nil_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(NIL_P(self)));
 }
 
-static VALUE kernel_object_id(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_object_id(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Distinct id for distinct values.  CRuby uses VALUE itself for
      * immediates (Fixnum / Symbol / true / false / nil / Flonum) and
      * a heap-pointer-derived id for objects.  We need DIFFERENT ids
@@ -580,12 +670,16 @@ static VALUE kernel_object_id(CTX *c, VALUE self, int argc, VALUE *argv) {
         /* For immediates the VALUE bit pattern itself uniquely
          * identifies the value — return it directly (matches CRuby
          * Fixnum: 1.object_id == 3, 2.object_id == 5). */
-        return INT2FIX((long)self);
+        return RESULT_OK(INT2FIX((long)self));
     }
-    return INT2FIX((long)self / 8);
+    return RESULT_OK(INT2FIX((long)self / 8));
 }
 
-static VALUE kernel_freeze(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_freeze(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (!SPECIAL_CONST_P(self)) {
         RBASIC(self)->head.flags |= FL_FROZEN;
         /* Propagate freeze to the singleton class if one already exists.
@@ -605,18 +699,26 @@ static VALUE kernel_freeze(CTX *c, VALUE self, int argc, VALUE *argv) {
             }
         }
     }
-    return self;
+    return RESULT_OK(self);
 }
 
-static VALUE kernel_frozen_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_frozen_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* immediates and Symbol/String literals are always frozen — we
      * only track heap objects via the FL_FROZEN flag. */
-    if (SPECIAL_CONST_P(self)) return Qtrue;
-    return KORB_BOOL(RBASIC(self)->head.flags & FL_FROZEN);
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(Qtrue);
+    return RESULT_OK(KORB_BOOL(RBASIC(self)->head.flags & FL_FROZEN));
 }
 
-static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qfalse;
+static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qfalse);
     /* Coerce non-Symbol/String name via #to_str (CRuby semantics).
      * Failure or unsuitable type → TypeError. */
     VALUE name_arg = argv[0];
@@ -625,10 +727,10 @@ static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (!SPECIAL_CONST_P(name_arg)) {
             VALUE rt = korb_funcall(c, name_arg, korb_intern("respond_to?"), 1,
                                     (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
-            if (c->state == KORB_RAISE) return Qfalse;
+            if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             if (RTEST(rt)) {
                 name_arg = korb_funcall(c, name_arg, korb_intern("to_str"), 0, NULL);
-                if (c->state == KORB_RAISE) return Qfalse;
+                if (c->state == KORB_RAISE) return RESULT_OK(Qfalse);
             }
         }
     }
@@ -640,11 +742,10 @@ static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
         name = korb_intern_n(s->ptr, s->len);
     } else {
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+        return korb_raise(c, (struct korb_class *)eT,
                    "%s is not a symbol nor a string",
                    SPECIAL_CONST_P(argv[0]) ? "(special)"
-                       : korb_id_name(korb_class_of_class(argv[0])->name)));
-        return Qfalse;
+                       : korb_id_name(korb_class_of_class(argv[0])->name));
     }
     struct korb_class *klass = korb_class_of_class(self);
     bool include_private = (argc >= 2) && RTEST(argv[1]);
@@ -655,8 +756,8 @@ static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
          * has nuanced semantics around same-class call sites, but the
          * common rubyspec usage is the boolean form, where excluding
          * both is correct.) */
-        if (m->visibility != KORB_VIS_PUBLIC && !include_private) return Qfalse;
-        return Qtrue;
+        if (m->visibility != KORB_VIS_PUBLIC && !include_private) return RESULT_OK(Qfalse);
+        return RESULT_OK(Qtrue);
     }
     /* Defer to user-defined respond_to_missing?, but only if the class
      * actually overrode it (the default Object#respond_to_missing?
@@ -665,34 +766,42 @@ static VALUE kernel_respond_to_p(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (rtm) {
         VALUE args[2] = { korb_id2sym(name), (argc >= 2 ? argv[1] : Qfalse) };
         VALUE r = korb_funcall(c, self, korb_intern("respond_to_missing?"), 2, args);
-        return RTEST(r) ? Qtrue : Qfalse;
+        return RESULT_OK(RTEST(r) ? Qtrue : Qfalse);
     }
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
-static VALUE kernel_is_a_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE) return Qfalse;
+static RESULT kernel_is_a_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (BUILTIN_TYPE(argv[0]) != T_CLASS && BUILTIN_TYPE(argv[0]) != T_MODULE) return RESULT_OK(Qfalse);
     struct korb_class *target = (struct korb_class *)argv[0];
     for (struct korb_class *k = korb_class_of_class(self); k; k = k->super) {
-        if (k == target) return Qtrue;
+        if (k == target) return RESULT_OK(Qtrue);
         for (uint32_t i = 0; i < k->includes_cnt; i++) {
-            if (k->includes[i] == target) return Qtrue;
+            if (k->includes[i] == target) return RESULT_OK(Qtrue);
         }
     }
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
-static VALUE kernel_block_given(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_block_given(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Inspect the closest enclosing AST method frame's block.  cfunc
      * frames (including this one's) DO push a frame now, so walk past
      * any cfunc frames to reach the real method.  We detect a cfunc
      * frame by `locals_cnt == 0` (set by prologue_cfunc_inl). */
     for (struct korb_frame *f = c->current_frame; f; f = f->prev) {
         if (f->locals_cnt != 0 || (f->method && f->method->type != KORB_METHOD_CFUNC)) {
-            return KORB_BOOL(f->block != NULL);
+            return RESULT_OK(KORB_BOOL(f->block != NULL));
         }
     }
-    return KORB_BOOL(korb_block_given(c));
+    return RESULT_OK(KORB_BOOL(korb_block_given(c)));
 }
 
 /* ---------- catch / throw ----------
@@ -705,12 +814,15 @@ static VALUE kernel_block_given(CTX *c, VALUE self, int argc, VALUE *argv) {
  * then if state==THROW with a matching tag clears state and returns
  * val; otherwise re-propagates.  No setjmp/longjmp — the existing
  * EVAL_ARG / korb_yield bail-on-non-NORMAL machinery does the work. */
-static VALUE kernel_throw(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (argc < 1 || argc > 2) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
-                   "wrong number of arguments (given %d, expected 1..2)", argc));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eA,
+                   "wrong number of arguments (given %d, expected 1..2)", argc);
     }
     VALUE tag = argv[0];
     VALUE val = argc >= 2 ? argv[1] : Qnil;
@@ -719,10 +831,14 @@ static VALUE kernel_throw(CTX *c, VALUE self, int argc, VALUE *argv) {
     korb_ary_push(pair, val);
     c->state = KORB_THROW;
     c->state_value = pair;
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* `catch` invocations may use either an explicit tag (`catch(:t) {}`)
      * or no tag (`catch {}` — the block param is the implicit tag).
      * For the no-tag form we synthesize a fresh Object as the tag. */
@@ -737,7 +853,7 @@ static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
             VALUE v = pair->ptr[1];
             c->state = KORB_NORMAL;
             c->state_value = Qnil;
-            return v;
+            return RESULT_OK(v);
         }
     }
     /* state == RAISE with UncaughtThrowError: proc_call already converted
@@ -757,11 +873,11 @@ static VALUE kernel_catch(CTX *c, VALUE self, int argc, VALUE *argv) {
                 if (UNDEF_P(v)) v = Qnil;
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
-                return v;
+                return RESULT_OK(v);
             }
         }
     }
-    return r;
+    return RESULT_OK(r);
 }
 
 /* Walk frame chain to find a non-NULL current_file.  cfunc frames are
@@ -774,20 +890,31 @@ static const char *caller_current_file(CTX *c) {
     return c->sentinel_frame.current_file;
 }
 
-static VALUE kernel_dir(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_dir(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     const char *cf = caller_current_file(c);
-    return korb_str_new_cstr(c, c->sp, korb_dirname(cf ? cf : "."));
+    return RESULT_OK(korb_str_new_cstr(c, c->sp, korb_dirname(cf ? cf : ".")));
 }
 
-static VALUE kernel_file(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_file(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     const char *cf = caller_current_file(c);
-    return korb_str_new_cstr(c, c->sp, cf ? cf : "(eval)");
+    return RESULT_OK(korb_str_new_cstr(c, c->sp, cf ? cf : "(eval)"));
 }
 
-static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_require_relative(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (argc != 1 || BUILTIN_TYPE(argv[0]) != T_STRING) {
-        DROP_RESULT(korb_raise(c, NULL, "require_relative: expected 1 String"));
-        return Qnil;
+        return korb_raise(c, NULL, "require_relative: expected 1 String");
     }
     const char *name = korb_str_cstr(argv[0]);
     /* The cfunc dispatch pushed a frame for this function — its
@@ -796,44 +923,54 @@ static VALUE kernel_require_relative(CTX *c, VALUE self, int argc, VALUE *argv) 
     const char *cf = caller_current_file(c);
     char *resolved = korb_resolve_relative(cf, name);
     if (!resolved) {
-        DROP_RESULT(korb_raise(c, NULL, "cannot load such file -- %s", name));
-        return Qnil;
+        return korb_raise(c, NULL, "cannot load such file -- %s", name);
     }
     extern VALUE korb_require_file(CTX *c, const char *path);
-    return korb_require_file(c, resolved);
+    return RESULT_OK(korb_require_file(c, resolved));
 }
 
-static VALUE kernel_require(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_require(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (argc != 1 || BUILTIN_TYPE(argv[0]) != T_STRING) {
-        DROP_RESULT(korb_raise(c, NULL, "require: expected 1 String"));
-        return Qnil;
+        return korb_raise(c, NULL, "require: expected 1 String");
     }
     const char *name = korb_str_cstr(argv[0]);
     extern VALUE korb_require_file(CTX *c, const char *path);
     /* Bare path: try as is, then as .rb in cwd */
-    if (korb_file_exists(name)) return korb_require_file(c, name);
+    if (korb_file_exists(name)) return RESULT_OK(korb_require_file(c, name));
     long nl = strlen(name);
     bool has_rb = nl >= 3 && strcmp(name + nl - 3, ".rb") == 0;
     if (!has_rb) {
         char *with = korb_xmalloc_atomic(nl + 4);
         sprintf(with, "%s.rb", name);
-        if (korb_file_exists(with)) return korb_require_file(c, with);
+        if (korb_file_exists(with)) return RESULT_OK(korb_require_file(c, with));
     }
     /* Stub: pretend stdlib gems aren't available, return false */
-    if (strcmp(name, "stackprof") == 0) return Qfalse;
-    if (strcmp(name, "fiddle") == 0) return Qfalse;
-    if (strcmp(name, "rbconfig") == 0) return Qfalse;
-    if (strcmp(name, "ffi") == 0) return Qfalse;
+    if (strcmp(name, "stackprof") == 0) return RESULT_OK(Qfalse);
+    if (strcmp(name, "fiddle") == 0) return RESULT_OK(Qfalse);
+    if (strcmp(name, "rbconfig") == 0) return RESULT_OK(Qfalse);
+    if (strcmp(name, "ffi") == 0) return RESULT_OK(Qfalse);
     /* unknown — don't raise, just return false (CRuby would raise but be lenient) */
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
-static VALUE kernel_load(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
-    return korb_load_file(c, korb_str_cstr(argv[0]));
+static RESULT kernel_load(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(Qnil);
+    return RESULT_OK(korb_load_file(c, korb_str_cstr(argv[0])));
 }
 
-static VALUE kernel_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Ruby's `exit` raises SystemExit so `rescue SystemExit` and
      * `at_exit` can run.  CRuby's `exit!` is the libc-style abort.  */
     int code = 0;
@@ -861,15 +998,23 @@ static VALUE kernel_exit(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     c->state = KORB_RAISE;
     c->state_value = e;
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
-static VALUE kernel_exit_bang(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_exit_bang(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     int code = 0;
     if (argc >= 1 && FIXNUM_P(argv[0])) code = (int)FIX2LONG(argv[0]);
     else if (argc >= 1 && argv[0] == Qfalse) code = 1;
     exit(code);
 }
-static VALUE kernel_abort(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
         fprintf(stderr, "%s\n", ((struct korb_string *)argv[0])->ptr);
     }
@@ -884,15 +1029,19 @@ static VALUE kernel_abort(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     c->state = KORB_RAISE;
     c->state_value = e;
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) { DROP_RESULT(korb_raise(c, NULL, "Integer() needs argument")); return Qnil; }
-    if (FIXNUM_P(argv[0])) return argv[0];
-    if (BUILTIN_TYPE(argv[0]) == T_BIGNUM) return argv[0];
+static RESULT kernel_integer(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) { return korb_raise(c, NULL, "Integer() needs argument"); }
+    if (FIXNUM_P(argv[0])) return RESULT_OK(argv[0]);
+    if (BUILTIN_TYPE(argv[0]) == T_BIGNUM) return RESULT_OK(argv[0]);
     if (KORB_IS_FLOAT(argv[0])) {
-        return INT2FIX((long)korb_num2dbl(argv[0]));
+        return RESULT_OK(INT2FIX((long)korb_num2dbl(argv[0])));
     }
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         const char *s = korb_str_cstr(argv[0]);
@@ -920,10 +1069,9 @@ static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
             long v = strtol(buf, &end, base);
             if (end == buf) {
                 VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s));
-                return Qnil;
+                return korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s);
             }
-            return INT2FIX(v);
+            return RESULT_OK(INT2FIX(v));
         }
         if (!explicit_base && p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
             base = 2;
@@ -938,27 +1086,28 @@ static VALUE kernel_integer(CTX *c, VALUE self, int argc, VALUE *argv) {
             long v = strtol(buf, &end, base);
             if (end == buf) {
                 VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s));
-                return Qnil;
+                return korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s);
             }
-            return INT2FIX(v);
+            return RESULT_OK(INT2FIX(v));
         }
         char *end;
         long v = strtol(s, &end, base);
         if (end == s || (*end != '\0' && *end != ' ' && *end != '\t')) {
             VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eArg, "invalid value for Integer(): %s", s);
         }
-        return INT2FIX(v);
+        return RESULT_OK(INT2FIX(v));
     }
     VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    DROP_RESULT(korb_raise(c, (struct korb_class *)eTyp, "can't convert to Integer"));
-    return Qnil;
+    return korb_raise(c, (struct korb_class *)eTyp, "can't convert to Integer");
 }
 
-static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     /* CRuby Float() options: `exception: false` returns nil instead of
      * raising on failed conversion. */
     bool exception_ok = true;
@@ -967,15 +1116,14 @@ static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (excv == Qfalse) exception_ok = false;
     }
     if (NIL_P(argv[0])) {
-        if (!exception_ok) return Qnil;
+        if (!exception_ok) return RESULT_OK(Qnil);
         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT, "can't convert nil into Float"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eT, "can't convert nil into Float");
     }
-    if (KORB_IS_FLOAT(argv[0])) return argv[0];
-    if (FIXNUM_P(argv[0])) return korb_float_new(c, c->sp, (double)FIX2LONG(argv[0]));
+    if (KORB_IS_FLOAT(argv[0])) return RESULT_OK(argv[0]);
+    if (FIXNUM_P(argv[0])) return RESULT_OK(korb_float_new(c, c->sp, (double)FIX2LONG(argv[0])));
     if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
-        return korb_float_new(c, c->sp, korb_num2dbl(argv[0]));
+        return RESULT_OK(korb_float_new(c, c->sp, korb_num2dbl(argv[0])));
     }
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         const char *s = korb_str_cstr(argv[0]);
@@ -989,42 +1137,48 @@ static VALUE kernel_float(CTX *c, VALUE self, int argc, VALUE *argv) {
         /* Skip trailing whitespace. */
         while (*end == ' ' || *end == '\t' || *end == '\n') end++;
         if (end == p || *end != '\0') {
-            if (!exception_ok) return Qnil;
+            if (!exception_ok) return RESULT_OK(Qnil);
             VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
-                       "invalid value for Float(): %s", s));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eA,
+                       "invalid value for Float(): %s", s);
         }
-        return korb_float_new(c, c->sp, d);
+        return RESULT_OK(korb_float_new(c, c->sp, d));
     }
-    if (!exception_ok) return Qnil;
+    if (!exception_ok) return RESULT_OK(Qnil);
     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+    return korb_raise(c, (struct korb_class *)eT,
                "can't convert %s into Float",
-               korb_id_name(korb_class_of_class(argv[0])->name)));
-    return Qnil;
+               korb_id_name(korb_class_of_class(argv[0])->name));
 }
 
-static VALUE kernel_string(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_str_new(c, c->sp, "", 0);
-    return korb_to_s(c, c->sp, argv[0]);
+static RESULT kernel_string(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(korb_str_new(c, c->sp, "", 0));
+    return RESULT_OK(korb_to_s(c, c->sp, argv[0]));
 }
 
-static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return korb_ary_new(c, c->sp);
+static RESULT kernel_array(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(korb_ary_new(c, c->sp));
     VALUE v = argv[0];
-    if (NIL_P(v)) return korb_ary_new(c, c->sp);
-    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return v;
+    if (NIL_P(v)) return RESULT_OK(korb_ary_new(c, c->sp));
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return RESULT_OK(v);
     /* Range / Hash / anything responding to to_a: delegate.  Only
      * wrap in a 1-element Array when the value doesn't.  CRuby uses
      * to_ary first then falls back to to_a; for koruby's coverage
      * to_a is enough. */
     if (!SPECIAL_CONST_P(v) && (BUILTIN_TYPE(v) == T_RANGE || BUILTIN_TYPE(v) == T_HASH)) {
-        return korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
+        return RESULT_OK(korb_funcall(c, v, korb_intern("to_a"), 0, NULL));
     }
     VALUE r = korb_ary_new_capa(c, c->sp, 1);
     korb_ary_push(r, v);
-    return r;
+    return RESULT_OK(r);
 }
 
 
@@ -1036,7 +1190,11 @@ static VALUE kernel_array(CTX *c, VALUE self, int argc, VALUE *argv) {
  * same logic as korb_build_backtrace.  Skips kernel_caller's own
  * level so the result starts at the actual caller (CRuby behavior).
  */
-static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Build the full caller list, including the immediate caller's own
      * frame at index 0; slice it per start/length args.  Default start
      * is 1, so out-of-the-box `caller` skips the immediate frame and
@@ -1120,7 +1278,7 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (argc >= 2 && FIXNUM_P(argv[1])) len = FIX2LONG(argv[1]);
         }
     }
-    if (start < 0 || start > total) return Qnil;
+    if (start < 0 || start > total) return RESULT_OK(Qnil);
     long end_exclusive = (len < 0) ? total : start + len;
     if (end_exclusive > total) end_exclusive = total;
     if (end_exclusive < start) end_exclusive = start;
@@ -1128,22 +1286,26 @@ static VALUE kernel_caller(CTX *c, VALUE self, int argc, VALUE *argv) {
     for (long i = start; i < end_exclusive; i++) {
         korb_ary_push(out, korb_ary_aref(arr, i));
     }
-    return out;
+    return RESULT_OK(out);
 }
-static VALUE kernel_method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Inside Binding#eval body — return the method name captured at
      * binding-creation time, so `bind.eval('__method__')` reports the
      * method where binding was taken (CRuby semantics). */
     if (c->current_eval_binding) {
         struct korb_binding *b = (struct korb_binding *)c->current_eval_binding;
-        if (b->method_name) return korb_id2sym(b->method_name);
+        if (b->method_name) return RESULT_OK(korb_id2sym(b->method_name));
     }
     /* cfunc prologue (prologue_cfunc_inl) doesn't push a frame, so
      * c->current_frame is the *enclosing* AST method's frame — exactly
      * what __method__ should report. */
     struct korb_frame *f = c->current_frame;
-    if (!f || !f->method) return Qnil;
-    return korb_id2sym(f->method->name);
+    if (!f || !f->method) return RESULT_OK(Qnil);
+    return RESULT_OK(korb_id2sym(f->method->name));
 }
 
 /* Returns a Hash of {name_sym => current value} for the lvars in
@@ -1162,7 +1324,11 @@ static VALUE kernel_method_name(CTX *c, VALUE self, int argc, VALUE *argv) {
  * we don't want it to expose `it`'s own internal locals).  When called
  * from inside an `it` block (current_frame->method.name == :it),
  * return [] to avoid leaking mspec_shim internals. */
-static VALUE kernel_local_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_local_variables(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE arr = korb_ary_new(c, c->sp);
     /* Inside Binding#eval body — report the binding's view, not the
      * caller frame's. */
@@ -1175,10 +1341,10 @@ static VALUE kernel_local_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (cname[0] == '_' && cname[1] == '_') continue;
             korb_ary_push(arr, korb_id2sym(b->names[i]));
         }
-        return arr;
+        return RESULT_OK(arr);
     }
     struct korb_frame *f = c->current_frame;
-    if (!f || !f->method || f->method->type != KORB_METHOD_AST) return arr;
+    if (!f || !f->method || f->method->type != KORB_METHOD_AST) return RESULT_OK(arr);
     /* Filter out the test harness frames so user-level local_variables
      * doesn't see them.  `it`, `before`, `after`, `describe`, `context`,
      * `specify` are the most common in mspec-style suites. */
@@ -1189,29 +1355,33 @@ static VALUE kernel_local_variables(CTX *c, VALUE self, int argc, VALUE *argv) {
         const char *mn = korb_id_name(f->method->name);
         if (mn) {
             for (int i = 0; harness_methods[i]; i++) {
-                if (strcmp(mn, harness_methods[i]) == 0) return arr;
+                if (strcmp(mn, harness_methods[i]) == 0) return RESULT_OK(arr);
             }
         }
     }
     ID *names = f->method->u.ast.local_names;
-    if (!names) return arr;
+    if (!names) return RESULT_OK(arr);
     for (uint32_t i = 0; names[i] != 0; i++) {
         const char *cname = korb_id_name(names[i]);
         if (!cname) continue;
         if (cname[0] == '_' && cname[1] == 0) continue;
         korb_ary_push(arr, korb_id2sym(names[i]));
     }
-    return arr;
+    return RESULT_OK(arr);
 }
 
-static VALUE kernel_capture_lvars(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_capture_lvars(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE h = korb_hash_new(c, c->sp);
     /* Skip past the AST method that's hosting this cfunc call (typically
      * Kernel#binding from bootstrap) to get to the user's frame. */
     struct korb_frame *f = c->current_frame ? c->current_frame->prev : NULL;
-    if (!f || !f->method || f->method->type != KORB_METHOD_AST) return h;
+    if (!f || !f->method || f->method->type != KORB_METHOD_AST) return RESULT_OK(h);
     ID *names = f->method->u.ast.local_names;
-    if (!names || !f->fp) return h;
+    if (!names || !f->fp) return RESULT_OK(h);
     for (uint32_t i = 0; names[i] != 0; i++) {
         const char *cname = korb_id_name(names[i]);
         if (!cname) continue;
@@ -1224,15 +1394,19 @@ static VALUE kernel_capture_lvars(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (UNDEF_P(val)) val = Qnil;
         korb_hash_aset(c, h, name_sym, val);
     }
-    return h;
+    return RESULT_OK(h);
 }
 extern VALUE korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
 extern VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *args, int argc);
-static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* eval(string [, binding [, filename [, line]]]).
      * If a Binding is supplied, delegate to Binding#eval so the
      * eval'd code sees the binding's lvars / self / cref. */
-    if (argc < 1) return Qnil;
+    if (argc < 1) return RESULT_OK(Qnil);
     if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING) {
         /* CRuby coerces the first arg via #to_str when it isn't already
          * a String — any object responding to to_str works. */
@@ -1242,15 +1416,14 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (klass_v && korb_class_find_method((struct korb_class *)klass_v,
                                                   korb_intern("to_str"))) {
                 coerced = korb_funcall(c, argv[0], korb_intern("to_str"), 0, NULL);
-                if (c->state == KORB_RAISE) return Qnil;
+                if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
             }
         }
         if (SPECIAL_CONST_P(coerced) || BUILTIN_TYPE(coerced) != T_STRING) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+            return korb_raise(c, (struct korb_class *)eT,
                        "no implicit conversion of %s into String",
-                       korb_id_name(korb_class_of_class(argv[0])->name)));
-            return Qnil;
+                       korb_id_name(korb_class_of_class(argv[0])->name));
         }
         argv[0] = coerced;
     }
@@ -1262,10 +1435,9 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
             ((struct RBasic *)argv[1])->klass == (VALUE)korb_vm->binding_class;
         if (!is_binding) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+            return korb_raise(c, (struct korb_class *)eT,
                        "wrong argument type %s (expected Binding)",
-                       korb_id_name(korb_class_of_class(argv[1])->name)));
-            return Qnil;
+                       korb_id_name(korb_class_of_class(argv[1])->name));
         }
         struct korb_binding *b = (struct korb_binding *)argv[1];
         /* Forward [string, file, line] to binding's eval implementation. */
@@ -1273,7 +1445,7 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
         forward[0] = argv[0];
         forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr(c, c->sp, "(eval)");
         forward[2] = (argc >= 4) ? argv[3] : INT2FIX(1);
-        return binding_eval_via(c, b, forward, 3);
+        return RESULT_OK(binding_eval_via(c, b, forward, 3));
     }
     struct korb_string *s = (struct korb_string *)argv[0];
     /* CRuby 3.4+: __FILE__ inside `eval(str)` is "(eval at <caller>:<line>)".
@@ -1359,13 +1531,13 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (err_msg) {
         VALUE eSE = korb_const_get(korb_vm->object_class, korb_intern("SyntaxError"));
         if (eSE && !SPECIAL_CONST_P(eSE) && BUILTIN_TYPE(eSE) == T_CLASS) {
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eSE, "%s", err_msg));
+            return korb_raise(c, (struct korb_class *)eSE, "%s", err_msg);
         } else {
-            DROP_RESULT(korb_raise(c, NULL, "syntax error: %s", err_msg));
+            return korb_raise(c, NULL, "syntax error: %s", err_msg);
         }
-        return Qnil;
+        return RESULT_OK(Qnil);
     }
-    if (!ast) return Qnil;
+    if (!ast) return RESULT_OK(Qnil);
     const char *prev_file = c->current_frame->current_file;
     c->current_frame->current_file = filename;
     struct Node *prev_eval_body = c->current_eval_program_body;
@@ -1408,28 +1580,35 @@ static VALUE kernel_eval_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
     c->current_frame->cref = prev_cref;
     c->current_eval_program_body = prev_eval_body;
     c->current_frame->current_file = prev_file;
-    return r;
+    return RESULT_OK(r);
 }
 /* Default Object#initialize — accepts any args and returns self.
  * Lets `super` from an overridden initialize at the top of the chain
  * succeed (CRuby has the same convention via BasicObject#initialize). */
-static VALUE kernel_initialize_default(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return self;
+static RESULT kernel_initialize_default(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(self);
 }
 
-static VALUE kernel_loop(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* loop { ... } — call block forever, swallow StopIteration. */
     
     if (!c->current_block) {
-        DROP_RESULT(korb_raise(c, NULL, "no block given (loop)"));
-        return Qnil;
+        return korb_raise(c, NULL, "no block given (loop)");
     }
     while (c->state == KORB_NORMAL) {
         korb_yield(c, 0, NULL);
         if (c->state == KORB_BREAK) {
             VALUE r = c->state_value;
             c->state = KORB_NORMAL; c->state_value = Qnil;
-            return r;
+            return RESULT_OK(r);
         }
         if (c->state == KORB_RAISE) {
             /* StopIteration → swallow.  Anything else propagates. */
@@ -1438,35 +1617,41 @@ static VALUE kernel_loop(CTX *c, VALUE self, int argc, VALUE *argv) {
                 struct korb_class *k = (struct korb_class *)((struct RBasic *)exc)->klass;
                 if (k && k->name == korb_intern("StopIteration")) {
                     c->state = KORB_NORMAL; c->state_value = Qnil;
-                    return Qnil;
+                    return RESULT_OK(Qnil);
                 }
             }
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
-static VALUE kernel_lambda(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_lambda(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     
     if (!c->current_block) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
-                   "tried to create Proc object without a block"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eA,
+                   "tried to create Proc object without a block");
     }
     /* Mark as lambda so Proc#call's `return` becomes local. */
     c->current_block->is_lambda = true;
-    return (VALUE)c->current_block;
+    return RESULT_OK((VALUE)c->current_block);
 }
-static VALUE kernel_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_proc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     
     if (!c->current_block) {
         VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eA,
-                   "tried to create Proc object without a block"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eA,
+                   "tried to create Proc object without a block");
     }
-    return (VALUE)c->current_block;
+    return RESULT_OK((VALUE)c->current_block);
 }
 
 
@@ -1480,13 +1665,21 @@ static VALUE kernel_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
 /* Phase 1: ObjectSpace stubs.  Precise GC framework exposes
  * aro_gc_collect + aro_gc_stats; use those instead of libgc API. */
 
-VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT objspace_each_object(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Yields nothing.  Returns 0 (the count of yielded objects). */
-    if (!korb_block_given(c)) return korb_ary_new(c, c->sp);
-    return INT2FIX(0);
+    if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp));
+    return RESULT_OK(INT2FIX(0));
 }
 
-VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Hash{ :TOTAL => N, :FREE => 0, ...:T_OBJECT => 0, ... }.  We
      * don't track per-type counts so just provide :TOTAL from the
      * GC framework's heap_bytes stat / 64. */
@@ -1499,12 +1692,16 @@ VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (argc >= 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_HASH) {
         korb_hash_aset(c, argv[0], korb_id2sym(korb_intern("TOTAL")),
                        INT2FIX((long)(heap_bytes / 64)));
-        return argv[0];
+        return RESULT_OK(argv[0]);
     }
-    return h;
+    return RESULT_OK(h);
 }
 
-VALUE objspace_garbage_collect(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT objspace_garbage_collect(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     aro_gc_collect(c);
-    return Qnil;
+    return RESULT_OK(Qnil);
 }

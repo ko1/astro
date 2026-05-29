@@ -75,16 +75,16 @@ void korb_init_builtins(CTX *c) {
     {
         struct korb_class *cBasic = (struct korb_class *)korb_const_get(korb_vm->object_class, korb_intern("BasicObject"));
         if (cBasic) {
-            extern VALUE kernel_object_id(CTX *c, VALUE self, int argc, VALUE *argv);
-            extern VALUE kernel_eq(CTX *c, VALUE self, int argc, VALUE *argv);
-            extern VALUE kernel_neq(CTX *c, VALUE self, int argc, VALUE *argv);
-            extern VALUE kernel_not(CTX *c, VALUE self, int argc, VALUE *argv);
-            DEF(cBasic, "__id__", kernel_object_id, 0);
+            extern RESULT kernel_object_id(CTX *c, int argc, VALUE *sp);
+            extern RESULT kernel_eq(CTX *c, int argc, VALUE *sp);
+            extern RESULT kernel_neq(CTX *c, int argc, VALUE *sp);
+            extern RESULT kernel_not(CTX *c, int argc, VALUE *sp);
+            DEF_R(cBasic, "__id__", kernel_object_id, 0);
             DEF_R(cBasic, "__send__", obj_send, -1);
-            DEF(cBasic, "==", kernel_eq, 1);
-            DEF(cBasic, "!=", kernel_neq, 1);
-            DEF(cBasic, "!", kernel_not, 0);
-            DEF(cBasic, "equal?", kernel_eq, 1);
+            DEF_R(cBasic, "==", kernel_eq, 1);
+            DEF_R(cBasic, "!=", kernel_neq, 1);
+            DEF_R(cBasic, "!", kernel_not, 0);
+            DEF_R(cBasic, "equal?", kernel_eq, 1);
             DEF_R(cBasic, "instance_eval", obj_instance_eval, -1);
             DEF_R(cBasic, "instance_exec", obj_instance_exec, -1);
         }
@@ -106,66 +106,66 @@ void korb_init_builtins(CTX *c) {
 #define cKerMeta ((korb_vm->kernel_module                                      \
                    ? (struct korb_class *)korb_vm->kernel_module->basic.klass  \
                    : NULL))
-    DEF_PRIV(korb_vm->object_class, "p", kernel_p, -1);
-    DEF_PRIV(korb_vm->object_class, "puts", kernel_puts, -1);
+    DEF_R_PRIV(korb_vm->object_class, "p", kernel_p, -1);
+    DEF_R_PRIV(korb_vm->object_class, "puts", kernel_puts, -1);
     if (cKerMeta) {
-        DEF(cKerMeta, "p", kernel_p, -1);
-        DEF(cKerMeta, "puts", kernel_puts, -1);
+        DEF_R(cKerMeta, "p", kernel_p, -1);
+        DEF_R(cKerMeta, "puts", kernel_puts, -1);
     }
     /* internal helpers used by `**obj` hash splat lowering. */
     {
-        VALUE kernel_kwsplat_to_hash(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE kernel_kwsplat_to_hash_lenient(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE kernel_to_block_arg(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE kernel_rescue_splat_match(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE kernel_case_splat_match(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE kernel_pattern_decon_check(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE kernel_pattern_decon_keys_check(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->object_class, "__kwsplat_to_hash", kernel_kwsplat_to_hash, 1);
-        DEF(korb_vm->object_class, "__kwsplat_to_hash_lenient", kernel_kwsplat_to_hash_lenient, 1);
-        DEF(korb_vm->object_class, "__to_block_arg", kernel_to_block_arg, 1);
-        DEF(korb_vm->object_class, "__rescue_splat_match", kernel_rescue_splat_match, 2);
-        DEF(korb_vm->object_class, "__rescue_class_check", kernel_rescue_class_check, 1);
-        DEF(korb_vm->object_class, "__case_splat_match", kernel_case_splat_match, 2);
-        DEF(korb_vm->object_class, "__case_splat_any",   kernel_case_splat_any,   1);
-        DEF(korb_vm->object_class, "__pattern_decon_check", kernel_pattern_decon_check, 1);
-        DEF(korb_vm->object_class, "__pattern_decon_keys_check", kernel_pattern_decon_keys_check, 1);
+        RESULT kernel_kwsplat_to_hash(CTX *c, int argc, VALUE *sp);
+        RESULT kernel_kwsplat_to_hash_lenient(CTX *c, int argc, VALUE *sp);
+        RESULT kernel_to_block_arg(CTX *c, int argc, VALUE *sp);
+        RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp);
+        RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp);
+        RESULT kernel_pattern_decon_check(CTX *c, int argc, VALUE *sp);
+        RESULT kernel_pattern_decon_keys_check(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->object_class, "__kwsplat_to_hash", kernel_kwsplat_to_hash, 1);
+        DEF_R(korb_vm->object_class, "__kwsplat_to_hash_lenient", kernel_kwsplat_to_hash_lenient, 1);
+        DEF_R(korb_vm->object_class, "__to_block_arg", kernel_to_block_arg, 1);
+        DEF_R(korb_vm->object_class, "__rescue_splat_match", kernel_rescue_splat_match, 2);
+        DEF_R(korb_vm->object_class, "__rescue_class_check", kernel_rescue_class_check, 1);
+        DEF_R(korb_vm->object_class, "__case_splat_match", kernel_case_splat_match, 2);
+        DEF_R(korb_vm->object_class, "__case_splat_any",   kernel_case_splat_any,   1);
+        DEF_R(korb_vm->object_class, "__pattern_decon_check", kernel_pattern_decon_check, 1);
+        DEF_R(korb_vm->object_class, "__pattern_decon_keys_check", kernel_pattern_decon_keys_check, 1);
     }
-    DEF_PRIV(korb_vm->object_class, "print", kernel_print, -1);
-    DEF_PRIV(korb_vm->object_class, "raise", kernel_raise, -1);
-    DEF_PRIV(korb_vm->object_class, "fail", kernel_raise, -1);  /* alias */
+    DEF_R_PRIV(korb_vm->object_class, "print", kernel_print, -1);
+    DEF_R_PRIV(korb_vm->object_class, "raise", kernel_raise, -1);
+    DEF_R_PRIV(korb_vm->object_class, "fail", kernel_raise, -1);  /* alias */
     /* Also register on Kernel module so `Kernel.private_instance_methods`
      * reports them (CRuby convention).  Module include propagates to
      * Object instances. */
     if (korb_vm->kernel_module) {
-        DEF_PRIV(korb_vm->kernel_module, "print", kernel_print, -1);
-        DEF_PRIV(korb_vm->kernel_module, "raise", kernel_raise, -1);
-        DEF_PRIV(korb_vm->kernel_module, "fail", kernel_raise, -1);
+        DEF_R_PRIV(korb_vm->kernel_module, "print", kernel_print, -1);
+        DEF_R_PRIV(korb_vm->kernel_module, "raise", kernel_raise, -1);
+        DEF_R_PRIV(korb_vm->kernel_module, "fail", kernel_raise, -1);
     }
     if (cKerMeta) {
-        DEF(cKerMeta, "print", kernel_print, -1);
-        DEF(cKerMeta, "raise", kernel_raise, -1);
-        DEF(cKerMeta, "fail", kernel_raise, -1);
+        DEF_R(cKerMeta, "print", kernel_print, -1);
+        DEF_R(cKerMeta, "raise", kernel_raise, -1);
+        DEF_R(cKerMeta, "fail", kernel_raise, -1);
     }
-    DEF(korb_vm->object_class, "inspect", kernel_inspect, 0);
-    DEF(korb_vm->object_class, "to_s", kernel_to_s, 0);
-    DEF(korb_vm->object_class, "class", kernel_class, 0);
-    DEF(korb_vm->object_class, "==", kernel_eq, 1);
-    DEF(korb_vm->object_class, "!=", kernel_neq, 1);
+    DEF_R(korb_vm->object_class, "inspect", kernel_inspect, 0);
+    DEF_R(korb_vm->object_class, "to_s", kernel_to_s, 0);
+    DEF_R(korb_vm->object_class, "class", kernel_class, 0);
+    DEF_R(korb_vm->object_class, "==", kernel_eq, 1);
+    DEF_R(korb_vm->object_class, "!=", kernel_neq, 1);
     {
-        extern VALUE kernel_not_match(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->object_class, "!~", kernel_not_match, 1);
+        extern RESULT kernel_not_match(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->object_class, "!~", kernel_not_match, 1);
     }
-    DEF(korb_vm->object_class, "!", kernel_not, 0);
-    DEF(korb_vm->object_class, "nil?", kernel_nil_p, 0);
-    DEF(korb_vm->object_class, "object_id", kernel_object_id, 0);
-    DEF(korb_vm->object_class, "__id__", kernel_object_id, 0);
-    DEF(korb_vm->object_class, "equal?", kernel_eq, 1);  /* same as == for now */
-    DEF(korb_vm->object_class, "freeze", kernel_freeze, 0);
-    DEF(korb_vm->object_class, "frozen?", kernel_frozen_p, 0);
-    DEF(korb_vm->object_class, "respond_to?", kernel_respond_to_p, 1);
-    DEF(korb_vm->object_class, "is_a?", kernel_is_a_p, 1);
-    DEF(korb_vm->object_class, "kind_of?", kernel_is_a_p, 1);
+    DEF_R(korb_vm->object_class, "!", kernel_not, 0);
+    DEF_R(korb_vm->object_class, "nil?", kernel_nil_p, 0);
+    DEF_R(korb_vm->object_class, "object_id", kernel_object_id, 0);
+    DEF_R(korb_vm->object_class, "__id__", kernel_object_id, 0);
+    DEF_R(korb_vm->object_class, "equal?", kernel_eq, 1);  /* same as == for now */
+    DEF_R(korb_vm->object_class, "freeze", kernel_freeze, 0);
+    DEF_R(korb_vm->object_class, "frozen?", kernel_frozen_p, 0);
+    DEF_R(korb_vm->object_class, "respond_to?", kernel_respond_to_p, 1);
+    DEF_R(korb_vm->object_class, "is_a?", kernel_is_a_p, 1);
+    DEF_R(korb_vm->object_class, "kind_of?", kernel_is_a_p, 1);
     /* Default Object#respond_to_missing? — always returns false.  CRuby
      * has this as a private instance method on Kernel; user classes
      * override it to participate in respond_to? lookup. */
@@ -181,9 +181,9 @@ void korb_init_builtins(CTX *c) {
     /* Kernel module copies for `Kernel.{public,private}_instance_methods`
      * introspection. */
     if (korb_vm->kernel_module) {
-        DEF(korb_vm->kernel_module, "respond_to?", kernel_respond_to_p, 1);
-        DEF(korb_vm->kernel_module, "is_a?", kernel_is_a_p, 1);
-        DEF(korb_vm->kernel_module, "kind_of?", kernel_is_a_p, 1);
+        DEF_R(korb_vm->kernel_module, "respond_to?", kernel_respond_to_p, 1);
+        DEF_R(korb_vm->kernel_module, "is_a?", kernel_is_a_p, 1);
+        DEF_R(korb_vm->kernel_module, "kind_of?", kernel_is_a_p, 1);
     }
     DEF_R(korb_vm->object_class, "methods", obj_methods, -1);
     {
@@ -200,72 +200,72 @@ void korb_init_builtins(CTX *c) {
         DEF_R(korb_vm->object_class, "singleton_class", obj_singleton_class, 0);
     }
     DEF_R(korb_vm->object_class, "define_singleton_method", obj_define_singleton_method, -1);
-    DEF(korb_vm->object_class, "block_given?", kernel_block_given, 0);
-    DEF_PRIV(korb_vm->object_class, "throw",        kernel_throw,      -1);
-    DEF_PRIV(korb_vm->object_class, "catch",        kernel_catch,      -1);
+    DEF_R(korb_vm->object_class, "block_given?", kernel_block_given, 0);
+    DEF_R_PRIV(korb_vm->object_class, "throw",        kernel_throw,      -1);
+    DEF_R_PRIV(korb_vm->object_class, "catch",        kernel_catch,      -1);
     if (korb_vm->kernel_module) {
-        DEF_PRIV(korb_vm->kernel_module, "throw", kernel_throw, -1);
-        DEF_PRIV(korb_vm->kernel_module, "catch", kernel_catch, -1);
+        DEF_R_PRIV(korb_vm->kernel_module, "throw", kernel_throw, -1);
+        DEF_R_PRIV(korb_vm->kernel_module, "catch", kernel_catch, -1);
     }
-    DEF_PRIV(korb_vm->object_class, "require_relative", kernel_require_relative, 1);
-    DEF_PRIV(korb_vm->object_class, "require", kernel_require, 1);
-    DEF_PRIV(korb_vm->object_class, "__dir__", kernel_dir, 0);
-    DEF_PRIV(korb_vm->object_class, "load", kernel_load, -1);
-    DEF_PRIV(korb_vm->object_class, "abort", kernel_abort, -1);
-    DEF_PRIV(korb_vm->object_class, "exit", kernel_exit, -1);
+    DEF_R_PRIV(korb_vm->object_class, "require_relative", kernel_require_relative, 1);
+    DEF_R_PRIV(korb_vm->object_class, "require", kernel_require, 1);
+    DEF_R_PRIV(korb_vm->object_class, "__dir__", kernel_dir, 0);
+    DEF_R_PRIV(korb_vm->object_class, "load", kernel_load, -1);
+    DEF_R_PRIV(korb_vm->object_class, "abort", kernel_abort, -1);
+    DEF_R_PRIV(korb_vm->object_class, "exit", kernel_exit, -1);
     {
-        VALUE kernel_exit_bang(CTX *c, VALUE self, int argc, VALUE *argv);
-        VALUE kernel_abort(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->object_class, "exit!", kernel_exit_bang, -1);
-        DEF(korb_vm->object_class, "abort", kernel_abort,     -1);
+        RESULT kernel_exit_bang(CTX *c, int argc, VALUE *sp);
+        RESULT kernel_abort(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->object_class, "exit!", kernel_exit_bang, -1);
+        DEF_R(korb_vm->object_class, "abort", kernel_abort,     -1);
     }
     DEF(korb_vm->object_class, "sleep", kernel_sleep, -1);
-    DEF(korb_vm->object_class, "at_exit", kernel_at_exit, 0);
-    DEF(korb_vm->object_class, "rand",    kernel_rand,   -1);
-    DEF(korb_vm->object_class, "srand",   kernel_srand,  -1);
-    DEF_PRIV(korb_vm->object_class, "Integer", kernel_integer, -1);
-    DEF_PRIV(korb_vm->object_class, "Float",   kernel_float,    1);
-    DEF_PRIV(korb_vm->object_class, "String",  kernel_string,   1);
-    DEF_PRIV(korb_vm->object_class, "Array",   kernel_array,    1);
+    DEF_R(korb_vm->object_class, "at_exit", kernel_at_exit, 0);
+    DEF_R(korb_vm->object_class, "rand",    kernel_rand,   -1);
+    DEF_R(korb_vm->object_class, "srand",   kernel_srand,  -1);
+    DEF_R_PRIV(korb_vm->object_class, "Integer", kernel_integer, -1);
+    DEF_R_PRIV(korb_vm->object_class, "Float",   kernel_float,    1);
+    DEF_R_PRIV(korb_vm->object_class, "String",  kernel_string,   1);
+    DEF_R_PRIV(korb_vm->object_class, "Array",   kernel_array,    1);
     /* Spec checks Kernel.private_instance_methods — also register there. */
     if (korb_vm->kernel_module) {
-        DEF_PRIV(korb_vm->kernel_module, "Integer", kernel_integer, -1);
-        DEF_PRIV(korb_vm->kernel_module, "Float",   kernel_float,    1);
-        DEF_PRIV(korb_vm->kernel_module, "String",  kernel_string,   1);
-        DEF_PRIV(korb_vm->kernel_module, "Array",   kernel_array,    1);
+        DEF_R_PRIV(korb_vm->kernel_module, "Integer", kernel_integer, -1);
+        DEF_R_PRIV(korb_vm->kernel_module, "Float",   kernel_float,    1);
+        DEF_R_PRIV(korb_vm->kernel_module, "String",  kernel_string,   1);
+        DEF_R_PRIV(korb_vm->kernel_module, "Array",   kernel_array,    1);
     }
 
     /* Integer */
-    DEF(korb_vm->integer_class, "+", int_plus, 1);
-    DEF(korb_vm->integer_class, "-", int_minus, 1);
-    DEF(korb_vm->integer_class, "*", int_mul, 1);
-    DEF(korb_vm->integer_class, "/", int_div, 1);
-    DEF(korb_vm->integer_class, "%", int_mod, 1);
-    DEF(korb_vm->integer_class, "<<", int_lshift, 1);
-    DEF(korb_vm->integer_class, ">>", int_rshift, 1);
-    DEF(korb_vm->integer_class, "&", int_and, 1);
-    DEF(korb_vm->integer_class, "|", int_or, 1);
-    DEF(korb_vm->integer_class, "^", int_xor, 1);
-    DEF(korb_vm->integer_class, "<", int_lt, 1);
-    DEF(korb_vm->integer_class, "<=", int_le, 1);
-    DEF(korb_vm->integer_class, ">", int_gt, 1);
-    DEF(korb_vm->integer_class, ">=", int_ge, 1);
-    DEF(korb_vm->integer_class, "==", int_eq, 1);
-    DEF(korb_vm->integer_class, "<=>", int_cmp, 1);
-    DEF(korb_vm->integer_class, "-@", int_uminus, 0);
-    DEF(korb_vm->integer_class, "+@", int_uplus,  0);
-    DEF(korb_vm->integer_class, "to_s", int_to_s, -1);
-    DEF(korb_vm->integer_class, "to_i", int_to_i, 0);
-    DEF(korb_vm->integer_class, "to_f", int_to_f, 0);
-    DEF(korb_vm->integer_class, "zero?", int_zero_p, 0);
-    DEF(korb_vm->integer_class, "even?", int_even_p, 0);
-    DEF(korb_vm->integer_class, "odd?",  int_odd_p,  0);
-    DEF(korb_vm->integer_class, "positive?", int_positive_p, 0);
-    DEF(korb_vm->integer_class, "negative?", int_negative_p, 0);
-    DEF(korb_vm->integer_class, "times", int_times, 0);
-    DEF(korb_vm->integer_class, "succ", int_succ, 0);
-    DEF(korb_vm->integer_class, "next", int_succ, 0);
-    DEF(korb_vm->integer_class, "pred", int_pred, 0);
+    DEF_R(korb_vm->integer_class, "+", int_plus, 1);
+    DEF_R(korb_vm->integer_class, "-", int_minus, 1);
+    DEF_R(korb_vm->integer_class, "*", int_mul, 1);
+    DEF_R(korb_vm->integer_class, "/", int_div, 1);
+    DEF_R(korb_vm->integer_class, "%", int_mod, 1);
+    DEF_R(korb_vm->integer_class, "<<", int_lshift, 1);
+    DEF_R(korb_vm->integer_class, ">>", int_rshift, 1);
+    DEF_R(korb_vm->integer_class, "&", int_and, 1);
+    DEF_R(korb_vm->integer_class, "|", int_or, 1);
+    DEF_R(korb_vm->integer_class, "^", int_xor, 1);
+    DEF_R(korb_vm->integer_class, "<", int_lt, 1);
+    DEF_R(korb_vm->integer_class, "<=", int_le, 1);
+    DEF_R(korb_vm->integer_class, ">", int_gt, 1);
+    DEF_R(korb_vm->integer_class, ">=", int_ge, 1);
+    DEF_R(korb_vm->integer_class, "==", int_eq, 1);
+    DEF_R(korb_vm->integer_class, "<=>", int_cmp, 1);
+    DEF_R(korb_vm->integer_class, "-@", int_uminus, 0);
+    DEF_R(korb_vm->integer_class, "+@", int_uplus,  0);
+    DEF_R(korb_vm->integer_class, "to_s", int_to_s, -1);
+    DEF_R(korb_vm->integer_class, "to_i", int_to_i, 0);
+    DEF_R(korb_vm->integer_class, "to_f", int_to_f, 0);
+    DEF_R(korb_vm->integer_class, "zero?", int_zero_p, 0);
+    DEF_R(korb_vm->integer_class, "even?", int_even_p, 0);
+    DEF_R(korb_vm->integer_class, "odd?",  int_odd_p,  0);
+    DEF_R(korb_vm->integer_class, "positive?", int_positive_p, 0);
+    DEF_R(korb_vm->integer_class, "negative?", int_negative_p, 0);
+    DEF_R(korb_vm->integer_class, "times", int_times, 0);
+    DEF_R(korb_vm->integer_class, "succ", int_succ, 0);
+    DEF_R(korb_vm->integer_class, "next", int_succ, 0);
+    DEF_R(korb_vm->integer_class, "pred", int_pred, 0);
 
     /* Helpers used to forbid `.allocate` / `.new` on classes whose
      * instances are immediates (Float, Symbol, NilClass, TrueClass,
@@ -339,28 +339,28 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->string_class, "__chilled?", str_chilled_p, 0);
 
     /* Array */
-    DEF(korb_vm->array_class, "size", ary_size, 0);
-    DEF(korb_vm->array_class, "length", ary_size, 0);
-    DEF(korb_vm->array_class, "[]", ary_aref, -1);
-    DEF(korb_vm->array_class, "[]=", ary_aset, -1);
-    DEF(korb_vm->array_class, "push", ary_push, -1);
-    DEF(korb_vm->array_class, "<<", ary_lshift, 1);
-    DEF(korb_vm->array_class, "pop", ary_pop, -1);
-    DEF(korb_vm->array_class, "first", ary_first_n, -1);
-    DEF(korb_vm->array_class, "last",  ary_last_n,  -1);
-    DEF(korb_vm->array_class, "each", ary_each, 0);
-    DEF(korb_vm->array_class, "each_with_index", ary_each_with_index, 0);
-    DEF(korb_vm->array_class, "map", ary_map, 0);
-    DEF(korb_vm->array_class, "collect", ary_map, 0);
-    DEF(korb_vm->array_class, "select", ary_select, 0);
-    DEF(korb_vm->array_class, "filter", ary_select, 0);
-    DEF(korb_vm->array_class, "reduce", ary_reduce, -1);
-    DEF(korb_vm->array_class, "inject", ary_reduce, -1);
-    DEF(korb_vm->array_class, "join", ary_join, -1);
-    DEF(korb_vm->array_class, "inspect", ary_inspect, 0);
-    DEF(korb_vm->array_class, "to_s", ary_inspect, 0);
+    DEF_R(korb_vm->array_class, "size", ary_size, 0);
+    DEF_R(korb_vm->array_class, "length", ary_size, 0);
+    DEF_R(korb_vm->array_class, "[]", ary_aref, -1);
+    DEF_R(korb_vm->array_class, "[]=", ary_aset, -1);
+    DEF_R(korb_vm->array_class, "push", ary_push, -1);
+    DEF_R(korb_vm->array_class, "<<", ary_lshift, 1);
+    DEF_R(korb_vm->array_class, "pop", ary_pop, -1);
+    DEF_R(korb_vm->array_class, "first", ary_first_n, -1);
+    DEF_R(korb_vm->array_class, "last",  ary_last_n,  -1);
+    DEF_R(korb_vm->array_class, "each", ary_each, 0);
+    DEF_R(korb_vm->array_class, "each_with_index", ary_each_with_index, 0);
+    DEF_R(korb_vm->array_class, "map", ary_map, 0);
+    DEF_R(korb_vm->array_class, "collect", ary_map, 0);
+    DEF_R(korb_vm->array_class, "select", ary_select, 0);
+    DEF_R(korb_vm->array_class, "filter", ary_select, 0);
+    DEF_R(korb_vm->array_class, "reduce", ary_reduce, -1);
+    DEF_R(korb_vm->array_class, "inject", ary_reduce, -1);
+    DEF_R(korb_vm->array_class, "join", ary_join, -1);
+    DEF_R(korb_vm->array_class, "inspect", ary_inspect, 0);
+    DEF_R(korb_vm->array_class, "to_s", ary_inspect, 0);
     DEF_R(korb_vm->array_class, "==", ary_eq, 1);   /* Phase 3 PoC: new sp/RESULT ABI */
-    DEF(korb_vm->array_class, "dup", ary_dup, 0);
+    DEF_R(korb_vm->array_class, "dup", ary_dup, 0);
     DEF_R(korb_vm->array_class, "to_h", ary_to_h, 0);
 
     /* Hash */
@@ -494,22 +494,22 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->object_class, "instance_variables", obj_instance_variables,    0);
     DEF_R(korb_vm->object_class, "instance_variable_defined?", obj_ivar_defined_p, 1);
     /* Kernel#__method__, caller, eval, loop, lambda, proc */
-    DEF(korb_vm->object_class, "__method__",         kernel_method_name,        0);
-    DEF(korb_vm->object_class, "__callee__",         kernel_method_name,        0);
-    DEF(korb_vm->object_class, "caller",             kernel_caller,            -1);
-    DEF(korb_vm->object_class, "__capture_lvars__",  kernel_capture_lvars,      0);
-    DEF(korb_vm->object_class, "local_variables",    kernel_local_variables,    0);
-    DEF(korb_vm->object_class, "eval",               kernel_eval_stub,         -1);
-    DEF(korb_vm->object_class, "loop",               kernel_loop,               0);
-    DEF(korb_vm->object_class, "initialize",         kernel_initialize_default, -1);
-    DEF_PRIV(korb_vm->object_class, "lambda",        kernel_lambda,             0);
-    DEF_PRIV(korb_vm->object_class, "proc",          kernel_proc,               0);
+    DEF_R(korb_vm->object_class, "__method__",         kernel_method_name,        0);
+    DEF_R(korb_vm->object_class, "__callee__",         kernel_method_name,        0);
+    DEF_R(korb_vm->object_class, "caller",             kernel_caller,            -1);
+    DEF_R(korb_vm->object_class, "__capture_lvars__",  kernel_capture_lvars,      0);
+    DEF_R(korb_vm->object_class, "local_variables",    kernel_local_variables,    0);
+    DEF_R(korb_vm->object_class, "eval",               kernel_eval_stub,         -1);
+    DEF_R(korb_vm->object_class, "loop",               kernel_loop,               0);
+    DEF_R(korb_vm->object_class, "initialize",         kernel_initialize_default, -1);
+    DEF_R_PRIV(korb_vm->object_class, "lambda",        kernel_lambda,             0);
+    DEF_R_PRIV(korb_vm->object_class, "proc",          kernel_proc,               0);
     /* Mirror to Kernel module so Kernel.private_method_defined? sees them. */
     if (korb_vm->kernel_module) {
         struct korb_class *kmod = korb_vm->kernel_module;
-        korb_class_add_method_cfunc(kmod, korb_intern("lambda"), kernel_lambda, 0);
-        korb_class_add_method_cfunc(kmod, korb_intern("proc"),   kernel_proc,   0);
-        korb_class_add_method_cfunc(kmod, korb_intern("eval"),   kernel_eval_stub, -1);
+        korb_class_add_method_cfunc_r(kmod, korb_intern("lambda"), kernel_lambda, 0);
+        korb_class_add_method_cfunc_r(kmod, korb_intern("proc"),   kernel_proc,   0);
+        korb_class_add_method_cfunc_r(kmod, korb_intern("eval"),   kernel_eval_stub, -1);
         struct korb_method *m;
         if ((m = korb_class_find_method(kmod, korb_intern("lambda")))) m->visibility = KORB_VIS_PRIVATE;
         if ((m = korb_class_find_method(kmod, korb_intern("proc"))))   m->visibility = KORB_VIS_PRIVATE;
@@ -572,37 +572,37 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->object_class, "printf",                kernel_printf,            -1);
 
     /* extra Integer */
-    DEF(korb_vm->integer_class, "chr",   int_chr, 0);
-    DEF(korb_vm->integer_class, "===",   int_eqq, 1);
-    DEF(korb_vm->integer_class, "floor", int_floor, -1);
-    DEF(korb_vm->integer_class, "ceil",  int_floor, -1);
-    DEF(korb_vm->integer_class, "round",    int_round, -1);
-    DEF(korb_vm->integer_class, "floor",    int_floor, -1);
-    DEF(korb_vm->integer_class, "ceil",     int_ceil,  -1);
-    DEF(korb_vm->integer_class, "truncate", int_truncate, -1);
-    DEF(korb_vm->integer_class, "abs",   int_abs, 0);
-    DEF(korb_vm->integer_class, "[]",    int_aref, -1);
-    DEF(korb_vm->integer_class, "bit_length", int_bit_length, 0);
-    DEF(korb_vm->integer_class, "divmod", int_divmod, 1);
-    DEF(korb_vm->integer_class, "**",    int_pow, 1);
+    DEF_R(korb_vm->integer_class, "chr",   int_chr, 0);
+    DEF_R(korb_vm->integer_class, "===",   int_eqq, 1);
+    DEF_R(korb_vm->integer_class, "floor", int_floor, -1);
+    DEF_R(korb_vm->integer_class, "ceil",  int_floor, -1);
+    DEF_R(korb_vm->integer_class, "round",    int_round, -1);
+    DEF_R(korb_vm->integer_class, "floor",    int_floor, -1);
+    DEF_R(korb_vm->integer_class, "ceil",     int_ceil,  -1);
+    DEF_R(korb_vm->integer_class, "truncate", int_truncate, -1);
+    DEF_R(korb_vm->integer_class, "abs",   int_abs, 0);
+    DEF_R(korb_vm->integer_class, "[]",    int_aref, -1);
+    DEF_R(korb_vm->integer_class, "bit_length", int_bit_length, 0);
+    DEF_R(korb_vm->integer_class, "divmod", int_divmod, 1);
+    DEF_R(korb_vm->integer_class, "**",    int_pow, 1);
     {
-        VALUE int_invert(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->integer_class, "~", int_invert, 0);
+        RESULT int_invert(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->integer_class, "~", int_invert, 0);
     }
-    DEF(korb_vm->integer_class, "step",  int_step, -1);
-    DEF(korb_vm->integer_class, "upto",  int_upto, 1);
-    DEF(korb_vm->integer_class, "downto", int_downto, 1);
-    DEF(korb_vm->integer_class, "div",   int_method_div, 1);
-    DEF(korb_vm->integer_class, "fdiv",       int_fdiv,       1);
-    DEF(korb_vm->integer_class, "remainder",  int_remainder,  1);
-    DEF(korb_vm->integer_class, "modulo",     int_mod,        1);
+    DEF_R(korb_vm->integer_class, "step",  int_step, -1);
+    DEF_R(korb_vm->integer_class, "upto",  int_upto, 1);
+    DEF_R(korb_vm->integer_class, "downto", int_downto, 1);
+    DEF_R(korb_vm->integer_class, "div",   int_method_div, 1);
+    DEF_R(korb_vm->integer_class, "fdiv",       int_fdiv,       1);
+    DEF_R(korb_vm->integer_class, "remainder",  int_remainder,  1);
+    DEF_R(korb_vm->integer_class, "modulo",     int_mod,        1);
     {
-        VALUE int_abs(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->integer_class, "magnitude", int_abs, 0);
+        RESULT int_abs(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->integer_class, "magnitude", int_abs, 0);
     }
-    DEF(korb_vm->integer_class, "size",  int_size, 0);
-    DEF(korb_vm->integer_class, "coerce", int_coerce, 1);
-    DEF(korb_vm->integer_class, "abs2",   int_abs2,   0);
+    DEF_R(korb_vm->integer_class, "size",  int_size, 0);
+    DEF_R(korb_vm->integer_class, "coerce", int_coerce, 1);
+    DEF_R(korb_vm->integer_class, "abs2",   int_abs2,   0);
     DEF_R(korb_vm->float_class, "coerce", flt_coerce, 1);
     DEF_R(korb_vm->float_class, "abs2",   flt_abs2,   0);
 
@@ -670,14 +670,14 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->string_class, "tr_s!",       str_tr_s_bang,   -1);
     DEF_R(korb_vm->string_class, "%",           str_percent,     -1);
     DEF_R(korb_vm->string_class, "bytesize",    str_bytesize,     0);
-    DEF(korb_vm->string_class, "inspect",     kernel_inspect,   0);
+    DEF_R(korb_vm->string_class, "inspect",     kernel_inspect,   0);
     DEF_R(korb_vm->string_class, "dup",         obj_dup,          0);
     DEF_R(korb_vm->string_class, "=~",          str_match_op, 1);
     DEF_R(korb_vm->string_class, "match?",      str_match_p, -1);
     DEF_R(korb_vm->string_class, "match",       str_match, -1);
     DEF(korb_vm->string_class, "scan",        str_scan, 1);
     DEF_R(korb_vm->string_class, "sum",         str_sum, -1);
-    DEF(korb_vm->string_class, "unpack",      str_unpack, -1);
+    DEF_R(korb_vm->string_class, "unpack",      str_unpack, -1);
     DEF_R(korb_vm->string_class, "center",      str_center, -1);
     DEF_R(korb_vm->string_class, "ljust",       str_ljust,  -1);
     DEF_R(korb_vm->string_class, "rjust",       str_rjust,  -1);
@@ -702,73 +702,73 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->string_class, "intern",      str_to_sym,  0);
 
     /* extra Array */
-    DEF(korb_vm->array_class, "sort",       ary_sort,       -1);
-    DEF(korb_vm->array_class, "sort_by",    ary_sort_by,     0);
-    DEF(korb_vm->array_class, "zip",        ary_zip,        -1);
-    DEF(korb_vm->array_class, "flatten",    ary_flatten,    -1);
-    DEF(korb_vm->array_class, "compact",    ary_compact,     0);
-    DEF(korb_vm->array_class, "uniq",       ary_uniq,       -1);
-    DEF(korb_vm->array_class, "include?",   ary_include,     1);
-    DEF(korb_vm->array_class, "any?",       ary_any_p,      -1);
-    DEF(korb_vm->array_class, "all?",       ary_all_p,      -1);
-    DEF(korb_vm->array_class, "none?",      ary_none_p,     -1);
-    DEF(korb_vm->array_class, "min",        ary_min,        -1);
-    DEF(korb_vm->array_class, "max",        ary_max,        -1);
-    DEF(korb_vm->array_class, "sum",        ary_sum,        -1);
-    DEF(korb_vm->array_class, "each_slice", ary_each_slice,  1);
-    DEF(korb_vm->array_class, "step",       ary_step,       -1);
-    DEF(korb_vm->array_class, "===",        ary_eqq,         1);
-    DEF(korb_vm->array_class, "pack",       ary_pack,       -1);
-    DEF(korb_vm->array_class, "concat",     ary_concat,     -1);
-    DEF(korb_vm->array_class, "-",          ary_minus,       1);
+    DEF_R(korb_vm->array_class, "sort",       ary_sort,       -1);
+    DEF_R(korb_vm->array_class, "sort_by",    ary_sort_by,     0);
+    DEF_R(korb_vm->array_class, "zip",        ary_zip,        -1);
+    DEF_R(korb_vm->array_class, "flatten",    ary_flatten,    -1);
+    DEF_R(korb_vm->array_class, "compact",    ary_compact,     0);
+    DEF_R(korb_vm->array_class, "uniq",       ary_uniq,       -1);
+    DEF_R(korb_vm->array_class, "include?",   ary_include,     1);
+    DEF_R(korb_vm->array_class, "any?",       ary_any_p,      -1);
+    DEF_R(korb_vm->array_class, "all?",       ary_all_p,      -1);
+    DEF_R(korb_vm->array_class, "none?",      ary_none_p,     -1);
+    DEF_R(korb_vm->array_class, "min",        ary_min,        -1);
+    DEF_R(korb_vm->array_class, "max",        ary_max,        -1);
+    DEF_R(korb_vm->array_class, "sum",        ary_sum,        -1);
+    DEF_R(korb_vm->array_class, "each_slice", ary_each_slice,  1);
+    DEF_R(korb_vm->array_class, "step",       ary_step,       -1);
+    DEF_R(korb_vm->array_class, "===",        ary_eqq,         1);
+    DEF_R(korb_vm->array_class, "pack",       ary_pack,       -1);
+    DEF_R(korb_vm->array_class, "concat",     ary_concat,     -1);
+    DEF_R(korb_vm->array_class, "-",          ary_minus,       1);
     {
-        VALUE ary_plus(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->array_class, "+",          ary_plus,        1);
+        RESULT ary_plus(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->array_class, "+",          ary_plus,        1);
     }
-    DEF(korb_vm->array_class, "index",      ary_index,      -1);
-    DEF(korb_vm->array_class, "find_index", ary_index,      -1);
-    DEF(korb_vm->array_class, "reverse",      ary_reverse,      0);
-    DEF(korb_vm->array_class, "reverse_each", ary_reverse_each, 0);
-    DEF(korb_vm->array_class, "clear",      ary_clear,       0);
-    DEF(korb_vm->array_class, "unshift",    ary_unshift,    -1);
-    DEF(korb_vm->array_class, "prepend",    ary_unshift,    -1);
-    DEF(korb_vm->array_class, "shift",      ary_shift,      -1);
-    DEF(korb_vm->array_class, "each_with_object", ary_each_with_object, 1);
-    DEF(korb_vm->array_class, "transpose", ary_transpose, 0);
-    DEF(korb_vm->array_class, "count",     ary_count, -1);
-    DEF(korb_vm->array_class, "drop",      ary_drop,   1);
-    DEF(korb_vm->array_class, "take",      ary_take,   1);
-    DEF(korb_vm->array_class, "fill",      ary_fill,  -1);
-    DEF(korb_vm->array_class, "sample",    ary_sample, -1);
-    DEF(korb_vm->array_class, "empty?",    ary_empty_p, 0);
-    DEF(korb_vm->array_class, "find",      ary_find, 0);
-    DEF(korb_vm->array_class, "detect",    ary_find, 0);
-    DEF(korb_vm->array_class, "min_by",    ary_min_by, 0);
-    DEF(korb_vm->array_class, "max_by",    ary_max_by, 0);
-    DEF(korb_vm->array_class, "*",         ary_mul, 1);
-    DEF(korb_vm->array_class, "uniq!",     ary_uniq, -1);
-    DEF(korb_vm->array_class, "sort!",     ary_sort_bang, -1);
-    DEF(korb_vm->array_class, "compact!",  ary_compact_bang, 0);
-    DEF(korb_vm->array_class, "reverse!",  ary_reverse_bang, 0);
-    DEF(korb_vm->array_class, "rotate!",   ary_rotate_bang, -1);
-    DEF(korb_vm->array_class, "rotate",    ary_rotate, -1);
-    DEF(korb_vm->array_class, "flatten!",  ary_flatten_bang, -1);
-    DEF(korb_vm->array_class, "freeze",    kernel_freeze, 0);
-    DEF(korb_vm->array_class, "frozen?",   kernel_frozen_p, 0);
+    DEF_R(korb_vm->array_class, "index",      ary_index,      -1);
+    DEF_R(korb_vm->array_class, "find_index", ary_index,      -1);
+    DEF_R(korb_vm->array_class, "reverse",      ary_reverse,      0);
+    DEF_R(korb_vm->array_class, "reverse_each", ary_reverse_each, 0);
+    DEF_R(korb_vm->array_class, "clear",      ary_clear,       0);
+    DEF_R(korb_vm->array_class, "unshift",    ary_unshift,    -1);
+    DEF_R(korb_vm->array_class, "prepend",    ary_unshift,    -1);
+    DEF_R(korb_vm->array_class, "shift",      ary_shift,      -1);
+    DEF_R(korb_vm->array_class, "each_with_object", ary_each_with_object, 1);
+    DEF_R(korb_vm->array_class, "transpose", ary_transpose, 0);
+    DEF_R(korb_vm->array_class, "count",     ary_count, -1);
+    DEF_R(korb_vm->array_class, "drop",      ary_drop,   1);
+    DEF_R(korb_vm->array_class, "take",      ary_take,   1);
+    DEF_R(korb_vm->array_class, "fill",      ary_fill,  -1);
+    DEF_R(korb_vm->array_class, "sample",    ary_sample, -1);
+    DEF_R(korb_vm->array_class, "empty?",    ary_empty_p, 0);
+    DEF_R(korb_vm->array_class, "find",      ary_find, 0);
+    DEF_R(korb_vm->array_class, "detect",    ary_find, 0);
+    DEF_R(korb_vm->array_class, "min_by",    ary_min_by, 0);
+    DEF_R(korb_vm->array_class, "max_by",    ary_max_by, 0);
+    DEF_R(korb_vm->array_class, "*",         ary_mul, 1);
+    DEF_R(korb_vm->array_class, "uniq!",     ary_uniq, -1);
+    DEF_R(korb_vm->array_class, "sort!",     ary_sort_bang, -1);
+    DEF_R(korb_vm->array_class, "compact!",  ary_compact_bang, 0);
+    DEF_R(korb_vm->array_class, "reverse!",  ary_reverse_bang, 0);
+    DEF_R(korb_vm->array_class, "rotate!",   ary_rotate_bang, -1);
+    DEF_R(korb_vm->array_class, "rotate",    ary_rotate, -1);
+    DEF_R(korb_vm->array_class, "flatten!",  ary_flatten_bang, -1);
+    DEF_R(korb_vm->array_class, "freeze",    kernel_freeze, 0);
+    DEF_R(korb_vm->array_class, "frozen?",   kernel_frozen_p, 0);
     {
-        VALUE ary_hash_content(CTX *c, VALUE self, int argc, VALUE *argv);
-        DEF(korb_vm->array_class, "hash",      ary_hash_content, 0);
+        RESULT ary_hash_content(CTX *c, int argc, VALUE *sp);
+        DEF_R(korb_vm->array_class, "hash",      ary_hash_content, 0);
     }
-    DEF(korb_vm->array_class, "slice!",    ary_slice_bang, -1);
-    DEF(korb_vm->array_class, "slice",     ary_slice,      -1);
-    DEF(korb_vm->array_class, "flat_map",       ary_flat_map, 0);
-    DEF(korb_vm->array_class, "collect_concat", ary_flat_map, 0);
-    DEF(korb_vm->array_class, "dig",            ary_dig,      -1);
-    DEF(korb_vm->array_class, "take_while",     ary_take_while, 0);
-    DEF(korb_vm->array_class, "drop_while",     ary_drop_while, 0);
-    DEF(korb_vm->array_class, "shuffle",        ary_shuffle,    0);
-    DEF(korb_vm->array_class, "bsearch",        ary_bsearch,    -1);
-    DEF(korb_vm->array_class, "one?",           ary_one_p,     -1);
+    DEF_R(korb_vm->array_class, "slice!",    ary_slice_bang, -1);
+    DEF_R(korb_vm->array_class, "slice",     ary_slice,      -1);
+    DEF_R(korb_vm->array_class, "flat_map",       ary_flat_map, 0);
+    DEF_R(korb_vm->array_class, "collect_concat", ary_flat_map, 0);
+    DEF_R(korb_vm->array_class, "dig",            ary_dig,      -1);
+    DEF_R(korb_vm->array_class, "take_while",     ary_take_while, 0);
+    DEF_R(korb_vm->array_class, "drop_while",     ary_drop_while, 0);
+    DEF_R(korb_vm->array_class, "shuffle",        ary_shuffle,    0);
+    DEF_R(korb_vm->array_class, "bsearch",        ary_bsearch,    -1);
+    DEF_R(korb_vm->array_class, "one?",           ary_one_p,     -1);
     /* String additions */
     DEF_R(korb_vm->string_class, "hex",           str_hex,           0);
     DEF_R(korb_vm->string_class, "oct",           str_oct,           0);
@@ -783,35 +783,35 @@ void korb_init_builtins(CTX *c) {
     DEF_R(korb_vm->string_class, "setbyte",       str_setbyte,       2);
     DEF_R(korb_vm->string_class, "getbyte",       str_getbyte,       1);
     /* Numeric eql? — type-strict */
-    DEF(korb_vm->integer_class, "eql?",          int_eql,           1);
+    DEF_R(korb_vm->integer_class, "eql?",          int_eql,           1);
     DEF_R(korb_vm->float_class, "eql?",          flt_eql,           1);
-    DEF(korb_vm->array_class, "each_cons",      ary_each_cons,  1);
-    DEF(korb_vm->array_class, "minmax_by",      ary_minmax_by,  0);
-    DEF(korb_vm->array_class, "assoc",       ary_assoc,       1);
-    DEF(korb_vm->array_class, "rassoc",      ary_rassoc,      1);
-    DEF(korb_vm->array_class, "at",          ary_at,          1);
-    DEF(korb_vm->array_class, "to_a",        ary_to_a,        0);
-    DEF(korb_vm->array_class, "to_ary",      ary_self,        0);
-    DEF(korb_vm->array_class, "deconstruct", ary_self,        0);
-    DEF(korb_vm->array_class, "fetch",       ary_fetch,       -1);
-    DEF(korb_vm->array_class, "fetch_values", ary_fetch_values, -1);
-    DEF(korb_vm->array_class, "delete",      ary_delete,      1);
-    DEF(korb_vm->array_class, "delete_at",   ary_delete_at,   1);
-    DEF(korb_vm->array_class, "delete_if",   ary_delete_if,   0);
-    DEF(korb_vm->array_class, "reject",      ary_reject,      0);
-    DEF(korb_vm->array_class, "reject!",     ary_reject_bang, 0);
-    DEF(korb_vm->array_class, "insert",      ary_insert,     -1);
-    DEF(korb_vm->array_class, "replace",     ary_replace,     1);
-    DEF(korb_vm->array_class, "each_index",  ary_each_index,  0);
-    DEF(korb_vm->array_class, "clone",       ary_clone,       0);
-    DEF(korb_vm->array_class, "eql?",        ary_eql,         1);
-    DEF(korb_vm->array_class, "<=>",         ary_cmp,         1);
-    DEF(korb_vm->array_class, "cycle",       ary_cycle,      -1);
-    DEF(korb_vm->array_class, "combination", ary_combination, 1);
-    DEF(korb_vm->array_class, "permutation", ary_permutation, -1);
-    DEF(korb_vm->array_class, "repeated_combination", ary_repeated_combination, -1);
-    DEF(korb_vm->array_class, "repeated_permutation", ary_repeated_permutation, -1);
-    DEF(korb_vm->array_class, "product",     ary_product,    -1);
+    DEF_R(korb_vm->array_class, "each_cons",      ary_each_cons,  1);
+    DEF_R(korb_vm->array_class, "minmax_by",      ary_minmax_by,  0);
+    DEF_R(korb_vm->array_class, "assoc",       ary_assoc,       1);
+    DEF_R(korb_vm->array_class, "rassoc",      ary_rassoc,      1);
+    DEF_R(korb_vm->array_class, "at",          ary_at,          1);
+    DEF_R(korb_vm->array_class, "to_a",        ary_to_a,        0);
+    DEF_R(korb_vm->array_class, "to_ary",      ary_self,        0);
+    DEF_R(korb_vm->array_class, "deconstruct", ary_self,        0);
+    DEF_R(korb_vm->array_class, "fetch",       ary_fetch,       -1);
+    DEF_R(korb_vm->array_class, "fetch_values", ary_fetch_values, -1);
+    DEF_R(korb_vm->array_class, "delete",      ary_delete,      1);
+    DEF_R(korb_vm->array_class, "delete_at",   ary_delete_at,   1);
+    DEF_R(korb_vm->array_class, "delete_if",   ary_delete_if,   0);
+    DEF_R(korb_vm->array_class, "reject",      ary_reject,      0);
+    DEF_R(korb_vm->array_class, "reject!",     ary_reject_bang, 0);
+    DEF_R(korb_vm->array_class, "insert",      ary_insert,     -1);
+    DEF_R(korb_vm->array_class, "replace",     ary_replace,     1);
+    DEF_R(korb_vm->array_class, "each_index",  ary_each_index,  0);
+    DEF_R(korb_vm->array_class, "clone",       ary_clone,       0);
+    DEF_R(korb_vm->array_class, "eql?",        ary_eql,         1);
+    DEF_R(korb_vm->array_class, "<=>",         ary_cmp,         1);
+    DEF_R(korb_vm->array_class, "cycle",       ary_cycle,      -1);
+    DEF_R(korb_vm->array_class, "combination", ary_combination, 1);
+    DEF_R(korb_vm->array_class, "permutation", ary_permutation, -1);
+    DEF_R(korb_vm->array_class, "repeated_combination", ary_repeated_combination, -1);
+    DEF_R(korb_vm->array_class, "repeated_permutation", ary_repeated_permutation, -1);
+    DEF_R(korb_vm->array_class, "product",     ary_product,    -1);
     {
         /* Override Class.new on Array's metaclass so Array.new(n, default)
          * and Array.new(n) { ... } actually build an array of the right
@@ -819,15 +819,15 @@ void korb_init_builtins(CTX *c) {
          * doesn't size a T_ARRAY correctly. */
         struct korb_class *cAryMeta = korb_class_new(c, c->sp, korb_intern("ArrayMeta"),
                                                       korb_vm->class_class, T_CLASS);
-        korb_class_add_method_cfunc(cAryMeta, korb_intern("new"), ary_class_new, -1);
+        korb_class_add_method_cfunc_r(cAryMeta, korb_intern("new"), ary_class_new, -1);
         /* Array#initialize — populate (or replace contents of) an already
          * allocated Array.  Subclasses can override this. */
-        extern VALUE ary_initialize(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern RESULT ary_initialize(CTX *c, int argc, VALUE *sp);
         korb_class_add_method_cfunc(korb_vm->array_class, korb_intern("initialize"),
                                     ary_initialize, -1);
         /* Array[] — class method that returns an Array literal of args. */
-        VALUE ary_class_brackets(CTX *c, VALUE self, int argc, VALUE *argv);
-        korb_class_add_method_cfunc(cAryMeta, korb_intern("[]"), ary_class_brackets, -1);
+        RESULT ary_class_brackets(CTX *c, int argc, VALUE *sp);
+        korb_class_add_method_cfunc_r(cAryMeta, korb_intern("[]"), ary_class_brackets, -1);
         korb_vm->array_class->basic.klass = (VALUE)cAryMeta;
         /* Array.try_convert(obj) — obj.to_ary if obj responds and returns
          * Array, else nil.  Raises TypeError if #to_ary returns non-Array. */
@@ -1224,12 +1224,12 @@ void korb_init_builtins(CTX *c) {
     VALUE stdout_obj = korb_const_get(korb_vm->object_class, korb_intern("STDOUT"));
     VALUE stderr_obj = korb_const_get(korb_vm->object_class, korb_intern("STDERR"));
     /* IO#puts / write methods */
-    korb_class_add_method_cfunc(cIO, korb_intern("puts"), kernel_puts, -1);
-    korb_class_add_method_cfunc(cIO, korb_intern("print"), kernel_print, -1);
-    korb_class_add_method_cfunc(cIO, korb_intern("write"), kernel_print, -1);
-    korb_class_add_method_cfunc(cIO, korb_intern("<<"), kernel_print, 1);
-    korb_class_add_method_cfunc(cIO, korb_intern("flush"), kernel_inspect, 0);
-    korb_class_add_method_cfunc(cIO, korb_intern("sync="), kernel_inspect, 1);
+    korb_class_add_method_cfunc_r(cIO, korb_intern("puts"), kernel_puts, -1);
+    korb_class_add_method_cfunc_r(cIO, korb_intern("print"), kernel_print, -1);
+    korb_class_add_method_cfunc_r(cIO, korb_intern("write"), kernel_print, -1);
+    korb_class_add_method_cfunc_r(cIO, korb_intern("<<"), kernel_print, 1);
+    korb_class_add_method_cfunc_r(cIO, korb_intern("flush"), kernel_inspect, 0);
+    korb_class_add_method_cfunc_r(cIO, korb_intern("sync="), kernel_inspect, 1);
     /* IO instances also need gets/read/each_line/eof?/close — share
      * the same impls as File. */
     korb_class_add_method_cfunc(cIO, korb_intern("gets"),      io_gets,     -1);
@@ -1279,7 +1279,7 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->symbol_class, "==", sym_eq, 1);
     DEF(korb_vm->symbol_class, "to_proc", sym_to_proc, 0);
     DEF(korb_vm->symbol_class, "===", sym_eq, 1);
-    DEF(korb_vm->symbol_class, "inspect", kernel_inspect, 0);
+    DEF_R(korb_vm->symbol_class, "inspect", kernel_inspect, 0);
     DEF(korb_vm->symbol_class, "<=>",     sym_cmp,        1);
     DEF(korb_vm->symbol_class, "succ",    sym_succ,       0);
     DEF(korb_vm->symbol_class, "next",    sym_succ,       0);
