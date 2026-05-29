@@ -803,11 +803,11 @@ cfunc 側で:
 | 7 | C API helper (korb_eq / korb_str_new_cstr / korb_ary_new 等) を (c, sp, ...) 規約に | 完了 (commit da232e4f で残 alloc helper 全て sp 引数化) |
 | 8a | 移行 macro 整備 + warn_unused_result + DROP_RESULT wrapping | 完了 (469 ヶ所 wrap、 build green) |
 | 8b | builtins cfunc を全て新 ABI に migrate | 完了 (DROP_RESULT 469 → ~110、 残は AST 内部 / void helper / 意図的 dispatch discharge) |
-| 8c | korb_vm global を KORB_VM(c) macro 経由に切替 | 進行中 (891 → 30 ref、 残は CTX を取らない low-level helper) |
-| 8d | node.def AST nodes を RESULT 化 (EVAL macro 変更) | 未着手 |
+| 8c | korb_vm global を KORB_VM(c) macro 経由に切替 | 進行中 (node.def 全 43 ref 完了 commit 354837c7、 object.c 残 34 ref は CTX を取らない low-level helper で API 改修待ち) |
+| 8d | node.def AST nodes を RESULT 化 (EVAL macro 変更) | R1-R5 完了 (cfunc 全 RESULT 化 + c->state 削除) |
 | 8e | super_forward / super で cfunc_r 経路に対応 | 完了 (commit 832011d6) |
 | 8f | AST dispatcher で argv snapshot して zero-fill clobber 回避 | 完了 (commit 832011d6) |
-| 9 | 動作確認 + 回帰 fix | 進行中: rubyspec PASS=8138/300 spec (2026-05-29 時点、 random sweep)、 全 26 test suite が default/STRESS/STRESS+PURGE 全 mode PASS。 Phase 8d-R5 完了 (c->state 撤去) + ary/Hash 系 recursion guard + Object#method() bug fix + Range#step 負方向 + Enumerable に chain/filter_map/chunk/compact/minmax_by/reverse_each/slice_after/slice_before 追加 + NilClass/TrueClass/FalseClass .allocate/.new disallowed + Symbol#name/[]/slice + Range#overlap? + Struct#dig/deconstruct/deconstruct_keys + Method#=== + Numeric デフォルト method 一通り + __method__ block 内 logic + Kernel#global_variables 等で大幅改善。 |
+| 9 | 動作確認 + 回帰 fix | 進行中: 全 24 test suite が default mode PASS、 STRESS+PURGE で test_class.rb のみ regression (snapshot_env_if_in_frame で SEGV、 root cause 未特定 = pre-existing flake)。 rubyspec は Struct PASS 130→183、 Range PASS の cover/min/max 大幅改善、 Comparable#== の例外伝播、 Kernel#instance_variable_get/set/defined?/remove の名前検証+frozen check 強化等で +100 PASS 程度。 |
 
 Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
 責任を引き受ける)。 移行期は cfunc 側で sync しておけば安全。
