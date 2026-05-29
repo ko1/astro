@@ -657,7 +657,7 @@ static RESULT struct_eq(CTX *c, int argc, VALUE *sp) {
     return res;
 }
 
-/* Struct#to_h */
+/* Struct#to_h — with optional block that transforms each [key, value] pair. */
 static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
@@ -668,6 +668,8 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, c->sp));
     struct korb_array *members = (struct korb_array *)members_v;
     VALUE h = korb_hash_new(c, c->sp);
+    sp[0] = h; /* keep alive across yields */
+    bool has_block = (c->current_block != NULL);
     for (long i = 0; i < members->len; i++) {
         ID name = SYMBOL_P(members->ptr[i]) ? korb_sym2id(members->ptr[i]) :
                   korb_intern(korb_str_cstr(members->ptr[i]));
@@ -675,7 +677,39 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
         long bl = strlen(base);
         char *iv = korb_xmalloc_atomic(bl + 2);
         iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
-        korb_hash_aset(c, h, members->ptr[i], korb_ivar_get(self, korb_intern(iv)));
+        VALUE val = korb_ivar_get(self, korb_intern(iv));
+        VALUE key = members->ptr[i];
+        if (has_block) {
+            sp[1] = key;
+            sp[2] = val;
+            RESULT yr = korb_yield_r(c, 2, &sp[1]);
+            if (yr.state != KORB_NORMAL) return yr;
+            VALUE pair = yr.value;
+            if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
+                /* Try to_ary; if absent or returns non-Array, TypeError. */
+                if (!SPECIAL_CONST_P(pair)) {
+                    struct korb_class *pkl = korb_class_of_class(pair);
+                    if (korb_class_find_method(pkl, korb_intern("to_ary"))) {
+                        RESULT tr = korb_funcall_r(c, pair, korb_intern("to_ary"), 0, NULL);
+                        if (tr.state != KORB_NORMAL) return tr;
+                        pair = tr.value;
+                    }
+                }
+                if (SPECIAL_CONST_P(pair) || BUILTIN_TYPE(pair) != T_ARRAY) {
+                    return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                      "wrong element type %s (expected array)",
+                                      korb_id_name(korb_class_of_class(pair)->name));
+                }
+            }
+            struct korb_array *pa = (struct korb_array *)pair;
+            if (pa->len != 2) {
+                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
+                                  "element has wrong array length (expected 2, was %ld)", pa->len);
+            }
+            key = pa->ptr[0];
+            val = pa->ptr[1];
+        }
+        korb_hash_aset(c, h, key, val);
     }
     return RESULT_OK(h);
 }
@@ -715,8 +749,12 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
      * (the generated initializer already handles both), but at least
      * the loader-time `Struct.new(:foo, keyword_init: true)` pattern
      * (test_marshal:776 etc.) needs to not blow up on the Hash arg. */
+    VALUE kw_init_val = Qundef; /* used by Struct#keyword_init? */
     if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
         BUILTIN_TYPE(argv[argc - 1]) == T_HASH) {
+        VALUE opts = argv[argc - 1];
+        kw_init_val = korb_hash_aref(c, opts, korb_id2sym(korb_intern("keyword_init")));
+        if (UNDEF_P(kw_init_val)) kw_init_val = Qundef;
         argc--;
     }
     struct korb_class *klass = korb_class_new(c, c->sp, korb_intern("Struct"), KORB_VM(c)->object_class, T_OBJECT);
@@ -736,6 +774,38 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     korb_class_add_method_cfunc_r(klass, korb_intern("[]"),         struct_aref,        1);
     korb_class_add_method_cfunc_r(klass, korb_intern("[]="),        struct_aset,       -1);
     korb_class_add_method_cfunc_r(klass, korb_intern("each"),       struct_each,        0);
+    /* Struct#each_pair — yield [member, value] for each member. */
+    {
+        RESULT _struct_each_pair(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
+            VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
+            if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(self);
+            struct korb_array *members = (struct korb_array *)members_v;
+            for (long i = 0; i < members->len; i++) {
+                ID name = SYMBOL_P(members->ptr[i]) ? korb_sym2id(members->ptr[i]) :
+                          korb_intern(korb_str_cstr(members->ptr[i]));
+                const char *base = korb_id_name(name);
+                long bl = strlen(base);
+                char *iv = korb_xmalloc_atomic(bl + 2);
+                iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
+                VALUE val = korb_ivar_get(self, korb_intern(iv));
+                sp[0] = members->ptr[i];
+                sp[1] = val;
+                /* yield [key, val] as a single array when block has 1 param,
+                 * or as 2 args when 2 params; korb_yield_r handles arity. */
+                VALUE pair = korb_ary_new_capa(c, c->sp + 2, 2);
+                korb_ary_push(pair, sp[0]);
+                korb_ary_push(pair, sp[1]);
+                sp[2] = pair;
+                RESULT yr = korb_yield_r(c, 1, &sp[2]);
+                if (yr.state != KORB_NORMAL) return yr;
+            }
+            return RESULT_OK(self);
+        }
+        korb_class_add_method_cfunc_r(klass, korb_intern("each_pair"), _struct_each_pair, 0);
+    }
     /* Struct#values_at: delegate to to_a.values_at(*indices). */
     {
         RESULT _struct_values_at(CTX *c, int argc, VALUE *sp) {
@@ -984,11 +1054,23 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         for (int i = 0; i < argc; i++) c->sp[1 + i] = argv[i];
         DROP_RESULT(module_attr_accessor(c, argc, c->sp + 1 + argc));
     }
+    /* Store keyword_init flag for #keyword_init? introspection. */
+    if (!UNDEF_P(kw_init_val)) {
+        korb_const_set(klass, korb_intern("__keyword_init__"), kw_init_val);
+    }
     /* class-level .members and .[] (synonym for .new) */
     {
         struct korb_class *meta = korb_singleton_class_of(c, klass);
         korb_class_add_method_cfunc_r(meta, korb_intern("members"),
                                      struct_class_members, 0);
+        RESULT _struct_keyword_init_p(CTX *c, int argc, VALUE *sp) {
+            (void)argc; c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE v = korb_const_get_inherited((struct korb_class *)self, korb_intern("__keyword_init__"));
+            if (UNDEF_P(v) || NIL_P(v)) return RESULT_OK(Qnil);
+            return RESULT_OK(RTEST(v) ? Qtrue : Qfalse);
+        }
+        korb_class_add_method_cfunc_r(meta, korb_intern("keyword_init?"), _struct_keyword_init_p, 0);
         RESULT _struct_class_aref(CTX *c, int argc, VALUE *sp) {
             c->sp = sp;
             VALUE self = sp[-argc - 1];
