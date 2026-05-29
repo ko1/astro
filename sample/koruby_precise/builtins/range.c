@@ -4,7 +4,6 @@
 extern VALUE korb_range_new(CTX *c, VALUE *sp, VALUE b, VALUE e, bool excl);
 
 static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -25,12 +24,11 @@ static RESULT rng_class_new(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, (struct korb_class *)eArg, "bad value for range");
         }
     }
-    return RESULT_OK(korb_range_new(c, c->sp_top, argv[0], argv[1], excl));
+    return RESULT_OK(korb_range_new(c, sp, argv[0], argv[1], excl));
 }
 
 /* Range#hash — same begin / end / exclude_end? must hash equal. */
 static RESULT rng_hash(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -44,7 +42,6 @@ static RESULT rng_hash(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -121,7 +118,6 @@ static long rng_cmp(CTX *c, VALUE a, VALUE b, RESULT *err) {
 }
 
 static RESULT rng_min(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -151,7 +147,6 @@ static RESULT rng_min(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -208,7 +203,6 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
 /* Range#begin — returns the begin field directly (nil for beginless).
  * Unlike #first, never raises.  CRuby semantics. */
 static RESULT rng_begin(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     (void)argc; (void)sp;
     return RESULT_OK(((struct korb_range *)self)->begin);
@@ -217,14 +211,12 @@ static RESULT rng_begin(CTX *c, int argc, VALUE *sp) {
 /* Range#end / Range#last (no args) — returns the end field directly
  * (nil for endless).  #last with args raises for endless. */
 static RESULT rng_end(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     (void)argc; (void)sp;
     return RESULT_OK(((struct korb_range *)self)->end);
 }
 
 static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -295,12 +287,11 @@ static RESULT rng_first(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(Qnil);
     }
     if (n > avail) n = avail;
-    VALUE a = korb_ary_new_capa(c, c->sp_top, n);
+    VALUE a = korb_ary_new_capa(c, sp, n);
     for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(b + i));
     return RESULT_OK(a);
 }
 static RESULT rng_last(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -351,12 +342,11 @@ static RESULT rng_last(CTX *c, int argc, VALUE *sp) {
     long avail = e - b + 1; if (avail < 0) avail = 0;
     if (n > avail) n = avail;
     long start = e - n + 1;
-    VALUE a = korb_ary_new_capa(c, c->sp_top, n);
+    VALUE a = korb_ary_new_capa(c, sp, n);
     for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(start + i));
     return RESULT_OK(a);
 }
 static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -365,12 +355,12 @@ static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
         long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
         if (r->exclude_end) e--;
         long n = e - b + 1; if (n < 0) n = 0;
-        VALUE a = korb_ary_new_capa(c, c->sp_top, n);
+        VALUE a = korb_ary_new_capa(c, sp, n);
         for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(b + i));
         return RESULT_OK(a);
     }
     /* Non-numeric: walk via #succ. */
-    VALUE a = korb_ary_new(c, c->sp_top);
+    VALUE a = korb_ary_new(c, sp);
     if (NIL_P(r->begin) || NIL_P(r->end)) return RESULT_OK(a);
     VALUE cur = r->begin;
     while (true) {
@@ -387,7 +377,6 @@ static RESULT rng_to_a(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Range methods (extended) ---------- */
 static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -406,9 +395,9 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
         double b = korb_num2dbl(r->begin);
         double e = korb_num2dbl(r->end);
         bool has_block = korb_block_given(c);
-        VALUE out = has_block ? Qnil : korb_ary_new(c, c->sp_top);
+        VALUE out = has_block ? Qnil : korb_ary_new(c, sp);
         for (double v = b; r->exclude_end ? (v < e) : (v <= e + 1e-12); v += step) {
-            VALUE fv = korb_float_new(c, c->sp_top, v);
+            VALUE fv = korb_float_new(c, sp, v);
             if (has_block) {
                 CHECK(korb_yield(c, 1, &fv));
             } else {
@@ -425,7 +414,7 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
         else if (step < 0) e++;
     }
     if (!korb_block_given(c)) {
-        VALUE a = korb_ary_new(c, c->sp_top);
+        VALUE a = korb_ary_new(c, sp);
         if (step > 0) {
             for (long i = b; i <= e; i += step) korb_ary_push(a, INT2FIX(i));
         } else {
@@ -450,7 +439,6 @@ static RESULT rng_step(CTX *c, int argc, VALUE *sp) {
 /* Range#zip — pair each element with the corresponding element of
  * each given Array.  Missing slots get nil. */
 static RESULT rng_zip(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -461,7 +449,6 @@ static RESULT rng_zip(CTX *c, int argc, VALUE *sp) {
 
 /* Range#each_with_index — yields (value, index) pairs. */
 static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -493,7 +480,6 @@ static RESULT rng_each_with_index(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -556,7 +542,6 @@ static RESULT rng_size(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_include(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -594,7 +579,6 @@ static RESULT rng_include(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_map(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -602,10 +586,10 @@ static RESULT rng_map(CTX *c, int argc, VALUE *sp) {
         return korb_funcall(c, self, korb_intern("to_a"), 0, NULL);
     }
     struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, sp));
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    VALUE out = korb_ary_new(c, c->sp_top);
+    VALUE out = korb_ary_new(c, sp);
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
         VALUE m = UNWRAP(korb_yield(c, 1, &v));
@@ -615,15 +599,14 @@ static RESULT rng_map(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_select(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     struct korb_range *r = (struct korb_range *)self;
-    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+    if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(korb_ary_new(c, sp));
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
     if (r->exclude_end) e--;
-    VALUE out = korb_ary_new(c, c->sp_top);
+    VALUE out = korb_ary_new(c, sp);
     for (long i = b; i <= e; i++) {
         VALUE v = INT2FIX(i);
         VALUE m = UNWRAP(korb_yield(c, 1, &v));
@@ -633,7 +616,6 @@ static RESULT rng_select(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_all_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -650,7 +632,6 @@ static RESULT rng_all_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_any_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -667,7 +648,6 @@ static RESULT rng_any_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_count(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -677,7 +657,7 @@ static RESULT rng_count(CTX *c, int argc, VALUE *sp) {
      * infinity is the conventional carrier for "infinite". */
     if (argc == 0 && !korb_block_given(c) &&
         (NIL_P(r->begin) || NIL_P(r->end))) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, 1.0/0.0));
+        return RESULT_OK(korb_float_new(c, sp, 1.0/0.0));
     }
     if (!FIXNUM_P(r->begin) || !FIXNUM_P(r->end)) return RESULT_OK(INT2FIX(0));
     long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
@@ -688,7 +668,6 @@ static RESULT rng_count(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -731,7 +710,6 @@ static RESULT rng_reduce(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Range#exclude_end? ---------- */
 static RESULT rng_exclude_end_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 

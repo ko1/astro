@@ -22,8 +22,8 @@ static RESULT false_xor(CTX *c, int argc, VALUE *sp) { return RESULT_OK(KORB_BOO
 static RESULT nil_and(CTX *c, int argc, VALUE *sp)   { return RESULT_OK(Qfalse); }
 static RESULT nil_or(CTX *c, int argc, VALUE *sp)    { return RESULT_OK(KORB_BOOL(korb_truthy(sp[-1]))); }
 static RESULT nil_xor(CTX *c, int argc, VALUE *sp)   { return RESULT_OK(KORB_BOOL(korb_truthy(sp[-1]))); }
-static RESULT nil_to_a(CTX *c, int argc, VALUE *sp)  { c->sp_top = sp; return RESULT_OK(korb_ary_new(c, c->sp_top)); }
-static RESULT nil_to_h(CTX *c, int argc, VALUE *sp)  { c->sp_top = sp; return RESULT_OK(korb_hash_new(c, c->sp_top)); }
+static RESULT nil_to_a(CTX *c, int argc, VALUE *sp)  { c->sp_top = sp; return RESULT_OK(korb_ary_new(c, sp)); }
+static RESULT nil_to_h(CTX *c, int argc, VALUE *sp)  { c->sp_top = sp; return RESULT_OK(korb_hash_new(c, sp)); }
 static RESULT nil_to_f(CTX *c, int argc, VALUE *sp)  { return RESULT_OK(korb_float_new(c, sp, 0.0)); }
 static RESULT nil_to_i(CTX *c, int argc, VALUE *sp)  { return RESULT_OK(INT2FIX(0)); }
 static RESULT nil_nil_p(CTX *c, int argc, VALUE *sp) { return RESULT_OK(Qtrue); }

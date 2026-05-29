@@ -62,12 +62,11 @@ static RESULT int_coerce_dispatch(CTX *c, VALUE self, VALUE other, ID op) {
     } while (0)
 
 static RESULT int_plus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (KORB_IS_FLOAT(argv[0])) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) + korb_num2dbl(argv[0])));
+        return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self) + korb_num2dbl(argv[0])));
     }
     if (int_op_other_kind(argv[0])) {
         /* + is commutative — delegate to Rational#+/Complex#+. */
@@ -77,12 +76,11 @@ static RESULT int_plus(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_int_plus(self, argv[0]));
 }
 static RESULT int_minus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (KORB_IS_FLOAT(argv[0])) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) - korb_num2dbl(argv[0])));
+        return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self) - korb_num2dbl(argv[0])));
     }
     if (int_op_other_kind(argv[0])) {
         VALUE r = UNWRAP(int_to_rational_obj(c, self));
@@ -92,7 +90,6 @@ static RESULT int_minus(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_int_minus(self, argv[0]));
 }
 static RESULT int_mul(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -101,7 +98,7 @@ static RESULT int_mul(CTX *c, int argc, VALUE *sp) {
          * korb_num2dbl which handles both via the slow path.  Without
          * this Bignum * Float would interpret the heap pointer as a
          * Fixnum and return garbage. */
-        return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) * korb_num2dbl(argv[0])));
+        return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self) * korb_num2dbl(argv[0])));
     }
     if (int_op_other_kind(argv[0])) {
         return korb_funcall(c, argv[0], korb_intern("*"), 1, &self);
@@ -110,12 +107,11 @@ static RESULT int_mul(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_int_mul(self, argv[0]));
 }
 static RESULT int_div(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (KORB_IS_FLOAT(argv[0])) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self) / korb_num2dbl(argv[0])));
+        return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self) / korb_num2dbl(argv[0])));
     }
     if (int_op_other_kind(argv[0])) {
         VALUE r = UNWRAP(int_to_rational_obj(c, self));
@@ -129,7 +125,6 @@ static RESULT int_div(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_int_div(self, argv[0]));
 }
 static RESULT int_mod(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -143,7 +138,7 @@ static RESULT int_mod(CTX *c, int argc, VALUE *sp) {
         double r = fmod(lhs, rhs);
         /* Ruby semantics: result has the sign of the divisor. */
         if (r != 0.0 && ((r < 0.0) != (rhs < 0.0))) r += rhs;
-        return RESULT_OK(korb_float_new(c, c->sp_top, r));
+        return RESULT_OK(korb_float_new(c, sp, r));
     }
     COERCE_OR_RAISE(c, argv[0], "%");
     if (FIXNUM_P(argv[0]) && FIX2LONG(argv[0]) == 0) {
@@ -176,7 +171,6 @@ static RESULT int_shift_coerce(CTX *c, VALUE v, VALUE *out) {
     return RESULT_OK(Qnil);
 }
 static RESULT int_lshift(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
     VALUE shift;
@@ -184,7 +178,6 @@ static RESULT int_lshift(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_int_lshift(self, shift));
 }
 static RESULT int_rshift(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
     VALUE shift;
@@ -213,7 +206,6 @@ static RESULT int_rshift(CTX *c, int argc, VALUE *sp) {
     } \
 } while (0)
 static RESULT int_and(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -221,7 +213,6 @@ static RESULT int_and(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_int_and(self, argv[0]));
 }
 static RESULT int_or(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -229,7 +220,6 @@ static RESULT int_or(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_int_or(self, argv[0]));
 }
 static RESULT int_xor(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -255,7 +245,6 @@ static RESULT int_xor(CTX *c, int argc, VALUE *sp) {
     } \
 } while (0)
 static RESULT int_lt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -265,7 +254,6 @@ static RESULT int_lt(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_int_cmp(self, argv[0]) < 0));
 }
 static RESULT int_le(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -275,7 +263,6 @@ static RESULT int_le(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_int_cmp(self, argv[0]) <= 0));
 }
 static RESULT int_gt(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -285,7 +272,6 @@ static RESULT int_gt(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_int_cmp(self, argv[0]) > 0));
 }
 static RESULT int_ge(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -295,7 +281,6 @@ static RESULT int_ge(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_int_cmp(self, argv[0]) >= 0));
 }
 static RESULT int_eq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -310,7 +295,6 @@ static RESULT int_eq(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(KORB_BOOL(korb_int_eq(self, argv[0])));
 }
 static RESULT int_cmp(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -341,14 +325,14 @@ static RESULT int_cmp(CTX *c, int argc, VALUE *sp) {
         if (bint != b) {
             /* a is Integer, b is Float with fractional part — compare
              * a to bint; equal → sign of -fractional. */
-            VALUE bint_v = korb_dbl2int(c, c->sp_top, bint);
+            VALUE bint_v = korb_dbl2int(c, sp, bint);
             int cmp = korb_int_cmp(self, bint_v);
             if (cmp != 0) return RESULT_OK(INT2FIX(cmp));
             /* a == bint exactly: result is opposite sign of fractional. */
             double frac = b - bint;
             return RESULT_OK(INT2FIX(frac < 0 ? 1 : -1));
         }
-        VALUE bint_v = korb_dbl2int(c, c->sp_top, b);
+        VALUE bint_v = korb_dbl2int(c, sp, b);
         return RESULT_OK(INT2FIX(korb_int_cmp(self, bint_v)));
     }
     /* Non-numeric: coerce protocol. */
@@ -367,14 +351,12 @@ static RESULT int_cmp(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(Qnil);
 }
 static RESULT int_uminus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return RESULT_OK(korb_int_minus(INT2FIX(0), self));
 }
 static RESULT int_uplus(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -382,30 +364,26 @@ static RESULT int_uplus(CTX *c, int argc, VALUE *sp) {
 }
 static RESULT int_format(CTX *c, int argc, VALUE *sp);
 static RESULT int_to_s(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return int_format(c, argc, sp);
 }
 static RESULT int_to_i(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
  return RESULT_OK(self); }
 static RESULT int_to_f(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (FIXNUM_P(self)) return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(self)));
+    if (FIXNUM_P(self)) return RESULT_OK(korb_float_new(c, sp, korb_num2dbl(self)));
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, mpz_get_d((mpz_ptr)((struct korb_bignum *)self)->mpz)));
+        return RESULT_OK(korb_float_new(c, sp, mpz_get_d((mpz_ptr)((struct korb_bignum *)self)->mpz)));
     }
-    return RESULT_OK(korb_float_new(c, c->sp_top, 0.0));
+    return RESULT_OK(korb_float_new(c, sp, 0.0));
 }
 static RESULT int_even_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -417,7 +395,6 @@ static RESULT int_even_p(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(Qfalse);
 }
 static RESULT int_odd_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -429,7 +406,6 @@ static RESULT int_odd_p(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(Qfalse);
 }
 static RESULT int_positive_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -441,7 +417,6 @@ static RESULT int_positive_p(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(Qfalse);
 }
 static RESULT int_negative_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -454,7 +429,6 @@ static RESULT int_negative_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_zero_p(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -462,7 +436,6 @@ static RESULT int_zero_p(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(Qfalse);
 }
 static RESULT int_times(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -472,7 +445,7 @@ static RESULT int_times(CTX *c, int argc, VALUE *sp) {
     if (!korb_block_given(c)) {
         /* No-block: return Array stand-in [0, 1, ..., n-1] for chains
          * like `5.times.to_a` / `5.times.map { ... }`. */
-        VALUE a = korb_ary_new_capa(c, c->sp_top, n > 0 ? n : 0);
+        VALUE a = korb_ary_new_capa(c, sp, n > 0 ? n : 0);
         for (long i = 0; i < n; i++) korb_ary_push(a, INT2FIX(i));
         return RESULT_OK(a);
     }
@@ -483,14 +456,12 @@ static RESULT int_times(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(self);
 }
 static RESULT int_succ(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     return RESULT_OK(korb_int_plus(self, INT2FIX(1)));
 }
 static RESULT int_pred(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -500,17 +471,15 @@ static RESULT int_pred(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Integer methods (extended) ---------- */
 static RESULT int_chr(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (!FIXNUM_P(self)) return RESULT_OK(Qnil);
     char ch = (char)(FIX2LONG(self) & 0xff);
-    return RESULT_OK(korb_str_new(c, c->sp_top, &ch, 1));
+    return RESULT_OK(korb_str_new(c, sp, &ch, 1));
 }
 
 static RESULT int_format(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -526,17 +495,17 @@ static RESULT int_format(CTX *c, int argc, VALUE *sp) {
         if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
             mpz_ptr z = (mpz_ptr)((struct korb_bignum *)self)->mpz;
             char *s = mpz_get_str(NULL, base, z);
-            VALUE r = korb_str_new_cstr(c, c->sp_top, s);
+            VALUE r = korb_str_new_cstr(c, sp, s);
             free(s);
             return RESULT_OK(r);
         }
-        return RESULT_OK(korb_to_s(c, c->sp_top, self));
+        return RESULT_OK(korb_to_s(c, sp, self));
     }
     long v = FIX2LONG(self);
     char buf[80];
     if (base == 10) {
         snprintf(buf, sizeof(buf), "%ld", v);
-        return RESULT_OK(korb_str_new_cstr(c, c->sp_top, buf));
+        return RESULT_OK(korb_str_new_cstr(c, sp, buf));
     }
     bool neg = v < 0;
     unsigned long uv = neg ? (unsigned long)(-v) : (unsigned long)v;
@@ -554,13 +523,12 @@ static RESULT int_format(CTX *c, int argc, VALUE *sp) {
     if (neg) {
         char out[82]; out[0] = '-';
         memcpy(out+1, tmp, tl+1);
-        return RESULT_OK(korb_str_new_cstr(c, c->sp_top, out));
+        return RESULT_OK(korb_str_new_cstr(c, sp, out));
     }
-    return RESULT_OK(korb_str_new_cstr(c, c->sp_top, tmp));
+    return RESULT_OK(korb_str_new_cstr(c, sp, tmp));
 }
 
 static RESULT int_eqq(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -570,7 +538,6 @@ static RESULT int_eqq(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_floor(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -590,7 +557,6 @@ static RESULT int_floor(CTX *c, int argc, VALUE *sp) {
  * positive ndigits returns self; for n < 0 chops off |n| trailing
  * decimal digits while preserving the sign. */
 static RESULT int_truncate(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -609,7 +575,6 @@ static RESULT int_truncate(CTX *c, int argc, VALUE *sp) {
  * For n < 0, rounds to the nearest 10^|n|.  Half rounds away from zero
  * (Ruby's default).  `154.round(-1) == 150`. */
 static RESULT int_round(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -683,7 +648,6 @@ static RESULT int_round(CTX *c, int argc, VALUE *sp) {
 /* Integer#ceil(ndigits=0) — for n >= 0 returns self.  For n < 0 rounds
  * toward +inf at the 10^|n| boundary. */
 static RESULT int_ceil(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -705,7 +669,6 @@ static RESULT int_ceil(CTX *c, int argc, VALUE *sp) {
  * a different method from Integer#/ (the `/` operator above), which
  * already exists; div is registered separately as the named method. */
 static RESULT int_method_div(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -726,7 +689,7 @@ static RESULT int_method_div(CTX *c, int argc, VALUE *sp) {
         double q = floor(a / b);
         if (q >= (double)FIXNUM_MIN && q <= (double)FIXNUM_MAX) return RESULT_OK(INT2FIX((long)q));
         /* Build a Bignum from the float. */
-        return korb_funcall(c, korb_float_new(c, c->sp_top, q), korb_intern("to_i"), 0, NULL);
+        return korb_funcall(c, korb_float_new(c, sp, q), korb_intern("to_i"), 0, NULL);
     }
     /* Fixnum / Fixnum fast path. */
     if (FIXNUM_P(self) && FIXNUM_P(other)) {
@@ -769,7 +732,6 @@ static RESULT int_method_div(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_fdiv(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -824,13 +786,12 @@ static RESULT int_fdiv(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eT,
                           "can't be coerced into Float");
     }
-    return RESULT_OK(korb_float_new(c, c->sp_top, a / b));
+    return RESULT_OK(korb_float_new(c, sp, a / b));
 }
 
 /* Integer#size — width in bytes of the machine word.  Matches CRuby's
  * `1.size == 8` on a 64-bit build. */
 static RESULT int_size(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -865,7 +826,6 @@ static RESULT int_size(CTX *c, int argc, VALUE *sp) {
  * semantics (rather than floor division).  `-10.remainder(3) == -1`
  * vs `-10 % 3 == 2`. */
 static RESULT int_remainder(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -884,7 +844,6 @@ static RESULT int_remainder(CTX *c, int argc, VALUE *sp) {
  * variant: if other is Integer, both stay Integer; if Float, both
  * promote to Float; otherwise raise TypeError (CRuby). */
 static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -893,7 +852,7 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments");
     }
     VALUE other = argv[0];
-    VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
+    VALUE pair = korb_ary_new_capa(c, sp, 2);
     if (FIXNUM_P(other) || (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM)) {
         korb_ary_push(pair, other);
         korb_ary_push(pair, self);
@@ -901,7 +860,7 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
     }
     if (KORB_IS_FLOAT(other)) {
         korb_ary_push(pair, other);
-        korb_ary_push(pair, korb_float_new(c, c->sp_top, korb_num2dbl(self)));
+        korb_ary_push(pair, korb_float_new(c, sp, korb_num2dbl(self)));
         return RESULT_OK(pair);
     }
     /* String: parse via Float() — if it parses cleanly, return [parsed,
@@ -912,7 +871,7 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
         VALUE f = UNWRAP(korb_funcall(c, klass, korb_intern("Float"), 1, &other));
         if (FLONUM_P(f) || (!SPECIAL_CONST_P(f) && BUILTIN_TYPE(f) == T_FLOAT)) {
             korb_ary_push(pair, f);
-            korb_ary_push(pair, korb_float_new(c, c->sp_top, korb_num2dbl(self)));
+            korb_ary_push(pair, korb_float_new(c, sp, korb_num2dbl(self)));
             return RESULT_OK(pair);
         }
     }
@@ -924,7 +883,7 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
             VALUE f = UNWRAP(korb_funcall(c, other, korb_intern("to_f"), 0, NULL));
             if (FLONUM_P(f) || (!SPECIAL_CONST_P(f) && BUILTIN_TYPE(f) == T_FLOAT)) {
                 korb_ary_push(pair, f);
-                korb_ary_push(pair, korb_float_new(c, c->sp_top, korb_num2dbl(self)));
+                korb_ary_push(pair, korb_float_new(c, sp, korb_num2dbl(self)));
                 return RESULT_OK(pair);
             }
         }
@@ -936,7 +895,6 @@ static RESULT int_coerce(CTX *c, int argc, VALUE *sp) {
 
 /* Numeric#abs2 — |self|**2 (== self*self for real Numerics). */
 static RESULT int_abs2(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -951,7 +909,6 @@ static RESULT int_abs2(CTX *c, int argc, VALUE *sp) {
 /* Integer#eql? — type-strict: `1.eql?(1.0) == false`.  Object's default
  * eql? falls through to ==, which coerces; that's wrong here. */
 static RESULT int_eql(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -967,7 +924,6 @@ static RESULT int_eql(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_abs(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1063,7 +1019,6 @@ static RESULT int_aref_range(CTX *c, VALUE self, long start, long len, bool is_r
 }
 
 static RESULT int_aref(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1116,7 +1071,6 @@ static RESULT int_aref(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_bit_length(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1147,7 +1101,6 @@ static RESULT int_bit_length(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1171,9 +1124,9 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
         double ad = korb_num2dbl(self);
         double q = floor(ad / bd);
         double m = ad - q * bd;
-        VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
-        korb_ary_push(r, korb_float_new(c, c->sp_top, q));
-        korb_ary_push(r, korb_float_new(c, c->sp_top, m));
+        VALUE r = korb_ary_new_capa(c, sp, 2);
+        korb_ary_push(r, korb_float_new(c, sp, q));
+        korb_ary_push(r, korb_float_new(c, sp, m));
         return RESULT_OK(r);
     }
     /* Fixnum / Fixnum fast path. */
@@ -1185,7 +1138,7 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
         }
         long q = a / b, m = a % b;
         if ((a ^ b) < 0 && m != 0) { q--; m += b; }
-        VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
+        VALUE r = korb_ary_new_capa(c, sp, 2);
         korb_ary_push(r, INT2FIX(q));
         korb_ary_push(r, INT2FIX(m));
         return RESULT_OK(r);
@@ -1201,7 +1154,7 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
         }
         VALUE q = korb_int_div(self, other);
         VALUE m = korb_int_mod(self, other);
-        VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
+        VALUE r = korb_ary_new_capa(c, sp, 2);
         korb_ary_push(r, q);
         korb_ary_push(r, m);
         return RESULT_OK(r);
@@ -1224,7 +1177,6 @@ static RESULT int_divmod(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT int_invert(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1236,7 +1188,6 @@ RESULT int_invert(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_step(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1247,7 +1198,7 @@ static RESULT int_step(CTX *c, int argc, VALUE *sp) {
     if (step == 0) return RESULT_OK(self);
     /* If no block given, return Array of values (Enumerator approximation) */
     if (!korb_block_given(c)) {
-        VALUE r = korb_ary_new(c, c->sp_top);
+        VALUE r = korb_ary_new(c, sp);
         if (step > 0) for (long i = start; i <= stop; i += step) korb_ary_push(r, INT2FIX(i));
         else for (long i = start; i >= stop; i += step) korb_ary_push(r, INT2FIX(i));
         return RESULT_OK(r);
@@ -1305,7 +1256,6 @@ static RESULT int_upto_downto_stop(CTX *c, VALUE arg, bool is_upto, long *out, b
 }
 
 static RESULT int_upto(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1316,11 +1266,11 @@ static RESULT int_upto(CTX *c, int argc, VALUE *sp) {
     long start = FIX2LONG(self);
     if (abort) {
         /* Bignum/NaN stop — empty loop. */
-        if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+        if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, sp));
         return RESULT_OK(self);
     }
     if (!korb_block_given(c)) {
-        VALUE a = korb_ary_new(c, c->sp_top);
+        VALUE a = korb_ary_new(c, sp);
         for (long i = start; i <= stop; i++) korb_ary_push(a, INT2FIX(i));
         return RESULT_OK(a);
     }
@@ -1332,7 +1282,6 @@ static RESULT int_upto(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1342,11 +1291,11 @@ static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
     CHECK(int_upto_downto_stop(c, argv[0], false, &stop, &abort));
     long start = FIX2LONG(self);
     if (abort) {
-        if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp_top));
+        if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, sp));
         return RESULT_OK(self);
     }
     if (!korb_block_given(c)) {
-        VALUE a = korb_ary_new(c, c->sp_top);
+        VALUE a = korb_ary_new(c, sp);
         for (long i = start; i >= stop; i--) korb_ary_push(a, INT2FIX(i));
         return RESULT_OK(a);
     }
@@ -1358,7 +1307,6 @@ static RESULT int_downto(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
-    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1366,7 +1314,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
     /* Float exponent: promote to Float arithmetic.  `2 ** 0.5` should
      * be 1.414, not 2 — CRuby returns a Float. */
     if (KORB_IS_FLOAT(argv[0])) {
-        return RESULT_OK(korb_float_new(c, c->sp_top, pow(korb_num2dbl(self), korb_num2dbl(argv[0]))));
+        return RESULT_OK(korb_float_new(c, sp, pow(korb_num2dbl(self), korb_num2dbl(argv[0]))));
     }
     if (!FIXNUM_P(argv[0])) return RESULT_OK(self);
     long base = FIX2LONG(self), exp = FIX2LONG(argv[0]);
@@ -1414,7 +1362,7 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
          * return 0r — the test tolerance (assert_in_delta(0.0, …)) is
          * satisfied and we avoid SIGSEGV via stack overflow. */
         if (exp == LONG_MIN || (-exp) > FIXNUM_MAX) {
-            return RESULT_OK(korb_float_new(c, c->sp_top, 0.0));
+            return RESULT_OK(korb_float_new(c, sp, 0.0));
         }
         VALUE pos_exp = INT2FIX(-exp);
         sp[0] = self;
@@ -1433,8 +1381,8 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
             if (__builtin_mul_overflow(r, b, &s)) {
                 /* Promote to Bignum: finish the rest of the calculation
                  * via korb_int_mul which handles arbitrary precision. */
-                VALUE big_r = korb_bignum_new_long(c, c->sp_top, r);
-                VALUE big_b = korb_bignum_new_long(c, c->sp_top, b);
+                VALUE big_r = korb_bignum_new_long(c, sp, r);
+                VALUE big_b = korb_bignum_new_long(c, sp, b);
                 big_r = korb_int_mul(big_r, big_b);
                 e >>= 1;
                 while (e > 0) {
@@ -1456,8 +1404,8 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
             /* Same: promote and finish.  Use bignum_new_long so r and b
              * promote correctly even when they're already past FIXNUM
              * range (2^62 ≤ r ≤ 2^63-1 fits in long but not Fixnum). */
-            VALUE big_r = korb_bignum_new_long(c, c->sp_top, r);
-            VALUE big_b = korb_bignum_new_long(c, c->sp_top, b);
+            VALUE big_r = korb_bignum_new_long(c, sp, r);
+            VALUE big_b = korb_bignum_new_long(c, sp, b);
             e >>= 1;
             while (e > 0) {
                 big_b = korb_int_mul(big_b, big_b);
@@ -1478,6 +1426,6 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
      * in signed long but not the 63-bit FIXNUM payload).  Promote to
      * Bignum when needed so the encoded VALUE doesn't sign-flip. */
     if (FIXABLE(r)) return RESULT_OK(INT2FIX(r));
-    return RESULT_OK(korb_bignum_new_long(c, c->sp_top, r));
+    return RESULT_OK(korb_bignum_new_long(c, sp, r));
 }
 
