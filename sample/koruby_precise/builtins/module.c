@@ -889,6 +889,7 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
      * (or garbage under STRESS).  Use ARO_ROOT_SCOPE so both survive. */
     
     VALUE obj;
+    RESULT init_r = RESULT_OK(Qnil);
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = (VALUE)klass;
         rs[1] = korb_object_new(c, c->sp_top, (struct korb_class *)rs[0]);
@@ -897,11 +898,15 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
         VALUE *fp_hi = c->sp_top;
         if (m) {
             VALUE blk = c->current_block ? (VALUE)c->current_block : Qnil;
-            korb_funcall_with_block(c, rs[1], id_initialize, argc, argv, blk);
+            init_r = korb_funcall_with_block(c, rs[1], id_initialize, argc, argv, blk);
         }
         obj = rs[1];
         (void)fp_lo; (void)fp_hi;
     } ARO_ROOT_SCOPE_END(c, rs);
+    /* `break N` from the block passed to .new escapes .new with value N
+     * (CRuby semantics).  Raises / returns also need to propagate. */
+    if (init_r.state == KORB_BREAK) return RESULT_OK(init_r.value);
+    if (init_r.state != KORB_NORMAL) return init_r;
     VALUE *fp_lo = c->current_frame->fp;
     VALUE *fp_hi = c->sp_top;
     /* Snapshot any Proc-typed ivar of obj whose env still points at
