@@ -493,6 +493,12 @@ typedef struct CTX_struct {
     struct korb_proc *running_block;
 } CTX;
 
+/* Per-CTX machine access.  Transition macro: callers should prefer
+ * `KORB_VM(c)->X` over `korb_vm->X`.  Both currently resolve to the
+ * same struct, but after the global is removed only this form will
+ * remain.  See feedback_result_and_vm_priorities memory note. */
+#define KORB_VM(c) ((c)->mch)
+
 /* push/pop frame helpers via macro */
 #define KORB_PUSH_FRAME(c, mtd, fp_, locals_, caller) \
     struct korb_frame _frame_ = {                     \
