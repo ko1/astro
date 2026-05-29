@@ -453,7 +453,7 @@ static RESULT struct_initialize(CTX *c, int argc, VALUE *sp) {
 
     /* attr_accessor for each member */
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
-    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(Qnil);
     struct korb_array *members = (struct korb_array *)members_v;
     long n = members->len;
@@ -476,7 +476,7 @@ static RESULT struct_to_a(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
-    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_ary_new(c, c->sp));
     struct korb_array *members = (struct korb_array *)members_v;
     VALUE r = korb_ary_new_capa(c, c->sp, members->len);
@@ -500,7 +500,7 @@ static RESULT struct_aref(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
-    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(Qnil);
     struct korb_array *members = (struct korb_array *)members_v;
     long idx = -1;
@@ -533,7 +533,7 @@ static RESULT struct_aset(CTX *c, int argc, VALUE *sp) {
 
     if (argc < 2) return RESULT_OK(Qnil);
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
-    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(Qnil);
     struct korb_array *members = (struct korb_array *)members_v;
     long idx = -1;
@@ -616,7 +616,7 @@ static RESULT struct_to_h(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
-    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(korb_hash_new(c, c->sp));
     struct korb_array *members = (struct korb_array *)members_v;
     VALUE h = korb_hash_new(c, c->sp);
@@ -639,7 +639,7 @@ static RESULT struct_size(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     struct korb_class *klass = (struct korb_class *)((struct korb_object *)self)->basic.klass;
-    VALUE members_v = korb_const_get(klass, korb_intern("__members__"));
+    VALUE members_v = korb_const_get_inherited(klass, korb_intern("__members__"));
     if (UNDEF_P(members_v) || BUILTIN_TYPE(members_v) != T_ARRAY) return RESULT_OK(INT2FIX(0));
     return RESULT_OK(INT2FIX(((struct korb_array *)members_v)->len));
 }
@@ -672,6 +672,9 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         argc--;
     }
     struct korb_class *klass = korb_class_new(c, c->sp, korb_intern("Struct"), KORB_VM(c)->object_class, T_OBJECT);
+    /* Reset name so const_set can rename anonymous Struct subclasses to
+     * their constant path (Object → "Foo", or Mod → "Mod::Foo"). */
+    klass->name = 0;
     /* save members */
     VALUE members = korb_ary_new_from_values(c, c->sp, argc, argv);
     korb_const_set(klass, korb_intern("__members__"), members);
@@ -837,6 +840,56 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
             return RESULT_OK(INT2FIX(h & 0x3fffffffffffffffLL));
         }
         korb_class_add_method_cfunc_r(klass, korb_intern("hash"), _struct_hash, 0);
+    }
+    /* Struct#inspect / #to_s — #<struct ClassName key=val, ...> */
+    {
+        RESULT _struct_inspect(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            static __thread VALUE ins_stk[64];
+            static __thread int ins_top = 0;
+            for (int j = 0; j < ins_top; j++) {
+                if (ins_stk[j] == self) return RESULT_OK(korb_str_new_cstr(c, c->sp, "#<struct ...>"));
+            }
+            if (ins_top < 64) { ins_stk[ins_top] = self; ins_top++; }
+            struct korb_class *kl = (struct korb_class *)((struct korb_object *)self)->basic.klass;
+            VALUE result = korb_str_new_cstr(c, c->sp, "#<struct ");
+            sp[0] = result;
+            /* Skip class name when class is anonymous or its name is a
+             * tentative path through an anonymous ancestor (k->anon_parent
+             * != NULL). CRuby Struct#inspect omits the class name in
+             * both cases. */
+            if (kl->name && kl->anon_parent == NULL && kl->name != korb_intern("(anon)")) {
+                VALUE nm = korb_str_new_cstr(c, c->sp + 1, korb_id_name(kl->name));
+                sp[0] = korb_str_concat(c, c->sp + 1, sp[0], nm);
+                sp[0] = korb_str_concat(c, c->sp + 1, sp[0], korb_str_new_cstr(c, c->sp + 1, " "));
+            }
+            /* __members__ lives on the original Struct.new class; walk the
+             * super chain so subclasses (`class Foo < Struct.new(:a)`)
+             * still see it. */
+            VALUE members_v = korb_const_get_inherited(kl, korb_intern("__members__"));
+            if (!UNDEF_P(members_v) && BUILTIN_TYPE(members_v) == T_ARRAY) {
+                struct korb_array *ms = (struct korb_array *)members_v;
+                for (long i = 0; i < ms->len; i++) {
+                    if (i > 0) sp[0] = korb_str_concat(c, c->sp + 1, sp[0], korb_str_new_cstr(c, c->sp + 1, ", "));
+                    ID mid = SYMBOL_P(ms->ptr[i]) ? korb_sym2id(ms->ptr[i]) : korb_intern(korb_str_cstr(ms->ptr[i]));
+                    const char *base = korb_id_name(mid);
+                    long bl = strlen(base);
+                    char *iv = korb_xmalloc_atomic(bl + 2);
+                    iv[0] = '@'; memcpy(iv + 1, base, bl); iv[bl + 1] = 0;
+                    VALUE val = korb_ivar_get(self, korb_intern(iv));
+                    sp[0] = korb_str_concat(c, c->sp + 1, sp[0], korb_str_new_cstr(c, c->sp + 1, base));
+                    sp[0] = korb_str_concat(c, c->sp + 1, sp[0], korb_str_new_cstr(c, c->sp + 1, "="));
+                    VALUE ins = korb_inspect(c, c->sp + 1, val);
+                    sp[0] = korb_str_concat(c, c->sp + 1, sp[0], ins);
+                }
+            }
+            sp[0] = korb_str_concat(c, c->sp + 1, sp[0], korb_str_new_cstr(c, c->sp + 1, ">"));
+            if (ins_top > 0) ins_top--;
+            return RESULT_OK(sp[0]);
+        }
+        korb_class_add_method_cfunc_r(klass, korb_intern("inspect"), _struct_inspect, 0);
+        korb_class_add_method_cfunc_r(klass, korb_intern("to_s"),    _struct_inspect, 0);
     }
     korb_class_add_method_cfunc_r(klass, korb_intern("to_h"),       struct_to_h,        0);
     korb_class_add_method_cfunc_r(klass, korb_intern("size"),       struct_size,        0);
