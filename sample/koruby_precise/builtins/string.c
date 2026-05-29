@@ -1823,15 +1823,18 @@ static RESULT kernel_format(CTX *c, int argc, VALUE *sp) {
      * read moved-out fields, producing wrong format output or false
      * return values from sprintf. */
     RESULT _final_kf = RESULT_OK(Qnil);
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = argv[0];  /* fmt */
-        rs[1] = korb_str_new(c, c->sp_top, "", 0);  /* out */
+    sp[0] = argv[0];
+    sp[1] = 0;
+    sp[1] = korb_str_new(c, sp + 2, "", 0);
+    {
+        /* sp[0] = argv[0] (fmt) parked above. */
+        /* sp[1] = out parked above. */
     int ai = 1;
-    struct korb_string *fmt = (struct korb_string *)rs[0];
+    struct korb_string *fmt = (struct korb_string *)sp[0];
     for (long i = 0; i < fmt->len; i++) {
         if (fmt->ptr[i] != '%') {
-            korb_str_concat(c, c->sp_top, rs[1], korb_str_new(c, c->sp_top, fmt->ptr + i, 1));
-            fmt = (struct korb_string *)rs[0];  /* reload */
+            korb_str_concat(c, sp + 2, sp[1], korb_str_new(c, sp + 2, fmt->ptr + i, 1));
+            fmt = (struct korb_string *)sp[0];  /* reload */
             continue;
         }
         i++;
@@ -1951,8 +1954,8 @@ static RESULT kernel_format(CTX *c, int argc, VALUE *sp) {
                 break;
             }
             case 's': {
-                VALUE v = ai < argc ? argv[ai] : korb_str_new(c, c->sp_top, "", 0);
-                if (BUILTIN_TYPE(v) != T_STRING) v = korb_to_s(c, c->sp_top, v);
+                VALUE v = ai < argc ? argv[ai] : korb_str_new(c, sp + 2, "", 0);
+                if (BUILTIN_TYPE(v) != T_STRING) v = korb_to_s(c, sp + 2, v);
                 snprintf(buf, sizeof(buf), spec, ((struct korb_string *)v)->ptr);
                 ai++;
                 break;
@@ -1960,8 +1963,8 @@ static RESULT kernel_format(CTX *c, int argc, VALUE *sp) {
             case 'p': {
                 /* %p uses #inspect to render the value. */
                 VALUE v = ai < argc ? argv[ai] : Qnil;
-                VALUE is = korb_inspect(c, c->sp_top, v);
-                if (BUILTIN_TYPE(is) != T_STRING) is = korb_to_s(c, c->sp_top, is);
+                VALUE is = korb_inspect(c, sp + 2, v);
+                if (BUILTIN_TYPE(is) != T_STRING) is = korb_to_s(c, sp + 2, is);
                 /* Apply width/flags via swapped-out %s. */
                 spec[sl-1] = 's'; /* turn %p into %s */
                 snprintf(buf, sizeof(buf), spec, ((struct korb_string *)is)->ptr);
@@ -1977,12 +1980,12 @@ static RESULT kernel_format(CTX *c, int argc, VALUE *sp) {
                 goto kf_done;
             }
         }
-        korb_str_concat(c, c->sp_top, rs[1], korb_str_new_cstr(c, c->sp_top, buf));
-        fmt = (struct korb_string *)rs[0];  /* reload after potential GC */
+        korb_str_concat(c, sp + 2, sp[1], korb_str_new_cstr(c, sp + 2, buf));
+        fmt = (struct korb_string *)sp[0];  /* reload after potential GC */
     }
-    _final_kf = RESULT_OK(rs[1]);
+    _final_kf = RESULT_OK(sp[1]);
 kf_done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
+    }
     return _final_kf;
 }
 
