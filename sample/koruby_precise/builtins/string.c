@@ -1246,9 +1246,30 @@ static RESULT str_replace(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(self);
+    if (argc < 1) {
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
+                          "wrong number of arguments (given 0, expected 1)");
+    }
+    VALUE other = argv[0];
+    if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
+        if (!SPECIAL_CONST_P(other)) {
+            VALUE rt = UNWRAP(korb_funcall(c, other, korb_intern("respond_to?"), 1,
+                                    (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+            if (RTEST(rt)) {
+                RESULT tr = korb_funcall_r(c, other, korb_intern("to_str"), 0, NULL);
+                if (tr.state != KORB_NORMAL) return tr;
+                other = tr.value;
+            }
+        }
+        if (SPECIAL_CONST_P(other) || BUILTIN_TYPE(other) != T_STRING) {
+            return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                              "no implicit conversion of %s into String",
+                              SPECIAL_CONST_P(argv[0]) ? "(special)" :
+                              korb_id_name(korb_class_of_class(argv[0])->name));
+        }
+    }
     struct korb_string *s = (struct korb_string *)self;
-    struct korb_string *o = (struct korb_string *)argv[0];
+    struct korb_string *o = (struct korb_string *)other;
     s->ptr = korb_xmalloc_atomic(o->len + 1);
     memcpy(s->ptr, o->ptr, o->len);
     s->ptr[o->len] = 0;
@@ -2415,7 +2436,8 @@ static RESULT str_ord(CTX *c, int argc, VALUE *sp) {
 
     struct korb_string *s = (struct korb_string *)self;
     if (s->len == 0) {
-        return korb_raise(c, NULL, "empty string");
+        return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
+                          "empty string");
     }
     /* Decode the leading UTF-8 codepoint.  ASCII (0xxxxxxx) returns
      * the byte directly; multi-byte sequences combine continuation
