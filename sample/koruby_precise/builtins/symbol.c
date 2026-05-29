@@ -1,7 +1,11 @@
 /* Symbol — moved from builtins.c.  Includes Symbol#to_proc shim. */
 
 /* ---------- Symbol#to_proc ---------- */
-static VALUE sym_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT sym_to_proc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Allocate a marker Proc whose body is NULL and whose `self` is the
      * Symbol value.  korb_yield/proc_call detect (body==NULL && SYMBOL_P(self))
      * and dispatch as `arg.send(sym, *rest)`. */
@@ -18,7 +22,7 @@ static VALUE sym_to_proc(CTX *c, VALUE self, int argc, VALUE *argv) {
     p->is_lambda = true;
     extern void koruby_register_libc_obj(struct RBasic *);
     koruby_register_libc_obj(&p->basic);
-    return (VALUE)p;
+    return RESULT_OK((VALUE)p);
 }
 
 /* (range ext folded into builtins/range.c) */
@@ -33,36 +37,60 @@ static RESULT sym_to_s(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_CHILLED;
     return RESULT_OK(s);
 }
-static VALUE sym_eq(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(self == argv[0]);
+static RESULT sym_eq(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(self == argv[0]));
 }
 /* Symbol#<=> — compares by name. */
-static VALUE sym_cmp(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (!SYMBOL_P(argv[0])) return Qnil;
+static RESULT sym_cmp(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (!SYMBOL_P(argv[0])) return RESULT_OK(Qnil);
     const char *a = korb_id_name(korb_sym2id(self));
     const char *b = korb_id_name(korb_sym2id(argv[0]));
     int r = strcmp(a, b);
-    return INT2FIX(r < 0 ? -1 : r > 0 ? 1 : 0);
+    return RESULT_OK(INT2FIX(r < 0 ? -1 : r > 0 ? 1 : 0));
 }
 /* Symbol#succ — name's #succ wrapped back into a Symbol. */
-static VALUE sym_succ(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT sym_succ(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE s = korb_str_new_cstr(c, c->sp, korb_id_name(korb_sym2id(self)));
     VALUE next_str = SINK_RESULT(c, korb_funcall(c, s, korb_intern("succ"), 0, NULL));
-    if (BUILTIN_TYPE(next_str) != T_STRING) return self;
+    if (BUILTIN_TYPE(next_str) != T_STRING) return RESULT_OK(self);
     struct korb_string *ns = (struct korb_string *)next_str;
-    return korb_id2sym(korb_intern_n(ns->ptr, ns->len));
+    return RESULT_OK(korb_id2sym(korb_intern_n(ns->ptr, ns->len)));
 }
 
 /* Symbol#size / length — character count of the symbol's name. */
-static VALUE sym_length(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return INT2FIX((long)strlen(korb_id_name(korb_sym2id(self))));
+static RESULT sym_length(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(INT2FIX((long)strlen(korb_id_name(korb_sym2id(self)))));
 }
 /* Symbol#empty? */
-static VALUE sym_empty_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return KORB_BOOL(*korb_id_name(korb_sym2id(self)) == '\0');
+static RESULT sym_empty_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(KORB_BOOL(*korb_id_name(korb_sym2id(self)) == '\0'));
 }
 /* Symbol#upcase / downcase / capitalize / swapcase — return new Symbol. */
-static VALUE sym_upcase(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT sym_upcase(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     const char *s = korb_id_name(korb_sym2id(self));
     size_t n = strlen(s);
     char *buf = korb_xmalloc_atomic(n + 1);
@@ -72,9 +100,13 @@ static VALUE sym_upcase(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     buf[n] = 0;
     VALUE r = korb_id2sym(korb_intern_n(buf, (long)n));
-    return r;
+    return RESULT_OK(r);
 }
-static VALUE sym_downcase(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT sym_downcase(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     const char *s = korb_id_name(korb_sym2id(self));
     size_t n = strlen(s);
     char *buf = korb_xmalloc_atomic(n + 1);
@@ -84,9 +116,13 @@ static VALUE sym_downcase(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     buf[n] = 0;
     VALUE r = korb_id2sym(korb_intern_n(buf, (long)n));
-    return r;
+    return RESULT_OK(r);
 }
-static VALUE sym_capitalize(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT sym_capitalize(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     const char *s = korb_id_name(korb_sym2id(self));
     size_t n = strlen(s);
     char *buf = korb_xmalloc_atomic(n + 1);
@@ -96,9 +132,13 @@ static VALUE sym_capitalize(CTX *c, VALUE self, int argc, VALUE *argv) {
         else         buf[i] = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch;
     }
     buf[n] = 0;
-    return korb_id2sym(korb_intern_n(buf, (long)n));
+    return RESULT_OK(korb_id2sym(korb_intern_n(buf, (long)n)));
 }
-static VALUE sym_swapcase(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT sym_swapcase(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     const char *s = korb_id_name(korb_sym2id(self));
     size_t n = strlen(s);
     char *buf = korb_xmalloc_atomic(n + 1);
@@ -109,6 +149,6 @@ static VALUE sym_swapcase(CTX *c, VALUE self, int argc, VALUE *argv) {
         else                              buf[i] = ch;
     }
     buf[n] = 0;
-    return korb_id2sym(korb_intern_n(buf, (long)n));
+    return RESULT_OK(korb_id2sym(korb_intern_n(buf, (long)n)));
 }
 

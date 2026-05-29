@@ -337,14 +337,22 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
 }
 
 /* Kernel#binding — return a Binding bound to caller's frame. */
-static VALUE kernel_binding_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return (VALUE)binding_alloc_from(c, self);
+static RESULT kernel_binding_cfunc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK((VALUE)binding_alloc_from(c, self));
 }
 
 /* Binding#receiver */
-static VALUE binding_receiver(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
-    return ((struct korb_binding *)self)->self;
+static RESULT binding_receiver(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
+    return RESULT_OK(((struct korb_binding *)self)->self);
 }
 
 /* Read a name's value: extras Hash takes precedence (binding-introduced
@@ -483,14 +491,18 @@ static RESULT binding_local_variable_set(CTX *c, int argc, VALUE *sp) {
 }
 
 /* Binding#local_variable_defined?(name) */
-static VALUE binding_local_variable_defined_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qfalse;
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qfalse;
+static RESULT binding_local_variable_defined_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qfalse);
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qfalse);
     struct korb_binding *b = (struct korb_binding *)self;
     bool ok = false;
     ID name_id = binding_arg_to_id(c, argv[0], &ok);
-    if (!ok) return Qfalse;
-    return KORB_BOOL(binding_find_slot(b, name_id) >= 0);
+    if (!ok) return RESULT_OK(Qfalse);
+    return RESULT_OK(KORB_BOOL(binding_find_slot(b, name_id) >= 0));
 }
 
 /* Binding#local_variables — Array of Symbol names.  CRuby orders the
@@ -501,9 +513,13 @@ static VALUE binding_local_variable_defined_p(CTX *c, VALUE self, int argc, VALU
  * This matches CRuby's "newest scope first, oldest last" rule.
  * Underscore-prefix names (`_`, `__foo`) are filtered (CRuby compat).
  */
-static VALUE binding_local_variables_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT binding_local_variables_cfunc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE arr = korb_ary_new(c, c->sp);
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return arr;
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(arr);
     struct korb_binding *b = (struct korb_binding *)self;
     VALUE extras = b->extra_vars;
     bool has_extras = (!NIL_P(extras) && BUILTIN_TYPE(extras) == T_HASH);
@@ -553,7 +569,7 @@ static VALUE binding_local_variables_cfunc(CTX *c, VALUE self, int argc, VALUE *
         }
         korb_ary_push(arr, sym);
     }
-    return arr;
+    return RESULT_OK(arr);
 }
 
 /* Binding#eval implementation factored out so Kernel#eval can call
@@ -726,15 +742,19 @@ VALUE binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
 
 /* Binding#source_location — [file, line] of where the binding was
  * created. */
-static VALUE binding_source_location(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
+static RESULT binding_source_location(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
     struct korb_binding *b = (struct korb_binding *)self;
     VALUE arr = korb_ary_new(c, c->sp);
     const char *file = b->source_file ? b->source_file : "(eval)";
     int line = b->source_line ? b->source_line : 0;
     korb_ary_push(arr, korb_str_new_cstr(c, c->sp, file));
     korb_ary_push(arr, INT2FIX(line));
-    return arr;
+    return RESULT_OK(arr);
 }
 
 /* Snapshot the frame's locals into each registered binding's heap.
@@ -762,9 +782,13 @@ void korb_binding_snapshot_frame(struct korb_frame *f) {
 }
 
 /* Method dispatch for Binding#eval — receiver-bound wrapper. */
-static VALUE binding_eval_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
-    return binding_eval_via(c, (struct korb_binding *)self, argv, argc);
+static RESULT binding_eval_cfunc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
+    return RESULT_OK(binding_eval_via(c, (struct korb_binding *)self, argv, argc));
 }
 
 /* Binding#dup / Binding#clone — deep-copy the names list and extras
@@ -826,16 +850,31 @@ static VALUE binding_dup_clone_impl(CTX *c, VALUE self, bool preserve_frozen, in
     return (VALUE)dst;
 }
 
-static VALUE binding_clone_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return binding_dup_clone_impl(c, self, true, argc, argv);
+static RESULT binding_clone_cfunc(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(binding_dup_clone_impl(c, self, true, argc, argv));
 }
-static VALUE binding_dup_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return binding_dup_clone_impl(c, self, false, argc, argv);
+static RESULT binding_dup_cfunc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(binding_dup_clone_impl(c, self, false, argc, argv));
 }
 
 /* Proc#binding — create a new Binding from the proc's captured env. */
-static VALUE proc_binding_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return Qnil;
+static RESULT proc_binding_cfunc(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
     struct korb_proc *p = (struct korb_proc *)self;
     struct korb_binding *b = korb_xcalloc(1, sizeof(*b));
     b->basic.head.flags = T_DATA;
@@ -873,5 +912,5 @@ static VALUE proc_binding_cfunc(CTX *c, VALUE self, int argc, VALUE *argv) {
     b->live_fp = NULL;
     b->live_base = 0;
     b->live_frame_id = 0;
-    return (VALUE)b;
+    return RESULT_OK((VALUE)b);
 }

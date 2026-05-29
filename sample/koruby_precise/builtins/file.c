@@ -45,26 +45,40 @@ static VALUE korb_io_new(CTX *c, struct korb_class *klass, FILE *fp) {
     return io;
 }
 
-static VALUE io_close(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_close(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
     if (fp) {
         fclose(fp);
         korb_ivar_set(self, korb_io_fp_id_(), Qnil);
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE io_read(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_read(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
-    if (!fp) return Qnil;
+    if (!fp) return RESULT_OK(Qnil);
     /* Read everything remaining (or `argc=1` length bytes). */
     if (argc >= 1 && FIXNUM_P(argv[0])) {
         long n = FIX2LONG(argv[0]);
         char *buf = korb_xmalloc_atomic(n + 1);
         long got = (long)fread(buf, 1, n, fp);
-        if (got <= 0) return Qnil;
+        if (got <= 0) return RESULT_OK(Qnil);
         buf[got] = 0;
-        return korb_str_new(c, c->sp, buf, got);
+        return RESULT_OK(korb_str_new(c, c->sp, buf, got));
     }
     long cap = 4096, len = 0;
     char *buf = korb_xmalloc_atomic(cap);
@@ -79,29 +93,43 @@ static VALUE io_read(CTX *c, VALUE self, int argc, VALUE *argv) {
             buf = nb;
         }
     }
-    return korb_str_new(c, c->sp, buf, len);
+    return RESULT_OK(korb_str_new(c, c->sp, buf, len));
 }
 
-static VALUE io_gets(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_gets(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
     if (!fp) {
         /* CRuby: if EOF/closed → $_ = nil. */
         korb_last_line_set(c, Qnil);
-        return Qnil;
+        return RESULT_OK(Qnil);
     }
     char *line = NULL;
     size_t cap = 0;
     ssize_t n = getline(&line, &cap, fp);
-    if (n <= 0) { free(line); korb_last_line_set(c, Qnil); return Qnil; }
+    if (n <= 0) { free(line); korb_last_line_set(c, Qnil); return RESULT_OK(Qnil); }
     VALUE r = korb_str_new(c, c->sp, line, n);
     free(line);
     korb_last_line_set(c, r);
-    return r;
+    return RESULT_OK(r);
 }
 
-static VALUE io_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_each_line(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
-    if (!fp) return self;
+    if (!fp) return RESULT_OK(self);
     bool has_block = korb_block_given(c);
     VALUE collected = has_block ? Qnil : korb_ary_new(c, c->sp);
     char *line = NULL;
@@ -112,54 +140,82 @@ static VALUE io_each_line(CTX *c, VALUE self, int argc, VALUE *argv) {
         korb_last_line_set(c, l);
         if (has_block) {
             SINK_RESULT(c, korb_yield(c, 1, &l));
-            if (c->state != KORB_NORMAL) { free(line); return Qnil; }
+            if (c->state != KORB_NORMAL) { free(line); return RESULT_OK(Qnil); }
         } else {
             korb_ary_push(collected, l);
         }
     }
     free(line);
-    return has_block ? self : collected;
+    return RESULT_OK(has_block ? self : collected);
 }
 
-static VALUE io_puts(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_puts(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
-    if (!fp) return Qnil;
-    if (argc == 0) { fputc('\n', fp); return Qnil; }
+    if (!fp) return RESULT_OK(Qnil);
+    if (argc == 0) { fputc('\n', fp); return RESULT_OK(Qnil); }
     for (int i = 0; i < argc; i++) {
         VALUE s = korb_to_s_dispatch(c, argv[i]);
         const struct korb_string *str = (const struct korb_string *)s;
         fwrite(str->ptr, 1, str->len, fp);
         if (str->len == 0 || str->ptr[str->len-1] != '\n') fputc('\n', fp);
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE io_write(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_write(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
-    if (!fp) return INT2FIX(0);
+    if (!fp) return RESULT_OK(INT2FIX(0));
     long total = 0;
     for (int i = 0; i < argc; i++) {
         VALUE s = korb_to_s_dispatch(c, argv[i]);
         const struct korb_string *str = (const struct korb_string *)s;
         total += (long)fwrite(str->ptr, 1, str->len, fp);
     }
-    return INT2FIX(total);
+    return RESULT_OK(INT2FIX(total));
 }
 
-static VALUE io_print(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_print(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
-    if (!fp) return Qnil;
+    if (!fp) return RESULT_OK(Qnil);
     for (int i = 0; i < argc; i++) {
         VALUE s = korb_to_s_dispatch(c, argv[i]);
         const struct korb_string *str = (const struct korb_string *)s;
         fwrite(str->ptr, 1, str->len, fp);
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE io_eof_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_eof_p(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
-    return KORB_BOOL(fp ? feof(fp) : true);
+    return RESULT_OK(KORB_BOOL(fp ? feof(fp) : true));
 }
 
 #include <unistd.h>
@@ -333,17 +389,25 @@ RESULT io_class_copy_stream(CTX *c, int argc, VALUE *sp) {
 }
 
 /* IO#tty? — true iff backed by a terminal fd. */
-static VALUE io_tty_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_tty_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
-    if (!fp) return Qfalse;
-    return KORB_BOOL(isatty(fileno(fp)));
+    if (!fp) return RESULT_OK(Qfalse);
+    return RESULT_OK(KORB_BOOL(isatty(fileno(fp))));
 }
 
 /* IO#fileno — underlying fd, useful for IO.select sanity etc. */
-static VALUE io_fileno(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT io_fileno(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     FILE *fp = korb_io_fp(self);
-    if (!fp) return INT2FIX(-1);
-    return INT2FIX(fileno(fp));
+    if (!fp) return RESULT_OK(INT2FIX(-1));
+    return RESULT_OK(INT2FIX(fileno(fp)));
 }
 
 RESULT io_class_select(CTX *c, int argc, VALUE *sp) {
@@ -429,7 +493,14 @@ static RESULT file_write(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(INT2FIX(got));
 }
 
-static VALUE file_join(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT file_join(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     /* Pin r (result) and per-iter s/sep against the cascade of
      * korb_str_new / korb_to_s / korb_str_concat allocations that
      * each fire GC under STRESS. */
@@ -447,26 +518,41 @@ static VALUE file_join(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         ret = rs[0];
     } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+    return RESULT_OK(ret);
 }
 
-static VALUE file_exist_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qfalse;
-    return KORB_BOOL(korb_file_exists(korb_str_cstr(argv[0])));
+static RESULT file_exist_p(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(Qfalse);
+    return RESULT_OK(KORB_BOOL(korb_file_exists(korb_str_cstr(argv[0]))));
 }
 
 #include <sys/stat.h>
-static VALUE file_directory_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qfalse;
+static RESULT file_directory_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(Qfalse);
     struct stat st;
-    if (stat(korb_str_cstr(argv[0]), &st) != 0) return Qfalse;
-    return KORB_BOOL(S_ISDIR(st.st_mode));
+    if (stat(korb_str_cstr(argv[0]), &st) != 0) return RESULT_OK(Qfalse);
+    return RESULT_OK(KORB_BOOL(S_ISDIR(st.st_mode)));
 }
-static VALUE file_file_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qfalse;
+static RESULT file_file_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(Qfalse);
     struct stat st;
-    if (stat(korb_str_cstr(argv[0]), &st) != 0) return Qfalse;
-    return KORB_BOOL(S_ISREG(st.st_mode));
+    if (stat(korb_str_cstr(argv[0]), &st) != 0) return RESULT_OK(Qfalse);
+    return RESULT_OK(KORB_BOOL(S_ISREG(st.st_mode)));
 }
 static RESULT file_size(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
@@ -557,27 +643,48 @@ static RESULT file_realpath(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(korb_str_new_cstr(c, sp, buf));
 }
 
-static VALUE file_dirname(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, ".", 1);
-    return korb_str_new_cstr(c, c->sp, korb_dirname(korb_str_cstr(argv[0])));
+static RESULT file_dirname(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_str_new(c, c->sp, ".", 1));
+    return RESULT_OK(korb_str_new_cstr(c, c->sp, korb_dirname(korb_str_cstr(argv[0]))));
 }
 
-static VALUE file_basename(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, "", 0);
+static RESULT file_basename(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_str_new(c, c->sp, "", 0));
     const char *s = korb_str_cstr(argv[0]);
     const char *slash = strrchr(s, '/');
-    return korb_str_new_cstr(c, c->sp, slash ? slash + 1 : s);
+    return RESULT_OK(korb_str_new_cstr(c, c->sp, slash ? slash + 1 : s));
 }
 
-static VALUE file_extname(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, "", 0);
+static RESULT file_extname(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_str_new(c, c->sp, "", 0));
     const char *s = korb_str_cstr(argv[0]);
     const char *dot = strrchr(s, '.');
-    if (!dot || dot == s) return korb_str_new(c, c->sp, "", 0);
+    if (!dot || dot == s) return RESULT_OK(korb_str_new(c, c->sp, "", 0));
     /* Don't include if dot is in dirname only */
     const char *slash = strrchr(s, '/');
-    if (slash && dot < slash) return korb_str_new(c, c->sp, "", 0);
-    return korb_str_new_cstr(c, c->sp, dot);
+    if (slash && dot < slash) return RESULT_OK(korb_str_new(c, c->sp, "", 0));
+    return RESULT_OK(korb_str_new_cstr(c, c->sp, dot));
 }
 
 static RESULT file_binread(CTX *c, int argc, VALUE *sp) {
@@ -585,15 +692,22 @@ static RESULT file_binread(CTX *c, int argc, VALUE *sp) {
     return file_read(c, argc, sp);
 }
 
-static VALUE file_expand_path(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_str_new(c, c->sp, "", 0);
-    /* simplistic: if absolute, return as-is; else prepend dir */
+static RESULT file_expand_path(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_str_new(c, c->sp, "", 0));
+    /* simplistic: if absolute, return RESULT_OK(as-is); else prepend dir */
     const char *s = korb_str_cstr(argv[0]);
-    if (s[0] == '/') return argv[0];
+    if (s[0] == '/') return RESULT_OK(argv[0]);
     if (argc >= 2 && BUILTIN_TYPE(argv[1]) == T_STRING) {
-        return korb_str_new_cstr(c, c->sp, korb_join_path(korb_str_cstr(argv[1]), s));
+        return RESULT_OK(korb_str_new_cstr(c, c->sp, korb_join_path(korb_str_cstr(argv[1]), s)));
     }
-    return argv[0];
+    return RESULT_OK(argv[0]);
 }
 
 /* ---------- Dir ---------- */
@@ -626,10 +740,17 @@ static RESULT dir_rmdir(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(INT2FIX(0));
 }
 
-static VALUE dir_pwd(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT dir_pwd(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     char buf[4096];
-    if (!getcwd(buf, sizeof(buf))) return korb_str_new_cstr(c, c->sp, ".");
-    return korb_str_new_cstr(c, c->sp, buf);
+    if (!getcwd(buf, sizeof(buf))) return RESULT_OK(korb_str_new_cstr(c, c->sp, "."));
+    return RESULT_OK(korb_str_new_cstr(c, c->sp, buf));
 }
 
 static RESULT dir_entries(CTX *c, int argc, VALUE *sp) {
@@ -719,14 +840,21 @@ static void korb_glob_walk(CTX *c, const char *dir, const char *pat, VALUE out, 
     closedir(d);
 }
 
-static VALUE dir_glob(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return korb_ary_new(c, c->sp);
+static RESULT dir_glob(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(korb_ary_new(c, c->sp));
     const char *pat = korb_str_cstr(argv[0]);
     VALUE out = korb_ary_new(c, c->sp);
     /* Detect double-star + slash + rest recursive form. */
     if (strncmp(pat, "**/", 3) == 0) {
         korb_glob_walk(c, ".", pat + 3, out, true);
-        return out;
+        return RESULT_OK(out);
     }
     /* Otherwise look in `.` if no /; else split last component. */
     const char *slash = strrchr(pat, '/');
@@ -739,7 +867,7 @@ static VALUE dir_glob(CTX *c, VALUE self, int argc, VALUE *argv) {
         memcpy(dir, pat, dl); dir[dl] = 0;
         korb_glob_walk(c, dir, slash + 1, out, false);
     }
-    return out;
+    return RESULT_OK(out);
 }
 
 /* ---------- Process ---------- */
@@ -748,8 +876,15 @@ static VALUE dir_glob(CTX *c, VALUE self, int argc, VALUE *argv) {
 #include <signal.h>
 #include <unistd.h>
 
-static VALUE process_pid(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return INT2FIX((long)getpid());
+static RESULT process_pid(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(INT2FIX((long)getpid()));
 }
 
 /* Build a NUL-terminated argv array from `cmd, *args`.  Handles the
@@ -843,15 +978,19 @@ static RESULT kernel_system(CTX *c, int argc, VALUE *sp) {
 }
 
 /* Kernel#`cmd` (backtick) — run command, return stdout as a String. */
-static VALUE kernel_xstring(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT kernel_xstring(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     if (argc < 1 || SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_STRING)
-        return korb_str_new_cstr(c, c->sp, "");
+        return RESULT_OK(korb_str_new_cstr(c, c->sp, ""));
     int pipefd[2];
-    if (pipe(pipefd) < 0) return korb_str_new_cstr(c, c->sp, "");
+    if (pipe(pipefd) < 0) return RESULT_OK(korb_str_new_cstr(c, c->sp, ""));
     pid_t pid = fork();
     if (pid < 0) {
         close(pipefd[0]); close(pipefd[1]);
-        return korb_str_new_cstr(c, c->sp, "");
+        return RESULT_OK(korb_str_new_cstr(c, c->sp, ""));
     }
     if (pid == 0) {
         dup2(pipefd[1], 1);
@@ -871,7 +1010,7 @@ static VALUE kernel_xstring(CTX *c, VALUE self, int argc, VALUE *argv) {
     int wstatus = 0;
     waitpid(pid, &wstatus, 0);
     korb_gvar_set(korb_intern("$?"), make_process_status(c, wstatus, pid));
-    return r;
+    return RESULT_OK(r);
 }
 
 /* Kernel#exec — replace the current process. */
@@ -892,25 +1031,33 @@ static RESULT kernel_exec(CTX *c, int argc, VALUE *sp) {
 }
 
 /* Process.spawn(cmd, *args) — fork + exec, return pid (don't wait). */
-static VALUE process_spawn(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+static RESULT process_spawn(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     bool use_shell;
     char **xargv = build_exec_argv(c, argv, argc, &use_shell);
-    if (!xargv) return Qnil;
+    if (!xargv) return RESULT_OK(Qnil);
     pid_t pid = fork();
-    if (pid < 0) return Qnil;
+    if (pid < 0) return RESULT_OK(Qnil);
     if (pid == 0) {
         execvp(xargv[0], xargv);
         _exit(127);
     }
-    return INT2FIX((long)pid);
+    return RESULT_OK(INT2FIX((long)pid));
 }
 
 /* Process.fork { ... } — fork; in child, run block then exit.  In
  * parent, return child pid. */
-static VALUE process_fork(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT process_fork(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     pid_t pid = fork();
-    if (pid < 0) return Qnil;
+    if (pid < 0) return RESULT_OK(Qnil);
     if (pid == 0) {
         if (korb_block_given(c)) {
             SINK_RESULT(c, korb_yield(c, 0, NULL));
@@ -922,25 +1069,36 @@ static VALUE process_fork(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
         _exit(0);
     }
-    return INT2FIX((long)pid);
+    return RESULT_OK(INT2FIX((long)pid));
 }
 
 /* Process.wait([pid [, flags]]) — waitpid; sets $? and returns the pid
  * (or -1 on error). */
-static VALUE process_wait(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT process_wait(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     pid_t want = -1;
     int flags = 0;
     if (argc >= 1 && FIXNUM_P(argv[0])) want = (pid_t)FIX2LONG(argv[0]);
     if (argc >= 2 && FIXNUM_P(argv[1])) flags = (int)FIX2LONG(argv[1]);
     int wstatus = 0;
     pid_t got = waitpid(want, &wstatus, flags);
-    if (got <= 0) return Qnil;
+    if (got <= 0) return RESULT_OK(Qnil);
     korb_gvar_set(korb_intern("$?"), make_process_status(c, wstatus, got));
-    return INT2FIX((long)got);
+    return RESULT_OK(INT2FIX((long)got));
 }
 
-static VALUE process_kill(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2) return INT2FIX(0);
+static RESULT process_kill(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (argc < 2) return RESULT_OK(INT2FIX(0));
     int sig = 0;
     if (FIXNUM_P(argv[0])) {
         sig = (int)FIX2LONG(argv[0]);
@@ -960,28 +1118,52 @@ static VALUE process_kill(CTX *c, VALUE self, int argc, VALUE *argv) {
             if (kill((pid_t)FIX2LONG(argv[i]), sig) == 0) sent++;
         }
     }
-    return INT2FIX((long)sent);
+    return RESULT_OK(INT2FIX((long)sent));
 }
 
 /* Process::Status methods. */
-static VALUE pstatus_exitstatus(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_ivar_get(self, korb_intern("@exitstatus"));
+static RESULT pstatus_exitstatus(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(korb_ivar_get(self, korb_intern("@exitstatus")));
 }
-static VALUE pstatus_pid(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_ivar_get(self, korb_intern("@pid"));
+static RESULT pstatus_pid(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(korb_ivar_get(self, korb_intern("@pid")));
 }
-static VALUE pstatus_success_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_ivar_get(self, korb_intern("@success"));
+static RESULT pstatus_success_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(korb_ivar_get(self, korb_intern("@success")));
 }
-static VALUE pstatus_signaled_p(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_ivar_get(self, korb_intern("@signaled"));
+static RESULT pstatus_signaled_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(korb_ivar_get(self, korb_intern("@signaled")));
 }
-static VALUE pstatus_termsig(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT pstatus_termsig(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE v = korb_ivar_get(self, korb_intern("@termsig"));
-    return UNDEF_P(v) ? Qnil : v;
+    return RESULT_OK(UNDEF_P(v) ? Qnil : v);
 }
-static VALUE pstatus_to_i(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return korb_ivar_get(self, korb_intern("@to_i"));
+static RESULT pstatus_to_i(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(korb_ivar_get(self, korb_intern("@to_i")));
 }
 
 /* Signal — minimal: trap (stub: stores handler), list (constant map). */
@@ -1007,14 +1189,21 @@ static int signal_name_to_num(const char *n) {
     return -1;
 }
 
-static VALUE signal_trap(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1) return Qnil;
+static RESULT signal_trap(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
+    if (argc < 1) return RESULT_OK(Qnil);
     int signum = -1;
     if (FIXNUM_P(argv[0])) signum = (int)FIX2LONG(argv[0]);
     else if (SYMBOL_P(argv[0])) signum = signal_name_to_num(korb_id_name(korb_sym2id(argv[0])));
     else if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING)
         signum = signal_name_to_num(((struct korb_string *)argv[0])->ptr);
-    if (signum < 0) return Qnil;
+    if (signum < 0) return RESULT_OK(Qnil);
     /* Block argument (if any) is the handler.  Otherwise argv[1] (a
      * Proc / String like "DEFAULT" / "IGNORE").  We don't actually
      * install a real signal handler — stub so user code can register
@@ -1027,7 +1216,7 @@ static VALUE signal_trap(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (g_signal_handlers[i].signum == signum) {
             prev = g_signal_handlers[i].handler;
             g_signal_handlers[i].handler = handler;
-            return prev;
+            return RESULT_OK(prev);
         }
     }
     if (g_signal_handlers_cnt < (int)(sizeof(g_signal_handlers)/sizeof(g_signal_handlers[0]))) {
@@ -1035,10 +1224,17 @@ static VALUE signal_trap(CTX *c, VALUE self, int argc, VALUE *argv) {
         g_signal_handlers[g_signal_handlers_cnt].handler = handler;
         g_signal_handlers_cnt++;
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
-static VALUE signal_list(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT signal_list(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     VALUE h = korb_hash_new(c, c->sp);
     /* CRuby includes "EXIT" with value 0 — pseudo-signal used by at_exit
      * dispatch.  Always present even when the OS doesn't define it. */
@@ -1050,7 +1246,7 @@ static VALUE signal_list(CTX *c, VALUE self, int argc, VALUE *argv) {
     korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "HUP"), INT2FIX(SIGHUP));
     korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "QUIT"), INT2FIX(SIGQUIT));
     korb_hash_aset(c, h, korb_str_new_cstr(c, c->sp, "KILL"), INT2FIX(SIGKILL));
-    return h;
+    return RESULT_OK(h);
 }
 
 /* IO (stubbed via STDOUT / $stdout) */
@@ -1058,32 +1254,50 @@ static VALUE signal_list(CTX *c, VALUE self, int argc, VALUE *argv) {
 #include <time.h>
 /* Kernel#sleep — pause for N seconds (Float or Integer).  No timer
  * accuracy goal beyond what nanosleep gives. */
-VALUE kernel_sleep(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT kernel_sleep(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     double secs = 0;
     if (argc >= 1) {
         if (FIXNUM_P(argv[0])) secs = (double)FIX2LONG(argv[0]);
         else if (FLONUM_P(argv[0]) || (BUILTIN_TYPE(argv[0]) == T_FLOAT))
             secs = korb_num2dbl(argv[0]);
     }
-    if (secs <= 0) return INT2FIX(0);
+    if (secs <= 0) return RESULT_OK(INT2FIX(0));
     struct timespec ts = { (time_t)secs, (long)((secs - (long)secs) * 1e9) };
     nanosleep(&ts, NULL);
-    return INT2FIX((long)secs);
+    return RESULT_OK(INT2FIX((long)secs));
 }
 
-VALUE proc_clock_gettime_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT proc_clock_gettime_stub(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     double t = ts.tv_sec + ts.tv_nsec / 1e9;
-    return korb_float_new(c, c->sp, t);
+    return RESULT_OK(korb_float_new(c, c->sp, t));
 }
 
-VALUE time_now_stub(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT time_now_stub(CTX *c, int argc, VALUE *sp) {
+
+    c->sp = sp;
+
+    VALUE self = sp[-argc - 1];
+
+    VALUE *argv = sp - argc;
+
     /* return Float seconds since epoch (we just use Process clock, not real epoch) */
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     double t = ts.tv_sec + ts.tv_nsec / 1e9;
-    return korb_float_new(c, c->sp, t);
+    return RESULT_OK(korb_float_new(c, c->sp, t));
 }
 
 

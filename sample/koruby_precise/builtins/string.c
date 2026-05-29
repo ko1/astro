@@ -413,8 +413,6 @@ static RESULT str_to_sym(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- String formatting / methods (extended) ---------- */
 
-static VALUE str_format_self(CTX *c, VALUE self, int argc, VALUE *argv);
-
 static RESULT str_split(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];

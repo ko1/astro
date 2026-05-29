@@ -9,8 +9,12 @@
  * exc_to_s.  This is the CRuby-2.7+ behavior (`message` was equivalent
  * to `to_s`). */
 static VALUE exc_to_s_internal(CTX *c, VALUE self);
-static VALUE exc_message(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return SINK_RESULT(c, korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
+static RESULT exc_message(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return korb_funcall(c, self, korb_intern("to_s"), 0, NULL);
 }
 static VALUE exc_to_s_internal(CTX *c, VALUE self) {
     VALUE msg = korb_ivar_get(self, korb_intern("@message"));
@@ -32,11 +36,19 @@ static VALUE exc_to_s_internal(CTX *c, VALUE self) {
     }
     return msg;
 }
-static VALUE exc_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
-    return exc_to_s_internal(c, self);
+static RESULT exc_to_s(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    return RESULT_OK(exc_to_s_internal(c, self));
 }
-static VALUE exc_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (SPECIAL_CONST_P(self)) return korb_str_new_cstr(c, c->sp, "#<Exception>");
+static RESULT exc_inspect(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(korb_str_new_cstr(c, c->sp, "#<Exception>"));
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
     while (k && (k->basic.head.flags & FL_SINGLETON)) k = k->super;
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
@@ -46,18 +58,22 @@ static VALUE exc_inspect(CTX *c, VALUE self, int argc, VALUE *argv) {
      *   to_s == class name    → "#<Class: Class>"   (CRuby keeps it)
      *   to_s == anything else → "#<Class: <to_s>>" */
     VALUE s = SINK_RESULT(c, korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
-    if (c->state == KORB_RAISE) return Qnil;
+    if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
     const char *ms = (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING)
                        ? korb_str_cstr(s) : "";
-    if (ms[0] == '\0') return korb_str_new_cstr(c, c->sp, kn);
+    if (ms[0] == '\0') return RESULT_OK(korb_str_new_cstr(c, c->sp, kn));
     char *buf = korb_xmalloc_atomic(strlen(kn) + strlen(ms) + 8);
     sprintf(buf, "#<%s: %s>", kn, ms);
-    return korb_str_new_cstr(c, c->sp, buf);
+    return RESULT_OK(korb_str_new_cstr(c, c->sp, buf));
 }
-static VALUE exc_backtrace(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT exc_backtrace(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE bt = korb_ivar_get(self, korb_intern("@__backtrace__"));
-    if (!UNDEF_P(bt) && !NIL_P(bt)) return bt;
-    return korb_ary_new(c, c->sp);
+    if (!UNDEF_P(bt) && !NIL_P(bt)) return RESULT_OK(bt);
+    return RESULT_OK(korb_ary_new(c, c->sp));
 }
 
 /* Exception#set_backtrace(arg) — accepts nil, a String, or an Array of
@@ -95,12 +111,20 @@ static RESULT exc_set_backtrace(CTX *c, int argc, VALUE *sp) {
  * Location objects; for compatibility we return the same array as
  * #backtrace (or nil if no backtrace).  Tests that probe individual
  * Location attributes will fail, but the common nil-vs-set check works. */
-static VALUE exc_backtrace_locations(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT exc_backtrace_locations(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE bt = korb_ivar_get(self, korb_intern("@__backtrace__"));
-    if (UNDEF_P(bt) || NIL_P(bt)) return Qnil;
-    return bt;
+    if (UNDEF_P(bt) || NIL_P(bt)) return RESULT_OK(Qnil);
+    return RESULT_OK(bt);
 }
-static VALUE exc_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT exc_initialize(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     /* Drop trailing FL_KWARGS hash and look for `:receiver` (NameError
      * / FrozenError accept it as a keyword). */
     int eff_argc = argc;
@@ -136,22 +160,30 @@ static VALUE exc_initialize(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (!UNDEF_P(recv_kw)) {
         korb_ivar_set(self, korb_intern("@receiver"), recv_kw);
     }
-    return self;
+    return RESULT_OK(self);
 }
 
 /* Exception#cause — returns the previously-rescued exception that was
  * "current" when this one was raised, or nil if none.  Set by
  * node_rescue when raise happens inside a rescue body. */
-static VALUE exc_cause(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT exc_cause(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE v = korb_ivar_get(self, korb_intern("@cause"));
-    return UNDEF_P(v) ? Qnil : v;
+    return RESULT_OK(UNDEF_P(v) ? Qnil : v);
 }
 
 /* Exception#full_message([highlight: false, order: :top]) —
  * formatted message + backtrace.  Simple concat: "<file:line>: <msg>
  * (Class)" + back-trace lines.  Ignore kwargs entirely. */
-static VALUE exc_full_message(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE msg = exc_message(c, self, 0, NULL);
+static RESULT exc_full_message(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    VALUE msg = UNWRAP(korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
     if (SPECIAL_CONST_P(msg) || BUILTIN_TYPE(msg) != T_STRING) {
         msg = korb_str_new_cstr(c, c->sp, "");
     }
@@ -169,29 +201,37 @@ static VALUE exc_full_message(CTX *c, VALUE self, int argc, VALUE *argv) {
         }
     }
     korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, "\n"));
-    return r;
+    return RESULT_OK(r);
 }
 /* Exception#detailed_message — returns "message (Class)" by default,
  * or just the message if Class is RuntimeError. */
-static VALUE exc_detailed_message(CTX *c, VALUE self, int argc, VALUE *argv) {
-    VALUE msg = exc_message(c, self, 0, NULL);
-    if (SPECIAL_CONST_P(self)) return msg;
+static RESULT exc_detailed_message(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    VALUE msg = UNWRAP(korb_funcall(c, self, korb_intern("to_s"), 0, NULL));
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(msg);
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
     const char *kn = k && k->name ? korb_id_name(k->name) : "Exception";
-    if (strcmp(kn, "RuntimeError") == 0) return msg;
+    if (strcmp(kn, "RuntimeError") == 0) return RESULT_OK(msg);
     VALUE r = korb_str_dup(c, c->sp, msg);
     korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, " ("));
     korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, kn));
     korb_str_concat(c, c->sp, r, korb_str_new_cstr(c, c->sp, ")"));
-    return r;
+    return RESULT_OK(r);
 }
 
 /* Exception#exception([msg]) — re-construct or return self. */
-static VALUE exc_exception(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc == 0) return self;
-    if (argc == 1 && argv[0] == self) return self;
+static RESULT exc_exception(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    if (argc == 0) return RESULT_OK(self);
+    if (argc == 1 && argv[0] == self) return RESULT_OK(self);
     /* Build a new instance of self's class with msg = argv[0]. */
-    if (SPECIAL_CONST_P(self)) return self;
+    if (SPECIAL_CONST_P(self)) return RESULT_OK(self);
     struct korb_class *k = (struct korb_class *)((struct RBasic *)self)->klass;
     VALUE n = korb_object_new(c, c->sp, k);
     VALUE msg = argv[0];
@@ -200,7 +240,7 @@ static VALUE exc_exception(CTX *c, VALUE self, int argc, VALUE *argv) {
         if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) msg = s;
     }
     korb_ivar_set(n, korb_intern("@message"), msg);
-    return n;
+    return RESULT_OK(n);
 }
 
 /* NoMethodError#receiver — the object the missing method was called on.
@@ -214,24 +254,36 @@ static RESULT nme_receiver(CTX *c, int argc, VALUE *sp) {
     }
     return RESULT_OK(v);
 }
-static VALUE nme_name(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT nme_name(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE v = korb_ivar_get(self, korb_intern("@name"));
-    return UNDEF_P(v) ? Qnil : v;
+    return RESULT_OK(UNDEF_P(v) ? Qnil : v);
 }
 
 /* SystemExit#status / #success? — set by Kernel#exit. */
-static VALUE syx_status(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT syx_status(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE v = korb_ivar_get(self, korb_intern("@status"));
-    return UNDEF_P(v) ? INT2FIX(0) : v;
+    return RESULT_OK(UNDEF_P(v) ? INT2FIX(0) : v);
 }
-static VALUE syx_success_p(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT syx_success_p(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
     VALUE v = korb_ivar_get(self, korb_intern("@success"));
     if (UNDEF_P(v) || NIL_P(v)) {
         VALUE st = korb_ivar_get(self, korb_intern("@status"));
-        if (FIXNUM_P(st)) return KORB_BOOL(FIX2LONG(st) == 0);
-        return Qtrue;
+        if (FIXNUM_P(st)) return RESULT_OK(KORB_BOOL(FIX2LONG(st) == 0));
+        return RESULT_OK(Qtrue);
     }
-    return v;
+    return RESULT_OK(v);
 }
 
 /* (Range#exclude_end? folded into builtins/range.c) */
