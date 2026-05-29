@@ -1070,10 +1070,10 @@ static RESULT str_chars(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    /* Park self + result in sp[0..1] across korb_str_new / korb_ary_push GC. */
+    /* Park self + result in sp[0..1].  korb_ary_new_capa / korb_str_new
+     * publish c->sp_top = sp+2 internally before their GC trigger. */
     sp[0] = self;
     sp[1] = 0;
-    c->sp_top = sp + 2;
     sp[1] = korb_ary_new_capa(c, sp + 2, ((struct korb_string *)sp[0])->len);
     struct korb_string *s = (struct korb_string *)sp[0];
     for (long i = 0; i < s->len; i++) {
@@ -1443,10 +1443,10 @@ static RESULT str_mul(CTX *c, int argc, VALUE *sp) {
      * self (C param) goes stale after the first alloc, and
      * korb_str_concat(c, c->sp_top, r, stale_self) reads garbage->len → buffer
      * overflow → corrupts adjacent obj's header. */
-    /* Park self + result in sp[0..1] across korb_str_concat GC. */
+    /* Park self + result in sp[0..1].  korb_str_new publishes
+     * c->sp_top = sp+2 internally before its GC trigger. */
     sp[0] = self;
     sp[1] = 0;
-    c->sp_top = sp + 2;
     sp[1] = korb_str_new(c, sp + 2, "", 0);
     for (long i = 0; i < n; i++) korb_str_concat(c, sp + 2, sp[1], sp[0]);
     return RESULT_OK(sp[1]);
