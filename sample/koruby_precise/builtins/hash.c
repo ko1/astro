@@ -255,11 +255,56 @@ static RESULT hash_merge_bang(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
+    bool has_block = (c->current_block != NULL);
     for (int i = 0; i < argc; i++) {
-        if (BUILTIN_TYPE(argv[i]) != T_HASH) continue;
-        struct korb_hash *o = (struct korb_hash *)argv[i];
+        VALUE arg = argv[i];
+        /* Try to_hash coercion if not already a Hash. */
+        if (SPECIAL_CONST_P(arg) || BUILTIN_TYPE(arg) != T_HASH) {
+            if (SPECIAL_CONST_P(arg)) {
+                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                  "no implicit conversion of (special) into Hash");
+            }
+            struct korb_class *k = korb_class_of_class(arg);
+            if (!korb_class_find_method(k, korb_intern("to_hash"))) {
+                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                  "no implicit conversion of %s into Hash",
+                                  korb_id_name(k->name));
+            }
+            RESULT tr = korb_funcall_r(c, arg, korb_intern("to_hash"), 0, NULL);
+            if (tr.state != KORB_NORMAL) return tr;
+            if (SPECIAL_CONST_P(tr.value) || BUILTIN_TYPE(tr.value) != T_HASH) {
+                return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError")),
+                                  "can't convert to Hash (to_hash returned non-Hash)");
+            }
+            arg = tr.value;
+        }
+        struct korb_hash *o = (struct korb_hash *)arg;
         for (struct korb_hash_entry *e = o->first; e; e = e->next) {
-            korb_hash_aset(c, self, e->key, e->value);
+            VALUE val = e->value;
+            if (has_block) {
+                /* Walk self's bucket chain to distinguish "key absent"
+                 * from "key present with nil value" — korb_hash_aref
+                 * returns the default value for both. */
+                struct korb_hash *sh = (struct korb_hash *)self;
+                bool found = false;
+                VALUE existing = Qnil;
+                for (struct korb_hash_entry *se = sh->first; se; se = se->next) {
+                    if (se->key == e->key || korb_eql(c, se->key, e->key)) {
+                        found = true;
+                        existing = se->value;
+                        break;
+                    }
+                }
+                if (found) {
+                    sp[0] = e->key;
+                    sp[1] = existing;
+                    sp[2] = e->value;
+                    RESULT yr = korb_yield_r(c, 3, &sp[0]);
+                    if (yr.state != KORB_NORMAL) return yr;
+                    val = yr.value;
+                }
+            }
+            korb_hash_aset(c, self, e->key, val);
         }
     }
     return RESULT_OK(self);
