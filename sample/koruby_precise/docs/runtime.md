@@ -348,15 +348,24 @@ break/return/throw 等の非 NORMAL 制御フローを **すべて RESULT (2 reg
 - [x] **R4b** nested GCC `({...})` 形式 cfunc 25 件 + restrict 型 4 件を
   cfunc_r に変換、 builtins.c の copy-method ループは
   `m->u.cfunc.func_r` か `func` か実行時 dispatch に
-- [x] **R5a** SINK_RESULT propagation pattern 68 件を UNWRAP/CHECK に置換
-  (`VAR = SINK_RESULT(c, ...); if (c->state ...) return Qnil;` の単純な
-  propagation 形は機械置換可能)
-- [ ] **R5b** swallow 系 SINK_RESULT (~70 件): respond_to? 失敗時に
-  false 扱いといった意図的な error swallow パターン。 これは UNWRAP では
-  伝播してしまうので、 `RESULT _r = ...; VALUE x = (_r.state == NORMAL) ?
-  _r.value : DEFAULT;` 形に手書き変換が必要
-- [ ] **R5c** node_eval.c / koruby_runtime.c の c->state bridge (~50 件)
-- [ ] **R5d** `c->state` / `c->state_value` field の delete +
+- [x] **R5a-l** SINK_RESULT 系全件除去: propagation pattern 68 件 →
+  UNWRAP/CHECK、 swallow pattern (respond_to?-style) 16 件 → RESULT
+  capture + state 分岐、 helper RESULT 化 (korb_to_int_or_raise /
+  ary_try_to_int / ary_predicate_match / korb_const_lookup /
+  korb_cmp_call / rng_cmp / ary_sort_compare / hash_min_or_max_by /
+  int_coerce_dispatch / flt_coerce_dispatch / kwsplat_convert /
+  exc_to_s_internal / str_concat_one / ary_combine/perm/rcombine/rperm
+  etc.)、 ARO_ROOT_SCOPE 内 yield swallow 4 件 → `_final` accumulator
+  pattern。 **builtins/*.c と object.c の SINK_RESULT は 0 件達成**。
+- [x] **R5m-o** node.def / koruby_runtime.c の c->state 経由 raise
+  propagation を _br RESULT 直参照に変更、 ObjectSpace ABI mismatch を
+  修正。 koruby_run_ast の THROW→RAISE / SystemExit / unhandled exception
+  経路を RESULT-driven に。
+- [ ] **R5p** 残 c->state ~39 件: legacy cfunc fallback bridge (node.def
+  3 ヶ所、 object.c 1 ヶ所)、 node_specialize.c の specialized binop fast
+  path、 korb_hash_value / korb_eql / korb_inspect の inline lift (返り値が
+  非-VALUE のため out-param 化が必要)、 main.c の top-level exit。
+- [ ] **R5q** `c->state` / `c->state_value` field の delete +
   SINK_RESULT / LIFT_C_STATE macro 削除
 
 `CTX::state_target_frame` は state 値ではなく "非ローカル return がどの
