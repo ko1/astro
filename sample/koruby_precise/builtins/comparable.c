@@ -1108,7 +1108,7 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
     }
     /* class-level .members and .[] (synonym for .new) */
     {
-        struct korb_class *meta = korb_singleton_class_of(c, klass);
+        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, klass);
         korb_class_add_method_cfunc_r(meta, korb_intern("members"),
                                      struct_class_members, 0);
         RESULT _struct_keyword_init_p(CTX *c, int argc, VALUE *sp) {

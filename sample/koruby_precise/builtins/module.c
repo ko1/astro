@@ -386,7 +386,7 @@ static RESULT obj_singleton_methods(CTX *c, int argc, VALUE *sp) {
     struct korb_class *k = NULL;
     if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
         /* For a class, singleton_methods returns the metaclass methods. */
-        struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)self);
+        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)self);
         k = meta;
     } else if (BUILTIN_TYPE(self) == T_OBJECT) {
         struct korb_object *o = (struct korb_object *)self;
@@ -1018,7 +1018,7 @@ static RESULT obj_extend(CTX *c, int argc, VALUE *sp) {
         }
     } else if (BUILTIN_TYPE(self) == T_CLASS || BUILTIN_TYPE(self) == T_MODULE) {
         /* extending a class extends its metaclass — include into singleton */
-        struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)self);
+        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)self);
         for (int i = 0; i < argc; i++) {
             if (!SPECIAL_CONST_P(argv[i]) &&
                 (BUILTIN_TYPE(argv[i]) == T_MODULE || BUILTIN_TYPE(argv[i]) == T_CLASS)) {
@@ -1138,8 +1138,8 @@ static RESULT module_remove_class_variable(CTX *c, int argc, VALUE *sp) {
 static RESULT class_visibility_set(CTX *c, VALUE self, int argc, VALUE *argv,
                                   enum korb_visibility v) {
     if (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE) return RESULT_OK(self);
-    extern struct korb_class *korb_singleton_class_of(CTX *c, struct korb_class *);
-    struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)self);
+    extern struct korb_class *korb_singleton_class_of(CTX *c, VALUE *sp, struct korb_class *);
+    struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)self);
     /* Single-Array form: `private_class_method([:foo, :bar])` (Ruby 3.x). */
     if (argc == 1 && !SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)argv[0];

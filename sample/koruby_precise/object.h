@@ -508,7 +508,7 @@ struct korb_method *korb_class_find_super_method(const struct korb_class *receiv
                                                  const struct korb_class *defining_class,
                                                  ID name);
 void korb_module_include(struct korb_class *klass, struct korb_class *mod);
-struct korb_class *korb_singleton_class_of(CTX *c, struct korb_class *klass);
+struct korb_class *korb_singleton_class_of(CTX *c, VALUE *sp, struct korb_class *klass);
 struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v);
 
 /* constants */

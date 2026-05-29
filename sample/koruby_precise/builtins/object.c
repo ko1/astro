@@ -1152,7 +1152,7 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
          * methods would also affect src — copy methods instead. */
         if (preserve_frozen && src->basic.klass) {
             struct korb_class *src_meta = (struct korb_class *)src->basic.klass;
-            struct korb_class *nk_meta = korb_singleton_class_of(c, (VALUE)nk);
+            struct korb_class *nk_meta = korb_singleton_class_of(c, c->sp_top, (VALUE)nk);
             for (uint32_t b = 0; b < src_meta->methods.bucket_cnt; b++) {
                 for (struct korb_method_table_entry *e = src_meta->methods.buckets[b]; e; e = e->next) {
                     if (e->method) korb_class_alias_method(nk_meta, e->name, e->method);

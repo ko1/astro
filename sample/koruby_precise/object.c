@@ -597,50 +597,35 @@ void korb_class_alias_method(struct korb_class *klass, ID new_name, struct korb_
     if (korb_vm) { korb_vm->method_serial++; korb_g_method_serial = korb_vm->method_serial; }
 }
 
-struct korb_class *korb_singleton_class_of(CTX *c, struct korb_class *klass) {
-    /* If klass->basic.klass is the shared metaclass, create a per-instance
-     * singleton class so per-class methods can be installed.  CRuby
-     * semantics: meta(C).super = meta(C.super), so a method defined on
-     * super's singleton class is visible to C as a class method.
-     *
-     * Recursive + nested alloc — klass / current_meta / meta all live
-     * across GC fires from the recursive call and korb_class_new.  Park
-     * them in ARO_ROOT_SCOPE slots and reload C-local pointers after
-     * each potential GC trigger. */
-    struct korb_class *result;
-    ARO_ROOT_SCOPE_START(c, r, 3) {
-        r[0] = (VALUE)klass;
-        struct korb_class *current_meta = (struct korb_class *)klass->basic.klass;
-        if (current_meta == KORB_VM(c)->class_class || current_meta == KORB_VM(c)->module_class) {
-            r[1] = (VALUE)current_meta;
-            struct korb_class *super_meta;
-            if (klass->super) {
-                /* recursive korb_singleton_class_of may fire GC; r[0]/r[1]
-                 * survive via visit_roots. */
-                super_meta = korb_singleton_class_of(c, klass->super);
-                klass        = (struct korb_class *)r[0];
-                current_meta = (struct korb_class *)r[1];
-            } else {
-                super_meta = current_meta;
-            }
-            r[2] = (VALUE)super_meta;
-            /* korb_class_new fires GC — read klass->name after the inner
-             * alloc returns, but klass needs to be reloaded first. */
-            ID nm = klass->name;
-            VALUE meta_v = (VALUE)korb_class_new(c, c->sp_top, nm, super_meta, T_CLASS);
-            klass        = (struct korb_class *)r[0];
-            current_meta = (struct korb_class *)r[1];
-            struct korb_class *meta = (struct korb_class *)meta_v;
-            meta->basic.head.flags = T_CLASS | FL_SINGLETON;
-            /* meta itself's class is the original metaclass (Class). */
-            meta->basic.klass = current_meta;
-            klass->basic.klass = meta;
-            result = meta;
-        } else {
-            result = current_meta;
-        }
-    } ARO_ROOT_SCOPE_END(c, r);
-    return result;
+struct korb_class *korb_singleton_class_of(CTX *c, VALUE *sp, struct korb_class *klass) {
+    /* Park klass / current_meta / super_meta in sp[0..2] across nested
+     * alloc (recursive korb_singleton_class_of and korb_class_new). */
+    sp[0] = (VALUE)klass;
+    sp[1] = 0;
+    sp[2] = 0;
+    c->sp_top = sp + 3;          /* publish slots before alloc */
+    struct korb_class *current_meta = (struct korb_class *)klass->basic.klass;
+    if (current_meta != KORB_VM(c)->class_class && current_meta != KORB_VM(c)->module_class) {
+        return current_meta;
+    }
+    sp[1] = (VALUE)current_meta;
+    struct korb_class *super_meta;
+    if (klass->super) {
+        super_meta = korb_singleton_class_of(c, sp + 3, klass->super);
+        klass        = (struct korb_class *)sp[0];
+        current_meta = (struct korb_class *)sp[1];
+    } else {
+        super_meta = current_meta;
+    }
+    sp[2] = (VALUE)super_meta;
+    ID nm = klass->name;
+    struct korb_class *meta = korb_class_new(c, sp + 3, nm, super_meta, T_CLASS);
+    klass        = (struct korb_class *)sp[0];
+    current_meta = (struct korb_class *)sp[1];
+    meta->basic.head.flags = T_CLASS | FL_SINGLETON;
+    meta->basic.klass = current_meta;
+    klass->basic.klass = meta;
+    return meta;
 }
 
 /* Singleton class for an arbitrary value.  Same idea as
@@ -663,7 +648,7 @@ struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE *sp, VALUE v) {
     sp[0] = v;
     c->sp_top = sp + 1;
     if (BUILTIN_TYPE(sp[0]) == T_CLASS || BUILTIN_TYPE(sp[0]) == T_MODULE) {
-        struct korb_class *meta = korb_singleton_class_of(c, (struct korb_class *)sp[0]);
+        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, (struct korb_class *)sp[0]);
         if (meta && korb_obj_frozen_p(sp[0]) && !korb_obj_frozen_p((VALUE)meta)) {
             ((struct RBasic *)meta)->head.flags |= FL_FROZEN;
         }
@@ -1216,7 +1201,7 @@ RESULT korb_const_lookup(CTX *c, ID name) {
      * code like `ClassA.constx → CS_CONSTX` can intercept the miss
      * even when the lookup walks past ClassA. */
     if (k) {
-        struct korb_class *meta = korb_singleton_class_of(c, k);
+        struct korb_class *meta = korb_singleton_class_of(c, c->sp_top, k);
         if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
             VALUE sym = korb_id2sym(name);
             return korb_funcall(c, (VALUE)k, korb_intern("const_missing"), 1, &sym);
