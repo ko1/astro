@@ -681,17 +681,17 @@ static RESULT hash_class_aref(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(r);
 }
 
-static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
+/* Hash#initialize(default = nil) / Hash#initialize { |h, k| ... } —
+ * default_value or default_proc; subclasses can override.  Called by
+ * Hash.new after the empty allocation. */
+static RESULT hash_initialize(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    
-    /* Ruby 3.2+: Hash.new accepts a `capacity:` keyword (and rejects
-     * unknown keywords).  Peel off a trailing FL_KWARGS hash before the
-     * arity check so `Hash.new(capacity: 100)` doesn't look like a
-     * positional default. */
+    CHECK_FROZEN_R(c, self);
     int eff_argc = argc;
+    /* Peel off trailing FL_KWARGS hash (capacity:). */
     if (argc > 0 && !SPECIAL_CONST_P(argv[argc - 1]) &&
         BUILTIN_TYPE(argv[argc - 1]) == T_HASH &&
         (RBASIC(argv[argc - 1])->head.flags & FL_KWARGS)) {
@@ -705,7 +705,6 @@ static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
                            "unknown keyword: :%s", kn);
             }
         }
-        /* capacity is informational only — we don't pre-grow buckets. */
         eff_argc = argc - 1;
     }
     if (eff_argc > 1) {
@@ -718,18 +717,35 @@ static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eA,
                    "wrong number of arguments (given 1, expected 0)");
     }
-    VALUE h = korb_hash_new(c, c->sp);
-    struct korb_hash *hh = (struct korb_hash *)h;
-    /* Honor subclass: rewrite klass when called as MyHash.new (where self
-     * is the subclass).  CRuby semantics. */
-    if (self != (VALUE)KORB_VM(c)->hash_class) {
-        hh->basic.klass = self;
-    }
+    struct korb_hash *hh = (struct korb_hash *)self;
+    /* Reset both first so calling #initialize again clears them; the
+     * appropriate one is then set based on args. */
+    hh->default_value = Qnil;
+    hh->default_proc = Qnil;
     if (c->current_block) {
         hh->default_proc = (VALUE)c->current_block;
     } else if (eff_argc >= 1) {
         hh->default_value = argv[0];
     }
+    return RESULT_OK(self);
+}
+
+static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
+    VALUE *argv = sp - argc;
+
+    /* Allocate an empty hash, retag for subclass, then dispatch
+     * initialize (which may be subclass-overridden — CRuby semantics). */
+    VALUE h = korb_hash_new(c, c->sp);
+    if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS) {
+        ((struct korb_hash *)h)->basic.klass = self;
+    }
+    /* Stage [h, argv...] on sp and dispatch initialize.  See
+     * ary_class_new comment for the rationale. */
+    sp[0] = h;
+    for (int i = 0; i < argc; i++) sp[1 + i] = argv[i];
+    UNWRAP(korb_funcall_r(c, h, korb_intern("initialize"), argc, sp + 1));
     return RESULT_OK(h);
 }
 

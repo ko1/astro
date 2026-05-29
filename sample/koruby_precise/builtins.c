@@ -926,6 +926,9 @@ void korb_init_builtins(CTX *c) {
         struct korb_class *cHshMeta = korb_class_new(c, c->sp, korb_intern("HashMeta"),
                                                       KORB_VM(c)->class_class, T_CLASS);
         korb_class_add_method_cfunc_r(cHshMeta, korb_intern("new"), hash_class_new, -1);
+        /* Hash#initialize — subclasses can override; called by Hash.new
+         * after the empty allocation. */
+        DEF_R(KORB_VM(c)->hash_class, "initialize", hash_initialize, -1);
         korb_class_add_method_cfunc_r(cHshMeta, korb_intern("[]"),  hash_class_aref, -1);
         KORB_VM(c)->hash_class->basic.klass = (VALUE)cHshMeta;
         /* Hash.try_convert(obj) — obj.to_hash if responding and returns
