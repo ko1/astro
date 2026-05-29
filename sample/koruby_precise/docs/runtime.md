@@ -220,89 +220,87 @@ proc.call は **blk->env を直接共有**する (snapshot しない)。 過去�
 snapshot していて `r = ...` が outer に伝搬しなかったが、 escape 時の
 snapshot で env はすでに heap にあるので直接利用で正しい。
 
-## 5. 例外伝搬 (state propagation)
+## 5. 例外伝搬 (state propagation) — Phase 8d で RESULT 化
 
-setjmp/longjmp は使わない。代わりに `CTX::state` を毎 EVAL_ARG 後にチェック。
+setjmp/longjmp は使わない。 全 dispatcher / NODE_DEF body が `RESULT` を
+返し、 state は in-band (= VALUE+state の 2 register) で伝搬する。
+abruby / castro と同じ設計。
 
-### 5.1 EA マクロ
+```c
+typedef struct {
+    VALUE value;
+    uint8_t state;     /* KORB_NORMAL / KORB_RAISE / ... */
+} RESULT;
+```
+
+### 5.1 EVAL_ARG_UNWRAP マクロ
 
 `node.def` で内部的に使うラッパ:
 
 ```c
-#define EA(c, n) ({                                       \
-    VALUE _v = EVAL_ARG(c, n);                            \
-    if (UNLIKELY((c)->state != KORB_NORMAL)) return Qnil; \
-    _v;                                                   \
+#define EVAL_ARG(c, n) (EVAL_ARG_CHECK(n), (*n##_dispatcher)(c, n, sp))
+#define EVAL_ARG_UNWRAP(c, n) UNWRAP(EVAL_ARG(c, n))
+
+/* UNWRAP は context.h 由来 — 非 NORMAL は早期 return RESULT。 */
+#define UNWRAP(call) ({                                   \
+    RESULT _r = (call);                                   \
+    if (__builtin_expect(_r.state != KORB_NORMAL, 0))     \
+        return _r;                                        \
+    _r.value;                                             \
 })
 ```
 
-`UNLIKELY` で正常パスは予測ヒット率が高い。
+`UNLIKELY` で正常パスは予測ヒット率が高い。 値が要らない場合は `CHECK(call)`。
 
 ### 5.2 raise 系
 
 ```c
 NODE_DEF
-node_raise(...)
+node_raise(CTX *c, NODE *n, VALUE *sp, NODE *exc_expr)
 {
-    ...
-    c->state = KORB_RAISE;
-    c->state_value = exc_obj;
-    return Qnil;
+    VALUE e = ...;
+    return (RESULT){ e, KORB_RAISE };
 }
 
-void korb_raise(CTX *c, ko_class *klass, const char *fmt, ...) {
-    /* 同様 */
+RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...) {
+    /* 同様、 (RESULT){exc, KORB_RAISE} を返す */
 }
 ```
 
-### 5.3 rescue / ensure
+break / next / retry / redo / return も同じパターン。
+
+### 5.3 rescue / ensure (RESULT-native)
 
 ```c
-NODE_DEF @noinline
-node_rescue(CTX *c, NODE *n, NODE *body, NODE *rescue_body, uint32_t exc_idx)
+NODE_DEF
+node_rescue(CTX *c, NODE *n, VALUE *sp, NODE *body, NODE *rescue_body, uint32_t exc_idx)
 {
-    VALUE v = EVAL_ARG(c, body);
-    if (c->state == KORB_RAISE && rescue_body) {
-        VALUE exc = c->state_value;
-        c->state = KORB_NORMAL;
-        c->fp[exc_idx] = exc;
-        /* $! を rescue body の間だけ exc に挿げ替える。 ensure 後に
-         * 復元するため prev_bang を保存しておく。 */
-        VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+retry:;
+    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    RESULT _br = EVAL_ARG(c, body);
+    if (_br.state == KORB_RAISE && rescue_body) {
+        VALUE exc = _br.value;
+        c->current_frame->fp[exc_idx] = exc;
         korb_gvar_set(korb_intern("$!"), exc);
-        v = EVAL_ARG(c, rescue_body);
-        korb_gvar_set(korb_intern("$!"), prev_bang);
+        RESULT _rr = EVAL_ARG(c, rescue_body);
+        if (_rr.state == KORB_RETRY) goto retry;
+        /* ... */
+        return _rr.state == KORB_NORMAL ? RESULT_OK(_rr.value) : _rr;
     }
-    return v;
+    return _br;
 }
-```
-
-bare `raise` (引数なし) は `$!` の値を再 raise:
-```c
-if (argc == 0) {
-    VALUE bang = korb_gvar_get(korb_intern("$!"));
-    if (!NIL_P(bang)) { c->state = KORB_RAISE; c->state_value = bang; }
-    else korb_raise(c, NULL, "unhandled exception");
-}
-```
 
 NODE_DEF
-node_ensure(CTX *c, NODE *n, NODE *body, NODE *ensure_body)
+node_ensure(CTX *c, NODE *n, VALUE *sp, NODE *body, NODE *ensure_body)
 {
-    int saved_state = KORB_NORMAL;
-    VALUE saved_value = Qnil;
-    VALUE r = EVAL_ARG(c, body);
-    if (c->state != KORB_NORMAL) {
-        saved_state = c->state;
-        saved_value = c->state_value;
-        c->state = KORB_NORMAL;
-    }
-    EVAL_ARG(c, ensure_body);
-    if (c->state == KORB_NORMAL && saved_state != KORB_NORMAL) {
-        c->state = saved_state;
-        c->state_value = saved_value;
-    }
-    return r;
+    VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
+    RESULT _br = EVAL_ARG(c, body);
+    if (_br.state == KORB_RAISE) korb_gvar_set(korb_intern("$!"), _br.value);
+    RESULT _er = EVAL_ARG(c, ensure_body);
+    /* ensure body の state が wins。 さもなくば body の state を伝搬。 */
+    if (_er.state != KORB_NORMAL) return _er;
+    if (_br.state != KORB_RAISE) korb_gvar_set(korb_intern("$!"), prev_bang);
+    return _br;
 }
 ```
 
@@ -310,7 +308,7 @@ node_ensure(CTX *c, NODE *n, NODE *body, NODE *ensure_body)
 
 | state | 用途 | 設定箇所 |
 |---|---|---|
-| `KORB_NORMAL` | 通常 | (defalt) |
+| `KORB_NORMAL` | 通常 | (default) |
 | `KORB_RAISE` | 例外 raise 中 | `node_raise` / `korb_raise` |
 | `KORB_RETURN` | メソッド return | `node_return` |
 | `KORB_BREAK`  | ループ break / yield 中の break | `node_break` |
@@ -319,21 +317,40 @@ node_ensure(CTX *c, NODE *n, NODE *body, NODE *ensure_body)
 | `KORB_RETRY`  | rescue 中の retry | `node_retry` |
 | `KORB_THROW`  | catch/throw の unwind | `kernel_throw` |
 
-`KORB_THROW` は state_value に `[tag, value]` の 2-element Array を載せる。
-`kernel_catch` は受信側で tag 比較 → 一致なら state を NORMAL に戻して
-value を返す。 不一致は state を維持して呼出元へ伝搬。
-
 ### 5.5 setjmp/longjmp と比べて
 
-| 項目 | state 伝搬 | setjmp/longjmp |
+| 項目 | RESULT 伝搬 | setjmp/longjmp |
 |---|---|---|
-| 正常パスのコスト | 各 EVAL_ARG で `cmp+je` | ゼロ |
-| 例外パスのコスト | 連続 return | longjmp 1回 + register restore |
+| 正常パスのコスト | 各 EVAL_ARG で `cmp+je` (2 レジ返り値) | ゼロ |
+| 例外パスのコスト | 連続 return | longjmp 1 回 + register restore |
 | C コンパイラ最適化 | 全コード見える → DCE 可 | setjmp barrier で阻害される |
 | portable | はい | はい |
 | ASTro 特化と相性 | ◎ (部分木で state チェック消える) | △ |
 
-abruby は同じ思想で `RESULT { VALUE, state }` を 2 レジスタ返り値にしている。性能は近いが、koruby は実装簡略化のため CTX フィールドにしてある。
+baruby_precise / castro / abruby も同じ `RESULT { VALUE, state }` を採用。
+
+### 5.6 移行過渡期 (Phase 8d, in progress)
+
+Legacy VALUE-returning helper (`korb_dispatch_call`, `korb_funcall`,
+`korb_const_lookup`, `korb_node_X_slow` 等) は今は `c->state` 経由で
+raise を返す。 NODE_DEF body から呼ぶ場所では `LIFT_C_STATE(c, call)`
+で RESULT に lift する:
+
+```c
+#define LIFT_C_STATE(c, call) ({ \
+    VALUE _lv = (call); \
+    if (__builtin_expect((c)->state != KORB_NORMAL, 0)) { \
+        RESULT _ls = (RESULT){ (c)->state_value, (c)->state }; \
+        (c)->state = KORB_NORMAL; (c)->state_value = Qnil; \
+        return _ls; \
+    } _lv; \
+})
+
+/* Use: return RESULT_OK(LIFT_C_STATE(c, korb_funcall(...))) */
+```
+
+全 legacy helper を `_r` 化 (= RESULT 返り値) すれば `LIFT_C_STATE` も
+撤去できる。 これが Phase 8d 続きの作業。
 
 ## 6. 字句的定数スコープ (cref)
 
