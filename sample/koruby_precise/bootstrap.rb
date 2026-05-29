@@ -2199,34 +2199,43 @@ class Range
   end unless method_defined?(:bsearch)
 
   def cover?(v)
-    f = first
-    l = last
+    # Use #begin / #end directly — they return nil for begin/endless
+    # ranges, unlike #first / #last which raise for endless.
+    f = self.begin
+    l = self.end
     # Range vs Range: normalize each range's effective last (subtract
     # one when exclude_end and the bound is an Integer) so comparisons
     # are uniform.
     if v.is_a?(Range)
-      vf = v.first
-      vl = v.last
+      vf = v.begin
+      vl = v.end
       return false if vf.nil? && !f.nil?
       return false if vl.nil? && !l.nil?
-      return false if !f.nil? && !vf.nil? && vf < f
+      return false if !f.nil? && !vf.nil? && (vf <=> f) < 0
       if !l.nil? && !vl.nil?
         outer_last = (exclude_end? && l.is_a?(Integer)) ? l - 1 : l
         inner_last = (v.exclude_end? && vl.is_a?(Integer)) ? vl - 1 : vl
-        return inner_last <= outer_last
+        return (inner_last <=> outer_last) <= 0
       end
       return true
     end
     if f.nil?
-      return v < l if exclude_end?
-      return v <= l
+      return false if l.nil?
+      cmp = (v <=> l)
+      return false if cmp.nil?
+      return exclude_end? ? cmp < 0 : cmp <= 0
     elsif l.nil?
-      return f <= v
+      cmp = (f <=> v)
+      return false if cmp.nil?
+      return cmp <= 0
     end
+    cmp_f = (f <=> v)
+    cmp_l = (v <=> l)
+    return false if cmp_f.nil? || cmp_l.nil?
     if exclude_end?
-      f <= v && v < l
+      cmp_f <= 0 && cmp_l < 0
     else
-      f <= v && v <= l
+      cmp_f <= 0 && cmp_l <= 0
     end
   rescue
     false

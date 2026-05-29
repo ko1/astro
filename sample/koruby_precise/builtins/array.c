@@ -481,23 +481,22 @@ static RESULT ary_join(CTX *c, int argc, VALUE *sp) {
         }
     }
     /* Pin self / sep / result / per-iter element across korb_to_s /
-     * korb_str_new / korb_str_concat GC fires (PURGE catches the
-     * stale-pointer faster than STRESS alone). */
-    VALUE ret = Qnil;
-    ARO_ROOT_SCOPE_START(c, rs, 4) {
-        rs[0] = self;
-        rs[1] = sep;
-        rs[2] = korb_str_new(c, c->sp, "", 0);  /* result */
-        rs[3] = Qnil;                  /* per-iter element */
-        long len = korb_ary_len(rs[0]);
-        for (long i = 0; i < len; i++) {
-            if (i > 0 && BUILTIN_TYPE(rs[1]) == T_STRING) korb_str_concat(c, c->sp, rs[2], rs[1]);
-            rs[3] = korb_ary_aref(rs[0], i);
-            if (BUILTIN_TYPE(rs[3]) != T_STRING) rs[3] = korb_to_s(c, c->sp, rs[3]);
-            korb_str_concat(c, c->sp, rs[2], rs[3]);
-        }
-        ret = rs[2];
-    } ARO_ROOT_SCOPE_END(c, rs);
+     * korb_str_new / korb_str_concat GC fires.  We park them in sp[0..3]
+     * and advance c->sp so subsequent allocs see those slots as roots. */
+    sp[0] = self;
+    sp[1] = sep;
+    sp[3] = Qnil;
+    c->sp = sp + 4;
+    sp[2] = korb_str_new(c, c->sp, "", 0);  /* result, allocated after c->sp bump */
+    long len = korb_ary_len(sp[0]);
+    for (long i = 0; i < len; i++) {
+        if (i > 0 && BUILTIN_TYPE(sp[1]) == T_STRING) korb_str_concat(c, c->sp, sp[2], sp[1]);
+        sp[3] = korb_ary_aref(sp[0], i);
+        if (BUILTIN_TYPE(sp[3]) != T_STRING) sp[3] = korb_to_s(c, c->sp, sp[3]);
+        korb_str_concat(c, c->sp, sp[2], sp[3]);
+    }
+    VALUE ret = sp[2];
+    c->sp = sp;
     return RESULT_OK(ret);
 }
 static RESULT ary_inspect(CTX *c, int argc, VALUE *sp) {
