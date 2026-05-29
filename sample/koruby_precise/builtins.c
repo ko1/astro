@@ -592,7 +592,7 @@ void korb_init_builtins(CTX *c) {
     DEF(korb_vm->integer_class, "size",  int_size, 0);
     DEF(korb_vm->integer_class, "coerce", int_coerce, 1);
     DEF(korb_vm->integer_class, "abs2",   int_abs2,   0);
-    DEF(korb_vm->float_class, "coerce", flt_coerce, 1);
+    DEF_R(korb_vm->float_class, "coerce", flt_coerce, 1);
     DEF(korb_vm->float_class, "abs2",   flt_abs2,   0);
 
     /* extra Float */
@@ -1094,7 +1094,7 @@ void korb_init_builtins(CTX *c) {
     korb_const_set(korb_vm->object_class, korb_intern("File"), (VALUE)cFile);
     {
         struct korb_class *cFileMeta = korb_class_new(c, c->sp, korb_intern("FileMeta"), korb_vm->class_class, T_CLASS);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("read"), file_read, -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("read"), file_read, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("join"), file_join, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("exist?"), file_exist_p, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("exists?"), file_exist_p, -1);
@@ -1110,9 +1110,9 @@ void korb_init_builtins(CTX *c) {
         korb_class_add_method_cfunc(cFileMeta, korb_intern("basename"), file_basename, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("expand_path"), file_expand_path, -1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("extname"), file_extname, 1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("binread"), file_binread, 1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("binread"), file_binread, 1);
         korb_class_add_method_cfunc(cFileMeta, korb_intern("open"), file_open, -1);
-        korb_class_add_method_cfunc(cFileMeta, korb_intern("write"), file_write, -1);
+        korb_class_add_method_cfunc_r(cFileMeta, korb_intern("write"), file_write, -1);
         cFile->basic.klass = (VALUE)cFileMeta;
     }
     /* Dir / Process classes — stubs so common Ruby idioms don't NPE. */
@@ -1231,13 +1231,13 @@ void korb_init_builtins(CTX *c) {
      * IO's singleton. */
     {
         extern VALUE io_class_pipe(CTX *c, VALUE self, int argc, VALUE *argv);
-        extern VALUE io_class_select(CTX *c, VALUE self, int argc, VALUE *argv);
+        extern RESULT io_class_select(CTX *c, int argc, VALUE *sp);
         extern VALUE io_class_popen(CTX *c, VALUE self, int argc, VALUE *argv);
         extern VALUE io_class_copy_stream(CTX *c, VALUE self, int argc, VALUE *argv);
         struct korb_class *cIOMeta = korb_singleton_class_of(c, cIO);
         korb_class_add_method_cfunc(cIOMeta, korb_intern("pipe"),
                                      io_class_pipe, -1);
-        korb_class_add_method_cfunc(cIOMeta, korb_intern("select"),
+        korb_class_add_method_cfunc_r(cIOMeta, korb_intern("select"),
                                      io_class_select, -1);
         korb_class_add_method_cfunc(cIOMeta, korb_intern("popen"),
                                      io_class_popen, -1);

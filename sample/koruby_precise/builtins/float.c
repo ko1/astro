@@ -149,33 +149,34 @@ static VALUE flt_to_s(CTX *c, VALUE self, int argc, VALUE *argv) {
 
 /* Numeric#coerce — Float variant.  Integer/Bignum/Float other all
  * promoted to a Float pair. */
-static VALUE flt_coerce(CTX *c, VALUE self, int argc, VALUE *argv) {
+/* Numeric#coerce — Float variant.  Phase 8 RESULT 化: 直接 RESULT を返し、
+ * raise も `return korb_raise(...)` で in-band 伝搬。 caller は cfunc_r
+ * 経由で UNWRAP する。 */
+static RESULT flt_coerce(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE self = sp[-argc - 1];
     if (argc < 1) {
-        VALUE eArg = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg, "wrong number of arguments"));
-        return Qnil;
+        return korb_raise_argument_error(c, "wrong number of arguments");
     }
-    VALUE other = argv[0];
-    VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+    VALUE other = sp[-1];
+    VALUE pair = korb_ary_new_capa(c, sp, 2);
     if (FIXNUM_P(other)) {
-        korb_ary_push(pair, korb_float_new(c, c->sp, (double)FIX2LONG(other)));
+        korb_ary_push(pair, korb_float_new(c, sp, (double)FIX2LONG(other)));
         korb_ary_push(pair, self);
-        return pair;
+        return RESULT_OK(pair);
     }
     if (KORB_IS_FLOAT(other)) {
         korb_ary_push(pair, other);
         korb_ary_push(pair, self);
-        return pair;
+        return RESULT_OK(pair);
     }
     if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM) {
-        korb_ary_push(pair, korb_float_new(c, c->sp, korb_num2dbl(other)));
+        korb_ary_push(pair, korb_float_new(c, sp, korb_num2dbl(other)));
         korb_ary_push(pair, self);
-        return pair;
+        return RESULT_OK(pair);
     }
-    VALUE eTyp = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-    DROP_RESULT(korb_raise(c, (struct korb_class *)eTyp, "%s can't be coerced into Float",
-             korb_id_name(korb_class_of_class(other)->name)));
-    return Qnil;
+    return korb_raise_type_error(c, "%s can't be coerced into Float",
+                                 korb_id_name(korb_class_of_class(other)->name));
 }
 
 static VALUE flt_abs2(CTX *c, VALUE self, int argc, VALUE *argv) {

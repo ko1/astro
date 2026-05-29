@@ -1,13 +1,15 @@
 /* File / IO — moved from builtins.c. */
 
 /* ---------- File ---------- */
-static VALUE file_read(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 1 || BUILTIN_TYPE(argv[0]) != T_STRING) return Qnil;
-    const char *path = korb_str_cstr(argv[0]);
+/* Phase 8 RESULT 化: File.read(path) — RESULT-typed cfunc_r。  raise も
+ * `return korb_raise(...)` で直接伝搬。 */
+static RESULT file_read(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    if (argc < 1 || BUILTIN_TYPE(sp[-1]) != T_STRING) return RESULT_OK(Qnil);
+    const char *path = korb_str_cstr(sp[-1]);
     FILE *fp = fopen(path, "rb");
     if (!fp) {
-        DROP_RESULT(korb_raise(c, NULL, "no such file -- %s", path));
-        return Qnil;
+        return korb_raise(c, NULL, "no such file -- %s", path);
     }
     fseek(fp, 0, SEEK_END);
     long sz = ftell(fp);
@@ -17,7 +19,7 @@ static VALUE file_read(CTX *c, VALUE self, int argc, VALUE *argv) {
     if (got < 0) got = 0;
     buf[got] = 0;
     fclose(fp);
-    return korb_str_new(c, c->sp, buf, got);
+    return RESULT_OK(korb_str_new(c, sp, buf, got));
 }
 
 /* Simple FILE* wrapper.  We keep the raw FILE* on a fresh T_OBJECT
@@ -353,7 +355,9 @@ static VALUE io_fileno(CTX *c, VALUE self, int argc, VALUE *argv) {
     return INT2FIX(fileno(fp));
 }
 
-VALUE io_class_select(CTX *c, VALUE self, int argc, VALUE *argv) {
+RESULT io_class_select(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE *argv = sp - argc;
     VALUE rs = (argc >= 1) ? argv[0] : Qnil;
     VALUE ws = (argc >= 2) ? argv[1] : Qnil;
     VALUE es = (argc >= 3) ? argv[2] : Qnil;
@@ -376,15 +380,14 @@ VALUE io_class_select(CTX *c, VALUE self, int argc, VALUE *argv) {
     }
     int n = select(maxfd + 1, &rset, &wset, &eset, tvp);
     if (n < 0) {
-        DROP_RESULT(korb_raise(c, NULL, "IO.select failed: %s", strerror(errno)));
-        return Qnil;
+        return korb_raise(c, NULL, "IO.select failed: %s", strerror(errno));
     }
-    if (n == 0) return Qnil;
-    VALUE ret = korb_ary_new_capa(c, c->sp, 3);
+    if (n == 0) return RESULT_OK(Qnil);
+    VALUE ret = korb_ary_new_capa(c, sp, 3);
     korb_ary_push(ret, korb_select_collect_ready(c, rs, &rset));
     korb_ary_push(ret, korb_select_collect_ready(c, ws, &wset));
     korb_ary_push(ret, korb_select_collect_ready(c, es, &eset));
-    return ret;
+    return RESULT_OK(ret);
 }
 
 /* File.open(path[, mode]) [{ |f| ... }]
@@ -416,19 +419,20 @@ static VALUE file_open(CTX *c, VALUE self, int argc, VALUE *argv) {
 }
 
 /* File.write(path, str[, mode]) — write str to path, return bytes written. */
-static VALUE file_write(CTX *c, VALUE self, int argc, VALUE *argv) {
-    if (argc < 2 || BUILTIN_TYPE(argv[0]) != T_STRING) return INT2FIX(0);
+static RESULT file_write(CTX *c, int argc, VALUE *sp) {
+    c->sp = sp;
+    VALUE *argv = sp - argc;
+    if (argc < 2 || BUILTIN_TYPE(argv[0]) != T_STRING) return RESULT_OK(INT2FIX(0));
     const char *path = korb_str_cstr(argv[0]);
     FILE *fp = fopen(path, "wb");
     if (!fp) {
-        DROP_RESULT(korb_raise(c, NULL, "could not open for writing: %s", path));
-        return Qnil;
+        return korb_raise(c, NULL, "could not open for writing: %s", path);
     }
     VALUE s = korb_to_s_dispatch(c, argv[1]);
     const struct korb_string *str = (const struct korb_string *)s;
     long got = (long)fwrite(str->ptr, 1, str->len, fp);
     fclose(fp);
-    return INT2FIX(got);
+    return RESULT_OK(INT2FIX(got));
 }
 
 static VALUE file_join(CTX *c, VALUE self, int argc, VALUE *argv) {
@@ -579,9 +583,9 @@ static VALUE file_extname(CTX *c, VALUE self, int argc, VALUE *argv) {
     return korb_str_new_cstr(c, c->sp, dot);
 }
 
-static VALUE file_binread(CTX *c, VALUE self, int argc, VALUE *argv) {
+static RESULT file_binread(CTX *c, int argc, VALUE *sp) {
     /* Same as File.read but ensures binary mode */
-    return file_read(c, self, argc, argv);
+    return file_read(c, argc, sp);
 }
 
 static VALUE file_expand_path(CTX *c, VALUE self, int argc, VALUE *argv) {
