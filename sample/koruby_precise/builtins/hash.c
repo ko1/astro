@@ -979,6 +979,10 @@ static RESULT hash_delete_if(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("delete_if"));
+        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     CHECK_FROZEN_R(c, self);
     struct korb_hash *h = (struct korb_hash *)self;
     /* Snapshot keys so we can iterate without mutation issues. */
@@ -1008,6 +1012,12 @@ static RESULT hash_reject_bang(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    /* No block: return Enumerator.  Frozen check happens later (CRuby
+     * order: enumerator first, frozen check on iteration). */
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("reject!"));
+        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     CHECK_FROZEN_R(c, self);
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE keys = korb_ary_new(c, c->sp_top);
@@ -1037,6 +1047,10 @@ static RESULT hash_keep_if(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("keep_if"));
+        return korb_funcall_r(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     CHECK_FROZEN_R(c, self);
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE keys = korb_ary_new(c, c->sp_top);
