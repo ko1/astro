@@ -881,15 +881,15 @@ static RESULT class_new(CTX *c, int argc, VALUE *sp) {
             c->current_frame->cref = &new_cref;
             c->current_block->self = (VALUE)nk;   /* class_eval semantics */
             VALUE av0[1] = { (VALUE)nk };
-            SINK_RESULT(c, korb_yield(c, 1, av0));
+            RESULT _yr = korb_yield(c, 1, av0);
             c->current_block->cref = prev_blk_cref;
             c->current_block->self = prev_blk_self;
             c->current_frame->self = prev_self;
             c->current_frame->current_class = prev_class;
             c->current_frame->cref = prev_cref;
-            if (c->state == KORB_BREAK) {
-                c->state = KORB_NORMAL; c->state_value = Qnil;
-            }
+            /* BREAK from class body silently consumed; other non-NORMAL
+             * propagates. */
+            if (_yr.state != KORB_NORMAL && _yr.state != KORB_BREAK) return _yr;
         }
         return RESULT_OK((VALUE)nk);
     }
@@ -1299,15 +1299,15 @@ static RESULT module_new_class_func(CTX *c, int argc, VALUE *sp) {
          * the module, not the outer caller — same fix as Class.new. */
         c->current_block->self = (VALUE)m;
         VALUE argv0[1] = { (VALUE)m };
-        SINK_RESULT(c, korb_yield(c, 1, argv0));
+        RESULT _yr = korb_yield(c, 1, argv0);
         c->current_block->cref = prev_blk_cref;
         c->current_block->self = prev_blk_self;
         c->current_frame->self = prev_self;
         c->current_frame->current_class = prev_class;
         c->current_frame->cref = prev_cref;
-        if (c->state == KORB_BREAK) {
-            c->state = KORB_NORMAL; c->state_value = Qnil;
-        }
+        /* BREAK from module body silently consumed; other non-NORMAL
+         * propagates. */
+        if (_yr.state != KORB_NORMAL && _yr.state != KORB_BREAK) return _yr;
     }
     return RESULT_OK((VALUE)m);
 }

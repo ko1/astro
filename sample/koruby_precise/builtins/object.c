@@ -916,7 +916,10 @@ RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
     
     if (c->current_block) {
         VALUE av[1] = { self };
-        SINK_RESULT(c, korb_yield(c, 1, av));
+        RESULT _yr = korb_yield(c, 1, av);
+        if (_yr.state == KORB_RAISE) return _yr;
+        /* BREAK/NEXT/RETURN from a tap block: silently consumed (tap
+         * always returns self). */
     }
     return RESULT_OK(self);
 }

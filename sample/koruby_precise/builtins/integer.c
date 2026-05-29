@@ -453,8 +453,7 @@ static RESULT int_times(CTX *c, int argc, VALUE *sp) {
     }
     for (long i = 0; i < n; i++) {
         VALUE arg = INT2FIX(i);
-        VALUE r = SINK_RESULT(c, korb_yield(c, 1, &arg));
-        if (c->state != KORB_NORMAL) return RESULT_OK(r);
+        CHECK(korb_yield(c, 1, &arg));
     }
     return RESULT_OK(self);
 }

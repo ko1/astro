@@ -139,8 +139,8 @@ static RESULT io_each_line(CTX *c, int argc, VALUE *sp) {
         VALUE l = korb_str_new(c, c->sp, line, n);
         korb_last_line_set(c, l);
         if (has_block) {
-            SINK_RESULT(c, korb_yield(c, 1, &l));
-            if (c->state != KORB_NORMAL) { free(line); return RESULT_OK(Qnil); }
+            RESULT _yr = korb_yield(c, 1, &l);
+            if (_yr.state != KORB_NORMAL) { free(line); return _yr; }
         } else {
             korb_ary_push(collected, l);
         }
@@ -1059,11 +1059,10 @@ static RESULT process_fork(CTX *c, int argc, VALUE *sp) {
     pid_t pid = fork();
     if (pid < 0) return RESULT_OK(Qnil);
     if (pid == 0) {
-        if (korb_block_given(c)) {
-            SINK_RESULT(c, korb_yield(c, 0, NULL));
-        }
-        if (c->state == KORB_RAISE) {
-            VALUE s = korb_inspect(c, c->sp, c->state_value);
+        RESULT _yr = RESULT_OK(Qnil);
+        if (korb_block_given(c)) _yr = korb_yield(c, 0, NULL);
+        if (_yr.state == KORB_RAISE) {
+            VALUE s = korb_inspect(c, c->sp, _yr.value);
             fprintf(stderr, "fork child: %s\n", korb_str_cstr(s));
             _exit(1);
         }

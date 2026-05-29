@@ -1605,31 +1605,26 @@ static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     /* loop { ... } — call block forever, swallow StopIteration. */
-    
+
     if (!c->current_block) {
         return korb_raise(c, NULL, "no block given (loop)");
     }
-    while (c->state == KORB_NORMAL) {
-        SINK_RESULT(c, korb_yield(c, 0, NULL));
-        if (c->state == KORB_BREAK) {
-            VALUE r = c->state_value;
-            c->state = KORB_NORMAL; c->state_value = Qnil;
-            return RESULT_OK(r);
-        }
-        if (c->state == KORB_RAISE) {
+    for (;;) {
+        RESULT _yr = korb_yield(c, 0, NULL);
+        if (_yr.state == KORB_NORMAL) continue;
+        if (_yr.state == KORB_BREAK) return RESULT_OK(_yr.value);
+        if (_yr.state == KORB_RAISE) {
             /* StopIteration → swallow.  Anything else propagates. */
-            VALUE exc = c->state_value;
+            VALUE exc = _yr.value;
             if (!SPECIAL_CONST_P(exc)) {
                 struct korb_class *k = (struct korb_class *)((struct RBasic *)exc)->klass;
-                if (k && k->name == korb_intern("StopIteration")) {
-                    c->state = KORB_NORMAL; c->state_value = Qnil;
-                    return RESULT_OK(Qnil);
-                }
+                if (k && k->name == korb_intern("StopIteration")) return RESULT_OK(Qnil);
             }
-            return RESULT_OK(Qnil);
+            return _yr;
         }
+        /* RETURN / THROW / NEXT etc. — propagate */
+        return _yr;
     }
-    return RESULT_OK(Qnil);
 }
 static RESULT kernel_lambda(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
