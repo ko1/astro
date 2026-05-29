@@ -248,11 +248,11 @@ gather/dispatch 復活)。 any_spec.rb 65 → 70、 all_spec.rb 56 → 61 PASS�
 - 全 10 test suite が default / STRESS / STRESS+PURGE で PASS 維持。
 
 残り Phase 8d 作業:
-- `EVAL_LIFT` 撤去 (= 残り legacy caller [koruby_run_ast / proc_call /
-  korb_yield_slow shared-fp / Fiber start / Kernel#eval / Module#class_eval
-  / Binding#eval] を RESULT-native 化)。
+- ~~`EVAL_LIFT` 撤去~~ **完了**。 全 caller (koruby_run_ast / proc_call /
+  korb_yield_slow / Fiber start / Kernel#eval / Module#class_eval /
+  Binding#eval / korb_dispatch_to_method) を RESULT-native 化。
 - `korb_dispatch_call` / `korb_funcall` / `korb_yield` / 各種 `korb_node_X_slow`
-  helper を RESULT 化 (今は LIFT_C_STATE 経由)。
+  helper を RESULT 化 (今は LIFT_C_STATE 経由で c->state を read)。
 - `builtins/` 全 cfunc を cfunc_r ABI に統一 (現在 ~100 ヶ所未移行)。
 
 ### 第 7 セッション: Enumerable 追加 + pre-existing yield bug 発見
