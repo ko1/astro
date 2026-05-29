@@ -20,7 +20,7 @@ extern struct koruby_option OPTION;
  * Precise GC root scan + per-type edge walk.
  *
  * koruby_visit_roots: walks every root slot the GC must see — the linear
- * c->stack_base..c->sp value-stack range, CTX-held VALUEs, the cref and
+ * c->stack_base..c->sp_top value-stack range, CTX-held VALUEs, the cref and
  * current_frame chains, and the korb_vm globals.  Sample-side helpers
  * place live VALUEs into ARO_ROOT_SCOPE-managed slots (or sp[] directly)
  * so they appear in the value-stack range.
@@ -129,14 +129,14 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
      * AST-node access, leading to a wrong-slot read on B's instance. */
     extern uint64_t korb_g_gc_gen;
     korb_g_gc_gen++;
-    /* (a) Value stack — c->stack_base..c->sp linear range.  Contract is
+    /* (a) Value stack — c->stack_base..c->sp_top linear range.  Contract is
      * that every sp-advancing site zero-fills the new slots before any
      * alloc that can fire GC (= ARO_ROOT_SCOPE_START's invariant).  We
      * do NOT keep a high-water mark and lazy-clear popped slots — that
      * pattern hides a sp-up-without-zero-fill bug as a slow-leak SEGV
      * rather than catching it at the violating site. */
-    if (c->stack_base && c->sp) {
-        for (VALUE *p = c->stack_base; p < c->sp; p++) {
+    if (c->stack_base && c->sp_top) {
+        for (VALUE *p = c->stack_base; p < c->sp_top; p++) {
             visit_value_slot(ctx, fn, p);
         }
     }
@@ -366,7 +366,7 @@ koruby_visit_libc_obj_internals_via_registry(struct CTX_struct *c, void *ctx, ko
               /* p->env walking — only for ESCAPED procs (env is
                * libc-malloc'd by korb_proc_snapshot_env_*).  Skip when
                * env points into the value stack — those are walked by
-               * phase (a) when c->sp covers them, or are leftover for a
+               * phase (a) when c->sp_top covers them, or are leftover for a
                * popped frame (= unreachable; values can be stale but
                * walking them would re-introduce dead arena refs).  The
                * libc snapshot env is fixed-size (env_size) and not
@@ -504,7 +504,7 @@ CTX *
 koruby_setup_ctx(const char *current_file)
 {
     /* Reuse the bootstrap CTX that korb_runtime_init initialized — it
-     * already has c->astro_gc bound, c->stack_base mmap'd, c->sp = base.
+     * already has c->astro_gc bound, c->stack_base mmap'd, c->sp_top = base.
      * koruby_setup_ctx just attaches the per-run roots (self / cref /
      * current_file / state). */
     CTX *c = korb_vm->current_ctx;
@@ -530,7 +530,7 @@ koruby_eval_bootstrap(CTX *c)
     RESULT _r = korb_eval_string(c, koruby_bootstrap_src,
                                   koruby_bootstrap_len, "<bootstrap>");
     if (_r.state == KORB_RAISE) {
-        VALUE s = korb_inspect(c, c->sp, _r.value);
+        VALUE s = korb_inspect(c, c->sp_top, _r.value);
         fprintf(stderr, "bootstrap failure: %s\n", korb_str_cstr(s));
     }
 }
@@ -552,14 +552,14 @@ koruby_run_ast(CTX *c, NODE *ast)
                 struct korb_array *pair = (struct korb_array *)_br.value;
                 if (pair->len >= 1) urs[1] = pair->ptr[0];
             }
-            urs[2] = korb_inspect(c, c->sp, urs[1]);  /* tag_s */
+            urs[2] = korb_inspect(c, c->sp_top, urs[1]);  /* tag_s */
             char buf[256];
             snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[2]));
             _br.state = KORB_RAISE;
             if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
-                _br.value = korb_exc_new(c, c->sp, (struct korb_class *)urs[0], buf);
+                _br.value = korb_exc_new(c, c->sp_top, (struct korb_class *)urs[0], buf);
             } else {
-                _br.value = korb_exc_new(c, c->sp, NULL, buf);
+                _br.value = korb_exc_new(c, c->sp_top, NULL, buf);
             }
         } ARO_ROOT_SCOPE_END(c, urs);
     }
@@ -585,7 +585,7 @@ koruby_run_ast(CTX *c, NODE *ast)
                 return code;
             }
         }
-        VALUE s = korb_inspect(c, c->sp, _br.value);
+        VALUE s = korb_inspect(c, c->sp_top, _br.value);
         fprintf(stderr, "unhandled exception: %s\n", korb_str_cstr(s));
         extern void korb_run_at_exit_hooks(CTX *c);
         korb_run_at_exit_hooks(c);

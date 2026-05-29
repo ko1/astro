@@ -7,7 +7,7 @@ static struct {
 } g_at_exit = {0};
 
 static RESULT kernel_at_exit(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -33,7 +33,7 @@ void korb_run_at_exit_hooks(CTX *c) {
         if (!p) continue;
         RESULT _r = korb_funcall(c, (VALUE)p, korb_intern("call"), 0, NULL);
         if (_r.state == KORB_RAISE) {
-            VALUE s = korb_inspect(c, c->sp, _r.value);
+            VALUE s = korb_inspect(c, c->sp_top, _r.value);
             fprintf(stderr, "at_exit hook raised: %s\n", korb_str_cstr(s));
         }
     }
@@ -46,7 +46,7 @@ void korb_run_at_exit_hooks(CTX *c) {
 #include "precise_gc/gc.h"  /* ARO_ROOT_SCOPE_* macros */
 
 static RESULT kernel_srand(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -69,7 +69,7 @@ static void korb_srand_lazy(void) {
 }
 
 static RESULT kernel_rand(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -79,18 +79,18 @@ static RESULT kernel_rand(CTX *c, int argc, VALUE *sp) {
      * rand(F)        → Float in [0, F)
      * rand(a..b)     → Integer in [a, b]  (or [a, b) for exclusive) */
     if (argc < 1) {
-        return RESULT_OK(korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0)));
+        return RESULT_OK(korb_float_new(c, c->sp_top, (double)rand() / ((double)RAND_MAX + 1.0)));
     }
     VALUE a = argv[0];
     if (FIXNUM_P(a)) {
         long n = FIX2LONG(a);
-        if (n <= 0) return RESULT_OK(korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0)));
+        if (n <= 0) return RESULT_OK(korb_float_new(c, c->sp_top, (double)rand() / ((double)RAND_MAX + 1.0)));
         return RESULT_OK(INT2FIX((long)(rand() % n)));
     }
     if (KORB_IS_FLOAT(a)) {
         double d = korb_num2dbl(a);
-        if (d <= 0) return RESULT_OK(korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0)));
-        return RESULT_OK(korb_float_new(c, c->sp, ((double)rand() / ((double)RAND_MAX + 1.0)) * d));
+        if (d <= 0) return RESULT_OK(korb_float_new(c, c->sp_top, (double)rand() / ((double)RAND_MAX + 1.0)));
+        return RESULT_OK(korb_float_new(c, c->sp_top, ((double)rand() / ((double)RAND_MAX + 1.0)) * d));
     }
     if (!SPECIAL_CONST_P(a) && BUILTIN_TYPE(a) == T_RANGE) {
         struct korb_range *r = (struct korb_range *)a;
@@ -102,7 +102,7 @@ static RESULT kernel_rand(CTX *c, int argc, VALUE *sp) {
             return RESULT_OK(INT2FIX(lo + (rand() % span)));
         }
     }
-    return RESULT_OK(korb_float_new(c, c->sp, (double)rand() / ((double)RAND_MAX + 1.0)));
+    return RESULT_OK(korb_float_new(c, c->sp_top, (double)rand() / ((double)RAND_MAX + 1.0)));
 }
 
 /* ---------- Kernel ---------- */
@@ -148,7 +148,7 @@ static RESULT kwsplat_convert(CTX *c, VALUE v) {
 /* `case x; in [...]` array pattern coerce step: if obj.deconstruct
  * returns non-Array, raise TypeError ("deconstruct must return Array"). */
 RESULT kernel_pattern_decon_check(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -161,7 +161,7 @@ RESULT kernel_pattern_decon_check(CTX *c, int argc, VALUE *sp) {
 }
 /* Same shape for deconstruct_keys: must return Hash else TypeError. */
 RESULT kernel_pattern_decon_keys_check(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -176,7 +176,7 @@ RESULT kernel_pattern_decon_keys_check(CTX *c, int argc, VALUE *sp) {
 /* `case x; when *arr` lowering: iterate arr at runtime and return true
  * iff any element ===s x.  Mirrors rescue *list. */
 RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -202,7 +202,7 @@ RESULT kernel_case_splat_match(CTX *c, int argc, VALUE *sp) {
 /* `case; when *arr; ... end` (no target) — return true iff any element
  * of arr is truthy (`when *[false, true]` → true). */
 RESULT kernel_case_splat_any(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -230,7 +230,7 @@ RESULT kernel_case_splat_any(CTX *c, int argc, VALUE *sp) {
  * `rescue 42` raises TypeError "class or module required for rescue
  * clause".  Returns the value unchanged on success. */
 RESULT kernel_rescue_class_check(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -246,7 +246,7 @@ RESULT kernel_rescue_class_check(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -289,7 +289,7 @@ RESULT kernel_rescue_splat_match(CTX *c, int argc, VALUE *sp) {
 /* `&expr` block-pass: nil → no block (Qnil); else expr.to_proc.
  * CRuby allows `m(&nil)` to mean "no block". */
 RESULT kernel_to_block_arg(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -302,27 +302,27 @@ RESULT kernel_to_block_arg(CTX *c, int argc, VALUE *sp) {
 
 /* Lenient: `m(**nil)` is allowed and treated as no kwargs. */
 RESULT kernel_kwsplat_to_hash_lenient(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp));
+    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp_top));
     return kwsplat_convert(c, argv[0]);
 }
 
 RESULT kernel_kwsplat_to_hash(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Ruby 3.4+: `{**nil}` evaluates to {}.  Earlier versions raised
      * TypeError; we follow current CRuby (≥ 3.4). */
-    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp));
+    if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp_top));
     return kwsplat_convert(c, argv[0]);
 }
 
 static RESULT kernel_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -334,7 +334,7 @@ static RESULT kernel_p(CTX *c, int argc, VALUE *sp) {
     }
     if (argc == 0) return RESULT_OK(Qnil);
     if (argc == 1) return RESULT_OK(argv[0]);
-    return RESULT_OK(korb_ary_new_from_values(c, c->sp, argc, argv));
+    return RESULT_OK(korb_ary_new_from_values(c, c->sp_top, argc, argv));
 }
 
 /* Pick the FILE * for IO-method writes.  When the receiver carries
@@ -351,7 +351,7 @@ static FILE *io_stream(VALUE self) {
 }
 
 static RESULT kernel_puts(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -377,7 +377,7 @@ static RESULT kernel_puts(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_print(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -400,7 +400,7 @@ static RESULT kernel_print(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -472,7 +472,7 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
             msg = korb_str_cstr(argv[1]);
         }
         ARO_ROOT_SCOPE_START(c, rs, 1) {
-            rs[0] = korb_exc_new(c, c->sp, (struct korb_class *)argv[0], msg);
+            rs[0] = korb_exc_new(c, c->sp_top, (struct korb_class *)argv[0], msg);
             int line = c->last_cfunc_callsite ? c->last_cfunc_callsite->head.line : 0;
             korb_exc_set_backtrace(c, rs[0], line);
             VALUE cur = korb_gvar_get(korb_intern("$!"));
@@ -511,29 +511,29 @@ static RESULT kernel_raise(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_inspect(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* main object: CRuby's main_object inspects/to_s as "main". */
-    if (self == KORB_VM(c)->main_obj) return RESULT_OK(korb_str_new_cstr(c, c->sp, "main"));
+    if (self == KORB_VM(c)->main_obj) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "main"));
     /* Default Kernel#inspect for objects that don't override it.
      * Avoid calling korb_inspect_dispatch here — that would loop
      * straight back to this cfunc.  korb_inspect skips user dispatch. */
-    return RESULT_OK(korb_inspect(c, c->sp, self));
+    return RESULT_OK(korb_inspect(c, c->sp_top, self));
 }
 
 static RESULT kernel_to_s(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (self == KORB_VM(c)->main_obj) return RESULT_OK(korb_str_new_cstr(c, c->sp, "main"));
-    return RESULT_OK(korb_to_s(c, c->sp, self));
+    if (self == KORB_VM(c)->main_obj) return RESULT_OK(korb_str_new_cstr(c, c->sp_top, "main"));
+    return RESULT_OK(korb_to_s(c, c->sp_top, self));
 }
 
 static RESULT kernel_class(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -563,7 +563,7 @@ static RESULT kernel_class(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_eq(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -571,7 +571,7 @@ static RESULT kernel_eq(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_neq(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -581,7 +581,7 @@ static RESULT kernel_neq(CTX *c, int argc, VALUE *sp) {
 /* Object#!~: inverted =~.  Default implementation returns !(self =~ arg).
  * `defined?(x !~ y)` returns "method" because every Object responds to !~. */
 static RESULT kernel_not_match(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -590,7 +590,7 @@ static RESULT kernel_not_match(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_not(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -598,7 +598,7 @@ static RESULT kernel_not(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_nil_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -606,7 +606,7 @@ static RESULT kernel_nil_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_object_id(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -626,7 +626,7 @@ static RESULT kernel_object_id(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_freeze(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -653,7 +653,7 @@ static RESULT kernel_freeze(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_frozen_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -664,7 +664,7 @@ static RESULT kernel_frozen_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -720,7 +720,7 @@ static RESULT kernel_respond_to_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_is_a_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -736,7 +736,7 @@ static RESULT kernel_is_a_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_block_given(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -763,7 +763,7 @@ static RESULT kernel_block_given(CTX *c, int argc, VALUE *sp) {
  * val; otherwise re-propagates.  No setjmp/longjmp — the existing
  * EVAL_ARG / korb_yield bail-on-non-NORMAL machinery does the work. */
 static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -774,21 +774,21 @@ static RESULT kernel_throw(CTX *c, int argc, VALUE *sp) {
     }
     VALUE tag = argv[0];
     VALUE val = argc >= 2 ? argv[1] : Qnil;
-    VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+    VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
     korb_ary_push(pair, tag);
     korb_ary_push(pair, val);
     return (RESULT){ pair, KORB_THROW };
 }
 
 static RESULT kernel_catch(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* `catch` invocations may use either an explicit tag (`catch(:t) {}`)
      * or no tag (`catch {}` — the block param is the implicit tag).
      * For the no-tag form we synthesize a fresh Object as the tag. */
-    VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(c, c->sp, KORB_VM(c)->object_class);
+    VALUE tag = (argc >= 1) ? argv[0] : korb_object_new(c, c->sp_top, KORB_VM(c)->object_class);
     VALUE block_arg[1] = { tag };
     RESULT _br = korb_yield(c, 1, block_arg);
     /* state == THROW: tag/value live on _br.value as a 2-element ary. */
@@ -832,25 +832,25 @@ static const char *caller_current_file(CTX *c) {
 }
 
 static RESULT kernel_dir(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     const char *cf = caller_current_file(c);
-    return RESULT_OK(korb_str_new_cstr(c, c->sp, korb_dirname(cf ? cf : ".")));
+    return RESULT_OK(korb_str_new_cstr(c, c->sp_top, korb_dirname(cf ? cf : ".")));
 }
 
 static RESULT kernel_file(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     const char *cf = caller_current_file(c);
-    return RESULT_OK(korb_str_new_cstr(c, c->sp, cf ? cf : "(eval)"));
+    return RESULT_OK(korb_str_new_cstr(c, c->sp_top, cf ? cf : "(eval)"));
 }
 
 static RESULT kernel_require_relative(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -871,7 +871,7 @@ static RESULT kernel_require_relative(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_require(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -899,7 +899,7 @@ static RESULT kernel_require(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_load(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -908,7 +908,7 @@ static RESULT kernel_load(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -932,7 +932,7 @@ static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
         (BUILTIN_TYPE(eSE) == T_CLASS || BUILTIN_TYPE(eSE) == T_MODULE)) {
         exc_class = (struct korb_class *)eSE;
     }
-    VALUE e = korb_exc_new(c, c->sp, exc_class, "exit");
+    VALUE e = korb_exc_new(c, c->sp_top, exc_class, "exit");
     if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
         korb_ivar_set(e, korb_intern("@status"), INT2FIX(code));
         korb_ivar_set(e, korb_intern("@success"), KORB_BOOL(success));
@@ -940,7 +940,7 @@ static RESULT kernel_exit(CTX *c, int argc, VALUE *sp) {
     return (RESULT){ e, KORB_RAISE };
 }
 static RESULT kernel_exit_bang(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -950,7 +950,7 @@ static RESULT kernel_exit_bang(CTX *c, int argc, VALUE *sp) {
     exit(code);
 }
 static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -961,7 +961,7 @@ static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
     struct korb_class *exc_class = (eSE && !SPECIAL_CONST_P(eSE) &&
                                     (BUILTIN_TYPE(eSE) == T_CLASS || BUILTIN_TYPE(eSE) == T_MODULE))
                                        ? (struct korb_class *)eSE : NULL;
-    VALUE e = korb_exc_new(c, c->sp, exc_class, "abort");
+    VALUE e = korb_exc_new(c, c->sp_top, exc_class, "abort");
     if (!SPECIAL_CONST_P(e) && BUILTIN_TYPE(e) == T_OBJECT) {
         korb_ivar_set(e, korb_intern("@status"), INT2FIX(1));
         korb_ivar_set(e, korb_intern("@success"), Qfalse);
@@ -970,7 +970,7 @@ static RESULT kernel_abort(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_integer(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1040,7 +1040,7 @@ static RESULT kernel_integer(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1058,9 +1058,9 @@ static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eT, "can't convert nil into Float");
     }
     if (KORB_IS_FLOAT(argv[0])) return RESULT_OK(argv[0]);
-    if (FIXNUM_P(argv[0])) return RESULT_OK(korb_float_new(c, c->sp, (double)FIX2LONG(argv[0])));
+    if (FIXNUM_P(argv[0])) return RESULT_OK(korb_float_new(c, c->sp_top, (double)FIX2LONG(argv[0])));
     if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_BIGNUM) {
-        return RESULT_OK(korb_float_new(c, c->sp, korb_num2dbl(argv[0])));
+        return RESULT_OK(korb_float_new(c, c->sp_top, korb_num2dbl(argv[0])));
     }
     if (BUILTIN_TYPE(argv[0]) == T_STRING) {
         const char *s = korb_str_cstr(argv[0]);
@@ -1079,7 +1079,7 @@ static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
             return korb_raise(c, (struct korb_class *)eA,
                        "invalid value for Float(): %s", s);
         }
-        return RESULT_OK(korb_float_new(c, c->sp, d));
+        return RESULT_OK(korb_float_new(c, c->sp_top, d));
     }
     if (!exception_ok) return RESULT_OK(Qnil);
     VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
@@ -1089,22 +1089,22 @@ static RESULT kernel_float(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_string(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1) return RESULT_OK(korb_str_new(c, c->sp, "", 0));
-    return RESULT_OK(korb_to_s(c, c->sp, argv[0]));
+    if (argc < 1) return RESULT_OK(korb_str_new(c, c->sp_top, "", 0));
+    return RESULT_OK(korb_to_s(c, c->sp_top, argv[0]));
 }
 
 static RESULT kernel_array(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1) return RESULT_OK(korb_ary_new(c, c->sp));
+    if (argc < 1) return RESULT_OK(korb_ary_new(c, c->sp_top));
     VALUE v = argv[0];
-    if (NIL_P(v)) return RESULT_OK(korb_ary_new(c, c->sp));
+    if (NIL_P(v)) return RESULT_OK(korb_ary_new(c, c->sp_top));
     if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_ARRAY) return RESULT_OK(v);
     /* Range / Hash / anything responding to to_a: delegate.  Only
      * wrap in a 1-element Array when the value doesn't.  CRuby uses
@@ -1113,7 +1113,7 @@ static RESULT kernel_array(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(v) && (BUILTIN_TYPE(v) == T_RANGE || BUILTIN_TYPE(v) == T_HASH)) {
         return korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
     }
-    VALUE r = korb_ary_new_capa(c, c->sp, 1);
+    VALUE r = korb_ary_new_capa(c, c->sp_top, 1);
     korb_ary_push(r, v);
     return RESULT_OK(r);
 }
@@ -1128,7 +1128,7 @@ static RESULT kernel_array(CTX *c, int argc, VALUE *sp) {
  * level so the result starts at the actual caller (CRuby behavior).
  */
 static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1136,7 +1136,7 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
      * frame at index 0; slice it per start/length args.  Default start
      * is 1, so out-of-the-box `caller` skips the immediate frame and
      * matches CRuby. */
-    VALUE arr = korb_ary_new(c, c->sp);
+    VALUE arr = korb_ary_new(c, c->sp_top);
     const char *cf0 = caller_current_file(c);
     const char *default_file = cf0 ? cf0 : "(unknown)";
     struct korb_frame *f = c->current_frame;
@@ -1157,7 +1157,7 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
         }
         snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
-        korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
+        korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
     }
     while (f) {
         /* Inserted block-in-<enclosing> for THIS frame's caller block,
@@ -1170,7 +1170,7 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
             file = f->method->u.ast.body->head.source_file;
         }
         snprintf(buf, sizeof(buf), "%s:%d:in '%s'", file, next_line, name);
-        korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
+        korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
         next_line = f->caller_node ? f->caller_node->head.line : 0;
         if (f->caller_running_block) {
             struct korb_proc *cb = (struct korb_proc *)f->caller_running_block;
@@ -1186,13 +1186,13 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
             }
             snprintf(nbuf, sizeof(nbuf), "block in %s", enc_name);
             snprintf(buf, sizeof(buf), "%s:%d:in '%s'", enc_file, next_line, nbuf);
-            korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
+            korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
         }
         f = f->prev;
     }
     /* Append a <main> entry so the chain always ends in main. */
     snprintf(buf, sizeof(buf), "%s:%d:in '<main>'", default_file, next_line);
-    korb_ary_push(arr, korb_str_new_cstr(c, c->sp, buf));
+    korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, buf));
 
     /* Slice per CRuby: caller(start=1, length=nil) or caller(range). */
     long total = ((struct korb_array *)arr)->len;
@@ -1219,14 +1219,14 @@ static RESULT kernel_caller(CTX *c, int argc, VALUE *sp) {
     long end_exclusive = (len < 0) ? total : start + len;
     if (end_exclusive > total) end_exclusive = total;
     if (end_exclusive < start) end_exclusive = start;
-    VALUE out = korb_ary_new_capa(c, c->sp, end_exclusive - start);
+    VALUE out = korb_ary_new_capa(c, c->sp_top, end_exclusive - start);
     for (long i = start; i < end_exclusive; i++) {
         korb_ary_push(out, korb_ary_aref(arr, i));
     }
     return RESULT_OK(out);
 }
 static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1262,12 +1262,12 @@ static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
 
 /* Kernel#global_variables — Array of Symbols naming each defined gvar. */
 static RESULT kernel_global_variables(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     extern uint32_t koruby_gvars_size(void);
     extern ID *koruby_gvars_keys(void);
     uint32_t n = koruby_gvars_size();
     ID *keys = koruby_gvars_keys();
-    VALUE arr = korb_ary_new_capa(c, c->sp, n);
+    VALUE arr = korb_ary_new_capa(c, c->sp_top, n);
     for (uint32_t i = 0; i < n; i++) {
         korb_ary_push(arr, korb_id2sym(keys[i]));
     }
@@ -1291,11 +1291,11 @@ static RESULT kernel_global_variables(CTX *c, int argc, VALUE *sp) {
  * from inside an `it` block (current_frame->method.name == :it),
  * return [] to avoid leaking mspec_shim internals. */
 static RESULT kernel_local_variables(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE arr = korb_ary_new(c, c->sp);
+    VALUE arr = korb_ary_new(c, c->sp_top);
     /* Inside Binding#eval body — report the binding's view, not the
      * caller frame's. */
     if (c->current_eval_binding) {
@@ -1337,11 +1337,11 @@ static RESULT kernel_local_variables(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_capture_lvars(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE h = korb_hash_new(c, c->sp);
+    VALUE h = korb_hash_new(c, c->sp_top);
     /* Skip past the AST method that's hosting this cfunc call (typically
      * Kernel#binding from bootstrap) to get to the user's frame. */
     struct korb_frame *f = c->current_frame ? c->current_frame->prev : NULL;
@@ -1365,7 +1365,7 @@ static RESULT kernel_capture_lvars(CTX *c, int argc, VALUE *sp) {
 extern RESULT korb_eval_string(CTX *c, const char *src, size_t len, const char *filename);
 extern RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *args, int argc);
 static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1408,7 +1408,7 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
         /* Forward [string, file, line] to binding's eval implementation. */
         VALUE forward[3];
         forward[0] = argv[0];
-        forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr(c, c->sp, "(eval)");
+        forward[1] = (argc >= 3) ? argv[2] : korb_str_new_cstr(c, c->sp_top, "(eval)");
         forward[2] = (argc >= 4) ? argv[3] : INT2FIX(1);
         return binding_eval_via(c, b, forward, 3);
     }
@@ -1551,7 +1551,7 @@ static RESULT kernel_eval_stub(CTX *c, int argc, VALUE *sp) {
  * Lets `super` from an overridden initialize at the top of the chain
  * succeed (CRuby has the same convention via BasicObject#initialize). */
 static RESULT kernel_initialize_default(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1559,7 +1559,7 @@ static RESULT kernel_initialize_default(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1586,7 +1586,7 @@ static RESULT kernel_loop(CTX *c, int argc, VALUE *sp) {
     }
 }
 static RESULT kernel_lambda(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1601,7 +1601,7 @@ static RESULT kernel_lambda(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK((VALUE)c->current_block);
 }
 static RESULT kernel_proc(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1626,17 +1626,17 @@ static RESULT kernel_proc(CTX *c, int argc, VALUE *sp) {
  * aro_gc_collect + aro_gc_stats; use those instead of libgc API. */
 
 RESULT objspace_each_object(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Yields nothing.  Returns 0 (the count of yielded objects). */
-    if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp));
+    if (!korb_block_given(c)) return RESULT_OK(korb_ary_new(c, c->sp_top));
     return RESULT_OK(INT2FIX(0));
 }
 
 RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1644,7 +1644,7 @@ RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp) {
      * don't track per-type counts so just provide :TOTAL from the
      * GC framework's heap_bytes stat / 64. */
     size_t heap_bytes = ARO_GC_COMMON(c)->stats.heap_bytes;
-    VALUE h = korb_hash_new(c, c->sp);
+    VALUE h = korb_hash_new(c, c->sp_top);
     korb_hash_aset(c, h, korb_id2sym(korb_intern("TOTAL")),
                    INT2FIX((long)(heap_bytes / 64)));
     korb_hash_aset(c, h, korb_id2sym(korb_intern("FREE")), INT2FIX(0));
@@ -1658,7 +1658,7 @@ RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT objspace_garbage_collect(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 

@@ -5,7 +5,7 @@ extern RESULT korb_yield(CTX *c, uint32_t argc, VALUE *argv);
 
 /* Proc#lambda? — true for ->{} / lambda{}, false for Proc.new / { } blocks. */
 static RESULT proc_lambda_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -18,7 +18,7 @@ static RESULT proc_lambda_p(CTX *c, int argc, VALUE *sp) {
  * Any *rest makes it negative: -(req + 1).
  * Lambdas: opt also makes it negative. */
 static RESULT proc_arity(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -36,7 +36,7 @@ static RESULT proc_arity(CTX *c, int argc, VALUE *sp) {
 
 /* Proc#== — same Proc identity. */
 static RESULT proc_eq(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -45,7 +45,7 @@ static RESULT proc_eq(CTX *c, int argc, VALUE *sp) {
 
 /* Proc.new — captures the current block as a Proc. */
 static RESULT proc_class_new(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -59,7 +59,7 @@ static RESULT proc_class_new(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT proc_call(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -127,7 +127,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         }
     }
     VALUE *prev_fp = c->current_frame->fp;
-    VALUE *prev_sp = c->sp;
+    VALUE *prev_sp = c->sp_top;
     /* Pin prev_self in the GC root stack — body EVAL straddles many
      * GCs under STRESS; a plain C local goes stale and the restore
      * writes a pre-GC addr back into frame.self.  Same root cause
@@ -145,7 +145,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
      * Slot-collision guard: if a method is currently active above env
      * (prev_fp lies inside env's slot range), the block's own slot
      * range [param_base, env_size) overlaps that method's locals.
-     * Clone env to a fresh location above c->sp, run there, then write
+     * Clone env to a fresh location above c->sp_top, run there, then write
      * back the closure-captured slots [0, param_base) so outer-scope
      * assignments survive. */
     VALUE *new_fp = p->env;
@@ -158,7 +158,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
     /* Slot collision guard: when prev_fp is inside the env's range
      * (a method's frame sits on top of env), the block body's nested
      * method calls would write into prev_fp's locals.  Clone env
-     * to a fresh location above c->sp, then write back the closure-
+     * to a fresh location above c->sp_top, then write back the closure-
      * captured slots [0, param_base) on return.  Don't clone when
      * prev_fp IS the env (the block is being called from within its
      * defining scope — closure writes propagate naturally) — that
@@ -174,7 +174,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
      * above env (prev_fp > new_fp).  Without cloning, callees inside
      * the body that allocate frames at new_fp + N can extend past
      * env_size and overwrite the active method's locals.  Clone the
-     * env to fresh space at c->sp so callees write into virgin memory
+     * env to fresh space at c->sp_top so callees write into virgin memory
      * (and outer-scope writes propagate via the writeback step below). */
     bool method_overlaps_env = (prev_fp && prev_fp != new_fp && prev_fp > new_fp);
     /* Self-recursion: a proc/lambda is being called from inside its own
@@ -185,16 +185,16 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
      * vars still propagate via the writeback step below. */
     bool self_recursion = (prev_fp == new_fp && new_fp != NULL);
     if (method_overlaps_env || env_outside_stack || self_recursion) {
-        fresh_env = c->sp;
+        fresh_env = c->sp_top;
         for (uint32_t i = 0; i < p->env_size; i++) fresh_env[i] = new_fp[i];
         /* Allocate slack past env_size so inner-block / inner-method
          * frames don't spill out of the cloned env into adjacent
          * memory.  Mirrors korb_yield's FRESH_ENV_SLACK rationale
-         * (without slack, recursive currying clobbers c->sp slots
+         * (without slack, recursive currying clobbers c->sp_top slots
          * holding live values from sibling Proc.call frames). */
         enum { PC_FRESH_ENV_SLACK = 512 };
         for (uint32_t i = p->env_size; i < p->env_size + PC_FRESH_ENV_SLACK; i++) fresh_env[i] = Qnil;
-        c->sp = fresh_env + p->env_size + PC_FRESH_ENV_SLACK;
+        c->sp_top = fresh_env + p->env_size + PC_FRESH_ENV_SLACK;
         new_fp = fresh_env;
     }
     /* Kwargs peel: if block declares kwargs and last arg is a kwargs-
@@ -208,7 +208,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
             peeled_kwh = argv[argc - 1];
             argc--;
         } else {
-            peeled_kwh = korb_hash_new(c, c->sp);
+            peeled_kwh = korb_hash_new(c, c->sp_top);
         }
     }
     /* If last positional is a kwargs-tagged empty Hash and callee has
@@ -307,7 +307,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         if (middle > p->opt_cnt) middle -= p->opt_cnt; else middle = 0;
         /* 4) *rest: gather whatever is left in "middle" (after opt). */
         if (p->rest_slot >= 0) {
-            VALUE rest = korb_ary_new(c, c->sp);
+            VALUE rest = korb_ary_new(c, c->sp_top);
             for (uint32_t i = 0; i < middle; i++) korb_ary_push(rest, argv[arg_cur++]);
             new_fp[p->rest_slot] = rest;
         }
@@ -335,7 +335,7 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
         new_fp[p->block_slot] = c->current_block ? (VALUE)c->current_block : Qnil;
     }
     c->current_frame->fp = new_fp;
-    if (c->current_frame->fp + p->env_size > c->sp) c->sp = c->current_frame->fp + p->env_size;
+    if (c->current_frame->fp + p->env_size > c->sp_top) c->sp_top = c->current_frame->fp + p->env_size;
     c->current_frame->self = p->self;
     /* yield inside the proc body targets the enclosing method's block
      * captured at proc creation time. */
@@ -385,10 +385,10 @@ redo_proc:
         }
     }
     /* Always restore fp/sp.  Without restoring sp on the no-clone
-     * path, repeated proc.call from a hot loop creeps c->sp upward
+     * path, repeated proc.call from a hot loop creeps c->sp_top upward
      * (each call's slots stay committed) until stack overflow. */
     c->current_frame->fp = prev_fp;
-    c->sp = prev_sp;
+    c->sp_top = prev_sp;
     c->current_frame->self = prev_self;
     /* Lambda: `return` inside the body targets the lambda itself, so we
      * consume it here and the caller sees the value as the call's result.
@@ -455,7 +455,7 @@ redo_proc:
             struct korb_array *pair = (struct korb_array *)throw_val;
             if (pair->len >= 1) tag = pair->ptr[0];
         }
-        VALUE tag_s = korb_inspect(c, c->sp, tag);
+        VALUE tag_s = korb_inspect(c, c->sp_top, tag);
         char buf[256];
         snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(tag_s));
         AROH_ROOT_STACK_SET_TOP(c, pc_self_root);

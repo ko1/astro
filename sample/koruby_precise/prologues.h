@@ -28,7 +28,7 @@ void korb_proc_snapshot_env_if_in_frame(VALUE v, VALUE *fp_lo, VALUE *fp_hi);
  * Caller has already staged self and args on the value stack:
  *   sp[-argc-1] = self  (= recv)
  *   sp[-argc..-1] = args
- *   c->sp == sp  (= post-staging top)
+ *   c->sp_top == sp  (= post-staging top)
  *
  * The cfunc body receives the same sp and returns RESULT.  State
  * propagation is in-band (no c->state side-channel).  Frame is pushed
@@ -111,18 +111,18 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * (visit_roots walks &outer_frame->self).  Writing back a C-local
      * "prev_self" after body would overwrite the freshly-updated outer
      * frame.self with a stale pointer that GC has long since moved. */
-    VALUE *prev_sp = c->sp;
+    VALUE *prev_sp = c->sp_top;
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *new_fp = prev_fp + arg_index;
-    /* Grow c->sp + zero-fill the newly-exposed slots so stale heap
+    /* Grow c->sp_top + zero-fill the newly-exposed slots so stale heap
      * pointers left over in those addresses (from prior frames popped
      * at this location) don't get treated as live roots by the next
      * visit_roots. */
     {
         VALUE *new_sp = new_fp + mc->locals_cnt;
-        if (new_sp > c->sp) {
-            for (VALUE *p = c->sp; p < new_sp; p++) *p = Qnil;
-            c->sp = new_sp;
+        if (new_sp > c->sp_top) {
+            for (VALUE *p = c->sp_top; p < new_sp; p++) *p = Qnil;
+            c->sp_top = new_sp;
         }
     }
 
@@ -221,12 +221,12 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
      * higher than before — long-running loops with many calls hit
      * stack_end and false-overflow.  Cheap (one store per call).
      *
-     * Zero-fill the popped slots [prev_sp, c->sp) before lowering sp.
+     * Zero-fill the popped slots [prev_sp, c->sp_top) before lowering sp.
      * Subsequent sp-up by a sibling/later call will re-expose those
      * addresses; without the zero-clear the new frame would inherit
      * this method's stale heap pointers. */
-    for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
-    c->sp = prev_sp;
+    for (VALUE *p = prev_sp; p < c->sp_top; p++) *p = Qnil;
+    c->sp_top = prev_sp;
 
     if (UNLIKELY(_br.state == KORB_RETURN || _br.state == KORB_BREAK)) {
         bool consume_return = (_br.state == KORB_RETURN &&
@@ -274,18 +274,18 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
      * (visit_roots walks &outer_frame->self).  Writing back a C-local
      * "prev_self" after body would overwrite the freshly-updated outer
      * frame.self with a stale pointer that GC has long since moved. */
-    VALUE *prev_sp = c->sp;
+    VALUE *prev_sp = c->sp_top;
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *new_fp = prev_fp + arg_index;
-    /* Grow c->sp + zero-fill the newly-exposed slots so stale heap
+    /* Grow c->sp_top + zero-fill the newly-exposed slots so stale heap
      * pointers left over in those addresses (from prior frames popped
      * at this location) don't get treated as live roots by the next
      * visit_roots. */
     {
         VALUE *new_sp = new_fp + mc->locals_cnt;
-        if (new_sp > c->sp) {
-            for (VALUE *p = c->sp; p < new_sp; p++) *p = Qnil;
-            c->sp = new_sp;
+        if (new_sp > c->sp_top) {
+            for (VALUE *p = c->sp_top; p < new_sp; p++) *p = Qnil;
+            c->sp_top = new_sp;
         }
     }
 
@@ -364,8 +364,8 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     }
     /* Zero-fill popped slots so a sibling call's sp-grow doesn't re-expose
      * stale heap pointers from this frame's locals. */
-    for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
-    c->sp = prev_sp;
+    for (VALUE *p = prev_sp; p < c->sp_top; p++) *p = Qnil;
+    c->sp_top = prev_sp;
 
     if (UNLIKELY(_br.state == KORB_RETURN || _br.state == KORB_BREAK)) {
         bool consume_return = (_br.state == KORB_RETURN &&

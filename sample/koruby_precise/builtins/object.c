@@ -67,7 +67,7 @@ static RESULT obj_send_impl(CTX *c, VALUE self, int argc, VALUE *argv, bool enfo
 }
 
 static RESULT obj_send(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -75,7 +75,7 @@ static RESULT obj_send(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_public_send(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -140,7 +140,7 @@ check_name:;
 }
 
 static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -155,7 +155,7 @@ static RESULT obj_instance_variable_get(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_instance_variable_set(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -237,7 +237,7 @@ static RESULT korb_cvar_name_to_id_or_raise(CTX *c, VALUE v, ID *out_id) {
 }
 extern VALUE korb_cvar_names(CTX *c, struct korb_class *k);
 RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -263,7 +263,7 @@ RESULT mod_class_variable_get(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -290,7 +290,7 @@ RESULT mod_class_variable_set(CTX *c, int argc, VALUE *sp) {
 }
 
 RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -323,7 +323,7 @@ RESULT mod_class_variable_defined_p(CTX *c, int argc, VALUE *sp) {
  * creating one if needed.  All subsequent define_method on it adds
  * a method visible only to this object. */
 RESULT obj_singleton_class(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -352,7 +352,7 @@ RESULT obj_singleton_class(CTX *c, int argc, VALUE *sp) {
 /* Class#allocate — create an instance without invoking initialize.
  * Used for serializers, Marshal.load, etc. */
 RESULT class_allocate(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -370,20 +370,20 @@ RESULT class_allocate(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eT,
                    "can't create instance of singleton class");
     }
-    return RESULT_OK(korb_object_new(c, c->sp, (struct korb_class *)self));
+    return RESULT_OK(korb_object_new(c, c->sp_top, (struct korb_class *)self));
 }
 
 RESULT mod_class_variables(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(korb_ary_new(c, c->sp));
+    if (SPECIAL_CONST_P(self) || (BUILTIN_TYPE(self) != T_CLASS && BUILTIN_TYPE(self) != T_MODULE)) return RESULT_OK(korb_ary_new(c, c->sp_top));
     return RESULT_OK(korb_cvar_names(c, (struct korb_class *)self));
 }
 
 static RESULT obj_method(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -421,7 +421,7 @@ static RESULT obj_method(CTX *c, int argc, VALUE *sp) {
 extern RESULT korb_eval_string_in_self(CTX *c, const char *src, size_t len,
                                        const char *filename, VALUE recv);
 static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -466,7 +466,7 @@ static RESULT obj_instance_eval(CTX *c, int argc, VALUE *sp) {
 /* Object#instance_exec(*args) { |args| ... } — like instance_eval but
  * passes args to the block. */
 static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -507,7 +507,7 @@ static RESULT obj_instance_exec(CTX *c, int argc, VALUE *sp) {
 /* Module#instance_method(name) — returns an UnboundMethod, represented
  * as a Method object whose receiver is the class itself. */
 static RESULT module_instance_method(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -539,7 +539,7 @@ static RESULT module_instance_method(CTX *c, int argc, VALUE *sp) {
 /* Method#unbind — return an UnboundMethod (a Method-shaped record
  * whose receiver is the class instead of an instance). */
 static RESULT method_unbind(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -559,7 +559,7 @@ static RESULT method_unbind(CTX *c, int argc, VALUE *sp) {
 
 /* UnboundMethod#bind(obj) — return a Method bound to obj. */
 static RESULT method_bind(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -578,7 +578,7 @@ static RESULT method_bind(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_call(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -598,7 +598,7 @@ static RESULT method_call(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -635,7 +635,7 @@ static RESULT method_to_proc(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_arity(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -660,7 +660,7 @@ static RESULT method_arity(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_name(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -669,7 +669,7 @@ static RESULT method_name(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_receiver(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -683,17 +683,17 @@ static RESULT method_receiver(CTX *c, int argc, VALUE *sp) {
  * arrays [:req] / [:opt] / etc.  CRuby accepts that form for
  * anonymous parameters. */
 static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
-    VALUE r = korb_ary_new(c, c->sp);
+    VALUE r = korb_ary_new(c, c->sp_top);
     if (!km) return r;
     if (km->type == KORB_METHOD_CFUNC) {
         int n = km->u.cfunc.argc;
         if (n < 0) {
-            VALUE pair = korb_ary_new_capa(c, c->sp, 1);
+            VALUE pair = korb_ary_new_capa(c, c->sp_top, 1);
             korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
             korb_ary_push(r, pair);
         } else {
             for (int i = 0; i < n; i++) {
-                VALUE pair = korb_ary_new_capa(c, c->sp, 1);
+                VALUE pair = korb_ary_new_capa(c, c->sp_top, 1);
                 korb_ary_push(pair, korb_id2sym(korb_intern("req")));
                 korb_ary_push(r, pair);
             }
@@ -723,7 +723,7 @@ static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
          * those, so always include a name when one exists. */
         #define PUSH_PARAM(kind_str, slot)                                  \
             do {                                                              \
-                VALUE _pair = korb_ary_new_capa(c, c->sp, 2);                            \
+                VALUE _pair = korb_ary_new_capa(c, c->sp_top, 2);                            \
                 korb_ary_push(_pair, korb_id2sym(korb_intern((kind_str))));   \
                 if (names && (slot) >= 0 && (slot) < locals_cnt &&            \
                     names[(slot)] != 0) {                                     \
@@ -748,7 +748,7 @@ static VALUE method_params_for_method(CTX *c, struct korb_method *km) {
 }
 
 static RESULT method_parameters(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -766,7 +766,7 @@ static RESULT method_parameters(CTX *c, int argc, VALUE *sp) {
 /* Method#source_location — [file, line] of the method's body node,
  * or nil for cfunc / synthesized methods. */
 static RESULT method_source_location(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -781,23 +781,23 @@ static RESULT method_source_location(CTX *c, int argc, VALUE *sp) {
     struct korb_method *km = korb_class_find_method(k, m->name);
     if (!km || km->type != KORB_METHOD_AST || !km->u.ast.body) return RESULT_OK(Qnil);
     struct Node *body = km->u.ast.body;
-    VALUE r = korb_ary_new_capa(c, c->sp, 2);
-    korb_ary_push(r, body->head.source_file ? korb_str_new_cstr(c, c->sp, body->head.source_file) : Qnil);
+    VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
+    korb_ary_push(r, body->head.source_file ? korb_str_new_cstr(c, c->sp_top, body->head.source_file) : Qnil);
     korb_ary_push(r, INT2FIX(body->head.line));
     return RESULT_OK(r);
 }
 
 /* Proc#source_location — same shape, drawn from blk->body. */
 RESULT proc_source_location(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(Qnil);
     struct korb_proc *p = (struct korb_proc *)self;
     if (!p->body) return RESULT_OK(Qnil);
-    VALUE r = korb_ary_new_capa(c, c->sp, 2);
-    korb_ary_push(r, p->body->head.source_file ? korb_str_new_cstr(c, c->sp, p->body->head.source_file) : Qnil);
+    VALUE r = korb_ary_new_capa(c, c->sp_top, 2);
+    korb_ary_push(r, p->body->head.source_file ? korb_str_new_cstr(c, c->sp_top, p->body->head.source_file) : Qnil);
     korb_ary_push(r, INT2FIX(p->body->head.line));
     return RESULT_OK(r);
 }
@@ -808,18 +808,18 @@ RESULT proc_source_location(CTX *c, int argc, VALUE *sp) {
  *   "".method(:gsub).to_proc.parameters
  * report [[:rest]] from the cfunc rather than [].  */
 RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(korb_ary_new(c, c->sp));
+    if (BUILTIN_TYPE(self) != T_PROC) return RESULT_OK(korb_ary_new(c, c->sp_top));
     struct korb_proc *p = (struct korb_proc *)self;
     if (p->body == NULL && !SPECIAL_CONST_P(p->self) &&
         BUILTIN_TYPE(p->self) == T_DATA &&
         ((struct RBasic *)p->self)->klass == (VALUE)KORB_VM(c)->method_class) {
         return korb_funcall(c, p->self, korb_intern("parameters"), 0, NULL);
     }
-    VALUE r = korb_ary_new(c, c->sp);
+    VALUE r = korb_ary_new(c, c->sp_top);
     ID *names = p->body ? korb_body_local_names(p->body) : NULL;
     /* names[] is indexed from prism's locals.ids[] (lvar 0 = first local).
      * Proc params live at fp[param_base + i] = fp[slot_base + i]; the name
@@ -829,7 +829,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
      * param_base. */
     uint32_t req_cnt = (p->params_cnt > p->opt_cnt) ? p->params_cnt - p->opt_cnt : 0;
     for (uint32_t i = 0; i < p->params_cnt; i++) {
-        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
         const char *kind;
         if (i < req_cnt) {
             kind = p->is_lambda ? "req" : "opt";
@@ -847,7 +847,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(r, pair);
     }
     if (p->rest_slot >= 0 && !p->implicit_rest) {
-        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
         korb_ary_push(pair, korb_id2sym(korb_intern("rest")));
         bool added_name = false;
         if (names) {
@@ -869,7 +869,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
     }
     /* Post params (after rest). */
     for (uint32_t i = 0; i < p->post_cnt; i++) {
-        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
         korb_ary_push(pair, korb_id2sym(korb_intern("req")));
         long abs = (long)p->param_base + (long)p->params_cnt + (p->rest_slot >= 0 ? 1 : 0) + (long)i;
         long li = abs - (long)p->param_base;
@@ -883,7 +883,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
         korb_ary_push(r, pair);
     }
     if (p->kwh_save_slot >= 0) {
-        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
         korb_ary_push(pair, korb_id2sym(korb_intern("keyrest")));
         bool added_name = false;
         if (names) {
@@ -904,7 +904,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
     }
     /* Block parameter `&blk`: param appears at the end of the list. */
     if (p->block_slot >= 0) {
-        VALUE pair = korb_ary_new_capa(c, c->sp, 2);
+        VALUE pair = korb_ary_new_capa(c, c->sp_top, 2);
         korb_ary_push(pair, korb_id2sym(korb_intern("block")));
         bool added_name = false;
         if (names) {
@@ -927,7 +927,7 @@ RESULT proc_parameters(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT method_owner(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -948,7 +948,7 @@ static RESULT method_owner(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_instance_of_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -964,7 +964,7 @@ static RESULT obj_instance_of_p(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_eqq(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -980,7 +980,7 @@ static RESULT obj_eqq(CTX *c, int argc, VALUE *sp) {
 
 /* ---------- Object#tap / #then / #itself ---------- */
 RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -995,7 +995,7 @@ RESULT obj_tap(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(self);
 }
 RESULT obj_then(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1007,7 +1007,7 @@ RESULT obj_then(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(self);
 }
 RESULT obj_itself(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
  return RESULT_OK(self); }
@@ -1018,7 +1018,7 @@ static RESULT obj_dup_impl(CTX *c, VALUE self, bool preserve_frozen);
 
 static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int freeze_arg);
 static RESULT obj_clone(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1041,7 +1041,7 @@ static RESULT obj_clone(CTX *c, int argc, VALUE *sp) {
     return obj_dup_impl_freeze(c, self, true, freeze_arg);
 }
 static RESULT obj_dup(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1064,7 +1064,7 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
         if (!preserve_frozen && k && k->name == korb_intern("(singleton)")) {
             while (k && k->name == korb_intern("(singleton)")) k = k->super;
         }
-        r = korb_object_new(c, c->sp, k);
+        r = korb_object_new(c, c->sp_top, k);
         struct korb_object *no = (struct korb_object *)r;
         for (uint32_t i = 0; i < o->ivar_cnt && i < no->ivar_capa; i++) {
             no->ivars[i] = o->ivars[i];
@@ -1072,12 +1072,12 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
         if (no->ivar_cnt < o->ivar_cnt) no->ivar_cnt = o->ivar_cnt;
     } else if (t == T_ARRAY) {
         struct korb_array *a = (struct korb_array *)self;
-        r = korb_ary_new_capa(c, c->sp, a->len);
+        r = korb_ary_new_capa(c, c->sp_top, a->len);
         for (long i = 0; i < a->len; i++) korb_ary_push(r, a->ptr[i]);
     } else if (t == T_STRING) {
-        r = korb_str_new(c, c->sp, korb_str_cstr(self), korb_str_len(self));
+        r = korb_str_new(c, c->sp_top, korb_str_cstr(self), korb_str_len(self));
     } else if (t == T_HASH) {
-        r = korb_hash_new(c, c->sp);
+        r = korb_hash_new(c, c->sp_top);
         struct korb_hash *h = (struct korb_hash *)self;
         struct korb_hash *rh = (struct korb_hash *)r;
         /* Preserve compare_by_identity / default_value / default_proc
@@ -1095,9 +1095,9 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
         struct korb_class *src = (struct korb_class *)self;
         struct korb_class *nk;
         if (t == T_CLASS) {
-            nk = korb_class_new(c, c->sp, 0, src->super, src->instance_type);
+            nk = korb_class_new(c, c->sp_top, 0, src->super, src->instance_type);
         } else {
-            nk = korb_module_new(c, c->sp, 0);
+            nk = korb_module_new(c, c->sp_top, 0);
         }
         /* Copy methods (shallow — share method body / ast nodes). */
         for (uint32_t b = 0; b < src->methods.bucket_cnt; b++) {
@@ -1187,11 +1187,11 @@ static RESULT obj_dup_impl_freeze(CTX *c, VALUE self, bool preserve_frozen, int 
     return RESULT_OK(r);
 }
 static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE arr = korb_ary_new(c, c->sp);
+    VALUE arr = korb_ary_new(c, c->sp_top);
     if (SPECIAL_CONST_P(self)) return RESULT_OK(arr);
     /* Class / Module: their own ivars (e.g. `class C; @x = 1; end` →
      * C.instance_variables == [:@x]).  Stored on the class itself in
@@ -1234,7 +1234,7 @@ static RESULT obj_instance_variables(CTX *c, int argc, VALUE *sp) {
  * its previous value.  Raises NameError if not defined, FrozenError if
  * self is frozen, TypeError for bad name args. */
 static RESULT obj_remove_instance_variable(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -1276,7 +1276,7 @@ static RESULT obj_remove_instance_variable(CTX *c, int argc, VALUE *sp) {
 }
 
 static RESULT obj_ivar_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 

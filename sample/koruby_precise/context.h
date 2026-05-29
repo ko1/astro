@@ -264,7 +264,7 @@ typedef struct {
 /* LIFT_C_STATE / SINK_RESULT / LIFT_C_STATE_OR_OK macros removed in
  * Phase 8d-R5: c->state side-channel field deleted, all bridges gone. */
 
-/* Sync c->sp to sp before calling a function that may fire GC.  All
+/* Sync c->sp_top to sp before calling a function that may fire GC.  All
  * staged values on or below sp will then be in visit_roots scan range. */
 #define KORB_SYNC_SP(c, sp_)  ((c)->sp = (sp_))
 
@@ -420,7 +420,9 @@ typedef struct CTX_struct {
 
     VALUE *stack_base;
     VALUE *stack_end;
-    VALUE *sp;            /* high-water mark for GC scanning */
+    VALUE *sp_top;        /* high-water mark for GC scanning. Only alloc
+                           * helpers write here, immediately before the
+                           * GC trigger. Other code MUST NOT write it. */
     VALUE *env;           /* root scan lower bound — set at init (= stack_base) */
     /* `self`, `fp`, `cref`, `current_class`, `current_file` all live in
      * `current_frame->*` — the frame chain is the authoritative source
@@ -535,12 +537,12 @@ typedef struct CTX_struct {
 #define AROH_IS_GC_OBJECT(v) (!SPECIAL_CONST_P(v))
 
 /* Root-stack contract for ARO_ROOT_SCOPE_* in runtime/precise_gc/gc.h.
- * koruby_precise uses c->stack_base..c->sp as the single VALUE stack
+ * koruby_precise uses c->stack_base..c->sp_top as the single VALUE stack
  * (= eval stack + precise root spill stack).  AROH_VISIT_ROOTS walks
  * the same range plus CTX-held VALUEs / cref chain / current_frame
  * chain / korb_vm globals. */
-#define AROH_ROOT_STACK_TOP(c)        ((c)->sp)
-#define AROH_ROOT_STACK_SET_TOP(c, p) ((c)->sp = (p))
+#define AROH_ROOT_STACK_TOP(c)        ((c)->sp_top)
+#define AROH_ROOT_STACK_SET_TOP(c, p) ((c)->sp_top = (p))
 #define AROH_ROOT_STACK_LIMIT(c)      ((c)->stack_end)
 
 /* Phase 2-3: root visitor + per-type edge dispatch.  Both forwarded to

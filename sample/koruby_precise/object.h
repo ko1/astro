@@ -644,7 +644,7 @@ VALUE korb_str_to_sym(VALUE str);
 /* float / bignum */
 /* korb_float_new: try FLONUM-encode (fast inline; no alloc, so the c/sp
  * args are unused on the fast path).  Heap-allocate via out-of-line slow
- * path otherwise — sync c->sp = sp there. */
+ * path otherwise — sync c->sp_top = sp there. */
 VALUE korb_float_new_heap(CTX *c, VALUE *sp, double d);
 static inline __attribute__((always_inline)) VALUE
 korb_float_new(CTX *c, VALUE *sp, double d) {
@@ -838,11 +838,11 @@ korb_dispatch_call_cached(CTX * restrict c, struct Node * restrict callsite,
         if (p == prologue_ast_simple_3) return prologue_ast_simple_inl(c, callsite, recv, argc, arg_index, block, mc, 3);
         if (p == prologue_cfunc) {
             /* sp-based RESULT ABI: stage self + args at the top of the
-             * value stack and call prologue_cfunc_r_inl.  c->sp is NOT
-             * touched here — the cfunc itself syncs `c->sp = sp` just
+             * value stack and call prologue_cfunc_r_inl.  c->sp_top is NOT
+             * touched here — the cfunc itself syncs `c->sp_top = sp` just
              * before any alloc (see runtime.md §12.3).  All cfuncs use
              * the func_r ABI now; legacy prologue_cfunc_inl is gone. */
-            VALUE *sp = c->sp;
+            VALUE *sp = c->sp_top;
             sp[0] = recv;
             for (uint32_t i = 0; i < argc; i++) sp[1 + i] = c->current_frame->fp[arg_index + i];
             return prologue_cfunc_r_inl(c, callsite, (int)argc, sp + 1 + argc, block, mc);

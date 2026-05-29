@@ -206,14 +206,14 @@ int main(int argc, char *argv[])
         }
     }
     /* Build ARGV from args after the script path */
-    VALUE argv_array = korb_ary_new(c, c->sp);
+    VALUE argv_array = korb_ary_new(c, c->sp_top);
     for (int i = script_arg_start; i < argc; i++) {
-        korb_ary_push(argv_array, korb_str_new_cstr(c, c->sp, argv[i]));
+        korb_ary_push(argv_array, korb_str_new_cstr(c, c->sp_top, argv[i]));
     }
     korb_const_set(korb_vm->object_class, korb_intern("ARGV"), argv_array);
     /* $0 / $PROGRAM_NAME — the script path. */
     {
-        VALUE pn = korb_str_new_cstr(c, c->sp, file ? file : (e_code ? "-e" : argv[0]));
+        VALUE pn = korb_str_new_cstr(c, c->sp_top, file ? file : (e_code ? "-e" : argv[0]));
         korb_gvar_set(korb_intern("$0"), pn);
         korb_gvar_set(korb_intern("$PROGRAM_NAME"), pn);
     }

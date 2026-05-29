@@ -99,7 +99,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     b->outer_vars = Qnil;
     b->outer_names_cnt = 0;
         if (!NIL_P(src->extra_vars) && BUILTIN_TYPE(src->extra_vars) == T_HASH) {
-            b->extra_vars = korb_hash_new(c, c->sp);
+            b->extra_vars = korb_hash_new(c, c->sp_top);
             struct korb_hash *sh = (struct korb_hash *)src->extra_vars;
             for (struct korb_hash_entry *e = sh->first; e; e = e->next) {
                 korb_hash_aset(c, b->extra_vars, e->key, e->value);
@@ -228,7 +228,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
     if (c->current_eval_program_body) {
         ID *eval_names = korb_body_local_names(c->current_eval_program_body);
         if (eval_names) {
-            if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp);
+            if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp_top);
             for (size_t i = 0; eval_names[i] != 0; i++) {
                 if (binding_find_slot(b, eval_names[i]) >= 0) continue;
                 binding_append_name(b, eval_names[i]);
@@ -287,7 +287,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
      * outer_names_cnt so binding_local_variables shows them at the END
      * of the list (innermost-first ordering — CRuby compat). */
     if (c->running_block) {
-        if (NIL_P(b->outer_vars)) b->outer_vars = korb_hash_new(c, c->sp);
+        if (NIL_P(b->outer_vars)) b->outer_vars = korb_hash_new(c, c->sp_top);
         struct korb_proc *parent = c->running_block->lexical_parent_block;
         while (parent && parent->body) {
             ID *parent_names = korb_body_local_names(parent->body);
@@ -340,7 +340,7 @@ static struct korb_binding *binding_alloc_from(CTX *c, VALUE recv) {
 
 /* Kernel#binding — return a Binding bound to caller's frame. */
 static RESULT kernel_binding_cfunc(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -349,7 +349,7 @@ static RESULT kernel_binding_cfunc(CTX *c, int argc, VALUE *sp) {
 
 /* Binding#receiver */
 static RESULT binding_receiver(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -392,7 +392,7 @@ static VALUE binding_read_name(struct korb_binding *b, ID name_id) {
 
 /* Binding#local_variable_get(name) */
 static RESULT binding_local_variable_get(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     if (argc < 1) return RESULT_OK(Qnil);
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
@@ -442,7 +442,7 @@ static bool binding_valid_lvar_name(ID name_id) {
  * Hash to avoid corrupting the caller's temp slots.
  */
 static RESULT binding_local_variable_set(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     if (argc < 2) return RESULT_OK(Qnil);
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
@@ -486,7 +486,7 @@ static RESULT binding_local_variable_set(CTX *c, int argc, VALUE *sp) {
         return RESULT_OK(argv[1]);
     }
     /* New name: store in extras Hash to avoid clobbering caller temps. */
-    if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp);
+    if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp_top);
     korb_hash_aset(c, b->extra_vars, korb_id2sym(name_id), argv[1]);
     binding_append_name(b, name_id);
     return RESULT_OK(argv[1]);
@@ -494,7 +494,7 @@ static RESULT binding_local_variable_set(CTX *c, int argc, VALUE *sp) {
 
 /* Binding#local_variable_defined?(name) */
 static RESULT binding_local_variable_defined_p(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -516,11 +516,11 @@ static RESULT binding_local_variable_defined_p(CTX *c, int argc, VALUE *sp) {
  * Underscore-prefix names (`_`, `__foo`) are filtered (CRuby compat).
  */
 static RESULT binding_local_variables_cfunc(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    VALUE arr = korb_ary_new(c, c->sp);
+    VALUE arr = korb_ary_new(c, c->sp_top);
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(arr);
     struct korb_binding *b = (struct korb_binding *)self;
     VALUE extras = b->extra_vars;
@@ -722,7 +722,7 @@ RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
      * truth — caller's temp slots can be reused, so we have to
      * snapshot whatever the eval body wrote. */
     if (b->fp) {
-        if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp);
+        if (NIL_P(b->extra_vars)) b->extra_vars = korb_hash_new(c, c->sp_top);
         for (uint32_t i = orig_names_cnt; i < b->names_cnt; i++) {
             VALUE v = b->fp[b->base + i];
             if (UNDEF_P(v)) v = Qnil;
@@ -735,16 +735,16 @@ RESULT binding_eval_via(CTX *c, struct korb_binding *b, VALUE *argv, int argc) {
 /* Binding#source_location — [file, line] of where the binding was
  * created. */
 static RESULT binding_source_location(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_DATA) return RESULT_OK(Qnil);
     struct korb_binding *b = (struct korb_binding *)self;
-    VALUE arr = korb_ary_new(c, c->sp);
+    VALUE arr = korb_ary_new(c, c->sp_top);
     const char *file = b->source_file ? b->source_file : "(eval)";
     int line = b->source_line ? b->source_line : 0;
-    korb_ary_push(arr, korb_str_new_cstr(c, c->sp, file));
+    korb_ary_push(arr, korb_str_new_cstr(c, c->sp_top, file));
     korb_ary_push(arr, INT2FIX(line));
     return RESULT_OK(arr);
 }
@@ -775,7 +775,7 @@ void korb_binding_snapshot_frame(struct korb_frame *f) {
 
 /* Method dispatch for Binding#eval — receiver-bound wrapper. */
 static RESULT binding_eval_cfunc(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -831,7 +831,7 @@ static VALUE binding_dup_clone_impl(CTX *c, VALUE self, bool preserve_frozen, in
     }
     /* Extras — deep copy each entry. */
     if (!NIL_P(src->extra_vars) && BUILTIN_TYPE(src->extra_vars) == T_HASH) {
-        dst->extra_vars = korb_hash_new(c, c->sp);
+        dst->extra_vars = korb_hash_new(c, c->sp_top);
         struct korb_hash *sh = (struct korb_hash *)src->extra_vars;
         for (struct korb_hash_entry *e = sh->first; e; e = e->next) {
             korb_hash_aset(c, dst->extra_vars, e->key, e->value);
@@ -844,7 +844,7 @@ static VALUE binding_dup_clone_impl(CTX *c, VALUE self, bool preserve_frozen, in
 
 static RESULT binding_clone_cfunc(CTX *c, int argc, VALUE *sp) {
 
-    c->sp = sp;
+    c->sp_top = sp;
 
     VALUE self = sp[-argc - 1];
 
@@ -853,7 +853,7 @@ static RESULT binding_clone_cfunc(CTX *c, int argc, VALUE *sp) {
     return RESULT_OK(binding_dup_clone_impl(c, self, true, argc, argv));
 }
 static RESULT binding_dup_cfunc(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
@@ -862,7 +862,7 @@ static RESULT binding_dup_cfunc(CTX *c, int argc, VALUE *sp) {
 
 /* Proc#binding — create a new Binding from the proc's captured env. */
 static RESULT proc_binding_cfunc(CTX *c, int argc, VALUE *sp) {
-    c->sp = sp;
+    c->sp_top = sp;
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
