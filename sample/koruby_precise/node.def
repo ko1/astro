@@ -172,15 +172,15 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         }
         if (read_only) {
             VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-            korb_raise(c, (struct korb_class *)eN,
-                       "%s is a read-only variable", nm);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+                       "%s is a read-only variable", nm));
             return Qnil;
         }
         if (string_only && !NIL_P(v) &&
             (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
-                       "value of %s must be String", nm);
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                       "value of %s must be String", nm));
             return Qnil;
         }
         /* $stdout / $stderr / $stdin must respond to #write (or #read for stdin). */
@@ -191,10 +191,10 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
             if (!RTEST(rt)) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
                 struct korb_class *klass = korb_class_of_class(v);
-                korb_raise(c, (struct korb_class *)eT,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
                            "%s must have write method, %s given",
                            nm,
-                           klass && klass->name ? korb_id_name(klass->name) : "?");
+                           klass && klass->name ? korb_id_name(klass->name) : "?"));
                 return Qnil;
             }
         }
@@ -212,14 +212,14 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
                                                      : BUILTIN_TYPE(v) == T_BIGNUM;
                     if (!is_int) {
                         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                        korb_raise(c, (struct korb_class *)eT,
-                                   "can't convert to Integer (#to_int returned non-Integer)");
+                        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                                   "can't convert to Integer (#to_int returned non-Integer)"));
                         return Qnil;
                     }
                 } else {
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                    korb_raise(c, (struct korb_class *)eT,
-                               "no implicit conversion to Integer");
+                    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                               "no implicit conversion to Integer"));
                     return Qnil;
                 }
             }
@@ -253,7 +253,7 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
             VALUE exc = korb_gvar_get(korb_intern("$!"));
             if (NIL_P(exc) || SPECIAL_CONST_P(exc)) {
                 VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-                korb_raise(c, (struct korb_class *)eA, "$! not set");
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "$! not set"));
                 return Qnil;
             }
             korb_funcall(c, exc, korb_intern("set_backtrace"), 1, &v);
@@ -263,8 +263,8 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         if (strcmp(nm, "$0") == 0 || strcmp(nm, "$PROGRAM_NAME") == 0) {
             if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                korb_raise(c, (struct korb_class *)eT,
-                           "$0 must be a String");
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                           "$0 must be a String"));
                 return Qnil;
             }
             korb_gvar_set(korb_intern("$0"), v);
@@ -445,9 +445,9 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
                     return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
                 }
                 VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-                korb_raise(c, (struct korb_class *)eName,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
                            "private constant %s::%s referenced",
-                           korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
+                           korb_id_name(((struct korb_class *)p)->name), korb_id_name(name)));
                 return Qnil;
             }
         }
@@ -486,14 +486,14 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
             }
             const char *prefix_str = (BUILTIN_TYPE(ers[2]) == T_STRING)
                                        ? ((struct korb_string *)ers[2])->ptr : "?";
-            korb_raise(c, (struct korb_class *)ers[0],
+            DROP_RESULT(korb_raise(c, (struct korb_class *)ers[0],
                        "uninitialized constant %s::%s",
-                       prefix_str, korb_id_name(name));
+                       prefix_str, korb_id_name(name)));
         } ARO_ROOT_SCOPE_END(c, ers);
         return Qnil;
     }
-    korb_raise_type_error(c, "%s is not a class/module",
-                          NIL_P(p) ? "nil" : korb_id_name(korb_class_of_class(p)->name));
+    DROP_RESULT(korb_raise_type_error(c, "%s is not a class/module",
+                          NIL_P(p) ? "nil" : korb_id_name(korb_class_of_class(p)->name)));
     return Qnil;
 }
 
@@ -507,7 +507,7 @@ node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t en
     c->current_frame->fp += envsize;
     if (UNLIKELY(c->current_frame->fp + envsize >= c->stack_end)) {
         c->current_frame->fp = prev_fp;
-        korb_raise(c, NULL, "stack overflow");
+        DROP_RESULT(korb_raise(c, NULL, "stack overflow"));
         return Qnil;
     }
     /* Extend sp to cover the scope's locals AND zero-fill the freshly
@@ -652,7 +652,7 @@ node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *valu
         }
         if (!target_alive) {
             VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
-            korb_raise(c, (struct korb_class *)eL, "unexpected return");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eL, "unexpected return"));
             return Qnil;
         }
     }
@@ -805,13 +805,13 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
         if (super_expr) {
             VALUE sv = EA(c, super_expr);
             if (BUILTIN_TYPE(sv) != T_CLASS) {
-                korb_raise_type_error(c, "superclass must be a Class (%s given)",
-                                      korb_id_name(korb_class_of_class(sv)->name));
+                DROP_RESULT(korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                      korb_id_name(korb_class_of_class(sv)->name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
                 return Qnil;
             }
             if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
-                korb_raise_type_error(c, "can't make subclass of singleton class");
+                DROP_RESULT(korb_raise_type_error(c, "can't make subclass of singleton class"));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
                 return Qnil;
             }
@@ -823,19 +823,19 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
                                     BUILTIN_TYPE(existing) == T_MODULE)) {
             rs[1] = existing;
             if (BUILTIN_TYPE(existing) == T_MODULE) {
-                korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+                DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
                 return Qnil;
             }
             if (super_expr && ((struct korb_class *)rs[1])->super != (struct korb_class *)rs[0]) {
-                korb_raise_type_error(c, "superclass mismatch for class %s",
-                                      korb_id_name(name));
+                DROP_RESULT(korb_raise_type_error(c, "superclass mismatch for class %s",
+                                      korb_id_name(name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
                 return Qnil;
             }
         }
         else if (!UNDEF_P(existing)) {
-            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         }
@@ -905,12 +905,12 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
             rs[0] = existing;
         }
         else if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
-            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         }
         else if (!UNDEF_P(existing)) {
-            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         }
@@ -968,7 +968,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
             rs[0] = existing;
         }
         else if (!UNDEF_P(existing)) {
-            korb_raise_type_error(c, "%s is not a module", korb_id_name(name));
+            DROP_RESULT(korb_raise_type_error(c, "%s is not a module", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         }
@@ -1367,7 +1367,7 @@ node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
         if (UNLIKELY(b == 0)) {
             c->last_cfunc_callsite = n;
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
             return Qnil;
         }
         long q = a / b;
@@ -1392,7 +1392,7 @@ node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
         if (UNLIKELY(b == 0)) {
             c->last_cfunc_callsite = n;
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            korb_raise(c, (struct korb_class *)eZ, "divided by 0");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
             return Qnil;
         }
         long m = a % b;
@@ -1767,14 +1767,14 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
             struct korb_array *aa = (struct korb_array *)r;
             if (ii < 0 && ii + aa->len < 0) {
                 VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-                korb_raise(c, (struct korb_class *)eIE,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eIE,
                            "index %ld too small for array; minimum: -%ld",
-                           ii, aa->len);
+                           ii, aa->len));
                 return v;
             }
             if (ii >= (long)(LONG_MAX / sizeof(VALUE))) {
                 VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
-                korb_raise(c, (struct korb_class *)eIE, "index %ld too big", ii);
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eIE, "index %ld too big", ii));
                 return v;
             }
             korb_ary_aset(r, ii, v); return v;
@@ -1990,8 +1990,8 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
         }
         if (BUILTIN_TYPE(r) != T_ARRAY) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
-                       "can't convert to Array (#to_ary gave non-Array)");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to Array (#to_ary gave non-Array)"));
             return Qnil;
         }
         return r;
@@ -2049,8 +2049,8 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
                 return a;
             }
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            korb_raise(c, (struct korb_class *)eT,
-                       "can't convert to Array (returned non-Array)");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to Array (returned non-Array)"));
             return Qnil;
         }
     }
@@ -2135,7 +2135,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
                               ? c->running_block->defining_method
                               : (c->current_frame ? c->current_frame->method : NULL);
     if (!m) {
-        korb_raise(c, NULL, "super called outside of method");
+        DROP_RESULT(korb_raise(c, NULL, "super called outside of method"));
         return Qnil;
     }
     uint16_t super_skip_n = (c->current_frame && c->current_frame->method == m)
@@ -2156,8 +2156,8 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
         : NULL;
     if (!sm) {
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-        korb_raise(c, (struct korb_class *)eNoMethod,
-                   "super: no superclass method '%s'", korb_id_name(m->name));
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", korb_id_name(m->name)));
         return Qnil;
     }
     if (sm->type == KORB_METHOD_CFUNC) {
@@ -2172,7 +2172,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + arg_index;
-    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return Qnil; }
     { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; if (_ns > c->sp) { for (VALUE *p = c->sp; p < _ns; p++) *p = Qnil; c->sp = _ns; } }
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->current_frame->fp = new_fp;
@@ -2226,7 +2226,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
                               ? c->running_block->defining_method
                               : (c->current_frame ? c->current_frame->method : NULL);
     if (!m) {
-        korb_raise(c, NULL, "super called outside of method");
+        DROP_RESULT(korb_raise(c, NULL, "super called outside of method"));
         return Qnil;
     }
     struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
@@ -2240,8 +2240,8 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
         : NULL;
     if (!sm) {
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-        korb_raise(c, (struct korb_class *)eNoMethod,
-                   "super: no superclass method '%s'", korb_id_name(m->name));
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", korb_id_name(m->name)));
         return Qnil;
     }
     /* Evaluate the explicit block.  nil → no block. */
@@ -2259,7 +2259,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + arg_index;
-    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return Qnil; }
     { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; if (_ns > c->sp) { for (VALUE *p = c->sp; p < _ns; p++) *p = Qnil; c->sp = _ns; } }
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->current_frame->fp = new_fp;
@@ -2338,7 +2338,7 @@ NODE_DEF
 node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (!c->current_frame || !c->current_frame->method) {
-        korb_raise(c, NULL, "super called outside of method");
+        DROP_RESULT(korb_raise(c, NULL, "super called outside of method"));
         return Qnil;
     }
     /* Inside a block body, `super` targets the block's lexical method
@@ -2367,8 +2367,8 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
             return korb_funcall(c, c->current_frame->self, korb_intern("method_missing"), 1, &name_sym);
         }
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-        korb_raise(c, (struct korb_class *)eNoMethod,
-                   "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?");
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?"));
         return Qnil;
     }
     /* Forward all positionals: required + optional + (splatted *rest if
@@ -2423,7 +2423,7 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);
-    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { korb_raise(c, NULL, "stack overflow"); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return Qnil; }
     /* Peel kwh from forward_buf's tail if the super accepts kwargs. */
     VALUE peeled_kwh = Qundef;
     if (sm->u.ast.kwh_save_slot >= 0) {
@@ -2585,10 +2585,10 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
     if (BUILTIN_TYPE(c->current_frame->self) == T_CLASS || BUILTIN_TYPE(c->current_frame->self) == T_MODULE) {
         if (korb_obj_frozen_p(c->current_frame->self)) {
             VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-            korb_raise(c, (struct korb_class *)eF,
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
                        "can't modify frozen %s",
                        ((struct korb_class *)c->current_frame->self)->name
-                         ? korb_id_name(((struct korb_class *)c->current_frame->self)->name) : "Class");
+                         ? korb_id_name(((struct korb_class *)c->current_frame->self)->name) : "Class"));
             return Qnil;
         }
         target = korb_singleton_class_of(c, (struct korb_class *)c->current_frame->self);
@@ -2597,14 +2597,14 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
          * class.  CRuby installs on main's singleton at top level. */
         if (korb_obj_frozen_p(c->current_frame->self)) {
             VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-            korb_raise(c, (struct korb_class *)eF, "can't modify frozen object");
+            DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen object"));
             return Qnil;
         }
         extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
         struct korb_class *meta = korb_singleton_class_of_value(c, c->current_frame->self);
         target = meta ? meta : korb_class_of_class(c->current_frame->self);
     } else {
-        korb_raise(c, NULL, "def self.* outside of class/module");
+        DROP_RESULT(korb_raise(c, NULL, "def self.* outside of class/module"));
         return Qnil;
     }
     korb_class_add_method_ast_full_cref(c, target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
@@ -2631,7 +2631,7 @@ node_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
         struct korb_class *meta = korb_singleton_class_of_value(c, c->current_frame->self);
         target = meta ? meta : korb_class_of_class(c->current_frame->self);
     } else {
-        korb_raise(c, NULL, "def self.* outside of class/module");
+        DROP_RESULT(korb_raise(c, NULL, "def self.* outside of class/module"));
         return Qnil;
     }
     korb_class_add_method_ast_full_cref(c, target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
@@ -2663,12 +2663,12 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
         const char *kind = "object";
         if (BUILTIN_TYPE(sp[0]) == T_CLASS) kind = "Class";
         else if (BUILTIN_TYPE(sp[0]) == T_MODULE) kind = "Module";
-        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind));
         ret = Qnil;
     } else {
         struct korb_class *meta = korb_singleton_class_of_value(c, sp[0]);
         if (!meta) {
-            korb_raise(c, NULL, "cannot define singleton method on this value");
+            DROP_RESULT(korb_raise(c, NULL, "cannot define singleton method on this value"));
             ret = Qnil;
         } else {
             korb_class_add_method_ast_full_cref(c, meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
@@ -2695,12 +2695,12 @@ node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restric
         const char *kind = "object";
         if (BUILTIN_TYPE(recv) == T_CLASS) kind = "Class";
         else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
-        korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind));
         return Qnil;
     }
     struct korb_class *meta = korb_singleton_class_of_value(c, recv);
     if (!meta) {
-        korb_raise(c, NULL, "cannot define singleton method on this value");
+        DROP_RESULT(korb_raise(c, NULL, "cannot define singleton method on this value"));
         return Qnil;
     }
     korb_class_add_method_ast_full_cref(c, meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
@@ -2726,8 +2726,8 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict 
     if (!meta) {
         /* Numeric, Symbol etc. — CRuby raises TypeError "no class to make
          * a singleton class for ..." */
-        korb_raise_type_error(c, "no class to make singleton class for %s",
-                              korb_id_name(korb_class_of_class(recv)->name));
+        DROP_RESULT(korb_raise_type_error(c, "no class to make singleton class for %s",
+                              korb_id_name(korb_class_of_class(recv)->name)));
         return Qnil;
     }
     VALUE prev_self = c->current_frame->self;
@@ -2859,7 +2859,7 @@ node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
     VALUE new_v = EA(c, new_name);
     VALUE old_v = EA(c, old_name);
     if (!SYMBOL_P(new_v) || !SYMBOL_P(old_v)) {
-        korb_raise(c, NULL, "alias requires symbol names");
+        DROP_RESULT(korb_raise(c, NULL, "alias requires symbol names"));
         return Qnil;
     }
     ID new_id = korb_sym2id(new_v);
@@ -2868,10 +2868,10 @@ node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
     struct korb_method *m = korb_class_find_method(target, old_id);
     if (!m) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        korb_raise(c, (struct korb_class *)eN,
+        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
                    "undefined method '%s' for %s",
                    korb_id_name(old_id),
-                   target->name ? korb_id_name(target->name) : "?");
+                   target->name ? korb_id_name(target->name) : "?"));
         return Qnil;
     }
     korb_class_alias_method(target, new_id, m);
@@ -2929,8 +2929,8 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
     ARO_ROOT_SCOPE_START(c, rs, 3) {
         rs[0] = EA(c, parent_expr);  /* parent_v */
         if (BUILTIN_TYPE(rs[0]) != T_CLASS && BUILTIN_TYPE(rs[0]) != T_MODULE) {
-            korb_raise_type_error(c, "%s is not a class/module",
-                                  korb_id_name(korb_class_of_class(rs[0])->name));
+            DROP_RESULT(korb_raise_type_error(c, "%s is not a class/module",
+                                  korb_id_name(korb_class_of_class(rs[0])->name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         }
@@ -2945,10 +2945,10 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
                 if (!in_scope) {
                     VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
                     struct korb_class *parent = (struct korb_class *)rs[0];
-                    korb_raise(c, (struct korb_class *)eName,
+                    DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
                                "private constant %s::%s referenced",
                                parent->name ? korb_id_name(parent->name) : "?",
-                               korb_id_name(name));
+                               korb_id_name(name)));
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
                     return Qnil;
                 }
@@ -2959,14 +2959,14 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
             VALUE sv = EA(c, super_expr);
             if (BUILTIN_TYPE(sv) == T_CLASS) {
                 if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
-                    korb_raise_type_error(c, "can't make subclass of singleton class");
+                    DROP_RESULT(korb_raise_type_error(c, "can't make subclass of singleton class"));
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
                     return Qnil;
                 }
                 rs[1] = sv;
             } else if (enforce_super_match) {
-                korb_raise_type_error(c, "superclass must be a Class (%s given)",
-                                      korb_id_name(korb_class_of_class(sv)->name));
+                DROP_RESULT(korb_raise_type_error(c, "superclass must be a Class (%s given)",
+                                      korb_id_name(korb_class_of_class(sv)->name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
                 return Qnil;
             }
@@ -2975,13 +2975,13 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
             rs[2] = existing;
             if (enforce_super_match && ((struct korb_class *)rs[2])->super != (struct korb_class *)rs[1]) {
-                korb_raise_type_error(c, "superclass mismatch for class %s",
-                                      korb_id_name(name));
+                DROP_RESULT(korb_raise_type_error(c, "superclass mismatch for class %s",
+                                      korb_id_name(name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
                 return Qnil;
             }
         } else if (!UNDEF_P(existing) && enforce_super_match) {
-            korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
+            DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         } else {
@@ -3021,8 +3021,8 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
     ARO_ROOT_SCOPE_START(c, rs, 3) {
         rs[0] = EA(c, parent_expr);  /* parent_v */
         if (BUILTIN_TYPE(rs[0]) != T_CLASS && BUILTIN_TYPE(rs[0]) != T_MODULE) {
-            korb_raise_type_error(c, "%s is not a class/module",
-                                  korb_id_name(korb_class_of_class(rs[0])->name));
+            DROP_RESULT(korb_raise_type_error(c, "%s is not a class/module",
+                                  korb_id_name(korb_class_of_class(rs[0])->name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
             return Qnil;
         }
@@ -3037,10 +3037,10 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
                 if (!in_scope) {
                     VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
                     struct korb_class *parent = (struct korb_class *)rs[0];
-                    korb_raise(c, (struct korb_class *)eName,
+                    DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
                                "private constant %s::%s referenced",
                                parent->name ? korb_id_name(parent->name) : "?",
-                               korb_id_name(name));
+                               korb_id_name(name)));
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
                     return Qnil;
                 }
@@ -3087,8 +3087,8 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
     c->sp = sp + 2;
     sp[0] = EA(c, parent_expr);
     if (BUILTIN_TYPE(sp[0]) != T_CLASS && BUILTIN_TYPE(sp[0]) != T_MODULE) {
-        korb_raise_type_error(c, "%s is not a class/module",
-                              korb_id_name(korb_class_of_class(sp[0])->name));
+        DROP_RESULT(korb_raise_type_error(c, "%s is not a class/module",
+                              korb_id_name(korb_class_of_class(sp[0])->name)));
         c->sp = sp;
         return Qnil;
     }
@@ -3103,10 +3103,10 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
             if (!in_scope) {
                 VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
                 struct korb_class *p = (struct korb_class *)sp[0];
-                korb_raise(c, (struct korb_class *)eName,
+                DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
                            "private constant %s::%s referenced",
                            p->name ? korb_id_name(p->name) : "?",
-                           korb_id_name(name));
+                           korb_id_name(name)));
                 c->sp = sp;
                 return Qnil;
             }
@@ -3116,8 +3116,8 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
     if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
         sp[1] = existing;
     } else if (!UNDEF_P(existing)) {
-        korb_raise_type_error(c, "%s is not a module",
-                              korb_id_name(name));
+        DROP_RESULT(korb_raise_type_error(c, "%s is not a module",
+                              korb_id_name(name)));
         c->sp = sp;
         return Qnil;
     } else {
