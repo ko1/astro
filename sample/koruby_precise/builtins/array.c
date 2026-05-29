@@ -642,18 +642,22 @@ static RESULT ary_dup(CTX *c, int argc, VALUE *sp) {
 
 /* Compare two values using either the supplied block or default `<=>`,
  * returning a negative/zero/positive long like a C sort comparator.
- * On incomparable (`<=>` returns nil) raises ArgumentError. */
-static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
+ * On incomparable (`<=>` returns nil) or raised exception, sets *err
+ * to the propagating RESULT and returns 0. */
+static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block, RESULT *err) {
     VALUE r;
     if (has_block) {
         VALUE pair[2] = { x, y };
-        r = SINK_RESULT(c, korb_yield(c, 2, pair));
+        RESULT _r = korb_yield(c, 2, pair);
+        if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
+        r = _r.value;
     } else if (FIXNUM_P(x) && FIXNUM_P(y)) {
         return (intptr_t)x < (intptr_t)y ? -1 : (intptr_t)x > (intptr_t)y ? 1 : 0;
     } else {
-        r = SINK_RESULT(c, korb_funcall(c, x, korb_intern("<=>"), 1, &y));
+        RESULT _r = korb_funcall(c, x, korb_intern("<=>"), 1, &y);
+        if (_r.state != KORB_NORMAL) { *err = _r; return 0; }
+        r = _r.value;
     }
-    if (c->state != KORB_NORMAL) return 0;
     /* CRuby: sort block return is used by sign — Fixnum sign extracted
      * directly; Bignum compared against 0 via korb_int_cmp; Float by
      * sign; nil → raise ArgumentError (CRuby semantics). */
@@ -667,27 +671,28 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block) {
     }
     if (NIL_P(r)) {
         VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eArg,
+        *err = korb_raise(c, (struct korb_class *)eArg,
                    "comparison of %s with %s failed",
                    korb_id_name(korb_class_of_class(x)->name),
-                   korb_id_name(korb_class_of_class(y)->name)));
+                   korb_id_name(korb_class_of_class(y)->name));
     }
     return 0;
 }
 
-static void ary_sort_in_place(CTX *c, struct korb_array *ra, bool has_block) {
+static RESULT ary_sort_in_place(CTX *c, struct korb_array *ra, bool has_block) {
     long n = ra->len;
     /* Pin the "probe" value v across korb_yield/funcall GC fires.  The
      * array storage (ra->ptr[]) is libc-tracked so its entries auto-
      * forward, but the C-local `v` would go stale after GC moves the
      * referent.  Stage on the value stack so visit_roots picks it up. */
+    RESULT _ret = RESULT_OK(Qnil);
     ARO_ROOT_SCOPE_START(c, rs, 1) {
         for (long i = 1; i < n; i++) {
             rs[0] = ra->ptr[i];
             long j = i - 1;
             while (j >= 0) {
-                long cmp = ary_sort_compare(c, ra->ptr[j], rs[0], has_block);
-                if (c->state != KORB_NORMAL) goto done;
+                long cmp = ary_sort_compare(c, ra->ptr[j], rs[0], has_block, &_ret);
+                if (_ret.state != KORB_NORMAL) goto done;
                 if (cmp <= 0) break;
                 ra->ptr[j+1] = ra->ptr[j];
                 j--;
@@ -696,6 +701,7 @@ static void ary_sort_in_place(CTX *c, struct korb_array *ra, bool has_block) {
         }
 done:   ;
     } ARO_ROOT_SCOPE_END(c, rs);
+    return _ret;
 }
 
 static RESULT ary_sort(CTX *c, int argc, VALUE *sp) {
@@ -707,7 +713,7 @@ static RESULT ary_sort(CTX *c, int argc, VALUE *sp) {
     long n = a->len;
     VALUE r = korb_ary_new_capa(c, c->sp, n);
     for (long i = 0; i < n; i++) korb_ary_push(r, a->ptr[i]);
-    ary_sort_in_place(c, (struct korb_array *)r, korb_block_given(c));
+    CHECK(ary_sort_in_place(c, (struct korb_array *)r, korb_block_given(c)));
     return RESULT_OK(r);
 }
 
@@ -720,7 +726,7 @@ static RESULT ary_sort_bang(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    ary_sort_in_place(c, (struct korb_array *)self, korb_block_given(c));
+    CHECK(ary_sort_in_place(c, (struct korb_array *)self, korb_block_given(c)));
     return RESULT_OK(self);
 }
 
@@ -1142,18 +1148,19 @@ static RESULT ary_min(CTX *c, int argc, VALUE *sp) {
      * returns < 0 the probe is smaller than the running min (so swap).
      * This is the opposite of sort's convention, which is also why the
      * cmp variable here is interpreted with the probe as the LHS. */
-    VALUE ret;
+    RESULT _ret = RESULT_OK(Qnil);
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = a->ptr[0];
         for (long i = 1; i < a->len; i++) {
             rs[1] = a->ptr[i];
-            long cmp = ary_sort_compare(c, rs[1], rs[0], has_block);
-            if (c->state != KORB_NORMAL) break;
+            long cmp = ary_sort_compare(c, rs[1], rs[0], has_block, &_ret);
+            if (_ret.state != KORB_NORMAL) goto done_min;
             if (cmp < 0) rs[0] = rs[1];
         }
-        ret = rs[0];
+        _ret = RESULT_OK(rs[0]);
+done_min: ;
     } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(ret);
+    return _ret;
 }
 
 static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
@@ -1166,18 +1173,19 @@ static RESULT ary_max(CTX *c, int argc, VALUE *sp) {
     bool has_block = korb_block_given(c);
     /* Same convention as ary_min — block.call(probe, running).  If it
      * returns > 0 the probe is greater than running max, so swap. */
-    VALUE ret;
+    RESULT _ret = RESULT_OK(Qnil);
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = a->ptr[0];
         for (long i = 1; i < a->len; i++) {
             rs[1] = a->ptr[i];
-            long cmp = ary_sort_compare(c, rs[1], rs[0], has_block);
-            if (c->state != KORB_NORMAL) break;
+            long cmp = ary_sort_compare(c, rs[1], rs[0], has_block, &_ret);
+            if (_ret.state != KORB_NORMAL) goto done_max;
             if (cmp > 0) rs[0] = rs[1];
         }
-        ret = rs[0];
+        _ret = RESULT_OK(rs[0]);
+done_max: ;
     } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(ret);
+    return _ret;
 }
 
 static RESULT ary_sum(CTX *c, int argc, VALUE *sp) {
