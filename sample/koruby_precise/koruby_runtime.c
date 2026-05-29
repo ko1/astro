@@ -505,6 +505,10 @@ koruby_setup_ctx(const char *current_file)
      * koruby_setup_ctx just attaches the per-run roots (self / cref /
      * current_file / state). */
     CTX *c = korb_vm->current_ctx;
+    /* Bind the per-CTX machine pointer.  Initially this just mirrors the
+     * global; future migration: replace `korb_vm->X` with `c->mch->X`
+     * call-site by call-site, then make `korb_vm` private to setup. */
+    c->mch = korb_vm;
     c->current_frame->self = korb_vm->main_obj;
     c->current_frame->current_class = korb_vm->object_class;
     c->top_cref.klass = korb_vm->object_class;

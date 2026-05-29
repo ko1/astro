@@ -4594,6 +4594,7 @@ CTX *korb_runtime_init(void) {
         /* rest default-zero (prev=NULL, method=NULL, block=NULL, ...) */
     };
     c->current_frame = &c->sentinel_frame;
+    c->mch = korb_vm;  /* per-CTX machine pointer — see context.h comment */
     korb_vm->current_ctx = c;
     aro_gc_init(c);   /* binds c->astro_gc; precise-GC ready after this. */
 

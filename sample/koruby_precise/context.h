@@ -412,6 +412,20 @@ typedef struct CTX_struct {
     struct korb_frame sentinel_frame;
     struct korb_cref  top_cref;
 
+    /* Per-CTX pointer to the interpreter's machine state.  Naming follows
+     * abruby's `c->abm` / `struct abruby_machine` convention (rather than
+     * "vm" which doesn't fit a tree-walking AST interpreter).
+     * Transitional: the global `korb_vm` still exists and `c->mch` is
+     * initialized to it at setup.  Future code should prefer `c->mch->X`
+     * over `korb_vm->X` so the global can eventually be removed and
+     * multi-interpreter embedding (one CTX per interpreter) becomes
+     * possible.
+     * Note: the `struct korb_vm` type name itself is also up for rename
+     * (planned: `struct korb_machine`); kept as-is for this incremental
+     * patch to avoid touching 1300+ references in one go.
+     * See memory note: feedback_result_and_vm_priorities. */
+    struct korb_vm *mch;
+
     state_serial_t method_serial;
 
     /* unified exceptional control state.  When state != KORB_NORMAL, all
