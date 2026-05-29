@@ -678,6 +678,88 @@ static RESULT struct_class_new(CTX *c, int argc, VALUE *sp) {
         }
         korb_class_add_method_cfunc_r(klass, korb_intern("values_at"), _struct_values_at, -1);
     }
+    /* Struct#dig — chain dig into nested structures starting from
+     * each member at the index/key given by the first arg. */
+    {
+        RESULT _struct_dig(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            if (argc < 1) {
+                VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+                return korb_raise(c, (struct korb_class *)eArg,
+                           "wrong number of arguments (given %d, expected 1+)", argc);
+            }
+            /* First step: get member by symbol/string name or integer index. */
+            VALUE v = UNWRAP(korb_funcall(c, self, korb_intern("[]"), 1, &argv[0]));
+            if (argc == 1) return RESULT_OK(v);
+            if (NIL_P(v)) return RESULT_OK(Qnil);
+            /* Recurse: v.dig(*rest). */
+            if (!SPECIAL_CONST_P(v)) {
+                struct korb_class *k = korb_class_of_class(v);
+                if (!k || !korb_class_find_method(k, korb_intern("dig"))) {
+                    VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+                    return korb_raise(c, (struct korb_class *)eT,
+                               "%s does not have #dig method",
+                               korb_id_name(korb_class_of_class(v)->name));
+                }
+            }
+            return korb_funcall(c, v, korb_intern("dig"), argc - 1, &argv[1]);
+        }
+        korb_class_add_method_cfunc_r(klass, korb_intern("dig"), _struct_dig, -1);
+    }
+    /* Struct#deconstruct — returns array of values (= to_a). */
+    {
+        RESULT _struct_deconstruct(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            c->sp[0] = self;
+            return struct_to_a(c, 0, c->sp + 1);
+        }
+        korb_class_add_method_cfunc_r(klass, korb_intern("deconstruct"), _struct_deconstruct, 0);
+    }
+    /* Struct#deconstruct_keys(keys) — returns hash subset by keys (or all if nil). */
+    {
+        RESULT _struct_deconstruct_keys(CTX *c, int argc, VALUE *sp) {
+            c->sp = sp;
+            VALUE self = sp[-argc - 1];
+            VALUE *argv = sp - argc;
+            if (argc < 1) {
+                VALUE eArg = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+                return korb_raise(c, (struct korb_class *)eArg,
+                           "wrong number of arguments (given %d, expected 1)", argc);
+            }
+            /* nil → return all values as hash; Array → filter. */
+            c->sp[0] = self;
+            VALUE h = UNWRAP(struct_to_h(c, 0, c->sp + 1));
+            if (NIL_P(argv[0])) return RESULT_OK(h);
+            if (SPECIAL_CONST_P(argv[0]) || BUILTIN_TYPE(argv[0]) != T_ARRAY) {
+                return RESULT_OK(h);
+            }
+            struct korb_array *keys = (struct korb_array *)argv[0];
+            VALUE result = korb_hash_new(c, c->sp);
+            for (long i = 0; i < keys->len; i++) {
+                VALUE k = keys->ptr[i];
+                VALUE v = korb_hash_aref(c, h, k);
+                if (UNDEF_P(v)) {
+                    /* Try integer index — convert to symbol via Struct member name. */
+                    if (FIXNUM_P(k)) {
+                        c->sp[0] = self;
+                        VALUE arr = UNWRAP(struct_to_a(c, 0, c->sp + 1));
+                        long idx = FIX2LONG(k);
+                        if (idx >= 0 && idx < ((struct korb_array *)arr)->len) {
+                            korb_hash_aset(c, result, k, ((struct korb_array *)arr)->ptr[idx]);
+                            continue;
+                        }
+                    }
+                    return RESULT_OK(result); /* missing key short-circuits */
+                }
+                korb_hash_aset(c, result, k, v);
+            }
+            return RESULT_OK(result);
+        }
+        korb_class_add_method_cfunc_r(klass, korb_intern("deconstruct_keys"), _struct_deconstruct_keys, 1);
+    }
     korb_class_add_method_cfunc_r(klass, korb_intern("==" ),        struct_eq,          1);
     korb_class_add_method_cfunc_r(klass, korb_intern("to_h"),       struct_to_h,        0);
     korb_class_add_method_cfunc_r(klass, korb_intern("size"),       struct_size,        0);

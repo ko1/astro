@@ -1617,6 +1617,8 @@ void korb_init_builtins(CTX *c) {
         (void)cUnboundMethod;
         korb_class_add_method_cfunc_r(cMethod, korb_intern("call"),     method_call,     -1);
         korb_class_add_method_cfunc_r(cMethod, korb_intern("[]"),       method_call,     -1);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("==="),      method_call,     -1);
+        korb_class_add_method_cfunc_r(cMethod, korb_intern("()"),       method_call,     -1);
         korb_class_add_method_cfunc_r(cMethod, korb_intern("to_proc"),  method_to_proc,   0);
         korb_class_add_method_cfunc_r(cMethod, korb_intern("arity"),      method_arity,      0);
         korb_class_add_method_cfunc_r(cMethod, korb_intern("name"),       method_name,       0);
