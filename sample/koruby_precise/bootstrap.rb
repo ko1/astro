@@ -722,7 +722,7 @@ class Range
     memo
   end unless method_defined?(:each_with_object)
 
-  def enum_for(method = :each, *args)
+  def enum_for(method = :each, *args, &size_blk)
     receiver = self
     e = Enumerator.new { |y|
       receiver.send(method, *args) { |*x|
@@ -735,7 +735,14 @@ class Range
     e.instance_variable_set(:@__source_obj,    receiver)
     e.instance_variable_set(:@__source_method, method)
     e.instance_variable_set(:@__source_args,   args)
-    if receiver.respond_to?(:size)
+    # CRuby enum_for accepts a block that, when called, returns the
+    # enumerator's size.  Methods like bsearch (whose enum size is
+    # unknown) pass a block returning nil.  Methods like each / map
+    # don't pass anything; we fall back to receiver.size when the
+    # receiver supports it.
+    if size_blk
+      e.instance_variable_set(:@__size_blk, size_blk)
+    elsif receiver.respond_to?(:size)
       e.instance_variable_set(:@__size, receiver.size)
     end
     e
@@ -2163,7 +2170,7 @@ class Range
   #                 x with 0, or one near the boundary
   # Only Integer ranges are supported here (Float is rare in tests).
   def bsearch(&blk)
-    return enum_for(:bsearch) unless blk
+    return enum_for(:bsearch) { nil } unless blk
     lo = self.begin
     hi = self.end
     raise TypeError, "can't do binary search for #{lo.class}" unless lo.is_a?(Integer) || lo.nil?
@@ -3117,7 +3124,11 @@ class Enumerator
   # (recorded by enum_for), return it; else nil (stream of unknown
   # length, matches CRuby's "no size proc" case).
   def size
-    @__size
+    if @__size_blk
+      @__size_blk.call
+    else
+      @__size
+    end
   end
 
   def _start
@@ -4942,17 +4953,20 @@ class Symbol
 end
 
 class Object
-  def to_enum(method = :each, *args)
+  def to_enum(method = :each, *args, &size_blk)
     me = self
     e = Enumerator.new { |y| me.send(method, *args) { |*x| y.yield(*x) } }
     # Record source so Enumerator#each(&blk) can re-invoke the original
     # method with the user's block — that's how `arr.transform_values
     # .each(&:succ)` aggregates results back into a Hash.  Also record
-    # size: when receiver responds to :size, snapshot it for #size.
+    # size: when caller passed a size block, defer to it; else snapshot
+    # receiver.size.
     e.instance_variable_set(:@__source_obj,    me)
     e.instance_variable_set(:@__source_method, method)
     e.instance_variable_set(:@__source_args,   args)
-    if me.respond_to?(:size)
+    if size_blk
+      e.instance_variable_set(:@__size_blk, size_blk)
+    elsif me.respond_to?(:size)
       e.instance_variable_set(:@__size, me.size)
     end
     e

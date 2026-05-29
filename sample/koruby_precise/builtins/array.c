@@ -3847,7 +3847,10 @@ static RESULT ary_bsearch(CTX *c, int argc, VALUE *sp) {
 
     if (!korb_block_given(c)) {
         VALUE arg = korb_id2sym(korb_intern("bsearch"));
-        return korb_funcall(c, self, korb_intern("to_enum"), 1, &arg);
+        VALUE e = UNWRAP(korb_funcall(c, self, korb_intern("to_enum"), 1, &arg));
+        /* bsearch's returned Enumerator has unknown size (CRuby semantics). */
+        korb_ivar_set(e, korb_intern("@__size"), Qnil);
+        return RESULT_OK(e);
     }
     struct korb_array *a = (struct korb_array *)self;
     long lo = 0, hi = a->len;
