@@ -65,11 +65,13 @@ static ID binding_arg_to_id(CTX *c, VALUE arg, bool *ok) {
                                 (VALUE[]){ korb_id2sym(korb_intern("to_str")) });
         VALUE rt = (_rt_rt.state == KORB_NORMAL) ? _rt_rt.value : (Qfalse);
         if (RTEST(rt)) {
-            VALUE s = SINK_RESULT(c, korb_funcall(c, arg, korb_intern("to_str"), 0, NULL));
-            if (c->state == KORB_NORMAL && !SPECIAL_CONST_P(s) &&
-                BUILTIN_TYPE(s) == T_STRING) {
-                struct korb_string *str = (struct korb_string *)s;
-                return korb_intern_n(str->ptr, str->len);
+            RESULT _ts = korb_funcall(c, arg, korb_intern("to_str"), 0, NULL);
+            if (_ts.state == KORB_NORMAL) {
+                VALUE s = _ts.value;
+                if (!SPECIAL_CONST_P(s) && BUILTIN_TYPE(s) == T_STRING) {
+                    struct korb_string *str = (struct korb_string *)s;
+                    return korb_intern_n(str->ptr, str->len);
+                }
             }
         }
     }

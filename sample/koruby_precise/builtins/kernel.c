@@ -117,10 +117,10 @@ static RESULT kernel_rand(CTX *c, int argc, VALUE *sp) {
  * returns a non-Hash (with the message "no implicit conversion of X
  * into Hash").  nil is rejected (CRuby semantics changed in 2.7+;
  * empty-hash splat is `**{}`). */
-/* Common path: convert v to Hash via to_hash.  Returns Hash or raises
- * TypeError on non-conversion.  nil handling is decided by caller. */
-static VALUE kwsplat_convert(CTX *c, VALUE v) {
-    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_HASH) return v;
+/* Common path: convert v to Hash via to_hash.  Returns Hash on NORMAL,
+ * propagates TypeError raise via RESULT.state. */
+static RESULT kwsplat_convert(CTX *c, VALUE v) {
+    if (!SPECIAL_CONST_P(v) && BUILTIN_TYPE(v) == T_HASH) return RESULT_OK(v);
     /* For BasicObject (no #respond_to?), peek at the method table directly. */
     bool has_to_hash = false;
     if (!SPECIAL_CONST_P(v)) {
@@ -131,27 +131,24 @@ static VALUE kwsplat_convert(CTX *c, VALUE v) {
     if (!has_to_hash) {
         RESULT _rt_rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
                           (VALUE[]){ korb_id2sym(korb_intern("to_hash")) });
-        rt = (_rt_rt.state == KORB_NORMAL) ? _rt_rt.value : (Qfalse);
+        rt = (_rt_rt.state == KORB_NORMAL) ? _rt_rt.value : Qfalse;
     }
     if (!has_to_hash && !RTEST(rt)) {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+        return korb_raise(c, (struct korb_class *)eT,
                    "no implicit conversion of %s into Hash",
-                   korb_id_name(korb_class_of_class(v)->name)));
-        return Qnil;
+                   korb_id_name(korb_class_of_class(v)->name));
     }
-    VALUE r = SINK_RESULT(c, korb_funcall(c, v, korb_intern("to_hash"), 0, NULL));
-    if (c->state != KORB_NORMAL) return Qnil;
+    VALUE r = UNWRAP(korb_funcall(c, v, korb_intern("to_hash"), 0, NULL));
     if (SPECIAL_CONST_P(r) || BUILTIN_TYPE(r) != T_HASH) {
         VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+        return korb_raise(c, (struct korb_class *)eT,
                    "can't convert %s to Hash (%s#to_hash gives %s)",
                    korb_id_name(korb_class_of_class(v)->name),
                    korb_id_name(korb_class_of_class(v)->name),
-                   korb_id_name(korb_class_of_class(r)->name)));
-        return Qnil;
+                   korb_id_name(korb_class_of_class(r)->name));
     }
-    return r;
+    return RESULT_OK(r);
 }
 
 /* `case x; in [...]` array pattern coerce step: if obj.deconstruct
@@ -326,7 +323,7 @@ RESULT kernel_kwsplat_to_hash_lenient(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp));
-    return RESULT_OK(kwsplat_convert(c, argv[0]));
+    return kwsplat_convert(c, argv[0]);
 }
 
 RESULT kernel_kwsplat_to_hash(CTX *c, int argc, VALUE *sp) {
@@ -337,7 +334,7 @@ RESULT kernel_kwsplat_to_hash(CTX *c, int argc, VALUE *sp) {
     /* Ruby 3.4+: `{**nil}` evaluates to {}.  Earlier versions raised
      * TypeError; we follow current CRuby (≥ 3.4). */
     if (argc < 1 || NIL_P(argv[0])) return RESULT_OK(korb_hash_new(c, c->sp));
-    return RESULT_OK(kwsplat_convert(c, argv[0]));
+    return kwsplat_convert(c, argv[0]);
 }
 
 static RESULT kernel_p(CTX *c, int argc, VALUE *sp) {

@@ -63,7 +63,7 @@ static RESULT sym_succ(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     VALUE s = korb_str_new_cstr(c, c->sp, korb_id_name(korb_sym2id(self)));
-    VALUE next_str = SINK_RESULT(c, korb_funcall(c, s, korb_intern("succ"), 0, NULL));
+    VALUE next_str = UNWRAP(korb_funcall(c, s, korb_intern("succ"), 0, NULL));
     if (BUILTIN_TYPE(next_str) != T_STRING) return RESULT_OK(self);
     struct korb_string *ns = (struct korb_string *)next_str;
     return RESULT_OK(korb_id2sym(korb_intern_n(ns->ptr, ns->len)));

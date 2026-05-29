@@ -107,13 +107,16 @@ static RESULT rng_each(CTX *c, int argc, VALUE *sp) {
 }
 
 /* Compare two values using <=>.  Returns 0 if equal, negative if a<b,
- * positive if a>b.  Returns LONG_MAX if comparison failed (nil <=>). */
-static long rng_cmp(CTX *c, VALUE a, VALUE b) {
+ * positive if a>b.  Returns LONG_MAX if comparison failed (nil <=>).
+ * On raise, sets *err and returns LONG_MAX. */
+static long rng_cmp(CTX *c, VALUE a, VALUE b, RESULT *err) {
     if (FIXNUM_P(a) && FIXNUM_P(b)) {
         return (long)((intptr_t)a - (intptr_t)b);
     }
-    VALUE r = SINK_RESULT(c, korb_funcall(c, a, korb_intern("<=>"), 1, &b));
-    if (c->state != KORB_NORMAL || !FIXNUM_P(r)) return LONG_MAX;
+    RESULT _r = korb_funcall(c, a, korb_intern("<=>"), 1, &b);
+    if (_r.state != KORB_NORMAL) { *err = _r; return LONG_MAX; }
+    VALUE r = _r.value;
+    if (!FIXNUM_P(r)) return LONG_MAX;
     return FIX2LONG(r);
 }
 
@@ -138,7 +141,9 @@ static RESULT rng_min(CTX *c, int argc, VALUE *sp) {
         return korb_raise(c, (struct korb_class *)eR, "cannot get the minimum of beginless range");
     }
     if (NIL_P(r->end)) return RESULT_OK(r->begin);
-    long cmp = rng_cmp(c, r->begin, r->end);
+    RESULT _err = RESULT_OK(Qnil);
+    long cmp = rng_cmp(c, r->begin, r->end, &_err);
+    if (_err.state != KORB_NORMAL) return _err;
     if (cmp == LONG_MAX) return RESULT_OK(Qnil);
     if (cmp > 0) return RESULT_OK(Qnil);
     if (cmp == 0 && r->exclude_end) return RESULT_OK(Qnil);
@@ -177,7 +182,9 @@ static RESULT rng_max(CTX *c, int argc, VALUE *sp) {
         }
         return RESULT_OK(r->end);
     }
-    long cmp = rng_cmp(c, r->begin, r->end);
+    RESULT _err2 = RESULT_OK(Qnil);
+    long cmp = rng_cmp(c, r->begin, r->end, &_err2);
+    if (_err2.state != KORB_NORMAL) return _err2;
     if (cmp == LONG_MAX) return RESULT_OK(Qnil);
     if (cmp > 0) return RESULT_OK(Qnil);
     if (cmp == 0 && r->exclude_end) return RESULT_OK(Qnil);
