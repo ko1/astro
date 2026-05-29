@@ -539,7 +539,7 @@ korb_ivar_get_ic(VALUE obj, ID name, struct ivar_cache *cache) {
 /* Fast inline ivar setter — same monomorphic cache pattern.  Cache miss
  * (different klass / unset slot / first write past current capa) goes
  * through the slow path which handles growth + slot assignment. */
-extern RESULT korb_raise_frozen_modification(CTX *c, VALUE obj);
+extern RESULT_FN RESULT korb_raise_frozen_modification(CTX *c, VALUE obj);
 static inline __attribute__((always_inline)) void
 korb_ivar_set_ic(CTX *c, VALUE obj, ID name, VALUE val, struct ivar_cache *cache) {
     if (UNLIKELY(SPECIAL_CONST_P(obj))) {
@@ -684,11 +684,11 @@ void  korb_p(CTX *c, VALUE v); /* writes to stdout with newline */
 
 /* errors / exceptions */
 VALUE korb_exc_new(CTX *c, struct korb_class *klass, const char *msg);
-RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
-RESULT korb_raise_type_error(CTX *c, const char *fmt, ...);
-RESULT korb_raise_argument_error(CTX *c, const char *fmt, ...);
-RESULT korb_raise_range_error(CTX *c, const char *fmt, ...);
-RESULT korb_raise_index_error(CTX *c, const char *fmt, ...);
+RESULT_FN RESULT korb_raise(CTX *c, struct korb_class *klass, const char *fmt, ...);
+RESULT_FN RESULT korb_raise_type_error(CTX *c, const char *fmt, ...);
+RESULT_FN RESULT korb_raise_argument_error(CTX *c, const char *fmt, ...);
+RESULT_FN RESULT korb_raise_range_error(CTX *c, const char *fmt, ...);
+RESULT_FN RESULT korb_raise_index_error(CTX *c, const char *fmt, ...);
 VALUE korb_build_backtrace(CTX *c, int raise_line);
 void  korb_exc_set_backtrace(CTX *c, VALUE exc, int raise_line);
 
@@ -888,9 +888,9 @@ VALUE korb_yield_slow(CTX *c, struct korb_proc *blk, uint32_t argc, VALUE *argv)
  * korb_yield.  Each performs the legacy dispatch, then converts c->state
  * into RESULT.state for in-band propagation.  Use in new-ABI cfuncs /
  * helpers (where UNWRAP propagates the state). */
-RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
+RESULT_FN RESULT korb_funcall_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv);
 /* korb_yield_r — defined as a static inline below near korb_yield. */
-RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
+RESULT_FN RESULT korb_funcall_with_block_r(CTX *c, VALUE recv, ID mid, int argc, VALUE *argv, VALUE block);
 
 
 
@@ -966,7 +966,7 @@ korb_yield(CTX *c, uint32_t argc, VALUE *argv) {
 }
 
 /* RESULT-returning wrapper around korb_yield. */
-static inline __attribute__((always_inline)) RESULT
+static inline __attribute__((always_inline, warn_unused_result)) RESULT
 korb_yield_r(CTX *c, uint32_t argc, VALUE *argv) {
     VALUE r = korb_yield(c, argc, argv);
     if (UNLIKELY(c->state != KORB_NORMAL)) {

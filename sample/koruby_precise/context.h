@@ -214,6 +214,18 @@ typedef struct {
     uint8_t state;
 } RESULT;
 
+/* Mark RESULT-returning functions so the compiler enforces that callers
+ * actually use the returned value (UNWRAP / CHECK / inline handling).
+ * Without it, a forgotten UNWRAP would silently drop exception
+ * propagation.  With -Werror=unused-result this becomes a build failure.
+ *
+ * Apply to function declarations / definitions, e.g.
+ *   RESULT_FN RESULT my_func(CTX *c, ...);
+ *
+ * GCC's warn_unused_result attribute only applies to function types, not
+ * to the return type itself, so this is the cleanest way to apply it. */
+#define RESULT_FN __attribute__((warn_unused_result))
+
 #define RESULT_OK(v)        ((RESULT){(v), KORB_NORMAL})
 #define RESULT_RAISE_R(v)   ((RESULT){(v), KORB_RAISE})
 #define RESULT_RETURN_R(v)  ((RESULT){(v), KORB_RETURN})
