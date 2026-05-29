@@ -722,22 +722,20 @@ node_range_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *b
 NODE_DEF
 node_str_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
 {
-    /* rs[0] = result string, rs[1] = current part — both survive across
-     * korb_to_s_dispatch (= can fire GC) and korb_str_concat (= libc
-     * realloc, no GC).  C-locals would go stale. */
-    VALUE ret = Qnil;
-    ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = korb_str_new(c, c->sp_top, "", 0);
-        for (uint32_t i = 0; i < argc; i++) {
-            rs[1] = c->current_frame->fp[arg_index + i];
-            if (BUILTIN_TYPE(rs[1]) != T_STRING) {
-                rs[1] = korb_to_s_dispatch(c, rs[1]);
-            }
-            rs[0] = korb_str_concat(c, c->sp_top, rs[0], rs[1]);
+    /* Park result + current part in sp[0..1] across korb_to_s_dispatch
+     * (GC) and korb_str_concat (libc realloc, no GC). */
+    sp[0] = 0;
+    sp[1] = 0;
+    c->sp_top = sp + 2;
+    sp[0] = korb_str_new(c, sp + 2, "", 0);
+    for (uint32_t i = 0; i < argc; i++) {
+        sp[1] = c->current_frame->fp[arg_index + i];
+        if (BUILTIN_TYPE(sp[1]) != T_STRING) {
+            sp[1] = korb_to_s_dispatch(c, sp[1]);
         }
-        ret = rs[0];
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return RESULT_OK(ret);
+        sp[0] = korb_str_concat(c, sp + 2, sp[0], sp[1]);
+    }
+    return RESULT_OK(sp[0]);
 }
 
 // ---------------- method definition / call ----------------
@@ -872,46 +870,36 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
     VALUE r = Qnil;
     /* rs[0] = klass, held across korb_class_new + korb_funcall (= GC
      * sites) and body eval.  C-local prev_class would go stale. */
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
+    /* Park klass in sp[0] across korb_class_new + korb_funcall(:inherited)
+     * + body eval. */
+    sp[0] = 0;
+    c->sp_top = sp + 1;
+    {
         #define HOST_K (korb_host_class(c))
         VALUE existing = korb_const_get(HOST_K, name);
         if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_CLASS) {
-            rs[0] = existing;
+            sp[0] = existing;
         }
         else if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
-            RESULT _e = korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-
-            ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-            return _e;
+            return korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
         }
         else if (!UNDEF_P(existing)) {
-            RESULT _e = korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
-
-            ARO_ROOT_SCOPE_CANCEL(c, rs);
-
-            return _e;
+            return korb_raise_type_error(c, "%s is not a class", korb_id_name(name));
         }
         else {
-            struct korb_class *k = korb_class_new(c, c->sp_top, name, KORB_VM(c)->object_class, T_OBJECT);
+            struct korb_class *k = korb_class_new(c, sp + 1, name, KORB_VM(c)->object_class, T_OBJECT);
             k->name = 0;
-            rs[0] = (VALUE)k;
-            korb_const_set(HOST_K, name, rs[0]);
+            sp[0] = (VALUE)k;
+            korb_const_set(HOST_K, name, sp[0]);
             struct korb_class *super_meta = korb_class_of_class((VALUE)KORB_VM(c)->object_class);
             if (super_meta && korb_class_find_method(super_meta, korb_intern("inherited"))) {
-                VALUE child_v = rs[0];
+                VALUE child_v = sp[0];
                 RESULT _ih = korb_funcall(c, (VALUE)KORB_VM(c)->object_class, korb_intern("inherited"), 1, &child_v);
-                if (_ih.state != KORB_NORMAL) {
-                    ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return _ih;
-                }
+                if (_ih.state != KORB_NORMAL) return _ih;
             }
         }
         #undef HOST_K
-        /* Push a synthetic frame so frame.self / current_class / cref
-         * live in the frame chain (= visit_roots auto-updates).  No
-         * C-local prev_class stale issue. */
-        struct korb_class *klass = (struct korb_class *)rs[0];
+        struct korb_class *klass = (struct korb_class *)sp[0];
         struct korb_cref new_cref = { .klass = klass, .prev = c->current_frame->cref };
         struct korb_frame fr = {
             .prev = c->current_frame,
@@ -928,10 +916,8 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
         VALUE *fp_hi = c->sp_top;
         r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame = fr.prev;
-        /* Use fr.self (frame-chain tracked) not rs[0] — same reason as
-         * the @< clause variant above. */
         korb_proc_snapshot_env_if_in_frame(fr.self, fp_lo, fp_hi + 1024);
-    } ARO_ROOT_SCOPE_END(c, rs);
+    }
     return RESULT_OK(r);
 }
 
