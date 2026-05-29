@@ -380,6 +380,13 @@ struct korb_vm {
      * korb_hash_value to invoke user-defined #hash on custom-class
      * keys.  Single-threaded, so a single global is fine. */
     struct CTX_struct *current_ctx;
+
+    /* Generic ivar side table — for heap types (T_STRING, T_ARRAY,
+     * T_HASH, T_RANGE, ...) that don't have an ivars[] field in their
+     * struct.  Keyed by obj pointer (cast to VALUE), value is a Hash
+     * of (Symbol -> VALUE).  Lazily allocated on first ivar set.
+     * Safe because those types are libc-allocated and don't move. */
+    VALUE generic_ivars;
 };
 
 extern struct korb_vm *korb_vm;

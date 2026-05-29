@@ -1444,6 +1444,39 @@ bool korb_ivar_defined(VALUE obj, ID name) {
     return false;
 }
 
+/* Generic ivar storage helper: look up obj in vm->generic_ivars (a Hash
+ * of obj-pointer-as-VALUE → inner Hash of Symbol → VALUE).  Used for
+ * heap types without an ivars[] field (T_STRING, T_ARRAY, T_HASH, ...).
+ * Safe because those types are libc-allocated and don't move under our
+ * precise GC, so the pointer key stays stable. */
+static VALUE generic_ivar_get(VALUE obj, ID name) {
+    if (!korb_vm || NIL_P(korb_vm->generic_ivars)) return Qnil;
+    VALUE key = obj;  /* pointer value */
+    VALUE inner = korb_hash_aref(korb_vm->current_ctx, korb_vm->generic_ivars, key);
+    if (NIL_P(inner) || BUILTIN_TYPE(inner) != T_HASH) return Qnil;
+    VALUE r = korb_hash_aref(korb_vm->current_ctx, inner, korb_id2sym(name));
+    return UNDEF_P(r) ? Qnil : r;
+}
+
+static void generic_ivar_set(VALUE obj, ID name, VALUE val) {
+    if (!korb_vm) return;
+    CTX *c = korb_vm->current_ctx;
+    if (!c) return;
+    if (NIL_P(korb_vm->generic_ivars)) {
+        korb_vm->generic_ivars = korb_hash_new(c, c->sp);
+        /* Use compare_by_identity so pointer keys aren't double-hashed
+         * (we want identity comparison on VALUE pointer). */
+        ((struct korb_hash *)korb_vm->generic_ivars)->compare_by_identity = true;
+    }
+    VALUE key = obj;
+    VALUE inner = korb_hash_aref(c, korb_vm->generic_ivars, key);
+    if (NIL_P(inner) || BUILTIN_TYPE(inner) != T_HASH) {
+        inner = korb_hash_new(c, c->sp);
+        korb_hash_aset(c, korb_vm->generic_ivars, key, inner);
+    }
+    korb_hash_aset(c, inner, korb_id2sym(name), val);
+}
+
 VALUE korb_ivar_get(VALUE obj, ID name) {
     if (SPECIAL_CONST_P(obj)) return Qnil;
     if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
@@ -1453,7 +1486,14 @@ VALUE korb_ivar_get(VALUE obj, ID name) {
         }
         return Qnil;
     }
-    if (BUILTIN_TYPE(obj) != T_OBJECT) return Qnil;
+    if (BUILTIN_TYPE(obj) != T_OBJECT) {
+        /* Fall back to the generic side table for non-T_OBJECT heap
+         * types (T_STRING, T_ARRAY, T_HASH, T_RANGE, T_DATA, T_FLOAT
+         * heap, T_PROC, T_BIGNUM).  Lets `class S < String; def init;
+         * @x = 1; end; end; s = S.new; s.instance_variable_get(:@x)`
+         * work for subclasses that store state on the receiver. */
+        return generic_ivar_get(obj, name);
+    }
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     int s = ivar_slot(k, name);
@@ -1469,7 +1509,7 @@ VALUE korb_ivar_get_ic_slow(VALUE obj, ID name, struct ivar_cache *cache) {
     if (BUILTIN_TYPE(obj) == T_CLASS || BUILTIN_TYPE(obj) == T_MODULE) {
         return korb_ivar_get(obj, name);
     }
-    if (BUILTIN_TYPE(obj) != T_OBJECT) return Qnil;
+    if (BUILTIN_TYPE(obj) != T_OBJECT) return generic_ivar_get(obj, name);
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     int s = ivar_slot(k, name);
@@ -1499,7 +1539,11 @@ void korb_ivar_set(VALUE obj, ID name, VALUE val) {
         k->class_ivar_cnt++;
         return;
     }
-    if (BUILTIN_TYPE(obj) != T_OBJECT) return;
+    if (BUILTIN_TYPE(obj) != T_OBJECT) {
+        /* Side-table fallback for non-T_OBJECT heap types. */
+        generic_ivar_set(obj, name, val);
+        return;
+    }
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     int s = ivar_slot_assign(k, name);
@@ -1530,7 +1574,11 @@ void korb_ivar_set_ic_slow(VALUE obj, ID name, VALUE val, struct ivar_cache *cac
         korb_ivar_set(obj, name, val);
         return;
     }
-    if (BUILTIN_TYPE(obj) != T_OBJECT) return;
+    if (BUILTIN_TYPE(obj) != T_OBJECT) {
+        /* Side-table fallback for non-T_OBJECT heap types. */
+        generic_ivar_set(obj, name, val);
+        return;
+    }
     struct korb_object *o = (struct korb_object *)obj;
     struct korb_class *k = (struct korb_class *)o->basic.klass;
     int s;
@@ -4579,6 +4627,7 @@ CTX *korb_runtime_init(void) {
     korb_vm = korb_xmalloc(sizeof(*korb_vm));
     memset(korb_vm, 0, sizeof(*korb_vm));
     korb_vm->method_serial = 1; korb_g_method_serial = 1;
+    korb_vm->generic_ivars = Qnil;  /* lazy alloc on first non-T_OBJECT ivar set */
 
     /* Bootstrap CTX setup — MUST come before the first aro_gc_alloc.
      * Value stack is libc-malloc'd (= 16 M slots × 8 B = 128 MB); both

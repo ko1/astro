@@ -264,6 +264,7 @@ koruby_visit_roots(CTX *c, void *ctx, koruby_edge_fn fn)
         visit_value_slot(ctx, fn, &korb_vm->frozen_true_str);
         visit_value_slot(ctx, fn, &korb_vm->frozen_false_str);
         visit_value_slot(ctx, fn, &korb_vm->frozen_nil_str);
+        visit_value_slot(ctx, fn, &korb_vm->generic_ivars);
         visit_method_table(ctx, fn, &korb_vm->globals);
     }
     /* (f) Walk the libc-obj registry to update interior heap-ref

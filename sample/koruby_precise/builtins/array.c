@@ -3434,15 +3434,17 @@ static RESULT ary_initialize(CTX *c, int argc, VALUE *sp) {
 
 static RESULT ary_class_new(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
-    VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Allocate an empty array of self's class.  Subclass support: when
      * `class A < Array; def initialize(a, b); self << a << b; end; end`,
      * we must dispatch `A#initialize` (which may differ from
      * Array#initialize), not the size/default short-cut.  Falling back
-     * through korb_funcall_r ensures Ruby method-resolution applies. */
+     * through korb_funcall_r ensures Ruby method-resolution applies.
+     * Re-read self from sp[-argc-1] AFTER alloc since T_CLASS is
+     * arena-allocated and can move under STRESS+PURGE. */
     VALUE arr = korb_ary_new(c, c->sp);
+    VALUE self = sp[-argc - 1];
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS) {
         ((struct korb_array *)arr)->basic.klass = self;
     }

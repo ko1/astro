@@ -63,12 +63,14 @@ RESULT str_initialize(CTX *c, int argc, VALUE *sp) {
 
 RESULT str_class_new(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
-    VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Allocate an empty String of self's class, then dispatch initialize
-     * so subclass overrides apply (CRuby semantics). */
+     * so subclass overrides apply (CRuby semantics).  Re-read `self`
+     * from sp[-argc-1] AFTER the alloc since GC may have moved the
+     * class (T_CLASS is arena-allocated). */
     VALUE r = korb_str_new(c, c->sp, "", 0);
+    VALUE self = sp[-argc - 1];
     if (BUILTIN_TYPE(self) == T_CLASS) {
         ((struct RBasic *)r)->klass = self;
     }

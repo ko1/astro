@@ -732,12 +732,14 @@ static RESULT hash_initialize(CTX *c, int argc, VALUE *sp) {
 
 static RESULT hash_class_new(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
-    VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
     /* Allocate an empty hash, retag for subclass, then dispatch
-     * initialize (which may be subclass-overridden — CRuby semantics). */
+     * initialize (which may be subclass-overridden — CRuby semantics).
+     * Re-read self from sp[-argc-1] AFTER alloc since T_CLASS is
+     * arena-allocated and can move. */
     VALUE h = korb_hash_new(c, c->sp);
+    VALUE self = sp[-argc - 1];
     if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_CLASS) {
         ((struct korb_hash *)h)->basic.klass = self;
     }
