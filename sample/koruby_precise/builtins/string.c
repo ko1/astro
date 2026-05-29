@@ -411,63 +411,57 @@ static RESULT str_split(CTX *c, int argc, VALUE *sp) {
      * out address fields, producing negative lengths that abort
      * korb_xmalloc with SIGABRT. */
     bool has_block = korb_block_given(c);
-    RESULT _final = RESULT_OK(Qnil);
-    int rs_cap = 4;
-    ARO_ROOT_SCOPE_START(c, rs, 4) {
-        (void)rs_cap;
-        rs[0] = self;
-        rs[1] = (argc >= 1) ? argv[0] : Qnil;
-        rs[2] = korb_ary_new(c, c->sp_top);           /* result */
-        /* rs[3] holds the per-iter piece across korb_ary_push / yield */
-        #define EMIT(v) do { \
-            rs[3] = (v); \
-            if (has_block) { \
-                RESULT _ye = korb_yield(c, 1, &rs[3]); \
-                if (_ye.state != KORB_NORMAL) { _final = _ye; goto split_done; } \
-            } else korb_ary_push(rs[2], rs[3]); \
-        } while (0)
-        struct korb_string *s = (struct korb_string *)rs[0];
-        if (argc == 0 || NIL_P(rs[1])) {
-            long i = 0;
-            while (i < s->len) {
-                while (i < s->len && (s->ptr[i] == ' ' || s->ptr[i] == '\t' || s->ptr[i] == '\n')) i++;
-                if (i >= s->len) break;
-                long start = i;
-                while (i < s->len && s->ptr[i] != ' ' && s->ptr[i] != '\t' && s->ptr[i] != '\n') i++;
-                EMIT(korb_str_new(c, c->sp_top, s->ptr + start, i - start));
-                s = (struct korb_string *)rs[0];  /* reload */
-            }
-            _final = RESULT_OK(has_block ? rs[0] : rs[2]);
-        } else if (BUILTIN_TYPE(rs[1]) != T_STRING) {
-            _final = RESULT_OK(has_block ? rs[0] : rs[2]);
-        } else {
-            struct korb_string *sep = (struct korb_string *)rs[1];
-            if (sep->len == 0) {
-                for (long i = 0; i < s->len; i++) {
-                    EMIT(korb_str_new(c, c->sp_top, s->ptr + i, 1));
-                    s = (struct korb_string *)rs[0];  /* reload */
-                    sep = (struct korb_string *)rs[1];
-                }
-                _final = RESULT_OK(has_block ? rs[0] : rs[2]);
-            } else {
-                long start = 0;
-                for (long i = 0; i + sep->len <= s->len; ) {
-                    if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
-                        EMIT(korb_str_new(c, c->sp_top, s->ptr + start, i - start));
-                        s = (struct korb_string *)rs[0];  /* reload */
-                        sep = (struct korb_string *)rs[1];
-                        i += sep->len;
-                        start = i;
-                    } else i++;
-                }
-                EMIT(korb_str_new(c, c->sp_top, s->ptr + start, s->len - start));
-                _final = RESULT_OK(has_block ? rs[0] : rs[2]);
-            }
+    /* Park self / sep / result / per-iter piece in sp[0..3]. */
+    sp[0] = self;
+    sp[1] = (argc >= 1) ? argv[0] : Qnil;
+    sp[2] = 0;
+    sp[3] = 0;
+    sp[2] = korb_ary_new(c, sp + 4);
+    #define EMIT(v) do { \
+        sp[3] = (v); \
+        if (has_block) { \
+            RESULT _ye = korb_yield(c, 1, &sp[3]); \
+            if (_ye.state != KORB_NORMAL) return _ye; \
+        } else korb_ary_push(sp[2], sp[3]); \
+    } while (0)
+    struct korb_string *s = (struct korb_string *)sp[0];
+    if (argc == 0 || NIL_P(sp[1])) {
+        long i = 0;
+        while (i < s->len) {
+            while (i < s->len && (s->ptr[i] == ' ' || s->ptr[i] == '\t' || s->ptr[i] == '\n')) i++;
+            if (i >= s->len) break;
+            long start = i;
+            while (i < s->len && s->ptr[i] != ' ' && s->ptr[i] != '\t' && s->ptr[i] != '\n') i++;
+            EMIT(korb_str_new(c, sp + 4, s->ptr + start, i - start));
+            s = (struct korb_string *)sp[0];
         }
-        #undef EMIT
-    split_done: ;
-    } ARO_ROOT_SCOPE_END(c, rs);
-    return _final;
+        return RESULT_OK(has_block ? sp[0] : sp[2]);
+    }
+    if (BUILTIN_TYPE(sp[1]) != T_STRING) {
+        return RESULT_OK(has_block ? sp[0] : sp[2]);
+    }
+    struct korb_string *sep = (struct korb_string *)sp[1];
+    if (sep->len == 0) {
+        for (long i = 0; i < s->len; i++) {
+            EMIT(korb_str_new(c, sp + 4, s->ptr + i, 1));
+            s = (struct korb_string *)sp[0];
+            sep = (struct korb_string *)sp[1];
+        }
+        return RESULT_OK(has_block ? sp[0] : sp[2]);
+    }
+    long start = 0;
+    for (long i = 0; i + sep->len <= s->len; ) {
+        if (memcmp(s->ptr + i, sep->ptr, sep->len) == 0) {
+            EMIT(korb_str_new(c, sp + 4, s->ptr + start, i - start));
+            s = (struct korb_string *)sp[0];
+            sep = (struct korb_string *)sp[1];
+            i += sep->len;
+            start = i;
+        } else i++;
+    }
+    EMIT(korb_str_new(c, sp + 4, s->ptr + start, s->len - start));
+    #undef EMIT
+    return RESULT_OK(has_block ? sp[0] : sp[2]);
 }
 
 /* Compute the chomp length given an optional argument.
