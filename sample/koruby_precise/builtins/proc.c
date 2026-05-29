@@ -185,7 +185,14 @@ RESULT proc_call(CTX *c, int argc, VALUE *sp) {
     if (method_overlaps_env || env_outside_stack || self_recursion) {
         fresh_env = c->sp;
         for (uint32_t i = 0; i < p->env_size; i++) fresh_env[i] = new_fp[i];
-        c->sp = fresh_env + p->env_size;
+        /* Allocate slack past env_size so inner-block / inner-method
+         * frames don't spill out of the cloned env into adjacent
+         * memory.  Mirrors korb_yield's FRESH_ENV_SLACK rationale
+         * (without slack, recursive currying clobbers c->sp slots
+         * holding live values from sibling Proc.call frames). */
+        enum { PC_FRESH_ENV_SLACK = 512 };
+        for (uint32_t i = p->env_size; i < p->env_size + PC_FRESH_ENV_SLACK; i++) fresh_env[i] = Qnil;
+        c->sp = fresh_env + p->env_size + PC_FRESH_ENV_SLACK;
         new_fp = fresh_env;
     }
     /* Kwargs peel: if block declares kwargs and last arg is a kwargs-
