@@ -1642,6 +1642,23 @@ void korb_init_builtins(CTX *c) {
             DEF_R(cExc, "full_message", exc_full_message, -1);
             DEF_R(cExc, "detailed_message", exc_detailed_message, -1);
             DEF_R(cExc, "exception", exc_exception, -1);
+            /* Exception.exception (class method) — same as Class.new */
+            {
+                RESULT _exc_class_exception(CTX *c, int argc, VALUE *sp) {
+                    c->sp = sp;
+                    VALUE self = sp[-argc - 1];
+                    VALUE *argv = sp - argc;
+                    if (SPECIAL_CONST_P(self) || BUILTIN_TYPE(self) != T_CLASS) {
+                        return RESULT_OK(Qnil);
+                    }
+                    /* Delegate to self.new(*argv). */
+                    return korb_funcall(c, self, korb_intern("new"), argc, argv);
+                }
+                struct korb_class *cExcMeta = (struct korb_class *)cExc->basic.klass;
+                if (cExcMeta) {
+                    DEF_R(cExcMeta, "exception", _exc_class_exception, -1);
+                }
+            }
         }
         VALUE eNme = korb_const_get(KORB_VM(c)->object_class, korb_intern("NoMethodError"));
         if (eNme && !SPECIAL_CONST_P(eNme) &&

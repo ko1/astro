@@ -516,6 +516,11 @@ static RESULT hash_select(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    /* No block: return Enumerator (.to_enum(:select)). */
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("select"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     const struct korb_hash *h = (const struct korb_hash *)self;
     VALUE r = korb_hash_new(c, c->sp);
     ((struct korb_hash *)r)->compare_by_identity = h->compare_by_identity;
@@ -1025,6 +1030,10 @@ static RESULT hash_reject(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
+    if (!korb_block_given(c)) {
+        VALUE method_sym = korb_id2sym(korb_intern("reject"));
+        return korb_funcall(c, self, korb_intern("to_enum"), 1, &method_sym);
+    }
     struct korb_hash *h = (struct korb_hash *)self;
     VALUE r = korb_hash_new(c, c->sp);
     struct korb_hash *rh = (struct korb_hash *)r;
