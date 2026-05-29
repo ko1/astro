@@ -795,7 +795,7 @@ cfunc 側で:
 | 8d | node.def AST nodes を RESULT 化 (EVAL macro 変更) | 未着手 |
 | 8e | super_forward / super で cfunc_r 経路に対応 | 完了 (commit 832011d6) |
 | 8f | AST dispatcher で argv snapshot して zero-fill clobber 回避 | 完了 (commit 832011d6) |
-| 9 | 動作確認 + 回帰 fix | 進行中: rubyspec PASS=1615 (150 spec)、 全 10 test suite が default/STRESS/STRESS+PURGE 全 mode PASS |
+| 9 | 動作確認 + 回帰 fix | 進行中: rubyspec PASS=1630 (150 spec、 2026-05-29 時点)、 全 24 test suite が default/STRESS/STRESS+PURGE 全 mode PASS。 it_behaves_like 再有効化 + Hash#each Enumerator + Math hyperbolic 等で改善。 |
 
 Phase 7 完了後は cfunc 側の `c->sp = sp;` も不要になる (helper が
 責任を引き受ける)。 移行期は cfunc 側で sync しておけば安全。
