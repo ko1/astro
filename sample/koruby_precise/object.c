@@ -4702,12 +4702,12 @@ CTX *korb_runtime_init(void) {
             korb_const_set(KORB_VM(c)->object_class, ((struct korb_class *)os[0])->name, os[0]);
             os[1] = (VALUE)korb_class_new(c, c->sp, korb_intern("ObjectSpaceMeta"),
                                            KORB_VM(c)->class_class, T_CLASS);
-            VALUE objspace_each_object(CTX *c, VALUE self, int argc, VALUE *argv);
-            VALUE objspace_count_objects(CTX *c, VALUE self, int argc, VALUE *argv);
-            VALUE objspace_garbage_collect(CTX *c, VALUE self, int argc, VALUE *argv);
-            korb_class_add_method_cfunc((struct korb_class *)os[1], korb_intern("each_object"),     objspace_each_object,     -1);
-            korb_class_add_method_cfunc((struct korb_class *)os[1], korb_intern("count_objects"),   objspace_count_objects,   -1);
-            korb_class_add_method_cfunc((struct korb_class *)os[1], korb_intern("garbage_collect"), objspace_garbage_collect,  0);
+            extern RESULT objspace_each_object(CTX *c, int argc, VALUE *sp);
+            extern RESULT objspace_count_objects(CTX *c, int argc, VALUE *sp);
+            extern RESULT objspace_garbage_collect(CTX *c, int argc, VALUE *sp);
+            korb_class_add_method_cfunc_r((struct korb_class *)os[1], korb_intern("each_object"),     objspace_each_object,     -1);
+            korb_class_add_method_cfunc_r((struct korb_class *)os[1], korb_intern("count_objects"),   objspace_count_objects,   -1);
+            korb_class_add_method_cfunc_r((struct korb_class *)os[1], korb_intern("garbage_collect"), objspace_garbage_collect,  0);
             ((struct korb_class *)os[0])->basic.klass = (struct korb_class *)os[1];
         } ARO_ROOT_SCOPE_END(c, os);
     }

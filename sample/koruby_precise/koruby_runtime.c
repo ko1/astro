@@ -526,6 +526,8 @@ koruby_eval_bootstrap(CTX *c)
 {
     extern const char koruby_bootstrap_src[];
     extern const size_t koruby_bootstrap_len;
+    /* korb_eval_string currently still bridges via c->state at its
+     * boundary — see object.c korb_run_eval comment.  Read it back. */
     VALUE br = korb_eval_string(c, koruby_bootstrap_src,
                                 koruby_bootstrap_len, "<bootstrap>");
     (void)br;
@@ -543,35 +545,30 @@ int
 koruby_run_ast(CTX *c, NODE *ast)
 {
     RESULT _br = EVAL(c, ast, c->current_frame->fp);
-    if (UNLIKELY(_br.state != KORB_NORMAL)) {
-        c->state = _br.state;
-        c->state_value = _br.value;
-    }
-    (void)_br;
-    if (c->state == KORB_THROW) {
+    if (_br.state == KORB_THROW) {
         /* Pin eUTE / tag / tag_s — korb_inspect / korb_exc_new fire GC. */
         ARO_ROOT_SCOPE_START(c, urs, 3) {
             urs[0] = korb_const_get(korb_vm->object_class,
                                     korb_intern("UncaughtThrowError"));
             urs[1] = Qnil;  /* tag */
-            if (!SPECIAL_CONST_P(c->state_value) &&
-                BUILTIN_TYPE(c->state_value) == T_ARRAY) {
-                struct korb_array *pair = (struct korb_array *)c->state_value;
+            if (!SPECIAL_CONST_P(_br.value) &&
+                BUILTIN_TYPE(_br.value) == T_ARRAY) {
+                struct korb_array *pair = (struct korb_array *)_br.value;
                 if (pair->len >= 1) urs[1] = pair->ptr[0];
             }
             urs[2] = korb_inspect(c, c->sp, urs[1]);  /* tag_s */
             char buf[256];
             snprintf(buf, sizeof(buf), "uncaught throw %s", korb_str_cstr(urs[2]));
-            c->state = KORB_RAISE;
+            _br.state = KORB_RAISE;
             if (urs[0] && !SPECIAL_CONST_P(urs[0]) && BUILTIN_TYPE(urs[0]) == T_CLASS) {
-                c->state_value = korb_exc_new(c, (struct korb_class *)urs[0], buf);
+                _br.value = korb_exc_new(c, (struct korb_class *)urs[0], buf);
             } else {
-                c->state_value = korb_exc_new(c, NULL, buf);
+                _br.value = korb_exc_new(c, NULL, buf);
             }
         } ARO_ROOT_SCOPE_END(c, urs);
     }
-    if (c->state == KORB_RAISE) {
-        VALUE exc = c->state_value;
+    if (_br.state == KORB_RAISE) {
+        VALUE exc = _br.value;
         VALUE eSE = korb_const_get(korb_vm->object_class,
                                    korb_intern("SystemExit"));
         if (eSE && !SPECIAL_CONST_P(eSE) && !SPECIAL_CONST_P(exc) &&
