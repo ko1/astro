@@ -1190,10 +1190,40 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
     }
     if (!FIXNUM_P(argv[0])) return RESULT_OK(self);
     long base = FIX2LONG(self), exp = FIX2LONG(argv[0]);
+    /* Optional second arg = modulus: a.pow(b, m) == (a**b) mod m.
+     * Validate FIRST so type/range errors don't get masked by the
+     * Rational fallback below for negative exp. */
+    long mod = 0;
+    bool has_mod = false;
+    if (argc >= 2) {
+        VALUE m = argv[1];
+        if (FIXNUM_P(m)) {
+            has_mod = true;
+            mod = FIX2LONG(m);
+        } else if (!SPECIAL_CONST_P(m) && BUILTIN_TYPE(m) == T_BIGNUM) {
+            /* Bignum modulus not yet supported in fast path; pretend
+             * it's non-fixnum so we don't crash, but at least don't
+             * silently ignore.  TODO: actual bignum mod. */
+            has_mod = true;
+            mod = 0;
+        } else {
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+            return korb_raise(c, (struct korb_class *)eT,
+                       "no implicit conversion of %s into Integer",
+                       SPECIAL_CONST_P(m) ? "(special)"
+                           : korb_id_name(korb_class_of_class(m)->name));
+        }
+        /* CRuby: pow(neg, mod) raises RangeError. */
+        if (exp < 0) {
+            VALUE eR = korb_const_get(KORB_VM(c)->object_class, korb_intern("RangeError"));
+            return korb_raise(c, (struct korb_class *)eR,
+                       "2nd argument not allowed when first argument is negative");
+        }
+    }
     /* Negative exponent on a non-zero base: CRuby returns a Rational.
      * Compute (base**|exp|) recursively as a positive integer, then
      * wrap as Rational(1, that). */
-    if (exp < 0) {
+    if (exp < 0 && !has_mod) {
         if (base == 0) {
             VALUE eZ = korb_const_get(KORB_VM(c)->object_class, korb_intern("ZeroDivisionError"));
             return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
@@ -1214,10 +1244,6 @@ static RESULT int_pow(CTX *c, int argc, VALUE *sp) {
         VALUE rargs[2] = { INT2FIX(1), den };
         return korb_funcall_r(c, rk, korb_intern("new"), 2, rargs);
     }
-    /* Optional second arg = modulus: a.pow(b, m) == (a**b) mod m. */
-    long mod = 0;
-    bool has_mod = (argc >= 2 && FIXNUM_P(argv[1]));
-    if (has_mod) mod = FIX2LONG(argv[1]);
     /* Fixnum-only square-and-multiply, switching to Bignum on overflow. */
     long b = base, e = exp;
     long r = 1;

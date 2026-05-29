@@ -786,7 +786,7 @@ class Integer
       unless exp.is_a?(Integer) && mod.is_a?(Integer)
         raise TypeError, "2nd argument not allowed unless all arguments are integers"
       end
-      raise TypeError, "Integer#pow() 1st argument cannot be negative when 2nd argument specified" if exp < 0
+      raise RangeError, "2nd argument not allowed when first argument is negative" if exp < 0
       raise ZeroDivisionError, "divided by 0" if mod == 0
       r = 1
       b = self % mod
