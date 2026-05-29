@@ -318,6 +318,9 @@ def equal(o); MSpecMatcher.new(:equal, o); end
 def eql(o); MSpecMatcher.new(:eql, o); end
 def respond_to(name); MSpecMatcher.new(:respond_to, name); end
 def raise_error(klass = StandardError, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
+# CRuby specs use raise_consistent_error to allow message-format drift
+# across ruby versions.  Treat as a regular raise_error matcher.
+def raise_consistent_error(klass = StandardError, msg = nil); MSpecMatcher.new(:raise_error, [klass, nil]); end
 def raise_exception(klass = Exception, msg = nil); MSpecMatcher.new(:raise_error, [klass, msg]); end
 def __mspec_include_matcher(*items); MSpecMatcher.new(:include, items); end
 # Top-level `include` ambiguous: in mspec test bodies it's a matcher
