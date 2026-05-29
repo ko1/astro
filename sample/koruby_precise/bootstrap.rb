@@ -1604,6 +1604,25 @@ module Enumerable
     out
   end
 
+  def take(n)
+    n = n.to_int if !n.is_a?(Integer) && n.respond_to?(:to_int)
+    raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.is_a?(Integer)
+    raise ArgumentError, "attempt to take negative size" if n < 0
+    out = []
+    each { |x| break if out.size >= n; out << x }
+    out
+  end
+
+  def drop(n)
+    n = n.to_int if !n.is_a?(Integer) && n.respond_to?(:to_int)
+    raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.is_a?(Integer)
+    raise ArgumentError, "attempt to drop negative size" if n < 0
+    out = []
+    i = 0
+    each { |x| (i += 1; next) if i < n; out << x }
+    out
+  end
+
   def each_with_object(memo, &blk)
     each { |x| blk.call(x, memo) }
     memo
