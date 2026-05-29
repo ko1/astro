@@ -100,11 +100,11 @@ static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
     static __thread int cmp_eq_depth = 0;
     if (cmp_eq_depth >= 16) return RESULT_OK(Qfalse);
     cmp_eq_depth++;
-    /* If <=> raises, swallow the raise and return false (CRuby:
-     * Comparable#== rescues and falls through). */
+    /* If <=> raises, propagate the raise — CRuby's Comparable#== lets
+     * exceptions go through. */
     RESULT _cr = korb_funcall(c, self, korb_intern("<=>"), 1, argv);
     cmp_eq_depth--;
-    if (_cr.state != KORB_NORMAL) return RESULT_OK(Qfalse);
+    if (_cr.state != KORB_NORMAL) return _cr;
     VALUE r = _cr.value;
     if (NIL_P(r)) return RESULT_OK(Qfalse);
     if (FIXNUM_P(r)) return RESULT_OK(KORB_BOOL(FIX2LONG(r) == 0));
@@ -112,7 +112,11 @@ static RESULT cmp_eq(CTX *c, int argc, VALUE *sp) {
     if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT) {
         return RESULT_OK(KORB_BOOL(((struct korb_float *)r)->value == 0.0));
     }
-    return RESULT_OK(Qfalse);
+    /* Non-nil non-numeric — CRuby raises ArgumentError. */
+    return korb_raise(c, (struct korb_class *)korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError")),
+                      "comparison of %s with %s failed",
+                      korb_id_name(korb_class_of_class(self)->name),
+                      korb_id_name(korb_class_of_class(argv[0])->name));
 }
 static RESULT cmp_between(CTX *c, int argc, VALUE *sp) {
     c->sp = sp;
