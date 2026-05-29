@@ -285,7 +285,19 @@ static RESULT str_eq(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    return RESULT_OK(KORB_BOOL(BUILTIN_TYPE(argv[0]) == T_STRING && korb_eql(c, self, argv[0])));
+    if (!SPECIAL_CONST_P(argv[0]) && BUILTIN_TYPE(argv[0]) == T_STRING) {
+        return RESULT_OK(KORB_BOOL(korb_eql(c, self, argv[0])));
+    }
+    /* Non-String other: if it responds to #to_str, defer to obj == self
+     * (CRuby semantics). */
+    if (!SPECIAL_CONST_P(argv[0])) {
+        VALUE rt = UNWRAP(korb_funcall(c, argv[0], korb_intern("respond_to?"), 1,
+                                (VALUE[]){ korb_id2sym(korb_intern("to_str")) }));
+        if (RTEST(rt)) {
+            return korb_funcall_r(c, argv[0], korb_intern("=="), 1, &self);
+        }
+    }
+    return RESULT_OK(Qfalse);
 }
 
 /* Reentrancy guard for the inverted-<=> path: if other.<=>(self) re-enters
