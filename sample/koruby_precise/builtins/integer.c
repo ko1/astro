@@ -752,30 +752,56 @@ static RESULT int_fdiv(CTX *c, int argc, VALUE *sp) {
     VALUE self = sp[-argc - 1];
     VALUE *argv = sp - argc;
 
-    if (argc < 1) return RESULT_OK(Qnil);
-    double a = (double)(FIXNUM_P(self) ? FIX2LONG(self) : 0);
+    if (argc != 1) {
+        VALUE eA = korb_const_get(KORB_VM(c)->object_class, korb_intern("ArgumentError"));
+        return korb_raise(c, (struct korb_class *)eA,
+                          "wrong number of arguments (given %d, expected 1)", argc);
+    }
+    double a;
+    if (FIXNUM_P(self)) {
+        a = (double)FIX2LONG(self);
+    } else if (!SPECIAL_CONST_P(self) && BUILTIN_TYPE(self) == T_BIGNUM) {
+        const struct korb_bignum *bn = (const struct korb_bignum *)self;
+        a = mpz_get_d((mpz_ptr)bn->mpz);
+    } else {
+        a = 0;
+    }
     double b;
     VALUE other = argv[0];
     if      (FIXNUM_P(other))                                            b = (double)FIX2LONG(other);
     else if (FLONUM_P(other))                                            b = korb_flonum_to_double(other);
     else if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_FLOAT)  b = korb_num2dbl(other);
+    else if (!SPECIAL_CONST_P(other) && BUILTIN_TYPE(other) == T_BIGNUM) {
+        const struct korb_bignum *bn = (const struct korb_bignum *)other;
+        b = mpz_get_d((mpz_ptr)bn->mpz);
+    }
     else if (!SPECIAL_CONST_P(other)) {
         /* Coerce via #to_f (CRuby semantics for Numeric#fdiv with mocks
-         * and other to_f-respondable objects). */
-        VALUE rt = korb_funcall(c, other, korb_intern("respond_to?"), 1,
-                                (VALUE[]){ korb_id2sym(korb_intern("to_f")) });
-        if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
-        if (RTEST(rt)) {
-            VALUE r = korb_funcall(c, other, korb_intern("to_f"), 0, NULL);
-            if (c->state == KORB_RAISE) return RESULT_OK(Qnil);
-            if (FLONUM_P(r)) b = korb_flonum_to_double(r);
-            else if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT) b = korb_num2dbl(r);
-            else return RESULT_OK(Qnil);
-        } else {
-            return RESULT_OK(Qnil);
+         * and other to_f-respondable objects).  Non-Numeric without
+         * #to_f → TypeError. */
+        VALUE rt = UNWRAP(korb_funcall_r(c, other, korb_intern("respond_to?"), 1,
+                                          (VALUE[]){ korb_id2sym(korb_intern("to_f")) }));
+        if (!RTEST(rt)) {
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+            return korb_raise(c, (struct korb_class *)eT,
+                              "%s can't be coerced into Float",
+                              korb_id_name(korb_class_of_class(other)->name));
+        }
+        VALUE r = UNWRAP(korb_funcall_r(c, other, korb_intern("to_f"), 0, NULL));
+        if (FLONUM_P(r)) b = korb_flonum_to_double(r);
+        else if (!SPECIAL_CONST_P(r) && BUILTIN_TYPE(r) == T_FLOAT) b = korb_num2dbl(r);
+        else {
+            VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+            return korb_raise(c, (struct korb_class *)eT,
+                              "can't convert %s into Float (%s#to_f gives %s)",
+                              korb_id_name(korb_class_of_class(other)->name),
+                              korb_id_name(korb_class_of_class(other)->name),
+                              korb_id_name(korb_class_of_class(r)->name));
         }
     } else {
-        return RESULT_OK(Qnil);
+        VALUE eT = korb_const_get(KORB_VM(c)->object_class, korb_intern("TypeError"));
+        return korb_raise(c, (struct korb_class *)eT,
+                          "can't be coerced into Float");
     }
     return RESULT_OK(korb_float_new(c, c->sp, a / b));
 }
