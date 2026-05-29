@@ -555,7 +555,10 @@ class Range
 
   def each_with_object(memo, &blk)
     return enum_for(:each_with_object, memo) unless blk
-    each { |x| blk.call(x, memo) }
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      blk.call(x, memo)
+    }
     memo
   end unless method_defined?(:each_with_object)
 
@@ -1506,8 +1509,10 @@ end
 # and call `blk.call(...)` to escape the ambiguity.
 module Enumerable
   def group_by(&blk)
+    return enum_for(:group_by) unless blk
     h = {}
-    each { |x|
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
       k = blk.call(x)
       (h[k] ||= []) << x
     }
@@ -1515,8 +1520,12 @@ module Enumerable
   end
 
   def partition(&blk)
+    return enum_for(:partition) unless blk
     yes = []; no = []
-    each { |x| (blk.call(x) ? yes : no) << x }
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      (blk.call(x) ? yes : no) << x
+    }
     [yes, no]
   end
 
@@ -1630,7 +1639,11 @@ module Enumerable
   end
 
   def each_with_object(memo, &blk)
-    each { |x| blk.call(x, memo) }
+    return enum_for(:each_with_object, memo) unless blk
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      blk.call(x, memo)
+    }
     memo
   end
 
