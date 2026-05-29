@@ -256,8 +256,22 @@ prologue_ast_simple_inl(CTX *c, struct Node *callsite, VALUE recv,
 
     /* baruby convention: body's `sp` parameter = frame TOP (= fp +
      * locals_cnt).  Body's local `i` is accessed as `sp[i - locals_cnt]`
-     * (= negative offset, baked by walker). */
-    VALUE r = mc->dispatcher(c, mc->body, new_fp + mc->locals_cnt);
+     * (= negative offset, baked by walker).  Use EVAL_R so the dispatch
+     * goes through the standard NODE function-pointer path (= same as
+     * what `EVAL` would do, just RESULT-native). */
+    RESULT _br = EVAL_R(c, mc->body, new_fp + mc->locals_cnt);
+    VALUE r;
+    /* Lift RESULT.state into c->state for the surrounding legacy path
+     * (snapshot / dispatch_to_method's RETURN consumption etc. still
+     * reads c->state).  This bridge will go away once all the
+     * surrounding code goes RESULT-native (Phase 8d follow-ups). */
+    if (UNLIKELY(_br.state != KORB_NORMAL)) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+        r = Qnil;
+    } else {
+        r = _br.value;
+    }
 
     c->current_frame = frame.prev;
     c->running_block = prev_running;
@@ -416,7 +430,15 @@ prologue_ast_simple_static_inl(CTX *c, struct Node *callsite, VALUE recv,
     /* Direct call: linker resolves static_disp to a concrete SD_*
      * symbol; gcc emits a direct call instead of going through
      * mc->dispatcher (one indirect load + indirect call removed). */
-    VALUE r = static_disp(c, mc->body, new_fp + mc->locals_cnt);
+    RESULT _br = static_disp(c, mc->body, new_fp + mc->locals_cnt);
+    VALUE r;
+    if (UNLIKELY(_br.state != KORB_NORMAL)) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+        r = Qnil;
+    } else {
+        r = _br.value;
+    }
 
     c->current_frame = frame.prev;
     c->running_block = prev_running;

@@ -4,7 +4,7 @@
 #include "context.h"
 
 typedef struct Node NODE;
-typedef VALUE (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *sp);
+typedef RESULT (*node_dispatcher_func_t)(CTX *c, NODE *n, VALUE *sp);
 typedef uint64_t node_hash_t;
 
 void INIT(void);
@@ -63,8 +63,25 @@ struct NodeHead {
 #include <limits.h>
 #include "object.h"
 
+/* EVAL — dispatchers now return RESULT (Phase 8d).  This wrapper
+ * extracts the VALUE and lifts non-NORMAL state back into c->state for
+ * the legacy callers (cfuncs, koruby_run_ast, the test harnesses).
+ * Body uses inside node.def should keep using RESULT directly via EA /
+ * UNWRAP — only legacy boundaries need this lift. */
 static inline VALUE
 EVAL(CTX *c, NODE *n, VALUE *sp)
+{
+    RESULT r = (*n->head.dispatcher)(c, n, sp);
+    if (UNLIKELY(r.state != KORB_NORMAL)) {
+        c->state = r.state;
+        c->state_value = r.value;
+        return Qnil;
+    }
+    return r.value;
+}
+
+static inline RESULT
+EVAL_R(CTX *c, NODE *n, VALUE *sp)
 {
     return (*n->head.dispatcher)(c, n, sp);
 }

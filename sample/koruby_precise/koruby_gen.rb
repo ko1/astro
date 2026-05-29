@@ -38,6 +38,13 @@ class KoRubyNodeDef < ASTroGen::NodeDef
     end
 
 
+    # All dispatchers return `RESULT` (= VALUE + state bits).  Migration
+    # from VALUE-return + c->state side-channel: Phase 8d (2026-05-29).
+    # Embedder code must use UNWRAP at language boundaries (entry from
+    # main / builtins / cfuncs).  See context.h RESULT_OK / UNWRAP /
+    # CHECK macros.
+    def result_type = "RESULT"
+
     # 4-arg dispatcher: `(CTX *c, NODE *n, VALUE *sp)`.  sp は parse-time
     # baked sp_offset (= node_lvar_get/set 等の `index` から walker が計算)
     # を介して frame-local slot 直接アクセスに使う。 c->fp は段階移行中で

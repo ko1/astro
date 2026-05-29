@@ -1,46 +1,43 @@
 // -*- mode: c -*-
 // koruby AST nodes.
-// EVAL_ARG returns VALUE; if c->state != KORB_NORMAL after a child eval the
-// current frame must propagate by returning Qnil immediately.
+// All dispatchers return RESULT (VALUE + state bits).  EVAL_ARG_UNWRAP() unwraps a
+// child's RESULT to VALUE and early-returns the raw RESULT on non-NORMAL.
+// Phase 8d (2026-05-29): c->state side-channel removed from node.def.
 
-#define EA(c, n) ({                                       \
-    VALUE _v = EVAL_ARG(c, n);                            \
-    if (UNLIKELY((c)->state != KORB_NORMAL)) return Qnil;   \
-    _v;                                                   \
-})
-#define CHECK_STATE(c) do { if (UNLIKELY((c)->state != KORB_NORMAL)) return Qnil; } while (0)
+#define EVAL_ARG_UNWRAP(c, n) UNWRAP(EVAL_ARG(c, n))
+#define CHECK_STATE(c) do { if (UNLIKELY((c)->state != KORB_NORMAL)) return RESULT_OK(Qnil); } while (0)
 
 // ---------------- literals ----------------
 
 NODE_DEF
 node_num(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, int32_t v)
 {
-    return INT2FIX(v);
+    return RESULT_OK(INT2FIX(v));
 }
 
 NODE_DEF
 node_int_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, intptr_t v)
 {
     /* literal that fits in a fixnum */
-    return (VALUE)((uintptr_t)v << 1) | FIXNUM_FLAG;
+    return RESULT_OK((VALUE)((uintptr_t)v << 1) | FIXNUM_FLAG);
 }
 
 NODE_DEF
 node_bignum_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str)
 {
-    return korb_bignum_new_str(str, 10);
+    return RESULT_OK(korb_bignum_new_str(str, 10));
 }
 
 NODE_DEF
 node_float_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, double v)
 {
-    return korb_float_new(c, c->sp, v);
+    return RESULT_OK(korb_float_new(c, c->sp, v));
 }
 
 NODE_DEF
 node_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, const char *str, uint32_t len)
 {
-    return korb_str_new(c, c->sp, str, len);
+    return RESULT_OK(korb_str_new(c, c->sp, str, len));
 }
 
 NODE_DEF
@@ -48,7 +45,7 @@ node_frozen_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, co
 {
     VALUE s = korb_str_new(c, c->sp, str, len);
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_FROZEN;
-    return s;
+    return RESULT_OK(s);
 }
 
 NODE_DEF
@@ -56,37 +53,37 @@ node_chilled_str_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, c
 {
     VALUE s = korb_str_new(c, c->sp, str, len);
     if (!SPECIAL_CONST_P(s)) RBASIC(s)->head.flags |= FL_CHILLED;
-    return s;
+    return RESULT_OK(s);
 }
 
 NODE_DEF
 node_sym_lit(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID id)
 {
-    return korb_id2sym(id);
+    return RESULT_OK(korb_id2sym(id));
 }
 
 NODE_DEF
 node_true(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return Qtrue;
+    return RESULT_OK(Qtrue);
 }
 
 NODE_DEF
 node_false(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
 NODE_DEF
 node_nil(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 NODE_DEF
 node_self(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return c->current_frame->self;
+    return RESULT_OK(c->current_frame->self);
 }
 
 // ---------------- variables ----------------
@@ -103,32 +100,32 @@ NODE_DEF
 node_lvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t index)
 {
     int32_t off = (int32_t)index;
-    if (off < 0) return sp[off];
-    return c->current_frame->fp[index];
+    if (off < 0) return RESULT_OK(sp[off]);
+    return RESULT_OK(c->current_frame->fp[index]);
 }
 
 NODE_DEF
 node_lvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t index, NODE *rhs)
 {
-    VALUE v = EA(c, rhs);
+    VALUE v = EVAL_ARG_UNWRAP(c, rhs);
     int32_t off = (int32_t)index;
     if (off < 0) sp[off] = v;
     else c->current_frame->fp[index] = v;
-    return v;
+    return RESULT_OK(v);
 }
 
 NODE_DEF
 node_ivar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, struct ivar_cache *cache@ref)
 {
-    return korb_ivar_get_ic(c->current_frame->self, name, cache);
+    return RESULT_OK(korb_ivar_get_ic(c->current_frame->self, name, cache));
 }
 
 NODE_DEF
 node_ivar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs, struct ivar_cache *cache@ref)
 {
-    VALUE v = EA(c, rhs);
+    VALUE v = EVAL_ARG_UNWRAP(c, rhs);
     korb_ivar_set_ic(c, c->current_frame->self, name, v, cache);
-    return v;
+    return RESULT_OK(v);
 }
 
 NODE_DEF
@@ -137,18 +134,18 @@ node_gvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
     /* $@ — `current exception`.backtrace, or nil if no current exc. */
     if (name == korb_intern("$@")) {
         VALUE exc = korb_gvar_get(korb_intern("$!"));
-        if (NIL_P(exc) || SPECIAL_CONST_P(exc)) return Qnil;
+        if (NIL_P(exc) || SPECIAL_CONST_P(exc)) return RESULT_OK(Qnil);
         VALUE bt = korb_funcall(c, exc, korb_intern("backtrace"), 0, NULL);
         if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; bt = Qnil; }
-        return bt;
+        return RESULT_OK(bt);
     }
-    return korb_gvar_get(name);
+    return RESULT_OK(korb_gvar_get(name));
 }
 
 NODE_DEF
 node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs)
 {
-    VALUE v = EA(c, rhs);
+    VALUE v = EVAL_ARG_UNWRAP(c, rhs);
     /* Validation for special globals. */
     const char *nm = korb_id_name(name);
     if (nm && nm[0] == '$' && nm[1]) {
@@ -172,16 +169,14 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         }
         if (read_only) {
             VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
-                       "%s is a read-only variable", nm));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eN,
+                       "%s is a read-only variable", nm);
         }
         if (string_only && !NIL_P(v) &&
             (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING)) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                       "value of %s must be String", nm));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eT,
+                       "value of %s must be String", nm);
         }
         /* $stdout / $stderr / $stdin must respond to #write (or #read for stdin). */
         if (strcmp(nm, "$stdout") == 0 || strcmp(nm, "$stderr") == 0) {
@@ -191,11 +186,10 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
             if (!RTEST(rt)) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
                 struct korb_class *klass = korb_class_of_class(v);
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
+                return korb_raise(c, (struct korb_class *)eT,
                            "%s must have write method, %s given",
                            nm,
-                           klass && klass->name ? korb_id_name(klass->name) : "?"));
-                return Qnil;
+                           klass && klass->name ? korb_id_name(klass->name) : "?");
             }
         }
         /* $. should call #to_int.  Returned value must be Integer; if
@@ -207,20 +201,18 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
                 if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
                 if (RTEST(rt)) {
                     v = korb_funcall(c, v, korb_intern("to_int"), 0, NULL);
-                    if (c->state != KORB_NORMAL) return Qnil;
+                    if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
                     bool is_int = SPECIAL_CONST_P(v) ? FIXNUM_P(v)
                                                      : BUILTIN_TYPE(v) == T_BIGNUM;
                     if (!is_int) {
                         VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                        DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                                   "can't convert to Integer (#to_int returned non-Integer)"));
-                        return Qnil;
+                        return korb_raise(c, (struct korb_class *)eT,
+                                   "can't convert to Integer (#to_int returned non-Integer)");
                     }
                 } else {
                     VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                    DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                               "no implicit conversion to Integer"));
-                    return Qnil;
+                    return korb_raise(c, (struct korb_class *)eT,
+                               "no implicit conversion to Integer");
                 }
             }
         }
@@ -238,14 +230,14 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
             korb_gvar_set(korb_intern("$-v"),      canon);
             korb_gvar_set(korb_intern("$-w"),      canon);
             korb_gvar_set(korb_intern("$-W"),      canon);
-            return canon;
+            return RESULT_OK(canon);
         }
         /* $DEBUG / $-d aliases. */
         if (strcmp(nm, "$DEBUG") == 0 || strcmp(nm, "$-d") == 0) {
             VALUE canon = RTEST(v) ? Qtrue : Qfalse;
             korb_gvar_set(korb_intern("$DEBUG"), canon);
             korb_gvar_set(korb_intern("$-d"),    canon);
-            return canon;
+            return RESULT_OK(canon);
         }
         /* $@ — sets backtrace on the current exception ($!).  Raises
          * ArgumentError "$! not set" if no exception is in flight. */
@@ -253,33 +245,31 @@ node_gvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
             VALUE exc = korb_gvar_get(korb_intern("$!"));
             if (NIL_P(exc) || SPECIAL_CONST_P(exc)) {
                 VALUE eA = korb_const_get(korb_vm->object_class, korb_intern("ArgumentError"));
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eA, "$! not set"));
-                return Qnil;
+                return korb_raise(c, (struct korb_class *)eA, "$! not set");
             }
             korb_funcall(c, exc, korb_intern("set_backtrace"), 1, &v);
-            return v;
+            return RESULT_OK(v);
         }
         /* $0 / $PROGRAM_NAME aliases — must coerce to String. */
         if (strcmp(nm, "$0") == 0 || strcmp(nm, "$PROGRAM_NAME") == 0) {
             if (SPECIAL_CONST_P(v) || BUILTIN_TYPE(v) != T_STRING) {
                 VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                           "$0 must be a String"));
-                return Qnil;
+                return korb_raise(c, (struct korb_class *)eT,
+                           "$0 must be a String");
             }
             korb_gvar_set(korb_intern("$0"), v);
             korb_gvar_set(korb_intern("$PROGRAM_NAME"), v);
-            return v;
+            return RESULT_OK(v);
         }
     }
     korb_gvar_set(name, v);
-    return v;
+    return RESULT_OK(v);
 }
 
 NODE_DEF
 node_gvar_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
 {
-    return KORB_BOOL(korb_gvar_defined(name));
+    return RESULT_OK(KORB_BOOL(korb_gvar_defined(name)));
 }
 
 /* defined?(A::B) helper — like node_const_path_get but returns Qfalse
@@ -289,8 +279,8 @@ NODE_DEF
 node_const_path_defined(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent, ID name)
 {
     extern bool korb_const_is_private(const struct korb_class *, ID);
-    VALUE p = EA(c, parent);
-    if (BUILTIN_TYPE(p) != T_CLASS && BUILTIN_TYPE(p) != T_MODULE) return Qfalse;
+    VALUE p = EVAL_ARG_UNWRAP(c, parent);
+    if (BUILTIN_TYPE(p) != T_CLASS && BUILTIN_TYPE(p) != T_MODULE) return RESULT_OK(Qfalse);
     if (korb_const_is_private((struct korb_class *)p, name)) {
         bool in_scope = false;
         for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
@@ -301,10 +291,10 @@ node_const_path_defined(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
             if (cr->klass == korb_vm->object_class && cr->prev == NULL) continue;
             if ((VALUE)cr->klass == p) { in_scope = true; break; }
         }
-        if (!in_scope) return Qfalse;
+        if (!in_scope) return RESULT_OK(Qfalse);
     }
     VALUE v = korb_const_get_inherited_stop_at_object((struct korb_class *)p, name);
-    return UNDEF_P(v) ? Qfalse : Qtrue;
+    return RESULT_OK(UNDEF_P(v) ? Qfalse : Qtrue);
 }
 
 /* defined? for bare CONST — walks lexical scope (cref) and superclass
@@ -319,12 +309,12 @@ node_const_path_defined(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
 NODE_DEF
 node_super_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    if (!c->current_frame || !c->current_frame->method) return Qfalse;
+    if (!c->current_frame || !c->current_frame->method) return RESULT_OK(Qfalse);
     
     struct korb_method *m = (c->running_block && c->running_block->defining_method)
                               ? c->running_block->defining_method
                               : c->current_frame->method;
-    if (!m || !m->defining_class) return Qfalse;
+    if (!m || !m->defining_class) return RESULT_OK(Qfalse);
     struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
     extern struct korb_method *korb_class_find_super_method_n(
         const struct korb_class *, const struct korb_class *, ID,
@@ -333,7 +323,7 @@ node_super_defined_p(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     uint16_t out;
     struct korb_method *sm = korb_class_find_super_method_n(recv_klass,
         m->defining_class, m->name, skip, &out);
-    return sm ? Qtrue : Qfalse;
+    return RESULT_OK(sm ? Qtrue : Qfalse);
 }
 
 NODE_DEF
@@ -341,53 +331,53 @@ node_const_defined_lex(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 {
     extern bool korb_const_is_private(const struct korb_class *, ID);
     for (struct korb_cref *cr = c->current_frame->cref; cr; cr = cr->prev) {
-        if (korb_const_has(cr->klass, name)) return Qtrue;
+        if (korb_const_has(cr->klass, name)) return RESULT_OK(Qtrue);
         for (int32_t i = (int32_t)cr->klass->includes_cnt - 1; i >= 0; i--) {
-            if (korb_const_has(cr->klass->includes[i], name)) return Qtrue;
+            if (korb_const_has(cr->klass->includes[i], name)) return RESULT_OK(Qtrue);
         }
     }
     struct korb_class *k = korb_host_class(c);
     if (k && k->super) {
         VALUE v = korb_const_get_inherited(k->super, name);
         if (!UNDEF_P(v)) {
-            if (korb_const_is_private(k->super, name)) return Qfalse;
-            return Qtrue;
+            if (korb_const_is_private(k->super, name)) return RESULT_OK(Qfalse);
+            return RESULT_OK(Qtrue);
         }
     }
     VALUE v = korb_const_get_inherited(korb_vm->object_class, name);
     if (!UNDEF_P(v)) {
-        if (korb_const_is_private(korb_vm->object_class, name)) return Qfalse;
-        return Qtrue;
+        if (korb_const_is_private(korb_vm->object_class, name)) return RESULT_OK(Qfalse);
+        return RESULT_OK(Qtrue);
     }
-    return Qfalse;
+    return RESULT_OK(Qfalse);
 }
 
 NODE_DEF
 node_last_line_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return korb_last_line_get(c);
+    return RESULT_OK(korb_last_line_get(c));
 }
 
 NODE_DEF
 node_last_line_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *rhs)
 {
-    VALUE v = EA(c, rhs);
+    VALUE v = EVAL_ARG_UNWRAP(c, rhs);
     korb_last_line_set(c, v);
-    return v;
+    return RESULT_OK(v);
 }
 
 NODE_DEF
 node_last_match_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    return korb_last_match_get(c);
+    return RESULT_OK(korb_last_match_get(c));
 }
 
 NODE_DEF
 node_last_match_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *rhs)
 {
-    VALUE v = EA(c, rhs);
+    VALUE v = EVAL_ARG_UNWRAP(c, rhs);
     korb_last_match_set(c, v);
-    return v;
+    return RESULT_OK(v);
 }
 
 NODE_DEF
@@ -396,37 +386,37 @@ node_cvar_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
     /* Class variable: walk the cref's class up its superclass chain
      * looking for @@name; missing → NameError. */
     extern VALUE korb_cvar_get(CTX *c, ID name);
-    return korb_cvar_get(c, name);
+    return RESULT_OK(korb_cvar_get(c, name));
 }
 
 NODE_DEF
 node_cvar_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs)
 {
-    VALUE v = EA(c, rhs);
+    VALUE v = EVAL_ARG_UNWRAP(c, rhs);
     extern void korb_cvar_set(CTX *c, ID name, VALUE val);
     korb_cvar_set(c, name, v);
-    return v;
+    return RESULT_OK(v);
 }
 
 NODE_DEF
 node_const_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name)
 {
-    return korb_const_lookup(c, name);
+    return RESULT_OK(korb_const_lookup(c, name));
 }
 
 NODE_DEF
 node_const_set(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE *rhs)
 {
-    VALUE v = EA(c, rhs);
+    VALUE v = EVAL_ARG_UNWRAP(c, rhs);
     struct korb_class *host = korb_host_class(c);
     korb_const_set(host, name, v);
-    return v;
+    return RESULT_OK(v);
 }
 
 NODE_DEF
 node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *parent, ID name)
 {
-    VALUE p = EA(c, parent);
+    VALUE p = EVAL_ARG_UNWRAP(c, parent);
     if (BUILTIN_TYPE(p) == T_CLASS || BUILTIN_TYPE(p) == T_MODULE) {
         /* private_constant enforcement: explicit `Mod::FOO` from
          * outside Mod's lexical scope is a NameError — but if Mod
@@ -442,20 +432,19 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
                 struct korb_class *p_meta = korb_singleton_class_of(c, (struct korb_class *)p);
                 if (p_meta && korb_class_find_method(p_meta, korb_intern("const_missing"))) {
                     VALUE sym = korb_id2sym(name);
-                    return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
+                    return RESULT_OK(LIFT_C_STATE(c, korb_funcall(c, p, korb_intern("const_missing"), 1, &sym)));
                 }
                 VALUE eName = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-                DROP_RESULT(korb_raise(c, (struct korb_class *)eName,
+                return korb_raise(c, (struct korb_class *)eName,
                            "private constant %s::%s referenced",
-                           korb_id_name(((struct korb_class *)p)->name), korb_id_name(name)));
-                return Qnil;
+                           korb_id_name(((struct korb_class *)p)->name), korb_id_name(name));
             }
         }
         /* Walk super chain AND includes — but stop short of Object's
          * own namespace.  CRuby's `Sub::CONST` lookup does NOT find
          * top-level constants visible only via Object inheritance. */
         VALUE v = korb_const_get_inherited_stop_at_object((struct korb_class *)p, name);
-        if (!UNDEF_P(v)) return v;
+        if (!UNDEF_P(v)) return RESULT_OK(v);
         /* const_missing hook: if the class defines a (singleton) method
          * named const_missing, dispatch to it with the missing name as
          * a Symbol — CRuby's protocol for autoload / lazy const lookup. */
@@ -463,7 +452,7 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
         struct korb_class *meta = korb_singleton_class_of(c, p_class);
         if (meta && korb_class_find_method(meta, korb_intern("const_missing"))) {
             VALUE sym = korb_id2sym(name);
-            return korb_funcall(c, p, korb_intern("const_missing"), 1, &sym);
+            return RESULT_OK(LIFT_C_STATE(c, korb_funcall(c, p, korb_intern("const_missing"), 1, &sym)));
         }
         /* Build the error message via mod.name (or .inspect for an
          * anonymous module).  Pin eName / name_v / prefix across the
@@ -490,11 +479,10 @@ node_const_path_get(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NO
                        "uninitialized constant %s::%s",
                        prefix_str, korb_id_name(name)));
         } ARO_ROOT_SCOPE_END(c, ers);
-        return Qnil;
+        return RESULT_OK(Qnil);
     }
-    DROP_RESULT(korb_raise_type_error(c, "%s is not a class/module",
-                          NIL_P(p) ? "nil" : korb_id_name(korb_class_of_class(p)->name)));
-    return Qnil;
+    return korb_raise_type_error(c, "%s is not a class/module",
+                          NIL_P(p) ? "nil" : korb_id_name(korb_class_of_class(p)->name));
 }
 
 // ---------------- syntax / control ----------------
@@ -507,8 +495,7 @@ node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t en
     c->current_frame->fp += envsize;
     if (UNLIKELY(c->current_frame->fp + envsize >= c->stack_end)) {
         c->current_frame->fp = prev_fp;
-        DROP_RESULT(korb_raise(c, NULL, "stack overflow"));
-        return Qnil;
+        return korb_raise(c, NULL, "stack overflow");
     }
     /* Extend sp to cover the scope's locals AND zero-fill the freshly
      * exposed slots (= the working area).  Doing the zero-fill in the
@@ -527,7 +514,7 @@ node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t en
      * frame top (= shifted fp + envsize), since bake walker computed
      * the lvar sp_offsets relative to envsize.  EVAL_ARG would pass
      * the enclosing scope's sp, which is wrong. */
-    VALUE v = EVAL(c, body, c->current_frame->fp + envsize);
+    RESULT _sr = EVAL_R(c, body, c->current_frame->fp + envsize);
     /* Restore sp too — otherwise the now-dead scope's slots stay in the
      * GC root-scan range and a later collect treats their values (=
      * possibly stale heap ptrs written during this scope's body) as live
@@ -538,20 +525,20 @@ node_scope(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t en
     c->current_frame->fp = prev_fp;
     for (VALUE *p = prev_sp; p < c->sp; p++) *p = Qnil;
     c->sp = prev_sp;
-    return v;
+    return _sr;
 }
 
 NODE_DEF
 node_seq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *head, NODE *tail)
 {
-    EA(c, head);
+    EVAL_ARG_UNWRAP(c, head);
     return EVAL_ARG(c, tail);
 }
 
 NODE_DEF
 node_if(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *then_node, NODE *else_node)
 {
-    VALUE v = EA(c, cond);
+    VALUE v = EVAL_ARG_UNWRAP(c, cond);
     if (RTEST(v)) {
         return EVAL_ARG(c, then_node);
     }
@@ -564,72 +551,60 @@ NODE_DEF
 node_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *body)
 {
     while (1) {
-        VALUE v = EVAL_ARG(c, cond);
-        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        VALUE v = EVAL_ARG_UNWRAP(c, cond);
         if (!RTEST(v)) break;
     redo_while:
-        EVAL_ARG(c, body);
-        if (UNLIKELY(c->state != KORB_NORMAL)) {
-            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
-                /* break with no target frame is a local while-break. */
-                VALUE bv = c->state_value;
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                return bv;
+        {
+            RESULT _br = EVAL_ARG(c, body);
+            if (UNLIKELY(_br.state != KORB_NORMAL)) {
+                if (_br.state == KORB_BREAK && c->state_target_frame == NULL) {
+                    /* break with no target frame is a local while-break. */
+                    return RESULT_OK(_br.value);
+                }
+                else if (_br.state == KORB_NEXT) {
+                    continue;
+                }
+                else if (_br.state == KORB_REDO) {
+                    /* redo: re-eval body without re-checking condition. */
+                    goto redo_while;
+                }
+                return _br;
             }
-            else if (c->state == KORB_NEXT) {
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                continue;
-            }
-            else if (c->state == KORB_REDO) {
-                /* redo: re-eval body without re-checking condition. */
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                goto redo_while;
-            }
-            return Qnil;
         }
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 NODE_DEF
 node_until(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *cond, NODE *body)
 {
     while (1) {
-        VALUE v = EVAL_ARG(c, cond);
-        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        VALUE v = EVAL_ARG_UNWRAP(c, cond);
         if (RTEST(v)) break;
     redo_until:
-        EVAL_ARG(c, body);
-        if (UNLIKELY(c->state != KORB_NORMAL)) {
-            if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
-                VALUE bv = c->state_value;
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                return bv;
+        {
+            RESULT _br = EVAL_ARG(c, body);
+            if (UNLIKELY(_br.state != KORB_NORMAL)) {
+                if (_br.state == KORB_BREAK && c->state_target_frame == NULL) {
+                    return RESULT_OK(_br.value);
+                }
+                else if (_br.state == KORB_NEXT) {
+                    continue;
+                }
+                else if (_br.state == KORB_REDO) {
+                    goto redo_until;
+                }
+                return _br;
             }
-            else if (c->state == KORB_NEXT) {
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                continue;
-            }
-            else if (c->state == KORB_REDO) {
-                c->state = KORB_NORMAL;
-                c->state_value = Qnil;
-                goto redo_until;
-            }
-            return Qnil;
         }
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 NODE_DEF
 node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
 {
-    VALUE v = EA(c, value);
+    VALUE v = EVAL_ARG_UNWRAP(c, value);
     
     /* Stale-frame check: if we're inside a non-lambda block whose
      * lexically-enclosing method has already returned, raise
@@ -652,63 +627,55 @@ node_return(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *valu
         }
         if (!target_alive) {
             VALUE eL = korb_const_get(korb_vm->object_class, korb_intern("LocalJumpError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eL, "unexpected return"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eL, "unexpected return");
         }
     }
-    c->state = KORB_RETURN;
-    c->state_value = v;
-    /* If we're running inside a non-lambda block / proc, this is a
-     * non-local return targeting the lexically-enclosing method's
-     * frame.  `c->running_block` is set by korb_yield/proc_call.  Plain
-     * method body return / lambda body return → state_target_frame
-     * stays NULL (consume at any matching boundary). */
+    /* state_target_frame is still propagated via c-> (cannot fit in
+     * RESULT); used by node_def's body / dispatch_to_method epilogue
+     * to decide whether to consume this RETURN.  See c->state_target_frame
+     * lookup at frame.prev == target match points. */
     c->state_target_frame = NULL;
     if (c->running_block && !c->running_block->is_lambda &&
         c->running_block->return_target_frame) {
         c->state_target_frame = c->running_block->return_target_frame;
     }
-    return v;
+    return (RESULT){ v, KORB_RETURN };
 }
 
 NODE_DEF
 node_break(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
 {
-    VALUE v = EA(c, value);
-    c->state = KORB_BREAK;
-    c->state_value = v;
-    return v;
+    VALUE v = EVAL_ARG_UNWRAP(c, value);
+    return (RESULT){ v, KORB_BREAK };
 }
 
 NODE_DEF
 node_next(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *value)
 {
-    VALUE v = EA(c, value);
-    c->state = KORB_NEXT;
-    c->state_value = v;
-    return v;
+    VALUE v = EVAL_ARG_UNWRAP(c, value);
+    return (RESULT){ v, KORB_NEXT };
 }
 
 NODE_DEF
 node_not(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *expr)
 {
-    VALUE v = EA(c, expr);
-    return RTEST(v) ? Qfalse : Qtrue;
+    VALUE v = EVAL_ARG_UNWRAP(c, expr);
+    return RESULT_OK(RTEST(v) ? Qfalse : Qtrue);
 }
 
 NODE_DEF
 node_and(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EA(c, lhs);
-    if (!RTEST(l)) return l;
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    if (!RTEST(l)) return RESULT_OK(l);
     return EVAL_ARG(c, rhs);
 }
 
 NODE_DEF
 node_or(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EA(c, lhs);
-    if (RTEST(l)) return l;
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    if (RTEST(l)) return RESULT_OK(l);
     return EVAL_ARG(c, rhs);
 }
 
@@ -722,7 +689,7 @@ node_ary_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t 
     for (uint32_t i = 0; i < argc; i++) {
         korb_ary_push(ary, c->current_frame->fp[arg_index + i]);
     }
-    return ary;
+    return RESULT_OK(ary);
 }
 
 NODE_DEF
@@ -744,15 +711,15 @@ node_hash_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t
         }
         korb_hash_aset(c, h, k, c->current_frame->fp[arg_index + i + 1]);
     }
-    return h;
+    return RESULT_OK(h);
 }
 
 NODE_DEF
 node_range_new(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *begin, NODE *end, uint32_t exclude_end)
 {
-    VALUE b = EA(c, begin);
-    VALUE e = EA(c, end);
-    return korb_range_new(b, e, exclude_end != 0);
+    VALUE b = EVAL_ARG_UNWRAP(c, begin);
+    VALUE e = EVAL_ARG_UNWRAP(c, end);
+    return RESULT_OK(korb_range_new(b, e, exclude_end != 0));
 }
 
 NODE_DEF
@@ -773,7 +740,7 @@ node_str_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32
         }
         ret = rs[0];
     } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+    return RESULT_OK(ret);
 }
 
 // ---------------- method definition / call ----------------
@@ -785,7 +752,7 @@ node_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name, NODE
      * `def foo` semantics inside a class body. */
     struct korb_class *target = korb_host_class(c);
     korb_class_add_method_ast_full_cref(c, target, name, body, params_cnt, params_cnt, -1, locals_cnt, c->current_frame->cref);
-    return korb_id2sym(name);
+    return RESULT_OK(korb_id2sym(name));
 }
 
 NODE_DEF @noinline
@@ -803,17 +770,17 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
     ARO_ROOT_SCOPE_START(c, rs, 2) {
         rs[0] = (VALUE)korb_vm->object_class;
         if (super_expr) {
-            VALUE sv = EA(c, super_expr);
+            VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
             if (BUILTIN_TYPE(sv) != T_CLASS) {
                 DROP_RESULT(korb_raise_type_error(c, "superclass must be a Class (%s given)",
                                       korb_id_name(korb_class_of_class(sv)->name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
             if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
                 DROP_RESULT(korb_raise_type_error(c, "can't make subclass of singleton class"));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
             rs[0] = sv;
         }
@@ -825,19 +792,19 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
             if (BUILTIN_TYPE(existing) == T_MODULE) {
                 DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
             if (super_expr && ((struct korb_class *)rs[1])->super != (struct korb_class *)rs[0]) {
                 DROP_RESULT(korb_raise_type_error(c, "superclass mismatch for class %s",
                                       korb_id_name(name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
         }
         else if (!UNDEF_P(existing)) {
             DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
         else {
             struct korb_class *k = korb_class_new(c, c->sp, name, (struct korb_class *)rs[0], T_OBJECT);
@@ -853,7 +820,7 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
                 korb_funcall(c, rs[0], korb_intern("inherited"), 1, &child_v);
                 if (c->state == KORB_RAISE) {
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return Qnil;
+                    return RESULT_OK(Qnil);
                 }
             }
         }
@@ -875,11 +842,11 @@ node_class_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
         c->current_frame = &fr;
         VALUE *fp_lo = fr.fp;
         VALUE *fp_hi = c->sp;
-        r = body ? EVAL_ARG(c, body) : Qnil;
+        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame = fr.prev;
         korb_proc_snapshot_env_if_in_frame(rs[1], fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
-    return r;
+    return RESULT_OK(r);
 }
 
 /* `class X` with no `< Super` clause — reopen if exists (any super is
@@ -907,12 +874,12 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
         else if (!UNDEF_P(existing) && BUILTIN_TYPE(existing) == T_MODULE) {
             DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
         else if (!UNDEF_P(existing)) {
             DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
         else {
             struct korb_class *k = korb_class_new(c, c->sp, name, korb_vm->object_class, T_OBJECT);
@@ -925,7 +892,7 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
                 korb_funcall(c, (VALUE)korb_vm->object_class, korb_intern("inherited"), 1, &child_v);
                 if (c->state == KORB_RAISE) {
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return Qnil;
+                    return RESULT_OK(Qnil);
                 }
             }
         }
@@ -948,11 +915,11 @@ node_class_reopen(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID n
         c->current_frame = &fr;
         VALUE *fp_lo = fr.fp;
         VALUE *fp_hi = c->sp;
-        r = body ? EVAL_ARG(c, body) : Qnil;
+        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame = fr.prev;
         korb_proc_snapshot_env_if_in_frame(rs[0], fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
-    return r;
+    return RESULT_OK(r);
 }
 
 NODE_DEF @noinline
@@ -970,7 +937,7 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
         else if (!UNDEF_P(existing)) {
             DROP_RESULT(korb_raise_type_error(c, "%s is not a module", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
         else {
             struct korb_class *m = korb_module_new(c, c->sp, name);
@@ -997,11 +964,11 @@ node_module_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID nam
         c->current_frame = &fr;
         VALUE *fp_lo = fr.fp;
         VALUE *fp_hi = c->sp;
-        r = body ? EVAL_ARG(c, body) : Qnil;
+        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame = fr.prev;
         korb_proc_snapshot_env_if_in_frame(rs[0], fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
-    return r;
+    return RESULT_OK(r);
 }
 
 /* dispatch helpers (declared in node.h via include) */
@@ -1013,7 +980,7 @@ node_func_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name
      * dispatch directly into the SD body, so a hot self-call (e.g.
      * `render_pixel` from the per-frame loop) avoids a function-pointer
      * jump per call. */
-    return korb_dispatch_call_cached(c, n, c->current_frame->self, name, argc, arg_index, NULL, mc);
+    return RESULT_OK(LIFT_C_STATE(c, korb_dispatch_call_cached(c, n, c->current_frame->self, name, argc, arg_index, NULL, mc)));
 }
 
 NODE_DEF
@@ -1024,10 +991,10 @@ node_method_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE 
      * C local r would go stale. */
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 1) {
-        rs[0] = EA(c, recv);
+        rs[0] = EVAL_ARG_UNWRAP(c, recv);
         ret = korb_dispatch_call_cached(c, n, rs[0], name, argc, arg_index, NULL, mc);
     } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+    return LIFT_C_STATE_OR_OK(c, ret);
 }
 
 /* Case/when's `===` dispatch: bypass visibility because CRuby calls
@@ -1036,9 +1003,9 @@ node_method_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE 
 NODE_DEF
 node_case_eqq_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, uint32_t arg_index)
 {
-    VALUE r = EA(c, recv);
+    VALUE r = EVAL_ARG_UNWRAP(c, recv);
     VALUE arg = c->current_frame->fp[arg_index];
-    return korb_funcall(c, r, korb_intern("==="), 1, &arg);
+    return RESULT_OK(LIFT_C_STATE(c, korb_funcall(c, r, korb_intern("==="), 1, &arg)));
 }
 
 NODE_DEF
@@ -1048,13 +1015,13 @@ node_method_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
      * bumping c->sp so visit_roots doesn't see stale leftovers. */
     sp[0] = 0; sp[1] = 0;
     c->sp = sp + 2;
-    sp[0] = EA(c, recv);
-    sp[1] = blk ? EA(c, blk) : Qnil;
+    sp[0] = EVAL_ARG_UNWRAP(c, recv);
+    sp[1] = blk ? EVAL_ARG_UNWRAP(c, blk) : Qnil;
     VALUE r = sp[0];
     VALUE block = sp[1];
     VALUE ret = korb_dispatch_call_cached(c, n, r, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
     c->sp = sp;
-    return ret;
+    return RESULT_OK(ret);
 }
 
 NODE_DEF
@@ -1068,12 +1035,12 @@ node_func_call_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, I
     sp[0] = 0; sp[1] = 0;
     c->sp = sp + 2;
     sp[0] = c->current_frame->self;
-    sp[1] = blk ? EA(c, blk) : Qnil;
+    sp[1] = blk ? EVAL_ARG_UNWRAP(c, blk) : Qnil;
     VALUE recv = sp[0];
     VALUE block = sp[1];
     VALUE ret = korb_dispatch_call_cached(c, n, recv, name, argc, arg_index, block == Qnil ? NULL : (struct korb_proc *)block, mc);
     c->sp = sp;
-    return ret;
+    return RESULT_OK(ret);
 }
 
 NODE_DEF @noinline
@@ -1100,7 +1067,7 @@ node_block_literal(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
         c->running_block ? c->running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
     ((struct korb_proc *)p)->lexical_parent_block = c->running_block;
-    return p;
+    return RESULT_OK(p);
 }
 
 /* Variant with an explicit *rest slot.  rest_slot is the absolute slot
@@ -1120,7 +1087,7 @@ node_block_literal_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
         c->running_block ? c->running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
     ((struct korb_proc *)p)->lexical_parent_block = c->running_block;
-    return p;
+    return RESULT_OK(p);
 }
 
 /* Block literal with both *rest_slot AND kwh_save_slot.  Used when the
@@ -1142,7 +1109,7 @@ node_block_literal_kw(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
         c->running_block ? c->running_block->defining_method
                       : (c->current_frame ? c->current_frame->method : NULL);
     ((struct korb_proc *)p)->lexical_parent_block = c->running_block;
-    return p;
+    return RESULT_OK(p);
 }
 
 /* Set a Proc's opt_cnt — used by parse.c to plumb the count of
@@ -1153,12 +1120,12 @@ node_block_literal_kw(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
 NODE_DEF @noinline
 node_proc_set_opt_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, uint32_t opt_cnt)
 {
-    VALUE p = EVAL_ARG(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->opt_cnt = opt_cnt;
     }
-    return p;
+    return RESULT_OK(p);
 }
 
 /* Set a Proc's `&blk` slot — proc_call binds the caller's block (or nil)
@@ -1166,24 +1133,24 @@ node_proc_set_opt_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
 NODE_DEF @noinline
 node_proc_set_block_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, int32_t block_slot)
 {
-    VALUE p = EVAL_ARG(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->block_slot = block_slot;
     }
-    return p;
+    return RESULT_OK(p);
 }
 
 /* Set a Proc's post_cnt — required params after *rest. */
 NODE_DEF @noinline
 node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node, uint32_t post_cnt)
 {
-    VALUE p = EVAL_ARG(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->post_cnt = post_cnt;
     }
-    return p;
+    return RESULT_OK(p);
 }
 
 /* Mark a Proc as having `|a, |` style implicit-rest (trailing comma).
@@ -1193,12 +1160,12 @@ node_proc_set_post_cnt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 NODE_DEF @noinline
 node_proc_set_implicit_rest(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node)
 {
-    VALUE p = EVAL_ARG(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->implicit_rest = true;
     }
-    return p;
+    return RESULT_OK(p);
 }
 
 /* Flip a freshly-created Proc into a lambda.  Used by `-> { ... }` so
@@ -1207,12 +1174,12 @@ node_proc_set_implicit_rest(CTX * restrict c, NODE * restrict n, VALUE * restric
 NODE_DEF @noinline
 node_proc_make_lambda(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_node)
 {
-    VALUE p = EVAL_ARG(c, blk_node);
-    if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+    VALUE p = EVAL_ARG_UNWRAP(c, blk_node);
+    if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
     if (LIKELY(!SPECIAL_CONST_P(p) && BUILTIN_TYPE(p) == T_PROC)) {
         ((struct korb_proc *)p)->is_lambda = true;
     }
-    return p;
+    return RESULT_OK(p);
 }
 
 /* Mark a Hash with FL_KWARGS so dispatch peels it as kwargs at the
@@ -1220,17 +1187,17 @@ node_proc_make_lambda(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
 NODE_DEF
 node_hash_mark_kwargs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *hash_expr)
 {
-    VALUE h = EVAL_ARG(c, hash_expr);
+    VALUE h = EVAL_ARG_UNWRAP(c, hash_expr);
     if (!SPECIAL_CONST_P(h) && BUILTIN_TYPE(h) == T_HASH) {
         ((struct RBasic *)h)->head.flags |= FL_KWARGS;
     }
-    return h;
+    return RESULT_OK(h);
 }
 
 NODE_DEF
 node_yield(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t argc, uint32_t arg_index)
 {
-    return korb_yield(c, argc, &c->current_frame->fp[arg_index]);
+    return RESULT_OK(LIFT_C_STATE(c, korb_yield(c, argc, &c->current_frame->fp[arg_index])));
 }
 
 /* `yield *arr` (or `yield a, *b, c`) — args were materialized into a
@@ -1241,10 +1208,10 @@ node_yield_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
 {
     VALUE arr = c->current_frame->fp[arr_slot];
     if (SPECIAL_CONST_P(arr) || BUILTIN_TYPE(arr) != T_ARRAY) {
-        return korb_yield(c, 0, NULL);
+        return RESULT_OK(LIFT_C_STATE(c, korb_yield(c, 0, NULL)));
     }
     struct korb_array *a = (struct korb_array *)arr;
-    return korb_yield(c, (uint32_t)a->len, a->ptr);
+    return RESULT_OK(LIFT_C_STATE(c, korb_yield(c, (uint32_t)a->len, a->ptr)));
 }
 
 // ---------------- arithmetic (generic + fixnum fast path) ----------------
@@ -1257,18 +1224,18 @@ node_yield_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
 NODE_DEF
 node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     /* Fixnum fast path: l is immediate (= value-type, no GC risk),
      * so we can eval rhs without protecting l. */
     if (LIKELY(FIXNUM_P(l))) {
-        VALUE r = EA(c, rhs);
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
         if (LIKELY(FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
             long a = FIX2LONG(l), b = FIX2LONG(r), s;
-            if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
-            return korb_int_plus(l, r);
+            if (LIKELY(!__builtin_add_overflow(a, b, &s) && FIXABLE(s))) return RESULT_OK(INT2FIX(s));
+            return RESULT_OK(korb_int_plus(l, r));
         }
         c->last_cfunc_callsite = n;
-        return korb_node_plus_slow(c, l, r, arg_index);
+        return RESULT_OK(LIFT_C_STATE(c, korb_node_plus_slow(c, l, r, arg_index)));
     }
     /* l is a heap object (string / array / float / etc.).  Park it in a
      * synthetic frame's last_line slot so visit_roots scans &fr.last_line
@@ -1289,130 +1256,128 @@ node_plus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, N
         .last_match= Qnil,
     };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-        return korb_float_new(c, c->sp, korb_flonum_to_double(l) + korb_flonum_to_double(r));
+        return RESULT_OK(korb_float_new(c, c->sp, korb_flonum_to_double(l) + korb_flonum_to_double(r)));
     }
     c->last_cfunc_callsite = n;
-    return korb_node_plus_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_plus_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_minus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
-        VALUE r = EA(c, rhs);
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
         if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
             long a = FIX2LONG(l), b = FIX2LONG(r), s;
-            if (LIKELY(!__builtin_sub_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
-            return korb_int_minus(l, r);
+            if (LIKELY(!__builtin_sub_overflow(a, b, &s) && FIXABLE(s))) return RESULT_OK(INT2FIX(s));
+            return RESULT_OK(korb_int_minus(l, r));
         }
         if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-            return korb_float_new(c, c->sp, korb_flonum_to_double(l) - korb_flonum_to_double(r));
+            return RESULT_OK(korb_float_new(c, c->sp, korb_flonum_to_double(l) - korb_flonum_to_double(r)));
         }
         c->last_cfunc_callsite = n;
-        return korb_node_minus_slow(c, l, r, arg_index);
+        return RESULT_OK(LIFT_C_STATE(c, korb_node_minus_slow(c, l, r, arg_index)));
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
         .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
         .last_line = l, .last_match = Qnil };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return korb_node_minus_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_minus_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_mul(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
-        VALUE r = EA(c, rhs);
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
         if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
             long a = FIX2LONG(l), b = FIX2LONG(r), s;
-            if (LIKELY(!__builtin_mul_overflow(a, b, &s) && FIXABLE(s))) return INT2FIX(s);
-            return korb_int_mul(l, r);
+            if (LIKELY(!__builtin_mul_overflow(a, b, &s) && FIXABLE(s))) return RESULT_OK(INT2FIX(s));
+            return RESULT_OK(korb_int_mul(l, r));
         }
         if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-            return korb_float_new(c, c->sp, korb_flonum_to_double(l) * korb_flonum_to_double(r));
+            return RESULT_OK(korb_float_new(c, c->sp, korb_flonum_to_double(l) * korb_flonum_to_double(r)));
         }
         c->last_cfunc_callsite = n;
-        return korb_node_mul_slow(c, l, r, arg_index);
+        return RESULT_OK(LIFT_C_STATE(c, korb_node_mul_slow(c, l, r, arg_index)));
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
         .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
         .last_line = l, .last_match = Qnil };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return korb_node_mul_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_mul_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_div(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
         if (UNLIKELY(b == 0)) {
             c->last_cfunc_callsite = n;
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
         }
         long q = a / b;
         if ((a % b) != 0 && ((a ^ b) < 0)) q--;
-        if (FIXABLE(q)) return INT2FIX(q);
-        return korb_int_div(l, r);
+        if (FIXABLE(q)) return RESULT_OK(INT2FIX(q));
+        return RESULT_OK(korb_int_div(l, r));
     }
     if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) {
-        return korb_float_new(c, c->sp, korb_flonum_to_double(l) / korb_flonum_to_double(r));
+        return RESULT_OK(korb_float_new(c, c->sp, korb_flonum_to_double(l) / korb_flonum_to_double(r)));
     }
     c->last_cfunc_callsite = n;
-    return korb_node_div_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_div_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_mod(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
         if (UNLIKELY(b == 0)) {
             c->last_cfunc_callsite = n;
             VALUE eZ = korb_const_get(korb_vm->object_class, korb_intern("ZeroDivisionError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eZ, "divided by 0"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eZ, "divided by 0");
         }
         long m = a % b;
         if (m != 0 && ((a ^ b) < 0)) m += b;
-        return INT2FIX(m);
+        return RESULT_OK(INT2FIX(m));
     }
     c->last_cfunc_callsite = n;
-    return korb_node_mod_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_mod_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_uminus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *operand, uint32_t arg_index)
 {
-    VALUE v = EA(c, operand);
+    VALUE v = EVAL_ARG_UNWRAP(c, operand);
     if (LIKELY(FIXNUM_P(v) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(v), s;
-        if (!__builtin_sub_overflow(0L, a, &s) && FIXABLE(s)) return INT2FIX(s);
+        if (!__builtin_sub_overflow(0L, a, &s) && FIXABLE(s)) return RESULT_OK(INT2FIX(s));
     }
     c->last_cfunc_callsite = n;
-    return korb_node_uminus_slow(c, v);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_uminus_slow(c, v)));
 }
 
 // ---------------- bit ops ----------------
@@ -1420,49 +1385,49 @@ node_uminus(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *oper
 NODE_DEF
 node_bit_and(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return l & r;
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(l & r);
     c->last_cfunc_callsite = n;
-    return korb_node_band_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_band_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_bit_or(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return l | r;
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(l | r);
     c->last_cfunc_callsite = n;
-    return korb_node_bor_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_bor_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_bit_xor(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
-    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return (l ^ r) | FIXNUM_FLAG;
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+    if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK((l ^ r) | FIXNUM_FLAG);
     c->last_cfunc_callsite = n;
-    return korb_node_bxor_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_bxor_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     if (LIKELY(FIXNUM_P(l))) {
-        VALUE r = EA(c, rhs);
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
         if (LIKELY(FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
             long a = FIX2LONG(l), b = FIX2LONG(r);
             if (b >= 0 && b < 62) {
                 long s = a << b;
-                if ((s >> b) == a && FIXABLE(s)) return INT2FIX(s);
+                if ((s >> b) == a && FIXABLE(s)) return RESULT_OK(INT2FIX(s));
             }
-            return korb_int_lshift(l, r);
+            return RESULT_OK(korb_int_lshift(l, r));
         }
         c->last_cfunc_callsite = n;
-        return korb_node_lshift_slow(c, l, r, arg_index);
+        return RESULT_OK(LIFT_C_STATE(c, korb_node_lshift_slow(c, l, r, arg_index)));
     }
     /* l is a heap obj — pin via synthetic-frame's last_line slot
      * (see node_plus for the same pattern + rationale) so rhs eval's
@@ -1479,32 +1444,32 @@ node_lshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
         .last_match= Qnil,
     };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     /* Array#<< — push and return self.  Hot in optcarrot's
      * render_pixel (`@output_pixels << ...` runs once per pixel). */
     if (LIKELY(!SPECIAL_CONST_P(l) && BUILTIN_TYPE(l) == T_ARRAY && !korb_g_array_op_redefined)) {
-        CHECK_FROZEN_RET(c, l, Qnil);
+        CHECK_FROZEN_R(c, l);
         korb_ary_push(l, r);
-        return l;
+        return RESULT_OK(l);
     }
     c->last_cfunc_callsite = n;
-    return korb_node_lshift_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_lshift_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_rshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) {
         long a = FIX2LONG(l), b = FIX2LONG(r);
-        if (b >= 0 && b < 62) return INT2FIX(a >> b);
-        return korb_int_rshift(l, r);
+        if (b >= 0 && b < 62) return RESULT_OK(INT2FIX(a >> b));
+        return RESULT_OK(korb_int_rshift(l, r));
     }
     c->last_cfunc_callsite = n;
-    return korb_node_rshift_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_rshift_slow(c, l, r, arg_index)));
 }
 
 // ---------------- comparisons ----------------
@@ -1512,13 +1477,13 @@ node_rshift(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs,
 NODE_DEF
 node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
-        VALUE r = EA(c, rhs);
-        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l < (intptr_t)r);
-        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r));
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL((intptr_t)l < (intptr_t)r));
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(l) < korb_flonum_to_double(r)));
         c->last_cfunc_callsite = n;
-        return korb_node_lt_slow(c, l, r, arg_index);
+        return RESULT_OK(LIFT_C_STATE(c, korb_node_lt_slow(c, l, r, arg_index)));
     }
     /* Pin l across rhs GC fire — see node_plus. */
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
@@ -1526,100 +1491,100 @@ node_lt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
         .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
         .last_line = l, .last_match = Qnil };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return korb_node_lt_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_lt_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_le(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
-        VALUE r = EA(c, rhs);
-        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l <= (intptr_t)r);
-        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r));
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL((intptr_t)l <= (intptr_t)r));
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(l) <= korb_flonum_to_double(r)));
         c->last_cfunc_callsite = n;
-        return korb_node_le_slow(c, l, r, arg_index);
+        return RESULT_OK(LIFT_C_STATE(c, korb_node_le_slow(c, l, r, arg_index)));
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
         .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
         .last_line = l, .last_match = Qnil };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return korb_node_le_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_le_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_gt(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
-        VALUE r = EA(c, rhs);
-        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l > (intptr_t)r);
-        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r));
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL((intptr_t)l > (intptr_t)r));
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(l) > korb_flonum_to_double(r)));
         c->last_cfunc_callsite = n;
-        return korb_node_gt_slow(c, l, r, arg_index);
+        return RESULT_OK(LIFT_C_STATE(c, korb_node_gt_slow(c, l, r, arg_index)));
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
         .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
         .last_line = l, .last_match = Qnil };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return korb_node_gt_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_gt_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_ge(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     if (LIKELY(FIXNUM_P(l) || FLONUM_P(l))) {
-        VALUE r = EA(c, rhs);
-        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL((intptr_t)l >= (intptr_t)r);
-        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r));
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+        if (LIKELY(FIXNUM_P(l) && FIXNUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL((intptr_t)l >= (intptr_t)r));
+        if (LIKELY(FLONUM_P(l) && FLONUM_P(r) && !korb_g_basic_op_redefined)) return RESULT_OK(KORB_BOOL(korb_flonum_to_double(l) >= korb_flonum_to_double(r)));
         c->last_cfunc_callsite = n;
-        return korb_node_ge_slow(c, l, r, arg_index);
+        return RESULT_OK(LIFT_C_STATE(c, korb_node_ge_slow(c, l, r, arg_index)));
     }
     struct korb_frame fr = { .prev = c->current_frame, .self = c->current_frame->self,
         .fp = c->current_frame->fp, .cref = c->current_frame->cref,
         .current_class = c->current_frame->current_class, .current_file = c->current_frame->current_file,
         .last_line = l, .last_match = Qnil };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->last_cfunc_callsite = n;
-    return korb_node_ge_slow(c, l, r, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_ge_slow(c, l, r, arg_index)));
 }
 
 NODE_DEF
 node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     /* FIXNUM/FLONUM/SPECIAL fast-path: no GC concern, l never moves. */
     if (LIKELY(FIXNUM_P(l) || FLONUM_P(l) || SPECIAL_CONST_P(l))) {
-        VALUE r = EA(c, rhs);
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
         if (UNLIKELY(korb_g_basic_op_redefined)) {
             c->current_frame->fp[arg_index+1] = r;
-            return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
+            return RESULT_OK(LIFT_C_STATE(c, korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1])));
         }
-        if (FIXNUM_P(l) && FIXNUM_P(r)) return KORB_BOOL(l == r);
-        if (FLONUM_P(l) && FLONUM_P(r)) return KORB_BOOL(l == r);
+        if (FIXNUM_P(l) && FIXNUM_P(r)) return RESULT_OK(KORB_BOOL(l == r));
+        if (FLONUM_P(l) && FLONUM_P(r)) return RESULT_OK(KORB_BOOL(l == r));
         if (SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) {
-            return KORB_BOOL(l == r);
+            return RESULT_OK(KORB_BOOL(l == r));
         }
         c->current_frame->fp[arg_index+1] = r;
-        return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
+        return RESULT_OK(LIFT_C_STATE(c, korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1])));
     }
     /* l is a heap obj — pin via synthetic frame's last_line slot
      * (same pattern as node_plus / node_lshift) so rhs eval's GC
@@ -1636,33 +1601,33 @@ node_eq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NOD
         .last_match= Qnil,
     };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->current_frame->fp[arg_index+1] = r;
-    return korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
+    return RESULT_OK(LIFT_C_STATE(c, korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1])));
 }
 
 NODE_DEF
 node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs, uint32_t arg_index)
 {
-    VALUE l = EA(c, lhs);
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
     if (LIKELY(FIXNUM_P(l) || FLONUM_P(l) || SPECIAL_CONST_P(l))) {
-        VALUE r = EA(c, rhs);
+        VALUE r = EVAL_ARG_UNWRAP(c, rhs);
         if (UNLIKELY(korb_g_basic_op_redefined)) {
             c->current_frame->fp[arg_index+1] = r;
             VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
-            return KORB_BOOL(!RTEST(eq));
+            return RESULT_OK(KORB_BOOL(!RTEST(eq)));
         }
-        if (FIXNUM_P(l) && FIXNUM_P(r)) return KORB_BOOL(l != r);
-        if (FLONUM_P(l) && FLONUM_P(r)) return KORB_BOOL(l != r);
+        if (FIXNUM_P(l) && FIXNUM_P(r)) return RESULT_OK(KORB_BOOL(l != r));
+        if (FLONUM_P(l) && FLONUM_P(r)) return RESULT_OK(KORB_BOOL(l != r));
         if ((SPECIAL_CONST_P(l) && !FIXNUM_P(l) && !FLONUM_P(l)) ||
             (SPECIAL_CONST_P(r) && !FIXNUM_P(r) && !FLONUM_P(r))) {
-            return KORB_BOOL(l != r);
+            return RESULT_OK(KORB_BOOL(l != r));
         }
         c->current_frame->fp[arg_index+1] = r;
         VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
-        return KORB_BOOL(!RTEST(eq));
+        return RESULT_OK(KORB_BOOL(!RTEST(eq)));
     }
     /* l is a heap obj — pin via synthetic frame's last_line.  See
      * node_plus / node_lshift / node_eq. */
@@ -1677,12 +1642,12 @@ node_neq(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NO
         .last_match= Qnil,
     };
     c->current_frame = &fr;
-    VALUE r = EA(c, rhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
     c->current_frame = fr.prev;
     l = fr.last_line;
     c->current_frame->fp[arg_index+1] = r;
     VALUE eq = korb_dispatch_binop(c, l, korb_intern("=="), 1, &c->current_frame->fp[arg_index+1]);
-    return KORB_BOOL(!RTEST(eq));
+    return RESULT_OK(KORB_BOOL(!RTEST(eq)));
 }
 
 // ---------------- subscript [] / []= ----------------
@@ -1697,8 +1662,8 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
      * c->sp = sp + N would give visit_roots an invalid linear range. */
     VALUE ret;
     ARO_ROOT_SCOPE_START(c, rs, 2) {
-        rs[0] = EA(c, recv);
-        rs[1] = EA(c, idx);
+        rs[0] = EVAL_ARG_UNWRAP(c, recv);
+        rs[1] = EVAL_ARG_UNWRAP(c, idx);
         VALUE r = rs[0];
         VALUE i = rs[1];
         if (LIKELY(!korb_g_basic_op_redefined)) {
@@ -1744,25 +1709,25 @@ node_aref(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
         ret = korb_node_aref_slow(c, r, i, arg_index);
       aref_done: ;
     } ARO_ROOT_SCOPE_END(c, rs);
-    return ret;
+    return RESULT_OK(ret);
 }
 
 NODE_DEF
 node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *idx, NODE *val, uint32_t arg_index)
 {
     /* Reserve 2 slots: sp[0] = r, sp[1] = i.  Zero-fill before
-     * bumping c->sp.  Body uses sp[0]/sp[1] across EA(val). */
+     * bumping c->sp.  Body uses sp[0]/sp[1] across EVAL_ARG_UNWRAP(val). */
     sp[0] = 0; sp[1] = 0;
     c->sp = sp + 2;
-    sp[0] = EA(c, recv);
-    sp[1] = EA(c, idx);
-    VALUE v = EA(c, val);
+    sp[0] = EVAL_ARG_UNWRAP(c, recv);
+    sp[1] = EVAL_ARG_UNWRAP(c, idx);
+    VALUE v = EVAL_ARG_UNWRAP(c, val);
     VALUE r = sp[0];
     VALUE i = sp[1];
     c->sp = sp;
     if (LIKELY(!SPECIAL_CONST_P(r) && !korb_g_basic_op_redefined)) {
         if (BUILTIN_TYPE(r) == T_ARRAY && FIXNUM_P(i)) {
-            CHECK_FROZEN_RET(c, r, Qnil);
+            CHECK_FROZEN_R(c, r);
             long ii = FIX2LONG(i);
             struct korb_array *aa = (struct korb_array *)r;
             if (ii < 0 && ii + aa->len < 0) {
@@ -1770,22 +1735,22 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
                 DROP_RESULT(korb_raise(c, (struct korb_class *)eIE,
                            "index %ld too small for array; minimum: -%ld",
                            ii, aa->len));
-                return v;
+                return RESULT_OK(v);
             }
             if (ii >= (long)(LONG_MAX / sizeof(VALUE))) {
                 VALUE eIE = korb_const_get(korb_vm->object_class, korb_intern("IndexError"));
                 DROP_RESULT(korb_raise(c, (struct korb_class *)eIE, "index %ld too big", ii));
-                return v;
+                return RESULT_OK(v);
             }
-            korb_ary_aset(r, ii, v); return v;
+            korb_ary_aset(r, ii, v); return RESULT_OK(v);
         }
         if (BUILTIN_TYPE(r) == T_HASH) {
-            CHECK_FROZEN_RET(c, r, Qnil);
-            korb_hash_aset(c, r, i, v); return v;
+            CHECK_FROZEN_R(c, r);
+            korb_hash_aset(c, r, i, v); return RESULT_OK(v);
         }
     }
     c->last_cfunc_callsite = n;
-    return korb_node_aset_slow(c, r, i, v, arg_index);
+    return RESULT_OK(LIFT_C_STATE(c, korb_node_aset_slow(c, r, i, v, arg_index)));
 }
 
 /* `obj[*args] = v` — splat-key form.  splat must be a node_splat_to_ary
@@ -1795,9 +1760,9 @@ node_aset(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, 
 NODE_DEF @noinline
 node_aset_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv, NODE *splat, NODE *val, uint32_t arg_index)
 {
-    VALUE r = EA(c, recv);
-    VALUE arr = EA(c, splat);
-    VALUE v = EA(c, val);
+    VALUE r = EVAL_ARG_UNWRAP(c, recv);
+    VALUE arr = EVAL_ARG_UNWRAP(c, splat);
+    VALUE v = EVAL_ARG_UNWRAP(c, val);
     long n_keys = 0;
     VALUE *argv;
     VALUE inline_argv[17];
@@ -1822,7 +1787,7 @@ node_aset_splat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
     c->last_cfunc_callsite = n;
     korb_dispatch_binop(c, r, id_op_aset, (int)(n_keys + 1), argv);
     if (heap_argv) korb_xfree(heap_argv);
-    return v;
+    return RESULT_OK(v);
 }
 
 // ---------------- exception ----------------
@@ -1832,50 +1797,55 @@ node_rescue(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body
 {
 retry:;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
-    VALUE v = EVAL_ARG(c, body);
-    if (c->state == KORB_RAISE && rescue_body) {
-        VALUE exc = c->state_value;
+    RESULT _br = EVAL_ARG(c, body);
+    VALUE v = _br.value;
+    if (_br.state == KORB_RAISE && rescue_body) {
+        VALUE exc = _br.value;
+        /* Clear the side-channel c->state — `korb_raise` set it as part
+         * of the legacy bridge; the rescue is consuming the raise, so
+         * callees inside the rescue body should not see a pending state. */
         c->state = KORB_NORMAL;
         c->state_value = Qnil;
         c->current_frame->fp[exception_lvar_index] = exc;
         /* $! reflects the current exception throughout the rescue body. */
         korb_gvar_set(korb_intern("$!"), exc);
-        v = EVAL_ARG(c, rescue_body);
+        RESULT _rr = EVAL_ARG(c, rescue_body);
+        v = _rr.value;
         /* If a NEW exception was raised inside the rescue body, link
          * the original (currently-rescued) exception in as #cause —
          * Exception#cause returns it.  Skip when re-raising the same
          * one (`raise` with no args). */
-        if (c->state == KORB_RAISE && c->state_value &&
-            !SPECIAL_CONST_P(c->state_value) && c->state_value != exc) {
-            VALUE cur_cause = korb_ivar_get(c->state_value, korb_intern("@cause"));
+        if (_rr.state == KORB_RAISE && _rr.value &&
+            !SPECIAL_CONST_P(_rr.value) && _rr.value != exc) {
+            VALUE cur_cause = korb_ivar_get(_rr.value, korb_intern("@cause"));
             if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
-                korb_ivar_set(c->state_value, korb_intern("@cause"), exc);
+                korb_ivar_set(_rr.value, korb_intern("@cause"), exc);
             }
         }
-        /* `retry` inside the rescue body sets state=KORB_RETRY; clear
-         * and jump back to re-evaluate the begin body. */
-        if (c->state == KORB_RETRY) {
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
+        /* `retry` inside the rescue body re-evaluates the begin body. */
+        if (_rr.state == KORB_RETRY) {
             korb_gvar_set(korb_intern("$!"), prev_bang);
             goto retry;
         }
         /* If rescue body re-raised (or raised a new exception), $! is
          * the new exception — leave it as-is.  Only restore prev_bang
          * when rescue completed normally. */
-        if (c->state != KORB_RAISE) {
+        if (_rr.state != KORB_RAISE) {
             korb_gvar_set(korb_intern("$!"), prev_bang);
         }
+        /* Propagate non-NORMAL (other than handled RAISE) up. */
+        if (_rr.state != KORB_NORMAL) return _rr;
+        return RESULT_OK(v);
     }
-    return v;
+    /* Body did not raise (or no rescue body): propagate body's RESULT. */
+    if (_br.state != KORB_NORMAL) return _br;
+    return RESULT_OK(v);
 }
 
 NODE_DEF
 node_retry(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    c->state = KORB_RETRY;
-    c->state_value = Qnil;
-    return Qnil;
+    return (RESULT){ Qnil, KORB_RETRY };
 }
 
 /* `begin body; rescue ...; else else_body; end` — else runs iff body
@@ -1887,45 +1857,46 @@ node_rescue_else(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE 
 retry_re:;
     bool rescued = false;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
-    VALUE v = EVAL_ARG(c, body);
-    if (c->state == KORB_RAISE && rescue_body) {
+    RESULT _br = EVAL_ARG(c, body);
+    VALUE v = _br.value;
+    uint8_t cur_state = _br.state;
+    if (_br.state == KORB_RAISE && rescue_body) {
         rescued = true;
-        VALUE exc = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+        VALUE exc = _br.value;
         c->current_frame->fp[exception_lvar_index] = exc;
         korb_gvar_set(korb_intern("$!"), exc);
-        v = EVAL_ARG(c, rescue_body);
-        if (c->state == KORB_RAISE && c->state_value &&
-            !SPECIAL_CONST_P(c->state_value) && c->state_value != exc) {
-            VALUE cur_cause = korb_ivar_get(c->state_value, korb_intern("@cause"));
+        RESULT _rr = EVAL_ARG(c, rescue_body);
+        v = _rr.value;
+        cur_state = _rr.state;
+        if (_rr.state == KORB_RAISE && _rr.value &&
+            !SPECIAL_CONST_P(_rr.value) && _rr.value != exc) {
+            VALUE cur_cause = korb_ivar_get(_rr.value, korb_intern("@cause"));
             if (UNDEF_P(cur_cause) || NIL_P(cur_cause)) {
-                korb_ivar_set(c->state_value, korb_intern("@cause"), exc);
+                korb_ivar_set(_rr.value, korb_intern("@cause"), exc);
             }
         }
-        if (c->state == KORB_RETRY) {
-            c->state = KORB_NORMAL;
-            c->state_value = Qnil;
+        if (_rr.state == KORB_RETRY) {
             korb_gvar_set(korb_intern("$!"), prev_bang);
             goto retry_re;
         }
-        if (c->state != KORB_RAISE) {
+        if (_rr.state != KORB_RAISE) {
             korb_gvar_set(korb_intern("$!"), prev_bang);
         }
     }
     /* No rescue was triggered → else body replaces the result. */
-    if (!rescued && c->state == KORB_NORMAL && else_body) {
-        v = EVAL_ARG(c, else_body);
+    if (!rescued && cur_state == KORB_NORMAL && else_body) {
+        RESULT _er = EVAL_ARG(c, else_body);
+        v = _er.value;
+        cur_state = _er.state;
     }
-    return v;
+    if (cur_state != KORB_NORMAL) return (RESULT){ v, cur_state };
+    return RESULT_OK(v);
 }
 
 NODE_DEF
 node_redo(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
-    c->state = KORB_REDO;
-    c->state_value = Qnil;
-    return Qnil;
+    return (RESULT){ Qnil, KORB_REDO };
 }
 
 NODE_DEF
@@ -1933,7 +1904,7 @@ node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_e
 {
     VALUE e;
     if (exc_expr) {
-        e = EA(c, exc_expr);
+        e = EVAL_ARG_UNWRAP(c, exc_expr);
         if (BUILTIN_TYPE(e) == T_STRING) {
             e = korb_exc_new(c, NULL, korb_str_cstr(e));
         }
@@ -1954,9 +1925,7 @@ node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_e
             }
         }
     }
-    c->state = KORB_RAISE;
-    c->state_value = e;
-    return Qnil;
+    return (RESULT){ e, KORB_RAISE };
 }
 
 // ---------------- multi-assign helpers ----------------
@@ -1968,12 +1937,12 @@ node_raise(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *exc_e
 NODE_DEF
 node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *expr)
 {
-    VALUE v = EA(c, expr);
-    if (BUILTIN_TYPE(v) == T_ARRAY) return v;
+    VALUE v = EVAL_ARG_UNWRAP(c, expr);
+    if (BUILTIN_TYPE(v) == T_ARRAY) return RESULT_OK(v);
     if (NIL_P(v)) {
         VALUE a = korb_ary_new_capa(c, c->sp, 1);
         korb_ary_push(a, v);
-        return a;
+        return RESULT_OK(a);
     }
     /* respond_to?(:to_ary)? */
     VALUE rt = korb_funcall(c, v, korb_intern("respond_to?"), 1,
@@ -1981,44 +1950,43 @@ node_to_ary_for_mlhs(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, N
     if (c->state != KORB_NORMAL) { c->state = KORB_NORMAL; c->state_value = Qnil; rt = Qfalse; }
     if (RTEST(rt)) {
         VALUE r = korb_funcall(c, v, korb_intern("to_ary"), 0, NULL);
-        if (c->state != KORB_NORMAL) return Qnil;
+        if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
         if (NIL_P(r)) {
             /* CRuby: to_ary returning nil wraps in [v]. */
             VALUE a = korb_ary_new_capa(c, c->sp, 1);
             korb_ary_push(a, v);
-            return a;
+            return RESULT_OK(a);
         }
         if (BUILTIN_TYPE(r) != T_ARRAY) {
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                       "can't convert to Array (#to_ary gave non-Array)"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to Array (#to_ary gave non-Array)");
         }
-        return r;
+        return RESULT_OK(r);
     }
     /* No to_ary: wrap. */
     VALUE a = korb_ary_new_capa(c, c->sp, 1);
     korb_ary_push(a, v);
-    return a;
+    return RESULT_OK(a);
 }
 
 NODE_DEF
 node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *expr)
 {
-    VALUE v = EA(c, expr);
+    VALUE v = EVAL_ARG_UNWRAP(c, expr);
     /* CRuby splat: nil → [] (no elements). */
-    if (NIL_P(v)) return korb_ary_new(c, c->sp);
-    if (BUILTIN_TYPE(v) == T_ARRAY) return v;
+    if (NIL_P(v)) return RESULT_OK(korb_ary_new(c, c->sp));
+    if (BUILTIN_TYPE(v) == T_ARRAY) return RESULT_OK(v);
     if (BUILTIN_TYPE(v) == T_RANGE) {
         /* convert Range to Array for splat */
         struct korb_range *r = (struct korb_range *)v;
         if (FIXNUM_P(r->begin) && FIXNUM_P(r->end)) {
             long b = FIX2LONG(r->begin), e = FIX2LONG(r->end);
             if (r->exclude_end) e--;
-            if (e < b) return korb_ary_new(c, c->sp);
+            if (e < b) return RESULT_OK(korb_ary_new(c, c->sp));
             VALUE a = korb_ary_new_capa(c, c->sp, e - b + 1);
             for (long i = b; i <= e; i++) korb_ary_push(a, INT2FIX(i));
-            return a;
+            return RESULT_OK(a);
         }
     }
     /* CRuby: if value responds to to_a, call it.  to_a must return Array.
@@ -2039,44 +2007,43 @@ node_splat_to_ary(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         }
         if (has_to_a || RTEST(rt)) {
             VALUE r = korb_funcall(c, v, korb_intern("to_a"), 0, NULL);
-            if (c->state != KORB_NORMAL) return Qnil;
-            if (BUILTIN_TYPE(r) == T_ARRAY) return r;
+            if (c->state != KORB_NORMAL) return RESULT_OK(Qnil);
+            if (BUILTIN_TYPE(r) == T_ARRAY) return RESULT_OK(r);
             /* CRuby: if to_a returns nil, treat the value as a single
              * element array.  Other non-Array results are TypeError. */
             if (NIL_P(r)) {
                 VALUE a = korb_ary_new_capa(c, c->sp, 1);
                 korb_ary_push(a, v);
-                return a;
+                return RESULT_OK(a);
             }
             VALUE eT = korb_const_get(korb_vm->object_class, korb_intern("TypeError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eT,
-                       "can't convert to Array (returned non-Array)"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eT,
+                       "can't convert to Array (returned non-Array)");
         }
     }
     VALUE a = korb_ary_new_capa(c, c->sp, 1);
     korb_ary_push(a, v);
-    return a;
+    return RESULT_OK(a);
 }
 
 NODE_DEF
 node_ary_aget(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t idx)
 {
-    VALUE a = EA(c, ary_node);
-    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
-    return korb_ary_aref(a, idx);
+    VALUE a = EVAL_ARG_UNWRAP(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return RESULT_OK(Qnil);
+    return RESULT_OK(korb_ary_aref(a, idx));
 }
 
 /* For multi-assign splat: ary[ary.len - neg_offset]; nil if out of range. */
 NODE_DEF
 node_ary_aget_neg(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t neg_offset)
 {
-    VALUE a = EA(c, ary_node);
-    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
+    VALUE a = EVAL_ARG_UNWRAP(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return RESULT_OK(Qnil);
     long len = korb_ary_len(a);
     long idx = len - (long)neg_offset;
-    if (idx < 0) return Qnil;
-    return korb_ary_aref(a, idx);
+    if (idx < 0) return RESULT_OK(Qnil);
+    return RESULT_OK(korb_ary_aref(a, idx));
 }
 
 /* For multi-assign trailing target with rest: rights[i] = ary[max(lefts + i,
@@ -2087,22 +2054,22 @@ node_ary_aget_neg(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
 NODE_DEF
 node_ary_aget_right(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t lefts, uint32_t rights, uint32_t i)
 {
-    VALUE a = EA(c, ary_node);
-    if (BUILTIN_TYPE(a) != T_ARRAY) return Qnil;
+    VALUE a = EVAL_ARG_UNWRAP(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return RESULT_OK(Qnil);
     long len = korb_ary_len(a);
     long left_based = (long)lefts + (long)i;
     long right_based = len - (long)rights + (long)i;
     long idx = left_based > right_based ? left_based : right_based;
-    if (idx < 0 || idx >= len) return Qnil;
-    return korb_ary_aref(a, idx);
+    if (idx < 0 || idx >= len) return RESULT_OK(Qnil);
+    return RESULT_OK(korb_ary_aref(a, idx));
 }
 
 /* For multi-assign middle splat: ary[leading .. (len - trailing - 1)] as a new Array. */
 NODE_DEF
 node_ary_slice_middle(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *ary_node, uint32_t leading, uint32_t trailing)
 {
-    VALUE a = EA(c, ary_node);
-    if (BUILTIN_TYPE(a) != T_ARRAY) return korb_ary_new(c, c->sp);
+    VALUE a = EVAL_ARG_UNWRAP(c, ary_node);
+    if (BUILTIN_TYPE(a) != T_ARRAY) return RESULT_OK(korb_ary_new(c, c->sp));
     long len = korb_ary_len(a);
     long start = (long)leading;
     long end_excl = len - (long)trailing;
@@ -2112,15 +2079,15 @@ node_ary_slice_middle(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, 
     long n_take = end_excl - start;
     VALUE r = korb_ary_new_capa(c, c->sp, n_take);
     for (long i = 0; i < n_take; i++) korb_ary_push(r, korb_ary_aref(a, start + i));
-    return r;
+    return RESULT_OK(r);
 }
 
 NODE_DEF
 node_str_to_sym(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *str_node)
 {
-    VALUE s = EA(c, str_node);
-    if (BUILTIN_TYPE(s) != T_STRING) return Qnil;
-    return korb_str_to_sym(s);
+    VALUE s = EVAL_ARG_UNWRAP(c, str_node);
+    if (BUILTIN_TYPE(s) != T_STRING) return RESULT_OK(Qnil);
+    return RESULT_OK(korb_str_to_sym(s));
 }
 
 NODE_DEF
@@ -2135,8 +2102,7 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
                               ? c->running_block->defining_method
                               : (c->current_frame ? c->current_frame->method : NULL);
     if (!m) {
-        DROP_RESULT(korb_raise(c, NULL, "super called outside of method"));
-        return Qnil;
+        return korb_raise(c, NULL, "super called outside of method");
     }
     uint16_t super_skip_n = (c->current_frame && c->current_frame->method == m)
                               ? c->current_frame->super_skip_n : 0;
@@ -2156,9 +2122,8 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
         : NULL;
     if (!sm) {
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eNoMethod,
-                   "super: no superclass method '%s'", korb_id_name(m->name)));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", korb_id_name(m->name));
     }
     if (sm->type == KORB_METHOD_CFUNC) {
         if (sm->u.cfunc.func_r != NULL) {
@@ -2169,11 +2134,11 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
             if (UNLIKELY(_rr.state != KORB_NORMAL)) {
                 c->state = _rr.state;
                 c->state_value = _rr.value;
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
-            return _rr.value;
+            return RESULT_OK(_rr.value);
         }
-        return sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
+        return RESULT_OK(sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]));
     }
     if (sm->type == KORB_METHOD_PROC) {
         /* Super to a define_method'd proc — dispatch via proc_call so
@@ -2186,14 +2151,14 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
         if (UNLIKELY(_rr.state != KORB_NORMAL)) {
             c->state = _rr.state;
             c->state_value = _rr.value;
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
-        return _rr.value;
+        return RESULT_OK(_rr.value);
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + arg_index;
-    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return RESULT_OK(Qnil); }
     { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; if (_ns > c->sp) { for (VALUE *p = c->sp; p < _ns; p++) *p = Qnil; c->sp = _ns; } }
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->current_frame->fp = new_fp;
@@ -2219,19 +2184,17 @@ node_super(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint32_t ar
     c->current_frame = &frame;
     struct korb_proc *prev_running = c->running_block;
     c->running_block = NULL;
-    VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    RESULT _bres = EVAL_R(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
     c->current_frame = frame.prev;
     c->running_block = prev_running;
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
-    if (c->state == KORB_RETURN &&
+    if (_bres.state == KORB_RETURN &&
         (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
         c->state_target_frame = NULL;
+        return RESULT_OK(_bres.value);
     }
-    return r;
+    return _bres;
 }
 
 /* Variant of node_super that accepts an explicit block expression
@@ -2247,8 +2210,7 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
                               ? c->running_block->defining_method
                               : (c->current_frame ? c->current_frame->method : NULL);
     if (!m) {
-        DROP_RESULT(korb_raise(c, NULL, "super called outside of method"));
-        return Qnil;
+        return korb_raise(c, NULL, "super called outside of method");
     }
     struct korb_class *recv_klass = korb_class_of_class(c->current_frame->self);
     extern struct korb_method *korb_class_find_super_method_n(
@@ -2261,12 +2223,11 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
         : NULL;
     if (!sm) {
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eNoMethod,
-                   "super: no superclass method '%s'", korb_id_name(m->name)));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", korb_id_name(m->name));
     }
     /* Evaluate the explicit block.  nil → no block. */
-    VALUE blk_v = blk_expr ? EA(c, blk_expr) : Qnil;
+    VALUE blk_v = blk_expr ? EVAL_ARG_UNWRAP(c, blk_expr) : Qnil;
     struct korb_proc *blk_proc = (!NIL_P(blk_v) && !SPECIAL_CONST_P(blk_v) &&
                                    BUILTIN_TYPE(blk_v) == T_PROC)
                                   ? (struct korb_proc *)blk_v : NULL;
@@ -2290,12 +2251,12 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
             r = sm->u.cfunc.func(c, c->current_frame->self, argc, &c->current_frame->fp[arg_index]);
         }
         c->current_block = prev_block;
-        return r;
+        return RESULT_OK(r);
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + arg_index;
-    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return RESULT_OK(Qnil); }
     { VALUE *_ns = new_fp + sm->u.ast.locals_cnt; if (_ns > c->sp) { for (VALUE *p = c->sp; p < _ns; p++) *p = Qnil; c->sp = _ns; } }
     for (uint32_t i = argc; i < sm->u.ast.locals_cnt; i++) new_fp[i] = Qnil;
     c->current_frame->fp = new_fp;
@@ -2327,20 +2288,18 @@ node_super_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint3
     if (sm->u.ast.block_slot >= 0) {
         new_fp[sm->u.ast.block_slot] = blk_proc ? (VALUE)blk_proc : Qnil;
     }
-    VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    RESULT _bres = EVAL_R(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
     c->current_block = prev_current_block;
     c->current_frame = frame.prev;
     c->running_block = prev_running;
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
-    if (c->state == KORB_RETURN &&
+    if (_bres.state == KORB_RETURN &&
         (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
         c->state_target_frame = NULL;
+        return RESULT_OK(_bres.value);
     }
-    return r;
+    return _bres;
 }
 
 /* `super { block }` (forwarding form): evaluate the block, swap
@@ -2354,7 +2313,7 @@ NODE_DEF @noinline
 node_super_forward_block(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *blk_expr)
 {
     
-    VALUE blk_v = blk_expr ? EA(c, blk_expr) : Qnil;
+    VALUE blk_v = blk_expr ? EVAL_ARG_UNWRAP(c, blk_expr) : Qnil;
     struct korb_proc *blk_proc = (!NIL_P(blk_v) && !SPECIAL_CONST_P(blk_v) &&
                                    BUILTIN_TYPE(blk_v) == T_PROC)
                                   ? (struct korb_proc *)blk_v : NULL;
@@ -2365,17 +2324,16 @@ node_super_forward_block(CTX * restrict c, NODE * restrict n, VALUE * restrict s
     struct Node *fwd = ALLOC_node_super_forward();
     struct korb_proc *prev = c->current_block;
     c->current_block = blk_proc;
-    VALUE r = ((korb_dispatcher_t)fwd->head.dispatcher)(c, fwd, sp);
+    RESULT _fr = ((korb_dispatcher_t)fwd->head.dispatcher)(c, fwd, sp);
     c->current_block = prev;
-    return r;
+    return _fr;
 }
 
 NODE_DEF
 node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
 {
     if (!c->current_frame || !c->current_frame->method) {
-        DROP_RESULT(korb_raise(c, NULL, "super called outside of method"));
-        return Qnil;
+        return korb_raise(c, NULL, "super called outside of method");
     }
     /* Inside a block body, `super` targets the block's lexical method
      * (captured at proc creation), not the dynamic frame's method. */
@@ -2400,12 +2358,11 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
         struct korb_method *mm = korb_class_find_method(recv_klass, korb_intern("method_missing"));
         if (mm && mm->defining_class != korb_vm->object_class) {
             VALUE name_sym = korb_id2sym(m->name);
-            return korb_funcall(c, c->current_frame->self, korb_intern("method_missing"), 1, &name_sym);
+            return RESULT_OK(LIFT_C_STATE(c, korb_funcall(c, c->current_frame->self, korb_intern("method_missing"), 1, &name_sym)));
         }
         VALUE eNoMethod = korb_const_get(korb_vm->object_class, korb_intern("NoMethodError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eNoMethod,
-                   "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?"));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eNoMethod,
+                   "super: no superclass method '%s'", m && m->name ? korb_id_name(m->name) : "?");
     }
     /* Forward all positionals: required + optional + (splatted *rest if
      * any) + post + (kwh hash if both this method and the super accept
@@ -2465,16 +2422,16 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
             if (UNLIKELY(_rr.state != KORB_NORMAL)) {
                 c->state = _rr.state;
                 c->state_value = _rr.value;
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
-            return _rr.value;
+            return RESULT_OK(_rr.value);
         }
-        return sm->u.cfunc.func(c, c->current_frame->self, argc, forward_buf);
+        return RESULT_OK(sm->u.cfunc.func(c, c->current_frame->self, argc, forward_buf));
     }
     VALUE *prev_fp = c->current_frame->fp;
     VALUE *prev_sp = c->sp;
     VALUE *new_fp = prev_fp + (m->type == KORB_METHOD_AST ? m->u.ast.locals_cnt : 0);
-    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return Qnil; }
+    if (new_fp + sm->u.ast.locals_cnt >= c->stack_end) { DROP_RESULT(korb_raise(c, NULL, "stack overflow")); return RESULT_OK(Qnil); }
     /* Peel kwh from forward_buf's tail if the super accepts kwargs. */
     VALUE peeled_kwh = Qundef;
     if (sm->u.ast.kwh_save_slot >= 0) {
@@ -2583,49 +2540,41 @@ node_super_forward(CTX * restrict c, NODE * restrict n, VALUE * restrict sp)
     c->current_frame = &frame;
     struct korb_proc *prev_running = c->running_block;
     c->running_block = NULL;
-    VALUE r = EVAL(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
+    RESULT _bres = EVAL_R(c, sm->u.ast.body, new_fp + sm->u.ast.locals_cnt);
     c->current_frame = frame.prev;
     c->running_block = prev_running;
     c->current_frame->fp = prev_fp;
     c->sp = prev_sp;
-    if (c->state == KORB_RETURN &&
+    if (_bres.state == KORB_RETURN &&
         (c->state_target_frame == NULL || c->state_target_frame == &frame)) {
-        r = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
         c->state_target_frame = NULL;
+        return RESULT_OK(_bres.value);
     }
-    return r;
+    return _bres;
 }
 
 NODE_DEF
 node_ensure(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *body, NODE *ensure_body)
 {
-    int saved_state = KORB_NORMAL;
-    VALUE saved_value = Qnil;
     VALUE prev_bang = korb_gvar_get(korb_intern("$!"));
-    VALUE r = EVAL_ARG(c, body);
-    if (c->state != KORB_NORMAL) {
-        saved_state = c->state;
-        saved_value = c->state_value;
-        c->state = KORB_NORMAL;
-        c->state_value = Qnil;
+    /* Run body — capture its RESULT (we'll always run the ensure clause,
+     * then propagate the saved state). */
+    RESULT _br = EVAL_ARG(c, body);
+    if (_br.state == KORB_RAISE) {
         /* $! reflects in-flight exception during ensure body. */
-        if (saved_state == KORB_RAISE) {
-            korb_gvar_set(korb_intern("$!"), saved_value);
-        }
+        korb_gvar_set(korb_intern("$!"), _br.value);
     }
-    EVAL_ARG(c, ensure_body);
-    if (c->state == KORB_NORMAL && saved_state != KORB_NORMAL) {
-        c->state = saved_state;
-        c->state_value = saved_value;
+    RESULT _er = EVAL_ARG(c, ensure_body);
+    /* If the ensure body itself raised / broke / returned, it wins.
+     * Otherwise propagate the body's RESULT (including its state). */
+    if (_er.state != KORB_NORMAL) {
+        return _er;
     }
-    /* Restore $! after ensure body if the body completed (didn't replace
-     * the in-flight exception with a new one). */
-    if (c->state != KORB_RAISE) {
+    /* Body's $! handling: restore if no in-flight raise survives. */
+    if (_br.state != KORB_RAISE) {
         korb_gvar_set(korb_intern("$!"), prev_bang);
     }
-    return r;
+    return _br;
 }
 
 NODE_DEF @noinline
@@ -2636,11 +2585,10 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
     if (BUILTIN_TYPE(c->current_frame->self) == T_CLASS || BUILTIN_TYPE(c->current_frame->self) == T_MODULE) {
         if (korb_obj_frozen_p(c->current_frame->self)) {
             VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eF,
+            return korb_raise(c, (struct korb_class *)eF,
                        "can't modify frozen %s",
                        ((struct korb_class *)c->current_frame->self)->name
-                         ? korb_id_name(((struct korb_class *)c->current_frame->self)->name) : "Class"));
-            return Qnil;
+                         ? korb_id_name(((struct korb_class *)c->current_frame->self)->name) : "Class");
         }
         target = korb_singleton_class_of(c, (struct korb_class *)c->current_frame->self);
     } else if (!SPECIAL_CONST_P(c->current_frame->self) && BUILTIN_TYPE(c->current_frame->self) == T_OBJECT) {
@@ -2648,15 +2596,13 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
          * class.  CRuby installs on main's singleton at top level. */
         if (korb_obj_frozen_p(c->current_frame->self)) {
             VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
-            DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen object"));
-            return Qnil;
+            return korb_raise(c, (struct korb_class *)eF, "can't modify frozen object");
         }
         extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
         struct korb_class *meta = korb_singleton_class_of_value(c, c->current_frame->self);
         target = meta ? meta : korb_class_of_class(c->current_frame->self);
     } else {
-        DROP_RESULT(korb_raise(c, NULL, "def self.* outside of class/module"));
-        return Qnil;
+        return korb_raise(c, NULL, "def self.* outside of class/module");
     }
     korb_class_add_method_ast_full_cref(c, target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
@@ -2666,7 +2612,7 @@ node_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID 
         int *phs = korb_body_param_holder_slots(body);
         if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
     }
-    return korb_id2sym(name);
+    return RESULT_OK(korb_id2sym(name));
 }
 
 /* `def self.foo(a, *r, b, c)` — like node_singleton_def but additionally
@@ -2682,8 +2628,7 @@ node_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
         struct korb_class *meta = korb_singleton_class_of_value(c, c->current_frame->self);
         target = meta ? meta : korb_class_of_class(c->current_frame->self);
     } else {
-        DROP_RESULT(korb_raise(c, NULL, "def self.* outside of class/module"));
-        return Qnil;
+        return korb_raise(c, NULL, "def self.* outside of class/module");
     }
     korb_class_add_method_ast_full_cref(c, target, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(target, name, block_slot);
@@ -2694,7 +2639,7 @@ node_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp
         int *phs = korb_body_param_holder_slots(body);
         if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
     }
-    return korb_id2sym(name);
+    return RESULT_OK(korb_id2sym(name));
 }
 
 NODE_DEF @noinline
@@ -2706,7 +2651,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
      * Pin recv at sp[0] across korb_const_get / korb_intern /
      * korb_raise / korb_singleton_class_of_value — all GC sites. */
     extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-    sp[0] = EA(c, recv_expr);
+    sp[0] = EVAL_ARG_UNWRAP(c, recv_expr);
     c->sp = sp + 1;
     VALUE ret;
     if (!SPECIAL_CONST_P(sp[0]) && korb_obj_frozen_p(sp[0])) {
@@ -2732,7 +2677,7 @@ node_obj_singleton_def(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
         }
     }
     c->sp = sp;
-    return ret;
+    return RESULT_OK(ret);
 }
 
 /* `def obj.foo(a, *r, b, c)` — variant with post_params_cnt. */
@@ -2740,19 +2685,17 @@ NODE_DEF @noinline
 node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *recv_expr, ID name, NODE *body, uint32_t required_cnt, uint32_t total_cnt, int32_t rest_slot, int32_t block_slot, uint32_t locals_cnt, uint32_t post_cnt)
 {
     extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-    VALUE recv = EA(c, recv_expr);
+    VALUE recv = EVAL_ARG_UNWRAP(c, recv_expr);
     if (!SPECIAL_CONST_P(recv) && korb_obj_frozen_p(recv)) {
         VALUE eF = korb_const_get(korb_vm->object_class, korb_intern("FrozenError"));
         const char *kind = "object";
         if (BUILTIN_TYPE(recv) == T_CLASS) kind = "Class";
         else if (BUILTIN_TYPE(recv) == T_MODULE) kind = "Module";
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind));
-        return Qnil;
+        return korb_raise(c, (struct korb_class *)eF, "can't modify frozen %s", kind);
     }
     struct korb_class *meta = korb_singleton_class_of_value(c, recv);
     if (!meta) {
-        DROP_RESULT(korb_raise(c, NULL, "cannot define singleton method on this value"));
-        return Qnil;
+        return korb_raise(c, NULL, "cannot define singleton method on this value");
     }
     korb_class_add_method_ast_full_cref(c, meta, name, body, required_cnt, total_cnt, rest_slot, locals_cnt, c->current_frame->cref);
     if (block_slot >= 0) korb_class_set_method_block_slot(meta, name, block_slot);
@@ -2763,7 +2706,7 @@ node_obj_singleton_def_post(CTX * restrict c, NODE * restrict n, VALUE * restric
         int *phs = korb_body_param_holder_slots(body);
         if (phs) korb_class_set_method_param_holder_slots(meta, name, phs);
     }
-    return korb_id2sym(name);
+    return RESULT_OK(korb_id2sym(name));
 }
 
 NODE_DEF @noinline
@@ -2772,14 +2715,13 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict 
     /* `class << obj; body; end` — evaluate body with self set to obj's
      * singleton class so `def name` lands there. */
     extern struct korb_class *korb_singleton_class_of_value(CTX *c, VALUE v);
-    VALUE recv = EA(c, recv_expr);
+    VALUE recv = EVAL_ARG_UNWRAP(c, recv_expr);
     struct korb_class *meta = korb_singleton_class_of_value(c, recv);
     if (!meta) {
         /* Numeric, Symbol etc. — CRuby raises TypeError "no class to make
          * a singleton class for ..." */
-        DROP_RESULT(korb_raise_type_error(c, "no class to make singleton class for %s",
-                              korb_id_name(korb_class_of_class(recv)->name)));
-        return Qnil;
+        return korb_raise_type_error(c, "no class to make singleton class for %s",
+                              korb_id_name(korb_class_of_class(recv)->name));
     }
     VALUE prev_self = c->current_frame->self;
     struct korb_class *prev_class = c->current_frame->current_class;
@@ -2788,11 +2730,11 @@ node_singleton_class_body(CTX * restrict c, NODE * restrict n, VALUE * restrict 
     c->current_frame->self = (VALUE)meta;
     c->current_frame->current_class = meta;
     c->current_frame->cref = &new_cref;
-    VALUE r = EVAL_ARG(c, body);
+    VALUE r = EVAL_ARG_UNWRAP(c, body);
     c->current_frame->self = prev_self;
     c->current_frame->current_class = prev_class;
     c->current_frame->cref = prev_cref;
-    return r;
+    return RESULT_OK(r);
 }
 
 NODE_DEF
@@ -2804,11 +2746,11 @@ node_default_init(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, uint
      * into user code (CRuby 3.4+ semantics). */
     if (c->current_frame->fp[slot] == Qundef) {
         c->current_frame->fp[slot] = Qnil;
-        VALUE v = EVAL_ARG(c, default_expr);
-        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        VALUE v = EVAL_ARG_UNWRAP(c, default_expr);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
         c->current_frame->fp[slot] = v;
     }
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 NODE_DEF @noinline
@@ -2868,7 +2810,7 @@ node_def_full(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
             korb_funcall(c, (VALUE)target, korb_intern("method_added"), 1, &name_sym);
         }
     }
-    return korb_id2sym(name);
+    return RESULT_OK(korb_id2sym(name));
 }
 
 /* Like node_def_full but with post_params_cnt for `def f(a, *r, b, c)`. */
@@ -2886,7 +2828,7 @@ node_def_post(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, ID name,
         if (phs) korb_class_set_method_param_holder_slots(target, name, phs);
     }
     korb_check_basic_op_redef(target, name);
-    return korb_id2sym(name);
+    return RESULT_OK(korb_id2sym(name));
 }
 
 /* Set the kwh_save_slot on the most-recently-registered method `name`
@@ -2897,7 +2839,7 @@ node_set_kwh_save_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 {
     struct korb_class *target = korb_host_class(c);
     korb_class_set_method_kwh_save_slot(target, name, (int)slot);
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 /* `alias new_name old_name` — keyword form, lexical scope.  Goes
@@ -2907,11 +2849,10 @@ node_set_kwh_save_slot(CTX * restrict c, NODE * restrict n, VALUE * restrict sp,
 NODE_DEF @noinline
 node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *new_name, NODE *old_name)
 {
-    VALUE new_v = EA(c, new_name);
-    VALUE old_v = EA(c, old_name);
+    VALUE new_v = EVAL_ARG_UNWRAP(c, new_name);
+    VALUE old_v = EVAL_ARG_UNWRAP(c, old_name);
     if (!SYMBOL_P(new_v) || !SYMBOL_P(old_v)) {
-        DROP_RESULT(korb_raise(c, NULL, "alias requires symbol names"));
-        return Qnil;
+        return korb_raise(c, NULL, "alias requires symbol names");
     }
     ID new_id = korb_sym2id(new_v);
     ID old_id = korb_sym2id(old_v);
@@ -2919,29 +2860,28 @@ node_alias_method(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
     struct korb_method *m = korb_class_find_method(target, old_id);
     if (!m) {
         VALUE eN = korb_const_get(korb_vm->object_class, korb_intern("NameError"));
-        DROP_RESULT(korb_raise(c, (struct korb_class *)eN,
+        return korb_raise(c, (struct korb_class *)eN,
                    "undefined method '%s' for %s",
                    korb_id_name(old_id),
-                   target->name ? korb_id_name(target->name) : "?"));
-        return Qnil;
+                   target->name ? korb_id_name(target->name) : "?");
     }
     korb_class_alias_method(target, new_id, m);
-    return korb_id2sym(new_id);
+    return RESULT_OK(korb_id2sym(new_id));
 }
 
 NODE_DEF
 node_ary_concat(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *lhs, NODE *rhs)
 {
-    VALUE l = EA(c, lhs);
-    VALUE r = EA(c, rhs);
-    if (BUILTIN_TYPE(l) != T_ARRAY) return l;
-    if (BUILTIN_TYPE(r) != T_ARRAY) return l;
+    VALUE l = EVAL_ARG_UNWRAP(c, lhs);
+    VALUE r = EVAL_ARG_UNWRAP(c, rhs);
+    if (BUILTIN_TYPE(l) != T_ARRAY) return RESULT_OK(l);
+    if (BUILTIN_TYPE(r) != T_ARRAY) return RESULT_OK(l);
     struct korb_array *la = (struct korb_array *)l;
     struct korb_array *ra = (struct korb_array *)r;
     VALUE out = korb_ary_new_capa(c, c->sp, la->len + ra->len);
     for (long i = 0; i < la->len; i++) korb_ary_push(out, la->ptr[i]);
     for (long i = 0; i < ra->len; i++) korb_ary_push(out, ra->ptr[i]);
-    return out;
+    return RESULT_OK(out);
 }
 
 NODE_DEF
@@ -2953,8 +2893,8 @@ node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
      * STRESS+PURGE — slots pin the values across the cascade. */
     sp[0] = 0; sp[1] = 0; sp[2] = 0;
     c->sp = sp + 3;
-    sp[0] = is_method ? EA(c, recv) : c->current_frame->self;
-    sp[1] = EA(c, args_node);
+    sp[0] = is_method ? EVAL_ARG_UNWRAP(c, recv) : c->current_frame->self;
+    sp[1] = EVAL_ARG_UNWRAP(c, args_node);
     long n_args = 0;
     if (BUILTIN_TYPE(sp[1]) == T_ARRAY) {
         struct korb_array *aa = (struct korb_array *)sp[1];
@@ -2963,12 +2903,12 @@ node_apply_call(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *
             c->current_frame->fp[arg_index + i] = aa->ptr[i];
         }
     }
-    sp[2] = blk ? EA(c, blk) : Qnil;
+    sp[2] = blk ? EVAL_ARG_UNWRAP(c, blk) : Qnil;
     VALUE r = sp[0];
     struct korb_proc *block = (BUILTIN_TYPE(sp[2]) == T_PROC) ? (struct korb_proc *)sp[2] : NULL;
     VALUE ret = korb_dispatch_call(c, n, r, name, (uint32_t)n_args, arg_index, block, mc);
     c->sp = sp;
-    return ret;
+    return RESULT_OK(ret);
 }
 
 NODE_DEF @noinline
@@ -2978,12 +2918,12 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
      * korb_const_set — same root-cause as node_class_def_in. */
     VALUE r = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 3) {
-        rs[0] = EA(c, parent_expr);  /* parent_v */
+        rs[0] = EVAL_ARG_UNWRAP(c, parent_expr);  /* parent_v */
         if (BUILTIN_TYPE(rs[0]) != T_CLASS && BUILTIN_TYPE(rs[0]) != T_MODULE) {
             DROP_RESULT(korb_raise_type_error(c, "%s is not a class/module",
                                   korb_id_name(korb_class_of_class(rs[0])->name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
         {
             extern bool korb_const_is_private(const struct korb_class *, ID);
@@ -3001,25 +2941,25 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
                                parent->name ? korb_id_name(parent->name) : "?",
                                korb_id_name(name)));
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return Qnil;
+                    return RESULT_OK(Qnil);
                 }
             }
         }
         rs[1] = (VALUE)korb_vm->object_class;  /* super */
         if (super_expr) {
-            VALUE sv = EA(c, super_expr);
+            VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
             if (BUILTIN_TYPE(sv) == T_CLASS) {
                 if (((struct korb_class *)sv)->basic.head.flags & FL_SINGLETON) {
                     DROP_RESULT(korb_raise_type_error(c, "can't make subclass of singleton class"));
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return Qnil;
+                    return RESULT_OK(Qnil);
                 }
                 rs[1] = sv;
             } else if (enforce_super_match) {
                 DROP_RESULT(korb_raise_type_error(c, "superclass must be a Class (%s given)",
                                       korb_id_name(korb_class_of_class(sv)->name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
         }
         VALUE existing = korb_const_get((struct korb_class *)rs[0], name);
@@ -3029,12 +2969,12 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
                 DROP_RESULT(korb_raise_type_error(c, "superclass mismatch for class %s",
                                       korb_id_name(name)));
                 ARO_ROOT_SCOPE_CANCEL(c, rs);
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
         } else if (!UNDEF_P(existing) && enforce_super_match) {
             DROP_RESULT(korb_raise_type_error(c, "%s is not a class", korb_id_name(name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return Qnil;
+            return RESULT_OK(Qnil);
         } else {
             rs[2] = (VALUE)korb_class_new(c, c->sp, name, (struct korb_class *)rs[1], T_OBJECT);
             ((struct korb_class *)rs[2])->name = 0;
@@ -3049,13 +2989,13 @@ node_class_def_in_strict(CTX * restrict c, NODE * restrict n, VALUE * restrict s
         c->current_frame->self = (VALUE)klass;
         c->current_frame->cref = &new_cref;
         VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp;
-        r = body ? EVAL_ARG(c, body) : Qnil;
+        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame->current_class = prev_class;
         c->current_frame->self = prev_self;
         c->current_frame->cref = prev_cref;
         korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
-    return r;
+    return RESULT_OK(r);
 }
 
 NODE_DEF @noinline
@@ -3070,12 +3010,12 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
      * would crash inside korb_const_set(stale_klass, ...). */
     VALUE r = Qnil;
     ARO_ROOT_SCOPE_START(c, rs, 3) {
-        rs[0] = EA(c, parent_expr);  /* parent_v */
+        rs[0] = EVAL_ARG_UNWRAP(c, parent_expr);  /* parent_v */
         if (BUILTIN_TYPE(rs[0]) != T_CLASS && BUILTIN_TYPE(rs[0]) != T_MODULE) {
             DROP_RESULT(korb_raise_type_error(c, "%s is not a class/module",
                                   korb_id_name(korb_class_of_class(rs[0])->name)));
             ARO_ROOT_SCOPE_CANCEL(c, rs);
-            return Qnil;
+            return RESULT_OK(Qnil);
         }
         {
             extern bool korb_const_is_private(const struct korb_class *, ID);
@@ -3093,13 +3033,13 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
                                parent->name ? korb_id_name(parent->name) : "?",
                                korb_id_name(name)));
                     ARO_ROOT_SCOPE_CANCEL(c, rs);
-                    return Qnil;
+                    return RESULT_OK(Qnil);
                 }
             }
         }
         rs[1] = (VALUE)korb_vm->object_class;  /* super */
         if (super_expr) {
-            VALUE sv = EA(c, super_expr);
+            VALUE sv = EVAL_ARG_UNWRAP(c, super_expr);
             if (BUILTIN_TYPE(sv) == T_CLASS) rs[1] = sv;
         }
         VALUE existing = korb_const_get((struct korb_class *)rs[0], name);
@@ -3119,13 +3059,13 @@ node_class_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE
         c->current_frame->self = (VALUE)klass;
         c->current_frame->cref = &new_cref;
         VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp;
-        r = body ? EVAL_ARG(c, body) : Qnil;
+        r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
         c->current_frame->current_class = prev_class;
         c->current_frame->self = prev_self;
         c->current_frame->cref = prev_cref;
         korb_proc_snapshot_env_if_in_frame((VALUE)klass, fp_lo, fp_hi + 1024);
     } ARO_ROOT_SCOPE_END(c, rs);
-    return r;
+    return RESULT_OK(r);
 }
 
 NODE_DEF @noinline
@@ -3136,12 +3076,12 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
      * subsequent allocs (= synthetic frame, body EVAL) keep it fresh. */
     sp[0] = 0; sp[1] = 0;
     c->sp = sp + 2;
-    sp[0] = EA(c, parent_expr);
+    sp[0] = EVAL_ARG_UNWRAP(c, parent_expr);
     if (BUILTIN_TYPE(sp[0]) != T_CLASS && BUILTIN_TYPE(sp[0]) != T_MODULE) {
         DROP_RESULT(korb_raise_type_error(c, "%s is not a class/module",
                               korb_id_name(korb_class_of_class(sp[0])->name)));
         c->sp = sp;
-        return Qnil;
+        return RESULT_OK(Qnil);
     }
     {
         extern bool korb_const_is_private(const struct korb_class *, ID);
@@ -3159,7 +3099,7 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
                            p->name ? korb_id_name(p->name) : "?",
                            korb_id_name(name)));
                 c->sp = sp;
-                return Qnil;
+                return RESULT_OK(Qnil);
             }
         }
     }
@@ -3170,7 +3110,7 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
         DROP_RESULT(korb_raise_type_error(c, "%s is not a module",
                               korb_id_name(name)));
         c->sp = sp;
-        return Qnil;
+        return RESULT_OK(Qnil);
     } else {
         sp[1] = (VALUE)korb_module_new(c, c->sp, name);
         ((struct korb_class *)sp[1])->name = 0;
@@ -3184,13 +3124,13 @@ node_module_def_in(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NOD
     c->current_frame->self = sp[1];
     c->current_frame->cref = &new_cref;
     VALUE *fp_lo = c->current_frame->fp; VALUE *fp_hi = c->sp;
-    VALUE r = body ? EVAL_ARG(c, body) : Qnil;
+    VALUE r = body ? EVAL_ARG_UNWRAP(c, body) : Qnil;
     c->current_frame->current_class = prev_class;
     c->current_frame->self = prev_self;
     c->current_frame->cref = prev_cref;
     korb_proc_snapshot_env_if_in_frame(sp[1], fp_lo, fp_hi + 1024);
     c->sp = sp;
-    return r;
+    return RESULT_OK(r);
 }
 
 NODE_DEF
@@ -3199,13 +3139,13 @@ node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
     /* begin; body; end while cond */
     do {
     redo_do_while:
-        EVAL_ARG(c, body);
+        EVAL_ARG_UNWRAP(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
             if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
                 VALUE bv = c->state_value;
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
-                return bv;
+                return RESULT_OK(bv);
             }
             else if (c->state == KORB_NEXT) {
                 c->state = KORB_NORMAL;
@@ -3217,13 +3157,13 @@ node_do_while(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
                 c->state_value = Qnil;
                 goto redo_do_while;
             }
-            else return Qnil;
+            else return RESULT_OK(Qnil);
         }
-        VALUE v = EVAL_ARG(c, cond);
-        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        VALUE v = EVAL_ARG_UNWRAP(c, cond);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
         if (!RTEST(v)) break;
     } while (1);
-    return Qnil;
+    return RESULT_OK(Qnil);
 }
 
 NODE_DEF
@@ -3231,13 +3171,13 @@ node_do_until(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
 {
     do {
     redo_do_until:
-        EVAL_ARG(c, body);
+        EVAL_ARG_UNWRAP(c, body);
         if (UNLIKELY(c->state != KORB_NORMAL)) {
             if (c->state == KORB_BREAK && c->state_target_frame == NULL) {
                 VALUE bv = c->state_value;
                 c->state = KORB_NORMAL;
                 c->state_value = Qnil;
-                return bv;
+                return RESULT_OK(bv);
             }
             else if (c->state == KORB_NEXT) {
                 c->state = KORB_NORMAL;
@@ -3248,11 +3188,11 @@ node_do_until(CTX * restrict c, NODE * restrict n, VALUE * restrict sp, NODE *co
                 c->state_value = Qnil;
                 goto redo_do_until;
             }
-            else return Qnil;
+            else return RESULT_OK(Qnil);
         }
-        VALUE v = EVAL_ARG(c, cond);
-        if (UNLIKELY(c->state != KORB_NORMAL)) return Qnil;
+        VALUE v = EVAL_ARG_UNWRAP(c, cond);
+        if (UNLIKELY(c->state != KORB_NORMAL)) return RESULT_OK(Qnil);
         if (RTEST(v)) break;
     } while (1);
-    return Qnil;
+    return RESULT_OK(Qnil);
 }

@@ -3887,7 +3887,15 @@ static VALUE prologue_ast_general(CTX *c, struct Node *callsite, VALUE recv,
     c->running_block = NULL;
     VALUE *frame_lo = c->current_frame->fp;
     VALUE *frame_hi = c->current_frame->fp + mc->locals_cnt;
-    VALUE r = mc->dispatcher(c, mc->body, c->current_frame->fp + mc->locals_cnt);
+    RESULT _br = EVAL_R(c, mc->body, c->current_frame->fp + mc->locals_cnt);
+    VALUE r;
+    if (UNLIKELY(_br.state != KORB_NORMAL)) {
+        c->state = _br.state;
+        c->state_value = _br.value;
+        r = Qnil;
+    } else {
+        r = _br.value;
+    }
     c->current_frame = frame.prev;
     c->running_block = prev_running;
     /* Same guard as proc_call: when an unhandled raise/throw escapes

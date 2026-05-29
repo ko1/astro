@@ -262,6 +262,38 @@ typedef struct {
     (void)_r;                                             \
 })
 
+/* LIFT_C_STATE — bridge a legacy VALUE-returning helper into the RESULT
+ * world.  Captures c->state after the call; if non-NORMAL, early-returns
+ * the lifted RESULT (clearing c->state on the way out so callers don't
+ * see it twice).  Used while we incrementally migrate korb_dispatch_*,
+ * korb_funcall, etc. */
+#define LIFT_C_STATE(c, call) ({                          \
+    VALUE _lv = (call);                                   \
+    if (__builtin_expect((c)->state != KORB_NORMAL, 0)) { \
+        RESULT _ls = (RESULT){ (c)->state_value, (c)->state }; \
+        (c)->state = KORB_NORMAL;                         \
+        (c)->state_value = Qnil;                          \
+        return _ls;                                       \
+    }                                                     \
+    _lv;                                                  \
+})
+
+/* Same as LIFT_C_STATE but synthesizes the RESULT (no early return).
+ * Use at the very end of a node body when c->sp restore (or other
+ * cleanup) must happen after a legacy call but before the lift. */
+#define LIFT_C_STATE_OR_OK(c, v) ({                                \
+    VALUE _lvv = (v);                                              \
+    RESULT _lrr;                                                   \
+    if (UNLIKELY((c)->state != KORB_NORMAL)) {                     \
+        _lrr = (RESULT){ (c)->state_value, (c)->state };           \
+        (c)->state = KORB_NORMAL;                                  \
+        (c)->state_value = Qnil;                                   \
+    } else {                                                       \
+        _lrr = (RESULT){ _lvv, KORB_NORMAL };                      \
+    }                                                              \
+    _lrr;                                                          \
+})
+
 /* Sync c->sp to sp before calling a function that may fire GC.  All
  * staged values on or below sp will then be in visit_roots scan range. */
 #define KORB_SYNC_SP(c, sp_)  ((c)->sp = (sp_))
@@ -281,7 +313,7 @@ struct CTX_struct;
 struct method_cache;
 
 /* Legacy EVAL_node dispatcher: returns VALUE, propagates state via c->state. */
-typedef VALUE (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n, VALUE *sp);
+typedef RESULT (*korb_dispatcher_t)(struct CTX_struct *c, struct Node *n, VALUE *sp);
 
 /* Legacy prologue: chosen at method_cache fill time
  * (ast_simple / ast_general / cfunc). */
