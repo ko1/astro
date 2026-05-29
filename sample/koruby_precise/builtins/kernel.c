@@ -1241,11 +1241,20 @@ static RESULT kernel_method_name(CTX *c, int argc, VALUE *sp) {
      * c->current_frame->method is __method__ — we want the enclosing
      * AST method's frame, which is one level up.  Walk past any
      * cfunc frames (KORB_METHOD_CFUNC) to find the enclosing AST
-     * method.  Legacy prologue_cfunc_inl doesn't push, so the cfunc
-     * frame may not be there at all — handle both. */
+     * method. */
     struct korb_frame *f = c->current_frame;
     while (f && f->method && f->method->type == KORB_METHOD_CFUNC) {
         f = f->prev;
+    }
+    /* Inside a block: __method__ returns the LEXICALLY enclosing
+     * method (where the block was defined), not the method that
+     * called the block.  c->running_block is the currently-running
+     * block proc; its defining_method is the lexical enclosing.
+     * NULL defining_method → block was defined at top level → nil. */
+    if (c->running_block) {
+        struct korb_method *dm = c->running_block->defining_method;
+        if (!dm) return RESULT_OK(Qnil);
+        return RESULT_OK(korb_id2sym(dm->name));
     }
     if (!f || !f->method) return RESULT_OK(Qnil);
     return RESULT_OK(korb_id2sym(f->method->name));

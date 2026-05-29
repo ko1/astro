@@ -1582,6 +1582,132 @@ end
 # block-forwarding, so these helpers take an explicit `&blk` parameter
 # and call `blk.call(...)` to escape the ambiguity.
 module Enumerable
+  # Enumerable#chain — concat self with the supplied enumerables.
+  def chain(*others)
+    r = to_a
+    others.each { |o| r.concat(o.to_a) }
+    r
+  end unless method_defined?(:chain)
+
+  # Enumerable#filter_map — map then drop falsy results.
+  def filter_map(&blk)
+    return enum_for(:filter_map) unless blk
+    r = []
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      v = blk.call(x)
+      r << v if v
+    }
+    r
+  end unless method_defined?(:filter_map)
+
+  # Enumerable#compact — return array with nil elements removed.
+  def compact
+    r = []
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      r << x unless x.nil?
+    }
+    r
+  end unless method_defined?(:compact)
+
+  # Enumerable#minmax_by — returns [min, max] by block.
+  def minmax_by(&blk)
+    return enum_for(:minmax_by) unless blk
+    min_v = nil; min_k = nil; max_v = nil; max_k = nil
+    found = false
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      k = blk.call(x)
+      if !found
+        min_v = max_v = x
+        min_k = max_k = k
+        found = true
+      else
+        if (k <=> min_k) < 0
+          min_v = x; min_k = k
+        end
+        if (k <=> max_k) > 0
+          max_v = x; max_k = k
+        end
+      end
+    }
+    found ? [min_v, max_v] : [nil, nil]
+  end unless method_defined?(:minmax_by)
+
+  # Enumerable#reverse_each — yield in reverse order.
+  def reverse_each(&blk)
+    return enum_for(:reverse_each) unless blk
+    arr = to_a
+    i = arr.size - 1
+    while i >= 0
+      blk.call(arr[i])
+      i -= 1
+    end
+    self
+  end unless method_defined?(:reverse_each)
+
+  # Enumerable#slice_after — yields slices ending where blk returns truthy.
+  def slice_after(pat = nil, &blk)
+    return enum_for(:slice_after, pat) if !blk && pat.nil?
+    pred = blk || ->(x) { pat === x }
+    result = []
+    cur = []
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      cur << x
+      if pred.call(x)
+        result << cur
+        cur = []
+      end
+    }
+    result << cur unless cur.empty?
+    result
+  end unless method_defined?(:slice_after)
+
+  # Enumerable#slice_before — yields slices starting where blk returns truthy.
+  def slice_before(pat = nil, &blk)
+    return enum_for(:slice_before, pat) if !blk && pat.nil?
+    pred = blk || ->(x) { pat === x }
+    result = []
+    cur = []
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      if pred.call(x) && !cur.empty?
+        result << cur
+        cur = []
+      end
+      cur << x
+    }
+    result << cur unless cur.empty?
+    result
+  end unless method_defined?(:slice_before)
+
+  # Enumerable#chunk — yield [v, [items...]] for runs where blk returns v.
+  def chunk(&blk)
+    return enum_for(:chunk) unless blk
+    result = []
+    cur_key = nil
+    cur_items = nil
+    each { |*args|
+      x = args.size <= 1 ? args.first : args
+      k = blk.call(x)
+      next if k == :_separator || k == nil
+      if k == :_alone
+        result << [k, [x]]
+        cur_key = nil
+        cur_items = nil
+      elsif cur_key == k && cur_items
+        cur_items << x
+      else
+        cur_items = [x]
+        cur_key = k
+        result << [k, cur_items]
+      end
+    }
+    result
+  end unless method_defined?(:chunk)
+
   def group_by(&blk)
     return enum_for(:group_by) unless blk
     h = {}
