@@ -713,28 +713,24 @@ static long ary_sort_compare(CTX *c, VALUE x, VALUE y, bool has_block, RESULT *e
     return 0;
 }
 
-static RESULT ary_sort_in_place(CTX *c, struct korb_array *ra, bool has_block) {
+static RESULT ary_sort_in_place(CTX *c, VALUE *sp, struct korb_array *ra, bool has_block) {
     long n = ra->len;
-    /* Pin the "probe" value v across korb_yield/funcall GC fires.  The
-     * array storage (ra->ptr[]) is libc-tracked so its entries auto-
-     * forward, but the C-local `v` would go stale after GC moves the
-     * referent.  Stage on the value stack so visit_roots picks it up. */
+    /* Park probe in sp[0] across korb_yield/funcall GC fires. */
+    sp[0] = 0;
+    c->sp_top = sp + 1;
     RESULT _ret = RESULT_OK(Qnil);
-    ARO_ROOT_SCOPE_START(c, rs, 1) {
-        for (long i = 1; i < n; i++) {
-            rs[0] = ra->ptr[i];
-            long j = i - 1;
-            while (j >= 0) {
-                long cmp = ary_sort_compare(c, ra->ptr[j], rs[0], has_block, &_ret);
-                if (_ret.state != KORB_NORMAL) goto done;
-                if (cmp <= 0) break;
-                ra->ptr[j+1] = ra->ptr[j];
-                j--;
-            }
-            ra->ptr[j+1] = rs[0];
+    for (long i = 1; i < n; i++) {
+        sp[0] = ra->ptr[i];
+        long j = i - 1;
+        while (j >= 0) {
+            long cmp = ary_sort_compare(c, ra->ptr[j], sp[0], has_block, &_ret);
+            if (_ret.state != KORB_NORMAL) return _ret;
+            if (cmp <= 0) break;
+            ra->ptr[j+1] = ra->ptr[j];
+            j--;
         }
-done:   ;
-    } ARO_ROOT_SCOPE_END(c, rs);
+        ra->ptr[j+1] = sp[0];
+    }
     return _ret;
 }
 
@@ -747,7 +743,7 @@ static RESULT ary_sort(CTX *c, int argc, VALUE *sp) {
     long n = a->len;
     VALUE r = korb_ary_new_capa(c, c->sp_top, n);
     for (long i = 0; i < n; i++) korb_ary_push(r, a->ptr[i]);
-    CHECK(ary_sort_in_place(c, (struct korb_array *)r, korb_block_given(c)));
+    CHECK(ary_sort_in_place(c, sp, (struct korb_array *)r, korb_block_given(c)));
     return RESULT_OK(r);
 }
 
@@ -760,7 +756,7 @@ static RESULT ary_sort_bang(CTX *c, int argc, VALUE *sp) {
     VALUE *argv = sp - argc;
 
     CHECK_FROZEN_R(c, self);
-    CHECK(ary_sort_in_place(c, (struct korb_array *)self, korb_block_given(c)));
+    CHECK(ary_sort_in_place(c, sp, (struct korb_array *)self, korb_block_given(c)));
     return RESULT_OK(self);
 }
 
